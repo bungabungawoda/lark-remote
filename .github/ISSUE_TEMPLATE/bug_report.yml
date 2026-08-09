@@ -1,0 +1,76 @@
+name: Bug Report
+description: Report a bug in lark-remote
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report a bug! Please fill out the sections below.
+  - type: dropdown
+    id: agent
+    attributes:
+      label: Agent
+      description: Which coding agent were you using?
+      options:
+        - claude
+        - codex
+        - opencode
+        - pi
+        - kimi
+    validations:
+      required: true
+  - type: textarea
+    id: description
+    attributes:
+      label: Description
+      description: What happened? What did you expect to happen?
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to Reproduce
+      description: How can we reproduce this issue?
+      placeholder: |
+        1. ...
+        2. ...
+        3. ...
+    validations:
+      required: true
+  - type: textarea
+    id: config
+    attributes:
+      label: Relevant Configuration
+      description: |
+        Sanitized config snippet (remove appId, appSecret, and any other sensitive values).
+      render: yaml
+    validations:
+      required: false
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant Logs
+      description: |
+        Logs from `~/.lark-remote/logs/` (sanitize any personal info).
+      render: shell
+    validations:
+      required: false
+  - type: input
+    id: version
+    attributes:
+      label: lark-remote Version
+      description: Run `lark-remote --version` or check package.json
+      placeholder: "0.1.0"
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: OS, Node.js version, etc.
+      placeholder: |
+        - OS: macOS 15 / Ubuntu 24.04 / ...
+        - Node.js: 20.x / 22.x
+        - Bun: 1.x (if applicable)
+    validations:
+      required: false
