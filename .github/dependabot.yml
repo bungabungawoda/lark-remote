@@ -1,0 +1,20 @@
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    reviewers:
+      - bungabungawoda
+    # 飞书 SDK 和 agent 相关依赖升级必须手动审查
+    ignore:
+      - dependency-name: "@larksuite/channel"
+      - dependency-name: "@anthropic-ai/*"
+      - dependency-name: "@openai/*"
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
