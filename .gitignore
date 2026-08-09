@@ -1,0 +1,60 @@
+node_modules
+dist/
+*.js.map
+*.d.ts
+*.d.ts.map
+.env
+.env.*
+.DS_Store
+*.log
+coverage/
+
+# 真实飞书凭据不入库
+.lark-remote/
+config.yaml
+config.yml
+credentials*
+
+# adversarial TDD scratchpad (per global rule)
+.adversarial-tdd/
+
+# 临时截图 / 后台输出
+image.png
+nohup.out
+
+# Claude Code worktrees
+.worktrees/
+.claude/worktrees/
+
+# npm pack output
+*.tgz
+
+# npm auth tokens
+.npmrc
+
+# IDE
+.idea/
+.vscode/
+
+# AI coding agent config (project-specific, not shared)
+AGENTS.md
+CLAUDE.md
+
+# 红线教训文档（含真实环境痕迹，不入库）
+docs/**/lessons-redlines.md
+
+# TypeScript incremental build info
+tsconfig.tsbuildinfo
+scripts/download-feishu-card-docs.sh
+
+# Coverage / test home directory (contains local hostnames)
+.cov-home/
+
+# Watchdog script (not shipped in open-source release)
+scripts/watchdog.sh
+
+# Compact 感知方案草稿（探索中，不入库）
+docs/zh/architecture/run-card-compact-awareness-plan.md
+
+# 飞书 CardKit 官方文档镜像（第三方内容，不入库；由 scripts/download-feishu-card-docs.sh 抓取）
+docs/feishu-card-v2/
