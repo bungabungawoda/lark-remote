@@ -1,0 +1,93 @@
+{
+  "name": "lark-remote",
+  "version": "0.1.0",
+  "description": "Feishu (Lark) private-chat bridge to local coding agents — Claude Code / Codex / opencode / pi / kimi, with live-streaming CardKit 2.0 cards",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "bin": {
+    "lark-remote": "dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "!dist/**/*.js.map",
+    "!dist/**/*.d.ts.map",
+    "!dist/config/codex-bundled-test-helpers.*",
+    "!dist/test-helpers.*",
+    "README.md",
+    "README.en.md",
+    "LICENSE",
+    "CHANGELOG.md"
+  ],
+  "scripts": {
+    "dev": "bun src/index.ts",
+    "build": "rm -rf dist && tsc && chmod +x dist/index.js dist/cli.js",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint src tests",
+    "lint:fix": "eslint src tests --fix",
+    "format": "prettier --write 'src/**/*.ts' 'tests/**/*.ts'",
+    "format:check": "prettier --check 'src/**/*.ts' 'tests/**/*.ts'",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "prepublishOnly": "tsc --noEmit && vitest run && rm -rf dist && tsc && chmod +x dist/index.js dist/cli.js",
+    "prepack": "node -e \"const fs=require('fs');if(!fs.existsSync('dist/cli.js')){console.error('dist/ missing — run bun run build first');process.exit(1)}\""
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": false
+  },
+  "keywords": [
+    "feishu",
+    "lark",
+    "claude-code",
+    "codex",
+    "opencode",
+    "kimi",
+    "coding-agent",
+    "bridge",
+    "cli",
+    "remote-control"
+  ],
+  "author": "bungabungawoda",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/bungabungawoda/lark-remote.git"
+  },
+  "bugs": {
+    "url": "https://github.com/bungabungawoda/lark-remote/issues"
+  },
+  "homepage": "https://github.com/bungabungawoda/lark-remote#readme",
+  "engines": {
+    "node": ">=20"
+  },
+  "type": "module",
+  "dependencies": {
+    "@iarna/toml": "^2.2.5",
+    "@larksuite/channel": "^0.3.0",
+    "axios": "^1.18.0",
+    "form-data": "^4.0.6",
+    "qrcode-terminal": "^0.12.0",
+    "yaml": "^2.9.0",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@types/form-data": "^2.5.2",
+    "@types/node": "^26.1.2",
+    "@types/qrcode-terminal": "^0.12.2",
+    "@vitest/coverage-v8": "4.1.9",
+    "eslint": "^10.7.0",
+    "eslint-config-prettier": "^10.1.8",
+    "eslint-plugin-prettier": "^5.5.6",
+    "prettier": "^3.9.5",
+    "typescript": "^6.0.0",
+    "typescript-eslint": "^8.63.0",
+    "vitest": "^4.1.9"
+  }
+}

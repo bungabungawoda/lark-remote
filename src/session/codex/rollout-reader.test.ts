@@ -1,0 +1,382 @@
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import fs from 'node:fs';
+import path from 'node:path';
+import os from 'node:os';
+import {
+  readCodexRollout,
+  listCodexRollouts,
+  readCodexSessionContent,
+  isCodexSessionActive,
+} from '../../session/codex/rollout-reader.js';
+
+const { mockLogger } = vi.hoisted(() => ({
+  mockLogger: {
+    debug: vi.fn(),
+    info: vi.fn(),
+    warn: vi.fn(),
+    error: vi.fn(),
+  },
+}));
+
+vi.mock('../logger/index.js', () => ({
+  getLogger: () => mockLogger,
+  initLogger: () => mockLogger,
+}));
+
+let tmpDir: string;
+
+beforeEach(() => {
+  tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'lark-rollout-test-'));
+});
+
+afterEach(() => {
+  fs.rmSync(tmpDir, { recursive: true, force: true });
+});
+
+// Helper: create a test rollout file
+function createRolloutFile(filename: string, content: string): string {
+  const filePath = path.join(tmpDir, filename);
+  fs.writeFileSync(filePath, content, 'utf-8');
+  return filePath;
+}
+
+describe('codex-rollout-reader', () => {
+  describe('readCodexRollout', () => {
+    it('parses session_meta and response_item lines', () => {
+      const content = `{"type":"session_meta","payload":{"session_id":"019f-test","cwd":"/tmp/project","originator":"lark-remote"},"timestamp":"2026-07-13T10:00:00.000Z"}
+{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Hello"}]},"timestamp":"2026-07-13T10:00:01.000Z"}
+{"type":"event_msg","payload":{"type":"user_message","message":"Hello"},"timestamp":"2026-07-13T10:00:01.000Z"}
+{"type":"response_item","payload":{"type":"message","role":"developer","content":[{"type":"text","text":"Hi there!"}]},"timestamp":"2026-07-13T10:00:02.000Z"}
+`;
+      const filePath = createRolloutFile('rollout-2026-07-13T10-00-00-019f-test.jsonl', content);
+      const entry = readCodexRollout(filePath);
+
+      expect(entry).not.toBeNull();
+      expect(entry!.threadId).toBe('019f-test');
+      expect(entry!.cwd).toBe('/tmp/project');
+      expect(entry!.firstUserMessage).toBe('Hello');
+      expect(entry!.events).toHaveLength(2);
+    });
+
+    it('returns null for non-existent file', () => {
+      const entry = readCodexRollout(path.join(tmpDir, 'nonexistent.jsonl'));
+      expect(entry).toBeNull();
+    });
+
+    it('returns null for file without session_meta', () => {
+      const content = `{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Hello"}]}}`;
+      const filePath = createRolloutFile('rollout-no-meta.jsonl', content);
+      const entry = readCodexRollout(filePath);
+      expect(entry).toBeNull();
+    });
+
+    it('skips malformed JSON lines', () => {
+      const content = `{"type":"session_meta","payload":{"session_id":"019f-err","cwd":"/tmp","originator":"lark-remote"}}
+not valid json
+{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Good"}]}}
+`;
+      const filePath = createRolloutFile('rollout-with-errors.jsonl', content);
+      const entry = readCodexRollout(filePath);
+
+      expect(entry).not.toBeNull();
+      expect(entry!.threadId).toBe('019f-err');
+      expect(entry!.events).toHaveLength(1);
+    });
+
+    it('extracts first user message correctly', () => {
+      const content = `{"type":"session_meta","payload":{"session_id":"019f-msg","cwd":"/tmp","originator":"lark-remote"}}
+{"type":"response_item","payload":{"type":"message","role":"developer","content":[{"type":"text","text":"Hello!"}]}}
+{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"First user message"}]}}
+{"type":"event_msg","payload":{"type":"user_message","message":"First user message"}}
+{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Second user message"}]}}
+{"type":"event_msg","payload":{"type":"user_message","message":"Second user message"}}
+`;
+      const filePath = createRolloutFile('rollout-multi.jsonl', content);
+      const entry = readCodexRollout(filePath);
+
+      expect(entry).not.toBeNull();
+      expect(entry!.firstUserMessage).toBe('First user message');
+    });
+  });
+
+  describe('listCodexRollouts', () => {
+    it('returns entries sorted by mtime descending', () => {
+      // Create mock sessions directory structure
+      const sessionsDir = path.join(tmpDir, 'sessions', '2026', '07', '13');
+      fs.mkdirSync(sessionsDir, { recursive: true });
+
+      // Create files with different mtimes
+      const oldFile = path.join(sessionsDir, 'rollout-old.jsonl');
+      const newFile = path.join(sessionsDir, 'rollout-new.jsonl');
+
+      fs.writeFileSync(
+        oldFile,
+        '{"type":"session_meta","payload":{"session_id":"old","cwd":"/tmp","originator":"x"}}',
+        'utf-8',
+      );
+      fs.writeFileSync(
+        newFile,
+        '{"type":"session_meta","payload":{"session_id":"new","cwd":"/tmp","originator":"x"}}',
+        'utf-8',
+      );
+
+      // Set different mtimes (older first, newer second in listing order)
+      const oldTime = new Date('2026-07-13T08:00:00Z').getTime();
+      const newTime = new Date('2026-07-13T12:00:00Z').getTime();
+      fs.utimesSync(oldFile, oldTime / 1000, oldTime / 1000);
+      fs.utimesSync(newFile, newTime / 1000, newTime / 1000);
+
+      const result = listCodexRollouts({ codexHome: tmpDir, limit: 10 });
+
+      expect(result.entries).toHaveLength(2);
+      expect(result.entries[0].threadId).toBe('new'); // newer first
+      expect(result.entries[1].threadId).toBe('old');
+    });
+
+    it('applies limit', () => {
+      const sessionsDir = path.join(tmpDir, 'sessions', '2026', '07', '13');
+      fs.mkdirSync(sessionsDir, { recursive: true });
+
+      for (let i = 0; i < 5; i++) {
+        const file = path.join(sessionsDir, `rollout-${i}.jsonl`);
+        fs.writeFileSync(
+          file,
+          `{"type":"session_meta","payload":{"session_id":"${i}","cwd":"/tmp","originator":"x"}}`,
+          'utf-8',
+        );
+      }
+
+      const result = listCodexRollouts({ codexHome: tmpDir, limit: 3 });
+      expect(result.entries).toHaveLength(3);
+    });
+
+    it('filters by cwd', () => {
+      const sessionsDir = path.join(tmpDir, 'sessions', '2026', '07', '13');
+      fs.mkdirSync(sessionsDir, { recursive: true });
+
+      const file1 = path.join(sessionsDir, 'rollout-1.jsonl');
+      const file2 = path.join(sessionsDir, 'rollout-2.jsonl');
+
+      fs.writeFileSync(
+        file1,
+        '{"type":"session_meta","payload":{"session_id":"s1","cwd":"/project/a","originator":"x"}}',
+        'utf-8',
+      );
+      fs.writeFileSync(
+        file2,
+        '{"type":"session_meta","payload":{"session_id":"s2","cwd":"/project/b","originator":"x"}}',
+        'utf-8',
+      );
+
+      const result = listCodexRollouts({ codexHome: tmpDir, cwd: '/project/a' });
+      expect(result.entries).toHaveLength(1);
+      expect(result.entries[0].threadId).toBe('s1');
+      expect(result.total).toBe(1);
+    });
+
+    it('returns empty array for non-existent codex home', () => {
+      const result = listCodexRollouts({ codexHome: path.join(tmpDir, 'nonexistent') });
+      expect(result).toEqual({ entries: [], total: 0 });
+    });
+  });
+
+  describe('readCodexSessionContent', () => {
+    it('returns session content for matching sessionId', () => {
+      const sessionsDir = path.join(tmpDir, 'sessions', '2026', '07', '13');
+      fs.mkdirSync(sessionsDir, { recursive: true });
+
+      const file = path.join(sessionsDir, 'rollout-019f-target.jsonl');
+      fs.writeFileSync(
+        file,
+        `{"type":"session_meta","payload":{"session_id":"019f-target","cwd":"/tmp","originator":"lark-remote"}}
+{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"What is 2+2?"}]}}
+{"type":"event_msg","payload":{"type":"user_message","message":"What is 2+2?"}}
+{"type":"response_item","payload":{"type":"message","role":"developer","content":[{"type":"text","text":"It's 4."}]}}
+`,
+        'utf-8',
+      );
+
+      const content = readCodexSessionContent('019f-target', { codexHome: tmpDir });
+
+      expect(content.events).toHaveLength(2);
+      expect(content.displayTitle).toContain('What is 2+2?');
+    });
+
+    it('displayTitle excludes injected AGENTS.md / environment_context, uses last real user input (regression 2026-07-13)', () => {
+      // Regression 2026-07-13: codex writes AGENTS.md project rules and
+      // <environment_context> as `role:"user"` response_items. The reader
+      // used the FIRST role:user message as displayTitle/recap, so the
+      // auto-resume card showed "AGENTS.md instructions" as "最近输入".
+      // Real user input is identifiable by a paired event_msg/user_message.
+      const sessionsDir = path.join(tmpDir, 'sessions', '2026', '07', '13');
+      fs.mkdirSync(sessionsDir, { recursive: true });
+
+      const file = path.join(sessionsDir, 'rollout-019f-inject.jsonl');
+      fs.writeFileSync(
+        file,
+        `{"type":"session_meta","payload":{"session_id":"019f-inject","cwd":"/tmp/proj","originator":"lark-remote"}}
+{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"# AGENTS.md instructions\\n\\n<INSTRUCTIONS>\\n# Claude rules"}]}}
+{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"continue fixing"}]}}
+{"type":"event_msg","payload":{"type":"user_message","message":"continue fixing"}}
+{"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"text","text":"ok"}]}}
+{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"<environment_context>\\n  <current_date>2026-07-13</current_date>\\n</environment_context>"}]}}
+{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"commit & push"}]}}
+{"type":"event_msg","payload":{"type":"user_message","message":"commit & push"}}
+`,
+        'utf-8',
+      );
+
+      const content = readCodexSessionContent('019f-inject', { codexHome: tmpDir });
+      // displayTitle = LAST real user input, never the injected AGENTS.md/env.
+      expect(content.displayTitle).toBe('commit & push');
+      expect(content.displayTitle).not.toContain('AGENTS.md');
+      expect(content.displayTitle).not.toContain('environment_context');
+      // recap is undefined (codex has no compact summary).
+      expect(content.recap).toBeUndefined();
+    });
+
+    it('firstUserMessage / lastRealUserMessage skip injected user messages', () => {
+      const sessionsDir = path.join(tmpDir, 'sessions', '2026', '07', '13');
+      fs.mkdirSync(sessionsDir, { recursive: true });
+      const file = path.join(sessionsDir, 'rollout-019f-entry.jsonl');
+      fs.writeFileSync(
+        file,
+        `{"type":"session_meta","payload":{"session_id":"019f-entry","cwd":"/tmp/proj","originator":"lark-remote"}}
+{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"# AGENTS.md instructions\\n<INSTRUCTIONS>"}]}}
+{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"continue fixing"}]}}
+{"type":"event_msg","payload":{"type":"user_message","message":"continue fixing"}}
+{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"commit & push"}]}}
+{"type":"event_msg","payload":{"type":"user_message","message":"commit & push"}}
+`,
+        'utf-8',
+      );
+      const entry = readCodexRollout(file);
+      expect(entry!.firstUserMessage).toBe('continue fixing');
+      expect(entry!.lastRealUserMessage).toBe('commit & push');
+      expect(entry!.firstUserMessage).not.toContain('AGENTS.md');
+    });
+
+    it('returns empty events for non-existent session', () => {
+      const content = readCodexSessionContent('019f-does-not-exist', { codexHome: tmpDir });
+      expect(content.events).toHaveLength(0);
+    });
+  });
+
+  describe('readCodexSessionContent usage extraction (ccusage-aligned)', () => {
+    it('extracts last token_count usage with input=raw-cached, cacheCreation=0', () => {
+      const sessionsDir = path.join(tmpDir, 'sessions', '2026', '07', '14');
+      fs.mkdirSync(sessionsDir, { recursive: true });
+      const file = path.join(sessionsDir, 'rollout-019f-usage.jsonl');
+      fs.writeFileSync(
+        file,
+        `{"type":"session_meta","payload":{"session_id":"019f-usage","cwd":"/tmp"}}
+{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]}}
+{"type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":15006,"cached_input_tokens":6400,"output_tokens":500,"total_tokens":15506},"total_token_usage":{"input_tokens":15006,"cached_input_tokens":6400,"output_tokens":500,"total_tokens":15506}}}}
+`,
+        'utf-8',
+      );
+
+      const content = readCodexSessionContent('019f-usage', { codexHome: tmpDir });
+      expect(content.usage).toBeDefined();
+      // input = raw - cached (ccusage semantics, matches live codex translator)
+      expect(content.usage!.inputTokens).toBe(8606); // 15006 - 6400
+      expect(content.usage!.cacheReadTokens).toBe(6400);
+      // Codex never reports cache creation
+      expect(content.usage!.cacheCreationTokens).toBe(0);
+      expect(content.usage!.totalTokens).toBe(15506);
+    });
+
+    it('falls back to total - previous_total when last_token_usage is absent', () => {
+      const sessionsDir = path.join(tmpDir, 'sessions', '2026', '07', '15');
+      fs.mkdirSync(sessionsDir, { recursive: true });
+      const file = path.join(sessionsDir, 'rollout-019f-diff.jsonl');
+      fs.writeFileSync(
+        file,
+        `{"type":"session_meta","payload":{"session_id":"019f-diff","cwd":"/tmp"}}
+{"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":40,"output_tokens":10,"total_tokens":110}}}}
+{"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":200,"cached_input_tokens":90,"output_tokens":30,"total_tokens":230}}}}
+`,
+        'utf-8',
+      );
+      const content = readCodexSessionContent('019f-diff', { codexHome: tmpDir });
+      expect(content.usage).toBeDefined();
+      // last turn diff: 200-100=100 input, 90-40=50 cached, 30-10=20 output, 230-110=120 total
+      expect(content.usage!.inputTokens).toBe(50); // 100 - 50
+      expect(content.usage!.cacheReadTokens).toBe(50);
+      expect(content.usage!.totalTokens).toBe(120);
+    });
+
+    it('extracts cumulative usage from final total_token_usage', () => {
+      const sessionsDir = path.join(tmpDir, 'sessions', '2026', '07', '16');
+      fs.mkdirSync(sessionsDir, { recursive: true });
+      const file = path.join(sessionsDir, 'rollout-019f-cum.jsonl');
+      fs.writeFileSync(
+        file,
+        `{"type":"session_meta","payload":{"session_id":"019f-cum","cwd":"/tmp"}}
+{"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":40,"output_tokens":10,"total_tokens":110}}}}
+{"type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":50,"cached_input_tokens":10,"output_tokens":20,"total_tokens":80},"total_token_usage":{"input_tokens":200,"cached_input_tokens":90,"output_tokens":30,"total_tokens":230}}}}
+`,
+        'utf-8',
+      );
+      const content = readCodexSessionContent('019f-cum', { codexHome: tmpDir });
+      expect(content.usage).toBeDefined();
+      // per-turn = last_token_usage: non-cached input = 50-10 = 40, output = 20
+      expect(content.usage!.inputTokens).toBe(40);
+      expect(content.usage!.outputTokens).toBe(20);
+      // cumulative = final total_token_usage: non-cached input = 200-90 = 110, output = 30
+      expect(content.usage!.cumulativeInputTokens).toBe(110);
+      expect(content.usage!.cumulativeOutputTokens).toBe(30);
+    });
+  });
+
+  describe('isCodexSessionActive', () => {
+    it('returns true for recently modified session', () => {
+      const sessionsDir = path.join(tmpDir, 'sessions', '2026', '07', '13');
+      fs.mkdirSync(sessionsDir, { recursive: true });
+
+      const file = path.join(sessionsDir, 'rollout-active.jsonl');
+      fs.writeFileSync(
+        file,
+        '{"type":"session_meta","payload":{"session_id":"019f-active","cwd":"/tmp","originator":"x"}}',
+        'utf-8',
+      );
+
+      // Touch the file to make it recent
+      const now = Date.now();
+      fs.utimesSync(file, now / 1000, now / 1000);
+
+      const active = isCodexSessionActive('019f-active', {
+        codexHome: tmpDir,
+        activeThresholdMs: 60_000,
+      });
+      expect(active).toBe(true);
+    });
+
+    it('returns false for old session', () => {
+      const sessionsDir = path.join(tmpDir, 'sessions', '2026', '07', '13');
+      fs.mkdirSync(sessionsDir, { recursive: true });
+
+      const file = path.join(sessionsDir, 'rollout-old.jsonl');
+      fs.writeFileSync(
+        file,
+        '{"type":"session_meta","payload":{"session_id":"019f-old","cwd":"/tmp","originator":"x"}}',
+        'utf-8',
+      );
+
+      // Set mtime to 30 minutes ago
+      const oldTime = (Date.now() - 30 * 60 * 1000) / 1000;
+      fs.utimesSync(file, oldTime, oldTime);
+
+      const active = isCodexSessionActive('019f-old', {
+        codexHome: tmpDir,
+        activeThresholdMs: 10 * 60 * 1000,
+      });
+      expect(active).toBe(false);
+    });
+
+    it('returns false for non-existent session', () => {
+      const active = isCodexSessionActive('019f-nonexistent', { codexHome: tmpDir });
+      expect(active).toBe(false);
+    });
+  });
+});
