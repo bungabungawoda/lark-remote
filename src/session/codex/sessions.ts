@@ -46,12 +46,13 @@ export class CodexSessionReader implements AgentSessionReader {
 
   readSessionContent(
     sessionId: string,
-    _cwd: string,
+    cwd: string,
     opts?: { maxEvents?: number },
   ): SessionContent {
     return readCodexSessionContent(sessionId, {
       codexHome: this.codexHome,
       maxEvents: opts?.maxEvents,
+      cwd,
     });
   }
 
