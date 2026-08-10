@@ -793,25 +793,56 @@ export class CommandRouter {
       return;
     }
 
+    // RACE FIX: register the replacement closure BEFORE any await. The old
+    // code awaited updateMessagePreview first, yielding to the microtask
+    // queue. Between that yield and the later setTaskReplacement call, the
+    // queue chain could advance: the task's begin path would find no
+    // replacement → the original stale closure would run → the user saw
+    // "消息已更新" but the agent executed the old prompt.
+    //
+    // By registering synchronously first, the begin path always finds the
+    // replacement if the task starts during the subsequent await. Both
+    // setTaskReplacement and the begin-path consumption are synchronous, so
+    // there is no interleaving window.
+    //
+    // D3/Step3：复用原任务 binding（不重新快照）+ 恢复 cwdOverride。
+    const inputTask = this.bridge.getQueuedTask(workspace, messageId);
+    if (!inputTask) {
+      // Task already left the queue (began or was cancelled) before we could
+      // register the replacement. The user must be told the edit failed.
+      await this.bridge.sendResult({ text: '⚠️ 任务已不在队列中（可能已开始执行或被撤销）' }, ctx);
+      return;
+    }
+    this.bridge.setTaskReplacement(workspace, messageId, async () => {
+      await this.handle(newMessage, ctx, { cwdOverride: workspace, binding: inputTask.binding });
+    });
+
     // Update the message preview (and editedMessage so handleQueueImmediate
     // re-enqueues the edited content instead of the stale original closure),
     // and build the updated queue card. Returning the card in the callback
     // response makes Feishu render it in place -- a toast-only response leaves
     // the card stuck in the edit state (Feishu keeps the pre-click card when
     // the callback response has no `card` field).
+    //
+    // After the synchronous replacement registration above, it is safe to
+    // await here: even if the queue chain advances and the replacement is
+    // consumed, the user-facing card update is best-effort (the executing card
+    // is updated by updateQueueCardToExecuting instead).
     const card = await this.bridge.updateMessagePreview(workspace, messageId, newMessage);
     if (!card) {
-      await this.bridge.sendResult({ text: '⚠️ 任务已不在队列中' }, ctx);
-      return;
+      // Task left the queue during the await (began or cancelled). The
+      // replacement was already consumed (begin path) or cleaned up
+      // (cancel/removeFromQueue path). Inform the user the edit didn't stick
+      // as a *card update*, but the replacement closure was already in effect.
+      if (this.bridge.hasTaskBegan(messageId)) {
+        return {
+          toast: { type: 'success', content: '消息已更新（任务已开始执行）' },
+        };
+      }
+      return {
+        toast: { type: 'info', content: '任务已不在队列中，编辑未生效' },
+      };
     }
-    // 编辑即生效：自然轮到时（不经立即执行）也必须执行编辑后内容，而不是
-    // enqueue 时闭包冻结的旧指令。setTaskReplacement 原位替换该任务槽位的闭包，
-    // 保持队列位置；handleQueueImmediate 后续注册/刷新幂等覆盖。
-    // D3/Step3：复用原任务 binding（不重新快照）+ 恢复 cwdOverride。
-    const inputTask = this.bridge.getQueuedTask(workspace, messageId);
-    this.bridge.setTaskReplacement(workspace, messageId, async () => {
-      await this.handle(newMessage, ctx, { cwdOverride: workspace, binding: inputTask?.binding });
-    });
     return {
       toast: { type: 'success', content: '消息已更新' },
       card: { type: 'raw', data: card },
