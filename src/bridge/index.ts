@@ -12,7 +12,7 @@ import type { RunTerminal } from '../card/run-state.js';
 import { markdownDiv } from '../card/collapsible.js';
 import { sessionEventPanel } from '../router/card-helpers.js';
 import { formatUsageStats } from '../router/index.js';
-import { agentDisplayName } from '../card/card-shared.js';
+import { agentDisplayName, resumeUseButton } from '../card/card-shared.js';
 import { enforceCardBudget } from '../card/card-budget.js';
 import { normalizeResultUsage } from '../runner/common/usage.js';
 import { BashProcessRunner, type BashRunner } from '../runner/index.js';
@@ -1450,14 +1450,7 @@ export class Bridge {
           {
             tag: 'column',
             width: 'auto',
-            elements: [
-              {
-                tag: 'button',
-                text: { tag: 'plain_text', content: '🔁 切换到此会话' },
-                type: 'primary',
-                behaviors: [{ type: 'callback', value: { cmd: 'resume.use', sessionId } }],
-              },
-            ],
+            elements: [resumeUseButton(sessionId, agentKind)],
           },
         ],
       });

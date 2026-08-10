@@ -100,3 +100,18 @@ export function newSessionButton(): object {
     behaviors: [{ type: 'callback', value: { cmd: 'new-session' } }],
   };
 }
+
+/**
+ * Create a CardKit 2.0 "resume session" button with behaviors callback.
+ * Carries both sessionId and agent so the handler routes to the correct
+ * agent's session reader (P2 fix: completion cards from non-default agents
+ * must carry agent to avoid wrong-reader fallback).
+ */
+export function resumeUseButton(sessionId: string, agent: AgentKind): object {
+  return {
+    tag: 'button',
+    text: { tag: 'plain_text', content: '🔁 切换到此会话' },
+    type: 'primary',
+    behaviors: [{ type: 'callback', value: { cmd: 'resume.use', sessionId, agent } }],
+  };
+}

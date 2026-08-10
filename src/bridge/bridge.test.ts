@@ -1197,6 +1197,114 @@ describe('Bridge agentRegistry / sessionReaderRegistry', () => {
     expect(JSON.stringify(notifPayload?.input)).not.toContain('120,000');
   });
 
+  it('completion notification card resume.use button carries agent field', async () => {
+    // When a non-default agent completes, the resume.use button in the
+    // completion card must carry agent:<kind> so clicking it routes to the
+    // correct agent's session reader. Without this, clicking the button
+    // after switching defaultAgent would look up the wrong agent's session.
+    const { SessionReaderRegistry } = await import('../session/registry.js');
+    const codexReadSpy = vi.fn(() => ({
+      events: [{ type: 'text', content: 'codex session done' }],
+      usage: {
+        inputTokens: 10,
+        outputTokens: 20,
+        contextLength: 5000,
+        cost: 0.001,
+        compactCount: 0,
+      },
+    }));
+    const codexReader = {
+      listSessions: vi.fn(() => ({ sessions: [], total: 0 })),
+      getNewestSession: vi.fn(() => null),
+      readSessionContent: codexReadSpy,
+      isSessionActive: vi.fn(() => false),
+    };
+    const emptyReader = {
+      listSessions: vi.fn(() => ({ sessions: [], total: 0 })),
+      getNewestSession: vi.fn(() => null),
+      readSessionContent: vi.fn(() => ({ events: [], usage: undefined, reason: 'not_found' })),
+      isSessionActive: vi.fn(() => false),
+    };
+    const registry = new SessionReaderRegistry();
+    registry.register('claude', emptyReader as never);
+    registry.register('codex', codexReader as never);
+    registry.register('opencode', emptyReader as never);
+    registry.register('pi', emptyReader as never);
+    registry.register('kimi', emptyReader as never);
+
+    // Force the unsent path so sendCompletionNotificationCard fires
+    const connector = createStubConnector();
+    connector.streamCard = async () => {
+      throw new Error('stream unavailable');
+    };
+    const streamingRunner = createStreamingRunner([
+      {
+        type: 'system',
+        subtype: 'init',
+        session_id: 'codex-sess-1',
+        cwd: tmpDir,
+        model: 'codex-model',
+      },
+      { type: 'assistant', message: { content: [{ type: 'text', text: 'codex done' }] } },
+      { type: 'result', subtype: 'success', session_id: 'codex-sess-1' },
+    ]);
+    const bridge = new Bridge({
+      runner: asAgentRunner(streamingRunner),
+      connector,
+      sessionStore: new SessionStore(),
+      config,
+      agentRegistry: createStubAgentRegistry(streamingRunner),
+      sessionReaderRegistry: registry,
+    });
+    sessionStore_setCwd(bridge, ctx.userId, tmpDir);
+
+    // Forward with agent binding = codex (simulates a codex run completing)
+    await bridge.forwardToClaude('hello', ctx, {
+      binding: { agent: 'codex' },
+    });
+
+    // Find the completion notification card
+    const notifPayload = connector._sent.find((s) =>
+      JSON.stringify(s.input).includes('codex session done'),
+    );
+    expect(notifPayload).toBeDefined();
+
+    // The resume.use button must carry agent:'codex'.
+    // Parse back to object and walk the card structure to find the button,
+    // avoiding fragile JSON-string matching.
+    const card = (
+      notifPayload!.input as Record<
+        string,
+        Record<string, Record<string, Array<Record<string, unknown>>>>
+      >
+    )?.card;
+    expect(card).toBeDefined();
+    const elements = card?.body?.elements ?? [];
+    // Find the column_set containing the resume.use button
+    const resumeButton = elements
+      .filter((el) => Array.isArray(el.columns))
+      .flatMap((el) =>
+        (el.columns as Array<Record<string, Array<Record<string, unknown>>>>).flatMap(
+          (col) => col.elements ?? [],
+        ),
+      )
+      .find(
+        (el) =>
+          el.tag === 'button' &&
+          Array.isArray(el.behaviors) &&
+          (el.behaviors as Array<Record<string, Record<string, string>>>).some(
+            (b) => b.value?.cmd === 'resume.use',
+          ),
+      );
+    expect(resumeButton).toBeDefined();
+    const behavior = (resumeButton as Record<string, Array<Record<string, Record<string, string>>>>)
+      ?.behaviors?.[0];
+    expect(behavior?.value?.cmd).toBe('resume.use');
+    expect(behavior?.value?.sessionId).toBe('codex-sess-1');
+    // THE KEY ASSERTION: agent field must be present with value 'codex'
+    expect(behavior?.value?.agent).toBe('codex');
+  });
+
   it('done path reads jsonl via resolveFinalUsage for compactCount (regression: run card showed 1,115,408)', async () => {
     // The run card finish path must read the jsonl to get authoritative
     // contextLength (postTokens) + compactCount, instead of trusting the
