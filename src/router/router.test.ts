@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -1517,6 +1517,79 @@ describe('CommandRouter', () => {
     };
     expect(input.card).toBeDefined();
     expect(sessionStore.getSessionId('user1')).toBe(sid);
+  });
+
+  /** Create a SessionReaderRegistry where only codex has content, others are empty stubs. */
+  function createCodexOnlyRegistry(codexReadSpy: ReturnType<typeof vi.fn>) {
+    const codexReader: AgentSessionReader = {
+      listSessions: () => ({ sessions: [], total: 0 }),
+      getNewestSession: () => null,
+      readSessionContent: codexReadSpy,
+      isSessionActive: () => false,
+    };
+    const registry = new SessionReaderRegistry();
+    registry.register('claude', stubSessionReader);
+    registry.register('codex', codexReader);
+    registry.register('opencode', stubSessionReader);
+    registry.register('pi', stubSessionReader);
+    registry.register('kimi', stubSessionReader);
+    return registry;
+  }
+
+  it('resume.use with agent field routes to correct agent reader', async () => {
+    // Session exists in codex reader but NOT in claude reader.
+    // If resume.use carries agent:'codex', it should find the session.
+    const codexReadSpy = vi.fn(() => ({
+      events: [{ type: 'text', content: 'codex session tail' }],
+      usage: undefined,
+      aiTitle: undefined,
+      recap: undefined,
+      displayTitle: undefined,
+      reason: 'ok',
+    }));
+    const registry = createCodexOnlyRegistry(codexReadSpy);
+
+    const { router, sessionStore } = createRouter({ sessionReaderRegistry: registry });
+    sessionStore.setCwd('user1', fs.realpathSync(tmpDir));
+
+    // Click resume.use button WITH agent:'codex' → should use codex reader
+    await router.handleCardAction(
+      { cmd: 'resume.use', sessionId: 'codex-session-1', agent: 'codex' },
+      ctx,
+    );
+    expect(codexReadSpy).toHaveBeenCalled();
+    expect(codexReadSpy.mock.calls[0][0]).toBe('codex-session-1');
+    expect(sessionStore.getSessionId('user1', 'codex')).toBe('codex-session-1');
+  });
+
+  it('resume.use WITHOUT agent falls back to defaultAgent and may miss session from another agent', async () => {
+    // Session only exists in codex reader, not in claude (default).
+    // Without agent field, resume.use falls back to claude reader → session not found.
+    const codexReadSpy = vi.fn(() => ({
+      events: [{ type: 'text', content: 'codex session tail' }],
+      usage: undefined,
+      aiTitle: undefined,
+      recap: undefined,
+      displayTitle: undefined,
+      reason: 'ok',
+    }));
+    const registry = createCodexOnlyRegistry(codexReadSpy);
+
+    const { router, sessionStore, connector } = createRouter({ sessionReaderRegistry: registry });
+    sessionStore.setCwd('user1', fs.realpathSync(tmpDir));
+
+    // Click resume.use WITHOUT agent → falls back to defaultAgent='claude' → not found
+    await router.handleCardAction({ cmd: 'resume.use', sessionId: 'codex-session-2' }, ctx);
+    // codex reader should NOT have been called (default agent is claude)
+    expect(codexReadSpy).not.toHaveBeenCalled();
+    // session should NOT be set (validation fails because claude reader has no such session)
+    expect(sessionStore.getSessionId('user1', 'claude')).toBeUndefined();
+    expect(sessionStore.getSessionId('user1', 'codex')).toBeUndefined();
+    // Should have sent an error message about session not found
+    const lastSent = connector._sent[connector._sent.length - 1];
+    const sentText =
+      typeof lastSent.input === 'string' ? lastSent.input : JSON.stringify(lastSent.input);
+    expect(sentText).toContain('未找到 session');
   });
 
   it('/resume <id> shows usage stats and context length in card', async () => {
