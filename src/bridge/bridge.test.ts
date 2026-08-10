@@ -2112,3 +2112,83 @@ describe('Bridge session epoch guard (2026-08-09)', () => {
     expect(sessionStore.getSessionId(ctx.userId, 'claude')).toBe('sess-ok');
   });
 });
+
+describe('Queue edit race: setTaskReplacement before await (Plan B fix)', () => {
+  it('test_anchor_replacement_registered_synchronously_before_await_is_consumed_correctly', async () => {
+    // RACE FIX (Plan B): handleQueueInput now registers the replacement
+    // BEFORE any await, so the begin path always finds it. This test verifies
+    // the fix at the Bridge level: when setTaskReplacement is called
+    // synchronously before releasing the blocking task, the replacement closure
+    // runs instead of the original stale closure.
+
+    const sessionStore = new SessionStore();
+    const connector = createStubConnector();
+    const runner = createStubRunner();
+    const bridge = new Bridge({
+      runner,
+      agentRegistry: createStubAgentRegistry(runner),
+      sessionReaderRegistry: createStubSessionReaderRegistry(),
+      connector,
+      sessionStore,
+      config,
+    });
+
+    const realCwd = fs.realpathSync(tmpDir);
+
+    // Track which closure actually ran
+    const executed: string[] = [];
+
+    // Task A — hang until released
+    let releaseA: () => void = () => {};
+    const hangA = new Promise<void>((resolve) => {
+      releaseA = resolve;
+    });
+    bridge.enqueue(
+      realCwd,
+      async () => {
+        await hangA;
+        executed.push('A');
+      },
+      {
+        taskMeta: {
+          userId: ctx.userId,
+          chatId: ctx.chatId,
+          messageId: 'msg-A',
+          messagePreview: 'task A',
+        },
+      },
+    );
+
+    // Task B — queued behind A, original closure captures stale content
+    bridge.enqueue(
+      realCwd,
+      async () => {
+        executed.push('B-original');
+      },
+      {
+        taskMeta: {
+          userId: ctx.userId,
+          chatId: ctx.chatId,
+          messageId: 'msg-B',
+          messagePreview: 'old content B',
+        },
+      },
+    );
+
+    await new Promise((r) => setTimeout(r, 30));
+
+    // FIXED ORDER: register replacement synchronously BEFORE releasing A.
+    // This is what handleQueueInput now does after the Plan B fix.
+    bridge.setTaskReplacement(realCwd, 'msg-B', async () => {
+      executed.push('B-edited');
+    });
+
+    // Now release A — the queue chain advances, B begins.
+    // The begin path finds the replacement and executes it.
+    releaseA();
+    await new Promise((r) => setTimeout(r, 50));
+
+    // The replacement closure ran, not the original.
+    expect(executed).toEqual(['A', 'B-edited']);
+  });
+});
