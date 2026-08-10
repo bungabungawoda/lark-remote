@@ -403,10 +403,18 @@ export class KimiSessionReader implements AgentSessionReader {
       return { events: [] };
     }
 
-    const realCwd = fs.realpathSync(cwd);
+    const statePath = path.join(sessionDir, 'state.json');
+    let realCwd: string;
+    try {
+      realCwd = fs.realpathSync(cwd);
+    } catch {
+      getLogger().warn(
+        `[kimi-session-reader] fs.realpathSync failed for cwd=${cwd} (session ${sessionId}), returning empty`,
+      );
+      return { events: [] };
+    }
     let cwdGuardPassed = false;
 
-    const statePath = path.join(sessionDir, 'state.json');
     try {
       if (fs.existsSync(statePath)) {
         const state = JSON.parse(fs.readFileSync(statePath, 'utf-8')) as KimiSessionState;
