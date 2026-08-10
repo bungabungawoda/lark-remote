@@ -7,6 +7,7 @@ import {
   listClaudeSessions,
   readCwdFromJsonl,
   getNewestSession,
+  isClaudeSessionActive,
 } from '../../session/claude/sessions.js';
 
 let tmpDir: string;
@@ -686,6 +687,194 @@ describe('readSessionContent - EnterWorktree relocated session', () => {
       const result = readSessionContent('any-sid', '/any/cwd', { projectsDir: missingProjects });
       expect(result.events).toEqual([]);
       expect(result.usage).toBeUndefined();
+    } finally {
+      fs.rmSync(localTmp, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('listClaudeSessions - EnterWorktree relocated session', () => {
+  // P1 regression: Claude EnterWorktree 搬迁 session 后，transcript 文件移至新 cwd 的项目目录，
+  // 但文件首条 cwd 仍是搬迁前的原目录。readSessionContent 使用 jsonlContainsCwd（任一 cwd
+  // 匹配即可）能正确读取；但 listClaudeSessions 使用 readCwdFromJsonl（仅首条 cwd）过滤，
+  // 导致搬迁后的 session 不出现在 /resume 列表中。两者 cwd 判断逻辑不一致。
+  //
+  // 场景：session 首条 cwd=/home/user/proj（原目录），搬迁后 cwd=/home/user/proj-worktree
+  // 文件仅存在于搬迁后目录的 encoded 项目目录下。用户在 worktree 目录执行 /resume 时：
+  // - readSessionContent(sid, worktreeCwd) → jsonlContainsCwd 找到 worktreeCwd → ✅ 能读
+  // - listClaudeSessions(worktreeCwd) → readCwdFromJsonl 只看首条=原目录 ≠ worktreeCwd → ❌ 不列出
+  //
+  // 构造方式：复用 readSessionContent 测试的 writeRelocatedSession 模式——文件仅写在 B 的
+  // 项目目录，首条 cwd 是 A，请求 B。
+
+  function writeRelocatedSessionForList(projectsDir: string, sid: string): void {
+    const encodedB = '/home/user/proj-worktree'.replace(/\//g, '-');
+    const dirB = path.join(projectsDir, encodedB);
+    fs.mkdirSync(dirB, { recursive: true });
+    const lines = [
+      '{"type":"system","subtype":"init","session_id":"' +
+        sid +
+        '","cwd":"/home/user/proj","model":"opus"}',
+      '{"type":"user","cwd":"/home/user/proj","message":{"role":"user","content":"fix the bug"}}',
+      '{"type":"assistant","cwd":"/home/user/proj","message":{"id":"m1","role":"assistant","content":[{"type":"text","text":"working on it"}],"usage":{"input_tokens":100,"output_tokens":10}}}',
+      // EnterWorktree: cwd switches to the worktree directory
+      '{"type":"user","cwd":"/home/user/proj-worktree","message":{"role":"user","content":"continue in worktree"}}',
+      '{"type":"assistant","cwd":"/home/user/proj-worktree","message":{"id":"m2","role":"assistant","content":[{"type":"text","text":"done in worktree"}],"usage":{"input_tokens":200,"output_tokens":20}}}',
+    ];
+    fs.writeFileSync(path.join(dirB, `${sid}.jsonl`), lines.join('\n') + '\n');
+  }
+
+  it('test_anchor_list_includes_relocated_session_when_post_relocate_cwd_matches', () => {
+    // 验证行为: listClaudeSessions 对搬迁后的 worktree cwd(/home/user/proj-worktree)
+    //           应列出该 session，与 readSessionContent 读取结果一致。
+    // 缺失后果: /resume 列表看不到搬迁后的 session；自动恢复也找不到。
+    // 依据: P1 描述——listClaudeSessions 应复用与 readSessionContent 一致的 cwd 判断逻辑。
+    const localTmp = fs.mkdtempSync(path.join(os.tmpdir(), 'lark-list-relocate-1-'));
+    try {
+      const sid = 'relocated-for-list-1';
+      writeRelocatedSessionForList(localTmp, sid);
+
+      // readSessionContent 确认：readSessionContent 用 jsonlContainsCwd 能读到
+      const content = readSessionContent(sid, '/home/user/proj-worktree', {
+        projectsDir: localTmp,
+      });
+      expect(content.events.length).toBeGreaterThan(0);
+
+      // listClaudeSessions 对同一 cwd 应也能列出该 session（当前失败：首条 cwd ≠ worktree）
+      const sessions = listClaudeSessions('/home/user/proj-worktree', { projectsDir: localTmp });
+      expect(sessions).toHaveLength(1);
+      expect(sessions[0].sessionId).toBe(sid);
+    } finally {
+      fs.rmSync(localTmp, { recursive: true, force: true });
+    }
+  });
+
+  it('test_anchor_getNewestSession_finds_relocated_session_when_post_relocate_cwd_matches', () => {
+    // 验证行为: getNewestSession 对搬迁后的 worktree cwd 应返回该 session，
+    //           用于自动恢复场景（bridge 重启后恢复上次 session）。
+    // 缺失后果: 自动恢复找不到搬迁后的 session，每次重启都开新 session。
+    const localTmp = fs.mkdtempSync(path.join(os.tmpdir(), 'lark-list-relocate-2-'));
+    try {
+      const sid = 'relocated-for-list-2';
+      writeRelocatedSessionForList(localTmp, sid);
+
+      const newest = getNewestSession('/home/user/proj-worktree', { projectsDir: localTmp });
+      expect(newest).toBeDefined();
+      expect(newest?.sessionId).toBe(sid);
+    } finally {
+      fs.rmSync(localTmp, { recursive: true, force: true });
+    }
+  });
+
+  it('test_anchor_list_includes_relocated_session_from_original_cwd', () => {
+    // 验证行为: 从原 cwd(/home/user/proj) 请求列表时，session 文件已搬迁到 B 的
+    //           项目目录，A 的目录下没有该文件。listClaudeSessions 通过跨目录兜底
+    //           扫描 scanRelocatedSessions 找到 B 目录下的文件并验证 cwd 包含 A
+    //           → 列出该 session。与 readSessionContent 行为一致。
+    // 依据: P1 修复 2026-08-10，scanClaudeSessions 增加跨目录 fallback + cwd 守卫
+    //       从 readCwdFromJsonl 改为 jsonlContainsCwd。
+    const localTmp = fs.mkdtempSync(path.join(os.tmpdir(), 'lark-list-relocate-3-'));
+    try {
+      const sid = 'relocated-for-list-3';
+      writeRelocatedSessionForList(localTmp, sid);
+
+      // A 的 encoded 目录下没有文件 → 主扫描找不到，但跨目录兜底扫描 B 目录，
+      // jsonlContainsCwd 确认文件包含 cwd=A → 列出
+      const content = readSessionContent(sid, '/home/user/proj', { projectsDir: localTmp });
+      expect(content.events.length).toBeGreaterThan(0);
+
+      const sessions = listClaudeSessions('/home/user/proj', { projectsDir: localTmp });
+      expect(sessions).toHaveLength(1);
+      expect(sessions[0].sessionId).toBe(sid);
+    } finally {
+      fs.rmSync(localTmp, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('isClaudeSessionActive - EnterWorktree relocated session', () => {
+  // P1 follow-up: isClaudeSessionActive must use the same cross-dir fallback
+  // + jsonlContainsCwd guard as readSessionContent and listClaudeSessions,
+  // otherwise a relocated session can be listed but falsely reported as inactive.
+
+  function writeRelocatedSessionForActive(projectsDir: string, sid: string): string {
+    const encodedB = '/home/user/proj-worktree'.replace(/\//g, '-');
+    const dirB = path.join(projectsDir, encodedB);
+    fs.mkdirSync(dirB, { recursive: true });
+    const lines = [
+      '{"type":"system","subtype":"init","session_id":"' +
+        sid +
+        '","cwd":"/home/user/proj","model":"opus"}',
+      '{"type":"user","cwd":"/home/user/proj","message":{"role":"user","content":"hi"}}',
+      '{"type":"assistant","cwd":"/home/user/proj","message":{"id":"m1","role":"assistant","content":[{"type":"text","text":"a"}],"usage":{"input_tokens":100,"output_tokens":10}}}',
+      '{"type":"user","cwd":"/home/user/proj-worktree","message":{"role":"user","content":"next"}}',
+      '{"type":"assistant","cwd":"/home/user/proj-worktree","message":{"id":"m2","role":"assistant","content":[{"type":"text","text":"b"}],"usage":{"input_tokens":200,"output_tokens":20}}}',
+    ];
+    const filePath = path.join(dirB, `${sid}.jsonl`);
+    fs.writeFileSync(filePath, lines.join('\n') + '\n');
+    // Touch mtime to now so isSessionActive doesn't reject by STALE_MS
+    const now = new Date();
+    fs.utimesSync(filePath, now, now);
+    return filePath;
+  }
+
+  it('test_anchor_is_active_finds_relocated_session_from_worktree_cwd', () => {
+    const localTmp = fs.mkdtempSync(path.join(os.tmpdir(), 'lark-active-relocate-1-'));
+    try {
+      const sid = 'relocated-for-active-1';
+      writeRelocatedSessionForActive(localTmp, sid);
+
+      // File is in B's dir (worktree), not A's. isClaudeSessionActive must
+      // use findSessionFileInProjects + jsonlContainsCwd to locate and verify.
+      const active = isClaudeSessionActive(sid, '/home/user/proj-worktree', {
+        projectsDir: localTmp,
+      });
+      expect(active).toBe(true);
+    } finally {
+      fs.rmSync(localTmp, { recursive: true, force: true });
+    }
+  });
+
+  it('test_anchor_is_active_finds_relocated_session_from_original_cwd', () => {
+    const localTmp = fs.mkdtempSync(path.join(os.tmpdir(), 'lark-active-relocate-2-'));
+    try {
+      const sid = 'relocated-for-active-2';
+      writeRelocatedSessionForActive(localTmp, sid);
+
+      // From original cwd — file not in A's dir, cross-dir fallback needed
+      const active = isClaudeSessionActive(sid, '/home/user/proj', {
+        projectsDir: localTmp,
+      });
+      expect(active).toBe(true);
+    } finally {
+      fs.rmSync(localTmp, { recursive: true, force: true });
+    }
+  });
+
+  it('test_anchor_is_active_rejects_foreign_cwd_for_relocated_session', () => {
+    const localTmp = fs.mkdtempSync(path.join(os.tmpdir(), 'lark-active-relocate-3-'));
+    try {
+      const sid = 'relocated-for-active-3';
+      writeRelocatedSessionForActive(localTmp, sid);
+
+      // Foreign cwd not in the jsonl — must return false even with cross-dir fallback
+      const active = isClaudeSessionActive(sid, '/real/cwd/C', { projectsDir: localTmp });
+      expect(active).toBe(false);
+    } finally {
+      fs.rmSync(localTmp, { recursive: true, force: true });
+    }
+  });
+
+  it('test_anchor_is_active_returns_false_when_no_file_found', () => {
+    const localTmp = fs.mkdtempSync(path.join(os.tmpdir(), 'lark-active-relocate-4-'));
+    try {
+      const sid = 'nonexistent-session';
+      writeRelocatedSessionForActive(localTmp, 'other-session');
+
+      const active = isClaudeSessionActive(sid, '/home/user/proj-worktree', {
+        projectsDir: localTmp,
+      });
+      expect(active).toBe(false);
     } finally {
       fs.rmSync(localTmp, { recursive: true, force: true });
     }
