@@ -394,30 +394,58 @@ export class KimiSessionReader implements AgentSessionReader {
     cwd: string,
     opts?: { maxEvents?: number },
   ): SessionContent {
-    // Find session directory from index
-    const sessionDir = this.findSessionDirFromIndex(sessionId);
+    // Find session directory from index (also retrieve index entry for
+    // fallback cwd guard when state.json is missing or unparseable)
+    const indexEntry = this.findSessionIndexEntry(sessionId);
+    const sessionDir = indexEntry?.sessionDir ?? null;
 
     if (!sessionDir) {
       return { events: [] };
     }
 
+    const realCwd = fs.realpathSync(cwd);
+    let cwdGuardPassed = false;
+
     const statePath = path.join(sessionDir, 'state.json');
     try {
       if (fs.existsSync(statePath)) {
         const state = JSON.parse(fs.readFileSync(statePath, 'utf-8')) as KimiSessionState;
-        const realCwd = fs.realpathSync(cwd);
         const guardResult = checkCwdGuard(state, realCwd);
         if (guardResult === 'failed') {
           return { events: [] };
         }
         if (guardResult === 'unverifiable') {
           getLogger().warn(
-            `[kimi-session-reader] state.json has no workDir/cwd field for session ${sessionId}, skipping cwd guard`,
+            `[kimi-session-reader] state.json has no workDir/cwd field for session ${sessionId}, falling back to index workDir`,
           );
+          // Fall through to index-based guard below
+        } else {
+          // verified — state.json cwd matches
+          cwdGuardPassed = true;
         }
       }
     } catch {
-      // Unverifiable — skip the check
+      // state.json unparseable — fall through to index-based guard
+      getLogger().warn(
+        `[kimi-session-reader] state.json parse failed for session ${sessionId}, falling back to index workDir`,
+      );
+    }
+
+    // Fallback: when state.json is missing, unparseable, or has no workDir/cwd,
+    // use the workDir from the session index entry as a secondary guard.
+    // This prevents /resume <id> from accessing a session belonging to a
+    // different workspace when state.json is unavailable.
+    if (!cwdGuardPassed) {
+      const indexWorkDir = indexEntry?.workDir;
+      if (indexWorkDir && indexWorkDir !== realCwd) {
+        return { events: [] };
+      }
+      // When index also has no workDir, fall through (unverifiable from all sources)
+      if (!indexWorkDir) {
+        getLogger().warn(
+          `[kimi-session-reader] no cwd source (state.json + index) for session ${sessionId}, skipping cwd guard`,
+        );
+      }
     }
 
     const wirePath = path.join(sessionDir, 'agents', 'main', 'wire.jsonl');

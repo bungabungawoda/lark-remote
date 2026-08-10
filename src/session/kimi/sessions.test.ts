@@ -540,6 +540,65 @@ describe('KimiSessionReader', () => {
     expect(content.events.length).toBeGreaterThanOrEqual(1);
   });
 
+  it('readSessionContent blocks access when state.json missing but index has workDir', () => {
+    const workDir = makeWorkDir('project-a');
+    const wrongDir = makeWorkDir('project-b');
+    const sessionDir = path.join(kimiDir, 'sessions', 'sess-no-state');
+    const agentsDir = path.join(sessionDir, 'agents', 'main');
+    fs.mkdirSync(agentsDir, { recursive: true });
+    // No state.json at all
+    fs.writeFileSync(
+      path.join(agentsDir, 'wire.jsonl'),
+      '{"type":"turn.prompt","input":[{"type":"text","text":"test"}],"origin":{"kind":"user"},"time":1000}\n' +
+        '{"type":"context.append_loop_event","event":{"type":"content.part","part":{"type":"text","text":"reply"}},"time":1001}\n',
+    );
+    // Index has workDir — should be used as fallback guard
+    addIndexEntry('sess-no-state', sessionDir, workDir);
+
+    const reader = new KimiSessionReader(kimiDir);
+    const content = reader.readSessionContent('sess-no-state', wrongDir);
+    // Should be blocked: index workDir=/project-a ≠ requested cwd=/project-b
+    expect(content.events).toEqual([]);
+  });
+
+  it('readSessionContent blocks access when state.json unparseable but index has workDir', () => {
+    const workDir = makeWorkDir('project-a');
+    const wrongDir = makeWorkDir('project-b');
+    const sessionDir = path.join(kimiDir, 'sessions', 'sess-bad-state');
+    const agentsDir = path.join(sessionDir, 'agents', 'main');
+    fs.mkdirSync(agentsDir, { recursive: true });
+    // Corrupt state.json
+    fs.writeFileSync(path.join(sessionDir, 'state.json'), 'not valid json{{{');
+    fs.writeFileSync(
+      path.join(agentsDir, 'wire.jsonl'),
+      '{"type":"turn.prompt","input":[{"type":"text","text":"test"}],"origin":{"kind":"user"},"time":1000}\n' +
+        '{"type":"context.append_loop_event","event":{"type":"content.part","part":{"type":"text","text":"reply"}},"time":1001}\n',
+    );
+    addIndexEntry('sess-bad-state', sessionDir, workDir);
+
+    const reader = new KimiSessionReader(kimiDir);
+    const content = reader.readSessionContent('sess-bad-state', wrongDir);
+    expect(content.events).toEqual([]);
+  });
+
+  it('readSessionContent allows access when state.json missing and index workDir matches', () => {
+    const workDir = makeWorkDir('project-a');
+    const sessionDir = path.join(kimiDir, 'sessions', 'sess-no-state-ok');
+    const agentsDir = path.join(sessionDir, 'agents', 'main');
+    fs.mkdirSync(agentsDir, { recursive: true });
+    // No state.json
+    fs.writeFileSync(
+      path.join(agentsDir, 'wire.jsonl'),
+      '{"type":"turn.prompt","input":[{"type":"text","text":"ok"}],"origin":{"kind":"user"},"time":1000}\n' +
+        '{"type":"context.append_loop_event","event":{"type":"content.part","part":{"type":"text","text":"reply"}},"time":1001}\n',
+    );
+    addIndexEntry('sess-no-state-ok', sessionDir, workDir);
+
+    const reader = new KimiSessionReader(kimiDir);
+    const content = reader.readSessionContent('sess-no-state-ok', workDir);
+    expect(content.events.length).toBeGreaterThanOrEqual(1);
+  });
+
   // --- v2 listSessions title extraction from wire.jsonl ---
 
   it('listSessions extracts summary from wire.jsonl when v2 state has no title', () => {

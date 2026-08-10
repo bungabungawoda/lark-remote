@@ -297,7 +297,7 @@ export function listCodexRollouts(opts: ListCodexRolloutsOptions = {}): {
  */
 export function readCodexSessionContent(
   sessionId: string,
-  opts: { codexHome?: string; maxEvents?: number } = {},
+  opts: { codexHome?: string; maxEvents?: number; cwd?: string } = {},
 ): SessionContent {
   const codexHome = resolveCodexHome(opts.codexHome);
 
@@ -312,6 +312,13 @@ export function readCodexSessionContent(
     entry = index.get(sessionId);
   }
   if (!entry) {
+    return { events: [] };
+  }
+
+  // Cwd guard: when a cwd is provided, the session's working directory must
+  // match. Without this, /resume <id> finds sessions by global ID lookup and
+  // allows resuming a session from workspace B while the user is in workspace A.
+  if (opts.cwd && entry.cwd !== opts.cwd) {
     return { events: [] };
   }
 
