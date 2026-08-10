@@ -345,4 +345,128 @@ describe('QueueManager', () => {
     release1();
     await new Promise((r) => setTimeout(r, 50));
   });
+
+  it('test_anchor_replacement_registered_before_yield_is_consumed_by_begin_path', async () => {
+    // RACE FIX (Plan B): The caller (handleQueueInput) must register the
+    // replacement BEFORE any await. When this ordering is respected, the
+    // begin path finds the replacement and executes it instead of the original
+    // stale closure — even if the queue chain advances during a subsequent
+    // await (e.g. updateMessagePreview).
+    //
+    // This test simulates the FIXED interleaving at the QueueManager level:
+    // - Task A is running (hang), task B is queued.
+    // - setTaskReplacement is called for B FIRST (synchronous, no await yet).
+    // - Task A is released (queue chain advances, B begins).
+    // - B's begin path finds the replacement → runs edited closure.
+    // - Then updateQueuedTaskMessage is called (too late for the card, but the
+    //   replacement was already consumed correctly).
+
+    const { qm } = makeQueueManager(() => true);
+
+    // Track which closure actually ran
+    const executed: string[] = [];
+
+    // Task A — runs immediately, held until we release it
+    let releaseA: () => void = () => {};
+    const hangA = new Promise<void>((resolve) => {
+      releaseA = resolve;
+    });
+    qm.enqueue(
+      tmpDir,
+      async () => {
+        await hangA;
+        executed.push('A');
+      },
+      {
+        taskMeta: { userId: 'u1', chatId: 'c1', messageId: 'msg-A', messagePreview: 'task A' },
+      },
+    );
+
+    // Task B — queued behind A, captures OLD content in its original closure
+    qm.enqueue(
+      tmpDir,
+      async () => {
+        executed.push('B-original');
+      },
+      {
+        taskMeta: { userId: 'u1', chatId: 'c1', messageId: 'msg-B', messagePreview: 'old content' },
+      },
+    );
+
+    await new Promise((r) => setTimeout(r, 30));
+
+    // FIXED ORDER: register replacement BEFORE releasing A (synchronous, no await).
+    // This is what handleQueueInput now does: setTaskReplacement before any await.
+    qm.setTaskReplacement(tmpDir, 'msg-B', async () => {
+      executed.push('B-edited');
+    });
+
+    // Also update the preview (simulates the second step of handleQueueInput,
+    // but after the replacement is already registered).
+    const updated = qm.updateQueuedTaskMessage(tmpDir, 'msg-B', 'new content');
+    expect(updated).toBe(true);
+
+    // Now release A — the queue chain advances, B begins.
+    // The begin path finds the replacement and executes it.
+    releaseA();
+    await new Promise((r) => setTimeout(r, 50));
+
+    // The replacement closure ran, not the original.
+    expect(executed).toEqual(['A', 'B-edited']);
+  });
+
+  it('test_anchor_replacement_not_registered_when_task_already_began', async () => {
+    // When a queued task has already begun (removed from the queue by the begin
+    // path), getQueuedTask returns undefined. The caller must detect this and
+    // NOT register a replacement (it would leak as a dead closure).
+    // handleQueueInput now checks getQueuedTask BEFORE setTaskReplacement.
+
+    const { qm } = makeQueueManager(() => true);
+
+    const executed: string[] = [];
+
+    // Task A — runs and completes quickly
+    qm.enqueue(
+      tmpDir,
+      async () => {
+        executed.push('A');
+      },
+      {
+        taskMeta: { userId: 'u1', chatId: 'c1', messageId: 'msg-A', messagePreview: 'task A' },
+      },
+    );
+
+    // Task B — queued, will begin immediately after A completes
+    qm.enqueue(
+      tmpDir,
+      async () => {
+        executed.push('B-original');
+      },
+      {
+        taskMeta: { userId: 'u1', chatId: 'c1', messageId: 'msg-B', messagePreview: 'old content' },
+      },
+    );
+
+    // Let both tasks complete
+    await new Promise((r) => setTimeout(r, 50));
+
+    // Both have already begun and settled.
+    expect(qm.hasBegan('msg-A')).toBe(true);
+    expect(qm.hasBegan('msg-B')).toBe(true);
+
+    // getQueuedTask returns undefined — the caller must NOT register replacement.
+    const task = qm.getQueuedTask(tmpDir, 'msg-B');
+    expect(task).toBeUndefined();
+
+    // If the caller erroneously registers a replacement for an already-began task,
+    // it leaks as a dead closure (never consumed). The fix is to check
+    // getQueuedTask first and skip setTaskReplacement when undefined.
+    qm.setTaskReplacement(tmpDir, 'msg-B', async () => {
+      executed.push('B-edited');
+    });
+
+    // The dead replacement should not run.
+    await new Promise((r) => setTimeout(r, 30));
+    expect(executed).toEqual(['A', 'B-original']);
+  });
 });
