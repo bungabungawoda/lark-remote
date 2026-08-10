@@ -161,6 +161,38 @@ describe('CodexSessionReader', () => {
       expect(content.events).toHaveLength(2);
       expect(content.displayTitle).toBe('Test input');
     });
+
+    it('returns empty events when cwd mismatches session cwd', () => {
+      createRollout(
+        'rollout-cwd-guard.jsonl',
+        [
+          metaLine('cwd-guard-sess', '/home/user/project-a'),
+          '{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"hello"}]}}',
+          '{"type":"event_msg","payload":{"type":"user_message","message":"hello"}}',
+          '{"type":"response_item","payload":{"type":"message","role":"developer","content":[{"type":"text","text":"world"}]}}',
+        ].join('\n'),
+      );
+
+      const reader = new CodexSessionReader({ codexHome: tmpDir });
+      // Resume with wrong cwd — should be blocked
+      const content = reader.readSessionContent('cwd-guard-sess', '/home/user/project-b');
+      expect(content.events).toEqual([]);
+    });
+
+    it('returns content when cwd matches session cwd', () => {
+      createRollout(
+        'rollout-cwd-match.jsonl',
+        [
+          metaLine('cwd-match-sess', '/tmp'),
+          '{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"ok"}]}}',
+          '{"type":"event_msg","payload":{"type":"user_message","message":"ok"}}',
+        ].join('\n'),
+      );
+
+      const reader = new CodexSessionReader({ codexHome: tmpDir });
+      const content = reader.readSessionContent('cwd-match-sess', '/tmp');
+      expect(content.events.length).toBeGreaterThan(0);
+    });
   });
 
   describe('isSessionActive', () => {
