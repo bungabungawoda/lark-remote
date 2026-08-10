@@ -34,14 +34,16 @@ function projectDirForCwd(cwd: string, projectsDir: string): string {
 }
 
 /**
- * Read cwd from a Claude session JSONL by scanning events for the first
- * `cwd` field. Claude CLI writes the absolute (symlink-resolved) cwd on
+ * Read the FIRST cwd from a Claude session JSONL. Used for display and
+ * diagnostics. Claude CLI writes the absolute (symlink-resolved) cwd on
  * every event that produces one; older versions wrote it once on init.
  * Returns the first non-empty value, or undefined if absent.
  *
- * This is the SOLE source of truth for cwd. The directory name under
- * ~/.claude/projects/ is lossy (encodes `/` AND `_` as `-`), so it cannot
- * be decoded back to a real path. See regression 2026-06-21 /resume & /cd 路径错乱.
+ * For cwd GUARD checks (list/read), use `jsonlContainsCwd` which accepts
+ * any matching cwd field (required for relocated sessions whose first cwd
+ * is the pre-relocate path). The directory name under ~/.claude/projects/
+ * is lossy (encodes `/` AND `_` as `-`), so it cannot be decoded back to
+ * a real path. See regression 2026-06-21 /resume & /cd 路径错乱.
  */
 export function readCwdFromJsonl(filePath: string): string | undefined {
   const line = findJsonlLine(filePath, (l) => {
@@ -199,7 +201,7 @@ export function listClaudeSessions(
   if (cached && Date.now() - cached.builtAt < LIST_CACHE_TTL_MS) {
     sessions = cached.sessions;
   } else {
-    sessions = scanClaudeSessions(cwd, dir);
+    sessions = scanClaudeSessions(cwd, dir, opts.projectsDir);
     claudeListCache.set(cacheKey, { builtAt: Date.now(), sessions });
     // Bound the cache (map iteration order = insertion order).
     if (claudeListCache.size > LIST_CACHE_MAX_ENTRIES) {
@@ -210,8 +212,13 @@ export function listClaudeSessions(
   return limit === undefined ? sessions : sessions.slice(0, limit);
 }
 
-/** Uncached scan of a claude project dir (the expensive part being cached). */
-function scanClaudeSessions(cwd: string, dir: string): AgentSession[] {
+/**
+ * Scan a single project directory for jsonl files whose cwd field matches
+ * the requested cwd. Uses `jsonlContainsCwd` (any cwd field matches) rather
+ * than `readCwdFromJsonl` (first cwd only) so that relocated sessions whose
+ * first cwd is the pre-relocate path are still found. P1 fix 2026-08-10.
+ */
+function scanDirForSessions(cwd: string, dir: string): AgentSession[] {
   let files: string[];
   try {
     files = fs.readdirSync(dir).filter((f) => f.endsWith('.jsonl'));
@@ -224,11 +231,10 @@ function scanClaudeSessions(cwd: string, dir: string): AgentSession[] {
     const full = path.join(dir, f);
     try {
       const st = fs.statSync(full);
-      // Verify the jsonl's cwd field actually matches. Defends against
-      // directory-name collisions where a different cwd encoded to the same
-      // directory name.
-      const fileCwd = readCwdFromJsonl(full);
-      if (fileCwd !== cwd) continue;
+      // P1 fix: use jsonlContainsCwd (any match) instead of readCwdFromJsonl
+      // (first only). Defends against directory-name collisions AND includes
+      // relocated sessions whose first cwd is the pre-relocate path.
+      if (!jsonlContainsCwd(full, cwd)) continue;
       const sessionId = f.slice(0, -'.jsonl'.length);
       sessions.push({
         sessionId,
@@ -238,6 +244,103 @@ function scanClaudeSessions(cwd: string, dir: string): AgentSession[] {
     } catch (err) {
       getLogger().warn(`[session] skip ${f}: ${(err as Error).message}`);
     }
+  }
+  return sessions;
+}
+
+/**
+ * Scan OTHER project subdirectories for jsonl files whose cwd matches the
+ * requested cwd. Used as a fallback when the primary dir doesn't contain the
+ * session (EnterWorktree moves the transcript to the new cwd's project dir).
+ * Skips the primary dir (already scanned) and any sessionIds already found
+ * (avoids duplicates). P1 fix 2026-08-10.
+ */
+function scanRelocatedSessions(
+  cwd: string,
+  primaryDir: string,
+  projectsDir: string,
+  seenIds: Set<string>,
+): AgentSession[] {
+  let entries: string[];
+  try {
+    entries = fs.readdirSync(projectsDir);
+  } catch {
+    return [];
+  }
+
+  const sessions: AgentSession[] = [];
+  for (const entry of entries.sort()) {
+    const subdir = path.join(projectsDir, entry);
+    // Skip the primary dir (already scanned) and non-directories
+    if (subdir === primaryDir) continue;
+    try {
+      if (!fs.statSync(subdir).isDirectory()) continue;
+    } catch {
+      continue;
+    }
+
+    let files: string[];
+    try {
+      files = fs
+        .readdirSync(subdir)
+        .filter((f) => f.endsWith('.jsonl'))
+        .sort();
+    } catch {
+      continue;
+    }
+
+    for (const f of files) {
+      const full = path.join(subdir, f);
+      const sessionId = f.slice(0, -'.jsonl'.length);
+      // Skip sessions already found in the primary dir scan
+      if (seenIds.has(sessionId)) continue;
+      try {
+        const st = fs.statSync(full);
+        if (!jsonlContainsCwd(full, cwd)) continue;
+        sessions.push({
+          sessionId,
+          summary: truncate(summarizeSession(full), 60, { normalizeWhitespace: true }),
+          mtime: st.mtimeMs,
+        });
+      } catch (err) {
+        getLogger().warn(`[session] skip ${f}: ${(err as Error).message}`);
+      }
+    }
+  }
+  return sessions;
+}
+
+/** Uncached scan of a claude project dir (the expensive part being cached).
+ *  P1 fix: cwd guard now uses `jsonlContainsCwd` (any cwd field matches)
+ *  instead of `readCwdFromJsonl` (first cwd only). Relocated sessions
+ *  (EnterWorktree) contain multiple cwd values; the first one is the
+ *  pre-relocate path, which would be rejected by the old first-cwd-only
+ *  check. See regression 2026-08-10 list vs read inconsistency.
+ */
+function scanClaudeSessions(cwd: string, dir: string, projectsDir?: string): AgentSession[] {
+  const sessions: AgentSession[] = [];
+
+  // Phase 1: scan the primary project dir (fast path)
+  const primarySessions = scanDirForSessions(cwd, dir);
+  sessions.push(...primarySessions);
+
+  // Phase 2: cross-dir fallback for relocated sessions whose transcript
+  // was moved away from the primary dir. Only scan OTHER project subdirs
+  // when the primary scan found nothing (the common case: primary dir has
+  // all sessions, no need to scan elsewhere). When primary has results,
+  // relocated sessions in other dirs that match this cwd are already
+  // handled by jsonlContainsCwd on files in the primary dir (the file was
+  // moved TO the primary dir's encoded path). Skip to avoid O(all projects)
+  // overhead on every cached-miss list call.
+  const effectiveProjectsDir = projectsDir ?? defaultProjectsDir();
+  if (
+    primarySessions.length === 0 &&
+    effectiveProjectsDir &&
+    dir.startsWith(effectiveProjectsDir)
+  ) {
+    const seenIds = new Set(primarySessions.map((s) => s.sessionId));
+    const crossDirSessions = scanRelocatedSessions(cwd, dir, effectiveProjectsDir, seenIds);
+    sessions.push(...crossDirSessions);
   }
 
   // Same-mtime ties: secondary key keeps the full order deterministic.
@@ -305,9 +408,20 @@ export function isClaudeSessionActive(
   cwd: string,
   opts: { projectsDir?: string } = {},
 ): boolean {
-  const dir = projectDirForCwd(cwd, opts.projectsDir ?? defaultProjectsDir());
-  const filePath = path.join(dir, `${sessionId}.jsonl`);
-  if (!fs.existsSync(filePath)) return false;
+  const projectsDir = opts.projectsDir ?? defaultProjectsDir();
+  const dir = projectDirForCwd(cwd, projectsDir);
+  let filePath = path.join(dir, `${sessionId}.jsonl`);
+
+  if (!fs.existsSync(filePath)) {
+    // EnterWorktree relocate: transcript moved to the new cwd's project dir.
+    const relocated = findSessionFileInProjects(sessionId, projectsDir);
+    if (!relocated) return false;
+    filePath = relocated;
+  }
+
+  // Verify the jsonl belongs to the requested cwd (any cwd field may match).
+  if (!jsonlContainsCwd(filePath, cwd)) return false;
+
   try {
     const st = fs.statSync(filePath);
     return isSessionActive(filePath, st.mtimeMs);
