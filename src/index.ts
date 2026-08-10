@@ -222,34 +222,28 @@ function initializeRunner(
   configDir: string,
   cliArgs: { settings?: string },
 ): {
-  createRunner: (workspace: string) => ClaudeRunner;
-  runner: ClaudeRunner;
   agentRegistry: AgentRegistry;
   sessionReaderRegistry: SessionReaderRegistry;
 } {
-  const createRunner = (workspace: string): ClaudeRunner => {
-    const runner = new ClaudeRunner({
-      binary: config.claude.binary,
-      model: config.claude.model,
-      effort: config.claude.effort,
-      stopGraceMs: config.claude.stopGraceMs,
+  const agentRegistry = new AgentRegistry();
+
+  // P1-15: Claude factory reads from configContainer (not closure) so runtime
+  // config changes (binary, model, effort, stopGraceMs) take effect after
+  // bridge.setConfig() + clearRunners(). Same pattern as codex/pi/kimi.
+  agentRegistry.register('claude', (ws) => {
+    const container = agentRegistry.getConfigContainer();
+    const latestConfig = (container?.current as AppConfig) ?? config;
+    const claudeConfig = latestConfig.claude;
+    return new ClaudeRunner({
+      binary: claudeConfig.binary,
+      model: claudeConfig.model,
+      effort: claudeConfig.effort,
+      stopGraceMs: claudeConfig.stopGraceMs,
       settings: cliArgs.settings,
       pidDir: configDir,
-      workspace,
+      workspace: ws,
     });
-    return runner;
-  };
-
-  const runner = createRunner('default');
-  runner.killOrphan();
-  runner.registerExitHandlers();
-
-  // Wire multi-agent registries. All five agents (claude/codex/opencode/pi/kimi)
-  // are already registered. Bridge and Router depend on these registries instead of
-  // importing session readers directly, so adding a new agent is "register factory + reader"
-  // with zero upstream changes.
-  const agentRegistry = new AgentRegistry();
-  agentRegistry.register('claude', (ws) => createRunner(ws));
+  });
 
   // Register CodexExecRunner (codex exec --json, approval_policy=never).
   // Factory reads latest config from container.current so runtime config changes
@@ -308,7 +302,8 @@ function initializeRunner(
     return new OpencodeExecRunner({
       binary: ocConfig?.binary ?? 'opencode',
       model,
-      stopGraceMs: config.claude?.stopGraceMs ?? DEFAULT_STOP_GRACE_MS,
+      // P1-15: read stopGraceMs from latestConfig (not startup closure)
+      stopGraceMs: latestConfig.claude?.stopGraceMs ?? DEFAULT_STOP_GRACE_MS,
       pidDir: configDir,
       workspace: ws,
       sessionReader: opencodeSessionReader,
@@ -356,7 +351,7 @@ function initializeRunner(
       model: kimiConf?.model ?? 'kimi-code/k3',
       thinkingEffort: kimiConf?.thinkingEffort ?? 'max',
 
-      stopGraceMs: config.claude?.stopGraceMs ?? DEFAULT_STOP_GRACE_MS,
+      stopGraceMs: latestConfig.claude?.stopGraceMs ?? DEFAULT_STOP_GRACE_MS,
       pidDir: configDir,
       workspace: ws,
       sessionReader: kimiSessionReader,
@@ -374,7 +369,7 @@ function initializeRunner(
   // 设置全局 registry，供 agentDisplayName 等全局函数使用
   AgentRegistry.setGlobalInstance(agentRegistry);
 
-  return { createRunner, runner, agentRegistry, sessionReaderRegistry };
+  return { agentRegistry, sessionReaderRegistry };
 }
 
 /** Setup message and card action handlers. */
@@ -635,11 +630,7 @@ async function main() {
     logger.info(`claude.settings = ${cliArgs.settings}`);
   }
 
-  const { runner, agentRegistry, sessionReaderRegistry } = initializeRunner(
-    config,
-    configDir,
-    cliArgs,
-  );
+  const { agentRegistry, sessionReaderRegistry } = initializeRunner(config, configDir, cliArgs);
 
   const connector = new FeishuConnector(config);
   const startupContactStore = new StartupContactStore(path.join(configDir, 'startup-contact.json'));
@@ -658,7 +649,6 @@ async function main() {
   );
   const workspaceStore = new WorkspaceStore(path.join(configDir, 'workspace.json'));
   const bridge = new Bridge({
-    runner,
     connector,
     sessionStore,
     config,

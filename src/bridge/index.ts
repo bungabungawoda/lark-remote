@@ -101,7 +101,6 @@ export interface ActiveRunSnapshot {
 }
 
 interface BridgeDeps {
-  runner: Runner;
   connector: BridgeChannel;
   sessionStore: SessionStore;
   config: AppConfig;
@@ -166,7 +165,6 @@ interface ActiveRun {
  * Runner/BridgeChannel seams.
  */
 export class Bridge {
-  private runner: Runner;
   private connector: BridgeChannel;
   private sessionStore: SessionStore;
   private config: AppConfig;
@@ -209,7 +207,6 @@ export class Bridge {
   >();
 
   constructor(deps: BridgeDeps) {
-    this.runner = deps.runner;
     this.connector = deps.connector;
     this.sessionStore = deps.sessionStore;
     this.config = deps.config;
