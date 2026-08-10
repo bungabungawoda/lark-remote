@@ -76,7 +76,7 @@ interface CommandResult {
  * stop        — interrupt current run
  * ls.file     — send file only
  * ws.remove   — delete workspace alias only
- * resume.use  — set sessionId only
+ * resume.use  — set sessionId + agent for correct reader routing
  * help.*      — read-only help commands
  * order.delete — delete order only
  * order.exec is intercepted by index.ts at the enqueue boundary
