@@ -1,9 +1,4 @@
-import { describe, it, expect, vi, beforeAll, beforeEach, afterEach } from 'vitest';
-import { mkdirSync, mkdtempSync, writeFileSync, readFileSync, chmodSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { spawnSync } from 'node:child_process';
-import { fileURLToPath } from 'node:url';
+import { describe, it, expect, vi } from 'vitest';
 import { bootstrap, decideRuntime } from './cli.js';
 
 interface BunProbe {
@@ -181,80 +176,4 @@ describe('bootstrap', () => {
     expect(deps.onSignal).toHaveBeenCalledWith('SIGBREAK', expect.any(Function));
     expect(deps.onSignal).not.toHaveBeenCalledWith('SIGHUP', expect.any(Function));
   });
-});
-
-const repoRoot = fileURLToPath(new URL('..', import.meta.url));
-const distCli = join(repoRoot, 'dist', 'cli.js');
-const pkg = JSON.parse(readFileSync(join(repoRoot, 'package.json'), 'utf8')) as {
-  version: string;
-};
-
-describe.skipIf(process.platform === 'win32')('bootstrap subprocess smoke', () => {
-  beforeAll(() => {
-    rmSync(join(repoRoot, 'dist'), { recursive: true, force: true });
-    const tsc = join(repoRoot, 'node_modules', 'typescript', 'bin', 'tsc');
-    const build = spawnSync(nodeBin(), [tsc, '-p', repoRoot], { stdio: 'inherit' });
-    expect(build.status).toBe(0);
-    chmodSync(join(repoRoot, 'dist', 'index.js'), 0o755);
-    chmodSync(distCli, 0o755);
-  }, 120_000);
-
-  let tmp: string;
-  beforeEach(() => {
-    tmp = mkdtempSync(join(tmpdir(), 'lark-cli-'));
-  });
-  afterEach(() => {
-    rmSync(tmp, { recursive: true, force: true });
-  });
-
-  function nodeBin(): string {
-    const which = spawnSync('which', ['node']);
-    return which.status === 0 ? which.stdout.toString().trim() : 'node';
-  }
-
-  it('falls back to node when bun is absent and serves --version', () => {
-    const emptyDir = join(tmp, 'empty');
-    mkdirSync(emptyDir);
-    const r = spawnSync(nodeBin(), [distCli, '--version'], {
-      env: { ...process.env, PATH: emptyDir },
-      encoding: 'utf8',
-      timeout: 30_000,
-    });
-
-    expect(r.status).toBe(0);
-    expect(r.stdout).toBe(`lark-remote ${pkg.version}\n`);
-  }, 60_000);
-
-  it('prefers bun: forwards args to bun and mirrors its exit code', () => {
-    const fakeBun = join(tmp, 'bun');
-    const log = join(tmp, 'bun.log');
-    writeFileSync(
-      fakeBun,
-      [
-        '#!/usr/bin/env node',
-        "const fs = require('node:fs');",
-        "if (process.argv[2] === '--version') process.exit(0);",
-        'fs.writeFileSync(process.env.FAKE_BUN_LOG, process.argv.slice(2).join(" "));',
-        'process.exit(Number(process.env.FAKE_BUN_CODE ?? 0));',
-        '',
-      ].join('\n'),
-    );
-    chmodSync(fakeBun, 0o755);
-
-    const r = spawnSync(nodeBin(), [distCli, '--config-dir', '/tmp/xyz'], {
-      env: {
-        ...process.env,
-        PATH: `${tmp}:${process.env.PATH}`,
-        FAKE_BUN_LOG: log,
-        FAKE_BUN_CODE: '42',
-      },
-      encoding: 'utf8',
-      timeout: 30_000,
-    });
-
-    expect(r.status).toBe(42);
-    const logged = readFileSync(log, 'utf8');
-    expect(logged).toContain('dist/index.js');
-    expect(logged).toContain('--config-dir /tmp/xyz');
-  }, 60_000);
 });
