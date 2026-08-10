@@ -708,4 +708,29 @@ describe('KimiSessionReader', () => {
     const content = reader.readSessionContent('sess-v2-nums', workDir);
     expect(content.events.length).toBeGreaterThanOrEqual(1);
   });
+
+  it('readSessionContent returns empty when cwd does not exist (realpathSync protection)', () => {
+    const workDir = makeWorkDir('project');
+    const sessionDir = path.join(kimiDir, 'sessions', 'sess-stale-cwd');
+    const agentsDir = path.join(sessionDir, 'agents', 'main');
+    fs.mkdirSync(agentsDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(sessionDir, 'state.json'),
+      JSON.stringify({ version: 2, cwd: workDir }),
+    );
+    fs.writeFileSync(
+      path.join(agentsDir, 'wire.jsonl'),
+      '{"type":"turn.prompt","input":[{"type":"text","text":"hello"}],"origin":{"kind":"user"},"time":1000}\n',
+    );
+    addIndexEntry('sess-stale-cwd', sessionDir, workDir);
+
+    const reader = new KimiSessionReader(kimiDir);
+
+    // Use a non-existent cwd path — realpathSync should NOT throw uncaught;
+    // it should be caught and return empty content gracefully.
+    const nonexistentCwd = '/no/such/directory/ever';
+    expect(() => reader.readSessionContent('sess-stale-cwd', nonexistentCwd)).not.toThrow();
+    const content = reader.readSessionContent('sess-stale-cwd', nonexistentCwd);
+    expect(content.events).toEqual([]);
+  });
 });
