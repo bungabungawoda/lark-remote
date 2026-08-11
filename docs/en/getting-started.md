@@ -205,7 +205,7 @@ Both must pass for the change to be considered done. If either one is red, fix i
 lark-remote/
 ├── src/                ← Source code (this is where you mostly make changes)
 │   ├── index.ts        ← Program entry point
-│   ├── bridge/         ← Serial queue, watchdog
+│   ├── bridge/         ← Serial queue, idle timeout
 │   ├── runner/         ← Calling various AI CLIs (Claude/Codex/OpenCode/Pi/Kimi)
 │   ├── card/           ← Feishu card rendering
 │   ├── router/         ← Command dispatch
