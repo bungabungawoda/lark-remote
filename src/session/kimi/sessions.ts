@@ -450,10 +450,11 @@ export class KimiSessionReader implements AgentSessionReader {
       if (indexWorkDir && indexWorkDir !== realCwd) {
         return { events: [] };
       }
-      // v2 sessions have empty index workDir (v1-only field) and may lack
-      // state.json cwd. When no cwd source can verify the session belongs to
-      // the requested workspace, fail-closed to prevent cross-workspace access
-      // (aligned with claude's fail-closed cwd guard).
+      // Index workDir is populated for both v1 and v2 sessions, and v2
+      // state.json carries cwd. This branch only fires for pathological
+      // sessions (state.json unverifiable AND index entry missing workDir).
+      // Fail-closed to prevent cross-workspace access (aligned with claude's
+      // fail-closed cwd guard).
       if (!indexWorkDir) {
         getLogger().warn(
           `[kimi-session-reader] no cwd source (state.json + index) for session ${sessionId}, rejecting (fail-closed)`,

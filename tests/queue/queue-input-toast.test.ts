@@ -173,4 +173,49 @@ describe('queue.input returns toast instead of sending message', () => {
     release1();
     await new Promise((r) => setTimeout(r, 100));
   });
+
+  it('test_anchor_queue_input_returns_info_toast_when_task_already_left_queue', async () => {
+    // Bug: 编辑时任务已不在队列（已开始执行或被撤销），旧实现调 sendResult 发一条
+    // 正文消息，编辑表单卡停留在编辑态（飞书回调响应无 toast/card 时保留点击前
+    // 卡片）。应返回 info toast 作为回调响应，收掉编辑态且不发送正文。
+
+    const sessionStore = new SessionStore();
+    const connector = createStubConnector();
+    const runner = createStubRunner();
+    const bridge = new Bridge({
+      agentRegistry: createStubAgentRegistry(runner),
+      sessionReaderRegistry: createStubSessionReaderRegistry(),
+      connector,
+      sessionStore,
+      config,
+    });
+    const router = new CommandRouter({
+      sessionStore,
+      bridge,
+      config,
+      configPath: path.join(tmpDir, 'config.yaml'),
+      workspacePath: path.join(tmpDir, 'workspace.json'),
+      sessionReaderRegistry: new SessionReaderRegistry(),
+    });
+
+    const ctx = { userId: 'u1', chatId: 'c1', messageId: 'msg-card-ghost' };
+
+    // Submit an edit for a messageId that is not in the queue (already began
+    // or was cancelled). The early return must dismiss the edit form with a
+    // toast and must NOT send a separate text message.
+    const result = await router.handleCardAction(
+      { cmd: 'queue.input', workspace: tmpDir, messageId: 'ghost-message', inputValue: 'edited' },
+      ctx,
+    );
+
+    expect(result).toMatchObject({
+      toast: { type: 'info', content: '任务已不在队列中（可能已开始执行或被撤销）' },
+    });
+    expect(result).not.toHaveProperty('card');
+
+    const sentTexts = connector._sent
+      .map((s) => (s.input as { text?: string } | undefined)?.text)
+      .filter((t): t is string => typeof t === 'string');
+    expect(sentTexts).toHaveLength(0);
+  });
 });
