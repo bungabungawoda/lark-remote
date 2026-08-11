@@ -25,6 +25,7 @@
     "CHANGELOG.md"
   ],
   "scripts": {
+    "prepare": "husky",
     "dev": "bun src/index.ts",
     "build": "rm -rf dist && tsc && chmod +x dist/index.js dist/cli.js",
     "typecheck": "tsc --noEmit",
@@ -37,6 +38,16 @@
     "test:watch": "vitest",
     "prepublishOnly": "tsc --noEmit && vitest run && rm -rf dist && tsc && chmod +x dist/index.js dist/cli.js",
     "prepack": "node -e \"const fs=require('fs');if(!fs.existsSync('dist/cli.js')){console.error('dist/ missing — run bun run build first');process.exit(1)}\""
+  },
+  "lint-staged": {
+    "src/**/*.ts": [
+      "eslint --fix",
+      "prettier --write"
+    ],
+    "tests/**/*.ts": [
+      "eslint --fix",
+      "prettier --write"
+    ]
   },
   "publishConfig": {
     "access": "public",
@@ -86,6 +97,8 @@
     "eslint": "^10.7.0",
     "eslint-config-prettier": "^10.1.8",
     "eslint-plugin-prettier": "^5.5.6",
+    "husky": "^9.1.7",
+    "lint-staged": "^17.3.0",
     "prettier": "^3.9.5",
     "typescript": "^6.0.0",
     "typescript-eslint": "^8.63.0",
