@@ -124,7 +124,7 @@ describe('A3 /resume 默认页大小 5 + N clamp [1,5]', () => {
     const runner = createStubRunner();
     const config: AppConfig = AppConfigSchema.parse({
       feishu: { appId: 'test', appSecret: 'test' },
-      claude: { binary: 'claude', model: 'opus', stopGraceMs: 5000 },
+      claude: { model: 'opus', stopGraceMs: 5000 },
       defaultAgent: 'claude',
     });
 

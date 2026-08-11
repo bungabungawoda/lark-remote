@@ -15,18 +15,16 @@ export class CodexConfigBuilder implements AgentConfigCardBuilder {
     const fields: ConfigField[] = [];
 
     // 从 codex config.toml 动态读取 provider 和 model
-    const codexBinary = displayConfig.agents?.codex?.binary ?? 'codex';
-    const codexCfg = loadCodexConfig({ binary: codexBinary });
+    const codexCfg = loadCodexConfig();
     const codexProviderNames = codexCfg.providerNames;
 
     const currentModelProvider =
       displayConfig.agents?.codex?.modelProvider ?? codexCfg.currentProvider;
     const currentCodexModel = displayConfig.agents?.codex?.model ?? codexCfg.currentModel;
     const currentReasoningEffort =
-      displayConfig.agents?.codex?.reasoningEffort ??
-      getDefaultReasoningEffort(currentCodexModel, codexBinary);
+      displayConfig.agents?.codex?.reasoningEffort ?? getDefaultReasoningEffort(currentCodexModel);
 
-    // 传入当前 provider 过滤模型列���
+    // 传入当前 provider 过滤模型列表
     const codexModelOptions = codexCfg.modelOptions(currentModelProvider);
 
     fields.push({
@@ -60,7 +58,7 @@ export class CodexConfigBuilder implements AgentConfigCardBuilder {
       label: '推理强度',
       type: 'select',
       // 档位按目录实际声明透传（P2-5）：codex 支持 none/Custom，不再按标准枚举过滤
-      options: getReasoningEffortOptions(currentCodexModel, codexBinary),
+      options: getReasoningEffortOptions(currentCodexModel),
       currentValue: currentReasoningEffort,
     });
 
@@ -76,10 +74,9 @@ export class CodexConfigBuilder implements AgentConfigCardBuilder {
 
     patches.push({ key, value });
 
-    // provider 变更时，重置 model 为�� provider 的首个模型
+    // provider 变更时，重置 model 为新 provider 的首个模型
     if (key === 'agents.codex.modelProvider' && typeof value === 'string') {
-      const codexBinary = config.agents?.codex?.binary ?? 'codex';
-      const codexCfg = loadCodexConfig({ binary: codexBinary });
+      const codexCfg = loadCodexConfig();
       const newModelOptions = codexCfg.modelOptions(value);
       const currentModel = config.agents?.codex?.model as string | undefined;
       const currentModelIsValid = newModelOptions.some((m) => m === currentModel);
@@ -116,14 +113,13 @@ export class CodexConfigBuilder implements AgentConfigCardBuilder {
     config: AppConfig,
     newModel: string,
   ): { key: string; value: string | undefined } | null {
-    const codexBinary = config.agents?.codex?.binary ?? 'codex';
     const currentReasoningEffort = config.agents?.codex?.reasoningEffort as string | undefined;
-    const newModelSupportedEfforts = getReasoningEffortOptions(newModel, codexBinary);
+    const newModelSupportedEfforts = getReasoningEffortOptions(newModel);
     const isCurrentEffortValid =
       currentReasoningEffort && newModelSupportedEfforts.includes(currentReasoningEffort);
     if (isCurrentEffortValid) return null;
     const middle = newModelSupportedEfforts[Math.floor((newModelSupportedEfforts.length - 1) / 2)];
-    const newEffort = middle ?? getDefaultReasoningEffort(newModel, codexBinary);
+    const newEffort = middle ?? getDefaultReasoningEffort(newModel);
     return { key: 'agents.codex.reasoningEffort', value: newEffort };
   }
 }

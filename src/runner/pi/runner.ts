@@ -5,7 +5,6 @@ import { PiEventAccumulator } from './jsonl.js';
 // --- PiRunner ---
 
 interface PiRunnerConfig {
-  binary?: string;
   provider?: string;
   model?: string;
   thinking?: string;
@@ -37,7 +36,6 @@ export class PiRunner extends SpawningRunner implements AgentRunner {
 
   constructor(opts: PiRunnerConfig) {
     super({
-      binary: opts.binary ?? 'pi',
       pidDir: opts.pidDir,
       workspace: opts.workspace,
       stopGraceMs: opts.stopGraceMs,
@@ -45,6 +43,7 @@ export class PiRunner extends SpawningRunner implements AgentRunner {
       pidFilePrefix: 'pi',
       logTag: 'pi-runner',
     });
+    this.binary = 'pi';
     this.provider = opts.provider ?? 'Volcano';
     this.defaultModel = opts.model ?? 'glm-5.2';
     this.thinking = opts.thinking ?? 'medium';

@@ -29,8 +29,6 @@ import type {
 } from '../../runner/index.js';
 
 interface OpencodeSessionReaderOptions {
-  /** Path to opencode binary. Default: 'opencode' (in PATH). */
-  binary?: string;
   /** Cache TTL for session list (ms). Default: 10_000. */
   cacheTtlMs?: number;
   /**
@@ -108,7 +106,7 @@ export class OpencodeSessionReader implements AgentSessionReader {
   private listCache = new Map<string, { ts: number; data: OpencodeSessionListEntry[] }>();
 
   constructor(opts: OpencodeSessionReaderOptions = {}) {
-    this.binary = opts.binary ?? 'opencode';
+    this.binary = 'opencode';
     this.cacheTtlMs = opts.cacheTtlMs ?? 10_000;
     this.captureExportOverride = opts.captureExport;
   }

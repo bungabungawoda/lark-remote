@@ -50,7 +50,10 @@ import { spawn, execFileSync } from 'node:child_process';
  */
 class TestRunner extends SpawningRunner {
   constructor(opts: { binary?: string; pidDir?: string; workspace?: string } = {}) {
-    super({ workspace: 'test', ...opts });
+    super({ workspace: 'test', pidDir: opts.pidDir });
+    // SpawningRunner no longer takes a binary option; subclasses set the
+    // hard-coded CLI name (like the real runners do) after super().
+    this.binary = opts.binary ?? 'testbin';
   }
 
   protected buildArgv(_opts: SpawnOptions): string[] {
@@ -84,7 +87,8 @@ class ThrowingTestRunner extends TestRunner {
  */
 class MinimalTestRunner extends SpawningRunner {
   constructor(opts: { binary?: string; pidDir?: string; workspace?: string } = {}) {
-    super({ workspace: 'test', ...opts });
+    super({ workspace: 'test', pidDir: opts.pidDir });
+    this.binary = opts.binary ?? 'testbin';
   }
 
   protected buildArgv(_opts: SpawnOptions): string[] {

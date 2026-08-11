@@ -49,7 +49,7 @@ afterEach(() => {
 function makeConfig(): AppConfig {
   return AppConfigSchema.parse({
     feishu: { appId: 'test', appSecret: 'test' },
-    claude: { binary: 'claude', model: 'claude-opus-4-8', stopGraceMs: 5000 },
+    claude: { model: 'claude-opus-4-8', stopGraceMs: 5000 },
     output: { showThinking: true, showToolUse: false, showToolResult: false },
   });
 }

@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { ClaudeRunner } from './index.js';
+import { prependPath, restorePath, writeMockBin } from '../../../tests/lib/path-mock.js';
 
 const { mockLogger } = vi.hoisted(() => ({
   mockLogger: {
@@ -20,30 +21,30 @@ vi.mock('../../logger/index.js', () => ({
 }));
 
 let tmpDir: string;
+let savedPath: string | undefined;
 
 beforeEach(() => {
   tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'lark-runner-test-'));
+  savedPath = prependPath(tmpDir);
 });
 
 afterEach(() => {
+  restorePath(savedPath);
   fs.rmSync(tmpDir, { recursive: true, force: true });
 });
 
 // Create a mock claude script that outputs JSONL.
 function createMockClaude(script: string): string {
-  const scriptPath = path.join(tmpDir, 'mock-claude');
-  fs.writeFileSync(scriptPath, `#!/bin/bash\n${script}`, 'utf-8');
-  fs.chmodSync(scriptPath, 0o755);
-  return scriptPath;
+  return writeMockBin(tmpDir, 'claude', `#!/bin/bash\n${script}`);
 }
 
 describe('ClaudeRunner', () => {
   it('test_anchor_nonzero_exit_rejects_with_stderr_summary', async () => {
-    const mockClaude = createMockClaude(`
+    createMockClaude(`
       echo 'authentication failed' >&2
       exit 7
     `);
-    const runner = new ClaudeRunner({ workspace: 'test', binary: mockClaude, pidDir: tmpDir });
+    const runner = new ClaudeRunner({ workspace: 'test', pidDir: tmpDir });
 
     // run() yields a unified result event on non-zero exit instead of
     // throwing. The bridge accepts both thrown errors and yielded error-result
@@ -63,12 +64,12 @@ describe('ClaudeRunner', () => {
   });
 
   it('spawns claude with correct arguments', async () => {
-    const mockClaude = createMockClaude(`
+    createMockClaude(`
       echo '{"type":"system","subtype":"init","session_id":"s1","cwd":"/tmp","model":"opus"}'
       echo '{"type":"result","subtype":"success","session_id":"s1"}'
     `);
 
-    const runner = new ClaudeRunner({ workspace: 'test', binary: mockClaude, pidDir: tmpDir });
+    const runner = new ClaudeRunner({ workspace: 'test', pidDir: tmpDir });
     const events = [];
     for await (const event of runner.run('hello', { cwd: '/tmp' })) {
       events.push(event);
@@ -86,13 +87,13 @@ describe('ClaudeRunner', () => {
   });
 
   it('includes --resume when sessionId provided', async () => {
-    const mockClaude = createMockClaude(`
+    createMockClaude(`
       echo "$@" > ${tmpDir}/args.txt
       echo '{"type":"system","subtype":"init","session_id":"s1","cwd":"/tmp","model":"opus"}'
       echo '{"type":"result","subtype":"success","session_id":"s1"}'
     `);
 
-    const runner = new ClaudeRunner({ workspace: 'test', binary: mockClaude, pidDir: tmpDir });
+    const runner = new ClaudeRunner({ workspace: 'test', pidDir: tmpDir });
     const events = [];
     for await (const event of runner.run('hello', { cwd: '/tmp', sessionId: 's1' })) {
       events.push(event);
@@ -107,14 +108,14 @@ describe('ClaudeRunner', () => {
     // Mock outputs init then blocks. `exec sleep` replaces the bash process
     // so SIGTERM from stop() kills a single process and closes stdout; a
     // bare `sleep` would be a child holding the fd open, hanging the consumer.
-    const mockClaude = createMockClaude(`
+    createMockClaude(`
       echo '{"type":"system","subtype":"init","session_id":"s1","cwd":"/tmp","model":"opus"}'
       exec sleep 10
     `);
 
     const runner = new ClaudeRunner({
       workspace: 'test',
-      binary: mockClaude,
+
       pidDir: tmpDir,
       stopGraceMs: 500,
     });
@@ -140,14 +141,14 @@ describe('ClaudeRunner', () => {
   });
 
   it('stop kills the process', async () => {
-    const mockClaude = createMockClaude(`
+    createMockClaude(`
       echo '{"type":"system","subtype":"init","session_id":"s1","cwd":"/tmp","model":"opus"}'
       exec sleep 60
     `);
 
     const runner = new ClaudeRunner({
       workspace: 'test',
-      binary: mockClaude,
+
       pidDir: tmpDir,
       stopGraceMs: 500,
     });
@@ -168,12 +169,12 @@ describe('ClaudeRunner', () => {
   });
 
   it('cleans up pid file after process exits', async () => {
-    const mockClaude = createMockClaude(`
+    createMockClaude(`
       echo '{"type":"system","subtype":"init","session_id":"s1","cwd":"/tmp","model":"opus"}'
       echo '{"type":"result","subtype":"success","session_id":"s1"}'
     `);
 
-    const runner = new ClaudeRunner({ workspace: 'test', binary: mockClaude, pidDir: tmpDir });
+    const runner = new ClaudeRunner({ workspace: 'test', pidDir: tmpDir });
     const pidFile = path.join(tmpDir, 'claude-test.pid');
 
     for await (const _ of runner.run('hello', { cwd: '/tmp' })) {
@@ -197,7 +198,7 @@ describe('ClaudeRunner', () => {
     const pidFile = path.join(tmpDir, 'claude-test.pid');
     fs.writeFileSync(pidFile, String(pid), 'utf-8');
 
-    const runner = new ClaudeRunner({ workspace: 'test', binary: mockBin, pidDir: tmpDir });
+    const runner = new ClaudeRunner({ workspace: 'test', pidDir: tmpDir });
     runner.killOrphan();
 
     // Wait for process to actually exit (SIGTERM takes a moment)
@@ -250,12 +251,12 @@ describe('ClaudeRunner logging probes', () => {
   });
 
   it('logs spawn + pid file write on happy path (regression: these were missing in production log)', async () => {
-    const mockClaude = createMockClaude(`
+    createMockClaude(`
       echo '{"type":"system","subtype":"init","session_id":"s1","cwd":"/tmp","model":"opus"}'
       echo '{"type":"result","subtype":"success","session_id":"s1"}'
     `);
 
-    const runner = new ClaudeRunner({ workspace: 'test', binary: mockClaude, pidDir: tmpDir });
+    const runner = new ClaudeRunner({ workspace: 'test', pidDir: tmpDir });
     for await (const _ of runner.run('hello', { cwd: '/tmp', sessionId: 's1' })) {
       // consume
     }
@@ -267,7 +268,7 @@ describe('ClaudeRunner logging probes', () => {
     );
     expect(spawnLogs.length).toBe(1);
     const spawnMsg = String(spawnLogs[0]?.[0]);
-    expect(spawnMsg).toContain('binary=' + mockClaude);
+    expect(spawnMsg).toContain('binary=claude');
     expect(spawnMsg).toContain('cwd=/tmp');
     expect(spawnMsg).toContain('sessionId=s1');
 
@@ -284,12 +285,12 @@ describe('ClaudeRunner logging probes', () => {
   });
 
   it('logs non-zero exit with stderr summary before throwing', async () => {
-    const mockClaude = createMockClaude(`
+    createMockClaude(`
       echo 'authentication failed' >&2
       exit 7
     `);
 
-    const runner = new ClaudeRunner({ workspace: 'test', binary: mockClaude, pidDir: tmpDir });
+    const runner = new ClaudeRunner({ workspace: 'test', pidDir: tmpDir });
     // run() yields a result event instead of throwing. Consume the generator
     // to completion; the non-zero-exit log is emitted from run()'s body
     // before the result event is yielded.
@@ -307,10 +308,10 @@ describe('ClaudeRunner logging probes', () => {
   });
 
   it('logs SIGTERM when stop() is called on a running process', async () => {
-    const mockClaude = createMockClaude('exec sleep 60');
+    createMockClaude('exec sleep 60');
     const runner = new ClaudeRunner({
       workspace: 'test',
-      binary: mockClaude,
+
       pidDir: tmpDir,
       stopGraceMs: 100,
     });
@@ -345,11 +346,11 @@ describe('ClaudeRunner logging probes', () => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
     try {
       // Mock claude: spawns, never emits stdout (simulates OAuth hang / stdio fd misroute)
-      const mockClaude = createMockClaude(`exec sleep 60`);
+      createMockClaude(`exec sleep 60`);
 
       const runner = new ClaudeRunner({
         workspace: 'test',
-        binary: mockClaude,
+
         pidDir: tmpDir,
         spawnHeartbeatMs: 50,
       });
@@ -388,14 +389,14 @@ describe('ClaudeRunner logging probes', () => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
     try {
       // Mock: emit one stdout line immediately, then sleep
-      const mockClaude = createMockClaude(`
+      createMockClaude(`
         echo '{"type":"system","subtype":"init","session_id":"s1","cwd":"/tmp","model":"opus"}'
         exec sleep 60
       `);
 
       const runner = new ClaudeRunner({
         workspace: 'test',
-        binary: mockClaude,
+
         pidDir: tmpDir,
         spawnHeartbeatMs: 50,
       });
@@ -437,13 +438,13 @@ describe('ClaudeRunner logging probes', () => {
     // Mock that ignores SIGTERM — only SIGKILL can kill it. With a 30s grace
     // window, stop() without immediate would wait 30s. With immediate, must
     // resolve well under that.
-    const mockClaude = createMockClaude(`
+    createMockClaude(`
       trap '' TERM
       exec sleep 60
     `);
     const runner = new ClaudeRunner({
       workspace: 'test',
-      binary: mockClaude,
+
       pidDir: tmpDir,
       stopGraceMs: 30_000,
     });
@@ -479,12 +480,12 @@ describe('ClaudeRunner logging probes', () => {
 // ClaudeRunner implements AgentRunner (kind/sessionReader).
 describe('ClaudeRunner AgentRunner adaptation', () => {
   it('exposes kind="claude"', () => {
-    const runner = new ClaudeRunner({ workspace: 'test', binary: '/bin/true', pidDir: tmpDir });
+    const runner = new ClaudeRunner({ workspace: 'test', pidDir: tmpDir });
     expect(runner.kind).toBe('claude');
   });
 
   it('provides a default ClaudeSessionReader when none is injected', () => {
-    const runner = new ClaudeRunner({ workspace: 'test', binary: '/bin/true', pidDir: tmpDir });
+    const runner = new ClaudeRunner({ workspace: 'test', pidDir: tmpDir });
     // The default reader is a ClaudeSessionReader; we only verify it exists
     // and has the expected method shape (structural AgentSessionReader).
     expect(runner.sessionReader).toBeDefined();
@@ -496,21 +497,25 @@ describe('ClaudeRunner AgentRunner adaptation', () => {
 });
 
 it('yields_error_event_when_binary_not_found', async () => {
-  const runner = new ClaudeRunner({
-    workspace: 'test',
-    binary: path.join(tmpDir, 'nonexistent-claude-binary'),
-    pidDir: tmpDir,
-  });
+  // SpawningRunner hard-codes the 'claude' binary name; simulate ENOENT by
+  // pointing PATH at a directory that contains no claude executable.
+  const saved = process.env.PATH;
+  process.env.PATH = path.join(tmpDir, 'no-bin');
+  try {
+    const runner = new ClaudeRunner({ workspace: 'test', pidDir: tmpDir });
 
-  const events = [];
-  for await (const event of runner.run('hello', { cwd: tmpDir })) {
-    events.push(event);
+    const events = [];
+    for await (const event of runner.run('hello', { cwd: tmpDir })) {
+      events.push(event);
+    }
+
+    expect(events).toHaveLength(1);
+    const result = events[0];
+    if (result.type !== 'result') throw new Error('expected result event');
+    expect(result.subtype).toBe('error');
+    expect(result.errorMessage).toMatch(/不可用|not found|ENOENT/i);
+    expect(runner.isRunning).toBe(false);
+  } finally {
+    restorePath(saved);
   }
-
-  expect(events).toHaveLength(1);
-  const result = events[0];
-  if (result.type !== 'result') throw new Error('expected result event');
-  expect(result.subtype).toBe('error');
-  expect(result.errorMessage).toMatch(/不可用|not found|ENOENT/i);
-  expect(runner.isRunning).toBe(false);
 });

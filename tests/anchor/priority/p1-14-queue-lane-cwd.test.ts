@@ -114,7 +114,7 @@ describe('P1-14 queue lane vs execution cwd', () => {
     try {
       const config: AppConfig = AppConfigSchema.parse({
         feishu: { appId: 'test', appSecret: 'test' },
-        claude: { binary: 'claude', model: 'opus', stopGraceMs: 5000 },
+        claude: { model: 'opus', stopGraceMs: 5000 },
         workspace: { default: '' },
         output: { showThinking: true, showToolUse: false, showToolResult: false },
       });
