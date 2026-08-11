@@ -948,9 +948,8 @@ describe('codex config card effort follows model - anchor', () => {
     return new CommandRouter({
       sessionStore: new SessionStore(),
       bridge: createMockBridge({
-        sendCard: vi.fn().mockResolvedValue(undefined),
         clearRunners: vi.fn(),
-      }),
+      } as any),
       config,
       configPath: path.join(tmpDir, 'config.yaml'),
       workspacePath: path.join(tmpDir, 'workspace.json'),

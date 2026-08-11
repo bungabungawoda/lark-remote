@@ -180,7 +180,6 @@ describe('Bridge usage scope: live 优先、jsonl 兜底', () => {
     );
     const bridge = new Bridge({
       // claude 风格：result 事件带 usage，使用 cache_read_input_tokens 命名
-      runner: claudeCacheRunner,
       agentRegistry: createStubAgentRegistry(claudeCacheRunner),
       connector,
       sessionStore,
@@ -261,7 +260,6 @@ describe('Bridge usage scope: live 优先、jsonl 兜底', () => {
     );
     const bridge = new Bridge({
       // 本次 run 的 live result 只有本 run 的值
-      runner: resumeRunner,
       agentRegistry: createStubAgentRegistry(resumeRunner),
       connector,
       sessionStore,
@@ -341,7 +339,6 @@ describe('Bridge usage scope: live 优先、jsonl 兜底', () => {
     );
     const bridge = new Bridge({
       // kimi 实时事件流：result 不带 usage
-      runner: kimiRunner,
       agentRegistry: createStubAgentRegistry(kimiRunner),
       connector,
       sessionStore,
@@ -427,7 +424,6 @@ describe('Bridge cumulative Total threading: done 卡必须显示累计 Total', 
       'claude',
     );
     const bridge = new Bridge({
-      runner: cumTotalRunner,
       agentRegistry: createStubAgentRegistry(cumTotalRunner),
       connector,
       sessionStore,

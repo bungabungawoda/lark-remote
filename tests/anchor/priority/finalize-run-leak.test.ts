@@ -98,7 +98,6 @@ describe(' finalizeRun cleanup', () => {
 
       const bridgeRunner = createEmptyStreamingRunner();
       const bridge = new Bridge({
-        runner: bridgeRunner,
         agentRegistry: createStubAgentRegistry(bridgeRunner),
         sessionReaderRegistry: createStubSessionReaderRegistry(),
         connector: createStreamRejectingConnector(),

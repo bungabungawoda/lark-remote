@@ -204,7 +204,6 @@ describe('executeBash after bridge restart (REGRESSION)', () => {
     const connector = createStubConnector();
     const runner = createStubRunner();
     const bridge = new Bridge({
-      runner,
       connector,
       sessionStore,
       config,
@@ -243,7 +242,6 @@ function makeBridge(
   const connector = opts.connector ?? createStubConnector();
   const runner = opts.runner ?? createStubRunner();
   const bridge = new Bridge({
-    runner,
     connector,
     sessionStore,
     config,
@@ -1117,7 +1115,6 @@ describe('Bridge agentRegistry / sessionReaderRegistry', () => {
     );
     const connector = createStubConnector();
     const bridge = new Bridge({
-      runner: createStubRunner(),
       connector,
       sessionStore: new SessionStore(),
       config,
@@ -1169,7 +1166,6 @@ describe('Bridge agentRegistry / sessionReaderRegistry', () => {
       { type: 'result', subtype: 'success', session_id: 'sess-notif' },
     ]);
     const bridge = new Bridge({
-      runner: asAgentRunner(streamingRunner),
       connector,
       sessionStore: new SessionStore(),
       config,
@@ -1248,7 +1244,6 @@ describe('Bridge agentRegistry / sessionReaderRegistry', () => {
       { type: 'result', subtype: 'success', session_id: 'codex-sess-1' },
     ]);
     const bridge = new Bridge({
-      runner: asAgentRunner(streamingRunner),
       connector,
       sessionStore: new SessionStore(),
       config,
@@ -1335,7 +1330,6 @@ describe('Bridge agentRegistry / sessionReaderRegistry', () => {
       { type: 'result', subtype: 'success', session_id: 'sess-final' },
     ]);
     const bridge = new Bridge({
-      runner: asAgentRunner(streamingRunner),
       connector,
       sessionStore: new SessionStore(),
       config,
@@ -1387,7 +1381,6 @@ describe('Bridge agentRegistry / sessionReaderRegistry', () => {
       { type: 'result', subtype: 'error', session_id: 'sess-err' },
     ]);
     const bridge = new Bridge({
-      runner: asAgentRunner(streamingRunner),
       connector,
       sessionStore: new SessionStore(),
       config,
@@ -1442,7 +1435,6 @@ describe('Bridge agentRegistry / sessionReaderRegistry', () => {
       { type: 'result', subtype: 'success', session_id: 'sess-no-usage' },
     ]);
     const bridge = new Bridge({
-      runner: asAgentRunner(streamingRunner),
       connector,
       sessionStore: new SessionStore(),
       config,
@@ -2069,7 +2061,6 @@ describe('Bridge.forwardToClaude AgentBinding (D2/D5)', () => {
     const connector = createStubConnector();
     const sessionStore = new SessionStore();
     const bridge = new Bridge({
-      runner: claudeRunner,
       connector,
       sessionStore,
       config, // live defaultAgent = claude
@@ -2133,7 +2124,6 @@ describe('Bridge session epoch guard (2026-08-09)', () => {
     // Override bridge runner
     const connector = createStubConnector();
     const bridgeWithRunner = new Bridge({
-      runner,
       connector,
       sessionStore,
       config,
@@ -2198,7 +2188,6 @@ describe('Bridge session epoch guard (2026-08-09)', () => {
 
     const connector = createStubConnector();
     const bridgeWithRunner = new Bridge({
-      runner,
       connector,
       sessionStore,
       config,
@@ -2230,7 +2219,6 @@ describe('Queue edit race: setTaskReplacement before await (Plan B fix)', () => 
     const connector = createStubConnector();
     const runner = createStubRunner();
     const bridge = new Bridge({
-      runner,
       agentRegistry: createStubAgentRegistry(runner),
       sessionReaderRegistry: createStubSessionReaderRegistry(),
       connector,

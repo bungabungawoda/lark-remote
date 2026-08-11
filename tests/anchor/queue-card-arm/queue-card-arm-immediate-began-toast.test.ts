@@ -157,7 +157,6 @@ describe('queue.immediate final feedback must say the target STARTED when it beg
     const connector = createStubConnector();
     const runner = createStubRunner();
     const bridge = new Bridge({
-      runner,
       agentRegistry: createStubAgentRegistry(runner),
       sessionReaderRegistry: createStubSessionReaderRegistry(),
       connector,
