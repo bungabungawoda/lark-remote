@@ -21,7 +21,7 @@
  *   - 正向断言：claude factory 中必须出现 `latestConfig.claude`（从 container 读取）
  *   - 反向断言：claude factory 中不得出现 `config.claude`（闭包旧模式）
  *   - 同样验证 codex factory 使用 `getConfigContainer()` 模式
- *   - 验证 `setConfigContainer` 在所有 factory 之后被调用（确保 container 已设置）
+ *   - 验证 `setConfigContainer` 被调用（确保 container 基础设施存在）
  */
 import { describe, it, expect } from 'vitest';
 import fs from 'node:fs';
@@ -32,6 +32,10 @@ const indexSource = fs.readFileSync(path.join(process.cwd(), 'src/index.ts'), 'u
 /**
  * Extract the body of a specific agent's factory closure from index.ts source.
  * Returns the source between `agentRegistry.register('agentName', (ws) => {` and the matching `});`
+ *
+ * CAVEAT: brace balancing ignores braces inside string/template literals.
+ * Currently safe because factory bodies don't contain template literals,
+ * but a future refactor adding `${...}` would break the depth counter.
  */
 function extractFactoryBody(source: string, agentName: string): string {
   // Match agentRegistry.register('agentName', (ws) => { ... });
@@ -84,9 +88,11 @@ describe('P1-15: Claude factory configContainer wiring', () => {
     expect(codexFactory).toContain('latestConfig');
   });
 
-  it('test_anchor_configContainer_set_before_all_factories', () => {
+  it('test_anchor_configContainer_exists_in_initializeRunner', () => {
     // The configContainer must be set up (setConfigContainer call) so that
     // factories can read from it. Verify this call exists in initializeRunner.
+    // Note: this does NOT verify call ordering relative to factories —
+    // setConfigContainer currently sits between opencode and pi registrations.
     expect(indexSource).toContain('agentRegistry.setConfigContainer(');
   });
 });
