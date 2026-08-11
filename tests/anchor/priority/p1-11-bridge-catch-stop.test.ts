@@ -124,7 +124,6 @@ describe('P1-11: bridge catch calls runner.stop()', () => {
 
     const sessionStore = new SessionStore();
     const bridge = new Bridge({
-      runner,
       agentRegistry: createStubAgentRegistry(runner),
       sessionReaderRegistry: createStubSessionReaderRegistry(),
       connector: createStubConnector() as never,

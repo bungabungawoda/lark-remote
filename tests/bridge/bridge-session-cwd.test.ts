@@ -120,7 +120,6 @@ describe('Bridge.forwardToClaude session cwd sync', () => {
       { type: 'result', subtype: 'success', session_id: 'session-from-init' },
     ]);
     const bridge = new Bridge({
-      runner,
       agentRegistry: createStubAgentRegistry(runner),
       sessionReaderRegistry: createStubSessionReaderRegistry(),
       connector: createStubConnector(),
@@ -159,7 +158,6 @@ describe('Bridge.forwardToClaude session cwd sync', () => {
       { type: 'result', subtype: 'success', session_id: 'ses-empty' },
     ]);
     const bridge = new Bridge({
-      runner,
       agentRegistry: createStubAgentRegistry(runner),
       sessionReaderRegistry: createStubSessionReaderRegistry(),
       connector: createStubConnector(),
@@ -211,7 +209,6 @@ describe('Bridge.forwardToClaude session cwd sync', () => {
       { type: 'result', subtype: 'success', session_id: 'codex-session-B' },
     ]);
     const bridge = new Bridge({
-      runner,
       agentRegistry: createStubAgentRegistry(runner),
       sessionReaderRegistry: createStubSessionReaderRegistry(),
       connector,

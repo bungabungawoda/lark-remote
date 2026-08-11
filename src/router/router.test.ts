@@ -13,7 +13,7 @@ import type { AppConfig } from '../config/index.js';
 import type { AgentEvent, Runner } from '../runner/index.js';
 import type { AgentSessionReader } from '../runner/index.js';
 
-import { createStubAgentRegistry, createStubSessionReaderRegistry } from '../test-helpers.js';
+import { createStubAgentRegistry } from '../test-helpers.js';
 // Stub session reader for tests that need empty results
 const stubSessionReader: AgentSessionReader = {
   listSessions: () => ({ sessions: [], total: 0 }),
@@ -206,7 +206,6 @@ function createRouter(overrides?: {
     bridge:
       overrides?.bridge ??
       new Bridge({
-        runner,
         agentRegistry: createStubAgentRegistry(runner),
         sessionReaderRegistry: createStubSessionReaderRegistry(),
         connector,
@@ -1519,7 +1518,13 @@ describe('CommandRouter', () => {
   });
 
   /** Create a SessionReaderRegistry where only codex has content, others are empty stubs. */
-  function createCodexOnlyRegistry(codexReadSpy: ReturnType<typeof vi.fn>) {
+  function createCodexOnlyRegistry(
+    codexReadSpy: ReturnType<
+      typeof vi.fn<
+        (sessionId: string, cwd: string, opts?: any) => import('../runner/types.js').SessionContent
+      >
+    >,
+  ) {
     const codexReader: AgentSessionReader = {
       listSessions: () => ({ sessions: [], total: 0 }),
       getNewestSession: () => null,
@@ -1538,13 +1543,14 @@ describe('CommandRouter', () => {
   it('resume.use with agent field routes to correct agent reader', async () => {
     // Session exists in codex reader but NOT in claude reader.
     // If resume.use carries agent:'codex', it should find the session.
-    const codexReadSpy = vi.fn(() => ({
+    const codexReadSpy = vi.fn<
+      (sessionId: string, cwd: string, opts?: any) => import('../runner/types.js').SessionContent
+    >(() => ({
       events: [{ type: 'text', content: 'codex session tail' }],
       usage: undefined,
       aiTitle: undefined,
       recap: undefined,
       displayTitle: undefined,
-      reason: 'ok',
     }));
     const registry = createCodexOnlyRegistry(codexReadSpy);
 
@@ -1557,20 +1563,21 @@ describe('CommandRouter', () => {
       ctx,
     );
     expect(codexReadSpy).toHaveBeenCalled();
-    expect(codexReadSpy.mock.calls[0][0]).toBe('codex-session-1');
+    expect(codexReadSpy.mock.calls[0]![0]).toBe('codex-session-1');
     expect(sessionStore.getSessionId('user1', 'codex')).toBe('codex-session-1');
   });
 
   it('resume.use WITHOUT agent falls back to defaultAgent and may miss session from another agent', async () => {
     // Session only exists in codex reader, not in claude (default).
     // Without agent field, resume.use falls back to claude reader → session not found.
-    const codexReadSpy = vi.fn(() => ({
+    const codexReadSpy = vi.fn<
+      (sessionId: string, cwd: string, opts?: any) => import('../runner/types.js').SessionContent
+    >(() => ({
       events: [{ type: 'text', content: 'codex session tail' }],
       usage: undefined,
       aiTitle: undefined,
       recap: undefined,
       displayTitle: undefined,
-      reason: 'ok',
     }));
     const registry = createCodexOnlyRegistry(codexReadSpy);
 
@@ -2150,7 +2157,13 @@ describe('CommandRouter', () => {
       sessionStore.setCwd('user1', wsDir);
       await router.handle('/ws save ws1', ctx);
       // Clear session and switch to different directory first
-      sessionStore.set('user1', { sessions: new Map(), previousSessions: new Map(), cwd: tmpDir });
+      sessionStore.set('user1', {
+        sessions: new Map(),
+        previousSessions: new Map(),
+        arrivalSessions: new Map(),
+        sessionCwds: new Map(),
+        cwd: tmpDir,
+      });
 
       // Now use the workspace - should auto-resume
       await router.handle('/ws use ws1', ctx);
@@ -2330,6 +2343,7 @@ describe('CommandRouter', () => {
       const fakeSession = {
         sessionId: 'aaaaaaaa-1111-2222-3333-444444444444',
         summary: 'test session',
+        mtime: Date.now(),
       };
       const readerWithSession: AgentSessionReader = {
         listSessions: () => ({ sessions: [], total: 0 }),
@@ -3041,7 +3055,6 @@ describe('P0: /active card must use CardKit 2.0 (not 1.x action container)', () 
       output: { showThinking: true, showToolUse: false, showToolResult: false },
     });
     const bridge = new Bridge({
-      runner,
       agentRegistry: createStubAgentRegistry(runner),
       sessionReaderRegistry: createStubSessionReaderRegistry(),
       connector,
@@ -3115,7 +3128,6 @@ describe('P0: /active card must use CardKit 2.0 (not 1.x action container)', () 
 
     let clearRunnersCalled = false;
     const bridge = new Bridge({
-      runner,
       agentRegistry: createStubAgentRegistry(runner),
       sessionReaderRegistry: createStubSessionReaderRegistry(),
       connector,

@@ -296,7 +296,7 @@ describe('Round6 anchors: arrival baseline persistence round-trip boundaries', (
     // 模拟重启
     const store2 = new SessionStore(filePath);
     makeRouter('codex', store2);
-    bridge.sendResult.mockResolvedValueOnce(false);
+    (bridge.sendResult as ReturnType<typeof vi.fn>).mockResolvedValueOnce(false);
 
     const response = await doSwitch(userId, ctx, 'pi');
     const sendResultMock = bridge.sendResult as ReturnType<typeof vi.fn>;

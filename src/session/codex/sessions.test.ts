@@ -836,7 +836,7 @@ describe('rollout-reader additional branches', () => {
         if (typeof p === 'string' && p.includes('2027')) {
           throw new Error('EACCES');
         }
-        return origReaddirSync.apply(fs, args as [string]);
+        return origReaddirSync.apply(fs, args as Parameters<typeof fs.readdirSync>);
       });
 
       // Also create a 2027 year dir (which will trigger the mock to throw)

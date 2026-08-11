@@ -128,7 +128,6 @@ describe('P3-1 resume.page offset 数值化 + 页对齐', () => {
     registry.register('kimi', stubReader);
 
     const bridge = new Bridge({
-      runner,
       agentRegistry: createStubAgentRegistry(runner),
       sessionReaderRegistry: createStubSessionReaderRegistry(),
       connector,

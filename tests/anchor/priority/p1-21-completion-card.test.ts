@@ -20,10 +20,7 @@ import { Bridge } from '../../../src/bridge/index.js';
 import { SessionStore, SessionReaderRegistry } from '../../../src/session/index.js';
 import { AppConfigSchema } from '../../../src/config/index.js';
 import type { AppConfig } from '../../../src/config/index.js';
-import {
-  createStubAgentRegistry,
-  createStubSessionReaderRegistry,
-} from '../../lib/bridge-stubs.js';
+import { createStubAgentRegistry } from '../../lib/bridge-stubs.js';
 import type {
   AgentEvent,
   AgentSession,
@@ -133,9 +130,7 @@ describe('P1-21 completion notification card', () => {
     registry.register('claude', reader);
     const bridgeRunner = createDoneRunner();
     const bridge = new Bridge({
-      runner: bridgeRunner,
       agentRegistry: createStubAgentRegistry(bridgeRunner),
-      sessionReaderRegistry: createStubSessionReaderRegistry(),
       connector,
       sessionStore,
       config,
