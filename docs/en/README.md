@@ -15,7 +15,6 @@ Browse by topic:
 ## Architecture & Design
 
 - [architecture/design.md](architecture/design.md) — Overall design, JSONL events, config semantics, §9 known pitfalls (the most important design document).
-- [architecture/lessons-redlines.md](architecture/lessons-redlines.md) — Red lines & pitfall knowledge base (full version of the CLAUDE.md summary).
 - [architecture/streaming-card.md](architecture/streaming-card.md) — Single-card streaming architecture (RunCardSession / BashCardSession lifecycle, degradation, concurrency control).
 - [cardkit-layout.md](cardkit-layout.md) — Feishu CardKit 2.0 card layout pitfall guide.
 
