@@ -121,7 +121,7 @@ describe('P1-21 completion notification card', () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'p1-21-completion-'));
     const config: AppConfig = AppConfigSchema.parse({
       feishu: { appId: 'test', appSecret: 'test' },
-      claude: { binary: 'claude', model: 'opus', stopGraceMs: 5000 },
+      claude: { model: 'opus', stopGraceMs: 5000 },
       workspace: { default: '' },
       output: { showThinking: true, showToolUse: false, showToolResult: false },
     });

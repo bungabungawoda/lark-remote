@@ -22,7 +22,7 @@ describe('P0: opencode session list uses wrong cwd', () => {
 
     // Check the method signature by checking if it can be called with different cwds
     // The implementation should accept cwd parameter
-    const reader = new OpencodeSessionReader({ binary: 'opencode' });
+    const reader = new OpencodeSessionReader();
 
     // Verify cache is now a Map (keyed by cwd) instead of single entry
     const cache = (reader as unknown as { listCache: Map<string, unknown> }).listCache;
@@ -33,7 +33,7 @@ describe('P0: opencode session list uses wrong cwd', () => {
     const { OpencodeSessionReader } = await import('../../src/session/opencode/index.js');
 
     // Create reader with short cache TTL for testing
-    const reader = new OpencodeSessionReader({ binary: 'opencode', cacheTtlMs: 10000 });
+    const reader = new OpencodeSessionReader({ cacheTtlMs: 10000 });
 
     // Create two different cwds
     const cwd2 = path.join(tmpDir, 'subdir2');
@@ -51,7 +51,7 @@ describe('P0: opencode session list uses wrong cwd', () => {
     const { OpencodeSessionReader } = await import('../../src/session/opencode/index.js');
 
     // New implementation should use Map keyed by cwd
-    const reader = new OpencodeSessionReader({ binary: 'fake-opencode' });
+    const reader = new OpencodeSessionReader();
     const cache = (reader as unknown as { listCache: Map<string, unknown> }).listCache;
 
     // Verify it's a Map (keyed by cwd)
@@ -64,7 +64,7 @@ describe('P0: opencode session list uses wrong cwd', () => {
   it('test_anchor_opencode_realpath_handles_empty_cwd', async () => {
     const { OpencodeSessionReader } = await import('../../src/session/opencode/index.js');
 
-    const reader = new OpencodeSessionReader({ binary: 'opencode' });
+    const reader = new OpencodeSessionReader();
 
     // Test that realpath handles empty string
     const result = (reader as unknown as { realpath: (cwd: string) => string }).realpath('');

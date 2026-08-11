@@ -200,7 +200,6 @@ function buildCodexConfig(model: string = 'gpt-5.2'): AppConfig {
     defaultAgent: 'codex',
     agents: {
       codex: {
-        binary: 'codex',
         model,
         modelProvider: 'openai',
         reasoningEffort: 'medium',

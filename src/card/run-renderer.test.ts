@@ -302,31 +302,31 @@ describe('renderRunCard', () => {
 
   it('test_anchor_done_card_uses_real_input_output_tokens_when_present', () => {
     // Bug: codex run card showed "Output token - 2K" (10% estimate of
-    // contextLength 15107) instead of the real output_tokens=101. When the
+    // contextLength) instead of the real output_tokens. When the
     // run state carries real inputTokens/outputTokens (threaded from the
     // codex ResultEvent.usage), the done card MUST render the real values.
     let state = createInitialRunState('run-codex-real');
     state = finishRun(state, 'done', {
       resultSubtype: 'success',
-      contextLength: 15107,
-      inputTokens: 15006,
-      outputTokens: 101,
-      cacheReadTokens: 6400,
+      contextLength: 20000,
+      inputTokens: 18000,
+      outputTokens: 200,
+      cacheReadTokens: 8000,
     });
     const card = renderRunCard(state) as {
       body?: { elements?: Array<{ text?: { content?: string } }> };
     };
     const json = JSON.stringify(card);
 
-    // Real output (101), NOT the 10% estimate (1511 → "2K").
-    expect(json).toContain('Output token - 101');
+    // Real output (200), NOT the 10% estimate from contextLength.
+    expect(json).toContain('Output token - 200');
     expect(json).not.toMatch(/Output token - \d+K/);
-    // Real input (15006 → "15K"), NOT contextLength+cache (21507 → "22K").
-    expect(json).toContain('Input token - 15K');
-    expect(json).not.toContain('Input token - 22K');
+    // Real input (18000 → "18K"), NOT contextLength+cache (28000 → "28K").
+    expect(json).toContain('Input token - 18K');
+    expect(json).not.toContain('Input token - 28K');
     // Unified ccusage cache% = cacheRead / (input + cacheRead)
-    // = 6400 / (15006 + 6400) = 29.9% ≈ 30%.
-    expect(json).toContain('Cached token - 6K (30%)');
+    // = 8000 / (18000 + 8000) = 30.8% ≈ 31%.
+    expect(json).toContain('Cached token - 8K (31%)');
   });
 
   it('test_anchor_done_card_threads_cache_creation_and_total_tokens', () => {

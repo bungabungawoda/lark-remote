@@ -220,7 +220,8 @@ export function parseCodexModelsOutput(stdout: string): BundledModelInfo[] {
  * （P3-4/P3-15/P3-5）；成功结果 TTL 1h，失败/空结果短 TTL 负缓存；stat 异常时
  * 指纹为空（P1-1/P3-10）。
  */
-export function getCodexCatalogModels(binary: string, codexHome?: string): BundledModelInfo[] {
+export function getCodexCatalogModels(codexHome?: string): BundledModelInfo[] {
+  const binary = 'codex';
   const home = resolveCodexHome(codexHome);
   const catalogPath = readModelCatalogJsonPath(home);
   const bundled = catalogPath === undefined || catalogPath === TOML_PARSE_FAILED_SENTINEL;
@@ -285,12 +286,8 @@ export function invalidateCodexBundledCache(): void {
  * @param codexHome 可选 codex 配置目录覆盖（与 loadCodexConfig 的 codexHome 对齐，
  *   与 loadCodexConfig 的 codexHome 对齐）；省略时走 $CODEX_HOME → ~/.codex。
  */
-export function getReasoningEffortOptions(
-  model: string,
-  binary: string = 'codex',
-  codexHome?: string,
-): readonly string[] {
-  const models = getCodexCatalogModels(binary, codexHome);
+export function getReasoningEffortOptions(model: string, codexHome?: string): readonly string[] {
+  const models = getCodexCatalogModels(codexHome);
   const found = models.find((m) => m.slug === model);
   // 未命中（含未知模型，codex fallback 元数据 supported 为空）→ []，不虚构档位（P1）
   return found?.supportedReasoningLevels ?? [];
@@ -301,12 +298,8 @@ export function getReasoningEffortOptions(
  * 未声明/未知模型 → undefined（codex 语义：ModelPreset.default_reasoning_effort
  * unwrap_or(ReasoningEffort::None)，即不传 effort；P3-12）。
  */
-export function getDefaultReasoningEffort(
-  model: string,
-  binary: string = 'codex',
-  codexHome?: string,
-): string | undefined {
-  const models = getCodexCatalogModels(binary, codexHome);
+export function getDefaultReasoningEffort(model: string, codexHome?: string): string | undefined {
+  const models = getCodexCatalogModels(codexHome);
   return models.find((m) => m.slug === model)?.defaultReasoningLevel;
 }
 
@@ -317,8 +310,6 @@ export function getDefaultReasoningEffort(
 interface LoadCodexConfigOpts {
   /** Explicit codex home override. Default: $CODEX_HOME -> ~/.codex */
   codexHome?: string;
-  /** codex binary path, for `debug models --bundled`. Default: 'codex' */
-  binary?: string;
 }
 
 /**
@@ -339,14 +330,13 @@ function extractCustomProvider(providers: Record<string, unknown>): string | und
  * - anthropic: bundled models with 'claude-*' prefix
  */
 export function loadCodexConfig(opts: LoadCodexConfigOpts = {}): CodexConfigResult {
-  const binary = opts.binary ?? 'codex';
   const codexHome = resolveCodexHome(opts.codexHome);
   const configFile = path.join(codexHome, 'config.toml');
   const catalogMode = isCodexCatalogMode(codexHome);
 
   // 统一目录来源：catalog 模式 = 活动目录（model_catalog_json 整体替换内置目录）；
   // 否则 = bundled（与原行为一致）
-  const catalogSlugs = getCodexCatalogModels(binary, codexHome).map((m) => m.slug);
+  const catalogSlugs = getCodexCatalogModels(codexHome).map((m) => m.slug);
   const allModels = catalogSlugs.length > 0 ? catalogSlugs : FALLBACK_MODELS;
   const anthropicModels = allModels.filter((m) => m.startsWith('claude-'));
 

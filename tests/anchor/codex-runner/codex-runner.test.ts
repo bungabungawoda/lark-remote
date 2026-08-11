@@ -112,7 +112,6 @@ describe('CodexExecRunner non-zero exit result event (D2)', () => {
 
     const runner = new CodexExecRunner({
       workspace: 'test',
-      binary: 'codex',
       sessionReader: {
         listSessions: () => ({ sessions: [], total: 0 }),
         getNewestSession: () => null,
@@ -211,7 +210,6 @@ describe('CodexExecRunner signal kill result event (D3)', () => {
 
     const runner = new CodexExecRunner({
       workspace: 'test',
-      binary: 'codex',
       sessionReader: {
         listSessions: () => ({ sessions: [], total: 0 }),
         getNewestSession: () => null,
@@ -307,7 +305,6 @@ describe('CodexExecRunner stoppedByUser result event', () => {
 
     const runner = new CodexExecRunner({
       workspace: 'test',
-      binary: 'codex',
       sessionReader: {
         listSessions: () => ({ sessions: [], total: 0 }),
         getNewestSession: () => null,

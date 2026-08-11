@@ -10,6 +10,7 @@ let cachedConfigDir: string | null = null;
 interface CliArgs {
   configDir?: string;
   settings?: string;
+  dev?: boolean;
   help?: boolean;
   version?: boolean;
 }
@@ -57,6 +58,8 @@ export function parseCliArgs(args: string[] = process.argv.slice(2)): CliArgs {
       if (nextArg && !nextArg.startsWith('--')) {
         result.settings = args[++i];
       }
+    } else if (arg === '--dev') {
+      result.dev = true;
     }
   }
 
@@ -91,6 +94,7 @@ export function printHelp(): void {
     'Options:',
     '  --config-dir <path>   自定义配置目录（默认 ~/.lark-remote，可用于同机多实例）',
     '  --settings <path>     指定 Claude 配置文件路径',
+    '  --dev                 开发模式：标记从源码 bun src/index.ts 启动（看门狗据此选择拉起方式）',
     '  -h, --help            显示本帮助信息',
     '  -v, --version         显示版本号',
   ];

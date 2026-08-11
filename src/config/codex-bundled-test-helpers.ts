@@ -32,7 +32,8 @@ let bundledCache: BundledCacheEntry | null = null;
  * Bundled model list via `codex debug models --bundled` (test-only entry).
  * Production should use `getCodexCatalogModels` from `codex-config.ts`.
  */
-export function getCodexBundledModels(binary: string): BundledModelInfo[] {
+export function getCodexBundledModels(): BundledModelInfo[] {
+  const binary = 'codex';
   const now = Date.now();
   if (
     bundledCache &&
@@ -64,8 +65,8 @@ export function getCodexBundledModels(binary: string): BundledModelInfo[] {
 }
 
 /** Returns slug list sorted by priority ascending (test-only). */
-export function getCodexBundledModelSlugs(binary: string): string[] {
-  return getCodexBundledModels(binary).map((m) => m.slug);
+export function getCodexBundledModelSlugs(): string[] {
+  return getCodexBundledModels().map((m) => m.slug);
 }
 
 /** Test utility: clear the bundled-models cache. */

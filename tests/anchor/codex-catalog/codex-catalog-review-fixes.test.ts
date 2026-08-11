@@ -97,7 +97,7 @@ describe('codex catalog review fixes - anchor', () => {
 
     expect(isCodexCatalogMode()).toBe(true);
 
-    const cfg = loadCodexConfig({ binary: 'codex' });
+    const cfg = loadCodexConfig();
     // 活动目录命令失败 → 回退 [currentModel]，不得泄漏 bundled gpt-5.6-sol / FALLBACK
     // provider 列表 = 内置 openai + deepseek（codex 合并内置 provider，review4 P2）
     expect(cfg.providerNames).toEqual(['openai', 'deepseek']);
@@ -123,7 +123,7 @@ describe('codex catalog review fixes - anchor', () => {
     );
     invalidateCodexBundledCache();
 
-    const cfg = loadCodexConfig({ binary: 'codex' });
+    const cfg = loadCodexConfig();
     expect(cfg.modelOptions('deepseek')).toEqual([]);
     expect(cfg.modelOptions()).toEqual([]);
     expect(cfg.modelOptions('deepseek')).not.toContain('o3');
@@ -143,7 +143,7 @@ describe('codex catalog review fixes - anchor', () => {
     );
     invalidateCodexBundledCache();
 
-    const cfg = loadCodexConfig({ binary: 'codex' });
+    const cfg = loadCodexConfig();
     expect(cfg.providerNames).toEqual(['openai']);
     expect(cfg.providerNames).not.toContain('anthropic');
     expect(cfg.currentProvider).toBe('openai');
@@ -168,15 +168,9 @@ describe('codex catalog review fixes - anchor', () => {
     });
     invalidateCodexBundledCache();
 
-    expect(getReasoningEffortOptions('deepseek-v4-flash', 'codex')).toEqual([
-      'fast',
-      'low',
-      'high',
-      'max',
-    ]);
+    expect(getReasoningEffortOptions('deepseek-v4-flash')).toEqual(['fast', 'low', 'high', 'max']);
 
     const parsed = CodexConfigSchema.safeParse({
-      binary: 'codex',
       model: 'deepseek-v4-flash',
       modelProvider: 'deepseek',
       reasoningEffort: 'fast',

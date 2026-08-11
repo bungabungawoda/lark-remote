@@ -23,8 +23,8 @@ import type {
  * Claude encodes the cwd by replacing `/` with `-` (e.g.
  * `/Users/x/proj` -> `-Users-x-proj`). Underscores are also replaced with `-`.
  *
- * Note: this encoding is LOSSY (`my_disk/foo` and `my-disk/foo` both encode to
- * `my-disk-foo`). It is only safe to use the result to **locate** files; never
+ * Note: this encoding is LOSSY (`disk_d/foo` and `disk-d/foo` both encode to
+ * `disk-d-foo`). It is only safe to use the result to **locate** files; never
  * to **decode** a directory name back to a cwd. Use `readCwdFromJsonl` for
  * cwd (regression 2026-06-21 /resume & /cd 路径错乱).
  */
@@ -138,7 +138,11 @@ function summarizeSession(filePath: string): string {
   const line = findJsonlLine(filePath, (l) => {
     try {
       const obj: { type?: string; message?: { content?: unknown } } = JSON.parse(l);
-      return obj.type === 'user' && !!obj.message?.content && !!extractText(obj.message.content);
+      if (obj.type === 'user' && !!obj.message?.content) {
+        const text = extractText(obj.message.content);
+        return !!text && !isTaskNotificationText(text);
+      }
+      return false;
     } catch {
       return false;
     }
@@ -159,6 +163,20 @@ const CLAUDE_MAPPING: ContentBlockMapping = {
   toolInputField: 'input',
   toolErrorField: 'is_error',
 };
+
+/**
+ * Detect Claude CLI sub-agent completion notification text.
+ * Claude CLI injects a `type:"user"` record with string content starting
+ * with `<task-notification>` when a sub-agent (Agent tool) finishes.
+ * These must be excluded from displayTitle/summary — they are machine
+ * injections, not real user input. Primary criterion: extracted text
+ * starts with `<task-notification` (works for both string and array
+ * content since `extractText` is called first). Secondary (optional):
+ * `origin.kind === 'task-notification'` (not all CLI versions write it).
+ */
+function isTaskNotificationText(text: string): boolean {
+  return text.trimStart().startsWith('<task-notification');
+}
 
 /**
  * Extract first text from a user message.
@@ -184,7 +202,7 @@ function extractText(content: unknown): string | null {
  *
  * We locate the directory via `projectDirForCwd` (lossy but OK for locating
  * a known cwd) and then **verify** each jsonl's cwd field matches. This
- * prevents collision: `my_disk/foo` and `my-disk/foo` both encode to the same
+ * prevents collision: `disk_d/foo` and `disk-d/foo` both encode to the same
  * directory name, but only the matching cwd field is kept.
  */
 export function listClaudeSessions(
@@ -249,11 +267,21 @@ function scanDirForSessions(cwd: string, dir: string): AgentSession[] {
 }
 
 /**
- * Scan OTHER project subdirectories for jsonl files whose cwd matches the
- * requested cwd. Used as a fallback when the primary dir doesn't contain the
- * session (EnterWorktree moves the transcript to the new cwd's project dir).
+ * Scan OTHER project subdirectories for jsonl files whose first cwd matches
+ * the requested cwd. Used to find sessions that were MOVED OUT of the primary
+ * dir by EnterWorktree (which relocates the transcript to the target worktree's
+ * project dir). Such sessions always have firstCwd == queryCwd because
+ * EnterWorktree happens after session start.
+ *
+ * Uses `readCwdFromJsonl` (first cwd only) instead of `jsonlContainsCwd`
+ * (full-file scan) because:
+ * - Relocated-out sessions always have firstCwd == queryCwd → readCwdFromJsonl
+ *   is sufficient and ~10× faster (no full-file streaming).
+ * - Relocated-IN sessions are found by Phase 1's jsonlContainsCwd in the
+ *   primary dir — no need for Phase 2 to find them again.
+ *
  * Skips the primary dir (already scanned) and any sessionIds already found
- * (avoids duplicates). P1 fix 2026-08-10.
+ * (avoids duplicates). S2 fix 2026-08-10.
  */
 function scanRelocatedSessions(
   cwd: string,
@@ -296,7 +324,11 @@ function scanRelocatedSessions(
       if (seenIds.has(sessionId)) continue;
       try {
         const st = fs.statSync(full);
-        if (!jsonlContainsCwd(full, cwd)) continue;
+        // S2: use readCwdFromJsonl (first cwd only) instead of
+        // jsonlContainsCwd (full-file scan). Relocated-out sessions
+        // always have firstCwd == queryCwd.
+        const firstCwd = readCwdFromJsonl(full);
+        if (firstCwd === undefined || firstCwd !== cwd) continue;
         sessions.push({
           sessionId,
           summary: truncate(summarizeSession(full), 60, { normalizeWhitespace: true }),
@@ -311,11 +343,14 @@ function scanRelocatedSessions(
 }
 
 /** Uncached scan of a claude project dir (the expensive part being cached).
- *  P1 fix: cwd guard now uses `jsonlContainsCwd` (any cwd field matches)
- *  instead of `readCwdFromJsonl` (first cwd only). Relocated sessions
- *  (EnterWorktree) contain multiple cwd values; the first one is the
- *  pre-relocate path, which would be rejected by the old first-cwd-only
- *  check. See regression 2026-08-10 list vs read inconsistency.
+ *  Phase 1 scans the primary project dir using jsonlContainsCwd (any cwd
+ *  match) to find sessions including relocated-in ones.
+ *  Phase 2 scans all OTHER project dirs using readCwdFromJsonl (first cwd
+ *  only) to find relocated-out sessions (always firstCwd == queryCwd).
+ *  S2 fix 2026-08-10: removed the primarySessions.length === 0 guard so
+ *  relocated-out sessions are visible even when the primary dir has other
+ *  sessions. readCwdFromJsonl is ~10× cheaper than jsonlContainsCwd for
+ *  cross-dir scanning.
  */
 function scanClaudeSessions(cwd: string, dir: string, projectsDir?: string): AgentSession[] {
   const sessions: AgentSession[] = [];
@@ -325,19 +360,12 @@ function scanClaudeSessions(cwd: string, dir: string, projectsDir?: string): Age
   sessions.push(...primarySessions);
 
   // Phase 2: cross-dir fallback for relocated sessions whose transcript
-  // was moved away from the primary dir. Only scan OTHER project subdirs
-  // when the primary scan found nothing (the common case: primary dir has
-  // all sessions, no need to scan elsewhere). When primary has results,
-  // relocated sessions in other dirs that match this cwd are already
-  // handled by jsonlContainsCwd on files in the primary dir (the file was
-  // moved TO the primary dir's encoded path). Skip to avoid O(all projects)
-  // overhead on every cached-miss list call.
+  // was moved away from the primary dir by EnterWorktree.
+  // Always executed (S2 fix): relocated-out sessions have firstCwd == queryCwd
+  // but are invisible to Phase 1 (file moved away). seenIds prevents
+  // double-counting sessions already found by Phase 1.
   const effectiveProjectsDir = projectsDir ?? defaultProjectsDir();
-  if (
-    primarySessions.length === 0 &&
-    effectiveProjectsDir &&
-    dir.startsWith(effectiveProjectsDir)
-  ) {
+  if (effectiveProjectsDir && dir.startsWith(effectiveProjectsDir)) {
     const seenIds = new Set(primarySessions.map((s) => s.sessionId));
     const crossDirSessions = scanRelocatedSessions(cwd, dir, effectiveProjectsDir, seenIds);
     sessions.push(...crossDirSessions);
@@ -560,7 +588,7 @@ function scalarScan(filePath: string): ScanResult {
           (content[0] as Record<string, unknown>)?.type === 'tool_result';
         if (!isToolResult) {
           const userContent = extractText(content);
-          if (userContent) {
+          if (userContent && !isTaskNotificationText(userContent)) {
             lastUserMessage = userContent;
           }
         }

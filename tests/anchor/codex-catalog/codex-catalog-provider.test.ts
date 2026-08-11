@@ -99,7 +99,7 @@ describe('codex active catalog provider list - anchor', () => {
   });
 
   it('test_anchor_catalog_mode_providers_merge_builtin_openai', () => {
-    const cfg = loadCodexConfig({ binary: 'codex' });
+    const cfg = loadCodexConfig();
 
     // provider 列表 = 内置 openai + [model_providers.*]；anthropic 非 codex 内置 provider
     expect(cfg.providerNames).toEqual(['openai', 'deepseek', 'volcengine-coding-plan']);

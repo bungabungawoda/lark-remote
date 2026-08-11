@@ -103,7 +103,6 @@ describe('CodexExecRunner getStatusInfo', () => {
   it('returns status info with model and provider', () => {
     const runner = new CodexExecRunner({
       workspace: 'test',
-      binary: 'codex',
       model: 'claude-sonnet-4-20250514',
       modelProvider: 'volcengine-coding-plan',
       pidDir: tmpDir,
@@ -121,7 +120,6 @@ describe('CodexExecRunner getStatusInfo', () => {
   it('returns model from codex config.toml when not specified', () => {
     const runner = new CodexExecRunner({
       workspace: 'test',
-      binary: 'codex',
       pidDir: tmpDir,
       sessionReader: mockSessionReader,
     });
@@ -139,7 +137,6 @@ describe('PiRunner getStatusInfo', () => {
   it('returns status info with model, provider and thinking', () => {
     const runner = new PiRunner({
       workspace: 'test',
-      binary: 'pi',
       provider: 'anthropic',
       model: 'claude-sonnet-4-20250514',
       thinking: 'high',
@@ -155,7 +152,7 @@ describe('PiRunner getStatusInfo', () => {
   });
 
   it('returns default values when not specified', () => {
-    const runner = new PiRunner({ workspace: 'test', binary: 'pi', pidDir: tmpDir });
+    const runner = new PiRunner({ workspace: 'test', pidDir: tmpDir });
 
     const info = runner.getStatusInfo();
 

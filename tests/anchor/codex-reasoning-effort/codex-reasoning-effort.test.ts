@@ -8,7 +8,6 @@
  *   - codex-exec-argv-reasoning-effort.test.ts
  *   - codex-exec-runner-reasoning-effort.test.ts
  *   - codex-model-switch-reasoning-adjustment.test.ts
- *   - codex-reasoning-effort-binary-param.test.ts
  *   - codex-reasoning-effort-schema.test.ts
  *   - codex-reasoning-effort.test.ts
  *
@@ -28,7 +27,6 @@ import { buildCodexExecArgs } from '../../../src/runner/codex/argv.js';
 import type { AgentSessionReader } from '../../../src/runner/types.js';
 
 interface CodexExecRunnerOptions {
-  binary?: string;
   model?: string;
   modelProvider?: string;
   reasoningEffort?: string;
@@ -199,7 +197,6 @@ function createMockSessionReaderRegistry(
 describe('CodexConfigSchema reasoningEffort - anchor', () => {
   it('test_anchor_codex_config_schema_has_reasoning_effort', () => {
     const configWithEffort = {
-      binary: 'codex',
       model: 'gpt-5.6-sol',
       modelProvider: 'openai',
       reasoningEffort: 'high',
@@ -215,7 +212,6 @@ describe('CodexConfigSchema reasoningEffort - anchor', () => {
 
   it('test_anchor_codex_config_schema_reasoning_effort_optional', () => {
     const configWithoutEffort = {
-      binary: 'codex',
       model: 'gpt-5.6-sol',
       modelProvider: 'openai',
       stopGraceMs: 5000,
@@ -233,7 +229,6 @@ describe('CodexConfigSchema reasoningEffort - anchor', () => {
 
     for (const value of validValues) {
       const config = {
-        binary: 'codex',
         model: 'gpt-5.6-sol',
         modelProvider: 'openai',
         reasoningEffort: value,
@@ -270,7 +265,6 @@ describe('P3-1: CodexConfigSchema reasoningEffort validation', () => {
   it('test_anchor_codex_reasoningEffort_accepts_valid_values', () => {
     for (const effort of ['minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra']) {
       const result = CodexConfigSchema.safeParse({
-        binary: 'codex',
         model: 'gpt-5.6-sol',
         modelProvider: 'openai',
         reasoningEffort: effort,
@@ -281,7 +275,6 @@ describe('P3-1: CodexConfigSchema reasoningEffort validation', () => {
 
   it('test_anchor_codex_reasoningEffort_optional', () => {
     const result = CodexConfigSchema.safeParse({
-      binary: 'codex',
       model: 'gpt-5.6-sol',
       modelProvider: 'openai',
     });
@@ -290,7 +283,6 @@ describe('P3-1: CodexConfigSchema reasoningEffort validation', () => {
 
   it('test_anchor_codex_reasoningEffort_accepts_custom_value', () => {
     const result = CodexConfigSchema.safeParse({
-      binary: 'codex',
       model: 'gpt-5.6-sol',
       modelProvider: 'openai',
       reasoningEffort: 'super-extreme',
@@ -384,7 +376,6 @@ describe('buildCodexExecArgs reasoningEffort - anchor', () => {
 describe('CodexExecRunner reasoningEffort - anchor', () => {
   it('test_anchor_codex_runner_options_accepts_reasoning_effort', () => {
     const options: CodexExecRunnerOptions = {
-      binary: 'codex',
       model: 'gpt-5.6-sol',
       modelProvider: 'openai',
       reasoningEffort: 'high',
@@ -403,7 +394,6 @@ describe('CodexExecRunner reasoningEffort - anchor', () => {
 
   it('test_anchor_codex_runner_options_reasoning_effort_optional', () => {
     const options: CodexExecRunnerOptions = {
-      binary: 'codex',
       model: 'gpt-5.6-sol',
       stopGraceMs: 5000,
       pidDir: '/tmp',
@@ -442,7 +432,7 @@ describe('getCodexBundledModels - anchor', () => {
   it('test_anchor_bundled_models_contain_reasoning_levels', () => {
     mockExecFileSync.mockReturnValue(BUNDLED_JSON_WITH_REASONING);
 
-    const models = getCodexBundledModels('codex');
+    const models = getCodexBundledModels();
 
     expect(models).toBeDefined();
     expect(Array.isArray(models)).toBe(true);
@@ -472,7 +462,7 @@ describe('getCodexBundledModels - anchor', () => {
   it('test_anchor_bundled_models_excludes_hidden', () => {
     mockExecFileSync.mockReturnValue(BUNDLED_JSON_WITH_REASONING);
 
-    const models = getCodexBundledModels('codex');
+    const models = getCodexBundledModels();
 
     const hiddenModel = models.find((m) => m.slug === 'codex-auto-review');
     expect(hiddenModel).toBeUndefined();
@@ -485,7 +475,7 @@ describe('getCodexBundledModels - anchor', () => {
   it('test_anchor_bundled_models_sorted_by_priority', () => {
     mockExecFileSync.mockReturnValue(BUNDLED_JSON_WITH_REASONING);
 
-    const models = getCodexBundledModels('codex');
+    const models = getCodexBundledModels();
 
     expect(models[0]!.slug).toBe('gpt-5.6-sol');
     expect(models[1]!.slug).toBe('gpt-5.6-terra');
@@ -495,7 +485,7 @@ describe('getCodexBundledModels - anchor', () => {
   it('test_anchor_model_with_fewer_reasoning_levels', () => {
     mockExecFileSync.mockReturnValue(BUNDLED_JSON_WITH_REASONING);
 
-    const models = getCodexBundledModels('codex');
+    const models = getCodexBundledModels();
     const gpt54 = models.find((m) => m.slug === 'gpt-5.4');
 
     expect(gpt54).toBeDefined();
@@ -570,41 +560,46 @@ describe('getDefaultReasoningEffort - anchor', () => {
 });
 
 // ---------------------------------------------------------------------------
-// P2-2: reasoning effort functions respect custom binary (Round 2)
+// P2-2: reasoning effort functions read the bundled catalog via the
+// hard-coded 'codex' binary (Round 2, binary param removed)
 // ---------------------------------------------------------------------------
 
 /**
  * Red Agent - Round 2 - Anchor (Bug 模式)
  *
- * Target: getReasoningEffortOptions / getDefaultReasoningEffort 必须接受 binary 参数
+ * Target: getReasoningEffortOptions / getDefaultReasoningEffort 必须从 codex
+ * bundled 目录读取声明档位与默认档位
  *
- * Spec basis: CLAUDE.md "Codex 推理强度配置"; loadCodexConfig 已支持 binary 参数
+ * Spec basis: CLAUDE.md "Codex 推理强度配置"；codex binary 路径已硬编码（不再
+ * 支持自定义 binary 参数），通过 CODEX_HOME 指向无 config.toml 的临时目录走
+ * bundled 目录模式。
  */
-describe('P2-2: reasoning effort functions respect custom binary', () => {
+describe('P2-2: reasoning effort functions read bundled catalog', () => {
+  let tmpDir: string;
+  let oldCodexHome: string | undefined;
+
   beforeEach(() => {
     mockExecFileSync.mockReset();
     mockLogger.warn.mockReset();
     invalidateCodexBundledCache();
+    oldCodexHome = process.env.CODEX_HOME;
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-effort-binary-'));
+    process.env.CODEX_HOME = tmpDir;
   });
 
-  it('test_anchor_getReasoningEffortOptions_uses_custom_binary', () => {
-    mockExecFileSync.mockImplementation((binary: string) => {
-      if (binary === '/custom/codex') {
-        return JSON.stringify({
-          models: [
-            {
-              slug: 'custom-model',
-              display_name: 'Custom Model',
-              visibility: 'list',
-              supported_in_api: true,
-              priority: 1,
-              supported_reasoning_levels: [{ effort: 'low' }, { effort: 'high' }],
-              default_reasoning_level: 'high',
-            },
-          ],
-        });
-      }
-      return JSON.stringify({
+  afterEach(() => {
+    if (oldCodexHome === undefined) {
+      delete process.env.CODEX_HOME;
+    } else {
+      process.env.CODEX_HOME = oldCodexHome;
+    }
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+    invalidateCodexBundledCache();
+  });
+
+  it('test_anchor_getReasoningEffortOptions_reads_bundled_catalog', () => {
+    mockExecFileSync.mockReturnValue(
+      JSON.stringify({
         models: [
           {
             slug: 'custom-model',
@@ -612,44 +607,21 @@ describe('P2-2: reasoning effort functions respect custom binary', () => {
             visibility: 'list',
             supported_in_api: true,
             priority: 1,
-            supported_reasoning_levels: [
-              { effort: 'low' },
-              { effort: 'medium' },
-              { effort: 'high' },
-            ],
-            default_reasoning_level: 'medium',
+            supported_reasoning_levels: [{ effort: 'low' }, { effort: 'high' }],
+            default_reasoning_level: 'high',
           },
         ],
-      });
-    });
-
-    const options = getReasoningEffortOptions('custom-model', '/custom/codex');
-    expect(options).toEqual(['low', 'high']);
-    expect(mockExecFileSync).toHaveBeenCalledWith(
-      '/custom/codex',
-      expect.any(Array),
-      expect.any(Object),
+      }),
     );
+
+    const options = getReasoningEffortOptions('custom-model');
+    expect(options).toEqual(['low', 'high']);
+    expect(mockExecFileSync).toHaveBeenCalledWith('codex', expect.any(Array), expect.any(Object));
   });
 
-  it('test_anchor_getDefaultReasoningEffort_uses_custom_binary', () => {
-    mockExecFileSync.mockImplementation((binary: string) => {
-      if (binary === '/custom/codex') {
-        return JSON.stringify({
-          models: [
-            {
-              slug: 'custom-model',
-              display_name: 'Custom Model',
-              visibility: 'list',
-              supported_in_api: true,
-              priority: 1,
-              supported_reasoning_levels: [{ effort: 'low' }, { effort: 'high' }],
-              default_reasoning_level: 'high',
-            },
-          ],
-        });
-      }
-      return JSON.stringify({
+  it('test_anchor_getDefaultReasoningEffort_reads_bundled_catalog', () => {
+    mockExecFileSync.mockReturnValue(
+      JSON.stringify({
         models: [
           {
             slug: 'custom-model',
@@ -657,13 +629,13 @@ describe('P2-2: reasoning effort functions respect custom binary', () => {
             visibility: 'list',
             supported_in_api: true,
             priority: 1,
-            default_reasoning_level: 'medium',
+            default_reasoning_level: 'high',
           },
         ],
-      });
-    });
+      }),
+    );
 
-    const defaultEffort = getDefaultReasoningEffort('custom-model', '/custom/codex');
+    const defaultEffort = getDefaultReasoningEffort('custom-model');
     expect(defaultEffort).toBe('high');
   });
 });
@@ -700,14 +672,12 @@ function buildCodexConfig(): AppConfig {
     feishu: { appId: 'test', appSecret: 'test' },
     defaultAgent: 'codex',
     claude: {
-      binary: 'claude',
       model: 'opus',
       effort: 'medium',
       stopGraceMs: 5000,
     },
     agents: {
       codex: {
-        binary: 'codex',
         model: 'gpt-5.6-sol',
         modelProvider: 'openai',
         reasoningEffort: 'high',
@@ -903,7 +873,6 @@ function buildCodexConfigForModel(
     defaultAgent: 'codex',
     agents: {
       codex: {
-        binary: 'codex',
         model,
         modelProvider,
         reasoningEffort,
