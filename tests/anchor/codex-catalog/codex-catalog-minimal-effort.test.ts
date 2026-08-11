@@ -82,7 +82,7 @@ describe('codex catalog minimal reasoning effort - anchor', () => {
   });
 
   it('test_anchor_catalog_minimal_reasoning_effort_is_not_filtered_out', () => {
-    const options = getReasoningEffortOptions('deepseek-v4-flash', 'codex');
+    const options = getReasoningEffortOptions('deepseek-v4-flash');
     // codex 枚举支持 minimal，目录声明后必须保留（顺序保持目录声明顺序）
     expect(options).toContain('minimal');
     expect(options).toEqual(['minimal', 'low', 'high', 'max']);

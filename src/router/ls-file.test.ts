@@ -77,7 +77,6 @@ describe('ls file action', () => {
     const config: AppConfig = {
       feishu: { appId: 'test', appSecret: 'test' },
       claude: {
-        binary: 'claude',
         model: 'claude-sonnet-4-20250514',
         effort: 'medium',
         stopGraceMs: 5000,
@@ -170,7 +169,6 @@ describe('ls tilde expansion', () => {
     const config: AppConfig = {
       feishu: { appId: 'test', appSecret: 'test' },
       claude: {
-        binary: 'claude',
         model: 'claude-sonnet-4-20250514',
         effort: 'medium',
         stopGraceMs: 5000,

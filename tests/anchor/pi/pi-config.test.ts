@@ -169,7 +169,6 @@ describe('config path mapping', () => {
       claude: {},
       agents: {
         pi: {
-          binary: 'pi',
           provider: 'Volcano',
           model: 'glm-5.2',
           thinking: 'medium',
@@ -230,7 +229,6 @@ describe('config path mapping', () => {
         claude: {},
         agents: {
           pi: {
-            binary: 'pi',
             provider: 'Volcano',
             model: 'glm-5.2',
             thinking: 'medium',
@@ -340,7 +338,6 @@ describe('anchor: config card model options filtered by provider', () => {
           provider: 'lt',
           model: 'glm-5.1',
           thinking: 'medium',
-          binary: 'pi',
           tools: 'read,bash',
         },
       },
@@ -471,7 +468,6 @@ describe('Bug 2: 切换 provider 后应自动重置 model', () => {
           provider: 'Volcano',
           model: 'glm-5.2',
           thinking: 'medium',
-          binary: 'pi',
           tools: 'read,bash',
         },
       },

@@ -26,7 +26,6 @@ describe('pi config path mapping bug', () => {
       feishu: { appId: 'test', appSecret: 'test' },
       defaultAgent: 'claude',
       claude: {
-        binary: 'claude',
         model: 'opus',
         settings: '',
         stopGraceMs: 5000,

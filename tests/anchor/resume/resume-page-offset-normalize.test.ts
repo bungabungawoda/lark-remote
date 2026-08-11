@@ -110,7 +110,7 @@ describe(' resume.page offset 数值化 + 页对齐', () => {
     const runner = createStubRunner();
     const config: AppConfig = AppConfigSchema.parse({
       feishu: { appId: 'test', appSecret: 'test' },
-      claude: { binary: 'claude', model: 'opus', stopGraceMs: 5000 },
+      claude: { model: 'opus', stopGraceMs: 5000 },
       defaultAgent: 'claude',
     });
 

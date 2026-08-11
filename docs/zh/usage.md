@@ -56,7 +56,6 @@ feishu:
 defaultAgent: claude
 
 claude:
-  binary: claude            # claude CLI 可执行文件路径
   model: claude-opus-4-8    # 模型
   effort: medium            # 推理强度 low | medium | high | xhigh | max
   # permissionMode 硬编码为 bypassPermissions（runner 内部），不通过 config 配置

@@ -141,7 +141,6 @@ function buildCodexConfig(model: string, reasoningEffort: string): AppConfig {
     defaultAgent: 'codex',
     agents: {
       codex: {
-        binary: 'codex',
         model,
         modelProvider: 'deepseek',
         reasoningEffort,
@@ -219,8 +218,8 @@ describe('codex catalog review3 fixes - anchor', () => {
     fs.writeFileSync(path.join(tmpDir, 'models.json'), EMPTY_LEVELS_CATALOG);
 
     // 声明空档位 → 选项为空（不虚构 DEFAULT），默认档位取声明 default 'high'
-    expect(getReasoningEffortOptions('empty-levels-model', 'codex')).toEqual([]);
-    expect(getDefaultReasoningEffort('empty-levels-model', 'codex')).toBe('high');
+    expect(getReasoningEffortOptions('empty-levels-model')).toEqual([]);
+    expect(getDefaultReasoningEffort('empty-levels-model')).toBe('high');
 
     // 卡片切到空档位模型：当前 ultra 不支持 → 无中位 → 用声明 default 'high'
     const router = new CommandRouter({
@@ -252,7 +251,7 @@ describe('codex catalog review3 fixes - anchor', () => {
     invalidateCodexBundledCache();
 
     expect(isCodexCatalogMode()).toBe(false);
-    const cfg = loadCodexConfig({ binary: 'codex' });
+    const cfg = loadCodexConfig();
     // legacy 兜底：provider 只含 openai，模型列表=bundled（gpt-5.2 fixture）
     expect(cfg.providerNames).toEqual(['openai']);
     expect(cfg.modelOptions()).toEqual(['gpt-5.2']);
@@ -264,7 +263,7 @@ describe('codex catalog review3 fixes - anchor', () => {
     writeCatalogConfig('model_catalog_json = ""', 'model = "deepseek-v4-flash"');
 
     expect(isCodexCatalogMode()).toBe(true);
-    const cfg = loadCodexConfig({ binary: 'codex' });
+    const cfg = loadCodexConfig();
     expect(cfg.providerNames).toEqual(['openai', 'deepseek']);
     expect(cfg.providerNames).not.toContain('anthropic');
     expect(cfg.modelOptions('deepseek')).toEqual(['deepseek-v4-flash']);

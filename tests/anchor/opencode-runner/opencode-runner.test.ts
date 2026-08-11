@@ -115,7 +115,6 @@ describe('OpencodeExecRunner non-zero exit result event (D6)', () => {
 
     const runner = new OpencodeExecRunner({
       workspace: 'test',
-      binary: 'opencode',
       sessionReader: {
         listSessions: () => ({ sessions: [], total: 0 }),
         getNewestSession: () => null,
@@ -192,7 +191,6 @@ describe('OpencodeExecRunner signal kill result event (D7)', () => {
 
     const runner = new OpencodeExecRunner({
       workspace: 'test',
-      binary: 'opencode',
       sessionReader: {
         listSessions: () => ({ sessions: [], total: 0 }),
         getNewestSession: () => null,
@@ -277,7 +275,6 @@ describe('OpencodeExecRunner stoppedByUser result event (D5)', () => {
 
     const runner = new OpencodeExecRunner({
       workspace: 'test',
-      binary: 'opencode',
       sessionReader: {
         listSessions: () => ({ sessions: [], total: 0 }),
         getNewestSession: () => null,

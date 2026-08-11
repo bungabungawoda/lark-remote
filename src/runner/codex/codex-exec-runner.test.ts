@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { CodexExecRunner } from './index.js';
+import { prependPath, restorePath, writeMockBin } from '../../../tests/lib/path-mock.js';
 
 const { mockLogger } = vi.hoisted(() => ({
   mockLogger: {
@@ -36,12 +37,15 @@ const mockSessionReader = {
 };
 
 let tmpDir: string;
+let savedPath: string | undefined;
 
 beforeEach(() => {
   tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'lark-exec-runner-test-'));
+  savedPath = prependPath(tmpDir);
 });
 
 afterEach(() => {
+  restorePath(savedPath);
   fs.rmSync(tmpDir, { recursive: true, force: true });
 });
 
@@ -50,20 +54,17 @@ afterEach(() => {
  * It reads from stdin (prompt) and writes ndjson to stdout.
  */
 function createMockCodex(script: string): string {
-  const scriptPath = path.join(tmpDir, 'mock-codex');
-  fs.writeFileSync(
-    scriptPath,
+  return writeMockBin(
+    tmpDir,
+    'codex',
     `#!/bin/bash\n# Read stdin (prompt), then execute script\nread -r _PROMPT\n${script}`,
-    'utf-8',
   );
-  fs.chmodSync(scriptPath, 0o755);
-  return scriptPath;
 }
 
 describe('CodexExecRunner', () => {
   // ① Normal turn: spawn → stdin gets prompt → stdout outputs ndjson → yield AgentEvent → terminal
   it('yields AgentEvents from codex exec ndjson output', async () => {
-    const mockCodex = createMockCodex(`
+    createMockCodex(`
       echo '{"type":"thread.started","thread_id":"019f-test","cwd":"/tmp","model":"glm-5.2"}'
       echo '{"type":"item.completed","item":{"type":"agent_message","text":"Hello!"}}'
       echo '{"type":"turn.completed","usage":{"input_tokens":100,"output_tokens":10}}'
@@ -71,7 +72,6 @@ describe('CodexExecRunner', () => {
 
     const runner = new CodexExecRunner({
       workspace: 'test',
-      binary: mockCodex,
       pidDir: tmpDir,
       sessionReader: mockSessionReader,
     });
@@ -93,9 +93,10 @@ describe('CodexExecRunner', () => {
 
   // ② Binary not found → yield resultError
   it('yields error event when binary is not found', async () => {
+    const saved = process.env.PATH;
+    process.env.PATH = path.join(tmpDir, 'no-bin');
     const runner = new CodexExecRunner({
       workspace: 'test',
-      binary: '/nonexistent/codex-binary-xyz',
       pidDir: tmpDir,
       sessionReader: mockSessionReader,
     });
@@ -104,6 +105,7 @@ describe('CodexExecRunner', () => {
     for await (const event of runner.run('hello', { cwd: '/tmp' })) {
       events.push(event);
     }
+    restorePath(saved);
 
     expect(events).toHaveLength(1);
     expect(events[0]).toMatchObject({
@@ -115,7 +117,7 @@ describe('CodexExecRunner', () => {
 
   // ④ Stream ends before turn.completed → yield "stream ended" error
   it('yields error when stream ends before terminal event', async () => {
-    const mockCodex = createMockCodex(`
+    createMockCodex(`
       echo '{"type":"thread.started","thread_id":"019f-early-end","cwd":"/tmp","model":"glm-5.2"}'
       echo '{"type":"item.completed","item":{"type":"agent_message","text":"partial"}}'
       # Exit without turn.completed
@@ -123,7 +125,6 @@ describe('CodexExecRunner', () => {
 
     const runner = new CodexExecRunner({
       workspace: 'test',
-      binary: mockCodex,
       pidDir: tmpDir,
       sessionReader: mockSessionReader,
     });
@@ -142,13 +143,12 @@ describe('CodexExecRunner', () => {
 
   // ⑥ killOrphan scans pid file
   it('killOrphan reads pid file and kills process if running', async () => {
-    const mockCodex = createMockCodex(`
+    createMockCodex(`
       echo '{"type":"turn.completed","usage":{}}'
     `);
 
     const runner = new CodexExecRunner({
       workspace: 'test',
-      binary: mockCodex,
       pidDir: tmpDir,
       sessionReader: mockSessionReader,
     });
@@ -167,7 +167,6 @@ describe('CodexExecRunner', () => {
   it('has kind codex', () => {
     const runner = new CodexExecRunner({
       workspace: 'test',
-      binary: 'codex',
       pidDir: tmpDir,
       sessionReader: mockSessionReader,
     });
@@ -193,13 +192,10 @@ read -r _PROMPT
 echo '{"type":"thread.started","thread_id":"019f-resume","cwd":"/tmp","model":"glm-5.2"}'
 echo '{"type":"turn.completed","usage":{}}'
 `;
-    const scriptPath = path.join(tmpDir, 'mock-codex-resume');
-    fs.writeFileSync(scriptPath, mockCodex, 'utf-8');
-    fs.chmodSync(scriptPath, 0o755);
+    writeMockBin(tmpDir, 'codex', mockCodex);
 
     const runner = new CodexExecRunner({
       workspace: 'test',
-      binary: scriptPath,
       pidDir: tmpDir,
       sessionReader: mockSessionReader,
     });
@@ -215,7 +211,7 @@ echo '{"type":"turn.completed","usage":{}}'
 
   // ⑩ Command execution events (tool_use + tool_result flow)
   it('handles full command_execution flow', async () => {
-    const mockCodex = createMockCodex(`
+    createMockCodex(`
       echo '{"type":"thread.started","thread_id":"019f-cmd","cwd":"/tmp","model":"glm-5.2"}'
       echo '{"type":"item.started","item":{"type":"command_execution","id":"cmd_1","command":"ls"}}'
       echo '{"type":"item.completed","item":{"type":"command_execution","id":"cmd_1","exit_code":0,"output":"file.txt"}}'
@@ -225,7 +221,6 @@ echo '{"type":"turn.completed","usage":{}}'
 
     const runner = new CodexExecRunner({
       workspace: 'test',
-      binary: mockCodex,
       pidDir: tmpDir,
       sessionReader: mockSessionReader,
     });
@@ -252,7 +247,6 @@ echo '{"type":"turn.completed","usage":{}}'
   it('getStatusInfo returns configured model and provider', () => {
     const runner = new CodexExecRunner({
       workspace: 'test',
-      binary: 'codex',
       pidDir: tmpDir,
       model: 'gpt-4.1',
       modelProvider: 'openai',
@@ -274,7 +268,6 @@ echo '{"type":"turn.completed","usage":{}}'
 
     const runner = new CodexExecRunner({
       workspace: 'test',
-      binary: 'codex',
       pidDir: tmpDir,
       sessionReader: mockSessionReader,
     });
@@ -293,7 +286,6 @@ echo '{"type":"turn.completed","usage":{}}'
     // Only model set, no provider — should read provider from loadCodexConfig
     const runner = new CodexExecRunner({
       workspace: 'test',
-      binary: 'codex',
       pidDir: tmpDir,
       model: 'gpt-4.1',
       sessionReader: mockSessionReader,
@@ -314,7 +306,6 @@ echo '{"type":"turn.completed","usage":{}}'
     // Only provider set, no model — should read model from loadCodexConfig
     const runner = new CodexExecRunner({
       workspace: 'test',
-      binary: 'codex',
       pidDir: tmpDir,
       modelProvider: 'openai',
       sessionReader: mockSessionReader,
@@ -331,7 +322,6 @@ echo '{"type":"turn.completed","usage":{}}'
 
     const runner = new CodexExecRunner({
       workspace: 'test',
-      binary: 'codex',
       pidDir: tmpDir,
       sessionReader: mockSessionReader,
     });
@@ -345,7 +335,6 @@ echo '{"type":"turn.completed","usage":{}}'
   it('validateBeforeRun returns null when no modelProvider is set', () => {
     const runner = new CodexExecRunner({
       workspace: 'test',
-      binary: 'codex',
       pidDir: tmpDir,
       sessionReader: mockSessionReader,
     });
@@ -362,7 +351,6 @@ echo '{"type":"turn.completed","usage":{}}'
 
     const runner = new CodexExecRunner({
       workspace: 'test',
-      binary: 'codex',
       pidDir: tmpDir,
       modelProvider: 'openai',
       sessionReader: mockSessionReader,
@@ -397,7 +385,6 @@ echo '{"type":"turn.completed","usage":{}}'
 
     const runner = new CodexExecRunner({
       workspace: 'test',
-      binary: 'codex',
       pidDir: tmpDir,
       modelProvider: 'openai',
       sessionReader: mockSessionReader,
@@ -427,7 +414,6 @@ echo '{"type":"turn.completed","usage":{}}'
 
     const runner = new CodexExecRunner({
       workspace: 'test',
-      binary: 'codex',
       pidDir: tmpDir,
       modelProvider: 'custom_provider_xyz',
       sessionReader: mockSessionReader,
@@ -446,7 +432,6 @@ echo '{"type":"turn.completed","usage":{}}'
 
     const runner = new CodexExecRunner({
       workspace: 'test',
-      binary: 'codex',
       pidDir: tmpDir,
       modelProvider: 'openai',
       sessionReader: mockSessionReader,
@@ -475,7 +460,6 @@ echo '{"type":"turn.completed","usage":{}}'
 
     const runner = new CodexExecRunner({
       workspace: 'test',
-      binary: 'codex',
       pidDir: tmpDir,
       modelProvider: 'openai',
       sessionReader: mockSessionReader,
@@ -496,13 +480,10 @@ read -r _PROMPT
 echo '{"type":"thread.started","thread_id":"019f-opts","cwd":"/tmp","model":"glm-5.2"}'
 echo '{"type":"turn.completed","usage":{}}'
 `;
-    const scriptPath = path.join(tmpDir, 'mock-codex-opts');
-    fs.writeFileSync(scriptPath, mockCodex, 'utf-8');
-    fs.chmodSync(scriptPath, 0o755);
+    writeMockBin(tmpDir, 'codex', mockCodex);
 
     const runner = new CodexExecRunner({
       workspace: 'test',
-      binary: scriptPath,
       pidDir: tmpDir,
       modelProvider: 'anthropic',
       reasoningEffort: 'high',
@@ -526,13 +507,10 @@ read -r _PROMPT
 echo '{"type":"thread.started","thread_id":"019f-effort","cwd":"/tmp","model":"glm-5.2"}'
 echo '{"type":"turn.completed","usage":{}}'
 `;
-    const scriptPath = path.join(tmpDir, 'mock-codex-effort');
-    fs.writeFileSync(scriptPath, mockCodex, 'utf-8');
-    fs.chmodSync(scriptPath, 0o755);
+    writeMockBin(tmpDir, 'codex', mockCodex);
 
     const runner = new CodexExecRunner({
       workspace: 'test',
-      binary: scriptPath,
       pidDir: tmpDir,
       reasoningEffort: 'low',
       sessionReader: mockSessionReader,

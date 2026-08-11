@@ -33,7 +33,6 @@ describe(': opencode pid file workspace scoping', () => {
   it('test_anchor_opencode_pid_file_workspace_scoped', () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'opencode-anchor-'));
     const runner = new OpencodeExecRunner({
-      binary: '/bin/true',
       pidDir: tmpDir,
       workspace: 'wsX',
       sessionReader: {
