@@ -2,7 +2,7 @@
  * ANCHOR (RED) — resume 卡片体积裁剪必须作用于真实 sessionEventPanel 结构，
  * 极端降级不得丢弃卡片骨架。
  *
- * 背景（详见 docs/zh/architecture/resume-card-budget-failure-analysis.md）：
+ * 背景：
  * 2026-08-08 线上故障——kimi session 最后 5 条事件含 51KB tool_result +
  * 23KB tool_use（合计约 77KB），resume 卡经 enforceCardBudget 后直接落到
  * 阶段3 extreme_fallback，用户只收到「⚠️ 内容已截断」一句话卡片，
