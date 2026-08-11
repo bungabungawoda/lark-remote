@@ -50,7 +50,7 @@ describe('R17: KimiRunner extends SpawningRunner', () => {
   });
 
   it('test_anchor_kimi_runner_extends_spawning_runner', () => {
-    const runner = new KimiRunner({ workspace: 'test', binary: 'fake-kimi', pidDir: PID_DIR });
+    const runner = new KimiRunner({ workspace: 'test', pidDir: PID_DIR });
 
     // Core contract: KimiRunner IS-A SpawningRunner. Today this is RED
     // because KimiRunner `implements AgentRunner` and does not extend

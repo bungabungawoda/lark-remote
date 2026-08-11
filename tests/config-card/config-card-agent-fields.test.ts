@@ -79,12 +79,10 @@ function buildCodexConfig(): AppConfig {
     feishu: { appId: 'test', appSecret: 'test' },
     defaultAgent: 'codex',
     claude: {
-      binary: 'claude',
       model: 'opus',
       stopGraceMs: 5000,
     },
     codex: {
-      binary: 'codex',
       model: 'claude-sonnet-4-20250514',
     },
     workspace: { default: '' },
@@ -101,7 +99,6 @@ function buildClaudeConfig(): AppConfig {
     feishu: { appId: 'test', appSecret: 'test' },
     defaultAgent: 'claude',
     claude: {
-      binary: 'claude',
       model: 'opus',
       stopGraceMs: 5000,
     },
@@ -133,7 +130,6 @@ function buildPiConfig(): AppConfig {
     feishu: { appId: 'test', appSecret: 'test' },
     defaultAgent: 'pi',
     claude: {
-      binary: 'claude',
       model: 'opus',
       stopGraceMs: 5000,
     },
@@ -151,7 +147,6 @@ function buildOpencodeConfig(): AppConfig {
     feishu: { appId: 'test', appSecret: 'test' },
     defaultAgent: 'opencode',
     claude: {
-      binary: 'claude',
       model: 'opus',
       stopGraceMs: 5000,
     },

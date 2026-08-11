@@ -30,11 +30,11 @@ import { spawn } from 'node:child_process';
 class TestRunner extends SpawningRunner {
   constructor() {
     super({
-      binary: 'fake-binary',
       pidDir: '/tmp/spawn-cause-test',
       workspace: 'test',
       logTag: 'test-runner',
     });
+    this.binary = 'fake-binary';
   }
   protected buildArgv(_opts: SpawnOptions): string[] {
     return ['--fake'];

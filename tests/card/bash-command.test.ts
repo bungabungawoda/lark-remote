@@ -110,7 +110,7 @@ afterEach(() => {
 function createRouter(overrides?: {
   runner?: Runner;
   output?: Partial<AppConfig['output']>;
-  binary?: string;
+
   exitHandler?: () => void;
   projectsDir?: string;
   bridge?: Bridge;
@@ -122,7 +122,6 @@ function createRouter(overrides?: {
   const config: AppConfig = AppConfigSchema.parse({
     feishu: { appId: 'test', appSecret: 'test' },
     claude: {
-      binary: overrides?.binary ?? 'claude',
       model: 'claude-opus-4-8',
       stopGraceMs: 5000,
     },

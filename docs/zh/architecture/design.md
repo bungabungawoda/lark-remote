@@ -242,7 +242,6 @@ feishu:
 defaultAgent: claude
 
 claude:
-  binary: claude
   model: claude-opus-4-8
   effort: medium           # low | medium | high | xhigh | max
   # permissionMode 硬编码为 bypassPermissions（runner 内部），不通过 config 配置
