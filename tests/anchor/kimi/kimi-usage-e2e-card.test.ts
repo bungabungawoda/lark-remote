@@ -50,10 +50,7 @@ import { AppConfigSchema } from '../../../src/config/index.js';
 import type { AppConfig } from '../../../src/config/index.js';
 import type { AgentEvent, AgentRunner, Runner } from '../../../src/runner/index.js';
 
-import {
-  createStubAgentRegistry,
-  createStubSessionReaderRegistry,
-} from '../../lib/bridge-stubs.js';
+import { createStubAgentRegistry } from '../../lib/bridge-stubs.js';
 const { mockLogger } = vi.hoisted(() => ({
   mockLogger: {
     debug: vi.fn(),
@@ -243,9 +240,7 @@ describe('kimi done card shows session-wide real usage end-to-end (anchor)', () 
     const bridge = new Bridge({
       // kimi 实时事件流：system.init → assistant 文本 → result(success, 无 usage)。
       // session_id 必须等于 fixture sessionId，cwd 必须等于 fixture workDir（realpath 后）。
-      runner: kimiRunner,
       agentRegistry: createStubAgentRegistry(kimiRunner),
-      sessionReaderRegistry: createStubSessionReaderRegistry(),
       connector,
       sessionStore,
       config,

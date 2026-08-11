@@ -190,7 +190,6 @@ describe('Bridge threads jsonl input/output tokens to kimi done card (anchor)', 
     );
     const bridge = new Bridge({
       // kimi 实时事件流：system.init → assistant 文本 → result(success, 无 usage)。
-      runner: bridgeRunner,
       agentRegistry: createStubAgentRegistry(bridgeRunner),
       connector,
       sessionStore,

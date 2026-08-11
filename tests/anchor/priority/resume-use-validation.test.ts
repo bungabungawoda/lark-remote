@@ -41,7 +41,6 @@ const stubRunner: Runner = {
   stop: async () => {},
   killOrphan: () => {},
   registerExitHandlers: () => {},
-  getStatusInfo: () => ({ kind: 'claude', model: 'test-model' }),
   run: async function* () {
     throw new Error('run not expected in stub');
   },
@@ -117,7 +116,6 @@ function createRouter() {
     output: { showThinking: true, showToolUse: false, showToolResult: false },
   });
   const bridge = new Bridge({
-    runner: stubRunner,
     agentRegistry: createStubAgentRegistry(stubRunner),
     sessionReaderRegistry: createStubSessionReaderRegistry(),
     connector,

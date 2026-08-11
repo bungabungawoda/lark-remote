@@ -136,7 +136,6 @@ describe('resume.use resumes non-default agent session (set sessionId only)', ()
     // 创建 bridge 并跟踪 clearRunners 是否被调用
     const clearRunnersCalls: number[] = [];
     const bridge = new Bridge({
-      runner,
       agentRegistry: createStubAgentRegistry(runner),
       sessionReaderRegistry: createStubSessionReaderRegistry(),
       connector,

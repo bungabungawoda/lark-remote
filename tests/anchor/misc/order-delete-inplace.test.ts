@@ -107,7 +107,6 @@ function createRouter(overrides?: {
   const ordersPath = overrides?.ordersPath ?? ordersFile;
 
   const bridge = new Bridge({
-    runner,
     agentRegistry: createStubAgentRegistry(runner),
     sessionReaderRegistry: createStubSessionReaderRegistry(),
     connector,
@@ -145,6 +144,8 @@ describe('Anchor: order.delete updates card in place', () => {
     sessionStore.set('user1', {
       sessions: new Map([['claude', 'session-1']]),
       previousSessions: new Map(),
+      arrivalSessions: new Map(),
+      sessionCwds: new Map(),
       cwd: projectDir,
     });
 

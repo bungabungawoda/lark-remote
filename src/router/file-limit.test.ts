@@ -46,7 +46,13 @@ describe('file upload size limit: 30MB', () => {
     fs.writeFileSync(bigFilePath, Buffer.alloc(31 * 1024 * 1024));
 
     const sessionStore = new SessionStore();
-    sessionStore.set('user1', { sessions: new Map(), previousSessions: new Map(), cwd: tempDir });
+    sessionStore.set('user1', {
+      sessions: new Map(),
+      previousSessions: new Map(),
+      arrivalSessions: new Map(),
+      sessionCwds: new Map(),
+      cwd: tempDir,
+    });
 
     const mockBridge = {
       sendResult: vi.fn().mockResolvedValue(undefined),
@@ -108,7 +114,13 @@ describe('file upload size limit: 30MB', () => {
     fs.writeFileSync(midFilePath, Buffer.alloc(20 * 1024 * 1024));
 
     const sessionStore = new SessionStore();
-    sessionStore.set('user1', { sessions: new Map(), previousSessions: new Map(), cwd: tempDir });
+    sessionStore.set('user1', {
+      sessions: new Map(),
+      previousSessions: new Map(),
+      arrivalSessions: new Map(),
+      sessionCwds: new Map(),
+      cwd: tempDir,
+    });
 
     const mockBridge = {
       sendResult: vi.fn().mockResolvedValue(undefined),

@@ -204,11 +204,11 @@ describe('queue executing count must not be reset onto the next task that began 
     const connector = createStubConnector();
     const sessionStore = new SessionStore();
     const bridge = new Bridge({
-      runner: createGatedRunner(), // fallback, unused (registry path)
       connector,
       sessionStore,
       config,
       agentRegistry: reg,
+      sessionReaderRegistry: new SessionReaderRegistry(),
       idleTimeoutMs: 0,
     });
     const router = new CommandRouter({

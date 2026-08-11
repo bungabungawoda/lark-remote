@@ -193,11 +193,11 @@ describe('queue.immediate must stop the run blocking the SAME workspace, not a p
     const connector = createStubConnector();
     const sessionStore = new SessionStore();
     const bridge = new Bridge({
-      runner: createTrackingHangingRunner(), // fallback, unused (registry path)
       connector,
       sessionStore,
       config,
       agentRegistry: reg,
+      sessionReaderRegistry: new SessionReaderRegistry(),
       idleTimeoutMs: 0,
     });
     const router = new CommandRouter({
