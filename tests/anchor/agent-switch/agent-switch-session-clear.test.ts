@@ -76,7 +76,6 @@ function buildConfig(): AppConfig {
     feishu: { appId: 'test', appSecret: 'test' },
     defaultAgent: 'claude',
     claude: {
-      binary: 'claude',
       model: 'opus',
       stopGraceMs: 5000,
     },

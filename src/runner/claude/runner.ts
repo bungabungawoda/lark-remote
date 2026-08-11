@@ -28,7 +28,6 @@ export class ClaudeRunner extends SpawningRunner implements IAgentRunner {
   private defaultSettings?: string;
 
   constructor(opts: {
-    binary?: string;
     model?: string;
     effort?: string;
     settings?: string;
@@ -39,7 +38,6 @@ export class ClaudeRunner extends SpawningRunner implements IAgentRunner {
     sessionReader?: AgentSessionReader;
   }) {
     super({
-      binary: opts.binary ?? 'claude',
       pidDir: opts.pidDir,
       workspace: opts.workspace,
       stopGraceMs: opts.stopGraceMs,
@@ -47,6 +45,7 @@ export class ClaudeRunner extends SpawningRunner implements IAgentRunner {
       pidFilePrefix: 'claude',
       logTag: 'claude-runner',
     });
+    this.binary = 'claude';
     this.defaultModel = opts.model ?? 'claude-opus-4-8';
     this.defaultEffort = opts.effort ?? 'medium';
     this.defaultSettings = opts.settings;

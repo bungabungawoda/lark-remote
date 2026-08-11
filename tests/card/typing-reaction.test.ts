@@ -64,7 +64,6 @@ vi.mock('@larksuite/channel', () => ({
 const config: AppConfig = AppConfigSchema.parse({
   feishu: { appId: 'app-id', appSecret: 'app-secret' },
   claude: {
-    binary: 'claude',
     model: 'claude-opus-4-8',
     stopGraceMs: 5000,
   },

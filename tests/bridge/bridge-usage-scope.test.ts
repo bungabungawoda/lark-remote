@@ -111,7 +111,7 @@ beforeEach(() => {
   tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'bridge-usage-scope-'));
   config = AppConfigSchema.parse({
     feishu: { appId: 'test', appSecret: 'test' },
-    claude: { binary: 'claude', model: 'opus', stopGraceMs: 5000 },
+    claude: { model: 'opus', stopGraceMs: 5000 },
     defaultAgent: 'claude',
     output: { showThinking: true, showToolUse: false, showToolResult: false },
   });
@@ -317,7 +317,7 @@ describe('Bridge usage scope: live 优先、jsonl 兜底', () => {
     // 切换 defaultAgent 为 kimi
     const kimiConfig = AppConfigSchema.parse({
       feishu: { appId: 'test', appSecret: 'test' },
-      claude: { binary: 'claude', model: 'opus', stopGraceMs: 5000 },
+      claude: { model: 'opus', stopGraceMs: 5000 },
       defaultAgent: 'kimi',
       output: {
         showThinking: true,

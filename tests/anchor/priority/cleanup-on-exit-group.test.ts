@@ -22,6 +22,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { ClaudeRunner } from '../../../src/runner/claude/index.js';
+import { prependPath, restorePath, writeMockBin } from '../../lib/path-mock.js';
 
 const { mockLogger } = vi.hoisted(() => ({
   mockLogger: {
@@ -58,13 +59,16 @@ async function waitFor(cond: () => boolean, timeoutMs = 5000): Promise<void> {
 
 describe(': cleanupOnExit kills whole process group', () => {
   let tmpDir: string;
+  let savedPath: string | undefined;
   const spawnedPids = new Set<number>();
 
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cleanup-on-exit-group-anchor-'));
+    savedPath = prependPath(tmpDir);
   });
 
   afterEach(() => {
+    restorePath(savedPath);
     for (const pid of spawnedPids) {
       try {
         process.kill(-pid, 'SIGKILL');
@@ -83,21 +87,19 @@ describe(': cleanupOnExit kills whole process group', () => {
 
   it('test_anchor_cleanup_on_exit_kills_whole_group', async () => {
     const childPidFile = path.join(tmpDir, 'child.pid');
-    const mockBin = path.join(tmpDir, 'mock-claude');
-    fs.writeFileSync(
-      mockBin,
+    writeMockBin(
+      tmpDir,
+      'claude',
       `#!/bin/bash
 echo '{"type":"system","subtype":"init","session_id":"s1","cwd":"/tmp","model":"m"}'
 sleep 300 &
 echo $! > "${childPidFile}"
 exec sleep 300
 `,
-      { mode: 0o755 },
     );
 
     const runner = new ClaudeRunner({
       workspace: 'test',
-      binary: mockBin,
       pidDir: tmpDir,
       stopGraceMs: 500,
     });
