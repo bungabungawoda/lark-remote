@@ -20,7 +20,6 @@ const VALID_CONFIG = `feishu:
   appSecret: secret_test123
 
 claude:
-  binary: claude
   model: claude-opus-4-8
   stopGraceMs: 5000
 

@@ -93,7 +93,7 @@ describe('codex active catalog empty providers - anchor', () => {
   });
 
   it('test_anchor_catalog_mode_without_providers_keeps_builtin_openai_only', () => {
-    const cfg = loadCodexConfig({ binary: 'codex' });
+    const cfg = loadCodexConfig();
 
     // providerNames = 内置 openai（codex 默认 provider），anthropic 非内置不得出现
     expect(cfg.providerNames).toEqual(['openai']);

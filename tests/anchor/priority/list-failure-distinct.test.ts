@@ -14,6 +14,7 @@ import { SessionStore, SessionReaderRegistry } from '../../../src/session/index.
 import { AppConfigSchema } from '../../../src/config/index.js';
 import type { AppConfig } from '../../../src/config/index.js';
 import type { AgentSessionReader } from '../../../src/runner/index.js';
+import { prependPath, restorePath, writeMockBin } from '../../lib/path-mock.js';
 
 const { mockLogger } = vi.hoisted(() => ({
   mockLogger: {
@@ -57,7 +58,7 @@ function buildConfig(): AppConfig {
   return AppConfigSchema.parse({
     feishu: { appId: 'test', appSecret: 'test' },
     defaultAgent: 'claude',
-    claude: { binary: 'claude', model: 'opus', stopGraceMs: 5000 },
+    claude: { model: 'opus', stopGraceMs: 5000 },
     workspace: { default: '' },
     output: { showThinking: true, showToolUse: false, showToolResult: false },
   });
@@ -78,11 +79,15 @@ describe(' list failure vs empty', () => {
     //    也会基于错误空集继续。
     //    error 级日志 + 向上抛出让 router 显示『读取失败』」。
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'list-failure-fail-'));
-    const script = path.join(tmpDir, 'mock-opencode');
-    fs.writeFileSync(script, '#!/bin/sh\necho "boom" >&2\nexit 1\n', { mode: 0o755 });
+    const saved = prependPath(tmpDir);
+    writeMockBin(tmpDir, 'opencode', '#!/bin/sh\necho "boom" >&2\nexit 1\n');
 
-    const reader = new OpencodeSessionReader({ binary: script });
-    expect(() => reader.listSessions(tmpDir)).toThrow();
+    try {
+      const reader = new OpencodeSessionReader();
+      expect(() => reader.listSessions(tmpDir)).toThrow();
+    } finally {
+      restorePath(saved);
+    }
   });
 
   it('test_anchor_resume_shows_read_failure_not_empty_hint', async () => {

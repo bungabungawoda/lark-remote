@@ -229,7 +229,6 @@ feishu:
 defaultAgent: claude
 
 claude:
-  binary: claude
   model: claude-opus-4-8
   effort: medium           # low | medium | high | xhigh | max
   # permissionMode is hardcoded as bypassPermissions (inside runner), not configurable via config

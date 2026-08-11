@@ -18,7 +18,6 @@ export const PI_THINKING_LEVELS = ['off', 'minimal', 'low', 'medium', 'high', 'x
 
 /** 默认值常量：schema 与 template 共享，避免双源不一致（G25 Magic Numbers）。 */
 const DEFAULTS = {
-  CLAUDE_BINARY: 'claude',
   CLAUDE_MODEL: 'claude-opus-4-8',
   STOP_GRACE_MS: 5000,
   IDLE_WATCHDOG_MINUTES: 15,
@@ -53,7 +52,6 @@ const FeishuConfigSchema = z.object({
 });
 
 const ClaudeConfigSchema = z.object({
-  binary: z.string().default(DEFAULTS.CLAUDE_BINARY),
   model: z.string().default(DEFAULTS.CLAUDE_MODEL),
   effort: z.enum(CLAUDE_EFFORTS).default('medium'),
   // permissionMode 硬编码为 bypassPermissions（runner 内部），不通过 config 配置
@@ -62,8 +60,6 @@ const ClaudeConfigSchema = z.object({
 
 /** Codex-specific configuration. */
 export const CodexConfigSchema = z.object({
-  /** Path to codex binary. Default: 'codex' (in PATH). */
-  binary: z.string().default('codex'),
   /** model to use. Undefined → codex reads from its config.toml. */
   model: z.string().optional(),
   /** model provider, e.g. 'volcengine-coding-plan'. Undefined → codex reads from its config.toml. */
@@ -82,8 +78,6 @@ export const CodexConfigSchema = z.object({
 
 /** OpenCode-specific configuration (run mode: opencode run --format json --auto). */
 const OpencodeConfigSchema = z.object({
-  /** Path to opencode binary. Default: 'opencode' (in PATH). */
-  binary: z.string().default('opencode'),
   /** Provider ID for the LLM backend (e.g. 'anthropic'). */
   providerID: z.string().default('anthropic'),
   /** Model ID for the LLM backend (e.g. 'claude-sonnet-4-20250514'). */
@@ -92,8 +86,6 @@ const OpencodeConfigSchema = z.object({
 
 /** Pi-specific configuration. pi is a spawn-per-message CLI like Claude. */
 const PiConfigSchema = z.object({
-  /** Path to pi binary. Default: 'pi' (in PATH). */
-  binary: z.string().default('pi'),
   /** LLM provider, e.g. 'Volcano', 'anthropic', 'openai'. */
   provider: z.string().default('Volcano'),
   /** Model ID or alias, e.g. 'glm-5.2'. */
@@ -106,8 +98,6 @@ const PiConfigSchema = z.object({
 
 /** Kimi-specific configuration. kimi is a spawn-per-message CLI. */
 const KimiConfigSchema = z.object({
-  /** Path to kimi binary. Default: 'kimi' (in PATH). */
-  binary: z.string().default('kimi'),
   /** Model ID or alias, e.g. 'kimi-code/k3'. */
   model: z.string().default('kimi-code/k3'),
   /** Thinking effort: 'on', 'max'. */
@@ -192,7 +182,6 @@ const TEMPLATE = `feishu:
   appSecret: ""
 
 claude:
-  binary: ${DEFAULTS.CLAUDE_BINARY}
   model: ${DEFAULTS.CLAUDE_MODEL}
   effort: medium
   stopGraceMs: ${DEFAULTS.STOP_GRACE_MS}

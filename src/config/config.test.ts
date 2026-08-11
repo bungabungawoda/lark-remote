@@ -26,7 +26,6 @@ const VALID_CONFIG = `feishu:
   appSecret: secret_test123
 
 claude:
-  binary: claude
   model: claude-opus-4-8
   stopGraceMs: 5000
 
@@ -42,7 +41,7 @@ describe('loadConfig', () => {
     const config = loadConfig(p);
     expect(config.feishu.appId).toBe('cli_test123');
     expect(config.feishu.appSecret).toBe('secret_test123');
-    expect(config.claude.binary).toBe('claude');
+
     expect(config.claude.model).toBe('claude-opus-4-8');
     expect(config.claude.stopGraceMs).toBe(5000);
     expect(config.output.showThinking).toBe(true);
@@ -55,7 +54,7 @@ describe('loadConfig', () => {
 `;
     const p = writeConfig(minimal);
     const config = loadConfig(p);
-    expect(config.claude.binary).toBe('claude');
+
     expect(config.claude.model).toBe('claude-opus-4-8');
     expect(config.claude.stopGraceMs).toBe(5000);
     expect(config.output.showThinking).toBe(true);
@@ -118,7 +117,6 @@ describe('getConfigValue', () => {
   const config: AppConfig = AppConfigSchema.parse({
     feishu: { appId: 'cli_x', appSecret: 'sec_x' },
     claude: {
-      binary: 'claude',
       model: 'claude-opus-4-8',
       stopGraceMs: 5000,
     },
