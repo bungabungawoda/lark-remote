@@ -155,7 +155,6 @@ describe('P1-1 /resume 列表页预取上限 + summary 兜底', () => {
     registry.register('kimi', stubReader);
 
     const bridge = new Bridge({
-      runner,
       agentRegistry: createStubAgentRegistry(runner),
       sessionReaderRegistry: createStubSessionReaderRegistry(),
       connector,

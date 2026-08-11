@@ -9,7 +9,7 @@ import { AppConfigSchema } from '../../src/config/index.js';
 import type { AppConfig } from '../../src/config/index.js';
 import type { AgentSessionReader, Runner } from '../../src/runner/index.js';
 
-import { createStubAgentRegistry, createStubSessionReaderRegistry } from '../lib/bridge-stubs.js';
+import { createStubAgentRegistry } from '../lib/bridge-stubs.js';
 // Stub session reader for tests
 const stubSessionReader: AgentSessionReader = {
   listSessions: () => ({ sessions: [], total: 0 }),
@@ -138,7 +138,6 @@ function createRouter(overrides?: {
     bridge:
       overrides?.bridge ??
       new Bridge({
-        runner,
         agentRegistry: createStubAgentRegistry(runner),
         sessionReaderRegistry: createStubSessionReaderRegistry(),
         connector,

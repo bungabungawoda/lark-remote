@@ -55,7 +55,6 @@ describe('P1-1: registerExitHandlers 不累积 process 监听器', () => {
   it('test_anchor_claude_runner_register_exit_handlers_does_not_accumulate_listeners', () => {
     for (let i = 0; i < 5; i++) {
       const runner = new ClaudeRunner({
-        binary: '/bin/true',
         pidDir: PID_DIR,
         workspace: `ws${i}`,
       });
@@ -80,7 +79,6 @@ describe('P1-1: registerExitHandlers 不累积 process 监听器', () => {
     for (let i = 0; i < 5; i++) {
       const runner = new CodexExecRunner({
         workspace: 'test',
-        binary: '/bin/true',
         pidDir: PID_DIR,
         sessionReader,
       });
@@ -105,7 +103,6 @@ describe('P1-1: registerExitHandlers 不累积 process 监听器', () => {
     for (let i = 0; i < 5; i++) {
       const runner = new OpencodeExecRunner({
         workspace: 'test',
-        binary: '/bin/true',
         pidDir: PID_DIR,
         sessionReader,
       });
@@ -121,7 +118,7 @@ describe('P1-1: registerExitHandlers 不累积 process 监听器', () => {
 
   it('test_anchor_pi_runner_register_exit_handlers_does_not_accumulate_listeners', () => {
     for (let i = 0; i < 5; i++) {
-      const runner = new PiRunner({ workspace: 'test', binary: '/bin/true', pidDir: PID_DIR });
+      const runner = new PiRunner({ workspace: 'test', pidDir: PID_DIR });
       // Bridge.getRunner 对每次新 runner 实例的实际行为
       runner.registerExitHandlers();
     }
@@ -134,7 +131,7 @@ describe('P1-1: registerExitHandlers 不累积 process 监听器', () => {
 
   it('test_anchor_kimi_runner_register_exit_handlers_does_not_accumulate_listeners', () => {
     for (let i = 0; i < 5; i++) {
-      const runner = new KimiRunner({ workspace: 'test', binary: '/bin/true', pidDir: PID_DIR });
+      const runner = new KimiRunner({ workspace: 'test', pidDir: PID_DIR });
       // Bridge.getRunner 对每次新 runner 实例的实际行为
       runner.registerExitHandlers();
     }
@@ -181,23 +178,13 @@ describe('P1-1: registerExitHandlers 不累积 process 监听器', () => {
       };
       // 生产路径：agentRegistry 工厂返回真实 runner（非 stub）
       const agentRegistry = {
-        get: (_kind: string, workspace: string) =>
-          new ClaudeRunner({ binary: '/bin/true', pidDir: tmpDir, workspace }),
+        get: (_kind: string, workspace: string) => new ClaudeRunner({ pidDir: tmpDir, workspace }),
         isRegistered: () => true,
         listRegistered: () => ['claude'],
         setConfigContainer: () => {},
         getConfigContainer: () => ({ current: config }),
       };
-      const stubRunner = {
-        isRunning: false,
-        run: async function* () {},
-        stop: async () => {},
-        killOrphan: () => {},
-        registerExitHandlers: () => {},
-      };
-
       const bridge = new Bridge({
-        runner: stubRunner,
         config,
         connector: connector as never,
         sessionStore,
@@ -227,8 +214,6 @@ describe('P1-1: registerExitHandlers 不累积 process 监听器', () => {
     const workspace = 'exitprobe';
     const pidFile = path.join(PID_DIR, `claude-${workspace}.pid`);
     const runner = new ClaudeRunner({
-      workspace: 'test',
-      binary: '/bin/true',
       pidDir: PID_DIR,
       workspace,
     });
@@ -248,7 +233,6 @@ describe('P1-1: registerExitHandlers 不累积 process 监听器', () => {
     const beforeExit = process.listenerCount('exit');
     const beforeCount = SpawningRunner.getRegisteredExitHandlerCount();
     const runner = new ClaudeRunner({
-      binary: '/bin/true',
       pidDir: PID_DIR,
       workspace: 'idempotent-probe',
     });
