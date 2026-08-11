@@ -80,20 +80,20 @@ describe('resume.use resumes non-default agent session (set sessionId only)', ()
     const piEncodedCwd = canonicalCwd.replace(/^\//, '').replace(/\//g, '-');
     const piProjectDir = path.join(piSessionsDir, `--${piEncodedCwd}--`);
     fs.mkdirSync(piProjectDir, { recursive: true });
-    const piSessionId = '019f0000-0000-7000-8000-0000000000aa';
+    const piSessionId = 'eeeeeeee-1111-2222-3333-444444444444';
     fs.writeFileSync(
-      path.join(piProjectDir, `2026-07-18T02-02-05-121Z_${piSessionId}.jsonl`),
+      path.join(piProjectDir, `2026-01-15T08-00-00-000Z_${piSessionId}.jsonl`),
       JSON.stringify({
         type: 'session',
         id: piSessionId,
         cwd: canonicalCwd,
-        timestamp: '2026-07-18T02:02:05.121Z',
+        timestamp: '2026-01-15T08:00:00.000Z',
       }) +
         '\n' +
         JSON.stringify({
           type: 'message',
-          message: { role: 'user', content: [{ type: 'text', text: '用subagent执行第一阶段' }] },
-          timestamp: '2026-07-18T02:02-05.200Z',
+          message: { role: 'user', content: [{ type: 'text', text: 'placeholder' }] },
+          timestamp: '2026-01-15T08:00:00.100Z',
         }) +
         '\n',
     );
@@ -105,7 +105,6 @@ describe('resume.use resumes non-default agent session (set sessionId only)', ()
     const config: AppConfig = AppConfigSchema.parse({
       feishu: { appId: 'test', appSecret: 'test' },
       claude: {
-        binary: 'claude',
         model: 'opus',
         stopGraceMs: 5000,
       },
@@ -178,6 +177,6 @@ describe('resume.use resumes non-default agent session (set sessionId only)', ()
     const sent = connector._sent;
     expect(sent.length).toBeGreaterThanOrEqual(1);
     const resultText = JSON.stringify(sent[0].input);
-    expect(resultText).toContain('用subagent执行第一阶段');
+    expect(resultText).toContain('placeholder');
   });
 });

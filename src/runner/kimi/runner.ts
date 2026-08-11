@@ -16,7 +16,6 @@ const KIMI_TIMEOUT_MS = 5000;
 // --- KimiRunner ---
 
 interface KimiRunnerConfig {
-  binary?: string;
   model?: string;
   thinkingEffort?: string;
   stopGraceMs?: number;
@@ -53,7 +52,6 @@ export class KimiRunner extends SpawningRunner implements AgentRunner {
 
   constructor(opts: KimiRunnerConfig) {
     super({
-      binary: opts.binary ?? 'kimi',
       pidDir: opts.pidDir,
       workspace: opts.workspace,
       stopGraceMs: opts.stopGraceMs,
@@ -61,6 +59,7 @@ export class KimiRunner extends SpawningRunner implements AgentRunner {
       pidFilePrefix: 'kimi',
       logTag: 'kimi-runner',
     });
+    this.binary = 'kimi';
     this.defaultModel = opts.model ?? 'kimi-code/k3';
     this.thinkingEffort = opts.thinkingEffort ?? 'max';
     this.completionTimeoutMs = opts.completionTimeoutMs ?? KIMI_TIMEOUT_MS;

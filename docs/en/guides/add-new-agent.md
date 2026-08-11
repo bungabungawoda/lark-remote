@@ -156,7 +156,6 @@ agentRegistry.register('<agent>', (_workspace: string) => {
   const agentConfig = getAgentConfig(latestConfig, '<agent>');
 
   return new <Agent>Runner({
-    binary: agentConfig?.binary ?? '<agent>',
     model: agentConfig?.model,
     // ... other config
     pidDir: configDir,

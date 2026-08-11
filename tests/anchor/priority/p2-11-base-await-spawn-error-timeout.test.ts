@@ -29,11 +29,11 @@ vi.mock('../../../src/logger/index.js', () => ({
 class TestRunner extends SpawningRunner {
   constructor() {
     super({
-      binary: 'fake-agent',
       pidDir: '/tmp/p2-11-test',
       workspace: 'test',
       logTag: 'test-runner',
     });
+    this.binary = 'fake-agent';
   }
   protected buildArgv(_opts: SpawnOptions): string[] {
     return ['--fake'];

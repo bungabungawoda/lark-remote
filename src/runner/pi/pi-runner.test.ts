@@ -4,6 +4,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { PiRunner } from './index.js';
 import type { SystemInitEvent, AssistantEvent, ResultEvent, UserEvent } from '../types.js';
+import { prependPath, restorePath, writeMockBin } from '../../../tests/lib/path-mock.js';
 
 const { mockLogger } = vi.hoisted(() => ({
   mockLogger: {
@@ -20,25 +21,25 @@ vi.mock('../logger/index.js', () => ({
 }));
 
 let tmpDir: string;
+let savedPath: string | undefined;
 
 beforeEach(() => {
   tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'lark-pi-runner-test-'));
+  savedPath = prependPath(tmpDir);
 });
 
 afterEach(() => {
+  restorePath(savedPath);
   fs.rmSync(tmpDir, { recursive: true, force: true });
 });
 
 function createMockPi(script: string): string {
-  const scriptPath = path.join(tmpDir, 'mock-pi');
-  fs.writeFileSync(scriptPath, `#!/bin/bash\n${script}`, 'utf-8');
-  fs.chmodSync(scriptPath, 0o755);
-  return scriptPath;
+  return writeMockBin(tmpDir, 'pi', `#!/bin/bash\n${script}`);
 }
 
 describe('PiRunner', () => {
   it('test_anchor_basic_flow_normalizes_to_agent_events', async () => {
-    const mockPi = createMockPi(`
+    createMockPi(`
       echo '{"type":"session","version":3,"id":"sess-1","cwd":"/tmp","model":"glm-5.2"}'
       echo '{"type":"message_start","message":{"role":"assistant","content":[]}}'
       echo '{"type":"message_update","assistantMessageEvent":{"type":"thinking_start","contentIndex":0}}'
@@ -51,7 +52,7 @@ describe('PiRunner', () => {
       echo '{"type":"agent_end","messages":[]}'
     `);
 
-    const runner = new PiRunner({ workspace: 'test', binary: mockPi, pidDir: tmpDir });
+    const runner = new PiRunner({ workspace: 'test', pidDir: tmpDir });
     const events = [];
     for await (const event of runner.run('hello', { cwd: '/tmp' })) {
       events.push(event);
@@ -82,7 +83,7 @@ describe('PiRunner', () => {
   });
 
   it('test_anchor_tool_call_flow_maps_toolcall_and_toolresult', async () => {
-    const mockPi = createMockPi(`
+    createMockPi(`
       echo '{"type":"session","id":"sess-2","cwd":"/tmp","model":"glm-5.2"}'
       echo '{"type":"message_start","message":{"role":"assistant","content":[]}}'
       echo '{"type":"message_update","assistantMessageEvent":{"type":"toolcall_start","contentIndex":0}}'
@@ -93,7 +94,7 @@ describe('PiRunner', () => {
       echo '{"type":"agent_end","messages":[]}'
     `);
 
-    const runner = new PiRunner({ workspace: 'test', binary: mockPi, pidDir: tmpDir });
+    const runner = new PiRunner({ workspace: 'test', pidDir: tmpDir });
     const events = [];
     for await (const event of runner.run('read package.json', { cwd: '/tmp' })) {
       events.push(event);
@@ -124,15 +125,17 @@ describe('PiRunner', () => {
   });
 
   it('test_anchor_spawn_failure_yields_auth_error_event', async () => {
+    const saved = process.env.PATH;
+    process.env.PATH = path.join(tmpDir, 'no-bin');
     const runner = new PiRunner({
       workspace: 'test',
-      binary: '/nonexistent/pi-binary',
       pidDir: tmpDir,
     });
     const events = [];
     for await (const event of runner.run('hello', { cwd: '/tmp' })) {
       events.push(event);
     }
+    restorePath(saved);
 
     expect(events).toHaveLength(1);
     const errEvent = events[0] as ResultEvent;
@@ -142,12 +145,12 @@ describe('PiRunner', () => {
   });
 
   it('test_anchor_nonzero_exit_emits_result_error_with_stderr', async () => {
-    const mockPi = createMockPi(`
+    createMockPi(`
       echo 'API key invalid' >&2
       exit 1
     `);
 
-    const runner = new PiRunner({ workspace: 'test', binary: mockPi, pidDir: tmpDir });
+    const runner = new PiRunner({ workspace: 'test', pidDir: tmpDir });
     const events = [];
     for await (const event of runner.run('hello', { cwd: '/tmp' })) {
       events.push(event);
@@ -165,13 +168,13 @@ describe('PiRunner', () => {
   });
 
   it('test_anchor_resume_passes_session_id_argument', async () => {
-    const mockPi = createMockPi(`
+    createMockPi(`
       echo "$@" > ${tmpDir}/args.txt
       echo '{"type":"session","id":"sess-r","cwd":"/tmp","model":"glm-5.2"}'
       echo '{"type":"agent_end","messages":[]}'
     `);
 
-    const runner = new PiRunner({ workspace: 'test', binary: mockPi, pidDir: tmpDir });
+    const runner = new PiRunner({ workspace: 'test', pidDir: tmpDir });
     const events = [];
     for await (const event of runner.run('hello', { cwd: '/tmp', sessionId: 'sess-resume-1' })) {
       events.push(event);
@@ -186,14 +189,14 @@ describe('PiRunner', () => {
     // Inject a malformed event (valid JSON but missing required fields that will
     // cause normalize to throw). The stream should continue and still yield
     // the subsequent valid events.
-    const mockPi = createMockPi(`
+    createMockPi(`
       echo '{"type":"session","id":"sess-e","cwd":"/tmp","model":"glm-5.2"}'
       echo '{"type":"message_update","assistantMessageEvent":{"type":"text_delta","contentIndex":0,"delta":"oops"}}'
       echo '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"Hi"}]}}'
       echo '{"type":"agent_end","messages":[]}'
     `);
 
-    const runner = new PiRunner({ workspace: 'test', binary: mockPi, pidDir: tmpDir });
+    const runner = new PiRunner({ workspace: 'test', pidDir: tmpDir });
     const events = [];
     for await (const event of runner.run('hello', { cwd: '/tmp' })) {
       events.push(event);
@@ -213,14 +216,13 @@ describe('PiRunner', () => {
 
   it('test_anchor_stop_immediate_kills_running_process', async () => {
     // exec sleep replaces bash so SIGTERM closes stdout
-    const mockPi = createMockPi(`
+    createMockPi(`
       echo '{"type":"session","id":"sess-s","cwd":"/tmp","model":"glm-5.2"}'
       exec sleep 10
     `);
 
     const runner = new PiRunner({
       workspace: 'test',
-      binary: mockPi,
       pidDir: tmpDir,
       stopGraceMs: 500,
     });
@@ -246,7 +248,7 @@ describe('PiRunner', () => {
     // messages, each carrying per-message (non-cumulative) usage. The run
     // card must show the SUM (turn total), not the last message's value
     // (which shrinks across messages).
-    const mockPi = createMockPi(`
+    createMockPi(`
       echo '{"type":"session","id":"sess-multi","cwd":"/tmp","model":"glm-5.2"}'
       echo '{"type":"message_start","message":{"role":"user","content":[]}}'
       echo '{"type":"message_end","message":{"role":"user","content":[]}}'
@@ -260,7 +262,7 @@ describe('PiRunner', () => {
       echo '{"type":"agent_end","messages":[]}'
     `);
 
-    const runner = new PiRunner({ workspace: 'test', binary: mockPi, pidDir: tmpDir });
+    const runner = new PiRunner({ workspace: 'test', pidDir: tmpDir });
     const events = [];
     for await (const event of runner.run('read x then say done', { cwd: '/tmp' })) {
       events.push(event);
@@ -285,7 +287,7 @@ describe('PiRunner', () => {
   });
 
   it('test_anchor_spawn_args_include_provider_model_thinking', async () => {
-    const mockPi = createMockPi(`
+    createMockPi(`
       echo "$@" > ${tmpDir}/args.txt
       echo '{"type":"session","id":"s","cwd":"/tmp","model":"glm-5.2"}'
       echo '{"type":"agent_end","messages":[]}'
@@ -293,7 +295,6 @@ describe('PiRunner', () => {
 
     const runner = new PiRunner({
       workspace: 'test',
-      binary: mockPi,
       pidDir: tmpDir,
       provider: 'anthropic',
       model: 'claude-sonnet-4-20250514',
@@ -326,18 +327,18 @@ describe('PiRunner', () => {
     // 预期：result event subtype 必须是 'error'，且 errorMessage 透传
     // provider 报的 "Connection error."，让用户看到真实失败原因。
     //
-    // 依据：pi session jsonl 铁证（2026-07-29 real session captured），
+    // 依据：pi session jsonl 故障记录，
     // 4 条 {stopReason:"error",errorMessage:"Connection error.",content:[]}。
-    const mockPi = createMockPi(`
+    createMockPi(`
       echo '{"type":"session","id":"sess-err","cwd":"/tmp","model":"glm-5.1"}'
       echo '{"type":"message_start","message":{"role":"assistant","content":[]}}'
       echo '{"type":"message_end","message":{"role":"assistant","content":[],"usage":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"totalTokens":0},"stopReason":"error","errorMessage":"Connection error."}}'
       echo '{"type":"agent_end","messages":[]}'
     `);
 
-    const runner = new PiRunner({ workspace: 'test', binary: mockPi, pidDir: tmpDir });
+    const runner = new PiRunner({ workspace: 'test', pidDir: tmpDir });
     const events = [];
-    for await (const event of runner.run('check recent runs for issues', { cwd: '/tmp' })) {
+    for await (const event of runner.run('placeholder', { cwd: '/tmp' })) {
       events.push(event);
     }
 
@@ -359,14 +360,14 @@ describe('PiRunner', () => {
     //
     // 依据：run-renderer.ts:608 `state.errorMsg ?? '未知错误'` 同样只防
     // undefined 不防空字符串；getTerminalError 应在源头保证非空。
-    const mockPi = createMockPi(`
+    createMockPi(`
       echo '{"type":"session","id":"sess-empty","cwd":"/tmp","model":"glm-5.1"}'
       echo '{"type":"message_start","message":{"role":"assistant","content":[]}}'
       echo '{"type":"message_end","message":{"role":"assistant","content":[],"usage":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"totalTokens":0},"stopReason":"error","errorMessage":""}}'
       echo '{"type":"agent_end","messages":[]}'
     `);
 
-    const runner = new PiRunner({ workspace: 'test', binary: mockPi, pidDir: tmpDir });
+    const runner = new PiRunner({ workspace: 'test', pidDir: tmpDir });
     const events = [];
     for await (const event of runner.run('hi', { cwd: '/tmp' })) {
       events.push(event);

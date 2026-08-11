@@ -89,7 +89,7 @@ describe('codex both catalog commands fail - anchor', () => {
 
     let cfg: ReturnType<typeof loadCodexConfig>;
     expect(() => {
-      cfg = loadCodexConfig({ binary: 'codex' });
+      cfg = loadCodexConfig();
     }).not.toThrow();
 
     // legacy 兜底：openai 模型列表 = FALLBACK_MODELS；自定义 provider = [currentModel]
@@ -118,7 +118,7 @@ describe('codex both catalog commands fail - anchor', () => {
 
     let cfg: ReturnType<typeof loadCodexConfig>;
     expect(() => {
-      cfg = loadCodexConfig({ binary: 'codex' });
+      cfg = loadCodexConfig();
     }).not.toThrow();
 
     // 不泄漏 FALLBACK_MODELS / bundled；provider 仍含内置 openai（codex 合并，review4 P2）
@@ -136,7 +136,7 @@ describe('codex both catalog commands fail - anchor', () => {
 
     let cfg: ReturnType<typeof loadCodexConfig>;
     expect(() => {
-      cfg = loadCodexConfig({ binary: 'codex' });
+      cfg = loadCodexConfig();
     }).not.toThrow();
 
     // anthropic 非 codex 内置 provider（P3-2 对齐），fallback 只含 openai

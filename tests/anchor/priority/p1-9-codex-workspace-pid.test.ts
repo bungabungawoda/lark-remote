@@ -25,6 +25,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { CodexExecRunner } from '../../../src/runner/codex/index.js';
+import { prependPath, restorePath, writeMockBin } from '../../lib/path-mock.js';
 
 const { mockLogger } = vi.hoisted(() => ({
   mockLogger: {
@@ -71,12 +72,15 @@ async function waitFor(cond: () => boolean, timeoutMs = 3000): Promise<void> {
 
 describe('P1-9: codex pid file workspace scoping', () => {
   let tmpDir: string;
+  let savedPath: string | undefined;
 
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'p1-9-codex-anchor-'));
+    savedPath = prependPath(tmpDir);
   });
 
   afterEach(() => {
+    restorePath(savedPath);
     for (const pid of spawnedPids) {
       try {
         process.kill(-pid, 'SIGKILL');
@@ -94,24 +98,20 @@ describe('P1-9: codex pid file workspace scoping', () => {
   });
 
   function createMockCodex(script: string): string {
-    const scriptPath = path.join(tmpDir, 'mock-codex');
-    fs.writeFileSync(
-      scriptPath,
+    return writeMockBin(
+      tmpDir,
+      'codex',
       `#!/bin/bash\n# Read stdin (prompt), then execute script\nread -r _PROMPT\n${script}`,
-      'utf-8',
     );
-    fs.chmodSync(scriptPath, 0o755);
-    return scriptPath;
   }
 
   it('test_anchor_codex_pid_file_workspace_scoped_and_kill_orphan_does_not_kill_sibling_run', async () => {
-    const mockCodex = createMockCodex(`
+    createMockCodex(`
       echo '{"type":"thread.started","thread_id":"t1","cwd":"/tmp","model":"m"}'
       exec sleep 60
     `);
 
     const r1 = new CodexExecRunner({
-      binary: mockCodex,
       pidDir: tmpDir,
       workspace: 'wsA',
       sessionReader: mockSessionReader,
@@ -131,7 +131,6 @@ describe('P1-9: codex pid file workspace scoping', () => {
 
     // workspace B 的 runner 创建路径（bridge getRunner 的 killOrphan 行为）
     const r2 = new CodexExecRunner({
-      binary: mockCodex,
       pidDir: tmpDir,
       workspace: 'wsB',
       sessionReader: mockSessionReader,

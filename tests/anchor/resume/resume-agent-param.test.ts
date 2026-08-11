@@ -105,7 +105,6 @@ describe('/resume [agent] [N] dual-parameter feature', () => {
     const config: AppConfig = AppConfigSchema.parse({
       feishu: { appId: 'test', appSecret: 'test' },
       claude: {
-        binary: 'claude',
         model: 'opus',
         stopGraceMs: 5000,
       },
@@ -173,7 +172,6 @@ describe('/resume [agent] [N] dual-parameter feature', () => {
     const config: AppConfig = AppConfigSchema.parse({
       feishu: { appId: 'test', appSecret: 'test' },
       claude: {
-        binary: 'claude',
         model: 'opus',
         stopGraceMs: 5000,
       },
@@ -241,7 +239,6 @@ describe('/resume [agent] [N] dual-parameter feature', () => {
     const config: AppConfig = AppConfigSchema.parse({
       feishu: { appId: 'test', appSecret: 'test' },
       claude: {
-        binary: 'claude',
         model: 'opus',
         stopGraceMs: 5000,
       },
@@ -314,7 +311,6 @@ describe('/resume [agent] [N] dual-parameter feature', () => {
     const config: AppConfig = AppConfigSchema.parse({
       feishu: { appId: 'test', appSecret: 'test' },
       claude: {
-        binary: 'claude',
         model: 'opus',
         stopGraceMs: 5000,
       },

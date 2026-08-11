@@ -89,7 +89,7 @@ describe('codex active catalog default reasoning effort - anchor', () => {
 
   it('test_anchor_catalog_mode_default_reasoning_effort_from_active_catalog', () => {
     // catalog 模式下默认档位必须来自活动目录的 default_reasoning_level（high）
-    expect(getDefaultReasoningEffort('deepseek-v4-flash', 'codex')).toBe('high');
+    expect(getDefaultReasoningEffort('deepseek-v4-flash')).toBe('high');
 
     // 数据源必须是 `codex debug models`（无 --bundled）
     const calls = mockExecFileSync.mock.calls as Array<[string, string[]]>;

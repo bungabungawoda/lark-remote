@@ -56,14 +56,13 @@ import {
 function makeConfig(): AppConfig {
   return AppConfigSchema.parse({
     feishu: { appId: 'test', appSecret: 'test' },
-    claude: { binary: 'claude', model: 'opus', effort: 'high', stopGraceMs: 5000 },
+    claude: { model: 'opus', effort: 'high', stopGraceMs: 5000 },
     defaultAgent: 'claude',
     agents: {
-      claude: { binary: 'claude', model: 'opus', effort: 'high' },
-      codex: { binary: 'codex', model: 'glm-5.2', modelProvider: 'lt' },
-      pi: { binary: 'pi', model: 'glm-5.1', provider: 'lt', thinking: 'high' },
+      claude: { model: 'opus', effort: 'high' },
+      codex: { model: 'glm-5.2', modelProvider: 'lt' },
+      pi: { model: 'glm-5.1', provider: 'lt', thinking: 'high' },
       opencode: {
-        binary: 'opencode',
         modelID: 'claude-sonnet-4-20250505',
         providerID: 'anthropic',
         agent: 'claude',

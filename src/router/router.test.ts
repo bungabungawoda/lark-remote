@@ -174,7 +174,7 @@ function createRouter(overrides?: {
   runner?: Runner;
   output?: Partial<AppConfig['output']>;
   idle?: Partial<AppConfig['idle']>;
-  binary?: string;
+
   exitHandler?: () => void;
   restartSpawner?: () => number;
   bridge?: Bridge;
@@ -189,7 +189,6 @@ function createRouter(overrides?: {
   const config: AppConfig = AppConfigSchema.parse({
     feishu: { appId: 'test', appSecret: 'test' },
     claude: {
-      binary: overrides?.binary ?? 'claude',
       model: 'claude-opus-4-8',
       stopGraceMs: 5000,
     },
@@ -2615,7 +2614,7 @@ describe('CommandRouter', () => {
   });
 
   it('config.set reads option into pendingConfig', async () => {
-    const { router, connector } = createRouter({ binary: '/usr/bin/claude' });
+    const { router, connector } = createRouter();
 
     // 点击 select（config.set + key + option）
     // 现在模型选项使用 alias (opus/sonnet/haiku)，不再是 model ID
@@ -2789,7 +2788,7 @@ describe('CommandRouter', () => {
   });
 
   it('cmdConfig <key> <value> command writes to disk immediately', async () => {
-    const { router, connector } = createRouter({ binary: '/usr/bin/claude' });
+    const { router, connector } = createRouter();
     const configPath = (router as unknown as { configPath: string }).configPath;
 
     // 执行 /config claude.model haiku（现在使用 alias）
@@ -3038,7 +3037,7 @@ describe('P0: /active card must use CardKit 2.0 (not 1.x action container)', () 
     const runner = createStubRunner();
     const config: AppConfig = AppConfigSchema.parse({
       feishu: { appId: 'test', appSecret: 'test' },
-      claude: { binary: 'claude', model: 'claude-opus-4-8', stopGraceMs: 5000 },
+      claude: { model: 'claude-opus-4-8', stopGraceMs: 5000 },
       output: { showThinking: true, showToolUse: false, showToolResult: false },
     });
     const bridge = new Bridge({
@@ -3109,7 +3108,7 @@ describe('P0: /active card must use CardKit 2.0 (not 1.x action container)', () 
     const runner = createStubRunner();
     const config: AppConfig = AppConfigSchema.parse({
       feishu: { appId: 'test', appSecret: 'test' },
-      claude: { binary: 'claude', model: 'claude-opus-4-8', stopGraceMs: 5000 },
+      claude: { model: 'claude-opus-4-8', stopGraceMs: 5000 },
       output: { showThinking: true, showToolUse: false, showToolResult: false },
       defaultAgent: 'kimi',
     });

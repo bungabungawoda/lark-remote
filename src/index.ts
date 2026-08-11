@@ -26,6 +26,7 @@ import {
   KimiRunner,
 } from './runner/index.js';
 import { AgentRegistry } from './runner/registry.js';
+import { probeAllAgents } from './runner/probe.js';
 import { SessionReaderRegistry, SessionStore } from './session/index.js';
 import {
   ClaudeSessionReader,
@@ -228,14 +229,13 @@ function initializeRunner(
   const agentRegistry = new AgentRegistry();
 
   // P1-15: Claude factory reads from configContainer (not closure) so runtime
-  // config changes (binary, model, effort, stopGraceMs) take effect after
+  // config changes (model, effort, stopGraceMs) take effect after
   // bridge.setConfig() + clearRunners(). Same pattern as codex/pi/kimi.
   agentRegistry.register('claude', (ws) => {
     const container = agentRegistry.getConfigContainer();
     const latestConfig = (container?.current as AppConfig) ?? config;
     const claudeConfig = latestConfig.claude;
     return new ClaudeRunner({
-      binary: claudeConfig.binary,
       model: claudeConfig.model,
       effort: claudeConfig.effort,
       stopGraceMs: claudeConfig.stopGraceMs,
@@ -254,7 +254,6 @@ function initializeRunner(
     const latestConfig = (container?.current as AppConfig) ?? config;
     const codexConfig = getAgentConfig(latestConfig, 'codex');
     return new CodexExecRunner({
-      binary: codexConfig?.binary ?? 'codex',
       model: codexConfig?.model,
       modelProvider: codexConfig?.modelProvider,
       reasoningEffort: codexConfig?.reasoningEffort,
@@ -268,7 +267,6 @@ function initializeRunner(
 
   // Register OpencodeExecRunner (run mode)
   // Using `opencode run --format json --auto` instead of HTTP+SSE server mode
-  const opencodeConfig = getAgentConfig(config, 'opencode');
 
   // Register session reader (same instance as used by runner)
   const sessionReaderRegistry = new SessionReaderRegistry();
@@ -277,9 +275,7 @@ function initializeRunner(
 
   // Register OpencodeSessionReader (CLI version)
   // Using `opencode session list` and `opencode export` instead of HTTP API
-  const opencodeSessionReader = new OpencodeSessionReader({
-    binary: opencodeConfig?.binary ?? 'opencode',
-  });
+  const opencodeSessionReader = new OpencodeSessionReader();
 
   agentRegistry.register('opencode', (ws: string) => {
     // Get latest config from container (set below for pi)
@@ -300,7 +296,6 @@ function initializeRunner(
     }
 
     return new OpencodeExecRunner({
-      binary: ocConfig?.binary ?? 'opencode',
       model,
       // P1-15: read stopGraceMs from latestConfig (not startup closure)
       stopGraceMs: latestConfig.claude?.stopGraceMs ?? DEFAULT_STOP_GRACE_MS,
@@ -324,7 +319,6 @@ function initializeRunner(
     const latestConfig = container?.current as AppConfig;
     const piConf = getAgentConfig(latestConfig, 'pi');
     return new PiRunner({
-      binary: piConf?.binary ?? 'pi',
       provider: piConf?.provider ?? 'Volcano',
       model: piConf?.model ?? 'glm-5.2',
       thinking: piConf?.thinking ?? 'medium',
@@ -347,10 +341,10 @@ function initializeRunner(
     const latestConfig = container?.current as AppConfig;
     const kimiConf = getAgentConfig(latestConfig, 'kimi');
     return new KimiRunner({
-      binary: kimiConf?.binary ?? 'kimi',
       model: kimiConf?.model ?? 'kimi-code/k3',
       thinkingEffort: kimiConf?.thinkingEffort ?? 'max',
 
+      // P1-15: read stopGraceMs from latestConfig (not startup closure)
       stopGraceMs: latestConfig.claude?.stopGraceMs ?? DEFAULT_STOP_GRACE_MS,
       pidDir: configDir,
       workspace: ws,
@@ -369,6 +363,23 @@ function initializeRunner(
   // 设置全局 registry，供 agentDisplayName 等全局函数使用
   AgentRegistry.setGlobalInstance(agentRegistry);
 
+  // Probe agent CLI availability (fire-and-forget, populates cache for /config card).
+  // Don't block startup — log unavailable agents as warnings.
+  probeAllAgents()
+    .then((availability) => {
+      const unavailable = [...availability.entries()].filter(([, ok]) => !ok).map(([kind]) => kind);
+      if (unavailable.length > 0) {
+        getLogger().warn(
+          `[probe] agent CLI not found or not functional: ${unavailable.join(', ')}`,
+        );
+      } else {
+        getLogger().info('[probe] all agent CLIs available');
+      }
+    })
+    .catch(() => {
+      // Probe failure is non-fatal; /config card will retry on open.
+    });
+
   return { agentRegistry, sessionReaderRegistry };
 }
 
@@ -381,6 +392,7 @@ function setupMessageHandlers(
   workspaceStore: WorkspaceStore,
   binder: OwnerBinder,
   logger: ReturnType<typeof getLogger>,
+  config: AppConfig,
 ): void {
   connector.setMessageHandler((msg) => {
     // 绑定/授权闸门：仅 owner 放行；非 owner 静默丢弃；未绑定时要求 PIN 认领
@@ -389,9 +401,38 @@ function setupMessageHandlers(
     // 未绑定且 PIN 错误：完全静默丢弃（不回复、不提醒）
     if (decision.kind === 'pin_wrong') return;
     if (decision.kind === 'bind_success') {
-      void connector
-        .sendWithRetry(msg.chatId, { text: '✅ 已绑定到本账号，此后仅你可使用本应用' })
-        .catch((err: unknown) => logger.error('[binder] bind-success reply failed:', err));
+      // First-run onboarding: set default cwd + send welcome + Help card.
+      // setCwd is synchronous (outside the async closure) so that the user's
+      // next message — which will hit the `owner` branch now that
+      // startup-contact.json has been written — finds cwd already set.
+      // process.cwd() is the only sensible default: the user started
+      // lark-remote in the directory they want to work in.
+      sessionStore.setCwd(msg.userId, process.cwd());
+
+      void (async () => {
+        try {
+          // Message 1: bind confirmation + status (combined to avoid
+          // Feishu out-of-order delivery across three separate messages).
+          await connector.sendWithRetry(msg.chatId, {
+            text:
+              `✅ 已绑定到本账号，此后仅你可使用本应用\n` +
+              `📂 当前工作目录: \`${process.cwd()}\`\n` +
+              `🤖 默认 Agent: ${agentDisplayName(config.defaultAgent)}\n` +
+              `💡 直接输入消息即可开始对话，或 /cd 切换目录`,
+          });
+          // Message 2: Help card.
+          // Use router.cmdHelp() + manual send (without replyTo) so the Help
+          // card appears as an independent message, not a reply to the PIN
+          // message. router.handle('/help') would set replyTo=msg.messageId
+          // (the PIN), causing the card to nest under the PIN in Feishu UI.
+          const helpResult = router.cmdHelp();
+          if (helpResult.card) {
+            await connector.sendWithRetry(msg.chatId, { card: helpResult.card });
+          }
+        } catch (err) {
+          logger.error('[binder] onboarding send failed:', err);
+        }
+      })();
       return;
     }
 
@@ -625,7 +666,7 @@ async function main() {
   logger.info('config loaded');
   logger.info(`configDir = ${configDir}`);
   logger.info(`feishu.appId = ${config.feishu.appId}`);
-  logger.info(`claude.binary = ${config.claude.binary}`);
+  logger.info(`claude.model = ${config.claude.model}`);
   if (cliArgs.settings) {
     logger.info(`claude.settings = ${cliArgs.settings}`);
   }
@@ -667,7 +708,16 @@ async function main() {
     sessionReaderRegistry,
   });
 
-  setupMessageHandlers(connector, router, bridge, sessionStore, workspaceStore, binder, logger);
+  setupMessageHandlers(
+    connector,
+    router,
+    bridge,
+    sessionStore,
+    workspaceStore,
+    binder,
+    logger,
+    config,
+  );
 
   try {
     await connector.connect();
@@ -678,7 +728,7 @@ async function main() {
 
   if (binder.isBound()) {
     // 仅已绑定时发送启动通知；未绑定时不打扰（PIN 引导已在控制台输出）
-    await sendStartupHello(connector, startupContactStore);
+    await sendStartupHello(connector, startupContactStore, { dev: cliArgs.dev });
   }
 
   // Auto-restore: resume the persisted sessionId if available
