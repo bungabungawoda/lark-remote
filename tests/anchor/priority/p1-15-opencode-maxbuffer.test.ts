@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { OpencodeSessionReader } from '../../../src/session/opencode/sessions.js';
+import { prependPath, restorePath, writeMockBin } from '../../lib/path-mock.js';
 
 const { mockLogger } = vi.hoisted(() => ({
   mockLogger: {
@@ -38,9 +39,10 @@ describe('P1-15 opencode session list maxBuffer', () => {
       // Mock opencode binary: prints a valid session-list JSON array >1MiB.
       // Entries must carry directory === process.cwd() (the reader passes its
       // realpath cwd to execFileSync) so listSessions' directory filter keeps them.
-      const script = path.join(tmpDir, 'mock-opencode');
-      fs.writeFileSync(
-        script,
+      const saved = prependPath(tmpDir);
+      writeMockBin(
+        tmpDir,
+        'opencode',
         `#!/usr/bin/env node
 const cwd = process.cwd();
 const entries = [];
@@ -57,14 +59,17 @@ for (let i = 0; i < 30000; i++) {
 process.stdout.write(JSON.stringify(entries));
 `,
       );
-      fs.chmodSync(script, 0o755);
 
-      const reader = new OpencodeSessionReader({ binary: script });
-      const result = reader.listSessions(tmpDir);
+      try {
+        const reader = new OpencodeSessionReader();
+        const result = reader.listSessions(tmpDir);
 
-      expect(result.total).toBeGreaterThan(0);
-      // Newest (largest updated) sorts first.
-      expect(result.sessions[0]?.sessionId).toBe('s29999');
+        expect(result.total).toBeGreaterThan(0);
+        // Newest (largest updated) sorts first.
+        expect(result.sessions[0]?.sessionId).toBe('s29999');
+      } finally {
+        restorePath(saved);
+      }
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }

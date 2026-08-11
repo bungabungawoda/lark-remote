@@ -56,7 +56,6 @@ feishu:
 defaultAgent: claude
 
 claude:
-  binary: claude            # Path to the claude CLI executable
   model: claude-opus-4-8    # Model
   effort: medium            # Reasoning effort: low | medium | high | xhigh | max
   # permissionMode is hardcoded as bypassPermissions (inside runner), not configurable via config
@@ -259,5 +258,5 @@ Test coverage: config, session, workspace, runner (JSONL parsing + exit code), c
 | Single-card streaming architecture and Feishu validation | [`architecture/streaming-card.md`](architecture/streaming-card.md) |
 | New agent integration template | [`guides/add-new-agent.md`](guides/add-new-agent.md) |
 | Codex configuration card guide | [`guides/codex-config.md`](guides/codex-config.md) |
-| Feishu CardKit 2.0 component reference | [Feishu Open Platform official docs](https://open.feishu.cn/document/feishu-cards/card-json-v2-components/component-json-v2-overview) |
+| Feishu CardKit 2.0 component reference | [Official Feishu docs](https://open.feishu.cn/document/feishu-cards/card-json-v2-components/component-json-v2-overview) |
 | Getting started | [`getting-started.md`](getting-started.md) |

@@ -129,7 +129,7 @@ beforeEach(() => {
   tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'bridge-codex-flow-anchor-'));
   config = AppConfigSchema.parse({
     feishu: { appId: 'test', appSecret: 'test' },
-    claude: { binary: 'claude', model: 'opus', stopGraceMs: 5000 },
+    claude: { model: 'opus', stopGraceMs: 5000 },
     defaultAgent: 'codex',
     output: { showThinking: true, showToolUse: false, showToolResult: false },
   });

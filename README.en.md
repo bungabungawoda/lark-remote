@@ -64,7 +64,6 @@ feishu:
 defaultAgent: claude
 
 claude:
-  binary: claude
   model: claude-opus-4-8
   effort: medium            # low | medium | high | xhigh | max
   # permissionMode is hardcoded to bypassPermissions (inside the runner)
@@ -98,7 +97,7 @@ lark-remote --settings ~/.claude/settings.json  # specify Claude settings file
 
 The bridge prints nothing to the terminal after startup; logs go to `~/.lark-remote/logs/YYYY-MM-DD/lark-remote-<pid>.log` (rotated daily, one subdirectory per day). Only one `lark-remote` instance is allowed per `configDir` — a duplicate start fails with the existing pid. After connecting to Feishu, a startup notification (with start time and pid) is sent to the most recent private chat.
 
-For automatic process restart, set up your own supervisor such as systemd, launchd, or pm2.
+For automatic process restart (watchdog), use `scripts/watchdog.sh` from the source repo (available only when installing from source, not via npm).
 
 Each agent run creates one CardKit 2.0 card that updates in place with thinking, body text, and tool summaries in real time.
 Timestamps are read from the JSONL and shown in local time as `YYYY-MM-DD HH:mm` for thinking, body, tool call/result, and session history events.
@@ -152,7 +151,7 @@ Full docs under [`docs/`](docs/):
 - Single-card streaming architecture and Feishu acceptance: [`docs/en/architecture/streaming-card.md`](docs/en/architecture/streaming-card.md)
 - Template for adding a new agent: [`docs/en/guides/add-new-agent.md`](docs/en/guides/add-new-agent.md)
 - Codex config card guide: [`docs/en/guides/codex-config.md`](docs/en/guides/codex-config.md)
-- Feishu CardKit 2.0 component reference: [Feishu Open Platform official docs](https://open.feishu.cn/document/feishu-cards/card-json-v2-components/component-json-v2-overview)
+- Feishu CardKit 2.0 component reference: [Official Feishu docs](https://open.feishu.cn/document/feishu-cards/card-json-v2-components/component-json-v2-overview)
 - AI collaboration rules and red lines: [`CLAUDE.md`](CLAUDE.md)
 
 > This package is a CLI tool only — no programmatic API is exposed.

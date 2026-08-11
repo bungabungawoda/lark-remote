@@ -88,6 +88,31 @@ function shouldRetrySendError(err: unknown): boolean {
   return false;
 }
 
+/**
+ * Narrow interface for the feishu message.patch API used by the observability probe.
+ * Isolates the deep optional-chain cast into one place so the constructor stays
+ * readable and future SDK structural changes break at this type boundary.
+ */
+interface PatchableMessageService {
+  patch(
+    request?: { path?: { message_id?: string }; data?: { content?: string } },
+    options?: unknown,
+  ): Promise<{ code?: number; msg?: string }>;
+}
+
+/**
+ * Safely extract the im.v1.message.patch service from a LarkChannel.
+ * Returns undefined when the channel mock omits rawClient (unit tests).
+ */
+function tryGetPatchService(channel: LarkChannel): PatchableMessageService | undefined {
+  const c = (
+    channel as unknown as {
+      rawClient?: { im?: { v1?: { message?: PatchableMessageService } } };
+    }
+  ).rawClient;
+  return c?.im?.v1?.message;
+}
+
 export class FeishuConnector {
   private channel: LarkChannel;
   private onMessage?: MessageHandler;
@@ -117,6 +142,30 @@ export class FeishuConnector {
         },
       },
     });
+
+    // 观测探针（2026-08-11 run 卡定格事故）：飞书业务码错误以 HTTP 200 + {code!=0}
+    // 返回时，lark SDK 正常 resolve、@larksuite/channel 的 patchCard 丢弃返回值，
+    // 导致终态卡 patch 被业务层拒绝时全链路无日志无兜底。这里只观测不改行为——
+    // 不 throw、不重试，返回值原样透传。
+    // 详见 .adversarial-tdd/prompt-patchcard-business-code-observability.md
+    // Guard: unit-test mocks may omit rawClient; skip probe installation in that case.
+    const messageService = tryGetPatchService(this.channel);
+    if (messageService?.patch) {
+      const origPatch = messageService.patch.bind(messageService);
+      messageService.patch = (async (request, options) => {
+        const res = await origPatch(request, options);
+        if (typeof res?.code === 'number' && res.code !== 0) {
+          const content = request?.data?.content;
+          const bytes =
+            typeof content === 'string' ? Buffer.byteLength(content, 'utf8') : undefined;
+          getLogger().warn(
+            `[feishu] message.patch business error code=${res.code} msg=${String(res.msg)} ` +
+              `messageId=${String(request?.path?.message_id)} bytes=${bytes ?? 'unknown'}`,
+          );
+        }
+        return res;
+      }) as typeof origPatch;
+    }
 
     this.channel.on('message', (msg: NormalizedMessage) => {
       if (msg.chatType !== 'p2p') return;

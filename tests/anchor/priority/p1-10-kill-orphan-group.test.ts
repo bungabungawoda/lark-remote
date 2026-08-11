@@ -20,6 +20,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { ClaudeRunner } from '../../../src/runner/claude/index.js';
+import { prependPath, restorePath, writeMockBin } from '../../lib/path-mock.js';
 
 const { mockLogger } = vi.hoisted(() => ({
   mockLogger: {
@@ -56,13 +57,16 @@ async function waitFor(cond: () => boolean, timeoutMs = 5000): Promise<void> {
 
 describe('P1-10: killOrphan group kill on identity match', () => {
   let tmpDir: string;
+  let savedPath: string | undefined;
   const spawnedPids = new Set<number>();
 
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'p1-10-group-anchor-'));
+    savedPath = prependPath(tmpDir);
   });
 
   afterEach(() => {
+    restorePath(savedPath);
     for (const pid of spawnedPids) {
       try {
         process.kill(-pid, 'SIGKILL');
@@ -81,9 +85,9 @@ describe('P1-10: killOrphan group kill on identity match', () => {
 
   it('test_anchor_kill_orphan_kills_whole_group_when_identity_matches', async () => {
     const childPidFile = path.join(tmpDir, 'child.pid');
-    const mockBin = path.join(tmpDir, 'mock-claude');
-    fs.writeFileSync(
-      mockBin,
+    writeMockBin(
+      tmpDir,
+      'claude',
       `#!/bin/bash
 echo '{"type":"system","subtype":"init","session_id":"s1","cwd":"/tmp","model":"m"}'
 sleep 300 &
@@ -91,12 +95,10 @@ echo $! > "${childPidFile}"
 # 前台 sleep 保持 bash 身份（ps command 含 mockBin 路径，身份校验可命中）
 sleep 300
 `,
-      { mode: 0o755 },
     );
 
     const r1 = new ClaudeRunner({
       workspace: 'test',
-      binary: mockBin,
       pidDir: tmpDir,
       stopGraceMs: 500,
     });
@@ -115,7 +117,6 @@ sleep 300
     // 模拟 bridge 重启：新 runner 实例做 killOrphan（身份匹配）
     const r2 = new ClaudeRunner({
       workspace: 'test',
-      binary: mockBin,
       pidDir: tmpDir,
       stopGraceMs: 500,
     });
