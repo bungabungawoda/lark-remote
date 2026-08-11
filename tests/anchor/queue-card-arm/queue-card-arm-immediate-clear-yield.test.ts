@@ -182,7 +182,6 @@ describe('queue.immediate must clear EVERY task before the target before yieldin
     const connector = createStubConnectorWithGatedCardUpdate();
     const runner = createStubRunner();
     const bridge = new Bridge({
-      runner,
       agentRegistry: createStubAgentRegistry(runner),
       sessionReaderRegistry: createStubSessionReaderRegistry(),
       connector,

@@ -10,7 +10,7 @@ import { AppConfigSchema } from '../config/index.js';
 import type { AppConfig } from '../config/index.js';
 import type { Runner, AgentSessionReader } from '../runner/index.js';
 
-import { createStubAgentRegistry, createStubSessionReaderRegistry } from '../test-helpers.js';
+import { createStubAgentRegistry } from '../test-helpers.js';
 // Stub session reader for tests
 const stubSessionReader: AgentSessionReader = {
   listSessions: () => ({ sessions: [], total: 0 }),
@@ -127,7 +127,6 @@ function createRouter(overrides?: {
 
   // Create bridge mock
   const bridge = new Bridge({
-    runner,
     agentRegistry: createStubAgentRegistry(runner),
     sessionReaderRegistry: createStubSessionReaderRegistry(),
     connector,

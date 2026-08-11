@@ -120,7 +120,6 @@ describe('reaction emoji regression locks (probe)', () => {
     const sessionStore = new SessionStore();
     sessionStore.setCwd(ctx.userId, fs.realpathSync(tmpDir));
     const bridge = new Bridge({
-      runner,
       agentRegistry: createStubAgentRegistry(runner),
       sessionReaderRegistry: createStubSessionReaderRegistry(),
       connector,
@@ -151,7 +150,6 @@ describe('reaction emoji regression locks (probe)', () => {
       run: async function* () {},
     };
     const bridge = new Bridge({
-      runner: inlineRunner,
       agentRegistry: createStubAgentRegistry(inlineRunner),
       sessionReaderRegistry: createStubSessionReaderRegistry(),
       connector,
