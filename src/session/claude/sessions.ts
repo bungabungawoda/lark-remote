@@ -96,7 +96,11 @@ function defaultProjectsDir(): string {
  * sorted, first match wins; the cwd guard in `readSessionContent` still
  * validates the file afterwards.
  */
-function findSessionFileInProjects(sessionId: string, projectsDir: string): string | undefined {
+function findSessionFileInProjects(
+  sessionId: string,
+  projectsDir: string,
+  cwd?: string,
+): string | undefined {
   let entries: string[];
   try {
     entries = fs.readdirSync(projectsDir);
@@ -104,11 +108,24 @@ function findSessionFileInProjects(sessionId: string, projectsDir: string): stri
     return undefined;
   }
   const name = `${sessionId}.jsonl`;
+  const candidates: string[] = [];
   for (const entry of entries.sort()) {
     const candidate = path.join(projectsDir, entry, name);
-    if (fs.existsSync(candidate)) return candidate;
+    if (fs.existsSync(candidate)) {
+      candidates.push(candidate);
+    }
   }
-  return undefined;
+  if (candidates.length === 0) return undefined;
+  if (candidates.length === 1) return candidates[0];
+  // Multiple copies: prefer the one whose jsonl contains the requested cwd
+  // (handles EnterWorktree relocate where the same sessionId exists in
+  // multiple project dirs). Fall back to the first sorted candidate.
+  if (cwd) {
+    for (const candidate of candidates) {
+      if (jsonlContainsCwd(candidate, cwd)) return candidate;
+    }
+  }
+  return candidates[0];
 }
 
 /**
@@ -334,6 +351,8 @@ function scanRelocatedSessions(
           summary: truncate(summarizeSession(full), 60, { normalizeWhitespace: true }),
           mtime: st.mtimeMs,
         });
+        // Prevent duplicates if the same sessionId exists in multiple dirs
+        seenIds.add(sessionId);
       } catch (err) {
         getLogger().warn(`[session] skip ${f}: ${(err as Error).message}`);
       }
@@ -442,7 +461,7 @@ export function isClaudeSessionActive(
 
   if (!fs.existsSync(filePath)) {
     // EnterWorktree relocate: transcript moved to the new cwd's project dir.
-    const relocated = findSessionFileInProjects(sessionId, projectsDir);
+    const relocated = findSessionFileInProjects(sessionId, projectsDir, cwd);
     if (!relocated) return false;
     filePath = relocated;
   }
@@ -706,7 +725,7 @@ export function readSessionContent(
 
   if (!fs.existsSync(filePath)) {
     // EnterWorktree relocate: transcript moved to the new cwd's project dir.
-    const relocated = findSessionFileInProjects(sessionId, projectsDir);
+    const relocated = findSessionFileInProjects(sessionId, projectsDir, cwd);
     if (!relocated) return { events: [] };
     filePath = relocated;
   }

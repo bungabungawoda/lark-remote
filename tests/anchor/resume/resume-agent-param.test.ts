@@ -119,7 +119,6 @@ describe('/resume [agent] [N] dual-parameter feature', () => {
     registry.register('codex', codexReader);
 
     const bridge = new Bridge({
-      runner,
       agentRegistry: createStubAgentRegistry(runner),
       sessionReaderRegistry: createStubSessionReaderRegistry(),
       connector,
@@ -184,7 +183,6 @@ describe('/resume [agent] [N] dual-parameter feature', () => {
     registry.register('claude', claudeReader);
 
     const bridge = new Bridge({
-      runner,
       agentRegistry: createStubAgentRegistry(runner),
       sessionReaderRegistry: createStubSessionReaderRegistry(),
       connector,
@@ -252,7 +250,6 @@ describe('/resume [agent] [N] dual-parameter feature', () => {
     // 不注册 gemini, codex 等
 
     const bridge = new Bridge({
-      runner,
       agentRegistry: createStubAgentRegistry(runner),
       sessionReaderRegistry: createStubSessionReaderRegistry(),
       connector,
@@ -325,7 +322,6 @@ describe('/resume [agent] [N] dual-parameter feature', () => {
     registry.register('codex', codexReader);
 
     const bridge = new Bridge({
-      runner,
       agentRegistry: createStubAgentRegistry(runner),
       sessionReaderRegistry: createStubSessionReaderRegistry(),
       connector,

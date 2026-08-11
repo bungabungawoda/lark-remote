@@ -175,7 +175,6 @@ describe('Bridge codex jsonl 无 usage 回退 live (anchor)', () => {
       ]),
     );
     const bridge = new Bridge({
-      runner: bridgeRunner,
       agentRegistry: createStubAgentRegistry(bridgeRunner),
       connector,
       sessionStore,

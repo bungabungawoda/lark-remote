@@ -204,7 +204,6 @@ describe('Bridge codex done 卡 flow 字段 jsonl 优先 (anchor)', () => {
     );
     const bridge = new Bridge({
       // codex 实时流：result 带 usage = 会话累计（turn.completed.usage 语义）。
-      runner: bridgeRunner,
       agentRegistry: createStubAgentRegistry(bridgeRunner),
       connector,
       sessionStore,

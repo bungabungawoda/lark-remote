@@ -211,11 +211,11 @@ describe('queue.immediate final feedback must not claim "未安排执行" when t
     const connector = createStubConnector();
     const sessionStore = new SessionStore();
     const bridge = new Bridge({
-      runner: createGatedRunner(), // fallback, unused (registry path)
       connector,
       sessionStore,
       config,
       agentRegistry: reg,
+      sessionReaderRegistry: new SessionReaderRegistry(),
       idleTimeoutMs: 0,
     });
     const router = new CommandRouter({
