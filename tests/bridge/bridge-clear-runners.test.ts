@@ -33,9 +33,9 @@ beforeEach(() => {
   tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'bridge-clear-test-'));
   config = AppConfigSchema.parse({
     feishu: { appId: 'test', appSecret: 'test' },
-    claude: { binary: 'claude', model: 'opus', stopGraceMs: 5000 },
+    claude: { model: 'opus', stopGraceMs: 5000 },
     defaultAgent: 'codex',
-    agents: { codex: { binary: 'codex' } },
+    agents: { codex: {} },
     idle: { watchdogMinutes: 15 },
     output: { showThinking: true, showToolUse: true, showToolResult: true },
     logging: { level: 'info' },

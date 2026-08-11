@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { PiRunner } from './runner.js';
+import { prependPath, restorePath, writeMockBin } from '../../../tests/lib/path-mock.js';
 
 const { mockLogger } = vi.hoisted(() => ({
   mockLogger: {
@@ -19,12 +20,15 @@ vi.mock('../../logger/index.js', () => ({
 }));
 
 let tmpDir: string;
+let savedPath: string | undefined;
 
 beforeEach(() => {
   tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'lark-pi-runner-unit-'));
+  savedPath = prependPath(tmpDir);
 });
 
 afterEach(() => {
+  restorePath(savedPath);
   fs.rmSync(tmpDir, { recursive: true, force: true });
 });
 
@@ -77,11 +81,6 @@ describe('PiRunner', () => {
       expect(runner.getStatusInfo().model).toBe('claude-sonnet-4-20250514');
     });
 
-    it('test_anchor_custom_binary', () => {
-      const runner = new PiRunner({ workspace: 'test', binary: '/custom/bin/pi', pidDir: tmpDir });
-      expect((runner as unknown as { binary: string }).binary).toBe('/custom/bin/pi');
-    });
-
     it('test_anchor_custom_stop_grace_ms', () => {
       const runner = new PiRunner({ workspace: 'test', stopGraceMs: 1000, pidDir: tmpDir });
       expect((runner as unknown as { stopGraceMs: number }).stopGraceMs).toBe(1000);
@@ -111,17 +110,14 @@ describe('PiRunner', () => {
     });
 
     it('test_anchor_pid_returns_process_pid_when_running', async () => {
-      const scriptPath = path.join(tmpDir, 'mock-pi');
-      fs.writeFileSync(
-        scriptPath,
+      writeMockBin(
+        tmpDir,
+        'pi',
         '#!/bin/bash\necho \'{"type":"session","id":"s","cwd":"/tmp","model":"glm-5.2"}\'\necho \'{"type":"agent_end","messages":[]}\'\nexec sleep 5',
-        'utf-8',
       );
-      fs.chmodSync(scriptPath, 0o755);
 
       const runner = new PiRunner({
         workspace: 'test',
-        binary: scriptPath,
         pidDir: tmpDir,
         stopGraceMs: 500,
       });

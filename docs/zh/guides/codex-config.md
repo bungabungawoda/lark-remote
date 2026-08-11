@@ -34,7 +34,7 @@ Codex 的模型下拉选项从 `~/.codex/config.toml` 动态读取：
 // src/config/codex-config.ts
 import { loadCodexConfig } from '../config/codex-config.js';
 
-const codexCfg = loadCodexConfig({ binary: 'codex' });
+const codexCfg = loadCodexConfig();
 const providerNames = codexCfg.providerNames;  // 内置 openai + config.toml [model_providers.*]
                                                // （anthropic 非内置，需显式配置）
 const modelOptions = codexCfg.modelOptions();  // catalog 模式：活动目录 visibility==='list' 的 slug
@@ -122,8 +122,7 @@ wire_api = "responses"
 ```typescript
 // router/index.ts - config.set 处理
 if (key === 'agents.codex.modelProvider' && newValue) {
-  const codexBinary = this.pendingConfig?.agents?.codex?.binary ?? 'codex';
-  const codexCfg = loadCodexConfig({ binary: codexBinary });
+  const codexCfg = loadCodexConfig();
   const newModelOptions = codexCfg.modelOptions(newValue);
   const currentModel = this.pendingConfig?.agents?.codex?.model;
   const currentModelIsValid = newModelOptions.some(m => m === currentModel);
@@ -149,10 +148,10 @@ if (effortPatch) patches.push(effortPatch);
 }
 ```
 
-`getReasoningEffortOptions(model, binary?, codexHome?)` 从活动目录（catalog 模式）或 bundled（非 catalog）
+`getReasoningEffortOptions(model, codexHome?)` 从活动目录（catalog 模式）或 bundled（非 catalog）
 的 `supported_reasoning_levels` 取选项，**原样透传**（含 `minimal`/自定义档位）；模型未声明
-档位或未知时返回空列表（codex fallback 元数据 supported 为空，不虚构档位）。`binary` 参数
-用于覆盖自定义 codex 二进制路径，`codexHome` 用于覆盖配置目录。空串档位/空串 default 会被解析器过滤
+档位或未知时返回空列表（codex fallback 元数据 supported 为空，不虚构档位）。codex 二进制路径
+硬编码为 `codex`（PATH 查找），`codexHome` 用于覆盖配置目录。空串档位/空串 default 会被解析器过滤
 （codex `ReasoningEffort::from_str("")` 是硬错误）。
 
 ## 配置保存与生效

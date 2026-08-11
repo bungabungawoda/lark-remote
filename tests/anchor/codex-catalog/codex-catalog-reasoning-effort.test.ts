@@ -88,7 +88,7 @@ describe('codex active catalog reasoning effort - anchor', () => {
 
   it('test_anchor_catalog_mode_reasoning_effort_from_active_catalog', () => {
     // catalog 模式下 deepseek-v4-flash 的选项必须来自活动目录：low/high/max
-    const options = getReasoningEffortOptions('deepseek-v4-flash', 'codex');
+    const options = getReasoningEffortOptions('deepseek-v4-flash');
     expect(options).toEqual(['low', 'high', 'max']);
 
     // 模型来源必须是 `codex debug models`（无 --bundled）

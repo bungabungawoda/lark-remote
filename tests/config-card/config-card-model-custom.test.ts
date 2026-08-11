@@ -195,7 +195,6 @@ function buildClaudeConfig(model: string = 'opus'): AppConfig {
     feishu: { appId: 'test', appSecret: 'test' },
     defaultAgent: 'claude',
     claude: {
-      binary: 'claude',
       model,
       effort: 'medium',
       stopGraceMs: 5000,

@@ -85,8 +85,8 @@ describe('codex catalog empty effort filter - anchor', () => {
 
   it('test_anchor_empty_effort_and_default_are_filtered_out', () => {
     // 空串档位必须被过滤（codex 对空串是硬错误）
-    expect(getReasoningEffortOptions('empty-effort-model', 'codex')).toEqual(['low']);
+    expect(getReasoningEffortOptions('empty-effort-model')).toEqual(['low']);
     // 空串 default 视为未声明（undefined），不进入卡片/配置
-    expect(getDefaultReasoningEffort('empty-effort-model', 'codex')).toBeUndefined();
+    expect(getDefaultReasoningEffort('empty-effort-model')).toBeUndefined();
   });
 });

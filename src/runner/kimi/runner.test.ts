@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { KimiRunner } from './runner.js';
+import { prependPath, restorePath, writeMockBin } from '../../../tests/lib/path-mock.js';
 
 const { mockLogger } = vi.hoisted(() => ({
   mockLogger: {
@@ -20,20 +21,20 @@ vi.mock('../../logger/index.js', () => ({
 }));
 
 let tmpDir: string;
+let savedPath: string | undefined;
 
 beforeEach(() => {
   tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'lark-kimi-runner-test-'));
+  savedPath = prependPath(tmpDir);
 });
 
 afterEach(() => {
+  restorePath(savedPath);
   fs.rmSync(tmpDir, { recursive: true, force: true });
 });
 
 function createMockKimi(script: string): string {
-  const scriptPath = path.join(tmpDir, 'mock-kimi');
-  fs.writeFileSync(scriptPath, `#!/bin/bash\n${script}`, 'utf-8');
-  fs.chmodSync(scriptPath, 0o755);
-  return scriptPath;
+  return writeMockBin(tmpDir, 'kimi', `#!/bin/bash\n${script}`);
 }
 
 // --- Constructor & defaults ---
@@ -59,15 +60,13 @@ describe('KimiRunner constructor', () => {
     expect(status.reasoning).toBe('low');
   });
 
-  it('accepts custom binary and completionTimeoutMs', () => {
+  it('accepts custom completionTimeoutMs', () => {
     const runner = new KimiRunner({
       workspace: 'test',
       pidDir: tmpDir,
-      binary: '/usr/local/bin/kimi',
       completionTimeoutMs: 1000,
     });
-    // Verify indirectly: buildArgv uses the binary, awaitCompletion uses the timeout.
-    // We'll test those paths separately. Just ensure construction doesn't throw.
+    // awaitCompletion uses the timeout. Just ensure construction doesn't throw.
     expect(runner).toBeDefined();
   });
 
@@ -95,13 +94,12 @@ describe('KimiRunner.pid', () => {
   });
 
   it('returns the process pid when a process is running', async () => {
-    const mockKimi = createMockKimi(`
+    createMockKimi(`
       echo '{"role":"meta","type":"session.resume_hint","session_id":"s1","command":"test","content":""}'
       exec sleep 10
     `);
     const runner = new KimiRunner({
       workspace: 'test',
-      binary: mockKimi,
       pidDir: tmpDir,
       stopGraceMs: 500,
     });
@@ -144,14 +142,13 @@ describe('KimiRunner.getStatusInfo', () => {
 
 describe('KimiRunner buildArgv', () => {
   it('includes -p <message> --output-format stream-json -m <model>', async () => {
-    const mockKimi = createMockKimi(`
+    createMockKimi(`
       echo "$@" > ${tmpDir}/args.txt
       echo '{"role":"meta","type":"session.resume_hint","session_id":"s1","command":"test","content":""}'
     `);
 
     const runner = new KimiRunner({
       workspace: 'test',
-      binary: mockKimi,
       pidDir: tmpDir,
       model: 'kimi-code/k3',
     });
@@ -169,12 +166,12 @@ describe('KimiRunner buildArgv', () => {
   });
 
   it('includes -r <sessionId> when sessionId is provided', async () => {
-    const mockKimi = createMockKimi(`
+    createMockKimi(`
       echo "$@" > ${tmpDir}/args.txt
       echo '{"role":"meta","type":"session.resume_hint","session_id":"s1","command":"test","content":""}'
     `);
 
-    const runner = new KimiRunner({ workspace: 'test', binary: mockKimi, pidDir: tmpDir });
+    const runner = new KimiRunner({ workspace: 'test', pidDir: tmpDir });
     for await (const _ of runner.run('hello', { cwd: '/tmp', sessionId: 'sess-42' })) {
       // consume
     }
@@ -185,12 +182,12 @@ describe('KimiRunner buildArgv', () => {
   });
 
   it('omits -r when no sessionId is provided', async () => {
-    const mockKimi = createMockKimi(`
+    createMockKimi(`
       echo "$@" > ${tmpDir}/args.txt
       echo '{"role":"meta","type":"session.resume_hint","session_id":"s1","command":"test","content":""}'
     `);
 
-    const runner = new KimiRunner({ workspace: 'test', binary: mockKimi, pidDir: tmpDir });
+    const runner = new KimiRunner({ workspace: 'test', pidDir: tmpDir });
     for await (const _ of runner.run('hello', { cwd: '/tmp' })) {
       // consume
     }
@@ -278,11 +275,11 @@ describe('KimiRunner awaitCompletion', () => {
 
 describe('KimiRunner integration', () => {
   it('test_anchor_basic_flow_yields_system_init_and_result', async () => {
-    const mockKimi = createMockKimi(`
+    createMockKimi(`
       echo '{"role":"meta","type":"session.resume_hint","session_id":"s1","command":"test","content":""}'
     `);
 
-    const runner = new KimiRunner({ workspace: 'test', binary: mockKimi, pidDir: tmpDir });
+    const runner = new KimiRunner({ workspace: 'test', pidDir: tmpDir });
     const events = [];
     for await (const event of runner.run('hello', { cwd: '/tmp' })) {
       events.push(event);
@@ -301,12 +298,12 @@ describe('KimiRunner integration', () => {
   });
 
   it('test_anchor_nonzero_exit_yields_result_error', async () => {
-    const mockKimi = createMockKimi(`
+    createMockKimi(`
       echo 'API error' >&2
       exit 1
     `);
 
-    const runner = new KimiRunner({ workspace: 'test', binary: mockKimi, pidDir: tmpDir });
+    const runner = new KimiRunner({ workspace: 'test', pidDir: tmpDir });
     const events = [];
     for await (const event of runner.run('hello', { cwd: '/tmp' })) {
       events.push(event);
@@ -320,9 +317,10 @@ describe('KimiRunner integration', () => {
   });
 
   it('test_anchor_spawn_failure_yields_auth_error_event', async () => {
+    const saved = process.env.PATH;
+    process.env.PATH = path.join(tmpDir, 'no-bin');
     const runner = new KimiRunner({
       workspace: 'test',
-      binary: path.join(tmpDir, 'nonexistent-kimi-binary'),
       pidDir: tmpDir,
     });
 
@@ -330,6 +328,7 @@ describe('KimiRunner integration', () => {
     for await (const event of runner.run('hello', { cwd: '/tmp' })) {
       events.push(event);
     }
+    restorePath(saved);
 
     expect(events).toHaveLength(1);
     const errEvent = events[0] as { type: string; subtype?: string; errorMessage?: string };
@@ -340,11 +339,11 @@ describe('KimiRunner integration', () => {
   });
 
   it('cleans up pid file after process exits', async () => {
-    const mockKimi = createMockKimi(`
+    createMockKimi(`
       echo '{"role":"meta","type":"session.resume_hint","session_id":"s1","command":"test","content":""}'
     `);
 
-    const runner = new KimiRunner({ workspace: 'test', binary: mockKimi, pidDir: tmpDir });
+    const runner = new KimiRunner({ workspace: 'test', pidDir: tmpDir });
     const pidFile = path.join(tmpDir, 'kimi.pid');
 
     for await (const _ of runner.run('hello', { cwd: '/tmp' })) {

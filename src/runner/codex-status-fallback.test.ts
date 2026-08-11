@@ -58,7 +58,6 @@ model_provider = "volcengine-coding-plan"
     try {
       const runner = new CodexExecRunner({
         workspace: 'test',
-        binary: 'codex',
         pidDir: tmpDir,
         sessionReader: mockSessionReader,
         // No model provided - should fallback to config.toml
@@ -81,7 +80,6 @@ model_provider = "volcengine-coding-plan"
   it('should use explicitly provided model over config file', () => {
     const runner = new CodexExecRunner({
       workspace: 'test',
-      binary: 'codex',
       model: 'custom-model',
       modelProvider: 'custom-provider',
       pidDir: tmpDir,

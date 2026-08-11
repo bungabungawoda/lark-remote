@@ -90,7 +90,7 @@ describe('codex active catalog failure fallback - anchor', () => {
     // 不抛异常
     let cfg: ReturnType<typeof loadCodexConfig>;
     expect(() => {
-      cfg = loadCodexConfig({ binary: 'codex' });
+      cfg = loadCodexConfig();
     }).not.toThrow();
 
     // provider 列表 = 内置 openai + deepseek（codex 合并内置 provider）；无 anthropic

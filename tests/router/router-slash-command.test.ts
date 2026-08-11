@@ -97,7 +97,6 @@ beforeEach(() => {
   config = AppConfigSchema.parse({
     feishu: { appId: 'test', appSecret: 'test' },
     claude: {
-      binary: 'claude',
       model: 'opus',
       effort: 'medium',
       stopGraceMs: 5000,

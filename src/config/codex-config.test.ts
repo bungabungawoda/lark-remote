@@ -95,7 +95,7 @@ describe('getCodexBundledModelSlugs', () => {
   it('excludes visibility:"hide" and sorts by priority ascending', () => {
     mockExecFileSync.mockReturnValue(BUNDLED_JSON);
 
-    const slugs = getCodexBundledModelSlugs('codex');
+    const slugs = getCodexBundledModelSlugs();
 
     expect(slugs).toEqual(['gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.4']);
     expect(slugs).not.toContain('codex-auto-review');
@@ -111,8 +111,8 @@ describe('getCodexBundledModelSlugs', () => {
   it('caches: repeated calls within TTL only spawn once', () => {
     mockExecFileSync.mockReturnValue(BUNDLED_JSON);
 
-    getCodexBundledModelSlugs('codex');
-    getCodexBundledModelSlugs('codex');
+    getCodexBundledModelSlugs();
+    getCodexBundledModelSlugs();
 
     expect(mockExecFileSync).toHaveBeenCalledTimes(1);
   });
@@ -120,9 +120,9 @@ describe('getCodexBundledModelSlugs', () => {
   it('refetches after invalidateCodexBundledTestCache', () => {
     mockExecFileSync.mockReturnValue(BUNDLED_JSON);
 
-    getCodexBundledModelSlugs('codex');
+    getCodexBundledModelSlugs();
     invalidateCodexBundledTestCache();
-    getCodexBundledModelSlugs('codex');
+    getCodexBundledModelSlugs();
 
     expect(mockExecFileSync).toHaveBeenCalledTimes(2);
   });
@@ -134,7 +134,7 @@ describe('getCodexBundledModelSlugs', () => {
       throw err;
     });
 
-    const slugs = getCodexBundledModelSlugs('codex');
+    const slugs = getCodexBundledModelSlugs();
 
     expect(slugs).toEqual([]);
     expect(mockLogger.warn).toHaveBeenCalled();
@@ -142,16 +142,16 @@ describe('getCodexBundledModelSlugs', () => {
 
   it('returns [] and warns on invalid JSON', () => {
     mockExecFileSync.mockReturnValue('not json {{{');
-    expect(getCodexBundledModelSlugs('codex')).toEqual([]);
+    expect(getCodexBundledModelSlugs()).toEqual([]);
     expect(mockLogger.warn).toHaveBeenCalled();
   });
 
   it('treats models array missing/empty as empty result (no crash)', () => {
     mockExecFileSync.mockReturnValue(JSON.stringify({ models: [] }));
-    expect(getCodexBundledModelSlugs('codex')).toEqual([]);
+    expect(getCodexBundledModelSlugs()).toEqual([]);
 
     mockExecFileSync.mockReturnValue(JSON.stringify({}));
-    expect(getCodexBundledModelSlugs('codex')).toEqual([]);
+    expect(getCodexBundledModelSlugs()).toEqual([]);
   });
 });
 
@@ -191,7 +191,7 @@ describe('loadCodexConfig model options merge', () => {
     );
     mockExecFileSync.mockReturnValue(BUNDLED_JSON);
 
-    const cfg = loadCodexConfig({ codexHome, binary: 'codex' });
+    const cfg = loadCodexConfig({ codexHome });
     const opts = cfg.modelOptions();
 
     // glm-5.2 (config model) 在首位；bundled 非 hide 模型按 priority 跟随；不含 hide
@@ -217,7 +217,7 @@ describe('loadCodexConfig model options merge', () => {
     );
     mockExecFileSync.mockReturnValue(BUNDLED_JSON);
 
-    const opts = loadCodexConfig({ codexHome, binary: 'codex' }).modelOptions();
+    const opts = loadCodexConfig({ codexHome }).modelOptions();
 
     // gpt-5.6-sol 只出现一次（在首位）
     expect(opts.filter((m) => m === 'gpt-5.6-sol')).toHaveLength(1);
@@ -240,7 +240,7 @@ describe('loadCodexConfig model options merge', () => {
     );
     mockExecFileSync.mockReturnValue(BUNDLED_JSON);
 
-    const cfg = loadCodexConfig({ codexHome, binary: 'codex' });
+    const cfg = loadCodexConfig({ codexHome });
 
     // openai 是内置 provider，即使 config.toml 没声明也要出现在列表中
     expect(cfg.providerNames).toContain('openai');
@@ -267,7 +267,7 @@ describe('loadCodexConfig model options merge', () => {
       throw new Error('spawn ENOENT');
     });
 
-    const opts = loadCodexConfig({ codexHome, binary: 'codex' }).modelOptions();
+    const opts = loadCodexConfig({ codexHome }).modelOptions();
 
     expect(opts[0]).toBe('glm-5.2');
     expect(opts).toContain('o3');

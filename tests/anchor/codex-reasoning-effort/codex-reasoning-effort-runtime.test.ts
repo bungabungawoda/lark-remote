@@ -33,11 +33,10 @@ beforeEach(() => {
   tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-effort-runtime-'));
   baseConfig = AppConfigSchema.parse({
     feishu: { appId: 'test', appSecret: 'test' },
-    claude: { binary: 'claude', model: 'opus', stopGraceMs: 5000 },
+    claude: { model: 'opus', stopGraceMs: 5000 },
     defaultAgent: 'codex',
     agents: {
       codex: {
-        binary: 'codex',
         model: 'gpt-5.6-sol',
         modelProvider: 'openai',
         reasoningEffort: 'high',
@@ -210,7 +209,6 @@ describe('P1: reasoningEffort runtime propagation', () => {
     // constructor 设置 reasoningEffort: 'low'
     const runner = new CodexExecRunner({
       workspace: 'test',
-      binary: 'codex',
       model: 'gpt-5.6-sol',
       reasoningEffort: 'low',
       stopGraceMs: 1000,

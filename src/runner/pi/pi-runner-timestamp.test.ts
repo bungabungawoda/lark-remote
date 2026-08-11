@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { PiRunner } from './runner.js';
+import { prependPath, restorePath, writeMockBin } from '../../../tests/lib/path-mock.js';
 
 const { mockLogger } = vi.hoisted(() => ({
   mockLogger: {
@@ -19,31 +20,31 @@ vi.mock('../logger/index.js', () => ({
 }));
 
 let tmpDir: string;
+let savedPath: string | undefined;
 
 beforeEach(() => {
   tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'lark-pi-test-'));
+  savedPath = prependPath(tmpDir);
 });
 
 afterEach(() => {
+  restorePath(savedPath);
   fs.rmSync(tmpDir, { recursive: true, force: true });
 });
 
 // Create a mock pi script that outputs JSONL.
 function createMockPi(script: string): string {
-  const scriptPath = path.join(tmpDir, 'mock-pi');
-  fs.writeFileSync(scriptPath, `#!/bin/bash\n${script}`, 'utf-8');
-  fs.chmodSync(scriptPath, 0o755);
-  return scriptPath;
+  return writeMockBin(tmpDir, 'pi', `#!/bin/bash\n${script}`);
 }
 
 describe('PiRunner timestamp', () => {
   it('test_anchor_should_generate_timestamp_for_system_init_event', async () => {
-    const mockPi = createMockPi(`
+    createMockPi(`
       echo '{"type":"session","id":"s1","cwd":"/tmp","model":"pi-3.5","timestamp":"2026-07-18T10:00:00.000Z"}'
       echo '{"type":"message","timestamp":"2026-07-18T10:00:01.000Z","message":{"role":"assistant","content":[{"type":"text","text":"hello"}]}}'
       echo '{"type":"agent_end","timestamp":"2026-07-18T10:00:03.000Z"}'
     `);
-    const runner = new PiRunner({ workspace: 'test', binary: mockPi, pidDir: tmpDir });
+    const runner = new PiRunner({ workspace: 'test', pidDir: tmpDir });
 
     const events: any[] = [];
     for await (const event of runner.run('hello', { cwd: '/tmp' })) {
@@ -60,14 +61,14 @@ describe('PiRunner timestamp', () => {
   });
 
   it('test_anchor_should_generate_timestamp_for_assistant_event', async () => {
-    const mockPi = createMockPi(`
+    createMockPi(`
       echo '{"type":"session","id":"s1","cwd":"/tmp","model":"pi-3.5","timestamp":"2026-07-18T10:00:00.000Z"}'
       echo '{"type":"message_start","timestamp":"2026-07-18T10:00:00.500Z","message":{"role":"assistant","content":[]}}'
       echo '{"type":"message","timestamp":"2026-07-18T10:00:01.000Z","message":{"role":"assistant","content":[{"type":"text","text":"hello"}]}}'
       echo '{"type":"message_end","timestamp":"2026-07-18T10:00:01.500Z","message":{"role":"assistant","usage":{}}}'
       echo '{"type":"agent_end","timestamp":"2026-07-18T10:00:03.000Z"}'
     `);
-    const runner = new PiRunner({ workspace: 'test', binary: mockPi, pidDir: tmpDir });
+    const runner = new PiRunner({ workspace: 'test', pidDir: tmpDir });
 
     const events: any[] = [];
     for await (const event of runner.run('hello', { cwd: '/tmp' })) {
@@ -86,7 +87,7 @@ describe('PiRunner timestamp', () => {
   });
 
   it('test_anchor_should_generate_timestamp_for_tool_result_event', async () => {
-    const mockPi = createMockPi(`
+    createMockPi(`
       echo '{"type":"session","id":"s1","cwd":"/tmp","model":"pi-3.5","timestamp":"2026-07-18T10:00:00.000Z"}'
       echo '{"type":"message_start","timestamp":"2026-07-18T10:00:00.500Z","message":{"role":"assistant","content":[]}}'
       echo '{"type":"message","timestamp":"2026-07-18T10:00:01.000Z","message":{"role":"assistant","content":[{"type":"toolCall","id":"t1","function":{"name":"Read","arguments":"{}"}}]}}'
@@ -95,7 +96,7 @@ describe('PiRunner timestamp', () => {
       echo '{"type":"message_end","timestamp":"2026-07-18T10:00:02.500Z","message":{"role":"toolResult","usage":{}}}'
       echo '{"type":"agent_end","timestamp":"2026-07-18T10:00:03.000Z"}'
     `);
-    const runner = new PiRunner({ workspace: 'test', binary: mockPi, pidDir: tmpDir });
+    const runner = new PiRunner({ workspace: 'test', pidDir: tmpDir });
 
     const events: any[] = [];
     for await (const event of runner.run('hello', { cwd: '/tmp' })) {
