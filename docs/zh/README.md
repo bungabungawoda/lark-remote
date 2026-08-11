@@ -23,7 +23,6 @@ English documentation: [../en/README.md](../en/README.md)
 
 - [guides/add-new-agent.md](guides/add-new-agent.md) — 新增 AI agent 接入的 10 步模板（registry 模式）。
 - [guides/codex-config.md](guides/codex-config.md) — `/config` 卡片中 Codex 字段的工作原理、provider/model 切换联动。
-- [guides/open-source-playbook.md](guides/open-source-playbook.md) — 开源发布、npm 发布 SOP、维护 SOP、推广渠道与文案的逐条执行清单。
 
 ## 外部参考
 

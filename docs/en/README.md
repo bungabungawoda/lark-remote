@@ -23,7 +23,6 @@ Browse by topic:
 
 - [guides/add-new-agent.md](guides/add-new-agent.md) — 10-step template for integrating a new AI agent (registry pattern).
 - [guides/codex-config.md](guides/codex-config.md) — How Codex fields in the `/config` card work; provider/model switching linkage.
-- [guides/open-source-playbook.md](guides/open-source-playbook.md) — Open-source release, npm publishing SOP, maintenance SOP, promotion channels & copy.
 
 ## External Reference
 
