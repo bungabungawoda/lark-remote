@@ -135,7 +135,6 @@ function buildConfig(overrides?: Partial<AppConfig>): AppConfig {
   return AppConfigSchema.parse({
     feishu: { appId: 'test', appSecret: 'test' },
     claude: {
-      binary: 'claude',
       model: 'claude-opus-4-8',
       stopGraceMs: 5000,
     },

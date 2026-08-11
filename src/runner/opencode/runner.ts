@@ -35,8 +35,6 @@ import { buildOpencodeRunArgs } from './argv.js';
 import { OpencodeExecTranslator } from './jsonl.js';
 
 interface OpencodeExecRunnerOptions {
-  /** Path to opencode binary. Default: 'opencode' (in PATH). */
-  binary?: string;
   /** Model override in provider/model format (e.g. 'anthropic/claude-sonnet-4-20250514'). Omitted → opencode config default. */
   model?: string;
   /** Grace period (ms) for SIGTERM→SIGKILL. Default: 5000. */
@@ -60,7 +58,6 @@ export class OpencodeExecRunner extends SpawningRunner implements AgentRunner {
 
   constructor(opts: OpencodeExecRunnerOptions) {
     super({
-      binary: opts.binary ?? 'opencode',
       pidDir: opts.pidDir,
       workspace: opts.workspace,
       stopGraceMs: opts.stopGraceMs,
@@ -68,6 +65,7 @@ export class OpencodeExecRunner extends SpawningRunner implements AgentRunner {
       pidFilePrefix: 'opencode',
       logTag: 'opencode-exec-runner',
     });
+    this.binary = 'opencode';
     this.defaultModel = opts.model;
     this.sessionReader = opts.sessionReader;
   }

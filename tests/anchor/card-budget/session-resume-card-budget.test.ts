@@ -2,12 +2,6 @@
  * ANCHOR (RED) — resume 卡片体积裁剪必须作用于真实 sessionEventPanel 结构，
  * 极端降级不得丢弃卡片骨架。
  *
- * 背景：
- * 2026-08-08 线上故障——kimi session 最后 5 条事件含 51KB tool_result +
- * 23KB tool_use（合计约 77KB），resume 卡经 enforceCardBudget 后直接落到
- * 阶段3 extreme_fallback，用户只收到「⚠️ 内容已截断」一句话卡片，
- * sessionId/cwd/标题/事件面板/usage/按钮全部丢失。
- *
  * 根因：card-budget 的 isLikelySessionPanel 用 emoji 标题模式（🤖👤💭🔧🟢🔴）
  * 识别会话事件面板，但真实 sessionEventPanel 产出的标题是
  * `tool_result (2026-01-01 08:00:00)` 这类裸英文 type 名——emoji 在事件正文

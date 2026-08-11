@@ -76,7 +76,7 @@ describe('codex fallback aligns with codex runtime - anchor', () => {
 
   it('test_anchor_fallback_providers_exclude_anthropic_without_config', () => {
     // 无 config.toml：anthropic 不是 codex 内置 provider，不得出现在下拉
-    const cfg = loadCodexConfig({ binary: 'codex', codexHome: path.join(tmpDir, 'no-home') });
+    const cfg = loadCodexConfig({ codexHome: path.join(tmpDir, 'no-home') });
     expect(cfg.providerNames).not.toContain('anthropic');
     expect(cfg.providerNames).toEqual(['openai']);
   });
@@ -86,7 +86,7 @@ describe('codex fallback aligns with codex runtime - anchor', () => {
     fs.writeFileSync(path.join(tmpDir, 'config.toml'), 'model_provider = "openai"\n');
     invalidateCodexBundledCache();
 
-    const cfg = loadCodexConfig({ binary: 'codex' });
+    const cfg = loadCodexConfig();
     expect(cfg.currentModel).toBe('gpt-5.6-sol');
     expect(cfg.modelOptions('openai')[0]).toBe('gpt-5.6-sol');
   });

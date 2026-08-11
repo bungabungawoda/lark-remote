@@ -65,7 +65,6 @@ function buildPiConfig(): AppConfig {
     feishu: { appId: 'test', appSecret: 'test' },
     defaultAgent: 'pi',
     claude: {
-      binary: 'claude',
       model: 'opus',
       stopGraceMs: 5000,
     },

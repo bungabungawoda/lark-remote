@@ -31,6 +31,7 @@ import { atomicWrite } from '../persistence/atomic-write.js';
 
 /** Config card builder - delegates to per-agent builders */
 import { getConfigBuilder, listRegisteredAgents } from './config/index.js';
+import { probeAllAgents, getCachedAvailability } from '../runner/probe.js';
 import { buildConfigCardFromTabs } from './config/common/render.js';
 import type { ConfigTab } from './config/common/render.js';
 
@@ -1592,7 +1593,7 @@ export class CommandRouter {
         return await this.cmdReconnect();
       case 'config':
       case 'c':
-        return this.cmdConfig(args, ctx);
+        return await this.cmdConfig(args, ctx);
       case 'order':
       case 'o':
         return this.cmdOrder(args, ctx);
@@ -1603,7 +1604,7 @@ export class CommandRouter {
 
   // --- Command implementations ---
 
-  private cmdHelp(): CommandResult {
+  cmdHelp(): CommandResult {
     // 按钮组（可直接点击触发；按钮 label 只保留子命令，不含参数）
     // 2026-07-04: /ws 子命令 (save|use|remove) 移到右侧文本说明，按钮只显示 /ws
     // 2026-07-04: 按钮 label 按长度升序排列（短在上，长在下），视觉更整齐
@@ -2992,7 +2993,10 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
     }
   }
 
-  private cmdConfig(args: string[], ctx: CommandContext): CommandResult {
+  private async cmdConfig(args: string[], ctx: CommandContext): Promise<CommandResult> {
+    // Ensure probe cache is populated before building the card.
+    await probeAllAgents();
+
     // Check if this is a direct set command: /config <key> <value>
     // Command-style set: immediate write to disk, clear pendingConfig
     if (args.length >= 2) {
@@ -3040,28 +3044,63 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
     const displayConfig = this.pendingConfig ?? this.config;
 
     // 定义字段分组：defaultAgent 选择器 + 该 agent 的配置字段 + idle.watchdogMinutes +
-    // output/logging。stopGraceMs / claude.binary 等实现细节走 YAML，不在卡片暴露。
+    // output/logging。stopGraceMs 等实现细节走 YAML，不在卡片暴露。
 
     // 根据 defaultAgent 构建完整的 Agent 配置字段组
     // 使用 agent config builder 获取该 agent 的配置字段
     const defaultAgent = displayConfig.defaultAgent ?? 'claude';
     const configBuilder = getConfigBuilder(defaultAgent);
-    const agentConfigFields = configBuilder.buildFields(displayConfig);
 
-    // 使用共享渲染模块构建 tabs 和卡片
-    // 添加 defaultAgent 选择器作为第一个字段
-    agentConfigFields.unshift({
-      key: 'defaultAgent',
-      label: '默认 Agent',
-      type: 'select',
-      options: listRegisteredAgents(),
+    // Build defaultAgent selector with availability annotations.
+    // Direct inline construction (not via ConfigField) so that text (display label)
+    // and value (agentKind for config storage) can differ — uninstalled agents get
+    // a "⚠️ (未安装)" suffix in the label while the value stays clean.
+    const allAgents = listRegisteredAgents();
+    const agentOptions = allAgents.map((kind) => {
+      const available = getCachedAvailability(kind);
+      const label =
+        available === false ? `${agentDisplayName(kind)} ⚠️ (未安装)` : agentDisplayName(kind);
+      return { text: { tag: 'plain_text' as const, content: label }, value: kind };
     });
+    const selectedAgent = displayConfig.defaultAgent ?? 'claude';
+    const agentSelector = {
+      tag: 'column_set',
+      flex_mode: 'none',
+      columns: [
+        {
+          tag: 'column',
+          width: 'weighted',
+          weight: 2,
+          vertical_align: 'center',
+          elements: [{ tag: 'div', text: { tag: 'lark_md', content: '默认 Agent' } }],
+        },
+        {
+          tag: 'column',
+          width: 'weighted',
+          weight: 3,
+          vertical_align: 'center',
+          elements: [
+            {
+              tag: 'select_static',
+              placeholder: { tag: 'plain_text', content: '请选择' },
+              options: agentOptions,
+              initial_option: selectedAgent,
+              behaviors: [{ type: 'callback', value: { cmd: 'config.set', key: 'defaultAgent' } }],
+            },
+          ],
+        },
+      ],
+    };
+
+    // Agent config fields — no longer include defaultAgent as a ConfigField
+    // (it's rendered inline above with text/value separation).
+    const agentConfigFieldsNoSelector = configBuilder.buildFields(displayConfig);
 
     const tabs: ConfigTab[] = [
       {
         id: 'agent',
         label: `🤖 ${agentDisplayName(defaultAgent)}`,
-        fields: agentConfigFields,
+        fields: agentConfigFieldsNoSelector,
       },
       {
         id: 'idle',
@@ -3093,6 +3132,30 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
 
     // 使用共享渲染模块构建卡片
     const card = buildConfigCardFromTabs(tabs, displayConfig);
+
+    // Inject the agent selector as the first element in the agent tab section,
+    // right after the "**🤖 ..." header, so text/value can differ for uninstalled agents.
+    // NOTE: findIndex relies on the agent tab header starting with "**🤖" — if the
+    // tab label format changes, this fallback will fire and the selector moves to top.
+    const body = (card as { body?: { elements?: unknown[] } }).body;
+    if (body && Array.isArray(body.elements)) {
+      const headerIdx = body.elements.findIndex(
+        (el) =>
+          typeof el === 'object' &&
+          el !== null &&
+          (el as { tag?: string; text?: { tag?: string; content?: string } }).tag === 'div' &&
+          (el as { text?: { tag?: string; content?: string } }).text?.tag === 'lark_md' &&
+          ((el as { text?: { tag?: string; content?: string } }).text?.content ?? '').startsWith(
+            '**🤖',
+          ),
+      );
+      if (headerIdx >= 0) {
+        body.elements.splice(headerIdx + 1, 0, agentSelector);
+      } else {
+        getLogger().warn('[buildConfigCard] agent tab header not found, falling back to unshift');
+        body.elements.unshift(agentSelector);
+      }
+    }
 
     return { card };
   }

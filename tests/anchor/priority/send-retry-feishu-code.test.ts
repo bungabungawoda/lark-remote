@@ -31,7 +31,6 @@ vi.mock('../../../src/logger/index.js', () => ({
 const config: AppConfig = {
   feishu: { appId: 'app-id', appSecret: 'app-secret' },
   claude: {
-    binary: 'claude',
     model: 'claude-opus-4-8',
     effort: 'medium',
     stopGraceMs: 5000,
