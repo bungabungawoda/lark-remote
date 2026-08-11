@@ -8,6 +8,7 @@ import { AppConfigSchema } from '../../src/config/index.js';
 import type { AppConfig } from '../../src/config/index.js';
 import type { Runner, AgentRunner } from '../../src/runner/index.js';
 import { AgentRegistry } from '../../src/runner/registry.js';
+import { SessionReaderRegistry } from '../../src/session/registry.js';
 
 // 直接在模块顶层定义 mock（兼容 bun 的 vitest）
 const mockLogger = {
@@ -168,11 +169,11 @@ describe('Bridge clearRunners must not orphan an ACTIVE runner (regression 2026-
     const sessionStore = new SessionStore();
     sessionStore.setCwd('user1', tmpDir);
     const bridge = new Bridge({
-      runner: createTrackingHangingRunner(), // fallback, unused (registry path)
       connector,
       sessionStore,
       config,
       agentRegistry: reg,
+      sessionReaderRegistry: new SessionReaderRegistry(),
     });
 
     // 1. Start a run; do NOT await (it hangs). getRunner caches runner A.
@@ -239,11 +240,11 @@ describe('Bridge clearRunners must not orphan an ACTIVE runner (regression 2026-
     const sessionStore = new SessionStore();
     sessionStore.setCwd('user1', tmpDir);
     const bridge = new Bridge({
-      runner: createTrackingHangingRunner(), // fallback, unused (registry path)
       connector,
       sessionStore,
       config,
       agentRegistry: reg,
+      sessionReaderRegistry: new SessionReaderRegistry(),
     });
 
     // Start a hanging run -> runner A created, cached, and active.

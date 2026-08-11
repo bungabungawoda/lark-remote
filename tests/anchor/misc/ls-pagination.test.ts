@@ -111,7 +111,6 @@ function createRouter(tmpDir: string) {
     },
   });
   const bridge = new Bridge({
-    runner,
     agentRegistry: createStubAgentRegistry(runner),
     sessionReaderRegistry: createStubSessionReaderRegistry(),
     connector,

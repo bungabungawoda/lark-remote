@@ -136,7 +136,6 @@ describe('an edited order.exec queued task must keep the router.handle dispatch 
     const connector = createStubConnector();
     const runner = createStubRunner();
     const bridge = new Bridge({
-      runner,
       agentRegistry: createStubAgentRegistry(runner),
       sessionReaderRegistry: createStubSessionReaderRegistry(),
       connector,

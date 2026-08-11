@@ -60,7 +60,13 @@ describe('ls file action', () => {
     fs.writeFileSync(testFilePath, 'hello world');
 
     sessionStore = new SessionStore();
-    sessionStore.set('user1', { sessions: new Map(), previousSessions: new Map(), cwd: tempDir });
+    sessionStore.set('user1', {
+      sessions: new Map(),
+      previousSessions: new Map(),
+      arrivalSessions: new Map(),
+      sessionCwds: new Map(),
+      cwd: tempDir,
+    });
 
     mockBridge = {
       sendResult: vi.fn().mockResolvedValue(undefined),
@@ -118,7 +124,13 @@ describe('ls file action', () => {
     const largeBuffer = Buffer.alloc(31 * 1024 * 1024); // 31MB
     fs.writeFileSync(bigFilePath, largeBuffer);
 
-    sessionStore.set('user1', { sessions: new Map(), previousSessions: new Map(), cwd: tempDir });
+    sessionStore.set('user1', {
+      sessions: new Map(),
+      previousSessions: new Map(),
+      arrivalSessions: new Map(),
+      sessionCwds: new Map(),
+      cwd: tempDir,
+    });
 
     await router.handleCardAction(
       { cmd: 'ls.file', path: bigFilePath },
@@ -152,7 +164,13 @@ describe('ls tilde expansion', () => {
     tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ls-tilde-test-'));
 
     sessionStore = new SessionStore();
-    sessionStore.set('user1', { sessions: new Map(), previousSessions: new Map(), cwd: tempDir });
+    sessionStore.set('user1', {
+      sessions: new Map(),
+      previousSessions: new Map(),
+      arrivalSessions: new Map(),
+      sessionCwds: new Map(),
+      cwd: tempDir,
+    });
 
     mockBridge = {
       sendResult: vi.fn().mockResolvedValue(undefined),

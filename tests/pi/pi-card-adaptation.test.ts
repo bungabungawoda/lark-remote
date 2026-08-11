@@ -194,7 +194,6 @@ describe('Pi card adaptation', () => {
       const router = new CommandRouter({
         sessionStore,
         bridge: new Bridge({
-          runner,
           agentRegistry: createStubAgentRegistry(runner),
           sessionReaderRegistry: createStubSessionReaderRegistry(),
           connector,
