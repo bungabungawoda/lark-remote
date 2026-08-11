@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -6,10 +6,28 @@ import { KimiSessionReader } from './sessions.js';
 import { detectSchemaVersion, extractWorkDir, checkCwdGuard } from './sessions.js';
 import type { KimiSessionState } from './sessions.js';
 
+const { mockLogger } = vi.hoisted(() => ({
+  mockLogger: {
+    debug: vi.fn(),
+    info: vi.fn(),
+    warn: vi.fn(),
+    error: vi.fn(),
+  },
+}));
+
+vi.mock('../../logger/index.js', () => ({
+  getLogger: () => mockLogger,
+  initLogger: () => mockLogger,
+}));
+
 let tmpDir: string;
 let kimiDir: string;
 
 beforeEach(() => {
+  mockLogger.debug.mockReset();
+  mockLogger.info.mockReset();
+  mockLogger.warn.mockReset();
+  mockLogger.error.mockReset();
   tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'lark-kimi-reader-test-'));
   kimiDir = path.join(tmpDir, '.kimi-code');
   fs.mkdirSync(kimiDir, { recursive: true });
@@ -514,9 +532,9 @@ describe('KimiSessionReader', () => {
     expect(checkCwdGuard(state, '/home/user/project')).toBe('unverifiable');
   });
 
-  // --- three-state guard in readSessionContent (fail-open + WARN log) ---
+  // --- three-state guard in readSessionContent (fail-closed + WARN log) ---
 
-  it('readSessionContent allows access when state.json has no workDir/cwd (unverifiable)', () => {
+  it('readSessionContent allows access when state.json unverifiable but index workDir matches', () => {
     const workDir = makeWorkDir('project');
     // Create session with v2 state that has no workDir/cwd fields at all
     const sessionDir = path.join(kimiDir, 'sessions', 'sess-no-dir');
@@ -536,8 +554,36 @@ describe('KimiSessionReader', () => {
 
     const reader = new KimiSessionReader(kimiDir);
     const content = reader.readSessionContent('sess-no-dir', workDir);
-    // Fail-open: should return content despite unverifiable cwd
+    // state.json has no cwd source, but index workDir matches the requested
+    // workspace — the index fallback guard passes, so content is returned.
     expect(content.events.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('readSessionContent rejects when state.json and index both lack cwd (fail-closed)', () => {
+    const workDir = makeWorkDir('project');
+    const sessionDir = path.join(kimiDir, 'sessions', 'sess-no-cwd-src');
+    const agentsDir = path.join(sessionDir, 'agents', 'main');
+    fs.mkdirSync(agentsDir, { recursive: true });
+    // state.json with neither workDir nor cwd (v2 session without cwd field)
+    fs.writeFileSync(
+      path.join(sessionDir, 'state.json'),
+      JSON.stringify({ createdAt: Date.now(), updatedAt: Date.now() }),
+    );
+    fs.writeFileSync(
+      path.join(agentsDir, 'wire.jsonl'),
+      '{"type":"turn.prompt","input":[{"type":"text","text":"test"}],"origin":{"kind":"user"},"time":1000}\n',
+    );
+    // Index entry without workDir — no cwd source anywhere
+    addIndexEntry('sess-no-cwd-src', sessionDir, workDir, { omitWorkDir: true });
+
+    const reader = new KimiSessionReader(kimiDir);
+    const content = reader.readSessionContent('sess-no-cwd-src', workDir);
+    // Fail-closed: no cwd source can verify the session belongs to the
+    // requested workspace — access is rejected (aligned with claude).
+    expect(content.events).toEqual([]);
+    expect(mockLogger.warn).toHaveBeenCalledWith(
+      expect.stringContaining('no cwd source (state.json + index)'),
+    );
   });
 
   it('readSessionContent blocks access when state.json missing but index has workDir', () => {
