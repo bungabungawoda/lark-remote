@@ -34,7 +34,7 @@ The Codex model dropdown options are dynamically read from `~/.codex/config.toml
 // src/config/codex-config.ts
 import { loadCodexConfig } from '../config/codex-config.js';
 
-const codexCfg = loadCodexConfig({ binary: 'codex' });
+const codexCfg = loadCodexConfig();
 const providerNames = codexCfg.providerNames;  // built-in openai + config.toml [model_providers.*]
                                                // (anthropic is not built-in, requires explicit config)
 const modelOptions = codexCfg.modelOptions();  // catalog mode: active catalog visibility==='list' slugs
@@ -125,8 +125,7 @@ When the user switches the `Codex Provider` dropdown, the system automatically:
 ```typescript
 // router/index.ts - config.set handling
 if (key === 'agents.codex.modelProvider' && newValue) {
-  const codexBinary = this.pendingConfig?.agents?.codex?.binary ?? 'codex';
-  const codexCfg = loadCodexConfig({ binary: codexBinary });
+  const codexCfg = loadCodexConfig();
   const newModelOptions = codexCfg.modelOptions(newValue);
   const currentModel = this.pendingConfig?.agents?.codex?.model;
   const currentModelIsValid = newModelOptions.some(m => m === currentModel);
@@ -149,7 +148,7 @@ if (effortPatch) patches.push(effortPatch);
 }
 ```
 
-`getReasoningEffortOptions(model, binary?, codexHome?)` retrieves options from the active catalog (catalog mode) or bundled (non-catalog) `supported_reasoning_levels`, **passing them through as-is** (including `minimal`/custom levels); returns an empty list when the model declares no levels or is unknown (codex fallback metadata has empty `supported`, no fabricated levels). The `binary` parameter overrides the custom codex binary path, and `codexHome` overrides the config directory. Empty-string levels/empty-string defaults are filtered by the parser (codex `ReasoningEffort::from_str("")` is a hard error).
+`getReasoningEffortOptions(model, codexHome?)` retrieves options from the active catalog (catalog mode) or bundled (non-catalog) `supported_reasoning_levels`, **passing them through as-is** (including `minimal`/custom levels); returns an empty list when the model declares no levels or is unknown (codex fallback metadata has empty `supported`, no fabricated levels). The codex binary is hard-coded to `codex` (in PATH); `codexHome` overrides the config directory. Empty-string levels/empty-string defaults are filtered by the parser (codex `ReasoningEffort::from_str("")` is a hard error).
 
 ## Configuration Save and Effect
 

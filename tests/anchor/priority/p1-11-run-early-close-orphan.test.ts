@@ -24,6 +24,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { ClaudeRunner } from '../../../src/runner/claude/index.js';
+import { prependPath, restorePath, writeMockBin } from '../../lib/path-mock.js';
 
 const { mockLogger } = vi.hoisted(() => ({
   mockLogger: {
@@ -60,33 +61,34 @@ async function waitFor(cond: () => boolean, timeoutMs = 3000): Promise<void> {
 
 describe('P1-11: run() early close must not orphan the child process', () => {
   let tmpDir: string;
+  let savedPath: string | undefined;
 
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'p1-11-orphan-anchor-'));
+    savedPath = prependPath(tmpDir);
   });
 
   afterEach(() => {
+    restorePath(savedPath);
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
   it('test_anchor_run_early_close_kills_child_process', async () => {
-    const mockBin = path.join(tmpDir, 'mock-claude');
     // side pid 文件由 mock 自己写（$$ 在 exec 前后同一 pid），避免与 run() finally
     // 会 unlink 的 runner pid 文件竞争读取窗口
     const sidePidFile = path.join(tmpDir, 'side.pid');
-    fs.writeFileSync(
-      mockBin,
+    writeMockBin(
+      tmpDir,
+      'claude',
       `#!/bin/bash
 echo $$ > "${sidePidFile}"
 echo '{"type":"system","subtype":"init","session_id":"s1","cwd":"/tmp","model":"m"}'
 exec sleep 60
 `,
-      { mode: 0o755 },
     );
 
     const runner = new ClaudeRunner({
       workspace: 'test',
-      binary: mockBin,
       pidDir: tmpDir,
       stopGraceMs: 500,
     });

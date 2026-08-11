@@ -174,7 +174,6 @@ beforeEach(() => {
   config = AppConfigSchema.parse({
     feishu: { appId: 'test', appSecret: 'test' },
     claude: {
-      binary: 'claude',
       model: 'opus',
       stopGraceMs: 5000,
     },
@@ -1360,16 +1359,16 @@ describe('Bridge agentRegistry / sessionReaderRegistry', () => {
   it('error path does NOT read historical jsonl usage (regression: kimi --auto rejection showed stale contextLength=24439)', async () => {
     // 回归: kimi 0.26+ 拒绝 -p + --auto, 进程立即退出 exit=1 → result/error (无 usage)。
     // bridge 不应读 session jsonl 的历史 usage 当作本次 usage -- 否则把上一次成功
-    // turn 的 contextLength (24439) 显示在出错卡片/日志上, 误导用户以为本次也消耗了 token。
+    // turn 的 contextLength 显示在出错卡片/日志上, 误导用户以为本次也消耗了 token。
     // 所有 agent 统一走 result -> finalizing -> 进程退出 -> done/error 路径。
     const { SessionReaderRegistry } = await import('../session/registry.js');
     const readSpy = vi.fn(() => ({
       events: [],
       usage: {
-        inputTokens: 5216,
-        outputTokens: 23,
-        contextLength: 24439, // 历史数据 (上一次成功 turn)
-        cacheReadTokens: 19200,
+        inputTokens: 8000,
+        outputTokens: 50,
+        contextLength: 30000, // 历史数据 (上一次成功 turn)
+        cacheReadTokens: 25000,
         cacheCreationTokens: 0,
       },
     }));
@@ -1415,8 +1414,7 @@ describe('Bridge agentRegistry / sessionReaderRegistry', () => {
     //           （content.usage 为空，如 EnterWorktree 搬迁致读取静默失败）时，
     //           记一条 WARN 探针，含 "no usage from jsonl" + sessionId/cwd/agent。
     // 缺失后果: jsonl 兜底失败完全静默，token 统计悄悄回退到单 run live 增量，
-    //           无任何日志线索，2026-08-04 故障就是靠人工翻日志对 compactCount=undefined
-    //           才定位。探针让同类故障一眼可见。
+    //           无任何日志线索。探针让同类故障一眼可见。
     // 依据: worktree relocate 方案 §3.2。
     const { SessionReaderRegistry } = await import('../session/registry.js');
     const readSpy = vi.fn(() => ({
@@ -2091,14 +2089,13 @@ describe('Bridge.forwardToClaude AgentBinding (D2/D5)', () => {
 });
 
 /**
- * 会话代际（session epoch）守卫 (2026-08-09 事故修复)
+ * 会话代际（session epoch）守卫
  *
  * 验证：run 在途时 /new（或 new-session 卡片动作、/cd、/resume、/config 切换）
  * 不会被在途 run 的 system.init 写回撤销。
  *
- * 事故时间线：用户点「新会话」→ clearSessionId → 在途 run 重发 init →
- * 无条件写回 → 旧 sessionId 复活。epoch guard 在 run 启动时捕获快照，
- * init 写回前比对——epoch 不一致则跳过写回。
+ * 事故根因：clearSessionId 后在途 run 重发 init 无条件写回，旧 sessionId 复活。
+ * epoch guard 在 run 启动时捕获快照，init 写回前比对——epoch 不一致则跳过写回。
  */
 describe('Bridge session epoch guard (2026-08-09)', () => {
   it('test_anchor_new_session_mid_run_blocks_stale_init_writeback', async () => {

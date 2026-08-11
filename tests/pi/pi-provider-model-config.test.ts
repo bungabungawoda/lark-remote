@@ -70,7 +70,6 @@ function buildPiConfig(): AppConfig {
     feishu: { appId: 'test', appSecret: 'test' },
     defaultAgent: 'pi',
     claude: {
-      binary: 'claude',
       model: 'opus',
       stopGraceMs: 5000,
     },
@@ -79,7 +78,6 @@ function buildPiConfig(): AppConfig {
         provider: 'Volcano',
         model: 'glm-5.2',
         thinking: 'medium',
-        binary: 'pi',
         tools: 'read,bash,edit,write,grep,find,ls',
       },
     },

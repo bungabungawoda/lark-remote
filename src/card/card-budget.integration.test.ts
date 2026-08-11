@@ -195,21 +195,20 @@ enforceCardBudget 的单元测试覆盖了以下场景：
             tag: 'div',
             text: {
               tag: 'lark_md',
-              content: '已恢复最近会话: **019f0000-0000-7000-8000-0000000000bb**',
+              content: '已恢复最近会话: **dddddddd-1111-2222-3333-444444444444**',
             },
           },
           { tag: 'hr' },
           {
             tag: 'collapsible_panel',
             expanded: false,
-            header: { title: { tag: 'markdown', content: 'thinking (2026-07-13 22:38)' } },
+            header: { title: { tag: 'markdown', content: 'thinking (2026-01-15 08:00)' } },
             elements: [
               {
                 tag: 'div',
                 text: {
                   tag: 'lark_md',
-                  content:
-                    'Let me start by reading the review document to understand what needs to be fixed',
+                  content: 'placeholder',
                 },
               },
             ],
@@ -217,7 +216,7 @@ enforceCardBudget 的单元测试覆盖了以下场景：
           {
             tag: 'collapsible_panel',
             expanded: false,
-            header: { title: { tag: 'markdown', content: 'tool_use (2026-07-13 22:38)' } },
+            header: { title: { tag: 'markdown', content: 'tool_use (2026-01-15 08:00)' } },
             elements: [
               {
                 tag: 'div',
@@ -231,7 +230,7 @@ enforceCardBudget 的单元测试覆盖了以下场景：
           {
             tag: 'collapsible_panel',
             expanded: false,
-            header: { title: { tag: 'markdown', content: 'text (2026-07-13 22:38)' } },
+            header: { title: { tag: 'markdown', content: 'text (2026-01-15 08:00)' } },
             elements: [{ tag: 'div', text: { tag: 'lark_md', content: longDocContent } }],
           },
         ],

@@ -38,8 +38,6 @@ import { CodexExecTranslator } from './jsonl.js';
 import { loadCodexConfig } from '../../config/codex-config.js';
 
 interface CodexExecRunnerOptions {
-  /** Path to codex binary. Default: 'codex' (in PATH). */
-  binary?: string;
   /** Model override. Omitted → codex reads from its config.toml. */
   model?: string;
   /** Model provider override. Omitted → codex reads from its config.toml. */
@@ -69,7 +67,6 @@ export class CodexExecRunner extends SpawningRunner implements AgentRunner {
 
   constructor(opts: CodexExecRunnerOptions) {
     super({
-      binary: opts.binary ?? 'codex',
       pidDir: opts.pidDir,
       workspace: opts.workspace,
       stopGraceMs: opts.stopGraceMs,
@@ -77,6 +74,7 @@ export class CodexExecRunner extends SpawningRunner implements AgentRunner {
       pidFilePrefix: 'codex',
       logTag: 'codex-exec-runner',
     });
+    this.binary = 'codex';
     this.defaultModel = opts.model;
     this.modelProvider = opts.modelProvider;
     this.reasoningEffort = opts.reasoningEffort;

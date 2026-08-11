@@ -5,7 +5,7 @@ import type { AppConfig } from '../config/index.js';
 describe('resolveAgentChoices', () => {
   const baseConfig: AppConfig = {
     feishu: { appId: 'test', appSecret: 'test' },
-    claude: { binary: 'claude', model: 'claude-opus-4-8', effort: 'medium', stopGraceMs: 5000 },
+    claude: { model: 'claude-opus-4-8', effort: 'medium', stopGraceMs: 5000 },
     defaultAgent: 'codex',
     idle: { watchdogMinutes: 15 },
     output: { showThinking: true, showToolUse: true, showToolResult: true },
@@ -18,13 +18,11 @@ describe('resolveAgentChoices', () => {
 
   it('should merge codex choices into agents config', () => {
     // 部分 agents 配置是故意的：缺 model 时由 agentChoices 补齐（运行时语义）。
-    const config = { ...baseConfig, agents: { codex: { binary: 'codex' } } } as AppConfig;
+    const config = { ...baseConfig, agents: { codex: {} } } as AppConfig;
     const resolved = resolveAgentChoices(config);
 
     expect(resolved.agents?.codex?.model).toBe('glm-5.2');
     expect(resolved.agents?.codex?.modelProvider).toBe('volcengine-coding-plan');
-    // Explicit config should be preserved
-    expect(resolved.agents?.codex?.binary).toBe('codex');
   });
 
   it('should use choices when agents config is empty', () => {
@@ -39,7 +37,7 @@ describe('resolveAgentChoices', () => {
     const config = {
       ...baseConfig,
       defaultAgent: 'pi',
-      agents: { pi: { binary: 'pi' } },
+      agents: { pi: {} },
     } as AppConfig;
     const resolved = resolveAgentChoices(config);
 
@@ -210,7 +208,7 @@ describe('resolveAgentChoices', () => {
     const config = {
       ...baseConfig,
       defaultAgent: 'codex',
-      agents: { codex: { binary: 'codex' } },
+      agents: { codex: {} },
       agentChoices: { codex: { model: 'glm-5.2' } },
     } as AppConfig;
     const resolved = resolveAgentChoices(config);
@@ -223,7 +221,7 @@ describe('resolveAgentChoices', () => {
     const config = {
       ...baseConfig,
       defaultAgent: 'codex',
-      agents: { codex: { binary: 'codex' } },
+      agents: { codex: {} },
       agentChoices: { codex: { modelProvider: 'volcengine' } },
     } as AppConfig;
     const resolved = resolveAgentChoices(config);
@@ -236,7 +234,7 @@ describe('resolveAgentChoices', () => {
     const config = {
       ...baseConfig,
       defaultAgent: 'pi',
-      agents: { pi: { binary: 'pi' } },
+      agents: { pi: {} },
       agentChoices: { pi: { model: 'glm-5.1' } },
     } as AppConfig;
     const resolved = resolveAgentChoices(config);
@@ -250,7 +248,7 @@ describe('resolveAgentChoices', () => {
     const config = {
       ...baseConfig,
       defaultAgent: 'pi',
-      agents: { pi: { binary: 'pi' } },
+      agents: { pi: {} },
       agentChoices: { pi: { provider: 'anthropic' } },
     } as AppConfig;
     const resolved = resolveAgentChoices(config);
@@ -264,7 +262,7 @@ describe('resolveAgentChoices', () => {
     const config = {
       ...baseConfig,
       defaultAgent: 'pi',
-      agents: { pi: { binary: 'pi' } },
+      agents: { pi: {} },
       agentChoices: { pi: { thinking: 'high' } },
     } as AppConfig;
     const resolved = resolveAgentChoices(config);
@@ -278,7 +276,7 @@ describe('resolveAgentChoices', () => {
     const config = {
       ...baseConfig,
       defaultAgent: 'opencode',
-      agents: { opencode: { binary: 'opencode' } },
+      agents: { opencode: {} },
       agentChoices: { opencode: { modelID: 'sonnet' } },
     } as AppConfig;
     const resolved = resolveAgentChoices(config);
@@ -291,7 +289,7 @@ describe('resolveAgentChoices', () => {
     const config = {
       ...baseConfig,
       defaultAgent: 'opencode',
-      agents: { opencode: { binary: 'opencode' } },
+      agents: { opencode: {} },
       agentChoices: { opencode: { providerID: 'anthropic' } },
     } as AppConfig;
     const resolved = resolveAgentChoices(config);
@@ -304,7 +302,7 @@ describe('resolveAgentChoices', () => {
     const config = {
       ...baseConfig,
       defaultAgent: 'kimi',
-      agents: { kimi: { binary: 'kimi' } },
+      agents: { kimi: {} },
       agentChoices: { kimi: { model: 'moonshot-v1' } },
     } as AppConfig;
     const resolved = resolveAgentChoices(config);
@@ -317,7 +315,7 @@ describe('resolveAgentChoices', () => {
     const config = {
       ...baseConfig,
       defaultAgent: 'kimi',
-      agents: { kimi: { binary: 'kimi' } },
+      agents: { kimi: {} },
       agentChoices: { kimi: { thinkingEffort: 'max' } },
     } as AppConfig;
     const resolved = resolveAgentChoices(config);
@@ -330,7 +328,7 @@ describe('resolveAgentChoices', () => {
     const config = {
       ...baseConfig,
       defaultAgent: 'codex',
-      agents: { pi: { binary: 'pi' } },
+      agents: { pi: {} },
       agentChoices: { codex: {} },
     } as AppConfig;
     const resolved = resolveAgentChoices(config);
@@ -345,7 +343,7 @@ describe('resolveAgentChoices', () => {
     const config = {
       ...baseConfig,
       defaultAgent: 'pi',
-      agents: { codex: { binary: 'codex' } },
+      agents: { codex: {} },
       agentChoices: { pi: { model: 'glm-5.1' } },
     } as AppConfig;
     const resolved = resolveAgentChoices(config);
@@ -360,7 +358,7 @@ describe('resolveAgentChoices', () => {
     const config = {
       ...baseConfig,
       defaultAgent: 'pi',
-      agents: { pi: { binary: 'pi', model: 'existing' } },
+      agents: { pi: { model: 'existing' } },
       agentChoices: { pi: { provider: 'lt' } },
     } as AppConfig;
     const resolved = resolveAgentChoices(config);
@@ -377,7 +375,7 @@ describe('resolveAgentChoices', () => {
     const config = {
       ...baseConfig,
       defaultAgent: 'opencode',
-      agents: { opencode: { binary: 'opencode', modelID: 'existing' } },
+      agents: { opencode: { modelID: 'existing' } },
       agentChoices: { opencode: { providerID: 'anthropic' } },
     } as AppConfig;
     const resolved = resolveAgentChoices(config);
@@ -390,7 +388,7 @@ describe('resolveAgentChoices', () => {
     const config = {
       ...baseConfig,
       defaultAgent: 'kimi',
-      agents: { kimi: { binary: 'kimi', model: 'existing' } },
+      agents: { kimi: { model: 'existing' } },
       agentChoices: { kimi: { thinkingEffort: 'max' } },
     } as AppConfig;
     const resolved = resolveAgentChoices(config);
@@ -403,7 +401,7 @@ describe('resolveAgentChoices', () => {
     const config = {
       ...baseConfig,
       defaultAgent: 'kimi',
-      agents: { codex: { binary: 'codex' } },
+      agents: { codex: {} },
       agentChoices: { kimi: { model: 'moonshot' } },
     } as AppConfig;
     const resolved = resolveAgentChoices(config);
@@ -411,8 +409,6 @@ describe('resolveAgentChoices', () => {
     // agents.kimi should be created
     expect(resolved.agents?.kimi).toBeDefined();
     expect(resolved.agents?.kimi?.model).toBe('moonshot');
-    // codex should be preserved
-    expect(resolved.agents?.codex?.binary).toBe('codex');
   });
 
   it('should create agents object for codex when agents is undefined', () => {

@@ -46,7 +46,7 @@ describe('R16: ClaudeRunner extends SpawningRunner', () => {
   });
 
   it('test_anchor_claude_runner_extends_spawning_runner', () => {
-    const runner = new ClaudeRunner({ workspace: 'test', binary: 'fake-claude', pidDir: PID_DIR });
+    const runner = new ClaudeRunner({ workspace: 'test', pidDir: PID_DIR });
 
     // Core contract: ClaudeRunner IS-A SpawningRunner. Today this is RED
     // because ClaudeRunner `implements IAgentRunner` and does not extend

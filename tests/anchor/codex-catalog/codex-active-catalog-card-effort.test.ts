@@ -113,7 +113,6 @@ function buildCodexConfig(): AppConfig {
     defaultAgent: 'codex',
     agents: {
       codex: {
-        binary: 'codex',
         model: 'deepseek-v4-flash',
         modelProvider: 'deepseek',
         reasoningEffort: 'high',
