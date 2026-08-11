@@ -123,7 +123,6 @@ describe('reaction emoji by run terminal (anchor)', () => {
     const sessionStore = new SessionStore();
     sessionStore.setCwd(ctx.userId, fs.realpathSync(tmpDir));
     const bridge = new Bridge({
-      runner,
       agentRegistry: createStubAgentRegistry(runner),
       sessionReaderRegistry: createStubSessionReaderRegistry(),
       connector,
@@ -164,7 +163,6 @@ describe('reaction emoji by run terminal (anchor)', () => {
       const sessionStore = new SessionStore();
       sessionStore.setCwd(ctx.userId, fs.realpathSync(tmpDir));
       const bridge = new Bridge({
-        runner,
         agentRegistry: createStubAgentRegistry(runner),
         sessionReaderRegistry: createStubSessionReaderRegistry(),
         connector,
@@ -209,7 +207,6 @@ describe('reaction emoji by run terminal (anchor)', () => {
     const sessionStore = new SessionStore();
     sessionStore.setCwd(ctx.userId, fs.realpathSync(tmpDir));
     const bridge = new Bridge({
-      runner,
       agentRegistry: createStubAgentRegistry(runner),
       sessionReaderRegistry: createStubSessionReaderRegistry(),
       connector,

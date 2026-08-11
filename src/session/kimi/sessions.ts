@@ -203,7 +203,9 @@ export type CwdGuardResult = 'verified' | 'failed' | 'unverifiable';
  * - failed: session has a workDir but it doesn't match realCwd
  * - unverifiable: session has no workDir field (cannot verify)
  *
- * Unverifiable is a fail-open state — the caller should allow access and log a warning.
+ * Unverifiable sessions are handled by the caller: when no cwd source can
+ * verify the session, it is rejected (fail-closed), aligned with claude's
+ * cwd guard semantics.
  */
 export function checkCwdGuard(state: KimiSessionState, realCwd: string): CwdGuardResult {
   const sessionWorkDir = extractWorkDir(state);
@@ -448,11 +450,15 @@ export class KimiSessionReader implements AgentSessionReader {
       if (indexWorkDir && indexWorkDir !== realCwd) {
         return { events: [] };
       }
-      // When index also has no workDir, fall through (unverifiable from all sources)
+      // v2 sessions have empty index workDir (v1-only field) and may lack
+      // state.json cwd. When no cwd source can verify the session belongs to
+      // the requested workspace, fail-closed to prevent cross-workspace access
+      // (aligned with claude's fail-closed cwd guard).
       if (!indexWorkDir) {
         getLogger().warn(
-          `[kimi-session-reader] no cwd source (state.json + index) for session ${sessionId}, skipping cwd guard`,
+          `[kimi-session-reader] no cwd source (state.json + index) for session ${sessionId}, rejecting (fail-closed)`,
         );
+        return { events: [] };
       }
     }
 

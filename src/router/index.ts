@@ -153,6 +153,8 @@ interface CardActionResponse {
 }
 
 export class CommandRouter {
+  /** Valid agent kinds — single source of truth for resume.use / resume.page / cmdResume. */
+  static readonly VALID_AGENTS = ['claude', 'codex', 'opencode', 'pi', 'kimi'] as const;
   private sessionStore: SessionStore;
   private bridge: Bridge;
   private config: AppConfig;
@@ -306,10 +308,10 @@ export class CommandRouter {
       case 'ws.remove':
         return await this.handleWsRemove(value, ctx);
       case 'resume.use': {
-        // resume.use can carry an agent field when called from /resume [agent] list
+        // resume.use carries an agent field from /resume [agent] list cards
+        // (both active and completed cards include the agent field).
         const resumeAgent = value.agent ?? this.config.defaultAgent;
-        // Validate agent is a valid type
-        const validAgents = ['claude', 'codex', 'opencode', 'pi', 'kimi'] as const;
+        const validAgents = CommandRouter.VALID_AGENTS;
         const resolvedAgent = validAgents.includes(resumeAgent as (typeof validAgents)[number])
           ? (resumeAgent as (typeof validAgents)[number])
           : this.config.defaultAgent;
@@ -810,9 +812,11 @@ export class CommandRouter {
     const inputTask = this.bridge.getQueuedTask(workspace, messageId);
     if (!inputTask) {
       // Task already left the queue (began or was cancelled) before we could
-      // register the replacement. The user must be told the edit failed.
-      await this.bridge.sendResult({ text: '⚠️ 任务已不在队列中（可能已开始执行或被撤销）' }, ctx);
-      return;
+      // register the replacement. Return a toast so the edit-form card gets
+      // dismissed — sendResult alone leaves the card stuck in the edit state
+      // (Feishu keeps the pre-click card when the callback response has no
+      // toast/card field).
+      return { toast: { type: 'info', content: '任务已不在队列中（可能已开始执行或被撤销）' } };
     }
     this.bridge.setTaskReplacement(workspace, messageId, async () => {
       await this.handle(newMessage, ctx, { cwdOverride: workspace, binding: inputTask.binding });
@@ -952,8 +956,7 @@ export class CommandRouter {
     ctx: CommandContext,
   ): Promise<CardActionResponse> {
     const resumeAgent = value.agent ?? this.config.defaultAgent;
-    // Validate agent is a valid type (same as resume.use); fall back to default.
-    const validAgents = ['claude', 'codex', 'opencode', 'pi', 'kimi'] as const;
+    const validAgents = CommandRouter.VALID_AGENTS;
     const resolvedAgent = validAgents.includes(resumeAgent as (typeof validAgents)[number])
       ? (resumeAgent as (typeof validAgents)[number])
       : this.config.defaultAgent;
@@ -2482,7 +2485,7 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
     const cwd = entry?.cwd;
 
     // Valid agent kinds for the /resume [agent] [N] feature
-    const VALID_AGENTS = ['claude', 'codex', 'opencode', 'pi', 'kimi'] as const;
+    const VALID_AGENTS = CommandRouter.VALID_AGENTS;
     type ValidAgent = (typeof VALID_AGENTS)[number];
 
     // Parse arguments: /resume [agent] [N] or /resume [sessionId] or /resume [agent] [sessionId]

@@ -155,7 +155,6 @@ describe('A8 /resume <sessionId> single-session path unaffected by pagination', 
     registry.register('kimi', stubReader);
 
     const bridge = new Bridge({
-      runner,
       agentRegistry: createStubAgentRegistry(runner),
       sessionReaderRegistry: createStubSessionReaderRegistry(),
       connector,

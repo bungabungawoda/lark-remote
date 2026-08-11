@@ -74,7 +74,7 @@ describe('Anchor: multiple thinking events create separate blocks', () => {
     // accumulated thinking content — thinking lives in blocks now.
     // Either the field is removed, or it no longer holds the concatenated
     // thinking text.
-    expect(state.reasoning?.content).toBeFalsy();
+    expect((state as any).reasoning?.content).toBeFalsy();
   });
 });
 

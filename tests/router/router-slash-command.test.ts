@@ -181,7 +181,6 @@ describe('Bug 2: / commands must not be blocked by the serial queue', () => {
     const connector = createStubConnector();
     const runner = createBlockingRunner();
     const bridge = new Bridge({
-      runner,
       agentRegistry: createStubAgentRegistry(runner),
       sessionReaderRegistry: createStubSessionReaderRegistry(),
       connector,
@@ -246,7 +245,6 @@ describe('Bug 2: / commands must not be blocked by the serial queue', () => {
     const connector = createStubConnector();
     const runner = createBlockingRunner();
     const bridge = new Bridge({
-      runner,
       agentRegistry: createStubAgentRegistry(runner),
       sessionReaderRegistry: createStubSessionReaderRegistry(),
       connector,
@@ -292,7 +290,6 @@ describe('Bug 2: / commands must not be blocked by the serial queue', () => {
     const connector = createStubConnector();
     const runner = createBlockingRunner();
     const bridge = new Bridge({
-      runner,
       agentRegistry: createStubAgentRegistry(runner),
       sessionReaderRegistry: createStubSessionReaderRegistry(),
       connector,
@@ -338,7 +335,6 @@ describe('Bug 2: / commands must not be blocked by the serial queue', () => {
     const connector = createStubConnector();
     const runner = createBlockingRunner();
     const bridge = new Bridge({
-      runner,
       agentRegistry: createStubAgentRegistry(runner),
       sessionReaderRegistry: createStubSessionReaderRegistry(),
       connector,
@@ -389,7 +385,6 @@ describe('Bug 2: / commands must not be blocked by the serial queue', () => {
     const connector = createStubConnector();
     const runner = createBlockingRunner();
     const bridge = new Bridge({
-      runner,
       agentRegistry: createStubAgentRegistry(runner),
       sessionReaderRegistry: createStubSessionReaderRegistry(),
       connector,
@@ -432,7 +427,6 @@ describe('Bug 2: / commands must not be blocked by the serial queue', () => {
     const connector = createStubConnector();
     const runner = createBlockingRunner();
     const bridge = new Bridge({
-      runner,
       agentRegistry: createStubAgentRegistry(runner),
       sessionReaderRegistry: createStubSessionReaderRegistry(),
       connector,

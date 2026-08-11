@@ -131,7 +131,8 @@ describe('Round9 anchors: config.save switch vs startup/resume/cd/syncAgentChoic
       workspacePath: path.join(tmpDir, 'workspace.json'),
       ordersPath: path.join(tmpDir, 'orders.json'),
       sessionReaderRegistry: registry,
-    });
+      toast: vi.fn(),
+    } as any);
   }
 
   beforeEach(() => {
@@ -290,11 +291,11 @@ describe('Round9 anchors: config.save switch vs startup/resume/cd/syncAgentChoic
       ctx,
     );
     expect(sessionStore.getSessionId(userId, 'pi')).toBe('pi-session-P1');
-    expect(router.config.defaultAgent).toBe('codex');
+    expect((router as any).config.defaultAgent).toBe('codex');
 
     const response = await doSwitch(userId, ctx, 'pi');
 
-    expect(response?.toast).toBeFalsy();
+    expect((response as any)?.toast).toBeFalsy();
     expect(lastNotice()).toContain('已使用所选 session');
     expect(lastNotice()).toContain('pi-session-P1');
     expect(lastNotice()).not.toContain('session 已清空');
@@ -555,7 +556,7 @@ describe('Round9 anchors: config.save switch vs startup/resume/cd/syncAgentChoic
     );
     const response = await router.handleCardAction({ cmd: 'config.save' }, ctx);
 
-    expect(response?.toast).toBeFalsy();
+    expect((response as any)?.toast).toBeFalsy();
     for (const text of allNotices()) {
       expect(text).not.toContain('已切换到');
     }
@@ -596,7 +597,7 @@ describe('Round9 anchors: config.save switch vs startup/resume/cd/syncAgentChoic
     );
     const response = await router.handleCardAction({ cmd: 'config.save' }, ctx);
 
-    expect(response?.toast).toBeFalsy();
+    expect((response as any)?.toast).toBeFalsy();
     expect(lastNotice()).toContain('将继续之前的 session');
     expect(lastNotice()).toContain('pi-session-P');
     expect(sessionStore.getSessionId(userId, 'pi')).toBe('pi-session-P');
