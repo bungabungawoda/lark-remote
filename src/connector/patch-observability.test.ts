@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, type Mock } from 'vitest';
 import { FeishuConnector } from './index.js';
 import type { AppConfig } from '../config/index.js';
 
@@ -11,7 +11,7 @@ import type { AppConfig } from '../config/index.js';
  * fallback prevents "patchStub is not a function" if a test is added without
  * a proper beforeEach reset.
  */
-let patchStub: ReturnType<typeof vi.fn>;
+let patchStub: Mock<(...args: unknown[]) => unknown>;
 
 vi.mock('@larksuite/channel', () => ({
   createLarkChannel: () => ({
@@ -29,7 +29,8 @@ vi.mock('@larksuite/channel', () => ({
             // Must be a writable property so FeishuConnector can reassign patch
             // with the observability wrapper. The closure reads patchStub at call
             // time so beforeEach controls the stub per test.
-            patch: (...args: unknown[]) => (patchStub ??= vi.fn())(...args),
+            patch: (...args: unknown[]) =>
+              (patchStub ??= vi.fn<(...args: unknown[]) => unknown>())(...args),
           },
         },
       },
@@ -37,7 +38,7 @@ vi.mock('@larksuite/channel', () => ({
   }),
 }));
 
-let warnFn: ReturnType<typeof vi.fn>;
+let warnFn: Mock<(...args: unknown[]) => unknown>;
 
 vi.mock('../logger/index.js', () => ({
   getLogger: () => ({

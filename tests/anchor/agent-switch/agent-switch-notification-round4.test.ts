@@ -291,7 +291,7 @@ describe('Round4/5 anchors & probes (Round 6: 3 probes upgraded): config.save sw
     sessionStore.setSessionId(userId, 'pi', 'pi-session-X');
 
     // S2 pi→codex 时 sendResult 失败
-    bridge.sendResult.mockResolvedValueOnce(false);
+    (bridge.sendResult as ReturnType<typeof vi.fn>).mockResolvedValueOnce(false);
     await doSwitch(userId, ctx, 'codex');
     const sendResultMock = bridge.sendResult as ReturnType<typeof vi.fn>;
     expect(sendResultMock).toHaveBeenCalledTimes(2);
@@ -328,7 +328,7 @@ describe('Round4/5 anchors & probes (Round 6: 3 probes upgraded): config.save sw
     await doSwitch(userId, ctx, 'codex');
 
     // S3 codex→pi：恢复消息发送失败
-    bridge.sendResult.mockResolvedValueOnce(false);
+    (bridge.sendResult as ReturnType<typeof vi.fn>).mockResolvedValueOnce(false);
     const response3 = await doSwitch(userId, ctx, 'pi');
 
     const sendResultMock = bridge.sendResult as ReturnType<typeof vi.fn>;

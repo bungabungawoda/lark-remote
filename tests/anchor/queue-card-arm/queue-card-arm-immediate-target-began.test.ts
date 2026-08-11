@@ -156,7 +156,6 @@ describe('queue.immediate must not remove tasks queued BEHIND the target when th
     const connector = createStubConnector();
     const runner = createStubRunner();
     const bridge = new Bridge({
-      runner,
       agentRegistry: createStubAgentRegistry(runner),
       sessionReaderRegistry: createStubSessionReaderRegistry(),
       connector,

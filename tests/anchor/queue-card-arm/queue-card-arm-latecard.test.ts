@@ -133,7 +133,7 @@ describe('QueueManager - late-arriving queue card must still transition to execu
     expect(sentCards.length).toBe(1); // T2 的排队卡已发出（send 挂起）
 
     // --- 步骤 3：模拟 stop：reset 计数 + T1 被杀 settle ---
-    qm.resetExecutingCount(WORKSPACE);
+    qm.resetExecutingCount(WORKSPACE, qm.getExecutingSlot(WORKSPACE)!);
     rejectT1(new Error('simulated process kill'));
 
     // --- 步骤 4：等 T2 从队列链接跑（此时排队卡 send 仍未完成）---

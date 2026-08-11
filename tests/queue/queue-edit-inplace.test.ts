@@ -149,7 +149,6 @@ describe('queue.edit 原地更新修复', () => {
     const connector = createStubConnector();
     const runner = createStubRunner();
     const bridge = new Bridge({
-      runner,
       agentRegistry: createStubAgentRegistry(runner),
       sessionReaderRegistry: createStubSessionReaderRegistry(),
       connector,
@@ -245,7 +244,6 @@ describe('queue.edit 原地更新修复', () => {
     const connector = createStubConnector();
     const runner = createStubRunner();
     const bridge = new Bridge({
-      runner,
       agentRegistry: createStubAgentRegistry(runner),
       sessionReaderRegistry: createStubSessionReaderRegistry(),
       connector,
@@ -296,7 +294,6 @@ describe('queue.edit 原地更新修复', () => {
     const connector = createStubConnector();
     const runner = createStubRunner();
     const bridge = new Bridge({
-      runner,
       agentRegistry: createStubAgentRegistry(runner),
       sessionReaderRegistry: createStubSessionReaderRegistry(),
       connector,

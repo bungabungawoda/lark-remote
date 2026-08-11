@@ -64,7 +64,9 @@ describe(' setNestedValue 原型链污染守卫 (anchor)', () => {
     expect(() => setConfigValue(p, config, 'constructor.prototype.x', '1')).toThrow();
     expect(() => setConfigValue(p, config, 'prototype.x', '1')).toThrow();
     // 删除路径（value=undefined 走 deleteNestedValue）
-    expect(() => setConfigValue(p, config, '__proto__.polluted', undefined)).toThrow();
+    expect(() =>
+      setConfigValue(p, config, '__proto__.polluted', undefined as unknown as string),
+    ).toThrow();
     // 读取路径
     expect(() => getConfigValue(config, 'constructor.prototype.x')).toThrow();
   });
