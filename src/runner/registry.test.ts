@@ -11,10 +11,7 @@ const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'lark-registry-test-'));
 describe('AgentRegistry', () => {
   it('register + get returns the runner produced by the factory', () => {
     const registry = new AgentRegistry();
-    registry.register(
-      'claude',
-      (ws) => new ClaudeRunner({ binary: '/bin/true', pidDir: tmpDir, workspace: ws }),
-    );
+    registry.register('claude', (ws) => new ClaudeRunner({ pidDir: tmpDir, workspace: ws }));
 
     const runner = registry.get('claude', '/tmp/ws-a');
     expect(runner).toBeInstanceOf(ClaudeRunner);
@@ -23,10 +20,7 @@ describe('AgentRegistry', () => {
 
   it('get throws "agent not registered" for an unregistered kind', () => {
     const registry = new AgentRegistry();
-    registry.register(
-      'claude',
-      () => new ClaudeRunner({ workspace: 'test', binary: '/bin/true', pidDir: tmpDir }),
-    );
+    registry.register('claude', () => new ClaudeRunner({ workspace: 'test', pidDir: tmpDir }));
 
     expect(() => registry.get('codex', '/tmp/ws-a')).toThrow(/agent not registered: codex/);
     expect(() => registry.get('opencode', '/tmp/ws-a')).toThrow(/agent not registered: opencode/);
@@ -34,10 +28,7 @@ describe('AgentRegistry', () => {
 
   it('factory can return a fresh instance per workspace (claude spawn-per-message)', () => {
     const registry = new AgentRegistry();
-    registry.register(
-      'claude',
-      (ws) => new ClaudeRunner({ binary: '/bin/true', pidDir: tmpDir, workspace: ws }),
-    );
+    registry.register('claude', (ws) => new ClaudeRunner({ pidDir: tmpDir, workspace: ws }));
 
     const a = registry.get('claude', '/tmp/ws-a');
     const b = registry.get('claude', '/tmp/ws-b');
@@ -82,12 +73,11 @@ describe('AgentRegistry', () => {
   describe('factory reads latest config from configContainer', () => {
     /** Build a minimal AppConfig for testing (feishu fields required by schema). */
     function makeConfig(
-      overrides: { binary?: string; model?: string; effort?: string; stopGraceMs?: number } = {},
+      overrides: { model?: string; effort?: string; stopGraceMs?: number } = {},
     ): AppConfig {
       return {
         feishu: { appId: 'test-app', appSecret: 'test-secret' },
         claude: {
-          binary: overrides.binary ?? 'claude',
           model: overrides.model ?? 'claude-opus-4-8',
           effort: overrides.effort ?? 'medium',
           stopGraceMs: overrides.stopGraceMs ?? DEFAULT_STOP_GRACE_MS,
@@ -113,7 +103,6 @@ describe('AgentRegistry', () => {
         const latestConfig = (container?.current as AppConfig) ?? startupConfig;
         const claudeConfig = latestConfig.claude;
         return new ClaudeRunner({
-          binary: claudeConfig.binary,
           model: claudeConfig.model,
           effort: claudeConfig.effort,
           stopGraceMs: claudeConfig.stopGraceMs,
@@ -146,7 +135,6 @@ describe('AgentRegistry', () => {
         const latestConfig = (container?.current as AppConfig) ?? startupConfig;
         const claudeConfig = latestConfig.claude;
         return new ClaudeRunner({
-          binary: claudeConfig.binary,
           model: claudeConfig.model,
           effort: claudeConfig.effort,
           stopGraceMs: claudeConfig.stopGraceMs,

@@ -135,7 +135,7 @@ describe('P1-1 /resume 列表页预取上限 + summary 兜底', () => {
     const runner = createStubRunner();
     const config: AppConfig = AppConfigSchema.parse({
       feishu: { appId: 'test', appSecret: 'test' },
-      claude: { binary: 'claude', model: 'opus', stopGraceMs: 5000 },
+      claude: { model: 'opus', stopGraceMs: 5000 },
       defaultAgent: 'claude',
     });
 
