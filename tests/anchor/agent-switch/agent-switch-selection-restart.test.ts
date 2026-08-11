@@ -127,7 +127,8 @@ describe('R3 red: explicit selection survives restart before first switch-in', (
       workspacePath: path.join(tmpDir, 'workspace.json'),
       ordersPath: path.join(tmpDir, 'orders.json'),
       sessionReaderRegistry: registry,
-    });
+      toast: vi.fn(),
+    } as any);
   }
 
   beforeEach(() => {
@@ -197,7 +198,7 @@ describe('R3 red: explicit selection survives restart before first switch-in', (
 
     // 首次 config.save 切入：显式选择必须存活
     const response = await doSwitch(userId, ctx, 'pi');
-    expect(response?.toast).toBeFalsy();
+    expect((response as any)?.toast).toBeFalsy();
     expect(lastNotice()).toContain('已使用所选 session');
     expect(lastNotice()).toContain('pi-session-P1');
     expect(lastNotice()).not.toContain('session 已清空');

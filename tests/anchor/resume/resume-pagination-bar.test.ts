@@ -154,7 +154,6 @@ function buildHarness(tmpDir: string, projectsDir: string, sessionCount: number)
   registry.register('kimi', stubReader);
 
   const bridge = new Bridge({
-    runner,
     agentRegistry: createStubAgentRegistry(runner),
     sessionReaderRegistry: createStubSessionReaderRegistry(),
     connector,

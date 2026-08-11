@@ -100,7 +100,6 @@ function createRouter() {
   });
 
   const bridge = new Bridge({
-    runner,
     agentRegistry: createStubAgentRegistry(runner),
     sessionReaderRegistry: createStubSessionReaderRegistry(),
     connector,
@@ -149,6 +148,8 @@ describe('Anchor: ws.remove updates card in place', () => {
     sessionStore.set('user1', {
       sessions: new Map([['claude', 'session-1']]),
       previousSessions: new Map(),
+      arrivalSessions: new Map(),
+      sessionCwds: new Map(),
       cwd: projectDir,
     });
 

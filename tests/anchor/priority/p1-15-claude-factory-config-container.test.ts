@@ -2,7 +2,7 @@
  * Anchor Test: P1-15 — Claude factory must read config from configContainer, not startup closure
  *
  * ① 验证什么行为：
- *   src/index.ts 中 claude agent 工厂必须通过 agentRegistry.getConfigContainer()
+ *   src/runner/factory.ts 中 claude agent 工厂必须通过 agentRegistry.getConfigContainer()
  *   读取最新配置，而非闭包中的启动时 config 快照。这是 P1-15 修复的核心：
  *   运行时 config 变更（model, effort, stopGraceMs）在 bridge.setConfig() +
  *   clearRunners() 后必须生效。
@@ -12,9 +12,10 @@
  *    则运行时 setConfig() 修改的 model/effort 不会传递给新创建的 runner，
  *    用户改配置后仍使用旧模型运行。
  *
- * ③ 依据：index.ts 的 initializeRunner 不导出、工厂闭包不可注入测试，
- *   故用源码级守卫（项目已有先例：p1-9-index-factories-workspace.test.ts
- *   对 workspace: ws 做源码断言）。
+ * ③ 依据：factory.ts 的 createAgentRegistries 不导出、工厂闭包不可注入测试，
+ *   故用源码级守卫。行为覆盖由 factory.test.ts 的 configContainer 动态切换测试提供；
+ *   本测试是编译时/重构守卫——防止有人把 `(container?.current as AppConfig) ?? config`
+ *   简化回 `config` 闭包模式时无声通过。
  *
  * ④ 测试策略：
  *   - 正向断言：claude factory 中必须出现 `agentRegistry.getConfigContainer()` 调用
@@ -27,10 +28,10 @@ import { describe, it, expect } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 
-const indexSource = fs.readFileSync(path.join(process.cwd(), 'src/index.ts'), 'utf-8');
+const factorySource = fs.readFileSync(path.join(process.cwd(), 'src/runner/factory.ts'), 'utf-8');
 
 /**
- * Extract the body of a specific agent's factory closure from index.ts source.
+ * Extract the body of a specific agent's factory closure from factory.ts source.
  * Returns the source between `agentRegistry.register('agentName', (ws) => {` and the matching `});`
  *
  * CAVEAT: brace balancing ignores braces inside string/template literals.
@@ -45,7 +46,7 @@ function extractFactoryBody(source: string, agentName: string): string {
   );
   const match = registerPattern.exec(source);
   if (!match) {
-    throw new Error(`Could not find agentRegistry.register('${agentName}', ...) in index.ts`);
+    throw new Error(`Could not find agentRegistry.register('${agentName}', ...) in factory.ts`);
   }
 
   const startIdx = match.index + match[0].length;
@@ -66,7 +67,7 @@ function extractFactoryBody(source: string, agentName: string): string {
 
 describe('P1-15: Claude factory configContainer wiring', () => {
   it('test_anchor_claude_factory_uses_configContainer_not_closure', () => {
-    const claudeFactory = extractFactoryBody(indexSource, 'claude');
+    const claudeFactory = extractFactoryBody(factorySource, 'claude');
 
     // Positive: must read from configContainer
     expect(claudeFactory).toContain('agentRegistry.getConfigContainer()');
@@ -81,7 +82,7 @@ describe('P1-15: Claude factory configContainer wiring', () => {
   });
 
   it('test_anchor_codex_factory_uses_configContainer_not_closure', () => {
-    const codexFactory = extractFactoryBody(indexSource, 'codex');
+    const codexFactory = extractFactoryBody(factorySource, 'codex');
 
     // Codex factory must also use configContainer
     expect(codexFactory).toContain('agentRegistry.getConfigContainer()');
@@ -92,11 +93,9 @@ describe('P1-15: Claude factory configContainer wiring', () => {
     expect(codexFactory).not.toMatch(/getAgentConfig\s*\(\s*config\b/);
   });
 
-  it('test_anchor_configContainer_exists_in_initializeRunner', () => {
+  it('test_anchor_configContainer_exists_in_createAgentRegistries', () => {
     // The configContainer must be set up (setConfigContainer call) so that
-    // factories can read from it. Verify this call exists in initializeRunner.
-    // Note: this does NOT verify call ordering relative to factories —
-    // setConfigContainer currently sits between opencode and pi registrations.
-    expect(indexSource).toContain('agentRegistry.setConfigContainer(');
+    // factories can read from it. Verify this call exists in createAgentRegistries.
+    expect(factorySource).toContain('agentRegistry.setConfigContainer(');
   });
 });

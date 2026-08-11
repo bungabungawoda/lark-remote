@@ -128,7 +128,6 @@ describe('/resume uses new defaultAgent reader after config.save', () => {
     registry.register('pi', piReader);
 
     const bridge = new Bridge({
-      runner,
       agentRegistry: createStubAgentRegistry(runner),
       sessionReaderRegistry: createStubSessionReaderRegistry(),
       connector,

@@ -172,7 +172,6 @@ describe('edited queue.immediate must register its replacement before any awaiti
     const sessionStore = new SessionStore();
     const runner = createStubRunner();
     const bridge = new Bridge({
-      runner,
       agentRegistry: createStubAgentRegistry(runner),
       sessionReaderRegistry: createStubSessionReaderRegistry(),
       connector,
