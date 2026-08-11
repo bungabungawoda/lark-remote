@@ -143,7 +143,6 @@ describe('A3 /resume 默认页大小 5 + N clamp [1,5]', () => {
     registry.register('kimi', stubReader);
 
     const bridge = new Bridge({
-      runner,
       agentRegistry: createStubAgentRegistry(runner),
       sessionReaderRegistry: createStubSessionReaderRegistry(),
       connector,

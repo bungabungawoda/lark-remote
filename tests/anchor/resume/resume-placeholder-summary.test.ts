@@ -174,7 +174,6 @@ describe('Review P2-1 非预取行占位符 summary 不得渲染为"最近输入
     registry.register('kimi', stubReader);
 
     const bridge = new Bridge({
-      runner,
       agentRegistry: createStubAgentRegistry(runner),
       sessionReaderRegistry: createStubSessionReaderRegistry(),
       connector,

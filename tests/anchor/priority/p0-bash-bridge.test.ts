@@ -102,7 +102,13 @@ describe('P0-2 B4: bridge 集成（10k chunk 洪峰）', () => {
     };
 
     const sessionStore = new SessionStore();
-    sessionStore.set('u1', { sessions: new Map(), cwd: '/tmp' });
+    sessionStore.set('u1', {
+      sessions: new Map(),
+      previousSessions: new Map(),
+      arrivalSessions: new Map(),
+      sessionCwds: new Map(),
+      cwd: '/tmp',
+    });
 
     const inlineRunner = {
       isRunning: false,
@@ -112,13 +118,11 @@ describe('P0-2 B4: bridge 集成（10k chunk 洪峰）', () => {
       registerExitHandlers: () => {},
     };
     const bridge = new Bridge({
-      runner: inlineRunner,
       agentRegistry: createStubAgentRegistry(inlineRunner),
-      sessionReaderRegistry: createStubSessionReaderRegistry(),
-      config: makeConfig(),
-      connector: connector as never,
+      connector: connector as any,
       sessionStore,
-      sessionReaderRegistry: null as never,
+      config: makeConfig(),
+      sessionReaderRegistry: createStubSessionReaderRegistry(),
     });
 
     await bridge.executeBash('yes', { userId: 'u1', chatId: 'c1', messageId: 'm1' });

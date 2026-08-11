@@ -66,7 +66,7 @@ describe('PiRunner', () => {
       const reader = runner.sessionReader;
       expect(reader.listSessions('/tmp')).toEqual({ sessions: [], total: 0 });
       expect(reader.getNewestSession('/tmp')).toBeNull();
-      expect(reader.readSessionContent('any')).toEqual({ events: [] });
+      expect(reader.readSessionContent('any', '/tmp')).toEqual({ events: [] });
       expect(reader.isSessionActive('any', '/tmp')).toBe(false);
     });
   });

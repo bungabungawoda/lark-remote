@@ -10,10 +10,7 @@ import { AppConfigSchema } from '../../../src/config/index.js';
 import type { AppConfig } from '../../../src/config/index.js';
 import type { AgentSessionReader } from '../../../src/runner/index.js';
 
-import {
-  createStubAgentRegistry,
-  createStubSessionReaderRegistry,
-} from '../../lib/bridge-stubs.js';
+import { createStubAgentRegistry } from '../../lib/bridge-stubs.js';
 const stubSessionReader: AgentSessionReader = {
   listSessions: () => ({ sessions: [], total: 0 }),
   getNewestSession: () => null,
@@ -109,7 +106,6 @@ describe('P2-27: /active card stop buttons must have tag:plain_text', () => {
       output: { showThinking: true, showToolUse: false, showToolResult: false },
     });
     const bridge = new Bridge({
-      runner,
       agentRegistry: createStubAgentRegistry(runner),
       sessionReaderRegistry: createStubSessionReaderRegistry(),
       connector,

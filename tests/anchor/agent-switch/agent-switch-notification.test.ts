@@ -202,7 +202,7 @@ describe('config.save sends persistent message notification on agent switch', ()
     await router.handleCardAction({ cmd: 'config.set', key: 'defaultAgent', option: 'pi' }, ctx);
 
     // 本次保存时持久化消息发送失败（真实契约：resolve false，不 throw）
-    bridge.sendResult.mockResolvedValueOnce(false);
+    (bridge.sendResult as ReturnType<typeof vi.fn>).mockResolvedValueOnce(false);
 
     const response = await router.handleCardAction({ cmd: 'config.save' }, ctx);
 
@@ -250,7 +250,9 @@ describe('config.save sends persistent message notification on agent switch', ()
     await router.handleCardAction({ cmd: 'config.set', key: 'defaultAgent', option: 'pi' }, ctx);
 
     // 模拟保存时卡片原地刷新失败（飞书 patch 请求网络错误等）
-    bridge.updateCardInPlace.mockRejectedValueOnce(new Error('card refresh failed'));
+    (bridge.updateCardInPlace as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
+      new Error('card refresh failed'),
+    );
 
     await router.handleCardAction({ cmd: 'config.save' }, ctx);
 

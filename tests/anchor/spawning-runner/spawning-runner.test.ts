@@ -768,7 +768,6 @@ describe('P1-4 A2: createStreamReader enables backpressure by default', () => {
     class BackpressureTestRunner extends SpawningRunner {
       constructor() {
         super({
-          binary: 'echo',
           workspace: 'test',
           pidFilePrefix: 'test-p1-4',
           logTag: 'test-p1-4',
