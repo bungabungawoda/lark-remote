@@ -59,7 +59,7 @@ claude:
   model: claude-opus-4-8    # Model
   effort: medium            # Reasoning effort: low | medium | high | xhigh | max
   # permissionMode is hardcoded as bypassPermissions (inside runner), not configurable via config
-  stopGraceMs: 5000         # SIGTERM→SIGKILL grace period for watchdog auto-finish (milliseconds)
+  stopGraceMs: 5000         # Grace period for idle-timeout auto-stop: SIGTERM→SIGKILL (milliseconds)
 
 output:
   showThinking: true        # Whether to send thinking blocks
@@ -70,7 +70,7 @@ logging:
   level: info               # debug | info | warn | error
 
 idle:
-  watchdogMinutes: 15       # Idle watchdog, 0 to disable
+  watchdogMinutes: 15       # Idle timeout auto-stop, 0 to disable
 ```
 
 The configuration file path can be overridden with the `--config-dir` CLI parameter (e.g., `lark-remote --config-dir /path/to/dir`).
@@ -158,7 +158,7 @@ Each agent's (claude/codex/opencode/pi/kimi) conversation has a session id. The 
 
 #### `/stop`: Terminating a Process
 
-`/stop` uses a dedicated control channel and will not queue behind the current Claude run. It calls `runner.stop({ immediate: true })`: SIGTERM followed immediately by SIGKILL, **no grace wait** (`stopGraceMs` only serves the idle-watchdog auto-finish path, default 5s, not user-adjustable). The "⏹ Stop" button on the run card behaves identically.
+`/stop` uses a dedicated control channel and will not queue behind the current Claude run. It calls `runner.stop({ immediate: true })`: SIGTERM followed immediately by SIGKILL, **no grace wait** (`stopGraceMs` only serves the idle-timeout auto-stop path, default 5s, not user-adjustable). The "⏹ Stop" button on the run card behaves identically.
 
 #### `/restart`: Restarting the Bridge
 
@@ -229,7 +229,7 @@ Cards have a strict UTF-8 byte budget and are lossy progress summaries, not comp
 | Situation | Behavior |
 |-----------|----------|
 | claude process killed externally | Bridge reports error but does not crash; next message is processed normally |
-| claude produces no output for a long time (hung) | 15-minute idle watchdog auto-terminates the process; original card shows timeout; queue unblocks |
+| claude produces no output for a long time (hung) | 15-minute idle timeout auto-terminates the process; original card shows timeout; queue unblocks |
 | Bridge exits abnormally | Orphaned claude processes are cleaned up (on startup, pid file is read to kill orphans) |
 | Duplicate launch with same configDir | Second instance exits immediately and reports existing pid |
 | Feishu rate limiting (99991400) | Automatically sleeps 200ms and retries once |
@@ -246,7 +246,7 @@ bun run test        # vitest all tests
 bun run typecheck   # tsc --noEmit static check
 ```
 
-Test coverage: config, session, workspace, runner (JSONL parsing + exit code), card (state machine, rendering, stream lifecycle), bridge (work queue + control lane + watchdog + degradation), router, and integration.
+Test coverage: config, session, workspace, runner (JSONL parsing + exit code), card (state machine, rendering, stream lifecycle), bridge (work queue + control lane + idle timeout + degradation), router, and integration.
 
 ---
 

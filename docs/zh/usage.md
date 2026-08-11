@@ -59,7 +59,7 @@ claude:
   model: claude-opus-4-8    # 模型
   effort: medium            # 推理强度 low | medium | high | xhigh | max
   # permissionMode 硬编码为 bypassPermissions（runner 内部），不通过 config 配置
-  stopGraceMs: 5000         # watchdog 自动 finish 的 SIGTERM→SIGKILL 宽限时间（毫秒）
+  stopGraceMs: 5000         # 空闲超时自动停止时的优雅关闭宽限时间（毫秒）
 
 output:
   showThinking: true        # 是否发送 thinking 块
@@ -70,7 +70,7 @@ logging:
   level: info               # debug | info | warn | error
 
 idle:
-  watchdogMinutes: 15       # 空闲看门狗，0 关闭
+  watchdogMinutes: 15       # 空闲超时自动停止，0 关闭
 ```
 
 配置文件路径可用 `--config-dir` CLI 参数覆盖（如 `lark-remote --config-dir /path/to/dir`）。
