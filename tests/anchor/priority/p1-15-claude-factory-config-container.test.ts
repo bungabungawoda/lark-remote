@@ -86,6 +86,10 @@ describe('P1-15: Claude factory configContainer wiring', () => {
     // Codex factory must also use configContainer
     expect(codexFactory).toContain('agentRegistry.getConfigContainer()');
     expect(codexFactory).toContain('latestConfig');
+
+    // Negative: must NOT pass the startup closure `config` to getAgentConfig.
+    // Old broken pattern: getAgentConfig(config, 'codex') — ignores runtime updates.
+    expect(codexFactory).not.toMatch(/getAgentConfig\s*\(\s*config\b/);
   });
 
   it('test_anchor_configContainer_exists_in_initializeRunner', () => {
