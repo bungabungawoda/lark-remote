@@ -97,8 +97,6 @@ lark-remote --settings ~/.claude/settings.json  # specify Claude settings file
 
 The bridge prints nothing to the terminal after startup; logs go to `~/.lark-remote/logs/YYYY-MM-DD/lark-remote-<pid>.log` (rotated daily, one subdirectory per day). Only one `lark-remote` instance is allowed per `configDir` — a duplicate start fails with the existing pid. After connecting to Feishu, a startup notification (with start time and pid) is sent to the most recent private chat.
 
-For automatic process restart (watchdog), use `scripts/watchdog.sh` from the source repo (available only when installing from source, not via npm).
-
 Each agent run creates one CardKit 2.0 card that updates in place with thinking, body text, and tool summaries in real time.
 Timestamps are read from the JSONL and shown in local time as `YYYY-MM-DD HH:mm` for thinking, body, tool call/result, and session history events.
 The card clearly shows completion, error, interruption, or idle timeout at the end; the in-card "⏹ Stop" button is equivalent to `/stop`.
