@@ -11,7 +11,7 @@ import type { AppConfig } from '../config/index.js';
 import type { Runner, AgentSessionReader } from '../runner/index.js';
 import { dispatchOrderExecForQueue } from './order-exec-dispatch.js';
 
-import { createStubAgentRegistry, createStubSessionReaderRegistry } from '../test-helpers.js';
+import { createStubAgentRegistry } from '../test-helpers.js';
 const { mockLogger } = vi.hoisted(() => ({
   mockLogger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
 }));
@@ -97,7 +97,6 @@ function createRouter(ordersPath: string) {
   });
   const stubRunner = createStubRunner() as Runner;
   const bridge = new Bridge({
-    runner: stubRunner,
     agentRegistry: createStubAgentRegistry(stubRunner),
     sessionReaderRegistry: createStubSessionReaderRegistry(),
     connector,

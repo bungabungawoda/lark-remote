@@ -6,7 +6,7 @@ import { Bridge } from '../../../src/bridge/index.js';
 import { SessionStore } from '../../../src/session/index.js';
 import { AppConfigSchema } from '../../../src/config/index.js';
 import type { AppConfig } from '../../../src/config/index.js';
-import type { AgentEvent, Runner, SpawnOptions } from '../../../src/runner/index.js';
+import type { AgentEvent, Runner, SpawnOptions } from '../../../src/runner/types.js';
 
 import {
   createStubAgentRegistry,
@@ -121,7 +121,6 @@ describe('P1-14 queue lane vs execution cwd', () => {
       const sessionStore = new SessionStore();
       const connector = createStubConnector();
       const bridge = new Bridge({
-        runner: blocker,
         agentRegistry: createStubAgentRegistry(blocker),
         sessionReaderRegistry: createStubSessionReaderRegistry(),
         connector,

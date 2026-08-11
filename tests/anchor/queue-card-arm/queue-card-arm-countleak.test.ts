@@ -117,7 +117,9 @@ describe('QueueManager - no fake queue card when queue is idle after repeated in
     expect(sentCards.length).toBe(1); // T2 的排队卡
 
     // --- 步骤 3：第一次 stop：reset #1（计数 2→0，credit=1）---
-    qm.resetExecutingCount(WORKSPACE);
+    const slot1 = qm.getExecutingSlot(WORKSPACE);
+    expect(slot1).toBeDefined();
+    qm.resetExecutingCount(WORKSPACE, slot1!);
 
     // --- 步骤 4：T3（meta，快速）入队 → 排队卡 #2（队列里还有 T2，排队卡照发）---
     let t3Ran = false;
@@ -139,14 +141,18 @@ describe('QueueManager - no fake queue card when queue is idle after repeated in
     expect(sentCards.length).toBe(2); // T3 的排队卡
 
     // --- 步骤 5：第二次 stop：reset #2（计数因 T3 入队回到 1 → 0，credit=2）---
-    qm.resetExecutingCount(WORKSPACE);
+    const slot2 = qm.getExecutingSlot(WORKSPACE);
+    expect(slot2).toBeDefined();
+    qm.resetExecutingCount(WORKSPACE, slot2!);
 
     // --- 步骤 6：T1 被杀 settle（消耗 credit #1），链前进到 T2 接跑 ---
     rejectT1(new Error('simulated process kill'));
     expect(await waitFor(() => t2Started)).toBe(true);
 
     // --- 步骤 7：T2 执行中第三次 stop：reset #3（计数 1→0，credit=3）---
-    qm.resetExecutingCount(WORKSPACE);
+    const slot3 = qm.getExecutingSlot(WORKSPACE);
+    expect(slot3).toBeDefined();
+    qm.resetExecutingCount(WORKSPACE, slot3!);
 
     // --- 步骤 8：T2 正常结束（settle 消耗 credit #2），T3 接跑并结束 ---
     resolveT2();

@@ -116,7 +116,6 @@ function makeBridge(
   const connector = opts.connector ?? createStubConnector();
   const runner = opts.runner ?? createStubRunner();
   const bridge = new Bridge({
-    runner,
     agentRegistry: createStubAgentRegistry(runner),
     sessionReaderRegistry: createStubSessionReaderRegistry(),
     connector,
