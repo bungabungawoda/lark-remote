@@ -211,11 +211,11 @@ describe('queue.immediate must not claim the target is executing when a task ahe
     const connector = createStubConnector();
     const sessionStore = new SessionStore();
     const bridge = new Bridge({
-      runner: createGatedRunner(), // fallback, unused (registry path)
       connector,
       sessionStore,
       config,
       agentRegistry: reg,
+      sessionReaderRegistry: new SessionReaderRegistry(),
       idleTimeoutMs: 0,
     });
     const router = new CommandRouter({

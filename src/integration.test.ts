@@ -10,7 +10,7 @@ import { AppConfigSchema, loadConfig, setConfigValue } from './config/index.js';
 import type { AppConfig } from './config/index.js';
 import type { AgentEvent, Runner, AgentSessionReader } from './runner/index.js';
 
-import { createStubAgentRegistry, createStubSessionReaderRegistry } from './test-helpers.js';
+import { createStubAgentRegistry } from './test-helpers.js';
 // Stub session reader for tests
 const stubSessionReader: AgentSessionReader = {
   listSessions: () => ({ sessions: [], total: 0 }),
@@ -159,7 +159,6 @@ function createRouter(opts: {
   const router = new CommandRouter({
     sessionStore,
     bridge: new Bridge({
-      runner: opts.runner,
       agentRegistry: createStubAgentRegistry(opts.runner),
       sessionReaderRegistry: createStubSessionReaderRegistry(),
       connector,
@@ -356,7 +355,6 @@ describe('异常场景', () => {
     const workingRouter = new CommandRouter({
       sessionStore,
       bridge: new Bridge({
-        runner: createCapturingRunner(goodEvents, capture),
         agentRegistry: createStubAgentRegistry(createCapturingRunner(goodEvents, capture)),
         sessionReaderRegistry: createStubSessionReaderRegistry(),
         connector,

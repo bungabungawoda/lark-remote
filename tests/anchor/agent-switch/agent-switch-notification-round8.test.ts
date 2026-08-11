@@ -153,8 +153,10 @@ describe('Round8 anchors: config.save failure/equivalence boundaries', () => {
     const ctx = { userId, chatId: 'chat1', messageId: 'msg1' };
 
     await router.handleCardAction({ cmd: 'config.set', key: 'defaultAgent', option: 'pi' }, ctx);
-    bridge.updateCardInPlace.mockRejectedValueOnce(new Error('card refresh failed'));
-    bridge.sendResult.mockResolvedValueOnce(false);
+    (bridge.updateCardInPlace as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
+      new Error('card refresh failed'),
+    );
+    (bridge.sendResult as ReturnType<typeof vi.fn>).mockResolvedValueOnce(false);
 
     const response = await router.handleCardAction({ cmd: 'config.save' }, ctx);
 
@@ -320,8 +322,10 @@ describe('Round8 anchors: config.save failure/equivalence boundaries', () => {
     const ctx = { userId, chatId: 'chat1', messageId: 'msg1' };
 
     await router.handleCardAction({ cmd: 'config.set', key: 'defaultAgent', option: 'pi' }, ctx);
-    bridge.updateCardInPlace.mockRejectedValueOnce(new Error('card refresh failed'));
-    bridge.sendResult.mockResolvedValueOnce(false);
+    (bridge.updateCardInPlace as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
+      new Error('card refresh failed'),
+    );
+    (bridge.sendResult as ReturnType<typeof vi.fn>).mockResolvedValueOnce(false);
     await router.handleCardAction({ cmd: 'config.save' }, ctx);
 
     // 重建
