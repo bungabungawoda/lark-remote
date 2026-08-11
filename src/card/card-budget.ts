@@ -91,8 +91,7 @@ type BudgetResult = {
  * when table truncation alone doesn't bring the card under the byte limit.
  *
  * 裁剪判定是**结构化**的：所有 collapsible_panel 都是待裁剪对象，不看面板
- * 标题文本。历史教训（2026-08-08，详见
- * docs/zh/architecture/resume-card-budget-failure-analysis.md）：旧实现用
+ * 标题文本。历史教训（2026-08-08）：旧实现用
  * emoji 标题模式（🤖👤💭🔧🟢🔴）识别「会话事件面板」，但真实
  * sessionEventPanel 产出的标题是裸英文 type 名（emoji 在事件正文而非标题），
  * 导致裁剪阶段对真实 resume 卡零命中，任何 >28KB 的卡片无裁剪直通极端降级，
