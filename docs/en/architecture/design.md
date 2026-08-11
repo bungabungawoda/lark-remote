@@ -98,7 +98,7 @@ const sessions = new Map<string, SessionEntry>();
 - Next message includes `--resume sessionId`
 - `/new` only clears `sessionId` + `sessionCwds`, keeping the current `cwd`
 - `/cd` and `/ws use` **must clear sessionId** (see pitfall §9.1)
-- When `/config` switches `defaultAgent`: the old agent's sessionId is parked in `previousSessions`, the new agent restores from its `arrivalSessions` baseline; switching back restores the parked session (see lessons-redlines "`/config` agent switch restore")
+- When `/config` switches `defaultAgent`: the old agent's sessionId is parked in `previousSessions`, the new agent restores from its `arrivalSessions` baseline; switching back restores the parked session
 - `<configDir>/last-session.json` persists all 5 fields; any missing field is treated as corrupt and skipped; bridge restart restores cwd + last-used sessionId
 
 ---
@@ -295,7 +295,7 @@ enqueue(task: () => Promise<void>): void {
 **Batch 6 P1 semantics**:
 - Completion notification card: `sendCompletionNotificationCard` reads session content with `maxEvents: 5`, sends via `sendResult` (with `enforceCardBudget` as fallback), no longer directly calls the connector — long session cards will no longer exceed 28KB and be silently rejected by Feishu.
 - Bash `!` process: `BashProcessRunner` registers to the process-level exit dispatcher during the process's lifetime (same source as the 5 agent runners); on `/restart`/SIGTERM, it group-kills bash and its child processes; on `run()` completion it unregisters — `!sleep 3600` will no longer become orphaned.
-- Caching: session read caching uniformly uses "TTL based on cache write time + bounded LRU/FIFO"; see lessons-redlines.md "session caching discipline" for details.
+- Caching: session read caching uniformly uses "TTL based on cache write time + bounded LRU/FIFO".
 
 ### 9.7 `/ls` Switch Target: Aligned with Browse, No Subtree Restriction
 

@@ -105,7 +105,7 @@ const sessions = new Map<string, SessionEntry>();
 - 下次发消息带 `--resume sessionId`
 - `/new` 只清空 `sessionId` + `sessionCwds`，保留当前 `cwd`
 - `/cd` 和 `/ws use` 时**必须清空 sessionId**（见坑 §9.1）
-- `/config` 切 defaultAgent 时：旧 agent 的 sessionId 存入 `previousSessions`（停车位），新 agent 从 `arrivalSessions` 恢复上次到达基线；切回时可恢复停车位（见 lessons-redlines「`/config` 切换 agent 再切回时恢复 session」条）
+- `/config` 切 defaultAgent 时：旧 agent 的 sessionId 存入 `previousSessions`（停车位），新 agent 从 `arrivalSessions` 恢复上次到达基线；切回时可恢复停车位
 - 持久化 `<configDir>/last-session.json` 保存全部 5 个字段，任一缺失视为损坏跳过；bridge 重启恢复 cwd + 上次使用的 sessionId
 
 ---
@@ -342,7 +342,7 @@ resolve 到新 cwd 的竞态——先到者占 `activeRuns`，后到者 busy-dro
   分发器（与 5 个 agent runner 同源），`/restart`/SIGTERM 时组杀 bash 及其子
   进程，run() 结束注销——`!sleep 3600` 不再孤儿化。
 - 缓存：session 读取缓存统一「TTL 用缓存写入时间 + 有界
-  LRU/FIFO」，详见 lessons-redlines.md「session 缓存纪律」。
+  LRU/FIFO」。
 
 ### 9.7 `/ls` 切换目标：与浏览对齐，不做子树限制
 

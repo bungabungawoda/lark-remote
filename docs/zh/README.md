@@ -15,7 +15,6 @@ English documentation: [../en/README.md](../en/README.md)
 ## 架构与设计
 
 - [architecture/design.md](architecture/design.md) — 整体设计、JSONL 事件、配置语义、§9 已知坑点合集（最重要的设计文档）。
-- [architecture/lessons-redlines.md](architecture/lessons-redlines.md) — 红线/踩坑详细知识库（CLAUDE.md 摘要的全文版）。
 - [architecture/streaming-card.md](architecture/streaming-card.md) — 单卡流式输出架构（RunCardSession / BashCardSession 生命周期、降级、并发控制）。
 - [cardkit-layout.md](cardkit-layout.md) — 飞书 CardKit 2.0 卡片布局避坑指南。
 
