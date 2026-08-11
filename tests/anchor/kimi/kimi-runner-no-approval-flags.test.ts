@@ -33,14 +33,14 @@ vi.mock('../../../src/logger/index.js', () => ({
 
 describe('KimiRunner buildArgv: no --auto/--yolo flags (kimi 0.26+ compatibility)', () => {
   it('buildArgv does NOT include --auto', () => {
-    const runner = new KimiRunner({ workspace: 'test', binary: 'kimi' });
+    const runner = new KimiRunner({ workspace: 'test' });
     (runner as any).currentMessage = 'hello';
     const args = (runner as any).buildArgv({ cwd: '/tmp' });
     expect(args).not.toContain('--auto');
   });
 
   it('buildArgv does NOT include --yolo', () => {
-    const runner = new KimiRunner({ workspace: 'test', binary: 'kimi' });
+    const runner = new KimiRunner({ workspace: 'test' });
     (runner as any).currentMessage = 'hello';
     const args = (runner as any).buildArgv({ cwd: '/tmp' });
     expect(args).not.toContain('--yolo');
@@ -50,13 +50,13 @@ describe('KimiRunner buildArgv: no --auto/--yolo flags (kimi 0.26+ compatibility
     // approvalMode 字段应从 config interface 中移除
     // 如果类型仍然存在，以下代码不会在编译时报错
     // 我们用运行时检查验证：构造函数忽略 approvalMode
-    const runner = new KimiRunner({ workspace: 'test', binary: 'kimi' } as any);
+    const runner = new KimiRunner({ workspace: 'test' } as any);
     // approvalMode 不应作为实例属性存在
     expect((runner as any).approvalMode).toBeUndefined();
   });
 
   it('buildArgv still includes required flags (-p, --output-format, -m)', () => {
-    const runner = new KimiRunner({ workspace: 'test', binary: 'kimi', model: 'kimi-code/k3' });
+    const runner = new KimiRunner({ workspace: 'test', model: 'kimi-code/k3' });
     (runner as any).currentMessage = 'hello';
     const args = (runner as any).buildArgv({ cwd: '/tmp' });
 
@@ -69,7 +69,7 @@ describe('KimiRunner buildArgv: no --auto/--yolo flags (kimi 0.26+ compatibility
   });
 
   it('buildArgv includes -r when sessionId is provided', () => {
-    const runner = new KimiRunner({ workspace: 'test', binary: 'kimi' });
+    const runner = new KimiRunner({ workspace: 'test' });
     (runner as any).currentMessage = 'hello';
     const args = (runner as any).buildArgv({ cwd: '/tmp', sessionId: 'sess-123' });
     expect(args).toContain('-r');

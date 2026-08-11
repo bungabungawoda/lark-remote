@@ -80,14 +80,14 @@ describe('codex catalog cache freshness - anchor', () => {
     fs.utimesSync(modelsPath, t1, t1);
 
     // 首次读取
-    const first = getCodexCatalogModels('codex');
+    const first = getCodexCatalogModels();
     expect(first.map((m) => m.slug)).toEqual(['deepseek-v4-flash']);
     expect(mockExecFileSync).toHaveBeenCalledTimes(1);
 
     // 修改 models.json（换模型 + 显式推进 mtime）→ 必须重新执行命令，不得命中旧缓存
     fs.writeFileSync(modelsPath, catalogJson('deepseek-v4-pro'));
     fs.utimesSync(modelsPath, t2, t2);
-    const second = getCodexCatalogModels('codex');
+    const second = getCodexCatalogModels();
     expect(second.map((m) => m.slug)).toEqual(['deepseek-v4-pro']);
     expect(mockExecFileSync).toHaveBeenCalledTimes(2);
   });

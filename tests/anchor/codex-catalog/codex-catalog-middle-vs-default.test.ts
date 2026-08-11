@@ -120,7 +120,6 @@ function buildCodexConfig(model: string, reasoningEffort: string): AppConfig {
     defaultAgent: 'codex',
     agents: {
       codex: {
-        binary: 'codex',
         model,
         modelProvider: 'deepseek',
         reasoningEffort,

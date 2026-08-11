@@ -233,7 +233,7 @@ describe('readSessionContent', () => {
   it('uses last turn full prompt as contextLength when no compact (includes cache)', () => {
     // 无 compact 时 contextLength = 末轮窗口占用 = input+cacheRead+cacheCreation（excludes output）。
     // 累加所有 turn 会得到 N×context 的虚假巨值（regression 2ded6229:
-    // 55 turn 累加 3,328,386，实际当前 context 仅 79,693）。
+    // 大量 turn 累加远超实际 context 值）。
     const sessionId = writeSession('/tmp/proj', [
       '{"type":"user","message":{"role":"user","content":[{"type":"text","text":"q1"}]}}',
       '{"type":"assistant","message":{"id":"m1","role":"assistant","content":[{"type":"text","text":"a1"}],"usage":{"input_tokens":100,"output_tokens":20}}}',
@@ -302,6 +302,22 @@ describe('listClaudeSessions', () => {
     expect(sessions).toHaveLength(1);
     expect(sessions[0].sessionId).toBe(sessionId);
     expect(sessions[0].summary).toContain('hello world');
+  });
+
+  it('test_anchor_summary_skips_leading_task_notification', () => {
+    // Regression 2026-08-11: when the first user record is a task-notification
+    // (Claude CLI sub-agent completion), summarizeSession must skip it and find
+    // the real first user input instead of returning the XML tag text.
+    writeSession('/tmp/proj', [
+      // Notification happens to be the first user record
+      '{"type":"user","origin":{"kind":"task-notification"},"message":{"role":"user","content":"<task-notification>\\n<task-id>aa11bb22</task-id>\\n</task-notification>"}}',
+      '{"type":"user","message":{"role":"user","content":[{"type":"text","text":"real first question"}]}}',
+      '{"type":"assistant","message":{"id":"m1","role":"assistant","content":[{"type":"text","text":"ok"}],"usage":{"input_tokens":10,"output_tokens":5}}}',
+    ]);
+    const sessions = listClaudeSessions('/tmp/proj', { projectsDir: tmpDir });
+    expect(sessions).toHaveLength(1);
+    expect(sessions[0].summary).not.toContain('<task-notification');
+    expect(sessions[0].summary).toContain('real first question');
   });
 });
 
@@ -534,14 +550,30 @@ describe('readSessionContent - aiTitle and recap extraction', () => {
     // and shown as 🏷️ 最近输入 — but it is NOT something the user typed.
     // Trigger window: between skill injection and the user's next real input.
     const sessionId = writeSession('/tmp/proj', [
-      '{"type":"user","message":{"role":"user","content":[{"type":"text","text":"download all articles from this channel"}]}}',
+      '{"type":"user","message":{"role":"user","content":[{"type":"text","text":"placeholder"}]}}',
       '{"type":"user","isMeta":true,"message":{"role":"user","content":[{"type":"text","text":"Base directory for this skill: /home/user/.claude/skills/article-downloader\\n\\n# article-downloader skill"}]}}',
       '{"type":"assistant","message":{"id":"m1","role":"assistant","content":[{"type":"text","text":"starting download"}]}}',
     ]);
 
     const result = readSessionContent(sessionId, '/tmp/proj', { projectsDir: tmpDir });
-    expect(result.displayTitle).toBe('download all articles from this channel');
+    expect(result.displayTitle).toBe('placeholder');
     expect(result.displayTitle).not.toContain('Base directory for this skill');
+  });
+
+  it('test_anchor_displayTitle_skips_task_notification_falls_back_to_real_input', () => {
+    // Regression 2026-08-11: Claude CLI injects a task-notification on sub-agent
+    // completion (type:"user", isMeta absent, content is string starting with
+    // "<task-notification>"). Without filtering, this overwrites the real user
+    // input in displayTitle when no aiTitle exists.
+    const sessionId = writeSession('/tmp/proj', [
+      '{"type":"user","message":{"role":"user","content":[{"type":"text","text":"placeholder"}]}}',
+      '{"type":"assistant","message":{"id":"m1","role":"assistant","content":[{"type":"text","text":"ok"}],"usage":{"input_tokens":10,"output_tokens":5}}}',
+      // Claude CLI injected sub-agent completion notification: isMeta absent, string content
+      '{"type":"user","origin":{"kind":"task-notification"},"message":{"role":"user","content":"<task-notification>\\n<task-id>aa11bb22</task-id>\\n<status>completed</status>\\n</task-notification>"}}',
+    ]);
+    const result = readSessionContent(sessionId, '/tmp/proj', { projectsDir: tmpDir });
+    expect(result.displayTitle).not.toContain('<task-notification');
+    expect(result.displayTitle).toContain('placeholder');
   });
 });
 
@@ -699,9 +731,9 @@ describe('listClaudeSessions - EnterWorktree relocated session', () => {
   // 匹配即可）能正确读取；但 listClaudeSessions 使用 readCwdFromJsonl（仅首条 cwd）过滤，
   // 导致搬迁后的 session 不出现在 /resume 列表中。两者 cwd 判断逻辑不一致。
   //
-  // 场景：session 首条 cwd=/home/user/proj（原目录），搬迁后 cwd=/home/user/proj-worktree
+  // 场景：session 首条 cwd=/home/user/proj（原目录），搬迁后 cwd=/home/user/proj/.claude/worktrees/fix
   // 文件仅存在于搬迁后目录的 encoded 项目目录下。用户在 worktree 目录执行 /resume 时：
-  // - readSessionContent(sid, worktreeCwd) → jsonlContainsCwd 找到 worktreeCwd → ✅ 能读
+  // - readSessionContent(sid, worktreeCwd) → jsonlContainsCwd 扴到 worktreeCwd → ✅ 能读
   // - listClaudeSessions(worktreeCwd) → readCwdFromJsonl 只看首条=原目录 ≠ worktreeCwd → ❌ 不列出
   //
   // 构造方式：复用 readSessionContent 测试的 writeRelocatedSession 模式——文件仅写在 B 的
@@ -875,6 +907,175 @@ describe('isClaudeSessionActive - EnterWorktree relocated session', () => {
         projectsDir: localTmp,
       });
       expect(active).toBe(false);
+    } finally {
+      fs.rmSync(localTmp, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('listClaudeSessions - S2 relocated-out gap fix', () => {
+  // S2 fix: removed primarySessions.length === 0 guard so relocated-out
+  // sessions are visible even when the primary dir has other sessions.
+  // scanRelocatedSessions now uses readCwdFromJsonl (first cwd only)
+  // instead of jsonlContainsCwd (full-file scan) for ~10× performance.
+
+  /**
+   * Write a normal session in the PRIMARY project dir for a given cwd.
+   * This simulates sessions that were NOT relocated — they stay in their
+   * original project directory.
+   */
+  function writeNormalSession(projectsDir: string, cwd: string, sid: string): void {
+    const encoded = cwd.replace(/\//g, '-');
+    const dir = path.join(projectsDir, encoded);
+    fs.mkdirSync(dir, { recursive: true });
+    const lines = [
+      `{"type":"system","subtype":"init","session_id":"${sid}","cwd":"${cwd}","model":"opus"}`,
+      `{"type":"user","message":{"role":"user","content":[{"type":"text","text":"normal session ${sid}"}]}}`,
+    ];
+    fs.writeFileSync(path.join(dir, `${sid}.jsonl`), lines.join('\n') + '\n');
+  }
+
+  /**
+   * Write a relocated-out session: started in `originCwd` but the transcript
+   * was moved to `targetCwd`'s project dir (by EnterWorktree). The first cwd
+   * in the JSONL is `originCwd` (the pre-relocate path).
+   */
+  function writeRelocatedOutSession(
+    projectsDir: string,
+    originCwd: string,
+    targetCwd: string,
+    sid: string,
+  ): void {
+    const encodedTarget = targetCwd.replace(/\//g, '-');
+    const dirTarget = path.join(projectsDir, encodedTarget);
+    fs.mkdirSync(dirTarget, { recursive: true });
+    const lines = [
+      `{"type":"system","subtype":"init","session_id":"${sid}","cwd":"${originCwd}","model":"opus"}`,
+      `{"type":"user","cwd":"${originCwd}","message":{"role":"user","content":"started in origin"}}`,
+      `{"type":"assistant","cwd":"${originCwd}","message":{"id":"m1","role":"assistant","content":[{"type":"text","text":"working"}],"usage":{"input_tokens":100,"output_tokens":10}}}`,
+      `{"type":"user","cwd":"${targetCwd}","message":{"role":"user","content":"relocated"}}`,
+      `{"type":"assistant","cwd":"${targetCwd}","message":{"id":"m2","role":"assistant","content":[{"type":"text","text":"done in worktree"}],"usage":{"input_tokens":200,"output_tokens":20}}}`,
+    ];
+    fs.writeFileSync(path.join(dirTarget, `${sid}.jsonl`), lines.join('\n') + '\n');
+  }
+
+  it('test_anchor_relocated_out_visible_when_primary_has_other_sessions', () => {
+    // S2 core fix: primary dir has 2 normal sessions + 3 relocated-out sessions
+    // in other project dirs. All 5 should appear in the list.
+    const localTmp = fs.mkdtempSync(path.join(os.tmpdir(), 'lark-s2-gap-1-'));
+    try {
+      const cwd = '/home/user/proj';
+
+      // 2 normal sessions in the primary dir
+      writeNormalSession(localTmp, cwd, 'normal-1');
+      writeNormalSession(localTmp, cwd, 'normal-2');
+
+      // 3 relocated-out sessions: started in cwd, moved to different worktrees
+      writeRelocatedOutSession(localTmp, cwd, '/home/user/proj-worktree-a', 'relocated-1');
+      writeRelocatedOutSession(localTmp, cwd, '/home/user/proj-worktree-b', 'relocated-2');
+      writeRelocatedOutSession(localTmp, cwd, '/home/user/proj-worktree-c', 'relocated-3');
+
+      const sessions = listClaudeSessions(cwd, { projectsDir: localTmp });
+      const ids = sessions.map((s) => s.sessionId);
+
+      // All 5 sessions should be found (2 normal + 3 relocated-out)
+      expect(ids).toContain('normal-1');
+      expect(ids).toContain('normal-2');
+      expect(ids).toContain('relocated-1');
+      expect(ids).toContain('relocated-2');
+      expect(ids).toContain('relocated-3');
+      expect(sessions).toHaveLength(5);
+    } finally {
+      fs.rmSync(localTmp, { recursive: true, force: true });
+    }
+  });
+
+  it('test_anchor_seen_ids_prevents_duplicate_when_same_sid_in_primary_and_cross_dir', () => {
+    // If the same sessionId appears in both the primary dir and a cross-dir
+    // scan, the result should contain it only once (seenIds dedup).
+    const localTmp = fs.mkdtempSync(path.join(os.tmpdir(), 'lark-s2-dedup-'));
+    try {
+      const cwd = '/home/user/proj';
+
+      // Write a normal session in the primary dir
+      const encoded = cwd.replace(/\//g, '-');
+      const primaryDir = path.join(localTmp, encoded);
+      fs.mkdirSync(primaryDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(primaryDir, 'shared-sid.jsonl'),
+        `{"type":"system","subtype":"init","session_id":"shared-sid","cwd":"${cwd}","model":"opus"}\n` +
+          '{"type":"user","message":{"role":"user","content":[{"type":"text","text":"in primary"}]}}\n',
+      );
+
+      // Write the same sessionId in a cross-dir project dir
+      const otherDir = path.join(localTmp, '-home-user-other');
+      fs.mkdirSync(otherDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(otherDir, 'shared-sid.jsonl'),
+        `{"type":"system","subtype":"init","session_id":"shared-sid","cwd":"${cwd}","model":"opus"}\n` +
+          '{"type":"user","message":{"role":"user","content":[{"type":"text","text":"in other"}]}}\n',
+      );
+
+      const sessions = listClaudeSessions(cwd, { projectsDir: localTmp });
+      const matching = sessions.filter((s) => s.sessionId === 'shared-sid');
+      expect(matching).toHaveLength(1);
+    } finally {
+      fs.rmSync(localTmp, { recursive: true, force: true });
+    }
+  });
+
+  it('test_known_limitation_firstCwd_mismatch_skips_cross_dir_session', () => {
+    // S2 known limitation: a session with firstCwd=A and later cwd=C is NOT
+    // found when querying from C. Phase 2 uses readCwdFromJsonl (first cwd
+    // only), so firstCwd=A ≠ C means it's skipped. The old code with
+    // jsonlContainsCwd could find these (if guard passed), but S2's
+    // readCwdFromJsonl cannot. 0 real instances of this case exist.
+    const localTmp = fs.mkdtempSync(path.join(os.tmpdir(), 'lark-s2-limit-'));
+    try {
+      // Session started in A, visited C later. File is in A's project dir.
+      const encodedA = '/home/user/proj-a'.replace(/\//g, '-');
+      const dirA = path.join(localTmp, encodedA);
+      fs.mkdirSync(dirA, { recursive: true });
+      fs.writeFileSync(
+        path.join(dirA, 'cross-proj.jsonl'),
+        '{"type":"system","subtype":"init","session_id":"cross-proj","cwd":"/home/user/proj-a","model":"opus"}\n' +
+          '{"type":"user","cwd":"/home/user/proj-a","message":{"role":"user","content":"start in a"}}\n' +
+          '{"type":"user","cwd":"/home/user/proj-c","message":{"role":"user","content":"cd to c"}}\n',
+      );
+
+      // Phase 1 for proj-c: no files in proj-c's project dir
+      // Phase 2: readCwdFromJsonl returns /home/user/proj-a ≠ /home/user/proj-c → skip
+      const sessions = listClaudeSessions('/home/user/proj-c', {
+        projectsDir: localTmp,
+      });
+      expect(sessions).toHaveLength(0);
+    } finally {
+      fs.rmSync(localTmp, { recursive: true, force: true });
+    }
+  });
+
+  it('test_anchor_phase1_still_finds_relocated_in_sessions', () => {
+    // Phase 1 (scanDirForSessions) uses jsonlContainsCwd (any cwd match).
+    // A session that was relocated INTO the primary dir has firstCwd ≠ queryCwd
+    // but a later cwd matches → Phase 1 must still find it.
+    const localTmp = fs.mkdtempSync(path.join(os.tmpdir(), 'lark-s2-phase1-'));
+    try {
+      const cwd = '/home/user/proj-b';
+      const encoded = cwd.replace(/\//g, '-');
+      const primaryDir = path.join(localTmp, encoded);
+      fs.mkdirSync(primaryDir, { recursive: true });
+
+      // Session started in proj-a, relocated INTO proj-b (file now in proj-b's dir)
+      fs.writeFileSync(
+        path.join(primaryDir, 'moved-in.jsonl'),
+        '{"type":"system","subtype":"init","session_id":"moved-in","cwd":"/home/user/proj-a","model":"opus"}\n' +
+          '{"type":"user","cwd":"/home/user/proj-a","message":{"role":"user","content":"start in a"}}\n' +
+          '{"type":"user","cwd":"/home/user/proj-b","message":{"role":"user","content":"relocated to b"}}\n',
+      );
+
+      const sessions = listClaudeSessions(cwd, { projectsDir: localTmp });
+      expect(sessions).toHaveLength(1);
+      expect(sessions[0].sessionId).toBe('moved-in');
     } finally {
       fs.rmSync(localTmp, { recursive: true, force: true });
     }

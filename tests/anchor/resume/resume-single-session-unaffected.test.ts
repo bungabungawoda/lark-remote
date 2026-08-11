@@ -137,7 +137,7 @@ describe('A8 /resume <sessionId> single-session path unaffected by pagination', 
     const runner = createStubRunner();
     const config: AppConfig = AppConfigSchema.parse({
       feishu: { appId: 'test', appSecret: 'test' },
-      claude: { binary: 'claude', model: 'opus', stopGraceMs: 5000 },
+      claude: { model: 'opus', stopGraceMs: 5000 },
       defaultAgent: 'claude',
     });
 

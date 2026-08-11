@@ -84,7 +84,7 @@ wire_api = "responses"
       }),
     );
 
-    const result = loadCodexConfig({ codexHome: testCodexHome, binary: 'codex' });
+    const result = loadCodexConfig({ codexHome: testCodexHome });
 
     // Verify provider list includes openai (built-in) + volcengine-coding-plan (custom)
     expect(result.providerNames).toContain('openai');
@@ -144,7 +144,7 @@ wire_api = "responses"
       }),
     );
 
-    const result = loadCodexConfig({ codexHome: testCodexHome, binary: 'codex' });
+    const result = loadCodexConfig({ codexHome: testCodexHome });
 
     // Custom provider: only the model from config.toml (no model list in config.toml)
     const volcModels = result.modelOptions('volcengine-coding-plan');
@@ -177,7 +177,7 @@ model_provider = "openai"
       }),
     );
 
-    const result = loadCodexConfig({ codexHome: testCodexHome, binary: 'codex' });
+    const result = loadCodexConfig({ codexHome: testCodexHome });
 
     // Request a provider that doesn't exist
     const unknownModels = result.modelOptions('nonexistent-provider');
@@ -207,7 +207,7 @@ model_provider = "openai"
       }),
     );
 
-    const result = loadCodexConfig({ codexHome: testCodexHome, binary: 'codex' });
+    const result = loadCodexConfig({ codexHome: testCodexHome });
 
     // Current model should always be in the list when it belongs to the current provider
     const openaiModels = result.modelOptions('openai');
@@ -252,7 +252,7 @@ wire_api = "responses"
       }),
     );
 
-    const result = loadCodexConfig({ codexHome: testCodexHome, binary: 'codex' });
+    const result = loadCodexConfig({ codexHome: testCodexHome });
 
     // glm-5.2 belongs to volcengine-coding-plan, should NOT appear in openai's model list
     const openaiModels = result.modelOptions('openai');
@@ -294,7 +294,7 @@ wire_api = "responses"
       }),
     );
 
-    const result = loadCodexConfig({ codexHome: testCodexHome, binary: 'codex' });
+    const result = loadCodexConfig({ codexHome: testCodexHome });
 
     // Global list (no provider filter) should still include currentModel
     const globalModels = result.modelOptions();
@@ -341,7 +341,7 @@ wire_api = "responses"
       }),
     );
 
-    const result = loadCodexConfig({ codexHome: testCodexHome, binary: 'codex' });
+    const result = loadCodexConfig({ codexHome: testCodexHome });
     const currentModel = 'glm-5.2';
 
     // Simulate user switching provider from volcengine-coding-plan to openai

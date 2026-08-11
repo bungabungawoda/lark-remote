@@ -54,6 +54,20 @@ describe('formatStartupHello', () => {
     expect(message).toContain('2026');
     expect(message).toContain('进程号：12345');
   });
+
+  it('shows dev tag when dev mode is enabled', () => {
+    const message = formatStartupHello(new Date('2026-06-22T12:34:56Z'), 12345, true);
+
+    expect(message).toContain('lark-remote 🔧 dev 已启动');
+    expect(message).not.toContain('lark-remote 已启动');
+  });
+
+  it('hides dev tag when dev mode is disabled', () => {
+    const message = formatStartupHello(new Date('2026-06-22T12:34:56Z'), 12345, false);
+
+    expect(message).toContain('lark-remote 已启动');
+    expect(message).not.toContain('🔧');
+  });
 });
 
 describe('sendStartupHello', () => {

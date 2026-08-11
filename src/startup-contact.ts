@@ -30,7 +30,7 @@ export class StartupContactStore {
   }
 }
 
-export function formatStartupHello(now = new Date(), pid = process.pid): string {
+export function formatStartupHello(now = new Date(), pid = process.pid, dev = false): string {
   const startedAt = new Intl.DateTimeFormat('zh-CN', {
     year: 'numeric',
     month: '2-digit',
@@ -41,12 +41,14 @@ export function formatStartupHello(now = new Date(), pid = process.pid): string 
     hour12: false,
   }).format(now);
 
-  return `lark-remote 已启动\n启动时间：${startedAt}\n进程号：${pid}`;
+  const modeTag = dev ? ' 🔧 dev' : '';
+  return `lark-remote${modeTag} 已启动\n启动时间：${startedAt}\n进程号：${pid}`;
 }
 
 export async function sendStartupHello(
   connector: StartupHelloChannel,
   store: StartupContactStore,
+  opts?: { dev?: boolean },
 ): Promise<void> {
   const contact = store.getContact();
   const recipient = contact?.chatId ?? contact?.userId;
@@ -56,7 +58,9 @@ export async function sendStartupHello(
   }
 
   try {
-    await connector.sendWithRetry(recipient, { text: formatStartupHello() });
+    await connector.sendWithRetry(recipient, {
+      text: formatStartupHello(undefined, undefined, opts?.dev),
+    });
     getLogger().info('[startup] hello message sent');
   } catch (err) {
     getLogger().warn('[startup] hello message failed:', err);

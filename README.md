@@ -64,7 +64,6 @@ feishu:
 defaultAgent: claude
 
 claude:
-  binary: claude
   model: claude-opus-4-8
   effort: medium            # low | medium | high | xhigh | max
   # permissionMode 硬编码为 bypassPermissions（runner 内部）
@@ -97,8 +96,6 @@ lark-remote --settings ~/.claude/settings.json  # 指定 Claude 配置文件
 ```
 
 bridge 启动后不在终端输出，运行日志写入 `~/.lark-remote/logs/YYYY-MM-DD/lark-remote-<pid>.log`（按日期轮转，每天一个子目录）。同一 `configDir` 只允许一个 `lark-remote` 实例，重复启动会直接报错并提示已有 pid。连接飞书成功后会向最近私聊用户发送启动通知，包含启动时间和进程号。
-
-如需进程自动重启，可自行配置 systemd / launchd / pm2 等守护方案。
 
 每次 agent 运行会创建一张 CardKit 2.0 卡片，并在原地实时更新 thinking、正文和工具摘要。
 卡片会读取 JSONL 的 `timestamp`，以本地时间 `YYYY-MM-DD HH:mm` 显示 thinking、正文、tool call/result 和会话历史事件。

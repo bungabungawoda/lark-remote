@@ -3,19 +3,15 @@ import path from 'node:path';
 import fs from 'node:fs';
 import os from 'node:os';
 import { OpencodeExecRunner } from './index.js';
+import { prependPath, restorePath, writeMockBin } from '../../../tests/lib/path-mock.js';
 
 // Mock opencode binary script - outputs ndjson then exits
-const createMockOpencodeScript = (content: string): string => {
-  const tmpDir = os.tmpdir();
-  const scriptPath = path.join(tmpDir, `mock-opencode-${process.pid}.sh`);
-
+const createMockOpencodeScript = (dir: string, content: string): string => {
   const script = `#!/bin/bash
 echo '${content.replace(/'/g, "'\\''")}'
 exit 0
 `;
-  fs.writeFileSync(scriptPath, script, 'utf-8');
-  fs.chmodSync(scriptPath, 0o755);
-  return scriptPath;
+  return writeMockBin(dir, 'opencode', script);
 };
 
 // Mock opencode that returns a simple text response
@@ -47,15 +43,17 @@ const simpleResponse =
 
 describe('OpencodeExecRunner', () => {
   let runner: OpencodeExecRunner;
-  let mockBinaryPath: string;
+  let mockDir: string;
+  let savedPath: string | undefined;
 
   beforeEach(() => {
-    // Create mock binary
-    mockBinaryPath = createMockOpencodeScript(simpleResponse);
+    // Create mock binary named `opencode` on PATH
+    mockDir = fs.mkdtempSync(path.join(os.tmpdir(), 'lark-opencode-test-'));
+    savedPath = prependPath(mockDir);
+    createMockOpencodeScript(mockDir, simpleResponse);
 
     runner = new OpencodeExecRunner({
       workspace: 'test',
-      binary: mockBinaryPath,
       stopGraceMs: 1000,
       pidDir: os.tmpdir(),
       sessionReader: {
@@ -68,12 +66,8 @@ describe('OpencodeExecRunner', () => {
   });
 
   afterEach(() => {
-    // Cleanup mock script
-    try {
-      fs.unlinkSync(mockBinaryPath);
-    } catch {
-      /* ignore */
-    }
+    restorePath(savedPath);
+    fs.rmSync(mockDir, { recursive: true, force: true });
   });
 
   describe('run()', () => {
@@ -99,9 +93,10 @@ describe('OpencodeExecRunner', () => {
     });
 
     it('handles binary not found (ENOENT)', async () => {
+      const saved = process.env.PATH;
+      process.env.PATH = path.join(mockDir, 'no-bin');
       const errorRunner = new OpencodeExecRunner({
         workspace: 'test',
-        binary: '/nonexistent/opencode',
         sessionReader: {
           listSessions: () => ({ sessions: [], total: 0 }),
           getNewestSession: () => null,
@@ -114,6 +109,7 @@ describe('OpencodeExecRunner', () => {
       for await (const event of errorRunner.run('test', { cwd: '/tmp' })) {
         events.push(event);
       }
+      restorePath(saved);
 
       // Should yield auth error event
       const errorEvent = events.find((e: any) => e.type === 'result' && e.subtype === 'error');
@@ -125,7 +121,6 @@ describe('OpencodeExecRunner', () => {
   describe('stop()', () => {
     it('can stop running process', async () => {
       // Override mock to produce slow output
-      const slowScriptPath = path.join(os.tmpdir(), `mock-opencode-slow-${process.pid}.sh`);
       const slowScript = `#!/bin/bash
 echo '{"type":"step_start","sessionID":"ses_slow","part":{"type":"step-start"}}'
 echo '{"type":"text","sessionID":"ses_slow","part":{"type":"text","text":"working"}}'
@@ -133,12 +128,10 @@ sleep 2
 echo '{"type":"step_finish","sessionID":"ses_slow","part":{"type":"step-finish","reason":"stop","tokens":{"total":10,"input":5,"output":5,"reasoning":0,"cache":{"read":0,"write":0}}}}'
 exit 0
 `;
-      fs.writeFileSync(slowScriptPath, slowScript, 'utf-8');
-      fs.chmodSync(slowScriptPath, 0o755);
+      writeMockBin(mockDir, 'opencode', slowScript);
 
       const slowRunner = new OpencodeExecRunner({
         workspace: 'test',
-        binary: slowScriptPath,
         stopGraceMs: 500,
         pidDir: os.tmpdir(),
         sessionReader: {
@@ -170,13 +163,6 @@ exit 0
       // 'interrupted by user' message.
       expect((resultEvent as any).subtype).toBe('error');
       expect((resultEvent as any).errorMessage).toMatch(/interrupted by user/i);
-
-      // Cleanup
-      try {
-        fs.unlinkSync(slowScriptPath);
-      } catch {
-        /* ignore */
-      }
     });
   });
 
@@ -208,19 +194,16 @@ exit 0
       // Use a slow mock so the process is still alive when we check isRunning.
       // The default mock echoes and exits instantly — too fast for the 50ms
       // check to catch it running on busy CI runners.
-      const slowScriptPath = path.join(os.tmpdir(), `mock-opencode-isrunning-${process.pid}.sh`);
       const slowScript = `#!/bin/bash
 echo '{"type":"step_start","sessionID":"ses_ir","part":{"type":"step-start"}}'
 sleep 2
 echo '{"type":"step_finish","sessionID":"ses_ir","part":{"type":"step-finish","reason":"stop","tokens":{"total":10,"input":5,"output":5,"reasoning":0,"cache":{"read":0,"write":0}}}}'
 exit 0
 `;
-      fs.writeFileSync(slowScriptPath, slowScript, 'utf-8');
-      fs.chmodSync(slowScriptPath, 0o755);
+      writeMockBin(mockDir, 'opencode', slowScript);
 
       const slowRunner = new OpencodeExecRunner({
         workspace: 'test',
-        binary: slowScriptPath,
         stopGraceMs: 500,
         pidDir: os.tmpdir(),
         sessionReader: {
@@ -246,13 +229,6 @@ exit 0
       await runPromise;
 
       expect(slowRunner.isRunning).toBe(false);
-
-      // Cleanup
-      try {
-        fs.unlinkSync(slowScriptPath);
-      } catch {
-        /* ignore */
-      }
     });
   });
 
@@ -265,19 +241,16 @@ exit 0
   describe('PWD env sync (L1)', () => {
     it('passes PWD=opts.cwd to the spawned process', async () => {
       const target = fs.mkdtempSync(path.join(os.tmpdir(), 'oc-pwd-target-'));
-      const scriptPath = path.join(os.tmpdir(), `mock-opencode-pwd-${process.pid}.js`);
       const script =
         `#!${process.execPath}\n` +
         `const w=(o)=>process.stdout.write(JSON.stringify(o)+'\\n');\n` +
         `w({type:'step_start',sessionID:'ses_pwd',part:{type:'step-start',id:'p1'}});\n` +
         `w({type:'text',sessionID:'ses_pwd',part:{type:'text',text:'PWD='+process.env.PWD}});\n` +
         `w({type:'step_finish',sessionID:'ses_pwd',part:{type:'step-finish',reason:'stop',tokens:{total:10,input:5,output:5,reasoning:0,cache:{read:0,write:0}}}});\n`;
-      fs.writeFileSync(scriptPath, script, 'utf-8');
-      fs.chmodSync(scriptPath, 0o755);
+      writeMockBin(mockDir, 'opencode', script);
 
       const r = new OpencodeExecRunner({
         workspace: 'test',
-        binary: scriptPath,
         pidDir: os.tmpdir(),
         sessionReader: {
           listSessions: () => ({ sessions: [], total: 0 }),
@@ -298,7 +271,6 @@ exit 0
       expect(textEvent).toBeDefined();
       expect((textEvent as any).message.content[0].text).toBe('PWD=' + target);
 
-      fs.unlinkSync(scriptPath);
       fs.rmSync(target, { recursive: true, force: true });
     });
   });
