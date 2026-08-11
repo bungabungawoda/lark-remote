@@ -96,7 +96,6 @@ function buildRouter(
     defaultAgent: 'claude',
   });
   const bridge = new Bridge({
-    runner,
     agentRegistry: createStubAgentRegistry(runner),
     sessionReaderRegistry: createStubSessionReaderRegistry(),
     connector,

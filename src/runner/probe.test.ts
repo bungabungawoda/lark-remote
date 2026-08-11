@@ -29,6 +29,7 @@ function makeMockProc(exitCode: number | null, signal: string | null = null) {
       return this;
     },
     kill: vi.fn(),
+    unref: vi.fn(),
     _listeners: listeners,
   };
 }
@@ -45,6 +46,7 @@ function makeErrorProc(error: Error) {
       return this;
     },
     kill: vi.fn(),
+    unref: vi.fn(),
     _listeners: listeners,
   };
 }
@@ -57,6 +59,7 @@ function makeHangingProc() {
       return this;
     },
     kill: vi.fn(),
+    unref: vi.fn(),
   };
 }
 
@@ -86,21 +89,35 @@ describe('probe', () => {
       expect(result).toBe(false);
     });
 
-    it('returns false and kills process on timeout', async () => {
+    it('returns false and sends SIGTERM then SIGKILL on timeout', async () => {
       vi.useFakeTimers();
       const mockProc = makeHangingProc();
       mockSpawn.mockReturnValue(mockProc as never);
 
       const promise = probeAgentAvailability('kimi');
 
-      // Advance past the timeout
+      // Advance past the probe timeout — should fire SIGTERM and resolve false
       await vi.advanceTimersByTimeAsync(4_000);
 
       const result = await promise;
       expect(result).toBe(false);
-      expect(mockProc.kill).toHaveBeenCalled();
+      expect(mockProc.kill).toHaveBeenCalledWith('SIGTERM');
+
+      // Advance past the SIGKILL fallback delay
+      await vi.advanceTimersByTimeAsync(600);
+      expect(mockProc.kill).toHaveBeenCalledWith('SIGKILL');
 
       vi.useRealTimers();
+    });
+
+    it('calls unref on process and timer to avoid blocking exit', async () => {
+      mockSpawn.mockReturnValue(makeMockProc(0) as never);
+      const promise = probeAgentAvailability('claude');
+      const result = await promise;
+      expect(result).toBe(true);
+      // unref should be called on the process
+      const mockProc = mockSpawn.mock.results[0]?.value as { unref?: () => void };
+      expect(mockProc.unref).toHaveBeenCalled();
     });
 
     it('caches result and does not re-probe within TTL', async () => {

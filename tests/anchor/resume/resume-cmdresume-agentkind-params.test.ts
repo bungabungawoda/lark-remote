@@ -131,7 +131,6 @@ describe('AC2: cmdResume supports agentKind via args', () => {
     registry.register('kimi', kimiReader);
 
     const bridge = new Bridge({
-      runner,
       agentRegistry: createStubAgentRegistry(runner),
       sessionReaderRegistry: createStubSessionReaderRegistry(),
       connector,
