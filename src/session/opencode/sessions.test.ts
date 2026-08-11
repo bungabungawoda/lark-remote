@@ -50,7 +50,7 @@ describe('OpencodeSessionReader - L1: empty output handling', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
-    reader = new OpencodeSessionReader({ binary: 'opencode', cacheTtlMs: 0 });
+    reader = new OpencodeSessionReader({ cacheTtlMs: 0 });
   });
 
   it('handles empty string output from opencode session list gracefully', () => {
@@ -220,7 +220,6 @@ describe('OpencodeSessionReader - L1/L2/L3: large/corrupt export handling', () =
       ],
     });
     const r = new OpencodeSessionReader({
-      binary: 'opencode',
       cacheTtlMs: 0,
       captureExport: () => raw,
     });
@@ -233,7 +232,7 @@ describe('OpencodeSessionReader - L1/L2/L3: large/corrupt export handling', () =
   // (not 'pipe'), which bypasses opencode's pipe truncation for large output.
   it('L1: default captureExport routes stdout to a file fd (not a pipe)', () => {
     vi.mocked(execFileSync).mockReturnValue(null as unknown as string);
-    const r = new OpencodeSessionReader({ binary: 'opencode', cacheTtlMs: 0 });
+    const r = new OpencodeSessionReader({ cacheTtlMs: 0 });
     // execFileSync is mocked (writes nothing), so the temp file is empty -> ''.
     const out = (r as unknown as { captureExport: (id: string) => string }).captureExport('ses_tr');
     expect(out).toBe('');
@@ -272,7 +271,6 @@ describe('OpencodeSessionReader - L1/L2/L3: large/corrupt export handling', () =
       ],
     });
     const r = new OpencodeSessionReader({
-      binary: 'opencode',
       cacheTtlMs: 0,
       captureExport: () => raw,
     });
@@ -290,7 +288,6 @@ describe('OpencodeSessionReader - L1/L2/L3: large/corrupt export handling', () =
 
   it('L3: empty output -> truly missing', () => {
     const r = new OpencodeSessionReader({
-      binary: 'opencode',
       cacheTtlMs: 0,
       captureExport: () => '',
     });
@@ -300,7 +297,6 @@ describe('OpencodeSessionReader - L1/L2/L3: large/corrupt export handling', () =
 
   it('L3: captureExport throws -> empty events', () => {
     const r = new OpencodeSessionReader({
-      binary: 'opencode',
       cacheTtlMs: 0,
       captureExport: () => {
         throw new Error('spawn ENOENT');
@@ -342,7 +338,6 @@ describe('OpencodeSessionReader - usage extraction (ccusage-aligned)', () => {
       ],
     });
     const r = new OpencodeSessionReader({
-      binary: 'opencode',
       cacheTtlMs: 0,
       captureExport: () => json,
     });
@@ -398,7 +393,6 @@ describe('OpencodeSessionReader - usage extraction (ccusage-aligned)', () => {
       ],
     });
     const r = new OpencodeSessionReader({
-      binary: 'opencode',
       cacheTtlMs: 0,
       captureExport: () => json,
     });

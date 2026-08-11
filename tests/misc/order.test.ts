@@ -116,7 +116,6 @@ describe('cmdOrder 列表命令 (Anchor #2)', () => {
     config = AppConfigSchema.parse({
       feishu: { appId: 'test', appSecret: 'test' },
       claude: {
-        binary: 'claude',
         model: 'opus',
         stopGraceMs: 5000,
       },

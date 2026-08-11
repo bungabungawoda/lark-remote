@@ -92,7 +92,6 @@ function createRouter() {
   const config: AppConfig = AppConfigSchema.parse({
     feishu: { appId: 'test', appSecret: 'test' },
     claude: {
-      binary: 'claude',
       model: 'claude-opus-4-8',
       effort: 'medium',
       stopGraceMs: 5000,

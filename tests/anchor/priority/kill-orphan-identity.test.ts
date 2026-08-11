@@ -57,7 +57,6 @@ describe(': killOrphan process identity verification', () => {
     try {
       const runner = new ClaudeRunner({
         workspace: 'test',
-        binary: path.join(tmpDir, 'mock-agent'),
         pidDir: tmpDir,
       });
       const pidFilePath = path.join(tmpDir, 'claude-test.pid');

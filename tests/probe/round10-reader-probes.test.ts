@@ -61,7 +61,6 @@ describe('Round 10 reader probes', () => {
     const codex = new CodexSessionReader({ codexHome: path.join(tmpDir, 'codex') });
     const pi = new PiSessionReader({ piDir: path.join(tmpDir, 'pi') });
     const opencode = new OpencodeSessionReader({
-      binary: 'definitely-missing-opencode-binary',
       cacheTtlMs: 1,
     });
     const kimi = new KimiSessionReader(path.join(tmpDir, 'kimi'));

@@ -167,7 +167,6 @@ export abstract class SpawningRunner {
   protected stoppedByUser: boolean = false;
 
   constructor(opts: {
-    binary?: string;
     pidDir?: string;
     workspace: string;
     stopGraceMs?: number;
@@ -187,10 +186,8 @@ export abstract class SpawningRunner {
      */
     logTag?: string;
   }) {
-    // Neutral default — empty string fails loudly at spawn time if a caller
-    // forgets to configure binary. 'claude' would be wrong (biases the base
-    // class toward one agent). Subclasses pass their own binary.
-    this.binary = opts.binary ?? '';
+    // Subclasses set this.binary after super()
+    this.binary = '';
     this.stopGraceMs = opts.stopGraceMs ?? DEFAULT_STOP_GRACE_MS;
     this.logTag = opts.logTag ?? 'spawning-runner';
     const pidDir = opts.pidDir ?? path.join(os.homedir(), '.lark-remote');

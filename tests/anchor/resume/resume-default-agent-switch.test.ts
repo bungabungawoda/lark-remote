@@ -113,7 +113,6 @@ describe('/resume uses new defaultAgent reader after config.save', () => {
     const config: AppConfig = AppConfigSchema.parse({
       feishu: { appId: 'test', appSecret: 'test' },
       claude: {
-        binary: 'claude',
         model: 'opus',
         stopGraceMs: 5000,
       },

@@ -199,7 +199,7 @@ describe('kimi done card must not fabricate an all-zero token block when jsonl h
 
     config = AppConfigSchema.parse({
       feishu: { appId: 'test', appSecret: 'test' },
-      claude: { binary: 'claude', model: 'opus', stopGraceMs: 5000 },
+      claude: { model: 'opus', stopGraceMs: 5000 },
       defaultAgent: 'kimi',
       output: {
         showThinking: true,

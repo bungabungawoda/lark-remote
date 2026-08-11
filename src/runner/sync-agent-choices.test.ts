@@ -5,12 +5,12 @@ import { syncAgentChoices } from './index.js';
 describe('syncAgentChoices', () => {
   const baseConfig: AppConfig = {
     feishu: { appId: 'test', appSecret: 'test' },
-    claude: { binary: 'claude', model: 'claude-opus-4-8', effort: 'medium', stopGraceMs: 5000 },
+    claude: { model: 'claude-opus-4-8', effort: 'medium', stopGraceMs: 5000 },
     defaultAgent: 'codex',
     idle: { watchdogMinutes: 15 },
     output: { showThinking: true, showToolUse: true, showToolResult: true },
     logging: { level: 'info' },
-    agents: { codex: { binary: 'codex', stopGraceMs: 5000 } },
+    agents: { codex: { stopGraceMs: 5000 } },
   };
 
   it('should sync codex model and provider to agentChoices', () => {

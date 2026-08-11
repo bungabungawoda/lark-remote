@@ -89,7 +89,6 @@ describe(': kimi completion timeout kills whole group', () => {
 
       const kimi = new ExposedKimiRunner({
         workspace: 'test',
-        binary: '/bin/true',
         pidDir: tmpDir,
       });
       vi.useFakeTimers();

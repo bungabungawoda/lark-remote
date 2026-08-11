@@ -27,7 +27,6 @@ function createInitialConfig() {
     feishu: { appId: 'test', appSecret: 'test' },
     defaultAgent: 'pi',
     claude: {
-      binary: 'claude',
       model: 'opus',
       settings: '',
       stopGraceMs: 5000,
