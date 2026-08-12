@@ -25,7 +25,7 @@ import { Bridge } from '../../../src/bridge/index.js';
 import { SessionStore } from '../../../src/session/index.js';
 import { AppConfigSchema } from '../../../src/config/index.js';
 import type { AppConfig } from '../../../src/config/index.js';
-import type { AgentEvent, AgentRunner, Runner } from '../../../src/runner/index.js';
+import type { _AgentEvent, AgentRunner, Runner } from '../../../src/runner/index.js';
 
 import {
   createStubAgentRegistry,
