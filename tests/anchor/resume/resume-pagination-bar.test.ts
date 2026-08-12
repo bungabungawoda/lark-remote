@@ -13,6 +13,8 @@ import { ClaudeSessionReader } from '../../../src/session/claude/index.js';
 import {
   createStubAgentRegistry,
   createStubSessionReaderRegistry,
+  createStubRunner,
+  createStubConnector,
 } from '../../lib/bridge-stubs.js';
 /**
  * Anchor (A4): `/resume` 分页栏显示真实总数 + `resume.page` 按钮 + 假提示已删
@@ -40,34 +42,8 @@ import {
  */
 
 // Stub connector (same minimal shape as tests/anchor/resume/resume-pagination.test.ts)
-function createStubConnector() {
-  const sent: { chatId: string; input: unknown; opts?: unknown }[] = [];
-  return {
-    reconnect: async () => {},
-    addReaction: async () => {},
-    streamCard: async () => '',
-    _sent: sent,
-    sendWithRetry: async (chatId: string, input: unknown, opts?: unknown) => {
-      sent.push({ chatId, input, opts });
-      return 'msg-id';
-    },
-    sendFile: async () => 'file-msg-id',
-    updateCard: async () => {},
-    start: async () => {},
-    stop: async () => {},
-  };
-}
 
 // Stub runner
-function createStubRunner() {
-  return {
-    isRunning: false,
-    stop: async () => {},
-    killOrphan: () => {},
-    registerExitHandlers: () => {},
-    run: async function* () {},
-  };
-}
 
 // Same encoding as production `projectDirForCwd`, canonicalized via realpath first.
 function encodedProjectDir(cwd: string): string {
@@ -133,7 +109,7 @@ function buildHarness(tmpDir: string, projectsDir: string, sessionCount: number)
 
   const sessionStore = new SessionStore();
   const connector = createStubConnector();
-  const runner = createStubRunner();
+  const runner = createStubRunner({ mode: 'empty' });
   const config: AppConfig = AppConfigSchema.parse({
     feishu: { appId: 'test', appSecret: 'test' },
     claude: { model: 'opus', stopGraceMs: 5000 },
@@ -154,6 +130,7 @@ function buildHarness(tmpDir: string, projectsDir: string, sessionCount: number)
   registry.register('kimi', stubReader);
 
   const bridge = new Bridge({
+    runner,
     agentRegistry: createStubAgentRegistry(runner),
     sessionReaderRegistry: createStubSessionReaderRegistry(),
     connector,

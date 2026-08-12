@@ -9,88 +9,14 @@ import { AppConfigSchema } from '../../src/config/index.js';
 import type { AppConfig } from '../../src/config/index.js';
 import type { Runner } from '../../src/runner/index.js';
 import { SessionReaderRegistry } from '../../src/session/registry.js';
-import type { AgentSessionReader } from '../../src/runner/index.js';
 import type { RunState } from '../../src/card/run-state.js';
 
-import { createStubAgentRegistry, createStubSessionReaderRegistry } from '../lib/bridge-stubs.js';
-// ── Stub helpers ──────────────────────────────────────────────
-
-function createStubConnector() {
-  const sent: { chatId: string; input: unknown; opts?: unknown }[] = [];
-  const cards: object[] = [];
-  return {
-    sendWithRetry: async (chatId: string, input: unknown, opts?: unknown) => {
-      sent.push({ chatId, input, opts });
-      return 'msg-id';
-    },
-    sendFile: async () => 'file-msg-id',
-    reconnect: async () => {},
-    addReaction: async () => {},
-    streamCard: async (
-      chatId: string,
-      initial: object,
-      producer: (controller: {
-        messageId: string;
-        current: object;
-        update(next: object | ((current: object) => object)): Promise<void>;
-      }) => Promise<void>,
-      opts?: unknown,
-    ) => {
-      sent.push({ chatId, input: { card: initial }, opts });
-      cards.push(initial);
-      let current = initial;
-      await producer({
-        messageId: 'stream-msg-id',
-        get current() {
-          return current;
-        },
-        update: async (next) => {
-          current = typeof next === 'function' ? next(current) : next;
-          cards.push(current);
-        },
-      });
-      return 'stream-msg-id';
-    },
-    updateCard: async (_messageId: string, card: object) => {
-      cards.push(card);
-    },
-    connected: true,
-    _sent: sent,
-    _cards: cards,
-  };
-}
-
-function createStubRunner(): Runner {
-  return {
-    isRunning: false,
-    stop: async () => {},
-    killOrphan: () => {},
-    registerExitHandlers: () => {},
-    getStatusInfo: () => ({ kind: 'claude', model: 'test-model' }),
-    run: async function* () {
-      throw new Error('run not expected in stub');
-    },
-  } as Runner;
-}
-
-/**
- * Stub session reader that always returns empty lists, for testing messages.
- */
-function createStubSessionReader(): AgentSessionReader {
-  return {
-    listSessions: () => ({ sessions: [], total: 0 }),
-    getNewestSession: () => null,
-    isSessionActive: () => false,
-    readSessionContent: () => ({
-      events: [],
-      aiTitle: undefined,
-      recap: undefined,
-      displayTitle: undefined,
-      usage: undefined,
-      reason: 'not_found' as const,
-    }),
-  };
-}
+import {
+  createStubAgentRegistry,
+  createStubSessionReaderRegistry,
+  createStubConnector,
+  createStubRunner,
+} from '../lib/bridge-stubs.js';
 
 let tmpDir: string;
 beforeEach(() => {
@@ -108,7 +34,7 @@ function createRouter(overrides?: {
 }) {
   const sessionStore = new SessionStore();
   const connector = createStubConnector();
-  const runner = createStubRunner();
+  const runner = createStubRunner({ withStatusInfo: true });
   const config: AppConfig = AppConfigSchema.parse({
     feishu: { appId: 'test', appSecret: 'test' },
     claude: {
@@ -120,17 +46,12 @@ function createRouter(overrides?: {
     output: { showThinking: true, showToolUse: false, showToolResult: false },
   });
 
-  const registry = overrides?.sessionReaderRegistry ?? new SessionReaderRegistry();
-  // Register all agents that tests may use
-  registry.register('claude', createStubSessionReader());
-  registry.register('codex', createStubSessionReader());
-  registry.register('opencode', createStubSessionReader());
-  registry.register('pi', createStubSessionReader());
-  registry.register('kimi', createStubSessionReader());
+  const registry = overrides?.sessionReaderRegistry ?? createStubSessionReaderRegistry();
 
   const router = new CommandRouter({
     sessionStore,
     bridge: new Bridge({
+      runner,
       agentRegistry: createStubAgentRegistry(runner),
       sessionReaderRegistry: createStubSessionReaderRegistry(),
       connector,

@@ -8,10 +8,14 @@ import { OrderStore } from '../order/index.js';
 import { Bridge } from '../bridge/index.js';
 import { AppConfigSchema } from '../config/index.js';
 import type { AppConfig } from '../config/index.js';
-import type { Runner, AgentSessionReader } from '../runner/index.js';
+import type { Runner } from '../runner/index.js';
 import { dispatchOrderExecForQueue } from './order-exec-dispatch.js';
 
-import { createStubAgentRegistry } from '../test-helpers.js';
+import {
+  createStubAgentRegistry,
+  createStubRunner,
+  createStubSessionReaderRegistry,
+} from '../../tests/lib/bridge-stubs.js';
 const { mockLogger } = vi.hoisted(() => ({
   mockLogger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
 }));
@@ -19,42 +23,6 @@ vi.mock('../logger/index.js', () => ({
   getLogger: () => mockLogger,
   initLogger: () => mockLogger,
 }));
-
-const stubSessionReader: AgentSessionReader = {
-  listSessions: () => ({ sessions: [], total: 0 }),
-  getNewestSession: () => null,
-  readSessionContent: () => ({
-    events: [],
-    aiTitle: undefined,
-    recap: undefined,
-    displayTitle: undefined,
-    usage: undefined,
-    reason: 'not_found',
-  }),
-  isSessionActive: () => false,
-};
-
-function createStubSessionReaderRegistry(): SessionReaderRegistry {
-  const registry = new SessionReaderRegistry();
-  registry.register('claude', stubSessionReader);
-  registry.register('codex', stubSessionReader);
-  registry.register('opencode', stubSessionReader);
-  registry.register('pi', stubSessionReader);
-  registry.register('kimi', stubSessionReader);
-  return registry;
-}
-
-function createStubRunner() {
-  return {
-    isRunning: false,
-    stop: async () => {},
-    killOrphan: () => {},
-    registerExitHandlers: () => {},
-    run: async function* () {
-      throw new Error('run not expected in stub');
-    },
-  };
-}
 
 /** A promise that stays pending until `release()` is called. Keeps a task
  *  blocking the serial queue so subsequently enqueued tasks stay queued. */
@@ -97,6 +65,7 @@ function createRouter(ordersPath: string) {
   });
   const stubRunner = createStubRunner() as Runner;
   const bridge = new Bridge({
+    runner: stubRunner,
     agentRegistry: createStubAgentRegistry(stubRunner),
     sessionReaderRegistry: createStubSessionReaderRegistry(),
     connector,

@@ -1,3 +1,4 @@
+import { createMockBridge, createMockSessionReaderRegistry } from '../lib/bridge-stubs.js';
 /**
  * 测试：pi provider 和 model 应该从 ~/.pi/agent/models.json 和 auth.json 动态读取
  *
@@ -27,43 +28,6 @@ import type { SessionReaderRegistry } from '../../src/session/registry.js';
 import path from 'node:path';
 import os from 'node:os';
 import fs from 'node:fs';
-
-// ---------------------------------------------------------------------------
-// Stub factories
-// ---------------------------------------------------------------------------
-
-function createMockBridge(): Bridge {
-  return {
-    sendResult: vi.fn().mockResolvedValue(undefined),
-    forwardToClaude: vi.fn().mockResolvedValue(undefined),
-    isBusy: false,
-    isBusyFor: vi.fn().mockReturnValue(false),
-    enqueue: vi.fn(),
-    interruptCurrentRun: vi.fn().mockResolvedValue(false),
-    reconnect: vi.fn().mockResolvedValue(undefined),
-    setConfig: vi.fn(),
-    setIdleTimeout: vi.fn(),
-    removeFromQueue: vi.fn().mockReturnValue(false),
-    sendCard: vi.fn().mockResolvedValue(undefined),
-    updateCard: vi.fn().mockResolvedValue(undefined),
-    updateCardInPlace: vi.fn().mockResolvedValue(undefined),
-  } as unknown as Bridge;
-}
-
-function createMockSessionReaderRegistry(
-  agentKinds: string[] = ['claude', 'pi'],
-): SessionReaderRegistry {
-  return {
-    get: vi.fn().mockReturnValue({
-      listSessions: () => ({ sessions: [], total: 0 }),
-      getNewestSession: () => null,
-      readSessionContent: () => ({ events: [] }),
-      isSessionActive: () => false,
-    }),
-    register: vi.fn(),
-    listRegistered: vi.fn().mockReturnValue(agentKinds),
-  } as unknown as SessionReaderRegistry;
-}
 
 function buildPiConfig(): AppConfig {
   return AppConfigSchema.parse({
@@ -301,7 +265,10 @@ describe('pi provider/model config from pi files', () => {
     const config = buildPiConfig();
     const sessionStore = new SessionStore();
     const bridge = createMockBridge();
-    const sessionReaderRegistry = createMockSessionReaderRegistry(['claude', 'pi']);
+    const sessionReaderRegistry = createMockSessionReaderRegistry({
+      agentKinds: ['claude', 'pi'],
+      withGet: true,
+    });
 
     const router = new CommandRouter({
       sessionStore,
@@ -345,7 +312,10 @@ describe('pi provider/model config from pi files', () => {
     const config = buildPiConfig();
     const sessionStore = new SessionStore();
     const bridge = createMockBridge();
-    const sessionReaderRegistry = createMockSessionReaderRegistry(['claude', 'pi']);
+    const sessionReaderRegistry = createMockSessionReaderRegistry({
+      agentKinds: ['claude', 'pi'],
+      withGet: true,
+    });
 
     const router = new CommandRouter({
       sessionStore,
@@ -366,53 +336,6 @@ describe('pi provider/model config from pi files', () => {
     const modelOptions = extractFieldOptions(card, 'agents.pi.model');
 
     expect(providerOptions.length).toBeGreaterThan(0);
-    expect(modelOptions.length).toBeGreaterThan(0);
-  });
-
-  /**
-   * TEST 6: 验证选项包含预期的 provider（lt 或 Volcano）
-   */
-  it('should include expected providers from config', async () => {
-    writeModelsJson({
-      Volcano: {
-        baseUrl: 'https://ark.cn-beijing.volces.com/api/coding/v3',
-        api: 'openai-completions',
-        models: [{ id: 'glm-5.2' }],
-      },
-      lt: {
-        baseUrl: 'https://aigw-gzgy2.cucloud.cn:8443/v1',
-        api: 'openai-completions',
-        models: [{ id: 'glm-5.1' }],
-      },
-    });
-
-    const config = buildPiConfig();
-    const sessionStore = new SessionStore();
-    const bridge = createMockBridge();
-    const sessionReaderRegistry = createMockSessionReaderRegistry(['claude', 'pi']);
-
-    const router = new CommandRouter({
-      sessionStore,
-      bridge,
-      config,
-      configPath: path.join(tmpDir, 'config.yaml'),
-      workspacePath: path.join(tmpDir, 'workspace.json'),
-      ordersPath: path.join(tmpDir, 'orders.json'),
-      sessionReaderRegistry,
-    });
-
-    const result = (
-      router as unknown as { buildConfigCard: () => { card: object } }
-    ).buildConfigCard();
-    const card = result.card;
-
-    const providerOptions = extractFieldOptions(card, 'agents.pi.provider');
-    const modelOptions = extractFieldOptions(card, 'agents.pi.model');
-
-    // 验证有 provider 选项
-    expect(providerOptions.length).toBeGreaterThan(0);
-
-    // 验证有 model 选项
     expect(modelOptions.length).toBeGreaterThan(0);
   });
 });
