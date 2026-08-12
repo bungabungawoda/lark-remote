@@ -6,7 +6,7 @@ import { Bridge } from '../../src/bridge/index.js';
 import { SessionStore } from '../../src/session/index.js';
 import { AppConfigSchema } from '../../src/config/index.js';
 import type { AppConfig } from '../../src/config/index.js';
-import type { _AgentEvent, AgentKind, AgentRunner, Runner } from '../../src/runner/index.js';
+import type { AgentKind, AgentRunner, Runner } from '../../src/runner/index.js';
 
 import {
   createStubAgentRegistry,
@@ -229,10 +229,10 @@ describe('Bridge usage scope: live 优先、jsonl 兜底', () => {
     expect(finalCard).toContain('Cached token - 800 (44%)'); // live 800, 800/(1000+800)=44%
     expect(finalCard).toContain('Total token - 2K'); // 1000+50+800+0=1850→2K
     // contextLength 取 jsonl（水位/历史计数）
-    expect(finalCard).toContain('Context - 1150K'); // jsonl 1_150_000 → 1150K
+    expect(finalCard).toContain('Context - 1.2M'); // jsonl 1_150_000 → 1.2M
     expect(finalCard).toContain('Compact - 5次'); // jsonl compactCount=5
     // jsonl 的 session 累计 flow 值不应出现
-    expect(finalCard).not.toContain('Cached token - 1M'); // jsonl 1_000_000
+    expect(finalCard).not.toContain('Cached token - 1M ('); // jsonl 1_000_000 → 不含 "1M (" 子串
   });
 
   /**

@@ -4,7 +4,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { CommandRouter } from '../../src/router/index.js';
 import { Bridge } from '../../src/bridge/index.js';
-import { SessionStore, _SessionReaderRegistry } from '../../src/session/index.js';
+import { SessionStore } from '../../src/session/index.js';
 import { AppConfigSchema } from '../../src/config/index.js';
 import type { AppConfig } from '../../src/config/index.js';
 import type { Runner } from '../../src/runner/index.js';

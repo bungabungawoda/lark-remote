@@ -139,15 +139,14 @@ describe('formatUsageStats - cumulative cache display', () => {
       cumulativeCacheCreationTokens: 1824000,
     });
 
-    // 验证各行显示（token 数已格式化为 K 单位）
-    expect(out).toContain('Input token - 171K · 累计 7350K'); // 7350000/1000=7350K
-    expect(out).toContain('Output token - 84 · 累计 44K'); // 44000/1000=44K
-    expect(out).toContain('Cached token - 0 (0%) · 累计 15000K (67%)'); // 15000000/1000=15000K
-    expect(out).toContain('Cache create - 100 · 累计 1824K'); // 1824000/1000=1824K
-    expect(out).toContain('Total token - 171K · 累计 24218K'); // 7350+44+15000+1824=24218K
+    // 验证各行显示（token 数已格式化为人类可读单位：>=1M 用 M，>=1K 用 K）
+    expect(out).toContain('Input token - 171K · 累计 7.4M'); // 7350000→7.4M
+    expect(out).toContain('Output token - 84 · 累计 44K'); // 44000→44K
+    expect(out).toContain('Cached token - 0 (0%) · 累计 15M (67%)'); // 15000000→15M
+    expect(out).toContain('Cache create - 100 · 累计 1.8M'); // 1824000→1.8M
+    expect(out).toContain('Total token - 171K · 累计 24.2M'); // 24218000→24.2M
 
-    // 验证 Total = Input + Output + CacheRead + CacheCreate
-    // 7350K + 44K + 15000K + 1824K = 24218K ✓
-    expect(out).toContain('累计 24218K');
+    // 验证 Total ≈ Input + Output + CacheRead + CacheCreate（四舍五入后 7.4M+44K+15M+1.8M≈24.2M）
+    expect(out).toContain('累计 24.2M');
   });
 });

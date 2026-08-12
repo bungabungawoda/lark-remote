@@ -96,8 +96,8 @@ describe('probe', () => {
 
       const promise = probeAgentAvailability('kimi');
 
-      // Advance past the probe timeout — should fire SIGTERM and resolve false
-      await vi.advanceTimersByTimeAsync(4_000);
+      // Advance past the probe timeout (10 s) — should fire SIGTERM and resolve false
+      await vi.advanceTimersByTimeAsync(11_000);
 
       const result = await promise;
       expect(result).toBe(false);
@@ -133,7 +133,7 @@ describe('probe', () => {
   });
 
   describe('probeAllAgents', () => {
-    it('probes all 5 agents concurrently', async () => {
+    it('probes all 5 agents sequentially', async () => {
       mockSpawn.mockReturnValue(makeMockProc(0) as never);
       const result = await probeAllAgents();
       expect(result.size).toBe(5);

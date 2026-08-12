@@ -5,7 +5,7 @@ import os from 'node:os';
 import yaml from 'yaml';
 import { CommandRouter } from './router/index.js';
 import { Bridge } from './bridge/index.js';
-import { SessionStore, _SessionReaderRegistry } from './session/index.js';
+import { SessionStore } from './session/index.js';
 import { AppConfigSchema, loadConfig, setConfigValue } from './config/index.js';
 import type { AppConfig } from './config/index.js';
 import type { AgentEvent, Runner } from './runner/index.js';

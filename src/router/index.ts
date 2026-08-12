@@ -41,6 +41,10 @@ import type { ConfigTab } from './config/common/render.js';
 const AUTO_RESUME_MAX_EVENTS = 5;
 /** /resume 列表页大小；`/resume [N]` 的 N clamp 到 [1, RESUME_PAGE_SIZE]。 */
 const RESUME_PAGE_SIZE = 5;
+/** /active 卡片每页显示的最大条目数（agent run + bash run 合计）。 */
+const ACTIVE_PAGE_SIZE = 20;
+/** /order 列表页大小；指令超过此数量时显示分页导航栏。 */
+const ORDER_PAGE_SIZE = 20;
 /** /resume 列表页内全量预取（readSessionContent）的行数上限；其余行用轻量 summary 兜底。 */
 const RESUME_CONTENT_PREFETCH = 5;
 /**
@@ -95,6 +99,7 @@ export function isImmediateAction(cmd: string): boolean {
     cmd === 'ls.switch' ||
     cmd === 'ls.page' ||
     cmd === 'resume.page' || // control operation: paginate only, never spawns claude
+    cmd === 'active.page' || // control operation: paginate active card
     cmd === 'ws.remove' ||
     cmd === 'resume.use' ||
     cmd === 'ws.use' ||
@@ -104,6 +109,7 @@ export function isImmediateAction(cmd: string): boolean {
     cmd === 'queue.edit' ||
     cmd === 'queue.input' ||
     cmd === 'order.delete' ||
+    cmd === 'order.page' ||
     cmd === 'config.toggle' ||
     cmd === 'config.set' ||
     cmd === 'config.input' ||
@@ -339,6 +345,8 @@ export class CommandRouter {
       }
       case 'resume.page':
         return this.handleResumePage(value, ctx);
+      case 'active.page':
+        return this.handleActivePage(value, ctx);
       case 'new-session':
         this.sessionStore.clearSessionId(ctx.userId, this.config.defaultAgent, {
           clearSessionCwd: true,
@@ -376,6 +384,8 @@ export class CommandRouter {
         return await this.handleQueueInput(value, ctx);
       case 'order.delete':
         return await this.handleOrderDelete(value, ctx);
+      case 'order.page':
+        return await this.handleOrderPage(value, ctx);
       case 'config.toggle':
       case 'config.set':
       case 'config.input':
@@ -998,6 +1008,26 @@ export class CommandRouter {
   }
 
   /**
+   * Handle active.page: paginate the /active run list in place.
+   * Mirrors handleResumePage — updates the same card, never sends a new one.
+   */
+  private async handleActivePage(
+    value: CardActionPayload,
+    ctx: CommandContext,
+  ): Promise<CardActionResponse> {
+    const rawOffset = Number(value.offset);
+    const offset = Number.isFinite(rawOffset) ? Math.max(0, Math.trunc(rawOffset)) : 0;
+    const alignedOffset = Math.floor(offset / ACTIVE_PAGE_SIZE) * ACTIVE_PAGE_SIZE;
+
+    const result = this.cmdActive([], ctx, alignedOffset);
+    if (!result.card) {
+      return { toast: { type: 'error', content: '当前没有正在进行中的任务' } };
+    }
+    await this.bridge.updateCardInPlace(result.card, ctx);
+    return { toast: { type: 'success', content: '' } };
+  }
+
+  /**
    * Handle ls.browse: browse directory without switching cwd.
    */
   private async handleLsBrowse(value: CardActionPayload, ctx: CommandContext): Promise<void> {
@@ -1070,7 +1100,7 @@ export class CommandRouter {
    * Handle order.delete: remove the order and update card in place.
    */
   private async handleOrderDelete(
-    value: { orderId?: string },
+    value: { orderId?: string; offset?: number },
     ctx: CommandContext,
   ): Promise<CardActionResponse | void> {
     const orderId = value.orderId;
@@ -1086,11 +1116,27 @@ export class CommandRouter {
     // Delete the order
     this.orderStore.remove(orderId);
 
-    // Refresh the order list and update card in place
-    const result = this.cmdOrder([], ctx);
+    // Refresh the order list and update card in place, preserving current page
+    const currentOffset = Math.max(0, Math.trunc(Number(value.offset) || 0));
+    const result = this.cmdOrder([], ctx, currentOffset);
     await this.bridge.updateCardInPlace(result.card!, ctx);
 
     return { toast: { type: 'success', content: '已删除指令' } };
+  }
+
+  /**
+   * Handle order.page: paginate the /order list in place.
+   * Mirrors handleLsPage — updates the same card, never sends a new one.
+   */
+  private async handleOrderPage(
+    value: CardActionPayload,
+    ctx: CommandContext,
+  ): Promise<CardActionResponse> {
+    const offset = Math.max(0, Math.trunc(Number(value.offset) || 0));
+    // cmdOrder internally clamps stale/out-of-range offsets
+    const result = this.cmdOrder([], ctx, offset);
+    await this.bridge.updateCardInPlace(result.card!, ctx);
+    return { toast: { type: 'success', content: '' } };
   }
 
   /**
@@ -2880,7 +2926,7 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
     return { card };
   }
 
-  private cmdActive(_args: string[], _ctx: CommandContext): CommandResult {
+  private cmdActive(_args: string[], _ctx: CommandContext, offset = 0): CommandResult {
     // List all active runs from bridge memory (not from file system scan)
     // New semantics (2026-07-20): only shows runs started by THIS bridge process
 
@@ -2892,12 +2938,13 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
     }
 
     // Build CardKit 2.0 card showing memory-based active runs
-    return this.buildActiveCardFromMemory(activeRuns, activeBashRuns);
+    return this.buildActiveCardFromMemory(activeRuns, activeBashRuns, offset);
   }
 
   /**
    * Build CardKit 2.0 /active card from bridge memory (not file system).
    * Shows only runs that were started by THIS bridge process.
+   * Paginates with ACTIVE_PAGE_SIZE (default 20) items per page.
    */
   private buildActiveCardFromMemory(
     activeRuns: Array<{
@@ -2916,13 +2963,38 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
       terminal: string;
       command: string;
     }>,
+    offset = 0,
   ): CommandResult {
+    const totalCount = activeRuns.length + activeBashRuns.length;
+    const pageSize = ACTIVE_PAGE_SIZE;
+    const safeOffset = Math.max(0, Math.min(offset, Math.max(0, totalCount - 1)));
+    const totalPages = Math.max(1, Math.ceil(totalCount / pageSize));
+    const currentPage = Math.floor(safeOffset / pageSize) + 1;
+
+    // Slice: distribute offset across agent runs first, then bash runs
     const elements: object[] = [];
 
+    // Page info
+    if (totalPages > 1) {
+      elements.push({
+        tag: 'div',
+        text: {
+          tag: 'lark_md',
+          content: `**第 ${currentPage}/${totalPages} 页** （共 ${totalCount} 项）`,
+        },
+      });
+    }
+
+    let remaining = pageSize;
+    let skipped = safeOffset;
+
     // Agent runs section
-    if (activeRuns.length > 0) {
+    if (activeRuns.length > 0 && skipped < activeRuns.length && remaining > 0) {
       elements.push({ tag: 'div', text: { tag: 'lark_md', content: '## 🤖 Agent 任务' } });
-      for (const run of activeRuns) {
+      const start = skipped;
+      const end = Math.min(start + remaining, activeRuns.length);
+      for (let i = start; i < end; i++) {
+        const run = activeRuns[i];
         const statusLabel = run.terminal === 'running' ? '运行中' : '处理中';
 
         elements.push({
@@ -2946,12 +3018,19 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
         });
         elements.push({ tag: 'hr' });
       }
+      remaining -= end - start;
+      skipped = 0;
+    } else {
+      skipped -= activeRuns.length;
     }
 
     // Bash runs section
-    if (activeBashRuns.length > 0) {
+    if (activeBashRuns.length > 0 && skipped < activeBashRuns.length && remaining > 0) {
       elements.push({ tag: 'div', text: { tag: 'lark_md', content: '## 💻 Bash 命令' } });
-      for (const run of activeBashRuns) {
+      const start = skipped;
+      const end = Math.min(start + remaining, activeBashRuns.length);
+      for (let i = start; i < end; i++) {
+        const run = activeBashRuns[i];
         const statusLabel = run.terminal === 'running' ? '运行中' : '处理中';
 
         elements.push({
@@ -2972,6 +3051,39 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
         });
         elements.push({ tag: 'hr' });
       }
+    }
+
+    // Pagination buttons
+    if (totalPages > 1) {
+      const paginationButtons: object[] = [];
+      if (currentPage > 1) {
+        const prevOffset = (currentPage - 2) * pageSize;
+        paginationButtons.push({
+          tag: 'button',
+          text: { tag: 'plain_text', content: '◀ 上一页' },
+          type: 'default',
+          size: 'small',
+          behaviors: [{ type: 'callback', value: { cmd: 'active.page', offset: prevOffset } }],
+        });
+      }
+      if (currentPage < totalPages) {
+        const nextOffset = currentPage * pageSize;
+        paginationButtons.push({
+          tag: 'button',
+          text: { tag: 'plain_text', content: '下一页 ▶' },
+          type: 'primary',
+          size: 'small',
+          behaviors: [{ type: 'callback', value: { cmd: 'active.page', offset: nextOffset } }],
+        });
+      }
+      elements.push({
+        tag: 'column_set',
+        columns: paginationButtons.map((btn) => ({
+          tag: 'column',
+          width: 'auto',
+          elements: [btn],
+        })),
+      });
     }
 
     const card = {
@@ -3163,10 +3275,10 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
     return { card };
   }
 
-  private cmdOrder(args: string[], _ctx: CommandContext): CommandResult {
+  private cmdOrder(args: string[], _ctx: CommandContext, offset = 0): CommandResult {
     const sub = args[0]?.toLowerCase();
 
-    // /order — list orders (simple CardKit 2.0 list, no tabs)
+    // /order — list orders (CardKit 2.0 with pagination)
     if (!sub || sub === 'list') {
       this.orderStore.reload();
       const allOrders = this.orderStore.get();
@@ -3175,8 +3287,18 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
       if (allOrders.length === 0) {
         elements.push({ tag: 'div', text: { tag: 'lark_md', content: '暂无指令' } });
       } else {
-        for (let i = 0; i < allOrders.length; i++) {
-          const order = allOrders[i];
+        // Pagination calculations
+        const totalCount = allOrders.length;
+        const totalPages = Math.max(1, Math.ceil(totalCount / ORDER_PAGE_SIZE));
+        // Clamp offset to last page boundary to avoid empty pages
+        const maxOffset = Math.max(0, (totalPages - 1) * ORDER_PAGE_SIZE);
+        const safeOffset = Math.min(Math.max(offset, 0), maxOffset);
+        const currentPage = Math.floor(safeOffset / ORDER_PAGE_SIZE) + 1;
+        const pageOrders = allOrders.slice(safeOffset, safeOffset + ORDER_PAGE_SIZE);
+        const hasPagination = totalCount > ORDER_PAGE_SIZE;
+
+        for (let i = 0; i < pageOrders.length; i++) {
+          const order = pageOrders[i];
           const displayText =
             order.text.length > 100 ? order.text.slice(0, 97) + '...' : order.text;
 
@@ -3212,7 +3334,10 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
                     type: 'danger',
                     size: 'small',
                     behaviors: [
-                      { type: 'callback', value: { cmd: 'order.delete', orderId: order.id } },
+                      {
+                        type: 'callback',
+                        value: { cmd: 'order.delete', orderId: order.id, offset: safeOffset },
+                      },
                     ],
                   },
                 ],
@@ -3221,9 +3346,83 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
           });
 
           // 非最后一项，添加分隔线
-          if (i < allOrders.length - 1) {
+          if (i < pageOrders.length - 1) {
             elements.push({ tag: 'hr' });
           }
+        }
+
+        // Pagination bar (only shown when there are more items than ORDER_PAGE_SIZE)
+        if (hasPagination) {
+          const hasPrev = safeOffset > 0;
+          const hasNext = safeOffset + ORDER_PAGE_SIZE < totalCount;
+
+          const pageColumns: object[] = [];
+          if (hasPrev) {
+            pageColumns.push({
+              tag: 'column',
+              width: 'auto',
+              vertical_align: 'center',
+              elements: [
+                {
+                  tag: 'button',
+                  text: { tag: 'plain_text', content: '⬅ 上一页' },
+                  type: 'default',
+                  size: 'small',
+                  behaviors: [
+                    {
+                      type: 'callback',
+                      value: {
+                        cmd: 'order.page',
+                        offset: safeOffset - ORDER_PAGE_SIZE,
+                      },
+                    },
+                  ],
+                },
+              ],
+            });
+          }
+          pageColumns.push({
+            tag: 'column',
+            width: 'weighted',
+            weight: 1,
+            vertical_align: 'center',
+            elements: [
+              {
+                tag: 'div',
+                text: {
+                  tag: 'lark_md',
+                  content: `**第 ${currentPage}/${totalPages} 页**（共 ${totalCount} 条）`,
+                },
+              },
+            ],
+          });
+          if (hasNext) {
+            pageColumns.push({
+              tag: 'column',
+              width: 'auto',
+              vertical_align: 'center',
+              elements: [
+                {
+                  tag: 'button',
+                  text: { tag: 'plain_text', content: '下一页 ➡' },
+                  type: 'default',
+                  size: 'small',
+                  behaviors: [
+                    {
+                      type: 'callback',
+                      value: {
+                        cmd: 'order.page',
+                        offset: safeOffset + ORDER_PAGE_SIZE,
+                      },
+                    },
+                  ],
+                },
+              ],
+            });
+          }
+
+          elements.push({ tag: 'hr' });
+          elements.push({ tag: 'column_set', columns: pageColumns });
         }
       }
 

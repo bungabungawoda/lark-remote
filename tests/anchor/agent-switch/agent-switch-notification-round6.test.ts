@@ -7,8 +7,6 @@ import { SessionStore } from '../../../src/session/index.js';
 import { CommandRouter } from '../../../src/router/index.js';
 import { AppConfigSchema } from '../../../src/config/index.js';
 import type { AppConfig } from '../../../src/config/index.js';
-import type { _Bridge } from '../../../src/bridge/index.js';
-import type { _SessionReaderRegistry } from '../../../src/session/registry.js';
 
 /**
  * Round 6 anchors: spec Round 5 设计（arrival 基线 + 停车语义 + 持久化迁移）的

@@ -78,7 +78,7 @@ logging:
   level: info               # debug | info | warn | error
 
 idle:
-  watchdogMinutes: 15       # 0 disables the idle watchdog
+  watchdogMinutes: 15       # 0 disables the idle timeout auto-stop
 ```
 
 Override the config directory with `--config-dir <path>`; override the Claude settings path with `--settings <path>` or the `CLAUDE_SETTINGS_PATH` environment variable.
