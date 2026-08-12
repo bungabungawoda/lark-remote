@@ -13,6 +13,8 @@ import { ClaudeSessionReader } from '../../../src/session/claude/index.js';
 import {
   createStubAgentRegistry,
   createStubSessionReaderRegistry,
+  createStubRunner,
+  createStubConnector,
 } from '../../lib/bridge-stubs.js';
 /**
  * Anchor (P1-1): /resume 列表页内容预取有上限（≤5），且 5 行全部有标题
@@ -39,34 +41,8 @@ import {
  */
 
 // Stub connector (minimal, matches tests/anchor/resume/resume-pagination.test.ts pattern)
-function createStubConnector() {
-  const sent: { chatId: string; input: unknown; opts?: unknown }[] = [];
-  return {
-    reconnect: async () => {},
-    addReaction: async () => {},
-    streamCard: async () => '',
-    _sent: sent,
-    sendWithRetry: async (chatId: string, input: unknown, opts?: unknown) => {
-      sent.push({ chatId, input, opts });
-      return 'msg-id';
-    },
-    sendFile: async () => 'file-msg-id',
-    updateCard: async () => {},
-    start: async () => {},
-    stop: async () => {},
-  };
-}
 
 // Stub runner
-function createStubRunner() {
-  return {
-    isRunning: false,
-    stop: async () => {},
-    killOrphan: () => {},
-    registerExitHandlers: () => {},
-    run: async function* () {},
-  };
-}
 
 // Same encoding as production `projectDirForCwd`, canonicalized via realpath first.
 function encodedProjectDir(cwd: string): string {
@@ -132,7 +108,7 @@ describe('P1-1 /resume 列表页预取上限 + summary 兜底', () => {
 
     const sessionStore = new SessionStore();
     const connector = createStubConnector();
-    const runner = createStubRunner();
+    const runner = createStubRunner({ mode: 'empty' });
     const config: AppConfig = AppConfigSchema.parse({
       feishu: { appId: 'test', appSecret: 'test' },
       claude: { model: 'opus', stopGraceMs: 5000 },
@@ -155,6 +131,7 @@ describe('P1-1 /resume 列表页预取上限 + summary 兜底', () => {
     registry.register('kimi', stubReader);
 
     const bridge = new Bridge({
+      runner,
       agentRegistry: createStubAgentRegistry(runner),
       sessionReaderRegistry: createStubSessionReaderRegistry(),
       connector,

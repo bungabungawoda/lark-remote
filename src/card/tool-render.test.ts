@@ -3,18 +3,6 @@ import { toolHeaderText, toolBodyMd } from './tool-render.js';
 import { createInitialRunState, reduceRunState } from './run-state.js';
 import type { ToolEntry } from './run-state.js';
 
-/** Construct a ToolEntry with sensible defaults, overriding only what the test needs. */
-function makeTool(overrides: Partial<ToolEntry> & Pick<ToolEntry, 'name'>): ToolEntry {
-  const { name, ...rest } = overrides;
-  return {
-    id: 't1',
-    name,
-    status: 'ok',
-    input: {},
-    ...rest,
-  };
-}
-
 /**
  * P3-6 anchors: in the real pipeline `reduceAssistantEvent` stores tool input
  * as `truncateDetail(stringifyUnknown(content.input))` — a STRING (truncated to
@@ -99,6 +87,16 @@ describe('tool-render input parse (P3-6)', () => {
 // branch-level coverage of summarizeInput, renderInput, and asRecord.
 
 describe('toolHeaderText', () => {
+  function makeTool(overrides: Partial<ToolEntry> & Pick<ToolEntry, 'name'>): ToolEntry {
+    return {
+      id: 't1',
+      name: overrides.name,
+      status: overrides.status ?? 'ok',
+      input: overrides.input ?? {},
+      ...overrides,
+    };
+  }
+
   it('Grep: header shows "pattern in path"', () => {
     const tool = makeTool({ name: 'Grep', input: { pattern: 'TODO', path: 'src/' } });
     expect(toolHeaderText(tool)).toBe('✅ **Grep** — TODO in src/');
@@ -241,6 +239,16 @@ describe('toolHeaderText', () => {
 });
 
 describe('toolBodyMd', () => {
+  function makeTool(overrides: Partial<ToolEntry> & Pick<ToolEntry, 'name'>): ToolEntry {
+    return {
+      id: 't1',
+      name: overrides.name,
+      status: overrides.status ?? 'ok',
+      input: overrides.input ?? {},
+      ...overrides,
+    };
+  }
+
   it('Grep body shows Pattern + Path fields', () => {
     const tool = makeTool({ name: 'Grep', input: { pattern: 'TODO', path: 'src/' } });
     const body = toolBodyMd(tool);
@@ -438,6 +446,16 @@ describe('toolBodyMd', () => {
 });
 
 describe('asRecord edge cases (via toolHeaderText / toolBodyMd)', () => {
+  function makeTool(overrides: Partial<ToolEntry> & Pick<ToolEntry, 'name'>): ToolEntry {
+    return {
+      id: 't1',
+      name: overrides.name,
+      status: overrides.status ?? 'ok',
+      input: overrides.input ?? {},
+      ...overrides,
+    };
+  }
+
   it('input is a valid JSON string: parses correctly', () => {
     const tool = makeTool({ name: 'Bash', input: '{"command":"ls"}' });
     expect(toolHeaderText(tool)).toBe('✅ **Bash** — ls');
