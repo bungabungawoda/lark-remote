@@ -1,3 +1,4 @@
+import { createMockBridge, createMockSessionReaderRegistry } from '../../lib/bridge-stubs.js';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { CommandRouter } from '../../../src/router/index.js';
 import { SessionStore } from '../../../src/session/index.js';
@@ -50,38 +51,6 @@ type RouterInternals = {
   diffConfig: (original: AppConfig, pending: AppConfig) => Record<string, string | undefined>;
   setNestedValue: (target: AppConfig, key: string, value: unknown) => void;
 };
-
-function createMockBridge(): Bridge {
-  return {
-    sendResult: vi.fn().mockResolvedValue(undefined),
-    forwardToClaude: vi.fn().mockResolvedValue(undefined),
-    isBusy: false,
-    isBusyFor: vi.fn().mockReturnValue(false),
-    enqueue: vi.fn(),
-    interruptCurrentRun: vi.fn().mockResolvedValue(false),
-    reconnect: vi.fn().mockResolvedValue(undefined),
-    setConfig: vi.fn(),
-    setIdleTimeout: vi.fn(),
-    removeFromQueue: vi.fn().mockReturnValue(false),
-    updateCardInPlace: vi.fn().mockResolvedValue(undefined),
-    sendCard: vi.fn().mockResolvedValue(undefined),
-    getQueuedTasks: vi.fn().mockReturnValue([]),
-    getQueuedTask: vi.fn().mockReturnValue(undefined),
-    getQueueInfo: vi.fn().mockReturnValue({ position: 0, isRunning: false, tasksAhead: 0 }),
-    getAllActiveRuns: vi.fn().mockReturnValue(new Map()),
-    sendFile: vi.fn().mockResolvedValue(''),
-    getActiveRunFor: vi.fn().mockReturnValue(undefined),
-    clearRunners: vi.fn(),
-  } as unknown as Bridge;
-}
-
-function createMockSessionReaderRegistry(): SessionReaderRegistry {
-  return {
-    listRegistered: vi.fn().mockReturnValue(['claude', 'codex']),
-    get: vi.fn(),
-  } as unknown as SessionReaderRegistry;
-}
-
 function buildCodexConfig(model: string, reasoningEffort: string): AppConfig {
   return AppConfigSchema.parse({
     feishu: { appId: 'test', appSecret: 'test' },
@@ -149,12 +118,12 @@ describe('codex catalog save clears effort - anchor', () => {
     const config = buildCodexConfig('deepseek-v4-flash', 'high');
     const router = new CommandRouter({
       sessionStore: new SessionStore(),
-      bridge: createMockBridge(),
+      bridge: createMockBridge({ enqueueImmediate: vi.fn(), clearRunners: vi.fn() }),
       config,
       configPath,
       workspacePath: path.join(tmpDir, 'workspace.json'),
       ordersPath: path.join(tmpDir, 'orders.json'),
-      sessionReaderRegistry: createMockSessionReaderRegistry(),
+      sessionReaderRegistry: createMockSessionReaderRegistry({ agentKinds: ['claude', 'codex'] }),
     });
     const internals = router as unknown as RouterInternals;
 

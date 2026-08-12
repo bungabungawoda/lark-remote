@@ -56,7 +56,6 @@ function createFakeProcWithStreams(pid = 12345) {
     stdout: PassThrough;
     stderr: PassThrough;
     kill: () => boolean;
-    emit: typeof EventEmitter.prototype.emit;
   };
   proc.pid = pid;
   proc.exitCode = null;
@@ -64,7 +63,6 @@ function createFakeProcWithStreams(pid = 12345) {
   proc.stdout = new PassThrough();
   proc.stderr = new PassThrough();
   proc.kill = () => true;
-  proc.emit = EventEmitter.prototype.emit.bind(proc) as typeof EventEmitter.prototype.emit;
   return proc;
 }
 
