@@ -1,3 +1,4 @@
+import { createMockBridge } from '../../lib/bridge-stubs.js';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import path from 'node:path';
 import os from 'node:os';
@@ -25,31 +26,6 @@ import type { AgentKind, AgentSessionReader } from '../../../src/runner/index.js
  * 4. agentChoices 同步（syncAgentChoices）与 arrival 的交互：agent 配置变更保存时
  *    不误发切换消息，session/arrival 状态原样保留。
  */
-
-function createMockBridge(): Bridge {
-  const mock = {
-    sendResult: vi.fn().mockResolvedValue(true),
-    updateCardInPlace: vi.fn().mockResolvedValue(undefined),
-    forwardToClaude: vi.fn().mockResolvedValue(undefined),
-    isBusy: false,
-    isBusyFor: vi.fn().mockReturnValue(false),
-    enqueue: vi.fn(),
-    enqueueImmediate: vi.fn(),
-    interruptCurrentRun: vi.fn().mockResolvedValue(false),
-    reconnect: vi.fn().mockResolvedValue(undefined),
-    setConfig: vi.fn(),
-    setIdleTimeout: vi.fn(),
-    clearRunners: vi.fn(),
-    removeFromQueue: vi.fn().mockReturnValue(false),
-    getQueuedTasks: vi.fn().mockReturnValue([]),
-    getQueuedTask: vi.fn().mockReturnValue(undefined),
-    getQueueInfo: vi.fn().mockReturnValue({ position: 0, isRunning: false, tasksAhead: 0 }),
-    getAllActiveRuns: vi.fn().mockReturnValue(new Map()),
-    sendFile: vi.fn().mockResolvedValue(''),
-    getActiveRunFor: vi.fn().mockReturnValue(undefined),
-  } as unknown as Bridge;
-  return mock;
-}
 
 /** Stub reader with a whitelist of "existing" session ids and an optional newest session. */
 function stubReader(opts: { known?: string[]; newest?: string | null }): AgentSessionReader {
@@ -122,7 +98,7 @@ describe('Round9 anchors: config.save switch vs startup/resume/cd/syncAgentChoic
     registry: SessionReaderRegistry = defaultRegistry(),
   ): void {
     sessionStore = store;
-    bridge = createMockBridge();
+    bridge = createMockBridge({ enqueueImmediate: vi.fn(), clearRunners: vi.fn() });
     router = new CommandRouter({
       sessionStore,
       bridge,
@@ -131,8 +107,7 @@ describe('Round9 anchors: config.save switch vs startup/resume/cd/syncAgentChoic
       workspacePath: path.join(tmpDir, 'workspace.json'),
       ordersPath: path.join(tmpDir, 'orders.json'),
       sessionReaderRegistry: registry,
-      toast: vi.fn(),
-    } as any);
+    });
   }
 
   beforeEach(() => {
@@ -291,11 +266,11 @@ describe('Round9 anchors: config.save switch vs startup/resume/cd/syncAgentChoic
       ctx,
     );
     expect(sessionStore.getSessionId(userId, 'pi')).toBe('pi-session-P1');
-    expect((router as any).config.defaultAgent).toBe('codex');
+    expect(router.config.defaultAgent).toBe('codex');
 
     const response = await doSwitch(userId, ctx, 'pi');
 
-    expect((response as any)?.toast).toBeFalsy();
+    expect(response?.toast).toBeFalsy();
     expect(lastNotice()).toContain('已使用所选 session');
     expect(lastNotice()).toContain('pi-session-P1');
     expect(lastNotice()).not.toContain('session 已清空');
@@ -556,7 +531,7 @@ describe('Round9 anchors: config.save switch vs startup/resume/cd/syncAgentChoic
     );
     const response = await router.handleCardAction({ cmd: 'config.save' }, ctx);
 
-    expect((response as any)?.toast).toBeFalsy();
+    expect(response?.toast).toBeFalsy();
     for (const text of allNotices()) {
       expect(text).not.toContain('已切换到');
     }
@@ -597,7 +572,7 @@ describe('Round9 anchors: config.save switch vs startup/resume/cd/syncAgentChoic
     );
     const response = await router.handleCardAction({ cmd: 'config.save' }, ctx);
 
-    expect((response as any)?.toast).toBeFalsy();
+    expect(response?.toast).toBeFalsy();
     expect(lastNotice()).toContain('将继续之前的 session');
     expect(lastNotice()).toContain('pi-session-P');
     expect(sessionStore.getSessionId(userId, 'pi')).toBe('pi-session-P');

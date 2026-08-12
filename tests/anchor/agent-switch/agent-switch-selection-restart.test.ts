@@ -1,3 +1,4 @@
+import { createMockBridge } from '../../lib/bridge-stubs.js';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import path from 'node:path';
 import os from 'node:os';
@@ -22,31 +23,6 @@ import type { AgentKind, AgentSessionReader } from '../../../src/runner/index.js
  *   到达过的非当前 agent 伪造了一条到达基线，Step 2.5 触发条件被洗成相等，
  *   显式选择在切入时被清空并发「session 已清空」。
  */
-
-function createMockBridge(): Bridge {
-  const mock = {
-    sendResult: vi.fn().mockResolvedValue(true),
-    updateCardInPlace: vi.fn().mockResolvedValue(undefined),
-    forwardToClaude: vi.fn().mockResolvedValue(undefined),
-    isBusy: false,
-    isBusyFor: vi.fn().mockReturnValue(false),
-    enqueue: vi.fn(),
-    enqueueImmediate: vi.fn(),
-    interruptCurrentRun: vi.fn().mockResolvedValue(false),
-    reconnect: vi.fn().mockResolvedValue(undefined),
-    setConfig: vi.fn(),
-    setIdleTimeout: vi.fn(),
-    clearRunners: vi.fn(),
-    removeFromQueue: vi.fn().mockReturnValue(false),
-    getQueuedTasks: vi.fn().mockReturnValue([]),
-    getQueuedTask: vi.fn().mockReturnValue(undefined),
-    getQueueInfo: vi.fn().mockReturnValue({ position: 0, isRunning: false, tasksAhead: 0 }),
-    getAllActiveRuns: vi.fn().mockReturnValue(new Map()),
-    sendFile: vi.fn().mockResolvedValue(''),
-    getActiveRunFor: vi.fn().mockReturnValue(undefined),
-  } as unknown as Bridge;
-  return mock;
-}
 
 function stubReader(opts: { known?: string[]; newest?: string | null }): AgentSessionReader {
   const known = new Set(opts.known ?? []);
@@ -118,7 +94,7 @@ describe('R3 red: explicit selection survives restart before first switch-in', (
     registry: SessionReaderRegistry = defaultRegistry(),
   ): void {
     sessionStore = store;
-    bridge = createMockBridge();
+    bridge = createMockBridge({ enqueueImmediate: vi.fn(), clearRunners: vi.fn() });
     router = new CommandRouter({
       sessionStore,
       bridge,
@@ -127,8 +103,7 @@ describe('R3 red: explicit selection survives restart before first switch-in', (
       workspacePath: path.join(tmpDir, 'workspace.json'),
       ordersPath: path.join(tmpDir, 'orders.json'),
       sessionReaderRegistry: registry,
-      toast: vi.fn(),
-    } as any);
+    });
   }
 
   beforeEach(() => {
@@ -198,7 +173,7 @@ describe('R3 red: explicit selection survives restart before first switch-in', (
 
     // 首次 config.save 切入：显式选择必须存活
     const response = await doSwitch(userId, ctx, 'pi');
-    expect((response as any)?.toast).toBeFalsy();
+    expect(response?.toast).toBeFalsy();
     expect(lastNotice()).toContain('已使用所选 session');
     expect(lastNotice()).toContain('pi-session-P1');
     expect(lastNotice()).not.toContain('session 已清空');

@@ -1,3 +1,4 @@
+import { createMockBridge } from '../../lib/bridge-stubs.js';
 /**
  *  残余 anchors：opencode session list 失败必须与「真空」可区分
  *
@@ -29,30 +30,6 @@ vi.mock('../../../src/logger/index.js', () => ({
   getLogger: () => mockLogger,
   initLogger: () => mockLogger,
 }));
-
-function createMockBridge() {
-  return {
-    sendResult: vi.fn().mockResolvedValue(true),
-    updateCardInPlace: vi.fn().mockResolvedValue(undefined),
-    forwardToClaude: vi.fn().mockResolvedValue(undefined),
-    isBusy: false,
-    isBusyFor: vi.fn().mockReturnValue(false),
-    enqueue: vi.fn(),
-    enqueueImmediate: vi.fn(),
-    interruptCurrentRun: vi.fn().mockResolvedValue(false),
-    reconnect: vi.fn().mockResolvedValue(undefined),
-    setConfig: vi.fn(),
-    setIdleTimeout: vi.fn(),
-    clearRunners: vi.fn(),
-    removeFromQueue: vi.fn().mockReturnValue(false),
-    getQueuedTasks: vi.fn().mockReturnValue([]),
-    getQueuedTask: vi.fn().mockReturnValue(undefined),
-    getQueueInfo: vi.fn().mockReturnValue({ position: 0, isRunning: false, tasksAhead: 0 }),
-    getAllActiveRuns: vi.fn().mockReturnValue(new Map()),
-    sendFile: vi.fn().mockResolvedValue(''),
-    getActiveRunFor: vi.fn().mockReturnValue(undefined),
-  };
-}
 
 function buildConfig(): AppConfig {
   return AppConfigSchema.parse({
@@ -98,7 +75,7 @@ describe(' list failure vs empty', () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'list-failure-router-'));
     const sessionStore = new SessionStore();
     sessionStore.setCwd('user1', fs.realpathSync(tmpDir));
-    const bridge = createMockBridge();
+    const bridge = createMockBridge({ enqueueImmediate: vi.fn(), clearRunners: vi.fn() });
 
     const failingReader: AgentSessionReader = {
       listSessions: () => {

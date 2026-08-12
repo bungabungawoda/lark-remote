@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { createStubConnector } from '../lib/bridge-stubs.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -8,7 +9,6 @@ import { AppConfigSchema } from '../../src/config/index.js';
 import type { AppConfig } from '../../src/config/index.js';
 import type { Runner, AgentRunner } from '../../src/runner/index.js';
 import { AgentRegistry } from '../../src/runner/registry.js';
-import { SessionReaderRegistry } from '../../src/session/registry.js';
 
 // 直接在模块顶层定义 mock（兼容 bun 的 vitest）
 const mockLogger = {
@@ -69,50 +69,6 @@ function createTrackingHangingRunner(): TrackingHangingRunner & AgentRunner {
   return runner;
 }
 
-function createStubConnector() {
-  const sent: Array<{ chatId: string; input: unknown; opts?: unknown }> = [];
-  const cards: object[] = [];
-  return {
-    sendWithRetry: async (chatId: string, input: unknown, opts?: unknown) => {
-      sent.push({ chatId, input, opts });
-      return 'msg-id';
-    },
-    sendFile: async () => 'file-msg-id',
-    reconnect: async () => {},
-    addReaction: async () => {},
-    streamCard: async (
-      chatId: string,
-      initial: object,
-      producer: (controller: {
-        messageId: string;
-        current: object;
-        update(next: object | ((current: object) => object)): Promise<void>;
-      }) => Promise<void>,
-    ) => {
-      sent.push({ chatId, input: { card: initial }, opts: undefined });
-      cards.push(initial);
-      let current = initial;
-      await producer({
-        messageId: 'stream-msg-id',
-        get current() {
-          return current;
-        },
-        update: async (next) => {
-          current = typeof next === 'function' ? next(current) : next;
-          cards.push(current);
-        },
-      });
-      return 'stream-msg-id';
-    },
-    updateCard: async (_messageId: string, card: object) => {
-      cards.push(card);
-    },
-    connected: true,
-    _sent: sent,
-    _cards: cards,
-  };
-}
-
 let tmpDir: string;
 let config: AppConfig;
 
@@ -169,11 +125,11 @@ describe('Bridge clearRunners must not orphan an ACTIVE runner (regression 2026-
     const sessionStore = new SessionStore();
     sessionStore.setCwd('user1', tmpDir);
     const bridge = new Bridge({
+      runner: createTrackingHangingRunner(), // fallback, unused (registry path)
       connector,
       sessionStore,
       config,
       agentRegistry: reg,
-      sessionReaderRegistry: new SessionReaderRegistry(),
     });
 
     // 1. Start a run; do NOT await (it hangs). getRunner caches runner A.
@@ -240,11 +196,11 @@ describe('Bridge clearRunners must not orphan an ACTIVE runner (regression 2026-
     const sessionStore = new SessionStore();
     sessionStore.setCwd('user1', tmpDir);
     const bridge = new Bridge({
+      runner: createTrackingHangingRunner(), // fallback, unused (registry path)
       connector,
       sessionStore,
       config,
       agentRegistry: reg,
-      sessionReaderRegistry: new SessionReaderRegistry(),
     });
 
     // Start a hanging run -> runner A created, cached, and active.

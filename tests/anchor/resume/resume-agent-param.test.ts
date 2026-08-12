@@ -13,6 +13,8 @@ import { ClaudeSessionReader } from '../../../src/session/claude/index.js';
 import {
   createStubAgentRegistry,
   createStubSessionReaderRegistry,
+  createStubRunner,
+  createStubConnector,
 } from '../../lib/bridge-stubs.js';
 /**
  * Anchor: /resume [agent] [N] 双参数功能
@@ -27,43 +29,8 @@ import {
  */
 
 // Stub connector that records sent messages (matching router.test.ts pattern)
-function createStubConnector() {
-  const sent: { chatId: string; input: unknown; opts?: unknown }[] = [];
-  const cards: object[] = [];
-  return {
-    reconnect: async () => {},
-    addReaction: async () => {},
-    streamCard: async () => '',
-    _sent: sent,
-    _cards: cards,
-    sendWithRetry: async (chatId: string, input: unknown, opts?: unknown) => {
-      sent.push({ chatId, input, opts });
-      return 'msg-id';
-    },
-    sendFile: async (chatId: string, filePath: string) => {
-      sent.push({ chatId, input: { file: filePath }, opts: undefined });
-      return 'file-msg-id';
-    },
-    updateCard: async (_messageId: string, card: unknown) => {
-      cards.push(card as object);
-    },
-    start: async () => {},
-    stop: async () => {},
-  };
-}
 
 // Stub runner
-function createStubRunner() {
-  return {
-    isRunning: false,
-    stop: async () => {},
-    killOrphan: () => {},
-    registerExitHandlers: () => {},
-    run: async function* () {
-      // no-op
-    },
-  };
-}
 
 describe('/resume [agent] [N] dual-parameter feature', () => {
   let tmpDir: string;
@@ -101,7 +68,7 @@ describe('/resume [agent] [N] dual-parameter feature', () => {
 
     const sessionStore = new SessionStore();
     const connector = createStubConnector();
-    const runner = createStubRunner();
+    const runner = createStubRunner({ mode: 'empty' });
     const config: AppConfig = AppConfigSchema.parse({
       feishu: { appId: 'test', appSecret: 'test' },
       claude: {
@@ -119,6 +86,7 @@ describe('/resume [agent] [N] dual-parameter feature', () => {
     registry.register('codex', codexReader);
 
     const bridge = new Bridge({
+      runner,
       agentRegistry: createStubAgentRegistry(runner),
       sessionReaderRegistry: createStubSessionReaderRegistry(),
       connector,
@@ -167,7 +135,7 @@ describe('/resume [agent] [N] dual-parameter feature', () => {
 
     const sessionStore = new SessionStore();
     const connector = createStubConnector();
-    const runner = createStubRunner();
+    const runner = createStubRunner({ mode: 'empty' });
     const config: AppConfig = AppConfigSchema.parse({
       feishu: { appId: 'test', appSecret: 'test' },
       claude: {
@@ -183,6 +151,7 @@ describe('/resume [agent] [N] dual-parameter feature', () => {
     registry.register('claude', claudeReader);
 
     const bridge = new Bridge({
+      runner,
       agentRegistry: createStubAgentRegistry(runner),
       sessionReaderRegistry: createStubSessionReaderRegistry(),
       connector,
@@ -233,7 +202,7 @@ describe('/resume [agent] [N] dual-parameter feature', () => {
 
     const sessionStore = new SessionStore();
     const connector = createStubConnector();
-    const runner = createStubRunner();
+    const runner = createStubRunner({ mode: 'empty' });
     const config: AppConfig = AppConfigSchema.parse({
       feishu: { appId: 'test', appSecret: 'test' },
       claude: {
@@ -250,6 +219,7 @@ describe('/resume [agent] [N] dual-parameter feature', () => {
     // 不注册 gemini, codex 等
 
     const bridge = new Bridge({
+      runner,
       agentRegistry: createStubAgentRegistry(runner),
       sessionReaderRegistry: createStubSessionReaderRegistry(),
       connector,
@@ -304,7 +274,7 @@ describe('/resume [agent] [N] dual-parameter feature', () => {
 
     const sessionStore = new SessionStore();
     const connector = createStubConnector();
-    const runner = createStubRunner();
+    const runner = createStubRunner({ mode: 'empty' });
     const config: AppConfig = AppConfigSchema.parse({
       feishu: { appId: 'test', appSecret: 'test' },
       claude: {
@@ -322,6 +292,7 @@ describe('/resume [agent] [N] dual-parameter feature', () => {
     registry.register('codex', codexReader);
 
     const bridge = new Bridge({
+      runner,
       agentRegistry: createStubAgentRegistry(runner),
       sessionReaderRegistry: createStubSessionReaderRegistry(),
       connector,

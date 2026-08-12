@@ -1,3 +1,4 @@
+import { createMockBridge, createMockSessionReaderRegistry } from '../../lib/bridge-stubs.js';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import path from 'node:path';
 import os from 'node:os';
@@ -27,39 +28,6 @@ import type { SessionReaderRegistry } from '../../../src/session/registry.js';
 // Stub runner
 
 // Mock bridge
-function createMockBridge(): Bridge {
-  const mock = {
-    // 真实 sendResult 成功返回 true；router 会检查返回值，失败才兜底 toast
-    sendResult: vi.fn().mockResolvedValue(true),
-    updateCardInPlace: vi.fn().mockResolvedValue(undefined),
-    forwardToClaude: vi.fn().mockResolvedValue(undefined),
-    isBusy: false,
-    isBusyFor: vi.fn().mockReturnValue(false),
-    enqueue: vi.fn(),
-    enqueueImmediate: vi.fn(),
-    interruptCurrentRun: vi.fn().mockResolvedValue(false),
-    reconnect: vi.fn().mockResolvedValue(undefined),
-    setConfig: vi.fn(),
-    setIdleTimeout: vi.fn(),
-    clearRunners: vi.fn(),
-    removeFromQueue: vi.fn().mockReturnValue(false),
-    getQueuedTasks: vi.fn().mockReturnValue([]),
-    getQueuedTask: vi.fn().mockReturnValue(undefined),
-    getQueueInfo: vi.fn().mockReturnValue({ position: 0, isRunning: false, tasksAhead: 0 }),
-    getAllActiveRuns: vi.fn().mockReturnValue(new Map()),
-    sendFile: vi.fn().mockResolvedValue(''),
-    getActiveRunFor: vi.fn().mockReturnValue(undefined),
-  } as unknown as Bridge;
-  return mock;
-}
-
-function createMockSessionReaderRegistry(): SessionReaderRegistry {
-  return {
-    listRegistered: vi.fn().mockReturnValue(['claude', 'codex', 'pi', 'opencode']),
-    get: vi.fn(),
-  } as unknown as SessionReaderRegistry;
-}
-
 function buildPiConfig(): AppConfig {
   return AppConfigSchema.parse({
     feishu: { appId: 'test', appSecret: 'test' },
@@ -86,7 +54,7 @@ describe('config.save restores previous session when switching back', () => {
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-restore-test-'));
     sessionStore = new SessionStore();
-    bridge = createMockBridge();
+    bridge = createMockBridge({ enqueueImmediate: vi.fn(), clearRunners: vi.fn() });
   });
 
   afterEach(() => {
@@ -96,7 +64,9 @@ describe('config.save restores previous session when switching back', () => {
   it('test_anchor_restore_session_on_switch_back', async () => {
     // Setup: user on pi with sessionId
     const config = buildPiConfig(); // defaultAgent = pi
-    const registry = createMockSessionReaderRegistry();
+    const registry = createMockSessionReaderRegistry({
+      agentKinds: ['claude', 'codex', 'pi', 'opencode'],
+    });
     router = new CommandRouter({
       sessionStore,
       bridge,
@@ -146,7 +116,9 @@ describe('config.save restores previous session when switching back', () => {
   it('test_anchor_no_restore_if_new_session_created', async () => {
     // Setup: user on pi with sessionId
     const config = buildPiConfig(); // defaultAgent = pi
-    const registry = createMockSessionReaderRegistry();
+    const registry = createMockSessionReaderRegistry({
+      agentKinds: ['claude', 'codex', 'pi', 'opencode'],
+    });
     router = new CommandRouter({
       sessionStore,
       bridge,

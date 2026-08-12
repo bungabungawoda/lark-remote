@@ -1,3 +1,4 @@
+import { createMockBridge } from '../lib/bridge-stubs.js';
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -86,27 +87,6 @@ function createBlockingRunner(): Runner & { unblock: () => void } {
     unblock,
   };
   return runner;
-}
-
-function createMockBridge(): Bridge {
-  return {
-    sendResult: async () => {},
-    forwardToClaude: async () => {},
-    isBusy: false,
-    isBusyFor: () => false,
-    enqueue: () => {},
-    interruptCurrentRun: async () => false,
-    reconnect: async () => {},
-    setConfig: () => {},
-    setIdleTimeout: () => {},
-    removeFromQueue: () => false,
-    getQueuedTasks: () => [],
-    getQueuedTask: () => undefined,
-    getQueueInfo: () => ({ position: 0, isRunning: false, tasksAhead: 0 }),
-    getAllActiveRuns: () => new Map(),
-    sendFile: async () => '',
-    getActiveRunFor: () => undefined,
-  } as unknown as Bridge;
 }
 
 describe('cmdOrder 列表命令 (Anchor #2)', () => {
