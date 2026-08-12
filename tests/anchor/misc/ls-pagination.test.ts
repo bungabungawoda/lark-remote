@@ -8,7 +8,7 @@ import { Bridge } from '../../../src/bridge/index.js';
 import type { AppConfig } from '../../../src/config/index.js';
 import { AppConfigSchema } from '../../../src/config/index.js';
 import { SessionReaderRegistry } from '../../../src/session/registry.js';
-import type { Runner } from '../../../src/runner/index.js';
+import type { _Runner } from '../../../src/runner/index.js';
 
 import {
   createStubAgentRegistry,

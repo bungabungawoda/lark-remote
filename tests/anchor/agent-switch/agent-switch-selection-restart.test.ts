@@ -8,7 +8,7 @@ import { SessionReaderRegistry } from '../../../src/session/registry.js';
 import { CommandRouter } from '../../../src/router/index.js';
 import { AppConfigSchema } from '../../../src/config/index.js';
 import type { AppConfig } from '../../../src/config/index.js';
-import type { Bridge } from '../../../src/bridge/index.js';
+import type { _Bridge } from '../../../src/bridge/index.js';
 import type { AgentKind, AgentSessionReader } from '../../../src/runner/index.js';
 
 /**
