@@ -161,7 +161,7 @@ bridge 启动后不在终端输出，运行日志写入 `~/.lark-remote/logs/`�
 
 `/stop` 走独立控制通道，不会排在当前 Claude run 后等待。它调用
 `runner.stop({ immediate: true })`：发 SIGTERM 后立即 SIGKILL，**不等宽限期**
-（`stopGraceMs` 只服务空闲看门狗自动 finish 路径，默认 5s，不可由用户调整）。
+（`stopGraceMs` 只服务空闲超时自动停止的收尾流程，默认 5s，不可由用户调整）。
 运行卡片上的「⏹ 终止」按钮行为相同。
 
 #### `/restart`：自重启 bridge
@@ -241,7 +241,7 @@ bot: 已切换到: /Users/you/code/my-app
 | 情况 | 行为 |
 |------|------|
 | claude 进程被外部 kill | bridge 报错但不崩溃，下一条消息正常处理 |
-| claude 长时间无输出（挂起） | 15 分钟空闲看门狗自动终止进程，原卡片显示超时，queue 解除阻塞 |
+| claude 长时间无输出（挂起） | 15 分钟空闲超时自动终止进程，原卡片显示超时，queue 解除阻塞 |
 | bridge 异常退出 | 残留 claude 进程被清理（启动时读 pid 文件 kill 孤儿） |
 | 同一 configDir 重复启动 | 第二个实例直接退出并提示已有 pid |
 | 飞书限流（99991400） | 自动 sleep 200ms 重试一次 |
@@ -259,7 +259,7 @@ bun run typecheck   # tsc --noEmit 静态检查
 ```
 
 测试覆盖：config、session、workspace、runner（JSONL 解析 + exit code）、card（状态机、渲染、
-stream 生命周期）、bridge（work queue + control lane + 看门狗 + 降级）、router 以及 integration。
+stream 生命周期）、bridge（work queue + control lane + 空闲超时自动停止 + 降级）、router 以及 integration。
 
 ---
 

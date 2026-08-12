@@ -7,8 +7,6 @@ import { SessionStore } from '../session/index.js';
 import { AppConfigSchema } from '../config/index.js';
 import type { AppConfig } from '../config/index.js';
 import type { AgentEvent, AgentRunner, Runner } from '../runner/index.js';
-import { _AgentRegistry } from '../runner/registry.js';
-import { _SessionReaderRegistry } from '../session/registry.js';
 import {
   createStubSessionReaderRegistry,
   createStubConnector,
