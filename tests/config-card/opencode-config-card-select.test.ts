@@ -1,3 +1,4 @@
+import { createMockBridge, createMockSessionReaderRegistry } from '../lib/bridge-stubs.js';
 /**
  * Opencode Config Card Field Type Test - ANCHOR
  *
@@ -27,35 +28,6 @@ type RouterInternals = {
   setNestedValue: (obj: unknown, key: string, value: unknown) => void;
   pendingConfig: Record<string, unknown>;
 };
-
-function createMockBridge(): Bridge {
-  return {
-    sendResult: vi.fn().mockResolvedValue(undefined),
-    forwardToClaude: vi.fn().mockResolvedValue(undefined),
-    isBusy: false,
-    isBusyFor: vi.fn().mockReturnValue(false),
-    enqueue: vi.fn(),
-    interruptCurrentRun: vi.fn().mockResolvedValue(false),
-    reconnect: vi.fn().mockResolvedValue(undefined),
-    setConfig: vi.fn(),
-    setIdleTimeout: vi.fn(),
-    removeFromQueue: vi.fn().mockReturnValue(false),
-    getQueuedTasks: vi.fn().mockReturnValue([]),
-    getQueuedTask: vi.fn().mockReturnValue(undefined),
-    getQueueInfo: vi.fn().mockReturnValue({ position: 0, isRunning: false, tasksAhead: 0 }),
-    getAllActiveRuns: vi.fn().mockReturnValue(new Map()),
-    sendFile: vi.fn().mockResolvedValue(''),
-    getActiveRunFor: vi.fn().mockReturnValue(undefined),
-  } as unknown as Bridge;
-}
-
-function createMockSessionReaderRegistry(): SessionReaderRegistry {
-  return {
-    listRegistered: vi.fn().mockReturnValue(['claude', 'codex', 'pi', 'opencode']),
-    get: vi.fn(),
-  } as unknown as SessionReaderRegistry;
-}
-
 function buildOpencodeConfig(): AppConfig {
   return AppConfigSchema.parse({
     feishu: { appId: 'test', appSecret: 'test' },
@@ -94,7 +66,9 @@ describe('opencode config card ANCHOR: opencode fields must use select type', ()
       configPath: path.join(tmpDir, 'config.yaml'),
       workspacePath: path.join(tmpDir, 'workspace.json'),
       ordersPath: path.join(tmpDir, 'orders.json'),
-      sessionReaderRegistry: createMockSessionReaderRegistry(),
+      sessionReaderRegistry: createMockSessionReaderRegistry({
+        agentKinds: ['claude', 'codex', 'pi', 'opencode'],
+      }),
     });
 
     const result = (router as unknown as RouterInternals).buildConfigCard();
@@ -136,7 +110,9 @@ describe('opencode config card ANCHOR: opencode fields must use select type', ()
       configPath: path.join(tmpDir, 'config.yaml'),
       workspacePath: path.join(tmpDir, 'workspace.json'),
       ordersPath: path.join(tmpDir, 'orders.json'),
-      sessionReaderRegistry: createMockSessionReaderRegistry(),
+      sessionReaderRegistry: createMockSessionReaderRegistry({
+        agentKinds: ['claude', 'codex', 'pi', 'opencode'],
+      }),
     });
 
     const result = (router as unknown as RouterInternals).buildConfigCard();
@@ -182,7 +158,9 @@ describe('opencode config card ANCHOR: opencode fields must use select type', ()
       configPath: path.join(tmpDir, 'config.yaml'),
       workspacePath: path.join(tmpDir, 'workspace.json'),
       ordersPath: path.join(tmpDir, 'orders.json'),
-      sessionReaderRegistry: createMockSessionReaderRegistry(),
+      sessionReaderRegistry: createMockSessionReaderRegistry({
+        agentKinds: ['claude', 'codex', 'pi', 'opencode'],
+      }),
     });
 
     const result = (router as unknown as RouterInternals).buildConfigCard();

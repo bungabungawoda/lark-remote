@@ -1,3 +1,4 @@
+import { createMockBridge, createMockSessionReaderRegistry } from '../../lib/bridge-stubs.js';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import path from 'node:path';
 import os from 'node:os';
@@ -24,39 +25,6 @@ import type { SessionReaderRegistry } from '../../../src/session/registry.js';
  * - 双用户隔离：config.save 切换的 sessions/previousSessions/arrivalSessions 全部
  *   按 userId 隔离。
  */
-
-function createMockBridge(): Bridge {
-  const mock = {
-    sendResult: vi.fn().mockResolvedValue(true),
-    updateCardInPlace: vi.fn().mockResolvedValue(undefined),
-    forwardToClaude: vi.fn().mockResolvedValue(undefined),
-    isBusy: false,
-    isBusyFor: vi.fn().mockReturnValue(false),
-    enqueue: vi.fn(),
-    enqueueImmediate: vi.fn(),
-    interruptCurrentRun: vi.fn().mockResolvedValue(false),
-    reconnect: vi.fn().mockResolvedValue(undefined),
-    setConfig: vi.fn(),
-    setIdleTimeout: vi.fn(),
-    clearRunners: vi.fn(),
-    removeFromQueue: vi.fn().mockReturnValue(false),
-    getQueuedTasks: vi.fn().mockReturnValue([]),
-    getQueuedTask: vi.fn().mockReturnValue(undefined),
-    getQueueInfo: vi.fn().mockReturnValue({ position: 0, isRunning: false, tasksAhead: 0 }),
-    getAllActiveRuns: vi.fn().mockReturnValue(new Map()),
-    sendFile: vi.fn().mockResolvedValue(''),
-    getActiveRunFor: vi.fn().mockReturnValue(undefined),
-  } as unknown as Bridge;
-  return mock;
-}
-
-function createMockSessionReaderRegistry(): SessionReaderRegistry {
-  return {
-    listRegistered: vi.fn().mockReturnValue(['claude', 'codex', 'pi', 'opencode', 'kimi']),
-    get: vi.fn(),
-  } as unknown as SessionReaderRegistry;
-}
-
 function buildConfig(overrides?: Partial<AppConfig>): AppConfig {
   return AppConfigSchema.parse({
     feishu: { appId: 'test', appSecret: 'test' },
@@ -89,7 +57,7 @@ describe('Round6 anchors: arrival baseline persistence round-trip boundaries', (
 
   function makeRouter(defaultAgent: string, store: SessionStore = new SessionStore()): void {
     sessionStore = store;
-    bridge = createMockBridge();
+    bridge = createMockBridge({ enqueueImmediate: vi.fn(), clearRunners: vi.fn() });
     router = new CommandRouter({
       sessionStore,
       bridge,
@@ -296,7 +264,7 @@ describe('Round6 anchors: arrival baseline persistence round-trip boundaries', (
     // 模拟重启
     const store2 = new SessionStore(filePath);
     makeRouter('codex', store2);
-    (bridge.sendResult as ReturnType<typeof vi.fn>).mockResolvedValueOnce(false);
+    bridge.sendResult.mockResolvedValueOnce(false);
 
     const response = await doSwitch(userId, ctx, 'pi');
     const sendResultMock = bridge.sendResult as ReturnType<typeof vi.fn>;

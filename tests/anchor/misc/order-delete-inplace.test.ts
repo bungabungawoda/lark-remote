@@ -14,6 +14,8 @@ import { SessionReaderRegistry } from '../../../src/session/registry.js';
 import {
   createStubAgentRegistry,
   createStubSessionReaderRegistry,
+  createStubConnector,
+  createStubRunner,
 } from '../../lib/bridge-stubs.js';
 let tmpDir: string;
 let ordersFile: string;
@@ -28,64 +30,6 @@ afterEach(() => {
 });
 
 // --- Stubs ---
-
-function createStubConnector() {
-  const sent: { chatId: string; input: unknown; opts?: unknown }[] = [];
-  const cards: object[] = [];
-  return {
-    sendWithRetry: async (chatId: string, input: unknown, opts?: unknown) => {
-      sent.push({ chatId, input, opts });
-      return 'msg-id';
-    },
-    sendFile: async () => 'file-msg-id',
-    reconnect: async () => {},
-    addReaction: async () => {},
-    streamCard: async (
-      chatId: string,
-      initial: object,
-      producer: (controller: {
-        messageId: string;
-        current: object;
-        update(next: object | ((current: object) => object)): Promise<void>;
-      }) => Promise<void>,
-      opts?: unknown,
-    ) => {
-      sent.push({ chatId, input: { card: initial }, opts });
-      cards.push(initial);
-      let current = initial;
-      await producer({
-        messageId: 'stream-msg-id',
-        get current() {
-          return current;
-        },
-        update: async (next) => {
-          current = typeof next === 'function' ? next(current) : next;
-          cards.push(current);
-        },
-      });
-      return 'stream-msg-id';
-    },
-    updateCard: async (_messageId: string, card: object) => {
-      cards.push(card);
-    },
-    connected: true,
-    _sent: sent,
-    _cards: cards,
-  };
-}
-
-function createStreamingRunner(events: AgentEvent[] = []): Runner {
-  return {
-    isRunning: false,
-    stop: async () => {},
-    killOrphan: () => {},
-    registerExitHandlers: () => {},
-    run: async function* () {
-      for (const e of events) yield e;
-    },
-  };
-}
-
 function createRouter(overrides?: {
   runner?: Runner;
   sessionStore?: SessionStore;
@@ -93,7 +37,7 @@ function createRouter(overrides?: {
 }) {
   const sessionStore = overrides?.sessionStore ?? new SessionStore();
   const connector = createStubConnector();
-  const runner: Runner = overrides?.runner ?? createStreamingRunner();
+  const runner: Runner = overrides?.runner ?? createStubRunner({ mode: 'streaming' });
   const config: AppConfig = AppConfigSchema.parse({
     feishu: { appId: 'test', appSecret: 'test' },
     claude: {
@@ -107,6 +51,7 @@ function createRouter(overrides?: {
   const ordersPath = overrides?.ordersPath ?? ordersFile;
 
   const bridge = new Bridge({
+    runner,
     agentRegistry: createStubAgentRegistry(runner),
     sessionReaderRegistry: createStubSessionReaderRegistry(),
     connector,
@@ -144,8 +89,6 @@ describe('Anchor: order.delete updates card in place', () => {
     sessionStore.set('user1', {
       sessions: new Map([['claude', 'session-1']]),
       previousSessions: new Map(),
-      arrivalSessions: new Map(),
-      sessionCwds: new Map(),
       cwd: projectDir,
     });
 

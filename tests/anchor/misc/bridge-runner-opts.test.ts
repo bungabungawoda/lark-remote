@@ -84,6 +84,13 @@ describe('Bridge passes model/effort to runner', () => {
 
     // 创建 bridge
     const bridge = new Bridge({
+      runner: {
+        isRunning: false,
+        run: async function* () {},
+        stop: async () => {},
+        killOrphan: () => {},
+        registerExitHandlers: () => {},
+      },
       config,
       connector: connector as any,
       sessionStore,
@@ -141,6 +148,13 @@ describe('Bridge passes model/effort to runner', () => {
     };
 
     const bridge = new Bridge({
+      runner: {
+        isRunning: false,
+        run: async function* () {},
+        stop: async () => {},
+        killOrphan: () => {},
+        registerExitHandlers: () => {},
+      },
       config: codexConfig,
       connector: connector as any,
       sessionStore,
@@ -187,6 +201,13 @@ describe('Bridge passes model/effort to runner', () => {
     };
 
     const bridge = new Bridge({
+      runner: {
+        isRunning: false,
+        run: async function* () {},
+        stop: async () => {},
+        killOrphan: () => {},
+        registerExitHandlers: () => {},
+      },
       config: piConfig,
       connector: connector as any,
       sessionStore,
@@ -234,6 +255,13 @@ describe('Bridge passes model/effort to runner', () => {
     };
 
     const bridge = new Bridge({
+      runner: {
+        isRunning: false,
+        run: async function* () {},
+        stop: async () => {},
+        killOrphan: () => {},
+        registerExitHandlers: () => {},
+      },
       config: opencodeConfig,
       connector: connector as any,
       sessionStore,

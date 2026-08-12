@@ -16,10 +16,11 @@ import { CommandRouter } from '../../../src/router/index.js';
 import { Bridge } from '../../../src/bridge/index.js';
 import { AppConfigSchema } from '../../../src/config/index.js';
 import type { AppConfig } from '../../../src/config/index.js';
-import { SessionReaderRegistry } from '../../../src/session/registry.js';
 import {
   createStubAgentRegistry,
   createStubSessionReaderRegistry,
+  createStubConnector,
+  createStubRunner,
 } from '../../lib/bridge-stubs.js';
 import {
   RESTART_WAIT_PID_ENV,
@@ -31,49 +32,6 @@ const spawnMock = vi.hoisted(() => vi.fn());
 vi.mock('node:child_process', () => ({
   spawn: spawnMock,
 }));
-
-function createStubConnector() {
-  const sent: { chatId: string; input: unknown; opts?: unknown }[] = [];
-  return {
-    reconnect: async () => {},
-    addReaction: async () => {},
-    streamCard: async () => '',
-    _sent: sent,
-    sendWithRetry: async (chatId: string, input: unknown, opts?: unknown) => {
-      sent.push({ chatId, input, opts });
-      return 'msg-id';
-    },
-    sendFile: async () => 'file-msg-id',
-    updateCard: async () => {},
-    start: async () => {},
-    stop: async () => {},
-  };
-}
-
-function createStubRunner() {
-  return {
-    isRunning: false,
-    stop: async () => {},
-    killOrphan: () => {},
-    registerExitHandlers: () => {},
-    getStatusInfo: () => ({ kind: 'claude', model: 'test-model' }),
-    run: async function* () {},
-  };
-}
-
-function createStubRegistry(): SessionReaderRegistry {
-  const registry = new SessionReaderRegistry();
-  const stubReader = {
-    listSessions: () => ({ sessions: [], total: 0 }),
-    getNewestSession: () => null,
-    readSessionContent: () => ({ events: [], reason: 'not_found' }),
-    isSessionActive: () => false,
-  };
-  for (const agent of ['claude', 'codex', 'opencode', 'pi', 'kimi'] as const) {
-    registry.register(agent, stubReader);
-  }
-  return registry;
-}
 
 function buildRouter(
   overrides: {
@@ -89,13 +47,14 @@ function buildRouter(
         sendWithRetry: overrides.sendWithRetry,
       }
     : createStubConnector();
-  const runner = createStubRunner();
+  const runner = createStubRunner({ mode: 'empty', withStatusInfo: true });
   const config: AppConfig = AppConfigSchema.parse({
     feishu: { appId: 'test', appSecret: 'test' },
     claude: { model: 'opus', stopGraceMs: 5000 },
     defaultAgent: 'claude',
   });
   const bridge = new Bridge({
+    runner,
     agentRegistry: createStubAgentRegistry(runner),
     sessionReaderRegistry: createStubSessionReaderRegistry(),
     connector,
@@ -109,7 +68,7 @@ function buildRouter(
     configPath: '/tmp/restart-test-config.yaml',
     exitHandler: overrides.exitHandler,
     restartSpawner: overrides.restartSpawner,
-    sessionReaderRegistry: createStubRegistry(),
+    sessionReaderRegistry: createStubSessionReaderRegistry(),
   });
   return { router, connector, sessionStore };
 }
