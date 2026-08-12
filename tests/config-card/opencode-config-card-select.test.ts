@@ -11,13 +11,13 @@ import { createMockBridge, createMockSessionReaderRegistry } from '../lib/bridge
  * 3. 我们通过检查 opencode 相关的回调 key 对应的元素类型来判断
  */
 
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, _vi, beforeEach, afterEach } from 'vitest';
 import { CommandRouter } from '../../src/router/index.js';
 import { SessionStore } from '../../src/session/index.js';
 import { AppConfigSchema } from '../../src/config/index.js';
 import type { AppConfig } from '../../src/config/index.js';
-import type { Bridge } from '../../src/bridge/index.js';
-import type { SessionReaderRegistry } from '../../src/session/registry.js';
+import type { _Bridge } from '../../src/bridge/index.js';
+import type { _SessionReaderRegistry } from '../../src/session/registry.js';
 import path from 'node:path';
 import os from 'node:os';
 import fs from 'node:fs';
