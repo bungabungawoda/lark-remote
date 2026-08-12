@@ -1,3 +1,4 @@
+import { createMockBridge, createMockSessionReaderRegistry } from '../lib/bridge-stubs.js';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { CommandRouter } from '../../src/router/index.js';
 import { SessionStore } from '../../src/session/index.js';
@@ -158,38 +159,6 @@ function extractSelectFields(
 // ---------------------------------------------------------------------------
 // Stub factories
 // ---------------------------------------------------------------------------
-
-function createMockBridge(): Bridge {
-  return {
-    sendResult: vi.fn().mockResolvedValue(undefined),
-    forwardToClaude: vi.fn().mockResolvedValue(undefined),
-    isBusy: false,
-    isBusyFor: vi.fn().mockReturnValue(false),
-    enqueue: vi.fn(),
-    interruptCurrentRun: vi.fn().mockResolvedValue(false),
-    reconnect: vi.fn().mockResolvedValue(undefined),
-    setConfig: vi.fn(),
-    setIdleTimeout: vi.fn(),
-    removeFromQueue: vi.fn().mockReturnValue(false),
-    updateCardInPlace: vi.fn().mockResolvedValue(undefined),
-    sendCard: vi.fn().mockResolvedValue(undefined),
-    getQueuedTasks: vi.fn().mockReturnValue([]),
-    getQueuedTask: vi.fn().mockReturnValue(undefined),
-    getQueueInfo: vi.fn().mockReturnValue({ position: 0, isRunning: false, tasksAhead: 0 }),
-    getAllActiveRuns: vi.fn().mockReturnValue(new Map()),
-    sendFile: vi.fn().mockResolvedValue(''),
-    getActiveRunFor: vi.fn().mockReturnValue(undefined),
-    clearRunners: vi.fn(),
-  } as unknown as Bridge;
-}
-
-function createMockSessionReaderRegistry(agentKinds: string[] = ['claude']): SessionReaderRegistry {
-  return {
-    listRegistered: vi.fn().mockReturnValue(agentKinds),
-    get: vi.fn(),
-  } as unknown as SessionReaderRegistry;
-}
-
 function buildClaudeConfig(model: string = 'opus'): AppConfig {
   return AppConfigSchema.parse({
     feishu: { appId: 'test', appSecret: 'test' },
@@ -228,8 +197,8 @@ describe('Config card: Claude model custom input (feature: 2026-07-15)', () => {
     it('should include custom model input field when defaultAgent=claude', () => {
       const config = buildClaudeConfig();
       const sessionStore = new SessionStore();
-      const bridge = createMockBridge();
-      const sessionReaderRegistry = createMockSessionReaderRegistry(['claude']);
+      const bridge = createMockBridge({ enqueueImmediate: vi.fn(), clearRunners: vi.fn() });
+      const sessionReaderRegistry = createMockSessionReaderRegistry({ agentKinds: ['claude'] });
 
       const router = new CommandRouter({
         sessionStore,
@@ -256,8 +225,8 @@ describe('Config card: Claude model custom input (feature: 2026-07-15)', () => {
     it('should show custom value in input field when model is not in dropdown options', () => {
       const config = buildClaudeConfig('custom-model-vendor-xyz');
       const sessionStore = new SessionStore();
-      const bridge = createMockBridge();
-      const sessionReaderRegistry = createMockSessionReaderRegistry(['claude']);
+      const bridge = createMockBridge({ enqueueImmediate: vi.fn(), clearRunners: vi.fn() });
+      const sessionReaderRegistry = createMockSessionReaderRegistry({ agentKinds: ['claude'] });
 
       const router = new CommandRouter({
         sessionStore,
@@ -282,8 +251,8 @@ describe('Config card: Claude model custom input (feature: 2026-07-15)', () => {
     it('should show no selection in select when model is custom value', () => {
       const config = buildClaudeConfig('custom-model-vendor-xyz');
       const sessionStore = new SessionStore();
-      const bridge = createMockBridge();
-      const sessionReaderRegistry = createMockSessionReaderRegistry(['claude']);
+      const bridge = createMockBridge({ enqueueImmediate: vi.fn(), clearRunners: vi.fn() });
+      const sessionReaderRegistry = createMockSessionReaderRegistry({ agentKinds: ['claude'] });
 
       const router = new CommandRouter({
         sessionStore,
@@ -311,8 +280,8 @@ describe('Config card: Claude model custom input (feature: 2026-07-15)', () => {
     it('should show empty input field when model is in preset options', () => {
       const config = buildClaudeConfig('opus');
       const sessionStore = new SessionStore();
-      const bridge = createMockBridge();
-      const sessionReaderRegistry = createMockSessionReaderRegistry(['claude']);
+      const bridge = createMockBridge({ enqueueImmediate: vi.fn(), clearRunners: vi.fn() });
+      const sessionReaderRegistry = createMockSessionReaderRegistry({ agentKinds: ['claude'] });
 
       const router = new CommandRouter({
         sessionStore,
@@ -337,8 +306,8 @@ describe('Config card: Claude model custom input (feature: 2026-07-15)', () => {
     it('should update pendingConfig when user inputs custom model via config.input', () => {
       const config = buildClaudeConfig('opus');
       const sessionStore = new SessionStore();
-      const bridge = createMockBridge();
-      const sessionReaderRegistry = createMockSessionReaderRegistry(['claude']);
+      const bridge = createMockBridge({ enqueueImmediate: vi.fn(), clearRunners: vi.fn() });
+      const sessionReaderRegistry = createMockSessionReaderRegistry({ agentKinds: ['claude'] });
 
       const router = new CommandRouter({
         sessionStore,

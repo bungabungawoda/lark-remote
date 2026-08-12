@@ -14,6 +14,8 @@ import { PiSessionReader } from '../../../src/session/pi/index.js';
 import {
   createStubAgentRegistry,
   createStubSessionReaderRegistry,
+  createStubRunner,
+  createStubConnector,
 } from '../../lib/bridge-stubs.js';
 /**
  * Anchor: /resume 必须使用 defaultAgent 切换后的 sessionReader
@@ -34,43 +36,8 @@ import {
  */
 
 // Stub connector that records sent messages (matching resume-agent-param.test.ts pattern)
-function createStubConnector() {
-  const sent: { chatId: string; input: unknown; opts?: unknown }[] = [];
-  const cards: object[] = [];
-  return {
-    reconnect: async () => {},
-    addReaction: async () => {},
-    streamCard: async () => '',
-    _sent: sent,
-    _cards: cards,
-    sendWithRetry: async (chatId: string, input: unknown, opts?: unknown) => {
-      sent.push({ chatId, input, opts });
-      return 'msg-id';
-    },
-    sendFile: async (chatId: string, filePath: string) => {
-      sent.push({ chatId, input: { file: filePath }, opts: undefined });
-      return 'file-msg-id';
-    },
-    updateCard: async (_messageId: string, card: unknown) => {
-      cards.push(card as object);
-    },
-    start: async () => {},
-    stop: async () => {},
-  };
-}
 
 // Stub runner
-function createStubRunner() {
-  return {
-    isRunning: false,
-    stop: async () => {},
-    killOrphan: () => {},
-    registerExitHandlers: () => {},
-    run: async function* () {
-      // no-op
-    },
-  };
-}
 
 describe('/resume uses new defaultAgent reader after config.save', () => {
   let tmpDir: string;
@@ -108,7 +75,7 @@ describe('/resume uses new defaultAgent reader after config.save', () => {
 
     const sessionStore = new SessionStore();
     const connector = createStubConnector();
-    const runner = createStubRunner();
+    const runner = createStubRunner({ mode: 'empty' });
     // 初始 defaultAgent = 'pi'，让构造函数捕获 PiSessionReader 作为 this.sessionReader
     const config: AppConfig = AppConfigSchema.parse({
       feishu: { appId: 'test', appSecret: 'test' },
@@ -128,6 +95,7 @@ describe('/resume uses new defaultAgent reader after config.save', () => {
     registry.register('pi', piReader);
 
     const bridge = new Bridge({
+      runner,
       agentRegistry: createStubAgentRegistry(runner),
       sessionReaderRegistry: createStubSessionReaderRegistry(),
       connector,

@@ -5,38 +5,13 @@ import os from 'node:os';
 import { CommandRouter } from '../../../src/router/index.js';
 import { Bridge } from '../../../src/bridge/index.js';
 import { SessionStore } from '../../../src/session/index.js';
-import { SessionReaderRegistry } from '../../../src/session/registry.js';
 import { AppConfigSchema } from '../../../src/config/index.js';
 import type { AppConfig } from '../../../src/config/index.js';
-import type { AgentSessionReader } from '../../../src/runner/index.js';
+import { createStubSessionReaderRegistry } from '../../lib/bridge-stubs.js';
 
 // P2-28 anchor (red): handleQueueDiagnose 的诊断卡片仍是 CardKit V1 结构
 // （缺 schema:'2.0'，缺 body:{elements}，顶层用 elements）。
 // 这是全项目最后一张 V1 卡。本测试复现该缺陷，待绿 agent 修复 src。
-
-const stubSessionReader: AgentSessionReader = {
-  listSessions: () => ({ sessions: [], total: 0 }),
-  getNewestSession: () => null,
-  readSessionContent: () => ({
-    events: [],
-    aiTitle: undefined,
-    recap: undefined,
-    displayTitle: undefined,
-    usage: undefined,
-    reason: 'not_found',
-  }),
-  isSessionActive: () => false,
-};
-
-function createStubSessionReaderRegistry(): SessionReaderRegistry {
-  const registry = new SessionReaderRegistry();
-  registry.register('claude', stubSessionReader);
-  registry.register('codex', stubSessionReader);
-  registry.register('opencode', stubSessionReader);
-  registry.register('pi', stubSessionReader);
-  registry.register('kimi', stubSessionReader);
-  return registry;
-}
 
 let tmpDir: string;
 beforeEach(() => {

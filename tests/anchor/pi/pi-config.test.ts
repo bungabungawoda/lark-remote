@@ -1,3 +1,4 @@
+import { createMockBridge, createMockSessionReaderRegistry } from '../../lib/bridge-stubs.js';
 /**
  * Merged anchor tests for pi config (path mapping / card / provider filter / fallback)
  *
@@ -35,38 +36,6 @@ import os from 'node:os';
 // ---------------------------------------------------------------------------
 // Shared stub factories
 // ---------------------------------------------------------------------------
-
-function createMockBridge(): Bridge {
-  return {
-    sendResult: vi.fn().mockResolvedValue(undefined),
-    forwardToClaude: vi.fn().mockResolvedValue(undefined),
-    isBusy: false,
-    isBusyFor: vi.fn().mockReturnValue(false),
-    enqueue: vi.fn(),
-    interruptCurrentRun: vi.fn().mockResolvedValue(false),
-    reconnect: vi.fn().mockResolvedValue(undefined),
-    setConfig: vi.fn(),
-    setIdleTimeout: vi.fn(),
-    removeFromQueue: vi.fn().mockReturnValue(false),
-    sendCard: vi.fn().mockResolvedValue(undefined),
-    updateCard: vi.fn().mockResolvedValue(undefined),
-    updateCardInPlace: vi.fn().mockResolvedValue(undefined),
-  } as unknown as Bridge;
-}
-
-function createMockSessionReaderRegistry(): SessionReaderRegistry {
-  return {
-    get: vi.fn().mockReturnValue({
-      listSessions: () => ({ sessions: [], total: 0 }),
-      getNewestSession: () => null,
-      readSessionContent: () => ({ events: [] }),
-      isSessionActive: () => false,
-    }),
-    register: vi.fn(),
-    listRegistered: vi.fn().mockReturnValue(['claude', 'pi']),
-  } as unknown as SessionReaderRegistry;
-}
-
 /** 从 card JSON 中提取指定 key 字段的 select 选项值 */
 function extractFieldOptions(card: object, fieldKey: string): string[] {
   const json = JSON.stringify(card);
@@ -350,7 +319,10 @@ describe('anchor: config card model options filtered by provider', () => {
       configPath: path.join(tmpDir, 'config.yaml'),
       workspacePath: path.join(tmpDir, 'workspace.json'),
       ordersPath: path.join(tmpDir, 'orders.json'),
-      sessionReaderRegistry: createMockSessionReaderRegistry(),
+      sessionReaderRegistry: createMockSessionReaderRegistry({
+        agentKinds: ['claude', 'pi'],
+        withGet: true,
+      }),
     });
 
     const result = (
@@ -423,10 +395,6 @@ describe('Bug 1: Fallback provider/model 列表应一致', () => {
       ).toBeGreaterThan(0);
     }
   });
-
-  it('model fallback 中出现的 provider 必须在 provider fallback 中出现', () => {
-    expect(true).toBe(true); // placeholder - 测试已过时（新 model 格式不包含 provider 信息）
-  });
 });
 
 // ---------------------------------------------------------------------------
@@ -481,7 +449,10 @@ describe('Bug 2: 切换 provider 后应自动重置 model', () => {
       configPath: path.join(tmpDir, 'config.yaml'),
       workspacePath: path.join(tmpDir, 'workspace.json'),
       ordersPath: path.join(tmpDir, 'orders.json'),
-      sessionReaderRegistry: createMockSessionReaderRegistry(),
+      sessionReaderRegistry: createMockSessionReaderRegistry({
+        agentKinds: ['claude', 'pi'],
+        withGet: true,
+      }),
     });
 
     await (

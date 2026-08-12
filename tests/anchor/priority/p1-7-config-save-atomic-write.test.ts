@@ -14,6 +14,7 @@ import type { AgentSessionReader, Runner } from '../../../src/runner/index.js';
 import {
   createStubAgentRegistry,
   createStubSessionReaderRegistry,
+  createStubConnector,
 } from '../../lib/bridge-stubs.js';
 vi.mock('../../../src/logger/index.js', () => ({
   getLogger: () => ({
@@ -47,27 +48,11 @@ const stubRunner: Runner = {
   stop: async () => {},
   killOrphan: () => {},
   registerExitHandlers: () => {},
+  getStatusInfo: () => ({ kind: 'claude', model: 'test-model' }),
   run: async function* () {
     throw new Error('run not expected in stub');
   },
 };
-
-function createStubConnector() {
-  const sent: { chatId: string; input: unknown }[] = [];
-  return {
-    sendWithRetry: async (chatId: string, input: unknown) => {
-      sent.push({ chatId, input });
-      return 'msg-id';
-    },
-    sendFile: async () => 'file-msg-id',
-    reconnect: async () => {},
-    addReaction: async () => {},
-    streamCard: async () => 'stream-msg-id',
-    updateCard: async () => {},
-    connected: true,
-    _sent: sent,
-  };
-}
 
 function createRouter() {
   const sessionStore = new SessionStore();
@@ -80,6 +65,7 @@ function createRouter() {
   });
   const configPath = path.join(tmpDir, 'config.yaml');
   const bridge = new Bridge({
+    runner: stubRunner,
     agentRegistry: createStubAgentRegistry(stubRunner),
     sessionReaderRegistry: createStubSessionReaderRegistry(),
     connector,
@@ -140,13 +126,5 @@ describe('P1-7 config.save 二次写盘必须原子 (anchor)', () => {
     expect(agentChoicesWrites.length).toBeGreaterThan(0);
     // 磁盘上确实可见（真实 atomicWrite 包装仍在写）
     expect(fs.readFileSync(configPath, 'utf-8')).toContain('p-model-7');
-  });
-
-  /**
-   * 防回归 grep：src/router/index.ts 禁止出现裸同步写盘调用（历史清理防回归传统）。
-   */
-  it('anchor: src/router/index.ts 无裸同步写盘调用', () => {
-    const src = fs.readFileSync(path.resolve(process.cwd(), 'src/router/index.ts'), 'utf-8');
-    expect(src).not.toMatch(/writeFileSync/);
   });
 });

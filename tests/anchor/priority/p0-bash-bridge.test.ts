@@ -84,9 +84,7 @@ describe('P0-2 B4: bridge 集成（10k chunk 洪峰）', () => {
         updates.push(typeof card === 'function' ? card({}) : card);
       },
     };
-    // BridgeChannel is not exported; derive the exact structural type from the
-    // Bridge constructor so the stub satisfies the seam without `as any`.
-    const connector: ConstructorParameters<typeof Bridge>[0]['connector'] = {
+    const connector = {
       streamCard: async (
         _chatId: string,
         _initial: object,
@@ -100,16 +98,11 @@ describe('P0-2 B4: bridge 集成（10k chunk 洪峰）', () => {
       reconnect: async () => {},
       sendFile: async () => 'file-id',
       addReaction: async () => {},
+      connected: true,
     };
 
     const sessionStore = new SessionStore();
-    sessionStore.set('u1', {
-      sessions: new Map(),
-      previousSessions: new Map(),
-      arrivalSessions: new Map(),
-      sessionCwds: new Map(),
-      cwd: '/tmp',
-    });
+    sessionStore.set('u1', { sessions: new Map(), cwd: '/tmp' });
 
     const inlineRunner = {
       isRunning: false,
@@ -119,11 +112,13 @@ describe('P0-2 B4: bridge 集成（10k chunk 洪峰）', () => {
       registerExitHandlers: () => {},
     };
     const bridge = new Bridge({
+      runner: inlineRunner,
       agentRegistry: createStubAgentRegistry(inlineRunner),
-      connector,
-      sessionStore,
-      config: makeConfig(),
       sessionReaderRegistry: createStubSessionReaderRegistry(),
+      config: makeConfig(),
+      connector: connector as never,
+      sessionStore,
+      sessionReaderRegistry: null as never,
     });
 
     await bridge.executeBash('yes', { userId: 'u1', chatId: 'c1', messageId: 'm1' });

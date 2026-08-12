@@ -27,7 +27,11 @@ import { AppConfigSchema } from '../../../src/config/index.js';
 import type { AppConfig } from '../../../src/config/index.js';
 import type { AgentEvent, AgentRunner, Runner } from '../../../src/runner/index.js';
 
-import { createStubAgentRegistry } from '../../lib/bridge-stubs.js';
+import {
+  createStubAgentRegistry,
+  createStubConnector,
+  createStubRunner,
+} from '../../lib/bridge-stubs.js';
 const { mockLogger } = vi.hoisted(() => ({
   mockLogger: {
     debug: vi.fn(),
@@ -41,67 +45,6 @@ vi.mock('../../../src/logger/index.js', () => ({
   getLogger: () => mockLogger,
   initLogger: () => mockLogger,
 }));
-
-function createStubConnector() {
-  const sent: { chatId: string; input: unknown; opts?: unknown }[] = [];
-  const cards: object[] = [];
-  return {
-    sendWithRetry: async (chatId: string, input: unknown, opts?: unknown) => {
-      sent.push({ chatId, input, opts });
-      return 'msg-id';
-    },
-    sendFile: async (chatId: string, filePath: string) => {
-      sent.push({ chatId, input: { file: filePath }, opts: undefined });
-      return 'file-msg-id';
-    },
-    reconnect: async () => {},
-    addReaction: async () => {},
-    streamCard: async (
-      chatId: string,
-      initial: object,
-      producer: (controller: {
-        messageId: string;
-        current: object;
-        update(next: object | ((current: object) => object)): Promise<void>;
-      }) => Promise<void>,
-      opts?: unknown,
-    ) => {
-      sent.push({ chatId, input: { card: initial }, opts });
-      cards.push(initial);
-      let current = initial;
-      await producer({
-        messageId: 'stream-msg-id',
-        get current() {
-          return current;
-        },
-        update: async (next) => {
-          current = typeof next === 'function' ? next(current) : next;
-          cards.push(current);
-        },
-      });
-      return 'stream-msg-id';
-    },
-    updateCard: async (_messageId: string, card: object) => {
-      cards.push(card);
-    },
-    connected: true,
-    _sent: sent,
-    _cards: cards,
-  };
-}
-
-function createStreamingRunner(events: AgentEvent[]): Runner {
-  return {
-    isRunning: false,
-    stop: async () => {},
-    killOrphan: () => {},
-    registerExitHandlers: () => {},
-    run: async function* () {
-      for (const e of events) yield e;
-    },
-  };
-}
-
 function asCodexRunner(r: Runner): AgentRunner {
   return {
     ...r,
@@ -152,29 +95,33 @@ describe('Bridge codex jsonl 无 usage 回退 live (anchor)', () => {
     const connector = createStubConnector();
     const sessionStore = new SessionStore();
     const bridgeRunner = asCodexRunner(
-      createStreamingRunner([
-        {
-          type: 'system',
-          subtype: 'init',
-          session_id: 'sess-codex-fallback',
-          cwd: tmpDir,
-          model: 'deepseek-v4-flash',
-        },
-        {
-          type: 'result',
-          subtype: 'success',
-          session_id: 'sess-codex-fallback',
-          usage: {
-            input_tokens: 244381,
-            output_tokens: 256385,
-            cache_read_tokens: 107833472,
-            cache_creation_tokens: 0,
-            total_tokens: 108334238,
+      createStubRunner({
+        mode: 'streaming',
+        events: [
+          {
+            type: 'system',
+            subtype: 'init',
+            session_id: 'sess-codex-fallback',
+            cwd: tmpDir,
+            model: 'deepseek-v4-flash',
           },
-        },
-      ]),
+          {
+            type: 'result',
+            subtype: 'success',
+            session_id: 'sess-codex-fallback',
+            usage: {
+              input_tokens: 244381,
+              output_tokens: 256385,
+              cache_read_tokens: 107833472,
+              cache_creation_tokens: 0,
+              total_tokens: 108334238,
+            },
+          },
+        ],
+      }),
     );
     const bridge = new Bridge({
+      runner: bridgeRunner,
       agentRegistry: createStubAgentRegistry(bridgeRunner),
       connector,
       sessionStore,

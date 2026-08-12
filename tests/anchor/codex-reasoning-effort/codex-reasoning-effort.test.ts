@@ -1,3 +1,4 @@
+import { createMockBridge, createMockSessionReaderRegistry } from '../../lib/bridge-stubs.js';
 /**
  * Merged anchor tests for codex reasoning effort (config/schema/argv/card)
  *
@@ -147,38 +148,6 @@ const BUNDLED_FIXTURE = makeCatalog([
 // ---------------------------------------------------------------------------
 // Shared stub factories (for config card tests)
 // ---------------------------------------------------------------------------
-
-function createMockBridge(overrides: Partial<Bridge> = {}): Bridge {
-  return {
-    sendResult: vi.fn().mockResolvedValue(undefined),
-    forwardToClaude: vi.fn().mockResolvedValue(undefined),
-    isBusy: false,
-    isBusyFor: vi.fn().mockReturnValue(false),
-    enqueue: vi.fn(),
-    interruptCurrentRun: vi.fn().mockResolvedValue(false),
-    reconnect: vi.fn().mockResolvedValue(undefined),
-    setConfig: vi.fn(),
-    setIdleTimeout: vi.fn(),
-    removeFromQueue: vi.fn().mockReturnValue(false),
-    getQueuedTasks: vi.fn().mockReturnValue([]),
-    getQueuedTask: vi.fn().mockReturnValue(undefined),
-    getQueueInfo: vi.fn().mockReturnValue({ position: 0, isRunning: false, tasksAhead: 0 }),
-    getAllActiveRuns: vi.fn().mockReturnValue(new Map()),
-    sendFile: vi.fn().mockResolvedValue(''),
-    getActiveRunFor: vi.fn().mockReturnValue(undefined),
-    updateCardInPlace: vi.fn().mockResolvedValue(undefined),
-    ...overrides,
-  } as unknown as Bridge;
-}
-
-function createMockSessionReaderRegistry(
-  agentKinds: string[] = ['claude', 'codex'],
-): SessionReaderRegistry {
-  return {
-    listRegistered: vi.fn().mockReturnValue(agentKinds),
-    get: vi.fn(),
-  } as unknown as SessionReaderRegistry;
-}
 
 // ---------------------------------------------------------------------------
 // 1. CodexConfigSchema reasoningEffort (Round 3 — no mocks needed)
@@ -723,7 +692,9 @@ describe('Config card codex reasoningEffort - anchor', () => {
     const config = buildCodexConfig();
     const sessionStore = new SessionStore();
     const bridge = createMockBridge();
-    const sessionReaderRegistry = createMockSessionReaderRegistry(['claude', 'codex']);
+    const sessionReaderRegistry = createMockSessionReaderRegistry({
+      agentKinds: ['claude', 'codex'],
+    });
 
     const router = new CommandRouter({
       sessionStore,
@@ -748,7 +719,9 @@ describe('Config card codex reasoningEffort - anchor', () => {
     const config = buildCodexConfig();
     const sessionStore = new SessionStore();
     const bridge = createMockBridge();
-    const sessionReaderRegistry = createMockSessionReaderRegistry(['claude', 'codex']);
+    const sessionReaderRegistry = createMockSessionReaderRegistry({
+      agentKinds: ['claude', 'codex'],
+    });
 
     const router = new CommandRouter({
       sessionStore,
@@ -774,7 +747,9 @@ describe('Config card codex reasoningEffort - anchor', () => {
     const config = buildCodexConfig();
     const sessionStore = new SessionStore();
     const bridge = createMockBridge();
-    const sessionReaderRegistry = createMockSessionReaderRegistry(['claude', 'codex']);
+    const sessionReaderRegistry = createMockSessionReaderRegistry({
+      agentKinds: ['claude', 'codex'],
+    });
 
     const router = new CommandRouter({
       sessionStore,
@@ -948,13 +923,14 @@ describe('codex config card effort follows model - anchor', () => {
     return new CommandRouter({
       sessionStore: new SessionStore(),
       bridge: createMockBridge({
+        sendCard: vi.fn().mockResolvedValue(undefined),
         clearRunners: vi.fn(),
-      } as any),
+      }),
       config,
       configPath: path.join(tmpDir, 'config.yaml'),
       workspacePath: path.join(tmpDir, 'workspace.json'),
       ordersPath: path.join(tmpDir, 'orders.json'),
-      sessionReaderRegistry: createMockSessionReaderRegistry(),
+      sessionReaderRegistry: createMockSessionReaderRegistry({ agentKinds: ['claude', 'codex'] }),
     });
   }
 
