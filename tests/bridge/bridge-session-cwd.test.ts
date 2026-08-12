@@ -10,54 +10,11 @@ import type { AppConfig } from '../../src/config/index.js';
 import type { AgentEvent, Runner } from '../../src/runner/index.js';
 import type { SpawnOptions } from '../../src/runner/types.js';
 
-import { createStubAgentRegistry, createStubSessionReaderRegistry } from '../lib/bridge-stubs.js';
-function createStubConnector() {
-  const sent: { chatId: string; input: unknown; opts?: unknown }[] = [];
-  const cards: object[] = [];
-  return {
-    sendWithRetry: async (chatId: string, input: unknown, opts?: unknown) => {
-      sent.push({ chatId, input, opts });
-      return 'msg-id';
-    },
-    sendFile: async (chatId: string, filePath: string) => {
-      sent.push({ chatId, input: { file: filePath }, opts: undefined });
-      return 'file-msg-id';
-    },
-    reconnect: async () => {},
-    addReaction: async () => {},
-    streamCard: async (
-      chatId: string,
-      initial: object,
-      producer: (controller: {
-        messageId: string;
-        current: object;
-        update(next: object | ((current: object) => object)): Promise<void>;
-      }) => Promise<void>,
-      opts?: unknown,
-    ) => {
-      sent.push({ chatId, input: { card: initial }, opts });
-      cards.push(initial);
-      let current = initial;
-      await producer({
-        messageId: 'stream-msg-id',
-        get current() {
-          return current;
-        },
-        update: async (next) => {
-          current = typeof next === 'function' ? next(current) : next;
-          cards.push(current);
-        },
-      });
-      return 'stream-msg-id';
-    },
-    updateCard: async (_messageId: string, card: object) => {
-      cards.push(card);
-    },
-    connected: true,
-    _sent: sent,
-    _cards: cards,
-  };
-}
+import {
+  createStubAgentRegistry,
+  createStubSessionReaderRegistry,
+  createStubConnector,
+} from '../lib/bridge-stubs.js';
 
 interface CapturingRunner extends Runner {
   readonly runCalls: SpawnOptions[];
@@ -120,6 +77,7 @@ describe('Bridge.forwardToClaude session cwd sync', () => {
       { type: 'result', subtype: 'success', session_id: 'session-from-init' },
     ]);
     const bridge = new Bridge({
+      runner,
       agentRegistry: createStubAgentRegistry(runner),
       sessionReaderRegistry: createStubSessionReaderRegistry(),
       connector: createStubConnector(),
@@ -158,6 +116,7 @@ describe('Bridge.forwardToClaude session cwd sync', () => {
       { type: 'result', subtype: 'success', session_id: 'ses-empty' },
     ]);
     const bridge = new Bridge({
+      runner,
       agentRegistry: createStubAgentRegistry(runner),
       sessionReaderRegistry: createStubSessionReaderRegistry(),
       connector: createStubConnector(),
@@ -209,6 +168,7 @@ describe('Bridge.forwardToClaude session cwd sync', () => {
       { type: 'result', subtype: 'success', session_id: 'codex-session-B' },
     ]);
     const bridge = new Bridge({
+      runner,
       agentRegistry: createStubAgentRegistry(runner),
       sessionReaderRegistry: createStubSessionReaderRegistry(),
       connector,

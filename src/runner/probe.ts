@@ -48,11 +48,7 @@ async function probeOne(kind: AgentKind): Promise<boolean> {
 
     const proc = spawn(binary, ['--help'], { stdio: 'ignore' });
     const timer = setTimeout(() => {
-      try {
-        proc.kill('SIGTERM');
-      } catch {
-        /* already exited */
-      }
+      proc.kill('SIGTERM');
       // SIGKILL fallback after 500ms if the process ignores SIGTERM.
       // This ensures the child is forcibly cleaned up even if SIGTERM
       // is ignored, preventing zombie processes.

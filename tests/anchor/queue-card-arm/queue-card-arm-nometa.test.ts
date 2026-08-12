@@ -107,7 +107,7 @@ describe('QueueManager - queue card for a meta task enqueued while an interrupte
     });
 
     // --- 步骤 3：模拟 stop：reset 计数 + T1 被杀 settle（生产顺序：reset 先于 settle）---
-    qm.resetExecutingCount(WORKSPACE, qm.getExecutingSlot(WORKSPACE)!);
+    qm.resetExecutingCount(WORKSPACE);
     rejectT1(new Error('simulated process kill'));
 
     // --- 步骤 4：等 T2（无 meta）从队列链接跑并保持执行中 ---

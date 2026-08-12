@@ -13,6 +13,8 @@ import { PiSessionReader } from '../../../src/session/pi/index.js';
 import {
   createStubAgentRegistry,
   createStubSessionReaderRegistry,
+  createStubRunner,
+  createStubConnector,
 } from '../../lib/bridge-stubs.js';
 /**
  * Anchor AC2: cmdResume 支持通过 args 首位指定 agentKind 覆盖默认推断
@@ -26,34 +28,8 @@ import {
  */
 
 // Stub connector
-function createStubConnector() {
-  const sent: { chatId: string; input: unknown; opts?: unknown }[] = [];
-  return {
-    reconnect: async () => {},
-    addReaction: async () => {},
-    streamCard: async () => '',
-    _sent: sent,
-    sendWithRetry: async (chatId: string, input: unknown, opts?: unknown) => {
-      sent.push({ chatId, input, opts });
-      return 'msg-id';
-    },
-    sendFile: async () => 'file-msg-id',
-    updateCard: async () => {},
-    start: async () => {},
-    stop: async () => {},
-  };
-}
 
 // Stub runner
-function createStubRunner() {
-  return {
-    isRunning: false,
-    stop: async () => {},
-    killOrphan: () => {},
-    registerExitHandlers: () => {},
-    run: async function* () {},
-  };
-}
 
 describe('AC2: cmdResume supports agentKind via args', () => {
   let tmpDir: string;
@@ -105,7 +81,7 @@ describe('AC2: cmdResume supports agentKind via args', () => {
     // 初始化：defaultAgent = 'kimi'（不是 pi）
     const sessionStore = new SessionStore();
     const connector = createStubConnector();
-    const runner = createStubRunner();
+    const runner = createStubRunner({ mode: 'empty' });
     const config: AppConfig = AppConfigSchema.parse({
       feishu: { appId: 'test', appSecret: 'test' },
       claude: {
@@ -131,6 +107,7 @@ describe('AC2: cmdResume supports agentKind via args', () => {
     registry.register('kimi', kimiReader);
 
     const bridge = new Bridge({
+      runner,
       agentRegistry: createStubAgentRegistry(runner),
       sessionReaderRegistry: createStubSessionReaderRegistry(),
       connector,

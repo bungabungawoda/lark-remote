@@ -8,7 +8,11 @@ import { AppConfigSchema } from '../../../src/config/index.js';
 import type { AppConfig } from '../../../src/config/index.js';
 import type { AgentEvent, AgentRunner, Runner } from '../../../src/runner/index.js';
 
-import { createStubAgentRegistry } from '../../lib/bridge-stubs.js';
+import {
+  createStubAgentRegistry,
+  createStubConnector,
+  createStubRunner,
+} from '../../lib/bridge-stubs.js';
 const { mockLogger } = vi.hoisted(() => ({
   mockLogger: {
     debug: vi.fn(),
@@ -22,69 +26,6 @@ vi.mock('../../../src/logger/index.js', () => ({
   getLogger: () => mockLogger,
   initLogger: () => mockLogger,
 }));
-
-// --- Stubs（Bridge 边界测试替身，与被测逻辑无关；同 src/bridge/bridge.test.ts 模式） ---
-
-function createStubConnector() {
-  const sent: { chatId: string; input: unknown; opts?: unknown }[] = [];
-  const cards: object[] = [];
-  return {
-    sendWithRetry: async (chatId: string, input: unknown, opts?: unknown) => {
-      sent.push({ chatId, input, opts });
-      return 'msg-id';
-    },
-    sendFile: async (chatId: string, filePath: string) => {
-      sent.push({ chatId, input: { file: filePath }, opts: undefined });
-      return 'file-msg-id';
-    },
-    reconnect: async () => {},
-    addReaction: async () => {},
-    streamCard: async (
-      chatId: string,
-      initial: object,
-      producer: (controller: {
-        messageId: string;
-        current: object;
-        update(next: object | ((current: object) => object)): Promise<void>;
-      }) => Promise<void>,
-      opts?: unknown,
-    ) => {
-      sent.push({ chatId, input: { card: initial }, opts });
-      cards.push(initial);
-      let current = initial;
-      await producer({
-        messageId: 'stream-msg-id',
-        get current() {
-          return current;
-        },
-        update: async (next) => {
-          current = typeof next === 'function' ? next(current) : next;
-          cards.push(current);
-        },
-      });
-      return 'stream-msg-id';
-    },
-    updateCard: async (_messageId: string, card: object) => {
-      cards.push(card);
-    },
-    connected: true,
-    _sent: sent,
-    _cards: cards,
-  };
-}
-
-function createStreamingRunner(events: AgentEvent[]): Runner {
-  return {
-    isRunning: false,
-    stop: async () => {},
-    killOrphan: () => {},
-    registerExitHandlers: () => {},
-    run: async function* () {
-      for (const e of events) yield e;
-    },
-  };
-}
-
 /** Wrap a stub Runner with AgentRunner fields（同 bridge.test.ts 的 asAgentRunner）。 */
 function asKimiRunner(r: Runner): AgentRunner {
   return {
@@ -176,20 +117,24 @@ describe('Bridge threads jsonl input/output tokens to kimi done card (anchor)', 
     const connector = createStubConnector();
     const sessionStore = new SessionStore();
     const bridgeRunner = asKimiRunner(
-      createStreamingRunner([
-        {
-          type: 'system',
-          subtype: 'init',
-          session_id: 'sess-kimi-usage',
-          cwd: tmpDir,
-          model: 'kimi-code/k3',
-        },
-        { type: 'assistant', message: { content: [{ type: 'text', text: 'kimi reply' }] } },
-        { type: 'result', subtype: 'success', session_id: 'sess-kimi-usage' },
-      ]),
+      createStubRunner({
+        mode: 'streaming',
+        events: [
+          {
+            type: 'system',
+            subtype: 'init',
+            session_id: 'sess-kimi-usage',
+            cwd: tmpDir,
+            model: 'kimi-code/k3',
+          },
+          { type: 'assistant', message: { content: [{ type: 'text', text: 'kimi reply' }] } },
+          { type: 'result', subtype: 'success', session_id: 'sess-kimi-usage' },
+        ],
+      }),
     );
     const bridge = new Bridge({
       // kimi 实时事件流：system.init → assistant 文本 → result(success, 无 usage)。
+      runner: bridgeRunner,
       agentRegistry: createStubAgentRegistry(bridgeRunner),
       connector,
       sessionStore,

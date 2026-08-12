@@ -56,17 +56,12 @@ describe('PiRunner', () => {
       expect(runner.getStatusInfo().reasoning).toBe('medium');
     });
 
-    it('test_anchor_default_kind_is_pi', () => {
-      const runner = new PiRunner({ workspace: 'test', pidDir: tmpDir });
-      expect(runner.kind).toBe('pi');
-    });
-
     it('test_anchor_default_session_reader_is_noop', () => {
       const runner = new PiRunner({ workspace: 'test', pidDir: tmpDir });
       const reader = runner.sessionReader;
       expect(reader.listSessions('/tmp')).toEqual({ sessions: [], total: 0 });
       expect(reader.getNewestSession('/tmp')).toBeNull();
-      expect(reader.readSessionContent('any', '/tmp')).toEqual({ events: [] });
+      expect(reader.readSessionContent('any')).toEqual({ events: [] });
       expect(reader.isSessionActive('any', '/tmp')).toBe(false);
     });
   });

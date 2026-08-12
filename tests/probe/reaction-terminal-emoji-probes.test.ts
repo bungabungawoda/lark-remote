@@ -15,7 +15,11 @@ import { AppConfigSchema } from '../../src/config/index.js';
 import type { AppConfig } from '../../src/config/index.js';
 import type { Runner, AgentEvent } from '../../src/runner/index.js';
 
-import { createStubAgentRegistry, createStubSessionReaderRegistry } from '../lib/bridge-stubs.js';
+import {
+  createStubAgentRegistry,
+  createStubSessionReaderRegistry,
+  createStubConnector,
+} from '../lib/bridge-stubs.js';
 const { mockLogger } = vi.hoisted(() => ({
   mockLogger: {
     debug: vi.fn(),
@@ -29,54 +33,6 @@ vi.mock('../../src/logger/index.js', () => ({
   getLogger: () => mockLogger,
   initLogger: () => mockLogger,
 }));
-
-function createStubConnector() {
-  const sent: { chatId: string; input: unknown; opts?: unknown }[] = [];
-  const cards: object[] = [];
-  return {
-    sendWithRetry: async (chatId: string, input: unknown, opts?: unknown) => {
-      sent.push({ chatId, input, opts });
-      return 'msg-id';
-    },
-    sendFile: async (chatId: string, filePath: string) => {
-      sent.push({ chatId, input: { file: filePath }, opts: undefined });
-      return 'file-msg-id';
-    },
-    reconnect: async () => {},
-    addReaction: vi.fn().mockResolvedValue(undefined),
-    streamCard: async (
-      chatId: string,
-      initial: object,
-      producer: (controller: {
-        messageId: string;
-        current: object;
-        update(next: object | ((current: object) => object)): Promise<void>;
-      }) => Promise<void>,
-      opts?: unknown,
-    ) => {
-      sent.push({ chatId, input: { card: initial }, opts });
-      cards.push(initial);
-      let current = initial;
-      await producer({
-        messageId: 'stream-msg-id',
-        get current() {
-          return current;
-        },
-        update: async (next) => {
-          current = typeof next === 'function' ? next(current) : next;
-          cards.push(current);
-        },
-      });
-      return 'stream-msg-id';
-    },
-    updateCard: async (_messageId: string, card: object) => {
-      cards.push(card);
-    },
-    connected: true,
-    _sent: sent,
-    _cards: cards,
-  };
-}
 
 const ctx = { userId: 'user1', chatId: 'chat1', messageId: 'msg1' };
 
@@ -116,10 +72,11 @@ describe('reaction emoji regression locks (probe)', () => {
         for (const e of events) yield e;
       },
     };
-    const connector = createStubConnector();
+    const connector = createStubConnector({ addReactionSpy: true });
     const sessionStore = new SessionStore();
     sessionStore.setCwd(ctx.userId, fs.realpathSync(tmpDir));
     const bridge = new Bridge({
+      runner,
       agentRegistry: createStubAgentRegistry(runner),
       sessionReaderRegistry: createStubSessionReaderRegistry(),
       connector,
@@ -139,7 +96,7 @@ describe('reaction emoji regression locks (probe)', () => {
    * 依据：round-log spec「bash 命令保持 'Done' 不动」，2026-08-02 用户确认。
    */
   it('test_probe_bash_path_keeps_done_reaction', async () => {
-    const connector = createStubConnector();
+    const connector = createStubConnector({ addReactionSpy: true });
     const sessionStore = new SessionStore();
     sessionStore.setCwd(ctx.userId, fs.realpathSync(tmpDir));
     const inlineRunner = {
@@ -150,6 +107,7 @@ describe('reaction emoji regression locks (probe)', () => {
       run: async function* () {},
     };
     const bridge = new Bridge({
+      runner: inlineRunner,
       agentRegistry: createStubAgentRegistry(inlineRunner),
       sessionReaderRegistry: createStubSessionReaderRegistry(),
       connector,

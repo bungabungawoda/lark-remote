@@ -1,3 +1,4 @@
+import { createMockBridge, createMockSessionReaderRegistry } from '../../lib/bridge-stubs.js';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { CommandRouter } from '../../../src/router/index.js';
 import { SessionStore } from '../../../src/session/index.js';
@@ -103,38 +104,6 @@ function extractSelectCurrentValue(card: object, key: string): string | undefine
   traverse(card);
   return current;
 }
-
-function createMockBridge(): Bridge {
-  return {
-    sendResult: vi.fn().mockResolvedValue(undefined),
-    forwardToClaude: vi.fn().mockResolvedValue(undefined),
-    isBusy: false,
-    isBusyFor: vi.fn().mockReturnValue(false),
-    enqueue: vi.fn(),
-    interruptCurrentRun: vi.fn().mockResolvedValue(false),
-    reconnect: vi.fn().mockResolvedValue(undefined),
-    setConfig: vi.fn(),
-    setIdleTimeout: vi.fn(),
-    removeFromQueue: vi.fn().mockReturnValue(false),
-    updateCardInPlace: vi.fn().mockResolvedValue(undefined),
-    sendCard: vi.fn().mockResolvedValue(undefined),
-    getQueuedTasks: vi.fn().mockReturnValue([]),
-    getQueuedTask: vi.fn().mockReturnValue(undefined),
-    getQueueInfo: vi.fn().mockReturnValue({ position: 0, isRunning: false, tasksAhead: 0 }),
-    getAllActiveRuns: vi.fn().mockReturnValue(new Map()),
-    sendFile: vi.fn().mockResolvedValue(''),
-    getActiveRunFor: vi.fn().mockReturnValue(undefined),
-    clearRunners: vi.fn(),
-  } as unknown as Bridge;
-}
-
-function createMockSessionReaderRegistry(): SessionReaderRegistry {
-  return {
-    listRegistered: vi.fn().mockReturnValue(['claude', 'codex']),
-    get: vi.fn(),
-  } as unknown as SessionReaderRegistry;
-}
-
 function buildCodexConfig(model: string, reasoningEffort: string): AppConfig {
   return AppConfigSchema.parse({
     feishu: { appId: 'test', appSecret: 'test' },
@@ -224,12 +193,12 @@ describe('codex catalog review3 fixes - anchor', () => {
     // 卡片切到空档位模型：当前 ultra 不支持 → 无中位 → 用声明 default 'high'
     const router = new CommandRouter({
       sessionStore: new SessionStore(),
-      bridge: createMockBridge(),
+      bridge: createMockBridge({ enqueueImmediate: vi.fn(), clearRunners: vi.fn() }),
       config: buildCodexConfig('gpt-5.6-sol', 'ultra'),
       configPath: path.join(tmpDir, 'config.yaml'),
       workspacePath: path.join(tmpDir, 'workspace.json'),
       ordersPath: path.join(tmpDir, 'orders.json'),
-      sessionReaderRegistry: createMockSessionReaderRegistry(),
+      sessionReaderRegistry: createMockSessionReaderRegistry({ agentKinds: ['claude', 'codex'] }),
     });
     const ctx = { userId: 'u1', chatId: 'c1', messageId: 'm1' };
     await router.handleCardAction(

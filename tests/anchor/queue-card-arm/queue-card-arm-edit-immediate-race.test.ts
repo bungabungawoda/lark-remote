@@ -13,6 +13,7 @@ import { SessionReaderRegistry } from '../../../src/session/registry.js';
 import {
   createStubAgentRegistry,
   createStubSessionReaderRegistry,
+  createStubRunner,
 } from '../../lib/bridge-stubs.js';
 const { mockLogger } = vi.hoisted(() => ({
   mockLogger: {
@@ -95,18 +96,6 @@ function createStubConnectorWithPendingQueueCard() {
   };
 }
 
-function createStubRunner(): Runner {
-  return {
-    isRunning: false,
-    stop: async () => {},
-    killOrphan: () => {},
-    registerExitHandlers: () => {},
-    run: async function* () {
-      throw new Error('run not expected in stub');
-    },
-  };
-}
-
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
 /** Poll a condition with real waits; returns false on timeout. */
@@ -172,6 +161,7 @@ describe('edited queue.immediate must register its replacement before any awaiti
     const sessionStore = new SessionStore();
     const runner = createStubRunner();
     const bridge = new Bridge({
+      runner,
       agentRegistry: createStubAgentRegistry(runner),
       sessionReaderRegistry: createStubSessionReaderRegistry(),
       connector,
