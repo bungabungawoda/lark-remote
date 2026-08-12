@@ -190,6 +190,9 @@ export interface AgentSessionUsage {
   inputTokens: number;
   outputTokens: number;
   contextLength: number;
+  /** Agent 上报的当前模型 context window 上限（codex token_count.info.model_context_window）。
+   *  仅 codex 提供；缺省时卡片只显示绝对量、不显示百分比。 */
+  contextLimit?: number;
   /** Claude auto-compact 次数（数 compact_boundary 事件）；codex/opencode 无此概念，留 undefined。 */
   compactCount?: number;
   /** 从缓存读取的 token 数（节省的费用）。 */
