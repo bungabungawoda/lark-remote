@@ -97,6 +97,9 @@ export function readCodexRollout(filePath: string): CodexRolloutEntry | null {
     // pi/opencode /resume "last turn" display semantics). When
     // last_token_usage is absent we derive it as total - previous_total.
     let lastRawUsage: RawTokenUsage | undefined;
+    // Context window limit from the same token_count event as lastRawUsage
+    // (codex reports info.model_context_window per turn; absent on old data).
+    let lastContextLimit: number | undefined;
     // Final total_token_usage (cumulative across the whole session) for the
     // Run card's "累计" display. Codex emits this alongside last_token_usage.
     let lastTotalUsage: RawTokenUsage | undefined;
@@ -142,6 +145,8 @@ export function readCodexRollout(filePath: string): CodexRolloutEntry | null {
             }
             if (raw && (raw.input_tokens || raw.cached_input_tokens || raw.output_tokens)) {
               lastRawUsage = raw;
+              const ctxWindow = info?.model_context_window;
+              lastContextLimit = typeof ctxWindow === 'number' ? ctxWindow : undefined;
             }
           }
         } else if (parsed.type === 'response_item' && parsed.payload) {
@@ -201,6 +206,7 @@ export function readCodexRollout(filePath: string): CodexRolloutEntry | null {
         inputTokens: r.input_tokens - cached,
         outputTokens: r.output_tokens,
         contextLength: r.input_tokens,
+        contextLimit: lastContextLimit,
         cacheReadTokens: cached,
         cacheCreationTokens: 0,
         totalTokens: r.total_tokens,
