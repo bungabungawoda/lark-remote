@@ -12,7 +12,7 @@ import { createMockBridge, createMockSessionReaderRegistry } from '../lib/bridge
  * 避免依赖真实 ~/.pi/agent/ 状态（本地和 CI 环境可能不同）。
  */
 
-import { describe, it, expect, beforeEach, _vi, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { CommandRouter } from '../../src/router/index.js';
 import { SessionStore } from '../../src/session/index.js';
 import { AppConfigSchema } from '../../src/config/index.js';
@@ -23,8 +23,6 @@ import {
   _getAuthFilePath,
 } from '../../src/config/pi-config.js';
 import type { AppConfig } from '../../src/config/index.js';
-import type { _Bridge } from '../../src/bridge/index.js';
-import type { _SessionReaderRegistry } from '../../src/session/registry.js';
 import path from 'node:path';
 import os from 'node:os';
 import fs from 'node:fs';

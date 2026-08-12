@@ -31,7 +31,7 @@ import { Bridge } from '../../../src/bridge/index.js';
 import { SessionStore } from '../../../src/session/index.js';
 import { AppConfigSchema } from '../../../src/config/index.js';
 import type { AppConfig } from '../../../src/config/index.js';
-import type { _AgentEvent, AgentRunner, Runner } from '../../../src/runner/index.js';
+import type { AgentRunner, Runner } from '../../../src/runner/index.js';
 
 import {
   createStubAgentRegistry,
@@ -170,10 +170,10 @@ describe('Bridge codex done 卡 flow 字段 jsonl 优先 (anchor)', () => {
     expect(finalCard).toContain('Output token - 1K'); // live 显示 256K
     expect(finalCard).toContain('Cached token - 446K (100%)'); // live 显示 107,833K
     expect(finalCard).toContain('Total token - 447K'); // live 显示 108,334K
-    // 累计后缀 = jsonl 累计值（保持正确）
+    // 累计后缀 = jsonl 累计值（保持正确，>=1M 用 M 单位）
     expect(finalCard).toContain('· 累计 244K');
     expect(finalCard).toContain('· 累计 256K');
-    expect(finalCard).toContain('· 累计 107833K (100%)');
-    expect(finalCard).toContain('· 累计 108334K');
+    expect(finalCard).toContain('· 累计 107.8M (100%)');
+    expect(finalCard).toContain('· 累计 108.3M');
   });
 });
