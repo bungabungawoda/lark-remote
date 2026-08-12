@@ -263,6 +263,51 @@ not valid json
   });
 
   describe('readCodexSessionContent usage extraction (ccusage-aligned)', () => {
+    it('test_anchor_codex_usage_extracts_model_context_window', () => {
+      // 验证：token_count 事件带 model_context_window 时，usage.contextLimit
+      // 必须等于该值，Run 卡片才能显示 "Context - X (Y%)"。
+      // 缺失/错误会导致百分比分母缺失，卡片只能显示绝对量。
+      // 依据：codex token_count.info.model_context_window（CLI 与 AppServer
+      // 均上报，实测 rollout JSONL 形如
+      // {"type":"event_msg","payload":{"type":"token_count","info":{...,"model_context_window":258400}}}）。
+      const sessionsDir = path.join(tmpDir, 'sessions', '2026', '07', '17');
+      fs.mkdirSync(sessionsDir, { recursive: true });
+      const file = path.join(sessionsDir, 'rollout-019f-ctx.jsonl');
+      fs.writeFileSync(
+        file,
+        `{"type":"session_meta","payload":{"session_id":"019f-ctx","cwd":"/tmp"}}
+{"type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":15006,"cached_input_tokens":6400,"output_tokens":500,"total_tokens":15506},"total_token_usage":{"input_tokens":15006,"cached_input_tokens":6400,"output_tokens":500,"total_tokens":15506},"model_context_window":258400}}}
+`,
+        'utf-8',
+      );
+
+      const content = readCodexSessionContent('019f-ctx', { codexHome: tmpDir });
+      expect(content.usage).toBeDefined();
+      expect(content.usage!.contextLimit).toBe(258400);
+    });
+
+    it('test_anchor_codex_usage_omits_context_limit_when_window_absent', () => {
+      // 验证：老版本 / 无 model_context_window 的 token_count 数据，usage 仍正常提取，
+      // 但 contextLimit 必须为 undefined —— "不支持就不填"，不能编造或除零。
+      // 缺失/错误会导致：旧数据被塞进错误百分比，或渲染 NaN%/Infinity%。
+      // 依据：spec 摘要第 3 条；实测旧 rollout 的 token_count 只有 last/total_token_usage。
+      const sessionsDir = path.join(tmpDir, 'sessions', '2026', '07', '18');
+      fs.mkdirSync(sessionsDir, { recursive: true });
+      const file = path.join(sessionsDir, 'rollout-019f-noctx.jsonl');
+      fs.writeFileSync(
+        file,
+        `{"type":"session_meta","payload":{"session_id":"019f-noctx","cwd":"/tmp"}}
+{"type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100,"cached_input_tokens":40,"output_tokens":20,"total_tokens":120},"total_token_usage":{"input_tokens":100,"cached_input_tokens":40,"output_tokens":20,"total_tokens":120}}}}
+`,
+        'utf-8',
+      );
+
+      const content = readCodexSessionContent('019f-noctx', { codexHome: tmpDir });
+      expect(content.usage).toBeDefined();
+      expect(content.usage!.inputTokens).toBe(60);
+      expect(content.usage!.contextLimit).toBeUndefined();
+    });
+
     it('extracts last token_count usage with input=raw-cached, cacheCreation=0', () => {
       const sessionsDir = path.join(tmpDir, 'sessions', '2026', '07', '14');
       fs.mkdirSync(sessionsDir, { recursive: true });

@@ -683,6 +683,11 @@ run 卡片 done 统计与 `/resume` 末尾统计共用 `formatUsageStats`（src/
 - **cache 百分比**：`cacheRead/(input+cacheRead)`（input 已是未缓存值，不再减一次）。
 - **Cache create 行**：`cacheCreationTokens`（pi 的 `cacheWrite`、opencode 的
   `tokens.cache.write`）；codex 永远 0。
+- **Context 行与上限百分比**：`contextLimit` 仅 codex 提供
+  （`token_count.info.model_context_window`，每 turn 上报，可与 `last_token_usage`
+  同事件读取）。有 `contextLimit` 时 Context 行渲染 `Context - X (Y%)`，
+  `Y = round(contextLength/contextLimit*100)`，不 clamp；缺省（其他 agent、旧数据、
+  运行中）只显示绝对量。`contextLimit <= 0` 视为缺失（防除零）。
 
 **透传链路与 scope 统一（codex 例外）**：result event usage → `Bridge` 提取 live 值
 （claude 原生命名 `cache_read_input_tokens`/`cache_creation_input_tokens` 与统一命名
