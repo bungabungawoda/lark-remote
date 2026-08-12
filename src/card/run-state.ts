@@ -51,6 +51,8 @@ export interface RunState {
   sessionId?: string;
   resultSubtype?: 'success' | 'error';
   contextLength?: number;
+  /** 当前模型 context window 上限（codex jsonl 提供）；卡片据此渲染百分比。 */
+  contextLimit?: number;
   errorMsg?: string;
   idleTimeoutMinutes?: number;
   compactCount?: number;
@@ -78,6 +80,8 @@ export interface RunState {
 export interface FinishMeta {
   resultSubtype?: 'success' | 'error';
   contextLength?: number;
+  /** 当前模型 context window 上限；透传到 RunState 供 done 卡片显示百分比。 */
+  contextLimit?: number;
   errorMsg?: string;
   idleTimeoutMinutes?: number;
   compactCount?: number;

@@ -909,6 +909,7 @@ function buildSummaryContent(state: RunState): object[] {
     const usageStatsStr = formatUsageStats(
       {
         contextLength: state.contextLength,
+        contextLimit: state.contextLimit,
         compactCount: state.compactCount,
         cacheReadTokens: state.cacheReadTokens,
         cacheCreationTokens: state.cacheCreationTokens,
