@@ -21,7 +21,10 @@ const BINARY_MAP: Record<AgentKind, string> = {
 };
 
 const CACHE_TTL_MS = 5 * 60_000;
-const PROBE_TIMEOUT_MS = 3_000;
+// 10 s — on resource-constrained devices (e.g. Raspberry Pi) a single
+// `claude --help` takes ~2 s; with 5 agents probing concurrently the CPU
+// contention can push individual probes past the old 3 s limit.
+const PROBE_TIMEOUT_MS = 10_000;
 
 interface CacheEntry {
   ts: number;
@@ -85,15 +88,22 @@ export async function probeAgentAvailability(kind: AgentKind): Promise<boolean> 
 }
 
 /**
- * Probe all agents concurrently, using cache when fresh.
- * Updates cache for each probed agent.
+ * Probe all agents sequentially.
+ *
+ * Sequential (not concurrent) to avoid CPU contention on
+ * resource-constrained devices (e.g. Raspberry Pi) where 5 concurrent
+ * `--help` spawns can starve each other and push individual probes past
+ * the timeout.  Sequential probing is only marginally slower on fast
+ * machines (~2 s total vs ~0.5 s) but reliably avoids false-negatives
+ * on slow ones.
  */
 export async function probeAllAgents(): Promise<Map<AgentKind, boolean>> {
   const kinds = Object.keys(BINARY_MAP) as AgentKind[];
-  const results = await Promise.all(
-    kinds.map(async (k) => [k, await probeAgentAvailability(k)] as const),
-  );
-  return new Map(results);
+  const results = new Map<AgentKind, boolean>();
+  for (const k of kinds) {
+    results.set(k, await probeAgentAvailability(k));
+  }
+  return results;
 }
 
 /**

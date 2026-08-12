@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { CommandRouter } from './index.js';
-import { SessionStore, _SessionReaderRegistry } from '../session/index.js';
+import { SessionStore } from '../session/index.js';
 import { OrderStore } from '../order/index.js';
 import { Bridge } from '../bridge/index.js';
 import { AppConfigSchema } from '../config/index.js';

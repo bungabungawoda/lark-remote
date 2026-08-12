@@ -4,8 +4,6 @@ import { CommandRouter } from '../../../src/router/index.js';
 import { SessionStore } from '../../../src/session/index.js';
 import { AppConfigSchema } from '../../../src/config/index.js';
 import type { AppConfig } from '../../../src/config/index.js';
-import type { _Bridge } from '../../../src/bridge/index.js';
-import type { _SessionReaderRegistry } from '../../../src/session/registry.js';
 import { invalidateCodexBundledCache } from '../../../src/config/codex-config.js';
 import { makeModel, makeCatalog } from '../../fixtures/codex-catalog-fixture.js';
 import fs from 'node:fs';
