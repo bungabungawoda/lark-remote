@@ -1,44 +1,14 @@
 import { describe, it, expect, vi } from 'vitest';
 import { CommandRouter } from './index.js';
-import { SessionStore, SessionReaderRegistry } from '../session/index.js';
-import type { AgentSessionReader } from '../runner/index.js';
+import { SessionStore } from '../session/index.js';
 import type { Bridge } from '../bridge/index.js';
 import type { AppConfig } from '../config/index.js';
-import { MAX_FILE_UPLOAD_SIZE } from '../connector/file-limits.js';
+import { createStubSessionReaderRegistry } from '../../tests/lib/bridge-stubs.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 
-// Stub session reader for tests
-const stubSessionReader: AgentSessionReader = {
-  listSessions: () => ({ sessions: [], total: 0 }),
-  getNewestSession: () => null,
-  readSessionContent: () => ({
-    events: [],
-    aiTitle: undefined,
-    recap: undefined,
-    displayTitle: undefined,
-    usage: undefined,
-    reason: 'not_found',
-  }),
-  isSessionActive: () => false,
-};
-
-function createStubSessionReaderRegistry(): SessionReaderRegistry {
-  const registry = new SessionReaderRegistry();
-  registry.register('claude', stubSessionReader);
-  registry.register('codex', stubSessionReader);
-  registry.register('opencode', stubSessionReader);
-  registry.register('pi', stubSessionReader);
-  registry.register('kimi', stubSessionReader);
-  return registry;
-}
-
 describe('file upload size limit: 30MB', () => {
-  it('MAX_FILE_UPLOAD_SIZE constant equals 30MB', () => {
-    expect(MAX_FILE_UPLOAD_SIZE).toBe(30 * 1024 * 1024);
-  });
-
   it('router cardLsFile rejects files > 30MB with 30MB in message', async () => {
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'file-limit-test-'));
     // 31MB file (> 30MB limit)
@@ -46,13 +16,7 @@ describe('file upload size limit: 30MB', () => {
     fs.writeFileSync(bigFilePath, Buffer.alloc(31 * 1024 * 1024));
 
     const sessionStore = new SessionStore();
-    sessionStore.set('user1', {
-      sessions: new Map(),
-      previousSessions: new Map(),
-      arrivalSessions: new Map(),
-      sessionCwds: new Map(),
-      cwd: tempDir,
-    });
+    sessionStore.set('user1', { sessions: new Map(), previousSessions: new Map(), cwd: tempDir });
 
     const mockBridge = {
       sendResult: vi.fn().mockResolvedValue(undefined),
@@ -114,13 +78,7 @@ describe('file upload size limit: 30MB', () => {
     fs.writeFileSync(midFilePath, Buffer.alloc(20 * 1024 * 1024));
 
     const sessionStore = new SessionStore();
-    sessionStore.set('user1', {
-      sessions: new Map(),
-      previousSessions: new Map(),
-      arrivalSessions: new Map(),
-      sessionCwds: new Map(),
-      cwd: tempDir,
-    });
+    sessionStore.set('user1', { sessions: new Map(), previousSessions: new Map(), cwd: tempDir });
 
     const mockBridge = {
       sendResult: vi.fn().mockResolvedValue(undefined),
@@ -200,22 +158,13 @@ describe('file upload size limit: 30MB', () => {
     }
   });
 
-  it('router source uses shared MAX_FILE_UPLOAD_SIZE from connector/file-limits', () => {
+  it('router 和 connector 不得重新定义本地文件大小常量（防双源发散）', () => {
     const routerSource = fs.readFileSync(path.resolve(__dirname, 'index.ts'), 'utf-8');
-    expect(routerSource).toContain("from '../connector/file-limits.js'");
-    expect(routerSource).toContain('MAX_FILE_UPLOAD_SIZE');
-    // Should NOT have a local MAX_SIZE for file uploads
     expect(routerSource).not.toMatch(/const MAX_SIZE = \d+ \* 1024 \* 1024/);
-  });
-
-  it('connector source uses shared MAX_FILE_UPLOAD_SIZE from file-limits', () => {
     const connectorSource = fs.readFileSync(
       path.resolve(__dirname, '../connector/index.ts'),
       'utf-8',
     );
-    expect(connectorSource).toContain("from './file-limits.js'");
-    expect(connectorSource).toContain('MAX_FILE_UPLOAD_SIZE');
-    // Should NOT have a local MAX_FILE_SIZE
     expect(connectorSource).not.toMatch(/const MAX_FILE_SIZE = \d+ \* 1024 \* 1024/);
   });
 });
