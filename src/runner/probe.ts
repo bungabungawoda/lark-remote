@@ -1,11 +1,24 @@
 /**
  * Agent availability probe — detect whether each CLI binary is installed
- * and functional by running `<binary> --help`.
+ * by checking whether it resolves on PATH via `which`.
  *
- * Why `--help` over `command -v`:
- * - Validates not just PATH existence but also executability + dependency integrity
- * - All 5 agent CLIs (claude/codex/opencode/pi/kimi) return immediately on --help
- * - No shell-builtin portability concerns (spawn uses the binary directly)
+ * Why `which` over `<binary> --help`:
+ * - `--help` starts a full Node.js process per agent (2–8 s on
+ *   resource-constrained devices like Raspberry Pi). Under startup load
+ *   (auto-resume spawns, CPU contention) probes time out and installed
+ *   agents are falsely reported as unavailable.
+ * - `which` is a lightweight PATH lookup (<10 ms), immune to CPU contention.
+ * - "Installed but broken" cases surface at run time via SpawningRunner's
+ *   ENOENT/error handling (src/runner/common/spawning-runner.ts), which
+ *   shows a friendly error card instead of a startup-time mislabel.
+ *
+ * Why `which` over `command -v`:
+ * - `which` is a standalone executable (e.g. /usr/bin/which on macOS and
+ *   Debian-based Linux), so no `shell: true` and no Node DEP0190 warning.
+ * - Caveat: `which` is not POSIX-guaranteed. macOS, Raspberry Pi OS and
+ *   other Debian-based distributions ship it by default; if Windows or
+ *   minimal Alpine containers become supported, prefer a pure-Node
+ *   PATH + X_OK lookup instead.
  */
 
 import { spawn } from 'child_process';
@@ -21,10 +34,6 @@ const BINARY_MAP: Record<AgentKind, string> = {
 };
 
 const CACHE_TTL_MS = 5 * 60_000;
-// 10 s — on resource-constrained devices (e.g. Raspberry Pi) a single
-// `claude --help` takes ~2 s; with 5 agents probing concurrently the CPU
-// contention can push individual probes past the old 3 s limit.
-const PROBE_TIMEOUT_MS = 10_000;
 
 interface CacheEntry {
   ts: number;
@@ -35,42 +44,15 @@ interface CacheEntry {
 const cache = new Map<AgentKind, CacheEntry>();
 
 /**
- * Probe a single agent's availability by spawning `<binary> --help`.
- * Exit code 0 = available; error / non-zero / timeout = unavailable.
+ * Probe a single agent's availability by spawning `which <binary>`.
+ * Exit code 0 = binary on PATH; error / non-zero = unavailable.
  */
 async function probeOne(kind: AgentKind): Promise<boolean> {
   const binary = BINARY_MAP[kind];
   return new Promise((resolve) => {
-    let settled = false;
-    const done = (ok: boolean) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      resolve(ok);
-    };
-
-    const proc = spawn(binary, ['--help'], { stdio: 'ignore' });
-    const timer = setTimeout(() => {
-      proc.kill('SIGTERM');
-      // SIGKILL fallback after 500ms if the process ignores SIGTERM.
-      // This ensures the child is forcibly cleaned up even if SIGTERM
-      // is ignored, preventing zombie processes.
-      const killTimer = setTimeout(() => {
-        try {
-          proc.kill('SIGKILL');
-        } catch {
-          /* already exited */
-        }
-      }, 500);
-      killTimer.unref();
-      done(false);
-    }, PROBE_TIMEOUT_MS);
-    // Don't prevent the process from exiting naturally
-    proc.unref();
-    timer.unref();
-
-    proc.on('error', () => done(false));
-    proc.on('exit', (code) => done(code === 0));
+    const proc = spawn('which', [binary], { stdio: 'ignore' });
+    proc.on('error', () => resolve(false));
+    proc.on('exit', (code) => resolve(code === 0));
   });
 }
 
@@ -88,22 +70,19 @@ export async function probeAgentAvailability(kind: AgentKind): Promise<boolean> 
 }
 
 /**
- * Probe all agents sequentially.
+ * Probe all agents concurrently.
  *
- * Sequential (not concurrent) to avoid CPU contention on
- * resource-constrained devices (e.g. Raspberry Pi) where 5 concurrent
- * `--help` spawns can starve each other and push individual probes past
- * the timeout.  Sequential probing is only marginally slower on fast
- * machines (~2 s total vs ~0.5 s) but reliably avoids false-negatives
- * on slow ones.
+ * Concurrent (not sequential) because `which` is a lightweight PATH lookup
+ * (<10 ms) with no CPU contention risk — unlike the previous `--help`
+ * probes, which needed to run one-at-a-time to avoid starving each other
+ * on resource-constrained devices.
  */
 export async function probeAllAgents(): Promise<Map<AgentKind, boolean>> {
   const kinds = Object.keys(BINARY_MAP) as AgentKind[];
-  const results = new Map<AgentKind, boolean>();
-  for (const k of kinds) {
-    results.set(k, await probeAgentAvailability(k));
-  }
-  return results;
+  const entries = await Promise.all(
+    kinds.map(async (k) => [k, await probeAgentAvailability(k)] as const),
+  );
+  return new Map(entries);
 }
 
 /**

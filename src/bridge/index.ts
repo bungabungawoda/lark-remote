@@ -922,6 +922,7 @@ export class Bridge {
     // Final usage read from jsonl after the run completes. live stream-json does
     // not emit compact_boundary, so the live contextLength is unreliable.
     let finalContextLength: number | undefined;
+    let finalContextLimit: number | undefined;
     let finalCompactCount: number | undefined;
     let finalCacheReadTokens: number | undefined;
     let finalCacheCreationTokens: number | undefined;
@@ -1126,6 +1127,7 @@ export class Bridge {
         ? undefined
         : this.resolveFinalUsage(finalSessionId, cwd, agentKind);
       finalContextLength = finalUsage?.contextLength ?? contextLength;
+      finalContextLimit = finalUsage?.contextLimit;
       finalCompactCount = finalUsage?.compactCount;
       finalCumulativeTotalTokens = finalUsage?.cumulativeTotalTokens;
       finalCumulativeInputTokens = finalUsage?.cumulativeInputTokens;
@@ -1159,7 +1161,7 @@ export class Bridge {
         finalTotalTokens = finalUsage?.totalTokens ?? finalTotalTokens;
       }
       getLogger().info(
-        `[bridge] final usage runId=${runId} contextLength=${finalContextLength} compactCount=${finalCompactCount ?? 'undefined'} cacheRead=${finalCacheReadTokens ?? 'undefined'} cacheCreate=${finalCacheCreationTokens ?? 'undefined'}`,
+        `[bridge] final usage runId=${runId} contextLength=${finalContextLength} contextLimit=${finalContextLimit ?? 'undefined'} compactCount=${finalCompactCount ?? 'undefined'} cacheRead=${finalCacheReadTokens ?? 'undefined'} cacheCreate=${finalCacheCreationTokens ?? 'undefined'}`,
       );
 
       // for-await 自然结束 = stream 关闭 = CLI 进程退出。
@@ -1174,6 +1176,7 @@ export class Bridge {
           resultSubtype: finalState.resultSubtype,
           errorMsg: finalState.errorMsg,
           contextLength: finalContextLength,
+          contextLimit: finalContextLimit,
           compactCount: finalCompactCount,
           cacheReadTokens: finalCacheReadTokens,
           cacheCreationTokens: finalCacheCreationTokens,
@@ -1190,6 +1193,7 @@ export class Bridge {
       } else if (finalState.terminal === 'running') {
         await cardSession.finish('error', {
           contextLength: finalContextLength,
+          contextLimit: finalContextLimit,
           compactCount: finalCompactCount,
           cacheReadTokens: finalCacheReadTokens,
           cacheCreationTokens: finalCacheCreationTokens,
@@ -1209,6 +1213,7 @@ export class Bridge {
         // 仅补充 usage meta（finalizing 期间被 /stop 或 idle 超时也展示 token 统计）
         await cardSession.finish(finalState.terminal, {
           contextLength: finalContextLength,
+          contextLimit: finalContextLimit,
           compactCount: finalCompactCount,
           cacheReadTokens: finalCacheReadTokens,
           cacheCreationTokens: finalCacheCreationTokens,
@@ -1239,6 +1244,7 @@ export class Bridge {
       if (catchTerminal === 'running' || catchTerminal === 'finalizing') {
         await cardSession.finish('error', {
           contextLength: finalContextLength,
+          contextLimit: finalContextLimit,
           compactCount: finalCompactCount,
           cacheReadTokens: finalCacheReadTokens,
           cacheCreationTokens: finalCacheCreationTokens,
@@ -1257,6 +1263,7 @@ export class Bridge {
         if (sawResult) {
           await cardSession.finish(catchTerminal, {
             contextLength: finalContextLength,
+            contextLimit: finalContextLimit,
             compactCount: finalCompactCount,
             cacheReadTokens: finalCacheReadTokens,
             cacheCreationTokens: finalCacheCreationTokens,
@@ -1358,6 +1365,7 @@ export class Bridge {
   ):
     | {
         contextLength?: number;
+        contextLimit?: number;
         compactCount?: number;
         cacheReadTokens?: number;
         cacheCreationTokens?: number;
@@ -1385,6 +1393,7 @@ export class Bridge {
       return content.usage
         ? {
             contextLength: content.usage.contextLength,
+            contextLimit: content.usage.contextLimit,
             compactCount: content.usage.compactCount,
             cacheReadTokens: content.usage.cacheReadTokens,
             cacheCreationTokens: content.usage.cacheCreationTokens,
