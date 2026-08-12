@@ -9,7 +9,7 @@ import { OrderStore } from '../../../src/order/index.js';
 import { dispatchOrderExecForQueue } from '../../../src/router/order-exec-dispatch.js';
 import { AppConfigSchema } from '../../../src/config/index.js';
 import type { AppConfig } from '../../../src/config/index.js';
-import type { Runner } from '../../../src/runner/index.js';
+import type { _Runner } from '../../../src/runner/index.js';
 import { SessionReaderRegistry } from '../../../src/session/registry.js';
 
 import {
