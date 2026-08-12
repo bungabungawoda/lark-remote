@@ -1,3 +1,4 @@
+import { createMockBridge, createMockSessionReaderRegistry } from '../../lib/bridge-stubs.js';
 /**
  * Codex Config Card Custom Model Input - ANCHOR TEST
  *
@@ -157,43 +158,6 @@ function extractProviderOptions(card: object): string[] {
   return extractSelectOptions(card, 'agents.codex.modelProvider');
 }
 
-// ---------------------------------------------------------------------------
-// Stub factories
-// ---------------------------------------------------------------------------
-
-function createMockBridge(): Bridge {
-  return {
-    sendResult: vi.fn().mockResolvedValue(undefined),
-    forwardToClaude: vi.fn().mockResolvedValue(undefined),
-    isBusy: false,
-    isBusyFor: vi.fn().mockReturnValue(false),
-    enqueue: vi.fn(),
-    interruptCurrentRun: vi.fn().mockResolvedValue(false),
-    reconnect: vi.fn().mockResolvedValue(undefined),
-    setConfig: vi.fn(),
-    setIdleTimeout: vi.fn(),
-    removeFromQueue: vi.fn().mockReturnValue(false),
-    updateCardInPlace: vi.fn().mockResolvedValue(undefined),
-    sendCard: vi.fn().mockResolvedValue(undefined),
-    getQueuedTasks: vi.fn().mockReturnValue([]),
-    getQueuedTask: vi.fn().mockReturnValue(undefined),
-    getQueueInfo: vi.fn().mockReturnValue({ position: 0, isRunning: false, tasksAhead: 0 }),
-    getAllActiveRuns: vi.fn().mockReturnValue(new Map()),
-    sendFile: vi.fn().mockResolvedValue(''),
-    getActiveRunFor: vi.fn().mockReturnValue(undefined),
-    clearRunners: vi.fn(),
-  } as unknown as Bridge;
-}
-
-function createMockSessionReaderRegistry(
-  agentKinds: string[] = ['claude', 'codex'],
-): SessionReaderRegistry {
-  return {
-    listRegistered: vi.fn().mockReturnValue(agentKinds),
-    get: vi.fn(),
-  } as unknown as SessionReaderRegistry;
-}
-
 function buildCodexConfig(model: string = 'gpt-5.2'): AppConfig {
   return AppConfigSchema.parse({
     feishu: { appId: 'test', appSecret: 'test' },
@@ -274,8 +238,10 @@ describe('codex config card custom model input - ANCHOR', () => {
   it('should include custom model input field when defaultAgent=codex', () => {
     const config = buildCodexConfig('gpt-5.2');
     const sessionStore = new SessionStore();
-    const bridge = createMockBridge();
-    const sessionReaderRegistry = createMockSessionReaderRegistry(['claude', 'codex']);
+    const bridge = createMockBridge({ enqueueImmediate: vi.fn(), clearRunners: vi.fn() });
+    const sessionReaderRegistry = createMockSessionReaderRegistry({
+      agentKinds: ['claude', 'codex'],
+    });
 
     const router = new CommandRouter({
       sessionStore,
@@ -309,8 +275,10 @@ describe('codex config card custom model input - ANCHOR', () => {
   it('should show custom value in input field when model is not in dropdown options', () => {
     const config = buildCodexConfig('custom-model-xyz');
     const sessionStore = new SessionStore();
-    const bridge = createMockBridge();
-    const sessionReaderRegistry = createMockSessionReaderRegistry(['claude', 'codex']);
+    const bridge = createMockBridge({ enqueueImmediate: vi.fn(), clearRunners: vi.fn() });
+    const sessionReaderRegistry = createMockSessionReaderRegistry({
+      agentKinds: ['claude', 'codex'],
+    });
 
     const router = new CommandRouter({
       sessionStore,
@@ -343,8 +311,10 @@ describe('codex config card custom model input - ANCHOR', () => {
   it('should show empty input field when model is in preset options', () => {
     const config = buildCodexConfig('gpt-5.2');
     const sessionStore = new SessionStore();
-    const bridge = createMockBridge();
-    const sessionReaderRegistry = createMockSessionReaderRegistry(['claude', 'codex']);
+    const bridge = createMockBridge({ enqueueImmediate: vi.fn(), clearRunners: vi.fn() });
+    const sessionReaderRegistry = createMockSessionReaderRegistry({
+      agentKinds: ['claude', 'codex'],
+    });
 
     const router = new CommandRouter({
       sessionStore,
@@ -377,8 +347,10 @@ describe('codex config card custom model input - ANCHOR', () => {
   it('should update pendingConfig when user inputs custom model via config.input', () => {
     const config = buildCodexConfig('gpt-5.2');
     const sessionStore = new SessionStore();
-    const bridge = createMockBridge();
-    const sessionReaderRegistry = createMockSessionReaderRegistry(['claude', 'codex']);
+    const bridge = createMockBridge({ enqueueImmediate: vi.fn(), clearRunners: vi.fn() });
+    const sessionReaderRegistry = createMockSessionReaderRegistry({
+      agentKinds: ['claude', 'codex'],
+    });
 
     const router = new CommandRouter({
       sessionStore,
@@ -443,12 +415,12 @@ describe('codex config card custom model input - ANCHOR', () => {
     config1.agents!.codex!.modelProvider = 'deepseek';
     const router1 = new CommandRouter({
       sessionStore: new SessionStore(),
-      bridge: createMockBridge(),
+      bridge: createMockBridge({ enqueueImmediate: vi.fn(), clearRunners: vi.fn() }),
       config: config1,
       configPath: path.join(tmpDir, 'config.yaml'),
       workspacePath: path.join(tmpDir, 'workspace.json'),
       ordersPath: path.join(tmpDir, 'orders.json'),
-      sessionReaderRegistry: createMockSessionReaderRegistry(['claude', 'codex']),
+      sessionReaderRegistry: createMockSessionReaderRegistry({ agentKinds: ['claude', 'codex'] }),
     });
     const card1 = (router1 as unknown as RouterInternals).buildConfigCard() as { card: object };
     const inputs1 = extractInputFields(card1.card);
@@ -464,12 +436,12 @@ describe('codex config card custom model input - ANCHOR', () => {
     const config2 = buildCodexConfig('gpt-5.2');
     const router2 = new CommandRouter({
       sessionStore: new SessionStore(),
-      bridge: createMockBridge(),
+      bridge: createMockBridge({ enqueueImmediate: vi.fn(), clearRunners: vi.fn() }),
       config: config2,
       configPath: path.join(tmpDir, 'config.yaml'),
       workspacePath: path.join(tmpDir, 'workspace.json'),
       ordersPath: path.join(tmpDir, 'orders.json'),
-      sessionReaderRegistry: createMockSessionReaderRegistry(['claude', 'codex']),
+      sessionReaderRegistry: createMockSessionReaderRegistry({ agentKinds: ['claude', 'codex'] }),
     });
     const card2 = (router2 as unknown as RouterInternals).buildConfigCard() as { card: object };
     const inputs2 = extractInputFields(card2.card);

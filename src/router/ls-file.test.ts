@@ -2,38 +2,13 @@
 // File buttons use ls.file (directory buttons use ls.browse/ls.switch)
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { CommandRouter } from '../router/index.js';
-import { SessionStore, SessionReaderRegistry } from '../session/index.js';
-import type { AgentSessionReader } from '../runner/index.js';
+import { SessionStore } from '../session/index.js';
 import type { Bridge } from '../bridge/index.js';
 import type { AppConfig } from '../config/index.js';
+import { createStubSessionReaderRegistry } from '../../tests/lib/bridge-stubs.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-
-// Stub session reader for tests
-const stubSessionReader: AgentSessionReader = {
-  listSessions: () => ({ sessions: [], total: 0 }),
-  getNewestSession: () => null,
-  readSessionContent: () => ({
-    events: [],
-    aiTitle: undefined,
-    recap: undefined,
-    displayTitle: undefined,
-    usage: undefined,
-    reason: 'not_found',
-  }),
-  isSessionActive: () => false,
-};
-
-function createStubSessionReaderRegistry(): SessionReaderRegistry {
-  const registry = new SessionReaderRegistry();
-  registry.register('claude', stubSessionReader);
-  registry.register('codex', stubSessionReader);
-  registry.register('opencode', stubSessionReader);
-  registry.register('pi', stubSessionReader);
-  registry.register('kimi', stubSessionReader);
-  return registry;
-}
 
 type MockFn = ReturnType<typeof vi.fn>;
 
@@ -60,13 +35,7 @@ describe('ls file action', () => {
     fs.writeFileSync(testFilePath, 'hello world');
 
     sessionStore = new SessionStore();
-    sessionStore.set('user1', {
-      sessions: new Map(),
-      previousSessions: new Map(),
-      arrivalSessions: new Map(),
-      sessionCwds: new Map(),
-      cwd: tempDir,
-    });
+    sessionStore.set('user1', { sessions: new Map(), previousSessions: new Map(), cwd: tempDir });
 
     mockBridge = {
       sendResult: vi.fn().mockResolvedValue(undefined),
@@ -124,13 +93,7 @@ describe('ls file action', () => {
     const largeBuffer = Buffer.alloc(31 * 1024 * 1024); // 31MB
     fs.writeFileSync(bigFilePath, largeBuffer);
 
-    sessionStore.set('user1', {
-      sessions: new Map(),
-      previousSessions: new Map(),
-      arrivalSessions: new Map(),
-      sessionCwds: new Map(),
-      cwd: tempDir,
-    });
+    sessionStore.set('user1', { sessions: new Map(), previousSessions: new Map(), cwd: tempDir });
 
     await router.handleCardAction(
       { cmd: 'ls.file', path: bigFilePath },
@@ -164,13 +127,7 @@ describe('ls tilde expansion', () => {
     tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ls-tilde-test-'));
 
     sessionStore = new SessionStore();
-    sessionStore.set('user1', {
-      sessions: new Map(),
-      previousSessions: new Map(),
-      arrivalSessions: new Map(),
-      sessionCwds: new Map(),
-      cwd: tempDir,
-    });
+    sessionStore.set('user1', { sessions: new Map(), previousSessions: new Map(), cwd: tempDir });
 
     mockBridge = {
       sendResult: vi.fn().mockResolvedValue(undefined),

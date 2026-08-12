@@ -5,68 +5,15 @@ import os from 'node:os';
 import { CommandRouter } from '../../../src/router/index.js';
 import { Bridge } from '../../../src/bridge/index.js';
 import { SessionStore } from '../../../src/session/index.js';
-import { SessionReaderRegistry } from '../../../src/session/registry.js';
 import { AppConfigSchema } from '../../../src/config/index.js';
 import type { AppConfig } from '../../../src/config/index.js';
-import type { AgentSessionReader } from '../../../src/runner/index.js';
 
-import { createStubAgentRegistry } from '../../lib/bridge-stubs.js';
-const stubSessionReader: AgentSessionReader = {
-  listSessions: () => ({ sessions: [], total: 0 }),
-  getNewestSession: () => null,
-  readSessionContent: () => ({
-    events: [],
-    aiTitle: undefined,
-    recap: undefined,
-    displayTitle: undefined,
-    usage: undefined,
-    reason: 'not_found',
-  }),
-  isSessionActive: () => false,
-};
-
-function createStubSessionReaderRegistry(): SessionReaderRegistry {
-  const registry = new SessionReaderRegistry();
-  registry.register('claude', stubSessionReader);
-  registry.register('codex', stubSessionReader);
-  registry.register('opencode', stubSessionReader);
-  registry.register('pi', stubSessionReader);
-  registry.register('kimi', stubSessionReader);
-  return registry;
-}
-
-function createStubConnector() {
-  const sent: { chatId: string; input: unknown; opts?: unknown }[] = [];
-  return {
-    sendWithRetry: async (chatId: string, input: unknown, opts?: unknown) => {
-      sent.push({ chatId, input, opts });
-      return 'msg-id';
-    },
-    sendFile: async (chatId: string, filePath: string) => {
-      sent.push({ chatId, input: { file: filePath }, opts: undefined });
-      return 'file-msg-id';
-    },
-    reconnect: async () => {},
-    addReaction: async () => {},
-    streamCard: async () => 'stream-msg-id',
-    updateCard: async () => {},
-    connected: true,
-    _sent: sent,
-  };
-}
-
-function createStubRunner() {
-  return {
-    isRunning: false,
-    stop: async () => {},
-    killOrphan: () => {},
-    registerExitHandlers: () => {},
-    getStatusInfo: () => ({ kind: 'claude', model: 'test-model' }),
-    run: async function* () {
-      throw new Error('run not expected in stub');
-    },
-  };
-}
+import {
+  createStubAgentRegistry,
+  createStubSessionReaderRegistry,
+  createStubConnector,
+  createStubRunner,
+} from '../../lib/bridge-stubs.js';
 
 let tmpDir: string;
 beforeEach(() => {
@@ -99,13 +46,14 @@ describe('P2-27: /active card stop buttons must have tag:plain_text', () => {
   it('test_anchor_active_card_stop_buttons_have_plain_text_tag', async () => {
     const sessionStore = new SessionStore();
     const connector = createStubConnector();
-    const runner = createStubRunner();
+    const runner = createStubRunner({ withStatusInfo: true });
     const config: AppConfig = AppConfigSchema.parse({
       feishu: { appId: 'test', appSecret: 'test' },
       claude: { model: 'claude-opus-4-8', stopGraceMs: 5000 },
       output: { showThinking: true, showToolUse: false, showToolResult: false },
     });
     const bridge = new Bridge({
+      runner,
       agentRegistry: createStubAgentRegistry(runner),
       sessionReaderRegistry: createStubSessionReaderRegistry(),
       connector,

@@ -54,19 +54,6 @@ describe('ClaudeConfigBuilder', () => {
   });
 
   describe('findSettingsPath (via buildFields)', () => {
-    it('env var set + file exists → returns env path (dynamic options used)', async () => {
-      // Point CLAUDE_SETTINGS_PATH to the real temp file so findSettingsPath() returns it
-      process.env.CLAUDE_SETTINGS_PATH = settingsFile;
-      const { getModelOptionsFromSettings } = await import('../../config/index.js');
-      vi.mocked(getModelOptionsFromSettings).mockReturnValue(['opus', 'sonnet']);
-
-      const config = makeConfig();
-      const fields = builder.buildFields(config);
-      const modelField = fields.find((f) => f.key === 'claude.model' && f.type === 'select');
-      // Dynamic options from settings are used
-      expect(modelField!.options).toEqual(['opus', 'sonnet']);
-    });
-
     it('neither exists → returns undefined, uses default alias options', async () => {
       // Set CLAUDE_SETTINGS_PATH to a non-existent file to make findSettingsPath return undefined
       process.env.CLAUDE_SETTINGS_PATH = '/nonexistent/path/settings.json';

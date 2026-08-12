@@ -6,11 +6,12 @@ import { Bridge } from '../../../src/bridge/index.js';
 import { SessionStore } from '../../../src/session/index.js';
 import { AppConfigSchema } from '../../../src/config/index.js';
 import type { AppConfig } from '../../../src/config/index.js';
-import type { AgentEvent, Runner, SpawnOptions } from '../../../src/runner/types.js';
+import type { AgentEvent, Runner, SpawnOptions } from '../../../src/runner/index.js';
 
 import {
   createStubAgentRegistry,
   createStubSessionReaderRegistry,
+  createStubConnector,
 } from '../../lib/bridge-stubs.js';
 const { mockLogger } = vi.hoisted(() => ({
   mockLogger: {
@@ -25,43 +26,6 @@ vi.mock('../../../src/logger/index.js', () => ({
   getLogger: () => mockLogger,
   initLogger: () => mockLogger,
 }));
-
-function createStubConnector() {
-  const sent: { chatId: string; input: unknown; opts?: unknown }[] = [];
-  return {
-    sendWithRetry: async (chatId: string, input: unknown, opts?: unknown) => {
-      sent.push({ chatId, input, opts });
-      return 'msg-id';
-    },
-    sendFile: async () => 'file-msg-id',
-    reconnect: async () => {},
-    addReaction: async () => {},
-    streamCard: async (
-      chatId: string,
-      initial: object,
-      producer: (controller: {
-        messageId: string;
-        current: object;
-        update(next: object | ((current: object) => object)): Promise<void>;
-      }) => Promise<void>,
-    ) => {
-      let current = initial;
-      await producer({
-        messageId: 'stream-msg-id',
-        get current() {
-          return current;
-        },
-        update: async (next) => {
-          current = typeof next === 'function' ? next(current) : next;
-        },
-      });
-      return 'stream-msg-id';
-    },
-    updateCard: async () => {},
-    connected: true,
-    _sent: sent,
-  };
-}
 
 /** Runner that yields events then hangs until stop() releases it. */
 function createBackgroundRunningRunner(
@@ -121,6 +85,7 @@ describe('P1-14 queue lane vs execution cwd', () => {
       const sessionStore = new SessionStore();
       const connector = createStubConnector();
       const bridge = new Bridge({
+        runner: blocker,
         agentRegistry: createStubAgentRegistry(blocker),
         sessionReaderRegistry: createStubSessionReaderRegistry(),
         connector,

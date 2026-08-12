@@ -11,7 +11,12 @@ import { toolHeaderText, toolBodyMd } from '../../src/card/tool-render.js';
 import type { ToolEntry } from '../../src/card/run-state.js';
 import { SessionReaderRegistry } from '../../src/session/registry.js';
 
-import { createStubAgentRegistry, createStubSessionReaderRegistry } from '../lib/bridge-stubs.js';
+import {
+  createStubAgentRegistry,
+  createStubSessionReaderRegistry,
+  createStubRunner,
+  createStubConnector,
+} from '../lib/bridge-stubs.js';
 let tmpDir: string;
 
 beforeEach(() => {
@@ -21,34 +26,6 @@ beforeEach(() => {
 afterEach(() => {
   fs.rmSync(tmpDir, { recursive: true, force: true });
 });
-
-function createStubConnector() {
-  const sent: { chatId: string; input: unknown }[] = [];
-  return {
-    _sent: sent,
-    sendWithRetry: async (chatId: string, input: unknown) => {
-      sent.push({ chatId, input });
-      return 'msg-id';
-    },
-    sendFile: async () => 'file-msg-id',
-    reconnect: async () => {},
-    addReaction: async () => {},
-    streamCard: async () => 'stream-msg-id',
-    updateCard: async () => {},
-  };
-}
-
-function createStubRunner() {
-  return {
-    isRunning: false,
-    stop: async () => {},
-    killOrphan: () => {},
-    registerExitHandlers: () => {},
-    run: async function* () {
-      throw new Error('run not expected in stub');
-    },
-  };
-}
 
 describe('Pi card adaptation', () => {
   describe('agentDisplayName', () => {
@@ -194,6 +171,7 @@ describe('Pi card adaptation', () => {
       const router = new CommandRouter({
         sessionStore,
         bridge: new Bridge({
+          runner,
           agentRegistry: createStubAgentRegistry(runner),
           sessionReaderRegistry: createStubSessionReaderRegistry(),
           connector,

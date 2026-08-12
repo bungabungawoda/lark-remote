@@ -86,6 +86,13 @@ describe('P1: reasoningEffort runtime propagation', () => {
     };
 
     const bridge = new Bridge({
+      runner: {
+        isRunning: false,
+        run: async function* () {},
+        stop: async () => {},
+        killOrphan: () => {},
+        registerExitHandlers: () => {},
+      },
       config: baseConfig,
       connector: connector as any,
       sessionStore,
@@ -131,6 +138,13 @@ describe('P1: reasoningEffort runtime propagation', () => {
     };
 
     const bridge = new Bridge({
+      runner: {
+        isRunning: false,
+        run: async function* () {},
+        stop: async () => {},
+        killOrphan: () => {},
+        registerExitHandlers: () => {},
+      },
       config: baseConfig,
       connector: connector as any,
       sessionStore,

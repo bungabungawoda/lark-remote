@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { createStubConnector } from '../../lib/bridge-stubs.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -92,57 +93,6 @@ function createGatedRunner(): GatedRunner & AgentRunner {
  * so the test can count queue cards (sendWithRetry entries whose payload
  * carries the queue-card header/preview) sent for each message.
  */
-function createStubConnector() {
-  const sent: Array<{ chatId: string; input: unknown; opts?: unknown; id: string }> = [];
-  const cards: object[] = [];
-  const updates: Array<{ messageId: string; card: object }> = [];
-  let seq = 0;
-  return {
-    sendWithRetry: async (chatId: string, input: unknown, opts?: unknown) => {
-      const id = `card-msg-${++seq}`;
-      sent.push({ chatId, input, opts, id });
-      return id;
-    },
-    sendFile: async (chatId: string, filePath: string) => {
-      sent.push({ chatId, input: { file: filePath }, opts: undefined, id: `card-msg-${++seq}` });
-      return 'file-msg-id';
-    },
-    reconnect: async () => {},
-    addReaction: async () => {},
-    streamCard: async (
-      chatId: string,
-      initial: object,
-      producer: (controller: {
-        messageId: string;
-        current: object;
-        update(next: object | ((current: object) => object)): Promise<void>;
-      }) => Promise<void>,
-    ) => {
-      sent.push({ chatId, input: { card: initial }, opts: undefined, id: `card-msg-${++seq}` });
-      cards.push(initial);
-      let current = initial;
-      await producer({
-        messageId: 'stream-msg-id',
-        get current() {
-          return current;
-        },
-        update: async (next) => {
-          current = typeof next === 'function' ? next(current) : next;
-          cards.push(current);
-        },
-      });
-      return 'stream-msg-id';
-    },
-    updateCard: async (messageId: string, card: object) => {
-      updates.push({ messageId, card });
-      cards.push(card);
-    },
-    connected: true,
-    _sent: sent,
-    _cards: cards,
-    _updates: updates,
-  };
-}
 
 let tmpDir: string;
 let config: AppConfig;
@@ -204,11 +154,11 @@ describe('queue executing count must not be reset onto the next task that began 
     const connector = createStubConnector();
     const sessionStore = new SessionStore();
     const bridge = new Bridge({
+      runner: createGatedRunner(), // fallback, unused (registry path)
       connector,
       sessionStore,
       config,
       agentRegistry: reg,
-      sessionReaderRegistry: new SessionReaderRegistry(),
       idleTimeoutMs: 0,
     });
     const router = new CommandRouter({

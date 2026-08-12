@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { createStubConnector } from '../../lib/bridge-stubs.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -92,57 +93,6 @@ function createGatedRunner(): GatedRunner & AgentRunner {
  * so the test can tell which queue card (A's vs the target T's) got which
  * executing/cancelled update. Run cards go through streamCard (separate path).
  */
-function createStubConnector() {
-  const sent: Array<{ chatId: string; input: unknown; opts?: unknown; id: string }> = [];
-  const cards: object[] = [];
-  const updates: Array<{ messageId: string; card: object }> = [];
-  let seq = 0;
-  return {
-    sendWithRetry: async (chatId: string, input: unknown, opts?: unknown) => {
-      const id = `card-msg-${++seq}`;
-      sent.push({ chatId, input, opts, id });
-      return id;
-    },
-    sendFile: async (chatId: string, filePath: string) => {
-      sent.push({ chatId, input: { file: filePath }, opts: undefined, id: `card-msg-${++seq}` });
-      return 'file-msg-id';
-    },
-    reconnect: async () => {},
-    addReaction: async () => {},
-    streamCard: async (
-      chatId: string,
-      initial: object,
-      producer: (controller: {
-        messageId: string;
-        current: object;
-        update(next: object | ((current: object) => object)): Promise<void>;
-      }) => Promise<void>,
-    ) => {
-      sent.push({ chatId, input: { card: initial }, opts: undefined, id: `card-msg-${++seq}` });
-      cards.push(initial);
-      let current = initial;
-      await producer({
-        messageId: 'stream-msg-id',
-        get current() {
-          return current;
-        },
-        update: async (next) => {
-          current = typeof next === 'function' ? next(current) : next;
-          cards.push(current);
-        },
-      });
-      return 'stream-msg-id';
-    },
-    updateCard: async (messageId: string, card: object) => {
-      updates.push({ messageId, card });
-      cards.push(card);
-    },
-    connected: true,
-    _sent: sent,
-    _cards: cards,
-    _updates: updates,
-  };
-}
 
 let tmpDir: string;
 let config: AppConfig;
@@ -211,11 +161,11 @@ describe('queue.immediate must not claim the target is executing when a task ahe
     const connector = createStubConnector();
     const sessionStore = new SessionStore();
     const bridge = new Bridge({
+      runner: createGatedRunner(), // fallback, unused (registry path)
       connector,
       sessionStore,
       config,
       agentRegistry: reg,
-      sessionReaderRegistry: new SessionReaderRegistry(),
       idleTimeoutMs: 0,
     });
     const router = new CommandRouter({
@@ -328,10 +278,6 @@ describe('queue.immediate must not claim the target is executing when a task ahe
         // 当前实现：步骤 6 的 finalTask 分支发
         // "⚡ 已停止当前任务，清除了 0 条排队消息。您的消息将立即执行。"。必须真红。
         expect(toastTexts.some((t) => t.includes('您的消息将立即执行'))).toBe(false);
-      } else {
-        // 修复后若 T 已真正接跑（escaping 任务被再停掉），卡片/toast 即如实，
-        // 断言在 if 分支外为空操作——测试只约束"T 仍排队时必须不说谎"。
-        expect(true).toBe(true);
       }
 
       // 清理：放行 A 的 run（created[1]）与 T 的挂起，让两条队列链 settle。
