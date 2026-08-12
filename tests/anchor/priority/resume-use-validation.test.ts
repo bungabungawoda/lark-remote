@@ -13,6 +13,7 @@ import type { AgentSessionReader, Runner } from '../../../src/runner/index.js';
 import {
   createStubAgentRegistry,
   createStubSessionReaderRegistry,
+  createStubConnector,
 } from '../../lib/bridge-stubs.js';
 vi.mock('../../../src/logger/index.js', () => ({
   getLogger: () => ({
@@ -41,47 +42,11 @@ const stubRunner: Runner = {
   stop: async () => {},
   killOrphan: () => {},
   registerExitHandlers: () => {},
+  getStatusInfo: () => ({ kind: 'claude', model: 'test-model' }),
   run: async function* () {
     throw new Error('run not expected in stub');
   },
 };
-
-function createStubConnector() {
-  const sent: { chatId: string; input: unknown }[] = [];
-  return {
-    sendWithRetry: async (chatId: string, input: unknown) => {
-      sent.push({ chatId, input });
-      return 'msg-id';
-    },
-    sendFile: async () => 'file-msg-id',
-    reconnect: async () => {},
-    addReaction: async () => {},
-    streamCard: async (
-      _chatId: string,
-      initial: object,
-      producer: (controller: {
-        messageId: string;
-        current: object;
-        update(next: object | ((current: object) => object)): Promise<void>;
-      }) => Promise<void>,
-    ) => {
-      let current = initial;
-      await producer({
-        messageId: 'stream-msg-id',
-        get current() {
-          return current;
-        },
-        update: async (next) => {
-          current = typeof next === 'function' ? next(current) : next;
-        },
-      });
-      return 'stream-msg-id';
-    },
-    updateCard: async () => {},
-    connected: true,
-    _sent: sent,
-  };
-}
 
 /**
  * claude reader：只有 'real-s1' 返回内容（校验通过），其余返回空（not found）。
@@ -116,6 +81,7 @@ function createRouter() {
     output: { showThinking: true, showToolUse: false, showToolResult: false },
   });
   const bridge = new Bridge({
+    runner: stubRunner,
     agentRegistry: createStubAgentRegistry(stubRunner),
     sessionReaderRegistry: createStubSessionReaderRegistry(),
     connector,
