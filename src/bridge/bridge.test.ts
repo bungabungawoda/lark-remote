@@ -1137,6 +1137,68 @@ describe('Bridge agentRegistry / sessionReaderRegistry', () => {
     expect(JSON.stringify(notifPayload?.input)).not.toContain('120,000');
   });
 
+  it('test_anchor_completion_notification_card_renders_context_percent', async () => {
+    // 验证：完成通知卡片（streamCard 失败回退路径）从 session content usage
+    // 透传 contextLimit 渲染 "Context - X (Y%)"。
+    // 缺失/错误会导致：通知卡片只看得到绝对量，看不到水位。
+    // 依据：spec 摘要第 2 条（卡片统计输出百分比）。
+    const { SessionReaderRegistry } = await import('../session/registry.js');
+    const readSpy = vi.fn(() => ({
+      events: [{ type: 'text', content: 'notif ctx marker' }],
+      usage: {
+        inputTokens: 100,
+        outputTokens: 20,
+        contextLength: 5000,
+        contextLimit: 200000,
+        cost: 0.001,
+        compactCount: 0,
+      },
+    }));
+    const stubReader = {
+      listSessions: vi.fn(() => ({ sessions: [], total: 0 })),
+      getNewestSession: vi.fn(() => null),
+      readSessionContent: readSpy,
+      isSessionActive: vi.fn(() => false),
+    };
+    const registry = new SessionReaderRegistry();
+    registry.register('claude', stubReader as never);
+
+    const connector = createStubConnector();
+    connector.streamCard = async () => {
+      throw new Error('stream unavailable');
+    };
+    const streamingRunner = createStubRunner({
+      mode: 'streaming',
+      events: [
+        {
+          type: 'system',
+          subtype: 'init',
+          session_id: 'sess-notif-ctx',
+          cwd: tmpDir,
+          model: 'opus',
+        },
+        { type: 'assistant', message: { content: [{ type: 'text', text: 'done' }] } },
+        { type: 'result', subtype: 'success', session_id: 'sess-notif-ctx' },
+      ],
+    });
+    const bridge = new Bridge({
+      runner: asAgentRunner(streamingRunner),
+      connector,
+      sessionStore: new SessionStore(),
+      config,
+      agentRegistry: createStubAgentRegistry(streamingRunner),
+      sessionReaderRegistry: registry,
+    });
+    sessionStore_setCwd(bridge, ctx.userId, tmpDir);
+
+    await bridge.forwardToClaude('hello', ctx);
+    const notifPayload = connector._sent.find((s) =>
+      JSON.stringify(s.input).includes('notif ctx marker'),
+    );
+    expect(notifPayload).toBeDefined();
+    expect(JSON.stringify(notifPayload?.input)).toContain('Context - 5K (3%)');
+  });
+
   it('completion notification card resume.use button carries agent field', async () => {
     // When a non-default agent completes, the resume.use button in the
     // completion card must carry agent:<kind> so clicking it routes to the
@@ -1301,6 +1363,115 @@ describe('Bridge agentRegistry / sessionReaderRegistry', () => {
     expect(finalLogs.length).toBe(1);
     expect(finalLogs[0]).toContain('compactCount=3');
     expect(finalLogs[0]).toContain('contextLength=5000');
+  });
+
+  it('test_anchor_final_usage_logs_context_limit_from_jsonl', async () => {
+    // 验证：resolveFinalUsage 把 jsonl usage.contextLimit 透传到最终 usage，
+    // "[bridge] final usage" 探针日志输出 contextLimit=...，Run 卡片据此渲染百分比。
+    // 缺失/错误会导致：codex 会话的 context 上限在卡片链路中途丢失，只能显示绝对量。
+    // 依据：spec 摘要第 1、2 条（codex jsonl → bridge → 卡片链路）。
+    const { SessionReaderRegistry } = await import('../session/registry.js');
+    const readSpy = vi.fn(() => ({
+      events: [],
+      usage: {
+        inputTokens: 100,
+        outputTokens: 20,
+        contextLength: 5000,
+        contextLimit: 200000,
+        cost: 0.01,
+        compactCount: 0,
+      },
+    }));
+    const stubReader = {
+      listSessions: vi.fn(() => ({ sessions: [], total: 0 })),
+      getNewestSession: vi.fn(() => null),
+      readSessionContent: readSpy,
+      isSessionActive: vi.fn(() => false),
+    };
+    const registry = new SessionReaderRegistry();
+    registry.register('claude', stubReader as never);
+
+    const connector = createStubConnector();
+    const streamingRunner = createStubRunner({
+      mode: 'streaming',
+      events: [
+        { type: 'system', subtype: 'init', session_id: 'sess-ctx', cwd: tmpDir, model: 'opus' },
+        { type: 'result', subtype: 'success', session_id: 'sess-ctx' },
+      ],
+    });
+    const bridge = new Bridge({
+      runner: asAgentRunner(streamingRunner),
+      connector,
+      sessionStore: new SessionStore(),
+      config,
+      agentRegistry: createStubAgentRegistry(streamingRunner),
+      sessionReaderRegistry: registry,
+    });
+    sessionStore_setCwd(bridge, ctx.userId, tmpDir);
+    mockLogger.info.mockClear();
+
+    await bridge.forwardToClaude('hello', ctx);
+    expect(readSpy).toHaveBeenCalledWith('sess-ctx', tmpDir);
+    const finalLogs = mockLogger.info.mock.calls
+      .map((c) => String(c[0]))
+      .filter((m) => m.includes('[bridge] final usage'));
+    expect(finalLogs.length).toBe(1);
+    expect(finalLogs[0]).toContain('contextLimit=200000');
+  });
+
+  it('test_anchor_run_card_renders_context_percent_from_jsonl_limit', async () => {
+    // 验证：jsonl usage.contextLimit 经 resolveFinalUsage → finish meta →
+    // RunState → run-renderer 全链路后，done 卡片渲染 "Context - X (Y%)"。
+    // 缺失/错误会导致：上限在链路中途丢失（如 finish 不透传），卡片只显示绝对量。
+    // 依据：spec 摘要第 2 条（Run 卡片显示百分比）。
+    const { SessionReaderRegistry } = await import('../session/registry.js');
+    const readSpy = vi.fn(() => ({
+      events: [],
+      usage: {
+        inputTokens: 100,
+        outputTokens: 20,
+        contextLength: 5000,
+        contextLimit: 200000,
+        cost: 0.01,
+        compactCount: 0,
+      },
+    }));
+    const stubReader = {
+      listSessions: vi.fn(() => ({ sessions: [], total: 0 })),
+      getNewestSession: vi.fn(() => null),
+      readSessionContent: readSpy,
+      isSessionActive: vi.fn(() => false),
+    };
+    const registry = new SessionReaderRegistry();
+    registry.register('claude', stubReader as never);
+
+    const connector = createStubConnector();
+    const streamingRunner = createStubRunner({
+      mode: 'streaming',
+      events: [
+        {
+          type: 'system',
+          subtype: 'init',
+          session_id: 'sess-ctx-card',
+          cwd: tmpDir,
+          model: 'opus',
+        },
+        { type: 'result', subtype: 'success', session_id: 'sess-ctx-card' },
+      ],
+    });
+    const bridge = new Bridge({
+      runner: asAgentRunner(streamingRunner),
+      connector,
+      sessionStore: new SessionStore(),
+      config,
+      agentRegistry: createStubAgentRegistry(streamingRunner),
+      sessionReaderRegistry: registry,
+    });
+    sessionStore_setCwd(bridge, ctx.userId, tmpDir);
+
+    await bridge.forwardToClaude('hello', ctx);
+    const finalCard = JSON.stringify(connector._cards.at(-1));
+    expect(finalCard).toContain('Context - 5K (3%)');
   });
 
   it('error path does NOT read historical jsonl usage (regression: kimi --auto rejection showed stale contextLength=24439)', async () => {
