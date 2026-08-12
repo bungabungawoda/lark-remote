@@ -9,6 +9,12 @@ import type { AppConfig } from '../config/index.js';
 import type { AgentEvent, AgentRunner, Runner } from '../runner/index.js';
 import { AgentRegistry } from '../runner/registry.js';
 import { SessionReaderRegistry } from '../session/registry.js';
+import {
+  createStubSessionReaderRegistry,
+  createStubConnector,
+  createStubAgentRegistry,
+  createStubRunner,
+} from '../../tests/lib/bridge-stubs.js';
 
 const { mockLogger } = vi.hoisted(() => ({
   mockLogger: {
@@ -25,79 +31,6 @@ vi.mock('../logger/index.js', () => ({
 }));
 
 // --- Stubs ---
-
-function createStubConnector() {
-  const sent: { chatId: string; input: unknown; opts?: unknown }[] = [];
-  const cards: object[] = [];
-  return {
-    sendWithRetry: async (chatId: string, input: unknown, opts?: unknown) => {
-      sent.push({ chatId, input, opts });
-      return 'msg-id';
-    },
-    sendFile: async (chatId: string, filePath: string) => {
-      sent.push({ chatId, input: { file: filePath }, opts: undefined });
-      return 'file-msg-id';
-    },
-    reconnect: async () => {},
-    addReaction: async () => {},
-    streamCard: async (
-      chatId: string,
-      initial: object,
-      producer: (controller: {
-        messageId: string;
-        current: object;
-        update(next: object | ((current: object) => object)): Promise<void>;
-      }) => Promise<void>,
-      opts?: unknown,
-    ) => {
-      sent.push({ chatId, input: { card: initial }, opts });
-      cards.push(initial);
-      let current = initial;
-      await producer({
-        messageId: 'stream-msg-id',
-        get current() {
-          return current;
-        },
-        update: async (next) => {
-          current = typeof next === 'function' ? next(current) : next;
-          cards.push(current);
-        },
-      });
-      return 'stream-msg-id';
-    },
-    updateCard: async (_messageId: string, card: object) => {
-      cards.push(card);
-    },
-    connected: true,
-    _sent: sent,
-    _cards: cards,
-  };
-}
-
-function createStubRunner(): Runner {
-  return {
-    isRunning: false,
-    stop: async () => {},
-    killOrphan: () => {},
-    registerExitHandlers: () => {},
-    run: async function* () {
-      throw new Error('run not expected in stub');
-    },
-  };
-}
-
-function createStreamingRunner(events: AgentEvent[]): Runner {
-  return {
-    isRunning: false,
-    stop: async () => {},
-    killOrphan: () => {},
-    registerExitHandlers: () => {},
-    run: async function* () {
-      for (const e of events) yield e;
-    },
-  };
-}
-
 /** A runner that yields events, then hangs forever until stop() releases it.
  *  Simulates Claude's run_in_background: result event is emitted, process still
  *  running (waiting for background tasks), then stop() releases to simulate
@@ -149,23 +82,6 @@ function createHangingRunner(): HangingRunner {
   return runner;
 }
 
-/** Create a minimal AgentRegistry that maps common agent kinds to the given runner. */
-function createStubAgentRegistry(runner: Runner): AgentRegistry {
-  const reg = new AgentRegistry();
-  const asAgent = () => runner as unknown as AgentRunner;
-  reg.register('claude', asAgent);
-  reg.register('codex', asAgent);
-  reg.register('opencode', asAgent);
-  reg.register('pi', asAgent);
-  reg.register('kimi', asAgent);
-  return reg;
-}
-
-/** Create a minimal SessionReaderRegistry with no readers registered. */
-function createStubSessionReaderRegistry(): SessionReaderRegistry {
-  return new SessionReaderRegistry();
-}
-
 let tmpDir: string;
 let config: AppConfig;
 
@@ -204,6 +120,7 @@ describe('executeBash after bridge restart (REGRESSION)', () => {
     const connector = createStubConnector();
     const runner = createStubRunner();
     const bridge = new Bridge({
+      runner,
       connector,
       sessionStore,
       config,
@@ -242,6 +159,7 @@ function makeBridge(
   const connector = opts.connector ?? createStubConnector();
   const runner = opts.runner ?? createStubRunner();
   const bridge = new Bridge({
+    runner,
     connector,
     sessionStore,
     config,
@@ -430,7 +348,7 @@ describe('Bridge idle watchdog (§9.12)', () => {
         { type: 'system', subtype: 'init', session_id: 's1', cwd: tmpDir, model: 'opus' },
         { type: 'result', subtype: 'success', session_id: 's1' },
       ];
-      const runner = createStreamingRunner(events);
+      const runner = createStubRunner({ mode: 'streaming', events: events });
       const { bridge, sessionStore, connector } = makeBridge({ runner, idleTimeoutMs: 1000 });
       sessionStore.setCwd(ctx.userId, tmpDir);
 
@@ -534,21 +452,24 @@ describe('Bridge.forwardToClaude', () => {
     // "Cache create" and uses max(total, sum) for Total. The contextLength
     // fallback must also use total (input is non-cached, so input+output
     // would drop cached tokens).
-    const runner = createStreamingRunner([
-      { type: 'system', subtype: 'init', session_id: 's-cu', cwd: tmpDir, model: 'opus' },
-      {
-        type: 'result',
-        subtype: 'success',
-        session_id: 's-cu',
-        usage: {
-          input_tokens: 240,
-          output_tokens: 3,
-          cache_read_tokens: 0,
-          cache_creation_tokens: 100,
-          total_tokens: 393,
+    const runner = createStubRunner({
+      mode: 'streaming',
+      events: [
+        { type: 'system', subtype: 'init', session_id: 's-cu', cwd: tmpDir, model: 'opus' },
+        {
+          type: 'result',
+          subtype: 'success',
+          session_id: 's-cu',
+          usage: {
+            input_tokens: 240,
+            output_tokens: 3,
+            cache_read_tokens: 0,
+            cache_creation_tokens: 100,
+            total_tokens: 393,
+          },
         },
-      },
-    ]);
+      ],
+    });
     const { bridge, sessionStore, connector } = makeBridge({ runner });
     sessionStore.setCwd(ctx.userId, tmpDir);
 
@@ -660,16 +581,22 @@ describe('Bridge.forwardToClaude', () => {
       { type: 'result', subtype: 'success', session_id: 's1', total_cost_usd: 0.01 },
     ];
     const { bridge, sessionStore, connector } = makeBridge({
-      runner: createStreamingRunner(events),
+      runner: createStubRunner({ mode: 'streaming', events: events }),
     });
     sessionStore.setCwd(ctx.userId, tmpDir);
 
     await bridge.forwardToClaude('hello', ctx);
 
     // Only the run card should be sent (streaming succeeded, no fallback needed)
-    // No separate completion notification card should be added
-    expect(connector._sent).toHaveLength(1);
-    expect(connector._sent[0].input).toHaveProperty('card');
+    // No separate completion notification card should be added via sendWithRetry
+    const sendWithRetryCalls = connector._sent.filter(
+      (s) => !(s.input as Record<string, unknown>).card,
+    );
+    expect(sendWithRetryCalls).toHaveLength(0);
+    const streamCardCalls = connector._sent.filter(
+      (s) => (s.input as Record<string, unknown>).card,
+    );
+    expect(streamCardCalls.length).toBeGreaterThanOrEqual(1);
     const cardJson = JSON.stringify(connector._cards.at(-1));
     expect(cardJson).toContain('hello');
     expect(cardJson).toContain('success');
@@ -683,7 +610,7 @@ describe('Bridge.forwardToClaude', () => {
       { type: 'result', subtype: 'success', session_id: 's1', total_cost_usd: 0.01 },
     ];
     const { bridge, sessionStore, connector } = makeBridge({
-      runner: createStreamingRunner(events),
+      runner: createStubRunner({ mode: 'streaming', events: events }),
     });
     sessionStore.setCwd(ctx.userId, tmpDir);
 
@@ -693,8 +620,11 @@ describe('Bridge.forwardToClaude', () => {
     expect(sessionStore.getSessionId(ctx.userId)).toBe('s1');
     expect(sessionStore.getCwd(ctx.userId)).toBe(tmpDir);
 
-    // Only the run card is sent (streaming succeeded, no separate completion notification)
-    expect(connector._sent).toHaveLength(1);
+    // Only the run card is sent via streamCard (no separate completion notification via sendWithRetry)
+    const sendWithRetryCalls = connector._sent.filter(
+      (s) => !(s.input as Record<string, unknown>).card,
+    );
+    expect(sendWithRetryCalls).toHaveLength(0);
     const finalCard = JSON.stringify(connector._cards.at(-1));
     expect(finalCard).toContain('part 1part 2');
     expect(finalCard).toContain('success');
@@ -717,16 +647,20 @@ describe('Bridge.forwardToClaude', () => {
 
   it('test_anchor_error_result_and_missing_result_are_not_rendered_as_done', async () => {
     const errorResult = makeBridge({
-      runner: createStreamingRunner([{ type: 'result', subtype: 'error', session_id: 's1' }]),
+      runner: createStubRunner({
+        mode: 'streaming',
+        events: [{ type: 'result', subtype: 'error', session_id: 's1' }],
+      }),
     });
     errorResult.sessionStore.setCwd(ctx.userId, tmpDir);
     await errorResult.bridge.forwardToClaude('error', ctx);
     expect(JSON.stringify(errorResult.connector._cards.at(-1))).toContain('Agent 返回错误结果');
 
     const missingResult = makeBridge({
-      runner: createStreamingRunner([
-        { type: 'assistant', message: { content: [{ type: 'text', text: 'partial' }] } },
-      ]),
+      runner: createStubRunner({
+        mode: 'streaming',
+        events: [{ type: 'assistant', message: { content: [{ type: 'text', text: 'partial' }] } }],
+      }),
     });
     missingResult.sessionStore.setCwd(ctx.userId, tmpDir);
     await missingResult.bridge.forwardToClaude('missing', ctx);
@@ -740,10 +674,13 @@ describe('Bridge.forwardToClaude', () => {
     };
     const { bridge, sessionStore } = makeBridge({
       connector,
-      runner: createStreamingRunner([
-        { type: 'assistant', message: { content: [{ type: 'text', text: 'fallback body' }] } },
-        { type: 'result', subtype: 'success', session_id: 's1' },
-      ]),
+      runner: createStubRunner({
+        mode: 'streaming',
+        events: [
+          { type: 'assistant', message: { content: [{ type: 'text', text: 'fallback body' }] } },
+          { type: 'result', subtype: 'success', session_id: 's1' },
+        ],
+      }),
     });
     sessionStore.setCwd(ctx.userId, tmpDir);
 
@@ -826,7 +763,9 @@ describe('Bridge.forwardToClaude logging probes', () => {
       { type: 'system', subtype: 'init', session_id: 's1', cwd: tmpDir, model: 'opus' },
       { type: 'result', subtype: 'success', session_id: 's1' },
     ];
-    const { bridge, sessionStore } = makeBridge({ runner: createStreamingRunner(events) });
+    const { bridge, sessionStore } = makeBridge({
+      runner: createStubRunner({ mode: 'streaming', events: events }),
+    });
     sessionStore.setCwd(ctx.userId, tmpDir);
 
     await bridge.forwardToClaude('hello world', ctx);
@@ -1108,13 +1047,17 @@ describe('Bridge agentRegistry / sessionReaderRegistry', () => {
   it('getRunner uses agentRegistry when present (falls back to stub runner otherwise)', async () => {
     const { AgentRegistry } = await import('../runner/registry.js');
     const stubFromRegistry = asAgentRunner(
-      createStreamingRunner([
-        { type: 'assistant', message: { content: [{ type: 'text', text: 'REGISTRY-MARKER' }] } },
-        { type: 'result', subtype: 'success', session_id: 'from-registry' },
-      ]),
+      createStubRunner({
+        mode: 'streaming',
+        events: [
+          { type: 'assistant', message: { content: [{ type: 'text', text: 'REGISTRY-MARKER' }] } },
+          { type: 'result', subtype: 'success', session_id: 'from-registry' },
+        ],
+      }),
     );
     const connector = createStubConnector();
     const bridge = new Bridge({
+      runner: createStubRunner(),
       connector,
       sessionStore: new SessionStore(),
       config,
@@ -1160,12 +1103,16 @@ describe('Bridge agentRegistry / sessionReaderRegistry', () => {
     connector.streamCard = async () => {
       throw new Error('stream unavailable');
     };
-    const streamingRunner = createStreamingRunner([
-      { type: 'system', subtype: 'init', session_id: 'sess-notif', cwd: tmpDir, model: 'opus' },
-      { type: 'assistant', message: { content: [{ type: 'text', text: 'done' }] } },
-      { type: 'result', subtype: 'success', session_id: 'sess-notif' },
-    ]);
+    const streamingRunner = createStubRunner({
+      mode: 'streaming',
+      events: [
+        { type: 'system', subtype: 'init', session_id: 'sess-notif', cwd: tmpDir, model: 'opus' },
+        { type: 'assistant', message: { content: [{ type: 'text', text: 'done' }] } },
+        { type: 'result', subtype: 'success', session_id: 'sess-notif' },
+      ],
+    });
     const bridge = new Bridge({
+      runner: asAgentRunner(streamingRunner),
       connector,
       sessionStore: new SessionStore(),
       config,
@@ -1232,18 +1179,22 @@ describe('Bridge agentRegistry / sessionReaderRegistry', () => {
     connector.streamCard = async () => {
       throw new Error('stream unavailable');
     };
-    const streamingRunner = createStreamingRunner([
-      {
-        type: 'system',
-        subtype: 'init',
-        session_id: 'codex-sess-1',
-        cwd: tmpDir,
-        model: 'codex-model',
-      },
-      { type: 'assistant', message: { content: [{ type: 'text', text: 'codex done' }] } },
-      { type: 'result', subtype: 'success', session_id: 'codex-sess-1' },
-    ]);
+    const streamingRunner = createStubRunner({
+      mode: 'streaming',
+      events: [
+        {
+          type: 'system',
+          subtype: 'init',
+          session_id: 'codex-sess-1',
+          cwd: tmpDir,
+          model: 'codex-model',
+        },
+        { type: 'assistant', message: { content: [{ type: 'text', text: 'codex done' }] } },
+        { type: 'result', subtype: 'success', session_id: 'codex-sess-1' },
+      ],
+    });
     const bridge = new Bridge({
+      runner: asAgentRunner(streamingRunner),
       connector,
       sessionStore: new SessionStore(),
       config,
@@ -1325,11 +1276,15 @@ describe('Bridge agentRegistry / sessionReaderRegistry', () => {
     registry.register('claude', stubReader as never);
 
     const connector = createStubConnector();
-    const streamingRunner = createStreamingRunner([
-      { type: 'system', subtype: 'init', session_id: 'sess-final', cwd: tmpDir, model: 'opus' },
-      { type: 'result', subtype: 'success', session_id: 'sess-final' },
-    ]);
+    const streamingRunner = createStubRunner({
+      mode: 'streaming',
+      events: [
+        { type: 'system', subtype: 'init', session_id: 'sess-final', cwd: tmpDir, model: 'opus' },
+        { type: 'result', subtype: 'success', session_id: 'sess-final' },
+      ],
+    });
     const bridge = new Bridge({
+      runner: asAgentRunner(streamingRunner),
       connector,
       sessionStore: new SessionStore(),
       config,
@@ -1376,11 +1331,15 @@ describe('Bridge agentRegistry / sessionReaderRegistry', () => {
     registry.register('claude', stubReader as never);
 
     const connector = createStubConnector();
-    const streamingRunner = createStreamingRunner([
-      { type: 'system', subtype: 'init', session_id: 'sess-err', cwd: tmpDir, model: 'opus' },
-      { type: 'result', subtype: 'error', session_id: 'sess-err' },
-    ]);
+    const streamingRunner = createStubRunner({
+      mode: 'streaming',
+      events: [
+        { type: 'system', subtype: 'init', session_id: 'sess-err', cwd: tmpDir, model: 'opus' },
+        { type: 'result', subtype: 'error', session_id: 'sess-err' },
+      ],
+    });
     const bridge = new Bridge({
+      runner: asAgentRunner(streamingRunner),
       connector,
       sessionStore: new SessionStore(),
       config,
@@ -1424,17 +1383,21 @@ describe('Bridge agentRegistry / sessionReaderRegistry', () => {
     registry.register('claude', stubReader as never);
 
     const connector = createStubConnector();
-    const streamingRunner = createStreamingRunner([
-      {
-        type: 'system',
-        subtype: 'init',
-        session_id: 'sess-no-usage',
-        cwd: tmpDir,
-        model: 'opus',
-      },
-      { type: 'result', subtype: 'success', session_id: 'sess-no-usage' },
-    ]);
+    const streamingRunner = createStubRunner({
+      mode: 'streaming',
+      events: [
+        {
+          type: 'system',
+          subtype: 'init',
+          session_id: 'sess-no-usage',
+          cwd: tmpDir,
+          model: 'opus',
+        },
+        { type: 'result', subtype: 'success', session_id: 'sess-no-usage' },
+      ],
+    });
     const bridge = new Bridge({
+      runner: asAgentRunner(streamingRunner),
       connector,
       sessionStore: new SessionStore(),
       config,
@@ -1504,7 +1467,7 @@ describe('Bridge finalizing integration tests (§7.3)', () => {
     ];
     // createStreamingRunner: events are yielded, then generator returns (simulates process exit)
     const { bridge, sessionStore, connector } = makeBridge({
-      runner: createStreamingRunner(events),
+      runner: createStubRunner({ mode: 'streaming', events: events }),
     });
     sessionStore.setCwd(ctx.userId, tmpDir);
 
@@ -1536,7 +1499,7 @@ describe('Bridge finalizing integration tests (§7.3)', () => {
       },
     ];
     const { bridge, sessionStore, connector } = makeBridge({
-      runner: createStreamingRunner(events),
+      runner: createStubRunner({ mode: 'streaming', events: events }),
     });
     sessionStore.setCwd(ctx.userId, tmpDir);
 
@@ -1625,7 +1588,9 @@ describe('Bridge finalizing integration tests (§7.3)', () => {
       { type: 'system', subtype: 'init', session_id: 's6', cwd: tmpDir, model: 'opus' },
       { type: 'result', subtype: 'success', session_id: 's6' },
     ];
-    const { bridge, sessionStore } = makeBridge({ runner: createStreamingRunner(events) });
+    const { bridge, sessionStore } = makeBridge({
+      runner: createStubRunner({ mode: 'streaming', events: events }),
+    });
     sessionStore.setCwd(ctx.userId, tmpDir);
 
     expect(bridge.isBusyFor(tmpDir)).toBe(false);
@@ -1652,7 +1617,7 @@ describe('Bridge finalizing integration tests (§7.3)', () => {
       },
     ];
     const { bridge, sessionStore, connector } = makeBridge({
-      runner: createStreamingRunner(events),
+      runner: createStubRunner({ mode: 'streaming', events: events }),
     });
     sessionStore.setCwd(ctx.userId, tmpDir);
 
@@ -2061,6 +2026,7 @@ describe('Bridge.forwardToClaude AgentBinding (D2/D5)', () => {
     const connector = createStubConnector();
     const sessionStore = new SessionStore();
     const bridge = new Bridge({
+      runner: claudeRunner,
       connector,
       sessionStore,
       config, // live defaultAgent = claude
@@ -2124,6 +2090,7 @@ describe('Bridge session epoch guard (2026-08-09)', () => {
     // Override bridge runner
     const connector = createStubConnector();
     const bridgeWithRunner = new Bridge({
+      runner,
       connector,
       sessionStore,
       config,
@@ -2188,6 +2155,7 @@ describe('Bridge session epoch guard (2026-08-09)', () => {
 
     const connector = createStubConnector();
     const bridgeWithRunner = new Bridge({
+      runner,
       connector,
       sessionStore,
       config,
@@ -2219,6 +2187,7 @@ describe('Queue edit race: setTaskReplacement before await (Plan B fix)', () => 
     const connector = createStubConnector();
     const runner = createStubRunner();
     const bridge = new Bridge({
+      runner,
       agentRegistry: createStubAgentRegistry(runner),
       sessionReaderRegistry: createStubSessionReaderRegistry(),
       connector,

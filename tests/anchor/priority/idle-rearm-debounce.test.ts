@@ -11,6 +11,8 @@ import type { AgentEvent, Runner } from '../../../src/runner/index.js';
 import {
   createStubAgentRegistry,
   createStubSessionReaderRegistry,
+  createStubConnector,
+  createStubRunner,
 } from '../../lib/bridge-stubs.js';
 const { mockLogger } = vi.hoisted(() => ({
   mockLogger: {
@@ -25,69 +27,6 @@ vi.mock('../../../src/logger/index.js', () => ({
   getLogger: () => mockLogger,
   initLogger: () => mockLogger,
 }));
-
-// --- Stubs（与 src/bridge/bridge.test.ts 同构的边界替身） ---
-
-function createStubConnector() {
-  const sent: { chatId: string; input: unknown; opts?: unknown }[] = [];
-  const cards: object[] = [];
-  return {
-    sendWithRetry: async (chatId: string, input: unknown, opts?: unknown) => {
-      sent.push({ chatId, input, opts });
-      return 'msg-id';
-    },
-    sendFile: async (chatId: string, filePath: string) => {
-      sent.push({ chatId, input: { file: filePath }, opts: undefined });
-      return 'file-msg-id';
-    },
-    reconnect: async () => {},
-    addReaction: async () => {},
-    streamCard: async (
-      chatId: string,
-      initial: object,
-      producer: (controller: {
-        messageId: string;
-        current: object;
-        update(next: object | ((current: object) => object)): Promise<void>;
-      }) => Promise<void>,
-      opts?: unknown,
-    ) => {
-      sent.push({ chatId, input: { card: initial }, opts });
-      cards.push(initial);
-      let current = initial;
-      await producer({
-        messageId: 'stream-msg-id',
-        get current() {
-          return current;
-        },
-        update: async (next) => {
-          current = typeof next === 'function' ? next(current) : next;
-          cards.push(current);
-        },
-      });
-      return 'stream-msg-id';
-    },
-    updateCard: async (_messageId: string, card: object) => {
-      cards.push(card);
-    },
-    connected: true,
-    _sent: sent,
-    _cards: cards,
-  };
-}
-
-function createStreamingRunner(events: AgentEvent[]): Runner {
-  return {
-    isRunning: false,
-    stop: async () => {},
-    killOrphan: () => {},
-    registerExitHandlers: () => {},
-    run: async function* () {
-      for (const e of events) yield e;
-    },
-  };
-}
-
 /** A runner that yields a few events, then hangs forever until stop() releases it.
  *  Used to test that the idle watchdog still fires after some events were received. */
 interface EventThenHangRunner extends Runner {
@@ -143,8 +82,9 @@ function makeBridge(
 ) {
   const sessionStore = new SessionStore();
   const connector = opts.connector ?? createStubConnector();
-  const runner = opts.runner ?? createStreamingRunner([]);
+  const runner = opts.runner ?? createStubRunner({ mode: 'streaming', events: [] });
   const bridge = new Bridge({
+    runner,
     agentRegistry: createStubAgentRegistry(runner),
     sessionReaderRegistry: createStubSessionReaderRegistry(),
     connector,
@@ -231,7 +171,7 @@ describe('P2-1 idle watchdog re-arm debounce (anchor)', () => {
     try {
       const N = 30;
       const events = makeTextEvents(N);
-      const runner = createStreamingRunner(events);
+      const runner = createStubRunner({ mode: 'streaming', events: events });
       const { bridge, sessionStore } = makeBridge({
         runner,
         idleTimeoutMs: 60_000, // large so watchdog never fires during the run

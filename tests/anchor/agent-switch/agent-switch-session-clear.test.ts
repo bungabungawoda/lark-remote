@@ -1,3 +1,4 @@
+import { createMockBridge, createMockSessionReaderRegistry } from '../../lib/bridge-stubs.js';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import path from 'node:path';
 import os from 'node:os';
@@ -32,43 +33,10 @@ import type { SessionReaderRegistry } from '../../../src/session/registry.js';
 // Stub runner
 
 // Mock bridge that can capture sendResult calls
-function createMockBridge(): Bridge {
-  const mock = {
-    sendResult: vi.fn().mockResolvedValue(true),
-    updateCardInPlace: vi.fn().mockResolvedValue(undefined),
-    forwardToClaude: vi.fn().mockResolvedValue(undefined),
-    isBusy: false,
-    isBusyFor: vi.fn().mockReturnValue(false),
-    enqueue: vi.fn(),
-    enqueueImmediate: vi.fn(),
-    interruptCurrentRun: vi.fn().mockResolvedValue(false),
-    reconnect: vi.fn().mockResolvedValue(undefined),
-    setConfig: vi.fn(),
-    setIdleTimeout: vi.fn(),
-    clearRunners: vi.fn(),
-    removeFromQueue: vi.fn().mockReturnValue(false),
-    getQueuedTasks: vi.fn().mockReturnValue([]),
-    getQueuedTask: vi.fn().mockReturnValue(undefined),
-    getQueueInfo: vi.fn().mockReturnValue({ position: 0, isRunning: false, tasksAhead: 0 }),
-    getAllActiveRuns: vi.fn().mockReturnValue(new Map()),
-    sendFile: vi.fn().mockResolvedValue(''),
-    getActiveRunFor: vi.fn().mockReturnValue(undefined),
-  } as unknown as Bridge;
-  return mock;
-}
 
 function lastNotice(bridge: ReturnType<typeof createMockBridge>): string {
   const calls = (bridge.sendResult as ReturnType<typeof vi.fn>).mock.calls;
   return (calls[calls.length - 1][0] as { text: string }).text;
-}
-
-function createMockSessionReaderRegistry(
-  agentKinds: string[] = ['claude', 'codex', 'pi', 'opencode'],
-): SessionReaderRegistry {
-  return {
-    listRegistered: vi.fn().mockReturnValue(agentKinds),
-    get: vi.fn(),
-  } as unknown as SessionReaderRegistry;
 }
 
 function buildConfig(): AppConfig {
@@ -100,10 +68,12 @@ describe('config.save keeps explicitly selected new agent session on agent switc
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-switch-session-test-'));
     sessionStore = new SessionStore();
-    bridge = createMockBridge();
+    bridge = createMockBridge({ enqueueImmediate: vi.fn(), clearRunners: vi.fn() });
 
     const config = buildConfig();
-    const registry = createMockSessionReaderRegistry();
+    const registry = createMockSessionReaderRegistry({
+      agentKinds: ['claude', 'codex', 'pi', 'opencode'],
+    });
 
     router = new CommandRouter({
       sessionStore,

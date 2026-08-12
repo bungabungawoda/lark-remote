@@ -1,3 +1,4 @@
+import { createMockBridge, createMockSessionReaderRegistry } from '../../lib/bridge-stubs.js';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import path from 'node:path';
 import os from 'node:os';
@@ -30,39 +31,6 @@ import type { SessionReaderRegistry } from '../../../src/session/registry.js';
  * T4 boundaries: 5-agent pairwise matrix (claude/codex/pi/opencode/kimi) 文案 +
  * 调用次数；sendResult 失败兜底必须携带当前切换文案且状态一致。
  */
-
-function createMockBridge(): Bridge {
-  const mock = {
-    sendResult: vi.fn().mockResolvedValue(true),
-    updateCardInPlace: vi.fn().mockResolvedValue(undefined),
-    forwardToClaude: vi.fn().mockResolvedValue(undefined),
-    isBusy: false,
-    isBusyFor: vi.fn().mockReturnValue(false),
-    enqueue: vi.fn(),
-    enqueueImmediate: vi.fn(),
-    interruptCurrentRun: vi.fn().mockResolvedValue(false),
-    reconnect: vi.fn().mockResolvedValue(undefined),
-    setConfig: vi.fn(),
-    setIdleTimeout: vi.fn(),
-    clearRunners: vi.fn(),
-    removeFromQueue: vi.fn().mockReturnValue(false),
-    getQueuedTasks: vi.fn().mockReturnValue([]),
-    getQueuedTask: vi.fn().mockReturnValue(undefined),
-    getQueueInfo: vi.fn().mockReturnValue({ position: 0, isRunning: false, tasksAhead: 0 }),
-    getAllActiveRuns: vi.fn().mockReturnValue(new Map()),
-    sendFile: vi.fn().mockResolvedValue(''),
-    getActiveRunFor: vi.fn().mockReturnValue(undefined),
-  } as unknown as Bridge;
-  return mock;
-}
-
-function createMockSessionReaderRegistry(): SessionReaderRegistry {
-  return {
-    listRegistered: vi.fn().mockReturnValue(['claude', 'codex', 'pi', 'opencode', 'kimi']),
-    get: vi.fn(),
-  } as unknown as SessionReaderRegistry;
-}
-
 function buildConfig(overrides?: Partial<AppConfig>): AppConfig {
   return AppConfigSchema.parse({
     feishu: { appId: 'test', appSecret: 'test' },
@@ -116,7 +84,7 @@ describe('Round4/5 anchors & probes (Round 6: 3 probes upgraded): config.save sw
 
   function makeRouter(defaultAgent: string, overrides?: Partial<AppConfig>): void {
     sessionStore = new SessionStore();
-    bridge = createMockBridge();
+    bridge = createMockBridge({ enqueueImmediate: vi.fn(), clearRunners: vi.fn() });
     router = new CommandRouter({
       sessionStore,
       bridge,
@@ -137,7 +105,7 @@ describe('Round4/5 anchors & probes (Round 6: 3 probes upgraded): config.save sw
     overrides?: Partial<AppConfig>,
   ): void {
     sessionStore = store;
-    bridge = createMockBridge();
+    bridge = createMockBridge({ enqueueImmediate: vi.fn(), clearRunners: vi.fn() });
     router = new CommandRouter({
       sessionStore,
       bridge,
@@ -291,7 +259,7 @@ describe('Round4/5 anchors & probes (Round 6: 3 probes upgraded): config.save sw
     sessionStore.setSessionId(userId, 'pi', 'pi-session-X');
 
     // S2 pi→codex 时 sendResult 失败
-    (bridge.sendResult as ReturnType<typeof vi.fn>).mockResolvedValueOnce(false);
+    bridge.sendResult.mockResolvedValueOnce(false);
     await doSwitch(userId, ctx, 'codex');
     const sendResultMock = bridge.sendResult as ReturnType<typeof vi.fn>;
     expect(sendResultMock).toHaveBeenCalledTimes(2);
@@ -328,7 +296,7 @@ describe('Round4/5 anchors & probes (Round 6: 3 probes upgraded): config.save sw
     await doSwitch(userId, ctx, 'codex');
 
     // S3 codex→pi：恢复消息发送失败
-    (bridge.sendResult as ReturnType<typeof vi.fn>).mockResolvedValueOnce(false);
+    bridge.sendResult.mockResolvedValueOnce(false);
     const response3 = await doSwitch(userId, ctx, 'pi');
 
     const sendResultMock = bridge.sendResult as ReturnType<typeof vi.fn>;

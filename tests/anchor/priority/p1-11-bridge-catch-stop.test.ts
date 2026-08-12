@@ -29,6 +29,7 @@ import type { AgentEvent, Runner } from '../../../src/runner/index.js';
 import {
   createStubAgentRegistry,
   createStubSessionReaderRegistry,
+  createStubConnector,
 } from '../../lib/bridge-stubs.js';
 const { mockLogger } = vi.hoisted(() => ({
   mockLogger: {
@@ -43,47 +44,6 @@ vi.mock('../../../src/logger/index.js', () => ({
   getLogger: () => mockLogger,
   initLogger: () => mockLogger,
 }));
-
-function createStubConnector() {
-  const cards: object[] = [];
-  return {
-    sendWithRetry: async (chatId: string, input: unknown) => {
-      cards.push(input as object);
-      return 'msg-id';
-    },
-    sendFile: async () => 'file-msg-id',
-    reconnect: async () => {},
-    addReaction: async () => {},
-    streamCard: async (
-      _chatId: string,
-      initial: object,
-      producer: (controller: {
-        messageId: string;
-        current: object;
-        update(next: object | ((current: object) => object)): Promise<void>;
-      }) => Promise<void>,
-    ) => {
-      cards.push(initial);
-      let current = initial;
-      await producer({
-        messageId: 'stream-msg-id',
-        get current() {
-          return current;
-        },
-        update: async (next) => {
-          current = typeof next === 'function' ? next(current) : next;
-          cards.push(current);
-        },
-      });
-      return 'stream-msg-id';
-    },
-    updateCard: async (_messageId: string, card: object) => {
-      cards.push(card);
-    },
-    connected: true,
-    _cards: cards,
-  };
-}
 
 describe('P1-11: bridge catch calls runner.stop()', () => {
   let tmpDir: string;
@@ -124,6 +84,7 @@ describe('P1-11: bridge catch calls runner.stop()', () => {
 
     const sessionStore = new SessionStore();
     const bridge = new Bridge({
+      runner,
       agentRegistry: createStubAgentRegistry(runner),
       sessionReaderRegistry: createStubSessionReaderRegistry(),
       connector: createStubConnector() as never,

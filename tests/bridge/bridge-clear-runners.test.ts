@@ -6,7 +6,6 @@ import { Bridge } from '../../src/bridge/index.js';
 import { SessionStore } from '../../src/session/index.js';
 import { AppConfigSchema } from '../../src/config/index.js';
 import type { AppConfig } from '../../src/config/index.js';
-import { SessionReaderRegistry } from '../../src/session/registry.js';
 
 // 创建一个 mock runner，包含 getStatusInfo
 function createMockRunner(kind: string) {
@@ -75,11 +74,11 @@ describe('Bridge clearRunners on config change', () => {
 
     // 创建 bridge
     const bridge = new Bridge({
+      runner: createMockRunner('claude') as any,
       connector,
       sessionStore,
       config,
       agentRegistry: mockRegistry as any,
-      sessionReaderRegistry: new SessionReaderRegistry(),
     });
 
     // 首次获取 runner
