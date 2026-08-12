@@ -9,6 +9,8 @@ import type { ActiveRunSnapshot } from '../bridge/index.js';
 
 export interface SessionDisplayUsage {
   contextLength?: number;
+  /** 当前模型 context window 上限（仅 codex 提供）；用于渲染 "Context - X (Y%)"。 */
+  contextLimit?: number;
   compactCount?: number;
   cacheReadTokens?: number;
   cacheCreationTokens?: number;
@@ -57,6 +59,7 @@ function formatTokenK(n: number): string {
 export function formatUsageStats(
   usage?: {
     contextLength?: number;
+    contextLimit?: number;
     compactCount?: number;
     cacheReadTokens?: number;
     cacheCreationTokens?: number;
@@ -92,7 +95,12 @@ export function formatUsageStats(
 
   // 2. Context 长度
   if (usage?.contextLength !== undefined) {
-    lines.push(`Context - ${formatTokenK(usage.contextLength)}`);
+    const ctxLimit = usage.contextLimit;
+    const ctxPercent =
+      ctxLimit !== undefined && ctxLimit > 0
+        ? ` (${Math.round((usage.contextLength / ctxLimit) * 100)}%)`
+        : '';
+    lines.push(`Context - ${formatTokenK(usage.contextLength)}${ctxPercent}`);
   }
 
   // 3. Compact 次数

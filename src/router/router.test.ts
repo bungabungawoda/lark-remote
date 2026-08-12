@@ -190,6 +190,22 @@ describe('formatTimestamp', () => {
 });
 
 describe('formatUsageStats', () => {
+  it('test_anchor_format_usage_stats_context_percent_when_limit_present', () => {
+    // 验证：contextLimit 存在时 Context 行追加百分比 "Context - X (Y%)"；
+    // contextLimit 缺失（其他 agent / 旧数据 / 运行中）时不得渲染任何 "%"，
+    // 保持现状只显示绝对量。
+    // 缺失/错误会导致：有上限的 codex 会话无法在卡片上看到水位；无上限的
+    // agent 被错误地塞进一个编造的百分比。
+    // 依据：spec 摘要第 2、3 条；百分比 = contextLength / contextLimit * 100 四舍五入。
+    const out = formatUsageStats({ contextLength: 5000, contextLimit: 200000 });
+    expect(out).toContain('Context - 5K (3%)');
+
+    const withoutLimit = formatUsageStats({ contextLength: 5000 });
+    expect(withoutLimit).toContain('Context - 5K');
+    // Cache 行本身会渲染 "Cached token - 0 (0%)"，因此只断言 Context 行不追加百分比。
+    expect(withoutLimit).not.toContain('Context - 5K (');
+  });
+
   it('renders context length + compact count when present', () => {
     const out = formatUsageStats({ contextLength: 5000, compactCount: 2 });
     expect(out).toContain('✅ 已完成');
@@ -1562,6 +1578,36 @@ describe('CommandRouter', () => {
     const sentText =
       typeof lastSent.input === 'string' ? lastSent.input : JSON.stringify(lastSent.input);
     expect(sentText).toContain('未找到 session');
+  });
+
+  it('test_anchor_resume_card_renders_context_percent_from_session_usage', async () => {
+    // 验证：/resume 卡片从 session content usage 透传 contextLimit，渲染
+    // "Context - X (Y%)"（resume 是独立于 Run 卡片的用户可见路径）。
+    // 缺失/错误会导致：恢复会话时看不到水位，只有完成卡能看到。
+    // 依据：spec 摘要第 2 条（卡片统计输出百分比）。
+    const codexReadSpy = vi.fn(() => ({
+      events: [{ type: 'text', content: 'codex session tail' }],
+      usage: {
+        inputTokens: 100,
+        outputTokens: 20,
+        contextLength: 5000,
+        contextLimit: 200000,
+      },
+      aiTitle: undefined,
+      recap: undefined,
+      displayTitle: 'codex session tail',
+      reason: 'ok',
+    }));
+    const registry = createCodexOnlyRegistry(codexReadSpy);
+
+    const { router, sessionStore, connector } = createRouter({ sessionReaderRegistry: registry });
+    sessionStore.setCwd('user1', fs.realpathSync(tmpDir));
+
+    await router.handleCardAction(
+      { cmd: 'resume.use', sessionId: 'codex-session-1', agent: 'codex' },
+      ctx,
+    );
+    expect(JSON.stringify(connector._sent)).toContain('Context - 5K (3%)');
   });
 
   it('/resume <id> shows usage stats and context length in card', async () => {
