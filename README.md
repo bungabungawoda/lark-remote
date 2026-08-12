@@ -78,7 +78,7 @@ logging:
   level: info               # debug | info | warn | error
 
 idle:
-  watchdogMinutes: 15       # 0 关闭空闲看门狗
+  watchdogMinutes: 15       # 0 关闭空闲超时自动停止
 ```
 
 配置目录可用 `--config-dir <path>` 覆盖；Claude settings 路径可用 `--settings <path>` 或 `CLAUDE_SETTINGS_PATH` 环境变量覆盖。

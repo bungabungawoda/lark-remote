@@ -7,7 +7,6 @@ import { formatTimestamp } from '../card/time.js';
 import { Bridge } from '../bridge/index.js';
 import { SessionStore } from '../session/index.js';
 import { SessionReaderRegistry } from '../session/registry.js';
-import { _ClaudeSessionReader } from '../session/claude/index.js';
 import { AppConfigSchema } from '../config/index.js';
 import type { AppConfig } from '../config/index.js';
 import type { AgentEvent, Runner } from '../runner/index.js';
@@ -328,6 +327,59 @@ describe('formatUsageStats', () => {
   it('falls back to 10% output estimate when outputTokens absent', () => {
     const out = formatUsageStats({ contextLength: 120000, compactCount: 2 });
     expect(out).toContain('Output token - 12K');
+  });
+
+  it('formats tokens >= 1M with M unit (e.g., 1200000 → 1.2M, not 1200K)', () => {
+    // Context length over 1M
+    const out = formatUsageStats({
+      contextLength: 1200000,
+      inputTokens: 800000,
+      outputTokens: 400000,
+      cacheReadTokens: 600000,
+      cacheCreationTokens: 200000,
+      totalTokens: 2000000,
+      cumulativeTotalTokens: 25000000,
+      cumulativeInputTokens: 10000000,
+      cumulativeOutputTokens: 5000000,
+    });
+    expect(out).toContain('Context - 1.2M');
+    expect(out).toContain('Input token - 800K');
+    expect(out).toContain('Output token - 400K');
+    expect(out).toContain('Cached token - 600K');
+    expect(out).toContain('Cache create - 200K');
+    expect(out).toContain('Total token - 2M');
+    // Cumulative over 1M uses M unit
+    expect(out).toContain('累计 25M'); // 25000000 → 25M
+    expect(out).toContain('累计 10M'); // 10000000 → 10M
+    expect(out).toContain('累计 5M'); // 5000000 → 5M
+    // Must NOT render as "1200K" or "25000K"
+    expect(out).not.toContain('1200K');
+    expect(out).not.toContain('25000K');
+  });
+
+  it('formats exactly 1M as 1M (not 1000K)', () => {
+    const out = formatUsageStats({
+      contextLength: 1000000,
+    });
+    expect(out).toContain('Context - 1M');
+    expect(out).not.toContain('1000K');
+  });
+
+  it('preserves one decimal for M when not a whole number (e.g., 1500000 → 1.5M)', () => {
+    const out = formatUsageStats({
+      contextLength: 1500000,
+      inputTokens: 1500000,
+      outputTokens: 1500000,
+      cacheReadTokens: 1500000,
+      totalTokens: 4500000,
+      cumulativeTotalTokens: 12345678,
+    });
+    expect(out).toContain('Context - 1.5M');
+    expect(out).toContain('Input token - 1.5M');
+    expect(out).toContain('Output token - 1.5M');
+    expect(out).toContain('Cached token - 1.5M');
+    expect(out).toContain('Total token - 4.5M');
+    expect(out).toContain('累计 12.3M'); // 12345678 → 12.3M
   });
 });
 
@@ -2886,6 +2938,188 @@ describe('CommandRouter', () => {
     const input = connector._sent[0].input as { text?: string };
     // Should say no active sessions
     expect(input.text).toContain('没有');
+  });
+});
+
+// ========== ACTIVE CARD PAGINATION ==========
+
+describe('/active card pagination', () => {
+  /** Create a router with a bridge that returns the given active runs / bash runs. */
+  function createActiveRouter(
+    activeRuns: Array<{
+      runId: string;
+      sessionId: string;
+      cwd: string;
+      userId: string;
+      chatId: string;
+      terminal: string;
+    }>,
+    activeBashRuns: Array<{
+      runId: string;
+      cwd: string;
+      userId: string;
+      chatId: string;
+      terminal: string;
+      command: string;
+    }> = [],
+  ) {
+    const sessionStore = new SessionStore();
+    const connector = createStubConnector();
+    const runner = createStubRunner({ withStatusInfo: true });
+    const config: AppConfig = AppConfigSchema.parse({
+      feishu: { appId: 'test', appSecret: 'test' },
+      claude: { model: 'claude-opus-4-8', stopGraceMs: 5000 },
+      output: { showThinking: true, showToolUse: false, showToolResult: false },
+    });
+    const bridge = new Bridge({
+      runner,
+      agentRegistry: createStubAgentRegistry(runner),
+      sessionReaderRegistry: createStubSessionReaderRegistry(),
+      connector,
+      sessionStore,
+      config,
+    });
+    (bridge as unknown as { getActiveRuns: () => typeof activeRuns }).getActiveRuns = () =>
+      activeRuns;
+    (bridge as unknown as { getActiveBashRuns: () => typeof activeBashRuns }).getActiveBashRuns =
+      () => activeBashRuns;
+    const router = new CommandRouter({
+      sessionStore,
+      bridge,
+      config,
+      configPath: path.join(tmpDir, 'config.yaml'),
+      workspacePath: path.join(tmpDir, 'workspace.json'),
+      sessionReaderRegistry: createStubSessionReaderRegistry(),
+    });
+    return { router, connector };
+  }
+
+  /** Generate N agent runs with distinct runIds. */
+  function makeAgentRuns(n: number, offset = 0) {
+    return Array.from({ length: n }, (_, i) => ({
+      runId: `run-${i + offset}`,
+      sessionId: `sess-${i + offset}`,
+      cwd: `/home/user/project-${i + offset}`,
+      userId: 'user1',
+      chatId: 'chat1',
+      terminal: 'running' as const,
+    }));
+  }
+
+  function makeBashRuns(n: number, offset = 0) {
+    return Array.from({ length: n }, (_, i) => ({
+      runId: `bash-${i + offset}`,
+      cwd: `/home/user/project-${i + offset}`,
+      userId: 'user1',
+      chatId: 'chat1',
+      terminal: 'running' as const,
+      command: `echo ${i + offset}`,
+    }));
+  }
+
+  it('shows all runs when total count <= page size', async () => {
+    const runs = makeAgentRuns(5);
+    const { router, connector } = createActiveRouter(runs);
+    await router.handle('/active', { userId: 'user1', chatId: 'chat1', messageId: 'msg1' });
+    const card = (connector._sent[0].input as { card?: object }).card!;
+    const cardStr = JSON.stringify(card);
+    // All 5 runs should appear
+    for (let i = 0; i < 5; i++) {
+      expect(cardStr).toContain(`run-${i}`);
+    }
+    // No pagination button when everything fits on one page
+    expect(cardStr).not.toContain('active.page');
+  });
+
+  it('limits display to page size (20) when more runs exist', async () => {
+    const runs = makeAgentRuns(25);
+    const { router, connector } = createActiveRouter(runs);
+    await router.handle('/active', { userId: 'user1', chatId: 'chat1', messageId: 'msg1' });
+    const card = (connector._sent[0].input as { card?: object }).card!;
+    const cardStr = JSON.stringify(card);
+    // First 20 runs should appear
+    for (let i = 0; i < 20; i++) {
+      expect(cardStr).toContain(`run-${i}`);
+    }
+    // Runs beyond page size should NOT appear
+    expect(cardStr).not.toContain('run-20');
+    expect(cardStr).not.toContain('run-24');
+  });
+
+  it('includes next-page button when there are more runs than page size', async () => {
+    const runs = makeAgentRuns(25);
+    const { router, connector } = createActiveRouter(runs);
+    await router.handle('/active', { userId: 'user1', chatId: 'chat1', messageId: 'msg1' });
+    const card = (connector._sent[0].input as { card?: object }).card!;
+    const cardStr = JSON.stringify(card);
+    // Should have active.page callback with offset=20
+    expect(cardStr).toContain('active.page');
+    expect(cardStr).toContain('"offset":20');
+  });
+
+  it('includes prev-page and next-page buttons on middle pages', async () => {
+    const runs = makeAgentRuns(45);
+    const { router, connector } = createActiveRouter(runs);
+    // Simulate page=1 (offset=20) via cardAction
+    await router.handleCardAction(
+      { cmd: 'active.page', offset: 20 },
+      { userId: 'user1', chatId: 'chat1', messageId: 'msg1' },
+    );
+    const card = connector._cards.at(-1)!;
+    const cardStr = JSON.stringify(card);
+    // Middle page should show runs 20-39
+    expect(cardStr).toContain('run-20');
+    expect(cardStr).toContain('run-39');
+    // Should NOT show runs outside this page
+    expect(cardStr).not.toContain('run-19');
+    expect(cardStr).not.toContain('run-40');
+    // Both prev and next buttons
+    expect(cardStr).toContain('"offset":0'); // prev
+    expect(cardStr).toContain('"offset":40'); // next
+  });
+
+  it('last page shows remaining runs without next button', async () => {
+    const runs = makeAgentRuns(25);
+    const { router, connector } = createActiveRouter(runs);
+    await router.handleCardAction(
+      { cmd: 'active.page', offset: 20 },
+      { userId: 'user1', chatId: 'chat1', messageId: 'msg1' },
+    );
+    const card = connector._cards.at(-1)!;
+    const cardStr = JSON.stringify(card);
+    // Last page: only runs 20-24
+    expect(cardStr).toContain('run-20');
+    expect(cardStr).toContain('run-24');
+    // Only prev button, no next
+    expect(cardStr).toContain('"offset":0'); // prev
+    expect(cardStr).not.toContain('"offset":40'); // no next
+  });
+
+  it('paginates across agent runs and bash runs combined', async () => {
+    // 15 agent runs + 10 bash runs = 25 total, should paginate at combined boundary
+    const agentRuns = makeAgentRuns(15);
+    const bashRuns = makeBashRuns(10);
+    const { router, connector } = createActiveRouter(agentRuns, bashRuns);
+    await router.handle('/active', { userId: 'user1', chatId: 'chat1', messageId: 'msg1' });
+    const card = (connector._sent[0].input as { card?: object }).card!;
+    const cardStr = JSON.stringify(card);
+    // First page should show 20 items: 15 agent + 5 bash
+    expect(cardStr).toContain('bash-0');
+    expect(cardStr).toContain('bash-4');
+    // Remaining bash runs should not appear on page 1
+    expect(cardStr).not.toContain('bash-5');
+    // Has next button
+    expect(cardStr).toContain('active.page');
+  });
+
+  it('shows page indicator (e.g. 1/2)', async () => {
+    const runs = makeAgentRuns(25);
+    const { router, connector } = createActiveRouter(runs);
+    await router.handle('/active', { userId: 'user1', chatId: 'chat1', messageId: 'msg1' });
+    const card = (connector._sent[0].input as { card?: object }).card!;
+    const cardStr = JSON.stringify(card);
+    // Should show current page info
+    expect(cardStr).toMatch(/1\s*\/\s*2/);
   });
 });
 
