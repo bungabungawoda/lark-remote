@@ -7,7 +7,7 @@ import { formatTimestamp } from '../card/time.js';
 import { Bridge } from '../bridge/index.js';
 import { SessionStore } from '../session/index.js';
 import { SessionReaderRegistry } from '../session/registry.js';
-import { ClaudeSessionReader } from '../session/claude/index.js';
+import { _ClaudeSessionReader } from '../session/claude/index.js';
 import { AppConfigSchema } from '../config/index.js';
 import type { AppConfig } from '../config/index.js';
 import type { AgentEvent, Runner } from '../runner/index.js';
