@@ -48,7 +48,7 @@ import { SessionReaderRegistry } from '../../../src/session/registry.js';
 import { KimiSessionReader } from '../../../src/session/kimi/sessions.js';
 import { AppConfigSchema } from '../../../src/config/index.js';
 import type { AppConfig } from '../../../src/config/index.js';
-import type { _AgentEvent, AgentRunner, Runner } from '../../../src/runner/index.js';
+import type { AgentRunner, Runner } from '../../../src/runner/index.js';
 
 import {
   createStubAgentRegistry,
