@@ -7,8 +7,6 @@ import { SessionStore } from '../../../src/session/index.js';
 import { CommandRouter } from '../../../src/router/index.js';
 import { AppConfigSchema } from '../../../src/config/index.js';
 import type { AppConfig } from '../../../src/config/index.js';
-import type { _Bridge } from '../../../src/bridge/index.js';
-import type { _SessionReaderRegistry } from '../../../src/session/registry.js';
 
 /**
  * Anchor: config.save 切换 agent 再切回来时，应恢复之前的 session

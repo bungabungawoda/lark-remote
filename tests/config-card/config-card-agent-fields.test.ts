@@ -1,11 +1,9 @@
 import { createMockBridge, createMockSessionReaderRegistry } from '../lib/bridge-stubs.js';
-import { describe, it, expect, beforeEach, afterEach, _vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { CommandRouter } from '../../src/router/index.js';
 import { SessionStore } from '../../src/session/index.js';
 import { AppConfigSchema } from '../../src/config/index.js';
 import type { AppConfig } from '../../src/config/index.js';
-import type { _Bridge } from '../../src/bridge/index.js';
-import type { _SessionReaderRegistry } from '../../src/session/registry.js';
 import path from 'node:path';
 import os from 'node:os';
 import fs from 'node:fs';

@@ -34,18 +34,31 @@
     "format:check": "prettier --check 'src/**/*.ts' 'tests/**/*.ts'",
     "test": "vitest run",
     "test:watch": "vitest",
+    "test:bridge": "vitest run --project infra-bridge",
+    "test:card": "vitest run --project infra-card",
+    "test:connector": "vitest run --project infra-connector",
+    "test:router": "vitest run --project infra-router",
+    "test:session": "vitest run --project infra-session",
+    "test:runner": "vitest run --project infra-runner",
+    "test:config": "vitest run --project infra-config",
+    "test:order": "vitest run --project infra-order",
+    "test:misc": "vitest run --project infra-misc",
+    "test:claude": "vitest run --project agent-claude",
+    "test:codex": "vitest run --project agent-codex",
+    "test:opencode": "vitest run --project agent-opencode",
+    "test:pi": "vitest run --project agent-pi",
+    "test:kimi": "vitest run --project agent-kimi",
+    "test:bash": "vitest run --project agent-bash",
+    "test:infra": "vitest run --project 'infra-*'",
+    "test:agents": "vitest run --project 'agent-*'",
+    "test:codex-full": "vitest run --project agent-codex --project infra-runner --project infra-session",
+    "test:claude-full": "vitest run --project agent-claude --project infra-runner --project infra-session",
+    "test:opencode-full": "vitest run --project agent-opencode --project infra-runner --project infra-session",
+    "test:pi-full": "vitest run --project agent-pi --project infra-runner --project infra-session",
+    "test:kimi-full": "vitest run --project agent-kimi --project infra-runner --project infra-session",
+    "test:live": "vitest run --project live",
     "prepublishOnly": "tsc --noEmit && vitest run && rm -rf dist && tsc && chmod +x dist/index.js dist/cli.js",
     "prepack": "node -e \"const fs=require('fs');if(!fs.existsSync('dist/cli.js')){console.error('dist/ missing — run bun run build first');process.exit(1)}\""
-  },
-  "lint-staged": {
-    "src/**/*.ts": [
-      "eslint --fix",
-      "prettier --write"
-    ],
-    "tests/**/*.ts": [
-      "eslint --fix",
-      "prettier --write"
-    ]
   },
   "publishConfig": {
     "access": "public",
@@ -101,5 +114,15 @@
     "typescript": "^6.0.0",
     "typescript-eslint": "^8.63.0",
     "vitest": "^4.1.10"
+  },
+  "lint-staged": {
+    "src/**/*.ts": [
+      "eslint --fix",
+      "prettier --write"
+    ],
+    "tests/**/*.ts": [
+      "eslint --fix",
+      "prettier --write"
+    ]
   }
 }

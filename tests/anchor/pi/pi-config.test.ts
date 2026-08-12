@@ -27,8 +27,6 @@ import {
 } from '../../../src/config/pi-config.js';
 import { CommandRouter } from '../../../src/router/index.js';
 import { SessionStore } from '../../../src/session/index.js';
-import type { _Bridge } from '../../../src/bridge/index.js';
-import type { _SessionReaderRegistry } from '../../../src/session/registry.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';

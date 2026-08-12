@@ -205,7 +205,7 @@ bun test            # 跑全部测试，必须全绿
 lark-remote/
 ├── src/                ← 源代码（你主要改这里）
 │   ├── index.ts        ← 程序入口
-│   ├── bridge/         ← 串行队列、看门狗
+│   ├── bridge/         ← 串行队列、空闲超时自动停止
 │   ├── runner/         ← 调用各种 AI CLI（Claude/Codex/OpenCode/Pi/Kimi）
 │   ├── card/           ← 飞书卡片渲染
 │   ├── router/         ← 命令分发

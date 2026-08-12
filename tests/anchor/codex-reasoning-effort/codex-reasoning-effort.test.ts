@@ -22,8 +22,6 @@ import { SessionStore } from '../../../src/session/index.js';
 import { AppConfigSchema } from '../../../src/config/index.js';
 import type { AppConfig } from '../../../src/config/index.js';
 import { CodexConfigSchema } from '../../../src/config/index.js';
-import type { _Bridge } from '../../../src/bridge/index.js';
-import type { _SessionReaderRegistry } from '../../../src/session/registry.js';
 import { buildCodexExecArgs } from '../../../src/runner/codex/argv.js';
 import type { AgentSessionReader } from '../../../src/runner/types.js';
 

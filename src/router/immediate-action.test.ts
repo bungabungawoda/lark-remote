@@ -79,6 +79,11 @@ describe('isImmediateAction (§9.19)', () => {
     it('order.delete should return true', () => {
       expect(isImmediateAction('order.delete')).toBe(true);
     });
+
+    // active.page - 分页操作，只更新卡片，不 spawn agent
+    it('active.page should return true', () => {
+      expect(isImmediateAction('active.page')).toBe(true);
+    });
   });
 
   describe('work operations that should return false (enqueue)', () => {

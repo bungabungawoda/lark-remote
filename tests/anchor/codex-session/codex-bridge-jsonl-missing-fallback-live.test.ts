@@ -25,7 +25,7 @@ import { Bridge } from '../../../src/bridge/index.js';
 import { SessionStore } from '../../../src/session/index.js';
 import { AppConfigSchema } from '../../../src/config/index.js';
 import type { AppConfig } from '../../../src/config/index.js';
-import type { _AgentEvent, AgentRunner, Runner } from '../../../src/runner/index.js';
+import type { AgentRunner, Runner } from '../../../src/runner/index.js';
 
 import {
   createStubAgentRegistry,
@@ -136,10 +136,10 @@ describe('Bridge codex jsonl 无 usage 回退 live (anchor)', () => {
 
     const finalCard = JSON.stringify(connector._cards.at(-1));
 
-    // jsonl 无 usage → 回退 live result usage（显示 live 值而非估算/空白）
+    // jsonl 无 usage → 回退 live result usage（显示 live 值而非估算/空白，>=1M 用 M 单位）
     expect(finalCard).toContain('Input token - 244K');
     expect(finalCard).toContain('Output token - 256K');
-    expect(finalCard).toContain('Cached token - 107833K (100%)');
-    expect(finalCard).toContain('Total token - 108334K');
+    expect(finalCard).toContain('Cached token - 107.8M (100%)');
+    expect(finalCard).toContain('Total token - 108.3M');
   });
 });
