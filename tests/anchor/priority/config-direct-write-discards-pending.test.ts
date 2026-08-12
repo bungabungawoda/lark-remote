@@ -13,6 +13,7 @@ import type { AgentSessionReader, Runner } from '../../../src/runner/index.js';
 import {
   createStubAgentRegistry,
   createStubSessionReaderRegistry,
+  createStubConnector,
 } from '../../lib/bridge-stubs.js';
 vi.mock('../../../src/logger/index.js', () => ({
   getLogger: () => ({
@@ -41,27 +42,11 @@ const stubRunner: Runner = {
   stop: async () => {},
   killOrphan: () => {},
   registerExitHandlers: () => {},
+  getStatusInfo: () => ({ kind: 'claude', model: 'test-model' }),
   run: async function* () {
     throw new Error('run not expected in stub');
   },
 };
-
-function createStubConnector() {
-  const sent: { chatId: string; input: unknown; opts?: unknown }[] = [];
-  return {
-    sendWithRetry: async (chatId: string, input: unknown, opts?: unknown) => {
-      sent.push({ chatId, input, opts });
-      return 'msg-id';
-    },
-    sendFile: async () => 'file-msg-id',
-    reconnect: async () => {},
-    addReaction: async () => {},
-    streamCard: async () => 'stream-msg-id',
-    updateCard: async () => {},
-    connected: true,
-    _sent: sent,
-  };
-}
 
 function createRouter(overrides?: { output?: Partial<AppConfig['output']> }) {
   const sessionStore = new SessionStore();
@@ -79,6 +64,7 @@ function createRouter(overrides?: { output?: Partial<AppConfig['output']> }) {
   });
   const configPath = path.join(tmpDir, 'config.yaml');
   const bridge = new Bridge({
+    runner: stubRunner,
     agentRegistry: createStubAgentRegistry(stubRunner),
     sessionReaderRegistry: createStubSessionReaderRegistry(),
     connector,

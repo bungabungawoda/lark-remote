@@ -7,97 +7,17 @@ import { Bridge } from '../../src/bridge/index.js';
 import { SessionStore, SessionReaderRegistry } from '../../src/session/index.js';
 import { AppConfigSchema } from '../../src/config/index.js';
 import type { AppConfig } from '../../src/config/index.js';
-import type { AgentSessionReader, Runner } from '../../src/runner/index.js';
+import type { Runner } from '../../src/runner/index.js';
 
-import { createStubAgentRegistry } from '../lib/bridge-stubs.js';
+import {
+  createStubAgentRegistry,
+  createStubRunner,
+  createStubSessionReaderRegistry,
+  createStubConnector,
+} from '../lib/bridge-stubs.js';
 // Stub session reader for tests
-const stubSessionReader: AgentSessionReader = {
-  listSessions: () => ({ sessions: [], total: 0 }),
-  getNewestSession: () => null,
-  readSessionContent: () => ({
-    events: [],
-    aiTitle: undefined,
-    recap: undefined,
-    displayTitle: undefined,
-    usage: undefined,
-    reason: 'not_found',
-  }),
-  isSessionActive: () => false,
-};
-
-function createStubSessionReaderRegistry(): SessionReaderRegistry {
-  const registry = new SessionReaderRegistry();
-  registry.register('claude', stubSessionReader);
-  registry.register('codex', stubSessionReader);
-  registry.register('opencode', stubSessionReader);
-  registry.register('pi', stubSessionReader);
-  registry.register('kimi', stubSessionReader);
-  return registry;
-}
 
 // Test utilities
-
-function createStubConnector() {
-  const sent: { chatId: string; input: unknown; opts?: unknown }[] = [];
-  const cards: object[] = [];
-  return {
-    sendWithRetry: async (chatId: string, input: unknown, opts?: unknown) => {
-      sent.push({ chatId, input, opts });
-      return 'msg-id';
-    },
-    sendFile: async (chatId: string, filePath: string) => {
-      sent.push({ chatId, input: { file: filePath }, opts: undefined });
-      return 'file-msg-id';
-    },
-    reconnect: async () => {},
-    addReaction: async () => {},
-    streamCard: async (
-      chatId: string,
-      initial: object,
-      producer: (controller: {
-        messageId: string;
-        current: object;
-        update(next: object | ((current: object) => object)): Promise<void>;
-      }) => Promise<void>,
-      opts?: unknown,
-    ) => {
-      sent.push({ chatId, input: { card: initial }, opts });
-      cards.push(initial);
-      let current = initial;
-      await producer({
-        messageId: 'stream-msg-id',
-        get current() {
-          return current;
-        },
-        update: async (next) => {
-          current = typeof next === 'function' ? next(current) : next;
-          cards.push(current);
-          // Record updates so tests can see final card with exit code
-          sent.push({ chatId, input: { card: current }, opts });
-        },
-      });
-      return 'stream-msg-id';
-    },
-    updateCard: async (_messageId: string, card: object) => {
-      cards.push(card);
-    },
-    connected: true,
-    _sent: sent,
-    _cards: cards,
-  };
-}
-
-function createStubRunner() {
-  return {
-    isRunning: false,
-    stop: async () => {},
-    killOrphan: () => {},
-    registerExitHandlers: () => {},
-    run: async function* () {
-      throw new Error('run not expected in stub');
-    },
-  };
-}
 
 let tmpDir: string;
 beforeEach(() => {
@@ -138,6 +58,7 @@ function createRouter(overrides?: {
     bridge:
       overrides?.bridge ??
       new Bridge({
+        runner,
         agentRegistry: createStubAgentRegistry(runner),
         sessionReaderRegistry: createStubSessionReaderRegistry(),
         connector,
@@ -330,21 +251,6 @@ describe('! bash command feature (Anchor Tests)', () => {
       // the hanging task is still running — bash neither waited behind it nor blocked it
       expect(taskStarted).toBe(true);
     }, 10000);
-
-    it('stop command can interrupt running bang command', async () => {
-      const { router, sessionStore, connector: _connector } = createRouter();
-      sessionStore.setCwd(ctx.userId, fs.realpathSync(tmpDir));
-
-      // This test verifies that /stop can interrupt a running bang command
-      // Note: This requires the bang execution to register as an active run
-
-      // Send stop command
-      await router.handle('/stop', ctx);
-
-      // Should handle without error (may or may not have output depending on state)
-      // Just verify no exception thrown
-      expect(true).toBe(true);
-    });
   });
 
   describe('Error handling', () => {

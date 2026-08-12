@@ -8,7 +8,11 @@ import { AppConfigSchema } from '../../src/config/index.js';
 import type { AppConfig } from '../../src/config/index.js';
 import type { AgentEvent, AgentKind, AgentRunner, Runner } from '../../src/runner/index.js';
 
-import { createStubAgentRegistry } from '../lib/bridge-stubs.js';
+import {
+  createStubAgentRegistry,
+  createStubConnector,
+  createStubRunner,
+} from '../lib/bridge-stubs.js';
 // 直接在模块顶层定义 mock（兼容 bun 的 vitest）
 const mockLogger = {
   debug: vi.fn(),
@@ -23,67 +27,6 @@ vi.mock('../../src/logger/index.js', () => ({
 }));
 
 // --- Stubs（同 tests/anchor/misc/bridge-kimi-usage-threading.test.ts 模式） ---
-
-function createStubConnector() {
-  const sent: { chatId: string; input: unknown; opts?: unknown }[] = [];
-  const cards: object[] = [];
-  return {
-    sendWithRetry: async (chatId: string, input: unknown, opts?: unknown) => {
-      sent.push({ chatId, input, opts });
-      return 'msg-id';
-    },
-    sendFile: async (chatId: string, filePath: string) => {
-      sent.push({ chatId, input: { file: filePath }, opts: undefined });
-      return 'file-msg-id';
-    },
-    reconnect: async () => {},
-    addReaction: async () => {},
-    streamCard: async (
-      chatId: string,
-      initial: object,
-      producer: (controller: {
-        messageId: string;
-        current: object;
-        update(next: object | ((current: object) => object)): Promise<void>;
-      }) => Promise<void>,
-      opts?: unknown,
-    ) => {
-      sent.push({ chatId, input: { card: initial }, opts });
-      cards.push(initial);
-      let current = initial;
-      await producer({
-        messageId: 'stream-msg-id',
-        get current() {
-          return current;
-        },
-        update: async (next) => {
-          current = typeof next === 'function' ? next(current) : next;
-          cards.push(current);
-        },
-      });
-      return 'stream-msg-id';
-    },
-    updateCard: async (_messageId: string, card: object) => {
-      cards.push(card);
-    },
-    connected: true,
-    _sent: sent,
-    _cards: cards,
-  };
-}
-
-function createStreamingRunner(events: AgentEvent[]): Runner {
-  return {
-    isRunning: false,
-    stop: async () => {},
-    killOrphan: () => {},
-    registerExitHandlers: () => {},
-    run: async function* () {
-      for (const e of events) yield e;
-    },
-  };
-}
-
 function asAgentRunner(r: Runner, kind: AgentKind): AgentRunner {
   return {
     ...r,
@@ -155,31 +98,35 @@ describe('Bridge usage scope: live 优先、jsonl 兜底', () => {
     const connector = createStubConnector();
     const sessionStore = new SessionStore();
     const claudeCacheRunner = asAgentRunner(
-      createStreamingRunner([
-        {
-          type: 'system',
-          subtype: 'init',
-          session_id: 'sess-claude-cache',
-          cwd: tmpDir,
-          model: 'claude-sonnet-4-20250514',
-        },
-        { type: 'assistant', message: { content: [{ type: 'text', text: 'claude reply' }] } },
-        {
-          type: 'result',
-          subtype: 'success',
-          session_id: 'sess-claude-cache',
-          usage: {
-            input_tokens: 1000,
-            output_tokens: 50,
-            cache_read_input_tokens: 800,
-            cache_creation_input_tokens: 100,
+      createStubRunner({
+        mode: 'streaming',
+        events: [
+          {
+            type: 'system',
+            subtype: 'init',
+            session_id: 'sess-claude-cache',
+            cwd: tmpDir,
+            model: 'claude-sonnet-4-20250514',
           },
-        },
-      ]),
+          { type: 'assistant', message: { content: [{ type: 'text', text: 'claude reply' }] } },
+          {
+            type: 'result',
+            subtype: 'success',
+            session_id: 'sess-claude-cache',
+            usage: {
+              input_tokens: 1000,
+              output_tokens: 50,
+              cache_read_input_tokens: 800,
+              cache_creation_input_tokens: 100,
+            },
+          },
+        ],
+      }),
       'claude',
     );
     const bridge = new Bridge({
       // claude 风格：result 事件带 usage，使用 cache_read_input_tokens 命名
+      runner: claudeCacheRunner,
       agentRegistry: createStubAgentRegistry(claudeCacheRunner),
       connector,
       sessionStore,
@@ -236,30 +183,34 @@ describe('Bridge usage scope: live 优先、jsonl 兜底', () => {
     const connector = createStubConnector();
     const sessionStore = new SessionStore();
     const resumeRunner = asAgentRunner(
-      createStreamingRunner([
-        {
-          type: 'system',
-          subtype: 'init',
-          session_id: 'sess-resume',
-          cwd: tmpDir,
-          model: 'claude-sonnet-4-20250514',
-        },
-        { type: 'assistant', message: { content: [{ type: 'text', text: 'resume reply' }] } },
-        {
-          type: 'result',
-          subtype: 'success',
-          session_id: 'sess-resume',
-          usage: {
-            input_tokens: 1000,
-            output_tokens: 50,
-            cache_read_input_tokens: 800,
+      createStubRunner({
+        mode: 'streaming',
+        events: [
+          {
+            type: 'system',
+            subtype: 'init',
+            session_id: 'sess-resume',
+            cwd: tmpDir,
+            model: 'claude-sonnet-4-20250514',
           },
-        },
-      ]),
+          { type: 'assistant', message: { content: [{ type: 'text', text: 'resume reply' }] } },
+          {
+            type: 'result',
+            subtype: 'success',
+            session_id: 'sess-resume',
+            usage: {
+              input_tokens: 1000,
+              output_tokens: 50,
+              cache_read_input_tokens: 800,
+            },
+          },
+        ],
+      }),
       'claude',
     );
     const bridge = new Bridge({
       // 本次 run 的 live result 只有本 run 的值
+      runner: resumeRunner,
       agentRegistry: createStubAgentRegistry(resumeRunner),
       connector,
       sessionStore,
@@ -324,21 +275,25 @@ describe('Bridge usage scope: live 优先、jsonl 兜底', () => {
       },
     });
     const kimiRunner = asAgentRunner(
-      createStreamingRunner([
-        {
-          type: 'system',
-          subtype: 'init',
-          session_id: 'sess-kimi-usage',
-          cwd: tmpDir,
-          model: 'kimi-code/k3',
-        },
-        { type: 'assistant', message: { content: [{ type: 'text', text: 'kimi reply' }] } },
-        { type: 'result', subtype: 'success', session_id: 'sess-kimi-usage' },
-      ]),
+      createStubRunner({
+        mode: 'streaming',
+        events: [
+          {
+            type: 'system',
+            subtype: 'init',
+            session_id: 'sess-kimi-usage',
+            cwd: tmpDir,
+            model: 'kimi-code/k3',
+          },
+          { type: 'assistant', message: { content: [{ type: 'text', text: 'kimi reply' }] } },
+          { type: 'result', subtype: 'success', session_id: 'sess-kimi-usage' },
+        ],
+      }),
       'kimi',
     );
     const bridge = new Bridge({
       // kimi 实时事件流：result 不带 usage
+      runner: kimiRunner,
       agentRegistry: createStubAgentRegistry(kimiRunner),
       connector,
       sessionStore,
@@ -401,29 +356,33 @@ describe('Bridge cumulative Total threading: done 卡必须显示累计 Total', 
     const connector = createStubConnector();
     const sessionStore = new SessionStore();
     const cumTotalRunner = asAgentRunner(
-      createStreamingRunner([
-        {
-          type: 'system',
-          subtype: 'init',
-          session_id: 'sess-cum-total',
-          cwd: tmpDir,
-          model: 'claude-sonnet-4-20250514',
-        },
-        { type: 'assistant', message: { content: [{ type: 'text', text: 'done reply' }] } },
-        {
-          type: 'result',
-          subtype: 'success',
-          session_id: 'sess-cum-total',
-          usage: {
-            input_tokens: 1000,
-            output_tokens: 50,
-            cache_read_input_tokens: 800,
+      createStubRunner({
+        mode: 'streaming',
+        events: [
+          {
+            type: 'system',
+            subtype: 'init',
+            session_id: 'sess-cum-total',
+            cwd: tmpDir,
+            model: 'claude-sonnet-4-20250514',
           },
-        },
-      ]),
+          { type: 'assistant', message: { content: [{ type: 'text', text: 'done reply' }] } },
+          {
+            type: 'result',
+            subtype: 'success',
+            session_id: 'sess-cum-total',
+            usage: {
+              input_tokens: 1000,
+              output_tokens: 50,
+              cache_read_input_tokens: 800,
+            },
+          },
+        ],
+      }),
       'claude',
     );
     const bridge = new Bridge({
+      runner: cumTotalRunner,
       agentRegistry: createStubAgentRegistry(cumTotalRunner),
       connector,
       sessionStore,

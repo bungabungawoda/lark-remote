@@ -13,6 +13,8 @@ import { PiSessionReader } from '../../../src/session/pi/index.js';
 import {
   createStubAgentRegistry,
   createStubSessionReaderRegistry,
+  createStubRunner,
+  createStubConnector,
 } from '../../lib/bridge-stubs.js';
 /**
  * Anchor: resume.use 恢复非默认 agent session（仅 set sessionId，不切换 defaultAgent）
@@ -25,34 +27,8 @@ import {
  */
 
 // Stub connector
-function createStubConnector() {
-  const sent: { chatId: string; input: unknown; opts?: unknown }[] = [];
-  return {
-    reconnect: async () => {},
-    addReaction: async () => {},
-    streamCard: async () => '',
-    _sent: sent,
-    sendWithRetry: async (chatId: string, input: unknown, opts?: unknown) => {
-      sent.push({ chatId, input, opts });
-      return 'msg-id';
-    },
-    sendFile: async () => 'file-msg-id',
-    updateCard: async () => {},
-    start: async () => {},
-    stop: async () => {},
-  };
-}
 
 // Stub runner
-function createStubRunner() {
-  return {
-    isRunning: false,
-    stop: async () => {},
-    killOrphan: () => {},
-    registerExitHandlers: () => {},
-    run: async function* () {},
-  };
-}
 
 describe('resume.use resumes non-default agent session (set sessionId only)', () => {
   let tmpDir: string;
@@ -101,7 +77,7 @@ describe('resume.use resumes non-default agent session (set sessionId only)', ()
     // 初始化：defaultAgent = 'kimi'（非 pi）
     const sessionStore = new SessionStore();
     const connector = createStubConnector();
-    const runner = createStubRunner();
+    const runner = createStubRunner({ mode: 'empty' });
     const config: AppConfig = AppConfigSchema.parse({
       feishu: { appId: 'test', appSecret: 'test' },
       claude: {
@@ -136,6 +112,7 @@ describe('resume.use resumes non-default agent session (set sessionId only)', ()
     // 创建 bridge 并跟踪 clearRunners 是否被调用
     const clearRunnersCalls: number[] = [];
     const bridge = new Bridge({
+      runner,
       agentRegistry: createStubAgentRegistry(runner),
       sessionReaderRegistry: createStubSessionReaderRegistry(),
       connector,
