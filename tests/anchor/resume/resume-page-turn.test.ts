@@ -13,6 +13,8 @@ import { ClaudeSessionReader } from '../../../src/session/claude/index.js';
 import {
   createStubAgentRegistry,
   createStubSessionReaderRegistry,
+  createStubRunner,
+  createStubConnector,
 } from '../../lib/bridge-stubs.js';
 /**
  * Anchor (A6): `resume.page` 回调原地翻页 + offset clamp + 缺 agent 兜底 + 无 cwd 报错
@@ -45,38 +47,8 @@ import {
  */
 
 // Stub connector: records sent messages AND in-place card updates.
-function createStubConnector() {
-  const sent: { chatId: string; input: unknown; opts?: unknown }[] = [];
-  const updates: { messageId: string; card: unknown }[] = [];
-  return {
-    reconnect: async () => {},
-    addReaction: async () => {},
-    streamCard: async () => '',
-    _sent: sent,
-    _updates: updates,
-    sendWithRetry: async (chatId: string, input: unknown, opts?: unknown) => {
-      sent.push({ chatId, input, opts });
-      return 'msg-id';
-    },
-    sendFile: async () => 'file-msg-id',
-    updateCard: async (messageId: string, card: unknown) => {
-      updates.push({ messageId, card });
-    },
-    start: async () => {},
-    stop: async () => {},
-  };
-}
 
 // Stub runner
-function createStubRunner() {
-  return {
-    isRunning: false,
-    stop: async () => {},
-    killOrphan: () => {},
-    registerExitHandlers: () => {},
-    run: async function* () {},
-  };
-}
 
 // Same encoding as production `projectDirForCwd`, canonicalized via realpath first.
 function encodedProjectDir(cwd: string): string {
@@ -152,7 +124,7 @@ function buildHarness(tmpDir: string, projectsDir: string, sessionCount: number)
 
   const sessionStore = new SessionStore();
   const connector = createStubConnector();
-  const runner = createStubRunner();
+  const runner = createStubRunner({ mode: 'empty' });
   const config: AppConfig = AppConfigSchema.parse({
     feishu: { appId: 'test', appSecret: 'test' },
     claude: { model: 'opus', stopGraceMs: 5000 },
@@ -173,6 +145,7 @@ function buildHarness(tmpDir: string, projectsDir: string, sessionCount: number)
   registry.register('kimi', stubReader);
 
   const bridge = new Bridge({
+    runner,
     agentRegistry: createStubAgentRegistry(runner),
     sessionReaderRegistry: createStubSessionReaderRegistry(),
     connector,

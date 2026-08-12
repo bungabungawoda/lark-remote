@@ -1,3 +1,4 @@
+import { createMockBridge, createMockSessionReaderRegistry } from '../../lib/bridge-stubs.js';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import path from 'node:path';
 import os from 'node:os';
@@ -23,43 +24,7 @@ import type { SessionReaderRegistry } from '../../../src/session/registry.js';
  *       改为发送消息提醒，因为需要持久化看到"。
  */
 
-// Stub runner
-
 // Mock bridge that can capture sendResult calls
-function createMockBridge(): Bridge {
-  const mock = {
-    // 真实 sendResult 成功返回 true；router 会检查返回值，失败才兜底 toast
-    sendResult: vi.fn().mockResolvedValue(true),
-    updateCardInPlace: vi.fn().mockResolvedValue(undefined),
-    forwardToClaude: vi.fn().mockResolvedValue(undefined),
-    isBusy: false,
-    isBusyFor: vi.fn().mockReturnValue(false),
-    enqueue: vi.fn(),
-    enqueueImmediate: vi.fn(),
-    interruptCurrentRun: vi.fn().mockResolvedValue(false),
-    reconnect: vi.fn().mockResolvedValue(undefined),
-    setConfig: vi.fn(),
-    setIdleTimeout: vi.fn(),
-    clearRunners: vi.fn(),
-    removeFromQueue: vi.fn().mockReturnValue(false),
-    getQueuedTasks: vi.fn().mockReturnValue([]),
-    getQueuedTask: vi.fn().mockReturnValue(undefined),
-    getQueueInfo: vi.fn().mockReturnValue({ position: 0, isRunning: false, tasksAhead: 0 }),
-    getAllActiveRuns: vi.fn().mockReturnValue(new Map()),
-    sendFile: vi.fn().mockResolvedValue(''),
-    getActiveRunFor: vi.fn().mockReturnValue(undefined),
-  } as unknown as Bridge;
-  return mock;
-}
-
-function createMockSessionReaderRegistry(
-  agentKinds: string[] = ['claude', 'codex', 'pi', 'opencode'],
-): SessionReaderRegistry {
-  return {
-    listRegistered: vi.fn().mockReturnValue(agentKinds),
-    get: vi.fn(),
-  } as unknown as SessionReaderRegistry;
-}
 
 function buildConfig(): AppConfig {
   return AppConfigSchema.parse({
@@ -90,10 +55,12 @@ describe('config.save sends persistent message notification on agent switch', ()
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-switch-toast-test-'));
     sessionStore = new SessionStore();
-    bridge = createMockBridge();
+    bridge = createMockBridge({ enqueueImmediate: vi.fn(), clearRunners: vi.fn() });
 
     const config = buildConfig();
-    const registry = createMockSessionReaderRegistry();
+    const registry = createMockSessionReaderRegistry({
+      agentKinds: ['claude', 'codex', 'pi', 'opencode'],
+    });
 
     router = new CommandRouter({
       sessionStore,
@@ -202,7 +169,7 @@ describe('config.save sends persistent message notification on agent switch', ()
     await router.handleCardAction({ cmd: 'config.set', key: 'defaultAgent', option: 'pi' }, ctx);
 
     // 本次保存时持久化消息发送失败（真实契约：resolve false，不 throw）
-    (bridge.sendResult as ReturnType<typeof vi.fn>).mockResolvedValueOnce(false);
+    bridge.sendResult.mockResolvedValueOnce(false);
 
     const response = await router.handleCardAction({ cmd: 'config.save' }, ctx);
 
@@ -250,9 +217,7 @@ describe('config.save sends persistent message notification on agent switch', ()
     await router.handleCardAction({ cmd: 'config.set', key: 'defaultAgent', option: 'pi' }, ctx);
 
     // 模拟保存时卡片原地刷新失败（飞书 patch 请求网络错误等）
-    (bridge.updateCardInPlace as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
-      new Error('card refresh failed'),
-    );
+    bridge.updateCardInPlace.mockRejectedValueOnce(new Error('card refresh failed'));
 
     await router.handleCardAction({ cmd: 'config.save' }, ctx);
 

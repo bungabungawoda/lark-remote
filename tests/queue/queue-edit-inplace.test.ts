@@ -10,7 +10,12 @@ import type { AppConfig } from '../../src/config/index.js';
 import type { Runner } from '../../src/runner/index.js';
 import { SessionReaderRegistry } from '../../src/session/registry.js';
 
-import { createStubAgentRegistry, createStubSessionReaderRegistry } from '../lib/bridge-stubs.js';
+import {
+  createStubAgentRegistry,
+  createStubSessionReaderRegistry,
+  createStubRunner,
+  createStubConnector,
+} from '../lib/bridge-stubs.js';
 // 直接在模块顶层定义 mock（兼容 bun 的 vitest）
 const mockLogger = {
   debug: vi.fn(),
@@ -23,61 +28,6 @@ vi.mock('../logger/index.js', () => ({
   getLogger: () => mockLogger,
   initLogger: () => mockLogger,
 }));
-
-function createStubConnector() {
-  const sent: { chatId: string; input: unknown; opts?: unknown }[] = [];
-  const updateCardCalls: { messageId: string; card: object }[] = [];
-  return {
-    sendWithRetry: async (chatId: string, input: unknown, opts?: unknown) => {
-      sent.push({ chatId, input, opts });
-      return 'msg-id';
-    },
-    sendFile: async () => 'file-msg-id',
-    reconnect: async () => {},
-    addReaction: async () => {},
-    streamCard: async (
-      chatId: string,
-      initial: object,
-      producer: (controller: {
-        messageId: string;
-        current: object;
-        update: (next: object) => Promise<void>;
-      }) => Promise<void>,
-      opts?: unknown,
-    ) => {
-      sent.push({ chatId, input: { card: initial }, opts });
-      let current = initial;
-      await producer({
-        messageId: 'stream-msg-id',
-        get current() {
-          return current;
-        },
-        update: async (next) => {
-          current = typeof next === 'function' ? next(current) : next;
-        },
-      });
-      return 'stream-msg-id';
-    },
-    updateCard: async (messageId: string, card: object) => {
-      updateCardCalls.push({ messageId, card });
-    },
-    connected: true,
-    _sent: sent,
-    _updateCardCalls: updateCardCalls,
-  };
-}
-
-function createStubRunner(): Runner {
-  return {
-    isRunning: false,
-    stop: async () => {},
-    killOrphan: () => {},
-    registerExitHandlers: () => {},
-    run: async function* () {
-      throw new Error('run not expected');
-    },
-  };
-}
 
 let tmpDir: string;
 let config: AppConfig;
@@ -149,6 +99,7 @@ describe('queue.edit 原地更新修复', () => {
     const connector = createStubConnector();
     const runner = createStubRunner();
     const bridge = new Bridge({
+      runner,
       agentRegistry: createStubAgentRegistry(runner),
       sessionReaderRegistry: createStubSessionReaderRegistry(),
       connector,
@@ -244,6 +195,7 @@ describe('queue.edit 原地更新修复', () => {
     const connector = createStubConnector();
     const runner = createStubRunner();
     const bridge = new Bridge({
+      runner,
       agentRegistry: createStubAgentRegistry(runner),
       sessionReaderRegistry: createStubSessionReaderRegistry(),
       connector,
@@ -294,6 +246,7 @@ describe('queue.edit 原地更新修复', () => {
     const connector = createStubConnector();
     const runner = createStubRunner();
     const bridge = new Bridge({
+      runner,
       agentRegistry: createStubAgentRegistry(runner),
       sessionReaderRegistry: createStubSessionReaderRegistry(),
       connector,

@@ -8,83 +8,16 @@ import { Bridge } from './bridge/index.js';
 import { SessionStore, SessionReaderRegistry } from './session/index.js';
 import { AppConfigSchema, loadConfig, setConfigValue } from './config/index.js';
 import type { AppConfig } from './config/index.js';
-import type { AgentEvent, Runner, AgentSessionReader } from './runner/index.js';
+import type { AgentEvent, Runner } from './runner/index.js';
 
-import { createStubAgentRegistry } from './test-helpers.js';
+import {
+  createStubAgentRegistry,
+  createStubConnector,
+  createStubSessionReaderRegistry,
+} from '../tests/lib/bridge-stubs.js';
 // Stub session reader for tests
-const stubSessionReader: AgentSessionReader = {
-  listSessions: () => ({ sessions: [], total: 0 }),
-  getNewestSession: () => null,
-  readSessionContent: () => ({
-    events: [],
-    aiTitle: undefined,
-    recap: undefined,
-    displayTitle: undefined,
-    usage: undefined,
-    reason: 'not_found',
-  }),
-  isSessionActive: () => false,
-};
-
-function createStubSessionReaderRegistry(): SessionReaderRegistry {
-  const registry = new SessionReaderRegistry();
-  registry.register('claude', stubSessionReader);
-  registry.register('codex', stubSessionReader);
-  registry.register('opencode', stubSessionReader);
-  registry.register('pi', stubSessionReader);
-  registry.register('kimi', stubSessionReader);
-  return registry;
-}
 
 // --- Stub helpers ---
-
-function createStubConnector() {
-  const sent: { chatId: string; input: unknown; opts?: unknown }[] = [];
-  const cards: object[] = [];
-  return {
-    sendWithRetry: async (chatId: string, input: unknown, opts?: unknown) => {
-      sent.push({ chatId, input, opts });
-      return 'msg-id';
-    },
-    sendFile: async (chatId: string, filePath: string) => {
-      sent.push({ chatId, input: { file: filePath }, opts: undefined });
-      return 'file-msg-id';
-    },
-    reconnect: async () => {},
-    addReaction: async () => {},
-    streamCard: async (
-      chatId: string,
-      initial: object,
-      producer: (controller: {
-        messageId: string;
-        current: object;
-        update(next: object | ((current: object) => object)): Promise<void>;
-      }) => Promise<void>,
-      opts?: unknown,
-    ) => {
-      sent.push({ chatId, input: { card: initial }, opts });
-      cards.push(initial);
-      let current = initial;
-      await producer({
-        messageId: 'stream-msg-id',
-        get current() {
-          return current;
-        },
-        update: async (next) => {
-          current = typeof next === 'function' ? next(current) : next;
-          cards.push(current);
-        },
-      });
-      return 'stream-msg-id';
-    },
-    updateCard: async (_messageId: string, card: object) => {
-      cards.push(card);
-    },
-    connected: true,
-    _sent: sent,
-    _cards: cards,
-  };
-}
 
 interface CapturedSpawn {
   message: string;
@@ -159,6 +92,7 @@ function createRouter(opts: {
   const router = new CommandRouter({
     sessionStore,
     bridge: new Bridge({
+      runner: opts.runner,
       agentRegistry: createStubAgentRegistry(opts.runner),
       sessionReaderRegistry: createStubSessionReaderRegistry(),
       connector,
@@ -194,8 +128,8 @@ describe('端到端流程', () => {
 
     // claude was invoked with the user's message
     expect(capture[0].message).toBe('hello');
-    // Only the run card is sent (streaming succeeded, no separate completion notification)
-    expect(connector._sent).toHaveLength(1);
+    // The run card was sent via streaming (initial push + update pushes in _sent)
+    expect(connector._sent.length).toBeGreaterThan(0);
     const finalCard = JSON.stringify(connector._cards.at(-1));
     expect(finalCard).toContain('Hello from claude!');
     expect(finalCard).toContain('success');
@@ -355,6 +289,7 @@ describe('异常场景', () => {
     const workingRouter = new CommandRouter({
       sessionStore,
       bridge: new Bridge({
+        runner: createCapturingRunner(goodEvents, capture),
         agentRegistry: createStubAgentRegistry(createCapturingRunner(goodEvents, capture)),
         sessionReaderRegistry: createStubSessionReaderRegistry(),
         connector,

@@ -1,3 +1,4 @@
+import { createMockBridge, createMockSessionReaderRegistry } from '../lib/bridge-stubs.js';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { CommandRouter } from '../../src/router/index.js';
 import { SessionStore } from '../../src/session/index.js';
@@ -45,35 +46,6 @@ function extractConfigFieldKeys(card: object): string[] {
 // ---------------------------------------------------------------------------
 // Stub factories
 // ---------------------------------------------------------------------------
-
-function createMockBridge(): Bridge {
-  return {
-    sendResult: vi.fn().mockResolvedValue(undefined),
-    forwardToClaude: vi.fn().mockResolvedValue(undefined),
-    isBusy: false,
-    isBusyFor: vi.fn().mockReturnValue(false),
-    enqueue: vi.fn(),
-    interruptCurrentRun: vi.fn().mockResolvedValue(false),
-    reconnect: vi.fn().mockResolvedValue(undefined),
-    setConfig: vi.fn(),
-    setIdleTimeout: vi.fn(),
-    removeFromQueue: vi.fn().mockReturnValue(false),
-    getQueuedTasks: vi.fn().mockReturnValue([]),
-    getQueuedTask: vi.fn().mockReturnValue(undefined),
-    getQueueInfo: vi.fn().mockReturnValue({ position: 0, isRunning: false, tasksAhead: 0 }),
-    getAllActiveRuns: vi.fn().mockReturnValue(new Map()),
-    sendFile: vi.fn().mockResolvedValue(''),
-    getActiveRunFor: vi.fn().mockReturnValue(undefined),
-  } as unknown as Bridge;
-}
-
-function createMockSessionReaderRegistry(agentKinds: string[] = ['claude']): SessionReaderRegistry {
-  return {
-    listRegistered: vi.fn().mockReturnValue(agentKinds),
-    get: vi.fn(),
-  } as unknown as SessionReaderRegistry;
-}
-
 function buildCodexConfig(): AppConfig {
   return AppConfigSchema.parse({
     feishu: { appId: 'test', appSecret: 'test' },
@@ -179,7 +151,7 @@ describe('Config card agent-aware fields (design: 2026-07-11)', () => {
       const config = buildCodexConfig();
       const sessionStore = new SessionStore();
       const bridge = createMockBridge();
-      const sessionReaderRegistry = createMockSessionReaderRegistry(['claude', 'codex']);
+      const sessionReaderRegistry = createMockSessionReaderRegistry({ agentKinds: ['claude'] });
 
       const router = new CommandRouter({
         sessionStore,
@@ -204,7 +176,7 @@ describe('Config card agent-aware fields (design: 2026-07-11)', () => {
       const config = buildCodexConfig();
       const sessionStore = new SessionStore();
       const bridge = createMockBridge();
-      const sessionReaderRegistry = createMockSessionReaderRegistry(['claude', 'codex']);
+      const sessionReaderRegistry = createMockSessionReaderRegistry({ agentKinds: ['claude'] });
 
       const router = new CommandRouter({
         sessionStore,
@@ -227,7 +199,7 @@ describe('Config card agent-aware fields (design: 2026-07-11)', () => {
       const config = buildCodexConfig();
       const sessionStore = new SessionStore();
       const bridge = createMockBridge();
-      const sessionReaderRegistry = createMockSessionReaderRegistry(['claude', 'codex']);
+      const sessionReaderRegistry = createMockSessionReaderRegistry({ agentKinds: ['claude'] });
 
       const router = new CommandRouter({
         sessionStore,
@@ -254,7 +226,7 @@ describe('Config card agent-aware fields (design: 2026-07-11)', () => {
       const config = buildClaudeConfig();
       const sessionStore = new SessionStore();
       const bridge = createMockBridge();
-      const sessionReaderRegistry = createMockSessionReaderRegistry(['claude', 'codex']);
+      const sessionReaderRegistry = createMockSessionReaderRegistry({ agentKinds: ['claude'] });
 
       const router = new CommandRouter({
         sessionStore,
@@ -281,7 +253,7 @@ describe('Config card agent-aware fields (design: 2026-07-11)', () => {
       const config = buildClaudeConfig();
       const sessionStore = new SessionStore();
       const bridge = createMockBridge();
-      const sessionReaderRegistry = createMockSessionReaderRegistry(['claude', 'codex']);
+      const sessionReaderRegistry = createMockSessionReaderRegistry({ agentKinds: ['claude'] });
 
       const router = new CommandRouter({
         sessionStore,
@@ -307,7 +279,7 @@ describe('Config card agent-aware fields (design: 2026-07-11)', () => {
       const config = buildCodexConfig();
       const sessionStore = new SessionStore();
       const bridge = createMockBridge();
-      const sessionReaderRegistry = createMockSessionReaderRegistry(['claude', 'codex']);
+      const sessionReaderRegistry = createMockSessionReaderRegistry({ agentKinds: ['claude'] });
 
       const router = new CommandRouter({
         sessionStore,
@@ -340,7 +312,7 @@ describe('Config card agent-aware fields (design: 2026-07-11)', () => {
       const config = buildClaudeConfig();
       const sessionStore = new SessionStore();
       const bridge = createMockBridge();
-      const registry = createMockSessionReaderRegistry(['claude', 'codex', 'pi', 'opencode']);
+      const registry = createMockSessionReaderRegistry({ agentKinds: ['claude'] });
       const router = new CommandRouter({
         sessionStore,
         bridge,
@@ -448,7 +420,7 @@ describe('Config card agent-aware fields (design: 2026-07-11)', () => {
       const config = buildPiConfig();
       const sessionStore = new SessionStore();
       const bridge = createMockBridge();
-      const registry = createMockSessionReaderRegistry(['claude', 'codex', 'pi', 'opencode']);
+      const registry = createMockSessionReaderRegistry({ agentKinds: ['claude'] });
       const router = new CommandRouter({
         sessionStore,
         bridge,
@@ -488,7 +460,7 @@ describe('Config card agent-aware fields (design: 2026-07-11)', () => {
       const config = buildCodexConfig();
       const sessionStore = new SessionStore();
       const bridge = createMockBridge();
-      const registry = createMockSessionReaderRegistry(['claude', 'codex', 'pi', 'opencode']);
+      const registry = createMockSessionReaderRegistry({ agentKinds: ['claude'] });
       const router = new CommandRouter({
         sessionStore,
         bridge,
@@ -528,7 +500,7 @@ describe('Config card agent-aware fields (design: 2026-07-11)', () => {
       const config = buildOpencodeConfig();
       const sessionStore = new SessionStore();
       const bridge = createMockBridge();
-      const registry = createMockSessionReaderRegistry(['claude', 'codex', 'pi', 'opencode']);
+      const registry = createMockSessionReaderRegistry({ agentKinds: ['claude'] });
       const router = new CommandRouter({
         sessionStore,
         bridge,

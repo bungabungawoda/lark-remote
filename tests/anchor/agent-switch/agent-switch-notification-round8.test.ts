@@ -1,3 +1,4 @@
+import { createMockBridge, createMockSessionReaderRegistry } from '../../lib/bridge-stubs.js';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import path from 'node:path';
 import os from 'node:os';
@@ -26,39 +27,6 @@ import type { SessionReaderRegistry } from '../../../src/session/registry.js';
  * - T3：同一用户连续两次 config.save（中间无 config.set）→ 第二次空
  *   pending，只能发「没有待保存的修改」文本，不得发第二条切换消息。
  */
-
-function createMockBridge(): Bridge {
-  const mock = {
-    sendResult: vi.fn().mockResolvedValue(true),
-    updateCardInPlace: vi.fn().mockResolvedValue(undefined),
-    forwardToClaude: vi.fn().mockResolvedValue(undefined),
-    isBusy: false,
-    isBusyFor: vi.fn().mockReturnValue(false),
-    enqueue: vi.fn(),
-    enqueueImmediate: vi.fn(),
-    interruptCurrentRun: vi.fn().mockResolvedValue(false),
-    reconnect: vi.fn().mockResolvedValue(undefined),
-    setConfig: vi.fn(),
-    setIdleTimeout: vi.fn(),
-    clearRunners: vi.fn(),
-    removeFromQueue: vi.fn().mockReturnValue(false),
-    getQueuedTasks: vi.fn().mockReturnValue([]),
-    getQueuedTask: vi.fn().mockReturnValue(undefined),
-    getQueueInfo: vi.fn().mockReturnValue({ position: 0, isRunning: false, tasksAhead: 0 }),
-    getAllActiveRuns: vi.fn().mockReturnValue(new Map()),
-    sendFile: vi.fn().mockResolvedValue(''),
-    getActiveRunFor: vi.fn().mockReturnValue(undefined),
-  } as unknown as Bridge;
-  return mock;
-}
-
-function createMockSessionReaderRegistry(): SessionReaderRegistry {
-  return {
-    listRegistered: vi.fn().mockReturnValue(['claude', 'codex', 'pi', 'opencode', 'kimi']),
-    get: vi.fn(),
-  } as unknown as SessionReaderRegistry;
-}
-
 function buildConfig(overrides?: Partial<AppConfig>): AppConfig {
   return AppConfigSchema.parse({
     feishu: { appId: 'test', appSecret: 'test' },
@@ -92,7 +60,7 @@ describe('Round8 anchors: config.save failure/equivalence boundaries', () => {
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-switch-round8-'));
     sessionStore = new SessionStore();
-    bridge = createMockBridge();
+    bridge = createMockBridge({ enqueueImmediate: vi.fn(), clearRunners: vi.fn() });
     router = new CommandRouter({
       sessionStore,
       bridge,
@@ -153,10 +121,8 @@ describe('Round8 anchors: config.save failure/equivalence boundaries', () => {
     const ctx = { userId, chatId: 'chat1', messageId: 'msg1' };
 
     await router.handleCardAction({ cmd: 'config.set', key: 'defaultAgent', option: 'pi' }, ctx);
-    (bridge.updateCardInPlace as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
-      new Error('card refresh failed'),
-    );
-    (bridge.sendResult as ReturnType<typeof vi.fn>).mockResolvedValueOnce(false);
+    bridge.updateCardInPlace.mockRejectedValueOnce(new Error('card refresh failed'));
+    bridge.sendResult.mockResolvedValueOnce(false);
 
     const response = await router.handleCardAction({ cmd: 'config.save' }, ctx);
 
@@ -304,7 +270,7 @@ describe('Round8 anchors: config.save failure/equivalence boundaries', () => {
     // claude 的 X 停车、pi 清空到达，重启后 claude→pi 仍无恢复机会。
     const filePath = path.join(tmpDir, 'last-session.json');
     const store1 = new SessionStore(filePath);
-    bridge = createMockBridge();
+    bridge = createMockBridge({ enqueueImmediate: vi.fn(), clearRunners: vi.fn() });
     router = new CommandRouter({
       sessionStore: store1,
       bridge,
@@ -322,15 +288,13 @@ describe('Round8 anchors: config.save failure/equivalence boundaries', () => {
     const ctx = { userId, chatId: 'chat1', messageId: 'msg1' };
 
     await router.handleCardAction({ cmd: 'config.set', key: 'defaultAgent', option: 'pi' }, ctx);
-    (bridge.updateCardInPlace as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
-      new Error('card refresh failed'),
-    );
-    (bridge.sendResult as ReturnType<typeof vi.fn>).mockResolvedValueOnce(false);
+    bridge.updateCardInPlace.mockRejectedValueOnce(new Error('card refresh failed'));
+    bridge.sendResult.mockResolvedValueOnce(false);
     await router.handleCardAction({ cmd: 'config.save' }, ctx);
 
     // 重建
     const store2 = new SessionStore(filePath);
-    const bridge2 = createMockBridge();
+    const bridge2 = createMockBridge({ enqueueImmediate: vi.fn(), clearRunners: vi.fn() });
     const router2 = new CommandRouter({
       sessionStore: store2,
       bridge: bridge2,

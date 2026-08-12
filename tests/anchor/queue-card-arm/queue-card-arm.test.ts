@@ -117,7 +117,7 @@ describe('QueueManager - queue card must be sent for a message enqueued after an
     expect(sentCards.length).toBe(1); // T2 的排队卡
 
     // --- 步骤 3：模拟 stop：reset 计数 + T1 进程被杀 settle ---
-    qm.resetExecutingCount(WORKSPACE, qm.getExecutingSlot(WORKSPACE)!);
+    qm.resetExecutingCount(WORKSPACE);
     rejectT1(new Error('simulated process kill'));
 
     // --- 步骤 4：等 T2 从队列链接跑（继续挂起 = 执行中）---
