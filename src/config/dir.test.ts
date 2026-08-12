@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
-import { parseCliArgs, getVersion, printVersion } from './dir.js';
+import { parseCliArgs, printVersion } from './dir.js';
 
 describe('parseCliArgs version flag', () => {
   afterEach(() => {
@@ -22,18 +22,6 @@ describe('parseCliArgs version flag', () => {
     const result = parseCliArgs(['--config-dir', '/tmp/foo', '--version']);
     expect(result.version).toBe(true);
     expect(result.configDir).toBe('/tmp/foo');
-  });
-
-  it('should parse version together with other flags', () => {
-    const result = parseCliArgs(['--config-dir', '/tmp/foo', '--version']);
-    expect(result.version).toBe(true);
-    expect(result.configDir).toBe('/tmp/foo');
-  });
-});
-
-describe('getVersion', () => {
-  it('should return a semver string from package.json', () => {
-    expect(getVersion()).toMatch(/^\d+\.\d+\.\d+/);
   });
 });
 

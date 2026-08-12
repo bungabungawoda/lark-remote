@@ -92,20 +92,25 @@ function createGatedRunner(): GatedRunner & AgentRunner {
  * Stub connector returning a UNIQUE card message id per sendWithRetry call
  * (same pattern as the other queue-card-arm anchors).
  */
-function createStubConnector() {
-  const sent: Array<{ chatId: string; input: unknown; opts?: unknown; id: string }> = [];
+let msgIdCounter = 0;
+function createUniqueMsgIdConnector() {
+  const sent: { chatId: string; input: unknown; opts?: unknown; id: string }[] = [];
   const cards: object[] = [];
-  const updates: Array<{ messageId: string; card: object }> = [];
-  let seq = 0;
+  const updates: { messageId: string; card: object }[] = [];
   return {
     sendWithRetry: async (chatId: string, input: unknown, opts?: unknown) => {
-      const id = `card-msg-${++seq}`;
+      const id = `msg-${++msgIdCounter}`;
       sent.push({ chatId, input, opts, id });
       return id;
     },
     sendFile: async (chatId: string, filePath: string) => {
-      sent.push({ chatId, input: { file: filePath }, opts: undefined, id: `card-msg-${++seq}` });
-      return 'file-msg-id';
+      sent.push({
+        chatId,
+        input: { file: filePath },
+        opts: undefined,
+        id: `file-${++msgIdCounter}`,
+      });
+      return `file-msg-${msgIdCounter}`;
     },
     reconnect: async () => {},
     addReaction: async () => {},
@@ -117,25 +122,29 @@ function createStubConnector() {
         current: object;
         update(next: object | ((current: object) => object)): Promise<void>;
       }) => Promise<void>,
+      opts2?: unknown,
     ) => {
-      sent.push({ chatId, input: { card: initial }, opts: undefined, id: `card-msg-${++seq}` });
+      const id = `stream-${++msgIdCounter}`;
+      sent.push({ chatId, input: { card: initial }, opts: opts2, id });
       cards.push(initial);
       let current = initial;
       await producer({
-        messageId: 'stream-msg-id',
+        messageId: id,
         get current() {
           return current;
         },
         update: async (next) => {
           current = typeof next === 'function' ? next(current) : next;
           cards.push(current);
+          sent.push({ chatId, input: { card: current }, opts: opts2, id: `${id}-update` });
+          updates.push({ messageId: id, card: current });
         },
       });
-      return 'stream-msg-id';
+      return id;
     },
     updateCard: async (messageId: string, card: object) => {
-      updates.push({ messageId, card });
       cards.push(card);
+      updates.push({ messageId, card });
     },
     connected: true,
     _sent: sent,
@@ -208,14 +217,14 @@ describe('queue.immediate final feedback must not claim "未安排执行" when t
       return r;
     });
 
-    const connector = createStubConnector();
+    const connector = createUniqueMsgIdConnector();
     const sessionStore = new SessionStore();
     const bridge = new Bridge({
+      runner: createGatedRunner(), // fallback, unused (registry path)
       connector,
       sessionStore,
       config,
       agentRegistry: reg,
-      sessionReaderRegistry: new SessionReaderRegistry(),
       idleTimeoutMs: 0,
     });
     const router = new CommandRouter({

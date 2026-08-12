@@ -13,6 +13,8 @@ import { ClaudeSessionReader } from '../../../src/session/claude/index.js';
 import {
   createStubAgentRegistry,
   createStubSessionReaderRegistry,
+  createStubRunner,
+  createStubConnector,
 } from '../../lib/bridge-stubs.js';
 /**
  * Anchor (P3-1): resume.page 的 offset 数值化 + 页对齐，非法值不误导
@@ -36,38 +38,8 @@ import {
  */
 
 // Stub connector that records updateCard calls (原地翻页路径).
-function createStubConnector() {
-  const sent: { chatId: string; input: unknown; opts?: unknown }[] = [];
-  const updates: unknown[] = [];
-  return {
-    reconnect: async () => {},
-    addReaction: async () => {},
-    streamCard: async () => '',
-    _sent: sent,
-    _updates: updates,
-    sendWithRetry: async (chatId: string, input: unknown, opts?: unknown) => {
-      sent.push({ chatId, input, opts });
-      return 'msg-id';
-    },
-    sendFile: async () => 'file-msg-id',
-    updateCard: async (_messageId: string, card: unknown) => {
-      updates.push(card);
-    },
-    start: async () => {},
-    stop: async () => {},
-  };
-}
 
 // Stub runner
-function createStubRunner() {
-  return {
-    isRunning: false,
-    stop: async () => {},
-    killOrphan: () => {},
-    registerExitHandlers: () => {},
-    run: async function* () {},
-  };
-}
 
 // Same encoding as production `projectDirForCwd`, canonicalized via realpath first.
 function encodedProjectDir(cwd: string): string {
@@ -107,7 +79,7 @@ describe('P3-1 resume.page offset 数值化 + 页对齐', () => {
 
     const sessionStore = new SessionStore();
     connector = createStubConnector();
-    const runner = createStubRunner();
+    const runner = createStubRunner({ mode: 'empty' });
     const config: AppConfig = AppConfigSchema.parse({
       feishu: { appId: 'test', appSecret: 'test' },
       claude: { model: 'opus', stopGraceMs: 5000 },
@@ -128,6 +100,7 @@ describe('P3-1 resume.page offset 数值化 + 页对齐', () => {
     registry.register('kimi', stubReader);
 
     const bridge = new Bridge({
+      runner,
       agentRegistry: createStubAgentRegistry(runner),
       sessionReaderRegistry: createStubSessionReaderRegistry(),
       connector,

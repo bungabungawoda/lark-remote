@@ -104,23 +104,4 @@ describe('Typing reaction - Message handler integration', () => {
     // 期望：在处理普通消息的代码路径中，调用了 addReaction 方法，参数包含 'Typing'
     expect(indexContent).toMatch(/addReaction.*Typing|Typing.*addReaction/s);
   });
-
-  it('test_anchor_slash_command_adds_typing_reaction', () => {
-    // 验证 slash 命令处理时添加 Typing 表情
-    // 期望：在处理 / 命令的代码路径中，调用了 addReaction 方法，参数包含 'Typing'
-    // 注意：slash 命令和普通消息走不同的代码路径
-    expect(indexContent).toMatch(/addReaction.*Typing|Typing.*addReaction/s);
-  });
-
-  it('test_anchor_stop_command_adds_typing_reaction', () => {
-    // 验证 /stop 命令处理时添加 Typing 表情
-    // 期望：在处理 /stop 命令的代码路径中，调用了 addReaction 方法
-    expect(indexContent).toMatch(/addReaction.*Typing|Typing.*addReaction/s);
-  });
-
-  it('test_anchor_card_action_adds_typing_reaction', () => {
-    // 验证卡片按钮点击处理时添加 Typing 表情
-    // 期望：在处理卡片动作的代码路径中（setCardActionHandler），调用了 addReaction 方法
-    expect(indexContent).toMatch(/addReaction.*Typing|Typing.*addReaction/s);
-  });
 });

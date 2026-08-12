@@ -27,38 +27,12 @@ import { AppConfigSchema } from '../../src/config/index.js';
 import { SessionReaderRegistry } from '../../src/session/registry.js';
 import { ClaudeSessionReader } from '../../src/session/claude/index.js';
 
-import { createStubAgentRegistry, createStubSessionReaderRegistry } from '../lib/bridge-stubs.js';
-function createStubConnector() {
-  const sent: { chatId: string; input: unknown; opts?: unknown }[] = [];
-  const updates: { messageId: string; card: unknown }[] = [];
-  return {
-    reconnect: async () => {},
-    addReaction: async () => {},
-    streamCard: async () => '',
-    _sent: sent,
-    _updates: updates,
-    sendWithRetry: async (chatId: string, input: unknown, opts?: unknown) => {
-      sent.push({ chatId, input, opts });
-      return 'msg-id';
-    },
-    sendFile: async () => 'file-msg-id',
-    updateCard: async (messageId: string, card: unknown) => {
-      updates.push({ messageId, card });
-    },
-    start: async () => {},
-    stop: async () => {},
-  };
-}
-
-function createStubRunner() {
-  return {
-    isRunning: false,
-    stop: async () => {},
-    killOrphan: () => {},
-    registerExitHandlers: () => {},
-    run: async function* () {},
-  };
-}
+import {
+  createStubAgentRegistry,
+  createStubSessionReaderRegistry,
+  createStubRunner,
+  createStubConnector,
+} from '../lib/bridge-stubs.js';
 
 function encodedProjectDir(cwd: string): string {
   return fs.realpathSync(cwd).replace(/\//g, '-').replace(/_/g, '-');
@@ -130,7 +104,7 @@ function buildHarness(tmpDir: string, projectsDir: string, sessionCount: number,
 
   const sessionStore = new SessionStore();
   const connector = createStubConnector();
-  const runner = createStubRunner();
+  const runner = createStubRunner({ mode: 'empty' });
   const config: AppConfig = AppConfigSchema.parse({
     feishu: { appId: 'test', appSecret: 'test' },
     claude: { model: 'opus', stopGraceMs: 5000 },
@@ -151,6 +125,7 @@ function buildHarness(tmpDir: string, projectsDir: string, sessionCount: number,
   registry.register('kimi', stubReader);
 
   const bridge = new Bridge({
+    runner,
     agentRegistry: createStubAgentRegistry(runner),
     sessionReaderRegistry: createStubSessionReaderRegistry(),
     connector,

@@ -13,6 +13,8 @@ import { ClaudeSessionReader } from '../../../src/session/claude/index.js';
 import {
   createStubAgentRegistry,
   createStubSessionReaderRegistry,
+  createStubRunner,
+  createStubConnector,
 } from '../../lib/bridge-stubs.js';
 /**
  * Anchor (Review P2-1): summary 占位符不得以"最近输入"label 渲染
@@ -41,38 +43,8 @@ import {
  */
 
 // Stub connector (minimal, matches tests/anchor/resume/resume-pagination.test.ts pattern)
-function createStubConnector() {
-  const sent: { chatId: string; input: unknown; opts?: unknown }[] = [];
-  const updates: { card: object }[] = [];
-  return {
-    reconnect: async () => {},
-    addReaction: async () => {},
-    streamCard: async () => '',
-    _sent: sent,
-    _updates: updates,
-    sendWithRetry: async (chatId: string, input: unknown, opts?: unknown) => {
-      sent.push({ chatId, input, opts });
-      return 'msg-id';
-    },
-    sendFile: async () => 'file-msg-id',
-    updateCard: async (_messageId: string, card: object) => {
-      updates.push({ card });
-    },
-    start: async () => {},
-    stop: async () => {},
-  };
-}
 
 // Stub runner
-function createStubRunner() {
-  return {
-    isRunning: false,
-    stop: async () => {},
-    killOrphan: () => {},
-    registerExitHandlers: () => {},
-    run: async function* () {},
-  };
-}
 
 // Same encoding as production `projectDirForCwd` (cwd -> dirName), canonicalized
 // via realpath first (same as src/router/router.test.ts `encodedProjectDir`).
@@ -152,7 +124,7 @@ describe('Review P2-1 非预取行占位符 summary 不得渲染为"最近输入
 
     const sessionStore = new SessionStore();
     const connector = createStubConnector();
-    const runner = createStubRunner();
+    const runner = createStubRunner({ mode: 'empty' });
     const config: AppConfig = AppConfigSchema.parse({
       feishu: { appId: 'test', appSecret: 'test' },
       claude: { model: 'opus', stopGraceMs: 5000 },
@@ -174,6 +146,7 @@ describe('Review P2-1 非预取行占位符 summary 不得渲染为"最近输入
     registry.register('kimi', stubReader);
 
     const bridge = new Bridge({
+      runner,
       agentRegistry: createStubAgentRegistry(runner),
       sessionReaderRegistry: createStubSessionReaderRegistry(),
       connector,
