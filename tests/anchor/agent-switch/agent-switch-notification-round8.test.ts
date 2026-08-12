@@ -7,8 +7,8 @@ import { SessionStore } from '../../../src/session/index.js';
 import { CommandRouter } from '../../../src/router/index.js';
 import { AppConfigSchema } from '../../../src/config/index.js';
 import type { AppConfig } from '../../../src/config/index.js';
-import type { Bridge } from '../../../src/bridge/index.js';
-import type { SessionReaderRegistry } from '../../../src/session/registry.js';
+import type { _Bridge } from '../../../src/bridge/index.js';
+import type { _SessionReaderRegistry } from '../../../src/session/registry.js';
 
 /**
  * Round 8 anchors: config.save 失败路径 / 双失败 / 同 agent 等价类 /
