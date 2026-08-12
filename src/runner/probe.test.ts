@@ -17,49 +17,27 @@ import { spawn } from 'child_process';
 const mockSpawn = vi.mocked(spawn);
 
 /** Helper: create a mock ChildProcess that emits 'exit' with the given code. */
-function makeMockProc(exitCode: number | null, signal: string | null = null) {
-  const listeners: Record<string, Array<(...args: unknown[]) => void>> = {};
+function makeMockProc(exitCode: number) {
   return {
     on(event: string, handler: (...args: unknown[]) => void) {
-      (listeners[event] ??= []).push(handler);
       // Auto-fire exit on next tick
       if (event === 'exit') {
-        process.nextTick(() => handler(exitCode, signal));
+        process.nextTick(() => handler(exitCode, null));
       }
       return this;
     },
-    kill: vi.fn(),
-    unref: vi.fn(),
-    _listeners: listeners,
   };
 }
 
 /** Helper: create a mock ChildProcess that emits 'error' (e.g. ENOENT). */
 function makeErrorProc(error: Error) {
-  const listeners: Record<string, Array<(...args: unknown[]) => void>> = {};
   return {
     on(event: string, handler: (...args: unknown[]) => void) {
-      (listeners[event] ??= []).push(handler);
       if (event === 'error') {
         process.nextTick(() => handler(error));
       }
       return this;
     },
-    kill: vi.fn(),
-    unref: vi.fn(),
-    _listeners: listeners,
-  };
-}
-
-/** Helper: create a mock ChildProcess that never fires exit/error (simulates hang). */
-function makeHangingProc() {
-  return {
-    on(_event: string, _handler: (...args: unknown[]) => void) {
-      // Never fires any event — simulates a process that hangs
-      return this;
-    },
-    kill: vi.fn(),
-    unref: vi.fn(),
   };
 }
 
@@ -70,54 +48,23 @@ describe('probe', () => {
   });
 
   describe('probeAgentAvailability', () => {
-    it('returns true when binary --help exits with code 0', async () => {
+    it('returns true when which finds the binary on PATH', async () => {
       mockSpawn.mockReturnValue(makeMockProc(0) as never);
       const result = await probeAgentAvailability('claude');
       expect(result).toBe(true);
-      expect(mockSpawn).toHaveBeenCalledWith('claude', ['--help'], { stdio: 'ignore' });
+      expect(mockSpawn).toHaveBeenCalledWith('which', ['claude'], { stdio: 'ignore' });
     });
 
-    it('returns false when binary --help exits with non-zero code', async () => {
+    it('returns false when which exits with non-zero code (binary not on PATH)', async () => {
       mockSpawn.mockReturnValue(makeMockProc(1) as never);
       const result = await probeAgentAvailability('codex');
       expect(result).toBe(false);
     });
 
-    it('returns false when spawn emits error (e.g. ENOENT)', async () => {
+    it('returns false when spawn emits error (e.g. which itself missing)', async () => {
       mockSpawn.mockReturnValue(makeErrorProc(new Error('ENOENT')) as never);
       const result = await probeAgentAvailability('pi');
       expect(result).toBe(false);
-    });
-
-    it('returns false and sends SIGTERM then SIGKILL on timeout', async () => {
-      vi.useFakeTimers();
-      const mockProc = makeHangingProc();
-      mockSpawn.mockReturnValue(mockProc as never);
-
-      const promise = probeAgentAvailability('kimi');
-
-      // Advance past the probe timeout (10 s) — should fire SIGTERM and resolve false
-      await vi.advanceTimersByTimeAsync(11_000);
-
-      const result = await promise;
-      expect(result).toBe(false);
-      expect(mockProc.kill).toHaveBeenCalledWith('SIGTERM');
-
-      // Advance past the SIGKILL fallback delay
-      await vi.advanceTimersByTimeAsync(600);
-      expect(mockProc.kill).toHaveBeenCalledWith('SIGKILL');
-
-      vi.useRealTimers();
-    });
-
-    it('calls unref on process and timer to avoid blocking exit', async () => {
-      mockSpawn.mockReturnValue(makeMockProc(0) as never);
-      const promise = probeAgentAvailability('claude');
-      const result = await promise;
-      expect(result).toBe(true);
-      // unref should be called on the process
-      const mockProc = mockSpawn.mock.results[0]?.value as { unref?: () => void };
-      expect(mockProc.unref).toHaveBeenCalled();
     });
 
     it('caches result and does not re-probe within TTL', async () => {
@@ -133,7 +80,7 @@ describe('probe', () => {
   });
 
   describe('probeAllAgents', () => {
-    it('probes all 5 agents sequentially', async () => {
+    it('probes all 5 agents concurrently', async () => {
       mockSpawn.mockReturnValue(makeMockProc(0) as never);
       const result = await probeAllAgents();
       expect(result.size).toBe(5);
@@ -146,7 +93,8 @@ describe('probe', () => {
 
     it('reports mixed availability correctly', async () => {
       // claude/opencode available, codex/pi/kimi unavailable
-      mockSpawn.mockImplementation((binary: string) => {
+      mockSpawn.mockImplementation((_cmd: string, args: string[]) => {
+        const binary = args[0];
         if (binary === 'claude' || binary === 'opencode') {
           return makeMockProc(0) as never;
         }
