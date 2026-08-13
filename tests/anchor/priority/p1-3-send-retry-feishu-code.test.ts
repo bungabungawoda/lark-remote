@@ -63,7 +63,7 @@ describe('P1-3 sendWithRetry retries feishu business code 99991400/99991401 (anc
    *   现状只判 `channelErr.code === 'rate_limited'`，99991400 归类为
    *   permission_denied 后永不重试（SDK 内部 retry 对 permission_denied
    *   fail-fast）——outbound 洪峰时消息直接失败抛给用户，限流重试设计意图
-   *   完全失效（review.md §P1-3，design.md §9.5 + AGENTS.md「限流重试
+   *   完全失效（review.md §P1-3，design.md §9.5 + 限流重试
    *   （99991400）」口径同步错误）。
    *
    * 依据: review.md §P1-3 失败用例（SDK 真实映射：permission_denied + feishuCode 经

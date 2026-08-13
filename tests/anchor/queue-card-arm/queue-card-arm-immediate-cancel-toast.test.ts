@@ -95,7 +95,7 @@ describe('queue.immediate must not promise execution in its final toast after th
     // await（interruptCurrentRun / markQueueCardExecuting）都可能改变它；步骤 4.5
     // 之后的成功 toast 是对未来事实的承诺（"您的消息将立即执行"），必须先确认目标
     // 仍在队列。A5/A9/A12 锚点已确立同一契约：任何跨 await 的后续动作/反馈必须按
-    // 最新成员资格判定，不能沿用入口快照。CLAUDE.md 卡片反馈红线（stop miss 必须
+    // 最新成员资格判定，不能沿用入口快照。卡片反馈约束（stop miss 必须
     // 可见、反馈不得静默撒谎）的同类要求。
     const sessionStore = new SessionStore();
     const connector = createStubConnector();

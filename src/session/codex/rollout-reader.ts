@@ -85,11 +85,11 @@ export function readCodexRollout(filePath: string): CodexRolloutEntry | null {
     let sessionMeta: Record<string, unknown> | null = null;
     // Real user input is identified by a paired `event_msg` whose
     // payload.type === "user_message" - codex emits this ONLY for text the
-    // human actually typed. Injected scaffolding (AGENTS.md project rules,
+    // human actually typed. Injected scaffolding (project rules,
     // <environment_context>, permissions) is also written as `role:"user"`
     // response_items but has NO user_message event, so it must be excluded
     // from displayTitle/recap/summary. Regression 2026-07-13: the first
-    // `role:user` message is the injected AGENTS.md, mistakenly shown as
+    // `role:user` message is the injected project rules, mistakenly shown as
     // "最近输入".
     const realUserMessages: string[] = [];
     // token_count tracking: codex emits cumulative `total_token_usage` and an
@@ -352,7 +352,7 @@ export function readCodexSessionContent(
     // displayTitle = LAST real user message (matches the
     // "最近输入" label). recap is undefined: codex has no
     // compact-summary concept, so never fake one from a user
-    // message (was: firstUserMessage = injected AGENTS.md).
+    // message (was: firstUserMessage = injected project rules).
     displayTitle: rollout.lastRealUserMessage
       ? rollout.lastRealUserMessage.slice(0, 50)
       : undefined,

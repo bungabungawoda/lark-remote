@@ -200,7 +200,7 @@ describe('queue.immediate final feedback must not claim "未安排执行" when t
     // 卡片与正文直接矛盾；用户以为自己的指令被丢弃（实际已执行），会重复发送，
     // 污染会话/队列。该竞态真实可达：A16/A19 已确立"stop 窗口内队列链可前进到目标
     // 的 begin"；目标若是快速任务（短指令、/status 类命令），在 stop 窗口内完成
-    // 完全正常。CLAUDE.md 卡片反馈红线（反馈不得与事实矛盾）与 A16 锚点的
+    // 完全正常。卡片反馈约束（反馈不得与事实矛盾）与 A16 锚点的
     // "已开始却宣称未安排 = 谎言"同族，本测试补上 A16 未覆盖的"完成态"半边。
     //
     // 依据：router handleQueueImmediate 步骤 6 注释明文规定最终 toast 必须区分

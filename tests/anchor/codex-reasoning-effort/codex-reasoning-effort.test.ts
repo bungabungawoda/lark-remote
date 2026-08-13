@@ -537,7 +537,7 @@ describe('getDefaultReasoningEffort - anchor', () => {
  * Target: getReasoningEffortOptions / getDefaultReasoningEffort 必须从 codex
  * bundled 目录读取声明档位与默认档位
  *
- * Spec basis: CLAUDE.md "Codex 推理强度配置"；codex binary 路径已硬编码（不再
+ * Spec basis: design.md "Codex 推理强度配置"；codex binary 路径已硬编码（不再
  * 支持自定义 binary 参数），通过 CODEX_HOME 指向无 config.toml 的临时目录走
  * bundled 目录模式。
  */

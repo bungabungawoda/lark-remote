@@ -35,7 +35,7 @@ describe('atomicWriteJson', () => {
  * 掉电后目标文件可能为空文件（0 字节），违反"原子写不丢数据"契约。
  *
  * 依据：POSIX 原子写标准模式 = write tmp → fsync(tmp) → close → rename → fsync(dir)。
- * 缺少 fsync 的 "atomic write" 在掉电下不原子。项目 CLAUDE.md 红线明确要求
+ * 缺少 fsync 的 "atomic write" 在掉电下不原子。项目约束明确要求
  * "原子写入 tmp+rename"，fsync 是该契约的完整性组成。
  */
 describe('atomicWrite durability', () => {

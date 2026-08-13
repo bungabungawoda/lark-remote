@@ -16,7 +16,7 @@ import os from 'node:os';
  *   project_memory 中的硬约束已写明：maxEvents 必须在所有 agent session reader 实现。
  *
  * Spec basis:
- *   - CLAUDE.md 硬约束 "maxEvents parameter must be implemented for all agent
+ *   - Design constraint "maxEvents parameter must be implemented for all agent
  *     session readers (not just claude)"
  *   - lessons learned "maxEvents参数仅在claude session实现导致非claude agent的
  *     auto-resume功能依赖enforceCardBudget兜底"

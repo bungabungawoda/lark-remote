@@ -20,7 +20,7 @@ import { PiSessionReader } from '../../../src/session/pi/index.js';
  *   只能靠下游 enforceCardBudget 兜底（截断不准、可能丢近期事件）。
  *
  * Spec basis:
- *   - CLAUDE.md 硬约束 "session reader 必须转发 maxEvents 参数"
+ *   - Design constraint "session reader 必须转发 maxEvents 参数"
  *   - project_memory "maxEvents parameter must be implemented for all agent
  *     session readers (not just claude)"
  *   - src/runner/index.ts AgentSessionReader 接口签名:
