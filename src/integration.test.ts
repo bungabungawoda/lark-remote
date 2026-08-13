@@ -366,7 +366,8 @@ describe('配置持久化验证', () => {
     // File exists on disk
     expect(fs.existsSync(workspaceFile)).toBe(true);
     const raw = JSON.parse(fs.readFileSync(workspaceFile, 'utf-8'));
-    expect(raw.proj).toBe(tmpDir);
+    expect(raw.proj.path).toBe(tmpDir);
+    expect(raw.proj.lastUsedAt).toBe(0);
 
     // Simulate restart: new router reading the same workspace file
     const r2 = createRouter({
