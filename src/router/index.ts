@@ -30,11 +30,7 @@ import { MAX_FILE_UPLOAD_SIZE } from '../connector/file-limits.js';
 import { atomicWrite } from '../persistence/atomic-write.js';
 
 /** Config card builder - delegates to per-agent builders */
-import {
-  getConfigBuilder,
-  listRegisteredAgents,
-  sortAgentsByAvailability,
-} from './config/index.js';
+import { getConfigBuilder, listRegisteredAgents } from './config/index.js';
 import { probeAllAgents, getCachedAvailability } from '../runner/probe.js';
 import { buildConfigCardFromTabs } from './config/common/render.js';
 import type { ConfigTab } from './config/common/render.js';
@@ -3418,9 +3414,7 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
     // Direct inline construction (not via ConfigField) so that text (display label)
     // and value (agentKind for config storage) can differ — uninstalled agents get
     // a "⚠️ (未安装)" suffix in the label while the value stays clean.
-    // Uninstalled agents sink to the bottom; installed ones keep registration
-    // order (claude → codex → pi → opencode → kimi).
-    const allAgents = sortAgentsByAvailability(listRegisteredAgents(), getCachedAvailability);
+    const allAgents = listRegisteredAgents();
     const agentOptions = allAgents.map((kind) => {
       const available = getCachedAvailability(kind);
       const label =

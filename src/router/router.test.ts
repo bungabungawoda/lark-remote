@@ -19,14 +19,6 @@ import {
   createStubSessionReaderRegistry,
 } from '../../tests/lib/bridge-stubs.js';
 
-// Mock agent availability probes so config card tests are deterministic on any
-// machine (real probes depend on which CLIs happen to be installed).
-vi.mock('../runner/probe.js', () => ({
-  probeAllAgents: vi.fn().mockResolvedValue(new Map()),
-  getCachedAvailability: vi.fn().mockReturnValue(true),
-}));
-import { getCachedAvailability } from '../runner/probe.js';
-
 // Stub session reader for tests that need empty results (used in manual registry composition)
 const stubSessionReader: AgentSessionReader = {
   listSessions: () => ({ sessions: [], total: 0 }),
@@ -56,10 +48,9 @@ type TestCardElement = {
   }>;
   columns?: Array<{ elements?: TestCardElement[] }>;
   behaviors?: Array<{
-    value?: { cmd?: string; name?: string; sessionId?: string; offset?: number; key?: string };
+    value?: { cmd?: string; name?: string; sessionId?: string; offset?: number };
   }>;
   value?: { cmd?: string; name?: string; sessionId?: string; offset?: number };
-  options?: Array<{ text?: { content?: string }; value?: string }>;
 };
 
 type TestCard = {
@@ -79,29 +70,6 @@ function collectCardTexts(elements: TestCardElement[]): string[] {
       }
     }
   }
-  return out;
-}
-
-/** 找到指定 callback key 的 select_static 选项（递归遍历 column_set 等嵌套）。 */
-function findSelectOptions(
-  card: TestCard,
-  key: string,
-): Array<{ content?: string; value?: string }> {
-  const out: Array<{ content?: string; value?: string }> = [];
-  const visit = (els?: TestCardElement[]) => {
-    for (const el of els ?? []) {
-      if (el.tag === 'select_static') {
-        const behaviorKey = el.behaviors?.[0]?.value?.key;
-        if (behaviorKey === key) {
-          for (const opt of el.options ?? []) {
-            out.push({ content: opt.text?.content, value: opt.value });
-          }
-        }
-      }
-      for (const col of el.columns ?? []) visit(col.elements);
-    }
-  };
-  visit(card.body?.elements ?? card.elements);
   return out;
 }
 function createBackgroundRunningRunner(events: AgentEvent[]) {
@@ -2771,24 +2739,6 @@ describe('CommandRouter', () => {
     // binary is an implementation detail of the agent kind.
     expect(cardStr).not.toContain('执行程序');
     expect(cardStr).not.toContain('claude.binary');
-  });
-
-  it('/config card sinks uninstalled agents to the bottom of the defaultAgent selector', async () => {
-    const { router, connector } = createRouter();
-    // kimi 未安装 → 沉底；已安装的其余 agent 保持注册顺序
-    vi.mocked(getCachedAvailability).mockImplementation((kind) => kind !== 'kimi');
-    await router.handle('/config', ctx);
-    const card = (connector._sent[0].input as { card: TestCard }).card;
-    const options = findSelectOptions(card, 'defaultAgent');
-    expect(options.map((o) => o.content)).toEqual([
-      'Claude',
-      'Codex',
-      'Pi',
-      'Opencode',
-      'Kimi ⚠️ (未安装)',
-    ]);
-    // 沉底后 value 仍保持 agent kind，选择器仍可选中该 agent
-    expect(options[options.length - 1]?.value).toBe('kimi');
   });
 
   // P0 Config CardKit 2.0 行为测试（2026-07-02）
