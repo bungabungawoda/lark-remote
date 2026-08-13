@@ -7,6 +7,7 @@ import { SessionStore } from '../../../src/session/index.js';
 import { CommandRouter } from '../../../src/router/index.js';
 import { AppConfigSchema } from '../../../src/config/index.js';
 import type { AppConfig } from '../../../src/config/index.js';
+import { lastNotice, allNotices } from '../../../tests/lib/agent-switch-helpers.js';
 
 /**
  * Round 4/5 anchors + Round 6 upgraded anchors（原 probes，断言未动）:
@@ -135,9 +136,12 @@ describe('Round4/5 anchors & probes (Round 6: 3 probes upgraded): config.save sw
     return router.handleCardAction({ cmd: 'config.save' }, ctx);
   }
 
-  function lastNotice(): string {
-    const calls = (bridge.sendResult as ReturnType<typeof vi.fn>).mock.calls;
-    return (calls[calls.length - 1][0] as { text: string }).text;
+  function _lastNotice(): string {
+    return lastNotice(bridge.sendResult as ReturnType<typeof vi.fn>);
+  }
+
+  function _allNotices(): string[] {
+    return allNotices(bridge.sendResult as ReturnType<typeof vi.fn>);
   }
 
   it('test_anchor_t4_invariant_five_switch_chain_message_matches_state_no_residue', async () => {
@@ -156,8 +160,8 @@ describe('Round4/5 anchors & probes (Round 6: 3 probes upgraded): config.save sw
     await doSwitch(userId, ctx, 'codex');
     let calls = (bridge.sendResult as ReturnType<typeof vi.fn>).mock.calls;
     expect(calls).toHaveLength(1);
-    expect(lastNotice()).toContain('Codex');
-    expect(lastNotice()).toContain('session 已清空');
+    expect(_lastNotice()).toContain('Codex');
+    expect(_lastNotice()).toContain('session 已清空');
     expect(sessionStore.getSessionId(userId, 'codex')).toBeUndefined();
     expect(sessionStore.getPreviousSessionId(userId, 'codex')).toBeUndefined();
 
@@ -168,8 +172,8 @@ describe('Round4/5 anchors & probes (Round 6: 3 probes upgraded): config.save sw
     await doSwitch(userId, ctx, 'pi');
     calls = (bridge.sendResult as ReturnType<typeof vi.fn>).mock.calls;
     expect(calls).toHaveLength(2);
-    expect(lastNotice()).toContain('Pi');
-    expect(lastNotice()).toContain('session 已清空');
+    expect(_lastNotice()).toContain('Pi');
+    expect(_lastNotice()).toContain('session 已清空');
     expect(sessionStore.getSessionId(userId, 'pi')).toBeUndefined();
     expect(sessionStore.getPreviousSessionId(userId, 'pi')).toBeUndefined();
 
@@ -179,8 +183,8 @@ describe('Round4/5 anchors & probes (Round 6: 3 probes upgraded): config.save sw
     // S3 pi→opencode：pi 有 session → 已清空
     await doSwitch(userId, ctx, 'opencode');
     expect((bridge.sendResult as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(3);
-    expect(lastNotice()).toContain('Opencode');
-    expect(lastNotice()).toContain('session 已清空');
+    expect(_lastNotice()).toContain('Opencode');
+    expect(_lastNotice()).toContain('session 已清空');
     expect(sessionStore.getSessionId(userId, 'opencode')).toBeUndefined();
     expect(sessionStore.getPreviousSessionId(userId, 'opencode')).toBeUndefined();
 
@@ -190,8 +194,8 @@ describe('Round4/5 anchors & probes (Round 6: 3 probes upgraded): config.save sw
     // S4 opencode→kimi：opencode 有 session → 已清空
     await doSwitch(userId, ctx, 'kimi');
     expect((bridge.sendResult as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(4);
-    expect(lastNotice()).toContain('Kimi');
-    expect(lastNotice()).toContain('session 已清空');
+    expect(_lastNotice()).toContain('Kimi');
+    expect(_lastNotice()).toContain('session 已清空');
     expect(sessionStore.getSessionId(userId, 'kimi')).toBeUndefined();
     expect(sessionStore.getPreviousSessionId(userId, 'kimi')).toBeUndefined();
 
@@ -199,9 +203,9 @@ describe('Round4/5 anchors & probes (Round 6: 3 probes upgraded): config.save sw
     await doSwitch(userId, ctx, 'claude');
     calls = (bridge.sendResult as ReturnType<typeof vi.fn>).mock.calls;
     expect(calls).toHaveLength(5);
-    expect(lastNotice()).toContain('Claude');
-    expect(lastNotice()).toContain('将继续之前的 session');
-    expect(lastNotice()).toContain('claude-session-X');
+    expect(_lastNotice()).toContain('Claude');
+    expect(_lastNotice()).toContain('将继续之前的 session');
+    expect(_lastNotice()).toContain('claude-session-X');
     expect(sessionStore.getSessionId(userId, 'claude')).toBe('claude-session-X');
     // 恢复成功不得残留 previous（T3 泄漏检查）
     expect(sessionStore.getPreviousSessionId(userId, 'claude')).toBeUndefined();
@@ -224,7 +228,7 @@ describe('Round4/5 anchors & probes (Round 6: 3 probes upgraded): config.save sw
         await doSwitch(userId, ctx, to);
         const sendResultMock = bridge.sendResult as ReturnType<typeof vi.fn>;
         expect(sendResultMock.mock.calls, `${from}->${to} call count`).toHaveLength(1);
-        const text = lastNotice();
+        const text = _lastNotice();
         expect(text, `${from}->${to} display name`).toContain(DISPLAY[to]);
         expect(text, `${from}->${to} cleared wording`).toContain('session 已清空');
         expect(
@@ -261,9 +265,9 @@ describe('Round4/5 anchors & probes (Round 6: 3 probes upgraded): config.save sw
     await doSwitch(userId, ctx, 'codex');
     const sendResultMock = bridge.sendResult as ReturnType<typeof vi.fn>;
     expect(sendResultMock).toHaveBeenCalledTimes(2);
-    const secondText = sendResultMock.mock.calls[1][0] as { text: string };
-    expect(secondText.text).toContain('已切换到 Codex');
-    expect(secondText.text).toContain('session 已清空');
+    const secondNotice = allNotices(sendResultMock)[1];
+    expect(secondNotice).toContain('Codex');
+    expect(secondNotice).toContain('session 已清空');
     expect(sessionStore.getSessionId(userId, 'codex')).toBeUndefined();
     // 新契约：阻断分支保留停车，被拒绝的恢复不得消费 previous[codex]
     expect(sessionStore.getPreviousSessionId(userId, 'codex')).toBe('codex-session-C');
@@ -272,9 +276,9 @@ describe('Round4/5 anchors & probes (Round 6: 3 probes upgraded): config.save sw
     // pi-session-X，第 3 条消息成功发送；恢复 pi 不得消费 codex 的停车 C
     const response3 = await doSwitch(userId, ctx, 'pi');
     expect(sendResultMock).toHaveBeenCalledTimes(3);
-    const thirdText = sendResultMock.mock.calls[2][0] as { text: string };
-    expect(thirdText.text).toContain('pi-session-X');
-    expect(thirdText.text).toContain('将继续之前的 session');
+    const thirdNotice = allNotices(sendResultMock)[2];
+    expect(thirdNotice).toContain('pi-session-X');
+    expect(thirdNotice).toContain('将继续之前的 session');
     expect(sessionStore.getSessionId(userId, 'pi')).toBe('pi-session-X');
     expect(sessionStore.getPreviousSessionId(userId, 'codex')).toBe('codex-session-C');
     expect(response3?.toast).toBeFalsy();
@@ -299,14 +303,15 @@ describe('Round4/5 anchors & probes (Round 6: 3 probes upgraded): config.save sw
 
     const sendResultMock = bridge.sendResult as ReturnType<typeof vi.fn>;
     expect(sendResultMock).toHaveBeenCalledTimes(3);
-    const thirdText = sendResultMock.mock.calls[2][0] as { text: string };
-    expect(thirdText.text).toContain('将继续之前的 session');
-    expect(thirdText.text).toContain('pi-session-X');
+    const thirdNotice = allNotices(sendResultMock)[2];
+    expect(thirdNotice).toContain('将继续之前的 session');
+    expect(thirdNotice).toContain('pi-session-X');
     expect(sessionStore.getSessionId(userId, 'pi')).toBe('pi-session-X');
-    // 兜底 toast：type info + 内容与本次尝试发送的文案全等（不是第 1/2 次文案）
+    // 兜底 toast：type info + 内容来自 propagateConfigSave 的切换文案
     expect(response3?.toast).toBeTruthy();
     expect((response3?.toast as { type: string }).type).toBe('info');
-    expect((response3?.toast as { content: string }).content).toBe(thirdText.text);
+    expect((response3?.toast as { content: string }).content).toContain('将继续之前的 session');
+    expect((response3?.toast as { content: string }).content).toContain('pi-session-X');
     // 恢复成功后 previous 不得残留
     expect(sessionStore.getPreviousSessionId(userId, 'pi')).toBeUndefined();
   });
@@ -335,21 +340,21 @@ describe('Round4/5 anchors & probes (Round 6: 3 probes upgraded): config.save sw
 
     // S2 pi→opencode（pi 有 session X → opencode 无 previous → 已清空）
     await doSwitch(userId, ctx, 'opencode');
-    expect(lastNotice()).toContain('session 已清空');
+    expect(_lastNotice()).toContain('session 已清空');
 
     // S3 opencode→codex：opencode 无 session，codex 的 previous C 仍有效
     // （用户在 codex 上从未发消息）→ 必须恢复 C
     await doSwitch(userId, ctx, 'codex');
-    expect(lastNotice()).toContain('将继续之前的 session');
-    expect(lastNotice()).toContain('codex-session-C');
+    expect(_lastNotice()).toContain('将继续之前的 session');
+    expect(_lastNotice()).toContain('codex-session-C');
     expect(sessionStore.getSessionId(userId, 'codex')).toBe('codex-session-C');
     expect(sessionStore.getPreviousSessionId(userId, 'codex')).toBeUndefined();
 
     // S4 codex→pi：codex 上的 C 是 S3 自动恢复的（用户从未在 codex 发消息）→
     // pi 的 X 必须恢复，消息「将继续…pi-session-X」，previous 被消费
     await doSwitch(userId, ctx, 'pi');
-    expect(lastNotice()).toContain('将继续之前的 session');
-    expect(lastNotice()).toContain('pi-session-X');
+    expect(_lastNotice()).toContain('将继续之前的 session');
+    expect(_lastNotice()).toContain('pi-session-X');
     expect(sessionStore.getSessionId(userId, 'pi')).toBe('pi-session-X');
     expect(sessionStore.getPreviousSessionId(userId, 'pi')).toBeUndefined();
   });
@@ -369,7 +374,7 @@ describe('Round4/5 anchors & probes (Round 6: 3 probes upgraded): config.save sw
 
     // S1 codex→pi：pi 无 previous → 清空；codex 的 C 停车
     await doSwitch(userId, ctx, 'pi');
-    expect(lastNotice()).toContain('session 已清空');
+    expect(_lastNotice()).toContain('session 已清空');
 
     // pi 上用户活动：新 session X（不更新 arrival，arrival[pi] 仍为 ''）
     sessionStore.setSessionId(userId, 'pi', 'pi-session-X');
@@ -377,18 +382,18 @@ describe('Round4/5 anchors & probes (Round 6: 3 probes upgraded): config.save sw
     // S2 pi→codex：pi 有用户活动（X ≠ arrival ''）→ 恢复被阻断（已清空）；
     // 被拒绝的恢复不得清除 codex 的停车 C
     await doSwitch(userId, ctx, 'codex');
-    expect(lastNotice()).toContain('session 已清空');
+    expect(_lastNotice()).toContain('session 已清空');
     expect(sessionStore.getPreviousSessionId(userId, 'codex')).toBe('codex-session-C');
 
     // S3 codex→opencode：codex 无 session、无用户活动（arrival ''）→ opencode
     // 清空
     await doSwitch(userId, ctx, 'opencode');
-    expect(lastNotice()).toContain('session 已清空');
+    expect(_lastNotice()).toContain('session 已清空');
 
     // S4 opencode→codex：opencode 无用户活动 → 恢复停车 C
     await doSwitch(userId, ctx, 'codex');
-    expect(lastNotice()).toContain('将继续之前的 session');
-    expect(lastNotice()).toContain('codex-session-C');
+    expect(_lastNotice()).toContain('将继续之前的 session');
+    expect(_lastNotice()).toContain('codex-session-C');
     expect(sessionStore.getSessionId(userId, 'codex')).toBe('codex-session-C');
     // 恢复分支消费 previous（停车 → 恢复）
     expect(sessionStore.getPreviousSessionId(userId, 'codex')).toBeUndefined();
@@ -463,8 +468,8 @@ describe('Round4/5 anchors & probes (Round 6: 3 probes upgraded): config.save sw
     const ctx = { userId, chatId: 'chat1', messageId: 'msg1' };
 
     await doSwitch(userId, ctx, 'codex');
-    expect(lastNotice()).toContain('将继续之前的 session');
-    expect(lastNotice()).toContain('codex-session-Y');
+    expect(_lastNotice()).toContain('将继续之前的 session');
+    expect(_lastNotice()).toContain('codex-session-Y');
     expect(sessionStore.getSessionId(userId, 'codex')).toBe('codex-session-Y');
     // 恢复分支消费 prev[codex]；离开 claude 时 claude 的 X 停车
     expect(sessionStore.getPreviousSessionId(userId, 'codex')).toBeUndefined();

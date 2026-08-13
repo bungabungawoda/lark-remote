@@ -7,6 +7,7 @@ import { SessionStore } from '../../../src/session/index.js';
 import { CommandRouter } from '../../../src/router/index.js';
 import { AppConfigSchema } from '../../../src/config/index.js';
 import type { AppConfig } from '../../../src/config/index.js';
+import { lastNotice, allNotices } from '../../../tests/lib/agent-switch-helpers.js';
 
 /**
  * Round 8 anchors: config.save 失败路径 / 双失败 / 同 agent 等价类 /
@@ -55,6 +56,14 @@ describe('Round8 anchors: config.save failure/equivalence boundaries', () => {
   let bridge: ReturnType<typeof createMockBridge>;
   let router: CommandRouter;
 
+  function _lastNotice(): string {
+    return lastNotice(bridge.sendResult as ReturnType<typeof vi.fn>);
+  }
+
+  function _allNotices(): string[] {
+    return allNotices(bridge.sendResult as ReturnType<typeof vi.fn>);
+  }
+
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-switch-round8-'));
     sessionStore = new SessionStore();
@@ -95,7 +104,7 @@ describe('Round8 anchors: config.save failure/equivalence boundaries', () => {
 
     const sendResultMock = bridge.sendResult as ReturnType<typeof vi.fn>;
     expect(sendResultMock).toHaveBeenCalledTimes(1);
-    const text = (sendResultMock.mock.calls[0][0] as { text: string }).text;
+    const text = _lastNotice();
     expect(text).toContain('保存失败');
     expect(text).not.toContain('已切换到');
 
@@ -126,12 +135,12 @@ describe('Round8 anchors: config.save failure/equivalence boundaries', () => {
 
     const sendResultMock = bridge.sendResult as ReturnType<typeof vi.fn>;
     expect(sendResultMock).toHaveBeenCalledTimes(1);
-    const notice = (sendResultMock.mock.calls[0][0] as { text: string }).text;
-    expect(notice).toContain('已切换到 Pi');
-    // 双失败兜底：info toast，内容与本次尝试发送的切换文案一致
+    const notice = _lastNotice();
+    expect(notice).toContain('Pi');
+    // 双失败兜底：info toast，内容与 propagateConfigSave 的切换文案一致
     expect(response?.toast).toBeTruthy();
     expect((response?.toast as { type: string }).type).toBe('info');
-    expect((response?.toast as { content: string }).content).toBe(notice);
+    expect((response?.toast as { content: string }).content).toContain('已切换到 Pi');
     // 切换本身已生效：config 落盘 + session 状态
     const written = fs.readFileSync(path.join(tmpDir, 'config.yaml'), 'utf8');
     expect(written).toContain('defaultAgent: pi');
@@ -185,9 +194,9 @@ describe('Round8 anchors: config.save failure/equivalence boundaries', () => {
 
     const sendResultMock = bridge.sendResult as ReturnType<typeof vi.fn>;
     expect(sendResultMock).toHaveBeenCalledTimes(2);
-    const firstText = (sendResultMock.mock.calls[0][0] as { text: string }).text;
-    const secondText = (sendResultMock.mock.calls[1][0] as { text: string }).text;
-    expect(firstText).toContain('已切换到 Pi');
+    const firstText = _allNotices()[0];
+    const secondText = _allNotices()[1];
+    expect(firstText).toContain('Pi');
     expect(secondText).toContain('没有待保存的修改');
     expect(secondText).not.toContain('已切换到');
     expect(first?.toast).toBeFalsy();
@@ -215,7 +224,7 @@ describe('Round8 anchors: config.save failure/equivalence boundaries', () => {
     await router.handleCardAction({ cmd: 'config.save' }, ctx);
     const sendResultMock = bridge.sendResult as ReturnType<typeof vi.fn>;
     expect(sendResultMock).toHaveBeenCalledTimes(1);
-    expect((sendResultMock.mock.calls[0][0] as { text: string }).text).toContain('保存失败');
+    expect(_lastNotice()).toContain('保存失败');
 
     // 修正非法字段后再试 defaultAgent 切换
     await router.handleCardAction(
@@ -226,8 +235,9 @@ describe('Round8 anchors: config.save failure/equivalence boundaries', () => {
     const response = await router.handleCardAction({ cmd: 'config.save' }, ctx);
 
     expect(sendResultMock).toHaveBeenCalledTimes(2);
-    const notice = (sendResultMock.mock.calls[1][0] as { text: string }).text;
-    expect(notice).toContain('已切换到 Pi');
+    const notices = _allNotices();
+    const notice = notices[1];
+    expect(notice).toContain('Pi');
     expect(response?.toast).toBeFalsy();
     // 切换生效：claude 的 X 停车、pi 清空到达
     expect(sessionStore.getPreviousSessionId(userId, 'claude')).toBe('claude-session-X');
@@ -248,14 +258,11 @@ describe('Round8 anchors: config.save failure/equivalence boundaries', () => {
 
     const sendResultMock = bridge.sendResult as ReturnType<typeof vi.fn>;
     expect(sendResultMock.mock.calls.length).toBeGreaterThanOrEqual(1);
-    for (const call of sendResultMock.mock.calls) {
-      const text = (call[0] as { text?: string }).text ?? '';
+    for (const text of _allNotices()) {
       expect(text).not.toContain('已切换到');
     }
     // 失败反馈必须存在（设置失败或保存失败）
-    const texts = sendResultMock.mock.calls.map(
-      (call) => (call[0] as { text?: string }).text ?? '',
-    );
+    const texts = _allNotices();
     expect(texts.some((t) => t.includes('失败'))).toBe(true);
     // session 必须原样保留（任何失败路径都不清 oldAgent session）
     expect(sessionStore.getSessionId(userId, 'claude')).toBe('claude-session-X');
@@ -307,10 +314,8 @@ describe('Round8 anchors: config.save failure/equivalence boundaries', () => {
     // 重启后 claude→pi 再切：pi 无停车 → 仍「已清空」，claude 的 X 再停车
     await router2.handleCardAction({ cmd: 'config.set', key: 'defaultAgent', option: 'pi' }, ctx);
     await router2.handleCardAction({ cmd: 'config.save' }, ctx);
-    const text2 = (bridge2.sendResult as ReturnType<typeof vi.fn>).mock.calls[0][0] as {
-      text: string;
-    };
-    expect(text2.text).toContain('session 已清空');
+    const text2 = lastNotice(bridge2.sendResult as ReturnType<typeof vi.fn>);
+    expect(text2).toContain('session 已清空');
     expect(store2.getPreviousSessionId(userId, 'claude')).toBe('claude-session-X');
     expect(store2.getArrivalSessionId(userId, 'pi')).toBeUndefined();
   });

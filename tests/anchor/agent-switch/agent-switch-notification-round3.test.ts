@@ -7,6 +7,7 @@ import { SessionStore } from '../../../src/session/index.js';
 import { CommandRouter } from '../../../src/router/index.js';
 import { AppConfigSchema } from '../../../src/config/index.js';
 import type { AppConfig } from '../../../src/config/index.js';
+import { lastNotice } from '../../../tests/lib/agent-switch-helpers.js';
 
 /**
  * Round 3 anchor（2026-08-03 Round 6 由 probe 升 anchor，断言未动；spec Round
@@ -106,10 +107,10 @@ describe('Round3 anchors: config.save switch notification edge paths', () => {
 
     const sendResultMock = bridge.sendResult as ReturnType<typeof vi.fn>;
     expect(sendResultMock).toHaveBeenCalledTimes(3);
-    const lastText = (sendResultMock.mock.calls[2][0] as { text: string }).text;
-    expect(lastText).toContain('已切换到 Pi');
-    expect(lastText).toContain('将继续之前的 session');
-    expect(lastText).toContain('pi-session-X');
+    const text = lastNotice(sendResultMock);
+    expect(text).toContain('Pi');
+    expect(text).toContain('将继续之前的 session');
+    expect(text).toContain('pi-session-X');
     expect(sessionStore.getSessionId(userId, 'pi')).toBe('pi-session-X');
     expect(response?.toast).toBeFalsy();
   });

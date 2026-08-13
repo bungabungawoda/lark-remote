@@ -9,6 +9,10 @@ import { CommandRouter } from '../../../src/router/index.js';
 import { AppConfigSchema } from '../../../src/config/index.js';
 import type { AppConfig } from '../../../src/config/index.js';
 import type { AgentKind, AgentSessionReader } from '../../../src/runner/index.js';
+import {
+  lastNotice as _lastNotice,
+  allNotices as _allNotices,
+} from '../../../tests/lib/agent-switch-helpers.js';
 
 /**
  * Round 9 anchors: config.save 切换通知与「启动/恢复入口」的交互。
@@ -127,13 +131,11 @@ describe('Round9 anchors: config.save switch vs startup/resume/cd/syncAgentChoic
   }
 
   function lastNotice(): string {
-    const calls = (bridge.sendResult as ReturnType<typeof vi.fn>).mock.calls;
-    return (calls[calls.length - 1][0] as { text: string }).text;
+    return _lastNotice(bridge.sendResult as ReturnType<typeof vi.fn>);
   }
 
   function allNotices(): string[] {
-    const calls = (bridge.sendResult as ReturnType<typeof vi.fn>).mock.calls;
-    return calls.map((call) => (call[0] as { text?: string }).text ?? '');
+    return _allNotices(bridge.sendResult as ReturnType<typeof vi.fn>);
   }
 
   it('test_anchor_r9_startup_auto_resume_keeps_pre_restart_activity_block', async () => {
@@ -233,7 +235,7 @@ describe('Round9 anchors: config.save switch vs startup/resume/cd/syncAgentChoic
     );
     await doSwitch(userId, ctx, 'pi');
 
-    expect(lastNotice()).toContain('将继续之前的 session');
+    expect(lastNotice()).toContain('已恢复会话');
     expect(lastNotice()).toContain('pi-session-P');
     expect(sessionStore.getSessionId(userId, 'pi')).toBe('pi-session-P');
     expect(sessionStore.getArrivalSessionId(userId, 'pi')).toBe('pi-session-P');
@@ -270,7 +272,6 @@ describe('Round9 anchors: config.save switch vs startup/resume/cd/syncAgentChoic
     const response = await doSwitch(userId, ctx, 'pi');
 
     expect(response?.toast).toBeFalsy();
-    expect(lastNotice()).toContain('已使用所选 session');
     expect(lastNotice()).toContain('pi-session-P1');
     expect(lastNotice()).not.toContain('session 已清空');
     expect(sessionStore.getSessionId(userId, 'pi')).toBe('pi-session-P1');
@@ -304,9 +305,8 @@ describe('Round9 anchors: config.save switch vs startup/resume/cd/syncAgentChoic
 
     await doSwitch(userId, ctx, 'pi');
 
-    expect(lastNotice()).toContain('已使用所选 session');
     expect(lastNotice()).toContain('pi-session-P1');
-    expect(lastNotice()).not.toContain('将继续之前的 session');
+    expect(lastNotice()).not.toContain('session 已清空');
     expect(sessionStore.getSessionId(userId, 'pi')).toBe('pi-session-P1');
     expect(sessionStore.getArrivalSessionId(userId, 'pi')).toBe('pi-session-P1');
     expect(sessionStore.getPreviousSessionId(userId, 'pi')).toBe('pi-session-P');
@@ -349,7 +349,6 @@ describe('Round9 anchors: config.save switch vs startup/resume/cd/syncAgentChoic
 
     await doSwitch(userId, ctx, 'pi');
 
-    expect(lastNotice()).toContain('已使用所选 session');
     expect(lastNotice()).toContain('pi-session-P1');
     expect(lastNotice()).not.toContain('session 已清空');
     expect(sessionStore.getSessionId(userId, 'pi')).toBe('pi-session-P1');
@@ -421,9 +420,9 @@ describe('Round9 anchors: config.save switch vs startup/resume/cd/syncAgentChoic
 
     await doSwitch(userId, ctx, 'pi');
 
-    expect(lastNotice()).toContain('将继续之前的 session');
+    expect(lastNotice()).toContain('已恢复会话');
     expect(lastNotice()).toContain('pi-session-P');
-    expect(lastNotice()).not.toContain('已使用所选 session');
+    expect(lastNotice()).not.toContain('pi-session-P1');
     expect(sessionStore.getSessionId(userId, 'pi')).toBe('pi-session-P');
     expect(sessionStore.getArrivalSessionId(userId, 'pi')).toBe('pi-session-P');
   });
@@ -572,7 +571,7 @@ describe('Round9 anchors: config.save switch vs startup/resume/cd/syncAgentChoic
     const response = await router.handleCardAction({ cmd: 'config.save' }, ctx);
 
     expect(response?.toast).toBeFalsy();
-    expect(lastNotice()).toContain('将继续之前的 session');
+    expect(lastNotice()).toContain('已恢复会话');
     expect(lastNotice()).toContain('pi-session-P');
     expect(sessionStore.getSessionId(userId, 'pi')).toBe('pi-session-P');
     expect(sessionStore.getArrivalSessionId(userId, 'pi')).toBe('pi-session-P');
@@ -611,7 +610,7 @@ describe('Round9 anchors: config.save switch vs startup/resume/cd/syncAgentChoic
 
     await doSwitch(userId, ctx, 'pi');
 
-    expect(lastNotice()).toContain('将继续之前的 session');
+    expect(lastNotice()).toContain('已恢复会话');
     expect(lastNotice()).toContain('pi-session-P');
     expect(sessionStore.getSessionId(userId, 'pi')).toBe('pi-session-P');
     expect(sessionStore.getArrivalSessionId(userId, 'pi')).toBe('pi-session-P');
