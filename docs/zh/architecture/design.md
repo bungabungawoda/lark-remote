@@ -128,7 +128,7 @@ const sessions = new Map<string, SessionEntry>();
 | `/reconnect` | 重连 WebSocket |
 | `/restart` | 原地自重启 bridge：spawn detached 继任者 → 旧进程释放单例锁退出 |
 | `/config get\|set` | 查改运行时配置（卡片交互，agent-aware 字段） |
-| `/order save\|list` | 保存或列出常用指令 |
+| `/order save\|list` | 保存或列出常用指令；>15 条分页（`order.page` 原地翻页，受飞书单卡 60 个 body 元素上限约束） |
 | `!<cmd>` | 执行 bash 命令并流式输出到卡片（绕过串行队列） |
 
 ---
@@ -194,11 +194,16 @@ channel.on('cardAction', async (action) => {
 
 ### 6.4 `/ws` 卡片
 
-使用 CardKit 2.0，每个别名两个按钮：
+使用 CardKit 2.0，每个别名两个按钮；列表按 `WS_PAGE_SIZE`（5 条/页）分页，
+超过一页时底部显示分页栏（`ws.page` 原地刷新）。每行 3 个 body 元素
+（div + column_set + hr），5 行 + 头部 + 排序栏 + 分页栏 ≈ 20 个元素，远低于飞书单卡
+`body.elements` 60 个上限（ErrCode 11310 "element exceeds the limit"）；
+删除按钮携带 `offset`，刷新后停留在原页。
 
 ```json
 { "cmd": "ws.use",    "name": "proj-a" }
-{ "cmd": "ws.remove", "name": "proj-a" }
+{ "cmd": "ws.remove", "name": "proj-a", "offset": 0 }
+{ "cmd": "ws.page",   "offset": 5 }
 ```
 
 ### 6.5 Claude 运行卡片
