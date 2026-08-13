@@ -13,7 +13,13 @@ describe('RunState', () => {
     // 不直接置 done/error。停止按钮在 finalizing 仍显示。
     // 缺失/错误会让卡片在进程仍存活时误显示"已完成"+丢失停止按钮（双事实来源 bug）。
     const initial = createInitialRunState('run-1');
-    const state = reduceRunState(initial, {
+    // system.init must precede result (pre-init result guard §9.22)
+    const inited = reduceRunState(initial, {
+      type: 'system',
+      subtype: 'init',
+      session_id: 'session-1',
+    });
+    const state = reduceRunState(inited, {
       type: 'result',
       subtype: 'success',
       session_id: 'session-1',
@@ -27,7 +33,12 @@ describe('RunState', () => {
 
   it('test_anchor_result_error_event_transitions_to_finalizing_with_error', () => {
     const initial = createInitialRunState('run-1');
-    const state = reduceRunState(initial, {
+    const inited = reduceRunState(initial, {
+      type: 'system',
+      subtype: 'init',
+      session_id: 'session-1',
+    });
+    const state = reduceRunState(inited, {
       type: 'result',
       subtype: 'error',
       session_id: 'session-1',
@@ -69,7 +80,12 @@ describe('RunState', () => {
     // 进程退出后 bridge finally 从 finalizing 转 done（状态转移表）。
     // 缺失会让卡片永远停在"完成中"，workspace 永久 busy（不一致）。
     const initial = createInitialRunState('run-1');
-    const finalizing = reduceRunState(initial, {
+    const inited = reduceRunState(initial, {
+      type: 'system',
+      subtype: 'init',
+      session_id: 'session-1',
+    });
+    const finalizing = reduceRunState(inited, {
       type: 'result',
       subtype: 'success',
       session_id: 'session-1',
@@ -85,7 +101,12 @@ describe('RunState', () => {
     // /stop 在 finalizing 期间触发：finalizing -> interrupted。
     // 缺失会让 /stop 对"完成中"的 run 无效，进程杀不掉。
     const initial = createInitialRunState('run-1');
-    const finalizing = reduceRunState(initial, {
+    const inited = reduceRunState(initial, {
+      type: 'system',
+      subtype: 'init',
+      session_id: 'session-1',
+    });
+    const finalizing = reduceRunState(inited, {
       type: 'result',
       subtype: 'success',
       session_id: 'session-1',
@@ -98,7 +119,12 @@ describe('RunState', () => {
   it('test_anchor_finishRun_from_finalizing_to_idle_timeout', () => {
     // idle watchdog 在 finalizing 期间触发：finalizing -> idle_timeout。
     const initial = createInitialRunState('run-1');
-    const finalizing = reduceRunState(initial, {
+    const inited = reduceRunState(initial, {
+      type: 'system',
+      subtype: 'init',
+      session_id: 'session-1',
+    });
+    const finalizing = reduceRunState(inited, {
       type: 'result',
       subtype: 'success',
       session_id: 'session-1',
@@ -113,7 +139,12 @@ describe('RunState', () => {
     // 进程退出 finally 的 else-if-sawResult 分支：已终态时补充 usage meta（§4.2）。
     // 缺失会让 finalizing 期间被 /stop 的卡片丢失 token 统计。
     const initial = createInitialRunState('run-1');
-    const finalizing = reduceRunState(initial, {
+    const inited = reduceRunState(initial, {
+      type: 'system',
+      subtype: 'init',
+      session_id: 'session-1',
+    });
+    const finalizing = reduceRunState(inited, {
       type: 'result',
       subtype: 'success',
       session_id: 'session-1',
@@ -139,7 +170,12 @@ describe('RunState', () => {
 
   it('test_anchor_finishRun_on_terminal_ignores_undefined_meta_fields', () => {
     const initial = createInitialRunState('run-1');
-    const finalizing = reduceRunState(initial, {
+    const inited = reduceRunState(initial, {
+      type: 'system',
+      subtype: 'init',
+      session_id: 'session-1',
+    });
+    const finalizing = reduceRunState(inited, {
       type: 'result',
       subtype: 'error',
       session_id: 'session-1',
@@ -163,6 +199,11 @@ describe('RunState', () => {
     // error 优先：任一为 error 即 error。
     // 缺失会让"agent 报错 + 进程干净退出"误判为 done。
     let state = createInitialRunState('run-1');
+    state = reduceRunState(state, {
+      type: 'system',
+      subtype: 'init',
+      session_id: 'session-1',
+    });
     // agent result(success)
     state = reduceRunState(state, {
       type: 'result',
@@ -187,6 +228,11 @@ describe('RunState', () => {
   it('test_anchor_multiple_result_events_errorMsg_first_wins', () => {
     // errorMsg 首个非 undefined 胜出：agent 的错误信息更具体。
     let state = createInitialRunState('run-1');
+    state = reduceRunState(state, {
+      type: 'system',
+      subtype: 'init',
+      session_id: 'session-1',
+    });
     // agent result(error, "auth failed")
     state = reduceRunState(state, {
       type: 'result',
@@ -210,8 +256,13 @@ describe('RunState', () => {
   it('test_anchor_finalizing_continues_processing_assistant_events', () => {
     // finalizing 非终态：for-await 继续消费事件（Claude 后台任务输出不被丢弃 §5 不变量 3）。
     const state0 = createInitialRunState('run-1');
+    const inited = reduceRunState(state0, {
+      type: 'system',
+      subtype: 'init',
+      session_id: 'session-1',
+    });
     // result -> finalizing
-    const state1 = reduceRunState(state0, {
+    const state1 = reduceRunState(inited, {
       type: 'result',
       subtype: 'success',
       session_id: 'session-1',
@@ -234,7 +285,12 @@ describe('RunState', () => {
   it('test_anchor_terminal_state_blocks_incoming_events', () => {
     // 终态守卫：done/error/interrupted/idle_timeout 后事件被忽略（§5 不变量 1）。
     const state0 = createInitialRunState('run-1');
-    const finalizing = reduceRunState(state0, {
+    const inited = reduceRunState(state0, {
+      type: 'system',
+      subtype: 'init',
+      session_id: 'session-1',
+    });
+    const finalizing = reduceRunState(inited, {
       type: 'result',
       subtype: 'success',
       session_id: 'session-1',
@@ -406,6 +462,55 @@ describe('RunState', () => {
       'idle_timeout',
     ];
     expect(terminals).toContain('finalizing');
+  });
+
+  // §9.22 pre-init result guard: Claude CLI --resume emits a historical result
+  // (from the previous turn) before sending system.init for the new run.
+  // Without this guard, that stale result would prematurely transition to
+  // 'finalizing', freezing the card at "⏳ 等待进程退出" for the entire run.
+  it('test_anchor_pre_init_result_ignored_when_sessionId_undefined', () => {
+    const initial = createInitialRunState('run-1');
+    // No system.init yet → sessionId is undefined
+    expect(initial.sessionId).toBeUndefined();
+
+    // result event before init should be completely ignored
+    const afterResult = reduceRunState(initial, {
+      type: 'result',
+      subtype: 'success',
+      session_id: 'stale-session',
+    });
+    expect(afterResult.terminal).toBe('running'); // NOT finalizing
+    expect(afterResult.resultSubtype).toBeUndefined();
+    expect(afterResult.footer).toBe('thinking'); // unchanged
+
+    // After init, a result should work normally
+    const inited = reduceRunState(afterResult, {
+      type: 'system',
+      subtype: 'init',
+      session_id: 'real-session',
+    });
+    expect(inited.sessionId).toBe('real-session');
+
+    const afterRealResult = reduceRunState(inited, {
+      type: 'result',
+      subtype: 'success',
+      session_id: 'real-session',
+    });
+    expect(afterRealResult.terminal).toBe('finalizing');
+    expect(afterRealResult.resultSubtype).toBe('success');
+  });
+
+  it('test_anchor_pre_init_result_error_also_ignored', () => {
+    // Even error results before init should be ignored (they're stale replay)
+    const initial = createInitialRunState('run-1');
+    const afterResult = reduceRunState(initial, {
+      type: 'result',
+      subtype: 'error',
+      session_id: 'stale-session',
+      errorMessage: 'stale error',
+    });
+    expect(afterResult.terminal).toBe('running');
+    expect(afterResult.errorMsg).toBeUndefined();
   });
 
   it('test_anchor_runFooter_excludes_background', () => {
