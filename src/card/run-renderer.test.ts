@@ -496,6 +496,11 @@ describe('renderRunCard (CardKit 2.0)', () => {
     // 缺失会让用户在进程仍存活（等后台任务）时丢失停止按钮。
     let state = createInitialRunState('run-2');
     state = reduceRunState(state, {
+      type: 'system',
+      subtype: 'init',
+      session_id: 'run-2',
+    });
+    state = reduceRunState(state, {
       type: 'result',
       subtype: 'success',
       session_id: 'run-2',
