@@ -50,6 +50,9 @@ scripts/download-feishu-card-docs.sh
 # Coverage / test home directory (contains local hostnames)
 .cov-home/
 
+# PII 演示图备份副本（原始版含个人信息，勿提交）
+docs/images/demo.original.gif
+
 # Watchdog script (not shipped in open-source release)
 scripts/watchdog.sh
 
