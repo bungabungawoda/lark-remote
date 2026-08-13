@@ -9,7 +9,7 @@
  *
  * 验收标准：
  * 1. 20 个 workspace 的原始卡片（无分页）→ 飞书返回 11310（复现线上故障）
- * 2. 5 条/页 + 排序栏 + 分页栏（修复后结构，20 条共 4 页）→ 两页均发送成功
+ * 2. 15 条/页 + 分页栏（修复后结构，20 条共 2 页）→ 两页均发送成功
  *
  * 运行方式（真实飞书 API，默认不跑）：
  *   FEISHU_LIVE_TEST=1 bun run test:live
@@ -50,13 +50,8 @@ let testChatId: string;
 
 const describeLive = process.env.FEISHU_LIVE_TEST ? describe : describe.skip;
 
-/** 与 CommandRouter.cmdWs 完全一致的结构（修复后：每页 WS_PAGE_SIZE=5 条 + 排序栏 + 分页栏）。 */
-function buildWsCard(
-  entries: [string, string][],
-  offset: number,
-  pageSize: number,
-  includeSortBar = false,
-) {
+/** 与 CommandRouter.cmdWs 完全一致的结构（修复后：每页 WS_PAGE_SIZE 条 + 分页栏）。 */
+function buildWsCard(entries: [string, string][], offset: number, pageSize: number) {
   const totalCount = entries.length;
   const totalPages = Math.max(1, Math.ceil(totalCount / pageSize));
   const maxOffset = Math.max(0, (totalPages - 1) * pageSize);
@@ -67,38 +62,8 @@ function buildWsCard(
 
   const bodyElements: object[] = [
     { tag: 'div', text: { tag: 'lark_md', content: '📂 当前工作目录：`/tmp`' } },
+    { tag: 'hr' },
   ];
-
-  if (includeSortBar) {
-    bodyElements.push({ tag: 'hr' });
-    bodyElements.push({
-      tag: 'column_set',
-      columns: [
-        {
-          tag: 'column',
-          width: 'weighted',
-          weight: 1,
-          vertical_align: 'center',
-          elements: [{ tag: 'div', text: { tag: 'lark_md', content: '排序：🕐 最近使用' } }],
-        },
-        {
-          tag: 'column',
-          width: 'auto',
-          elements: [
-            {
-              tag: 'button',
-              text: { tag: 'plain_text', content: '切换为 🔤 字母顺序' },
-              type: 'default',
-              size: 'small',
-              behaviors: [{ type: 'callback', value: { cmd: 'ws.sort' } }],
-            },
-          ],
-        },
-      ],
-    });
-  }
-
-  bodyElements.push({ tag: 'hr' });
 
   for (const [name, p] of page) {
     bodyElements.push({
@@ -256,21 +221,21 @@ describeLive('飞书 API 集成测试 - /ws 卡片元素上限（11310）', () =
     });
   });
 
-  it('5 条/页 + 排序栏 + 分页栏（修复后结构，20 条 4 页）两页均应发送成功', async () => {
+  it('15 条/页 + 分页栏（修复后结构，20 条 2 页）两页均应发送成功', async () => {
     if (skipIfNoConfig() || !connector || !testChatId) {
       console.log('⚠️ 跳过：connector 或 chatId 不可用');
       return;
     }
 
-    // 第 1 页：1(cwd) + 3(sort) + 5*3(行) - 1(末行 hr) + 2(分页栏) = 20 个 body 元素
-    const page1 = buildWsCard(twentyEntries, 0, 5, true);
-    expect((page1.body.elements as object[]).length).toBe(20);
+    // 第 1 页：2(头部) + 15*3(行) - 1(末行 hr) + 2(分页栏) = 48 个 body 元素
+    const page1 = buildWsCard(twentyEntries, 0, 15);
+    expect((page1.body.elements as object[]).length).toBe(48);
     const id1 = await connector.sendWithRetry(testChatId, { card: page1 });
     expect(typeof id1).toBe('string');
     expect(id1.length).toBeGreaterThan(0);
 
-    // 第 2 页
-    const page2 = buildWsCard(twentyEntries, 5, 5, true);
+    // 第 2 页：5 条
+    const page2 = buildWsCard(twentyEntries, 15, 15);
     const id2 = await connector.sendWithRetry(testChatId, { card: page2 });
     expect(typeof id2).toBe('string');
     expect(id2.length).toBeGreaterThan(0);
