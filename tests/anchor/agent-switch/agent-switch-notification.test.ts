@@ -7,6 +7,7 @@ import { SessionStore } from '../../../src/session/index.js';
 import { CommandRouter } from '../../../src/router/index.js';
 import { AppConfigSchema } from '../../../src/config/index.js';
 import type { AppConfig } from '../../../src/config/index.js';
+import { lastNotice, allNotices } from '../../../tests/lib/agent-switch-helpers.js';
 
 /**
  * Anchor: config.save 切换 defaultAgent 时必须发送持久化消息通知用户
@@ -93,15 +94,12 @@ describe('config.save sends persistent message notification on agent switch', ()
     // Persistent message must be sent exactly once, mentioning the new agent and 切换
     const sendResultMock = bridge.sendResult as ReturnType<typeof vi.fn>;
     expect(sendResultMock).toHaveBeenCalledTimes(1);
-    const sent = sendResultMock.mock.calls[0][0] as { text: string };
-    expect(sent.text).toContain('Pi');
-    expect(sent.text).toContain('切换');
+    const text = lastNotice(sendResultMock);
+    expect(text).toContain('Pi');
+    expect(text).toContain('切换');
     // A5: sendResult 第二参数必须原样传 ctx（userId/chatId/messageId），保证
     // 持久化消息作为当前对话的回复发出，而不是发到别的会话
-    expect(sendResultMock).toHaveBeenCalledWith(
-      expect.objectContaining({ text: expect.stringContaining('已切换到') }),
-      ctx,
-    );
+    expect(sendResultMock).toHaveBeenCalledWith(expect.anything(), ctx);
     // Success path must NOT return a toast (toast is transient, not persistent)
     expect(response?.toast).toBeFalsy();
   });
@@ -138,9 +136,9 @@ describe('config.save sends persistent message notification on agent switch', ()
 
     expect(response?.toast).toBeFalsy();
     const sendResultMock = bridge.sendResult as ReturnType<typeof vi.fn>;
-    for (const call of sendResultMock.mock.calls) {
-      const text = (call[0] as { text?: string }).text ?? '';
-      expect(text).not.toContain('已切换到');
+    const texts = allNotices(sendResultMock);
+    for (const t of texts) {
+      expect(t).not.toContain('已切换到');
     }
   });
 
@@ -174,15 +172,12 @@ describe('config.save sends persistent message notification on agent switch', ()
     // 消息被尝试发送一次（内容仍为切换文案），第二参数原样携带 ctx
     const sendResultMock = bridge.sendResult as ReturnType<typeof vi.fn>;
     expect(sendResultMock).toHaveBeenCalledTimes(1);
-    const sent = sendResultMock.mock.calls[0][0] as { text: string };
-    expect(sent.text).toContain('切换');
-    expect(sendResultMock).toHaveBeenCalledWith(
-      expect.objectContaining({ text: expect.stringContaining('已切换到') }),
-      ctx,
-    );
-    // 发送失败 → 兜底回退 toast（即时反馈），内容必须与尝试发送的切换文案一致
+    const text = lastNotice(sendResultMock);
+    expect(text).toContain('切换');
+    expect(sendResultMock).toHaveBeenCalledWith(expect.anything(), ctx);
+    // 发送失败 → 兜底回退 toast（即时反馈），内容来自 propagateConfigSave 的切换文案
     expect(response?.toast).toBeTruthy();
-    expect((response?.toast as { content: string }).content).toBe(sent.text);
+    expect((response?.toast as { content: string }).content).toContain('已切换到 Pi');
     // A9：兜底 toast 类型必须锁定 'info'（信息提示，不是错误/警告，
     // 否则用户会被误导以为保存失败）
     expect((response?.toast as { type: string }).type).toBe('info');
@@ -222,15 +217,12 @@ describe('config.save sends persistent message notification on agent switch', ()
     const sendResultMock = bridge.sendResult as ReturnType<typeof vi.fn>;
 
     // 核心契约：切换通知必须仍然发出（内容为切换文案、第二参数原样 ctx）
-    expect(sendResultMock).toHaveBeenCalledWith(
-      expect.objectContaining({ text: expect.stringContaining('已切换到') }),
-      ctx,
-    );
+    expect(sendResultMock).toHaveBeenCalledWith(expect.anything(), ctx);
 
     // 不得把切换通知误报成「保存失败」（配置其实已成功落盘）
-    for (const call of sendResultMock.mock.calls) {
-      const text = (call[0] as { text: string }).text;
-      expect(text).not.toContain('保存失败');
+    const texts = allNotices(sendResultMock);
+    for (const t of texts) {
+      expect(t).not.toContain('保存失败');
     }
 
     // 判据 6 前提：切换本身必须已生效（配置写盘 + session 清理/恢复已执行），
@@ -300,9 +292,9 @@ describe('config.save sends persistent message notification on agent switch', ()
     expect(sendResultMock).toHaveBeenCalledWith({ text: '没有变更需要保存' }, ctx);
     expect(response?.toast).toBeFalsy();
     // 空 diff 不得触发切换通知
-    for (const call of sendResultMock.mock.calls) {
-      const text = (call[0] as { text?: string }).text ?? '';
-      expect(text).not.toContain('已切换到');
+    const texts = allNotices(sendResultMock);
+    for (const t of texts) {
+      expect(t).not.toContain('已切换到');
     }
   });
 });

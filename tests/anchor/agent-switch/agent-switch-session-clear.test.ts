@@ -7,6 +7,7 @@ import { SessionStore } from '../../../src/session/index.js';
 import { CommandRouter } from '../../../src/router/index.js';
 import { AppConfigSchema } from '../../../src/config/index.js';
 import type { AppConfig } from '../../../src/config/index.js';
+import { lastNotice } from '../../../tests/lib/agent-switch-helpers.js';
 
 /**
  * Anchor: config.save 切换 defaultAgent 时必须保留新 agent 的显式选择 session
@@ -31,11 +32,6 @@ import type { AppConfig } from '../../../src/config/index.js';
 // Stub runner
 
 // Mock bridge that can capture sendResult calls
-
-function lastNotice(bridge: ReturnType<typeof createMockBridge>): string {
-  const calls = (bridge.sendResult as ReturnType<typeof vi.fn>).mock.calls;
-  return (calls[calls.length - 1][0] as { text: string }).text;
-}
 
 function buildConfig(): AppConfig {
   return AppConfigSchema.parse({
@@ -62,6 +58,10 @@ describe('config.save keeps explicitly selected new agent session on agent switc
   let sessionStore: SessionStore;
   let bridge: ReturnType<typeof createMockBridge>;
   let router: CommandRouter;
+
+  function _lastNotice(): string {
+    return lastNotice(bridge.sendResult as ReturnType<typeof vi.fn>);
+  }
 
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-switch-session-test-'));
@@ -115,9 +115,9 @@ describe('config.save keeps explicitly selected new agent session on agent switc
 
     // 持久化消息发送成功（sendResult resolve true）时不得回退 toast
     expect(response?.toast).toBeFalsy();
-    expect(lastNotice(bridge)).toContain('已使用所选 session');
-    expect(lastNotice(bridge)).toContain('pi-old-session-456');
-    expect(lastNotice(bridge)).not.toContain('session 已清空');
+    expect(_lastNotice()).toContain('已使用所选 session');
+    expect(_lastNotice()).toContain('pi-old-session-456');
+    expect(_lastNotice()).not.toContain('session 已清空');
 
     // 显式选择的 pi session 存活，arrival 更新为所选 session（新基线）
     expect(sessionStore.getSessionId(userId, 'pi')).toBe('pi-old-session-456');

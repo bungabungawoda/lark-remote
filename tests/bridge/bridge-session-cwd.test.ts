@@ -212,7 +212,40 @@ describe('Bridge.forwardToClaude session cwd sync', () => {
     await router.handleCardAction({ cmd: 'config.save' }, ctx);
 
     const lastText = connector._sent
-      .map((s) => (s.input as { text?: string }).text)
+      .map((s) => {
+        const input = (s as { input: { text?: string; card?: unknown } }).input;
+        if (input.text) return input.text;
+        if (input.card) {
+          const card = input.card;
+          if (!card || typeof card !== 'object') return '';
+          const c = card as {
+            header?: { title?: { content?: string } };
+            body?: { elements?: unknown[] };
+          };
+          const parts: string[] = [];
+          if (c.header?.title?.content) parts.push(c.header.title.content);
+          if (c.body?.elements && Array.isArray(c.body.elements)) {
+            for (const el of c.body.elements) {
+              const e = el as {
+                text?: { content?: string };
+                columns?: Array<{ elements?: unknown[] }>;
+              };
+              if (e.text?.content) parts.push(e.text.content);
+              for (const col of e.columns ?? []) {
+                const colEl = col as { elements?: unknown[] };
+                if (colEl.elements) {
+                  for (const child of colEl.elements) {
+                    const ch = child as { text?: { content?: string } };
+                    if (ch.text?.content) parts.push(ch.text.content);
+                  }
+                }
+              }
+            }
+          }
+          return parts.join(' ');
+        }
+        return '';
+      })
       .filter((text): text is string => typeof text === 'string')
       .at(-1);
     expect(lastText).toContain('session 已清空');
