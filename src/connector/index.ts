@@ -11,7 +11,21 @@ import { getLogger } from '../logger/index.js';
 import { MAX_FILE_UPLOAD_SIZE } from './file-limits.js';
 import axios from 'axios';
 import fs from 'node:fs';
+import https from 'node:https';
 import FormData from 'form-data';
+
+/**
+ * Dedicated https.Agent with keepAlive disabled for sendFile's three axios
+ * calls (token, upload, send). Bun's Node.js http compat layer has a bug
+ * where it reuses keep-alive sockets that the server has already RST'd —
+ * the write goes into a dead socket and the caller gets ECONNRESET after
+ * ~30s. Node.js proper does not exhibit this because it checks socket
+ * health before reuse. Disabling keep-alive forces a fresh TCP+TLS
+ * handshake per request, eliminating the stale-socket path at the cost of
+ * one extra round-trip per file send (acceptable for an infrequent
+ * operation).
+ */
+const noKeepAliveAgent = new https.Agent({ keepAlive: false });
 
 /**
  * dedup 缓存 TTL（毫秒）。控制飞书事件去重窗口，全局作用于 message + cardAction。
@@ -374,12 +388,15 @@ export class FeishuConnector {
       form.append('file_type', 'stream');
 
       // P2-18: timeout on the upload (large file, slow link) — 120s.
+      // httpsAgent: noKeepAlive — prevents Bun from reusing a server-RST'd
+      // keep-alive socket (ECONNRESET after ~30s; see noKeepAliveAgent docs).
       const uploadResp = await axios.post('https://open.feishu.cn/open-apis/im/v1/files', form, {
         headers: {
           ...form.getHeaders(),
           Authorization: `Bearer ${accessToken}`,
         },
         timeout: 120000,
+        httpsAgent: noKeepAliveAgent,
       });
 
       if (uploadResp.data.code !== 0) {
@@ -389,6 +406,7 @@ export class FeishuConnector {
       const fileKey = uploadResp.data.data.file_key;
 
       // Send file message. P2-18: timeout 30s.
+      // httpsAgent: noKeepAlive — same Bun keep-alive fix as upload above.
       const sendResp = await axios.post(
         'https://open.feishu.cn/open-apis/im/v1/messages',
         {
@@ -403,6 +421,7 @@ export class FeishuConnector {
           },
           params: { receive_id_type: 'chat_id' },
           timeout: 30000,
+          httpsAgent: noKeepAliveAgent,
         },
       );
 
@@ -442,6 +461,7 @@ export class FeishuConnector {
       return this.cachedToken;
     }
     // P2-18: timeout 30s on the token request.
+    // httpsAgent: noKeepAlive — same Bun keep-alive fix as upload above.
     const tokenResp = await axios.post(
       'https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal',
       {
@@ -451,6 +471,7 @@ export class FeishuConnector {
       {
         headers: { 'Content-Type': 'application/json; charset=utf-8' },
         timeout: 30000,
+        httpsAgent: noKeepAliveAgent,
       },
     );
     if (tokenResp.data.code !== 0) {

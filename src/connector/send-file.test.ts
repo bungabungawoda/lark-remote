@@ -105,7 +105,7 @@ describe('FeishuConnector.sendFile', () => {
         msg_type: 'file',
         content: JSON.stringify({ file_key: 'file-key' }),
       },
-      {
+      expect.objectContaining({
         headers: {
           'Content-Type': 'application/json; charset=utf-8',
           Authorization: 'Bearer token',
@@ -113,7 +113,9 @@ describe('FeishuConnector.sendFile', () => {
         params: { receive_id_type: 'chat_id' },
         // P2-18: send-message segment now carries a 30s timeout.
         timeout: 30000,
-      },
+        // Bun keep-alive stale-socket fix: dedicated Agent with keepAlive=false
+        httpsAgent: expect.objectContaining({ keepAlive: false }),
+      }),
     );
   });
 });
