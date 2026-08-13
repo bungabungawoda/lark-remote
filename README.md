@@ -153,6 +153,10 @@ FEISHU_LIVE_TEST=1 bun run test tests/feishu-reaction-emoji-live.test.ts
 
 > 本包为纯 CLI 工具，不提供编程 API。
 
+## 致谢
+
+本项目受到了 [lark-coding-agent-bridge](https://github.com/zarazhangrui/lark-coding-agent-bridge) 的启发，感谢该项目展示了飞书与本地 Coding Agent 桥接的可行性。
+
 ## License
 
 [MIT](LICENSE) © bungabungawoda
