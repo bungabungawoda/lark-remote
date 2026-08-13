@@ -248,6 +248,7 @@ lark-remote 现在支持 5 种 AI：Claude、Codex、OpenCode、Pi、Kimi。想�
 
 1. **先看日志**：`~/.lark-remote/logs/YYYY-MM-DD/lark-remote-<pid>.log`（`YYYY-MM-DD` 是当天日期，如 `2026-07-20`），找 `error`；
 2. **跑测试**：`bun run typecheck && bun test`，看哪里坏了；
+3. **查已知的坑**：项目已有踩坑记录，大概率踩过同样的坑；
 4. **问 AI**：把日志错误段复制给 Claude/ChatGPT，问「这是什么错误，怎么修」；
 5. **实在搞不定**：记录下复现步骤，问大人或提 issue。
 
