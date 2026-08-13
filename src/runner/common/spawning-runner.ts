@@ -7,7 +7,7 @@ import { getLogger } from '../../logger/index.js';
 import { ProcessStopper } from './process-stopper.js';
 import { SpawnHeartbeat } from './spawn-heartbeat.js';
 import { createJSONLStream } from './jsonl-stream.js';
-import { authErrorEvent } from './runner-utils.js';
+import { authErrorEvent, syntheticInitEvent } from './runner-utils.js';
 import { DEFAULT_STOP_GRACE_MS } from '../../config/index.js';
 import type { AgentEvent, SpawnOptions } from '../types.js';
 
@@ -354,6 +354,11 @@ export abstract class SpawningRunner {
     // Pre-spawn validation hook (e.g. codex API key check)
     const validationError = this.validateBeforeRun(opts);
     if (validationError) {
+      // §9.22: yield synthetic init so the bridge's pre-init result guard and
+      // the run-state reducer's sessionId check don't silently drop the error
+      // result. Without init, the card would show a generic "输出流已结束"
+      // instead of the specific validation error message.
+      yield syntheticInitEvent(opts.sessionId);
       yield validationError;
       return;
     }
@@ -392,6 +397,9 @@ export abstract class SpawningRunner {
       // so the user is not misdiagnosed into reinstalling the binary.
       const baseMsg = `${this.binary} 命令不可用（未找到或不可执行），请检查是否已安装或在 PATH 中`;
       const msg = spawnErr ? `${baseMsg}：${spawnErr.message}` : baseMsg;
+      // §9.22: yield synthetic init before the error result so bridge/run-state
+      // guards don't silently drop it (same rationale as validateBeforeRun).
+      yield syntheticInitEvent(opts.sessionId);
       yield authErrorEvent(msg);
       return;
     }

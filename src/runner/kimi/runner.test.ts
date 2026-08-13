@@ -330,8 +330,10 @@ describe('KimiRunner integration', () => {
     }
     restorePath(saved);
 
-    expect(events).toHaveLength(1);
-    const errEvent = events[0] as { type: string; subtype?: string; errorMessage?: string };
+    // §9.22: spawning-runner yields syntheticInitEvent + authErrorEvent (2 events)
+    expect(events).toHaveLength(2);
+    expect(events[0].type).toBe('system');
+    const errEvent = events[1] as { type: string; subtype?: string; errorMessage?: string };
     expect(errEvent.type).toBe('result');
     expect(errEvent.subtype).toBe('error');
     expect(errEvent.errorMessage).toMatch(/不可用|not found|ENOENT/i);

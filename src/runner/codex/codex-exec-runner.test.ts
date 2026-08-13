@@ -107,8 +107,10 @@ describe('CodexExecRunner', () => {
     }
     restorePath(saved);
 
-    expect(events).toHaveLength(1);
-    expect(events[0]).toMatchObject({
+    // §9.22: spawning-runner yields syntheticInitEvent + authErrorEvent (2 events)
+    expect(events).toHaveLength(2);
+    expect(events[0]).toMatchObject({ type: 'system', subtype: 'init' });
+    expect(events[1]).toMatchObject({
       type: 'result',
       subtype: 'error',
       errorMessage: expect.stringContaining('命令不可用'),
