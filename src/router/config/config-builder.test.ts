@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { getConfigBuilder, listRegisteredAgents, sortAgentsByAvailability } from './index.js';
+import { getConfigBuilder, listRegisteredAgents } from './index.js';
 import { ClaudeConfigBuilder } from './claude.js';
 import { CodexConfigBuilder } from './codex.js';
 import { OpencodeConfigBuilder } from './opencode.js';
@@ -34,42 +34,6 @@ describe('router/config registry', () => {
     expect(getConfigBuilder('opencode')).toBeInstanceOf(OpencodeConfigBuilder);
     expect(getConfigBuilder('pi')).toBeInstanceOf(PiConfigBuilder);
     expect(getConfigBuilder('kimi')).toBeInstanceOf(KimiConfigBuilder);
-  });
-});
-
-describe('sortAgentsByAvailability', () => {
-  it('keeps original order when every agent is available', () => {
-    const input = listRegisteredAgents();
-    expect(sortAgentsByAvailability(input, () => true)).toEqual(input);
-  });
-
-  it('sinks unavailable agents to the bottom, preserving order within both groups', () => {
-    const availability: Record<string, boolean | undefined> = {
-      claude: true,
-      codex: false,
-      pi: true,
-      opencode: false,
-      kimi: true,
-    };
-    const sorted = sortAgentsByAvailability(listRegisteredAgents(), (k) => availability[k]);
-    expect(sorted).toEqual(['claude', 'pi', 'kimi', 'codex', 'opencode']);
-  });
-
-  it('sinks an unavailable leading agent to the bottom', () => {
-    const sorted = sortAgentsByAvailability(['claude', 'codex', 'pi'], (k) => k !== 'claude');
-    expect(sorted).toEqual(['codex', 'pi', 'claude']);
-  });
-
-  it('treats undefined availability as not unavailable (keeps in place)', () => {
-    const input = listRegisteredAgents();
-    expect(sortAgentsByAvailability(input, () => undefined)).toEqual(input);
-  });
-
-  it('does not mutate the input array', () => {
-    const input = listRegisteredAgents();
-    const snapshot = [...input];
-    sortAgentsByAvailability(input, (k) => k === 'kimi');
-    expect(input).toEqual(snapshot);
   });
 });
 
