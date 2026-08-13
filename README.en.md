@@ -154,6 +154,10 @@ Full docs under [`docs/`](docs/):
 
 > This package is a CLI tool only — no programmatic API is exposed.
 
+## Acknowledgments
+
+This project was inspired by [lark-coding-agent-bridge](https://github.com/zarazhangrui/lark-coding-agent-bridge) — thanks for demonstrating the feasibility of bridging Feishu with local coding agents.
+
 ## License
 
 [MIT](LICENSE) © bungabungawoda
