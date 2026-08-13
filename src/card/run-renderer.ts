@@ -485,7 +485,7 @@ function buildSkeletonElements(state: RunState): object[] {
   elements.push(...buildSummaryContent(state));
 
   // Bottom action row: stop (if running/finalizing) + new session (always).
-  // Degraded paths must keep the action buttons reachable (AGENTS.md red line).
+  // Degraded paths must keep the action buttons reachable (design constraint).
   const actionButtons: object[] = [];
   const showStop = state.terminal === 'running' || state.terminal === 'finalizing';
   if (showStop) {

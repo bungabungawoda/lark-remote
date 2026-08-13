@@ -698,7 +698,7 @@ describe('renderRunCard budget estimate (A2+A3)', () => {
  * - 这是 renderRunCard 的最终安全网失效，无更深层兜底。
  *
  * 依据：飞书卡片单卡 28KB 上限（CARD_BUDGET_BYTES）；extreme fallback 必须保证
- * 任何输入下产物 ≤28KB。CLAUDE.md「飞书卡片表格限制（ErrCode 11310）」+ P1-2 spec
+ * 任何输入下产物 ≤28KB。飞书卡片表格限制（ErrCode 11310）+ P1-2 spec
  * 「不得破坏卡片 ≤28KB 保证」。
  *
  * 构造：3 个 5000-`\` text（间插 tool 阻止合并，extreme 滤掉早期 tool 后合并截 5000）

@@ -18,7 +18,7 @@ import type { AppConfig } from '../../../src/config/index.js';
  *   根因：getAgentRunOptions 不提取 reasoningEffort + SpawnOptions 无此字段 +
  *   runner.run() 只读 constructor 字段。三层断链。
  *
- * Spec basis: CLAUDE.md "Codex 推理强度配置" — "存储在 agents.codex.reasoningEffort"
+ * Spec basis: design.md "Codex 推理强度配置" — "存储在 agents.codex.reasoningEffort"
  *   + router config.set 切换模型时自动重置 reasoningEffort 的逻辑依赖运行时生效。
  *
  * Pyramid: L1 (unit) — 验证 getAgentRunOptions 返回值 + runner 参数传递

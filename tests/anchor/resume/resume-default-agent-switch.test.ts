@@ -31,7 +31,7 @@ import {
  * 同一根因影响 /active、自动恢复、resume.use、completionNotificationCard 等
  * 14+ 处直接使用 this.sessionReader 的调用点。
  *
- * 依据：CLAUDE.md "多 agent 注册表抽象" — Bridge/Router 应通过 sessionReaderRegistry
+ * 依据：design.md "多 agent 注册表抽象" — Bridge/Router 应通过 sessionReaderRegistry
  * 按 config.defaultAgent 动态获取 reader，而非构造时固化引用。
  */
 
@@ -62,7 +62,7 @@ describe('/resume uses new defaultAgent reader after config.save', () => {
 
     // 写一个真实的 claude session JSONL 文件，让 ClaudeSessionReader 能列出 1 条
     // 编码必须与 projectDirForCwd 一致：cwd.replace(/\//g, '-').replace(/_/g, '-')
-    // （Claude CLI 把 / 和 _ 都换成 -，参见 CLAUDE.md "cwd 编码" 条目）
+    // （Claude CLI 把 / 和 _ 都换成 -，参见 cwd 编码条目）
     const claudeEncoded = canonicalCwd.replace(/\//g, '-').replace(/_/g, '-');
     const claudeProjDir = path.join(claudeProjectsDir, claudeEncoded);
     fs.mkdirSync(claudeProjDir, { recursive: true });

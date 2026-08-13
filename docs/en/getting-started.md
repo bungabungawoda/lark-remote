@@ -219,7 +219,6 @@ lark-remote/
 │   ├── architecture/       ← Design and pitfalls
 │   └── guides/             ← How-to manuals
 ├── scripts/            ← Operations scripts
-├── CLAUDE.md           ← AI collaboration rules (not in git, local only)
 ├── README.md           ← Project readme
 └── package.json        ← Project dependencies and scripts
 ```
@@ -249,7 +248,7 @@ lark-remote currently supports 5 AIs: Claude, Codex, OpenCode, Pi, and Kimi. Wan
 
 1. **Check the logs first**: `~/.lark-remote/logs/YYYY-MM-DD/lark-remote-<pid>.log` (`YYYY-MM-DD` is today's date, e.g., `2026-07-20`), look for `error`;
 2. **Run tests**: `bun run typecheck && bun test`, see what's broken;
-3. **Check the red lines**: The "Red Lines / Common Pitfalls" section in the project root's `CLAUDE.md` (local file, not in git) — chances are someone has fallen into the same pit before;
+3. **Check known pitfalls**: The project has a record of common pitfalls — chances are someone has fallen into the same pit before;
 4. **Ask an AI**: Copy the error section of the log to Claude/ChatGPT and ask "What is this error and how do I fix it?";
 5. **Really stuck**: Document the steps to reproduce, then ask an adult or file an issue.
 
