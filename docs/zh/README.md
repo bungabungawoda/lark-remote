@@ -33,4 +33,6 @@ English documentation: [../en/README.md](../en/README.md)
 
 ## 文档维护约定
 
+- 路径稳定性：`architecture/design.md` 的 §9.x 章节编号被代码注释与文档互相引用，**不要随意重排**。
 - 历史归档：设计文档中已不在代码中存在的模式直接删除，不再保留「历史归档」节；事故复盘进 git commit message 或 PR 描述。
+- 新增文档：放在合适的子目录（architecture/guides/），并在此 README 同步加指针。
