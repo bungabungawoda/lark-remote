@@ -219,7 +219,7 @@ lark-remote/
 │   ├── architecture/       ← 设计与坑点
 │   └── guides/             ← 操作手册
 ├── scripts/            ← 运维脚本
-├── CLAUDE.md           ← AI 协作规则（红线、踩坑总结）
+├── CLAUDE.md           ← AI 协作规则（不入 git，仅本地维护）
 ├── README.md           ← 项目说明
 └── package.json        ← 项目依赖与脚本
 ```
@@ -242,7 +242,6 @@ lark-remote 现在支持 5 种 AI：Claude、Codex、OpenCode、Pi、Kimi。想�
 | 整体设计、JSONL 事件、踩过的坑 | [`architecture/design.md`](architecture/design.md) |
 | 单卡流式输出怎么工作的 | [`architecture/streaming-card.md`](architecture/streaming-card.md) |
 | Codex 怎么配置 | [`guides/codex-config.md`](guides/codex-config.md) |
-| AI 帮你写代码时要遵守的红线 | [`../../CLAUDE.md`](../../CLAUDE.md) |
 
 ---
 
@@ -250,7 +249,7 @@ lark-remote 现在支持 5 种 AI：Claude、Codex、OpenCode、Pi、Kimi。想�
 
 1. **先看日志**：`~/.lark-remote/logs/YYYY-MM-DD/lark-remote-<pid>.log`（`YYYY-MM-DD` 是当天日期，如 `2026-07-20`），找 `error`；
 2. **跑测试**：`bun run typecheck && bun test`，看哪里坏了；
-3. **看红线**：[`../../CLAUDE.md`](../../CLAUDE.md) 的「红线 / 易踩坑」章节，大概率踩过同样的坑；
+3. **看红线**：项目根目录的 `CLAUDE.md`「红线 / 易踩坑」章节（本地文件，不入 git），大概率踩过同样的坑；
 4. **问 AI**：把日志错误段复制给 Claude/ChatGPT，问「这是什么错误，怎么修」；
 5. **实在搞不定**：记录下复现步骤，问大人或提 issue。
 

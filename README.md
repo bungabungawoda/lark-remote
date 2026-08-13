@@ -149,7 +149,6 @@ FEISHU_LIVE_TEST=1 bun run test tests/feishu-reaction-emoji-live.test.ts
 - 新增 agent 接入模板：[`docs/zh/guides/add-new-agent.md`](docs/zh/guides/add-new-agent.md)
 - Codex 配置卡片指南：[`docs/zh/guides/codex-config.md`](docs/zh/guides/codex-config.md)
 - 飞书 CardKit 2.0 组件参考：[飞书开放平台官方文档](https://open.feishu.cn/document/feishu-cards/card-json-v2-components/component-json-v2-overview)
-- AI 协作规则与红线：[`CLAUDE.md`](CLAUDE.md)
 
 > 本包为纯 CLI 工具，不提供编程 API。
 

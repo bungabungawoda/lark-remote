@@ -30,11 +30,9 @@ English documentation: [../en/README.md](../en/README.md)
 ## 项目根文档
 
 - [../../README.md](../../README.md) — 项目总览（安装/运行/命令一览）。
-- [../../CLAUDE.md](../../CLAUDE.md) — AI 协作规则、命令速查、架构分层、红线踩坑、深入文档指针。**改代码前必读**。
 
 ## 文档维护约定
 
-- 路径稳定性：`architecture/design.md` 的 §9.x 章节编号是 CLAUDE.md 多处引用的锚点，**不要随意重排**。
+- 路径稳定性：`architecture/design.md` 的 §9.x 章节编号是内部规则引用的锚点，**不要随意重排**。
 - 历史归档：设计文档中已不在代码中存在的模式直接删除，不再保留「历史归档」节；事故复盘进 git commit message 或 PR 描述。
-- 新增文档：放在合适的子目录（architecture/guides/），并在此 README 与 CLAUDE.md「深入文档」表里同步加指针。
-- 不要把会话级流水账写进 CLAUDE.md；CLAUDE.md 是规则手册，不是变更日志。
+- 新增文档：放在合适的子目录（architecture/guides/），并在此 README 同步加指针。
