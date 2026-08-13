@@ -173,6 +173,16 @@ interface CardActionResponse {
   [key: string]: unknown;
 }
 
+/** propagateConfigSave 返回的结构化切换结果 */
+interface ConfigSwitchResult {
+  /** 切换通知文案（未切换 agent 时为 undefined） */
+  notice: string | undefined;
+  /** 切换后的新 agent（仅 agent 切换时有值） */
+  newAgent?: AgentKind;
+  /** 切换后恢复/使用的 sessionId（空串 = 已清空，undefined = 未切换 agent） */
+  sessionId?: string;
+}
+
 export class CommandRouter {
   /** Valid agent kinds — single source of truth for resume.use / resume.page / cmdResume. */
   static readonly VALID_AGENTS = ['claude', 'codex', 'opencode', 'pi', 'kimi'] as const;
@@ -1445,7 +1455,7 @@ export class CommandRouter {
           this.config = setConfigValues(this.configPath, this.config, updates);
           // P1-6：运行时传播（idleTimeout / clearRunners / syncAgentChoices /
           // defaultAgent 切换的 session 处理）抽到共享方法，与文本直写路径共用。
-          const switchNotice = this.propagateConfigSave(oldDefaultAgent, updates, ctx);
+          const switchResult = this.propagateConfigSave(oldDefaultAgent, updates, ctx);
 
           this.pendingConfig = null;
           // 原地更新卡片：保存后卡片刷新为已保存状态（2026-07-04）
@@ -1459,14 +1469,15 @@ export class CommandRouter {
             );
           }
 
-          // 2026-08-03: agent 切换时发送持久化消息通知用户（toast 不持久化，
-          // 聊天记录不可回溯）；发送失败（resolve false，不 throw）时兜底回退
-          // toast 即时反馈，复用同一个切换文案。
-          if (switchNotice) {
-            const sent = await this.bridge.sendResult({ text: switchNotice }, ctx);
+          // 2026-08-13: agent 切换时发送 Resume 卡片（替代纯文本通知），
+          // 让用户直观看到新 agent 的会话状态和历史。
+          // 发送失败（resolve false）时兜底回退 toast 即时反馈。
+          if (switchResult.notice) {
+            const switchCard = this.buildConfigSwitchCard(switchResult, ctx);
+            const sent = await this.bridge.sendResult(switchCard, ctx);
             if (!sent) {
               return {
-                toast: { type: 'info', content: switchNotice },
+                toast: { type: 'info', content: switchResult.notice },
               };
             }
           }
@@ -1578,13 +1589,13 @@ export class CommandRouter {
    *
    * @param updates 以 config 路径形式给出的变更 key（卡片路径来自 diffConfig；
    *   直写路径传 mapAgentKey(key)，保证 pi./codex./opencode./kimi. 命中 agents.*）。
-   * @returns defaultAgent 切换时的通知文案（未切换返回 undefined）
+   * @returns 结构化切换结果（含 notice 文案 + 新 agent/sessionId 信息）
    */
   private propagateConfigSave(
     oldDefaultAgent: AgentKind,
     updates: Record<string, string | undefined>,
     ctx: CommandContext,
-  ): string | undefined {
+  ): ConfigSwitchResult {
     this.bridge.setConfig(this.config);
     // idle.watchdogMinutes 改动需同步到 bridge 的 idleTimeoutMs
     this.idleTimeoutMs = this.config.idle.watchdogMinutes * 60_000;
@@ -1612,14 +1623,13 @@ export class CommandRouter {
     // 同时清除新 agent 的 sessionId（等效于 /new 命令），
     // 并支持 session 恢复 - 切换回来时如果条件满足则恢复之前的 session。
     let switchNotice: string | undefined;
+    let switchNewAgent: AgentKind | undefined;
+    let switchSessionId: string | undefined;
     if (hasDefaultAgentChange) {
       const newAgent = this.config.defaultAgent;
+      switchNewAgent = newAgent;
 
       // Step 0: 在清空 old 之前计算「用户活动」基线差（arrival 基线）：
-      // arrivalSessions[old] 是用户最近一次经 config.save 切换「到达」该 agent
-      // 时被赋予的 session id（清空到达 = ''）。当前 session 与到达基线不一致
-      // ⇒ 用户在 oldAgent 上产生过用户活动（发消息 /resume /new /cd 等，均
-      // 不更新 arrival），离开时恢复必须被阻断。
       const oldSessionId = this.sessionStore.getSessionId(ctx.userId, oldDefaultAgent);
       const oldArrivalSessionId = this.sessionStore.getArrivalSessionId(
         ctx.userId,
@@ -1635,50 +1645,38 @@ export class CommandRouter {
       // Step 2: 清除旧 agent 的 session（保存后清除，为新会话腾出空间）
       this.sessionStore.clearSessionId(ctx.userId, oldDefaultAgent);
 
-      // Step 2.5: 显式选择判定——sessions[new] 非空且不等于到达基线 ⇒ 用户经 /resume
-      // 显式改选了 new 的 session（/resume 不更新 arrival），切换时必须让选择存活。
-      // 优先级：显式选择 > 停车恢复 > 清空；newSessionId 为空（防御）不触发本分支。
+      // Step 2.5: 显式选择判定
       const newSessionId = this.sessionStore.getSessionId(ctx.userId, newAgent);
       const newArrivalSessionId = this.sessionStore.getArrivalSessionId(ctx.userId, newAgent);
       const userSelectedNew =
         !!newSessionId && (newSessionId ?? '') !== (newArrivalSessionId ?? '');
 
-      // Step 3: 恢复判定——previousSessions[newAgent] 存在 且 用户在 oldAgent 上
-      // 没有用户活动（session 未变于到达基线）。判断方法：arrival 基线差
-      // userChangedOld 为 false 时，oldAgent 的 session 只可能是 config.save
-      // 自动恢复/清空得到的，不构成用户活动，恢复不被阻断。
+      // Step 3: 恢复判定
       const previousSessionId = this.sessionStore.getPreviousSessionId(ctx.userId, newAgent);
       const canRestore = !!previousSessionId && !userChangedOld;
 
       if (userSelectedNew) {
-        // 显式选择优先于停车恢复与用户活动阻断：保留 sessions[new]（不动），更新
-        // arrival 基线为所选 session；prev[new] 停车位原样保留（下次离开时会被
-        // sessions[new] 覆盖停车）。
         this.sessionStore.setArrivalSessionId(ctx.userId, newAgent, newSessionId);
         const newAgentName = agentDisplayName(newAgent);
         switchNotice = `已切换到 ${newAgentName}，已使用所选 session，sessionId: ${newSessionId}`;
+        switchSessionId = newSessionId!;
       } else if (canRestore) {
-        // 可以恢复之前的 session
         this.sessionStore.setSessionId(ctx.userId, newAgent, previousSessionId);
-        // 恢复分支消费 previousSessions，并记录新的到达基线（自动恢复的 session
-        // 不构成用户活动，后续离开时 userChangedOld 仍为 false）
         this.sessionStore.clearPreviousSessionId(ctx.userId, newAgent);
         this.sessionStore.setArrivalSessionId(ctx.userId, newAgent, previousSessionId);
         const newAgentName = agentDisplayName(newAgent);
         switchNotice = `已切换到 ${newAgentName}，将继续之前的 session，sessionId: ${previousSessionId}`;
+        switchSessionId = previousSessionId;
       } else {
-        // Step 4: 清除新 agent 的 session（等效于 /new）
         this.sessionStore.clearSessionId(ctx.userId, newAgent, { clearSessionCwd: true });
-        // 清空分支不清除 previousSessions[newAgent]（停车语义：被拒绝的恢复
-        // 机会保留，未来无用户活动的返回仍可恢复）；记录清空到达基线
         this.sessionStore.setArrivalSessionId(ctx.userId, newAgent, '');
         const newAgentName = agentDisplayName(newAgent);
         switchNotice = `已切换到 ${newAgentName}，session 已清空，下次消息将启动新对话`;
+        switchSessionId = '';
       }
     }
 
     // 2026-07-13: 同步 agent 配置到 agentChoices（用于切换 agent 时恢复配置）
-    // 检测是否有当前 agent 的配置变更
     const currentAgent = this.config.defaultAgent;
     const currentAgentConfigKey = `agents.${currentAgent}`;
     const hasCurrentAgentUpdate = Object.keys(updates).some(
@@ -1692,12 +1690,11 @@ export class CommandRouter {
     }
 
     // 2026-07-13: 任何 agent 配置变更或 defaultAgent 切换，都清除 runner 缓存
-    // 否则 runner 仍使用旧配置值
     if (hasDefaultAgentChange || hasAgentConfigChange) {
       this.bridge.clearRunners();
     }
 
-    return switchNotice;
+    return { notice: switchNotice, newAgent: switchNewAgent, sessionId: switchSessionId };
   }
 
   private async executeCommand(
@@ -2215,6 +2212,161 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
     };
 
     return { card };
+  }
+
+  /**
+   * Build card for config.save agent switch.
+   * When the new agent has a restored session, renders a Resume card (mirrors
+   * buildAutoResumeCard) with session history + stop/new buttons.
+   * When the session was cleared, renders a compact notice card instead.
+   */
+  private buildConfigSwitchCard(
+    switchResult: ConfigSwitchResult,
+    ctx: CommandContext,
+  ): CommandResult {
+    const newAgent = switchResult.newAgent!;
+    const agentName = agentDisplayName(newAgent);
+    const cwd = this.sessionStore.getCwd(ctx.userId);
+    const sessionId = switchResult.sessionId;
+
+    // No cwd or no session → compact notice card
+    if (!cwd || !sessionId) {
+      const elements: object[] = [markdownDiv(switchResult.notice!)];
+      // New session button
+      elements.push({
+        tag: 'column_set',
+        columns: [
+          {
+            tag: 'column',
+            width: 'auto',
+            elements: [newSessionButton()],
+          },
+        ],
+      });
+      return {
+        card: {
+          schema: '2.0',
+          config: { wide_screen_mode: true },
+          header: {
+            title: { tag: 'plain_text', content: `🔀 切换到 ${agentName}` },
+          },
+          body: { elements },
+        },
+      };
+    }
+
+    // Has session → Resume card (mirrors buildAutoResumeCard)
+    // Guard: if the session reader for the new agent is not available (e.g. agent
+    // not registered), fall back to compact notice card to avoid NPE.
+    const readerForNewAgent =
+      newAgent === this.config.defaultAgent
+        ? this.sessionReader
+        : this.sessionReaderRegistry.get(newAgent);
+    if (!readerForNewAgent) {
+      // Fallback: compact notice card with the notice text
+      const elements: object[] = [markdownDiv(switchResult.notice!)];
+      elements.push({
+        tag: 'column_set',
+        columns: [
+          {
+            tag: 'column',
+            width: 'auto',
+            elements: [newSessionButton()],
+          },
+        ],
+      });
+      return {
+        card: {
+          schema: '2.0',
+          config: { wide_screen_mode: true },
+          header: { title: { tag: 'plain_text', content: `🔀 切换到 ${agentName}` } },
+          body: { elements },
+        },
+      };
+    }
+
+    const {
+      events: content,
+      usage,
+      isActive,
+      aiTitle,
+      recap,
+      displayTitle,
+      activeRunRunId,
+    } = this.readSessionDisplayState(sessionId, cwd, {
+      agentKind: newAgent,
+      maxEvents: AUTO_RESUME_MAX_EVENTS,
+    });
+
+    let header = `📂 \`${cwd}\`\n已恢复会话: **${sessionId}**`;
+    const sections: string[] = [];
+    if (displayTitle) {
+      const label = aiTitle ? 'AI 标题' : '最近输入';
+      sections.push(`🏷️ **${label}**\n${displayTitle}`);
+    }
+    if (recap) {
+      const recapPreview = recap.length > 200 ? recap.slice(0, 197) + '...' : recap;
+      sections.push(`📝 **Recap**\n${recapPreview}`);
+    }
+    if (sections.length > 0) {
+      header += '\n\n' + sections.join('\n\n──\n\n');
+    }
+
+    const elements: object[] = [markdownDiv(header), { tag: 'hr' }];
+
+    if (content.length === 0) {
+      elements.push(markdownDiv('_该会话暂无新消息可显示（最后一条为用户输入）_'));
+    } else {
+      content.forEach((ev, i) => {
+        elements.push(sessionEventPanel(ev, i, content.length, 2, newAgent));
+      });
+    }
+
+    if (usage) {
+      const usageStr = formatUsageStats(usage, { showResult: true, result: 'success' });
+      elements.push(markdownDiv(usageStr));
+    }
+
+    if (elements.length > 0 && (elements[elements.length - 1] as { tag: string }).tag === 'hr') {
+      elements.pop();
+    }
+
+    // Action buttons
+    const actions: object[] = [];
+    if (isActive) {
+      actions.push({
+        tag: 'button',
+        text: { tag: 'plain_text', content: '⏹ 终止' },
+        type: 'danger',
+        behaviors: [{ type: 'callback', value: { cmd: 'stop', runId: activeRunRunId, cwd } }],
+      } as { tag: string; text: object; type: string; behaviors: object[] });
+    }
+    actions.push(
+      newSessionButton() as { tag: string; text: object; type: string; behaviors: object[] },
+    );
+
+    elements.push({
+      tag: 'column_set',
+      columns: actions.map((btn) => ({
+        tag: 'column',
+        width: 'auto',
+        elements: [btn],
+      })),
+    });
+
+    return {
+      card: {
+        schema: '2.0',
+        config: { wide_screen_mode: true },
+        header: {
+          title: {
+            tag: 'plain_text',
+            content: `${isActive ? '⏳ 切换 Agent（完成中）' : '🔀 切换 Agent'} · ${agentName}`,
+          },
+        },
+        body: { elements },
+      },
+    };
   }
 
   private static readonly LS_PAGE_SIZE = 30;
@@ -3374,8 +3526,18 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
         // clearRunners / syncAgentChoices / defaultAgent 切换）。key 经 mapAgentKey
         // 归一化，pi./codex./opencode./kimi. 命中 agents.* 判定；claude. 与
         // defaultAgent 不再漏判。
-        this.propagateConfigSave(oldDefaultAgent, { [mapAgentKey(key)]: value }, ctx);
+        const switchResult = this.propagateConfigSave(
+          oldDefaultAgent,
+          { [mapAgentKey(key)]: value },
+          ctx,
+        );
         this.pendingConfig = null; // 命令式写盘后清空暂存，避免不一致
+        // 2026-08-13: agent 切换时额外发送 Resume 卡片
+        if (switchResult.notice) {
+          const switchCard = this.buildConfigSwitchCard(switchResult, ctx);
+          // 文本路径返回 config card，Resume card 通过 bridge 异步发送
+          void this.bridge.sendResult(switchCard, ctx);
+        }
         const card = this.buildConfigCard();
         if (discarded > 0 && card.card && typeof card.card === 'object') {
           const body = (card.card as { body?: { elements?: unknown[] } }).body;
