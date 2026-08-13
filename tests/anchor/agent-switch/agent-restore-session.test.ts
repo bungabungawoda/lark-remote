@@ -1,4 +1,5 @@
 import { createMockBridge, createMockSessionReaderRegistry } from '../../lib/bridge-stubs.js';
+import { lastNotice } from '../../lib/agent-switch-helpers.js';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import path from 'node:path';
 import os from 'node:os';
@@ -13,14 +14,13 @@ import type { AppConfig } from '../../../src/config/index.js';
  *
  * 验证场景：
  * 1. 用户当前 agent=A，有 sessionId=X
- * 2. 切换 A → B（无消息）→ sendResult 消息: "已切换到 B，session 已清空"
- * 3. 切换 B → A（无消息）→ sendResult 消息: "已切换到 A，将继续之前的 session，sessionId: X"
+ * 2. 切换 A → B（无消息）→ 发送切换卡片
+ * 3. 切换 B → A（无消息）→ 发送 Resume 卡片（含恢复的 sessionId）
  *
  * 如果在 B 上发送了消息（新 session），切回 A 时应清空 A 的 session。
  *
- * 通知形式：2026-08-03 起切换通知由 toast 改为 bridge.sendResult 持久化消息
- * （toast 不持久化，聊天记录不可回溯；依据：用户需求"改为发送消息提醒，因为需要
- * 持久化看到"）。
+ * 通知形式：2026-08-13 起切换通知由纯文本改为 Resume 卡片
+ * （用户需求：切换 agent 后能看到会话状态和历史，而不仅是文本通知）。
  */
 
 // Stub runner
@@ -101,12 +101,10 @@ describe('config.save restores previous session when switching back', () => {
     // 若 sendResult 从未被调用，失败信息直指「行为缺失」而非 TypeError
     const sendResultMock = bridge.sendResult as ReturnType<typeof vi.fn>;
     expect(sendResultMock).toHaveBeenCalledTimes(2);
-    const lastCall = sendResultMock.mock.calls[sendResultMock.mock.calls.length - 1];
-    const lastText = (lastCall[0] as { text: string }).text;
-    expect(lastText).toContain('已切换到');
-    expect(lastText).toContain('Pi');
-    expect(lastText).toContain('继续之前的 session');
-    expect(lastText).toContain('pi-session-123');
+    const notice = lastNotice(bridge.sendResult as ReturnType<typeof vi.fn>);
+    expect(notice).toContain('Pi');
+    expect(notice).toContain('继续之前的 session');
+    expect(notice).toContain('pi-session-123');
     // Success path must NOT return a toast (toast is transient, not persistent)
     expect(response2?.toast).toBeFalsy();
   });
@@ -152,12 +150,10 @@ describe('config.save restores previous session when switching back', () => {
     // 若 sendResult 从未被调用，失败信息直指「行为缺失」而非 TypeError
     const sendResultMock = bridge.sendResult as ReturnType<typeof vi.fn>;
     expect(sendResultMock).toHaveBeenCalledTimes(2);
-    const lastCall = sendResultMock.mock.calls[sendResultMock.mock.calls.length - 1];
-    const lastText = (lastCall[0] as { text: string }).text;
-    expect(lastText).toContain('已切换到');
-    expect(lastText).toContain('Pi');
-    expect(lastText).toContain('session 已清空');
-    expect(lastText).not.toContain('继续之前的 session');
+    const notice = lastNotice(bridge.sendResult as ReturnType<typeof vi.fn>);
+    expect(notice).toContain('Pi');
+    expect(notice).toContain('session 已清空');
+    expect(notice).not.toContain('继续之前的 session');
     // Success path must NOT return a toast (toast is transient, not persistent)
     expect(response?.toast).toBeFalsy();
   });
