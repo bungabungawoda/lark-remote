@@ -2,6 +2,20 @@ import path from 'node:path';
 import os from 'node:os';
 import { atomicWriteJson } from '../persistence/atomic-write.js';
 import { loadJsonFile } from '../persistence/load-json-file.js';
+import { getLogger } from '../logger/index.js';
+
+/** Internal storage format for each workspace entry. */
+interface WorkspaceEntryData {
+  path: string;
+  lastUsedAt: number;
+}
+
+/** Public view of a workspace entry returned by list(). */
+export interface WorkspaceEntry {
+  name: string;
+  path: string;
+  lastUsedAt: number;
+}
 
 /**
  * Persistent named-alias store for workspace directories.
@@ -9,10 +23,13 @@ import { loadJsonFile } from '../persistence/load-json-file.js';
  * Atomic write (§9.10): writes a temp file then `fs.rename` so a crash
  * mid-write cannot leave a truncated JSON file. On load, a corrupt file
  * is treated as empty (with a warning) so the bridge can still start.
+ *
+ * Data migration: old format `{ alias: "path" }` is normalized to
+ * `{ alias: { path, lastUsedAt: 0 } }` on first load and persisted.
  */
 export class WorkspaceStore {
   private filePath: string;
-  private data: Map<string, string>;
+  private data: Map<string, WorkspaceEntryData>;
 
   constructor(filePath?: string) {
     this.filePath = filePath ?? path.join(os.homedir(), '.lark-remote', 'workspace.json');
@@ -21,26 +38,55 @@ export class WorkspaceStore {
   }
 
   private load(): void {
-    const parsed = loadJsonFile<Record<string, string> | undefined>(this.filePath, undefined);
+    const parsed = loadJsonFile<Record<string, unknown> | undefined>(this.filePath, undefined);
     if (!parsed) return;
+
+    let needsMigration = false;
     for (const [k, v] of Object.entries(parsed)) {
-      if (typeof v === 'string') this.data.set(k, v);
+      if (typeof v === 'string') {
+        // Old format: string value → { path, lastUsedAt: 0 }
+        this.data.set(k, { path: v, lastUsedAt: 0 });
+        needsMigration = true;
+      } else if (
+        typeof v === 'object' &&
+        v !== null &&
+        typeof (v as Record<string, unknown>).path === 'string'
+      ) {
+        // New format: extract path and lastUsedAt (default 0 if missing)
+        const obj = v as Record<string, unknown>;
+        const lastUsedAt = typeof obj.lastUsedAt === 'number' ? obj.lastUsedAt : 0;
+        if (typeof obj.lastUsedAt !== 'number') {
+          if (obj.lastUsedAt !== undefined) {
+            getLogger().warn(
+              `[workspace] "${k}" has invalid lastUsedAt (${JSON.stringify(obj.lastUsedAt)}), resetting to 0`,
+            );
+          }
+          needsMigration = true;
+        }
+        this.data.set(k, { path: obj.path as string, lastUsedAt });
+      }
+      // Non-string, non-object entries are silently skipped (existing behavior)
+    }
+
+    // Write back immediately if migration occurred
+    if (needsMigration) {
+      this.persist();
     }
   }
 
   private persist(): void {
-    const obj: Record<string, string> = {};
+    const obj: Record<string, WorkspaceEntryData> = {};
     for (const [k, v] of this.data) obj[k] = v;
     atomicWriteJson(this.filePath, obj);
   }
 
   save(name: string, dirPath: string): void {
-    this.data.set(name, dirPath);
+    this.data.set(name, { path: dirPath, lastUsedAt: 0 });
     this.persist();
   }
 
   get(name: string): string | undefined {
-    return this.data.get(name);
+    return this.data.get(name)?.path;
   }
 
   has(name: string): boolean {
@@ -52,7 +98,26 @@ export class WorkspaceStore {
     this.persist();
   }
 
-  list(): [string, string][] {
-    return [...this.data.entries()];
+  /**
+   * Update lastUsedAt to now for the given alias and persist.
+   * No-op if the alias does not exist.
+   */
+  touch(name: string): void {
+    const entry = this.data.get(name);
+    if (!entry) return;
+    entry.lastUsedAt = Date.now();
+    this.persist();
+  }
+
+  /**
+   * List all workspace entries in insertion order.
+   * Sorting is the caller's responsibility (view concern).
+   */
+  list(): WorkspaceEntry[] {
+    return [...this.data.entries()].map(([name, data]) => ({
+      name,
+      path: data.path,
+      lastUsedAt: data.lastUsedAt,
+    }));
   }
 }
