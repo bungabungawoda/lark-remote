@@ -33,4 +33,6 @@ Browse by topic:
 
 ## Maintenance Conventions
 
+- Path stability: `architecture/design.md` §9.x section numbers are cross-referenced from code comments — **do not renumber**.
 - Historical archival: patterns no longer in the codebase are deleted outright, not kept in a "historical archive" section; incident post-mortems go into git commit messages or PR descriptions.
+- New docs: place in the appropriate subdirectory (architecture/guides/) and add a pointer in this README.
