@@ -16,7 +16,7 @@
  *
  * 说明：
  *   fixture 中 token 数值为真实值，逐字保留（脱敏红线的显式豁免，
- *   见 CLAUDE.md 测试约定）；其余字段已重写为合成数据。
+ *   见测试约定）；其余字段已重写为合成数据。
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';

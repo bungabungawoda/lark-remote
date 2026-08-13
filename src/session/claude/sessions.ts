@@ -596,7 +596,7 @@ function scalarScan(filePath: string): ScanResult {
 
     // --- last user message for displayTitle ---
     // Skip: 1) tool_result content, 2) isCompactSummary (recap),
-    //       3) isMeta (skill injection / command echo / CLAUDE.md)
+    //       3) isMeta (skill injection / command echo / project rules)
     if (obj.type === 'user' && !obj.isCompactSummary && !obj.isMeta) {
       const msg = obj.message as Record<string, unknown> | undefined;
       if (msg?.role === 'user' && msg.content) {

@@ -445,7 +445,7 @@ export class CommandRouter {
           }
           return;
         }
-        // AGENTS.md red-line: miss paths must reply via bridge.sendResult —
+        // Design constraint: miss paths must reply via bridge.sendResult —
         // don't silently swallow unknown card actions.
         getLogger().warn(`[router] unknown card action: ${value.cmd}`);
         await this.bridge.sendResult({ text: `⚠️ 未知的卡片操作: ${value.cmd}` }, ctx);
