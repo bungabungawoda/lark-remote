@@ -570,8 +570,8 @@ function setupMessageHandlers(
     if (actionValue.cmd === 'stop') {
       if (!actionValue.runId) {
         logger.warn('[control] ignored stop card action without runId');
-        // Card button clicks must have visible feedback (AGENTS.md 红线：卡片按钮
-        // 点击必须有可见反馈，见 design.md §6.2)。
+        // Card button clicks must have visible feedback (design constraint:
+        // card button clicks must have visible feedback, see design.md §6.2).
         void bridge
           .sendResult({ text: '⚠️ 无效的停止请求，缺少必要信息' }, { userId, chatId, messageId })
           .catch((err: unknown) => logger.error('[control] card stop feedback failed:', err));

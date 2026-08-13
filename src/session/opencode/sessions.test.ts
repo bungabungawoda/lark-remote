@@ -75,7 +75,7 @@ describe('OpencodeSessionReader - L1: empty output handling', () => {
 
   it('parses valid JSON array output normally', () => {
     // Use a real temp dir so realpath resolves consistently. Production receives
-    // a realpath from SessionStore (CLAUDE.md: cwd stored as realpath-resolved),
+    // a realpath from SessionStore (cwd stored as realpath-resolved),
     // and opencode's `directory` field is the same realpath — the filter at
     // listSessions:127 compares e.directory === realpath(cwd). A non-existent
     // path makes realpath fall back to the unresolved form (no symlink rewrite),

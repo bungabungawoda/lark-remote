@@ -92,7 +92,7 @@ describe('queue.immediate final feedback must say the target STARTED when it beg
     // 依据：router handleQueueImmediate 步骤 6 注释明文规定最终 toast 是"对未来
     // 事实的承诺"（success toast 承诺"您的消息将立即执行"），因此必须先按最新成员
     // 资格判定；成员资格缺失只有"撤销"与"开始执行"两种原因，文案必须区分两者。
-    // CLAUDE.md 卡片反馈红线（反馈不得与事实矛盾、miss 必须可见）同族要求；
+    // 卡片反馈约束（反馈不得与事实矛盾、miss 必须可见）同族要求；
     // A16 锚点已确立"目标在 interrupt 窗口内 begin 是真实可达状态"（T1 结束 →
     // T2 begin 可以在 stop 在途时完成），本测试是该状态的反馈面。
     const sessionStore = new SessionStore();
