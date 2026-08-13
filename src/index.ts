@@ -506,7 +506,9 @@ function setupMessageHandlers(
     if (!workspace && workspaceStore) {
       const workspaces = workspaceStore.list();
       if (workspaces.length > 0) {
-        workspace = workspaces[0][1];
+        // NOTE: fallback uses insertion order, not sort preference — by design
+        // (workspace-sorting.md §9: cwd fallback stays insertion-order for now)
+        workspace = workspaces[0].path;
       }
     }
 

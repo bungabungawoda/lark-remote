@@ -105,7 +105,10 @@ interface BridgeDeps {
   sessionStore: SessionStore;
   config: AppConfig;
   /** Workspace store for fallback when sessionStore has no cwd */
-  workspaceStore?: { get(name: string): string | undefined; list(): [string, string][] };
+  workspaceStore?: {
+    get(name: string): string | undefined;
+    list(): Array<{ name: string; path: string; lastUsedAt: number }>;
+  };
   /** Override the idle watchdog timeout (default 15 min). Tests use a small value. */
   idleTimeoutMs?: number;
   /**
@@ -168,7 +171,10 @@ export class Bridge {
   private connector: BridgeChannel;
   private sessionStore: SessionStore;
   private config: AppConfig;
-  private workspaceStore?: { get(name: string): string | undefined; list(): [string, string][] };
+  private workspaceStore?: {
+    get(name: string): string | undefined;
+    list(): Array<{ name: string; path: string; lastUsedAt: number }>;
+  };
   private idleTimeoutMs: number;
   /** Multi-agent registry. */
   private agentRegistry: AgentRegistry;
@@ -767,7 +773,9 @@ export class Bridge {
     if (!cwd && this.workspaceStore) {
       const workspaces = this.workspaceStore.list();
       if (workspaces.length > 0) {
-        cwd = workspaces[0][1];
+        // NOTE: fallback uses insertion order, not sort preference — by design
+        // (workspace-sorting.md §9: cwd fallback stays insertion-order for now)
+        cwd = workspaces[0].path;
         getLogger().info(`[bridge] resolveCwd fallback cwd=${cwd} (first saved workspace)`);
       }
     }
