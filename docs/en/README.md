@@ -30,11 +30,9 @@ Browse by topic:
 ## Root-level Docs
 
 - [../../README.en.md](../../README.en.md) — Project overview (install / run / command reference).
-- [../../CLAUDE.md](../../CLAUDE.md) — AI collaboration rules, command cheat sheet, architecture layers, red lines & pitfalls, doc pointers. **Required reading before code changes**.
 
 ## Maintenance Conventions
 
-- Path stability: `architecture/design.md` §9.x section numbers are anchors referenced from CLAUDE.md — **do not renumber**.
+- Path stability: `architecture/design.md` §9.x section numbers are anchors referenced from internal rules — **do not renumber**.
 - Historical archival: patterns no longer in the codebase are deleted outright, not kept in a "historical archive" section; incident post-mortems go into git commit messages or PR descriptions.
-- New docs: place in the appropriate subdirectory (architecture/guides/) and add a pointer in both this README and the CLAUDE.md "Deep docs" table.
-- Do not write session-level changelogs into CLAUDE.md; CLAUDE.md is a rulebook, not a change log.
+- New docs: place in the appropriate subdirectory (architecture/guides/) and add a pointer in this README.

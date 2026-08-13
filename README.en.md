@@ -150,7 +150,6 @@ Full docs under [`docs/`](docs/):
 - Template for adding a new agent: [`docs/en/guides/add-new-agent.md`](docs/en/guides/add-new-agent.md)
 - Codex config card guide: [`docs/en/guides/codex-config.md`](docs/en/guides/codex-config.md)
 - Feishu CardKit 2.0 component reference: [Official Feishu docs](https://open.feishu.cn/document/feishu-cards/card-json-v2-components/component-json-v2-overview)
-- AI collaboration rules and red lines: [`CLAUDE.md`](CLAUDE.md)
 
 > This package is a CLI tool only — no programmatic API is exposed.
 
