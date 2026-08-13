@@ -194,16 +194,16 @@ channel.on('cardAction', async (action) => {
 
 ### 6.4 `/ws` 卡片
 
-使用 CardKit 2.0，每个别名两个按钮；列表按 `WS_PAGE_SIZE`（5 条/页）分页，
+使用 CardKit 2.0，每个别名两个按钮；列表按 `WS_PAGE_SIZE`（15 条/页）分页，
 超过一页时底部显示分页栏（`ws.page` 原地刷新）。每行 3 个 body 元素
-（div + column_set + hr），5 行 + 头部 + 排序栏 + 分页栏 ≈ 20 个元素，远低于飞书单卡
+（div + column_set + hr），15 行 + 头部 + 分页栏 = 48 个元素，低于飞书单卡
 `body.elements` 60 个上限（ErrCode 11310 "element exceeds the limit"）；
 删除按钮携带 `offset`，刷新后停留在原页。
 
 ```json
 { "cmd": "ws.use",    "name": "proj-a" }
 { "cmd": "ws.remove", "name": "proj-a", "offset": 0 }
-{ "cmd": "ws.page",   "offset": 5 }
+{ "cmd": "ws.page",   "offset": 15 }
 ```
 
 ### 6.5 Claude 运行卡片
