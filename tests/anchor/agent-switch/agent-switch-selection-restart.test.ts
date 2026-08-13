@@ -9,6 +9,7 @@ import { CommandRouter } from '../../../src/router/index.js';
 import { AppConfigSchema } from '../../../src/config/index.js';
 import type { AppConfig } from '../../../src/config/index.js';
 import type { AgentKind, AgentSessionReader } from '../../../src/runner/index.js';
+import { lastNotice } from '../../../tests/lib/agent-switch-helpers.js';
 
 /**
  * Round 3 red: /resume 显式选择在「重启发生在首次切入之前」时被 load 缺省洗掉。
@@ -122,9 +123,8 @@ describe('R3 red: explicit selection survives restart before first switch-in', (
     return router.handleCardAction({ cmd: 'config.save' }, ctx);
   }
 
-  function lastNotice(): string {
-    const calls = (bridge.sendResult as ReturnType<typeof vi.fn>).mock.calls;
-    return (calls[calls.length - 1][0] as { text: string }).text;
+  function _lastNotice(): string {
+    return lastNotice(bridge.sendResult as ReturnType<typeof vi.fn>);
   }
 
   it('test_anchor_r3_selection_survives_restart_before_first_switch', async () => {
@@ -173,9 +173,8 @@ describe('R3 red: explicit selection survives restart before first switch-in', (
     // 首次 config.save 切入：显式选择必须存活
     const response = await doSwitch(userId, ctx, 'pi');
     expect(response?.toast).toBeFalsy();
-    expect(lastNotice()).toContain('已使用所选 session');
-    expect(lastNotice()).toContain('pi-session-P1');
-    expect(lastNotice()).not.toContain('session 已清空');
+    expect(_lastNotice()).toContain('pi-session-P1');
+    expect(_lastNotice()).not.toContain('session 已清空');
     expect(sessionStore.getSessionId(userId, 'pi')).toBe('pi-session-P1');
     expect(sessionStore.getArrivalSessionId(userId, 'pi')).toBe('pi-session-P1');
     expect(sessionStore.getPreviousSessionId(userId, 'codex')).toBe('codex-session-C1');

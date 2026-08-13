@@ -3493,3 +3493,136 @@ describe('anchor: live re-export (run-renderer/bridge import via router/index.js
     expect(exports.formatUsageStats).toBeDefined();
   });
 });
+
+describe('config switch agent sends Resume card', () => {
+  const ctx = { userId: 'user1', chatId: 'chat1', messageId: 'msg1' };
+
+  /** Extract the last sent card from connector._sent */
+  function lastSentCard(connector: ReturnType<typeof createStubConnector>): TestCard | undefined {
+    const sent = connector._sent;
+    for (let i = sent.length - 1; i >= 0; i--) {
+      const input = sent[i].input as { card?: TestCard };
+      if (input.card) return input.card;
+    }
+    return undefined;
+  }
+
+  it('config.save switching agent with restored session sends Resume card', async () => {
+    const dir = path.join(tmpDir, 'config-switch-resume');
+    fs.mkdirSync(dir, { recursive: true });
+
+    const projectsDir = path.join(tmpDir, 'claude-projects-cfg-switch');
+    const encoded = encodedProjectDir(dir);
+    const projDir = path.join(projectsDir, encoded);
+    fs.mkdirSync(projDir, { recursive: true });
+
+    // Write a session file for claude to find
+    const sid = 'restored-session-001';
+    const body =
+      JSON.stringify({
+        type: 'user',
+        message: { role: 'user', content: [{ type: 'text', text: 'hello from claude' }] },
+      }) +
+      '\n' +
+      JSON.stringify({
+        type: 'assistant',
+        message: { role: 'assistant', content: [{ type: 'text', text: 'hi from claude' }] },
+      });
+    writeSessionJsonl(projDir, sid, dir, body);
+
+    // Set up router with claudeProjectsDir and cwd
+    const { router, sessionStore, connector } = createRouter({ projectsDir });
+    sessionStore.setCwd('user1', dir);
+
+    // Simulate round-trip: claude → codex → claude (with session restore on return)
+    // 1. Set current agent to claude with a session
+    sessionStore.setSessionId('user1', 'claude', sid, dir);
+    // 2. Switch to codex via config card — claude session saved to previousSessions
+    await router.handleCardAction({ cmd: 'config.set', key: 'defaultAgent', option: 'codex' }, ctx);
+    await router.handleCardAction({ cmd: 'config.save' }, ctx);
+    // 3. Now switch back to claude — previousSessions['claude'] has sid, so canRestore=true
+    await router.handleCardAction(
+      { cmd: 'config.set', key: 'defaultAgent', option: 'claude' },
+      ctx,
+    );
+    await router.handleCardAction({ cmd: 'config.save' }, ctx);
+
+    // The last sent card should be a Resume card for the restored claude session
+    const card = lastSentCard(connector);
+    expect(card).toBeDefined();
+    const header = card!.header?.title?.content ?? '';
+    // Header should contain switch indicator and agent name
+    expect(header).toContain('切换 Agent');
+    expect(header).toContain('Claude');
+    // Card body should reference the restored session
+    const texts = collectCardTexts(card!.body?.elements ?? []);
+    const allText = texts.join(' ');
+    expect(allText).toContain(sid);
+  });
+
+  it('config.save switching agent without session sends compact switch card', async () => {
+    const dir = path.join(tmpDir, 'config-switch-no-session');
+    fs.mkdirSync(dir, { recursive: true });
+
+    const { router, sessionStore, connector } = createRouter();
+    sessionStore.setCwd('user1', dir);
+
+    // Toggle defaultAgent to kimi and save — no previous session for kimi
+    await router.handleCardAction({ cmd: 'config.set', key: 'defaultAgent', option: 'kimi' }, ctx);
+    await router.handleCardAction({ cmd: 'config.save' }, ctx);
+
+    // Should send a compact switch card (not plain text, not Resume card)
+    const card = lastSentCard(connector);
+    expect(card).toBeDefined();
+    const header = card!.header?.title?.content ?? '';
+    expect(header).toContain('切换到');
+    expect(header).toContain('Kimi');
+    // Body should contain the notice text
+    const texts = collectCardTexts(card!.body?.elements ?? []);
+    const allText = texts.join(' ');
+    expect(allText).toContain('session 已清空');
+  });
+
+  it('config.save without agent switch does not send switch card', async () => {
+    const dir = path.join(tmpDir, 'config-no-switch');
+    fs.mkdirSync(dir, { recursive: true });
+
+    const { router, sessionStore, connector } = createRouter();
+    sessionStore.setCwd('user1', dir);
+
+    // Toggle a non-agent config and save
+    await router.handleCardAction({ cmd: 'config.toggle', key: 'output.showThinking' }, ctx);
+    const sentBefore = connector._sent.length;
+    await router.handleCardAction({ cmd: 'config.save' }, ctx);
+
+    // No extra message beyond config card update should be sent
+    const switchCards = connector._sent.slice(sentBefore).filter((s) => {
+      const input = s.input as { card?: TestCard };
+      const header = input.card?.header?.title?.content ?? '';
+      return header.includes('切换 Agent') || header.includes('切换到');
+    });
+    expect(switchCards.length).toBe(0);
+  });
+
+  it('/config defaultAgent kimi sends switch card via text command', async () => {
+    const dir = path.join(tmpDir, 'config-cmd-switch');
+    fs.mkdirSync(dir, { recursive: true });
+
+    const { router, sessionStore, connector } = createRouter();
+    sessionStore.setCwd('user1', dir);
+
+    // Text command: /config defaultAgent kimi
+    await router.handle('/config defaultAgent kimi', ctx);
+
+    // Should send a switch card (via bridge.sendResult from text path)
+    // The config card is also sent; check for any card with switch indicator
+    const switchCards = connector._sent.filter((s) => {
+      const input = s.input as { card?: TestCard };
+      const header = input.card?.header?.title?.content ?? '';
+      return header.includes('切换到') || header.includes('切换 Agent');
+    });
+    expect(switchCards.length).toBeGreaterThanOrEqual(1);
+    const header = (switchCards[0].input as { card?: TestCard }).card?.header?.title?.content ?? '';
+    expect(header).toContain('Kimi');
+  });
+});
