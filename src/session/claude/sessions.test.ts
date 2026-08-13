@@ -5,10 +5,10 @@ import os from 'node:os';
 import {
   readSessionContent,
   listClaudeSessions,
-  readCwdFromJsonl,
   getNewestSession,
   isClaudeSessionActive,
 } from '../../session/claude/sessions.js';
+import { parseSessionJsonl } from '../../session/claude/session-index.js';
 
 let tmpDir: string;
 
@@ -328,7 +328,7 @@ describe('cwd decoded from JSONL (regression: 2026-06-21 /resume & /cd paths)', 
   // (`-mnt-data-d-reports`). The only reliable source for cwd is
   // the JSONL `cwd` field written by Claude CLI on every event.
 
-  it('readCwdFromJsonl returns the cwd from a system init line', () => {
+  it('parseSessionJsonl returns the cwd from a system init line', () => {
     const dir = path.join(tmpDir, 'data_d-proj');
     fs.mkdirSync(dir);
     const sid = 'cwd-data-d';
@@ -339,14 +339,14 @@ describe('cwd decoded from JSONL (regression: 2026-06-21 /resume & /cd paths)', 
         '{"type":"result","subtype":"success","session_id":"s"}\n',
     );
 
-    // readCwdFromJsonl must return cwd verbatim, NOT decoded from dir name
-    const cwd = readCwdFromJsonl(path.join(dir, `${sid}.jsonl`));
-    expect(cwd).toBe('/mnt/data_d/reports');
+    // 统一 parser 的 cwdSet 必须包含原样 cwd，NOT 从目录名反推的解码值
+    const cwdSet = parseSessionJsonl(path.join(dir, `${sid}.jsonl`)).cwdSet;
+    expect(cwdSet.has('/mnt/data_d/reports')).toBe(true);
     // The wrong decoded form would be `/mnt/data/d/reports`
-    expect(cwd).not.toBe('/mnt/data/d/reports');
+    expect(cwdSet.has('/mnt/data/d/reports')).toBe(false);
   });
 
-  it('readCwdFromJsonl preserves hyphens in cwd (e.g. lark-remote)', () => {
+  it('parseSessionJsonl preserves hyphens in cwd (e.g. lark-remote)', () => {
     const dir = path.join(tmpDir, 'lark-remote');
     fs.mkdirSync(dir);
     const sid = 'cwd-lark-remote';
@@ -356,10 +356,10 @@ describe('cwd decoded from JSONL (regression: 2026-06-21 /resume & /cd paths)', 
         '{"type":"user","message":{"role":"user","content":[{"type":"text","text":"task"}]}}\n',
     );
 
-    const cwd = readCwdFromJsonl(path.join(dir, `${sid}.jsonl`));
+    const cwdSet = parseSessionJsonl(path.join(dir, `${sid}.jsonl`)).cwdSet;
     // The wrong decoded form would split `my-project` into `my/project`
-    expect(cwd).toBe('/home/user/my-project');
-    expect(cwd).not.toBe('/home/user/my/project');
+    expect(cwdSet.has('/home/user/my-project')).toBe(true);
+    expect(cwdSet.has('/home/user/my/project')).toBe(false);
   });
 
   it('listClaudeSessions filters jsonl files by cwd field across directory-name collisions', () => {
@@ -1024,12 +1024,11 @@ describe('listClaudeSessions - S2 relocated-out gap fix', () => {
     }
   });
 
-  it('test_known_limitation_firstCwd_mismatch_skips_cross_dir_session', () => {
-    // S2 known limitation: a session with firstCwd=A and later cwd=C is NOT
-    // found when querying from C. Phase 2 uses readCwdFromJsonl (first cwd
-    // only), so firstCwd=A ≠ C means it's skipped. The old code with
-    // jsonlContainsCwd could find these (if guard passed), but S2's
-    // readCwdFromJsonl cannot. 0 real instances of this case exist.
+  it('test_anchor_later_cwd_visible_when_file_stays_in_origin_dir', () => {
+    // session-index 修复: 文件在 A 的项目目录、但 cwdSet 含 {A, C} 时，查 C
+    // 必须列出该 session。旧 S2 实现用 readCwdFromJsonl（仅首条 cwd）做跨目录
+    // 兜底，firstCwd=A ≠ C 被跳过；统一 parser 的完整 cwd 集合修掉这个缺口
+    // （A→B→C 连续搬迁场景的同一家族，见 session-index-manual.md「核心 bug 锚点」）。
     const localTmp = fs.mkdtempSync(path.join(os.tmpdir(), 'lark-s2-limit-'));
     try {
       // Session started in A, visited C later. File is in A's project dir.
@@ -1043,12 +1042,11 @@ describe('listClaudeSessions - S2 relocated-out gap fix', () => {
           '{"type":"user","cwd":"/home/user/proj-c","message":{"role":"user","content":"cd to c"}}\n',
       );
 
-      // Phase 1 for proj-c: no files in proj-c's project dir
-      // Phase 2: readCwdFromJsonl returns /home/user/proj-a ≠ /home/user/proj-c → skip
       const sessions = listClaudeSessions('/home/user/proj-c', {
         projectsDir: localTmp,
       });
-      expect(sessions).toHaveLength(0);
+      expect(sessions).toHaveLength(1);
+      expect(sessions[0].sessionId).toBe('cross-proj');
     } finally {
       fs.rmSync(localTmp, { recursive: true, force: true });
     }
@@ -1076,6 +1074,238 @@ describe('listClaudeSessions - S2 relocated-out gap fix', () => {
       const sessions = listClaudeSessions(cwd, { projectsDir: localTmp });
       expect(sessions).toHaveLength(1);
       expect(sessions[0].sessionId).toBe('moved-in');
+    } finally {
+      fs.rmSync(localTmp, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('listClaudeSessions - session-index A→B→C integration', () => {
+  // session-index-manual.md 核心 bug: EnterWorktree 连续搬迁 A→B→C 后，transcript
+  // 文件物理位于 C 的项目目录，cwdSet = {A, B, C}。旧 scanRelocatedSessions 用
+  // readCwdFromJsonl 只取首条 cwd(A) 判等，查 B 时 A !== B 被跳过 → /resume 列表漏列。
+  // 索引按完整 cwd 集合查询，三段 cwd 任一都可列出。
+  function writeAbcRelocatedSession(projectsDir: string, sid: string): void {
+    const encodedC = '/home/user/proj-c'.replace(/\//g, '-');
+    const dirC = path.join(projectsDir, encodedC);
+    fs.mkdirSync(dirC, { recursive: true });
+    const lines = [
+      '{"type":"system","subtype":"init","session_id":"' +
+        sid +
+        '","cwd":"/home/user/proj-a","model":"opus"}',
+      '{"type":"user","cwd":"/home/user/proj-a","message":{"role":"user","content":"start in a"}}',
+      '{"type":"assistant","cwd":"/home/user/proj-a","message":{"id":"m1","role":"assistant","content":[{"type":"text","text":"working"}],"usage":{"input_tokens":100,"output_tokens":10}}}',
+      '{"type":"user","cwd":"/home/user/proj-b","message":{"role":"user","content":"enter worktree b"}}',
+      '{"type":"assistant","cwd":"/home/user/proj-b","message":{"id":"m2","role":"assistant","content":[{"type":"text","text":"done in b"}],"usage":{"input_tokens":200,"output_tokens":20}}}',
+      '{"type":"user","cwd":"/home/user/proj-c","message":{"role":"user","content":"enter worktree c"}}',
+      '{"type":"assistant","cwd":"/home/user/proj-c","message":{"id":"m3","role":"assistant","content":[{"type":"text","text":"done in c"}],"usage":{"input_tokens":300,"output_tokens":30}}}',
+    ];
+    fs.writeFileSync(path.join(dirC, `${sid}.jsonl`), lines.join('\n') + '\n');
+  }
+
+  it('test_anchor_list_includes_intermediate_cwd_after_a_b_c_relocation', () => {
+    // 验证行为: A→B→C 搬迁后，文件在 C 目录、首条 cwd 是 A，listClaudeSessions(B)
+    // 必须列出该 session（完整 cwd 集合含 B）。
+    // 缺失后果: /resume 在中间 cwd(B) 看不到搬迁会话，自动恢复找不到 B 的 session。
+    const localTmp = fs.mkdtempSync(path.join(os.tmpdir(), 'lark-abc-list-'));
+    try {
+      const sid = 'abc-relocated-session';
+      writeAbcRelocatedSession(localTmp, sid);
+
+      const sessions = listClaudeSessions('/home/user/proj-b', { projectsDir: localTmp });
+      expect(sessions).toHaveLength(1);
+      expect(sessions[0].sessionId).toBe(sid);
+    } finally {
+      fs.rmSync(localTmp, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('readSessionContent / isClaudeSessionActive - session-index guard integration', () => {
+  // Slice 3（session-index-manual.md）: 按 ID 恢复与活跃判断走索引定位，定位后
+  // re-stat 比 fingerprint 做实时守卫（拍板 3）；索引 miss / 未构建走旧 fallback。
+  // 以下 fixture 全部用合成数据（AABB UUID / /home/user/... / "placeholder"）。
+
+  const SID = 'aaaaaaaa-1111-2222-3333-444444444444';
+  const CWD_A = '/home/user/project-a';
+  const CWD_B = '/home/user/project-b';
+
+  function writeSessionFile(
+    projectsDir: string,
+    dirName: string,
+    sid: string,
+    cwdSet: string[],
+    tailLines: string[] = [],
+  ): string {
+    const dir = path.join(projectsDir, dirName);
+    fs.mkdirSync(dir, { recursive: true });
+    const lines: string[] = [
+      `{"type":"system","subtype":"init","session_id":"${sid}","cwd":"${cwdSet[0]}","model":"opus"}`,
+      ...cwdSet.map(
+        (c, i) =>
+          `{"type":"user","cwd":"${c}","message":{"role":"user","content":"placeholder ${i}"}}`,
+      ),
+      ...tailLines,
+    ];
+    const filePath = path.join(dir, `${sid}.jsonl`);
+    fs.writeFileSync(filePath, lines.join('\n') + '\n');
+    return filePath;
+  }
+
+  it('test_anchor_index_read_prefers_path_with_matching_cwd_over_direct_dir', () => {
+    // 核心红测试: 请求 cwd B 时，B 的 encoded 目录下存在同名但 cwd 不匹配的文件，
+    // 真正含 cwd B 的 session 在另一个项目目录。旧实现直接命中错误文件 → 守卫拒绝
+    // → 空结果（/resume 读空、token 统计漂移）。索引按 sessionId 检查全部路径，
+    // 用 cwdSet 过滤到正确文件。
+    const localTmp = fs.mkdtempSync(path.join(os.tmpdir(), 'lark-idx-guard-collide-'));
+    try {
+      // 错误文件: 位于 B 的 encoded 目录，但 cwdSet 只有 A（lossy 编码碰撞的现实形态）
+      const encodedB = CWD_B.replace(/\//g, '-');
+      writeSessionFile(localTmp, encodedB, SID, [CWD_A]);
+      // 正确文件: 位于 A 的 encoded 目录，cwdSet = {A, B}
+      const encodedA = CWD_A.replace(/\//g, '-');
+      writeSessionFile(
+        localTmp,
+        encodedA,
+        SID,
+        [CWD_A, CWD_B],
+        [
+          '{"type":"assistant","message":{"id":"m1","role":"assistant","content":[{"type":"text","text":"real b session"}],"usage":{"input_tokens":10,"output_tokens":5}}}',
+        ],
+      );
+
+      // 构建索引（列表触发首次全量扫描）
+      const sessions = listClaudeSessions(CWD_A, { projectsDir: localTmp });
+      // 同一 sessionId 命中两个路径时列表去重为 1；索引仍记录两个路径供按 ID 定位
+      expect(sessions).toHaveLength(1);
+
+      const result = readSessionContent(SID, CWD_B, { projectsDir: localTmp });
+      expect(result.events.map((e) => e.content)).toContain('real b session');
+    } finally {
+      fs.rmSync(localTmp, { recursive: true, force: true });
+    }
+  });
+
+  it('test_anchor_index_read_reparses_on_fingerprint_change_and_accepts_new_cwd', () => {
+    // 拍板 3 正向: 索引构建后文件被 append（fingerprint 变），再次读取必须重解析
+    // 单文件后再守卫，不能用过期 cwdSet 拒绝新 cwd。
+    const localTmp = fs.mkdtempSync(path.join(os.tmpdir(), 'lark-idx-guard-pos-'));
+    try {
+      const encodedA = CWD_A.replace(/\//g, '-');
+      writeSessionFile(localTmp, encodedA, SID, [CWD_A]);
+
+      const sessions = listClaudeSessions(CWD_A, { projectsDir: localTmp });
+      expect(sessions).toHaveLength(1);
+
+      // append B 段 → fingerprint 变化
+      fs.appendFileSync(
+        path.join(localTmp, encodedA, `${SID}.jsonl`),
+        `{"type":"user","cwd":"${CWD_B}","message":{"role":"user","content":"worktree b"}}\n` +
+          '{"type":"assistant","message":{"id":"m2","role":"assistant","content":[{"type":"text","text":"done in b"}],"usage":{"input_tokens":20,"output_tokens":10}}}\n',
+      );
+
+      const result = readSessionContent(SID, CWD_B, { projectsDir: localTmp });
+      expect(result.events.map((e) => e.content)).toContain('done in b');
+    } finally {
+      fs.rmSync(localTmp, { recursive: true, force: true });
+    }
+  });
+
+  it('test_anchor_index_read_rejects_cwd_removed_after_indexing', () => {
+    // 拍板 3 反向: 索引构建时 cwdSet 含 B；文件随后被重写为不含 B。定位后 re-stat
+    // 发现 fingerprint 变 → 重解析 → 守卫拒绝。禁止用过期索引放行（foreign cwd 泄漏）。
+    const localTmp = fs.mkdtempSync(path.join(os.tmpdir(), 'lark-idx-guard-neg-'));
+    try {
+      const encodedA = CWD_A.replace(/\//g, '-');
+      writeSessionFile(
+        localTmp,
+        encodedA,
+        SID,
+        [CWD_A, CWD_B],
+        [
+          '{"type":"assistant","message":{"id":"m1","role":"assistant","content":[{"type":"text","text":"with b"}]}}',
+        ],
+      );
+
+      const sessions = listClaudeSessions(CWD_A, { projectsDir: localTmp });
+      expect(sessions).toHaveLength(1);
+
+      // 重写文件: 只剩 A 段（B 消失）
+      writeSessionFile(
+        localTmp,
+        encodedA,
+        SID,
+        [CWD_A],
+        [
+          '{"type":"assistant","message":{"id":"m2","role":"assistant","content":[{"type":"text","text":"without b"}]}}',
+        ],
+      );
+
+      const result = readSessionContent(SID, CWD_B, { projectsDir: localTmp });
+      expect(result.events).toEqual([]);
+      expect(result.usage).toBeUndefined();
+    } finally {
+      fs.rmSync(localTmp, { recursive: true, force: true });
+    }
+  });
+
+  it('test_anchor_index_read_falls_back_to_projects_scan_on_miss', () => {
+    // 索引 miss（新文件在构建后才出现）→ 精确 sessionId 全目录 fallback 仍工作。
+    const localTmp = fs.mkdtempSync(path.join(os.tmpdir(), 'lark-idx-guard-miss-'));
+    try {
+      const encodedA = CWD_A.replace(/\//g, '-');
+      writeSessionFile(localTmp, encodedA, SID, [CWD_A]);
+
+      listClaudeSessions(CWD_A, { projectsDir: localTmp });
+
+      // 构建后新增 session（不在索引里）
+      const newSid = 'bbbbbbbb-1111-2222-3333-444444444444';
+      writeSessionFile(
+        localTmp,
+        encodedA,
+        newSid,
+        [CWD_A],
+        [
+          '{"type":"assistant","message":{"id":"m9","role":"assistant","content":[{"type":"text","text":"new session"}]}}',
+        ],
+      );
+
+      const result = readSessionContent(newSid, CWD_A, { projectsDir: localTmp });
+      expect(result.events.map((e) => e.content)).toContain('new session');
+    } finally {
+      fs.rmSync(localTmp, { recursive: true, force: true });
+    }
+  });
+
+  it('test_anchor_index_active_rejects_cwd_removed_after_indexing', () => {
+    // isClaudeSessionActive 同守卫: 索引过期 cwdSet 含 B，文件重写后不含 B →
+    // re-stat 重解析 → 拒绝（false），禁止误报活跃。
+    const localTmp = fs.mkdtempSync(path.join(os.tmpdir(), 'lark-idx-guard-active-'));
+    try {
+      const encodedA = CWD_A.replace(/\//g, '-');
+      writeSessionFile(
+        localTmp,
+        encodedA,
+        SID,
+        [CWD_A, CWD_B],
+        [
+          '{"type":"assistant","message":{"id":"m1","role":"assistant","content":[{"type":"text","text":"still going"}]}}',
+        ],
+      );
+
+      listClaudeSessions(CWD_A, { projectsDir: localTmp });
+
+      writeSessionFile(
+        localTmp,
+        encodedA,
+        SID,
+        [CWD_A],
+        [
+          '{"type":"assistant","message":{"id":"m2","role":"assistant","content":[{"type":"text","text":"done"}]}}',
+        ],
+      );
+
+      expect(isClaudeSessionActive(SID, CWD_B, { projectsDir: localTmp })).toBe(false);
     } finally {
       fs.rmSync(localTmp, { recursive: true, force: true });
     }

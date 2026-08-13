@@ -8,15 +8,20 @@ import {
   readJsonlLinesFromOffset,
 } from '../common/jsonl.js';
 import { STALE_MS } from '../common/constants.js';
-import { extractContentBlocks, type ContentBlockMapping } from '../common/content-blocks.js';
+import { extractContentBlocks } from '../common/content-blocks.js';
 import { UsageAccumulator } from '../common/usage-accumulator.js';
-import { getLogger } from '../../logger/index.js';
 import { truncate } from '../../card/card-shared.js';
 import type {
   AgentSession,
   AgentSessionContentEvent,
   AgentSessionUsage,
 } from '../../runner/index.js';
+import {
+  SessionIndex,
+  extractText,
+  isTaskNotificationText,
+  CLAUDE_MAPPING,
+} from './session-index.js';
 
 /**
  * Directory Claude Code uses to store session transcripts for a given cwd.
@@ -25,8 +30,8 @@ import type {
  *
  * Note: this encoding is LOSSY (`disk_d/foo` and `disk-d/foo` both encode to
  * `disk-d-foo`). It is only safe to use the result to **locate** files; never
- * to **decode** a directory name back to a cwd. Use `readCwdFromJsonl` for
- * cwd (regression 2026-06-21 /resume & /cd 路径错乱).
+ * to **decode** a directory name back to a cwd. The cwd must always be read
+ * from the JSONL content (regression 2026-06-21 /resume & /cd 路径错乱).
  */
 function projectDirForCwd(cwd: string, projectsDir: string): string {
   const encoded = cwd.replace(/\//g, '-').replace(/_/g, '-');
@@ -34,44 +39,16 @@ function projectDirForCwd(cwd: string, projectsDir: string): string {
 }
 
 /**
- * Read the FIRST cwd from a Claude session JSONL. Used for display and
- * diagnostics. Claude CLI writes the absolute (symlink-resolved) cwd on
- * every event that produces one; older versions wrote it once on init.
- * Returns the first non-empty value, or undefined if absent.
- *
- * For cwd GUARD checks (list/read), use `jsonlContainsCwd` which accepts
- * any matching cwd field (required for relocated sessions whose first cwd
- * is the pre-relocate path). The directory name under ~/.claude/projects/
- * is lossy (encodes `/` AND `_` as `-`), so it cannot be decoded back to
- * a real path. See regression 2026-06-21 /resume & /cd 路径错乱.
+ * cwd guard for the index-miss fallback (readSessionContent /
+ * isClaudeSessionActive / findSessionFileInProjects): the project-dir
+ * encoding is lossy (N-to-N), so a file located by directory must be verified
+ * to actually belong to the requested cwd. A relocated session contains
+ * MULTIPLE cwd values (pre- and post-relocate) — accept when ANY `cwd` field
+ * matches. Early-stops on the first match (findJsonlLine), keeping the
+ * P2-2 single-pass parse-count anchors intact on the fallback path.
+ * Regression 2026-08-04 EnterWorktree relocate.
  */
-export function readCwdFromJsonl(filePath: string): string | undefined {
-  const line = findJsonlLine(filePath, (l) => {
-    try {
-      const obj = JSON.parse(l);
-      return typeof obj.cwd === 'string' && !!obj.cwd;
-    } catch {
-      return false; // skip malformed line
-    }
-  });
-  if (!line) return undefined;
-  try {
-    return (JSON.parse(line) as { cwd?: string }).cwd;
-  } catch {
-    return undefined;
-  }
-}
-
-/**
- * cwd guard for readSessionContent: the project-dir encoding is lossy
- * (N-to-N), so a file located by directory must be verified to actually
- * belong to the requested cwd. A relocated session contains MULTIPLE cwd
- * values (pre- and post-relocate) — accept when ANY `cwd` field matches
- * (was: first-cwd-only via readCwdFromJsonl, which rejected relocated
- * sessions whose first cwd is the pre-relocate path). Regression
- * 2026-08-04 EnterWorktree relocate.
- */
-function jsonlContainsCwd(filePath: string, cwd: string): boolean {
+function fileContainsCwd(filePath: string, cwd: string): boolean {
   return (
     findJsonlLine(filePath, (l) => {
       try {
@@ -122,93 +99,27 @@ function findSessionFileInProjects(
   // multiple project dirs). Fall back to the first sorted candidate.
   if (cwd) {
     for (const candidate of candidates) {
-      if (jsonlContainsCwd(candidate, cwd)) return candidate;
+      if (fileContainsCwd(candidate, cwd)) return candidate;
     }
   }
   return candidates[0];
 }
 
 /**
- * P1-19: TTL cache for full project listings (mirror codex getSessionIndex's
- * 5s TTL). Repeated /resume pages re-scan the whole project dir per call
- * (readdir + 2 opens/file + full reads for files without a user message);
- * caching the full list within the TTL removes the redundant scans.
+ * Lazily-created in-memory session index per projectsDir (session-index.ts).
+ * First list/read query builds it (full scan); afterwards refresh() is
+ * throttled to a 5s on-demand incremental rescan — no background polling.
+ * Keep-alive across calls so the index is actually reused.
  */
-const LIST_CACHE_TTL_MS = 5000;
-/** Upper bound on cached project listings; FIFO eviction past this. */
-const LIST_CACHE_MAX_ENTRIES = 32;
-const claudeListCache = new Map<string, { builtAt: number; sessions: AgentSession[] }>();
+const sessionIndexByProjectsDir = new Map<string, SessionIndex>();
 
-/**
- * Extract a one-line summary from a session JSONL by finding the first
- * `type: "user"` record and returning its prompt text. Uses streaming
- * early-stop via `findJsonlLine` so only the lines up to the first user
- * message are read (not the entire file). Returns a fallback when the
- * file is unreadable or contains no user message.
- *
- * P2-3 optimization: previously used `readJsonlLines` (full-file slurp)
- * just to get the first user message. Now uses `findJsonlLine` which
- * stops reading as soon as the predicate matches — typically only the
- * first few lines of the file, saving ~99% I/O on large sessions.
- */
-function summarizeSession(filePath: string): string {
-  const line = findJsonlLine(filePath, (l) => {
-    try {
-      const obj: { type?: string; message?: { content?: unknown } } = JSON.parse(l);
-      if (obj.type === 'user' && !!obj.message?.content) {
-        const text = extractText(obj.message.content);
-        return !!text && !isTaskNotificationText(text);
-      }
-      return false;
-    } catch {
-      return false;
-    }
-  });
-  if (!line) return '(无摘要)';
-  try {
-    const obj: { message?: { content?: unknown } } = JSON.parse(line);
-    return extractText(obj.message?.content) ?? '(无摘要)';
-  } catch {
-    return '(无摘要)';
+function ensureSessionIndex(projectsDir: string): SessionIndex {
+  let index = sessionIndexByProjectsDir.get(projectsDir);
+  if (!index) {
+    index = new SessionIndex(projectsDir);
+    sessionIndexByProjectsDir.set(projectsDir, index);
   }
-}
-
-/** Claude-specific field-name mapping for content block extraction. */
-const CLAUDE_MAPPING: ContentBlockMapping = {
-  toolUseType: 'tool_use',
-  toolResultType: 'tool_result',
-  toolInputField: 'input',
-  toolErrorField: 'is_error',
-};
-
-/**
- * Detect Claude CLI sub-agent completion notification text.
- * Claude CLI injects a `type:"user"` record with string content starting
- * with `<task-notification>` when a sub-agent (Agent tool) finishes.
- * These must be excluded from displayTitle/summary — they are machine
- * injections, not real user input. Primary criterion: extracted text
- * starts with `<task-notification` (works for both string and array
- * content since `extractText` is called first). Secondary (optional):
- * `origin.kind === 'task-notification'` (not all CLI versions write it).
- */
-function isTaskNotificationText(text: string): boolean {
-  return text.trimStart().startsWith('<task-notification');
-}
-
-/**
- * Extract first text from a user message.
- * Used by readFirstUserMessage.
- */
-function extractText(content: unknown): string | null {
-  // Handle string content directly (for simple user messages)
-  if (typeof content === 'string' && content.trim()) {
-    return content.trim();
-  }
-  const blocks = extractContentBlocks(content, CLAUDE_MAPPING);
-  // Prefer text block, skip if all blocks are tool_result (user just ran code)
-  const textBlock = blocks.find((b) => b.type === 'text');
-  if (textBlock) return textBlock.content;
-  return null;
+  return index;
 }
 
 /**
@@ -216,11 +127,6 @@ function extractText(content: unknown): string | null {
  * the sessionId (= jsonl filename stem), a one-line summary extracted from
  * the first user message, and the file mtime. Returns an empty array when
  * the project directory doesn't exist or no jsonl has a matching cwd field.
- *
- * We locate the directory via `projectDirForCwd` (lossy but OK for locating
- * a known cwd) and then **verify** each jsonl's cwd field matches. This
- * prevents collision: `disk_d/foo` and `disk-d/foo` both encode to the same
- * directory name, but only the matching cwd field is kept.
  */
 export function listClaudeSessions(
   cwd: string,
@@ -229,170 +135,18 @@ export function listClaudeSessions(
   // 不传 limit = 返回全集不切片；仅显式传值才 slice（契约迁移 plan §2.1，
   // reader 拿全集算 total 后再自己按 offset/limit 切片）。
   const limit = opts.limit;
-  const dir = projectDirForCwd(cwd, opts.projectsDir ?? defaultProjectsDir());
-  const cacheKey = `${dir}\u0000${cwd}`;
-  const cached = claudeListCache.get(cacheKey);
-  let sessions: AgentSession[];
-  if (cached && Date.now() - cached.builtAt < LIST_CACHE_TTL_MS) {
-    sessions = cached.sessions;
-  } else {
-    sessions = scanClaudeSessions(cwd, dir, opts.projectsDir);
-    claudeListCache.set(cacheKey, { builtAt: Date.now(), sessions });
-    // Bound the cache (map iteration order = insertion order).
-    if (claudeListCache.size > LIST_CACHE_MAX_ENTRIES) {
-      const oldest = claudeListCache.keys().next().value;
-      if (oldest !== undefined) claudeListCache.delete(oldest);
-    }
-  }
+  const projectsDir = opts.projectsDir ?? defaultProjectsDir();
+  const index = ensureSessionIndex(projectsDir);
+  // 首次调用延迟全量建索引；之后 5s 按需节流增量刷新（session-index-manual 拍板 3）。
+  index.refresh();
+  // 统一 parser 的完整 cwd 集合 → A→B→C 任意中间 cwd 都可列出（核心 bug 修复）。
+  // readdir 失败时索引保留旧快照（首次失败则为空），与旧扫描的 readdir 兜底等价。
+  const sessions = index.listByCwd(cwd).map((e) => ({
+    sessionId: e.sessionId,
+    summary: e.summary,
+    mtime: e.mtimeMs,
+  }));
   return limit === undefined ? sessions : sessions.slice(0, limit);
-}
-
-/**
- * Scan a single project directory for jsonl files whose cwd field matches
- * the requested cwd. Uses `jsonlContainsCwd` (any cwd field matches) rather
- * than `readCwdFromJsonl` (first cwd only) so that relocated sessions whose
- * first cwd is the pre-relocate path are still found. P1 fix 2026-08-10.
- */
-function scanDirForSessions(cwd: string, dir: string): AgentSession[] {
-  let files: string[];
-  try {
-    files = fs.readdirSync(dir).filter((f) => f.endsWith('.jsonl'));
-  } catch {
-    return [];
-  }
-
-  const sessions: AgentSession[] = [];
-  for (const f of files) {
-    const full = path.join(dir, f);
-    try {
-      const st = fs.statSync(full);
-      // P1 fix: use jsonlContainsCwd (any match) instead of readCwdFromJsonl
-      // (first only). Defends against directory-name collisions AND includes
-      // relocated sessions whose first cwd is the pre-relocate path.
-      if (!jsonlContainsCwd(full, cwd)) continue;
-      const sessionId = f.slice(0, -'.jsonl'.length);
-      sessions.push({
-        sessionId,
-        summary: truncate(summarizeSession(full), 60, { normalizeWhitespace: true }),
-        mtime: st.mtimeMs,
-      });
-    } catch (err) {
-      getLogger().warn(`[session] skip ${f}: ${(err as Error).message}`);
-    }
-  }
-  return sessions;
-}
-
-/**
- * Scan OTHER project subdirectories for jsonl files whose first cwd matches
- * the requested cwd. Used to find sessions that were MOVED OUT of the primary
- * dir by EnterWorktree (which relocates the transcript to the target worktree's
- * project dir). Such sessions always have firstCwd == queryCwd because
- * EnterWorktree happens after session start.
- *
- * Uses `readCwdFromJsonl` (first cwd only) instead of `jsonlContainsCwd`
- * (full-file scan) because:
- * - Relocated-out sessions always have firstCwd == queryCwd → readCwdFromJsonl
- *   is sufficient and ~10× faster (no full-file streaming).
- * - Relocated-IN sessions are found by Phase 1's jsonlContainsCwd in the
- *   primary dir — no need for Phase 2 to find them again.
- *
- * Skips the primary dir (already scanned) and any sessionIds already found
- * (avoids duplicates). S2 fix 2026-08-10.
- */
-function scanRelocatedSessions(
-  cwd: string,
-  primaryDir: string,
-  projectsDir: string,
-  seenIds: Set<string>,
-): AgentSession[] {
-  let entries: string[];
-  try {
-    entries = fs.readdirSync(projectsDir);
-  } catch {
-    return [];
-  }
-
-  const sessions: AgentSession[] = [];
-  for (const entry of entries.sort()) {
-    const subdir = path.join(projectsDir, entry);
-    // Skip the primary dir (already scanned) and non-directories
-    if (subdir === primaryDir) continue;
-    try {
-      if (!fs.statSync(subdir).isDirectory()) continue;
-    } catch {
-      continue;
-    }
-
-    let files: string[];
-    try {
-      files = fs
-        .readdirSync(subdir)
-        .filter((f) => f.endsWith('.jsonl'))
-        .sort();
-    } catch {
-      continue;
-    }
-
-    for (const f of files) {
-      const full = path.join(subdir, f);
-      const sessionId = f.slice(0, -'.jsonl'.length);
-      // Skip sessions already found in the primary dir scan
-      if (seenIds.has(sessionId)) continue;
-      try {
-        const st = fs.statSync(full);
-        // S2: use readCwdFromJsonl (first cwd only) instead of
-        // jsonlContainsCwd (full-file scan). Relocated-out sessions
-        // always have firstCwd == queryCwd.
-        const firstCwd = readCwdFromJsonl(full);
-        if (firstCwd === undefined || firstCwd !== cwd) continue;
-        sessions.push({
-          sessionId,
-          summary: truncate(summarizeSession(full), 60, { normalizeWhitespace: true }),
-          mtime: st.mtimeMs,
-        });
-        // Prevent duplicates if the same sessionId exists in multiple dirs
-        seenIds.add(sessionId);
-      } catch (err) {
-        getLogger().warn(`[session] skip ${f}: ${(err as Error).message}`);
-      }
-    }
-  }
-  return sessions;
-}
-
-/** Uncached scan of a claude project dir (the expensive part being cached).
- *  Phase 1 scans the primary project dir using jsonlContainsCwd (any cwd
- *  match) to find sessions including relocated-in ones.
- *  Phase 2 scans all OTHER project dirs using readCwdFromJsonl (first cwd
- *  only) to find relocated-out sessions (always firstCwd == queryCwd).
- *  S2 fix 2026-08-10: removed the primarySessions.length === 0 guard so
- *  relocated-out sessions are visible even when the primary dir has other
- *  sessions. readCwdFromJsonl is ~10× cheaper than jsonlContainsCwd for
- *  cross-dir scanning.
- */
-function scanClaudeSessions(cwd: string, dir: string, projectsDir?: string): AgentSession[] {
-  const sessions: AgentSession[] = [];
-
-  // Phase 1: scan the primary project dir (fast path)
-  const primarySessions = scanDirForSessions(cwd, dir);
-  sessions.push(...primarySessions);
-
-  // Phase 2: cross-dir fallback for relocated sessions whose transcript
-  // was moved away from the primary dir by EnterWorktree.
-  // Always executed (S2 fix): relocated-out sessions have firstCwd == queryCwd
-  // but are invisible to Phase 1 (file moved away). seenIds prevents
-  // double-counting sessions already found by Phase 1.
-  const effectiveProjectsDir = projectsDir ?? defaultProjectsDir();
-  if (effectiveProjectsDir && dir.startsWith(effectiveProjectsDir)) {
-    const seenIds = new Set(primarySessions.map((s) => s.sessionId));
-    const crossDirSessions = scanRelocatedSessions(cwd, dir, effectiveProjectsDir, seenIds);
-    sessions.push(...crossDirSessions);
-  }
-
-  // Same-mtime ties: secondary key keeps the full order deterministic.
-  sessions.sort((a, b) => b.mtime - a.mtime || a.sessionId.localeCompare(b.sessionId));
-  return sessions;
 }
 
 /** Get the newest session for a given cwd. Returns undefined if none exist. */
@@ -456,24 +210,43 @@ export function isClaudeSessionActive(
   opts: { projectsDir?: string } = {},
 ): boolean {
   const projectsDir = opts.projectsDir ?? defaultProjectsDir();
-  const dir = projectDirForCwd(cwd, projectsDir);
-  let filePath = path.join(dir, `${sessionId}.jsonl`);
-
-  if (!fs.existsSync(filePath)) {
-    // EnterWorktree relocate: transcript moved to the new cwd's project dir.
-    const relocated = findSessionFileInProjects(sessionId, projectsDir, cwd);
-    if (!relocated) return false;
-    filePath = relocated;
+  const index = ensureSessionIndex(projectsDir);
+  if (index.isBuilt) {
+    // 索引定位: findBySessionIdAndCwd 内部 re-stat 比 fingerprint（拍板 3），
+    // cwdSet 匹配即守卫通过，无需再全文件扫一遍。
+    index.refresh();
+    const entry = index.findBySessionIdAndCwd(sessionId, cwd);
+    if (entry) {
+      try {
+        const st = fs.statSync(entry.path);
+        return isSessionActive(entry.path, st.mtimeMs);
+      } catch {
+        return false;
+      }
+    }
   }
 
-  // Verify the jsonl belongs to the requested cwd (any cwd field may match).
-  if (!jsonlContainsCwd(filePath, cwd)) return false;
+  // 索引 miss / 未构建 / 降级 → 精确 sessionId 全目录 fallback + cwd 守卫
+  {
+    const dir = projectDirForCwd(cwd, projectsDir);
+    let filePath = path.join(dir, `${sessionId}.jsonl`);
 
-  try {
-    const st = fs.statSync(filePath);
-    return isSessionActive(filePath, st.mtimeMs);
-  } catch {
-    return false;
+    if (!fs.existsSync(filePath)) {
+      // EnterWorktree relocate: transcript moved to the new cwd's project dir.
+      const relocated = findSessionFileInProjects(sessionId, projectsDir, cwd);
+      if (!relocated) return false;
+      filePath = relocated;
+    }
+
+    // Verify the jsonl belongs to the requested cwd (any cwd field may match).
+    if (!fileContainsCwd(filePath, cwd)) return false;
+
+    try {
+      const st = fs.statSync(filePath);
+      return isSessionActive(filePath, st.mtimeMs);
+    } catch {
+      return false;
+    }
   }
 }
 
@@ -720,20 +493,35 @@ export function readSessionContent(
 } {
   const { maxEvents } = opts;
   const projectsDir = opts.projectsDir ?? defaultProjectsDir();
-  const dir = projectDirForCwd(cwd, projectsDir);
-  let filePath = path.join(dir, `${sessionId}.jsonl`);
+  let filePath: string | undefined;
 
-  if (!fs.existsSync(filePath)) {
-    // EnterWorktree relocate: transcript moved to the new cwd's project dir.
-    const relocated = findSessionFileInProjects(sessionId, projectsDir, cwd);
-    if (!relocated) return { events: [] };
-    filePath = relocated;
+  const index = ensureSessionIndex(projectsDir);
+  if (index.isBuilt) {
+    // 索引定位: findBySessionIdAndCwd 内部 re-stat 比 fingerprint（拍板 3），
+    // cwdSet 匹配即守卫通过，无需再全文件扫一遍（不许在指纹一致时全扫）。
+    index.refresh();
+    const entry = index.findBySessionIdAndCwd(sessionId, cwd);
+    if (entry) filePath = entry.path;
   }
 
-  // Verify the jsonl actually belongs to the requested cwd (dir encoding is
-  // lossy). ANY cwd field may match: relocated sessions contain multiple.
-  if (!jsonlContainsCwd(filePath, cwd)) {
-    return { events: [] };
+  if (filePath === undefined) {
+    // 索引 miss / 未构建 / 降级 → 旧 fallback（精确 sessionId 全目录扫描 + cwd 守卫）
+    const dir = projectDirForCwd(cwd, projectsDir);
+    const direct = path.join(dir, `${sessionId}.jsonl`);
+    if (fs.existsSync(direct)) {
+      filePath = direct;
+    } else {
+      // EnterWorktree relocate: transcript moved to the new cwd's project dir.
+      const relocated = findSessionFileInProjects(sessionId, projectsDir, cwd);
+      if (!relocated) return { events: [] };
+      filePath = relocated;
+    }
+
+    // Verify the jsonl actually belongs to the requested cwd (dir encoding is
+    // lossy). ANY cwd field may match: relocated sessions contain multiple.
+    if (!fileContainsCwd(filePath, cwd)) {
+      return { events: [] };
+    }
   }
 
   // P2-2 + P3-1 + P2-5: First pass STREAMS the file once via
@@ -751,8 +539,8 @@ export function readSessionContent(
   // When the session has NO user message, tailOffset stays -1 and the tail
   // IS the whole file → scan(N) + tail(N) = 2.0× — the known asymptotic
   // upper bound of the body's two-phase design (still better than pre-P2-2's
-  // ~3×). Total parse count adds readCwdFromJsonl's fixed overhead (~2
-  // parses, independent of line count).
+  // ~3×). Total parse count adds the index-miss fallback guard's fixed
+  // early-stop overhead (~2 parses, independent of line count).
   const scan = scalarScan(filePath);
 
   const usage: AgentSessionUsage | undefined =
