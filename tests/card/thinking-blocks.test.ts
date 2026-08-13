@@ -302,6 +302,12 @@ describe('Anchor: result event marks all thinking blocks inactive', () => {
     expect((thinkingBefore[0] as { active: boolean }).active).toBe(true);
 
     // Now the result event arrives — assistant turn is over
+    // system.init must precede result (pre-init result guard §9.22)
+    state = reduceRunState(state, {
+      type: 'system',
+      subtype: 'init',
+      session_id: 'test-session',
+    });
     state = reduceRunState(state, {
       type: 'result',
       subtype: 'success',

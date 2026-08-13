@@ -647,7 +647,10 @@ describe('Bridge.forwardToClaude', () => {
     const errorResult = makeBridge({
       runner: createStubRunner({
         mode: 'streaming',
-        events: [{ type: 'result', subtype: 'error', session_id: 's1' }],
+        events: [
+          { type: 'system', subtype: 'init', session_id: 's1' },
+          { type: 'result', subtype: 'error', session_id: 's1' },
+        ],
       }),
     });
     errorResult.sessionStore.setCwd(ctx.userId, tmpDir);
@@ -674,8 +677,13 @@ describe('Bridge.forwardToClaude', () => {
       connector,
       runner: createStubRunner({
         mode: 'streaming',
+        noAutoInit: true,
         events: [
           { type: 'assistant', message: { content: [{ type: 'text', text: 'fallback body' }] } },
+          // §9.22: no init event — this test intentionally covers the stream-failure
+          // fallback path where no system.init arrives (the card must still render
+          // a terminal state). Including an init would cause push() calls that
+          // produce extra messages when streamCard has failed.
           { type: 'result', subtype: 'success', session_id: 's1' },
         ],
       }),
@@ -1872,23 +1880,22 @@ describe('Bridge finalizing integration tests (§7.3)', () => {
    */
   it('validateBeforeRun early return yields error terminal', async () => {
     // Simulate a runner that validates and returns error without spawning process
-    const runner: Runner = {
-      isRunning: false,
-      stop: async () => {},
-      killOrphan: () => {},
-      registerExitHandlers: () => {},
-      run: async function* () {
-        // Simulate validateBeforeRun failure - yields error result, no process spawned
-        yield {
-          type: 'result',
-          subtype: 'error',
-          session_id: 's11',
-          errorMessage: 'API key not configured',
-        };
-        // No process exit event because process never started
-      },
-    };
-    const { bridge, sessionStore, connector } = makeBridge({ runner });
+    // §9.22: real spawning-runner now yields syntheticInitEvent before validationError;
+    // the mock must match that event ordering.
+    const { bridge, sessionStore, connector } = makeBridge({
+      runner: createStubRunner({
+        mode: 'streaming',
+        events: [
+          { type: 'system', subtype: 'init', session_id: 's11' },
+          {
+            type: 'result',
+            subtype: 'error',
+            session_id: 's11',
+            errorMessage: 'API key not configured',
+          },
+        ],
+      }),
+    });
     sessionStore.setCwd(ctx.userId, tmpDir);
 
     await bridge.forwardToClaude('validate test', ctx);
@@ -1906,12 +1913,20 @@ describe('Bridge finalizing integration tests (§7.3)', () => {
    */
   it('spawn failure yields auth error event leading to error terminal', async () => {
     // Simulate spawn failure (binary not found) - authErrorEvent returns result/error
+    // §9.22: real spawning-runner now yields syntheticInitEvent before authErrorEvent;
+    // the mock must match that event ordering.
     const runner: Runner = {
       isRunning: false,
       stop: async () => {},
       killOrphan: () => {},
       registerExitHandlers: () => {},
       run: async function* () {
+        // Synthetic init (matches spawning-runner's §9.22 fix)
+        yield {
+          type: 'system',
+          subtype: 'init',
+          session_id: 's12',
+        };
         // Simulate authErrorEvent from spawning-runner.ts - yields result/error
         yield {
           type: 'result',
@@ -1931,6 +1946,40 @@ describe('Bridge finalizing integration tests (§7.3)', () => {
     // Should show error due to spawn failure
     expect(cardJson).toContain('不可用');
     expect(cardJson).toContain('claude');
+  });
+
+  /**
+   * Test 13: §9.22 pre-init result guard
+   *
+   * Claude CLI --resume emits a historical result (from the previous turn)
+   * before system.init for the new run. The bridge must ignore the stale result
+   * (no premature finalizing), and the run-state reducer must stay in 'running'.
+   * The real result after init transitions to finalizing normally.
+   */
+  it('pre-init result from resume replay is ignored until system.init', async () => {
+    const { bridge, sessionStore, connector } = makeBridge({
+      runner: createStubRunner({
+        mode: 'streaming',
+        events: [
+          // Stale result from previous turn (resume replay)
+          { type: 'result', subtype: 'success', session_id: 'stale-session' },
+          // Real init for the new run
+          { type: 'system', subtype: 'init', session_id: 'real-session', cwd: tmpDir },
+          // Real result for the new run
+          { type: 'result', subtype: 'success', session_id: 'real-session' },
+        ],
+      }),
+    });
+    sessionStore.setCwd(ctx.userId, tmpDir);
+
+    await bridge.forwardToClaude('resume test', ctx);
+
+    const finalCard = connector._cards.at(-1) as Record<string, unknown>;
+    const cardJson = JSON.stringify(finalCard);
+    // Should end in 'done' (not stuck at finalizing from stale result)
+    expect(cardJson).toContain('已完成');
+    // Should NOT show the stale session
+    expect(cardJson).not.toContain('stale-session');
   });
 });
 
