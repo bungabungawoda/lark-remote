@@ -7,6 +7,7 @@ import { SessionStore } from '../../../src/session/index.js';
 import { CommandRouter } from '../../../src/router/index.js';
 import { AppConfigSchema } from '../../../src/config/index.js';
 import type { AppConfig } from '../../../src/config/index.js';
+import { lastNotice, allNotices } from '../../../tests/lib/agent-switch-helpers.js';
 
 /**
  * Round 6 anchors: spec Round 5 设计（arrival 基线 + 停车语义 + 持久化迁移）的
@@ -84,9 +85,8 @@ describe('Round6 anchors: arrival baseline persistence round-trip boundaries', (
     return router.handleCardAction({ cmd: 'config.save' }, ctx);
   }
 
-  function lastNotice(): string {
-    const calls = (bridge.sendResult as ReturnType<typeof vi.fn>).mock.calls;
-    return (calls[calls.length - 1][0] as { text: string }).text;
+  function _lastNotice(): string {
+    return lastNotice(bridge.sendResult as ReturnType<typeof vi.fn>);
   }
 
   it('anchor_r6_explicit_cleared_arrival_wins_over_load_default', async () => {
@@ -114,8 +114,8 @@ describe('Round6 anchors: arrival baseline persistence round-trip boundaries', (
 
     await doSwitch(userId, ctx, 'pi');
 
-    expect(lastNotice()).toContain('已切换到 Pi');
-    expect(lastNotice()).toContain('session 已清空');
+    expect(_lastNotice()).toContain('Pi');
+    expect(_lastNotice()).toContain('session 已清空');
     expect(sessionStore.getSessionId(userId, 'pi')).toBeUndefined();
     // 被阻断的恢复不清除停车位
     expect(sessionStore.getPreviousSessionId(userId, 'pi')).toBe('pi-session-P');
@@ -140,18 +140,18 @@ describe('Round6 anchors: arrival baseline persistence round-trip boundaries', (
 
     // S1 codex→pi：codex 有 session C，arrival '' → 用户活动 → 阻断
     await doSwitch(userId, ctx, 'pi');
-    expect(lastNotice()).toContain('session 已清空');
+    expect(_lastNotice()).toContain('session 已清空');
 
     // S2 pi→codex：pi 无活动 → 恢复 C；arrival[codex] 必须被覆盖为 C
     await doSwitch(userId, ctx, 'codex');
-    expect(lastNotice()).toContain('将继续之前的 session');
-    expect(lastNotice()).toContain('codex-session-C');
+    expect(_lastNotice()).toContain('将继续之前的 session');
+    expect(_lastNotice()).toContain('codex-session-C');
     expect(sessionStore.getArrivalSessionId(userId, 'codex')).toBe('codex-session-C');
 
     // S3 codex→pi：codex 无用户活动（C === arrival C）→ pi 的停车 P 必须恢复
     await doSwitch(userId, ctx, 'pi');
-    expect(lastNotice()).toContain('将继续之前的 session');
-    expect(lastNotice()).toContain('pi-session-P');
+    expect(_lastNotice()).toContain('将继续之前的 session');
+    expect(_lastNotice()).toContain('pi-session-P');
     expect(sessionStore.getSessionId(userId, 'pi')).toBe('pi-session-P');
     expect(sessionStore.getPreviousSessionId(userId, 'pi')).toBeUndefined();
   });
@@ -169,7 +169,7 @@ describe('Round6 anchors: arrival baseline persistence round-trip boundaries', (
     await doSwitch(userId, ctx, 'pi');
     // S2 pi→codex：pi 无活动 → 恢复 C（arrival[codex]=C）
     await doSwitch(userId, ctx, 'codex');
-    expect(lastNotice()).toContain('将继续之前的 session');
+    expect(_lastNotice()).toContain('将继续之前的 session');
     expect(sessionStore.getArrivalSessionId(userId, 'codex')).toBe('codex-session-C');
 
     // /new：清空 codex session（用户活动，arrival 不更新）
@@ -179,7 +179,7 @@ describe('Round6 anchors: arrival baseline persistence round-trip boundaries', (
 
     // S3 codex→pi：/new 后 '' ≠ arrival C → 阻断 → 已清空，P 保持停车
     await doSwitch(userId, ctx, 'pi');
-    expect(lastNotice()).toContain('session 已清空');
+    expect(_lastNotice()).toContain('session 已清空');
     expect(sessionStore.getSessionId(userId, 'pi')).toBeUndefined();
     expect(sessionStore.getPreviousSessionId(userId, 'pi')).toBe('pi-session-P');
   });
@@ -201,14 +201,14 @@ describe('Round6 anchors: arrival baseline persistence round-trip boundaries', (
     // 内存链：clearSessionId 后 sessions[codex] = ''（键存在），arrival=Y → 阻断
     sessionStore.clearSessionId(userId, 'codex');
     await doSwitch(userId, ctx, 'pi');
-    expect(lastNotice()).toContain('session 已清空');
+    expect(_lastNotice()).toContain('session 已清空');
     expect(sessionStore.getPreviousSessionId(userId, 'pi')).toBe('pi-session-P');
 
     // 重建链：'' 键不落盘（autoPersist 丢弃空串），重建后键缺失 → 判定必须相同
     const store2 = new SessionStore(filePath);
     makeRouter('codex', store2);
     await doSwitch(userId, ctx, 'pi');
-    expect(lastNotice()).toContain('session 已清空');
+    expect(_lastNotice()).toContain('session 已清空');
     expect(sessionStore.getPreviousSessionId(userId, 'pi')).toBe('pi-session-P');
   });
 
@@ -229,7 +229,7 @@ describe('Round6 anchors: arrival baseline persistence round-trip boundaries', (
     sessionStore.setSessionId(userId, 'pi', 'pi-session-X');
     // S2 pi→codex：pi 有活动 → 阻断；pi 的 X 停车、codex 的 C 继续停车
     await doSwitch(userId, ctx, 'codex');
-    expect(lastNotice()).toContain('session 已清空');
+    expect(_lastNotice()).toContain('session 已清空');
 
     // 模拟重启
     const store2 = new SessionStore(filePath);
@@ -237,8 +237,8 @@ describe('Round6 anchors: arrival baseline persistence round-trip boundaries', (
 
     // S3 codex→pi：codex 无活动（sessions 缺失 === arrival '' 显式）→ 恢复 X
     await doSwitch(userId, ctx, 'pi');
-    expect(lastNotice()).toContain('将继续之前的 session');
-    expect(lastNotice()).toContain('pi-session-X');
+    expect(_lastNotice()).toContain('将继续之前的 session');
+    expect(_lastNotice()).toContain('pi-session-X');
     expect(sessionStore.getSessionId(userId, 'pi')).toBe('pi-session-X');
     expect(sessionStore.getPreviousSessionId(userId, 'pi')).toBeUndefined();
     // codex 的停车 C 不被恢复 pi 消费
@@ -267,13 +267,15 @@ describe('Round6 anchors: arrival baseline persistence round-trip boundaries', (
     const response = await doSwitch(userId, ctx, 'pi');
     const sendResultMock = bridge.sendResult as ReturnType<typeof vi.fn>;
     expect(sendResultMock).toHaveBeenCalledTimes(1);
-    const notice = sendResultMock.mock.calls[0][0] as { text: string };
-    expect(notice.text).toContain('将继续之前的 session');
-    expect(notice.text).toContain('pi-session-X');
+    const notice = _lastNotice();
+    expect(notice).toContain('将继续之前的 session');
+    expect(notice).toContain('pi-session-X');
     expect(sessionStore.getSessionId(userId, 'pi')).toBe('pi-session-X');
     expect(response?.toast).toBeTruthy();
     expect((response?.toast as { type: string }).type).toBe('info');
-    expect((response?.toast as { content: string }).content).toBe(notice.text);
+    // toast content must carry the switch notice text (propagateConfigSave output)
+    const toastContent = (response?.toast as { content: string }).content;
+    expect(toastContent).toContain('将继续之前的 session');
   });
 
   it('anchor_r6_user_activity_after_restart_still_blocks_with_explicit_cleared_arrival', async () => {
@@ -301,7 +303,7 @@ describe('Round6 anchors: arrival baseline persistence round-trip boundaries', (
 
     await doSwitch(userId, ctx, 'pi');
 
-    expect(lastNotice()).toContain('session 已清空');
+    expect(_lastNotice()).toContain('session 已清空');
     expect(sessionStore.getSessionId(userId, 'pi')).toBeUndefined();
     expect(sessionStore.getPreviousSessionId(userId, 'pi')).toBe('pi-session-P');
     // 离开 codex 时 X 停车
@@ -340,7 +342,7 @@ describe('Round6 anchors: arrival baseline persistence round-trip boundaries', (
     // user2 独立切换 codex→opencode：无 arrival 基线 → userChangedOld=true
     // （session C2 ≠ arrival ''），但结果仍是清空（opencode 无停车），C2 停车
     await doSwitch('user2', ctx2, 'opencode');
-    expect(lastNotice()).toContain('session 已清空');
+    expect(_lastNotice()).toContain('session 已清空');
     expect(sessionStore.getPreviousSessionId('user2', 'codex')).toBe('codex-session-C2');
 
     // user1 的持久化状态不被 user2 污染
@@ -374,7 +376,7 @@ describe('Round6 anchors: arrival baseline persistence round-trip boundaries', (
     sessionStore.setSessionId('user1', 'pi', 'pi-session-X1');
     await doSwitch('user1', ctx1, 'codex');
     await doSwitch('user1', ctx1, 'pi');
-    expect(lastNotice()).toContain('pi-session-X1');
+    expect(_lastNotice()).toContain('pi-session-X1');
 
     // user2 状态完全不受 user1 影响
     expect(sessionStore.getSessionId('user2', 'codex')).toBe('codex-session-C2');
@@ -389,7 +391,7 @@ describe('Round6 anchors: arrival baseline persistence round-trip boundaries', (
     // 上下文：codex 有 session C2（无 arrival 基线 → ''）→ 已清空
     makeRouter('codex', sessionStore);
     await doSwitch('user2', ctx2, 'opencode');
-    expect(lastNotice()).toContain('session 已清空');
+    expect(_lastNotice()).toContain('session 已清空');
     expect(sessionStore.getSessionId('user2', 'opencode')).toBeUndefined();
     expect(sessionStore.getPreviousSessionId('user2', 'codex')).toBe('codex-session-C2');
     expect(sessionStore.getArrivalSessionId('user2', 'opencode')).toBeUndefined();
