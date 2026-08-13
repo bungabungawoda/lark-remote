@@ -158,6 +158,12 @@ function reduceSystemEvent(state: RunState, event: AgentEvent): RunState {
  */
 function reduceResultEvent(state: RunState, event: AgentEvent): RunState {
   if (event.type !== 'result') return state;
+  // Pre-init result guard: Claude CLI --resume emits a historical result (from
+  // the previous turn) before sending system.init for the new run. Without this
+  // guard, that stale result would prematurely transition to 'finalizing',
+  // freezing the card at "⏳ 等待进程退出" for the entire run duration.
+  // sessionId is set by system.init; undefined means init hasn't arrived yet.
+  if (state.sessionId === undefined) return state;
   const resultEvent = event as ResultEvent;
   const incomingSubtype = event.subtype;
   const incomingErrorMsg =
