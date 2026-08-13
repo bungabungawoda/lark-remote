@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.4] - 2026-08-13
+
+### 新增
+
+- 工作区列表支持 `lastUsedAt` 排序，最近使用的 workspace 排在前面；排序切换 UI 移至卡片上方，明确显示当前模式与切换目标
+- `/config` 卡片：未安装的 Coding Agent 沉底排序，已安装 agent 保持注册顺序；探测结果过期（`undefined`）时保持原位不误沉底
+
+### 修复
+
+- `/ws`、`/order` 卡片分页降为 15 条/页，修复飞书 ErrCode 11310 元素超限
+- workspace 排序相关 P2/P3 review findings 修复
+
 ## [0.1.3] - 2026-08-12
 
 ### 新增
@@ -102,3 +114,4 @@ Initial release.
 [0.1.1]: https://github.com/bungabungawoda/lark-remote/releases/tag/v0.1.1
 [0.1.2]: https://github.com/bungabungawoda/lark-remote/releases/tag/v0.1.2
 [0.1.3]: https://github.com/bungabungawoda/lark-remote/releases/tag/v0.1.3
+[0.1.4]: https://github.com/bungabungawoda/lark-remote/releases/tag/v0.1.4
