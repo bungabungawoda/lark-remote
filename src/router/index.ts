@@ -43,8 +43,19 @@ const AUTO_RESUME_MAX_EVENTS = 5;
 const RESUME_PAGE_SIZE = 5;
 /** /active 卡片每页显示的最大条目数（agent run + bash run 合计）。 */
 const ACTIVE_PAGE_SIZE = 20;
-/** /order 列表页大小；指令超过此数量时显示分页导航栏。 */
-const ORDER_PAGE_SIZE = 20;
+/**
+ * /order 列表页大小；指令超过此数量时显示分页导航栏。
+ * 2026-08-13 实测：每行 2 个元素（div + column_set，行间 hr），20 行 + 分页栏
+ * = 61 个 body 元素，触发飞书 ErrCode 11310 "element exceeds the limit"
+ * （21+ 条指令时第 1 页必炸）。改为 15 行：3*15 - 1 + 2 = 46 个元素，留足余量。
+ */
+const ORDER_PAGE_SIZE = 15;
+/**
+ * /ws 列表页大小。从 15 降为 5：头部 2 + 5 行 × 3（div + column_set + hr）+
+ * 底栏排序 1 + 分页栏 2 ≈ 20 个 body 元素，远低于单卡 60 元素上限（ErrCode 11310），
+ * 留足余量。
+ */
+const WS_PAGE_SIZE = 5;
 /** /resume 列表页内全量预取（readSessionContent）的行数上限；其余行用轻量 summary 兜底。 */
 const RESUME_CONTENT_PREFETCH = 5;
 /**
@@ -72,6 +83,7 @@ interface CommandResult {
  * These bypass the serial queue and execute immediately.
  *
  * ws.use   — /ws list card "使用 <name>"
+ * ws.page  — /ws list card "上一页/下一页"
  * queue.immediate — queue card "立即执行" button (§9.6)
  * queue.cancel    — queue card "撤销" button
  * queue.diagnose  — queue card "诊断" button
@@ -80,6 +92,7 @@ interface CommandResult {
  * new-session — clear sessionId only
  * stop        — interrupt current run
  * ls.file     — send file only
+ * ws.page     — paginate /ws list only
  * ws.remove   — delete workspace alias only
  * resume.use  — set sessionId + agent for correct reader routing
  * help.*      — read-only help commands
@@ -100,7 +113,9 @@ export function isImmediateAction(cmd: string): boolean {
     cmd === 'ls.page' ||
     cmd === 'resume.page' || // control operation: paginate only, never spawns claude
     cmd === 'active.page' || // control operation: paginate active card
+    cmd === 'ws.page' || // control operation: paginate /ws list only
     cmd === 'ws.remove' ||
+    cmd === 'ws.sort' || // control operation: toggle sort mode only
     cmd === 'resume.use' ||
     cmd === 'ws.use' ||
     cmd === 'queue.immediate' ||
@@ -184,6 +199,11 @@ export class CommandRouter {
    * millisecond); the counter guarantees uniqueness regardless of timing.
    */
   private orderExecKeyCounter = 0;
+  /**
+   * Per-user sort preference for /ws list (memory-only, not persisted).
+   * Default 'recent' (most recently used first), can toggle to 'alpha'.
+   */
+  private wsSortPreference = new Map<string, 'recent' | 'alpha'>();
   /**
    * Session reader registry for multi-agent path. Resolves the right
    * reader by `config.defaultAgent` (and per-agent override params).
@@ -309,8 +329,11 @@ export class CommandRouter {
       case 'ls.page':
         return this.handleLsPage(value, ctx);
       case 'ws.use':
-        await this.bridge.sendResult(this.cmdWs(['use', value.name ?? ''], ctx), ctx);
-        return;
+        return await this.handleWsUse(value, ctx);
+      case 'ws.sort':
+        return await this.handleWsSort(value, ctx);
+      case 'ws.page':
+        return await this.handleWsPage(value, ctx);
       case 'ws.remove':
         return await this.handleWsRemove(value, ctx);
       case 'resume.use': {
@@ -1140,12 +1163,53 @@ export class CommandRouter {
   }
 
   /**
+   * Handle ws.use card action: switch to the workspace, then refresh the /ws
+   * list card in place so "recent" sort order is immediately visible.
+   *
+   * Unlike the command-line `/ws use` (which returns text), the card action
+   * uses toast + inplace refresh for a cleaner UX (matching ws.remove/ws.sort).
+   * If auto-resume produces a card, it is sent as a separate reply.
+   */
+  private async handleWsUse(
+    value: { name?: string; offset?: number },
+    ctx: CommandContext,
+  ): Promise<CardActionResponse> {
+    const name = value.name ?? '';
+    const useResult = this.cmdWs(['use', name], ctx);
+
+    // Error cases (workspace not found, path invalid, etc.): relay as error toast
+    if (useResult.text && !useResult.text.includes('已切换')) {
+      return { toast: { type: 'error', content: useResult.text } };
+    }
+
+    // Success: if auto-resume produced a card, send it as a reply
+    if (useResult.card) {
+      await this.bridge.sendResult(useResult, ctx);
+    }
+
+    // Refresh the /ws list card in place so "recent" sort is immediately visible
+    const currentOffset = Math.max(0, Math.trunc(Number(value.offset) || 0));
+    const refreshed = this.cmdWs([], ctx, currentOffset);
+    if (refreshed.card) {
+      await this.bridge.updateCardInPlace(refreshed.card, ctx);
+    }
+
+    // Toast feedback (suppress text when auto-resume card was already sent)
+    return {
+      toast: {
+        type: 'success',
+        content: useResult.card ? '' : (useResult.text ?? `已切换到 workspace "${name}"`),
+      },
+    };
+  }
+
+  /**
    * Handle ws.remove: remove the workspace alias and refresh the /ws list card
    * in place (mirrors handleOrderDelete). Without this the stale alias would
    * remain visible on the card the user just clicked.
    */
   private async handleWsRemove(
-    value: { name?: string },
+    value: { name?: string; offset?: number },
     ctx: CommandContext,
   ): Promise<CardActionResponse | void> {
     const name = value.name;
@@ -1157,11 +1221,48 @@ export class CommandRouter {
     // is discarded — feedback flows through the toast + refreshed card).
     this.cmdWs(['remove', name], ctx);
 
-    // Rebuild the /ws list card and update it in place.
-    const refreshed = this.cmdWs([], ctx);
+    // Rebuild the /ws list card and update it in place, preserving the page
+    // the user was on when they clicked 删除.
+    const currentOffset = Math.max(0, Math.trunc(Number(value.offset) || 0));
+    const refreshed = this.cmdWs([], ctx, currentOffset);
     await this.bridge.updateCardInPlace(refreshed.card!, ctx);
 
     return { toast: { type: 'success', content: `已删除 workspace "${name}"` } };
+  }
+
+  /**
+   * Handle ws.page: paginate the /ws list in place.
+   * Mirrors handleOrderPage — updates the same card, never sends a new one.
+   */
+  private async handleWsPage(
+    value: CardActionPayload,
+    ctx: CommandContext,
+  ): Promise<CardActionResponse> {
+    const offset = Math.max(0, Math.trunc(Number(value.offset) || 0));
+    // cmdWs internally clamps stale/out-of-range offsets
+    const result = this.cmdWs([], ctx, offset);
+    await this.bridge.updateCardInPlace(result.card!, ctx);
+    return { toast: { type: 'success', content: '' } };
+  }
+
+  /**
+   * Handle ws.sort: toggle sort preference and refresh the /ws list card.
+   * Sort preference is memory-only (not persisted); restart resets to 'recent'.
+   */
+  private async handleWsSort(
+    value: CardActionPayload,
+    ctx: CommandContext,
+  ): Promise<CardActionResponse> {
+    const userId = ctx.userId;
+    const current = this.wsSortPreference.get(userId) ?? 'recent';
+    const next = current === 'recent' ? 'alpha' : 'recent';
+    this.wsSortPreference.set(userId, next);
+    const result = this.cmdWs([], ctx, 0);
+    await this.bridge.updateCardInPlace(result.card!, ctx);
+    const nextLabel = next === 'recent' ? '🕐 最近使用' : '🔤 字母顺序';
+    return {
+      toast: { type: 'success', content: `已切换为 ${nextLabel}` },
+    };
   }
 
   /**
@@ -2407,7 +2508,7 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
     }
   }
 
-  private cmdWs(args: string[], ctx: CommandContext): CommandResult {
+  private cmdWs(args: string[], ctx: CommandContext, offset = 0): CommandResult {
     const sub = args[0]?.toLowerCase();
 
     switch (sub) {
@@ -2435,6 +2536,8 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
         } catch {
           return { text: `路径无效: ${wsPath}` };
         }
+        // Record usage timestamp AFTER successful path validation
+        this.workspaceStore.touch(name);
         // Switch cwd with auto-resume and user feedback (shared with /cd and ls.switch)
         return this.switchCwdAndNotify(ctx.userId, canonical, ctx);
       }
@@ -2449,6 +2552,29 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
       default: {
         const entries = this.workspaceStore.list();
         const currentCwd = this.sessionStore.getCwd(ctx.userId);
+        const sortMode = this.wsSortPreference.get(ctx.userId) ?? 'recent';
+
+        // Sort entries by the current preference (view concern, not stored)
+        if (sortMode === 'recent') {
+          // Most recently used first; same lastUsedAt → alphabetical by name (deterministic)
+          entries.sort((a, b) => {
+            if (b.lastUsedAt !== a.lastUsedAt) return b.lastUsedAt - a.lastUsedAt;
+            return a.name.localeCompare(b.name);
+          });
+        } else {
+          // Alphabetical by alias name
+          entries.sort((a, b) => a.name.localeCompare(b.name));
+        }
+
+        // Pagination calculations (mirror cmdOrder): clamp stale/out-of-range
+        // offsets so prev/next always step by WS_PAGE_SIZE.
+        const totalCount = entries.length;
+        const totalPages = Math.max(1, Math.ceil(totalCount / WS_PAGE_SIZE));
+        const maxOffset = Math.max(0, (totalPages - 1) * WS_PAGE_SIZE);
+        const safeOffset = Math.min(Math.max(offset, 0), maxOffset);
+        const currentPage = Math.floor(safeOffset / WS_PAGE_SIZE) + 1;
+        const pageEntries = entries.slice(safeOffset, safeOffset + WS_PAGE_SIZE);
+        const hasPagination = totalCount > WS_PAGE_SIZE;
 
         // Build body elements: current cwd + workspace list with dividers
         const bodyElements: object[] = [];
@@ -2458,18 +2584,57 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
           tag: 'div',
           text: { tag: 'lark_md', content: `📂 当前工作目录：\`${currentCwd ?? '(未设置)'}\`` },
         });
-        bodyElements.push({ tag: 'hr' });
 
         if (entries.length === 0) {
+          bodyElements.push({ tag: 'hr' });
           bodyElements.push({
             tag: 'div',
             text: { tag: 'lark_md', content: '没有保存的 workspace' },
           });
         } else {
-          entries.forEach(([name, p]) => {
+          // Sort mode indicator + toggle button: placed above the list so the user
+          // sees "current mode" and "switch to X" before scanning entries.
+          // On narrow (mobile) screens, the label and button must convey both
+          // what-is-active and what-clicking-does to avoid ambiguity.
+          const currentLabel = sortMode === 'recent' ? '🕐 最近使用' : '🔤 字母顺序';
+          const switchLabel = sortMode === 'recent' ? '🔤 字母顺序' : '🕐 最近使用';
+          bodyElements.push({ tag: 'hr' });
+          bodyElements.push({
+            tag: 'column_set',
+            columns: [
+              {
+                tag: 'column',
+                width: 'weighted',
+                weight: 1,
+                vertical_align: 'center',
+                elements: [
+                  {
+                    tag: 'div',
+                    text: { tag: 'lark_md', content: `排序：${currentLabel}` },
+                  },
+                ],
+              },
+              {
+                tag: 'column',
+                width: 'auto',
+                elements: [
+                  {
+                    tag: 'button',
+                    text: { tag: 'plain_text', content: `切换为 ${switchLabel}` },
+                    type: 'default',
+                    size: 'small',
+                    behaviors: [{ type: 'callback', value: { cmd: 'ws.sort' } }],
+                  },
+                ],
+              },
+            ],
+          });
+          bodyElements.push({ tag: 'hr' });
+
+          for (const entry of pageEntries) {
             bodyElements.push({
               tag: 'div',
-              text: { tag: 'lark_md', content: `**${name}** → \`${p}\`` },
+              text: { tag: 'lark_md', content: `**${entry.name}** → \`${entry.path}\`` },
             });
             // Use column_set+column for 2.0 (action tag not supported in 2.0)
             bodyElements.push({
@@ -2484,7 +2649,12 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
                       text: { tag: 'plain_text', content: '切换' },
                       type: 'primary',
                       size: 'small',
-                      behaviors: [{ type: 'callback', value: { cmd: 'ws.use', name } }],
+                      behaviors: [
+                        {
+                          type: 'callback',
+                          value: { cmd: 'ws.use', name: entry.name, offset: safeOffset },
+                        },
+                      ],
                     },
                   ],
                 },
@@ -2497,15 +2667,89 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
                       text: { tag: 'plain_text', content: '删除' },
                       type: 'danger',
                       size: 'small',
-                      behaviors: [{ type: 'callback', value: { cmd: 'ws.remove', name } }],
+                      behaviors: [
+                        {
+                          type: 'callback',
+                          value: { cmd: 'ws.remove', name: entry.name, offset: safeOffset },
+                        },
+                      ],
                     },
                   ],
                 },
               ],
             });
             bodyElements.push({ tag: 'hr' });
-          });
+          }
           bodyElements.pop();
+
+          // Pagination bar — separate row below the list (not crowded with sort
+          // toggle; mobile-friendly vertical layout).
+          if (hasPagination) {
+            const hasPrev = safeOffset > 0;
+            const hasNext = safeOffset + WS_PAGE_SIZE < totalCount;
+
+            const pageColumns: object[] = [];
+            if (hasPrev) {
+              pageColumns.push({
+                tag: 'column',
+                width: 'auto',
+                vertical_align: 'center',
+                elements: [
+                  {
+                    tag: 'button',
+                    text: { tag: 'plain_text', content: '⬅' },
+                    type: 'default',
+                    size: 'small',
+                    behaviors: [
+                      {
+                        type: 'callback',
+                        value: { cmd: 'ws.page', offset: safeOffset - WS_PAGE_SIZE },
+                      },
+                    ],
+                  },
+                ],
+              });
+            }
+            pageColumns.push({
+              tag: 'column',
+              width: 'weighted',
+              weight: 1,
+              vertical_align: 'center',
+              elements: [
+                {
+                  tag: 'div',
+                  text: {
+                    tag: 'lark_md',
+                    content: `**${currentPage}/${totalPages}**（${totalCount}）`,
+                  },
+                },
+              ],
+            });
+            if (hasNext) {
+              pageColumns.push({
+                tag: 'column',
+                width: 'auto',
+                vertical_align: 'center',
+                elements: [
+                  {
+                    tag: 'button',
+                    text: { tag: 'plain_text', content: '➡' },
+                    type: 'default',
+                    size: 'small',
+                    behaviors: [
+                      {
+                        type: 'callback',
+                        value: { cmd: 'ws.page', offset: safeOffset + WS_PAGE_SIZE },
+                      },
+                    ],
+                  },
+                ],
+              });
+            }
+
+            bodyElements.push({ tag: 'hr' });
+            bodyElements.push({ tag: 'column_set', columns: pageColumns });
+          }
         }
 
         const card = {

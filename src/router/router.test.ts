@@ -43,12 +43,14 @@ type TestCardElement = {
   tag?: string;
   text?: { content?: string };
   actions?: Array<{
-    value?: { cmd?: string; name?: string; sessionId?: string };
+    value?: { cmd?: string; name?: string; sessionId?: string; offset?: number };
     text?: { content?: string };
   }>;
   columns?: Array<{ elements?: TestCardElement[] }>;
-  behaviors?: Array<{ value?: { cmd?: string; name?: string; sessionId?: string } }>;
-  value?: { cmd?: string; name?: string; sessionId?: string };
+  behaviors?: Array<{
+    value?: { cmd?: string; name?: string; sessionId?: string; offset?: number };
+  }>;
+  value?: { cmd?: string; name?: string; sessionId?: string; offset?: number };
 };
 
 type TestCard = {
@@ -56,6 +58,20 @@ type TestCard = {
   body?: { elements?: TestCardElement[] };
   elements?: TestCardElement[];
 };
+
+/** 递归收集卡片正文文本（含 column_set 内嵌 div/按钮的 text）。 */
+function collectCardTexts(elements: TestCardElement[]): string[] {
+  const out: string[] = [];
+  for (const el of elements) {
+    if (el.text?.content) out.push(el.text.content);
+    for (const col of el.columns ?? []) {
+      for (const child of col.elements ?? []) {
+        if (child.text?.content) out.push(child.text.content);
+      }
+    }
+  }
+  return out;
+}
 function createBackgroundRunningRunner(events: AgentEvent[]) {
   let release: () => void = () => {};
   const wait = new Promise<void>((resolve) => {
@@ -1165,13 +1181,19 @@ describe('CommandRouter', () => {
       .flatMap((e) => (e.columns ?? []).flatMap((c) => c.elements ?? []))
       .filter((b) => b.tag === 'button');
 
-    // 每个 workspace 恰好两个按钮：切换 + 删除（无多余按钮）
-    expect(buttons.length).toBe(2);
+    // 每个 workspace 恰好两个按钮：切换 + 删除；上方还有一个排序切换按钮
+    expect(buttons.length).toBe(3);
     const labels = buttons.map((b) => b.text?.content);
     expect(labels).toContain('切换');
     expect(labels).toContain('删除');
-    // 按钮文案不带 workspace 名字
-    expect(labels.every((l: string | undefined) => !l?.includes('proj'))).toBe(true);
+    // 排序切换按钮用"切换为 X"文案（包含 emoji 和目标模式名）
+    expect(labels.some((l) => l?.includes('切换为'))).toBe(true);
+    // 按钮文案不含 workspace 名字
+    expect(
+      labels
+        .filter((l) => !l?.includes('最近') && !l?.includes('字母'))
+        .every((l: string | undefined) => !l?.includes('proj')),
+    ).toBe(true);
 
     // callback value 仍带 name 识别操作目标
     const useBtn = buttons.find((b) => b.behaviors?.[0]?.value?.cmd === 'ws.use');
@@ -1226,6 +1248,156 @@ describe('CommandRouter', () => {
     );
     const allButtons = buttons2x.map((b) => b.value?.cmd);
     expect(allButtons).toContain('ws.use');
+  });
+
+  it('/ws list paginates at 5 per page: 8 workspaces → 5 rows + nav', async () => {
+    // WS_PAGE_SIZE = 5: with 8 workspaces, first page shows 5 + sort/pagination bar.
+    const { router, sessionStore, connector } = createRouter();
+    sessionStore.setCwd('user1', fs.realpathSync(tmpDir));
+    for (let i = 0; i < 8; i++) {
+      await router.handle(`/ws save ws${String(i).padStart(2, '0')}`, ctx);
+    }
+    await router.handle('/ws list', ctx);
+
+    const input = connector._sent[connector._sent.length - 1].input as { card: TestCard };
+    expect(input.card).toBeDefined();
+    // 200861 铁律：2.0 卡片不得出现 tag:action + actions
+    expect(JSON.stringify(input.card)).not.toMatch(/"tag"\s*:\s*"action"[^}]*"actions"/);
+
+    const elements = input.card.body!.elements ?? [];
+    // 新布局：1(cwd) + 3(sort指示: hr+column_set+hr) + 5*3(行) - 1(末行 hr 被 pop) + 1(hr) + 1(分页column_set) = 19
+    expect(elements.length).toBeLessThanOrEqual(60);
+
+    const texts = collectCardTexts(elements);
+    // 第一页只渲染 ws00..ws04，ws05 不得出现
+    expect(texts.some((t) => t.includes('ws00'))).toBe(true);
+    expect(texts.some((t) => t.includes('ws04'))).toBe(true);
+    expect(texts.some((t) => t.includes('ws05'))).toBe(false);
+    expect(texts.some((t) => t.includes('1/2'))).toBe(true);
+    expect(texts.some((t) => t.includes('8）'))).toBe(true);
+
+    const buttons = elements
+      .flatMap((e) => (e.columns ?? []).flatMap((c) => c.elements ?? []))
+      .filter((b) => b.tag === 'button');
+    const cmds = buttons.map((b) => b.behaviors?.[0]?.value?.cmd);
+    // 5 行 × (切换+删除) + sort + 下一页
+    expect(cmds.filter((c) => c === 'ws.use' || c === 'ws.remove').length).toBe(10);
+    expect(cmds).toContain('ws.sort');
+    expect(cmds).toContain('ws.page');
+    // Sort toggle button shows target mode ("切换为 X")
+    expect(buttons.some((b) => b.text?.content?.includes('切换为'))).toBe(true);
+    // Sort indicator text shows current mode
+    expect(texts.some((t) => t.includes('排序：'))).toBe(true);
+  });
+
+  it('ws.sort toggles from recent to alpha and back', async () => {
+    const { router, sessionStore, connector } = createRouter();
+    sessionStore.setCwd('user1', fs.realpathSync(tmpDir));
+    await router.handle('/ws save beta', ctx);
+    await router.handle('/ws save alpha', ctx);
+
+    // Default sort is recent — both have lastUsedAt=0, so alphabetical tiebreak
+    await router.handle('/ws list', ctx);
+    const input = connector._sent[connector._sent.length - 1].input as { card: TestCard };
+    let texts = collectCardTexts(input.card.body!.elements ?? []);
+    // Both have lastUsedAt=0, tiebreak by name: alpha first, then beta
+    expect(texts.some((t) => t.includes('alpha'))).toBe(true);
+    expect(texts.some((t) => t.includes('beta'))).toBe(true);
+
+    // Toggle to alpha sort
+    await router.handleCardAction({ cmd: 'ws.sort' }, ctx);
+    const sortCard = connector._cards[connector._cards.length - 1] as {
+      body: { elements: TestCardElement[] };
+    };
+    texts = collectCardTexts(sortCard.body.elements);
+    // Alpha sort: alpha first
+    const alphaIdx = texts.findIndex((t) => t.includes('alpha'));
+    const betaIdx = texts.findIndex((t) => t.includes('beta'));
+    expect(alphaIdx).toBeLessThan(betaIdx);
+
+    // Toggle back to recent
+    await router.handleCardAction({ cmd: 'ws.sort' }, ctx);
+    const recentCard = connector._cards[connector._cards.length - 1] as {
+      body: { elements: TestCardElement[] };
+    };
+    const sortButtons = recentCard.body.elements
+      .flatMap((e) => (e.columns ?? []).flatMap((c) => c.elements ?? []))
+      .filter((b) => b.tag === 'button');
+    // After toggling back to recent, the button offers "切换为 字母顺序"
+    expect(sortButtons.some((b) => b.text?.content?.includes('切换为'))).toBe(true);
+    // Sort indicator shows current mode
+    const sortTexts = collectCardTexts(recentCard.body.elements);
+    expect(sortTexts.some((t) => t.includes('排序：'))).toBe(true);
+  });
+
+  it('ws.use after touch reorders list in recent mode', async () => {
+    const { router, sessionStore, connector } = createRouter();
+    sessionStore.setCwd('user1', fs.realpathSync(tmpDir));
+    // Three workspaces: all lastUsedAt=0, so initial order is alphabetical (alpha → first → second)
+    await router.handle('/ws save alpha', ctx);
+    await router.handle('/ws save first', ctx);
+    await router.handle('/ws save second', ctx);
+
+    // Use "first" — it should move to top in recent sort (lastUsedAt > 0 beats 0)
+    await router.handleCardAction({ cmd: 'ws.use', name: 'first' }, ctx);
+
+    // Check the refreshed card: "first" should appear before "alpha"
+    // (if touch didn't work, alphabetical tiebreak would keep alpha before first — false positive)
+    const refreshedCard = connector._cards.at(-1) as { body: { elements: TestCardElement[] } };
+    expect(refreshedCard).toBeDefined();
+    const texts = collectCardTexts(refreshedCard.body.elements);
+    const firstIdx = texts.findIndex((t) => t.includes('first'));
+    const alphaIdx = texts.findIndex((t) => t.includes('alpha'));
+    expect(firstIdx).toBeLessThan(alphaIdx);
+  });
+
+  it('ws.sort is in immediate-action whitelist', () => {
+    expect(isImmediateAction('ws.sort')).toBe(true);
+  });
+
+  it('ws.page paginates at 5 per page', async () => {
+    const { router, sessionStore, connector } = createRouter();
+    sessionStore.setCwd('user1', fs.realpathSync(tmpDir));
+    for (let i = 0; i < 8; i++) {
+      await router.handle(`/ws save ws${String(i).padStart(2, '0')}`, ctx);
+    }
+    await router.handleCardAction({ cmd: 'ws.page', offset: 5 }, ctx);
+
+    // 更新走 updateCardInPlace → connector._cards
+    expect(connector._cards.length).toBeGreaterThan(0);
+    const card = connector._cards[connector._cards.length - 1] as {
+      body: { elements: TestCardElement[] };
+    };
+    const elements = card.body.elements;
+    const texts = collectCardTexts(elements);
+    expect(texts.some((t) => t.includes('ws05'))).toBe(true);
+    expect(texts.some((t) => t.includes('ws07'))).toBe(true);
+    expect(texts.some((t) => t.includes('ws00'))).toBe(false);
+    expect(texts.some((t) => t.includes('2/2'))).toBe(true);
+
+    const buttons = elements
+      .flatMap((e) => (e.columns ?? []).flatMap((c) => c.elements ?? []))
+      .filter((b) => b.tag === 'button');
+    // Second page has prev button
+    expect(buttons.some((b) => b.text?.content === '⬅')).toBe(true);
+  });
+
+  it('ws.remove from second page deletes and refreshes current page', async () => {
+    const { router, sessionStore, connector } = createRouter();
+    sessionStore.setCwd('user1', fs.realpathSync(tmpDir));
+    for (let i = 0; i < 8; i++) {
+      await router.handle(`/ws save ws${String(i).padStart(2, '0')}`, ctx);
+    }
+    await router.handleCardAction({ cmd: 'ws.remove', name: 'ws06', offset: 5 }, ctx);
+
+    // 删除走 handleWsRemove：updateCardInPlace 刷新同一页
+    expect(connector._cards.length).toBeGreaterThan(0);
+    const card = connector._cards[connector._cards.length - 1] as {
+      body: { elements: TestCardElement[] };
+    };
+    const texts = collectCardTexts(card.body.elements);
+    expect(texts.some((t) => t.includes('ws06'))).toBe(false);
+    expect(texts.some((t) => t.includes('ws07'))).toBe(true);
   });
 
   it('/resume without cwd prompts to /cd', async () => {
@@ -2404,7 +2576,8 @@ describe('CommandRouter', () => {
       // cmdWsUse canonicalizes via realpathSync to match Claude JSONL cwd.
       expect(entry?.cwd).toBe(fs.realpathSync(tmpDir));
       expect(entry?.sessions?.get('claude')).toBe('');
-      expect((connector._sent[1].input as { text: string }).text).toContain('已切换到');
+      // ws.use card action refreshes the list card in place (toast feedback, not sendResult)
+      expect(connector._cards.length).toBeGreaterThan(0);
     });
 
     // REGRESSION TEST: Problem 1 - ws.use when user has NO cwd set
@@ -2428,8 +2601,8 @@ describe('CommandRouter', () => {
       // Expected: workspace should switch successfully
       const entry = sessionStore.get('user1');
       expect(entry?.cwd).toBe(fs.realpathSync(tmpDir));
-      // Should have sent a result card
-      expect(connector._sent.length).toBeGreaterThan(0);
+      // ws.use card action refreshes the list card in place
+      expect(connector._cards.length).toBeGreaterThan(0);
     });
 
     // REGRESSION TEST: Verify ws.use fails gracefully when workspace name is missing
@@ -2441,12 +2614,10 @@ describe('CommandRouter', () => {
       connector._sent.length = 0; // Clear previous messages
 
       // Call ws.use WITHOUT name field (simulating potential card payload issue)
-      await router.handleCardAction({ cmd: 'ws.use' }, ctx);
+      const result = await router.handleCardAction({ cmd: 'ws.use' }, ctx);
 
-      // Should return error message, not crash
-      expect(connector._sent.length).toBe(1);
-      const result = connector._sent[0].input as { text: string };
-      expect(result.text).toContain('用法');
+      // Should return error toast, not crash
+      expect(result).toEqual({ toast: { type: 'error', content: '用法: /ws use <name>' } });
     });
 
     // RED TEST: Problem 2 - queue.immediate should execute the message immediately
@@ -3156,6 +3327,22 @@ describe('/active card pagination', () => {
     expect(cardStr).not.toContain('bash-5');
     // Has next button
     expect(cardStr).toContain('active.page');
+  });
+
+  it('max page stays under Feishu element budget (11310 guard)', async () => {
+    // 2026-08-13 排查：/active 每页最多 20 行 × 4 元素 + 页信息 + 两个分组头 +
+    // 分页栏 = 84 个 body 元素，实测远低于飞书 ErrCode 11310 阈值（纯 div ~99，
+    // 2 列分栏 ~86，/active 结构实测 86 总组件通过）。此守卫防止未来每行
+    // 增加元素（如状态行拆分）导致满页超限。
+    const agentRuns = makeAgentRuns(15);
+    const bashRuns = makeBashRuns(20);
+    const { router, connector } = createActiveRouter(agentRuns, bashRuns);
+    await router.handle('/active', { userId: 'user1', chatId: 'chat1', messageId: 'msg1' });
+    const card = (connector._sent[0].input as { card?: { body?: { elements?: unknown[] } } }).card!;
+    const elements = card.body?.elements ?? [];
+    // 页信息 1 + Agent 头 1 + 15*4 + Bash 头 1 + 5*4 + 分页栏 1 = 84
+    expect(elements.length).toBe(84);
+    expect(elements.length).toBeLessThanOrEqual(90);
   });
 
   it('shows page indicator (e.g. 1/2)', async () => {
