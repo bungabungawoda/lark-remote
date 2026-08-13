@@ -122,7 +122,7 @@ describe(' idle watchdog: result event must re-arm (anchor)', () => {
    *   result 分支不刷新 lastEventTs。t=0 收到 text 后停滞到 t=1500（>1000ms）即误触发
    *   fireIdleTimeout：一个已产出 result 的 turn 被标成「已自动终止」+ reaction 错标
    *   Alarm 而非 Done；result 后 CLI 做 jsonl flush/清理期间（finalizing 过渡）被掐断。
-   *   架构文档 §9.12 红线明文「result 事件后必须 resetIdle() 重新武装」。
+   *   Design constraint: result 事件后必须 resetIdle() 重新武装。
    *
    */
   it('anchor: result event re-arms the idle watchdog (no idle_timeout, no runner.stop)', async () => {

@@ -2640,6 +2640,7 @@ describe('CommandRouter', () => {
     });
 
     it('unknown cmd replies with a visible warning (regression: silent swallow)', async () => {
+      // Design constraint: miss paths must reply via bridge.sendResult so the
       // tap is not silently swallowed.
       const { router, connector } = createRouter();
       await router.handleCardAction({ cmd: 'bogus' }, ctx);

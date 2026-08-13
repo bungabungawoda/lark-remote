@@ -5,7 +5,7 @@
  * - `approval_policy="never"` eliminates the approval handshake (root cause ①).
  * - Prompt goes via stdin (`-` flag) to avoid argv escaping issues.
  * - `--skip-git-repo-check`: lark-remote's cwd may not be a git repo.
- * - User's `~/.codex/config.toml` and AGENTS.md/CLAUDE.md rules are preserved
+ * - User's `~/.codex/config.toml` and project rules are preserved
  *   (no `--ignore-user-config` / `--ignore-rules`).
  */
 

@@ -364,6 +364,7 @@ describe('/restart 命令', () => {
       expect(child.on).toHaveBeenCalledWith('error', expect.any(Function));
       expect(child.unref).toHaveBeenCalled();
 
+      // pid undefined → 必须抛错（spawn 同步失败路径，ENOENT 红线）
       spawnMock.mockReturnValueOnce({ pid: undefined, on: vi.fn(), unref: vi.fn() });
       expect(() => spawnReplacementBridge(logsDir)).toThrow(/no pid/);
     } finally {
