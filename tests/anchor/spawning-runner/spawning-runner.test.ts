@@ -571,9 +571,15 @@ describe('SpawningRunner.run() spawn orchestration', () => {
     }
 
     expect(caught).toBeUndefined();
-    expect(events).toHaveLength(1);
+    // §9.22: spawning-runner now yields syntheticInitEvent before authErrorEvent
+    // so the bridge's pre-init result guard doesn't silently drop the error.
+    expect(events).toHaveLength(2);
 
-    const event = events[0] as any;
+    const initEvent = events[0] as any;
+    expect(initEvent.type).toBe('system');
+    expect(initEvent.subtype).toBe('init');
+
+    const event = events[1] as any;
     expect(event.type).toBe('result');
     expect(event.subtype).toBe('error');
     expect(typeof event.errorMessage).toBe('string');

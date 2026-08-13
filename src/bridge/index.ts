@@ -1006,6 +1006,12 @@ export class Bridge {
       // Extract agent-specific options from config
       const agentOpts = this.getAgentRunOptions(agentKind);
       const runOpts = { cwd, sessionId, ...agentOpts };
+      // Track whether system.init has been received for this run.
+      // Claude CLI --resume emits a stale result (from the previous turn)
+      // before sending system.init; bridge must not treat that as the run
+      // ending (sawResult, usage capture, or cardSession.push would all
+      // be wrong for the historical event).
+      let sawInit = false;
 
       for await (const event of runner.run(message, runOpts)) {
         // 只有终态才阻止事件处理。finalizing 是非终态，应该继续处理
@@ -1020,6 +1026,7 @@ export class Bridge {
           continue;
         }
         if (event.type === 'system' && event.subtype === 'init') {
+          sawInit = true;
           // 代际守卫：run 在途时 /new（或 new-session 卡片、/cd、/resume、
           // /config 切换）移动了 session 指针，此 init 的写回是 stale 的——
           // 跳过，否则 /new 的清空会被在途 run 静默撤销（2026-08-09 事故：
@@ -1076,6 +1083,21 @@ export class Bridge {
           contextLength = event.compactMetadata.postTokens;
         }
         if (event.type === 'result') {
+          // Pre-init result guard: Claude CLI --resume emits a stale result
+          // (from the previous turn) before system.init. Ignoring it prevents
+          // premature sawResult/usage capture and the run-state reducer (which
+          // also guards on sessionId === undefined) from transitioning to
+          // finalizing too early. The real result for this run arrives after
+          // system.init.
+          if (!sawInit) {
+            getLogger().info(`[bridge] pre-init result ignored (resume replay) runId=${runId}`);
+            // Still reset idle timer — the CLI is alive and producing events.
+            resetIdle();
+            // Do NOT push to cardSession: the run-state reducer would also
+            // skip it (sessionId === undefined), but skipping at the bridge
+            // layer avoids the push + render overhead for a no-op event.
+            continue;
+          }
           sawResult = true;
           resultWasError = event.subtype === 'error';
           getLogger().info(`[bridge] result event received runId=${runId}`);

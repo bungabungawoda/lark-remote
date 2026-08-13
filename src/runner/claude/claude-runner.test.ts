@@ -509,8 +509,10 @@ it('yields_error_event_when_binary_not_found', async () => {
       events.push(event);
     }
 
-    expect(events).toHaveLength(1);
-    const result = events[0];
+    // §9.22: spawning-runner yields syntheticInitEvent + authErrorEvent (2 events)
+    expect(events).toHaveLength(2);
+    expect(events[0].type).toBe('system');
+    const result = events[1];
     if (result.type !== 'result') throw new Error('expected result event');
     expect(result.subtype).toBe('error');
     expect(result.errorMessage).toMatch(/不可用|not found|ENOENT/i);

@@ -209,6 +209,12 @@ export interface StubRunnerOpts {
   events?: import('../../src/runner/index.js').AgentEvent[];
   /** When true, include getStatusInfo returning { kind: 'claude', model: 'test-model' }. */
   withStatusInfo?: boolean;
+  /**
+   * When true, skip auto-injecting a synthetic system.init before the first
+   * result event (§9.22). Use this for tests that intentionally cover the
+   * "no init arrived" path (e.g. stream-failure fallback).
+   */
+  noAutoInit?: boolean;
 }
 
 /**
@@ -221,6 +227,27 @@ export interface StubRunnerOpts {
  */
 export function createStubRunner(opts?: StubRunnerOpts): Runner {
   const mode = opts?.mode ?? 'throw';
+  // §9.22: bridge pre-init result guard requires system.init before result.
+  // Auto-inject a synthetic init when the events list has a result but no init,
+  // so existing test mocks don't all need manual init events.
+  // Skip when noAutoInit is set (for tests that intentionally cover no-init paths).
+  let events = opts?.events ?? [];
+  if (mode === 'streaming' && !opts?.noAutoInit && events.length > 0) {
+    const hasInit = events.some(
+      (e) => e.type === 'system' && (e as { subtype?: string }).subtype === 'init',
+    );
+    const hasResult = events.some((e) => e.type === 'result');
+    if (hasResult && !hasInit) {
+      events = [
+        {
+          type: 'system',
+          subtype: 'init',
+          session_id: 'stub-session',
+        } as import('../../src/runner/index.js').AgentEvent,
+        ...events,
+      ];
+    }
+  }
   return {
     isRunning: false,
     stop: async () => {},
@@ -238,7 +265,7 @@ export function createStubRunner(opts?: StubRunnerOpts): Runner {
       : mode === 'streaming'
         ? {
             run: async function* () {
-              for (const e of opts?.events ?? []) yield e;
+              for (const e of events) yield e;
             },
           }
         : {
