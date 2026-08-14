@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import type { Runner, AgentRunner } from '../runner/index.js';
+import type { Runner, AgentRunner, AgentEvent, AgentSessionReader } from '../runner/index.js';
 import type { AgentRegistry } from '../runner/registry.js';
 import type { SessionReaderRegistry, SessionStore } from '../session/index.js';
 import type { AppConfig } from '../config/index.js';
@@ -23,6 +23,8 @@ import {
   type EnqueueOptions,
   type AgentBinding,
 } from './queue-manager.js';
+import { ApprovalCoordinator, decisionToApprovalAction } from './approval-coordinator.js';
+import type { ApprovalAction, ApprovalToggleAction } from './approval-coordinator.js';
 
 /**
  * Max events to read for the completion notification card (mirror router's
@@ -31,6 +33,9 @@ import {
  * budget (review §P1-21).
  */
 const COMPLETION_NOTIFICATION_MAX_EVENTS = 5;
+
+/** Approval request timeout (ms) — pending approval expires after this. */
+const APPROVAL_TIMEOUT_MS = 5 * 60 * 1000;
 
 /**
  * Max idle time (no stdout events) before a claude run is considered hung
@@ -71,6 +76,7 @@ interface BridgeChannel extends RunCardChannel {
   reconnect(): Promise<void>;
   sendFile(chatId: string, filePath: string): Promise<string>;
   addReaction(messageId: string, emoji: string): Promise<void>;
+  removeReactionByEmoji(messageId: string, emoji: string): Promise<void>;
 }
 
 /** Caller context for a bridge operation. */
@@ -193,6 +199,16 @@ export class Bridge {
   private queueManager: QueueManager;
   /** Active runs per workspace (cwd). Multiple workspaces can run in parallel. */
   private activeRuns = new Map<string, ActiveRun>();
+  /** Approval coordinators keyed by runId. */
+  private approvalCoordinators = new Map<string, ApprovalCoordinator>();
+  /**
+   * 最近一次已完成的 codex app-server run（按 cwd）。run 结束后 activeRuns
+   * 已清空，Compact 需要它来校验 runId 并提供 sessionId。
+   */
+  private lastCompactableCodexRun = new Map<
+    string,
+    { runId: string; sessionId: string; agentKind: AgentKind }
+  >();
 
   /**
    * Active `!` bash runs, keyed by runId (NOT cwd). Bash runs bypass the serial
@@ -317,6 +333,11 @@ export class Bridge {
     const evicted = workspaceMap.get(kind);
     if (evicted && typeof evicted.unregisterExitHandlers === 'function') {
       evicted.unregisterExitHandlers();
+    }
+    // App-server runner owns a persistent connection — dispose it so the
+    // `codex app-server` child process does not leak across runs/evictions.
+    if (evicted && typeof evicted.dispose === 'function') {
+      void evicted.dispose();
     }
     workspaceMap.delete(kind);
     if (workspaceMap.size === 0) {
@@ -710,6 +731,18 @@ export class Bridge {
       return false;
     } catch (err) {
       getLogger().error('[bridge] failed to send result:', err);
+      // 不静默：向用户发送一条纯文本消息，告知具体错误（如飞书 11310 element exceeds
+      // the limit）。如果用户看到空白无反馈，无法判断是命令无效还是卡片发送失败。
+      try {
+        const errMsg = (err as Error).message ?? String(err);
+        await this.connector.sendWithRetry(
+          ctx.chatId,
+          { text: `⚠️ 卡片发送失败：${errMsg}` },
+          { replyTo: ctx.messageId },
+        );
+      } catch (fallbackErr) {
+        getLogger().error('[bridge] fallback text send also failed:', fallbackErr);
+      }
       return false;
     }
   }
@@ -738,9 +771,10 @@ export class Bridge {
       await this.connector.updateCard(ctx.messageId, card);
       return true;
     } catch (err) {
-      getLogger().warn(
-        `[bridge] updateCardInPlace failed, falling back to sendResult: ${(err as Error).message}`,
-      );
+      const errMsg = (err as Error).message ?? String(err);
+      getLogger().warn(`[bridge] updateCardInPlace failed, falling back to sendResult: ${errMsg}`);
+      // 先尝试 fallback 发卡片；若卡片本身有问题（如 11310），
+      // sendResult 内部 catch 会发纯文本通知用户。
       await this.sendResult({ card }, ctx);
       return false;
     }
@@ -917,6 +951,13 @@ export class Bridge {
     message: string,
     agentKind: AgentKind = this.config.defaultAgent,
   ): Promise<void> {
+    // Runner 声明的 usage 权威来源（review P3-7）：codex exec = 'jsonl'，
+    // codex app-server = 'live'（turn/started 的 tokenUsage.last 是本 turn 增量）。
+    // 其余 runner 未声明，回退到 agentKind 推断（仅 codex 视为 jsonl-first）。
+    const usageAuthority = (
+      runner as Runner & { getUsageAuthority?: () => 'live' | 'jsonl' }
+    ).getUsageAuthority?.();
+
     // P2-1: idle watchdog 用单 interval + lastEventTs 截止时间判定，而非每事件
     // clearTimeout + setTimeout 重建 timer。高频事件流下 timer 重建次数与事件数
     // 成正比（N 事件 = N 次 setTimeout + N 个闭包/秒）；interval 方案只建一个
@@ -926,7 +967,7 @@ export class Bridge {
     let idleInterval: NodeJS.Timeout | null = null;
     let sawResult = false;
     // 记录 result 是否为 error: error 时跳过 jsonl usage 读取 (见 stream end 处说明)
-    let resultWasError = false;
+    let resultNotSuccess = false;
     // Final usage read from jsonl after the run completes. live stream-json does
     // not emit compact_boundary, so the live contextLength is unreliable.
     let finalContextLength: number | undefined;
@@ -940,6 +981,10 @@ export class Bridge {
     // done card shows real values instead of the 10% estimate.
     let liveInputTokens: number | undefined;
     let liveOutputTokens: number | undefined;
+    // Real context window limit from the live result event (codex app-server
+    // carries it in ResultEvent.usage.context_limit). jsonl wins when present;
+    // live is the fallback (app-server error runs / jsonl 未落盘时).
+    let liveContextLimit: number | undefined;
     // Final input/output for the done card: live value wins (codex/opencode
     // carry per-run usage in the result event); jsonl is the fallback for
     // agents whose live stream has no usage (kimi).
@@ -1074,6 +1119,24 @@ export class Bridge {
             `[bridge] system.init received runId=${runId} sessionId=${event.session_id} cwd=${event.cwd}`,
           );
         }
+        if (event.type === 'turn_started') {
+          // app-server runner 在 turn setup 成功后补发 synthetic system.init
+          // （§9.22 守卫前提），此处 turn_started 写回保留为双保险：两者都用
+          // threadId 写回 sessionId（代际守卫一致），幂等。缺失会导致每次消息
+          // 都新建线程（thread/start 而非 thread/resume），会话无法延续。
+          const pointerMoved =
+            this.sessionStore.getSessionEpoch(ctx.userId, agentKind) !== sessionEpochAtStart;
+          if (!pointerMoved) {
+            this.sessionStore.setSessionIdAndCwd(ctx.userId, agentKind, event.threadId, cwd);
+            getLogger().info(
+              `[bridge] turn_started session write-back runId=${runId} sessionId=${event.threadId}`,
+            );
+          } else {
+            getLogger().info(
+              `[bridge] turn_started write-back skipped: session pointer moved since run start runId=${runId} sessionId=${event.threadId}`,
+            );
+          }
+        }
         // Track context length from compaction events
         if (
           event.type === 'system' &&
@@ -1089,7 +1152,14 @@ export class Bridge {
           // also guards on sessionId === undefined) from transitioning to
           // finalizing too early. The real result for this run arrives after
           // system.init.
-          if (!sawInit) {
+          //
+          // Exception: app-server runners (usageAuthority === 'live') 的 init
+          // 是 runner 补发的 synthetic init（2026-08-13 修复）。此分支保留为
+          // 防御性兜底：任何 live runner 若在无 init 时发出 result（如旧构建、
+          // 其它 live runner），session 写回仍执行，但 sawResult 保持 false，
+          // 卡片不会把半初始化的 run 当作已收尾。
+          const preInitResult = !sawInit;
+          if (preInitResult && usageAuthority !== 'live') {
             getLogger().info(`[bridge] pre-init result ignored (resume replay) runId=${runId}`);
             // Still reset idle timer — the CLI is alive and producing events.
             resetIdle();
@@ -1098,9 +1168,31 @@ export class Bridge {
             // layer avoids the push + render overhead for a no-op event.
             continue;
           }
-          sawResult = true;
-          resultWasError = event.subtype === 'error';
-          getLogger().info(`[bridge] result event received runId=${runId}`);
+          if (!preInitResult) {
+            sawResult = true;
+          }
+          resultNotSuccess = event.subtype !== 'success';
+          getLogger().info(
+            preInitResult
+              ? `[bridge] pre-init result from live runner (app-server setup failure) runId=${runId}`
+              : `[bridge] result event received runId=${runId}`,
+          );
+
+          // app-server 模式 setup 失败路径（thread/start 成功后 turn/start 失败）
+          // 不会有 turn_started 事件，store 不会写回新线程 id；runner 已在 result
+          // 里兜底上报（review P3-10）。此处仅当 runner 声明 live usage（app-server）
+          // 且会话指针未动时写回，避免下条消息再开一个孤儿线程。exec 模式与其
+          // 余 agent 不在此列（它们各自有 system.init / turn_started 写回）。
+          if (
+            usageAuthority === 'live' &&
+            event.session_id &&
+            this.sessionStore.getSessionEpoch(ctx.userId, agentKind) === sessionEpochAtStart
+          ) {
+            this.sessionStore.setSessionIdAndCwd(ctx.userId, agentKind, event.session_id, cwd);
+            getLogger().info(
+              `[bridge] result session write-back runId=${runId} sessionId=${event.session_id}`,
+            );
+          }
 
           // result 后进入 finalizing 非终态（暂存 subtype/errorMsg），由 for-await
           // 自然结束后在 finally 转 done/error。提取 usage 信息。
@@ -1118,6 +1210,7 @@ export class Bridge {
             // Input/Output 是本 run、Cache/Total 是 session 累计的混 scope 问题。
             liveInputTokens = u.inputTokens;
             liveOutputTokens = u.outputTokens;
+            liveContextLimit = u.contextLimit;
             if (u.cacheReadTokens !== undefined) {
               finalCacheReadTokens = u.cacheReadTokens;
             }
@@ -1128,6 +1221,62 @@ export class Bridge {
               finalTotalTokens = u.totalTokens;
             }
           }
+        }
+        // Approval events (Codex app-server mode)
+        if (event.type === 'approval_requested') {
+          // 审批请求到达：撤回 Typing 表情再重发，让飞书重新触发提醒，把用户
+          // 注意力拉回待审批的卡片（run 在等待人工决策，Typing 应重新闪烁）。
+          void (async () => {
+            try {
+              await this.connector.removeReactionByEmoji(ctx.messageId, 'Typing');
+            } catch (err) {
+              getLogger().warn(
+                `[bridge] remove Typing reaction failed runId=${runId}: ${errorMessage(err)}`,
+              );
+            }
+            try {
+              await this.connector.addReaction(ctx.messageId, 'Typing');
+            } catch (err) {
+              getLogger().warn(
+                `[bridge] re-add Typing reaction failed runId=${runId}: ${errorMessage(err)}`,
+              );
+            }
+          })();
+          let coordinator = this.approvalCoordinators.get(runId);
+          if (!coordinator) {
+            coordinator = new ApprovalCoordinator({
+              runId,
+              userId: ctx.userId,
+              chatId: ctx.chatId,
+              workspace: cwd,
+              approvalTimeoutMs: APPROVAL_TIMEOUT_MS,
+              responder: async (requestId, response) => {
+                const r = runner as Runner & {
+                  respondApproval?: (rid: number | string, res: unknown) => Promise<void>;
+                };
+                if (typeof r.respondApproval === 'function') {
+                  await r.respondApproval(requestId, response);
+                }
+              },
+              interruptTurn: () => runner.stop(),
+              pushToCard: async (events) => {
+                for (const ev of events) await cardSession.push(ev);
+              },
+            });
+            this.approvalCoordinators.set(runId, coordinator);
+            getLogger().info(
+              `[bridge] approval coordinator created runId=${runId.slice(0, 8)} requestId=${event.requestId}`,
+            );
+          }
+          coordinator.onRequested(event);
+        } else if (event.type === 'approval_resolved') {
+          const coordinator = this.approvalCoordinators.get(runId);
+          coordinator?.onResolved(event.requestId);
+        } else if (event.type === 'approval_view_updated') {
+          // 乱序流：审批先到、item/started 后到，补全审批卡内容。coordinator
+          // 仅在 pending 时更新（已响应/过期不复活）。
+          const coordinator = this.approvalCoordinators.get(runId);
+          coordinator?.updateView(event.requestId, event.view);
         }
         // §9.12 红线（§P1-2 方案 A）：每个事件（含 result）无条件刷新
         // lastEventTs 重新武装看门狗。result 后 CLI 进程做 jsonl flush/清理（finalizing
@@ -1153,11 +1302,11 @@ export class Bridge {
       // 立即 exit=1), 此时 jsonl 里是上一次成功 turn 的历史 usage, 会被误当作本次 usage 显示,
       // 误导用户以为本次出错的请求也消耗了 token。error 时只用 live 捕获的 usage (若有)。
       const finalSessionId = this.sessionStore.getSessionId(ctx.userId, agentKind);
-      const finalUsage = resultWasError
+      const finalUsage = resultNotSuccess
         ? undefined
         : this.resolveFinalUsage(finalSessionId, cwd, agentKind);
       finalContextLength = finalUsage?.contextLength ?? contextLength;
-      finalContextLimit = finalUsage?.contextLimit;
+      finalContextLimit = finalUsage?.contextLimit ?? liveContextLimit;
       finalCompactCount = finalUsage?.compactCount;
       finalCumulativeTotalTokens = finalUsage?.cumulativeTotalTokens;
       finalCumulativeInputTokens = finalUsage?.cumulativeInputTokens;
@@ -1174,7 +1323,8 @@ export class Bridge {
       // 值必须被忽略，flow 字段一律取 jsonl 主线程文件的 per-turn 值；
       // jsonl 缺失（老版本无 token_count）时才回退 live。
       // contextLength/compactCount 保持 jsonl 优先（它们是水位/历史计数）。
-      const codexJsonlFirst = agentKind === 'codex';
+      const codexJsonlFirst =
+        usageAuthority === 'jsonl' || (usageAuthority === undefined && agentKind === 'codex');
       if (!codexJsonlFirst && liveInputTokens !== undefined && liveOutputTokens !== undefined) {
         // 非 codex 且 live 有 input/output → 所有 flow 字段用 live scope
         finalInputTokens = liveInputTokens;
@@ -1201,9 +1351,13 @@ export class Bridge {
       // 3) 已终态 + sawResult -> 补充 usage meta（不改 terminal）
       const finalState = cardSession.currentState;
       if (finalState.terminal === 'finalizing') {
-        const isError = finalState.resultSubtype === 'error' || !!finalState.errorMsg;
-        await cardSession.finish(isError ? 'error' : 'done', {
-          resultSubtype: finalState.resultSubtype,
+        // 三态终态映射（2026-08-14）：interrupted（审批超时/取消、/stop）是独立
+        // 终态，不再归因于 Agent 错误；error 保持「运行出错」；其余为 done。
+        const subtype = finalState.resultSubtype;
+        const isError = subtype === 'error' || !!finalState.errorMsg;
+        const terminal = isError ? 'error' : subtype === 'interrupted' ? 'interrupted' : 'done';
+        await cardSession.finish(terminal, {
+          resultSubtype: subtype,
           errorMsg: finalState.errorMsg,
           contextLength: finalContextLength,
           contextLimit: finalContextLimit,
@@ -1311,6 +1465,11 @@ export class Bridge {
       }
     } finally {
       if (idleInterval) clearInterval(idleInterval);
+      const coordinator = this.approvalCoordinators.get(runId);
+      if (coordinator) {
+        coordinator.onTurnEnded();
+        this.approvalCoordinators.delete(runId);
+      }
     }
   }
 
@@ -1369,14 +1528,38 @@ export class Bridge {
       // (every later message busy-dropped until a manual /stop).
       if (this.activeRuns.get(cwd) === activeRun) {
         this.activeRuns.delete(cwd);
-        // Also clean up the runner to prevent memory leak
-        // Fix 4: Clean up this specific (cwd, agentKind) runner slot.
-        // (P1-1: eviction must also unregister the runner from the exit dispatcher)
-        // P2-3: evict by the run's captured agentKind, not the live
-        // defaultAgent — switching agent mid-run (via /config, whose
-        // clearRunners skips the active cwd) would otherwise delete the new
-        // agent's slot (no-op) and leave the original runner lingering.
-        this.evictRunnerSlot(cwd, activeRun.agentKind);
+        // Workspace-lifetime runners (codex app-server) keep their persistent
+        // connection across runs: evicting here would kill the connection after
+        // EVERY run, defeating lifetime='workspace' + idle TTL. They are still
+        // evicted+disposed by clearRunners (/config) and interruptCurrentRun
+        // (/stop). Spawn-per-message runners are evicted as before to prevent
+        // stale process references accumulating.
+        if (activeRun.runner.lifetime !== 'workspace') {
+          this.evictRunnerSlot(cwd, activeRun.agentKind);
+        }
+        // Compact 卡片需要 runId + sessionId；record 供终态卡上的 Compact 按钮
+        // 校验与取参（activeRuns 已清空，无法再查到）。异常退出（error/
+        // interrupted/idle_timeout）同样记录——上下文往往更大，压缩后再续。
+        const runTerminal = cardSession.currentState.terminal;
+        if (
+          activeRun.agentKind === 'codex' &&
+          activeRun.runner.lifetime === 'workspace' &&
+          (runTerminal === 'done' ||
+            runTerminal === 'error' ||
+            runTerminal === 'interrupted' ||
+            runTerminal === 'idle_timeout')
+        ) {
+          const compactSessionId =
+            cardSession.currentState.sessionId ??
+            this.sessionStore.getSessionId(ctx.userId, 'codex');
+          if (compactSessionId) {
+            this.lastCompactableCodexRun.set(cwd, {
+              runId: activeRun.runId,
+              sessionId: compactSessionId,
+              agentKind: activeRun.agentKind,
+            });
+          }
+        }
         getLogger().info(`[bridge] activeRuns.delete cwd=${cwd} runId=${runId}`);
       }
     }
@@ -1397,6 +1580,7 @@ export class Bridge {
         contextLength?: number;
         contextLimit?: number;
         compactCount?: number;
+        compactPreContextLength?: number;
         cacheReadTokens?: number;
         cacheCreationTokens?: number;
         totalTokens?: number;
@@ -1425,6 +1609,7 @@ export class Bridge {
             contextLength: content.usage.contextLength,
             contextLimit: content.usage.contextLimit,
             compactCount: content.usage.compactCount,
+            compactPreContextLength: content.usage.compactPreContextLength,
             cacheReadTokens: content.usage.cacheReadTokens,
             cacheCreationTokens: content.usage.cacheCreationTokens,
             totalTokens: content.usage.totalTokens,
@@ -1523,6 +1708,303 @@ export class Bridge {
     } catch (err) {
       getLogger().warn(`[bridge] failed to send completion notification card:`, err);
     }
+  }
+
+  // =============================================================================
+  // Approval action handlers
+  // =============================================================================
+
+  /**
+   * Handle an approval response from a card button click.
+   * Routes to the ApprovalCoordinator for the given run.
+   */
+  async handleApprovalRespond(opts: {
+    runId: string;
+    requestId: number | string;
+    decision: string;
+    scope?: 'turn' | 'session';
+    nonce: string;
+  }): Promise<void> {
+    const log = getLogger();
+    log.info(
+      `[bridge] handleApprovalRespond runId=${opts.runId.slice(0, 8)}... requestId=${opts.requestId} decision=${opts.decision}`,
+    );
+
+    const coordinator = this.approvalCoordinators.get(opts.runId);
+    if (!coordinator) {
+      // P2-7: run 已结束（coordinator 已释放）时点击审批按钮必须给用户明确反馈，
+      // 不能静默。router 会把该异常转成 error toast。
+      log.warn(`[bridge] no approval coordinator for runId=${opts.runId.slice(0, 8)}`);
+      throw new Error('任务已结束，审批无法响应');
+    }
+
+    // Build ApprovalAction from the decision string
+    const action: ApprovalAction = decisionToApprovalAction(opts.decision);
+    await coordinator.submit(action, { requestId: opts.requestId, nonce: opts.nonce });
+  }
+
+  /**
+   * Handle a permission toggle from a card button click.
+   * Routes to the ApprovalCoordinator for the given run.
+   */
+  async handleApprovalToggle(opts: {
+    runId: string;
+    requestId: number | string;
+    permId: string;
+    nonce: string;
+    selected?: boolean;
+  }): Promise<void> {
+    const log = getLogger();
+    log.info(
+      `[bridge] handleApprovalToggle runId=${opts.runId.slice(0, 8)}... requestId=${opts.requestId} permId=${opts.permId}`,
+    );
+
+    const coordinator = this.approvalCoordinators.get(opts.runId);
+    if (!coordinator) {
+      log.warn(`[bridge] no approval coordinator for runId=${opts.runId.slice(0, 8)}`);
+      throw new Error('任务已结束，审批无法响应');
+    }
+
+    // selected 由卡片根据当前渲染状态传回（取反），不再硬编码只授不撤。
+    const toggleAction: ApprovalToggleAction = {
+      permId: opts.permId,
+      selected: opts.selected ?? true,
+    };
+    await coordinator.togglePerm(toggleAction, { requestId: opts.requestId });
+  }
+
+  /**
+   * Handle codex.compact card action — trigger a Codex compaction request.
+   * Validates the run exists and is in a terminal state, then calls
+   * the app-server runner's runCompact().
+   */
+  async handleCodexCompact(value: { runId?: string }, ctx: BridgeContext): Promise<void> {
+    const log = getLogger();
+    log.info(
+      `[bridge] handleCodexCompact userId=${ctx.userId} runId=${value.runId?.slice(0, 8)}...`,
+    );
+
+    const { runId } = value;
+    if (!runId) {
+      await this.sendResult({ text: '⚠️ 无效的 Compact 请求，缺少 runId' }, ctx);
+      return;
+    }
+
+    const cwd = this.resolveCwd(ctx.userId);
+    if (!cwd) {
+      await this.sendResult({ text: '⚠️ 未设置工作目录' }, ctx);
+      return;
+    }
+
+    // 校验：run 结束后 activeRuns 已清空，用 lastCompactableCodexRun 对照 runId。
+    const last = this.lastCompactableCodexRun.get(cwd);
+    if (!last || last.runId !== runId) {
+      await this.sendResult({ text: '⚠️ 该任务已结束或不属于当前会话' }, ctx);
+      return;
+    }
+    if (!last.sessionId) {
+      await this.sendResult({ text: '⚠️ 未找到可压缩的会话' }, ctx);
+      return;
+    }
+
+    // Check that the runner has runCompact method
+    const runner = this.getRunner(cwd, last.agentKind);
+    if (
+      !('runCompact' in runner) ||
+      typeof (runner as Record<string, unknown>).runCompact !== 'function'
+    ) {
+      await this.sendResult({ text: '⚠️ 当前运行模式不支持 Compact' }, ctx);
+      return;
+    }
+
+    log.info(`[bridge] handleCodexCompact executing runCompact for runId=${runId} cwd=${cwd}`);
+    await this.streamCodexCompact({
+      sessionId: last.sessionId,
+      cwd,
+      agentKind: last.agentKind,
+      runner,
+      ctx,
+    });
+  }
+
+  /**
+   * Stream a Codex compaction to a card: start a RunCardSession with
+   * operationKind='compaction' (no recursive Compact button), consume
+   * runner.runCompact() events, read authoritative jsonl usage, and finish
+   * the card. Shared by handleCodexCompact (run card button) and
+   * handleResumeCompact (resume cards) so both flows stay in sync.
+   *
+   * Precondition: callers have already validated that `runner` implements
+   * runCompact and that the session exists in `cwd`.
+   */
+  private async streamCodexCompact(opts: {
+    sessionId: string;
+    cwd: string;
+    agentKind: AgentKind;
+    runner: Runner;
+    ctx: BridgeContext;
+  }): Promise<void> {
+    const log = getLogger();
+    const { sessionId, cwd, agentKind, runner, ctx } = opts;
+    log.info(`[bridge] streamCodexCompact sessionId=${sessionId} cwd=${cwd}`);
+
+    // 防御性能力检查：调用方已校验（runId / resume 两条路径），此处双保险并
+    // 让 TS 收窄 runner 类型（'runCompact' in runner 之后的 cast 才合法）。
+    if (
+      !('runCompact' in runner) ||
+      typeof (runner as Record<string, unknown>).runCompact !== 'function'
+    ) {
+      await this.sendResult({ text: '⚠️ 当前运行模式不支持 Compact' }, ctx);
+      return;
+    }
+
+    await this.sendResult({ text: '🗜 Compact 已触发，正在压缩会话…' }, ctx);
+
+    const compactRunId = randomUUID();
+    const cardSession = new RunCardSession({
+      connector: this.connector,
+      chatId: ctx.chatId,
+      replyTo: ctx.messageId,
+      runId: compactRunId,
+      renderOptions: {
+        showThinking: this.config.output.showThinking,
+        showToolUse: this.config.output.showToolUse,
+        showToolResult: this.config.output.showToolResult,
+        agentKind,
+      },
+    });
+
+    try {
+      await cardSession.start();
+      // operationKind=compaction：卡片不渲染 Compact 按钮（防递归 Compact）。
+      await cardSession.push({
+        type: 'turn_started',
+        threadId: sessionId,
+        turnId: '',
+        operationKind: 'compaction',
+      });
+      let sawResult = false;
+      for await (const event of (
+        runner as {
+          runCompact: (
+            message: string,
+            opts: { cwd: string; sessionId: string },
+          ) => AsyncGenerator<AgentEvent>;
+        }
+      ).runCompact('', { cwd, sessionId })) {
+        if (event.type === 'result') sawResult = true;
+        await cardSession.push(event);
+      }
+      // 压缩结束后从会话 jsonl 读权威统计（压缩后上下文、压缩次数、本次压缩
+      // token 消耗与会话累计）。thread/compacted 通知与 jsonl 落盘几乎同时
+      // （实测差 ~9ms），compactCount 未读到则短重试，仍失败优雅降级（无统计）。
+      let finalUsage = this.resolveFinalUsage(sessionId, cwd, agentKind);
+      for (let attempt = 0; !finalUsage?.compactCount && attempt < 2; attempt++) {
+        await new Promise((r) => setTimeout(r, 150));
+        finalUsage = this.resolveFinalUsage(sessionId, cwd, agentKind);
+      }
+      await cardSession.finish(sawResult ? 'done' : 'error', {
+        resultSubtype: sawResult ? 'success' : 'error',
+        errorMsg: sawResult ? undefined : '未收到压缩结果',
+        contextLength: finalUsage?.contextLength,
+        contextLimit: finalUsage?.contextLimit,
+        compactPreContextLength: finalUsage?.compactPreContextLength,
+        compactCount: finalUsage?.compactCount,
+        cacheReadTokens: finalUsage?.cacheReadTokens,
+        cacheCreationTokens: finalUsage?.cacheCreationTokens,
+        totalTokens: finalUsage?.totalTokens,
+        inputTokens: finalUsage?.inputTokens,
+        outputTokens: finalUsage?.outputTokens,
+        cumulativeTotalTokens: finalUsage?.cumulativeTotalTokens,
+        cumulativeInputTokens: finalUsage?.cumulativeInputTokens,
+        cumulativeOutputTokens: finalUsage?.cumulativeOutputTokens,
+        cumulativeCacheReadTokens: finalUsage?.cumulativeCacheReadTokens,
+        cumulativeCacheCreationTokens: finalUsage?.cumulativeCacheCreationTokens,
+      });
+      log.info(
+        `[bridge] streamCodexCompact finished sessionId=${sessionId} sawResult=${sawResult}`,
+      );
+    } catch (err) {
+      log.error(`[bridge] streamCodexCompact failed: ${errorMessage(err)}`);
+      await cardSession.finish('error', { errorMsg: errorMessage(err) });
+    }
+  }
+
+  /**
+   * Handle resume.compact card action — compact a session directly from a
+   * resume card (auto-resume / `/resume <id>`), without a runId.
+   *
+   * Unlike handleCodexCompact (which validates against the last finished run's
+   * runId), the resume card carries the sessionId + agent it was rendered for.
+   * Validation: the session must exist in the current cwd (same rule as
+   * cmdResume / resume.use) and the runner must implement runCompact.
+   */
+  async handleResumeCompact(
+    value: { sessionId?: string; agent?: string },
+    ctx: BridgeContext,
+  ): Promise<void> {
+    const log = getLogger();
+    log.info(
+      `[bridge] handleResumeCompact userId=${ctx.userId} sessionId=${value.sessionId?.slice(0, 16)} agent=${value.agent ?? 'default'}`,
+    );
+
+    const { sessionId } = value;
+    if (!sessionId) {
+      await this.sendResult({ text: '⚠️ 无效的 Compact 请求，缺少 sessionId' }, ctx);
+      return;
+    }
+
+    const cwd = this.resolveCwd(ctx.userId);
+    if (!cwd) {
+      await this.sendResult({ text: '⚠️ 未设置工作目录' }, ctx);
+      return;
+    }
+
+    // Resolve agent kind the same way resume.use does: card value wins,
+    // otherwise fall back to defaultAgent.
+    const validAgents: AgentKind[] = ['claude', 'codex', 'opencode', 'pi', 'kimi'];
+    const agentKind: AgentKind =
+      value.agent && (validAgents as string[]).includes(value.agent)
+        ? (value.agent as AgentKind)
+        : this.config.defaultAgent;
+
+    // Session must exist in the current cwd (same rule as cmdResume /
+    // resume.use): reject ghosts so a stale card cannot compact a session
+    // from another cwd. Read failures get visible feedback (card click
+    // 红线：不许静默失败)。
+    let content: ReturnType<AgentSessionReader['readSessionContent']>;
+    try {
+      content = this.sessionReaderRegistry.get(agentKind).readSessionContent(sessionId, cwd);
+    } catch (err) {
+      await this.sendResult(
+        { text: `⚠️ 读取 session ${sessionId} 失败: ${errorMessage(err)}` },
+        ctx,
+      );
+      return;
+    }
+    if (
+      content.events.length === 0 &&
+      !content.usage &&
+      !content.aiTitle &&
+      !content.recap &&
+      !content.displayTitle
+    ) {
+      await this.sendResult({ text: `⚠️ 未找到 session ${sessionId}（当前目录: ${cwd}）` }, ctx);
+      return;
+    }
+
+    // Check that the runner has runCompact (codex app-server only).
+    const runner = this.getRunner(cwd, agentKind);
+    if (
+      !('runCompact' in runner) ||
+      typeof (runner as Record<string, unknown>).runCompact !== 'function'
+    ) {
+      await this.sendResult({ text: '⚠️ 当前运行模式不支持 Compact' }, ctx);
+      return;
+    }
+
+    log.info(`[bridge] handleResumeCompact executing runCompact sessionId=${sessionId} cwd=${cwd}`);
+    await this.streamCodexCompact({ sessionId, cwd, agentKind, runner, ctx });
   }
 
   /**

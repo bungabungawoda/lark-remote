@@ -9,6 +9,481 @@ import {
 import { renderRunCard } from './run-renderer.js';
 
 describe('renderRunCard', () => {
+  it('test_anchor_approval_area_renders_v2_buttons_without_v1_action_container', () => {
+    let state = createInitialRunState('run-approval');
+    state = reduceRunState(state, {
+      type: 'approval_requested',
+      requestId: 42,
+      kind: 'command',
+      threadId: 'th-aaa-111',
+      turnId: 'tn-111',
+      itemId: 'item-1',
+      view: {
+        requestId: 42,
+        kind: 'command',
+        threadShort: 'th-aaa-1',
+        turnShort: 'tn-111',
+        workspace: '/home/user/project',
+        command: 'ls -la',
+        commandCwd: '/home/user/project',
+        availableDecisions: ['accept', 'decline', 'cancel'],
+        pendingTotal: 1,
+      },
+    } as never);
+
+    const card = renderRunCard(state) as { schema: string; body?: { elements?: object[] } };
+    expect(card.schema).toBe('2.0');
+    const serialized = JSON.stringify(card);
+    expect(serialized).toContain('命令审批');
+    expect(serialized).toContain('ls -la');
+    expect(serialized).toContain('approval.respond');
+    // 200861 铁律：禁止 tag:"action" 容器
+    expect(serialized).not.toMatch(/"tag"\s*:\s*"action"[^}]*"actions"/);
+
+    // approval_resolved 清除审批区域
+    state = reduceRunState(state, {
+      type: 'approval_resolved',
+      requestId: 42,
+      outcome: 'resolved',
+    } as never);
+    const cleared = JSON.stringify(renderRunCard(state));
+    expect(cleared).not.toContain('命令审批');
+  });
+
+  it('test_anchor_concurrent_approvals_render_all_slots_and_resolve_independently', () => {
+    // review P2-3 回归：同一 turn 内并发两个审批时，后到者不得顶掉先到者的
+    // 按钮（单槽曾导致第一个审批的 UI 消失，只能等 5 分钟自动 cancel）。
+    let state = createInitialRunState('run-approval-2');
+    const request = (id: number, command: string) =>
+      ({
+        type: 'approval_requested',
+        requestId: id,
+        kind: 'command',
+        threadId: 'th-aaa-111',
+        turnId: 'tn-111',
+        itemId: `item-${id}`,
+        view: {
+          requestId: id,
+          kind: 'command',
+          threadShort: 'th-aaa-1',
+          turnShort: 'tn-111',
+          workspace: '/home/user/project',
+          command,
+          commandCwd: '/home/user/project',
+          availableDecisions: ['accept', 'decline', 'cancel'],
+          pendingTotal: 1,
+        },
+      }) as never;
+
+    state = reduceRunState(state, request(1, 'git push'));
+    state = reduceRunState(state, request(2, 'rm -rf /tmp/x'));
+
+    let serialized = JSON.stringify(renderRunCard(state));
+    // 两个审批的命令都在卡片上，各自有按钮
+    expect(serialized).toContain('git push');
+    expect(serialized).toContain('rm -rf /tmp/x');
+    expect((serialized.match(/approval\.respond/g) ?? []).length).toBeGreaterThanOrEqual(4);
+
+    // 第一个审批解决后，只剩第二个的 UI
+    state = reduceRunState(state, {
+      type: 'approval_resolved',
+      requestId: 1,
+      outcome: 'resolved',
+    } as never);
+    serialized = JSON.stringify(renderRunCard(state));
+    expect(serialized).not.toContain('git push');
+    expect(serialized).toContain('rm -rf /tmp/x');
+  });
+
+  it('test_anchor_interrupted_with_expired_approval_renders_timeout_reason', () => {
+    // 2026-08-14 事故回归：审批 5 分钟无人响应→自动 cancel→turn interrupted。
+    // 终态必须如实展示「审批超时未响应，已自动取消」，而不是归因于 Agent 出错，
+    // 也不是泛化的「已被用户终止」（用户实际没有主动终止）。
+    let state = createInitialRunState('run-approval-expired');
+    state = reduceRunState(state, {
+      type: 'approval_requested',
+      requestId: 11,
+      kind: 'command',
+      threadId: 'th-aaa-111',
+      turnId: 'tn-111',
+      itemId: 'item-11',
+      view: {
+        requestId: 11,
+        kind: 'command',
+        threadShort: 'th-aaa-1',
+        turnShort: 'tn-111',
+        workspace: '/home/user/project',
+        command: 'rm -rf /tmp/x',
+        commandCwd: '/home/user/project',
+        availableDecisions: ['accept', 'decline', 'cancel'],
+        pendingTotal: 1,
+      },
+    } as never);
+    state = reduceRunState(state, { type: 'approval_expired', requestId: 11 } as never);
+    const interrupted = finishRun(state, 'interrupted');
+
+    const json = JSON.stringify(renderRunCard(interrupted));
+    expect(json).toContain('审批超时未响应');
+    expect(json).not.toContain('运行出错');
+  });
+
+  it('test_anchor_pending_approval_title_shows_waiting_for_approval', () => {
+    // 2026-08-14 UX：审批等待期间命令工具未 completed，footer 停在 tool_running，
+    // 标题此前显示「调用工具」。必须改为「等待审批」，提示当前在等人工决策。
+    let state = createInitialRunState('run-approval-title');
+    state = reduceRunState(state, {
+      type: 'turn_diff',
+      toolOutput: 'npm view lark-remote version',
+      itemId: 'item-c1',
+      threadId: 'th-aaa-111',
+      turnId: 'tn-111',
+      timestamp: '2026-08-14T00:00:00.000Z',
+    } as never);
+    state = reduceRunState(state, {
+      type: 'approval_requested',
+      requestId: 1,
+      kind: 'command',
+      threadId: 'th-aaa-111',
+      turnId: 'tn-111',
+      itemId: 'item-c1',
+      view: {
+        requestId: 1,
+        kind: 'command',
+        threadShort: 'th-aaa-1',
+        turnShort: 'tn-111',
+        workspace: '/home/user/project',
+        command: 'npm view lark-remote version',
+        commandCwd: '/home/user/project',
+        availableDecisions: ['accept', 'decline', 'cancel'],
+        pendingTotal: 1,
+      },
+    } as never);
+
+    const json = JSON.stringify(renderRunCard(state));
+    expect(json).toContain('等待审批');
+    expect(json).toContain('✋');
+    expect(json).not.toContain('调用工具');
+  });
+
+  it('test_anchor_pending_approval_status_row_shows_waiting_not_tool_running', () => {
+    // 标题已显示「等待审批」时，状态行不得再写「工具调用中」，避免自相矛盾。
+    let state = createInitialRunState('run-approval-status');
+    state = reduceRunState(state, {
+      type: 'turn_diff',
+      toolOutput: 'npm view lark-remote version',
+      itemId: 'item-c1',
+      threadId: 'th-aaa-111',
+      turnId: 'tn-111',
+      timestamp: '2026-08-14T00:00:00.000Z',
+    } as never);
+    state = reduceRunState(state, {
+      type: 'approval_requested',
+      requestId: 2,
+      kind: 'command',
+      threadId: 'th-aaa-111',
+      turnId: 'tn-111',
+      itemId: 'item-c1',
+      view: {
+        requestId: 2,
+        kind: 'command',
+        threadShort: 'th-aaa-1',
+        turnShort: 'tn-111',
+        workspace: '/home/user/project',
+        command: 'npm view lark-remote version',
+        commandCwd: '/home/user/project',
+        availableDecisions: ['accept', 'decline', 'cancel'],
+        pendingTotal: 1,
+      },
+    } as never);
+
+    const json = JSON.stringify(renderRunCard(state));
+    expect(json).toContain('等待审批中');
+    expect(json).not.toContain('工具调用中');
+  });
+
+  it('test_anchor_expired_approval_does_not_show_waiting_title', () => {
+    // 审批已过期（按钮已隐藏，run 即将被中断）：不再显示「等待审批」，
+    // 标题回退到工具调用，直到 interrupted 终态到达。
+    let state = createInitialRunState('run-approval-expired-title');
+    state = reduceRunState(state, {
+      type: 'turn_diff',
+      toolOutput: 'npm view lark-remote version',
+      itemId: 'item-c1',
+      threadId: 'th-aaa-111',
+      turnId: 'tn-111',
+      timestamp: '2026-08-14T00:00:00.000Z',
+    } as never);
+    state = reduceRunState(state, {
+      type: 'approval_requested',
+      requestId: 3,
+      kind: 'command',
+      threadId: 'th-aaa-111',
+      turnId: 'tn-111',
+      itemId: 'item-c1',
+      view: {
+        requestId: 3,
+        kind: 'command',
+        threadShort: 'th-aaa-1',
+        turnShort: 'tn-111',
+        workspace: '/home/user/project',
+        command: 'npm view lark-remote version',
+        commandCwd: '/home/user/project',
+        availableDecisions: ['accept', 'decline', 'cancel'],
+        pendingTotal: 1,
+      },
+    } as never);
+    state = reduceRunState(state, { type: 'approval_expired', requestId: 3 } as never);
+
+    const json = JSON.stringify(renderRunCard(state));
+    expect(json).not.toContain('等待审批');
+    expect(json).toContain('调用工具');
+  });
+
+  it('test_anchor_resolved_approval_restores_tool_running_title', () => {
+    // 用户已处理审批：标题恢复「调用工具」，不再停留在「等待审批」。
+    let state = createInitialRunState('run-approval-resolved-title');
+    state = reduceRunState(state, {
+      type: 'turn_diff',
+      toolOutput: 'npm view lark-remote version',
+      itemId: 'item-c1',
+      threadId: 'th-aaa-111',
+      turnId: 'tn-111',
+      timestamp: '2026-08-14T00:00:00.000Z',
+    } as never);
+    state = reduceRunState(state, {
+      type: 'approval_requested',
+      requestId: 4,
+      kind: 'command',
+      threadId: 'th-aaa-111',
+      turnId: 'tn-111',
+      itemId: 'item-c1',
+      view: {
+        requestId: 4,
+        kind: 'command',
+        threadShort: 'th-aaa-1',
+        turnShort: 'tn-111',
+        workspace: '/home/user/project',
+        command: 'npm view lark-remote version',
+        commandCwd: '/home/user/project',
+        availableDecisions: ['accept', 'decline', 'cancel'],
+        pendingTotal: 1,
+      },
+    } as never);
+    state = reduceRunState(state, {
+      type: 'approval_resolved',
+      requestId: 4,
+      outcome: 'resolved',
+    } as never);
+
+    const json = JSON.stringify(renderRunCard(state));
+    expect(json).not.toContain('等待审批');
+    expect(json).toContain('调用工具');
+  });
+
+  it('test_anchor_terminal_state_takes_precedence_over_pending_approval_title', () => {
+    // 终态优先：即使审批仍 pending，interrupted 终态标题必须显示「已中断」。
+    let state = createInitialRunState('run-approval-terminal-prec');
+    state = reduceRunState(state, {
+      type: 'turn_diff',
+      toolOutput: 'npm view lark-remote version',
+      itemId: 'item-c1',
+      threadId: 'th-aaa-111',
+      turnId: 'tn-111',
+      timestamp: '2026-08-14T00:00:00.000Z',
+    } as never);
+    state = reduceRunState(state, {
+      type: 'approval_requested',
+      requestId: 5,
+      kind: 'command',
+      threadId: 'th-aaa-111',
+      turnId: 'tn-111',
+      itemId: 'item-c1',
+      view: {
+        requestId: 5,
+        kind: 'command',
+        threadShort: 'th-aaa-1',
+        turnShort: 'tn-111',
+        workspace: '/home/user/project',
+        command: 'npm view lark-remote version',
+        commandCwd: '/home/user/project',
+        availableDecisions: ['accept', 'decline', 'cancel'],
+        pendingTotal: 1,
+      },
+    } as never);
+    const interrupted = finishRun(state, 'interrupted');
+
+    const json = JSON.stringify(renderRunCard(interrupted));
+    expect(json).toContain('已中断');
+    expect(json).not.toContain('等待审批');
+  });
+
+  it('test_anchor_file_approval_renders_change_details_with_diff', () => {
+    // 验证行为：文件变更审批区域必须渲染真实变更详情——路径 + diff 内容。
+    // 缺失后果：用户只看到「📄 文件变更审批」标题，无法判断将改动什么文件、
+    // 改动什么内容（线上真实协议下 grantRoot/reason 为 null，diff 来自
+    // item/started 的 changes[]）。
+    // 依据：真实 codex app-server 抓包 + 用户报告。
+    let state = createInitialRunState('run-approval-file');
+    state = reduceRunState(state, {
+      type: 'approval_requested',
+      requestId: 43,
+      kind: 'file',
+      threadId: 'th-aaa-111',
+      turnId: 'tn-111',
+      itemId: 'item-1',
+      view: {
+        requestId: 43,
+        kind: 'file',
+        threadShort: 'th-aaa-1',
+        turnShort: 'tn-111',
+        workspace: '',
+        fileChanges: [
+          {
+            path: '/home/user/project/a.txt',
+            kind: 'update',
+            diff: '@@ -1 +1,2 @@\n hello\n+hello\n',
+          },
+        ],
+        availableDecisions: ['accept', 'decline', 'cancel'],
+        pendingTotal: 1,
+      },
+    } as never);
+
+    const serialized = JSON.stringify(renderRunCard(state));
+    expect(serialized).toContain('文件变更审批');
+    expect(serialized).toContain('/home/user/project/a.txt');
+    expect(serialized).toContain('+hello');
+    // 200861 铁律：禁止 tag:"action" 容器
+    expect(serialized).not.toMatch(/"tag"\s*:\s*"action"[^}]*"actions"/);
+  });
+
+  it('test_anchor_file_approval_diff_budget_omits_overflow', () => {
+    // 验证行为：文件审批区对 diff 总量设预算（避免多文件大 diff 把卡片顶爆
+    // 28KB——估算函数不计审批区，这是既有缺口）；超预算的 diff 显示省略提示。
+    // 缺失后果：多个大 diff 同时渲染时卡片超限被飞书拒绝（ErrCode 11310）。
+    // 依据：run-card 28KB 预算红线 + tool-render OUTPUT_MAX/BODY_TOTAL_MAX 先例。
+    let state = createInitialRunState('run-approval-budget');
+    const bigDiff = 'a'.repeat(1500);
+    state = reduceRunState(state, {
+      type: 'approval_requested',
+      requestId: 44,
+      kind: 'file',
+      threadId: 'th-aaa-111',
+      turnId: 'tn-111',
+      itemId: 'item-1',
+      view: {
+        requestId: 44,
+        kind: 'file',
+        threadShort: 'th-aaa-1',
+        turnShort: 'tn-111',
+        workspace: '',
+        fileChanges: [
+          { path: '/home/user/project/a.ts', kind: 'update', diff: bigDiff },
+          { path: '/home/user/project/b.ts', kind: 'update', diff: bigDiff },
+          { path: '/home/user/project/c.ts', kind: 'update', diff: bigDiff },
+        ],
+        availableDecisions: ['accept', 'decline', 'cancel'],
+        pendingTotal: 1,
+      },
+    } as never);
+
+    const serialized = JSON.stringify(renderRunCard(state));
+    expect(serialized).toContain('/home/user/project/a.ts');
+    expect(serialized).toMatch(/diff 已省略/);
+    expect(serialized).not.toMatch(/"tag"\s*:\s*"action"[^}]*"actions"/);
+  });
+
+  it('test_anchor_approval_view_updated_rerenders_changes', () => {
+    // 验证行为：乱序流下审批先出空卡，approval_view_updated 到达后卡片必须
+    // 原地补全文件与 diff。
+    // 缺失后果：item/started 晚到时卡片永远空白，用户无法判断将改动什么。
+    // 依据：真实协议 item/started 与审批顺序不保证（审批先到变体）。
+    let state = createInitialRunState('run-approval-update');
+    state = reduceRunState(state, {
+      type: 'approval_requested',
+      requestId: 50,
+      kind: 'file',
+      threadId: 'th-aaa-111',
+      turnId: 'tn-111',
+      itemId: 'item-1',
+      view: {
+        requestId: 50,
+        kind: 'file',
+        threadShort: 'th-aaa-1',
+        turnShort: 'tn-111',
+        workspace: '',
+        availableDecisions: ['accept', 'decline', 'cancel'],
+        pendingTotal: 1,
+      },
+    } as never);
+    expect(JSON.stringify(renderRunCard(state))).not.toContain('/home/user/project/a.txt');
+
+    state = reduceRunState(state, {
+      type: 'approval_view_updated',
+      requestId: 50,
+      view: {
+        requestId: 50,
+        kind: 'file',
+        threadShort: 'th-aaa-1',
+        turnShort: 'tn-111',
+        workspace: '',
+        fileChanges: [
+          {
+            path: '/home/user/project/a.txt',
+            kind: 'update',
+            diff: '@@ -1 +1,2 @@\n hello\n+hello\n',
+          },
+        ],
+        availableDecisions: ['accept', 'decline', 'cancel'],
+        pendingTotal: 1,
+      },
+    } as never);
+    const serialized = JSON.stringify(renderRunCard(state));
+    expect(serialized).toContain('/home/user/project/a.txt');
+    expect(serialized).toContain('+hello');
+    expect(serialized).not.toMatch(/"tag"\s*:\s*"action"[^}]*"actions"/);
+  });
+
+  it('test_anchor_command_approval_renders_protocol_decision_buttons', () => {
+    // 验证行为：命令审批按真实 availableDecisions 渲染按钮——acceptForSession
+    // （允许本次会话）与 acceptWithExecpolicyAmendment（允许并记住命令）仅在
+    // 协议列出时出现；拒绝按钮始终存在（安全兜底）。
+    // 缺失后果：硬编码按钮只给允许/拒绝，服务端列出的持久化决策无法表达。
+    // 依据：codex app-server 抓包 availableDecisions 形状。
+    let state = createInitialRunState('run-approval-btns');
+    state = reduceRunState(state, {
+      type: 'approval_requested',
+      requestId: 51,
+      kind: 'command',
+      threadId: 'th-aaa-111',
+      turnId: 'tn-111',
+      itemId: 'item-1',
+      view: {
+        requestId: 51,
+        kind: 'command',
+        threadShort: 'th-aaa-1',
+        turnShort: 'tn-111',
+        workspace: '/home/user/project',
+        command: 'rm -rf /tmp/test',
+        commandCwd: '/home/user/project',
+        availableDecisions: [
+          'accept',
+          'acceptForSession',
+          'acceptWithExecpolicyAmendment',
+          'cancel',
+        ],
+        pendingTotal: 1,
+      },
+    } as never);
+
+    const serialized = JSON.stringify(renderRunCard(state));
+    expect(serialized).toContain('acceptForSession');
+    expect(serialized).toContain('acceptWithExecpolicyAmendment');
+    expect(serialized).toContain('"decision":"decline"');
+    // 200861 铁律
+    expect(serialized).not.toMatch(/"tag"\s*:\s*"action"[^}]*"actions"/);
+  });
+
   it('test_anchor_running_card_is_v2_and_stop_is_bound_to_run', () => {
     const card = renderRunCard(createInitialRunState('run-7')) as {
       schema?: string;
@@ -403,6 +878,469 @@ describe('renderRunCard', () => {
     // Cache create 行：累计创建量（2500 -> 3K）
     expect(json).toContain('Cache create - 2K · 累计 3K');
   });
+
+  it('renders app-server turn_diff streaming snapshots (text/reasoning/plan/tool/file)', () => {
+    let state = createInitialRunState('run-appserver-stream');
+    // turn_started 记录操作类型
+    state = reduceRunState(state, {
+      type: 'turn_started',
+      threadId: 'th-aaa-111',
+      turnId: 'tn-111',
+      operationKind: 'turn',
+    } as never);
+    expect(state.operationKind).toBe('turn');
+
+    // 推理快照（替换语义，不重复追加）
+    state = reduceRunState(state, {
+      type: 'turn_diff',
+      itemId: 'item-r1',
+      reasoning: 'thinking…',
+      threadId: 'th-aaa-111',
+      turnId: 'tn-111',
+      timestamp: '2026-08-12T10:00:00.000Z',
+    } as never);
+    state = reduceRunState(state, {
+      type: 'turn_diff',
+      itemId: 'item-r1',
+      reasoning: 'thinking…more',
+      threadId: 'th-aaa-111',
+      turnId: 'tn-111',
+      timestamp: '2026-08-12T10:01:00.000Z',
+    } as never);
+    expect(state.blocks.filter((b) => b.kind === 'thinking')).toHaveLength(1);
+    const thinkingBlock = state.blocks.find((b) => b.kind === 'thinking');
+    expect(thinkingBlock?.kind === 'thinking' ? thinkingBlock.itemId : undefined).toBe('item-r1');
+    expect(thinkingBlock?.kind === 'thinking' ? thinkingBlock.timestamp : undefined).toBe(
+      '2026-08-12T10:00:00.000Z',
+    );
+
+    // 文本快照（替换语义）
+    state = reduceRunState(state, {
+      type: 'turn_diff',
+      itemId: 'item-1',
+      text: 'Hello, ',
+      threadId: 'th-aaa-111',
+      turnId: 'tn-111',
+      timestamp: '2026-08-12T10:02:00.000Z',
+    } as never);
+    state = reduceRunState(state, {
+      type: 'turn_diff',
+      itemId: 'item-1',
+      text: 'Hello, world!',
+      threadId: 'th-aaa-111',
+      turnId: 'tn-111',
+      timestamp: '2026-08-12T10:03:00.000Z',
+    } as never);
+    const textBlocks = state.blocks.filter((b) => b.kind === 'text');
+    expect(textBlocks).toHaveLength(1);
+    expect(textBlocks[0].content).toBe('Hello, world!');
+    expect(textBlocks[0].timestamp).toBe('2026-08-12T10:02:00.000Z');
+
+    // 工具输出快照（固定 tool block，替换语义）
+    state = reduceRunState(state, {
+      type: 'turn_diff',
+      itemId: 'item-c1',
+      toolOutput: 'out1',
+      threadId: 'th-aaa-111',
+      turnId: 'tn-111',
+      timestamp: '2026-08-12T10:04:00.000Z',
+    } as never);
+    state = reduceRunState(state, {
+      type: 'turn_diff',
+      itemId: 'item-c1',
+      toolOutput: 'out1out2',
+      threadId: 'th-aaa-111',
+      turnId: 'tn-111',
+      timestamp: '2026-08-12T10:05:00.000Z',
+    } as never);
+    const toolBlocks = state.blocks.filter((b) => b.kind === 'tool');
+    expect(toolBlocks).toHaveLength(1);
+    expect(toolBlocks[0].tool.output).toBe('out1out2');
+    expect(toolBlocks[0].tool.startedAt).toBe('2026-08-12T10:04:00.000Z');
+
+    // plan 快照（替换语义）
+    state = reduceRunState(state, {
+      type: 'turn_diff',
+      itemId: 'item-p1',
+      plan: 'Step 1\nStep 2',
+      threadId: 'th-aaa-111',
+      turnId: 'tn-111',
+      timestamp: '2026-08-12T10:06:00.000Z',
+    } as never);
+    expect(state.plan).toBe('Step 1\nStep 2');
+
+    // 文件变更快照（替换语义）
+    state = reduceRunState(state, {
+      type: 'turn_diff',
+      itemId: 'item-f1',
+      fileChanges: [{ path: '/home/user/project/a.txt', kind: 'update', diff: '@@ +1\n+hi' }],
+      threadId: 'th-aaa-111',
+      turnId: 'tn-111',
+      timestamp: '2026-08-12T10:07:00.000Z',
+    } as never);
+    const fileBlocks = state.blocks.filter((b) => b.kind === 'file_change');
+    expect(fileBlocks).toHaveLength(1);
+    expect(fileBlocks[0].path).toBe('/home/user/project/a.txt');
+    expect(fileBlocks[0].timestamp).toBe('2026-08-12T10:07:00.000Z');
+
+    const json = JSON.stringify(renderRunCard(state));
+    expect(json).toContain('thinking…more');
+    expect(json).toContain('Hello, world!');
+    expect(json).toContain('Step 1');
+    expect(json).toContain('/home/user/project/a.txt');
+  });
+
+  it('renders app-server interleaved items in real chronology (thinking→text→thinking→command→text)', () => {
+    const oldTz = process.env.TZ;
+    process.env.TZ = 'Asia/Shanghai';
+    try {
+      let state = createInitialRunState('run-interleave');
+      const reduce = (e: unknown) => {
+        state = reduceRunState(state, e as never);
+      };
+
+      // reasoning item 1 流式（首个块）
+      reduce({
+        type: 'turn_diff',
+        itemId: 'item-r1',
+        reasoning: 'first thought',
+        threadId: 'th-aaa-111',
+        turnId: 'tn-111',
+        timestamp: '2026-08-12T10:00:00.000Z',
+      });
+      // agentMessage item 1 流式（文本到达，旧思考折叠）
+      reduce({
+        type: 'turn_diff',
+        itemId: 'item-1',
+        text: 'Hello, world!',
+        threadId: 'th-aaa-111',
+        turnId: 'tn-111',
+        timestamp: '2026-08-12T10:01:00.000Z',
+      });
+      // reasoning item 2 交错开始（必须出现在底部，而不是钉在顶部）
+      reduce({
+        type: 'turn_diff',
+        itemId: 'item-r2',
+        reasoning: 'wait, rethink…',
+        threadId: 'th-aaa-111',
+        turnId: 'tn-111',
+        timestamp: '2026-08-12T10:02:00.000Z',
+      });
+
+      // 流式中的新思考必须在底部（index 2）且 active
+      expect(state.blocks.map((b) => b.kind)).toEqual(['thinking', 'text', 'thinking']);
+      const streamingThinking = state.blocks[2];
+      expect(streamingThinking.kind === 'thinking' ? streamingThinking.itemId : undefined).toBe(
+        'item-r2',
+      );
+      expect(streamingThinking.kind === 'thinking' ? streamingThinking.active : undefined).toBe(
+        true,
+      );
+
+      // command item：started 锚点 + 输出 delta
+      reduce({
+        type: 'turn_diff',
+        itemId: 'item-c1',
+        toolOutput: '',
+        threadId: 'th-aaa-111',
+        turnId: 'tn-111',
+        timestamp: '2026-08-12T10:03:00.000Z',
+      });
+      reduce({
+        type: 'turn_diff',
+        itemId: 'item-c1',
+        toolOutput: ' M src/a.ts',
+        threadId: 'th-aaa-111',
+        turnId: 'tn-111',
+        timestamp: '2026-08-12T10:04:00.000Z',
+      });
+      // 第二个 agentMessage
+      reduce({
+        type: 'turn_diff',
+        itemId: 'item-2',
+        text: 'Done.',
+        threadId: 'th-aaa-111',
+        turnId: 'tn-111',
+        timestamp: '2026-08-12T10:05:00.000Z',
+      });
+
+      // 真实时序：块顺序必须与事件到达顺序一致，流式中的思考在底部
+      expect(state.blocks.map((b) => b.kind)).toEqual([
+        'thinking',
+        'text',
+        'thinking',
+        'tool',
+        'text',
+      ]);
+      const thinkingBlocks = state.blocks.filter((b) => b.kind === 'thinking');
+      expect(thinkingBlocks).toHaveLength(2);
+      expect(thinkingBlocks[0].itemId).toBe('item-r1');
+      expect(thinkingBlocks[0].active).toBe(false);
+      expect(thinkingBlocks[1].itemId).toBe('item-r2');
+      // 最终文本到达后思考折叠；流式期间的 active 状态在上面的中间断言
+      expect(thinkingBlocks[1].active).toBe(false);
+      const toolBlocks = state.blocks.filter((b) => b.kind === 'tool');
+      expect(toolBlocks[0].tool.id).toBe('item-c1');
+      expect(toolBlocks[0].tool.output).toBe(' M src/a.ts');
+
+      const json = JSON.stringify(renderRunCard(state));
+      // 问题一回归：所有内容组件都有时间标记
+      expect(json).toContain('思考完成** (2026-08-12 18:02)');
+      expect(json).toContain('💬 **输出** (2026-08-12 18:01)');
+      // 流式中的 command 块：标题取 startedAt（18:03）
+      expect(json).toContain('**command** (2026-08-12 18:03)');
+    } finally {
+      if (oldTz === undefined) delete process.env.TZ;
+      else process.env.TZ = oldTz;
+    }
+  });
+
+  it('app-server authoritative completion replaces the item block in place and stamps timestamps', () => {
+    let state = createInitialRunState('run-authority');
+    // 流式草稿
+    state = reduceRunState(state, {
+      type: 'turn_diff',
+      itemId: 'item-r1',
+      reasoning: 'streamed draft',
+      threadId: 'th-aaa-111',
+      turnId: 'tn-111',
+      timestamp: '2026-08-12T10:00:00.000Z',
+    } as never);
+    // item/completed 权威内容：原地替换、置 inactive、打 completedAt
+    state = reduceRunState(state, {
+      type: 'turn_diff',
+      itemId: 'item-r1',
+      reasoning: 'final authoritative',
+      complete: true,
+      threadId: 'th-aaa-111',
+      turnId: 'tn-111',
+      timestamp: '2026-08-12T10:01:00.000Z',
+    } as never);
+
+    const thinking = state.blocks[0];
+    expect(thinking.kind).toBe('thinking');
+    expect(state.blocks).toHaveLength(1);
+    if (thinking.kind === 'thinking') {
+      expect(thinking.content).toBe('final authoritative');
+      expect(thinking.active).toBe(false);
+      expect(thinking.timestamp).toBe('2026-08-12T10:00:00.000Z');
+      expect(thinking.completedAt).toBe('2026-08-12T10:01:00.000Z');
+    }
+
+    // 工具同理：started → delta → completed（状态 ok + completedAt）
+    state = reduceRunState(state, {
+      type: 'turn_diff',
+      itemId: 'item-c1',
+      toolOutput: 'partial',
+      threadId: 'th-aaa-111',
+      turnId: 'tn-111',
+      timestamp: '2026-08-12T10:02:00.000Z',
+    } as never);
+    state = reduceRunState(state, {
+      type: 'turn_diff',
+      itemId: 'item-c1',
+      toolOutput: 'aggregated output',
+      complete: true,
+      threadId: 'th-aaa-111',
+      turnId: 'tn-111',
+      timestamp: '2026-08-12T10:03:00.000Z',
+    } as never);
+    const tool = state.blocks.find((b) => b.kind === 'tool');
+    expect(tool?.kind === 'tool' ? tool.tool.status : undefined).toBe('ok');
+    expect(tool?.kind === 'tool' ? tool.tool.completedAt : undefined).toBe(
+      '2026-08-12T10:03:00.000Z',
+    );
+    expect(tool?.kind === 'tool' ? tool.tool.startedAt : undefined).toBe(
+      '2026-08-12T10:02:00.000Z',
+    );
+  });
+
+  it('moves a same-item streaming update to the bottom when later items were appended (protocol-violation fallback)', () => {
+    let state = createInitialRunState('run-continuation');
+    const reduce = (e: unknown) => {
+      state = reduceRunState(state, e as never);
+    };
+    // 正常：reasoning item-r1 流式
+    reduce({
+      type: 'turn_diff',
+      itemId: 'item-r1',
+      reasoning: 'first thought',
+      threadId: 'th-aaa-111',
+      turnId: 'tn-111',
+      timestamp: '2026-08-12T10:00:00.000Z',
+    });
+    // 文本 item 追加
+    reduce({
+      type: 'turn_diff',
+      itemId: 'item-1',
+      text: 'Hello, world!',
+      threadId: 'th-aaa-111',
+      turnId: 'tn-111',
+      timestamp: '2026-08-12T10:01:00.000Z',
+    });
+    // 同一 reasoning item 继续收到 delta（违反 item 生命周期）：
+    // 流式更新必须出现在卡片底部，而不是钉在顶部刷新
+    reduce({
+      type: 'turn_diff',
+      itemId: 'item-r1',
+      reasoning: 'first thought + more',
+      threadId: 'th-aaa-111',
+      turnId: 'tn-111',
+      timestamp: '2026-08-12T10:02:00.000Z',
+    });
+
+    expect(state.blocks.map((b) => b.kind)).toEqual(['text', 'thinking']);
+    const thinking = state.blocks[1];
+    expect(thinking.kind === 'thinking' ? thinking.content : undefined).toBe(
+      'first thought + more',
+    );
+    expect(thinking.kind === 'thinking' ? thinking.active : undefined).toBe(true);
+    // 权威完成不移动位置：块已在末尾，原地收尾
+    reduce({
+      type: 'turn_diff',
+      itemId: 'item-r1',
+      reasoning: 'first thought + more',
+      complete: true,
+      threadId: 'th-aaa-111',
+      turnId: 'tn-111',
+      timestamp: '2026-08-12T10:03:00.000Z',
+    });
+    expect(state.blocks.map((b) => b.kind)).toEqual(['text', 'thinking']);
+  });
+
+  it('keeps multiple command items as separate tool blocks', () => {
+    let state = createInitialRunState('run-two-tools');
+    state = reduceRunState(state, {
+      type: 'turn_diff',
+      itemId: 'item-c1',
+      toolOutput: 'out one',
+      threadId: 'th-aaa-111',
+      turnId: 'tn-111',
+      timestamp: '2026-08-12T10:00:00.000Z',
+    } as never);
+    state = reduceRunState(state, {
+      type: 'turn_diff',
+      itemId: 'item-c2',
+      toolOutput: 'out two',
+      threadId: 'th-aaa-111',
+      turnId: 'tn-111',
+      timestamp: '2026-08-12T10:01:00.000Z',
+    } as never);
+    const tools = state.blocks.filter((b) => b.kind === 'tool');
+    expect(tools).toHaveLength(2);
+    expect(tools[0].kind === 'tool' ? tools[0].tool.id : undefined).toBe('item-c1');
+    expect(tools[1].kind === 'tool' ? tools[1].tool.id : undefined).toBe('item-c2');
+  });
+
+  it('isolates fileChange items per item (two items → two blocks)', () => {
+    let state = createInitialRunState('run-two-files');
+    state = reduceRunState(state, {
+      type: 'turn_diff',
+      itemId: 'item-f1',
+      fileChanges: [{ path: '/home/user/project/a.txt', kind: 'update', diff: '+a' }],
+      threadId: 'th-aaa-111',
+      turnId: 'tn-111',
+      timestamp: '2026-08-12T10:00:00.000Z',
+    } as never);
+    state = reduceRunState(state, {
+      type: 'turn_diff',
+      itemId: 'item-f2',
+      fileChanges: [{ path: '/home/user/project/b.txt', kind: 'update', diff: '+b' }],
+      threadId: 'th-aaa-111',
+      turnId: 'tn-111',
+      timestamp: '2026-08-12T10:01:00.000Z',
+    } as never);
+    const files = state.blocks.filter((b) => b.kind === 'file_change');
+    expect(files).toHaveLength(2);
+    expect(files[0].kind === 'file_change' ? files[0].itemId : undefined).toBe('item-f1');
+    expect(files[1].kind === 'file_change' ? files[1].itemId : undefined).toBe('item-f2');
+  });
+
+  it('corrects plan content with turn/completed authority in place', () => {
+    let state = createInitialRunState('run-plan-authority');
+    state = reduceRunState(state, {
+      type: 'turn_diff',
+      itemId: 'item-p1',
+      plan: 'Step 1 draft',
+      threadId: 'th-aaa-111',
+      turnId: 'tn-111',
+      timestamp: '2026-08-12T10:00:00.000Z',
+    } as never);
+    state = reduceRunState(state, {
+      type: 'turn_diff',
+      itemId: 'item-p1',
+      plan: 'Step 1\nStep 2 final',
+      complete: true,
+      threadId: 'th-aaa-111',
+      turnId: 'tn-111',
+      timestamp: '2026-08-12T10:01:00.000Z',
+    } as never);
+    const plans = state.blocks.filter((b) => b.kind === 'plan');
+    expect(plans).toHaveLength(1);
+    expect(plans[0].kind === 'plan' ? plans[0].content : undefined).toBe('Step 1\nStep 2 final');
+    expect(plans[0].kind === 'plan' ? plans[0].active : undefined).toBe(false);
+    expect(plans[0].kind === 'plan' ? plans[0].completedAt : undefined).toBe(
+      '2026-08-12T10:01:00.000Z',
+    );
+  });
+
+  it('marks failed commands as tool error status on authoritative completion', () => {
+    let state = createInitialRunState('run-tool-error');
+    state = reduceRunState(state, {
+      type: 'turn_diff',
+      itemId: 'item-c1',
+      toolOutput: '',
+      threadId: 'th-aaa-111',
+      turnId: 'tn-111',
+      timestamp: '2026-08-12T10:00:00.000Z',
+    } as never);
+    state = reduceRunState(state, {
+      type: 'turn_diff',
+      itemId: 'item-c1',
+      toolOutput: 'partial output',
+      complete: true,
+      toolStatus: 'error',
+      threadId: 'th-aaa-111',
+      turnId: 'tn-111',
+      timestamp: '2026-08-12T10:01:00.000Z',
+    } as never);
+    const tool = state.blocks.find((b) => b.kind === 'tool');
+    expect(tool?.kind === 'tool' ? tool.tool.status : undefined).toBe('error');
+    expect(tool?.kind === 'tool' ? tool.tool.completedAt : undefined).toBe(
+      '2026-08-12T10:01:00.000Z',
+    );
+  });
+
+  it('hides the approval area once the run is terminal (coordinator already released)', () => {
+    let state = createInitialRunState('run-approval-terminal');
+    state = reduceRunState(state, {
+      type: 'approval_requested',
+      requestId: 42,
+      kind: 'command',
+      threadId: 'th-aaa-111',
+      turnId: 'tn-111',
+      itemId: 'item-1',
+      view: {
+        requestId: 42,
+        kind: 'command',
+        threadShort: 'th-aaa-1',
+        turnShort: 'tn-111',
+        workspace: '/home/user/project',
+        command: 'ls -la',
+        commandCwd: '/home/user/project',
+        availableDecisions: ['accept', 'decline', 'cancel'],
+        pendingTotal: 1,
+      },
+    } as never);
+
+    const running = JSON.stringify(renderRunCard(state));
+    expect(running).toContain('命令审批');
+
+    state = finishRun(state, 'done');
+    const done = JSON.stringify(renderRunCard(state));
+    expect(done).not.toContain('命令审批');
+    expect(done).not.toContain('approval.respond');
+  });
 });
 
 // CardKit 2.0 renderer — renderRunCard coverage (2.0 path
@@ -451,6 +1389,78 @@ describe('renderRunCard (CardKit 2.0)', () => {
     // Status text uses div + lark_md (not 1.x tag component which is unsupported in 2.0)
     expect(json).toContain('"tag":"div"');
     expect(json).toContain('已完成');
+  });
+
+  it('compact button shows on every terminal state for a normal turn (incl. abnormal exits)', () => {
+    const terminals = ['done', 'error', 'interrupted', 'idle_timeout'] as const;
+    for (const terminal of terminals) {
+      let state = createInitialRunState('run-compact-terminal');
+      state = reduceRunState(state, {
+        type: 'turn_started',
+        threadId: 'th-aaa-1',
+        turnId: 'tn-1',
+        operationKind: 'turn',
+      } as never);
+      state = finishRun(state, terminal, {
+        resultSubtype: terminal === 'error' ? 'error' : 'success',
+        errorMsg: terminal === 'error' ? 'boom' : undefined,
+      });
+      const json = JSON.stringify(renderRunCard(state));
+      expect(json).toContain('"cmd":"codex.compact"');
+      expect(json).toContain('"cmd":"new-session"');
+    }
+  });
+
+  it('done + error subtype still shows compact button (approval-cancelled run)', () => {
+    let state = createInitialRunState('run-done-error');
+    state = reduceRunState(state, {
+      type: 'turn_started',
+      threadId: 'th-aaa-1',
+      turnId: 'tn-1',
+      operationKind: 'turn',
+    } as never);
+    state = finishRun(state, 'done', { resultSubtype: 'error' });
+    const json = JSON.stringify(renderRunCard(state));
+    expect(json).toContain('"cmd":"codex.compact"');
+  });
+
+  it('compaction card never shows compact button (no recursive compact)', () => {
+    let state = createInitialRunState('run-compaction');
+    state = reduceRunState(state, {
+      type: 'turn_started',
+      threadId: 'th-aaa-1',
+      turnId: 'tn-1',
+      operationKind: 'compaction',
+    } as never);
+    state = finishRun(state, 'done', { resultSubtype: 'success' });
+    const json = JSON.stringify(renderRunCard(state));
+    expect(json).not.toContain('"cmd":"codex.compact"');
+  });
+
+  it('running turn has no compact button yet', () => {
+    let state = createInitialRunState('run-running');
+    state = reduceRunState(state, {
+      type: 'turn_started',
+      threadId: 'th-aaa-1',
+      turnId: 'tn-1',
+      operationKind: 'turn',
+    } as never);
+    const json = JSON.stringify(renderRunCard(state));
+    expect(json).not.toContain('"cmd":"codex.compact"');
+  });
+
+  it('compact card shows post-compact context, pre-compact watermark and compact count', () => {
+    let state = createInitialRunState('run-compact-stats');
+    state = finishRun(state, 'done', {
+      resultSubtype: 'success',
+      contextLength: 4777,
+      compactPreContextLength: 20430,
+      compactCount: 1,
+    });
+    const json = JSON.stringify(renderRunCard(state));
+    // formatTokenK rounds to nearest K: 4777 -> 5K, 20430 -> 20K
+    expect(json).toContain('Context - 5K（压缩前 20K）');
+    expect(json).toContain('Compact - 1次');
   });
 
   it('header title is agent-aware via options.agentKind', () => {

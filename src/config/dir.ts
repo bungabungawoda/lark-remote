@@ -97,7 +97,7 @@ export function printHelp(): void {
     'Options:',
     '  --config-dir <path>   自定义配置目录（默认 ~/.lark-remote，可用于同机多实例）',
     '  --settings <path>     指定 Claude 配置文件路径',
-    '  --dev                 开发模式：标记从源码 bun src/index.ts 启动（空闲超时自动停止据此选择拉起方式）',
+    '  --dev                 开发模式：标记从源码 bun src/index.ts 启动（看门狗据此选择拉起方式）',
     '  --update              升级到最新版本后退出（用于 cron/脚本自动化升级）',
     '  -h, --help            显示本帮助信息',
     '  -v, --version         显示版本号',

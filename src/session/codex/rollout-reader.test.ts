@@ -372,6 +372,51 @@ not valid json
       expect(content.usage!.cumulativeInputTokens).toBe(110);
       expect(content.usage!.cumulativeOutputTokens).toBe(30);
     });
+
+    it('counts compacted events and reports post-compact context when session ends with compact', () => {
+      const sessionsDir = path.join(tmpDir, 'sessions', '2026', '07', '17');
+      fs.mkdirSync(sessionsDir, { recursive: true });
+      const file = path.join(sessionsDir, 'rollout-019f-compact.jsonl');
+      fs.writeFileSync(
+        file,
+        `{"type":"session_meta","payload":{"session_id":"019f-compact","cwd":"/tmp"}}
+{"type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":20430,"cached_input_tokens":0,"output_tokens":605,"total_tokens":21035},"total_token_usage":{"input_tokens":45106,"cached_input_tokens":24576,"output_tokens":695,"total_tokens":45801}}}}
+{"type":"compacted","payload":{"message":"summary text","window_number":1}}
+{"type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":0,"cached_input_tokens":0,"output_tokens":0,"total_tokens":4777},"total_token_usage":{"input_tokens":45106,"cached_input_tokens":24576,"output_tokens":695,"total_tokens":45801}}}}
+`,
+        'utf-8',
+      );
+      const content = readCodexSessionContent('019f-compact', { codexHome: tmpDir });
+      expect(content.usage).toBeDefined();
+      expect(content.usage!.compactCount).toBe(1);
+      // 压缩收尾 token_count 增量全 0，contextLength 用 total_tokens（压缩后窗口）
+      expect(content.usage!.contextLength).toBe(4777);
+      // 压缩前水位与压缩后同口径（total_tokens）：最近一次非零 token_count 的
+      // total = input 20430 + output 605 = 21035（review P3-9 单位统一）。
+      expect(content.usage!.compactPreContextLength).toBe(21035);
+    });
+
+    it('keeps normal-turn context after compact and still counts compactions', () => {
+      const sessionsDir = path.join(tmpDir, 'sessions', '2026', '07', '18');
+      fs.mkdirSync(sessionsDir, { recursive: true });
+      const file = path.join(sessionsDir, 'rollout-019f-compact-then-run.jsonl');
+      fs.writeFileSync(
+        file,
+        `{"type":"session_meta","payload":{"session_id":"019f-compact-then-run","cwd":"/tmp"}}
+{"type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":20430,"cached_input_tokens":0,"output_tokens":605,"total_tokens":21035},"total_token_usage":{"input_tokens":45106,"cached_input_tokens":24576,"output_tokens":695,"total_tokens":45801}}}}
+{"type":"compacted","payload":{"message":"summary text","window_number":1}}
+{"type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":0,"cached_input_tokens":0,"output_tokens":0,"total_tokens":4777},"total_token_usage":{"input_tokens":45106,"cached_input_tokens":24576,"output_tokens":695,"total_tokens":45801}}}}
+{"type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":25000,"cached_input_tokens":0,"output_tokens":100,"total_tokens":25100},"total_token_usage":{"input_tokens":70106,"cached_input_tokens":24576,"output_tokens":795,"total_tokens":70901}}}}
+`,
+        'utf-8',
+      );
+      const content = readCodexSessionContent('019f-compact-then-run', { codexHome: tmpDir });
+      expect(content.usage).toBeDefined();
+      expect(content.usage!.compactCount).toBe(1);
+      // 压缩后有普通 turn：水位回归该 turn，压缩前水位不再暴露
+      expect(content.usage!.contextLength).toBe(25000);
+      expect(content.usage!.compactPreContextLength).toBeUndefined();
+    });
   });
 
   describe('isCodexSessionActive', () => {

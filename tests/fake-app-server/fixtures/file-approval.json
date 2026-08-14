@@ -1,0 +1,9 @@
+{"request":{"method":"initialize"},"response":{"result":{"userAgent":"codex-cli/0.147.0","codexHome":"/home/user/.codex","platformFamily":"unix","platformOs":"macos"}}}
+{"notification":{"method":"initialized","params":{}}}
+{"request":{"method":"thread/start"},"response":{"result":{"thread":{"id":"th-aaa-333","sessionId":"sess-333","status":{"type":"idle"},"cwd":"/home/user/project","preview":"","turns":[],"createdAt":1,"updatedAt":1,"modelProvider":"deepseek","cliVersion":"0.147.0","ephemeral":false},"cwd":"/home/user/project","model":"deepseek-v4-flash","modelProvider":"deepseek","approvalPolicy":"on-request"}}}
+{"request":{"method":"turn/start"},"response":{"result":{"turn":{"id":"tn-333","items":[],"itemsView":"notLoaded","status":"inProgress"}}}}
+{"notification":{"method":"turn/started","params":{"threadId":"th-aaa-333","turn":{"id":"tn-333","items":[],"itemsView":"notLoaded","status":"inProgress"}}}}
+{"notification":{"method":"item/started","params":{"threadId":"th-aaa-333","turnId":"tn-333","item":{"type":"fileChange","id":"call_00_item333","changes":[{"path":"/home/user/project/src/main.ts","kind":{"type":"update","move_path":null},"diff":"@@ -1 +1,2 @@\n hello\n+hello\n"}],"status":"inProgress"},"startedAtMs":1}}}
+{"notification":{"id":1,"method":"item/fileChange/requestApproval","params":{"threadId":"th-aaa-333","turnId":"tn-333","itemId":"call_00_item333","startedAtMs":1,"reason":null,"grantRoot":null}}}
+{"notification":{"method":"serverRequest/resolved","params":{"threadId":"th-aaa-333","requestId":1}}}
+{"notification":{"method":"turn/completed","params":{"threadId":"th-aaa-333","turn":{"id":"tn-333","items":[],"itemsView":"summary","status":"completed"}}}}

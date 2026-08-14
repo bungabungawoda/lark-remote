@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.6] - 2026-08-14
+
+### 新增
+
+- Codex App Server 集成：通过 stdio JSON-RPC 持久连接 Codex CLI，支持审批流（文件读写/命令执行）、Compact 上下文压缩、空闲超时自动断开
+- Approval 审批系统：`approval-coordinator` 协调超时/取消/回复，`approval-render` 渲染审批按钮卡片
+- Codex runner 工厂：自动选择直连模式或 App Server 模式
+- `rollout-reader`：Codex App Server rollout 开关读取
+- Run card 审批区域渲染 + context limit 百分比显示
+- 架构文档：`codex-app-server-integration.md`
+
+### 修复
+
+- `/update` 命令移除自动重启逻辑
+- Codex 配置枚举回归官方标准值
+
 ## [0.1.5] - 2026-08-14
 
 ### 新增
@@ -136,3 +152,4 @@ Initial release.
 [0.1.3]: https://github.com/bungabungawoda/lark-remote/releases/tag/v0.1.3
 [0.1.4]: https://github.com/bungabungawoda/lark-remote/releases/tag/v0.1.4
 [0.1.5]: https://github.com/bungabungawoda/lark-remote/releases/tag/v0.1.5
+[0.1.6]: https://github.com/bungabungawoda/lark-remote/releases/tag/v0.1.6

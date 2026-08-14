@@ -50,6 +50,26 @@ describe('RunState', () => {
     expect(state.errorMsg).toBe('Test error');
   });
 
+  it('test_anchor_result_interrupted_keeps_interrupted_semantics', () => {
+    // 审批超时/取消导致的中断是独立终态：不得并入 success，也不得归因于 Agent
+    // 报错（errorMsg 保持 undefined，不落「Agent 返回错误结果」兜底）。
+    const initial = createInitialRunState('run-1');
+    const inited = reduceRunState(initial, {
+      type: 'system',
+      subtype: 'init',
+      session_id: 'session-1',
+    });
+    const state = reduceRunState(inited, {
+      type: 'result',
+      subtype: 'interrupted',
+      session_id: 'session-1',
+    });
+
+    expect(state.terminal).toBe('finalizing');
+    expect(state.resultSubtype).toBe('interrupted');
+    expect(state.errorMsg).toBeUndefined();
+  });
+
   it('test_anchor_compact_boundary_increments_compact_count', () => {
     const initial = createInitialRunState('run-1');
     const result = reduceRunState(initial, {

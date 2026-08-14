@@ -1,0 +1,5 @@
+{"request":{"method":"initialize"},"response":{"result":{"userAgent":"codex-cli/0.147.0","codexHome":"/home/user/.codex","platformFamily":"unix","platformOs":"macos"}}}
+{"notification":{"method":"initialized","params":{}}}
+{"request":{"method":"thread/start"},"response":{"result":{"thread":{"id":"th-aaa-111","sessionId":"sess-111","status":{"type":"idle"},"cwd":"/home/user/project","preview":"","turns":[],"createdAt":1,"updatedAt":1,"modelProvider":"deepseek","cliVersion":"0.147.0","ephemeral":false},"cwd":"/home/user/project","model":"deepseek-v4-flash","modelProvider":"deepseek","approvalPolicy":"on-request"}}}
+{"request":{"method":"turn/start"},"response":{"result":{"turn":{"id":"tn-111","items":[],"itemsView":"notLoaded","status":"inProgress"}}}}
+{"notification":{"method":"turn/started","params":{"threadId":"th-aaa-111","turn":{"id":"tn-111","items":[],"itemsView":"notLoaded","status":"inProgress"}}}}

@@ -20,7 +20,7 @@ import {
 import { FeishuConnector } from './connector/index.js';
 import {
   ClaudeRunner,
-  CodexExecRunner,
+  createCodexRunner,
   OpencodeExecRunner,
   PiRunner,
   KimiRunner,
@@ -53,7 +53,7 @@ import { classifyRejection } from './error-classification.js';
 import { WorkspaceStore } from './workspace/index.js';
 import { markdownDiv } from './card/collapsible.js';
 import { sessionEventPanel } from './router/card-helpers.js';
-import { newSessionButton, agentDisplayName } from './card/card-shared.js';
+import { newSessionButton, resumeCompactButton, agentDisplayName } from './card/card-shared.js';
 import path from 'node:path';
 import fs from 'node:fs';
 
@@ -76,6 +76,7 @@ async function sendAutoResumeCard(
   cwd: string,
   session: { sessionId: string; summary: string },
   state: SessionDisplayState,
+  compactSupported = false,
 ): Promise<void> {
   if (!contact.userId) return;
 
@@ -121,17 +122,21 @@ async function sendAutoResumeCard(
     elements.push(markdownDiv(usageStr));
   }
 
-  // Add new session button - use column_set+column (div+elements not supported in 2.0)
-  const newSessionBtn = newSessionButton();
+  // Add action buttons - use column_set+column (div+elements not supported in 2.0)
+  const actionButtons: object[] = [];
+  // Compact 按钮：仅 codex app-server 模式（runner 有 runCompact）且未在跑。
+  // 启动自动恢复时不会存在该会话的 activeRun，直接渲染。
+  if (compactSupported) {
+    actionButtons.push(resumeCompactButton(session.sessionId, state.agentKind ?? 'codex'));
+  }
+  actionButtons.push(newSessionButton());
   elements.push({
     tag: 'column_set',
-    columns: [
-      {
-        tag: 'column',
-        width: 'auto',
-        elements: [newSessionBtn],
-      },
-    ],
+    columns: actionButtons.map((btn) => ({
+      tag: 'column',
+      width: 'auto',
+      elements: [btn],
+    })),
   });
 
   const card = {
@@ -247,15 +252,17 @@ function initializeRunner(
     });
   });
 
-  // Register CodexExecRunner (codex exec --json, approval_policy=never).
-  // Factory reads latest config from container.current so runtime config changes
-  // (reasoningEffort, model, etc.) take effect after bridge.setConfig() + clearRunners().
+  // Register Codex runner. Factory reads latest config from container.current
+  // so runtime config changes (serviceMode, model, sandbox, approvalPolicy,
+  // reasoningEffort, etc.) take effect after bridge.setConfig() + clearRunners().
+  // serviceMode=app-server → CodexAppServerRunner (persistent connection with
+  // approval + sandbox); otherwise CodexExecRunner (codex exec --json).
   const codexSessionReader = new CodexSessionReader({ codexHome: process.env.CODEX_HOME });
   agentRegistry.register('codex', (ws: string) => {
     const container = agentRegistry.getConfigContainer();
     const latestConfig = (container?.current as AppConfig) ?? config;
     const codexConfig = getAgentConfig(latestConfig, 'codex');
-    return new CodexExecRunner({
+    return createCodexRunner({
       model: codexConfig?.model,
       modelProvider: codexConfig?.modelProvider,
       reasoningEffort: codexConfig?.reasoningEffort,
@@ -264,6 +271,13 @@ function initializeRunner(
       pidDir: configDir,
       workspace: ws,
       sessionReader: codexSessionReader,
+      serviceMode: codexConfig?.serviceMode,
+      sandbox: codexConfig?.sandbox,
+      approvalPolicy: codexConfig?.approvalPolicy,
+      appServerBinary: codexConfig?.appServer?.binary,
+      appServerRequestTimeoutMs: codexConfig?.appServer?.requestTimeoutMs,
+      appServerIdleTtlMs: codexConfig?.appServer?.idleTtlMs,
+      appServerTurnIdleTimeoutMinutes: codexConfig?.appServer?.turnIdleTimeoutMinutes,
     });
   });
 
@@ -612,11 +626,17 @@ function setupMessageHandlers(
         (action.action as { input_value?: string }).input_value,
     };
 
-    // queue.input 和 config.save 返回 CardActionResponse toast 给点击用户即时反馈。
-    // 必须直接返回值 -- enqueueImmediate / enqueueConfigAction 是 fire-and-forget，
-    // 会吞掉返回值。queue.input 只做一次卡片更新 + toast，快速且不需要串行队列序列化。
-    // config.save 内部已有 enqueueConfigAction 串行化保证，但返回值需要直接返回给飞书。
-    if (actionValue.cmd === 'queue.input' || actionValue.cmd === 'config.save') {
+    // queue.input / config.save / approval.respond / approval.toggle 返回
+    // CardActionResponse toast 给点击用户即时反馈。必须直接返回值 --
+    // enqueueImmediate / enqueueConfigAction 是 fire-and-forget，会吞掉返回值。
+    // 审批响应尤其不能落串行队列：run 任务占用队列头直到 turn 结束，审批响应
+    // 排在后面会形成死锁（run 不结束不执行、run 结束 coordinator 已删响应空转）。
+    if (
+      actionValue.cmd === 'queue.input' ||
+      actionValue.cmd === 'config.save' ||
+      actionValue.cmd === 'approval.respond' ||
+      actionValue.cmd === 'approval.toggle'
+    ) {
       return router.handleCardAction(fullValue, { userId, chatId, messageId });
     }
 
@@ -651,6 +671,8 @@ function setupMessageHandlers(
             chatId,
             messageId,
             messagePreview: `card action: ${actionValue.cmd}`,
+            // Compact 是单向操作，排队卡不允许编辑（编辑预览无意义）。
+            editable: actionValue.cmd !== 'codex.compact' && actionValue.cmd !== 'resume.compact',
           },
         },
       );
@@ -838,6 +860,9 @@ async function main() {
               displayTitle: content.displayTitle,
               agentKind: config.defaultAgent,
             },
+            // Compact 仅 codex app-server 模式有实现（runner.runCompact）。
+            config.defaultAgent === 'codex' &&
+              getAgentConfig(config, 'codex')?.serviceMode === 'app-server',
           );
         } catch (err) {
           getLogger().warn('[startup] sendAutoResumeCard failed:', err);

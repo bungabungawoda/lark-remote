@@ -61,3 +61,9 @@ docs/zh/architecture/run-card-compact-awareness-plan.md
 
 # 飞书 CardKit 官方文档镜像（第三方内容，不入库；由 scripts/download-feishu-card-docs.sh 抓取）
 docs/feishu-card-v2/
+
+# 锁文件统一使用 bun.lock，不保留 pnpm-lock.yaml
+pnpm-lock.yaml
+
+# 架构设计文档（含内部实现细节，不入库）
+docs/**/codex-app-server-integration.md

@@ -346,6 +346,18 @@ export class FeishuConnector {
   }
 
   /**
+   * Remove a reaction by emoji (e.g. retract the Typing indicator).
+   * The SDK resolves the reaction id internally; missing reaction is a no-op.
+   */
+  async removeReactionByEmoji(messageId: string, emoji: string): Promise<void> {
+    try {
+      await this.channel.removeReactionByEmoji(messageId, emoji);
+    } catch (err) {
+      getLogger().error('[feishu] removeReactionByEmoji failed:', this.formatError(err));
+    }
+  }
+
+  /**
    * Upload a file to Feishu and send it to the specified chat.
    * Uses the im/v1/files upload API.
    */

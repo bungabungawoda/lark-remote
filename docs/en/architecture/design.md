@@ -234,6 +234,11 @@ claude:
   # permissionMode is hardcoded as bypassPermissions (inside runner), not configurable via config
   stopGraceMs: 5000
 
+codex:
+  serviceMode: exec         # exec (default, spawn-per-message) | app-server (persistent connection + approvals)
+  approvalPolicy: on-request  # Codex official AskForApproval: untrusted | on-request | never (app-server mode only)
+  sandbox: danger-full-access  # Codex official SandboxMode: read-only | workspace-write | danger-full-access (app-server mode only)
+
 output:
   showThinking: true
   showToolUse: true

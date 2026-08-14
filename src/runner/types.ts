@@ -28,6 +28,68 @@ interface SystemCompactEvent {
   };
 }
 
+export interface ApprovalRequestedEvent {
+  type: 'approval_requested';
+  /** JSON-RPC id of the server request. Wire type is string | integer — keep raw. */
+  requestId: number | string;
+  kind: 'command' | 'file' | 'permissions';
+  threadId: string;
+  turnId: string;
+  itemId: string;
+  view: ApprovalView;
+  timestamp?: string;
+}
+
+export interface ApprovalResolvedEvent {
+  type: 'approval_resolved';
+  requestId: number | string;
+  outcome: 'resolved' | 'expired';
+  timestamp?: string;
+}
+
+/** Approval card content update (out-of-order item/started arrives late). */
+export interface ApprovalViewUpdatedEvent {
+  type: 'approval_view_updated';
+  requestId: number | string;
+  view: ApprovalView;
+  timestamp?: string;
+}
+
+/** Approval expired locally (bridge-side timeout) — card should show expired UI. */
+export interface ApprovalExpiredEvent {
+  type: 'approval_expired';
+  requestId: number | string;
+  timestamp?: string;
+}
+
+export interface ApprovalView {
+  requestId: number | string;
+  kind: 'command' | 'file' | 'permissions';
+  reason?: string;
+  threadShort: string;
+  turnShort: string;
+  workspace: string;
+  command?: string;
+  commandCwd?: string;
+  fileChanges?: Array<{ path: string; kind: 'add' | 'update' | 'delete'; diff?: string }>;
+  network?: { host: string; protocol: string };
+  permissions?: {
+    networkEnabled?: boolean;
+    fileSystemRead?: string[];
+    fileSystemWrite?: string[];
+    items: Array<{
+      id: string;
+      label: string;
+      target: { kind: 'network' } | { kind: 'fsRead' | 'fsWrite'; path: string };
+      selected: boolean;
+    }>;
+  };
+  availableDecisions: string[];
+  /** Raw payloads for structured decisions (e.g. acceptWithExecpolicyAmendment). */
+  decisionPayloads?: Record<string, unknown>;
+  pendingTotal: number;
+}
+
 interface ThinkingContent {
   type: 'thinking';
   thinking: string;
@@ -72,7 +134,7 @@ export interface UserEvent {
 
 export interface ResultEvent {
   type: 'result';
-  subtype: 'success' | 'error';
+  subtype: 'success' | 'error' | 'interrupted';
   session_id: string;
   timestamp?: string;
   usage?: {
@@ -89,6 +151,9 @@ export interface ResultEvent {
     cache_creation_input_tokens?: number;
     /** Agent-declared total; when present the display uses max(total, sum of parts). */
     total_tokens?: number;
+    /** 当前模型 context window 上限（codex app-server tokenUsage.modelContextWindow
+     *  透传）。仅 app-server 提供；缺省时卡片只显示绝对量、不显示百分比。 */
+    context_limit?: number;
   };
   total_cost_usd?: number;
   errorMessage?: string; // For auth errors and other run failures
@@ -117,14 +182,62 @@ export interface FileChangeEvent {
   timestamp?: string;
 }
 
+export interface TurnStartedEvent {
+  type: 'turn_started';
+  threadId: string;
+  turnId: string;
+  operationKind: 'turn' | 'compaction';
+  timestamp?: string;
+}
+
+export interface TurnDiffEvent {
+  type: 'turn_diff';
+  /**
+   * Thread item id this snapshot belongs to (app-server item-scoped stream).
+   * Each content item (reasoning / agentMessage / commandExecution / plan /
+   * fileChange) is tracked independently, so interleaved items keep their
+   * real chronology and update their own block instead of a shared one.
+   */
+  itemId: string;
+  /** Full accumulated assistant text snapshot for this item (replaces previous). */
+  text?: string;
+  /** Full accumulated reasoning snapshot for this item (replaces previous). */
+  reasoning?: string;
+  /** Full accumulated tool output snapshot for this item (replaces previous). */
+  toolOutput?: string;
+  /** Full accumulated plan text snapshot for this item (replaces previous). */
+  plan?: string;
+  /** Current set of file changes for this item (replaces previous). */
+  fileChanges?: Array<{ path: string; kind: 'add' | 'update' | 'delete'; diff?: string }>;
+  /**
+   * Authoritative completion snapshot (item/completed or turn/completed).
+   * The reducer finalizes the block in place: thinking/plan active=false,
+   * tool status ok, completedAt stamped. Never reorders blocks.
+   */
+  complete?: boolean;
+  /** Authoritative tool status at completion (commandExecution item). */
+  toolStatus?: 'ok' | 'error';
+  threadId: string;
+  turnId: string;
+  timestamp?: string;
+}
+
+export type RunnerLifetime = 'turn' | 'workspace';
+
 export type AgentEvent =
   | SystemInitEvent
   | SystemCompactEvent
+  | ApprovalRequestedEvent
+  | ApprovalResolvedEvent
+  | ApprovalViewUpdatedEvent
+  | ApprovalExpiredEvent
   | AssistantEvent
   | UserEvent
   | ResultEvent
   | PlanEvent
-  | FileChangeEvent;
+  | FileChangeEvent
+  | TurnStartedEvent
+  | TurnDiffEvent;
 
 // =============================================================================
 // Runner Interface
@@ -148,6 +261,8 @@ export interface SpawnOptions {
  */
 export interface Runner {
   readonly isRunning: boolean;
+  readonly lifetime?: RunnerLifetime;
+  dispose?(): Promise<void>;
   run(message: string, opts: SpawnOptions): AsyncGenerator<AgentEvent>;
   /**
    * Stop the running process. SIGTERM → grace → SIGKILL on the per-workspace
@@ -195,6 +310,8 @@ export interface AgentSessionUsage {
   contextLimit?: number;
   /** Claude auto-compact 次数（数 compact_boundary 事件）；codex/opencode 无此概念，留 undefined。 */
   compactCount?: number;
+  /** 压缩前上下文水位（codex compact 后从会话 jsonl 读取，仅会话以压缩收尾时有值）。 */
+  compactPreContextLength?: number;
   /** 从缓存读取的 token 数（节省的费用）。 */
   cacheReadTokens?: number;
   /** 新建缓存的 token 数。 */
@@ -272,6 +389,8 @@ export interface AgentRunner extends Runner {
   readonly sessionReader: AgentSessionReader;
   /** Return current status info for /status display. */
   getStatusInfo(): AgentStatusInfo;
+  /** Whether this runner provides live usage data (vs. file-based). */
+  getUsageAuthority?(): 'live' | 'jsonl';
 }
 
 /** Agent self-describing status info for /status display. */

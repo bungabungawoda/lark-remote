@@ -13,8 +13,11 @@ Codex Agent configuration is managed through the `/config` card's interactive in
 | `agents.codex.modelProvider` | Codex Provider | select | Model provider (built-in `openai` + config.toml `[model_providers.*]`, consistent with codex `merge_configured_model_providers`; `anthropic` is not a codex built-in provider and requires explicit configuration) |
 | `agents.codex.model` | Model | select | config.toml `model` + active catalog `visibility==='list'` slugs (when `model_catalog_json` is **declared** = `codex debug models` output; otherwise = `--bundled` built-in catalog) |
 | `agents.codex.reasoningEffort` | Reasoning Effort | select | Maps to `model_reasoning_effort`; options change dynamically based on the current model's `supported_reasoning_levels` |
+| `agents.codex.serviceMode` | Run Mode | select | `exec` (spawn-per-message) or `app-server` (persistent connection) |
+| `agents.codex.approvalPolicy` | Approval Policy | select | Official Codex `AskForApproval` values: `untrusted` / `on-request` / `never` (`on-request` is the codex default) |
+| `agents.codex.sandbox` | Sandbox Mode | select | Official Codex `SandboxMode` values: `read-only` / `workspace-write` / `danger-full-access` |
 
-> `approval_policy` (`never`) and `sandbox_mode` (`danger-full-access`) are hardcoded in the runner and not exposed on the card (see `src/runner/codex/argv.ts`).
+> With `serviceMode=exec`, `approval_policy="never"` + `--sandbox danger-full-access` remain hardcoded in the runner (see `src/runner/codex/argv.ts`); with `serviceMode=app-server`, approval policy and sandbox mode are configured on the card using the official Codex enum values directly, with no custom mapping.
 
 ## Field Key Mapping Principles
 
