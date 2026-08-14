@@ -107,6 +107,36 @@ export function newSessionButton(): object {
  * agent's session reader (P2 fix: completion cards from non-default agents
  * must carry agent to avoid wrong-reader fallback).
  */
+/**
+ * Create a CardKit 2.0 Compact button for Codex app-server mode.
+ * Triggers thread/compact/start via the codex.compact callback.
+ */
+export function compactButton(runId: string): object {
+  return {
+    tag: 'button',
+    text: { content: '🗜 Compact' },
+    type: 'primary',
+    behaviors: [{ type: 'callback', value: { cmd: 'codex.compact', runId } }],
+  };
+}
+
+/**
+ * Create a CardKit 2.0 Compact button for resume cards (auto-resume / `/resume <id>`).
+ * Unlike compactButton (which targets a finished run's runId), this targets a
+ * sessionId directly: the bridge resolves the session and calls the app-server
+ * runner's runCompact() without a runId. Carries agent so the handler routes
+ * to the correct session reader + runner when the card was rendered for a
+ * non-default agent.
+ */
+export function resumeCompactButton(sessionId: string, agent: string): object {
+  return {
+    tag: 'button',
+    text: { content: '🗜 Compact' },
+    type: 'primary',
+    behaviors: [{ type: 'callback', value: { cmd: 'resume.compact', sessionId, agent } }],
+  };
+}
+
 export function resumeUseButton(sessionId: string, agent: AgentKind): object {
   return {
     tag: 'button',

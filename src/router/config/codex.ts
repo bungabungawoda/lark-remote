@@ -8,7 +8,7 @@ import {
   getDefaultReasoningEffort,
 } from '../../config/codex-config.js';
 import type { AgentConfigCardBuilder, ConfigField } from './types.js';
-import type { AppConfig } from '../../config/index.js';
+import { DEFAULT_TURN_IDLE_TIMEOUT_MINUTES, type AppConfig } from '../../config/index.js';
 
 export class CodexConfigBuilder implements AgentConfigCardBuilder {
   buildFields(displayConfig: AppConfig): ConfigField[] {
@@ -61,6 +61,59 @@ export class CodexConfigBuilder implements AgentConfigCardBuilder {
       options: getReasoningEffortOptions(currentCodexModel),
       currentValue: currentReasoningEffort,
     });
+
+    // Service mode (exec vs app-server)
+    const currentServiceMode = displayConfig.agents?.codex?.serviceMode ?? 'exec';
+    fields.push({
+      key: 'agents.codex.serviceMode',
+      label: '运行模式',
+      type: 'select',
+      options: ['exec', 'app-server'],
+      currentValue: currentServiceMode,
+    });
+
+    // 审批策略与沙箱模式仅 app-server 模式可配置（CodexAppServerRunner 读取）；
+    // exec 模式在 runner 层固定 `--sandbox danger-full-access` +
+    // `approval_policy="never"`（src/runner/codex/argv.ts），卡片不暴露选项，
+    // 只用说明行把默认语义呈现给用户。
+    if (currentServiceMode === 'app-server') {
+      // Approval policy (Codex 官方 AskForApproval 标准值；on-request 为 codex 默认)
+      const currentApprovalPolicy = displayConfig.agents?.codex?.approvalPolicy ?? 'on-request';
+      fields.push({
+        key: 'agents.codex.approvalPolicy',
+        label: '审批策略',
+        type: 'select',
+        options: ['untrusted', 'on-request', 'never'],
+        currentValue: currentApprovalPolicy,
+      });
+
+      // Sandbox mode (Codex 官方 SandboxMode 标准值)
+      const currentSandbox = displayConfig.agents?.codex?.sandbox ?? 'danger-full-access';
+      fields.push({
+        key: 'agents.codex.sandbox',
+        label: '沙箱模式',
+        type: 'select',
+        options: ['read-only', 'workspace-write', 'danger-full-access'],
+        currentValue: currentSandbox,
+      });
+
+      const currentTurnIdleTimeoutMinutes =
+        displayConfig.agents?.codex?.appServer?.turnIdleTimeoutMinutes ??
+        DEFAULT_TURN_IDLE_TIMEOUT_MINUTES;
+      fields.push({
+        key: 'agents.codex.appServer.turnIdleTimeoutMinutes',
+        label: 'Turn 空闲超时(分钟, 0关闭)',
+        type: 'input',
+        currentValue: String(currentTurnIdleTimeoutMinutes),
+      });
+    } else {
+      fields.push({
+        key: 'agents.codex.modeNote',
+        label:
+          '命令行模式固定为完全访问（danger-full-access）且无需审批（approval never），不提供审批策略/沙箱配置',
+        type: 'note',
+      });
+    }
 
     return fields;
   }
