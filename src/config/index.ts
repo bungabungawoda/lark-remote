@@ -21,6 +21,7 @@ const DEFAULTS = {
   CLAUDE_MODEL: 'claude-opus-4-8',
   STOP_GRACE_MS: 5000,
   IDLE_WATCHDOG_MINUTES: 15,
+  TURN_IDLE_TIMEOUT_MINUTES: 10,
 } as const;
 
 /**
@@ -29,6 +30,9 @@ const DEFAULTS = {
  * instead of re-literalizing `5000` (Clean Code P3-1, G25).
  */
 export const DEFAULT_STOP_GRACE_MS = DEFAULTS.STOP_GRACE_MS;
+
+/** Codex app-server turn idle timeout default (minutes). */
+export const DEFAULT_TURN_IDLE_TIMEOUT_MINUTES = DEFAULTS.TURN_IDLE_TIMEOUT_MINUTES;
 
 /** 模型 ID → alias 映射。 */
 export const MODEL_ID_TO_ALIAS: Record<string, string> = {
@@ -58,13 +62,25 @@ const ClaudeConfigSchema = z.object({
   stopGraceMs: z.number().int().min(0).default(DEFAULTS.STOP_GRACE_MS),
 });
 
+/** Codex app-server connection configuration. */
+const CodexAppServerConfigSchema = z.object({
+  /** Path to the codex binary for app-server mode. */
+  binary: z.string().default('codex'),
+  /** Request timeout in milliseconds. */
+  requestTimeoutMs: z.number().int().min(0).default(60000),
+  /** Idle TTL for connection pool in milliseconds. */
+  idleTtlMs: z.number().int().min(0).default(1800000),
+  /** Turn idle timeout in minutes: no app-server output for this long triggers
+   *  turn/interrupt and fails the run. 0 disables the timeout. */
+  turnIdleTimeoutMinutes: z.number().int().min(0).default(DEFAULT_TURN_IDLE_TIMEOUT_MINUTES),
+});
+
 /** Codex-specific configuration. */
 export const CodexConfigSchema = z.object({
   /** model to use. Undefined → codex reads from its config.toml. */
   model: z.string().optional(),
   /** model provider, e.g. 'volcengine-coding-plan'. Undefined → codex reads from its config.toml. */
   modelProvider: z.string().optional(),
-  // approvalPolicy 和 sandboxPolicy 在 runner 内硬编码（exec 模式使用 approval_policy=never）
   /**
    * Reasoning effort level。codex 标准档位 minimal/low/medium/high/xhigh/max/ultra
    * 之外还接受 none 与模型自定义值（ReasoningEffort::Custom），目录声明什么就存什么
@@ -74,6 +90,14 @@ export const CodexConfigSchema = z.object({
   reasoningEffort: z.string().min(1).optional(),
   /** Stop grace period in milliseconds. */
   stopGraceMs: z.number().int().min(0).default(5000),
+  /** Service mode: 'exec' (spawn-per-message) or 'app-server' (persistent connection). */
+  serviceMode: z.enum(['exec', 'app-server']).optional(),
+  /** Approval policy (Codex 官方 AskForApproval 标准值). 仅 app-server 模式有效（exec 固定 approval_policy="never"）。 */
+  approvalPolicy: z.enum(['untrusted', 'on-request', 'never']).optional(),
+  /** Sandbox mode (Codex 官方 SandboxMode 标准值). 仅 app-server 模式有效（exec 固定 --sandbox danger-full-access）。 */
+  sandbox: z.enum(['read-only', 'workspace-write', 'danger-full-access']).optional(),
+  /** App-server connection configuration. */
+  appServer: CodexAppServerConfigSchema.optional(),
 });
 
 /** OpenCode-specific configuration (run mode: opencode run --format json --auto). */

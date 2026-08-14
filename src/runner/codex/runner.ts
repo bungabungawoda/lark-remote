@@ -108,6 +108,12 @@ export class CodexExecRunner extends SpawningRunner implements AgentRunner {
     };
   }
 
+  /** exec 模式的 turn.completed.usage 是会话累计值，flow 字段必须 jsonl 优先
+   *  （review P3-7：桥侧统一走本接口，替代 agentKind 硬编码）。 */
+  getUsageAuthority(): 'jsonl' {
+    return 'jsonl';
+  }
+
   protected buildArgv(opts: SpawnOptions): string[] {
     return buildCodexExecArgs({
       cwd: opts.cwd,

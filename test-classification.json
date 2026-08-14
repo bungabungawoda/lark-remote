@@ -13,7 +13,12 @@
     "tests/anchor/priority/p1-21-completion-card.test.ts",
     "tests/anchor/misc/bridge-runner-opts.test.ts",
     "tests/anchor/misc/reaction-terminal-emoji.test.ts",
-    "tests/probe/reaction-terminal-emoji-probes.test.ts"
+    "tests/probe/reaction-terminal-emoji-probes.test.ts",
+    "tests/anchor/approval-expiry/approval-expiry-expire-decline.test.ts",
+    "tests/probe/approval-expiry/approval-expiry-coordinator-idempotency-probe.test.ts",
+    "tests/probe/approval-expiry/approval-expiry-responder-failure-probe.test.ts",
+    "tests/probe/approval-expiry/approval-expiry-turn-end-probe.test.ts",
+    "tests/probe/approval-expiry/approval-expiry-multiple-pending-probe.test.ts"
   ],
   "infra-card": [
     "src/card/**/*.test.ts",
@@ -35,7 +40,9 @@
     "tests/probe/run-card-estimate-threshold-probe.test.ts",
     "tests/probe/run-card-finish-flush-probe.test.ts",
     "tests/probe/run-card-inflight-push-probe.test.ts",
-    "tests/probe/run-card-push-await-semantics-probe.test.ts"
+    "tests/probe/run-card-push-await-semantics-probe.test.ts",
+    "tests/anchor/approval-expiry/approval-expiry-card-render.test.ts",
+    "tests/anchor/approval-expiry/approval-expiry-reducer-mismatch.test.ts"
   ],
   "infra-connector": [
     "src/connector/**/*.test.ts",
@@ -71,7 +78,8 @@
     "tests/card/bash-command.test.ts",
     "tests/misc/multi-agent-commands.test.ts",
     "tests/probe/resume-pagination-boundary-probes.test.ts",
-    "tests/probe/round10-router-probes.test.ts"
+    "tests/probe/round10-router-probes.test.ts",
+    "tests/anchor/approval-expiry/approval-expiry-user-feedback.test.ts"
   ],
   "infra-session": [
     "src/session/*.test.ts",
@@ -140,6 +148,7 @@
     "src/workspace/workspace.test.ts",
     "src/logger/logger.test.ts",
     "src/update/**/*.test.ts",
+    "src/index-wiring.test.ts",
     "tests/anchor/priority/p1-20-cli-args.test.ts",
     "tests/anchor/priority/p2-20-instance-lock-eperm.test.ts",
     "tests/anchor/priority/p2-20-instance-lock-pid-reuse.test.ts",
@@ -169,6 +178,7 @@
     "tests/anchor/codex-catalog/**/*.test.ts",
     "tests/anchor/codex-reasoning-effort/**/*.test.ts",
     "tests/anchor/codex-runner/**/*.test.ts",
+    "tests/anchor/codex-app-server-idle-timeout/**/*.test.ts",
     "tests/anchor/codex-session/codex-bridge-jsonl-flow-priority.test.ts",
     "tests/anchor/codex-session/codex-bridge-jsonl-missing-fallback-live.test.ts",
     "tests/anchor/codex-session/codex-getnewest-session.test.ts",
@@ -183,7 +193,9 @@
     "tests/anchor/codex-session/codex-session-active-excludes-subagent.test.ts",
     "tests/anchor/codex-session/codex-session-reader-max-events.test.ts",
     "tests/anchor/priority/p1-9-codex-workspace-pid.test.ts",
-    "tests/probe/codex-reader-offset-boundary-probe.test.ts"
+    "tests/probe/codex-reader-offset-boundary-probe.test.ts",
+    "tests/anchor/approval-expiry/approval-expiry-respond-cancel.test.ts",
+    "tests/anchor/approval-expiry/approval-expiry-integration-cancel.test.ts"
   ],
   "agent-opencode": [
     "src/runner/opencode/**/*.test.ts",

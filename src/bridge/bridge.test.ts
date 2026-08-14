@@ -4,9 +4,10 @@ import path from 'node:path';
 import os from 'node:os';
 import { Bridge } from './index.js';
 import { SessionStore } from '../session/index.js';
+import { SessionReaderRegistry } from '../session/registry.js';
 import { AppConfigSchema } from '../config/index.js';
 import type { AppConfig } from '../config/index.js';
-import type { AgentEvent, AgentRunner, Runner } from '../runner/index.js';
+import type { AgentEvent, AgentRunner, AgentSessionReader, Runner } from '../runner/index.js';
 import {
   createStubSessionReaderRegistry,
   createStubConnector,
@@ -92,6 +93,55 @@ beforeEach(() => {
       stopGraceMs: 5000,
     },
     output: { showThinking: true, showToolUse: false, showToolResult: false },
+  });
+});
+
+// --- Approval typing reaction ---
+
+describe('Bridge approval reaction retract', () => {
+  it('test_anchor_approval_request_retracts_and_resends_typing_reaction', async () => {
+    // 验证行为：审批请求到达时，bridge 必须先撤回原消息上的 Typing 表情，
+    // 再重新发送一次——让飞书重新触发提醒，把用户注意力拉回待审批卡片。
+    // 缺失后果：审批在等待人工决策时 Typing 一直停留在旧状态，用户不感知
+    // 有审批等待（2026-08-12 用户要求：需要审批时撤回 typing 表情再重新发）。
+    const events: AgentEvent[] = [
+      {
+        type: 'approval_requested',
+        requestId: 1,
+        kind: 'command',
+        threadId: 'th-aaa-222',
+        turnId: 'tn-222',
+        itemId: 'item-2',
+        view: {
+          requestId: 1,
+          kind: 'command',
+          threadShort: 'th-aaa-2',
+          turnShort: 'tn-222',
+          workspace: '/home/user/project',
+          command: 'rm -rf /tmp/test',
+          commandCwd: '/home/user/project',
+          availableDecisions: ['accept', 'decline', 'cancel'],
+          pendingTotal: 1,
+        },
+        timestamp: new Date().toISOString(),
+      },
+      { type: 'result', subtype: 'success', session_id: 'th-aaa-222' },
+    ];
+    const connector = createStubConnector({ removeReactionSpy: true, addReactionSpy: true });
+    const runner = createStubRunner({ mode: 'streaming', events });
+    const { bridge, sessionStore } = makeBridge({ runner, connector });
+    sessionStore.setCwd(ctx.userId, tmpDir);
+
+    await bridge.forwardToClaude('do something', ctx);
+
+    const removeSpy = connector.removeReactionByEmoji as unknown as ReturnType<typeof vi.fn>;
+    const addSpy = connector.addReaction as unknown as ReturnType<typeof vi.fn>;
+    await vi.waitFor(() => {
+      expect(removeSpy).toHaveBeenCalledWith('msg1', 'Typing');
+      expect(addSpy).toHaveBeenCalledWith('msg1', 'Typing');
+    });
+    // 顺序：先撤回，再重发
+    expect(removeSpy.mock.invocationCallOrder[0]).toBeLessThan(addSpy.mock.invocationCallOrder[0]);
   });
 });
 
@@ -666,6 +716,28 @@ describe('Bridge.forwardToClaude', () => {
     missingResult.sessionStore.setCwd(ctx.userId, tmpDir);
     await missingResult.bridge.forwardToClaude('missing', ctx);
     expect(JSON.stringify(missingResult.connector._cards.at(-1))).toContain('输出流已结束');
+  });
+
+  it('test_anchor_interrupted_result_renders_interrupted_not_error', async () => {
+    // 审批超时/取消导致 turn interrupted：结果卡必须呈现「已被用户终止」，
+    // 不得归因为「运行出错 / Agent 返回错误结果」（2026-08-14 线上事故）。
+    const { bridge, sessionStore, connector } = makeBridge({
+      runner: createStubRunner({
+        mode: 'streaming',
+        events: [
+          { type: 'system', subtype: 'init', session_id: 's1' },
+          { type: 'result', subtype: 'interrupted', session_id: 's1' },
+        ],
+      }),
+    });
+    sessionStore.setCwd(ctx.userId, tmpDir);
+
+    await bridge.forwardToClaude('interrupt', ctx);
+
+    const cardJson = JSON.stringify(connector._cards.at(-1));
+    expect(cardJson).toContain('已被用户终止');
+    expect(cardJson).not.toContain('运行出错');
+    expect(cardJson).not.toContain('Agent 返回错误结果');
   });
 
   it('test_anchor_stream_failure_before_initial_sends_one_static_terminal_card', async () => {
@@ -1465,6 +1537,71 @@ describe('Bridge agentRegistry / sessionReaderRegistry', () => {
           model: 'opus',
         },
         { type: 'result', subtype: 'success', session_id: 'sess-ctx-card' },
+      ],
+    });
+    const bridge = new Bridge({
+      runner: asAgentRunner(streamingRunner),
+      connector,
+      sessionStore: new SessionStore(),
+      config,
+      agentRegistry: createStubAgentRegistry(streamingRunner),
+      sessionReaderRegistry: registry,
+    });
+    sessionStore_setCwd(bridge, ctx.userId, tmpDir);
+
+    await bridge.forwardToClaude('hello', ctx);
+    const finalCard = JSON.stringify(connector._cards.at(-1));
+    expect(finalCard).toContain('Context - 5K (3%)');
+  });
+
+  it('test_anchor_run_card_renders_context_percent_from_live_appserver_usage', async () => {
+    // 验证：app-server 模式 result 事件 usage.context_limit（协议
+    // tokenUsage.modelContextWindow 透传）在 jsonl 无 contextLimit 时兜底，
+    // done 卡片渲染 "Context - X (Y%)"。
+    // 缺失/错误会导致：jsonl 未落盘 / error run 时 app-server 卡片只有绝对量。
+    // 依据：spec 摘要第 2 条 + app-server v2 协议 thread/tokenUsage/updated。
+    const { SessionReaderRegistry } = await import('../session/registry.js');
+    const readSpy = vi.fn(() => ({
+      events: [],
+      usage: {
+        inputTokens: 100,
+        outputTokens: 20,
+        contextLength: 5000,
+        cost: 0.01,
+        compactCount: 0,
+      },
+    }));
+    const stubReader = {
+      listSessions: vi.fn(() => ({ sessions: [], total: 0 })),
+      getNewestSession: vi.fn(() => null),
+      readSessionContent: readSpy,
+      isSessionActive: vi.fn(() => false),
+    };
+    const registry = new SessionReaderRegistry();
+    registry.register('claude', stubReader as never);
+
+    const connector = createStubConnector();
+    const streamingRunner = createStubRunner({
+      mode: 'streaming',
+      events: [
+        {
+          type: 'system',
+          subtype: 'init',
+          session_id: 'sess-live-ctx',
+          cwd: tmpDir,
+          model: 'opus',
+        },
+        {
+          type: 'result',
+          subtype: 'success',
+          session_id: 'sess-live-ctx',
+          usage: {
+            input_tokens: 100,
+            output_tokens: 20,
+            total_tokens: 5000,
+            context_limit: 200000,
+          },
+        },
       ],
     });
     const bridge = new Bridge({
@@ -2470,5 +2607,360 @@ describe('Queue edit race: setTaskReplacement before await (Plan B fix)', () => 
 
     // The replacement closure ran, not the original.
     expect(executed).toEqual(['A', 'B-edited']);
+  });
+});
+
+describe('sendResult fallback: card send failure sends text to user', () => {
+  it('sends fallback text when card delivery fails (e.g. Feishu 11310)', async () => {
+    // Simulate Feishu rejecting a card (e.g. element exceeds the limit ErrCode 11310).
+    // The fallback must send a plain text message with the error detail so the user
+    // isn't left in silence.
+    const sendWithRetry = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('ErrCode: 11310; ErrMsg: element exceeds the limit'))
+      .mockResolvedValueOnce('fallback-msg-id'); // second call = fallback text
+    const connector = {
+      sendWithRetry,
+      sendFile: vi.fn().mockResolvedValue(undefined),
+      reconnect: vi.fn().mockResolvedValue(undefined),
+      addReaction: vi.fn().mockResolvedValue(undefined),
+      removeReactionByEmoji: vi.fn().mockResolvedValue(undefined),
+      streamCard: vi.fn().mockResolvedValue('stream-msg-id'),
+      updateCard: vi.fn().mockResolvedValue(undefined),
+      connected: true,
+    };
+    const sessionStore = new SessionStore();
+    const bridge = new Bridge({
+      connector: connector as unknown as BridgeChannel,
+      sessionStore,
+      runner: createStubRunner(),
+    });
+    const ctx = { userId: 'user1', chatId: 'chat1', messageId: 'msg1' };
+    const result = await bridge.sendResult(
+      { card: { schema: '2.0', body: { elements: [] } } },
+      ctx,
+    );
+    expect(result).toBe(false); // primary send failed
+    // Second call is the fallback text notification
+    expect(sendWithRetry).toHaveBeenCalledTimes(2);
+    const fallbackCall = sendWithRetry.mock.calls[1];
+    expect(fallbackCall[0]).toBe('chat1');
+    const input = fallbackCall[1] as { text?: string };
+    expect(input.text).toContain('卡片发送失败');
+    expect(input.text).toContain('11310');
+  });
+
+  it('updateCardInPlace fallback sends card via sendResult; sendResult failure sends text', async () => {
+    // When updateCard fails AND sendResult also fails for the same card,
+    // the fallback text from sendResult's catch must reach the user.
+    const sendWithRetry = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('ErrCode: 11310; ErrMsg: element exceeds the limit'))
+      .mockResolvedValueOnce('fallback-msg-id');
+    const connector = {
+      sendWithRetry,
+      sendFile: vi.fn().mockResolvedValue(undefined),
+      reconnect: vi.fn().mockResolvedValue(undefined),
+      addReaction: vi.fn().mockResolvedValue(undefined),
+      removeReactionByEmoji: vi.fn().mockResolvedValue(undefined),
+      streamCard: vi.fn().mockResolvedValue('stream-msg-id'),
+      updateCard: vi.fn().mockRejectedValue(new Error('updateCard failed: card not found')),
+      connected: true,
+    };
+    const sessionStore = new SessionStore();
+    const bridge = new Bridge({
+      connector: connector as unknown as BridgeChannel,
+      sessionStore,
+      runner: createStubRunner(),
+    });
+    const ctx = { userId: 'user1', chatId: 'chat1', messageId: 'msg1' };
+    await bridge.updateCardInPlace({ schema: '2.0', body: { elements: [] } }, ctx);
+    // First: updateCard threw → fallback to sendResult({ card })
+    // sendResult called sendWithRetry → rejected (11310) → catch sends fallback text
+    expect(sendWithRetry).toHaveBeenCalledTimes(2);
+    const fallbackCall = sendWithRetry.mock.calls[1];
+    const input = fallbackCall[1] as { text?: string };
+    expect(input.text).toContain('卡片发送失败');
+  });
+});
+
+describe('Bridge handleResumeCompact（resume 卡 Compact 按钮）', () => {
+  interface CompactRunner extends Runner {
+    runCompact: (
+      message: string,
+      opts: { cwd: string; sessionId: string },
+    ) => AsyncGenerator<AgentEvent>;
+  }
+
+  /** 正常压缩结果事件（单条 result，模拟 app-server 压缩 turn 收尾）。 */
+  async function* compactTurnEvents(): AsyncGenerator<AgentEvent> {
+    yield { type: 'result', subtype: 'success', session_id: 'codex-session-1' } as AgentEvent;
+  }
+
+  /** 默认 readSessionContent 返回「未找到」（events 空且无 usage/title）。 */
+  const notFoundRead: AgentSessionReader['readSessionContent'] = () => ({
+    events: [],
+    aiTitle: undefined,
+    recap: undefined,
+    displayTitle: undefined,
+    usage: undefined,
+    reason: 'not_found',
+  });
+
+  function makeResumeCompactBridge(opts: {
+    runner?: Runner;
+    codexRead?: AgentSessionReader['readSessionContent'];
+  }) {
+    const sessionStore = new SessionStore();
+    const connector = createStubConnector();
+    const runner = opts.runner ?? createStubRunner();
+    const read = opts.codexRead ?? notFoundRead;
+    const reader: AgentSessionReader = {
+      listSessions: () => ({ sessions: [], total: 0 }),
+      getNewestSession: () => null,
+      readSessionContent: vi.fn(read),
+      isSessionActive: () => false,
+    };
+    const registry = new SessionReaderRegistry();
+    registry.register('claude', reader);
+    registry.register('codex', reader);
+    registry.register('opencode', reader);
+    registry.register('pi', reader);
+    registry.register('kimi', reader);
+    const bridge = new Bridge({
+      runner,
+      connector,
+      sessionStore,
+      config,
+      agentRegistry: createStubAgentRegistry(runner),
+      sessionReaderRegistry: registry,
+    });
+    return { bridge, sessionStore, connector, runner };
+  }
+
+  it('test_anchor_handle_resume_compact_runs_runcompact_and_finishes_card', async () => {
+    // 验证什么：happy path 调 runner.runCompact('', {cwd, sessionId}) 并流式渲染
+    // 压缩卡，终态带 jsonl 统计（Compact - 1次 / ✅ 已完成）。缺失会导致点击
+    // Compact 后没有任何压缩行为（按钮空转）。
+    const cwd = fs.realpathSync(tmpDir);
+    const runCompactSpy = vi.fn(compactTurnEvents);
+    const runner: CompactRunner = { ...createStubRunner(), runCompact: runCompactSpy };
+    const { bridge, sessionStore, connector } = makeResumeCompactBridge({
+      runner,
+      codexRead: () => ({
+        events: [{ type: 'text', content: 'tail' }],
+        usage: { inputTokens: 10, outputTokens: 20, contextLength: 5000, compactCount: 1 },
+        aiTitle: undefined,
+        recap: undefined,
+        displayTitle: 'placeholder',
+        reason: 'ok',
+      }),
+    });
+    sessionStore.setCwd('user1', cwd);
+
+    await bridge.handleResumeCompact({ sessionId: 'codex-session-1', agent: 'codex' }, ctx);
+
+    expect(runCompactSpy).toHaveBeenCalledWith('', { cwd, sessionId: 'codex-session-1' });
+    const sentJsons = connector._sent.map((s) => JSON.stringify(s.input));
+    expect(sentJsons.some((j) => j.includes('Compact 已触发'))).toBe(true);
+    expect(sentJsons.some((j) => j.includes('Compact - 1次'))).toBe(true);
+    expect(sentJsons.some((j) => j.includes('✅ 已完成'))).toBe(true);
+  });
+
+  it('test_anchor_handle_resume_compact_card_context_percentage_from_jsonl_limit', async () => {
+    // 验证什么：Compact 完成卡必须像普通 run 卡一样带 Context 百分比
+    // （Context - X (Y%)）。回归：streamCodexCompact 的 finish meta 漏传
+    // contextLimit，导致 jsonl 里明明有 model_context_window，卡片却只显示
+    // "Context - 7K（压缩前 111K）" 没有百分比。
+    const cwd = fs.realpathSync(tmpDir);
+    const runCompactSpy = vi.fn(compactTurnEvents);
+    const runner: CompactRunner = { ...createStubRunner(), runCompact: runCompactSpy };
+    const { bridge, sessionStore, connector } = makeResumeCompactBridge({
+      runner,
+      codexRead: () => ({
+        events: [{ type: 'text', content: 'tail' }],
+        usage: {
+          inputTokens: 10,
+          outputTokens: 20,
+          contextLength: 5000,
+          contextLimit: 100000,
+          compactCount: 1,
+          compactPreContextLength: 21000,
+        },
+        aiTitle: undefined,
+        recap: undefined,
+        displayTitle: 'placeholder',
+        reason: 'ok',
+      }),
+    });
+    sessionStore.setCwd('user1', cwd);
+
+    await bridge.handleResumeCompact({ sessionId: 'codex-session-1', agent: 'codex' }, ctx);
+
+    const sentJsons = connector._sent.map((s) => JSON.stringify(s.input));
+    expect(sentJsons.some((j) => j.includes('Context - 5K (5%)（压缩前 21K）'))).toBe(true);
+  });
+
+  it('test_anchor_handle_resume_compact_missing_session_id_errors', async () => {
+    // 验证什么：缺少 sessionId 时报错且不触发压缩。缺失会导致幽灵压缩请求
+    // 打到 runner（没有可压缩目标）。
+    const cwd = fs.realpathSync(tmpDir);
+    const runCompactSpy = vi.fn(compactTurnEvents);
+    const runner: CompactRunner = { ...createStubRunner(), runCompact: runCompactSpy };
+    const { bridge, sessionStore, connector } = makeResumeCompactBridge({ runner });
+    sessionStore.setCwd('user1', cwd);
+
+    await bridge.handleResumeCompact({}, ctx);
+
+    expect(runCompactSpy).not.toHaveBeenCalled();
+    const sentJsons = connector._sent.map((s) => JSON.stringify(s.input));
+    expect(sentJsons.some((j) => j.includes('缺少 sessionId'))).toBe(true);
+  });
+
+  it('test_anchor_handle_resume_compact_session_not_found_errors', async () => {
+    // 验证什么：session 不在当前 cwd（reader 判定未找到）时报错且不压缩。
+    // 缺失会导致对任意 sessionId 都发起压缩（无归属校验，压缩错会话）。
+    const cwd = fs.realpathSync(tmpDir);
+    const runCompactSpy = vi.fn(compactTurnEvents);
+    const runner: CompactRunner = { ...createStubRunner(), runCompact: runCompactSpy };
+    const { bridge, sessionStore, connector } = makeResumeCompactBridge({ runner });
+    sessionStore.setCwd('user1', cwd);
+
+    await bridge.handleResumeCompact({ sessionId: 'ghost-session', agent: 'codex' }, ctx);
+
+    expect(runCompactSpy).not.toHaveBeenCalled();
+    const sentJsons = connector._sent.map((s) => JSON.stringify(s.input));
+    expect(sentJsons.some((j) => j.includes('未找到 session'))).toBe(true);
+  });
+
+  it('test_anchor_handle_resume_compact_unsupported_runner_errors', async () => {
+    // 验证什么：runner 无 runCompact（exec 模式等）时报「不支持 Compact」。
+    // 缺失会导致执行时 TypeError，卡片点击无友好反馈。
+    const cwd = fs.realpathSync(tmpDir);
+    const { bridge, sessionStore, connector } = makeResumeCompactBridge({
+      codexRead: () => ({
+        events: [{ type: 'text', content: 'tail' }],
+        usage: undefined,
+        aiTitle: undefined,
+        recap: undefined,
+        displayTitle: 'placeholder',
+        reason: 'ok',
+      }),
+    });
+    sessionStore.setCwd('user1', cwd);
+
+    await bridge.handleResumeCompact({ sessionId: 'codex-session-1', agent: 'codex' }, ctx);
+
+    const sentJsons = connector._sent.map((s) => JSON.stringify(s.input));
+    expect(sentJsons.some((j) => j.includes('不支持 Compact'))).toBe(true);
+  });
+
+  it('test_anchor_handle_resume_compact_busy_runner_finishes_error_card', async () => {
+    // 验证什么：runner 已在跑（runCompact 抛 already running）时压缩卡以 error 终态
+    // 呈现错误信息，不静默。缺失会导致异常被吞掉、用户看到卡永久「进行中」。
+    const cwd = fs.realpathSync(tmpDir);
+    const runCompactSpy = vi.fn(async function* () {
+      throw new Error('CodexAppServerRunner is already running');
+    });
+    const runner: CompactRunner = { ...createStubRunner(), runCompact: runCompactSpy };
+    const { bridge, sessionStore, connector } = makeResumeCompactBridge({
+      runner,
+      codexRead: () => ({
+        events: [{ type: 'text', content: 'tail' }],
+        usage: undefined,
+        aiTitle: undefined,
+        recap: undefined,
+        displayTitle: 'placeholder',
+        reason: 'ok',
+      }),
+    });
+    sessionStore.setCwd('user1', cwd);
+
+    await bridge.handleResumeCompact({ sessionId: 'codex-session-1', agent: 'codex' }, ctx);
+
+    expect(runCompactSpy).toHaveBeenCalled();
+    const sentJsons = connector._sent.map((s) => JSON.stringify(s.input));
+    expect(sentJsons.some((j) => j.includes('already running'))).toBe(true);
+  });
+});
+
+describe('app-server error result session write-back (review P3-10)', () => {
+  it('test_anchor_error_result_session_id_is_persisted_for_live_authority_runner', async () => {
+    // 验证行为：app-server runner（getUsageAuthority() === 'live'）在 setup
+    // 失败路径（thread/start 成功、turn/start 失败）发出的 error result 携带
+    // 新线程 id 时，bridge 必须写回 sessionStore——否则下一条消息会再开一个
+    // 孤儿线程（线程已建但指针没跟上）。exec 模式（'jsonl'）不在此列，它靠
+    // turn_started/system.init 写回。
+    const cwd = fs.realpathSync(tmpDir);
+    const runner: Runner & { getUsageAuthority?: () => 'live' | 'jsonl' } = {
+      isRunning: false,
+      stop: async () => {},
+      killOrphan: () => {},
+      registerExitHandlers: () => {},
+      run: async function* () {
+        yield {
+          type: 'result',
+          subtype: 'error',
+          session_id: 'th-new-1',
+          errorMessage: 'thread not found',
+        } as AgentEvent;
+      },
+      getUsageAuthority: () => 'live',
+    };
+    const { bridge, sessionStore } = makeBridge({ runner });
+    sessionStore.setCwd('user1', cwd);
+
+    await bridge.forwardToClaude('hello', ctx, {
+      binding: { agent: 'codex' as const, sessionId: 'th-old-999' },
+    });
+
+    expect(sessionStore.getSessionId('user1', 'codex')).toBe('th-new-1');
+  });
+
+  it('test_anchor_app_server_success_result_with_init_ends_done_not_stream_lost', async () => {
+    // 回归锚点（2026-08-13）：app-server runner 此前从不发 system.init，桥的
+    // pre-init result guard（sawInit）与 run-state reducer（state.sessionId）
+    // 两层守卫都把成功 result 当 pre-init 丢弃，终态停在 running，兜底成
+    // 「输出流已结束，但未收到 result 事件」。runner 补发 synthetic init 后，
+    // 成功 result 必须正常走 finalizing → done。
+    const cwd = fs.realpathSync(tmpDir);
+    const runner: Runner & { getUsageAuthority?: () => 'live' | 'jsonl' } = {
+      isRunning: false,
+      stop: async () => {},
+      killOrphan: () => {},
+      registerExitHandlers: () => {},
+      run: async function* () {
+        yield {
+          type: 'system',
+          subtype: 'init',
+          session_id: 'th-live-1',
+          cwd: '',
+          model: '',
+        } as AgentEvent;
+        yield {
+          type: 'turn_started',
+          threadId: 'th-live-1',
+          turnId: 'tn-live-1',
+          operationKind: 'turn',
+        } as AgentEvent;
+        yield {
+          type: 'result',
+          subtype: 'success',
+          session_id: 'th-live-1',
+        } as AgentEvent;
+      },
+      getUsageAuthority: () => 'live',
+    };
+    const { bridge, connector, sessionStore } = makeBridge({ runner });
+    sessionStore.setCwd('user1', cwd);
+
+    await bridge.forwardToClaude('hello', ctx, {
+      binding: { agent: 'codex' as const, sessionId: 'th-old-999' },
+    });
+
+    const lastCard = JSON.stringify(connector._cards.at(-1));
+    expect(lastCard).toContain('已完成');
+    expect(lastCard).not.toContain('输出流已结束');
+    expect(sessionStore.getSessionId('user1', 'codex')).toBe('th-live-1');
   });
 });

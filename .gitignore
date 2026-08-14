@@ -46,6 +46,9 @@ tsconfig.tsbuildinfo
 # 测试覆盖率 / 测试用 home 目录
 .cov-home/
 
+# 锁文件统一使用 bun.lock，不保留 pnpm-lock.yaml
+pnpm-lock.yaml
+
 # 内部工作文档与本地草稿（不入库）
 docs/**/*-plan.md
 docs/**/*-analysis.md

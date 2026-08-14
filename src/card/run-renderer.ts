@@ -4,6 +4,7 @@ import {
   terminalToLabel,
   newSessionButton,
   stopButton,
+  compactButton,
   agentDisplayName,
 } from './card-shared.js';
 import { collapsibleMarkdownPanel, markdownDiv, type PanelBorder } from './collapsible.js';
@@ -11,6 +12,7 @@ import { toolBodyMd, toolHeaderText } from './tool-render.js';
 import { truncateUtf8, truncateMarkdownTables } from './text-truncate.js';
 import { formatTimestamp } from './time.js';
 import { formatUsageStats } from '../router/index.js';
+import { renderApprovalArea } from './approval-render.js';
 
 const CARD_BUDGET_BYTES = 28_000;
 const REASONING_BYTES = 4_500;
@@ -35,6 +37,22 @@ function measureJson(obj: unknown): number {
 
 /** markdownDiv('', 'notation') 的序列化字节（空内容 div 的常量开销，估算时复用）。 */
 const EMPTY_MD_DIV_BYTES = measureJson(markdownDiv('', 'notation'));
+
+/**
+ * Compact 按钮可见性：普通 run（operationKind='turn'）到达任意终态即可压缩。
+ * 异常退出（error/interrupted/idle_timeout）时上下文往往更大，更需要压缩后
+ * 再继续，因此不再要求 resultSubtype==='success'。compaction 卡
+ * （operationKind='compaction'）永不显示，防止递归 Compact。
+ */
+function shouldShowCompactButton(state: RunState): boolean {
+  if (state.operationKind !== 'turn') return false;
+  return (
+    state.terminal === 'done' ||
+    state.terminal === 'error' ||
+    state.terminal === 'interrupted' ||
+    state.terminal === 'idle_timeout'
+  );
+}
 
 /**
  * Wrap text block in a collapsible panel with timestamp in the header.
@@ -310,12 +328,16 @@ function buildDegradedElements(state: RunState, options: RunCardRenderOptions): 
 
   elements.push(...buildSummaryContent(state));
 
-  // Bottom action row: stop (if running) + new session (always)
+  // Bottom action row: stop (if running) + compact (if applicable) + new session (always)
   const actionButtons: object[] = [];
   // finalizing 也显示停止按钮（进程未退出，用户可 /stop）
   const showStop = state.terminal === 'running' || state.terminal === 'finalizing';
   if (showStop) {
     actionButtons.push(stopButton(state.runId));
+  }
+  // Compact 按钮：普通 turn 到达任意终态即可压缩（含异常退出），compaction 卡除外
+  if (shouldShowCompactButton(state)) {
+    actionButtons.push(compactButton(state.runId));
   }
   actionButtons.push(newSessionButton());
 
@@ -330,6 +352,18 @@ function buildDegradedElements(state: RunState, options: RunCardRenderOptions): 
           elements: [btn],
         })),
       },
+    );
+  }
+
+  // 审批区位于 body 最底部（底部操作行之后）：待审批时决策按钮不遮挡内容流。
+  // 多槽渲染（review P2-3）：并发审批全部展示，互不顶掉。
+  for (const slot of state.approvals ?? []) {
+    elements.push(
+      ...renderApprovalArea(slot.view, {
+        expired: slot.expired,
+        runId: state.runId,
+        terminal: state.terminal,
+      }),
     );
   }
 
@@ -414,12 +448,16 @@ function buildExtremeFallbackElements(state: RunState, options: RunCardRenderOpt
 
   elements.push(...buildSummaryContent(state));
 
-  // Bottom action row: stop (if running) + new session (always)
+  // Bottom action row: stop (if running) + compact (if applicable) + new session (always)
   const actionButtons: object[] = [];
   // finalizing 也显示停止按钮（进程未退出，用户可 /stop）
   const showStop = state.terminal === 'running' || state.terminal === 'finalizing';
   if (showStop) {
     actionButtons.push(stopButton(state.runId));
+  }
+  // Compact 按钮：普通 turn 到达任意终态即可压缩（含异常退出），compaction 卡除外
+  if (shouldShowCompactButton(state)) {
+    actionButtons.push(compactButton(state.runId));
   }
   actionButtons.push(newSessionButton());
 
@@ -434,6 +472,18 @@ function buildExtremeFallbackElements(state: RunState, options: RunCardRenderOpt
           elements: [btn],
         })),
       },
+    );
+  }
+
+  // 审批区位于 body 最底部（底部操作行之后）：待审批时决策按钮不遮挡内容流。
+  // 多槽渲染（review P2-3）：并发审批全部展示，互不顶掉。
+  for (const slot of state.approvals ?? []) {
+    elements.push(
+      ...renderApprovalArea(slot.view, {
+        expired: slot.expired,
+        runId: state.runId,
+        terminal: state.terminal,
+      }),
     );
   }
 
@@ -484,12 +534,15 @@ function buildSkeletonElements(state: RunState): object[] {
   // Summary (token stats etc.) — static, bounded size
   elements.push(...buildSummaryContent(state));
 
-  // Bottom action row: stop (if running/finalizing) + new session (always).
+  // Bottom action row: stop (if running/finalizing) + compact (if applicable) + new session (always).
   // Degraded paths must keep the action buttons reachable (design constraint).
   const actionButtons: object[] = [];
   const showStop = state.terminal === 'running' || state.terminal === 'finalizing';
   if (showStop) {
     actionButtons.push(stopButton(state.runId));
+  }
+  if (shouldShowCompactButton(state)) {
+    actionButtons.push(compactButton(state.runId));
   }
   actionButtons.push(newSessionButton());
 
@@ -696,10 +749,13 @@ export function renderRunCard(state: RunState, options: RunCardRenderOptions = {
       ...buildSummaryContent(state),
     ];
 
-    // Bottom action row: stop (if running) + new session (always)
+    // Bottom action row: stop (if running) + compact (if applicable) + new session (always)
     const actionButtons: object[] = [];
     if (showStop) {
       actionButtons.push(stopButton(runId));
+    }
+    if (shouldShowCompactButton(state)) {
+      actionButtons.push(compactButton(runId));
     }
     actionButtons.push(newSessionButton());
 
@@ -714,6 +770,18 @@ export function renderRunCard(state: RunState, options: RunCardRenderOptions = {
             elements: [btn],
           })),
         },
+      );
+    }
+
+    // 审批区位于 body 最底部（底部操作行之后）：待审批时决策按钮不遮挡内容流。
+    // 多槽渲染（review P2-3）：并发审批全部展示，互不顶掉。
+    for (const slot of state.approvals ?? []) {
+      elements.push(
+        ...renderApprovalArea(slot.view, {
+          expired: slot.expired,
+          runId: state.runId,
+          terminal: state.terminal,
+        }),
       );
     }
 
@@ -896,7 +964,12 @@ function buildSummaryContent(state: RunState): object[] {
   if (state.terminal === 'error') {
     elements.push(markdownDiv(`⚠️ **运行出错**\n\n${state.errorMsg ?? '未知错误'}`));
   } else if (state.terminal === 'interrupted') {
-    elements.push(markdownDiv('⏹ **已被用户终止**'));
+    // 审批超时（approval_expired 已标记）是「无人响应被自动取消」，不是用户
+    // 主动终止；如实展示原因，避免用户误判为 Agent 出错或自己操作过。
+    const expiredApproval = (state.approvals ?? []).some((a) => a.expired);
+    elements.push(
+      markdownDiv(expiredApproval ? '⏰ **审批超时未响应，已自动取消**' : '⏹ **已被用户终止**'),
+    );
   } else if (state.terminal === 'idle_timeout') {
     elements.push(
       markdownDiv(`⏱ **已超时**\n\n${state.idleTimeoutMinutes ?? 0} 分钟无响应，已自动终止`),
@@ -912,6 +985,7 @@ function buildSummaryContent(state: RunState): object[] {
         contextLength: state.contextLength,
         contextLimit: state.contextLimit,
         compactCount: state.compactCount,
+        compactPreContextLength: state.compactPreContextLength,
         cacheReadTokens: state.cacheReadTokens,
         cacheCreationTokens: state.cacheCreationTokens,
         totalTokens: state.totalTokens,
@@ -942,6 +1016,8 @@ function buildDurationInfo(state: RunState): string {
   ) {
     return `⏱ ${state.footer || '已完成'}`;
   }
+  // 与标题一致：审批等待期间状态行显示「等待审批中」，而不是「工具调用中」。
+  if (hasPendingApproval(state)) return '✋ 等待审批中';
   return footerText2(state.footer);
 }
 
@@ -964,10 +1040,18 @@ function headerTitle2(state: RunState, options: RunCardRenderOptions = {}): stri
   if (state.terminal === 'interrupted') return `⏹ ${agent} · 已中断`;
   if (state.terminal === 'idle_timeout') return `⏱ ${agent} · 已超时`;
   if (state.terminal === 'finalizing') return `⏳ ${agent} · 完成中`;
+  // 审批等待期间 server 暂停 turn，命令工具停在 tool_running——标题必须提示
+  // 正在等人工决策，而不是「调用工具」（2026-08-14 UX）。
+  if (hasPendingApproval(state)) return `✋ ${agent} · 等待审批`;
   if (state.footer === 'thinking') return `💭 ${agent} · 思考中`;
   if (state.footer === 'streaming') return `💬 ${agent} · 输出中`;
   if (state.footer === 'tool_running') return `🔧 ${agent} · 调用工具`;
   return `🔴 ${agent} · 运行中`;
+}
+
+/** 是否有未过期（仍可操作）的待审批请求。 */
+function hasPendingApproval(state: RunState): boolean {
+  return (state.approvals ?? []).some((a) => !a.expired);
 }
 
 /** CardKit 2.0 header template color */

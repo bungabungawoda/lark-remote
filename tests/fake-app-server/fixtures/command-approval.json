@@ -1,0 +1,8 @@
+{"request":{"method":"initialize"},"response":{"result":{"userAgent":"codex-cli/0.147.0","codexHome":"/home/user/.codex","platformFamily":"unix","platformOs":"macos"}}}
+{"notification":{"method":"initialized","params":{}}}
+{"request":{"method":"thread/start"},"response":{"result":{"thread":{"id":"th-aaa-222","sessionId":"sess-222","status":{"type":"idle"},"cwd":"/home/user/project","preview":"","turns":[],"createdAt":1,"updatedAt":1,"modelProvider":"deepseek","cliVersion":"0.147.0","ephemeral":false},"cwd":"/home/user/project","model":"deepseek-v4-flash","modelProvider":"deepseek","approvalPolicy":"untrusted"}}}
+{"request":{"method":"turn/start"},"response":{"result":{"turn":{"id":"tn-222","items":[],"itemsView":"notLoaded","status":"inProgress"}}}}
+{"notification":{"method":"turn/started","params":{"threadId":"th-aaa-222","turn":{"id":"tn-222","items":[],"itemsView":"notLoaded","status":"inProgress"}}}}
+{"notification":{"id":1,"method":"item/commandExecution/requestApproval","params":{"threadId":"th-aaa-222","turnId":"tn-222","itemId":"item-2","startedAtMs":1,"command":"rm -rf /tmp/test","cwd":"/home/user/project","reason":"Delete temporary test directory","availableDecisions":["accept",{"acceptWithExecpolicyAmendment":{"execpolicy_amendment":["rm","/tmp/test"]}},"cancel"]}}}
+{"notification":{"method":"serverRequest/resolved","params":{"threadId":"th-aaa-222","requestId":1}}}
+{"notification":{"method":"turn/completed","params":{"threadId":"th-aaa-222","turn":{"id":"tn-222","items":[{"type":"agentMessage","id":"item-3","text":"done","phase":"final_answer"}],"itemsView":"summary","status":"completed"}}}}

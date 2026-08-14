@@ -252,6 +252,16 @@ claude:
   # permissionMode 硬编码为 bypassPermissions（runner 内部），不通过 config 配置
   stopGraceMs: 5000
 
+codex:
+  serviceMode: exec         # exec（默认，spawn-per-message）| app-server（持久连接 + 审批）
+  approvalPolicy: on-request  # Codex 官方 AskForApproval：untrusted | on-request | never（app-server 模式生效）
+  sandbox: danger-full-access  # Codex 官方 SandboxMode：read-only | workspace-write | danger-full-access（app-server 模式生效）
+  appServer:                # app-server 模式连接参数
+    binary: codex
+    requestTimeoutMs: 60000
+    idleTtlMs: 1800000
+    turnIdleTimeoutMinutes: 10
+
 output:
   showThinking: true
   showToolUse: true
@@ -268,6 +278,9 @@ idle:
 走扫码创建向导（`src/config/wizard.ts`，调用 `@larksuite/channel` 的 `registerApp`），
 终端打印二维码，用户用飞书 App 扫码创建应用，返回的 `client_id`/`client_secret`
 写回配置文件后继续启动；非交互环境（无 TTY）落到 `loadConfig` 生成模板并退出。
+
+`codex.appServer` 为 app-server 连接参数（连接超时、空闲释放、turn 空闲超时）；
+审批/沙箱字段的完整语义见 `docs/zh/guides/codex-config.md`。
 
 ---
 
@@ -692,7 +705,10 @@ run 卡片 done 统计与 `/resume` 末尾统计共用 `formatUsageStats`（src/
   （`token_count.info.model_context_window`，每 turn 上报，可与 `last_token_usage`
   同事件读取）。有 `contextLimit` 时 Context 行渲染 `Context - X (Y%)`，
   `Y = round(contextLength/contextLimit*100)`，不 clamp；缺省（其他 agent、旧数据、
-  运行中）只显示绝对量。`contextLimit <= 0` 视为缺失（防除零）。
+  运行中）只显示绝对量。`contextLimit <= 0` 视为缺失（防除零）。app-server 模式
+  同一数值由协议 `thread/tokenUsage/updated` 的 `tokenUsage.modelContextWindow`
+  提供（v2 schema 与 last/total 平级），经 result event `context_limit` 透传，
+  jsonl 无该字段时 live 值兜底。
 
 **透传链路与 scope 统一（codex 例外）**：result event usage → `Bridge` 提取 live 值
 （claude 原生命名 `cache_read_input_tokens`/`cache_creation_input_tokens` 与统一命名

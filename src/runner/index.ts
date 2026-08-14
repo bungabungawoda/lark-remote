@@ -10,7 +10,7 @@
 
 // Re-export AgentRunner 实现（从各 agent 目录）
 export { ClaudeRunner } from './claude/index.js';
-export { CodexExecRunner } from './codex/index.js';
+export { CodexExecRunner, CodexAppServerRunner, createCodexRunner } from './codex/index.js';
 export { OpencodeExecRunner } from './opencode/index.js';
 export { PiRunner } from './pi/index.js';
 export { KimiRunner } from './kimi/index.js';
@@ -29,6 +29,7 @@ export type {
   FileChangeEvent,
   AgentEvent,
   Runner,
+  RunnerLifetime,
   AgentKind,
   AgentSession,
   AgentSessionContentEvent,
@@ -36,6 +37,11 @@ export type {
   SessionContent,
   AgentSessionReader,
   AgentRunner,
+  TurnStartedEvent,
+  TurnDiffEvent,
+  ApprovalView,
+  ApprovalRequestedEvent,
+  ApprovalResolvedEvent,
 } from './types.js';
 
 // =============================================================================

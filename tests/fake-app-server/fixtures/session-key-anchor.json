@@ -1,0 +1,8 @@
+{"request":{"method":"initialize"},"response":{"result":{"userAgent":"codex-cli/0.147.0","codexHome":"/home/user/.codex","platformFamily":"unix","platformOs":"macos"}}}
+{"notification":{"method":"initialized","params":{}}}
+{"request":{"method":"thread/start"},"response":{"result":{"thread":{"id":"th-main-001","sessionId":"th-main-001","status":{"type":"idle"},"cwd":"/home/user/project","preview":"","turns":[],"createdAt":1,"updatedAt":1,"modelProvider":"deepseek","cliVersion":"0.147.0","ephemeral":false},"cwd":"/home/user/project","model":"deepseek-v4-flash","modelProvider":"deepseek","approvalPolicy":"on-request"}}}
+{"request":{"method":"turn/start"},"response":{"result":{"turn":{"id":"tn-main-001","items":[],"itemsView":"notLoaded","status":"inProgress"}}}}
+{"notification":{"method":"turn/started","params":{"threadId":"th-main-001","turn":{"id":"tn-main-001","items":[],"itemsView":"notLoaded","status":"inProgress"}}}}
+{"notification":{"method":"item/agentMessage/delta","params":{"threadId":"th-main-001","turnId":"tn-main-001","itemId":"item-1","delta":"ok"}}}
+{"notification":{"method":"item/completed","params":{"threadId":"th-main-001","turnId":"tn-main-001","item":{"type":"agentMessage","id":"item-1","text":"ok","phase":"final_answer"},"completedAtMs":1}}}
+{"notification":{"method":"turn/completed","params":{"threadId":"th-main-001","turn":{"id":"tn-main-001","items":[{"type":"agentMessage","id":"item-1","text":"ok","phase":"final_answer"}],"itemsView":"summary","status":"completed"}}}}

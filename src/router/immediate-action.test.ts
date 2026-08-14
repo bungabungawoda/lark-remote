@@ -84,6 +84,22 @@ describe('isImmediateAction (§9.19)', () => {
     it('active.page should return true', () => {
       expect(isImmediateAction('active.page')).toBe(true);
     });
+
+    // 审批响应必须即时触达在途 run（同 stop 类控制动作）：若走串行队列会排在
+    // 正在等待审批的 run 之后形成死锁（run 不结束审批不执行；run 结束
+    // coordinator 已删、响应空转）——线上复现为「card action: approval.respond
+    // 排队」卡片且审批永不生效。
+    it('approval.respond should return true', () => {
+      expect(isImmediateAction('approval.respond')).toBe(true);
+    });
+
+    it('approval.toggle should return true', () => {
+      expect(isImmediateAction('approval.toggle')).toBe(true);
+    });
+
+    it('ws.page should return true (pagination is a control operation)', () => {
+      expect(isImmediateAction('ws.page')).toBe(true);
+    });
   });
 
   describe('work operations that should return false (enqueue)', () => {

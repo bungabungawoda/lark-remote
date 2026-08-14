@@ -104,6 +104,18 @@ export function readCodexRollout(filePath: string): CodexRolloutEntry | null {
     // Run card's "累计" display. Codex emits this alongside last_token_usage.
     let lastTotalUsage: RawTokenUsage | undefined;
     let previousTotals: RawTokenUsage | undefined;
+    // Compaction 统计：codex 的 compact turn 在会话文件里写顶层 `compacted`
+    // 事件（含摘要），压缩前后的上下文水位由相邻 token_count 表达。压缩收尾的
+    // token_count 增量是 input/cached/output 全 0、只有 total_tokens 有值
+    // （窗口被摘要+replacement history 占据），现有 zero-filter 会跳过它，
+    // 因此这里必须单独捕获，不能复用 lastRawUsage。
+    // 单位口径（review P3-9）：前后两侧统一用 total_tokens —— 压缩前取最近一次
+    // 非零 token_count 的 total_tokens（input+output，即该 turn 在窗口内的全部
+    // token），压缩后取收尾事件的 total_tokens（压缩后窗口）。不得一边 input
+    // 一边 total，否则「压缩前 X → 压缩后 Y」两边单位不一致。
+    let compactCount = 0;
+    let compactPreContextLength: number | undefined;
+    let compactPostContextLength: number | undefined;
 
     for (const line of lines) {
       const trimmed = line.trim();
@@ -148,6 +160,27 @@ export function readCodexRollout(filePath: string): CodexRolloutEntry | null {
               const ctxWindow = info?.model_context_window;
               lastContextLimit = typeof ctxWindow === 'number' ? ctxWindow : undefined;
             }
+            // 压缩后的水位：压缩收尾 token_count 全 0（raw 不满足上面 zero-filter），
+            // 但 total_tokens 表达真实窗口；之后若出现普通 turn（input>0），
+            // 水位回归该 turn，post-compact 值失效。
+            if (compactCount > 0 && raw) {
+              if (
+                raw.total_tokens &&
+                !raw.input_tokens &&
+                !raw.cached_input_tokens &&
+                !raw.output_tokens
+              ) {
+                compactPostContextLength = raw.total_tokens;
+              } else if (raw.input_tokens > 0) {
+                compactPostContextLength = undefined;
+              }
+            }
+          }
+        } else if (parsed.type === 'compacted') {
+          // 顶层 compacted 事件：压缩次数 +1，压缩前水位取最近一次非零 token_count。
+          compactCount++;
+          if (lastRawUsage?.total_tokens !== undefined) {
+            compactPreContextLength = lastRawUsage.total_tokens;
           }
         } else if (parsed.type === 'response_item' && parsed.payload) {
           const payload = parsed.payload as Record<string, unknown>;
@@ -220,6 +253,16 @@ export function readCodexRollout(filePath: string): CodexRolloutEntry | null {
         usage.cumulativeTotalTokens = lastTotalUsage.total_tokens;
         usage.cumulativeCacheReadTokens = cumCached;
         usage.cumulativeCacheCreationTokens = 0; // Codex 不报告 cache creation
+      }
+      // 压缩统计：会话内出现过 compacted 事件就计数（供 /resume 与 Compact 卡
+      // 展示）；仅当会话以压缩收尾时（post-compact 水位存在），contextLength
+      // 覆盖为压缩后水位并暴露压缩前水位——后续还有普通 turn 时水位回归该 turn。
+      if (compactCount > 0) {
+        usage.compactCount = compactCount;
+        if (compactPostContextLength !== undefined) {
+          usage.contextLength = compactPostContextLength;
+          usage.compactPreContextLength = compactPreContextLength;
+        }
       }
     }
 
