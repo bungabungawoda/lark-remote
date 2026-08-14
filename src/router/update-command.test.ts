@@ -94,9 +94,8 @@ describe('/update command', () => {
     expect(result!.text).toContain('开发模式');
   });
 
-  it('runs install and restarts when newer version available', async () => {
+  it('runs install and reports success (no auto-restart)', async () => {
     let installed = false;
-    let restarted = false;
     const { router } = createRouter({
       checkLatestVersion: async () => ({ current: '0.1.0', latest: '0.2.0' }),
       isNewer: () => true,
@@ -104,15 +103,12 @@ describe('/update command', () => {
         installed = true;
         return { success: true };
       },
-      restartSpawner: () => {
-        restarted = true;
-        return 12345;
-      },
     });
     const result = await router.handle('/update', ctx);
     expect(installed).toBe(true);
-    expect(restarted).toBe(true);
     expect(result!.text).toContain('0.2.0');
+    expect(result!.text).toContain('/restart');
+    expect(result!.text).not.toContain('正在重启');
   });
 
   it('shows error when install fails', async () => {
@@ -145,8 +141,7 @@ describe('/update command', () => {
     expect(calls[1].cachePath).toBe('/tmp/update-cache.json');
   });
 
-  it('does not restart when install fails', async () => {
-    let restarted = false;
+  it('does not auto-restart when install fails', async () => {
     const { router } = createRouter({
       checkLatestVersion: async () => ({ current: '0.1.0', latest: '0.2.0' }),
       isNewer: () => true,
@@ -154,12 +149,8 @@ describe('/update command', () => {
         success: false,
         error: 'network error',
       }),
-      restartSpawner: () => {
-        restarted = true;
-        return 12345;
-      },
     });
-    await router.handle('/update', ctx);
-    expect(restarted).toBe(false);
+    const result = await router.handle('/update', ctx);
+    expect(result!.text).toContain('升级失败');
   });
 });

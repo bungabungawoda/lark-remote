@@ -11,6 +11,7 @@ import {
   getConfigValue,
   setConfigValue,
   setConfigValues,
+  getAgentConfig,
   mapAgentKey,
   assertSafeKeyPart,
 } from '../config/index.js';
@@ -71,7 +72,7 @@ const RESUME_CONTENT_PREFETCH = 5;
  * `New Session`、空串），都不是真实输入，不得渲染成行标题。
  */
 const RESUME_SUMMARY_PLACEHOLDERS = new Set(['', '(no user message)', '(无摘要)', 'New Session']);
-import { newSessionButton, agentDisplayName } from '../card/card-shared.js';
+import { newSessionButton, resumeCompactButton, agentDisplayName } from '../card/card-shared.js';
 
 interface CommandContext {
   userId: string;
@@ -135,7 +136,12 @@ export function isImmediateAction(cmd: string): boolean {
     cmd === 'config.toggle' ||
     cmd === 'config.set' ||
     cmd === 'config.input' ||
-    cmd === 'config.save'
+    cmd === 'config.save' ||
+    // 审批响应/权限切换必须即时触达在途 run（同 stop 类控制动作）。若走串行
+    // 队列会排在等待审批的 run 之后形成死锁：run 不结束审批不执行，run 结束
+    // coordinator 已删响应空转（线上复现：approval.respond 排队卡、审批永不生效）。
+    cmd === 'approval.respond' ||
+    cmd === 'approval.toggle'
   );
 }
 
@@ -163,6 +169,18 @@ export interface CardActionPayload {
   /** CardKit 2.0 input 组件自带提交图标触发回调时回传的输入值 */
   inputValue?: string;
   orderId?: string;
+  /** Approval request ID for approval card actions. */
+  requestId?: number | string;
+  /** Decision for approval.respond (e.g. 'accept', 'decline', 'cancel'). */
+  decision?: string;
+  /** Scope for acceptForSession: 'turn' | 'session'. */
+  scope?: 'turn' | 'session';
+  /** Unique nonce to prevent duplicate processing. */
+  nonce?: string;
+  /** Permission item ID for approval.toggle. */
+  permId?: string;
+  /** Desired selection state for approval.toggle (card renders !current). */
+  selected?: boolean;
 }
 
 /**
@@ -378,12 +396,12 @@ export class CommandRouter {
         return;
       case 'ls.page':
         return this.handleLsPage(value, ctx);
+      case 'ws.page':
+        return this.handleWsPage(value, ctx);
       case 'ws.use':
         return await this.handleWsUse(value, ctx);
       case 'ws.sort':
         return await this.handleWsSort(value, ctx);
-      case 'ws.page':
-        return await this.handleWsPage(value, ctx);
       case 'ws.remove':
         return await this.handleWsRemove(value, ctx);
       case 'resume.use': {
@@ -468,6 +486,15 @@ export class CommandRouter {
         // 调 updateCardInPlace → Feishu API 乱序到达导致 toggle 卡死。
         // 2026-07-18: 返回 enqueueConfigAction 的结果以支持 toast 响应
         return this.enqueueConfigAction(value, ctx);
+      case 'approval.respond':
+      case 'approval.toggle':
+        return this.handleApprovalAction(value, ctx);
+      case 'codex.compact':
+        await this.bridge.handleCodexCompact(value, ctx);
+        return;
+      case 'resume.compact':
+        await this.bridge.handleResumeCompact(value, ctx);
+        return;
       default: {
         // Help card buttons: help.<cmd> → execute /<cmd>
         if (value.cmd.startsWith('help.')) {
@@ -492,6 +519,62 @@ export class CommandRouter {
         return;
       }
     }
+  }
+
+  /**
+   * Handle approval-related card actions.
+   * Routes to the appropriate bridge method based on value.cmd.
+   * Returns a toast response for immediate user feedback.
+   */
+  private async handleApprovalAction(
+    value: CardActionPayload,
+    _ctx: CommandContext,
+  ): Promise<CardActionResponse> {
+    const { runId, requestId, decision, scope, nonce, permId } = value;
+
+    if (value.cmd === 'approval.respond') {
+      if (!runId || requestId === undefined || !decision || !nonce) {
+        return { toast: { type: 'error', content: '缺少审批响应参数' } };
+      }
+      try {
+        await this.bridge.handleApprovalRespond({
+          runId,
+          requestId,
+          decision,
+          scope,
+          nonce,
+        });
+        return { toast: { type: 'success', content: '审批已提交' } };
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        // 审批已过期：给用户明确反馈，不静默不误导（2026-08-12 事故：点了允许无任何反馈）。
+        const content = /state=expired/.test(msg)
+          ? '⏰ 审批已过期，无法响应'
+          : `审批响应失败：${msg}`;
+        return { toast: { type: 'error', content } };
+      }
+    }
+
+    if (value.cmd === 'approval.toggle') {
+      if (!runId || requestId === undefined || !permId || !nonce) {
+        return { toast: { type: 'error', content: '缺少权限切换参数' } };
+      }
+      try {
+        await this.bridge.handleApprovalToggle({
+          runId,
+          requestId,
+          permId,
+          nonce,
+          selected: value.selected ?? true,
+        });
+        return { toast: { type: 'info', content: '已切换' } };
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        return { toast: { type: 'error', content: `权限切换失败：${msg}` } };
+      }
+    }
+
+    return { toast: { type: 'error', content: '未知的审批操作' } };
   }
 
   /**
@@ -1232,9 +1315,19 @@ export class CommandRouter {
       return { toast: { type: 'error', content: useResult.text } };
     }
 
-    // Success: if auto-resume produced a card, send it as a reply
-    if (useResult.card) {
-      await this.bridge.sendResult(useResult, ctx);
+    // Success: send auto-resume card, or a persistent text confirmation when
+    // there is no history session. Toast alone is insufficient: for this
+    // immediate action the callback response is swallowed by enqueueImmediate
+    // (fire-and-forget), and even if delivered it is transient — the user gets
+    // no perceivable feedback on the switch. Same rationale as config.save
+    // agent-switch notice: persistent message first, toast only as a
+    // fallback if sendResult fails.
+    let fallbackToast: string | undefined;
+    if (useResult.card || useResult.text) {
+      const sent = await this.bridge.sendResult(useResult, ctx);
+      if (!sent && useResult.text) {
+        fallbackToast = useResult.text;
+      }
     }
 
     // Refresh the /ws list card in place so "recent" sort is immediately visible
@@ -1244,11 +1337,11 @@ export class CommandRouter {
       await this.bridge.updateCardInPlace(refreshed.card, ctx);
     }
 
-    // Toast feedback (suppress text when auto-resume card was already sent)
+    // Toast feedback (suppress text when a persistent message was already sent)
     return {
       toast: {
         type: 'success',
-        content: useResult.card ? '' : (useResult.text ?? `已切换到 workspace "${name}"`),
+        content: fallbackToast ?? '',
       },
     };
   }
@@ -2017,8 +2110,7 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
    * /update: check for newer version and upgrade if available.
    * /update check: only check, don't upgrade.
    *
-   * Flow: check version → if newer, install → spawn replacement bridge → exit.
-   * Reuses /restart's restartSpawner + pendingExit mechanism.
+   * Flow: check version → if newer, install → report success (no auto-restart).
    */
   private async cmdUpdate(args: string[], ctx: CommandContext): Promise<CommandResult> {
     const checkOnly = args[0] === 'check';
@@ -2058,20 +2150,8 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
       return { text: `❌ 升级失败: ${installResult.error}` };
     }
 
-    // 4. Restart (reuse /restart's restartSpawner + pendingExit)
-    if (!this.restartSpawner) {
-      return { text: `✅ 已升级到 ${latest}，请手动 /restart 重启 bridge` };
-    }
-    try {
-      const pid = this.restartSpawner();
-      this.pendingExit = true;
-      return { text: `✅ 升级成功 (${current} → ${latest})，正在重启（新进程 pid ${pid}）…` };
-    } catch (err) {
-      getLogger().error('[router] update restart spawn failed:', err);
-      return {
-        text: `✅ 已升级到 ${latest}，但重启失败：${(err as Error).message}，请手动 /restart`,
-      };
-    }
+    // 4. Report success (no auto-restart — user decides when to /restart)
+    return { text: `✅ 升级成功 (${current} → ${latest})，发送 /restart 重启后生效` };
   }
 
   private cmdNew(ctx: CommandContext): CommandResult {
@@ -2289,6 +2369,12 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
       } as { tag: string; text: object; type: string; behaviors: object[] });
     }
 
+    // Compact 按钮：仅 codex app-server 模式（runner 有 runCompact）且会话未在跑。
+    // 在途 run 会占住 app-server runner，压缩必然失败，此时不渲染。
+    if (!isActive && this.canCompactSession(this.config.defaultAgent)) {
+      actions.push(resumeCompactButton(session.sessionId, this.config.defaultAgent));
+    }
+
     // New session button always shown (use shared function for consistency)
     actions.push(
       newSessionButton() as { tag: string; text: object; type: string; behaviors: object[] },
@@ -2472,6 +2558,19 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
         body: { elements },
       },
     };
+  }
+
+  /**
+   * Whether a session of the given agent kind can be compacted from a resume
+   * card. Compact (thread/compact/start) is only implemented by the codex
+   * app-server runner (`runCompact`), so the button is gated on
+   * `serviceMode === 'app-server'` — exec mode spawns a fresh CLI per message
+   * and has no persistent session to compact.
+   */
+  private canCompactSession(agentKind: string): boolean {
+    return (
+      agentKind === 'codex' && getAgentConfig(this.config, 'codex')?.serviceMode === 'app-server'
+    );
   }
 
   private static readonly LS_PAGE_SIZE = 30;
@@ -3011,7 +3110,7 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
 
         const card = {
           schema: '2.0',
-          config: { wide_screen_mode: true },
+          config: { wide_screen_mode: true, update_multi: true },
           header: { title: { tag: 'plain_text', content: 'Workspaces' } },
           body: { elements: bodyElements },
         };
@@ -3149,6 +3248,12 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
           type: 'danger',
           behaviors: [{ type: 'callback', value: { cmd: 'stop', runId: activeRunRunId, cwd } }],
         } as { tag: string; text: object; type: string; behaviors: object[] });
+      }
+
+      // Compact 按钮：仅 codex app-server 模式（runner 有 runCompact）且会话未在跑。
+      // agentKind 来自 /resume [agent] <id> / resume.use 卡片值，非 defaultAgent。
+      if (!isActive && this.canCompactSession(agentKind)) {
+        buttons.push(resumeCompactButton(sessionIdArg, agentKind));
       }
 
       if (buttons.length > 0) {

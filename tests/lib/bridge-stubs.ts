@@ -94,6 +94,8 @@ export function createStubSessionReaderRegistry(
 export interface StubConnectorOpts {
   /** When true, addReaction returns a vi.fn().mockResolvedValue(undefined) spy. */
   addReactionSpy?: boolean;
+  /** When true, removeReactionByEmoji returns a vi.fn().mockResolvedValue(undefined) spy. */
+  removeReactionSpy?: boolean;
   /** When provided, streamCard update calls also push to this array. */
   recordUpdates?: { sent: unknown[] };
 }
@@ -103,6 +105,7 @@ export interface StubConnectorOpts {
  *
  * Mainstream version used by ~22 test files. Two optional params:
  * - `addReactionSpy`: useful for reaction-related tests
+ * - `removeReactionSpy`: useful for reaction-retract tests
  * - `recordUpdates`: useful for bash-command tests that need to track card updates
  */
 export function createStubConnector(opts?: StubConnectorOpts) {
@@ -120,6 +123,9 @@ export function createStubConnector(opts?: StubConnectorOpts) {
     },
     reconnect: async () => {},
     addReaction: opts?.addReactionSpy ? vi.fn().mockResolvedValue(undefined) : async () => {},
+    removeReactionByEmoji: opts?.removeReactionSpy
+      ? vi.fn().mockResolvedValue(undefined)
+      : async () => {},
     streamCard: async (
       chatId: string,
       initial: object,

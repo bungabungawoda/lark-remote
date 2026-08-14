@@ -13,8 +13,11 @@ Codex Agent 配置通过 `/config` 卡片的交互界面进行管理。当 `defa
 | `agents.codex.modelProvider` | Codex Provider | select | 模型服务商（内置 `openai` + config.toml `[model_providers.*]`，与 codex `merge_configured_model_providers` 一致；`anthropic` 非 codex 内置 provider，需显式配置） |
 | `agents.codex.model` | 使用模型 | select | config.toml `model` + 活动目录 `visibility==='list'` slug（`model_catalog_json` **声明**时 = `codex debug models` 输出；否则 = `--bundled` 内置目录） |
 | `agents.codex.reasoningEffort` | 推理强度 | select | 对应 `model_reasoning_effort`，选项随当前模型的 `supported_reasoning_levels` 动态变化 |
+| `agents.codex.serviceMode` | 运行模式 | select | `exec`（spawn-per-message）或 `app-server`（持久连接） |
+| `agents.codex.approvalPolicy` | 审批策略 | select | Codex 官方 `AskForApproval` 标准值：`untrusted` / `on-request` / `never`（`on-request` 为 codex 默认） |
+| `agents.codex.sandbox` | 沙箱模式 | select | Codex 官方 `SandboxMode` 标准值：`read-only` / `workspace-write` / `danger-full-access` |
 
-> `approval_policy`（`never`）和 `sandbox_mode`（`danger-full-access`）在 runner 内硬编码，不暴露到卡片（见 `src/runner/codex/argv.ts`）。
+> `serviceMode=exec` 时 `approval_policy="never"` + `--sandbox danger-full-access` 仍在 runner 内硬编码（见 `src/runner/codex/argv.ts`）；`serviceMode=app-server` 时审批策略与沙箱模式通过卡片配置，取值直接使用 Codex 官方标准枚举，不再自定义映射。
 
 ## 字段键映射原则
 

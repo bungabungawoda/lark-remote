@@ -11,7 +11,7 @@ import type { AppConfig } from '../../config/index.js';
 export interface ConfigField {
   key: string;
   label: string;
-  type: 'boolean' | 'select' | 'input';
+  type: 'boolean' | 'select' | 'input' | 'note';
   /** For select type: the list of options shown in the dropdown. */
   options?: readonly string[];
   /** Override the currentValue shown in the card (takes priority over getConfigValue). */
