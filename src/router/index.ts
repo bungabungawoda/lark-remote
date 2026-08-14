@@ -28,6 +28,13 @@ import { type SessionDisplayUsage, activeRunUsage, formatUsageStats } from './ut
 import { markdownDiv, sessionEventPanel } from './card-helpers.js';
 import { MAX_FILE_UPLOAD_SIZE } from '../connector/file-limits.js';
 import { atomicWrite } from '../persistence/atomic-write.js';
+import {
+  checkLatestVersion as defaultCheckLatestVersion,
+  isNewer as defaultIsNewer,
+  runInstallLatest as defaultRunInstallLatest,
+  type VersionCheckResult,
+  type InstallResult,
+} from '../update/index.js';
 
 /** Config card builder - delegates to per-agent builders */
 import { getConfigBuilder, listRegisteredAgents } from './config/index.js';
@@ -200,6 +207,19 @@ export class CommandRouter {
    */
   private restartSpawner?: () => number;
   private idleTimeoutMs: number;
+  /** Dev mode flag: --dev means the bridge was started from source (bun src/index.ts). */
+  private devMode: boolean;
+  /** Cache file for version checks (<configDir>/update-cache.json). */
+  private updateCachePath?: string;
+  /** Injected update functions (for testability; defaults to real implementation). */
+  private updateFns: {
+    checkLatestVersion: (opts?: {
+      cachePath?: string;
+      bypassCache?: boolean;
+    }) => Promise<VersionCheckResult>;
+    isNewer: (current: string, latest: string) => boolean | null;
+    runInstallLatest: () => Promise<InstallResult>;
+  };
   private pendingConfig: AppConfig | null = null; // /config 卡片编辑暂存区
   /**
    * Monotonic counter minting unique internal keys for order.exec enqueue
@@ -245,6 +265,19 @@ export class CommandRouter {
     idleTimeoutMs?: number;
     /** Session reader registry (required). */
     sessionReaderRegistry: SessionReaderRegistry;
+    /** Dev mode: bridge was started from source (--dev flag). */
+    devMode?: boolean;
+    /** Version check cache path (<configDir>/update-cache.json). */
+    updateCachePath?: string;
+    /** Override update functions for testability. */
+    updateFns?: {
+      checkLatestVersion?: (opts?: {
+        cachePath?: string;
+        bypassCache?: boolean;
+      }) => Promise<VersionCheckResult>;
+      isNewer?: (current: string, latest: string) => boolean | null;
+      runInstallLatest?: () => Promise<InstallResult>;
+    };
   }) {
     this.sessionStore = opts.sessionStore;
     this.bridge = opts.bridge;
@@ -261,6 +294,13 @@ export class CommandRouter {
       this.bridge.setIdleTimeout(this.idleTimeoutMs);
     }
     this.sessionReaderRegistry = opts.sessionReaderRegistry;
+    this.devMode = opts.devMode ?? false;
+    this.updateCachePath = opts.updateCachePath;
+    this.updateFns = {
+      checkLatestVersion: opts.updateFns?.checkLatestVersion ?? defaultCheckLatestVersion,
+      isNewer: opts.updateFns?.isNewer ?? defaultIsNewer,
+      runInstallLatest: opts.updateFns?.runInstallLatest ?? defaultRunInstallLatest,
+    };
   }
 
   /**
@@ -1744,6 +1784,9 @@ export class CommandRouter {
       case 'order':
       case 'o':
         return this.cmdOrder(args, ctx);
+      case 'update':
+      case 'u':
+        return await this.cmdUpdate(args, ctx);
       default:
         return { text: `未知命令 /${cmd}，输入 /help 查看可用命令` };
     }
@@ -1765,6 +1808,7 @@ export class CommandRouter {
       { cmd: 'active', label: '/active', desc: '查看所有正在进行中的 session' },
       { cmd: 'exit', label: '/exit /e', desc: '退出 bridge' },
       { cmd: 'restart', label: '/restart', desc: '重启 bridge（新进程，config 不变）' },
+      { cmd: 'update', label: '/update /u', desc: '检查并升级到最新版本' },
       { cmd: 'status', label: '/status /s', desc: '显示当前状态' },
       { cmd: 'reconnect', label: '/reconnect', desc: '重连飞书' },
     ].sort((a, b) => a.label.length - b.label.length || a.cmd.localeCompare(b.cmd));
@@ -1966,6 +2010,67 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
     } catch (err) {
       getLogger().error('[router] restart spawn failed:', err);
       return { text: `重启失败：${(err as Error).message}，旧进程仍在运行` };
+    }
+  }
+
+  /**
+   * /update: check for newer version and upgrade if available.
+   * /update check: only check, don't upgrade.
+   *
+   * Flow: check version → if newer, install → spawn replacement bridge → exit.
+   * Reuses /restart's restartSpawner + pendingExit mechanism.
+   */
+  private async cmdUpdate(args: string[], ctx: CommandContext): Promise<CommandResult> {
+    const checkOnly = args[0] === 'check';
+
+    // 1. Version query（/update check 始终绕过缓存，/update 用 TTL 缓存）
+    let current: string;
+    let latest: string;
+    try {
+      const result = await this.updateFns.checkLatestVersion({
+        cachePath: this.updateCachePath,
+        bypassCache: checkOnly,
+      });
+      current = result.current;
+      latest = result.latest;
+    } catch (err) {
+      return { text: `❌ 版本检查失败: ${(err as Error).message}` };
+    }
+
+    if (!this.updateFns.isNewer(current, latest)) {
+      return { text: `✅ 已是最新版本 ${current}` };
+    }
+
+    if (checkOnly) {
+      return { text: `📦 有新版本 ${latest} 可用（当前 ${current}），发送 /update 升级` };
+    }
+
+    // 2. Dev mode guard
+    if (this.devMode) {
+      return { text: '⚠️ 开发模式不支持自更新，请 git pull 后重新构建' };
+    }
+
+    // 3. Install (send intermediate status before the blocking operation)
+    await this.bridge.sendResult({ text: `⬆️ 正在升级 ${current} → ${latest} ...` }, ctx);
+    const installResult = await this.updateFns.runInstallLatest();
+
+    if (!installResult.success) {
+      return { text: `❌ 升级失败: ${installResult.error}` };
+    }
+
+    // 4. Restart (reuse /restart's restartSpawner + pendingExit)
+    if (!this.restartSpawner) {
+      return { text: `✅ 已升级到 ${latest}，请手动 /restart 重启 bridge` };
+    }
+    try {
+      const pid = this.restartSpawner();
+      this.pendingExit = true;
+      return { text: `✅ 升级成功 (${current} → ${latest})，正在重启（新进程 pid ${pid}）…` };
+    } catch (err) {
+      getLogger().error('[router] update restart spawn failed:', err);
+      return {
+        text: `✅ 已升级到 ${latest}，但重启失败：${(err as Error).message}，请手动 /restart`,
+      };
     }
   }
 
