@@ -15,6 +15,7 @@ import type { AgentSessionReader } from '../runner/index.js';
 import {
   createStubAgentRegistry,
   createStubConnector,
+  createMockBridge,
   createStubRunner,
   createStubSessionReaderRegistry,
 } from '../../tests/lib/bridge-stubs.js';
@@ -115,6 +116,7 @@ function createRouter(overrides?: {
   defaultAgent?: string;
   sessionReaderRegistry?: SessionReaderRegistry;
   projectsDir?: string; // For tests that need to read real session files
+  codex?: Partial<AppConfig['codex']>; // e.g. { serviceMode: 'app-server' }
 }) {
   const sessionStore = new SessionStore();
   const connector = createStubConnector();
@@ -133,6 +135,7 @@ function createRouter(overrides?: {
     },
     ...(overrides?.idle ? { idle: { watchdogMinutes: 15, ...overrides.idle } } : {}),
     ...(overrides?.defaultAgent ? { defaultAgent: overrides.defaultAgent } : {}),
+    ...(overrides?.codex ? { agents: { codex: overrides.codex } } : {}),
   });
   const router = new CommandRouter({
     sessionStore,
@@ -1782,6 +1785,209 @@ describe('CommandRouter', () => {
     expect(JSON.stringify(connector._sent)).toContain('Context - 5K (3%)');
   });
 
+  describe('Resume 卡片 Compact 按钮（codex app-server 模式）', () => {
+    /**
+     * 构造一个 codex reader 可找到会话的 registry（可指定最新会话与读取内容）。
+     * readSessionContent 默认返回「找到」——两条 resume 卡渲染测试不需要真实 jsonl。
+     */
+    function createCodexResumeRegistry(opts?: {
+      newest?: { sessionId: string; summary: string; mtime: number };
+    }): SessionReaderRegistry {
+      const codexReader: AgentSessionReader = {
+        listSessions: () => ({ sessions: [], total: 0 }),
+        getNewestSession: () => opts?.newest ?? null,
+        readSessionContent: () => ({
+          events: [{ type: 'text', content: 'codex session tail' }],
+          usage: undefined,
+          aiTitle: undefined,
+          recap: undefined,
+          displayTitle: 'placeholder',
+          reason: 'ok',
+        }),
+        isSessionActive: () => false,
+      };
+      const registry = new SessionReaderRegistry();
+      registry.register('claude', stubSessionReader);
+      registry.register('codex', codexReader);
+      registry.register('opencode', stubSessionReader);
+      registry.register('pi', stubSessionReader);
+      registry.register('kimi', stubSessionReader);
+      return registry;
+    }
+
+    /** 取 mock bridge.sendResult 最后一次调用的 CommandResult 序列化文本。 */
+    function lastSendResultJson(sendResult: ReturnType<typeof vi.fn>): string {
+      const calls = sendResult.mock.calls;
+      return JSON.stringify(calls[calls.length - 1]?.[0] ?? '');
+    }
+
+    it('test_anchor_auto_resume_card_codex_appserver_has_compact_button', async () => {
+      // 验证什么：/cd 自动恢复会话卡（codex + serviceMode=app-server）渲染
+      // resume.compact 按钮并携带 sessionId + agent。缺失/错误会导致用户在恢复
+      // 卡上无法直接压缩长会话，只能等下一次 run 结束后用 run 卡按钮。
+      // 依据：需求「两种 Resume 卡片上面也应该带 Compact 按钮」+ app-server 模式
+      // 才有 runCompact（runner factory serviceMode 分支）。
+      const dir = path.join(tmpDir, 'dir');
+      fs.mkdirSync(dir);
+      const registry = createCodexResumeRegistry({
+        newest: { sessionId: 'codex-session-latest', summary: 'placeholder', mtime: Date.now() },
+      });
+      const sendResult = vi.fn().mockResolvedValue(undefined);
+      const { router, sessionStore } = createRouter({
+        sessionReaderRegistry: registry,
+        defaultAgent: 'codex',
+        codex: { serviceMode: 'app-server' },
+        bridge: createMockBridge({ sendResult }),
+      });
+      sessionStore.setCwd('user1', fs.realpathSync(tmpDir));
+      await router.handle(`/cd ${dir}`, ctx);
+
+      const cardStr = lastSendResultJson(sendResult);
+      expect(cardStr).toContain('"cmd":"resume.compact"');
+      expect(cardStr).toContain('"sessionId":"codex-session-latest"');
+      expect(cardStr).toContain('"agent":"codex"');
+    });
+
+    it('test_anchor_resume_detail_card_codex_appserver_has_compact_button', async () => {
+      // 验证什么：/resume <id>（resume.use）详情卡在 codex + app-server 模式渲染
+      // resume.compact 按钮并携带 sessionId + agent（agent 来自卡片值，非 defaultAgent）。
+      const registry = createCodexResumeRegistry();
+      const sendResult = vi.fn().mockResolvedValue(undefined);
+      const { router, sessionStore } = createRouter({
+        sessionReaderRegistry: registry,
+        codex: { serviceMode: 'app-server' },
+        bridge: createMockBridge({ sendResult }),
+      });
+      sessionStore.setCwd('user1', fs.realpathSync(tmpDir));
+      await router.handleCardAction(
+        { cmd: 'resume.use', sessionId: 'codex-session-1', agent: 'codex' },
+        ctx,
+      );
+
+      const cardStr = lastSendResultJson(sendResult);
+      expect(cardStr).toContain('"cmd":"resume.compact"');
+      expect(cardStr).toContain('"sessionId":"codex-session-1"');
+      expect(cardStr).toContain('"agent":"codex"');
+    });
+
+    it('test_anchor_auto_resume_card_claude_has_no_compact_button', async () => {
+      // 验证什么：claude 默认 agent 的自动恢复卡不渲染 resume.compact。
+      // 错误会导致非 app-server agent 出现无效按钮（点了只会报「不支持 Compact」）。
+      const dir = path.join(tmpDir, 'dir');
+      fs.mkdirSync(dir);
+      const projectsDir = path.join(tmpDir, 'claude-projects');
+      const encoded = encodedProjectDir(dir);
+      const projDir = path.join(projectsDir, encoded);
+      fs.mkdirSync(projDir, { recursive: true });
+      const sid = 'claude-session';
+      const body =
+        JSON.stringify({
+          type: 'user',
+          message: { role: 'user', content: [{ type: 'text', text: 'hello' }] },
+        }) +
+        '\n' +
+        JSON.stringify({
+          type: 'assistant',
+          message: { role: 'assistant', content: [{ type: 'text', text: 'hi there' }] },
+        }) +
+        '\n' +
+        JSON.stringify({ type: 'result', subtype: 'success', session_id: sid });
+      writeSessionJsonl(projDir, sid, dir, body);
+
+      const sendResult = vi.fn().mockResolvedValue(undefined);
+      const { router, sessionStore } = createRouter({
+        projectsDir,
+        bridge: createMockBridge({ sendResult }),
+      });
+      sessionStore.setCwd('user1', fs.realpathSync(tmpDir));
+      await router.handle(`/cd ${dir}`, ctx);
+
+      const cardStr = lastSendResultJson(sendResult);
+      expect(cardStr).toContain('自动恢复会话');
+      expect(cardStr).not.toContain('"cmd":"resume.compact"');
+    });
+
+    it('test_anchor_auto_resume_card_codex_exec_mode_has_no_compact_button', async () => {
+      // 验证什么：codex 但 serviceMode=exec（无 runCompact）不渲染 Compact。
+      // 条件必须同时满足 agentKind=codex 与 app-server，缺一不可。
+      const dir = path.join(tmpDir, 'dir');
+      fs.mkdirSync(dir);
+      const registry = createCodexResumeRegistry({
+        newest: { sessionId: 'codex-session-latest', summary: 'placeholder', mtime: Date.now() },
+      });
+      const sendResult = vi.fn().mockResolvedValue(undefined);
+      const { router, sessionStore } = createRouter({
+        sessionReaderRegistry: registry,
+        defaultAgent: 'codex',
+        codex: { serviceMode: 'exec' },
+        bridge: createMockBridge({ sendResult }),
+      });
+      sessionStore.setCwd('user1', fs.realpathSync(tmpDir));
+      await router.handle(`/cd ${dir}`, ctx);
+
+      const cardStr = lastSendResultJson(sendResult);
+      expect(cardStr).not.toContain('"cmd":"resume.compact"');
+    });
+
+    it('test_anchor_resume_detail_card_active_run_has_no_compact_button', async () => {
+      // 验证什么：isActive（内存 activeRun 非终态且 sessionId 匹配）时详情卡不渲染
+      // resume.compact（在途 run 会占住 app-server runner，压缩必然失败），仍渲染 stop。
+      const registry = createCodexResumeRegistry();
+      const sendResult = vi.fn().mockResolvedValue(undefined);
+      const { router, sessionStore } = createRouter({
+        sessionReaderRegistry: registry,
+        codex: { serviceMode: 'app-server' },
+        bridge: createMockBridge({
+          sendResult,
+          getActiveRunFor: vi.fn().mockReturnValue({
+            runId: 'run-abc',
+            terminal: 'running',
+            sessionId: 'codex-session-1',
+          }),
+        }),
+      });
+      sessionStore.setCwd('user1', fs.realpathSync(tmpDir));
+      await router.handleCardAction(
+        { cmd: 'resume.use', sessionId: 'codex-session-1', agent: 'codex' },
+        ctx,
+      );
+
+      const cardStr = lastSendResultJson(sendResult);
+      expect(cardStr).not.toContain('"cmd":"resume.compact"');
+      expect(cardStr).toContain('"cmd":"stop"');
+    });
+
+    it('test_anchor_resume_detail_card_no_v1_action_container', async () => {
+      // 验证什么：带 Compact 按钮的 /resume <id> 卡仍是纯 CardKit 2.0 结构
+      // （无 tag:"action" 容器）。违反会触发飞书 200861 整卡不可用（设计铁律）。
+      const registry = createCodexResumeRegistry();
+      const sendResult = vi.fn().mockResolvedValue(undefined);
+      const { router, sessionStore } = createRouter({
+        sessionReaderRegistry: registry,
+        codex: { serviceMode: 'app-server' },
+        bridge: createMockBridge({ sendResult }),
+      });
+      sessionStore.setCwd('user1', fs.realpathSync(tmpDir));
+      await router.handleCardAction(
+        { cmd: 'resume.use', sessionId: 'codex-session-1', agent: 'codex' },
+        ctx,
+      );
+
+      const cardStr = lastSendResultJson(sendResult);
+      expect(cardStr).not.toMatch(/"tag"\s*:\s*"action"[^}]*"actions"/);
+    });
+
+    it('test_anchor_resume_compact_card_action_dispatches_to_bridge', async () => {
+      // 验证什么：resume.compact 卡片回调被 router 分发到 bridge.handleResumeCompact。
+      // 缺失会导致点击按钮无任何效果（静默失败，违反卡片点击必须有反馈的红线）。
+      const handleResumeCompact = vi.fn().mockResolvedValue(undefined);
+      const { router } = createRouter({ bridge: createMockBridge({ handleResumeCompact }) });
+      const value = { cmd: 'resume.compact', sessionId: 'codex-session-1', agent: 'codex' };
+      await router.handleCardAction(value, ctx);
+      expect(handleResumeCompact).toHaveBeenCalledWith(value, ctx);
+    });
+  });
+
   it('/resume <id> shows usage stats and context length in card', async () => {
     const projectsDir = path.join(tmpDir, 'claude-projects');
     const encoded = encodedProjectDir(tmpDir);
@@ -2576,7 +2782,14 @@ describe('CommandRouter', () => {
       // cmdWsUse canonicalizes via realpathSync to match Claude JSONL cwd.
       expect(entry?.cwd).toBe(fs.realpathSync(tmpDir));
       expect(entry?.sessions?.get('claude')).toBe('');
-      // ws.use card action refreshes the list card in place (toast feedback, not sendResult)
+      // No history session in the target workspace → must send a persistent
+      // "已切换到" text (regression: toast-only feedback is swallowed by
+      // enqueueImmediate and transient, so the user cannot perceive the switch).
+      const switchTexts = connector._sent
+        .map((s) => (s.input as { text?: string }).text)
+        .filter((t): t is string => typeof t === 'string' && t.includes('已切换到'));
+      expect(switchTexts.length).toBeGreaterThanOrEqual(1);
+      // ws.use card action refreshes the list card in place
       expect(connector._cards.length).toBeGreaterThan(0);
     });
 
@@ -2601,8 +2814,29 @@ describe('CommandRouter', () => {
       // Expected: workspace should switch successfully
       const entry = sessionStore.get('user1');
       expect(entry?.cwd).toBe(fs.realpathSync(tmpDir));
+      // No history session → persistent "已切换到" text so the switch is perceivable
+      const switchTexts = connector._sent
+        .map((s) => (s.input as { text?: string }).text)
+        .filter((t): t is string => typeof t === 'string' && t.includes('已切换到'));
+      expect(switchTexts.length).toBeGreaterThanOrEqual(1);
       // ws.use card action refreshes the list card in place
       expect(connector._cards.length).toBeGreaterThan(0);
+    });
+
+    it('ws.use falls back to toast when persistent text send fails', async () => {
+      const { router, sessionStore, connector } = createRouter();
+      sessionStore.setCwd('user1', fs.realpathSync(tmpDir));
+      await router.handle('/ws save proj', ctx);
+      connector._sent.length = 0;
+      // Simulate send failure: sendResult resolves false → handler falls back
+      // to a success toast carrying the switch text (config.save pattern).
+      connector.sendWithRetry = async () => {
+        throw new Error('send failed');
+      };
+      const result = await router.handleCardAction({ cmd: 'ws.use', name: 'proj' }, ctx);
+      expect(result).toEqual({
+        toast: { type: 'success', content: expect.stringContaining('已切换到') },
+      });
     });
 
     // REGRESSION TEST: Verify ws.use fails gracefully when workspace name is missing
@@ -2639,6 +2873,113 @@ describe('CommandRouter', () => {
       expect(cardStr).toContain('keep');
     });
 
+    it('/ws pagination: every column in column_set has tag="column" (regression: ErrCode 200621)', async () => {
+      // Mirror ls.page regression test — pagination bar must have tag:'column' on every item.
+      const { router, sessionStore, connector } = createRouter();
+      sessionStore.setCwd('user1', fs.realpathSync(tmpDir));
+      // 21 workspaces → exceeds WS_PAGE_SIZE(20), triggers pagination
+      for (let i = 0; i < 21; i++) {
+        router['workspaceStore'].save(`ws${String(i).padStart(2, '0')}`, `/p${i}`);
+      }
+      await router.handle('/ws', ctx);
+      const input = connector._sent[0].input as { card: { body: { elements: TestCardElement[] } } };
+      const card = input.card;
+
+      const violations: string[] = [];
+      function checkColumnTags(els: TestCardElement[], path: string): void {
+        for (let i = 0; i < els.length; i++) {
+          const el = els[i];
+          const p = `${path}[${i}]`;
+          if (el.tag === 'column_set' && el.columns) {
+            for (let j = 0; j < el.columns.length; j++) {
+              const col = el.columns[j] as Record<string, unknown>;
+              const cp = `${p}.columns[${j}]`;
+              if (col.tag !== 'column') {
+                violations.push(`${cp}.tag is "${col.tag ?? 'undefined'}", expected "column"`);
+              }
+              if (col.elements)
+                checkColumnTags(col.elements as TestCardElement[], `${cp}.elements`);
+            }
+          }
+        }
+      }
+      checkColumnTags(card.body.elements, 'body.elements');
+      expect(violations).toEqual([]);
+    });
+
+    it('/ws pagination: no column with empty elements (regression: ErrCode 200621)', async () => {
+      const { router, sessionStore, connector } = createRouter();
+      sessionStore.setCwd('user1', fs.realpathSync(tmpDir));
+      for (let i = 0; i < 21; i++) {
+        router['workspaceStore'].save(`ws${String(i).padStart(2, '0')}`, `/p${i}`);
+      }
+      await router.handle('/ws', ctx);
+      const input = connector._sent[0].input as { card: { body: { elements: TestCardElement[] } } };
+      const card = input.card;
+
+      const violations: string[] = [];
+      function checkElements(els: TestCardElement[], path: string): void {
+        for (let i = 0; i < els.length; i++) {
+          const el = els[i];
+          const p = `${path}[${i}]`;
+          if (el.columns) {
+            for (let j = 0; j < el.columns.length; j++) {
+              const col = el.columns[j];
+              const cp = `${p}.columns[${j}]`;
+              if (!col.elements || col.elements.length === 0) {
+                violations.push(`${cp}.elements is empty (tag=${el.tag || 'none'})`);
+              } else {
+                checkElements(col.elements, `${cp}.elements`);
+              }
+            }
+          }
+        }
+      }
+      checkElements(card.body.elements, 'body.elements');
+      expect(violations).toEqual([]);
+
+      // First page: no ⬅ (prev), has ➡ (next)
+      const cardStr = JSON.stringify(card);
+      expect(cardStr).not.toContain('"content":"⬅"');
+      expect(cardStr).toContain('"content":"➡"');
+    });
+
+    it('/ws pagination: ws.page callback shows second page with 上一页', async () => {
+      const { router, sessionStore, connector } = createRouter();
+      sessionStore.setCwd('user1', fs.realpathSync(tmpDir));
+      for (let i = 0; i < 21; i++) {
+        router['workspaceStore'].save(`ws${String(i).padStart(2, '0')}`, `/p${i}`);
+      }
+      // Trigger ws.page for offset=20 (page 2)
+      const ctxWithMsgId = { userId: 'user1', chatId: 'chat1', messageId: 'msg1' };
+      await router.handleCardAction({ cmd: 'ws.page', offset: 20 }, ctxWithMsgId);
+      expect(connector._cards.length).toBeGreaterThan(0);
+      const card = connector._cards[connector._cards.length - 1] as {
+        body: { elements: TestCardElement[] };
+      };
+
+      const cardStr = JSON.stringify(card);
+      expect(cardStr).toContain('"content":"⬅"');
+      // Only 1 item on last page, no ➡ (next)
+      expect(cardStr).not.toContain('"content":"➡"');
+    });
+
+    it('/ws pagination: no pagination bar when workspaces <= WS_PAGE_SIZE', async () => {
+      const { router, sessionStore, connector } = createRouter();
+      sessionStore.setCwd('user1', fs.realpathSync(tmpDir));
+      for (let i = 0; i < 5; i++) {
+        router['workspaceStore'].save(`ws${String(i).padStart(2, '0')}`, `/p${i}`);
+      }
+      await router.handle('/ws', ctx);
+      const input = connector._sent[0].input as { card: TestCard };
+      const cardStr = JSON.stringify(input.card);
+      // 200861 regression: no V1 action containers
+      expect(cardStr).not.toMatch(/"tag"\s*:\s*"action"[^}]*"actions"/);
+      // No pagination bar when count <= page size
+      expect(cardStr).not.toContain('"content":"⬅"');
+      expect(cardStr).not.toContain('"content":"➡"');
+    });
+
     it('unknown cmd replies with a visible warning (regression: silent swallow)', async () => {
       // Design constraint: miss paths must reply via bridge.sendResult so the
       // tap is not silently swallowed.
@@ -2659,6 +3000,36 @@ describe('CommandRouter', () => {
       await router.handleCardAction({ cmd: 'stop', runId: 'dead-run-1' }, ctx);
       expect(connector._sent.length).toBe(1);
       expect((connector._sent[0].input as { text: string }).text).toContain('已结束');
+    });
+
+    it('test_anchor_approval_respond_returns_toast_and_calls_bridge', async () => {
+      // 验证行为：approval.respond 在 router 层直接调用 bridge.handleApprovalRespond
+      // 并返回成功 toast（CardKit 回调即时反馈）。
+      // 缺失后果：若审批响应走串行队列，会排在等待审批的 run 之后形成死锁——
+      // 线上复现为「card action: approval.respond 排队」且审批永不生效。
+      // 依据：用户报告 + bridge 串行队列语义（run 任务占队列头）。
+      const handleApprovalRespond = vi.fn().mockResolvedValue(undefined);
+      const { router } = createRouter({
+        bridge: createMockBridge({ handleApprovalRespond }),
+      });
+      const resp = await router.handleCardAction(
+        {
+          cmd: 'approval.respond',
+          runId: 'run-approval-1',
+          requestId: 1,
+          decision: 'accept',
+          nonce: 'nonce-1',
+        },
+        ctx,
+      );
+      expect(resp).toEqual({ toast: { type: 'success', content: '审批已提交' } });
+      expect(handleApprovalRespond).toHaveBeenCalledWith({
+        runId: 'run-approval-1',
+        requestId: 1,
+        decision: 'accept',
+        scope: undefined,
+        nonce: 'nonce-1',
+      });
     });
   });
 

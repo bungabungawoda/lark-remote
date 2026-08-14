@@ -61,6 +61,8 @@ export function formatUsageStats(
     contextLength?: number;
     contextLimit?: number;
     compactCount?: number;
+    /** 压缩前上下文水位；与 contextLength（压缩后）成对出现在 Compact 卡上。 */
+    compactPreContextLength?: number;
     cacheReadTokens?: number;
     cacheCreationTokens?: number;
     /** Agent-declared total; when present the display uses max(total, sum of parts). */
@@ -93,14 +95,18 @@ export function formatUsageStats(
     lines.push(`结果 - ${options.result}`);
   }
 
-  // 2. Context 长度
+  // 2. Context 长度（compact 卡同时展示压缩前水位）
   if (usage?.contextLength !== undefined) {
     const ctxLimit = usage.contextLimit;
     const ctxPercent =
       ctxLimit !== undefined && ctxLimit > 0
         ? ` (${Math.round((usage.contextLength / ctxLimit) * 100)}%)`
         : '';
-    lines.push(`Context - ${formatTokenK(usage.contextLength)}${ctxPercent}`);
+    const preCompact =
+      usage.compactPreContextLength !== undefined
+        ? `（压缩前 ${formatTokenK(usage.compactPreContextLength)}）`
+        : '';
+    lines.push(`Context - ${formatTokenK(usage.contextLength)}${ctxPercent}${preCompact}`);
   }
 
   // 3. Compact 次数

@@ -346,6 +346,78 @@ describe('QueueManager', () => {
     await new Promise((r) => setTimeout(r, 50));
   });
 
+  it('test_anchor_non_editable_queued_task_card_omits_edit_button', async () => {
+    // Compact 等单向卡片动作入队时带 editable=false：排队卡仍然要发（位置/撤销/
+    // 立即执行都在），但 ✏️ 编辑 按钮必须消失——编辑一个不可编辑的预览无意义。
+    // 回归：曾对所有排队任务一律渲染编辑按钮，导致 Compact 排队卡可被编辑。
+    const { qm, sentCards } = makeQueueManager(() => true);
+
+    let release1: () => void = () => {};
+    const hang1 = new Promise<void>((resolve) => {
+      release1 = resolve;
+    });
+
+    // Task 1: starts immediately (no queue card)
+    qm.enqueue(
+      tmpDir,
+      async () => {
+        await hang1;
+      },
+      {
+        taskMeta: {
+          userId: 'u1',
+          chatId: 'c1',
+          messageId: 'msg-1',
+          messagePreview: 'task 1 running',
+        },
+      },
+    );
+
+    // Task 2: compact card action, queued behind task 1, NOT editable
+    qm.enqueue(
+      tmpDir,
+      async () => {
+        /* quick */
+      },
+      {
+        taskMeta: {
+          userId: 'u1',
+          chatId: 'c1',
+          messageId: 'msg-2',
+          messagePreview: 'card action: codex.compact',
+          editable: false,
+        },
+      },
+    );
+
+    await new Promise((r) => setTimeout(r, 50));
+
+    const card = sentCards[sentCards.length - 1].card;
+    const buttons = extractButtons(card);
+
+    // Preview 仍然展示（排队卡内容不丢）
+    const body = (card as Record<string, unknown>).body as Record<string, unknown>;
+    const elements = body.elements as Array<Record<string, unknown>>;
+    expect(JSON.stringify(elements).includes('card action: codex.compact')).toBe(true);
+
+    // ✏️ 编辑 按钮必须不存在
+    expect(buttons.some((b) => buttonLabel(b).includes('编辑'))).toBe(false);
+
+    // ❌ 撤销 / ⚡ 立即执行 仍然存在且可用（排队任务自身生命周期不受影响）
+    const cancelBtn = buttons.find((b) => buttonLabel(b).includes('撤销'));
+    expect(cancelBtn).toBeDefined();
+    expect(cancelBtn!.disabled).not.toBe(true);
+    const execBtn = buttons.find((b) => buttonLabel(b).includes('立即执行'));
+    expect(execBtn).toBeDefined();
+    expect(execBtn!.disabled).not.toBe(true);
+
+    // CardKit 2.0 铁律：禁止 V1 action 容器与 V2 behaviors 混用
+    expect(JSON.stringify(card)).not.toMatch(/"tag"\s*:\s*"action"[^}]*"actions"/);
+
+    release1();
+    await new Promise((r) => setTimeout(r, 50));
+  });
+
   it('test_anchor_replacement_registered_before_yield_is_consumed_by_begin_path', async () => {
     // RACE FIX (Plan B): The caller (handleQueueInput) must register the
     // replacement BEFORE any await. When this ordering is respected, the

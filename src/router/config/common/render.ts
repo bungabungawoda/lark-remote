@@ -29,6 +29,9 @@ function buildFieldElements(fields: ConfigField[], displayConfig: AppConfig): ob
       elements.push(buildBooleanElement(field, isOn));
     } else if (field.type === 'select' && field.options) {
       elements.push(buildSelectElement(field, currentValue));
+    } else if (field.type === 'note') {
+      // 纯说明行：无 config.* 回调，只渲染 label 为 markdown 文本。
+      elements.push({ tag: 'div', text: { tag: 'lark_md', content: field.label } });
     } else {
       elements.push(buildInputElement(field, currentValue));
     }

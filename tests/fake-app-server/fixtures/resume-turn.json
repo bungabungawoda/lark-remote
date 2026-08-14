@@ -1,0 +1,14 @@
+{"request":{"method":"initialize"},"response":{"result":{"userAgent":"codex-cli/0.147.0","codexHome":"/home/user/.codex","platformFamily":"unix","platformOs":"macos"}}}
+{"notification":{"method":"initialized","params":{}}}
+{"request":{"method":"thread/resume"},"response":{"result":{"thread":{"id":"th-aaa-111","sessionId":"sess-111","status":{"type":"idle"},"cwd":"/home/user/project","preview":"","turns":[],"createdAt":1,"updatedAt":1,"modelProvider":"deepseek","cliVersion":"0.147.0","ephemeral":false},"cwd":"/home/user/project","model":"deepseek-v4-flash","modelProvider":"deepseek","approvalPolicy":"on-request"}}}
+{"request":{"method":"turn/start"},"response":{"result":{"turn":{"id":"tn-222","items":[],"itemsView":"notLoaded","status":"inProgress"}}}}
+{"notification":{"method":"turn/started","params":{"threadId":"th-aaa-111","turn":{"id":"tn-222","items":[],"itemsView":"notLoaded","status":"inProgress"}}}}
+{"notification":{"method":"item/started","params":{"threadId":"th-aaa-111","turnId":"tn-222","item":{"type":"reasoning","id":"item-r1","summary":[],"content":[]},"startedAtMs":1}}}
+{"notification":{"method":"item/reasoning/textDelta","params":{"threadId":"th-aaa-111","turnId":"tn-222","itemId":"item-r1","contentIndex":0,"delta":"Let me think"}}}
+{"notification":{"method":"item/completed","params":{"threadId":"th-aaa-111","turnId":"tn-222","item":{"type":"reasoning","id":"item-r1","summary":[],"content":["Let me think"]},"completedAtMs":2}}}
+{"notification":{"method":"item/started","params":{"threadId":"th-aaa-111","turnId":"tn-222","item":{"type":"agentMessage","id":"item-1","text":"","phase":"final_answer"},"startedAtMs":3}}}
+{"notification":{"method":"item/agentMessage/delta","params":{"threadId":"th-aaa-111","turnId":"tn-222","itemId":"item-1","delta":"Hello, "}}}
+{"notification":{"method":"item/agentMessage/delta","params":{"threadId":"th-aaa-111","turnId":"tn-222","itemId":"item-1","delta":"world!"}}}
+{"notification":{"method":"item/completed","params":{"threadId":"th-aaa-111","turnId":"tn-222","item":{"type":"agentMessage","id":"item-1","text":"Hello, world!","phase":"final_answer"},"completedAtMs":4}}}
+{"notification":{"method":"thread/tokenUsage/updated","params":{"threadId":"th-aaa-111","turnId":"tn-222","tokenUsage":{"last":{"inputTokens":100,"outputTokens":50,"cachedInputTokens":10,"totalTokens":150},"total":{"inputTokens":100,"outputTokens":50,"cachedInputTokens":10,"totalTokens":150}}}}}
+{"notification":{"method":"turn/completed","params":{"threadId":"th-aaa-111","turn":{"id":"tn-222","items":[{"type":"agentMessage","id":"item-1","text":"Hello, world!","phase":"final_answer"}],"itemsView":"summary","status":"completed"}}}}
