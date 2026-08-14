@@ -25,6 +25,22 @@ describe('parseCliArgs version flag', () => {
   });
 });
 
+describe('parseCliArgs update flag', () => {
+  it('should set update for --update', () => {
+    expect(parseCliArgs(['--update']).update).toBe(true);
+  });
+
+  it('should not set update when absent', () => {
+    expect(parseCliArgs([]).update).toBeUndefined();
+  });
+
+  it('should parse --update together with --config-dir', () => {
+    const result = parseCliArgs(['--config-dir', '/tmp/foo', '--update']);
+    expect(result.update).toBe(true);
+    expect(result.configDir).toBe('/tmp/foo');
+  });
+});
+
 describe('printVersion', () => {
   afterEach(() => {
     vi.restoreAllMocks();
