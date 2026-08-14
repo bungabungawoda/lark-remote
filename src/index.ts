@@ -48,6 +48,7 @@ import { StartupContactStore, sendStartupHello } from './startup-contact.js';
 import { OwnerBinder, formatPinGuidance } from './binder.js';
 import { InstanceAlreadyRunningError, InstanceLock } from './instance-lock.js';
 import { spawnReplacementBridge, waitForPreviousInstance } from './restart.js';
+import { checkLatestVersion, isNewer, runInstallLatest, formatUpdateHint } from './update/index.js';
 import { classifyRejection } from './error-classification.js';
 import { WorkspaceStore } from './workspace/index.js';
 import { markdownDiv } from './card/collapsible.js';
@@ -670,6 +671,31 @@ async function main() {
     printVersion();
     process.exit(0);
   }
+  // --update: upgrade to latest version and exit (for cron/script automation)
+  if (cliArgs.update) {
+    // --update 在 acquireLock 之前执行；先解析 configDir 并初始化 logger，
+    // 让版本检查的日志落到正确目录（默认 ~/.lark-remote 或 --config-dir 指定）。
+    const updateConfigDir = resolveConfigDir(cliArgs.configDir);
+    initLogger({ dir: path.join(updateConfigDir, 'logs') });
+    try {
+      const { current, latest } = await checkLatestVersion();
+      if (!isNewer(current, latest)) {
+        console.log(`Already up to date: ${current}`);
+        process.exit(0);
+      }
+      console.log(`Updating ${current} → ${latest} ...`);
+      const result = await runInstallLatest();
+      if (!result.success) {
+        console.error(`Update failed: ${result.error}`);
+        process.exit(1);
+      }
+      console.log(`✅ Updated to ${latest}. Restart lark-remote to use the new version.`);
+      process.exit(0);
+    } catch (err) {
+      console.error(`Update failed: ${(err as Error).message}`);
+      process.exit(1);
+    }
+  }
   const { config, configDir, logger, instanceLock } = await initializeCliAndConfig();
 
   // Restart handoff: if spawned as a /restart replacement, wait for the old
@@ -721,6 +747,8 @@ async function main() {
     ordersPath: path.join(configDir, 'orders.json'),
     restartSpawner: () => spawnReplacementBridge(path.join(configDir, 'logs')),
     sessionReaderRegistry,
+    devMode: cliArgs.dev,
+    updateCachePath: path.join(configDir, 'update-cache.json'),
   });
 
   setupMessageHandlers(
@@ -744,6 +772,27 @@ async function main() {
   if (binder.isBound()) {
     // 仅已绑定时发送启动通知；未绑定时不打扰（PIN 引导已在控制台输出）
     await sendStartupHello(connector, startupContactStore, { dev: cliArgs.dev });
+
+    // 启动时静默检查版本（由 checkUpdateOnStartup 控制，默认关闭）
+    if (config.checkUpdateOnStartup) {
+      void (async () => {
+        try {
+          const cachePath = path.join(configDir, 'update-cache.json');
+          const { current, latest } = await checkLatestVersion({ cachePath });
+          const hint = formatUpdateHint(current, latest);
+          if (hint) {
+            const contact = startupContactStore.getContact();
+            const recipient = contact?.chatId ?? contact?.userId;
+            if (recipient) {
+              await connector.sendWithRetry(recipient, { text: hint });
+            }
+          }
+        } catch (err) {
+          // Non-fatal: startup check failure must not crash the bridge
+          logger.warn(`[startup] update check failed: ${(err as Error).message}`);
+        }
+      })();
+    }
   }
 
   // Auto-restore: resume the persisted sessionId if available
