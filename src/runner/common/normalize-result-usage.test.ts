@@ -10,6 +10,7 @@ type TokenUsage = {
   cache_read_input_tokens?: number;
   cache_creation_input_tokens?: number;
   total_tokens?: number;
+  context_limit?: number;
 };
 
 /** Expected return shape (local mirror; type is internal to usage.ts). */
@@ -19,6 +20,7 @@ interface NormalizedResultUsage {
   cacheReadTokens?: number;
   cacheCreationTokens?: number;
   totalTokens?: number;
+  contextLimit?: number;
   contextLength: number;
 }
 
@@ -81,5 +83,23 @@ describe('normalizeResultUsage', () => {
       total_tokens: 999,
     } as TokenUsage);
     expect(result.contextLength).toBe(999);
+  });
+
+  it('6. context_limit passthrough (codex app-server modelContextWindow)', () => {
+    const result: NormalizedResultUsage = normalizeResultUsage({
+      input_tokens: 10,
+      output_tokens: 20,
+      total_tokens: 999,
+      context_limit: 200000,
+    } as TokenUsage);
+    expect(result.contextLimit).toBe(200000);
+  });
+
+  it('7. context_limit absent → undefined (do not fabricate a denominator)', () => {
+    const result: NormalizedResultUsage = normalizeResultUsage({
+      input_tokens: 10,
+      output_tokens: 20,
+    } as TokenUsage);
+    expect(result.contextLimit).toBeUndefined();
   });
 });

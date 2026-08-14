@@ -29,6 +29,8 @@ interface NormalizedResultUsage {
   cacheReadTokens?: number;
   cacheCreationTokens?: number;
   totalTokens?: number;
+  /** Model context window limit (codex app-server `modelContextWindow` passthrough). */
+  contextLimit?: number;
   /** Reconstructed or agent-declared context length (see JSDoc above). */
   contextLength: number;
 }
@@ -45,6 +47,7 @@ export function normalizeResultUsage(usage: TokenUsage): NormalizedResultUsage {
   const cacheRead = usage.cache_read_tokens ?? usage.cache_read_input_tokens;
   const cacheCreation = usage.cache_creation_tokens ?? usage.cache_creation_input_tokens;
   const totalTokens = usage.total_tokens;
+  const contextLimit = usage.context_limit;
   // total_tokens (agent-declared total) takes priority; otherwise reconstruct
   // from the parts: input + cacheRead + cacheCreation + output.
   const contextLength =
@@ -56,6 +59,7 @@ export function normalizeResultUsage(usage: TokenUsage): NormalizedResultUsage {
     cacheReadTokens: cacheRead,
     cacheCreationTokens: cacheCreation,
     totalTokens,
+    contextLimit,
     contextLength,
   };
 }

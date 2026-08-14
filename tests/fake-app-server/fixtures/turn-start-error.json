@@ -1,0 +1,4 @@
+{"request":{"method":"initialize"},"response":{"result":{"userAgent":"codex-cli/0.147.0","codexHome":"/home/user/.codex","platformFamily":"unix","platformOs":"macos"}}}
+{"notification":{"method":"initialized","params":{}}}
+{"request":{"method":"thread/start"},"response":{"result":{"thread":{"id":"th-new-1","sessionId":"sess-new-1","status":{"type":"idle"},"cwd":"/home/user/project","preview":"","turns":[],"createdAt":1,"updatedAt":1,"modelProvider":"deepseek","cliVersion":"0.147.0","ephemeral":false},"cwd":"/home/user/project","model":"deepseek-v4-flash","modelProvider":"deepseek","approvalPolicy":"on-request"}}}
+{"request":{"method":"turn/start"},"response":{"error":{"code":-32600,"message":"thread not found"}}}

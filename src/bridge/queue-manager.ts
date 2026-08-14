@@ -45,6 +45,13 @@ export interface QueuedTask {
   timestamp: number;
   messagePreview: string;
   /**
+   * Whether the queued task's message is editable from the queue card.
+   * Card actions like Compact are one-shot operations — editing their
+   * preview is meaningless, so they enqueue with `editable: false` and the
+   * queue card omits the ✏️ 编辑 button.
+   */
+  editable?: boolean;
+  /**
    * Edited message content. Set by `updateQueuedTaskMessage` when the user
    * edits a queued message. The original closure captured at enqueue time
    * is immutable, so `handleQueueImmediate` reads this field to register a
@@ -70,6 +77,8 @@ export interface EnqueueOptions {
      * real Feishu id and doubles as the reply target.
      */
     feishuReplyTo?: string;
+    /** Whether the queued task is editable (queue card ✏️ 编辑 button). Defaults to true. */
+    editable?: boolean;
     /** 入队时刻捕获的 agent+session 绑定（方案 D4）。 */
     binding?: AgentBinding;
   };
@@ -226,6 +235,7 @@ export class QueueManager {
         workspace,
         timestamp: Date.now(),
         messagePreview,
+        editable: taskMeta.editable,
         binding: taskMeta.binding,
       };
 
@@ -540,22 +550,29 @@ export class QueueManager {
       { tag: 'hr' },
     ];
 
-    // Show message preview with edit button (only if not executing)
+    // Show message preview with edit button (only if not executing AND the
+    // task is editable). One-shot card actions like Compact enqueue with
+    // editable=false: their preview is not user-editable text, so the ✏️ 编辑
+    // button must not appear (queue card is still shown — only editing is
+    // meaningless for them).
     if (messagePreview) {
       elements.push({
         tag: 'div',
         text: { tag: 'lark_md', content: `📝 \`${messagePreview}\`` },
       });
-      // Edit button: a pending (queued) task is always editable. The
-      // executing/cancelled states render via dedicated card builders that
-      // hard-disable all buttons, so this builder only serves pending cards.
-      elements.push({
-        tag: 'button',
-        text: { tag: 'plain_text', content: '✏️ 编辑' },
-        type: 'default',
-        size: 'small',
-        behaviors: [{ type: 'callback', value: { cmd: 'queue.edit', workspace, messageId } }],
-      });
+      const task = this.indexGet(workspace, messageId);
+      if (task?.editable !== false) {
+        // Edit button: a pending (queued) task is editable by default. The
+        // executing/cancelled states render via dedicated card builders that
+        // hard-disable all buttons, so this builder only serves pending cards.
+        elements.push({
+          tag: 'button',
+          text: { tag: 'plain_text', content: '✏️ 编辑' },
+          type: 'default',
+          size: 'small',
+          behaviors: [{ type: 'callback', value: { cmd: 'queue.edit', workspace, messageId } }],
+        });
+      }
       elements.push({ tag: 'hr' });
     }
 
