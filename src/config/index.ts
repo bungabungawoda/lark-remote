@@ -173,6 +173,8 @@ export const AppConfigSchema = z.object({
   logging: LoggingConfigSchema.default(LoggingConfigSchema.parse({})),
   /** Default agent for new runs. */
   defaultAgent: z.enum(['claude', 'codex', 'opencode', 'pi', 'kimi']).default('claude'),
+  /** Check for updates on bridge startup (default: false). */
+  checkUpdateOnStartup: z.boolean().default(false),
 });
 
 export type AppConfig = z.infer<typeof AppConfigSchema>;
