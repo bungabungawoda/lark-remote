@@ -1030,7 +1030,7 @@ export class Bridge {
           // 代际守卫：run 在途时 /new（或 new-session 卡片、/cd、/resume、
           // /config 切换）移动了 session 指针，此 init 的写回是 stale 的——
           // 跳过，否则 /new 的清空会被在途 run 静默撤销（2026-08-09 事故：
-          // task-notification 注入触发 Claude 重发 init，terminated-run-revived 复活）。
+          // task-notification 注入触发 Claude 重发 init，已终止的 run 被复活）。
           const pointerMoved =
             this.sessionStore.getSessionEpoch(ctx.userId, agentKind) !== sessionEpochAtStart;
           if (pointerMoved) {
