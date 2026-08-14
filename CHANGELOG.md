@@ -5,6 +5,26 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.5] - 2026-08-14
+
+### 新增
+
+- `/update` / `/update check` 命令：检查 npm registry 最新版本并一键升级，升级后自动重启 bridge；开发模式（`--dev`）下自动拒绝自更新
+- `--update` CLI 参数：非交互式升级（适用于 cron / 脚本自动化），升级后退出
+- `checkUpdateOnStartup` 配置项：启动时静默检查版本更新并推送提示（默认关闭）
+- 纯内存 session index（`session-index.ts`）：替代旧的 `readCwdFromJsonl`，完整 `cwdSet` 支持 EnterWorktree 连续搬迁 A→B→C 场景
+- `verify-test-classification.ts` 脚本：测试分类校验工具
+
+### 修复
+
+- `/ws`、`/order` 卡片分页从 5 条/页调整为 15 条/页，修复飞书 ErrCode 11310 元素超限
+- CLI `--dev` 帮助文本内部术语"看门狗"替换为用户可理解的"空闲超时自动停止"
+
+### 变更
+
+- 移除 husky / lint-staged pre-commit 和 pre-push 钩子及相关 devDependencies
+- `sessions.ts` 重构：迁移到 `SessionIndex` + `parseSessionJsonl`，移除 `readCwdFromJsonl`
+
 ## [0.1.4] - 2026-08-13
 
 ### 新增
@@ -115,3 +135,4 @@ Initial release.
 [0.1.2]: https://github.com/bungabungawoda/lark-remote/releases/tag/v0.1.2
 [0.1.3]: https://github.com/bungabungawoda/lark-remote/releases/tag/v0.1.3
 [0.1.4]: https://github.com/bungabungawoda/lark-remote/releases/tag/v0.1.4
+[0.1.5]: https://github.com/bungabungawoda/lark-remote/releases/tag/v0.1.5
