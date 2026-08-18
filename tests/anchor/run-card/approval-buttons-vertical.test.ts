@@ -63,13 +63,9 @@ describe('anchor: approval decision buttons stack vertically on narrow screens',
       view: {
         requestId: 61,
         kind: 'command',
-        threadShort: 'th-aaa-1',
-        turnShort: 'tn-111',
-        workspace: '/home/user/project',
         command: 'rm -rf /tmp/a',
         commandCwd: '/home/user/project',
         availableDecisions: ['accept', 'acceptForSession', 'decline', 'cancel'],
-        pendingTotal: 1,
       },
     } as never);
 
@@ -115,9 +111,6 @@ describe('anchor: approval decision buttons stack vertically on narrow screens',
       view: {
         requestId: 62,
         kind: 'command',
-        threadShort: 'th-aaa-1',
-        turnShort: 'tn-111',
-        workspace: '/home/user/project',
         command: 'npm publish',
         commandCwd: '/home/user/project',
         availableDecisions: [
@@ -127,7 +120,6 @@ describe('anchor: approval decision buttons stack vertically on narrow screens',
           'decline',
           'cancel',
         ],
-        pendingTotal: 1,
       },
     } as never);
 
@@ -174,13 +166,9 @@ describe('anchor: approval decision buttons stack vertically on narrow screens',
       view: {
         requestId: 63,
         kind: 'command',
-        threadShort: 'th-aaa-1',
-        turnShort: 'tn-111',
-        workspace: '/home/user/project',
         command: 'deploy --prod',
         commandCwd: '/home/user/project',
         availableDecisions: ['accept', 'decline', 'cancel'],
-        pendingTotal: 1,
       },
     } as never);
 

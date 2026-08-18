@@ -36,10 +36,6 @@ vi.mock('../../../src/logger/index.js', () => ({
   initLogger: () => mockLogger,
 }));
 
-type RouterInternals = {
-  buildConfigCard: () => { card: object };
-};
-
 /** Extract select_static options by callback key (CardKit 2.0). */
 function extractSelectOptions(card: object, key: string): string[] {
   const values: string[] = [];
@@ -169,7 +165,7 @@ describe('codex active catalog config card - anchor', () => {
       sessionReaderRegistry: createMockSessionReaderRegistry({ agentKinds: ['claude', 'codex'] }),
     });
 
-    const card = (router as unknown as RouterInternals).buildConfigCard().card;
+    const card = router.buildConfigCard().card;
 
     // 推理强度下拉 = 活动目录档位，不得是 bundled 的 4 档/6 档
     expect(extractSelectOptions(card, 'agents.codex.reasoningEffort')).toEqual([

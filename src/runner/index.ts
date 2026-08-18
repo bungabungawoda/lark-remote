@@ -10,10 +10,10 @@
 
 // Re-export AgentRunner 实现（从各 agent 目录）
 export { ClaudeRunner } from './claude/index.js';
-export { CodexExecRunner, CodexAppServerRunner, createCodexRunner } from './codex/index.js';
-export { OpencodeExecRunner } from './opencode/index.js';
-export { PiRunner } from './pi/index.js';
-export { KimiRunner } from './kimi/index.js';
+export { CodexAppServerRunner } from './codex/index.js';
+export { OpencodeAcpRunner } from './opencode/index.js';
+export { PiRpcRunner } from './pi/index.js';
+export { KimiAcpRunner } from './kimi/index.js';
 export { BashProcessRunner, type BashRunner } from './bash/index.js';
 
 // Re-export registry

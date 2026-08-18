@@ -25,7 +25,7 @@ describe('P0: opencode session list uses wrong cwd', () => {
     const reader = new OpencodeSessionReader();
 
     // Verify cache is now a Map (keyed by cwd) instead of single entry
-    const cache = (reader as unknown as { listCache: Map<string, unknown> }).listCache;
+    const cache = reader.listCache;
     expect(cache).toBeInstanceOf(Map);
   });
 
@@ -35,7 +35,7 @@ describe('P0: opencode session list uses wrong cwd', () => {
     const reader = new OpencodeSessionReader();
 
     // Test that realpath handles empty string
-    const result = (reader as unknown as { realpath: (cwd: string) => string }).realpath('');
+    const result = reader.realpath('');
     // Empty string should return empty string (or the actual realpath)
     expect(typeof result).toBe('string');
   });

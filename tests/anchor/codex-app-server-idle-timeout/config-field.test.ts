@@ -8,7 +8,6 @@ describe('Codex app-server turn idle timeout config field', () => {
       feishu: { appId: 'test', appSecret: 'test' },
       agents: {
         codex: {
-          serviceMode: 'app-server',
           appServer: { turnIdleTimeoutMinutes: 2 },
         },
       },

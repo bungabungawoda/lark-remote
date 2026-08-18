@@ -24,7 +24,7 @@ import { resolveCodexHome, loadCodexConfig, invalidateCodexBundledCache } from '
 import {
   getCodexBundledModelSlugs,
   invalidateCodexBundledTestCache,
-} from './codex-bundled-test-helpers.js';
+} from '../../tests/lib/codex-bundled-test-helpers.js';
 
 beforeEach(() => {
   mockExecFileSync.mockReset();

@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { ProcessStopper } from './process-stopper.js';
 import type { ChildProcess } from 'node:child_process';
-import { EventEmitter } from 'node:events';
+import { createMockProc } from '../../../tests/lib/mock-process.js';
 
 const { mockLogger } = vi.hoisted(() => ({
   mockLogger: {
@@ -16,27 +16,12 @@ vi.mock('../../logger/index.js', () => ({
   getLogger: () => mockLogger,
 }));
 
-/** Build a mock ChildProcess with controllable exit behavior. */
-function createMockProc(overrides?: Partial<ChildProcess & { pid: number }>) {
-  const emitter = new EventEmitter();
-  const proc = Object.assign(emitter, {
-    pid: 12345,
-    exitCode: null as number | null,
-    signalCode: null as string | null,
-    killed: false,
-    ...overrides,
-  }) as unknown as ChildProcess;
-
-  return proc;
-}
-
 /**
  * Simulate the OS delivering an exit event on the mock process.
  * Node sets exitCode/signalCode and emits 'exit'.
  */
 function simulateExit(proc: ChildProcess, code: number | null, signal: string | null) {
-  (proc as unknown as { exitCode: number | null }).exitCode = code;
-  (proc as unknown as { signalCode: string | null }).signalCode = signal;
+  Object.assign(proc, { exitCode: code, signalCode: signal });
   proc.emit('exit', code, signal);
 }
 
@@ -175,8 +160,7 @@ describe('ProcessStopper', () => {
       // SIGTERM succeeds, SIGKILL throws ESRCH (process already gone)
       killSpy.mockImplementationOnce(() => true);
       killSpy.mockImplementationOnce(() => {
-        const err = new Error('ESRCH');
-        (err as unknown as { code: string }).code = 'ESRCH';
+        const err = Object.assign(new Error('ESRCH'), { code: 'ESRCH' });
         throw err;
       });
 
@@ -207,7 +191,7 @@ describe('ProcessStopper', () => {
     it('returns immediately if proc is nullish', async () => {
       const stopper = new ProcessStopper({ graceMs: 5000 });
 
-      await stopper.stop(null as unknown as ChildProcess);
+      await stopper.stop(null);
 
       expect(killSpy).not.toHaveBeenCalled();
     });
