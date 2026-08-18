@@ -13,8 +13,9 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { CardStreamController } from '@larksuite/channel';
-import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
+import type { ChildProcess } from 'node:child_process';
+import { createMockProc } from '../../../tests/lib/mock-process.js';
 import {
   BashCardSession,
   capBashOutput,
@@ -49,30 +50,18 @@ import { BashProcessRunner } from '../../../src/runner/bash/index.js';
  * EventEmitter 版不同——背压断言需要真实 Readable 的 pause 状态。
  */
 function createFakeProcWithStreams(pid = 12345) {
-  const proc = new EventEmitter() as unknown as {
-    pid: number;
-    exitCode: number | null;
-    signalCode: NodeJS.Signals | null;
-    stdout: PassThrough;
-    stderr: PassThrough;
-    kill: () => boolean;
-  };
-  proc.pid = pid;
-  proc.exitCode = null;
-  proc.signalCode = null;
-  proc.stdout = new PassThrough();
-  proc.stderr = new PassThrough();
-  proc.kill = () => true;
+  const proc = createMockProc({
+    pid,
+    exitCode: null,
+    signalCode: null,
+    stdout: new PassThrough(),
+    stderr: new PassThrough(),
+  });
   return proc;
 }
 
-function emitExit(
-  proc: ReturnType<typeof createFakeProcWithStreams>,
-  code: number | null,
-  signal: NodeJS.Signals | null,
-): void {
-  proc.exitCode = code;
-  proc.signalCode = signal;
+function emitExit(proc: ChildProcess, code: number | null, signal: NodeJS.Signals | null): void {
+  Object.assign(proc, { exitCode: code, signalCode: signal });
   proc.emit('exit', code, signal);
 }
 

@@ -13,7 +13,9 @@ import type {
 } from '../../runner/index.js';
 
 import { STALE_MS } from '../common/constants.js';
-import { truncateUtf8, TOOL_RESULT_MAX_BYTES } from '../../card/text-truncate.js';
+import { capEvents, paginate } from '../common/pagination.js';
+import { truncateUtf8, TOOL_RESULT_MAX_BYTES } from '../../common/truncate.js';
+import { truncateToolInput } from '../common/content-blocks.js';
 
 /** Default Kimi config directory */
 function defaultKimiDir(): string {
@@ -91,11 +93,49 @@ interface KimiTurnPromptEvent {
   time: number;
 }
 
+/**
+ * Compaction completion record in wire.jsonl (§6.3 / kimi-code wire-manifest).
+ *
+ * REAL shape (2026-08-16 实弹 wire.jsonl + kimi-code 源码)：
+ * - `context.apply_compaction`：带 `compactedCount` / `tokensBefore` /
+ *   `tokensAfter`（以及 summary 等）；
+ * - `full_compaction.complete`：只有 `{type, time}`。
+ * `messagesCompacted` 是死字段，真实 record 里不存在——禁止再写。
+ */
+export interface KimiCompactionRecord {
+  type: 'full_compaction.complete' | 'context.apply_compaction';
+  /** 压缩掉的消息条数（仅 context.apply_compaction 携带）。 */
+  compactedCount?: number;
+  /** 压缩前上下文 token 水位（仅 context.apply_compaction 携带）。 */
+  tokensBefore?: number;
+  /** 压缩后上下文 token 水位（仅 context.apply_compaction 携带）。 */
+  tokensAfter?: number;
+  time: number;
+}
+
 type KimiJsonlEntry =
   | KimiContextAppendLoopEvent
   | KimiUsageRecordEvent
   | KimiTurnPromptEvent
+  | KimiCompactionRecord
   | { type: string; [key: string]: unknown };
+
+/** union 含 catch-all 成员，普通 `===` 判窄不生效，用显式守卫收窄（替代 as unknown as）。 */
+function isAppendLoopEvent(entry: KimiJsonlEntry): entry is KimiContextAppendLoopEvent {
+  return entry.type === 'context.append_loop_event';
+}
+
+function isUsageRecord(entry: KimiJsonlEntry): entry is KimiUsageRecordEvent {
+  return entry.type === 'usage.record';
+}
+
+function isTurnPrompt(entry: KimiJsonlEntry): entry is KimiTurnPromptEvent {
+  return entry.type === 'turn.prompt';
+}
+
+function isCompactionComplete(entry: KimiJsonlEntry): entry is KimiCompactionRecord {
+  return entry.type === 'full_compaction.complete' || entry.type === 'context.apply_compaction';
+}
 
 /**
  * Max lines scanned backwards when looking for the last loop event.
@@ -120,11 +160,8 @@ function lastLoopEventIsStepEnd(lines: readonly string[]): boolean {
   ) {
     try {
       const entry = JSON.parse(lines[i]) as KimiJsonlEntry;
-      if (entry.type !== 'context.append_loop_event') {
-        continue;
-      }
-      const loopEvent = entry as unknown as KimiContextAppendLoopEvent;
-      return loopEvent.event.type === 'step.end';
+      if (!isAppendLoopEvent(entry)) continue;
+      return entry.event.type === 'step.end';
     } catch {
       // Skip malformed lines and keep scanning backwards
       continue;
@@ -273,10 +310,9 @@ export class KimiSessionReader implements AgentSessionReader {
       for (const line of lines) {
         try {
           const entry = JSON.parse(line) as KimiJsonlEntry;
-          if (entry.type === 'turn.prompt') {
-            const prompt = entry as unknown as KimiTurnPromptEvent;
-            if (prompt.input && prompt.input.length > 0) {
-              lastPrompt = prompt.input[0].text;
+          if (isTurnPrompt(entry)) {
+            if (entry.input && entry.input.length > 0) {
+              lastPrompt = entry.input[0].text;
             }
           }
         } catch {
@@ -357,7 +393,7 @@ export class KimiSessionReader implements AgentSessionReader {
 
         sessions.push({
           sessionId: entry.sessionId,
-          summary: summary.substring(0, 200), // Truncate long titles
+          summary,
           mtime: mtimeMs,
         });
       }
@@ -366,13 +402,9 @@ export class KimiSessionReader implements AgentSessionReader {
       // secondary key so ordering is stable across scans.
       sessions.sort((a, b) => b.mtime - a.mtime || a.sessionId.localeCompare(b.sessionId));
 
-      const total = sessions.length;
-      const offset = Math.max(0, opts?.offset ?? 0);
-      // Default limit 20, aligned with the other agent session readers
-      // (claude/codex/opencode/pi); no opts -> return up to 20 sessions.
-      const limit = opts?.limit ?? 20;
+      const { items, total } = paginate(sessions, opts ?? {});
       return {
-        sessions: sessions.slice(offset, offset + limit),
+        sessions: items,
         total,
       };
     } catch (error) {
@@ -396,74 +428,8 @@ export class KimiSessionReader implements AgentSessionReader {
     cwd: string,
     opts?: { maxEvents?: number },
   ): SessionContent {
-    // Find session directory from index (also retrieve index entry for
-    // fallback cwd guard when state.json is missing or unparseable)
-    const indexEntry = this.findSessionIndexEntry(sessionId);
-    const sessionDir = indexEntry?.sessionDir ?? null;
-
-    if (!sessionDir) {
-      return { events: [] };
-    }
-
-    const statePath = path.join(sessionDir, 'state.json');
-    let realCwd: string;
-    try {
-      realCwd = fs.realpathSync(cwd);
-    } catch {
-      getLogger().warn(
-        `[kimi-session-reader] fs.realpathSync failed for cwd=${cwd} (session ${sessionId}), returning empty`,
-      );
-      return { events: [] };
-    }
-    let cwdGuardPassed = false;
-
-    try {
-      if (fs.existsSync(statePath)) {
-        const state = JSON.parse(fs.readFileSync(statePath, 'utf-8')) as KimiSessionState;
-        const guardResult = checkCwdGuard(state, realCwd);
-        if (guardResult === 'failed') {
-          return { events: [] };
-        }
-        if (guardResult === 'unverifiable') {
-          getLogger().warn(
-            `[kimi-session-reader] state.json has no workDir/cwd field for session ${sessionId}, falling back to index workDir`,
-          );
-          // Fall through to index-based guard below
-        } else {
-          // verified — state.json cwd matches
-          cwdGuardPassed = true;
-        }
-      }
-    } catch {
-      // state.json unparseable — fall through to index-based guard
-      getLogger().warn(
-        `[kimi-session-reader] state.json parse failed for session ${sessionId}, falling back to index workDir`,
-      );
-    }
-
-    // Fallback: when state.json is missing, unparseable, or has no workDir/cwd,
-    // use the workDir from the session index entry as a secondary guard.
-    // This prevents /resume <id> from accessing a session belonging to a
-    // different workspace when state.json is unavailable.
-    if (!cwdGuardPassed) {
-      const indexWorkDir = indexEntry?.workDir;
-      if (indexWorkDir && indexWorkDir !== realCwd) {
-        return { events: [] };
-      }
-      // v2 sessions have empty index workDir (v1-only field) and may lack
-      // state.json cwd. When no cwd source can verify the session belongs to
-      // the requested workspace, fail-closed to prevent cross-workspace access
-      // (aligned with claude's fail-closed cwd guard).
-      if (!indexWorkDir) {
-        getLogger().warn(
-          `[kimi-session-reader] no cwd source (state.json + index) for session ${sessionId}, rejecting (fail-closed)`,
-        );
-        return { events: [] };
-      }
-    }
-
-    const wirePath = path.join(sessionDir, 'agents', 'main', 'wire.jsonl');
-    if (!fs.existsSync(wirePath)) {
+    const wirePath = this.resolveSessionWirePath(sessionId, cwd);
+    if (wirePath === null) {
       return { events: [] };
     }
 
@@ -478,6 +444,9 @@ export class KimiSessionReader implements AgentSessionReader {
       // (subagent context is an independent window). Tracked separately
       // from the accumulator's `last` (which could be a subagent record).
       let mainContextLength = 0;
+      // §6.3: Compaction stats — count compact events, track last pre-compact context.
+      let compactCount = 0;
+      let compactPreContextLength: number | undefined;
       // Distinguish "no usage.record in any wire file" (no data → usage:
       // undefined, downstream omits the token block) from "records exist but
       // are all zero / malformed" (real data → aggregate with ?? 0 and return
@@ -522,9 +491,23 @@ export class KimiSessionReader implements AgentSessionReader {
           const entry = JSON.parse(line) as KimiJsonlEntry;
 
           // Extract usage from usage.record.
-          if (entry.type === 'usage.record') {
-            const usageEntry = entry as unknown as KimiUsageRecordEvent;
-            accumulateUsage(usageEntry.usage, true);
+          if (isUsageRecord(entry)) {
+            accumulateUsage(entry.usage, true);
+            continue;
+          }
+
+          // §6.3: Count compaction events and track pre-compact context length.
+          // 展示计数只计 context.apply_compaction：一次手动 /compact 会同时写
+          // full_compaction.complete + context.apply_compaction 两条（2026-08-16
+          // 实弹 wire.jsonl），双计会把一次压缩虚报成 2 次。full_compaction.complete
+          // 仅作 R2 runCompact 轮询的完成信号（readCompactionRecords 仍返回两种）。
+          if (isCompactionComplete(entry) && entry.type === 'context.apply_compaction') {
+            compactCount++;
+            // Capture context length before this compaction as the pre-compact
+            // watermark (the most recent one is most relevant for display).
+            if (entry.tokensBefore !== undefined) {
+              compactPreContextLength = entry.tokensBefore;
+            }
             continue;
           }
 
@@ -537,18 +520,16 @@ export class KimiSessionReader implements AgentSessionReader {
           // last turn.prompt across the whole session (the most recent user
           // prompt), which is the correct catch-up title.
           // Extract display title from turn.prompt
-          if (entry.type === 'turn.prompt') {
-            const prompt = entry as unknown as KimiTurnPromptEvent;
-            if (prompt.input && prompt.input.length > 0) {
-              displayTitle = prompt.input[0].text.substring(0, 100);
+          if (isTurnPrompt(entry)) {
+            if (entry.input && entry.input.length > 0) {
+              displayTitle = entry.input[0].text;
             }
             continue;
           }
 
           // Convert loop events to content events
-          if (entry.type === 'context.append_loop_event') {
-            const loopEvent = entry as unknown as KimiContextAppendLoopEvent;
-            const evt = loopEvent.event;
+          if (isAppendLoopEvent(entry)) {
+            const evt = entry.event;
 
             if (evt.type === 'content.part' && evt.part) {
               if (evt.part.type === 'think') {
@@ -561,13 +542,10 @@ export class KimiSessionReader implements AgentSessionReader {
                 });
               }
             } else if (evt.type === 'tool.call' && evt.name) {
-              // 对齐 claude content-blocks 的 200 字符截断：大 args（整段
-              // 文件内容写入、长 prompt）原文进事件会把 resume 卡顶到
-              // 28KB 预算之外（2026-08-08 extreme_fallback 故障的推手之一）。
-              let inputStr = JSON.stringify(evt.args ?? {});
-              if (inputStr.length > 200) {
-                inputStr = inputStr.replace(/\n/g, ' ').slice(0, 197) + '...';
-              }
+              // 复用 content-blocks 的 200 字符截断：大 args（整段文件内容
+              // 写入、长 prompt）原文进事件会把 resume 卡顶到 28KB 预算之外
+              // （2026-08-08 extreme_fallback 故障的推手之一）。
+              const inputStr = truncateToolInput(JSON.stringify(evt.args ?? {}));
               events.push({
                 type: 'tool_use',
                 content: `${evt.name}(${inputStr})`,
@@ -595,7 +573,9 @@ export class KimiSessionReader implements AgentSessionReader {
       // contextLength stays main-only (subagent context is an independent
       // window). Display events/title also stay main-only. Any unreadable
       // directory or missing/corrupt wire file is skipped silently.
-      const agentsDir = path.join(sessionDir, 'agents');
+      // wirePath = <sessionDir>/agents/main/wire.jsonl → agents dir is two
+      // levels up (siblings of main hold subagent wires).
+      const agentsDir = path.dirname(path.dirname(wirePath));
       try {
         for (const dirent of fs.readdirSync(agentsDir, { withFileTypes: true })) {
           if (!dirent.isDirectory() || dirent.name === 'main') {
@@ -608,9 +588,8 @@ export class KimiSessionReader implements AgentSessionReader {
           for (const subLine of readJsonlLines(subWirePath)) {
             try {
               const subEntry = JSON.parse(subLine) as KimiJsonlEntry;
-              if (subEntry.type === 'usage.record') {
-                const usageEntry = subEntry as unknown as KimiUsageRecordEvent;
-                accumulateUsage(usageEntry.usage, false);
+              if (isUsageRecord(subEntry)) {
+                accumulateUsage(subEntry.usage, false);
               }
             } catch {
               continue;
@@ -638,10 +617,13 @@ export class KimiSessionReader implements AgentSessionReader {
         cumulativeOutputTokens: t.output,
         cumulativeCacheReadTokens: t.cacheRead > 0 ? t.cacheRead : 0,
         cumulativeCacheCreationTokens: t.cacheCreation > 0 ? t.cacheCreation : 0,
+        // §6.3: compaction stats from wire.jsonl
+        compactCount,
+        ...(compactPreContextLength !== undefined ? { compactPreContextLength } : {}),
       };
 
       return {
-        events: maxEvents <= 0 ? [] : events.slice(-maxEvents),
+        events: capEvents(events, maxEvents),
         usage: hasUsageRecord ? totalUsage : undefined,
         displayTitle,
       };
@@ -652,13 +634,161 @@ export class KimiSessionReader implements AgentSessionReader {
   }
 
   /**
+   * Read the compaction records (context.apply_compaction /
+   * full_compaction.complete) from a session's wire.jsonl.
+   *
+   * Same cwd guard as readSessionContent. Used by KimiAcpRunner.runCompact
+   * (R2) to wait for the background compaction to land before ending the run.
+   */
+  readCompactionRecords(sessionId: string, cwd: string): KimiCompactionRecord[] {
+    const wirePath = this.resolveSessionWirePath(sessionId, cwd);
+    if (wirePath === null) {
+      return [];
+    }
+    const records: KimiCompactionRecord[] = [];
+    try {
+      for (const line of readJsonlLines(wirePath)) {
+        try {
+          const entry = JSON.parse(line) as KimiJsonlEntry;
+          if (isCompactionComplete(entry)) {
+            records.push({
+              type: entry.type,
+              ...(entry.compactedCount !== undefined
+                ? { compactedCount: entry.compactedCount }
+                : {}),
+              ...(entry.tokensBefore !== undefined ? { tokensBefore: entry.tokensBefore } : {}),
+              ...(entry.tokensAfter !== undefined ? { tokensAfter: entry.tokensAfter } : {}),
+              time: entry.time,
+            });
+          }
+        } catch {
+          continue;
+        }
+      }
+    } catch (error) {
+      getLogger().error(`[kimi-session-reader] readCompactionRecords error: ${error}`);
+      return [];
+    }
+    return records;
+  }
+
+  /**
+   * Resolve the main wire.jsonl path for a session after passing the cwd
+   * guard (state.json + session index fallback). Returns null when the
+   * session is unknown, fails the guard, or has no wire file.
+   */
+  private resolveSessionWirePath(sessionId: string, cwd: string): string | null {
+    // Find session directory from index (also retrieve index entry for
+    // fallback cwd guard when state.json is missing or unparseable)
+    const indexEntry = this.findSessionIndexEntry(sessionId);
+    const sessionDir = indexEntry?.sessionDir ?? null;
+
+    if (!sessionDir) {
+      return null;
+    }
+
+    const statePath = path.join(sessionDir, 'state.json');
+    let realCwd: string;
+    try {
+      realCwd = fs.realpathSync(cwd);
+    } catch {
+      getLogger().warn(
+        `[kimi-session-reader] fs.realpathSync failed for cwd=${cwd} (session ${sessionId}), returning empty`,
+      );
+      return null;
+    }
+    let cwdGuardPassed = false;
+
+    try {
+      if (fs.existsSync(statePath)) {
+        const state = JSON.parse(fs.readFileSync(statePath, 'utf-8')) as KimiSessionState;
+        const guardResult = checkCwdGuard(state, realCwd);
+        if (guardResult === 'failed') {
+          return null;
+        }
+        if (guardResult === 'unverifiable') {
+          getLogger().warn(
+            `[kimi-session-reader] state.json has no workDir/cwd field for session ${sessionId}, falling back to index workDir`,
+          );
+          // Fall through to index-based guard below
+        } else {
+          // verified — state.json cwd matches
+          cwdGuardPassed = true;
+        }
+      }
+    } catch {
+      // state.json unparseable — fall through to index-based guard
+      getLogger().warn(
+        `[kimi-session-reader] state.json parse failed for session ${sessionId}, falling back to index workDir`,
+      );
+    }
+
+    // Fallback: when state.json is missing, unparseable, or has no workDir/cwd,
+    // use the workDir from the session index entry as a secondary guard.
+    // This prevents /resume <id> from accessing a session belonging to a
+    // different workspace when state.json is unavailable.
+    if (!cwdGuardPassed) {
+      const indexWorkDir = indexEntry?.workDir;
+      if (indexWorkDir && indexWorkDir !== realCwd) {
+        return null;
+      }
+      // v2 sessions have empty index workDir (v1-only field) and may lack
+      // state.json cwd. When no cwd source can verify the session belongs to
+      // the requested workspace, fail-closed to prevent cross-workspace access
+      // (aligned with claude's fail-closed cwd guard).
+      if (!indexWorkDir) {
+        getLogger().warn(
+          `[kimi-session-reader] no cwd source (state.json + index) for session ${sessionId}, rejecting (fail-closed)`,
+        );
+        return null;
+      }
+    }
+
+    const wirePath = path.join(sessionDir, 'agents', 'main', 'wire.jsonl');
+    if (!fs.existsSync(wirePath)) {
+      return null;
+    }
+    return wirePath;
+  }
+
+  /**
    * Check if a session is currently active
    */
-  isSessionActive(sessionId: string, _cwd: string): boolean {
-    const sessionDir = this.findSessionDirFromIndex(sessionId);
+  isSessionActive(sessionId: string, cwd: string): boolean {
+    const indexEntry = this.findSessionIndexEntry(sessionId);
+    const sessionDir = indexEntry?.sessionDir;
 
     if (!sessionDir) {
       return false;
+    }
+
+    // Cwd guard: the session's working directory must match the requested
+    // cwd (align with claude/pi/opencode). Mirrors readSessionContent's
+    // fail-closed cwd check (state.json workDir/cwd, then index workDir).
+    let realCwd: string;
+    try {
+      realCwd = fs.realpathSync(cwd);
+    } catch {
+      return false;
+    }
+    let cwdGuardPassed = false;
+    const statePath = path.join(sessionDir, 'state.json');
+    try {
+      if (fs.existsSync(statePath)) {
+        const state = JSON.parse(fs.readFileSync(statePath, 'utf-8')) as KimiSessionState;
+        const guardResult = checkCwdGuard(state, realCwd);
+        if (guardResult === 'failed') return false;
+        if (guardResult === 'verified') cwdGuardPassed = true;
+      }
+    } catch {
+      // state.json unparseable — fall through to index-based guard
+    }
+    if (!cwdGuardPassed) {
+      const indexWorkDir = indexEntry?.workDir;
+      if (indexWorkDir && indexWorkDir !== realCwd) return false;
+      // v2 sessions have empty index workDir (v1-only field) and may lack
+      // state.json cwd — fail-closed to prevent cross-workspace access.
+      if (!indexWorkDir) return false;
     }
 
     const wirePath = path.join(sessionDir, 'agents', 'main', 'wire.jsonl');

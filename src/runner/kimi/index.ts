@@ -1,1 +1,1 @@
-export { KimiRunner } from './runner.js';
+export { KimiAcpRunner } from './acp/runner.js';

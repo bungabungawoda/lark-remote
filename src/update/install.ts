@@ -1,4 +1,5 @@
 import { execFile, execFileSync } from 'node:child_process';
+import fs from 'node:fs';
 import { getLogger } from '../logger/index.js';
 
 /** Supported package managers for global install. */
@@ -24,18 +25,56 @@ type ExecFileFn = (
 ) => void;
 
 /**
+ * Infer the installing package manager from the real path of the running
+ * script (e.g. `.../node_modules/lark-remote/dist/index.js`).
+ *
+ * Layout markers (check order matters — bun/pnpm paths also contain
+ * `/node_modules/lark-remote/`):
+ * - bun:  `~/.bun/install/global/node_modules/lark-remote/...`
+ * - pnpm: `<global>/node_modules/.pnpm/lark-remote@<ver>/node_modules/lark-remote/...`
+ * - npm:  `<prefix>/lib/node_modules/lark-remote/...` (POSIX) or
+ *         `<prefix>/node_modules/lark-remote/...` (Windows)
+ *
+ * Returns null when the path has no marker (e.g. running from a source
+ * checkout in dev mode).
+ */
+export function inferPackageManagerFromPath(scriptPath: string): PackageManager | null {
+  const p = scriptPath.replace(/\\/g, '/');
+  if (p.includes('/.bun/install/global/')) return 'bun';
+  if (p.includes('/.pnpm/lark-remote@')) return 'pnpm';
+  if (p.includes('/node_modules/lark-remote/')) return 'npm';
+  return null;
+}
+
+/**
  * Detect which package manager to use for global install.
  *
  * Priority:
  * 1. Environment variable override (LARK_REMOTE_MANAGED_BY)
- * 2. `which` availability: npm → bun → pnpm
+ * 2. Install location of the running script (upgrades must target the same
+ *    copy that is actually running — a different PM would install a second
+ *    copy and leave the running one stale)
+ * 3. `which` availability: npm → bun → pnpm
  */
-export function detectPackageManager(): PackageManager | null {
+export function detectPackageManager(scriptPath?: string): PackageManager | null {
   // 1. Env override (highest priority)
   const env = process.env.LARK_REMOTE_MANAGED_BY;
   if (env === 'npm' || env === 'bun' || env === 'pnpm') return env;
 
-  // 2. which availability detection
+  // 2. Infer from where this process was loaded from
+  const raw = scriptPath ?? process.argv[1];
+  if (raw) {
+    let resolved = raw;
+    try {
+      resolved = fs.realpathSync(raw);
+    } catch {
+      // Keep raw path (e.g. synthetic path in tests)
+    }
+    const inferred = inferPackageManagerFromPath(resolved);
+    if (inferred) return inferred;
+  }
+
+  // 3. which availability fallback
   const candidates: PackageManager[] = ['npm', 'bun', 'pnpm'];
   for (const cmd of candidates) {
     try {
@@ -104,10 +143,13 @@ export function runInstallLatest(opts?: {
           logger.error(`[update] install failed: ${msg}`);
           // Detect common errors and give actionable advice
           if (msg.includes('EACCES') || msg.includes('permission')) {
-            resolve({
-              success: false,
-              error: `权限不足，尝试 sudo ${cmd} ${args.join(' ')}`,
-            });
+            // bun/pnpm install into the user dir — sudo is wrong advice there
+            // (it would install into root's global dir instead).
+            const hint =
+              pm === 'npm'
+                ? `权限不足，尝试 sudo ${cmd} ${args.join(' ')}`
+                : `权限不足，请检查 ${cmd} 全局安装目录的写权限`;
+            resolve({ success: false, error: hint });
             return;
           }
           resolve({

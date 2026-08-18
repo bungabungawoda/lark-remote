@@ -25,6 +25,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { ClaudeRunner } from '../../../src/runner/claude/index.js';
 import { prependPath, restorePath, writeMockBin } from '../../lib/path-mock.js';
+import { waitForOrThrow } from '../../lib/wait-for.js';
 
 const { mockLogger } = vi.hoisted(() => ({
   mockLogger: {
@@ -46,16 +47,6 @@ function isAlive(pid: number): boolean {
     return true;
   } catch {
     return false;
-  }
-}
-
-async function waitFor(cond: () => boolean, timeoutMs = 3000): Promise<void> {
-  const start = Date.now();
-  while (!cond()) {
-    if (Date.now() - start > timeoutMs) {
-      throw new Error(`waitFor timeout after ${timeoutMs}ms`);
-    }
-    await new Promise((r) => setTimeout(r, 25));
   }
 }
 
@@ -106,12 +97,12 @@ exec sleep 60
 
     // mock 在输出首个事件前已写 $$；循环体抛错后进程要么被杀（修复后）要么存活
     // （当前 bug）
-    await waitFor(() => fs.existsSync(sidePidFile), 3000);
+    await waitForOrThrow(() => fs.existsSync(sidePidFile), 3000);
     const leaderPid = Number(fs.readFileSync(sidePidFile, 'utf-8'));
     expect(leaderPid).toBeGreaterThan(0);
 
     // 当前 bug：finally 只清 bookkeeping，sleep 60 进程存活 → waitFor 超时 → RED
-    await waitFor(() => !isAlive(leaderPid), 3000);
+    await waitForOrThrow(() => !isAlive(leaderPid), 3000);
     expect(isAlive(leaderPid)).toBe(false);
   });
 });

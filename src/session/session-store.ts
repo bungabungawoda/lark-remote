@@ -76,6 +76,39 @@ export class SessionStore {
     if (persistPath) this.load();
   }
 
+  /** A fresh, empty session entry (default factory). */
+  private static emptyEntry(cwd = ''): SessionEntry {
+    return {
+      sessions: new Map(),
+      previousSessions: new Map(),
+      sessionCwds: new Map(),
+      arrivalSessions: new Map(),
+      cwd,
+    };
+  }
+
+  /**
+   * Clone the user's entry, apply `mutate` to it, and store the result.
+   * Creates a fresh empty entry when the user has none. All the per-field
+   * setters (clearSessionId / setPreviousSessionId / setArrivalSessionId /
+   * setCwd / setSessionId / setSessionIdAndCwd / setSessionIdAndSessionCwd)
+   * use this to avoid each re-spelling the "clone entry, tweak one Map" dance.
+   */
+  private mutateEntry(userId: string, mutate: (entry: SessionEntry) => SessionEntry): void {
+    const current = this.sessions.get(userId);
+    const base = current
+      ? {
+          sessions: new Map(current.sessions),
+          previousSessions: new Map(current.previousSessions),
+          sessionCwds: new Map(current.sessionCwds),
+          arrivalSessions: new Map(current.arrivalSessions),
+          cwd: current.cwd,
+        }
+      : SessionStore.emptyEntry();
+    this.sessions.set(userId, mutate(base));
+    this.autoPersist();
+  }
+
   get(userId: string): SessionEntry | undefined {
     return this.sessions.get(userId);
   }
@@ -99,23 +132,13 @@ export class SessionStore {
     // 无条件 bump：空→空也必须可检测（事故场景正是 run 以 (none) 启动，
     // /new 后 store 仍为空，值比较会误判「没变」）。entry 不存在同样 bump。
     this.bumpSessionEpoch(userId, agent);
-    const entry = this.sessions.get(userId);
-    if (entry) {
-      const newSessions = new Map(entry.sessions);
-      newSessions.set(agent, '');
-      const newSessionCwds = new Map(entry.sessionCwds);
+    this.mutateEntry(userId, (entry) => {
+      entry.sessions.set(agent, '');
       if (opts?.clearSessionCwd) {
-        newSessionCwds.set(agent, '');
+        entry.sessionCwds.set(agent, '');
       }
-      this.sessions.set(userId, {
-        sessions: newSessions,
-        previousSessions: entry.previousSessions,
-        sessionCwds: newSessionCwds,
-        arrivalSessions: entry.arrivalSessions,
-        cwd: entry.cwd,
-      });
-    }
-    this.autoPersist();
+      return entry;
+    });
   }
 
   /** Get previous sessionId for a specific agent (stored when switching away) */
@@ -129,46 +152,18 @@ export class SessionStore {
 
   /** Set previous sessionId for a specific agent (for potential restore when switching back) */
   setPreviousSessionId(userId: string, agent: AgentKind, sessionId: string): void {
-    const entry = this.sessions.get(userId);
-    if (entry) {
-      const newPrevious = new Map(entry.previousSessions);
-      newPrevious.set(agent, sessionId);
-      this.sessions.set(userId, {
-        sessions: entry.sessions,
-        previousSessions: newPrevious,
-        sessionCwds: entry.sessionCwds,
-        arrivalSessions: entry.arrivalSessions,
-        cwd: entry.cwd,
-      });
-    } else {
-      const newPrevious = new Map<AgentKind, string>();
-      newPrevious.set(agent, sessionId);
-      this.sessions.set(userId, {
-        sessions: new Map(),
-        previousSessions: newPrevious,
-        sessionCwds: new Map(),
-        arrivalSessions: new Map(),
-        cwd: '',
-      });
-    }
-    this.autoPersist();
+    this.mutateEntry(userId, (entry) => {
+      entry.previousSessions.set(agent, sessionId);
+      return entry;
+    });
   }
 
   /** Clear previous sessionId for a specific agent */
   clearPreviousSessionId(userId: string, agent: AgentKind): void {
-    const entry = this.sessions.get(userId);
-    if (entry) {
-      const newPrevious = new Map(entry.previousSessions);
-      newPrevious.delete(agent);
-      this.sessions.set(userId, {
-        sessions: entry.sessions,
-        previousSessions: newPrevious,
-        sessionCwds: entry.sessionCwds,
-        arrivalSessions: entry.arrivalSessions,
-        cwd: entry.cwd,
-      });
-    }
-    this.autoPersist();
+    this.mutateEntry(userId, (entry) => {
+      entry.previousSessions.delete(agent);
+      return entry;
+    });
   }
 
   /** Get the arrival baseline sessionId for a specific agent ('' and missing → undefined) */
@@ -182,29 +177,10 @@ export class SessionStore {
 
   /** Set the arrival baseline for a specific agent ('' explicitly clears the arrival baseline) */
   setArrivalSessionId(userId: string, agent: AgentKind, sessionId: string): void {
-    const entry = this.sessions.get(userId);
-    if (entry) {
-      const newArrival = new Map(entry.arrivalSessions);
-      newArrival.set(agent, sessionId);
-      this.sessions.set(userId, {
-        sessions: entry.sessions,
-        previousSessions: entry.previousSessions,
-        sessionCwds: entry.sessionCwds,
-        arrivalSessions: newArrival,
-        cwd: entry.cwd,
-      });
-    } else {
-      const newArrival = new Map<AgentKind, string>();
-      newArrival.set(agent, sessionId);
-      this.sessions.set(userId, {
-        sessions: new Map(),
-        previousSessions: new Map(),
-        sessionCwds: new Map(),
-        arrivalSessions: newArrival,
-        cwd: '',
-      });
-    }
-    this.autoPersist();
+    this.mutateEntry(userId, (entry) => {
+      entry.arrivalSessions.set(agent, sessionId);
+      return entry;
+    });
   }
 
   /** Set cwd for a user, clearing all sessionIds (§9.1) */
@@ -212,29 +188,16 @@ export class SessionStore {
     // §9.1 setCwd 清全部 agent 的 sessionId → user 级 bump，覆盖 sessions
     // map 里还没有 key 的 agent（run 刚启动、首个 init 未写回时 /cd 的边界）。
     this.bumpUserEpoch(userId);
-    const entry = this.sessions.get(userId);
-    if (entry) {
-      const newSessions = new Map(entry.sessions);
-      for (const key of newSessions.keys()) {
-        newSessions.set(key, '');
+    this.mutateEntry(userId, (entry) => {
+      for (const key of entry.sessions.keys()) {
+        entry.sessions.set(key, '');
       }
-      this.sessions.set(userId, {
-        sessions: newSessions,
-        previousSessions: new Map(),
-        sessionCwds: new Map(),
-        arrivalSessions: new Map(),
-        cwd,
-      });
-    } else {
-      this.sessions.set(userId, {
-        sessions: new Map(),
-        previousSessions: new Map(),
-        sessionCwds: new Map(),
-        arrivalSessions: new Map(),
-        cwd,
-      });
-    }
-    this.autoPersist();
+      entry.previousSessions = new Map();
+      entry.sessionCwds = new Map();
+      entry.arrivalSessions = new Map();
+      entry.cwd = cwd;
+      return entry;
+    });
   }
 
   /** Get cwd for a user, or undefined if no session */
@@ -254,29 +217,11 @@ export class SessionStore {
   /** Set sessionId for a specific agent, optionally with cwd */
   setSessionId(userId: string, agent: AgentKind, sessionId: string, cwd?: string): void {
     this.bumpSessionEpoch(userId, agent);
-    const entry = this.sessions.get(userId);
-    if (entry) {
-      const newSessions = new Map(entry.sessions);
-      newSessions.set(agent, sessionId);
-      this.sessions.set(userId, {
-        sessions: newSessions,
-        previousSessions: entry.previousSessions,
-        sessionCwds: entry.sessionCwds,
-        arrivalSessions: entry.arrivalSessions,
-        cwd: cwd ?? entry.cwd,
-      });
-    } else {
-      const newSessions = new Map<AgentKind, string>();
-      newSessions.set(agent, sessionId);
-      this.sessions.set(userId, {
-        sessions: newSessions,
-        previousSessions: new Map(),
-        sessionCwds: new Map(),
-        arrivalSessions: new Map(),
-        cwd: cwd ?? '',
-      });
-    }
-    this.autoPersist();
+    this.mutateEntry(userId, (entry) => {
+      entry.sessions.set(agent, sessionId);
+      if (cwd !== undefined) entry.cwd = cwd;
+      return entry;
+    });
   }
 
   /** Set sessionId for a specific agent and cwd together */
@@ -287,33 +232,14 @@ export class SessionStore {
     cwd: string,
     sessionCwd?: string,
   ): void {
-    const entry = this.sessions.get(userId);
-    if (entry) {
-      const newSessions = new Map(entry.sessions);
-      newSessions.set(agent, sessionId);
-      const newSessionCwds = new Map(entry.sessionCwds);
+    this.mutateEntry(userId, (entry) => {
+      entry.sessions.set(agent, sessionId);
       if (sessionCwd !== undefined) {
-        newSessionCwds.set(agent, sessionCwd);
+        entry.sessionCwds.set(agent, sessionCwd);
       }
-      this.sessions.set(userId, {
-        sessions: newSessions,
-        previousSessions: entry.previousSessions,
-        sessionCwds: newSessionCwds,
-        arrivalSessions: entry.arrivalSessions,
-        cwd,
-      });
-    } else {
-      const newSessions = new Map<AgentKind, string>();
-      newSessions.set(agent, sessionId);
-      this.sessions.set(userId, {
-        sessions: newSessions,
-        previousSessions: new Map(),
-        sessionCwds: new Map(),
-        arrivalSessions: new Map(),
-        cwd,
-      });
-    }
-    this.autoPersist();
+      entry.cwd = cwd;
+      return entry;
+    });
   }
 
   /** Get sessionCwd for a specific agent, or undefined if not set */
@@ -332,38 +258,16 @@ export class SessionStore {
     sessionId: string,
     sessionCwd: string,
   ): void {
-    const entry = this.sessions.get(userId);
-    if (entry) {
-      const newSessions = new Map(entry.sessions);
-      newSessions.set(agent, sessionId);
-      const newSessionCwds = new Map(entry.sessionCwds);
-      newSessionCwds.set(agent, sessionCwd);
-      this.sessions.set(userId, {
-        sessions: newSessions,
-        previousSessions: entry.previousSessions,
-        sessionCwds: newSessionCwds,
-        arrivalSessions: entry.arrivalSessions,
-        cwd: entry.cwd,
-      });
-    } else {
-      const newSessions = new Map<AgentKind, string>();
-      newSessions.set(agent, sessionId);
-      const newSessionCwds = new Map<AgentKind, string>();
-      newSessionCwds.set(agent, sessionCwd);
-      this.sessions.set(userId, {
-        sessions: newSessions,
-        previousSessions: new Map(),
-        sessionCwds: newSessionCwds,
-        arrivalSessions: new Map(),
-        cwd: '',
-      });
-    }
-    this.autoPersist();
+    this.mutateEntry(userId, (entry) => {
+      entry.sessions.set(agent, sessionId);
+      entry.sessionCwds.set(agent, sessionCwd);
+      return entry;
+    });
   }
 
   // -- Persistence helpers --
 
-  /** Persisted format: only cwd per user (sessionId is process-scoped) */
+  /** Persisted format: cwd + sessions + previous/arrival session maps. */
   private load(): void {
     if (!this.persistPath) return;
     try {

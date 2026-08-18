@@ -74,16 +74,9 @@ function createRouter(tmpDir: string) {
   return { router, sessionStore, connector, config, bridge };
 }
 
-/** cmdLs 是 CommandRouter 私有方法；测试直接调用验证分页边界（运行时可达）。 */
+/** cmdLs 现已 public；测试直接调用验证分页边界。 */
 function cmdLsOf(router: CommandRouter) {
-  const internals = router as unknown as {
-    cmdLs(
-      pathArgs: string[],
-      ctx: { userId: string; chatId: string; messageId: string },
-      offset?: number,
-    ): { card?: object };
-  };
-  return internals.cmdLs.bind(router);
+  return router.cmdLs.bind(router);
 }
 
 describe('/ls pagination anchor tests', () => {
