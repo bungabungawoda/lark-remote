@@ -10,8 +10,12 @@
 import { describe, it, expect, test, vi, beforeEach, afterEach } from 'vitest';
 import { Readable } from 'node:stream';
 import fs from 'node:fs';
+import type { ChildProcess } from 'node:child_process';
 import { SpawningRunner } from '../../../src/runner/common/spawning-runner.js';
-import type { AgentEvent, SpawnOptions } from '../../../src/runner/types.js';
+import type { AgentEvent, Runner, SpawnOptions } from '../../../src/runner/types.js';
+import type { SpawnHeartbeat } from '../../../src/runner/common/spawn-heartbeat.js';
+import type { ProcessStopper } from '../../../src/runner/common/process-stopper.js';
+import { createMockProc } from '../../../tests/lib/mock-process.js';
 
 // ---------------------------------------------------------------------------
 // Shared mock setup
@@ -69,6 +73,56 @@ class TestRunner extends SpawningRunner {
   protected validateConfig(): void {
     /* no-op */
   }
+
+  // Public wrapper to expose protected buildResultEvent for testing.
+  public callBuildResultEvent(opts: {
+    code: number | null;
+    signal: NodeJS.Signals | null;
+    stderr?: string;
+    sessionId?: string;
+    usage?: Record<string, unknown>;
+  }): AgentEvent {
+    return this.buildResultEvent(opts);
+  }
+
+  // Public setter to control stoppedByUser for testing
+  public setStoppedByUser(val: boolean): void {
+    this.stoppedByUser = val;
+  }
+
+  // ── 类型化测试访问器 ────────────────────────────────────────────
+  // protected 成员对子类可见，这里用 typed getter/setter 暴露给测试。
+  get testBinary(): string {
+    return this.binary;
+  }
+
+  get testPidFilePath(): string {
+    return this.pidFilePath;
+  }
+
+  get testSpawnHeartbeat(): SpawnHeartbeat {
+    return this.spawnHeartbeat;
+  }
+
+  get testStopper(): ProcessStopper {
+    return this.stopper;
+  }
+
+  get testCurrentProcess(): ChildProcess | null {
+    return this.currentProcess;
+  }
+
+  set testCurrentProcess(proc: ChildProcess | null) {
+    this.currentProcess = proc;
+  }
+
+  get testStoppedByUser(): boolean {
+    return this.stoppedByUser;
+  }
+
+  createTestStreamReader(stdout: Readable): AsyncGenerator<unknown> {
+    return this.createStreamReader(stdout);
+  }
 }
 
 /**
@@ -81,16 +135,58 @@ class ThrowingTestRunner extends TestRunner {
   }
 }
 
+/** isRunning getter 只读 pid/exitCode/signalCode，这里定义测试注入的最小形状。 */
+/**
+ * 构造可被 vi.mocked(spawn).mockReturnValue 接受的 ChildProcess mock。
+ *
+ * 统一收敛到 tests/lib 的 createMockProc（无 cast）。
+ */
+function makeMockProc(
+  opts: {
+    pid?: number;
+    stdout?: Readable | null;
+    stderr?: unknown;
+    close?: (event: string, cb: (...args: unknown[]) => void) => void;
+  } = {},
+): ReturnType<typeof spawn> {
+  const stdout =
+    opts.stdout === undefined
+      ? new Readable({
+          read() {
+            this.push(null);
+          },
+        })
+      : opts.stdout;
+  const defaultClose = (event: string, cb: (...args: unknown[]) => void): void => {
+    if (event === 'close') {
+      setTimeout(() => cb(0, null), 20);
+    }
+  };
+  return createMockProc({
+    // 显式传 pid: undefined 表示「spawn 后拿不到 pid」（ENOENT 路径），
+    // 不能 fallback 到默认 pid，否则 runner 走正常路径读 stdout 崩溃。
+    pid: 'pid' in opts ? opts.pid : 99999,
+    exitCode: null,
+    signalCode: null,
+    stdout,
+    stderr: opts.stderr ?? { on: vi.fn(), destroy: vi.fn() },
+    kill: vi.fn(),
+    once: vi.fn(opts.close ?? defaultClose),
+  });
+}
+
+/** 纯消费 runner.run 的 drain 循环（8 处相同循环的收敛点）。 */
+async function drainRun(runner: Runner, input: string, cwd = '/tmp/fake'): Promise<void> {
+  for await (const _event of runner.run(input, { cwd })) {
+    void _event;
+  }
+}
+
 /**
  * Minimal TestRunner for stoppedByUser and buildResultEvent tests.
  * Only overrides the 3 abstract hooks with no-ops.
  */
-class MinimalTestRunner extends SpawningRunner {
-  constructor(opts: { binary?: string; pidDir?: string; workspace?: string } = {}) {
-    super({ workspace: 'test', pidDir: opts.pidDir });
-    this.binary = opts.binary ?? 'testbin';
-  }
-
+class MinimalTestRunner extends TestRunner {
   protected buildArgv(_opts: SpawnOptions): string[] {
     return ['--fake'];
   }
@@ -101,22 +197,6 @@ class MinimalTestRunner extends SpawningRunner {
 
   protected validateConfig(): void {
     /* no-op */
-  }
-
-  // Public wrapper to expose protected buildResultEvent for testing.
-  public callBuildResultEvent(opts: {
-    code: number | null;
-    signal: NodeJS.Signals | null;
-    stderr?: string;
-    sessionId?: string;
-    usage?: Record<string, unknown>;
-  }): AgentEvent {
-    return (this as any).buildResultEvent(opts);
-  }
-
-  // Public setter to control stoppedByUser for testing
-  public setStoppedByUser(val: boolean): void {
-    (this as any).stoppedByUser = val;
   }
 }
 
@@ -156,36 +236,20 @@ describe('SpawningRunner.run() spawn orchestration', () => {
       },
     });
 
-    const mockProc = {
-      pid: 99999,
-      exitCode: null,
-      signalCode: null,
-      stdout,
-      stderr: { on: vi.fn(), destroy: vi.fn() },
-      kill: vi.fn(),
-      once: vi.fn((event: string, cb: (...args: unknown[]) => void) => {
-        if (event === 'close') {
-          setTimeout(() => cb(0, null), 20);
-        }
-      }),
-      on: vi.fn(),
-      removeAllListeners: vi.fn(),
-    };
+    const mockProc = makeMockProc({ stdout });
 
-    vi.mocked(spawn).mockReturnValue(mockProc as any);
+    vi.mocked(spawn).mockReturnValue(mockProc);
 
     const runner = new TestRunner({
       binary: 'fake-binary',
       pidDir: '/tmp/spawning-runner-anchor-test',
     });
 
-    for await (const _event of runner.run('hi', { cwd: '/tmp/fake' })) {
-      void _event;
-    }
+    await drainRun(runner, 'hi');
 
     expect(spawn).toHaveBeenCalledTimes(1);
     const call = vi.mocked(spawn).mock.calls[0];
-    const expectedBinary = (runner as any).binary;
+    const expectedBinary = runner.testBinary;
     expect(call[0]).toBe(expectedBinary);
     expect(call[1]).toEqual(['--fake-flag', 'marker']);
     expect(call[2]).toMatchObject({
@@ -199,7 +263,7 @@ describe('SpawningRunner.run() spawn orchestration', () => {
     const pidDir = '/tmp/spawning-runner-anchor-test-r2';
     fs.mkdirSync(pidDir, { recursive: true });
     const runner0 = new TestRunner({ binary: 'fake-binary', pidDir });
-    const pidFilePath = (runner0 as any).pidFilePath as string;
+    const pidFilePath = runner0.testPidFilePath;
     try {
       fs.rmSync(pidFilePath, { force: true });
     } catch {
@@ -213,29 +277,21 @@ describe('SpawningRunner.run() spawn orchestration', () => {
       },
     });
 
-    const mockProc = {
+    const mockProc = makeMockProc({
       pid: 88888,
-      exitCode: null,
-      signalCode: null,
       stdout,
-      stderr: { on: vi.fn(), destroy: vi.fn() },
-      kill: vi.fn(),
-      once: vi.fn((event: string, cb: (...args: unknown[]) => void) => {
-        if (event === 'close') {
-          setTimeout(() => cb(0, null), 50);
-        }
-      }),
-      on: vi.fn(),
-      removeAllListeners: vi.fn(),
-    };
+      close: (event, cb) => {
+        if (event === 'close') setTimeout(() => cb(0, null), 50);
+      },
+    });
 
-    vi.mocked(spawn).mockReturnValue(mockProc as any);
+    vi.mocked(spawn).mockReturnValue(mockProc);
 
     const runner = new TestRunner({
       binary: 'fake-binary',
       pidDir,
     });
-    const livePidFilePath = (runner as any).pidFilePath as string;
+    const livePidFilePath = runner.testPidFilePath;
 
     let observedMidRun = false;
     for await (const _event of runner.run('hi', { cwd: '/tmp/fake' })) {
@@ -252,7 +308,7 @@ describe('SpawningRunner.run() spawn orchestration', () => {
     const pidDir = '/tmp/spawning-runner-anchor-test-r3';
     fs.mkdirSync(pidDir, { recursive: true });
     const runner0 = new ThrowingTestRunner({ binary: 'fake-binary', pidDir });
-    const pidFilePath = (runner0 as any).pidFilePath as string;
+    const pidFilePath = runner0.testPidFilePath;
     try {
       fs.rmSync(pidFilePath, { force: true });
     } catch {
@@ -266,33 +322,23 @@ describe('SpawningRunner.run() spawn orchestration', () => {
       },
     });
 
-    const mockProc = {
+    const mockProc = makeMockProc({
       pid: 77777,
-      exitCode: null,
-      signalCode: null,
       stdout,
-      stderr: { on: vi.fn(), destroy: vi.fn() },
-      kill: vi.fn(),
-      once: vi.fn((event: string, cb: (...args: unknown[]) => void) => {
-        if (event === 'close') {
-          setTimeout(() => cb(0, null), 50);
-        }
-      }),
-      on: vi.fn(),
-      removeAllListeners: vi.fn(),
-    };
+      close: (event, cb) => {
+        if (event === 'close') setTimeout(() => cb(0, null), 50);
+      },
+    });
 
-    vi.mocked(spawn).mockReturnValue(mockProc as any);
+    vi.mocked(spawn).mockReturnValue(mockProc);
 
     const runner = new ThrowingTestRunner({
       binary: 'fake-binary',
       pidDir,
     });
-    const livePidFilePath = (runner as any).pidFilePath as string;
+    const livePidFilePath = runner.testPidFilePath;
 
-    for await (const _event of runner.run('hi', { cwd: '/tmp/fake' })) {
-      void _event;
-    }
+    await drainRun(runner, 'hi');
 
     expect(fs.existsSync(livePidFilePath)).toBe(false);
   });
@@ -305,39 +351,23 @@ describe('SpawningRunner.run() spawn orchestration', () => {
       },
     });
 
-    const mockProc = {
-      pid: 66666,
-      exitCode: null,
-      signalCode: null,
-      stdout,
-      stderr: { on: vi.fn(), destroy: vi.fn() },
-      kill: vi.fn(),
-      once: vi.fn((event: string, cb: (...args: unknown[]) => void) => {
-        if (event === 'close') {
-          setTimeout(() => cb(0, null), 20);
-        }
-      }),
-      on: vi.fn(),
-      removeAllListeners: vi.fn(),
-    };
+    const mockProc = makeMockProc({ pid: 66666, stdout });
 
-    vi.mocked(spawn).mockReturnValue(mockProc as any);
+    vi.mocked(spawn).mockReturnValue(mockProc);
 
     const runner = new TestRunner({
       binary: 'fake-binary',
       pidDir: '/tmp/spawning-runner-anchor-test-r4',
     });
 
-    const startSpy = vi.spyOn((runner as any).spawnHeartbeat, 'start');
+    const startSpy = vi.spyOn(runner.testSpawnHeartbeat, 'start');
 
-    for await (const _event of runner.run('hi', { cwd: '/tmp/r4' })) {
-      void _event;
-    }
+    await drainRun(runner, 'hi', '/tmp/r4');
 
     expect(startSpy).toHaveBeenCalledOnce();
     expect(startSpy.mock.calls[0][0]).toEqual({
       pid: 66666,
-      binary: (runner as any).binary,
+      binary: runner.testBinary,
       cwd: '/tmp/r4',
     });
   });
@@ -350,34 +380,18 @@ describe('SpawningRunner.run() spawn orchestration', () => {
       },
     });
 
-    const mockProc = {
-      pid: 55555,
-      exitCode: null,
-      signalCode: null,
-      stdout,
-      stderr: { on: vi.fn(), destroy: vi.fn() },
-      kill: vi.fn(),
-      once: vi.fn((event: string, cb: (...args: unknown[]) => void) => {
-        if (event === 'close') {
-          setTimeout(() => cb(0, null), 20);
-        }
-      }),
-      on: vi.fn(),
-      removeAllListeners: vi.fn(),
-    };
+    const mockProc = makeMockProc({ pid: 55555, stdout });
 
-    vi.mocked(spawn).mockReturnValue(mockProc as any);
+    vi.mocked(spawn).mockReturnValue(mockProc);
 
     const runner = new TestRunner({
       binary: 'fake-binary',
       pidDir: '/tmp/spawning-runner-anchor-test-r5',
     });
 
-    const notifySpy = vi.spyOn((runner as any).spawnHeartbeat, 'notifyStdout');
+    const notifySpy = vi.spyOn(runner.testSpawnHeartbeat, 'notifyStdout');
 
-    for await (const _event of runner.run('hi', { cwd: '/tmp/r5' })) {
-      void _event;
-    }
+    await drainRun(runner, 'hi', '/tmp/r5');
 
     expect(notifySpy).toHaveBeenCalledOnce();
   });
@@ -389,30 +403,16 @@ describe('SpawningRunner.run() spawn orchestration', () => {
       },
     });
 
-    const mockProc = {
-      pid: 44444,
-      exitCode: null,
-      signalCode: null,
-      stdout,
-      stderr: { on: vi.fn(), destroy: vi.fn() },
-      kill: vi.fn(),
-      once: vi.fn((event: string, cb: (...args: unknown[]) => void) => {
-        if (event === 'close') {
-          setTimeout(() => cb(0, null), 20);
-        }
-      }),
-      on: vi.fn(),
-      removeAllListeners: vi.fn(),
-    };
+    const mockProc = makeMockProc({ pid: 44444, stdout });
 
-    vi.mocked(spawn).mockReturnValue(mockProc as any);
+    vi.mocked(spawn).mockReturnValue(mockProc);
 
     const runner = new TestRunner({
       binary: 'fake-binary',
       pidDir: '/tmp/spawning-runner-anchor-test-r6',
     });
 
-    const spawnHeartbeat = (runner as any).spawnHeartbeat;
+    const spawnHeartbeat = runner.testSpawnHeartbeat;
     const realStart = spawnHeartbeat.start.bind(spawnHeartbeat);
 
     const clearSpy = vi.spyOn(spawnHeartbeat, 'clear');
@@ -423,9 +423,7 @@ describe('SpawningRunner.run() spawn orchestration', () => {
       clearSpy.mockClear();
     });
 
-    for await (const _event of runner.run('hi', { cwd: '/tmp/r6' })) {
-      void _event;
-    }
+    await drainRun(runner, 'hi', '/tmp/r6');
 
     expect(clearSpy).toHaveBeenCalledTimes(2);
   });
@@ -444,23 +442,16 @@ describe('SpawningRunner.run() spawn orchestration', () => {
       destroy: vi.fn(),
     };
 
-    const mockProc = {
+    const mockProc = makeMockProc({
       pid: 33333,
-      exitCode: null,
-      signalCode: null,
       stdout,
       stderr,
-      kill: vi.fn(),
-      once: vi.fn((event: string, cb: (...args: unknown[]) => void) => {
-        if (event === 'close') {
-          setTimeout(() => cb(1, null), 20);
-        }
-      }),
-      on: vi.fn(),
-      removeAllListeners: vi.fn(),
-    };
+      close: (event, cb) => {
+        if (event === 'close') setTimeout(() => cb(1, null), 20);
+      },
+    });
 
-    vi.mocked(spawn).mockReturnValue(mockProc as any);
+    vi.mocked(spawn).mockReturnValue(mockProc);
 
     const runner = new TestRunner({
       binary: 'fake-binary',
@@ -497,23 +488,16 @@ describe('SpawningRunner.run() spawn orchestration', () => {
       destroy: vi.fn(),
     };
 
-    const mockProc = {
+    const mockProc = makeMockProc({
       pid: 22222,
-      exitCode: null,
-      signalCode: null,
       stdout,
       stderr,
-      kill: vi.fn(),
-      once: vi.fn((event: string, cb: (...args: unknown[]) => void) => {
-        if (event === 'close') {
-          setTimeout(() => cb(1, null), 20);
-        }
-      }),
-      on: vi.fn(),
-      removeAllListeners: vi.fn(),
-    };
+      close: (event, cb) => {
+        if (event === 'close') setTimeout(() => cb(1, null), 20);
+      },
+    });
 
-    vi.mocked(spawn).mockReturnValue(mockProc as any);
+    vi.mocked(spawn).mockReturnValue(mockProc);
 
     const runner = new TestRunner({
       binary: 'fake-binary',
@@ -537,23 +521,15 @@ describe('SpawningRunner.run() spawn orchestration', () => {
   });
 
   it('test_anchor_spawning_runner_yields_auth_error_event_on_spawn_failure', async () => {
-    const mockProc = {
+    const mockProc = makeMockProc({
       pid: undefined,
-      exitCode: null,
-      signalCode: null,
       stdout: null,
-      stderr: { on: vi.fn(), destroy: vi.fn() },
-      kill: vi.fn(),
-      once: vi.fn((event: string, cb: (...args: unknown[]) => void) => {
-        if (event === 'error') {
-          setTimeout(() => cb(new Error('spawn ENOENT')), 10);
-        }
-      }),
-      on: vi.fn(),
-      removeAllListeners: vi.fn(),
-    };
+      close: (event, cb) => {
+        if (event === 'error') setTimeout(() => cb(new Error('spawn ENOENT')), 10);
+      },
+    });
 
-    vi.mocked(spawn).mockReturnValue(mockProc as any);
+    vi.mocked(spawn).mockReturnValue(mockProc);
 
     const runner = new TestRunner({
       binary: 'fake-binary',
@@ -575,11 +551,11 @@ describe('SpawningRunner.run() spawn orchestration', () => {
     // so the bridge's pre-init result guard doesn't silently drop the error.
     expect(events).toHaveLength(2);
 
-    const initEvent = events[0] as any;
+    const initEvent = events[0] as { type: string; subtype?: string };
     expect(initEvent.type).toBe('system');
     expect(initEvent.subtype).toBe('init');
 
-    const event = events[1] as any;
+    const event = events[1] as { type: string; subtype?: string; errorMessage?: string };
     expect(event.type).toBe('result');
     expect(event.subtype).toBe('error');
     expect(typeof event.errorMessage).toBe('string');
@@ -596,18 +572,12 @@ describe('SpawningRunner.run() spawn orchestration', () => {
       pidDir: '/tmp/spawning-runner-anchor-test-r10',
     });
 
-    (runner as any).currentProcess = {
-      pid: 12345,
-      exitCode: null,
-      signalCode: null,
-    };
+    runner.testCurrentProcess = createMockProc({ pid: 12345, exitCode: null, signalCode: null });
 
-    expect((runner as any).isRunning).toBe(true);
+    expect(runner.isRunning).toBe(true);
 
     const consume = async () => {
-      for await (const _event of runner.run('hi', { cwd: '/tmp/r10' })) {
-        void _event;
-      }
+      await drainRun(runner, 'hi', '/tmp/r10');
     };
 
     await expect(consume()).rejects.toThrow(/already running/i);
@@ -620,18 +590,18 @@ describe('SpawningRunner.run() spawn orchestration', () => {
       pidDir: '/tmp/spawning-runner-anchor-test-r11',
     });
 
-    const stopperStopSpy = vi.spyOn((runner as any).stopper, 'stop').mockResolvedValue(undefined);
+    const stopperStopSpy = vi.spyOn(runner.testStopper, 'stop').mockResolvedValue(undefined);
 
-    const fakeProc = {
+    const fakeProc = createMockProc({
       pid: 24680,
       exitCode: null,
       signalCode: null,
       kill: vi.fn(),
       once: vi.fn(),
-    };
-    (runner as any).currentProcess = fakeProc;
+    });
+    runner.testCurrentProcess = fakeProc;
 
-    expect((runner as any).isRunning).toBe(true);
+    expect(runner.isRunning).toBe(true);
 
     await runner.stop({ immediate: true });
 
@@ -649,7 +619,7 @@ describe('SpawningRunner.run() spawn orchestration', () => {
       pidDir,
     });
 
-    const pidFilePath = (runner as any).pidFilePath as string;
+    const pidFilePath = runner.testPidFilePath;
     try {
       fs.rmSync(pidFilePath, { force: true });
     } catch {
@@ -657,14 +627,14 @@ describe('SpawningRunner.run() spawn orchestration', () => {
     }
     fs.writeFileSync(pidFilePath, '13579', 'utf-8');
 
-    const killSpy = vi.spyOn(process, 'kill').mockImplementation((() => true) as any);
+    const killSpy = vi.spyOn(process, 'kill').mockImplementation(() => true);
 
     expect(fs.existsSync(pidFilePath)).toBe(true);
 
     vi.mocked(execFileSync).mockReturnValue('fake-binary --some-flag');
 
     try {
-      (runner as any).killOrphan();
+      runner.killOrphan();
 
       expect(killSpy).toHaveBeenCalledWith(-13579, 'SIGTERM');
       expect(fs.existsSync(pidFilePath)).toBe(false);
@@ -682,16 +652,16 @@ describe('SpawningRunner.run() spawn orchestration', () => {
       pidDir,
     });
 
-    const pidFilePath = (runner as any).pidFilePath as string;
+    const pidFilePath = runner.testPidFilePath;
 
     fs.rmSync(pidFilePath, { force: true });
 
-    const killSpy = vi.spyOn(process, 'kill').mockImplementation((() => true) as any);
+    const killSpy = vi.spyOn(process, 'kill').mockImplementation(() => true);
 
     expect(fs.existsSync(pidFilePath)).toBe(false);
 
     try {
-      (runner as any).killOrphan();
+      runner.killOrphan();
 
       expect(fs.existsSync(pidFilePath)).toBe(false);
       expect(killSpy).not.toHaveBeenCalled();
@@ -709,7 +679,7 @@ describe('SpawningRunner.run() spawn orchestration', () => {
       pidDir,
     });
 
-    const pidFilePath = (runner as any).pidFilePath as string;
+    const pidFilePath = runner.testPidFilePath;
     try {
       fs.rmSync(pidFilePath, { force: true });
     } catch {
@@ -717,12 +687,12 @@ describe('SpawningRunner.run() spawn orchestration', () => {
     }
     fs.writeFileSync(pidFilePath, 'not-a-number', 'utf-8');
 
-    const killSpy = vi.spyOn(process, 'kill').mockImplementation((() => true) as any);
+    const killSpy = vi.spyOn(process, 'kill').mockImplementation(() => true);
 
     expect(fs.existsSync(pidFilePath)).toBe(true);
 
     try {
-      (runner as any).killOrphan();
+      runner.killOrphan();
 
       expect(fs.existsSync(pidFilePath)).toBe(false);
       expect(killSpy).not.toHaveBeenCalled();
@@ -739,12 +709,8 @@ describe('SpawningRunner.run() spawn orchestration', () => {
 
     expect(runner.isRunning).toBe(false);
 
-    const mockProc: {
-      pid: number;
-      exitCode: number | null;
-      signalCode: NodeJS.Signals | null;
-    } = { pid: 12345, exitCode: null, signalCode: null };
-    (runner as any).currentProcess = mockProc;
+    const mockProc = createMockProc({ pid: 12345, exitCode: null, signalCode: null });
+    runner.testCurrentProcess = mockProc;
 
     expect(runner.isRunning).toBe(true);
 
@@ -771,14 +737,9 @@ describe('P1-4 A2: createStreamReader enables backpressure by default', () => {
       return origPause();
     };
 
-    class BackpressureTestRunner extends SpawningRunner {
+    class BackpressureTestRunner extends TestRunner {
       constructor() {
-        super({
-          binary: 'echo',
-          workspace: 'test',
-          pidFilePrefix: 'test-p1-4',
-          logTag: 'test-p1-4',
-        });
+        super({ binary: 'echo', workspace: 'test' });
       }
       protected buildArgv(_opts: SpawnOptions): string[] {
         return [];
@@ -791,9 +752,7 @@ describe('P1-4 A2: createStreamReader enables backpressure by default', () => {
       }
     }
     const runner = new BackpressureTestRunner();
-    const stream = (
-      runner as unknown as { createStreamReader(stdout: Readable): AsyncGenerator<unknown> }
-    ).createStreamReader(readable);
+    const stream = runner.createTestStreamReader(readable);
 
     for (let i = 0; i < 1000; i++) {
       readable.push(`{"type":"text","data":"line-${i}"}\n`);
@@ -820,7 +779,7 @@ describe('SpawningRunner stoppedByUser state', () => {
       binary: 'fake',
       pidDir: '/tmp/spawning-runner-r21',
     });
-    expect((runner as any).stoppedByUser).toBe(false);
+    expect(runner.testStoppedByUser).toBe(false);
   });
 
   it('test_anchor_stop_sets_stopped_by_user_true_when_process_running', async () => {
@@ -829,23 +788,23 @@ describe('SpawningRunner stoppedByUser state', () => {
       pidDir: '/tmp/spawning-runner-r21',
     });
 
-    const stopperStopSpy = vi.spyOn((runner as any).stopper, 'stop').mockResolvedValue(undefined);
+    const stopperStopSpy = vi.spyOn(runner.testStopper, 'stop').mockResolvedValue(undefined);
 
-    const fakeProc = {
+    const fakeProc = createMockProc({
       pid: 12345,
       exitCode: null,
       signalCode: null,
       kill: vi.fn(),
       once: vi.fn(),
-    };
-    (runner as any).currentProcess = fakeProc;
+    });
+    runner.testCurrentProcess = fakeProc;
 
-    expect((runner as any).isRunning).toBe(true);
-    expect((runner as any).stoppedByUser).toBe(false);
+    expect(runner.isRunning).toBe(true);
+    expect(runner.testStoppedByUser).toBe(false);
 
     await runner.stop({ immediate: true });
 
-    expect((runner as any).stoppedByUser).toBe(true);
+    expect(runner.testStoppedByUser).toBe(true);
     expect(stopperStopSpy).toHaveBeenCalledOnce();
   });
 
@@ -855,13 +814,13 @@ describe('SpawningRunner stoppedByUser state', () => {
       pidDir: '/tmp/spawning-runner-r21',
     });
 
-    expect((runner as any).currentProcess).toBe(null);
-    expect((runner as any).isRunning).toBe(false);
-    expect((runner as any).stoppedByUser).toBe(false);
+    expect(runner.testCurrentProcess).toBe(null);
+    expect(runner.isRunning).toBe(false);
+    expect(runner.testStoppedByUser).toBe(false);
 
     await runner.stop();
 
-    expect((runner as any).stoppedByUser).toBe(false);
+    expect(runner.testStoppedByUser).toBe(false);
   });
 });
 
@@ -879,7 +838,11 @@ describe('SpawningRunner.buildResultEvent()', () => {
     });
     runner.setStoppedByUser(true);
 
-    const event = runner.callBuildResultEvent({ code: 0, signal: null }) as any;
+    const event = runner.callBuildResultEvent({ code: 0, signal: null }) as {
+      type: string;
+      subtype?: string;
+      errorMessage?: string;
+    };
 
     expect(event.type).toBe('result');
     expect(event.subtype).toBe('error');
@@ -897,7 +860,7 @@ describe('SpawningRunner.buildResultEvent()', () => {
       code: 1,
       signal: null,
       stderr: 'API key invalid',
-    }) as any;
+    }) as { type: string; subtype?: string; errorMessage?: string };
 
     expect(event.type).toBe('result');
     expect(event.subtype).toBe('error');
@@ -915,7 +878,7 @@ describe('SpawningRunner.buildResultEvent()', () => {
     const event = runner.callBuildResultEvent({
       code: null,
       signal: 'SIGTERM',
-    }) as any;
+    }) as { type: string; subtype?: string; errorMessage?: string };
 
     expect(event.type).toBe('result');
     expect(event.subtype).toBe('error');
@@ -935,7 +898,13 @@ describe('SpawningRunner.buildResultEvent()', () => {
       signal: null,
       sessionId: 'sess-123',
       usage,
-    }) as any;
+    }) as {
+      type: string;
+      subtype?: string;
+      errorMessage?: string;
+      session_id?: string;
+      usage?: unknown;
+    };
 
     expect(event.type).toBe('result');
     expect(event.subtype).toBe('success');
@@ -955,7 +924,12 @@ describe('SpawningRunner.buildResultEvent()', () => {
       code: 0,
       signal: null,
       sessionId: 'sess-456',
-    }) as any;
+    }) as {
+      type: string;
+      subtype?: string;
+      errorMessage?: string;
+      session_id?: string;
+    };
 
     expect(event.type).toBe('result');
     expect(event.subtype).toBe('success');

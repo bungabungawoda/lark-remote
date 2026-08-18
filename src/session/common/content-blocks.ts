@@ -12,6 +12,17 @@ interface ContentBlock {
   content: string;
 }
 
+/**
+ * Truncate a serialized tool-input string to 200 chars, collapsing newlines.
+ * Shared by content-block extraction and standalone wire-event readers (kimi
+ * tool.call) so the resume card never exceeds its 28KB budget on pathological
+ * args (e.g. whole-file writes / long prompts).
+ */
+export function truncateToolInput(inputStr: string): string {
+  if (inputStr.length <= 200) return inputStr;
+  return inputStr.replace(/\n/g, ' ').slice(0, 197) + '...';
+}
+
 /** Maps agent-specific field names to the generic extraction logic. */
 export interface ContentBlockMapping {
   /** The `type` value that identifies a tool-use block (e.g. 'tool_use' or 'toolCall'). */
@@ -59,15 +70,9 @@ export function extractContentBlocks(
     // tool_use block (parameterized type name + input field)
     if (p.type === mapping.toolUseType && typeof p.name === 'string') {
       const rawInput = p[mapping.toolInputField] ?? {};
-      const inputStr = JSON.stringify(rawInput, null, 2);
+      const inputStr = truncateToolInput(JSON.stringify(rawInput, null, 2));
       const label = `🔧 ${p.name}`;
-      let body: string;
-      if (inputStr.length > 200) {
-        body = inputStr.replace(/\n/g, ' ').slice(0, 197) + '...';
-      } else {
-        body = inputStr;
-      }
-      blocks.push({ type: 'tool_use', content: `${label}: ${body}` });
+      blocks.push({ type: 'tool_use', content: `${label}: ${inputStr}` });
     }
 
     // tool_result block (parameterized type name + error field)

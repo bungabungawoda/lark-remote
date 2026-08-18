@@ -13,7 +13,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { SpawningRunner } from '../../../src/runner/common/spawning-runner.js';
 import type { AgentEvent, SpawnOptions } from '../../../src/runner/types.js';
-import type { ChildProcess } from 'node:child_process';
+import { PassThrough } from 'node:stream';
+import { createMockProc } from '../../../tests/lib/mock-process.js';
 
 const { mockLogger } = vi.hoisted(() => ({
   mockLogger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
@@ -55,21 +56,18 @@ describe('P2-13: spawn failure errorMessage includes real cause', () => {
     // NOT ENOENT (binary missing). The mock proc has pid===undefined and
     // emits 'error' with a real cause the runner must surface.
     const realCause = 'spawn EMFILE: too many open files';
-    const mockProc = {
+    const mockProc = createMockProc({
       pid: undefined,
       exitCode: null,
       signalCode: null,
-      stdout: null,
-      stderr: { on: vi.fn(), destroy: vi.fn() },
+      stderr: new PassThrough(),
       kill: vi.fn(),
       once: vi.fn((event: string, cb: (...args: unknown[]) => void) => {
         if (event === 'error') {
           setTimeout(() => cb(new Error(realCause)), 5);
         }
       }),
-      on: vi.fn(),
-      removeAllListeners: vi.fn(),
-    } as unknown as ChildProcess;
+    });
 
     vi.mocked(spawn).mockReturnValue(mockProc);
 

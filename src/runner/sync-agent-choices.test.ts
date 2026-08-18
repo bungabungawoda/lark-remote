@@ -10,7 +10,7 @@ describe('syncAgentChoices', () => {
     idle: { watchdogMinutes: 15 },
     output: { showThinking: true, showToolUse: true, showToolResult: true },
     logging: { level: 'info' },
-    agents: { codex: { stopGraceMs: 5000 } },
+    agents: { codex: {} },
   };
 
   it('should sync codex model and provider to agentChoices', () => {
@@ -160,7 +160,7 @@ describe('syncAgentChoices', () => {
       agents: { codex: { model: 'glm-5.2' } },
     } as AppConfig;
     // Ensure agentChoices is undefined
-    delete (config as any).agentChoices;
+    delete (config as Partial<AppConfig>).agentChoices;
     const updated = syncAgentChoices(config, 'codex');
 
     expect(updated.agentChoices).toBeDefined();
@@ -232,7 +232,7 @@ describe('syncAgentChoices', () => {
       ...baseConfig,
     } as AppConfig;
     // Remove agents entirely to test the agents || {} fallback
-    delete (config as any).agents;
+    delete (config as Partial<AppConfig>).agents;
     // claude is the only agent that can work without agents config
     const updated = syncAgentChoices(config, 'claude');
 

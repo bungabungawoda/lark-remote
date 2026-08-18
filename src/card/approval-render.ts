@@ -12,6 +12,24 @@ function mkNonce(): string {
   return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
 }
 
+/** reason div（3 处共用）；反引号中和防 lark_md 解析错误（review P2-2）。 */
+function reasonDiv(approval: ApprovalView): object | null {
+  if (!approval.reason) return null;
+  const neutralized = approval.reason.replace(/`/g, '·');
+  return {
+    tag: 'div',
+    text: { tag: 'lark_md', content: `💡 ${neutralized}` },
+  };
+}
+
+/**
+ * Append a possibly-null element to the array (convenience for optional divs).
+ * If the element is null, nothing is appended.
+ */
+function pushIf<T>(arr: T[], el: T | null): void {
+  if (el !== null) arr.push(el);
+}
+
 /**
  * Render the approval area for a run card.
  * Returns an array of CardKit 2.0 elements to append to the card body.
@@ -35,6 +53,8 @@ export function renderApprovalArea(
     elements.push(...renderFileApproval(approval, opts?.expired, opts?.runId));
   } else if (approval.kind === 'permissions') {
     elements.push(...renderPermissionsApproval(approval, opts?.expired, opts?.runId));
+  } else if (approval.kind === 'question') {
+    elements.push(...renderQuestionApproval(approval, opts?.expired, opts?.runId));
   }
 
   return elements;
@@ -64,13 +84,18 @@ function renderDecisionButtons(
     accept: { label: '✅ 允许', type: 'primary' },
     acceptForSession: { label: '✅ 允许本次会话', type: 'primary' },
     acceptWithExecpolicyAmendment: { label: '🔒 允许并记住命令', type: 'primary' },
+    acceptAll: { label: '✅ 允许所有', type: 'primary' },
     decline: { label: '❌ 拒绝', type: 'danger' },
   };
   // Fixed presentation order; only offer decisions the protocol listed
-  // (accept/decline are always available).
-  const offered = ['accept', 'acceptForSession', 'acceptWithExecpolicyAmendment', 'decline'].filter(
-    (d) => d === 'accept' || d === 'decline' || approval.availableDecisions.includes(d),
-  );
+  // (accept/decline are always available; acceptAll is Claude 专属「允许所有」)。
+  const offered = [
+    'accept',
+    'acceptForSession',
+    'acceptWithExecpolicyAmendment',
+    'acceptAll',
+    'decline',
+  ].filter((d) => d === 'accept' || d === 'decline' || approval.availableDecisions.includes(d));
 
   // 决策按钮逐个作为 body 直接元素返回（CardKit body 纵向堆叠 = 上下排列）。
   // 不能用 column_set width:auto 横排：手机窄屏下多个按钮挤在一行，按钮文字
@@ -106,7 +131,12 @@ function renderCommandApproval(
   const elements: object[] = [];
 
   // Command display
-  const cmdContent = approval.command ? `\`${approval.command.slice(0, 500)}\`` : '(no command)';
+  // review P2-2：命令里的反引号会提前终止 lark_md 行内代码 span，奇数次
+  // 反引号极易触发 11311 解析错误导致整卡失败（同 renderFileDiff 的中和策略）。
+  const neutralizedCommand = (approval.command ?? '').replace(/`/g, '·');
+  const cmdContent = neutralizedCommand
+    ? `\`${neutralizedCommand.slice(0, 500)}\``
+    : '(no command)';
   elements.push({
     tag: 'div',
     text: { tag: 'lark_md', content: `**⚡ 命令审批**\n${cmdContent}` },
@@ -119,25 +149,12 @@ function renderCommandApproval(
     });
   }
 
-  if (approval.reason) {
-    elements.push({
-      tag: 'div',
-      text: { tag: 'lark_md', content: `💡 ${approval.reason}` },
-    });
-  }
+  pushIf(elements, reasonDiv(approval));
 
   // Action buttons — derived from the real protocol decision list (see
   // renderDecisionButtons): accept/decline always, acceptForSession and
   // acceptWithExecpolicyAmendment only when the server offers them.
   elements.push(...renderDecisionButtons(approval, expired, runId));
-
-  // Pending count
-  if (approval.pendingTotal > 1) {
-    elements.push({
-      tag: 'div',
-      text: { tag: 'lark_md', content: `📋 还有 ${approval.pendingTotal - 1} 个待审批请求` },
-    });
-  }
 
   return elements;
 }
@@ -154,12 +171,7 @@ function renderFileApproval(approval: ApprovalView, expired?: boolean, runId?: s
     text: { tag: 'lark_md', content: '**📄 文件变更审批**' },
   });
 
-  if (approval.reason) {
-    elements.push({
-      tag: 'div',
-      text: { tag: 'lark_md', content: `💡 ${approval.reason}` },
-    });
-  }
+  pushIf(elements, reasonDiv(approval));
 
   // File changes list
   if (approval.fileChanges && approval.fileChanges.length > 0) {
@@ -198,13 +210,6 @@ function renderFileApproval(approval: ApprovalView, expired?: boolean, runId?: s
   // Derived from the real protocol decision list (see renderDecisionButtons).
   elements.push(...renderDecisionButtons(approval, expired, runId));
 
-  if (approval.pendingTotal > 1) {
-    elements.push({
-      tag: 'div',
-      text: { tag: 'lark_md', content: `📋 还有 ${approval.pendingTotal - 1} 个待审批请求` },
-    });
-  }
-
   return elements;
 }
 
@@ -241,12 +246,7 @@ function renderPermissionsApproval(
     text: { tag: 'lark_md', content: '**🔒 权限审批**' },
   });
 
-  if (approval.reason) {
-    elements.push({
-      tag: 'div',
-      text: { tag: 'lark_md', content: `💡 ${approval.reason}` },
-    });
-  }
+  pushIf(elements, reasonDiv(approval));
 
   // Permission items with toggle buttons
   if (approval.permissions?.items) {
@@ -285,11 +285,137 @@ function renderPermissionsApproval(
   // Derived from the real protocol decision list (see renderDecisionButtons).
   elements.push(...renderDecisionButtons(approval, expired, runId));
 
-  if (approval.pendingTotal > 1) {
+  return elements;
+}
+
+// =============================================================================
+// AskUserQuestion Approval
+// =============================================================================
+
+/**
+ * 渲染 Claude AskUserQuestion 选项卡（审批区复用）。
+ *
+ * - 单选问题：点击选项即选中（协调器在全部问题答完后自动提交）。
+ * - 多选问题：点击切换勾选，勾选后出现「提交答案」按钮。
+ * - 已选状态经 approval_view_updated 回流（view.questions[].selected）。
+ */
+function renderQuestionApproval(
+  approval: ApprovalView,
+  expired?: boolean,
+  runId?: string,
+): object[] {
+  const elements: object[] = [];
+
+  elements.push({
+    tag: 'div',
+    text: { tag: 'lark_md', content: '**❓ 需要你回答**' },
+  });
+
+  if (expired) {
     elements.push({
       tag: 'div',
-      text: { tag: 'lark_md', content: `📋 还有 ${approval.pendingTotal - 1} 个待审批请求` },
+      text: { tag: 'lark_md', content: '⏰ **审批已过期**' },
     });
+    return elements;
+  }
+
+  const questions = approval.questions ?? [];
+  for (let i = 0; i < questions.length; i++) {
+    const q = questions[i];
+    const selected = q.selected ?? [];
+    const header = q.header || `问题 ${i + 1}`;
+    elements.push({
+      tag: 'div',
+      text: {
+        tag: 'lark_md',
+        content: `**${header}**${q.multiSelect ? '（可多选）' : ''}\n${q.question}`,
+      },
+    });
+
+    for (const option of q.options) {
+      const isSelected = selected.includes(option.label);
+      elements.push({
+        tag: 'div',
+        text: {
+          tag: 'lark_md',
+          content: `${isSelected ? '✅' : '⬜'} ${option.label}${
+            option.description ? `\n_${option.description}_` : ''
+          }`,
+        },
+      });
+      elements.push({
+        tag: 'button',
+        text: { tag: 'plain_text', content: isSelected ? '取消选择' : '选择' },
+        type: isSelected ? 'default' : 'primary',
+        size: 'small',
+        behaviors: [
+          {
+            type: 'callback',
+            value: {
+              cmd: 'approval.answer',
+              requestId: approval.requestId,
+              questionIndex: i,
+              option: option.label,
+              runId,
+              nonce: mkNonce(),
+            },
+          },
+        ],
+      });
+    }
+
+    // 自定义答案（Other）的选中态展示：选项按钮无法表示自由文本，单独显示
+    // 已选文本，避免「点了没反应」的困惑（review P3）。
+    const customSelected = q.selected?.find((s) => !q.options.some((o) => o.label === s));
+    if (customSelected) {
+      elements.push({
+        tag: 'div',
+        text: { tag: 'lark_md', content: `✍️ 自定义答案：${customSelected}` },
+      });
+    }
+
+    // review P3-4：单选问题提供自定义答案（Other）输入——输入文本后点击
+    // 输入框右侧 ✓ 提交图标，input_value 经 connector raw 事件回传。
+    if (!q.multiSelect) {
+      elements.push({
+        tag: 'input',
+        name: `answer-custom-${approval.requestId}-${i}`,
+        placeholder: { tag: 'plain_text', content: '自定义答案（Other）…' },
+        behaviors: [
+          {
+            type: 'callback',
+            value: {
+              cmd: 'approval.answerCustom',
+              requestId: approval.requestId,
+              questionIndex: i,
+              runId,
+              nonce: mkNonce(),
+            },
+          },
+        ],
+      });
+    }
+
+    // 多选问题：有勾选才给提交按钮（单选在协调器内即时提交）。
+    if (q.multiSelect && selected.length > 0) {
+      elements.push({
+        tag: 'button',
+        text: { tag: 'plain_text', content: `✅ 提交答案（已选 ${selected.length} 项）` },
+        type: 'primary',
+        behaviors: [
+          {
+            type: 'callback',
+            value: {
+              cmd: 'approval.answerSubmit',
+              requestId: approval.requestId,
+              questionIndex: i,
+              runId,
+              nonce: mkNonce(),
+            },
+          },
+        ],
+      });
+    }
   }
 
   return elements;

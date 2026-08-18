@@ -110,9 +110,7 @@ describe('P2-23 /config 直写丢弃 pendingConfig 提示 (anchor)', () => {
     // 1. 通过卡片交互产生 pendingConfig 差异（走公开 handleCardAction 路径）
     await router.handleCardAction({ cmd: 'config.toggle', key: 'output.showThinking' }, ctx);
     // 确认 pendingConfig 确实有差异（1 项）
-    const pendingConfig = (
-      router as unknown as { pendingConfig: { output: { showThinking: boolean } } | null }
-    ).pendingConfig;
+    const pendingConfig = router.pendingConfig;
     expect(pendingConfig).not.toBeNull();
     expect(pendingConfig!.output.showThinking).toBe(true);
 

@@ -10,9 +10,26 @@ import {
   MODEL_ALIAS_TO_ID,
   getModelOptionsFromSettings,
   CLAUDE_EFFORTS,
+  CLAUDE_PERMISSION_MODES,
 } from '../../config/index.js';
 import type { AgentConfigCardBuilder, ConfigField } from './types.js';
 import type { AppConfig } from '../../config/index.js';
+
+/** Claude 官方 --permission-mode 中文注释（value 走 CLAUDE_PERMISSION_MODES SSOT）。 */
+const PERMISSION_MODE_LABELS: Record<string, string> = {
+  default: '默认（敏感操作逐项询问）',
+  acceptEdits: '自动接受文件编辑',
+  auto: '自动放行低风险操作',
+  bypassPermissions: '跳过所有权限检查',
+  manual: '手动审批（default 的别名）',
+  dontAsk: '仅预先批准的工具',
+  plan: '计划模式（只读探索）',
+};
+
+const PERMISSION_MODE_OPTIONS = CLAUDE_PERMISSION_MODES.map((m) => ({
+  text: `${m}（${PERMISSION_MODE_LABELS[m] ?? ''}）`,
+  value: m,
+}));
 
 export class ClaudeConfigBuilder implements AgentConfigCardBuilder {
   /** Find Claude settings.json path (for dynamic model reading). */
@@ -78,6 +95,17 @@ export class ClaudeConfigBuilder implements AgentConfigCardBuilder {
       // Use constant for effort options (SSOT)
       options: CLAUDE_EFFORTS as readonly string[],
       currentValue: currentEffort,
+    });
+
+    // 权限模式（Claude 官方 --permission-mode 枚举；bypassPermissions 为 schema 默认，
+    // 保持旧行为无审批卡，配置为其他值后激活交互式审批）
+    const currentPermissionMode = displayConfig.claude?.permissionMode ?? 'bypassPermissions';
+    fields.push({
+      key: 'claude.permissionMode',
+      label: '权限模式',
+      type: 'select',
+      options: PERMISSION_MODE_OPTIONS,
+      currentValue: currentPermissionMode,
     });
 
     return fields;

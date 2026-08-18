@@ -38,9 +38,9 @@ class MockCardChannel implements CardChannel {
     // 模拟飞书 API 拒绝超大卡片
     const size = Buffer.byteLength(JSON.stringify(card), 'utf8');
     if (size > 28_000) {
-      const error = new Error('Request failed with status code 400 (HTTP 400)') as any;
-      error.response = { status: 400 };
-      throw error;
+      throw Object.assign(new Error('Request failed with status code 400 (HTTP 400)'), {
+        response: { status: 400 },
+      });
     }
   }
 }

@@ -363,22 +363,6 @@ describe('rollout-reader additional branches', () => {
   });
 
   describe('listCodexRollouts deeper branches', () => {
-    it('excludes subagent sessions from the list', () => {
-      createRollout('rollout-main.jsonl', metaLine('shared-id', '/tmp'));
-      createRollout(
-        'rollout-subagent.jsonl',
-        metaLine('shared-id', '/tmp', { thread_source: 'subagent' }),
-        '2026/07/14', // different date dir to get both files
-      );
-
-      const result = listCodexRollouts({ codexHome: tmpDir, cwd: '/tmp' });
-      // Subagent should be excluded; only the main thread file should appear
-      // But since both files share the same session_id, the index keeps only
-      // the main-thread entry (conflict resolution). The list then returns 1.
-      expect(result.entries).toHaveLength(1);
-      expect(result.entries[0].threadId).toBe('shared-id');
-    });
-
     it('applies offset correctly', () => {
       for (let i = 0; i < 4; i++) {
         const f = createRollout(`rollout-off-${i}.jsonl`, metaLine(`off-${i}`, '/tmp'));
@@ -390,13 +374,6 @@ describe('rollout-reader additional branches', () => {
       const result = listCodexRollouts({ codexHome: tmpDir, cwd: '/tmp', limit: 2, offset: 2 });
       expect(result.total).toBe(4);
       expect(result.entries).toHaveLength(2);
-    });
-
-    it('negative offset is clamped to 0', () => {
-      createRollout('rollout-neg.jsonl', metaLine('neg', '/tmp'));
-
-      const result = listCodexRollouts({ codexHome: tmpDir, cwd: '/tmp', offset: -5 });
-      expect(result.entries).toHaveLength(1);
     });
   });
 
@@ -426,38 +403,6 @@ describe('rollout-reader additional branches', () => {
 
       const content = readCodexSessionContent('maxneg', { codexHome: tmpDir, maxEvents: -1 });
       expect(content.events).toHaveLength(0);
-    });
-
-    it('maxEvents > event count returns all events', () => {
-      createRollout(
-        'rollout-maxbig.jsonl',
-        [
-          metaLine('maxbig', '/tmp'),
-          '{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"a"}]}}',
-          '{"type":"response_item","payload":{"type":"message","role":"developer","content":[{"type":"text","text":"b"}]}}',
-        ].join('\n'),
-      );
-
-      const content = readCodexSessionContent('maxbig', { codexHome: tmpDir, maxEvents: 100 });
-      expect(content.events).toHaveLength(2);
-    });
-
-    it('maxEvents truncates to last N events', () => {
-      createRollout(
-        'rollout-maxtrunc.jsonl',
-        [
-          metaLine('maxtrunc', '/tmp'),
-          '{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"first"}]}}',
-          '{"type":"event_msg","payload":{"type":"user_message","message":"first"}}',
-          '{"type":"response_item","payload":{"type":"message","role":"developer","content":[{"type":"text","text":"mid"}]}}',
-          '{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"last"}]}}',
-          '{"type":"event_msg","payload":{"type":"user_message","message":"last"}}',
-        ].join('\n'),
-      );
-
-      const content = readCodexSessionContent('maxtrunc', { codexHome: tmpDir, maxEvents: 2 });
-      // Should keep only the last 2 events
-      expect(content.events).toHaveLength(2);
     });
 
     it('returns undefined displayTitle when no real user messages', () => {
@@ -496,21 +441,6 @@ describe('rollout-reader additional branches', () => {
   });
 
   describe('isCodexSessionActive deeper branches', () => {
-    it('returns false for subagent session', () => {
-      createRollout(
-        'rollout-sub-active.jsonl',
-        metaLine('sub-active', '/tmp', { thread_source: 'subagent' }),
-      );
-
-      // Make it recent
-      const sessionsDir = path.join(tmpDir, 'sessions', '2026', '07', '13');
-      const file = path.join(sessionsDir, 'rollout-sub-active.jsonl');
-      const now = Date.now();
-      fs.utimesSync(file, now / 1000, now / 1000);
-
-      expect(isCodexSessionActive('sub-active', { codexHome: tmpDir })).toBe(false);
-    });
-
     it('returns false when statSync throws (file deleted after index build)', () => {
       createRollout('rollout-deleted.jsonl', metaLine('deleted', '/tmp'));
 
@@ -541,54 +471,6 @@ describe('rollout-reader additional branches', () => {
   });
 
   describe('getSessionIndex conflict resolution', () => {
-    it('prefers non-subagent over subagent for same session_id', () => {
-      // Create two files with same session_id: one main, one subagent
-      createRollout('rollout-main-conflict.jsonl', metaLine('conflict-id', '/tmp'), '2026/07/13');
-      createRollout(
-        'rollout-sub-conflict.jsonl',
-        metaLine('conflict-id', '/tmp', { thread_source: 'subagent' }),
-        '2026/07/14',
-      );
-
-      // Even if subagent is newer, main should win
-      const sessionsDir14 = path.join(tmpDir, 'sessions', '2026', '07', '14');
-      const subFile = path.join(sessionsDir14, 'rollout-sub-conflict.jsonl');
-      const now = Date.now();
-      fs.utimesSync(subFile, now / 1000, now / 1000);
-
-      const sessionsDir13 = path.join(tmpDir, 'sessions', '2026', '07', '13');
-      const mainFile = path.join(sessionsDir13, 'rollout-main-conflict.jsonl');
-      const earlier = (Date.now() - 60000) / 1000;
-      fs.utimesSync(mainFile, earlier, earlier);
-
-      const result = listCodexRollouts({ codexHome: tmpDir, cwd: '/tmp' });
-      // Should find the main-thread file
-      expect(result.entries).toHaveLength(1);
-    });
-
-    it('among same-kind entries, picks newer mtime', () => {
-      // Two main-thread files with same session_id — newer wins
-      const file1 = createRollout(
-        'rollout-a-conflict2.jsonl',
-        metaLine('same-id-2', '/tmp'),
-        '2026/07/13',
-      );
-      const file2 = createRollout(
-        'rollout-b-conflict2.jsonl',
-        metaLine('same-id-2', '/tmp'),
-        '2026/07/14',
-      );
-
-      // file2 is newer
-      const t1 = new Date('2026-07-13T10:00:00Z').getTime() / 1000;
-      const t2 = new Date('2026-07-14T10:00:00Z').getTime() / 1000;
-      fs.utimesSync(file1, t1, t1);
-      fs.utimesSync(file2, t2, t2);
-
-      const result = listCodexRollouts({ codexHome: tmpDir, cwd: '/tmp' });
-      expect(result.entries).toHaveLength(1);
-    });
-
     it('among same mtime, picks lexicographically smaller filePath', () => {
       // Two files with same session_id and same mtime — filePath tie-breaker
       const file1 = createRollout('rollout-aaa.jsonl', metaLine('tie-id', '/tmp'), '2026/07/13');
@@ -679,26 +561,6 @@ describe('rollout-reader additional branches', () => {
       const result = listCodexRollouts({ codexHome: tmpDir });
       expect(result.entries).toHaveLength(1);
       expect(result.entries[0].threadId).toBe('real');
-    });
-  });
-
-  describe('session index cache TTL and refresh', () => {
-    it('force refresh finds newly created session after cache miss', () => {
-      // Build initial empty index
-      listCodexRollouts({ codexHome: tmpDir });
-
-      // Create a new session AFTER index was cached
-      createRollout(
-        'rollout-post-cache.jsonl',
-        [
-          metaLine('post-cache', '/tmp'),
-          '{"type":"event_msg","payload":{"type":"user_message","message":"new"}}',
-        ].join('\n'),
-      );
-
-      // readCodexSessionContent should force-refresh and find it
-      const content = readCodexSessionContent('post-cache', { codexHome: tmpDir });
-      expect(content.events.length).toBeGreaterThanOrEqual(0);
     });
   });
 

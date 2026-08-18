@@ -5,27 +5,15 @@ import { CommandRouter } from '../router/index.js';
 import { SessionStore } from '../session/index.js';
 import type { Bridge } from '../bridge/index.js';
 import type { AppConfig } from '../config/index.js';
-import { createStubSessionReaderRegistry } from '../../tests/lib/bridge-stubs.js';
+import { createMockBridge, createStubSessionReaderRegistry } from '../../tests/lib/bridge-stubs.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 
-type MockFn = ReturnType<typeof vi.fn>;
-
 describe('ls file action', () => {
   let router: CommandRouter;
   let sessionStore: SessionStore;
-  let mockBridge: {
-    sendResult: MockFn;
-    sendFile: MockFn;
-    forwardToClaude: MockFn;
-    isBusyFor: MockFn;
-    reconnect: MockFn;
-    setConfig: MockFn;
-    setIdleTimeout: MockFn;
-    enqueue: MockFn;
-    interruptCurrentRun: MockFn;
-  };
+  let mockBridge: Bridge;
   let tempDir: string;
   let testFilePath: string;
 
@@ -37,17 +25,7 @@ describe('ls file action', () => {
     sessionStore = new SessionStore();
     sessionStore.set('user1', { sessions: new Map(), previousSessions: new Map(), cwd: tempDir });
 
-    mockBridge = {
-      sendResult: vi.fn().mockResolvedValue(undefined),
-      sendFile: vi.fn().mockResolvedValue(undefined),
-      forwardToClaude: vi.fn(),
-      isBusyFor: vi.fn().mockReturnValue(false),
-      reconnect: vi.fn(),
-      setConfig: vi.fn(),
-      setIdleTimeout: vi.fn(),
-      enqueue: vi.fn().mockResolvedValue(undefined),
-      interruptCurrentRun: vi.fn().mockResolvedValue(true),
-    };
+    mockBridge = createMockBridge();
 
     const config: AppConfig = {
       feishu: { appId: 'test', appSecret: 'test' },
@@ -69,7 +47,7 @@ describe('ls file action', () => {
 
     router = new CommandRouter({
       sessionStore,
-      bridge: mockBridge as unknown as Bridge,
+      bridge: mockBridge,
       config,
       configPath: '/tmp/config.yaml',
       sessionReaderRegistry: createStubSessionReaderRegistry(),
@@ -160,7 +138,7 @@ describe('ls tilde expansion', () => {
 
     router = new CommandRouter({
       sessionStore,
-      bridge: mockBridge as unknown as Bridge,
+      bridge: mockBridge,
       config,
       configPath: '/tmp/config.yaml',
       sessionReaderRegistry: createStubSessionReaderRegistry(),

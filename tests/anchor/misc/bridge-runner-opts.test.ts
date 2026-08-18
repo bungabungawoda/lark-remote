@@ -1,11 +1,17 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { Bridge } from '../../../src/bridge/index.js';
 import { SessionStore } from '../../../src/session/index.js';
+import {
+  createStubAgentRegistry,
+  createStubConnector,
+  createStubSessionReaderRegistry,
+} from '../../lib/bridge-stubs.js';
 import { AppConfigSchema } from '../../../src/config/index.js';
 import type { AppConfig } from '../../../src/config/index.js';
+import type { SpawnOptions } from '../../../src/runner/index.js';
 
 let tmpDir: string;
 let config: AppConfig;
@@ -44,13 +50,13 @@ describe('Bridge passes model/effort to runner', () => {
    */
   it('should pass model and effort from config to runner.run() for claude', async () => {
     // 创建一个捕获 run() 调用参数的 mock runner
-    let capturedOpts: any = null;
+    let capturedOpts: SpawnOptions | null = null;
     const mockRunner = {
       isRunning: false,
       stop: async () => {},
       killOrphan: () => {},
       registerExitHandlers: () => {},
-      run: async function* (_message: string, opts: any) {
+      run: async function* (_message: string, opts: SpawnOptions) {
         capturedOpts = opts;
         // 立即返回结果，不等待
         return;
@@ -62,25 +68,7 @@ describe('Bridge passes model/effort to runner', () => {
       },
     };
 
-    const connector = {
-      sendWithRetry: vi.fn().mockResolvedValue('msg-id'),
-      reconnect: async () => {},
-      addReaction: async () => {},
-      streamCard: vi.fn().mockResolvedValue('msg-id'),
-      updateCard: vi.fn().mockResolvedValue(undefined),
-      connected: true,
-    };
-
     const sessionStore = new SessionStore();
-
-    // Mock agent registry 返回捕获 runner
-    const mockRegistry = {
-      get: () => mockRunner,
-      isRegistered: () => true,
-      listRegistered: () => ['claude'],
-      setConfigContainer: () => {},
-      getConfigContainer: () => ({ current: config }),
-    };
 
     // 创建 bridge
     const bridge = new Bridge({
@@ -92,10 +80,10 @@ describe('Bridge passes model/effort to runner', () => {
         registerExitHandlers: () => {},
       },
       config,
-      connector: connector as any,
+      connector: createStubConnector(),
       sessionStore,
-      agentRegistry: mockRegistry as any,
-      sessionReaderRegistry: null as any,
+      agentRegistry: createStubAgentRegistry(mockRunner),
+      sessionReaderRegistry: createStubSessionReaderRegistry(),
     });
 
     // 设置 cwd
@@ -108,7 +96,7 @@ describe('Bridge passes model/effort to runner', () => {
 
     // 让我们直接验证 getAgentRunOptions 返回的结果
     // 通过读取 bridge 实例的 config 来验证
-    const agentOpts = (bridge as any).getAgentRunOptions();
+    const agentOpts = bridge.getAgentRunOptions();
 
     expect(agentOpts.model).toBe('opus');
     expect(agentOpts.effort).toBe('high');
@@ -120,15 +108,6 @@ describe('Bridge passes model/effort to runner', () => {
       defaultAgent: 'codex',
     });
 
-    const connector = {
-      sendWithRetry: vi.fn().mockResolvedValue('msg-id'),
-      reconnect: async () => {},
-      addReaction: async () => {},
-      streamCard: vi.fn().mockResolvedValue('msg-id'),
-      updateCard: vi.fn().mockResolvedValue(undefined),
-      connected: true,
-    };
-
     const sessionStore = new SessionStore();
 
     const mockRunner = {
@@ -137,14 +116,6 @@ describe('Bridge passes model/effort to runner', () => {
       killOrphan: () => {},
       registerExitHandlers: () => {},
       run: async function* () {},
-    };
-
-    const mockRegistry = {
-      get: () => mockRunner,
-      isRegistered: () => true,
-      listRegistered: () => ['codex'],
-      setConfigContainer: () => {},
-      getConfigContainer: () => ({ current: codexConfig }),
     };
 
     const bridge = new Bridge({
@@ -156,13 +127,13 @@ describe('Bridge passes model/effort to runner', () => {
         registerExitHandlers: () => {},
       },
       config: codexConfig,
-      connector: connector as any,
+      connector: createStubConnector(),
       sessionStore,
-      agentRegistry: mockRegistry as any,
-      sessionReaderRegistry: null as any,
+      agentRegistry: createStubAgentRegistry(mockRunner),
+      sessionReaderRegistry: createStubSessionReaderRegistry(),
     });
 
-    const agentOpts = (bridge as any).getAgentRunOptions();
+    const agentOpts = bridge.getAgentRunOptions();
 
     expect(agentOpts.model).toBe('glm-5.2');
   });
@@ -173,15 +144,6 @@ describe('Bridge passes model/effort to runner', () => {
       defaultAgent: 'pi',
     });
 
-    const connector = {
-      sendWithRetry: vi.fn().mockResolvedValue('msg-id'),
-      reconnect: async () => {},
-      addReaction: async () => {},
-      streamCard: vi.fn().mockResolvedValue('msg-id'),
-      updateCard: vi.fn().mockResolvedValue(undefined),
-      connected: true,
-    };
-
     const sessionStore = new SessionStore();
 
     const mockRunner = {
@@ -190,14 +152,6 @@ describe('Bridge passes model/effort to runner', () => {
       killOrphan: () => {},
       registerExitHandlers: () => {},
       run: async function* () {},
-    };
-
-    const mockRegistry = {
-      get: () => mockRunner,
-      isRegistered: () => true,
-      listRegistered: () => ['pi'],
-      setConfigContainer: () => {},
-      getConfigContainer: () => ({ current: piConfig }),
     };
 
     const bridge = new Bridge({
@@ -209,13 +163,13 @@ describe('Bridge passes model/effort to runner', () => {
         registerExitHandlers: () => {},
       },
       config: piConfig,
-      connector: connector as any,
+      connector: createStubConnector(),
       sessionStore,
-      agentRegistry: mockRegistry as any,
-      sessionReaderRegistry: null as any,
+      agentRegistry: createStubAgentRegistry(mockRunner),
+      sessionReaderRegistry: createStubSessionReaderRegistry(),
     });
 
-    const agentOpts = (bridge as any).getAgentRunOptions();
+    const agentOpts = bridge.getAgentRunOptions();
 
     expect(agentOpts.model).toBe('glm-5.1');
     expect(agentOpts.thinking).toBe('high');
@@ -227,15 +181,6 @@ describe('Bridge passes model/effort to runner', () => {
       defaultAgent: 'opencode',
     });
 
-    const connector = {
-      sendWithRetry: vi.fn().mockResolvedValue('msg-id'),
-      reconnect: async () => {},
-      addReaction: async () => {},
-      streamCard: vi.fn().mockResolvedValue('msg-id'),
-      updateCard: vi.fn().mockResolvedValue(undefined),
-      connected: true,
-    };
-
     const sessionStore = new SessionStore();
 
     const mockRunner = {
@@ -244,14 +189,6 @@ describe('Bridge passes model/effort to runner', () => {
       killOrphan: () => {},
       registerExitHandlers: () => {},
       run: async function* () {},
-    };
-
-    const mockRegistry = {
-      get: () => mockRunner,
-      isRegistered: () => true,
-      listRegistered: () => ['opencode'],
-      setConfigContainer: () => {},
-      getConfigContainer: () => ({ current: opencodeConfig }),
     };
 
     const bridge = new Bridge({
@@ -263,13 +200,13 @@ describe('Bridge passes model/effort to runner', () => {
         registerExitHandlers: () => {},
       },
       config: opencodeConfig,
-      connector: connector as any,
+      connector: createStubConnector(),
       sessionStore,
-      agentRegistry: mockRegistry as any,
-      sessionReaderRegistry: null as any,
+      agentRegistry: createStubAgentRegistry(mockRunner),
+      sessionReaderRegistry: createStubSessionReaderRegistry(),
     });
 
-    const agentOpts = (bridge as any).getAgentRunOptions();
+    const agentOpts = bridge.getAgentRunOptions();
 
     // opencode model is set as provider/model in the constructor (not bare modelID).
     // getAgentRunOptions() intentionally returns undefined for opencode model

@@ -15,7 +15,7 @@
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { ProcessStopper } from '../../../src/runner/common/process-stopper.js';
-import type { ChildProcess } from 'node:child_process';
+import { createMockProc } from '../../../tests/lib/mock-process.js';
 
 describe('P2-15: ProcessStopper clears the grace-period timer after early exit', () => {
   beforeEach(() => {
@@ -32,17 +32,16 @@ describe('P2-15: ProcessStopper clears the grace-period timer after early exit',
     // Fake ChildProcess: still alive at stop() entry (exitCode/signalCode null),
     // but emits 'exit' on next tick (resolves the race immediately as true).
     const exitListeners: Array<(...args: unknown[]) => void> = [];
-    const mockProc = {
+    const mockProc = createMockProc({
       pid: 99999,
       exitCode: null,
       signalCode: null,
       once: vi.fn((event: string, cb: (...args: unknown[]) => void) => {
         if (event === 'exit') exitListeners.push(cb);
       }),
-    } as unknown as ChildProcess;
+    });
 
-    // Spy on global setTimeout / clearTimeout.
-    const _setTimeoutSpy = vi.spyOn(globalThis, 'setTimeout');
+    // Spy on global clearTimeout (grace timer must be cleared after early exit).
     const clearTimeoutSpy = vi.spyOn(globalThis, 'clearTimeout');
 
     const stopPromise = stopper.stop(mockProc);

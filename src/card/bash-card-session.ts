@@ -1,5 +1,6 @@
-import { CardSession, type CardChannel, type StreamSettleResult } from './card-session.js';
+import { CardSession, type CardChannel } from './card-session.js';
 import { renderBashCard, type BashState, type BashRenderOptions } from './bash-renderer.js';
+import { keepTail } from '../common/truncate.js';
 
 /**
  * Store-time 输出上限（字符，P1-3 层①）。§P1-3 建议「store-time 截断，
@@ -9,11 +10,6 @@ import { renderBashCard, type BashState, type BashRenderOptions } from './bash-r
  * state 与 bridge 局部变量。
  */
 export const BASH_OUTPUT_STORE_CAP = 24_000;
-
-/** 字符级 tail 保留（与 run-state.keepLatest 的 slice(-maxChars) 语义一致）。 */
-function keepTail(value: string, maxChars: number): string {
-  return value.length <= maxChars ? value : value.slice(-maxChars);
-}
 
 /**
  * Store-time 截断入口（P1-3 层①/层④共用）。bridge 本地 output/stderr 与 session
@@ -33,19 +29,6 @@ export function capBashOutput(value: string): string {
  * independent cards.
  */
 export class BashCardSession extends CardSession<BashState, BashRenderOptions> {
-  /**
-   * P1-3 层③：push 合批窗口（ms），与 RunCardSession 同语义。连续 update 各触发
-   * 一次全卡 render + patch 是 PATCH 风暴主源；窗口内多个事件复用同一次延迟 flush。
-   * 窗口大小可通过 constructor 覆盖（测试用小窗口/0 禁用）。
-   */
-  private readonly coalesceMs: number;
-  private flushTimer: NodeJS.Timeout | undefined;
-  private flushInFlight = false;
-  /** in-flight flush 期间到达的 update 标记：flush 完成后需重新调度（防 stale 帧）。 */
-  private pendingReschedule = false;
-  /** 当前 in-flight flush 的 promise：finish 在终态 patch 前 await 它保证顺序。 */
-  private flushP: Promise<void> | undefined;
-
   constructor(opts: {
     connector: CardChannel;
     chatId: string;
@@ -74,9 +57,9 @@ export class BashCardSession extends CardSession<BashState, BashRenderOptions> {
         renderOptions: opts.renderOptions,
         startTimeoutMs: opts.startTimeoutMs,
         settleTimeoutMs: opts.settleTimeoutMs,
+        coalesceMs: opts.coalesceMs,
       },
     );
-    this.coalesceMs = opts.coalesceMs ?? 100;
   }
 
   protected get logPrefix(): string {
@@ -98,6 +81,11 @@ export class BashCardSession extends CardSession<BashState, BashRenderOptions> {
     // markdownDiv output 是 misfit（超限时极端降级丢 command/exitCode），bash
     // 卡应跳过它，靠自身 renderer 保护。
     return true;
+  }
+
+  protected isFlushableState(): boolean {
+    // finish() 已把 state 转终态后，in-flight/延迟 flush 不再用旧 state patch。
+    return this.state.terminal === 'running';
   }
 
   /** Patch the card with updated bash state (e.g. new stdout/stderr). */
@@ -128,62 +116,6 @@ export class BashCardSession extends CardSession<BashState, BashRenderOptions> {
     };
     await this.updateCard();
     this.release();
-  }
-
-  /**
-   * 调度一次延迟 flush：已有 pending 调度则复用（合批核心）；flushInFlight 期间
-   * 不再起 timer（防重入叠加），但置 pendingReschedule 让 in-flight 完成后补渲染。
-   */
-  private scheduleFlush(): void {
-    if (this.flushTimer) return;
-    if (this.flushInFlight) {
-      this.pendingReschedule = true;
-      return;
-    }
-    this.flushTimer = setTimeout(() => {
-      this.flushTimer = undefined;
-      void this.flush();
-    }, this.coalesceMs);
-  }
-
-  /** 执行一次 render + updateCard（合批窗口到期或 finish 即时 flush 时调用）。 */
-  private async flush(): Promise<void> {
-    if (this.flushInFlight) return;
-    // 终态守卫：finish 已把 state 转终态后，in-flight/延迟 flush 不再用旧 state patch
-    if (this.state.terminal !== 'running') return;
-    this.flushInFlight = true;
-    const flushPromise = (async () => {
-      try {
-        await this.updateCard();
-      } finally {
-        this.flushInFlight = false;
-        this.flushP = undefined;
-        // in-flight 期间若有 update 到达（pendingReschedule），重新调度一次渲染
-        if (this.pendingReschedule) {
-          this.pendingReschedule = false;
-          this.scheduleFlush();
-        }
-      }
-    })();
-    this.flushP = flushPromise;
-    return flushPromise;
-  }
-
-  /** 取消待 flush 的合批调度（finish/settle 前清理，避免延迟 update 与终态竞争）。 */
-  private cancelPendingFlush(): boolean {
-    this.pendingReschedule = false;
-    if (this.flushTimer) {
-      clearTimeout(this.flushTimer);
-      this.flushTimer = undefined;
-      return true;
-    }
-    return false;
-  }
-
-  /** settle 前兜底取消合批调度，避免 release 后 dangling timer 更新已释放的 stream。 */
-  override async settle(): Promise<StreamSettleResult> {
-    this.cancelPendingFlush();
-    return super.settle();
   }
 
   /**

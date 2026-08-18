@@ -2,6 +2,7 @@ import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { getLogger } from './logger/index.js';
+import { sleep } from './common/sleep.js';
 
 /**
  * Self-restart without an external watchdog/cron: the only process that can
@@ -67,7 +68,7 @@ export async function waitForPreviousInstance(): Promise<void> {
       getLogger().info(`[restart] previous instance pid=${pid} exited, continuing startup`);
       return;
     }
-    await new Promise((resolve) => setTimeout(resolve, POLL_MS));
+    await sleep(POLL_MS);
   }
   getLogger().warn(
     `[restart] previous instance pid=${pid} still alive after ${WAIT_TIMEOUT_MS}ms, proceeding anyway`,

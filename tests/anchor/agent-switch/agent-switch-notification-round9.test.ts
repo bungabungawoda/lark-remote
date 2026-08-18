@@ -44,7 +44,7 @@ function stubReader(opts: { known?: string[]; newest?: string | null }): AgentSe
         : { events: [] },
     ),
     isSessionActive: vi.fn(() => false),
-  } as unknown as AgentSessionReader;
+  };
 }
 
 function createRegistry(readers: Record<string, AgentSessionReader>): SessionReaderRegistry {
@@ -538,7 +538,7 @@ describe('Round9 anchors: config.save switch vs startup/resume/cd/syncAgentChoic
     expect(sessionStore.getPreviousSessionId(userId, 'pi')).toBe('pi-session-P');
     expect(sessionStore.getPreviousSessionId(userId, 'codex')).toBeUndefined();
 
-    const routerConfig = (router as unknown as { config: AppConfig }).config;
+    const routerConfig = router.config;
     expect(routerConfig.agentChoices?.codex?.model).toBe('codex-new-model');
     const yaml = fs.readFileSync(path.join(tmpDir, 'config.yaml'), 'utf8');
     expect(yaml).toContain('codex-new-model');
@@ -577,7 +577,7 @@ describe('Round9 anchors: config.save switch vs startup/resume/cd/syncAgentChoic
     expect(sessionStore.getArrivalSessionId(userId, 'pi')).toBe('pi-session-P');
     expect(sessionStore.getPreviousSessionId(userId, 'codex')).toBe('codex-session-C1');
 
-    const routerConfig = (router as unknown as { config: AppConfig }).config;
+    const routerConfig = router.config;
     expect(routerConfig.agentChoices?.pi?.model).toBe('glm-new');
     const yaml = fs.readFileSync(path.join(tmpDir, 'config.yaml'), 'utf8');
     expect(yaml).toContain('glm-new');

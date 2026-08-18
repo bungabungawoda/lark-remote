@@ -43,6 +43,7 @@ vi.mock('../../../src/logger/index.js', () => ({
 }));
 
 import { FeishuConnector } from '../../../src/connector/index.js';
+import { AppConfigSchema } from '../../../src/config/index.js';
 
 describe('P2-17: sendWithRetry throws the retry error, not the first error', () => {
   beforeEach(() => {
@@ -53,9 +54,9 @@ describe('P2-17: sendWithRetry throws the retry error, not the first error', () 
     // First send → rate-limited (retryable). Retry send → auth failure (different).
     mockChannel.send.mockRejectedValueOnce(firstErr).mockRejectedValueOnce(retryErr);
 
-    const config = {
+    const config = AppConfigSchema.parse({
       feishu: { appId: 'a', appSecret: 's' },
-    } as any;
+    });
     const conn = new FeishuConnector(config);
 
     let caught: unknown = null;

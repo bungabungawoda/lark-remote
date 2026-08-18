@@ -1,27 +1,20 @@
 /**
- * Anchor A5 (plan §2.2 P1): codex done 卡 flow 字段必须 jsonl 优先——即使 live
- * result 事件带了 usage（codex exec 的 turn.completed.usage 是会话累计
- * total_token_usage，不是本 run 增量）。
+ * Anchor A5 (plan §2.2 P1, 2026-08-14 修订): codex app-server 的 live usage 是
+ * 本 turn 增量（协议 tokenUsage.last），与 opencode 一致走 live 优先；jsonl 的
+ * per-turn 值不得覆盖 live；累计后缀仍来自 jsonl。
  *
  * 验证什么行为：
- *   defaultAgent='codex'、live result usage 存在（input=244381/output=256385/
- *   cacheRead=107833472/total=108334238，会话累计）且 jsonl 读出 per-turn 值
- *   （input=165/output=1363/cacheRead=445568/total=447096）时，done 卡 flow
- *   字段显示 jsonl per-turn 值（Input 165、Output 1K、Cached 446K、Total 447K），
- *   累计后缀显示 jsonl 累计值（244K/256K/107,833K/108,334K）。
+ *   defaultAgent='codex'、runner 声明 usageAuthority='live'、live result usage
+ *   存在（input=200/output=2000/cacheRead=400000/total=402200，本 turn 增量）
+ *   且 jsonl 读出 per-turn 值（input=165/output=1363/cacheRead=445568/
+ *   total=447096）与累计值时，done 卡 flow 字段显示 live 值（Input 200、
+ *   Output 2K、Cached 400K、Total 402K），累计后缀显示 jsonl 累计值
+ *   （244K/256K/107,833K/108,334K）。
  *
  * 缺失/错误会导致什么：
- *   现逻辑"live 有 input/output → 所有 flow 字段用 live scope"对 codex 不成立：
- *   live usage 是会话累计（resume 长会话可达 108M），被当成"本 run"展示 →
- *   虚高约 240 倍（实测 2026-08-01 14:01 run 的 Input 244K 其实是整个会话从
- *   12:56 起的累计）。claude/pi/opencode/kimi 的 live usage 语义是单 run/单 turn，
- *   live 优先仍正确；只有 codex 需要 jsonl 优先。
- *
- * 依据（spec 原文）：
- *   plan §2.2："this.config.defaultAgent === 'codex' 时，flow 字段一律取
- *   finalUsage（jsonl，主线程文件的 per-turn last_token_usage 语义）……jsonl
- *   缺失时才回退 live"；plan §2.3 预期表：修复后 Input 165 / Output 1,363 /
- *   Cached 445,568 / Total 447,096，累计 244K/256K/107,833K/108,334K。
+ *   若重新引入「codex jsonl 优先」例外（exec 时代 live usage 是会话累计），
+ *   live 增量会被 jsonl per-turn 值覆盖，done 卡显示错误的本 run 数值。
+ *   本测试守护 codex 与其他 agent 一致的 live 优先不变量。
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
@@ -55,6 +48,7 @@ function asCodexRunner(r: Runner): AgentRunner {
   return {
     ...r,
     kind: 'codex',
+    getUsageAuthority: () => 'live' as const,
     sessionReader: {
       listSessions: () => ({ sessions: [], total: 0 }),
       getNewestSession: () => null,
@@ -84,10 +78,10 @@ afterEach(() => {
 
 const ctx = { userId: 'user1', chatId: 'chat1', messageId: 'msg1' };
 
-describe('Bridge codex done 卡 flow 字段 jsonl 优先 (anchor)', () => {
-  it('test_anchor_bridge_codex_flow_fields_jsonl_priority', async () => {
+describe('Bridge codex done 卡 flow 字段 live 优先 (anchor)', () => {
+  it('test_anchor_bridge_codex_flow_fields_live_priority', async () => {
     const { SessionReaderRegistry } = await import('../../../src/session/registry.js');
-    // codex 会话 jsonl（主线程文件）读出的 per-turn + 累计 usage（真实值）。
+    // codex 会话 jsonl（主线程文件）读出的 per-turn + 累计 usage。
     const readSpy = vi.fn(() => ({
       events: [],
       usage: {
@@ -135,14 +129,13 @@ describe('Bridge codex done 卡 flow 字段 jsonl 优先 (anchor)', () => {
             subtype: 'success',
             session_id: 'sess-codex-flow',
             usage: {
-              // snake_case: codex exec 的 turn.completed.usage 是会话累计值，
-              // 必须被 liveInputTokens/liveOutputTokens 真正捕获（否则测试会
-              // 静默退化成 jsonl 兜底路径 = 伪覆盖）。
-              input_tokens: 244381,
-              output_tokens: 256385,
-              cache_read_tokens: 107833472,
+              // snake_case: codex app-server 的 turn.completed.usage 是本 turn
+              // 增量（tokenUsage.last 语义），live 值必须被真正捕获并展示。
+              input_tokens: 200,
+              output_tokens: 2000,
+              cache_read_tokens: 400000,
               cache_creation_tokens: 0,
-              total_tokens: 108334238,
+              total_tokens: 402200,
             },
           },
         ],
@@ -165,11 +158,11 @@ describe('Bridge codex done 卡 flow 字段 jsonl 优先 (anchor)', () => {
 
     const finalCard = JSON.stringify(connector._cards.at(-1));
 
-    // flow 字段 = jsonl per-turn 值（live 累计值被忽略 → 现 RED：显示 244K/256K/107833K/108334K）
-    expect(finalCard).toContain('Input token - 165'); // live 显示 244K
-    expect(finalCard).toContain('Output token - 1K'); // live 显示 256K
-    expect(finalCard).toContain('Cached token - 446K (100%)'); // live 显示 107,833K
-    expect(finalCard).toContain('Total token - 447K'); // live 显示 108,334K
+    // flow 字段 = live 本 turn 增量（jsonl per-turn 值不得覆盖）
+    expect(finalCard).toContain('Input token - 200'); // jsonl per-turn 165
+    expect(finalCard).toContain('Output token - 2K'); // jsonl per-turn 1K
+    expect(finalCard).toContain('Cached token - 400K (100%)'); // jsonl per-turn 446K
+    expect(finalCard).toContain('Total token - 402K'); // jsonl per-turn 447K
     // 累计后缀 = jsonl 累计值（保持正确，>=1M 用 M 单位）
     expect(finalCard).toContain('· 累计 244K');
     expect(finalCard).toContain('· 累计 256K');

@@ -3,9 +3,15 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { ClaudeRunner } from './index.js';
-import { CodexExecRunner } from './codex/index.js';
-import { PiRunner } from './pi/index.js';
-import { OpencodeExecRunner } from './opencode/index.js';
+import { PiRpcRunner } from './pi/index.js';
+import type { AgentSessionReader } from './types.js';
+
+const emptyReader: AgentSessionReader = {
+  listSessions: () => ({ sessions: [], total: 0 }),
+  getNewestSession: () => null,
+  readSessionContent: () => ({ events: [] }),
+  isSessionActive: () => false,
+};
 
 const { mockLogger } = vi.hoisted(() => ({
   mockLogger: {
@@ -20,14 +26,6 @@ vi.mock('../logger/index.js', () => ({
   getLogger: () => mockLogger,
   initLogger: () => mockLogger,
 }));
-
-// Minimal mock session reader
-const mockSessionReader = {
-  listSessions: vi.fn().mockReturnValue({ sessions: [], total: 0 }),
-  getNewestSession: vi.fn().mockReturnValue(null),
-  readSessionContent: vi.fn().mockReturnValue({ events: [] }),
-  isSessionActive: vi.fn().mockReturnValue(false),
-};
 
 let tmpDir: string;
 
@@ -99,48 +97,14 @@ describe('ClaudeRunner getStatusInfo', () => {
   });
 });
 
-describe('CodexExecRunner getStatusInfo', () => {
-  it('returns status info with model and provider', () => {
-    const runner = new CodexExecRunner({
-      workspace: 'test',
-      model: 'claude-sonnet-4-20250514',
-      modelProvider: 'volcengine-coding-plan',
-      pidDir: tmpDir,
-      sessionReader: mockSessionReader,
-    });
-
-    const info = runner.getStatusInfo();
-
-    expect(info.kind).toBe('codex');
-    expect(info.model).toBe('claude-sonnet-4-20250514');
-    expect(info.provider).toBe('volcengine-coding-plan');
-    expect(info.extras?.sandbox).toBe('danger-full-access');
-  });
-
-  it('returns model from codex config.toml when not specified', () => {
-    const runner = new CodexExecRunner({
-      workspace: 'test',
-      pidDir: tmpDir,
-      sessionReader: mockSessionReader,
-    });
-
-    const info = runner.getStatusInfo();
-
-    expect(info.kind).toBe('codex');
-    // When model not specified, it should fallback to codex config.toml
-    expect(info.model).not.toBe('(config.toml)');
-    expect(info.provider).toBeDefined();
-  });
-});
-
-describe('PiRunner getStatusInfo', () => {
+describe('PiRpcRunner getStatusInfo', () => {
   it('returns status info with model, provider and thinking', () => {
-    const runner = new PiRunner({
+    const runner = new PiRpcRunner({
       workspace: 'test',
+      sessionReader: emptyReader,
       provider: 'anthropic',
       model: 'claude-sonnet-4-20250514',
       thinking: 'high',
-      pidDir: tmpDir,
     });
 
     const info = runner.getStatusInfo();
@@ -152,7 +116,7 @@ describe('PiRunner getStatusInfo', () => {
   });
 
   it('returns default values when not specified', () => {
-    const runner = new PiRunner({ workspace: 'test', pidDir: tmpDir });
+    const runner = new PiRpcRunner({ workspace: 'test', sessionReader: emptyReader });
 
     const info = runner.getStatusInfo();
 
@@ -160,44 +124,5 @@ describe('PiRunner getStatusInfo', () => {
     expect(info.model).toBe('glm-5.2');
     expect(info.provider).toBe('Volcano');
     expect(info.reasoning).toBe('medium');
-  });
-});
-
-describe('OpencodeExecRunner getStatusInfo', () => {
-  it('returns status info with model and provider', () => {
-    const runner = new OpencodeExecRunner({
-      workspace: 'test',
-      model: 'anthropic/claude-opus-4-8',
-      sessionReader: {
-        listSessions: () => ({ sessions: [], total: 0 }),
-        getNewestSession: () => null,
-        readSessionContent: () => ({ events: [] }),
-        isSessionActive: () => false,
-      },
-    });
-
-    const info = runner.getStatusInfo();
-
-    expect(info.kind).toBe('opencode');
-    expect(info.model).toBe('anthropic/claude-opus-4-8');
-    expect(info.provider).toBe('anthropic');
-  });
-
-  it('returns default values when not specified', () => {
-    const runner = new OpencodeExecRunner({
-      workspace: 'test',
-      sessionReader: {
-        listSessions: () => ({ sessions: [], total: 0 }),
-        getNewestSession: () => null,
-        readSessionContent: () => ({ events: [] }),
-        isSessionActive: () => false,
-      },
-    });
-
-    const info = runner.getStatusInfo();
-
-    expect(info.kind).toBe('opencode');
-    expect(info.model).toBe('(未配置)');
-    expect(info.provider).toBeUndefined();
   });
 });

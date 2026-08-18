@@ -1,9 +1,4 @@
-import {
-  loadConfig,
-  getAgentConfig,
-  DEFAULT_STOP_GRACE_MS,
-  type AppConfig,
-} from './config/index.js';
+import { loadConfig, getAgentConfig, type AppConfig } from './config/index.js';
 import {
   resolveAgentChoices,
   type AgentSessionContentEvent,
@@ -20,10 +15,10 @@ import {
 import { FeishuConnector } from './connector/index.js';
 import {
   ClaudeRunner,
-  createCodexRunner,
-  OpencodeExecRunner,
-  PiRunner,
-  KimiRunner,
+  CodexAppServerRunner,
+  OpencodeAcpRunner,
+  PiRpcRunner,
+  KimiAcpRunner,
 } from './runner/index.js';
 import { AgentRegistry } from './runner/registry.js';
 import { probeAllAgents } from './runner/probe.js';
@@ -35,12 +30,7 @@ import {
   PiSessionReader,
   KimiSessionReader,
 } from './session/index.js';
-import {
-  CommandRouter,
-  isImmediateAction,
-  type CardActionPayload,
-  formatUsageStats,
-} from './router/index.js';
+import { CommandRouter, isImmediateAction, type CardActionPayload } from './router/index.js';
 import { dispatchOrderExecForQueue } from './router/order-exec-dispatch.js';
 import { Bridge } from './bridge/index.js';
 import { initLogger, getLogger } from './logger/index.js';
@@ -51,11 +41,11 @@ import { spawnReplacementBridge, waitForPreviousInstance } from './restart.js';
 import { checkLatestVersion, isNewer, runInstallLatest, formatUpdateHint } from './update/index.js';
 import { classifyRejection } from './error-classification.js';
 import { WorkspaceStore } from './workspace/index.js';
-import { markdownDiv } from './card/collapsible.js';
-import { sessionEventPanel } from './router/card-helpers.js';
+import { buildSessionHistoryCard } from './router/card-helpers.js';
 import { newSessionButton, resumeCompactButton, agentDisplayName } from './card/card-shared.js';
 import path from 'node:path';
 import fs from 'node:fs';
+import { silentlyUnlink } from './common/fs.js';
 
 /** Session display state from readSessionContent */
 interface SessionDisplayState {
@@ -83,75 +73,37 @@ async function sendAutoResumeCard(
   const recipient = contact.chatId ?? contact.userId;
   if (!recipient) return;
 
-  // Build header with displayTitle (aiTitle or last user message) and recap
-  let header = `📂 \`${cwd}\`\n已恢复最近会话: **${session.sessionId}**`;
-  const sections: string[] = [];
-  if (state.displayTitle) {
-    const label = state.aiTitle ? 'AI 标题' : '最近输入';
-    sections.push(`🏷️ **${label}**\n${state.displayTitle}`);
-  }
-  if (state.recap) {
-    const recapPreview = state.recap.length > 200 ? state.recap.slice(0, 197) + '...' : state.recap;
-    sections.push(`📝 **Recap**\n${recapPreview}`);
-  }
-  if (sections.length > 0) {
-    header += '\n\n' + sections.join('\n\n──\n\n');
-  }
-
-  const elements: object[] = [markdownDiv(header), { tag: 'hr' }];
-
   // Limit history events to prevent card size exceeded error (11310)
   const MAX_HISTORY_EVENTS = 5;
   const eventsToShow = state.events.slice(-MAX_HISTORY_EVENTS);
   const hiddenCount = state.events.length - MAX_HISTORY_EVENTS;
 
-  // Add indicator if events were hidden
-  if (hiddenCount > 0) {
-    elements.push(markdownDiv(`📜 还有 ${hiddenCount} 个更早的事件未显示`));
-  }
-
-  // Fold session history into collapsible panels: the last 2 events stay expanded
+  // Action buttons: Compact (runCompact-capable runner) + new session.
   const agentKind = state.agentKind ?? 'claude';
-  eventsToShow.forEach((ev, i) => {
-    elements.push(sessionEventPanel(ev, i, eventsToShow.length, 2, agentKind));
-  });
-
-  // Add usage/stats at the end
-  if (state.usage) {
-    const usageStr = formatUsageStats(state.usage);
-    elements.push(markdownDiv(usageStr));
-  }
-
-  // Add action buttons - use column_set+column (div+elements not supported in 2.0)
   const actionButtons: object[] = [];
-  // Compact 按钮：仅 codex app-server 模式（runner 有 runCompact）且未在跑。
-  // 启动自动恢复时不会存在该会话的 activeRun，直接渲染。
   if (compactSupported) {
     actionButtons.push(resumeCompactButton(session.sessionId, state.agentKind ?? 'codex'));
   }
   actionButtons.push(newSessionButton());
-  elements.push({
-    tag: 'column_set',
-    columns: actionButtons.map((btn) => ({
-      tag: 'column',
-      width: 'auto',
-      elements: [btn],
-    })),
-  });
 
-  const card = {
-    schema: '2.0',
-    config: {
-      wide_screen_mode: true,
+  const card = buildSessionHistoryCard(
+    {
+      sessionId: session.sessionId,
+      cwd,
+      displayTitle: state.displayTitle,
+      aiTitle: state.aiTitle,
+      recap: state.recap,
+      events: eventsToShow,
+      usage: state.usage,
     },
-    header: {
-      title: {
-        tag: 'plain_text',
-        content: `🔁 自动恢复会话 · ${agentDisplayName(agentKind)}`,
-      },
+    {
+      agentKind,
+      headerText: `📂 \`${cwd}\`\n已恢复最近会话: **${session.sessionId}**`,
+      title: `🔁 自动恢复会话 · ${agentDisplayName(agentKind)}`,
+      hiddenCount,
+      actions: actionButtons,
     },
-    body: { elements },
-  };
+  );
 
   await connector.sendWithRetry(recipient, { card });
 }
@@ -249,40 +201,40 @@ function initializeRunner(
       settings: cliArgs.settings,
       pidDir: configDir,
       workspace: ws,
+      permissionMode: claudeConfig.permissionMode,
+      idleTtlMs:
+        claudeConfig.idleTtlMinutes != null ? claudeConfig.idleTtlMinutes * 60_000 : undefined,
     });
   });
 
-  // Register Codex runner. Factory reads latest config from container.current
-  // so runtime config changes (serviceMode, model, sandbox, approvalPolicy,
-  // reasoningEffort, etc.) take effect after bridge.setConfig() + clearRunners().
-  // serviceMode=app-server → CodexAppServerRunner (persistent connection with
-  // approval + sandbox); otherwise CodexExecRunner (codex exec --json).
+  // Register Codex runner (app-server only). The registry factory reads latest
+  // config from container.current so runtime config changes (model, sandbox,
+  // approvalPolicy, reasoningEffort, etc.) take effect after bridge.setConfig()
+  // + clearRunners().
   const codexSessionReader = new CodexSessionReader({ codexHome: process.env.CODEX_HOME });
-  agentRegistry.register('codex', (ws: string) => {
+  agentRegistry.register('codex', (_ws: string) => {
     const container = agentRegistry.getConfigContainer();
     const latestConfig = (container?.current as AppConfig) ?? config;
     const codexConfig = getAgentConfig(latestConfig, 'codex');
-    return createCodexRunner({
+    return new CodexAppServerRunner({
+      kind: 'codex',
       model: codexConfig?.model,
       modelProvider: codexConfig?.modelProvider,
       reasoningEffort: codexConfig?.reasoningEffort,
-      stopGraceMs:
-        codexConfig?.stopGraceMs ?? latestConfig.claude?.stopGraceMs ?? DEFAULT_STOP_GRACE_MS,
-      pidDir: configDir,
-      workspace: ws,
       sessionReader: codexSessionReader,
-      serviceMode: codexConfig?.serviceMode,
       sandbox: codexConfig?.sandbox,
       approvalPolicy: codexConfig?.approvalPolicy,
-      appServerBinary: codexConfig?.appServer?.binary,
-      appServerRequestTimeoutMs: codexConfig?.appServer?.requestTimeoutMs,
-      appServerIdleTtlMs: codexConfig?.appServer?.idleTtlMs,
-      appServerTurnIdleTimeoutMinutes: codexConfig?.appServer?.turnIdleTimeoutMinutes,
+      binary: codexConfig?.appServer?.binary,
+      requestTimeoutMs: codexConfig?.appServer?.requestTimeoutMs,
+      idleTtlMs: codexConfig?.appServer?.idleTtlMs,
+      turnTimeoutMs:
+        codexConfig?.appServer?.turnIdleTimeoutMinutes != null
+          ? codexConfig.appServer.turnIdleTimeoutMinutes * 60_000
+          : undefined,
     });
   });
 
-  // Register OpencodeExecRunner (run mode)
-  // Using `opencode run --format json --auto` instead of HTTP+SSE server mode
+  // Register OpencodeAcpRunner (pure ACP mode, `opencode acp` JSON-RPC over stdio)
 
   // Register session reader (same instance as used by runner)
   const sessionReaderRegistry = new SessionReaderRegistry();
@@ -293,7 +245,7 @@ function initializeRunner(
   // Using `opencode session list` and `opencode export` instead of HTTP API
   const opencodeSessionReader = new OpencodeSessionReader();
 
-  agentRegistry.register('opencode', (ws: string) => {
+  agentRegistry.register('opencode', (_ws: string) => {
     // Get latest config from container (set below for pi)
     const container = agentRegistry.getConfigContainer();
     const latestConfig = (container?.current as AppConfig) ?? config;
@@ -311,18 +263,16 @@ function initializeRunner(
       }
     }
 
-    return new OpencodeExecRunner({
+    return new OpencodeAcpRunner({
+      kind: 'opencode',
       model,
-      // P1-15: read stopGraceMs from latestConfig (not startup closure)
-      stopGraceMs: latestConfig.claude?.stopGraceMs ?? DEFAULT_STOP_GRACE_MS,
-      pidDir: configDir,
-      workspace: ws,
       sessionReader: opencodeSessionReader,
+      mode: ocConfig?.mode ?? 'build',
     });
   });
   sessionReaderRegistry.register('opencode', opencodeSessionReader);
 
-  // Register PiRunner and PiSessionReader
+  // Register PiRpcRunner and PiSessionReader
   // 2026-07-12: 修复 config.save 后 pi provider 不生效的问题
   // 关键：factory 闭包必须能访问到最新的 config，而不是启动时的快照
   // 用可变容器存储 config 引用，registry 持有容器引用，factory 从容器读取最新值
@@ -334,7 +284,7 @@ function initializeRunner(
     const container = agentRegistry.getConfigContainer();
     const latestConfig = (container?.current as AppConfig) ?? config;
     const piConf = getAgentConfig(latestConfig, 'pi');
-    return new PiRunner({
+    return new PiRpcRunner({
       provider: piConf?.provider ?? 'Volcano',
       model: piConf?.model ?? 'glm-5.2',
       thinking: piConf?.thinking ?? 'medium',
@@ -342,29 +292,33 @@ function initializeRunner(
         .split(',')
         .map((t) => t.trim())
         .filter(Boolean),
-      pidDir: configDir,
       workspace: ws,
       sessionReader: piSessionReader,
     });
   });
   sessionReaderRegistry.register('pi', piSessionReader);
 
-  // Register KimiRunner and KimiSessionReader
+  // Register KimiAcpRunner (pure ACP mode) and KimiSessionReader
   const kimiSessionReader = new KimiSessionReader();
-  agentRegistry.register('kimi', (ws: string) => {
+  agentRegistry.register('kimi', (_ws: string) => {
     // 每次 factory 调用时从 registry 获取最新 config
     const container = agentRegistry.getConfigContainer();
     const latestConfig = (container?.current as AppConfig) ?? config;
     const kimiConf = getAgentConfig(latestConfig, 'kimi');
-    return new KimiRunner({
-      model: kimiConf?.model ?? 'kimi-code/k3',
-      thinkingEffort: kimiConf?.thinkingEffort ?? 'max',
 
-      // P1-15: read stopGraceMs from latestConfig (not startup closure)
-      stopGraceMs: latestConfig.claude?.stopGraceMs ?? DEFAULT_STOP_GRACE_MS,
-      pidDir: configDir,
-      workspace: ws,
+    const acpConf = kimiConf?.acp;
+    return new KimiAcpRunner({
+      kind: 'kimi',
       sessionReader: kimiSessionReader,
+      binary: acpConf?.binary ?? 'kimi',
+      requestTimeoutMs: acpConf?.requestTimeoutMs,
+      idleTtlMs: acpConf?.idleTtlMs,
+      turnIdleTimeoutMs:
+        acpConf?.turnIdleTimeoutMinutes != null
+          ? acpConf.turnIdleTimeoutMinutes * 60_000
+          : undefined,
+      model: kimiConf?.model ?? 'kimi-code/k3',
+      permissionMode: kimiConf?.permissionMode ?? 'manual',
     });
   });
   sessionReaderRegistry.register('kimi', kimiSessionReader);
@@ -410,6 +364,52 @@ function setupMessageHandlers(
   logger: ReturnType<typeof getLogger>,
   config: AppConfig,
 ): void {
+  // 入站媒体（图片/文件）：先认证后下载（P1 review 修复）。
+  // connector 只上报"媒体到达"，这里先过 owner + enabled 闸门，通过后才
+  // 下载——未认证/关闭配置时不会发生任何网络下载或内存/磁盘占用。
+  connector.setInboundMediaDetectedHandler((msg) => {
+    if (!binder.isOwner(msg.userId)) {
+      logger.warn(`[media] rejected inbound media from non-owner ${msg.userId}`);
+      return;
+    }
+    // 读 router.config（活引用）：/config 保存后 setConfigValues 返回新对象，
+    // 启动时捕获的 config 参数会过期（P2 review 修复）。
+    if (!router.config.inboundMedia.enabled) {
+      // 不静默（P3 review）：关闭时给 owner 明确反馈，避免发图后无任何反应。
+      // 不下载、不落盘，只回一条说明。
+      void bridge
+        .sendResult(
+          {
+            text:
+              '⚠️ 入站媒体保存已关闭（inboundMedia.enabled: false），未保存文件。' +
+              '如需自动保存图片/文件，请开启后重试',
+          },
+          {
+            userId: msg.userId,
+            chatId: msg.chatId,
+            messageId: msg.messageId,
+          },
+        )
+        .catch((err: unknown) => logger.error('[media] disabled feedback send failed:', err));
+      return;
+    }
+    void (async () => {
+      const payload = await connector.downloadInboundMedia(msg, {
+        maxFileSizeMb: router.config.inboundMedia.maxFileSizeMb,
+      });
+      try {
+        await bridge.onInboundMedia(payload);
+      } catch (err) {
+        // handle() 的正常路径会清理临时文件；这里兜底 handle 进入 mkdir
+        // try 之前意外抛错的情况，避免 os.tmpdir 残留。
+        for (const item of payload.media) {
+          silentlyUnlink(item.tempPath);
+        }
+        throw err;
+      }
+    })().catch((err: unknown) => logger.error('[media] inbound media download/save failed:', err));
+  });
+
   connector.setMessageHandler((msg) => {
     // 绑定/授权闸门：仅 owner 放行；非 owner 静默丢弃；未绑定时要求 PIN 认领
     const decision = binder.classify(msg.userId, msg.content, msg.chatId);
@@ -467,10 +467,19 @@ function setupMessageHandlers(
     // decision.kind === 'owner'：正常处理（不再每条覆盖 startup-contact）
     logger.info(`message from ${msg.userId}: ${msg.content.slice(0, 100)}`);
 
+    // 文本到达先冲刷待合批的媒体保存提示（先图后文字时文字到达
+    // 先冲刷批次，避免合批提示被后续消息淹没/丢图）。
+    bridge.flushMediaNotifications(msg.userId, msg.chatId);
+
     // Add Typing reaction to indicate "still alive"
     void connector.addReaction(msg.messageId, 'Typing');
 
-    const trimmedLower = msg.content.trim().toLowerCase();
+    // 别名展开：命令分发前对消息做一次 $name 展开（不递归）。
+    // `!` / `/` 开头的消息不会进入展开路径（$PATH、$HOME 等 shell 变量不受影响），
+    // 未知 $xxx 原样透传；展开结果若以 `/` 开头会自然落入命令路径。
+    const content = router.expandAliasMessage(msg.content);
+
+    const trimmedLower = content.trim().toLowerCase();
     if (trimmedLower === '/stop' || trimmedLower === '/t') {
       void (async () => {
         const stopped = await bridge.interruptCurrentRun({
@@ -490,9 +499,9 @@ function setupMessageHandlers(
       })().catch((err: unknown) => logger.error('[control] /stop failed:', err));
       return;
     }
-    if (msg.content.trim().startsWith('/')) {
+    if (content.trim().startsWith('/')) {
       void router
-        .handle(msg.content, {
+        .handle(content, {
           userId: msg.userId,
           chatId: msg.chatId,
           messageId: msg.messageId,
@@ -505,9 +514,9 @@ function setupMessageHandlers(
     // in the same workspace (design.md §9.6: the queue exists to prevent
     // concurrent claude runs, not to serialize bash). router.handle dispatches
     // `!` to bridge.executeBash, which tracks the run independently.
-    if (msg.content.trim().startsWith('!')) {
+    if (content.trim().startsWith('!')) {
       void router
-        .handle(msg.content, {
+        .handle(content, {
           userId: msg.userId,
           chatId: msg.chatId,
           messageId: msg.messageId,
@@ -536,7 +545,7 @@ function setupMessageHandlers(
       workspace,
       async () => {
         await router.handle(
-          msg.content,
+          content,
           {
             userId: msg.userId,
             chatId: msg.chatId,
@@ -554,7 +563,7 @@ function setupMessageHandlers(
           userId: msg.userId,
           chatId: msg.chatId,
           messageId: msg.messageId,
-          messagePreview: msg.content.slice(0, 3000),
+          messagePreview: content.slice(0, 3000),
           // D3/Step4: binding 随 taskMeta 存进 QueuedTask，供替换闭包
           // （queue.edit/queue.immediate）复用，不重新快照。
           binding,
@@ -626,16 +635,21 @@ function setupMessageHandlers(
         (action.action as { input_value?: string }).input_value,
     };
 
-    // queue.input / config.save / approval.respond / approval.toggle 返回
-    // CardActionResponse toast 给点击用户即时反馈。必须直接返回值 --
-    // enqueueImmediate / enqueueConfigAction 是 fire-and-forget，会吞掉返回值。
+    // queue.input / config.save / approval.respond / approval.toggle /
+    // approval.answer 系列返回 CardActionResponse toast 给点击用户即时反馈。
+    // 必须直接返回值 -- enqueueImmediate / enqueueConfigAction 是
+    // fire-and-forget，会吞掉返回值（2026-08-17 review：answer 家族曾漏在
+    // 直返列表外，过期/重复 nonce/非法选项等错误 toast 被静默吞掉）。
     // 审批响应尤其不能落串行队列：run 任务占用队列头直到 turn 结束，审批响应
     // 排在后面会形成死锁（run 不结束不执行、run 结束 coordinator 已删响应空转）。
     if (
       actionValue.cmd === 'queue.input' ||
       actionValue.cmd === 'config.save' ||
       actionValue.cmd === 'approval.respond' ||
-      actionValue.cmd === 'approval.toggle'
+      actionValue.cmd === 'approval.toggle' ||
+      actionValue.cmd === 'approval.answer' ||
+      actionValue.cmd === 'approval.answerSubmit' ||
+      actionValue.cmd === 'approval.answerCustom'
     ) {
       return router.handleCardAction(fullValue, { userId, chatId, messageId });
     }
@@ -767,6 +781,7 @@ async function main() {
     configPath: path.join(configDir, 'config.yaml'),
     workspacePath: path.join(configDir, 'workspace.json'),
     ordersPath: path.join(configDir, 'orders.json'),
+    aliasesPath: path.join(configDir, 'aliases.json'),
     restartSpawner: () => spawnReplacementBridge(path.join(configDir, 'logs')),
     sessionReaderRegistry,
     devMode: cliArgs.dev,
@@ -860,9 +875,8 @@ async function main() {
               displayTitle: content.displayTitle,
               agentKind: config.defaultAgent,
             },
-            // Compact 仅 codex app-server 模式有实现（runner.runCompact）。
-            config.defaultAgent === 'codex' &&
-              getAgentConfig(config, 'codex')?.serviceMode === 'app-server',
+            // Compact 能力探测与 bridge 侧一致（runner 有 runCompact 才渲染）。
+            bridge.hasRunCompact(restoredCwd, config.defaultAgent),
           );
         } catch (err) {
           getLogger().warn('[startup] sendAutoResumeCard failed:', err);

@@ -10,6 +10,7 @@ import { AppConfigSchema } from '../../../src/config/index.js';
 import { SessionReaderRegistry } from '../../../src/session/registry.js';
 import { ClaudeSessionReader } from '../../../src/session/claude/index.js';
 
+import { encodedProjectDir, writeSessionJsonl } from '../../lib/session-fixtures.js';
 import {
   createStubAgentRegistry,
   createStubSessionReaderRegistry,
@@ -41,23 +42,6 @@ import {
  *   `🏷️ 最近输入\n(无摘要)` 这种误导/占位符标题。建议：兜底前过滤占位符…
  *   并补一个『无用户消息 fixture 不渲染占位符标题』的 anchor。"
  */
-
-// Stub connector (minimal, matches tests/anchor/resume/resume-pagination.test.ts pattern)
-
-// Stub runner
-
-// Same encoding as production `projectDirForCwd` (cwd -> dirName), canonicalized
-// via realpath first (same as src/router/router.test.ts `encodedProjectDir`).
-function encodedProjectDir(cwd: string): string {
-  return fs.realpathSync(cwd).replace(/\//g, '-').replace(/_/g, '-');
-}
-
-// Fake Claude session jsonl with an init line carrying the cwd (regression 2026-06-21).
-function writeSessionJsonl(projDir: string, sid: string, cwd: string, body: string): void {
-  const initLine = `{"type":"system","subtype":"init","session_id":"${sid}","cwd":"${cwd}","model":"opus"}`;
-  fs.writeFileSync(path.join(projDir, `${sid}.jsonl`), `${initLine}\n${body}\n`);
-}
-
 type CardElement = {
   tag?: string;
   columns?: Array<{ elements?: CardElement[] }>;
@@ -139,7 +123,7 @@ describe('Review P2-1 非预取行占位符 summary 不得渲染为"最近输入
       getNewestSession: () => null,
       readSessionContent: () => ({ events: [], reason: 'not_found' }),
       isSessionActive: () => false,
-    } as any;
+    };
     registry.register('codex', stubReader);
     registry.register('opencode', stubReader);
     registry.register('pi', stubReader);

@@ -14,7 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Codex runner 工厂：自动选择直连模式或 App Server 模式
 - `rollout-reader`：Codex App Server rollout 开关读取
 - Run card 审批区域渲染 + context limit 百分比显示
-- 架构文档：`codex-app-server-integration.md`
+- 架构文档：`docs/zh/guides/codex-config.md`
 
 ### 修复
 

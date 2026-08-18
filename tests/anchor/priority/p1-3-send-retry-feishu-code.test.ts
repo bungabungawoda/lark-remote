@@ -47,8 +47,7 @@ describe('P1-3 sendWithRetry retries feishu business code 99991400/99991401 (anc
 
   beforeEach(() => {
     connector = new FeishuConnector(config);
-    mockChannel = (connector as unknown as { channel: { send: ReturnType<typeof vi.fn> } }).channel
-      .send as ReturnType<typeof vi.fn>;
+    mockChannel = connector.channel.send as ReturnType<typeof vi.fn>;
   });
 
   /**

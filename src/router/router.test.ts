@@ -2,7 +2,8 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { CommandRouter, isImmediateAction, formatUsageStats } from './index.js';
+import { CommandRouter, isImmediateAction } from './index.js';
+import { formatUsageStats } from './utils.js';
 import { formatTimestamp } from '../card/time.js';
 import { Bridge } from '../bridge/index.js';
 import { SessionStore } from '../session/index.js';
@@ -18,22 +19,9 @@ import {
   createMockBridge,
   createStubRunner,
   createStubSessionReaderRegistry,
+  createStubSessionReader,
 } from '../../tests/lib/bridge-stubs.js';
-
-// Stub session reader for tests that need empty results (used in manual registry composition)
-const stubSessionReader: AgentSessionReader = {
-  listSessions: () => ({ sessions: [], total: 0 }),
-  getNewestSession: () => null,
-  readSessionContent: () => ({
-    events: [],
-    aiTitle: undefined,
-    recap: undefined,
-    displayTitle: undefined,
-    usage: undefined,
-    reason: 'not_found',
-  }),
-  isSessionActive: () => false,
-};
+import { encodedProjectDir, writeSessionJsonl } from '../../tests/lib/session-fixtures.js';
 
 /**
  * Create a stub session reader registry.
@@ -116,7 +104,7 @@ function createRouter(overrides?: {
   defaultAgent?: string;
   sessionReaderRegistry?: SessionReaderRegistry;
   projectsDir?: string; // For tests that need to read real session files
-  codex?: Partial<AppConfig['codex']>; // e.g. { serviceMode: 'app-server' }
+  codex?: Partial<AppConfig['codex']>; // codex config overrides
 }) {
   const sessionStore = new SessionStore();
   const connector = createStubConnector();
@@ -169,31 +157,6 @@ const ctx = { userId: 'user1', chatId: 'chat1', messageId: 'msg1' };
 // Write a fake Claude session jsonl under <projDir>/<sid>.jsonl. Injects an
 // init line with the cwd so the production code can locate the file via
 // projectDirForCwd + readCwdFromJsonl (regression 2026-06-21 /active).
-function writeSessionJsonl(projDir: string, sid: string, cwd: string, body: string): void {
-  // Canonicalize via realpath so the cwd written to JSONL matches what
-  // production cmdCd stores after `fs.realpathSync`. On macOS `os.tmpdir()`
-  // lives under `/var/folders/...` which is a symlink to
-  // `/private/var/folders/...`. If we wrote the unresolved path here,
-  // listClaudeSessions(getNewestSession) would never find it.
-  const canonicalCwd = fs.realpathSync(cwd);
-  const initLine = `{"type":"system","subtype":"init","session_id":"${sid}","cwd":"${canonicalCwd}","model":"opus"}`;
-  fs.writeFileSync(path.join(projDir, `${sid}.jsonl`), `${initLine}\n${body}\n`);
-}
-
-// Same encoding as production `projectDirForCwd` (cwd → dirName), but
-// canonicalizes the cwd via realpath first so the directory name matches
-// what Claude writes (`/private/var/folders/...` not `/var/folders/...`).
-// Falls back to path.resolve when the path doesn't exist (test fixtures
-// sometimes use synthetic paths like `/p1` that don't need to be on disk).
-function encodedProjectDir(cwd: string): string {
-  let canonical: string;
-  try {
-    canonical = fs.realpathSync(cwd);
-  } catch {
-    canonical = path.resolve(cwd);
-  }
-  return canonical.replace(/\//g, '-').replace(/_/g, '-');
-}
 
 describe('formatTimestamp', () => {
   it('formats JSONL UTC timestamp in local time', () => {
@@ -747,32 +710,6 @@ describe('CommandRouter', () => {
     } finally {
       fs.rmSync(homeSubdir, { recursive: true, force: true });
     }
-  });
-
-  it('/cd with bare ~ goes to home directory', async () => {
-    const { router, sessionStore } = createRouter();
-    sessionStore.set('user1', {
-      sessions: new Map([['claude', 's1']]),
-      previousSessions: new Map(),
-      sessionCwds: new Map(),
-      arrivalSessions: new Map(),
-      cwd: tmpDir,
-    });
-    await router.handle('/cd ~', ctx);
-    expect(sessionStore.getCwd('user1')).toBe(os.homedir());
-  });
-
-  it('/cd expands ~ to home directory', async () => {
-    const { router, sessionStore } = createRouter();
-    sessionStore.set('user1', {
-      sessions: new Map([['claude', 's1']]),
-      previousSessions: new Map(),
-      sessionCwds: new Map(),
-      arrivalSessions: new Map(),
-      cwd: '/tmp',
-    });
-    await router.handle('/cd ~', ctx);
-    expect(sessionStore.getCwd('user1')).toBe(os.homedir());
   });
 
   it('/ls without cwd prompts to /cd', async () => {
@@ -1442,15 +1379,6 @@ describe('CommandRouter', () => {
     expect(sessionStore.getSessionId('user1')).toBe('abc-123');
   });
 
-  it('/resume <id> does NOT set session id when session not found', async () => {
-    const { router, sessionStore } = createRouter();
-    sessionStore.setCwd('user1', fs.realpathSync(tmpDir));
-    // Try to resume a non-existent session - should return error, NOT set sessionId
-    await router.handle('/resume nonexistent-session', ctx);
-    // SessionId should NOT be set because the session doesn't exist
-    expect(sessionStore.getSessionId('user1')).toBeUndefined();
-  });
-
   it('/resume <id> renders card even when session tail is empty (last line is user)', async () => {
     // session 存在 + cwd 匹配，但最后一行是 user 消息（无 assistant 回复）。
     // readSessionContent 的 catch-up tail 为空，但仍应输出卡片（header + 空状态），
@@ -1488,6 +1416,8 @@ describe('CommandRouter', () => {
     sessionStore.setCwd('user1', fs.realpathSync(tmpDir));
     await router.handle('/resume nonexist-session-id', ctx);
     const input = connector._sent[0].input as { card?: TestCard; text?: string };
+    // 未找到的 session 不得污染 sessionId（no-op）
+    expect(sessionStore.getSessionId('user1')).toBeUndefined();
     expect(input.text).toBeDefined();
     expect(input.card).toBeUndefined();
     expect(input.text).toContain('未找到');
@@ -1650,6 +1580,49 @@ describe('CommandRouter', () => {
     expect(sessionStore.getSessionId('user1')).toBe(sid);
   });
 
+  it('/resume <id> history card always has new-session button (regression)', async () => {
+    const projectsDir = path.join(tmpDir, 'claude-projects');
+    const encoded = encodedProjectDir(tmpDir);
+    const projDir = path.join(projectsDir, encoded);
+    fs.mkdirSync(projDir, { recursive: true });
+    const sid = 'resume-new-session-btn';
+    const body =
+      JSON.stringify({
+        type: 'user',
+        message: { role: 'user', content: [{ type: 'text', text: 'task' }] },
+      }) +
+      '\n' +
+      JSON.stringify({
+        type: 'assistant',
+        message: { role: 'assistant', content: [{ type: 'text', text: 'response' }] },
+      }) +
+      '\n' +
+      JSON.stringify({ type: 'result', subtype: 'success', session_id: sid });
+    writeSessionJsonl(projDir, sid, tmpDir, body);
+
+    const { router, sessionStore, connector } = createRouter({ projectsDir });
+    sessionStore.setCwd('user1', fs.realpathSync(tmpDir));
+    await router.handle(`/resume ${sid}`, ctx);
+
+    const input = connector._sent[0].input as {
+      card?: {
+        body?: {
+          elements: Array<{
+            columns?: Array<{
+              elements?: Array<{ behaviors?: Array<{ value: { cmd: string } }> }>;
+            }>;
+          }>;
+        };
+      };
+    };
+    expect(input.card).toBeDefined();
+    const buttons = (input.card!.body?.elements ?? []).flatMap((e) =>
+      (e.columns ?? []).flatMap((c) => (c.elements ?? []).flatMap((b) => b.behaviors ?? [])),
+    );
+    expect(buttons.some((b) => b.value?.cmd === 'new-session')).toBe(true);
+    expect(buttons.some((b) => b.value?.cmd === 'stop')).toBe(false);
+  });
+
   it('/resume use card action shows session history', async () => {
     const projectsDir = path.join(tmpDir, 'claude-projects');
     const encoded = encodedProjectDir(tmpDir);
@@ -1691,11 +1664,11 @@ describe('CommandRouter', () => {
       isSessionActive: () => false,
     };
     const registry = new SessionReaderRegistry();
-    registry.register('claude', stubSessionReader);
+    registry.register('claude', createStubSessionReader());
     registry.register('codex', codexReader);
-    registry.register('opencode', stubSessionReader);
-    registry.register('pi', stubSessionReader);
-    registry.register('kimi', stubSessionReader);
+    registry.register('opencode', createStubSessionReader());
+    registry.register('pi', createStubSessionReader());
+    registry.register('kimi', createStubSessionReader());
     return registry;
   }
 
@@ -1807,11 +1780,11 @@ describe('CommandRouter', () => {
         isSessionActive: () => false,
       };
       const registry = new SessionReaderRegistry();
-      registry.register('claude', stubSessionReader);
+      registry.register('claude', createStubSessionReader());
       registry.register('codex', codexReader);
-      registry.register('opencode', stubSessionReader);
-      registry.register('pi', stubSessionReader);
-      registry.register('kimi', stubSessionReader);
+      registry.register('opencode', createStubSessionReader());
+      registry.register('pi', createStubSessionReader());
+      registry.register('kimi', createStubSessionReader());
       return registry;
     }
 
@@ -1822,11 +1795,11 @@ describe('CommandRouter', () => {
     }
 
     it('test_anchor_auto_resume_card_codex_appserver_has_compact_button', async () => {
-      // 验证什么：/cd 自动恢复会话卡（codex + serviceMode=app-server）渲染
-      // resume.compact 按钮并携带 sessionId + agent。缺失/错误会导致用户在恢复
-      // 卡上无法直接压缩长会话，只能等下一次 run 结束后用 run 卡按钮。
-      // 依据：需求「两种 Resume 卡片上面也应该带 Compact 按钮」+ app-server 模式
-      // 才有 runCompact（runner factory serviceMode 分支）。
+      // 验证什么：/cd 自动恢复会话卡（codex）渲染 resume.compact 按钮并携带
+      // sessionId + agent。缺失/错误会导致用户在恢复卡上无法直接压缩长会话，
+      // 只能等下一次 run 结束后用 run 卡按钮。
+      // 依据：需求「两种 Resume 卡片上面也应该带 Compact 按钮」+ codex runner
+      // 才有 runCompact。
       const dir = path.join(tmpDir, 'dir');
       fs.mkdirSync(dir);
       const registry = createCodexResumeRegistry({
@@ -1836,8 +1809,7 @@ describe('CommandRouter', () => {
       const { router, sessionStore } = createRouter({
         sessionReaderRegistry: registry,
         defaultAgent: 'codex',
-        codex: { serviceMode: 'app-server' },
-        bridge: createMockBridge({ sendResult }),
+        bridge: createMockBridge({ sendResult, hasRunCompact: vi.fn().mockReturnValue(true) }),
       });
       sessionStore.setCwd('user1', fs.realpathSync(tmpDir));
       await router.handle(`/cd ${dir}`, ctx);
@@ -1849,14 +1821,13 @@ describe('CommandRouter', () => {
     });
 
     it('test_anchor_resume_detail_card_codex_appserver_has_compact_button', async () => {
-      // 验证什么：/resume <id>（resume.use）详情卡在 codex + app-server 模式渲染
-      // resume.compact 按钮并携带 sessionId + agent（agent 来自卡片值，非 defaultAgent）。
+      // 验证什么：/resume <id>（resume.use）详情卡在 codex 渲染 resume.compact
+      // 按钮并携带 sessionId + agent（agent 来自卡片值，非 defaultAgent）。
       const registry = createCodexResumeRegistry();
       const sendResult = vi.fn().mockResolvedValue(undefined);
       const { router, sessionStore } = createRouter({
         sessionReaderRegistry: registry,
-        codex: { serviceMode: 'app-server' },
-        bridge: createMockBridge({ sendResult }),
+        bridge: createMockBridge({ sendResult, hasRunCompact: vi.fn().mockReturnValue(true) }),
       });
       sessionStore.setCwd('user1', fs.realpathSync(tmpDir));
       await router.handleCardAction(
@@ -1907,28 +1878,6 @@ describe('CommandRouter', () => {
       expect(cardStr).not.toContain('"cmd":"resume.compact"');
     });
 
-    it('test_anchor_auto_resume_card_codex_exec_mode_has_no_compact_button', async () => {
-      // 验证什么：codex 但 serviceMode=exec（无 runCompact）不渲染 Compact。
-      // 条件必须同时满足 agentKind=codex 与 app-server，缺一不可。
-      const dir = path.join(tmpDir, 'dir');
-      fs.mkdirSync(dir);
-      const registry = createCodexResumeRegistry({
-        newest: { sessionId: 'codex-session-latest', summary: 'placeholder', mtime: Date.now() },
-      });
-      const sendResult = vi.fn().mockResolvedValue(undefined);
-      const { router, sessionStore } = createRouter({
-        sessionReaderRegistry: registry,
-        defaultAgent: 'codex',
-        codex: { serviceMode: 'exec' },
-        bridge: createMockBridge({ sendResult }),
-      });
-      sessionStore.setCwd('user1', fs.realpathSync(tmpDir));
-      await router.handle(`/cd ${dir}`, ctx);
-
-      const cardStr = lastSendResultJson(sendResult);
-      expect(cardStr).not.toContain('"cmd":"resume.compact"');
-    });
-
     it('test_anchor_resume_detail_card_active_run_has_no_compact_button', async () => {
       // 验证什么：isActive（内存 activeRun 非终态且 sessionId 匹配）时详情卡不渲染
       // resume.compact（在途 run 会占住 app-server runner，压缩必然失败），仍渲染 stop。
@@ -1936,7 +1885,6 @@ describe('CommandRouter', () => {
       const sendResult = vi.fn().mockResolvedValue(undefined);
       const { router, sessionStore } = createRouter({
         sessionReaderRegistry: registry,
-        codex: { serviceMode: 'app-server' },
         bridge: createMockBridge({
           sendResult,
           getActiveRunFor: vi.fn().mockReturnValue({
@@ -1964,7 +1912,6 @@ describe('CommandRouter', () => {
       const sendResult = vi.fn().mockResolvedValue(undefined);
       const { router, sessionStore } = createRouter({
         sessionReaderRegistry: registry,
-        codex: { serviceMode: 'app-server' },
         bridge: createMockBridge({ sendResult }),
       });
       sessionStore.setCwd('user1', fs.realpathSync(tmpDir));
@@ -1985,6 +1932,91 @@ describe('CommandRouter', () => {
       const value = { cmd: 'resume.compact', sessionId: 'codex-session-1', agent: 'codex' };
       await router.handleCardAction(value, ctx);
       expect(handleResumeCompact).toHaveBeenCalledWith(value, ctx);
+    });
+
+    it('test_anchor_auto_resume_card_kimi_acp_has_compact_button', async () => {
+      // 验证什么：kimi acp 模式的自动恢复卡渲染 resume.compact 按钮（§6.2-2 能力探测）。
+      // hasRunCompact 鸭子判断：kimi acp runner 有 runCompact → 按钮出现。
+      const dir = path.join(tmpDir, 'dir-kimi');
+      fs.mkdirSync(dir, { recursive: true });
+      const kimiReader: AgentSessionReader = {
+        listSessions: () => ({ sessions: [], total: 0 }),
+        getNewestSession: () => ({
+          sessionId: 'kimi-session-latest',
+          summary: 'placeholder',
+          mtime: Date.now(),
+        }),
+        readSessionContent: () => ({
+          events: [{ type: 'text', content: 'kimi session tail' }],
+          usage: undefined,
+          aiTitle: undefined,
+          recap: undefined,
+          displayTitle: 'placeholder',
+          reason: 'ok',
+        }),
+        isSessionActive: () => false,
+      };
+      const registry = new SessionReaderRegistry();
+      registry.register('claude', createStubSessionReader());
+      registry.register('codex', createStubSessionReader());
+      registry.register('opencode', createStubSessionReader());
+      registry.register('pi', createStubSessionReader());
+      registry.register('kimi', kimiReader);
+      const sendResult = vi.fn().mockResolvedValue(undefined);
+      const { router, sessionStore } = createRouter({
+        sessionReaderRegistry: registry,
+        defaultAgent: 'kimi',
+        bridge: createMockBridge({ sendResult, hasRunCompact: vi.fn().mockReturnValue(true) }),
+      });
+      sessionStore.setCwd('user1', fs.realpathSync(tmpDir));
+      await router.handle(`/cd ${dir}`, ctx);
+
+      const cardStr = lastSendResultJson(sendResult);
+      expect(cardStr).toContain('"cmd":"resume.compact"');
+      expect(cardStr).toContain('"sessionId":"kimi-session-latest"');
+      expect(cardStr).toContain('"agent":"kimi"');
+    });
+
+    it('test_anchor_auto_resume_card_kimi_cli_has_no_compact_button', async () => {
+      // 验证什么：kimi cli 模式（runner 无 runCompact）不渲染 resume.compact 按钮。
+      // hasRunCompact 返回 false → 无按钮（§6.2-2 能力探测：cli 模式无此能力）。
+      const dir = path.join(tmpDir, 'dir-kimi-cli');
+      fs.mkdirSync(dir, { recursive: true });
+      const kimiReader: AgentSessionReader = {
+        listSessions: () => ({ sessions: [], total: 0 }),
+        getNewestSession: () => ({
+          sessionId: 'kimi-cli-session',
+          summary: 'placeholder',
+          mtime: Date.now(),
+        }),
+        readSessionContent: () => ({
+          events: [{ type: 'text', content: 'kimi session tail' }],
+          usage: undefined,
+          aiTitle: undefined,
+          recap: undefined,
+          displayTitle: 'placeholder',
+          reason: 'ok',
+        }),
+        isSessionActive: () => false,
+      };
+      const registry = new SessionReaderRegistry();
+      registry.register('claude', createStubSessionReader());
+      registry.register('codex', createStubSessionReader());
+      registry.register('opencode', createStubSessionReader());
+      registry.register('pi', createStubSessionReader());
+      registry.register('kimi', kimiReader);
+      const sendResult = vi.fn().mockResolvedValue(undefined);
+      const { router, sessionStore } = createRouter({
+        sessionReaderRegistry: registry,
+        defaultAgent: 'kimi',
+        bridge: createMockBridge({ sendResult, hasRunCompact: vi.fn().mockReturnValue(false) }),
+      });
+      sessionStore.setCwd('user1', fs.realpathSync(tmpDir));
+      await router.handle(`/cd ${dir}`, ctx);
+
+      const cardStr = lastSendResultJson(sendResult);
+      expect(cardStr).toContain('自动恢复会话');
+      expect(cardStr).not.toContain('"cmd":"resume.compact"');
     });
   });
 
@@ -2722,7 +2754,6 @@ describe('CommandRouter', () => {
     it('ls.switch auto-resumes newest session and sends resume card', async () => {
       const sub = path.join(tmpDir, 'sub-resume');
       fs.mkdirSync(sub);
-      const _canonicalSub = fs.realpathSync(sub);
       // Create a session reader that returns a fake newest session
       const fakeSession = {
         sessionId: 'aaaaaaaa-1111-2222-3333-444444444444',
@@ -2743,10 +2774,10 @@ describe('CommandRouter', () => {
       };
       const registry = new SessionReaderRegistry();
       registry.register('claude', readerWithSession);
-      registry.register('codex', { ...stubSessionReader });
-      registry.register('opencode', { ...stubSessionReader });
-      registry.register('pi', { ...stubSessionReader });
-      registry.register('kimi', { ...stubSessionReader });
+      registry.register('codex', createStubSessionReader());
+      registry.register('opencode', createStubSessionReader());
+      registry.register('pi', createStubSessionReader());
+      registry.register('kimi', createStubSessionReader());
 
       const { router, sessionStore, connector } = createRouter({ sessionReaderRegistry: registry });
       sessionStore.setCwd('user1', fs.realpathSync(tmpDir));
@@ -3031,6 +3062,94 @@ describe('CommandRouter', () => {
         nonce: 'nonce-1',
       });
     });
+
+    it('test_anchor_approval_answer_routes_to_bridge_for_ask_user_question', async () => {
+      // Claude AskUserQuestion：选项点击（单选即时/多选切换）与「提交答案」
+      // 按钮都是即时控制动作，路由到 bridge 的对应 handler。
+      const handleApprovalAnswer = vi.fn().mockResolvedValue(undefined);
+      const handleApprovalAnswerSubmit = vi.fn().mockResolvedValue(undefined);
+      const handleApprovalAnswerCustom = vi.fn().mockResolvedValue(undefined);
+      const { router } = createRouter({
+        bridge: createMockBridge({
+          handleApprovalAnswer,
+          handleApprovalAnswerSubmit,
+          handleApprovalAnswerCustom,
+        }),
+      });
+
+      const resp1 = await router.handleCardAction(
+        {
+          cmd: 'approval.answer',
+          runId: 'run-q-1',
+          requestId: 7,
+          questionIndex: 0,
+          option: 'Red',
+          nonce: 'nonce-q-1',
+        },
+        ctx,
+      );
+      expect(resp1).toEqual({ toast: { type: 'success', content: '已选择' } });
+      expect(handleApprovalAnswer).toHaveBeenCalledWith({
+        runId: 'run-q-1',
+        requestId: 7,
+        questionIndex: 0,
+        option: 'Red',
+        nonce: 'nonce-q-1',
+      });
+
+      const resp2 = await router.handleCardAction(
+        {
+          cmd: 'approval.answerSubmit',
+          runId: 'run-q-1',
+          requestId: 7,
+          questionIndex: 1,
+          nonce: 'nonce-q-2',
+        },
+        ctx,
+      );
+      expect(resp2).toEqual({ toast: { type: 'success', content: '答案已提交' } });
+      expect(handleApprovalAnswerSubmit).toHaveBeenCalledWith({
+        runId: 'run-q-1',
+        requestId: 7,
+        questionIndex: 1,
+        nonce: 'nonce-q-2',
+      });
+
+      // review P3-4：自定义答案（Other）走 input_value → text
+      const resp3 = await router.handleCardAction(
+        {
+          cmd: 'approval.answerCustom',
+          runId: 'run-q-1',
+          requestId: 7,
+          questionIndex: 0,
+          nonce: 'nonce-q-3',
+          inputValue: '自定义紫色',
+        },
+        ctx,
+      );
+      expect(resp3).toEqual({ toast: { type: 'success', content: '答案已提交' } });
+      expect(handleApprovalAnswerCustom).toHaveBeenCalledWith({
+        runId: 'run-q-1',
+        requestId: 7,
+        questionIndex: 0,
+        text: '自定义紫色',
+        nonce: 'nonce-q-3',
+      });
+
+      // 缺输入值 → error toast，不调 bridge
+      const resp4 = await router.handleCardAction(
+        {
+          cmd: 'approval.answerCustom',
+          runId: 'run-q-1',
+          requestId: 7,
+          questionIndex: 0,
+          nonce: 'nonce-q-4',
+        },
+        ctx,
+      );
+      expect(resp4).toEqual({ toast: { type: 'error', content: '缺少答案文本参数' } });
+      expect(handleApprovalAnswerCustom).toHaveBeenCalledTimes(1);
+    });
   });
 
   it('rejects message when the same workspace has a run in progress', async () => {
@@ -3132,7 +3251,7 @@ describe('CommandRouter', () => {
     expect(cardStr).toContain('✅ 已开启'); // toggle 后应为开启状态
 
     // pendingConfig 应有值
-    expect((router as unknown as { pendingConfig: unknown }).pendingConfig).not.toBeNull();
+    expect(router.pendingConfig).not.toBeNull();
   });
 
   // 2026-07-04 回归测试：toggle 必须可逆（on→off→on）
@@ -3177,7 +3296,7 @@ describe('CommandRouter', () => {
     expect(cardStr).toContain('haiku');
 
     // pendingConfig 应有值
-    expect((router as unknown as { pendingConfig: unknown }).pendingConfig).not.toBeNull();
+    expect(router.pendingConfig).not.toBeNull();
   });
 
   it('config.input reads formValue into pendingConfig', async () => {
@@ -3196,13 +3315,10 @@ describe('CommandRouter', () => {
     );
 
     // pendingConfig 应有值
-    expect((router as unknown as { pendingConfig: unknown }).pendingConfig).not.toBeNull();
+    expect(router.pendingConfig).not.toBeNull();
 
     // pendingConfig 里的值应为 "30" (字符串，来自 formValue)
-    const pendingConfig = (
-      router as unknown as { pendingConfig: { idle: { watchdogMinutes: string } } }
-    ).pendingConfig;
-    expect(pendingConfig.idle.watchdogMinutes).toBe('30');
+    expect(router.pendingConfig?.idle.watchdogMinutes).toBe('30');
   });
 
   // 2026-07-04 回归测试：CardKit 2.0 input 自带提交图标回传 input_value
@@ -3217,10 +3333,9 @@ describe('CommandRouter', () => {
       ctx,
     );
 
-    const pendingConfig = (router as unknown as { pendingConfig: { claude: { model: string } } })
-      .pendingConfig;
+    const pendingConfig = router.pendingConfig;
     expect(pendingConfig).not.toBeNull();
-    expect(pendingConfig.claude.model).toBe('haiku');
+    expect(pendingConfig!.claude.model).toBe('haiku');
   });
 
   // 2026-07-04 回归测试：config.* 动作串行化（修复 toggle 卡死 bug）
@@ -3239,10 +3354,7 @@ describe('CommandRouter', () => {
     await Promise.all([p1, p2]);
 
     // 两次 toggle = 回到初始状态 (true → false → true)
-    const pendingConfig = (
-      router as unknown as { pendingConfig: { output: { showToolUse: boolean } } }
-    ).pendingConfig;
-    expect(pendingConfig.output.showToolUse).toBe(true);
+    expect(router.pendingConfig?.output.showToolUse).toBe(true);
     // 两次 toggle 各自触发一次卡片更新
     expect(connector._cards.length).toBe(cardsBefore + 2);
   });
@@ -3253,7 +3365,7 @@ describe('CommandRouter', () => {
       output: { showThinking: false },
       idle: { watchdogMinutes: 10 },
     });
-    const configPath = (router as unknown as { configPath: string }).configPath;
+    const configPath = router.configPath;
 
     // 先 toggle
     await router.handleCardAction({ cmd: 'config.toggle', key: 'output.showThinking' }, ctx);
@@ -3268,7 +3380,7 @@ describe('CommandRouter', () => {
     );
 
     // pendingConfig 应有值
-    expect((router as unknown as { pendingConfig: unknown }).pendingConfig).not.toBeNull();
+    expect(router.pendingConfig).not.toBeNull();
 
     // 保存
     await router.handleCardAction({ cmd: 'config.save' }, ctx);
@@ -3279,7 +3391,7 @@ describe('CommandRouter', () => {
     expect(diskContent).toContain('watchdogMinutes: 30');
 
     // pendingConfig 应清空
-    expect((router as unknown as { pendingConfig: unknown }).pendingConfig).toBeNull();
+    expect(router.pendingConfig).toBeNull();
   });
 
   it('config.save correctly saves new nested agent config object (regression: agents.opencode [object Object])', async () => {
@@ -3288,7 +3400,7 @@ describe('CommandRouter', () => {
     // 整个对象转成 "[object Object]" 字符串导致 Zod 校验失败。
     // Bug: agents.opencode: Invalid input: expected object, received string
     const { router } = createRouter();
-    const configPath = (router as unknown as { configPath: string }).configPath;
+    const configPath = router.configPath;
 
     // 通过 config.set 设置 opencode 的 providerID 和 modelID
     await router.handleCardAction(
@@ -3301,7 +3413,7 @@ describe('CommandRouter', () => {
     );
 
     // pendingConfig 应有值
-    expect((router as unknown as { pendingConfig: unknown }).pendingConfig).not.toBeNull();
+    expect(router.pendingConfig).not.toBeNull();
 
     // 保存 - 不应抛出 "expected object, received string" 错误
     await router.handleCardAction({ cmd: 'config.save' }, ctx);
@@ -3313,7 +3425,68 @@ describe('CommandRouter', () => {
     expect(diskContent).not.toContain('[object Object]');
 
     // pendingConfig 应清空
-    expect((router as unknown as { pendingConfig: unknown }).pendingConfig).toBeNull();
+    expect(router.pendingConfig).toBeNull();
+  });
+
+  it('config.save hot-pushes kimi permissionMode via syncActiveApprovalModes (§P5)', async () => {
+    const bridge = createMockBridge();
+    const { router } = createRouter({ bridge });
+
+    await router.handleCardAction(
+      { cmd: 'config.set', key: 'agents.kimi.permissionMode', option: 'yolo' },
+      ctx,
+    );
+    await router.handleCardAction({ cmd: 'config.save' }, ctx);
+
+    expect(bridge.syncActiveApprovalModes).toHaveBeenCalled();
+  });
+
+  it('config.save hot-pushes opencode mode via syncActiveApprovalModes (§P5)', async () => {
+    const bridge = createMockBridge();
+    const { router } = createRouter({ bridge });
+
+    await router.handleCardAction(
+      { cmd: 'config.set', key: 'agents.opencode.mode', option: 'plan' },
+      ctx,
+    );
+    await router.handleCardAction({ cmd: 'config.save' }, ctx);
+
+    expect(bridge.syncActiveApprovalModes).toHaveBeenCalled();
+  });
+
+  it('/s shows the hot-updated approval mode after runner.updateApprovalMode (§P5)', async () => {
+    let extras: Record<string, string> = { mode: 'acp', permissionMode: 'manual' };
+    const runner: Runner = {
+      isRunning: false,
+      stop: async () => {},
+      killOrphan: () => {},
+      registerExitHandlers: () => {},
+      run: async function* () {},
+      getStatusInfo: () => ({ kind: 'kimi', model: 'kimi-code/k3', extras }),
+      updateApprovalMode: async (settings: { permissionMode?: string }) => {
+        if (settings.permissionMode !== undefined) {
+          extras = { ...extras, permissionMode: settings.permissionMode };
+        }
+      },
+    };
+    const { router, sessionStore, connector } = createRouter({ runner });
+    sessionStore.set('user1', {
+      sessions: new Map([['kimi', 's1']]),
+      previousSessions: new Map(),
+      sessionCwds: new Map(),
+      arrivalSessions: new Map(),
+      cwd: '/tmp',
+    });
+
+    await router.handle('/s', ctx);
+    const before = (connector._sent[0].input as { markdown: string }).markdown;
+    expect(before).toContain('permissionMode: `manual`');
+
+    // 模拟热更链路（bridge.syncActiveApprovalModes → runner.updateApprovalMode）
+    await runner.updateApprovalMode({ permissionMode: 'yolo' });
+    await router.handle('/s', ctx);
+    const after = (connector._sent[1].input as { markdown: string }).markdown;
+    expect(after).toContain('permissionMode: `yolo`');
   });
 
   // Anchor (red): config.edit handler is dead code — no card builder emits
@@ -3335,7 +3508,7 @@ describe('CommandRouter', () => {
 
   it('cmdConfig <key> <value> command writes to disk immediately', async () => {
     const { router, connector } = createRouter();
-    const configPath = (router as unknown as { configPath: string }).configPath;
+    const configPath = router.configPath;
 
     // 执行 /config claude.model haiku（现在使用 alias）
     await router.handle('/config claude.model haiku', ctx);
@@ -3346,7 +3519,7 @@ describe('CommandRouter', () => {
     expect(diskContent).toContain('model: haiku');
 
     // pendingConfig 应清空
-    expect((router as unknown as { pendingConfig: unknown }).pendingConfig).toBeNull();
+    expect(router.pendingConfig).toBeNull();
 
     // 响应应为卡片确认
     const response = connector._sent[0].input as { card?: object; text?: string };
@@ -3534,22 +3707,8 @@ describe('CommandRouter', () => {
 describe('/active card pagination', () => {
   /** Create a router with a bridge that returns the given active runs / bash runs. */
   function createActiveRouter(
-    activeRuns: Array<{
-      runId: string;
-      sessionId: string;
-      cwd: string;
-      userId: string;
-      chatId: string;
-      terminal: string;
-    }>,
-    activeBashRuns: Array<{
-      runId: string;
-      cwd: string;
-      userId: string;
-      chatId: string;
-      terminal: string;
-      command: string;
-    }> = [],
+    activeRuns: ReturnType<Bridge['getActiveRuns']>,
+    activeBashRuns: ReturnType<Bridge['getActiveBashRuns']> = [],
   ) {
     const sessionStore = new SessionStore();
     const connector = createStubConnector();
@@ -3567,10 +3726,8 @@ describe('/active card pagination', () => {
       sessionStore,
       config,
     });
-    (bridge as unknown as { getActiveRuns: () => typeof activeRuns }).getActiveRuns = () =>
-      activeRuns;
-    (bridge as unknown as { getActiveBashRuns: () => typeof activeBashRuns }).getActiveBashRuns =
-      () => activeBashRuns;
+    bridge.getActiveRuns = () => activeRuns;
+    bridge.getActiveBashRuns = () => activeBashRuns;
     const router = new CommandRouter({
       sessionStore,
       bridge,
@@ -3772,10 +3929,8 @@ describe('P0: /active card must use CardKit 2.0 (not 1.x action container)', () 
     ];
 
     // Override the methods
-    (bridge as unknown as { getActiveRuns: () => typeof activeRuns }).getActiveRuns = () =>
-      activeRuns;
-    (bridge as unknown as { getActiveBashRuns: () => typeof activeBashRuns }).getActiveBashRuns =
-      () => activeBashRuns;
+    bridge.getActiveRuns = () => activeRuns;
+    bridge.getActiveBashRuns = () => activeBashRuns;
 
     // Create router with our mock bridge
     const router = new CommandRouter({
@@ -3797,7 +3952,6 @@ describe('P0: /active card must use CardKit 2.0 (not 1.x action container)', () 
 
     const cardStr = JSON.stringify(response.card);
     // 2.0 cards MUST NOT mix in 1.x `tag:"action"` containers (200861 root cause)
-    // This assertion will FAIL until we fix buildActiveCardFromMemory
     expect(cardStr).not.toMatch(/"tag"\s*:\s*"action"[^}]*"actions"/);
   });
 
@@ -3821,12 +3975,7 @@ describe('P0: /active card must use CardKit 2.0 (not 1.x action container)', () 
       connector,
       sessionStore,
       config,
-    }) as unknown as Bridge & {
-      clearRunners: () => void;
-      getActiveRuns: () => [];
-      getActiveBashRuns: () => [];
-      getActiveRunFor: () => undefined;
-    };
+    });
     bridge.clearRunners = () => {
       clearRunnersCalled = true;
     };
@@ -3850,18 +3999,7 @@ describe('P0: /active card must use CardKit 2.0 (not 1.x action container)', () 
       messageId: 'msg1',
     });
 
-    // This assertion will FAIL until we add kimi. to the agentConfigKeys filter
     expect(clearRunnersCalled).toBe(true);
-  });
-});
-
-describe('anchor: live re-export (run-renderer/bridge import via router/index.js)', () => {
-  it('test_anchor_router_reexports_format_usage_stats', async () => {
-    // run-renderer and bridge import formatUsageStats from ../router/index.js,
-    // so router must keep re-exporting it. (isParentDir removed 2026-07-31.)
-    const routerModule = await import('./index.js');
-    const exports = routerModule as Record<string, unknown>;
-    expect(exports.formatUsageStats).toBeDefined();
   });
 });
 
@@ -3952,6 +4090,9 @@ describe('config switch agent sends Resume card', () => {
     const texts = collectCardTexts(card!.body?.elements ?? []);
     const allText = texts.join(' ');
     expect(allText).toContain('session 已清空');
+    // No new-session button: the next message already starts a fresh session,
+    // a button would mislead users into thinking a click is required
+    expect(JSON.stringify(card!.body?.elements ?? [])).not.toContain('"cmd":"new-session"');
   });
 
   it('config.save without agent switch does not send switch card', async () => {

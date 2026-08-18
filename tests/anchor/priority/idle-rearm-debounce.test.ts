@@ -2,18 +2,9 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { Bridge } from '../../../src/bridge/index.js';
-import { SessionStore } from '../../../src/session/index.js';
-import { AppConfigSchema } from '../../../src/config/index.js';
-import type { AppConfig } from '../../../src/config/index.js';
 import type { AgentEvent, Runner } from '../../../src/runner/index.js';
 
-import {
-  createStubAgentRegistry,
-  createStubSessionReaderRegistry,
-  createStubConnector,
-  createStubRunner,
-} from '../../lib/bridge-stubs.js';
+import { createStubRunner, makeBridge } from '../../lib/bridge-stubs.js';
 const { mockLogger } = vi.hoisted(() => ({
   mockLogger: {
     debug: vi.fn(),
@@ -56,15 +47,9 @@ function createEventThenHangRunner(events: AgentEvent[]): EventThenHangRunner {
 }
 
 let tmpDir: string;
-let config: AppConfig;
 
 beforeEach(() => {
   tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'bridge-idle-rearm-anchor-'));
-  config = AppConfigSchema.parse({
-    feishu: { appId: 'test', appSecret: 'test' },
-    claude: { model: 'opus', stopGraceMs: 5000 },
-    output: { showThinking: true, showToolUse: false, showToolResult: false },
-  });
 });
 
 afterEach(() => {
@@ -72,28 +57,6 @@ afterEach(() => {
 });
 
 const ctx = { userId: 'user1', chatId: 'chat1', messageId: 'msg1' };
-
-function makeBridge(
-  opts: {
-    runner?: Runner;
-    idleTimeoutMs?: number;
-    connector?: ReturnType<typeof createStubConnector>;
-  } = {},
-) {
-  const sessionStore = new SessionStore();
-  const connector = opts.connector ?? createStubConnector();
-  const runner = opts.runner ?? createStubRunner({ mode: 'streaming', events: [] });
-  const bridge = new Bridge({
-    runner,
-    agentRegistry: createStubAgentRegistry(runner),
-    sessionReaderRegistry: createStubSessionReaderRegistry(),
-    connector,
-    sessionStore,
-    config,
-    ...(opts.idleTimeoutMs !== undefined ? { idleTimeoutMs: opts.idleTimeoutMs } : {}),
-  });
-  return { bridge, sessionStore, connector, runner };
-}
 
 /** Build N non-result text events to simulate a high-frequency event stream. */
 function makeTextEvents(n: number): AgentEvent[] {

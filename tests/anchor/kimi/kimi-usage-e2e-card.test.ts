@@ -70,7 +70,7 @@ vi.mock('../../../src/logger/index.js', () => ({
   initLogger: () => mockLogger,
 }));
 /** Wrap a stub Runner with AgentRunner fields。 */
-function asKimiRunner(r: Runner): AgentRunner {
+function asAgentRunner(r: Runner): AgentRunner {
   return {
     ...r,
     kind: 'kimi',
@@ -166,7 +166,7 @@ describe('kimi done card shows session-wide real usage end-to-end (anchor)', () 
 
     const connector = createStubConnector();
     const sessionStore = new SessionStore();
-    const kimiRunner = asKimiRunner(
+    const kimiRunner = asAgentRunner(
       createStubRunner({
         mode: 'streaming',
         events: [

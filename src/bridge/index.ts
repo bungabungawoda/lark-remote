@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import type { Runner, AgentRunner, AgentEvent, AgentSessionReader } from '../runner/index.js';
+import { sleep } from '../common/sleep.js';
 import type { AgentRegistry } from '../runner/registry.js';
 import type { SessionReaderRegistry, SessionStore } from '../session/index.js';
 import type { AppConfig } from '../config/index.js';
@@ -9,9 +10,7 @@ import { renderRunCard } from '../card/run-renderer.js';
 import { renderBashCard } from '../card/bash-renderer.js';
 import { BashCardSession, capBashOutput } from '../card/bash-card-session.js';
 import type { RunTerminal } from '../card/run-state.js';
-import { markdownDiv } from '../card/collapsible.js';
-import { sessionEventPanel } from '../router/card-helpers.js';
-import { formatUsageStats } from '../router/index.js';
+import { buildSessionHistoryCard } from '../router/card-helpers.js';
 import { agentDisplayName, resumeUseButton } from '../card/card-shared.js';
 import { enforceCardBudget } from '../card/card-budget.js';
 import { normalizeResultUsage } from '../runner/common/usage.js';
@@ -25,6 +24,8 @@ import {
 } from './queue-manager.js';
 import { ApprovalCoordinator, decisionToApprovalAction } from './approval-coordinator.js';
 import type { ApprovalAction, ApprovalToggleAction } from './approval-coordinator.js';
+import { InboundMediaHandler } from './inbound-media.js';
+import type { InboundMediaPayload } from '../connector/index.js';
 
 /**
  * Max events to read for the completion notification card (mirror router's
@@ -36,6 +37,13 @@ const COMPLETION_NOTIFICATION_MAX_EVENTS = 5;
 
 /** Approval request timeout (ms) — pending approval expires after this. */
 const APPROVAL_TIMEOUT_MS = 5 * 60 * 1000;
+
+/**
+ * runner 缓存的工作区数量上限（review P3-3）：超过后创建新工作区槽位时
+ * 顺带回收「非 active 且进程已停」的死缓存，防止随访问过的工作区数量
+ * 无界增长。活进程/在途 run 一律保留（workspace-lifetime 长驻连接不能误杀）。
+ */
+const MAX_CACHED_RUNNER_WORKSPACES = 10;
 
 /**
  * Max idle time (no stdout events) before a claude run is considered hung
@@ -174,8 +182,10 @@ interface ActiveRun {
  * Runner/BridgeChannel seams.
  */
 export class Bridge {
-  private connector: BridgeChannel;
-  private sessionStore: SessionStore;
+  /** 飞书连接通道（public：集成测试的 seam，替代 as unknown as 访问）。 */
+  connector: BridgeChannel;
+  /** 会话存储（public：测试辅助读取/写入 cwd 等，替代私有访问）。 */
+  sessionStore: SessionStore;
   private config: AppConfig;
   private workspaceStore?: {
     get(name: string): string | undefined;
@@ -186,6 +196,8 @@ export class Bridge {
   private agentRegistry: AgentRegistry;
   /** Session reader registry for usage and completion cards. */
   private sessionReaderRegistry: SessionReaderRegistry;
+  /** 入站媒体（图片/文件）落盘 + 合批提示。 */
+  private readonly mediaHandler: InboundMediaHandler;
   /**
    * Per-workspace runner instances, keyed by (cwd, agentKind).
    * Fix 4 (2026-07-18): Each agentKind has its own cache slot, so switching
@@ -196,7 +208,8 @@ export class Bridge {
    */
   private runners = new Map<string, Map<AgentKind, Runner>>();
   /** Queue manager for per-workspace serial processing queue. */
-  private queueManager: QueueManager;
+  /** 普通消息队列管理器（public：测试注入 queue-card 状态用）。 */
+  queueManager: QueueManager;
   /** Active runs per workspace (cwd). Multiple workspaces can run in parallel. */
   private activeRuns = new Map<string, ActiveRun>();
   /** Approval coordinators keyed by runId. */
@@ -243,6 +256,11 @@ export class Bridge {
         this.connector.sendWithRetry(chatId, { card }, { replyTo: opts?.replyTo }),
       (messageId, card) => this.connector.updateCard(messageId, card),
     );
+    this.mediaHandler = new InboundMediaHandler({
+      resolveCwd: (userId) => this.resolveCwd(userId),
+      getConfig: () => this.config,
+      send: async (ctx, text) => this.sendResult({ text }, ctx),
+    });
   }
 
   /**
@@ -257,6 +275,20 @@ export class Bridge {
     const workspaceMap = this.runners.get(workspace);
     if (workspaceMap?.has(kind)) {
       return workspaceMap.get(kind)!;
+    }
+
+    // review P3-3：缓存超过上限且是新工作区时才回收死槽位——刚创建未 run
+    // 的 runner 同样是 isRunning=false，小缓存下立即回收会破坏「创建即注册」
+    // 的既有语义（exit-dispatcher 计数回归）。
+    if (this.runners.size >= MAX_CACHED_RUNNER_WORKSPACES && !this.runners.has(workspace)) {
+      for (const [cwd, slotMap] of [...this.runners.entries()]) {
+        if (this.activeRuns.has(cwd)) continue;
+        for (const [slotKind, r] of [...slotMap.entries()]) {
+          if (!r.isRunning) {
+            this.evictRunnerSlot(cwd, slotKind);
+          }
+        }
+      }
     }
 
     // Create new runner for this (workspace, kind) slot
@@ -288,9 +320,70 @@ export class Bridge {
     }
   }
 
+  /**
+   * Push updated approval-mode settings to active workspace-lifetime runners.
+   * `clearRunners()` deliberately skips workspaces with active runs; this
+   * gives those runners a chance to apply the new settings immediately via
+   * the unified duck method `updateApprovalMode` (codex → thread/settings/
+   * update, kimi → session/set_mode, opencode → session/set_mode) instead of
+   * keeping a stale snapshot until the runner is evicted/recreated.
+   */
+  syncActiveApprovalModes(): void {
+    for (const [cwd, active] of this.activeRuns) {
+      const runner = active.runner as unknown as {
+        updateApprovalMode?(settings: Record<string, unknown>): Promise<void>;
+      };
+      if (typeof runner.updateApprovalMode !== 'function') continue;
+      const settings = this.approvalModeSettingsFor(active.agentKind);
+      if (!settings) continue;
+      void runner.updateApprovalMode(settings).catch((err: Error) => {
+        getLogger().warn(`[bridge] sync approval mode failed cwd=${cwd}: ${err.message}`);
+      });
+    }
+  }
+
+  /** Per-agent approval-mode settings snapshot from the current config. */
+  private approvalModeSettingsFor(kind: AgentKind): Record<string, unknown> | undefined {
+    const agents = this.config.agents;
+    switch (kind) {
+      case 'codex': {
+        const codexConfig = agents?.codex;
+        if (!codexConfig) return undefined;
+        return {
+          approvalPolicy: codexConfig.approvalPolicy,
+          sandbox: codexConfig.sandbox,
+        };
+      }
+      case 'kimi': {
+        const kimiConfig = agents?.kimi;
+        if (!kimiConfig) return undefined;
+        return { permissionMode: kimiConfig.permissionMode };
+      }
+      case 'opencode': {
+        const opencodeConfig = agents?.opencode;
+        if (!opencodeConfig) return undefined;
+        return { mode: opencodeConfig.mode };
+      }
+      default:
+        return undefined;
+    }
+  }
+
   /** Get the current runner for a workspace. Used by router for agent-specific commands (P3.2). */
   getCurrentRunner(workspace: string): AgentRunner {
     return this.getRunner(workspace) as AgentRunner;
+  }
+
+  /**
+   * Whether the runner for the given agent kind has runCompact capability.
+   * Used by router for compact button gating (design doc §6.2-2: duck-typing
+   * instead of hardcoding agentKind === 'codex').
+   */
+  hasRunCompact(workspace: string, kind: AgentKind = this.config.defaultAgent): boolean {
+    const runner = this.getRunner(workspace, kind);
+    return (
+      'runCompact' in runner && typeof (runner as Record<string, unknown>).runCompact === 'function'
+    );
   }
 
   /** 入队时刻快照：当前 defaultAgent + 该 agent 的 sessionId（无 session 则 undefined）。
@@ -360,7 +453,8 @@ export class Bridge {
    * Extract agent-specific run options from config.
    * Returns model/effort/etc. based on current defaultAgent.
    */
-  private getAgentRunOptions(agent: AgentKind = this.config.defaultAgent): {
+  /** 解析某 agent 的 run 选项（forwardToClaude 用；测试直接调用的 seam）。 */
+  getAgentRunOptions(agent: AgentKind = this.config.defaultAgent): {
     model?: string;
     effort?: string;
     thinking?: string;
@@ -634,7 +728,10 @@ export class Bridge {
         // its slot interrupted, hiding it from queue cards (A22).
         const stoppedSlot = this.queueManager.getExecutingSlot(cwd);
         await Promise.allSettled([
-          active.session.finish('interrupted'),
+          // 用户主动中断（/stop、stop 卡按钮、queue.immediate）显式打标
+          // interruptedReason，与审批超时自动取消（approval_timeout）、审批
+          // 卡取消（approval_cancelled）在终态数据上可区分（方案 A）。
+          active.session.finish('interrupted', { interruptedReason: 'user_stop' }),
           runner.stop({ immediate: true }),
         ]);
         // The chain may have advanced while the stop was in flight: a new run
@@ -789,6 +886,21 @@ export class Bridge {
       getLogger().error('[bridge] failed to send file:', err);
       await this.sendResult({ text: `发送文件失败: ${(err as Error).message}` }, ctx);
     }
+  }
+
+  /** 入站媒体落盘入口（connector 下载完成后调用）。 */
+  async onInboundMedia(payload: InboundMediaPayload): Promise<void> {
+    await this.mediaHandler.handle(payload);
+  }
+
+  /** 文本消息到达时立即冲刷待合批的媒体保存提示。 */
+  flushMediaNotifications(userId: string, chatId: string): void {
+    this.mediaHandler.flushAll(userId, chatId);
+  }
+
+  /** 冲刷全部待合批提示（/exit、/restart 干净退出前调用）。 */
+  async flushAllMediaNotifications(): Promise<void> {
+    await this.mediaHandler.flushAllPending();
   }
 
   /** Reconnect the underlying Feishu channel. */
@@ -951,9 +1063,8 @@ export class Bridge {
     message: string,
     agentKind: AgentKind = this.config.defaultAgent,
   ): Promise<void> {
-    // Runner 声明的 usage 权威来源（review P3-7）：codex exec = 'jsonl'，
-    // codex app-server = 'live'（turn/started 的 tokenUsage.last 是本 turn 增量）。
-    // 其余 runner 未声明，回退到 agentKind 推断（仅 codex 视为 jsonl-first）。
+    // Runner 声明的 usage 权威来源（review P3-7）：codex app-server = 'live'
+    // （turn/started 的 tokenUsage.last 是本 turn 增量）。其余 runner 未声明。
     const usageAuthority = (
       runner as Runner & { getUsageAuthority?: () => 'live' | 'jsonl' }
     ).getUsageAuthority?.();
@@ -1020,6 +1131,15 @@ export class Bridge {
       // "15min 无事件即 stop" 的语义不变（§9.12）。周期取 idleTimeoutMs/2，使停滞
       // 后最多在 1.5× idleTimeoutMs 内触发（半个窗口延迟，watchdog 语义可接受）。
       const fireIdleTimeout = () => {
+        // 权限等待期间暂停空闲看门狗：claude/codex 等待人工决策时无 stdout
+        // 事件，「等审批」不是「挂死」。审批由 ApprovalCoordinator 的超时
+        // （默认 5 分钟 < 看门狗窗口）自愈：cancel 送达 + 中断 turn，不会无限
+        // 挂起。
+        const pendingApproval = this.approvalCoordinators.get(runId)?.pendingCount() ?? 0;
+        if (pendingApproval > 0) {
+          lastEventTs = Date.now();
+          return;
+        }
         if (idleInterval) clearInterval(idleInterval);
         idleInterval = null;
         getLogger().warn(`[bridge] claude idle timeout, stopping process runId=${runId}`);
@@ -1181,8 +1301,8 @@ export class Bridge {
           // app-server 模式 setup 失败路径（thread/start 成功后 turn/start 失败）
           // 不会有 turn_started 事件，store 不会写回新线程 id；runner 已在 result
           // 里兜底上报（review P3-10）。此处仅当 runner 声明 live usage（app-server）
-          // 且会话指针未动时写回，避免下条消息再开一个孤儿线程。exec 模式与其
-          // 余 agent 不在此列（它们各自有 system.init / turn_started 写回）。
+          // 且会话指针未动时写回，避免下条消息再开一个孤儿线程。其余 agent 不在
+          // 此列（它们各自有 system.init / turn_started 写回）。
           if (
             usageAuthority === 'live' &&
             event.session_id &&
@@ -1245,11 +1365,12 @@ export class Bridge {
           let coordinator = this.approvalCoordinators.get(runId);
           if (!coordinator) {
             coordinator = new ApprovalCoordinator({
-              runId,
-              userId: ctx.userId,
-              chatId: ctx.chatId,
-              workspace: cwd,
-              approvalTimeoutMs: APPROVAL_TIMEOUT_MS,
+              // claude 审批超时走 config（claude.approvalTimeoutMs，默认 5 分钟，
+              // 对齐 codex 红线勿改短）；codex 维持模块常量。
+              approvalTimeoutMs:
+                agentKind === 'claude'
+                  ? (this.config.claude?.approvalTimeoutMs ?? APPROVAL_TIMEOUT_MS)
+                  : APPROVAL_TIMEOUT_MS,
               responder: async (requestId, response) => {
                 const r = runner as Runner & {
                   respondApproval?: (rid: number | string, res: unknown) => Promise<void>;
@@ -1313,18 +1434,13 @@ export class Bridge {
       finalCumulativeOutputTokens = finalUsage?.cumulativeOutputTokens;
       finalCumulativeCacheReadTokens = finalUsage?.cumulativeCacheReadTokens;
       finalCumulativeCacheCreationTokens = finalUsage?.cumulativeCacheCreationTokens;
-      // 统一 flow 字段 scope：live 优先（非 codex），jsonl 兜底；codex 例外。
+      // 统一 flow 字段 scope：live 优先，jsonl 兜底。
       // 当 live result 事件带了 input/output（即 liveInputTokens/liveOutputTokens
       // 非 undefined），所有 flow 字段统一用 live scope（本 run），不用 jsonl
       // 的 session 累计值覆盖，避免 cache%/Total 分子分母不同源。
       // 无 live usage 时（如 kimi），jsonl 值兜底。
-      // codex 例外（2026-08-01）：codex exec 的 turn.completed.usage 是会话累计
-      // total_token_usage（resume 长会话下虚高数百倍），不是本 run 增量——live
-      // 值必须被忽略，flow 字段一律取 jsonl 主线程文件的 per-turn 值；
-      // jsonl 缺失（老版本无 token_count）时才回退 live。
       // contextLength/compactCount 保持 jsonl 优先（它们是水位/历史计数）。
-      const codexJsonlFirst =
-        usageAuthority === 'jsonl' || (usageAuthority === undefined && agentKind === 'codex');
+      const codexJsonlFirst = usageAuthority === 'jsonl';
       if (!codexJsonlFirst && liveInputTokens !== undefined && liveOutputTokens !== undefined) {
         // 非 codex 且 live 有 input/output → 所有 flow 字段用 live scope
         finalInputTokens = liveInputTokens;
@@ -1540,9 +1656,14 @@ export class Bridge {
         // Compact 卡片需要 runId + sessionId；record 供终态卡上的 Compact 按钮
         // 校验与取参（activeRuns 已清空，无法再查到）。异常退出（error/
         // interrupted/idle_timeout）同样记录——上下文往往更大，压缩后再续。
+        // §6.2-3：写入条件从「codex 终态」放宽为「runner 有 runCompact 的终态」
+        // （codex app-server + kimi acp 均满足）。
         const runTerminal = cardSession.currentState.terminal;
+        const runnerHasCompact =
+          'runCompact' in activeRun.runner &&
+          typeof (activeRun.runner as Record<string, unknown>).runCompact === 'function';
         if (
-          activeRun.agentKind === 'codex' &&
+          runnerHasCompact &&
           activeRun.runner.lifetime === 'workspace' &&
           (runTerminal === 'done' ||
             runTerminal === 'error' ||
@@ -1551,7 +1672,7 @@ export class Bridge {
         ) {
           const compactSessionId =
             cardSession.currentState.sessionId ??
-            this.sessionStore.getSessionId(ctx.userId, 'codex');
+            this.sessionStore.getSessionId(ctx.userId, activeRun.agentKind);
           if (compactSessionId) {
             this.lastCompactableCodexRun.set(cwd, {
               runId: activeRun.runId,
@@ -1651,46 +1772,22 @@ export class Bridge {
       });
       const { events, usage } = content;
 
-      const elements: object[] = [
-        markdownDiv(`📂 \`${cwd}\`\n会话: **${sessionId}**`),
-        { tag: 'hr' },
-      ];
-
-      // Add session content in collapsible panels (last 2 expanded)
-      events.forEach((ev, i) => {
-        elements.push(sessionEventPanel(ev, i, events.length, 2, agentKind));
-      });
-
-      // Add usage stats at the end
-      const usageStatsStr = formatUsageStats(usage, { showResult: true, result: 'completed' });
-      if (usage) {
-        elements.push(markdownDiv(usageStatsStr));
-      }
-
-      // Add action button to resume this session - use column_set+column for 2.0
-      elements.push({
-        tag: 'column_set',
-        columns: [
-          {
-            tag: 'column',
-            width: 'auto',
-            elements: [resumeUseButton(sessionId, agentKind)],
-          },
-        ],
-      });
-
-      const card = {
-        schema: '2.0',
-        config: { wide_screen_mode: true },
-        header: {
-          template: 'green',
-          title: {
-            tag: 'plain_text',
-            content: '✅ 会话已完成',
-          },
+      const card = buildSessionHistoryCard(
+        {
+          sessionId,
+          cwd,
+          events,
+          usage,
         },
-        body: { elements },
-      };
+        {
+          agentKind,
+          headerText: `📂 \`${cwd}\`\n会话: **${sessionId}**`,
+          title: '✅ 会话已完成',
+          usageResult: 'completed',
+          actions: [resumeUseButton(sessionId, agentKind)],
+          headerTemplate: 'green',
+        },
+      );
 
       // P1-21: send through sendResult so enforceCardBudget guards the card
       // (previously sent via connector directly, bypassing the budget — long
@@ -1715,6 +1812,24 @@ export class Bridge {
   // =============================================================================
 
   /**
+   * Resolve the ApprovalCoordinator for a run, or throw the standard
+   * "已结束" error. Shared preamble of all approval card-action handlers.
+   */
+  private withCoordinator<T>(
+    runId: string,
+    fn: (coordinator: ApprovalCoordinator) => Promise<T>,
+  ): Promise<T> {
+    const coordinator = this.approvalCoordinators.get(runId);
+    if (!coordinator) {
+      // P2-7: run 已结束（coordinator 已释放）时点击审批按钮必须给用户明确反馈，
+      // 不能静默。router 会把该异常转成 error toast。
+      getLogger().warn(`[bridge] no approval coordinator for runId=${runId.slice(0, 8)}`);
+      throw new Error('任务已结束，审批无法响应');
+    }
+    return fn(coordinator);
+  }
+
+  /**
    * Handle an approval response from a card button click.
    * Routes to the ApprovalCoordinator for the given run.
    */
@@ -1722,25 +1837,17 @@ export class Bridge {
     runId: string;
     requestId: number | string;
     decision: string;
-    scope?: 'turn' | 'session';
     nonce: string;
   }): Promise<void> {
     const log = getLogger();
     log.info(
       `[bridge] handleApprovalRespond runId=${opts.runId.slice(0, 8)}... requestId=${opts.requestId} decision=${opts.decision}`,
     );
-
-    const coordinator = this.approvalCoordinators.get(opts.runId);
-    if (!coordinator) {
-      // P2-7: run 已结束（coordinator 已释放）时点击审批按钮必须给用户明确反馈，
-      // 不能静默。router 会把该异常转成 error toast。
-      log.warn(`[bridge] no approval coordinator for runId=${opts.runId.slice(0, 8)}`);
-      throw new Error('任务已结束，审批无法响应');
-    }
-
-    // Build ApprovalAction from the decision string
-    const action: ApprovalAction = decisionToApprovalAction(opts.decision);
-    await coordinator.submit(action, { requestId: opts.requestId, nonce: opts.nonce });
+    return this.withCoordinator(opts.runId, async (coordinator) => {
+      // Build ApprovalAction from the decision string
+      const action: ApprovalAction = decisionToApprovalAction(opts.decision);
+      await coordinator.submit(action, { requestId: opts.requestId, nonce: opts.nonce });
+    });
   }
 
   /**
@@ -1751,7 +1858,6 @@ export class Bridge {
     runId: string;
     requestId: number | string;
     permId: string;
-    nonce: string;
     selected?: boolean;
   }): Promise<void> {
     const log = getLogger();
@@ -1759,18 +1865,82 @@ export class Bridge {
       `[bridge] handleApprovalToggle runId=${opts.runId.slice(0, 8)}... requestId=${opts.requestId} permId=${opts.permId}`,
     );
 
-    const coordinator = this.approvalCoordinators.get(opts.runId);
-    if (!coordinator) {
-      log.warn(`[bridge] no approval coordinator for runId=${opts.runId.slice(0, 8)}`);
-      throw new Error('任务已结束，审批无法响应');
-    }
+    return this.withCoordinator(opts.runId, async (coordinator) => {
+      // selected 由卡片根据当前渲染状态传回（取反），不再硬编码只授不撤。
+      const toggleAction: ApprovalToggleAction = {
+        permId: opts.permId,
+        selected: opts.selected ?? true,
+      };
+      await coordinator.togglePerm(toggleAction, { requestId: opts.requestId });
+    });
+  }
 
-    // selected 由卡片根据当前渲染状态传回（取反），不再硬编码只授不撤。
-    const toggleAction: ApprovalToggleAction = {
-      permId: opts.permId,
-      selected: opts.selected ?? true,
-    };
-    await coordinator.togglePerm(toggleAction, { requestId: opts.requestId });
+  /**
+   * Claude AskUserQuestion 选项点击（单选即时提交 / 多选切换勾选）。
+   * 路由到 ApprovalCoordinator.toggleAnswer。
+   */
+  async handleApprovalAnswer(opts: {
+    runId: string;
+    requestId: number | string;
+    questionIndex: number;
+    option: string;
+    nonce: string;
+  }): Promise<void> {
+    const log = getLogger();
+    log.info(
+      `[bridge] handleApprovalAnswer runId=${opts.runId.slice(0, 8)}... requestId=${opts.requestId} question=${opts.questionIndex}`,
+    );
+    return this.withCoordinator(opts.runId, (coordinator) =>
+      coordinator.toggleAnswer(
+        { questionIndex: opts.questionIndex, option: opts.option },
+        { requestId: opts.requestId, nonce: opts.nonce },
+      ),
+    );
+  }
+
+  /**
+   * Claude AskUserQuestion 多选问题的「提交答案」按钮。
+   * 路由到 ApprovalCoordinator.submitAnswers。
+   */
+  async handleApprovalAnswerSubmit(opts: {
+    runId: string;
+    requestId: number | string;
+    questionIndex: number;
+    nonce: string;
+  }): Promise<void> {
+    const log = getLogger();
+    log.info(
+      `[bridge] handleApprovalAnswerSubmit runId=${opts.runId.slice(0, 8)}... requestId=${opts.requestId} question=${opts.questionIndex}`,
+    );
+    return this.withCoordinator(opts.runId, (coordinator) =>
+      coordinator.submitAnswers(
+        { questionIndex: opts.questionIndex },
+        { requestId: opts.requestId, nonce: opts.nonce },
+      ),
+    );
+  }
+
+  /**
+   * Claude AskUserQuestion 自定义答案（Other，review P3-4）：自由文本直接
+   * 作为该单选问题的答案提交。路由到 ApprovalCoordinator.answerCustom。
+   */
+  async handleApprovalAnswerCustom(opts: {
+    runId: string;
+    requestId: number | string;
+    questionIndex: number;
+    text: string;
+    nonce: string;
+  }): Promise<void> {
+    const log = getLogger();
+    log.info(
+      `[bridge] handleApprovalAnswerCustom runId=${opts.runId.slice(0, 8)}... requestId=${opts.requestId} question=${opts.questionIndex}`,
+    );
+    return this.withCoordinator(opts.runId, (coordinator) =>
+      coordinator.answerCustom(
+        { questionIndex: opts.questionIndex, text: opts.text },
+        { requestId: opts.requestId, nonce: opts.nonce },
+      ),
+    );
   }
 
   /**
@@ -1900,7 +2070,7 @@ export class Bridge {
       // （实测差 ~9ms），compactCount 未读到则短重试，仍失败优雅降级（无统计）。
       let finalUsage = this.resolveFinalUsage(sessionId, cwd, agentKind);
       for (let attempt = 0; !finalUsage?.compactCount && attempt < 2; attempt++) {
-        await new Promise((r) => setTimeout(r, 150));
+        await sleep(150);
         finalUsage = this.resolveFinalUsage(sessionId, cwd, agentKind);
       }
       await cardSession.finish(sawResult ? 'done' : 'error', {

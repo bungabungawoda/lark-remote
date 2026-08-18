@@ -7,6 +7,7 @@ import type {
   TurnStartedEvent,
   TurnDiffEvent,
 } from '../runner/index.js';
+import { keepTail } from '../common/truncate.js';
 
 const MAX_REASONING_CHARS = 4_000;
 const MAX_TEXT_CHARS = 12_000;
@@ -16,6 +17,8 @@ const MAX_BLOCKS = 24;
 export type RunTerminal =
   'running' | 'finalizing' | 'done' | 'error' | 'interrupted' | 'idle_timeout';
 export type RunFooter = 'thinking' | 'tool_running' | 'streaming' | null;
+/** 中断来源（interrupted 终态的原因），供卡片如实归因。 */
+export type InterruptedReason = 'approval_timeout' | 'user_stop' | 'approval_cancelled';
 type ToolStatus = 'running' | 'ok' | 'error';
 
 export interface ToolEntry {
@@ -75,6 +78,8 @@ export interface RunState {
   blocks: RunBlock[];
   sessionId?: string;
   resultSubtype?: 'success' | 'error' | 'interrupted';
+  /** interrupted 终态的中断来源；undefined = 未归类（渲染默认文案）。 */
+  interruptedReason?: InterruptedReason;
   contextLength?: number;
   /** 当前模型 context window 上限（codex jsonl 提供）；卡片据此渲染百分比。 */
   contextLimit?: number;
@@ -109,10 +114,19 @@ export interface RunState {
    * 时全部渲染，避免后到者顶掉先到者的按钮（单槽会丢 UI，只能等超时 cancel）。
    */
   approvals?: Array<{ view: ApprovalView; expired?: boolean }>;
+  /**
+   * 审批是否曾过期（桥侧 timer 触发，approval_expired 事件置位）。
+   * 独立于 approvals 数组持久保存：cancel 送达后 server 会回
+   * approval_resolved，把对应审批条目从数组移除，但过期原因必须活到
+   * 终态渲染（2026-08-15 事故：标记被消费后卡片误报「已被用户终止」）。
+   */
+  approvalExpired?: boolean;
 }
 
 export interface FinishMeta {
   resultSubtype?: 'success' | 'error' | 'interrupted';
+  /** 中断来源：由桥侧在 finish 时显式传入（/stop → user_stop、审批卡取消 → approval_cancelled）。 */
+  interruptedReason?: InterruptedReason;
   contextLength?: number;
   /** 当前模型 context window 上限；透传到 RunState 供 done 卡片显示百分比。 */
   contextLimit?: number;
@@ -196,6 +210,7 @@ export function reduceRunState(state: RunState, event: AgentEvent): RunState {
   if (event.type === 'approval_expired') {
     return {
       ...state,
+      approvalExpired: true,
       approvals: (state.approvals ?? []).map((a) =>
         a.view.requestId === event.requestId ? { ...a, expired: true } : a,
       ),
@@ -239,7 +254,7 @@ function reduceTurnDiffEvent(state: RunState, event: TurnDiffEvent): RunState {
           () => ({
             kind: 'text' as const,
             itemId: event.itemId,
-            content: keepLatest(event.text!, MAX_TEXT_CHARS),
+            content: keepTail(event.text!, MAX_TEXT_CHARS),
             timestamp: ts,
             ...(complete ? { completedAt: ts } : {}),
           }),
@@ -247,7 +262,7 @@ function reduceTurnDiffEvent(state: RunState, event: TurnDiffEvent): RunState {
             const textBlock = existing as Extract<RunBlock, { kind: 'text' }>;
             return {
               ...textBlock,
-              content: keepLatest(event.text!, MAX_TEXT_CHARS),
+              content: keepTail(event.text!, MAX_TEXT_CHARS),
               ...(complete ? { completedAt: ts } : {}),
             };
           },
@@ -268,7 +283,7 @@ function reduceTurnDiffEvent(state: RunState, event: TurnDiffEvent): RunState {
           () => ({
             kind: 'thinking' as const,
             itemId: event.itemId,
-            content: keepLatest(event.reasoning!, MAX_REASONING_CHARS),
+            content: keepTail(event.reasoning!, MAX_REASONING_CHARS),
             active: !complete,
             timestamp: ts,
             ...(complete ? { completedAt: ts } : {}),
@@ -277,7 +292,7 @@ function reduceTurnDiffEvent(state: RunState, event: TurnDiffEvent): RunState {
             const thinkingBlock = existing as Extract<RunBlock, { kind: 'thinking' }>;
             return {
               ...thinkingBlock,
-              content: keepLatest(event.reasoning!, MAX_REASONING_CHARS),
+              content: keepTail(event.reasoning!, MAX_REASONING_CHARS),
               active: !complete,
               ...(complete ? { completedAt: ts } : {}),
             };
@@ -302,7 +317,7 @@ function reduceTurnDiffEvent(state: RunState, event: TurnDiffEvent): RunState {
               id: event.itemId,
               name: 'command',
               input: '',
-              output: keepLatest(event.toolOutput!, MAX_TOOL_DETAIL_CHARS),
+              output: keepTail(event.toolOutput!, MAX_TOOL_DETAIL_CHARS),
               status: complete ? (event.toolStatus ?? 'ok') : 'running',
               startedAt: ts,
               ...(complete ? { completedAt: ts } : {}),
@@ -312,7 +327,7 @@ function reduceTurnDiffEvent(state: RunState, event: TurnDiffEvent): RunState {
             kind: 'tool' as const,
             tool: {
               ...(existing as Extract<RunBlock, { kind: 'tool' }>).tool,
-              output: keepLatest(event.toolOutput!, MAX_TOOL_DETAIL_CHARS),
+              output: keepTail(event.toolOutput!, MAX_TOOL_DETAIL_CHARS),
               status: complete
                 ? (event.toolStatus ?? 'ok')
                 : (existing as Extract<RunBlock, { kind: 'tool' }>).tool.status,
@@ -327,7 +342,7 @@ function reduceTurnDiffEvent(state: RunState, event: TurnDiffEvent): RunState {
   }
 
   if (event.plan !== undefined) {
-    const newPlan = keepLatest(event.plan, MAX_REASONING_CHARS * 2);
+    const newPlan = keepTail(event.plan, MAX_REASONING_CHARS * 2);
     next = {
       ...next,
       plan: newPlan,
@@ -487,7 +502,7 @@ function reduceAssistantEvent(state: RunState, event: AgentEvent): RunState {
               ...next.blocks.slice(0, -1),
               {
                 kind: 'thinking' as const,
-                content: keepLatest(last.content + '\n' + content.thinking, MAX_REASONING_CHARS),
+                content: keepTail(last.content + '\n' + content.thinking, MAX_REASONING_CHARS),
                 active: true,
                 timestamp: last.timestamp ?? event.timestamp,
               },
@@ -496,7 +511,7 @@ function reduceAssistantEvent(state: RunState, event: AgentEvent): RunState {
               ...next.blocks,
               {
                 kind: 'thinking' as const,
-                content: keepLatest(content.thinking, MAX_REASONING_CHARS),
+                content: keepTail(content.thinking, MAX_REASONING_CHARS),
                 active: true,
                 timestamp: event.timestamp,
               },
@@ -515,7 +530,7 @@ function reduceAssistantEvent(state: RunState, event: AgentEvent): RunState {
               ...blocks.slice(0, -1),
               {
                 kind: 'text' as const,
-                content: keepLatest(last.content + content.text, MAX_TEXT_CHARS),
+                content: keepTail(last.content + content.text, MAX_TEXT_CHARS),
                 timestamp: last.timestamp ?? event.timestamp,
               },
             ]
@@ -523,7 +538,7 @@ function reduceAssistantEvent(state: RunState, event: AgentEvent): RunState {
               ...blocks,
               {
                 kind: 'text' as const,
-                content: keepLatest(content.text, MAX_TEXT_CHARS),
+                content: keepTail(content.text, MAX_TEXT_CHARS),
                 timestamp: event.timestamp,
               },
             ];
@@ -601,7 +616,7 @@ function reduceToolResultEvent(state: RunState, event: AgentEvent): RunState {
 function reducePlanEvent(state: RunState, event: PlanEvent): RunState {
   if (event.type !== 'plan') return state;
   const currentPlan = state.plan ?? '';
-  const newPlan = keepLatest(currentPlan + '\n' + event.plan, MAX_REASONING_CHARS * 2);
+  const newPlan = keepTail(currentPlan + '\n' + event.plan, MAX_REASONING_CHARS * 2);
   // Plan is a single evolving document — replace the existing plan block
   // instead of appending a new one (avoids N overlapping blocks after N events).
   const withoutOldPlan = state.blocks.filter((b) => b.kind !== 'plan');
@@ -653,12 +668,19 @@ export function finishRun(
     if (!hasMeta) return state;
     return { ...state, ...sanitizeMeta(meta) };
   }
+  // interrupted 终态的中断来源：显式传入优先；否则从顶层持久标记推导
+  // （approval_expired 已置位但调用方未传 reason 的路径，如协调器过期自动
+  // cancel。原因必须在终态确定，不依赖调用方记得传参）。
+  const derivedReason =
+    meta.interruptedReason ??
+    (terminal === 'interrupted' && state.approvalExpired === true ? 'approval_timeout' : undefined);
   return {
     ...state,
     terminal,
     footer: null,
     blocks: markThinkingInactive(state.blocks),
     ...sanitizeMeta(meta),
+    ...(derivedReason !== undefined ? { interruptedReason: derivedReason } : {}),
   };
 }
 
@@ -679,7 +701,11 @@ function markThinkingInactive(blocks: RunBlock[]): RunBlock[] {
 function stringifyUnknown(value: unknown): string {
   if (typeof value === 'string') return value;
   try {
-    return JSON.stringify(value);
+    // JSON.stringify(undefined) returns the value undefined, which would
+    // violate this function's string contract and crash callers that take
+    // .length on the result (2026-08-17 kimi ACP tool_call without rawInput
+    // → truncateDetail TypeError). Normalize to ''.
+    return JSON.stringify(value) ?? '';
   } catch {
     return String(value);
   }
@@ -700,10 +726,6 @@ function tryParseRecord(input: string): Record<string, unknown> | null {
   } catch {
     return null;
   }
-}
-
-function keepLatest(value: string, maxChars: number): string {
-  return value.length <= maxChars ? value : value.slice(-maxChars);
 }
 
 function keepLatestBlocks(blocks: RunBlock[]): RunBlock[] {
