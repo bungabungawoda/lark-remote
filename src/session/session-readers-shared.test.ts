@@ -1,47 +1,12 @@
 import { describe, it, expect } from 'vitest';
-import { findLastUserIndex } from './common/catch-up.js';
 import { extractContentBlocks } from './common/content-blocks.js';
-import type { ContentBlockMapping } from './common/content-blocks.js';
-
-// ─── findLastUserIndex ────────────────────────────────────────────────────────
-
-describe('findLastUserIndex', () => {
-  const isUser = (obj: Record<string, unknown>) => obj.type === 'user';
-
-  it('returns the last matching index among multiple matches', () => {
-    const lines = ['{"type":"user"}', '{"type":"assistant"}', '{"type":"user"}'];
-    expect(findLastUserIndex(lines, isUser)).toBe(2);
-  });
-
-  it('returns -1 when no line matches', () => {
-    const lines = ['{"type":"assistant"}', '{"type":"assistant"}'];
-    expect(findLastUserIndex(lines, isUser)).toBe(-1);
-  });
-
-  it('skips invalid JSON lines without affecting the result', () => {
-    const lines = ['not-json', '{"type":"user"}', '{bad json'];
-    expect(findLastUserIndex(lines, isUser)).toBe(1);
-  });
-
-  it('skips empty and whitespace-only lines', () => {
-    const lines = ['', '   ', '{"type":"user"}'];
-    expect(findLastUserIndex(lines, isUser)).toBe(2);
-  });
-
-  it('returns -1 for an empty array', () => {
-    expect(findLastUserIndex([], isUser)).toBe(-1);
-  });
-});
+import { CLAUDE_MAPPING } from './claude/session-index.js';
+import { PI_MAPPING } from './pi/sessions.js';
 
 // ─── extractContentBlocks ─────────────────────────────────────────────────────
 
 describe('extractContentBlocks', () => {
-  const claudeMapping: ContentBlockMapping = {
-    toolUseType: 'tool_use',
-    toolResultType: 'tool_result',
-    toolInputField: 'input',
-    toolErrorField: 'is_error',
-  };
+  const claudeMapping = CLAUDE_MAPPING;
 
   // case 6: non-array input
   it('returns [] for non-array input (null)', () => {
@@ -118,12 +83,7 @@ describe('extractContentBlocks', () => {
 
   // case 14: pi-style mapping (parameterized field names)
   it('works with pi-style mapping for tool_use', () => {
-    const piMapping: ContentBlockMapping = {
-      toolUseType: 'toolCall',
-      toolResultType: 'toolResult',
-      toolInputField: 'arguments',
-      toolErrorField: 'isError',
-    };
+    const piMapping = PI_MAPPING;
     const content = [{ type: 'toolCall', name: 'Search', arguments: { query: 'test' } }];
     const result = extractContentBlocks(content, piMapping);
     expect(result).toHaveLength(1);
@@ -133,12 +93,7 @@ describe('extractContentBlocks', () => {
   });
 
   it('works with pi-style mapping for tool_result', () => {
-    const piMapping: ContentBlockMapping = {
-      toolUseType: 'toolCall',
-      toolResultType: 'toolResult',
-      toolInputField: 'arguments',
-      toolErrorField: 'isError',
-    };
+    const piMapping = PI_MAPPING;
     const content = [{ type: 'toolResult', content: 'done', isError: true }];
     const result = extractContentBlocks(content, piMapping);
     expect(result).toEqual([{ type: 'tool_result', content: '🔴 tool_result: done' }]);

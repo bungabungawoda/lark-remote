@@ -3,6 +3,7 @@ import path from 'node:path';
 import os from 'node:os';
 import fs from 'node:fs';
 import type { Readable } from 'node:stream';
+import { silentlyUnlink } from '../../common/fs.js';
 import { getLogger } from '../../logger/index.js';
 import { ProcessStopper } from './process-stopper.js';
 import { SpawnHeartbeat } from './spawn-heartbeat.js';
@@ -20,6 +21,8 @@ import type { AgentEvent, SpawnOptions } from '../types.js';
 const STDERR_TAIL_BYTES = 4000;
 /** Max bytes of stderr surfaced in the non-zero-exit log line. */
 const STDERR_LOG_TAIL = 500;
+/** Error thrown by `spawnChild` when the child process fails to spawn. */
+class SpawnChildError extends Error {}
 /**
  * Timeout (ms) for awaiting the spawn 'error' event when proc.pid === undefined
  * (review P2-11). Node guarantees 'error' for ENOENT/EACCES, but some binaries
@@ -93,8 +96,8 @@ export function unregisterExitCleanup(handler: ExitCleanupHandler): void {
  *
  * `translate()` returns `AgentEvent | AgentEvent[] | null` (single event,
  * multiple events, or filtered-out). `isTerminal()` / `finish()` / `getTerminalError()`
- * / `hasAgentTerminalError()` are folded into the unified result event via
- * `resolveTranslatorError()`.
+ * / `hasAgentTerminalError()` are folded into the unified result event at the
+ * end of `run()`.
  *
  * `getSessionId()` / `getLastUsage()` are optional because ClaudeRunner uses
  * the stateless `translate()` hook (no translator object) and reads neither.
@@ -113,26 +116,21 @@ export interface RunnerTranslator {
  * Abstract base class for runners that spawn a child process per turn.
  *
  * Encapsulates the spawn + completion + cleanup orchestration shared by
- * Claude/Codex/OpenCode/Pi/Kimi runners. Subclasses override:
+ * Claude/Pi runners. Subclasses override:
  *   - buildArgv(opts)              → agent-specific CLI flags (required)
- *   - createTranslator(opts)       → stateful translator (codex/opencode/pi/kimi)
+ *   - createTranslator(opts)       → stateful translator (pi)
  *     OR translate(raw, ctx)       → stateless passthrough (claude)
  *
  * Optional hooks (with sensible defaults):
  *   - getStdio()                   → stdio config (default ['ignore','pipe','pipe'])
- *   - getSpawnEnv(opts)            → env vars (default process.env)
- *   - setupStdin(proc, message)    → write prompt to stdin (default no-op)
  *   - createStreamReader(stdout)   → JSONL or readline parser (default createJSONLStream)
- *   - validateBeforeRun(opts)      → pre-spawn validation (default no-op)
- *   - awaitCompletion(proc, p)     → wait for exit (default return p; kimi adds 5s race)
- *   - awaitSpawnError(proc)        → wait for spawn error (default once('error'); kimi adds 5s race)
- *   - resolveTranslatorError(t, c) → translatorError precedence (default honors agent errors)
+ *   - awaitSpawnError(proc)        → wait for spawn error (default once('error'))
  *
  * The base class always emits a unified result event at the end of `run()`
  * via `buildResultEvent(...)` — never throws on non-zero exit. This matches
- * the contract pinned by codex/opencode/pi/kimi subclass anchors and the
- * bridge's `runAgentStreamToEnd` error handling (which accepts both thrown
- * errors and yielded error-result events).
+ * the contract pinned by the agent subclass anchors and the bridge's
+ * `runAgentStreamToEnd` error handling (which accepts both thrown errors and
+ * yielded error-result events).
  */
 export abstract class SpawningRunner {
   protected currentProcess: ChildProcess | null = null;
@@ -141,6 +139,8 @@ export abstract class SpawningRunner {
   protected readonly spawnHeartbeat: SpawnHeartbeat;
   protected binary: string;
   protected stopGraceMs: number;
+  /** Accumulated stderr tail for the current run (filled by spawnChild). */
+  protected spawnStderr = '';
   /**
    * Log prefix used in all operational log lines emitted by this runner
    * (spawn, pid file, non-zero exit, stderr, killOrphan, stop cleanup) and
@@ -210,81 +210,32 @@ export abstract class SpawningRunner {
 
   /**
    * stdio config for spawn. Default: stdin ignored (claude/kimi/pi pass the
-   * prompt via argv). codex/opencode override to ['pipe','pipe','pipe'] so
-   * they can write the prompt to stdin via `setupStdin`.
+   * prompt via argv).
    */
   protected getStdio(): ('ignore' | 'pipe')[] {
     return ['ignore', 'pipe', 'pipe'];
   }
 
   /**
-   * Env vars for spawn. Default: process.env. opencode overrides to sync
-   * PWD=opts.cwd (opencode's directory detection reads PWD, not cwd).
-   */
-  protected getSpawnEnv(_opts: SpawnOptions): NodeJS.ProcessEnv {
-    return process.env;
-  }
-
-  /**
-   * Write the prompt to the child's stdin (called after spawn succeeds).
-   * Default: no-op. codex/opencode override to `proc.stdin.end(message)`.
-   */
-  protected setupStdin(_proc: ChildProcess, _message: string): void {
-    // no-op by default
-  }
-
-  /**
    * Create an async iterator over the child's stdout. Default: createJSONLStream
    * (claude/kimi/pi) with P1-4 backpressure enabled (pauseThreshold=100).
-   * Subclasses that need to silently skip non-JSON lines should override
-   * `handleBadStreamLine` instead of this method.
    */
   protected createStreamReader(stdout: Readable): AsyncGenerator<unknown> {
     return createJSONLStream(stdout, {
-      onParseError: (line) => this.handleBadStreamLine(line),
+      onParseError: (line) => {
+        getLogger().warn(`[jsonl-stream] failed to parse JSONL: ${line.slice(0, 100)}`);
+      },
       pauseThreshold: 100,
       resumeThreshold: 50,
     }) as AsyncGenerator<unknown>;
   }
 
   /**
-   * Hook called when createJSONLStream encounters a line that cannot be parsed
-   * as JSON. Default: log a warning via getLogger().warn (same format as
-   * jsonl-stream's built-in warning). Subclasses override to change behavior
-   * (e.g. codex/opencode silently skip by providing an empty override).
-   */
-  protected handleBadStreamLine(line: string): void {
-    getLogger().warn(`[jsonl-stream] failed to parse JSONL: ${line.slice(0, 100)}`);
-  }
-
-  /**
    * Create a stateful translator for this run. Default: null (uses the
-   * stateless `translate(raw, ctx)` hook). codex/opencode/pi/kimi override to
-   * return their translator instance.
+   * stateless passthrough). pi overrides to return its translator instance.
    */
   protected createTranslator(_opts: SpawnOptions): RunnerTranslator | null {
     return null;
-  }
-
-  /**
-   * Pre-spawn validation. Return an AgentEvent to yield it and abort run()
-   * (e.g. codex's API key check yields an error result and returns).
-   * Default: null (no validation).
-   */
-  protected validateBeforeRun(_opts: SpawnOptions): AgentEvent | null {
-    return null;
-  }
-
-  /**
-   * Await process completion. Default: return the completion promise as-is.
-   * kimi overrides to add a 5s timeout race + SIGKILL fallback (kimi
-   * sometimes hangs after stdout closes).
-   */
-  protected awaitCompletion(
-    _proc: ChildProcess,
-    completion: Promise<{ code: number | null; signal: NodeJS.Signals | null }>,
-  ): Promise<{ code: number | null; signal: NodeJS.Signals | null }> {
-    return completion;
   }
 
   /**
@@ -308,66 +259,24 @@ export abstract class SpawningRunner {
   }
 
   /**
-   * Resolve the translatorError to pass to buildResultEvent. Default
-   * precedence (most-specific first):
-   *   - agent-reported terminal error (translator.hasAgentTerminalError()):
-   *     always wins — the agent error is the root cause, signal/code is a
-   *     consequence. E.g. codex `turn.failed` then non-zero exit.
-   *   - stream-ended-early symptom (translator.getTerminalError() set by
-   *     finish('failed')): ONLY surfaces when there is no external cause
-   *     (signal / non-zero code / user stop). The signal/code is the root
-   *     cause; the early stream-end is a symptom.
-   *   - otherwise: undefined (signal/code/stoppedByUser drives the message).
+   * Spawn the agent binary with the subclass's argv and run the shared spawn
+   * lead-in: pid-undefined check, pid-file write, heartbeat start, and stderr
+   * accumulation (tail-capped).
    *
-   * Subclasses can override for custom precedence but the default matches
-   * the contract pinned by codex/opencode subclass anchors.
-   */
-  protected resolveTranslatorError(
-    translator: RunnerTranslator | null,
-    ctx: { code: number | null; signal: NodeJS.Signals | null },
-  ): string | undefined {
-    if (!translator) return undefined;
-    const agentError = translator.hasAgentTerminalError();
-    const hasExternalCause =
-      this.stoppedByUser || ctx.signal !== null || (ctx.code !== null && ctx.code !== 0);
-    return agentError || !hasExternalCause ? translator.getTerminalError() : undefined;
-  }
-
-  /**
-   * Spawn the agent binary with argv built by buildArgv(opts), iterate its
-   * stdout stream, and yield translated events. Always emits a unified
-   * result event at the end via `buildResultEvent(...)` — never throws on
-   * non-zero exit (the bridge accepts both thrown errors and yielded
-   * error-result events, and the latter carries richer diagnostic info).
+   * Throws a `SpawnChildError` (carrying the user-facing spawn failure
+   * message) when the process fails to spawn (binary missing / pid undefined).
+   * On success returns the spawned child plus the accumulated stderr tail.
    *
-   * Spawn failures (binary missing, pid undefined) yield an `authErrorEvent`
-   * instead of throwing, so the user sees a friendly error card.
+   * Shared by the base `run()` (yields an authErrorEvent on failure) and
+   * ClaudeSession's `doStartProcess` (returns the error message), which would
+   * otherwise duplicate ~60 lines of spawn lead-in with two copies of the
+   * STDERR_TAIL_BYTES cap.
    */
-  async *run(message: string, opts: SpawnOptions): AsyncGenerator<AgentEvent> {
-    if (this.isRunning) {
-      getLogger().warn(`[${this.logTag}] run() called while already running, refusing`);
-      throw new Error(`${this.binary} process already running`);
-    }
-    this.stoppedByUser = false;
-    this.currentMessage = message;
-
-    // Pre-spawn validation hook (e.g. codex API key check)
-    const validationError = this.validateBeforeRun(opts);
-    if (validationError) {
-      // §9.22: yield synthetic init so the bridge's pre-init result guard and
-      // the run-state reducer's sessionId check don't silently drop the error
-      // result. Without init, the card would show a generic "输出流已结束"
-      // instead of the specific validation error message.
-      yield syntheticInitEvent(opts.sessionId);
-      yield validationError;
-      return;
-    }
-
-    const args = this.buildArgv(opts);
-    const proc = spawn(this.binary, args, {
+  protected async spawnChild(opts: SpawnOptions): Promise<ChildProcess> {
+    const proc = spawn(this.binary, this.buildArgv(opts), {
       cwd: opts.cwd,
       stdio: this.getStdio(),
-      env: this.getSpawnEnv(opts),
+      env: process.env,
       // Spawn in a new process group so we can kill the entire group
       // when stopping. This ensures child processes (shell wrappers,
       // sub-processes) are also terminated.
@@ -397,10 +306,61 @@ export abstract class SpawningRunner {
       // so the user is not misdiagnosed into reinstalling the binary.
       const baseMsg = `${this.binary} 命令不可用（未找到或不可执行），请检查是否已安装或在 PATH 中`;
       const msg = spawnErr ? `${baseMsg}：${spawnErr.message}` : baseMsg;
+      throw new SpawnChildError(msg);
+    }
+
+    const pidDir = path.dirname(this.pidFilePath);
+    fs.mkdirSync(pidDir, { recursive: true });
+    fs.writeFileSync(this.pidFilePath, String(proc.pid), 'utf-8');
+    getLogger().info(`[${this.logTag}] wrote pid file ${this.pidFilePath}=${proc.pid}`);
+    this.spawnHeartbeat.start({ pid: proc.pid, binary: this.binary, cwd: opts.cwd });
+
+    proc.stdout?.once('data', () => {
+      this.spawnHeartbeat.notifyStdout();
+    });
+
+    this.spawnStderr = '';
+    proc.stderr?.on('data', (chunk: Buffer) => {
+      const text = chunk.toString('utf-8').trim();
+      if (text) {
+        this.spawnStderr = (this.spawnStderr + '\n' + text).trim().slice(-STDERR_TAIL_BYTES);
+        // P2-16: most agent CLIs emit progress/warnings/deprecation notices on
+        // stderr, not real errors. Logging each chunk at error level drowns out
+        // genuine errors. Downgrade to warn — the accumulated stderr is already
+        // surfaced at error level in the non-zero-exit result path.
+        getLogger().warn(`[${this.logTag} stderr] ${text}`);
+      }
+    });
+
+    return proc;
+  }
+
+  /**
+   * Spawn the agent binary with argv built by buildArgv(opts), iterate its
+   * stdout stream, and yield translated events. Always emits a unified
+   * result event at the end via `buildResultEvent(...)` — never throws on
+   * non-zero exit (the bridge accepts both thrown errors and yielded
+   * error-result events, and the latter carries richer diagnostic info).
+   *
+   * Spawn failures (binary missing, pid undefined) yield an `authErrorEvent`
+   * instead of throwing, so the user sees a friendly error card.
+   */
+  async *run(message: string, opts: SpawnOptions): AsyncGenerator<AgentEvent> {
+    if (this.isRunning) {
+      getLogger().warn(`[${this.logTag}] run() called while already running, refusing`);
+      throw new Error(`${this.binary} process already running`);
+    }
+    this.stoppedByUser = false;
+    this.currentMessage = message;
+
+    let proc: ChildProcess;
+    try {
+      proc = await this.spawnChild(opts);
+    } catch (err) {
       // §9.22: yield synthetic init before the error result so bridge/run-state
-      // guards don't silently drop it (same rationale as validateBeforeRun).
+      // guards don't silently drop it.
       yield syntheticInitEvent(opts.sessionId);
-      yield authErrorEvent(msg);
+      yield authErrorEvent((err as Error).message);
       return;
     }
 
@@ -428,33 +388,7 @@ export abstract class SpawningRunner {
       },
     );
 
-    const pidDir = path.dirname(this.pidFilePath);
-    fs.mkdirSync(pidDir, { recursive: true });
-    fs.writeFileSync(this.pidFilePath, String(proc.pid), 'utf-8');
-    getLogger().info(`[${this.logTag}] wrote pid file ${this.pidFilePath}=${proc.pid}`);
-    this.spawnHeartbeat.start({ pid: proc.pid, binary: this.binary, cwd: opts.cwd });
-
-    proc.stdout?.once('data', () => {
-      this.spawnHeartbeat.notifyStdout();
-    });
-
-    let stderr = '';
-    proc.stderr?.on('data', (chunk: Buffer) => {
-      const text = chunk.toString('utf-8').trim();
-      if (text) {
-        stderr = (stderr + '\n' + text).trim().slice(-STDERR_TAIL_BYTES);
-        // P2-16: most agent CLIs emit progress/warnings/deprecation notices on
-        // stderr, not real errors. Logging each chunk at error level drowns out
-        // genuine errors. Downgrade to warn — the accumulated stderr is already
-        // surfaced at error level in the non-zero-exit result path.
-        getLogger().warn(`[${this.logTag} stderr] ${text}`);
-      }
-    });
-
-    // Hook: write prompt to stdin (codex/opencode)
-    this.setupStdin(proc, message);
-
-    // Create translator (per-run state) — null for stateless passthrough (claude)
+    // Create translator (per-run state) — null for stateless passthrough
     const translator = this.createTranslator(opts);
 
     // Create stream reader (jsonl or readline)
@@ -494,7 +428,7 @@ export abstract class SpawningRunner {
         getLogger().error(`[${this.logTag}] stream error: ${error}`);
       }
 
-      const { code, signal } = await this.awaitCompletion(proc, completion);
+      const { code, signal } = await completion;
 
       // If the stream ended before a terminal event, let the translator
       // record its terminal state (e.g. codex `finish('failed')` stashes
@@ -505,14 +439,25 @@ export abstract class SpawningRunner {
         translator.finish(reason);
       }
 
-      const translatorError = this.resolveTranslatorError(translator, { code, signal });
+      // Resolve translatorError precedence (most-specific first):
+      //   - agent-reported terminal error always wins
+      //   - stream-ended-early symptom only surfaces with no external cause
+      let translatorError: string | undefined;
+      if (translator) {
+        const agentError = translator.hasAgentTerminalError();
+        const hasExternalCause =
+          this.stoppedByUser || signal !== null || (code !== null && code !== 0);
+        translatorError =
+          agentError || !hasExternalCause ? translator.getTerminalError() : undefined;
+      }
+
       const nonUserError =
         !this.stoppedByUser && ((code !== null && code !== 0) || signal !== null);
 
       yield this.buildResultEvent({
         code,
         signal,
-        stderr,
+        stderr: this.spawnStderr,
         sessionId: translator?.getSessionId?.() ?? '',
         usage: translator?.getLastUsage?.(),
         translatorError,
@@ -520,7 +465,7 @@ export abstract class SpawningRunner {
 
       if (nonUserError) {
         getLogger().error(
-          `[${this.logTag}] non-zero exit code=${code} signal=${signal} stderr=${stderr.slice(-STDERR_LOG_TAIL)}`,
+          `[${this.logTag}] non-zero exit code=${code} signal=${signal} stderr=${this.spawnStderr.slice(-STDERR_LOG_TAIL)}`,
         );
       }
     } finally {
@@ -539,11 +484,7 @@ export abstract class SpawningRunner {
         }
       }
       this.currentProcess = null;
-      try {
-        fs.unlinkSync(this.pidFilePath);
-      } catch {
-        /* ignore — file may not exist if spawn failed before write */
-      }
+      silentlyUnlink(this.pidFilePath);
     }
   }
 
@@ -564,9 +505,7 @@ export abstract class SpawningRunner {
     await this.stopper.stop(proc, { immediate: opts?.immediate });
 
     this.currentProcess = null;
-    try {
-      fs.unlinkSync(this.pidFilePath);
-    } catch {}
+    silentlyUnlink(this.pidFilePath);
     getLogger().debug(`[${this.logTag}] cleaned pid file ${this.pidFilePath}`);
   }
 
@@ -576,7 +515,7 @@ export abstract class SpawningRunner {
       const pidStr = fs.readFileSync(this.pidFilePath, 'utf-8').trim();
       const pid = Number(pidStr);
       if (isNaN(pid) || pid <= 0) {
-        fs.unlinkSync(this.pidFilePath);
+        silentlyUnlink(this.pidFilePath);
         return;
       }
 
@@ -592,7 +531,7 @@ export abstract class SpawningRunner {
           `[${this.logTag}] killOrphan: pid ${pid} not confirmed as ${this.binary} ` +
             `(${match}), skipping kill`,
         );
-        fs.unlinkSync(this.pidFilePath);
+        silentlyUnlink(this.pidFilePath);
         return;
       }
 
@@ -604,7 +543,7 @@ export abstract class SpawningRunner {
       } catch {
         // process may have exited
       }
-      fs.unlinkSync(this.pidFilePath);
+      silentlyUnlink(this.pidFilePath);
     } catch {
       // ignore
     }
@@ -683,9 +622,7 @@ export abstract class SpawningRunner {
         void this.stopper.stop(this.currentProcess, { immediate: true });
       } catch {}
     }
-    try {
-      fs.unlinkSync(this.pidFilePath);
-    } catch {}
+    silentlyUnlink(this.pidFilePath);
   }
 
   /**

@@ -11,13 +11,15 @@ import {
   getConfigValue,
   setConfigValue,
   setConfigValues,
-  getAgentConfig,
   mapAgentKey,
   assertSafeKeyPart,
+  walkNestedContainer,
 } from '../config/index.js';
 import { syncAgentChoices } from '../runner/index.js';
 import { WorkspaceStore } from '../workspace/index.js';
 import { OrderStore } from '../order/index.js';
+import { AliasStore } from '../order/alias-store.js';
+import { resolveAlias } from '../order/alias-resolve.js';
 import type {
   AgentKind,
   AgentSession,
@@ -25,8 +27,8 @@ import type {
   AgentSessionReader,
 } from '../runner/index.js';
 import { getLogger } from '../logger/index.js';
-import { type SessionDisplayUsage, activeRunUsage, formatUsageStats } from './utils.js';
-import { markdownDiv, sessionEventPanel } from './card-helpers.js';
+import { type SessionDisplayUsage, activeRunUsage, clampInt } from './utils.js';
+import { markdownDiv, buildSessionHistoryCard, paginationBar } from './card-helpers.js';
 import { MAX_FILE_UPLOAD_SIZE } from '../connector/file-limits.js';
 import { atomicWrite } from '../persistence/atomic-write.js';
 import {
@@ -38,7 +40,7 @@ import {
 } from '../update/index.js';
 
 /** Config card builder - delegates to per-agent builders */
-import { getConfigBuilder, listRegisteredAgents } from './config/index.js';
+import { getConfigBuilder, listRegisteredAgents, sortAgentsForDisplay } from './config/index.js';
 import { probeAllAgents, getCachedAvailability } from '../runner/probe.js';
 import { buildConfigCardFromTabs } from './config/common/render.js';
 import type { ConfigTab } from './config/common/render.js';
@@ -64,6 +66,26 @@ const ORDER_PAGE_SIZE = 15;
  * 留足余量。
  */
 const WS_PAGE_SIZE = 5;
+
+/**
+ * 归一化卡片分页参数：clamp pageSize 到 [1,maxPageSize]，offset 归整为
+ * 非负整数并对齐到页边界。非数字 payload（如 'abc'）不得产生 NaN slice。
+ *
+ * resume.page / active.page 共用，避免两处重复实现分页归一化。
+ */
+function normalizePageArgs(
+  value: { pageSize?: unknown; offset?: unknown },
+  maxPageSize: number,
+): { pageSize: number; alignedOffset: number } {
+  const rawPageSize = Number(value.pageSize);
+  const pageSize = Number.isFinite(rawPageSize)
+    ? clampInt(Math.trunc(rawPageSize), 1, maxPageSize)
+    : maxPageSize;
+  const rawOffset = Number(value.offset);
+  const offset = Number.isFinite(rawOffset) ? Math.max(0, Math.trunc(rawOffset)) : 0;
+  return { pageSize, alignedOffset: Math.floor(offset / pageSize) * pageSize };
+}
+
 /** /resume 列表页内全量预取（readSessionContent）的行数上限；其余行用轻量 summary 兜底。 */
 const RESUME_CONTENT_PREFETCH = 5;
 /**
@@ -141,7 +163,10 @@ export function isImmediateAction(cmd: string): boolean {
     // 队列会排在等待审批的 run 之后形成死锁：run 不结束审批不执行，run 结束
     // coordinator 已删响应空转（线上复现：approval.respond 排队卡、审批永不生效）。
     cmd === 'approval.respond' ||
-    cmd === 'approval.toggle'
+    cmd === 'approval.toggle' ||
+    cmd === 'approval.answer' ||
+    cmd === 'approval.answerSubmit' ||
+    cmd === 'approval.answerCustom'
   );
 }
 
@@ -173,14 +198,14 @@ export interface CardActionPayload {
   requestId?: number | string;
   /** Decision for approval.respond (e.g. 'accept', 'decline', 'cancel'). */
   decision?: string;
-  /** Scope for acceptForSession: 'turn' | 'session'. */
-  scope?: 'turn' | 'session';
   /** Unique nonce to prevent duplicate processing. */
   nonce?: string;
   /** Permission item ID for approval.toggle. */
   permId?: string;
   /** Desired selection state for approval.toggle (card renders !current). */
   selected?: boolean;
+  /** Claude AskUserQuestion 问题索引（approval.answer / approval.answerSubmit）。 */
+  questionIndex?: number;
 }
 
 /**
@@ -212,11 +237,15 @@ export class CommandRouter {
   /** Valid agent kinds — single source of truth for resume.use / resume.page / cmdResume. */
   static readonly VALID_AGENTS = ['claude', 'codex', 'opencode', 'pi', 'kimi'] as const;
   private sessionStore: SessionStore;
-  private bridge: Bridge;
-  private config: AppConfig;
-  private configPath: string;
+  /** 飞书桥接实例（public：测试直接访问断言，替代 as unknown as）。 */
+  bridge: Bridge;
+  /** 当前配置（public：测试直接读取断言，替代 as unknown as）。 */
+  config: AppConfig;
+  /** 配置文件的绝对路径（public：/config 保存链路与测试共用）。 */
+  configPath: string;
   private workspaceStore: WorkspaceStore;
   private orderStore: OrderStore;
+  private aliasStore: AliasStore;
   private exitHandler: () => void;
   private pendingExit = false;
   /**
@@ -238,7 +267,8 @@ export class CommandRouter {
     isNewer: (current: string, latest: string) => boolean | null;
     runInstallLatest: () => Promise<InstallResult>;
   };
-  private pendingConfig: AppConfig | null = null; // /config 卡片编辑暂存区
+  /** /config 卡片编辑暂存区（public：测试直接读取断言，替代 as unknown as）。 */
+  pendingConfig: AppConfig | null = null;
   /**
    * Monotonic counter minting unique internal keys for order.exec enqueue
    * actions. One order card can be clicked many times, so the Feishu card
@@ -259,7 +289,8 @@ export class CommandRouter {
    * it uses `listRegisteredAgents()` from `router/config/index.ts` (the
    * config-builder registry), which mirrors the agents with a config card.
    */
-  private sessionReaderRegistry: SessionReaderRegistry;
+  /** Session reader 注册中心（public：测试注入/读取，替代 as unknown as）。 */
+  sessionReaderRegistry: SessionReaderRegistry;
   /**
    * 串行化 config.* 卡片回调（2026-07-04）。
    * CardKit 2.0 input/button 回调经 `enqueueImmediate` 分发，**不进串行队列**，
@@ -277,6 +308,8 @@ export class CommandRouter {
     configPath: string;
     workspacePath?: string;
     ordersPath?: string;
+    /** 别名存储路径（<configDir>/aliases.json）。 */
+    aliasesPath?: string;
     exitHandler?: () => void;
     /** Spawn the detached replacement bridge process and return its pid (throws on failure). */
     restartSpawner?: () => number;
@@ -303,6 +336,7 @@ export class CommandRouter {
     this.configPath = opts.configPath;
     this.workspaceStore = new WorkspaceStore(opts.workspacePath);
     this.orderStore = new OrderStore(opts.ordersPath);
+    this.aliasStore = new AliasStore(opts.aliasesPath);
     this.exitHandler = opts.exitHandler ?? (() => process.exit(0));
     this.restartSpawner = opts.restartSpawner;
     // idle watchdog 窗口从 config.idle.watchdogMinutes 读取
@@ -350,6 +384,8 @@ export class CommandRouter {
         await this.bridge.sendResult(result, ctx);
       }
       if (this.pendingExit) {
+        // 干净退出前冲刷待合批的媒体保存提示，避免 500ms 窗口内的提示丢失。
+        await this.bridge.flushAllMediaNotifications();
         this.exitHandler();
       }
       return result;
@@ -371,6 +407,14 @@ export class CommandRouter {
     // the message was queued)
     await this.bridge.forwardToClaude(trimmed, ctx, opts);
     return null;
+  }
+
+  /**
+   * 一次别名展开：bridge 收到用户消息后、命令分发前调用。
+   * 仅 `$name` 开头的消息可能被展开；未知别名 / 非 `$` 消息原样返回。
+   */
+  expandAliasMessage(message: string): string {
+    return resolveAlias(message, this.aliasStore.list()) ?? message;
   }
 
   /**
@@ -488,6 +532,9 @@ export class CommandRouter {
         return this.enqueueConfigAction(value, ctx);
       case 'approval.respond':
       case 'approval.toggle':
+      case 'approval.answer':
+      case 'approval.answerSubmit':
+      case 'approval.answerCustom':
         return this.handleApprovalAction(value, ctx);
       case 'codex.compact':
         await this.bridge.handleCodexCompact(value, ctx);
@@ -508,6 +555,7 @@ export class CommandRouter {
           // 必须同样消费，否则点击 /restart 按钮 spawn 成功后旧进程不退出，
           // 新进程撞单例锁退出 → 重启两头落空（2026-08-01 红绿 anchor 锁定）。
           if (this.pendingExit) {
+            await this.bridge.flushAllMediaNotifications();
             this.exitHandler();
           }
           return;
@@ -530,7 +578,7 @@ export class CommandRouter {
     value: CardActionPayload,
     _ctx: CommandContext,
   ): Promise<CardActionResponse> {
-    const { runId, requestId, decision, scope, nonce, permId } = value;
+    const { runId, requestId, decision, nonce, permId } = value;
 
     if (value.cmd === 'approval.respond') {
       if (!runId || requestId === undefined || !decision || !nonce) {
@@ -541,7 +589,6 @@ export class CommandRouter {
           runId,
           requestId,
           decision,
-          scope,
           nonce,
         });
         return { toast: { type: 'success', content: '审批已提交' } };
@@ -556,7 +603,7 @@ export class CommandRouter {
     }
 
     if (value.cmd === 'approval.toggle') {
-      if (!runId || requestId === undefined || !permId || !nonce) {
+      if (!runId || requestId === undefined || !permId) {
         return { toast: { type: 'error', content: '缺少权限切换参数' } };
       }
       try {
@@ -564,13 +611,80 @@ export class CommandRouter {
           runId,
           requestId,
           permId,
-          nonce,
           selected: value.selected ?? true,
         });
         return { toast: { type: 'info', content: '已切换' } };
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         return { toast: { type: 'error', content: `权限切换失败：${msg}` } };
+      }
+    }
+
+    if (value.cmd === 'approval.answer') {
+      if (
+        !runId ||
+        requestId === undefined ||
+        value.questionIndex === undefined ||
+        !value.option ||
+        !nonce
+      ) {
+        return { toast: { type: 'error', content: '缺少问题答案参数' } };
+      }
+      try {
+        await this.bridge.handleApprovalAnswer({
+          runId,
+          requestId,
+          questionIndex: value.questionIndex,
+          option: value.option,
+          nonce,
+        });
+        return { toast: { type: 'success', content: '已选择' } };
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        return { toast: { type: 'error', content: `答案提交失败：${msg}` } };
+      }
+    }
+
+    if (value.cmd === 'approval.answerSubmit') {
+      if (!runId || requestId === undefined || value.questionIndex === undefined || !nonce) {
+        return { toast: { type: 'error', content: '缺少提交参数' } };
+      }
+      try {
+        await this.bridge.handleApprovalAnswerSubmit({
+          runId,
+          requestId,
+          questionIndex: value.questionIndex,
+          nonce,
+        });
+        return { toast: { type: 'success', content: '答案已提交' } };
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        return { toast: { type: 'error', content: `答案提交失败：${msg}` } };
+      }
+    }
+
+    if (value.cmd === 'approval.answerCustom') {
+      if (
+        !runId ||
+        requestId === undefined ||
+        value.questionIndex === undefined ||
+        !nonce ||
+        !value.inputValue
+      ) {
+        return { toast: { type: 'error', content: '缺少答案文本参数' } };
+      }
+      try {
+        await this.bridge.handleApprovalAnswerCustom({
+          runId,
+          requestId,
+          questionIndex: value.questionIndex,
+          text: value.inputValue,
+          nonce,
+        });
+        return { toast: { type: 'success', content: '答案已提交' } };
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        return { toast: { type: 'error', content: `答案提交失败：${msg}` } };
       }
     }
 
@@ -1127,18 +1241,7 @@ export class CommandRouter {
       ? (resumeAgent as (typeof validAgents)[number])
       : this.config.defaultAgent;
 
-    const rawPageSize = Number(value.pageSize);
-    const pageSize = Number.isFinite(rawPageSize)
-      ? Math.min(Math.max(Math.trunc(rawPageSize), 1), RESUME_PAGE_SIZE)
-      : RESUME_PAGE_SIZE;
-
-    // Normalize the callback offset to a finite non-negative integer, then
-    // align it to a page boundary so prev/next always step by pageSize.
-    // Non-numeric payloads (e.g. 'abc') must not produce NaN slices that look
-    // like an empty directory.
-    const rawOffset = Number(value.offset);
-    const offset = Number.isFinite(rawOffset) ? Math.max(0, Math.trunc(rawOffset)) : 0;
-    const alignedOffset = Math.floor(offset / pageSize) * pageSize;
+    const { pageSize, alignedOffset } = normalizePageArgs(value, RESUME_PAGE_SIZE);
 
     const entry = this.sessionStore.get(ctx.userId);
     const cwd = entry?.cwd;
@@ -1171,9 +1274,7 @@ export class CommandRouter {
     value: CardActionPayload,
     ctx: CommandContext,
   ): Promise<CardActionResponse> {
-    const rawOffset = Number(value.offset);
-    const offset = Number.isFinite(rawOffset) ? Math.max(0, Math.trunc(rawOffset)) : 0;
-    const alignedOffset = Math.floor(offset / ACTIVE_PAGE_SIZE) * ACTIVE_PAGE_SIZE;
+    const { alignedOffset } = normalizePageArgs(value, ACTIVE_PAGE_SIZE);
 
     const result = this.cmdActive([], ctx, alignedOffset);
     if (!result.card) {
@@ -1320,7 +1421,7 @@ export class CommandRouter {
     // immediate action the callback response is swallowed by enqueueImmediate
     // (fire-and-forget), and even if delivered it is transient — the user gets
     // no perceivable feedback on the switch. Same rationale as config.save
-    // agent-switch notice: persistent message first, toast only as a
+    // agent-switch notice (74e99f0): persistent message first, toast only as a
     // fallback if sendResult fails.
     let fallbackToast: string | undefined;
     if (useResult.card || useResult.text) {
@@ -1449,7 +1550,7 @@ export class CommandRouter {
   // --- PendingConfig 辅助方法 ---
 
   /** 确保 pendingConfig 已初始化（从当前 config 克隆） */
-  private ensurePendingConfig(): void {
+  ensurePendingConfig(): void {
     if (!this.pendingConfig) {
       this.pendingConfig = structuredClone(this.config);
     }
@@ -1487,7 +1588,8 @@ export class CommandRouter {
   }
 
   /** 实际的 config.* 分发逻辑（在串行队列内执行） */
-  private async dispatchConfigAction(
+  /** config.* 卡片动作分发（public：测试直接调用，替代 as unknown as）。 */
+  async dispatchConfigAction(
     value: CardActionPayload,
     ctx: CommandContext,
   ): Promise<CardActionResponse | void> {
@@ -1625,38 +1727,30 @@ export class CommandRouter {
   }
 
   /** 设置嵌套属性值（仅修改内存对象，不写盘） */
-  private setNestedValue(target: AppConfig, key: string, value: unknown): void {
+  /** 在 pendingConfig 上按 dot-separated key 设置嵌套值（config 卡片编辑用）。 */
+  setNestedValue(target: AppConfig, key: string, value: unknown): void {
     // Path mapping 共用 config 模块的 mapAgentKey（G11 Inconsistency 修复）：
     // pi.xxx/codex.xxx/opencode.xxx → agents.xxx，claude.xxx 保持顶层
     const mappedKey = mapAgentKey(key);
     const parts = mappedKey.split('.');
-    let current: Record<string, unknown> = target as unknown as Record<string, unknown>;
-    for (let i = 0; i < parts.length - 1; i++) {
-      // §P1-4：卡片 config.set/config.input 的 key 来自卡片 action，
-      // 必须与 config 模块的 setNestedValue/deleteNestedValue/getConfigValue 同等
-      // 守卫 __proto__/prototype/constructor 段——否则伪造 key 经
-      // `current['__proto__']` 污染 Object.prototype（文本直写路径已守卫，
-      // 卡片路径是同一威胁模型的另一入口）。
-      assertSafeKeyPart(parts[i]);
-      const next = current[parts[i]];
-      if (next == null || typeof next !== 'object') {
-        current[parts[i]] = {};
-      }
-      current = current[parts[i]] as Record<string, unknown>;
-    }
-    assertSafeKeyPart(parts[parts.length - 1]);
+    // 复用 config 模块的 walkNestedContainer（含 __proto__/prototype/constructor
+    // 守卫与中间段补 {}），router 只保留 value=undefined → delete 分支。
+    const container = walkNestedContainer(target, parts, true);
+    const lastPart = parts[parts.length - 1];
+    assertSafeKeyPart(lastPart);
     if (value === undefined) {
       // value=undefined 表示"删除键"（如清空 reasoningEffort），
       // 不能写成 undefined 值——diffConfig 会把 undefined 转成字面量 "undefined"
       // 写入 config.yaml 并透传给 codex（ReasoningEffort::Custom("undefined")）。
-      delete current[parts[parts.length - 1]];
+      delete container![lastPart];
     } else {
-      current[parts[parts.length - 1]] = value;
+      container![lastPart] = value;
     }
   }
 
   /** 对比原始 config 与 pendingConfig，返回变化的 key→string 映射 */
-  private diffConfig(original: AppConfig, pending: AppConfig): Record<string, string | undefined> {
+  /** config diff（public：测试直接调用，替代 as unknown as）。 */
+  diffConfig(original: AppConfig, pending: AppConfig): Record<string, string | undefined> {
     const updates: Record<string, string | undefined> = {};
     this.collectDiff('', original, pending, updates);
     return updates;
@@ -1822,6 +1916,31 @@ export class CommandRouter {
       this.bridge.setConfig(this.config);
     }
 
+    // P1-6 + live approval settings (§P5): active workspace-lifetime runners
+    // are not evicted by clearRunners() (would orphan the live subprocess).
+    // Push the new approval-mode settings to those runners via the unified
+    // duck method `updateApprovalMode` (codex thread/settings/update,
+    // kimi/opencode session/set_mode) so they take effect for subsequent
+    // turns without waiting for the runner to be recreated.
+    const hasApprovalConfigChange = Object.keys(updates).some(
+      (k) =>
+        k === 'agents.codex' ||
+        k.startsWith('agents.codex.') ||
+        k === 'codex' ||
+        k.startsWith('codex.') ||
+        k === 'agents.kimi' ||
+        k.startsWith('agents.kimi.') ||
+        k === 'kimi' ||
+        k.startsWith('kimi.') ||
+        k === 'agents.opencode' ||
+        k.startsWith('agents.opencode.') ||
+        k === 'opencode' ||
+        k.startsWith('opencode.'),
+    );
+    if (hasApprovalConfigChange) {
+      this.bridge.syncActiveApprovalModes();
+    }
+
     // 2026-07-13: 任何 agent 配置变更或 defaultAgent 切换，都清除 runner 缓存
     if (hasDefaultAgentChange || hasAgentConfigChange) {
       this.bridge.clearRunners();
@@ -1911,7 +2030,11 @@ export class CommandRouter {
       { cmd: 'cd', label: '/cd <path>', desc: '切换工作目录' },
       { cmd: 'ls', label: '/ls [dir]', desc: '列出当前目录，可指定子目录' },
       { cmd: 'resume', label: '/resume /r [agent] [list|id|N]', desc: '列出或切换 Agent session' },
-      { cmd: 'order', label: '/order /o save|list', desc: '保存或列出常用指令（/order 默认列出）' },
+      {
+        cmd: 'order',
+        label: '/order /o save|list',
+        desc: '收藏指令 /order save，快捷别名 /order alias',
+      },
     ];
 
     const bodyElements: object[] = [];
@@ -2001,7 +2124,8 @@ export class CommandRouter {
     };
   }
 
-  private cmdStatus(ctx: CommandContext): CommandResult {
+  /** /status 实现（public：测试直接调用，替代 as any）。 */
+  cmdStatus(ctx: CommandContext): CommandResult {
     const entry = this.sessionStore.get(ctx.userId);
     const cwd = entry?.cwd ?? '(未设置)';
     const sessionId = entry?.sessions?.get(this.config.defaultAgent) ?? '(无)';
@@ -2311,96 +2435,34 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
       activeRunRunId,
     } = this.readSessionDisplayState(session.sessionId, cwd, { maxEvents: AUTO_RESUME_MAX_EVENTS });
 
-    // Build header with displayTitle (aiTitle or last user message) and recap
-    let header = `📂 \`${cwd}\`\n已恢复最近会话: **${session.sessionId}**`;
-    const sections: string[] = [];
-    if (displayTitle) {
-      const label = aiTitle ? 'AI 标题' : '最近输入';
-      sections.push(`🏷️ **${label}**\n${displayTitle}`);
-    }
-    if (recap) {
-      const recapPreview = recap.length > 200 ? recap.slice(0, 197) + '...' : recap;
-      sections.push(`📝 **Recap**\n${recapPreview}`);
-    }
-    if (sections.length > 0) {
-      header += '\n\n' + sections.join('\n\n──\n\n');
-    }
-
-    const elements: object[] = [markdownDiv(header), { tag: 'hr' }];
-
-    // Fold session history into collapsible panels: the last 2 events stay
-    // expanded so the user sees the most recent context without clicking;
-    // older events are collapsed to keep the card compact.
-    content.forEach((ev, i) => {
-      elements.push(sessionEventPanel(ev, i, content.length, 2, this.config.defaultAgent));
+    const actions = this.buildResumeActionButtons({
+      isActive,
+      activeRunRunId,
+      cwd,
+      compact: this.canCompactSession(this.config.defaultAgent, cwd)
+        ? { sessionId: session.sessionId, agentKind: this.config.defaultAgent }
+        : undefined,
+      newSession: true,
     });
 
-    // Add usage/stats at the end
-    if (usage) {
-      const usageStr = formatUsageStats(usage, { showResult: true, result: 'success' });
-      elements.push({
-        tag: 'div',
-        text: { tag: 'lark_md', content: usageStr },
-      });
-    }
-
-    // Remove trailing hr and add action buttons
-    if (elements.length > 0 && (elements[elements.length - 1] as { tag: string }).tag === 'hr') {
-      elements.pop();
-    }
-
-    const actions: object[] = [];
-
-    // Stop button for active sessions (isActive = in-memory activeRun is
-    // non-terminal, which guarantees activeRunRunId is set). Bind the REAL
-    // activeRun.runId (UUID) so bridge.interruptCurrentRun can match and
-    // stop a live run.
-    if (isActive) {
-      actions.push({
-        tag: 'button',
-        text: { tag: 'plain_text', content: '⏹ 终止' },
-        type: 'danger',
-        behaviors: [
-          {
-            type: 'callback',
-            value: { cmd: 'stop', runId: activeRunRunId, cwd },
-          },
-        ],
-      } as { tag: string; text: object; type: string; behaviors: object[] });
-    }
-
-    // Compact 按钮：仅 codex app-server 模式（runner 有 runCompact）且会话未在跑。
-    // 在途 run 会占住 app-server runner，压缩必然失败，此时不渲染。
-    if (!isActive && this.canCompactSession(this.config.defaultAgent)) {
-      actions.push(resumeCompactButton(session.sessionId, this.config.defaultAgent));
-    }
-
-    // New session button always shown (use shared function for consistency)
-    actions.push(
-      newSessionButton() as { tag: string; text: object; type: string; behaviors: object[] },
-    );
-
-    // Use column_set+column for 2.0 (action tag not supported in 2.0)
-    elements.push({
-      tag: 'column_set',
-      columns: actions.map((btn) => ({
-        tag: 'column',
-        width: 'auto',
-        elements: [btn],
-      })),
-    });
-
-    const card = {
-      schema: '2.0',
-      config: { wide_screen_mode: true },
-      header: {
-        title: {
-          tag: 'plain_text',
-          content: `${isActive ? '⏳ 自动恢复会话（完成中）' : '🔁 自动恢复会话'} · ${agentName}`,
-        },
+    const card = buildSessionHistoryCard(
+      {
+        sessionId: session.sessionId,
+        cwd,
+        displayTitle,
+        aiTitle,
+        recap,
+        events: content,
+        usage,
       },
-      body: { elements },
-    };
+      {
+        agentKind: this.config.defaultAgent,
+        headerText: `📂 \`${cwd}\`\n已恢复最近会话: **${session.sessionId}**`,
+        title: `${isActive ? '⏳ 自动恢复会话（完成中）' : '🔁 自动恢复会话'} · ${agentName}`,
+        usageResult: 'success',
+        actions,
+      },
+    );
 
     return { card };
   }
@@ -2420,20 +2482,11 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
     const cwd = this.sessionStore.getCwd(ctx.userId);
     const sessionId = switchResult.sessionId;
 
-    // No cwd or no session → compact notice card
+    // No cwd or no session → compact notice card (no new-session button: the
+    // next message already starts a fresh session, a button would mislead
+    // users into thinking a click is required)
     if (!cwd || !sessionId) {
       const elements: object[] = [markdownDiv(switchResult.notice!)];
-      // New session button
-      elements.push({
-        tag: 'column_set',
-        columns: [
-          {
-            tag: 'column',
-            width: 'auto',
-            elements: [newSessionButton()],
-          },
-        ],
-      });
       return {
         card: {
           schema: '2.0',
@@ -2489,93 +2542,96 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
       maxEvents: AUTO_RESUME_MAX_EVENTS,
     });
 
-    let header = `📂 \`${cwd}\`\n已恢复会话: **${sessionId}**`;
-    const sections: string[] = [];
-    if (displayTitle) {
-      const label = aiTitle ? 'AI 标题' : '最近输入';
-      sections.push(`🏷️ **${label}**\n${displayTitle}`);
-    }
-    if (recap) {
-      const recapPreview = recap.length > 200 ? recap.slice(0, 197) + '...' : recap;
-      sections.push(`📝 **Recap**\n${recapPreview}`);
-    }
-    if (sections.length > 0) {
-      header += '\n\n' + sections.join('\n\n──\n\n');
-    }
-
-    const elements: object[] = [markdownDiv(header), { tag: 'hr' }];
-
-    if (content.length === 0) {
-      elements.push(markdownDiv('_该会话暂无新消息可显示（最后一条为用户输入）_'));
-    } else {
-      content.forEach((ev, i) => {
-        elements.push(sessionEventPanel(ev, i, content.length, 2, newAgent));
-      });
-    }
-
-    if (usage) {
-      const usageStr = formatUsageStats(usage, { showResult: true, result: 'success' });
-      elements.push(markdownDiv(usageStr));
-    }
-
-    if (elements.length > 0 && (elements[elements.length - 1] as { tag: string }).tag === 'hr') {
-      elements.pop();
-    }
-
-    // Action buttons
-    const actions: object[] = [];
-    if (isActive) {
-      actions.push({
-        tag: 'button',
-        text: { tag: 'plain_text', content: '⏹ 终止' },
-        type: 'danger',
-        behaviors: [{ type: 'callback', value: { cmd: 'stop', runId: activeRunRunId, cwd } }],
-      } as { tag: string; text: object; type: string; behaviors: object[] });
-    }
-    actions.push(
-      newSessionButton() as { tag: string; text: object; type: string; behaviors: object[] },
-    );
-
-    elements.push({
-      tag: 'column_set',
-      columns: actions.map((btn) => ({
-        tag: 'column',
-        width: 'auto',
-        elements: [btn],
-      })),
+    // Action buttons: stop (active) + new session
+    const actions = this.buildResumeActionButtons({
+      isActive,
+      activeRunRunId,
+      cwd,
+      newSession: true,
     });
 
-    return {
-      card: {
-        schema: '2.0',
-        config: { wide_screen_mode: true },
-        header: {
-          title: {
-            tag: 'plain_text',
-            content: `${isActive ? '⏳ 切换 Agent（完成中）' : '🔀 切换 Agent'} · ${agentName}`,
-          },
-        },
-        body: { elements },
+    const card = buildSessionHistoryCard(
+      {
+        sessionId,
+        cwd,
+        displayTitle,
+        aiTitle,
+        recap,
+        events: content,
+        usage,
       },
-    };
+      {
+        agentKind: newAgent,
+        headerText: `📂 \`${cwd}\`\n已恢复会话: **${sessionId}**`,
+        title: `${isActive ? '⏳ 切换 Agent（完成中）' : '🔀 切换 Agent'} · ${agentName}`,
+        usageResult: 'success',
+        emptyPlaceholder: '_该会话暂无新消息可显示（最后一条为用户输入）_',
+        actions,
+      },
+    );
+
+    return { card };
   }
 
   /**
    * Whether a session of the given agent kind can be compacted from a resume
-   * card. Compact (thread/compact/start) is only implemented by the codex
-   * app-server runner (`runCompact`), so the button is gated on
-   * `serviceMode === 'app-server'` — exec mode spawns a fresh CLI per message
-   * and has no persistent session to compact.
+   * card. Design doc §6.2-2: duck-typing — check if the runner has `runCompact`
+   * (codex app-server, kimi acp), instead of hardcoding agentKind === 'codex'.
    */
-  private canCompactSession(agentKind: string): boolean {
-    return (
-      agentKind === 'codex' && getAgentConfig(this.config, 'codex')?.serviceMode === 'app-server'
-    );
+  private canCompactSession(agentKind: string, cwd?: string): boolean {
+    if (!cwd) return false;
+    return this.bridge.hasRunCompact(cwd, agentKind as AgentKind);
+  }
+
+  /**
+   * Assemble the action buttons for a resume / session-history card.
+   * Shared by buildAutoResumeCard, buildConfigSwitchCard, and cmdResume so the
+   * button set (stop / compact / new-session) follows one contract instead of
+   * drifting per call site.
+   *
+   * - stop: only when the session has an in-memory active run (isActive), bound
+   *   to the real activeRun.runId so bridge.interruptCurrentRun can match.
+   * - compact: only when a compact-capable runner applies and the session is
+   *   not running (a live run would occupy the runner, so compaction would
+   *   fail). The caller passes `compact` only when canCompactSession holds.
+   * - new-session: when requested (always shown on resume cards).
+   */
+  private buildResumeActionButtons(opts: {
+    isActive: boolean;
+    activeRunRunId?: string;
+    cwd: string;
+    compact?: { sessionId: string; agentKind: string };
+    newSession?: boolean;
+  }): object[] {
+    const actions: object[] = [];
+    if (opts.isActive) {
+      actions.push({
+        tag: 'button',
+        text: { tag: 'plain_text', content: '⏹ 终止' },
+        type: 'danger',
+        behaviors: [
+          {
+            type: 'callback',
+            value: { cmd: 'stop', runId: opts.activeRunRunId, cwd: opts.cwd },
+          },
+        ],
+      } as { tag: string; text: object; type: string; behaviors: object[] });
+    }
+    if (opts.compact && !opts.isActive) {
+      actions.push(resumeCompactButton(opts.compact.sessionId, opts.compact.agentKind));
+    }
+    if (opts.newSession) {
+      actions.push(
+        newSessionButton() as { tag: string; text: object; type: string; behaviors: object[] },
+      );
+    }
+    return actions;
   }
 
   private static readonly LS_PAGE_SIZE = 30;
 
-  private cmdLs(args: string[], ctx: CommandContext, offset = 0): CommandResult {
+  /** /ls 实现（public：测试直接调用，替代 as unknown as）。 */
+  cmdLs(args: string[], ctx: CommandContext, offset = 0): CommandResult {
     const cwd = this.sessionStore.getCwd(ctx.userId);
     if (!cwd) {
       return { text: '请先使用 /cd <path> 设置工作目录' };
@@ -2770,80 +2826,16 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
 
       // Pagination bar (only shown when there are more items than PAGE_SIZE)
       if (hasPagination) {
-        const hasPrev = offset > 0;
-        const hasNext = offset + CommandRouter.LS_PAGE_SIZE < totalCount;
-
-        // Build columns dynamically — Feishu rejects empty elements[] in a column
-        // (ErrCode 200621: "no tag specified"). Only include columns that have content.
-        const pageColumns: object[] = [];
-        if (hasPrev) {
-          pageColumns.push({
-            tag: 'column',
-            width: 'auto',
-            vertical_align: 'center',
-            elements: [
-              {
-                tag: 'button',
-                text: { tag: 'plain_text', content: '⬅ 上一页' },
-                type: 'default',
-                size: 'small',
-                behaviors: [
-                  {
-                    type: 'callback',
-                    value: {
-                      cmd: 'ls.page',
-                      path: targetDir,
-                      offset: offset - CommandRouter.LS_PAGE_SIZE,
-                    },
-                  },
-                ],
-              },
-            ],
-          });
-        }
-        pageColumns.push({
-          tag: 'column',
-          width: 'weighted',
-          weight: 1,
-          vertical_align: 'center',
-          elements: [
-            {
-              tag: 'div',
-              text: {
-                tag: 'lark_md',
-                content: `**第 ${currentPage}/${totalPages} 页**（共 ${totalCount} 项）`,
-              },
-            },
-          ],
+        const bar = paginationBar({
+          cmd: 'ls.page',
+          offset,
+          pageSize: CommandRouter.LS_PAGE_SIZE,
+          total: totalCount,
+          extra: { path: targetDir },
+          label: `**第 ${currentPage}/${totalPages} 页**（共 ${totalCount} 项）`,
         });
-        if (hasNext) {
-          pageColumns.push({
-            tag: 'column',
-            width: 'auto',
-            vertical_align: 'center',
-            elements: [
-              {
-                tag: 'button',
-                text: { tag: 'plain_text', content: '下一页 ➡' },
-                type: 'default',
-                size: 'small',
-                behaviors: [
-                  {
-                    type: 'callback',
-                    value: {
-                      cmd: 'ls.page',
-                      path: targetDir,
-                      offset: offset + CommandRouter.LS_PAGE_SIZE,
-                    },
-                  },
-                ],
-              },
-            ],
-          });
-        }
-
         elements.push({ tag: 'hr' });
-        elements.push({ tag: 'column_set', columns: pageColumns });
+        elements.push(bar);
       }
 
       return {
@@ -2927,7 +2919,7 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
         const totalCount = entries.length;
         const totalPages = Math.max(1, Math.ceil(totalCount / WS_PAGE_SIZE));
         const maxOffset = Math.max(0, (totalPages - 1) * WS_PAGE_SIZE);
-        const safeOffset = Math.min(Math.max(offset, 0), maxOffset);
+        const safeOffset = clampInt(offset, 0, maxOffset);
         const currentPage = Math.floor(safeOffset / WS_PAGE_SIZE) + 1;
         const pageEntries = entries.slice(safeOffset, safeOffset + WS_PAGE_SIZE);
         const hasPagination = totalCount > WS_PAGE_SIZE;
@@ -3041,70 +3033,17 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
           // Pagination bar — separate row below the list (not crowded with sort
           // toggle; mobile-friendly vertical layout).
           if (hasPagination) {
-            const hasPrev = safeOffset > 0;
-            const hasNext = safeOffset + WS_PAGE_SIZE < totalCount;
-
-            const pageColumns: object[] = [];
-            if (hasPrev) {
-              pageColumns.push({
-                tag: 'column',
-                width: 'auto',
-                vertical_align: 'center',
-                elements: [
-                  {
-                    tag: 'button',
-                    text: { tag: 'plain_text', content: '⬅' },
-                    type: 'default',
-                    size: 'small',
-                    behaviors: [
-                      {
-                        type: 'callback',
-                        value: { cmd: 'ws.page', offset: safeOffset - WS_PAGE_SIZE },
-                      },
-                    ],
-                  },
-                ],
-              });
-            }
-            pageColumns.push({
-              tag: 'column',
-              width: 'weighted',
-              weight: 1,
-              vertical_align: 'center',
-              elements: [
-                {
-                  tag: 'div',
-                  text: {
-                    tag: 'lark_md',
-                    content: `**${currentPage}/${totalPages}**（${totalCount}）`,
-                  },
-                },
-              ],
+            const bar = paginationBar({
+              cmd: 'ws.page',
+              offset: safeOffset,
+              pageSize: WS_PAGE_SIZE,
+              total: totalCount,
+              label: `**${currentPage}/${totalPages}**（${totalCount}）`,
+              prevText: '⬅',
+              nextText: '➡',
             });
-            if (hasNext) {
-              pageColumns.push({
-                tag: 'column',
-                width: 'auto',
-                vertical_align: 'center',
-                elements: [
-                  {
-                    tag: 'button',
-                    text: { tag: 'plain_text', content: '➡' },
-                    type: 'default',
-                    size: 'small',
-                    behaviors: [
-                      {
-                        type: 'callback',
-                        value: { cmd: 'ws.page', offset: safeOffset + WS_PAGE_SIZE },
-                      },
-                    ],
-                  },
-                ],
-              });
-            }
-
             bodyElements.push({ tag: 'hr' });
-            bodyElements.push({ tag: 'column_set', columns: pageColumns });
+            bodyElements.push(bar);
           }
         }
 
@@ -3126,7 +3065,11 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
    * misleading "未找到". Reuses the same card-builder helpers (markdownDiv) as
    * the normal resume card; enforceCardBudget still applies at send time.
    */
-  private cmdResume(args: string[], ctx: CommandContext, offset = 0): CommandResult {
+  /**
+   * /resume 核心实现（public：handleResumePage / handle / resume.use 共用，
+   * 也是测试的直接 seam，避免测试用 @ts-expect-error 摸私有方法）。
+   */
+  cmdResume(args: string[], ctx: CommandContext, offset = 0): CommandResult {
     const entry = this.sessionStore.get(ctx.userId);
     const cwd = entry?.cwd;
 
@@ -3196,88 +3139,36 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
         maxEvents: AUTO_RESUME_MAX_EVENTS,
       });
 
-      // Build card header with displayTitle (aiTitle or last user message) and recap
-      let header = `📂 \`${cwd}\`\n会话: **${sessionIdArg}**`;
-      const sections: string[] = [];
-      if (displayTitle) {
-        const label = aiTitle ? 'AI 标题' : '最近输入';
-        sections.push(`🏷️ **${label}**\n${displayTitle}`);
-      }
-      if (recap) {
-        const recapPreview = recap.length > 200 ? recap.slice(0, 197) + '...' : recap;
-        sections.push(`📝 **Recap**\n${recapPreview}`);
-      }
-      if (sections.length > 0) {
-        header += '\n\n' + sections.join('\n\n──\n\n');
-      }
+      // Action buttons: stop (active) + compact (capable runner, not running) + new session
+      const actions = this.buildResumeActionButtons({
+        isActive,
+        activeRunRunId,
+        cwd,
+        compact: this.canCompactSession(agentKind, cwd)
+          ? { sessionId: sessionIdArg, agentKind }
+          : undefined,
+        newSession: true,
+      });
 
-      // Build card with session history
-      const elements: object[] = [markdownDiv(header), { tag: 'hr' }];
-
-      // Fold session history into collapsible panels: the last 2 events stay
-      // expanded so the user sees the most recent context without clicking;
-      // older events are collapsed to keep the card compact.
-      if (content.length === 0) {
-        elements.push(markdownDiv('_该会话暂无新消息可显示（最后一条为用户输入）_'));
-      } else {
-        content.forEach((ev, i) => {
-          elements.push(sessionEventPanel(ev, i, content.length, 2, this.config.defaultAgent));
-        });
-      }
-
-      // Add usage stats at the end
-      if (usage) {
-        const usageStr = formatUsageStats(usage, { showResult: true, result: 'success' });
-        elements.push(markdownDiv(usageStr));
-      }
-
-      if (elements.length > 0 && (elements[elements.length - 1] as { tag: string }).tag === 'hr') {
-        elements.pop();
-      }
-
-      // Add action buttons - use column_set+column for 2.0
-      const buttons: object[] = [];
-
-      // Stop button for active sessions.
-      // isActive is only true when an in-memory activeRun exists, so
-      // activeRunRunId is always set here. See buildAutoResumeCard for details.
-      if (isActive) {
-        buttons.push({
-          tag: 'button',
-          text: { tag: 'plain_text', content: '⏹ 终止' },
-          type: 'danger',
-          behaviors: [{ type: 'callback', value: { cmd: 'stop', runId: activeRunRunId, cwd } }],
-        } as { tag: string; text: object; type: string; behaviors: object[] });
-      }
-
-      // Compact 按钮：仅 codex app-server 模式（runner 有 runCompact）且会话未在跑。
-      // agentKind 来自 /resume [agent] <id> / resume.use 卡片值，非 defaultAgent。
-      if (!isActive && this.canCompactSession(agentKind)) {
-        buttons.push(resumeCompactButton(sessionIdArg, agentKind));
-      }
-
-      if (buttons.length > 0) {
-        elements.push({
-          tag: 'column_set',
-          columns: buttons.map((btn) => ({
-            tag: 'column',
-            width: 'auto',
-            elements: [btn],
-          })),
-        });
-      }
-
-      const card = {
-        schema: '2.0',
-        config: { wide_screen_mode: true },
-        header: {
-          title: {
-            tag: 'plain_text',
-            content: `${isActive ? '⏳ 恢复会话（完成中）' : '🔁 恢复会话'} · ${agentDisplayName(agentKind)}`,
-          },
+      const card = buildSessionHistoryCard(
+        {
+          sessionId: sessionIdArg,
+          cwd,
+          displayTitle,
+          aiTitle,
+          recap,
+          events: content,
+          usage,
         },
-        body: { elements },
-      };
+        {
+          agentKind,
+          headerText: `📂 \`${cwd}\`\n会话: **${sessionIdArg}**`,
+          title: `${isActive ? '⏳ 恢复会话（完成中）' : '🔁 恢复会话'} · ${agentDisplayName(agentKind)}`,
+          usageResult: 'success',
+          emptyPlaceholder: '_该会话暂无新消息可显示（最后一条为用户输入）_',
+          actions,
+        },
+      );
 
       return { card };
     }
@@ -3285,7 +3176,7 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
     // `/resume` or `/resume list` or `/resume <N>` — list sessions for the current cwd as a card
     // Use agentKind to select the appropriate sessionReader
     if (!cwd) return { text: '请先 /cd 设置工作目录' };
-    const pageSize = Math.min(Math.max(limit ?? RESUME_PAGE_SIZE, 1), RESUME_PAGE_SIZE);
+    const pageSize = clampInt(limit ?? RESUME_PAGE_SIZE, 1, RESUME_PAGE_SIZE);
     let reader: AgentSessionReader;
     // Use this.sessionReader when agentKind matches default, otherwise get from registry
     if (agentKind === this.config.defaultAgent) {
@@ -3305,7 +3196,7 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
       // 这样越界 offset clamp 后 prev/next 仍按 pageSize 步长移动，不会错位。
       const maxOffset = Math.max(0, Math.ceil(pageResult.total / pageSize) - 1) * pageSize;
       if (pageOffset < 0 || pageOffset > maxOffset) {
-        pageOffset = Math.min(Math.max(pageOffset, 0), maxOffset);
+        pageOffset = clampInt(pageOffset, 0, maxOffset);
         pageResult = reader.listSessions(cwd, { limit: pageSize, offset: pageOffset });
       }
     } catch (err) {
@@ -3441,81 +3332,17 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
     if (total > pageSize) {
       const totalPages = Math.ceil(total / pageSize);
       const currentPage = Math.floor(pageOffset / pageSize) + 1;
-      const hasPrev = pageOffset > 0;
-      const hasNext = pageOffset + pageSize < total;
 
-      // Build columns dynamically — Feishu rejects empty elements[] in a column
-      // (ErrCode 200621: "no tag specified"). Only include columns that have content.
-      const pageColumns: object[] = [];
-      if (hasPrev) {
-        pageColumns.push({
-          tag: 'column',
-          width: 'auto',
-          vertical_align: 'center',
-          elements: [
-            {
-              tag: 'button',
-              text: { tag: 'plain_text', content: '⬅ 上一页' },
-              type: 'default',
-              size: 'small',
-              behaviors: [
-                {
-                  type: 'callback',
-                  value: {
-                    cmd: 'resume.page',
-                    agent: agentKind,
-                    offset: pageOffset - pageSize,
-                    pageSize,
-                  },
-                },
-              ],
-            },
-          ],
-        });
-      }
-      pageColumns.push({
-        tag: 'column',
-        width: 'weighted',
-        weight: 1,
-        vertical_align: 'center',
-        elements: [
-          {
-            tag: 'div',
-            text: {
-              tag: 'lark_md',
-              content: `第 ${currentPage}/${totalPages} 页 · 共 ${total} 个会话`,
-            },
-          },
-        ],
+      const bar = paginationBar({
+        cmd: 'resume.page',
+        offset: pageOffset,
+        pageSize,
+        total,
+        extra: { agent: agentKind, pageSize },
+        label: `第 ${currentPage}/${totalPages} 页 · 共 ${total} 个会话`,
       });
-      if (hasNext) {
-        pageColumns.push({
-          tag: 'column',
-          width: 'auto',
-          vertical_align: 'center',
-          elements: [
-            {
-              tag: 'button',
-              text: { tag: 'plain_text', content: '下一页 ➡' },
-              type: 'default',
-              size: 'small',
-              behaviors: [
-                {
-                  type: 'callback',
-                  value: {
-                    cmd: 'resume.page',
-                    agent: agentKind,
-                    offset: pageOffset + pageSize,
-                    pageSize,
-                  },
-                },
-              ],
-            },
-          ],
-        });
-      }
       elements.push({ tag: 'hr' });
-      elements.push({ tag: 'column_set', columns: pageColumns });
+      elements.push(bar);
     }
 
     const card = {
@@ -3770,7 +3597,7 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
   }
 
   /** Build an interactive config card with CardKit 2.0 tabs + batch save */
-  private buildConfigCard(): CommandResult {
+  buildConfigCard(): CommandResult {
     // 使用 pendingConfig（若存在）或当前 config
     const displayConfig = this.pendingConfig ?? this.config;
 
@@ -3786,7 +3613,9 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
     // Direct inline construction (not via ConfigField) so that text (display label)
     // and value (agentKind for config storage) can differ — uninstalled agents get
     // a "⚠️ (未安装)" suffix in the label while the value stays clean.
-    const allAgents = listRegisteredAgents();
+    // 固定展示顺序（Codex → Claude → OpenCode → Pi → Kimi），
+    // 明确未安装的 agent 排到后面（getCachedAvailability === false）。
+    const allAgents = sortAgentsForDisplay(listRegisteredAgents(), getCachedAvailability);
     const agentOptions = allAgents.map((kind) => {
       const available = getCachedAvailability(kind);
       const label =
@@ -3891,12 +3720,15 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
     return { card };
   }
 
-  private cmdOrder(args: string[], _ctx: CommandContext, offset = 0): CommandResult {
+  /** /order 实现（public：测试直接调用，替代 as unknown as）。 */
+  cmdOrder(args: string[], _ctx: CommandContext, offset = 0): CommandResult {
     const sub = args[0]?.toLowerCase();
 
-    // /order — list orders (CardKit 2.0 with pagination)
-    if (!sub || sub === 'list') {
+    // /order — list orders + aliases (CardKit 2.0 with pagination)
+    // `/order alias`（无参数）也并入列表卡片。
+    if (!sub || sub === 'list' || (sub === 'alias' && !args[1])) {
       this.orderStore.reload();
+      this.aliasStore.reload();
       const allOrders = this.orderStore.get();
 
       const elements: object[] = [];
@@ -3908,7 +3740,7 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
         const totalPages = Math.max(1, Math.ceil(totalCount / ORDER_PAGE_SIZE));
         // Clamp offset to last page boundary to avoid empty pages
         const maxOffset = Math.max(0, (totalPages - 1) * ORDER_PAGE_SIZE);
-        const safeOffset = Math.min(Math.max(offset, 0), maxOffset);
+        const safeOffset = clampInt(offset, 0, maxOffset);
         const currentPage = Math.floor(safeOffset / ORDER_PAGE_SIZE) + 1;
         const pageOrders = allOrders.slice(safeOffset, safeOffset + ORDER_PAGE_SIZE);
         const hasPagination = totalCount > ORDER_PAGE_SIZE;
@@ -3969,76 +3801,32 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
 
         // Pagination bar (only shown when there are more items than ORDER_PAGE_SIZE)
         if (hasPagination) {
-          const hasPrev = safeOffset > 0;
-          const hasNext = safeOffset + ORDER_PAGE_SIZE < totalCount;
-
-          const pageColumns: object[] = [];
-          if (hasPrev) {
-            pageColumns.push({
-              tag: 'column',
-              width: 'auto',
-              vertical_align: 'center',
-              elements: [
-                {
-                  tag: 'button',
-                  text: { tag: 'plain_text', content: '⬅ 上一页' },
-                  type: 'default',
-                  size: 'small',
-                  behaviors: [
-                    {
-                      type: 'callback',
-                      value: {
-                        cmd: 'order.page',
-                        offset: safeOffset - ORDER_PAGE_SIZE,
-                      },
-                    },
-                  ],
-                },
-              ],
-            });
-          }
-          pageColumns.push({
-            tag: 'column',
-            width: 'weighted',
-            weight: 1,
-            vertical_align: 'center',
-            elements: [
-              {
-                tag: 'div',
-                text: {
-                  tag: 'lark_md',
-                  content: `**第 ${currentPage}/${totalPages} 页**（共 ${totalCount} 条）`,
-                },
-              },
-            ],
+          const bar = paginationBar({
+            cmd: 'order.page',
+            offset: safeOffset,
+            pageSize: ORDER_PAGE_SIZE,
+            total: totalCount,
+            label: `**第 ${currentPage}/${totalPages} 页**（共 ${totalCount} 条）`,
           });
-          if (hasNext) {
-            pageColumns.push({
-              tag: 'column',
-              width: 'auto',
-              vertical_align: 'center',
-              elements: [
-                {
-                  tag: 'button',
-                  text: { tag: 'plain_text', content: '下一页 ➡' },
-                  type: 'default',
-                  size: 'small',
-                  behaviors: [
-                    {
-                      type: 'callback',
-                      value: {
-                        cmd: 'order.page',
-                        offset: safeOffset + ORDER_PAGE_SIZE,
-                      },
-                    },
-                  ],
-                },
-              ],
-            });
-          }
-
           elements.push({ tag: 'hr' });
-          elements.push({ tag: 'column_set', columns: pageColumns });
+          elements.push(bar);
+        }
+      }
+
+      // 别名区：并入 /order 卡片（`/order alias` 列出全部）。
+      const aliases = this.aliasStore.list();
+      if (aliases.length > 0) {
+        elements.push({ tag: 'hr' });
+        elements.push({
+          tag: 'div',
+          text: { tag: 'lark_md', content: '**⚡ 别名**（输入 $name 触发）' },
+        });
+        for (const alias of aliases) {
+          const text = alias.text.length > 100 ? alias.text.slice(0, 97) + '...' : alias.text;
+          elements.push({
+            tag: 'div',
+            text: { tag: 'lark_md', content: `$${alias.name} → ${text}` },
+          });
         }
       }
 
@@ -4050,6 +3838,47 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
           body: { elements },
         },
       };
+    }
+
+    // /order alias <name> <text> — 注册；/order alias <name> — 查看；/order alias remove <name> — 删除
+    if (sub === 'alias') {
+      const name = args[1];
+      if (name === 'remove') {
+        const target = args[2];
+        if (!target) {
+          return { text: '用法: /order alias remove <name>' };
+        }
+        // remove 是保留子命令，不能作为别名名：后面跟多词文本说明用户想注册
+        // 名为 remove 的别名，明确报错而不是静默删除已存在的 target（P2 review）。
+        if (args.length > 3) {
+          return { text: '`remove` 是保留子命令，不能作为别名名，请换一个名称' };
+        }
+        const entry = this.aliasStore.get(target);
+        if (!entry) {
+          return { text: `别名 $${target} 不存在` };
+        }
+        this.aliasStore.remove(target);
+        // 回显原内容：单词场景无法区分「注册 remove」与「删除」，误删后
+        // 用户可直接按回显内容重新注册，消除静默破坏（P3 review）。
+        const preview = entry.text.length > 50 ? entry.text.slice(0, 50) + '...' : entry.text;
+        return { text: `✅ 已删除别名 $${target}（原内容：${preview}）` };
+      }
+      const text = args.slice(2).join(' ');
+      if (!text) {
+        const entry = name ? this.aliasStore.get(name) : undefined;
+        if (!entry) {
+          return { text: name ? `别名 $${name} 不存在` : '用法: /order alias <name> <text>' };
+        }
+        return { text: `$${entry.name} → ${entry.text}` };
+      }
+      try {
+        const existed = this.aliasStore.has(name!);
+        this.aliasStore.set(name!, text);
+        const preview = text.length > 50 ? text.slice(0, 50) + '...' : text;
+        return { text: `${existed ? '✅ 已更新别名' : '✅ 已保存别名'} $${name} → ${preview}` };
+      } catch (err) {
+        return { text: `保存失败: ${(err as Error).message}` };
+      }
     }
 
     // /order save <text>
@@ -4066,10 +3895,6 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
       }
     }
 
-    return { text: '用法: /order [list|save <text>]' };
+    return { text: '用法: /order [list|save <text>|alias <name> <text>|alias remove <name>]' };
   }
 }
-
-// --- Re-exported from ./utils.js (moved for decomposition) ---
-// formatUsageStats is shared by run-renderer and bridge via ../router/index.js.
-export { formatUsageStats } from './utils.js';

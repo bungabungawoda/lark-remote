@@ -1,87 +1,15 @@
 /**
- * Merged anchor tests for pi session/runner (spawning base + stale db)
+ * Merged anchor tests for pi session (stale db + mtime ordering)
  *
  * Source files (merged 2026-08-04, Phase 4):
- *   - pi-runner-spawning-base.test.ts
+ *   - pi-runner-spawning-base.test.ts (PiRunner removed 2026-08-18, RPC-only)
  *   - pi-session-stale-db.test.ts
  */
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach } from 'vitest';
 import path from 'node:path';
 import fs from 'node:fs';
 import os from 'node:os';
-import { PiRunner } from '../../../src/runner/pi/runner.js';
-import { SpawningRunner } from '../../../src/runner/common/spawning-runner.js';
 import { PiSessionReader } from '../../../src/session/pi/index.js';
-
-// ---------------------------------------------------------------------------
-// PiRunner extends SpawningRunner (R18)
-// ---------------------------------------------------------------------------
-
-/**
- * Anchor Test: PiRunner extends SpawningRunner (R18)
- *
- * Behavior verified (①):
- *   PiRunner is a subclass of SpawningRunner. The spawn orchestration
- *   surface — `run()`, `stop()`, `killOrphan()`, and the `isRunning` getter —
- *   is INHERITED from the base class, not duplicated inside PiRunner.
- *   A fresh instance reports `isRunning === false` because no child process
- *   has been spawned yet.
- *
- * What goes wrong if missing/incorrect (②):
- *   If PiRunner merely `implements AgentRunner` (current state) instead
- *   of `extends SpawningRunner`, the spawn orchestration remains duplicated
- *   in src/runner/pi/runner.ts. The "deep module" deletion promised by
- *   the SpawningRunner deep-module refactor does not
- *   complete — PiRunner is the third of the four sibling runners
- *   (kimi/pi/codex/opencode) that should follow ClaudeRunner's collapse
- *   pattern. Even though PiRunner has complex event translation that may
- *   require overriding run(), the CLASS HIERARCHY contract
- *   (extends SpawningRunner) must still hold so stop/killOrphan/isRunning
- *   are inherited, not re-implemented.
- *
- * Spec basis (③):
- *   SpawningRunner deep-module refactor —
- *   "子类只覆盖 3 个 hook：buildArgv(opts) / translate(rawEvent, ctx) /
- *    validateConfig()；concrete run() / stop() / killOrphan() / isRunning
- *    由 base 提供。"
- *
- * Anti-Goodhart note: this is a genuine behavioral contract (instanceof
- * check on the prototype chain), not a tautology. No spawn, no logger mock,
- * no fixture — the test only verifies the class hierarchy and inherited
- * method presence on a fresh instance.
- */
-describe('PiRunner SpawningRunner base anchor', () => {
-  const PID_DIR = '/tmp/r18-pi-base-test';
-
-  afterEach(() => {
-    // Defensive: PiRunner constructor does not write the pid file, but
-    // if a future change does, we don't want to leak state across runs.
-    try {
-      fs.rmSync(PID_DIR, { recursive: true, force: true });
-    } catch {
-      /* ignore */
-    }
-  });
-
-  it('test_anchor_pi_runner_extends_spawning_runner', () => {
-    const runner = new PiRunner({ workspace: 'test' });
-
-    // Core contract: PiRunner IS-A SpawningRunner. Today this is RED
-    // because PiRunner `implements AgentRunner` and does not extend
-    // SpawningRunner — spawn orchestration is duplicated, not inherited.
-    expect(runner).toBeInstanceOf(SpawningRunner);
-
-    // Inherited public methods must exist on the instance. These would
-    // resolve via the prototype chain once PiRunner extends the base.
-    expect(typeof runner.run).toBe('function');
-    expect(typeof runner.stop).toBe('function');
-    expect(typeof runner.killOrphan).toBe('function');
-
-    // Inherited getter: a fresh instance with no spawned process must
-    // report not-running. Verifies the base-class getter is wired through.
-    expect(runner.isRunning).toBe(false);
-  });
-});
 
 // ---------------------------------------------------------------------------
 // PiSessionReader stale db

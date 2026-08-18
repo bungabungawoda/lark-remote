@@ -2,7 +2,6 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { scanJsonlLines } from '../common/jsonl.js';
 import { extractContentBlocks, type ContentBlockMapping } from '../common/content-blocks.js';
-import { truncate } from '../../card/card-shared.js';
 import { getLogger } from '../../logger/index.js';
 
 // ─── Types ──────────────────────────────────────────────────
@@ -273,7 +272,7 @@ export class SessionIndex {
           path: p,
           fingerprint: currentFp,
           mtimeMs: Number(st.mtimeMs),
-          summary: truncate(parsed.summary, 60, { normalizeWhitespace: true }),
+          summary: parsed.summary.replace(/\s+/g, ' ').trim(),
           cwdSet: parsed.cwdSet,
         };
         this.updateEntry(p, updated);
@@ -355,7 +354,7 @@ export class SessionIndex {
             path: fullPath,
             fingerprint: fpAfter,
             mtimeMs: Number(fileStat.mtimeMs),
-            summary: truncate(parsed.summary, 60, { normalizeWhitespace: true }),
+            summary: parsed.summary.replace(/\s+/g, ' ').trim(),
             cwdSet: parsed.cwdSet,
           };
           this.updateEntry(fullPath, newEntry);

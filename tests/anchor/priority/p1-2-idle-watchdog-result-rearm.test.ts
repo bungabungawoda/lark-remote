@@ -2,17 +2,10 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { Bridge } from '../../../src/bridge/index.js';
-import { SessionStore } from '../../../src/session/index.js';
-import { AppConfigSchema } from '../../../src/config/index.js';
-import type { AppConfig } from '../../../src/config/index.js';
 import type { Runner } from '../../../src/runner/index.js';
+import { sleep } from '../../lib/wait-for.js';
 
-import {
-  createStubAgentRegistry,
-  createStubSessionReaderRegistry,
-  createStubConnector,
-} from '../../lib/bridge-stubs.js';
+import { makeBridge } from '../../lib/bridge-stubs.js';
 const { mockLogger } = vi.hoisted(() => ({
   mockLogger: {
     debug: vi.fn(),
@@ -44,7 +37,6 @@ function createResultThenHangRunner(opts: {
   const hangPromise = new Promise<void>((r) => {
     resolveHang = r;
   });
-  const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
   const runner: ResultThenHangRunner = {
     isRunning: false,
     stopCalled: false,
@@ -73,15 +65,9 @@ function createResultThenHangRunner(opts: {
 }
 
 let tmpDir: string;
-let config: AppConfig;
 
 beforeEach(() => {
   tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'bridge-idle-result-rearm-'));
-  config = AppConfigSchema.parse({
-    feishu: { appId: 'test', appSecret: 'test' },
-    claude: { model: 'opus', stopGraceMs: 5000 },
-    output: { showThinking: true, showToolUse: false, showToolResult: false },
-  });
 });
 
 afterEach(() => {
@@ -89,28 +75,6 @@ afterEach(() => {
 });
 
 const ctx = { userId: 'user1', chatId: 'chat1', messageId: 'msg1' };
-
-function makeBridge(
-  opts: {
-    runner?: Runner;
-    idleTimeoutMs?: number;
-    connector?: ReturnType<typeof createStubConnector>;
-  } = {},
-) {
-  const sessionStore = new SessionStore();
-  const connector = opts.connector ?? createStubConnector();
-  const runner = opts.runner ?? createResultThenHangRunner({ cwd: tmpDir, resultDelayMs: 900 });
-  const bridge = new Bridge({
-    runner,
-    agentRegistry: createStubAgentRegistry(runner),
-    sessionReaderRegistry: createStubSessionReaderRegistry(),
-    connector,
-    sessionStore,
-    config,
-    ...(opts.idleTimeoutMs !== undefined ? { idleTimeoutMs: opts.idleTimeoutMs } : {}),
-  });
-  return { bridge, sessionStore, connector, runner };
-}
 
 describe('P1-2 idle watchdog: result event must re-arm (anchor)', () => {
   /**

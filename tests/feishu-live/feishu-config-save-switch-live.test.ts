@@ -24,7 +24,7 @@ import { loadConfig } from '../../src/config/index.js';
 import { SessionStore } from '../../src/session/index.js';
 import { CommandRouter } from '../../src/router/index.js';
 import type { Bridge } from '../../src/bridge/index.js';
-import type { SessionReaderRegistry } from '../../src/session/registry.js';
+import { createMockBridge, createMockSessionReaderRegistry } from '../../tests/lib/bridge-stubs.js';
 
 // 使用独立的测试配置目录
 const TEST_CONFIG_DIR = path.join(os.homedir(), '.lark-remote-test');
@@ -59,7 +59,7 @@ const describeLive = process.env.FEISHU_LIVE_TEST ? describe : describe.skip;
  * sendWithRetry(chatId, result, { replyTo: ctx.messageId })），其余方法 stub。
  */
 function createLiveBridge(conn: FeishuConnector): Bridge {
-  const mock = {
+  return createMockBridge({
     sendResult: vi.fn(
       async (result: { text?: string }, ctx: { chatId: string; messageId: string }) => {
         try {
@@ -93,8 +93,7 @@ function createLiveBridge(conn: FeishuConnector): Bridge {
     getAllActiveRuns: vi.fn().mockReturnValue(new Map()),
     sendFile: vi.fn().mockResolvedValue(''),
     getActiveRunFor: vi.fn().mockReturnValue(undefined),
-  } as unknown as Bridge;
-  return mock;
+  });
 }
 
 describeLive('飞书 API 集成测试 - config.save 切换 coding agent 持久化消息', () => {
@@ -152,10 +151,9 @@ describeLive('飞书 API 集成测试 - config.save 切换 coding agent 持久�
       configPath,
       workspacePath: path.join(tmpDir, 'workspace.json'),
       ordersPath: path.join(tmpDir, 'orders.json'),
-      sessionReaderRegistry: {
-        listRegistered: vi.fn().mockReturnValue(['claude', 'codex', 'pi', 'opencode', 'kimi']),
-        get: vi.fn(),
-      } as unknown as SessionReaderRegistry,
+      sessionReaderRegistry: createMockSessionReaderRegistry({
+        agentKinds: ['claude', 'codex', 'pi', 'opencode', 'kimi'],
+      }),
     });
 
     sessionStore.setCwd('live-user', tmpDir);

@@ -58,8 +58,17 @@ defaultAgent: claude
 claude:
   model: claude-opus-4-8    # 模型
   effort: medium            # 推理强度 low | medium | high | xhigh | max
-  # permissionMode 硬编码为 bypassPermissions（runner 内部），不通过 config 配置
+  permissionMode: bypassPermissions  # Claude 官方 --permission-mode：default | acceptEdits | auto | bypassPermissions | manual | dontAsk | plan（/config 卡片可切换）
   stopGraceMs: 5000         # 空闲超时自动停止时的优雅关闭宽限时间（毫秒）
+
+agents:
+  kimi:                     # 纯 ACP 模式（kimi acp 持久连接，支持审批 + compact）
+    permissionMode: manual  # manual | auto | yolo
+    acp:                    # acp 连接参数
+      binary: kimi
+      requestTimeoutMs: 60000
+      idleTtlMs: 1800000
+      turnIdleTimeoutMinutes: 10
 
 output:
   showThinking: true        # 是否发送 thinking 块
@@ -117,6 +126,8 @@ bridge 启动后不在终端输出，运行日志写入 `~/.lark-remote/logs/`�
 | `/config` | `/c` | 查看配置（卡片交互，布尔值点击切换，其他用按钮选择） |
 | `/order save <text>` | `/o` | 保存常用指令 |
 | `/order` `/order list` | `/o` | 列出已保存的指令 |
+| `/order alias <name> <text>` | `/o` | 注册快捷别名（如 `/order alias fix 请修复报错`），之后输入 `$fix` 即展开 |
+| `/order alias [remove <name>]` | `/o` | 列出全部别名（并入 `/order` 卡片）/ 删除别名 |
 | `/exit` | `/e` | 退出 bridge |
 | `/restart` | - | 原地自重启 bridge：新进程同 config 接管，启动通知稍后送达 |
 
@@ -180,6 +191,53 @@ pid N），启动通知稍后送达…」后干净退出并释放单例锁；新
   「重启失败：…，旧进程仍在运行」，bridge 继续服务。
 - **开发形态注意**：`bun run dev` 重启的是源码、`bun dist/cli.js` 重启的是 dist——
   改完代码后不 `bun run build` 就 `/restart`，新进程跑的还是旧 dist。
+
+### 入站图片/文件：自动落盘
+
+往飞书私聊发图片或文件，bridge 会自动下载并保存到**当前工作目录**的
+`.lark-remote-temp/<YYYYMMDDHHmm>/`（按分钟分子目录），然后回复一条
+「已保存 N 个文件」提示。之后直接说「请处理刚才保存的文件」即可——agent 用现有
+Read/Bash 工具读本地文件，**runner 无需任何改造**。
+
+- 文件消息保留原始文件名（自动 sanitize 防路径穿越）；图片消息按
+  `image_<HHmmss>_<n>.<ext>` 命名，扩展名按 MIME 推断；
+- 同名冲突自动加序号，不覆盖；单文件上限默认 50MB
+  （config.yaml `inboundMedia.maxFileSizeMb` 可调）；
+- 未设置工作目录时会提示先 `/cd` 或 `/ws use`；
+- 连续发送的多张图片合批成一条保存提示（500ms 窗口内）；
+- **`.lark-remote-temp/` 建议加入项目的 `.gitignore`**：本工具不会自动清理
+  或修改这些文件，避免临时文件被提交。
+
+config.yaml 可选配置（默认即可用）：
+
+```yaml
+inboundMedia:
+  enabled: true
+  dirName: ".lark-remote-temp"
+  maxFileSizeMb: 50
+```
+
+`enabled: false` 时不会保存图片/文件，但会收到一条「已关闭」的提示（不静默）。
+
+### 快捷别名 `$name`
+
+`/order alias` 注册「触发词 → 文本」的快捷别名，输入 `$name` 即展开，适合高频短语：
+
+```text
+/order alias fix 请修复刚才提到的报错并解释原因
+$fix                       → 展开为上面整句
+/order alias h 请读取文件并分析
+$h /tmp/a.txt              → 展开为 "请读取文件并分析 /tmp/a.txt"
+```
+
+- 只匹配消息开头的 `$name`（后接空格或行尾），全词精确匹配，大小写敏感；
+- 名称只能包含字母/数字/下划线且**不能数字开头**（`$500` 这类文本永远不会误展开）；
+- `!` 开头的 bash 消息和 `/` 开头的命令不展开（`$PATH` 等 shell 变量不受影响）；
+- 未注册的 `$xxx` 原样发给 agent，不报错；
+- 展开结果以 `/` 开头会走命令路径（可触发 `/cd` 等）；别名展开成 `!` 命令是
+  用户自定义行为，注意安全；
+- 别名持久化在 `<configDir>/aliases.json`，上限 50 条；
+- `remove` 是保留子命令，不能作为别名名（`/order alias remove <name>` 用于删除）。
 
 ---
 

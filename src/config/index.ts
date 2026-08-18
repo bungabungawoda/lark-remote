@@ -13,6 +13,21 @@ import { KIMI_THINKING_EFFORTS } from './kimi-config.js';
 /** Valid effort values for Claude */
 export const CLAUDE_EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'] as const;
 
+/**
+ * Claude 官方 --permission-mode 枚举（claude --help 输出，2026-08 实测）。
+ * 额外支持 'default'：Claude settings.json 的官方未设置值，等价于不传
+ * --permission-mode（交互式默认：高风险工具逐个询问）。
+ */
+export const CLAUDE_PERMISSION_MODES = [
+  'default',
+  'acceptEdits',
+  'auto',
+  'bypassPermissions',
+  'manual',
+  'dontAsk',
+  'plan',
+] as const;
+
 /** Valid thinking levels for Pi */
 export const PI_THINKING_LEVELS = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh'] as const;
 
@@ -22,6 +37,10 @@ const DEFAULTS = {
   STOP_GRACE_MS: 5000,
   IDLE_WATCHDOG_MINUTES: 15,
   TURN_IDLE_TIMEOUT_MINUTES: 10,
+  /** 审批超时默认 5 分钟（对齐 codex 红线：勿随意改短）。 */
+  APPROVAL_TIMEOUT_MS: 5 * 60 * 1000,
+  /** Claude 会话级空闲回收默认 30 分钟（对齐 codex appServer.idleTtlMs）。 */
+  CLAUDE_IDLE_TTL_MINUTES: 30,
 } as const;
 
 /**
@@ -33,6 +52,10 @@ export const DEFAULT_STOP_GRACE_MS = DEFAULTS.STOP_GRACE_MS;
 
 /** Codex app-server turn idle timeout default (minutes). */
 export const DEFAULT_TURN_IDLE_TIMEOUT_MINUTES = DEFAULTS.TURN_IDLE_TIMEOUT_MINUTES;
+
+/** 入站媒体默认配置（schema 默认与 connector 兜底共用，避免双源漂移）。 */
+export const DEFAULT_INBOUND_MEDIA_DIR_NAME = '.lark-remote-temp';
+export const DEFAULT_INBOUND_MEDIA_MAX_SIZE_MB = 50;
 
 /** 模型 ID → alias 映射。 */
 export const MODEL_ID_TO_ALIAS: Record<string, string> = {
@@ -58,7 +81,17 @@ const FeishuConfigSchema = z.object({
 const ClaudeConfigSchema = z.object({
   model: z.string().default(DEFAULTS.CLAUDE_MODEL),
   effort: z.enum(CLAUDE_EFFORTS).default('medium'),
-  // permissionMode 硬编码为 bypassPermissions（runner 内部），不通过 config 配置
+  /**
+   * Claude 权限模式（官方 --permission-mode 枚举 + 'default'=省略该参数）。
+   * 默认 bypassPermissions 保持现有行为（无审批卡）；配置为其他值后激活
+   * 交互式审批（control_request → run 卡审批区）。
+   */
+  permissionMode: z.enum(CLAUDE_PERMISSION_MODES).default('bypassPermissions'),
+  /** 审批请求超时（ms），默认 5 分钟；超时自动发送 cancel 并中断 turn。
+   *  0 = 立即过期（fail-fast，避免审批永久挂起），不推荐；勿随意改短。 */
+  approvalTimeoutMs: z.number().int().min(0).default(DEFAULTS.APPROVAL_TIMEOUT_MS),
+  /** 会话级空闲回收（分钟）：turn 之间无新消息超过该窗口则停止长驻进程。 */
+  idleTtlMinutes: z.number().int().min(0).default(DEFAULTS.CLAUDE_IDLE_TTL_MINUTES),
   stopGraceMs: z.number().int().min(0).default(DEFAULTS.STOP_GRACE_MS),
 });
 
@@ -88,14 +121,12 @@ export const CodexConfigSchema = z.object({
    */
   // codex 拒绝空串档位（ReasoningEffort::from_str "" → Err，P3-3）
   reasoningEffort: z.string().min(1).optional(),
-  /** Stop grace period in milliseconds. */
-  stopGraceMs: z.number().int().min(0).default(5000),
-  /** Service mode: 'exec' (spawn-per-message) or 'app-server' (persistent connection). */
-  serviceMode: z.enum(['exec', 'app-server']).optional(),
-  /** Approval policy (Codex 官方 AskForApproval 标准值). 仅 app-server 模式有效（exec 固定 approval_policy="never"）。 */
-  approvalPolicy: z.enum(['untrusted', 'on-request', 'never']).optional(),
-  /** Sandbox mode (Codex 官方 SandboxMode 标准值). 仅 app-server 模式有效（exec 固定 --sandbox danger-full-access）。 */
-  sandbox: z.enum(['read-only', 'workspace-write', 'danger-full-access']).optional(),
+  /** Approval policy (Codex 官方 AskForApproval 标准值). 默认 on-request。 */
+  approvalPolicy: z.enum(['untrusted', 'on-request', 'never']).default('on-request'),
+  /** Sandbox mode (Codex 官方 SandboxMode 标准值). 默认 workspace-write。 */
+  sandbox: z
+    .enum(['read-only', 'workspace-write', 'danger-full-access'])
+    .default('workspace-write'),
   /** App-server connection configuration. */
   appServer: CodexAppServerConfigSchema.optional(),
 });
@@ -106,6 +137,8 @@ const OpencodeConfigSchema = z.object({
   providerID: z.string().default('anthropic'),
   /** Model ID for the LLM backend (e.g. 'claude-sonnet-4-20250514'). */
   modelID: z.string().default('claude-sonnet-4-20250514'),
+  /** Session mode (opencode agent name): 'build' (default) or 'plan'. */
+  mode: z.enum(['build', 'plan']).default('build'),
 });
 
 /** Pi-specific configuration. pi is a spawn-per-message CLI like Claude. */
@@ -120,17 +153,37 @@ const PiConfigSchema = z.object({
   tools: z.string().default('read,bash,edit,write,grep,find,ls'),
 });
 
-/** Kimi-specific configuration. kimi is a spawn-per-message CLI. */
+/** Kimi-specific configuration. Pure ACP mode (persistent `kimi acp` connection). */
 const KimiConfigSchema = z.object({
   /** Model ID or alias, e.g. 'kimi-code/k3'. */
   model: z.string().default('kimi-code/k3'),
   /** Thinking effort: 'on', 'max'. */
   thinkingEffort: z.enum(KIMI_THINKING_EFFORTS).default('max'),
+  /** Permission mode: 'manual' (approve each), 'auto' (engine decides), 'yolo' (allow all). */
+  permissionMode: z.enum(['manual', 'auto', 'yolo']).default('manual'),
+  /** ACP sub-configuration. */
+  acp: z
+    .object({
+      /** Path to kimi binary for ACP mode. */
+      binary: z.string().default('kimi'),
+      /** Request timeout in milliseconds. */
+      requestTimeoutMs: z.number().int().min(0).default(60000),
+      /** Idle TTL for ACP connection in milliseconds. */
+      idleTtlMs: z.number().int().min(0).default(1800000),
+      /** Turn idle timeout in minutes (0 disables). */
+      turnIdleTimeoutMinutes: z.number().int().min(0).default(DEFAULT_TURN_IDLE_TIMEOUT_MINUTES),
+    })
+    .optional(),
 });
+
+/** 首次启动的默认 agents 配置：codex 默认 app-server / on-request / workspace-write。 */
+const DEFAULT_AGENTS_CONFIG = {
+  codex: CodexConfigSchema.parse({}),
+};
 
 /** Agents configuration: per-agent settings keyed by agent kind. */
 const AgentsConfigSchema = z.object({
-  codex: CodexConfigSchema.optional(),
+  codex: CodexConfigSchema.default(DEFAULT_AGENTS_CONFIG.codex),
   opencode: OpencodeConfigSchema.optional(),
   pi: PiConfigSchema.optional(),
   kimi: KimiConfigSchema.optional(),
@@ -153,6 +206,16 @@ const OutputConfigSchema = z.object({
 
 const LoggingConfigSchema = z.object({
   level: z.enum(['debug', 'info', 'warn', 'error']).default('info'),
+});
+
+/** 入站媒体落盘配置（预留可配置，默认即可用）。 */
+const InboundMediaConfigSchema = z.object({
+  /** 是否启用图片/文件落盘。 */
+  enabled: z.boolean().default(true),
+  /** 落盘根目录名（位于当前 cwd 下）。 */
+  dirName: z.string().min(1).default(DEFAULT_INBOUND_MEDIA_DIR_NAME),
+  /** 单文件大小上限（MiB）。 */
+  maxFileSizeMb: z.number().int().min(1).default(DEFAULT_INBOUND_MEDIA_MAX_SIZE_MB),
 });
 
 /** Agent-specific saved choices for quick switching. */
@@ -188,13 +251,15 @@ export const AppConfigSchema = z.object({
   feishu: FeishuConfigSchema,
   /** Claude config (top-level; other agents live under `agents`). */
   claude: ClaudeConfigSchema.default(ClaudeConfigSchema.parse({})),
-  /** Per-agent configuration for non-claude agents. */
-  agents: AgentsConfigSchema.optional(),
+  /** Per-agent configuration for non-claude agents. 首次启动默认含 codex（app-server / workspace-write / on-request）。 */
+  agents: AgentsConfigSchema.default(DEFAULT_AGENTS_CONFIG),
   /** Agent-specific saved choices for quick switching. */
   agentChoices: AgentChoicesSchema.optional(),
   idle: IdleConfigSchema.default(IdleConfigSchema.parse({})),
   output: OutputConfigSchema.default(OutputConfigSchema.parse({})),
   logging: LoggingConfigSchema.default(LoggingConfigSchema.parse({})),
+  /** 入站媒体（图片/文件）落盘配置。 */
+  inboundMedia: InboundMediaConfigSchema.default(InboundMediaConfigSchema.parse({})),
   /** Default agent for new runs. */
   defaultAgent: z.enum(['claude', 'codex', 'opencode', 'pi', 'kimi']).default('claude'),
   /** Check for updates on bridge startup (default: false). */
@@ -210,6 +275,9 @@ const TEMPLATE = `feishu:
 claude:
   model: ${DEFAULTS.CLAUDE_MODEL}
   effort: medium
+  permissionMode: bypassPermissions
+  approvalTimeoutMs: ${DEFAULTS.APPROVAL_TIMEOUT_MS}
+  idleTtlMinutes: ${DEFAULTS.CLAUDE_IDLE_TTL_MINUTES}
   stopGraceMs: ${DEFAULTS.STOP_GRACE_MS}
 
 idle:
@@ -302,33 +370,49 @@ export function assertSafeKeyPart(part: string): void {
   }
 }
 
-/** 在对象上按 dot-separated key 设置嵌套值（仅修改内存对象，不写盘）。 */
-function setNestedValue(target: AppConfig, key: string, value: unknown): void {
-  const parts = key.split('.');
-  let current: Record<string, unknown> = target as unknown as Record<string, unknown>;
+/**
+ * 按 dot-separated key 下钻到目标键的父容器（不含最后一段）。
+ *
+ * - create=true：中间缺失/非对象段自动补 `{}`（set 语义）
+ * - create=false：中间缺失/非对象段返回 undefined（get/delete 语义）
+ *
+ * 危险段（__proto__/prototype/constructor）在每段统一拒绝。
+ */
+export function walkNestedContainer(
+  target: unknown,
+  parts: string[],
+  create: boolean,
+): Record<string, unknown> | undefined {
+  let current = target as Record<string, unknown>;
   for (let i = 0; i < parts.length - 1; i++) {
     assertSafeKeyPart(parts[i]);
     const next = current[parts[i]];
     if (next == null || typeof next !== 'object') {
+      if (!create) return undefined;
       current[parts[i]] = {};
     }
     current = current[parts[i]] as Record<string, unknown>;
   }
+  return current;
+}
+
+/** 在对象上按 dot-separated key 设置嵌套值（仅修改内存对象，不写盘）。 */
+function setNestedValue(target: AppConfig, key: string, value: unknown): void {
+  const parts = key.split('.');
+  const container = walkNestedContainer(target, parts, true);
   const lastPart = parts[parts.length - 1];
   assertSafeKeyPart(lastPart);
-  current[lastPart] = value;
+  container![lastPart] = value;
 }
 
 /** Get a nested value from config by dot-separated key, e.g. "feishu.appId" */
 export function getConfigValue(config: AppConfig, key: string): unknown {
   const parts = key.split('.');
-  let current: Record<string, unknown> = config as unknown as Record<string, unknown>;
-  for (const part of parts) {
-    assertSafeKeyPart(part);
-    if (current == null || typeof current !== 'object') return undefined;
-    current = current[part] as Record<string, unknown>;
-  }
-  return current;
+  const container = walkNestedContainer(config, parts, false);
+  if (!container) return undefined;
+  const lastPart = parts[parts.length - 1];
+  assertSafeKeyPart(lastPart);
+  return container[lastPart];
 }
 
 /** Set a nested value in config by dot-separated key, write back to YAML file */
@@ -381,16 +465,11 @@ export function setConfigValues(
  */
 function deleteNestedValue(target: AppConfig, key: string): void {
   const parts = key.split('.');
-  let current: Record<string, unknown> = target as unknown as Record<string, unknown>;
-  for (let i = 0; i < parts.length - 1; i++) {
-    assertSafeKeyPart(parts[i]);
-    const next = current[parts[i]];
-    if (next == null || typeof next !== 'object') return;
-    current = next as Record<string, unknown>;
-  }
+  const container = walkNestedContainer(target, parts, false);
+  if (!container) return;
   const lastPart = parts[parts.length - 1];
   assertSafeKeyPart(lastPart);
-  delete current[lastPart];
+  delete container[lastPart];
 }
 
 /** Type helpers for agent config (used by getAgentConfig). */

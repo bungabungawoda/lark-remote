@@ -13,9 +13,10 @@
  * error 日志。
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { Readable, Writable } from 'node:stream';
+import { Readable } from 'node:stream';
 import { SpawningRunner } from '../../../src/runner/common/spawning-runner.js';
 import type { AgentEvent, SpawnOptions } from '../../../src/runner/types.js';
+import { createMockProc } from '../../../tests/lib/mock-process.js';
 
 const { mockLogger } = vi.hoisted(() => ({
   mockLogger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
@@ -58,15 +59,10 @@ describe('P2-16: stderr is not logged at error level per chunk', () => {
         this.push(null);
       },
     });
-    const _stderr = new Writable({
-      write(_chunk, _enc, cb) {
-        cb();
-      },
-    });
     // Make stderr behave as a readable we can push to.
     const stderrReadable = new Readable({ read() {} });
 
-    const mockProc = {
+    const mockProc = createMockProc({
       pid: 77001,
       exitCode: null,
       signalCode: null,
@@ -76,11 +72,9 @@ describe('P2-16: stderr is not logged at error level per chunk', () => {
       once: vi.fn((event: string, cb: (...args: unknown[]) => void) => {
         if (event === 'close') setTimeout(() => cb(0, null), 10);
       }),
-      on: vi.fn(),
-      removeAllListeners: vi.fn(),
-    };
+    });
 
-    vi.mocked(spawn).mockReturnValue(mockProc as any);
+    vi.mocked(spawn).mockReturnValue(mockProc);
 
     const runner = new TestRunner();
     const runPromise = runner.run('hi', { cwd: '/tmp/p2-16' });

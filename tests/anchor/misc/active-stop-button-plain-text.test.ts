@@ -82,10 +82,8 @@ describe('P2-27: /active card stop buttons must have tag:plain_text', () => {
       },
     ];
 
-    (bridge as unknown as { getActiveRuns: () => typeof activeRuns }).getActiveRuns = () =>
-      activeRuns;
-    (bridge as unknown as { getActiveBashRuns: () => typeof activeBashRuns }).getActiveBashRuns =
-      () => activeBashRuns;
+    bridge.getActiveRuns = () => activeRuns;
+    bridge.getActiveBashRuns = () => activeBashRuns;
 
     const router = new CommandRouter({
       sessionStore,

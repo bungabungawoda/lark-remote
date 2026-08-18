@@ -4,7 +4,6 @@ import os from 'node:os';
 import { findJsonlLine, scanJsonlLines, readJsonlLinesFromOffset } from '../common/jsonl.js';
 import { extractContentBlocks, type ContentBlockMapping } from '../common/content-blocks.js';
 import { UsageAccumulator } from '../common/usage-accumulator.js';
-import { truncate } from '../../card/card-shared.js';
 import type {
   AgentSession,
   AgentSessionReader,
@@ -14,6 +13,7 @@ import type {
 } from '../../runner/index.js';
 
 import { STALE_MS } from '../common/constants.js';
+import { capEvents, paginate } from '../common/pagination.js';
 
 /** PI JSONL entry type definitions for usage extraction. */
 type PiJsonlEntry =
@@ -66,7 +66,7 @@ const PI_LIST_MAX_ENTRIES = 32;
 const piListCache = new Map<string, { builtAt: number; sessions: AgentSession[] }>();
 
 /** Pi-specific field-name mapping for content block extraction. */
-const PI_MAPPING: ContentBlockMapping = {
+export const PI_MAPPING: ContentBlockMapping = {
   toolUseType: 'toolCall',
   toolResultType: 'toolResult',
   toolInputField: 'arguments',
@@ -177,19 +177,17 @@ function findSessionFile(sessionId: string, cwd: string, sessionsDir: string): s
 /**
  * P2-6 + P2-5 first-pass scan result for readSessionContent.
  *
- * Previously readSessionContent parsed allLines 4 times (findLastUserIndex,
- * event collection, extractUsage, extractDisplayTitle). Now a single first
- * pass (piScalarScan) parses each line once to collect usage + the index of
- * the last user message + the displayTitle; a second pass only re-parses
- * the TAIL (events after the last user message). Total parses ≈ 1.x × line
- * count instead of ~4×.
+ * A single first pass (piScalarScan) parses each line once to collect usage +
+ * the index of the last user message + the displayTitle; a second pass only
+ * re-parses the TAIL (events after the last user message). Total parses ≈
+ * 1.x × line count instead of ~4×.
  *
  * P2-5: the index is now a **byte offset** (`tailOffset`) of the line
  * AFTER the last user message, captured during a streaming scan that
  * materializes no `string[]`. The second pass re-reads only the tail from
  * that offset via `readJsonlLinesFromOffset`, so raw line-string memory is
  * O(tail) too — not just the parsed objects. When there is no user message,
- * `tailOffset` stays -1 and the caller re-reads the whole file.
+ * `tailOffset` stays -1 and the caller re-reads from the start.
  */
 interface PiScanResult {
   /** Byte offset where the tail begins (start of the line after the last
@@ -261,9 +259,10 @@ function piScalarScan(filePath: string): PiScanResult {
   return {
     tailOffset,
     usage: buildPiUsage(acc),
-    displayTitle: lastUserText
-      ? truncate(lastUserText, 200, { normalizeWhitespace: true })
-      : undefined,
+    // Whitespace-normalized single-line display title (no length truncation —
+    // the consumer truncates). Normalization collapses the skill-injection
+    // newlines so the title stays on one line.
+    displayTitle: lastUserText ? lastUserText.replace(/\s+/g, ' ').trim() : undefined,
   };
 }
 
@@ -361,7 +360,8 @@ function extractPiEventsFromTail(tailLines: string[]): AgentSessionContentEvent[
  */
 export class PiSessionReader implements AgentSessionReader {
   private readonly piDir: string;
-  private readonly sessionsDir: string;
+  /** 会话目录（public：测试可重定向到 fixture 目录，替代 as any）。 */
+  sessionsDir: string;
 
   constructor(opts: { piDir?: string } = {}) {
     this.piDir = opts.piDir ?? defaultPiDir();
@@ -372,14 +372,12 @@ export class PiSessionReader implements AgentSessionReader {
     cwd: string,
     opts?: { limit?: number; offset?: number },
   ): { sessions: AgentSession[]; total: number } {
-    const limit = opts?.limit ?? 20;
-    const offset = Math.max(0, opts?.offset ?? 0);
-
     // SCAN: filesystem is the source of truth for pi sessions.
     const scanned = this.listSessionsByScan(cwd);
+    const { items, total } = paginate(scanned, opts ?? {});
     return {
-      sessions: scanned.slice(offset, offset + limit),
-      total: scanned.length,
+      sessions: items,
+      total,
     };
   }
 
@@ -429,13 +427,7 @@ export class PiSessionReader implements AgentSessionReader {
     // Apply maxEvents cap: keep the LAST N events (most recent), matching
     // CodexSessionReader's slice(-maxEvents). maxEvents limits the catch-up
     // tail so auto-resume cards don't load the entire session.
-    // P2-7: maxEvents <= 0 returns [] (guards `slice(-0)` full-array trap).
-    const cappedEvents =
-      opts?.maxEvents !== undefined
-        ? opts.maxEvents <= 0
-          ? []
-          : events.slice(-opts.maxEvents)
-        : events;
+    const cappedEvents = capEvents(events, opts?.maxEvents);
 
     return {
       events: cappedEvents,
@@ -485,7 +477,7 @@ export class PiSessionReader implements AgentSessionReader {
         const sessionId = stem.includes('_') ? stem.slice(stem.lastIndexOf('_') + 1) : stem;
         sessions.push({
           sessionId,
-          summary: truncate(summarizePiSession(full), 60, { normalizeWhitespace: true }),
+          summary: summarizePiSession(full),
           mtime: st.mtimeMs,
         });
       } catch {

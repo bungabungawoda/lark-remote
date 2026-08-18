@@ -4,6 +4,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { Bridge } from '../../src/bridge/index.js';
 import { SessionStore } from '../../src/session/index.js';
+import { AgentRegistry } from '../../src/runner/registry.js';
 import { AppConfigSchema } from '../../src/config/index.js';
 import type { AppConfig } from '../../src/config/index.js';
 
@@ -60,25 +61,24 @@ describe('Bridge clearRunners on config change', () => {
 
     const getRunnerCalls: string[] = [];
 
-    // Mock agent registry
-    const mockRegistry = {
-      get: (kind: string) => {
-        getRunnerCalls.push(kind);
-        return kind === 'codex' ? codexRunner : piRunner;
-      },
-      isRegistered: () => true,
-      listRegistered: () => ['claude', 'codex', 'pi'],
-      setConfigContainer: () => {},
-      getConfigContainer: () => undefined,
-    };
+    // Real registry with per-kind factories that record lookups.
+    const agentRegistry = new AgentRegistry();
+    agentRegistry.register('codex', () => {
+      getRunnerCalls.push('codex');
+      return codexRunner;
+    });
+    agentRegistry.register('pi', () => {
+      getRunnerCalls.push('pi');
+      return piRunner;
+    });
 
     // 创建 bridge
     const bridge = new Bridge({
-      runner: createMockRunner('claude') as any,
+      runner: createMockRunner('claude'),
       connector,
       sessionStore,
       config,
-      agentRegistry: mockRegistry as any,
+      agentRegistry,
     });
 
     // 首次获取 runner

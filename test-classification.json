@@ -59,6 +59,7 @@
     "src/router/order-exec.test.ts",
     "src/router/router.test.ts",
     "src/router/session-event-panel.test.ts",
+    "src/router/alias.test.ts",
     "src/router/config/config-builder.test.ts",
     "src/router/update-command.test.ts",
     "tests/router/**/*.test.ts",
@@ -87,7 +88,6 @@
     "tests/session/**/*.test.ts",
     "tests/anchor/jsonl-stream/**/*.test.ts",
     "tests/anchor/misc/readjsonlines-error-contract.test.ts",
-    "tests/anchor/misc/clear-session-id-preserves-session-cwd.test.ts",
     "tests/anchor/misc/set-session-id-and-session-cwd.test.ts",
     "tests/anchor/misc/session-cwds-semantics.test.ts",
     "tests/anchor/misc/reader-list-pagination.test.ts",
@@ -119,8 +119,7 @@
     "tests/anchor/priority/p2-13-spawn-failure-cause.test.ts",
     "tests/anchor/priority/p2-15-process-stopper-grace-timer.test.ts",
     "tests/anchor/priority/p2-16-stderr-log-level.test.ts",
-    "tests/anchor/misc/process-listener-leak.test.ts",
-    "tests/runner/runner-no-model-param.test.ts"
+    "tests/anchor/misc/process-listener-leak.test.ts"
   ],
   "infra-config": [
     "src/config/config.test.ts",
@@ -169,15 +168,13 @@
     "tests/anchor/codex-session/claude-read-session-content-tail.test.ts"
   ],
   "agent-codex": [
-    "src/runner/codex/**/*.test.ts",
-    "src/runner/codex-status-fallback.test.ts",
+    "src/runner/codex/app-server/**/*.test.ts",
     "src/session/codex/**/*.test.ts",
     "src/config/codex-config.test.ts",
     "src/config/codex-config-filter.test.ts",
     "src/router/config/codex.test.ts",
     "tests/anchor/codex-catalog/**/*.test.ts",
     "tests/anchor/codex-reasoning-effort/**/*.test.ts",
-    "tests/anchor/codex-runner/**/*.test.ts",
     "tests/anchor/codex-app-server-idle-timeout/**/*.test.ts",
     "tests/anchor/codex-session/codex-bridge-jsonl-flow-priority.test.ts",
     "tests/anchor/codex-session/codex-bridge-jsonl-missing-fallback-live.test.ts",
@@ -192,9 +189,7 @@
     "tests/anchor/codex-session/codex-same-mtime-stable-order.test.ts",
     "tests/anchor/codex-session/codex-session-active-excludes-subagent.test.ts",
     "tests/anchor/codex-session/codex-session-reader-max-events.test.ts",
-    "tests/anchor/priority/p1-9-codex-workspace-pid.test.ts",
     "tests/probe/codex-reader-offset-boundary-probe.test.ts",
-    "tests/anchor/approval-expiry/approval-expiry-respond-cancel.test.ts",
     "tests/anchor/approval-expiry/approval-expiry-integration-cancel.test.ts"
   ],
   "agent-opencode": [
@@ -203,9 +198,7 @@
     "src/config/opencode-config.test.ts",
     "src/config/opencode-config-provider-model-filter.test.ts",
     "src/router/config/opencode.test.ts",
-    "tests/anchor/opencode-runner/**/*.test.ts",
     "tests/anchor/priority/p1-8-opencode-config-ttl.test.ts",
-    "tests/anchor/priority/p1-9-opencode-workspace-pid.test.ts",
     "tests/anchor/priority/p1-15-opencode-maxbuffer.test.ts"
   ],
   "agent-pi": [
@@ -221,7 +214,6 @@
     "src/config/kimi-config.test.ts",
     "src/router/config/kimi.test.ts",
     "tests/anchor/kimi/**/*.test.ts",
-    "tests/anchor/priority/p1-12-kimi-timeout-group.test.ts",
     "tests/anchor/priority/p1-16-kimi-wire-mtime.test.ts",
     "tests/anchor/priority/p1-17-kimi-jsonl-cache.test.ts",
     "tests/anchor/misc/bridge-kimi-usage-threading.test.ts",

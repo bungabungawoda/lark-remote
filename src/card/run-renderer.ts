@@ -9,12 +9,11 @@ import {
 } from './card-shared.js';
 import { collapsibleMarkdownPanel, markdownDiv, type PanelBorder } from './collapsible.js';
 import { toolBodyMd, toolHeaderText } from './tool-render.js';
-import { truncateUtf8, truncateMarkdownTables } from './text-truncate.js';
+import { truncateUtf8, truncateMarkdownTables, CARD_BUDGET_BYTES } from './text-truncate.js';
 import { formatTimestamp } from './time.js';
-import { formatUsageStats } from '../router/index.js';
+import { formatUsageStats } from '../router/utils.js';
 import { renderApprovalArea } from './approval-render.js';
 
-const CARD_BUDGET_BYTES = 28_000;
 const REASONING_BYTES = 4_500;
 const TEXT_BYTES = 10_000;
 const DEGRADED_THINKING_KEEP = 2;
@@ -246,45 +245,132 @@ function toolTitle(tool: ToolEntry): string {
 }
 
 /**
- * Build degraded elements when full card exceeds 28KB budget.
- * Strategy: text fully preserved, thinking keeps last 2, tools keep last N (compressed).
- *
- * 性能优化：单遍遍历 state.blocks 按 kind 分桶（thinking/tool/other），替代原先
- * 多次 state.blocks.filter() 扫描。分桶时保持原相对顺序，后续用 groupBlocks
- * 渲染时序不变。
+ * Fallback-tier budget configuration (degraded vs extreme share one builder,
+ * differing only in how aggressively content is cut).
  */
-function buildDegradedElements(state: RunState, options: RunCardRenderOptions): object[] {
+interface BudgetTierConfig {
+  /** Max thinking blocks to keep. */
+  thinkingKeep: number;
+  /** Thinking block truncation byte budget. */
+  thinkingBytes: number;
+  /** Max tool blocks to keep. */
+  toolKeep: number;
+  /** Text block truncation byte budget. */
+  textBytes: number;
+}
+
+const DEGRADED_TIER: BudgetTierConfig = {
+  thinkingKeep: DEGRADED_THINKING_KEEP,
+  thinkingBytes: REASONING_BYTES,
+  toolKeep: DEGRADED_TOOL_KEEP,
+  textBytes: TEXT_BYTES,
+};
+
+const EXTREME_TIER: BudgetTierConfig = {
+  thinkingKeep: 1,
+  thinkingBytes: DEGRADED_THINKING_BYTES,
+  toolKeep: EXTREME_TOOL_KEEP,
+  textBytes: DEGRADED_TEXT_BYTES,
+};
+
+/** Bottom action row: stop (if running) + compact (if applicable) + new session (always). */
+function actionRow(state: RunState): object[] {
+  const actionButtons: object[] = [];
+  // finalizing 也显示停止按钮（进程未退出，用户可 /stop）
+  const showStop = state.terminal === 'running' || state.terminal === 'finalizing';
+  if (showStop) {
+    actionButtons.push(stopButton(state.runId));
+  }
+  // Compact 按钮：普通 turn 到达任意终态即可压缩（含异常退出），compaction 卡除外
+  if (shouldShowCompactButton(state)) {
+    actionButtons.push(compactButton(state.runId));
+  }
+  actionButtons.push(newSessionButton());
+
+  if (actionButtons.length === 0) return [];
+  return [
+    { tag: 'div', text: { content: '‎', tag: 'lark_md' } }, // spacer
+    {
+      tag: 'column_set',
+      columns: actionButtons.map((btn) => ({
+        tag: 'column',
+        width: 'auto',
+        elements: [btn],
+      })),
+    },
+  ];
+}
+
+/** 审批区位于 body 最底部（底部操作行之后）：待审批时决策按钮不遮挡内容流。 */
+function approvalArea(state: RunState): object[] {
+  const elements: object[] = [];
+  for (const slot of state.approvals ?? []) {
+    elements.push(
+      ...renderApprovalArea(slot.view, {
+        expired: slot.expired,
+        runId: state.runId,
+        terminal: state.terminal,
+      }),
+    );
+  }
+  return elements;
+}
+
+/** Assemble the card shell (schema/config/header) around body elements. */
+function assembleRunCard(
+  state: RunState,
+  options: RunCardRenderOptions,
+  elements: object[],
+): object {
+  return {
+    schema: '2.0',
+    config: { wide_screen_mode: true, update_multi: true },
+    header: {
+      template: headerTemplate2(state),
+      title: { content: headerTitle2(state, options), tag: 'plain_text' },
+    },
+    body: { elements },
+  };
+}
+
+/**
+ * Build a budget-fallback tier (degraded or extreme): keep the last N thinking
+ * blocks and last N tools, truncate text/thinking per tier, then render in
+ * chronological order. Shared by buildDegradedElements / buildExtremeFallback.
+ */
+function buildFallbackElements(
+  state: RunState,
+  options: RunCardRenderOptions,
+  tier: BudgetTierConfig,
+): object[] {
   const elements: object[] = [];
 
   elements.push(statusRow(state));
 
-  // 单遍分桶：thinking / tool / other（保持原相对顺序）
+  // 单遍分桶：thinking / tool（保持原相对顺序）
   const { thinking: allThinkingBlocks, tool: allToolBlocks } = bucketThinkingAndTool(state.blocks);
 
-  if (allThinkingBlocks.length > DEGRADED_THINKING_KEEP) {
-    const omitted = allThinkingBlocks.length - DEGRADED_THINKING_KEEP;
+  if (allThinkingBlocks.length > tier.thinkingKeep) {
+    const omitted = allThinkingBlocks.length - tier.thinkingKeep;
     elements.push(markdownDiv(`_💡 ${omitted} 个早期思考已省略_`));
   }
-  // Keep only the last N thinking blocks for display
-  const thinkingBlocksToShow = allThinkingBlocks.slice(-DEGRADED_THINKING_KEEP);
+  const thinkingBlocksToShow = allThinkingBlocks.slice(-tier.thinkingKeep);
 
-  const toolsToShow = allToolBlocks.slice(-DEGRADED_TOOL_KEEP);
-  const toolsOmitted = allToolBlocks.length - DEGRADED_TOOL_KEEP;
+  const toolsToShow = allToolBlocks.slice(-tier.toolKeep);
+  const toolsOmitted = allToolBlocks.length - tier.toolKeep;
 
   // Add omit hint for tools if any were omitted
   if (toolsOmitted > 0) {
     elements.push(markdownDiv(`_💡 另外 ${toolsOmitted} 个工具调用已省略_`));
   }
 
-  // Build a filtered blocks list that only includes the thinking blocks we want to show
-  // and the tool blocks we want to show.
   // P2-6: use object references (like the extreme path) instead of timestamps.
   // RunBlock.timestamp has millisecond precision; ≥2 thinking blocks sharing a
   // timestamp collapse to one Set entry, so `has(block.timestamp)` lets ALL
   // same-timestamp blocks (including ones meant to be omitted) pass through —
-  // inflating the degraded card past 28KB and contradicting the "N omitted"
-  // hint. `thinkingBlocksToShow` is a slice of `allThinkingBlocks`, so the
-  // blocks retain stable references and the Set membership check is exact.
+  // inflating the card past 28KB and contradicting the "N omitted" hint.
+  // `thinkingBlocksToShow` is a slice of `allThinkingBlocks`, so the blocks
+  // retain stable references and the Set membership check is exact.
   const thinkingSetToShow = new Set(thinkingBlocksToShow);
   const toolIdsToShow = new Set(toolsToShow.map((b) => b.tool.id));
   const filteredBlocks = state.blocks.filter((block) => {
@@ -303,7 +389,7 @@ function buildDegradedElements(state: RunState, options: RunCardRenderOptions): 
       if (options.showThinking === false) continue;
       const ts = formatTimestamp(group.timestamp);
       const title = '💭 **思考完成**';
-      const content = truncateUtf8(group.content, REASONING_BYTES);
+      const content = truncateUtf8(group.content, tier.thinkingBytes);
       const header = ts ? `${title} (${ts})` : title;
       elements.push(
         collapsibleMarkdownPanel({
@@ -315,179 +401,42 @@ function buildDegradedElements(state: RunState, options: RunCardRenderOptions): 
         }),
       );
     } else if (group.kind === 'text') {
-      const content = truncateUtf8(group.content, TEXT_BYTES, true, '…（已截断）\n');
+      const content = truncateUtf8(group.content, tier.textBytes, true, '…（已截断）\n');
       const ts = formatTimestamp(group.timestamp);
-      const els = renderTextBlock(content, ts, true);
-      elements.push(...els);
+      elements.push(...renderTextBlock(content, ts, true));
     } else if (group.kind === 'tool') {
-      // Degraded: show tool individually (each tool is independent now)
+      // Show tool individually (each tool is independent now)
       if (options.showToolUse === false) continue;
       elements.push(renderTool(group.tool, true, options.showToolResult !== false)); // finalized=true
     }
   }
 
+  if (elements.length === 0 && tier === EXTREME_TIER) {
+    elements.push(markdownDiv('_暂无输出_'));
+  }
+
   elements.push(...buildSummaryContent(state));
-
-  // Bottom action row: stop (if running) + compact (if applicable) + new session (always)
-  const actionButtons: object[] = [];
-  // finalizing 也显示停止按钮（进程未退出，用户可 /stop）
-  const showStop = state.terminal === 'running' || state.terminal === 'finalizing';
-  if (showStop) {
-    actionButtons.push(stopButton(state.runId));
-  }
-  // Compact 按钮：普通 turn 到达任意终态即可压缩（含异常退出），compaction 卡除外
-  if (shouldShowCompactButton(state)) {
-    actionButtons.push(compactButton(state.runId));
-  }
-  actionButtons.push(newSessionButton());
-
-  if (actionButtons.length > 0) {
-    elements.push(
-      { tag: 'div', text: { content: '‎', tag: 'lark_md' } }, // spacer
-      {
-        tag: 'column_set',
-        columns: actionButtons.map((btn) => ({
-          tag: 'column',
-          width: 'auto',
-          elements: [btn],
-        })),
-      },
-    );
-  }
-
-  // 审批区位于 body 最底部（底部操作行之后）：待审批时决策按钮不遮挡内容流。
-  // 多槽渲染（review P2-3）：并发审批全部展示，互不顶掉。
-  for (const slot of state.approvals ?? []) {
-    elements.push(
-      ...renderApprovalArea(slot.view, {
-        expired: slot.expired,
-        runId: state.runId,
-        terminal: state.terminal,
-      }),
-    );
-  }
+  elements.push(...actionRow(state));
+  elements.push(...approvalArea(state));
 
   return elements;
+}
+
+/**
+ * Build degraded elements when full card exceeds 28KB budget.
+ * Strategy: text fully preserved, thinking keeps last 2, tools keep last N (compressed).
+ */
+function buildDegradedElements(state: RunState, options: RunCardRenderOptions): object[] {
+  return buildFallbackElements(state, options, DEGRADED_TIER);
 }
 
 /**
  * Extreme fallback when even degraded card exceeds 28KB.
  * Strategy: text truncated to 5KB tail, thinking only last 1 truncated to 1KB,
  * tools keep last N (more aggressive than degraded).
- *
- * 性能优化：单遍分桶替代多次 state.blocks.filter()。
  */
 function buildExtremeFallbackElements(state: RunState, options: RunCardRenderOptions): object[] {
-  const elements: object[] = [];
-
-  elements.push(statusRow(state));
-
-  // 单遍分桶：thinking / tool
-  const { thinking: allThinkingBlocks, tool: allToolBlocks } = bucketThinkingAndTool(state.blocks);
-
-  // Thinking: only keep last 1 for extreme fallback
-  if (allThinkingBlocks.length > 1) {
-    const omitted = allThinkingBlocks.length - 1;
-    elements.push(markdownDiv(`_💡 ${omitted} 个早期思考已省略_`));
-  }
-  const thinkingBlockToShow =
-    allThinkingBlocks.length > 0 ? allThinkingBlocks[allThinkingBlocks.length - 1] : null;
-
-  const toolsToShow = allToolBlocks.slice(-EXTREME_TOOL_KEEP);
-  const toolsOmitted = allToolBlocks.length - EXTREME_TOOL_KEEP;
-
-  // Add omit hint for tools if any were omitted
-  if (toolsOmitted > 0) {
-    elements.push(markdownDiv(`_💡 另外 ${toolsOmitted} 个工具调用已省略_`));
-  }
-
-  // Build filtered blocks: only last thinking, last N tools, all text
-  const toolIdsToShow = new Set(toolsToShow.map((b) => b.tool.id));
-  const filteredBlocks: RunBlock[] = state.blocks.filter((block) => {
-    if (block.kind === 'thinking') {
-      return block === thinkingBlockToShow;
-    }
-    if (block.kind === 'tool') {
-      return toolIdsToShow.has(block.tool.id);
-    }
-    return true; // keep all text and other blocks
-  });
-
-  // Render in chronological order
-  for (const group of groupBlocks(filteredBlocks)) {
-    if (group.kind === 'thinking') {
-      if (options.showThinking === false) continue;
-      const ts = formatTimestamp(group.timestamp);
-      const title = '💭 **思考完成**';
-      const content = truncateUtf8(group.content, DEGRADED_THINKING_BYTES);
-      const header = ts ? `${title} (${ts})` : title;
-      elements.push(
-        collapsibleMarkdownPanel({
-          title: header,
-          expanded: false,
-          border: 'grey',
-          content,
-          textSize: 'notation',
-        }),
-      );
-    } else if (group.kind === 'text') {
-      const content = truncateUtf8(group.content, DEGRADED_TEXT_BYTES, true, '…（已截断）\n');
-      const ts = formatTimestamp(group.timestamp);
-      const els = renderTextBlock(content, ts, true);
-      elements.push(...els);
-    } else if (group.kind === 'tool') {
-      // Extreme fallback: show tool individually
-      if (options.showToolUse === false) continue;
-      elements.push(renderTool(group.tool, true, options.showToolResult !== false));
-    }
-  }
-
-  if (elements.length === 0) {
-    elements.push(markdownDiv('_暂无输出_'));
-  }
-
-  elements.push(...buildSummaryContent(state));
-
-  // Bottom action row: stop (if running) + compact (if applicable) + new session (always)
-  const actionButtons: object[] = [];
-  // finalizing 也显示停止按钮（进程未退出，用户可 /stop）
-  const showStop = state.terminal === 'running' || state.terminal === 'finalizing';
-  if (showStop) {
-    actionButtons.push(stopButton(state.runId));
-  }
-  // Compact 按钮：普通 turn 到达任意终态即可压缩（含异常退出），compaction 卡除外
-  if (shouldShowCompactButton(state)) {
-    actionButtons.push(compactButton(state.runId));
-  }
-  actionButtons.push(newSessionButton());
-
-  if (actionButtons.length > 0) {
-    elements.push(
-      { tag: 'div', text: { content: '‎', tag: 'lark_md' } }, // spacer
-      {
-        tag: 'column_set',
-        columns: actionButtons.map((btn) => ({
-          tag: 'column',
-          width: 'auto',
-          elements: [btn],
-        })),
-      },
-    );
-  }
-
-  // 审批区位于 body 最底部（底部操作行之后）：待审批时决策按钮不遮挡内容流。
-  // 多槽渲染（review P2-3）：并发审批全部展示，互不顶掉。
-  for (const slot of state.approvals ?? []) {
-    elements.push(
-      ...renderApprovalArea(slot.view, {
-        expired: slot.expired,
-        runId: state.runId,
-        terminal: state.terminal,
-      }),
-    );
-  }
-
-  return elements;
+  return buildFallbackElements(state, options, EXTREME_TIER);
 }
 
 /** Build the status row element (shared across full/degraded/extreme). */
@@ -536,27 +485,7 @@ function buildSkeletonElements(state: RunState): object[] {
 
   // Bottom action row: stop (if running/finalizing) + compact (if applicable) + new session (always).
   // Degraded paths must keep the action buttons reachable (design constraint).
-  const actionButtons: object[] = [];
-  const showStop = state.terminal === 'running' || state.terminal === 'finalizing';
-  if (showStop) {
-    actionButtons.push(stopButton(state.runId));
-  }
-  if (shouldShowCompactButton(state)) {
-    actionButtons.push(compactButton(state.runId));
-  }
-  actionButtons.push(newSessionButton());
-
-  elements.push(
-    { tag: 'div', text: { content: '‎', tag: 'lark_md' } }, // spacer
-    {
-      tag: 'column_set',
-      columns: actionButtons.map((btn) => ({
-        tag: 'column',
-        width: 'auto',
-        elements: [btn],
-      })),
-    },
-  );
+  elements.push(...actionRow(state));
 
   return elements;
 }
@@ -729,8 +658,6 @@ function measurePanelBytes(
  * CardKit 2.0 renderer - simplified for streaming (no tabs)
  */
 export function renderRunCard(state: RunState, options: RunCardRenderOptions = {}): object {
-  const { terminal, runId } = state;
-
   // 先估后建：用廉价估算预测是否超 28KB 预算，明显超预算直接跳过完整卡构建走
   // degraded。P1-2：groups/prepared 只算一次，测量与正式渲染共用同一份截断结果，
   // 避免影子测量 + 正式渲染对每个超限块双倍截断。
@@ -738,62 +665,17 @@ export function renderRunCard(state: RunState, options: RunCardRenderOptions = {
   const prepared = prepareGroupContent(groups);
   const estimate = estimateCardBytes(state, options, { groups, prepared });
 
-  // Stop button: show when running or finalizing (process not yet exited)
-  const showStop = terminal === 'running' || terminal === 'finalizing';
-
   // 构建完整卡（仅在估算低于阈值时，避免大 state 浪费 render + stringify）
   if (estimate < DEGRADED_THRESHOLD) {
     const elements: object[] = [
       statusRow(state),
       ...buildChronologicalContent(state, options, prepared, groups),
       ...buildSummaryContent(state),
+      ...actionRow(state),
+      ...approvalArea(state),
     ];
 
-    // Bottom action row: stop (if running) + compact (if applicable) + new session (always)
-    const actionButtons: object[] = [];
-    if (showStop) {
-      actionButtons.push(stopButton(runId));
-    }
-    if (shouldShowCompactButton(state)) {
-      actionButtons.push(compactButton(runId));
-    }
-    actionButtons.push(newSessionButton());
-
-    if (actionButtons.length > 0) {
-      elements.push(
-        { tag: 'div', text: { content: '‎', tag: 'lark_md' } }, // spacer
-        {
-          tag: 'column_set',
-          columns: actionButtons.map((btn) => ({
-            tag: 'column',
-            width: 'auto',
-            elements: [btn],
-          })),
-        },
-      );
-    }
-
-    // 审批区位于 body 最底部（底部操作行之后）：待审批时决策按钮不遮挡内容流。
-    // 多槽渲染（review P2-3）：并发审批全部展示，互不顶掉。
-    for (const slot of state.approvals ?? []) {
-      elements.push(
-        ...renderApprovalArea(slot.view, {
-          expired: slot.expired,
-          runId: state.runId,
-          terminal: state.terminal,
-        }),
-      );
-    }
-
-    const card = {
-      schema: '2.0',
-      config: { wide_screen_mode: true, update_multi: true },
-      header: {
-        template: headerTemplate2(state),
-        title: { content: headerTitle2(state, options), tag: 'plain_text' },
-      },
-      body: { elements },
-    };
+    const card = assembleRunCard(state, options, elements);
 
     // Check budget — stringify 兜底（估算可能低估，仍保留安全网）
     if (Buffer.byteLength(JSON.stringify(card), 'utf8') <= CARD_BUDGET_BYTES) return card;
@@ -801,32 +683,13 @@ export function renderRunCard(state: RunState, options: RunCardRenderOptions = {
   }
 
   // 估算 ≥ 阈值 或 完整卡 stringify 超预算 — 走 degraded 渲染
-  const degradedElements = buildDegradedElements(state, options);
-  const degradedCard = {
-    schema: '2.0',
-    config: { wide_screen_mode: true, update_multi: true },
-    header: {
-      template: headerTemplate2(state),
-      title: { content: headerTitle2(state, options), tag: 'plain_text' },
-    },
-    body: { elements: degradedElements },
-  };
-
+  const degradedCard = assembleRunCard(state, options, buildDegradedElements(state, options));
   if (Buffer.byteLength(JSON.stringify(degradedCard), 'utf8') <= CARD_BUDGET_BYTES) {
     return degradedCard;
   }
 
   // Extreme fallback: even degraded exceeds budget
-  const extremeElements = buildExtremeFallbackElements(state, options);
-  const extremeCard = {
-    schema: '2.0',
-    config: { wide_screen_mode: true, update_multi: true },
-    header: {
-      template: headerTemplate2(state),
-      title: { content: headerTitle2(state, options), tag: 'plain_text' },
-    },
-    body: { elements: extremeElements },
-  };
+  const extremeCard = assembleRunCard(state, options, buildExtremeFallbackElements(state, options));
 
   // Final safety net: extreme fallback 是最后一层，但高转义内容（反斜杠 4× 膨胀）
   // 可能让 extreme 产物本身 >28KB。补上 stringify 兜底（与 normal/degraded 对称）：
@@ -835,15 +698,7 @@ export function renderRunCard(state: RunState, options: RunCardRenderOptions = {
     return extremeCard;
   }
 
-  const skeletonCard = {
-    schema: '2.0',
-    config: { wide_screen_mode: true, update_multi: true },
-    header: {
-      template: headerTemplate2(state),
-      title: { content: headerTitle2(state, options), tag: 'plain_text' },
-    },
-    body: { elements: buildSkeletonElements(state) },
-  };
+  const skeletonCard = assembleRunCard(state, options, buildSkeletonElements(state));
   // skeleton 卡是静态结构，理论上必 ≤28KB；保留兜底断言以防未来结构膨胀
   if (Buffer.byteLength(JSON.stringify(skeletonCard), 'utf8') <= CARD_BUDGET_BYTES) {
     return skeletonCard;
@@ -966,9 +821,20 @@ function buildSummaryContent(state: RunState): object[] {
   } else if (state.terminal === 'interrupted') {
     // 审批超时（approval_expired 已标记）是「无人响应被自动取消」，不是用户
     // 主动终止；如实展示原因，避免用户误判为 Agent 出错或自己操作过。
-    const expiredApproval = (state.approvals ?? []).some((a) => a.expired);
+    // 顶层 approvalExpired 优先：approval_resolved 会移除审批条目，但标记
+    // 必须活到终态渲染（2026-08-15 事故回归）。
+    const expiredApproval =
+      state.interruptedReason === 'approval_timeout' ||
+      state.approvalExpired === true ||
+      (state.approvals ?? []).some((a) => a.expired);
     elements.push(
-      markdownDiv(expiredApproval ? '⏰ **审批超时未响应，已自动取消**' : '⏹ **已被用户终止**'),
+      markdownDiv(
+        expiredApproval
+          ? '⏰ **审批超时未响应，已自动取消**'
+          : state.interruptedReason === 'approval_cancelled'
+            ? '⏹ **已取消审批，任务终止**'
+            : '⏹ **已被用户终止**',
+      ),
     );
   } else if (state.terminal === 'idle_timeout') {
     elements.push(

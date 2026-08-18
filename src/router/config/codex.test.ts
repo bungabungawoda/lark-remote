@@ -29,6 +29,24 @@ function makeConfig(overrides?: Record<string, unknown>): AppConfig {
 describe('CodexConfigBuilder', () => {
   const builder = new CodexConfigBuilder();
 
+  describe('buildFields defaults (first-start)', () => {
+    it('codex section absent → workspace-write / on-request', () => {
+      // 验证什么：首次启动未配置 codex 字段时，卡片默认显示
+      // sandbox=workspace-write、approvalPolicy=on-request。
+      // 错误会导致首次启动显示 danger-full-access 旧默认值。
+      const config = makeConfig();
+      const fields = builder.buildFields(config);
+
+      expect(fields.find((f) => f.key === 'agents.codex.serviceMode')).toBeUndefined();
+      expect(fields.find((f) => f.key === 'agents.codex.approvalPolicy')?.currentValue).toBe(
+        'on-request',
+      );
+      expect(fields.find((f) => f.key === 'agents.codex.sandbox')?.currentValue).toBe(
+        'workspace-write',
+      );
+    });
+  });
+
   describe('handleFieldChange', () => {
     it('for provider change, current model invalid → model reset + effort patch', () => {
       const config = makeConfig({

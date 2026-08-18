@@ -1,5 +1,5 @@
 import { createMockBridge, createMockSessionReaderRegistry } from '../lib/bridge-stubs.js';
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { CommandRouter } from '../../src/router/index.js';
 import { SessionStore } from '../../src/session/index.js';
 import { AppConfigSchema } from '../../src/config/index.js';
@@ -8,13 +8,13 @@ import path from 'node:path';
 import os from 'node:os';
 import fs from 'node:fs';
 
-type RouterInternals = {
-  buildConfigCard: () => unknown;
-  ensurePendingConfig: () => void;
-  setNestedValue: (obj: unknown, key: string, value: unknown) => void;
-  pendingConfig: Record<string, unknown>;
-};
-
+// 默认不探测（availability=undefined），让既有用例保持「全部视为可用」的基线；
+// 排序用例里再按需 mock 单个 agent 为未安装。
+vi.mock('../../src/runner/probe.js', () => ({
+  probeAllAgents: vi.fn(async () => new Map()),
+  getCachedAvailability: vi.fn(() => undefined),
+}));
+import { getCachedAvailability } from '../../src/runner/probe.js';
 // ---------------------------------------------------------------------------
 // Helpers: extract field keys from a CardKit 2.0 config card JSON
 // ---------------------------------------------------------------------------
@@ -95,6 +95,44 @@ function extractAgentTabLabel(card: object): string {
   return '';
 }
 
+interface SelectInfo {
+  key: string;
+  options: string[];
+  initialOption?: string;
+}
+
+/** 递归收集卡片中所有 select_static 的 key / options / initial_option。 */
+function walkSelects(node: unknown, out: SelectInfo[]): void {
+  if (Array.isArray(node)) {
+    for (const item of node) walkSelects(item, out);
+    return;
+  }
+  if (node && typeof node === 'object') {
+    const obj = node as Record<string, unknown>;
+    if (obj.tag === 'select_static') {
+      const behavior = Array.isArray(obj.behaviors)
+        ? (obj.behaviors[0] as { value?: { key?: string } } | undefined)
+        : undefined;
+      const key = behavior?.value?.key ?? '';
+      const options = Array.isArray(obj.options)
+        ? (obj.options as Array<{ value: unknown }>).map((o) => String(o.value))
+        : [];
+      out.push({
+        key,
+        options,
+        initialOption: typeof obj.initial_option === 'string' ? obj.initial_option : undefined,
+      });
+    }
+    for (const value of Object.values(obj)) walkSelects(value, out);
+  }
+}
+
+function extractSelects(card: object): SelectInfo[] {
+  const out: SelectInfo[] = [];
+  walkSelects(card, out);
+  return out;
+}
+
 function buildPiConfig(): AppConfig {
   return AppConfigSchema.parse({
     feishu: { appId: 'test', appSecret: 'test' },
@@ -161,7 +199,7 @@ describe('Config card agent-aware fields (design: 2026-07-11)', () => {
         sessionReaderRegistry,
       });
 
-      const result = (router as unknown as RouterInternals).buildConfigCard() as { card: object };
+      const result = router.buildConfigCard() as { card: object };
       const fieldKeys = extractConfigFieldKeys(result.card);
 
       // BUG: current implementation shows claude.model and claude.settings
@@ -186,18 +224,16 @@ describe('Config card agent-aware fields (design: 2026-07-11)', () => {
         sessionReaderRegistry,
       });
 
-      const result = (router as unknown as RouterInternals).buildConfigCard() as { card: object };
+      const result = router.buildConfigCard() as { card: object };
       const fieldKeys = extractConfigFieldKeys(result.card);
 
       // FIXED 2026-07-12: now includes agents.codex.model (was codex.model before)
       expect(fieldKeys).toContain('agents.codex.model');
     });
 
-    it('test_anchor_codex_exec_mode_hides_approval_and_sandbox_fields', () => {
-      // 验证什么：codex 默认 exec（命令行）模式时，/config 卡片不出现
-      // 「审批策略」与「沙箱模式」字段（运行模式 select 仍保留）。
-      // 错误会导致命令行模式用户看到不可用/误导的 app-server 专属选项。
-      // 依据：需求「如果是命令行模式，不应该出现这两个选项」。
+    it('test_anchor_codex_default_appserver_mode_shows_approval_and_sandbox_fields', () => {
+      // 验证什么：codex（app-server 模式）时，/config 卡片出现「审批策略」
+      // 「沙箱模式」字段。错误会导致首次启动用户看不到审批/沙箱配置。
       const config = buildCodexConfig();
       const sessionStore = new SessionStore();
       const bridge = createMockBridge();
@@ -213,24 +249,20 @@ describe('Config card agent-aware fields (design: 2026-07-11)', () => {
         sessionReaderRegistry,
       });
 
-      const result = (router as unknown as RouterInternals).buildConfigCard() as { card: object };
+      const result = router.buildConfigCard() as { card: object };
       const fieldKeys = extractConfigFieldKeys(result.card);
 
-      expect(fieldKeys).not.toContain('agents.codex.approvalPolicy');
-      expect(fieldKeys).not.toContain('agents.codex.sandbox');
-      expect(fieldKeys).toContain('agents.codex.serviceMode');
+      expect(fieldKeys).toContain('agents.codex.approvalPolicy');
+      expect(fieldKeys).toContain('agents.codex.sandbox');
       expect(fieldKeys).toContain('agents.codex.model');
     });
 
-    it('test_anchor_codex_appserver_mode_shows_approval_and_sandbox_fields', () => {
-      // 验证什么：codex 且 serviceMode=app-server 时，/config 卡片出现
-      // 「审批策略」「沙箱模式」与「运行模式」三个字段。
-      // 错误会导致 app-server 用户无法在卡片上配置审批/沙箱。
-      // 依据：需求「只有在选了 AppServer 的时候，才应该出现审批模式还有 sandbox 这两个选项」。
-      const config: AppConfig = {
-        ...buildCodexConfig(),
-        agents: { codex: { serviceMode: 'app-server' } },
-      };
+    it('test_anchor_codex_default_card_shows_appserver_workspace_write_on_request', () => {
+      // 验证什么：首次启动切到 codex（未显式配置 codex 字段）时，卡片默认选中
+      // sandbox=workspace-write、approvalPolicy=on-request。
+      // 错误会导致首次启动显示 danger-full-access 旧默认值。
+      // 依据：需求「用户第一次启动，切换到 Codex，显示的就是这个配置」。
+      const config = buildCodexConfig();
       const sessionStore = new SessionStore();
       const bridge = createMockBridge();
       const sessionReaderRegistry = createMockSessionReaderRegistry({ agentKinds: ['claude'] });
@@ -245,74 +277,40 @@ describe('Config card agent-aware fields (design: 2026-07-11)', () => {
         sessionReaderRegistry,
       });
 
-      const result = (router as unknown as RouterInternals).buildConfigCard() as { card: object };
+      const result = router.buildConfigCard() as { card: object };
+      const selects = extractSelects(result.card);
+
+      expect(selects.find((s) => s.key === 'agents.codex.sandbox')?.initialOption).toBe(
+        'workspace-write',
+      );
+      expect(selects.find((s) => s.key === 'agents.codex.approvalPolicy')?.initialOption).toBe(
+        'on-request',
+      );
+    });
+
+    it('test_anchor_codex_appserver_mode_shows_approval_and_sandbox_fields', () => {
+      // 验证什么：codex 的 /config 卡片恒出现「审批策略」「沙箱模式」字段。
+      // 错误会导致用户无法在卡片上配置审批/沙箱。
+      const config = buildCodexConfig();
+      const sessionStore = new SessionStore();
+      const bridge = createMockBridge();
+      const sessionReaderRegistry = createMockSessionReaderRegistry({ agentKinds: ['claude'] });
+
+      const router = new CommandRouter({
+        sessionStore,
+        bridge,
+        config,
+        configPath: path.join(tmpDir, 'config.yaml'),
+        workspacePath: path.join(tmpDir, 'workspace.json'),
+        ordersPath: path.join(tmpDir, 'orders.json'),
+        sessionReaderRegistry,
+      });
+
+      const result = router.buildConfigCard() as { card: object };
       const fieldKeys = extractConfigFieldKeys(result.card);
 
       expect(fieldKeys).toContain('agents.codex.approvalPolicy');
       expect(fieldKeys).toContain('agents.codex.sandbox');
-      expect(fieldKeys).toContain('agents.codex.serviceMode');
-    });
-
-    it('test_anchor_codex_service_mode_switch_toggles_approval_and_sandbox_fields', () => {
-      // 验证什么：在 /config 卡片把运行模式从 exec 切到 app-server 时，
-      // 审批/沙箱字段出现；切回 exec 时消失（门控跟随 pendingConfig 动态渲染）。
-      // 错误会导致切换后字段不联动，卡片停留在旧模式。
-      // 依据：需求「只有在选了 AppServer 的时候才应该出现」。
-      const config = buildCodexConfig();
-      const sessionStore = new SessionStore();
-      const bridge = createMockBridge();
-      const sessionReaderRegistry = createMockSessionReaderRegistry({ agentKinds: ['claude'] });
-
-      const router = new CommandRouter({
-        sessionStore,
-        bridge,
-        config,
-        configPath: path.join(tmpDir, 'config.yaml'),
-        workspacePath: path.join(tmpDir, 'workspace.json'),
-        ordersPath: path.join(tmpDir, 'orders.json'),
-        sessionReaderRegistry,
-      });
-      const internals = router as unknown as RouterInternals;
-      internals.ensurePendingConfig();
-      internals.setNestedValue(internals.pendingConfig, 'agents.codex.serviceMode', 'app-server');
-
-      let fieldKeys = extractConfigFieldKeys(
-        (internals.buildConfigCard() as { card: object }).card,
-      );
-      expect(fieldKeys).toContain('agents.codex.approvalPolicy');
-      expect(fieldKeys).toContain('agents.codex.sandbox');
-
-      internals.setNestedValue(internals.pendingConfig, 'agents.codex.serviceMode', 'exec');
-      fieldKeys = extractConfigFieldKeys((internals.buildConfigCard() as { card: object }).card);
-      expect(fieldKeys).not.toContain('agents.codex.approvalPolicy');
-      expect(fieldKeys).not.toContain('agents.codex.sandbox');
-    });
-
-    it('test_anchor_codex_exec_mode_card_states_default_semantics', () => {
-      // 验证什么：exec（命令行）模式下卡片明示默认语义——完全访问
-      // （danger-full-access）且无需审批（never），与 runner argv 硬编码一致。
-      // 错误会导致用户对命令行模式的权限边界没有可见说明。
-      // 依据：需求「命令行模式默认就是 Dangerous for Access，还有不需要审批，Never approval」。
-      const config = buildCodexConfig();
-      const sessionStore = new SessionStore();
-      const bridge = createMockBridge();
-      const sessionReaderRegistry = createMockSessionReaderRegistry({ agentKinds: ['claude'] });
-
-      const router = new CommandRouter({
-        sessionStore,
-        bridge,
-        config,
-        configPath: path.join(tmpDir, 'config.yaml'),
-        workspacePath: path.join(tmpDir, 'workspace.json'),
-        ordersPath: path.join(tmpDir, 'orders.json'),
-        sessionReaderRegistry,
-      });
-
-      const cardStr = JSON.stringify(
-        (router as unknown as RouterInternals).buildConfigCard() as { card: object },
-      );
-      expect(cardStr).toContain('danger-full-access');
-      expect(cardStr).toContain('never');
     });
   });
 
@@ -333,15 +331,15 @@ describe('Config card agent-aware fields (design: 2026-07-11)', () => {
         sessionReaderRegistry,
       });
 
-      const result = (router as unknown as RouterInternals).buildConfigCard() as { card: object };
+      const result = router.buildConfigCard() as { card: object };
       const fieldKeys = extractConfigFieldKeys(result.card);
 
       // Claude agent should have these fields
       expect(fieldKeys).toContain('defaultAgent');
       expect(fieldKeys).toContain('claude.model');
       expect(fieldKeys).toContain('claude.effort');
-      // 2026-07-12: permissionMode hardcoded, not configurable in card
-      expect(fieldKeys).not.toContain('claude.permissionMode');
+      // 2026-08-16: claude 交互式审批落地后，permissionMode 在卡片上可选
+      expect(fieldKeys).toContain('claude.permissionMode');
     });
 
     it('should NOT show codex-specific fields when defaultAgent=claude', () => {
@@ -360,7 +358,7 @@ describe('Config card agent-aware fields (design: 2026-07-11)', () => {
         sessionReaderRegistry,
       });
 
-      const result = (router as unknown as RouterInternals).buildConfigCard() as { card: object };
+      const result = router.buildConfigCard() as { card: object };
       const fieldKeys = extractConfigFieldKeys(result.card);
 
       expect(fieldKeys).not.toContain('agents.codex.approvalPolicy');
@@ -386,7 +384,7 @@ describe('Config card agent-aware fields (design: 2026-07-11)', () => {
         sessionReaderRegistry,
       });
 
-      const result = (router as unknown as RouterInternals).buildConfigCard() as { card: object };
+      const result = router.buildConfigCard() as { card: object };
       const cardStr = JSON.stringify(result.card);
 
       expect(cardStr).toContain('"schema":"2.0"');
@@ -425,15 +423,11 @@ describe('Config card agent-aware fields (design: 2026-07-11)', () => {
 
       // Simulate user selecting 'pi' in the defaultAgent dropdown
       // (this is what config.set handler does internally)
-      (router as unknown as RouterInternals).ensurePendingConfig();
-      (router as unknown as RouterInternals).setNestedValue(
-        (router as unknown as RouterInternals).pendingConfig,
-        'defaultAgent',
-        'pi',
-      );
+      router.ensurePendingConfig();
+      router.setNestedValue(router.pendingConfig, 'defaultAgent', 'pi');
 
       // Rebuild card — should now show pi fields, not claude fields
-      const result = (router as unknown as RouterInternals).buildConfigCard() as { card: object };
+      const result = router.buildConfigCard() as { card: object };
       const fieldKeys = extractConfigFieldKeys(result.card);
 
       // pi fields must be present
@@ -450,14 +444,10 @@ describe('Config card agent-aware fields (design: 2026-07-11)', () => {
     it('claude → pi: tab label shows 🤖 Pi, not 🤖 Claude', () => {
       const { router } = createRouterWithClaudeDefault();
 
-      (router as unknown as RouterInternals).ensurePendingConfig();
-      (router as unknown as RouterInternals).setNestedValue(
-        (router as unknown as RouterInternals).pendingConfig,
-        'defaultAgent',
-        'pi',
-      );
+      router.ensurePendingConfig();
+      router.setNestedValue(router.pendingConfig, 'defaultAgent', 'pi');
 
-      const result = (router as unknown as RouterInternals).buildConfigCard() as { card: object };
+      const result = router.buildConfigCard() as { card: object };
       const label = extractAgentTabLabel(result.card);
 
       expect(label).toContain('Pi');
@@ -467,40 +457,32 @@ describe('Config card agent-aware fields (design: 2026-07-11)', () => {
     it('claude → codex: card shows codex fields, not claude fields', () => {
       const { router } = createRouterWithClaudeDefault();
 
-      (router as unknown as RouterInternals).ensurePendingConfig();
-      (router as unknown as RouterInternals).setNestedValue(
-        (router as unknown as RouterInternals).pendingConfig,
-        'defaultAgent',
-        'codex',
-      );
+      router.ensurePendingConfig();
+      router.setNestedValue(router.pendingConfig, 'defaultAgent', 'codex');
 
-      const result = (router as unknown as RouterInternals).buildConfigCard() as { card: object };
+      const result = router.buildConfigCard() as { card: object };
       const fieldKeys = extractConfigFieldKeys(result.card);
 
       // FIXED 2026-07-12: uses agents.codex.xxx keys
       expect(fieldKeys).toContain('agents.codex.model');
-      // 2026-08-12: 切到 codex 默认 exec 模式，审批/沙箱字段不显示
-      expect(fieldKeys).not.toContain('agents.codex.approvalPolicy');
-      expect(fieldKeys).not.toContain('agents.codex.sandbox');
-      expect(fieldKeys).toContain('agents.codex.serviceMode');
+      // 2026-08-14: codex 恒为 app-server 模式，审批/沙箱字段显示
+      expect(fieldKeys).toContain('agents.codex.approvalPolicy');
+      expect(fieldKeys).toContain('agents.codex.sandbox');
 
       expect(fieldKeys).not.toContain('claude.model');
       expect(fieldKeys).not.toContain('claude.settings');
-      // 2026-07-12: permissionMode hardcoded, not in card
+      // 2026-08-16: 切到 codex 后不再显示 claude 字段（含 permissionMode）
+      expect(fieldKeys).not.toContain('claude.effort');
       expect(fieldKeys).not.toContain('claude.permissionMode');
     });
 
     it('claude → opencode: card shows opencode fields, not claude fields', () => {
       const { router } = createRouterWithClaudeDefault();
 
-      (router as unknown as RouterInternals).ensurePendingConfig();
-      (router as unknown as RouterInternals).setNestedValue(
-        (router as unknown as RouterInternals).pendingConfig,
-        'defaultAgent',
-        'opencode',
-      );
+      router.ensurePendingConfig();
+      router.setNestedValue(router.pendingConfig, 'defaultAgent', 'opencode');
 
-      const result = (router as unknown as RouterInternals).buildConfigCard() as { card: object };
+      const result = router.buildConfigCard() as { card: object };
       const fieldKeys = extractConfigFieldKeys(result.card);
 
       // FIXED 2026-07-13: now uses agents.opencode.xxx keys (was opencode.xxx before)
@@ -528,27 +510,23 @@ describe('Config card agent-aware fields (design: 2026-07-11)', () => {
       });
 
       // Before switch: pi fields should be visible
-      let result = (router as unknown as RouterInternals).buildConfigCard() as { card: object };
+      let result = router.buildConfigCard() as { card: object };
       let fieldKeys = extractConfigFieldKeys(result.card);
       expect(fieldKeys).toContain('agents.pi.model');
       expect(fieldKeys).toContain('agents.pi.thinking');
 
       // Switch to codex
-      (router as unknown as RouterInternals).ensurePendingConfig();
-      (router as unknown as RouterInternals).setNestedValue(
-        (router as unknown as RouterInternals).pendingConfig,
-        'defaultAgent',
-        'codex',
-      );
+      router.ensurePendingConfig();
+      router.setNestedValue(router.pendingConfig, 'defaultAgent', 'codex');
 
-      result = (router as unknown as RouterInternals).buildConfigCard() as { card: object };
+      result = router.buildConfigCard() as { card: object };
       fieldKeys = extractConfigFieldKeys(result.card);
 
       // Now codex fields, not pi fields (FIXED 2026-07-12: uses agents.codex.xxx keys)
       expect(fieldKeys).toContain('agents.codex.model');
-      // 2026-08-12: 切到 codex 默认 exec 模式，审批字段不显示
-      expect(fieldKeys).not.toContain('agents.codex.approvalPolicy');
-      expect(fieldKeys).not.toContain('agents.codex.sandbox');
+      // 2026-08-14: codex 恒为 app-server 模式，审批/沙箱字段显示
+      expect(fieldKeys).toContain('agents.codex.approvalPolicy');
+      expect(fieldKeys).toContain('agents.codex.sandbox');
       expect(fieldKeys).not.toContain('agents.pi.model');
       expect(fieldKeys).not.toContain('pi.thinking');
     });
@@ -569,22 +547,18 @@ describe('Config card agent-aware fields (design: 2026-07-11)', () => {
       });
 
       // Before switch: codex fields should be visible (FIXED 2026-07-12: uses agents.codex.xxx keys)
-      let result = (router as unknown as RouterInternals).buildConfigCard() as { card: object };
+      let result = router.buildConfigCard() as { card: object };
       let fieldKeys = extractConfigFieldKeys(result.card);
       expect(fieldKeys).toContain('agents.codex.model');
-      // 2026-08-12: codex 默认 exec 模式，审批字段不显示
-      expect(fieldKeys).not.toContain('agents.codex.approvalPolicy');
-      expect(fieldKeys).not.toContain('agents.codex.sandbox');
+      // 2026-08-14: codex 恒为 app-server 模式，审批/沙箱字段显示
+      expect(fieldKeys).toContain('agents.codex.approvalPolicy');
+      expect(fieldKeys).toContain('agents.codex.sandbox');
 
       // Switch to pi
-      (router as unknown as RouterInternals).ensurePendingConfig();
-      (router as unknown as RouterInternals).setNestedValue(
-        (router as unknown as RouterInternals).pendingConfig,
-        'defaultAgent',
-        'pi',
-      );
+      router.ensurePendingConfig();
+      router.setNestedValue(router.pendingConfig, 'defaultAgent', 'pi');
 
-      result = (router as unknown as RouterInternals).buildConfigCard() as { card: object };
+      result = router.buildConfigCard() as { card: object };
       fieldKeys = extractConfigFieldKeys(result.card);
 
       // Now pi fields, not codex fields
@@ -611,18 +585,14 @@ describe('Config card agent-aware fields (design: 2026-07-11)', () => {
       });
 
       // Before switch
-      let result = (router as unknown as RouterInternals).buildConfigCard() as { card: object };
+      let result = router.buildConfigCard() as { card: object };
       expect(extractAgentTabLabel(result.card)).toContain('Opencode');
 
       // Switch to pi
-      (router as unknown as RouterInternals).ensurePendingConfig();
-      (router as unknown as RouterInternals).setNestedValue(
-        (router as unknown as RouterInternals).pendingConfig,
-        'defaultAgent',
-        'pi',
-      );
+      router.ensurePendingConfig();
+      router.setNestedValue(router.pendingConfig, 'defaultAgent', 'pi');
 
-      result = (router as unknown as RouterInternals).buildConfigCard() as { card: object };
+      result = router.buildConfigCard() as { card: object };
       expect(extractAgentTabLabel(result.card)).toContain('Pi');
       expect(extractAgentTabLabel(result.card)).not.toContain('Opencode');
     });
@@ -631,13 +601,63 @@ describe('Config card agent-aware fields (design: 2026-07-11)', () => {
       const { router } = createRouterWithClaudeDefault();
 
       // Don't set pendingConfig — should use this.config.defaultAgent = 'claude'
-      const result = (router as unknown as RouterInternals).buildConfigCard() as { card: object };
+      const result = router.buildConfigCard() as { card: object };
       const fieldKeys = extractConfigFieldKeys(result.card);
 
       expect(fieldKeys).toContain('claude.model');
-      // 2026-07-12: permissionMode hardcoded to bypassPermissions, not configurable in card
-      expect(fieldKeys).not.toContain('claude.permissionMode');
+      // 2026-08-16: claude.permissionMode 由卡片 select 暴露
+      expect(fieldKeys).toContain('claude.permissionMode');
       expect(extractAgentTabLabel(result.card)).toContain('Claude');
+    });
+  });
+
+  describe('defaultAgent selector agent order (first-start)', () => {
+    function createRouter() {
+      const config = buildClaudeConfig();
+      const sessionStore = new SessionStore();
+      const bridge = createMockBridge();
+      const registry = createMockSessionReaderRegistry({ agentKinds: ['claude'] });
+      return new CommandRouter({
+        sessionStore,
+        bridge,
+        config,
+        configPath: path.join(tmpDir, 'config.yaml'),
+        workspacePath: path.join(tmpDir, 'workspace.json'),
+        ordersPath: path.join(tmpDir, 'orders.json'),
+        sessionReaderRegistry: registry,
+      });
+    }
+
+    it('lists agents in canonical order Codex → Claude → OpenCode → Pi → Kimi', () => {
+      // 验证什么：首次启动默认 Agent 下拉按 Codex → Claude → OpenCode → Pi → Kimi 排列。
+      // 错误会导致首次启动用户看到的 agent 顺序不符合产品默认。
+      const router = createRouter();
+      const result = router.buildConfigCard() as {
+        card: object;
+      };
+      const options =
+        extractSelects(result.card).find((s) => s.key === 'defaultAgent')?.options ?? [];
+      expect(options).toEqual(['codex', 'claude', 'opencode', 'pi', 'kimi']);
+    });
+
+    it('moves uninstalled agents to the back, preserving canonical order within groups', () => {
+      // 验证什么：明确未安装（opencode/kimi）的 agent 排到已安装（codex/claude/pi）之后，
+      // 组内仍保持 canonical order。
+      // 错误会导致未安装的 agent 插在已安装前面，用户首选被未安装项占据。
+      vi.mocked(getCachedAvailability).mockImplementation(
+        (kind) => kind !== 'opencode' && kind !== 'kimi',
+      );
+      try {
+        const router = createRouter();
+        const result = router.buildConfigCard() as {
+          card: object;
+        };
+        const options =
+          extractSelects(result.card).find((s) => s.key === 'defaultAgent')?.options ?? [];
+        expect(options).toEqual(['codex', 'claude', 'pi', 'opencode', 'kimi']);
+      } finally {
+        vi.mocked(getCachedAvailability).mockImplementation(() => undefined);
+      }
     });
   });
 });

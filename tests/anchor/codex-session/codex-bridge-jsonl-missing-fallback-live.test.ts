@@ -9,8 +9,9 @@
  *   （Input 244K / Output 256K / Cached 107833K / Total 108334K）。
  *
  * 缺失/错误会导致什么：
- *   P1 把 codex 改为"jsonl 优先"后，若兜底缺失，jsonl 无 usage 的会话会显示
- *   估算值（formatUsageStats estimate path）甚至空白行——真实场景中老版本
+ *   codex 走 live 优先（app-server 的 usage 是本 turn 增量）后，若 jsonl 兜底
+ *   缺失，jsonl 无 usage 的会话会显示估算值（formatUsageStats estimate path）
+ *   甚至空白行——真实场景中老版本
  *   codex rollout 无 token_count 事件，/resume 与 done 卡都会退化。
  *
  * 依据（spec 原文）：
@@ -49,6 +50,7 @@ function asCodexRunner(r: Runner): AgentRunner {
   return {
     ...r,
     kind: 'codex',
+    getUsageAuthority: () => 'live' as const,
     sessionReader: {
       listSessions: () => ({ sessions: [], total: 0 }),
       getNewestSession: () => null,

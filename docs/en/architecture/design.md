@@ -231,13 +231,12 @@ defaultAgent: claude
 claude:
   model: claude-opus-4-8
   effort: medium           # low | medium | high | xhigh | max
-  # permissionMode is hardcoded as bypassPermissions (inside runner), not configurable via config
+  permissionMode: bypassPermissions  # Claude official --permission-mode: default | acceptEdits | auto | bypassPermissions | manual | dontAsk | plan (switchable via /config card)
   stopGraceMs: 5000
 
 codex:
-  serviceMode: exec         # exec (default, spawn-per-message) | app-server (persistent connection + approvals)
-  approvalPolicy: on-request  # Codex official AskForApproval: untrusted | on-request | never (app-server mode only)
-  sandbox: danger-full-access  # Codex official SandboxMode: read-only | workspace-write | danger-full-access (app-server mode only)
+  approvalPolicy: on-request  # Codex official AskForApproval: untrusted | on-request | never (default on-request)
+  sandbox: workspace-write  # Codex official SandboxMode: read-only | workspace-write | danger-full-access (default workspace-write)
 
 output:
   showThinking: true
@@ -277,7 +276,7 @@ When claude exits abnormally, the last chunk of stdout data may lack a trailing 
 
 ### 9.5 Feishu Rate Limiting (Error Code 99991400)
 
-New message sending is approximately 5 req/s. `sendWithRetry` retries once after sleeping 200ms for retryable errors: SDK's `rate_limited` (HTTP 429, SDK has built-in backoff retry, this is just a fallback), and Feishu business codes 99991400/99991401 (frequency control) — the latter are classified as `permission_denied` by `@larksuite/channel@0.3.0`'s `classifyError`, and the SDK fail-fasts on `permission_denied`. `shouldRetrySendError` must identify them from the `cause` chain (`cause.response.data.code`) to prevent the rate-limit retry path from dying (review.md). Regular `permission_denied` (e.g., missing scope) is not retried. Run card patches are controlled by the channel SDK's throttle + FIFO UpdateQueue; disabling tool use/result display by default further reduces card update volume.
+New message sending is approximately 5 req/s. `sendWithRetry` retries once after sleeping 200ms for retryable errors: SDK's `rate_limited` (HTTP 429, SDK has built-in backoff retry, this is just a fallback), and Feishu business codes 99991400/99991401 (frequency control) — the latter are classified as `permission_denied` by `@larksuite/channel@0.3.0`'s `classifyError`, and the SDK fail-fasts on `permission_denied`. `shouldRetrySendError` must identify them from the `cause` chain (`cause.response.data.code`) to prevent the rate-limit retry path from dying. Regular `permission_denied` (e.g., missing scope) is not retried. Run card patches are controlled by the channel SDK's throttle + FIFO UpdateQueue; disabling tool use/result display by default further reduces card update volume.
 
 ### 9.6 Serial Message Processing
 
@@ -499,12 +498,12 @@ Feishu 4xx business errors are classified as recoverable because they only affec
 Run card done statistics and `/resume` tail statistics share `formatUsageStats` (src/router/index.ts), uniformly aligned with [ccusage](https://github.com/sirmalloc/ccusage) token semantics. **Core invariants**:
 
 - **`Total = max(totalTokens, input+output+cacheRead+cacheCreation)`**. Cannot revert to `input+output` — that would miss cache (codex/opencode's cache_read often accounts for 90%+ of input). When `totalTokens` is absent, total = sum of components (claude JSONL has no explicit total; the reader computes the component sum).
-- **`input_tokens` everywhere represents "uncached input"**: codex derives it from `input_tokens − cached_input_tokens` (`codex-exec-jsonl.ts`'s `onTurnCompleted`); pi/opencode/claude's original values are already non-cached.
+- **`input_tokens` everywhere represents "uncached input"**: codex derives it from `input_tokens − cached_input_tokens` (`src/session/codex/rollout-reader.ts` jsonl fallback); pi/opencode/claude's original values are already non-cached.
 - **codex `total_token_usage` is session cumulative; `last_token_usage` is the single-turn incremental**: done card "this run" must use `last_token_usage` (when missing, derive from `total − prev_total`); cumulative uses the last `total_token_usage` in the main thread file. **Cannot** use "the last `token_count` event's `total_token_usage` to represent the last turn" — that's a cumulative value; on a long session resume, it would show the entire session's historical consumption as a single run (measured ~240x overstatement in practice).
 - **Cache percentage**: `cacheRead/(input+cacheRead)` (input is already the uncached value, no need to subtract again).
 - **Cache create row**: `cacheCreationTokens` (pi's `cacheWrite`, opencode's `tokens.cache.write`); codex is always 0.
 
-**Passthrough chain and scope unification (codex exception)**: result event usage → `Bridge` extracts live values (claude native naming `cache_read_input_tokens`/`cache_creation_input_tokens` is compatible with unified naming); after process exit, `resolveFinalUsage` reads jsonl. **Flow fields (input/output/cache/total): for non-codex, when live has input/output, use live entirely (this-run scope); otherwise jsonl fallback;** codex is the exception — live `turn.completed.usage` is session cumulative `total_token_usage`, so flow fields always prefer jsonl (main thread file per-turn `last_token_usage`), falling back to live only when jsonl is missing**; `contextLength`/`compactCount` always prefer jsonl (watermark/history count). A single card must not mix scopes (previously Input was this-run while Cache/Total were session cumulative, with cache% numerator and denominator from different sources; codex live cumulative values were also mistakenly shown as this-run).
+**Passthrough chain and scope unification**: result event usage → `Bridge` extracts live values (claude native naming `cache_read_input_tokens`/`cache_creation_input_tokens` is compatible with unified naming); after process exit, `resolveFinalUsage` reads jsonl. **Flow fields (input/output/cache/total): when live has input/output, use live entirely (this-run scope); otherwise jsonl fallback.** The codex app-server `turn.completed` carries the protocol's `tokenUsage.last` (single-turn incremental, live scope), so it follows the same live-first rule as opencode; `contextLength`/`compactCount` always prefer jsonl (watermark/history count). A single card must not mix scopes (previously Input was this-run while Cache/Total were session cumulative, with cache% numerator and denominator from different sources).
 → `FinishMeta` → `RunState` → `run-renderer` passes to `formatUsageStats`.
 
 **`/resume` populated by each session reader**: claude `aggregateSessionUsage` (`totalTokens` = component sum), pi `extractUsage` (`totalTokens = usage.totalTokens`), opencode reader (`cache.write`/`total`), codex `readCodexRollout` parses `token_count` events (`raw = last_token_usage ?? subtract(total, prev_total)`, tracking `previousTotals` for cumulative diff). When modifying token display, four readers + `formatUsageStats` + bridge must be kept consistent.

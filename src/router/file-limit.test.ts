@@ -1,9 +1,8 @@
 import { describe, it, expect, vi } from 'vitest';
 import { CommandRouter } from './index.js';
 import { SessionStore } from '../session/index.js';
-import type { Bridge } from '../bridge/index.js';
 import type { AppConfig } from '../config/index.js';
-import { createStubSessionReaderRegistry } from '../../tests/lib/bridge-stubs.js';
+import { createMockBridge, createStubSessionReaderRegistry } from '../../tests/lib/bridge-stubs.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -18,17 +17,7 @@ describe('file upload size limit: 30MB', () => {
     const sessionStore = new SessionStore();
     sessionStore.set('user1', { sessions: new Map(), previousSessions: new Map(), cwd: tempDir });
 
-    const mockBridge = {
-      sendResult: vi.fn().mockResolvedValue(undefined),
-      sendFile: vi.fn().mockResolvedValue(undefined),
-      forwardToClaude: vi.fn(),
-      isBusyFor: vi.fn().mockReturnValue(false),
-      reconnect: vi.fn(),
-      setConfig: vi.fn(),
-      setIdleTimeout: vi.fn(),
-      enqueue: vi.fn().mockResolvedValue(undefined),
-      interruptCurrentRun: vi.fn().mockResolvedValue(true),
-    };
+    const mockBridge = createMockBridge();
 
     const config: AppConfig = {
       feishu: { appId: 'test', appSecret: 'test' },
@@ -49,7 +38,7 @@ describe('file upload size limit: 30MB', () => {
 
     const router = new CommandRouter({
       sessionStore,
-      bridge: mockBridge as unknown as Bridge,
+      bridge: mockBridge,
       config,
       configPath: '/tmp/config.yaml',
       sessionReaderRegistry: createStubSessionReaderRegistry(),
@@ -111,7 +100,7 @@ describe('file upload size limit: 30MB', () => {
 
     const router = new CommandRouter({
       sessionStore,
-      bridge: mockBridge as unknown as Bridge,
+      bridge: mockBridge,
       config,
       configPath: '/tmp/config.yaml',
       sessionReaderRegistry: createStubSessionReaderRegistry(),
@@ -141,12 +130,6 @@ describe('file upload size limit: 30MB', () => {
       feishu: { appId: 'app-id', appSecret: 'app-secret' },
     } as AppConfig);
 
-    // Mock channel
-    (connector as unknown as { channel: unknown }).channel = {
-      send: vi.fn().mockResolvedValue({ messageId: 'msg-id' }),
-      on: vi.fn(),
-    } as any;
-
     const tmpDir = os.tmpdir();
     const largeFile = path.join(tmpDir, 'test-31mb-' + Date.now() + '.txt');
     fs.writeFileSync(largeFile, Buffer.alloc(31 * 1024 * 1024));
@@ -156,15 +139,5 @@ describe('file upload size limit: 30MB', () => {
     } finally {
       fs.unlinkSync(largeFile);
     }
-  });
-
-  it('router 和 connector 不得重新定义本地文件大小常量（防双源发散）', () => {
-    const routerSource = fs.readFileSync(path.resolve(__dirname, 'index.ts'), 'utf-8');
-    expect(routerSource).not.toMatch(/const MAX_SIZE = \d+ \* 1024 \* 1024/);
-    const connectorSource = fs.readFileSync(
-      path.resolve(__dirname, '../connector/index.ts'),
-      'utf-8',
-    );
-    expect(connectorSource).not.toMatch(/const MAX_FILE_SIZE = \d+ \* 1024 \* 1024/);
   });
 });

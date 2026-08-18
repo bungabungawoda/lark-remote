@@ -55,6 +55,7 @@ vi.mock('../../../src/logger/index.js', () => ({
 }));
 
 import { FeishuConnector } from '../../../src/connector/index.js';
+import { AppConfigSchema } from '../../../src/config/index.js';
 
 describe('P2-18: sendFile destroys the read stream on failure', () => {
   beforeEach(() => {
@@ -77,9 +78,11 @@ describe('P2-18: sendFile destroys the read stream on failure', () => {
     const destroySpy = vi.spyOn(stream, 'destroy');
     mockFs.createReadStream.mockReturnValue(stream);
 
-    const conn = new FeishuConnector({
-      feishu: { appId: 'a', appSecret: 's' },
-    } as any);
+    const conn = new FeishuConnector(
+      AppConfigSchema.parse({
+        feishu: { appId: 'a', appSecret: 's' },
+      }),
+    );
 
     await expect(conn.sendFile('chat-1', '/tmp/file.bin')).rejects.toThrow();
 

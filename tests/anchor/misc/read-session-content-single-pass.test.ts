@@ -3,7 +3,7 @@
  *
  * Before P2-2, readSessionContent parsed allLines 3-4 times:
  *   1. aggregateSessionUsage — JSON.parse every line
- *   2. findLastUserIndex — JSON.parse every line
+ *   2. last-user-message scan — JSON.parse every line
  *   3. event collection — JSON.parse from startIdx to end
  *   4. title/recap — JSON.parse all lines
  *

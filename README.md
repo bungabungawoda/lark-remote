@@ -16,12 +16,16 @@
 
 ## ⚠️ 安全警告（必读）
 
-本工具会把飞书消息直接转为本地 agent 执行，agent 默认以**完全权限**运行（Claude `bypassPermissions`、Codex `approval_policy=never` + full access），等价于把一台机器的 shell 交给聊天对端。请务必：
+本工具会把飞书消息直接转为本地 agent 执行。Claude 默认以**完全权限**运行（固定 `bypassPermissions`）；Codex 采用 **app-server 审批模式**（默认 `approvalPolicy=on-request`，执行命令需在飞书卡片上确认，沙箱默认 `workspace-write`），相对安全；其他 agent 以各自 CLI 的默认权限运行。agent 仍可读写你指定的本地目录，请务必：
 
 - **仅限你自己的私聊（p2p）使用**。不要把机器人拉进任何群聊，不要让任何其他人能与它对话。
 - 在飞书开放平台把应用可见范围限制到**只有你自己**。
 - 运行本工具的机器上不要存放与损失承受力不符的数据；建议在独立用户/机器/容器里运行。
 - `appSecret` 等凭据只在本地 `config.yaml`，**不要提交到任何仓库**。
+
+Codex 审批模式下，执行命令前会收到审批卡片，可直接在飞书里允许或拒绝：
+
+![Codex 命令审批卡片示例](docs/images/approval-card.png)
 
 ## 前置条件
 
@@ -120,11 +124,15 @@ bridge 启动后不在终端输出，运行日志写入 `~/.lark-remote/logs/YYY
 | `/reconnect` | - | 重连飞书 |
 | `/restart` | - | 原地自重启 bridge（新进程同 config 接管） |
 | `/config get\|set` | `/c` | 查改运行时配置（agent-aware 卡片） |
-| `/order save\|list` | `/o` | 保存或列出常用指令 |
+| `/order save\|list\|alias` | `/o` | 收藏常用指令；`/order alias` 注册快捷别名（输入 `$name` 展开） |
 | `!<cmd>` | - | 执行 bash 命令并流式输出到卡片（绕过串行队列） |
 | `/exit` | `/e` | 退出 bridge |
 
 直接发非 `/` 开头的消息即转发给当前默认 agent。
+
+往飞书私聊发**图片/文件**会自动保存到当前目录的 `.lark-remote-temp/<YYYYMMDDHHmm>/`
+（建议把 `.lark-remote-temp/` 加进项目 `.gitignore`），随后说「请处理刚才保存的文件」
+即可让 agent 直接读本地文件。更多用法见 [docs/zh/usage.md](docs/zh/usage.md)。
 
 ## 测试
 

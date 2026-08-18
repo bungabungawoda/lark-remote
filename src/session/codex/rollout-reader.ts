@@ -11,13 +11,14 @@
  * ```
  *
  * Note: This handles the **rollout file format** (historical logging), NOT the
- * `codex exec --json` stdout format. Those are two different JSONL formats
- * (see design doc appendix B vs C).
+ * `codex exec --json` stdout format（已随 exec 模式移除）。
  */
 
 import fs from 'node:fs';
 import path from 'node:path';
 import { readJsonlLines, findJsonlLine } from '../common/jsonl.js';
+import { STALE_MS } from '../common/constants.js';
+import { paginate, capEvents } from '../common/pagination.js';
 import { getLogger } from '../../logger/index.js';
 import { isRecord, stringValue } from '../../common/guards.js';
 import { resolveCodexHome } from '../../config/codex-config.js';
@@ -298,8 +299,6 @@ export function listCodexRollouts(opts: ListCodexRolloutsOptions = {}): {
   total: number;
 } {
   const codexHome = resolveCodexHome(opts.codexHome);
-  const limit = opts.limit ?? 20;
-  const offset = Math.max(0, opts.offset ?? 0);
   const filterCwd = opts.cwd;
 
   // Full index: every rollout file's session_meta + mtime, no early break.
@@ -318,8 +317,7 @@ export function listCodexRollouts(opts: ListCodexRolloutsOptions = {}): {
   // Same-mtime ties use filePath as a deterministic secondary key so index
   // rebuilds / walk order changes never reorder the page.
   matched.sort((a, b) => b.mtimeMs - a.mtimeMs || a.filePath.localeCompare(b.filePath));
-  const total = matched.length;
-  const page = matched.slice(offset, offset + limit);
+  const { items: page, total } = paginate(matched, { limit: opts.limit, offset: opts.offset });
 
   // Full-parse only the page being returned (summary/usage).
   const entries: CodexRolloutEntry[] = [];
@@ -381,14 +379,7 @@ export function readCodexSessionContent(
 
   // Apply maxEvents cap: keep the LAST N events (most recent).
   // See function docstring for rationale.
-  // P2-7: maxEvents <= 0 returns [] — guards the `slice(-0) === slice(0)`
-  // full-array trap (no caller passes 0 today, but the contract must hold).
-  const events =
-    opts.maxEvents !== undefined && opts.maxEvents > 0 && rollout.events.length > opts.maxEvents
-      ? rollout.events.slice(-opts.maxEvents)
-      : opts.maxEvents !== undefined && opts.maxEvents <= 0
-        ? []
-        : rollout.events;
+  const events = capEvents(rollout.events, opts.maxEvents);
 
   return {
     events,
@@ -396,9 +387,7 @@ export function readCodexSessionContent(
     // "最近输入" label). recap is undefined: codex has no
     // compact-summary concept, so never fake one from a user
     // message (was: firstUserMessage = injected project rules).
-    displayTitle: rollout.lastRealUserMessage
-      ? rollout.lastRealUserMessage.slice(0, 50)
-      : undefined,
+    displayTitle: rollout.lastRealUserMessage || undefined,
     recap: undefined,
     usage: rollout.usage,
   };
@@ -414,10 +403,12 @@ export function readCodexSessionContent(
  */
 export function isCodexSessionActive(
   sessionId: string,
-  opts: { codexHome?: string; activeThresholdMs?: number } = {},
+  opts: { codexHome?: string; activeThresholdMs?: number; cwd?: string } = {},
 ): boolean {
   const codexHome = resolveCodexHome(opts.codexHome);
-  const threshold = opts.activeThresholdMs ?? 10 * 60 * 1000; // 10 minutes default
+  // Unify with the other readers' 1-hour stale window (claude/pi/opencode/kimi
+  // all use STALE_MS). Previously codex used a divergent 10-minute default.
+  const threshold = opts.activeThresholdMs ?? STALE_MS;
 
   // P2-4: Use session index for direct file lookup + mtime check
   let index = getSessionIndex(codexHome);
@@ -435,6 +426,11 @@ export function isCodexSessionActive(
   // reflects thread-tree activity, not the parent session's liveness
   // (plan §2.1). A pure-subagent session must report inactive.
   if (entry.isSubagent) {
+    return false;
+  }
+  // Cwd guard: when a cwd is provided, the session's working directory must
+  // match (align with claude/pi/opencode which validate cwd).
+  if (opts.cwd && entry.cwd !== opts.cwd) {
     return false;
   }
 

@@ -52,11 +52,6 @@ const ACTIVE_CATALOG_JSON = makeCatalog([
   ),
 ]);
 
-type RouterInternals = {
-  pendingConfig?: AppConfig | null;
-  buildConfigCard: () => { card: object };
-};
-
 function extractSelectCurrentValue(card: object, key: string): string | undefined {
   let current: string | undefined;
   function traverse(obj: unknown) {
@@ -155,16 +150,14 @@ describe('codex catalog middle vs default - anchor', () => {
       ordersPath: path.join(tmpDir, 'orders.json'),
       sessionReaderRegistry: createMockSessionReaderRegistry({ agentKinds: ['claude', 'codex'] }),
     });
-    const internals = router as unknown as RouterInternals;
-
     await router.handleCardAction(
       { cmd: 'config.set', key: 'agents.codex.model', option: 'six-level-model' },
       { userId: 'u1', chatId: 'c1', messageId: 'm1' },
     );
 
     // 6 档 (low..ultra)：中位 index (6-1)/2=2 → high；声明 default 是 low，必须选中位
-    expect(internals.pendingConfig?.agents?.codex?.reasoningEffort).toBe('high');
-    const card = internals.buildConfigCard().card;
+    expect(router.pendingConfig?.agents?.codex?.reasoningEffort).toBe('high');
+    const card = router.buildConfigCard().card;
     expect(extractSelectCurrentValue(card, 'agents.codex.reasoningEffort')).toBe('high');
   });
 });

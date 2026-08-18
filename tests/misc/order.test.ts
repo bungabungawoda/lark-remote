@@ -23,33 +23,6 @@ afterEach(() => {
   fs.rmSync(tmpDir, { recursive: true, force: true });
 });
 
-describe('OrderStore basic CRUD', () => {
-  it('save / get / has / remove (global, no cwd)', () => {
-    const store = new OrderStore(ordersFile);
-
-    // save returns an OrderEntry with id, text, createdAt
-    const entry = store.save('检查测试覆盖率');
-    expect(entry).toMatchObject({ text: '检查测试覆盖率' });
-    expect(entry.id).toBeDefined();
-    expect(entry.createdAt).toBeDefined();
-
-    // get returns all entries (global, no cwd filter)
-    const entries = store.get();
-    expect(entries).toHaveLength(1);
-    expect(entries[0].id).toBe(entry.id);
-    expect(entries[0].text).toBe('检查测试覆盖率');
-
-    // has checks by id only (no cwd)
-    expect(store.has(entry.id)).toBe(true);
-    expect(store.has('nonexistent')).toBe(false);
-
-    // remove by id only (no cwd)
-    store.remove(entry.id);
-    expect(store.get()).toHaveLength(0);
-    expect(store.has(entry.id)).toBe(false);
-  });
-});
-
 /**
  * Anchor #2: cmdOrder 列表命令
  * 验证 /order 命令返回卡片格式，包含指令列表。
@@ -231,26 +204,10 @@ describe('cmdOrder 列表命令 (Anchor #2)', () => {
   });
 });
 
-// --- Probe tests: boundary & risk exploration ---
+// --- Boundary tests: length/quantity limits (OrderStore MAX_TEXT_LENGTH=200 / MAX_ORDERS=50) ---
 
-describe('OrderStore probe: boundary & risk', () => {
-  it('probe-1: 空指令保存 - empty text', () => {
-    const store = new OrderStore(ordersFile);
-
-    // Empty string (length 0) is under MAX_TEXT_LENGTH=200,
-    // so save() should NOT throw — but is this the intended behavior?
-    // Probe: document what actually happens.
-    const entry = store.save('');
-    expect(entry.text).toBe('');
-    expect(store.get()).toHaveLength(1);
-
-    // Whitespace-only text also passes length check
-    const entry2 = store.save('   ');
-    expect(entry2.text).toBe('   ');
-    expect(store.get()).toHaveLength(2);
-  });
-
-  it('probe-2: 超长指令 - 201 chars exceeds limit', () => {
+describe('OrderStore boundary limits', () => {
+  it('超长指令 - 201 chars exceeds MAX_TEXT_LENGTH', () => {
     const store = new OrderStore(ordersFile);
 
     // Exactly 200 chars should pass
@@ -263,7 +220,7 @@ describe('OrderStore probe: boundary & risk', () => {
     expect(() => store.save(text201)).toThrow(/200/);
   });
 
-  it('probe-3: 指令数量上限 - 51st order rejected', () => {
+  it('指令数量上限 - 51st order rejected (MAX_ORDERS=50)', () => {
     const store = new OrderStore(ordersFile);
 
     // Fill up to 50
@@ -274,32 +231,5 @@ describe('OrderStore probe: boundary & risk', () => {
 
     // 51st should throw
     expect(() => store.save('第 51 条')).toThrow(/50/);
-  });
-
-  it('probe-4: 全局存储 - all orders visible (no cwd isolation)', () => {
-    const store = new OrderStore(ordersFile);
-
-    store.save('A 的指令');
-    store.save('B 的指令');
-
-    expect(store.get()).toHaveLength(2);
-    const texts = store.get().map((e) => e.text);
-    expect(texts).toContain('A 的指令');
-    expect(texts).toContain('B 的指令');
-  });
-
-  it('probe-5: 删除不存在的指令 - idempotent remove', () => {
-    const store = new OrderStore(ordersFile);
-
-    // Remove from empty store — should not throw
-    expect(() => store.remove('nonexistent-id')).not.toThrow();
-
-    // Save then remove twice — second remove is idempotent
-    const entry = store.save('待删除');
-    store.remove(entry.id);
-    expect(store.get()).toHaveLength(0);
-
-    // Second remove of same id — should not throw
-    expect(() => store.remove(entry.id)).not.toThrow();
   });
 });

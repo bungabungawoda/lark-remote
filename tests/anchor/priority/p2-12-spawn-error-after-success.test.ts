@@ -18,6 +18,8 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Readable } from 'node:stream';
 import { SpawningRunner } from '../../../src/runner/common/spawning-runner.js';
 import type { AgentEvent, SpawnOptions } from '../../../src/runner/types.js';
+import { PassThrough } from 'node:stream';
+import { createMockProc } from '../../../tests/lib/mock-process.js';
 
 const { mockLogger } = vi.hoisted(() => ({
   mockLogger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
@@ -62,12 +64,12 @@ describe('P2-12: spawn-success error event not reported as success', () => {
     // Mock ChildProcess: pid present (spawn SUCCEEDED), but emits 'error'
     // after spawn (e.g. kill failure, broken pipe). 'close' never fires so
     // the completion promise settles via the 'error' branch.
-    const mockProc = {
+    const mockProc = createMockProc({
       pid: 45678,
       exitCode: null,
       signalCode: null,
       stdout,
-      stderr: { on: vi.fn(), destroy: vi.fn() },
+      stderr: new PassThrough(),
       kill: vi.fn(),
       once: vi.fn((event: string, cb: (...args: unknown[]) => void) => {
         if (event === 'error') {
@@ -78,11 +80,9 @@ describe('P2-12: spawn-success error event not reported as success', () => {
         }
         // 'close' deliberately NOT fired — the 'error' event settles completion.
       }),
-      on: vi.fn(),
-      removeAllListeners: vi.fn(),
-    };
+    });
 
-    vi.mocked(spawn).mockReturnValue(mockProc as any);
+    vi.mocked(spawn).mockReturnValue(mockProc);
 
     const runner = new TestRunner();
     const events: AgentEvent[] = [];

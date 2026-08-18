@@ -16,12 +16,16 @@ Designed for a single-user, peer-to-peer private chat. The agent's system prompt
 
 ## ⚠️ Security Warning (read first)
 
-This tool turns Feishu messages directly into local agent executions, and agents run with **full permissions** by default (Claude `bypassPermissions`, Codex `approval_policy=never` + full access) — effectively handing a shell on your machine to whoever can chat with the bot. You MUST:
+This tool turns Feishu messages directly into local agent executions. Claude runs with **full permissions** by default (fixed `bypassPermissions`); Codex uses the **app-server approval mode** (default `approvalPolicy=on-request` — command execution requires your confirmation on the Feishu card, sandbox defaults to `workspace-write`), which is relatively safe; other agents run with their CLI defaults. Agents can still read and write the local directories you specify. You MUST:
 
 - **Use it only in your own private (p2p) chat.** Never add the bot to any group chat; never let anyone else talk to it.
 - Restrict the app's visibility to **yourself only** in the Feishu Open Platform.
 - Don't run it on a machine holding data you can't afford to lose; prefer a dedicated user / machine / container.
 - Keep credentials such as `appSecret` in your local `config.yaml` only — **never commit them anywhere**.
+
+In Codex approval mode, an approval card arrives before any command runs — approve or reject it right in Feishu:
+
+![Codex command approval card example](docs/images/approval-card.png)
 
 ## Prerequisites
 

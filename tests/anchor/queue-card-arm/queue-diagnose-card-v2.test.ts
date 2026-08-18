@@ -3,11 +3,10 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { CommandRouter } from '../../../src/router/index.js';
-import { Bridge } from '../../../src/bridge/index.js';
 import { SessionStore } from '../../../src/session/index.js';
 import { AppConfigSchema } from '../../../src/config/index.js';
 import type { AppConfig } from '../../../src/config/index.js';
-import { createStubSessionReaderRegistry } from '../../lib/bridge-stubs.js';
+import { createMockBridge, createStubSessionReaderRegistry } from '../../lib/bridge-stubs.js';
 
 // P2-28 anchor (red): handleQueueDiagnose 的诊断卡片仍是 CardKit V1 结构
 // （缺 schema:'2.0'，缺 body:{elements}，顶层用 elements）。
@@ -38,8 +37,7 @@ describe('anchor: queue diagnose card v2', () => {
     // bridge.sendResult 发卡片。我们用一个伪造 bridge 满足这几个 seam，
     // 并捕获 sendResult 收到的诊断卡片做断言。
     const sentCards: object[] = [];
-    const fakeBridge = {
-      setIdleTimeout: () => {},
+    const fakeBridge = createMockBridge({
       sendResult: async (result: { card?: object }) => {
         if (result.card) sentCards.push(result.card);
         return true;
@@ -51,7 +49,7 @@ describe('anchor: queue diagnose card v2', () => {
       }),
       getQueueInfo: () => ({ position: 1, tasksAhead: 0, isRunning: true }),
       getAllActiveRuns: () => new Map(),
-    } as unknown as Bridge;
+    });
 
     const sessionStore = new SessionStore();
     sessionStore.setCwd('user1', fs.realpathSync(tmpDir));

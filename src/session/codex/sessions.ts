@@ -56,7 +56,7 @@ export class CodexSessionReader implements AgentSessionReader {
     });
   }
 
-  isSessionActive(sessionId: string, _cwd: string): boolean {
-    return isCodexSessionActive(sessionId, { codexHome: this.codexHome });
+  isSessionActive(sessionId: string, cwd: string): boolean {
+    return isCodexSessionActive(sessionId, { codexHome: this.codexHome, cwd });
   }
 }
