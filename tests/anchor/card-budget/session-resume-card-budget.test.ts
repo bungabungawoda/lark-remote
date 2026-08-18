@@ -20,11 +20,10 @@
  */
 import { describe, expect, it } from 'vitest';
 import { enforceCardBudget } from '../../../src/card/card-budget.js';
+import { CARD_BUDGET_BYTES } from '../../../src/card/text-truncate.js';
 import { markdownDiv } from '../../../src/card/collapsible.js';
 import { sessionEventPanel } from '../../../src/router/card-helpers.js';
 import type { AgentSessionContentEvent } from '../../../src/runner/index.js';
-
-const CARD_BUDGET_BYTES = 28_000;
 
 /** 生成 size 字节级别的合成占位正文（规律假值，无真实信息） */
 function syntheticPayload(approxBytes: number, tag: string): string {

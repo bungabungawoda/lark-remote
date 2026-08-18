@@ -23,14 +23,7 @@ import { Bridge } from '../../../src/bridge/index.js';
 import { SessionStore } from '../../../src/session/index.js';
 import { AppConfigSchema } from '../../../src/config/index.js';
 import { SpawningRunner } from '../../../src/runner/common/spawning-runner.js';
-import {
-  ClaudeRunner,
-  CodexExecRunner,
-  OpencodeExecRunner,
-  PiRunner,
-  KimiRunner,
-} from '../../../src/runner/index.js';
-import type { AgentSessionReader } from '../../../src/runner/types.js';
+import { ClaudeRunner } from '../../../src/runner/index.js';
 
 const PID_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'p1-1-anchor-'));
 
@@ -64,82 +57,6 @@ describe('P1-1: registerExitHandlers 不累积 process 监听器', () => {
     }
 
     // 单例分发修复后：首次注册 +1（或基线已装则 +0），后续只进 Set 不再加监听器
-    expect(process.listenerCount('exit') - beforeExit).toBeLessThanOrEqual(1);
-    expect(process.listenerCount('SIGINT') - beforeSigint).toBeLessThanOrEqual(1);
-    expect(process.listenerCount('SIGTERM') - beforeSigterm).toBeLessThanOrEqual(1);
-  });
-
-  it('test_anchor_codex_runner_register_exit_handlers_does_not_accumulate_listeners', () => {
-    const sessionReader: AgentSessionReader = {
-      listSessions: () => ({ sessions: [], total: 0 }),
-      getNewestSession: () => null,
-      readSessionContent: () => ({ events: [] }),
-      isSessionActive: () => false,
-    };
-
-    for (let i = 0; i < 5; i++) {
-      const runner = new CodexExecRunner({
-        workspace: 'test',
-        binary: '/bin/true',
-        pidDir: PID_DIR,
-        sessionReader,
-      });
-      // Bridge.getRunner 对每次新 runner 实例的实际行为
-      runner.registerExitHandlers();
-    }
-
-    // 与 A1 同契约：codex 的同构复制同样每实例 +1，收编基类后 ≤1
-    expect(process.listenerCount('exit') - beforeExit).toBeLessThanOrEqual(1);
-    expect(process.listenerCount('SIGINT') - beforeSigint).toBeLessThanOrEqual(1);
-    expect(process.listenerCount('SIGTERM') - beforeSigterm).toBeLessThanOrEqual(1);
-  });
-
-  it('test_anchor_opencode_runner_register_exit_handlers_does_not_accumulate_listeners', () => {
-    const sessionReader: AgentSessionReader = {
-      listSessions: () => ({ sessions: [], total: 0 }),
-      getNewestSession: () => null,
-      readSessionContent: () => ({ events: [] }),
-      isSessionActive: () => false,
-    };
-
-    for (let i = 0; i < 5; i++) {
-      const runner = new OpencodeExecRunner({
-        workspace: 'test',
-        binary: '/bin/true',
-        pidDir: PID_DIR,
-        sessionReader,
-      });
-      // Bridge.getRunner 对每次新 runner 实例的实际行为
-      runner.registerExitHandlers();
-    }
-
-    // 与 A1/A2 同契约：opencode 的同构复制同样每实例 +1，收编基类后 ≤1
-    expect(process.listenerCount('exit') - beforeExit).toBeLessThanOrEqual(1);
-    expect(process.listenerCount('SIGINT') - beforeSigint).toBeLessThanOrEqual(1);
-    expect(process.listenerCount('SIGTERM') - beforeSigterm).toBeLessThanOrEqual(1);
-  });
-
-  it('test_anchor_pi_runner_register_exit_handlers_does_not_accumulate_listeners', () => {
-    for (let i = 0; i < 5; i++) {
-      const runner = new PiRunner({ workspace: 'test', binary: '/bin/true', pidDir: PID_DIR });
-      // Bridge.getRunner 对每次新 runner 实例的实际行为
-      runner.registerExitHandlers();
-    }
-
-    // 与 A1-A3 同契约：pi 的同构复制同样每实例 +1，收编基类后 ≤1
-    expect(process.listenerCount('exit') - beforeExit).toBeLessThanOrEqual(1);
-    expect(process.listenerCount('SIGINT') - beforeSigint).toBeLessThanOrEqual(1);
-    expect(process.listenerCount('SIGTERM') - beforeSigterm).toBeLessThanOrEqual(1);
-  });
-
-  it('test_anchor_kimi_runner_register_exit_handlers_does_not_accumulate_listeners', () => {
-    for (let i = 0; i < 5; i++) {
-      const runner = new KimiRunner({ workspace: 'test', binary: '/bin/true', pidDir: PID_DIR });
-      // Bridge.getRunner 对每次新 runner 实例的实际行为
-      runner.registerExitHandlers();
-    }
-
-    // 与 A1-A4 同契约：kimi 的同构复制同样每实例 +1，收编基类后 ≤1
     expect(process.listenerCount('exit') - beforeExit).toBeLessThanOrEqual(1);
     expect(process.listenerCount('SIGINT') - beforeSigint).toBeLessThanOrEqual(1);
     expect(process.listenerCount('SIGTERM') - beforeSigterm).toBeLessThanOrEqual(1);

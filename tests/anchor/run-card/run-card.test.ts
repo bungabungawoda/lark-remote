@@ -299,13 +299,6 @@ describe('RunCardSession push coalescing (P1-3)', () => {
    * e2 必须被一次 follow-up render 捕获（不能停留在 e1）。
    */
   it('test_anchor_event_pushed_during_in_flight_flush_is_re_rendered', async () => {
-    let resolveUpdate: () => void = () => {};
-    let updateCallCount = 0;
-    const pendingUpdate = () =>
-      new Promise<void>((resolve) => {
-        resolveUpdate = resolve;
-      });
-
     const connector = {
       streamCard: async (
         _chatId: string,
@@ -316,19 +309,6 @@ describe('RunCardSession push coalescing (P1-3)', () => {
         return 'card-inflight';
       },
       updateCard: async () => {},
-    };
-    const _inflightController: CardStreamController = {
-      messageId: 'card-inflight',
-      current: {},
-      update: async (card) => {
-        updateCallCount++;
-        updates.push(typeof card === 'function' ? (card as (cur: object) => object)({}) : card);
-        // 第 1 次：start() 初始卡，立即完成。
-        // 第 2 次：e1 的 flush，挂起模拟 SDK throttle detach。
-        if (updateCallCount === 2) {
-          await pendingUpdate();
-        }
-      },
     };
 
     const session = new RunCardSession({
@@ -354,8 +334,6 @@ describe('RunCardSession push coalescing (P1-3)', () => {
       message: { content: [{ type: 'text', text: 'e2-text' }] },
     });
 
-    // resolve e1 的 in-flight flush
-    resolveUpdate();
     // 让 microtask 跑完 + follow-up 调度窗口到期（post-fix: pendingReschedule
     // 触发 scheduleFlush → 新 timer → coalesceMs 后 flush 渲染 e2）
     await vi.advanceTimersByTimeAsync(120);

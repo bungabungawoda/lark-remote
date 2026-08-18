@@ -8,8 +8,7 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { spawn } from 'node:child_process';
 import { RESTART_WAIT_PID_ENV, waitForPreviousInstance } from '../../../src/restart.js';
-
-const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+import { sleep } from '../../lib/wait-for.js';
 
 afterEach(() => {
   vi.useRealTimers();

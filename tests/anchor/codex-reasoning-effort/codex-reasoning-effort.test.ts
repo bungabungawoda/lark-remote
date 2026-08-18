@@ -6,8 +6,6 @@ import { createMockBridge, createMockSessionReaderRegistry } from '../../lib/bri
  *   - codex-config-card-effort-follows-model.test.ts
  *   - codex-config-card-reasoning-effort.test.ts
  *   - codex-config-schema-reasoning-effort.test.ts
- *   - codex-exec-argv-reasoning-effort.test.ts
- *   - codex-exec-runner-reasoning-effort.test.ts
  *   - codex-model-switch-reasoning-adjustment.test.ts
  *   - codex-reasoning-effort-schema.test.ts
  *   - codex-reasoning-effort.test.ts
@@ -22,19 +20,6 @@ import { SessionStore } from '../../../src/session/index.js';
 import { AppConfigSchema } from '../../../src/config/index.js';
 import type { AppConfig } from '../../../src/config/index.js';
 import { CodexConfigSchema } from '../../../src/config/index.js';
-import { buildCodexExecArgs } from '../../../src/runner/codex/argv.js';
-import type { AgentSessionReader } from '../../../src/runner/types.js';
-
-interface CodexExecRunnerOptions {
-  model?: string;
-  modelProvider?: string;
-  reasoningEffort?: string;
-  stopGraceMs?: number;
-  pidDir?: string;
-  workspace?: string;
-  spawnHeartbeatMs?: number;
-  sessionReader: AgentSessionReader;
-}
 import {
   getReasoningEffortOptions,
   getDefaultReasoningEffort,
@@ -43,7 +28,7 @@ import {
 import {
   getCodexBundledModels,
   invalidateCodexBundledTestCache,
-} from '../../../src/config/codex-bundled-test-helpers.js';
+} from '../../lib/codex-bundled-test-helpers.js';
 import { makeModel, makeCatalog } from '../../fixtures/codex-catalog-fixture.js';
 import path from 'node:path';
 import os from 'node:os';
@@ -255,124 +240,6 @@ describe('P3-1: CodexConfigSchema reasoningEffort validation', () => {
       reasoningEffort: 'super-extreme',
     });
     expect(result.success).toBe(true);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// 4. buildCodexExecArgs reasoningEffort (Round 4 — no mocks needed)
-// ---------------------------------------------------------------------------
-
-/**
- * Red Agent - Round 4 - Anchor
- *
- * Target: buildCodexExecArgs 应支持 reasoningEffort 参数
- * 并生成正确的 -c 'model_reasoning_effort="xxx"' 参数
- *
- * Spec basis: Codex OpenAI provider + config extension 方案 §4.3
- */
-describe('buildCodexExecArgs reasoningEffort - anchor', () => {
-  it('test_anchor_build_codex_exec_args_includes_reasoning_effort', () => {
-    const args = buildCodexExecArgs({
-      cwd: '/test/path',
-      model: 'gpt-5.6-sol',
-      reasoningEffort: 'high',
-    });
-
-    const hasReasoningEffort = args.some((arg) => arg.includes('model_reasoning_effort="high"'));
-    expect(hasReasoningEffort).toBe(true);
-  });
-
-  it('test_anchor_build_codex_exec_args_without_reasoning_effort', () => {
-    const args = buildCodexExecArgs({
-      cwd: '/test/path',
-      model: 'gpt-5.6-sol',
-    });
-
-    const hasReasoningEffort = args.some((arg) => arg.includes('model_reasoning_effort'));
-    expect(hasReasoningEffort).toBe(false);
-  });
-
-  it('test_anchor_build_codex_exec_args_reasoning_effort_low', () => {
-    const args = buildCodexExecArgs({
-      cwd: '/test/path',
-      model: 'gpt-5.4',
-      reasoningEffort: 'low',
-    });
-
-    const hasReasoningEffort = args.some((arg) => arg.includes('model_reasoning_effort="low"'));
-    expect(hasReasoningEffort).toBe(true);
-  });
-
-  it('test_anchor_build_codex_exec_args_reasoning_effort_ultra', () => {
-    const args = buildCodexExecArgs({
-      cwd: '/test/path',
-      model: 'gpt-5.6-sol',
-      reasoningEffort: 'ultra',
-    });
-
-    const hasReasoningEffort = args.some((arg) => arg.includes('model_reasoning_effort="ultra"'));
-    expect(hasReasoningEffort).toBe(true);
-  });
-
-  it('test_anchor_build_codex_exec_args_resume_with_reasoning_effort', () => {
-    const args = buildCodexExecArgs({
-      cwd: '/test/path',
-      threadId: 'thread-123',
-      reasoningEffort: 'xhigh',
-    });
-
-    const hasReasoningEffort = args.some((arg) => arg.includes('model_reasoning_effort="xhigh"'));
-    expect(hasReasoningEffort).toBe(true);
-
-    expect(args).toContain('resume');
-    expect(args).toContain('thread-123');
-  });
-});
-
-// ---------------------------------------------------------------------------
-// 5. CodexExecRunner reasoningEffort (Round 5 — no mocks needed, type check only)
-// ---------------------------------------------------------------------------
-
-/**
- * Red Agent - Round 5 - Anchor
- *
- * Target: CodexExecRunner 应将 reasoningEffort 传递到 buildCodexExecArgs
- *
- * Spec basis: Codex OpenAI provider + config extension 方案 §4.4
- */
-describe('CodexExecRunner reasoningEffort - anchor', () => {
-  it('test_anchor_codex_runner_options_accepts_reasoning_effort', () => {
-    const options: CodexExecRunnerOptions = {
-      model: 'gpt-5.6-sol',
-      modelProvider: 'openai',
-      reasoningEffort: 'high',
-      stopGraceMs: 5000,
-      pidDir: '/tmp',
-      sessionReader: {
-        listSessions: async () => [],
-        getNewestSession: async () => undefined,
-        readSessionContent: async () => ({ events: [], displayTitle: '' }),
-        isSessionActive: async () => false,
-      } as any,
-    };
-
-    expect(options.reasoningEffort).toBe('high');
-  });
-
-  it('test_anchor_codex_runner_options_reasoning_effort_optional', () => {
-    const options: CodexExecRunnerOptions = {
-      model: 'gpt-5.6-sol',
-      stopGraceMs: 5000,
-      pidDir: '/tmp',
-      sessionReader: {
-        listSessions: async () => [],
-        getNewestSession: async () => undefined,
-        readSessionContent: async () => ({ events: [], displayTitle: '' }),
-        isSessionActive: async () => false,
-      } as any,
-    };
-
-    expect(options.reasoningEffort).toBeUndefined();
   });
 });
 
@@ -704,7 +571,7 @@ describe('Config card codex reasoningEffort - anchor', () => {
       sessionReaderRegistry,
     });
 
-    const cardResult = (router as any).buildConfigCard();
+    const cardResult = router.buildConfigCard();
     const card = cardResult.card;
     expect(card).toBeDefined();
 
@@ -731,7 +598,7 @@ describe('Config card codex reasoningEffort - anchor', () => {
       sessionReaderRegistry,
     });
 
-    const cardResult = (router as any).buildConfigCard();
+    const cardResult = router.buildConfigCard();
     const card = cardResult.card;
     const json = JSON.stringify(card);
 
@@ -759,7 +626,7 @@ describe('Config card codex reasoningEffort - anchor', () => {
       sessionReaderRegistry,
     });
 
-    const cardResult = (router as any).buildConfigCard();
+    const cardResult = router.buildConfigCard();
     const card = cardResult.card;
     const json = JSON.stringify(card);
 
@@ -778,10 +645,6 @@ describe('Config card codex reasoningEffort - anchor', () => {
  *
  * Spec basis: 用户需求 + codex debug models 实测
  */
-
-type RouterInternals = {
-  buildConfigCard: () => { card: object };
-};
 
 function extractSelectOptions(card: object, key: string): string[] {
   const values: string[] = [];
@@ -943,7 +806,7 @@ describe('codex config card effort follows model - anchor', () => {
     const router = makeRouter(buildCodexConfigForModel('gpt-5.6-sol', 'openai', 'ultra'));
     const ctx = { userId: 'u1', chatId: 'c1', messageId: 'm1' };
 
-    const card1 = (router as unknown as RouterInternals).buildConfigCard().card;
+    const card1 = router.buildConfigCard().card!;
     const effort1 = extractSelectOptions(card1, 'agents.codex.reasoningEffort');
     expect(effort1).toEqual(['low', 'medium', 'high', 'xhigh', 'max', 'ultra']);
     expect(effort1).toContain('medium');
@@ -953,7 +816,7 @@ describe('codex config card effort follows model - anchor', () => {
       { cmd: 'config.set', key: 'agents.codex.model', option: 'gpt-5.4' },
       ctx,
     );
-    const card2 = (router as unknown as RouterInternals).buildConfigCard().card;
+    const card2 = router.buildConfigCard().card!;
     expect(extractSelectOptions(card2, 'agents.codex.reasoningEffort')).toEqual([
       'low',
       'medium',
@@ -992,7 +855,7 @@ describe('codex config card effort follows model - anchor', () => {
     const router = makeRouter(buildCodexConfigForModel('deepseek-v4-flash', 'deepseek', 'high'));
     const ctx = { userId: 'u1', chatId: 'c1', messageId: 'm1' };
 
-    const card1 = (router as unknown as RouterInternals).buildConfigCard().card;
+    const card1 = router.buildConfigCard().card!;
     expect(extractSelectOptions(card1, 'agents.codex.reasoningEffort')).toEqual([
       'low',
       'high',
@@ -1003,7 +866,7 @@ describe('codex config card effort follows model - anchor', () => {
       { cmd: 'config.set', key: 'agents.codex.model', option: 'deepseek-v4-pro' },
       ctx,
     );
-    const card2 = (router as unknown as RouterInternals).buildConfigCard().card;
+    const card2 = router.buildConfigCard().card!;
     expect(extractSelectOptions(card2, 'agents.codex.reasoningEffort')).toEqual([
       'low',
       'high',

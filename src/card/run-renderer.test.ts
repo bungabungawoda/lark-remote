@@ -21,13 +21,9 @@ describe('renderRunCard', () => {
       view: {
         requestId: 42,
         kind: 'command',
-        threadShort: 'th-aaa-1',
-        turnShort: 'tn-111',
-        workspace: '/home/user/project',
         command: 'ls -la',
         commandCwd: '/home/user/project',
         availableDecisions: ['accept', 'decline', 'cancel'],
-        pendingTotal: 1,
       },
     } as never);
 
@@ -50,6 +46,139 @@ describe('renderRunCard', () => {
     expect(cleared).not.toContain('命令审批');
   });
 
+  it('test_anchor_claude_command_approval_renders_allow_all_button_v2', () => {
+    let state = createInitialRunState('run-claude-approval');
+    state = reduceRunState(state, {
+      type: 'approval_requested',
+      requestId: 43,
+      kind: 'command',
+      threadId: 'th-claude-1',
+      turnId: 'tn-claude-1',
+      itemId: 'item-claude-1',
+      view: {
+        requestId: 43,
+        kind: 'command',
+        command: 'git push',
+        commandCwd: '/home/user/project',
+        // Claude「允许所有」专属决策（acceptAll：允许当前并自动放行后续）
+        availableDecisions: ['accept', 'decline', 'acceptAll'],
+      },
+    } as never);
+
+    const card = renderRunCard(state) as { schema: string };
+    expect(card.schema).toBe('2.0');
+    const serialized = JSON.stringify(card);
+    expect(serialized).toContain('命令审批');
+    expect(serialized).toContain('允许所有');
+    expect(serialized).toContain('approval.respond');
+    expect(serialized).not.toMatch(/"tag"\s*:\s*"action"[^}]*"actions"/);
+  });
+
+  it('test_anchor_command_approval_neutralizes_backticks', () => {
+    // review P2-2：命令里的反引号会提前终止 lark_md 行内代码 span，奇数次
+    // 反引号极易触发 11311 解析错误导致整卡失败——必须中和后再展示。
+    let state = createInitialRunState('run-claude-approval-backtick');
+    state = reduceRunState(state, {
+      type: 'approval_requested',
+      requestId: 46,
+      kind: 'command',
+      threadId: 'th-claude-3',
+      turnId: 'tn-claude-3',
+      itemId: 'item-claude-3',
+      view: {
+        requestId: 46,
+        kind: 'command',
+        command: 'echo `id`; ls -la',
+        commandCwd: '/home/user/project',
+        availableDecisions: ['accept', 'decline', 'acceptAll'],
+      },
+    } as never);
+
+    const serialized = JSON.stringify(renderRunCard(state));
+    expect(serialized).toContain('echo ·id·; ls -la');
+    expect(serialized).not.toContain('echo `id`');
+  });
+
+  it('test_anchor_ask_user_question_renders_options_v2_without_v1_container', () => {
+    let state = createInitialRunState('run-question');
+    state = reduceRunState(state, {
+      type: 'approval_requested',
+      requestId: 44,
+      kind: 'question',
+      threadId: 'th-q-1',
+      turnId: 'tn-q-1',
+      itemId: 'item-q-1',
+      view: {
+        requestId: 44,
+        kind: 'question',
+        questions: [
+          {
+            question: 'Pick a color',
+            header: 'Color',
+            options: [{ label: 'Red' }, { label: 'Blue' }],
+          },
+          {
+            question: 'Pick toppings',
+            header: 'Toppings',
+            multiSelect: true,
+            options: [{ label: 'Cheese' }, { label: 'Bacon' }],
+            selected: ['Cheese'],
+          },
+        ],
+        availableDecisions: [],
+      },
+    } as never);
+
+    const card = renderRunCard(state) as { schema: string };
+    expect(card.schema).toBe('2.0');
+    const serialized = JSON.stringify(card);
+    expect(serialized).toContain('需要你回答');
+    expect(serialized).toContain('Pick a color');
+    expect(serialized).toContain('Red');
+    expect(serialized).toContain('Pick toppings');
+    expect(serialized).toContain('approval.answer');
+    // 多选已勾选 → 出现提交按钮
+    expect(serialized).toContain('approval.answerSubmit');
+    // review P3-4：单选问题提供自定义答案（Other）输入
+    expect(serialized).toContain('approval.answerCustom');
+    expect(serialized).toContain('自定义答案');
+    expect(serialized).toContain('"tag":"input"');
+    expect(serialized).not.toMatch(/"tag"\s*:\s*"action"[^}]*"actions"/);
+  });
+
+  it('test_anchor_ask_user_question_custom_answer_selection_visible', () => {
+    // review P3：自定义答案（Other）的选中态必须可见——选项按钮无法表示
+    // 自由文本，单独展示已选文本，避免「点了没反应」的困惑。
+    let state = createInitialRunState('run-question-custom');
+    state = reduceRunState(state, {
+      type: 'approval_requested',
+      requestId: 45,
+      kind: 'question',
+      threadId: 'th-q-2',
+      turnId: 'tn-q-2',
+      itemId: 'item-q-2',
+      view: {
+        requestId: 45,
+        kind: 'question',
+        questions: [
+          {
+            question: 'Pick a color',
+            header: 'Color',
+            options: [{ label: 'Red' }, { label: 'Blue' }],
+            selected: ['自定义紫色'],
+          },
+        ],
+        availableDecisions: [],
+      },
+    } as never);
+
+    const card = renderRunCard(state) as { schema: string };
+    expect(card.schema).toBe('2.0');
+    const serialized = JSON.stringify(card);
+    expect(serialized).toContain('✍️ 自定义答案：自定义紫色');
+    expect(serialized).not.toMatch(/"tag"\s*:\s*"action"[^}]*"actions"/);
+  });
+
   it('test_anchor_concurrent_approvals_render_all_slots_and_resolve_independently', () => {
     // review P2-3 回归：同一 turn 内并发两个审批时，后到者不得顶掉先到者的
     // 按钮（单槽曾导致第一个审批的 UI 消失，只能等 5 分钟自动 cancel）。
@@ -65,13 +194,9 @@ describe('renderRunCard', () => {
         view: {
           requestId: id,
           kind: 'command',
-          threadShort: 'th-aaa-1',
-          turnShort: 'tn-111',
-          workspace: '/home/user/project',
           command,
           commandCwd: '/home/user/project',
           availableDecisions: ['accept', 'decline', 'cancel'],
-          pendingTotal: 1,
         },
       }) as never;
 
@@ -110,13 +235,9 @@ describe('renderRunCard', () => {
       view: {
         requestId: 11,
         kind: 'command',
-        threadShort: 'th-aaa-1',
-        turnShort: 'tn-111',
-        workspace: '/home/user/project',
         command: 'rm -rf /tmp/x',
         commandCwd: '/home/user/project',
         availableDecisions: ['accept', 'decline', 'cancel'],
-        pendingTotal: 1,
       },
     } as never);
     state = reduceRunState(state, { type: 'approval_expired', requestId: 11 } as never);
@@ -125,6 +246,76 @@ describe('renderRunCard', () => {
     const json = JSON.stringify(renderRunCard(interrupted));
     expect(json).toContain('审批超时未响应');
     expect(json).not.toContain('运行出错');
+  });
+
+  it('test_anchor_expired_then_resolved_still_renders_timeout_reason', () => {
+    // 2026-08-15 事故回归：真实协议顺序是 requested → expired（桥侧 timer）
+    // → resolved（cancel 送达后 server 回 serverRequest/resolved）→ result。
+    // approval_resolved 会把审批条目从 approvals 移除，过期原因必须独立于
+    // 该条目存活到终态渲染，否则卡片误报「已被用户终止」。
+    let state = createInitialRunState('run-approval-expired-resolved');
+    state = reduceRunState(state, {
+      type: 'approval_requested',
+      requestId: 12,
+      kind: 'command',
+      threadId: 'th-aaa-111',
+      turnId: 'tn-111',
+      itemId: 'item-12',
+      view: {
+        requestId: 12,
+        kind: 'command',
+        command: 'rm -rf /tmp/y',
+        commandCwd: '/home/user/project',
+        availableDecisions: ['accept', 'decline', 'cancel'],
+      },
+    } as never);
+    state = reduceRunState(state, { type: 'approval_expired', requestId: 12 } as never);
+    state = reduceRunState(state, {
+      type: 'approval_resolved',
+      requestId: 12,
+      outcome: 'resolved',
+    } as never);
+    state = reduceRunState(state, {
+      type: 'result',
+      subtype: 'interrupted',
+      session_id: 's1',
+    } as never);
+    const interrupted = finishRun(state, 'interrupted');
+
+    const json = JSON.stringify(renderRunCard(interrupted));
+    expect(json).toContain('审批超时未响应');
+    expect(json).not.toContain('已被用户终止');
+    expect(json).not.toContain('运行出错');
+  });
+
+  it('test_anchor_approval_cancelled_renders_cancelled_copy', () => {
+    // 用户在审批卡上主动点「取消/拒绝」与「审批超时」「手动 /stop」是三种
+    // 不同的中断来源。approval_cancelled 必须渲染独立文案，不得归入
+    // 「已被用户终止」或「审批超时未响应」。
+    let state = createInitialRunState('run-approval-cancelled');
+    state = reduceRunState(state, {
+      type: 'approval_requested',
+      requestId: 13,
+      kind: 'command',
+      threadId: 'th-aaa-111',
+      turnId: 'tn-111',
+      itemId: 'item-13',
+      view: {
+        requestId: 13,
+        kind: 'command',
+        command: 'rm -rf /tmp/z',
+        commandCwd: '/home/user/project',
+        availableDecisions: ['accept', 'decline', 'cancel'],
+      },
+    } as never);
+    const interrupted = finishRun(state, 'interrupted', {
+      interruptedReason: 'approval_cancelled',
+    } as never);
+
+    const json = JSON.stringify(renderRunCard(interrupted));
+    expect(json).toContain('已取消审批');
+    expect(json).not.toContain('已被用户终止');
+    expect(json).not.toContain('审批超时未响应');
   });
 
   it('test_anchor_pending_approval_title_shows_waiting_for_approval', () => {
@@ -149,13 +340,9 @@ describe('renderRunCard', () => {
       view: {
         requestId: 1,
         kind: 'command',
-        threadShort: 'th-aaa-1',
-        turnShort: 'tn-111',
-        workspace: '/home/user/project',
         command: 'npm view lark-remote version',
         commandCwd: '/home/user/project',
         availableDecisions: ['accept', 'decline', 'cancel'],
-        pendingTotal: 1,
       },
     } as never);
 
@@ -186,13 +373,9 @@ describe('renderRunCard', () => {
       view: {
         requestId: 2,
         kind: 'command',
-        threadShort: 'th-aaa-1',
-        turnShort: 'tn-111',
-        workspace: '/home/user/project',
         command: 'npm view lark-remote version',
         commandCwd: '/home/user/project',
         availableDecisions: ['accept', 'decline', 'cancel'],
-        pendingTotal: 1,
       },
     } as never);
 
@@ -223,13 +406,9 @@ describe('renderRunCard', () => {
       view: {
         requestId: 3,
         kind: 'command',
-        threadShort: 'th-aaa-1',
-        turnShort: 'tn-111',
-        workspace: '/home/user/project',
         command: 'npm view lark-remote version',
         commandCwd: '/home/user/project',
         availableDecisions: ['accept', 'decline', 'cancel'],
-        pendingTotal: 1,
       },
     } as never);
     state = reduceRunState(state, { type: 'approval_expired', requestId: 3 } as never);
@@ -260,13 +439,9 @@ describe('renderRunCard', () => {
       view: {
         requestId: 4,
         kind: 'command',
-        threadShort: 'th-aaa-1',
-        turnShort: 'tn-111',
-        workspace: '/home/user/project',
         command: 'npm view lark-remote version',
         commandCwd: '/home/user/project',
         availableDecisions: ['accept', 'decline', 'cancel'],
-        pendingTotal: 1,
       },
     } as never);
     state = reduceRunState(state, {
@@ -301,13 +476,9 @@ describe('renderRunCard', () => {
       view: {
         requestId: 5,
         kind: 'command',
-        threadShort: 'th-aaa-1',
-        turnShort: 'tn-111',
-        workspace: '/home/user/project',
         command: 'npm view lark-remote version',
         commandCwd: '/home/user/project',
         availableDecisions: ['accept', 'decline', 'cancel'],
-        pendingTotal: 1,
       },
     } as never);
     const interrupted = finishRun(state, 'interrupted');
@@ -334,9 +505,6 @@ describe('renderRunCard', () => {
       view: {
         requestId: 43,
         kind: 'file',
-        threadShort: 'th-aaa-1',
-        turnShort: 'tn-111',
-        workspace: '',
         fileChanges: [
           {
             path: '/home/user/project/a.txt',
@@ -345,7 +513,6 @@ describe('renderRunCard', () => {
           },
         ],
         availableDecisions: ['accept', 'decline', 'cancel'],
-        pendingTotal: 1,
       },
     } as never);
 
@@ -374,16 +541,12 @@ describe('renderRunCard', () => {
       view: {
         requestId: 44,
         kind: 'file',
-        threadShort: 'th-aaa-1',
-        turnShort: 'tn-111',
-        workspace: '',
         fileChanges: [
           { path: '/home/user/project/a.ts', kind: 'update', diff: bigDiff },
           { path: '/home/user/project/b.ts', kind: 'update', diff: bigDiff },
           { path: '/home/user/project/c.ts', kind: 'update', diff: bigDiff },
         ],
         availableDecisions: ['accept', 'decline', 'cancel'],
-        pendingTotal: 1,
       },
     } as never);
 
@@ -409,11 +572,7 @@ describe('renderRunCard', () => {
       view: {
         requestId: 50,
         kind: 'file',
-        threadShort: 'th-aaa-1',
-        turnShort: 'tn-111',
-        workspace: '',
         availableDecisions: ['accept', 'decline', 'cancel'],
-        pendingTotal: 1,
       },
     } as never);
     expect(JSON.stringify(renderRunCard(state))).not.toContain('/home/user/project/a.txt');
@@ -424,9 +583,6 @@ describe('renderRunCard', () => {
       view: {
         requestId: 50,
         kind: 'file',
-        threadShort: 'th-aaa-1',
-        turnShort: 'tn-111',
-        workspace: '',
         fileChanges: [
           {
             path: '/home/user/project/a.txt',
@@ -435,7 +591,6 @@ describe('renderRunCard', () => {
           },
         ],
         availableDecisions: ['accept', 'decline', 'cancel'],
-        pendingTotal: 1,
       },
     } as never);
     const serialized = JSON.stringify(renderRunCard(state));
@@ -461,9 +616,6 @@ describe('renderRunCard', () => {
       view: {
         requestId: 51,
         kind: 'command',
-        threadShort: 'th-aaa-1',
-        turnShort: 'tn-111',
-        workspace: '/home/user/project',
         command: 'rm -rf /tmp/test',
         commandCwd: '/home/user/project',
         availableDecisions: [
@@ -472,7 +624,6 @@ describe('renderRunCard', () => {
           'acceptWithExecpolicyAmendment',
           'cancel',
         ],
-        pendingTotal: 1,
       },
     } as never);
 
@@ -1323,13 +1474,9 @@ describe('renderRunCard', () => {
       view: {
         requestId: 42,
         kind: 'command',
-        threadShort: 'th-aaa-1',
-        turnShort: 'tn-111',
-        workspace: '/home/user/project',
         command: 'ls -la',
         commandCwd: '/home/user/project',
         availableDecisions: ['accept', 'decline', 'cancel'],
-        pendingTotal: 1,
       },
     } as never);
 
@@ -1908,7 +2055,7 @@ describe('renderRunCard (CardKit 2.0)', () => {
   });
 
   // RED test: degraded card must still have new-session button
-  it('RED: degraded card has new-session button even when budget exceeded', () => {
+  it('degraded card has new-session button even when budget exceeded', () => {
     // Build a RunState that exceeds 28KB to trigger degraded rendering
     const state: RunState = {
       runId: 'run-degraded-buttons',
@@ -1959,12 +2106,12 @@ describe('renderRunCard (CardKit 2.0)', () => {
     // Must be under budget after degradation
     expect(cardBytes).toBeLessThan(28_000);
 
-    // Degraded path must preserve the new-session button - THIS WILL FAIL
+    // Degraded path must preserve the new-session button
     expect(json).toContain('"cmd":"new-session"');
   });
 
   // RED test: extreme fallback card must still have new-session button
-  it('RED: extreme fallback card has new-session button even when budget exceeded', () => {
+  it('extreme fallback card has new-session button even when budget exceeded', () => {
     // Build an even larger state to trigger extreme fallback
     const state: RunState = {
       runId: 'run-extreme-buttons',
@@ -2007,7 +2154,7 @@ describe('renderRunCard (CardKit 2.0)', () => {
     // Must fit in budget
     expect(cardBytes).toBeLessThanOrEqual(28_000);
 
-    // Extreme fallback must preserve new-session button - THIS WILL FAIL
+    // Extreme fallback must preserve new-session button
     expect(json).toContain('"cmd":"new-session"');
   });
 
@@ -2152,7 +2299,7 @@ describe('renderRunCard (CardKit 2.0)', () => {
       expect((textPanel as Record<string, unknown>)?.expanded).toBe(true);
     });
 
-    it('RED: degraded path also uses collapsible_panel in terminal state', () => {
+    it('degraded path also uses collapsible_panel in terminal state', () => {
       // Build a large state that triggers degraded rendering
       const state: RunState = {
         runId: 'run-degrade-text',

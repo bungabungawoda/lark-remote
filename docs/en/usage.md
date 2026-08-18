@@ -58,7 +58,7 @@ defaultAgent: claude
 claude:
   model: claude-opus-4-8    # Model
   effort: medium            # Reasoning effort: low | medium | high | xhigh | max
-  # permissionMode is hardcoded as bypassPermissions (inside runner), not configurable via config
+  permissionMode: bypassPermissions  # Claude official --permission-mode: default | acceptEdits | auto | bypassPermissions | manual | dontAsk | plan (switchable via /config card)
   stopGraceMs: 5000         # Grace period for idle-timeout auto-stop: SIGTERM→SIGKILL (milliseconds)
 
 output:
@@ -117,6 +117,8 @@ Any message not starting with `/` is forwarded to Claude. Messages starting with
 | `/config` | `/c` | View configuration (interactive card; boolean values toggle on click, others use button selection) |
 | `/order save <text>` | `/o` | Save a frequently used instruction |
 | `/order` `/order list` | `/o` | List saved instructions |
+| `/order alias <name> <text>` | `/o` | Register a quick alias (e.g. `/order alias fix 请修复报错`); typing `$fix` expands it |
+| `/order alias [remove <name>]` | `/o` | List all aliases (merged into the `/order` card) / remove an alias |
 | `/exit` | `/e` | Exit the bridge |
 | `/restart` | - | Restart the bridge in place: the new process takes over with the same config, startup notification arrives shortly |
 
@@ -168,6 +170,63 @@ Each agent's (claude/codex/opencode/pi/kimi) conversation has a session id. The 
 - **Please `/stop` or wait for tasks to complete before restarting**: In-progress claude/bash runs are not preserved; when the old process exits, its in-memory state is lost (sessions in jsonl files remain and can be resumed via `/resume`).
 - **Spawn failure does not exit the old process**: If the successor cannot be launched (e.g., log directory not writable), you will receive "Restart failed: ..., old process is still running", and the bridge continues serving.
 - **Development mode note**: `bun run dev` restarts from source, `bun dist/cli.js` restarts from dist — if you modify code and `/restart` without `bun run build`, the new process still runs the old dist.
+
+### Inbound Images / Files: Auto-Save
+
+Sending an image or file in the Feishu private chat makes the bridge download it
+into the **current working directory** under
+`.lark-remote-temp/<YYYYMMDDHHmm>/` (one subdirectory per minute), then reply with
+an "N files saved" notice. You can then say "please process the files I just
+sent" — the agent reads the local files with its existing Read/Bash tools, so
+**no runner changes are needed**.
+
+- File messages keep their original name (sanitized against path traversal);
+  image messages are named `image_<HHmmss>_<n>.<ext>` with the extension
+  inferred from the MIME type;
+- Name collisions get a numeric suffix; existing files are never overwritten;
+  the per-file limit defaults to 50MB (configurable via `inboundMedia.maxFileSizeMb`);
+- If no working directory is set, the bridge asks you to `/cd` or `/ws use` first;
+- Multiple images sent in quick succession are merged into one save notice
+  (500ms window);
+- **Add `.lark-remote-temp/` to your project's `.gitignore`**: the bridge never
+  cleans up or modifies these files.
+
+Optional config.yaml (defaults work out of the box):
+
+```yaml
+inboundMedia:
+  enabled: true
+  dirName: ".lark-remote-temp"
+  maxFileSizeMb: 50
+```
+
+With `enabled: false`, images/files are not saved, but you still get a notice
+that the feature is off (never silent).
+
+### Quick Aliases (`$name`)
+
+`/order alias` registers a "trigger → text" shortcut. Typing `$name` expands it,
+which suits high-frequency phrases:
+
+```text
+/order alias fix 请修复刚才提到的报错并解释原因
+$fix                       → expands to the full sentence above
+/order alias h 请读取文件并分析
+$h /tmp/a.txt              → expands to "请读取文件并分析 /tmp/a.txt"
+```
+
+- Only a message-starting `$name` (followed by a space or end of line) matches;
+  full-word, case-sensitive;
+- Names may contain letters/digits/underscores only and must **not start with a
+  digit** (`$500` never expands);
+- `!` bash messages and `/` commands are never expanded (`$PATH` and friends are
+  untouched);
+- Unknown `$xxx` passes through to the agent as-is;
+- If the expanded text starts with `/` it is routed as a command; expanding to a
+  `!` command is a user-defined behavior — use with care;
+- Aliases persist in `<configDir>/aliases.json`, up to 50 entries;
+- `remove` is a reserved subcommand and cannot be used as an alias name
+  (`/order alias remove <name>` deletes an alias).
 
 ---
 

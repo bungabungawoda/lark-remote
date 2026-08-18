@@ -70,6 +70,43 @@ describe('RunState', () => {
     expect(state.errorMsg).toBeUndefined();
   });
 
+  it('test_anchor_expired_approval_derives_interrupted_reason_at_finish', () => {
+    // 真实协议顺序 requested → expired → resolved → result：approval_resolved
+    // 会移除审批条目，但 finish 时必须从顶层持久标记推导 interruptedReason。
+    // 中断原因在终态确定，不依赖调用方记得传参（2026-08-15 事故回归）。
+    let state = createInitialRunState('run-expiry-reason');
+    state = reduceRunState(state, {
+      type: 'approval_requested',
+      requestId: 21,
+      kind: 'command',
+      threadId: 'th-aaa-111',
+      turnId: 'tn-111',
+      itemId: 'item-21',
+      view: {
+        requestId: 21,
+        kind: 'command',
+        command: 'rm -rf /tmp/expiry',
+        commandCwd: '/home/user/project',
+        availableDecisions: ['accept', 'decline', 'cancel'],
+      },
+    } as never);
+    state = reduceRunState(state, { type: 'approval_expired', requestId: 21 } as never);
+    state = reduceRunState(state, {
+      type: 'approval_resolved',
+      requestId: 21,
+      outcome: 'resolved',
+    } as never);
+    state = reduceRunState(state, {
+      type: 'result',
+      subtype: 'interrupted',
+      session_id: 's1',
+    } as never);
+    const finished = finishRun(state, 'interrupted');
+
+    expect(finished.interruptedReason).toBe('approval_timeout');
+    expect(finished.approvalExpired).toBe(true);
+  });
+
   it('test_anchor_compact_boundary_increments_compact_count', () => {
     const initial = createInitialRunState('run-1');
     const result = reduceRunState(initial, {
@@ -355,6 +392,27 @@ describe('RunState', () => {
     expect(state.blocks[2]).toMatchObject({
       kind: 'tool',
       tool: { id: 'tool-1', status: 'ok', output: 'body' },
+    });
+  });
+
+  // 2026-08-17 kimi ACP: acp-server 的 lazy-create tool_call 可能不带
+  // rawInput（events-map.ts toolCallLazyCreateToSessionUpdate）。translator
+  // 归一化为 {}，但 shared 层也必须守住 stringifyUnknown 的 string 契约
+  // （JSON.stringify(undefined) 返回 undefined，穿透后 truncateDetail 会崩
+  // 在 value.length）——任何 agent 发 undefined input 都不允许炸卡片。
+  it('test_anchor_tool_use_undefined_input_does_not_crash', () => {
+    let state = createInitialRunState('run-1');
+    expect(() => {
+      state = reduceRunState(state, {
+        type: 'assistant',
+        message: {
+          content: [{ type: 'tool_use', id: 'tool-1', name: 'Read', input: undefined }],
+        },
+      });
+    }).not.toThrow();
+    expect(state.blocks[0]).toMatchObject({
+      kind: 'tool',
+      tool: { id: 'tool-1', name: 'Read', input: '', status: 'running' },
     });
   });
 

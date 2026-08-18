@@ -6,35 +6,33 @@
  * - onResolved: update state, clear timer
  * - submit: validate → atomic state transition → async respond
  * - togglePerm: flip permission item selection
- * - onTurnEnded / onConnectionLost: mark all as expired
+ * - onTurnEnded: mark all as expired
  */
 
 import type { ApprovalRequestedEvent, ApprovalView, AgentEvent } from '../runner/types.js';
+import type { ApprovalAction } from '../runner/types.js';
 import { getLogger } from '../logger/index.js';
 
 // =============================================================================
 // Types
 // =============================================================================
 
-export type ApprovalState = 'pending' | 'submitting' | 'resolved' | 'failed' | 'expired';
+type ApprovalState = 'pending' | 'submitting' | 'resolved' | 'failed' | 'expired';
 
 export interface TrackedApproval {
   requestId: number | string;
-  kind: 'command' | 'file' | 'permissions';
+  kind: 'command' | 'file' | 'permissions' | 'question';
   state: ApprovalState;
   view: ApprovalView;
   createdAt: number;
   timeoutTimer: ReturnType<typeof setTimeout> | null;
+  /** AskUserQuestion 已答问题索引 → 答案 label[]（kind === 'question'）。 */
+  answers?: Map<number, string[]>;
 }
 
-export type ApprovalResponder = (requestId: number | string, response: unknown) => Promise<void>;
+type ApprovalResponder = (requestId: number | string, response: unknown) => Promise<void>;
 
-export type ApprovalAction =
-  | { action: 'accept' }
-  | { action: 'accept_for_session' }
-  | { action: 'accept_with_execpolicy_amendment' }
-  | { action: 'decline' }
-  | { action: 'cancel' };
+export type { ApprovalAction } from '../runner/types.js';
 
 export interface ApprovalToggleAction {
   permId: string;
@@ -49,29 +47,17 @@ export class ApprovalCoordinator {
   private approvals = new Map<number | string, TrackedApproval>();
   /** 已提交过的 nonce（按 requestId）：同一按钮连点/飞书重投递只生效一次。 */
   private submittedNonces = new Map<number | string, Set<string>>();
-  private readonly runId: string;
-  private readonly userId: string;
-  private readonly chatId: string;
-  private readonly workspace: string;
   private readonly approvalTimeoutMs: number;
   private readonly responder: ApprovalResponder;
   private readonly interruptTurn: () => Promise<void>;
   private readonly pushToCard: (events: AgentEvent[]) => Promise<void>;
 
   constructor(opts: {
-    runId: string;
-    userId: string;
-    chatId: string;
-    workspace: string;
     approvalTimeoutMs: number;
     responder: ApprovalResponder;
     interruptTurn: () => Promise<void>;
     pushToCard: (events: AgentEvent[]) => Promise<void>;
   }) {
-    this.runId = opts.runId;
-    this.userId = opts.userId;
-    this.chatId = opts.chatId;
-    this.workspace = opts.workspace;
     this.approvalTimeoutMs = opts.approvalTimeoutMs;
     this.responder = opts.responder;
     this.interruptTurn = opts.interruptTurn;
@@ -130,20 +116,12 @@ export class ApprovalCoordinator {
   }
 
   /**
-   * Handle connection lost — same as onTurnEnded.
-   */
-  onConnectionLost(): void {
-    this.onTurnEnded();
-  }
-
-  /**
    * Submit an approval decision.
-   * Returns a promise that resolves when the response is sent.
    */
   async submit(
     action: ApprovalAction,
     ctx: { requestId: number | string; nonce?: string },
-  ): Promise<string> {
+  ): Promise<void> {
     const tracked = this.approvals.get(ctx.requestId);
     if (!tracked) {
       throw new Error(`Approval request ${ctx.requestId} not found`);
@@ -151,14 +129,7 @@ export class ApprovalCoordinator {
     // nonce 去重：同一张卡片渲染出的按钮连续点击（或飞书重投递）携带相同
     // nonce，只允许生效一次；不同渲染的按钮 nonce 不同，状态机（pending →
     // submitting）仍然兜底防二次提交。
-    if (ctx.nonce !== undefined) {
-      const seen = this.submittedNonces.get(ctx.requestId) ?? new Set<string>();
-      if (seen.has(ctx.nonce)) {
-        throw new Error(`Approval request ${ctx.requestId} already submitted (duplicate nonce)`);
-      }
-      seen.add(ctx.nonce);
-      this.submittedNonces.set(ctx.requestId, seen);
-    }
+    this.assertFreshNonce(ctx.requestId, ctx.nonce);
     if (tracked.state !== 'pending') {
       throw new Error(
         `Approval request ${ctx.requestId} is no longer pending (state=${tracked.state})`,
@@ -184,11 +155,13 @@ export class ApprovalCoordinator {
     try {
       await this.responder(ctx.requestId, action);
       tracked.state = 'resolved';
+      // 提交成功后立即从卡片移除审批区（agent 无关）：claude 控制协议没有
+      // resolved 回发，不推就会「已点允许按钮仍在」残留 UI；codex 的 server
+      // 稍后也会发 approval_resolved，reducer 按 requestId 过滤幂等。
+      this.pushResolved(ctx.requestId);
     } catch {
       tracked.state = 'failed';
     }
-
-    return `Approval ${tracked.requestId} (${tracked.kind}): ${decision}`;
   }
 
   /**
@@ -197,7 +170,7 @@ export class ApprovalCoordinator {
   async togglePerm(
     action: ApprovalToggleAction,
     ctx: { requestId: number | string },
-  ): Promise<string> {
+  ): Promise<void> {
     const tracked = this.approvals.get(ctx.requestId);
     if (!tracked) {
       throw new Error(`Approval request ${ctx.requestId} not found`);
@@ -220,7 +193,109 @@ export class ApprovalCoordinator {
     }
 
     item.selected = action.selected;
-    return `Permission ${action.permId}: ${action.selected ? 'granted' : 'denied'}`;
+  }
+
+  /**
+   * Claude AskUserQuestion 选项点击。
+   *
+   * - 单选：点击即选中该选项；全部问题答完时自动通过 responder 提交答案。
+   * - 多选：切换 selected 并推 approval_view_updated 重渲染，等待
+   *   submitAnswers() 显式提交。
+   */
+  async toggleAnswer(
+    action: { questionIndex: number; option: string },
+    ctx: { requestId: number | string; nonce?: string },
+  ): Promise<void> {
+    const tracked = this.getPendingQuestion(ctx.requestId);
+    const questions = tracked.view.questions!;
+    const q = questions[action.questionIndex];
+    if (!q) {
+      throw new Error(`Question ${action.questionIndex} not found in request ${ctx.requestId}`);
+    }
+    const option = q.options.find((o) => o.label === action.option);
+    if (!option) {
+      throw new Error(`Option "${action.option}" not found in question ${action.questionIndex}`);
+    }
+
+    const selected = new Set(q.selected ?? []);
+    if (q.multiSelect) {
+      // review P2-1：多选切换按钮同一 nonce 重复投递（双击/飞书重投递）只应
+      // toggle 一次，否则勾选会被二次 toggle 抵消。单选用例的重复防护在
+      // respondQuestionAnswers（提交即幂等，选中是 set 语义）。
+      this.assertFreshNonce(ctx.requestId, ctx.nonce);
+      if (selected.has(action.option)) {
+        selected.delete(action.option);
+      } else {
+        selected.add(action.option);
+      }
+      q.selected = [...selected];
+      this.pushQuestionViewUpdate(ctx.requestId, tracked);
+      return;
+    }
+
+    // 单选：替换选择；全部问题答完立即提交，否则等待后续问题。
+    q.selected = [action.option];
+    this.recordAnswer(tracked, action.questionIndex, [action.option]);
+    if (this.allQuestionsAnswered(tracked)) {
+      return this.respondQuestionAnswers(tracked, ctx);
+    }
+    this.pushQuestionViewUpdate(ctx.requestId, tracked);
+  }
+
+  /**
+   * Claude AskUserQuestion 多选问题的「提交答案」按钮。
+   * 提交该问题当前勾选的选项；全部问题答完时通过 responder 提交。
+   */
+  async submitAnswers(
+    action: { questionIndex: number },
+    ctx: { requestId: number | string; nonce?: string },
+  ): Promise<void> {
+    const tracked = this.getPendingQuestion(ctx.requestId);
+    const questions = tracked.view.questions!;
+    const q = questions[action.questionIndex];
+    if (!q) {
+      throw new Error(`Question ${action.questionIndex} not found in request ${ctx.requestId}`);
+    }
+    if (!q.multiSelect) {
+      throw new Error('该问题为单选，请直接点击选项');
+    }
+    const selected = q.selected ?? [];
+    if (selected.length === 0) {
+      throw new Error('请先选择至少一个选项');
+    }
+    this.recordAnswer(tracked, action.questionIndex, selected);
+    if (this.allQuestionsAnswered(tracked)) {
+      return this.respondQuestionAnswers(tracked, ctx);
+    }
+  }
+
+  /**
+   * AskUserQuestion 自定义答案（Other，review P3-4）：自由文本直接作为该
+   * 单选问题的答案。与单选 toggle 同语义：全部问题答完自动提交。
+   */
+  async answerCustom(
+    action: { questionIndex: number; text: string },
+    ctx: { requestId: number | string; nonce?: string },
+  ): Promise<void> {
+    const tracked = this.getPendingQuestion(ctx.requestId);
+    const questions = tracked.view.questions!;
+    const q = questions[action.questionIndex];
+    if (!q) {
+      throw new Error(`Question ${action.questionIndex} not found in request ${ctx.requestId}`);
+    }
+    if (q.multiSelect) {
+      throw new Error('自定义答案仅支持单选');
+    }
+    const text = action.text.trim();
+    if (!text) {
+      throw new Error('请输入自定义答案');
+    }
+    q.selected = [text];
+    this.recordAnswer(tracked, action.questionIndex, [text]);
+    if (this.allQuestionsAnswered(tracked)) {
+      return this.respondQuestionAnswers(tracked, ctx);
+    }
+    this.pushQuestionViewUpdate(ctx.requestId, tracked);
   }
 
   /**
@@ -245,21 +320,6 @@ export class ApprovalCoordinator {
     return count;
   }
 
-  /**
-   * Get the head (oldest pending) approval, or undefined.
-   */
-  head(): TrackedApproval | undefined {
-    let oldest: TrackedApproval | undefined;
-    let oldestTime = Infinity;
-    for (const [, tracked] of this.approvals) {
-      if (tracked.state === 'pending' && tracked.createdAt < oldestTime) {
-        oldest = tracked;
-        oldestTime = tracked.createdAt;
-      }
-    }
-    return oldest;
-  }
-
   // =========================================================================
   // Internal
   // =========================================================================
@@ -269,6 +329,113 @@ export class ApprovalCoordinator {
       clearTimeout(tracked.timeoutTimer);
       tracked.timeoutTimer = null;
     }
+  }
+
+  /** nonce 去重：同一 nonce 只允许生效一次（防连点/飞书重投递）。 */
+  private assertFreshNonce(requestId: number | string, nonce?: string): void {
+    if (nonce === undefined) return;
+    const seen = this.submittedNonces.get(requestId) ?? new Set<string>();
+    if (seen.has(nonce)) {
+      throw new Error(`Approval request ${requestId} already submitted (duplicate nonce)`);
+    }
+    seen.add(nonce);
+    this.submittedNonces.set(requestId, seen);
+  }
+
+  /** 记录问题答案到 tracked.answers（懒初始化 Map）。 */
+  private recordAnswer(tracked: TrackedApproval, questionIndex: number, values: string[]): void {
+    tracked.answers ??= new Map();
+    tracked.answers.set(questionIndex, values);
+  }
+
+  private getPendingQuestion(requestId: number | string): TrackedApproval {
+    const tracked = this.approvals.get(requestId);
+    if (!tracked) {
+      throw new Error(`Approval request ${requestId} not found`);
+    }
+    if (tracked.kind !== 'question') {
+      throw new Error(`Approval request ${requestId} is not a question request`);
+    }
+    if (tracked.state !== 'pending') {
+      throw new Error(`Approval request ${requestId} is no longer pending`);
+    }
+    return tracked;
+  }
+
+  private allQuestionsAnswered(tracked: TrackedApproval): boolean {
+    const questions = tracked.view.questions ?? [];
+    if (questions.length === 0) return false;
+    for (let i = 0; i < questions.length; i++) {
+      const answered = (tracked.answers?.get(i)?.length ?? 0) > 0;
+      if (!answered) return false;
+    }
+    return true;
+  }
+
+  /** 推送 question 卡片视图更新（选项勾选状态变化）。 */
+  private pushQuestionViewUpdate(requestId: number | string, tracked: TrackedApproval): void {
+    void this.pushToCard([
+      {
+        type: 'approval_view_updated',
+        requestId,
+        view: tracked.view,
+        timestamp: new Date().toISOString(),
+      },
+    ]).catch((err: unknown) => {
+      getLogger().warn(
+        `[approval-coordinator] question view update failed requestId=${requestId}: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+    });
+  }
+
+  /** 全部问题已答：构建 answers 并提交（非空校验 + 原子状态迁移）。 */
+  private async respondQuestionAnswers(
+    tracked: TrackedApproval,
+    ctx: { requestId: number | string; nonce?: string },
+  ): Promise<void> {
+    this.assertFreshNonce(ctx.requestId, ctx.nonce);
+    if (tracked.state !== 'pending') {
+      throw new Error(
+        `Approval request ${ctx.requestId} is no longer pending (state=${tracked.state})`,
+      );
+    }
+
+    const questions = tracked.view.questions ?? [];
+    const answers: Record<string, string | string[]> = {};
+    for (let i = 0; i < questions.length; i++) {
+      const selected = tracked.answers?.get(i) ?? [];
+      answers[questions[i].question] = questions[i].multiSelect ? selected : selected[0];
+    }
+
+    tracked.state = 'submitting';
+    this.clearTimer(tracked);
+    try {
+      await this.responder(ctx.requestId, { action: 'answer', answers });
+      tracked.state = 'resolved';
+      this.pushResolved(ctx.requestId);
+    } catch {
+      tracked.state = 'failed';
+    }
+  }
+
+  /** 推 approval_resolved 到卡片（移除审批区；幂等，失败仅记日志）。 */
+  private pushResolved(requestId: number | string): void {
+    void this.pushToCard([
+      {
+        type: 'approval_resolved',
+        requestId,
+        outcome: 'resolved',
+        timestamp: new Date().toISOString(),
+      },
+    ]).catch((err: unknown) => {
+      getLogger().warn(
+        `[approval-coordinator] resolved card event failed requestId=${requestId}: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+    });
   }
 
   private expireApproval(requestId: number | string): void {
@@ -315,6 +482,10 @@ export class ApprovalCoordinator {
         return 'acceptForSession';
       case 'accept_with_execpolicy_amendment':
         return 'acceptWithExecpolicyAmendment';
+      case 'accept_all':
+        return 'acceptAll';
+      case 'answer':
+        return 'answer';
       case 'decline':
         return 'decline';
       case 'cancel':
@@ -332,6 +503,8 @@ export function decisionToApprovalAction(decision: string): ApprovalAction {
       return { action: 'accept_for_session' };
     case 'acceptWithExecpolicyAmendment':
       return { action: 'accept_with_execpolicy_amendment' };
+    case 'acceptAll':
+      return { action: 'accept_all' };
     case 'decline':
       return { action: 'decline' };
     case 'cancel':

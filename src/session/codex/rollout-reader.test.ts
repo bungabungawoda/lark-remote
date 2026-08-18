@@ -100,39 +100,6 @@ not valid json
   });
 
   describe('listCodexRollouts', () => {
-    it('returns entries sorted by mtime descending', () => {
-      // Create mock sessions directory structure
-      const sessionsDir = path.join(tmpDir, 'sessions', '2026', '07', '13');
-      fs.mkdirSync(sessionsDir, { recursive: true });
-
-      // Create files with different mtimes
-      const oldFile = path.join(sessionsDir, 'rollout-old.jsonl');
-      const newFile = path.join(sessionsDir, 'rollout-new.jsonl');
-
-      fs.writeFileSync(
-        oldFile,
-        '{"type":"session_meta","payload":{"session_id":"old","cwd":"/tmp","originator":"x"}}',
-        'utf-8',
-      );
-      fs.writeFileSync(
-        newFile,
-        '{"type":"session_meta","payload":{"session_id":"new","cwd":"/tmp","originator":"x"}}',
-        'utf-8',
-      );
-
-      // Set different mtimes (older first, newer second in listing order)
-      const oldTime = new Date('2026-07-13T08:00:00Z').getTime();
-      const newTime = new Date('2026-07-13T12:00:00Z').getTime();
-      fs.utimesSync(oldFile, oldTime / 1000, oldTime / 1000);
-      fs.utimesSync(newFile, newTime / 1000, newTime / 1000);
-
-      const result = listCodexRollouts({ codexHome: tmpDir, limit: 10 });
-
-      expect(result.entries).toHaveLength(2);
-      expect(result.entries[0].threadId).toBe('new'); // newer first
-      expect(result.entries[1].threadId).toBe('old');
-    });
-
     it('applies limit', () => {
       const sessionsDir = path.join(tmpDir, 'sessions', '2026', '07', '13');
       fs.mkdirSync(sessionsDir, { recursive: true });

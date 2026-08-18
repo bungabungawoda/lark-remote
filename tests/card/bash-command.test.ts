@@ -224,8 +224,8 @@ describe('! bash command feature (Anchor Tests)', () => {
       const testDir = fs.realpathSync(tmpDir);
       sessionStore.setCwd(ctx.userId, testDir);
 
-      // Get the bridge from router
-      const bridge = (router as unknown as { bridge: Bridge }).bridge;
+      // Get the bridge from router (bridge is public for tests)
+      const bridge = router.bridge;
 
       // Occupy the serial queue with a hanging task (simulates a long claude run)
       let taskStarted = false;

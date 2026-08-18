@@ -21,6 +21,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { ClaudeRunner } from '../../../src/runner/claude/index.js';
 import { prependPath, restorePath, writeMockBin } from '../../lib/path-mock.js';
+import { waitForOrThrow } from '../../lib/wait-for.js';
 
 const { mockLogger } = vi.hoisted(() => ({
   mockLogger: {
@@ -42,16 +43,6 @@ function isAlive(pid: number): boolean {
     return true;
   } catch {
     return false;
-  }
-}
-
-async function waitFor(cond: () => boolean, timeoutMs = 5000): Promise<void> {
-  const start = Date.now();
-  while (!cond()) {
-    if (Date.now() - start > timeoutMs) {
-      throw new Error(`waitFor timeout after ${timeoutMs}ms`);
-    }
-    await new Promise((r) => setTimeout(r, 25));
   }
 }
 
@@ -110,7 +101,7 @@ sleep 300
     const leaderPid = Number(fs.readFileSync(pidFilePath, 'utf-8'));
     expect(leaderPid).toBeGreaterThan(0);
     spawnedPids.add(leaderPid);
-    await waitFor(() => fs.existsSync(childPidFile), 3000);
+    await waitForOrThrow(() => fs.existsSync(childPidFile), 3000);
     const childPid = Number(fs.readFileSync(childPidFile, 'utf-8'));
     spawnedPids.add(childPid);
 
@@ -123,7 +114,7 @@ sleep 300
     r2.killOrphan();
 
     // 当前 bug：只杀组长，后台 sleep 300 存活 → waitFor 超时 → RED
-    await waitFor(() => !isAlive(leaderPid) && !isAlive(childPid), 5000);
+    await waitForOrThrow(() => !isAlive(leaderPid) && !isAlive(childPid), 5000);
     expect(isAlive(leaderPid)).toBe(false);
     expect(isAlive(childPid)).toBe(false);
     expect(fs.existsSync(pidFilePath)).toBe(false);

@@ -537,7 +537,8 @@ describe('KimiSessionReader', () => {
     const reader = new KimiSessionReader(kimiDir);
     const content = reader.readSessionContent('sess-no-dir', workDir);
     // Fail-open: should return content despite unverifiable cwd
-    expect(content.events.length).toBeGreaterThanOrEqual(1);
+    const textEvents = content.events.filter((e) => e.type === 'text');
+    expect(textEvents.some((e) => e.content === 'reply')).toBe(true);
   });
 
   it('readSessionContent blocks access when state.json missing but index has workDir', () => {
@@ -596,7 +597,8 @@ describe('KimiSessionReader', () => {
 
     const reader = new KimiSessionReader(kimiDir);
     const content = reader.readSessionContent('sess-no-state-ok', workDir);
-    expect(content.events.length).toBeGreaterThanOrEqual(1);
+    const textEvents = content.events.filter((e) => e.type === 'text');
+    expect(textEvents.some((e) => e.content === 'reply')).toBe(true);
   });
 
   // --- v2 listSessions title extraction from wire.jsonl ---
@@ -706,7 +708,9 @@ describe('KimiSessionReader', () => {
 
     const reader = new KimiSessionReader(kimiDir);
     const content = reader.readSessionContent('sess-v2-nums', workDir);
-    expect(content.events.length).toBeGreaterThanOrEqual(1);
+    // numeric 时间戳的 wire.jsonl 必须被正常解析为事件内容
+    const textEvents = content.events.filter((e) => e.type === 'text');
+    expect(textEvents.some((e) => e.content === 'works')).toBe(true);
   });
 
   it('readSessionContent returns empty when cwd does not exist (realpathSync protection)', () => {
@@ -732,5 +736,121 @@ describe('KimiSessionReader', () => {
     expect(() => reader.readSessionContent('sess-stale-cwd', nonexistentCwd)).not.toThrow();
     const content = reader.readSessionContent('sess-stale-cwd', nonexistentCwd);
     expect(content.events).toEqual([]);
+  });
+
+  it('readSessionContent parses compaction records and populates compactCount + compactPreContextLength', () => {
+    // §6.3: wire.jsonl 中 full_compaction.complete / context.apply_compaction 记录
+    // 需解析出 compactCount 和 compactPreContextLength（tokensBefore）。
+    // 展示计数只计 context.apply_compaction：一次手动 /compact 会同时写
+    // full_compaction.complete + apply 两条（2026-08-16 实弹），双计虚报 2 次。
+    const workDir = makeWorkDir('project');
+    const sessionDir = path.join(kimiDir, 'sessions', 'sess-compact');
+    const agentsDir = path.join(sessionDir, 'agents', 'main');
+    fs.mkdirSync(agentsDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(sessionDir, 'state.json'),
+      JSON.stringify({ version: 2, cwd: workDir }),
+    );
+    fs.writeFileSync(
+      path.join(agentsDir, 'wire.jsonl'),
+      // First turn with usage
+      '{"type":"usage.record","model":"test-model","usage":{"inputOther":1000,"output":500,"inputCacheRead":200,"inputCacheCreation":50},"time":1000}\n' +
+        '{"type":"turn.prompt","input":[{"type":"text","text":"placeholder"}],"origin":{"kind":"user"},"time":1001}\n' +
+        '{"type":"context.append_loop_event","event":{"type":"content.part","part":{"type":"text","text":"response"}},"time":1002}\n' +
+        // First compaction
+        // REAL shape: full_compaction.complete carries ONLY {type, time}.
+        '{"type":"full_compaction.complete","time":2000}\n' +
+        // Usage after compaction
+        '{"type":"usage.record","model":"test-model","usage":{"inputOther":500,"output":200,"inputCacheRead":100,"inputCacheCreation":25},"time":3000}\n' +
+        // The actual compaction — REAL shape: compactedCount/tokensBefore/tokensAfter
+        // only on context.apply_compaction.
+        '{"type":"context.apply_compaction","summary":"placeholder","compactedCount":4,"tokensBefore":30000,"tokensAfter":15000,"time":4000}\n',
+    );
+    addIndexEntry('sess-compact', sessionDir, workDir);
+
+    const reader = new KimiSessionReader(kimiDir);
+    const content = reader.readSessionContent('sess-compact', workDir);
+
+    expect(content.usage).toBeDefined();
+    // full_compaction.complete 不计入展示计数（与 apply 同属一次手动 compact）。
+    expect(content.usage?.compactCount).toBe(1);
+    // compactPreContextLength takes the most recent compaction's tokensBefore
+    expect(content.usage?.compactPreContextLength).toBe(30000);
+  });
+
+  it('readSessionContent with no compaction records has compactCount 0 and no compactPreContextLength', () => {
+    const workDir = makeWorkDir('project');
+    const sessionDir = path.join(kimiDir, 'sessions', 'sess-no-compact');
+    const agentsDir = path.join(sessionDir, 'agents', 'main');
+    fs.mkdirSync(agentsDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(sessionDir, 'state.json'),
+      JSON.stringify({ version: 2, cwd: workDir }),
+    );
+    fs.writeFileSync(
+      path.join(agentsDir, 'wire.jsonl'),
+      '{"type":"usage.record","model":"test-model","usage":{"inputOther":1000,"output":500},"time":1000}\n' +
+        '{"type":"turn.prompt","input":[{"type":"text","text":"placeholder"}],"origin":{"kind":"user"},"time":1001}\n',
+    );
+    addIndexEntry('sess-no-compact', sessionDir, workDir);
+
+    const reader = new KimiSessionReader(kimiDir);
+    const content = reader.readSessionContent('sess-no-compact', workDir);
+
+    expect(content.usage).toBeDefined();
+    expect(content.usage?.compactCount).toBe(0);
+    expect(content.usage?.compactPreContextLength).toBeUndefined();
+  });
+
+  it('readCompactionRecords returns real-shape compaction records in wire order', () => {
+    const workDir = makeWorkDir('project');
+    const sessionDir = path.join(kimiDir, 'sessions', 'sess-records');
+    const agentsDir = path.join(sessionDir, 'agents', 'main');
+    fs.mkdirSync(agentsDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(sessionDir, 'state.json'),
+      JSON.stringify({ version: 2, cwd: workDir }),
+    );
+    fs.writeFileSync(
+      path.join(agentsDir, 'wire.jsonl'),
+      '{"type":"usage.record","model":"test-model","usage":{"inputOther":1000,"output":500},"time":1000}\n' +
+        '{"type":"full_compaction.complete","time":2000}\n' +
+        '{"type":"context.apply_compaction","summary":"placeholder","compactedCount":4,"tokensBefore":30000,"tokensAfter":15000,"time":4000}\n',
+    );
+    addIndexEntry('sess-records', sessionDir, workDir);
+
+    const records = new KimiSessionReader(kimiDir).readCompactionRecords('sess-records', workDir);
+
+    expect(records).toHaveLength(2);
+    expect(records[0]).toEqual({ type: 'full_compaction.complete', time: 2000 });
+    expect(records[1]).toEqual({
+      type: 'context.apply_compaction',
+      compactedCount: 4,
+      tokensBefore: 30000,
+      tokensAfter: 15000,
+      time: 4000,
+    });
+  });
+
+  it('readCompactionRecords fails closed on cwd guard mismatch', () => {
+    const workDir = makeWorkDir('project');
+    const sessionDir = path.join(kimiDir, 'sessions', 'sess-guarded');
+    const agentsDir = path.join(sessionDir, 'agents', 'main');
+    fs.mkdirSync(agentsDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(sessionDir, 'state.json'),
+      JSON.stringify({ version: 2, cwd: workDir }),
+    );
+    fs.writeFileSync(
+      path.join(agentsDir, 'wire.jsonl'),
+      '{"type":"context.apply_compaction","summary":"placeholder","compactedCount":1,"tokensBefore":100,"tokensAfter":50,"time":2000}\n',
+    );
+    addIndexEntry('sess-guarded', sessionDir, workDir);
+
+    const records = new KimiSessionReader(kimiDir).readCompactionRecords(
+      'sess-guarded',
+      makeWorkDir('other-project'),
+    );
+    expect(records).toEqual([]);
   });
 });

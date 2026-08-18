@@ -231,10 +231,10 @@ describe('OpencodeSessionReader - L1/L2/L3: large/corrupt export handling', () =
   // L1 transport: the DEFAULT captureExport must route stdout to a file fd
   // (not 'pipe'), which bypasses opencode's pipe truncation for large output.
   it('L1: default captureExport routes stdout to a file fd (not a pipe)', () => {
-    vi.mocked(execFileSync).mockReturnValue(null as unknown as string);
+    vi.mocked(execFileSync).mockReturnValue('');
     const r = new OpencodeSessionReader({ cacheTtlMs: 0 });
     // execFileSync is mocked (writes nothing), so the temp file is empty -> ''.
-    const out = (r as unknown as { captureExport: (id: string) => string }).captureExport('ses_tr');
+    const out = r.captureExport('ses_tr');
     expect(out).toBe('');
     expect(execFileSync).toHaveBeenCalledWith(
       'opencode',
@@ -404,5 +404,61 @@ describe('OpencodeSessionReader - usage extraction (ccusage-aligned)', () => {
     // cumulative = sum across all step-finish: input=200+13240=13440, output=50+3=53
     expect(content.usage!.cumulativeInputTokens).toBe(13440);
     expect(content.usage!.cumulativeOutputTokens).toBe(53);
+  });
+
+  it('falls back to the last non-empty step-finish when the final step has zero tokens', () => {
+    // Regression: a long autonomous run can end on a degenerate final step (the
+    // model is cut off mid-reasoning) whose step-finish reports all-zero tokens.
+    // Trusting it wipes out the run's real per-turn usage (contextLength/input/
+    // output/total all render 0 on the Run card). Per-turn usage must fall back
+    // to the last step-finish that actually consumed tokens.
+    const json = buildExportJson({
+      directory: cwd,
+      messages: [
+        { role: 'user', parts: [{ type: 'text', text: 'do the refactor' }] },
+        {
+          role: 'assistant',
+          parts: [
+            { type: 'text', text: 'step done' },
+            {
+              type: 'step-finish',
+              reason: 'stop',
+              tokens: {
+                total: 492529,
+                input: 656,
+                output: 97,
+                reasoning: 0,
+                cache: { read: 491776, write: 0 },
+              },
+            },
+          ],
+        },
+        {
+          role: 'assistant',
+          parts: [
+            { type: 'reasoning', text: 'the mock feeds stderr asynchronously...' },
+            {
+              type: 'step-finish',
+              reason: 'stop',
+              tokens: { total: 0, input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+            },
+          ],
+        },
+      ],
+    });
+    const r = new OpencodeSessionReader({
+      cacheTtlMs: 0,
+      captureExport: () => json,
+    });
+    const content = r.readSessionContent('ses_degenerate', cwd);
+    expect(content.usage).toBeDefined();
+    // per-turn falls back to the last non-empty step, not the zero-token stub.
+    expect(content.usage!.inputTokens).toBe(656);
+    expect(content.usage!.outputTokens).toBe(97);
+    expect(content.usage!.totalTokens).toBe(492529);
+    expect(content.usage!.contextLength).toBe(656 + 491776);
+    // cumulative still sums everything; the zero stub contributes nothing.
+    expect(content.usage!.cumulativeInputTokens).toBe(656);
+    expect(content.usage!.cumulativeTotalTokens).toBe(492529);
   });
 });

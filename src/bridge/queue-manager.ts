@@ -119,7 +119,8 @@ export class QueueManager {
    * executing/cancelled state. The promise never rejects (send failures
    * resolve undefined), so awaiting it is always safe.
    */
-  private queueCardMessages = new Map<string, Promise<string | undefined>>();
+  /** queue card 的 send promise 表（public：bridge 集成测试注入/断言用）。 */
+  queueCardMessages = new Map<string, Promise<string | undefined>>();
   /** Track number of executing tasks per workspace (for queue card display). */
   private pendingOrExecutingCount = new Map<string, number>();
   /**

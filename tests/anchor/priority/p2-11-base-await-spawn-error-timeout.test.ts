@@ -16,7 +16,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { SpawningRunner } from '../../../src/runner/common/spawning-runner.js';
 import type { AgentEvent, SpawnOptions } from '../../../src/runner/types.js';
-import { EventEmitter } from 'node:events';
+import { createMockProc } from '../../../tests/lib/mock-process.js';
 
 const { mockLogger } = vi.hoisted(() => ({
   mockLogger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
@@ -52,7 +52,7 @@ class TestRunner extends SpawningRunner {
 describe('P2-11: SpawningRunner.awaitSpawnError finite timeout', () => {
   it('test_anchor_base_await_spawn_error_times_out_when_no_error_event', async () => {
     // A fake proc that NEVER emits 'error' — simulates silent spawn failure.
-    const proc = new EventEmitter() as unknown as import('node:child_process').ChildProcess;
+    const proc = createMockProc();
     const runner = new TestRunner();
 
     // Must resolve (to undefined) within a finite bound, NOT hang forever.

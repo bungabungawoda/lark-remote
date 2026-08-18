@@ -10,6 +10,7 @@ import { AppConfigSchema } from '../../../src/config/index.js';
 import { SessionReaderRegistry } from '../../../src/session/registry.js';
 import { ClaudeSessionReader } from '../../../src/session/claude/index.js';
 
+import { encodedProjectDir, writeSessionJsonl } from '../../lib/session-fixtures.js';
 import {
   createStubAgentRegistry,
   createStubSessionReaderRegistry,
@@ -33,24 +34,6 @@ import {
  * "新增 RESUME_PAGE_SIZE = 5 常量。`/resume [agent] [N]`：N 作为页大小覆盖，
  * clamp 到 `[1, 5]`；默认 5（2026-08-02 由 20 调为 5，首页直接给满一页）。"
  */
-
-// Stub connector (minimal, matches resume-switch-default-agent.test.ts pattern)
-
-// Stub runner
-
-// Same encoding as production `projectDirForCwd` (cwd -> dirName), canonicalized
-// via realpath first (same as src/router/router.test.ts `encodedProjectDir`).
-function encodedProjectDir(cwd: string): string {
-  return fs.realpathSync(cwd).replace(/\//g, '-').replace(/_/g, '-');
-}
-
-// Write a fake Claude session jsonl with an init line carrying the cwd so the
-// production reader can locate it via readCwdFromJsonl (regression 2026-06-21).
-function writeSessionJsonl(projDir: string, sid: string, cwd: string, body: string): void {
-  const initLine = `{"type":"system","subtype":"init","session_id":"${sid}","cwd":"${cwd}","model":"opus"}`;
-  fs.writeFileSync(path.join(projDir, `${sid}.jsonl`), `${initLine}\n${body}\n`);
-}
-
 type CardElement = {
   tag?: string;
   columns?: Array<{ elements?: CardElement[] }>;
@@ -112,7 +95,7 @@ describe('A3 /resume 默认页大小 5 + N clamp [1,5]', () => {
       getNewestSession: () => null,
       readSessionContent: () => ({ events: [], reason: 'not_found' }),
       isSessionActive: () => false,
-    } as any;
+    };
     registry.register('codex', stubReader);
     registry.register('opencode', stubReader);
     registry.register('pi', stubReader);

@@ -8,13 +8,13 @@ import { SessionStore } from '../../src/session/index.js';
 import { AppConfigSchema } from '../../src/config/index.js';
 import type { AppConfig } from '../../src/config/index.js';
 import { SessionReaderRegistry } from '../../src/session/registry.js';
-import type { RunState } from '../../src/card/run-state.js';
 
 import {
   createStubAgentRegistry,
   createStubSessionReaderRegistry,
   createStubConnector,
   createStubRunner,
+  makeBridge,
 } from '../lib/bridge-stubs.js';
 
 let tmpDir: string;
@@ -180,13 +180,14 @@ describe('P1: multi-agent legacy issues — run-state error message', () => {
     const { reduceRunState } = await import('../../src/card/run-state.js');
     const result = reduceRunState(
       {
+        runId: 'test',
         terminal: 'running' as const,
         footer: null,
-        blocks: [] as unknown as RunState['blocks'],
+        blocks: [],
         resultSubtype: undefined,
         errorMsg: undefined,
         sessionId: 'test',
-      } as RunState,
+      },
       { type: 'result', subtype: 'error', session_id: 'test' },
     );
     // Error message should NOT contain hardcoded "Claude"
@@ -199,12 +200,28 @@ describe('P1: multi-agent legacy issues — run-state error message', () => {
 // ── P1: Issue 8 — bridge stream end hardcoded "Claude 输出流已结束" ─
 
 describe('P1: multi-agent legacy issues — bridge stream end', () => {
-  it('test_anchor_bridge_stream_end_not_hardcoded_claude', async () => {
-    // The error message in bridge/index.ts should use agentDisplayName
-    // We verify by reading the source directly that the hardcoded string is gone
-    const source = fs.readFileSync(path.join(process.cwd(), 'src/bridge/index.ts'), 'utf-8');
-    // The literal "Claude 输出流已结束" should not appear
-    expect(source).not.toContain('Claude 输出流已结束');
+  it('test_anchor_bridge_stream_end_uses_agent_display_name_not_hardcoded_claude', async () => {
+    // 非 claude agent（codex）的流提前结束（无 result 事件）时，错误卡必须显示
+    // agent 展示名（agentDisplayName('codex') = 'Codex'），不得硬编码 'Claude'。
+    const config = AppConfigSchema.parse({
+      feishu: { appId: 'test', appSecret: 'test' },
+      defaultAgent: 'codex',
+      codex: { model: 'gpt-5.2', stopGraceMs: 5000 },
+      workspace: { default: '' },
+      output: { showThinking: true, showToolUse: false, showToolResult: false },
+    });
+    const { bridge, sessionStore, connector } = makeBridge({
+      runner: createStubRunner({
+        mode: 'streaming',
+        events: [{ type: 'assistant', message: { content: [{ type: 'text', text: 'partial' }] } }],
+      }),
+      config,
+    });
+    sessionStore.setCwd(ctx.userId, tmpDir);
+    await bridge.forwardToClaude('missing', ctx);
+    const cardJson = JSON.stringify(connector._cards.at(-1));
+    expect(cardJson).toContain('输出流已结束');
+    expect(cardJson).toContain('Codex 输出流已结束');
   });
 });
 

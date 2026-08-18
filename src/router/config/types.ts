@@ -7,13 +7,23 @@
 
 import type { AppConfig } from '../../config/index.js';
 
+/** A select option with separate display text and config value. */
+export interface SelectOption {
+  /** Display text shown in the dropdown (may include annotations). */
+  text: string;
+  /** Config value written to config.yaml (must match schema enum values). */
+  value: string;
+}
+
 /** A single field descriptor in the /config card. */
 export interface ConfigField {
   key: string;
   label: string;
   type: 'boolean' | 'select' | 'input' | 'note';
-  /** For select type: the list of options shown in the dropdown. */
-  options?: readonly string[];
+  /** For select type: the list of options shown in the dropdown.
+   *  Accepts plain strings (text=value) or {text, value} objects for
+   *  display-value separation (e.g. 'manual（逐项审批）' → value 'manual'). */
+  options?: readonly (string | SelectOption)[];
   /** Override the currentValue shown in the card (takes priority over getConfigValue). */
   currentValue?: string | boolean;
 }

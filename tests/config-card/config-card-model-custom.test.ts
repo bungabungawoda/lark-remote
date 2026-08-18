@@ -8,12 +8,6 @@ import path from 'node:path';
 import os from 'node:os';
 import fs from 'node:fs';
 
-type RouterInternals = {
-  buildConfigCard: () => unknown;
-  ensurePendingConfig: () => void;
-  pendingConfig: AppConfig | null;
-};
-
 // ---------------------------------------------------------------------------
 // Helpers: extract config card fields and input elements
 // ---------------------------------------------------------------------------
@@ -208,7 +202,7 @@ describe('Config card: Claude model custom input (feature: 2026-07-15)', () => {
         sessionReaderRegistry,
       });
 
-      const result = (router as unknown as RouterInternals).buildConfigCard() as { card: object };
+      const result = router.buildConfigCard() as { card: object };
       const inputFields = extractInputFields(result.card);
 
       // Should have a custom model input field with label containing "自定义模型名"
@@ -236,7 +230,7 @@ describe('Config card: Claude model custom input (feature: 2026-07-15)', () => {
         sessionReaderRegistry,
       });
 
-      const result = (router as unknown as RouterInternals).buildConfigCard() as { card: object };
+      const result = router.buildConfigCard() as { card: object };
       const inputFields = extractInputFields(result.card);
 
       // Find the custom model input field
@@ -262,7 +256,7 @@ describe('Config card: Claude model custom input (feature: 2026-07-15)', () => {
         sessionReaderRegistry,
       });
 
-      const result = (router as unknown as RouterInternals).buildConfigCard() as { card: object };
+      const result = router.buildConfigCard() as { card: object };
       const selectFields = extractSelectFields(result.card);
 
       // Find the model select field (should be the one with "使用模型" label)
@@ -291,7 +285,7 @@ describe('Config card: Claude model custom input (feature: 2026-07-15)', () => {
         sessionReaderRegistry,
       });
 
-      const result = (router as unknown as RouterInternals).buildConfigCard() as { card: object };
+      const result = router.buildConfigCard() as { card: object };
       const inputFields = extractInputFields(result.card);
 
       // Find the custom model input field
@@ -318,16 +312,15 @@ describe('Config card: Claude model custom input (feature: 2026-07-15)', () => {
       });
 
       // Simulate user typing in custom model input and submitting
-      (router as unknown as RouterInternals).ensurePendingConfig();
+      router.ensurePendingConfig();
 
       // Access internal method to set value
-      const internals = router as unknown as RouterInternals;
-      if (internals.pendingConfig) {
-        internals.pendingConfig.claude = { ...config.claude, model: 'claude-super-5-custom' };
+      if (router.pendingConfig) {
+        router.pendingConfig.claude = { ...config.claude, model: 'claude-super-5-custom' };
       }
 
       // Verify pendingConfig was updated
-      expect(internals.pendingConfig?.claude?.model).toBe('claude-super-5-custom');
+      expect(router.pendingConfig?.claude?.model).toBe('claude-super-5-custom');
     });
   });
 });

@@ -22,6 +22,7 @@ import { clearSessionIndexCache } from '../../src/session/codex/rollout-reader.j
 import { OpencodeSessionReader } from '../../src/session/opencode/index.js';
 import { PiSessionReader } from '../../src/session/pi/index.js';
 import { KimiSessionReader } from '../../src/session/kimi/index.js';
+import type { AgentSessionReader } from '../../src/runner/index.js';
 
 const { mockLogger } = vi.hoisted(() => ({
   mockLogger: {
@@ -32,14 +33,11 @@ const { mockLogger } = vi.hoisted(() => ({
   },
 }));
 
+import { encodedProjectDir } from '../lib/session-fixtures.js';
 vi.mock('../../src/logger/index.js', () => ({
   getLogger: () => mockLogger,
   initLogger: () => mockLogger,
 }));
-
-function encodedProjectDir(cwd: string): string {
-  return fs.realpathSync(cwd).replace(/\//g, '-').replace(/_/g, '-');
-}
 
 describe('Round 10 reader probes', () => {
   let tmpDir: string;
@@ -65,7 +63,8 @@ describe('Round 10 reader probes', () => {
     });
     const kimi = new KimiSessionReader(path.join(tmpDir, 'kimi'));
 
-    for (const reader of [claude, codex, pi, opencode, kimi]) {
+    const readers: AgentSessionReader[] = [claude, codex, pi, opencode, kimi];
+    for (const reader of readers) {
       for (const opts of [
         undefined,
         { limit: 0 },
@@ -73,7 +72,7 @@ describe('Round 10 reader probes', () => {
         { limit: 20, offset: 25 },
         { limit: 20, offset: -3 },
       ]) {
-        const result = reader.listSessions(cwd, opts as any);
+        const result = reader.listSessions(cwd, opts);
         expect(result).toEqual({ sessions: [], total: 0 });
       }
     }

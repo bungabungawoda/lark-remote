@@ -7,28 +7,12 @@
 
 import { describe, it, expect } from 'vitest';
 import {
-  RpcErrorCode,
   NotificationMethod,
   ServerRequestMethod,
   UNSUPPORTED_SERVER_REQUEST_METHODS,
 } from './protocol-types.js';
 
 describe('protocol-types', () => {
-  describe('RpcErrorCode constants', () => {
-    it('defines standard JSON-RPC error codes', () => {
-      expect(RpcErrorCode.PARSE_ERROR).toBe(-32700);
-      expect(RpcErrorCode.INVALID_REQUEST).toBe(-32600);
-      expect(RpcErrorCode.METHOD_NOT_FOUND).toBe(-32601);
-      expect(RpcErrorCode.INVALID_PARAMS).toBe(-32602);
-      expect(RpcErrorCode.INTERNAL_ERROR).toBe(-32603);
-    });
-
-    it('defines custom error codes', () => {
-      expect(RpcErrorCode.TIMEOUT_ERROR).toBe(-32000);
-      expect(RpcErrorCode.CONNECTION_LOST).toBe(-32001);
-    });
-  });
-
   describe('NotificationMethod constants', () => {
     it('has all notification methods (real v2 wire names)', () => {
       expect(NotificationMethod.TURN_STARTED).toBe('turn/started');
@@ -86,39 +70,6 @@ describe('protocol-types', () => {
       expect(UNSUPPORTED_SERVER_REQUEST_METHODS.has('item/permissions/requestApproval')).toBe(
         false,
       );
-    });
-  });
-
-  describe('wire field conventions', () => {
-    it('uses camelCase for protocol params (threadId/turnId/itemId)', () => {
-      const params = {
-        threadId: 'th-123',
-        turnId: 'tn-456',
-        itemId: 'item-1',
-      };
-      expect(params.threadId).toBe('th-123');
-      expect(params.turnId).toBe('tn-456');
-      expect(params.itemId).toBe('item-1');
-    });
-
-    it('turn/start input is an array of UserInput objects', () => {
-      const params = {
-        threadId: 'th-123',
-        input: [{ type: 'text' as const, text: 'hello' }],
-      };
-      expect(params.input[0].text).toBe('hello');
-    });
-
-    it('sandbox mode uses the real protocol enum', () => {
-      const modes = ['read-only', 'workspace-write', 'danger-full-access'] as const;
-      expect(modes).toContain('workspace-write');
-      expect(modes).toContain('danger-full-access');
-      expect(modes).not.toContain('sandboxed');
-    });
-
-    it('approval response carries a decision', () => {
-      const response = { decision: 'accept' as const };
-      expect(response.decision).toBe('accept');
     });
   });
 });
