@@ -48,7 +48,7 @@ vi.mock('../../../src/logger/index.js', () => ({
   initLogger: () => mockLogger,
 }));
 
-const CARD_BUDGET_BYTES = 28 * 1024;
+import { CARD_BUDGET_BYTES } from '../../../src/card/text-truncate.js';
 
 function createStreamRejectingConnector() {
   const sent: { chatId: string; input: unknown; opts?: unknown }[] = [];

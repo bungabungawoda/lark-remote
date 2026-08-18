@@ -210,7 +210,7 @@ describe('config path mapping', () => {
 
       nodeFs.writeFileSync(configPath, YAML.stringify(initialConfig));
 
-      const updated = setConfigValues(configPath, initialConfig as any, { 'pi.thinking': 'high' });
+      const updated = setConfigValues(configPath, initialConfig, { 'pi.thinking': 'high' });
       expect(updated.agents?.pi?.thinking).toBe('high');
 
       nodeFs.rmSync(tmpDir, { recursive: true, force: true });
@@ -323,10 +323,8 @@ describe('anchor: config card model options filtered by provider', () => {
       }),
     });
 
-    const result = (
-      router as unknown as { buildConfigCard: () => { card: object } }
-    ).buildConfigCard();
-    const modelOptions = extractFieldOptions(result.card, 'agents.pi.model');
+    const result = router.buildConfigCard();
+    const modelOptions = extractFieldOptions(result.card!, 'agents.pi.model');
 
     expect(modelOptions.some((m) => m === 'glm-5.1')).toBe(true);
     expect(modelOptions.some((m) => m === 'glm-5.2')).toBe(false);
@@ -453,17 +451,12 @@ describe('Bug 2: 切换 provider 后应自动重置 model', () => {
       }),
     });
 
-    await (
-      router as unknown as {
-        dispatchConfigAction: (
-          value: { cmd: string; key: string; option: string },
-          ctx: unknown,
-        ) => Promise<void>;
-      }
-    ).dispatchConfigAction({ cmd: 'config.set', key: 'agents.pi.provider', option: 'lt' }, {});
+    await router.dispatchConfigAction(
+      { cmd: 'config.set', key: 'agents.pi.provider', option: 'lt' },
+      { userId: 'u1', chatId: 'c1', messageId: 'm1' },
+    );
 
-    const pendingPiConfig = (router as unknown as { pendingConfig: AppConfig }).pendingConfig.agents
-      ?.pi;
+    const pendingPiConfig = router.pendingConfig?.agents?.pi;
     const currentModel = pendingPiConfig?.model;
     const ltModels = getPiModelOptions('lt');
 

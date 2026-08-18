@@ -3,6 +3,7 @@ import {
   truncateMarkdownTables,
   countMarkdownTables,
   FEISHU_MAX_TABLES,
+  CARD_BUDGET_BYTES,
 } from './text-truncate.js';
 
 /**
@@ -23,8 +24,26 @@ interface CardBudgetOptions {
   truncationHint?: string;
 }
 
-// 飞书卡片大小限制（安全阈值，取 run-renderer 相同值）
-const CARD_BUDGET_BYTES = 28_000;
+/**
+ * CardKit 2.0 卡片 JSON 的最小结构（仅本模块裁剪关心的字段）。
+ *
+ * 用结构化类型替代 `any`，让 count/truncate 两套遍历共享同一棵树的形状。
+ */
+interface CardText {
+  tag?: string;
+  content?: string;
+}
+
+interface CardElementNode {
+  tag?: string;
+  text?: CardText;
+  elements?: CardElementNode[];
+  columns?: { elements?: CardElementNode[] }[];
+}
+
+interface CardNode {
+  body?: { elements?: CardElementNode[] };
+}
 
 /**
  * 静态卡片体积保护
@@ -51,8 +70,7 @@ export function enforceCardBudget(
   const totalTables = countCardTables(JSON.parse(cardStr));
   if (totalTables > FEISHU_MAX_TABLES) {
     // 深拷贝后对每个 lark_md 文本做 truncateMarkdownTables
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const fixed = JSON.parse(cardStr) as any;
+    const fixed = JSON.parse(cardStr) as CardNode;
     truncateCardMarkdownTables(fixed);
     const fixedStr = JSON.stringify(fixed);
     // table 截断后可能仍超字节预算，继续走后续阶段
@@ -74,8 +92,7 @@ export function enforceCardBudget(
   }
 
   // 字节超限但 table 不超限
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  return enforceByteBudget(JSON.parse(cardStr) as any, opts, bytesBefore);
+  return enforceByteBudget(JSON.parse(cardStr) as CardNode, opts, bytesBefore);
 }
 
 type BudgetResult = {
@@ -105,8 +122,7 @@ type BudgetResult = {
  *   阶段5 最终兜底 minimal card（骨架本身已超限的病理场景）
  */
 function enforceByteBudget(
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  truncated: any,
+  truncated: CardNode,
   opts: CardBudgetOptions = {},
   bytesBefore?: number,
 ): BudgetResult {
@@ -118,8 +134,7 @@ function enforceByteBudget(
 
   const reasons: string[] = [];
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const elements: any[] = truncated.body?.elements ?? [];
+  const elements: CardElementNode[] = truncated.body?.elements ?? [];
   const size = () => Buffer.byteLength(JSON.stringify(truncated), 'utf8');
   const done = (wasTruncated: boolean): BudgetResult => ({
     card: truncated,
@@ -135,7 +150,7 @@ function enforceByteBudget(
     if (el.tag !== 'collapsible_panel') continue;
     for (const inner of el.elements ?? []) {
       if (inner.tag === 'div' && inner.text?.content) {
-        const content = inner.text.content as string;
+        const content = inner.text.content;
         if (Buffer.byteLength(content, 'utf8') > maxPanelContentBytes) {
           inner.text.content = truncateUtf8(content, maxPanelContentBytes);
           modifications++;
@@ -189,7 +204,7 @@ function enforceByteBudget(
   let textTruncations = 0;
   for (const el of elements) {
     if (el.tag === 'div' && el.text?.content) {
-      const content = el.text.content as string;
+      const content = el.text.content;
       if (Buffer.byteLength(content, 'utf8') > maxPanelContentBytes) {
         el.text.content = truncateUtf8(content, maxPanelContentBytes);
         textTruncations++;
@@ -237,8 +252,11 @@ function enforceByteBudget(
 /**
  * 在卡片头部插入「N 个事件未显示」提示（仅在有面板被移除时）。
  */
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-function insertOmittedHint(elements: any[], omitted: number, truncationHint: string): void {
+function insertOmittedHint(
+  elements: CardElementNode[],
+  omitted: number,
+  truncationHint: string,
+): void {
   if (omitted <= 0) return;
   elements.unshift({
     tag: 'div',
@@ -249,8 +267,7 @@ function insertOmittedHint(elements: any[], omitted: number, truncationHint: str
 /**
  * 获取所有 collapsible_panel 的索引（结构化判定，不看标题文本）。
  */
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-function getPanelIndices(elements: any[]): number[] {
+function getPanelIndices(elements: CardElementNode[]): number[] {
   const indices: number[] = [];
   for (let i = 0; i < elements.length; i++) {
     if (elements[i].tag === 'collapsible_panel') {
@@ -261,92 +278,46 @@ function getPanelIndices(elements: any[]): number[] {
 }
 
 /**
- * Count all markdown tables across every lark_md text field in a card JSON.
- * Recursively walks elements, collapsible_panel.elements, column.elements, etc.
+ * 遍历卡片元素树（含 collapsible_panel.elements 与 column_set.columns[].elements）。
+ *
+ * count 与 truncate 两条路径共用同一遍历，避免两套递归漂移（G5 Duplication）。
  */
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-function countCardTables(card: any): number {
-  let total = 0;
-  const elements = card?.body?.elements ?? [];
+function walkCardElements(elements: CardElementNode[], visit: (el: CardElementNode) => void): void {
   for (const el of elements) {
-    total += countElementTables(el);
-  }
-  return total;
-}
-
-/**
- * Recursively count markdown tables in a single element and its children.
- */
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-function countElementTables(el: any): number {
-  let count = 0;
-
-  // lark_md div text
-  if (el.text?.tag === 'lark_md' && typeof el.text.content === 'string') {
-    count += countMarkdownTables(el.text.content);
-  }
-
-  // collapsible_panel inner elements
-  if (Array.isArray(el.elements)) {
-    for (const child of el.elements) {
-      count += countElementTables(child);
-    }
-  }
-
-  // column_set → columns → elements
-  if (Array.isArray(el.columns)) {
-    for (const col of el.columns) {
-      if (Array.isArray(col.elements)) {
-        for (const child of col.elements) {
-          count += countElementTables(child);
-        }
+    visit(el);
+    if (Array.isArray(el.elements)) walkCardElements(el.elements, visit);
+    if (Array.isArray(el.columns)) {
+      for (const col of el.columns) {
+        if (Array.isArray(col.elements)) walkCardElements(col.elements, visit);
       }
     }
   }
+}
 
-  return count;
+/**
+ * Count all markdown tables across every lark_md text field in a card JSON.
+ */
+function countCardTables(card: CardNode): number {
+  let total = 0;
+  walkCardElements(card?.body?.elements ?? [], (el) => {
+    if (el.text?.tag === 'lark_md' && typeof el.text.content === 'string') {
+      total += countMarkdownTables(el.text.content);
+    }
+  });
+  return total;
 }
 
 /**
  * In-place truncate markdown tables in every lark_md text field of a card,
  * keeping at most FEISHU_MAX_TABLES per field.
  */
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-function truncateCardMarkdownTables(card: any): void {
-  const elements = card?.body?.elements ?? [];
-  for (const el of elements) {
-    truncateElementTables(el);
-  }
-}
-
-/**
- * Recursively truncate markdown tables in a single element and its children.
- */
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-function truncateElementTables(el: any): void {
-  // lark_md div text
-  if (el.text?.tag === 'lark_md' && typeof el.text.content === 'string') {
-    const truncated = truncateMarkdownTables(el.text.content);
-    if (truncated !== el.text.content) {
-      el.text.content = truncated;
-    }
-  }
-
-  // collapsible_panel inner elements
-  if (Array.isArray(el.elements)) {
-    for (const child of el.elements) {
-      truncateElementTables(child);
-    }
-  }
-
-  // column_set → columns → elements
-  if (Array.isArray(el.columns)) {
-    for (const col of el.columns) {
-      if (Array.isArray(col.elements)) {
-        for (const child of col.elements) {
-          truncateElementTables(child);
-        }
+function truncateCardMarkdownTables(card: CardNode): void {
+  walkCardElements(card?.body?.elements ?? [], (el) => {
+    if (el.text?.tag === 'lark_md' && typeof el.text.content === 'string') {
+      const truncated = truncateMarkdownTables(el.text.content);
+      if (truncated !== el.text.content) {
+        el.text.content = truncated;
       }
     }
-  }
+  });
 }

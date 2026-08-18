@@ -8,11 +8,13 @@ import { CommandRouter } from '../../../src/router/index.js';
 import { AppConfigSchema } from '../../../src/config/index.js';
 import type { AppConfig } from '../../../src/config/index.js';
 import { SessionReaderRegistry } from '../../../src/session/registry.js';
+import { sleep, waitFor } from '../../lib/wait-for.js';
 
 import {
   createStubAgentRegistry,
   createStubSessionReaderRegistry,
   createStubRunner,
+  createStubConnectorWithPendingQueueCard,
 } from '../../lib/bridge-stubs.js';
 const { mockLogger } = vi.hoisted(() => ({
   mockLogger: {
@@ -27,85 +29,6 @@ vi.mock('../../logger/index.js', () => ({
   getLogger: () => mockLogger,
   initLogger: () => mockLogger,
 }));
-
-/**
- * Stub connector whose queue status card send ("⏳ 消息排队中" via
- * sendWithRetry({ card })) stays in flight until the test resolves it. This
- * reproduces the A5 production race: Feishu API latency / 99991400 rate-limit
- * retry keeps the queue card's send promise pending while the running task is
- * stopped and its settle advances the queue chain. Text sends resolve
- * immediately so the router's final confirmation toast never blocks.
- */
-function createStubConnectorWithPendingQueueCard() {
-  const sent: Array<{ chatId: string; input: unknown; opts?: unknown }> = [];
-  const cards: object[] = [];
-  let resolveQueueCardSend: (() => void) | undefined;
-
-  return {
-    sendWithRetry: async (chatId: string, input: unknown, opts?: unknown) => {
-      sent.push({ chatId, input, opts });
-      const hasCard =
-        !!input && typeof input === 'object' && 'card' in (input as Record<string, unknown>);
-      if (hasCard) {
-        // Queue status card send stays pending until the test releases it.
-        return new Promise<string>((resolve) => {
-          resolveQueueCardSend = () => resolve('queue-card-msg');
-        });
-      }
-      return 'msg-id';
-    },
-    sendFile: async (chatId: string, filePath: string) => {
-      sent.push({ chatId, input: { file: filePath }, opts: undefined });
-      return 'file-msg-id';
-    },
-    reconnect: async () => {},
-    addReaction: async () => {},
-    streamCard: async (
-      chatId: string,
-      initial: object,
-      producer: (controller: {
-        messageId: string;
-        current: object;
-        update(next: object | ((current: object) => object)): Promise<void>;
-      }) => Promise<void>,
-      opts?: unknown,
-    ) => {
-      sent.push({ chatId, input: { card: initial }, opts });
-      cards.push(initial);
-      let current = initial;
-      await producer({
-        messageId: 'stream-msg-id',
-        get current() {
-          return current;
-        },
-        update: async (next) => {
-          current = typeof next === 'function' ? next(current) : next;
-          cards.push(current);
-        },
-      });
-      return 'stream-msg-id';
-    },
-    updateCard: async (_messageId: string, card: object) => {
-      cards.push(card);
-    },
-    connected: true,
-    _sent: sent,
-    _cards: cards,
-    resolveQueueCardSend: () => resolveQueueCardSend?.(),
-  };
-}
-
-const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
-
-/** Poll a condition with real waits; returns false on timeout. */
-async function waitFor(condition: () => boolean, timeoutMs = 1000): Promise<boolean> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (condition()) return true;
-    await sleep(10);
-  }
-  return condition();
-}
 
 let tmpDir: string;
 let config: AppConfig;

@@ -51,8 +51,7 @@ describe('FeishuConnector.sendWithRetry', () => {
 
   beforeEach(() => {
     connector = new FeishuConnector(config);
-    mockChannel = (connector as unknown as { channel: { send: ReturnType<typeof vi.fn> } }).channel
-      .send as ReturnType<typeof vi.fn>;
+    mockChannel = connector.channel.send as ReturnType<typeof vi.fn>;
   });
 
   it('should succeed on first attempt', async () => {
@@ -127,8 +126,7 @@ describe('FeishuConnector.updateCard', () => {
 
   beforeEach(() => {
     connector = new FeishuConnector(config);
-    mockChannel = (connector as unknown as { channel: { updateCard: ReturnType<typeof vi.fn> } })
-      .channel.updateCard as ReturnType<typeof vi.fn>;
+    mockChannel = connector.channel.updateCard as ReturnType<typeof vi.fn>;
   });
 
   it('should handle 502 error without crashing', async () => {
@@ -140,8 +138,10 @@ describe('FeishuConnector.updateCard', () => {
     });
     mockChannel.mockRejectedValueOnce(axiosError);
 
-    // Should not throw unhandled rejection, should be catchable
-    await expect(connector.updateCard('msg-123', { config: {} })).rejects.toBeDefined();
+    // 错误被包装传播，且 formatError 保留 HTTP status 分类信息
+    await expect(connector.updateCard('msg-123', { config: {} })).rejects.toMatchObject({
+      message: expect.stringContaining('(HTTP 502)'),
+    });
   });
 
   it('should handle 503 error gracefully', async () => {
@@ -153,7 +153,9 @@ describe('FeishuConnector.updateCard', () => {
     });
     mockChannel.mockRejectedValueOnce(axiosError);
 
-    await expect(connector.updateCard('msg-123', { config: {} })).rejects.toBeDefined();
+    await expect(connector.updateCard('msg-123', { config: {} })).rejects.toMatchObject({
+      message: expect.stringContaining('(HTTP 503)'),
+    });
   });
 
   it('should handle timeout errors', async () => {
@@ -161,7 +163,9 @@ describe('FeishuConnector.updateCard', () => {
     Object.assign(axiosError, { code: 'ETIMEDOUT' });
     mockChannel.mockRejectedValueOnce(axiosError);
 
-    await expect(connector.updateCard('msg-123', { config: {} })).rejects.toBeDefined();
+    await expect(connector.updateCard('msg-123', { config: {} })).rejects.toMatchObject({
+      message: expect.stringContaining('(code: ETIMEDOUT)'),
+    });
   });
 
   it('should return successfully when updateCard succeeds', async () => {
@@ -178,8 +182,7 @@ describe('FeishuConnector.streamCard', () => {
 
   beforeEach(() => {
     connector = new FeishuConnector(config);
-    mockChannel = (connector as unknown as { channel: { stream: ReturnType<typeof vi.fn> } })
-      .channel.stream as ReturnType<typeof vi.fn>;
+    mockChannel = connector.channel.stream as ReturnType<typeof vi.fn>;
   });
 
   it('should return messageId on success', async () => {
@@ -268,8 +271,7 @@ describe('FeishuConnector.disconnect', () => {
 
   beforeEach(() => {
     connector = new FeishuConnector(config);
-    mockChannel = (connector as unknown as { channel: { disconnect: ReturnType<typeof vi.fn> } })
-      .channel.disconnect as ReturnType<typeof vi.fn>;
+    mockChannel = connector.channel.disconnect as ReturnType<typeof vi.fn>;
   });
 
   it('should handle disconnect error gracefully', async () => {
@@ -286,11 +288,7 @@ describe('FeishuConnector.reconnect', () => {
 
   beforeEach(() => {
     connector = new FeishuConnector(config);
-    mockChannel = (
-      connector as unknown as {
-        channel: { disconnect: ReturnType<typeof vi.fn>; connect: ReturnType<typeof vi.fn> };
-      }
-    ).channel;
+    mockChannel = connector.channel;
   });
 
   it('should handle disconnect failure during reconnect gracefully', async () => {
