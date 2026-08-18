@@ -24,14 +24,10 @@ describe('anchor: approval expiry card state', () => {
       view: {
         requestId: 1001,
         kind: 'command',
-        threadShort: 'th-aaa-2',
-        turnShort: 'tn-222',
-        workspace: '/home/user/project',
         command: 'mv /tmp/a.txt /tmp/b.txt',
         commandCwd: '/home/user/project',
         reason: 'Test approval',
         availableDecisions: ['accept', 'decline', 'cancel'],
-        pendingTotal: 1,
       },
     };
   }

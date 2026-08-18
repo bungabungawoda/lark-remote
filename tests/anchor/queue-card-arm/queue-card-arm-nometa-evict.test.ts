@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import { QueueManager } from '../../../src/bridge/queue-manager.js';
+import { sleep, waitFor } from '../../lib/wait-for.js';
 
 const { mockLogger } = vi.hoisted(() => ({
   mockLogger: {
@@ -16,18 +17,6 @@ vi.mock('../../../src/logger/index.js', () => ({
 }));
 
 const WORKSPACE = '/tmp/queue-card-arm-nometa-evict-ws';
-
-const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
-
-/** Poll a condition with real waits; returns false on timeout. */
-async function waitFor(condition: () => boolean, timeoutMs = 1000): Promise<boolean> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (condition()) return true;
-    await sleep(10);
-  }
-  return condition();
-}
 
 /** Same stub-callback pattern as tests/anchor/queue-card-arm/queue-card-arm.test.ts. */
 function makeQueueManager() {

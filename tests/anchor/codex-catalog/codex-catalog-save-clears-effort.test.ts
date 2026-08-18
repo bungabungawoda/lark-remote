@@ -5,7 +5,6 @@ import { SessionStore } from '../../../src/session/index.js';
 import { AppConfigSchema, setConfigValues } from '../../../src/config/index.js';
 import type { AppConfig } from '../../../src/config/index.js';
 import { invalidateCodexBundledCache } from '../../../src/config/codex-config.js';
-import { buildCodexExecArgs } from '../../../src/runner/codex/argv.js';
 import { makeModel, makeCatalog } from '../../fixtures/codex-catalog-fixture.js';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -43,12 +42,6 @@ const ACTIVE_CATALOG_JSON = makeCatalog([
   }),
 ]);
 
-type RouterInternals = {
-  pendingConfig?: AppConfig | null;
-  ensurePendingConfig: () => void;
-  diffConfig: (original: AppConfig, pending: AppConfig) => Record<string, string | undefined>;
-  setNestedValue: (target: AppConfig, key: string, value: unknown) => void;
-};
 function buildCodexConfig(model: string, reasoningEffort: string): AppConfig {
   return AppConfigSchema.parse({
     feishu: { appId: 'test', appSecret: 'test' },
@@ -123,25 +116,20 @@ describe('codex catalog save clears effort - anchor', () => {
       ordersPath: path.join(tmpDir, 'orders.json'),
       sessionReaderRegistry: createMockSessionReaderRegistry({ agentKinds: ['claude', 'codex'] }),
     });
-    const internals = router as unknown as RouterInternals;
-
     // 切到未知模型（目录无档位元数据、无声明 default）→ 档位应被清空
     await router.handleCardAction(
       { cmd: 'config.set', key: 'agents.codex.model', option: 'unknown-model' },
       { userId: 'u1', chatId: 'c1', messageId: 'm1' },
     );
 
-    expect(internals.pendingConfig?.agents?.codex?.model).toBe('unknown-model');
+    expect(router.pendingConfig?.agents?.codex?.model).toBe('unknown-model');
     // 删除语义：键必须从 pendingConfig 中移除，而不是值为 undefined 或字符串 "undefined"
     expect(
-      Object.prototype.hasOwnProperty.call(
-        internals.pendingConfig?.agents?.codex,
-        'reasoningEffort',
-      ),
+      Object.prototype.hasOwnProperty.call(router.pendingConfig?.agents?.codex, 'reasoningEffort'),
     ).toBe(false);
 
     // diffConfig：已删除的键表达为 undefined，绝不能变成 "undefined"
-    const updates = internals.diffConfig(config, internals.pendingConfig!);
+    const updates = router.diffConfig(config, router.pendingConfig!);
     expect(updates['agents.codex.reasoningEffort']).toBeUndefined();
     expect(updates['agents.codex.reasoningEffort']).not.toBe('undefined');
     expect(updates['agents.codex.model']).toBe('unknown-model');
@@ -152,14 +140,5 @@ describe('codex catalog save clears effort - anchor', () => {
     const yamlContent = fs.readFileSync(configPath, 'utf-8');
     expect(yamlContent).not.toContain('reasoningEffort');
     expect(yamlContent).not.toContain('undefined');
-
-    // runner 侧：reasoningEffort 为 undefined 时不透传 effort（argv 短路）
-    const argv = buildCodexExecArgs({
-      cwd: '/tmp',
-      model: 'unknown-model',
-      modelProvider: 'deepseek',
-      reasoningEffort: saved.agents?.codex?.reasoningEffort,
-    });
-    expect(argv.join(' ')).not.toContain('model_reasoning_effort');
   });
 });

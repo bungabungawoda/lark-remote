@@ -4,14 +4,13 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { RpcErrorCode, NotificationMethod, ServerRequestMethod } from './protocol-types.js';
+import { NotificationMethod, ServerRequestMethod } from './protocol-types.js';
 import { CodexAppServerTranslator } from './translator.js';
 import type { AgentEvent, ApprovalView } from '../../types.js';
 
 describe('Codex App Server Runner', () => {
   describe('module imports', () => {
     it('imports protocol-types without error', () => {
-      expect(RpcErrorCode.PARSE_ERROR).toBeDefined();
       expect(NotificationMethod.TURN_STARTED).toBeDefined();
       expect(ServerRequestMethod.COMMAND_EXECUTION_APPROVAL).toBeDefined();
     });
@@ -711,7 +710,8 @@ describe('Codex App Server Runner', () => {
       expect(methods).toContain('serverRequest/resolved');
       expect(methods).toContain('error');
       expect(methods).toContain('model/rerouted');
-      expect(methods.length).toBe(21);
+      expect(methods).toContain('thread/settings/updated');
+      expect(methods.length).toBe(22);
     });
 
     it('has the correct set of server request methods', () => {

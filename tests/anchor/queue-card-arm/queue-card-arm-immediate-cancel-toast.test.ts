@@ -8,6 +8,7 @@ import { CommandRouter } from '../../../src/router/index.js';
 import { AppConfigSchema } from '../../../src/config/index.js';
 import type { AppConfig } from '../../../src/config/index.js';
 import { SessionReaderRegistry } from '../../../src/session/registry.js';
+import { sleep, waitFor } from '../../lib/wait-for.js';
 
 import {
   createStubAgentRegistry,
@@ -30,18 +31,6 @@ vi.mock('../../../src/logger/index.js', () => ({
 }));
 
 /** Same stub connector pattern as tests/anchor/queue-card-arm/queue-card-arm-immediate-target-began.test.ts. */
-
-const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
-
-/** Poll a condition with real waits; returns false on timeout. */
-async function waitFor(condition: () => boolean, timeoutMs = 1000): Promise<boolean> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (condition()) return true;
-    await sleep(10);
-  }
-  return condition();
-}
 
 let tmpDir: string;
 let config: AppConfig;

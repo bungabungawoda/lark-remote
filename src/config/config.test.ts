@@ -57,9 +57,73 @@ describe('loadConfig', () => {
 
     expect(config.claude.model).toBe('claude-opus-4-8');
     expect(config.claude.stopGraceMs).toBe(5000);
+    // claude 审批配置默认：bypassPermissions（保持旧行为）+ 5 分钟超时 + 30 分钟空闲回收
+    expect(config.claude.permissionMode).toBe('bypassPermissions');
+    expect(config.claude.approvalTimeoutMs).toBe(5 * 60 * 1000);
+    expect(config.claude.idleTtlMinutes).toBe(30);
     expect(config.output.showThinking).toBe(true);
     // defaultAgent defaults to 'claude' when absent
     expect(config.defaultAgent).toBe('claude');
+  });
+
+  it('claude permissionMode accepts official --permission-mode enum plus default', () => {
+    for (const mode of [
+      'default',
+      'acceptEdits',
+      'auto',
+      'bypassPermissions',
+      'manual',
+      'dontAsk',
+      'plan',
+    ]) {
+      const p = writeConfig(`feishu:
+  appId: cli_test123
+  appSecret: secret_test123
+claude:
+  permissionMode: ${mode}
+`);
+      const config = loadConfig(p);
+      expect(config.claude.permissionMode).toBe(mode);
+    }
+  });
+
+  it('claude custom approvalTimeoutMs and idleTtlMinutes are honored', () => {
+    const p = writeConfig(`feishu:
+  appId: cli_test123
+  appSecret: secret_test123
+claude:
+  approvalTimeoutMs: 120000
+  idleTtlMinutes: 0
+`);
+    const config = loadConfig(p);
+    expect(config.claude.approvalTimeoutMs).toBe(120000);
+    expect(config.claude.idleTtlMinutes).toBe(0);
+  });
+
+  it('fresh config defaults codex to on-request / workspace-write', () => {
+    const p = writeConfig(VALID_CONFIG);
+    const config = loadConfig(p);
+
+    // codex 恒为 app-server 模式，无运行模式字段
+    expect(config.agents?.codex?.serviceMode).toBeUndefined();
+    expect(config.agents?.codex?.approvalPolicy).toBe('on-request');
+    expect(config.agents?.codex?.sandbox).toBe('workspace-write');
+  });
+
+  it('agents.opencode.mode defaults to build and accepts build/plan (§P5)', () => {
+    const p = writeConfig(VALID_CONFIG + '\nagents:\n  opencode:\n    providerID: anthropic\n');
+    const config = loadConfig(p);
+    expect(config.agents?.opencode?.mode).toBe('build');
+
+    const plan = writeConfig(
+      VALID_CONFIG + '\nagents:\n  opencode:\n    providerID: anthropic\n    mode: plan\n',
+    );
+    expect(loadConfig(plan).agents?.opencode?.mode).toBe('plan');
+
+    const invalid = writeConfig(
+      VALID_CONFIG + '\nagents:\n  opencode:\n    providerID: anthropic\n    mode: oops\n',
+    );
+    expect(() => loadConfig(invalid)).toThrow();
   });
 
   it('defaultAgent defaults to "claude" when absent', () => {
@@ -84,6 +148,61 @@ describe('loadConfig', () => {
     const bad = VALID_CONFIG + '\ndefaultAgent: gemini\n';
     const p = writeConfig(bad);
     expect(() => loadConfig(p)).toThrow();
+  });
+
+  // Kimi ACP config schema
+
+  it('kimi config defaults: permissionMode=manual', () => {
+    const p = writeConfig(VALID_CONFIG + '\nagents:\n  kimi:\n    model: kimi-code/k3\n');
+    const config = loadConfig(p);
+    expect(config.agents?.kimi?.permissionMode).toBe('manual');
+  });
+
+  it('kimi config accepts permissionMode and acp sub-config', () => {
+    const yaml =
+      VALID_CONFIG +
+      `
+agents:
+  kimi:
+    model: kimi-code/k3
+    permissionMode: yolo
+    acp:
+      binary: /usr/local/bin/kimi
+      requestTimeoutMs: 30000
+      idleTtlMs: 600000
+      turnIdleTimeoutMinutes: 5
+`;
+    const p = writeConfig(yaml);
+    const config = loadConfig(p);
+    expect(config.agents?.kimi?.permissionMode).toBe('yolo');
+    expect(config.agents?.kimi?.acp?.binary).toBe('/usr/local/bin/kimi');
+    expect(config.agents?.kimi?.acp?.requestTimeoutMs).toBe(30000);
+    expect(config.agents?.kimi?.acp?.idleTtlMs).toBe(600000);
+    expect(config.agents?.kimi?.acp?.turnIdleTimeoutMinutes).toBe(5);
+  });
+
+  it('kimi config rejects invalid permissionMode value', () => {
+    const bad =
+      VALID_CONFIG + '\nagents:\n  kimi:\n    model: kimi-code/k3\n    permissionMode: always\n';
+    const p = writeConfig(bad);
+    expect(() => loadConfig(p)).toThrow();
+  });
+
+  it('kimi acp sub-config stays undefined when not set', () => {
+    const yaml = VALID_CONFIG + '\nagents:\n  kimi:\n    model: kimi-code/k3\n';
+    const p = writeConfig(yaml);
+    const config = loadConfig(p);
+    // acp is optional, so when not provided it stays undefined
+    // (defaults are applied in KimiAcpRunner constructor, not in schema)
+    expect(config.agents?.kimi?.acp).toBeUndefined();
+  });
+
+  it('kimi schema accepts permissionMode alongside model', () => {
+    const yaml =
+      VALID_CONFIG + '\nagents:\n  kimi:\n    model: kimi-code/k3\n    permissionMode: yolo\n';
+    const p = writeConfig(yaml);
+    const config = loadConfig(p);
+    expect(config.agents?.kimi?.permissionMode).toBe('yolo');
   });
 
   it('generated template includes defaultAgent: claude', () => {

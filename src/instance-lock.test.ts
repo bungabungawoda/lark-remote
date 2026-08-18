@@ -86,9 +86,7 @@ describe('InstanceLock acquire edge cases', () => {
     fs.writeFileSync(lockPath, '12345\nold-process', 'utf-8');
 
     // Mock openSync: first call throws EEXIST, after unlink the second call also throws EEXIST
-    let _openCallCount = 0;
     vi.spyOn(fs, 'openSync').mockImplementation((..._args: unknown[]) => {
-      _openCallCount++;
       const err = new Error('file exists') as NodeJS.ErrnoException;
       err.code = 'EEXIST';
       throw err;
@@ -107,11 +105,11 @@ describe('InstanceLock acquire edge cases', () => {
     fs.writeFileSync(lockPath, '12345\nold-process', 'utf-8');
 
     // Mock openSync: first call EEXIST (enters stale path), second call also EEXIST (race)
-    let _openCallCount2 = 0;
+    let openCallCount = 0;
     vi.spyOn(fs, 'openSync').mockImplementation((..._args: unknown[]) => {
-      _openCallCount2++;
+      openCallCount++;
       // After the first EEXIST triggers unlink+retry, write malformed content before second read
-      if (_openCallCount2 === 2) {
+      if (openCallCount === 2) {
         fs.writeFileSync(lockPath, 'not-a-number\n', 'utf-8');
       }
       const err = new Error('file exists') as NodeJS.ErrnoException;
@@ -145,7 +143,6 @@ describe('InstanceLock acquire edge cases', () => {
     // isProcessRunning returns false (stale), so we try to unlink + retry
     // On retry, throw a non-EEXIST error
     let openSyncCallCount = 0;
-    const _origOpenSync = fs.openSync;
     vi.spyOn(fs, 'openSync').mockImplementation((..._args) => {
       openSyncCallCount++;
       if (openSyncCallCount === 1) {

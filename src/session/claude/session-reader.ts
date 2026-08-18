@@ -1,4 +1,5 @@
 import type { AgentSession, AgentSessionReader, SessionContent } from '../../runner/index.js';
+import { paginate } from '../common/pagination.js';
 import {
   listClaudeSessions,
   getNewestSession,
@@ -34,12 +35,8 @@ export class ClaudeSessionReader implements AgentSessionReader {
     // 先拿全集（不传 limit → listClaudeSessions 不切片），total 用全集长度，
     // 再由 reader 按 [offset, offset+limit) 切片。
     const all = listClaudeSessions(cwd, this.readerOpts());
-    const offset = Math.max(0, opts?.offset ?? 0);
-    const limit = opts?.limit;
-    return {
-      sessions: limit === undefined ? all.slice(offset) : all.slice(offset, offset + limit),
-      total: all.length,
-    };
+    const { items, total } = paginate(all, opts ?? {});
+    return { sessions: items, total };
   }
 
   getNewestSession(cwd: string): AgentSession | null {

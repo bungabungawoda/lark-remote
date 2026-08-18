@@ -65,10 +65,6 @@ describe('anchor: approval expiry integration to server', () => {
     const pushToCard = vi.fn().mockResolvedValue(undefined);
     const interruptTurn = vi.fn().mockResolvedValue(undefined);
     const coordinator = new ApprovalCoordinator({
-      runId: 'run-aaa-111',
-      userId: 'user-1',
-      chatId: 'chat-1',
-      workspace: '/home/user/project',
       approvalTimeoutMs: 100,
       responder: async (requestId, response) => {
         await runner.respondApproval(requestId, response);
@@ -99,6 +95,15 @@ describe('anchor: approval expiry integration to server', () => {
       .filter((entry) => entry.response && entry.response.id === 1);
     expect(responses).toHaveLength(1);
     expect(responses[0].response.result).toEqual({ decision: 'cancel' });
+
+    // 幂等：同一 requestId 再次响应不得重复发送（pendingApprovals 已清理）。
+    await runner.respondApproval(requestedId, { action: 'cancel' });
+    const responsesAfterSecond = readFileSync(requestLog, 'utf8')
+      .split('\n')
+      .filter(Boolean)
+      .map((line) => JSON.parse(line))
+      .filter((entry) => entry.response && entry.response.id === 1);
+    expect(responsesAfterSecond).toHaveLength(1);
 
     await runner.dispose();
   });
