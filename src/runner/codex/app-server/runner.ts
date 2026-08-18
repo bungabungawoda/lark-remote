@@ -5,31 +5,42 @@
  * Flow per run: acquire persistent connection → thread/start or thread/resume
  * → turn/start → consume notifications (agent message deltas, approval server
  * requests, …) until turn/completed → synthesize ResultEvent.
+ *
+ * Shares the ConnectionBasedRunner base with kimi/opencode: same notification
+ * queue + waitResolve pump, forceFinish/stopRequested semantics, turn idle
+ * watchdog, and ConnectionLostError respawn-and-retry-once.
  */
 
 import type {
   AgentKind,
   AgentSessionReader,
   AgentEvent,
-  AgentRunner,
   AgentStatusInfo,
   ApprovalView,
   SpawnOptions,
 } from '../../types.js';
-import { ConnectionManager, type ConnectionManagerOptions } from './connection-manager.js';
-import { CodexAppServerClient, ConnectionLostError } from './client.js';
+import {
+  ConnectionManager,
+  type ConnectionManagerOptions,
+} from '../../common/jsonrpc/connection-manager.js';
+import { JsonRpcClient } from '../../common/jsonrpc/client.js';
 import { CodexAppServerTranslator, type TranslatorEvent } from './translator.js';
 import {
   type AskForApproval,
   type SandboxMode,
+  type SandboxPolicy,
+  type InitializeResult,
   type ThreadStartResponse,
   type ThreadResumeParams,
   type ThreadStartParams,
+  type ThreadSettingsUpdateParams,
+  type ThreadSettingsUpdateResponse,
   type TurnStartResponse,
   type TurnStartParams,
 } from './protocol-types.js';
+import { RpcErrorCode } from '../../common/acp/protocol-types.js';
 import { getLogger } from '../../../logger/index.js';
-import { syntheticInitEvent } from '../../common/runner-utils.js';
+import { ConnectionBasedRunner } from '../../common/connection-based-runner.js';
 
 export interface CodexAppServerRunnerOptions {
   kind: AgentKind;
@@ -55,9 +66,6 @@ export interface CodexAppServerRunnerOptions {
   approvalPolicy?: AskForApproval;
 }
 
-/** How long to wait for turn output notifications before failing. */
-const TURN_IDLE_TIMEOUT_MS = 10 * 60 * 1000;
-
 /**
  * Build the protocol response body for a command/file approval decision.
  * Structured decisions (acceptWithExecpolicyAmendment) carry the payload the
@@ -80,218 +88,132 @@ function buildApprovalResponse(action: string, view: ApprovalView): { decision: 
   return { decision: action };
 }
 
+/**
+ * Map the client-side SandboxMode enum to the response-side SandboxPolicy
+ * object used by `thread/settings/update` (`sandboxPolicy`).
+ */
+export function sandboxModeToSandboxPolicy(mode: SandboxMode): SandboxPolicy {
+  switch (mode) {
+    case 'read-only':
+      return { type: 'readOnly', networkAccess: false };
+    case 'workspace-write':
+      return {
+        type: 'workspaceWrite',
+        writableRoots: [],
+        networkAccess: false,
+        excludeTmpdirEnvVar: false,
+        excludeSlashTmp: false,
+      };
+    case 'danger-full-access':
+      return { type: 'dangerFullAccess' };
+  }
+}
+
 interface PendingApproval {
-  kind: 'command' | 'file' | 'permissions';
+  kind: 'command' | 'file' | 'permissions' | 'question';
   view: ApprovalView;
 }
 
-export class CodexAppServerRunner implements AgentRunner {
-  readonly kind: AgentKind;
-  readonly sessionReader: AgentSessionReader;
-  readonly lifetime = 'workspace' as const;
-
-  private connectionManager: ConnectionManager;
-  private currentClient: CodexAppServerClient | null = null;
+export class CodexAppServerRunner extends ConnectionBasedRunner<
+  JsonRpcClient<InitializeResult>,
+  TranslatorEvent
+> {
+  private connectionManager: ConnectionManager<JsonRpcClient<InitializeResult>>;
   private currentTranslator: CodexAppServerTranslator | null = null;
-  private currentThreadId: string | null = null;
-  private currentTurnId: string | null = null;
-  private lastEventAt = 0;
-  private _isRunning = false;
+  private activeThreadId: string | null = null;
   private model?: string;
   private modelProvider?: string;
   private reasoningEffort?: string;
   private sandboxConfig?: SandboxMode;
   private approvalPolicyConfig?: AskForApproval;
-  private readonly turnTimeoutMs: number;
 
   /** Pending approval requests: requestId (JSON-RPC id) → kind + view. */
   private pendingApprovals = new Map<number | string, PendingApproval>();
 
-  /** Notification queue consumed by the active run generator. */
-  private notificationQueue: TranslatorEvent[] = [];
-  private waitResolve: (() => void) | null = null;
-  private forceFinish = false;
-  /** stop() 在 turn/start 响应前到达时置位，turn/start 完成后补发 interrupt。 */
-  private stopRequested = false;
-
   constructor(opts: CodexAppServerRunnerOptions) {
-    this.kind = opts.kind;
-    this.sessionReader = opts.sessionReader;
+    super({ kind: opts.kind, sessionReader: opts.sessionReader }, opts.turnTimeoutMs);
     this.model = opts.model;
     this.modelProvider = opts.modelProvider;
     this.reasoningEffort = opts.reasoningEffort;
     this.sandboxConfig = opts.sandbox;
     this.approvalPolicyConfig = opts.approvalPolicy;
-    this.turnTimeoutMs = opts.turnTimeoutMs ?? TURN_IDLE_TIMEOUT_MS;
 
-    const managerOpts: ConnectionManagerOptions = {
+    const managerOpts: ConnectionManagerOptions<JsonRpcClient<InitializeResult>> = {
       binary: opts.binary ?? 'codex',
-      args: opts.appServerArgs,
+      args: opts.appServerArgs ?? ['app-server', '--stdio'],
       env: opts.env,
       requestTimeoutMs: opts.requestTimeoutMs,
       idleTtlMs: opts.idleTtlMs,
-    };
-    this.connectionManager = new ConnectionManager(managerOpts);
-  }
-
-  get isRunning(): boolean {
-    return this._isRunning;
-  }
-
-  /**
-   * Run a message in the current thread.
-   *
-   * 进程容错：若 app-server 子进程被外部误杀或自身异常退出（连接丢失），
-   * 自动重拉进程并重试一次 setup（thread/start 或按 sessionId thread/resume
-   * 继续处理），保证消费用户消息时进程挂了也能恢复。
-   */
-  async *run(message: string, opts: SpawnOptions): AsyncGenerator<AgentEvent> {
-    if (this._isRunning) {
-      throw new Error('CodexAppServerRunner is already running');
-    }
-    this._isRunning = true;
-    this.resetRunState();
-
-    try {
-      try {
-        await this.setupTurn(message, opts);
-      } catch (err) {
-        // 连接在 setup 期间丢失（进程被误杀/异常退出）：重拉进程并重试一次。
-        // thread/resume 会按持久化记录（rollout）恢复线程，继续原会话处理。
-        if (err instanceof ConnectionLostError && !this.stopRequested) {
-          getLogger().warn(
-            `[codex-app-server-runner] connection lost during turn setup (${(err as Error).message}), respawning app-server and retrying once`,
-          );
-          // 旧连接可能仍挂在 slot 里（close 事件尚未处理完）：先强制释放，
-          // 保证重试会拉起全新进程；并摘掉旧 client 的 hooks，避免其残留的
-          // onClose 把错误结果塞进重试后的通知队列。
-          await this.connectionManager.release(opts.cwd);
-          const staleClient = this.currentClient;
-          if (staleClient) {
-            staleClient.setHooks({
-              onNotification: () => {},
-              onServerRequest: () => {},
-              onClose: () => {},
-            });
-          }
-          this.resetRunState();
-          await this.setupTurn(message, opts);
-        } else {
-          throw err;
-        }
-      }
-      if (this.stopRequested) {
-        // 启动期 /stop：turn/start 已完成，补发 interrupt，避免 server 端 turn
-        // 无人接管继续执行。
-        getLogger().warn('[codex-app-server-runner] stop requested before turn/start resolved');
-        try {
-          await this.currentClient?.request('turn/interrupt', {
-            threadId: this.currentThreadId,
-            turnId: this.currentTurnId,
-          });
-        } catch (err) {
-          getLogger().warn(
-            `[codex-app-server-runner] deferred interrupt failed: ${(err as Error).message}`,
-          );
-        }
-      }
-
-      // §9.22 守卫前提：桥的 pre-init result guard 和 run-state reducer 都以
-      // system.init 作为「本轮真实开始」的标记，而 app-server 协议没有 init 事件。
-      // 缺了它，成功的 result 会被当作 pre-init 丢弃，卡片终态停在 running，
-      // 最后兜底成「输出流已结束，但未收到 result 事件」（2026-08-13 事故）。
-      // 与 exec runner 的 syntheticInitEvent 模式一致：turn setup 成功即发 init，
-      // 保证 turn_started / turn_diff / result 全部落在 init 之后。
-      yield syntheticInitEvent(this.currentThreadId ?? opts.sessionId ?? '');
-      yield* this.consumeTurn();
-    } catch (err) {
-      getLogger().error(`[codex-app-server-runner] run error: ${(err as Error).message}`);
-      // 与 spawn 失败路径（spawning-runner §9.22）同理：error result 前必须补
-      // init，否则守卫把错误结果丢弃，卡片只显示通用「输出流已结束」而非具体
-      // 错误信息。
-      yield syntheticInitEvent(this.currentThreadId ?? opts.sessionId ?? '');
-      yield {
-        type: 'result',
-        subtype: 'error',
-        // 优先上报本次 setup 创建/恢复的线程 id：thread/start 成功后 turn/start
-        // 失败时 opts.sessionId 仍是旧值，漏报会导致下条消息再开一个孤儿线程
-        // （review P3-10）。
-        session_id: this.currentThreadId ?? opts.sessionId ?? '',
-        errorMessage: (err as Error).message,
-      } as AgentEvent;
-    } finally {
-      this._isRunning = false;
-      this.currentTranslator = null;
-      this.currentTurnId = null;
-      this.stopRequested = false;
-      this.currentThreadId = null;
-      // 无论成功失败都要重新武装 idle TTL（无 slot 时是 no-op）。
-      this.connectionManager.notifyIdle(opts.cwd);
-    }
-  }
-
-  /**
-   * Acquire the connection and set up the turn: thread/start（新会话）或
-   * thread/resume（按 sessionId 恢复既有线程）→ turn/start。
-   */
-  private async setupTurn(message: string, opts: SpawnOptions): Promise<void> {
-    const client = await this.connectionManager.acquire(opts.cwd);
-    this.connectionManager.notifyActivity(opts.cwd);
-    this.currentClient = client;
-    client.setHooks({
-      onNotification: (method, params) => this.handleNotification(method, params),
-      onServerRequest: (id, method, params) => this.handleServerRequest(id, method, params),
-      onClose: () => {
-        getLogger().warn('[codex-app-server-runner] client connection closed');
-        this.failTurn('Codex app-server connection closed');
+      // `experimentalApi: true` is required for `thread/settings/update`, which
+      // lets config.save push approval/sandbox changes to a live thread instead
+      // of waiting for the workspace-lifetime runner to be recreated.
+      initializeParams: {
+        clientInfo: {
+          name: 'lark-remote',
+          version: '1.0.0',
+        },
+        capabilities: {
+          experimentalApi: true,
+        },
       },
-    });
+    };
+    this.connectionManager = new ConnectionManager<JsonRpcClient<InitializeResult>>(managerOpts);
+  }
 
-    const threadParams: ThreadStartParams = this.buildThreadParams(opts.cwd);
-    let threadId: string;
-    if (opts.sessionId) {
-      const resumeParams: ThreadResumeParams = {
-        threadId: opts.sessionId,
-        ...threadParams,
-      };
-      await client.request<ThreadResumeParams, ThreadStartResponse>('thread/resume', resumeParams);
-      threadId = opts.sessionId;
-    } else {
-      const threadResult = await client.request<ThreadStartParams, ThreadStartResponse>(
-        'thread/start',
-        threadParams,
-      );
-      // 会话键假设（review P2-4）：主线程 thread.id === session_meta.session_id，
-      // 故 thread.id 可同时用作协议 threadId 与 store/session reader 的 session
-      // 键（bridge 用 turn_started 通知的 threadId 写回，/resume、Compact 按此
-      // 键定位 JSONL）。forked/subagent 线程二者会分叉（openai/codex#29327），
-      // 桥只把主线程作为顶层会话，不在此链路内。
-      threadId = threadResult.thread.id;
+  protected get logTag(): string {
+    return 'codex-app-server-runner';
+  }
+
+  protected get turnTimeoutErrorMessage(): string {
+    return 'Codex app-server turn timed out';
+  }
+
+  protected get turnInterruptedErrorMessage(): string {
+    return 'Codex app-server turn interrupted';
+  }
+
+  protected currentSessionId(): string | null {
+    return this.activeThreadId;
+  }
+
+  protected shouldDeferStop(): boolean {
+    return !this.currentTurnId;
+  }
+
+  protected async cancelCurrentTurn(): Promise<void> {
+    if (!this.currentClient || !this.activeThreadId || !this.currentTurnId) return;
+    try {
+      await (this.currentClient as JsonRpcClient).request('turn/interrupt', {
+        threadId: this.activeThreadId,
+        turnId: this.currentTurnId,
+      });
+    } catch (err) {
+      getLogger().warn(`[${this.logTag}] interrupt failed: ${(err as Error).message}`);
     }
-    this.currentThreadId = threadId;
+  }
 
-    const translator = new CodexAppServerTranslator();
-    this.currentTranslator = translator;
+  protected clearTurnState(): void {
+    this.currentTranslator = null;
+    this.activeThreadId = null;
+  }
 
-    const turnParams: TurnStartParams = this.buildTurnParams(message, opts);
-    const turnResult = await client.request<TurnStartParams, TurnStartResponse>(
-      'turn/start',
-      turnParams,
-    );
-    this.currentTurnId = turnResult.turn.id;
+  protected async releaseConnection(cwd: string): Promise<void> {
+    await this.connectionManager.release(cwd);
+  }
+
+  protected notifyIdle(cwd: string): void {
+    this.connectionManager.notifyIdle(cwd);
+  }
+
+  protected async disposeConnections(): Promise<void> {
+    await this.connectionManager.disposeAll();
   }
 
   /**
    * Run a compact operation on the current thread.
    */
   async *runCompact(_message: string, opts: SpawnOptions): AsyncGenerator<AgentEvent> {
-    if (this._isRunning) {
-      throw new Error('CodexAppServerRunner is already running');
-    }
-    this._isRunning = true;
-    this.resetRunState();
-
-    try {
+    yield* this.executeTurn(opts, async () => {
       const client = await this.connectionManager.acquire(opts.cwd);
       this.connectionManager.notifyActivity(opts.cwd);
       this.currentClient = client;
@@ -304,7 +226,7 @@ export class CodexAppServerRunner implements AgentRunner {
       if (!opts.sessionId) {
         throw new Error('compact requires a sessionId');
       }
-      this.currentThreadId = opts.sessionId;
+      this.activeThreadId = opts.sessionId;
 
       const translator = new CodexAppServerTranslator();
       translator.setOperationKind('compact');
@@ -322,52 +244,7 @@ export class CodexAppServerRunner implements AgentRunner {
       await client.request<ThreadResumeParams, ThreadStartResponse>('thread/resume', resumeParams);
 
       await client.request('thread/compact/start', { threadId: opts.sessionId });
-      // 与 run() 同理：compact 也先发 init 再消费通知，避免 result 被守卫丢弃。
-      yield syntheticInitEvent(this.currentThreadId ?? opts.sessionId ?? '');
-      yield* this.consumeTurn();
-    } catch (err) {
-      getLogger().error(`[codex-app-server-runner] runCompact error: ${(err as Error).message}`);
-      yield syntheticInitEvent(this.currentThreadId ?? opts.sessionId ?? '');
-      yield {
-        type: 'result',
-        subtype: 'error',
-        session_id: this.currentThreadId ?? opts.sessionId ?? '',
-        errorMessage: (err as Error).message,
-      } as AgentEvent;
-    } finally {
-      this._isRunning = false;
-      this.currentTranslator = null;
-      this.currentTurnId = null;
-      this.stopRequested = false;
-      this.currentThreadId = null;
-      this.connectionManager.notifyIdle(opts.cwd);
-    }
-  }
-
-  /**
-   * Stop the current turn by interrupting it.
-   */
-  async stop(_opts?: { immediate?: boolean }): Promise<void> {
-    if (!this._isRunning || !this.currentClient || !this.currentThreadId) return;
-    if (!this.currentTurnId) {
-      // turn/start 尚未响应：先标记，等 run() 在 turn/start 完成后补发 interrupt。
-      this.stopRequested = true;
-      this.forceFinish = true;
-      this.wakeWaiters();
-      return;
-    }
-    try {
-      await this.currentClient.request('turn/interrupt', {
-        threadId: this.currentThreadId,
-        turnId: this.currentTurnId ?? '',
-      });
-    } catch (err) {
-      getLogger().warn(`[codex-app-server-runner] stop error: ${(err as Error).message}`);
-    }
-    // Unblock the turn loop regardless of whether the server sends a
-    // turn/completed notification afterwards.
-    this.forceFinish = true;
-    this.wakeWaiters();
+    });
   }
 
   /**
@@ -397,35 +274,8 @@ export class CodexAppServerRunner implements AgentRunner {
     }
     this.pendingApprovals.delete(requestId);
     getLogger().info(
-      `[codex-app-server-runner] approval responded requestId=${requestId} kind=${pending.kind} action=${action}`,
+      `[${this.logTag}] approval responded requestId=${requestId} kind=${pending.kind} action=${action}`,
     );
-  }
-
-  /**
-   * Dispose the runner: release the connection.
-   */
-  async dispose(): Promise<void> {
-    try {
-      await this.connectionManager.disposeAll();
-    } catch (err) {
-      getLogger().warn(`[codex-app-server-runner] dispose error: ${(err as Error).message}`);
-    }
-  }
-
-  getUsageAuthority(): 'live' {
-    return 'live';
-  }
-
-  killOrphan(): void {
-    // No-op: the app-server connection is managed by ConnectionManager.
-  }
-
-  registerExitHandlers(): void {
-    // No-op: connection manager handles cleanup on exit.
-  }
-
-  unregisterExitHandlers(): void {
-    // No-op.
   }
 
   getStatusInfo(): AgentStatusInfo {
@@ -440,6 +290,56 @@ export class CodexAppServerRunner implements AgentRunner {
         ...(this.approvalPolicyConfig ? { approvalPolicy: String(this.approvalPolicyConfig) } : {}),
       },
     };
+  }
+
+  /**
+   * Unified approval-mode hot-update entry (called by the bridge via duck
+   * typing on active runs). Codex's `thread/settings/update` applies the new
+   * approval/sandbox policy to subsequent turns, even while the current turn
+   * is still active. This lets `/config` take effect without waiting for this
+   * workspace-lifetime runner to be recreated/evicted. Local fields are always
+   * updated so `/status` reflects the new config immediately; if there is no
+   * live thread, the next `thread/start`/`thread/resume` uses the new values
+   * anyway.
+   */
+  async updateApprovalMode(settings: {
+    approvalPolicy?: AskForApproval;
+    sandbox?: SandboxMode;
+  }): Promise<void> {
+    if (settings.approvalPolicy !== undefined) {
+      this.approvalPolicyConfig = settings.approvalPolicy;
+    }
+    if (settings.sandbox !== undefined) {
+      this.sandboxConfig = settings.sandbox;
+    }
+
+    if (!this.currentClient || !this.activeThreadId) {
+      return;
+    }
+
+    const params: ThreadSettingsUpdateParams = {
+      threadId: this.activeThreadId,
+      ...(settings.approvalPolicy !== undefined ? { approvalPolicy: settings.approvalPolicy } : {}),
+      ...(settings.sandbox !== undefined
+        ? { sandboxPolicy: sandboxModeToSandboxPolicy(settings.sandbox) }
+        : {}),
+    };
+
+    try {
+      await (this.currentClient as JsonRpcClient).request<
+        ThreadSettingsUpdateParams,
+        ThreadSettingsUpdateResponse
+      >('thread/settings/update', params);
+      getLogger().info(
+        `[${this.logTag}] thread/settings/update applied for thread=${this.activeThreadId}`,
+      );
+    } catch (err) {
+      // Config save must not fail because a live thread rejected an experimental
+      // update (e.g. older Codex without thread/settings/update). The local
+      // snapshot is already updated, so /status and the next thread start/resume
+      // still use the new values.
+      getLogger().warn(`[${this.logTag}] thread/settings/update failed: ${(err as Error).message}`);
+    }
   }
 
   // =========================================================================
@@ -459,7 +359,7 @@ export class CodexAppServerRunner implements AgentRunner {
 
   private buildTurnParams(message: string, opts: SpawnOptions): TurnStartParams {
     const params: TurnStartParams = {
-      threadId: this.currentThreadId ?? '',
+      threadId: this.activeThreadId ?? '',
       input: [{ type: 'text', text: message }],
       ...((opts.model ?? this.model) ? { model: opts.model ?? this.model } : {}),
       ...((opts.reasoningEffort ?? this.reasoningEffort)
@@ -470,83 +370,54 @@ export class CodexAppServerRunner implements AgentRunner {
   }
 
   /**
-   * Consume the notification queue until a result event arrives or the turn
-   * times out / is interrupted.
+   * Acquire the connection and set up the turn: thread/start（新会话）或
+   * thread/resume（按 sessionId 恢复既有线程）→ turn/start。
    */
-  private async *consumeTurn(): AsyncGenerator<AgentEvent> {
-    while (true) {
-      const timedOut = await this.waitForEvents(this.nextTurnIdleDeadline());
-      if (timedOut) {
-        await this.interruptCurrentTurn();
-        getLogger().warn('[codex-app-server-runner] turn wait timed out');
-        yield {
-          type: 'result',
-          subtype: 'error',
-          session_id: this.currentThreadId ?? '',
-          errorMessage: 'Codex app-server turn timed out',
-        } as AgentEvent;
-        return;
-      }
-      if (this.forceFinish) {
-        yield {
-          type: 'result',
-          subtype: 'interrupted',
-          session_id: this.currentThreadId ?? '',
-          errorMessage: 'Codex app-server turn interrupted',
-        } as AgentEvent;
-        return;
-      }
-      while (this.notificationQueue.length > 0) {
-        const ev = this.notificationQueue.shift() as TranslatorEvent;
-        yield ev as AgentEvent;
-        if (ev.type === 'result') {
-          return;
-        }
-      }
-    }
-  }
+  protected async setupTurn(message: string, opts: SpawnOptions): Promise<void> {
+    const client = await this.connectionManager.acquire(opts.cwd);
+    this.connectionManager.notifyActivity(opts.cwd);
+    this.currentClient = client;
+    client.setHooks({
+      onNotification: (method, params) => this.handleNotification(method, params),
+      onServerRequest: (id, method, params) => this.handleServerRequest(id, method, params),
+      onClose: () => {
+        getLogger().warn(`[${this.logTag}] client connection closed`);
+        this.failTurn('Codex app-server connection closed');
+      },
+    });
 
-  /**
-   * Compute the current idle deadline. 0 disables the idle timeout; otherwise
-   * the deadline is based on the last received event, not the turn start time.
-   */
-  private nextTurnIdleDeadline(): number {
-    if (this.turnTimeoutMs <= 0) return Number.POSITIVE_INFINITY;
-    return this.lastEventAt + this.turnTimeoutMs;
-  }
-
-  private async interruptCurrentTurn(): Promise<void> {
-    if (!this.currentClient || !this.currentThreadId || !this.currentTurnId) return;
-    try {
-      await this.currentClient.request('turn/interrupt', {
-        threadId: this.currentThreadId,
-        turnId: this.currentTurnId,
-      });
-    } catch (err) {
-      getLogger().warn(
-        `[codex-app-server-runner] idle-timeout interrupt failed: ${(err as Error).message}`,
+    const threadParams: ThreadStartParams = this.buildThreadParams(opts.cwd);
+    let threadId: string;
+    if (opts.sessionId) {
+      const resumeParams: ThreadResumeParams = {
+        threadId: opts.sessionId,
+        ...threadParams,
+      };
+      await client.request<ThreadResumeParams, ThreadStartResponse>('thread/resume', resumeParams);
+      threadId = opts.sessionId;
+    } else {
+      const threadResult = await client.request<ThreadStartParams, ThreadStartResponse>(
+        'thread/start',
+        threadParams,
       );
+      // 会话键假设（review P2-4）：主线程 thread.id === session_meta.session_id，
+      // 故 thread.id 可同时用作协议 threadId 与 store/session reader 的 session
+      // 键（bridge 用 turn_started 通知的 threadId 写回，/resume、Compact 按此
+      // 键定位 JSONL）。forked/subagent 线程二者会分叉（openai/codex#29327），
+      // 桥只把主线程作为顶层会话，不在此链路内。
+      threadId = threadResult.thread.id;
     }
-  }
+    this.activeThreadId = threadId;
 
-  private async waitForEvents(deadline: number): Promise<boolean> {
-    while (this.notificationQueue.length === 0 && !this.forceFinish) {
-      const remaining = deadline - Date.now();
-      if (remaining <= 0) return true;
-      await new Promise<void>((resolve) => {
-        this.waitResolve = resolve;
-        setTimeout(
-          () => {
-            if (this.waitResolve === resolve) {
-              this.waitResolve = null;
-              resolve();
-            }
-          },
-          Math.min(remaining, 30_000),
-        );
-      });
-    }
-    return false;
+    const translator = new CodexAppServerTranslator();
+    this.currentTranslator = translator;
+
+    const turnParams: TurnStartParams = this.buildTurnParams(message, opts);
+    const turnResult = await client.request<TurnStartParams, TurnStartResponse>(
+      'turn/start',
+      turnParams,
+    );
+    this.currentTurnId = turnResult.turn.id;
   }
 
   private handleNotification(method: string, params: unknown): void {
@@ -560,52 +431,22 @@ export class CodexAppServerRunner implements AgentRunner {
       // 未处理/不支持的服务端请求必须显式响应（error 即"拒绝"，turn 继续），
       // 否则服务端会一直等待响应（applyPatchApproval、item/tool/requestUserInput、
       // mcpServer/elicitation/request 等）。
-      this.currentClient?.respondError(id, -32601, `Unsupported server request: ${method}`);
+      this.currentClient?.respondError(
+        id,
+        RpcErrorCode.METHOD_NOT_FOUND,
+        `Unsupported server request: ${method}`,
+      );
       return;
     }
     for (const ev of events) {
       if (ev.type === 'approval_requested') {
         this.pendingApprovals.set(ev.requestId, { kind: ev.kind, view: ev.view });
         getLogger().info(
-          `[codex-app-server-runner] approval requested requestId=${ev.requestId} kind=${ev.kind}`,
+          `[${this.logTag}] approval requested requestId=${ev.requestId} kind=${ev.kind}`,
         );
       }
     }
     this.pushEvents(events);
-  }
-
-  private pushEvents(events: TranslatorEvent[]): void {
-    if (events.length === 0) return;
-    this.lastEventAt = Date.now();
-    this.notificationQueue.push(...events);
-    this.wakeWaiters();
-  }
-
-  private wakeWaiters(): void {
-    if (this.waitResolve) {
-      const resolve = this.waitResolve;
-      this.waitResolve = null;
-      resolve();
-    }
-  }
-
-  private failTurn(message: string): void {
-    this.pushEvents([
-      {
-        type: 'result',
-        subtype: 'error',
-        session_id: this.currentThreadId ?? '',
-        errorMessage: message,
-      } as AgentEvent,
-    ]);
-  }
-
-  private resetRunState(): void {
-    this.notificationQueue = [];
-    this.waitResolve = null;
-    this.lastEventAt = Date.now();
-    this.forceFinish = false;
-    this.pendingApprovals.clear();
   }
 
   private buildGrantedPermissions(view: ApprovalView): unknown {

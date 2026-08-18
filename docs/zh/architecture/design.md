@@ -40,7 +40,8 @@ Bridge                   普通 work queue + stop control lane；非命令消息
 CommandRouter            /开头 → 内置 handler；否则委托 bridge.forwardToClaude
     │                       session 读取走 SessionReaderRegistry（非直接 claude/sessions import）
     │
-ClaudeRunner             spawn claude -p，解析 JSONL，检查进程终态，yield AgentEvent
+ClaudeRunner             长驻交互会话（ClaudeSession），stream-json 双向通道，
+                         control_request → ApprovalCoordinator → 审批区，yield AgentEvent
     │
 RunCardSession           RunState reduce → CardKit 2.0 render → 原消息 patch
     │
@@ -49,23 +50,54 @@ FeishuConnector.streamCard() / updateCard()
 
 ---
 
-## 3. Claude 进程调用
+## 3. Claude 进程调用（长驻交互模式）
+
+ClaudeRunner 从「一次一跑」（`claude -p`）升级为**长驻交互会话**：一个 workspace
+一个长驻进程，stdout 是 stream-json 事件流，stdin 是双向 JSON 控制通道
+（`--input-format stream-json`）。每次用户消息 = 写一条 `user` 事件 + 消费事件
+直到本 turn 的 `result`；进程在 turn 之间保持存活，被 `/stop`、`/new`、`/cd`、
+会话级空闲回收（`claude.idleTtlMinutes`，默认 30 分钟）或 bridge 退出时经
+`ProcessStopper` 组杀，下条消息按 SessionStore 的 sessionId `--resume` 恢复。
+进程编排（pid 文件、killOrphan 身份校验、心跳、退出分发）由 `ClaudeSession`
+继承 `SpawningRunner` 复用；`ClaudeRunner` 是 workspace-lifetime 薄包装。
 
 ```bash
 claude \
-  -p "<user_message>" \
   --output-format stream-json \
+  --input-format stream-json \
+  --permission-prompt-tool stdio \
+  --replay-user-messages \
   --verbose \
-  --permission-mode bypassPermissions \
+  [--permission-mode <default|acceptEdits|auto|bypassPermissions|manual|dontAsk|plan>] \
   [--resume <session_id>] \
   [--model <model>] \
   [--settings <settings_json_path>]
 ```
 
 - `--verbose`：**必须加**，否则 JSONL 里不含 `thinking` 块
+- `--permission-prompt-tool stdio`：把权限检查以 `control_request`（subtype
+  `can_use_tool`）发到 stdout、从 stdin 收 `control_response`——这是
+  实测的成熟路径（Claude Code SDK 内部隐藏参数，`claude --help`
+  不显示；`stdio` 是保留值，其他值会被当作 MCP 工具名调用）
+- `--replay-user-messages`：把用户消息回显到 stdout（`isReplay`），协议层据此
+  确认消息已被接收
+- `--permission-mode`：默认 `bypassPermissions`（无审批卡，行为与旧版一致）；
+  配置为其他值后激活交互式审批
 - `--settings`：可选，指定 Claude 配置文件（由 CLI 参数 `--settings` 传入，或自动从 `CLAUDE_SETTINGS_PATH` 环境变量 / `~/.claude/settings.json` 检测）
 - `cwd`：通过 spawn 的 `cwd` 选项传入，不写进 prompt
-- `stdin`：必须设为 `'ignore'`，否则进程可能挂起等待输入
+
+**交互式审批链路**：`control_request`（工具调用/AskUserQuestion）→ runner 翻译
+为 `approval_requested` → bridge `ApprovalCoordinator` → run 卡底部审批区
+（允许 / 拒绝 / 允许所有；AskUserQuestion 为选项卡片）→ 用户决策 →
+`control_response` 回写。审批等待期间暂停桥级空闲看门狗；`claude.approvalTimeoutMs`
+（默认 5 分钟）超时自动发 cancel（deny + 中断 turn），终态显示「审批超时未响应，
+已自动取消」。
+
+**result 事件语义**：subtype 为 `compact`/`compaction` 是 turn 中途压缩（不是
+结束），其余 subtype 才是 turn 终态；`--resume` 会先重放上一轮旧 result（早于
+`system/init`），协议层直接丢弃。真实 claude 实测：长驻模式下 result 之后不会
+再有 stdout 事件（后台任务完成是静默的），因此 result = run 卡终态，无需像
+旧 `-p` 流程那样等进程退出（2026-08-16 实测）。
 
 **JSONL 事件类型（每行一个 JSON）：**
 
@@ -242,25 +274,35 @@ feishu:
   appId: cli_xxx
   appSecret: xxx
 
-# 默认 agent：claude | codex | opencode | pi | kimi
-# 决定 bridge spawn 哪个 agent、run 卡片 header 显示哪个 agent 名
+# 默认 agent 展示顺序（/config 卡片）：codex → claude → opencode → pi → kimi；
+# 未安装（CLI 不在 PATH）的 agent 排到后面。defaultAgent 决定 bridge spawn
+# 哪个 agent、run 卡片 header 显示哪个 agent 名
 defaultAgent: claude
 
 claude:
   model: claude-opus-4-8
   effort: medium           # low | medium | high | xhigh | max
-  # permissionMode 硬编码为 bypassPermissions（runner 内部），不通过 config 配置
+  permissionMode: bypassPermissions  # Claude 官方 --permission-mode：default | acceptEdits | auto | bypassPermissions | manual | dontAsk | plan
+  approvalTimeoutMs: 300000          # 审批超时（ms），默认 5 分钟，勿随意改短
+  idleTtlMinutes: 30                 # 会话级空闲回收（分钟），0=禁用
   stopGraceMs: 5000
 
-codex:
-  serviceMode: exec         # exec（默认，spawn-per-message）| app-server（持久连接 + 审批）
-  approvalPolicy: on-request  # Codex 官方 AskForApproval：untrusted | on-request | never（app-server 模式生效）
-  sandbox: danger-full-access  # Codex 官方 SandboxMode：read-only | workspace-write | danger-full-access（app-server 模式生效）
-  appServer:                # app-server 模式连接参数
-    binary: codex
-    requestTimeoutMs: 60000
-    idleTtlMs: 1800000
-    turnIdleTimeoutMinutes: 10
+agents:
+  codex:
+    approvalPolicy: on-request  # Codex 官方 AskForApproval：untrusted | on-request | never（默认 on-request）
+    sandbox: workspace-write   # Codex 官方 SandboxMode：read-only | workspace-write | danger-full-access（默认 workspace-write）
+    appServer:                # app-server 连接参数
+      binary: codex
+      requestTimeoutMs: 60000
+      idleTtlMs: 1800000
+      turnIdleTimeoutMinutes: 10
+  kimi:
+    permissionMode: manual     # manual | auto | yolo（纯 ACP 模式，kimi acp 持久连接，支持审批 + compact）
+    acp:                       # acp 连接参数
+      binary: kimi
+      requestTimeoutMs: 60000
+      idleTtlMs: 1800000
+      turnIdleTimeoutMinutes: 10
 
 output:
   showThinking: true
@@ -279,8 +321,10 @@ idle:
 终端打印二维码，用户用飞书 App 扫码创建应用，返回的 `client_id`/`client_secret`
 写回配置文件后继续启动；非交互环境（无 TTY）落到 `loadConfig` 生成模板并退出。
 
-`codex.appServer` 为 app-server 连接参数（连接超时、空闲释放、turn 空闲超时）；
-审批/沙箱字段的完整语义见 `docs/zh/guides/codex-config.md`。
+`codex.appServer` 与审批/沙箱字段的完整语义见
+[`docs/zh/guides/codex-config.md`](../guides/codex-config.md)。
+`kimi` 的 permissionMode/acp 字段完整语义见
+[`docs/zh/usage.md`](../usage.md)（kimi 为纯 ACP 模式，已无 cli/acp 切换）。
 
 ---
 
@@ -303,7 +347,7 @@ idle:
 
 ### 9.3 claude 首次运行需 OAuth
 
-`claude -p` 未登录时触发交互式浏览器 OAuth，`stdin=ignore` 下进程挂起或报错退出。
+`claude`（print/交互模式）未登录时触发交互式浏览器 OAuth，非 TTY 下进程挂起或报错退出。
 bridge 无法代替这一步——首次启动若发现 OAuth 未完成，会在日志中记录并由用户去终端手动 `claude` 完成登录。
 
 ### 9.4 JSONL 末行可能无换行符
@@ -319,7 +363,7 @@ claude 异常退出时 stdout 最后一块数据可能无尾部 `\n`，`readline
 99991400/99991401（频率控制）——后者被 `@larksuite/channel@0.3.0` 的 `classifyError`
 归类为 `permission_denied` 且 SDK 对 `permission_denied` fail-fast，必须由
 `shouldRetrySendError` 从 `cause` 链（`cause.response.data.code`）识别才不至于让
-限流重试路径死掉（review.md）。普通 `permission_denied`（如缺 scope）不重试。
+限流重试路径死掉。普通 `permission_denied`（如缺 scope）不重试。
 run 卡片 patch 由 channel SDK 的 throttle + FIFO UpdateQueue 控制；默认关闭
 tool use/result 展示可进一步减小卡片更新量。
 
@@ -690,7 +734,7 @@ run 卡片 done 统计与 `/resume` 末尾统计共用 `formatUsageStats`（src/
   `input+output`——会漏掉 cache（codex/opencode 的 cache_read 动辄占输入 90%+）。
   无 `totalTokens` 时 total = 分项和（claude JSONL 无显式 total，由 reader 算分项和）。
 - **`input_tokens` 处处表示「未命中缓存的输入」**：codex 由
-  `input_tokens − cached_input_tokens` 推导（`codex-exec-jsonl.ts` 的 `onTurnCompleted`），
+  `input_tokens − cached_input_tokens` 推导（`src/session/codex/rollout-reader.ts` 的 jsonl 兜底读取），
   pi/opencode/claude 的原值即非缓存。
 - **codex `total_token_usage` 是会话累计、`last_token_usage` 才是单 turn 增量**
   ：done 卡"本 run"只能用 `last_token_usage`
@@ -710,15 +754,14 @@ run 卡片 done 统计与 `/resume` 末尾统计共用 `formatUsageStats`（src/
   提供（v2 schema 与 last/total 平级），经 result event `context_limit` 透传，
   jsonl 无该字段时 live 值兜底。
 
-**透传链路与 scope 统一（codex 例外）**：result event usage → `Bridge` 提取 live 值
+**透传链路与 scope 统一**：result event usage → `Bridge` 提取 live 值
 （claude 原生命名 `cache_read_input_tokens`/`cache_creation_input_tokens` 与统一命名
 都兼容）；进程退出后 `resolveFinalUsage` 读 jsonl。**flow 字段（input/output/cache/
-total）：非 codex 且 live 有 input/output 时全部用 live（本 run scope），否则 jsonl
-兜底；**codex 例外——live `turn.completed.usage` 是会话累计 `total_token_usage`，
-flow 字段一律 jsonl 优先（主线程文件 per-turn `last_token_usage`），jsonl 缺失才回退
-live**；`contextLength`/`compactCount` 保持 jsonl 优先（水位/历史计数）。同一张卡片
-禁止混 scope（曾出现 Input 是本 run、Cache/Total 是 session 累计，cache% 分子分母
-不同源；codex live 累计值也曾被误当本 run 展示）。
+total）：live 有 input/output 时全部用 live（本 run scope），否则 jsonl 兜底**；
+codex app-server 的 `turn.completed` 透传协议 `tokenUsage.last`（本 turn 增量，
+live 口径），与 opencode 一致走 live 优先；`contextLength`/`compactCount` 保持 jsonl
+优先（水位/历史计数）。同一张卡片禁止混 scope（曾出现 Input 是本 run、Cache/Total
+是 session 累计，cache% 分子分母不同源）。
 → `FinishMeta` → `RunState` → `run-renderer` 传给 `formatUsageStats`。
 
 **`/resume` 由各 session reader 填充**：claude `aggregateSessionUsage`（`totalTokens`

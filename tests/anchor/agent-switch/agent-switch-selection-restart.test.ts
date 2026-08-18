@@ -37,7 +37,7 @@ function stubReader(opts: { known?: string[]; newest?: string | null }): AgentSe
         : { events: [] },
     ),
     isSessionActive: vi.fn(() => false),
-  } as unknown as AgentSessionReader;
+  };
 }
 
 function createRegistry(readers: Record<string, AgentSessionReader>): SessionReaderRegistry {

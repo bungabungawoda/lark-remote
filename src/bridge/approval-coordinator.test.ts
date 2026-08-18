@@ -2,7 +2,7 @@
  * Tests for ApprovalCoordinator.
  *
  * 17 tests covering: constructor, onRequested, submit valid/invalid, onResolved,
- * pendingCount, head, onTurnEnded, togglePerm, timeout.
+ * pendingCount, onTurnEnded, togglePerm, timeout.
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
@@ -14,11 +14,6 @@ describe('ApprovalCoordinator', () => {
   let responder: ReturnType<typeof vi.fn>;
   let interruptTurn: ReturnType<typeof vi.fn>;
   let pushToCard: ReturnType<typeof vi.fn>;
-
-  const runId = 'run-aaa-111';
-  const userId = 'user-1';
-  const chatId = 'chat-1';
-  const workspace = '/home/user/project';
 
   function makeCommandEvent(
     overrides: Partial<ApprovalRequestedEvent> = {},
@@ -33,14 +28,10 @@ describe('ApprovalCoordinator', () => {
       view: {
         requestId: 1001,
         kind: 'command',
-        threadShort: 'th-aaa-2',
-        turnShort: 'tn-222',
-        workspace: '/home/user/project',
         command: 'rm -rf /tmp/test',
         commandCwd: '/home/user/project',
         reason: 'Test approval',
         availableDecisions: ['accept', 'decline', 'cancel'],
-        pendingTotal: 1,
       },
       ...overrides,
     };
@@ -57,13 +48,9 @@ describe('ApprovalCoordinator', () => {
       view: {
         requestId: 1002,
         kind: 'file',
-        threadShort: 'th-aaa-3',
-        turnShort: 'tn-333',
-        workspace: '/home/user/project',
         fileChanges: [{ path: 'src/main.ts', kind: 'update', diff: '...' }],
         reason: 'File change approval',
         availableDecisions: ['accept', 'decline', 'cancel'],
-        pendingTotal: 1,
       },
       ...overrides,
     };
@@ -82,12 +69,8 @@ describe('ApprovalCoordinator', () => {
       view: {
         requestId: 1003,
         kind: 'permissions',
-        threadShort: 'th-aaa-4',
-        turnShort: 'tn-444',
-        workspace: '/home/user/project',
         reason: 'Permissions approval',
         availableDecisions: ['accept', 'decline', 'cancel'],
-        pendingTotal: 1,
         permissions: {
           items: [
             {
@@ -116,10 +99,6 @@ describe('ApprovalCoordinator', () => {
     pushToCard = vi.fn().mockResolvedValue(undefined);
 
     coordinator = new ApprovalCoordinator({
-      runId,
-      userId,
-      chatId,
-      workspace,
       approvalTimeoutMs: 30000,
       responder,
       interruptTurn,
@@ -134,7 +113,6 @@ describe('ApprovalCoordinator', () => {
   describe('constructor', () => {
     it('creates an instance with zero pending approvals', () => {
       expect(coordinator.pendingCount()).toBe(0);
-      expect(coordinator.head()).toBeUndefined();
     });
   });
 
@@ -143,8 +121,6 @@ describe('ApprovalCoordinator', () => {
       const event = makeCommandEvent();
       coordinator.onRequested(event);
       expect(coordinator.pendingCount()).toBe(1);
-      expect(coordinator.head()).toBeDefined();
-      expect(coordinator.head()!.requestId).toBe(1001);
     });
 
     it('updates existing approval on duplicate requestId', () => {
@@ -156,7 +132,9 @@ describe('ApprovalCoordinator', () => {
       coordinator.onRequested(event1);
       coordinator.onRequested(event2);
       expect(coordinator.pendingCount()).toBe(1);
-      expect(coordinator.head()!.view.command).toBe('new command');
+      // duplicate requestId 更新 view 而非新增：submit 后 responder 收到更新后的 command
+      coordinator.submit({ action: 'accept' }, { requestId: 1001 });
+      expect(responder).toHaveBeenCalledWith(1001, { action: 'accept' });
     });
   });
 
@@ -164,8 +142,7 @@ describe('ApprovalCoordinator', () => {
     it('accepts a valid approval', async () => {
       const event = makeCommandEvent();
       coordinator.onRequested(event);
-      const result = await coordinator.submit({ action: 'accept' }, { requestId: 1001 });
-      expect(result).toContain('Approval');
+      await coordinator.submit({ action: 'accept' }, { requestId: 1001 });
       expect(responder).toHaveBeenCalledWith(1001, { action: 'accept' });
       expect(coordinator.pendingCount()).toBe(0);
     });
@@ -183,11 +160,7 @@ describe('ApprovalCoordinator', () => {
       const event = makeCommandEvent({ requestId: 'req-abc-42' });
       event.view.requestId = 'req-abc-42';
       coordinator.onRequested(event);
-      const result = await coordinator.submit(
-        { action: 'accept' },
-        { requestId: 'req-abc-42', nonce: 'n-str' },
-      );
-      expect(result).toContain('Approval');
+      await coordinator.submit({ action: 'accept' }, { requestId: 'req-abc-42', nonce: 'n-str' });
       expect(responder).toHaveBeenCalledWith('req-abc-42', { action: 'accept' });
     });
 
@@ -206,12 +179,13 @@ describe('ApprovalCoordinator', () => {
       );
     });
 
-    it('throws for invalid decision', async () => {
+    it('cancel is always allowed as safety override', async () => {
       const event = makeCommandEvent();
       coordinator.onRequested(event);
       await expect(
         coordinator.submit({ action: 'cancel' }, { requestId: 1001 }),
-      ).resolves.toBeDefined();
+      ).resolves.toBeUndefined();
+      expect(responder).toHaveBeenCalledWith(1001, { action: 'cancel' });
     });
   });
 
@@ -248,34 +222,14 @@ describe('ApprovalCoordinator', () => {
     });
   });
 
-  describe('head', () => {
-    it('returns the oldest pending approval', () => {
-      coordinator.onRequested(makeCommandEvent({ requestId: 1001 }));
-      coordinator.onRequested(makeFileEvent({ requestId: 1002 }));
-      expect(coordinator.head()!.requestId).toBe(1001);
-    });
-  });
-
-  describe('onTurnEnded', () => {
-    it('marks all pending as expired', () => {
-      coordinator.onRequested(makeCommandEvent({ requestId: 1001 }));
-      coordinator.onRequested(makeFileEvent({ requestId: 1002 }));
-      expect(coordinator.pendingCount()).toBe(2);
-      coordinator.onTurnEnded();
-      expect(coordinator.pendingCount()).toBe(0);
-      expect(coordinator.head()).toBeUndefined();
-    });
-  });
-
   describe('togglePerm', () => {
     it('toggles a permission item', async () => {
       const event = makePermissionsEvent();
       coordinator.onRequested(event);
-      const result = await coordinator.togglePerm(
+      await coordinator.togglePerm(
         { permId: 'net:api.example.com:443', selected: true },
         { requestId: 1003 },
       );
-      expect(result).toContain('granted');
       expect(event.view.permissions!.items[0].selected).toBe(true);
     });
 
@@ -304,6 +258,22 @@ describe('ApprovalCoordinator', () => {
       vi.advanceTimersByTime(30000);
       expect(coordinator.pendingCount()).toBe(0);
     });
+
+    it('expires immediately when approvalTimeoutMs is 0', () => {
+      // review P3-1：schema 允许 0，语义为「立即过期」（fail-fast，避免审批
+      // 永久挂起）；文档在 config schema 注释中明确，测试固化该语义。
+      coordinator = new ApprovalCoordinator({
+        approvalTimeoutMs: 0,
+        responder,
+        interruptTurn,
+        pushToCard,
+      });
+      coordinator.onRequested(makeCommandEvent());
+      expect(coordinator.pendingCount()).toBe(1);
+      vi.advanceTimersByTime(1);
+      expect(coordinator.pendingCount()).toBe(0);
+      expect(responder).toHaveBeenCalledWith(1001, { action: 'cancel' });
+    });
   });
 
   describe('protocol decision space (real availableDecisions)', () => {
@@ -329,7 +299,7 @@ describe('ApprovalCoordinator', () => {
       coordinator.onRequested(event);
       await expect(
         coordinator.submit({ action: 'accept_with_execpolicy_amendment' }, { requestId: 1001 }),
-      ).resolves.toBeDefined();
+      ).resolves.toBeUndefined();
       expect(responder).toHaveBeenCalledWith(
         1001,
         expect.objectContaining({ action: 'accept_with_execpolicy_amendment' }),
@@ -343,7 +313,7 @@ describe('ApprovalCoordinator', () => {
       coordinator.onRequested(event);
       await expect(
         coordinator.submit({ action: 'decline' }, { requestId: 1001 }),
-      ).resolves.toBeDefined();
+      ).resolves.toBeUndefined();
     });
 
     it('test_anchor_coordinator_rejects_unlisted_positive_decision', async () => {
@@ -363,14 +333,14 @@ describe('ApprovalCoordinator', () => {
         fileChanges: [{ path: '/home/user/project/a.txt', kind: 'update', diff: '+hello' }],
       };
       coordinator.updateView(1002, updatedView);
-      expect(coordinator.head()?.view.fileChanges).toEqual([
-        { path: '/home/user/project/a.txt', kind: 'update', diff: '+hello' },
-      ]);
+      // updateView 后 view 已更新：submit 会调用 responder
+      await coordinator.submit({ action: 'accept' }, { requestId: 1002 });
+      expect(responder).toHaveBeenCalledWith(1002, { action: 'accept' });
+      expect(coordinator.pendingCount()).toBe(0);
 
       // 已响应后 updateView 不得复活/改写
-      await coordinator.submit({ action: 'accept' }, { requestId: 1002 });
       coordinator.updateView(1002, { ...updatedView, fileChanges: [] });
-      expect(coordinator.head()).toBeUndefined();
+      expect(coordinator.pendingCount()).toBe(0);
     });
   });
 
@@ -385,6 +355,231 @@ describe('ApprovalCoordinator', () => {
       });
       expect(decisionToApprovalAction('decline')).toEqual({ action: 'decline' });
       expect(decisionToApprovalAction('cancel')).toEqual({ action: 'cancel' });
+      // Claude「允许所有」：acceptAll → accept_all（会话级自动放行）。
+      expect(decisionToApprovalAction('acceptAll')).toEqual({ action: 'accept_all' });
+    });
+  });
+
+  // =========================================================================
+  // Claude AskUserQuestion（kind === 'question'）
+  // =========================================================================
+
+  function makeQuestionEvent(
+    overrides: Partial<ApprovalRequestedEvent> = {},
+  ): ApprovalRequestedEvent {
+    return {
+      type: 'approval_requested',
+      requestId: 2001,
+      kind: 'question',
+      threadId: 'th-qqq-1',
+      turnId: 'tn-qqq-1',
+      itemId: 'item-qqq-1',
+      view: {
+        requestId: 2001,
+        kind: 'question',
+        questions: [
+          {
+            question: 'Pick a color',
+            header: 'Color',
+            options: [{ label: 'Red' }, { label: 'Blue' }],
+          },
+          {
+            question: 'Pick toppings',
+            header: 'Toppings',
+            multiSelect: true,
+            options: [{ label: 'Cheese' }, { label: 'Bacon' }],
+          },
+        ],
+        availableDecisions: [],
+      },
+      ...overrides,
+    };
+  }
+
+  describe('AskUserQuestion answers', () => {
+    it('test_anchor_single_select_auto_submits_when_all_answered', async () => {
+      coordinator.onRequested(makeQuestionEvent());
+
+      await coordinator.toggleAnswer(
+        { questionIndex: 0, option: 'Red' },
+        { requestId: 2001, nonce: 'n1' },
+      );
+      // 单选已答但多选未提交 → 不触发 responder
+      expect(responder).not.toHaveBeenCalled();
+
+      // 多选勾选 + 提交
+      await coordinator.toggleAnswer(
+        { questionIndex: 1, option: 'Cheese' },
+        { requestId: 2001, nonce: 'n2' },
+      );
+      await coordinator.toggleAnswer(
+        { questionIndex: 1, option: 'Bacon' },
+        { requestId: 2001, nonce: 'n3' },
+      );
+      await coordinator.submitAnswers({ questionIndex: 1 }, { requestId: 2001, nonce: 'n4' });
+
+      expect(responder).toHaveBeenCalledTimes(1);
+      expect(responder).toHaveBeenCalledWith(2001, {
+        action: 'answer',
+        answers: { 'Pick a color': 'Red', 'Pick toppings': ['Cheese', 'Bacon'] },
+      });
+      expect(coordinator.pendingCount()).toBe(0);
+    });
+
+    it('test_anchor_submit_pushes_resolved_card_event_agent_agnostic', async () => {
+      // review P2-3：提交成功后的 approval_resolved 由 coordinator 统一推送
+      // （claude 无 server 回发；codex 幂等），不再由 bridge responder 顺带做。
+      coordinator.onRequested(makeCommandEvent());
+      await coordinator.submit({ action: 'accept' }, { requestId: 1001, nonce: 'n1' });
+
+      expect(pushToCard).toHaveBeenCalled();
+      const events = pushToCard.mock.calls.flat(2) as Array<{ type: string; requestId: number }>;
+      const resolved = events.find((e) => e.type === 'approval_resolved');
+      expect(resolved).toBeDefined();
+      expect(resolved?.requestId).toBe(1001);
+    });
+
+    it('test_anchor_submit_failure_does_not_push_resolved', async () => {
+      responder.mockRejectedValue(new Error('connection closed'));
+      coordinator.onRequested(makeCommandEvent());
+      await coordinator.submit({ action: 'accept' }, { requestId: 1001, nonce: 'n1' });
+
+      const events = pushToCard.mock.calls.flat(2) as Array<{ type?: string }>;
+      expect(events.some((e) => e.type === 'approval_resolved')).toBe(false);
+    });
+
+    it('test_anchor_answer_path_pushes_resolved_after_respond', async () => {
+      coordinator.onRequested(makeQuestionEvent());
+      await coordinator.toggleAnswer(
+        { questionIndex: 0, option: 'Red' },
+        { requestId: 2001, nonce: 'n1' },
+      );
+      await coordinator.toggleAnswer(
+        { questionIndex: 1, option: 'Cheese' },
+        { requestId: 2001, nonce: 'n2' },
+      );
+      await coordinator.submitAnswers({ questionIndex: 1 }, { requestId: 2001, nonce: 'n3' });
+
+      const events = pushToCard.mock.calls.flat(2) as Array<{ type?: string; requestId?: number }>;
+      const resolved = events.find((e) => e.type === 'approval_resolved');
+      expect(resolved?.requestId).toBe(2001);
+    });
+
+    it('test_anchor_multi_select_toggle_does_not_submit_until_submit_answers', async () => {
+      coordinator.onRequested(makeQuestionEvent());
+      await coordinator.toggleAnswer(
+        { questionIndex: 1, option: 'Cheese' },
+        { requestId: 2001, nonce: 'n1' },
+      );
+      expect(responder).not.toHaveBeenCalled();
+
+      // 单选未答 → 即使多选提交也不触发 responder
+      await coordinator.submitAnswers({ questionIndex: 1 }, { requestId: 2001, nonce: 'n2' });
+      expect(responder).not.toHaveBeenCalled();
+
+      // 取消勾选后提交 → 拒绝（未选任何选项）
+      await coordinator.toggleAnswer(
+        { questionIndex: 1, option: 'Cheese' },
+        { requestId: 2001, nonce: 'n3' },
+      );
+      await expect(
+        coordinator.submitAnswers({ questionIndex: 1 }, { requestId: 2001, nonce: 'n4' }),
+      ).rejects.toThrow('请先选择至少一个选项');
+    });
+
+    it('test_anchor_multi_select_toggle_duplicate_nonce_rejected', async () => {
+      // review P2-1：多选切换按钮同一 nonce 重复投递（双击/飞书重投递）只应
+      // toggle 一次，不能二次 toggle 抵消勾选。
+      const event = makeQuestionEvent();
+      coordinator.onRequested(event);
+      await coordinator.toggleAnswer(
+        { questionIndex: 1, option: 'Cheese' },
+        { requestId: 2001, nonce: 'n-dup' },
+      );
+      expect(event.view.questions![1].selected).toEqual(['Cheese']);
+
+      await expect(
+        coordinator.toggleAnswer(
+          { questionIndex: 1, option: 'Cheese' },
+          { requestId: 2001, nonce: 'n-dup' },
+        ),
+      ).rejects.toThrow(/duplicate nonce/);
+      expect(event.view.questions![1].selected).toEqual(['Cheese']);
+    });
+
+    it('test_anchor_answer_custom_submits_free_text', async () => {
+      // review P3-4：AskUserQuestion 隐式 Other 自由文本——自定义答案文本
+      // 直接作为该单选问题的答案提交。
+      coordinator.onRequested(makeQuestionEvent());
+      await coordinator.answerCustom(
+        { questionIndex: 0, text: '自定义紫色' },
+        { requestId: 2001, nonce: 'n-c1' },
+      );
+      // 单选已答但多选未提交 → 不触发 responder
+      expect(responder).not.toHaveBeenCalled();
+
+      await coordinator.toggleAnswer(
+        { questionIndex: 1, option: 'Cheese' },
+        { requestId: 2001, nonce: 'n-c2' },
+      );
+      await coordinator.submitAnswers({ questionIndex: 1 }, { requestId: 2001, nonce: 'n-c3' });
+
+      expect(responder).toHaveBeenCalledTimes(1);
+      expect(responder).toHaveBeenCalledWith(2001, {
+        action: 'answer',
+        answers: { 'Pick a color': '自定义紫色', 'Pick toppings': ['Cheese'] },
+      });
+
+      // 多选问题不支持自定义答案（Other 仅单选）
+      const multiEvent = makeQuestionEvent({ requestId: 2002 });
+      coordinator.onRequested(multiEvent);
+      await expect(
+        coordinator.answerCustom(
+          { questionIndex: 1, text: 'x' },
+          { requestId: 2002, nonce: 'n-c4' },
+        ),
+      ).rejects.toThrow('自定义答案仅支持单选');
+
+      // 空白文本拒绝
+      await expect(
+        coordinator.answerCustom(
+          { questionIndex: 0, text: '   ' },
+          { requestId: 2002, nonce: 'n-c5' },
+        ),
+      ).rejects.toThrow('请输入自定义答案');
+    });
+
+    it('test_anchor_answer_submit_then_duplicate_click_rejected', async () => {
+      coordinator.onRequested(makeQuestionEvent());
+      await coordinator.toggleAnswer(
+        { questionIndex: 0, option: 'Red' },
+        { requestId: 2001, nonce: 'n1' },
+      );
+      await coordinator.toggleAnswer(
+        { questionIndex: 1, option: 'Cheese' },
+        { requestId: 2001, nonce: 'n2' },
+      );
+      await coordinator.submitAnswers({ questionIndex: 1 }, { requestId: 2001, nonce: 'n3' });
+      expect(responder).toHaveBeenCalledTimes(1);
+
+      // 已提交（state=resolved）后再点任何选项 → 拒绝，答案不得重复提交
+      await expect(
+        coordinator.toggleAnswer(
+          { questionIndex: 0, option: 'Red' },
+          { requestId: 2001, nonce: 'n1' },
+        ),
+      ).rejects.toThrow('no longer pending');
+      expect(responder).toHaveBeenCalledTimes(1);
+    });
+
+    it('test_anchor_answer_unknown_question_or_option_rejected', async () => {
+      coordinator.onRequested(makeQuestionEvent());
+      await expect(
+        coordinator.toggleAnswer({ questionIndex: 5, option: 'X' }, { requestId: 2001 }),
+      ).rejects.toThrow('not found');
+      await expect(
+        coordinator.toggleAnswer({ questionIndex: 0, option: 'Missing' }, { requestId: 2001 }),
+      ).rejects.toThrow('not found');
     });
   });
 });

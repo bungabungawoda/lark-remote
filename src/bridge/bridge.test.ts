@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { Bridge } from './index.js';
+import { ClaudeRunner } from '../runner/claude/index.js';
 import { SessionStore } from '../session/index.js';
 import { SessionReaderRegistry } from '../session/registry.js';
 import { AppConfigSchema } from '../config/index.js';
@@ -13,7 +14,10 @@ import {
   createStubConnector,
   createStubAgentRegistry,
   createStubRunner,
+  makeBridge,
+  createStubSessionReader,
 } from '../../tests/lib/bridge-stubs.js';
+import { prependPath, restorePath, writeMockBin } from '../../tests/lib/path-mock.js';
 
 const { mockLogger } = vi.hoisted(() => ({
   mockLogger: {
@@ -115,13 +119,9 @@ describe('Bridge approval reaction retract', () => {
         view: {
           requestId: 1,
           kind: 'command',
-          threadShort: 'th-aaa-2',
-          turnShort: 'tn-222',
-          workspace: '/home/user/project',
           command: 'rm -rf /tmp/test',
           commandCwd: '/home/user/project',
           availableDecisions: ['accept', 'decline', 'cancel'],
-          pendingTotal: 1,
         },
         timestamp: new Date().toISOString(),
       },
@@ -134,8 +134,8 @@ describe('Bridge approval reaction retract', () => {
 
     await bridge.forwardToClaude('do something', ctx);
 
-    const removeSpy = connector.removeReactionByEmoji as unknown as ReturnType<typeof vi.fn>;
-    const addSpy = connector.addReaction as unknown as ReturnType<typeof vi.fn>;
+    const removeSpy = vi.mocked(connector.removeReactionByEmoji);
+    const addSpy = vi.mocked(connector.addReaction);
     await vi.waitFor(() => {
       expect(removeSpy).toHaveBeenCalledWith('msg1', 'Typing');
       expect(addSpy).toHaveBeenCalledWith('msg1', 'Typing');
@@ -196,28 +196,6 @@ describe('executeBash after bridge restart (REGRESSION)', () => {
   });
 });
 
-function makeBridge(
-  opts: {
-    runner?: Runner;
-    idleTimeoutMs?: number;
-    connector?: ReturnType<typeof createStubConnector>;
-  } = {},
-) {
-  const sessionStore = new SessionStore();
-  const connector = opts.connector ?? createStubConnector();
-  const runner = opts.runner ?? createStubRunner();
-  const bridge = new Bridge({
-    runner,
-    connector,
-    sessionStore,
-    config,
-    agentRegistry: createStubAgentRegistry(runner),
-    sessionReaderRegistry: createStubSessionReaderRegistry(),
-    ...(opts.idleTimeoutMs !== undefined ? { idleTimeoutMs: opts.idleTimeoutMs } : {}),
-  });
-  return { bridge, sessionStore, connector, runner };
-}
-
 // --- Serial queue (§9.6) ---
 
 describe('Bridge serial queue (§9.6)', () => {
@@ -258,7 +236,7 @@ describe('Bridge serial queue (§9.6)', () => {
     const { bridge } = makeBridge();
     const seen: string[] = [];
     // Simulate the production case: a non-function slips into enqueue
-    bridge.enqueue(tmpDir, undefined as unknown as () => Promise<void>);
+    bridge.enqueue(tmpDir, undefined as never);
     bridge.enqueue(tmpDir, async () => {
       seen.push('next');
     });
@@ -409,6 +387,144 @@ describe('Bridge idle watchdog (§9.12)', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it('does NOT fire the watchdog while an approval is pending', async () => {
+    // 权限等待期间暂停空闲看门狗：claude/codex 等待人工决策时无
+    // stdout 事件，「等审批」不是「挂死」。审批由 ApprovalCoordinator 的
+    // 5 分钟超时自愈（cancel + 中断 turn），此处推进到看门狗窗口之外但远小于
+    // 审批超时，必须不触发 runner.stop()。
+    vi.useFakeTimers();
+    try {
+      const events: AgentEvent[] = [
+        {
+          type: 'system',
+          subtype: 'init',
+          session_id: 's1',
+          cwd: tmpDir,
+          model: 'opus',
+        },
+        {
+          type: 'approval_requested',
+          requestId: 1,
+          kind: 'command',
+          threadId: 'th-aaa-222',
+          turnId: 'tn-222',
+          itemId: 'item-2',
+          view: {
+            requestId: 1,
+            kind: 'command',
+            command: 'rm -rf /tmp/test',
+            commandCwd: '/home/user/project',
+            availableDecisions: ['accept', 'decline', 'cancel'],
+          },
+        },
+      ];
+      const runner = createBackgroundRunningRunner(events);
+      const stopSpy = vi.fn(() => runner.stop());
+      runner.stop = stopSpy;
+      const { bridge, sessionStore } = makeBridge({ runner, idleTimeoutMs: 1000 });
+      sessionStore.setCwd(ctx.userId, tmpDir);
+
+      const promise = bridge.forwardToClaude('hello', ctx);
+      await vi.advanceTimersByTimeAsync(5000);
+
+      // 审批 pending：看门狗不得 stop（stub runner 无 respondApproval，审批
+      // 保持 pending；stop 未被调用即证明暂停生效）。
+      expect(stopSpy).not.toHaveBeenCalled();
+
+      // 释放挂起 run，让 forwardToClaude 正常收尾
+      runner.release();
+      await promise;
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+// --- ClaudeRunner 长驻审批链路集成（真实 runner + mock claude） ---
+
+describe('Bridge + ClaudeRunner approval integration', () => {
+  let integrationTmpDir: string;
+  let savedPath: string | undefined;
+  const integrationRunners: ClaudeRunner[] = [];
+
+  beforeEach(() => {
+    integrationTmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'bridge-claude-'));
+    savedPath = prependPath(integrationTmpDir);
+  });
+
+  afterEach(async () => {
+    for (const r of [...integrationRunners]) {
+      try {
+        await r.dispose();
+      } catch {
+        /* ignore */
+      }
+    }
+    integrationRunners.length = 0;
+    for (const key of Object.keys(process.env)) {
+      if (key.startsWith('MOCK_')) delete process.env[key];
+    }
+    restorePath(savedPath);
+    fs.rmSync(integrationTmpDir, { recursive: true, force: true });
+  });
+
+  it('test_anchor_approval_request_shows_card_and_accept_writes_back_to_done', async () => {
+    // 端到端链路：真实 ClaudeRunner（mock claude 协议）→ bridge 事件循环 →
+    // ApprovalCoordinator → run 卡审批区 → 点击允许 → control_response 回写 →
+    // mock 继续执行 → result → 卡片 done。协议单测在 runner 层、审批 UI 在
+    // bridge 层，本测试覆盖中间的接线（review P3-5）。
+    const mockPath = path.resolve(__dirname, '../../tests/lib/mock-claude.js');
+    writeMockBin(integrationTmpDir, 'claude', `#!/bin/bash\nexec node "${mockPath}"`);
+    process.env.MOCK_SCENARIO = 'approval';
+
+    const runner = new ClaudeRunner({
+      pidDir: integrationTmpDir,
+      workspace: integrationTmpDir,
+      permissionMode: 'default',
+      idleTtlMs: 0,
+    });
+    integrationRunners.push(runner);
+
+    const { bridge, sessionStore, connector } = makeBridge({
+      runner,
+      idleTimeoutMs: 60_000,
+    });
+    sessionStore.setCwd(ctx.userId, integrationTmpDir);
+
+    const runPromise = bridge.forwardToClaude('run the command', ctx);
+
+    // 等审批区出现在流式卡上（不新增消息，卡上直接出现「命令审批」）
+    await vi.waitFor(() => {
+      const card = connector._cards.at(-1);
+      expect(JSON.stringify(card)).toContain('命令审批');
+    });
+
+    // 从审批按钮提取 runId + requestId，走真实卡片动作路径响应
+    const lastCard = JSON.stringify(connector._cards.at(-1));
+    const respondMatch = lastCard.match(
+      /"cmd":"approval\.respond","decision":"accept","requestId":([^,]+),"runId":"([^"]+)"/,
+    );
+    expect(respondMatch).not.toBeNull();
+    const rawRequestId = respondMatch![1];
+    const requestId = rawRequestId.startsWith('"')
+      ? rawRequestId.replace(/"/g, '')
+      : Number(rawRequestId);
+    const runId = respondMatch![2];
+
+    await bridge.handleApprovalRespond({
+      runId,
+      requestId,
+      decision: 'accept',
+      nonce: 'integration-n1',
+    });
+    await runPromise;
+
+    const finalCard = JSON.stringify(connector._cards.at(-1));
+    expect(finalCard).toContain('已完成');
+    // 审批区已随 resolved 移除（不再残留按钮）
+    expect(finalCard).not.toContain('命令审批');
   });
 });
 
@@ -795,11 +911,7 @@ describe('Bridge.sendResult', () => {
       runner: createStubRunner(),
     });
     // Replace connector with one that throws
-    (bridge as unknown as { connector: { sendWithRetry: unknown } }).connector = {
-      sendWithRetry: async () => {
-        throw new Error('network down');
-      },
-    };
+    vi.spyOn(bridge.connector, 'sendWithRetry').mockRejectedValue(new Error('network down'));
     // sendResult should return false on failure (not throw)
     const result = await bridge.sendResult({ text: 'x' }, ctx);
     expect(result).toBe(false);
@@ -813,6 +925,114 @@ describe('Bridge.sendResult', () => {
 });
 
 // --- setConfig ---
+
+// --- syncActiveApprovalModes (§P5 hot push) ---
+
+/** Runner that records updateApprovalMode calls and holds the run until released. */
+function createApprovalHotPushRunner(): {
+  runner: Runner & { updateApprovalMode: ReturnType<typeof vi.fn> };
+  release: () => void;
+} {
+  const updateApprovalMode = vi.fn(async () => {});
+  let releaseRun: () => void = () => {};
+  const waitForRelease = new Promise<void>((r) => {
+    releaseRun = r;
+  });
+  const runner = {
+    isRunning: false,
+    updateApprovalMode,
+    stop: async () => {
+      releaseRun();
+    },
+    killOrphan: () => {},
+    registerExitHandlers: () => {},
+    lifetime: 'workspace' as const,
+    run: async function* () {
+      yield { type: 'system', subtype: 'init', session_id: 'stub-session' } as AgentEvent;
+      await waitForRelease;
+      yield { type: 'result', subtype: 'success', session_id: 'stub-session' } as AgentEvent;
+    },
+  } as Runner & { updateApprovalMode: ReturnType<typeof vi.fn> };
+  return { runner, release: releaseRun };
+}
+
+describe('Bridge.syncActiveApprovalModes (§P5 hot push)', () => {
+  it('hot-pushes kimi permissionMode to the active run', async () => {
+    const { runner } = createApprovalHotPushRunner();
+    const { bridge, sessionStore } = makeBridge({
+      runner,
+      config: AppConfigSchema.parse({
+        feishu: { appId: 'test', appSecret: 'test' },
+        claude: { model: 'opus', stopGraceMs: 5000 },
+        defaultAgent: 'kimi',
+        agents: { kimi: { model: 'kimi-code/k3', permissionMode: 'manual' } },
+        output: { showThinking: true, showToolUse: false, showToolResult: false },
+      }),
+    });
+    const cwd = fs.realpathSync(tmpDir);
+    sessionStore.setCwd(ctx.userId, cwd);
+
+    const runPromise = bridge.forwardToClaude('hi', ctx);
+    await vi.waitFor(() => {
+      expect(bridge.isBusyFor(cwd)).toBe(true);
+    });
+
+    const newConfig = AppConfigSchema.parse({
+      feishu: { appId: 'test', appSecret: 'test' },
+      claude: { model: 'opus', stopGraceMs: 5000 },
+      defaultAgent: 'kimi',
+      agents: { kimi: { model: 'kimi-code/k3', permissionMode: 'yolo' } },
+      output: { showThinking: true, showToolUse: false, showToolResult: false },
+    });
+    bridge.setConfig(newConfig);
+    bridge.syncActiveApprovalModes();
+
+    expect(runner.updateApprovalMode).toHaveBeenCalledWith({ permissionMode: 'yolo' });
+
+    await runner.stop();
+    await runPromise;
+  });
+
+  it('hot-pushes opencode mode to the active run', async () => {
+    const { runner } = createApprovalHotPushRunner();
+    const { bridge, sessionStore } = makeBridge({
+      runner,
+      config: AppConfigSchema.parse({
+        feishu: { appId: 'test', appSecret: 'test' },
+        claude: { model: 'opus', stopGraceMs: 5000 },
+        defaultAgent: 'opencode',
+        agents: {
+          opencode: { providerID: 'anthropic', modelID: 'claude-sonnet-4-20250514', mode: 'build' },
+        },
+        output: { showThinking: true, showToolUse: false, showToolResult: false },
+      }),
+    });
+    const cwd = fs.realpathSync(tmpDir);
+    sessionStore.setCwd(ctx.userId, cwd);
+
+    const runPromise = bridge.forwardToClaude('hi', ctx);
+    await vi.waitFor(() => {
+      expect(bridge.isBusyFor(cwd)).toBe(true);
+    });
+
+    const newConfig = AppConfigSchema.parse({
+      feishu: { appId: 'test', appSecret: 'test' },
+      claude: { model: 'opus', stopGraceMs: 5000 },
+      defaultAgent: 'opencode',
+      agents: {
+        opencode: { providerID: 'anthropic', modelID: 'claude-sonnet-4-20250514', mode: 'plan' },
+      },
+      output: { showThinking: true, showToolUse: false, showToolResult: false },
+    });
+    bridge.setConfig(newConfig);
+    bridge.syncActiveApprovalModes();
+
+    expect(runner.updateApprovalMode).toHaveBeenCalledWith({ mode: 'plan' });
+
+    await runner.stop();
+    await runPromise;
+  });
+});
 
 // --- forwardToClaude logging probes ---
 
@@ -1061,11 +1281,7 @@ describe('Bridge queue card in-place update on cancel', () => {
     // Manually simulate that a queue card was sent for this task
     // (In real flow: first task is running, second task gets queue card)
     // We need to access queueManager to set up the mapping
-    const queueManager = (bridge as unknown as { queueManager: unknown }).queueManager;
-    const qm = queueManager as {
-      queueCardMessages: Map<string, Promise<string | undefined>>;
-    };
-    qm.queueCardMessages.set(userMessageId, Promise.resolve('feishu-card-msg-id'));
+    bridge.queueManager.queueCardMessages.set(userMessageId, Promise.resolve('feishu-card-msg-id'));
 
     // Call the method to update the queue card to cancelled state
     await bridge.updateQueueCardToCancelled(workspace, userMessageId);
@@ -1152,6 +1368,59 @@ describe('Bridge agentRegistry / sessionReaderRegistry', () => {
 
     // The runner from the registry (not the stub fallback runner) produced the assistant text.
     expect(JSON.stringify(connector._cards.at(-1))).toContain('REGISTRY-MARKER');
+  });
+
+  it('getRunner reclaims stopped runner slots beyond the cache cap (P3 review)', async () => {
+    // 旧 workspace 的 runner 在会话 idle TTL 停进程后仍留在缓存里。创建新
+    // workspace 槽位超过缓存上限时回收「非 active 且进程已停」的死槽位，
+    // 防止缓存随访问过的 workspace 数量无界增长（活进程/在途 run 一律保留；
+    // 小缓存下刚创建未 run 的 runner 不回收，保持「创建即注册」语义）。
+    const { AgentRegistry } = await import('../runner/registry.js');
+    const created: Array<{ entry: { disposed: boolean } }> = [];
+    const reg = new AgentRegistry();
+    reg.register('claude', () => {
+      const entry = { disposed: false };
+      const runner = asAgentRunner({
+        lifetime: 'workspace',
+        isRunning: false,
+        run: async function* () {
+          yield { type: 'system', subtype: 'init', session_id: 'stub-session' };
+          yield { type: 'result', subtype: 'success', session_id: 'stub-session' };
+        },
+        stop: async () => {},
+        dispose: async () => {
+          entry.disposed = true;
+        },
+        killOrphan: () => {},
+        registerExitHandlers: () => {},
+        unregisterExitHandlers: () => {},
+      });
+      created.push({ entry });
+      return runner;
+    });
+    const connector = createStubConnector();
+    const bridge = new Bridge({
+      runner: createStubRunner(),
+      connector,
+      sessionStore: new SessionStore(),
+      config,
+      agentRegistry: reg,
+      sessionReaderRegistry: createStubSessionReaderRegistry(),
+    });
+    // 超过 MAX_CACHED_RUNNER_WORKSPACES（10）后，第 11 个工作区创建时回收
+    // 前面的死槽位（stub 恒为 isRunning=false 且无在途 run）。
+    for (let i = 1; i <= 11; i++) {
+      const w = path.join(tmpDir, `w${i}`);
+      fs.mkdirSync(w);
+      sessionStore_setCwd(bridge, ctx.userId, w);
+      await bridge.forwardToClaude('hello', ctx);
+    }
+    expect(created).toHaveLength(11);
+    // 前 10 个死槽位被回收（dispose 已调用），第 11 个保留
+    for (let i = 0; i < 10; i++) {
+      expect(created[i].entry.disposed).toBe(true);
+    }
+    expect(created[10].entry.disposed).toBe(false);
   });
 
   it('sendCompletionNotificationCard uses sessionReaderRegistry when present', async () => {
@@ -1753,11 +2022,9 @@ function asAgentRunner(r: Runner): AgentRunner {
   };
 }
 
-// Helper: set cwd by reaching into Bridge's sessionStore (private but present).
+// Helper: set cwd via Bridge's sessionStore (public seam).
 function sessionStore_setCwd(bridge: Bridge, userId: string, cwd: string): void {
-  const store = (bridge as unknown as { sessionStore: { setCwd(u: string, c: string): void } })
-    .sessionStore;
-  store.setCwd(userId, cwd);
+  bridge.sessionStore.setCwd(userId, cwd);
 }
 
 // --- finalizing 专项集成测试 (§7.3) ---
@@ -2279,14 +2546,12 @@ describe('Bridge.forwardToClaude AgentBinding (D2/D5)', () => {
    * codex 槽位 = 数据污染。此测试锁住写回目标，防止跨 agent 污染。
    */
   it('test_anchor_system_init_writes_session_to_bound_agent_not_live', async () => {
-    let _capturedRunOpts: { sessionId?: string } | undefined;
     const runner: Runner = {
       isRunning: false,
       stop: async () => {},
       killOrphan: () => {},
       registerExitHandlers: () => {},
-      run: async function* (_message, runOpts) {
-        _capturedRunOpts = runOpts;
+      run: async function* (_message, _runOpts) {
         // system.init 触发 session 写回。session_id 用明确的 'codex-sess-init'。
         yield {
           type: 'system',
@@ -2631,7 +2896,7 @@ describe('sendResult fallback: card send failure sends text to user', () => {
     };
     const sessionStore = new SessionStore();
     const bridge = new Bridge({
-      connector: connector as unknown as BridgeChannel,
+      connector,
       sessionStore,
       runner: createStubRunner(),
     });
@@ -2669,7 +2934,7 @@ describe('sendResult fallback: card send failure sends text to user', () => {
     };
     const sessionStore = new SessionStore();
     const bridge = new Bridge({
-      connector: connector as unknown as BridgeChannel,
+      connector,
       sessionStore,
       runner: createStubRunner(),
     });
@@ -2697,15 +2962,9 @@ describe('Bridge handleResumeCompact（resume 卡 Compact 按钮）', () => {
     yield { type: 'result', subtype: 'success', session_id: 'codex-session-1' } as AgentEvent;
   }
 
-  /** 默认 readSessionContent 返回「未找到」（events 空且无 usage/title）。 */
-  const notFoundRead: AgentSessionReader['readSessionContent'] = () => ({
-    events: [],
-    aiTitle: undefined,
-    recap: undefined,
-    displayTitle: undefined,
-    usage: undefined,
-    reason: 'not_found',
-  });
+  /** 默认 readSessionContent 返回「未找到」（共享 stub 的空结果形状）。 */
+  const notFoundRead: AgentSessionReader['readSessionContent'] =
+    createStubSessionReader().readSessionContent;
 
   function makeResumeCompactBridge(opts: {
     runner?: Runner;
@@ -2834,7 +3093,7 @@ describe('Bridge handleResumeCompact（resume 卡 Compact 按钮）', () => {
   });
 
   it('test_anchor_handle_resume_compact_unsupported_runner_errors', async () => {
-    // 验证什么：runner 无 runCompact（exec 模式等）时报「不支持 Compact」。
+    // 验证什么：runner 无 runCompact 时报「不支持 Compact」。
     // 缺失会导致执行时 TypeError，卡片点击无友好反馈。
     const cwd = fs.realpathSync(tmpDir);
     const { bridge, sessionStore, connector } = makeResumeCompactBridge({
@@ -2889,7 +3148,7 @@ describe('app-server error result session write-back (review P3-10)', () => {
     // 验证行为：app-server runner（getUsageAuthority() === 'live'）在 setup
     // 失败路径（thread/start 成功、turn/start 失败）发出的 error result 携带
     // 新线程 id 时，bridge 必须写回 sessionStore——否则下一条消息会再开一个
-    // 孤儿线程（线程已建但指针没跟上）。exec 模式（'jsonl'）不在此列，它靠
+    // 孤儿线程（线程已建但指针没跟上）。'jsonl' 权威的 runner 不在此列，它们靠
     // turn_started/system.init 写回。
     const cwd = fs.realpathSync(tmpDir);
     const runner: Runner & { getUsageAuthority?: () => 'live' | 'jsonl' } = {

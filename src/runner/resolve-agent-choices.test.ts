@@ -122,7 +122,7 @@ describe('resolveAgentChoices', () => {
   it('should return original config when defaultAgent is undefined', () => {
     const config = {
       ...baseConfig,
-      defaultAgent: undefined as unknown as AppConfig['defaultAgent'],
+      defaultAgent: undefined,
     } as AppConfig;
     const resolved = resolveAgentChoices(config);
 
@@ -418,7 +418,7 @@ describe('resolveAgentChoices', () => {
       agentChoices: { codex: { model: 'glm-5.2' } },
     } as AppConfig;
     // Remove agents entirely
-    delete (config as any).agents;
+    delete (config as Partial<AppConfig>).agents;
     const resolved = resolveAgentChoices(config);
 
     expect(resolved.agents).toBeDefined();
@@ -431,7 +431,7 @@ describe('resolveAgentChoices', () => {
       defaultAgent: 'pi',
       agentChoices: { pi: { model: 'glm-5.1' } },
     } as AppConfig;
-    delete (config as any).agents;
+    delete (config as Partial<AppConfig>).agents;
     const resolved = resolveAgentChoices(config);
 
     expect(resolved.agents).toBeDefined();

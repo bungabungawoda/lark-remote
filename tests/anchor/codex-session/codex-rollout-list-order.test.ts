@@ -146,10 +146,7 @@ describe('codex listCodexRollouts global-newest + total', () => {
       codexHome: tmpDir,
       cwd: '/proj',
       limit: 20,
-    }) as unknown as {
-      entries: Array<{ threadId: string }>;
-      total: number;
-    };
+    });
 
     // total = cwd 精确匹配的全集大小（分页前）：50 + 1，不含 /other 的 2 个。
     expect(result.total).toBe(51);

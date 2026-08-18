@@ -1,1 +1,1 @@
-export { OpencodeExecRunner } from './runner.js';
+export { OpencodeAcpRunner } from './acp/index.js';

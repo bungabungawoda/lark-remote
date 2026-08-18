@@ -19,18 +19,23 @@
  */
 
 import { vi } from 'vitest';
-import type { Runner, AgentRunner, AgentSessionReader } from '../../src/runner/index.js';
+import type { Runner, AgentSessionReader } from '../../src/runner/index.js';
 import { AgentRegistry } from '../../src/runner/registry.js';
 import { SessionReaderRegistry } from '../../src/session/registry.js';
 import { ClaudeSessionReader } from '../../src/session/claude/index.js';
-import type { Bridge } from '../../src/bridge/index.js';
+import { Bridge } from '../../src/bridge/index.js';
+import { SessionStore } from '../../src/session/index.js';
+import { AppConfigSchema } from '../../src/config/index.js';
+import type { AppConfig } from '../../src/config/index.js';
 
 // ── Agent registry ──────────────────────────────────────────────────
 
 /** Create a minimal AgentRegistry that maps all agent kinds to the given runner. */
 export function createStubAgentRegistry(runner: Runner): AgentRegistry {
   const reg = new AgentRegistry();
-  const asAgent = () => runner as unknown as AgentRunner;
+  // AgentRegistry factories are typed `() => Runner` (see registry.ts), so a
+  // shared stub runner registers directly — no cast needed.
+  const asAgent = () => runner;
   reg.register('claude', asAgent);
   reg.register('codex', asAgent);
   reg.register('opencode', asAgent);
@@ -54,6 +59,16 @@ const stubSessionReader: AgentSessionReader = {
   }),
   isSessionActive: () => false,
 };
+
+/**
+ * 返回一个「空结果 / not_found」的 AgentSessionReader。
+ *
+ * 此前 router.test.ts / bridge.test.ts 各自内联了同一形状的 reader（DRY），
+ * 统一从这里取。reader 无状态，可安全共享同一实例。
+ */
+export function createStubSessionReader(): AgentSessionReader {
+  return stubSessionReader;
+}
 
 export interface StubSessionReaderRegistryOpts {
   /** Register stub readers for all 5 agent kinds. */
@@ -166,16 +181,150 @@ export function createStubConnector(opts?: StubConnectorOpts) {
   };
 }
 
+/**
+ * Connector 变体：card PATCH（updateCard）挂起直到测试 release。
+ *
+ * 复现生产竞态：飞书 updateCard API 往返期间串行队列链继续推进。
+ * 行为变体按 AGENTS.md 约定收敛到共享工厂（独立命名导出）。
+ */
+export function createStubConnectorWithGatedCardUpdate() {
+  const sent: Array<{ chatId: string; input: unknown; opts?: unknown }> = [];
+  const cards: object[] = [];
+  const updateCalls: string[] = [];
+  const gateResolvers: Array<() => void> = [];
+
+  return {
+    sendWithRetry: async (chatId: string, input: unknown, opts?: unknown) => {
+      sent.push({ chatId, input, opts });
+      return 'msg-id';
+    },
+    sendFile: async (chatId: string, filePath: string) => {
+      sent.push({ chatId, input: { file: filePath }, opts: undefined });
+      return 'file-msg-id';
+    },
+    reconnect: async () => {},
+    addReaction: async () => {},
+    streamCard: async (
+      chatId: string,
+      initial: object,
+      producer: (controller: {
+        messageId: string;
+        current: object;
+        update(next: object | ((current: object) => object)): Promise<void>;
+      }) => Promise<void>,
+      opts?: unknown,
+    ) => {
+      sent.push({ chatId, input: { card: initial }, opts });
+      cards.push(initial);
+      let current = initial;
+      await producer({
+        messageId: 'stream-msg-id',
+        get current() {
+          return current;
+        },
+        update: async (next) => {
+          current = typeof next === 'function' ? next(current) : next;
+          cards.push(current);
+        },
+      });
+      return 'stream-msg-id';
+    },
+    updateCard: async (_messageId: string, card: object) => {
+      const header = (card as { header?: { title?: { content?: string } } }).header;
+      updateCalls.push(header?.title?.content ?? '');
+      // Block the card PATCH until the test releases it.
+      await new Promise<void>((resolve) => gateResolvers.push(resolve));
+      cards.push(card);
+    },
+    connected: true,
+    _sent: sent,
+    _cards: cards,
+    _updateCalls: updateCalls,
+    // Resolve ALL parked card updates: with the fix, several updateCard calls
+    // (cancelled A/B cards + the target's executing card, incl. the begin-path
+    // update) can be parked concurrently; a single-last-resolver gate would
+    // leave the handler awaiting an older gate forever.
+    releaseCardGate: () => {
+      for (const resolve of gateResolvers.splice(0)) resolve();
+    },
+  };
+}
+
+/**
+ * Connector 变体：队列状态卡（sendWithRetry({ card })）的发送挂起直到测试
+ * release；文本发送立即 resolve。
+ *
+ * 复现 A5 生产竞态：飞书 API 延迟 / 99991400 限流重试使排队卡 send promise
+ * pending，而运行中任务被 stop、settle 推进队列链。
+ */
+export function createStubConnectorWithPendingQueueCard() {
+  const sent: Array<{ chatId: string; input: unknown; opts?: unknown }> = [];
+  const cards: object[] = [];
+  let resolveQueueCardSend: (() => void) | undefined;
+
+  return {
+    sendWithRetry: async (chatId: string, input: unknown, opts?: unknown) => {
+      sent.push({ chatId, input, opts });
+      const hasCard =
+        !!input && typeof input === 'object' && 'card' in (input as Record<string, unknown>);
+      if (hasCard) {
+        // Queue status card send stays pending until the test releases it.
+        return new Promise<string>((resolve) => {
+          resolveQueueCardSend = () => resolve('queue-card-msg');
+        });
+      }
+      return 'msg-id';
+    },
+    sendFile: async (chatId: string, filePath: string) => {
+      sent.push({ chatId, input: { file: filePath }, opts: undefined });
+      return 'file-msg-id';
+    },
+    reconnect: async () => {},
+    addReaction: async () => {},
+    streamCard: async (
+      chatId: string,
+      initial: object,
+      producer: (controller: {
+        messageId: string;
+        current: object;
+        update(next: object | ((current: object) => object)): Promise<void>;
+      }) => Promise<void>,
+      opts?: unknown,
+    ) => {
+      sent.push({ chatId, input: { card: initial }, opts });
+      cards.push(initial);
+      let current = initial;
+      await producer({
+        messageId: 'stream-msg-id',
+        get current() {
+          return current;
+        },
+        update: async (next) => {
+          current = typeof next === 'function' ? next(current) : next;
+          cards.push(current);
+        },
+      });
+      return 'stream-msg-id';
+    },
+    updateCard: async (_messageId: string, card: object) => {
+      cards.push(card);
+    },
+    connected: true,
+    _sent: sent,
+    _cards: cards,
+    resolveQueueCardSend: () => resolveQueueCardSend?.(),
+  };
+}
+
 // ── Mock session reader registry ────────────────────────────────────
 
 /**
- * Create a mock SessionReaderRegistry using `as unknown as` cast.
+ * Create a mock SessionReaderRegistry.
  *
- * Used by tests that need `listRegistered` to return specific agent kinds
- * without registering real readers. Two variants:
- * - Default: `{ listRegistered, get }` only (get returns undefined).
+ * Builds a real registry so no `as unknown as` cast is needed. Two variants:
+ * - Default: empty registry (no readers registered).
  * - `{ withGet: true }`: `get` returns a stub reader with empty results.
- * - `{ agentKinds: [...] }`: override which agent kinds listRegistered returns.
+ * - `{ agentKinds: [...] }`: override the (mock-only) listRegistered probe.
  */
 export interface MockSessionReaderRegistryOpts {
   /** Agent kinds returned by listRegistered. Default: all 5. */
@@ -187,19 +336,19 @@ export interface MockSessionReaderRegistryOpts {
 export function createMockSessionReaderRegistry(
   opts?: MockSessionReaderRegistryOpts,
 ): SessionReaderRegistry {
+  const registry = new SessionReaderRegistry();
   const kinds = opts?.agentKinds ?? ['claude', 'codex', 'pi', 'opencode', 'kimi'];
-  return {
-    listRegistered: vi.fn().mockReturnValue(kinds),
-    get: opts?.withGet
-      ? vi.fn().mockReturnValue({
-          listSessions: () => ({ sessions: [], total: 0 }),
-          getNewestSession: () => null,
-          readSessionContent: () => ({ events: [] }),
-          isSessionActive: () => false,
-        })
-      : vi.fn(),
-    register: vi.fn(),
-  } as unknown as SessionReaderRegistry;
+  if (opts?.withGet) {
+    vi.spyOn(registry, 'get').mockReturnValue(stubSessionReader);
+  } else {
+    // Legacy semantics: get() returns undefined (callers guard for it, e.g.
+    // the config.save restore fallback), NOT the real registry's throw.
+    vi.spyOn(registry, 'get').mockImplementation(() => undefined);
+  }
+  // Legacy mock-only member (not on the real class): keep for any consumer
+  // that still probes registered agent kinds.
+  Object.assign(registry, { listRegistered: vi.fn().mockReturnValue(kinds) });
+  return registry;
 }
 
 // ── Stub runner ─────────────────────────────────────────────────────
@@ -280,6 +429,49 @@ export function createStubRunner(opts?: StubRunnerOpts): Runner {
   } as Runner;
 }
 
+// ── Bridge factory ──────────────────────────────────────────────────
+
+export interface MakeBridgeOpts {
+  runner?: Runner;
+  idleTimeoutMs?: number;
+  connector?: ReturnType<typeof createStubConnector>;
+  /** 覆盖默认测试 config；不传时使用 defaultTestConfig()。 */
+  config?: AppConfig;
+}
+
+/**
+ * 组装一个接好共享 stub 的 Bridge（agent registry + session reader registry
+ * + connector + session store）。
+ *
+ * 此前 5 个测试文件各自复制了同一份 ~20 行样板（DRY），统一收敛到这里。
+ * runner 默认 throw-stub；需要特定 runner 时经 opts.runner 注入。
+ */
+export function makeBridge(opts: MakeBridgeOpts = {}) {
+  const sessionStore = new SessionStore();
+  const connector = opts.connector ?? createStubConnector();
+  const runner = opts.runner ?? createStubRunner();
+  const bridge = new Bridge({
+    runner,
+    connector,
+    sessionStore,
+    config: opts.config ?? defaultTestConfig(),
+    agentRegistry: createStubAgentRegistry(runner),
+    sessionReaderRegistry: createStubSessionReaderRegistry(),
+    ...(opts.idleTimeoutMs !== undefined ? { idleTimeoutMs: opts.idleTimeoutMs } : {}),
+  });
+  return { bridge, sessionStore, connector, runner };
+}
+
+/** 各测试 beforeEach 里 AppConfigSchema.parse(...) 的公共最小配置。 */
+function defaultTestConfig(): AppConfig {
+  return AppConfigSchema.parse({
+    feishu: { appId: 'test', appSecret: 'test' },
+    claude: { model: 'opus', stopGraceMs: 5000 },
+    workspace: { default: '' },
+    output: { showThinking: true, showToolUse: false, showToolResult: false },
+  });
+}
+
 // ── Mock bridge ─────────────────────────────────────────────────────
 
 /**
@@ -307,6 +499,11 @@ export function createMockBridge(overrides?: Partial<Bridge>): Bridge {
     sendFile: vi.fn().mockResolvedValue(''),
     getActiveRunFor: vi.fn().mockReturnValue(undefined),
     updateCardInPlace: vi.fn().mockResolvedValue(undefined),
+    hasRunCompact: vi.fn().mockReturnValue(false),
+    syncActiveApprovalModes: vi.fn(),
+    onInboundMedia: vi.fn().mockResolvedValue(undefined),
+    flushMediaNotifications: vi.fn(),
+    flushAllMediaNotifications: vi.fn().mockResolvedValue(undefined),
     ...overrides,
   } as Bridge;
 }

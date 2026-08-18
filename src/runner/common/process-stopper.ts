@@ -31,7 +31,8 @@ export class ProcessStopper {
    * Pass `immediate: true` to skip the grace window — SIGTERM and SIGKILL
    * are sent back-to-back. Safe to call on an already-exited process.
    */
-  async stop(proc: ChildProcess, opts?: StopOptions): Promise<void> {
+  /** proc 可为 null（调用方已清理 currentProcess）；nullish 直接返回。 */
+  async stop(proc: ChildProcess | null, opts?: StopOptions): Promise<void> {
     if (!proc || proc.exitCode !== null || proc.signalCode !== null) {
       return;
     }

@@ -1,5 +1,10 @@
 import { describe, it, expect } from 'vitest';
-import { getConfigBuilder, listRegisteredAgents } from './index.js';
+import {
+  getConfigBuilder,
+  listRegisteredAgents,
+  sortAgentsForDisplay,
+  DEFAULT_AGENT_ORDER,
+} from './index.js';
 import { ClaudeConfigBuilder } from './claude.js';
 import { CodexConfigBuilder } from './codex.js';
 import { OpencodeConfigBuilder } from './opencode.js';
@@ -26,6 +31,30 @@ describe('router/config registry', () => {
     expect(agents).toContain('pi');
     expect(agents).toContain('kimi');
     expect(agents).toHaveLength(5);
+  });
+
+  it('listRegisteredAgents returns agents in first-start canonical order', () => {
+    // 首次启动默认顺序：Codex → Claude → OpenCode → Pi → Kimi
+    expect(listRegisteredAgents()).toEqual(['codex', 'claude', 'opencode', 'pi', 'kimi']);
+    expect(DEFAULT_AGENT_ORDER).toEqual(['codex', 'claude', 'opencode', 'pi', 'kimi']);
+  });
+
+  describe('sortAgentsForDisplay', () => {
+    it('keeps canonical order when all agents are available', () => {
+      const sorted = sortAgentsForDisplay(listRegisteredAgents(), () => true);
+      expect(sorted).toEqual(['codex', 'claude', 'opencode', 'pi', 'kimi']);
+    });
+
+    it('keeps canonical order when availability is unknown (not probed)', () => {
+      const sorted = sortAgentsForDisplay(listRegisteredAgents(), () => undefined);
+      expect(sorted).toEqual(['codex', 'claude', 'opencode', 'pi', 'kimi']);
+    });
+
+    it('moves unavailable agents to the back, preserving canonical order within groups', () => {
+      const availability = (kind: string) => kind !== 'opencode' && kind !== 'kimi';
+      const sorted = sortAgentsForDisplay(listRegisteredAgents(), availability);
+      expect(sorted).toEqual(['codex', 'claude', 'pi', 'opencode', 'kimi']);
+    });
   });
 
   it('getConfigBuilder returns the correct builder class for each agent', () => {

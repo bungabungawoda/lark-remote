@@ -5,7 +5,8 @@
  * - types.ts has no circular import on session/
  * - SpawningRunner owns registerExitHandlers singleton dispatch
  * - index.ts does not re-export common/ utilities
- * - claude/runner.ts extends SpawningRunner without re-implementing registerExitHandlers (P1-1)
+ * - claude/session.ts extends SpawningRunner; claude/runner.ts delegates without
+ *   re-implementing registerExitHandlers (P1-1, 2026-08-16 长驻交互改造)
  *
  * Other structure checks (line counts, directory listings, export existence)
  * were removed: they are fragile against normal refactoring and provide no
@@ -44,11 +45,20 @@ describe('runner structure: architecture guards', () => {
     expect(content).not.toContain("from './common/");
   });
 
-  it('claude/runner.ts extends SpawningRunner without re-implementing registerExitHandlers (P1-1)', () => {
-    const content = read('claude/runner.ts');
-    expect(content).toContain('extends SpawningRunner');
-    // P1-1 (2026-08-02): registerExitHandlers moved to the SpawningRunner base as a
-    // module-level singleton dispatch — subclass must NOT re-implement it.
-    expect(content).not.toContain('registerExitHandlers()');
+  it('claude/session.ts extends SpawningRunner; runner.ts delegates lifecycle (P1-1)', () => {
+    // 长驻交互改造：进程编排下沉到 ClaudeSession
+    // （IS-A SpawningRunner），ClaudeRunner 薄包装委托。registerExitHandlers
+    // 仍由 SpawningRunner 基类单例分发，两个文件都不得重复实现。
+    const session = read('claude/session.ts');
+    expect(session).toContain('extends SpawningRunner');
+    // 单例分发实现不得在子类重复（registerExitCleanup/unregisterExitCleanup
+    // 只存在于 SpawningRunner 基类）。
+    expect(session).not.toContain('registerExitCleanup(');
+    expect(session).not.toContain('unregisterExitCleanup(');
+
+    const runner = read('claude/runner.ts');
+    expect(runner).toContain('implements AgentRunner');
+    expect(runner).not.toContain('registerExitCleanup(');
+    expect(runner).not.toContain('unregisterExitCleanup(');
   });
 });

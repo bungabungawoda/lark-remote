@@ -56,7 +56,7 @@ describe('bash-card-settle-fallback', () => {
    * Anchor: test_anchor_bash_card_error_state_with_large_output
    *
    * 验证：错误状态下的 fallback 也能正常渲染
-   * 注：stderr 和 output 各自被截断到 15KB，但仍可能组合超限
+   * 注：stderr 和 output 各自被截断到 12KB，但仍可能组合超限
    * 这是第三层的极端情况测试 - 如果仍然超限，需要降级到真正的极简卡片
    */
   it('test_anchor_bash_card_error_state_with_large_output', () => {
@@ -72,8 +72,7 @@ describe('bash-card-settle-fallback', () => {
     const cardBytes = Buffer.byteLength(cardStr, 'utf8');
 
     // 第三层要求：即使 output + stderr 组合超限，fallback 也要能在限制内发送
-    // 当前实现：15KB * 2 = 30KB，仍然可能超限（实际 30659）
-    // 这是需要进一步修复的问题
+    // 当前实现：12KB * 2 = 24KB，仍然可能超限
     expect(cardBytes).toBeLessThanOrEqual(FEISHU_CARD_LIMIT);
     expect(cardStr).toContain('命令执行失败');
     expect(cardStr).toContain('退出码: 1');

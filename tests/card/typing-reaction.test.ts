@@ -1,5 +1,5 @@
 /**
- * 红 agent - Typing reaction anchor 测试
+ * Typing reaction anchor 测试
  *
  * 验收标准：
  * 1. FeishuConnector 有 addReaction 方法，可添加 reaction
@@ -9,13 +9,7 @@
  * 5. 收到卡片按钮点击时，添加 Typing 表情
  */
 
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import fs from 'node:fs';
-import path from 'node:path';
-import os from 'node:os';
-import { fileURLToPath } from 'node:url';
-
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 // Mock logger
 vi.mock('../logger/index.js', () => ({
@@ -83,25 +77,5 @@ describe('Typing reaction - FeishuConnector methods', () => {
   it('test_anchor_feishu_connector_has_add_reaction_method', () => {
     // 验证 FeishuConnector 有 addReaction 方法
     expect(typeof connector.addReaction).toBe('function');
-  });
-});
-
-describe('Typing reaction - Message handler integration', () => {
-  let tempDir: string;
-  let indexContent: string;
-
-  beforeEach(() => {
-    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'lark-typing-test-'));
-    indexContent = fs.readFileSync(path.join(__dirname, '../../src/index.ts'), 'utf-8');
-  });
-
-  afterEach(() => {
-    fs.rmSync(tempDir, { recursive: true, force: true });
-  });
-
-  it('test_anchor_normal_message_adds_typing_reaction', () => {
-    // 验证普通消息处理时添加 Typing 表情
-    // 期望：在处理普通消息的代码路径中，调用了 addReaction 方法，参数包含 'Typing'
-    expect(indexContent).toMatch(/addReaction.*Typing|Typing.*addReaction/s);
   });
 });

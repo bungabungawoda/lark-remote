@@ -9,9 +9,15 @@ import {
 import type { AppConfig } from '../config/index.js';
 import { getLogger } from '../logger/index.js';
 import { MAX_FILE_UPLOAD_SIZE } from './file-limits.js';
+import { DEFAULT_INBOUND_MEDIA_MAX_SIZE_MB } from '../config/index.js';
+import { sleep } from '../common/sleep.js';
 import axios from 'axios';
 import fs from 'node:fs';
+import { silentlyUnlink } from '../common/fs.js';
 import https from 'node:https';
+import os from 'node:os';
+import path from 'node:path';
+import { randomUUID } from 'node:crypto';
 import FormData from 'form-data';
 
 /**
@@ -55,6 +61,75 @@ interface FeishuMessage {
 }
 
 type MessageHandler = (msg: FeishuMessage) => void;
+
+/**
+ * 入站媒体（image/file 消息的 resource）下载结果，交给 bridge 落盘。
+ * media 为通过大小限制、可落盘的项；failures 为下载失败或超限的项
+ * （bridge 负责把这些失败提示回用户）。
+ */
+export interface InboundMediaItem {
+  /** 资源类型：image 消息按 MIME 生成 image_<HHmmss>_<n>.<ext>，file 保留文件名。 */
+  type: 'image' | 'file';
+  /** 原始文件名（file 消息有；image 消息无，由 bridge 按 MIME 生成）。 */
+  fileName?: string;
+  /** 服务端 content-type（参数已剥离；可能缺失，bridge 有兜底）。 */
+  mimeType?: string;
+  /**
+   * 下载内容所在临时文件（流式落盘，避免大文件全量进堆内存）。
+   * 由 bridge 移动到最终位置；任何未移动路径都必须清理该文件。
+   */
+  tempPath: string;
+}
+
+export interface InboundMediaFailure {
+  fileName?: string;
+  reason: string;
+}
+
+export interface InboundMediaPayload {
+  userId: string;
+  chatId: string;
+  messageId: string;
+  /** 引用上下文：不同 replyTo 强制拆批。 */
+  replyToMessageId?: string;
+  media: InboundMediaItem[];
+  failures: InboundMediaFailure[];
+}
+
+/** 单资源下载超时（毫秒）：SDK 无内置超时，挂起会导致提示丢失 + 残留临时文件。 */
+const RESOURCE_DOWNLOAD_TIMEOUT_MS = 5 * 60 * 1000;
+
+function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms);
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (err: unknown) => {
+        clearTimeout(timer);
+        reject(err);
+      },
+    );
+  });
+}
+
+/**
+ * 媒体消息到达的轻量描述（未下载）：供上层先做 owner/配置闸门，
+ * 通过后再调 downloadInboundMedia —— 下载发生在认证之后（P1 review 修复）。
+ */
+export interface InboundMediaMessage {
+  userId: string;
+  chatId: string;
+  messageId: string;
+  /** 引用上下文：不同 replyTo 强制拆批。 */
+  replyToMessageId?: string;
+  resources: Array<{ type: 'image' | 'file'; fileKey: string; fileName?: string }>;
+}
+
+type InboundMediaDetectedHandler = (msg: InboundMediaMessage) => void | Promise<void>;
+
 /**
  * CardAction handler may return a CardActionResponse (e.g. `{ toast: {...} }`)
  * to give the clicking user native immediate feedback. The SDK passes the
@@ -128,9 +203,11 @@ function tryGetPatchService(channel: LarkChannel): PatchableMessageService | und
 }
 
 export class FeishuConnector {
-  private channel: LarkChannel;
+  /** 飞书 channel 实例（public：测试直接访问/注入 mock，替代 as unknown as）。 */
+  channel: LarkChannel;
   private onMessage?: MessageHandler;
   private onCardAction?: CardActionHandler;
+  private onInboundMediaDetected?: InboundMediaDetectedHandler;
   private isConnected = false;
   private appId: string;
   private appSecret: string;
@@ -184,6 +261,18 @@ export class FeishuConnector {
     this.channel.on('message', (msg: NormalizedMessage) => {
       if (msg.chatType !== 'p2p') return;
 
+      // 入站图片/文件：不转发文本内容（图片消息的 content 只是占位文案），
+      // 而是下载资源后交给 bridge 落盘（runner 零改动）。
+      if (
+        (msg.rawContentType === 'image' || msg.rawContentType === 'file') &&
+        msg.resources.length > 0
+      ) {
+        // 只上报"媒体到达"，不在此下载：owner/配置闸门在 index.ts 里先执行，
+        // 通过后才调用 downloadInboundMedia（避免未认证大文件下载打爆内存）。
+        void this.handleInboundMediaDetected(msg);
+        return;
+      }
+
       this.onMessage?.({
         userId: msg.senderId,
         messageId: msg.messageId,
@@ -223,6 +312,94 @@ export class FeishuConnector {
 
   setCardActionHandler(handler: CardActionHandler): void {
     this.onCardAction = handler;
+  }
+
+  setInboundMediaDetectedHandler(handler: InboundMediaDetectedHandler): void {
+    this.onInboundMediaDetected = handler;
+  }
+
+  /**
+   * 上报媒体消息到达（轻量，不含下载内容）。上层认证/配置闸门通过后
+   * 再调 downloadInboundMedia。
+   */
+  private async handleInboundMediaDetected(msg: NormalizedMessage): Promise<void> {
+    if (!this.onInboundMediaDetected) {
+      getLogger().warn('[feishu] inbound media received but no detected handler registered');
+      return;
+    }
+    try {
+      await this.onInboundMediaDetected({
+        userId: msg.senderId,
+        chatId: msg.chatId,
+        messageId: msg.messageId,
+        replyToMessageId: msg.replyToMessageId,
+        resources: msg.resources.map((r) => ({
+          type: r.type === 'image' ? ('image' as const) : ('file' as const),
+          fileKey: r.fileKey,
+          fileName: r.fileName,
+        })),
+      });
+    } catch (err) {
+      getLogger().error('[feishu] inbound media detected handler failed:', (err as Error).message);
+    }
+  }
+
+  /**
+   * 下载消息里的全部资源（流式写临时文件，避免大文件全量进堆内存）。
+   * 逐资源 try/catch：单个失败不影响其他资源；超限项不进入 media（不落盘）。
+   * 下载失败/超限都随 failures 交给 bridge 提示用户（对齐"发送文件失败"文案风格）。
+   * 调用方必须已通过 owner/配置闸门（index.ts）；maxFileSizeMb 由调用方从
+   * 当前配置传入（避免 connector 持有过期的 config 快照）。
+   */
+  async downloadInboundMedia(
+    msg: InboundMediaMessage,
+    opts?: { maxFileSizeMb?: number; downloadTimeoutMs?: number },
+  ): Promise<InboundMediaPayload> {
+    const maxBytes = (opts?.maxFileSizeMb ?? DEFAULT_INBOUND_MEDIA_MAX_SIZE_MB) * 1024 * 1024;
+    const timeoutMs = opts?.downloadTimeoutMs ?? RESOURCE_DOWNLOAD_TIMEOUT_MS;
+    const media: InboundMediaItem[] = [];
+    const failures: InboundMediaFailure[] = [];
+
+    for (const res of msg.resources) {
+      const tmpPath = path.join(os.tmpdir(), `lark-remote-inbound-${randomUUID()}`);
+      try {
+        const { contentType, bytesWritten } = await withTimeout(
+          this.channel.downloadResourceToFile(msg.messageId, res.fileKey, res.type, tmpPath),
+          timeoutMs,
+          `downloadResource fileKey=${res.fileKey}`,
+        );
+        if (bytesWritten > maxBytes) {
+          silentlyUnlink(tmpPath);
+          failures.push({
+            fileName: res.fileName,
+            reason: `超过 ${maxBytes / (1024 * 1024)}MB 大小限制`,
+          });
+          continue;
+        }
+        media.push({
+          type: res.type,
+          fileName: res.fileName,
+          mimeType: contentType,
+          tempPath: tmpPath,
+        });
+      } catch (err) {
+        silentlyUnlink(tmpPath);
+        getLogger().warn(
+          `[feishu] downloadResource failed fileKey=${res.fileKey} type=${res.type}:`,
+          (err as Error).message,
+        );
+        failures.push({ fileName: res.fileName, reason: `下载失败: ${(err as Error).message}` });
+      }
+    }
+
+    return {
+      userId: msg.userId,
+      chatId: msg.chatId,
+      messageId: msg.messageId,
+      replyToMessageId: msg.replyToMessageId,
+      media,
+      failures,
+    };
   }
 
   async connect(): Promise<void> {
@@ -271,7 +448,7 @@ export class FeishuConnector {
     } catch (err: unknown) {
       if (shouldRetrySendError(err)) {
         getLogger().warn('[feishu] rate limited, retrying in 200ms...');
-        await new Promise((r) => setTimeout(r, 200));
+        await sleep(200);
         try {
           const result = await this.channel.send(chatId, input, { replyTo: opts?.replyTo });
           return result.messageId;

@@ -8,11 +8,13 @@ import { CommandRouter } from '../../../src/router/index.js';
 import { AppConfigSchema } from '../../../src/config/index.js';
 import type { AppConfig } from '../../../src/config/index.js';
 import { SessionReaderRegistry } from '../../../src/session/registry.js';
+import { sleep, waitFor } from '../../lib/wait-for.js';
 
 import {
   createStubAgentRegistry,
   createStubSessionReaderRegistry,
   createStubRunner,
+  createStubConnectorWithGatedCardUpdate,
 } from '../../lib/bridge-stubs.js';
 const { mockLogger } = vi.hoisted(() => ({
   mockLogger: {
@@ -27,87 +29,6 @@ vi.mock('../../../src/logger/index.js', () => ({
   getLogger: () => mockLogger,
   initLogger: () => mockLogger,
 }));
-
-/**
- * Stub connector whose card PATCH (`updateCard`) stays in flight until the
- * test releases it. This reproduces the production race where a Feishu card
- * update API round trip (updateQueueCardToCancelled → connector.updateCard)
- * yields to the event loop while the serial queue chain advances.
- */
-function createStubConnectorWithGatedCardUpdate() {
-  const sent: Array<{ chatId: string; input: unknown; opts?: unknown }> = [];
-  const cards: object[] = [];
-  const updateCalls: string[] = [];
-  const gateResolvers: Array<() => void> = [];
-
-  return {
-    sendWithRetry: async (chatId: string, input: unknown, opts?: unknown) => {
-      sent.push({ chatId, input, opts });
-      return 'msg-id';
-    },
-    sendFile: async (chatId: string, filePath: string) => {
-      sent.push({ chatId, input: { file: filePath }, opts: undefined });
-      return 'file-msg-id';
-    },
-    reconnect: async () => {},
-    addReaction: async () => {},
-    streamCard: async (
-      chatId: string,
-      initial: object,
-      producer: (controller: {
-        messageId: string;
-        current: object;
-        update(next: object | ((current: object) => object)): Promise<void>;
-      }) => Promise<void>,
-      opts?: unknown,
-    ) => {
-      sent.push({ chatId, input: { card: initial }, opts });
-      cards.push(initial);
-      let current = initial;
-      await producer({
-        messageId: 'stream-msg-id',
-        get current() {
-          return current;
-        },
-        update: async (next) => {
-          current = typeof next === 'function' ? next(current) : next;
-          cards.push(current);
-        },
-      });
-      return 'stream-msg-id';
-    },
-    updateCard: async (_messageId: string, card: object) => {
-      const header = (card as { header?: { title?: { content?: string } } }).header;
-      updateCalls.push(header?.title?.content ?? '');
-      // Block the card PATCH until the test releases it.
-      await new Promise<void>((resolve) => gateResolvers.push(resolve));
-      cards.push(card);
-    },
-    connected: true,
-    _sent: sent,
-    _cards: cards,
-    _updateCalls: updateCalls,
-    // Resolve ALL parked card updates: with the fix, several updateCard calls
-    // (cancelled A/B cards + the target's executing card, incl. the begin-path
-    // update) can be parked concurrently; a single-last-resolver gate would
-    // leave the handler awaiting an older gate forever.
-    releaseCardGate: () => {
-      for (const resolve of gateResolvers.splice(0)) resolve();
-    },
-  };
-}
-
-const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
-
-/** Poll a condition with real waits; returns false on timeout. */
-async function waitFor(condition: () => boolean, timeoutMs = 1000): Promise<boolean> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (condition()) return true;
-    await sleep(10);
-  }
-  return condition();
-}
 
 let tmpDir: string;
 let config: AppConfig;

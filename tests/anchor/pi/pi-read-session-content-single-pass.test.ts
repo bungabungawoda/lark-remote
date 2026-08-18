@@ -3,7 +3,7 @@
  *
  * Before P2-6, pi readSessionContent (src/session/pi/sessions.ts) parsed
  * allLines 4 times:
- *   1. findLastUserIndex — JSON.parse every line
+ *   1. last-user-message scan — JSON.parse every line
  *   2. event collection — JSON.parse from startIdx to end
  *   3. extractUsage — JSON.parse every line
  *   4. extractDisplayTitle — JSON.parse every line

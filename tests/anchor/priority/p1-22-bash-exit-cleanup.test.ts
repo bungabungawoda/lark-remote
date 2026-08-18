@@ -24,6 +24,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { BashProcessRunner } from '../../../src/runner/bash/index.js';
 import { SpawningRunner } from '../../../src/runner/common/spawning-runner.js';
+import { waitForOrThrow } from '../../lib/wait-for.js';
 
 const { mockLogger } = vi.hoisted(() => ({
   mockLogger: {
@@ -45,16 +46,6 @@ function isAlive(pid: number): boolean {
     return true;
   } catch {
     return false;
-  }
-}
-
-async function waitFor(cond: () => boolean, timeoutMs = 5000): Promise<void> {
-  const start = Date.now();
-  while (!cond()) {
-    if (Date.now() - start > timeoutMs) {
-      throw new Error(`waitFor timeout after ${timeoutMs}ms`);
-    }
-    await new Promise((r) => setTimeout(r, 25));
   }
 }
 
@@ -102,13 +93,13 @@ describe('P1-22: bash runner exit cleanup', () => {
     const leaderPid = Number(fs.readFileSync(leaderPidFile, 'utf-8'));
     expect(leaderPid).toBeGreaterThan(0);
     spawnedPids.add(leaderPid);
-    await waitFor(() => fs.existsSync(childPidFile), 3000);
+    await waitForOrThrow(() => fs.existsSync(childPidFile), 3000);
     const childPid = Number(fs.readFileSync(childPidFile, 'utf-8'));
     spawnedPids.add(childPid);
 
     // 触发进程级清理（分发器最终都调 cleanupOnExit）→ 必须组杀
     runner.cleanupOnExit();
-    await waitFor(() => !isAlive(leaderPid) && !isAlive(childPid), 5000);
+    await waitForOrThrow(() => !isAlive(leaderPid) && !isAlive(childPid), 5000);
     expect(isAlive(leaderPid)).toBe(false);
     expect(isAlive(childPid)).toBe(false);
 

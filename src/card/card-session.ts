@@ -61,6 +61,8 @@ export abstract class CardSession<S, RO = unknown> {
       renderOptions?: RO;
       startTimeoutMs?: number;
       settleTimeoutMs?: number;
+      /** update/push 合批窗口，默认 100ms（0 = 禁用合批，每事件立即 flush）。 */
+      coalesceMs?: number;
     },
   ) {
     this.state = initialState;
@@ -77,6 +79,79 @@ export abstract class CardSession<S, RO = unknown> {
       this.resolveController = resolve;
       this.rejectController = reject;
     });
+    this.coalesceMs = opts.coalesceMs ?? 100;
+  }
+
+  /**
+   * 调度一次延迟 flush。已有 pending 调度则复用（合批核心）；否则起一个
+   * coalesceMs 定时器。flushInFlight 期间不再起 timer（避免重入叠加），但置
+   * pendingReschedule 以便 in-flight flush 完成后重新调度——否则 in-flight 期间
+   * 到达的 push/update 会停留为 stale 中间帧（P2-1）。
+   */
+  protected scheduleFlush(): void {
+    if (this.flushTimer) return;
+    if (this.flushInFlight) {
+      this.pendingReschedule = true;
+      return;
+    }
+    this.flushTimer = setTimeout(() => {
+      this.flushTimer = undefined;
+      void this.flush();
+    }, this.coalesceMs);
+  }
+
+  /**
+   * 执行一次 render + updateCard。合批窗口到期或 finish 即时 flush 时调用。
+   * flushInFlight 防止 timer 回调与 finish 的即时 flush 重入。
+   *
+   * 终态守卫：若 finish() 已把 state 转为终态，跳过本次 patch——避免 in-flight flush
+   * 用 pre-terminal state 覆盖 finish 已发的终态卡。finish() 自身会 await 任何
+   * in-flight flush 保证顺序，此守卫是双保险。
+   */
+  protected async flush(): Promise<void> {
+    if (this.flushInFlight) return;
+    if (!this.isFlushableState()) return;
+    this.flushInFlight = true;
+    const flushPromise = (async () => {
+      try {
+        await this.updateCard();
+      } finally {
+        this.flushInFlight = false;
+        // flushInFlight 守卫保证同一时刻只有一个 in-flight flush，故可无条件清空。
+        this.flushP = undefined;
+        // P2-1：in-flight 期间若有 push/update 到达（pendingReschedule），重新调度一次
+        // flush 渲染累积事件，避免 stale 中间帧。终态守卫在 flush() 入口已拦截，
+        // 故 finish 后不会误触发。
+        if (this.pendingReschedule) {
+          this.pendingReschedule = false;
+          this.scheduleFlush();
+        }
+      }
+    })();
+    this.flushP = flushPromise;
+    return flushPromise;
+  }
+
+  /**
+   * Whether the current state still permits a flush (i.e. is not yet terminal).
+   * Subclasses define their terminal set. Run treats 'finalizing' as non-terminal.
+   */
+  protected abstract isFlushableState(): boolean;
+
+  /**
+   * 取消待 flush 的合批调度（finish/settle 前清理，避免延迟 update 与终态
+   * 渲染竞争）。返回是否有被取消的 pending 调度。同时清掉 pendingReschedule，
+   * 防止 in-flight flush 的 finally 在 finish await 之后又起 dangling timer
+   * （finish 自身会渲染含累积事件的终态卡，无需 follow-up）。
+   */
+  protected cancelPendingFlush(): boolean {
+    this.pendingReschedule = false;
+    if (this.flushTimer) {
+      clearTimeout(this.flushTimer);
+      this.flushTimer = undefined;
+      return true;
+    }
+    return false;
   }
 
   get currentState(): S {
@@ -87,6 +162,25 @@ export abstract class CardSession<S, RO = unknown> {
   get cardMessageId(): string | undefined {
     return this.messageId;
   }
+
+  /**
+   * P1-3 合批窗口（ms）。连续事件各触发一次全卡 render + patch 是流式 CPU 主要
+   * 来源；窗口内多个事件复用同一次延迟 flush。窗口大小可通过 constructor 覆盖
+   * （测试用小窗口/0 禁用）。run/bash 子类共用的 flush 骨架（scheduleFlush/flush/
+   * cancelPendingFlush/settle）下沉到基类。
+   */
+  protected readonly coalesceMs: number;
+  private flushTimer: NodeJS.Timeout | undefined;
+  private flushInFlight = false; /** P2-1：in-flight flush 期间到达的 push/update 标记。scheduleFlush 在
+   *  flushInFlight 时早退不调度新 timer，但事件已 reduce 进 state；若无此标志，
+   *  in-flight flush 完成后该事件无 follow-up render，停留为 stale 中间帧。
+   *  finally 检查此标志后重新 scheduleFlush，保证 in-flight 期间累积的事件最终被渲染。 */
+  private pendingReschedule = false;
+  /** 当前 in-flight flush 的 promise（若 flush 正在 await updateCard）。
+   *  finish() 在终态 patch 前 await 它，保证 in-flight 的 pre-terminal patch 先落地、
+   *  terminal patch 后落地——否则两条 controller.update 并发无 FIFO，
+   *  pre-terminal 可能在 terminal 之后 resolve 留下"思考中"终帧（P2）。 */
+  protected flushP: Promise<void> | undefined;
 
   async start(): Promise<void> {
     if (this.streamOutcome) {

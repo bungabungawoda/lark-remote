@@ -30,6 +30,11 @@ export function activeRunUsage(
 
 // --- Extracted helpers for refactoring ---
 
+/** Clamp `v` into [min, max]. */
+export function clampInt(v: number, min: number, max: number): number {
+  return Math.min(Math.max(v, min), max);
+}
+
 /**
  * Format number to human-readable unit string.
  * - >= 1M: one decimal, M suffix (e.g., 1200000 → 1.2M, 25000000 → 25M)

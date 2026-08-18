@@ -10,6 +10,7 @@ import { AppConfigSchema } from '../../../src/config/index.js';
 import { SessionReaderRegistry } from '../../../src/session/registry.js';
 import { ClaudeSessionReader } from '../../../src/session/claude/index.js';
 
+import { encodedProjectDir, writeSessionJsonl } from '../../lib/session-fixtures.js';
 import {
   createStubAgentRegistry,
   createStubSessionReaderRegistry,
@@ -36,21 +37,6 @@ import {
  *   payload（JSON value），必须是数值化后参与比较/切片，任何 NaN 值都不应
  *   产生误导性空页文案。
  */
-
-// Stub connector that records updateCard calls (原地翻页路径).
-
-// Stub runner
-
-// Same encoding as production `projectDirForCwd`, canonicalized via realpath first.
-function encodedProjectDir(cwd: string): string {
-  return fs.realpathSync(cwd).replace(/\//g, '-').replace(/_/g, '-');
-}
-
-function writeSessionJsonl(projDir: string, sid: string, cwd: string, body: string): void {
-  const initLine = `{"type":"system","subtype":"init","session_id":"${sid}","cwd":"${cwd}","model":"opus"}`;
-  fs.writeFileSync(path.join(projDir, `${sid}.jsonl`), `${initLine}\n${body}\n`);
-}
-
 describe('P3-1 resume.page offset 数值化 + 页对齐', () => {
   let tmpDir: string;
   let connector: ReturnType<typeof createStubConnector>;
@@ -93,7 +79,7 @@ describe('P3-1 resume.page offset 数值化 + 页对齐', () => {
       getNewestSession: () => null,
       readSessionContent: () => ({ events: [], reason: 'not_found' }),
       isSessionActive: () => false,
-    } as any;
+    };
     registry.register('codex', stubReader);
     registry.register('opencode', stubReader);
     registry.register('pi', stubReader);

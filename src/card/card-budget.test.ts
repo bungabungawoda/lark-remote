@@ -1,12 +1,12 @@
 import { describe, it, expect } from 'vitest';
 import { enforceCardBudget } from './card-budget.js';
+import { CARD_BUDGET_BYTES } from './text-truncate.js';
 import { sessionEventPanel } from '../router/card-helpers.js';
 import { markdownDiv } from './collapsible.js';
 import type { AgentSessionContentEvent } from '../runner/index.js';
+import type { CardView } from '../../tests/lib/card-view.js';
 
 // ========== 测试辅助函数 ==========
-
-const CARD_BUDGET_BYTES = 28_000;
 
 /** 生成约 approxBytes 字节的合成占位正文 */
 function syntheticPayload(approxBytes: number, tag: string): string {
@@ -102,13 +102,13 @@ function buildMixedCard(): object {
 
 /** 统计所有 collapsible_panel 的数量（结构化判定，不依赖标题 emoji） */
 function countAllPanels(card: object): number {
-  const elements = (card as any).body?.elements ?? [];
-  return elements.filter((el: any) => el.tag === 'collapsible_panel').length;
+  const elements = (card as CardView).body?.elements ?? [];
+  return elements.filter((el) => el.tag === 'collapsible_panel').length;
 }
 
 /** 获取第一个面板的内容文本 */
 function getFirstPanelContent(card: object): string {
-  const elements = (card as any).body?.elements ?? [];
+  const elements = (card as CardView).body?.elements ?? [];
   for (const el of elements) {
     if (el.tag === 'collapsible_panel') {
       const inner = el.elements?.[0];
@@ -137,7 +137,7 @@ describe('enforceCardBudget', () => {
     const { card: resultCard, wasTruncated } = enforceCardBudget(card);
 
     expect(wasTruncated).toBe(false);
-    const header = (resultCard as any).header?.title?.content;
+    const header = (resultCard as CardView).header?.title?.content;
     expect(header).not.toContain('内容已截断');
   });
 

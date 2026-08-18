@@ -84,14 +84,7 @@ describeLive('飞书 API 集成测试 - reaction 表情 key 合法性', () => {
     }
 
     // FeishuConnector.addReaction 吞错误只记日志，直连 raw channel 才能感知 key 拒绝
-    const rawChannel = (
-      connector as unknown as {
-        channel: {
-          addReaction(messageId: string, emojiType: string): Promise<string>;
-          removeReactionByEmoji(messageId: string, emojiType: string): Promise<boolean>;
-        };
-      }
-    ).channel;
+    const rawChannel = connector.channel;
 
     // 发一条真实消息作为 reaction 载体
     const messageId = await connector.sendWithRetry(testChatId, {

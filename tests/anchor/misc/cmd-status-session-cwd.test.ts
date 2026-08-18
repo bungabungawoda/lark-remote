@@ -4,6 +4,7 @@ import { SessionReaderRegistry } from '../../../src/session/registry.js';
 import { CommandRouter } from '../../../src/router/index.js';
 import { AppConfigSchema } from '../../../src/config/index.js';
 import type { AppConfig } from '../../../src/config/index.js';
+import { createMockBridge } from '../../lib/bridge-stubs.js';
 
 describe('cmdStatus sessionCwd display', () => {
   const config: AppConfig = AppConfigSchema.parse({
@@ -19,7 +20,7 @@ describe('cmdStatus sessionCwd display', () => {
   beforeEach(() => {
     store = new SessionStore();
     // Minimal bridge mock — only the methods CommandRouter constructor and cmdStatus call
-    const bridge = {
+    const bridge = createMockBridge({
       isBusyFor: () => false,
       getCurrentRunner: () => ({
         getStatusInfo: () => ({ kind: 'claude', model: 'opus', reasoning: '' }),
@@ -30,7 +31,7 @@ describe('cmdStatus sessionCwd display', () => {
       enqueue: async () => {},
       forwardToClaude: async () => {},
       sendResult: async () => {},
-    } as any;
+    });
     router = new CommandRouter({
       sessionStore: store,
       bridge,
@@ -45,7 +46,7 @@ describe('cmdStatus sessionCwd display', () => {
   it('anchor_cmdStatus_shows_sessionCwd_when_different', () => {
     store.setCwd('u1', '/main');
     store.setSessionIdAndSessionCwd('u1', 'claude', 's1', '/worktree');
-    const result = (router as any).cmdStatus({ userId: 'u1' });
+    const result = router.cmdStatus({ userId: 'u1' });
     expect(result.markdown).toContain('/main');
     expect(result.markdown).toContain('/worktree');
     expect(result.markdown).toContain('会话目录');
@@ -54,7 +55,7 @@ describe('cmdStatus sessionCwd display', () => {
   it('anchor_cmdStatus_single_line_when_same', () => {
     store.setCwd('u1', '/main');
     store.setSessionIdAndSessionCwd('u1', 'claude', 's1', '/main');
-    const result = (router as any).cmdStatus({ userId: 'u1' });
+    const result = router.cmdStatus({ userId: 'u1' });
     expect(result.markdown).not.toContain('会话目录');
     expect(result.markdown).toContain('/main');
   });

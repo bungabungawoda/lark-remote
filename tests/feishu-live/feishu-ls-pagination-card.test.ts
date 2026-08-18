@@ -236,7 +236,7 @@ describeLive('飞书 API 集成测试 - /ls 分页栏 CardKit 2.0 column 校验'
       const errorMsg = feishuError?.msg || '';
       if (errorMsg.includes('200621') && errorMsg.includes('no tag specified')) {
         // This is the exact bug we fixed - column without tag
-        expect(true).toBe(false); // Force fail
+        expect.unreachable('card structure regression: column without tag');
       }
       throw err;
     }
@@ -278,7 +278,7 @@ describeLive('飞书 API 集成测试 - /ls 分页栏 CardKit 2.0 column 校验'
       // If we reach here, Feishu accepted it (unexpected)
       console.log('⚠️ 卡片发送成功，但预期应该失败');
       // This shouldn't happen - Feishu should reject this card
-      expect(true).toBe(false);
+      expect.unreachable('card should have been rejected by Feishu');
     } catch (err: unknown) {
       const e = err as {
         code?: string;

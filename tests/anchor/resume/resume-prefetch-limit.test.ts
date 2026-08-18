@@ -10,6 +10,7 @@ import { AppConfigSchema } from '../../../src/config/index.js';
 import { SessionReaderRegistry } from '../../../src/session/registry.js';
 import { ClaudeSessionReader } from '../../../src/session/claude/index.js';
 
+import { encodedProjectDir, writeSessionJsonl } from '../../lib/session-fixtures.js';
 import {
   createStubAgentRegistry,
   createStubSessionReaderRegistry,
@@ -39,25 +40,6 @@ import {
  *   claude 侧 `/resume` 列表应复用 listSessions 已算好的 summary 做行标题
  *   兜底，全量 readSessionContent 预取上限 ≤5（列表只需要足够渲染标题）。
  */
-
-// Stub connector (minimal, matches tests/anchor/resume/resume-pagination.test.ts pattern)
-
-// Stub runner
-
-// Same encoding as production `projectDirForCwd`, canonicalized via realpath first.
-function encodedProjectDir(cwd: string): string {
-  return fs.realpathSync(cwd).replace(/\//g, '-').replace(/_/g, '-');
-}
-
-// Fake Claude session jsonl with an init line carrying the cwd (regression 2026-06-21).
-// body has TWO user messages: first = summary source (listSessions),
-// last = displayTitle source (readSessionContent) — makes the two sources
-// distinguishable in the rendered card.
-function writeSessionJsonl(projDir: string, sid: string, cwd: string, body: string): void {
-  const initLine = `{"type":"system","subtype":"init","session_id":"${sid}","cwd":"${cwd}","model":"opus"}`;
-  fs.writeFileSync(path.join(projDir, `${sid}.jsonl`), `${initLine}\n${body}\n`);
-}
-
 type CardElement = {
   tag?: string;
   columns?: Array<{ elements?: CardElement[] }>;
@@ -124,7 +106,7 @@ describe('P1-1 /resume 列表页预取上限 + summary 兜底', () => {
       getNewestSession: () => null,
       readSessionContent: () => ({ events: [], reason: 'not_found' }),
       isSessionActive: () => false,
-    } as any;
+    };
     registry.register('codex', stubReader);
     registry.register('opencode', stubReader);
     registry.register('pi', stubReader);

@@ -1,1 +1,1 @@
-export { PiRunner } from './runner.js';
+export { PiRpcRunner } from './rpc/index.js';

@@ -16,9 +16,10 @@
 
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
+import { silentlyUnlink } from '../../common/fs.js';
 import os from 'node:os';
 import path from 'node:path';
-import { truncateUtf8, TOOL_RESULT_MAX_BYTES } from '../../card/text-truncate.js';
+import { truncateUtf8, TOOL_RESULT_MAX_BYTES } from '../../common/truncate.js';
 import { getLogger } from '../../logger/index.js';
 import type {
   AgentSession,
@@ -96,6 +97,7 @@ interface OpencodeExportData {
 }
 
 import { STALE_MS } from '../common/constants.js';
+import { paginate, capEvents } from '../common/pagination.js';
 
 export class OpencodeSessionReader implements AgentSessionReader {
   private readonly binary: string;
@@ -103,7 +105,8 @@ export class OpencodeSessionReader implements AgentSessionReader {
   /** Optional raw-export capture override (testing / alt transport). */
   private readonly captureExportOverride?: (sessionId: string) => string;
   /** Cache keyed by cwd - each cwd has its own cache entry */
-  private listCache = new Map<string, { ts: number; data: OpencodeSessionListEntry[] }>();
+  /** cwd → 列表缓存（public：测试直接断言缓存形状，替代 as unknown as）。 */
+  listCache = new Map<string, { ts: number; data: OpencodeSessionListEntry[] }>();
 
   constructor(opts: OpencodeSessionReaderOptions = {}) {
     this.binary = 'opencode';
@@ -131,14 +134,10 @@ export class OpencodeSessionReader implements AgentSessionReader {
     filtered.sort((a, b) => b.updated - a.updated || a.id.localeCompare(b.id));
 
     // Compute total over the full sorted set, then paginate.
-    const total = filtered.length;
-    const offset = Math.max(0, opts?.offset ?? 0);
-    const limit = opts?.limit;
-    const page =
-      limit === undefined ? filtered.slice(offset) : filtered.slice(offset, offset + limit);
+    const { items, total } = paginate(filtered, opts ?? {});
 
     return {
-      sessions: page.map((e) => ({
+      sessions: items.map((e) => ({
         sessionId: e.id,
         // CLI title 字段形状不保证恒为 string（null/缺字段时 router 的
         // s.summary.trim() 会 TypeError）——非 string 给空串（Review R3 P3-3）。
@@ -202,8 +201,7 @@ export class OpencodeSessionReader implements AgentSessionReader {
       let displayTitle: string | undefined;
 
       // Find the last user message position (for catch-up tail).
-      // messages are already parsed objects — scan directly instead of
-      // stringify→findLastUserIndex→parse round-trip (review P2-36).
+      // messages are already parsed objects — scan directly.
       let lastUserIndex = -1;
       for (let i = 0; i < data.messages.length; i++) {
         if (data.messages[i].info.role === 'user') {
@@ -270,22 +268,29 @@ export class OpencodeSessionReader implements AgentSessionReader {
         // Track usage from step-finish parts
         for (const part of msg.parts) {
           if (part.type === 'step-finish' && part.tokens) {
-            // Use the last step-finish tokens (usually the final one).
+            // Use the last NON-EMPTY step-finish tokens. A long autonomous run
+            // can end on a degenerate step (model cut off mid-reasoning) whose
+            // step-finish reports all-zero tokens; trusting it would wipe out
+            // the run's real per-turn usage (contextLength/input/output/total
+            // all render 0). Skip zero-total steps so per-turn usage reflects
+            // the last step that actually consumed tokens.
             // ccusage-aligned: cache.write -> cacheCreationTokens.
             // contextLength = input + cacheRead + cacheCreation (excludes
             // output/reasoning) — the unified context-window occupancy
             // contract across all five readers (review P2-8).
-            usage = {
-              inputTokens: part.tokens.input,
-              outputTokens: part.tokens.output,
-              contextLength:
-                part.tokens.input +
-                (part.tokens.cache?.read ?? 0) +
-                (part.tokens.cache?.write ?? 0),
-              cacheReadTokens: part.tokens.cache?.read,
-              cacheCreationTokens: part.tokens.cache?.write,
-              totalTokens: part.tokens.total,
-            };
+            if ((part.tokens.total ?? 0) !== 0) {
+              usage = {
+                inputTokens: part.tokens.input,
+                outputTokens: part.tokens.output,
+                contextLength:
+                  part.tokens.input +
+                  (part.tokens.cache?.read ?? 0) +
+                  (part.tokens.cache?.write ?? 0),
+                cacheReadTokens: part.tokens.cache?.read,
+                cacheCreationTokens: part.tokens.cache?.write,
+                totalTokens: part.tokens.total,
+              };
+            }
           }
         }
       }
@@ -352,13 +357,7 @@ export class OpencodeSessionReader implements AgentSessionReader {
       // Apply maxEvents cap: keep the LAST N events (most recent), matching
       // CodexSessionReader's slice(-maxEvents). maxEvents limits the catch-up
       // tail so auto-resume cards don't load the entire session.
-      // P2-7: maxEvents <= 0 returns [] (guards `slice(-0)` full-array trap).
-      const cappedEvents =
-        opts?.maxEvents !== undefined
-          ? opts.maxEvents <= 0
-            ? []
-            : events.slice(-opts.maxEvents)
-          : events;
+      const cappedEvents = capEvents(events, opts?.maxEvents);
 
       return {
         events: cappedEvents,
@@ -393,7 +392,8 @@ export class OpencodeSessionReader implements AgentSessionReader {
   }
   // --- Private helpers ---
 
-  private realpath(cwd: string): string {
+  /** realpath 归一化（public：测试直接调用，替代 as unknown as）。 */
+  realpath(cwd: string): string {
     try {
       return fs.realpathSync(cwd);
     } catch {
@@ -451,7 +451,8 @@ export class OpencodeSessionReader implements AgentSessionReader {
    * via the constructor; the default routes stdout to a temp file fd to bypass
    * opencode's ~128KB pipe truncation on large sessions (L1).
    */
-  private captureExport(sessionId: string): string {
+  /** 导出会话内容（public：测试直接调用，替代 as unknown as）。 */
+  captureExport(sessionId: string): string {
     if (this.captureExportOverride) return this.captureExportOverride(sessionId);
     return this.captureExportViaFileFd(sessionId);
   }
@@ -487,9 +488,7 @@ export class OpencodeSessionReader implements AgentSessionReader {
           fs.closeSync(fd);
         } catch {}
       }
-      try {
-        fs.unlinkSync(tmp);
-      } catch {}
+      silentlyUnlink(tmp);
     }
   }
 }
