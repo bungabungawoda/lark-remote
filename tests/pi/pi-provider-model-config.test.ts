@@ -278,10 +278,8 @@ describe('pi provider/model config from pi files', () => {
       sessionReaderRegistry,
     });
 
-    const result = (
-      router as unknown as { buildConfigCard: () => { card: object } }
-    ).buildConfigCard();
-    const card = result.card;
+    const result = router.buildConfigCard();
+    const card = result.card!;
 
     // 验证 pi.model 是 select 类型
     expect(isSelectField(card, 'agents.pi.model')).toBe(true);
@@ -325,10 +323,8 @@ describe('pi provider/model config from pi files', () => {
       sessionReaderRegistry,
     });
 
-    const result = (
-      router as unknown as { buildConfigCard: () => { card: object } }
-    ).buildConfigCard();
-    const card = result.card;
+    const result = router.buildConfigCard();
+    const card = result.card!;
 
     const providerOptions = extractFieldOptions(card, 'agents.pi.provider');
     const modelOptions = extractFieldOptions(card, 'agents.pi.model');

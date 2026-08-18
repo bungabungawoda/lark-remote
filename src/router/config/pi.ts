@@ -6,6 +6,7 @@ import { loadPiConfig, getPiModelOptions } from '../../config/pi-config.js';
 import { PI_THINKING_LEVELS } from '../../config/index.js';
 import type { AgentConfigCardBuilder, ConfigField } from './types.js';
 import type { AppConfig } from '../../config/index.js';
+import { resetModelPatch } from './common/model-patch.js';
 
 export class PiConfigBuilder implements AgentConfigCardBuilder {
   buildFields(displayConfig: AppConfig): ConfigField[] {
@@ -53,12 +54,14 @@ export class PiConfigBuilder implements AgentConfigCardBuilder {
 
     // provider 变更时，重置 model 为新 provider 的首个模型
     if (key === 'agents.pi.provider' && typeof value === 'string') {
-      const newModelOptions = getPiModelOptions(value);
       const currentModel = config.agents?.pi?.model as string | undefined;
-      const currentModelIsValid = newModelOptions.some((m) => m === currentModel);
-      if (!currentModelIsValid && newModelOptions.length > 0) {
-        patches.push({ key: 'agents.pi.model', value: newModelOptions[0] });
-      }
+      const modelPatch = resetModelPatch(
+        key,
+        'agents.pi.model',
+        currentModel,
+        getPiModelOptions(value),
+      );
+      if (modelPatch) patches.push(modelPatch);
     }
 
     return patches;

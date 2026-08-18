@@ -187,7 +187,7 @@ describe('Pi card adaptation', () => {
       const ctx = { userId: 'test-user', chatId: 'test-chat', messageId: 'msg-1' };
       await router.handle('/config', ctx);
 
-      const sent = (connector as unknown as { _sent: Array<{ input: unknown }> })._sent;
+      const sent = connector._sent;
       expect(sent.length).toBeGreaterThan(0);
       const card = (sent[0].input as { card: object }).card;
       const cardStr = JSON.stringify(card);

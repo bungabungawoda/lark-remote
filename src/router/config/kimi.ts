@@ -1,5 +1,8 @@
 /**
  * Kimi config builder — builds fields and handles field changes for Kimi agent.
+ *
+ * Kimi is pure ACP mode: permissionMode (manual/auto/yolo) and the ACP
+ * sub-config fields are always shown.
  */
 
 import {
@@ -8,8 +11,14 @@ import {
   FALLBACK_EFFORTS,
   type KimiThinkingEffort,
 } from '../../config/kimi-config.js';
-import type { AgentConfigCardBuilder, ConfigField } from './types.js';
-import type { AppConfig } from '../../config/index.js';
+import type { AgentConfigCardBuilder, ConfigField, SelectOption } from './types.js';
+import { DEFAULT_TURN_IDLE_TIMEOUT_MINUTES, type AppConfig } from '../../config/index.js';
+
+const PERMISSION_MODE_OPTIONS: SelectOption[] = [
+  { text: 'manual（逐项审批）', value: 'manual' },
+  { text: 'auto（引擎裁决）', value: 'auto' },
+  { text: 'yolo（全部放行）', value: 'yolo' },
+];
 
 export class KimiConfigBuilder implements AgentConfigCardBuilder {
   buildFields(displayConfig: AppConfig): ConfigField[] {
@@ -19,7 +28,9 @@ export class KimiConfigBuilder implements AgentConfigCardBuilder {
     const kimiCfg = loadKimiConfig();
     const currentModel = displayConfig.agents?.kimi?.model ?? kimiCfg.currentModel;
     const currentThinking = displayConfig.agents?.kimi?.thinkingEffort ?? 'max';
+    const currentPermissionMode = displayConfig.agents?.kimi?.permissionMode ?? 'manual';
 
+    // §7: 现有 model + thinkingEffort select（顺序不变）
     fields.push({
       key: 'agents.kimi.model',
       label: '使用模型',
@@ -38,6 +49,25 @@ export class KimiConfigBuilder implements AgentConfigCardBuilder {
         (e): e is KimiThinkingEffort => (KIMI_THINKING_EFFORTS as readonly string[]).includes(e),
       ),
       currentValue: currentThinking,
+    });
+
+    // Permission mode + ACP sub-config (pure ACP: always shown)
+    // §7: 文案用官方名 + 中文注释
+    fields.push({
+      key: 'agents.kimi.permissionMode',
+      label: '权限模式',
+      type: 'select',
+      options: PERMISSION_MODE_OPTIONS,
+      currentValue: currentPermissionMode,
+    });
+
+    const currentTurnIdleTimeoutMinutes =
+      displayConfig.agents?.kimi?.acp?.turnIdleTimeoutMinutes ?? DEFAULT_TURN_IDLE_TIMEOUT_MINUTES;
+    fields.push({
+      key: 'agents.kimi.acp.turnIdleTimeoutMinutes',
+      label: 'Turn 空闲超时(分钟, 0关闭)',
+      type: 'input',
+      currentValue: String(currentTurnIdleTimeoutMinutes),
     });
 
     return fields;

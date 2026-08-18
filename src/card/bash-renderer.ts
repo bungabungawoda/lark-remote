@@ -1,13 +1,12 @@
 import type { RunCardRenderOptions } from './run-renderer.js';
 import { terminalToColor, terminalToLabel, stopButton } from './card-shared.js';
 import { markdownDiv } from './collapsible.js';
-import { truncateUtf8 } from './text-truncate.js';
+import { truncateUtf8, CARD_BUDGET_BYTES } from './text-truncate.js';
 
 /**
  * 飞书卡片大小限制（安全阈值，与 run-renderer 一致）。
- * 本地定义，不从 card-budget.ts 导入（避免流式/静态耦合）。
+ * 从共享的 text-truncate.ts 导入，避免三处各自定义后数值漂移。
  */
-const CARD_BUDGET_BYTES = 28_000;
 
 /**
  * 单个输出字段的默认最大字节数（保守值，用于正常路径）。

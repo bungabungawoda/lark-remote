@@ -70,7 +70,7 @@ vi.mock('../../src/logger/index.js', () => ({
 
 // --- 边界测试替身（仅 runner；同 tests/anchor/kimi/kimi-usage-e2e-card.test.ts 模式） ---
 /** Wrap a stub Runner with AgentRunner fields。 */
-function asKimiRunner(r: Runner): AgentRunner {
+function asAgentRunner(r: Runner): AgentRunner {
   return {
     ...r,
     kind: 'kimi',
@@ -166,7 +166,7 @@ describe('kimi done card must not fabricate an all-zero token block when jsonl h
 
     const connector = createStubConnector();
     const sessionStore = new SessionStore();
-    const bridgeRunner = asKimiRunner(
+    const bridgeRunner = asAgentRunner(
       createStubRunner({
         mode: 'streaming',
         events: [

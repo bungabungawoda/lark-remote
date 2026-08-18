@@ -54,7 +54,7 @@ describe('AgentRegistry', () => {
 
   it('getGlobalInstance returns undefined before set', () => {
     // Reset to undefined first to test the unset state
-    AgentRegistry.setGlobalInstance(undefined as unknown as AgentRegistry);
+    AgentRegistry.setGlobalInstance(undefined);
     expect(AgentRegistry.getGlobalInstance()).toBeUndefined();
   });
 

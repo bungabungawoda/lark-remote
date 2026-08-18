@@ -32,7 +32,7 @@ export interface ApprovalRequestedEvent {
   type: 'approval_requested';
   /** JSON-RPC id of the server request. Wire type is string | integer — keep raw. */
   requestId: number | string;
-  kind: 'command' | 'file' | 'permissions';
+  kind: 'command' | 'file' | 'permissions' | 'question';
   threadId: string;
   turnId: string;
   itemId: string;
@@ -62,21 +62,46 @@ export interface ApprovalExpiredEvent {
   timestamp?: string;
 }
 
+/** 审批决策（bridge ApprovalCoordinator → runner.respondApproval 的响应载荷）。 */
+export type ApprovalAction =
+  | { action: 'accept' }
+  | { action: 'accept_for_session' }
+  | { action: 'accept_with_execpolicy_amendment' }
+  /** Claude：允许当前请求 + 本会话后续所有权限请求自动放行（允许所有）。 */
+  | { action: 'accept_all' }
+  | { action: 'decline' }
+  | { action: 'cancel' }
+  /** Claude AskUserQuestion 答案（question → label 或 label[]）。 */
+  | { action: 'answer'; answers: Record<string, string | string[]> };
+
+/** Claude Code AskUserQuestion 的单个选项（control_request input.questions[].options[]）。 */
+export interface ClaudeUserQuestionOption {
+  label: string;
+  description?: string;
+}
+
+/** Claude Code AskUserQuestion 的单个问题（control_request input.questions[]）。 */
+export interface ClaudeUserQuestion {
+  question: string;
+  header?: string;
+  multiSelect?: boolean;
+  options: ClaudeUserQuestionOption[];
+  /**
+   * 当前已选选项 label（卡片渲染与多选切换用；单选在协调器内即时提交）。
+   * 与 permissions.items.selected 同模式：协调器原地更新后以
+   * approval_view_updated 重新渲染。
+   */
+  selected?: string[];
+}
+
 export interface ApprovalView {
   requestId: number | string;
-  kind: 'command' | 'file' | 'permissions';
+  kind: 'command' | 'file' | 'permissions' | 'question';
   reason?: string;
-  threadShort: string;
-  turnShort: string;
-  workspace: string;
   command?: string;
   commandCwd?: string;
   fileChanges?: Array<{ path: string; kind: 'add' | 'update' | 'delete'; diff?: string }>;
-  network?: { host: string; protocol: string };
   permissions?: {
-    networkEnabled?: boolean;
-    fileSystemRead?: string[];
-    fileSystemWrite?: string[];
     items: Array<{
       id: string;
       label: string;
@@ -84,10 +109,11 @@ export interface ApprovalView {
       selected: boolean;
     }>;
   };
+  /** Claude AskUserQuestion 问题列表（kind === 'question' 时存在）。 */
+  questions?: ClaudeUserQuestion[];
   availableDecisions: string[];
   /** Raw payloads for structured decisions (e.g. acceptWithExecpolicyAmendment). */
   decisionPayloads?: Record<string, unknown>;
-  pendingTotal: number;
 }
 
 interface ThinkingContent {
