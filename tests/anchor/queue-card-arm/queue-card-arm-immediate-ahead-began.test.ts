@@ -11,6 +11,7 @@ import type { AppConfig } from '../../../src/config/index.js';
 import type { Runner, AgentRunner } from '../../../src/runner/index.js';
 import { AgentRegistry } from '../../../src/runner/registry.js';
 import { SessionReaderRegistry } from '../../../src/session/registry.js';
+import { sleep, waitFor } from '../../lib/wait-for.js';
 
 const { mockLogger } = vi.hoisted(() => ({
   mockLogger: {
@@ -25,18 +26,6 @@ vi.mock('../../../src/logger/index.js', () => ({
   getLogger: () => mockLogger,
   initLogger: () => mockLogger,
 }));
-
-const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
-
-/** Poll a condition with real waits; returns false on timeout. */
-async function waitFor(condition: () => boolean, timeoutMs = 1000): Promise<boolean> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (condition()) return true;
-    await sleep(10);
-  }
-  return condition();
-}
 
 /**
  * A runner whose run() hangs until the test releases it (faithful to a real

@@ -275,7 +275,7 @@ export function getCodexCatalogModels(codexHome?: string): BundledModelInfo[] {
 /**
  * Test utility: clear the catalog cache. Tests that exercise the bundled
  * command path (`--bundled`) directly use `invalidateCodexBundledTestCache`
- * from `codex-bundled-test-helpers.ts`.
+ * from `tests/lib/codex-bundled-test-helpers.ts`.
  */
 export function invalidateCodexBundledCache(): void {
   catalogCache = null;

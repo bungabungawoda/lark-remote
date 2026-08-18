@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { ClaudeConfigBuilder } from './claude.js';
-import type { AppConfig } from '../../config/index.js';
+import { CLAUDE_PERMISSION_MODES, type AppConfig } from '../../config/index.js';
 
 vi.mock('../../config/index.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../config/index.js')>();
@@ -130,6 +130,20 @@ describe('ClaudeConfigBuilder', () => {
 
       const modelSelect = fields.find((f) => f.key === 'claude.model' && f.type === 'select');
       expect(modelSelect!.currentValue).toBe('sonnet');
+    });
+
+    it('includes permissionMode select with official Claude modes', async () => {
+      const config = makeConfig({ claude: { model: 'opus', permissionMode: 'manual' } });
+      const fields = builder.buildFields(config);
+
+      const permField = fields.find((f) => f.key === 'claude.permissionMode');
+      expect(permField).toBeDefined();
+      expect(permField!.type).toBe('select');
+      expect(permField!.currentValue).toBe('manual');
+      const optionValues = (permField!.options ?? []).map((o) =>
+        typeof o === 'string' ? o : o.value,
+      );
+      expect(optionValues).toEqual([...CLAUDE_PERMISSION_MODES]);
     });
   });
 

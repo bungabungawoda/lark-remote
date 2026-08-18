@@ -98,10 +98,11 @@ function buildSelectElement(field: ConfigField, currentValue: unknown): object {
           {
             tag: 'select_static',
             placeholder: { tag: 'plain_text', content: '请选择' },
-            options: field.options!.map((opt) => ({
-              text: { tag: 'plain_text', content: opt },
-              value: opt,
-            })),
+            options: field.options!.map((opt) => {
+              const text = typeof opt === 'string' ? opt : opt.text;
+              const value = typeof opt === 'string' ? opt : opt.value;
+              return { text: { tag: 'plain_text', content: text }, value };
+            }),
             initial_option: selectedValue,
             behaviors: [{ type: 'callback', value: { cmd: 'config.set', key: field.key } }],
           },

@@ -11,12 +11,6 @@ export {
   checkLatestVersion,
   type VersionCheckResult,
   type UpdateCache,
-  CACHE_TTL_MS,
 } from './version-check.js';
-export {
-  detectPackageManager,
-  runInstallLatest,
-  type PackageManager,
-  type InstallResult,
-} from './install.js';
+export { runInstallLatest, type PackageManager, type InstallResult } from './install.js';
 export { formatUpdateHint } from './startup-hint.js';

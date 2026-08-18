@@ -4,7 +4,7 @@ import { renderRunCard } from '../../src/card/run-renderer.js';
 
 describe('Anchor: multiple thinking events create separate blocks', () => {
   /**
-   * RED: Current implementation accumulates all thinking content into a single
+   * Current implementation accumulates all thinking content into a single
    * `state.reasoning.content` string. Multiple thinking events (e.g. thinking1
    * → text → thinking2) get merged into one monolithic reasoning block,
    * losing temporal ordering with text and tool blocks.
@@ -270,7 +270,7 @@ describe('Anchor: consecutive thinking blocks in same assistant event are merged
 
 describe('Anchor: result event marks all thinking blocks inactive', () => {
   /**
-   * RED: When a `result` event arrives, it means the assistant turn has ended
+   * When a `result` event arrives, it means the assistant turn has ended
    * (the CLI will wait for background tasks then exit). Any thinking block
    * still in `active: true` state should be flipped to `active: false` —
    * the assistant is no longer thinking; it has finished.

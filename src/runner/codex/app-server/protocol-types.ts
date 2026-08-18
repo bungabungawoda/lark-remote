@@ -9,53 +9,15 @@
  */
 
 // =============================================================================
-// JSON-RPC Base Types
+// JSON-RPC Base Types (shared: src/runner/common/jsonrpc/types.ts)
 // =============================================================================
 
-export interface JsonRpcRequest {
-  jsonrpc: '2.0';
-  id: number | string;
-  method: string;
-  params?: unknown;
-}
-
-export interface JsonRpcNotification {
-  jsonrpc: '2.0';
-  method: string;
-  params?: unknown;
-}
-
-export interface JsonRpcSuccessResponse {
-  jsonrpc: '2.0';
-  id: number | string;
-  result: unknown;
-}
-
-export interface JsonRpcErrorResponse {
-  jsonrpc: '2.0';
-  id: number | string | null;
-  error: {
-    code: number;
-    message: string;
-    data?: unknown;
-  };
-}
-
-export type ServerMessage =
-  JsonRpcRequest | JsonRpcNotification | JsonRpcSuccessResponse | JsonRpcErrorResponse;
-
-/** Standard JSON-RPC error codes. */
-export const RpcErrorCode = {
-  PARSE_ERROR: -32700,
-  INVALID_REQUEST: -32600,
-  METHOD_NOT_FOUND: -32601,
-  INVALID_PARAMS: -32602,
-  INTERNAL_ERROR: -32603,
-  /** Timeout error (custom, not standard JSON-RPC). */
-  TIMEOUT_ERROR: -32000,
-  /** Connection lost / transport error (custom). */
-  CONNECTION_LOST: -32001,
-} as const;
+export type {
+  JsonRpcRequest,
+  JsonRpcNotification,
+  JsonRpcSuccessResponse,
+  JsonRpcErrorResponse,
+} from '../../common/jsonrpc/types.js';
 
 // =============================================================================
 // Lifecycle: initialize
@@ -66,9 +28,16 @@ export interface ClientInfo {
   version: string;
 }
 
+export interface InitializeCapabilities {
+  experimentalApi?: boolean;
+  requestAttestation?: boolean;
+  optOutNotificationMethods?: string[];
+  mcpServerOpenaiFormElicitation?: boolean;
+}
+
 export interface InitializeParams {
   clientInfo: ClientInfo;
-  capabilities?: Record<string, unknown>;
+  capabilities?: InitializeCapabilities;
 }
 
 export interface InitializeResult {
@@ -153,6 +122,32 @@ export interface ThreadResumeResponse {
   cwd: string;
   model: string;
   modelProvider: string;
+}
+
+/** `thread/settings/update` params (real v2 protocol). */
+export interface ThreadSettingsUpdateParams {
+  threadId: string;
+  /** Override the approval policy for subsequent turns. */
+  approvalPolicy?: AskForApproval;
+  /** Override the sandbox policy for subsequent turns. */
+  sandboxPolicy?: SandboxPolicy;
+  /** Override the model for subsequent turns. */
+  model?: string | null;
+  /** Override the model provider for subsequent turns. */
+  modelProvider?: string | null;
+}
+
+export interface ThreadSettingsUpdateResponse {
+  // Empty success body.
+}
+
+/** Server→client notification after a settings update is applied. */
+export interface ThreadSettingsUpdatedNotification {
+  method: 'thread/settings/updated';
+  params: {
+    threadId: string;
+    threadSettings: unknown;
+  };
 }
 
 export interface ThreadCompactStartParams {
@@ -332,6 +327,7 @@ export const NotificationMethod = {
   WARNING: 'warning',
   THREAD_STARTED: 'thread/started',
   THREAD_STATUS_CHANGED: 'thread/status/changed',
+  THREAD_SETTINGS_UPDATED: 'thread/settings/updated',
   THREAD_COMPACTED: 'thread/compacted',
   MODEL_REROUTED: 'model/rerouted',
 } as const;

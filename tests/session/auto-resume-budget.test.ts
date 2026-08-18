@@ -4,6 +4,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { readSessionContent } from '../../src/session/claude/sessions.js';
 import { enforceCardBudget } from '../../src/card/card-budget.js';
+import type { CardView } from '../../tests/lib/card-view.js';
 
 describe('ws.use auto-resume budget bug - anchor', () => {
   let tmpDir: string;
@@ -23,8 +24,7 @@ describe('ws.use auto-resume budget bug - anchor', () => {
    * 当前 BUG: 20 个事件 → enforceCardBudget → 只有 5 个面板可见
    * 期望修复: readSessionContent(maxEvents=10) → 只读 10 个事件 → 10 个面板
    *
-   * RED: 当前实现没有 maxEvents 参数，读取全部 20 个事件，导致只能看到 5 个
-   * GREEN: 修复后 readSessionContent 支持 maxEvents，限制为 10 个事件
+   * 当前实现没有 maxEvents 参数，读取全部 20 个事件，导致只能看到 5 个
    */
   it('FIX: readSessionContent should support maxEvents parameter to limit events', () => {
     const cwd = '/tmp/test-project';
@@ -81,7 +81,7 @@ describe('ws.use auto-resume budget bug - anchor', () => {
     const budgetResult = enforceCardBudget(card);
 
     const panelCount =
-      (budgetResult.card as any).body?.elements?.filter((el: any) => el.tag === 'collapsible_panel')
+      (budgetResult.card as CardView).body?.elements?.filter((el) => el.tag === 'collapsible_panel')
         .length ?? 0;
 
     // 验证：10 个事件 → 10 个面板（不被截断）

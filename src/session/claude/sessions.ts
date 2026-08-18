@@ -8,9 +8,9 @@ import {
   readJsonlLinesFromOffset,
 } from '../common/jsonl.js';
 import { STALE_MS } from '../common/constants.js';
+import { capEvents } from '../common/pagination.js';
 import { extractContentBlocks } from '../common/content-blocks.js';
 import { UsageAccumulator } from '../common/usage-accumulator.js';
-import { truncate } from '../../card/card-shared.js';
 import type {
   AgentSession,
   AgentSessionContentEvent,
@@ -340,7 +340,7 @@ function scalarScan(filePath: string): ScanResult {
       }
     }
 
-    // --- last user message offset (was findLastUserIndex) ---
+    // --- last user message offset ---
     // Record the byte offset where the tail should start: the beginning of
     // the NEXT line after this user message. We compute it as this line's
     // start offset + its byte length + 1 (the trailing '\n').
@@ -473,11 +473,7 @@ function extractEventsFromTail(
       events.push({ type: role, content: `(${role} event)`, timestamp });
     }
   }
-  if (maxEvents !== undefined) {
-    if (maxEvents <= 0) return [];
-    return events.slice(-maxEvents);
-  }
-  return events;
+  return capEvents(events, maxEvents);
 }
 
 export function readSessionContent(
@@ -553,12 +549,9 @@ export function readSessionContent(
   const tailLines = readJsonlLinesFromOffset(filePath, scan.tailOffset >= 0 ? scan.tailOffset : 0);
   const events = extractEventsFromTail(tailLines, maxEvents);
 
-  // Use aiTitle if available, otherwise fallback to last user message (truncated to 200 chars)
-  const displayTitle =
-    scan.aiTitle ??
-    (scan.lastUserMessage
-      ? truncate(scan.lastUserMessage, 200, { normalizeWhitespace: true })
-      : undefined);
+  // Use aiTitle if available, otherwise fallback to last user message.
+  // Truncation is deferred to the consumer (router card building).
+  const displayTitle = scan.aiTitle ?? scan.lastUserMessage ?? undefined;
 
   return {
     events,

@@ -46,10 +46,6 @@ const EMPTY_LEVELS_CATALOG = makeCatalog([
   }),
 ]);
 
-type RouterInternals = {
-  buildConfigCard: () => { card: object };
-};
-
 function extractSelectOptions(card: object, key: string): string[] {
   const values: string[] = [];
   function traverse(obj: unknown) {
@@ -203,7 +199,7 @@ describe('codex catalog review3 fixes - anchor', () => {
       { cmd: 'config.set', key: 'agents.codex.model', option: 'empty-levels-model' },
       ctx,
     );
-    const card = (router as unknown as RouterInternals).buildConfigCard().card;
+    const card = router.buildConfigCard().card;
     expect(extractSelectOptions(card, 'agents.codex.reasoningEffort')).toEqual([]);
     expect(extractSelectCurrentValue(card, 'agents.codex.reasoningEffort')).toBe('high');
   });

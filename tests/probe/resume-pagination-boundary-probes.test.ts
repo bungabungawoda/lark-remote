@@ -19,25 +19,13 @@ import { AppConfigSchema } from '../../src/config/index.js';
 import { SessionReaderRegistry } from '../../src/session/registry.js';
 import { ClaudeSessionReader } from '../../src/session/claude/index.js';
 
+import { encodedProjectDir, writeSessionJsonl } from '../lib/session-fixtures.js';
 import {
   createStubAgentRegistry,
   createStubSessionReaderRegistry,
   createStubRunner,
   createStubConnector,
 } from '../lib/bridge-stubs.js';
-// Stub connector: records sent messages AND in-place card updates.
-
-// Stub runner.
-
-function encodedProjectDir(cwd: string): string {
-  return fs.realpathSync(cwd).replace(/\//g, '-').replace(/_/g, '-');
-}
-
-function writeSessionJsonl(projDir: string, sid: string, cwd: string, body: string): void {
-  const initLine = `{"type":"system","subtype":"init","session_id":"${sid}","cwd":"${cwd}","model":"opus"}`;
-  fs.writeFileSync(path.join(projDir, `${sid}.jsonl`), `${initLine}\n${body}\n`);
-}
-
 type CardElement = {
   tag?: string;
   text?: { content?: string };
@@ -106,7 +94,7 @@ function buildHarness(tmpDir: string, projectsDir: string, sessionCount: number)
     getNewestSession: () => null,
     readSessionContent: () => ({ events: [], reason: 'not_found' }),
     isSessionActive: () => false,
-  } as any;
+  };
   registry.register('codex', stubReader);
   registry.register('opencode', stubReader);
   registry.register('pi', stubReader);

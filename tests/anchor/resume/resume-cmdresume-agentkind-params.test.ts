@@ -94,7 +94,7 @@ describe('AC2: cmdResume supports agentKind via args', () => {
     // 构造 registry，注册 pi 和 kimi reader
     const piReader = new PiSessionReader({ piDir });
     // 手动修复 piReader 的 sessionsDir，指向我们创建的测试目录
-    (piReader as any).sessionsDir = piSessionsDir;
+    piReader.sessionsDir = piSessionsDir;
     const registry = new SessionReaderRegistry();
     registry.register('pi', piReader);
     // kimi reader 返回空（模拟没有 kimi session）
@@ -103,7 +103,7 @@ describe('AC2: cmdResume supports agentKind via args', () => {
       getNewestSession: () => null,
       readSessionContent: () => ({ events: [], reason: 'not_found' }),
       isSessionActive: () => false,
-    } as unknown as import('../../../src/runner/index.js').AgentSessionReader;
+    };
     registry.register('kimi', kimiReader);
 
     const bridge = new Bridge({
@@ -130,8 +130,6 @@ describe('AC2: cmdResume supports agentKind via args', () => {
     // 期望：返回包含 pi session 内容（displayTitle: "placeholder"）
     // 如果不传 agentKind 或用默认，会走 kimi reader，返回 "未找到 session"
 
-    // 使用私有方法（通过 any 绕过类型检查）
-    // @ts-expect-error - accessing private method for testing
     const result = router.cmdResume(['pi', piSessionId], ctx);
 
     // 验证：结果应该成功恢复 pi session（不是 "未找到 session"）

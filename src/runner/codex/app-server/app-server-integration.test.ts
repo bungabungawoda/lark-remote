@@ -11,21 +11,13 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync, chmodSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { AgentSessionReader, AgentEvent, TurnDiffEvent } from '../../types.js';
+import type { AgentEvent, TurnDiffEvent } from '../../types.js';
 import { createInitialRunState, reduceRunState } from '../../../card/run-state.js';
 import { CodexAppServerRunner } from './runner.js';
+import { createStubSessionReader } from '../../../../tests/lib/bridge-stubs.js';
 
 const FAKE_SERVER = join(process.cwd(), 'tests', 'fake-app-server', 'server.mjs');
 const FIXTURES = join(process.cwd(), 'tests', 'fake-app-server', 'fixtures');
-
-function makeSessionReader(): AgentSessionReader {
-  return {
-    listSessions: () => ({ sessions: [], total: 0 }),
-    getNewestSession: () => null,
-    readSessionContent: () => ({ events: [] }),
-    isSessionActive: () => false,
-  };
-}
 
 describe('CodexAppServerRunner integration', () => {
   let tmpDir: string;
@@ -52,7 +44,7 @@ describe('CodexAppServerRunner integration', () => {
     chmodSync(wrapper, 0o755);
     const runner = new CodexAppServerRunner({
       kind: 'codex',
-      sessionReader: makeSessionReader(),
+      sessionReader: createStubSessionReader(),
       binary: wrapper,
       model: 'deepseek-v4-flash',
       modelProvider: 'deepseek',
@@ -115,12 +107,35 @@ describe('CodexAppServerRunner integration', () => {
     await runner.dispose();
   });
 
+  it('updateApprovalMode updates the local status snapshot immediately', async () => {
+    const runner = new CodexAppServerRunner({
+      kind: 'codex',
+      sessionReader: createStubSessionReader(),
+      sandbox: 'workspace-write',
+      approvalPolicy: 'untrusted',
+    });
+
+    // No live thread/connection yet: the method must still update the local
+    // snapshot so /status reflects the saved config right away, and the next
+    // thread/start/resume will use these values.
+    await runner.updateApprovalMode({
+      approvalPolicy: 'never',
+      sandbox: 'danger-full-access',
+    });
+
+    const info = runner.getStatusInfo();
+    expect(info.extras?.sandbox).toBe('danger-full-access');
+    expect(info.extras?.approvalPolicy).toBe('never');
+
+    await runner.dispose();
+  });
+
   it('streams interleaved items in real chronology (translator → reducer contract)', async () => {
     const cwd = join(tmpDir, 'workspace');
     mkdirSync(cwd, { recursive: true });
     const runner = new CodexAppServerRunner({
       kind: 'codex',
-      sessionReader: makeSessionReader(),
+      sessionReader: createStubSessionReader(),
       binary: process.execPath,
       appServerArgs: [FAKE_SERVER, join(FIXTURES, 'interleaved-turn.json')],
       model: 'deepseek-v4-flash',
@@ -184,7 +199,7 @@ describe('CodexAppServerRunner integration', () => {
     chmodSync(wrapper, 0o755);
     const runner = new CodexAppServerRunner({
       kind: 'codex',
-      sessionReader: makeSessionReader(),
+      sessionReader: createStubSessionReader(),
       binary: wrapper,
       model: 'deepseek-v4-flash',
       modelProvider: 'deepseek',
@@ -254,7 +269,7 @@ describe('CodexAppServerRunner integration', () => {
 
     const runner = new CodexAppServerRunner({
       kind: 'codex',
-      sessionReader: makeSessionReader(),
+      sessionReader: createStubSessionReader(),
       binary: wrapper,
       model: 'deepseek-v4-flash',
       modelProvider: 'deepseek',
@@ -291,7 +306,7 @@ describe('CodexAppServerRunner integration', () => {
     mkdirSync(cwd, { recursive: true });
     const runner = new CodexAppServerRunner({
       kind: 'codex',
-      sessionReader: makeSessionReader(),
+      sessionReader: createStubSessionReader(),
       binary: process.execPath,
       appServerArgs: [FAKE_SERVER, join(FIXTURES, 'session-key-anchor.json')],
       model: 'deepseek-v4-flash',
@@ -319,7 +334,7 @@ describe('CodexAppServerRunner integration', () => {
     mkdirSync(cwd, { recursive: true });
     const runner = new CodexAppServerRunner({
       kind: 'codex',
-      sessionReader: makeSessionReader(),
+      sessionReader: createStubSessionReader(),
       binary: process.execPath,
       appServerArgs: [FAKE_SERVER, join(FIXTURES, 'turn-start-error.json')],
       model: 'deepseek-v4-flash',
@@ -352,7 +367,7 @@ describe('CodexAppServerRunner integration', () => {
     mkdirSync(cwd, { recursive: true });
     const runner = new CodexAppServerRunner({
       kind: 'codex',
-      sessionReader: makeSessionReader(),
+      sessionReader: createStubSessionReader(),
       binary: process.execPath,
       appServerArgs: [FAKE_SERVER, join(FIXTURES, 'command-approval.json')],
       model: 'deepseek-v4-flash',
@@ -401,7 +416,7 @@ describe('CodexAppServerRunner integration', () => {
     chmodSync(wrapper, 0o755);
     const runner = new CodexAppServerRunner({
       kind: 'codex',
-      sessionReader: makeSessionReader(),
+      sessionReader: createStubSessionReader(),
       binary: wrapper,
       model: 'deepseek-v4-flash',
       modelProvider: 'deepseek',
@@ -454,7 +469,7 @@ describe('CodexAppServerRunner integration', () => {
     mkdirSync(cwd, { recursive: true });
     const runner = new CodexAppServerRunner({
       kind: 'codex',
-      sessionReader: makeSessionReader(),
+      sessionReader: createStubSessionReader(),
       binary: process.execPath,
       appServerArgs: [FAKE_SERVER, join(FIXTURES, 'file-approval.json')],
       model: 'deepseek-v4-flash',
@@ -495,7 +510,7 @@ describe('CodexAppServerRunner integration', () => {
     mkdirSync(cwd, { recursive: true });
     const runner = new CodexAppServerRunner({
       kind: 'codex',
-      sessionReader: makeSessionReader(),
+      sessionReader: createStubSessionReader(),
       binary: process.execPath,
       appServerArgs: [FAKE_SERVER, join(FIXTURES, 'error-sequence.json')],
       model: 'deepseek-v4-flash',
@@ -527,7 +542,7 @@ describe('CodexAppServerRunner integration', () => {
   it('reports status extras reflecting the configured sandbox and approval policy', () => {
     const runner = new CodexAppServerRunner({
       kind: 'codex',
-      sessionReader: makeSessionReader(),
+      sessionReader: createStubSessionReader(),
       binary: process.execPath,
       appServerArgs: [FAKE_SERVER, join(FIXTURES, 'normal-turn.json')],
       sandbox: 'workspace-write',
@@ -554,7 +569,7 @@ describe('CodexAppServerRunner integration', () => {
     chmodSync(wrapper, 0o755);
     const runner = new CodexAppServerRunner({
       kind: 'codex',
-      sessionReader: makeSessionReader(),
+      sessionReader: createStubSessionReader(),
       binary: wrapper,
       model: 'deepseek-v4-flash',
       modelProvider: 'deepseek',
@@ -609,7 +624,7 @@ describe('CodexAppServerRunner integration', () => {
     chmodSync(wrapper, 0o755);
     const runner = new CodexAppServerRunner({
       kind: 'codex',
-      sessionReader: makeSessionReader(),
+      sessionReader: createStubSessionReader(),
       binary: wrapper,
       model: 'deepseek-v4-flash',
       modelProvider: 'deepseek',
@@ -624,9 +639,7 @@ describe('CodexAppServerRunner integration', () => {
       if (event.type === 'approval_requested') {
         // 先模拟用户勾选了权限（view 内 selected=true），再点「拒绝」——
         // 修复前 decline 会把勾选项原样授权返回。
-        const view = (
-          event as unknown as { view: { permissions?: { items?: Array<{ selected: boolean }> } } }
-        ).view;
+        const view = event.view;
         for (const item of view.permissions?.items ?? []) {
           item.selected = true;
         }
@@ -677,7 +690,7 @@ describe('CodexAppServerRunner integration', () => {
     chmodSync(wrapper, 0o755);
     const runner = new CodexAppServerRunner({
       kind: 'codex',
-      sessionReader: makeSessionReader(),
+      sessionReader: createStubSessionReader(),
       binary: wrapper,
       model: 'deepseek-v4-flash',
       modelProvider: 'deepseek',
@@ -687,11 +700,7 @@ describe('CodexAppServerRunner integration', () => {
 
     for await (const event of runner.run('do something', { cwd })) {
       if (event.type === 'approval_requested') {
-        const view = (
-          event as unknown as {
-            view: { permissions?: { items?: Array<{ id: string; selected: boolean }> } };
-          }
-        ).view;
+        const view = event.view;
         // 勾选写路径权限后 accept：修复必须保留"勾选即授予"语义，只有
         // decline/cancel 才清空。
         const writeItem = view.permissions?.items?.find((i) => i.id.startsWith('fs-write:'));
@@ -730,7 +739,7 @@ describe('CodexAppServerRunner integration', () => {
     mkdirSync(cwd, { recursive: true });
     const runner = new CodexAppServerRunner({
       kind: 'codex',
-      sessionReader: makeSessionReader(),
+      sessionReader: createStubSessionReader(),
       binary: process.execPath,
       appServerArgs: [FAKE_SERVER, join(FIXTURES, 'hang-turn.json')],
       model: 'deepseek-v4-flash',

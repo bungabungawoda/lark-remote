@@ -45,12 +45,6 @@ const BUNDLED_FIXTURE = makeCatalog([
   }),
 ]);
 
-type RouterInternals = {
-  buildConfigCard: () => { card: object };
-  ensurePendingConfig: () => void;
-  pendingConfig: AppConfig | null;
-};
-
 // ---------------------------------------------------------------------------
 // Helpers: extract input fields from CardKit 2.0 config card
 // ---------------------------------------------------------------------------
@@ -178,6 +172,19 @@ function buildCodexConfig(model: string = 'gpt-5.2'): AppConfig {
   });
 }
 
+/** Build a router wired to tmpDir-backed stores with a codex-scoped reader registry. */
+function makeRouter(config: AppConfig, tmpDir: string): CommandRouter {
+  return new CommandRouter({
+    sessionStore: new SessionStore(),
+    bridge: createMockBridge({ enqueueImmediate: vi.fn(), clearRunners: vi.fn() }),
+    config,
+    configPath: path.join(tmpDir, 'config.yaml'),
+    workspacePath: path.join(tmpDir, 'workspace.json'),
+    ordersPath: path.join(tmpDir, 'orders.json'),
+    sessionReaderRegistry: createMockSessionReaderRegistry({ agentKinds: ['claude', 'codex'] }),
+  });
+}
+
 // ---------------------------------------------------------------------------
 // ANCHOR Tests
 // ---------------------------------------------------------------------------
@@ -231,27 +238,12 @@ describe('codex config card custom model input - ANCHOR', () => {
    * ANCHOR AC1: Codex config card should have custom model input field
    *
    * Expected: A field with key 'agents.codex.model' and label containing "自定义模型名"
-   * Current behavior: NO custom model input field exists (will FAIL)
    */
   it('should include custom model input field when defaultAgent=codex', () => {
     const config = buildCodexConfig('gpt-5.2');
-    const sessionStore = new SessionStore();
-    const bridge = createMockBridge({ enqueueImmediate: vi.fn(), clearRunners: vi.fn() });
-    const sessionReaderRegistry = createMockSessionReaderRegistry({
-      agentKinds: ['claude', 'codex'],
-    });
+    const router = makeRouter(config, tmpDir);
 
-    const router = new CommandRouter({
-      sessionStore,
-      bridge,
-      config,
-      configPath: path.join(tmpDir, 'config.yaml'),
-      workspacePath: path.join(tmpDir, 'workspace.json'),
-      ordersPath: path.join(tmpDir, 'orders.json'),
-      sessionReaderRegistry,
-    });
-
-    const result = (router as unknown as RouterInternals).buildConfigCard() as { card: object };
+    const result = router.buildConfigCard() as { card: object };
     const inputFields = extractInputFields(result.card);
 
     // Should have a custom model input field with label containing "自定义模型名"
@@ -268,27 +260,12 @@ describe('codex config card custom model input - ANCHOR', () => {
    * ANCHOR AC2: When current model is not in dropdown options, input field should show custom value
    *
    * Expected: When model is a custom value (e.g., 'custom-model-xyz'), input shows that value
-   * Current behavior: NO custom model input field exists (will FAIL)
    */
   it('should show custom value in input field when model is not in dropdown options', () => {
     const config = buildCodexConfig('custom-model-xyz');
-    const sessionStore = new SessionStore();
-    const bridge = createMockBridge({ enqueueImmediate: vi.fn(), clearRunners: vi.fn() });
-    const sessionReaderRegistry = createMockSessionReaderRegistry({
-      agentKinds: ['claude', 'codex'],
-    });
+    const router = makeRouter(config, tmpDir);
 
-    const router = new CommandRouter({
-      sessionStore,
-      bridge,
-      config,
-      configPath: path.join(tmpDir, 'config.yaml'),
-      workspacePath: path.join(tmpDir, 'workspace.json'),
-      ordersPath: path.join(tmpDir, 'orders.json'),
-      sessionReaderRegistry,
-    });
-
-    const result = (router as unknown as RouterInternals).buildConfigCard() as { card: object };
+    const result = router.buildConfigCard() as { card: object };
     const inputFields = extractInputFields(result.card);
 
     // Find the custom model input field - MUST use the label "自定义模型名" to distinguish from other inputs
@@ -304,27 +281,12 @@ describe('codex config card custom model input - ANCHOR', () => {
    * ANCHOR AC3: When current model is in dropdown options, input field should be empty
    *
    * Expected: When model is a preset option (e.g., 'o3'), input should be empty
-   * Current behavior: NO custom model input field exists (will FAIL)
    */
   it('should show empty input field when model is in preset options', () => {
     const config = buildCodexConfig('gpt-5.2');
-    const sessionStore = new SessionStore();
-    const bridge = createMockBridge({ enqueueImmediate: vi.fn(), clearRunners: vi.fn() });
-    const sessionReaderRegistry = createMockSessionReaderRegistry({
-      agentKinds: ['claude', 'codex'],
-    });
+    const router = makeRouter(config, tmpDir);
 
-    const router = new CommandRouter({
-      sessionStore,
-      bridge,
-      config,
-      configPath: path.join(tmpDir, 'config.yaml'),
-      workspacePath: path.join(tmpDir, 'workspace.json'),
-      ordersPath: path.join(tmpDir, 'orders.json'),
-      sessionReaderRegistry,
-    });
-
-    const result = (router as unknown as RouterInternals).buildConfigCard() as { card: object };
+    const result = router.buildConfigCard() as { card: object };
     const inputFields = extractInputFields(result.card);
 
     // Find the custom model input field - MUST use the label "自定义模型名" to distinguish from other inputs
@@ -340,40 +302,24 @@ describe('codex config card custom model input - ANCHOR', () => {
    * ANCHOR AC4: config.input handler should update pendingConfig for codex custom model
    *
    * Expected: When user inputs custom model via config.input, pendingConfig should be updated
-   * Current behavior: config.input may not handle codex custom model correctly (will FAIL)
    */
   it('should update pendingConfig when user inputs custom model via config.input', () => {
     const config = buildCodexConfig('gpt-5.2');
-    const sessionStore = new SessionStore();
-    const bridge = createMockBridge({ enqueueImmediate: vi.fn(), clearRunners: vi.fn() });
-    const sessionReaderRegistry = createMockSessionReaderRegistry({
-      agentKinds: ['claude', 'codex'],
-    });
-
-    const router = new CommandRouter({
-      sessionStore,
-      bridge,
-      config,
-      configPath: path.join(tmpDir, 'config.yaml'),
-      workspacePath: path.join(tmpDir, 'workspace.json'),
-      ordersPath: path.join(tmpDir, 'orders.json'),
-      sessionReaderRegistry,
-    });
+    const router = makeRouter(config, tmpDir);
 
     // Simulate user typing in custom model input and submitting
-    (router as unknown as RouterInternals).ensurePendingConfig();
+    router.ensurePendingConfig();
 
     // Access internal method to set value
-    const internals = router as unknown as RouterInternals;
-    if (internals.pendingConfig) {
-      internals.pendingConfig.agents = {
-        ...(internals.pendingConfig.agents ?? {}),
+    if (router.pendingConfig) {
+      router.pendingConfig.agents = {
+        ...(router.pendingConfig.agents ?? {}),
         codex: { ...(config.agents?.codex ?? {}), model: 'custom-codex-model-xyz' },
       } as AppConfig['agents'];
     }
 
     // Verify pendingConfig was updated
-    expect(internals.pendingConfig?.agents?.codex?.model).toBe('custom-codex-model-xyz');
+    expect(router.pendingConfig?.agents?.codex?.model).toBe('custom-codex-model-xyz');
   });
 
   /**
@@ -411,16 +357,8 @@ describe('codex config card custom model input - ANCHOR', () => {
     // 场景 1：catalog 模型 + 对应 provider → 预设，输入框为空
     const config1 = buildCodexConfig('deepseek-v4-flash');
     config1.agents!.codex!.modelProvider = 'deepseek';
-    const router1 = new CommandRouter({
-      sessionStore: new SessionStore(),
-      bridge: createMockBridge({ enqueueImmediate: vi.fn(), clearRunners: vi.fn() }),
-      config: config1,
-      configPath: path.join(tmpDir, 'config.yaml'),
-      workspacePath: path.join(tmpDir, 'workspace.json'),
-      ordersPath: path.join(tmpDir, 'orders.json'),
-      sessionReaderRegistry: createMockSessionReaderRegistry({ agentKinds: ['claude', 'codex'] }),
-    });
-    const card1 = (router1 as unknown as RouterInternals).buildConfigCard() as { card: object };
+    const router1 = makeRouter(config1, tmpDir);
+    const card1 = router1.buildConfigCard() as { card: object };
     const inputs1 = extractInputFields(card1.card);
     const custom1 = inputs1.find(
       (f) => f.label.includes('自定义模型名') && f.key === 'agents.codex.model',
@@ -432,16 +370,8 @@ describe('codex config card custom model input - ANCHOR', () => {
 
     // 场景 2：旧 bundled 模型 + openai provider → 不在活动目录，视为自定义回显
     const config2 = buildCodexConfig('gpt-5.2');
-    const router2 = new CommandRouter({
-      sessionStore: new SessionStore(),
-      bridge: createMockBridge({ enqueueImmediate: vi.fn(), clearRunners: vi.fn() }),
-      config: config2,
-      configPath: path.join(tmpDir, 'config.yaml'),
-      workspacePath: path.join(tmpDir, 'workspace.json'),
-      ordersPath: path.join(tmpDir, 'orders.json'),
-      sessionReaderRegistry: createMockSessionReaderRegistry({ agentKinds: ['claude', 'codex'] }),
-    });
-    const card2 = (router2 as unknown as RouterInternals).buildConfigCard() as { card: object };
+    const router2 = makeRouter(config2, tmpDir);
+    const card2 = router2.buildConfigCard() as { card: object };
     const inputs2 = extractInputFields(card2.card);
     const custom2 = inputs2.find(
       (f) => f.label.includes('自定义模型名') && f.key === 'agents.codex.model',

@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
+import { silentlyUnlink } from './common/fs.js';
 
 export class InstanceAlreadyRunningError extends Error {
   constructor(
@@ -71,9 +72,7 @@ export class InstanceLock {
           throw new InstanceAlreadyRunningError(pid, this.lockPath);
         }
         // Stale lock: remove and retry once
-        try {
-          fs.unlinkSync(this.lockPath);
-        } catch {}
+        silentlyUnlink(this.lockPath);
         try {
           const fd = fs.openSync(this.lockPath, 'wx');
           fs.writeSync(fd, this.lockContents(process.pid));
@@ -100,9 +99,7 @@ export class InstanceLock {
   release(): void {
     const { pid } = this.readPidAndComm();
     if (pid === process.pid) {
-      try {
-        fs.unlinkSync(this.lockPath);
-      } catch {}
+      silentlyUnlink(this.lockPath);
     }
   }
 
@@ -143,9 +140,7 @@ export class InstanceLock {
     const comm = commParts.join('\n') || undefined;
     if (Number.isInteger(pid) && pid > 0 && comm) return { pid, comm };
     // Malformed or missing comm — treat as corrupt, unlink and return undefined
-    try {
-      fs.unlinkSync(this.lockPath);
-    } catch {}
+    silentlyUnlink(this.lockPath);
     return { pid: undefined, comm: undefined };
   }
 }
