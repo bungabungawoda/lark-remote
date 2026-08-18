@@ -89,14 +89,14 @@ describe('resume.use resumes non-default agent session (set sessionId only)', ()
 
     // 注册 pi reader，修复 sessionsDir
     const piReader = new PiSessionReader({ piDir });
-    (piReader as any).sessionsDir = piSessionsDir;
+    piReader.sessionsDir = piSessionsDir;
     // 注册 kimi reader（空）
     const kimiReader = {
       listSessions: () => ({ sessions: [], total: 0 }),
       getNewestSession: () => null,
       readSessionContent: () => ({ events: [], reason: 'not_found' }),
       isSessionActive: () => false,
-    } as any;
+    };
 
     const registry = new SessionReaderRegistry();
     registry.register('pi', piReader);
@@ -107,7 +107,7 @@ describe('resume.use resumes non-default agent session (set sessionId only)', ()
       getNewestSession: () => null,
       readSessionContent: () => ({ events: [], reason: 'not_found' }),
       isSessionActive: () => false,
-    } as any);
+    });
 
     // 创建 bridge 并跟踪 clearRunners 是否被调用
     const clearRunnersCalls: number[] = [];
@@ -141,7 +141,7 @@ describe('resume.use resumes non-default agent session (set sessionId only)', ()
     await router.handleCardAction({ cmd: 'resume.use', sessionId: piSessionId, agent: 'pi' }, ctx);
 
     // resume.use 只设置 pi 的 sessionId，不切换 defaultAgent（2026-07-01 设计：sessions 按 agent 键存）
-    expect((router as unknown as { config: AppConfig }).config.defaultAgent).toBe('kimi');
+    expect(router.config.defaultAgent).toBe('kimi');
 
     // pi 的 sessionId 已设置
     expect(sessionStore.getSessionId('user1', 'pi')).toBe(piSessionId);

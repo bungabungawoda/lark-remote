@@ -97,6 +97,18 @@ describe('isImmediateAction (§9.19)', () => {
       expect(isImmediateAction('approval.toggle')).toBe(true);
     });
 
+    it('approval.answer should return true (AskUserQuestion 即时响应)', () => {
+      expect(isImmediateAction('approval.answer')).toBe(true);
+    });
+
+    it('approval.answerSubmit should return true (AskUserQuestion 多选提交)', () => {
+      expect(isImmediateAction('approval.answerSubmit')).toBe(true);
+    });
+
+    it('approval.answerCustom should return true (AskUserQuestion 自定义答案)', () => {
+      expect(isImmediateAction('approval.answerCustom')).toBe(true);
+    });
+
     it('ws.page should return true (pagination is a control operation)', () => {
       expect(isImmediateAction('ws.page')).toBe(true);
     });

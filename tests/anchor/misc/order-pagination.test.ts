@@ -66,16 +66,9 @@ function createRouter(overrides?: { ordersPath?: string }) {
   return { router, connector, bridge };
 }
 
-/** Access private cmdOrder method for unit testing pagination logic. */
+/** Access cmdOrder (public) for unit testing pagination logic. */
 function cmdOrderOf(router: CommandRouter) {
-  const internals = router as unknown as {
-    cmdOrder(
-      args: string[],
-      ctx: { userId: string; chatId: string; messageId: string },
-      offset?: number,
-    ): { card?: object };
-  };
-  return internals.cmdOrder.bind(router);
+  return router.cmdOrder.bind(router);
 }
 
 const ctx = { userId: 'user1', chatId: 'chat1', messageId: 'msg1' };

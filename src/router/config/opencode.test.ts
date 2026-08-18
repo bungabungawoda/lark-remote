@@ -47,6 +47,28 @@ describe('OpencodeConfigBuilder', () => {
       const modelField = fields.find((f) => f.key === 'agents.opencode.modelID');
       expect(modelField!.options).toEqual(['gpt-4o', 'claude-sonnet']);
     });
+
+    it('returns mode select field with build/plan options (§P5)', () => {
+      const config = makeConfig({ agents: { opencode: { mode: 'plan' } } });
+      const fields = builder.buildFields(config);
+
+      const modeField = fields.find((f) => f.key === 'agents.opencode.mode');
+      expect(modeField).toBeDefined();
+      expect(modeField!.type).toBe('select');
+      expect(modeField!.options).toEqual([
+        { text: 'build（默认，逐项审批）', value: 'build' },
+        { text: 'plan（规划模式）', value: 'plan' },
+      ]);
+      expect(modeField!.currentValue).toBe('plan');
+    });
+
+    it('mode select defaults to build when config missing (§P5)', () => {
+      const config = makeConfig({ agents: { opencode: {} } });
+      const fields = builder.buildFields(config);
+
+      const modeField = fields.find((f) => f.key === 'agents.opencode.mode');
+      expect(modeField!.currentValue).toBe('build');
+    });
   });
 
   describe('handleFieldChange', () => {

@@ -1,10 +1,5 @@
 import { AgentRegistry, type AgentKind } from '../runner/index.js';
 
-interface TruncateOptions {
-  suffix?: string; // default '…' (1 char)
-  normalizeWhitespace?: boolean; // default false
-}
-
 /**
  * Display name for an agent kind in the run card header.
  *
@@ -27,25 +22,7 @@ export function agentDisplayName(kind: string): string {
   return kind;
 }
 
-export function truncate(str: string, max: number, options?: TruncateOptions): string {
-  const suffix = options?.suffix ?? '…';
-  const normalize = options?.normalizeWhitespace ?? false;
-
-  let s = str;
-  if (normalize) s = s.replace(/\s+/g, ' ').trim();
-
-  if (s.length <= max) return s;
-
-  const suffixLen = suffix.length;
-  const budget = max - suffixLen;
-  if (budget <= 0) return suffix;
-  let end = 0;
-  for (const ch of s) {
-    if (end + ch.length > budget) break;
-    end += ch.length;
-  }
-  return s.slice(0, end) + suffix;
-}
+export { truncate } from '../common/truncate.js';
 
 interface TerminalLabelOptions {
   prefix?: string;
@@ -101,12 +78,6 @@ export function newSessionButton(): object {
   };
 }
 
-/**
- * Create a CardKit 2.0 "resume session" button with behaviors callback.
- * Carries both sessionId and agent so the handler routes to the correct
- * agent's session reader (P2 fix: completion cards from non-default agents
- * must carry agent to avoid wrong-reader fallback).
- */
 /**
  * Create a CardKit 2.0 Compact button for Codex app-server mode.
  * Triggers thread/compact/start via the codex.compact callback.

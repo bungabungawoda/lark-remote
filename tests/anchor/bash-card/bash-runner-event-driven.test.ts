@@ -22,7 +22,6 @@
  *     forever instead of yielding an exit event -> spawn-error anchor times out.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
 import { Buffer } from 'node:buffer';
 import type { ChildProcess } from 'node:child_process';
@@ -54,6 +53,7 @@ vi.mock('node:child_process', () => ({
 }));
 
 import { BashProcessRunner } from '../../../src/runner/bash/index.js';
+import { createMockProc } from '../../../tests/lib/mock-process.js';
 
 /**
  * Fake ChildProcess: stdout/stderr use PassThrough (real Readable streams with
@@ -62,36 +62,23 @@ import { BashProcessRunner } from '../../../src/runner/bash/index.js';
  * `signalCode` fields are set by emitExit to mirror Node's real ChildProcess.
  */
 function createFakeProc(pid = 12345): ChildProcess {
-  const proc = new EventEmitter() as unknown as {
-    pid: number;
-    exitCode: number | null;
-    signalCode: NodeJS.Signals | null;
-    stdout: PassThrough;
-    stderr: PassThrough;
-    kill: () => boolean;
-  };
-  proc.pid = pid;
-  proc.exitCode = null;
-  proc.signalCode = null;
-  proc.stdout = new PassThrough();
-  proc.stderr = new PassThrough();
-  proc.kill = () => true;
-  return proc as unknown as ChildProcess;
+  return createMockProc({
+    pid,
+    exitCode: null,
+    signalCode: null,
+    stdout: new PassThrough(),
+    stderr: new PassThrough(),
+  });
 }
 
 function emitStdout(proc: ChildProcess, data: string): void {
-  (proc as unknown as { stdout: PassThrough }).stdout.write(Buffer.from(data));
+  proc.stdout?.write(Buffer.from(data));
 }
 function emitStderr(proc: ChildProcess, data: string): void {
-  (proc as unknown as { stderr: PassThrough }).stderr.write(Buffer.from(data));
+  proc.stderr?.write(Buffer.from(data));
 }
 function emitExit(proc: ChildProcess, code: number | null, signal: NodeJS.Signals | null): void {
-  const p = proc as unknown as {
-    exitCode: number | null;
-    signalCode: NodeJS.Signals | null;
-  };
-  p.exitCode = code;
-  p.signalCode = signal;
+  Object.assign(proc, { exitCode: code, signalCode: signal });
   proc.emit('exit', code, signal);
 }
 

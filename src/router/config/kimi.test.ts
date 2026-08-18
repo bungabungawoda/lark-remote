@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import { KimiConfigBuilder } from './kimi.js';
+import { buildConfigCardFromTabs } from './common/render.js';
 import type { AppConfig } from '../../config/index.js';
 
 vi.mock('../../config/kimi-config.js', () => ({
@@ -22,7 +23,7 @@ describe('KimiConfigBuilder', () => {
   const builder = new KimiConfigBuilder();
 
   describe('buildFields', () => {
-    it('returns model + thinkingEffort fields with fallback defaults', () => {
+    it('returns model + thinkingEffort + permissionMode fields with fallback defaults', () => {
       const config = makeConfig({
         agents: { kimi: { model: 'kimi-code/k3', thinkingEffort: 'max' } },
       });
@@ -30,6 +31,14 @@ describe('KimiConfigBuilder', () => {
 
       const modelField = fields.find((f) => f.key === 'agents.kimi.model');
       const effortField = fields.find((f) => f.key === 'agents.kimi.thinkingEffort');
+      const permField = fields.find((f) => f.key === 'agents.kimi.permissionMode');
+
+      // field order is model → thinkingEffort → permissionMode (appended after existing fields)
+      const modelIdx = fields.indexOf(modelField!);
+      const effortIdx = fields.indexOf(effortField!);
+      const permIdx = fields.indexOf(permField!);
+      expect(modelIdx).toBeLessThan(effortIdx);
+      expect(effortIdx).toBeLessThan(permIdx);
 
       expect(modelField).toBeDefined();
       expect(modelField!.type).toBe('select');
@@ -40,6 +49,41 @@ describe('KimiConfigBuilder', () => {
       expect(effortField!.type).toBe('select');
       expect(effortField!.options).toEqual(['low', 'high', 'max']);
       expect(effortField!.currentValue).toBe('max');
+
+      expect(permField).toBeDefined();
+      expect(permField!.type).toBe('select');
+      expect(permField!.currentValue).toBe('manual');
+    });
+
+    it('shows permissionMode and acp.turnIdleTimeoutMinutes fields', () => {
+      const config = makeConfig({
+        agents: { kimi: { permissionMode: 'auto' } },
+      });
+      const fields = builder.buildFields(config);
+
+      const permField = fields.find((f) => f.key === 'agents.kimi.permissionMode');
+      expect(permField).toBeDefined();
+      expect(permField!.type).toBe('select');
+      // §7: options use SelectOption objects with text + value separation
+      const permOptions = permField!.options!;
+      expect(permOptions).toEqual([
+        { text: 'manual（逐项审批）', value: 'manual' },
+        { text: 'auto（引擎裁决）', value: 'auto' },
+        { text: 'yolo（全部放行）', value: 'yolo' },
+      ]);
+      // currentValue is the raw config value (without Chinese annotation)
+      expect(permField!.currentValue).toBe('auto');
+
+      const timeoutField = fields.find((f) => f.key === 'agents.kimi.acp.turnIdleTimeoutMinutes');
+      expect(timeoutField).toBeDefined();
+      expect(timeoutField!.type).toBe('input');
+    });
+
+    it('defaults permissionMode to manual when not configured', () => {
+      const config = makeConfig();
+      const fields = builder.buildFields(config);
+      const permField = fields.find((f) => f.key === 'agents.kimi.permissionMode');
+      expect(permField!.currentValue).toBe('manual');
     });
 
     it('uses fallback efforts for unknown model', () => {
@@ -130,6 +174,27 @@ describe('KimiConfigBuilder', () => {
       const effortPatch = patches.find((p) => p.key === 'agents.kimi.thinkingEffort');
       // FALLBACK_EFFORTS = ['low','high','max'], median = 'high'
       expect(effortPatch!.value).toBe('high');
+    });
+  });
+
+  describe('CardKit 2.0 compliance', () => {
+    it('kimi config card does not mix V1/V2 — no 1.x `action` container (regression: 200861)', () => {
+      const config = makeConfig({
+        agents: { kimi: { permissionMode: 'auto' } },
+      });
+      const fields = builder.buildFields(config);
+      const tabs = [{ id: 'kimi', label: 'Kimi', fields }];
+      const card = buildConfigCardFromTabs(tabs, config);
+      const cardStr = JSON.stringify(card);
+
+      // Must be CardKit 2.0
+      expect(cardStr).toContain('"schema":"2.0"');
+      // 2.0 cards MUST NOT mix in 1.x `tag:"action"` containers (200861 root cause).
+      expect(cardStr).not.toMatch(/"tag"\s*:\s*"action"[^}]*"actions"/);
+      // Config callbacks use 2.0 behaviors
+      expect(cardStr).toContain('"cmd":"config.');
+      // ACP fields must appear in card
+      expect(cardStr).toContain('agents.kimi.permissionMode');
     });
   });
 });

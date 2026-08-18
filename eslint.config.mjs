@@ -37,6 +37,17 @@ export default tseslint.config(
       '@typescript-eslint/no-explicit-any': 'off',
     },
   },
+  // Node 脚本（mock CLI 等）：flat config 已不支持 eslint-env 注释，
+  // 用 languageOptions.globals 声明 Node 全局。
+  {
+    files: ['tests/lib/*.js'],
+    languageOptions: {
+      globals: {
+        process: 'readonly',
+        setInterval: 'readonly',
+      },
+    },
+  },
   {
     ignores: ['dist/', 'node_modules/', '*.js', '*.d.ts', '*.js.map'],
   },

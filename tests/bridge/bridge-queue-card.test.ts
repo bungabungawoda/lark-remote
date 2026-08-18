@@ -2,18 +2,9 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { Bridge } from '../../src/bridge/index.js';
-import { SessionStore } from '../../src/session/index.js';
-import { AppConfigSchema } from '../../src/config/index.js';
-import type { AppConfig } from '../../src/config/index.js';
-import type { Runner } from '../../src/runner/index.js';
 
-import {
-  createStubAgentRegistry,
-  createStubSessionReaderRegistry,
-  createStubConnector,
-  createStubRunner,
-} from '../lib/bridge-stubs.js';
+import { makeBridge } from '../lib/bridge-stubs.js';
+import { setupTwoTaskQueueScenario } from '../lib/queue-scenario.js';
 // 直接在模块顶层定义 mock（兼容 bun 的 vitest）
 const mockLogger = {
   debug: vi.fn(),
@@ -27,10 +18,7 @@ vi.mock('../logger/index.js', () => ({
   initLogger: () => mockLogger,
 }));
 
-// --- Stubs ---
-
 let tmpDir: string;
-let config: AppConfig;
 
 beforeEach(() => {
   // 重置 mock
@@ -40,42 +28,11 @@ beforeEach(() => {
   mockLogger.error.mockReset();
 
   tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'lark-bridge-test-'));
-  config = AppConfigSchema.parse({
-    feishu: { appId: 'test', appSecret: 'test' },
-    claude: {
-      model: 'opus',
-      stopGraceMs: 5000,
-    },
-    workspace: { default: '' },
-    output: { showThinking: true, showToolUse: false, showToolResult: false },
-  });
 });
 
 afterEach(() => {
   fs.rmSync(tmpDir, { recursive: true, force: true });
 });
-
-function makeBridge(
-  opts: {
-    runner?: Runner;
-    idleTimeoutMs?: number;
-    connector?: ReturnType<typeof createStubConnector>;
-  } = {},
-) {
-  const sessionStore = new SessionStore();
-  const connector = opts.connector ?? createStubConnector();
-  const runner = opts.runner ?? createStubRunner();
-  const bridge = new Bridge({
-    runner,
-    agentRegistry: createStubAgentRegistry(runner),
-    sessionReaderRegistry: createStubSessionReaderRegistry(),
-    connector,
-    sessionStore,
-    config,
-    ...(opts.idleTimeoutMs !== undefined ? { idleTimeoutMs: opts.idleTimeoutMs } : {}),
-  });
-  return { bridge, sessionStore, connector, runner };
-}
 
 describe('Queue card update when task starts executing', () => {
   it('test_anchor_queue_card_updates_when_task_starts_executing', async () => {
@@ -83,59 +40,10 @@ describe('Queue card update when task starts executing', () => {
     mockLogger.warn.mockClear();
     mockLogger.info.mockClear();
 
-    // Track updateCard calls
-    const updateCardCalls: Array<{ messageId: string; card: object }> = [];
-    const originalUpdateCard = connector.updateCard;
-    connector.updateCard = async (messageId: string, card: object) => {
-      updateCardCalls.push({ messageId, card });
-      (connector._cards as object[]).push(card);
-    };
-
-    // Scenario: Two tasks in queue
-    // - Task 1: long running (blocks)
-    // - Task 2: queued behind task 1
-
-    let release1: () => void = () => {};
-    const hang1 = new Promise<void>((resolve) => {
-      release1 = resolve;
-    });
-
-    // Task 1: starts immediately, blocks for a while
-    bridge.enqueue(
-      tmpDir,
-      async () => {
-        await hang1;
-      },
-      { taskMeta: { userId: 'u1', chatId: 'c1', messageId: 'msg-1', messagePreview: 'long task' } },
-    );
-
-    // Give task1 time to start executing
-    await new Promise((r) => setTimeout(r, 50));
-
-    // Task 2: will be queued (taskList.length > 1 triggers queue card)
-    bridge.enqueue(
-      tmpDir,
-      async () => {
-        /* quick task */
-      },
-      {
-        taskMeta: { userId: 'u1', chatId: 'c1', messageId: 'msg-2', messagePreview: 'quick task' },
-      },
-    );
-
-    // Wait for queue card to be sent
-    await new Promise((r) => setTimeout(r, 100));
-
-    // Verify initial queue card was sent (header: orange, title: "排队中")
-    // FIXED: Use header.title?.content instead of String(header?.title)
-    const initialCards = connector._sent.filter((s: { input: unknown }) => {
-      const inp = s.input as Record<string, unknown>;
-      const card = inp.card as Record<string, unknown> | undefined;
-      if (!card) return false;
-      const header = card.header as Record<string, unknown> | undefined;
-      const titleContent = (header?.title as { content?: string } | undefined)?.content;
-      return header?.template === 'orange' && (titleContent?.includes('排队') ?? false);
-    });
+    const { updateCardCalls, initialCards, release1, restoreUpdateCard } =
+      await setupTwoTaskQueueScenario(bridge, connector, tmpDir, {
+        secondMessagePreview: 'quick task',
+      });
     expect(initialCards.length).toBeGreaterThan(0);
 
     // Now release task1 - task2 starts executing
@@ -168,6 +76,6 @@ describe('Queue card update when task starts executing', () => {
       expect(btn.disabled).toBe(true);
     }
 
-    connector.updateCard = originalUpdateCard;
+    restoreUpdateCard();
   });
 });

@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import { QueueManager } from '../../../src/bridge/queue-manager.js';
+import { sleep, waitFor } from '../../lib/wait-for.js';
 
 const { mockLogger } = vi.hoisted(() => ({
   mockLogger: {
@@ -16,17 +17,6 @@ vi.mock('../../../src/logger/index.js', () => ({
 }));
 
 const WORKSPACE = '/tmp/queue-card-arm-send-failure-ws';
-
-const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
-
-async function waitFor(condition: () => boolean, timeoutMs = 1000): Promise<boolean> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (condition()) return true;
-    await sleep(10);
-  }
-  return condition();
-}
 
 /**
  * QueueManager whose queue-card send FAILS (Feishu error / rate limit): the
@@ -67,10 +57,7 @@ describe('QueueManager - queue card send failure must clean up the promise mappi
     // 发送失败即无卡可更新，必须清理；bridge.test.ts 已有直接访问该私有字段
     // 的先例（Map 注入）。
     const { qm, sentCards, updatedCards, getSendFailures } = makeQueueManagerWithFailingCardSend();
-    // 白盒观察点：与 src/bridge/bridge.test.ts 相同的私有字段访问模式。
-    const qmPrivate = qm as unknown as {
-      queueCardMessages: Map<string, Promise<string | undefined>>;
-    };
+    // 白盒观察点：queueCardMessages 是 public 字段，直接读取。
 
     // --- 步骤 1：T1（挂起）开始执行 ---
     let rejectT1: (err: Error) => void = () => {};
@@ -119,7 +106,7 @@ describe('QueueManager - queue card send failure must clean up the promise mappi
     expect(getSendFailures()).toBe(1);
 
     // --- 步骤 3：发送失败 settle 后，映射必须已清理 ---
-    expect(await waitFor(() => qmPrivate.queueCardMessages.has('m2') === false)).toBe(true);
+    expect(await waitFor(() => qm.queueCardMessages.has('m2') === false)).toBe(true);
 
     // --- 步骤 4：后续对 m2 的卡片更新必须 no-op（不调 updateCard）---
     await qm.updateQueueCardToExecuting(WORKSPACE, 'm2', 'T2 queued', true);
