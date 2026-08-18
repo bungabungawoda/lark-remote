@@ -5,6 +5,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.7] - 2026-08-18
+
+### 新增
+
+- pi RPC 模式 runner：通过持久连接复用共享 `ConnectionManager`，支持审批与上下文压缩
+- kimi / opencode ACP 模式 runner：纯 ACP 持久连接，支持审批 + Compact
+- 共享 ACP / JSON-RPC 连接层（`runner/common/acp`、`runner/common/jsonrpc`）：统一 codex / kimi / opencode / pi 的连接管理
+- 入站图片/文件自动落盘：往飞书私聊发图片/文件自动保存到 `.lark-remote-temp/`，可直接让 agent 处理
+- `/order alias`：注册快捷别名，输入 `$name` 即展开
+- 会话分页/截断共享辅助模块（`session/common/pagination`）
+- Codex 命令审批卡片示例图
+
+### 变更
+
+- codex runner 统一走 app-server 审批模式；移除 codex/kimi/opencode/pi 的 exec/jsonl 旧模式与死代码
+- `codex-bundled-test-helpers` 迁移至 `tests/lib/`
+- 用户文档：新增入站文件、`/order alias`、kimi acp 配置说明
+
+### 修复
+
+- 修复文档引用指向被排除的本地文档导致的破链
+
 ## [0.1.6] - 2026-08-14
 
 ### 新增
