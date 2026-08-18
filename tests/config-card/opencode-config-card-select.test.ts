@@ -20,12 +20,6 @@ import path from 'node:path';
 import os from 'node:os';
 import fs from 'node:fs';
 
-type RouterInternals = {
-  buildConfigCard: () => { card: object };
-  ensurePendingConfig: () => void;
-  setNestedValue: (obj: unknown, key: string, value: unknown) => void;
-  pendingConfig: Record<string, unknown>;
-};
 function buildOpencodeConfig(): AppConfig {
   return AppConfigSchema.parse({
     feishu: { appId: 'test', appSecret: 'test' },
@@ -69,7 +63,7 @@ describe('opencode config card ANCHOR: opencode fields must use select type', ()
       }),
     });
 
-    const result = (router as unknown as RouterInternals).buildConfigCard();
+    const result = router.buildConfigCard();
     const json = JSON.stringify(result.card);
 
     // 检查卡片中是否有 opencode 相关的 input 元素
@@ -113,7 +107,7 @@ describe('opencode config card ANCHOR: opencode fields must use select type', ()
       }),
     });
 
-    const result = (router as unknown as RouterInternals).buildConfigCard();
+    const result = router.buildConfigCard();
     const json = JSON.stringify(result.card);
 
     // 检查是否有任何 select_static 元素
@@ -161,7 +155,7 @@ describe('opencode config card ANCHOR: opencode fields must use select type', ()
       }),
     });
 
-    const result = (router as unknown as RouterInternals).buildConfigCard();
+    const result = router.buildConfigCard();
     const json = JSON.stringify(result.card);
 
     // 检查是否有 select_static

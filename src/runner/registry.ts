@@ -1,4 +1,4 @@
-import type { AgentKind, AgentRunner } from './index.js';
+import type { AgentKind, Runner } from './index.js';
 
 /**
  * 单例 registry 实例，供 agentDisplayName 等全局查询使用。
@@ -11,21 +11,20 @@ let globalRegistry: AgentRegistry | undefined;
  * factory per available agent at startup; `Bridge.getRunner(workspace)` looks
  * up `config.defaultAgent` here to pick the concrete runner.
  *
- * Singleton caching: the factory MAY cache its instance internally. All
- * current agents (claude, codex, opencode, pi, kimi) are spawn-per-message,
- * so per-workspace instantiation has no cost; each factory returns a fresh
- * runner per call.
+ * Singleton caching: the factory MAY cache its instance internally. Most
+ * current agents (claude, opencode, pi, kimi) are spawn-per-message; codex is
+ * workspace-lifetime (app-server). Each factory returns a runner per call.
  *
  * Dynamic config reload: factory can read latest config via registry's
  * configContainer, enabling runtime config changes to take effect.
  */
 export class AgentRegistry {
-  private readonly factories = new Map<AgentKind, (workspace: string) => AgentRunner>();
+  private readonly factories = new Map<AgentKind, (workspace: string) => Runner>();
   private readonly displayNames = new Map<AgentKind, string>();
   /** Container for runtime config updates (pi provider dynamic reload). */
   private configContainer?: { current: unknown };
 
-  register(kind: AgentKind, factory: (workspace: string) => AgentRunner): void {
+  register(kind: AgentKind, factory: (workspace: string) => Runner): void {
     this.factories.set(kind, factory);
   }
 
@@ -48,7 +47,7 @@ export class AgentRegistry {
    * 设置全局 registry 实例，供 agentDisplayName 等全局函数使用。
    * 在 index.ts 初始化所有 agents 后调用。
    */
-  static setGlobalInstance(reg: AgentRegistry): void {
+  static setGlobalInstance(reg: AgentRegistry | undefined): void {
     globalRegistry = reg;
   }
 
@@ -75,7 +74,7 @@ export class AgentRegistry {
     return this.configContainer;
   }
 
-  get(kind: AgentKind, workspace: string): AgentRunner {
+  get(kind: AgentKind, workspace: string): Runner {
     const factory = this.factories.get(kind);
     if (!factory) {
       throw new Error(`agent not registered: ${kind}`);

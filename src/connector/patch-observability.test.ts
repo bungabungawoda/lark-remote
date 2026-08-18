@@ -62,11 +62,7 @@ const config: AppConfig = {
 };
 
 function getWrappedPatch(connector: FeishuConnector) {
-  return (
-    connector as unknown as {
-      channel: { rawClient: { im: { v1: { message: { patch: typeof patchStub } } } } };
-    }
-  ).channel.rawClient.im.v1.message.patch;
+  return connector.channel.rawClient.im.v1.message.patch;
 }
 
 describe('message.patch business-code observability', () => {

@@ -79,7 +79,8 @@ describe('RunCardSession error handling', () => {
     // settle() should handle the error gracefully
     const result = await session.settle();
 
-    // Should return 'unsent' or 'updated' but NOT throw
-    expect(result).toMatch(/streamed|updated|unsent/);
+    // streamCard 本身成功（messageId 存在），updateCard 500 只影响运行中的 patch
+    // 与 fallback finalize，settle 按 stream 是否 clean 收敛 → streamed
+    expect(result).toBe('streamed');
   });
 });

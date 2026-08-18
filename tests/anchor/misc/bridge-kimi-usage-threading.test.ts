@@ -27,7 +27,7 @@ vi.mock('../../../src/logger/index.js', () => ({
   initLogger: () => mockLogger,
 }));
 /** Wrap a stub Runner with AgentRunner fields（同 bridge.test.ts 的 asAgentRunner）。 */
-function asKimiRunner(r: Runner): AgentRunner {
+function asAgentRunner(r: Runner): AgentRunner {
   return {
     ...r,
     kind: 'kimi',
@@ -116,7 +116,7 @@ describe('Bridge threads jsonl input/output tokens to kimi done card (anchor)', 
 
     const connector = createStubConnector();
     const sessionStore = new SessionStore();
-    const bridgeRunner = asKimiRunner(
+    const bridgeRunner = asAgentRunner(
       createStubRunner({
         mode: 'streaming',
         events: [

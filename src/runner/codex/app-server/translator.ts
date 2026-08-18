@@ -8,7 +8,7 @@
  * app-server v2 protocol (see protocol-types.ts).
  */
 
-import type { AgentEvent, TokenUsage } from '../../types.js';
+import type { AgentEvent, TokenUsage, TurnStartedEvent, TurnDiffEvent } from '../../types.js';
 import type {
   ApprovalView,
   ApprovalRequestedEvent,
@@ -39,28 +39,6 @@ import {
   type CommandExecutionApprovalDecision,
   UNSUPPORTED_SERVER_REQUEST_METHODS,
 } from './protocol-types.js';
-
-// =============================================================================
-// Local event types (translator-specific)
-// =============================================================================
-
-export interface TurnStartedEvent {
-  type: 'turn_started';
-  threadId: string;
-  turnId: string;
-  operationKind: 'turn' | 'compaction';
-}
-
-export interface TurnDiffEvent {
-  type: 'turn_diff';
-  text?: string;
-  reasoning?: string;
-  toolOutput?: string;
-  plan?: string;
-  fileChanges?: Array<{ path: string; kind: 'add' | 'update' | 'delete'; diff?: string }>;
-  threadId: string;
-  turnId: string;
-}
 
 export type TranslatorEvent =
   AgentEvent | TurnStartedEvent | TurnDiffEvent | ApprovalRequestedEvent | ApprovalResolvedEvent;
@@ -568,21 +546,11 @@ export class CodexAppServerTranslator {
     const view: ApprovalView = {
       requestId,
       kind: 'command',
-      threadShort: params.threadId.slice(0, 8),
-      turnShort: params.turnId.slice(0, 8),
-      workspace: params.cwd ?? '',
       command: params.command ?? undefined,
       commandCwd: params.cwd ?? undefined,
       reason: params.reason ?? undefined,
-      network: params.networkApprovalContext
-        ? {
-            host: params.networkApprovalContext.host,
-            protocol: params.networkApprovalContext.protocol,
-          }
-        : undefined,
       availableDecisions: decisions,
       ...(payloads ? { decisionPayloads: payloads } : {}),
-      pendingTotal: 1,
     };
 
     return [
@@ -615,14 +583,10 @@ export class CodexAppServerTranslator {
     const view: ApprovalView = {
       requestId,
       kind: 'file',
-      threadShort: params.threadId.slice(0, 8),
-      turnShort: params.turnId.slice(0, 8),
-      workspace: '',
       fileChanges,
       reason: params.reason ?? undefined,
       // 真实 FileChangeApprovalDecision 枚举：accept/acceptForSession/decline/cancel。
       availableDecisions: ['accept', 'acceptForSession', 'decline', 'cancel'],
-      pendingTotal: 1,
     };
 
     // 乱序流：审批先到、item/started 后到。先出事件（回退信息），item 到达时
@@ -712,12 +676,8 @@ export class CodexAppServerTranslator {
     const view: ApprovalView = {
       requestId,
       kind: 'permissions',
-      threadShort: params.threadId.slice(0, 8),
-      turnShort: params.turnId.slice(0, 8),
-      workspace: params.cwd,
       reason: params.reason ?? undefined,
       availableDecisions: ['accept', 'decline', 'cancel'],
-      pendingTotal: 1,
       permissions: {
         items: permItems,
       },

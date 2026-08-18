@@ -28,6 +28,8 @@ jobs:
 
       - run: bun run test
 
+      - run: npx tsx scripts/verify-test-classification.ts
+
       - run: bun run build
 
       - run: bun run format:check

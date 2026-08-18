@@ -17,7 +17,15 @@ import os from 'node:os';
 import fs from 'node:fs';
 import { AppConfigSchema, setConfigValues, getAgentConfig } from '../../src/config/index.js';
 import { AgentRegistry } from '../../src/runner/registry.js';
-import { PiRunner } from '../../src/runner/pi/index.js';
+import { PiRpcRunner } from '../../src/runner/pi/index.js';
+import type { AgentSessionReader } from '../../src/runner/types.js';
+
+const emptyReader: AgentSessionReader = {
+  listSessions: () => ({ sessions: [], total: 0 }),
+  getNewestSession: () => null,
+  readSessionContent: () => ({ events: [] }),
+  isSessionActive: () => false,
+};
 
 // 创建带 provider 的 config
 
@@ -77,8 +85,9 @@ describe('ADVERSARIAL: pi provider config dynamic reload', () => {
       const container = registry.getConfigContainer();
       const latestConfig = container?.current as ReturnType<typeof createInitialConfig>;
       const piConf = getAgentConfig(latestConfig, 'pi');
-      return new PiRunner({
+      return new PiRpcRunner({
         workspace: _workspace,
+        sessionReader: emptyReader,
         provider: piConf?.provider ?? 'Volcano',
         model: piConf?.model ?? 'glm-5.2',
       });
@@ -86,7 +95,7 @@ describe('ADVERSARIAL: pi provider config dynamic reload', () => {
 
     // 4. 第一次获取 runner - 应该是默认 Volcano（因为初始 config 没有 pi 配置）
     const runner1 = registry.get('pi', '/tmp');
-    expect((runner1 as unknown as { provider: string }).provider).toBe('Volcano');
+    expect(runner1.getStatusInfo().provider).toBe('Volcano');
 
     // 5. 模拟用户通过 /config 卡片保存 pi.provider = 'lt'
     // 这会更新 configContainer.current（这是 setConfig 做的事情）
@@ -104,7 +113,7 @@ describe('ADVERSARIAL: pi provider config dynamic reload', () => {
     const runner2 = registry.get('pi', '/tmp');
 
     // 攻击断言：修复后应该返回 'lt'，不再是 'Volcano'
-    expect((runner2 as unknown as { provider: string }).provider).toBe('lt');
+    expect(runner2.getStatusInfo().provider).toBe('lt');
   });
 
   /**
@@ -119,14 +128,15 @@ describe('ADVERSARIAL: pi provider config dynamic reload', () => {
 
     // 3. 从更新后的 config 创建新的 PiRunner
     const piConfig = getAgentConfig(config2, 'pi');
-    const piRunnerFromConfig = new PiRunner({
+    const piRunnerFromConfig = new PiRpcRunner({
       workspace: 'test',
+      sessionReader: emptyReader,
       provider: piConfig?.provider ?? 'Volcano',
       model: piConfig?.model ?? 'glm-5.2',
     });
 
     // 验证：新 runner 应该使用配置中的 provider
-    expect((piRunnerFromConfig as unknown as { provider: string }).provider).toBe('lt');
+    expect(piRunnerFromConfig.getStatusInfo().provider).toBe('lt');
   });
 
   /**
@@ -142,11 +152,12 @@ describe('ADVERSARIAL: pi provider config dynamic reload', () => {
     let currentConfig = createInitialConfig();
 
     // 注册 factory，它应该从 currentConfig 读取最新值
-    let piRunnerInstance: PiRunner | null = null;
+    let piRunnerInstance: PiRpcRunner | null = null;
     registry.register('pi', (_workspace: string) => {
       const piConf = getAgentConfig(currentConfig, 'pi');
-      piRunnerInstance = new PiRunner({
+      piRunnerInstance = new PiRpcRunner({
         workspace: _workspace,
+        sessionReader: emptyReader,
         provider: piConf?.provider ?? 'Volcano',
         model: piConf?.model ?? 'glm-5.2',
       });
@@ -155,13 +166,13 @@ describe('ADVERSARIAL: pi provider config dynamic reload', () => {
 
     // 第一次获取 - 应该是 Volcano
     const runner1 = registry.get('pi', '/tmp');
-    expect((runner1 as unknown as { provider: string }).provider).toBe('Volcano');
+    expect(runner1.getStatusInfo().provider).toBe('Volcano');
 
     // 模拟 config.save：更新 currentConfig 引用
     currentConfig = setConfigValues(configPath, currentConfig, { 'pi.provider': 'lt' });
 
     // 第二次获取 - 应该是 lt
     const runner2 = registry.get('pi', '/tmp');
-    expect((runner2 as unknown as { provider: string }).provider).toBe('lt');
+    expect(runner2.getStatusInfo().provider).toBe('lt');
   });
 });

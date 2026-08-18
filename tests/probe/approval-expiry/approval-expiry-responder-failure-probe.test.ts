@@ -19,9 +19,6 @@ describe('probe: approval expiry responder failure', () => {
   let interruptTurn: ReturnType<typeof vi.fn>;
   let pushToCard: ReturnType<typeof vi.fn>;
 
-  const runId = 'run-aaa-111';
-  const userId = 'user-1';
-  const chatId = 'chat-1';
   const workspace = '/home/user/project';
   const approvalTimeoutMs = 30000;
 
@@ -36,14 +33,10 @@ describe('probe: approval expiry responder failure', () => {
       view: {
         requestId: 1001,
         kind: 'command',
-        threadShort: 'th-aaa-2',
-        turnShort: 'tn-222',
-        workspace,
         command: 'mv /tmp/a.txt /tmp/b.txt',
         commandCwd: workspace,
         reason: 'Test approval',
         availableDecisions: ['accept', 'decline', 'cancel'],
-        pendingTotal: 1,
       },
     };
   }
@@ -54,10 +47,6 @@ describe('probe: approval expiry responder failure', () => {
     interruptTurn = vi.fn().mockResolvedValue(undefined);
     pushToCard = vi.fn().mockResolvedValue(undefined);
     coordinator = new ApprovalCoordinator({
-      runId,
-      userId,
-      chatId,
-      workspace,
       approvalTimeoutMs,
       responder,
       interruptTurn,

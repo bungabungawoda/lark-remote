@@ -1,7 +1,57 @@
 import { describe, it, expect, beforeEach, afterAll } from 'vitest';
-import { detectPackageManager, runInstallLatest } from './install.js';
+import { detectPackageManager, inferPackageManagerFromPath, runInstallLatest } from './install.js';
 
 type MockExecCallback = (err: Error | null, stdout: unknown, stderr: unknown) => void;
+
+describe('inferPackageManagerFromPath', () => {
+  it('detects bun global install layout', () => {
+    expect(
+      inferPackageManagerFromPath(
+        '/home/user/.bun/install/global/node_modules/lark-remote/dist/index.js',
+      ),
+    ).toBe('bun');
+  });
+
+  it('detects pnpm global install layout (realpath inside .pnpm store)', () => {
+    expect(
+      inferPackageManagerFromPath(
+        '/home/user/Library/pnpm/global/5/node_modules/.pnpm/lark-remote@0.1.4/node_modules/lark-remote/dist/index.js',
+      ),
+    ).toBe('pnpm');
+  });
+
+  it('detects npm global install layout (POSIX)', () => {
+    expect(
+      inferPackageManagerFromPath('/usr/local/lib/node_modules/lark-remote/dist/index.js'),
+    ).toBe('npm');
+  });
+
+  it('detects npm global install layout (Windows backslash path)', () => {
+    expect(
+      inferPackageManagerFromPath(
+        'C:\\Users\\user\\AppData\\Roaming\\npm\\node_modules\\lark-remote\\dist\\index.js',
+      ),
+    ).toBe('npm');
+  });
+
+  it('bun/pnpm markers win over the generic node_modules marker', () => {
+    // bun layout also contains /node_modules/lark-remote/ — must not become npm
+    expect(
+      inferPackageManagerFromPath(
+        '/home/user/.bun/install/global/node_modules/lark-remote/dist/cli.js',
+      ),
+    ).toBe('bun');
+    expect(
+      inferPackageManagerFromPath(
+        '/home/user/Library/pnpm/global/5/node_modules/.pnpm/lark-remote@0.1.4/node_modules/lark-remote/dist/cli.js',
+      ),
+    ).toBe('pnpm');
+  });
+
+  it('returns null for source checkout (dev mode)', () => {
+    expect(inferPackageManagerFromPath('/home/user/code/lark-remote/dist/index.js')).toBe(null);
+  });
+});
 
 describe('detectPackageManager', () => {
   const originalEnv = process.env;
@@ -39,6 +89,35 @@ describe('detectPackageManager', () => {
     // In CI/test environments npm is usually available
     expect(result === null || ['npm', 'bun', 'pnpm'].includes(result!)).toBe(true);
   });
+  it('infers PM from running script path before which detection', () => {
+    delete process.env.LARK_REMOTE_MANAGED_BY;
+    // pnpm install layout: must pick pnpm even though npm exists on this machine
+    expect(
+      detectPackageManager(
+        '/home/user/Library/pnpm/global/5/node_modules/.pnpm/lark-remote@0.1.4/node_modules/lark-remote/dist/index.js',
+      ),
+    ).toBe('pnpm');
+    expect(
+      detectPackageManager('/home/user/.bun/install/global/node_modules/lark-remote/dist/index.js'),
+    ).toBe('bun');
+    expect(detectPackageManager('/usr/local/lib/node_modules/lark-remote/dist/index.js')).toBe(
+      'npm',
+    );
+  });
+
+  it('env override wins over script path inference', () => {
+    process.env.LARK_REMOTE_MANAGED_BY = 'bun';
+    expect(detectPackageManager('/usr/local/lib/node_modules/lark-remote/dist/index.js')).toBe(
+      'bun',
+    );
+  });
+
+  it('falls through to which detection when script path has no marker', () => {
+    delete process.env.LARK_REMOTE_MANAGED_BY;
+    const result = detectPackageManager('/home/user/code/lark-remote/dist/index.js');
+    // In CI/test environments npm is usually available
+    expect(result === null || ['npm', 'bun', 'pnpm'].includes(result!)).toBe(true);
+  });
 });
 
 describe('runInstallLatest', () => {
@@ -70,6 +149,18 @@ describe('runInstallLatest', () => {
     });
     expect(result.success).toBe(false);
     expect(result.error).toContain('sudo');
+  });
+
+  it('does not suggest sudo for bun/pnpm EACCES (they install into the user dir)', async () => {
+    const mockExec = (_cmd: string, _args: string[], _opts: object, cb: MockExecCallback) => {
+      cb(new Error('EACCES: permission denied'), { stdout: '', stderr: '' });
+    };
+    for (const pm of ['bun', 'pnpm'] as const) {
+      const result = await runInstallLatest({ packageManager: pm, execFn: mockExec });
+      expect(result.success).toBe(false);
+      expect(result.error).not.toContain('sudo');
+      expect(result.error).toContain('权限不足');
+    }
   });
 
   it('returns success=false with error message on generic failure', async () => {

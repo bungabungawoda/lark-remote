@@ -88,27 +88,6 @@ function parseFixture(fileName: string): ParsedRollout {
   return out;
 }
 
-function derivePerTurn(u: NonNullable<ParsedRollout['lastTokenUsage']>) {
-  const cached = Math.min(u.cached_input_tokens, u.input_tokens);
-  return {
-    inputTokens: u.input_tokens - cached,
-    outputTokens: u.output_tokens,
-    cacheReadTokens: cached,
-    totalTokens: u.total_tokens,
-    contextLength: u.input_tokens,
-  };
-}
-
-function deriveCumulative(u: NonNullable<ParsedRollout['lastTotalUsage']>) {
-  const cached = Math.min(u.cached_input_tokens, u.input_tokens);
-  return {
-    cumulativeInputTokens: u.input_tokens - cached,
-    cumulativeOutputTokens: u.output_tokens,
-    cumulativeCacheReadTokens: cached,
-    cumulativeTotalTokens: u.total_tokens,
-  };
-}
-
 describe('codex 真实长会话快照：主线程解析与 token 口径（L2 集成）', () => {
   beforeEach(() => {
     clearSessionIndexCache();
@@ -131,29 +110,28 @@ describe('codex 真实长会话快照：主线程解析与 token 口径（L2 集
 
     const content = readCodexSessionContent(MAIN_SID, { codexHome: FIXTURE_ROOT });
     const u = content.usage;
-    const expectPerTurn = derivePerTurn(main.lastTokenUsage!);
-    const expectCum = deriveCumulative(main.lastTotalUsage!);
 
-    // per-turn 来自主文件末条 last_token_usage（真实值：input 238 / output 660 /
-    // cache 470,912 / total 471,810 / context 471,150）
-    expect(u?.inputTokens).toBe(expectPerTurn.inputTokens);
-    expect(u?.outputTokens).toBe(expectPerTurn.outputTokens);
-    expect(u?.cacheReadTokens).toBe(expectPerTurn.cacheReadTokens);
-    expect(u?.totalTokens).toBe(expectPerTurn.totalTokens);
-    expect(u?.contextLength).toBe(expectPerTurn.contextLength);
+    // per-turn 来自主文件末条 last_token_usage（fixture 值：
+    // input 471150 - cached 470912 = 238 / output 660 / total 471810）
+    expect(u?.inputTokens).toBe(238);
+    expect(u?.outputTokens).toBe(660);
+    expect(u?.cacheReadTokens).toBe(470912);
+    expect(u?.totalTokens).toBe(471810);
+    expect(u?.contextLength).toBe(471150);
 
-    // 累计来自主文件末条 total_token_usage，而不是 subagent 的冻结快照
-    expect(u?.cumulativeTotalTokens).toBe(expectCum.cumulativeTotalTokens);
-    expect(u?.cumulativeInputTokens).toBe(expectCum.cumulativeInputTokens);
-    expect(u?.cumulativeOutputTokens).toBe(expectCum.cumulativeOutputTokens);
-    expect(u?.cumulativeCacheReadTokens).toBe(expectCum.cumulativeCacheReadTokens);
+    // 累计来自主文件末条 total_token_usage（input 120076868 - cached 119504896
+    // = 571972），而不是 subagent 的冻结快照
+    expect(u?.cumulativeInputTokens).toBe(571972);
+    expect(u?.cumulativeOutputTokens).toBe(274449);
+    expect(u?.cumulativeCacheReadTokens).toBe(119504896);
+    expect(u?.cumulativeTotalTokens).toBe(120351317);
     expect(u?.cumulativeTotalTokens).not.toBe(subagentA.lastTotalUsage!.total_tokens);
     expect(u?.cumulativeTotalTokens).not.toBe(subagentB.lastTotalUsage!.total_tokens);
 
-    // displayTitle 来自主文件最后一条真实用户消息
+    // displayTitle 来自主文件最后一条真实用户消息（reader 不截断，消费侧统一截断）
     const lastUserMsg = main.userMessages[main.userMessages.length - 1];
     expect(lastUserMsg).toBeTruthy();
-    expect(content.displayTitle).toBe(lastUserMsg.slice(0, 200).slice(0, 50));
+    expect(content.displayTitle).toBe(lastUserMsg);
   });
 
   it('test_anchor_codex_real_session_list_dedupes_to_main_thread', () => {
