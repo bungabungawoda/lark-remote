@@ -215,8 +215,8 @@ export class Bridge {
   /** Approval coordinators keyed by runId. */
   private approvalCoordinators = new Map<string, ApprovalCoordinator>();
   /**
-   * 最近一次已完成的 codex app-server run（按 cwd）。run 结束后 activeRuns
-   * 已清空，Compact 需要它来校验 runId 并提供 sessionId。
+   * 最近一次已完成的、runner 有 runCompact 的 run（按 cwd）。run 结束后
+   * activeRuns 已清空，Compact 需要它来校验 runId 并提供 sessionId。
    */
   private lastCompactableCodexRun = new Map<
     string,
@@ -1032,6 +1032,9 @@ export class Bridge {
         showToolResult: this.config.output.showToolResult,
         // Run card header shows the current agent name (e.g. "Claude · 思考中")
         agentKind,
+        // Compact 按钮能力门控与 resume 卡 / auto-resume 卡一致（hasRunCompact
+        // 鸭子探测）：claude（stream-json，无 turn_started）也能拿到按钮。
+        compactSupported: this.hasRunCompact(cwd, agentKind),
       },
     });
     const activeRun: ActiveRun = {
@@ -1449,7 +1452,10 @@ export class Bridge {
         // 已在上面 result 事件处理中赋了 live 值；若 live 没有则为 undefined，
         // 由 formatUsageStats 的 max/兜底公式处理。
       } else {
-        // codex（jsonl 优先）或无 live usage → jsonl 兜底所有 flow 字段
+        // codex（jsonl 优先）或无 live usage → jsonl 兜底所有 flow 字段。
+        // jsonl 的非累计字段已是末轮（本 run）scope（claude reader 修复后对齐
+        // codex `last_token_usage` 语义，见 scalarScan），不再是 session 累计；
+        // session 累计只经 cumulative* 字段透传，卡片"本 run ≤ 累计"不变量成立。
         finalInputTokens = finalUsage?.inputTokens ?? liveInputTokens;
         finalOutputTokens = finalUsage?.outputTokens ?? liveOutputTokens;
         finalCacheReadTokens = finalUsage?.cacheReadTokens ?? finalCacheReadTokens;
@@ -1944,9 +1950,34 @@ export class Bridge {
   }
 
   /**
-   * Handle codex.compact card action — trigger a Codex compaction request.
-   * Validates the run exists and is in a terminal state, then calls
-   * the app-server runner's runCompact().
+   * Codex AskUserQuestion 补充说明（user_note，2026-08-18 live 验证模型理解
+   * "user_note: <text>" 条目）：记录到 coordinator，随答案一起提交。
+   * 路由到 ApprovalCoordinator.answerNote。
+   */
+  async handleApprovalAnswerNote(opts: {
+    runId: string;
+    requestId: number | string;
+    questionIndex: number;
+    text: string;
+    nonce: string;
+  }): Promise<void> {
+    const log = getLogger();
+    log.info(
+      `[bridge] handleApprovalAnswerNote runId=${opts.runId.slice(0, 8)}... requestId=${opts.requestId} question=${opts.questionIndex}`,
+    );
+    return this.withCoordinator(opts.runId, (coordinator) =>
+      coordinator.answerNote(
+        { questionIndex: opts.questionIndex, text: opts.text },
+        { requestId: opts.requestId, nonce: opts.nonce },
+      ),
+    );
+  }
+
+  /**
+   * Handle codex.compact card action — trigger a compaction request for any
+   * runCompact-capable runner（codex/kimi/opencode/pi/claude，按
+   * lastCompactableCodexRun 记录的 agentKind 路由）。Validates the run exists
+   * and is in a terminal state, then calls the runner's runCompact().
    */
   async handleCodexCompact(value: { runId?: string }, ctx: BridgeContext): Promise<void> {
     const log = getLogger();
@@ -1998,7 +2029,7 @@ export class Bridge {
   }
 
   /**
-   * Stream a Codex compaction to a card: start a RunCardSession with
+   * Stream a compaction to a card: start a RunCardSession with
    * operationKind='compaction' (no recursive Compact button), consume
    * runner.runCompact() events, read authoritative jsonl usage, and finish
    * the card. Shared by handleCodexCompact (run card button) and
@@ -2163,7 +2194,7 @@ export class Bridge {
       return;
     }
 
-    // Check that the runner has runCompact (codex app-server only).
+    // Check that the runner has runCompact（codex/kimi/opencode/pi/claude 鸭子探测）。
     const runner = this.getRunner(cwd, agentKind);
     if (
       !('runCompact' in runner) ||

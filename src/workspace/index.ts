@@ -24,6 +24,10 @@ export interface WorkspaceEntry {
  * mid-write cannot leave a truncated JSON file. On load, a corrupt file
  * is treated as empty (with a warning) so the bridge can still start.
  *
+ * lastUsedAt 语义（2026-08-19 语义对齐）：保存（save）与使用（use/touch）
+ * 都会把时间戳更新为当前时间。save 内部调用 touch，保证「最近使用」排序
+ * 对新保存的 workspace 同样生效（新条目应排在列表最前，而非沉底）。
+ *
  * Data migration: old format `{ alias: "path" }` is normalized to
  * `{ alias: { path, lastUsedAt: 0 } }` on first load and persisted.
  */
@@ -81,8 +85,11 @@ export class WorkspaceStore {
   }
 
   save(name: string, dirPath: string): void {
+    // 保存即视为使用（语义对齐）：新建/覆盖的 workspace 都应拿到当前
+    // lastUsedAt，而不是 0，否则「最近使用」排序下新条目会沉底。
+    // touch() 负责统一写入时间戳并 persist，消除 save 写 0 / use 写 now 的不对称。
     this.data.set(name, { path: dirPath, lastUsedAt: 0 });
-    this.persist();
+    this.touch(name);
   }
 
   get(name: string): string | undefined {
