@@ -646,6 +646,49 @@ describe('Bridge.forwardToClaude', () => {
     expect(json).not.toContain('Context - 243');
   });
 
+  it('claude run card (stream-json, no turn_started) shows compact button when runner has runCompact', async () => {
+    // 回归：2026-08-19 缺陷——claude 走 stream-json 不发射 turn_started，
+    // operationKind 恒 undefined；若以 operationKind==='turn' 作按钮门控，
+    // claude 终态 run 卡永远没有 Compact 按钮（只有 resume 卡有）。能力门控
+    // 改为 bridge.hasRunCompact 鸭子探测（compactSupported）后应点亮。
+    const runner = createStubRunner({
+      mode: 'streaming',
+      events: [
+        { type: 'system', subtype: 'init', session_id: 's-cl', cwd: tmpDir, model: 'opus' },
+        { type: 'result', subtype: 'success', session_id: 's-cl' },
+      ],
+    });
+    // claude runner 有 runCompact（同 src/runner/claude/runner.ts:115）
+    (runner as unknown as { runCompact: unknown }).runCompact = async function* () {};
+    const { bridge, sessionStore, connector } = makeBridge({ runner });
+    sessionStore.setCwd(ctx.userId, tmpDir);
+
+    await bridge.forwardToClaude('hi', ctx);
+
+    const json = JSON.stringify(connector._cards.at(-1));
+    expect(json).toContain('"cmd":"codex.compact"');
+    expect(json).toContain('"cmd":"new-session"');
+  });
+
+  it('claude run card hides compact button when runner lacks runCompact', async () => {
+    // 对照组：无 runCompact 能力的 runner → 终态卡不渲染 Compact 按钮。
+    const runner = createStubRunner({
+      mode: 'streaming',
+      events: [
+        { type: 'system', subtype: 'init', session_id: 's-nc', cwd: tmpDir, model: 'opus' },
+        { type: 'result', subtype: 'success', session_id: 's-nc' },
+      ],
+    });
+    const { bridge, sessionStore, connector } = makeBridge({ runner });
+    sessionStore.setCwd(ctx.userId, tmpDir);
+
+    await bridge.forwardToClaude('hi', ctx);
+
+    const json = JSON.stringify(connector._cards.at(-1));
+    expect(json).not.toContain('"cmd":"codex.compact"');
+    expect(json).toContain('"cmd":"new-session"');
+  });
+
   it('isBusyFor returns true only for the specified workspace', async () => {
     const { bridge, sessionStore } = makeBridge();
     sessionStore.setCwd(ctx.userId, tmpDir);
