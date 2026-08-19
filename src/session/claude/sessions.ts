@@ -186,7 +186,7 @@ function isSessionActive(filePath: string, mtimeMs: number, now: number = Date.n
     // Explicit terminal markers — regardless of mtime. Claude CLI 2.x uses
     // `last-prompt` / `mode` (no `result` event) to mark turn end, so a
     // 24-minute-old session with a last-prompt tail is already done
-    // (regression 2026-06-21: c5e929a7 falsely reported as active).
+    // (regression 2026-06-21: previously falsely reported as active).
     const TERMINAL_TYPES = new Set(['result', 'last-prompt', 'mode', 'permission-mode']);
     if (typeof obj.type === 'string' && TERMINAL_TYPES.has(obj.type)) return false;
   } catch {
@@ -292,7 +292,19 @@ interface ScanResult {
  */
 function scalarScan(filePath: string): ScanResult {
   const acc = new UsageAccumulator();
-  const seenMessageIds = new Set<string>();
+  // Per-message-id best usage record (per-field max). A streaming assistant
+  // message spans multiple jsonl lines sharing the same message id; some
+  // backends (third-party gateways, e.g. DeepSeek) write all-zero usage on
+  // the early placeholder lines (empty thinking block) and the real usage
+  // only on the final line carrying stop_reason. First-occurrence-wins dedup
+  // would pin the zero record and discard the real one (regression
+  // 2026-08-19: auto-resume card per-run stats all 0). Per-field max
+  // reconstructs the full usage regardless of line order — on the official
+  // API every line repeats identical usage, so max is a no-op there.
+  const usageByMessageId = new Map<
+    string,
+    { input: number; output: number; cacheRead: number; cacheCreation: number }
+  >();
   let lastPostTokens = 0;
   let tailOffset = -1;
 
@@ -321,13 +333,16 @@ function scalarScan(filePath: string): ScanResult {
         | undefined;
       if (usage) {
         const msgId = msg?.id as string | undefined;
-        if (msgId && !seenMessageIds.has(msgId)) {
-          seenMessageIds.add(msgId);
-          acc.add({
-            input: usage.input_tokens ?? 0,
-            output: usage.output_tokens ?? 0,
-            cacheRead: usage.cache_read_input_tokens ?? 0,
-            cacheCreation: usage.cache_creation_input_tokens ?? 0,
+        if (msgId) {
+          const prev = usageByMessageId.get(msgId);
+          usageByMessageId.set(msgId, {
+            input: Math.max(prev?.input ?? 0, usage.input_tokens ?? 0),
+            output: Math.max(prev?.output ?? 0, usage.output_tokens ?? 0),
+            cacheRead: Math.max(prev?.cacheRead ?? 0, usage.cache_read_input_tokens ?? 0),
+            cacheCreation: Math.max(
+              prev?.cacheCreation ?? 0,
+              usage.cache_creation_input_tokens ?? 0,
+            ),
           });
         }
       }
@@ -388,6 +403,13 @@ function scalarScan(filePath: string): ScanResult {
     }
   });
 
+  // Feed one best record per message id, in first-appearance order (Map
+  // preserves insertion order), so acc.last is the LAST message's full usage
+  // and totals sum each API response exactly once.
+  for (const record of usageByMessageId.values()) {
+    acc.add(record);
+  }
+
   // Build usage result (same logic as old aggregateSessionUsage)
   const t = acc.totals;
   const l = acc.last;
@@ -403,14 +425,19 @@ function scalarScan(filePath: string): ScanResult {
     contextLength = lastWindow;
   }
 
+  // 非累计字段 = 末轮（本 run）scope，累计字段 = session 总和（所有 run）。
+  // 对齐 codex reader 语义（§9.21：`last_token_usage`=单 turn 增量、
+  // `total_token_usage`=session 累计）——否则 jsonl 兜底路径会把 session 累计
+  // 当成"本 run"显示，与卡片"本 run ≤ 累计"不变量冲突（累计反而更小）。
+  const lastTotal = l ? l.input + l.output + l.cacheRead + l.cacheCreation : 0;
   const usage: AgentSessionUsage = {
-    inputTokens: t.input,
-    outputTokens: t.output,
+    inputTokens: l ? l.input : 0,
+    outputTokens: l ? l.output : 0,
     contextLength,
     compactCount: acc.compactCount,
-    cacheReadTokens: t.cacheRead > 0 ? t.cacheRead : undefined,
-    cacheCreationTokens: t.cacheCreation > 0 ? t.cacheCreation : undefined,
-    totalTokens: t.input + t.output + t.cacheRead + t.cacheCreation,
+    cacheReadTokens: l && l.cacheRead > 0 ? l.cacheRead : undefined,
+    cacheCreationTokens: l && l.cacheCreation > 0 ? l.cacheCreation : undefined,
+    totalTokens: lastTotal,
     cumulativeTotalTokens: t.input + t.output + t.cacheRead + t.cacheCreation,
     cumulativeInputTokens: t.input,
     cumulativeOutputTokens: t.output,
@@ -539,8 +566,10 @@ export function readSessionContent(
   // early-stop overhead (~2 parses, independent of line count).
   const scan = scalarScan(filePath);
 
+  // 有 usage 即返回：非累计字段已是末轮 scope，命中判定用 session 累计兜底
+  // （末轮可能 input/output 为 0 而仍有 cacheRead，累计口径不会被末轮遮挡）。
   const usage: AgentSessionUsage | undefined =
-    scan.usage.inputTokens + scan.usage.outputTokens > 0 ? scan.usage : undefined;
+    (scan.usage.cumulativeTotalTokens ?? 0) > 0 ? scan.usage : undefined;
 
   // Extract events AFTER the last user message by re-reading + re-parsing
   // only the tail. If no user message was found (tailOffset === -1), fall

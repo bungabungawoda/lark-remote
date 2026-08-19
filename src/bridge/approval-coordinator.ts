@@ -21,13 +21,15 @@ type ApprovalState = 'pending' | 'submitting' | 'resolved' | 'failed' | 'expired
 
 export interface TrackedApproval {
   requestId: number | string;
-  kind: 'command' | 'file' | 'permissions' | 'question';
+  kind: 'command' | 'file' | 'permissions' | 'question' | 'tool';
   state: ApprovalState;
   view: ApprovalView;
   createdAt: number;
   timeoutTimer: ReturnType<typeof setTimeout> | null;
   /** AskUserQuestion 已答问题索引 → 答案 label[]（kind === 'question'）。 */
   answers?: Map<number, string[]>;
+  /** AskUserQuestion 补充说明（Codex user_note）：问题索引 → 文本。 */
+  notes?: Map<number, string>;
 }
 
 type ApprovalResponder = (requestId: number | string, response: unknown) => Promise<void>;
@@ -76,9 +78,12 @@ export class ApprovalCoordinator {
       return;
     }
 
+    // 事件级 timeoutMs 优先（Codex autoResolutionMs / Pi extension timeout），
+    // 缺省回落 run 级默认超时。放在事件上而非桥按 agentKind 分支，公共层
+    // 保持无 agent 分支。
     const timer = setTimeout(() => {
       this.expireApproval(event.requestId);
-    }, this.approvalTimeoutMs);
+    }, event.timeoutMs ?? this.approvalTimeoutMs);
 
     const tracked: TrackedApproval = {
       requestId: event.requestId,
@@ -299,6 +304,32 @@ export class ApprovalCoordinator {
   }
 
   /**
+   * AskUserQuestion 补充说明（Codex user_note）：选项之外的可选文本，随答案
+   * 提交；不单独构成答案（仍需选项/自定义答案才能完成该问题）。note 更新
+   * 后回流视图（卡片回显），同一请求可多次修改（新 nonce 来自新渲染）。
+   */
+  async answerNote(
+    action: { questionIndex: number; text: string },
+    ctx: { requestId: number | string; nonce?: string },
+  ): Promise<void> {
+    const tracked = this.getPendingQuestion(ctx.requestId);
+    const questions = tracked.view.questions!;
+    const q = questions[action.questionIndex];
+    if (!q) {
+      throw new Error(`Question ${action.questionIndex} not found in request ${ctx.requestId}`);
+    }
+    const text = action.text.trim();
+    if (!text) {
+      throw new Error('请输入补充说明');
+    }
+    this.assertFreshNonce(ctx.requestId, ctx.nonce);
+    tracked.notes ??= new Map();
+    tracked.notes.set(action.questionIndex, text);
+    q.note = text;
+    this.pushQuestionViewUpdate(ctx.requestId, tracked);
+  }
+
+  /**
    * Update a pending approval's view (out-of-order item/started arrives late).
    * Only applies while the approval is still pending — resolved/expired
    * approvals must not be resurrected or rewritten.
@@ -404,15 +435,22 @@ export class ApprovalCoordinator {
 
     const questions = tracked.view.questions ?? [];
     const answers: Record<string, string | string[]> = {};
+    const notes: Record<string, string> = {};
     for (let i = 0; i < questions.length; i++) {
       const selected = tracked.answers?.get(i) ?? [];
       answers[questions[i].question] = questions[i].multiSelect ? selected : selected[0];
+      const note = tracked.notes?.get(i);
+      if (note) notes[questions[i].question] = note;
     }
 
     tracked.state = 'submitting';
     this.clearTimer(tracked);
     try {
-      await this.responder(ctx.requestId, { action: 'answer', answers });
+      await this.responder(ctx.requestId, {
+        action: 'answer',
+        answers,
+        ...(Object.keys(notes).length > 0 ? { notes } : {}),
+      });
       tracked.state = 'resolved';
       this.pushResolved(ctx.requestId);
     } catch {

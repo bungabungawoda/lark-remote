@@ -54,6 +54,7 @@
   "infra-router": [
     "src/router/file-limit.test.ts",
     "src/router/immediate-action.test.ts",
+    "src/router/card-action-payload.test.ts",
     "src/router/ls-file.test.ts",
     "src/router/order-exec-dispatch.test.ts",
     "src/router/order-exec.test.ts",
@@ -100,6 +101,7 @@
   ],
   "infra-runner": [
     "src/runner/common/**/*.test.ts",
+    "src/runner/question-common.test.ts",
     "src/runner/agent-status.test.ts",
     "src/runner/probe.test.ts",
     "src/runner/registry.test.ts",
@@ -222,6 +224,12 @@
     "tests/probe/kimi-session-usage-malformed-record-probe.test.ts",
     "tests/probe/kimi-session-usage-subagent-aggregation-probe.test.ts",
     "tests/probe/kimi-usage-no-record-no-fake-zero-probe.test.ts"
+  ],
+  "agent-dsh": [
+    "src/runner/dsh/**/*.test.ts",
+    "src/session/dsh/**/*.test.ts",
+    "src/router/config/dsh.test.ts",
+    "src/router/dsh-config-session.test.ts"
   ],
   "agent-bash": [
     "src/runner/bash/**/*.test.ts"

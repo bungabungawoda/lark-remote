@@ -49,6 +49,8 @@ export function renderApprovalArea(
 
   if (approval.kind === 'command') {
     elements.push(...renderCommandApproval(approval, opts?.expired, opts?.runId));
+  } else if (approval.kind === 'tool') {
+    elements.push(...renderToolApproval(approval, opts?.expired, opts?.runId));
   } else if (approval.kind === 'file') {
     elements.push(...renderFileApproval(approval, opts?.expired, opts?.runId));
   } else if (approval.kind === 'permissions') {
@@ -117,6 +119,50 @@ function renderDecisionButtons(
       },
     ],
   }));
+}
+
+// =============================================================================
+// Tool Approval (non-command tools, e.g. ExitPlanMode)
+// =============================================================================
+
+/**
+ * 通用工具权限请求（kind === 'tool'）：展示工具名 + 用途说明（reason）+ 原始
+ * input（若有）。ExitPlanMode 的 input 为空对象，工具名本身即审批内容，
+ * 不再落入 command 槽位显示无意义 `{}`。
+ */
+function renderToolApproval(approval: ApprovalView, expired?: boolean, runId?: string): object[] {
+  const elements: object[] = [];
+
+  // ExitPlanMode 是「退出计划模式」：标题用计划审批语义；其他工具用通用标题。
+  const isPlanExit = approval.toolName === 'ExitPlanMode';
+  elements.push({
+    tag: 'div',
+    text: {
+      tag: 'lark_md',
+      content: isPlanExit ? '**📋 计划审批**' : '**🔧 工具请求**',
+    },
+  });
+
+  const toolLabel = approval.toolName ?? '(unknown tool)';
+  elements.push({
+    tag: 'div',
+    text: { tag: 'lark_md', content: `🔧 \`${toolLabel}\`` },
+  });
+
+  pushIf(elements, reasonDiv(approval));
+
+  // 原始 input（非空时展示，截断保护卡片预算；ExitPlanMode 的 `{}` 不展示）。
+  if (approval.toolInput && approval.toolInput !== '{}') {
+    const neutralized = approval.toolInput.replace(/`/g, '·');
+    elements.push({
+      tag: 'div',
+      text: { tag: 'lark_md', content: `\`${neutralized.slice(0, 500)}\`` },
+    });
+  }
+
+  elements.push(...renderDecisionButtons(approval, expired, runId));
+
+  return elements;
 }
 
 // =============================================================================
@@ -311,6 +357,15 @@ function renderQuestionApproval(
     text: { tag: 'lark_md', content: '**❓ 需要你回答**' },
   });
 
+  // Kimi elicitation form：完整题干只在 form message 里合并出现，概要行展示
+  // 于提问卡顶部（数据驱动，Kimi runner 翻译时填充 approval.intro）。
+  if (approval.intro) {
+    elements.push({
+      tag: 'div',
+      text: { tag: 'lark_md', content: `📝 ${approval.intro}` },
+    });
+  }
+
   if (expired) {
     elements.push({
       tag: 'div',
@@ -324,6 +379,7 @@ function renderQuestionApproval(
     const q = questions[i];
     const selected = q.selected ?? [];
     const header = q.header || `问题 ${i + 1}`;
+    const freeText = (q.options?.length ?? 0) === 0;
     elements.push({
       tag: 'div',
       text: {
@@ -332,36 +388,27 @@ function renderQuestionApproval(
       },
     });
 
-    for (const option of q.options) {
+    if (freeText) {
+      // 自由文本题（Codex options:null / Pi extension input）：无选项行，
+      // 直接渲染题面 + 输入框，提交走 answerCustom（coordinator 不要求有选项）。
+      elements.push(renderAnswerInput(approval.requestId, i, q.placeholder ?? '输入回答…', runId));
+      // 已答回显：input_value 不跨卡片更新保留，多题场景下用户提交后若还有
+      // 其他问题未答，卡片必须展示已答文本（与自定义答案选中态同模式）。
+      const answered = q.selected?.find((s) => s.length > 0);
+      if (answered) {
+        elements.push({
+          tag: 'div',
+          text: { tag: 'lark_md', content: `✍️ 已答：${answered}` },
+        });
+      }
+      continue;
+    }
+
+    for (const option of q.options ?? []) {
       const isSelected = selected.includes(option.label);
-      elements.push({
-        tag: 'div',
-        text: {
-          tag: 'lark_md',
-          content: `${isSelected ? '✅' : '⬜'} ${option.label}${
-            option.description ? `\n_${option.description}_` : ''
-          }`,
-        },
-      });
-      elements.push({
-        tag: 'button',
-        text: { tag: 'plain_text', content: isSelected ? '取消选择' : '选择' },
-        type: isSelected ? 'default' : 'primary',
-        size: 'small',
-        behaviors: [
-          {
-            type: 'callback',
-            value: {
-              cmd: 'approval.answer',
-              requestId: approval.requestId,
-              questionIndex: i,
-              option: option.label,
-              runId,
-              nonce: mkNonce(),
-            },
-          },
-        ],
-      });
+      // 单选/多选图标区分：单选 ⚪/🔵（radio 隐喻），多选 ⬜/☑️（checkbox 隐喻）。
+      const icon = q.multiSelect ? (isSelected ? '☑️' : '⬜') : isSelected ? '🔵' : '⚪';
+      elements.push(renderOptionRow(approval.requestId, i, option, isSelected, icon, runId));
     }
 
     // 自定义答案（Other）的选中态展示：选项按钮无法表示自由文本，单独显示
@@ -376,24 +423,32 @@ function renderQuestionApproval(
 
     // review P3-4：单选问题提供自定义答案（Other）输入——输入文本后点击
     // 输入框右侧 ✓ 提交图标，input_value 经 connector raw 事件回传。
-    if (!q.multiSelect) {
-      elements.push({
-        tag: 'input',
-        name: `answer-custom-${approval.requestId}-${i}`,
-        placeholder: { tag: 'plain_text', content: '自定义答案（Other）…' },
-        behaviors: [
-          {
-            type: 'callback',
-            value: {
-              cmd: 'approval.answerCustom',
-              requestId: approval.requestId,
-              questionIndex: i,
-              runId,
-              nonce: mkNonce(),
-            },
-          },
-        ],
-      });
+    // 显隐按 isOther !== false：Kimi form 会丢弃非声明选项值，翻译时置
+    // isOther=false 隐藏输入；Claude 未设置该字段默认显示（行为不变）。
+    if (!q.multiSelect && q.isOther !== false) {
+      elements.push(
+        renderAnswerInput(
+          approval.requestId,
+          i,
+          '自定义答案（Other）…',
+          runId,
+          'approval.answerCustom',
+        ),
+      );
+    }
+
+    // Codex user_note：选项之外的补充说明（allowNote 数据驱动门控）。
+    // 提交走 answerNote（coordinator 记录 note，随答案一起提交），已填回显。
+    if (q.allowNote === true) {
+      elements.push(
+        renderAnswerInput(approval.requestId, i, '补充说明（可选）…', runId, 'approval.answerNote'),
+      );
+      if (q.note) {
+        elements.push({
+          tag: 'div',
+          text: { tag: 'lark_md', content: `📝 ${q.note}` },
+        });
+      }
     }
 
     // 多选问题：有勾选才给提交按钮（单选在协调器内即时提交）。
@@ -418,5 +473,128 @@ function renderQuestionApproval(
     }
   }
 
+  // 提问卡底部统一「跳过回答」：走现有 approval.respond + decision=decline
+  // （coordinator 对 question 允许 decline 作为安全兜底），runner 按协议映射
+  // 跳过语义（Claude deny / Codex 空 answers / Kimi action decline / Pi cancelled）。
+  if (!expired) {
+    elements.push({
+      tag: 'button',
+      text: { tag: 'plain_text', content: '⏭️ 跳过回答' },
+      type: 'default',
+      behaviors: [
+        {
+          type: 'callback',
+          value: {
+            cmd: 'approval.respond',
+            decision: 'decline',
+            requestId: approval.requestId,
+            runId,
+            nonce: mkNonce(),
+          },
+        },
+      ],
+    });
+  }
+
   return elements;
+}
+
+/**
+ * 选项行：左按钮右描述（固定 100px 按钮列保证对齐），单选/多选图标区分。
+ * 与 renderAnswerInput 分开以便自由文本题不渲染选项行。
+ */
+function renderOptionRow(
+  requestId: number | string,
+  questionIndex: number,
+  option: { label: string; description?: string },
+  isSelected: boolean,
+  icon: string,
+  runId?: string,
+): object {
+  return {
+    tag: 'column_set',
+    flex_mode: 'none',
+    columns: [
+      {
+        tag: 'column',
+        width: 'auto',
+        vertical_align: 'center',
+        elements: [
+          {
+            tag: 'button',
+            text: { tag: 'plain_text', content: isSelected ? '取消选择' : '选择' },
+            type: isSelected ? 'default' : 'primary',
+            size: 'small',
+            // 固定宽度让所有选项行的按钮左对齐（描述长短不影响按钮列）。
+            width: '100px',
+            behaviors: [
+              {
+                type: 'callback',
+                value: {
+                  cmd: 'approval.answer',
+                  requestId,
+                  questionIndex,
+                  option: option.label,
+                  runId,
+                  nonce: mkNonce(),
+                },
+              },
+            ],
+          },
+        ],
+      },
+      {
+        tag: 'column',
+        width: 'weighted',
+        weight: 1,
+        vertical_align: 'center',
+        elements: [
+          {
+            tag: 'div',
+            text: {
+              tag: 'lark_md',
+              content: `${icon} ${option.label}${
+                option.description ? `\n_${option.description}_` : ''
+              }`,
+            },
+          },
+        ],
+      },
+    ],
+  };
+}
+
+/**
+ * 文本输入行（Other 输入与自由文本题共用）：输入后点击右侧 ✓ 提交图标，
+ * input_value 经 connector raw 事件回传（CardKit input 的 input_value 会被
+ * SDK normalizer 丢弃，必须走 includeRawEvent 路径）。
+ */
+function renderAnswerInput(
+  requestId: number | string,
+  questionIndex: number,
+  placeholder: string,
+  runId?: string,
+  cmd: 'approval.answerCustom' | 'approval.answerNote' = 'approval.answerCustom',
+): object {
+  // name 必须含 cmd，保证同一题同时渲染多个输入框（如单选选项题的
+  // Other 输入 + Note 输入）时元素 name 唯一——飞书对同卡内重复 name
+  // 报 ErrCode 11310 拒绝整卡（2026-08-19 线上：name(answer-custom-0-0) duplicate）。
+  const kind = cmd === 'approval.answerNote' ? 'note' : 'custom';
+  return {
+    tag: 'input',
+    name: `answer-${kind}-${requestId}-${questionIndex}`,
+    placeholder: { tag: 'plain_text', content: placeholder },
+    behaviors: [
+      {
+        type: 'callback',
+        value: {
+          cmd,
+          requestId,
+          questionIndex,
+          runId,
+          nonce: mkNonce(),
+        },
+      },
+    ],
+  };
 }

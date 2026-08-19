@@ -14,8 +14,7 @@
  * turn idle watchdog, connection-lost retry). Differences:
  *   - pi binds the session at spawn via `--session-id` (no RPC resume-by-id);
  *     the PiRpcConnectionManager respawns when the requested session changes.
- *   - no approval server-requests (pi RPC exposes none in this scope) →
- *     respondApproval is a no-op.
+ *   - pi，极简风格，没有 Ask User question。
  *   - `prompt` ack ≠ turn completion; the turn ends on `agent_settled`.
  */
 
@@ -218,17 +217,8 @@ export class PiRpcRunner extends ConnectionBasedRunner<PiRpcClient, PiRpcTransla
     });
   }
 
-  /**
-   * Approvals are out of scope for pi RPC (no server requests surface in this
-   * integration); the bridge's duck-typed respondApproval call is a no-op.
-   */
-  async respondApproval(_requestId: number | string, _response: unknown): Promise<void> {
-    // no-op
-  }
-
   private handleEvent(evt: PiRpcEvent): void {
-    const events = this.currentTranslator?.handleEvent(evt) ?? [];
-    this.pushEvents(events);
+    this.pushEvents(this.currentTranslator?.handleEvent(evt) ?? []);
   }
 }
 

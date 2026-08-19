@@ -79,8 +79,10 @@ export function newSessionButton(): object {
 }
 
 /**
- * Create a CardKit 2.0 Compact button for Codex app-server mode.
- * Triggers thread/compact/start via the codex.compact callback.
+ * Create a CardKit 2.0 Compact button for any runCompact-capable runner
+ * (codex/kimi/opencode/pi/claude，鸭子类型 `'runCompact' in runner` 探测）。
+ * Triggers the compact flow via the codex.compact callback（handler 按
+ * runId 解析 agentKind，claude 走 stream-json 内建 /compact）。
  */
 export function compactButton(runId: string): object {
   return {
@@ -94,8 +96,8 @@ export function compactButton(runId: string): object {
 /**
  * Create a CardKit 2.0 Compact button for resume cards (auto-resume / `/resume <id>`).
  * Unlike compactButton (which targets a finished run's runId), this targets a
- * sessionId directly: the bridge resolves the session and calls the app-server
- * runner's runCompact() without a runId. Carries agent so the handler routes
+ * sessionId directly: the bridge resolves the session and calls the runner's
+ * runCompact() without a runId. Carries agent so the handler routes
  * to the correct session reader + runner when the card was rendered for a
  * non-default agent.
  */

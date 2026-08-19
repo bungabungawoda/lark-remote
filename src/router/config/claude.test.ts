@@ -132,18 +132,20 @@ describe('ClaudeConfigBuilder', () => {
       expect(modelSelect!.currentValue).toBe('sonnet');
     });
 
-    it('includes permissionMode select with official Claude modes', async () => {
+    it('includes permissionMode select with official Claude modes (manual alias hidden)', async () => {
       const config = makeConfig({ claude: { model: 'opus', permissionMode: 'manual' } });
       const fields = builder.buildFields(config);
 
       const permField = fields.find((f) => f.key === 'claude.permissionMode');
       expect(permField).toBeDefined();
       expect(permField!.type).toBe('select');
-      expect(permField!.currentValue).toBe('manual');
+      // manual 是 default 的别名：配置为 manual 时按 default 显示，下拉无 manual 项
+      expect(permField!.currentValue).toBe('default');
       const optionValues = (permField!.options ?? []).map((o) =>
         typeof o === 'string' ? o : o.value,
       );
-      expect(optionValues).toEqual([...CLAUDE_PERMISSION_MODES]);
+      expect(optionValues).toEqual(CLAUDE_PERMISSION_MODES.filter((m) => m !== 'manual'));
+      expect(optionValues).not.toContain('manual');
     });
   });
 

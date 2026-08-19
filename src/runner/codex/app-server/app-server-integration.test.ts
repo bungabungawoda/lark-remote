@@ -98,6 +98,11 @@ describe('CodexAppServerRunner integration', () => {
     // 配置值即协议标准值，直接透传
     expect(threadStart.params.sandbox).toBe('workspace-write');
     expect(threadStart.params.approvalPolicy).toBe('untrusted');
+    // Default 协作模式启用 request_user_input：thread/start 必须带官方 feature
+    // override（协议级，不依赖 codex config.toml）
+    expect(threadStart.params.config).toEqual({
+      'features.default_mode_request_user_input': true,
+    });
 
     const turnStart = requests.find((r) => r.method === 'turn/start');
     expect(turnStart).toBeDefined();
@@ -397,6 +402,111 @@ describe('CodexAppServerRunner integration', () => {
     await runner.dispose();
   });
 
+  it('test_anchor_request_user_input_answers_map_back_to_question_ids', async () => {
+    // AskUserQuestion：用户答案以 {问题文本: 值} 回传，runner 必须按问题 id
+    // 回编为 {answers:{id:{answers:[值]}}}，否则 codex 服务端无法关联答案
+    // （cc-connect 同款 question text → id 映射）。
+    const cwd = join(tmpDir, 'workspace');
+    mkdirSync(cwd, { recursive: true });
+    const requestLog = join(tmpDir, 'requests.jsonl');
+    const wrapper = join(tmpDir, 'fake-server.sh');
+    writeFileSync(
+      wrapper,
+      `#!/bin/sh\nexport FAKE_SERVER_LOG="${requestLog}"\nexec "${process.execPath}" "${FAKE_SERVER}" "${join(FIXTURES, 'question-request.jsonl')}"\n`,
+    );
+    chmodSync(wrapper, 0o755);
+    const runner = new CodexAppServerRunner({
+      kind: 'codex',
+      sessionReader: createStubSessionReader(),
+      binary: wrapper,
+      model: 'deepseek-v4-flash',
+      modelProvider: 'deepseek',
+      sandbox: 'workspace-write',
+      approvalPolicy: 'untrusted',
+    });
+
+    const events: AgentEvent[] = [];
+    let questionSeen = false;
+    for await (const event of runner.run('ask me', { cwd })) {
+      events.push(event);
+      if (event.type === 'approval_requested' && event.kind === 'question') {
+        questionSeen = true;
+        expect(event.view.questions).toHaveLength(2);
+        // 自由文本题：options null → 空数组（卡片渲染为输入题）
+        expect(event.view.questions?.[1]?.options).toEqual([]);
+        await runner.respondApproval(event.requestId, {
+          action: 'answer',
+          answers: {
+            'Which database?': 'PostgreSQL',
+            'Commit message': 'feat: ask-user-question',
+          },
+          // Codex user_note：选项之外补充说明，回编为 "user_note: <text>" 条目
+          // （2026-08-18 live：deepseek-v4-flash 明确理解并遵守该格式）。
+          notes: { 'Which database?': '先验证 PostgreSQL 17 兼容性' },
+        });
+      }
+    }
+
+    expect(questionSeen).toBe(true);
+    expect(events.some((e) => e.type === 'result')).toBe(true);
+
+    const responses = readFileSync(requestLog, 'utf8')
+      .split('\n')
+      .filter(Boolean)
+      .map((l) => JSON.parse(l))
+      .filter((l) => l.response);
+    const questionResponse = responses.find((l) => l.response.id === 1);
+    expect(questionResponse).toBeDefined();
+    expect(questionResponse.response.result).toEqual({
+      answers: {
+        db: { answers: ['PostgreSQL', 'user_note: 先验证 PostgreSQL 17 兼容性'] },
+        msg: { answers: ['feat: ask-user-question'] },
+      },
+    });
+
+    await runner.dispose();
+  });
+
+  it('test_anchor_request_user_input_decline_returns_empty_answers', async () => {
+    // 跳过/拒绝：返回空 answers（Codex 视为 unanswered，turn 继续），
+    // 不能回空行为以外的值（cc-connect deny 同款语义）。
+    const cwd = join(tmpDir, 'workspace');
+    mkdirSync(cwd, { recursive: true });
+    const requestLog = join(tmpDir, 'requests.jsonl');
+    const wrapper = join(tmpDir, 'fake-server.sh');
+    writeFileSync(
+      wrapper,
+      `#!/bin/sh\nexport FAKE_SERVER_LOG="${requestLog}"\nexec "${process.execPath}" "${FAKE_SERVER}" "${join(FIXTURES, 'question-request.jsonl')}"\n`,
+    );
+    chmodSync(wrapper, 0o755);
+    const runner = new CodexAppServerRunner({
+      kind: 'codex',
+      sessionReader: createStubSessionReader(),
+      binary: wrapper,
+      model: 'deepseek-v4-flash',
+      modelProvider: 'deepseek',
+      sandbox: 'workspace-write',
+      approvalPolicy: 'untrusted',
+    });
+
+    for await (const event of runner.run('ask me', { cwd })) {
+      if (event.type === 'approval_requested' && event.kind === 'question') {
+        await runner.respondApproval(event.requestId, { action: 'decline' });
+      }
+    }
+
+    const responses = readFileSync(requestLog, 'utf8')
+      .split('\n')
+      .filter(Boolean)
+      .map((l) => JSON.parse(l))
+      .filter((l) => l.response);
+    const questionResponse = responses.find((l) => l.response.id === 1);
+    expect(questionResponse).toBeDefined();
+    expect(questionResponse.response.result).toEqual({ answers: {} });
+
+    await runner.dispose();
+  });
+
   it('test_anchor_approval_respond_sends_amendment_decision_with_payload', async () => {
     // 验证行为：对 acceptWithExecpolicyAmendment 决策，runner 必须把协议对象
     // 决策（含 execpolicy_amendment payload）原样发回服务端——这是真实命令审批
@@ -600,9 +710,16 @@ describe('CodexAppServerRunner integration', () => {
     const compactIndex = requests.findIndex((r) => r.method === 'thread/compact/start');
     expect(resumeIndex).toBeGreaterThanOrEqual(0);
     expect(compactIndex).toBeGreaterThan(resumeIndex);
-    expect((requests[resumeIndex] as { params: { threadId: string } }).params.threadId).toBe(
-      'th-aaa-999',
-    );
+    const resumeParams = (
+      requests[resumeIndex] as {
+        params: { threadId: string; config?: unknown };
+      }
+    ).params;
+    expect(resumeParams.threadId).toBe('th-aaa-999');
+    // resume 路径同样下发 feature override，冷连接恢复后 request_user_input 仍可用
+    expect(resumeParams.config).toEqual({
+      'features.default_mode_request_user_input': true,
+    });
 
     await runner.dispose();
   });

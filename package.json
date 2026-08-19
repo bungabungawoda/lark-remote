@@ -47,6 +47,7 @@
     "test:opencode": "vitest run --project agent-opencode",
     "test:pi": "vitest run --project agent-pi",
     "test:kimi": "vitest run --project agent-kimi",
+    "test:dsh": "vitest run --project agent-dsh",
     "test:bash": "vitest run --project agent-bash",
     "test:infra": "vitest run --project 'infra-*'",
     "test:agents": "vitest run --project 'agent-*'",

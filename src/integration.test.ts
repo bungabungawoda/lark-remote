@@ -367,7 +367,8 @@ describe('配置持久化验证', () => {
     expect(fs.existsSync(workspaceFile)).toBe(true);
     const raw = JSON.parse(fs.readFileSync(workspaceFile, 'utf-8'));
     expect(raw.proj.path).toBe(tmpDir);
-    expect(raw.proj.lastUsedAt).toBe(0);
+    // save 即视为使用：lastUsedAt 应为当前时刻（>0），而非 0
+    expect(raw.proj.lastUsedAt).toBeGreaterThan(0);
 
     // Simulate restart: new router reading the same workspace file
     const r2 = createRouter({

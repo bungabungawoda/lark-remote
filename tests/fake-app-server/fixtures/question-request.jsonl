@@ -1,0 +1,8 @@
+{"request":{"method":"initialize"},"response":{"result":{"userAgent":"codex-cli/0.147.0","codexHome":"/home/user/.codex","platformFamily":"unix","platformOs":"macos"}}}
+{"notification":{"method":"initialized","params":{}}}
+{"request":{"method":"thread/start"},"response":{"result":{"thread":{"id":"th-aaa-333","sessionId":"sess-333","status":{"type":"idle"},"cwd":"/home/user/project","preview":"","turns":[],"createdAt":1,"updatedAt":1,"modelProvider":"deepseek","cliVersion":"0.147.0","ephemeral":false},"cwd":"/home/user/project","model":"deepseek-v4-flash","modelProvider":"deepseek","approvalPolicy":"untrusted"}}}
+{"request":{"method":"turn/start"},"response":{"result":{"turn":{"id":"tn-333","items":[],"itemsView":"notLoaded","status":"inProgress"}}}}
+{"notification":{"method":"turn/started","params":{"threadId":"th-aaa-333","turn":{"id":"tn-333","items":[],"itemsView":"notLoaded","status":"inProgress"}}}}
+{"notification":{"id":1,"method":"item/tool/requestUserInput","params":{"threadId":"th-aaa-333","turnId":"tn-333","itemId":"item-9","questions":[{"id":"db","header":"Setup","question":"Which database?","isOther":false,"isSecret":false,"options":[{"label":"PostgreSQL","description":"Robust"},{"label":"SQLite","description":"Lightweight"}]},{"id":"msg","header":"","question":"Commit message","isOther":false,"isSecret":false,"options":null}],"autoResolutionMs":null}}}
+{"notification":{"method":"serverRequest/resolved","params":{"threadId":"th-aaa-333","requestId":1}}}
+{"notification":{"method":"turn/completed","params":{"threadId":"th-aaa-333","turn":{"id":"tn-333","items":[{"type":"agentMessage","id":"item-10","text":"done","phase":"final_answer"}],"itemsView":"summary","status":"completed"}}}}
