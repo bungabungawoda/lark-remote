@@ -378,6 +378,92 @@ describe('KimiAcpRunner', () => {
     await runner.dispose();
   });
 
+  it('surfaces elicitation form questions and answers via respondApproval', async () => {
+    const capturePath = join(tmpDir, 'received.jsonl');
+    const { wrapper, workspace } = writeScenario(tmpDir, serverScript, 'kimi', {
+      sendElicitation: true,
+      holdPromptUntilResponse: true,
+      capturePath,
+    });
+
+    const runner = new KimiAcpRunner({
+      kind: 'kimi',
+      sessionReader: createStubSessionReader(),
+      binary: wrapper,
+      acpArgs: [],
+      turnIdleTimeoutMs: 30_000,
+    });
+
+    const events: AgentEvent[] = [];
+    let questionSeen = false;
+    for await (const event of runner.run('ask me', { cwd: workspace })) {
+      events.push(event);
+      if (event.type === 'approval_requested' && event.kind === 'question') {
+        questionSeen = true;
+        expect(event.view.questions).toHaveLength(2);
+        expect(event.view.questions?.[1]?.multiSelect).toBe(true);
+        expect(event.view.intro).toBe('Which database?\nPick frameworks');
+        // 文本 key 答案（按题面标题）→ 序号回编 content{q0,q1}
+        await runner.respondApproval(event.requestId, {
+          action: 'answer',
+          answers: {
+            Setup: 'PostgreSQL',
+            Frameworks: ['React', 'Vue'],
+          },
+        });
+      }
+    }
+
+    expect(questionSeen).toBe(true);
+    expect(events.some((e) => e.type === 'result')).toBe(true);
+
+    const received = readFileSync(capturePath, 'utf-8')
+      .trim()
+      .split('\n')
+      .filter(Boolean)
+      .map((l) => JSON.parse(l) as { id?: number; result?: unknown });
+    const elicitationResponse = received.find((m) => m.id === 44 && m.result);
+    expect(elicitationResponse?.result).toEqual({
+      action: 'accept',
+      content: { q0: 'PostgreSQL', q1: ['React', 'Vue'] },
+    });
+
+    await runner.dispose();
+  });
+
+  it('declines elicitation form with action decline', async () => {
+    const capturePath = join(tmpDir, 'received.jsonl');
+    const { wrapper, workspace } = writeScenario(tmpDir, serverScript, 'kimi', {
+      sendElicitation: true,
+      holdPromptUntilResponse: true,
+      capturePath,
+    });
+
+    const runner = new KimiAcpRunner({
+      kind: 'kimi',
+      sessionReader: createStubSessionReader(),
+      binary: wrapper,
+      acpArgs: [],
+      turnIdleTimeoutMs: 30_000,
+    });
+
+    for await (const event of runner.run('ask me', { cwd: workspace })) {
+      if (event.type === 'approval_requested' && event.kind === 'question') {
+        await runner.respondApproval(event.requestId, { action: 'decline' });
+      }
+    }
+
+    const received = readFileSync(capturePath, 'utf-8')
+      .trim()
+      .split('\n')
+      .filter(Boolean)
+      .map((l) => JSON.parse(l) as { id?: number; result?: unknown });
+    const elicitationResponse = received.find((m) => m.id === 44 && m.result);
+    expect(elicitationResponse?.result).toEqual({ action: 'decline' });
+
+    await runner.dispose();
+  });
+
   it('declines approval with reject_once option', async () => {
     const { wrapper, workspace } = writeScenario(tmpDir, serverScript, 'kimi', {
       sendApproval: true,
@@ -836,6 +922,10 @@ describe('KimiAcpRunner', () => {
       clientCapabilities: {
         fs: { readTextFile: false, writeTextFile: false },
         terminal: false,
+        // AskUserQuestion 走 elicitation form（原生多题多选）。elicitation.form
+        // 必须是对象（ACP SDK zod: z.record），布尔 true 会被 kimi 服务端丢弃
+        // → 多选回退成 request_permission 单选桥（勾一个选项即提交）。
+        elicitation: { form: {} },
       },
     });
 
