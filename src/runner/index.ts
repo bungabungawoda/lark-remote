@@ -14,6 +14,7 @@ export { CodexAppServerRunner } from './codex/index.js';
 export { OpencodeAcpRunner } from './opencode/index.js';
 export { PiRpcRunner } from './pi/index.js';
 export { KimiAcpRunner } from './kimi/index.js';
+export { DshRunner } from './dsh/index.js';
 export { BashProcessRunner, type BashRunner } from './bash/index.js';
 
 // Re-export registry

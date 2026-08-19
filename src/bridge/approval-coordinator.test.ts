@@ -274,6 +274,16 @@ describe('ApprovalCoordinator', () => {
       expect(coordinator.pendingCount()).toBe(0);
       expect(responder).toHaveBeenCalledWith(1001, { action: 'cancel' });
     });
+
+    it('test_anchor_prefers_event_timeout_override_over_run_default', () => {
+      // Codex autoResolutionMs / Pi extension timeout 经事件 timeoutMs 下传：
+      // 默认 30s 未到、事件 5s 先到时应按事件超时过期并回 cancel。
+      coordinator.onRequested(makeCommandEvent({ timeoutMs: 5000 }));
+      expect(coordinator.pendingCount()).toBe(1);
+      vi.advanceTimersByTime(5001);
+      expect(coordinator.pendingCount()).toBe(0);
+      expect(responder).toHaveBeenCalledWith(1001, { action: 'cancel' });
+    });
   });
 
   describe('protocol decision space (real availableDecisions)', () => {
@@ -580,6 +590,53 @@ describe('ApprovalCoordinator', () => {
       await expect(
         coordinator.toggleAnswer({ questionIndex: 0, option: 'Missing' }, { requestId: 2001 }),
       ).rejects.toThrow('not found');
+    });
+
+    it('test_anchor_answer_note_attaches_note_to_submitted_answer', async () => {
+      // Codex user_note：选项之外的补充说明，随答案一起提交（runner 编码为
+      // "user_note: <text>" 条目）。note 本身不构成「已答」，仍需选项/自定义答案。
+      const event = makeQuestionEvent();
+      coordinator.onRequested(event);
+      await coordinator.answerNote(
+        { questionIndex: 0, text: '先验证 PostgreSQL 17 兼容性' },
+        { requestId: 2001, nonce: 'n-note1' },
+      );
+      // note 已记录并回流视图（卡片回显）
+      expect(event.view.questions![0].note).toBe('先验证 PostgreSQL 17 兼容性');
+      expect(responder).not.toHaveBeenCalled();
+
+      await coordinator.toggleAnswer(
+        { questionIndex: 0, option: 'Red' },
+        { requestId: 2001, nonce: 'n-note2' },
+      );
+      await coordinator.toggleAnswer(
+        { questionIndex: 1, option: 'Cheese' },
+        { requestId: 2001, nonce: 'n-note3' },
+      );
+      await coordinator.submitAnswers({ questionIndex: 1 }, { requestId: 2001, nonce: 'n-note4' });
+
+      expect(responder).toHaveBeenCalledTimes(1);
+      expect(responder).toHaveBeenCalledWith(2001, {
+        action: 'answer',
+        answers: { 'Pick a color': 'Red', 'Pick toppings': ['Cheese'] },
+        notes: { 'Pick a color': '先验证 PostgreSQL 17 兼容性' },
+      });
+    });
+
+    it('test_anchor_answer_note_validates_question_and_blank_text', async () => {
+      coordinator.onRequested(makeQuestionEvent());
+      await expect(
+        coordinator.answerNote(
+          { questionIndex: 99, text: 'x' },
+          { requestId: 2001, nonce: 'n-note5' },
+        ),
+      ).rejects.toThrow(/Question 99 not found/);
+      await expect(
+        coordinator.answerNote(
+          { questionIndex: 0, text: '   ' },
+          { requestId: 2001, nonce: 'n-note6' },
+        ),
+      ).rejects.toThrow('请输入补充说明');
     });
   });
 });

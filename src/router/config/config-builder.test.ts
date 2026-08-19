@@ -23,37 +23,37 @@ function makeConfig(overrides?: Partial<AppConfig>): AppConfig {
 }
 
 describe('router/config registry', () => {
-  it('listRegisteredAgents returns all 5 agent kinds', () => {
+  it('listRegisteredAgents includes all registered agent kinds', () => {
     const agents = listRegisteredAgents();
     expect(agents).toContain('claude');
     expect(agents).toContain('codex');
     expect(agents).toContain('opencode');
     expect(agents).toContain('pi');
     expect(agents).toContain('kimi');
-    expect(agents).toHaveLength(5);
+    expect(agents).toContain('dsh');
   });
 
   it('listRegisteredAgents returns agents in first-start canonical order', () => {
-    // 首次启动默认顺序：Codex → Claude → OpenCode → Pi → Kimi
-    expect(listRegisteredAgents()).toEqual(['codex', 'claude', 'opencode', 'pi', 'kimi']);
-    expect(DEFAULT_AGENT_ORDER).toEqual(['codex', 'claude', 'opencode', 'pi', 'kimi']);
+    // 首次启动默认顺序：Codex → Claude → OpenCode → Pi → Kimi → DSH
+    expect(listRegisteredAgents()).toEqual(['codex', 'claude', 'opencode', 'pi', 'kimi', 'dsh']);
+    expect(DEFAULT_AGENT_ORDER).toEqual(['codex', 'claude', 'opencode', 'pi', 'kimi', 'dsh']);
   });
 
   describe('sortAgentsForDisplay', () => {
     it('keeps canonical order when all agents are available', () => {
       const sorted = sortAgentsForDisplay(listRegisteredAgents(), () => true);
-      expect(sorted).toEqual(['codex', 'claude', 'opencode', 'pi', 'kimi']);
+      expect(sorted).toEqual(['codex', 'claude', 'opencode', 'pi', 'kimi', 'dsh']);
     });
 
     it('keeps canonical order when availability is unknown (not probed)', () => {
       const sorted = sortAgentsForDisplay(listRegisteredAgents(), () => undefined);
-      expect(sorted).toEqual(['codex', 'claude', 'opencode', 'pi', 'kimi']);
+      expect(sorted).toEqual(['codex', 'claude', 'opencode', 'pi', 'kimi', 'dsh']);
     });
 
     it('moves unavailable agents to the back, preserving canonical order within groups', () => {
       const availability = (kind: string) => kind !== 'opencode' && kind !== 'kimi';
       const sorted = sortAgentsForDisplay(listRegisteredAgents(), availability);
-      expect(sorted).toEqual(['codex', 'claude', 'pi', 'opencode', 'kimi']);
+      expect(sorted).toEqual(['codex', 'claude', 'pi', 'dsh', 'opencode', 'kimi']);
     });
   });
 

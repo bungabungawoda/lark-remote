@@ -31,6 +31,9 @@ const BINARY_MAP: Record<AgentKind, string> = {
   opencode: 'opencode',
   pi: 'pi',
   kimi: 'kimi',
+  // DSH is an HTTP-only agent (no CLI). `which ''` fails → reported unavailable,
+  // which is semantically correct for the /config availability display.
+  dsh: '',
 };
 
 const CACHE_TTL_MS = 5 * 60_000;
@@ -78,7 +81,11 @@ export async function probeAgentAvailability(kind: AgentKind): Promise<boolean> 
  * on resource-constrained devices.
  */
 export async function probeAllAgents(): Promise<Map<AgentKind, boolean>> {
-  const kinds = Object.keys(BINARY_MAP) as AgentKind[];
+  // Skip agents with no CLI binary (DSH is HTTP-only, binary === ''): the
+  // probe / availability display only covers spawn-able agents.
+  const kinds = Object.keys(BINARY_MAP).filter(
+    (k) => BINARY_MAP[k as AgentKind] !== '',
+  ) as AgentKind[];
   const entries = await Promise.all(
     kinds.map(async (k) => [k, await probeAgentAvailability(k)] as const),
   );

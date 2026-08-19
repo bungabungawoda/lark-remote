@@ -379,6 +379,66 @@ describe('formatUsageStats', () => {
     expect(out).toContain('Total token - 4.5M');
     expect(out).toContain('累计 12.3M'); // 12345678 → 12.3M
   });
+
+  it('一致性护栏：本 run > 累计 时 Total 行追加 ⚠️ 累计异常', () => {
+    // 回归：会话完成卡"本 run 23.1M > 累计 663K"——DeepSeek live
+    // result usage 是累积/超大 scope，大于 jsonl 去重聚合的 session 累计。
+    // 护栏只标记不修正（数字保持原样便于排查），Total 行追加告警。
+    const out = formatUsageStats({
+      contextLength: 15926,
+      inputTokens: 796000,
+      outputTokens: 128000,
+      cacheReadTokens: 22191744,
+      totalTokens: 23115744,
+      cumulativeTotalTokens: 663195,
+    });
+    expect(out).toContain('Total token - 23.1M · 累计 663K · ⚠️ 累计异常');
+  });
+
+  it('一致性护栏：本 run ≤ 累计 时不加告警', () => {
+    const out = formatUsageStats({
+      inputTokens: 1000,
+      outputTokens: 50,
+      cacheReadTokens: 800,
+      totalTokens: 1850,
+      cumulativeTotalTokens: 50000,
+    });
+    expect(out).toContain('Total token - 2K · 累计 50K');
+    expect(out).not.toContain('⚠️ 累计异常');
+  });
+
+  it('一致性护栏：累计缺失（如旧数据/error 路径）不加告警', () => {
+    const out = formatUsageStats({
+      inputTokens: 1000,
+      outputTokens: 50,
+      cacheReadTokens: 800,
+      totalTokens: 1850,
+    });
+    expect(out).toContain('Total token - 2K');
+    expect(out).not.toContain('⚠️ 累计异常');
+  });
+
+  it('一致性护栏：estimate 路径（无 real input/output）同样暴露异常', () => {
+    // 10% 估计路径：total = (contextLength + cacheRead) + 10% + cacheCreation。
+    // 无 real input/output，同样可能本 run > 累计（如 jsonl 兜底时 contextLength
+    // 是末轮窗口而累计更小）——护栏需在两个分支都生效。
+    const out = formatUsageStats({
+      contextLength: 1000,
+      cacheReadTokens: 900,
+      totalTokens: 2000,
+      cumulativeTotalTokens: 1500,
+    });
+    // 估计 total = 1000 + 900 + 100 = 2000 → 2K；2000 > 1500 → 告警
+    expect(out).toContain('Total token - 2K · 累计 2K · ⚠️ 累计异常');
+    // 正常：估计 total ≤ 累计 → 无告警
+    const ok = formatUsageStats({
+      contextLength: 1000,
+      cacheReadTokens: 900,
+      cumulativeTotalTokens: 5000,
+    });
+    expect(ok).toContain('Total token - 2K · 累计 5K');
+    expect(ok).not.toContain('⚠️ 累计异常');
+  });
 });
 
 describe('CommandRouter', () => {
@@ -1197,8 +1257,12 @@ describe('CommandRouter', () => {
     for (let i = 0; i < 8; i++) {
       await router.handle(`/ws save ws${String(i).padStart(2, '0')}`, ctx);
     }
+    // 切到字母序：语义对齐后 save 也打时间戳，recent 序 = 保存倒序；
+    // 分页测试只关心分页机制，用 alpha 隔离排序影响（alpha 下 ws00→ws07 稳定）。
+    await router.handleCardAction({ cmd: 'ws.sort' }, ctx);
     await router.handle('/ws list', ctx);
 
+    // 最新卡片：/ws list 走 _sent，读 tail
     const input = connector._sent[connector._sent.length - 1].input as { card: TestCard };
     expect(input.card).toBeDefined();
     // 200861 铁律：2.0 卡片不得出现 tag:action + actions
@@ -1236,13 +1300,16 @@ describe('CommandRouter', () => {
     await router.handle('/ws save beta', ctx);
     await router.handle('/ws save alpha', ctx);
 
-    // Default sort is recent — both have lastUsedAt=0, so alphabetical tiebreak
+    // Default sort is recent — last save wins: alpha (saved later) appears first
     await router.handle('/ws list', ctx);
     const input = connector._sent[connector._sent.length - 1].input as { card: TestCard };
     let texts = collectCardTexts(input.card.body!.elements ?? []);
-    // Both have lastUsedAt=0, tiebreak by name: alpha first, then beta
-    expect(texts.some((t) => t.includes('alpha'))).toBe(true);
-    expect(texts.some((t) => t.includes('beta'))).toBe(true);
+    // Recent sort: alpha was saved after beta → alpha first
+    const recentAlphaIdx = texts.findIndex((t) => t.includes('alpha'));
+    const recentBetaIdx = texts.findIndex((t) => t.includes('beta'));
+    expect(recentAlphaIdx).toBeGreaterThan(-1);
+    expect(recentBetaIdx).toBeGreaterThan(-1);
+    expect(recentAlphaIdx).toBeLessThan(recentBetaIdx);
 
     // Toggle to alpha sort
     await router.handleCardAction({ cmd: 'ws.sort' }, ctx);
@@ -1273,22 +1340,35 @@ describe('CommandRouter', () => {
   it('ws.use after touch reorders list in recent mode', async () => {
     const { router, sessionStore, connector } = createRouter();
     sessionStore.setCwd('user1', fs.realpathSync(tmpDir));
-    // Three workspaces: all lastUsedAt=0, so initial order is alphabetical (alpha → first → second)
+    // Three workspaces: saved in order alpha → first → second, so initial
+    // recent order is the reverse (second → first → alpha)
     await router.handle('/ws save alpha', ctx);
     await router.handle('/ws save first', ctx);
     await router.handle('/ws save second', ctx);
 
-    // Use "first" — it should move to top in recent sort (lastUsedAt > 0 beats 0)
+    // Sanity: recent sort puts most recently saved on top
+    await router.handle('/ws list', ctx);
+    let texts = collectCardTexts(
+      (connector._sent[connector._sent.length - 1].input as { card: TestCard }).card.body!
+        .elements ?? [],
+    );
+    const secondIdx = texts.findIndex((t) => t.includes('second'));
+    const firstIdx0 = texts.findIndex((t) => t.includes('first'));
+    expect(secondIdx).toBeGreaterThan(-1);
+    expect(secondIdx).toBeLessThan(firstIdx0);
+
+    // Use "first" — it should move above "second" in recent sort
     await router.handleCardAction({ cmd: 'ws.use', name: 'first' }, ctx);
 
-    // Check the refreshed card: "first" should appear before "alpha"
-    // (if touch didn't work, alphabetical tiebreak would keep alpha before first — false positive)
+    // Check the refreshed card: "first" should now appear before "second"
     const refreshedCard = connector._cards.at(-1) as { body: { elements: TestCardElement[] } };
     expect(refreshedCard).toBeDefined();
-    const texts = collectCardTexts(refreshedCard.body.elements);
+    texts = collectCardTexts(refreshedCard.body.elements);
     const firstIdx = texts.findIndex((t) => t.includes('first'));
-    const alphaIdx = texts.findIndex((t) => t.includes('alpha'));
-    expect(firstIdx).toBeLessThan(alphaIdx);
+    const secondIdx2 = texts.findIndex((t) => t.includes('second'));
+    expect(firstIdx).toBeGreaterThan(-1);
+    expect(secondIdx2).toBeGreaterThan(-1);
+    expect(firstIdx).toBeLessThan(secondIdx2);
   });
 
   it('ws.sort is in immediate-action whitelist', () => {
@@ -1301,6 +1381,8 @@ describe('CommandRouter', () => {
     for (let i = 0; i < 8; i++) {
       await router.handle(`/ws save ws${String(i).padStart(2, '0')}`, ctx);
     }
+    // 切到字母序隔离排序影响（见 /ws list paginates 注释）
+    await router.handleCardAction({ cmd: 'ws.sort' }, ctx);
     await router.handleCardAction({ cmd: 'ws.page', offset: 5 }, ctx);
 
     // 更新走 updateCardInPlace → connector._cards
@@ -1328,6 +1410,8 @@ describe('CommandRouter', () => {
     for (let i = 0; i < 8; i++) {
       await router.handle(`/ws save ws${String(i).padStart(2, '0')}`, ctx);
     }
+    // 切到字母序隔离排序影响（见 /ws list paginates 注释）
+    await router.handleCardAction({ cmd: 'ws.sort' }, ctx);
     await router.handleCardAction({ cmd: 'ws.remove', name: 'ws06', offset: 5 }, ctx);
 
     // 删除走 handleWsRemove：updateCardInPlace 刷新同一页
@@ -3069,11 +3153,13 @@ describe('CommandRouter', () => {
       const handleApprovalAnswer = vi.fn().mockResolvedValue(undefined);
       const handleApprovalAnswerSubmit = vi.fn().mockResolvedValue(undefined);
       const handleApprovalAnswerCustom = vi.fn().mockResolvedValue(undefined);
+      const handleApprovalAnswerNote = vi.fn().mockResolvedValue(undefined);
       const { router } = createRouter({
         bridge: createMockBridge({
           handleApprovalAnswer,
           handleApprovalAnswerSubmit,
           handleApprovalAnswerCustom,
+          handleApprovalAnswerNote,
         }),
       });
 
@@ -3149,6 +3235,64 @@ describe('CommandRouter', () => {
       );
       expect(resp4).toEqual({ toast: { type: 'error', content: '缺少答案文本参数' } });
       expect(handleApprovalAnswerCustom).toHaveBeenCalledTimes(1);
+
+      // Codex user_note：补充说明走 input_value → text → bridge.handleApprovalAnswerNote
+      const resp5 = await router.handleCardAction(
+        {
+          cmd: 'approval.answerNote',
+          runId: 'run-q-1',
+          requestId: 7,
+          questionIndex: 0,
+          nonce: 'nonce-q-5',
+          inputValue: '先验证 PostgreSQL 17 兼容性',
+        },
+        ctx,
+      );
+      expect(resp5).toEqual({ toast: { type: 'success', content: '补充说明已保存' } });
+      expect(handleApprovalAnswerNote).toHaveBeenCalledWith({
+        runId: 'run-q-1',
+        requestId: 7,
+        questionIndex: 0,
+        text: '先验证 PostgreSQL 17 兼容性',
+        nonce: 'nonce-q-5',
+      });
+
+      // 缺输入值 → error toast，不调 bridge
+      const resp6 = await router.handleCardAction(
+        {
+          cmd: 'approval.answerNote',
+          runId: 'run-q-1',
+          requestId: 7,
+          questionIndex: 0,
+          nonce: 'nonce-q-6',
+        },
+        ctx,
+      );
+      expect(resp6).toEqual({ toast: { type: 'error', content: '缺少补充说明参数' } });
+      expect(handleApprovalAnswerNote).toHaveBeenCalledTimes(1);
+    });
+
+    it('test_anchor_approval_answer_duplicate_nonce_returns_neutral_feedback', async () => {
+      // 双击/飞书重投递携带相同 nonce：首次点击实际已成功，第二次不能报
+      // 「答案提交失败」误导用户（coordinator 抛 duplicate nonce 原文）。
+      const handleApprovalAnswer = vi
+        .fn()
+        .mockRejectedValue(new Error('Approval request 7 already submitted (duplicate nonce)'));
+      const { router } = createRouter({
+        bridge: createMockBridge({ handleApprovalAnswer }),
+      });
+      const resp = await router.handleCardAction(
+        {
+          cmd: 'approval.answer',
+          runId: 'run-q-dup',
+          requestId: 7,
+          questionIndex: 0,
+          option: 'Red',
+          nonce: 'dup-nonce',
+        },
+        ctx,
+      );
+      expect(resp).toEqual({ toast: { type: 'info', content: '该选项已处理，请勿重复点击' } });
     });
   });
 

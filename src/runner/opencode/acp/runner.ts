@@ -123,7 +123,7 @@ function buildApprovalResponse(
 }
 
 interface PendingApproval {
-  kind: 'command' | 'file' | 'permissions' | 'question';
+  kind: 'command' | 'file' | 'permissions' | 'question' | 'tool';
   view: ApprovalView;
   options: PermissionOption[];
 }
