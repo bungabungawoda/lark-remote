@@ -5,6 +5,32 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.8] - 2026-08-19
+
+### 新增
+
+- DSH（DeepSeek Harness）Agent 接入：纯 HTTP 连接 DSH Web Host（无本地子进程），支持会话创建/续跑、`selectModel` 模型对齐、SSE mux 事件订阅、会话历史读取
+- `/config` DSH 配置卡：Host 地址 / 会话 preset / 模型 / 推理强度，模型与预设目录预取动态加载（失败回退固定兜底清单）
+- AskUserQuestion 公共契约（`question-common`）：标准提问审批事件工厂 + 按序答案映射，claude / codex / kimi / pi 统一接入
+- Codex AskUserQuestion：支持自由文本题、补充说明（user_note）、`autoResolutionMs` 透传为单请求审批超时
+- Kimi elicitation 表单回编 + request_permission 兜底桥
+- 工具权限审批卡（`kind === 'tool'`）：ExitPlanMode 等非命令工具展示工具名 + 用途说明，计划审批语义
+- 提问卡单选/多选图标区分（⚪/🔵 vs ⬜/☑️）、自由文本题输入框、自定义答案回显
+
+### 变更
+
+- claude session usage 扫描对齐 codex 语义：非累计字段为末轮（本 run）scope，累计走 `cumulative*` 字段
+- Compact 按钮能力门控放开到所有 `runCompact` 能力 runner（claude / codex / kimi / opencode / pi）
+- claude `/config` 权限模式下拉排除 `manual`（`default` 的别名，避免等价重复项）
+- workspace 保存即触达：`save` 内部调用 `touch`，新保存的工作区排在列表最前
+- DSH 可用性探测跳过二进制检查（HTTP-only Agent）
+
+### 修复
+
+- claude session usage 扫描：修复第三方网关（如 DeepSeek）将零 usage 写在占位行、真实 usage 只在末行导致的 per-run 统计全 0（改为按 message id 逐字段 max 聚合）
+- 审批答案重复投递（重复 nonce 二次点击）改为中性提示，不再误报"提交失败"
+- usage 统计一致性护栏：本 run 超出累计时显式标记 `⚠️ 累计异常`（只标记不修正，便于排查数据源问题）
+
 ## [0.1.7] - 2026-08-18
 
 ### 新增
@@ -175,3 +201,5 @@ Initial release.
 [0.1.4]: https://github.com/bungabungawoda/lark-remote/releases/tag/v0.1.4
 [0.1.5]: https://github.com/bungabungawoda/lark-remote/releases/tag/v0.1.5
 [0.1.6]: https://github.com/bungabungawoda/lark-remote/releases/tag/v0.1.6
+[0.1.7]: https://github.com/bungabungawoda/lark-remote/releases/tag/v0.1.7
+[0.1.8]: https://github.com/bungabungawoda/lark-remote/releases/tag/v0.1.8
