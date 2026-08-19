@@ -38,11 +38,13 @@ import {
   type SessionSetModeParams,
   type RequestPermissionParams,
   type RequestPermissionResponse,
+  type ElicitationCreateResponse,
   type PermissionOption,
   RpcErrorCode,
   ServerRequestMethod,
 } from '../../common/acp/protocol-types.js';
 import { findOptionIdByKind } from '../../common/acp/protocol-helpers.js';
+import { mapAnswersByIndex } from '../../question-common.js';
 import { getLogger } from '../../../logger/index.js';
 import { ConnectionBasedRunner } from '../../common/connection-based-runner.js';
 
@@ -171,10 +173,70 @@ function buildApprovalResponse(
   return { outcome: { outcome: 'cancelled' } };
 }
 
+/**
+ * AskUserQuestion 回编（kind === 'question'）：
+ * - elicitation form：answer → {action:'accept', content:{q0..qn}}（多选数组/
+ *   单选字符串，key 按问题顺序）；decline → {action:'decline'}；cancel →
+ *   {action:'cancel'}。
+ * - request_permission 兜底桥：answer → 按 label 回显 q0_opt_{i} optionId；
+ *   decline → q0_skip optionId（无则 cancelled）；cancel → cancelled。
+ * 答案以 {问题文本: 值} 回传，先按问题顺序展开再协议编码。
+ */
+function buildQuestionResponse(
+  action: string,
+  pending: PendingApproval,
+  response: unknown,
+): RequestPermissionResponse | ElicitationCreateResponse {
+  if (pending.proto === 'elicitation') {
+    if (action === 'answer') {
+      const answers = (response as { answers?: Record<string, string | string[]> }).answers;
+      const questions = pending.view.questions ?? [];
+      const byIndex = mapAnswersByIndex(questions, answers ?? {});
+      const content: Record<string, string | string[]> = {};
+      questions.forEach((q, i) => {
+        const value = byIndex[i];
+        if (value === undefined) return;
+        if (q.multiSelect) {
+          const values = Array.isArray(value) ? value : [value];
+          const cleaned = values.filter((v) => typeof v === 'string' && v.length > 0);
+          if (cleaned.length > 0) content[`q${i}`] = cleaned;
+        } else {
+          const single = Array.isArray(value) ? value[0] : value;
+          if (typeof single === 'string' && single.length > 0) content[`q${i}`] = single;
+        }
+      });
+      return { action: 'accept', content };
+    }
+    if (action === 'decline') return { action: 'decline' };
+    return { action: 'cancel' };
+  }
+
+  // request_permission 兜底桥（单题单选）
+  if (action === 'answer') {
+    const answers = (response as { answers?: Record<string, string | string[]> }).answers;
+    const first = pending.view.questions?.[0];
+    const value = first ? answers?.[first.question] : undefined;
+    const label = Array.isArray(value) ? value[0] : value;
+    const option = (pending.options ?? []).find(
+      (opt) => /^q\d+_opt_\d+$/.test(opt.optionId) && opt.name === label,
+    );
+    if (option) return { outcome: { outcome: 'selected', optionId: option.optionId } };
+    return { outcome: { outcome: 'cancelled' } };
+  }
+  if (action === 'decline') {
+    const skip = (pending.options ?? []).find((opt) => /^q\d+_skip$/.test(opt.optionId));
+    if (skip) return { outcome: { outcome: 'selected', optionId: skip.optionId } };
+    return { outcome: { outcome: 'cancelled' } };
+  }
+  return { outcome: { outcome: 'cancelled' } };
+}
+
 interface PendingApproval {
-  kind: 'command' | 'file' | 'permissions' | 'question';
+  kind: 'command' | 'file' | 'permissions' | 'question' | 'tool';
   view: ApprovalView;
   options: PermissionOption[];
+  /** 提问来源：elicitation form / request_permission 兜底桥（决定回编形状）。 */
+  proto?: 'elicitation' | 'permission';
 }
 
 // =============================================================================
@@ -212,6 +274,13 @@ export class KimiAcpRunner extends ConnectionBasedRunner<KimiAcpClient, AcpTrans
         clientCapabilities: {
           fs: { readTextFile: false, writeTextFile: false },
           terminal: false,
+          // AskUserQuestion 走 elicitation form（原生多题+多选；form 失败时
+          // kimi 服务端自动回退 request_permission 桥，客户端两者都处理）。
+          // 注意：ACP SDK 对 elicitation.form 的 zod schema 是对象
+          // （z.record(z.string(), z.any())），布尔 true 会被 kimi 服务端静默
+          // 丢弃 → elicitationForm=false → 多选回退成 request_permission 单选
+          // 桥（勾一个选项即提交）。必须用空对象 {}。
+          elicitation: { form: {} },
         },
       },
     };
@@ -379,7 +448,10 @@ export class KimiAcpRunner extends ConnectionBasedRunner<KimiAcpClient, AcpTrans
     if (!client || !pending) return;
 
     const action = (response as { action?: string })?.action ?? 'decline';
-    const acpResponse = buildApprovalResponse(action, pending);
+    const acpResponse =
+      pending.kind === 'question'
+        ? buildQuestionResponse(action, pending, response)
+        : buildApprovalResponse(action, pending);
     client.respond(requestId, acpResponse);
     this.pendingApprovals.delete(requestId);
     getLogger().info(`[${this.logTag}] approval responded requestId=${requestId} action=${action}`);
@@ -606,6 +678,7 @@ export class KimiAcpRunner extends ConnectionBasedRunner<KimiAcpClient, AcpTrans
           kind: ev.kind,
           view: ev.view,
           options: (params as RequestPermissionParams).options,
+          proto: method === ServerRequestMethod.ELICITATION_CREATE ? 'elicitation' : 'permission',
         });
         getLogger().info(
           `[${this.logTag}] approval requested requestId=${ev.requestId} kind=${ev.kind}`,

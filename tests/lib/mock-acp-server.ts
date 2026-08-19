@@ -25,6 +25,8 @@ export interface MockAcpScenarioOpts {
   sendApproval?: boolean;
   /** (kimi) Send a question elicitation permission request (no toolCall). */
   sendQuestion?: boolean;
+  /** (kimi) Send an elicitation/create form request during the prompt. */
+  sendElicitation?: boolean;
   /** (opencode) Send an fs/write_text_file server request (client must reject). */
   sendFsWrite?: boolean;
   /** (kimi) Exit the process right after session/new (crash recovery test). */
@@ -186,6 +188,47 @@ rl.on('line', (line) => {
       }, delay);
       delay += 40;
     }
+    if (config.sendElicitation) {
+      setTimeout(() => {
+        send({
+          jsonrpc: '2.0', id: 44, method: 'elicitation/create',
+          params: {
+            sessionId: config.sessionId,
+            toolCallId: 'call_q',
+            mode: 'form',
+            message: 'Which database?\\nPick frameworks',
+            requestedSchema: {
+              type: 'object',
+              required: ['q0', 'q1'],
+              properties: {
+                q0: {
+                  type: 'string',
+                  title: 'Setup',
+                  description: '',
+                  oneOf: [
+                    { const: 'PostgreSQL', title: 'PostgreSQL', description: 'Robust' },
+                    { const: 'SQLite', title: 'SQLite', description: 'Lightweight' },
+                  ],
+                },
+                q1: {
+                  type: 'array',
+                  title: 'Frameworks',
+                  description: '',
+                  minItems: 1,
+                  items: {
+                    anyOf: [
+                      { const: 'React', title: 'React' },
+                      { const: 'Vue', title: 'Vue' },
+                    ],
+                  },
+                },
+              },
+            },
+          },
+        });
+      }, delay);
+      delay += 60;
+    }
     if (config.sendFsWrite) {
       setTimeout(() => {
         send({
@@ -273,6 +316,7 @@ export function writeScenario(
       delayMs: opts.delayMs ?? 0,
       sendApproval: opts.sendApproval ?? false,
       sendQuestion: opts.sendQuestion ?? false,
+      sendElicitation: opts.sendElicitation ?? false,
       sendFsWrite: opts.sendFsWrite ?? false,
       crashAfterInit: opts.crashAfterInit ?? false,
       capturePath: opts.capturePath ?? null,
