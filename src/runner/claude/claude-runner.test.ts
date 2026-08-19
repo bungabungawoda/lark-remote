@@ -265,6 +265,37 @@ describe('ClaudeRunner (long-lived interactive session)', () => {
     expect((results[0] as { subtype?: string }).subtype).toBe('success');
   });
 
+  it('test_anchor_exit_plan_mode_yields_tool_approval', async () => {
+    // ExitPlanMode：input 为空对象，语义是「退出计划模式」→ 应映射为
+    // kind:'tool'（含 toolName + reason），而非 command 槽位的 `{}`。
+    const stdinFile = path.join(tmpDir, 'stdin-exit-plan.txt');
+    createMockClaude({ MOCK_SCENARIO: 'approval-exit-plan', MOCK_RECORD_STDIN: stdinFile });
+    const runner = makeRunner({ permissionMode: 'default' });
+    const events: AgentEvent[] = [];
+
+    for await (const ev of runner.run('approve the plan', { cwd: '/tmp' })) {
+      events.push(ev);
+      if (ev.type === 'approval_requested') {
+        await runner.respondApproval(ev.requestId, { action: 'accept' });
+      }
+    }
+
+    const approval = events.find((e) => e.type === 'approval_requested');
+    expect(approval).toBeDefined();
+    if (approval?.type !== 'approval_requested') throw new Error('expected approval_requested');
+    expect(approval.kind).toBe('tool');
+    expect(approval.view.toolName).toBe('ExitPlanMode');
+    expect(approval.view.reason).toContain('实施方案');
+    // 计划审批无「允许所有」语义。
+    expect(approval.view.availableDecisions).toEqual(['accept', 'decline']);
+    await vi.waitFor(() => {
+      const written = fs.readFileSync(stdinFile, 'utf-8');
+      expect(written).toContain('"behavior":"allow"');
+    });
+    const results = events.filter((e) => e.type === 'result');
+    expect(results).toHaveLength(1);
+  });
+
   it('test_anchor_approval_decline_writes_deny', async () => {
     const stdinFile = path.join(tmpDir, 'stdin.txt');
     createMockClaude({ MOCK_SCENARIO: 'approval', MOCK_RECORD_STDIN: stdinFile });

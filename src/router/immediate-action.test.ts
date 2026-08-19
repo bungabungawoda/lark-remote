@@ -109,6 +109,10 @@ describe('isImmediateAction (§9.19)', () => {
       expect(isImmediateAction('approval.answerCustom')).toBe(true);
     });
 
+    it('approval.answerNote should return true (AskUserQuestion 补充说明)', () => {
+      expect(isImmediateAction('approval.answerNote')).toBe(true);
+    });
+
     it('ws.page should return true (pagination is a control operation)', () => {
       expect(isImmediateAction('ws.page')).toBe(true);
     });

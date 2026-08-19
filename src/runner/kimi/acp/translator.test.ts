@@ -391,6 +391,102 @@ describe('KimiAcpTranslator', () => {
     expect(events).toHaveLength(0);
   });
 
+  it('elicitation/create form → question approval with multiSelect + intro', () => {
+    const t = new KimiAcpTranslator();
+    const events = t.handleServerRequest(46, ServerRequestMethod.ELICITATION_CREATE, {
+      sessionId: SESSION_ID,
+      toolCallId: 'call_q',
+      mode: 'form',
+      message: 'Which database?\nPick frameworks',
+      requestedSchema: {
+        type: 'object',
+        required: ['q0', 'q1'],
+        properties: {
+          q0: {
+            type: 'string',
+            title: 'Setup',
+            description: '',
+            oneOf: [
+              { const: 'PostgreSQL', title: 'PostgreSQL', description: 'Robust' },
+              { const: 'SQLite', title: 'SQLite', description: 'Lightweight' },
+            ],
+          },
+          q1: {
+            type: 'array',
+            title: 'Frameworks',
+            description: '',
+            minItems: 1,
+            items: {
+              anyOf: [
+                { const: 'React', title: 'React' },
+                { const: 'Vue', title: 'Vue' },
+              ],
+            },
+          },
+        },
+      },
+    });
+
+    expect(events).toHaveLength(1);
+    const approval = events[0] as ApprovalRequestedEvent;
+    expect(approval.type).toBe('approval_requested');
+    expect(approval.kind).toBe('question');
+    expect(approval.requestId).toBe(46);
+    expect(approval.threadId).toBe(SESSION_ID);
+    expect(approval.view.availableDecisions).toEqual([]);
+    // 题面只在 form message 里合并出现 → 概要行透传（卡片渲染为 intro）
+    expect(approval.view.intro).toBe('Which database?\nPick frameworks');
+    expect(approval.view.questions).toEqual([
+      {
+        question: 'Setup',
+        header: 'Setup',
+        multiSelect: false,
+        isOther: false,
+        options: [
+          { label: 'PostgreSQL', description: 'Robust' },
+          { label: 'SQLite', description: 'Lightweight' },
+        ],
+      },
+      {
+        question: 'Frameworks',
+        header: 'Frameworks',
+        multiSelect: true,
+        isOther: false,
+        options: [{ label: 'React' }, { label: 'Vue' }],
+      },
+    ]);
+    expect(approval.timeoutMs).toBeUndefined();
+  });
+
+  it('session/request_permission AskUserQuestion fallback → question approval', () => {
+    // elicitation/create 失败时 kimi 回退 request_permission 桥：toolCall 标题
+    // AskUserQuestion + q0_opt_* 选项命名空间。必须渲染为提问卡而不是畸形命令卡。
+    const t = new KimiAcpTranslator();
+    const events = t.handleServerRequest(47, ServerRequestMethod.REQUEST_PERMISSION, {
+      sessionId: SESSION_ID,
+      toolCall: {
+        title: 'AskUserQuestion',
+        content: [{ type: 'content', content: { type: 'text', text: 'Which database?' } }],
+      },
+      options: [
+        { optionId: 'q0_opt_0', name: 'PostgreSQL', kind: 'allow_once' },
+        { optionId: 'q0_opt_1', name: 'SQLite', kind: 'allow_once' },
+        { optionId: 'q0_skip', name: 'Skip', kind: 'reject_once' },
+      ],
+    });
+
+    expect(events).toHaveLength(1);
+    const approval = events[0] as ApprovalRequestedEvent;
+    expect(approval.kind).toBe('question');
+    expect(approval.view.questions).toEqual([
+      {
+        question: 'Which database?',
+        isOther: false,
+        options: [{ label: 'PostgreSQL' }, { label: 'SQLite' }],
+      },
+    ]);
+  });
+
   it('unsupported server request methods return empty', () => {
     const t = new KimiAcpTranslator();
     const events = t.handleServerRequest(45, 'unknown/method', {});

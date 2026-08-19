@@ -9,6 +9,8 @@
  * - compact:      user("/compact") → assistant(压缩摘要) → result(success)
  * - approval:     user → assistant(tool_use Bash) → control_request(can_use_tool)
  *                 → (control_response) → user(tool_result) → assistant → result
+ * - approval-exit-plan: user → control_request(can_use_tool, tool_name=ExitPlanMode,
+ *                 input={}) → (control_response) → result
  * - question:     user → control_request(AskUserQuestion, input.questions)
  *                 → (control_response) → result
  * - hang:         init then never respond to user messages
@@ -187,6 +189,44 @@ if (scenario === 'no-stdout') {
       },
     });
   }
+} else if (scenario === 'approval-exit-plan') {
+  // ExitPlanMode：通知型工具，input 为空对象，plan 内容不进 tool input。
+  init();
+  rl.on('line', (line) => {
+    if (recordStdin) fs.appendFileSync(recordStdin, line + '\n');
+    let ev;
+    try {
+      ev = JSON.parse(line);
+    } catch {
+      return;
+    }
+    if (ev.type === 'control_response') {
+      const allowed = ev.response?.response?.behavior === 'allow';
+      emit({
+        type: 'assistant',
+        message: {
+          content: [{ type: 'text', text: allowed ? 'exiting plan mode' : 'plan kept' }],
+        },
+      });
+      result('success');
+      return;
+    }
+    if (ev.type !== 'user') return;
+    emit({
+      type: 'assistant',
+      message: { content: [] },
+    });
+    emit({
+      type: 'control_request',
+      request_id: 'req-exit-plan',
+      request: {
+        subtype: 'can_use_tool',
+        tool_name: 'ExitPlanMode',
+        input: {},
+        description: '已按计划准备好实施方案，请审批',
+      },
+    });
+  });
 } else if (scenario === 'approval-then-question') {
   // accept_all 后紧跟 AskUserQuestion：验证「允许所有」不会把提问也自动放行。
   init();
