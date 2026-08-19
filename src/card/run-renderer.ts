@@ -38,13 +38,20 @@ function measureJson(obj: unknown): number {
 const EMPTY_MD_DIV_BYTES = measureJson(markdownDiv('', 'notation'));
 
 /**
- * Compact 按钮可见性：普通 run（operationKind='turn'）到达任意终态即可压缩。
+ * Compact 按钮可见性：到达任意终态即可压缩。
  * 异常退出（error/interrupted/idle_timeout）时上下文往往更大，更需要压缩后
  * 再继续，因此不再要求 resultSubtype==='success'。compaction 卡
  * （operationKind='compaction'）永不显示，防止递归 Compact。
+ *
+ * 能力门控（compactSupported !== false）与执行侧 `'runCompact' in runner`
+ * 鸭子探测对齐：claude 走 stream-json，不发射 turn_started，operationKind
+ * 恒 undefined——若以 operationKind==='turn' 作门控，claude 终态卡永远拿
+ * 不到按钮（2026-08-19 缺陷）。compaction 卡的「防递归」仍由 operationKind
+ * 保证，两者是不同质的判断。
  */
-function shouldShowCompactButton(state: RunState): boolean {
-  if (state.operationKind !== 'turn') return false;
+function shouldShowCompactButton(state: RunState, options: RunCardRenderOptions): boolean {
+  if (state.operationKind === 'compaction') return false;
+  if (options.compactSupported === false) return false;
   return (
     state.terminal === 'done' ||
     state.terminal === 'error' ||
@@ -120,6 +127,13 @@ export interface RunCardRenderOptions {
    * Defaults to 'claude' when not provided; the bridge passes `config.defaultAgent`.
    */
   agentKind?: string;
+  /**
+   * Whether the terminal-state Compact button may be rendered. Defaults to true.
+   * The bridge passes `runner 有 runCompact`（与 resume 卡 / auto-resume 卡的
+   * hasRunCompact 探测一致），保证「有能力才渲染」：claude（stream-json，
+   * 无 turn_started → operationKind undefined）同样能拿到按钮。
+   */
+  compactSupported?: boolean;
 }
 
 // =============================================================================
@@ -274,15 +288,15 @@ const EXTREME_TIER: BudgetTierConfig = {
 };
 
 /** Bottom action row: stop (if running) + compact (if applicable) + new session (always). */
-function actionRow(state: RunState): object[] {
+function actionRow(state: RunState, options: RunCardRenderOptions): object[] {
   const actionButtons: object[] = [];
   // finalizing 也显示停止按钮（进程未退出，用户可 /stop）
   const showStop = state.terminal === 'running' || state.terminal === 'finalizing';
   if (showStop) {
     actionButtons.push(stopButton(state.runId));
   }
-  // Compact 按钮：普通 turn 到达任意终态即可压缩（含异常退出），compaction 卡除外
-  if (shouldShowCompactButton(state)) {
+  // Compact 按钮：到达任意终态即可压缩（含异常退出），compaction 卡除外
+  if (shouldShowCompactButton(state, options)) {
     actionButtons.push(compactButton(state.runId));
   }
   actionButtons.push(newSessionButton());
@@ -416,7 +430,7 @@ function buildFallbackElements(
   }
 
   elements.push(...buildSummaryContent(state));
-  elements.push(...actionRow(state));
+  elements.push(...actionRow(state, options));
   elements.push(...approvalArea(state));
 
   return elements;
@@ -472,7 +486,7 @@ function statusRow(state: RunState): object {
  * stop while running/finalizing). No block content is rendered, so the size is
  * bounded by static structure regardless of input — closing the safety-net gap.
  */
-function buildSkeletonElements(state: RunState): object[] {
+function buildSkeletonElements(state: RunState, options: RunCardRenderOptions): object[] {
   const elements: object[] = [];
 
   elements.push(statusRow(state));
@@ -485,7 +499,7 @@ function buildSkeletonElements(state: RunState): object[] {
 
   // Bottom action row: stop (if running/finalizing) + compact (if applicable) + new session (always).
   // Degraded paths must keep the action buttons reachable (design constraint).
-  elements.push(...actionRow(state));
+  elements.push(...actionRow(state, options));
 
   return elements;
 }
@@ -564,6 +578,9 @@ export function estimateCardBytes(
   const actionButtons: object[] = [];
   if (state.terminal === 'running' || state.terminal === 'finalizing') {
     actionButtons.push(stopButton(state.runId));
+  }
+  if (shouldShowCompactButton(state, options)) {
+    actionButtons.push(compactButton(state.runId));
   }
   actionButtons.push(newSessionButton());
   total += measureJson([
@@ -671,7 +688,7 @@ export function renderRunCard(state: RunState, options: RunCardRenderOptions = {
       statusRow(state),
       ...buildChronologicalContent(state, options, prepared, groups),
       ...buildSummaryContent(state),
-      ...actionRow(state),
+      ...actionRow(state, options),
       ...approvalArea(state),
     ];
 
@@ -698,7 +715,7 @@ export function renderRunCard(state: RunState, options: RunCardRenderOptions = {
     return extremeCard;
   }
 
-  const skeletonCard = assembleRunCard(state, options, buildSkeletonElements(state));
+  const skeletonCard = assembleRunCard(state, options, buildSkeletonElements(state, options));
   // skeleton 卡是静态结构，理论上必 ≤28KB；保留兜底断言以防未来结构膨胀
   if (Buffer.byteLength(JSON.stringify(skeletonCard), 'utf8') <= CARD_BUDGET_BYTES) {
     return skeletonCard;

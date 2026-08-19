@@ -6,7 +6,7 @@
 import { describe, it, expect } from 'vitest';
 import { NotificationMethod, ServerRequestMethod } from './protocol-types.js';
 import { CodexAppServerTranslator } from './translator.js';
-import type { AgentEvent, ApprovalView } from '../../types.js';
+import type { AgentEvent, ApprovalRequestedEvent, ApprovalView } from '../../types.js';
 
 describe('Codex App Server Runner', () => {
   describe('module imports', () => {
@@ -698,6 +698,98 @@ describe('Codex App Server Runner', () => {
         ]);
       });
     });
+
+    describe('request_user_input server request', () => {
+      it('test_anchor_request_user_input_surfaces_question_approval', () => {
+        const translator = new CodexAppServerTranslator();
+        const events = translator.handleServerRequest(9, 'item/tool/requestUserInput', {
+          threadId: 'th-aaa-222',
+          turnId: 'tn-222',
+          itemId: 'item-9',
+          questions: [
+            {
+              id: 'db',
+              header: 'Setup',
+              question: 'Which database?',
+              isOther: false,
+              isSecret: false,
+              options: [
+                { label: 'PostgreSQL', description: 'Robust' },
+                { label: 'SQLite', description: 'Lightweight' },
+              ],
+            },
+            {
+              id: 'stack',
+              header: 'Stack',
+              question: 'Pick frameworks',
+              isOther: true,
+              isSecret: false,
+              options: [{ label: 'React' }, { label: 'Vue' }],
+            },
+          ],
+          autoResolutionMs: 120000,
+        });
+
+        expect(events).toHaveLength(1);
+        const event = events[0] as unknown as ApprovalRequestedEvent;
+        expect(event.type).toBe('approval_requested');
+        expect(event.kind).toBe('question');
+        expect(event.requestId).toBe(9);
+        expect(event.threadId).toBe('th-aaa-222');
+        // autoResolutionMs 必须透传为 per-request 超时（coordinator 优先使用）
+        expect(event.timeoutMs).toBe(120000);
+        expect(event.view.availableDecisions).toEqual([]);
+        expect(event.view.questions).toEqual([
+          {
+            id: 'db',
+            header: 'Setup',
+            question: 'Which database?',
+            isOther: false,
+            isSecret: false,
+            // Codex user_note：选项题渲染「补充说明（可选）」输入
+            allowNote: true,
+            options: [
+              { label: 'PostgreSQL', description: 'Robust' },
+              { label: 'SQLite', description: 'Lightweight' },
+            ],
+          },
+          {
+            id: 'stack',
+            header: 'Stack',
+            question: 'Pick frameworks',
+            isOther: true,
+            isSecret: false,
+            allowNote: true,
+            options: [{ label: 'React' }, { label: 'Vue' }],
+          },
+        ]);
+      });
+
+      it('test_anchor_request_user_input_null_options_is_free_text_question', () => {
+        const translator = new CodexAppServerTranslator();
+        const events = translator.handleServerRequest(10, 'item/tool/requestUserInput', {
+          threadId: 'th-aaa-222',
+          turnId: 'tn-222',
+          itemId: 'item-10',
+          questions: [
+            {
+              id: 'msg',
+              header: '',
+              question: 'Commit message',
+              isOther: false,
+              isSecret: false,
+              options: null,
+            },
+          ],
+          autoResolutionMs: null,
+        });
+
+        expect(events).toHaveLength(1);
+        const event = events[0] as unknown as ApprovalRequestedEvent;
+        expect(event.view.questions?.[0]?.options).toEqual([]);
+        expect(event.timeoutMs).toBeUndefined();
+      });
+    });
   });
 
   describe('protocol-type constants', () => {
@@ -719,7 +811,8 @@ describe('Codex App Server Runner', () => {
       expect(methods).toContain('item/commandExecution/requestApproval');
       expect(methods).toContain('item/fileChange/requestApproval');
       expect(methods).toContain('item/permissions/requestApproval');
-      expect(methods.length).toBe(3);
+      expect(methods).toContain('item/tool/requestUserInput');
+      expect(methods.length).toBe(4);
     });
   });
 });

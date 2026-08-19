@@ -115,6 +115,8 @@ export interface ThreadResumeParams {
   modelProvider?: string | null;
   approvalPolicy?: AskForApproval;
   sandbox?: SandboxMode;
+  /** Configuration overrides for the resumed thread (codex v2 wire field). */
+  config?: Record<string, unknown> | null;
 }
 
 export interface ThreadResumeResponse {
@@ -524,6 +526,7 @@ export const ServerRequestMethod = {
   COMMAND_EXECUTION_APPROVAL: 'item/commandExecution/requestApproval',
   FILE_CHANGE_APPROVAL: 'item/fileChange/requestApproval',
   PERMISSIONS_APPROVAL: 'item/permissions/requestApproval',
+  REQUEST_USER_INPUT: 'item/tool/requestUserInput',
 } as const;
 
 export interface NetworkApprovalContext {
@@ -622,9 +625,45 @@ export interface PermissionsRequestApprovalResponse {
   scope?: 'turn' | 'session';
 }
 
+/**
+ * Codex AskUserQuestion（request_user_input）协议形状。
+ * 来源：codex-rs/codex-rs/protocol/src/request_user_input.rs +
+ * app-server-protocol v2/item.rs ToolRequestUserInput*（EXPERIMENTAL）。
+ * isOther=true → 渲染层提供自定义答案输入；isSecret 仅影响展示（按普通输入
+ * 处理）；options 为 null/空 → 自由文本题。
+ */
+export interface ToolRequestUserInputOption {
+  label: string;
+  description: string;
+}
+
+export interface ToolRequestUserInputQuestion {
+  id: string;
+  header: string;
+  question: string;
+  isOther: boolean;
+  isSecret: boolean;
+  options: ToolRequestUserInputOption[] | null;
+}
+
+export interface ToolRequestUserInputParams {
+  threadId: string;
+  turnId: string;
+  itemId: string;
+  questions: ToolRequestUserInputQuestion[];
+  autoResolutionMs?: number | null;
+}
+
+export interface ToolRequestUserInputAnswer {
+  answers: string[];
+}
+
+export interface ToolRequestUserInputResponse {
+  answers: Record<string, ToolRequestUserInputAnswer>;
+}
+
 /** Unsupported / ignored server request methods. */
 export const UNSUPPORTED_SERVER_REQUEST_METHODS = new Set<string>([
-  'item/tool/requestUserInput',
   'mcpServer/elicitation/request',
   'item/tool/call',
   'account/chatgptAuthTokens/refresh',

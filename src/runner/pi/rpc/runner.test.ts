@@ -21,6 +21,7 @@ const config = JSON.parse(process.env.MOCK_PI_SCENARIO || '{}');
 const readline = require('node:readline');
 const rl = readline.createInterface({ input: process.stdin });
 const send = (o) => process.stdout.write(JSON.stringify(o) + '\\n');
+const sendSettled = () => send({ type: 'agent_settled' });
 rl.on('line', (line) => {
   let msg; try { msg = JSON.parse(line); } catch { return; }
   if (msg.type === 'get_state') {
@@ -33,7 +34,7 @@ rl.on('line', (line) => {
       send({ type: 'message_update', assistantMessageEvent: { type: 'text_delta', contentIndex: 0, delta: 'Hello' } });
       send({ type: 'message_update', assistantMessageEvent: { type: 'text_end', contentIndex: 0, content: 'Hello' } });
       send({ type: 'message_end', message: { role: 'assistant', content: [{ type: 'text', text: 'Hello' }], usage: { input: 100, output: 20 } } });
-      send({ type: 'agent_settled' });
+      sendSettled();
     }
   } else if (msg.type === 'compact') {
     send({ type: 'compaction_start', reason: 'manual' });
