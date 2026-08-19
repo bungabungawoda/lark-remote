@@ -68,6 +68,7 @@ pnpm-lock.yaml
 # 架构设计文档（含内部实现细节，不入库）
 docs/**/codex-app-server-integration.md
 docs/**/kimi-acp-integration.md
+docs/**/dsh-config.md
 
 # 临时执行 playbook（阶段任务书，执行完即废，不入库）
 playbook*.md

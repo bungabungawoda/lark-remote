@@ -32,11 +32,18 @@ export interface ApprovalRequestedEvent {
   type: 'approval_requested';
   /** JSON-RPC id of the server request. Wire type is string | integer — keep raw. */
   requestId: number | string;
-  kind: 'command' | 'file' | 'permissions' | 'question';
+  kind: 'command' | 'file' | 'permissions' | 'question' | 'tool';
   threadId: string;
   turnId: string;
   itemId: string;
   view: ApprovalView;
+  /**
+   * Per-request 审批超时覆盖（毫秒）。由 runner 在翻译时填入
+   * （Codex autoResolutionMs），coordinator 优先使用；
+   * 缺省回落 run 级默认超时。放在事件上而非桥按 agentKind 分支，
+   * 保证公共层无 agent 分支。
+   */
+  timeoutMs?: number;
   timestamp?: string;
 }
 
@@ -71,21 +78,54 @@ export type ApprovalAction =
   | { action: 'accept_all' }
   | { action: 'decline' }
   | { action: 'cancel' }
-  /** Claude AskUserQuestion 答案（question → label 或 label[]）。 */
-  | { action: 'answer'; answers: Record<string, string | string[]> };
+  /**
+   * AskUserQuestion 答案（question → label 或 label[]）。
+   * notes：Codex user_note 补充说明（question → 文本），runner 编码为
+   * "user_note: <text>" 条目；其他 agent 忽略该字段。
+   */
+  | {
+      action: 'answer';
+      answers: Record<string, string | string[]>;
+      notes?: Record<string, string>;
+    };
 
-/** Claude Code AskUserQuestion 的单个选项（control_request input.questions[].options[]）。 */
-export interface ClaudeUserQuestionOption {
+/** AskUserQuestion 公共契约（Agent 无关）的单个选项。 */
+export interface UserQuestionOption {
   label: string;
   description?: string;
 }
 
-/** Claude Code AskUserQuestion 的单个问题（control_request input.questions[]）。 */
-export interface ClaudeUserQuestion {
+/**
+ * AskUserQuestion 公共契约（Agent 无关）的单个问题。
+ *
+ * 接入约定（新 agent 接入 AskUserQuestion 时在这里扩展，禁止在 coordinator /
+ * renderer / router 里写 agent 分支）：
+ * 1. 各 agent runner 把协议提问翻译为 `ApprovalView{ kind:'question', questions }`；
+ * 2. 用户回答经 ApprovalCoordinator 收集，以 `ApprovalAction{action:'answer',
+ *    answers:{问题文本: string|string[]}}` 回传 runner；
+ * 3. runner 侧把文本 key 答案翻译回自己协议的 shape（Claude 直接用文本 key；
+ *    Codex 需按问题 id 映射）。
+ */
+export interface UserQuestion {
+  /** Agent 侧问题唯一标识（Codex request_user_input 的 id 预留；Claude 无此字段）。 */
+  id?: string;
   question: string;
   header?: string;
   multiSelect?: boolean;
-  options: ClaudeUserQuestionOption[];
+  options: UserQuestionOption[];
+  /** 是否允许自定义答案（Codex isOther 预留；当前单选渲染层恒提供 Other 输入）。 */
+  isOther?: boolean;
+  /** 敏感输入（Codex isSecret 预留）。 */
+  isSecret?: boolean;
+  /** 自由文本题的输入框占位提示（渲染层自由文本题 input）。 */
+  placeholder?: string;
+  /**
+   * 是否渲染「补充说明（可选）」输入（Codex user_note；数据驱动无 agent 分支）。
+   * note 是选项之外的附加文本，随答案提交，不单独构成答案。
+   */
+  allowNote?: boolean;
+  /** 当前已填写的补充说明（卡片回显；coordinator answerNote 回流）。 */
+  note?: string;
   /**
    * 当前已选选项 label（卡片渲染与多选切换用；单选在协调器内即时提交）。
    * 与 permissions.items.selected 同模式：协调器原地更新后以
@@ -96,10 +136,24 @@ export interface ClaudeUserQuestion {
 
 export interface ApprovalView {
   requestId: number | string;
-  kind: 'command' | 'file' | 'permissions' | 'question';
+  kind: 'command' | 'file' | 'permissions' | 'question' | 'tool';
   reason?: string;
+  /**
+   * 提问卡顶部概要行（数据驱动，无 agent 分支）：Kimi elicitation form 的
+   * 题面只在 form 级 message 里合并出现，逐字段 title 可能只是短 header，
+   * 概要行用于展示完整题干。
+   */
+  intro?: string;
   command?: string;
   commandCwd?: string;
+  /**
+   * 被审批的工具名（kind === 'tool' 时展示，如 ExitPlanMode）。非命令工具的
+   * 权限请求（plan 退出/通知型工具）input 无 command 语义，用工具名 + reason
+   * 表达审批内容，避免落入 command 槽位显示无意义 `{}`。
+   */
+  toolName?: string;
+  /** 原始 input 的 JSON 字符串（kind === 'tool' 且 input 非空时展示）。 */
+  toolInput?: string;
   fileChanges?: Array<{ path: string; kind: 'add' | 'update' | 'delete'; diff?: string }>;
   permissions?: {
     items: Array<{
@@ -110,7 +164,7 @@ export interface ApprovalView {
     }>;
   };
   /** Claude AskUserQuestion 问题列表（kind === 'question' 时存在）。 */
-  questions?: ClaudeUserQuestion[];
+  questions?: UserQuestion[];
   availableDecisions: string[];
   /** Raw payloads for structured decisions (e.g. acceptWithExecpolicyAmendment). */
   decisionPayloads?: Record<string, unknown>;
@@ -311,13 +365,15 @@ export interface Runner {
 // Multi-Agent Adapter Types
 // =============================================================================
 
-export type AgentKind = 'claude' | 'codex' | 'opencode' | 'pi' | 'kimi';
+export type AgentKind = 'claude' | 'codex' | 'opencode' | 'pi' | 'kimi' | 'dsh';
 
 /** Unified session descriptor returned by every AgentSessionReader. */
 export interface AgentSession {
   sessionId: string;
   summary: string;
   mtime: number;
+  /** DSH：session 创建时固定的 preset；其他 agent 无此概念（undefined）。 */
+  agentPreset?: string;
 }
 
 /** A single renderable event from session history. */

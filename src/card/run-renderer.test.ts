@@ -99,6 +99,45 @@ describe('renderRunCard', () => {
     expect(serialized).not.toContain('echo `id`');
   });
 
+  it('test_anchor_exit_plan_mode_approval_renders_tool_kind_v2', () => {
+    // ExitPlanMode：kind:'tool'，渲染「📋 计划审批」+ 工具名 + reason，
+    // 不落入 command 槽位显示无意义 `{}`，且无「允许所有」按钮。
+    let state = createInitialRunState('run-exit-plan');
+    state = reduceRunState(state, {
+      type: 'approval_requested',
+      requestId: 47,
+      kind: 'tool',
+      threadId: 'th-plan-1',
+      turnId: 'tn-plan-1',
+      itemId: 'item-plan-1',
+      view: {
+        requestId: 47,
+        kind: 'tool',
+        toolName: 'ExitPlanMode',
+        reason: '已按计划准备好实施方案，请审批',
+        availableDecisions: ['accept', 'decline'],
+      },
+    } as never);
+
+    const card = renderRunCard(state) as { schema: string };
+    expect(card.schema).toBe('2.0');
+    const serialized = JSON.stringify(card);
+    expect(serialized).toContain('计划审批');
+    expect(serialized).toContain('ExitPlanMode');
+    expect(serialized).toContain('实施方案');
+    expect(serialized).not.toContain('{}');
+    expect(serialized).not.toContain('允许所有');
+    expect(serialized).not.toMatch(/"tag"\s*:\s*"action"[^}]*"actions"/);
+
+    // approval_resolved 清除审批区域
+    state = reduceRunState(state, {
+      type: 'approval_resolved',
+      requestId: 47,
+      outcome: 'resolved',
+    } as never);
+    expect(JSON.stringify(renderRunCard(state))).not.toContain('计划审批');
+  });
+
   it('test_anchor_ask_user_question_renders_options_v2_without_v1_container', () => {
     let state = createInitialRunState('run-question');
     state = reduceRunState(state, {
@@ -146,6 +185,59 @@ describe('renderRunCard', () => {
     expect(serialized).not.toMatch(/"tag"\s*:\s*"action"[^}]*"actions"/);
   });
 
+  it('test_anchor_ask_user_question_option_row_left_button_right_description_with_distinct_icons', () => {
+    // UI 整改：每个选项一行（column_set），左按钮右描述，按钮固定宽度保证
+    // 列对齐；单选/多选图标区分（单选 ⚪/🔵，多选 ⬜/☑️）。
+    let state = createInitialRunState('run-question-ui');
+    state = reduceRunState(state, {
+      type: 'approval_requested',
+      requestId: 50,
+      kind: 'question',
+      threadId: 'th-ui-1',
+      turnId: 'tn-ui-1',
+      itemId: 'item-ui-1',
+      view: {
+        requestId: 50,
+        kind: 'question',
+        questions: [
+          {
+            question: 'Pick a color',
+            header: 'Color',
+            options: [{ label: 'Red' }, { label: 'Blue', description: 'Cool color' }],
+            selected: ['Red'],
+          },
+          {
+            question: 'Pick toppings',
+            header: 'Toppings',
+            multiSelect: true,
+            options: [{ label: 'Cheese' }, { label: 'Bacon' }],
+            selected: ['Cheese'],
+          },
+        ],
+        availableDecisions: [],
+      },
+    } as never);
+
+    const card = renderRunCard(state) as { schema: string };
+    expect(card.schema).toBe('2.0');
+    const serialized = JSON.stringify(card);
+    // 每个选项一行 column_set（左按钮右描述）
+    expect(serialized).toContain('"tag":"column_set"');
+    expect(serialized).toContain('"width":"100px"');
+    expect(serialized).toContain('"width":"weighted"');
+    // 单选图标：已选 🔵、未选 ⚪
+    expect(serialized).toContain('🔵 Red');
+    expect(serialized).toContain('⚪ Blue');
+    // 多选图标：已选 ☑️、未选 ⬜
+    expect(serialized).toContain('☑️ Cheese');
+    expect(serialized).toContain('⬜ Bacon');
+    // 按钮文案与提交按钮保留
+    expect(serialized).toContain('取消选择');
+    expect(serialized).toContain('approval.answerSubmit');
+    // 200861 铁律：不得出现 V1 action 容器
+    expect(serialized).not.toMatch(/"tag"\s*:\s*"action"[^}]*"actions"/);
+  });
+
   it('test_anchor_ask_user_question_custom_answer_selection_visible', () => {
     // review P3：自定义答案（Other）的选中态必须可见——选项按钮无法表示
     // 自由文本，单独展示已选文本，避免「点了没反应」的困惑。
@@ -176,6 +268,277 @@ describe('renderRunCard', () => {
     expect(card.schema).toBe('2.0');
     const serialized = JSON.stringify(card);
     expect(serialized).toContain('✍️ 自定义答案：自定义紫色');
+    expect(serialized).not.toMatch(/"tag"\s*:\s*"action"[^}]*"actions"/);
+  });
+
+  it('test_anchor_ask_user_question_free_text_renders_input_without_options', () => {
+    // 自由文本题（Codex options:null / Pi extension input）：options 为空时
+    // 不渲染选项行，渲染题面 + 输入框（placeholder 透传）+ 提交走 answerCustom。
+    let state = createInitialRunState('run-question-free-text');
+    state = reduceRunState(state, {
+      type: 'approval_requested',
+      requestId: 60,
+      kind: 'question',
+      threadId: 'th-q-ft',
+      turnId: 'tn-q-ft',
+      itemId: 'item-q-ft',
+      view: {
+        requestId: 60,
+        kind: 'question',
+        questions: [
+          {
+            question: 'Commit message',
+            placeholder: 'feat: ...',
+            options: [],
+          },
+        ],
+        availableDecisions: [],
+      },
+    } as never);
+
+    const serialized = JSON.stringify(renderRunCard(state));
+    expect(serialized).toContain('需要你回答');
+    expect(serialized).toContain('Commit message');
+    expect(serialized).toContain('feat: ...');
+    expect(serialized).toContain('approval.answerCustom');
+    expect(serialized).toContain('"tag":"input"');
+    // 无选项 → 不渲染选项行按钮
+    expect(serialized).not.toContain('"cmd":"approval.answer"');
+    expect(serialized).not.toContain('"option":"');
+    expect(serialized).not.toMatch(/"tag"\s*:\s*"action"[^}]*"actions"/);
+  });
+
+  it('test_anchor_ask_user_question_free_text_echoes_answered_text', () => {
+    // 多题场景：自由文本题已答后（selected 有值）卡片回显已答文本，
+    // 避免 input_value 不跨卡保留导致「答了看不到」。
+    let state = createInitialRunState('run-question-free-text-echo');
+    state = reduceRunState(state, {
+      type: 'approval_requested',
+      requestId: 64,
+      kind: 'question',
+      threadId: 'th-q-ft-echo',
+      turnId: 'tn-q-ft-echo',
+      itemId: 'item-q-ft-echo',
+      view: {
+        requestId: 64,
+        kind: 'question',
+        questions: [
+          {
+            question: 'Commit message',
+            options: [],
+            selected: ['feat: ask-user-question'],
+          },
+          {
+            question: 'Pick a color',
+            options: [{ label: 'Red' }, { label: 'Blue' }],
+          },
+        ],
+        availableDecisions: [],
+      },
+    } as never);
+
+    const serialized = JSON.stringify(renderRunCard(state));
+    expect(serialized).toContain('✍️ 已答：feat: ask-user-question');
+    expect(serialized).not.toMatch(/"tag"\s*:\s*"action"[^}]*"actions"/);
+  });
+
+  it('test_anchor_ask_user_question_note_input_gated_by_allowNote', () => {
+    // Codex user_note：allowNote=true 渲染「补充说明（可选）」输入 + 已填回显；
+    // 未设置（Claude/Kimi/Pi）不渲染。
+    let withNote = createInitialRunState('run-question-note');
+    withNote = reduceRunState(withNote, {
+      type: 'approval_requested',
+      requestId: 65,
+      kind: 'question',
+      threadId: 'th-q-note',
+      turnId: 'tn-q-note',
+      itemId: 'item-q-note',
+      view: {
+        requestId: 65,
+        kind: 'question',
+        questions: [
+          {
+            question: 'Which database?',
+            allowNote: true,
+            note: '先验证 PostgreSQL 17 兼容性',
+            options: [{ label: 'PostgreSQL' }, { label: 'SQLite' }],
+          },
+        ],
+        availableDecisions: [],
+      },
+    } as never);
+    const withNoteSerialized = JSON.stringify(renderRunCard(withNote));
+    expect(withNoteSerialized).toContain('approval.answerNote');
+    expect(withNoteSerialized).toContain('补充说明（可选）');
+    expect(withNoteSerialized).toContain('📝 先验证 PostgreSQL 17 兼容性');
+    expect(withNoteSerialized).not.toMatch(/"tag"\s*:\s*"action"[^}]*"actions"/);
+
+    let withoutNote = createInitialRunState('run-question-no-note');
+    withoutNote = reduceRunState(withoutNote, {
+      type: 'approval_requested',
+      requestId: 66,
+      kind: 'question',
+      threadId: 'th-q-no-note',
+      turnId: 'tn-q-no-note',
+      itemId: 'item-q-no-note',
+      view: {
+        requestId: 66,
+        kind: 'question',
+        questions: [
+          {
+            question: 'Which database?',
+            options: [{ label: 'PostgreSQL' }, { label: 'SQLite' }],
+          },
+        ],
+        availableDecisions: [],
+      },
+    } as never);
+    expect(JSON.stringify(renderRunCard(withoutNote))).not.toContain('approval.answerNote');
+  });
+
+  it('test_anchor_ask_user_question_input_names_unique_when_other_and_note_coexist', () => {
+    // 2026-08-19 线上 P0：单选选项题同时渲染 Other 输入 + Note 输入，二者 name
+    // 均为 answer-custom-0-0 → 飞书 ErrCode 11310 拒绝整卡，提问卡静默失败致
+    // run 挂起。回归：name 必须按 cmd 区分，同一题多个 input 互不重复。
+    const cases = [
+      {
+        name: 'single-select-options-other-and-note',
+        questions: [
+          {
+            question: 'Which database?',
+            allowNote: true,
+            options: [{ label: 'PostgreSQL' }, { label: 'SQLite' }],
+          },
+        ],
+      },
+      {
+        name: 'multi-select-options-note',
+        questions: [
+          {
+            question: 'Pick toppings',
+            multiSelect: true,
+            allowNote: true,
+            options: [{ label: 'Cheese' }, { label: 'Bacon' }],
+            selected: ['Cheese'],
+          },
+        ],
+      },
+      {
+        name: 'free-text',
+        questions: [
+          {
+            question: 'Commit message',
+            placeholder: 'feat: ...',
+            options: [],
+          },
+        ],
+      },
+    ];
+
+    for (const c of cases) {
+      let state = createInitialRunState(`run-q-unique-${c.name}`);
+      state = reduceRunState(state, {
+        type: 'approval_requested',
+        requestId: 70,
+        kind: 'question',
+        threadId: 'th-q-unique',
+        turnId: 'tn-q-unique',
+        itemId: 'item-q-unique',
+        view: { requestId: 70, kind: 'question', questions: c.questions, availableDecisions: [] },
+      } as never);
+      const serialized = JSON.stringify(renderRunCard(state));
+      // 提取所有 input 元素的 name，断言互不重复（避免 11310）。
+      const names: string[] = [];
+      const re = /"tag":"input","name":"([^"]+)"/g;
+      let m: RegExpExecArray | null;
+      while ((m = re.exec(serialized)) !== null) names.push(m[1]);
+      const unique = new Set(names);
+      expect(names.length).toBe(unique.size);
+      expect(names.length).toBeGreaterThan(0);
+    }
+  });
+
+  it('test_anchor_ask_user_question_other_input_gated_by_isOther', () => {
+    // Other 输入按 isOther !== false 显隐：Kimi form 会丢弃非声明选项值，
+    // 翻译时置 isOther=false 隐藏输入；未设置（Claude）保持默认显示。
+    let hidden = createInitialRunState('run-question-no-other');
+    hidden = reduceRunState(hidden, {
+      type: 'approval_requested',
+      requestId: 61,
+      kind: 'question',
+      threadId: 'th-q-no-other',
+      turnId: 'tn-q-no-other',
+      itemId: 'item-q-no-other',
+      view: {
+        requestId: 61,
+        kind: 'question',
+        questions: [
+          {
+            question: 'Which database?',
+            isOther: false,
+            options: [{ label: 'PostgreSQL' }, { label: 'SQLite' }],
+          },
+        ],
+        availableDecisions: [],
+      },
+    } as never);
+    const hiddenSerialized = JSON.stringify(renderRunCard(hidden));
+    expect(hiddenSerialized).not.toContain('approval.answerCustom');
+
+    let shown = createInitialRunState('run-question-other-default');
+    shown = reduceRunState(shown, {
+      type: 'approval_requested',
+      requestId: 62,
+      kind: 'question',
+      threadId: 'th-q-other',
+      turnId: 'tn-q-other',
+      itemId: 'item-q-other',
+      view: {
+        requestId: 62,
+        kind: 'question',
+        questions: [
+          {
+            question: 'Which database?',
+            options: [{ label: 'PostgreSQL' }, { label: 'SQLite' }],
+          },
+        ],
+        availableDecisions: [],
+      },
+    } as never);
+    const shownSerialized = JSON.stringify(renderRunCard(shown));
+    expect(shownSerialized).toContain('approval.answerCustom');
+    expect(shownSerialized).not.toMatch(/"tag"\s*:\s*"action"[^}]*"actions"/);
+  });
+
+  it('test_anchor_ask_user_question_renders_skip_button_via_approval_respond', () => {
+    // 提问卡底部统一「⏭️ 跳过回答」：走现有 approval.respond + decision=decline，
+    // runner 按协议映射跳过语义（Claude deny / Codex 空 answers / Kimi decline /
+    // Pi cancelled|confirmed:false）。
+    let state = createInitialRunState('run-question-skip');
+    state = reduceRunState(state, {
+      type: 'approval_requested',
+      requestId: 63,
+      kind: 'question',
+      threadId: 'th-q-skip',
+      turnId: 'tn-q-skip',
+      itemId: 'item-q-skip',
+      view: {
+        requestId: 63,
+        kind: 'question',
+        questions: [
+          {
+            question: 'Which database?',
+            options: [{ label: 'PostgreSQL' }, { label: 'SQLite' }],
+          },
+        ],
+        availableDecisions: [],
+      },
+    } as never);
+
+    const serialized = JSON.stringify(renderRunCard(state));
+    expect(serialized).toContain('跳过回答');
+    expect(serialized).toContain('approval.respond');
+    expect(serialized).toContain('"decision":"decline"');
     expect(serialized).not.toMatch(/"tag"\s*:\s*"action"[^}]*"actions"/);
   });
 
@@ -1582,6 +1945,27 @@ describe('renderRunCard (CardKit 2.0)', () => {
     state = finishRun(state, 'done', { resultSubtype: 'success' });
     const json = JSON.stringify(renderRunCard(state));
     expect(json).not.toContain('"cmd":"codex.compact"');
+  });
+
+  it('claude stream-json run (no turn_started) shows compact button on terminal state', () => {
+    // claude 走 stream-json，从不发射 turn_started → operationKind 恒 undefined。
+    // 回归：2026-08-19 缺陷——shouldShowCompactButton 以 operationKind==='turn'
+    // 作门控，claude 终态卡永远拿不到 Compact 按钮（只有 resume 卡有）。能力
+    // 门控改为 compactSupported 后，bridge 传 runner 有 runCompact → 按钮出现。
+    let state = createInitialRunState('run-claude-compact');
+    state = finishRun(state, 'done', { resultSubtype: 'success' });
+    expect(state.operationKind).toBeUndefined();
+    const json = JSON.stringify(renderRunCard(state, { compactSupported: true }));
+    expect(json).toContain('"cmd":"codex.compact"');
+    expect(json).toContain('"cmd":"new-session"');
+  });
+
+  it('claude run card hides compact button when runner lacks runCompact', () => {
+    let state = createInitialRunState('run-claude-no-cap');
+    state = finishRun(state, 'done', { resultSubtype: 'success' });
+    const json = JSON.stringify(renderRunCard(state, { compactSupported: false }));
+    expect(json).not.toContain('"cmd":"codex.compact"');
+    expect(json).toContain('"cmd":"new-session"');
   });
 
   it('running turn has no compact button yet', () => {
