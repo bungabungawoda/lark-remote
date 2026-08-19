@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -13,6 +13,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.restoreAllMocks();
   fs.rmSync(tmpDir, { recursive: true, force: true });
 });
 
@@ -192,6 +193,23 @@ describe('WorkspaceStore', () => {
     const store = new WorkspaceStore(workspaceFile);
     // Should not throw
     expect(() => store.touch('nonexistent')).not.toThrow();
+  });
+
+  it('keeps recent order strict when saves happen in the same millisecond', () => {
+    vi.spyOn(Date, 'now').mockReturnValue(1750000000000);
+    const store = new WorkspaceStore(workspaceFile);
+    store.save('alpha', '/tmp/alpha');
+    store.save('first', '/tmp/first');
+    store.save('second', '/tmp/second');
+
+    const byName = new Map(store.list().map((e) => [e.name, e.lastUsedAt]));
+    expect(byName.get('second')!).toBeGreaterThan(byName.get('first')!);
+    expect(byName.get('first')!).toBeGreaterThan(byName.get('alpha')!);
+
+    // Use "first" in the same millisecond — it should become strictly most recent.
+    store.touch('first');
+    const afterTouch = new Map(store.list().map((e) => [e.name, e.lastUsedAt]));
+    expect(afterTouch.get('first')!).toBeGreaterThan(afterTouch.get('second')!);
   });
 
   it('save() stamps lastUsedAt (save 即视为使用)', () => {
