@@ -17,6 +17,8 @@ export const CLAUDE_EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'] as const
  * Claude 官方 --permission-mode 枚举（claude --help 输出，2026-08 实测）。
  * 额外支持 'default'：Claude settings.json 的官方未设置值，等价于不传
  * --permission-mode（交互式默认：高风险工具逐个询问）。
+ * 'manual' 是 'default' 的别名（claude CLI 等价），schema 保留以向后兼容旧配置，
+ * 但 UI 下拉不展示（见 router/config/claude.ts）。
  */
 export const CLAUDE_PERMISSION_MODES = [
   'default',
@@ -36,7 +38,9 @@ const DEFAULTS = {
   CLAUDE_MODEL: 'claude-opus-4-8',
   STOP_GRACE_MS: 5000,
   IDLE_WATCHDOG_MINUTES: 15,
-  TURN_IDLE_TIMEOUT_MINUTES: 10,
+  /** ACP/app-server turn idle 超时默认 30 分钟：Kimi/opencode/codex 常因
+   *  等待 SubAgent 或长思考长时间静默，10 分钟会误杀正常进行中的 run。 */
+  TURN_IDLE_TIMEOUT_MINUTES: 30,
   /** 审批超时默认 5 分钟（对齐 codex 红线：勿随意改短）。 */
   APPROVAL_TIMEOUT_MS: 5 * 60 * 1000,
   /** Claude 会话级空闲回收默认 30 分钟（对齐 codex appServer.idleTtlMs）。 */
@@ -176,6 +180,29 @@ const KimiConfigSchema = z.object({
     .optional(),
 });
 
+/** DSH (DeepSeek Harness) Web Host default base URL. */
+export const DEFAULT_DSH_HOST = 'http://127.0.0.1:3080';
+
+/** DSH (DeepSeek Harness) Web Host connection config. */
+const DshConfigSchema = z.object({
+  /** DSH Web Host base URL (no auth, local). */
+  host: z.string().url().default(DEFAULT_DSH_HOST),
+  /**
+   * Session preset（agentPreset）。preset 在 session 创建时固定，中途切换会被
+   * 服务端拒绝（agent-preset-conflict）。留空 = 跟随服务端默认（不传 agentPreset）。
+   * 枚举不在此硬编码：preset 清单随 DSH profile bundle 变化，合法性由配置卡下拉
+   * 控制 + 运行时 DSH API 报错兜底。
+   */
+  agentPreset: z.string().optional(),
+  /** 模型 ID。留空 = 跟随服务端默认。 */
+  model: z.string().optional(),
+  /**
+   * 推理强度（off / low / high / max，跟随 llm.models 实际档位）。留空 = 跟随
+   * 服务端默认。枚举不硬编码（理由同上 agentPreset）。
+   */
+  reasoningEffort: z.string().optional(),
+});
+
 /** 首次启动的默认 agents 配置：codex 默认 app-server / on-request / workspace-write。 */
 const DEFAULT_AGENTS_CONFIG = {
   codex: CodexConfigSchema.parse({}),
@@ -187,6 +214,7 @@ const AgentsConfigSchema = z.object({
   opencode: OpencodeConfigSchema.optional(),
   pi: PiConfigSchema.optional(),
   kimi: KimiConfigSchema.optional(),
+  dsh: DshConfigSchema.optional(),
 });
 
 const IdleConfigSchema = z.object({
@@ -245,6 +273,11 @@ const AgentChoicesSchema = z.object({
       thinkingEffort: z.string().optional(),
     })
     .optional(),
+  dsh: z
+    .object({
+      host: z.string().optional(),
+    })
+    .optional(),
 });
 
 export const AppConfigSchema = z.object({
@@ -261,7 +294,7 @@ export const AppConfigSchema = z.object({
   /** 入站媒体（图片/文件）落盘配置。 */
   inboundMedia: InboundMediaConfigSchema.default(InboundMediaConfigSchema.parse({})),
   /** Default agent for new runs. */
-  defaultAgent: z.enum(['claude', 'codex', 'opencode', 'pi', 'kimi']).default('claude'),
+  defaultAgent: z.enum(['claude', 'codex', 'opencode', 'pi', 'kimi', 'dsh']).default('claude'),
   /** Check for updates on bridge startup (default: false). */
   checkUpdateOnStartup: z.boolean().default(false),
 });
@@ -322,7 +355,7 @@ export function loadConfig(configPath: string): AppConfig {
  * Agent key 前缀，这些前缀的 key 会映射到 `agents.<key>` 路径下。
  * `claude.` 保持顶层（不映射到 agents.claude）。
  */
-const AGENT_PREFIXES = ['pi', 'codex', 'opencode', 'kimi'] as const;
+const AGENT_PREFIXES = ['pi', 'codex', 'opencode', 'kimi', 'dsh'] as const;
 
 /**
  * 将卡片短 key 映射到 schema 期望的路径：
@@ -478,6 +511,7 @@ type CodexConfig = z.infer<typeof CodexConfigSchema>;
 type OpencodeConfig = z.infer<typeof OpencodeConfigSchema>;
 type PiConfig = z.infer<typeof PiConfigSchema>;
 type KimiConfig = z.infer<typeof KimiConfigSchema>;
+export type DshConfig = z.infer<typeof DshConfigSchema>;
 
 /** Get configuration for a specific agent. Falls back to defaults if not configured. */
 export function getAgentConfig(config: AppConfig, kind: 'claude'): ClaudeConfig;
@@ -485,10 +519,11 @@ export function getAgentConfig(config: AppConfig, kind: 'codex'): CodexConfig | 
 export function getAgentConfig(config: AppConfig, kind: 'opencode'): OpencodeConfig | undefined;
 export function getAgentConfig(config: AppConfig, kind: 'pi'): PiConfig | undefined;
 export function getAgentConfig(config: AppConfig, kind: 'kimi'): KimiConfig | undefined;
+export function getAgentConfig(config: AppConfig, kind: 'dsh'): DshConfig | undefined;
 export function getAgentConfig(
   config: AppConfig,
   kind: AgentKind,
-): ClaudeConfig | CodexConfig | OpencodeConfig | PiConfig | KimiConfig | undefined {
+): ClaudeConfig | CodexConfig | OpencodeConfig | PiConfig | KimiConfig | DshConfig | undefined {
   if (kind === 'claude') {
     return config.claude;
   }

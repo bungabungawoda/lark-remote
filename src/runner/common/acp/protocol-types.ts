@@ -290,6 +290,8 @@ export interface SessionUpdateNotification {
 
 export const ServerRequestMethod = {
   REQUEST_PERMISSION: 'session/request_permission',
+  /** Kimi AskUserQuestion elicitation form（客户端广告 elicitation.form 时启用）。 */
+  ELICITATION_CREATE: 'elicitation/create',
 } as const;
 
 export interface PermissionOption {
@@ -321,4 +323,43 @@ export interface RequestPermissionResponse {
     outcome: 'selected' | 'cancelled';
     optionId?: string;
   };
+}
+
+// =============================================================================
+// Elicitation（Kimi AskUserQuestion form 通道）
+// 形状来源：kimi-code/packages/acp-server/src/question.ts
+//   questionRequestToElicitationParams / elicitationResponseToQuestionAnswers
+// =============================================================================
+
+export interface ElicitationEnumOption {
+  const: string;
+  title?: string;
+  description?: string;
+}
+
+export interface ElicitationPropertySchema {
+  type: 'string' | 'array';
+  title?: string;
+  description?: string;
+  minItems?: number;
+  oneOf?: ElicitationEnumOption[];
+  items?: { anyOf?: ElicitationEnumOption[] };
+}
+
+export interface ElicitationCreateParams {
+  sessionId: string;
+  toolCallId?: string;
+  mode: 'form';
+  message?: string;
+  requestedSchema: {
+    type: 'object';
+    required?: string[];
+    properties: Record<string, ElicitationPropertySchema>;
+  };
+}
+
+export interface ElicitationCreateResponse {
+  action: 'accept' | 'decline' | 'cancel';
+  /** accept 时的答案，key 为 q0..qn（按问题顺序）。 */
+  content?: Record<string, string | string[]>;
 }

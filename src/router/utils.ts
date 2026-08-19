@@ -138,6 +138,18 @@ export function formatUsageStats(
       ? ` · 累计 ${formatTokenK(usage.cumulativeTotalTokens)}`
       : '';
 
+  // 一致性护栏：本 run ≤ 累计 是硬不变量（累计 = 所有 run 之和，必 ≥ 本 run）。
+  // 违反说明来源 scope 混用（如 DeepSeek live result usage 是累积/超大 scope，
+  // 大于 jsonl 去重聚合的 session 累计）。只标记不修正——数字保持原样便于排查，
+  // 由数据源修复。两侧都有值时校验（避免旧数据/缺失字段误报）。
+  // 两个分支（real input/output / 10% 估计）共用，保证"本 run > 累计"在任意
+  // 路径都显式暴露。
+  const withCumGuard = (totalTokens: number): string =>
+    cumTotalSuffix +
+    (usage?.cumulativeTotalTokens !== undefined && totalTokens > usage.cumulativeTotalTokens
+      ? ' · ⚠️ 累计异常'
+      : '');
+
   // 计算累计 cache 命中率
   const cumInput = usage?.cumulativeInputTokens;
   const cumCacheRead = usage?.cumulativeCacheReadTokens;
@@ -175,7 +187,7 @@ export function formatUsageStats(
       lines.push(`Cache create - ${formatTokenK(cacheCreation)}${cumCacheCreateSuffix}`);
     }
     lines.push(`Cached token - ${formatTokenK(cacheRead)} (${cachePercent}%)${cumCacheReadSuffix}`);
-    lines.push(`Total token - ${formatTokenK(totalTokens)}${cumTotalSuffix}`);
+    lines.push(`Total token - ${formatTokenK(totalTokens)}${withCumGuard(totalTokens)}`);
   } else {
     // Estimate path: when real input/output are absent,
     // fall back to the 10% estimate based on contextLength.
@@ -194,7 +206,7 @@ export function formatUsageStats(
       lines.push(
         `Cached token - ${formatTokenK(cacheRead)} (${cachePercent}%)${cumCacheReadSuffix}`,
       );
-      lines.push(`Total token - ${formatTokenK(totalTokens)}${cumTotalSuffix}`);
+      lines.push(`Total token - ${formatTokenK(totalTokens)}${withCumGuard(totalTokens)}`);
     }
   }
 
