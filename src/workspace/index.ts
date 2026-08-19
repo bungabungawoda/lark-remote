@@ -27,6 +27,8 @@ export interface WorkspaceEntry {
  * lastUsedAt 语义（2026-08-19 语义对齐）：保存（save）与使用（use/touch）
  * 都会把时间戳更新为当前时间。save 内部调用 touch，保证「最近使用」排序
  * 对新保存的 workspace 同样生效（新条目应排在列表最前，而非沉底）。
+ * 同一毫秒内连续操作时 touch 会用 max+1 保证严格递增，避免 Date.now 相同
+ * 导致最近排序退化为字母序。
  *
  * Data migration: old format `{ alias: "path" }` is normalized to
  * `{ alias: { path, lastUsedAt: 0 } }` on first load and persisted.
@@ -108,11 +110,25 @@ export class WorkspaceStore {
   /**
    * Update lastUsedAt to now for the given alias and persist.
    * No-op if the alias does not exist.
+   *
+   * To keep "recent" ordering stable even for rapid successive saves/uses in
+   * the same millisecond, never allow another entry to share the same
+   * timestamp while this entry is being touched. If a peer already has a
+   * timestamp at or after the current wall-clock time, use max+1 so the
+   * touched entry always becomes the most recently used.
    */
   touch(name: string): void {
     const entry = this.data.get(name);
     if (!entry) return;
-    entry.lastUsedAt = Date.now();
+    const now = Date.now();
+    let max = Math.max(now, entry.lastUsedAt);
+    let hasPeerAtOrAfterNow = false;
+    for (const [otherName, other] of this.data) {
+      if (otherName === name) continue;
+      if (other.lastUsedAt > max) max = other.lastUsedAt;
+      if (other.lastUsedAt >= now) hasPeerAtOrAfterNow = true;
+    }
+    entry.lastUsedAt = hasPeerAtOrAfterNow ? max + 1 : max;
     this.persist();
   }
 
