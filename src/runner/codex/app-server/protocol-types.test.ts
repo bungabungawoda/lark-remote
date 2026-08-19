@@ -49,12 +49,12 @@ describe('protocol-types', () => {
       );
       expect(ServerRequestMethod.FILE_CHANGE_APPROVAL).toBe('item/fileChange/requestApproval');
       expect(ServerRequestMethod.PERMISSIONS_APPROVAL).toBe('item/permissions/requestApproval');
+      expect(ServerRequestMethod.REQUEST_USER_INPUT).toBe('item/tool/requestUserInput');
     });
   });
 
   describe('UNSUPPORTED_SERVER_REQUEST_METHODS', () => {
     it('contains unsupported methods', () => {
-      expect(UNSUPPORTED_SERVER_REQUEST_METHODS.has('item/tool/requestUserInput')).toBe(true);
       expect(UNSUPPORTED_SERVER_REQUEST_METHODS.has('mcpServer/elicitation/request')).toBe(true);
       expect(UNSUPPORTED_SERVER_REQUEST_METHODS.has('execCommandApproval')).toBe(true);
       // 真实协议（v2 schema）的 server-request 全集里的其余方法必须显式归类，
@@ -70,6 +70,7 @@ describe('protocol-types', () => {
       expect(UNSUPPORTED_SERVER_REQUEST_METHODS.has('item/permissions/requestApproval')).toBe(
         false,
       );
+      expect(UNSUPPORTED_SERVER_REQUEST_METHODS.has('item/tool/requestUserInput')).toBe(false);
     });
   });
 });

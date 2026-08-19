@@ -55,4 +55,11 @@ export interface AgentConfigCardBuilder {
     value: unknown,
     config: AppConfig,
   ): Array<{ key: string; value: unknown }>;
+
+  /**
+   * 可选的异步预取钩子：卡片渲染前拉取动态选项（如 DSH 的模型/预设目录）。
+   * host 为该 agent 的当前连接地址；实现内部应缓存（同一 host 只拉一次），
+   * 失败静默回退固定兜底，不阻断卡片渲染。非异步预取的 agent 可不实现。
+   */
+  prefetch?(host?: string): Promise<void>;
 }

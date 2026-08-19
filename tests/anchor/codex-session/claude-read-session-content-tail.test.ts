@@ -193,18 +193,24 @@ describe('P2-5 anchor: claude readSessionContent tail-only read', () => {
     expect(result.events.map((e) => e.content)).toContain('a2');
     expect(result.events.map((e) => e.content)).not.toContain('a1');
 
-    // usage: aggregated from m1 + m2.
+    // 非累计字段 = 末轮（本 run）scope（对齐 codex `last_token_usage` 语义）；
+    // 累计字段 = session 总和。修复前非累计字段也塞 session 累计（混 scope）。
     expect(result.usage).toBeDefined();
-    expect(result.usage?.inputTokens).toBe(5100);
-    expect(result.usage?.outputTokens).toBe(70);
-    expect(result.usage?.cacheReadTokens).toBe(800);
-    expect(result.usage?.cacheCreationTokens).toBe(100);
+    expect(result.usage?.inputTokens).toBe(5000); // 末轮 m2
+    expect(result.usage?.outputTokens).toBe(50); // 末轮 m2
+    expect(result.usage?.cacheReadTokens).toBe(800); // 末轮 m2
+    expect(result.usage?.cacheCreationTokens).toBe(100); // 末轮 m2
     expect(result.usage?.compactCount).toBe(1);
     // contextLength = max(lastPostTokens=5000, last assistant 窗口占用).
     // lastWindow uses acc.last (the last assistant's per-message usage:
     // 5000+800+100 = 5900, excludes output — review P2-8), NOT the cumulative total.
     expect(result.usage?.contextLength).toBe(5900);
-    expect(result.usage?.totalTokens).toBe(5100 + 70 + 800 + 100);
+    expect(result.usage?.totalTokens).toBe(5000 + 50 + 800 + 100); // 末轮分项和
+    // session 累计（所有 run 之和）
+    expect(result.usage?.cumulativeInputTokens).toBe(5100); // 100 + 5000
+    expect(result.usage?.cumulativeOutputTokens).toBe(70); // 20 + 50
+    expect(result.usage?.cumulativeCacheReadTokens).toBe(800); // 0 + 800
+    expect(result.usage?.cumulativeCacheCreationTokens).toBe(100); // 0 + 100
 
     // aiTitle + displayTitle
     expect(result.aiTitle).toBe('Test Title');

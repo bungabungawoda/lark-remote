@@ -39,11 +39,11 @@ describe('WorkspaceStore', () => {
     const entries = store.list();
     expect(entries).toHaveLength(2);
     expect(entries.map((e) => e.name).sort()).toEqual(['a', 'b']);
-    // Each entry has path and lastUsedAt
+    // Each entry has path and lastUsedAt (save 即视为使用，时间戳应为当前时刻)
     expect(entries[0].path).toBe('/tmp/a');
-    expect(entries[0].lastUsedAt).toBe(0);
+    expect(entries[0].lastUsedAt).toBeGreaterThan(0);
     expect(entries[1].path).toBe('/tmp/b');
-    expect(entries[1].lastUsedAt).toBe(0);
+    expect(entries[1].lastUsedAt).toBeGreaterThan(0);
   });
 
   it('persists across instances (simulates restart)', () => {
@@ -194,10 +194,22 @@ describe('WorkspaceStore', () => {
     expect(() => store.touch('nonexistent')).not.toThrow();
   });
 
-  it('save() sets lastUsedAt=0 for new entries', () => {
+  it('save() stamps lastUsedAt (save 即视为使用)', () => {
     const store = new WorkspaceStore(workspaceFile);
     store.save('proj', '/tmp/proj');
     const entries = store.list();
-    expect(entries[0].lastUsedAt).toBe(0);
+    expect(entries[0].lastUsedAt).toBeGreaterThan(0);
+  });
+
+  it('save() over existing entry bumps lastUsedAt (re-save 也算使用)', () => {
+    const store = new WorkspaceStore(workspaceFile);
+    store.save('proj', '/tmp/proj');
+    const first = store.list()[0].lastUsedAt;
+
+    // 稍等片刻再覆盖保存，时间戳应前进
+    const store2 = new WorkspaceStore(workspaceFile);
+    store2.save('proj', '/tmp/proj-updated');
+    const second = store2.list()[0].lastUsedAt;
+    expect(second).toBeGreaterThanOrEqual(first);
   });
 });

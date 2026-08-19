@@ -19,6 +19,7 @@ import {
   OpencodeAcpRunner,
   PiRpcRunner,
   KimiAcpRunner,
+  DshRunner,
 } from './runner/index.js';
 import { AgentRegistry } from './runner/registry.js';
 import { probeAllAgents } from './runner/probe.js';
@@ -29,9 +30,11 @@ import {
   OpencodeSessionReader,
   PiSessionReader,
   KimiSessionReader,
+  DshSessionReader,
 } from './session/index.js';
 import { CommandRouter, isImmediateAction, type CardActionPayload } from './router/index.js';
 import { dispatchOrderExecForQueue } from './router/order-exec-dispatch.js';
+import { buildCardActionFullValue } from './router/card-action-payload.js';
 import { Bridge } from './bridge/index.js';
 import { initLogger, getLogger } from './logger/index.js';
 import { StartupContactStore, sendStartupHello } from './startup-contact.js';
@@ -323,12 +326,34 @@ function initializeRunner(
   });
   sessionReaderRegistry.register('kimi', kimiSessionReader);
 
+  // Register DshRunner (HTTP-only DSH Web Host agent) and DshSessionReader.
+  const dshSessionReader = new DshSessionReader({
+    host: getAgentConfig(config, 'dsh')?.host,
+  });
+  agentRegistry.register('dsh', (_ws: string) => {
+    // Read latest config from container so /config host changes take effect
+    // after bridge.setConfig() + clearRunners().
+    const container = agentRegistry.getConfigContainer();
+    const latestConfig = (container?.current as AppConfig) ?? config;
+    const dshConf = getAgentConfig(latestConfig, 'dsh');
+    return new DshRunner({
+      kind: 'dsh',
+      sessionReader: dshSessionReader,
+      host: dshConf?.host,
+      agentPreset: dshConf?.agentPreset,
+      model: dshConf?.model,
+      reasoningEffort: dshConf?.reasoningEffort,
+    });
+  });
+  sessionReaderRegistry.register('dsh', dshSessionReader);
+
   // 2026-07-17: 注册所有 agent 的显示名，实现单点真相
   agentRegistry.registerDisplayName('claude', 'Claude');
   agentRegistry.registerDisplayName('codex', 'Codex');
   agentRegistry.registerDisplayName('opencode', 'Opencode');
   agentRegistry.registerDisplayName('pi', 'Pi');
   agentRegistry.registerDisplayName('kimi', 'Kimi');
+  agentRegistry.registerDisplayName('dsh', 'DSH');
 
   // 设置全局 registry，供 agentDisplayName 等全局函数使用
   AgentRegistry.setGlobalInstance(agentRegistry);
@@ -621,19 +646,10 @@ function setupMessageHandlers(
     const isImmediate = isImmediateAction(actionValue.cmd);
     const workspace = sessionStore.getCwd(userId) ?? '';
 
-    // Build full value object — spread all fields from actionValue,
-    // then override option/formValue/inputValue from action for CardKit 2.0 compatibility.
-    // 2026-07-04: inputValue 来自 CardKit 2.0 input 组件自带提交图标触发 callback
-    const fullValue: CardActionPayload = {
-      ...actionValue,
-      option: action.action.option,
-      formValue: action.action.formValue,
-      // CardKit 2.0 input ✓ 提交图标：输入值走 raw.action.input_value（SDK normalizer
-      // 丢弃 action.action.input_value，需 connector includeRawEvent: true）。
-      inputValue:
-        (action.raw as { action?: { input_value?: string } } | undefined)?.action?.input_value ??
-        (action.action as { input_value?: string }).input_value,
-    };
+    // Build full value object — spread all fields from actionValue, then merge
+    // component out-of-band fields (option/formValue/inputValue/options) where
+    // present. See card-action-payload.ts for the component-type contract.
+    const fullValue = buildCardActionFullValue(actionValue, action);
 
     // queue.input / config.save / approval.respond / approval.toggle /
     // approval.answer 系列返回 CardActionResponse toast 给点击用户即时反馈。

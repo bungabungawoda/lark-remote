@@ -91,10 +91,13 @@ describe('P2-2 anchor: readSessionContent single-pass parsing', () => {
       // Verify outputs are correct (parity with existing tests)
       expect(result.events.map((e) => e.content)).toContain('a2');
       expect(result.usage).toBeDefined();
-      expect(result.usage?.inputTokens).toBe(5100);
-      expect(result.usage?.outputTokens).toBe(70);
-      expect(result.usage?.cacheReadTokens).toBe(800);
-      expect(result.usage?.cacheCreationTokens).toBe(100);
+      // 非累计字段 = 末轮（本 run）scope；累计字段 = session 总和
+      expect(result.usage?.inputTokens).toBe(5000); // 末轮 m2
+      expect(result.usage?.outputTokens).toBe(50); // 末轮 m2
+      expect(result.usage?.cacheReadTokens).toBe(800); // 末轮 m2
+      expect(result.usage?.cacheCreationTokens).toBe(100); // 末轮 m2
+      expect(result.usage?.cumulativeInputTokens).toBe(5100); // 100 + 5000
+      expect(result.usage?.cumulativeOutputTokens).toBe(70); // 20 + 50
       expect(result.usage?.compactCount).toBe(1);
       expect(result.aiTitle).toBe('Test Title');
       expect(result.recap).toBe('Summary of prior');

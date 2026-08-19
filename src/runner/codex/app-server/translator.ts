@@ -14,7 +14,9 @@ import type {
   ApprovalRequestedEvent,
   ApprovalResolvedEvent,
   ApprovalViewUpdatedEvent,
+  UserQuestion,
 } from '../../types.js';
+import { makeQuestionApprovalEvent } from '../../question-common.js';
 import {
   NotificationMethod,
   ServerRequestMethod,
@@ -33,6 +35,8 @@ import {
   type CommandExecutionRequestApprovalParams,
   type FileChangeRequestApprovalParams,
   type PermissionsRequestApprovalParams,
+  type ToolRequestUserInputParams,
+  type ToolRequestUserInputQuestion,
   type RequestPermissionProfile,
   type FileUpdateChange,
   type FileUpdateChangeKind,
@@ -140,9 +144,36 @@ export class CodexAppServerTranslator {
         return this.handleFileApproval(id, params as FileChangeRequestApprovalParams);
       case ServerRequestMethod.PERMISSIONS_APPROVAL:
         return this.handlePermissionsApproval(id, params as PermissionsRequestApprovalParams);
+      case ServerRequestMethod.REQUEST_USER_INPUT:
+        return this.handleRequestUserInput(id, params as ToolRequestUserInputParams);
       default:
         return [];
     }
+  }
+
+  /**
+   * Codex AskUserQuestion：item/tool/requestUserInput → question 审批事件。
+   * 问题 id 保留在 UserQuestion.id（回编时文本 → id 映射），options 为
+   * null/空 → 自由文本题（空数组驱动卡片渲染输入框）；autoResolutionMs
+   * 透传为 per-request 超时（coordinator 优先使用）。
+   */
+  private handleRequestUserInput(
+    requestId: number | string,
+    params: ToolRequestUserInputParams,
+  ): TranslatorEvent[] {
+    const questions: UserQuestion[] = params.questions
+      .map((q) => requestUserInputQuestionToUserQuestion(q))
+      .filter((q): q is UserQuestion => q !== null);
+    if (questions.length === 0) {
+      // 无有效问题：不渲染空提问卡，返回 [] 由 runner 以 method-not-found
+      // 拒绝（服务端视作请求失败，不会悬挂）。
+      return [];
+    }
+    return [
+      makeQuestionApprovalEvent(requestId, questions, params.threadId, {
+        timeoutMs: params.autoResolutionMs ?? undefined,
+      }),
+    ];
   }
 
   /**
@@ -844,5 +875,28 @@ function normalizeCommandDecisions(list?: CommandExecutionApprovalDecision[] | n
   return {
     decisions,
     ...(Object.keys(payloads).length > 0 ? { payloads } : {}),
+  };
+}
+
+/** Codex wire question → 统一 UserQuestion（options null/空 → 自由文本题）。 */
+function requestUserInputQuestionToUserQuestion(
+  q: ToolRequestUserInputQuestion,
+): UserQuestion | null {
+  const question = q.question?.trim();
+  if (!question) return null;
+  const options = (q.options ?? []).map((opt) => ({
+    label: opt.label,
+    ...(opt.description ? { description: opt.description } : {}),
+  }));
+  return {
+    id: q.id,
+    header: q.header || undefined,
+    question,
+    isOther: q.isOther,
+    isSecret: q.isSecret,
+    options,
+    // Codex user_note：选项题渲染「补充说明（可选）」输入（live 验证模型理解
+    // "user_note:" 条目）；自由文本题（options 空）不需要。
+    ...(options.length > 0 ? { allowNote: true } : {}),
   };
 }

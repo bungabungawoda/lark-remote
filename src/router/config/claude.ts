@@ -21,12 +21,15 @@ const PERMISSION_MODE_LABELS: Record<string, string> = {
   acceptEdits: '自动接受文件编辑',
   auto: '自动放行低风险操作',
   bypassPermissions: '跳过所有权限检查',
-  manual: '手动审批（default 的别名）',
   dontAsk: '仅预先批准的工具',
   plan: '计划模式（只读探索）',
 };
 
-const PERMISSION_MODE_OPTIONS = CLAUDE_PERMISSION_MODES.map((m) => ({
+/**
+ * 下拉选项排除 manual：manual 是 default 的别名（claude CLI 等价），
+ * 只保留 default 一个，避免下拉出现两个等价项。schema 仍接受 manual（旧配置向后兼容）。
+ */
+const PERMISSION_MODE_OPTIONS = CLAUDE_PERMISSION_MODES.filter((m) => m !== 'manual').map((m) => ({
   text: `${m}（${PERMISSION_MODE_LABELS[m] ?? ''}）`,
   value: m,
 }));
@@ -100,12 +103,15 @@ export class ClaudeConfigBuilder implements AgentConfigCardBuilder {
     // 权限模式（Claude 官方 --permission-mode 枚举；bypassPermissions 为 schema 默认，
     // 保持旧行为无审批卡，配置为其他值后激活交互式审批）
     const currentPermissionMode = displayConfig.claude?.permissionMode ?? 'bypassPermissions';
+    // manual 是 default 的别名：旧配置按 default 显示（下拉无 manual 项，避免空选）
+    const displayedPermissionMode =
+      currentPermissionMode === 'manual' ? 'default' : currentPermissionMode;
     fields.push({
       key: 'claude.permissionMode',
       label: '权限模式',
       type: 'select',
       options: PERMISSION_MODE_OPTIONS,
-      currentValue: currentPermissionMode,
+      currentValue: displayedPermissionMode,
     });
 
     return fields;
