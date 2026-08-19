@@ -209,12 +209,82 @@ describe('readSessionContent', () => {
     ]);
     const result = readSessionContent(sessionId, '/tmp/proj', { projectsDir: tmpDir });
     expect(result.usage).toBeDefined();
-    // Claude semantics: inputTokens/outputTokens are already cumulative totals.
-    expect(result.usage!.inputTokens).toBe(5100); // 100 + 5000
-    expect(result.usage!.outputTokens).toBe(70); // 20 + 50
-    // Cumulative field mirrors the session-wide totals (explicit, for Run card).
-    expect(result.usage!.cumulativeInputTokens).toBe(5100);
-    expect(result.usage!.cumulativeOutputTokens).toBe(70);
+    // 非累计字段 = 末轮（本 run）scope（对齐 codex `last_token_usage` 语义）
+    expect(result.usage!.inputTokens).toBe(5000); // 末轮 m2
+    expect(result.usage!.outputTokens).toBe(50); // 末轮 m2
+    // 累计字段 = session 总和（所有 run，供卡片"· 累计"展示）
+    expect(result.usage!.cumulativeInputTokens).toBe(5100); // 100 + 5000
+    expect(result.usage!.cumulativeOutputTokens).toBe(70); // 20 + 50
+  });
+
+  it('cache 非累计字段取末轮、累计取 session 总和（scope 分离）', () => {
+    // 修复回归：scalarScan 曾把 session 总和同时塞进非累计与累计字段，
+    // jsonl 兜底路径会把 session 累计当"本 run"显示（累计反而更小）。
+    const sessionId = writeSession('/tmp/proj', [
+      '{"type":"user","message":{"role":"user","content":[{"type":"text","text":"q1"}]}}',
+      '{"type":"assistant","message":{"id":"m1","role":"assistant","content":[{"type":"text","text":"a1"}],"usage":{"input_tokens":100,"output_tokens":20,"cache_read_input_tokens":500,"cache_creation_input_tokens":50}}}',
+      '{"type":"user","message":{"role":"user","content":[{"type":"text","text":"q2"}]}}',
+      '{"type":"assistant","message":{"id":"m2","role":"assistant","content":[{"type":"text","text":"a2"}],"usage":{"input_tokens":1000,"output_tokens":80,"cache_read_input_tokens":800,"cache_creation_input_tokens":0}}}',
+    ]);
+    const result = readSessionContent(sessionId, '/tmp/proj', { projectsDir: tmpDir });
+    expect(result.usage).toBeDefined();
+    // 非累计（本 run）= 末轮 m2
+    expect(result.usage?.inputTokens).toBe(1000);
+    expect(result.usage?.outputTokens).toBe(80);
+    expect(result.usage?.cacheReadTokens).toBe(800);
+    expect(result.usage?.cacheCreationTokens).toBeUndefined(); // 末轮 cache_creation=0
+    expect(result.usage?.totalTokens).toBe(1000 + 80 + 800 + 0); // 末轮分项和
+    // 累计（session 总和）
+    expect(result.usage?.cumulativeInputTokens).toBe(1100); // 100 + 1000
+    expect(result.usage?.cumulativeOutputTokens).toBe(100); // 20 + 80
+    expect(result.usage?.cumulativeCacheReadTokens).toBe(1300); // 500 + 800
+    expect(result.usage?.cumulativeCacheCreationTokens).toBe(50); // 50 + 0
+  });
+
+  it('merges multi-line assistant usage by per-field max (zero placeholder lines before real usage)', () => {
+    // Regression 2026-08-19: some backends (third-party gateways) stream an
+    // assistant message as multiple jsonl lines sharing one message id, with
+    // all-zero usage on the early placeholder lines (empty thinking block) and
+    // the real usage only on the final line carrying stop_reason.
+    // First-occurrence-wins dedup pinned the zero record, so the auto-resume
+    // card showed per-run stats all 0 while the real usage line was discarded.
+    const sessionId = writeSession('/tmp/proj', [
+      '{"type":"user","message":{"role":"user","content":[{"type":"text","text":"q1"}]}}',
+      // m1: two zero-usage placeholder lines, then the final line with real usage
+      '{"type":"assistant","message":{"id":"m1","role":"assistant","content":[{"type":"thinking","thinking":"","signature":""}],"usage":{"input_tokens":0,"output_tokens":0,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}}',
+      '{"type":"assistant","message":{"id":"m1","role":"assistant","content":[{"type":"text","text":"a1"}],"usage":{"input_tokens":0,"output_tokens":0,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}}',
+      '{"type":"assistant","message":{"id":"m1","role":"assistant","content":[{"type":"text","text":"a1 done"}],"stop_reason":"end_turn","usage":{"input_tokens":619,"output_tokens":313,"cache_read_input_tokens":98816,"cache_creation_input_tokens":0}}}',
+      '{"type":"user","message":{"role":"user","content":[{"type":"text","text":"q2"}]}}',
+      // m2: single line with real usage (official-API shape)
+      '{"type":"assistant","message":{"id":"m2","role":"assistant","content":[{"type":"text","text":"a2"}],"usage":{"input_tokens":100,"output_tokens":20}}}',
+    ]);
+    const result = readSessionContent(sessionId, '/tmp/proj', { projectsDir: tmpDir });
+    expect(result.usage).toBeDefined();
+    // 非累计字段 = 末轮 m2
+    expect(result.usage!.inputTokens).toBe(100);
+    expect(result.usage!.outputTokens).toBe(20);
+    // 累计：m1 的真实 usage（末行）+ m2；零占位行不得遮蔽真行
+    expect(result.usage!.cumulativeInputTokens).toBe(719); // 619 + 100
+    expect(result.usage!.cumulativeOutputTokens).toBe(333); // 313 + 20
+    expect(result.usage!.cumulativeCacheReadTokens).toBe(98816);
+  });
+
+  it('per-field max merge combines message_start-style partial usage across lines of one message', () => {
+    // Same multi-line message, but the FIRST line already carries real
+    // input_tokens with output 0 (message_start shape) and only the final
+    // line adds output_tokens. Max merge must combine them, not let the
+    // later line's 0 clobber the earlier real value (last-wins would fail
+    // the inverse order).
+    const sessionId = writeSession('/tmp/proj', [
+      '{"type":"user","message":{"role":"user","content":[{"type":"text","text":"q"}]}}',
+      '{"type":"assistant","message":{"id":"m1","role":"assistant","content":[{"type":"thinking","thinking":"..."}],"usage":{"input_tokens":46045,"output_tokens":0,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}}',
+      '{"type":"assistant","message":{"id":"m1","role":"assistant","content":[{"type":"text","text":"done"}],"stop_reason":"end_turn","usage":{"input_tokens":46045,"output_tokens":433,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}}',
+    ]);
+    const result = readSessionContent(sessionId, '/tmp/proj', { projectsDir: tmpDir });
+    expect(result.usage!.inputTokens).toBe(46045);
+    expect(result.usage!.outputTokens).toBe(433);
+    expect(result.usage!.totalTokens).toBe(46045 + 433);
+    expect(result.usage!.contextLength).toBe(46045);
   });
 
   it('returns compactCount=0 when no compact_boundary events', () => {
@@ -232,7 +302,7 @@ describe('readSessionContent', () => {
 
   it('uses last turn full prompt as contextLength when no compact (includes cache)', () => {
     // 无 compact 时 contextLength = 末轮窗口占用 = input+cacheRead+cacheCreation（excludes output）。
-    // 累加所有 turn 会得到 N×context 的虚假巨值（regression 2ded6229:
+    // 累加所有 turn 会得到 N×context 的虚假巨值（regression:
     // 大量 turn 累加远超实际 context 值）。
     const sessionId = writeSession('/tmp/proj', [
       '{"type":"user","message":{"role":"user","content":[{"type":"text","text":"q1"}]}}',
@@ -246,9 +316,11 @@ describe('readSessionContent', () => {
     expect(result.usage?.compactCount).toBe(0);
     // contextLength = 最后一个 turn 的窗口占用（无 cache 时 = input，excludes output），不是所有 turn 累加
     expect(result.usage?.contextLength).toBe(90000);
-    // inputTokens/outputTokens 仍是累加值（用于 cost 计算）
-    expect(result.usage?.inputTokens).toBe(95100);
-    expect(result.usage?.outputTokens).toBe(170);
+    // 非累计字段 = 末轮 scope；累计字段 = session 总和（用于 cost 计算）
+    expect(result.usage?.inputTokens).toBe(90000); // 末轮 m3
+    expect(result.usage?.outputTokens).toBe(100); // 末轮 m3
+    expect(result.usage?.cumulativeInputTokens).toBe(95100); // 100+5000+90000
+    expect(result.usage?.cumulativeOutputTokens).toBe(170); // 20+50+100
   });
 
   it('compact after continued conversation uses last full prompt (not stale postTokens)', () => {
@@ -618,7 +690,9 @@ describe('readSessionContent - EnterWorktree relocated session', () => {
       const result = readSessionContent(sid, '/real/cwd/A', { projectsDir: localTmp });
       expect(result.events.length).toBeGreaterThan(0);
       expect(result.usage).toBeDefined();
-      expect(result.usage?.inputTokens).toBe(300); // 100 + 200
+      // 非累计 = 末轮 m2，累计 = session 总和
+      expect(result.usage?.inputTokens).toBe(200);
+      expect(result.usage?.cumulativeInputTokens).toBe(300); // 100 + 200
     } finally {
       fs.rmSync(localTmp, { recursive: true, force: true });
     }
@@ -637,7 +711,41 @@ describe('readSessionContent - EnterWorktree relocated session', () => {
       const result = readSessionContent(sid, '/real/cwd/B', { projectsDir: localTmp });
       expect(result.events.length).toBeGreaterThan(0);
       expect(result.usage).toBeDefined();
-      expect(result.usage?.inputTokens).toBe(300); // 100 + 200
+      // 非累计 = 末轮 m2，累计 = session 总和
+      expect(result.usage?.inputTokens).toBe(200);
+      expect(result.usage?.cumulativeInputTokens).toBe(300); // 100 + 200
+    } finally {
+      fs.rmSync(localTmp, { recursive: true, force: true });
+    }
+  });
+
+  it('test_anchor_relocated_session_usage_scope_matches_whole_file', () => {
+    // EnterWorktree 搬迁会话 = 同一 jsonl 含 A→B 两段 cwd。readSessionContent
+    // 无论请求 A 还是 B 都读同一物理文件（跨目录兜底/index 定位），scalarScan
+    // 整文件单遍扫描 → 非累计字段 = 文件末轮（B 段 m2）、累计 = 全文件 session
+    // 总和（A 段 m1 + B 段 m2）。本 run ≤ 累计 不变量在搬迁场景依然成立。
+    // 缺失后果: 若按"请求 cwd 的某段"过滤再聚合，会漏掉搬迁前段或把段内累计
+    //           当本 run，卡片混 scope（实例：cwd=main 14 行 + worktree
+    //           1097 行，两段同一文件）。
+    const localTmp = fs.mkdtempSync(path.join(os.tmpdir(), 'lark-relocate-scope-'));
+    try {
+      const sid = 'relocated-scope-session';
+      writeRelocatedSession(localTmp, sid);
+      // 请求搬迁前 cwd(A)：跨目录兜底定位到 B 目录的文件，读全文件
+      const fromA = readSessionContent(sid, '/real/cwd/A', { projectsDir: localTmp });
+      // 请求搬迁后 cwd(B)：index/直接定位到同一文件
+      const fromB = readSessionContent(sid, '/real/cwd/B', { projectsDir: localTmp });
+      // 两处读同一文件 → 非累计 = 末轮 m2（B 段），累计 = 全文件总和
+      for (const result of [fromA, fromB]) {
+        expect(result.events.length).toBeGreaterThan(0);
+        expect(result.usage).toBeDefined();
+        expect(result.usage?.inputTokens).toBe(200); // 末轮 m2
+        expect(result.usage?.outputTokens).toBe(20); // 末轮 m2
+        expect(result.usage?.totalTokens).toBe(200 + 20); // 末轮分项和
+        expect(result.usage?.cumulativeInputTokens).toBe(300); // m1(100) + m2(200)
+        expect(result.usage?.cumulativeOutputTokens).toBe(30); // m1(10) + m2(20)
+        expect(result.usage!.cumulativeTotalTokens!).toBeGreaterThan(result.usage!.totalTokens!);
+      }
     } finally {
       fs.rmSync(localTmp, { recursive: true, force: true });
     }

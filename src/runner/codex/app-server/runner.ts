@@ -39,6 +39,7 @@ import {
   type TurnStartParams,
 } from './protocol-types.js';
 import { RpcErrorCode } from '../../common/acp/protocol-types.js';
+import { mapAnswersByIndex } from '../../question-common.js';
 import { getLogger } from '../../../logger/index.js';
 import { ConnectionBasedRunner } from '../../common/connection-based-runner.js';
 
@@ -89,6 +90,41 @@ function buildApprovalResponse(action: string, view: ApprovalView): { decision: 
 }
 
 /**
+ * 构造 request_user_input 响应。answer → 按问题 id 回编；decline/cancel →
+ * 空 answers。answers 值与问题 options 无强校验（Codex 接受任意字符串，
+ * 包括自由文本题的自定义答案）。
+ */
+function buildRequestUserInputResponse(
+  action: string,
+  questions: ApprovalView['questions'],
+  response: unknown,
+): { answers: Record<string, { answers: string[] }> } {
+  if (action !== 'answer') {
+    return { answers: {} };
+  }
+  const answers = (response as { answers?: Record<string, string | string[]> }).answers;
+  if (!answers) {
+    return { answers: {} };
+  }
+  const notes = (response as { notes?: Record<string, string> }).notes;
+  const byIndex = mapAnswersByIndex(questions ?? [], answers);
+  const result: Record<string, { answers: string[] }> = {};
+  (questions ?? []).forEach((q, i) => {
+    const value = byIndex[i];
+    if (!q.id || value === undefined) return;
+    const values = Array.isArray(value) ? value : [value];
+    const cleaned = values.filter((v): v is string => typeof v === 'string' && v.length > 0);
+    // Codex user_note：补充说明编码为 "user_note: <text>" 条目（2026-08-18
+    // live 验证 deepseek-v4-flash 明确理解并遵守该格式）。
+    const note = notes?.[q.question]?.trim();
+    if (note) cleaned.push(`user_note: ${note}`);
+    if (cleaned.length === 0) return;
+    result[q.id] = { answers: cleaned };
+  });
+  return { answers: result };
+}
+
+/**
  * Map the client-side SandboxMode enum to the response-side SandboxPolicy
  * object used by `thread/settings/update` (`sandboxPolicy`).
  */
@@ -109,8 +145,19 @@ export function sandboxModeToSandboxPolicy(mode: SandboxMode): SandboxPolicy {
   }
 }
 
+/**
+ * Codex 官方 feature override（thread/start·resume 的 `config` 字段）：
+ * 让 `request_user_input` 在 Default 协作模式下也可用，无需改 codex
+ * config.toml。协议键与 openai/codex 的 feature registry 一致
+ * （key `default_mode_request_user_input`），app-server 官方测试
+ * （turn_start.rs）验证同一路径。
+ */
+export const THREAD_CONFIG_DEFAULT_MODE_REQUEST_USER_INPUT = {
+  'features.default_mode_request_user_input': true,
+} as const;
+
 interface PendingApproval {
-  kind: 'command' | 'file' | 'permissions' | 'question';
+  kind: 'command' | 'file' | 'permissions' | 'question' | 'tool';
   view: ApprovalView;
 }
 
@@ -257,7 +304,14 @@ export class CodexAppServerRunner extends ConnectionBasedRunner<
     if (!client || !pending) return;
 
     const action = (response as { action?: string })?.action ?? 'decline';
-    if (pending.kind === 'permissions') {
+    if (pending.kind === 'question') {
+      // AskUserQuestion 回编：文本 key 答案按问题顺序展开后映射回问题 id
+      // （{answers:{id:{answers:[值]}}}）；跳过/拒绝/取消 → 空 answers
+      // （Codex 视为 unanswered，turn 继续，对齐 cc-connect deny 语义）。
+      const questions = pending.view.questions ?? [];
+      const answerPayload = buildRequestUserInputResponse(action, questions, response);
+      client.respond(requestId, answerPayload);
+    } else if (pending.kind === 'permissions') {
       // 权限审批的响应没有 decision 字段（真实协议只回 granted profile +
       // scope）：decline/cancel 必须返回空授权（拒绝全部），否则会把用户已
       // 勾选的条目当作授予返回（2026-08-12 review 发现：勾选后点「拒绝」实
@@ -353,6 +407,9 @@ export class CodexAppServerRunner extends ConnectionBasedRunner<
       ...(this.modelProvider ? { modelProvider: this.modelProvider } : {}),
       ...(this.approvalPolicyConfig ? { approvalPolicy: this.approvalPolicyConfig } : {}),
       ...(this.sandboxConfig ? { sandbox: this.sandboxConfig } : {}),
+      // Default 协作模式下默认启用 request_user_input（Ask User Question），
+      // 协议级 override，不依赖 codex config.toml。
+      config: THREAD_CONFIG_DEFAULT_MODE_REQUEST_USER_INPUT,
     };
     return params;
   }

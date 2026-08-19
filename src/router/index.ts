@@ -14,6 +14,7 @@ import {
   mapAgentKey,
   assertSafeKeyPart,
   walkNestedContainer,
+  getAgentConfig,
 } from '../config/index.js';
 import { syncAgentChoices } from '../runner/index.js';
 import { WorkspaceStore } from '../workspace/index.js';
@@ -166,7 +167,8 @@ export function isImmediateAction(cmd: string): boolean {
     cmd === 'approval.toggle' ||
     cmd === 'approval.answer' ||
     cmd === 'approval.answerSubmit' ||
-    cmd === 'approval.answerCustom'
+    cmd === 'approval.answerCustom' ||
+    cmd === 'approval.answerNote'
   );
 }
 
@@ -206,6 +208,8 @@ export interface CardActionPayload {
   selected?: boolean;
   /** Claude AskUserQuestion 问题索引（approval.answer / approval.answerSubmit）。 */
   questionIndex?: number;
+  /** 多选组件（multi_select_static 等）回传的选中值数组（预留公共层能力）。 */
+  options?: string[];
 }
 
 /**
@@ -235,7 +239,7 @@ interface ConfigSwitchResult {
 
 export class CommandRouter {
   /** Valid agent kinds — single source of truth for resume.use / resume.page / cmdResume. */
-  static readonly VALID_AGENTS = ['claude', 'codex', 'opencode', 'pi', 'kimi'] as const;
+  static readonly VALID_AGENTS = ['claude', 'codex', 'opencode', 'pi', 'kimi', 'dsh'] as const;
   private sessionStore: SessionStore;
   /** 飞书桥接实例（public：测试直接访问断言，替代 as unknown as）。 */
   bridge: Bridge;
@@ -535,6 +539,7 @@ export class CommandRouter {
       case 'approval.answer':
       case 'approval.answerSubmit':
       case 'approval.answerCustom':
+      case 'approval.answerNote':
         return this.handleApprovalAction(value, ctx);
       case 'codex.compact':
         await this.bridge.handleCodexCompact(value, ctx);
@@ -574,6 +579,15 @@ export class CommandRouter {
    * Routes to the appropriate bridge method based on value.cmd.
    * Returns a toast response for immediate user feedback.
    */
+  /** 答案类操作的统一失败反馈：重复投递（同一 nonce 第二次点击）是已生效的
+   *  中性事件，报 error 会误导（首次点击实际已成功）。 */
+  private answerFailureToast(msg: string): CardActionResponse {
+    if (/already submitted \(duplicate nonce\)/.test(msg)) {
+      return { toast: { type: 'info', content: '该选项已处理，请勿重复点击' } };
+    }
+    return { toast: { type: 'error', content: `答案提交失败：${msg}` } };
+  }
+
   private async handleApprovalAction(
     value: CardActionPayload,
     _ctx: CommandContext,
@@ -641,7 +655,7 @@ export class CommandRouter {
         return { toast: { type: 'success', content: '已选择' } };
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
-        return { toast: { type: 'error', content: `答案提交失败：${msg}` } };
+        return this.answerFailureToast(msg);
       }
     }
 
@@ -659,7 +673,7 @@ export class CommandRouter {
         return { toast: { type: 'success', content: '答案已提交' } };
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
-        return { toast: { type: 'error', content: `答案提交失败：${msg}` } };
+        return this.answerFailureToast(msg);
       }
     }
 
@@ -684,7 +698,32 @@ export class CommandRouter {
         return { toast: { type: 'success', content: '答案已提交' } };
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
-        return { toast: { type: 'error', content: `答案提交失败：${msg}` } };
+        return this.answerFailureToast(msg);
+      }
+    }
+
+    if (value.cmd === 'approval.answerNote') {
+      if (
+        !runId ||
+        requestId === undefined ||
+        value.questionIndex === undefined ||
+        !nonce ||
+        !value.inputValue
+      ) {
+        return { toast: { type: 'error', content: '缺少补充说明参数' } };
+      }
+      try {
+        await this.bridge.handleApprovalAnswerNote({
+          runId,
+          requestId,
+          questionIndex: value.questionIndex,
+          text: value.inputValue,
+          nonce,
+        });
+        return { toast: { type: 'success', content: '补充说明已保存' } };
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        return this.answerFailureToast(msg);
       }
     }
 
@@ -1421,7 +1460,7 @@ export class CommandRouter {
     // immediate action the callback response is swallowed by enqueueImmediate
     // (fire-and-forget), and even if delivered it is transient — the user gets
     // no perceivable feedback on the switch. Same rationale as config.save
-    // agent-switch notice (74e99f0): persistent message first, toast only as a
+    // agent-switch notice: persistent message first, toast only as a
     // fallback if sendResult fails.
     let fallbackToast: string | undefined;
     if (useResult.card || useResult.text) {
@@ -1697,6 +1736,8 @@ export class CommandRouter {
           // 2026-08-03: 卡片刷新失败不吞切换通知——保存已成功，仅记录日志，
           // 后续切换消息照常发送；真正写盘/传播阶段的失败才走外层 catch 报「保存失败」。
           try {
+            // host 可能已变更 → 重新预取 DSH 目录（内部按 host 缓存，未变不重复拉）
+            await this.prefetchConfigCardCatalogs();
             await this.bridge.updateCardInPlace(this.buildConfigCard().card!, ctx);
           } catch (refreshErr) {
             getLogger().warn(
@@ -1900,6 +1941,24 @@ export class CommandRouter {
         const newAgentName = agentDisplayName(newAgent);
         switchNotice = `已切换到 ${newAgentName}，session 已清空，下次消息将启动新对话`;
         switchSessionId = '';
+      }
+    }
+
+    // DSH preset 变更 = 下次 run 新建 session（§4.3 D1）：
+    // preset 在 session 创建时固定，中途切换会被服务端拒绝（agent-preset-conflict）。
+    // 旧 sessionId 存入 previousSessions 停车位（可手动 /resume，但 /resume 会做
+    // preset 一致性校验），当前 sessionId 清空——下次 run 走 session.create 新建。
+    const hasDshPresetChange = Object.keys(updates).some((k) => k === 'agents.dsh.agentPreset');
+    // 已发生 agent 切换时（switchNotice 已设置）preset 分支跳过，避免覆盖切换 notice；
+    // 切换分支对 dsh 的 session 已做恢复/清空处理。
+    if (hasDshPresetChange && this.config.defaultAgent === 'dsh' && !switchNotice) {
+      const oldSessionId = this.sessionStore.getSessionId(ctx.userId, 'dsh');
+      if (oldSessionId) {
+        this.sessionStore.setPreviousSessionId(ctx.userId, 'dsh', oldSessionId);
+        this.sessionStore.clearSessionId(ctx.userId, 'dsh');
+        switchNotice = `DSH preset 已变更，旧会话已停放到恢复槽（可 /resume 校验后恢复），下次消息将新建会话`;
+      } else {
+        switchNotice = `DSH preset 已变更，下次消息将新建会话`;
       }
     }
 
@@ -3069,6 +3128,35 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
    * /resume 核心实现（public：handleResumePage / handle / resume.use 共用，
    * 也是测试的直接 seam，避免测试用 @ts-expect-error 摸私有方法）。
    */
+  /**
+   * DSH /resume preset 一致性校验：返回 mismatch 详情，或 undefined（一致/不可判定）。
+   *
+   * session 的 preset 在创建时固定（§2.1）。通过 listSessions 拿到目标 session 的
+   * agentPreset 与当前配置比对：不一致时不静默复用（返回提示），一致或查询失败
+   * （无法判定）时不阻断，避免 DSH 离线导致 /resume 完全不可用。
+   */
+  private dshPresetMismatch(
+    reader: AgentSessionReader,
+    sessionId: string,
+    cwd: string,
+  ): { sessionPreset: string; currentPreset: string } | undefined {
+    const currentPreset = this.config.agents?.dsh?.agentPreset;
+    if (!currentPreset) return undefined; // 配置跟随服务端默认，无法判定 → 放行
+    let sessionPreset: string | undefined;
+    try {
+      const { sessions } = reader.listSessions(cwd, { limit: 100 });
+      sessionPreset = sessions.find((s) => s.sessionId === sessionId)?.agentPreset;
+    } catch (err) {
+      getLogger().warn(
+        `[router] dshPresetMismatch listSessions failed for ${sessionId}: ${(err as Error).message}`,
+      );
+      return undefined;
+    }
+    if (!sessionPreset) return undefined; // 服务端未返回 preset → 无法判定，放行
+    if (sessionPreset === currentPreset) return undefined;
+    return { sessionPreset, currentPreset };
+  }
+
   cmdResume(args: string[], ctx: CommandContext, offset = 0): CommandResult {
     const entry = this.sessionStore.get(ctx.userId);
     const cwd = entry?.cwd;
@@ -3121,6 +3209,21 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
         return {
           text: `未找到 session ${sessionIdArg}（当前目录: ${cwd}）。请确认该 session 属于此目录，或先 /cd 到正确目录。`,
         };
+      }
+
+      // DSH preset 一致性校验（§6 风险 1）：session 的 preset 在创建时固定，
+      // 若与当前配置不符，直接复用会让后续 run 报 agent-preset-conflict。
+      // 不静默复用——明确提示用户，由用户决定是否继续（配置里手动改/清 preset）。
+      if (agentKind === 'dsh' && this.config.defaultAgent === 'dsh') {
+        const presetMismatch = this.dshPresetMismatch(reader, sessionIdArg, cwd);
+        if (presetMismatch) {
+          return {
+            text:
+              `⚠️ 该 DSH session 的 preset 是「${presetMismatch.sessionPreset}」，与当前配置「${presetMismatch.currentPreset}」不一致。\n` +
+              `preset 在 session 创建时固定，无法中途切换（DSH 返回 agent-preset-conflict）。\n` +
+              `继续恢复将在下次 run 失败。请在 /config 中把预设模式改回「${presetMismatch.sessionPreset}」后重试，或保持当前配置并发新消息新建会话。`,
+          };
+        }
       }
 
       // L3: 校验通过后才写入
@@ -3545,6 +3648,9 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
     // Ensure probe cache is populated before building the card.
     await probeAllAgents();
 
+    // 动态清单预取（DSH 模型/预设目录）：卡渲染前拉取，失败回退兜底清单
+    await this.prefetchConfigCardCatalogs();
+
     // Check if this is a direct set command: /config <key> <value>
     // Command-style set: immediate write to disk, clear pendingConfig
     if (args.length >= 2) {
@@ -3594,6 +3700,18 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
     // Default: show interactive config card - initialize pendingConfig if needed
     this.ensurePendingConfig();
     return this.buildConfigCard();
+  }
+
+  /**
+   * DSH /config 卡片构建前异步预取模型/预设目录（§4.2 动态清单）。
+   * 只在 defaultAgent 为 dsh 时生效；其他 agent 无 prefetch 钩子直接跳过。
+   * 预取失败不阻断——DshConfigBuilder 内部已回退固定兜底清单。
+   */
+  private async prefetchConfigCardCatalogs(): Promise<void> {
+    if (this.config.defaultAgent !== 'dsh') return;
+    const builder = getConfigBuilder('dsh');
+    const dshConf = getAgentConfig(this.config, 'dsh');
+    await builder.prefetch?.(dshConf?.host);
   }
 
   /** Build an interactive config card with CardKit 2.0 tabs + batch save */

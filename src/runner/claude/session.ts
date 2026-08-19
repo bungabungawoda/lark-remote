@@ -34,7 +34,8 @@ import { getLogger } from '../../logger/index.js';
 import { SpawningRunner } from '../common/spawning-runner.js';
 import { pipeAllStdio } from '../common/runner-utils.js';
 import { authErrorEvent, syntheticInitEvent } from '../common/runner-utils.js';
-import type { AgentEvent, ApprovalView, ClaudeUserQuestion, SpawnOptions } from '../types.js';
+import type { AgentEvent, ApprovalView, SpawnOptions, UserQuestion } from '../types.js';
+import { makeQuestionApprovalEvent } from '../question-common.js';
 
 /** 拒绝权限时的默认提示（进入 claude 上下文，中文用户可读）。 */
 const DENY_MESSAGE = '用户拒绝了此工具调用，请停止并等待用户指令。';
@@ -731,17 +732,33 @@ export class ClaudeSession extends SpawningRunner {
         this.pendingToolInputs.delete(requestId);
         return [];
       }
+      return [makeQuestionApprovalEvent(requestId, questions, this.sessionId)];
+    }
+
+    // ExitPlanMode：语义是「退出计划模式」的通知型工具，input 天然为空（plan
+    // 内容在 plan 文件 + 前置 thinking/text 里，不走 tool input）。它没有
+    // command 语义，塞进 command 槽位会显示无意义 `{}` → 用独立 tool kind，
+    // 标题/工具名 + reason 表达审批内容。
+    if (toolName === 'ExitPlanMode') {
+      const rawInput = JSON.stringify(input);
       const view: ApprovalView = {
         requestId,
-        kind: 'question',
-        questions,
-        availableDecisions: [],
+        kind: 'tool',
+        toolName,
+        reason: typeof request.description === 'string' ? request.description : undefined,
+        // 非空 input 携带给渲染层（当前 ExitPlanMode 为 `{}`，渲染层不展示）。
+        ...(rawInput && rawInput !== '{}' ? { toolInput: rawInput.slice(0, 500) } : {}),
+        // 计划审批没有「后续自动放行」语义，acceptAll 无意义；只留 accept/decline。
+        availableDecisions: ['accept', 'decline'],
       };
+      getLogger().info(
+        `[${this.logTag}] permission request requestId=${requestId} tool=${toolName}`,
+      );
       return [
         {
           type: 'approval_requested',
           requestId,
-          kind: 'question',
+          kind: 'tool',
           threadId: this.sessionId,
           turnId: '',
           itemId: '',
@@ -751,7 +768,13 @@ export class ClaudeSession extends SpawningRunner {
       ];
     }
 
-    const command = typeof input.command === 'string' ? input.command : JSON.stringify(input ?? {});
+    // 非命令工具的兜底防御：input 无 command 字段时 JSON 序列化，但空对象
+    // 序列化成 `{}` 对用户无意义——内容为空时回退展示工具名（review P3-5）。
+    const rawCommand = typeof input.command === 'string' ? input.command : JSON.stringify(input);
+    const command =
+      rawCommand && rawCommand !== '{}' && rawCommand !== 'null'
+        ? rawCommand
+        : toolName || '(unknown tool)';
     const view: ApprovalView = {
       requestId,
       kind: 'command',
@@ -793,11 +816,11 @@ function isTurnResultEvent(ev: AgentEvent): boolean {
 }
 
 /** 解析 AskUserQuestion input.questions。 */
-function parseUserQuestions(input: Record<string, unknown>): ClaudeUserQuestion[] {
+function parseUserQuestions(input: Record<string, unknown>): UserQuestion[] {
   const rawQuestions = input.questions;
   if (!Array.isArray(rawQuestions)) return [];
 
-  const questions: ClaudeUserQuestion[] = [];
+  const questions: UserQuestion[] = [];
   const seenQuestions = new Set<string>();
   for (const raw of rawQuestions) {
     if (!raw || typeof raw !== 'object') continue;
@@ -808,7 +831,7 @@ function parseUserQuestions(input: Record<string, unknown>): ClaudeUserQuestion[
     // 视为解析失败（调用方 deny 兜底），不把坏问题上抛给用户。
     if (seenQuestions.has(question)) return [];
     seenQuestions.add(question);
-    const options: ClaudeUserQuestion['options'] = [];
+    const options: UserQuestion['options'] = [];
     if (Array.isArray(q.options)) {
       for (const rawOption of q.options) {
         if (!rawOption || typeof rawOption !== 'object') continue;

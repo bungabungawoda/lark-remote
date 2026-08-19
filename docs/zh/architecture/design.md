@@ -539,7 +539,7 @@ mtime 新鲜度校验（`STALE_MS = 1h`，与 `isSessionActive` 同源）：一�
 max(末次 compact 的 postTokens, 末轮完整 prompt input+output+cacheRead+cacheCreation)`
 ——postTokens 只在 compact 刚发生时准确，session 继续增长就过期；cache_read 是 prompt
 主体，漏掉会严重低估。**不可累加所有 turn**（N turn 累加得 N×context 虚假巨值，
-regression 2ded6229: 55 turn 累加 3,328,386，实际 79,816）。`totalInput/totalOutput`
+regression: 55 turn 累加 3,328,386，实际 79,816）。`totalInput/totalOutput`
 仍累加，保留备用。
 `/resume` 末尾的 context 长度同源（`readSessionContent` 共用 `aggregateSessionUsage`）。
 

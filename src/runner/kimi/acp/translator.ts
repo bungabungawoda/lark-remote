@@ -29,8 +29,9 @@
  *   session/request_permission     → approval_requested
  */
 
-import type { AgentEvent, ApprovalView, ResultEvent } from '../../types.js';
+import type { AgentEvent, ApprovalView, ResultEvent, UserQuestion } from '../../types.js';
 import type { ApprovalRequestedEvent } from '../../types.js';
+import { makeQuestionApprovalEvent } from '../../question-common.js';
 import {
   NotificationMethod,
   ServerRequestMethod,
@@ -42,6 +43,9 @@ import {
   type UsageUpdateEvent,
   type SessionUpdateNotification,
   type RequestPermissionParams,
+  type ElicitationCreateParams,
+  type ElicitationPropertySchema,
+  type ElicitationEnumOption,
 } from '../../common/acp/protocol-types.js';
 import { getLogger } from '../../../logger/index.js';
 
@@ -154,8 +158,44 @@ export class KimiAcpTranslator {
     if (method === ServerRequestMethod.REQUEST_PERMISSION) {
       return this.handleRequestPermission(id, params as RequestPermissionParams);
     }
+    if (method === ServerRequestMethod.ELICITATION_CREATE) {
+      return this.handleElicitationCreate(id, params as ElicitationCreateParams);
+    }
 
     return [];
+  }
+
+  /**
+   * Kimi elicitation form：requestedSchema.properties 按顺序解析为 UserQuestion[]
+   * （type:array → 多选；oneOf/anyOf const → 选项 label；title → header??question）。
+   * 题面完整文本只在 form 级 message 里合并出现（逐字段 title 可能只是短 header），
+   * 因此 message 作为卡片概要行（view.intro）透传。
+   * form 会丢弃非声明选项值 → isOther=false（卡片隐藏自定义答案输入）。
+   */
+  private handleElicitationCreate(
+    requestId: number | string,
+    params: ElicitationCreateParams,
+  ): AcpTranslatorEvent[] {
+    const properties = params.requestedSchema?.properties ?? {};
+    const questions: UserQuestion[] = [];
+    for (const [key, prop] of Object.entries(properties)) {
+      const q = elicitationPropertyToQuestion(prop);
+      if (!q) {
+        getLogger().warn(`[kimi-acp-translator] elicitation property skipped: key=${key}`);
+        continue;
+      }
+      questions.push(q);
+    }
+    if (questions.length === 0) {
+      // 无法解析 → 交还 runner 自动响应（不悬挂服务端）。
+      return [];
+    }
+    const message = params.message?.trim();
+    const single = questions.length === 1;
+    const intro = message && (!single || message !== questions[0]!.question) ? message : undefined;
+    const event = makeQuestionApprovalEvent(requestId, questions, params.sessionId);
+    if (intro) event.view.intro = intro;
+    return [event];
   }
 
   /**
@@ -363,10 +403,22 @@ export class KimiAcpTranslator {
     requestId: number | string,
     params: RequestPermissionParams,
   ): AcpTranslatorEvent[] {
-    // §5.4: Question elicitation auto-respond cancelled
-    if (params.isQuestion || !params.toolCall) {
+    // §5.4 升级：question elicitation 识别（isQuestion 标记 / AskUserQuestion
+    // toolCall 标题 / q{n}_opt_* 选项命名空间）→ 渲染为提问卡；无法解析的
+    // 退化形态（无 toolCall 也无选项）仍返回 [] 由 runner 自动响应 cancelled。
+    const toolCall = params.toolCall;
+    const questionMarker =
+      params.isQuestion === true ||
+      toolCall?.title === 'AskUserQuestion' ||
+      optionIdsMatchQuestionNamespace(params.options);
+    if (questionMarker) {
+      return this.handlePermissionQuestion(requestId, params);
+    }
+    // §5.4：无 toolCall 且无提问标记 → 无法构成审批视图，返回 [] 由 runner
+    // 自动响应 cancelled（服务端不会悬挂）。
+    if (!toolCall) {
       getLogger().info(
-        `[kimi-acp-translator] question elicitation detected, auto-responding cancelled (requestId=${requestId})`,
+        `[kimi-acp-translator] permission request without toolCall, auto-responding cancelled (requestId=${requestId})`,
       );
       return [];
     }
@@ -393,6 +445,33 @@ export class KimiAcpTranslator {
         timestamp: new Date().toISOString(),
       } as ApprovalRequestedEvent,
     ];
+  }
+
+  /**
+   * request_permission 兜底桥（elicitation/create 失败或旧版 kimi）：
+   * 选项为 q{n}_opt_{i}（allow_once，label 直取 name）+ q{n}_skip（reject_once，
+   * 跳过语义）。单题单选、无 Other（kimi 桥丢弃非声明值）。
+   */
+  private handlePermissionQuestion(
+    requestId: number | string,
+    params: RequestPermissionParams,
+  ): AcpTranslatorEvent[] {
+    const selectable = (params.options ?? []).filter((opt) => /^q\d+_opt_\d+$/.test(opt.optionId));
+    if (selectable.length === 0) {
+      getLogger().info(
+        `[kimi-acp-translator] question elicitation unparseable, auto-responding cancelled (requestId=${requestId})`,
+      );
+      return [];
+    }
+    const questionText = extractQuestionText(params.toolCall);
+    const questions: UserQuestion[] = [
+      {
+        question: questionText,
+        isOther: false,
+        options: selectable.map((opt) => ({ label: opt.name })),
+      },
+    ];
+    return [makeQuestionApprovalEvent(requestId, questions, params.sessionId)];
   }
 
   /**
@@ -432,4 +511,43 @@ export class KimiAcpTranslator {
 
 function truncate(text: string, maxLen: number): string {
   return text.length <= maxLen ? text : text.slice(0, maxLen) + '…';
+}
+
+/** elicitation schema property → UserQuestion（无法解析返回 null）。 */
+function elicitationPropertyToQuestion(prop: ElicitationPropertySchema): UserQuestion | null {
+  const title = prop.title?.trim();
+  if (!title) return null;
+  const multiSelect = prop.type === 'array';
+  const rawOptions = multiSelect ? prop.items?.anyOf : prop.oneOf;
+  const options = (rawOptions ?? [])
+    .filter((opt): opt is ElicitationEnumOption => typeof opt?.const === 'string')
+    .map((opt) => ({
+      label: opt.const,
+      ...(opt.description ? { description: opt.description } : {}),
+    }));
+  if (options.length === 0) return null;
+  return {
+    question: title,
+    header: title,
+    multiSelect,
+    isOther: false,
+    options,
+  };
+}
+
+/** 选项命名空间是否匹配 kimi question 桥（q{n}_opt_{i} / q{n}_skip）。 */
+function optionIdsMatchQuestionNamespace(options?: Array<{ optionId: string }>): boolean {
+  return (options ?? []).some((opt) => /^q\d+_(opt_\d+|skip)$/.test(opt.optionId));
+}
+
+/** 从 AskUserQuestion toolCall 提取题面（content 文本优先，标题兜底）。 */
+function extractQuestionText(toolCall: RequestPermissionParams['toolCall']): string {
+  const content = toolCall?.content;
+  if (Array.isArray(content)) {
+    for (const block of content) {
+      const text = (block as { content?: { text?: string } }).content?.text;
+      if (typeof text === 'string' && text.trim()) return text.trim();
+    }
+  }
+  return toolCall?.title?.trim() || '请选择';
 }
