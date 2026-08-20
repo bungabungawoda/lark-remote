@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.9] - 2026-08-20
+
+### 新增
+
+- ExitPlanMode 计划审批：计划全文折叠展示 + 五决策对齐 TUI（自动放行 / 附意见 / 采纳修改）
+- 卡片别名管理重构：`alias-store` 并入 `alias-resolve`，`/order` 卡片新增「＋别名」交互（绑定/修改/删除，已绑定指令显示 `$name` 标签 + ✕）
+- DSH / connection-based runner 启动 / 配置热更 / 失败路径修复（CC-01~CC-08）
+
+### 变更
+
+- 别名 API 由「触发词 → 文本」改为「指令 → 别名」：`/order alias add <orderId|序号> <别名>` 绑定、`/order alias rm` 移除；别名随指令持久化在 `orders.json`，删除指令时别名一并删除；名称不能为保留子命令、不能数字开头
+- 用户文档同步别名卡片化交互，移除 `/order alias <name> <text>` 旧用法
+
+### 修复
+
+- 别名卡片成功回调：携带 `card` 替换 pre-click 卡，删除文案对齐新交互
+- kimi ACP runner 模型下发：迁移到纯 ACP 后 `session/set_config_option` 必须紧跟 `session/new|resume` 下发，否则实际跑的是默认模型（CC-07）
+
 ## [0.1.8] - 2026-08-19
 
 ### 新增
