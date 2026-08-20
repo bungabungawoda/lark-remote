@@ -93,6 +93,14 @@ claude \
 （默认 5 分钟）超时自动发 cancel（deny + 中断 turn），终态显示「审批超时未响应，
 已自动取消」。
 
+**ExitPlanMode 计划审批**：计划全文 + 计划文件路径随审批卡展示（来源：input.plan
+→ input.planFilePath 读文件 → 会话内 Write/Edit 跟踪的 plans 路径，逐级兜底）。
+决策对齐 TUI 四种交互：批准并执行（allow）/ 批准并自动放行（allow + 会话级
+autoApprove，语义比官方 auto mode 的分类器放行更宽）/ 拒绝并附意见（deny +
+message，留在 plan 模式修订）/ 批准并采纳修改（allow + `updatedInput.plan` 追加
+意见，触发 Claude 侧 `planWasEdited` 回显 edited plan 并写回计划文件）/ 拒绝。
+修改意见经 `approval.planFeedback` 输入框回流 coordinator，反馈类按钮复用。
+
 **result 事件语义**：subtype 为 `compact`/`compaction` 是 turn 中途压缩（不是
 结束），其余 subtype 才是 turn 终态；`--resume` 会先重放上一轮旧 result（早于
 `system/init`），协议层直接丢弃。真实 claude 实测：长驻模式下 result 之后不会
