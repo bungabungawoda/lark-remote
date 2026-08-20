@@ -170,17 +170,24 @@ export abstract class ConnectionBasedRunner<TClient, TEvent = AgentEvent> implem
    * unblock; otherwise cancel now via cancelCurrentTurn().
    */
   async stop(_opts?: { immediate?: boolean }): Promise<void> {
-    if (!this._isRunning || !this.currentClient || !this.currentSessionId()) return;
+    if (!this._isRunning) return;
+    // CC-01: 启动阶段（client/session 未建立）也必须记录停止意图，否则 /stop 被吞、
+    // turn 照常执行。executeTurn 在 setup 完成后检查 stopRequested 补发 cancel。
+    this.stopRequested = true;
+    this.forceFinish = true;
+    this.wakeWaiters();
+    if (!this.currentClient || !this.currentSessionId()) {
+      getLogger().warn(
+        `[${this.logTag}] stop during setup (client/session not ready); will cancel after setup`,
+      );
+      return;
+    }
     if (this.shouldDeferStop()) {
       // turn/start 或 prompt 尚未响应：先标记，等 run() 完成后再补发 cancel。
-      this.stopRequested = true;
-      this.forceFinish = true;
-      this.wakeWaiters();
       return;
     }
     // turn/start 或 prompt 已 resolved：立即 cancel；同时置 stopRequested 抑制
     // 尚未结算的 prompt 结果翻译（opencode 语义），对已结算方无害。
-    this.stopRequested = true;
     try {
       await this.cancelCurrentTurn();
     } catch (err) {

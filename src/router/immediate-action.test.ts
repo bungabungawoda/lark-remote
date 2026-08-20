@@ -113,6 +113,10 @@ describe('isImmediateAction (§9.19)', () => {
       expect(isImmediateAction('approval.answerNote')).toBe(true);
     });
 
+    it('approval.planFeedback should return true (计划审批修改意见即时保存)', () => {
+      expect(isImmediateAction('approval.planFeedback')).toBe(true);
+    });
+
     it('ws.page should return true (pagination is a control operation)', () => {
       expect(isImmediateAction('ws.page')).toBe(true);
     });

@@ -2,10 +2,6 @@ import { describe, expect, it } from 'vitest';
 import { terminalToColor } from './card-shared.js';
 
 describe('terminalToColor', () => {
-  it('can be imported from card-shared', () => {
-    expect(terminalToColor).toBeTypeOf('function');
-  });
-
   it('maps done to green', () => {
     expect(terminalToColor('done')).toBe('green');
   });

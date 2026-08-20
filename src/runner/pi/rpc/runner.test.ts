@@ -27,6 +27,10 @@ rl.on('line', (line) => {
   if (msg.type === 'get_state') {
     send({ id: msg.id, type: 'response', command: 'get_state', success: true, data: { sessionId: config.sessionId || '${SESSION_ID}' } });
   } else if (msg.type === 'prompt') {
+    if (config.promptSuccess === false) {
+      send({ id: msg.id, type: 'response', command: 'prompt', success: false, error: config.promptError || 'invalid model' });
+      return;
+    }
     send({ id: msg.id, type: 'response', command: 'prompt', success: true });
     if (config.emitEvents !== false) {
       send({ type: 'message_start', message: { role: 'assistant', content: [] } });
@@ -105,12 +109,6 @@ describe('PiRpcRunner', () => {
     expect(assistant.message.content).toContainEqual({ type: 'text', text: 'Hello' });
   });
 
-  it('test_anchor_run_has_runCompact_duck_typing', () => {
-    const runner = makeRunner();
-    expect('runCompact' in runner).toBe(true);
-    expect(typeof (runner as unknown as { runCompact: unknown }).runCompact).toBe('function');
-  });
-
   it('test_anchor_compact_requires_session_id', async () => {
     const runner = makeRunner();
     const events = [];
@@ -163,4 +161,23 @@ describe('PiRpcRunner', () => {
     expect(info.provider).toBe('Volcano');
     expect(info.extras).toMatchObject({ mode: 'rpc' });
   });
+
+  it('test_anchor_prompt_failure_success_false_produces_error_result_not_timeout', async () => {
+    // CC-08: prompt 返回 success:false（无效模型/provider/忙）时必须立即产出
+    // error result（含 pi 的错误文本），而不是忽略响应继续等 agent_settled →
+    // 最长 turn idle timeout。
+    const runner = makeRunner({
+      promptSuccess: false,
+      promptError: 'invalid model: glm-does-not-exist',
+    });
+    const events = [];
+    for await (const ev of runner.run('hello', { cwd: tmpDir })) events.push(ev);
+    await runner.dispose();
+    const result = events.find((e) => e.type === 'result') as {
+      subtype: string;
+      errorMessage?: string;
+    };
+    expect(result.subtype).toBe('error');
+    expect(result.errorMessage).toContain('invalid model: glm-does-not-exist');
+  }, 15000);
 });

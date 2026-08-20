@@ -25,7 +25,11 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { AgentEvent } from '../../types.js';
 import { KimiAcpRunner } from './runner.js';
-import { writeMockAcpServer, writeScenario } from '../../../../tests/lib/mock-acp-server.js';
+import {
+  writeMockAcpServer,
+  writeScenario,
+  collectEvents,
+} from '../../../../tests/lib/mock-acp-server.js';
 import { createStubSessionReader } from '../../../../tests/lib/bridge-stubs.js';
 import { KimiSessionReader } from '../../../session/kimi/sessions.js';
 
@@ -107,10 +111,7 @@ describe('KimiAcpRunner', () => {
       turnIdleTimeoutMs: 30_000,
     });
 
-    const events: AgentEvent[] = [];
-    for await (const event of runner.run('hello', { cwd: workspace })) {
-      events.push(event);
-    }
+    const events = await collectEvents(runner, 'hello', { cwd: workspace });
 
     // Must have synthetic init
     const init = events.find((e) => e.type === 'system' && e.subtype === 'init');
@@ -167,10 +168,7 @@ describe('KimiAcpRunner', () => {
       turnIdleTimeoutMs: 30_000,
     });
 
-    const events: AgentEvent[] = [];
-    for await (const event of runner.run('hello', { cwd: workspace })) {
-      events.push(event);
-    }
+    const events = await collectEvents(runner, 'hello', { cwd: workspace });
 
     const result = events.find((e) => e.type === 'result') as
       (AgentEvent & { subtype?: string }) | undefined;
@@ -194,10 +192,7 @@ describe('KimiAcpRunner', () => {
       turnIdleTimeoutMs: 30_000,
     });
 
-    const events: AgentEvent[] = [];
-    for await (const event of runner.run('hello', { cwd: workspace })) {
-      events.push(event);
-    }
+    const events = await collectEvents(runner, 'hello', { cwd: workspace });
 
     const result = events.find((e) => e.type === 'result') as
       (AgentEvent & { subtype?: string; errorMessage?: string }) | undefined;
@@ -219,10 +214,7 @@ describe('KimiAcpRunner', () => {
       turnIdleTimeoutMs: 30_000,
     });
 
-    const events: AgentEvent[] = [];
-    for await (const event of runner.run('hello', { cwd: workspace, sessionId: SESSION_ID })) {
-      events.push(event);
-    }
+    const events = await collectEvents(runner, 'hello', { cwd: workspace, sessionId: SESSION_ID });
 
     const result = events.find((e) => e.type === 'result') as
       (AgentEvent & { subtype?: string; session_id?: string }) | undefined;
@@ -257,10 +249,7 @@ describe('KimiAcpRunner', () => {
       turnIdleTimeoutMs: 30_000,
     });
 
-    const events: AgentEvent[] = [];
-    for await (const event of runner.run('think', { cwd: workspace })) {
-      events.push(event);
-    }
+    const events = await collectEvents(runner, 'think', { cwd: workspace });
 
     const thinking = events.filter((e) => e.type === 'turn_diff' && 'reasoning' in e);
     expect(thinking.length).toBeGreaterThan(0);
@@ -308,10 +297,7 @@ describe('KimiAcpRunner', () => {
       turnIdleTimeoutMs: 30_000,
     });
 
-    const events: AgentEvent[] = [];
-    for await (const event of runner.run('list files', { cwd: workspace })) {
-      events.push(event);
-    }
+    const events = await collectEvents(runner, 'list files', { cwd: workspace });
 
     // Should have tool_use in assistant events
     const toolUse = events.find(
@@ -478,13 +464,16 @@ describe('KimiAcpRunner', () => {
       turnIdleTimeoutMs: 30_000,
     });
 
-    const events: AgentEvent[] = [];
-    for await (const event of runner.run('do something', { cwd: workspace })) {
-      events.push(event);
-      if (event.type === 'approval_requested') {
-        await runner.respondApproval(event.requestId, { action: 'decline' });
-      }
-    }
+    const events = await collectEvents(
+      runner,
+      'do something',
+      { cwd: workspace },
+      async (event) => {
+        if (event.type === 'approval_requested') {
+          await runner.respondApproval(event.requestId, { action: 'decline' });
+        }
+      },
+    );
 
     const result = events.find((e) => e.type === 'result') as
       (AgentEvent & { subtype?: string }) | undefined;
@@ -593,6 +582,54 @@ describe('KimiAcpRunner', () => {
     await runner.dispose();
   });
 
+  it('pushes the configured model via session/set_config_option (CC: migration regression)', async () => {
+    // 旧 KimiRunner 通过 -m 传模型；迁移到纯 ACP 后模型只用于 /status 展示。
+    // 必须像 opencode 一样在 setupTurn 里 session/new|resume 后 session/set_config_option 下发，
+    // 否则实际跑的是 kimi 默认模型（CC-07）。
+    const capturePath = join(tmpDir, 'model-capture.jsonl');
+    const { wrapper, workspace } = writeScenario(tmpDir, serverScript, 'kimi', {
+      capturePath,
+      configOptions: [
+        {
+          id: 'model',
+          name: 'Model',
+          category: 'model',
+          type: 'select',
+          currentValue: 'kimi-code/k3',
+        },
+      ],
+    });
+
+    const runner = new KimiAcpRunner({
+      kind: 'kimi',
+      sessionReader: createStubSessionReader(),
+      binary: wrapper,
+      acpArgs: [],
+      permissionMode: 'manual',
+      model: 'myprovider/DeepSeek-V4-Pro',
+      turnIdleTimeoutMs: 30_000,
+    });
+
+    const events = await collectEvents(runner, 'hello', { cwd: workspace });
+    const result = events.find((e) => e.type === 'result') as
+      (AgentEvent & { subtype?: string }) | undefined;
+    expect(result?.subtype).toBe('success');
+
+    const setConfigs = readFileSync(capturePath, 'utf-8')
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line) as { method?: string; params?: Record<string, unknown> })
+      .filter((m) => m.method === 'session/set_config_option');
+    expect(setConfigs.length).toBeGreaterThan(0);
+    expect(setConfigs[0].params).toMatchObject({
+      sessionId: SESSION_ID,
+      configId: 'model',
+      value: 'myprovider/DeepSeek-V4-Pro',
+    });
+
+    await runner.dispose();
+  });
+
   it('cancels approval with cancelled outcome', async () => {
     const { wrapper, workspace } = writeScenario(tmpDir, serverScript, 'kimi', {
       sendApproval: true,
@@ -607,13 +644,16 @@ describe('KimiAcpRunner', () => {
       turnIdleTimeoutMs: 30_000,
     });
 
-    const events: AgentEvent[] = [];
-    for await (const event of runner.run('do something', { cwd: workspace })) {
-      events.push(event);
-      if (event.type === 'approval_requested') {
-        await runner.respondApproval(event.requestId, { action: 'cancel' });
-      }
-    }
+    const events = await collectEvents(
+      runner,
+      'do something',
+      { cwd: workspace },
+      async (event) => {
+        if (event.type === 'approval_requested') {
+          await runner.respondApproval(event.requestId, { action: 'cancel' });
+        }
+      },
+    );
 
     const result = events.find((e) => e.type === 'result') as
       (AgentEvent & { subtype?: string }) | undefined;
@@ -708,17 +748,6 @@ describe('KimiAcpRunner', () => {
     });
 
     expect(runner.lifetime).toBe('workspace');
-  });
-
-  it('kills no orphans (managed by connection manager)', () => {
-    const runner = new KimiAcpRunner({
-      kind: 'kimi',
-      sessionReader: createStubSessionReader(),
-      binary: 'kimi',
-      acpArgs: [],
-    });
-    // killOrphan is a no-op — just verify it doesn't throw
-    expect(() => runner.killOrphan()).not.toThrow();
   });
 
   it('runCompact requires a sessionId', async () => {
@@ -905,10 +934,7 @@ describe('KimiAcpRunner', () => {
       turnIdleTimeoutMs: 30_000,
     });
 
-    const events: AgentEvent[] = [];
-    for await (const event of runner.run('hello', { cwd: workspace })) {
-      events.push(event);
-    }
+    const events = await collectEvents(runner, 'hello', { cwd: workspace });
     await runner.dispose();
 
     const received = readFileSync(capturePath, 'utf-8')
@@ -1038,10 +1064,7 @@ describe('KimiAcpRunner', () => {
       turnIdleTimeoutMs: 30_000,
     });
 
-    const events: AgentEvent[] = [];
-    for await (const event of runner.run('hello', { cwd: workspace })) {
-      events.push(event);
-    }
+    const events = await collectEvents(runner, 'hello', { cwd: workspace });
 
     // No approval_requested event should be emitted for question elicitation
     const approvals = events.filter((e) => e.type === 'approval_requested');
@@ -1073,10 +1096,7 @@ describe('KimiAcpRunner', () => {
       turnIdleTimeoutMs: 200, // very short idle timeout
     });
 
-    const events: AgentEvent[] = [];
-    for await (const event of runner.run('hello', { cwd: workspace })) {
-      events.push(event);
-    }
+    const events = await collectEvents(runner, 'hello', { cwd: workspace });
 
     const result = events.find((e) => e.type === 'result') as
       (AgentEvent & { subtype?: string; errorMessage?: string }) | undefined;
@@ -1127,10 +1147,7 @@ fi
       turnIdleTimeoutMs: 30_000,
     });
 
-    const events: AgentEvent[] = [];
-    for await (const event of runner.run('hello', { cwd: crashWorkspace })) {
-      events.push(event);
-    }
+    const events = await collectEvents(runner, 'hello', { cwd: crashWorkspace });
 
     const result = events.find((e) => e.type === 'result') as
       (AgentEvent & { subtype?: string }) | undefined;
@@ -1139,6 +1156,58 @@ fi
 
     // Should have spawned twice (crash + retry)
     expect(Number(readFileSync(spawnCountFile, 'utf8').trim())).toBe(2);
+
+    await runner.dispose();
+  });
+
+  it('stop during setup (session/new pending) emits interrupted, does not run the turn (CC-01)', async () => {
+    const { wrapper, workspace } = writeScenario(tmpDir, serverScript, 'kimi', {
+      delayNewMs: 500, // session/new 阻塞 500ms，制造「连接已建、session 未建立」的启动窗口
+      notifications: [
+        {
+          method: 'session/update',
+          params: {
+            sessionId: SESSION_ID,
+            update: {
+              sessionUpdate: 'agent_message_chunk',
+              content: { type: 'text', text: 'SHOULD-NOT-RUN' },
+            },
+          },
+        },
+      ],
+    });
+
+    const runner = new KimiAcpRunner({
+      kind: 'kimi',
+      sessionReader: createStubSessionReader(),
+      binary: wrapper,
+      acpArgs: [],
+      permissionMode: 'manual',
+      turnIdleTimeoutMs: 30_000,
+    });
+
+    const events: AgentEvent[] = [];
+    const runPromise = (async () => {
+      for await (const event of runner.run('hello', { cwd: workspace })) {
+        events.push(event);
+      }
+    })();
+
+    // 在 setup（session/new）尚未完成时按 /stop：旧实现 currentSessionId() 为 null →
+    // stop() 提前 return 不置 stopRequested → turn 照常执行。
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    await runner.stop();
+    await runPromise;
+
+    const result = events.find((e) => e.type === 'result') as
+      (AgentEvent & { subtype?: string }) | undefined;
+    expect(result).toBeDefined();
+    expect(result?.subtype).toBe('interrupted');
+    // 关键：不得产出真实 agent 文本（turn 被取消而非继续执行）
+    const assistantTexts = events.filter(
+      (e) => e.type === 'assistant' || (e.type === 'turn_diff' && 'text' in e),
+    );
+    expect(assistantTexts).toHaveLength(0);
 
     await runner.dispose();
   });

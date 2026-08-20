@@ -20,35 +20,12 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
-import os from 'node:os';
 import { FeishuConnector } from '../../src/connector/index.js';
 import { loadConfig } from '../../src/config/index.js';
-
-const TEST_CONFIG_DIR = path.join(os.homedir(), '.lark-remote-test');
-const configPath = path.join(TEST_CONFIG_DIR, 'config.yaml');
-
-const skipIfNoConfig = () => {
-  if (!fs.existsSync(configPath)) {
-    console.log(`⚠️ 跳过：配置不存在 ${configPath}`);
-    return true;
-  }
-  try {
-    const cfg = loadConfig(configPath);
-    if (!cfg.feishu?.appId || !cfg.feishu?.appSecret) {
-      console.log('⚠️ 跳过：配置中缺少飞书凭据');
-      return true;
-    }
-    return false;
-  } catch (err) {
-    console.log(`⚠️ 跳过：配置加载失败 ${err}`);
-    return true;
-  }
-};
+import { TEST_CONFIG_DIR, configPath, skipIfNoConfig, describeLive } from './live-helpers.js';
 
 let connector: FeishuConnector;
 let testChatId: string;
-
-const describeLive = process.env.FEISHU_LIVE_TEST ? describe : describe.skip;
 
 /** 与 CommandRouter.cmdWs 完全一致的结构（修复后：每页 WS_PAGE_SIZE 条 + 分页栏）。 */
 function buildWsCard(entries: [string, string][], offset: number, pageSize: number) {

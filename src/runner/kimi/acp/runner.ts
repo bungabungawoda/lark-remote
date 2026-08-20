@@ -544,6 +544,23 @@ export class KimiAcpRunner extends ConnectionBasedRunner<KimiAcpClient, AcpTrans
     }
     this.activeSessionId = sessionId;
 
+    // CC-07: 下发配置的模型（provider/model）。session/new|resume 只带 cwd/mcpServers，
+    // 不带 model；不主动下发则实际跑 kimi 服务端默认模型（旧 KimiRunner 通过 -m 传模型，
+    // 迁移到纯 ACP 后丢失）。仿 opencode 用 session/set_config_option。失败仅告警不阻断。
+    if (this.model) {
+      try {
+        await client.request('session/set_config_option', {
+          sessionId,
+          configId: 'model',
+          value: this.model,
+        });
+      } catch (err) {
+        getLogger().warn(
+          `[${this.logTag}] set_config_option model failed (non-fatal): ${(err as Error).message}`,
+        );
+      }
+    }
+
     // Set permission mode (§5.1): EVERY fresh ACP session starts in
     // 'default' (= manual approvals, acp-server modes.ts DEFAULT_MODE_ID),
     // so the mode must be sent unconditionally — skipping yolo leaves the

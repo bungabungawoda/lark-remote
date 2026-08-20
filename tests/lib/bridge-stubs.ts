@@ -19,11 +19,12 @@
  */
 
 import { vi } from 'vitest';
-import type { Runner, AgentSessionReader } from '../../src/runner/index.js';
+import type { Runner, AgentRunner, AgentSessionReader } from '../../src/runner/index.js';
 import { AgentRegistry } from '../../src/runner/registry.js';
 import { SessionReaderRegistry } from '../../src/session/registry.js';
 import { ClaudeSessionReader } from '../../src/session/claude/index.js';
 import { Bridge } from '../../src/bridge/index.js';
+import { QueueManager } from '../../src/bridge/queue-manager.js';
 import { SessionStore } from '../../src/session/index.js';
 import { AppConfigSchema } from '../../src/config/index.js';
 import type { AppConfig } from '../../src/config/index.js';
@@ -506,4 +507,145 @@ export function createMockBridge(overrides?: Partial<Bridge>): Bridge {
     flushAllMediaNotifications: vi.fn().mockResolvedValue(undefined),
     ...overrides,
   } as Bridge;
+}
+
+// ── QueueManager fixtures ─────────────────────────────────────────────
+
+export interface MakeQueueManagerResult {
+  qm: QueueManager;
+  /** Cards sent via sendCard, keyed by the card message id returned. */
+  sentCards: Array<{ chatId: string; card: object }>;
+  /** Cards updated via updateCard. */
+  updatedCards: Array<{ messageId: string; card: object }>;
+}
+
+/**
+ * QueueManager with stub callbacks: sendCard resolves immediately with a
+ * unique `card-msg-N` id, updateCard records the patch. Shared by the
+ * queue-card-arm tests (was copy-pasted across 5 files).
+ */
+export function makeQueueManager(): MakeQueueManagerResult {
+  const sentCards: Array<{ chatId: string; card: object }> = [];
+  const updatedCards: Array<{ messageId: string; card: object }> = [];
+
+  const sendCard = async (chatId: string, card: object) => {
+    sentCards.push({ chatId, card });
+    return `card-msg-${sentCards.length}`;
+  };
+  const updateCard = async (messageId: string, card: object) => {
+    updatedCards.push({ messageId, card });
+  };
+
+  const qm = new QueueManager(() => false, sendCard, updateCard);
+  return { qm, sentCards, updatedCards };
+}
+
+/**
+ * Variant of makeQueueManager whose sendCard hangs until resolveSendCard()
+ * is called, for tests that exercise the race between a pending card send
+ * and a subsequent update (was copy-pasted across the queue-card-arm race
+ * tests). resolveSendCard is a no-op before the card send is pending.
+ *
+ * `cardMessageId` is the message id the resolved sendCard promise returns;
+ * tests that later filter `updatedCards` by it must pass the same id the
+ * local copy used (e.g. 'card-late-msg', 'card-preview-race-msg').
+ */
+export function makeQueueManagerWithPendingCard(
+  cardMessageId = 'card-msg-1',
+): MakeQueueManagerResult & { resolveSendCard: () => void } {
+  const sentCards: Array<{ chatId: string; card: object }> = [];
+  const updatedCards: Array<{ messageId: string; card: object }> = [];
+  let resolveSendCard: (() => void) | undefined;
+
+  const sendCard = async (chatId: string, card: object) => {
+    sentCards.push({ chatId, card });
+    return new Promise<string>((resolve) => {
+      resolveSendCard = () => resolve(cardMessageId);
+    });
+  };
+  const updateCard = async (messageId: string, card: object) => {
+    updatedCards.push({ messageId, card });
+  };
+
+  const qm = new QueueManager(() => false, sendCard, updateCard);
+  return {
+    qm,
+    sentCards,
+    updatedCards,
+    resolveSendCard: () => resolveSendCard?.(),
+  };
+}
+
+/**
+ * Variant of makeQueueManager whose sendCard FAILS (Feishu error / rate
+ * limit): the queue status card is never delivered, and the promise mapping
+ * must be cleaned up so a long-running bridge does not accumulate a stale
+ * entry per failed send. Was copy-pasted in queue-card-arm-send-failure.
+ */
+export function makeQueueManagerWithFailingCardSend(): MakeQueueManagerResult & {
+  getSendFailures: () => number;
+} {
+  const sentCards: Array<{ chatId: string; card: object }> = [];
+  const updatedCards: Array<{ messageId: string; card: object }> = [];
+  let sendFailures = 0;
+
+  const sendCard = async (chatId: string, card: object) => {
+    sentCards.push({ chatId, card });
+    sendFailures++;
+    throw new Error('simulated Feishu send failure');
+  };
+  const updateCard = async (messageId: string, card: object) => {
+    updatedCards.push({ messageId, card });
+  };
+
+  const qm = new QueueManager(() => false, sendCard, updateCard);
+  return { qm, sentCards, updatedCards, getSendFailures: () => sendFailures };
+}
+
+/**
+ * A runner whose run() hangs until released and whose stop() hangs on a
+ * separate gate, reproducing the production stop window: interruptCurrentRun
+ * awaits Promise.allSettled([session.finish, runner.stop]) while the killed
+ * run's promise-chain settle already advanced the serial queue to the NEXT
+ * task. Was copy-pasted across 3 queue-card-arm tests.
+ */
+export interface GatedRunner extends Runner {
+  stopCalls: number;
+  releaseRun: () => void;
+  releaseStop: () => void;
+}
+
+export function createGatedRunner(): GatedRunner & AgentRunner {
+  let releaseRun!: () => void;
+  let releaseStop!: () => void;
+  const runGate = new Promise<void>((resolve) => {
+    releaseRun = resolve;
+  });
+  const stopGate = new Promise<void>((resolve) => {
+    releaseStop = resolve;
+  });
+  const runner: GatedRunner & AgentRunner = {
+    isRunning: false,
+    stopCalls: 0,
+    stop: async () => {
+      runner.stopCalls++;
+      await stopGate;
+    },
+    killOrphan: () => {},
+    registerExitHandlers: () => {},
+    run: async function* () {
+      await runGate;
+    },
+    kind: 'claude',
+    sessionReader: {
+      listSessions: () => ({ sessions: [], total: 0 }),
+      getNewestSession: () => null,
+      readSessionContent: () => ({ events: [] }),
+      isSessionActive: () => false,
+    },
+    getStatusInfo: () => ({ kind: 'claude', model: 'test' }),
+    releaseRun: () => releaseRun(),
+    releaseStop: () => releaseStop(),
+  };
+  return runner;
 }

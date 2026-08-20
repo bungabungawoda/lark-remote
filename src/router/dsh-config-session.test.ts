@@ -140,6 +140,28 @@ describe('DSH preset 变更 session 语义', () => {
     expect(sessionStore.getSessionId(ctx.userId, 'dsh')).toBe(SID_OLD);
     expect(sessionStore.getPreviousSessionId(ctx.userId, 'dsh')).toBeUndefined();
   });
+
+  it('host 变更时把旧 sessionId 停到 previousSessions 并清空（CC-02 session 边界）', async () => {
+    // host 变更 = 换服务，旧 host 的 sessionId 发往新 host 是错的。须像 preset 变更一样
+    // 停车 + 清空当前 sessionId，下次 run 新建会话。
+    const { router, sessionStore } = makeRouter([], { host: 'http://host-a:3080' });
+    sessionStore.set(ctx.userId, {
+      cwd: '/home/user/project',
+      sessions: new Map([['dsh', SID_OLD]]),
+      previousSessions: new Map(),
+      sessionCwds: new Map(),
+      arrivalSessions: new Map(),
+    });
+
+    await router.handleCardAction(
+      { cmd: 'config.set', key: 'agents.dsh.host', option: 'http://host-b:3080' },
+      ctx,
+    );
+    await router.handleCardAction({ cmd: 'config.save' }, ctx);
+
+    expect(sessionStore.getPreviousSessionId(ctx.userId, 'dsh')).toBe(SID_OLD);
+    expect(sessionStore.getSessionId(ctx.userId, 'dsh')).toBeUndefined();
+  });
 });
 
 describe('DSH /resume preset 一致性校验', () => {

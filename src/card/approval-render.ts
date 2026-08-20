@@ -6,11 +6,16 @@
  */
 
 import type { ApprovalView } from '../runner/types.js';
+import { collapsibleMarkdownPanel } from './collapsible.js';
+import { truncateUtf8, truncateMarkdownTables } from './text-truncate.js';
 
 /** Unique nonce for card button callbacks (SDK dedup + router validation). */
 function mkNonce(): string {
   return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
 }
+
+/** 计划面板正文字节预算（折叠展示 + 截断保护 28KB 卡片预算）。 */
+const PLAN_PANEL_BYTES = 6000;
 
 /** reason div（3 处共用）；反引号中和防 lark_md 解析错误（review P2-2）。 */
 function reasonDiv(approval: ApprovalView): object | null {
@@ -82,20 +87,26 @@ function renderDecisionButtons(
     ];
   }
 
-  const BUTTONS: Record<string, { label: string; type: 'primary' | 'danger' }> = {
-    accept: { label: '✅ 允许', type: 'primary' },
+  // ExitPlanMode 计划审批用 TUI 语义文案；其他审批保持原文案。
+  const isPlanExit = approval.kind === 'tool' && approval.toolName === 'ExitPlanMode';
+  const BUTTONS: Record<string, { label: string; type: 'primary' | 'default' | 'danger' }> = {
+    accept: { label: isPlanExit ? '✅ 批准并执行' : '✅ 允许', type: 'primary' },
     acceptForSession: { label: '✅ 允许本次会话', type: 'primary' },
     acceptWithExecpolicyAmendment: { label: '🔒 允许并记住命令', type: 'primary' },
-    acceptAll: { label: '✅ 允许所有', type: 'primary' },
+    acceptAll: { label: isPlanExit ? '✅ 批准并自动放行' : '✅ 允许所有', type: 'primary' },
+    acceptWithFeedback: { label: '✍️ 批准并采纳修改', type: 'primary' },
+    declineWithFeedback: { label: '✏️ 拒绝并附意见', type: 'default' },
     decline: { label: '❌ 拒绝', type: 'danger' },
   };
   // Fixed presentation order; only offer decisions the protocol listed
-  // (accept/decline are always available; acceptAll is Claude 专属「允许所有」)。
+  // (accept/decline are always available; 其余按 availableDecisions 出现)。
   const offered = [
     'accept',
     'acceptForSession',
     'acceptWithExecpolicyAmendment',
     'acceptAll',
+    'acceptWithFeedback',
+    'declineWithFeedback',
     'decline',
   ].filter((d) => d === 'accept' || d === 'decline' || approval.availableDecisions.includes(d));
 
@@ -127,19 +138,23 @@ function renderDecisionButtons(
 
 /**
  * 通用工具权限请求（kind === 'tool'）：展示工具名 + 用途说明（reason）+ 原始
- * input（若有）。ExitPlanMode 的 input 为空对象，工具名本身即审批内容，
- * 不再落入 command 槽位显示无意义 `{}`。
+ * input（若有）。ExitPlanMode 走独立计划审批分支（计划全文 + 修改意见输入）。
  */
 function renderToolApproval(approval: ApprovalView, expired?: boolean, runId?: string): object[] {
+  // ExitPlanMode：对齐 TUI「先看完整计划再交互」——计划全文折叠面板 +
+  // 修改意见输入 + 五决策按钮（批准并执行 / 批准并自动放行 / 拒绝并附意见 /
+  // 批准并采纳修改 / 拒绝）。
+  if (approval.toolName === 'ExitPlanMode') {
+    return renderPlanApproval(approval, expired, runId);
+  }
+
   const elements: object[] = [];
 
-  // ExitPlanMode 是「退出计划模式」：标题用计划审批语义；其他工具用通用标题。
-  const isPlanExit = approval.toolName === 'ExitPlanMode';
   elements.push({
     tag: 'div',
     text: {
       tag: 'lark_md',
-      content: isPlanExit ? '**📋 计划审批**' : '**🔧 工具请求**',
+      content: '**🔧 工具请求**',
     },
   });
 
@@ -163,6 +178,100 @@ function renderToolApproval(approval: ApprovalView, expired?: boolean, runId?: s
   elements.push(...renderDecisionButtons(approval, expired, runId));
 
   return elements;
+}
+
+/**
+ * ExitPlanMode 计划审批区：
+ * - 计划全文（input.plan 或计划文件读取）折叠展示，反引号中和 + 表格限数 +
+ *   字节预算截断；
+ * - 计划文件路径（有则展示，含模型写错目录的退化场景）；
+ * - 修改意见输入框（approval.planFeedback → coordinator 回流回显），供
+ *   「拒绝并附意见」/「批准并采纳修改」复用；
+ * - 决策按钮由 renderDecisionButtons 按 availableDecisions 渲染。
+ */
+function renderPlanApproval(approval: ApprovalView, expired?: boolean, runId?: string): object[] {
+  const elements: object[] = [];
+
+  elements.push({
+    tag: 'div',
+    text: { tag: 'lark_md', content: '**📋 计划审批**' },
+  });
+
+  pushIf(elements, reasonDiv(approval));
+
+  if (approval.planFilePath) {
+    const neutralizedPath = approval.planFilePath.replace(/`/g, '·');
+    elements.push({
+      tag: 'div',
+      text: { tag: 'lark_md', content: `📄 ${neutralizedPath}` },
+    });
+  }
+
+  if (approval.plan) {
+    // 反引号中和防 11311（同 reasonDiv/command 策略）；表格限数防 11310；
+    // 字节预算截断防 28KB 超限。
+    const neutralized = approval.plan.replace(/`/g, '·');
+    const tableSafe = truncateMarkdownTables(neutralized);
+    const content = truncateUtf8(tableSafe, PLAN_PANEL_BYTES);
+    elements.push(
+      collapsibleMarkdownPanel({
+        title: '📋 计划',
+        expanded: false,
+        border: 'blue',
+        content,
+      }),
+    );
+  } else {
+    elements.push({
+      tag: 'div',
+      text: {
+        tag: 'lark_md',
+        content: '📋 未获取到计划文件内容（可参考上方正文摘要）',
+      },
+    });
+  }
+
+  if (!expired) {
+    elements.push(renderPlanFeedbackInput(approval.requestId, runId));
+    if (approval.planFeedback) {
+      const neutralized = approval.planFeedback.replace(/`/g, '·');
+      elements.push({
+        tag: 'div',
+        text: { tag: 'lark_md', content: `📝 ${neutralized}` },
+      });
+    }
+  }
+
+  elements.push(...renderDecisionButtons(approval, expired, runId));
+
+  return elements;
+}
+
+/**
+ * 计划修改意见输入行：输入后点击右侧 ✓ 提交图标，input_value 经 connector
+ * raw 事件回传（CardKit input 的 input_value 会被 SDK normalizer 丢弃，
+ * 必须走 includeRawEvent 路径，同 answerNote）。
+ */
+function renderPlanFeedbackInput(requestId: number | string, runId?: string): object {
+  return {
+    tag: 'input',
+    name: `plan-feedback-${requestId}`,
+    placeholder: {
+      tag: 'plain_text',
+      content: '填写修改意见（可配合「拒绝并附意见」/「批准并采纳修改」）…',
+    },
+    behaviors: [
+      {
+        type: 'callback',
+        value: {
+          cmd: 'approval.planFeedback',
+          requestId,
+          runId,
+          nonce: mkNonce(),
+        },
+      },
+    ],
+  };
 }
 
 // =============================================================================

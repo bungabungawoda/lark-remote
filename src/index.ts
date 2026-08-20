@@ -328,7 +328,13 @@ function initializeRunner(
 
   // Register DshRunner (HTTP-only DSH Web Host agent) and DshSessionReader.
   const dshSessionReader = new DshSessionReader({
-    host: getAgentConfig(config, 'dsh')?.host,
+    // hostProvider 每次调用读最新 config：/config 修改 host 后 runner 重建为
+    // 新 host，reader（/resume、用量、完成卡）也跟随新 host（CC-02）。
+    hostProvider: () => {
+      const container = agentRegistry.getConfigContainer();
+      const latestConfig = (container?.current as AppConfig) ?? config;
+      return getAgentConfig(latestConfig, 'dsh')?.host;
+    },
   });
   agentRegistry.register('dsh', (_ws: string) => {
     // Read latest config from container so /config host changes take effect
@@ -658,14 +664,18 @@ function setupMessageHandlers(
     // 直返列表外，过期/重复 nonce/非法选项等错误 toast 被静默吞掉）。
     // 审批响应尤其不能落串行队列：run 任务占用队列头直到 turn 结束，审批响应
     // 排在后面会形成死锁（run 不结束不执行、run 结束 coordinator 已删响应空转）。
+    // order.aliasInput / order.aliasRemove 也返回 toast，需直返避免被吞。
     if (
       actionValue.cmd === 'queue.input' ||
+      actionValue.cmd === 'order.aliasInput' ||
+      actionValue.cmd === 'order.aliasRemove' ||
       actionValue.cmd === 'config.save' ||
       actionValue.cmd === 'approval.respond' ||
       actionValue.cmd === 'approval.toggle' ||
       actionValue.cmd === 'approval.answer' ||
       actionValue.cmd === 'approval.answerSubmit' ||
-      actionValue.cmd === 'approval.answerCustom'
+      actionValue.cmd === 'approval.answerCustom' ||
+      actionValue.cmd === 'approval.answerNote'
     ) {
       return router.handleCardAction(fullValue, { userId, chatId, messageId });
     }
@@ -674,6 +684,7 @@ function setupMessageHandlers(
     // at the enqueue boundary and route it through router.handle, exactly like
     // a hand-typed message. See order-exec-dispatch.ts for the contract and
     // why an internal key replaces the Feishu card messageId.
+    // （order.aliasEdit 是控制动作，走 enqueueImmediate 弹卡即可，不需直返。）
     if (actionValue.cmd === 'order.exec') {
       void dispatchOrderExecForQueue({
         router,
@@ -797,7 +808,6 @@ async function main() {
     configPath: path.join(configDir, 'config.yaml'),
     workspacePath: path.join(configDir, 'workspace.json'),
     ordersPath: path.join(configDir, 'orders.json'),
-    aliasesPath: path.join(configDir, 'aliases.json'),
     restartSpawner: () => spawnReplacementBridge(path.join(configDir, 'logs')),
     sessionReaderRegistry,
     devMode: cliArgs.dev,

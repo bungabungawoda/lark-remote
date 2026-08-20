@@ -9,17 +9,6 @@ import { CodexAppServerTranslator } from './translator.js';
 import type { AgentEvent, ApprovalRequestedEvent, ApprovalView } from '../../types.js';
 
 describe('Codex App Server Runner', () => {
-  describe('module imports', () => {
-    it('imports protocol-types without error', () => {
-      expect(NotificationMethod.TURN_STARTED).toBeDefined();
-      expect(ServerRequestMethod.COMMAND_EXECUTION_APPROVAL).toBeDefined();
-    });
-
-    it('imports translator without error', () => {
-      expect(CodexAppServerTranslator).toBeDefined();
-    });
-  });
-
   describe('translator', () => {
     describe('turn/started notification', () => {
       it('returns a TurnStartedEvent', () => {
