@@ -133,6 +133,28 @@ export class ClaudeRunner implements AgentRunner {
         this.session.setAutoApprove(true);
         await this.session.respondPermission(requestId, { behavior: 'allow' });
         return;
+      case 'accept_with_feedback': {
+        // 计划审批「批准并采纳修改」：allow + updatedInput.plan（改写过的新计划），
+        // 触发 Claude 侧 planWasEdited → tool_result 回显 edited plan 并写回文件。
+        const plan = (response as { plan?: string }).plan;
+        if (!plan || !plan.trim()) {
+          throw new Error('approval accept_with_feedback missing plan payload');
+        }
+        await this.session.respondPermission(requestId, {
+          behavior: 'allow',
+          updatedInput: { plan },
+        });
+        return;
+      }
+      case 'decline_with_feedback': {
+        // 计划审批「拒绝并附意见」：deny + message，Claude 留在 plan 模式修订。
+        const message = (response as { message?: string }).message?.trim();
+        if (!message) {
+          throw new Error('approval decline_with_feedback missing message payload');
+        }
+        await this.session.respondPermission(requestId, { behavior: 'deny', message });
+        return;
+      }
       case 'decline':
         await this.session.respondPermission(requestId, { behavior: 'deny' });
         return;

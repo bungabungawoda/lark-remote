@@ -17,7 +17,12 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { AgentEvent } from '../../types.js';
 import { OpencodeAcpRunner, type OpencodeAcpRunnerOptions } from './runner.js';
-import { writeMockAcpServer, writeScenario } from '../../../../tests/lib/mock-acp-server.js';
+import {
+  writeMockAcpServer,
+  writeScenario,
+  collectEvents,
+  readCapture,
+} from '../../../../tests/lib/mock-acp-server.js';
 import { createStubSessionReader } from '../../../../tests/lib/bridge-stubs.js';
 
 const SESSION_ID = 'aaaaaaaa-1111-2222-3333-444444444444';
@@ -36,27 +41,6 @@ function makeRunner(wrapper: string, extra?: Partial<OpencodeAcpRunnerOptions>):
     turnIdleTimeoutMs: 30_000,
     ...extra,
   });
-}
-
-async function collectEvents(
-  runner: OpencodeAcpRunner,
-  message: string,
-  opts: { cwd: string; sessionId?: string },
-  onEvent?: (ev: AgentEvent) => Promise<void>,
-): Promise<AgentEvent[]> {
-  const events: AgentEvent[] = [];
-  for await (const event of runner.run(message, opts)) {
-    events.push(event);
-    if (onEvent) await onEvent(event);
-  }
-  return events;
-}
-
-function readCapture(capturePath: string): Array<Record<string, unknown>> {
-  return readFileSync(capturePath, 'utf8')
-    .split('\n')
-    .filter(Boolean)
-    .map((l) => JSON.parse(l) as Record<string, unknown>);
 }
 
 describe('OpencodeAcpRunner', () => {

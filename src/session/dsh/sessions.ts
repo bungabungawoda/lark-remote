@@ -32,8 +32,19 @@ import type {
 import { capEvents, paginate } from '../common/pagination.js';
 import { truncateUtf8, TOOL_RESULT_MAX_BYTES } from '../../common/truncate.js';
 
+/**
+ * CC-05: history 拉取上限。DSH session.history 的 maxMessages 同时限制返回条数，
+ * 若用它同时充当展示截断，>50 事件的会话累计 usage 会少算。这里拉取一个足够大的
+ * 上限保证 usage 累加覆盖整个会话；展示仍由 capEvents(opts?.maxEvents ?? 50) 截断。
+ * （若 DSH 支持分页 cursor 可改成分页，当前用有界大拉取，见 review-fix-plan-cc.md）
+ */
+const DSH_HISTORY_FETCH_LIMIT = 10_000;
+
 interface DshSessionReaderOptions {
   host?: string;
+  /** 每次调用时解析当前 host（/config 修改 host 后 runner 重建、reader 也跟随新 host）。
+   *  优先于固定的 `host`。 */
+  hostProvider?: () => string | undefined;
   /** Injectable synchronous unary transport. Defaults to spawnSync curl. */
   syncRequest?: (baseUrl: string, method: string, payload: unknown) => unknown;
 }
@@ -78,16 +89,23 @@ function defaultSyncRequest(baseUrl: string, method: string, payload: unknown): 
 }
 
 export class DshSessionReader implements AgentSessionReader {
-  private readonly baseUrl: string;
+  private readonly hostProvider: () => string | undefined;
   private readonly syncRequest: (baseUrl: string, method: string, payload: unknown) => unknown;
 
   constructor(opts: DshSessionReaderOptions = {}) {
-    this.baseUrl = (opts.host ?? DEFAULT_DSH_HOST).replace(/\/$/, '');
+    const fixed = (opts.host ?? DEFAULT_DSH_HOST).replace(/\/$/, '');
+    this.hostProvider = opts.hostProvider ?? (() => fixed);
     this.syncRequest = opts.syncRequest ?? defaultSyncRequest;
   }
 
+  /** 解析当前 host（hostProvider 优先，允许 /config 热改 host）。 */
+  private resolveBaseUrl(): string {
+    const host = this.hostProvider();
+    return (host && host.length > 0 ? host : DEFAULT_DSH_HOST).replace(/\/$/, '');
+  }
+
   private unary(method: string, payload: unknown): unknown {
-    return this.syncRequest(this.baseUrl, method, payload);
+    return this.syncRequest(this.resolveBaseUrl(), method, payload);
   }
 
   listSessions(
@@ -129,7 +147,7 @@ export class DshSessionReader implements AgentSessionReader {
     try {
       const value = this.unary('session.history', {
         sessionId,
-        maxMessages: opts?.maxEvents ?? 50,
+        maxMessages: DSH_HISTORY_FETCH_LIMIT,
       }) as DshSessionHistoryValue;
       const events: AgentSessionContentEvent[] = [];
       let displayTitle: string | undefined;
@@ -182,7 +200,9 @@ export class DshSessionReader implements AgentSessionReader {
       }
 
       return {
-        events: capEvents(events, opts?.maxEvents),
+        // CC-05: 展示仍按 maxEvents 尾截断（默认 50，保持原行为），usage 已在上面基于
+        // 完整 history 累加。
+        events: capEvents(events, opts?.maxEvents ?? 50),
         ...(sessionUsage ? { usage: sessionUsage } : {}),
         ...(displayTitle ? { displayTitle } : {}),
       };
