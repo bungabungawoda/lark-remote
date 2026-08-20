@@ -92,6 +92,35 @@ describe('ApprovalCoordinator', () => {
     };
   }
 
+  function makePlanExitEvent(
+    overrides: Partial<ApprovalRequestedEvent> = {},
+  ): ApprovalRequestedEvent {
+    return {
+      type: 'approval_requested',
+      requestId: 2001,
+      kind: 'tool',
+      threadId: 'th-plan-555',
+      turnId: 'tn-plan-555',
+      itemId: 'item-plan-555',
+      view: {
+        requestId: 2001,
+        kind: 'tool',
+        toolName: 'ExitPlanMode',
+        reason: '已按计划准备好实施方案，请审批',
+        plan: '# 原计划\n\n1. 步骤一',
+        planFilePath: '/home/user/.claude/plans/mock-plan.md',
+        availableDecisions: [
+          'accept',
+          'acceptAll',
+          'declineWithFeedback',
+          'acceptWithFeedback',
+          'decline',
+        ],
+      },
+      ...overrides,
+    };
+  }
+
   beforeEach(() => {
     vi.useFakeTimers();
     responder = vi.fn().mockResolvedValue(undefined);
@@ -367,6 +396,91 @@ describe('ApprovalCoordinator', () => {
       expect(decisionToApprovalAction('cancel')).toEqual({ action: 'cancel' });
       // Claude「允许所有」：acceptAll → accept_all（会话级自动放行）。
       expect(decisionToApprovalAction('acceptAll')).toEqual({ action: 'accept_all' });
+      // 计划审批反馈类决策：decisionToApprovalAction 只带决策名，payload 由
+      // coordinator.submit 从已填写的修改意见补齐。
+      expect(decisionToApprovalAction('declineWithFeedback')).toEqual({
+        action: 'decline_with_feedback',
+        message: '',
+      });
+      expect(decisionToApprovalAction('acceptWithFeedback')).toEqual({
+        action: 'accept_with_feedback',
+        plan: '',
+      });
+    });
+  });
+
+  // =========================================================================
+  // ExitPlanMode 计划审批（kind === 'tool' 反馈类决策）
+  // =========================================================================
+
+  describe('ExitPlanMode plan feedback', () => {
+    it('test_anchor_plan_feedback_stores_and_echoes_view', async () => {
+      coordinator.onRequested(makePlanExitEvent());
+      await coordinator.planFeedback(
+        { text: '  先补测试再写实现  ' },
+        { requestId: 2001, nonce: 'fb-1' },
+      );
+      expect(pushToCard).toHaveBeenCalledWith(
+        expect.arrayContaining([
+          expect.objectContaining({
+            type: 'approval_view_updated',
+            requestId: 2001,
+          }),
+        ]),
+      );
+      // 空意见拒绝保存
+      await expect(
+        coordinator.planFeedback({ text: '   ' }, { requestId: 2001, nonce: 'fb-2' }),
+      ).rejects.toThrow('请输入修改意见');
+    });
+
+    it('test_anchor_plan_decline_with_feedback_injects_stored_feedback', async () => {
+      coordinator.onRequested(makePlanExitEvent());
+      await coordinator.planFeedback(
+        { text: '先把测试写了再实施' },
+        { requestId: 2001, nonce: 'fb-1' },
+      );
+      await coordinator.submit(
+        { action: 'decline_with_feedback', message: '' },
+        { requestId: 2001, nonce: 'd-1' },
+      );
+      expect(responder).toHaveBeenCalledWith(2001, {
+        action: 'decline_with_feedback',
+        message: '先把测试写了再实施',
+      });
+    });
+
+    it('test_anchor_plan_accept_with_feedback_appends_feedback_to_plan', async () => {
+      coordinator.onRequested(makePlanExitEvent());
+      await coordinator.planFeedback({ text: '补测试' }, { requestId: 2001, nonce: 'fb-1' });
+      await coordinator.submit(
+        { action: 'accept_with_feedback', plan: '' },
+        { requestId: 2001, nonce: 'a-1' },
+      );
+      expect(responder).toHaveBeenCalledWith(
+        2001,
+        expect.objectContaining({
+          action: 'accept_with_feedback',
+          plan: expect.stringContaining('# 原计划'),
+        }),
+      );
+      const payload = (responder.mock.calls[0] as unknown[])[1] as {
+        action: string;
+        plan: string;
+      };
+      expect(payload.plan).toContain('## 用户修改意见');
+      expect(payload.plan).toContain('补测试');
+    });
+
+    it('test_anchor_plan_feedback_decisions_require_feedback', async () => {
+      coordinator.onRequested(makePlanExitEvent());
+      await expect(
+        coordinator.submit(
+          { action: 'decline_with_feedback', message: '' },
+          { requestId: 2001, nonce: 'd-1' },
+        ),
+      ).rejects.toThrow('请先填写修改意见');
+      expect(responder).not.toHaveBeenCalled();
     });
   });
 

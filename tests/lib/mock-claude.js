@@ -190,8 +190,17 @@ if (scenario === 'no-stdout') {
     });
   }
 } else if (scenario === 'approval-exit-plan') {
-  // ExitPlanMode：通知型工具，input 为空对象，plan 内容不进 tool input。
+  // ExitPlanMode：计划审批。默认 input 携带 plan + planFilePath（CLI
+  // normalizeToolInput 注入形态）；设置 MOCK_PLAN_FILE_PATH 时仅带
+  // planFilePath，验证「读取计划文件」兜底路径。
   init();
+  const planFile = process.env.MOCK_PLAN_FILE_PATH;
+  const exitPlanInput = planFile
+    ? { planFilePath: planFile }
+    : {
+        plan: '# 测试计划\n\n## 步骤\n1. 步骤一\n2. 步骤二',
+        planFilePath: '/home/user/.claude/plans/mock-plan.md',
+      };
   rl.on('line', (line) => {
     if (recordStdin) fs.appendFileSync(recordStdin, line + '\n');
     let ev;
@@ -222,7 +231,7 @@ if (scenario === 'no-stdout') {
       request: {
         subtype: 'can_use_tool',
         tool_name: 'ExitPlanMode',
-        input: {},
+        input: exitPlanInput,
         description: '已按计划准备好实施方案，请审批',
       },
     });

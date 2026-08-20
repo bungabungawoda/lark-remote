@@ -107,7 +107,6 @@
     "src/runner/registry.test.ts",
     "src/runner/resolve-agent-choices.test.ts",
     "src/runner/runner-structure.test.ts",
-    "src/runner/runner.test.ts",
     "src/runner/sync-agent-choices.test.ts",
     "tests/anchor/spawning-runner/**/*.test.ts",
     "tests/anchor/priority/p1-10-kill-orphan-group.test.ts",

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { QueueManager } from '../../../src/bridge/queue-manager.js';
+import { makeQueueManagerWithFailingCardSend } from '../../lib/bridge-stubs.js';
 import { sleep, waitFor } from '../../lib/wait-for.js';
 
 const { mockLogger } = vi.hoisted(() => ({
@@ -17,30 +17,6 @@ vi.mock('../../../src/logger/index.js', () => ({
 }));
 
 const WORKSPACE = '/tmp/queue-card-arm-send-failure-ws';
-
-/**
- * QueueManager whose queue-card send FAILS (Feishu error / rate limit): the
- * queue status card is never delivered, and the promise mapping must be
- * cleaned up so a long-running bridge does not accumulate a stale entry per
- * failed send (review P2).
- */
-function makeQueueManagerWithFailingCardSend() {
-  const sentCards: Array<{ chatId: string; card: object }> = [];
-  const updatedCards: Array<{ messageId: string; card: object }> = [];
-  let sendFailures = 0;
-
-  const sendCard = async (chatId: string, card: object) => {
-    sentCards.push({ chatId, card });
-    sendFailures++;
-    throw new Error('simulated Feishu send failure');
-  };
-  const updateCard = async (messageId: string, card: object) => {
-    updatedCards.push({ messageId, card });
-  };
-
-  const qm = new QueueManager(() => false, sendCard, updateCard);
-  return { qm, sentCards, updatedCards, getSendFailures: () => sendFailures };
-}
 
 describe('QueueManager - queue card send failure must clean up the promise mapping (anchor A23)', () => {
   it('test_anchor_failed_queue_card_send_does_not_leave_stale_mapping', async () => {
