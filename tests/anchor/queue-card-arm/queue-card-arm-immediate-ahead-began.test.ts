@@ -1,5 +1,9 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { createStubConnector } from '../../lib/bridge-stubs.js';
+import {
+  createStubConnector,
+  createGatedRunner,
+  type GatedRunner,
+} from '../../lib/bridge-stubs.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -8,7 +12,7 @@ import { SessionStore } from '../../../src/session/index.js';
 import { CommandRouter } from '../../../src/router/index.js';
 import { AppConfigSchema } from '../../../src/config/index.js';
 import type { AppConfig } from '../../../src/config/index.js';
-import type { Runner, AgentRunner } from '../../../src/runner/index.js';
+import type { AgentRunner } from '../../../src/runner/index.js';
 import { AgentRegistry } from '../../../src/runner/registry.js';
 import { SessionReaderRegistry } from '../../../src/session/registry.js';
 import { sleep, waitFor } from '../../lib/wait-for.js';
@@ -26,56 +30,6 @@ vi.mock('../../../src/logger/index.js', () => ({
   getLogger: () => mockLogger,
   initLogger: () => mockLogger,
 }));
-
-/**
- * A runner whose run() hangs until the test releases it (faithful to a real
- * subprocess that only exits when killed), and whose stop() hangs on a
- * separate gate. Decoupling run-exit from stop-completion reproduces the
- * production stop window: interruptCurrentRun awaits
- * Promise.allSettled([session.finish, runner.stop]), and the Feishu card
- * round trips in that window keep the handler parked while the killed run's
- * promise-chain settle already advanced the serial queue to the NEXT task.
- */
-interface GatedRunner extends Runner {
-  stopCalls: number;
-  releaseRun: () => void;
-  releaseStop: () => void;
-}
-
-function createGatedRunner(): GatedRunner & AgentRunner {
-  let releaseRun!: () => void;
-  let releaseStop!: () => void;
-  const runGate = new Promise<void>((resolve) => {
-    releaseRun = resolve;
-  });
-  const stopGate = new Promise<void>((resolve) => {
-    releaseStop = resolve;
-  });
-  const runner: GatedRunner & AgentRunner = {
-    isRunning: false,
-    stopCalls: 0,
-    stop: async () => {
-      runner.stopCalls++;
-      await stopGate;
-    },
-    killOrphan: () => {},
-    registerExitHandlers: () => {},
-    run: async function* () {
-      await runGate;
-    },
-    kind: 'claude',
-    sessionReader: {
-      listSessions: () => ({ sessions: [], total: 0 }),
-      getNewestSession: () => null,
-      readSessionContent: () => ({ events: [] }),
-      isSessionActive: () => false,
-    },
-    getStatusInfo: () => ({ kind: 'claude', model: 'test' }),
-    releaseRun: () => releaseRun(),
-    releaseStop: () => releaseStop(),
-  };
-  return runner;
-}
 
 /**
  * Stub connector returning a UNIQUE card message id per sendWithRetry call,

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { QueueManager } from '../../../src/bridge/queue-manager.js';
+import { makeQueueManager } from '../../lib/bridge-stubs.js';
 import { sleep, waitFor } from '../../lib/wait-for.js';
 
 const { mockLogger } = vi.hoisted(() => ({
@@ -17,27 +17,6 @@ vi.mock('../../../src/logger/index.js', () => ({
 }));
 
 const WORKSPACE = '/tmp/queue-card-arm-ws';
-
-/**
- * Create a QueueManager with stub callbacks (same pattern as
- * src/bridge/queue-interrupt.test.ts: sendCard pushes to sentCards and
- * returns a fake Feishu card message id; updateCard records updates).
- */
-function makeQueueManager() {
-  const sentCards: Array<{ chatId: string; card: object }> = [];
-  const updatedCards: Array<{ messageId: string; card: object }> = [];
-
-  const sendCard = async (chatId: string, card: object) => {
-    sentCards.push({ chatId, card });
-    return `card-msg-${sentCards.length}`;
-  };
-  const updateCard = async (messageId: string, card: object) => {
-    updatedCards.push({ messageId, card });
-  };
-
-  const qm = new QueueManager(() => false, sendCard, updateCard);
-  return { qm, sentCards, updatedCards };
-}
 
 describe('QueueManager - queue card must be sent for a message enqueued after an interrupted task resumes (anchor A1)', () => {
   it('test_anchor_queue_card_sent_when_task_resumes_after_interrupt', async () => {

@@ -213,6 +213,53 @@ describe('DshSessionReader', () => {
     expect(reader.getNewestSession(CWD)).toBeNull();
     expect(reader.isSessionActive(SID_A, CWD)).toBe(false);
   });
+
+  it('uses a dynamic host via hostProvider so /config host changes take effect (CC-02)', () => {
+    // DshRunner 每次重建读最新 host，但 reader 构造时固定 baseUrl，导致 host 变更后
+    // /resume、用量、完成卡仍访问旧 host。hostProvider 每次调用解析当前 host。
+    let currentHost = 'http://host-a:3080';
+    const seenUrls: string[] = [];
+    const reader = new DshSessionReader({
+      hostProvider: () => currentHost,
+      syncRequest: (baseUrl, method) => {
+        seenUrls.push(baseUrl);
+        if (method === 'session.list') return { items: [] };
+        return {};
+      },
+    });
+
+    reader.listSessions(CWD);
+    currentHost = 'http://host-b:3080';
+    reader.listSessions(CWD);
+
+    expect(seenUrls).toEqual(['http://host-a:3080', 'http://host-b:3080']);
+  });
+
+  it('accumulates usage across the whole session, not just the first 50 events (CC-05)', () => {
+    // reader 固定请求 maxMessages=50 却把结果当 session-wide cumulative；>50 事件的会话
+    // 累计 token 会少算。必须读取完整 history（或分页）再累加 usage。
+    const server = new FakeDshServer();
+    const events = [];
+    for (let i = 0; i < 60; i++) {
+      events.push({
+        event: assistantMsg(SID_A, `msg-${i}`, { inputTokens: 1, outputTokens: 1 }),
+        view: undefined,
+      });
+    }
+    server.register('session.history', (payload) => {
+      const max = (payload as { maxMessages?: number }).maxMessages ?? 50;
+      return {
+        ok: true,
+        value: { hasMore: events.length > max, events: events.slice(0, max) },
+      };
+    });
+
+    const reader = makeReader(server);
+    const content = reader.readSessionContent(SID_A, CWD);
+    // 60 条 assistant/message，每条 input 1 + output 1 → cumulativeTotalTokens 应为 120
+    expect(content.usage?.cumulativeTotalTokens).toBe(120);
+    expect(content.usage?.cumulativeInputTokens).toBe(60);
+  });
 });
 
 function userMsg(sessionId: string, text: string): DshSessionEvent {

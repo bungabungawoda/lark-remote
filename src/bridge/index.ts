@@ -207,6 +207,13 @@ export class Bridge {
    * blocked the queue forever.
    */
   private runners = new Map<string, Map<AgentKind, Runner>>();
+  /**
+   * Runner 槽位在「活跃运行期间配置变更」时被标 stale（CC-06/P1）：clearRunners() 对
+   * 活跃 workspace 只标 stale、不立即 evict（避免误杀长驻连接），当前 run 结束后由
+   * finalizeRun 安全 evict+dispose，下一轮 getRunner 创建新配置的 runner。
+   * key 为 `${cwd}\u0000${agentKind}`。
+   */
+  private staleRunnerSlots = new Set<string>();
   /** Queue manager for per-workspace serial processing queue. */
   /** 普通消息队列管理器（public：测试注入 queue-card 状态用）。 */
   queueManager: QueueManager;
@@ -406,9 +413,18 @@ export class Bridge {
     // keeping it is correct; finalizeRun deletes the cache entry when the run
     // ends, and the next run picks up the new config/agent via getRunner.
     for (const cwd of [...this.runners.keys()]) {
-      if (this.activeRuns.has(cwd)) continue;
+      if (this.activeRuns.has(cwd)) {
+        // CC-06/P1: 活跃 workspace 不能立即 evict（会误杀长驻连接），但必须标记 stale，
+        // 否则 finalizeRun 对 workspace-lifetime runner 也不 evict → 下一轮复用旧配置实例。
+        // 这里只标待淘汰，当前 run 结束后由 finalizeRun 安全 evict。
+        for (const kind of [...this.runners.get(cwd)!.keys()]) {
+          this.staleRunnerSlots.add(`${cwd}\u0000${kind}`);
+        }
+        continue;
+      }
       for (const kind of [...this.runners.get(cwd)!.keys()]) {
         this.evictRunnerSlot(cwd, kind);
+        this.staleRunnerSlots.delete(`${cwd}\u0000${kind}`);
       }
     }
   }
@@ -433,6 +449,7 @@ export class Bridge {
       void evicted.dispose();
     }
     workspaceMap.delete(kind);
+    this.staleRunnerSlots.delete(`${cwd}\u0000${kind}`);
     if (workspaceMap.size === 0) {
       this.runners.delete(cwd);
     }
@@ -1656,9 +1673,13 @@ export class Bridge {
         // evicted+disposed by clearRunners (/config) and interruptCurrentRun
         // (/stop). Spawn-per-message runners are evicted as before to prevent
         // stale process references accumulating.
-        if (activeRun.runner.lifetime !== 'workspace') {
+        // CC-06/P1: 配置变更期间（clearRunners 标了 stale）的 workspace-lifetime
+        // runner 也必须在 run 结束后 evict，否则下一轮复用旧配置实例。
+        const slotKey = `${cwd}\u0000${activeRun.agentKind}`;
+        if (activeRun.runner.lifetime !== 'workspace' || this.staleRunnerSlots.has(slotKey)) {
           this.evictRunnerSlot(cwd, activeRun.agentKind);
         }
+        this.staleRunnerSlots.delete(slotKey);
         // Compact 卡片需要 runId + sessionId；record 供终态卡上的 Compact 按钮
         // 校验与取参（activeRuns 已清空，无法再查到）。异常退出（error/
         // interrupted/idle_timeout）同样记录——上下文往往更大，压缩后再续。
@@ -1853,6 +1874,24 @@ export class Bridge {
       // Build ApprovalAction from the decision string
       const action: ApprovalAction = decisionToApprovalAction(opts.decision);
       await coordinator.submit(action, { requestId: opts.requestId, nonce: opts.nonce });
+    });
+  }
+
+  /**
+   * 计划审批修改意见（ExitPlanMode 输入框）：记录到 coordinator 并回流卡片。
+   * 「拒绝并附意见」/「批准并采纳修改」按钮复用该文本。
+   */
+  async handleApprovalPlanFeedback(opts: {
+    runId: string;
+    requestId: number | string;
+    text: string;
+    nonce: string;
+  }): Promise<void> {
+    return this.withCoordinator(opts.runId, async (coordinator) => {
+      await coordinator.planFeedback(
+        { text: opts.text },
+        { requestId: opts.requestId, nonce: opts.nonce },
+      );
     });
   }
 

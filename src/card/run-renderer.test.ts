@@ -100,8 +100,9 @@ describe('renderRunCard', () => {
   });
 
   it('test_anchor_exit_plan_mode_approval_renders_tool_kind_v2', () => {
-    // ExitPlanMode：kind:'tool'，渲染「📋 计划审批」+ 工具名 + reason，
-    // 不落入 command 槽位显示无意义 `{}`，且无「允许所有」按钮。
+    // ExitPlanMode：kind:'tool'，渲染「📋 计划审批」+ 计划全文折叠面板 +
+    // 计划文件路径 + 修改意见输入 + 五决策按钮（对齐 TUI），
+    // 不落入 command 槽位显示无意义 `{}`。
     let state = createInitialRunState('run-exit-plan');
     state = reduceRunState(state, {
       type: 'approval_requested',
@@ -115,7 +116,15 @@ describe('renderRunCard', () => {
         kind: 'tool',
         toolName: 'ExitPlanMode',
         reason: '已按计划准备好实施方案，请审批',
-        availableDecisions: ['accept', 'decline'],
+        plan: '# 测试计划\n\n## 步骤\n1. 步骤一\n2. 步骤二',
+        planFilePath: '/home/user/.claude/plans/mock-plan.md',
+        availableDecisions: [
+          'accept',
+          'acceptAll',
+          'declineWithFeedback',
+          'acceptWithFeedback',
+          'decline',
+        ],
       },
     } as never);
 
@@ -123,11 +132,42 @@ describe('renderRunCard', () => {
     expect(card.schema).toBe('2.0');
     const serialized = JSON.stringify(card);
     expect(serialized).toContain('计划审批');
-    expect(serialized).toContain('ExitPlanMode');
+    expect(serialized).toContain('测试计划');
+    expect(serialized).toContain('/home/user/.claude/plans/mock-plan.md');
     expect(serialized).toContain('实施方案');
-    expect(serialized).not.toContain('{}');
+    expect(serialized).toContain('批准并执行');
+    expect(serialized).toContain('批准并自动放行');
+    expect(serialized).toContain('拒绝并附意见');
+    expect(serialized).toContain('批准并采纳修改');
+    expect(serialized).toContain('填写修改意见');
+    // 计划即内容：不再展示工具名 / 无意义的「允许所有」/ `{}`。
+    expect(serialized).not.toContain('ExitPlanMode');
     expect(serialized).not.toContain('允许所有');
+    expect(serialized).not.toContain('{}');
     expect(serialized).not.toMatch(/"tag"\s*:\s*"action"[^}]*"actions"/);
+
+    // 修改意见回流回显：planFeedback 随 approval_view_updated 重渲染。
+    state = reduceRunState(state, {
+      type: 'approval_view_updated',
+      requestId: 47,
+      view: {
+        requestId: 47,
+        kind: 'tool',
+        toolName: 'ExitPlanMode',
+        reason: '已按计划准备好实施方案，请审批',
+        plan: '# 测试计划\n\n## 步骤\n1. 步骤一\n2. 步骤二',
+        planFilePath: '/home/user/.claude/plans/mock-plan.md',
+        planFeedback: '先补测试再写实现',
+        availableDecisions: [
+          'accept',
+          'acceptAll',
+          'declineWithFeedback',
+          'acceptWithFeedback',
+          'decline',
+        ],
+      },
+    } as never);
+    expect(JSON.stringify(renderRunCard(state))).toContain('先补测试再写实现');
 
     // approval_resolved 清除审批区域
     state = reduceRunState(state, {

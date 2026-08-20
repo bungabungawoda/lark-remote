@@ -10,9 +10,10 @@
  * All fixture data must be synthetic (AABB UUIDs, /home/user/project paths) —
  * CLAUDE.md red line: no real user data in test fixtures.
  */
-import { chmodSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import type { Runner, AgentEvent } from '../../src/runner/index.js';
 
 /** Protocol-specific agent name echoed in the initialize result. */
 export type AcpProtocol = 'kimi' | 'opencode';
@@ -32,6 +33,8 @@ export interface MockAcpScenarioOpts {
   sendFsWrite?: boolean;
   /** (kimi) Exit the process right after session/new (crash recovery test). */
   crashAfterInit?: boolean;
+  /** Delay session/new and session/resume responses (setup-phase stop test). */
+  delayNewMs?: number;
   capturePath?: string;
   wirePath?: string;
   compactionRecordDelayMs?: number;
@@ -112,14 +115,16 @@ rl.on('line', (line) => {
     if (config.crashAfterInit) {
       process.exit(1);
     }
-    send({ jsonrpc: '2.0', id: msg.id, result: { sessionId: config.sessionId, configOptions: config.configOptions ?? [] } });
+    const respondNew = () => send({ jsonrpc: '2.0', id: msg.id, result: { sessionId: config.sessionId, configOptions: config.configOptions ?? [] } });
+    if (config.delayNewMs) setTimeout(respondNew, config.delayNewMs); else respondNew();
     return;
   }
   if (msg.method === 'session/resume') {
     const result = config.resumeOmitsSessionId
       ? { configOptions: config.configOptions ?? [] }
       : { sessionId: msg.params.sessionId, configOptions: config.configOptions ?? [] };
-    send({ jsonrpc: '2.0', id: msg.id, result });
+    const respondResume = () => send({ jsonrpc: '2.0', id: msg.id, result });
+    if (config.delayNewMs) setTimeout(respondResume, config.delayNewMs); else respondResume();
     return;
   }
   if (msg.method === 'session/set_mode') {
@@ -320,6 +325,7 @@ export function writeScenario(
       sendElicitation: opts.sendElicitation ?? false,
       sendFsWrite: opts.sendFsWrite ?? false,
       crashAfterInit: opts.crashAfterInit ?? false,
+      delayNewMs: opts.delayNewMs ?? 0,
       capturePath: opts.capturePath ?? null,
       wirePath: opts.wirePath ?? null,
       compactionRecordDelayMs: opts.compactionRecordDelayMs ?? null,
@@ -347,4 +353,38 @@ export function writeScenario(
 /** Create a temp dir for the mock server (convenience for suites that need one). */
 export function makeMockAcpTmpDir(prefix = 'lark-mock-acp-'): string {
   return mkdtempSync(join(tmpdir(), prefix));
+}
+
+// ── Shared ACP runner test harness ───────────────────────────────────
+// Collected into this module because both kimi and opencode ACP runner tests
+// use the same mock-server scenario + wrapper pattern and previously
+// copy-pasted these helpers.
+
+/**
+ * Consume a runner's run() generator, collecting every event. An optional
+ * onEvent hook runs per event (e.g. to stop mid-run).
+ */
+export async function collectEvents(
+  runner: Runner,
+  message: string,
+  opts: { cwd: string; sessionId?: string },
+  onEvent?: (ev: AgentEvent) => Promise<void>,
+): Promise<AgentEvent[]> {
+  const events: AgentEvent[] = [];
+  for await (const event of runner.run(message, opts)) {
+    events.push(event);
+    if (onEvent) await onEvent(event);
+  }
+  return events;
+}
+
+/**
+ * Read a wrapper capture file (newline-delimited JSON, one record per line)
+ * into an array of parsed records.
+ */
+export function readCapture(capturePath: string): Array<Record<string, unknown>> {
+  return readFileSync(capturePath, 'utf8')
+    .split('\n')
+    .filter(Boolean)
+    .map((l) => JSON.parse(l) as Record<string, unknown>);
 }

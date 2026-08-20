@@ -80,111 +80,130 @@ export class DshRunner implements AgentRunner {
   }
 
   async *run(message: string, opts: SpawnOptions): AsyncGenerator<AgentEvent> {
+    if (this.running) {
+      throw new Error('DshRunner is already running');
+    }
     const abort = new AbortController();
     this.activeAbort = abort;
     this.running = true;
 
     let sessionId = opts.sessionId;
-    if (!sessionId) {
-      const created = await this.client.createSession({
-        cwd: opts.cwd,
-        ...(this.agentPreset ? { agentPreset: this.agentPreset } : {}),
-      });
-      sessionId = created.sessionId;
-    }
-    this.activeSessionId = sessionId;
-
-    // 模型/推理强度变更 = 保留 session，每次 run 前对齐（§4.3）：
-    // 该调用同时会写服务端全局默认；失败仅告警不阻断 run（模型校验由 DSH 负责）。
-    if (this.configuredModel) {
-      try {
-        await this.client.selectModel({
-          sessionId,
-          provider: DSH_MODEL_PROVIDER,
-          model: this.configuredModel,
-          ...(this.reasoningEffort ? { reasoningEffort: this.reasoningEffort } : {}),
-        });
-      } catch (err) {
-        getLogger().warn(
-          `[dsh] selectModel failed for session ${sessionId} (run continues): ${(err as Error).message}`,
-        );
-      }
-    }
-
-    yield {
-      type: 'system',
-      subtype: 'init',
-      session_id: sessionId,
-      cwd: opts.cwd,
-      model: this.configuredModel ?? 'DSH',
-    };
-
     let terminalEmitted = false;
     try {
-      // Snapshot the pre-prompt high-water mark before mutating the session.
-      // DSH session.history returns the whole session, so starting from seq 0
-      // would replay the first completed turn on every follow-up prompt.
-      const prePromptSeq = await this.client.latestEventSeq(sessionId);
+      // CC-03: session.create 必须包进同一 try/finally，否则创建失败（服务端不可达/报错）
+      // 会在进入旧 try 之前抛异常，finally 不执行 → running 恒 true、activeAbort 残留。
+      if (!sessionId) {
+        const created = await this.client.createSession({
+          cwd: opts.cwd,
+          ...(this.agentPreset ? { agentPreset: this.agentPreset } : {}),
+        });
+        sessionId = created.sessionId;
+      }
+      this.activeSessionId = sessionId;
 
-      await this.client.unary('session.prompt', {
-        sessionId,
-        mode: 'queue',
-        content: [{ type: 'text', text: message }],
-      });
+      // 模型/推理强度变更 = 保留 session，每次 run 前对齐（§4.3）：
+      // 该调用同时会写服务端全局默认；失败仅告警不阻断 run（模型校验由 DSH 负责）。
+      if (this.configuredModel) {
+        try {
+          await this.client.selectModel({
+            sessionId,
+            provider: DSH_MODEL_PROVIDER,
+            model: this.configuredModel,
+            ...(this.reasoningEffort ? { reasoningEffort: this.reasoningEffort } : {}),
+          });
+        } catch (err) {
+          getLogger().warn(
+            `[dsh] selectModel failed for session ${sessionId} (run continues): ${(err as Error).message}`,
+          );
+        }
+      }
 
-      const translator = new DshTranslator();
+      yield {
+        type: 'system',
+        subtype: 'init',
+        session_id: sessionId,
+        cwd: opts.cwd,
+        model: this.configuredModel ?? 'DSH',
+      };
+
       try {
-        for await (const item of this.client.sessionEvents(
+        // Snapshot the pre-prompt high-water mark before mutating the session.
+        // DSH session.history returns the whole session, so starting from seq 0
+        // would replay the first completed turn on every follow-up prompt.
+        const prePromptSeq = await this.client.latestEventSeq(sessionId);
+
+        await this.client.unary('session.prompt', {
           sessionId,
-          opts.cwd,
-          abort.signal,
-          prePromptSeq,
-        )) {
-          if (abort.signal.aborted) break;
+          mode: 'queue',
+          content: [{ type: 'text', text: message }],
+        });
 
-          if (item.kind === 'approval') {
-            getLogger().warn(
-              `[dsh] approval requested approvalId=${item.approvalId} tool=${item.toolName} — resolve in DSH Web UI`,
-            );
-            yield {
-              type: 'assistant',
-              message: {
-                content: [
-                  {
-                    type: 'text',
-                    text: `⚠️ 需要授权（${item.toolName}）：请在 DSH Web UI 处理 ${this.client.baseUrl}`,
-                  },
-                ],
-              },
-            };
-            continue;
-          }
+        const translator = new DshTranslator();
+        try {
+          for await (const item of this.client.sessionEvents(
+            sessionId,
+            opts.cwd,
+            abort.signal,
+            prePromptSeq,
+          )) {
+            if (abort.signal.aborted) break;
 
-          for (const ev of translator.eventToAgentEvents(item.event, sessionId)) {
-            yield ev;
-            if (ev.type === 'result') {
-              terminalEmitted = true;
-              return;
+            if (item.kind === 'approval') {
+              getLogger().warn(
+                `[dsh] approval requested approvalId=${item.approvalId} tool=${item.toolName} — resolve in DSH Web UI`,
+              );
+              yield {
+                type: 'assistant',
+                message: {
+                  content: [
+                    {
+                      type: 'text',
+                      text: `⚠️ 需要授权（${item.toolName}）：请在 DSH Web UI 处理 ${this.client.baseUrl}`,
+                    },
+                  ],
+                },
+              };
+              continue;
+            }
+
+            for (const ev of translator.eventToAgentEvents(item.event, sessionId)) {
+              yield ev;
+              if (ev.type === 'result') {
+                terminalEmitted = true;
+                return;
+              }
             }
           }
+        } catch (err) {
+          if (abort.signal.aborted) throw err;
+          getLogger().error(`[dsh] run consume error: ${(err as Error).message}`);
+          yield {
+            type: 'result',
+            subtype: 'error',
+            session_id: sessionId,
+            errorMessage: `DSH stream error: ${(err as Error).message}`,
+          };
+          terminalEmitted = true;
         }
       } catch (err) {
-        if (abort.signal.aborted) throw err;
-        getLogger().error(`[dsh] run consume error: ${(err as Error).message}`);
-        yield {
-          type: 'result',
-          subtype: 'error',
-          session_id: sessionId,
-          errorMessage: `DSH stream error: ${(err as Error).message}`,
-        };
-        terminalEmitted = true;
+        if (!abort.signal.aborted) {
+          yield {
+            type: 'result',
+            subtype: 'error',
+            session_id: sessionId,
+            errorMessage: `DSH run failed: ${(err as Error).message}`,
+          };
+          terminalEmitted = true;
+        }
       }
     } catch (err) {
+      // CC-03: createSession 等启动期失败也产出 error result（而非抛异常），
+      // 由本 catch 统一转 error result；state 清理在 finally。
       if (!abort.signal.aborted) {
         yield {
           type: 'result',
           subtype: 'error',
-          session_id: sessionId,
+          session_id: sessionId ?? '',
           errorMessage: `DSH run failed: ${(err as Error).message}`,
         };
         terminalEmitted = true;
@@ -199,7 +218,7 @@ export class DshRunner implements AgentRunner {
       yield {
         type: 'result',
         subtype: abort.signal.aborted ? 'interrupted' : 'error',
-        session_id: sessionId,
+        session_id: sessionId ?? '',
         errorMessage: abort.signal.aborted ? 'run stopped' : 'turn ended without a terminal event',
       };
     }

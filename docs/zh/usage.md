@@ -125,9 +125,9 @@ bridge 启动后不在终端输出，运行日志写入 `~/.lark-remote/logs/`�
 | `/reconnect` | - | 重连飞书 WebSocket |
 | `/config` | `/c` | 查看配置（卡片交互，布尔值点击切换，其他用按钮选择） |
 | `/order save <text>` | `/o` | 保存常用指令 |
-| `/order` `/order list` | `/o` | 列出已保存的指令 |
-| `/order alias <name> <text>` | `/o` | 注册快捷别名（如 `/order alias fix 请修复报错`），之后输入 `$fix` 即展开 |
-| `/order alias [remove <name>]` | `/o` | 列出全部别名（并入 `/order` 卡片）/ 删除别名 |
+| `/order` `/order list` | `/o` | 列出已保存的指令（卡片，可给指令起别名） |
+| `/order alias add <orderId\|序号> <别名名>` | `/o` | 给指令绑定别名（也可在卡片上「＋别名」操作），之后输入 `$name` 即展开 |
+| `/order alias rm <orderId\|序号>` | `/o` | 移除指令的别名 |
 | `/exit` | `/e` | 退出 bridge |
 | `/restart` | - | 原地自重启 bridge：新进程同 config 接管，启动通知稍后送达 |
 
@@ -221,23 +221,28 @@ inboundMedia:
 
 ### 快捷别名 `$name`
 
-`/order alias` 注册「触发词 → 文本」的快捷别名，输入 `$name` 即展开，适合高频短语：
+给收藏的指令起个别名，输入 `$name` 即触发该指令，适合高频短语：
 
 ```text
-/order alias fix 请修复刚才提到的报错并解释原因
-$fix                       → 展开为上面整句
-/order alias h 请读取文件并分析
-$h /tmp/a.txt              → 展开为 "请读取文件并分析 /tmp/a.txt"
+/order save 跑全量测试
+/order alias add 1 all        # 给第 1 条指令绑定别名 all（序号按 /order 列表顺序）
+$all                          → 展开为 "跑全量测试"（等价于执行该指令）
+/order alias add 2 h
+$h /tmp/a.txt                 → 展开为 "请读取文件并分析 /tmp/a.txt"
 ```
 
+- **卡片是主入口**：`/order` 卡片每条指令有「＋别名」按钮，点击弹出输入框即可
+  绑定/修改/删除别名（留空提交 = 删除）；已绑定的指令显示 `$name` 标签，
+  旁边 ✕ 可快速删除别名。命令 `/order alias add|rm` 是备选入口；
+- **1 条指令 = 1 个别名**，全局唯一，不能与已有别名重名；
 - 只匹配消息开头的 `$name`（后接空格或行尾），全词精确匹配，大小写敏感；
 - 名称只能包含字母/数字/下划线且**不能数字开头**（`$500` 这类文本永远不会误展开）；
 - `!` 开头的 bash 消息和 `/` 开头的命令不展开（`$PATH` 等 shell 变量不受影响）；
 - 未注册的 `$xxx` 原样发给 agent，不报错；
 - 展开结果以 `/` 开头会走命令路径（可触发 `/cd` 等）；别名展开成 `!` 命令是
   用户自定义行为，注意安全；
-- 别名持久化在 `<configDir>/aliases.json`，上限 50 条；
-- `remove` 是保留子命令，不能作为别名名（`/order alias remove <name>` 用于删除）。
+- 别名随指令持久化在 `<configDir>/orders.json`，删除指令时别名一并删除；
+- 名称不能是保留子命令（`remove`、`save`、`list`、`alias` 等），不能数字开头。
 
 ---
 
