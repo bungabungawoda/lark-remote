@@ -1466,6 +1466,83 @@ describe('Bridge agentRegistry / sessionReaderRegistry', () => {
     expect(created[10].entry.disposed).toBe(false);
   });
 
+  it('config change during an active run evicts the stale workspace runner after the run ends (P1)', async () => {
+    // clearRunners() 对活跃 workspace 直接 skip，而 finalizeRun() 只 evict
+    // lifetime !== 'workspace' 的 runner；全部 runner 都是 workspace → 活跃 workspace
+    // 的 runner 既不因 clearRunners 被清、也不因 finalize 被清，下一轮复用旧配置实例。
+    // 修复：配置变更时把活跃 workspace 槽位标 stale，run 结束后 evict+dispose。
+    const { AgentRegistry } = await import('../runner/registry.js');
+    const created: Array<{ model: string; disposed: boolean }> = [];
+    let releaseRun: (() => void) | null = null;
+    const gate = new Promise<void>((r) => {
+      releaseRun = r;
+    });
+    const reg = new AgentRegistry();
+    reg.register('claude', () => {
+      const entry = {
+        model: created.length === 0 ? 'model-A' : 'model-B',
+        disposed: false,
+      };
+      created.push(entry);
+      return asAgentRunner({
+        lifetime: 'workspace',
+        isRunning: false,
+        run: async function* () {
+          yield {
+            type: 'system',
+            subtype: 'init',
+            session_id: 'stub-session',
+            model: entry.model,
+          } as AgentEvent;
+          await gate; // 保持 run 活跃
+          yield { type: 'result', subtype: 'success', session_id: 'stub-session' } as AgentEvent;
+        },
+        stop: async () => {},
+        dispose: async () => {
+          entry.disposed = true;
+        },
+        killOrphan: () => {},
+        registerExitHandlers: () => {},
+        unregisterExitHandlers: () => {},
+      });
+    });
+    const connector = createStubConnector();
+    const bridge = new Bridge({
+      runner: createStubRunner(),
+      connector,
+      sessionStore: new SessionStore(),
+      config,
+      agentRegistry: reg,
+      sessionReaderRegistry: createStubSessionReaderRegistry(),
+    });
+    sessionStore_setCwd(bridge, ctx.userId, tmpDir);
+
+    // 第一次 run（活跃中）
+    const runPromise = bridge.forwardToClaude('hello', ctx);
+    await vi.waitFor(() => {
+      expect(created.length).toBe(1);
+      expect(bridge.isBusyFor(tmpDir)).toBe(true);
+    });
+
+    // 运行中保存配置 + clearRunners（模拟 /config save）
+    bridge.setConfig(config);
+    bridge.clearRunners();
+
+    // 结束当前 run
+    releaseRun!();
+    await runPromise;
+
+    // 修复后：stale 槽位在 run 结束后被 evict + dispose
+    expect(created[0].disposed).toBe(true);
+
+    // 下一轮应创建新 runner（model-B），复用新配置，而不是旧 model-A 实例
+    const runPromise2 = bridge.forwardToClaude('again', ctx);
+    await runPromise2;
+    expect(created).toHaveLength(2);
+    expect(created[1].model).toBe('model-B');
+    expect(created[1].disposed).toBe(false);
+  });
+
   it('sendCompletionNotificationCard uses sessionReaderRegistry when present', async () => {
     const { SessionReaderRegistry } = await import('../session/registry.js');
     const readSpy = vi.fn(() => ({

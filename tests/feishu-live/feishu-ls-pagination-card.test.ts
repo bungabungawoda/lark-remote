@@ -18,35 +18,13 @@ import path from 'node:path';
 import os from 'node:os';
 import { FeishuConnector } from '../../src/connector/index.js';
 import { loadConfig } from '../../src/config/index.js';
+import { TEST_CONFIG_DIR, configPath, skipIfNoConfig, describeLive } from './live-helpers.js';
 
 // 使用独立的测试配置目录
-const TEST_CONFIG_DIR = path.join(os.homedir(), '.lark-remote-test');
-const configPath = path.join(TEST_CONFIG_DIR, 'config.yaml');
-
-const skipIfNoConfig = () => {
-  if (!fs.existsSync(configPath)) {
-    console.log(`⚠️ 跳过：配置不存在 ${configPath}`);
-    return true;
-  }
-  try {
-    const cfg = loadConfig(configPath);
-    if (!cfg.feishu?.appId || !cfg.feishu?.appSecret) {
-      console.log('⚠️ 跳过：配置中缺少飞书凭据');
-      return true;
-    }
-    return false;
-  } catch (err) {
-    console.log(`⚠️ 跳过：配置加载失败 ${err}`);
-    return true;
-  }
-};
 
 let connector: FeishuConnector;
 let testChatId: string;
 let tmpDir: string;
-
-// 真实飞书 API 集成测试：需 FEISHU_LIVE_TEST=1 显式开启，默认跳过（外部贡献者无凭据也能跑全量测试）
-const describeLive = process.env.FEISHU_LIVE_TEST ? describe : describe.skip;
 
 describeLive('飞书 API 集成测试 - /ls 分页栏 CardKit 2.0 column 校验', () => {
   beforeEach(async () => {

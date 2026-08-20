@@ -76,6 +76,17 @@ export type ApprovalAction =
   | { action: 'accept_with_execpolicy_amendment' }
   /** Claude：允许当前请求 + 本会话后续所有权限请求自动放行（允许所有）。 */
   | { action: 'accept_all' }
+  /**
+   * 计划审批「拒绝并附修改意见」：deny + message，Claude 留在 plan 模式
+   * 按意见修订（等价 TUI「Tell Claude what to change」）。
+   */
+  | { action: 'decline_with_feedback'; message: string }
+  /**
+   * 计划审批「批准并采纳修改意见」：allow + updatedInput.plan（原计划追加
+   * 意见），触发 Claude 侧 planWasEdited → tool_result 回显
+   * "## Approved Plan (edited by user)"（等价 TUI shift+tab approve with feedback）。
+   */
+  | { action: 'accept_with_feedback'; plan: string }
   | { action: 'decline' }
   | { action: 'cancel' }
   /**
@@ -152,6 +163,20 @@ export interface ApprovalView {
    * 表达审批内容，避免落入 command 槽位显示无意义 `{}`。
    */
   toolName?: string;
+  /**
+   * 计划全文（kind === 'tool' 且 toolName === 'ExitPlanMode' 时存在）。
+   * 来源：control_request input.plan（CLI normalizeToolInput 从磁盘注入，
+   * 非稳定）→ 计划文件读取（input.planFilePath / 会话内 Write/Edit 跟踪）。
+   */
+  plan?: string;
+  /** 计划文件路径（ExitPlanMode；input.planFilePath 或会话内跟踪所得）。 */
+  planFilePath?: string;
+  /**
+   * 用户已填写的计划修改意见（ExitPlanMode 反馈输入框；coordinator
+   * planFeedback 回流，卡片回显）。供「拒绝并附意见」/「批准并采纳修改」
+   * 两个决策复用。
+   */
+  planFeedback?: string;
   /** 原始 input 的 JSON 字符串（kind === 'tool' 且 input 非空时展示）。 */
   toolInput?: string;
   fileChanges?: Array<{ path: string; kind: 'add' | 'update' | 'delete'; diff?: string }>;

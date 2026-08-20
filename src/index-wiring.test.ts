@@ -30,6 +30,7 @@ describe('index.ts card action dispatch wiring guard (§9.19)', () => {
     expect(block).toContain("actionValue.cmd === 'approval.answer'");
     expect(block).toContain("actionValue.cmd === 'approval.answerSubmit'");
     expect(block).toContain("actionValue.cmd === 'approval.answerCustom'");
+    expect(block).toContain("actionValue.cmd === 'approval.answerNote'");
   });
 });
 
