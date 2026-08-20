@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { QueueManager } from '../../../src/bridge/queue-manager.js';
+import { makeQueueManagerWithPendingCard } from '../../lib/bridge-stubs.js';
 import { sleep, waitFor } from '../../lib/wait-for.js';
 
 const { mockLogger } = vi.hoisted(() => ({
@@ -17,34 +17,6 @@ vi.mock('../../../src/logger/index.js', () => ({
 }));
 
 const WORKSPACE = '/tmp/queue-card-arm-cancel-exec-race-ws';
-
-/**
- * QueueManager with a manually-controlled sendCard: the queue status card's
- * Feishu send promise stays pending until the test resolves it. This lets the
- * test hold the queueCardMessages mapping in the in-flight state while the
- * cancel ("撤销") and immediate ("立即执行") handlers race on the same task —
- * both handlers await the same mapping promise, so the order in which they
- * update the card is decided by continuation registration, not by queue
- * membership.
- */
-function makeQueueManagerWithPendingCard() {
-  const sentCards: Array<{ chatId: string; card: object }> = [];
-  const updatedCards: Array<{ messageId: string; card: object }> = [];
-  let resolveSendCard: (() => void) | undefined;
-
-  const sendCard = async (chatId: string, card: object) => {
-    sentCards.push({ chatId, card });
-    return new Promise<string>((resolve) => {
-      resolveSendCard = () => resolve('card-late-msg');
-    });
-  };
-  const updateCard = async (messageId: string, card: object) => {
-    updatedCards.push({ messageId, card });
-  };
-
-  const qm = new QueueManager(() => false, sendCard, updateCard);
-  return { qm, sentCards, updatedCards, resolveSendCard: () => resolveSendCard?.() };
-}
 
 /** Header title of a card update, e.g. '❌ 已撤销' / '▶️ 已开始执行'. */
 function headerTitle(update: { messageId: string; card: object }): string {
@@ -78,7 +50,8 @@ describe('QueueManager - cancelled task card must not be flipped back to executi
     // 存在于 begin 路径，updateQueueCardToExecuting 公共方法本身无成员资格检查，
     // 而 bridge.markQueueCardExecuting 无条件调用它。方向 #1（撤销与接跑在 send
     // 完成瞬间的交错）即此竞态。
-    const { qm, sentCards, updatedCards, resolveSendCard } = makeQueueManagerWithPendingCard();
+    const { qm, sentCards, updatedCards, resolveSendCard } =
+      makeQueueManagerWithPendingCard('card-late-msg');
 
     // --- 步骤 1：T1（meta，挂起）开始执行 ---
     let rejectT1: (err: Error) => void = () => {};
