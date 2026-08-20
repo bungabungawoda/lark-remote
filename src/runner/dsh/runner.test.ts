@@ -517,6 +517,31 @@ describe('DshRunner stop state', () => {
     await server.stop();
   });
 
+  it('createSession failure cleans up running state (CC-03)', async () => {
+    const server = new FakeDshServer();
+    server.register('session.create', () => ({
+      ok: false,
+      error: { code: 'internal', message: 'session create boom' },
+    }));
+    await server.start();
+    const runner = new DshRunner({ kind: 'dsh', sessionReader: stubReader, host: server.baseUrl });
+    const events = await collect(runner.run('hi', { cwd: CWD }));
+    // 失败也要产出 error result，且不再泄漏 running 状态
+    expect(events.find((e) => e.type === 'result')).toMatchObject({
+      subtype: 'error',
+      errorMessage: expect.stringContaining('session create boom'),
+    });
+    expect(runner.isRunning).toBe(false);
+    // 状态未污染：清理后再次 run（这次成功）可正常执行
+    server.register('session.create', () => ({ ok: true, value: { sessionId: SID } }));
+    server.register('session.prompt', () => ({ ok: true, value: { accepted: true } }));
+    server.setMuxFrames([sessionEventFrame(SID, turnEnd('completed', 1))]);
+    const events2 = await collect(runner.run('hi', { cwd: CWD }));
+    expect(events2.find((e) => e.type === 'result')).toMatchObject({ subtype: 'success' });
+    expect(runner.isRunning).toBe(false);
+    await server.stop();
+  });
+
   it('getStatusInfo reports kind/model/host', async () => {
     const runner = new DshRunner({
       kind: 'dsh',

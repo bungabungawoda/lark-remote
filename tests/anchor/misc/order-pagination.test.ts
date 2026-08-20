@@ -73,11 +73,14 @@ function cmdOrderOf(router: CommandRouter) {
 
 const ctx = { userId: 'user1', chatId: 'chat1', messageId: 'msg1' };
 
+// ORDER_PAGE_SIZE = 8（2026-08-19 别名并卡后每行 3 个元素，15 → 8）
+const PAGE_SIZE = 8;
+
 describe('/order pagination anchor tests', () => {
-  it('test_anchor_order_no_pagination_bar_when_15_or_fewer_items', async () => {
+  it('test_anchor_order_no_pagination_bar_when_8_or_fewer_items', async () => {
     const orderStore = new OrderStore(ordersFile);
-    // Exactly 15 items — should NOT show pagination
-    for (let i = 0; i < 15; i++) {
+    // Exactly 8 items — should NOT show pagination
+    for (let i = 0; i < PAGE_SIZE; i++) {
       orderStore.save(`指令 ${i + 1}`);
     }
 
@@ -91,9 +94,9 @@ describe('/order pagination anchor tests', () => {
     expect(cardStr).not.toContain('order.page');
   });
 
-  it('test_anchor_order_pagination_bar_shown_when_more_than_15_items', async () => {
+  it('test_anchor_order_pagination_bar_shown_when_more_than_8_items', async () => {
     const orderStore = new OrderStore(ordersFile);
-    // 25 items (> 15) — should show pagination
+    // 25 items (> 8) — should show pagination
     for (let i = 0; i < 25; i++) {
       orderStore.save(`指令 ${i + 1}`);
     }
@@ -111,7 +114,7 @@ describe('/order pagination anchor tests', () => {
 
   it('test_anchor_order_pagination_shows_correct_page_info', async () => {
     const orderStore = new OrderStore(ordersFile);
-    // 25 items → 2 pages (15 + 10)
+    // 25 items → 4 pages (8 + 8 + 8 + 1)
     for (let i = 0; i < 25; i++) {
       orderStore.save(`指令 ${i + 1}`);
     }
@@ -121,8 +124,8 @@ describe('/order pagination anchor tests', () => {
     const r = Array.isArray(result) ? result[0] : result;
     const cardStr = JSON.stringify(r.card);
 
-    // Should show page 1/2, total 25
-    expect(cardStr).toContain('第 1/2 页');
+    // Should show page 1/4, total 25
+    expect(cardStr).toContain('第 1/4 页');
     expect(cardStr).toContain('共 25 条');
   });
 
@@ -133,14 +136,14 @@ describe('/order pagination anchor tests', () => {
     }
 
     const { router } = createRouter();
-    // Simulate page 2 by calling cmdOrder with offset=15
-    const page2Result = cmdOrderOf(router)([], ctx, 15);
+    // Simulate page 2 by calling cmdOrder with offset=PAGE_SIZE
+    const page2Result = cmdOrderOf(router)([], ctx, PAGE_SIZE);
     const cardStr = JSON.stringify(page2Result.card);
 
-    // Page 2: "上一页" shown, "下一页" not shown (last page)
+    // Page 2: "上一页" shown, "下一页" shown (not last page)
     expect(cardStr).toContain('上一页');
-    expect(cardStr).not.toContain('下一页');
-    expect(cardStr).toContain('第 2/2 页');
+    expect(cardStr).toContain('下一页');
+    expect(cardStr).toContain('第 2/4 页');
   });
 
   it('test_anchor_order_empty_list_no_pagination', async () => {
@@ -168,9 +171,9 @@ describe('/order pagination anchor tests', () => {
     }
 
     const { router, connector } = createRouter();
-    // Simulate order.page card action
+    // Simulate order.page card action to page 3 (offset = 2*PAGE_SIZE)
     const response = await router.handleCardAction(
-      { cmd: 'order.page', offset: 15 } as { cmd: string; offset: number },
+      { cmd: 'order.page', offset: 2 * PAGE_SIZE } as { cmd: string; offset: number },
       ctx,
     );
 
@@ -179,8 +182,8 @@ describe('/order pagination anchor tests', () => {
     expect(updatedCards.length).toBeGreaterThanOrEqual(1);
     const lastCard = updatedCards[updatedCards.length - 1] as { body?: { elements?: unknown[] } };
     const cardStr = JSON.stringify(lastCard);
-    // Page 2 content
-    expect(cardStr).toContain('第 2/2 页');
+    // Page 3 content
+    expect(cardStr).toContain('第 3/4 页');
 
     // Should return a toast (immediate feedback)
     expect(response).toBeDefined();
@@ -212,21 +215,22 @@ describe('/order pagination anchor tests', () => {
     }
 
     const { router } = createRouter();
-    // Page 1 (offset=0): should show items 1-15, NOT items 16-25
+    // Page 1 (offset=0): should show items 1-8, NOT items 9-25
     const page1 = cmdOrderOf(router)([], ctx, 0);
     const page1Str = JSON.stringify(page1.card);
     expect(page1Str).toContain('指令 1');
-    expect(page1Str).toContain('指令 15');
-    expect(page1Str).not.toContain('指令 16');
+    expect(page1Str).toContain('指令 8');
+    expect(page1Str).not.toContain('指令 9');
 
-    // Page 2 (offset=15): should show items 16-25, NOT items 1-15
-    const page2 = cmdOrderOf(router)([], ctx, 15);
+    // Page 2 (offset=8): should show items 9-16, NOT items 1-8
+    const page2 = cmdOrderOf(router)([], ctx, PAGE_SIZE);
     const page2Str = JSON.stringify(page2.card);
+    expect(page2Str).toContain('指令 9');
     expect(page2Str).toContain('指令 16');
-    expect(page2Str).toContain('指令 25');
-    // 注意："指令 16" 包含子串 "指令 1"，负断言必须匹配完整 content 值
+    // 注意："指令 9" 不包含子串 "指令 1"，但 "指令 16" 不含 "指令 1"；
+    // 负断言匹配完整 content 值以防子串误伤
     expect(page2Str).not.toContain('"content":"指令 1"');
-    expect(page2Str).not.toContain('"content":"指令 15"');
+    expect(page2Str).not.toContain('"content":"指令 8"');
   });
 
   it('test_anchor_order_delete_on_paginated_page_preserves_current_page', async () => {
@@ -236,12 +240,12 @@ describe('/order pagination anchor tests', () => {
     }
 
     const { router, connector } = createRouter();
-    // Delete an item on page 2 (offset=15)
+    // Delete an item on page 2 (offset=PAGE_SIZE)
     const allOrders = orderStore.get();
-    const order16 = allOrders[15]; // item 16 (0-indexed)
+    const order9 = allOrders[PAGE_SIZE]; // item 9 (0-indexed)
 
     const response = await router.handleCardAction(
-      { cmd: 'order.delete', orderId: order16.id, offset: 15 } as {
+      { cmd: 'order.delete', orderId: order9.id, offset: PAGE_SIZE } as {
         cmd: string;
         orderId: string;
         offset: number;
@@ -254,11 +258,12 @@ describe('/order pagination anchor tests', () => {
     expect(updatedCards.length).toBeGreaterThanOrEqual(1);
     const lastCard = updatedCards[updatedCards.length - 1];
     const cardStr = JSON.stringify(lastCard);
-    expect(cardStr).not.toContain('指令 16');
+    expect(cardStr).not.toContain('指令 9');
     // Total should now be 24
     expect(cardStr).toContain('共 24 条');
-    // Should stay on page 2 (offset=15 preserved after delete)
-    expect(cardStr).toContain('第 2/2 页');
+    // Should stay on page 2 (offset=PAGE_SIZE preserved after delete)
+    // 24 条 = 3 页（8+8+8），当前第 2/3 页
+    expect(cardStr).toContain('第 2/3 页');
 
     // Toast response
     expect(response).toBeDefined();
@@ -269,7 +274,8 @@ describe('/order pagination anchor tests', () => {
   it('test_anchor_order_page1_with_20_items_stays_under_feishu_element_budget', async () => {
     // 2026-08-13 线上同类故障：ORDER_PAGE_SIZE=20 时，21+ 条指令第 1 页
     // （20 行 + 分页栏 = 61 个 body 元素）触发飞书 ErrCode 11310。
-    // 修复后每页 15 行：3*15 - 1 + 2 = 46 个 body 元素。
+    // 2026-08-19 别名并卡后每行 3 个元素（文本 div + 操作 column_set + hr），
+    // 页大小 8：3*8 - 1 + 2 = 25 个 body 元素，远低于 60 上限。
     const orderStore = new OrderStore(ordersFile);
     for (let i = 0; i < 20; i++) {
       orderStore.save(`指令 ${i + 1}`);
@@ -283,7 +289,7 @@ describe('/order pagination anchor tests', () => {
       elements?: unknown[];
     };
     const elements = card.body?.elements ?? [];
-    expect(elements.length).toBe(46);
+    expect(elements.length).toBe(25);
     expect(elements.length).toBeLessThanOrEqual(60);
   });
 });

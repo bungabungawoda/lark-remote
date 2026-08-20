@@ -175,7 +175,14 @@ export class PiRpcRunner extends ConnectionBasedRunner<PiRpcClient, PiRpcTransla
     this.pushEvents([translator.produceTurnStarted(sessionId, turnId)]);
 
     this.promptSettled = false;
-    await client.request({ type: 'prompt', message });
+    const response = await client.request({ type: 'prompt', message });
+    if (!response.success) {
+      // CC-08: pi 返回 success:false（无效模型/provider 错误/忙）时立即失败，
+      // 不能当成成功 ACK 继续等 agent_settled（否则最长 turn idle timeout）。
+      throw new Error(
+        `pi prompt failed: ${(response as { error?: string }).error ?? 'unknown error'}`,
+      );
+    }
     this.promptSettled = true;
   }
 

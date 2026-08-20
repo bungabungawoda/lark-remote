@@ -266,8 +266,9 @@ describe('ClaudeRunner (long-lived interactive session)', () => {
   });
 
   it('test_anchor_exit_plan_mode_yields_tool_approval', async () => {
-    // ExitPlanMode：input 为空对象，语义是「退出计划模式」→ 应映射为
-    // kind:'tool'（含 toolName + reason），而非 command 槽位的 `{}`。
+    // ExitPlanMode：计划审批 → kind:'tool'，计划全文 + 文件路径 + reason 上抛，
+    // 决策对齐 TUI（批准并执行 / 批准并自动放行 / 拒绝并附意见 / 批准并采纳
+    // 修改 / 拒绝），而非 command 槽位的 `{}`。
     const stdinFile = path.join(tmpDir, 'stdin-exit-plan.txt');
     createMockClaude({ MOCK_SCENARIO: 'approval-exit-plan', MOCK_RECORD_STDIN: stdinFile });
     const runner = makeRunner({ permissionMode: 'default' });
@@ -286,14 +287,111 @@ describe('ClaudeRunner (long-lived interactive session)', () => {
     expect(approval.kind).toBe('tool');
     expect(approval.view.toolName).toBe('ExitPlanMode');
     expect(approval.view.reason).toContain('实施方案');
-    // 计划审批无「允许所有」语义。
-    expect(approval.view.availableDecisions).toEqual(['accept', 'decline']);
+    expect(approval.view.plan).toContain('测试计划');
+    expect(approval.view.planFilePath).toBe('/home/user/.claude/plans/mock-plan.md');
+    expect(approval.view.availableDecisions).toEqual([
+      'accept',
+      'acceptAll',
+      'declineWithFeedback',
+      'acceptWithFeedback',
+      'decline',
+    ]);
     await vi.waitFor(() => {
       const written = fs.readFileSync(stdinFile, 'utf-8');
       expect(written).toContain('"behavior":"allow"');
     });
     const results = events.filter((e) => e.type === 'result');
     expect(results).toHaveLength(1);
+  });
+
+  it('test_anchor_exit_plan_reads_plan_file_fallback', async () => {
+    // input.plan 缺失时按 input.planFilePath 读取计划文件（CLI 注入不稳定，
+    // 文件是可靠兜底）。
+    const planFile = path.join(tmpDir, 'plans', 'session-plan.md');
+    fs.mkdirSync(path.dirname(planFile), { recursive: true });
+    fs.writeFileSync(planFile, '# 文件兜底计划\n\n1. 读取文件成功', 'utf-8');
+    createMockClaude({
+      MOCK_SCENARIO: 'approval-exit-plan',
+      MOCK_PLAN_FILE_PATH: planFile,
+    });
+    const runner = makeRunner({ permissionMode: 'default' });
+    const events: AgentEvent[] = [];
+
+    for await (const ev of runner.run('approve the plan', { cwd: '/tmp' })) {
+      events.push(ev);
+      if (ev.type === 'approval_requested') {
+        await runner.respondApproval(ev.requestId, { action: 'accept' });
+      }
+    }
+
+    const approval = events.find((e) => e.type === 'approval_requested');
+    expect(approval).toBeDefined();
+    if (approval?.type !== 'approval_requested') throw new Error('expected approval_requested');
+    expect(approval.view.plan).toContain('文件兜底计划');
+    expect(approval.view.planFilePath).toBe(planFile);
+  });
+
+  it('test_anchor_exit_plan_decline_with_feedback_writes_deny_message', async () => {
+    const stdinFile = path.join(tmpDir, 'stdin-exit-plan-fb.txt');
+    createMockClaude({ MOCK_SCENARIO: 'approval-exit-plan', MOCK_RECORD_STDIN: stdinFile });
+    const runner = makeRunner({ permissionMode: 'default' });
+
+    for await (const ev of runner.run('approve the plan', { cwd: '/tmp' })) {
+      if (ev.type === 'approval_requested') {
+        await runner.respondApproval(ev.requestId, {
+          action: 'decline_with_feedback',
+          message: '先把测试写了再实施',
+        });
+      }
+    }
+
+    await vi.waitFor(() => {
+      const written = fs.readFileSync(stdinFile, 'utf-8');
+      expect(written).toContain('"behavior":"deny"');
+      expect(written).toContain('先把测试写了再实施');
+    });
+  });
+
+  it('test_anchor_exit_plan_accept_with_feedback_writes_allow_updated_plan', async () => {
+    const stdinFile = path.join(tmpDir, 'stdin-exit-plan-afb.txt');
+    createMockClaude({ MOCK_SCENARIO: 'approval-exit-plan', MOCK_RECORD_STDIN: stdinFile });
+    const runner = makeRunner({ permissionMode: 'default' });
+
+    for await (const ev of runner.run('approve the plan', { cwd: '/tmp' })) {
+      if (ev.type === 'approval_requested') {
+        await runner.respondApproval(ev.requestId, {
+          action: 'accept_with_feedback',
+          plan: '# 测试计划\n\n## 用户修改意见\n先补测试再写实现',
+        });
+      }
+    }
+
+    await vi.waitFor(() => {
+      const written = fs.readFileSync(stdinFile, 'utf-8');
+      expect(written).toContain('"behavior":"allow"');
+      expect(written).toContain('"updatedInput"');
+      expect(written).toContain('用户修改意见');
+    });
+  });
+
+  it('test_anchor_exit_plan_accept_all_writes_allow', async () => {
+    // 计划审批「批准并自动放行」：acceptAll = allow + 本会话后续自动放行
+    // （自动放行机制由 test_anchor_accept_all_auto_approves_subsequent_requests
+    // 覆盖，这里验证计划审批的 acceptAll 决策能写 allow）。
+    const stdinFile = path.join(tmpDir, 'stdin-exit-plan-all.txt');
+    createMockClaude({ MOCK_SCENARIO: 'approval-exit-plan', MOCK_RECORD_STDIN: stdinFile });
+    const runner = makeRunner({ permissionMode: 'default' });
+
+    for await (const ev of runner.run('approve the plan', { cwd: '/tmp' })) {
+      if (ev.type === 'approval_requested') {
+        await runner.respondApproval(ev.requestId, { action: 'accept_all' });
+      }
+    }
+
+    await vi.waitFor(() => {
+      const written = fs.readFileSync(stdinFile, 'utf-8');
+      expect(written).toContain('"behavior":"allow"');
+    });
   });
 
   it('test_anchor_approval_decline_writes_deny', async () => {

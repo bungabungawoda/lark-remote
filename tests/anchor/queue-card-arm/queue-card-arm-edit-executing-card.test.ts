@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { QueueManager } from '../../../src/bridge/queue-manager.js';
+import { makeQueueManager } from '../../lib/bridge-stubs.js';
 import { sleep, waitFor } from '../../lib/wait-for.js';
 
 const { mockLogger } = vi.hoisted(() => ({
@@ -17,23 +17,6 @@ vi.mock('../../../src/logger/index.js', () => ({
 }));
 
 const WORKSPACE = '/tmp/queue-card-arm-edit-executing-card-ws';
-
-/** Same stub-callback pattern as tests/anchor/queue-card-arm/queue-card-arm.test.ts. */
-function makeQueueManager() {
-  const sentCards: Array<{ chatId: string; card: object }> = [];
-  const updatedCards: Array<{ messageId: string; card: object }> = [];
-
-  const sendCard = async (chatId: string, card: object) => {
-    sentCards.push({ chatId, card });
-    return `card-msg-${sentCards.length}`;
-  };
-  const updateCard = async (messageId: string, card: object) => {
-    updatedCards.push({ messageId, card });
-  };
-
-  const qm = new QueueManager(() => false, sendCard, updateCard);
-  return { qm, sentCards, updatedCards };
-}
 
 /** Header title of a card update, e.g. '▶️ 已开始执行'. */
 function headerTitle(update: { messageId: string; card: object }): string {

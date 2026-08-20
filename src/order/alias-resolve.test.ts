@@ -1,12 +1,12 @@
 import { describe, it, expect } from 'vitest';
 import { resolveAlias } from './alias-resolve.js';
-import type { AliasEntry } from './alias-store.js';
+import type { AliasResolveEntry } from './alias-resolve.js';
 
-const aliases: AliasEntry[] = [
-  { name: 'fix', text: '请修复刚才提到的报错并解释原因', createdAt: '2026-08-16T00:00:00.000Z' },
-  { name: 'h', text: '请读取文件并分析', createdAt: '2026-08-16T00:00:00.000Z' },
-  { name: 'cd2', text: '/cd /home/user/project', createdAt: '2026-08-16T00:00:00.000Z' },
-  { name: 'sh', text: '!ls -la', createdAt: '2026-08-16T00:00:00.000Z' },
+const aliases: AliasResolveEntry[] = [
+  { name: 'fix', text: '请修复刚才提到的报错并解释原因' },
+  { name: 'h', text: '请读取文件并分析' },
+  { name: 'cd2', text: '/cd /home/user/project' },
+  { name: 'sh', text: '!ls -la' },
 ];
 
 describe('resolveAlias', () => {
@@ -45,9 +45,9 @@ describe('resolveAlias', () => {
   });
 
   it('单次展开不递归（展开结果含 $other 不再二次展开）', () => {
-    const recursive: AliasEntry[] = [
-      { name: 'a', text: '$b 的内容', createdAt: '' },
-      { name: 'b', text: 'B', createdAt: '' },
+    const recursive: AliasResolveEntry[] = [
+      { name: 'a', text: '$b 的内容' },
+      { name: 'b', text: 'B' },
     ];
     expect(resolveAlias('$a', recursive)).toBe('$b 的内容');
   });

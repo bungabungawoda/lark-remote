@@ -18,8 +18,7 @@ import {
 } from '../config/index.js';
 import { syncAgentChoices } from '../runner/index.js';
 import { WorkspaceStore } from '../workspace/index.js';
-import { OrderStore } from '../order/index.js';
-import { AliasStore } from '../order/alias-store.js';
+import { OrderStore, type OrderEntry } from '../order/index.js';
 import { resolveAlias } from '../order/alias-resolve.js';
 import type {
   AgentKind,
@@ -59,8 +58,11 @@ const ACTIVE_PAGE_SIZE = 20;
  * 2026-08-13 实测：每行 2 个元素（div + column_set，行间 hr），20 行 + 分页栏
  * = 61 个 body 元素，触发飞书 ErrCode 11310 "element exceeds the limit"
  * （21+ 条指令时第 1 页必炸）。改为 15 行：3*15 - 1 + 2 = 46 个元素，留足余量。
+ * 2026-08-19 别名并卡后每行变 3 个元素（文本 div + 操作 column_set + hr），
+ * 从 15 降为 8：3*8 - 1 + 2 = 25 个元素，仍在余量内，同时保证手机窄屏
+ * 每条指令的操作控件（执行/别名/删除）不被挤压。
  */
-const ORDER_PAGE_SIZE = 15;
+const ORDER_PAGE_SIZE = 8;
 /**
  * /ws 列表页大小。从 15 降为 5：头部 2 + 5 行 × 3（div + column_set + hr）+
  * 底栏排序 1 + 分页栏 2 ≈ 20 个 body 元素，远低于单卡 60 元素上限（ErrCode 11310），
@@ -156,6 +158,9 @@ export function isImmediateAction(cmd: string): boolean {
     cmd === 'queue.input' ||
     cmd === 'order.delete' ||
     cmd === 'order.page' ||
+    cmd === 'order.aliasEdit' ||
+    cmd === 'order.aliasInput' ||
+    cmd === 'order.aliasRemove' ||
     cmd === 'config.toggle' ||
     cmd === 'config.set' ||
     cmd === 'config.input' ||
@@ -168,7 +173,8 @@ export function isImmediateAction(cmd: string): boolean {
     cmd === 'approval.answer' ||
     cmd === 'approval.answerSubmit' ||
     cmd === 'approval.answerCustom' ||
-    cmd === 'approval.answerNote'
+    cmd === 'approval.answerNote' ||
+    cmd === 'approval.planFeedback'
   );
 }
 
@@ -249,7 +255,6 @@ export class CommandRouter {
   configPath: string;
   private workspaceStore: WorkspaceStore;
   private orderStore: OrderStore;
-  private aliasStore: AliasStore;
   private exitHandler: () => void;
   private pendingExit = false;
   /**
@@ -312,8 +317,6 @@ export class CommandRouter {
     configPath: string;
     workspacePath?: string;
     ordersPath?: string;
-    /** 别名存储路径（<configDir>/aliases.json）。 */
-    aliasesPath?: string;
     exitHandler?: () => void;
     /** Spawn the detached replacement bridge process and return its pid (throws on failure). */
     restartSpawner?: () => number;
@@ -340,7 +343,6 @@ export class CommandRouter {
     this.configPath = opts.configPath;
     this.workspaceStore = new WorkspaceStore(opts.workspacePath);
     this.orderStore = new OrderStore(opts.ordersPath);
-    this.aliasStore = new AliasStore(opts.aliasesPath);
     this.exitHandler = opts.exitHandler ?? (() => process.exit(0));
     this.restartSpawner = opts.restartSpawner;
     // idle watchdog 窗口从 config.idle.watchdogMinutes 读取
@@ -416,9 +418,14 @@ export class CommandRouter {
   /**
    * 一次别名展开：bridge 收到用户消息后、命令分发前调用。
    * 仅 `$name` 开头的消息可能被展开；未知别名 / 非 `$` 消息原样返回。
+   * 别名来自 order 的 `alias` 字段（1 条指令 = 1 个别名），展开文本即指令文本。
    */
   expandAliasMessage(message: string): string {
-    return resolveAlias(message, this.aliasStore.list()) ?? message;
+    const entries = this.orderStore
+      .get()
+      .filter((o): o is OrderEntry & { alias: string } => typeof o.alias === 'string')
+      .map((o) => ({ name: o.alias, text: o.text }));
+    return resolveAlias(message, entries) ?? message;
   }
 
   /**
@@ -525,6 +532,12 @@ export class CommandRouter {
         return await this.handleOrderDelete(value, ctx);
       case 'order.page':
         return await this.handleOrderPage(value, ctx);
+      case 'order.aliasEdit':
+        return await this.handleOrderAliasEdit(value, ctx);
+      case 'order.aliasInput':
+        return await this.handleOrderAliasInput(value, ctx);
+      case 'order.aliasRemove':
+        return await this.handleOrderAliasRemove(value, ctx);
       case 'config.toggle':
       case 'config.set':
       case 'config.input':
@@ -540,6 +553,7 @@ export class CommandRouter {
       case 'approval.answerSubmit':
       case 'approval.answerCustom':
       case 'approval.answerNote':
+      case 'approval.planFeedback':
         return this.handleApprovalAction(value, ctx);
       case 'codex.compact':
         await this.bridge.handleCodexCompact(value, ctx);
@@ -724,6 +738,24 @@ export class CommandRouter {
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         return this.answerFailureToast(msg);
+      }
+    }
+
+    if (value.cmd === 'approval.planFeedback') {
+      if (!runId || requestId === undefined || !nonce || !value.inputValue) {
+        return { toast: { type: 'error', content: '缺少修改意见参数' } };
+      }
+      try {
+        await this.bridge.handleApprovalPlanFeedback({
+          runId,
+          requestId,
+          text: value.inputValue,
+          nonce,
+        });
+        return { toast: { type: 'success', content: '修改意见已保存' } };
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        return { toast: { type: 'error', content: `修改意见保存失败：${msg}` } };
       }
     }
 
@@ -1436,6 +1468,152 @@ export class CommandRouter {
   }
 
   /**
+   * Handle order.aliasEdit: 展示别名编辑卡（input + ✓ 提交图标）。
+   * 有别名时预填；提交 `order.aliasInput` 处理（含校验与唯一性）。
+   */
+  private async handleOrderAliasEdit(
+    value: { orderId?: string; offset?: number },
+    ctx: CommandContext,
+  ): Promise<CardActionResponse | void> {
+    const orderId = value.orderId;
+    const offset = Math.max(0, Math.trunc(Number(value.offset) || 0));
+    if (!orderId) {
+      return { toast: { type: 'error', content: '卡片 payload 缺少必要信息' } };
+    }
+    this.orderStore.reload();
+    const order = this.orderStore.get().find((o) => o.id === orderId);
+    if (!order) {
+      return { toast: { type: 'error', content: '指令不存在或已被删除' } };
+    }
+    const displayText = order.text.length > 100 ? order.text.slice(0, 97) + '...' : order.text;
+    // CardKit 2.0 input 自带 ✓ 提交图标（input_value 经 raw 回传，红线）。
+    // 不用 form 容器（触发 300123 无 submit button / 200621 嵌套 column）。
+    const editCard = {
+      schema: '2.0',
+      config: { wide_screen_mode: true },
+      header: {
+        template: 'blue',
+        title: { tag: 'plain_text', content: '✏️ 给指令起别名' },
+      },
+      body: {
+        elements: [
+          {
+            tag: 'div',
+            text: { tag: 'lark_md', content: `**当前指令:**\n\`${displayText}\`` },
+          },
+          { tag: 'hr' },
+          {
+            tag: 'div',
+            text: {
+              tag: 'lark_md',
+              content: '💡 输入别名名后点击右侧 ✓ 提交；留空提交 = 删除该别名',
+            },
+          },
+          {
+            tag: 'column_set',
+            columns: [
+              {
+                tag: 'column',
+                width: 'weighted',
+                weight: 3,
+                elements: [
+                  {
+                    tag: 'input',
+                    name: 'aliasName',
+                    placeholder: { tag: 'plain_text', content: '输入 $别名名（如 all）...' },
+                    default_value: order.alias ?? '',
+                    behaviors: [
+                      {
+                        type: 'callback',
+                        value: { cmd: 'order.aliasInput', orderId, offset },
+                      },
+                    ],
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+      },
+    };
+    await this.bridge.updateCardInPlace(editCard, ctx);
+  }
+
+  /**
+   * Handle order.aliasInput: 提交别名（绑/改/解绑），随后重渲染 /order 列表卡。
+   * 留空 = 解绑；非空按命名规则 + 全局唯一校验，失败仅 toast 不重渲染。
+   */
+  private async handleOrderAliasInput(
+    value: {
+      orderId?: string;
+      offset?: number;
+      inputValue?: string;
+      formValue?: Record<string, unknown>;
+    },
+    ctx: CommandContext,
+  ): Promise<CardActionResponse | void> {
+    const orderId = value.orderId;
+    const offset = Math.max(0, Math.trunc(Number(value.offset) || 0));
+    const name = value.inputValue ?? (value.formValue?.['aliasName'] as string | undefined);
+    if (!orderId) {
+      return { toast: { type: 'error', content: '卡片 payload 缺少必要信息' } };
+    }
+    this.orderStore.reload();
+    const order = this.orderStore.get().find((o) => o.id === orderId);
+    if (!order) {
+      return { toast: { type: 'error', content: '指令不存在或已被删除' } };
+    }
+    const trimmed = name?.trim() ?? '';
+    // 变更前快照旧别名：setAlias 会原地变异 order 对象（delete entry.alias），
+    // 删除后 order.alias 已为 undefined，直接用会让成功文案显示 `$undefined`。
+    const prevAlias = order.alias;
+    try {
+      this.orderStore.setAlias(order.id, trimmed === '' ? undefined : trimmed);
+    } catch (err) {
+      return { toast: { type: 'error', content: (err as Error).message } };
+    }
+    // 成功：重渲染列表卡（保持页码）。必须把 card 放进 callback 响应体让飞书
+    // 原地替换 pre-click 编辑卡——toast-only 响应会停留在编辑界面（飞书保留
+    // 点击前那张卡），见 handleQueueInput 同款注释。
+    const result = this.cmdOrder([], ctx, offset);
+    return {
+      toast: {
+        type: 'success',
+        content: trimmed === '' ? `✅ 已移除别名 $${prevAlias ?? ''}` : `✅ 已绑定别名 $${trimmed}`,
+      },
+      card: { type: 'raw', data: result.card! },
+    };
+  }
+
+  /** Handle order.aliasRemove: 删除某条指令的别名并原地重渲染列表卡。 */
+  private async handleOrderAliasRemove(
+    value: { orderId?: string; offset?: number },
+    ctx: CommandContext,
+  ): Promise<CardActionResponse | void> {
+    const orderId = value.orderId;
+    const offset = Math.max(0, Math.trunc(Number(value.offset) || 0));
+    if (!orderId) {
+      return { toast: { type: 'error', content: '卡片 payload 缺少必要信息' } };
+    }
+    this.orderStore.reload();
+    const order = this.orderStore.get().find((o) => o.id === orderId);
+    if (!order || !order.alias) {
+      return { toast: { type: 'error', content: '指令不存在或没有别名' } };
+    }
+    // 变更前快照旧别名：setAlias(undefined) 会原地变异 order（delete alias），
+    // 删除后 order.alias 已为 undefined，直接拼会让成功文案显示 `$undefined`。
+    const removedAlias = order.alias;
+    this.orderStore.setAlias(order.id, undefined);
+    // 必须把 card 放进 callback 响应体让飞书原地替换 pre-click 卡片，否则删除
+    // 后卡片停留在旧状态（别名视觉上未消失）。同 handleQueueInput 语义。
+    const result = this.cmdOrder([], ctx, offset);
+    return {
+      toast: { type: 'success', content: `✅ 已移除别名 $${removedAlias}` },
+      card: { type: 'raw', data: result.card! },
+    };
+  }
+
+  /**
    * Handle ws.use card action: switch to the workspace, then refresh the /ws
    * list card in place so "recent" sort order is immediately visible.
    *
@@ -1962,6 +2140,20 @@ export class CommandRouter {
       }
     }
 
+    // DSH host 变更 = 换服务（CC-02）：旧 host 的 sessionId 发往新 host 是错的。
+    // 视为 session 边界，仿 preset 分支停车 + 清空当前 sessionId，下次 run 新建会话。
+    const hasDshHostChange = Object.keys(updates).some((k) => k === 'agents.dsh.host');
+    if (hasDshHostChange && this.config.defaultAgent === 'dsh' && !switchNotice) {
+      const oldSessionId = this.sessionStore.getSessionId(ctx.userId, 'dsh');
+      if (oldSessionId) {
+        this.sessionStore.setPreviousSessionId(ctx.userId, 'dsh', oldSessionId);
+        this.sessionStore.clearSessionId(ctx.userId, 'dsh');
+        switchNotice = `DSH host 已变更，旧会话已停放到恢复槽（可 /resume 校验后恢复），下次消息将新建会话`;
+      } else {
+        switchNotice = `DSH host 已变更，下次消息将新建会话`;
+      }
+    }
+
     // 2026-07-13: 同步 agent 配置到 agentChoices（用于切换 agent 时恢复配置）
     const currentAgent = this.config.defaultAgent;
     const currentAgentConfigKey = `agents.${currentAgent}`;
@@ -2092,7 +2284,7 @@ export class CommandRouter {
       {
         cmd: 'order',
         label: '/order /o save|list',
-        desc: '收藏指令 /order save，快捷别名 /order alias',
+        desc: '收藏指令 /order save，指令可起别名（卡片上 ＋别名）',
       },
     ];
 
@@ -2159,6 +2351,18 @@ export class CommandRouter {
       text: {
         tag: 'lark_md',
         content: '**快捷命令**\n`!<bash-command>` — 执行 bash 命令并流式输出到卡片',
+      },
+    });
+
+    // 快捷别名（$name）
+    bodyElements.push({ tag: 'hr' });
+    bodyElements.push({
+      tag: 'div',
+      text: {
+        tag: 'lark_md',
+        content:
+          '**快捷别名**\n`$<name>` — 触发已保存指令的别名（在 /order 卡片给指令起别名后生效），' +
+          '如 `$all` 等价于执行「跑全量测试」。只匹配消息开头的 `$name`，`!`/`/` 开头不展开',
       },
     });
 
@@ -3842,11 +4046,9 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
   cmdOrder(args: string[], _ctx: CommandContext, offset = 0): CommandResult {
     const sub = args[0]?.toLowerCase();
 
-    // /order — list orders + aliases (CardKit 2.0 with pagination)
-    // `/order alias`（无参数）也并入列表卡片。
-    if (!sub || sub === 'list' || (sub === 'alias' && !args[1])) {
+    // /order — list orders (CardKit 2.0 with pagination)
+    if (!sub || sub === 'list') {
       this.orderStore.reload();
-      this.aliasStore.reload();
       const allOrders = this.orderStore.get();
 
       const elements: object[] = [];
@@ -3868,41 +4070,121 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
           const displayText =
             order.text.length > 100 ? order.text.slice(0, 97) + '...' : order.text;
 
-          // 文字在上方
-          elements.push({ tag: 'div', text: { tag: 'lark_md', content: displayText } });
+          // 文字在上方（有别名时用 `$name` 前缀标识触发词）
+          elements.push({
+            tag: 'div',
+            text: {
+              tag: 'lark_md',
+              content: order.alias ? `\`$${order.alias}\` ${displayText}` : displayText,
+            },
+          });
 
-          // 按钮在下方，一左一右
+          // 操作行：左侧别名按钮（无别名显示 ＋别名，有别名点击可改），
+          // 右侧「删除指令」按钮。两列均 weighted 1:1，跨行对齐。
+          const leftColumn: object[] = order.alias
+            ? [
+                {
+                  tag: 'button',
+                  text: { tag: 'plain_text', content: `$${order.alias}` },
+                  type: 'default',
+                  size: 'small',
+                  behaviors: [
+                    {
+                      type: 'callback',
+                      value: { cmd: 'order.aliasEdit', orderId: order.id, offset: safeOffset },
+                    },
+                  ],
+                },
+                {
+                  tag: 'button',
+                  text: { tag: 'plain_text', content: '✕' },
+                  type: 'default',
+                  size: 'small',
+                  behaviors: [
+                    {
+                      type: 'callback',
+                      value: {
+                        cmd: 'order.aliasRemove',
+                        orderId: order.id,
+                        aliasName: order.alias,
+                        offset: safeOffset,
+                      },
+                    },
+                  ],
+                },
+              ]
+            : [
+                {
+                  tag: 'button',
+                  text: { tag: 'plain_text', content: '＋别名' },
+                  type: 'default',
+                  size: 'small',
+                  behaviors: [
+                    {
+                      type: 'callback',
+                      value: { cmd: 'order.aliasEdit', orderId: order.id, offset: safeOffset },
+                    },
+                  ],
+                },
+              ];
+
           elements.push({
             tag: 'column_set',
             columns: [
               {
                 tag: 'column',
-                width: 'auto',
-                elements: [
-                  {
-                    tag: 'button',
-                    text: { tag: 'plain_text', content: '▶ 执行' },
-                    type: 'primary',
-                    size: 'small',
-                    behaviors: [
-                      { type: 'callback', value: { cmd: 'order.exec', orderId: order.id } },
-                    ],
-                  },
-                ],
+                width: 'weighted',
+                weight: 1,
+                elements: leftColumn,
               },
               {
                 tag: 'column',
-                width: 'auto',
+                width: 'weighted',
+                weight: 1,
+                vertical_align: 'center',
                 elements: [
                   {
-                    tag: 'button',
-                    text: { tag: 'plain_text', content: '删除' },
-                    type: 'danger',
-                    size: 'small',
-                    behaviors: [
+                    tag: 'column_set',
+                    columns: [
                       {
-                        type: 'callback',
-                        value: { cmd: 'order.delete', orderId: order.id, offset: safeOffset },
+                        tag: 'column',
+                        width: 'auto',
+                        elements: [
+                          {
+                            tag: 'button',
+                            text: { tag: 'plain_text', content: '▶ 执行' },
+                            type: 'primary',
+                            size: 'small',
+                            behaviors: [
+                              {
+                                type: 'callback',
+                                value: { cmd: 'order.exec', orderId: order.id },
+                              },
+                            ],
+                          },
+                        ],
+                      },
+                      {
+                        tag: 'column',
+                        width: 'auto',
+                        elements: [
+                          {
+                            tag: 'button',
+                            text: { tag: 'plain_text', content: '删除' },
+                            type: 'danger',
+                            size: 'small',
+                            behaviors: [
+                              {
+                                type: 'callback',
+                                value: {
+                                  cmd: 'order.delete',
+                                  orderId: order.id,
+                                  offset: safeOffset,
+                                },
+                              },
+                            ],
+                          },
+                        ],
                       },
                     ],
                   },
@@ -3931,23 +4213,6 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
         }
       }
 
-      // 别名区：并入 /order 卡片（`/order alias` 列出全部）。
-      const aliases = this.aliasStore.list();
-      if (aliases.length > 0) {
-        elements.push({ tag: 'hr' });
-        elements.push({
-          tag: 'div',
-          text: { tag: 'lark_md', content: '**⚡ 别名**（输入 $name 触发）' },
-        });
-        for (const alias of aliases) {
-          const text = alias.text.length > 100 ? alias.text.slice(0, 97) + '...' : alias.text;
-          elements.push({
-            tag: 'div',
-            text: { tag: 'lark_md', content: `$${alias.name} → ${text}` },
-          });
-        }
-      }
-
       return {
         card: {
           schema: '2.0',
@@ -3958,45 +4223,34 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
       };
     }
 
-    // /order alias <name> <text> — 注册；/order alias <name> — 查看；/order alias remove <name> — 删除
+    // /order alias — CLI 别名管理（卡片是主入口，命令是备选）：
+    //   /order alias add <orderId|N> <name>   — 给某条指令绑定别名
+    //   /order alias rm <orderId|N>           — 移除某条指令的别名
+    //   /order alias list                     — 列出已绑定的别名（并入列表卡片）
     if (sub === 'alias') {
-      const name = args[1];
-      if (name === 'remove') {
+      const op = args[1];
+      if (op === 'add') {
+        const target = args[2];
+        const name = args[3];
+        if (!target || !name) {
+          return { text: '用法: /order alias add <orderId|序号> <别名名>' };
+        }
+        return this.cmdOrderAliasAdd(target, name);
+      }
+      if (op === 'rm') {
         const target = args[2];
         if (!target) {
-          return { text: '用法: /order alias remove <name>' };
+          return { text: '用法: /order alias rm <orderId|序号>' };
         }
-        // remove 是保留子命令，不能作为别名名：后面跟多词文本说明用户想注册
-        // 名为 remove 的别名，明确报错而不是静默删除已存在的 target（P2 review）。
-        if (args.length > 3) {
-          return { text: '`remove` 是保留子命令，不能作为别名名，请换一个名称' };
-        }
-        const entry = this.aliasStore.get(target);
-        if (!entry) {
-          return { text: `别名 $${target} 不存在` };
-        }
-        this.aliasStore.remove(target);
-        // 回显原内容：单词场景无法区分「注册 remove」与「删除」，误删后
-        // 用户可直接按回显内容重新注册，消除静默破坏（P3 review）。
-        const preview = entry.text.length > 50 ? entry.text.slice(0, 50) + '...' : entry.text;
-        return { text: `✅ 已删除别名 $${target}（原内容：${preview}）` };
+        return this.cmdOrderAliasRemove(target);
       }
-      const text = args.slice(2).join(' ');
-      if (!text) {
-        const entry = name ? this.aliasStore.get(name) : undefined;
-        if (!entry) {
-          return { text: name ? `别名 $${name} 不存在` : '用法: /order alias <name> <text>' };
-        }
-        return { text: `$${entry.name} → ${entry.text}` };
+      if (!op || op === 'list') {
+        // 别名管理列表并入列表卡片
+        return this.cmdOrder([], _ctx, offset);
       }
-      try {
-        const existed = this.aliasStore.has(name!);
-        this.aliasStore.set(name!, text);
-        const preview = text.length > 50 ? text.slice(0, 50) + '...' : text;
-        return { text: `${existed ? '✅ 已更新别名' : '✅ 已保存别名'} $${name} → ${preview}` };
-      } catch (err) {
-        return { text: `保存失败: ${(err as Error).message}` };
-      }
+      return {
+        text: '用法: /order alias [add <orderId|序号> <别名名> | rm <orderId|序号> | list]',
+      };
     }
 
     // /order save <text>
@@ -4013,6 +4267,41 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
       }
     }
 
-    return { text: '用法: /order [list|save <text>|alias <name> <text>|alias remove <name>]' };
+    return {
+      text: '用法: /order [list|save <text>|alias add <orderId|序号> <别名名>|alias rm <orderId|序号>]',
+    };
+  }
+
+  /** /order alias add：按 orderId 或列表序号（1 基）解析目标指令并绑定别名。 */
+  private cmdOrderAliasAdd(target: string, name: string): CommandResult {
+    const order = this.resolveOrderTarget(target);
+    if (!order) return { text: `指令不存在: ${target}` };
+    try {
+      this.orderStore.setAlias(order.id, name);
+      return { text: `✅ 已给指令绑定别名 $${name}` };
+    } catch (err) {
+      return { text: `保存失败: ${(err as Error).message}` };
+    }
+  }
+
+  /** /order alias rm：按 orderId 或列表序号（1 基）移除指令的别名。 */
+  private cmdOrderAliasRemove(target: string): CommandResult {
+    const order = this.resolveOrderTarget(target);
+    if (!order) return { text: `指令不存在: ${target}` };
+    if (!order.alias) return { text: '该指令没有别名' };
+    // 先读别名名再解绑：setAlias(undefined) 会 delete 同一对象引用上的 alias 字段。
+    const aliasName = order.alias;
+    this.orderStore.setAlias(order.id, undefined);
+    return { text: `✅ 已移除别名 $${aliasName}` };
+  }
+
+  /** 将 `/order alias add|rm` 的目标解析为 order：优先 orderId 精确匹配，回退列表序号（1 基）。 */
+  private resolveOrderTarget(target: string): OrderEntry | undefined {
+    const all = this.orderStore.get();
+    const byId = all.find((o) => o.id === target);
+    if (byId) return byId;
+    const n = Number(target);
+    if (Number.isInteger(n) && n >= 1 && n <= all.length) return all[n - 1];
+    return undefined;
   }
 }

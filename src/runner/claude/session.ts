@@ -29,6 +29,7 @@
  */
 
 import type { ChildProcess } from 'node:child_process';
+import { readFile } from 'node:fs/promises';
 import { silentlyUnlink } from '../../common/fs.js';
 import { getLogger } from '../../logger/index.js';
 import { SpawningRunner } from '../common/spawning-runner.js';
@@ -39,6 +40,8 @@ import { makeQuestionApprovalEvent } from '../question-common.js';
 
 /** 拒绝权限时的默认提示（进入 claude 上下文，中文用户可读）。 */
 const DENY_MESSAGE = '用户拒绝了此工具调用，请停止并等待用户指令。';
+/** ExitPlanMode 计划文件读取上限（超出截断，防超大计划拖垮事件翻译）。 */
+const MAX_PLAN_CHARS = 60_000;
 
 /** 会话级空闲回收默认 TTL（对齐 codex appServer.idleTtlMs 默认 30 分钟）。 */
 const DEFAULT_IDLE_TTL_MS = 30 * 60 * 1000;
@@ -70,6 +73,11 @@ export interface ClaudeSessionOptions {
 export interface PermissionResult {
   behavior: 'allow' | 'deny';
   message?: string;
+  /**
+   * allow 时显式覆盖 updatedInput（默认回写 pendingToolInputs 原始 input）。
+   * 计划审批「批准并采纳修改意见」用它携带改写的 plan。
+   */
+  updatedInput?: unknown;
 }
 
 /**
@@ -101,6 +109,12 @@ export class ClaudeSession extends SpawningRunner {
   private waitResolve: (() => void) | null = null;
   /** 待审批的 control_request 原始 input（回写 updatedInput 需要）。 */
   private pendingToolInputs = new Map<number | string, unknown>();
+  /**
+   * 本会话内跟踪到的计划文件路径：Write/Edit 工具把文件写到 `plans` 目录
+   * 时记录（ExitPlanMode 的 plan 内容不总是经 input 注入，文件是可靠兜底）。
+   * 会话进程生命周期内有效（长驻进程 = 一个会话）。
+   */
+  private planFilePath = '';
   /** 允许所有：后续 control_request 自动 allow（本会话进程生命周期内有效）。 */
   private autoApprove = false;
   /** 串行化 stdin 写入（用户消息与审批响应交错到达）。 */
@@ -230,7 +244,9 @@ export class ClaudeSession extends SpawningRunner {
     if (result.behavior === 'allow') {
       await this.writeControlResponse(requestId, {
         behavior: 'allow',
-        updatedInput: input ?? {},
+        // 显式 updatedInput 优先（计划审批「批准并采纳修改」携带改写 plan）；
+        // 缺省回写原始 input，保证其他工具审批行为不变。
+        updatedInput: result.updatedInput !== undefined ? result.updatedInput : (input ?? {}),
       });
     } else {
       await this.writeControlResponse(requestId, {
@@ -419,7 +435,7 @@ export class ClaudeSession extends SpawningRunner {
       try {
         for await (const raw of stream) {
           if (generation !== this.processGeneration) return; // 旧进程残留事件丢弃
-          const events = this.translateEvent(raw);
+          const events = await this.translateEvent(raw);
           if (events.length > 0) {
             this.eventQueue.push(...events);
             this.wakeWaiters();
@@ -611,7 +627,7 @@ export class ClaudeSession extends SpawningRunner {
   // Internal: event translation
   // =========================================================================
 
-  private translateEvent(raw: unknown): AgentEvent[] {
+  private async translateEvent(raw: unknown): Promise<AgentEvent[]> {
     const event = raw as Record<string, unknown>;
     const type = event.type;
 
@@ -619,6 +635,11 @@ export class ClaudeSession extends SpawningRunner {
     // 旧 assistant/user 内容）。init 之前除 init 本身外一律丢弃，避免历史
     // 内容混进当前卡片（result 分支的 sawInit 守卫升级为全类型守卫）。
     if (type !== 'system' && !this.sawInit) return [];
+
+    // 跟踪会话内计划文件写入（ExitPlanMode 审批卡的 plan 文件兜底）。
+    if (type === 'assistant') {
+      this.trackPlanFilePath(event);
+    }
 
     if (type === 'control_request') {
       return this.translateControlRequest(event);
@@ -669,7 +690,65 @@ export class ClaudeSession extends SpawningRunner {
     return [this.withTimestamp(event)];
   }
 
-  private translateControlRequest(raw: Record<string, unknown>): AgentEvent[] {
+  /**
+   * 跟踪会话内 Write/Edit 工具写到 `plans` 目录的文件路径：CLI 对
+   * ExitPlanMode 的 plan 注入不稳定（input.plan 时有时无），但模型被要求
+   * 先把计划写入计划文件，路径可经工具调用可靠捕获（含模型写错目录的
+   * 退化场景——渲染层可展示实际落盘位置）。
+   */
+  private trackPlanFilePath(raw: Record<string, unknown>): void {
+    const content = (raw as { message?: { content?: unknown[] } }).message?.content;
+    if (!Array.isArray(content)) return;
+    for (const block of content) {
+      const b = block as { type?: string; name?: string; input?: { file_path?: unknown } };
+      if (b?.type !== 'tool_use') continue;
+      if (b.name !== 'Write' && b.name !== 'Edit') continue;
+      const fp = b.input?.file_path;
+      if (typeof fp === 'string' && fp.includes('/plans/')) {
+        this.planFilePath = fp;
+      }
+    }
+  }
+
+  /**
+   * ExitPlanMode 计划解析，优先级：
+   * 1. control_request input.plan（CLI normalizeToolInput 从磁盘注入，非稳定）；
+   * 2. input.planFilePath 指向的文件；
+   * 3. 会话内 Write/Edit 跟踪到的计划文件。
+   * 全部落空时返回空对象，渲染层展示「未获取到计划文件内容」兜底。
+   */
+  private async resolvePlanContent(
+    input: Record<string, unknown>,
+    trackedPath: string,
+  ): Promise<{ plan?: string; planFilePath?: string }> {
+    const direct = typeof input.plan === 'string' && input.plan.trim() ? input.plan : undefined;
+    if (direct !== undefined) {
+      // 计划已随 input 注入时仍携带文件路径（input.planFilePath 或会话内跟踪），
+      // 供卡片展示「计划落盘位置」。
+      const filePath =
+        typeof input.planFilePath === 'string' && input.planFilePath
+          ? input.planFilePath
+          : trackedPath;
+      return filePath ? { plan: direct, planFilePath: filePath } : { plan: direct };
+    }
+    const candidate =
+      typeof input.planFilePath === 'string' && input.planFilePath
+        ? input.planFilePath
+        : trackedPath;
+    if (!candidate) return {};
+    try {
+      const content = await readFile(candidate, 'utf8');
+      const trimmed = content.trim();
+      if (trimmed) {
+        return { plan: trimmed.slice(0, MAX_PLAN_CHARS), planFilePath: candidate };
+      }
+    } catch {
+      // 计划文件缺失/不可读：fall through，渲染层兜底。
+    }
+    return {};
+  }
+
+  private async translateControlRequest(raw: Record<string, unknown>): Promise<AgentEvent[]> {
     const requestId = raw.request_id as number | string | null;
     if (requestId === null || requestId === undefined) {
       getLogger().warn(`[${this.logTag}] control_request missing request_id, dropping`);
@@ -735,21 +814,27 @@ export class ClaudeSession extends SpawningRunner {
       return [makeQuestionApprovalEvent(requestId, questions, this.sessionId)];
     }
 
-    // ExitPlanMode：语义是「退出计划模式」的通知型工具，input 天然为空（plan
-    // 内容在 plan 文件 + 前置 thinking/text 里，不走 tool input）。它没有
-    // command 语义，塞进 command 槽位会显示无意义 `{}` → 用独立 tool kind，
-    // 标题/工具名 + reason 表达审批内容。
+    // ExitPlanMode：计划已写入计划文件（或经 input.plan 注入）。没有 command
+    // 语义，塞进 command 槽位会显示无意义 `{}` → 用独立 tool kind，把计划
+    // 全文 + 文件路径带给渲染层，决策对齐 TUI 四种交互。
     if (toolName === 'ExitPlanMode') {
-      const rawInput = JSON.stringify(input);
+      const resolved = await this.resolvePlanContent(input, this.planFilePath);
       const view: ApprovalView = {
         requestId,
         kind: 'tool',
         toolName,
         reason: typeof request.description === 'string' ? request.description : undefined,
-        // 非空 input 携带给渲染层（当前 ExitPlanMode 为 `{}`，渲染层不展示）。
-        ...(rawInput && rawInput !== '{}' ? { toolInput: rawInput.slice(0, 500) } : {}),
-        // 计划审批没有「后续自动放行」语义，acceptAll 无意义；只留 accept/decline。
-        availableDecisions: ['accept', 'decline'],
+        ...(resolved.plan !== undefined ? { plan: resolved.plan } : {}),
+        ...(resolved.planFilePath !== undefined ? { planFilePath: resolved.planFilePath } : {}),
+        // 对齐 TUI：批准并执行 / 批准并自动放行（acceptAll）/ 拒绝并附意见 /
+        // 批准并采纳修改 / 拒绝。
+        availableDecisions: [
+          'accept',
+          'acceptAll',
+          'declineWithFeedback',
+          'acceptWithFeedback',
+          'decline',
+        ],
       };
       getLogger().info(
         `[${this.logTag}] permission request requestId=${requestId} tool=${toolName}`,
