@@ -1,4 +1,8 @@
-import type { AliasEntry } from './alias-store.js';
+/** 参与别名展开的条目：别名名 + 展开文本（即指令文本）。 */
+export interface AliasResolveEntry {
+  name: string;
+  text: string;
+}
 
 /**
  * 一次别名展开。
@@ -11,7 +15,10 @@ import type { AliasEntry } from './alias-store.js';
  *
  * @returns 展开后的完整消息；无匹配时返回 undefined。
  */
-export function resolveAlias(message: string, aliases: readonly AliasEntry[]): string | undefined {
+export function resolveAlias(
+  message: string,
+  aliases: readonly AliasResolveEntry[],
+): string | undefined {
   const match = /^\$([A-Za-z_][A-Za-z0-9_]*)(?=$|[ \t])/.exec(message);
   if (!match) return undefined;
   const entry = aliases.find((a) => a.name === match[1]);

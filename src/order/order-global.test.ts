@@ -132,3 +132,84 @@ describe('OrderStore 全局存储（无 cwd 参数）', () => {
     expect(entries.find((e) => e.id === entry.id)!.text).toBe('持久化测试');
   });
 });
+
+describe('OrderStore 别名（setAlias）', () => {
+  it('绑定别名', () => {
+    const store = new OrderStore(ordersFile);
+    const entry = store.save('跑全量测试');
+
+    const updated = store.setAlias(entry.id, 'all');
+    expect(updated?.alias).toBe('all');
+    expect(store.get()[0].alias).toBe('all');
+  });
+
+  it('同名覆盖（改绑别名）', () => {
+    const store = new OrderStore(ordersFile);
+    const entry = store.save('跑全量测试');
+
+    store.setAlias(entry.id, 'all');
+    store.setAlias(entry.id, 'full');
+    expect(store.get()[0].alias).toBe('full');
+  });
+
+  it('undefined / 空串解绑', () => {
+    const store = new OrderStore(ordersFile);
+    const entry = store.save('跑全量测试');
+    store.setAlias(entry.id, 'all');
+
+    store.setAlias(entry.id, undefined);
+    expect(store.get()[0].alias).toBeUndefined();
+
+    store.setAlias(entry.id, 'all');
+    store.setAlias(entry.id, '');
+    expect(store.get()[0].alias).toBeUndefined();
+  });
+
+  it('别名全局唯一：第二条占用已绑别名抛错', () => {
+    const store = new OrderStore(ordersFile);
+    store.save('第一条');
+    const entry2 = store.save('第二条');
+    store.setAlias(entry2.id, 'dup');
+
+    const entry3 = store.save('第三条');
+    expect(() => store.setAlias(entry3.id, 'dup')).toThrow(/已被其他指令占用/);
+    expect(store.get().find((e) => e.id === entry3.id)?.alias).toBeUndefined();
+  });
+
+  it('非法别名名抛错（数字开头 / 超长）', () => {
+    const store = new OrderStore(ordersFile);
+    const entry = store.save('跑全量测试');
+
+    expect(() => store.setAlias(entry.id, '500')).toThrow();
+    expect(() => store.setAlias(entry.id, 'a'.repeat(21))).toThrow();
+    expect(store.get()[0].alias).toBeUndefined();
+  });
+
+  it('不存在的 orderId 返回 undefined', () => {
+    const store = new OrderStore(ordersFile);
+    expect(store.setAlias('nonexistent', 'all')).toBeUndefined();
+  });
+
+  it('持久化：重建后 alias 字段保留', () => {
+    const store1 = new OrderStore(ordersFile);
+    const entry = store1.save('跑全量测试');
+    store1.setAlias(entry.id, 'all');
+
+    const store2 = new OrderStore(ordersFile);
+    expect(store2.get()[0].alias).toBe('all');
+  });
+
+  it('load 容错：非法 alias 字段被丢弃', () => {
+    const store1 = new OrderStore(ordersFile);
+    const entry = store1.save('跑全量测试');
+    store1.setAlias(entry.id, 'all');
+
+    // 手工改坏 alias（数字开头非法）后重建
+    const raw = JSON.parse(fs.readFileSync(ordersFile, 'utf8'));
+    raw[0].alias = '500bad';
+    fs.writeFileSync(ordersFile, JSON.stringify(raw));
+
+    const store2 = new OrderStore(ordersFile);
+    expect(store2.get()[0].alias).toBeUndefined();
+  });
+});

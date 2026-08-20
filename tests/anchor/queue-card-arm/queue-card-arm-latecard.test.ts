@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { QueueManager } from '../../../src/bridge/queue-manager.js';
+import { makeQueueManagerWithPendingCard } from '../../lib/bridge-stubs.js';
 import { sleep, waitFor } from '../../lib/wait-for.js';
 
 const { mockLogger } = vi.hoisted(() => ({
@@ -17,31 +17,6 @@ vi.mock('../../../src/logger/index.js', () => ({
 }));
 
 const WORKSPACE = '/tmp/queue-card-arm-latecard-anchor-ws';
-
-/**
- * QueueManager with a manually-controlled sendCard: the queue status card's
- * Feishu send promise stays pending until the test resolves it, reproducing
- * the production race where the card send resolves AFTER the task has already
- * begun executing (Feishu latency / 99991400 rate-limit retry).
- */
-function makeQueueManagerWithLateCard() {
-  const sentCards: Array<{ chatId: string; card: object }> = [];
-  const updatedCards: Array<{ messageId: string; card: object }> = [];
-  let resolveSendCard: (() => void) | undefined;
-
-  const sendCard = async (chatId: string, card: object) => {
-    sentCards.push({ chatId, card });
-    return new Promise<string>((resolve) => {
-      resolveSendCard = () => resolve('card-late-msg');
-    });
-  };
-  const updateCard = async (messageId: string, card: object) => {
-    updatedCards.push({ messageId, card });
-  };
-
-  const qm = new QueueManager(() => false, sendCard, updateCard);
-  return { qm, sentCards, updatedCards, resolveSendCard: () => resolveSendCard?.() };
-}
 
 /** True if the update is the "已开始执行" card transition. */
 function isExecutingUpdate(update: { messageId: string; card: object }): boolean {
@@ -72,7 +47,8 @@ describe('QueueManager - late-arriving queue card must still transition to execu
     // 转为执行态；buildQueueActionButtons 注释明确 executing/cancelled 状态
     // 必须 hard-disable 按钮，pending builder 只服务未执行任务。本测试构造
     // 映射晚建立的时序，断言该契约在竞态下仍然成立。
-    const { qm, sentCards, updatedCards, resolveSendCard } = makeQueueManagerWithLateCard();
+    const { qm, sentCards, updatedCards, resolveSendCard } =
+      makeQueueManagerWithPendingCard('card-late-msg');
 
     // --- 步骤 1：T1（meta，挂起）开始执行 ---
     let rejectT1: (err: Error) => void = () => {};
