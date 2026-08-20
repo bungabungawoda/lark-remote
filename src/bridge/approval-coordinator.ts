@@ -30,6 +30,8 @@ export interface TrackedApproval {
   answers?: Map<number, string[]>;
   /** AskUserQuestion 补充说明（Codex user_note）：问题索引 → 文本。 */
   notes?: Map<number, string>;
+  /** 计划审批修改意见（ExitPlanMode）：planFeedback 回流，供反馈类决策注入。 */
+  feedback?: string;
 }
 
 type ApprovalResponder = (requestId: number | string, response: unknown) => Promise<void>;
@@ -152,13 +154,35 @@ export class ApprovalCoordinator {
       );
     }
 
+    // 反馈类决策：注入用户已填写的修改意见（卡片输入框经 planFeedback 回流到
+    // coordinator）。decisionToApprovalAction 只带决策名，payload 在此补齐；
+    // 调用方直接传完整 payload 时以显式值为准。
+    let effectiveAction: ApprovalAction = action;
+    if (action.action === 'decline_with_feedback' || action.action === 'accept_with_feedback') {
+      const explicit = action.action === 'decline_with_feedback' ? action.message : action.plan;
+      const text = explicit.trim() || tracked.feedback?.trim() || '';
+      if (!text) {
+        throw new Error('请先填写修改意见');
+      }
+      effectiveAction =
+        action.action === 'decline_with_feedback'
+          ? { action: 'decline_with_feedback', message: text }
+          : {
+              action: 'accept_with_feedback',
+              // 批准并采纳修改：新计划 = 原计划 + 用户意见（无原计划时意见即计划）。
+              plan: tracked.view.plan?.trim()
+                ? `${tracked.view.plan.trim()}\n\n## 用户修改意见\n${text}`
+                : `# 用户修改意见\n\n${text}`,
+            };
+    }
+
     // Atomic state transition: pending → submitting（同步，无 await）
     tracked.state = 'submitting';
     this.clearTimer(tracked);
 
     // Send response via the responder
     try {
-      await this.responder(ctx.requestId, action);
+      await this.responder(ctx.requestId, effectiveAction);
       tracked.state = 'resolved';
       // 提交成功后立即从卡片移除审批区（agent 无关）：claude 控制协议没有
       // resolved 回发，不推就会「已点允许按钮仍在」残留 UI；codex 的 server
@@ -330,6 +354,32 @@ export class ApprovalCoordinator {
   }
 
   /**
+   * 计划审批修改意见（ExitPlanMode）：输入框提交 → coordinator 记录并回流
+   * 卡片回显，随后「拒绝并附意见」/「批准并采纳修改」按钮复用该文本。
+   * 同一请求可多次修改（新 nonce 来自新渲染）。
+   */
+  async planFeedback(
+    action: { text: string },
+    ctx: { requestId: number | string; nonce?: string },
+  ): Promise<void> {
+    const tracked = this.approvals.get(ctx.requestId);
+    if (!tracked) {
+      throw new Error(`Approval request ${ctx.requestId} not found`);
+    }
+    if (tracked.state !== 'pending') {
+      throw new Error(`Approval request ${ctx.requestId} is no longer pending`);
+    }
+    const text = action.text.trim();
+    if (!text) {
+      throw new Error('请输入修改意见');
+    }
+    this.assertFreshNonce(ctx.requestId, ctx.nonce);
+    tracked.feedback = text;
+    tracked.view.planFeedback = text;
+    this.pushApprovalViewUpdate(ctx.requestId, tracked);
+  }
+
+  /**
    * Update a pending approval's view (out-of-order item/started arrives late).
    * Only applies while the approval is still pending — resolved/expired
    * approvals must not be resurrected or rewritten.
@@ -403,8 +453,8 @@ export class ApprovalCoordinator {
     return true;
   }
 
-  /** 推送 question 卡片视图更新（选项勾选状态变化）。 */
-  private pushQuestionViewUpdate(requestId: number | string, tracked: TrackedApproval): void {
+  /** 推送审批卡视图更新（approval_view_updated 重渲染；失败仅记日志）。 */
+  private pushApprovalViewUpdate(requestId: number | string, tracked: TrackedApproval): void {
     void this.pushToCard([
       {
         type: 'approval_view_updated',
@@ -419,6 +469,11 @@ export class ApprovalCoordinator {
         }`,
       );
     });
+  }
+
+  /** 推送 question 卡片视图更新（选项勾选状态变化）。 */
+  private pushQuestionViewUpdate(requestId: number | string, tracked: TrackedApproval): void {
+    this.pushApprovalViewUpdate(requestId, tracked);
   }
 
   /** 全部问题已答：构建 answers 并提交（非空校验 + 原子状态迁移）。 */
@@ -524,6 +579,10 @@ export class ApprovalCoordinator {
         return 'acceptAll';
       case 'answer':
         return 'answer';
+      case 'decline_with_feedback':
+        return 'declineWithFeedback';
+      case 'accept_with_feedback':
+        return 'acceptWithFeedback';
       case 'decline':
         return 'decline';
       case 'cancel':
@@ -543,6 +602,10 @@ export function decisionToApprovalAction(decision: string): ApprovalAction {
       return { action: 'accept_with_execpolicy_amendment' };
     case 'acceptAll':
       return { action: 'accept_all' };
+    case 'declineWithFeedback':
+      return { action: 'decline_with_feedback', message: '' };
+    case 'acceptWithFeedback':
+      return { action: 'accept_with_feedback', plan: '' };
     case 'decline':
       return { action: 'decline' };
     case 'cancel':

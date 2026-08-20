@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { QueueManager } from '../../../src/bridge/queue-manager.js';
+import { makeQueueManagerWithPendingCard } from '../../lib/bridge-stubs.js';
 import { sleep, waitFor } from '../../lib/wait-for.js';
 
 const { mockLogger } = vi.hoisted(() => ({
@@ -17,33 +17,6 @@ vi.mock('../../../src/logger/index.js', () => ({
 }));
 
 const WORKSPACE = '/tmp/queue-card-arm-edit-executing-race-ws';
-
-/**
- * QueueManager with a manually-controlled sendCard: the queue status card's
- * Feishu send promise stays pending until the test resolves it. This holds the
- * `queueCardMessages` mapping in flight while `updateQueueCardToExecuting`
- * (started=false, i.e. Bridge.markQueueCardExecuting) is waiting for the card
- * id — the same production window in which a queue.input callback can land
- * and update the live task preview before the executing card is rendered.
- */
-function makeQueueManagerWithPendingCard() {
-  const sentCards: Array<{ chatId: string; card: object }> = [];
-  const updatedCards: Array<{ messageId: string; card: object }> = [];
-  let resolveSendCard: (() => void) | undefined;
-
-  const sendCard = async (chatId: string, card: object) => {
-    sentCards.push({ chatId, card });
-    return new Promise<string>((resolve) => {
-      resolveSendCard = () => resolve('card-preview-race-msg');
-    });
-  };
-  const updateCard = async (messageId: string, card: object) => {
-    updatedCards.push({ messageId, card });
-  };
-
-  const qm = new QueueManager(() => false, sendCard, updateCard);
-  return { qm, sentCards, updatedCards, resolveSendCard: () => resolveSendCard?.() };
-}
 
 /** Header title of a card update, e.g. '▶️ 已开始执行'. */
 function headerTitle(update: { messageId: string; card: object }): string {
@@ -88,7 +61,8 @@ describe('QueueManager - immediate executing card must re-read live preview afte
     // 确立执行卡展示的 preview 必须与实际执行内容一致（"不能显示 enqueue 时
     // 冻结的旧预览"）。方法在守卫处已能通过 indexGet 拿到 live 任务，重新读取
     // preview 是同一契约的自然延伸。
-    const { qm, sentCards, updatedCards, resolveSendCard } = makeQueueManagerWithPendingCard();
+    const { qm, sentCards, updatedCards, resolveSendCard } =
+      makeQueueManagerWithPendingCard('card-preview-race-msg');
 
     // --- 步骤 1：T1（meta，挂起）开始执行，制造 T2 必须排队 ---
     let releaseT1: () => void = () => {};

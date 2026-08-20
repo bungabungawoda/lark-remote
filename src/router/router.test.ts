@@ -3147,6 +3147,32 @@ describe('CommandRouter', () => {
       });
     });
 
+    it('test_anchor_approval_plan_feedback_routes_to_bridge', async () => {
+      // 计划审批修改意见输入：approval.planFeedback 走即时通道（同审批响应），
+      // router 层转发 input_value 到 bridge.handleApprovalPlanFeedback。
+      const handleApprovalPlanFeedback = vi.fn().mockResolvedValue(undefined);
+      const { router } = createRouter({
+        bridge: createMockBridge({ handleApprovalPlanFeedback }),
+      });
+      const resp = await router.handleCardAction(
+        {
+          cmd: 'approval.planFeedback',
+          runId: 'run-plan-fb-1',
+          requestId: 9,
+          inputValue: '先把测试写了再实施',
+          nonce: 'nonce-fb-1',
+        },
+        ctx,
+      );
+      expect(resp).toEqual({ toast: { type: 'success', content: '修改意见已保存' } });
+      expect(handleApprovalPlanFeedback).toHaveBeenCalledWith({
+        runId: 'run-plan-fb-1',
+        requestId: 9,
+        text: '先把测试写了再实施',
+        nonce: 'nonce-fb-1',
+      });
+    });
+
     it('test_anchor_approval_answer_routes_to_bridge_for_ask_user_question', async () => {
       // Claude AskUserQuestion：选项点击（单选即时/多选切换）与「提交答案」
       // 按钮都是即时控制动作，路由到 bridge 的对应 handler。

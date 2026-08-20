@@ -3,15 +3,21 @@ import os from 'node:os';
 import { atomicWriteJson } from '../persistence/atomic-write.js';
 import { loadJsonFile } from '../persistence/load-json-file.js';
 
-interface OrderEntry {
+export interface OrderEntry {
   id: string;
   text: string;
   createdAt: string;
   usedAt?: string;
+  /** 可选别名名（该指令的 $name 触发词）。全局唯一，由 OrderStore 校验。 */
+  alias?: string;
 }
 
 const MAX_TEXT_LENGTH = 200;
 const MAX_ORDERS = 50;
+
+/** 别名名称规则：`[A-Za-z_][A-Za-z0-9_]*`，≤20 字符，不能数字开头。 */
+const ALIAS_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
+const MAX_ALIAS_NAME_LENGTH = 20;
 
 /**
  * Global persistent order store.
@@ -58,6 +64,13 @@ export class OrderStore {
           createdAt: e.createdAt,
         };
         if (typeof e.usedAt === 'string') entry.usedAt = e.usedAt;
+        if (
+          typeof e.alias === 'string' &&
+          ALIAS_NAME_PATTERN.test(e.alias) &&
+          e.alias.length <= MAX_ALIAS_NAME_LENGTH
+        ) {
+          entry.alias = e.alias;
+        }
         valid.push(entry);
       }
     }
@@ -91,6 +104,34 @@ export class OrderStore {
       entry.usedAt = new Date().toISOString();
       this.persist();
     }
+  }
+
+  /**
+   * 给指令绑定别名（或解绑）。别名全局唯一，撞名抛错；名称必须通过
+   * `ALIAS_NAME_PATTERN`（字母/数字/下划线、不能数字开头、≤20 字符）。
+   * @returns 绑定后的条目。
+   */
+  setAlias(id: string, name: string | undefined): OrderEntry | undefined {
+    const entry = this.data.find((e) => e.id === id);
+    if (!entry) return undefined;
+
+    if (name === undefined || name === '') {
+      delete entry.alias;
+      this.persist();
+      return entry;
+    }
+    if (!ALIAS_NAME_PATTERN.test(name) || name.length > MAX_ALIAS_NAME_LENGTH) {
+      throw new Error(
+        `别名名称只能包含字母/数字/下划线，不能数字开头，且不超过 ${MAX_ALIAS_NAME_LENGTH} 字符`,
+      );
+    }
+    const existing = this.data.find((e) => e.id !== id && e.alias === name);
+    if (existing) {
+      throw new Error(`别名 $${name} 已被其他指令占用`);
+    }
+    entry.alias = name;
+    this.persist();
+    return entry;
   }
 
   get(): OrderEntry[] {
