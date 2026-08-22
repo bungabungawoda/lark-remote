@@ -17,7 +17,7 @@
  * 注意：使用 ~/.lark-remote-test 下的配置，避免干扰正常使用
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { it, expect, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import { FeishuConnector } from '../../src/connector/index.js';

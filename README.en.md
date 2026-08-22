@@ -6,7 +6,7 @@ English | [简体中文](README.md)
 [![npm](https://img.shields.io/npm/v/lark-remote.svg)](https://www.npmjs.com/package/lark-remote)
 [![CI](https://github.com/bungabungawoda/lark-remote/actions/workflows/ci.yml/badge.svg)](https://github.com/bungabungawoda/lark-remote/actions/workflows/ci.yml)
 
-A bridge between Feishu (Lark) private chat and local coding agents. Talk to Claude Code (or Codex / opencode / pi / Kimi) from Feishu — the agent reads/writes files and runs commands in a local directory you pick, with execution streamed live into a single CardKit 2.0 card.
+A bridge between Feishu (Lark) private chat and local coding agents. Talk to Claude Code (or Codex / opencode / pi / Kimi / DSH) from Feishu — the agent reads/writes files and runs commands in a local directory you pick, with execution streamed live into a single CardKit 2.0 card.
 
 Designed for a single-user, peer-to-peer private chat. The agent's system prompt is never modified.
 
@@ -32,7 +32,7 @@ In Codex approval mode, an approval card arrives before any command runs — app
 - OS: macOS / Linux. **Windows is not supported yet** (relies on POSIX behaviors such as Unix signals, bash, and file locks)
 - Node.js 20+ ([Bun](https://bun.sh/) for development)
 - A Feishu custom app (either way): scan-to-create (a QR code pops up in the terminal on first launch; scan it with the Feishu app to create the app and write credentials automatically); or create one manually in the Open Platform — enable bot capability, subscribe to `im.message.receive_v1` and `card.action.trigger` via **long connection** (WebSocket, no public address needed), with at least the `im:message` scope.
-- Claude Code CLI installed locally and logged in once in a terminal (`claude` → browser OAuth). Same idea for other agents (codex / opencode / pi / kimi): install the corresponding CLI first.
+- Claude Code CLI installed locally and logged in once in a terminal (`claude` → browser OAuth). Same idea for other agents (codex / opencode / pi / kimi): install the corresponding CLI first. DSH connects to a local DSH Web Host via HTTP+WebSocket (no local subprocess), default address `http://127.0.0.1:3080`.
 
 ## Installation
 
@@ -64,7 +64,7 @@ feishu:
   appId: cli_xxx
   appSecret: xxx
 
-# default agent: claude | codex | opencode | pi | kimi (default: claude)
+# default agent: claude | codex | opencode | pi | kimi | dsh (default: claude)
 defaultAgent: claude
 
 claude:
@@ -124,7 +124,7 @@ Your original message also gets an emoji reaction: `Typing` while the run is in 
 | `/reconnect` | - | Reconnect to Feishu |
 | `/restart` | - | In-place bridge self-restart (new process takes over with the same config) |
 | `/config get\|set` | `/c` | View/change runtime config (agent-aware card) |
-| `/order save\|list` | `/o` | Save or list frequently used prompts |
+| `/order save\|list\|edit` | `/o` | Save, list, or edit frequently used prompts |
 | `!<cmd>` | - | Run a bash command with streaming card output (bypasses the serial queue) |
 | `/exit` | `/e` | Exit the bridge |
 
