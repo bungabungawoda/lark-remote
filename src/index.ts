@@ -664,18 +664,22 @@ function setupMessageHandlers(
     // 直返列表外，过期/重复 nonce/非法选项等错误 toast 被静默吞掉）。
     // 审批响应尤其不能落串行队列：run 任务占用队列头直到 turn 结束，审批响应
     // 排在后面会形成死锁（run 不结束不执行、run 结束 coordinator 已删响应空转）。
-    // order.aliasInput / order.aliasRemove 也返回 toast，需直返避免被吞。
+    // order.aliasInput / order.aliasRemove / order.textInput 也返回 toast+card，
+    // 需直返避免被吞（order.textInput 曾漏在列表外，编辑卡停留在编辑界面）。
+    // approval.planFeedback 同 answer 系列：附意见的 toast 需直返 + 不落串行队列。
     if (
       actionValue.cmd === 'queue.input' ||
       actionValue.cmd === 'order.aliasInput' ||
       actionValue.cmd === 'order.aliasRemove' ||
+      actionValue.cmd === 'order.textInput' ||
       actionValue.cmd === 'config.save' ||
       actionValue.cmd === 'approval.respond' ||
       actionValue.cmd === 'approval.toggle' ||
       actionValue.cmd === 'approval.answer' ||
       actionValue.cmd === 'approval.answerSubmit' ||
       actionValue.cmd === 'approval.answerCustom' ||
-      actionValue.cmd === 'approval.answerNote'
+      actionValue.cmd === 'approval.answerNote' ||
+      actionValue.cmd === 'approval.planFeedback'
     ) {
       return router.handleCardAction(fullValue, { userId, chatId, messageId });
     }

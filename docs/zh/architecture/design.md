@@ -168,7 +168,7 @@ const sessions = new Map<string, SessionEntry>();
 | `/reconnect` | 重连 WebSocket |
 | `/restart` | 原地自重启 bridge：spawn detached 继任者 → 旧进程释放单例锁退出 |
 | `/config get\|set` | 查改运行时配置（卡片交互，agent-aware 字段） |
-| `/order save\|list` | 保存或列出常用指令；>15 条分页（`order.page` 原地翻页，受飞书单卡 60 个 body 元素上限约束） |
+| `/order save\|list\|edit` | 保存、列出或编辑常用指令（保留别名/使用统计）；>8 条分页（`order.page` 原地翻页，受飞书单卡 60 个 body 元素上限约束） |
 | `!<cmd>` | 执行 bash 命令并流式输出到卡片（绕过串行队列） |
 
 ---
@@ -282,7 +282,7 @@ feishu:
   appId: cli_xxx
   appSecret: xxx
 
-# 默认 agent 展示顺序（/config 卡片）：codex → claude → opencode → pi → kimi；
+# 默认 agent 展示顺序（/config 卡片）：codex → claude → opencode → pi → kimi → dsh；
 # 未安装（CLI 不在 PATH）的 agent 排到后面。defaultAgent 决定 bridge spawn
 # 哪个 agent、run 卡片 header 显示哪个 agent 名
 defaultAgent: claude
@@ -311,6 +311,11 @@ agents:
       requestTimeoutMs: 60000
       idleTtlMs: 1800000
       turnIdleTimeoutMinutes: 10
+  dsh:                        # DSH（DeepSeek Harness）Web Host 直连（HTTP+WS，无本地子进程）
+    host: http://127.0.0.1:3080  # 本地 DSH Web Host 地址
+    agentPreset: ''              # 留空 = 跟随服务端默认；session 创建后不可改
+    model: ''                    # 留空 = 跟随服务端默认
+    reasoningEffort: ''          # 留空 = 跟随服务端默认
 
 output:
   showThinking: true
@@ -333,6 +338,8 @@ idle:
 [`docs/zh/guides/codex-config.md`](../guides/codex-config.md)。
 `kimi` 的 permissionMode/acp 字段完整语义见
 [`docs/zh/usage.md`](../usage.md)（kimi 为纯 ACP 模式，已无 cli/acp 切换）。
+`dsh` 的 host/preset/model/reasoningEffort 字段语义与 DSH Web Host 直连 runner 设计见
+`docs/zh/architecture/dsh-config.md`。
 
 ---
 
@@ -408,7 +415,7 @@ resolve 到新 cwd 的竞态——先到者占 `activeRuns`，后到者 busy-dro
   `maxEvents: 5`，发送走 `sendResult`（`enforceCardBudget` 兜底），不再直连
   connector——长会话卡片不会再超 28KB 被飞书静默拒绝。
 - bash `!` 进程：`BashProcessRunner` 在进程存活期注册到进程级 exit
-  分发器（与 5 个 agent runner 同源），`/restart`/SIGTERM 时组杀 bash 及其子
+  分发器（与 6 个 agent runner 同源；DSH 无本地子进程故不注册），`/restart`/SIGTERM 时组杀 bash 及其子
   进程，run() 结束注销——`!sleep 3600` 不再孤儿化。
 - 缓存：session 读取缓存统一「TTL 用缓存写入时间 + 有界
   LRU/FIFO」。
@@ -704,6 +711,12 @@ spawn claude 进程），而不是它由 slash command 触发还是 cardAction �
 现行实现：`isImmediateAction` 白名单（`src/router/index.ts`）按上述语义分类，控制操作
 免排队，工作操作（`order.exec`、普通消息）走串行队列。
 
+**补充（2026-08-21）**：handler 返回 `{toast}`/`{card}`（`CardActionResponse`）时
+还必须进 `src/index.ts` 的**直返白名单**——`enqueueImmediate`/`enqueueConfigAction`
+是 fire-and-forget 会吞掉返回值。已三次漏项（answer 家族 / order.textInput /
+approval.planFeedback），新增这类 handler 必须同步加入直返分支 + 扩展 wiring 守卫
+测试。审批响应（approval.*）尤其不能落串行队列（run 占用队列头会死锁）。
+
 ### 9.20 SDK throttle patch rejection detach 与 unhandledRejection 兜底
 
 run 卡片流式 patch 走 SDK `@larksuite/channel` 的 throttle + FIFO `UpdateQueue`。
@@ -790,7 +803,7 @@ codex reader 用末 turn raw `input_tokens`（含 cache 的完整 prompt 大小�
 **起因**：codex `/resume` 列表曾显示任意 walk 子集（`listCodexRollouts` 收集到
 `limit*2` 条就 break 再排序，APFS 哈希序下最新目录常被跳过），且总数显示截断后长度。
 
-**reader 契约**（`AgentSessionReader.listSessions`，5 个 agent 统一）：
+**reader 契约**（`AgentSessionReader.listSessions`，6 个 agent 统一）：
 
 ```ts
 listSessions(cwd: string, opts?: { limit?: number; offset?: number }): {
@@ -800,7 +813,7 @@ listSessions(cwd: string, opts?: { limit?: number; offset?: number }): {
 ```
 
 - 必须先对**全集**按 mtime desc 建立全序再切片；任何建立全序前的提前终止都错（§1.4 第一性原理）。
-- 负 offset 按 0 处理（5 reader 统一 `Math.max(0, offset)`，防静默空页）。
+- 负 offset 按 0 处理（6 reader 统一 `Math.max(0, offset)`，防静默空页）。
 - `getNewestSession(cwd)` 内部 = `listSessions(cwd, { limit: 1 }).sessions[0] ?? null`。
 - codex 的 `listCodexRollouts` 返回 `{ entries, total }`，基于 `getSessionIndex`
   （全量 walk + 首行 `session_meta` + stat mtime，5s TTL），只对页内文件全量解析。

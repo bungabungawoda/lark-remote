@@ -414,6 +414,34 @@ describe('ApprovalCoordinator', () => {
   // =========================================================================
 
   describe('ExitPlanMode plan feedback', () => {
+    it('test_anchor_plan_feedback_rejects_non_exitplanmode_approval', async () => {
+      // 只有 ExitPlanMode 计划审批（kind==='tool' && toolName==='ExitPlanMode'）
+      // 有反馈类决策；command/file/permissions/question 审批存意见无意义，
+      // coordinator 兜底拒绝（防异常卡片 payload 注入无用反馈）。
+      coordinator.onRequested(makeCommandEvent());
+      await expect(
+        coordinator.planFeedback({ text: '不该存' }, { requestId: 1001, nonce: 'fb-x' }),
+      ).rejects.toThrow('仅计划审批（ExitPlanMode）支持修改意见');
+    });
+
+    it('test_anchor_plan_feedback_rejects_tool_but_not_exitplanmode', async () => {
+      // kind==='tool' 但 toolName 不是 ExitPlanMode（如其他工具审批）同样拒绝。
+      coordinator.onRequested(
+        makePlanExitEvent({
+          view: {
+            requestId: 2001,
+            kind: 'tool',
+            toolName: 'Bash',
+            reason: 'run a command',
+            availableDecisions: ['accept', 'decline', 'cancel'],
+          },
+        }),
+      );
+      await expect(
+        coordinator.planFeedback({ text: '不该存' }, { requestId: 2001, nonce: 'fb-y' }),
+      ).rejects.toThrow('仅计划审批（ExitPlanMode）支持修改意见');
+    });
+
     it('test_anchor_plan_feedback_stores_and_echoes_view', async () => {
       coordinator.onRequested(makePlanExitEvent());
       await coordinator.planFeedback(

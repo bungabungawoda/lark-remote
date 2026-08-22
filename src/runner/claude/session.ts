@@ -387,6 +387,10 @@ export class ClaudeSession extends SpawningRunner {
     this.cwd = opts.cwd;
     this.autoApprove = false;
     this.pendingToolInputs.clear();
+    // 每次 run 独立：上次 run 会话内跟踪到的计划文件不得泄漏到本次
+    // （否则本次 ExitPlanMode 无 plan/planFilePath 时 resolvePlanContent
+    // 会误读上一次的计划文件当当前计划）。
+    this.planFilePath = '';
 
     let proc: ChildProcess;
     try {

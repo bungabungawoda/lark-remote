@@ -206,7 +206,7 @@ lark-remote/
 ├── src/                ← 源代码（你主要改这里）
 │   ├── index.ts        ← 程序入口
 │   ├── bridge/         ← 串行队列、空闲超时自动停止
-│   ├── runner/         ← 调用各种 AI CLI（Claude/Codex/OpenCode/Pi/Kimi）
+│   ├── runner/         ← 调用各种 AI CLI（Claude/Codex/OpenCode/Pi/Kimi）+ DSH Web Host（HTTP+WS）
 │   ├── card/           ← 飞书卡片渲染
 │   ├── router/         ← 命令分发
 │   ├── config/         ← 配置文件读写
@@ -227,7 +227,7 @@ lark-remote/
 
 ## 12. 想加新 AI 怎么办
 
-lark-remote 现在支持 5 种 AI：Claude、Codex、OpenCode、Pi、Kimi。想接入第 6 种？
+lark-remote 现在支持 6 种 AI：Claude、Codex、OpenCode、Pi、Kimi、DSH（DeepSeek Harness）。想接入第 7 种？
 
 → 看 [`guides/add-new-agent.md`](guides/add-new-agent.md)，里面有完整的 10 步模板。
 
