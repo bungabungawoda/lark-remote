@@ -300,6 +300,43 @@ describe('DshClient / DshRunner integration', () => {
     expect(events.find((e) => e.type === 'result')).toMatchObject({ subtype: 'success' });
   });
 
+  it('selectModel aligns once per session; repeat runs on the same session skip it', async () => {
+    // Regression: session.selectModel writes the server global default, so a
+    // repeat run on the same session must not re-send it (write amplification).
+    // history always returns empty (fresh-session semantics); each run gets its
+    // own turn/end from the shared mux queue (shift-consumed).
+    server = new FakeDshServer();
+    let selectCount = 0;
+    server.register('session.create', () => ({ ok: true, value: { sessionId: SID } }));
+    server.register('session.selectModel', () => {
+      selectCount += 1;
+      return {
+        ok: true,
+        value: {
+          selected: { provider: 'deepseek-official', model: 'deepseek-v4-pro' },
+        },
+      };
+    });
+    server.register('session.prompt', () => ({ ok: true, value: { accepted: true } }));
+    server.register('session.history', () => ({ ok: true, value: { events: [] } }));
+    server.setMuxFrames([
+      sessionEventFrame(SID, turnEnd('completed', 1)),
+      sessionEventFrame(SID, turnEnd('completed', 2)),
+    ]);
+    await server.start();
+
+    const runner = new DshRunner({
+      kind: 'dsh',
+      sessionReader: stubReader,
+      host: server.baseUrl,
+      model: 'deepseek-v4-pro',
+    });
+    await collect(runner.run('first', { cwd: CWD }));
+    await collect(runner.run('second', { cwd: CWD, sessionId: SID }));
+    // 首次 run 对齐一次，复用同一 session 的二次 run 不重复写（selectModel 写全局默认）
+    expect(selectCount).toBe(1);
+  });
+
   it('does not call selectModel when model is not configured', async () => {
     server = new FakeDshServer();
     let selectCalled = false;
@@ -501,6 +538,39 @@ describe('DshClient / DshRunner integration', () => {
     await runner.stop({ immediate: true });
     expect(cancelled).toBe(true);
     await iterator.return?.();
+  });
+
+  it('stop during startup cancels the created session and does not prompt', async () => {
+    // Regression: createSession 挂起期间 stop() 已 abort（此时 sessionId 未知，
+    // stop() 无法 cancel）。createSession 返回后 run() 必须检查 abort——cancel
+    // 刚建的 session 并中断，不得继续 selectModel/prompt。
+    server = new FakeDshServer();
+    let cancelCalled = false;
+    let promptCalled = false;
+    server.register('session.create', () => ({ ok: true, value: { sessionId: SID } }));
+    server.register('session.cancel', (p) => {
+      cancelCalled = true;
+      expect(p).toEqual({ sessionId: SID });
+      return { ok: true, value: { accepted: true } };
+    });
+    server.register('session.prompt', () => {
+      promptCalled = true;
+      return { ok: true, value: { accepted: true } };
+    });
+    server.setMuxFrames([]);
+    await server.start();
+
+    const runner = new DshRunner({ kind: 'dsh', sessionReader: stubReader, host: server.baseUrl });
+    const iterator = runner.run('hi', { cwd: CWD })[Symbol.asyncIterator]();
+    // 推进到 createSession 挂起（createSession resolve 后 run() 检查 abort）。
+    const first = iterator.next();
+    await runner.stop({ immediate: true });
+    const firstResult = await first;
+    // 必须产出 interrupted result（不能裸 return——调用方依赖 result 收尾 run 卡）
+    expect(firstResult.value).toMatchObject({ type: 'result', subtype: 'interrupted' });
+    await iterator.return?.();
+    expect(cancelCalled).toBe(true);
+    expect(promptCalled).toBe(false);
   });
 });
 

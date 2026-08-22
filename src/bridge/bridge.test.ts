@@ -689,6 +689,39 @@ describe('Bridge.forwardToClaude', () => {
     expect(json).toContain('"cmd":"new-session"');
   });
 
+  it('unsent fallback run card hides compact button when runner lacks runCompact', async () => {
+    // 回归：finalizeRun 的 unsent fallback 卡（streamCard 抛错走静态卡）若不传
+    // compactSupported 会渲染出 DSH 等无 runCompact 能力 agent 的死按钮
+    // （缺省 undefined = 显示 Compact）。fallback 卡必须与 createRunSession 的
+    // renderOptions 同门控。
+    const runner = createStubRunner({
+      mode: 'streaming',
+      events: [
+        { type: 'system', subtype: 'init', session_id: 's-nc-fb', cwd: tmpDir, model: 'opus' },
+        { type: 'result', subtype: 'success', session_id: 's-nc-fb' },
+      ],
+    });
+    // 无 runCompact 能力（对照组：不挂 runCompact 方法）
+    const connector = createStubConnector();
+    connector.streamCard = async () => {
+      throw new Error('stream unavailable');
+    };
+    const { bridge, sessionStore } = makeBridge({ runner, connector });
+    sessionStore.setCwd(ctx.userId, tmpDir);
+
+    await bridge.forwardToClaude('hi', ctx);
+
+    // Fallback 静态卡在 _sent（sendResult 走 sendWithRetry），非 _cards（stream 失败）
+    const fallbackPayload = connector._sent.find((s) =>
+      JSON.stringify(s.input).includes('"schema":"2.0"'),
+    );
+    expect(fallbackPayload).toBeDefined();
+    const json = JSON.stringify(fallbackPayload!.input);
+    // 无 runCompact → fallback 卡不得渲染 Compact 按钮
+    expect(json).not.toContain('"cmd":"codex.compact"');
+    expect(json).toContain('"cmd":"new-session"');
+  });
+
   it('isBusyFor returns true only for the specified workspace', async () => {
     const { bridge, sessionStore } = makeBridge();
     sessionStore.setCwd(ctx.userId, tmpDir);

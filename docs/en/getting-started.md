@@ -206,7 +206,7 @@ lark-remote/
 ├── src/                ← Source code (this is where you mostly make changes)
 │   ├── index.ts        ← Program entry point
 │   ├── bridge/         ← Serial queue, idle timeout
-│   ├── runner/         ← Calling various AI CLIs (Claude/Codex/OpenCode/Pi/Kimi)
+│   ├── runner/         ← Calling various AI CLIs (Claude/Codex/OpenCode/Pi/Kimi) + DSH Web Host (HTTP+WS)
 │   ├── card/           ← Feishu card rendering
 │   ├── router/         ← Command dispatch
 │   ├── config/         ← Config file read/write
@@ -227,7 +227,7 @@ lark-remote/
 
 ## 12. What If You Want to Add a New AI?
 
-lark-remote currently supports 5 AIs: Claude, Codex, OpenCode, Pi, and Kimi. Want to add a 6th?
+lark-remote currently supports 6 AIs: Claude, Codex, OpenCode, Pi, Kimi, and DSH (DeepSeek Harness). Want to add a 7th?
 
 → See [`guides/add-new-agent.md`](guides/add-new-agent.md), which has a complete 10-step template.
 

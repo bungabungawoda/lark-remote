@@ -52,7 +52,7 @@ feishu:
   appId: cli_xxx            # 飞书应用 App ID
   appSecret: xxx            # 飞书应用 App Secret
 
-# 默认 agent：claude | codex | opencode | pi | kimi，默认 claude
+# 默认 agent：claude | codex | opencode | pi | kimi | dsh，默认 claude
 defaultAgent: claude
 
 claude:
@@ -69,6 +69,11 @@ agents:
       requestTimeoutMs: 60000
       idleTtlMs: 1800000
       turnIdleTimeoutMinutes: 10
+  dsh:                      # DSH（DeepSeek Harness）Web Host 直连（HTTP+WS，无本地子进程）
+    host: http://127.0.0.1:3080   # 本地 DSH Web Host 地址，默认 3080 端口
+    agentPreset: ''               # preset（标准/极简/...）；留空 = 跟随服务端默认；session 创建后不可改
+    model: ''                     # 模型名（如 deepseek-v4-flash / deepseek-v4-pro）；留空 = 跟随服务端默认
+    reasoningEffort: ''           # off/low/high/max；留空 = 跟随服务端默认
 
 output:
   showThinking: true        # 是否发送 thinking 块
@@ -85,6 +90,19 @@ idle:
 配置文件路径可用 `--config-dir` CLI 参数覆盖（如 `lark-remote --config-dir /path/to/dir`）。
 
 > **不要把真实 config.yaml 提交进仓库。**
+
+### DSH agent（DeepSeek Harness，HTTP+WS 直连）
+
+DSH 与其他 5 个 agent 不同：**不 spawn 本地子进程**，而是直接连到本地 DSH Web Host（默认 `http://127.0.0.1:3080`，HTTP+WebSocket，无认证）。前置条件：本机已运行 DSH Web Host（rc.7 及以上），端口与 `agents.dsh.host` 对齐。
+
+可用配置项（均可在 `/config` 卡片改写保存）：
+
+- `agents.dsh.host`：DSH Web Host base URL，默认 `http://127.0.0.1:3080`。**修改会触发停放当前 dsh session 到恢复槽**（下次消息新建会话，避免 host 不一致导致 session 历史归属错乱）。
+- `agents.dsh.agentPreset`：preset（standard / code / minimal / cordis 等，随服务端 profile bundle 变化）。**session 创建时固定，中途切换服务端返回 `agent-preset-conflict`**；切换 agentPreset 会清空当前 dsh session（session 历史是在该 preset 下产生的，换 preset 等于换语义上下文）。
+- `agents.dsh.model`：模型 ID（默认服务端 `deepseek-v4-flash`）；保留 session，会话首次 run 时对齐一次（`session.selectModel`，同一 session 不重复调用）。
+- `agents.dsh.reasoningEffort`：off / low / high / max；保留 session，会话首次 run 时对齐一次。
+
+跑 dsh 期间如果服务端发出 `approval/requested`，bridge 会在卡片上提示「请到 DSH Web UI 处理」并保留 turn 存活（不静默 park），等用户在 Web UI 解决或 turn 被取消 / 超时。
 
 ---
 
@@ -125,7 +143,8 @@ bridge 启动后不在终端输出，运行日志写入 `~/.lark-remote/logs/`�
 | `/reconnect` | - | 重连飞书 WebSocket |
 | `/config` | `/c` | 查看配置（卡片交互，布尔值点击切换，其他用按钮选择） |
 | `/order save <text>` | `/o` | 保存常用指令 |
-| `/order` `/order list` | `/o` | 列出已保存的指令（卡片，可给指令起别名） |
+| `/order` `/order list` | `/o` | 列出已保存的指令（卡片，可给指令起别名、编辑、删除） |
+| `/order edit <orderId\|序号> <新文本>` | `/o` | 编辑指令文本（卡片「编辑」按钮是主入口，保留别名和使用统计） |
 | `/order alias add <orderId\|序号> <别名名>` | `/o` | 给指令绑定别名（也可在卡片上「＋别名」操作），之后输入 `$name` 即展开 |
 | `/order alias rm <orderId\|序号>` | `/o` | 移除指令的别名 |
 | `/exit` | `/e` | 退出 bridge |
@@ -151,7 +170,7 @@ bridge 启动后不在终端输出，运行日志写入 `~/.lark-remote/logs/`�
 
 #### `/resume`：切换历史 session
 
-每个 agent（claude/codex/opencode/pi/kimi）的对话都有一个 session id，bridge 默认在每次 run 后记住它，下条消息用 `--resume` 续上。`/resume` 用来在历史 session 之间切换：
+每个 agent（claude/codex/opencode/pi/kimi/dsh）的对话都有一个 session id，bridge 默认在每次 run 后记住它，下条消息用 `--resume` 续上。`/resume` 用来在历史 session 之间切换：
 
 - **`/resume`** 或 **`/resume list`**：列出当前目录下当前 agent 的 session（卡片，按最近使用排序，每页 5 条带分页栏；点击按钮即切换）。当前 session 标记 ✓。
 - **`/resume <agent>`**：查看指定 agent 的 session 列表（如 `/resume codex`）。
@@ -243,6 +262,19 @@ $h /tmp/a.txt                 → 展开为 "请读取文件并分析 /tmp/a.txt
   用户自定义行为，注意安全；
 - 别名随指令持久化在 `<configDir>/orders.json`，删除指令时别名一并删除；
 - 名称不能是保留子命令（`remove`、`save`、`list`、`alias` 等），不能数字开头。
+
+#### 编辑指令文本
+
+`/order` 卡片每条指令有「编辑」按钮，点击弹出输入框（预填当前文本）即可原地修改：
+
+```text
+/order save 跑全量测试       # 第 1 条
+/order edit 1 跑全量测试 v2   # CLI 备选路径（卡片是主入口）
+```
+
+- 编辑**保留别名**（`alias`）、**使用统计**（`usedAt`）和创建时间（`createdAt`），只动 `text`；
+- 长度上限 200 字符，与 `/order save` 一致；超长或空白会返回错误 toast 并停留在编辑卡；
+- 文本未变化时短路写盘（mtime 不变），避免无意义磁盘 IO。
 
 ---
 

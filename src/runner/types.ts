@@ -359,7 +359,7 @@ export interface SpawnOptions {
 }
 
 /**
- * Seam (§3): the contract any agent runner (claude/codex/opencode/pi/kimi)
+ * Seam (§3): the contract any agent runner (claude/codex/opencode/pi/kimi/dsh)
  * must satisfy for the router/bridge.
  * Declared here so callers depend on the interface, not the concrete
  * runner classes — test stubs satisfy this structurally.
@@ -502,7 +502,7 @@ export interface AgentRunner extends Runner {
 
 /** Agent self-describing status info for /status display. */
 export interface AgentStatusInfo {
-  /** Agent kind (claude/codex/opencode/pi/kimi). */
+  /** Agent kind (claude/codex/opencode/pi/kimi/dsh). */
   kind: AgentKind;
   /** Display model name. */
   model: string;
