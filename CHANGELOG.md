@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **cardAction direct-return allowlist** (`src/index.ts`): `order.textInput` and `approval.planFeedback` now return `{toast}`/`{card}` directly instead of being swallowed by the fire-and-forget `enqueueImmediate` (edit card stayed on the edit view; plan feedback toast disappeared)
+- **DSH selectModel write amplification**: `session.selectModel` (which writes the server-side global default) is now aligned once per session via an `alignedSessions` set instead of every run; a start-up abort cancels the freshly created session and yields an `interrupted` terminal result instead of returning silently
+- **order empty-last-page regression guard**: deleting the sole item on the last page now clamps `offset` back to a non-empty page (no blank card)
+- **planFeedback gate**: modification opinions are accepted only for `ExitPlanMode` tool approvals; other approval kinds are rejected
+- **planFilePath cross-run reset**: `doStartProcess` clears the in-session tracked plan file so a stale plan is never read by `resolvePlanContent`
+- **order text edit** trim/validation unification: `updateText` trims internally, CLI `/order edit` joins+trims, edit card input gains `max_length: 200`
+- **finalizeRun fallback card** now gates the compact button via `compactSupported` (matches `createRunSession`; agents without `runCompact` no longer render a dead button)
+
+### Changed
+
+- ESLint: all warnings resolved (0 errors 0 warnings)
+
 ## [0.1.9] - 2026-08-20
 
 ### 新增
