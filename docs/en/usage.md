@@ -52,7 +52,7 @@ feishu:
   appId: cli_xxx            # Feishu app App ID
   appSecret: xxx            # Feishu app App Secret
 
-# Default agent: claude | codex | opencode | pi | kimi, defaults to claude
+# Default agent: claude | codex | opencode | pi | kimi | dsh, defaults to claude
 defaultAgent: claude
 
 claude:
@@ -76,6 +76,19 @@ idle:
 The configuration file path can be overridden with the `--config-dir` CLI parameter (e.g., `lark-remote --config-dir /path/to/dir`).
 
 > **Do not commit the real config.yaml to the repository.**
+
+### DSH agent (DeepSeek Harness, HTTP+WS direct connection)
+
+DSH differs from the other 5 agents: **it does not spawn a local subprocess** — instead it connects directly to a local DSH Web Host (default `http://127.0.0.1:3080`, HTTP+WebSocket, no auth). Prerequisite: a DSH Web Host (rc.7+) running locally on the port matching `agents.dsh.host`.
+
+Configurable fields (all editable via the `/config` card):
+
+- `agents.dsh.host`: DSH Web Host base URL, default `http://127.0.0.1:3080`. **Changing this parks the current dsh session into the restore slot** (the next message starts a new session, since the session history belongs to a different host).
+- `agents.dsh.agentPreset`: preset (standard / code / minimal / cordis, etc.; list varies with the server's profile bundle). **Fixed at session creation; switching mid-session returns `agent-preset-conflict`** from the server. Changing agentPreset clears the current dsh session (session history was produced under that preset — a different preset means a different semantic context).
+- `agents.dsh.model`: model ID (server default: `deepseek-v4-flash`); session preserved, aligned once per session (first run) via `session.selectModel` — not repeated for subsequent runs of the same session.
+- `agents.dsh.reasoningEffort`: off / low / high / max; session preserved, aligned once per session.
+
+If the server emits `approval/requested` during a dsh run, the bridge shows a "Please resolve in the DSH Web UI" prompt on the card and keeps the turn alive (never silently parks); the turn resolves when the user resolves it in the Web UI, or when the turn is cancelled / times out.
 
 ---
 
@@ -116,7 +129,8 @@ Any message not starting with `/` is forwarded to Claude. Messages starting with
 | `/reconnect` | - | Reconnect to Feishu WebSocket |
 | `/config` | `/c` | View configuration (interactive card; boolean values toggle on click, others use button selection) |
 | `/order save <text>` | `/o` | Save a frequently used instruction |
-| `/order` `/order list` | `/o` | List saved instructions |
+| `/order` `/order list` | `/o` | List saved instructions (card; supports alias / edit / delete) |
+| `/order edit <orderId\|N> <new text>` | `/o` | Edit the saved text of an instruction (alias and usedAt are preserved) |
 | `/order alias <name> <text>` | `/o` | Register a quick alias (e.g. `/order alias fix 请修复报错`); typing `$fix` expands it |
 | `/order alias [remove <name>]` | `/o` | List all aliases (merged into the `/order` card) / remove an alias |
 | `/exit` | `/e` | Exit the bridge |
@@ -142,7 +156,7 @@ Save frequently used directories as short names, avoiding typing long paths each
 
 #### `/resume`: Switching Historical Sessions
 
-Each agent's (claude/codex/opencode/pi/kimi) conversation has a session id. The bridge remembers it after each run and uses `--resume` to continue with the next message. `/resume` is used to switch between historical sessions:
+Each agent's (claude/codex/opencode/pi/kimi/dsh) conversation has a session id. The bridge remembers it after each run and uses `--resume` to continue with the next message. `/resume` is used to switch between historical sessions:
 
 - **`/resume`** or **`/resume list`**: List sessions for the current agent in the current directory (card, sorted by most recently used, 5 per page with pagination; click a button to switch). The current session is marked with ✓.
 - **`/resume <agent>`**: View the session list for a specific agent (e.g., `/resume codex`).

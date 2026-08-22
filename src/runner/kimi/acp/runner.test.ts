@@ -933,7 +933,7 @@ describe('KimiAcpRunner', () => {
       turnIdleTimeoutMs: 30_000,
     });
 
-    const events = await collectEvents(runner, 'hello', { cwd: workspace });
+    await collectEvents(runner, 'hello', { cwd: workspace });
     await runner.dispose();
 
     const received = readFileSync(capturePath, 'utf-8')

@@ -5,6 +5,26 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.10] - 2026-08-22
+
+### 新增
+
+- `/order` 卡片指令文本编辑：卡片「编辑」按钮弹出输入框原地修改（保留别名/使用统计/创建时间），CLI `/order edit <orderId|序号> <新文本>` 备选入口；长度上限 200 字符、空白提交报错、文本未变化短路写盘
+
+### 修复
+
+- cardAction 直返白名单补齐：`order.textInput` 与 `approval.planFeedback` 不再被 fire-and-forget 的 `enqueueImmediate` 吞掉返回值（编辑卡停留编辑界面 / 计划审批意见 toast 消失）
+- DSH `selectModel` 写放大：`session.selectModel`（会写服务端全局默认）改为每 session 首次 run 对齐一次，不再每次 run 重复写；启动期 `/stop` 会取消刚创建的 session 并产出 `interrupted` 终态而非静默返回
+- order 末页删空守卫：删除末页唯一指令后 `offset` 回退到非空页（不再出现空白卡）
+- 计划审批意见门控：仅 `ExitPlanMode` 工具审批接受修改意见，其他审批类型拒绝
+- 计划文件跨 run 重置：`doStartProcess` 清空会话内追踪的计划文件，避免旧计划被 `resolvePlanContent` 误读
+- finalizeRun fallback 卡按 `compactSupported` 门控 Compact 按钮（无 `runCompact` 能力的 agent 不再渲染死按钮）
+
+### 变更
+
+- ESLint 告警清零（0 errors 0 warnings）
+- 注释与文档同步 DSH 接入（"5 个 agent"→"6 个 agent"）
+
 ## [0.1.9] - 2026-08-20
 
 ### 新增

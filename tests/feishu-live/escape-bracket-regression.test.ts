@@ -12,7 +12,7 @@
  *   FEISHU_LIVE_TEST=1 bun run test tests/escape-bracket-experiment.test.ts
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { it, expect, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import { FeishuConnector } from '../../src/connector/index.js';
