@@ -107,6 +107,29 @@ export class OrderStore {
   }
 
   /**
+   * 修改指令文本。保留 usedAt / alias / createdAt（编辑不应重置使用统计或别名）。
+   * newText===oldText 短路 persist，避免空写盘。长度 > MAX_TEXT_LENGTH 抛错（与 save 一致）。
+   * 内部统一 trim：卡片（handleOrderTextInput）与 CLI（/order edit）都直接传原始文本，
+   * 避免双 trim 语义混淆、也避免两条入口存出不同结果。纯空白（trim 后空）抛错。
+   * @returns 更新后的 entry；id 不存在返回 undefined。
+   */
+  updateText(id: string, newText: string): OrderEntry | undefined {
+    const trimmed = newText.trim();
+    if (trimmed === '') {
+      throw new Error('指令文本不能为空');
+    }
+    if (trimmed.length > MAX_TEXT_LENGTH) {
+      throw new Error(`指令文本超过 ${MAX_TEXT_LENGTH} 字符限制`);
+    }
+    const entry = this.data.find((e) => e.id === id);
+    if (!entry) return undefined;
+    if (entry.text === trimmed) return entry; // no-op: 短路 persist
+    entry.text = trimmed;
+    this.persist();
+    return entry;
+  }
+
+  /**
    * 给指令绑定别名（或解绑）。别名全局唯一，撞名抛错；名称必须通过
    * `ALIAS_NAME_PATTERN`（字母/数字/下划线、不能数字开头、≤20 字符）。
    * @returns 绑定后的条目。

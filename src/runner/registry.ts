@@ -12,8 +12,9 @@ let globalRegistry: AgentRegistry | undefined;
  * up `config.defaultAgent` here to pick the concrete runner.
  *
  * Singleton caching: the factory MAY cache its instance internally. Most
- * current agents (claude, opencode, pi, kimi) are spawn-per-message; codex is
- * workspace-lifetime (app-server). Each factory returns a runner per call.
+ * current spawn-type agents (claude, opencode, pi, kimi) are spawn-per-message; codex is
+ * workspace-lifetime (app-server); dsh is HTTP+WS direct connection (no local
+ * subprocess). Each factory returns a runner per call.
  *
  * Dynamic config reload: factory can read latest config via registry's
  * configContainer, enabling runtime config changes to take effect.
