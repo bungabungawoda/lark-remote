@@ -357,6 +357,9 @@ export class ApprovalCoordinator {
    * 计划审批修改意见（ExitPlanMode）：输入框提交 → coordinator 记录并回流
    * 卡片回显，随后「拒绝并附意见」/「批准并采纳修改」按钮复用该文本。
    * 同一请求可多次修改（新 nonce 来自新渲染）。
+   * 仅 kind === 'tool' 且 toolName === 'ExitPlanMode' 的计划审批接受反馈；
+   * 其余审批类型（command/file/permissions/question）没有反馈类决策，
+   * 存意见无意义（卡片侧也不渲染该输入框，此处兜底防异常卡片 payload）。
    */
   async planFeedback(
     action: { text: string },
@@ -368,6 +371,9 @@ export class ApprovalCoordinator {
     }
     if (tracked.state !== 'pending') {
       throw new Error(`Approval request ${ctx.requestId} is no longer pending`);
+    }
+    if (tracked.kind !== 'tool' || tracked.view.toolName !== 'ExitPlanMode') {
+      throw new Error('仅计划审批（ExitPlanMode）支持修改意见');
     }
     const text = action.text.trim();
     if (!text) {
