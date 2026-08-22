@@ -5,21 +5,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.1.10] - 2026-08-22
 
-### Fixed
+### 新增
 
-- **cardAction direct-return allowlist** (`src/index.ts`): `order.textInput` and `approval.planFeedback` now return `{toast}`/`{card}` directly instead of being swallowed by the fire-and-forget `enqueueImmediate` (edit card stayed on the edit view; plan feedback toast disappeared)
-- **DSH selectModel write amplification**: `session.selectModel` (which writes the server-side global default) is now aligned once per session via an `alignedSessions` set instead of every run; a start-up abort cancels the freshly created session and yields an `interrupted` terminal result instead of returning silently
-- **order empty-last-page regression guard**: deleting the sole item on the last page now clamps `offset` back to a non-empty page (no blank card)
-- **planFeedback gate**: modification opinions are accepted only for `ExitPlanMode` tool approvals; other approval kinds are rejected
-- **planFilePath cross-run reset**: `doStartProcess` clears the in-session tracked plan file so a stale plan is never read by `resolvePlanContent`
-- **order text edit** trim/validation unification: `updateText` trims internally, CLI `/order edit` joins+trims, edit card input gains `max_length: 200`
-- **finalizeRun fallback card** now gates the compact button via `compactSupported` (matches `createRunSession`; agents without `runCompact` no longer render a dead button)
+- `/order` 卡片指令文本编辑：卡片「编辑」按钮弹出输入框原地修改（保留别名/使用统计/创建时间），CLI `/order edit <orderId|序号> <新文本>` 备选入口；长度上限 200 字符、空白提交报错、文本未变化短路写盘
 
-### Changed
+### 修复
 
-- ESLint: all warnings resolved (0 errors 0 warnings)
+- cardAction 直返白名单补齐：`order.textInput` 与 `approval.planFeedback` 不再被 fire-and-forget 的 `enqueueImmediate` 吞掉返回值（编辑卡停留编辑界面 / 计划审批意见 toast 消失）
+- DSH `selectModel` 写放大：`session.selectModel`（会写服务端全局默认）改为每 session 首次 run 对齐一次，不再每次 run 重复写；启动期 `/stop` 会取消刚创建的 session 并产出 `interrupted` 终态而非静默返回
+- order 末页删空守卫：删除末页唯一指令后 `offset` 回退到非空页（不再出现空白卡）
+- 计划审批意见门控：仅 `ExitPlanMode` 工具审批接受修改意见，其他审批类型拒绝
+- 计划文件跨 run 重置：`doStartProcess` 清空会话内追踪的计划文件，避免旧计划被 `resolvePlanContent` 误读
+- finalizeRun fallback 卡按 `compactSupported` 门控 Compact 按钮（无 `runCompact` 能力的 agent 不再渲染死按钮）
+
+### 变更
+
+- ESLint 告警清零（0 errors 0 warnings）
+- 注释与文档同步 DSH 接入（"5 个 agent"→"6 个 agent"）
 
 ## [0.1.9] - 2026-08-20
 
