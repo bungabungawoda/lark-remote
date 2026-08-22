@@ -161,6 +161,8 @@ export function isImmediateAction(cmd: string): boolean {
     cmd === 'order.aliasEdit' ||
     cmd === 'order.aliasInput' ||
     cmd === 'order.aliasRemove' ||
+    cmd === 'order.textEdit' ||
+    cmd === 'order.textInput' ||
     cmd === 'config.toggle' ||
     cmd === 'config.set' ||
     cmd === 'config.input' ||
@@ -538,6 +540,10 @@ export class CommandRouter {
         return await this.handleOrderAliasInput(value, ctx);
       case 'order.aliasRemove':
         return await this.handleOrderAliasRemove(value, ctx);
+      case 'order.textEdit':
+        return await this.handleOrderTextEdit(value, ctx);
+      case 'order.textInput':
+        return await this.handleOrderTextInput(value, ctx);
       case 'config.toggle':
       case 'config.set':
       case 'config.input':
@@ -1614,6 +1620,134 @@ export class CommandRouter {
   }
 
   /**
+   * Handle order.textEdit: 展示指令文本编辑卡（input + ✓ 提交图标）。
+   * 预填当前 text（完整内容，不截断——input 组件有自有滚动条）；
+   * 提交 `order.textInput` 处理（trim + 长度校验 + OrderStore.updateText）。
+   * 完全镜像 handleOrderAliasEdit 的 4 段结构（reload → find → 构造 editCard →
+   * updateCardInPlace）。
+   */
+  private async handleOrderTextEdit(
+    value: { orderId?: string; offset?: number },
+    ctx: CommandContext,
+  ): Promise<CardActionResponse | void> {
+    const orderId = value.orderId;
+    const offset = Math.max(0, Math.trunc(Number(value.offset) || 0));
+    if (!orderId) {
+      return { toast: { type: 'error', content: '卡片 payload 缺少必要信息' } };
+    }
+    this.orderStore.reload();
+    const order = this.orderStore.get().find((o) => o.id === orderId);
+    if (!order) {
+      return { toast: { type: 'error', content: '指令不存在或已被删除' } };
+    }
+    // 列表卡显示的是截断版（≤100 字符 + ...），编辑卡预览也保持一致；
+    // input 组件 default_value 预填完整 text（不受截断影响），用户提交后生效完整文本。
+    const displayText = order.text.length > 100 ? order.text.slice(0, 97) + '...' : order.text;
+    // CardKit 2.0 input 自带 ✓ 提交图标（input_value 经 raw 回传，红线）。
+    // 不用 form 容器（触发 300123 无 submit button / 200621 嵌套 column）。
+    const editCard = {
+      schema: '2.0',
+      config: { wide_screen_mode: true },
+      header: {
+        template: 'blue',
+        title: { tag: 'plain_text', content: '✏️ 编辑指令' },
+      },
+      body: {
+        elements: [
+          {
+            tag: 'div',
+            text: { tag: 'lark_md', content: `**当前指令:**\n\`${displayText}\`` },
+          },
+          { tag: 'hr' },
+          {
+            tag: 'div',
+            text: {
+              tag: 'lark_md',
+              content: '💡 修改后点击右侧 ✓ 提交；空白提交 = 报错；最多 200 字符',
+            },
+          },
+          {
+            tag: 'column_set',
+            columns: [
+              {
+                tag: 'column',
+                width: 'weighted',
+                weight: 3,
+                elements: [
+                  {
+                    tag: 'input',
+                    name: 'text',
+                    placeholder: { tag: 'plain_text', content: '输入新的指令文本...' },
+                    default_value: order.text,
+                    // max_length 与 MAX_TEXT_LENGTH=200 对齐：超长在输入侧直接截断，
+                    // 避免提交后才报错（后端 updateText 仍会二次校验，双保险）。
+                    max_length: 200,
+                    behaviors: [
+                      {
+                        type: 'callback',
+                        value: { cmd: 'order.textInput', orderId, offset },
+                      },
+                    ],
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+      },
+    };
+    await this.bridge.updateCardInPlace(editCard, ctx);
+  }
+
+  /**
+   * Handle order.textInput: 提交指令文本编辑。校验 orderId → OrderStore.updateText
+   * （store 内部统一 trim + 空/超长校验）。成功 toast + 原地重渲染列表卡（同
+   * handleOrderAliasInput 语义：toast-only 响应会让飞书停留在 pre-click 编辑卡，
+   * 必须把 card 放进 callback 响应体）；失败仅 error toast。
+   * 保留 usedAt / alias / createdAt（OrderStore.updateText 只动 text 字段）。
+   */
+  private async handleOrderTextInput(
+    value: {
+      orderId?: string;
+      offset?: number;
+      inputValue?: string;
+      formValue?: Record<string, unknown>;
+    },
+    ctx: CommandContext,
+  ): Promise<CardActionResponse | void> {
+    const orderId = value.orderId;
+    const offset = Math.max(0, Math.trunc(Number(value.offset) || 0));
+    const raw = value.inputValue ?? (value.formValue?.['text'] as string | undefined);
+    if (!orderId) {
+      return { toast: { type: 'error', content: '卡片 payload 缺少必要信息' } };
+    }
+    this.orderStore.reload();
+    const order = this.orderStore.get().find((o) => o.id === orderId);
+    if (!order) {
+      return { toast: { type: 'error', content: '指令不存在或已被删除' } };
+    }
+    let updated: OrderEntry | undefined;
+    try {
+      updated = this.orderStore.updateText(order.id, raw ?? '');
+    } catch (err) {
+      return { toast: { type: 'error', content: (err as Error).message } };
+    }
+    if (!updated) {
+      // reload + find 后 updateText 不应返回 undefined；防御性兜底（如并发删除）。
+      return { toast: { type: 'error', content: '指令不存在或已被删除' } };
+    }
+    // 成功：重渲染列表卡（保持页码）。必须把 card 放进 callback 响应体让飞书
+    // 原地替换 pre-click 编辑卡——toast-only 响应会停留在编辑界面（飞书保留
+    // 点击前那张卡），见 handleQueueInput / handleOrderAliasInput 同款注释。
+    const result = this.cmdOrder([], ctx, offset);
+    const preview = updated.text.length > 50 ? updated.text.slice(0, 50) + '...' : updated.text;
+    return {
+      toast: { type: 'success', content: `✅ 已更新指令: ${preview}` },
+      card: { type: 'raw', data: result.card! },
+    };
+  }
+
+  /**
    * Handle ws.use card action: switch to the workspace, then refresh the /ws
    * list card in place so "recent" sort order is immediately visible.
    *
@@ -2283,8 +2417,8 @@ export class CommandRouter {
       { cmd: 'resume', label: '/resume /r [agent] [list|id|N]', desc: '列出或切换 Agent session' },
       {
         cmd: 'order',
-        label: '/order /o save|list',
-        desc: '收藏指令 /order save，指令可起别名（卡片上 ＋别名）',
+        label: '/order /o save|list|edit',
+        desc: '收藏指令 /order save，编辑指令 /order edit <id|N> <新文本>，指令可起别名（卡片上 ＋别名）',
       },
     ];
 
@@ -4165,6 +4299,31 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
                         ],
                       },
                       {
+                        // 编辑：弹蓝色 header 输入卡（CardKit 2.0 input + ✓ 提交），
+                        // 镜像 order.aliasEdit 流程。order.textEdit 是 control-only action
+                        // （isImmediateAction 注册），不 spawn agent。
+                        tag: 'column',
+                        width: 'auto',
+                        elements: [
+                          {
+                            tag: 'button',
+                            text: { tag: 'plain_text', content: '编辑' },
+                            type: 'default',
+                            size: 'small',
+                            behaviors: [
+                              {
+                                type: 'callback',
+                                value: {
+                                  cmd: 'order.textEdit',
+                                  orderId: order.id,
+                                  offset: safeOffset,
+                                },
+                              },
+                            ],
+                          },
+                        ],
+                      },
+                      {
                         tag: 'column',
                         width: 'auto',
                         elements: [
@@ -4267,8 +4426,29 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
       }
     }
 
+    // /order edit <orderId|序号> <新文本> — CLI 备选路径（卡片是主入口）。
+    // 与 /order save / alias add|rm 对称；复用 resolveOrderTarget。
+    // 与卡片路径（handleOrderTextInput）对齐 trim 语义，避免「卡片 trim、CLI 不 trim」
+    // 两条入口对同一文本存出不同结果。
+    if (sub === 'edit') {
+      const target = args[1];
+      const newText = args.slice(2).join(' ').trim();
+      if (!target || !newText) {
+        return { text: '用法: /order edit <orderId|序号> <新文本>' };
+      }
+      const order = this.resolveOrderTarget(target);
+      if (!order) return { text: `指令不存在: ${target}` };
+      try {
+        this.orderStore.updateText(order.id, newText);
+        const preview = newText.length > 50 ? newText.slice(0, 50) + '...' : newText;
+        return { text: `✅ 已更新指令: ${preview}` };
+      } catch (err) {
+        return { text: `保存失败: ${(err as Error).message}` };
+      }
+    }
+
     return {
-      text: '用法: /order [list|save <text>|alias add <orderId|序号> <别名名>|alias rm <orderId|序号>]',
+      text: '用法: /order [list|save <text>|edit <orderId|序号> <新文本>|alias add <orderId|序号> <别名名>|alias rm <orderId|序号>]',
     };
   }
 

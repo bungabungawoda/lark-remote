@@ -233,3 +233,95 @@ describe('OrderStore boundary limits', () => {
     expect(() => store.save('第 51 条')).toThrow(/50/);
   });
 });
+
+// --- updateText: edit-command-text support ---
+
+describe('OrderStore.updateText', () => {
+  it('正常修改文本 - 返回 entry 且磁盘持久化', () => {
+    const store = new OrderStore(ordersFile);
+    const entry = store.save('原文本');
+    const updated = store.updateText(entry.id, '新文本');
+    expect(updated?.text).toBe('新文本');
+    expect(updated?.id).toBe(entry.id);
+    // reload 验证磁盘
+    store.reload();
+    expect(store.get()[0].text).toBe('新文本');
+  });
+
+  it('保留 usedAt - 编辑不重置使用统计', () => {
+    const store = new OrderStore(ordersFile);
+    const entry = store.save('原文本');
+    store.updateUsedAt(entry.id);
+    const usedAtBefore = store.get()[0].usedAt;
+    expect(usedAtBefore).toBeDefined();
+    store.updateText(entry.id, '新文本');
+    expect(store.get()[0].usedAt).toBe(usedAtBefore);
+  });
+
+  it('保留 alias - 编辑文本不动别名', () => {
+    const store = new OrderStore(ordersFile);
+    const entry = store.save('原文本');
+    store.setAlias(entry.id, 'myalias');
+    store.updateText(entry.id, '新文本');
+    expect(store.get()[0].alias).toBe('myalias');
+  });
+
+  it('保留 createdAt - 编辑文本不动创建时间', () => {
+    const store = new OrderStore(ordersFile);
+    const entry = store.save('原文本');
+    const createdAtBefore = store.get()[0].createdAt;
+    store.updateText(entry.id, '新文本');
+    expect(store.get()[0].createdAt).toBe(createdAtBefore);
+  });
+
+  it('超长文本 (201 chars) 抛错 - 与 save 一致', () => {
+    const store = new OrderStore(ordersFile);
+    const entry = store.save('原文本');
+    expect(() => store.updateText(entry.id, 'A'.repeat(201))).toThrow(/200/);
+  });
+
+  it('text 未变短路 persist - 不动磁盘', async () => {
+    const store = new OrderStore(ordersFile);
+    const entry = store.save('原文本');
+    const mtimeBefore = fs.statSync(ordersFile).mtimeMs;
+    // 等 mtime 推进（避免 ms 内重复写入难以区分）
+    await new Promise<void>((r) => setTimeout(r, 20));
+    const result = store.updateText(entry.id, '原文本');
+    expect(result?.text).toBe('原文本');
+    // mtime 不变即未 persist
+    expect(fs.statSync(ordersFile).mtimeMs).toBe(mtimeBefore);
+  });
+
+  it('id 不存在返回 undefined', () => {
+    const store = new OrderStore(ordersFile);
+    expect(store.updateText('non-existent', 'text')).toBeUndefined();
+  });
+
+  it('trim - store 统一处理，卡片与 CLI 一致', () => {
+    const store = new OrderStore(ordersFile);
+    const entry = store.save('原文本');
+    // 前后空格被 trim 掉（updateText 内部统一 trim，卡片/CLI 两入口一致）
+    const updated = store.updateText(entry.id, '  带空格  ');
+    expect(updated?.text).toBe('带空格');
+  });
+
+  it('纯空白文本抛错 - 不能为空', () => {
+    const store = new OrderStore(ordersFile);
+    const entry = store.save('原文本');
+    expect(() => store.updateText(entry.id, '   ')).toThrow(/不能为空/);
+  });
+
+  it('trim 后超长抛错 - 先 trim 再数长度', () => {
+    const store = new OrderStore(ordersFile);
+    const entry = store.save('原文本');
+    // 201 个字符但首尾有空格：trim 后恰为 199 合法 → 不抛错
+    const padded = ' ' + 'A'.repeat(199) + ' ';
+    const updated = store.updateText(entry.id, padded);
+    expect(updated?.text).toBe('A'.repeat(199));
+    // 202 个字符 trim 后 200 合法 → 不抛错
+    const ok = store.updateText(entry.id, ' ' + 'A'.repeat(200) + ' ');
+    expect(ok?.text).toBe('A'.repeat(200));
+    // 203 个字符 trim 后 201 超长 → 抛错
+    expect(() => store.updateText(entry.id, ' ' + 'A'.repeat(201) + ' ')).toThrow(/200/);
+  });
+});
