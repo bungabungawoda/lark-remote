@@ -51,6 +51,13 @@ export class DshRunner implements AgentRunner {
   private activeAbort: AbortController | null = null;
   private activeSessionId: string | null = null;
   private running = false;
+  /**
+   * 已对齐模型的 session 集合：同一 session 二次 run 不再重发 selectModel
+   * （session.selectModel 会写服务端全局默认，每次 run 都写是写放大）。
+   * configuredModel 在实例生命周期内不变（/config 改模型会 clearRunners
+   * 重建实例 + 换新 sessionId），故「每 session 对齐一次」足以覆盖配置变化。
+   */
+  private readonly alignedSessions = new Set<string>();
 
   constructor(opts: DshRunnerOptions) {
     this.sessionReader = opts.sessionReader;
@@ -101,9 +108,32 @@ export class DshRunner implements AgentRunner {
       }
       this.activeSessionId = sessionId;
 
-      // 模型/推理强度变更 = 保留 session，每次 run 前对齐（§4.3）：
-      // 该调用同时会写服务端全局默认；失败仅告警不阻断 run（模型校验由 DSH 负责）。
-      if (this.configuredModel) {
+      // Startup abort：createSession 挂起期间 stop() 已 abort（此时 sessionId 尚
+      // 未知，stop() 无法 cancel）。createSession 返回后立即检查——已 abort 则
+      // cancel 这个刚建的 session 并中断，不让启动流程继续（selectModel/prompt）。
+      // 必须 yield interrupted result（不能裸 return）：调用方依赖 result 收尾
+      // run 卡，否则 for-await 自然结束后无终态、卡片停留「运行中」。
+      if (abort.signal.aborted) {
+        try {
+          await this.client.unary('session.cancel', { sessionId });
+        } catch {
+          /* 取消失败仅告警，session 已 abort 无需继续 */
+        }
+        getLogger().info(`[dsh] run aborted during startup, cancelled session ${sessionId}`);
+        terminalEmitted = true;
+        yield {
+          type: 'result',
+          subtype: 'interrupted',
+          session_id: sessionId,
+          errorMessage: 'run stopped',
+        };
+        return;
+      }
+
+      // 模型/推理强度对齐（§4.3）：会话首次 run 时 selectModel 一次
+      // （该调用同时写服务端全局默认，故不重复写）；同一 session 后续 run
+      // 跳过。失败仅告警不阻断 run（模型校验由 DSH 负责）。
+      if (this.configuredModel && !this.alignedSessions.has(sessionId)) {
         try {
           await this.client.selectModel({
             sessionId,
@@ -111,6 +141,7 @@ export class DshRunner implements AgentRunner {
             model: this.configuredModel,
             ...(this.reasoningEffort ? { reasoningEffort: this.reasoningEffort } : {}),
           });
+          this.alignedSessions.add(sessionId);
         } catch (err) {
           getLogger().warn(
             `[dsh] selectModel failed for session ${sessionId} (run continues): ${(err as Error).message}`,
