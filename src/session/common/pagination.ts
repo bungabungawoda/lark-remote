@@ -1,7 +1,7 @@
 /**
  * Shared pagination / truncation helpers for agent session readers.
  *
- * The five readers (claude/codex/opencode/pi/kimi) all implement the same
+ * The six readers (claude/codex/opencode/pi/kimi/dsh) all implement the same
  * offset-clamp + slice + total pattern for `listSessions`, and the same
  * maxEvents tail-cap for `readSessionContent`. These were duplicated (and had
  * drifted on the default limit). Centralized here so the contract is defined

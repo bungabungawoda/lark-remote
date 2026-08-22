@@ -121,7 +121,7 @@ const sessions = new Map<string, SessionEntry>();
 | `/reconnect` | Reconnect WebSocket |
 | `/restart` | In-place self-restart bridge: spawn detached successor → old process releases instance lock and exits |
 | `/config get\|set` | Query/modify runtime config (card interaction, agent-aware fields) |
-| `/order save\|list` | Save or list frequent prompts |
+| `/order save\|list\|edit` | Save, list, or edit frequent prompts |
 | `!<cmd>` | Execute bash command with streaming output to card (bypasses serial queue) |
 
 ---
@@ -224,7 +224,7 @@ feishu:
   appId: cli_xxx
   appSecret: xxx
 
-# Default agent: claude | codex | opencode | pi | kimi
+# Default agent: claude | codex | opencode | pi | kimi | dsh
 # Determines which agent the bridge spawns and which agent name the run card header displays
 defaultAgent: claude
 
@@ -478,6 +478,8 @@ Classification definitions:
 
 Current implementation: the `isImmediateAction` allowlist (`src/router/index.ts`) follows this classification — control operations run queue-free, work operations (`order.exec`, normal messages) go through the serial queue.
 
+**Addition (2026-08-21)**: handlers that return `{toast}`/`{card}` (`CardActionResponse`) must also be in the **direct-return allowlist** in `src/index.ts` — `enqueueImmediate`/`enqueueConfigAction` are fire-and-forget and swallow the return value. This has been missed three times (answer family / order.textInput / approval.planFeedback); new handlers of this kind must be added to the direct-return branch and the wiring guard test extended. Approval responses (`approval.*`) in particular must not enter the serial queue (a run occupying the queue head would deadlock).
+
 ### 9.20 SDK Throttle Patch Rejection Detach and unhandledRejection Fallback
 
 Run card streaming patches go through SDK `@larksuite/channel`'s throttle + FIFO `UpdateQueue`. `Throttle.fireSoon` uses `setTimeout(() => this.doFire())` for delayed trigger; inside `doFire`, `(async () => { await this.fire(); })()` creates a **detached Promise** — its rejection is neither caught by `RunCardSession.update()`'s try-catch (`controller.update()` resolves immediately after calling `throttle.note()`, not waiting for the actual patch) nor awaited by the SDK internally. When a patch fails (e.g., Feishu 230027 "no permission to operate external chat", card not found, content exceeds limit), the rejection bubbles up to `process.unhandledRejection`.
@@ -514,7 +516,7 @@ Run card done statistics and `/resume` tail statistics share `formatUsageStats` 
 
 **Origin**: codex `/resume` list previously displayed an arbitrary walk subset (`listCodexRollouts` collected `limit*2` entries then broke and sorted; under APFS hash ordering, the newest directories were often skipped), and the total count displayed the truncated length.
 
-**Reader contract** (`AgentSessionReader.listSessions`, unified across 5 agents):
+**Reader contract** (`AgentSessionReader.listSessions`, unified across 6 agents):
 
 ```ts
 listSessions(cwd: string, opts?: { limit?: number; offset?: number }): {

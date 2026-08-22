@@ -1637,6 +1637,10 @@ export class Bridge {
               showToolUse: this.config.output.showToolUse,
               showToolResult: this.config.output.showToolResult,
               agentKind: activeRun.agentKind,
+              // 与 createRunSession 的 renderOptions 一致：fallback 卡也要按
+              // runner 能力门控 Compact 按钮（缺省 undefined = 显示按钮，
+              // DSH 等无 runCompact 的 agent 会渲染出点了报错的死按钮）。
+              compactSupported: this.hasRunCompact(cwd, activeRun.agentKind),
             }),
           },
           ctx,

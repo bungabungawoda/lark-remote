@@ -6,7 +6,7 @@
 [![npm](https://img.shields.io/npm/v/lark-remote.svg)](https://www.npmjs.com/package/lark-remote)
 [![CI](https://github.com/bungabungawoda/lark-remote/actions/workflows/ci.yml/badge.svg)](https://github.com/bungabungawoda/lark-remote/actions/workflows/ci.yml)
 
-飞书私聊 ↔ 本地 Coding Agent 桥接。在飞书里和 Claude Code（或 Codex / opencode / pi / Kimi）对话，agent 在你指定的本地目录里读写文件、跑命令，执行过程以 CardKit 2.0 卡片**单卡实时流式**呈现。
+飞书私聊 ↔ 本地 Coding Agent 桥接。在飞书里和 Claude Code（或 Codex / opencode / pi / Kimi / DSH）对话，agent 在你指定的本地目录里读写文件、跑命令，执行过程以 CardKit 2.0 卡片**单卡实时流式**呈现。
 
 单用户、p2p 私聊场景设计，不修改 agent 的 system prompt。
 
@@ -32,7 +32,7 @@ Codex 审批模式下，执行命令前会收到审批卡片，可直接在飞�
 - 操作系统：macOS / Linux。**暂不支持 Windows**（依赖 Unix 信号、bash、文件锁等 POSIX 行为）
 - Node.js 20+（开发时用 [Bun](https://bun.sh/)）
 - 飞书自建应用（二选一）：扫码创建（首次启动终端弹二维码，飞书 App 扫码即自动创建并写入凭据）；或手动在开放平台建应用——开启机器人能力，订阅 `im.message.receive_v1` 和 `card.action.trigger`，订阅方式选「长连接」（WebSocket，无需公网地址），权限至少 `im:message`。
-- Claude Code CLI：本地安装并在终端完成一次登录（`claude` → 浏览器 OAuth）。使用其他 agent（codex / opencode / pi / kimi）同理，先装好对应 CLI。
+- Claude Code CLI：本地安装并在终端完成一次登录（`claude` → 浏览器 OAuth）。使用其他 agent（codex / opencode / pi / kimi）同理，先装好对应 CLI；DSH 需本地 DSH Web Host 在跑（默认 `http://127.0.0.1:3080`），lark-remote 通过 HTTP+WebSocket 直连、不 spawn 本地子进程。
 
 ## 安装
 
@@ -64,7 +64,7 @@ feishu:
   appId: cli_xxx
   appSecret: xxx
 
-# 默认 agent：claude | codex | opencode | pi | kimi，默认 claude
+# 默认 agent：claude | codex | opencode | pi | kimi | dsh，默认 claude
 defaultAgent: claude
 
 claude:
@@ -124,7 +124,7 @@ bridge 启动后不在终端输出，运行日志写入 `~/.lark-remote/logs/YYY
 | `/reconnect` | - | 重连飞书 |
 | `/restart` | - | 原地自重启 bridge（新进程同 config 接管） |
 | `/config get\|set` | `/c` | 查改运行时配置（agent-aware 卡片） |
-| `/order save\|list\|alias` | `/o` | 收藏常用指令；`/order alias` 注册快捷别名（输入 `$name` 展开） |
+| `/order save\|list\|edit\|alias` | `/o` | 收藏常用指令；`/order edit` 修改指令文本（保留别名/使用统计）；`/order alias` 注册快捷别名（输入 `$name` 展开） |
 | `!<cmd>` | - | 执行 bash 命令并流式输出到卡片（绕过串行队列） |
 | `/exit` | `/e` | 退出 bridge |
 
