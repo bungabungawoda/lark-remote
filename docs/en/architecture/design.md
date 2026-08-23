@@ -260,7 +260,7 @@ When `feishu.appId`/`appSecret` is not detected on first launch: interactive ter
 
 `claude --resume <session_id>` restores the context from Claude's memory (including the old cwd). If `session_id` is not cleared after `/cd`, Claude's remembered directory and the actual spawn cwd will be inconsistent, causing file read/write errors. Both `/cd` and `/ws use` must clear session_id.
 
-`/cd` path resolution must expand `~` first: `path.resolve` does not recognize `~`, and passing `~/projects` directly would be treated as a relative path, resulting in `<bridge process.cwd()>/~/projects` (e.g., `/Users/.../lark-remote/~/projects`). `cmdCd` uses `path.join(os.homedir(), target.slice(1))` to preprocess `~`-prefixed input.
+`/cd` path resolution must expand `~` first: `path.resolve` does not recognize `~`, and passing `~/projects` directly would be treated as a relative path, resulting in `<bridge process.cwd()>/~/projects` (e.g., `<repo>/~/projects`). `cmdCd` uses `path.join(os.homedir(), target.slice(1))` to preprocess `~`-prefixed input.
 
 ### 9.2 Missing `--verbose` Causes No Thinking Output
 
