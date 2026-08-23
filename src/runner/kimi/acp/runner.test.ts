@@ -29,6 +29,7 @@ import {
   writeMockAcpServer,
   writeScenario,
   collectEvents,
+  readCapture,
 } from '../../../../tests/lib/mock-acp-server.js';
 import { createStubSessionReader } from '../../../../tests/lib/bridge-stubs.js';
 import { KimiSessionReader } from '../../../session/kimi/sessions.js';
@@ -1210,6 +1211,177 @@ fi
       (e) => e.type === 'assistant' || (e.type === 'turn_diff' && 'text' in e),
     );
     expect(assistantTexts).toHaveLength(0);
+
+    await runner.dispose();
+  });
+
+  it('executes kimi terminal/create bash commands locally and serves output/wait_for_exit/release (terminal protocol)', async () => {
+    // Custom inline mock server: the shared writeScenario mock cannot drive
+    // terminal/* because it must read the client-generated terminalId from the
+    // create response before sending the next request. Script mirrors the
+    // real kimi acp-terminal flow (create -> output polls -> wait_for_exit ->
+    // release) and captures every client->server message for wire assertions.
+    const capturePath = join(tmpDir, 'terminal-capture.jsonl');
+    const markerPath = join(tmpDir, 'terminal-marker.txt');
+    const workspace = join(tmpDir, 'workspace');
+    mkdirSync(workspace, { recursive: true });
+    const configPath = join(tmpDir, 'terminal-server-config.json');
+    writeFileSync(
+      configPath,
+      JSON.stringify({
+        sessionId: SESSION_ID,
+        capturePath,
+        workspace,
+        // stdout 也要有 hello（output 轮询断言），marker 文件同时落盘（本地执行断言）。
+        script: `echo hello | tee ${JSON.stringify(markerPath)}`,
+      }),
+    );
+    const server = join(tmpDir, 'terminal-server.mjs');
+    writeFileSync(
+      server,
+      `import { createInterface } from 'node:readline';
+import { appendFileSync, readFileSync } from 'node:fs';
+
+const config = JSON.parse(readFileSync(process.argv[2], 'utf8'));
+const rl = createInterface({ input: process.stdin });
+const capturePath = config.capturePath;
+let promptId = null;
+let terminalId = null;
+let outputPolls = 0;
+const send = (obj) => process.stdout.write(JSON.stringify(obj) + '\\n');
+const sendPromptResult = () => {
+  if (promptId === null) return;
+  send({ jsonrpc: '2.0', id: promptId, result: { stopReason: 'end_turn' } });
+  promptId = null;
+};
+
+rl.on('line', (line) => {
+  let msg;
+  try { msg = JSON.parse(line); } catch { return; }
+  if (capturePath) appendFileSync(capturePath, JSON.stringify(msg) + '\\n');
+
+  // Response to one of our terminal requests (has id, no method).
+  if (msg.method === undefined && msg.id !== undefined) {
+    if (msg.id === 100) {
+      if (msg.error) {
+        // create rejected (current behavior): nothing to poll, end the turn
+        // so the test fails fast on the missing marker/wire responses.
+        sendPromptResult();
+        return;
+      }
+      terminalId = msg.result && msg.result.terminalId;
+      // 真实服务端每 250ms 轮询一次 output；零延迟连打会在 bash 启动前
+      // 耗尽轮询次数。这里保留同样的轮询节奏。
+      setTimeout(() => send({ jsonrpc: '2.0', id: 101, method: 'terminal/output', params: { sessionId: config.sessionId, terminalId } }), 250);
+      return;
+    }
+    if (msg.id === 101 || (typeof msg.id === 'number' && msg.id >= 201 && msg.id <= 205)) {
+      const output = msg.result && typeof msg.result.output === 'string' ? msg.result.output : '';
+      if (output.includes('hello')) {
+        send({ jsonrpc: '2.0', id: 102, method: 'terminal/wait_for_exit', params: { sessionId: config.sessionId, terminalId } });
+      } else if (outputPolls < 5) {
+        // Real server polls every 250ms; retry a few times before giving up.
+        outputPolls += 1;
+        setTimeout(() => send({ jsonrpc: '2.0', id: 200 + outputPolls, method: 'terminal/output', params: { sessionId: config.sessionId, terminalId } }), 250);
+      } else {
+        send({ jsonrpc: '2.0', id: 102, method: 'terminal/wait_for_exit', params: { sessionId: config.sessionId, terminalId } });
+      }
+      return;
+    }
+    if (msg.id === 102) {
+      send({ jsonrpc: '2.0', id: 103, method: 'terminal/release', params: { sessionId: config.sessionId, terminalId } });
+      return;
+    }
+    if (msg.id === 103) {
+      sendPromptResult();
+      return;
+    }
+    return;
+  }
+
+  if (msg.method === 'initialize') {
+    send({ jsonrpc: '2.0', id: msg.id, result: { protocolVersion: 1, agentInfo: { name: 'kimi-acp', version: '0.36.0' } } });
+    return;
+  }
+  if (msg.method === 'session/new') {
+    send({ jsonrpc: '2.0', id: msg.id, result: { sessionId: config.sessionId, configOptions: [] } });
+    return;
+  }
+  if (msg.method === 'session/prompt') {
+    promptId = msg.id;
+    send({
+      jsonrpc: '2.0', id: 100, method: 'terminal/create',
+      params: {
+        sessionId: config.sessionId,
+        command: 'bash',
+        args: ['-c', config.script],
+        env: [{ name: 'TERM', value: 'dumb' }],
+        cwd: config.workspace,
+        outputByteLimit: 4194304,
+      },
+    });
+    return;
+  }
+  // Default: accept unknown client requests (e.g. session/set_mode).
+  if (msg.id !== undefined) {
+    send({ jsonrpc: '2.0', id: msg.id, result: { ok: true } });
+  }
+});
+`,
+    );
+    const wrapper = join(tmpDir, 'terminal-server.sh');
+    writeFileSync(wrapper, `#!/bin/sh\nexec "${process.execPath}" "${server}" "${configPath}"\n`);
+    chmodSync(wrapper, 0o755);
+
+    const runner = new KimiAcpRunner({
+      kind: 'kimi',
+      sessionReader: createStubSessionReader(),
+      binary: wrapper,
+      acpArgs: [],
+      turnIdleTimeoutMs: 30_000,
+    });
+
+    const events = await collectEvents(runner, 'run bash', { cwd: workspace });
+
+    const result = events.find((e) => e.type === 'result') as
+      (AgentEvent & { subtype?: string }) | undefined;
+    expect(result).toBeDefined();
+    expect(result?.subtype).toBe('success');
+
+    // Proves the client really spawned `bash -c <script>` locally.
+    expect(readFileSync(markerPath, 'utf8')).toContain('hello');
+
+    // Wire-shape assertions against the captured client->server messages.
+    const captured = readCapture(capturePath);
+    const createResp = captured.find((m) => m.id === 100);
+    expect(createResp).toBeDefined();
+    expect(createResp?.error).toBeUndefined();
+    const createResult = createResp?.result as { terminalId?: string } | undefined;
+    expect(createResult?.terminalId).toBeTypeOf('string');
+    expect((createResult?.terminalId ?? '').length).toBeGreaterThan(0);
+
+    const outputResps = captured.filter(
+      (m) => m.id === 101 || (typeof m.id === 'number' && m.id >= 201 && m.id <= 205),
+    );
+    expect(outputResps.length).toBeGreaterThan(0);
+    const outputWithHello = outputResps.find((m) => {
+      if (m.error !== undefined) return false;
+      const output = (m.result as { output?: string } | undefined)?.output ?? '';
+      return output.includes('hello');
+    });
+    expect(outputWithHello).toBeDefined();
+
+    const waitResp = captured.find((m) => m.id === 102);
+    expect(waitResp).toBeDefined();
+    expect(waitResp?.error).toBeUndefined();
+    const waitResult = waitResp?.result as
+      { exitCode?: number | null; signal?: string | null } | undefined;
+    expect(waitResult?.exitCode).toBe(0);
+    expect(waitResult?.signal).toBeNull();
+
+    const releaseResp = captured.find((m) => m.id === 103);
+    expect(releaseResp).toBeDefined();
+    expect(releaseResp?.error).toBeUndefined();
 
     await runner.dispose();
   });

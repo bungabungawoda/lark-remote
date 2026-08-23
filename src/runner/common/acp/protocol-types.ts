@@ -292,6 +292,12 @@ export const ServerRequestMethod = {
   REQUEST_PERMISSION: 'session/request_permission',
   /** Kimi AskUserQuestion elicitation form（客户端广告 elicitation.form 时启用）。 */
   ELICITATION_CREATE: 'elicitation/create',
+  /** kimi terminal 工具 reverse RPC：Bash 执行下放客户端（acp-terminal）。 */
+  TERMINAL_CREATE: 'terminal/create',
+  TERMINAL_OUTPUT: 'terminal/output',
+  TERMINAL_WAIT_FOR_EXIT: 'terminal/wait_for_exit',
+  TERMINAL_KILL: 'terminal/kill',
+  TERMINAL_RELEASE: 'terminal/release',
 } as const;
 
 export interface PermissionOption {
@@ -362,4 +368,44 @@ export interface ElicitationCreateResponse {
   action: 'accept' | 'decline' | 'cancel';
   /** accept 时的答案，key 为 q0..qn（按问题顺序）。 */
   content?: Record<string, string | string[]>;
+}
+
+// =============================================================================
+// Server Requests (terminal — Bash 下放客户端执行)
+// Shape source: kimi-code/packages/acp-server/src/acp-terminal/acpTerminalRunner.ts
+//   一次性 bash -c <script>，非交互 PTY、无 stdin 通道；服务端每 250ms 轮询
+//   terminal/output 并自行按 emitted 偏移切片，客户端只回累计 stdout。
+// =============================================================================
+
+export interface TerminalCreateParams {
+  sessionId: string;
+  /** 恒为 'bash'（服务端 spawn 只接受 bash -c）。 */
+  command: string;
+  /** ['-c', <script>]：-c 在 args[0]，脚本在 args[1]。 */
+  args: string[];
+  env?: Array<{ name: string; value: string }>;
+  /** 可能为 null → 回退 session cwd。 */
+  cwd?: string | null;
+  /** 输出缓冲上限（字节），默认 4MB。 */
+  outputByteLimit?: number;
+}
+
+export interface TerminalOutputParams {
+  sessionId: string;
+  terminalId: string;
+}
+
+export interface TerminalWaitForExitParams {
+  sessionId: string;
+  terminalId: string;
+}
+
+export interface TerminalKillParams {
+  sessionId: string;
+  terminalId: string;
+}
+
+export interface TerminalReleaseParams {
+  sessionId: string;
+  terminalId: string;
 }
