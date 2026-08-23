@@ -21,6 +21,7 @@ import type {
   SpawnOptions,
 } from '../../types.js';
 import { spawn, type ChildProcess } from 'node:child_process';
+import { StringDecoder } from 'node:string_decoder';
 import {
   ConnectionManager as KimiAcpConnectionManager,
   type ConnectionManagerOptions as KimiAcpConnectionManagerOptions,
@@ -105,6 +106,8 @@ interface TerminalHandle {
   proc: ChildProcess;
   /** stdout(+stderr) 累计输出（服务端自行按 emitted 偏移切片，客户端回全量）。 */
   output: string;
+  /** 已喂给缓冲的字节数（截断按字节算，不能按 UTF-16 单元算）。 */
+  outputBytes: number;
   /** 缓冲字节上限（outputByteLimit）。 */
   outputLimit: number;
   /** 缓冲达到上限后置 true（后续 chunk 丢弃，不再 append）。 */
@@ -113,8 +116,6 @@ interface TerminalHandle {
   signal: string | null;
   /** 进程退出（或 spawn 失败）时 resolve；wait_for_exit 未退出时 await 它。 */
   exitPromise?: Promise<void>;
-  /** release 后置 true（句柄已从 map 删除）。 */
-  released: boolean;
 }
 
 /** Minimal shape of a wire.jsonl compaction record (full source of truth:
@@ -832,30 +833,46 @@ export class KimiAcpRunner extends ConnectionBasedRunner<KimiAcpClient, AcpTrans
       cwd,
       env: env ? { ...process.env, ...env } : undefined,
       stdio: ['ignore', 'pipe', 'pipe'],
+      // ProcessStopper 用负 PID 杀进程组（kill(-pgid)）；子进程必须是组长
+      // 才能命中，否则 kill(-pid) 抛 ESRCH 被吞 → kill/release/清理全失效。
+      // 与 JsonlRpcTransport / spawning-runner 的 detached:true 同模式。
+      detached: true,
     });
 
     const handle: TerminalHandle = {
       proc,
       output: '',
+      outputBytes: 0,
       outputLimit,
       truncated: false,
       exitCode: null,
       signal: null,
-      released: false,
     };
 
-    const append = (chunk: Buffer) => {
+    // 每个流独立 decoder：多字节字符跨 chunk 拆分时由 decoder 保留不完整
+    // 序列，避免按 chunk 单独 toString 产生 U+FFFD 替换符。
+    const stdoutDecoder = new StringDecoder('utf8');
+    const stderrDecoder = new StringDecoder('utf8');
+    const append = (chunk: Buffer, decoder: StringDecoder) => {
       if (handle.truncated) return;
-      const remaining = Math.max(0, handle.outputLimit - Buffer.byteLength(handle.output));
-      if (Buffer.byteLength(chunk) > remaining) {
-        handle.output += chunk.toString('utf8').slice(0, remaining);
+      const remaining = handle.outputLimit - handle.outputBytes;
+      if (remaining <= 0) {
         handle.truncated = true;
+        return;
+      }
+      if (chunk.length <= remaining) {
+        handle.output += decoder.write(chunk);
+        handle.outputBytes += chunk.length;
       } else {
-        handle.output += chunk.toString('utf8');
+        // 只喂 remaining 字节；decoder 内部保留末尾不完整序列，不会在字节
+        // 边界产生替换符。outputBytes 按「喂入字节」计，保证不超过上限。
+        handle.output += decoder.write(chunk.subarray(0, remaining));
+        handle.outputBytes += remaining;
+        handle.truncated = true;
       }
     };
-    proc.stdout?.on('data', append);
-    proc.stderr?.on('data', append);
+    proc.stdout?.on('data', (chunk) => append(chunk, stdoutDecoder));
+    proc.stderr?.on('data', (chunk) => append(chunk, stderrDecoder));
 
     // spawn 失败（如 ENOENT）只发 'error' 不发 'exit'——一并 resolve，防止
     // wait_for_exit 永久挂起（runner 层 ENOENT 兜底红线）。
@@ -948,7 +965,6 @@ export class KimiAcpRunner extends ConnectionBasedRunner<KimiAcpClient, AcpTrans
       );
       return;
     }
-    handle.released = true;
     this.terminals.delete(params.terminalId);
     // stop 对已退出进程是 no-op；仍在跑则立即 SIGTERM+SIGKILL。
     await this.processStopper.stop(handle.proc, { immediate: true });
@@ -960,7 +976,6 @@ export class KimiAcpRunner extends ConnectionBasedRunner<KimiAcpClient, AcpTrans
     const handles = [...this.terminals.values()];
     this.terminals.clear();
     for (const handle of handles) {
-      handle.released = true;
       await this.processStopper.stop(handle.proc, { immediate: true });
     }
   }
