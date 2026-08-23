@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.11] - 2026-08-24
+
+### 新增
+
+- kimi ACP 支持 Bash 命令自主执行：`terminal/*` reverse RPC 将 Bash 工具下放到本地子进程（一次性 `bash -c <script>`），yolo/auto 模式自主跑命令，manual 模式仍走审批；run 卡片显示带真实命令与本地输出的 Bash 面板，并过滤 kimi 自产的双份 Bash 通知
+
+### 变更
+
+- kimi ACP 能力声明：`fs` 保持关闭（走本地磁盘兜底，避免未实现的 `fs/*` RPC 报 `METHOD_NOT_FOUND`），`terminal` 打开
+
 ## [0.1.10] - 2026-08-22
 
 ### 新增
