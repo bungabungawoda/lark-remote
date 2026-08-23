@@ -115,7 +115,7 @@ interface TerminalHandle {
   exitCode: number | null;
   signal: string | null;
   /** 进程退出（或 spawn 失败）时 resolve；wait_for_exit 未退出时 await 它。 */
-  exitPromise?: Promise<void>;
+  exitPromise: Promise<void>;
 }
 
 /** Minimal shape of a wire.jsonl compaction record (full source of truth:
@@ -839,6 +839,35 @@ export class KimiAcpRunner extends ConnectionBasedRunner<KimiAcpClient, AcpTrans
       detached: true,
     });
 
+    // 每个流独立 decoder：多字节字符跨 chunk 拆分时由 decoder 保留不完整
+    // 序列，避免按 chunk 单独 toString 产生 U+FFFD 替换符。
+    const stdoutDecoder = new StringDecoder('utf8');
+    const stderrDecoder = new StringDecoder('utf8');
+    const append = (chunk: Buffer, decoder: StringDecoder) => {
+      if (handle.truncated) return;
+      const remaining = handle.outputLimit - handle.outputBytes;
+      if (remaining > 0 && chunk.length <= remaining) {
+        handle.output += decoder.write(chunk);
+        handle.outputBytes += chunk.length;
+      } else if (remaining > 0) {
+        // 只喂 remaining 字节；decoder 内部保留末尾不完整序列，不会在字节
+        // 边界产生替换符。outputBytes 按「喂入字节」计，保证不超过上限。
+        handle.output += decoder.write(chunk.subarray(0, remaining));
+        handle.outputBytes += remaining;
+      }
+      // 契约（手册）：truncated = 缓冲 >= limit——恰好填满也标 true。
+      if (handle.outputBytes >= handle.outputLimit) handle.truncated = true;
+    };
+    proc.stdout?.on('data', (chunk) => append(chunk, stdoutDecoder));
+    proc.stderr?.on('data', (chunk) => append(chunk, stderrDecoder));
+
+    // spawn 失败（如 ENOENT）只发 'error' 不发 'exit'——一并 resolve，防止
+    // wait_for_exit 永久挂起（runner 层 ENOENT 兜底红线）。
+    // 用 resolveExit 承接，避免回调在 handle 初始化前引用它（TDZ）。
+    let resolveExit: (() => void) | undefined;
+    const exitPromise = new Promise<void>((resolve) => {
+      resolveExit = resolve;
+    });
     const handle: TerminalHandle = {
       proc,
       output: '',
@@ -847,49 +876,20 @@ export class KimiAcpRunner extends ConnectionBasedRunner<KimiAcpClient, AcpTrans
       truncated: false,
       exitCode: null,
       signal: null,
+      exitPromise,
     };
-
-    // 每个流独立 decoder：多字节字符跨 chunk 拆分时由 decoder 保留不完整
-    // 序列，避免按 chunk 单独 toString 产生 U+FFFD 替换符。
-    const stdoutDecoder = new StringDecoder('utf8');
-    const stderrDecoder = new StringDecoder('utf8');
-    const append = (chunk: Buffer, decoder: StringDecoder) => {
-      if (handle.truncated) return;
-      const remaining = handle.outputLimit - handle.outputBytes;
-      if (remaining <= 0) {
-        handle.truncated = true;
-        return;
+    proc.once('exit', (code, signal) => {
+      handle.exitCode = code;
+      handle.signal = signal;
+      resolveExit?.();
+    });
+    proc.once('error', (err) => {
+      getLogger().warn(`[${this.logTag}] terminal process error: ${err.message}`);
+      if (handle.exitCode === null && handle.signal === null) {
+        handle.exitCode = 1;
+        handle.signal = null;
       }
-      if (chunk.length <= remaining) {
-        handle.output += decoder.write(chunk);
-        handle.outputBytes += chunk.length;
-      } else {
-        // 只喂 remaining 字节；decoder 内部保留末尾不完整序列，不会在字节
-        // 边界产生替换符。outputBytes 按「喂入字节」计，保证不超过上限。
-        handle.output += decoder.write(chunk.subarray(0, remaining));
-        handle.outputBytes += remaining;
-        handle.truncated = true;
-      }
-    };
-    proc.stdout?.on('data', (chunk) => append(chunk, stdoutDecoder));
-    proc.stderr?.on('data', (chunk) => append(chunk, stderrDecoder));
-
-    // spawn 失败（如 ENOENT）只发 'error' 不发 'exit'——一并 resolve，防止
-    // wait_for_exit 永久挂起（runner 层 ENOENT 兜底红线）。
-    handle.exitPromise = new Promise<void>((resolve) => {
-      proc.once('exit', (code, signal) => {
-        handle.exitCode = code;
-        handle.signal = signal;
-        resolve();
-      });
-      proc.once('error', (err) => {
-        getLogger().warn(`[${this.logTag}] terminal process error: ${err.message}`);
-        if (handle.exitCode === null && handle.signal === null) {
-          handle.exitCode = 1;
-          handle.signal = null;
-        }
-        resolve();
-      });
+      resolveExit?.();
     });
 
     const terminalId = `term-${++this.terminalSeq}`;
