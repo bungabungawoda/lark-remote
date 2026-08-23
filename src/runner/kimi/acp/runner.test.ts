@@ -62,6 +62,13 @@ interface TerminalMockServerOptions {
   killAfterCreate?: boolean;
   /** Delay between output polls (real server polls every 250ms). */
   pollIntervalMs?: number;
+  /**
+   * Mirror the real kimi acp-server terminal correlation: emit a Bash
+   * tool_call notification before create, an in_progress tool_call_update
+   * with a terminal embed after create, and a completed terminal embed
+   * update after wait_for_exit (2026-08-23 regression coverage).
+   */
+  sendTerminalEmbedUpdates?: boolean;
 }
 
 function writeTerminalMockServer(
@@ -82,6 +89,7 @@ function writeTerminalMockServer(
       pollForTruncated: opts.pollForTruncated ?? false,
       killAfterCreate: opts.killAfterCreate ?? false,
       pollIntervalMs: opts.pollIntervalMs ?? 250,
+      sendTerminalEmbedUpdates: opts.sendTerminalEmbedUpdates ?? false,
     }),
   );
   const server = join(tmpDir, 'terminal-server.mjs');
@@ -138,6 +146,22 @@ rl.on('line', (line) => {
         pollPid();
         return;
       }
+      if (config.sendTerminalEmbedUpdates) {
+        // acp-server onTerminalCreated: attach the terminal embed to the
+        // in-flight Bash call (no status field).
+        send({
+          jsonrpc: '2.0',
+          method: 'session/update',
+          params: {
+            sessionId: config.sessionId,
+            update: {
+              sessionUpdate: 'tool_call_update',
+              toolCallId: '7:tool_terminal_test',
+              content: [{ type: 'terminal', terminalId }],
+            },
+          },
+        });
+      }
       // 真实服务端每 250ms 轮询一次 output；零延迟连打会在 bash 启动前
       // 耗尽轮询次数。这里保留同样的轮询节奏。
       setTimeout(() => send({ jsonrpc: '2.0', id: 101, method: 'terminal/output', params: { sessionId: config.sessionId, terminalId } }), pollIntervalMs);
@@ -164,6 +188,23 @@ rl.on('line', (line) => {
       return;
     }
     if (msg.id === 102) {
+      if (config.sendTerminalEmbedUpdates) {
+        // acp-server onToolResult: terminal-backed call finalises with the
+        // terminal embed + status; the real output lives client-side.
+        send({
+          jsonrpc: '2.0',
+          method: 'session/update',
+          params: {
+            sessionId: config.sessionId,
+            update: {
+              sessionUpdate: 'tool_call_update',
+              toolCallId: '7:tool_terminal_test',
+              status: 'completed',
+              content: [{ type: 'terminal', terminalId }],
+            },
+          },
+        });
+      }
       send({ jsonrpc: '2.0', id: 103, method: 'terminal/release', params: { sessionId: config.sessionId, terminalId } });
       return;
     }
@@ -184,6 +225,25 @@ rl.on('line', (line) => {
   }
   if (msg.method === 'session/prompt') {
     promptId = msg.id;
+    if (config.sendTerminalEmbedUpdates) {
+      // Real kimi emits the tool_call notification BEFORE delegating the
+      // Bash execution to the client (terminal/create).
+      send({
+        jsonrpc: '2.0',
+        method: 'session/update',
+        params: {
+          sessionId: config.sessionId,
+          update: {
+            sessionUpdate: 'tool_call',
+            toolCallId: '7:tool_terminal_test',
+            title: 'Bash',
+            kind: 'execute',
+            status: 'in_progress',
+            rawInput: { command: config.script },
+          },
+        },
+      });
+    }
     send({
       jsonrpc: '2.0', id: 100, method: 'terminal/create',
       params: {
@@ -442,10 +502,12 @@ describe('KimiAcpRunner', () => {
             update: {
               sessionUpdate: 'tool_call',
               toolCallId: 'tc-001',
-              title: 'Bash',
-              kind: 'execute',
+              // Bash 的 tool 通知已被 runner 过滤（terminal 下放自产事件），
+              // 这里用 Read 验证 translator 的通用 tool_call → tool_use 映射。
+              title: 'Read',
+              kind: 'read',
               status: 'in_progress',
-              rawInput: { command: 'ls' },
+              rawInput: { file_path: 'a.ts' },
             },
           },
         },
@@ -1452,6 +1514,74 @@ fi
     const releaseResp = captured.find((m) => m.id === 103);
     expect(releaseResp).toBeDefined();
     expect(releaseResp?.error).toBeUndefined();
+
+    await runner.dispose();
+  });
+
+  it('emits runner-owned Bash tool_use/tool_result with command and local output (terminal visibility)', async () => {
+    const capturePath = join(tmpDir, 'terminal-enrich-capture.jsonl');
+    const markerPath = join(tmpDir, 'terminal-enrich-marker.txt');
+    const workspace = join(tmpDir, 'workspace');
+    mkdirSync(workspace, { recursive: true });
+    const { wrapper } = writeTerminalMockServer(tmpDir, {
+      capturePath,
+      workspace,
+      script: `echo hello | tee ${JSON.stringify(markerPath)}`,
+      // 模拟真实 kimi acp-server：tool_call 通知 + terminal embed 更新。
+      sendTerminalEmbedUpdates: true,
+    });
+
+    const runner = new KimiAcpRunner({
+      kind: 'kimi',
+      sessionReader: createStubSessionReader(),
+      binary: wrapper,
+      acpArgs: [],
+      turnIdleTimeoutMs: 30_000,
+    });
+
+    const events = await collectEvents(runner, 'run bash', { cwd: workspace });
+
+    const result = events.find((e) => e.type === 'result') as
+      (AgentEvent & { subtype?: string }) | undefined;
+    expect(result).toBeDefined();
+    expect(result?.subtype).toBe('success');
+
+    // runner 自产 assistant/tool_use（Bash 面板，带真实命令），且仅一份
+    // （kimi 的 Bash 通知必须被过滤，否则双份面板）。
+    const bashToolUses = events.filter(
+      (e) =>
+        e.type === 'assistant' &&
+        (
+          e as { message?: { content?: Array<{ type?: string; name?: string; input?: unknown }> } }
+        ).message?.content?.filter((c) => c.type === 'tool_use' && c.name === 'Bash').length === 1,
+    );
+    expect(bashToolUses.length).toBe(1);
+    const bashToolUse = (
+      bashToolUses[0] as {
+        message?: {
+          content?: Array<{ type?: string; name?: string; input?: { command?: string } }>;
+        };
+      }
+    ).message?.content?.find((c) => c.type === 'tool_use');
+    expect(bashToolUse?.input?.command).toContain('echo hello');
+
+    // runner 自产 tool_result 必须带上本地缓冲的真实输出。
+    const toolResults = events.filter(
+      (
+        e,
+      ): e is AgentEvent & { message?: { content?: Array<{ type?: string; content?: string }> } } =>
+        e.type === 'user' &&
+        (e as { message?: { content?: unknown[] } }).message?.content?.some(
+          (c) => (c as { type?: string }).type === 'tool_result',
+        ),
+    );
+    expect(toolResults.length).toBeGreaterThan(0);
+    const outputs = toolResults.flatMap((e) =>
+      (e.message?.content ?? [])
+        .filter((c) => c.type === 'tool_result')
+        .map((c) => c.content ?? ''),
+    );
+    expect(outputs.some((o) => o.includes('hello'))).toBe(true);
 
     await runner.dispose();
   });
