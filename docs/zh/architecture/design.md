@@ -717,6 +717,12 @@ spawn claude 进程），而不是它由 slash command 触发还是 cardAction �
 approval.planFeedback），新增这类 handler 必须同步加入直返分支 + 扩展 wiring 守卫
 测试。审批响应（approval.*）尤其不能落串行队列（run 占用队列头会死锁）。
 
+**补充（2026-08-23）**：进直返白名单只是必要条件——回调响应必须**显式携带
+`card` 字段**才能让飞书替换 pre-click 卡。只返回 toast + 单独调 `updateCardInPlace`
+会被飞书"保持点击前状态"覆盖（toast 正常、卡片却卡在编辑界面/未刷新）。参考
+排队编辑卡 `handleQueueInput` 的 `return { toast, card: { type:'raw', data } }`
+模式；order.aliasInput/aliasRemove 曾踩此坑（第 4 次同源教训）。
+
 ### 9.20 SDK throttle patch rejection detach 与 unhandledRejection 兜底
 
 run 卡片流式 patch 走 SDK `@larksuite/channel` 的 throttle + FIFO `UpdateQueue`。
