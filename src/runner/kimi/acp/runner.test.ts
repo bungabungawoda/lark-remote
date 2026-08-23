@@ -51,6 +51,8 @@ interface TerminalMockServerOptions {
   capturePath: string;
   workspace: string;
   script: string;
+  /** Script writes its own pid to this file first; kill waits for it (deterministic). */
+  pidPath?: string;
   outputByteLimit?: number;
   /** Poll success condition: output response contains this substring (default 'hello'). */
   pollForOutput?: string;
@@ -58,8 +60,6 @@ interface TerminalMockServerOptions {
   pollForTruncated?: boolean;
   /** Send terminal/kill right after create (interrupt path, no release). */
   killAfterCreate?: boolean;
-  /** Delay before sending kill (lets the script write its pid file first). */
-  killDelayMs?: number;
   /** Delay between output polls (real server polls every 250ms). */
   pollIntervalMs?: number;
 }
@@ -76,11 +76,11 @@ function writeTerminalMockServer(
       capturePath: opts.capturePath,
       workspace: opts.workspace,
       script: opts.script,
+      pidPath: opts.pidPath ?? null,
       outputByteLimit: opts.outputByteLimit ?? 4194304,
       pollForOutput: opts.pollForOutput ?? 'hello',
       pollForTruncated: opts.pollForTruncated ?? false,
       killAfterCreate: opts.killAfterCreate ?? false,
-      killDelayMs: opts.killDelayMs ?? 300,
       pollIntervalMs: opts.pollIntervalMs ?? 250,
     }),
   );
@@ -88,7 +88,7 @@ function writeTerminalMockServer(
   writeFileSync(
     server,
     `import { createInterface } from 'node:readline';
-import { appendFileSync, readFileSync } from 'node:fs';
+import { appendFileSync, existsSync, readFileSync } from 'node:fs';
 
 const config = JSON.parse(readFileSync(process.argv[2], 'utf8'));
 const rl = createInterface({ input: process.stdin });
@@ -120,8 +120,22 @@ rl.on('line', (line) => {
       }
       terminalId = msg.result && msg.result.terminalId;
       if (config.killAfterCreate) {
-        // 等脚本先写完 pid 文件再 kill，避免杀在 spawn/写文件之前。
-        setTimeout(() => send({ jsonrpc: '2.0', id: 104, method: 'terminal/kill', params: { sessionId: config.sessionId, terminalId } }), config.killDelayMs);
+        const sendKill = () => send({ jsonrpc: '2.0', id: 104, method: 'terminal/kill', params: { sessionId: config.sessionId, terminalId } });
+        if (!config.pidPath) {
+          sendKill();
+          return;
+        }
+        // 轮询 pid 文件存在再 kill：消除「固定延迟 vs bash 写文件」的竞态。
+        let waited = 0;
+        const pollPid = () => {
+          if (existsSync(config.pidPath) || waited >= 2000) {
+            sendKill();
+            return;
+          }
+          waited += 50;
+          setTimeout(pollPid, 50);
+        };
+        pollPid();
         return;
       }
       // 真实服务端每 250ms 轮询一次 output；零延迟连打会在 bash 启动前
@@ -1448,6 +1462,7 @@ fi
     const { wrapper } = writeTerminalMockServer(tmpDir, {
       capturePath,
       workspace,
+      pidPath,
       killAfterCreate: true,
       // $$ 是 bash 自身 PID；sleep 30 保证 kill 到达前进程一定还在跑。
       script: `echo $$ > ${JSON.stringify(pidPath)}; sleep 30`,
@@ -1549,6 +1564,51 @@ fi
       const output = (m.result as { output?: string } | undefined)?.output ?? '';
       expect(output.includes('\uFFFD')).toBe(false);
     }
+
+    await runner.dispose();
+  });
+
+  it('reports truncated when output exactly reaches outputByteLimit (spec: buffer >= limit)', async () => {
+    const capturePath = join(tmpDir, 'terminal-exact-cap-capture.jsonl');
+    const workspace = join(tmpDir, 'workspace');
+    mkdirSync(workspace, { recursive: true });
+    const { wrapper } = writeTerminalMockServer(tmpDir, {
+      capturePath,
+      workspace,
+      pollForTruncated: true,
+      outputByteLimit: 5,
+      // 'hello' 恰好 5 字节 = outputByteLimit：契约要求 truncated=true（缓冲>=上限），
+      // 且恰好填满时不能丢数据（输出仍应完整）。
+      script: `printf 'hello'`,
+    });
+
+    const runner = new KimiAcpRunner({
+      kind: 'kimi',
+      sessionReader: createStubSessionReader(),
+      binary: wrapper,
+      acpArgs: [],
+      turnIdleTimeoutMs: 30_000,
+    });
+
+    const events = await collectEvents(runner, 'run bash', { cwd: workspace });
+
+    const result = events.find((e) => e.type === 'result') as
+      (AgentEvent & { subtype?: string }) | undefined;
+    expect(result).toBeDefined();
+    expect(result?.subtype).toBe('success');
+
+    const captured = readCapture(capturePath);
+    const outputResps = captured.filter(
+      (m) => m.id === 101 || (typeof m.id === 'number' && m.id >= 201 && m.id <= 205),
+    );
+    expect(outputResps.length).toBeGreaterThan(0);
+    const truncatedResp = outputResps.find((m) => {
+      if (m.error !== undefined) return false;
+      return (m.result as { truncated?: boolean } | undefined)?.truncated === true;
+    });
+    expect(truncatedResp).toBeDefined();
+    const truncatedOutput = (truncatedResp?.result as { output?: string }).output ?? '';
+    expect(truncatedOutput).toBe('hello');
 
     await runner.dispose();
   });
