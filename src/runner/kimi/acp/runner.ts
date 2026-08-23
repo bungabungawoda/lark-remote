@@ -47,6 +47,7 @@ import {
   type TerminalKillParams,
   type TerminalReleaseParams,
   type PermissionOption,
+  NotificationMethod,
   RpcErrorCode,
   ServerRequestMethod,
 } from '../../common/acp/protocol-types.js';
@@ -294,6 +295,14 @@ export class KimiAcpRunner extends ConnectionBasedRunner<KimiAcpClient, AcpTrans
   private terminals = new Map<string, TerminalHandle>();
   /** terminalId 自增序号（term-1, term-2, …）。 */
   private terminalSeq = 0;
+  /**
+   * kimi 服务端对 Bash 工具的 tool_call/tool_call_update 通知（title='Bash'）。
+   * Bash 的真实执行走 terminal/* reverse RPC 下放客户端，tool 事件由本 runner
+   * 自产（tool_use 带命令、tool_result 带本地输出）；这些通知必须过滤，否则
+   * 卡片出现双份 Bash 面板（通知版无 rawInput、terminal embed 无 rawOutput，
+   * 只能渲染「_无输出_」）。收集到的 toolCallId 用于过滤对应的 update。
+   */
+  private bashToolCallIds = new Set<string>();
   /** 当前 run 的 session cwd（terminal/create 未给 cwd 时回退用）。 */
   private activeCwd: string | null = null;
   private readonly processStopper = new ProcessStopper({ graceMs: 2_000 });
@@ -717,14 +726,57 @@ export class KimiAcpRunner extends ConnectionBasedRunner<KimiAcpClient, AcpTrans
   }
 
   private handleNotification(method: string, params: unknown): void {
+    // Terminal-backed Bash 的通知走 runner 自产事件（见 bashToolCallIds），
+    // 不交给 translator；其余通知（Read/Edit/text/thinking）正常翻译。
+    if (method === NotificationMethod.SESSION_UPDATE && this.filterBashNotifications(params)) {
+      return;
+    }
     const events = this.currentTranslator?.handleNotification(method, params) ?? [];
     this.pushEvents(events);
   }
 
+  /**
+   * Filter kimi's own Bash tool notifications so the run card doesn't get a
+   * duplicate, output-less Bash panel alongside the runner-produced one.
+   *
+   * - tool_call title='Bash' → remember the toolCallId, drop the notification
+   *   (the tool_use comes from terminal/create with the real command).
+   * - tool_call_update for a remembered id → drop (streaming args deltas and
+   *   the terminal embed final update; the tool_result is emitted locally).
+   * Returns true when the notification should be swallowed.
+   */
+  private filterBashNotifications(params: unknown): boolean {
+    if (typeof params !== 'object' || params === null) return false;
+    const update = (params as { update?: Record<string, unknown> }).update;
+    if (!update || typeof update !== 'object') return false;
+    if (update.sessionUpdate === 'tool_call') {
+      if (update.title === 'Bash') {
+        if (typeof update.toolCallId === 'string') {
+          this.bashToolCallIds.add(update.toolCallId);
+        }
+        return true;
+      }
+      return false;
+    }
+    if (update.sessionUpdate === 'tool_call_update') {
+      const toolCallId = update.toolCallId;
+      if (typeof toolCallId === 'string' && this.bashToolCallIds.has(toolCallId)) {
+        // 终态后清掉 id，避免集合随会话无限增长（漏清无碍：id 全局唯一）。
+        if (update.status === 'completed' || update.status === 'failed') {
+          this.bashToolCallIds.delete(toolCallId);
+        }
+        return true;
+      }
+      return false;
+    }
+    return false;
+  }
+
   private handleServerRequest(id: number | string, method: string, params: unknown): void {
     // kimi terminal 工具：Bash 执行下放客户端（acp-terminal reverse RPC）。
-    // 纯 request/response I/O，不产生 AgentEvent——在 translator 之前拦截，
-    // 避免落入下方「空事件 → 拒绝」兜底（原 terminal/* 一律 METHOD_NOT_FOUND）。
+    // 请求本身是纯 request/response I/O，不交给 translator（避免落入下方
+    // 「空事件 → 拒绝」兜底）；对应的 tool_use/tool_result 事件由
+    // handleTerminalCreate 自产（带本地命令与输出，见 bashToolCallIds）。
     if (method.startsWith('terminal/')) {
       void this.handleTerminalRequest(id, method, params);
       return;
@@ -871,6 +923,12 @@ export class KimiAcpRunner extends ConnectionBasedRunner<KimiAcpClient, AcpTrans
     const exitPromise = new Promise<void>((resolve) => {
       resolveExit = resolve;
     });
+    // 与 resolveExit 同款 TDZ 规避：tool_result 发射闭包在 terminalId 初始化
+    // 后赋值，exit/error 回调执行时经 emitResult 间接调用。
+    let emitTerminalResult: (() => void) | undefined = undefined;
+    const emitResult = () => {
+      emitTerminalResult?.();
+    };
     const handle: TerminalHandle = {
       proc,
       output: '',
@@ -885,6 +943,7 @@ export class KimiAcpRunner extends ConnectionBasedRunner<KimiAcpClient, AcpTrans
       handle.exitCode = code;
       handle.signal = signal;
       resolveExit?.();
+      emitResult();
     });
     proc.once('error', (err) => {
       getLogger().warn(`[${this.logTag}] terminal process error: ${err.message}`);
@@ -893,10 +952,52 @@ export class KimiAcpRunner extends ConnectionBasedRunner<KimiAcpClient, AcpTrans
         handle.signal = null;
       }
       resolveExit?.();
+      emitResult();
     });
 
     const terminalId = `term-${++this.terminalSeq}`;
     this.terminals.set(terminalId, handle);
+    // Bash 工具事件由本 runner 自产（kimi 通知已过滤）：create 即推 tool_use
+    // 带真实命令，让 run 卡立刻出现可识别的 Bash 面板。
+    const script =
+      Array.isArray(params.args) && params.args.length > 1 ? params.args[1] : params.command;
+    let resultEmitted = false;
+    emitTerminalResult = () => {
+      if (resultEmitted) return;
+      resultEmitted = true;
+      this.pushEvents([
+        {
+          type: 'user',
+          message: {
+            content: [
+              {
+                type: 'tool_result',
+                tool_use_id: terminalId,
+                content: handle.output,
+                is_error: handle.exitCode !== 0,
+              },
+            ],
+          },
+          timestamp: new Date().toISOString(),
+        },
+      ]);
+    };
+    this.pushEvents([
+      {
+        type: 'assistant',
+        message: {
+          content: [
+            {
+              type: 'tool_use',
+              id: terminalId,
+              name: 'Bash',
+              input: { command: script, cwd },
+            },
+          ],
+        },
+        timestamp: new Date().toISOString(),
+      },
+    ]);
     getLogger().info(
       `[${this.logTag}] terminal created id=${terminalId} command=${params.command} args=${JSON.stringify(params.args ?? [])}`,
     );
