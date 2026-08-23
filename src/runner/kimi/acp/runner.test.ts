@@ -36,6 +36,166 @@ import { KimiSessionReader } from '../../../session/kimi/sessions.js';
 
 const SESSION_ID = 'aaaaaaaa-1111-2222-3333-444444444444';
 
+// =============================================================================
+// Custom inline terminal mock server
+// =============================================================================
+// The shared writeScenario mock cannot drive terminal/* because it must read
+// the client-generated terminalId from the create response before sending the
+// next request. This helper mirrors the real kimi acp-terminal flow:
+//   default: create -> output polls (until pollForOutput / pollForTruncated)
+//            -> wait_for_exit -> release -> end_turn;
+//   killAfterCreate: create -> kill -> end_turn (interrupt path, no release).
+// Every client->server message is captured for wire-shape assertions.
+
+interface TerminalMockServerOptions {
+  capturePath: string;
+  workspace: string;
+  script: string;
+  outputByteLimit?: number;
+  /** Poll success condition: output response contains this substring (default 'hello'). */
+  pollForOutput?: string;
+  /** Poll success condition: output response has truncated === true. */
+  pollForTruncated?: boolean;
+  /** Send terminal/kill right after create (interrupt path, no release). */
+  killAfterCreate?: boolean;
+  /** Delay before sending kill (lets the script write its pid file first). */
+  killDelayMs?: number;
+  /** Delay between output polls (real server polls every 250ms). */
+  pollIntervalMs?: number;
+}
+
+function writeTerminalMockServer(
+  tmpDir: string,
+  opts: TerminalMockServerOptions,
+): { wrapper: string } {
+  const configPath = join(tmpDir, 'terminal-server-config.json');
+  writeFileSync(
+    configPath,
+    JSON.stringify({
+      sessionId: SESSION_ID,
+      capturePath: opts.capturePath,
+      workspace: opts.workspace,
+      script: opts.script,
+      outputByteLimit: opts.outputByteLimit ?? 4194304,
+      pollForOutput: opts.pollForOutput ?? 'hello',
+      pollForTruncated: opts.pollForTruncated ?? false,
+      killAfterCreate: opts.killAfterCreate ?? false,
+      killDelayMs: opts.killDelayMs ?? 300,
+      pollIntervalMs: opts.pollIntervalMs ?? 250,
+    }),
+  );
+  const server = join(tmpDir, 'terminal-server.mjs');
+  writeFileSync(
+    server,
+    `import { createInterface } from 'node:readline';
+import { appendFileSync, readFileSync } from 'node:fs';
+
+const config = JSON.parse(readFileSync(process.argv[2], 'utf8'));
+const rl = createInterface({ input: process.stdin });
+const capturePath = config.capturePath;
+const pollIntervalMs = config.pollIntervalMs;
+let promptId = null;
+let terminalId = null;
+let outputPolls = 0;
+const send = (obj) => process.stdout.write(JSON.stringify(obj) + '\\n');
+const sendPromptResult = () => {
+  if (promptId === null) return;
+  send({ jsonrpc: '2.0', id: promptId, result: { stopReason: 'end_turn' } });
+  promptId = null;
+};
+
+rl.on('line', (line) => {
+  let msg;
+  try { msg = JSON.parse(line); } catch { return; }
+  if (capturePath) appendFileSync(capturePath, JSON.stringify(msg) + '\\n');
+
+  // Response to one of our terminal requests (has id, no method).
+  if (msg.method === undefined && msg.id !== undefined) {
+    if (msg.id === 100) {
+      if (msg.error) {
+        // create rejected: nothing to poll, end the turn so the test fails
+        // fast on the missing marker/wire responses.
+        sendPromptResult();
+        return;
+      }
+      terminalId = msg.result && msg.result.terminalId;
+      if (config.killAfterCreate) {
+        // 等脚本先写完 pid 文件再 kill，避免杀在 spawn/写文件之前。
+        setTimeout(() => send({ jsonrpc: '2.0', id: 104, method: 'terminal/kill', params: { sessionId: config.sessionId, terminalId } }), config.killDelayMs);
+        return;
+      }
+      // 真实服务端每 250ms 轮询一次 output；零延迟连打会在 bash 启动前
+      // 耗尽轮询次数。这里保留同样的轮询节奏。
+      setTimeout(() => send({ jsonrpc: '2.0', id: 101, method: 'terminal/output', params: { sessionId: config.sessionId, terminalId } }), pollIntervalMs);
+      return;
+    }
+    if (msg.id === 104) {
+      // kill 响应 → 结束 turn（中断路径不回 release）。
+      sendPromptResult();
+      return;
+    }
+    if (msg.id === 101 || (typeof msg.id === 'number' && msg.id >= 201 && msg.id <= 205)) {
+      const output = msg.result && typeof msg.result.output === 'string' ? msg.result.output : '';
+      const truncated = msg.result && msg.result.truncated === true;
+      const done = config.pollForTruncated ? truncated : output.includes(config.pollForOutput);
+      if (done) {
+        send({ jsonrpc: '2.0', id: 102, method: 'terminal/wait_for_exit', params: { sessionId: config.sessionId, terminalId } });
+      } else if (outputPolls < 5) {
+        outputPolls += 1;
+        setTimeout(() => send({ jsonrpc: '2.0', id: 200 + outputPolls, method: 'terminal/output', params: { sessionId: config.sessionId, terminalId } }), pollIntervalMs);
+      } else {
+        // 轮询耗尽：仍走 wait/release 让 turn 正常结束（断言会暴露缺失）。
+        send({ jsonrpc: '2.0', id: 102, method: 'terminal/wait_for_exit', params: { sessionId: config.sessionId, terminalId } });
+      }
+      return;
+    }
+    if (msg.id === 102) {
+      send({ jsonrpc: '2.0', id: 103, method: 'terminal/release', params: { sessionId: config.sessionId, terminalId } });
+      return;
+    }
+    if (msg.id === 103) {
+      sendPromptResult();
+      return;
+    }
+    return;
+  }
+
+  if (msg.method === 'initialize') {
+    send({ jsonrpc: '2.0', id: msg.id, result: { protocolVersion: 1, agentInfo: { name: 'kimi-acp', version: '0.36.0' } } });
+    return;
+  }
+  if (msg.method === 'session/new') {
+    send({ jsonrpc: '2.0', id: msg.id, result: { sessionId: config.sessionId, configOptions: [] } });
+    return;
+  }
+  if (msg.method === 'session/prompt') {
+    promptId = msg.id;
+    send({
+      jsonrpc: '2.0', id: 100, method: 'terminal/create',
+      params: {
+        sessionId: config.sessionId,
+        command: 'bash',
+        args: ['-c', config.script],
+        env: [{ name: 'TERM', value: 'dumb' }],
+        cwd: config.workspace,
+        outputByteLimit: config.outputByteLimit,
+      },
+    });
+    return;
+  }
+  // Default: accept unknown client requests (e.g. session/set_mode).
+  if (msg.id !== undefined) {
+    send({ jsonrpc: '2.0', id: msg.id, result: { ok: true } });
+  }
+});
+`,
+  );
+  const wrapper = join(tmpDir, 'terminal-server.sh');
+  writeFileSync(wrapper, `#!/bin/sh\nexec "${process.execPath}" "${server}" "${configPath}"\n`);
+  chmodSync(wrapper, 0o755);
+  return { wrapper };
+}
+
 describe('KimiAcpRunner', () => {
   let tmpDir: string;
   let serverScript: string;
@@ -1216,122 +1376,16 @@ fi
   });
 
   it('executes kimi terminal/create bash commands locally and serves output/wait_for_exit/release (terminal protocol)', async () => {
-    // Custom inline mock server: the shared writeScenario mock cannot drive
-    // terminal/* because it must read the client-generated terminalId from the
-    // create response before sending the next request. Script mirrors the
-    // real kimi acp-terminal flow (create -> output polls -> wait_for_exit ->
-    // release) and captures every client->server message for wire assertions.
     const capturePath = join(tmpDir, 'terminal-capture.jsonl');
     const markerPath = join(tmpDir, 'terminal-marker.txt');
     const workspace = join(tmpDir, 'workspace');
     mkdirSync(workspace, { recursive: true });
-    const configPath = join(tmpDir, 'terminal-server-config.json');
-    writeFileSync(
-      configPath,
-      JSON.stringify({
-        sessionId: SESSION_ID,
-        capturePath,
-        workspace,
-        // stdout 也要有 hello（output 轮询断言），marker 文件同时落盘（本地执行断言）。
-        script: `echo hello | tee ${JSON.stringify(markerPath)}`,
-      }),
-    );
-    const server = join(tmpDir, 'terminal-server.mjs');
-    writeFileSync(
-      server,
-      `import { createInterface } from 'node:readline';
-import { appendFileSync, readFileSync } from 'node:fs';
-
-const config = JSON.parse(readFileSync(process.argv[2], 'utf8'));
-const rl = createInterface({ input: process.stdin });
-const capturePath = config.capturePath;
-let promptId = null;
-let terminalId = null;
-let outputPolls = 0;
-const send = (obj) => process.stdout.write(JSON.stringify(obj) + '\\n');
-const sendPromptResult = () => {
-  if (promptId === null) return;
-  send({ jsonrpc: '2.0', id: promptId, result: { stopReason: 'end_turn' } });
-  promptId = null;
-};
-
-rl.on('line', (line) => {
-  let msg;
-  try { msg = JSON.parse(line); } catch { return; }
-  if (capturePath) appendFileSync(capturePath, JSON.stringify(msg) + '\\n');
-
-  // Response to one of our terminal requests (has id, no method).
-  if (msg.method === undefined && msg.id !== undefined) {
-    if (msg.id === 100) {
-      if (msg.error) {
-        // create rejected (current behavior): nothing to poll, end the turn
-        // so the test fails fast on the missing marker/wire responses.
-        sendPromptResult();
-        return;
-      }
-      terminalId = msg.result && msg.result.terminalId;
-      // 真实服务端每 250ms 轮询一次 output；零延迟连打会在 bash 启动前
-      // 耗尽轮询次数。这里保留同样的轮询节奏。
-      setTimeout(() => send({ jsonrpc: '2.0', id: 101, method: 'terminal/output', params: { sessionId: config.sessionId, terminalId } }), 250);
-      return;
-    }
-    if (msg.id === 101 || (typeof msg.id === 'number' && msg.id >= 201 && msg.id <= 205)) {
-      const output = msg.result && typeof msg.result.output === 'string' ? msg.result.output : '';
-      if (output.includes('hello')) {
-        send({ jsonrpc: '2.0', id: 102, method: 'terminal/wait_for_exit', params: { sessionId: config.sessionId, terminalId } });
-      } else if (outputPolls < 5) {
-        // Real server polls every 250ms; retry a few times before giving up.
-        outputPolls += 1;
-        setTimeout(() => send({ jsonrpc: '2.0', id: 200 + outputPolls, method: 'terminal/output', params: { sessionId: config.sessionId, terminalId } }), 250);
-      } else {
-        send({ jsonrpc: '2.0', id: 102, method: 'terminal/wait_for_exit', params: { sessionId: config.sessionId, terminalId } });
-      }
-      return;
-    }
-    if (msg.id === 102) {
-      send({ jsonrpc: '2.0', id: 103, method: 'terminal/release', params: { sessionId: config.sessionId, terminalId } });
-      return;
-    }
-    if (msg.id === 103) {
-      sendPromptResult();
-      return;
-    }
-    return;
-  }
-
-  if (msg.method === 'initialize') {
-    send({ jsonrpc: '2.0', id: msg.id, result: { protocolVersion: 1, agentInfo: { name: 'kimi-acp', version: '0.36.0' } } });
-    return;
-  }
-  if (msg.method === 'session/new') {
-    send({ jsonrpc: '2.0', id: msg.id, result: { sessionId: config.sessionId, configOptions: [] } });
-    return;
-  }
-  if (msg.method === 'session/prompt') {
-    promptId = msg.id;
-    send({
-      jsonrpc: '2.0', id: 100, method: 'terminal/create',
-      params: {
-        sessionId: config.sessionId,
-        command: 'bash',
-        args: ['-c', config.script],
-        env: [{ name: 'TERM', value: 'dumb' }],
-        cwd: config.workspace,
-        outputByteLimit: 4194304,
-      },
+    // stdout 也要有 hello（output 轮询断言），marker 文件同时落盘（本地执行断言）。
+    const { wrapper } = writeTerminalMockServer(tmpDir, {
+      capturePath,
+      workspace,
+      script: `echo hello | tee ${JSON.stringify(markerPath)}`,
     });
-    return;
-  }
-  // Default: accept unknown client requests (e.g. session/set_mode).
-  if (msg.id !== undefined) {
-    send({ jsonrpc: '2.0', id: msg.id, result: { ok: true } });
-  }
-});
-`,
-    );
-    const wrapper = join(tmpDir, 'terminal-server.sh');
-    writeFileSync(wrapper, `#!/bin/sh\nexec "${process.execPath}" "${server}" "${configPath}"\n`);
-    chmodSync(wrapper, 0o755);
 
     const runner = new KimiAcpRunner({
       kind: 'kimi',
@@ -1382,6 +1436,119 @@ rl.on('line', (line) => {
     const releaseResp = captured.find((m) => m.id === 103);
     expect(releaseResp).toBeDefined();
     expect(releaseResp?.error).toBeUndefined();
+
+    await runner.dispose();
+  });
+
+  it('terminal/kill really terminates a long-running local bash process (kill regression)', async () => {
+    const capturePath = join(tmpDir, 'terminal-kill-capture.jsonl');
+    const pidPath = join(tmpDir, 'terminal-pid.txt');
+    const workspace = join(tmpDir, 'workspace');
+    mkdirSync(workspace, { recursive: true });
+    const { wrapper } = writeTerminalMockServer(tmpDir, {
+      capturePath,
+      workspace,
+      killAfterCreate: true,
+      // $$ 是 bash 自身 PID；sleep 30 保证 kill 到达前进程一定还在跑。
+      script: `echo $$ > ${JSON.stringify(pidPath)}; sleep 30`,
+    });
+
+    const runner = new KimiAcpRunner({
+      kind: 'kimi',
+      sessionReader: createStubSessionReader(),
+      binary: wrapper,
+      acpArgs: [],
+      turnIdleTimeoutMs: 30_000,
+    });
+
+    const events = await collectEvents(runner, 'run bash', { cwd: workspace });
+
+    const result = events.find((e) => e.type === 'result') as
+      (AgentEvent & { subtype?: string }) | undefined;
+    expect(result).toBeDefined();
+    expect(result?.subtype).toBe('success');
+
+    const captured = readCapture(capturePath);
+    const killResp = captured.find((m) => m.id === 104);
+    expect(killResp).toBeDefined();
+    expect(killResp?.error).toBeUndefined();
+
+    // 核心断言：kill 响应后 bash 必须真的死掉（负 PID 杀进程组），不能只回 {}。
+    const pid = Number(readFileSync(pidPath, 'utf8').trim());
+    expect(Number.isInteger(pid)).toBe(true);
+    let dead = false;
+    try {
+      for (let i = 0; i < 40; i++) {
+        try {
+          process.kill(pid, 0);
+        } catch {
+          dead = true;
+          break;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+      expect(dead).toBe(true);
+    } finally {
+      // 测试失败时兜底清理，避免孤儿 sleep 进程污染后续用例。
+      if (!dead) {
+        try {
+          process.kill(pid, 'SIGKILL');
+        } catch {}
+      }
+    }
+
+    await runner.dispose();
+  });
+
+  it('buffers terminal output byte-accurately: intact UTF-8 and outputByteLimit enforced', async () => {
+    const capturePath = join(tmpDir, 'terminal-buffer-capture.jsonl');
+    const workspace = join(tmpDir, 'workspace');
+    mkdirSync(workspace, { recursive: true });
+    const { wrapper } = writeTerminalMockServer(tmpDir, {
+      capturePath,
+      workspace,
+      pollForTruncated: true,
+      outputByteLimit: 5,
+      // 第一个 write 只有 1 字节（多字节字符被拆到两个 chunk），随后补全；
+      // 总输出 '你你好' 9 字节 > 5 字节上限，必须截断且不产生 U+FFFD。
+      script: `printf '\\xe4'; sleep 0.05; printf '\\xbd\\xa0\\xe4\\xbd\\xa0\\xe5\\xa5\\xbd'`,
+    });
+
+    const runner = new KimiAcpRunner({
+      kind: 'kimi',
+      sessionReader: createStubSessionReader(),
+      binary: wrapper,
+      acpArgs: [],
+      turnIdleTimeoutMs: 30_000,
+    });
+
+    const events = await collectEvents(runner, 'run bash', { cwd: workspace });
+
+    const result = events.find((e) => e.type === 'result') as
+      (AgentEvent & { subtype?: string }) | undefined;
+    expect(result).toBeDefined();
+    expect(result?.subtype).toBe('success');
+
+    const captured = readCapture(capturePath);
+    const outputResps = captured.filter(
+      (m) => m.id === 101 || (typeof m.id === 'number' && m.id >= 201 && m.id <= 205),
+    );
+    expect(outputResps.length).toBeGreaterThan(0);
+
+    // 字节准确截断：truncated 响应的输出不得超过 outputByteLimit（5 字节）。
+    const truncatedResp = outputResps.find((m) => {
+      if (m.error !== undefined) return false;
+      return (m.result as { truncated?: boolean } | undefined)?.truncated === true;
+    });
+    expect(truncatedResp).toBeDefined();
+    const truncatedOutput = (truncatedResp?.result as { output?: string }).output ?? '';
+    expect(Buffer.byteLength(truncatedOutput)).toBeLessThanOrEqual(5);
+
+    // 跨 chunk 拆分多字节字符不得产生 U+FFFD 替换符。
+    for (const m of outputResps) {
+      const output = (m.result as { output?: string } | undefined)?.output ?? '';
+      expect(output.includes('\uFFFD')).toBe(false);
+    }
 
     await runner.dispose();
   });
