@@ -58,7 +58,7 @@ export const RpcErrorCode = {
 export interface InitializeParams {
   /** Protocol version — must be 1 (number, not string). */
   protocolVersion: number;
-  /** Client capabilities: explicitly declare what we support (all off). */
+  /** Client capabilities: declare only reverse-RPC surfaces we implement. */
   clientCapabilities: {
     fs: { readTextFile: boolean; writeTextFile: boolean };
     terminal: boolean;
