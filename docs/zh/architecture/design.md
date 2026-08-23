@@ -352,7 +352,7 @@ idle:
 文件读写会错乱。`/cd` 和 `/ws use` 都必须清空 session_id。
 
 `/cd` 路径解析必须先展开 `~`：`path.resolve` 不识别 `~`，直接传 `~/projects` 会被
-当相对路径拼成 `<bridge process.cwd()>/~/projects`。
+当相对路径拼成 `<bridge process.cwd()>/~/projects`（如 `<repo>/~/projects`）。
 `cmdCd` 用 `path.join(os.homedir(), target.slice(1))` 预处理 `~` 开头的输入。
 
 ### 9.2 `--verbose` 缺失导致无 thinking 输出
@@ -721,7 +721,7 @@ approval.planFeedback），新增这类 handler 必须同步加入直返分支 +
 `card` 字段**才能让飞书替换 pre-click 卡。只返回 toast + 单独调 `updateCardInPlace`
 会被飞书"保持点击前状态"覆盖（toast 正常、卡片却卡在编辑界面/未刷新）。参考
 排队编辑卡 `handleQueueInput` 的 `return { toast, card: { type:'raw', data } }`
-模式；order.aliasInput/aliasRemove 曾踩此坑（第 4 次同源教训）。
+模式；order.aliasInput/aliasRemove 曾踩此坑。
 
 ### 9.20 SDK throttle patch rejection detach 与 unhandledRejection 兜底
 
