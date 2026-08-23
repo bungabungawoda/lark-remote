@@ -946,8 +946,10 @@ describe('KimiAcpRunner', () => {
     expect(initialize?.params).toEqual({
       protocolVersion: 1,
       clientCapabilities: {
-        fs: { readTextFile: false, writeTextFile: false },
-        terminal: false,
+        // fs 读写放开（模型可自主读写文件）。
+        fs: { readTextFile: true, writeTextFile: true },
+        // terminal 常开：yolo/auto 自主跑命令；manual 走 session/request_permission 审批。
+        terminal: true,
         // AskUserQuestion 走 elicitation form（原生多题多选）。elicitation.form
         // 必须是对象（ACP SDK zod: z.record），布尔 true 会被 kimi 服务端丢弃
         // → 多选回退成 request_permission 单选桥（勾一个选项即提交）。

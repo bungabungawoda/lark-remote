@@ -272,8 +272,10 @@ export class KimiAcpRunner extends ConnectionBasedRunner<KimiAcpClient, AcpTrans
       initializeParams: {
         protocolVersion: 1,
         clientCapabilities: {
-          fs: { readTextFile: false, writeTextFile: false },
-          terminal: false,
+          // fs 读写放开（模型可自主读写文件）。
+          fs: { readTextFile: true, writeTextFile: true },
+          // terminal 常开：yolo/auto 自主跑命令；manual 走 session/request_permission 审批。
+          terminal: true,
           // AskUserQuestion 走 elicitation form（原生多题+多选；form 失败时
           // kimi 服务端自动回退 request_permission 桥，客户端两者都处理）。
           // 注意：ACP SDK 对 elicitation.form 的 zod schema 是对象
