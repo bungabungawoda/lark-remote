@@ -20,6 +20,7 @@ import type {
   ApprovalView,
   SpawnOptions,
 } from '../../types.js';
+import { spawn, type ChildProcess } from 'node:child_process';
 import {
   ConnectionManager as KimiAcpConnectionManager,
   type ConnectionManagerOptions as KimiAcpConnectionManagerOptions,
@@ -39,6 +40,11 @@ import {
   type RequestPermissionParams,
   type RequestPermissionResponse,
   type ElicitationCreateResponse,
+  type TerminalCreateParams,
+  type TerminalOutputParams,
+  type TerminalWaitForExitParams,
+  type TerminalKillParams,
+  type TerminalReleaseParams,
   type PermissionOption,
   RpcErrorCode,
   ServerRequestMethod,
@@ -47,6 +53,7 @@ import { findOptionIdByKind } from '../../common/acp/protocol-helpers.js';
 import { mapAnswersByIndex } from '../../question-common.js';
 import { getLogger } from '../../../logger/index.js';
 import { ConnectionBasedRunner } from '../../common/connection-based-runner.js';
+import { ProcessStopper } from '../../common/process-stopper.js';
 
 // =============================================================================
 // Configuration
@@ -81,6 +88,34 @@ export interface KimiAcpRunnerOptions {
 const COMPACT_POLL_TIMEOUT_MS = 30_000;
 /** Poll interval for the wire.jsonl compaction record. */
 const COMPACT_POLL_INTERVAL_MS = 1_000;
+
+// =============================================================================
+// kimi terminal 工具（Bash 执行下放客户端）
+// 契约：kimi-code/packages/acp-server/src/acp-terminal/acpTerminalRunner.ts
+//   一次性 bash -c <script>，非交互 PTY、无 stdin；服务端每 250ms 轮询
+//   terminal/output，客户端只回累计 stdout。创建/轮询/等待/杀/释放五个
+//   reverse RPC 全部由本 runner 本地 spawn 子进程实现。
+// =============================================================================
+
+/** terminal/create 未显式给 outputByteLimit 时的缓冲上限（对齐服务端默认 4MB）。 */
+const TERMINAL_DEFAULT_OUTPUT_LIMIT = 4 * 1024 * 1024;
+
+/** 一个存活 terminal 的本地句柄：子进程 + 累计输出缓冲 + 退出状态。 */
+interface TerminalHandle {
+  proc: ChildProcess;
+  /** stdout(+stderr) 累计输出（服务端自行按 emitted 偏移切片，客户端回全量）。 */
+  output: string;
+  /** 缓冲字节上限（outputByteLimit）。 */
+  outputLimit: number;
+  /** 缓冲达到上限后置 true（后续 chunk 丢弃，不再 append）。 */
+  truncated: boolean;
+  exitCode: number | null;
+  signal: string | null;
+  /** 进程退出（或 spawn 失败）时 resolve；wait_for_exit 未退出时 await 它。 */
+  exitPromise?: Promise<void>;
+  /** release 后置 true（句柄已从 map 删除）。 */
+  released: boolean;
+}
 
 /** Minimal shape of a wire.jsonl compaction record (full source of truth:
  *  kimi-code wire-manifest — context.apply_compaction carries
@@ -254,6 +289,14 @@ export class KimiAcpRunner extends ConnectionBasedRunner<KimiAcpClient, AcpTrans
   /** Pending approval requests: requestId → kind + view + options. */
   private pendingApprovals = new Map<number | string, PendingApproval>();
 
+  /** 存活 terminal（kimi 把 Bash 执行下放客户端）：terminalId → 本地句柄。 */
+  private terminals = new Map<string, TerminalHandle>();
+  /** terminalId 自增序号（term-1, term-2, …）。 */
+  private terminalSeq = 0;
+  /** 当前 run 的 session cwd（terminal/create 未给 cwd 时回退用）。 */
+  private activeCwd: string | null = null;
+  private readonly processStopper = new ProcessStopper({ graceMs: 2_000 });
+
   /** Tracker for the in-flight prompt request — needed for cancellation. */
   private promptSettled = false;
 
@@ -324,6 +367,7 @@ export class KimiAcpRunner extends ConnectionBasedRunner<KimiAcpClient, AcpTrans
     this.currentTranslator = null;
     this.promptSettled = false;
     this.activeSessionId = null;
+    this.activeCwd = null;
   }
 
   protected async releaseConnection(cwd: string): Promise<void> {
@@ -335,6 +379,8 @@ export class KimiAcpRunner extends ConnectionBasedRunner<KimiAcpClient, AcpTrans
   }
 
   protected async disposeConnections(): Promise<void> {
+    // 关闭前 kill/release 所有存活 terminal，避免孤儿 bash 进程。
+    await this.cleanupTerminals();
     await this.connectionManager.disposeAll();
   }
 
@@ -350,10 +396,14 @@ export class KimiAcpRunner extends ConnectionBasedRunner<KimiAcpClient, AcpTrans
       const client = await this.connectionManager.acquire(opts.cwd);
       this.connectionManager.notifyActivity(opts.cwd);
       this.currentClient = client;
+      this.activeCwd = opts.cwd;
       client.setHooks({
         onNotification: (method, params) => this.handleNotification(method, params),
         onServerRequest: (id, method, params) => this.handleServerRequest(id, method, params),
-        onClose: () => this.failTurn('Kimi ACP connection closed'),
+        onClose: () => {
+          void this.cleanupTerminals();
+          this.failTurn('Kimi ACP connection closed');
+        },
       });
 
       const sessionId = opts.sessionId;
@@ -516,11 +566,13 @@ export class KimiAcpRunner extends ConnectionBasedRunner<KimiAcpClient, AcpTrans
     const client = await this.connectionManager.acquire(opts.cwd);
     this.connectionManager.notifyActivity(opts.cwd);
     this.currentClient = client;
+    this.activeCwd = opts.cwd;
     client.setHooks({
       onNotification: (method, params) => this.handleNotification(method, params),
       onServerRequest: (id, method, params) => this.handleServerRequest(id, method, params),
       onClose: () => {
         getLogger().warn(`[${this.logTag}] client connection closed`);
+        void this.cleanupTerminals();
         this.failTurn('Kimi ACP connection closed');
       },
     });
@@ -666,6 +718,14 @@ export class KimiAcpRunner extends ConnectionBasedRunner<KimiAcpClient, AcpTrans
   }
 
   private handleServerRequest(id: number | string, method: string, params: unknown): void {
+    // kimi terminal 工具：Bash 执行下放客户端（acp-terminal reverse RPC）。
+    // 纯 request/response I/O，不产生 AgentEvent——在 translator 之前拦截，
+    // 避免落入下方「空事件 → 拒绝」兜底（原 terminal/* 一律 METHOD_NOT_FOUND）。
+    if (method.startsWith('terminal/')) {
+      void this.handleTerminalRequest(id, method, params);
+      return;
+    }
+
     const events = this.currentTranslator?.handleServerRequest(id, method, params) ?? [];
 
     if (events.length === 0) {
@@ -705,5 +765,203 @@ export class KimiAcpRunner extends ConnectionBasedRunner<KimiAcpClient, AcpTrans
       }
     }
     this.pushEvents(events);
+  }
+
+  /**
+   * Handle a kimi terminal/* reverse RPC by spawning a one-shot local process.
+   *
+   * 契约（kimi-code acp-terminal/acpTerminalRunner.ts）：
+   *   create → 立即回 {terminalId}，进程异步跑，不阻塞 RPC；
+   *   output → 回累计 stdout（非增量，服务端按 emitted 偏移切片）；
+   *   wait_for_exit → 未退出则等 exit 再回 {exitCode, signal}；
+   *   kill/release → 杀进程并回 {}。
+   */
+  private async handleTerminalRequest(
+    id: number | string,
+    method: string,
+    params: unknown,
+  ): Promise<void> {
+    try {
+      switch (method) {
+        case ServerRequestMethod.TERMINAL_CREATE:
+          this.handleTerminalCreate(id, params as TerminalCreateParams);
+          return;
+        case ServerRequestMethod.TERMINAL_OUTPUT:
+          this.handleTerminalOutput(id, params as TerminalOutputParams);
+          return;
+        case ServerRequestMethod.TERMINAL_WAIT_FOR_EXIT:
+          await this.handleTerminalWaitForExit(id, params as TerminalWaitForExitParams);
+          return;
+        case ServerRequestMethod.TERMINAL_KILL:
+          await this.handleTerminalKill(id, params as TerminalKillParams);
+          return;
+        case ServerRequestMethod.TERMINAL_RELEASE:
+          await this.handleTerminalRelease(id, params as TerminalReleaseParams);
+          return;
+        default:
+          this.currentClient?.respondError(
+            id,
+            RpcErrorCode.METHOD_NOT_FOUND,
+            `Unsupported server request: ${method}`,
+          );
+      }
+    } catch (err) {
+      getLogger().warn(
+        `[${this.logTag}] terminal request failed method=${method}: ${(err as Error).message}`,
+      );
+      this.currentClient?.respondError(
+        id,
+        RpcErrorCode.INTERNAL_ERROR,
+        `Terminal request failed: ${(err as Error).message}`,
+      );
+    }
+  }
+
+  /**
+   * terminal/create: spawn 一次性进程（bash -c <script>），流式累积
+   * stdout(+stderr) 到缓冲，立即回 {terminalId}。
+   */
+  private handleTerminalCreate(id: number | string, params: TerminalCreateParams): void {
+    const env = params.env
+      ? Object.fromEntries(params.env.map((e) => [e.name, e.value]))
+      : undefined;
+    const cwd = params.cwd ?? this.activeCwd ?? undefined;
+    const outputLimit = params.outputByteLimit ?? TERMINAL_DEFAULT_OUTPUT_LIMIT;
+
+    const proc = spawn(params.command, params.args ?? [], {
+      cwd,
+      env: env ? { ...process.env, ...env } : undefined,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+
+    const handle: TerminalHandle = {
+      proc,
+      output: '',
+      outputLimit,
+      truncated: false,
+      exitCode: null,
+      signal: null,
+      released: false,
+    };
+
+    const append = (chunk: Buffer) => {
+      if (handle.truncated) return;
+      const remaining = Math.max(0, handle.outputLimit - Buffer.byteLength(handle.output));
+      if (Buffer.byteLength(chunk) > remaining) {
+        handle.output += chunk.toString('utf8').slice(0, remaining);
+        handle.truncated = true;
+      } else {
+        handle.output += chunk.toString('utf8');
+      }
+    };
+    proc.stdout?.on('data', append);
+    proc.stderr?.on('data', append);
+
+    // spawn 失败（如 ENOENT）只发 'error' 不发 'exit'——一并 resolve，防止
+    // wait_for_exit 永久挂起（runner 层 ENOENT 兜底红线）。
+    handle.exitPromise = new Promise<void>((resolve) => {
+      proc.once('exit', (code, signal) => {
+        handle.exitCode = code;
+        handle.signal = signal;
+        resolve();
+      });
+      proc.once('error', (err) => {
+        getLogger().warn(`[${this.logTag}] terminal process error: ${err.message}`);
+        if (handle.exitCode === null && handle.signal === null) {
+          handle.exitCode = 1;
+          handle.signal = null;
+        }
+        resolve();
+      });
+    });
+
+    const terminalId = `term-${++this.terminalSeq}`;
+    this.terminals.set(terminalId, handle);
+    getLogger().info(
+      `[${this.logTag}] terminal created id=${terminalId} command=${params.command} args=${JSON.stringify(params.args ?? [])}`,
+    );
+    this.currentClient?.respond(id, { terminalId });
+  }
+
+  /** terminal/output: 回累计全量输出 + truncated + 当前退出状态（可未退出）。 */
+  private handleTerminalOutput(id: number | string, params: TerminalOutputParams): void {
+    const handle = this.terminals.get(params.terminalId);
+    if (!handle) {
+      this.currentClient?.respondError(
+        id,
+        RpcErrorCode.INVALID_PARAMS,
+        `Unknown terminal: ${params.terminalId}`,
+      );
+      return;
+    }
+    this.currentClient?.respond(id, {
+      output: handle.output,
+      truncated: handle.truncated,
+      exitStatus: { exitCode: handle.exitCode, signal: handle.signal },
+    });
+  }
+
+  /** terminal/wait_for_exit: 未退出则等 exit promise 再回 {exitCode, signal}。 */
+  private async handleTerminalWaitForExit(
+    id: number | string,
+    params: TerminalWaitForExitParams,
+  ): Promise<void> {
+    const handle = this.terminals.get(params.terminalId);
+    if (!handle) {
+      this.currentClient?.respondError(
+        id,
+        RpcErrorCode.INVALID_PARAMS,
+        `Unknown terminal: ${params.terminalId}`,
+      );
+      return;
+    }
+    await handle.exitPromise;
+    this.currentClient?.respond(id, { exitCode: handle.exitCode, signal: handle.signal });
+  }
+
+  /** terminal/kill: 立即杀进程组，回 {}。 */
+  private async handleTerminalKill(id: number | string, params: TerminalKillParams): Promise<void> {
+    const handle = this.terminals.get(params.terminalId);
+    if (!handle) {
+      this.currentClient?.respondError(
+        id,
+        RpcErrorCode.INVALID_PARAMS,
+        `Unknown terminal: ${params.terminalId}`,
+      );
+      return;
+    }
+    await this.processStopper.stop(handle.proc, { immediate: true });
+    this.currentClient?.respond(id, {});
+  }
+
+  /** terminal/release: 从 map 删除；进程仍在则一并杀，回 {}。 */
+  private async handleTerminalRelease(
+    id: number | string,
+    params: TerminalReleaseParams,
+  ): Promise<void> {
+    const handle = this.terminals.get(params.terminalId);
+    if (!handle) {
+      this.currentClient?.respondError(
+        id,
+        RpcErrorCode.INVALID_PARAMS,
+        `Unknown terminal: ${params.terminalId}`,
+      );
+      return;
+    }
+    handle.released = true;
+    this.terminals.delete(params.terminalId);
+    // stop 对已退出进程是 no-op；仍在跑则立即 SIGTERM+SIGKILL。
+    await this.processStopper.stop(handle.proc, { immediate: true });
+    this.currentClient?.respond(id, {});
+  }
+
+  /** Kill every live terminal (dispose/connection-close 清理钩子)。 */
+  private async cleanupTerminals(): Promise<void> {
+    const handles = [...this.terminals.values()];
+    this.terminals.clear();
+    for (const handle of handles) {
+      handle.released = true;
+      await this.processStopper.stop(handle.proc, { immediate: true });
+    }
   }
 }
