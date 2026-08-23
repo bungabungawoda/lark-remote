@@ -1121,8 +1121,10 @@ describe('KimiAcpRunner', () => {
     expect(initialize?.params).toEqual({
       protocolVersion: 1,
       clientCapabilities: {
-        // fs 读写放开（模型可自主读写文件）。
-        fs: { readTextFile: true, writeTextFile: true },
+        // fs 保持关闭：kimi 服务端在 fs 能力为 false 时走本地磁盘兜底
+        // （acpFsService.ts AcpHostFileSystem.inner），读写正常；声明 true
+        // 则改发 fs/* reverse RPC，lark-remote 未实现，文件读写会失败。
+        fs: { readTextFile: false, writeTextFile: false },
         // terminal 常开：yolo/auto 自主跑命令；manual 走 session/request_permission 审批。
         terminal: true,
         // AskUserQuestion 走 elicitation form（原生多题多选）。elicitation.form
