@@ -129,6 +129,7 @@
     "src/config/config.test.ts",
     "src/config/agent-choices.test.ts",
     "src/config/dir.test.ts",
+    "src/config/wizard.test.ts",
     "src/persistence/atomic-write.test.ts",
     "tests/anchor/priority/p1-4-prototype-pollution.test.ts",
     "tests/anchor/priority/p1-7-config-save-atomic-write.test.ts",
