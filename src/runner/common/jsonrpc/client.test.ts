@@ -108,7 +108,7 @@ describe('JsonRpcClient request/response id matching', () => {
         onServerRequest: () => {},
         onClose: () => {},
       },
-      500, // 500ms timeout for fast test
+      2000, // 覆盖插桩/负载下子进程 boot 延迟不可控，500ms 过紧导致 flaky；语义仍为「缺响应→RpcTimeoutError」
     );
 
     await client.connect();
