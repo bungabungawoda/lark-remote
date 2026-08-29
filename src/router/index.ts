@@ -3665,12 +3665,19 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
     >();
     const prefetchCount = Math.min(RESUME_CONTENT_PREFETCH, allSessions.length);
     for (const s of allSessions.slice(0, prefetchCount)) {
-      // Use the same reader as the listSessions call above
-      const content = reader.readSessionContent(s.sessionId, cwd);
+      // 优先走轻量摘要（只取标题/用量，不构造 events）——codex 实现了
+      // readSessionSummary，避免对前 N 条各做一次全量 JSONL 解析来构造
+      // 立即被丢弃的 events 数组。其他 agent 无此方法时回退全量读取再取字段。
+      const meta = reader.readSessionSummary
+        ? reader.readSessionSummary(s.sessionId, cwd)
+        : (() => {
+            const c = reader.readSessionContent(s.sessionId, cwd);
+            return { aiTitle: c.aiTitle, recap: c.recap, displayTitle: c.displayTitle };
+          })();
       sessionMeta.set(s.sessionId, {
-        aiTitle: content.aiTitle,
-        recap: content.recap,
-        displayTitle: content.displayTitle,
+        aiTitle: meta.aiTitle,
+        recap: meta.recap,
+        displayTitle: meta.displayTitle,
       });
     }
 

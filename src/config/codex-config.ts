@@ -9,7 +9,7 @@
  * - 非 catalog 模式：openai 用 bundled 全量；anthropic 仅在用户显式配置时存在
  */
 
-import { execFileSync } from 'node:child_process';
+import { execFileSync, execFile } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -106,6 +106,8 @@ const BUNDLED_CACHE_TTL_MS = 60 * 60 * 1000;
 /** 失败/空结果负缓存 TTL：避免每次卡片构建同步阻塞最长 8s（P3-5） */
 const NEGATIVE_CACHE_TTL_MS = 30 * 1000;
 let catalogCache: CatalogCacheEntry | null = null;
+/** In-flight async catalog loads, keyed by cache key — dedup concurrent warm ups. */
+const catalogInFlight = new Map<string, Promise<BundledModelInfo[]>>();
 
 /**
  * Read config.toml `model_catalog_json` path (tilde-expanded).
@@ -219,8 +221,95 @@ export function parseCodexModelsOutput(stdout: string): BundledModelInfo[] {
  * 缓存：键含 binary/home/mode/models.json mtime:size + config.toml mtime:size
  * （P3-4/P3-15/P3-5）；成功结果 TTL 1h，失败/空结果短 TTL 负缓存；stat 异常时
  * 指纹为空（P1-1/P3-10）。
+ *
+ * 同步路径（卡片构建用）：缓存命中直接返回；若有一个后台异步加载
+ * （`loadCodexCatalogModelsAsync` / 启动 warm）在途，则不阻塞事件循环、不重复
+ * spawn，直接返回 [] 走既有 fallback（FALLBACK_MODELS / currentModel）——该
+ * [] 状态与命令失败/超时的已有语义一致，由调用方既有 fallback 兜底。
  */
 export function getCodexCatalogModels(codexHome?: string): BundledModelInfo[] {
+  const { key, bundled } = computeCodexCatalogKey(codexHome);
+  const cached = readCachedCatalog(key);
+  if (cached !== undefined) return cached;
+
+  // in-flight 异步加载进行中：不 execFileSync（会阻塞 8s），返回 [] 交给
+  // 调用方既有 fallback；in-flight 完成后下次读取命中缓存。
+  if (catalogInFlight.has(key)) {
+    return [];
+  }
+
+  const now = Date.now();
+  try {
+    const stdout = execFileSync('codex', catalogArgs(bundled), {
+      encoding: 'utf-8',
+      timeout: 8_000,
+      maxBuffer: 4 * 1024 * 1024,
+      env: process.env,
+      stdio: ['ignore', 'pipe', 'ignore'],
+    });
+    const models = parseCodexModelsOutput(stdout);
+    catalogCache = { key, models, ts: now, failed: models.length === 0 };
+    return models;
+  } catch (err) {
+    getLogger().warn(
+      `[codex-config] models unavailable for binary "codex": ${(err as Error).message}`,
+    );
+    catalogCache = { key, models: [], ts: now, failed: true };
+    return [];
+  }
+}
+
+/**
+ * 异步加载模型目录（execFile，不阻塞事件循环），写入与同步路径共享的
+ * `catalogCache`。按缓存 key 复用 in-flight Promise：并发调用（多个 warm /
+ * 显式调用）只 spawn 一次 `codex debug models`。
+ *
+ * 与同步路径的职责划分：启动时用 `warmCodexCatalogCache` 后台预热，使首次打开
+ * Codex 配置卡（同步读）时缓存已温、无需 8s execFileSync 阻塞；若用户在 warm
+ * 完成前打开卡片，同步路径会检测到 in-flight 并直接返回 [] fallback。
+ */
+export async function loadCodexCatalogModelsAsync(codexHome?: string): Promise<BundledModelInfo[]> {
+  const { key, bundled } = computeCodexCatalogKey(codexHome);
+  const cached = readCachedCatalog(key);
+  if (cached !== undefined) return cached;
+
+  const inFlight = catalogInFlight.get(key);
+  if (inFlight) return inFlight;
+
+  const p = (async (): Promise<BundledModelInfo[]> => {
+    const now = Date.now();
+    try {
+      const stdout = await execFileAsync('codex', catalogArgs(bundled));
+      const models = parseCodexModelsOutput(stdout);
+      catalogCache = { key, models, ts: now, failed: models.length === 0 };
+      return models;
+    } catch (err) {
+      getLogger().warn(
+        `[codex-config] models unavailable for binary "codex": ${(err as Error).message}`,
+      );
+      catalogCache = { key, models: [], ts: now, failed: true };
+      return [];
+    }
+  })();
+
+  catalogInFlight.set(key, p);
+  try {
+    return await p;
+  } finally {
+    catalogInFlight.delete(key);
+  }
+}
+
+/**
+ * 启动/后台预热：fire-and-forget 调用异步加载，消除首次打开 Codex 配置卡时的
+ * 8s 同步阻塞。非致命——失败/未安装 codex 时静默落负缓存。
+ */
+export function warmCodexCatalogCache(codexHome?: string): void {
+  void loadCodexCatalogModelsAsync(codexHome);
+}
+
+/** 计算目录缓存键（binary/home/mode + 指纹），同步与异步路径共享。 */
+function computeCodexCatalogKey(codexHome?: string): { key: string; bundled: boolean } {
   const binary = 'codex';
   const home = resolveCodexHome(codexHome);
   const catalogPath = readModelCatalogJsonPath(home);
@@ -243,6 +332,11 @@ export function getCodexCatalogModels(codexHome?: string): BundledModelInfo[] {
     }
   }
   const key = `${binary}\u0000${home}\u0000${bundled ? 'bundled' : 'active'}\u0000${catalogFingerprint}\u0000${configFingerprint}`;
+  return { key, bundled };
+}
+
+/** 读取有效缓存（含负缓存 TTL）；命中返回模型，否则 undefined。 */
+function readCachedCatalog(key: string): BundledModelInfo[] | undefined {
   const now = Date.now();
   if (catalogCache && catalogCache.key === key) {
     const ttl = catalogCache.failed ? NEGATIVE_CACHE_TTL_MS : BUNDLED_CACHE_TTL_MS;
@@ -250,26 +344,32 @@ export function getCodexCatalogModels(codexHome?: string): BundledModelInfo[] {
       return catalogCache.models;
     }
   }
+  return undefined;
+}
 
-  try {
-    const args = bundled ? ['debug', 'models', '--bundled'] : ['debug', 'models'];
-    const stdout = execFileSync(binary, args, {
-      encoding: 'utf-8',
-      timeout: 8_000,
-      maxBuffer: 4 * 1024 * 1024,
-      env: process.env,
-      stdio: ['ignore', 'pipe', 'ignore'],
-    });
-    const models = parseCodexModelsOutput(stdout);
-    catalogCache = { key, models, ts: now, failed: models.length === 0 };
-    return models;
-  } catch (err) {
-    getLogger().warn(
-      `[codex-config] models unavailable for binary "${binary}": ${(err as Error).message}`,
+/** `codex debug models` 参数（--bundled 与否）。 */
+function catalogArgs(bundled: boolean): string[] {
+  return bundled ? ['debug', 'models', '--bundled'] : ['debug', 'models'];
+}
+
+/** Promisify execFile with the same 8s timeout / 4MB cap as the sync path. */
+function execFileAsync(file: string, args: string[]): Promise<string> {
+  return new Promise((resolve, reject) => {
+    execFile(
+      file,
+      args,
+      {
+        encoding: 'utf-8',
+        timeout: 8_000,
+        maxBuffer: 4 * 1024 * 1024,
+        env: process.env,
+      },
+      (err: Error | null, stdout: string) => {
+        if (err) reject(err);
+        else resolve(stdout);
+      },
     );
-    catalogCache = { key, models: [], ts: now, failed: true };
-    return [];
-  }
+  });
 }
 
 /**
@@ -279,6 +379,11 @@ export function getCodexCatalogModels(codexHome?: string): BundledModelInfo[] {
  */
 export function invalidateCodexBundledCache(): void {
   catalogCache = null;
+}
+
+/** Test utility: clear in-flight async catalog loads (see async loader tests). */
+export function _clearCodexCatalogInFlightForTest(): void {
+  catalogInFlight.clear();
 }
 
 /**
