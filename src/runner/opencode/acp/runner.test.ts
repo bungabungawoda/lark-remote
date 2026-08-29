@@ -12,7 +12,14 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import {
+  appendFileSync,
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { AgentEvent } from '../../types.js';
@@ -24,6 +31,7 @@ import {
   readCapture,
 } from '../../../../tests/lib/mock-acp-server.js';
 import { createStubSessionReader } from '../../../../tests/lib/bridge-stubs.js';
+import { waitFor } from '../../../../tests/lib/wait-for.js';
 
 const SESSION_ID = 'aaaaaaaa-1111-2222-3333-444444444444';
 
@@ -32,24 +40,31 @@ const MODE_CONFIG_OPTIONS = [
   { id: 'mode', name: 'Session Mode', category: 'mode', type: 'select', currentValue: 'build' },
 ];
 
-function makeRunner(wrapper: string, extra?: Partial<OpencodeAcpRunnerOptions>): OpencodeAcpRunner {
-  return new OpencodeAcpRunner({
-    kind: 'opencode',
-    sessionReader: createStubSessionReader(),
-    binary: wrapper,
-    acpArgs: [],
-    turnIdleTimeoutMs: 30_000,
-    ...extra,
-  });
-}
-
 describe('OpencodeAcpRunner', () => {
   let tmpDir: string;
   let serverScript: string;
 
+  function makeRunner(
+    wrapper: string,
+    extra?: Partial<OpencodeAcpRunnerOptions>,
+  ): OpencodeAcpRunner {
+    return new OpencodeAcpRunner({
+      kind: 'opencode',
+      sessionReader: createStubSessionReader(),
+      binary: wrapper,
+      acpArgs: [],
+      turnIdleTimeoutMs: 30_000,
+      // Hermetic: never tail the real opencode.log in tests.
+      errorMonitorLogPath: join(tmpDir, 'opencode.log'),
+      errorMonitorPollIntervalMs: 20,
+      ...extra,
+    });
+  }
+
   beforeEach(() => {
     tmpDir = mkdtempSync(join(tmpdir(), 'lark-opencode-acp-'));
     serverScript = writeMockAcpServer(tmpDir);
+    writeFileSync(join(tmpDir, 'opencode.log'), '');
   });
 
   afterEach(() => {
@@ -524,4 +539,53 @@ describe('OpencodeAcpRunner', () => {
     });
     await runner.dispose();
   });
+
+  it('fails the turn immediately when opencode logs a limit stream error for the session', async () => {
+    const logPath = join(tmpDir, 'opencode.log');
+    const capturePath = join(tmpDir, 'capture.jsonl');
+    const { wrapper, workspace } = writeScenario(tmpDir, serverScript, 'opencode', {
+      holdPromptUntilCancel: true,
+      capturePath,
+    });
+
+    const runner = makeRunner(wrapper, {
+      errorMonitorLogPath: logPath,
+      errorMonitorPollIntervalMs: 20,
+    });
+
+    const events: AgentEvent[] = [];
+    const runPromise = (async () => {
+      for await (const event of runner.run('hello', { cwd: workspace })) {
+        events.push(event);
+      }
+    })();
+
+    // Wait until session/prompt is in flight, then plant the stream error
+    // line exactly like opencode's logger writes it (real error text from the
+    // 2026-08-24 opencode-go weekly-limit incident, provider/message
+    // placeholders aside).
+    const promptSent = await waitFor(
+      () =>
+        existsSync(capturePath) &&
+        readCapture(capturePath).some((m) => m.method === 'session/prompt'),
+      5000,
+    );
+    expect(promptSent).toBe(true);
+    appendFileSync(
+      logPath,
+      `timestamp=2026-08-24T06:32:16.666Z level=ERROR run=abc message="stream error" ` +
+        `providerID=opencode-go modelID=deepseek-v4-flash session.id=${SESSION_ID} ` +
+        `small=false agent=build mode=primary ` +
+        `error.error="AI_APICallError: Weekly usage limit reached. Resets in 1hr 6min."\n`,
+    );
+
+    await runPromise;
+
+    const result = events.find((e) => e.type === 'result') as
+      (AgentEvent & { subtype?: string; errorMessage?: string }) | undefined;
+    expect(result?.subtype).toBe('error');
+    expect(result?.errorMessage).toContain('Weekly usage limit reached');
+
+    await runner.dispose();
+  }, 15000);
 });
