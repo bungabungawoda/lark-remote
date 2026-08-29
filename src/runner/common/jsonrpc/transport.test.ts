@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { JsonlRpcTransport } from './transport.js';
@@ -16,6 +16,45 @@ function waitForProcessGone(pid: number, timeoutMs = 6000): Promise<void> {
       }
       if (Date.now() >= deadline) {
         reject(new Error(`process ${pid} is still alive`));
+        return;
+      }
+      setTimeout(tick, 20);
+    };
+    tick();
+  });
+}
+
+// 事件/轮询式同步工具：固定 setTimeout 睡眠无法保证子进程（真实 Node 子进程在
+// 并行测试负载下 boot 延迟不可控）已到达所需状态，导致 flaky。改用「轮询可观测
+// 信号 + 截止时间」，让测试只依赖状态而非墙钟时长。
+function waitForFile(file: string, timeoutMs = 6000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  return new Promise((resolve, reject) => {
+    const tick = () => {
+      if (existsSync(file)) {
+        resolve();
+        return;
+      }
+      if (Date.now() >= deadline) {
+        reject(new Error(`file ${file} not created in time`));
+        return;
+      }
+      setTimeout(tick, 20);
+    };
+    tick();
+  });
+}
+
+function waitForCondition(check: () => boolean, timeoutMs = 6000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  return new Promise((resolve, reject) => {
+    const tick = () => {
+      if (check()) {
+        resolve();
+        return;
+      }
+      if (Date.now() >= deadline) {
+        reject(new Error('condition not met in time'));
         return;
       }
       setTimeout(tick, 20);
@@ -167,10 +206,18 @@ describe('JsonlRpcTransport safety and cleanup', () => {
 
   it('test_anchor_transport_closes_on_epipe_and_kills_child', async () => {
     const pidFile = join(tmpDir, 'epipe-child.pid');
+    const readyFile = join(tmpDir, 'epipe-ready.txt');
     const wrapper = join(tmpDir, 'epipe-child.sh');
+    // 子进程先关闭 stdin（fd 0），再写 ready 文件作为「已关闭 stdin」的可观测信号。
+    // 父进程轮询到 ready 文件后才 write —— 保证 write 时管道读端已关闭，必然 EPIPE，
+    // 不再依赖固定 500ms 睡眠（并行负载下子进程 boot 延迟不可控，曾导致 flaky）。
     writeFileSync(
       wrapper,
-      `#!/bin/sh\necho $$ > "${pidFile}"\nexec "${process.execPath}" -e 'require("fs").closeSync(0); setInterval(() => {}, 1000)'\n`,
+      `#!/bin/sh\n` +
+        `echo $$ > "${pidFile}"\n` +
+        `exec "${process.execPath}" -e 'require("fs").closeSync(0); require("fs").writeFileSync(${JSON.stringify(
+          readyFile,
+        )}, "ready"); setInterval(() => {}, 1000)'\n`,
     );
     chmodSync(wrapper, 0o755);
 
@@ -185,7 +232,7 @@ describe('JsonlRpcTransport safety and cleanup', () => {
       closeResolve = resolve;
     });
     await transport.start({ onMessage: () => {}, onClose: closeResolve });
-    await new Promise((resolve) => setTimeout(resolve, 500));
+    await waitForFile(readyFile, 6000);
     transport.write({ method: 'ping' });
 
     const reason = await closed;
@@ -219,8 +266,16 @@ describe('JsonlRpcTransport safety and cleanup', () => {
     transport.write({ jsonrpc: '2.0', id: 1, method: 'initialize' });
     transport.write({ jsonrpc: '2.0', id: 2, method: 'ping' });
 
-    // Wait for messages to arrive
-    await new Promise((resolve) => setTimeout(resolve, 500));
+    // 事件驱动等待：轮询直到两条响应都到达（截止时间内），替代固定 500ms 睡眠——
+    // 并行负载下子进程响应延迟不可控，固定睡眠曾导致 flaky。
+    await waitForCondition(
+      () =>
+        messages.some(
+          (m) => (m as Record<string, unknown>).id === 1 && 'result' in (m as object),
+        ) &&
+        messages.some((m) => (m as Record<string, unknown>).id === 2 && 'result' in (m as object)),
+      6000,
+    );
     await transport.close();
 
     // Should have received the initialize response, ping response, and notification
