@@ -448,6 +448,22 @@ export interface SessionContent {
 }
 
 /**
+ * Lightweight session summary used by `/resume` list prefetch.
+ *
+ * Carries only the display fields (title / recap / usage) — **no `events`
+ * array**. Readers that can extract these without constructing the full event
+ * list (e.g. codex, which would otherwise JSON.parse every response_item and
+ * build an `events[]` that the prefetch immediately discards) implement the
+ * optional `readSessionSummary` on `AgentSessionReader`.
+ */
+export interface SessionSummary {
+  aiTitle?: string;
+  recap?: string;
+  displayTitle?: string;
+  usage?: AgentSessionUsage;
+}
+
+/**
  * Reads an agent's session history. Each agent implements its own (Claude reads
  * `~/.claude/projects/`, Codex calls `thread/list`, OpenCode calls `GET /session`).
  *
@@ -474,6 +490,14 @@ export interface AgentSessionReader {
   ): { sessions: AgentSession[]; total: number };
   getNewestSession(cwd: string): AgentSession | null;
   readSessionContent(sessionId: string, cwd: string, opts?: { maxEvents?: number }): SessionContent;
+  /**
+   * Optional lightweight summary for list-prefetch.
+   *
+   * Returns only the display fields (aiTitle/recap/displayTitle/usage) without
+   * constructing the full `events` array. When absent, callers fall back to
+   * `readSessionContent` and take the needed fields.
+   */
+  readSessionSummary?(sessionId: string, cwd: string): SessionSummary;
   /**
    * Whether a session is still active (process may still be running).
    *

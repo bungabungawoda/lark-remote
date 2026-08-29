@@ -176,6 +176,7 @@
     "src/session/codex/**/*.test.ts",
     "src/config/codex-config.test.ts",
     "src/config/codex-config-filter.test.ts",
+    "src/config/codex-config-async.test.ts",
     "src/router/config/codex.test.ts",
     "tests/anchor/codex-catalog/**/*.test.ts",
     "tests/anchor/codex-reasoning-effort/**/*.test.ts",
