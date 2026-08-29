@@ -51,6 +51,7 @@ import {
 import { findOptionIdByKind } from '../../common/acp/protocol-helpers.js';
 import { getLogger } from '../../../logger/index.js';
 import { ConnectionBasedRunner } from '../../common/connection-based-runner.js';
+import { OpencodeLogErrorMonitor, resolveOpencodeLogPath } from './error-monitor.js';
 
 // =============================================================================
 // Configuration
@@ -76,6 +77,10 @@ export interface OpencodeAcpRunnerOptions {
   model?: string;
   /** Configured session mode: 'build' (default) or 'plan' (opencode agent names). */
   mode?: 'build' | 'plan';
+  /** Path to opencode's own log file (default: resolveOpencodeLogPath()). */
+  errorMonitorLogPath?: string;
+  /** Tail poll interval for the opencode log error monitor. Defaults to 2000ms. */
+  errorMonitorPollIntervalMs?: number;
 }
 
 /**
@@ -153,6 +158,9 @@ export class OpencodeAcpRunner extends ConnectionBasedRunner<
   private currentModeId?: string;
   /** Current model value (`provider/model`), parsed from configOptions. */
   private currentModelValue?: string;
+  /** Tails opencode's own log to surface LLM stream errors the ACP protocol
+   *  never forwards (quota/limit errors back off for ~1h → turn would hang). */
+  private readonly errorMonitor: OpencodeLogErrorMonitor;
 
   /** Pending approval requests: requestId → kind + view + options. */
   private pendingApprovals = new Map<number | string, PendingApproval>();
@@ -168,6 +176,10 @@ export class OpencodeAcpRunner extends ConnectionBasedRunner<
     super({ kind: opts.kind, sessionReader: opts.sessionReader }, opts.turnIdleTimeoutMs);
     this.model = opts.model;
     this.configuredMode = opts.mode ?? 'build';
+    this.errorMonitor = new OpencodeLogErrorMonitor({
+      logPath: opts.errorMonitorLogPath ?? resolveOpencodeLogPath(),
+      pollIntervalMs: opts.errorMonitorPollIntervalMs,
+    });
 
     const managerOpts: ConnectionManagerOptions = {
       binary: opts.binary ?? 'opencode',
@@ -221,10 +233,29 @@ export class OpencodeAcpRunner extends ConnectionBasedRunner<
   }
 
   protected clearTurnState(): void {
+    this.errorMonitor.stop();
     this.currentTranslator = null;
     this.promptSettled = false;
     this.promptSent = false;
     this.activeSessionId = null;
+  }
+
+  /**
+   * Start watching opencode's own log for LLM stream errors of the active
+   * session. opencode ACP does not surface retry/error state to the client
+   * (no error/status notification type, session/list has no status field), so
+   * the log is the only channel that carries the real provider error. Without
+   * this, a quota error (e.g. opencode-go weekly limit) leaves session/prompt
+   * pending for the full retry-after backoff (~1h) and the Feishu card hangs
+   * until the idle watchdog.
+   */
+  private startErrorMonitor(sessionId: string): void {
+    this.errorMonitor.start(sessionId, (message) => {
+      getLogger().warn(
+        `[${this.logTag}] opencode stream error detected (log), failing turn: ${message}`,
+      );
+      this.failTurn(`opencode LLM stream error: ${message}`);
+    });
   }
 
   protected async releaseConnection(cwd: string): Promise<void> {
@@ -263,6 +294,7 @@ export class OpencodeAcpRunner extends ConnectionBasedRunner<
         throw new Error('compact requires a sessionId');
       }
       this.activeSessionId = sessionId;
+      this.startErrorMonitor(sessionId);
 
       // Cold-connection fallback: session/resume loads the session into
       // memory. On a reused connection the session is already loaded —
@@ -429,6 +461,7 @@ export class OpencodeAcpRunner extends ConnectionBasedRunner<
       sessionId = newResult.sessionId;
     }
     this.activeSessionId = sessionId;
+    this.startErrorMonitor(sessionId);
 
     // §P5: apply the configured mode (build/plan). If the session already
     // runs it (from session/new|resume configOptions), skip the wire call;
