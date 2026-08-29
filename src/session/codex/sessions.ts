@@ -1,8 +1,14 @@
-import type { AgentSession, SessionContent, AgentSessionReader } from '../../runner/index.js';
+import type {
+  AgentSession,
+  SessionContent,
+  SessionSummary,
+  AgentSessionReader,
+} from '../../runner/index.js';
 import { resolveCodexHome } from '../../config/codex-config.js';
 import {
   listCodexRollouts,
   readCodexSessionContent,
+  readCodexSessionSummary,
   isCodexSessionActive,
 } from './rollout-reader.js';
 
@@ -54,6 +60,10 @@ export class CodexSessionReader implements AgentSessionReader {
       maxEvents: opts?.maxEvents,
       cwd,
     });
+  }
+
+  readSessionSummary(sessionId: string, cwd: string): SessionSummary {
+    return readCodexSessionSummary(sessionId, { codexHome: this.codexHome, cwd });
   }
 
   isSessionActive(sessionId: string, cwd: string): boolean {

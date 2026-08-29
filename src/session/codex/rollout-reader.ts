@@ -25,6 +25,7 @@ import { resolveCodexHome } from '../../config/codex-config.js';
 import type {
   AgentSessionContentEvent,
   SessionContent,
+  SessionSummary,
   AgentSessionUsage,
 } from '../../runner/index.js';
 
@@ -81,131 +82,8 @@ export function readCodexRollout(filePath: string): CodexRolloutEntry | null {
   }
 
   try {
-    const lines = readJsonlLines(filePath);
-    const events: AgentSessionContentEvent[] = [];
-    let sessionMeta: Record<string, unknown> | null = null;
-    // Real user input is identified by a paired `event_msg` whose
-    // payload.type === "user_message" - codex emits this ONLY for text the
-    // human actually typed. Injected scaffolding (project rules,
-    // <environment_context>, permissions) is also written as `role:"user"`
-    // response_items but has NO user_message event, so it must be excluded
-    // from displayTitle/recap/summary. Regression 2026-07-13: the first
-    // `role:user` message is the injected project rules, mistakenly shown as
-    // "最近输入".
-    const realUserMessages: string[] = [];
-    // token_count tracking: codex emits cumulative `total_token_usage` and an
-    // incremental `last_token_usage`. We want the LAST turn's usage (matches
-    // pi/opencode /resume "last turn" display semantics). When
-    // last_token_usage is absent we derive it as total - previous_total.
-    let lastRawUsage: RawTokenUsage | undefined;
-    // Context window limit from the same token_count event as lastRawUsage
-    // (codex reports info.model_context_window per turn; absent on old data).
-    let lastContextLimit: number | undefined;
-    // Final total_token_usage (cumulative across the whole session) for the
-    // Run card's "累计" display. Codex emits this alongside last_token_usage.
-    let lastTotalUsage: RawTokenUsage | undefined;
-    let previousTotals: RawTokenUsage | undefined;
-    // Compaction 统计：codex 的 compact turn 在会话文件里写顶层 `compacted`
-    // 事件（含摘要），压缩前后的上下文水位由相邻 token_count 表达。压缩收尾的
-    // token_count 增量是 input/cached/output 全 0、只有 total_tokens 有值
-    // （窗口被摘要+replacement history 占据），现有 zero-filter 会跳过它，
-    // 因此这里必须单独捕获，不能复用 lastRawUsage。
-    // 单位口径（review P3-9）：前后两侧统一用 total_tokens —— 压缩前取最近一次
-    // 非零 token_count 的 total_tokens（input+output，即该 turn 在窗口内的全部
-    // token），压缩后取收尾事件的 total_tokens（压缩后窗口）。不得一边 input
-    // 一边 total，否则「压缩前 X → 压缩后 Y」两边单位不一致。
-    let compactCount = 0;
-    let compactPreContextLength: number | undefined;
-    let compactPostContextLength: number | undefined;
-
-    for (const line of lines) {
-      const trimmed = line.trim();
-      if (!trimmed) continue;
-
-      try {
-        const parsed = JSON.parse(trimmed) as {
-          type: string;
-          payload?: Record<string, unknown>;
-          timestamp?: string;
-        };
-        if (!parsed || typeof parsed.type !== 'string') continue;
-
-        if (parsed.type === 'session_meta' && parsed.payload) {
-          sessionMeta = parsed.payload as Record<string, unknown>;
-        } else if (parsed.type === 'event_msg' && parsed.payload) {
-          // user_message events carry the authoritative human-typed text.
-          const payload = parsed.payload as Record<string, unknown>;
-          if (payload.type === 'user_message') {
-            const text = stringValue(payload.message);
-            if (text) {
-              realUserMessages.push(text.slice(0, 200));
-            }
-          } else if (payload.type === 'token_count') {
-            const info = payload.info as Record<string, unknown> | undefined;
-            const last = info?.last_token_usage as RawTokenUsage | undefined;
-            const total = info?.total_token_usage as RawTokenUsage | undefined;
-            let raw: RawTokenUsage | undefined;
-            if (last) {
-              raw = last;
-            } else if (total && previousTotals) {
-              raw = subtractRawUsage(total, previousTotals);
-            } else {
-              raw = total;
-            }
-            if (total) {
-              previousTotals = total;
-              lastTotalUsage = total;
-            }
-            if (raw && (raw.input_tokens || raw.cached_input_tokens || raw.output_tokens)) {
-              lastRawUsage = raw;
-              const ctxWindow = info?.model_context_window;
-              lastContextLimit = typeof ctxWindow === 'number' ? ctxWindow : undefined;
-            }
-            // 压缩后的水位：压缩收尾 token_count 全 0（raw 不满足上面 zero-filter），
-            // 但 total_tokens 表达真实窗口；之后若出现普通 turn（input>0），
-            // 水位回归该 turn，post-compact 值失效。
-            if (compactCount > 0 && raw) {
-              if (
-                raw.total_tokens &&
-                !raw.input_tokens &&
-                !raw.cached_input_tokens &&
-                !raw.output_tokens
-              ) {
-                compactPostContextLength = raw.total_tokens;
-              } else if (raw.input_tokens > 0) {
-                compactPostContextLength = undefined;
-              }
-            }
-          }
-        } else if (parsed.type === 'compacted') {
-          // 顶层 compacted 事件：压缩次数 +1，压缩前水位取最近一次非零 token_count。
-          compactCount++;
-          if (lastRawUsage?.total_tokens !== undefined) {
-            compactPreContextLength = lastRawUsage.total_tokens;
-          }
-        } else if (parsed.type === 'response_item' && parsed.payload) {
-          const payload = parsed.payload as Record<string, unknown>;
-          if (payload.type === 'message' && Array.isArray(payload.content)) {
-            // Extract text content for display
-            const messages = extractMessageContent(payload);
-            for (const msg of messages) {
-              events.push({
-                type: msg.role === 'user' ? 'user' : 'assistant',
-                content: msg.text,
-                timestamp: parsed.timestamp,
-              });
-            }
-          }
-        }
-      } catch {
-        // Skip malformed lines
-        continue;
-      }
-    }
-
-    const firstUserMessage = realUserMessages[0] ?? '';
-    const lastRealUserMessage = realUserMessages[realUserMessages.length - 1] ?? '';
-
+    const scan = scanCodexRollout(filePath, true);
+    const { sessionMeta } = scan;
     if (!sessionMeta) {
       return null;
     }
@@ -224,48 +102,9 @@ export function readCodexRollout(filePath: string): CodexRolloutEntry | null {
       : stats.birthtimeMs;
     const updatedAtMs = stats.mtimeMs;
 
-    // Build ccusage-aligned usage from the last turn's raw tokens.
-    // input = raw - cached (codex reports cached input separately), cache
-    // creation is never reported by codex, reasoning is a subset of output
-    // (display-only, never added to total).
-    // contextLength = input_tokens (= (input_tokens-cached) + cached + 0),
-    // i.e. input + cacheRead + cacheCreation — the unified context-window
-    // occupancy contract across all five readers (review P2-8, excludes
-    // output/reasoning).
-    let usage: AgentSessionUsage | undefined;
-    if (lastRawUsage) {
-      const r = lastRawUsage;
-      const cached = Math.min(r.cached_input_tokens, r.input_tokens);
-      usage = {
-        inputTokens: r.input_tokens - cached,
-        outputTokens: r.output_tokens,
-        contextLength: r.input_tokens,
-        contextLimit: lastContextLimit,
-        cacheReadTokens: cached,
-        cacheCreationTokens: 0,
-        totalTokens: r.total_tokens,
-      };
-      // Cumulative from the final total_token_usage (non-cached input +
-      // output), summed across all turns in the session.
-      if (lastTotalUsage) {
-        const cumCached = Math.min(lastTotalUsage.cached_input_tokens, lastTotalUsage.input_tokens);
-        usage.cumulativeInputTokens = lastTotalUsage.input_tokens - cumCached;
-        usage.cumulativeOutputTokens = lastTotalUsage.output_tokens;
-        usage.cumulativeTotalTokens = lastTotalUsage.total_tokens;
-        usage.cumulativeCacheReadTokens = cumCached;
-        usage.cumulativeCacheCreationTokens = 0; // Codex 不报告 cache creation
-      }
-      // 压缩统计：会话内出现过 compacted 事件就计数（供 /resume 与 Compact 卡
-      // 展示）；仅当会话以压缩收尾时（post-compact 水位存在），contextLength
-      // 覆盖为压缩后水位并暴露压缩前水位——后续还有普通 turn 时水位回归该 turn。
-      if (compactCount > 0) {
-        usage.compactCount = compactCount;
-        if (compactPostContextLength !== undefined) {
-          usage.contextLength = compactPostContextLength;
-          usage.compactPreContextLength = compactPreContextLength;
-        }
-      }
-    }
+    const firstUserMessage = scan.realUserMessages[0] ?? '';
+    const lastRealUserMessage = scan.realUserMessages[scan.realUserMessages.length - 1] ?? '';
+    const usage = buildUsageFromScan(scan);
 
     return {
       threadId: sessionId,
@@ -274,13 +113,253 @@ export function readCodexRollout(filePath: string): CodexRolloutEntry | null {
       lastRealUserMessage,
       createdAtMs,
       updatedAtMs,
-      events,
+      events: scan.events,
       usage,
     };
   } catch (err) {
     getLogger().warn(`[codex-rollout-reader] failed to read ${filePath}: ${err}`);
     return null;
   }
+}
+
+/**
+ * Lightweight single-file scan that extracts only the display-relevant fields
+ * (last real user message + usage) — **without** constructing the `events`
+ * array. Backs `readCodexSessionSummary` so the `/resume` list prefetch does
+ * not pay the cost of JSON.parse-ing every response_item and building events
+ * that are immediately discarded.
+ *
+ * Returns null if the file doesn't exist, is corrupted, or has no session_meta.
+ */
+export function readCodexRolloutSummary(
+  filePath: string,
+): { lastRealUserMessage: string; usage?: AgentSessionUsage } | null {
+  if (!fs.existsSync(filePath)) {
+    return null;
+  }
+  try {
+    const scan = scanCodexRollout(filePath, false);
+    if (!scan.sessionMeta) return null;
+    return {
+      lastRealUserMessage: scan.realUserMessages[scan.realUserMessages.length - 1] ?? '',
+      usage: buildUsageFromScan(scan),
+    };
+  } catch (err) {
+    getLogger().warn(`[codex-rollout-reader] failed to read summary ${filePath}: ${err}`);
+    return null;
+  }
+}
+
+/** Intermediate scan state shared by the full parse and the summary variant. */
+interface CodexRolloutScan {
+  sessionMeta: Record<string, unknown> | null;
+  events: AgentSessionContentEvent[];
+  realUserMessages: string[];
+  lastRawUsage: RawTokenUsage | undefined;
+  lastContextLimit: number | undefined;
+  lastTotalUsage: RawTokenUsage | undefined;
+  previousTotals: RawTokenUsage | undefined;
+  compactCount: number;
+  compactPreContextLength: number | undefined;
+  compactPostContextLength: number | undefined;
+}
+
+/**
+ * Scan a rollout file once, tracking user messages, usage and compaction state.
+ * When `includeEvents` is true, response_item content is also extracted into
+ * `events`; when false, response_item lines are skipped entirely (the summary
+ * fast path).
+ */
+function scanCodexRollout(filePath: string, includeEvents: boolean): CodexRolloutScan {
+  const lines = readJsonlLines(filePath);
+  const events: AgentSessionContentEvent[] = [];
+  let sessionMeta: Record<string, unknown> | null = null;
+  // Real user input is identified by a paired `event_msg` whose
+  // payload.type === "user_message" - codex emits this ONLY for text the
+  // human actually typed. Injected scaffolding (project rules,
+  // <environment_context>, permissions) is also written as `role:"user"`
+  // response_items but has NO user_message event, so it must be excluded
+  // from displayTitle/recap/summary. Regression 2026-07-13: the first
+  // `role:user` message is the injected project rules, mistakenly shown as
+  // "最近输入".
+  const realUserMessages: string[] = [];
+  // token_count tracking: codex emits cumulative `total_token_usage` and an
+  // incremental `last_token_usage`. We want the LAST turn's usage (matches
+  // pi/opencode /resume "last turn" display semantics). When
+  // last_token_usage is absent we derive it as total - previous_total.
+  let lastRawUsage: RawTokenUsage | undefined;
+  // Context window limit from the same token_count event as lastRawUsage
+  // (codex reports info.model_context_window per turn; absent on old data).
+  let lastContextLimit: number | undefined;
+  // Final total_token_usage (cumulative across the whole session) for the
+  // Run card's "累计" display. Codex emits this alongside last_token_usage.
+  let lastTotalUsage: RawTokenUsage | undefined;
+  let previousTotals: RawTokenUsage | undefined;
+  // Compaction 统计：codex 的 compact turn 在会话文件里写顶层 `compacted`
+  // 事件（含摘要），压缩前后的上下文水位由相邻 token_count 表达。压缩收尾的
+  // token_count 增量是 input/cached/output 全 0、只有 total_tokens 有值
+  // （窗口被摘要+replacement history 占据），现有 zero-filter 会跳过它，
+  // 因此这里必须单独捕获，不能复用 lastRawUsage。
+  // 单位口径（review P3-9）：前后两侧统一用 total_tokens —— 压缩前取最近一次
+  // 非零 token_count 的 total_tokens（input+output，即该 turn 在窗口内的全部
+  // token），压缩后取收尾事件的 total_tokens（压缩后窗口）。不得一边 input
+  // 一边 total，否则「压缩前 X → 压缩后 Y」两边单位不一致。
+  let compactCount = 0;
+  let compactPreContextLength: number | undefined;
+  let compactPostContextLength: number | undefined;
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+
+    try {
+      const parsed = JSON.parse(trimmed) as {
+        type: string;
+        payload?: Record<string, unknown>;
+        timestamp?: string;
+      };
+      if (!parsed || typeof parsed.type !== 'string') continue;
+
+      if (parsed.type === 'session_meta' && parsed.payload) {
+        sessionMeta = parsed.payload as Record<string, unknown>;
+      } else if (parsed.type === 'event_msg' && parsed.payload) {
+        // user_message events carry the authoritative human-typed text.
+        const payload = parsed.payload as Record<string, unknown>;
+        if (payload.type === 'user_message') {
+          const text = stringValue(payload.message);
+          if (text) {
+            realUserMessages.push(text.slice(0, 200));
+          }
+        } else if (payload.type === 'token_count') {
+          const info = payload.info as Record<string, unknown> | undefined;
+          const last = info?.last_token_usage as RawTokenUsage | undefined;
+          const total = info?.total_token_usage as RawTokenUsage | undefined;
+          let raw: RawTokenUsage | undefined;
+          if (last) {
+            raw = last;
+          } else if (total && previousTotals) {
+            raw = subtractRawUsage(total, previousTotals);
+          } else {
+            raw = total;
+          }
+          if (total) {
+            previousTotals = total;
+            lastTotalUsage = total;
+          }
+          if (raw && (raw.input_tokens || raw.cached_input_tokens || raw.output_tokens)) {
+            lastRawUsage = raw;
+            const ctxWindow = info?.model_context_window;
+            lastContextLimit = typeof ctxWindow === 'number' ? ctxWindow : undefined;
+          }
+          // 压缩后的水位：压缩收尾 token_count 全 0（raw 不满足上面 zero-filter），
+          // 但 total_tokens 表达真实窗口；之后若出现普通 turn（input>0），
+          // 水位回归该 turn，post-compact 值失效。
+          if (compactCount > 0 && raw) {
+            if (
+              raw.total_tokens &&
+              !raw.input_tokens &&
+              !raw.cached_input_tokens &&
+              !raw.output_tokens
+            ) {
+              compactPostContextLength = raw.total_tokens;
+            } else if (raw.input_tokens > 0) {
+              compactPostContextLength = undefined;
+            }
+          }
+        }
+      } else if (parsed.type === 'compacted') {
+        // 顶层 compacted 事件：压缩次数 +1，压缩前水位取最近一次非零 token_count。
+        compactCount++;
+        if (lastRawUsage?.total_tokens !== undefined) {
+          compactPreContextLength = lastRawUsage.total_tokens;
+        }
+      } else if (includeEvents && parsed.type === 'response_item' && parsed.payload) {
+        const payload = parsed.payload as Record<string, unknown>;
+        if (payload.type === 'message' && Array.isArray(payload.content)) {
+          // Extract text content for display
+          const messages = extractMessageContent(payload);
+          for (const msg of messages) {
+            events.push({
+              type: msg.role === 'user' ? 'user' : 'assistant',
+              content: msg.text,
+              timestamp: parsed.timestamp,
+            });
+          }
+        }
+      }
+    } catch {
+      // Skip malformed lines
+      continue;
+    }
+  }
+
+  return {
+    sessionMeta,
+    events,
+    realUserMessages,
+    lastRawUsage,
+    lastContextLimit,
+    lastTotalUsage,
+    previousTotals,
+    compactCount,
+    compactPreContextLength,
+    compactPostContextLength,
+  };
+}
+
+/**
+ * Build ccusage-aligned usage from a scan's last-turn raw tokens.
+ * input = raw - cached (codex reports cached input separately), cache
+ * creation is never reported by codex, reasoning is a subset of output
+ * (display-only, never added to total).
+ * contextLength = input_tokens (= (input_tokens-cached) + cached + 0),
+ * i.e. input + cacheRead + cacheCreation — the unified context-window
+ * occupancy contract across all five readers (review P2-8, excludes
+ * output/reasoning).
+ */
+function buildUsageFromScan(scan: CodexRolloutScan): AgentSessionUsage | undefined {
+  const {
+    lastRawUsage,
+    lastContextLimit,
+    lastTotalUsage,
+    compactCount,
+    compactPreContextLength,
+    compactPostContextLength,
+  } = scan;
+  if (!lastRawUsage) return undefined;
+
+  const r = lastRawUsage;
+  const cached = Math.min(r.cached_input_tokens, r.input_tokens);
+  const usage: AgentSessionUsage = {
+    inputTokens: r.input_tokens - cached,
+    outputTokens: r.output_tokens,
+    contextLength: r.input_tokens,
+    contextLimit: lastContextLimit,
+    cacheReadTokens: cached,
+    cacheCreationTokens: 0,
+    totalTokens: r.total_tokens,
+  };
+  // Cumulative from the final total_token_usage (non-cached input +
+  // output), summed across all turns in the session.
+  if (lastTotalUsage) {
+    const cumCached = Math.min(lastTotalUsage.cached_input_tokens, lastTotalUsage.input_tokens);
+    usage.cumulativeInputTokens = lastTotalUsage.input_tokens - cumCached;
+    usage.cumulativeOutputTokens = lastTotalUsage.output_tokens;
+    usage.cumulativeTotalTokens = lastTotalUsage.total_tokens;
+    usage.cumulativeCacheReadTokens = cumCached;
+    usage.cumulativeCacheCreationTokens = 0; // Codex 不报告 cache creation
+  }
+  // 压缩统计：会话内出现过 compacted 事件就计数（供 /resume 与 Compact 卡
+  // 展示）；仅当会话以压缩收尾时（post-compact 水位存在），contextLength
+  // 覆盖为压缩后水位并暴露压缩前水位——后续还有普通 turn 时水位回归该 turn。
+  if (compactCount > 0) {
+    usage.compactCount = compactCount;
+    if (compactPostContextLength !== undefined) {
+      usage.contextLength = compactPostContextLength;
+      usage.compactPreContextLength = compactPreContextLength;
+    }
+  }
+  return usage;
 }
 
 /**
@@ -390,6 +469,49 @@ export function readCodexSessionContent(
     displayTitle: rollout.lastRealUserMessage || undefined,
     recap: undefined,
     usage: rollout.usage,
+  };
+}
+
+/**
+ * Read the summary (title + usage, no events) of a specific session by id.
+ *
+ * Mirrors `readCodexSessionContent`'s index lookup + cwd guard, but uses the
+ * lightweight `readCodexRolloutSummary` instead of the full parse — so the
+ * `/resume` list prefetch never constructs the events array it would discard.
+ */
+export function readCodexSessionSummary(
+  sessionId: string,
+  opts: { codexHome?: string; cwd?: string } = {},
+): SessionSummary {
+  const codexHome = resolveCodexHome(opts.codexHome);
+
+  let index = getSessionIndex(codexHome);
+  let entry = index.get(sessionId);
+  if (!entry) {
+    index = getSessionIndex(codexHome, true);
+    entry = index.get(sessionId);
+  }
+  if (!entry) {
+    return {};
+  }
+
+  // Cwd guard: same semantics as readCodexSessionContent — when a cwd is
+  // provided, the session's working directory must match.
+  if (opts.cwd && entry.cwd !== opts.cwd) {
+    return {};
+  }
+
+  const summary = readCodexRolloutSummary(entry.filePath);
+  if (!summary) {
+    return {};
+  }
+
+  return {
+    // displayTitle = LAST real user message (matches the "最近输入" label).
+    displayTitle: summary.lastRealUserMessage || undefined,
+    // codex has no compact-summary concept, so recap is never faked.
+    recap: undefined,
+    usage: summary.usage,
   };
 }
 
