@@ -23,6 +23,7 @@ import {
 } from './runner/index.js';
 import { AgentRegistry } from './runner/registry.js';
 import { probeAllAgents } from './runner/probe.js';
+import { warmCodexCatalogCache } from './config/codex-config.js';
 import { SessionReaderRegistry, SessionStore } from './session/index.js';
 import {
   ClaudeSessionReader,
@@ -380,6 +381,12 @@ function initializeRunner(
     .catch(() => {
       // Probe failure is non-fatal; /config card will retry on open.
     });
+
+  // Warm the codex model catalog in the background so the first Codex /config
+  // card open reads a warm cache instead of blocking the event loop for up to
+  // 8s (execFileSync cold path). Fire-and-forget; failure lands in negative
+  // cache and the sync card path falls back gracefully.
+  warmCodexCatalogCache();
 
   return { agentRegistry, sessionReaderRegistry };
 }
