@@ -36,6 +36,7 @@ export type {
   AgentSessionContentEvent,
   AgentSessionUsage,
   SessionContent,
+  SessionSummary,
   AgentSessionReader,
   AgentRunner,
   TurnStartedEvent,
