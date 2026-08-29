@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.12] - 2026-08-29
+
+### 修复
+
+- opencode ACP stream error 实时上报：tail opencode 日志即时捕获错误行，配额类错误秒级报错，不再挂起卡片等待超时
+
+### 变更
+
+- codex 会话历史读取轻量化：长会话生成轻量摘要，模型目录异步加载，减少启动阻塞
+- CI 覆盖率门禁纳入 `src/index.ts`，覆盖率统计更完整
+
 ## [0.1.11] - 2026-08-24
 
 ### 新增
