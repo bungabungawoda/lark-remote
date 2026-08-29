@@ -289,4 +289,102 @@ describe('JsonlRpcTransport safety and cleanup', () => {
     );
     expect(pongResp).toBeDefined();
   }, 10000);
+
+  it('test_anchor_transport_reports_enoint_when_binary_missing', async () => {
+    // spawn 早期 ENOENT：二进制缺失时走 pid===undefined 早检路径，
+    // 必须以 ENOENT 原因关闭并让调用方接管，而不是抛异常或悬挂。
+    const transport = new JsonlRpcTransport({
+      binary: join(tmpDir, 'does-not-exist-binary'),
+      args: [],
+      cwd: tmpDir,
+    });
+
+    const reason = await new Promise<string>((resolve) => {
+      void transport.start({ onMessage: () => {}, onClose: resolve });
+    });
+
+    expect(reason).toContain('ENOENT');
+    expect(transport.closed).toBe(true);
+  }, 10000);
+
+  it('test_anchor_transport_flushes_complete_json_line_without_trailing_newline_on_exit', async () => {
+    // 子进程最后一行不带尾部换行直接退出：onExit 必须 flush 残留 remainder，
+    // 否则最后一个完整消息会丢失（无尾换行的末行处理，见 session/common/jsonl.ts 同款约定）。
+    const wrapper = join(tmpDir, 'no-trailing-newline.sh');
+    writeFileSync(
+      wrapper,
+      `#!/bin/sh\nexec "${process.execPath}" -e 'process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id: 9, result: "final" }))'\n`,
+    );
+    chmodSync(wrapper, 0o755);
+
+    const transport = new JsonlRpcTransport({
+      binary: wrapper,
+      args: [],
+      cwd: tmpDir,
+    });
+
+    const messages: unknown[] = [];
+    const closed = new Promise<string>((resolve) => {
+      void transport.start({
+        onMessage: (msg) => messages.push(msg),
+        onClose: resolve,
+      });
+    });
+
+    const reason = await closed;
+    expect(reason).toBe('exit:0');
+    const final = messages.find((m) => (m as Record<string, unknown>).id === 9);
+    expect(final).toBeDefined();
+    expect((final as Record<string, unknown>).result).toBe('final');
+  }, 10000);
+
+  it('test_anchor_transport_ignores_trailing_partial_line_on_exit', async () => {
+    // 子进程退出时残留的是不完整 JSON 片段：onExit flush 解析失败必须忽略，
+    // 不抛异常、仍正常以 exit 原因关闭。
+    const wrapper = join(tmpDir, 'trailing-garbage.sh');
+    writeFileSync(
+      wrapper,
+      `#!/bin/sh\nexec "${process.execPath}" -e 'process.stdout.write("{\\"jsonrpc\\":\\"2.0" )'\n`,
+    );
+    chmodSync(wrapper, 0o755);
+
+    const transport = new JsonlRpcTransport({
+      binary: wrapper,
+      args: [],
+      cwd: tmpDir,
+    });
+
+    const closed = new Promise<string>((resolve) => {
+      void transport.start({ onMessage: () => {}, onClose: resolve });
+    });
+
+    expect(await closed).toBe('exit:0');
+    expect(transport.closed).toBe(true);
+  }, 10000);
+
+  it('test_anchor_transport_clean_close_terminates_live_child', async () => {
+    // close() 优雅停机：子进程存活时调用 close()，SIGTERM→grace→SIGKILL 收掉
+    // 进程并 end stdin，不留孤儿。
+    const pidFile = join(tmpDir, 'close-child.pid');
+    const wrapper = join(tmpDir, 'close-child.sh');
+    writeFileSync(
+      wrapper,
+      `#!/bin/sh\necho $$ > "${pidFile}"\nexec "${process.execPath}" -e 'setInterval(() => {}, 1000)'\n`,
+    );
+    chmodSync(wrapper, 0o755);
+
+    const transport = new JsonlRpcTransport({
+      binary: wrapper,
+      args: [],
+      cwd: tmpDir,
+    });
+
+    await transport.start({ onMessage: () => {}, onClose: () => {} });
+    await waitForFile(pidFile, 6000);
+    const pid = Number(readFileSync(pidFile, 'utf8').trim());
+
+    await transport.close();
+    expect(transport.closed).toBe(true);
+    await waitForProcessGone(pid, 10000);
+  }, 15000);
 });
