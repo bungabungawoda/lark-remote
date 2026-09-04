@@ -8,7 +8,7 @@ import { choiceFieldsFor } from './agent-choices-common.js';
 export function syncAgentChoices(config: AppConfig, agent: string): AppConfig {
   // claude 的配置在顶层 config.claude，不在 agents 下，无需同步
   const fields = choiceFieldsFor(agent);
-  if (!fields) return config;
+  if (!fields || fields.length === 0) return config;
 
   const agents = config.agents as unknown as Record<string, unknown> | undefined;
   const agentCfg = agents?.[agent];

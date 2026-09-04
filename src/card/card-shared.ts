@@ -24,10 +24,6 @@ export function agentDisplayName(kind: string): string {
 
 export { truncate } from '../common/truncate.js';
 
-interface TerminalLabelOptions {
-  prefix?: string;
-}
-
 const TERMINAL_LABELS: Record<string, string> = {
   done: '已完成',
   error: '出错',
@@ -37,10 +33,8 @@ const TERMINAL_LABELS: Record<string, string> = {
   finalizing: '完成中',
 };
 
-export function terminalToLabel(terminal: string, options?: TerminalLabelOptions): string {
-  const label = TERMINAL_LABELS[terminal] ?? '运行中';
-  const prefix = options?.prefix ?? '';
-  return prefix + label;
+export function terminalToLabel(terminal: string): string {
+  return TERMINAL_LABELS[terminal] ?? '运行中';
 }
 
 export function terminalToColor(terminal: string): string {

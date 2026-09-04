@@ -14,6 +14,8 @@
  */
 
 import { spawnSync } from 'node:child_process';
+import { cumulativeUsageFields } from '../common/usage-accumulator.js';
+import { sortByRecencyDesc } from '../common/recency.js';
 import { getLogger } from '../../logger/index.js';
 import { DEFAULT_DSH_HOST } from '../../config/index.js';
 import type {
@@ -117,16 +119,17 @@ export class DshSessionReader implements AgentSessionReader {
       const items = value.items ?? [];
       const filtered = items
         .filter((i) => i.cwd === cwd)
-        .sort(
-          (a, b) =>
-            b.updatedAt - a.updatedAt || String(a.sessionId).localeCompare(String(b.sessionId)),
-        )
         .map((i) => ({
           sessionId: String(i.sessionId),
           summary: '',
           mtime: i.updatedAt,
           ...(i.agentPreset ? { agentPreset: i.agentPreset } : {}),
         }));
+      sortByRecencyDesc(
+        filtered,
+        (i) => i.mtime,
+        (i) => i.sessionId,
+      );
       const { items: page, total } = paginate(filtered, opts ?? {});
       return { sessions: page, total };
     } catch (error) {
@@ -191,11 +194,12 @@ export class DshSessionReader implements AgentSessionReader {
           cacheReadTokens: cacheRead,
           cacheCreationTokens: cacheWrite,
           totalTokens: input + output + cacheRead + cacheWrite,
-          cumulativeTotalTokens: cumInput + cumOutput + cumCacheRead + cumCacheWrite,
-          cumulativeInputTokens: cumInput,
-          cumulativeOutputTokens: cumOutput,
-          cumulativeCacheReadTokens: cumCacheRead,
-          cumulativeCacheCreationTokens: cumCacheWrite,
+          ...cumulativeUsageFields({
+            input: cumInput,
+            output: cumOutput,
+            cacheRead: cumCacheRead,
+            cacheCreation: cumCacheWrite,
+          }),
         };
       }
 

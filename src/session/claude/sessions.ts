@@ -10,7 +10,11 @@ import {
 import { STALE_MS } from '../common/constants.js';
 import { capEvents } from '../common/pagination.js';
 import { extractContentBlocks } from '../common/content-blocks.js';
-import { UsageAccumulator } from '../common/usage-accumulator.js';
+import {
+  UsageAccumulator,
+  contextWindowOccupancy,
+  cumulativeUsageFields,
+} from '../common/usage-accumulator.js';
 import type {
   AgentSession,
   AgentSessionContentEvent,
@@ -419,7 +423,7 @@ function scalarScan(filePath: string): ScanResult {
   // contract — excludes output/reasoning, which are generated, not part of
   // the input window). Take the max so a pre-compact turn larger than the
   // post-compact size is not under-reported.
-  const lastWindow = l ? l.input + l.cacheRead + l.cacheCreation : 0;
+  const lastWindow = l ? contextWindowOccupancy(l) : 0;
   let contextLength = lastPostTokens;
   if (contextLength === 0 || lastWindow > contextLength) {
     contextLength = lastWindow;
@@ -438,11 +442,7 @@ function scalarScan(filePath: string): ScanResult {
     cacheReadTokens: l && l.cacheRead > 0 ? l.cacheRead : undefined,
     cacheCreationTokens: l && l.cacheCreation > 0 ? l.cacheCreation : undefined,
     totalTokens: lastTotal,
-    cumulativeTotalTokens: t.input + t.output + t.cacheRead + t.cacheCreation,
-    cumulativeInputTokens: t.input,
-    cumulativeOutputTokens: t.output,
-    cumulativeCacheReadTokens: t.cacheRead,
-    cumulativeCacheCreationTokens: t.cacheCreation,
+    ...cumulativeUsageFields(t),
   };
 
   return {

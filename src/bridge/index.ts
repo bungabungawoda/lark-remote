@@ -1128,6 +1128,26 @@ export class Bridge {
     let finalCumulativeOutputTokens: number | undefined;
     let finalCumulativeCacheReadTokens: number | undefined;
     let finalCumulativeCacheCreationTokens: number | undefined;
+    // 统一的 usage meta 构造（finalize 各分支共享，本方法内原先 5 处手写 11-15
+    // 字段对象；第 6 处 streamCodexCompact 形状不同未收敛）。
+    // catch 路径需覆盖 flow 字段时在展开后覆写即可。catch error 路径亦复用此
+    // 闭包，相比旧手写对象补齐了累计 cache 字段（cumulativeCacheReadTokens/
+    // cumulativeCacheCreationTokens），属有意的口径对齐（向 done 路径看齐）。
+    const usageMeta = () => ({
+      contextLength: finalContextLength,
+      contextLimit: finalContextLimit,
+      compactCount: finalCompactCount,
+      cacheReadTokens: finalCacheReadTokens,
+      cacheCreationTokens: finalCacheCreationTokens,
+      totalTokens: finalTotalTokens,
+      inputTokens: finalInputTokens,
+      outputTokens: finalOutputTokens,
+      cumulativeTotalTokens: finalCumulativeTotalTokens,
+      cumulativeInputTokens: finalCumulativeInputTokens,
+      cumulativeOutputTokens: finalCumulativeOutputTokens,
+      cumulativeCacheReadTokens: finalCumulativeCacheReadTokens,
+      cumulativeCacheCreationTokens: finalCumulativeCacheCreationTokens,
+    });
 
     try {
       try {
@@ -1479,6 +1499,7 @@ export class Bridge {
         finalCacheCreationTokens = finalUsage?.cacheCreationTokens ?? finalCacheCreationTokens;
         finalTotalTokens = finalUsage?.totalTokens ?? finalTotalTokens;
       }
+
       getLogger().info(
         `[bridge] final usage runId=${runId} contextLength=${finalContextLength} contextLimit=${finalContextLimit ?? 'undefined'} compactCount=${finalCompactCount ?? 'undefined'} cacheRead=${finalCacheReadTokens ?? 'undefined'} cacheCreate=${finalCacheCreationTokens ?? 'undefined'}`,
       );
@@ -1498,58 +1519,17 @@ export class Bridge {
         await cardSession.finish(terminal, {
           resultSubtype: subtype,
           errorMsg: finalState.errorMsg,
-          contextLength: finalContextLength,
-          contextLimit: finalContextLimit,
-          compactCount: finalCompactCount,
-          cacheReadTokens: finalCacheReadTokens,
-          cacheCreationTokens: finalCacheCreationTokens,
-          totalTokens: finalTotalTokens,
-          inputTokens: finalInputTokens,
-          outputTokens: finalOutputTokens,
-
-          cumulativeTotalTokens: finalCumulativeTotalTokens,
-          cumulativeInputTokens: finalCumulativeInputTokens,
-          cumulativeOutputTokens: finalCumulativeOutputTokens,
-          cumulativeCacheReadTokens: finalCumulativeCacheReadTokens,
-          cumulativeCacheCreationTokens: finalCumulativeCacheCreationTokens,
+          ...usageMeta(),
         });
       } else if (finalState.terminal === 'running') {
         await cardSession.finish('error', {
-          contextLength: finalContextLength,
-          contextLimit: finalContextLimit,
-          compactCount: finalCompactCount,
-          cacheReadTokens: finalCacheReadTokens,
-          cacheCreationTokens: finalCacheCreationTokens,
-          totalTokens: finalTotalTokens,
-          inputTokens: finalInputTokens,
-          outputTokens: finalOutputTokens,
-
-          cumulativeTotalTokens: finalCumulativeTotalTokens,
-          cumulativeInputTokens: finalCumulativeInputTokens,
-          cumulativeOutputTokens: finalCumulativeOutputTokens,
-          cumulativeCacheReadTokens: finalCumulativeCacheReadTokens,
-          cumulativeCacheCreationTokens: finalCumulativeCacheCreationTokens,
+          ...usageMeta(),
           errorMsg: agentDisplayName(agentKind) + ' 输出流已结束，但未收到 result 事件',
         });
       } else if (sawResult) {
         // 已终态（interrupted/idle_timeout）+ result 已收到：首终态优先，
         // 仅补充 usage meta（finalizing 期间被 /stop 或 idle 超时也展示 token 统计）
-        await cardSession.finish(finalState.terminal, {
-          contextLength: finalContextLength,
-          contextLimit: finalContextLimit,
-          compactCount: finalCompactCount,
-          cacheReadTokens: finalCacheReadTokens,
-          cacheCreationTokens: finalCacheCreationTokens,
-          totalTokens: finalTotalTokens,
-          inputTokens: finalInputTokens,
-          outputTokens: finalOutputTokens,
-
-          cumulativeTotalTokens: finalCumulativeTotalTokens,
-          cumulativeInputTokens: finalCumulativeInputTokens,
-          cumulativeOutputTokens: finalCumulativeOutputTokens,
-          cumulativeCacheReadTokens: finalCumulativeCacheReadTokens,
-          cumulativeCacheCreationTokens: finalCumulativeCacheCreationTokens,
-        });
+        await cardSession.finish(finalState.terminal, usageMeta());
       }
       // else: 已终态且未收到 result（如 spawn 失败后 interrupted）-> 无 usage 可补，跳过
     } catch (err) {
@@ -1566,17 +1546,9 @@ export class Bridge {
       const catchTerminal = cardSession.currentState.terminal;
       if (catchTerminal === 'running' || catchTerminal === 'finalizing') {
         await cardSession.finish('error', {
-          contextLength: finalContextLength,
-          contextLimit: finalContextLimit,
-          compactCount: finalCompactCount,
-          cacheReadTokens: finalCacheReadTokens,
-          cacheCreationTokens: finalCacheCreationTokens,
-          totalTokens: finalTotalTokens,
+          ...usageMeta(),
           inputTokens: liveInputTokens,
           outputTokens: liveOutputTokens,
-          cumulativeTotalTokens: finalCumulativeTotalTokens,
-          cumulativeInputTokens: finalCumulativeInputTokens,
-          cumulativeOutputTokens: finalCumulativeOutputTokens,
           errorMsg: errorMessage(err),
         });
       } else {
@@ -1584,22 +1556,7 @@ export class Bridge {
           `[bridge] skip error finish: state already terminal (${catchTerminal}) runId=${runId}`,
         );
         if (sawResult) {
-          await cardSession.finish(catchTerminal, {
-            contextLength: finalContextLength,
-            contextLimit: finalContextLimit,
-            compactCount: finalCompactCount,
-            cacheReadTokens: finalCacheReadTokens,
-            cacheCreationTokens: finalCacheCreationTokens,
-            totalTokens: finalTotalTokens,
-            inputTokens: finalInputTokens,
-            outputTokens: finalOutputTokens,
-
-            cumulativeTotalTokens: finalCumulativeTotalTokens,
-            cumulativeInputTokens: finalCumulativeInputTokens,
-            cumulativeOutputTokens: finalCumulativeOutputTokens,
-            cumulativeCacheReadTokens: finalCumulativeCacheReadTokens,
-            cumulativeCacheCreationTokens: finalCumulativeCacheCreationTokens,
-          });
+          await cardSession.finish(catchTerminal, usageMeta());
         }
       }
     } finally {
@@ -2051,6 +2008,10 @@ export class Bridge {
       return;
     }
 
+    // §5.3: kimi 压缩在途检测（wire 状态机）。第二次点击在本地毫秒级如实回答，
+    // 不开卡、不发 session/prompt——否则 kimi 服务端拒绝并产生「秒回」假完成。
+    if (await this.rejectIfCompactionInFlight(last.sessionId, cwd, last.agentKind, ctx)) return;
+
     // Check that the runner has runCompact method
     const runner = this.getRunner(cwd, last.agentKind);
     if (
@@ -2069,6 +2030,52 @@ export class Bridge {
       runner,
       ctx,
     });
+  }
+
+  /**
+   * §5.3: kimi 压缩在途检测——reader 鸭子实现 `readCompactionState` 时，若
+   * wire 状态机判定当前有未终结的压缩（最后一次 begin 无 terminal 记录），
+   * 直接回文本「已有一次 Compact 正在进行」并返回 true（调用方不开卡、不发
+   * session/prompt）。codex/claude 等 reader 无此方法 → 返回 false，行为不变。
+   */
+  private async rejectIfCompactionInFlight(
+    sessionId: string,
+    cwd: string,
+    agentKind: AgentKind,
+    ctx: BridgeContext,
+  ): Promise<boolean> {
+    const reader = this.sessionReaderRegistry.get(agentKind);
+    if (!reader || !('readCompactionState' in reader)) return false;
+    try {
+      const state = (
+        reader as {
+          readCompactionState(
+            sessionId: string,
+            cwd: string,
+          ): { inFlight?: boolean; inFlightSince?: number };
+        }
+      ).readCompactionState(sessionId, cwd);
+      if (state?.inFlight) {
+        const since = state.inFlightSince;
+        let timeLabel = '未知时刻';
+        if (since !== undefined) {
+          const d = new Date(since);
+          const hh = String(d.getHours()).padStart(2, '0');
+          const mm = String(d.getMinutes()).padStart(2, '0');
+          timeLabel = `${hh}:${mm}`;
+        }
+        await this.sendResult(
+          { text: `⚠️ 已有一次 Compact 正在进行（开始于 ${timeLabel}），请等待完成` },
+          ctx,
+        );
+        return true;
+      }
+    } catch (err) {
+      getLogger().warn(
+        `[bridge] readCompactionState failed sessionId=${sessionId}: ${errorMessage(err)}`,
+      );
+    }
+    return false;
   }
 
   /**
@@ -2128,6 +2135,8 @@ export class Bridge {
         operationKind: 'compaction',
       });
       let sawResult = false;
+      let resultSubtype: 'success' | 'error' | 'interrupted' | undefined;
+      let resultError: string | undefined;
       for await (const event of (
         runner as {
           runCompact: (
@@ -2136,9 +2145,21 @@ export class Bridge {
           ) => AsyncGenerator<AgentEvent>;
         }
       ).runCompact('', { cwd, sessionId })) {
-        if (event.type === 'result') sawResult = true;
+        if (event.type === 'result') {
+          sawResult = true;
+          resultSubtype = (event as { subtype?: 'success' | 'error' | 'interrupted' }).subtype;
+          resultError = (event as { errorMessage?: string }).errorMessage;
+        }
         await cardSession.push(event);
       }
+      // §5.3: 卡片终态必须等于引擎真实终态。旧实现只看 sawResult 布尔——error
+      // subtype 的 result 也被 finish 'done'（放大器 bug，2026-08-31 事故）。
+      const terminal: 'done' | 'error' | 'interrupted' =
+        resultSubtype === 'success'
+          ? 'done'
+          : resultSubtype === 'interrupted'
+            ? 'interrupted'
+            : 'error';
       // 压缩结束后从会话 jsonl 读权威统计（压缩后上下文、压缩次数、本次压缩
       // token 消耗与会话累计）。thread/compacted 通知与 jsonl 落盘几乎同时
       // （实测差 ~9ms），compactCount 未读到则短重试，仍失败优雅降级（无统计）。
@@ -2147,9 +2168,9 @@ export class Bridge {
         await sleep(150);
         finalUsage = this.resolveFinalUsage(sessionId, cwd, agentKind);
       }
-      await cardSession.finish(sawResult ? 'done' : 'error', {
-        resultSubtype: sawResult ? 'success' : 'error',
-        errorMsg: sawResult ? undefined : '未收到压缩结果',
+      await cardSession.finish(terminal, {
+        resultSubtype: resultSubtype ?? 'error',
+        errorMsg: terminal === 'error' ? (resultError ?? '未收到压缩结果') : undefined,
         contextLength: finalUsage?.contextLength,
         contextLimit: finalUsage?.contextLimit,
         compactPreContextLength: finalUsage?.compactPreContextLength,
@@ -2166,7 +2187,7 @@ export class Bridge {
         cumulativeCacheCreationTokens: finalUsage?.cumulativeCacheCreationTokens,
       });
       log.info(
-        `[bridge] streamCodexCompact finished sessionId=${sessionId} sawResult=${sawResult}`,
+        `[bridge] streamCodexCompact finished sessionId=${sessionId} sawResult=${sawResult} subtype=${resultSubtype ?? 'none'}`,
       );
     } catch (err) {
       log.error(`[bridge] streamCodexCompact failed: ${errorMessage(err)}`);
@@ -2236,6 +2257,9 @@ export class Bridge {
       await this.sendResult({ text: `⚠️ 未找到 session ${sessionId}（当前目录: ${cwd}）` }, ctx);
       return;
     }
+
+    // §5.3: kimi 压缩在途检测（与 handleCodexCompact 同一入口）。
+    if (await this.rejectIfCompactionInFlight(sessionId, cwd, agentKind, ctx)) return;
 
     // Check that the runner has runCompact（codex/kimi/opencode/pi/claude 鸭子探测）。
     const runner = this.getRunner(cwd, agentKind);
