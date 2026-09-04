@@ -24,7 +24,7 @@ afterEach(() => {
 });
 
 /**
- * OrderStore 全局存储改造测试（RED 阶段）
+ * OrderStore 全局存储行为测试
  *
  * 改造目标：OrderStore 不再按 cwd 分组，改为全局订单列表。
  * 新 API：

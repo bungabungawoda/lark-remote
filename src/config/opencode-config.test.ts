@@ -63,13 +63,7 @@ describe('loadOpencodeConfig', () => {
 
     const cfg = loadOpencodeConfig();
 
-    expect(cfg.providerNames).toEqual([
-      'opencode',
-      'deepseek',
-      'minimax-cn-coding-plan',
-      'myprovider',
-      'volcengine-plan',
-    ]);
+    expect(cfg.providerNames).toEqual(['opencode', 'deepseek', 'minimax-cn-coding-plan']);
     expect(cfg.modelOptions('opencode')).toEqual(['big-pickle']);
     expect(cfg.modelOptions('deepseek')).toEqual(['deepseek-chat']);
     expect(cfg.modelOptions('minimax-cn-coding-plan')).toEqual(['MiniMax-M2.5']);
@@ -174,8 +168,6 @@ describe('fallback result structure', () => {
     expect(cfg.providerNames).toContain('opencode');
     expect(cfg.providerNames).toContain('deepseek');
     expect(cfg.providerNames).toContain('minimax-cn-coding-plan');
-    expect(cfg.providerNames).toContain('myprovider');
-    expect(cfg.providerNames).toContain('volcengine-plan');
   });
 
   it('modelOptions without provider returns all fallback models sorted and deduped', () => {
@@ -197,15 +189,5 @@ describe('fallback result structure', () => {
     const cfg = loadOpencodeConfig();
 
     expect(cfg.modelOptions('nonexistent')).toEqual([]);
-  });
-
-  it('modelOptions for volcengine-plan returns empty array (no fallback models defined)', () => {
-    mockExecSync.mockImplementation(() => {
-      throw new Error('fail');
-    });
-
-    const cfg = loadOpencodeConfig();
-
-    expect(cfg.modelOptions('volcengine-plan')).toEqual([]);
   });
 });

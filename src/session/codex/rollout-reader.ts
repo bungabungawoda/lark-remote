@@ -19,6 +19,7 @@ import path from 'node:path';
 import { readJsonlLines, findJsonlLine } from '../common/jsonl.js';
 import { STALE_MS } from '../common/constants.js';
 import { paginate, capEvents } from '../common/pagination.js';
+import { sortByRecencyDesc } from '../common/recency.js';
 import { getLogger } from '../../logger/index.js';
 import { isRecord, stringValue } from '../../common/guards.js';
 import { resolveCodexHome } from '../../config/codex-config.js';
@@ -36,7 +37,6 @@ interface CodexRolloutEntry {
   firstUserMessage: string;
   /** Last real (human-typed) user message, for the "最近输入" card label. */
   lastRealUserMessage: string;
-  createdAtMs: number;
   updatedAtMs: number;
   events: AgentSessionContentEvent[];
   /** Last-turn usage extracted from token_count events (ccusage-aligned). */
@@ -95,11 +95,7 @@ export function readCodexRollout(filePath: string): CodexRolloutEntry | null {
       return null;
     }
 
-    // Use file mtime as updatedAtMs, or parse timestamp from session_meta
     const stats = fs.statSync(filePath);
-    const createdAtMs = sessionMeta.timestamp
-      ? new Date(String(sessionMeta.timestamp)).getTime()
-      : stats.birthtimeMs;
     const updatedAtMs = stats.mtimeMs;
 
     const firstUserMessage = scan.realUserMessages[0] ?? '';
@@ -111,7 +107,6 @@ export function readCodexRollout(filePath: string): CodexRolloutEntry | null {
       cwd,
       firstUserMessage: firstUserMessage || '(no user message)',
       lastRealUserMessage,
-      createdAtMs,
       updatedAtMs,
       events: scan.events,
       usage,
@@ -131,7 +126,7 @@ export function readCodexRollout(filePath: string): CodexRolloutEntry | null {
  *
  * Returns null if the file doesn't exist, is corrupted, or has no session_meta.
  */
-export function readCodexRolloutSummary(
+function readCodexRolloutSummary(
   filePath: string,
 ): { lastRealUserMessage: string; usage?: AgentSessionUsage } | null {
   if (!fs.existsSync(filePath)) {
@@ -395,7 +390,11 @@ export function listCodexRollouts(opts: ListCodexRolloutsOptions = {}): {
   // Establish the global order by mtime desc, then slice the page.
   // Same-mtime ties use filePath as a deterministic secondary key so index
   // rebuilds / walk order changes never reorder the page.
-  matched.sort((a, b) => b.mtimeMs - a.mtimeMs || a.filePath.localeCompare(b.filePath));
+  sortByRecencyDesc(
+    matched,
+    (e) => e.mtimeMs,
+    (e) => e.filePath,
+  );
   const { items: page, total } = paginate(matched, { limit: opts.limit, offset: opts.offset });
 
   // Full-parse only the page being returned (summary/usage).

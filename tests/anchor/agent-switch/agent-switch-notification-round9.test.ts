@@ -6,13 +6,13 @@ import fs from 'node:fs';
 import { SessionStore } from '../../../src/session/index.js';
 import { SessionReaderRegistry } from '../../../src/session/registry.js';
 import { CommandRouter } from '../../../src/router/index.js';
-import { AppConfigSchema } from '../../../src/config/index.js';
-import type { AppConfig } from '../../../src/config/index.js';
 import type { AgentKind, AgentSessionReader } from '../../../src/runner/index.js';
+import type { AppConfig } from '../../../src/config/index.js';
 import {
   lastNotice as _lastNotice,
   allNotices as _allNotices,
-} from '../../../tests/lib/agent-switch-helpers.js';
+  buildAgentSwitchConfig as buildConfig,
+} from '../../lib/agent-switch-helpers.js';
 
 /**
  * Round 9 anchors: config.save 切换通知与「启动/恢复入口」的交互。
@@ -62,30 +62,6 @@ function defaultRegistry(): SessionReaderRegistry {
     pi: stubReader({ known: ['pi-session-P', 'pi-session-P1'] }),
     opencode: stubReader({ known: [] }),
     kimi: stubReader({ known: [] }),
-  });
-}
-
-function buildConfig(overrides?: Partial<AppConfig>): AppConfig {
-  return AppConfigSchema.parse({
-    feishu: { appId: 'test', appSecret: 'test' },
-    defaultAgent: 'claude',
-    claude: {
-      model: 'opus',
-      stopGraceMs: 5000,
-    },
-    agents: {
-      pi: { provider: 'Volcano', model: 'glm-5.2', thinking: 'medium' },
-      codex: { model: 'claude-sonnet-4-20250514' },
-      opencode: { model: 'gpt-5' },
-      kimi: { model: 'kimi-k2' },
-    },
-    workspace: { default: '' },
-    output: {
-      showThinking: true,
-      showToolUse: false,
-      showToolResult: false,
-    },
-    ...overrides,
   });
 }
 

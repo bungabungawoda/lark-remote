@@ -47,6 +47,10 @@ import {
   type ElicitationPropertySchema,
   type ElicitationEnumOption,
 } from '../../common/acp/protocol-types.js';
+import {
+  deriveAcpAvailableDecisions,
+  truncateWithEllipsis,
+} from '../../common/acp/protocol-helpers.js';
 import { getLogger } from '../../../logger/index.js';
 
 // =============================================================================
@@ -427,10 +431,12 @@ export class KimiAcpTranslator {
       requestId,
       kind: 'command',
       command: params.toolCall?.title ?? undefined,
-      reason: params.toolCall?.rawInput ? truncate(params.toolCall.rawInput, 200) : undefined,
+      reason: params.toolCall?.rawInput
+        ? truncateWithEllipsis(params.toolCall.rawInput, 200)
+        : undefined,
       // §P4: 从服务端 options kind 派生——带 approve_always（或 allow_always）
       // 才提供「本会话总是允许」（acceptForSession）；否则与旧行为一致。
-      availableDecisions: this.deriveAvailableDecisions(params),
+      availableDecisions: deriveAcpAvailableDecisions(params.options ?? []),
     };
 
     return [
@@ -479,16 +485,6 @@ export class KimiAcpTranslator {
    * accept/decline/cancel are universal; acceptForSession requires an
    * always-class option (kimi `approve_always`, opencode `allow_always`).
    */
-  private deriveAvailableDecisions(params: RequestPermissionParams): string[] {
-    const decisions: string[] = ['accept', 'decline', 'cancel'];
-    const hasAlwaysOption = (params.options ?? []).some(
-      (opt) => opt.kind === 'approve_always' || opt.kind === 'allow_always',
-    );
-    if (hasAlwaysOption) {
-      decisions.push('acceptForSession');
-    }
-    return decisions;
-  }
 
   // =========================================================================
   // Private helpers
@@ -508,10 +504,6 @@ export class KimiAcpTranslator {
 // =============================================================================
 // Helpers
 // =============================================================================
-
-function truncate(text: string, maxLen: number): string {
-  return text.length <= maxLen ? text : text.slice(0, maxLen) + '…';
-}
 
 /** elicitation schema property → UserQuestion（无法解析返回 null）。 */
 function elicitationPropertyToQuestion(prop: ElicitationPropertySchema): UserQuestion | null {

@@ -9,8 +9,7 @@
  *
  * All fixture data must be synthetic (AABB UUIDs, /home/user/project paths) —
  */
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { chmodSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Runner, AgentEvent } from '../../src/runner/index.js';
 
@@ -347,11 +346,6 @@ export function writeScenario(
   chmodSync(wrapper, 0o755);
 
   return { wrapper, workspace };
-}
-
-/** Create a temp dir for the mock server (convenience for suites that need one). */
-export function makeMockAcpTmpDir(prefix = 'lark-mock-acp-'): string {
-  return mkdtempSync(join(tmpdir(), prefix));
 }
 
 // ── Shared ACP runner test harness ───────────────────────────────────

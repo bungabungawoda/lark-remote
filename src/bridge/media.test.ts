@@ -2,13 +2,6 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import {
-  buildFileName,
-  imageExtension,
-  limitFileNameLength,
-  sanitizeFileName,
-  uniqueTargetPath,
-} from './inbound-media.js';
 import { makeBridge } from '../../tests/lib/bridge-stubs.js';
 import { AppConfigSchema } from '../config/index.js';
 import type { InboundMediaPayload } from '../connector/index.js';
@@ -30,6 +23,7 @@ vi.mock('../logger/index.js', () => ({
 const pngBytes = Buffer.from([
   0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d,
 ]);
+const jpegBytes = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46]);
 
 let tmpDir: string;
 let downloadDir: string;
@@ -108,6 +102,27 @@ describe('InboundMediaHandler 落盘', () => {
     expect(sentTexts(connector)).toHaveLength(1);
     expect(sentTexts(connector)[0]).toContain('📎 已保存 1 个文件');
     expect(sentTexts(connector)[0]).toContain(files[0]);
+  });
+
+  it('图片缺 MIME 时按魔数推断扩展名（png/jpeg）', async () => {
+    const { bridge, sessionStore } = makeBridge();
+    sessionStore.setCwd('user-1', tmpDir);
+
+    await bridge.onInboundMedia(
+      mediaPayload({
+        media: [
+          downloaded(pngBytes, { mimeType: undefined }),
+          downloaded(jpegBytes, { mimeType: undefined }),
+        ],
+      }),
+    );
+
+    const files = savedFiles();
+    expect(files).toHaveLength(2);
+    const names = files.map((f) => path.basename(f)).sort();
+    expect(names.filter((n) => n.endsWith('.jpg'))).toHaveLength(1);
+    expect(names.filter((n) => n.endsWith('.png'))).toHaveLength(1);
+    expect(names.every((n) => /^image_\d{6}_\d+\.\w+$/.test(n))).toBe(true);
   });
 
   it('file 消息保留原始文件名（sanitize 防穿越 + 长度截断）', async () => {
@@ -310,71 +325,5 @@ describe('InboundMediaHandler 合批', () => {
     bridge.flushMediaNotifications('user-1', 'chat-1');
 
     expect(sentTexts(connector)).toHaveLength(2);
-  });
-});
-
-describe('文件名工具', () => {
-  it('sanitizeFileName 剥离目录与控制字符', () => {
-    expect(sanitizeFileName('../../etc/passwd')).toBe('passwd');
-    expect(sanitizeFileName('a\u0000b.txt')).toBe('a_b.txt');
-    expect(sanitizeFileName('a\\b.txt')).toBe('a_b.txt');
-    expect(sanitizeFileName('..')).toBe('');
-    expect(sanitizeFileName('  ')).toBe('');
-  });
-
-  it('imageExtension 按 MIME 映射，未知 MIME 按魔数兜底，全未知返回 undefined', () => {
-    expect(imageExtension('image/png', Buffer.alloc(0))).toBe('png');
-    expect(imageExtension('image/jpeg', Buffer.alloc(0))).toBe('jpg');
-    expect(imageExtension('image/gif', Buffer.alloc(0))).toBe('gif');
-    expect(imageExtension('image/webp', Buffer.alloc(0))).toBe('webp');
-    expect(imageExtension(undefined, Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x00]))).toBe('jpg');
-    expect(imageExtension('application/octet-stream', pngBytes)).toBe('png');
-    expect(imageExtension(undefined, Buffer.alloc(0))).toBeUndefined();
-  });
-
-  it('buildFileName：file 保留名，image 生成 image_<HHmmss>_<n>.<ext>；未知格式无扩展名', () => {
-    const at = new Date(2026, 7, 16, 14, 30, 5); // 2026-08-16 14:30:05
-    expect(buildFileName({ type: 'file', fileName: 'report.pdf', tempPath: '' }, 1, at)).toBe(
-      'report.pdf',
-    );
-    expect(buildFileName({ type: 'file', fileName: '..', tempPath: '' }, 2, at)).toBe(
-      'file_143005_2',
-    );
-    const pngTemp = path.join(downloadDir, 'img-raw');
-    fs.writeFileSync(pngTemp, pngBytes);
-    expect(buildFileName({ type: 'image', mimeType: 'image/png', tempPath: pngTemp }, 1, at)).toBe(
-      'image_143005_1.png',
-    );
-    const unknownTemp = path.join(downloadDir, 'img-unknown');
-    fs.writeFileSync(unknownTemp, Buffer.from('not-an-image'));
-    expect(
-      buildFileName({ type: 'image', mimeType: undefined, tempPath: unknownTemp }, 3, at),
-    ).toBe('image_143005_3');
-  });
-
-  it('limitFileNameLength 按 UTF-8 字节截断并保留扩展名', () => {
-    expect(limitFileNameLength('short.txt')).toBe('short.txt');
-    const longAscii = `${'a'.repeat(250)}.txt`;
-    const cut = limitFileNameLength(longAscii);
-    expect(cut.endsWith('.txt')).toBe(true);
-    expect(Buffer.byteLength(cut, 'utf8')).toBeLessThanOrEqual(240);
-    // 多字节字符不会被截断在中间
-    const chinese = `${'中'.repeat(100)}.txt`;
-    const cutZh = limitFileNameLength(chinese);
-    expect(Buffer.byteLength(cutZh, 'utf8')).toBeLessThanOrEqual(240);
-    expect(cutZh).not.toContain('�');
-  });
-
-  it('uniqueTargetPath 冲突加序号', () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'lark-unique-'));
-    try {
-      fs.writeFileSync(path.join(dir, 'a.txt'), 'x');
-      expect(uniqueTargetPath(dir, 'a.txt')).toBe(path.join(dir, 'a-1.txt'));
-      fs.writeFileSync(path.join(dir, 'a-1.txt'), 'y');
-      expect(uniqueTargetPath(dir, 'a.txt')).toBe(path.join(dir, 'a-2.txt'));
-      expect(uniqueTargetPath(dir, 'b.txt')).toBe(path.join(dir, 'b.txt'));
-    } finally {
-      fs.rmSync(dir, { recursive: true, force: true });
-    }
   });
 });

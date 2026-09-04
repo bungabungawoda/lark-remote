@@ -20,7 +20,7 @@ import { DshTranslator } from './translator.js';
 import { getLogger } from '../../logger/index.js';
 
 /** DSH selectModel provider（deepseek-official 是 rc.7 模型目录的 provider）。 */
-export const DSH_MODEL_PROVIDER = 'deepseek-official';
+const DSH_MODEL_PROVIDER = 'deepseek-official';
 
 export interface DshRunnerOptions {
   kind: 'dsh';

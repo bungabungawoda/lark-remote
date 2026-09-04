@@ -1,440 +1,227 @@
 import { describe, it, expect } from 'vitest';
 import { resolveAgentChoices } from '../runner/index.js';
+import { choiceFieldsFor, AGENT_CHOICE_FIELDS } from './agent-choices-common.js';
 import type { AppConfig } from '../config/index.js';
 
+/**
+ * 表驱动测试：用例由 choiceFieldsFor 映射表（agent-choices-common.ts）生成，
+ * 新增 agent/字段只需改映射表，这里自动覆盖。
+ */
+const AGENTS = ['codex', 'pi', 'opencode', 'kimi'] as const;
+
+const baseConfig: AppConfig = {
+  feishu: { appId: 'test', appSecret: 'test' },
+  claude: { model: 'claude-opus-4-8', effort: 'medium', stopGraceMs: 5000 },
+  defaultAgent: 'codex',
+  idle: { watchdogMinutes: 15 },
+  output: { showThinking: true, showToolUse: true, showToolResult: true },
+  logging: { level: 'info' },
+};
+
+function configFor(
+  agent: string,
+  opts: { choices?: Record<string, unknown>; agents?: Record<string, unknown> } = {},
+): AppConfig {
+  return {
+    ...baseConfig,
+    defaultAgent: agent,
+    ...(opts.choices ? { agentChoices: { [agent]: opts.choices } } : {}),
+    ...(opts.agents ? { agents: { [agent]: opts.agents } } : {}),
+  } as unknown as AppConfig;
+}
+
+function agentSlot(resolved: AppConfig, agent: string): Record<string, unknown> | undefined {
+  return (resolved.agents as unknown as Record<string, Record<string, unknown>>)?.[agent];
+}
+
 describe('resolveAgentChoices', () => {
-  const baseConfig: AppConfig = {
-    feishu: { appId: 'test', appSecret: 'test' },
-    claude: { model: 'claude-opus-4-8', effort: 'medium', stopGraceMs: 5000 },
-    defaultAgent: 'codex',
-    idle: { watchdogMinutes: 15 },
-    output: { showThinking: true, showToolUse: true, showToolResult: true },
-    logging: { level: 'info' },
-    agentChoices: {
-      codex: { model: 'glm-5.2', modelProvider: 'volcengine-coding-plan' },
-      pi: { model: 'glm-5.1', provider: 'lt', thinking: 'high' },
+  // 字面量快照：本文件的表驱动用例以 choiceFieldsFor 为 oracle（与生产同源），
+  // 这条断言用逐字段字面量钉住整张映射表，防止表被误改时测试自我适配。
+  it('pins the AGENT_CHOICE_FIELDS mapping table (literal snapshot)', () => {
+    expect(AGENT_CHOICE_FIELDS).toEqual({
+      codex: [
+        { configKey: 'model', choicesKey: 'model' },
+        { configKey: 'modelProvider', choicesKey: 'modelProvider' },
+      ],
+      pi: [
+        { configKey: 'model', choicesKey: 'model' },
+        { configKey: 'provider', choicesKey: 'provider' },
+        { configKey: 'thinking', choicesKey: 'thinking' },
+      ],
+      opencode: [
+        { configKey: 'modelID', choicesKey: 'modelID' },
+        { configKey: 'providerID', choicesKey: 'providerID' },
+      ],
+      kimi: [
+        { configKey: 'model', choicesKey: 'model' },
+        { configKey: 'thinkingEffort', choicesKey: 'thinkingEffort' },
+      ],
+      dsh: [],
+    });
+  });
+
+  it.each(AGENTS)(
+    'merges every choices field into agents.%s when the agents slot is empty',
+    (agent) => {
+      const fields = choiceFieldsFor(agent)!;
+      const choices = Object.fromEntries(
+        fields.map((f) => [f.choicesKey, `choices-${f.choicesKey}`]),
+      );
+      const resolved = resolveAgentChoices(configFor(agent, { choices }));
+
+      expect(agentSlot(resolved, agent)).toBeDefined();
+      for (const f of fields) {
+        expect(agentSlot(resolved, agent)?.[f.configKey]).toBe(`choices-${f.choicesKey}`);
+      }
     },
-  };
+  );
 
-  it('should merge codex choices into agents config', () => {
-    // 部分 agents 配置是故意的：缺 model 时由 agentChoices 补齐（运行时语义）。
-    const config = { ...baseConfig, agents: { codex: {} } } as AppConfig;
-    const resolved = resolveAgentChoices(config);
+  it.each(AGENTS)('does not overwrite explicit agents.%s config with choices', (agent) => {
+    const fields = choiceFieldsFor(agent)!;
+    const choices = Object.fromEntries(
+      fields.map((f) => [f.choicesKey, `choices-${f.choicesKey}`]),
+    );
+    const agents = Object.fromEntries(fields.map((f) => [f.configKey, `existing-${f.configKey}`]));
+    const resolved = resolveAgentChoices(configFor(agent, { choices, agents }));
 
-    expect(resolved.agents?.codex?.model).toBe('glm-5.2');
-    expect(resolved.agents?.codex?.modelProvider).toBe('volcengine-coding-plan');
+    for (const f of fields) {
+      expect(agentSlot(resolved, agent)?.[f.configKey]).toBe(`existing-${f.configKey}`);
+    }
   });
 
-  it('should use choices when agents config is empty', () => {
-    const config = { ...baseConfig, agents: {} };
-    const resolved = resolveAgentChoices(config);
+  // 部分 choices：单字段存在时只应用该字段，其余字段不得虚构
+  for (const agent of AGENTS) {
+    for (const field of choiceFieldsFor(agent)!) {
+      it(`handles ${agent} with partial agentChoices (${field.choicesKey} only)`, () => {
+        const resolved = resolveAgentChoices(
+          configFor(agent, { choices: { [field.choicesKey]: `choices-${field.choicesKey}` } }),
+        );
 
-    expect(resolved.agents?.codex?.model).toBe('glm-5.2');
-    expect(resolved.agents?.codex?.modelProvider).toBe('volcengine-coding-plan');
+        expect(agentSlot(resolved, agent)?.[field.configKey]).toBe(`choices-${field.choicesKey}`);
+        for (const f of choiceFieldsFor(agent)!) {
+          if (f.configKey !== field.configKey) {
+            expect(agentSlot(resolved, agent)?.[f.configKey]).toBeUndefined();
+          }
+        }
+      });
+    }
+  }
+
+  it('returns config unchanged when agentChoices is absent', () => {
+    const config = { ...baseConfig } as AppConfig;
+    expect(resolveAgentChoices(config)).toEqual(config);
   });
 
-  it('should use pi choices when switching to pi', () => {
-    const config = {
-      ...baseConfig,
-      defaultAgent: 'pi',
-      agents: { pi: {} },
-    } as AppConfig;
-    const resolved = resolveAgentChoices(config);
-
-    expect(resolved.agents?.pi?.model).toBe('glm-5.1');
-    expect(resolved.agents?.pi?.provider).toBe('lt');
-    expect(resolved.agents?.pi?.thinking).toBe('high');
-  });
-
-  it('should return original config when no choices exist', () => {
-    const config = { ...baseConfig, agentChoices: undefined };
-    const resolved = resolveAgentChoices(config);
-
-    expect(resolved).toEqual(config);
-  });
-
-  it('should not overwrite explicit agent config with choices', () => {
-    const config = {
-      ...baseConfig,
-      agents: { codex: { model: 'custom-model', modelProvider: 'custom-provider' } },
-    } as AppConfig;
-    const resolved = resolveAgentChoices(config);
-
-    // Explicit config should take priority
-    expect(resolved.agents?.codex?.model).toBe('custom-model');
-    expect(resolved.agents?.codex?.modelProvider).toBe('custom-provider');
-  });
-
-  it('should merge opencode choices with modelID and providerID into agents.opencode', () => {
-    const config = {
-      ...baseConfig,
-      defaultAgent: 'opencode',
-      agentChoices: {
-        opencode: { modelID: 'sonnet', providerID: 'anthropic' },
-      },
-    } as AppConfig;
-    const resolved = resolveAgentChoices(config);
-
-    expect(resolved.agents?.opencode?.modelID).toBe('sonnet');
-    expect(resolved.agents?.opencode?.providerID).toBe('anthropic');
-  });
-
-  it('should merge kimi choices with model and thinkingEffort into agents.kimi', () => {
-    const config = {
-      ...baseConfig,
-      defaultAgent: 'kimi',
-      agentChoices: {
-        kimi: { model: 'moonshot-v1', thinkingEffort: 'high' },
-      },
-    } as AppConfig;
-    const resolved = resolveAgentChoices(config);
-
-    expect(resolved.agents?.kimi?.model).toBe('moonshot-v1');
-    expect(resolved.agents?.kimi?.thinkingEffort).toBe('high');
-  });
-
-  it('should return config unchanged when agent is claude (early return)', () => {
-    const config = {
-      ...baseConfig,
+  it('returns config unchanged when agent is claude (top-level config, early return)', () => {
+    const config = configFor('claude', {
+      choices: Object.fromEntries(
+        choiceFieldsFor('codex')!.map((f) => [f.choicesKey, `choices-${f.choicesKey}`]),
+      ),
+    });
+    // choices 挂在 claude 槽位（configFor 按传入 agent 落键）也不该被消费
+    const withClaudeChoices = {
+      ...config,
       defaultAgent: 'claude',
-      agentChoices: {
-        codex: { model: 'glm-5.2', modelProvider: 'volcengine-coding-plan' },
-      },
     } as AppConfig;
-    const resolved = resolveAgentChoices(config);
-
-    expect(resolved).toEqual(config);
+    expect(resolveAgentChoices(withClaudeChoices)).toEqual(withClaudeChoices);
   });
 
-  it('should return original config when agentChoices has no entry for current agent', () => {
+  it('returns config unchanged when agentChoices has no entry for the current agent', () => {
     const config = {
-      ...baseConfig,
-      defaultAgent: 'opencode',
-      agentChoices: {
-        codex: { model: 'glm-5.2', modelProvider: 'volcengine-coding-plan' },
-      },
-    } as AppConfig;
-    const resolved = resolveAgentChoices(config);
-
-    expect(resolved).toEqual(config);
+      ...configFor('opencode', {
+        choices: { modelID: 'sonnet' },
+      }),
+      agentChoices: { codex: { model: 'glm-5.2' } },
+    } as unknown as AppConfig;
+    expect(resolveAgentChoices(config)).toEqual(config);
   });
 
-  it('should return original config when defaultAgent is undefined', () => {
-    const config = {
-      ...baseConfig,
-      defaultAgent: undefined,
-    } as AppConfig;
-    const resolved = resolveAgentChoices(config);
-
-    expect(resolved).toEqual(config);
+  it('returns config unchanged when defaultAgent is undefined', () => {
+    const config = { ...baseConfig, defaultAgent: undefined } as unknown as AppConfig;
+    expect(resolveAgentChoices(config)).toEqual(config);
   });
 
-  it('should not overwrite existing codex agents config fields with choices', () => {
-    const config = {
-      ...baseConfig,
-      defaultAgent: 'codex',
-      agents: { codex: { model: 'existing-model' } },
-      agentChoices: {
-        codex: { model: 'choices-model', modelProvider: 'choices-provider' },
-      },
-    } as AppConfig;
-    const resolved = resolveAgentChoices(config);
-
-    // existing model should be preserved, modelProvider from choices should be applied
-    expect(resolved.agents?.codex?.model).toBe('existing-model');
-    expect(resolved.agents?.codex?.modelProvider).toBe('choices-provider');
+  it('returns config unchanged for dsh (choices 恒为空：host 是连接配置而非 per-run choice)', () => {
+    const config = { ...baseConfig, defaultAgent: 'dsh' } as unknown as AppConfig;
+    expect(resolveAgentChoices(config)).toEqual(config);
   });
 
-  it('should not overwrite existing pi agents config fields with choices', () => {
-    const config = {
-      ...baseConfig,
-      defaultAgent: 'pi',
-      agents: { pi: { model: 'existing-model' } },
-      agentChoices: {
-        pi: { model: 'choices-model', provider: 'choices-provider', thinking: 'high' },
-      },
-    } as AppConfig;
-    const resolved = resolveAgentChoices(config);
+  // 混合场景：部分字段显式配置、部分来自 choices —— 逐字段回退语义
+  it.each(AGENTS)(
+    'fills only the missing agents.%s fields from choices (mixed explicit/partial)',
+    (agent) => {
+      const fields = choiceFieldsFor(agent)!;
+      const explicit = fields.slice(0, 1).map((f) => f.configKey);
+      const agents = Object.fromEntries(explicit.map((k) => [k, `existing-${k}`]));
+      const choices = Object.fromEntries(
+        fields.map((f) => [f.choicesKey, `choices-${f.choicesKey}`]),
+      );
+      const resolved = resolveAgentChoices(configFor(agent, { choices, agents }));
 
-    expect(resolved.agents?.pi?.model).toBe('existing-model');
-    expect(resolved.agents?.pi?.provider).toBe('choices-provider');
-    expect(resolved.agents?.pi?.thinking).toBe('high');
-  });
+      for (const f of fields) {
+        const expected = explicit.includes(f.configKey)
+          ? `existing-${f.configKey}`
+          : `choices-${f.choicesKey}`;
+        expect(agentSlot(resolved, agent)?.[f.configKey]).toBe(expected);
+      }
+    },
+  );
 
-  it('should not overwrite existing opencode agents config fields with choices', () => {
-    const config = {
-      ...baseConfig,
-      defaultAgent: 'opencode',
-      agents: { opencode: { modelID: 'existing-model-id' } },
-      agentChoices: {
-        opencode: { modelID: 'choices-model-id', providerID: 'choices-provider-id' },
-      },
-    } as AppConfig;
-    const resolved = resolveAgentChoices(config);
-
-    expect(resolved.agents?.opencode?.modelID).toBe('existing-model-id');
-    expect(resolved.agents?.opencode?.providerID).toBe('choices-provider-id');
-  });
-
-  it('should not overwrite existing kimi agents config fields with choices', () => {
-    const config = {
-      ...baseConfig,
-      defaultAgent: 'kimi',
-      agents: { kimi: { model: 'existing-model' } },
-      agentChoices: {
-        kimi: { model: 'choices-model', thinkingEffort: 'high' },
-      },
-    } as AppConfig;
-    const resolved = resolveAgentChoices(config);
-
-    expect(resolved.agents?.kimi?.model).toBe('existing-model');
-    expect(resolved.agents?.kimi?.thinkingEffort).toBe('high');
-  });
-
-  it('should not mutate the original config', () => {
-    const config = {
-      ...baseConfig,
-      defaultAgent: 'codex',
-      agents: {},
-    } as AppConfig;
+  it('does not mutate the original config', () => {
+    const config = configFor('codex', { choices: { model: 'glm-5.2' } });
     const originalAgents = config.agents;
     resolveAgentChoices(config);
 
     expect(config.agents).toBe(originalAgents);
-    expect(config.agents?.codex).toBeUndefined();
   });
 
-  it('should handle codex with partial agentChoices (model only, no modelProvider)', () => {
-    const config = {
-      ...baseConfig,
-      defaultAgent: 'codex',
-      agents: { codex: {} },
-      agentChoices: { codex: { model: 'glm-5.2' } },
-    } as AppConfig;
+  it('creates the agents object when agents is undefined', () => {
+    const config = configFor('pi', { choices: { model: 'glm-5.1' } });
+    delete (config as Partial<AppConfig>).agents;
     const resolved = resolveAgentChoices(config);
 
-    expect(resolved.agents?.codex?.model).toBe('glm-5.2');
-    expect(resolved.agents?.codex?.modelProvider).toBeUndefined();
+    expect(resolved.agents).toBeDefined();
+    expect(agentSlot(resolved, 'pi')?.model).toBe('glm-5.1');
   });
 
-  it('should handle codex with partial agentChoices (modelProvider only, no model)', () => {
-    const config = {
-      ...baseConfig,
-      defaultAgent: 'codex',
-      agents: { codex: {} },
-      agentChoices: { codex: { modelProvider: 'volcengine' } },
-    } as AppConfig;
-    const resolved = resolveAgentChoices(config);
-
-    expect(resolved.agents?.codex?.model).toBeUndefined();
-    expect(resolved.agents?.codex?.modelProvider).toBe('volcengine');
-  });
-
-  it('should handle pi with partial agentChoices (model only)', () => {
-    const config = {
-      ...baseConfig,
-      defaultAgent: 'pi',
-      agents: { pi: {} },
-      agentChoices: { pi: { model: 'glm-5.1' } },
-    } as AppConfig;
-    const resolved = resolveAgentChoices(config);
-
-    expect(resolved.agents?.pi?.model).toBe('glm-5.1');
-    expect(resolved.agents?.pi?.provider).toBeUndefined();
-    expect(resolved.agents?.pi?.thinking).toBeUndefined();
-  });
-
-  it('should handle pi with partial agentChoices (provider only)', () => {
-    const config = {
-      ...baseConfig,
-      defaultAgent: 'pi',
-      agents: { pi: {} },
-      agentChoices: { pi: { provider: 'anthropic' } },
-    } as AppConfig;
-    const resolved = resolveAgentChoices(config);
-
-    expect(resolved.agents?.pi?.model).toBeUndefined();
-    expect(resolved.agents?.pi?.provider).toBe('anthropic');
-    expect(resolved.agents?.pi?.thinking).toBeUndefined();
-  });
-
-  it('should handle pi with partial agentChoices (thinking only)', () => {
-    const config = {
-      ...baseConfig,
-      defaultAgent: 'pi',
-      agents: { pi: {} },
-      agentChoices: { pi: { thinking: 'high' } },
-    } as AppConfig;
-    const resolved = resolveAgentChoices(config);
-
-    expect(resolved.agents?.pi?.model).toBeUndefined();
-    expect(resolved.agents?.pi?.provider).toBeUndefined();
-    expect(resolved.agents?.pi?.thinking).toBe('high');
-  });
-
-  it('should handle opencode with partial agentChoices (modelID only)', () => {
-    const config = {
-      ...baseConfig,
-      defaultAgent: 'opencode',
-      agents: { opencode: {} },
-      agentChoices: { opencode: { modelID: 'sonnet' } },
-    } as AppConfig;
-    const resolved = resolveAgentChoices(config);
-
-    expect(resolved.agents?.opencode?.modelID).toBe('sonnet');
-    expect(resolved.agents?.opencode?.providerID).toBeUndefined();
-  });
-
-  it('should handle opencode with partial agentChoices (providerID only)', () => {
-    const config = {
-      ...baseConfig,
-      defaultAgent: 'opencode',
-      agents: { opencode: {} },
-      agentChoices: { opencode: { providerID: 'anthropic' } },
-    } as AppConfig;
-    const resolved = resolveAgentChoices(config);
-
-    expect(resolved.agents?.opencode?.modelID).toBeUndefined();
-    expect(resolved.agents?.opencode?.providerID).toBe('anthropic');
-  });
-
-  it('should handle kimi with partial agentChoices (model only)', () => {
-    const config = {
-      ...baseConfig,
-      defaultAgent: 'kimi',
-      agents: { kimi: {} },
-      agentChoices: { kimi: { model: 'moonshot-v1' } },
-    } as AppConfig;
-    const resolved = resolveAgentChoices(config);
-
-    expect(resolved.agents?.kimi?.model).toBe('moonshot-v1');
-    expect(resolved.agents?.kimi?.thinkingEffort).toBeUndefined();
-  });
-
-  it('should handle kimi with partial agentChoices (thinkingEffort only)', () => {
-    const config = {
-      ...baseConfig,
-      defaultAgent: 'kimi',
-      agents: { kimi: {} },
-      agentChoices: { kimi: { thinkingEffort: 'max' } },
-    } as AppConfig;
-    const resolved = resolveAgentChoices(config);
-
-    expect(resolved.agents?.kimi?.model).toBeUndefined();
-    expect(resolved.agents?.kimi?.thinkingEffort).toBe('max');
-  });
-
-  it('should handle codex agent with agents set but no codex sub-key and empty choices', () => {
-    const config = {
-      ...baseConfig,
-      defaultAgent: 'codex',
-      agents: { pi: {} },
-      agentChoices: { codex: {} },
-    } as AppConfig;
-    const resolved = resolveAgentChoices(config);
-
-    // codex sub-key should be created, no fields copied from empty choices
-    expect(resolved.agents?.codex).toBeDefined();
-    expect(resolved.agents?.codex?.model).toBeUndefined();
-    expect(resolved.agents?.codex?.modelProvider).toBeUndefined();
-  });
-
-  it('should handle pi agent with agents set but no pi sub-key and partial choices', () => {
-    const config = {
-      ...baseConfig,
-      defaultAgent: 'pi',
-      agents: { codex: {} },
-      agentChoices: { pi: { model: 'glm-5.1' } },
-    } as AppConfig;
-    const resolved = resolveAgentChoices(config);
-
-    expect(resolved.agents?.pi).toBeDefined();
-    expect(resolved.agents?.pi?.model).toBe('glm-5.1');
-    expect(resolved.agents?.pi?.provider).toBeUndefined();
-    expect(resolved.agents?.pi?.thinking).toBeUndefined();
-  });
-
-  it('should handle pi agent with agents.pi existing and choices missing some fields', () => {
-    const config = {
-      ...baseConfig,
-      defaultAgent: 'pi',
-      agents: { pi: { model: 'existing' } },
-      agentChoices: { pi: { provider: 'lt' } },
-    } as AppConfig;
-    const resolved = resolveAgentChoices(config);
-
-    // model already set in agents, should not be overwritten
-    expect(resolved.agents?.pi?.model).toBe('existing');
-    // provider from choices should be applied
-    expect(resolved.agents?.pi?.provider).toBe('lt');
-    // thinking absent in both, should remain undefined
-    expect(resolved.agents?.pi?.thinking).toBeUndefined();
-  });
-
-  it('should handle opencode agent with agents.opencode existing and choices missing some fields', () => {
-    const config = {
-      ...baseConfig,
-      defaultAgent: 'opencode',
-      agents: { opencode: { modelID: 'existing' } },
-      agentChoices: { opencode: { providerID: 'anthropic' } },
-    } as AppConfig;
-    const resolved = resolveAgentChoices(config);
-
-    expect(resolved.agents?.opencode?.modelID).toBe('existing');
-    expect(resolved.agents?.opencode?.providerID).toBe('anthropic');
-  });
-
-  it('should handle kimi agent with agents.kimi existing and choices missing some fields', () => {
-    const config = {
-      ...baseConfig,
-      defaultAgent: 'kimi',
-      agents: { kimi: { model: 'existing' } },
-      agentChoices: { kimi: { thinkingEffort: 'max' } },
-    } as AppConfig;
-    const resolved = resolveAgentChoices(config);
-
-    expect(resolved.agents?.kimi?.model).toBe('existing');
-    expect(resolved.agents?.kimi?.thinkingEffort).toBe('max');
-  });
-
-  it('should handle agents without the specific agent sub-key', () => {
+  it('creates the agent sub-key when agents exists without it (partial choices)', () => {
     const config = {
       ...baseConfig,
       defaultAgent: 'kimi',
       agents: { codex: {} },
       agentChoices: { kimi: { model: 'moonshot' } },
-    } as AppConfig;
+    } as unknown as AppConfig;
     const resolved = resolveAgentChoices(config);
 
-    // agents.kimi should be created
-    expect(resolved.agents?.kimi).toBeDefined();
-    expect(resolved.agents?.kimi?.model).toBe('moonshot');
+    expect(agentSlot(resolved, 'kimi')).toBeDefined();
+    expect(agentSlot(resolved, 'kimi')?.model).toBe('moonshot');
   });
 
-  it('should create agents object for codex when agents is undefined', () => {
+  it('creates an empty agent slot when agents exists without the sub-key and choices is {}', () => {
+    // 空 choices 对象 `{}` 是 truthy，不会被 `if (!agentChoices) return` 拦下，
+    // 仍走 resolve-agent-choices.ts 的 `[agent] ??= {}` 补槽位路径：
+    // 槽位被创建但不虚构任何字段。
     const config = {
       ...baseConfig,
       defaultAgent: 'codex',
-      agentChoices: { codex: { model: 'glm-5.2' } },
-    } as AppConfig;
-    // Remove agents entirely
-    delete (config as Partial<AppConfig>).agents;
+      agents: { pi: { model: 'glm-5.2' } },
+      agentChoices: { codex: {} },
+    } as unknown as AppConfig;
     const resolved = resolveAgentChoices(config);
 
-    expect(resolved.agents).toBeDefined();
-    expect(resolved.agents?.codex?.model).toBe('glm-5.2');
+    expect(agentSlot(resolved, 'codex')).toEqual({});
   });
 
-  it('should create agents object for pi when agents is undefined', () => {
+  it('mixes existing agents fields with missing choices fields (per-field fallback)', () => {
     const config = {
       ...baseConfig,
-      defaultAgent: 'pi',
-      agentChoices: { pi: { model: 'glm-5.1' } },
-    } as AppConfig;
-    delete (config as Partial<AppConfig>).agents;
+      defaultAgent: 'opencode',
+      agents: { opencode: { modelID: 'existing' } },
+      agentChoices: { opencode: { providerID: 'anthropic' } },
+    } as unknown as AppConfig;
     const resolved = resolveAgentChoices(config);
 
-    expect(resolved.agents).toBeDefined();
-    expect(resolved.agents?.pi?.model).toBe('glm-5.1');
+    expect(agentSlot(resolved, 'opencode')?.modelID).toBe('existing');
+    expect(agentSlot(resolved, 'opencode')?.providerID).toBe('anthropic');
   });
 });

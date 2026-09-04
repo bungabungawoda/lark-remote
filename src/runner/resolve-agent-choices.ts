@@ -19,9 +19,13 @@ export function resolveAgentChoices(config: AppConfig): AppConfig {
     return config;
   }
 
-  const agentChoices = choices[agent];
   const fields = choiceFieldsFor(agent);
-  if (!agentChoices || !fields) {
+  // dsh 的 choices 恒为空（host 是连接配置而非 per-run choice），无需恢复
+  if (!fields || fields.length === 0) {
+    return config;
+  }
+  const agentChoices = (choices as Record<string, Record<string, unknown>>)[agent];
+  if (!agentChoices) {
     return config;
   }
 
@@ -34,7 +38,7 @@ export function resolveAgentChoices(config: AppConfig): AppConfig {
   }
   const agents = resolved.agents;
   const target = ((agents as Record<string, Record<string, unknown>>)[agent] ??= {});
-  const source = agentChoices as unknown as Record<string, unknown>;
+  const source = agentChoices;
 
   for (const { configKey, choicesKey } of fields) {
     const value = source[choicesKey];

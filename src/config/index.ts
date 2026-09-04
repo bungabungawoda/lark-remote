@@ -273,11 +273,6 @@ const AgentChoicesSchema = z.object({
       thinkingEffort: z.string().optional(),
     })
     .optional(),
-  dsh: z
-    .object({
-      host: z.string().optional(),
-    })
-    .optional(),
 });
 
 export const AppConfigSchema = z.object({
