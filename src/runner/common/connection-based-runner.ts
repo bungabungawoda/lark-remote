@@ -27,7 +27,7 @@ import { getLogger } from '../../logger/index.js';
 import { syntheticInitEvent } from './runner-utils.js';
 
 /** How long to wait for turn output notifications before failing. */
-export const TURN_IDLE_TIMEOUT_MS = 10 * 60 * 1000;
+const TURN_IDLE_TIMEOUT_MS = 10 * 60 * 1000;
 
 export abstract class ConnectionBasedRunner<TClient, TEvent = AgentEvent> implements AgentRunner {
   readonly kind: AgentKind;
