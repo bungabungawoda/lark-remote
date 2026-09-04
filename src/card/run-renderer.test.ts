@@ -1050,6 +1050,7 @@ describe('renderRunCard', () => {
     const json = JSON.stringify(card);
     expect(json).toContain('"cmd":"stop"');
     expect(json).toContain('"runId":"run-7"');
+    expect(json).toContain('"type":"callback"');
     // New session button is always present
     expect(json).toContain('"cmd":"new-session"');
   });
@@ -1070,6 +1071,9 @@ describe('renderRunCard', () => {
     expect(json).not.toContain('"cmd":"stop"');
     // New session button is always present, even in terminal state
     expect(json).toContain('"cmd":"new-session"');
+    // Status text uses div + lark_md (not 1.x tag component which is unsupported in 2.0)
+    expect(json).toContain('"tag":"div"');
+    expect(json).toContain('已完成');
     expect(Buffer.byteLength(JSON.stringify(card), 'utf8')).toBeLessThan(30_000);
   });
 
@@ -1919,28 +1923,6 @@ describe('renderRunCard (CardKit 2.0)', () => {
     expect(json).not.toMatch(/"tag"\s*:\s*"action"[^}]*"actions"/);
   });
 
-  it('running card has stop button with 2.0 behaviors bound to runId', () => {
-    const card = render2(createInitialRunState('run-2-stop'));
-    const json = JSON.stringify(card);
-    expect(json).toContain('"cmd":"stop"');
-    expect(json).toContain('"runId":"run-2-stop"');
-    expect(json).toContain('"type":"callback"');
-  });
-
-  it('terminal (done) card has no stop button but has new-session button', () => {
-    const state = finishRun(createInitialRunState('run-2-done'), 'done', {
-      resultSubtype: 'success',
-    });
-    const card = render2(state);
-    const json = JSON.stringify(card);
-    expect(json).not.toContain('"cmd":"stop"');
-    // New session button is always present
-    expect(json).toContain('"cmd":"new-session"');
-    // Status text uses div + lark_md (not 1.x tag component which is unsupported in 2.0)
-    expect(json).toContain('"tag":"div"');
-    expect(json).toContain('已完成');
-  });
-
   it('compact button shows on every terminal state for a normal turn (incl. abnormal exits)', () => {
     const terminals = ['done', 'error', 'interrupted', 'idle_timeout'] as const;
     for (const terminal of terminals) {
@@ -2231,7 +2213,7 @@ describe('renderRunCard (CardKit 2.0)', () => {
     // Verify the card triggered budget exceeded (should be much smaller than 28KB)
     expect(cardBytes).toBeLessThan(28_000);
 
-    // Test expectations for the degraded behavior (will fail in RED):
+    // 降级行为的预期输出：
     // 1. Should contain the last 2 thinking blocks (思考6 and 思考7)
     expect(json).toContain('思考6');
     expect(json).toContain('思考7');

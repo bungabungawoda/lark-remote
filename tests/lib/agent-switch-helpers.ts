@@ -5,8 +5,48 @@
  * plain text. These helpers extract notification text from either format.
  */
 
+import { AppConfigSchema, type AppConfig } from '../../src/config/index.js';
+
+/**
+ * agent-switch anchor 系列的规范测试配置（全 agent 槽位填充）。
+ * 需要子集时用 `overrides.agents` 整体覆盖 agents 键。
+ */
+export function buildAgentSwitchConfig(overrides?: Partial<AppConfig>): AppConfig {
+  return AppConfigSchema.parse({
+    feishu: { appId: 'test', appSecret: 'test' },
+    defaultAgent: 'claude',
+    claude: {
+      model: 'opus',
+      stopGraceMs: 5000,
+    },
+    agents: {
+      pi: { provider: 'Volcano', model: 'glm-5.2', thinking: 'medium' },
+      codex: { model: 'claude-sonnet-4-20250514' },
+      opencode: { model: 'gpt-5' },
+      kimi: { model: 'kimi-k2' },
+    },
+    workspace: { default: '' },
+    output: {
+      showThinking: true,
+      showToolUse: false,
+      showToolResult: false,
+    },
+    ...overrides,
+  });
+}
+
+export const AGENTS = ['claude', 'codex', 'pi', 'opencode', 'kimi'] as const;
+
+export const DISPLAY: Record<string, string> = {
+  claude: 'Claude',
+  codex: 'Codex',
+  pi: 'Pi',
+  opencode: 'Opencode',
+  kimi: 'Kimi',
+};
+
 /** Extract all text content from a CardKit 2.0 card (header + body) */
-export function extractCardTexts(card: unknown): string {
+function extractCardTexts(card: unknown): string {
   if (!card || typeof card !== 'object') return '';
   const c = card as { header?: { title?: { content?: string } }; body?: { elements?: unknown[] } };
   const parts: string[] = [];

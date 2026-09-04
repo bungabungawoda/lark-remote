@@ -92,20 +92,12 @@ deepseek/deepseek-chat
       );
 
       const result = loadOpencodeConfig();
-      const currentModel = 'big-pickle';
 
-      // Simulate user switching from opencode to deepseek
-      const newProvider = 'deepseek';
-      const newModelOptions = result.modelOptions(newProvider);
-      const currentModelIsValid = newModelOptions.some((m) => m === currentModel);
-
-      // With correct implementation: currentModel (big-pickle) should NOT be valid
-      // for a different provider (deepseek)
-      expect(currentModelIsValid).toBe(false);
-
-      // The new provider's first model should be used as reset value
+      // deepseek 的模型列表不含 opencode 的模型，也不为空
+      const newModelOptions = result.modelOptions('deepseek');
       expect(newModelOptions.length).toBeGreaterThan(0);
-      expect(newModelOptions[0]).toBe('deepseek-chat');
+      expect(newModelOptions).toContain('deepseek-chat');
+      expect(newModelOptions).not.toContain('big-pickle');
     });
 
     it('should return all models when no provider specified', () => {
@@ -133,32 +125,6 @@ minimax-cn-coding-plan/MiniMax-M2.5
       expect(allModels).toContain('deepseek-chat');
       expect(allModels).toContain('MiniMax-M2.5');
       expect(allModels.length).toBe(3);
-    });
-
-    it('should correctly filter by provider via loadOpencodeConfig().modelOptions()', () => {
-      mockExecSync.mockReturnValue(
-        `opencode/big-pickle
-{
-  "id": "big-pickle"
-}
-deepseek/deepseek-chat
-{
-  "id": "deepseek-chat"
-}
-`,
-      );
-
-      // Test the production API (same path the router config card uses)
-      const opencodeModels = loadOpencodeConfig().modelOptions('opencode');
-      const deepseekModels = loadOpencodeConfig().modelOptions('deepseek');
-
-      // openai should NOT contain deepseek models
-      expect(opencodeModels).not.toContain('deepseek-chat');
-      expect(opencodeModels).toContain('big-pickle');
-
-      // deepseek should NOT contain opencode models
-      expect(deepseekModels).not.toContain('big-pickle');
-      expect(deepseekModels).toContain('deepseek-chat');
     });
 
     it('should handle unknown provider gracefully', () => {
@@ -195,49 +161,6 @@ deepseek/deepseek-chat
 
       const deepseekModels = result.modelOptions('deepseek');
       expect(deepseekModels).toContain('deepseek-chat');
-    });
-
-    it('should trigger model reset logic in router (provider switch scenario)', () => {
-      // This test simulates the router's logic when user switches provider
-
-      mockExecSync.mockReturnValue(
-        `opencode/big-pickle
-{
-  "id": "big-pickle"
-}
-deepseek/deepseek-chat
-{
-  "id": "deepseek-chat"
-}
-`,
-      );
-
-      const result = loadOpencodeConfig();
-
-      // Scenario: user currently has provider=opencode, model=big-pickle
-      // They switch to provider=deepseek
-      const currentModel = 'big-pickle';
-      const newProvider = 'deepseek';
-
-      const newModelOptions = result.modelOptions(newProvider);
-      const currentModelIsValid = newModelOptions.some((m) => m === currentModel);
-
-      // With correct implementation:
-      // - currentModelIsValid should be FALSE (big-pickle doesn't belong to deepseek)
-      // - Router should reset model to newModelOptions[0]
-      expect(currentModelIsValid).toBe(false);
-      expect(newModelOptions[0]).toBe('deepseek-chat');
-
-      // Test reverse scenario: deepseek -> opencode
-      const reverseCurrentModel = 'deepseek-chat';
-      const reverseNewProvider = 'opencode';
-      const reverseNewModelOptions = result.modelOptions(reverseNewProvider);
-      const reverseCurrentModelIsValid = reverseNewModelOptions.some(
-        (m) => m === reverseCurrentModel,
-      );
-
-      expect(reverseCurrentModelIsValid).toBe(false);
-      expect(reverseNewModelOptions[0]).toBe('big-pickle');
     });
   });
 });

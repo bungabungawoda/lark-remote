@@ -53,16 +53,13 @@ interface CodexConfigResult {
  * 配置 [model_providers.anthropic] 才存在，fallback 阶段不得虚构。
  */
 const FALLBACK_PROVIDERS = ['openai'];
-const FALLBACK_MODELS = [
-  'o3',
-  'o4-mini',
-  'gpt-4o',
-  'gpt-4.1',
-  'gpt-4.1-mini',
-  'gpt-4.1-nano',
-  'claude-sonnet-4-20250514',
-  'claude-opus-4-20250115',
-];
+const FALLBACK_MODELS = ['o3', 'o4-mini', 'gpt-4o', 'gpt-4.1', 'gpt-4.1-mini', 'gpt-4.1-nano'];
+/**
+ * anthropic 的独立兜底模型表：anthropic 非内置 provider，仅在用户显式配置后使用。
+ * 不得混入 FALLBACK_MODELS——无 config.toml 时 openai 的模型列表会原样暴露这些
+ * claude 条目（claude 模型列在 openai provider 下是错的）。
+ */
+const ANTHROPIC_FALLBACK_MODELS = ['claude-sonnet-4-20250514', 'claude-opus-4-20250115'];
 
 // ---------------------------------------------------------------------------
 // bundled models: `codex debug models --bundled`
@@ -443,7 +440,12 @@ export function loadCodexConfig(opts: LoadCodexConfigOpts = {}): CodexConfigResu
   // 否则 = bundled（与原行为一致）
   const catalogSlugs = getCodexCatalogModels(codexHome).map((m) => m.slug);
   const allModels = catalogSlugs.length > 0 ? catalogSlugs : FALLBACK_MODELS;
-  const anthropicModels = allModels.filter((m) => m.startsWith('claude-'));
+  // anthropic 模型列表仅在用户显式配置 anthropic 时使用：catalog 可用取 catalog 中的
+  // claude-*，否则用 ANTHROPIC_FALLBACK_MODELS（与 openai 兜底表隔离）
+  const anthropicModels =
+    catalogSlugs.length > 0
+      ? catalogSlugs.filter((m) => m.startsWith('claude-'))
+      : ANTHROPIC_FALLBACK_MODELS;
 
   if (!fs.existsSync(configFile)) {
     // 无 config.toml：默认模型取目录首个可用模型（codex default_model_from_available），

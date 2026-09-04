@@ -5,9 +5,9 @@ import os from 'node:os';
 import fs from 'node:fs';
 import { SessionStore } from '../../../src/session/index.js';
 import { CommandRouter } from '../../../src/router/index.js';
-import { AppConfigSchema } from '../../../src/config/index.js';
 import type { AppConfig } from '../../../src/config/index.js';
-import { lastNotice } from '../../../tests/lib/agent-switch-helpers.js';
+import { lastNotice } from '../../lib/agent-switch-helpers.js';
+import { buildAgentSwitchConfig as buildConfig } from '../../lib/agent-switch-helpers.js';
 
 /**
  * Round 3 anchor（2026-08-03 Round 6 由 probe 升 anchor，断言未动；spec Round
@@ -23,27 +23,6 @@ import { lastNotice } from '../../../tests/lib/agent-switch-helpers.js';
  * sessionId: X。历史背景：Round 3 修复前旧实现用 previous 残留代理"用户活动"
  * 并消费停车位，消息文案与 session 恢复双双错误；新契约下断言行为不变。
  */
-function buildConfig(overrides?: Partial<AppConfig>): AppConfig {
-  return AppConfigSchema.parse({
-    feishu: { appId: 'test', appSecret: 'test' },
-    defaultAgent: 'claude',
-    claude: {
-      model: 'opus',
-      stopGraceMs: 5000,
-    },
-    agents: {
-      pi: { provider: 'Volcano', model: 'glm-5.2', thinking: 'medium' },
-      codex: { model: 'claude-sonnet-4-20250514' },
-    },
-    workspace: { default: '' },
-    output: {
-      showThinking: true,
-      showToolUse: false,
-      showToolResult: false,
-    },
-    ...overrides,
-  });
-}
 
 describe('Round3 anchors: config.save switch notification edge paths', () => {
   let tmpDir: string;

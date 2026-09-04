@@ -53,7 +53,7 @@ vi.mock('node:child_process', () => ({
 }));
 
 import { BashProcessRunner } from '../../../src/runner/bash/index.js';
-import { createMockProc } from '../../../tests/lib/mock-process.js';
+import { createMockProc, emitExit } from '../../../tests/lib/mock-process.js';
 
 /**
  * Fake ChildProcess: stdout/stderr use PassThrough (real Readable streams with
@@ -76,10 +76,6 @@ function emitStdout(proc: ChildProcess, data: string): void {
 }
 function emitStderr(proc: ChildProcess, data: string): void {
   proc.stderr?.write(Buffer.from(data));
-}
-function emitExit(proc: ChildProcess, code: number | null, signal: NodeJS.Signals | null): void {
-  Object.assign(proc, { exitCode: code, signalCode: signal });
-  proc.emit('exit', code, signal);
 }
 
 /** Run a function on the next macrotask so the generator has suspended at its

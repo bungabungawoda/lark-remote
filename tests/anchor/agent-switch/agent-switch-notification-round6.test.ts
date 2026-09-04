@@ -5,9 +5,9 @@ import os from 'node:os';
 import fs from 'node:fs';
 import { SessionStore } from '../../../src/session/index.js';
 import { CommandRouter } from '../../../src/router/index.js';
-import { AppConfigSchema } from '../../../src/config/index.js';
 import type { AppConfig } from '../../../src/config/index.js';
-import { lastNotice } from '../../../tests/lib/agent-switch-helpers.js';
+import { lastNotice } from '../../lib/agent-switch-helpers.js';
+import { buildAgentSwitchConfig as buildConfig } from '../../lib/agent-switch-helpers.js';
 
 /**
  * Round 6 anchors: spec Round 5 设计（arrival 基线 + 停车语义 + 持久化迁移）的
@@ -24,29 +24,6 @@ import { lastNotice } from '../../../tests/lib/agent-switch-helpers.js';
  * - 双用户隔离：config.save 切换的 sessions/previousSessions/arrivalSessions 全部
  *   按 userId 隔离。
  */
-function buildConfig(overrides?: Partial<AppConfig>): AppConfig {
-  return AppConfigSchema.parse({
-    feishu: { appId: 'test', appSecret: 'test' },
-    defaultAgent: 'claude',
-    claude: {
-      model: 'opus',
-      stopGraceMs: 5000,
-    },
-    agents: {
-      pi: { provider: 'Volcano', model: 'glm-5.2', thinking: 'medium' },
-      codex: { model: 'claude-sonnet-4-20250514' },
-      opencode: { model: 'gpt-5' },
-      kimi: { model: 'kimi-k2' },
-    },
-    workspace: { default: '' },
-    output: {
-      showThinking: true,
-      showToolUse: false,
-      showToolResult: false,
-    },
-    ...overrides,
-  });
-}
 
 describe('Round6 anchors: arrival baseline persistence round-trip boundaries', () => {
   let tmpDir: string;
