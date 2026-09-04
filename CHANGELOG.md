@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.13] - 2026-09-04
+
+### 修复
+
+- kimi ACP Compact 等待机制重构：等待协议终态（complete / cancel / unknown）再收尾，移除「30s 超时即视为成功」的假完成路径——Compact 实际失败或被取消时如实反馈
+
+### 变更
+
+- 代码与测试清理：死导出/死字段清理、bridge usage 统计收敛、router 样板收敛、session 公共件下沉（`ttl-cache` / `recency`）、ACP 共享层下沉
+- 测试治理：超大测试文件按主题拆分、agent choices 测试表驱动化、弱断言收敛、移除无效测试
+- 移除未使用的 `@types/form-data` 依赖
+
 ## [0.1.12] - 2026-08-29
 
 ### 修复
