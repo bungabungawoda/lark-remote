@@ -53,7 +53,7 @@ interface KimiConfigResult {
   modelDefaultEfforts: Record<string, string>;
 }
 
-/** 清空缓存（测试与配置热更新用，与 codex/opencode 的 invalidate 对齐） */
+/** 清空缓存（仅供测试使用，生产代码无调用点） */
 export function invalidateKimiConfigCache(): void {
   kimiConfigCache = null;
 }

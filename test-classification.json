@@ -59,6 +59,7 @@
     "src/router/order-exec-dispatch.test.ts",
     "src/router/order-exec.test.ts",
     "src/router/router.test.ts",
+    "src/router/router-format.test.ts",
     "src/router/session-event-panel.test.ts",
     "src/router/alias.test.ts",
     "src/router/config/config-builder.test.ts",
@@ -99,8 +100,7 @@
     "tests/anchor/misc/session-reader-max-events-forward.test.ts",
     "tests/anchor/priority/p1-19-list-cache.test.ts",
     "tests/probe/jsonl-stream-thrashing-probe.test.ts",
-    "tests/probe/round10-reader-probes.test.ts",
-    "tests/runner/opencode-cwd-bug.test.ts"
+    "tests/probe/round10-reader-probes.test.ts"
   ],
   "infra-runner": [
     "src/runner/common/**/*.test.ts",
@@ -149,6 +149,7 @@
     "src/binder.test.ts",
     "src/error-classification.test.ts",
     "src/common/guards.test.ts",
+    "src/common/ttl-cache.test.ts",
     "src/workspace/workspace.test.ts",
     "src/logger/logger.test.ts",
     "src/update/**/*.test.ts",

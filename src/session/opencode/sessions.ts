@@ -98,19 +98,21 @@ interface OpencodeExportData {
 
 import { STALE_MS } from '../common/constants.js';
 import { paginate, capEvents } from '../common/pagination.js';
+import { sortByRecencyDesc } from '../common/recency.js';
+import { TtlCache } from '../../common/ttl-cache.js';
 
 export class OpencodeSessionReader implements AgentSessionReader {
   private readonly binary: string;
   private readonly cacheTtlMs: number;
   /** Optional raw-export capture override (testing / alt transport). */
   private readonly captureExportOverride?: (sessionId: string) => string;
-  /** Cache keyed by cwd - each cwd has its own cache entry */
-  /** cwd → 列表缓存（public：测试直接断言缓存形状，替代 as unknown as）。 */
-  listCache = new Map<string, { ts: number; data: OpencodeSessionListEntry[] }>();
+  /** cwd → 列表缓存（TTL 由 cacheTtlMs 决定）。 */
+  private listCache: TtlCache<string, OpencodeSessionListEntry[]>;
 
   constructor(opts: OpencodeSessionReaderOptions = {}) {
     this.binary = 'opencode';
     this.cacheTtlMs = opts.cacheTtlMs ?? 10_000;
+    this.listCache = new TtlCache(this.cacheTtlMs);
     this.captureExportOverride = opts.captureExport;
   }
 
@@ -131,7 +133,11 @@ export class OpencodeSessionReader implements AgentSessionReader {
 
     // Sort by updated descending; same-updated ties use id as a deterministic
     // secondary key so CLI/list-cache rebuilds never reorder the page.
-    filtered.sort((a, b) => b.updated - a.updated || a.id.localeCompare(b.id));
+    sortByRecencyDesc(
+      filtered,
+      (s) => s.updated,
+      (s) => s.id,
+    );
 
     // Compute total over the full sorted set, then paginate.
     const { items, total } = paginate(filtered, opts ?? {});
@@ -405,8 +411,8 @@ export class OpencodeSessionReader implements AgentSessionReader {
     const realCwd = this.realpath(cwd);
 
     const cached = this.listCache.get(realCwd);
-    if (cached && Date.now() - cached.ts < this.cacheTtlMs) {
-      return cached.data;
+    if (cached) {
+      return cached;
     }
 
     try {
@@ -427,7 +433,7 @@ export class OpencodeSessionReader implements AgentSessionReader {
       const data = JSON.parse(output) as OpencodeSessionListEntry[];
 
       // Update cache keyed by cwd
-      this.listCache.set(realCwd, { ts: Date.now(), data });
+      this.listCache.set(realCwd, data);
 
       return data;
     } catch (err) {

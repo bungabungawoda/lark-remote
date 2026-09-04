@@ -24,7 +24,7 @@ export const TOOL_RESULT_MAX_BYTES = 4000;
  * splitting a multi-byte sequence. When `fromEnd` is true, keeps the TAIL
  * (useful for logs/tails); otherwise keeps the HEAD.
  */
-export function fitUtf8(value: string, maxBytes: number, fromEnd = false): string {
+function fitUtf8(value: string, maxBytes: number, fromEnd = false): string {
   if (fromEnd) {
     const codepoints = Array.from(value);
     let bytes = 0;

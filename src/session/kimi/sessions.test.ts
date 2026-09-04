@@ -854,3 +854,110 @@ describe('KimiSessionReader', () => {
     expect(records).toEqual([]);
   });
 });
+
+describe('KimiSessionReader compaction state machine（kimi-compact-wait-redesign §5.1）', () => {
+  /**
+   * Write a session with the given wire lines and return a reader.
+   * Fixture data is synthetic (AABB UUIDs, tmp paths) — CLAUDE.md red line.
+   */
+  function makeCompactionReader(
+    sessionId: string,
+    workDir: string,
+    wireLines: string[],
+  ): KimiSessionReader {
+    const sessionDir = path.join(kimiDir, 'sessions', sessionId);
+    const agentsDir = path.join(sessionDir, 'agents', 'main');
+    fs.mkdirSync(agentsDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(sessionDir, 'state.json'),
+      JSON.stringify({ version: 2, cwd: workDir }),
+    );
+    fs.writeFileSync(path.join(agentsDir, 'wire.jsonl'), wireLines.join('\n') + '\n');
+    addIndexEntry(sessionId, sessionDir, workDir);
+    return new KimiSessionReader(kimiDir);
+  }
+
+  it('readCompactionState: begin 无终态 → inFlight，inFlightSince 取 begin 时间', () => {
+    const workDir = makeWorkDir('project');
+    const reader = makeCompactionReader('sess-begin-only', workDir, [
+      '{"type":"full_compaction.begin","source":"manual","time":5000}',
+    ]);
+
+    const state = reader.readCompactionState('sess-begin-only', workDir);
+    expect(state.inFlight).toBe(true);
+    expect(state.inFlightSince).toBe(5000);
+    expect(state.records).toHaveLength(1);
+  });
+
+  it('readCompactionState: begin + complete → 不在途', () => {
+    const workDir = makeWorkDir('project');
+    const reader = makeCompactionReader('sess-begin-complete', workDir, [
+      '{"type":"full_compaction.begin","source":"manual","time":5000}',
+      '{"type":"full_compaction.complete","time":6000}',
+    ]);
+
+    const state = reader.readCompactionState('sess-begin-complete', workDir);
+    expect(state.inFlight).toBe(false);
+    expect(state.inFlightSince).toBeUndefined();
+  });
+
+  it('readCompactionState: begin + cancel → 不在途', () => {
+    const workDir = makeWorkDir('project');
+    const reader = makeCompactionReader('sess-begin-cancel', workDir, [
+      '{"type":"full_compaction.begin","source":"manual","time":5000}',
+      '{"type":"full_compaction.cancel","time":6000}',
+    ]);
+
+    const state = reader.readCompactionState('sess-begin-cancel', workDir);
+    expect(state.inFlight).toBe(false);
+    expect(state.inFlightSince).toBeUndefined();
+  });
+
+  it('readCompactionState: auto source 的 begin 同样判在途', () => {
+    const workDir = makeWorkDir('project');
+    const reader = makeCompactionReader('sess-begin-auto', workDir, [
+      '{"type":"full_compaction.begin","source":"auto","time":7000}',
+    ]);
+
+    const state = reader.readCompactionState('sess-begin-auto', workDir);
+    expect(state.inFlight).toBe(true);
+    expect(state.inFlightSince).toBe(7000);
+  });
+
+  it('readCompactionState: 第二轮 begin 无终态 → 仍判在途（上一次已闭合）', () => {
+    const workDir = makeWorkDir('project');
+    const reader = makeCompactionReader('sess-two-rounds', workDir, [
+      '{"type":"full_compaction.begin","source":"manual","time":1000}',
+      '{"type":"context.apply_compaction","compactedCount":4,"tokensBefore":30000,"tokensAfter":15000,"time":2000}',
+      '{"type":"full_compaction.begin","source":"manual","time":3000}',
+    ]);
+
+    const state = reader.readCompactionState('sess-two-rounds', workDir);
+    expect(state.inFlight).toBe(true);
+    expect(state.inFlightSince).toBe(3000);
+  });
+
+  it('readCompactionRecords 返回 begin / terminal 三类记录（含 source/time）', () => {
+    const workDir = makeWorkDir('project');
+    const reader = makeCompactionReader('sess-three-kinds', workDir, [
+      '{"type":"full_compaction.begin","source":"manual","time":1000}',
+      '{"type":"full_compaction.cancel","time":2000}',
+      '{"type":"full_compaction.begin","source":"auto","time":3000}',
+      '{"type":"context.apply_compaction","compactedCount":4,"tokensBefore":30000,"tokensAfter":15000,"time":4000}',
+    ]);
+
+    const records = reader.readCompactionRecords('sess-three-kinds', workDir);
+    expect(records).toEqual([
+      { type: 'full_compaction.begin', source: 'manual', time: 1000 },
+      { type: 'full_compaction.cancel', time: 2000 },
+      { type: 'full_compaction.begin', source: 'auto', time: 3000 },
+      {
+        type: 'context.apply_compaction',
+        compactedCount: 4,
+        tokensBefore: 30000,
+        tokensAfter: 15000,
+        time: 4000,
+      },
+    ]);
+  });
+});
