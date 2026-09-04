@@ -414,8 +414,6 @@ export class ClaudeSession extends SpawningRunner {
     this.processExitPromise = new Promise((resolve) => {
       proc.once('close', (code, signal) => {
         this.spawnHeartbeat.clear();
-        this.exitCode = code;
-        this.exitSignal = signal;
         if (code !== null && code !== 0 && !this.stoppedByUser) {
           getLogger().error(
             `[${this.logTag}] non-zero exit code=${code} signal=${signal} stderr=${this.spawnStderr.slice(-500)}`,
@@ -457,10 +455,6 @@ export class ClaudeSession extends SpawningRunner {
       }
     })();
   }
-
-  /** 最近一次进程退出的 code/signal（流结束错误结果构造用）。 */
-  private exitCode: number | null = null;
-  private exitSignal: NodeJS.Signals | null = null;
 
   // =========================================================================
   // Internal: turn consumption

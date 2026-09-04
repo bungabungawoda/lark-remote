@@ -184,7 +184,7 @@ describe('QueueManager', () => {
     // Task 4 is the 4th task in the queue. Task 1 was removed when it started
     // (the queue callback removes it via splice). So tasks 2, 3, 4 remain.
     // Task 4 is at position 3 (1-indexed), with 2 tasks ahead.
-    // BUG: current code hardcodes position=1, tasksAhead=0.
+    // 回归守卫：不得硬编码 position=1 / tasksAhead=0（历史 bug）
     expect(info.position).toBe(3);
     expect(info.tasksAhead).toBe(2);
 
@@ -485,6 +485,57 @@ describe('QueueManager', () => {
 
     // The replacement closure ran, not the original.
     expect(executed).toEqual(['A', 'B-edited']);
+  });
+
+  it('test_anchor_removeFromQueue_cancelled_task_never_executes_after_drain', async () => {
+    // removeFromQueue 取消排队任务的回归守卫：
+    // removeFromQueue 只删元数据，Promise 链上的 .then 回调不可摘除——取消守卫
+    // （queue-manager.ts 的 `if (!task) return`）必须在 begin 路径跳过已取消任务。
+    // 断言目标任务闭包未执行（executed 只含阻塞任务）。
+
+    const { qm } = makeQueueManager(() => true);
+    const executed: string[] = [];
+
+    // Task 1 — 阻塞 workspace，先开始执行
+    let release1: () => void = () => {};
+    const hang1 = new Promise<void>((resolve) => {
+      release1 = resolve;
+    });
+    qm.enqueue(
+      tmpDir,
+      async () => {
+        executed.push('1');
+        await hang1;
+      },
+      {
+        taskMeta: { userId: 'u1', chatId: 'c1', messageId: 'msg-1', messagePreview: 't1' },
+      },
+    );
+
+    // Task 2 — 排在 task 1 后面，随后被取消
+    qm.enqueue(
+      tmpDir,
+      async () => {
+        executed.push('2');
+      },
+      {
+        taskMeta: { userId: 'u1', chatId: 'c1', messageId: 'msg-2', messagePreview: 't2' },
+      },
+    );
+
+    await new Promise((r) => setTimeout(r, 30));
+
+    // Task 2 在队列中，取消成功
+    expect(qm.getQueuedTasks(tmpDir).map((t) => t.messageId)).toContain('msg-2');
+    expect(qm.removeFromQueue(tmpDir, 'msg-2')).toBe(true);
+    expect(qm.getQueuedTasks(tmpDir).map((t) => t.messageId)).not.toContain('msg-2');
+
+    // 放行 task 1，队列链推进到已取消的 task 2 —— 守卫必须跳过它
+    release1();
+    await new Promise((r) => setTimeout(r, 50));
+
+    // 有 bug 时 executed = ['1', '2']；修复后 task 2 被跳过
+    expect(executed).toEqual(['1']);
   });
 
   it('test_anchor_replacement_not_registered_when_task_already_began', async () => {

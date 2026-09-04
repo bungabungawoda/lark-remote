@@ -1,11 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { pipeAllStdio, authErrorEvent } from './runner-utils.js';
-
-describe('pipeAllStdio', () => {
-  it('returns ["pipe", "pipe", "pipe"]', () => {
-    expect(pipeAllStdio()).toEqual(['pipe', 'pipe', 'pipe']);
-  });
-});
+import { authErrorEvent } from './runner-utils.js';
 
 describe('authErrorEvent', () => {
   it('returns correct event structure with message only', () => {
