@@ -67,7 +67,7 @@ describe('pi config path mapping bug', () => {
     // 5. 验证：配置应该保存到 agents.pi.provider
     const piConfig = getAgentConfig(reloadedConfig, 'pi');
 
-    // BUG: 当前会失败，因为配置写到了 config.pi 而不是 config.agents.pi
+    // 回归守卫：配置必须写到 config.agents.pi（历史 bug 曾写到 config.pi）
     expect(piConfig).toBeDefined();
     expect(piConfig?.provider).toBe('lt');
   });
@@ -84,7 +84,7 @@ describe('pi config path mapping bug', () => {
     const reloadedConfig = loadConfig(configPath);
     const piConfig = getAgentConfig(reloadedConfig, 'pi');
 
-    // BUG: 当前会失败
+    // 回归守卫
     expect(piConfig).toBeDefined();
     expect(piConfig?.model).toBe('glm-5.1');
   });
@@ -105,7 +105,7 @@ describe('pi config path mapping bug', () => {
     const reloadedConfig = loadConfig(configPath);
     const piConfig = getAgentConfig(reloadedConfig, 'pi');
 
-    // BUG: 当前会失败
+    // 回归守卫
     expect(piConfig).toBeDefined();
     expect(piConfig?.provider).toBe('lt');
     expect(piConfig?.model).toBe('glm-5.1');

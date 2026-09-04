@@ -14,8 +14,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { CardStreamController } from '@larksuite/channel';
 import { PassThrough } from 'node:stream';
-import type { ChildProcess } from 'node:child_process';
-import { createMockProc } from '../../../tests/lib/mock-process.js';
+import { createMockProc, emitExit } from '../../../tests/lib/mock-process.js';
 import {
   BashCardSession,
   capBashOutput,
@@ -58,11 +57,6 @@ function createFakeProcWithStreams(pid = 12345) {
     stderr: new PassThrough(),
   });
   return proc;
-}
-
-function emitExit(proc: ChildProcess, code: number | null, signal: NodeJS.Signals | null): void {
-  Object.assign(proc, { exitCode: code, signalCode: signal });
-  proc.emit('exit', code, signal);
 }
 
 async function nextWithTimeout(

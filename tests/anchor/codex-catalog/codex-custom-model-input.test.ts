@@ -1,4 +1,5 @@
 import { createMockBridge, createMockSessionReaderRegistry } from '../../lib/bridge-stubs.js';
+import { runCustomModelInputContract } from '../../lib/config-card-custom-model.js';
 /**
  * Codex Config Card Custom Model Input - ANCHOR TEST
  *
@@ -239,70 +240,31 @@ describe('codex config card custom model input - ANCHOR', () => {
    *
    * Expected: A field with key 'agents.codex.model' and label containing "自定义模型名"
    */
-  it('should include custom model input field when defaultAgent=codex', () => {
-    const config = buildCodexConfig('gpt-5.2');
-    const router = makeRouter(config, tmpDir);
-
-    const result = router.buildConfigCard() as { card: object };
-    const inputFields = extractInputFields(result.card);
-
-    // Should have a custom model input field with label containing "自定义模型名"
-    // Must use label to distinguish from other inputs with same key
-    const customModelInput = inputFields.find(
-      (f) => f.label.includes('自定义模型名') && f.key === 'agents.codex.model',
-    );
-
-    expect(customModelInput).toBeDefined();
-    expect(customModelInput?.key).toBe('agents.codex.model');
-  });
 
   /**
    * ANCHOR AC2: When current model is not in dropdown options, input field should show custom value
    *
    * Expected: When model is a custom value (e.g., 'custom-model-xyz'), input shows that value
    */
-  it('should show custom value in input field when model is not in dropdown options', () => {
-    const config = buildCodexConfig('custom-model-xyz');
-    const router = makeRouter(config, tmpDir);
-
-    const result = router.buildConfigCard() as { card: object };
-    const inputFields = extractInputFields(result.card);
-
-    // Find the custom model input field - MUST use the label "自定义模型名" to distinguish from other inputs
-    const customModelInput = inputFields.find(
-      (f) => f.label.includes('自定义模型名') && f.key === 'agents.codex.model',
-    );
-
-    // When model is not in preset options, the input should show the custom value
-    expect(customModelInput?.defaultValue).toBe('custom-model-xyz');
-  });
 
   /**
    * ANCHOR AC3: When current model is in dropdown options, input field should be empty
    *
    * Expected: When model is a preset option (e.g., 'o3'), input should be empty
    */
-  it('should show empty input field when model is in preset options', () => {
-    const config = buildCodexConfig('gpt-5.2');
-    const router = makeRouter(config, tmpDir);
-
-    const result = router.buildConfigCard() as { card: object };
-    const inputFields = extractInputFields(result.card);
-
-    // Find the custom model input field - MUST use the label "自定义模型名" to distinguish from other inputs
-    const customModelInput = inputFields.find(
-      (f) => f.label.includes('自定义模型名') && f.key === 'agents.codex.model',
-    );
-
-    // When model is a preset option (o3), input field should be empty
-    expect(customModelInput?.defaultValue).toBe('');
-  });
 
   /**
    * ANCHOR AC4: config.input handler should update pendingConfig for codex custom model
    *
    * Expected: When user inputs custom model via config.input, pendingConfig should be updated
    */
+  runCustomModelInputContract({
+    makeRouter: (model: string) => makeRouter(buildCodexConfig(model), tmpDir),
+    key: 'agents.codex.model',
+    presetModel: 'gpt-5.2',
+    customModel: 'custom-model-xyz',
+  });
+
   it('should update pendingConfig when user inputs custom model via config.input', () => {
     const config = buildCodexConfig('gpt-5.2');
     const router = makeRouter(config, tmpDir);

@@ -133,3 +133,36 @@ export class UsageAccumulator {
     this._compactCount++;
   }
 }
+
+/** P2-8 统一契约：上下文窗口占用 = 末轮 input + cacheRead + cacheCreation（不含 output/reasoning）。 */
+export function contextWindowOccupancy(l: {
+  input: number;
+  cacheRead: number;
+  cacheCreation: number;
+}): number {
+  return l.input + l.cacheRead + l.cacheCreation;
+}
+
+/** P2-8 统一契约：session 全量累计字段组装（4 个 reader 共用：claude/dsh/kimi/pi；
+ * codex 走 last_token_usage 口径、opencode 保留自己的条件赋值，原为逐字段复制的 4 连拷贝）。 */
+export function cumulativeUsageFields(t: {
+  input: number;
+  output: number;
+  cacheRead: number;
+  cacheCreation: number;
+}): Pick<
+  import('../../runner/types.js').AgentSessionUsage,
+  | 'cumulativeTotalTokens'
+  | 'cumulativeInputTokens'
+  | 'cumulativeOutputTokens'
+  | 'cumulativeCacheReadTokens'
+  | 'cumulativeCacheCreationTokens'
+> {
+  return {
+    cumulativeTotalTokens: t.input + t.output + t.cacheRead + t.cacheCreation,
+    cumulativeInputTokens: t.input,
+    cumulativeOutputTokens: t.output,
+    cumulativeCacheReadTokens: t.cacheRead,
+    cumulativeCacheCreationTokens: t.cacheCreation,
+  };
+}

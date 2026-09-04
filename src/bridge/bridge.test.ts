@@ -1295,57 +1295,6 @@ describe('Bridge queue cancel (removeFromQueue)', () => {
     const { bridge } = makeBridge();
     expect(bridge.removeFromQueue('/no/such/dir', 'any-id')).toBe(false);
   });
-
-  // Standalone test to verify the fix works - simpler version
-  it('cancelled task should not execute (verification test)', async () => {
-    // This is a cleaner test that directly verifies our fix
-    const { bridge } = makeBridge();
-    const executed: string[] = [];
-
-    // Task 1: blocks the workspace - WITH taskMeta so it appears in queuedTasks
-    let release1: () => void = () => {};
-    const hang1 = new Promise<void>((resolve) => {
-      release1 = resolve;
-    });
-    bridge.enqueue(
-      tmpDir,
-      async () => {
-        executed.push('1');
-        await hang1;
-      },
-      { taskMeta: { userId: 'u1', chatId: 'c1', messageId: 'msg-1', messagePreview: 't1' } },
-    );
-
-    // Task 2: with meta - will be cancelled
-    bridge.enqueue(
-      tmpDir,
-      async () => {
-        executed.push('2');
-      },
-      { taskMeta: { userId: 'u1', chatId: 'c1', messageId: 'msg-2', messagePreview: 't2' } },
-    );
-
-    await new Promise((r) => setImmediate(r));
-
-    // Verify task 2 is in queue
-    expect(bridge.getQueuedTasks(tmpDir).map((t) => t.messageId)).toContain('msg-2');
-
-    // Cancel task 2
-    const removed = bridge.removeFromQueue(tmpDir, 'msg-2');
-    expect(removed).toBe(true);
-
-    // Verify it's removed
-    expect(bridge.getQueuedTasks(tmpDir).map((t) => t.messageId)).not.toContain('msg-2');
-
-    // Let task 1 complete
-    release1();
-    await new Promise((r) => setTimeout(r, 50));
-
-    // Task 2 should NOT have executed if our fix works
-    // With the bug: executed = ['1', '2']
-    // After fix: executed = ['1'] (task 2 was skipped)
-    expect(executed).toEqual(['1']);
-  });
 });
 
 describe('Bridge queue card in-place update on cancel', () => {
@@ -3375,4 +3324,234 @@ describe('app-server error result session write-back (review P3-10)', () => {
     expect(lastCard).not.toContain('输出流已结束');
     expect(sessionStore.getSessionId('user1', 'codex')).toBe('th-live-1');
   });
+});
+
+// =============================================================================
+// streamCodexCompact 终态映射 + 在途检测（kimi-compact-wait-redesign §5.3）
+// - error subtype 的 result 必须 finish 'error'（旧实现 sawResult 布尔把 error
+//   也当 done，放大器 bug）；
+// - compact 在途（reader.readCompactionState().inFlight）时直接回文本，不开卡、
+//   不发请求；
+// - compact 占住串行队列直到真实终态，后续消息排队等待（不 spawn runner）。
+// =============================================================================
+describe('Bridge compact 终态映射 + 在途检测（§5.3）', () => {
+  interface CompactRunner extends Runner {
+    runCompact: (
+      message: string,
+      opts: { cwd: string; sessionId: string },
+    ) => AsyncGenerator<AgentEvent>;
+  }
+
+  const notFoundRead: AgentSessionReader['readSessionContent'] =
+    createStubSessionReader().readSessionContent;
+
+  function makeCompactBridge(opts: {
+    runner?: Runner;
+    read?: AgentSessionReader['readSessionContent'];
+    /** 覆盖指定 agent 的 reader（如带 readCompactionState 的 kimi/claude reader）。 */
+    readers?: Record<string, AgentSessionReader>;
+  }) {
+    const sessionStore = new SessionStore();
+    const connector = createStubConnector();
+    const runner = opts.runner ?? createStubRunner();
+    const read = opts.read ?? notFoundRead;
+    const defaultReader: AgentSessionReader = {
+      listSessions: () => ({ sessions: [], total: 0 }),
+      getNewestSession: () => null,
+      readSessionContent: vi.fn(read),
+      isSessionActive: () => false,
+    };
+    const registry = new SessionReaderRegistry();
+    for (const agent of ['claude', 'codex', 'opencode', 'pi', 'kimi'] as const) {
+      registry.register(agent, opts.readers?.[agent] ?? defaultReader);
+    }
+    const bridge = new Bridge({
+      runner,
+      connector,
+      sessionStore,
+      config,
+      agentRegistry: createStubAgentRegistry(runner),
+      sessionReaderRegistry: registry,
+    });
+    return { bridge, sessionStore, connector, runner };
+  }
+
+  function makeKimiInFlightReader(read: AgentSessionReader['readSessionContent']) {
+    return {
+      listSessions: () => ({ sessions: [], total: 0 }),
+      getNewestSession: () => null,
+      readSessionContent: vi.fn(read),
+      isSessionActive: () => false,
+      readCompactionState: () => ({
+        inFlight: true,
+        inFlightSince: Date.now() - 60_000,
+        records: [],
+      }),
+    };
+  }
+
+  it('error subtype 的 result → 卡片 finish error（非 done）——放大器 bug 回归钉', async () => {
+    const cwd = fs.realpathSync(tmpDir);
+    const runCompactSpy = vi.fn(async function* (): AsyncGenerator<AgentEvent> {
+      yield {
+        type: 'result',
+        subtype: 'error',
+        session_id: 'codex-session-1',
+        errorMessage: '压缩未完成：已被取消或压缩请求失败（可重试）',
+      } as AgentEvent;
+    });
+    const runner: CompactRunner = { ...createStubRunner(), runCompact: runCompactSpy };
+    const { bridge, sessionStore, connector } = makeCompactBridge({
+      runner,
+      read: () => ({
+        events: [{ type: 'text', content: 'tail' }],
+        usage: { compactCount: 0, contextLength: 100 },
+        aiTitle: undefined,
+        recap: undefined,
+        displayTitle: 'placeholder',
+        reason: 'ok',
+      }),
+    });
+    sessionStore.setCwd('user1', cwd);
+
+    await bridge.handleResumeCompact({ sessionId: 'codex-session-1', agent: 'codex' }, ctx);
+
+    const finalCard = JSON.stringify(connector._cards.at(-1) ?? '');
+    expect(finalCard).toContain('运行出错');
+    expect(finalCard).toContain('压缩未完成');
+    expect(finalCard).not.toContain('✅ 已完成');
+  });
+
+  it('reader 报 inFlight → handleResumeCompact 直接 sendResult，不开卡、不调 runCompact', async () => {
+    const cwd = fs.realpathSync(tmpDir);
+    const runCompactSpy = vi.fn();
+    const runner: CompactRunner = { ...createStubRunner(), runCompact: runCompactSpy };
+    const kimiReader = makeKimiInFlightReader(() => ({
+      events: [{ type: 'text', content: 'tail' }],
+      usage: undefined,
+      aiTitle: undefined,
+      recap: undefined,
+      displayTitle: 'placeholder',
+      reason: 'ok',
+    }));
+    const { bridge, sessionStore, connector } = makeCompactBridge({
+      runner,
+      readers: { kimi: kimiReader },
+    });
+    sessionStore.setCwd('user1', cwd);
+
+    await bridge.handleResumeCompact({ sessionId: 'kimi-session-1', agent: 'kimi' }, ctx);
+
+    expect(runCompactSpy).not.toHaveBeenCalled();
+    const sentJsons = connector._sent.map((s) => JSON.stringify(s.input));
+    expect(sentJsons.some((j) => j.includes('已有一次 Compact 正在进行'))).toBe(true);
+    expect(sentJsons.some((j) => j.includes('Compact 已触发'))).toBe(false);
+  });
+
+  it('reader 报 inFlight → handleCodexCompact 直接 sendResult，不开卡、不调 runCompact', async () => {
+    const cwd = fs.realpathSync(tmpDir);
+    // 先跑一个正常 run 让 lastCompactableCodexRun 记下 runId + sessionId。
+    const baseRunner = createStubRunner({
+      mode: 'streaming',
+      events: [
+        { type: 'system', subtype: 'init', session_id: 'kimi-session-1', cwd, model: 'opus' },
+        { type: 'result', subtype: 'success', session_id: 'kimi-session-1' },
+      ],
+    });
+    // finalizeRun 只对 workspace-lifetime runner 记录 lastCompactableCodexRun。
+    (baseRunner as unknown as { lifetime: string }).lifetime = 'workspace';
+    const runCompactSpy = vi.fn();
+    (baseRunner as unknown as { runCompact: unknown }).runCompact = runCompactSpy;
+    const claudeReader = makeKimiInFlightReader(() => ({
+      events: [{ type: 'text', content: 'tail' }],
+      usage: undefined,
+      aiTitle: undefined,
+      recap: undefined,
+      displayTitle: 'placeholder',
+      reason: 'ok',
+    }));
+    const { bridge, sessionStore, connector } = makeCompactBridge({
+      runner: baseRunner,
+      readers: { claude: claudeReader },
+    });
+    sessionStore.setCwd('user1', cwd);
+    sessionStore.setSessionId('user1', 'claude', 'kimi-session-1');
+
+    await bridge.forwardToClaude('hi', ctx);
+    const cardJson = JSON.stringify(connector._cards.at(-1) ?? '');
+    const runIdMatch = cardJson.match(/"cmd":"codex\.compact","runId":"([^"]+)"/);
+    expect(runIdMatch).not.toBeNull();
+    const runId = runIdMatch![1];
+
+    await bridge.handleCodexCompact({ runId }, ctx);
+
+    expect(runCompactSpy).not.toHaveBeenCalled();
+    const sentJsons = connector._sent.map((s) => JSON.stringify(s.input));
+    expect(sentJsons.some((j) => j.includes('已有一次 Compact 正在进行'))).toBe(true);
+  });
+
+  it('compact run 未结束时发普通消息 → 进串行队列（queue +1，不 spawn runner）', async () => {
+    const cwd = fs.realpathSync(tmpDir);
+    let releaseCompact: () => void = () => {};
+    const compactGate = new Promise<void>((resolve) => {
+      releaseCompact = resolve;
+    });
+    const runCompactSpy = vi.fn(async function* (): AsyncGenerator<AgentEvent> {
+      await compactGate;
+    });
+    const runSpy = vi.fn(async function* (): AsyncGenerator<AgentEvent> {
+      yield {
+        type: 'system',
+        subtype: 'init',
+        session_id: 'queued-session',
+        cwd,
+        model: 'opus',
+      } as AgentEvent;
+      yield { type: 'result', subtype: 'success', session_id: 'queued-session' } as AgentEvent;
+    });
+    const runner = { ...createStubRunner(), run: runSpy, runCompact: runCompactSpy };
+    // reader 必须返回非空内容，handleResumeCompact 的 session 校验才会放行到 runCompact。
+    const { bridge, sessionStore } = makeCompactBridge({
+      runner,
+      read: () => ({
+        events: [{ type: 'text', content: 'tail' }],
+        usage: undefined,
+        aiTitle: undefined,
+        recap: undefined,
+        displayTitle: 'placeholder',
+        reason: 'ok',
+      }),
+    });
+    sessionStore.setCwd('user1', cwd);
+
+    // Compact 任务先占住串行队列（runCompact 挂起直到 gate），普通消息排在其后。
+    const meta = (id: string, preview: string) => ({
+      userId: ctx.userId,
+      chatId: ctx.chatId,
+      messageId: id,
+      messagePreview: preview,
+    });
+    bridge.enqueue(
+      cwd,
+      () => bridge.handleResumeCompact({ sessionId: 'kimi-session-1', agent: 'kimi' }, ctx),
+      { taskMeta: meta('compact-msg', 'card action: resume.compact') },
+    );
+    bridge.enqueue(cwd, () => bridge.forwardToClaude('hello', ctx), {
+      taskMeta: meta('hello-msg', 'hello'),
+    });
+
+    // 等 compact 任务开始执行（runCompact 被调用），普通消息仍在排队。
+    const deadline = Date.now() + 3000;
+    while (runCompactSpy.mock.calls.length === 0 && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 20));
+    }
+    expect(runCompactSpy).toHaveBeenCalledTimes(1);
+    expect(bridge.getQueuedTasks(cwd)).toHaveLength(1);
+    expect(runSpy).not.toHaveBeenCalled();
+
+    releaseCompact();
+    // streamCodexCompact 收尾含 2×150ms usage 短重试，留足余量。
+    await new Promise((r) => setTimeout(r, 1000));
+    expect(runSpy).toHaveBeenCalledTimes(1);
+  }, 10000);
 });

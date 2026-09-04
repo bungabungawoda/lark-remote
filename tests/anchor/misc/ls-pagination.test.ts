@@ -225,4 +225,26 @@ describe('/ls pagination anchor tests', () => {
     expect(cardStr).not.toContain('上一页');
     expect(cardStr).not.toContain('下一页');
   });
+
+  it('test_anchor_ls_stale_offset_clamps_to_last_page_boundary', () => {
+    const { router, sessionStore } = createRouter(tmpDir);
+    // 35 items → 2 pages；过期 offset（如旧卡片残留 offset=300）必须 clamp 到
+    // 最后一页边界（30），而不是显示空页（统一前 /ls 不 clamp 会显示空页）
+    for (let i = 0; i < 20; i++) {
+      fs.mkdirSync(path.join(tmpDir, `dir${i}`));
+    }
+    for (let i = 0; i < 15; i++) {
+      fs.writeFileSync(path.join(tmpDir, `file${i}.txt`), 'content');
+    }
+    sessionStore.setCwd('user1', fs.realpathSync(tmpDir));
+
+    const staleCard = cmdLsOf(router)([fs.realpathSync(tmpDir)], ctx, 300);
+    const cardStr = JSON.stringify(staleCard.card);
+
+    // clamp 到第 2 页（最后一页），内容非空且上一页按钮存在
+    expect(cardStr).toContain('第 2/2 页');
+    expect(cardStr).toContain('上一页');
+    expect(cardStr).not.toContain('第 3');
+    expect(cardStr).not.toContain('无文件');
+  });
 });

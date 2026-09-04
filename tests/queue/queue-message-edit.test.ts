@@ -94,21 +94,33 @@ describe('Queue message edit', () => {
       const titleContent = (header?.title as { content?: string } | undefined)?.content;
       return titleContent?.includes('已开始执行') ?? false;
     });
-    if (executingUpdateCall) {
-      const execCard = executingUpdateCall.card as Record<string, unknown>;
-      const execBody = execCard.body as Record<string, unknown>;
-      const execElements = execBody.elements as Array<Record<string, unknown>>;
-      const execEditButton = execElements.find((el: Record<string, unknown>) => {
-        if (el.tag !== 'button') return false;
-        const behaviors = el.behaviors as Array<Record<string, unknown>> | undefined;
-        if (!behaviors?.length) return false;
-        const value = behaviors[0].value as Record<string, unknown> | undefined;
-        return value?.cmd === 'queue.edit';
-      });
-      if (execEditButton) {
-        expect(execEditButton.disabled).toBe(true);
-      }
-    }
+    // 执行态卡片必须移除 queue.edit 按钮（执行中不可编辑），仅保留禁用的
+    // cancel/immediate 按钮（实际行为：编辑按钮随执行态移除，而非禁用）
+    expect(executingUpdateCall, '任务开始执行后必须发送「已开始执行」卡片').toBeDefined();
+    const execCard = executingUpdateCall!.card as Record<string, unknown>;
+    const execBody = execCard.body as Record<string, unknown>;
+    const execElements = execBody.elements as Array<Record<string, unknown>>;
+    const execButtons = execElements.filter((el: Record<string, unknown>) => el.tag === 'button');
+    const hasEditButton = execButtons.some((el: Record<string, unknown>) => {
+      const behaviors = el.behaviors as Array<Record<string, unknown>> | undefined;
+      const value = behaviors?.[0]?.value as Record<string, unknown> | undefined;
+      return value?.cmd === 'queue.edit';
+    });
+    expect(hasEditButton).toBe(false);
+    const cancelBtn = execButtons.find((el: Record<string, unknown>) => {
+      const value = (el.behaviors as Array<{ value?: Record<string, unknown> }> | undefined)?.[0]
+        ?.value;
+      return value?.cmd === 'queue.cancel';
+    });
+    const immediateBtn = execButtons.find((el: Record<string, unknown>) => {
+      const value = (el.behaviors as Array<{ value?: Record<string, unknown> }> | undefined)?.[0]
+        ?.value;
+      return value?.cmd === 'queue.immediate';
+    });
+    expect(cancelBtn, '执行态卡片必须保留 queue.cancel 按钮').toBeDefined();
+    expect(immediateBtn, '执行态卡片必须保留 queue.immediate 按钮').toBeDefined();
+    expect(cancelBtn!.disabled).toBe(true);
+    expect(immediateBtn!.disabled).toBe(true);
 
     restoreUpdateCard();
   });
