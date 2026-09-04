@@ -5,9 +5,9 @@ import os from 'node:os';
 import fs from 'node:fs';
 import { SessionStore } from '../../../src/session/index.js';
 import { CommandRouter } from '../../../src/router/index.js';
-import { AppConfigSchema } from '../../../src/config/index.js';
 import type { AppConfig } from '../../../src/config/index.js';
-import { lastNotice } from '../../../tests/lib/agent-switch-helpers.js';
+import { lastNotice } from '../../lib/agent-switch-helpers.js';
+import { buildAgentSwitchConfig } from '../../lib/agent-switch-helpers.js';
 
 /**
  * Anchor: config.save 切换 defaultAgent 时必须保留新 agent 的显式选择 session
@@ -33,25 +33,10 @@ import { lastNotice } from '../../../tests/lib/agent-switch-helpers.js';
 
 // Mock bridge that can capture sendResult calls
 
-function buildConfig(): AppConfig {
-  return AppConfigSchema.parse({
-    feishu: { appId: 'test', appSecret: 'test' },
-    defaultAgent: 'claude',
-    claude: {
-      model: 'opus',
-      stopGraceMs: 5000,
-    },
-    agents: {
-      pi: { provider: 'Volcano', model: 'glm-5.2', thinking: 'medium' },
-    },
-    workspace: { default: '' },
-    output: {
-      showThinking: true,
-      showToolUse: false,
-      showToolResult: false,
-    },
+const buildConfig = (): AppConfig =>
+  buildAgentSwitchConfig({
+    agents: { pi: { provider: 'Volcano', model: 'glm-5.2', thinking: 'medium' } },
   });
-}
 
 describe('config.save keeps explicitly selected new agent session on agent switch', () => {
   let tmpDir: string;

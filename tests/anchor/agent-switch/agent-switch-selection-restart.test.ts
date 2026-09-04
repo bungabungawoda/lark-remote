@@ -6,10 +6,10 @@ import fs from 'node:fs';
 import { SessionStore } from '../../../src/session/index.js';
 import { SessionReaderRegistry } from '../../../src/session/registry.js';
 import { CommandRouter } from '../../../src/router/index.js';
-import { AppConfigSchema } from '../../../src/config/index.js';
-import type { AppConfig } from '../../../src/config/index.js';
 import type { AgentKind, AgentSessionReader } from '../../../src/runner/index.js';
-import { lastNotice } from '../../../tests/lib/agent-switch-helpers.js';
+import type { AppConfig } from '../../../src/config/index.js';
+import { lastNotice } from '../../lib/agent-switch-helpers.js';
+import { buildAgentSwitchConfig as buildConfig } from '../../lib/agent-switch-helpers.js';
 
 /**
  * Round 3 red: /resume 显式选择在「重启发生在首次切入之前」时被 load 缺省洗掉。
@@ -55,30 +55,6 @@ function defaultRegistry(): SessionReaderRegistry {
     pi: stubReader({ known: ['pi-session-P', 'pi-session-P1'] }),
     opencode: stubReader({ known: [] }),
     kimi: stubReader({ known: [] }),
-  });
-}
-
-function buildConfig(overrides?: Partial<AppConfig>): AppConfig {
-  return AppConfigSchema.parse({
-    feishu: { appId: 'test', appSecret: 'test' },
-    defaultAgent: 'claude',
-    claude: {
-      model: 'opus',
-      stopGraceMs: 5000,
-    },
-    agents: {
-      pi: { provider: 'Volcano', model: 'glm-5.2', thinking: 'medium' },
-      codex: { model: 'claude-sonnet-4-20250514' },
-      opencode: { model: 'gpt-5' },
-      kimi: { model: 'kimi-k2' },
-    },
-    workspace: { default: '' },
-    output: {
-      showThinking: true,
-      showToolUse: false,
-      showToolResult: false,
-    },
-    ...overrides,
   });
 }
 

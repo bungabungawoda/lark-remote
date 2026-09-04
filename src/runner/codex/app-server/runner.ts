@@ -128,7 +128,7 @@ function buildRequestUserInputResponse(
  * Map the client-side SandboxMode enum to the response-side SandboxPolicy
  * object used by `thread/settings/update` (`sandboxPolicy`).
  */
-export function sandboxModeToSandboxPolicy(mode: SandboxMode): SandboxPolicy {
+function sandboxModeToSandboxPolicy(mode: SandboxMode): SandboxPolicy {
   switch (mode) {
     case 'read-only':
       return { type: 'readOnly', networkAccess: false };
@@ -152,7 +152,7 @@ export function sandboxModeToSandboxPolicy(mode: SandboxMode): SandboxPolicy {
  * （key `default_mode_request_user_input`），app-server 官方测试
  * （turn_start.rs）验证同一路径。
  */
-export const THREAD_CONFIG_DEFAULT_MODE_REQUEST_USER_INPUT = {
+const THREAD_CONFIG_DEFAULT_MODE_REQUEST_USER_INPUT = {
   'features.default_mode_request_user_input': true,
 } as const;
 

@@ -15,41 +15,41 @@ import {
 describe('protocol-types', () => {
   describe('NotificationMethod constants', () => {
     it('has all notification methods (real v2 wire names)', () => {
-      expect(NotificationMethod.TURN_STARTED).toBe('turn/started');
-      expect(NotificationMethod.TURN_COMPLETED).toBe('turn/completed');
-      expect(NotificationMethod.ITEM_STARTED).toBe('item/started');
-      expect(NotificationMethod.ITEM_COMPLETED).toBe('item/completed');
-      expect(NotificationMethod.AGENT_MESSAGE_DELTA).toBe('item/agentMessage/delta');
-      expect(NotificationMethod.REASONING_SUMMARY_TEXT_DELTA).toBe(
-        'item/reasoning/summaryTextDelta',
-      );
-      expect(NotificationMethod.REASONING_SUMMARY_PART_ADDED).toBe(
-        'item/reasoning/summaryPartAdded',
-      );
-      expect(NotificationMethod.COMMAND_EXECUTION_OUTPUT_DELTA).toBe(
-        'item/commandExecution/outputDelta',
-      );
-      expect(NotificationMethod.PLAN_DELTA).toBe('item/plan/delta');
-      expect(NotificationMethod.FILE_CHANGE_OUTPUT_DELTA).toBe('item/fileChange/outputDelta');
-      expect(NotificationMethod.TOKEN_USAGE_UPDATED).toBe('thread/tokenUsage/updated');
-      expect(NotificationMethod.SERVER_REQUEST_RESOLVED).toBe('serverRequest/resolved');
-      expect(NotificationMethod.ERROR).toBe('error');
-      expect(NotificationMethod.WARNING).toBe('warning');
-      expect(NotificationMethod.THREAD_STARTED).toBe('thread/started');
-      expect(NotificationMethod.THREAD_STATUS_CHANGED).toBe('thread/status/changed');
-      expect(NotificationMethod.MODEL_REROUTED).toBe('model/rerouted');
-      expect(NotificationMethod.THREAD_COMPACTED).toBe('thread/compacted');
+      expect({ ...NotificationMethod }).toEqual({
+        TURN_STARTED: 'turn/started',
+        TURN_COMPLETED: 'turn/completed',
+        ITEM_STARTED: 'item/started',
+        ITEM_COMPLETED: 'item/completed',
+        AGENT_MESSAGE_DELTA: 'item/agentMessage/delta',
+        REASONING_SUMMARY_TEXT_DELTA: 'item/reasoning/summaryTextDelta',
+        REASONING_SUMMARY_PART_ADDED: 'item/reasoning/summaryPartAdded',
+        REASONING_TEXT_DELTA: 'item/reasoning/textDelta',
+        COMMAND_EXECUTION_OUTPUT_DELTA: 'item/commandExecution/outputDelta',
+        PLAN_DELTA: 'item/plan/delta',
+        FILE_CHANGE_OUTPUT_DELTA: 'item/fileChange/outputDelta',
+        TOKEN_USAGE_UPDATED: 'thread/tokenUsage/updated',
+        SERVER_REQUEST_RESOLVED: 'serverRequest/resolved',
+        ERROR: 'error',
+        WARNING: 'warning',
+        THREAD_STARTED: 'thread/started',
+        THREAD_STATUS_CHANGED: 'thread/status/changed',
+        THREAD_SETTINGS_UPDATED: 'thread/settings/updated',
+        MODEL_REROUTED: 'model/rerouted',
+        THREAD_COMPACTED: 'thread/compacted',
+        TURN_DIFF_UPDATED: 'turn/diff/updated',
+        TURN_PLAN_UPDATED: 'turn/plan/updated',
+      });
     });
   });
 
   describe('ServerRequestMethod constants', () => {
     it('has all server request methods (real v2 wire names)', () => {
-      expect(ServerRequestMethod.COMMAND_EXECUTION_APPROVAL).toBe(
-        'item/commandExecution/requestApproval',
-      );
-      expect(ServerRequestMethod.FILE_CHANGE_APPROVAL).toBe('item/fileChange/requestApproval');
-      expect(ServerRequestMethod.PERMISSIONS_APPROVAL).toBe('item/permissions/requestApproval');
-      expect(ServerRequestMethod.REQUEST_USER_INPUT).toBe('item/tool/requestUserInput');
+      expect({ ...ServerRequestMethod }).toEqual({
+        COMMAND_EXECUTION_APPROVAL: 'item/commandExecution/requestApproval',
+        FILE_CHANGE_APPROVAL: 'item/fileChange/requestApproval',
+        PERMISSIONS_APPROVAL: 'item/permissions/requestApproval',
+        REQUEST_USER_INPUT: 'item/tool/requestUserInput',
+      });
     });
   });
 

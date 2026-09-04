@@ -188,8 +188,8 @@ describe('Anchor: consecutive thinking blocks in same assistant event are merged
    * should produce ONE thinking block with content "step 1\nstep 2" (or similar
    * concatenation), not two separate thinking blocks.
    *
-   * Current behavior: each thinking content block creates a separate RunBlock.
-   * This test should FAIL until merging is implemented.
+   * Regression guard: adjacent thinking content blocks must stay merged into
+   * a single RunBlock, never split into separate panels.
    */
   it('test_anchor_consecutive_thinking_blocks_in_same_assistant_are_merged', () => {
     let state = createInitialRunState('run-merge');

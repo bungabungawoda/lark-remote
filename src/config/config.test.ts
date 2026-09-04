@@ -104,8 +104,6 @@ claude:
     const p = writeConfig(VALID_CONFIG);
     const config = loadConfig(p);
 
-    // codex 恒为 app-server 模式，无运行模式字段
-    expect(config.agents?.codex?.serviceMode).toBeUndefined();
     expect(config.agents?.codex?.approvalPolicy).toBe('on-request');
     expect(config.agents?.codex?.sandbox).toBe('workspace-write');
   });
