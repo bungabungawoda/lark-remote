@@ -19,18 +19,13 @@ interface OpencodeConfigResult {
  * 当 opencode 命令失败时使用
  * 格式：provider/model（内部用，modelOptions 返回时会去掉 provider 前缀）
  */
-const FALLBACK_PROVIDERS = [
-  'opencode',
-  'deepseek',
-  'minimax-cn-coding-plan',
-  'myprovider',
-  'volcengine-plan',
-];
 const FALLBACK_MODELS: Record<string, string[]> = {
   opencode: ['big-pickle'],
   deepseek: ['deepseek-chat'],
   'minimax-cn-coding-plan': ['MiniMax-M2.5'],
 };
+/** fallback provider 列表从模型表派生，保证不会出现空模型列表的 provider（历史曾混入无模型的 myprovider/volcengine-plan） */
+const FALLBACK_PROVIDERS = Object.keys(FALLBACK_MODELS);
 
 /** 正缓存 TTL：opencode models 列表短时间不变，1 分钟（与 kimi-config 对齐） */
 const OPENCODE_CONFIG_CACHE_TTL_MS = 60_000;
@@ -42,7 +37,7 @@ const OPENCODE_NEGATIVE_CACHE_TTL_MS = 30_000;
 let opencodeConfigCache: { result: OpencodeConfigResult; timestamp: number } | null = null;
 let opencodeConfigFailedAt: number | null = null;
 
-/** 清空缓存（测试与配置热更新用，与 codex-config 的 invalidateCodexBundledCache 对齐） */
+/** 清空缓存（仅供测试使用，生产代码无调用点） */
 export function invalidateOpencodeConfigCache(): void {
   opencodeConfigCache = null;
   opencodeConfigFailedAt = null;

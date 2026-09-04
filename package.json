@@ -101,7 +101,6 @@
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
-    "@types/form-data": "^2.5.2",
     "@types/node": "^26.1.2",
     "@types/qrcode-terminal": "^0.12.2",
     "@vitest/coverage-v8": "4.1.10",

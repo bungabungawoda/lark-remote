@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { scanJsonlLines } from '../common/jsonl.js';
+import { sortByRecencyDesc } from '../common/recency.js';
 import { extractContentBlocks, type ContentBlockMapping } from '../common/content-blocks.js';
 import { getLogger } from '../../logger/index.js';
 
@@ -217,8 +218,11 @@ export class SessionIndex {
       }
     }
 
-    const sorted = [...byId.values()].sort(
-      (a, b) => b.mtimeMs - a.mtimeMs || a.sessionId.localeCompare(b.sessionId),
+    const sorted = [...byId.values()];
+    sortByRecencyDesc(
+      sorted,
+      (s) => s.mtimeMs,
+      (s) => s.sessionId,
     );
 
     const offset = opts.offset ?? 0;

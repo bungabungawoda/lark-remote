@@ -52,6 +52,46 @@ const AUTO_RESUME_MAX_EVENTS = 5;
 /** /resume 列表页大小；`/resume [N]` 的 N clamp 到 [1, RESUME_PAGE_SIZE]。 */
 const RESUME_PAGE_SIZE = 5;
 /** /active 卡片每页显示的最大条目数（agent run + bash run 合计）。 */
+/**
+ * 分页算术（原先 5 处内联且 clamp 语义漂移：/ls 不 clamp、/active clamp 到
+ * totalCount-1 会把过期 offset 泄漏成残页）。统一 clamp 到最后一页边界。
+ */
+function pageInfo(
+  totalCount: number,
+  offset: number,
+  pageSize: number,
+): { totalPages: number; safeOffset: number; currentPage: number } {
+  const totalPages = Math.max(1, Math.ceil(totalCount / pageSize));
+  const maxOffset = Math.max(0, (totalPages - 1) * pageSize);
+  const safeOffset = clampInt(offset, 0, maxOffset);
+  const currentPage = Math.floor(safeOffset / pageSize) + 1;
+  return { totalPages, safeOffset, currentPage };
+}
+
+/** 在 pageInfo 之上切出当前页条目。 */
+function pageSlice<T>(
+  items: readonly T[],
+  offset: number,
+  pageSize: number,
+): {
+  totalCount: number;
+  totalPages: number;
+  safeOffset: number;
+  currentPage: number;
+  pageItems: T[];
+  hasPagination: boolean;
+} {
+  const { totalPages, safeOffset, currentPage } = pageInfo(items.length, offset, pageSize);
+  return {
+    totalCount: items.length,
+    totalPages,
+    safeOffset,
+    currentPage,
+    pageItems: items.slice(safeOffset, safeOffset + pageSize),
+    hasPagination: items.length > pageSize,
+  };
+}
+
 const ACTIVE_PAGE_SIZE = 20;
 /**
  * /order 列表页大小；指令超过此数量时显示分页导航栏。
@@ -244,6 +284,136 @@ interface ConfigSwitchResult {
   /** 切换后恢复/使用的 sessionId（空串 = 已清空，undefined = 未切换 agent） */
   sessionId?: string;
 }
+
+/**
+ * 审批卡片动作表驱动（cmd → 必填校验/bridge 调用/成功与失败 toast）。
+ * 原先 7 段同构的「校验→try→bridge 调用→成功 toast→catch→失败 toast」收敛于此。
+ */
+interface ApprovalActionSpec {
+  missing: (value: CardActionPayload) => boolean;
+  missingToast: string;
+  run: (bridge: Bridge, value: CardActionPayload) => Promise<unknown>;
+  successToast: string;
+  toastType?: 'success' | 'info';
+  /** 缺省走 CommandRouter.answerFailureToast（答案类操作的重复投递语义）。 */
+  failureToast?: (msg: string) => CardActionResponse;
+}
+
+const QUESTION_INDEX_PRESENT = (v: CardActionPayload) => v.questionIndex !== undefined;
+
+const APPROVAL_ACTION_SPECS: Record<string, ApprovalActionSpec> = {
+  'approval.respond': {
+    missing: (v) => !v.runId || v.requestId === undefined || !v.decision || !v.nonce,
+    missingToast: '缺少审批响应参数',
+    run: (bridge, v) =>
+      bridge.handleApprovalRespond({
+        runId: v.runId!,
+        requestId: v.requestId!,
+        decision: v.decision!,
+        nonce: v.nonce!,
+      }),
+    successToast: '审批已提交',
+    failureToast: (msg) => {
+      // 审批已过期：给用户明确反馈，不静默不误导（2026-08-12 事故：点了允许无任何反馈）。
+      const content = /state=expired/.test(msg)
+        ? '⏰ 审批已过期，无法响应'
+        : `审批响应失败：${msg}`;
+      return { toast: { type: 'error', content } };
+    },
+  },
+  'approval.toggle': {
+    missing: (v) => !v.runId || v.requestId === undefined || !v.permId,
+    missingToast: '缺少权限切换参数',
+    run: (bridge, v) =>
+      bridge.handleApprovalToggle({
+        runId: v.runId!,
+        requestId: v.requestId!,
+        permId: v.permId!,
+        selected: v.selected ?? true,
+      }),
+    successToast: '已切换',
+    toastType: 'info',
+    failureToast: (msg) => ({ toast: { type: 'error', content: `权限切换失败：${msg}` } }),
+  },
+  'approval.answer': {
+    missing: (v) =>
+      !v.runId || v.requestId === undefined || !QUESTION_INDEX_PRESENT(v) || !v.option || !v.nonce,
+    missingToast: '缺少问题答案参数',
+    run: (bridge, v) =>
+      bridge.handleApprovalAnswer({
+        runId: v.runId!,
+        requestId: v.requestId!,
+        questionIndex: v.questionIndex!,
+        option: v.option!,
+        nonce: v.nonce!,
+      }),
+    successToast: '已选择',
+  },
+  'approval.answerSubmit': {
+    missing: (v) => !v.runId || v.requestId === undefined || !QUESTION_INDEX_PRESENT(v) || !v.nonce,
+    missingToast: '缺少提交参数',
+    run: (bridge, v) =>
+      bridge.handleApprovalAnswerSubmit({
+        runId: v.runId!,
+        requestId: v.requestId!,
+        questionIndex: v.questionIndex!,
+        nonce: v.nonce!,
+      }),
+    successToast: '答案已提交',
+  },
+  'approval.answerCustom': {
+    missing: (v) =>
+      !v.runId ||
+      v.requestId === undefined ||
+      !QUESTION_INDEX_PRESENT(v) ||
+      !v.nonce ||
+      !v.inputValue,
+    missingToast: '缺少答案文本参数',
+    run: (bridge, v) =>
+      bridge.handleApprovalAnswerCustom({
+        runId: v.runId!,
+        requestId: v.requestId!,
+        questionIndex: v.questionIndex!,
+        text: v.inputValue!,
+        nonce: v.nonce!,
+      }),
+    successToast: '答案已提交',
+  },
+  'approval.answerNote': {
+    missing: (v) =>
+      !v.runId ||
+      v.requestId === undefined ||
+      !QUESTION_INDEX_PRESENT(v) ||
+      !v.nonce ||
+      !v.inputValue,
+    missingToast: '缺少补充说明参数',
+    run: (bridge, v) =>
+      bridge.handleApprovalAnswerNote({
+        runId: v.runId!,
+        requestId: v.requestId!,
+        questionIndex: v.questionIndex!,
+        text: v.inputValue!,
+        nonce: v.nonce!,
+      }),
+    successToast: '补充说明已保存',
+  },
+  'approval.planFeedback': {
+    missing: (v) => !v.runId || v.requestId === undefined || !v.nonce || !v.inputValue,
+    missingToast: '缺少修改意见参数',
+    run: (bridge, v) =>
+      bridge.handleApprovalPlanFeedback({
+        runId: v.runId!,
+        requestId: v.requestId!,
+        text: v.inputValue!,
+        nonce: v.nonce!,
+      }),
+    successToast: '修改意见已保存',
+    failureToast: (msg) => ({ toast: { type: 'error', content: `修改意见保存失败：${msg}` } }),
+  },
+};
+
+/** 卡片 cardAction payload 缺字段的统一报错文案（原先 12 处手写且已漂移出两种前缀）。 */
+const CARD_PAYLOAD_MISSING = '⚠️ 卡片 payload 缺少必要信息';
 
 export class CommandRouter {
   /** Valid agent kinds — single source of truth for resume.use / resume.page / cmdResume. */
@@ -599,6 +769,18 @@ export class CommandRouter {
    * Routes to the appropriate bridge method based on value.cmd.
    * Returns a toast response for immediate user feedback.
    */
+  /** queue.* 卡片动作通用守卫：workspace/messageId 缺失时回复错误并返回 null。 */
+  private async queuePayloadOrReply(
+    value: { workspace?: string; messageId?: string },
+    ctx: CommandContext,
+  ): Promise<{ workspace: string; messageId: string } | null> {
+    if (!value.workspace || !value.messageId) {
+      await this.bridge.sendResult({ text: CARD_PAYLOAD_MISSING }, ctx);
+      return null;
+    }
+    return { workspace: value.workspace, messageId: value.messageId };
+  }
+
   /** 答案类操作的统一失败反馈：重复投递（同一 nonce 第二次点击）是已生效的
    *  中性事件，报 error 会误导（首次点击实际已成功）。 */
   private answerFailureToast(msg: string): CardActionResponse {
@@ -612,160 +794,20 @@ export class CommandRouter {
     value: CardActionPayload,
     _ctx: CommandContext,
   ): Promise<CardActionResponse> {
-    const { runId, requestId, decision, nonce, permId } = value;
-
-    if (value.cmd === 'approval.respond') {
-      if (!runId || requestId === undefined || !decision || !nonce) {
-        return { toast: { type: 'error', content: '缺少审批响应参数' } };
-      }
-      try {
-        await this.bridge.handleApprovalRespond({
-          runId,
-          requestId,
-          decision,
-          nonce,
-        });
-        return { toast: { type: 'success', content: '审批已提交' } };
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        // 审批已过期：给用户明确反馈，不静默不误导（2026-08-12 事故：点了允许无任何反馈）。
-        const content = /state=expired/.test(msg)
-          ? '⏰ 审批已过期，无法响应'
-          : `审批响应失败：${msg}`;
-        return { toast: { type: 'error', content } };
-      }
+    const spec = APPROVAL_ACTION_SPECS[value.cmd];
+    if (!spec) {
+      return { toast: { type: 'error', content: '未知的审批操作' } };
     }
-
-    if (value.cmd === 'approval.toggle') {
-      if (!runId || requestId === undefined || !permId) {
-        return { toast: { type: 'error', content: '缺少权限切换参数' } };
-      }
-      try {
-        await this.bridge.handleApprovalToggle({
-          runId,
-          requestId,
-          permId,
-          selected: value.selected ?? true,
-        });
-        return { toast: { type: 'info', content: '已切换' } };
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        return { toast: { type: 'error', content: `权限切换失败：${msg}` } };
-      }
+    if (spec.missing(value)) {
+      return { toast: { type: 'error', content: spec.missingToast } };
     }
-
-    if (value.cmd === 'approval.answer') {
-      if (
-        !runId ||
-        requestId === undefined ||
-        value.questionIndex === undefined ||
-        !value.option ||
-        !nonce
-      ) {
-        return { toast: { type: 'error', content: '缺少问题答案参数' } };
-      }
-      try {
-        await this.bridge.handleApprovalAnswer({
-          runId,
-          requestId,
-          questionIndex: value.questionIndex,
-          option: value.option,
-          nonce,
-        });
-        return { toast: { type: 'success', content: '已选择' } };
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        return this.answerFailureToast(msg);
-      }
+    try {
+      await spec.run(this.bridge, value);
+      return { toast: { type: spec.toastType ?? 'success', content: spec.successToast } };
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      return spec.failureToast ? spec.failureToast(msg) : this.answerFailureToast(msg);
     }
-
-    if (value.cmd === 'approval.answerSubmit') {
-      if (!runId || requestId === undefined || value.questionIndex === undefined || !nonce) {
-        return { toast: { type: 'error', content: '缺少提交参数' } };
-      }
-      try {
-        await this.bridge.handleApprovalAnswerSubmit({
-          runId,
-          requestId,
-          questionIndex: value.questionIndex,
-          nonce,
-        });
-        return { toast: { type: 'success', content: '答案已提交' } };
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        return this.answerFailureToast(msg);
-      }
-    }
-
-    if (value.cmd === 'approval.answerCustom') {
-      if (
-        !runId ||
-        requestId === undefined ||
-        value.questionIndex === undefined ||
-        !nonce ||
-        !value.inputValue
-      ) {
-        return { toast: { type: 'error', content: '缺少答案文本参数' } };
-      }
-      try {
-        await this.bridge.handleApprovalAnswerCustom({
-          runId,
-          requestId,
-          questionIndex: value.questionIndex,
-          text: value.inputValue,
-          nonce,
-        });
-        return { toast: { type: 'success', content: '答案已提交' } };
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        return this.answerFailureToast(msg);
-      }
-    }
-
-    if (value.cmd === 'approval.answerNote') {
-      if (
-        !runId ||
-        requestId === undefined ||
-        value.questionIndex === undefined ||
-        !nonce ||
-        !value.inputValue
-      ) {
-        return { toast: { type: 'error', content: '缺少补充说明参数' } };
-      }
-      try {
-        await this.bridge.handleApprovalAnswerNote({
-          runId,
-          requestId,
-          questionIndex: value.questionIndex,
-          text: value.inputValue,
-          nonce,
-        });
-        return { toast: { type: 'success', content: '补充说明已保存' } };
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        return this.answerFailureToast(msg);
-      }
-    }
-
-    if (value.cmd === 'approval.planFeedback') {
-      if (!runId || requestId === undefined || !nonce || !value.inputValue) {
-        return { toast: { type: 'error', content: '缺少修改意见参数' } };
-      }
-      try {
-        await this.bridge.handleApprovalPlanFeedback({
-          runId,
-          requestId,
-          text: value.inputValue,
-          nonce,
-        });
-        return { toast: { type: 'success', content: '修改意见已保存' } };
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        return { toast: { type: 'error', content: `修改意见保存失败：${msg}` } };
-      }
-    }
-
-    return { toast: { type: 'error', content: '未知的审批操作' } };
   }
 
   /**
@@ -775,13 +817,9 @@ export class CommandRouter {
     value: { workspace?: string; messageId?: string },
     ctx: CommandContext,
   ): Promise<void> {
-    const workspace = value.workspace;
-    const messageId = value.messageId;
-
-    if (!workspace || !messageId) {
-      await this.bridge.sendResult({ text: '⚠️ 卡片 payload 缺少必要信息' }, ctx);
-      return;
-    }
+    const payload = await this.queuePayloadOrReply(value, ctx);
+    if (!payload) return;
+    const { workspace, messageId } = payload;
 
     const removed = this.bridge.removeFromQueue(workspace, messageId);
     if (removed) {
@@ -802,13 +840,9 @@ export class CommandRouter {
     value: { workspace?: string; messageId?: string },
     ctx: CommandContext,
   ): Promise<void> {
-    const workspace = value.workspace;
-    const messageId = value.messageId;
-
-    if (!workspace || !messageId) {
-      await this.bridge.sendResult({ text: '卡片 payload 缺少必要信息' }, ctx);
-      return;
-    }
+    const payload = await this.queuePayloadOrReply(value, ctx);
+    if (!payload) return;
+    const { workspace, messageId } = payload;
 
     // 1. Check target exists BEFORE any await. The queue chain can advance
     // while later awaits (interruptCurrentRun / markQueueCardExecuting's card
@@ -971,14 +1005,10 @@ export class CommandRouter {
     value: { workspace?: string; messageId?: string; userId?: string; chatId?: string },
     ctx: CommandContext,
   ): Promise<void> {
-    const workspace = value.workspace;
-    const messageId = value.messageId;
+    const payload = await this.queuePayloadOrReply(value, ctx);
+    if (!payload) return;
+    const { workspace, messageId } = payload;
     const targetUserId = value.userId ?? ctx.userId;
-
-    if (!workspace || !messageId) {
-      await this.bridge.sendResult({ text: '卡片 payload 缺少必要信息' }, ctx);
-      return;
-    }
 
     const task = this.bridge.getQueuedTask(workspace, messageId);
     const queueInfo = this.bridge.getQueueInfo(workspace);
@@ -1055,13 +1085,9 @@ export class CommandRouter {
     value: { workspace?: string; messageId?: string },
     ctx: CommandContext,
   ): Promise<void> {
-    const workspace = value.workspace;
-    const messageId = value.messageId;
-
-    if (!workspace || !messageId) {
-      await this.bridge.sendResult({ text: '⚠️ 卡片 payload 缺少必要信息' }, ctx);
-      return;
-    }
+    const payload = await this.queuePayloadOrReply(value, ctx);
+    if (!payload) return;
+    const { workspace, messageId } = payload;
 
     // Get current message preview
     const task = this.bridge.getQueuedTask(workspace, messageId);
@@ -1139,14 +1165,10 @@ export class CommandRouter {
     },
     ctx: CommandContext,
   ): Promise<CardActionResponse | void> {
-    const workspace = value.workspace;
-    const messageId = value.messageId;
     const newMessage = value.inputValue ?? (value.formValue?.['newMessage'] as string | undefined);
-
-    if (!workspace || !messageId) {
-      await this.bridge.sendResult({ text: '⚠️ 卡片 payload 缺少必要信息' }, ctx);
-      return;
-    }
+    const payload = await this.queuePayloadOrReply(value, ctx);
+    if (!payload) return;
+    const { workspace, messageId } = payload;
 
     if (!newMessage) {
       await this.bridge.sendResult({ text: '⚠️ 缺少新消息内容' }, ctx);
@@ -1440,7 +1462,7 @@ export class CommandRouter {
     const orderId = value.orderId;
 
     if (!orderId) {
-      return { toast: { type: 'error', content: '卡片 payload 缺少必要信息' } };
+      return { toast: { type: 'error', content: CARD_PAYLOAD_MISSING } };
     }
 
     if (!this.orderStore.has(orderId)) {
@@ -1477,20 +1499,34 @@ export class CommandRouter {
    * Handle order.aliasEdit: 展示别名编辑卡（input + ✓ 提交图标）。
    * 有别名时预填；提交 `order.aliasInput` 处理（含校验与唯一性）。
    */
-  private async handleOrderAliasEdit(
+  /**
+   * order 编辑卡公共骨架：payload 校验 → 查指令 → 构造 input 编辑卡 → 原地更新。
+   * handleOrderAliasEdit / handleOrderTextEdit 原先各持一份 ~90% 相同的 4 段结构。
+   */
+  private async showOrderEditCard(
     value: { orderId?: string; offset?: number },
     ctx: CommandContext,
+    opts: {
+      title: string;
+      hint: string;
+      inputName: string;
+      placeholder: string;
+      defaultValue: string;
+      inputCmd: 'order.aliasInput' | 'order.textInput';
+      maxLength?: number;
+    },
   ): Promise<CardActionResponse | void> {
     const orderId = value.orderId;
     const offset = Math.max(0, Math.trunc(Number(value.offset) || 0));
     if (!orderId) {
-      return { toast: { type: 'error', content: '卡片 payload 缺少必要信息' } };
+      return { toast: { type: 'error', content: CARD_PAYLOAD_MISSING } };
     }
     this.orderStore.reload();
     const order = this.orderStore.get().find((o) => o.id === orderId);
     if (!order) {
       return { toast: { type: 'error', content: '指令不存在或已被删除' } };
     }
+    // 列表卡显示的是截断版（≤100 字符 + ...），编辑卡预览保持一致
     const displayText = order.text.length > 100 ? order.text.slice(0, 97) + '...' : order.text;
     // CardKit 2.0 input 自带 ✓ 提交图标（input_value 经 raw 回传，红线）。
     // 不用 form 容器（触发 300123 无 submit button / 200621 嵌套 column）。
@@ -1499,7 +1535,7 @@ export class CommandRouter {
       config: { wide_screen_mode: true },
       header: {
         template: 'blue',
-        title: { tag: 'plain_text', content: '✏️ 给指令起别名' },
+        title: { tag: 'plain_text', content: opts.title },
       },
       body: {
         elements: [
@@ -1510,10 +1546,7 @@ export class CommandRouter {
           { tag: 'hr' },
           {
             tag: 'div',
-            text: {
-              tag: 'lark_md',
-              content: '💡 输入别名名后点击右侧 ✓ 提交；留空提交 = 删除该别名',
-            },
+            text: { tag: 'lark_md', content: opts.hint },
           },
           {
             tag: 'column_set',
@@ -1525,13 +1558,14 @@ export class CommandRouter {
                 elements: [
                   {
                     tag: 'input',
-                    name: 'aliasName',
-                    placeholder: { tag: 'plain_text', content: '输入 $别名名（如 all）...' },
-                    default_value: order.alias ?? '',
+                    name: opts.inputName,
+                    placeholder: { tag: 'plain_text', content: opts.placeholder },
+                    default_value: opts.defaultValue,
+                    ...(opts.maxLength !== undefined ? { max_length: opts.maxLength } : {}),
                     behaviors: [
                       {
                         type: 'callback',
-                        value: { cmd: 'order.aliasInput', orderId, offset },
+                        value: { cmd: opts.inputCmd, orderId, offset },
                       },
                     ],
                   },
@@ -1543,6 +1577,22 @@ export class CommandRouter {
       },
     };
     await this.bridge.updateCardInPlace(editCard, ctx);
+  }
+
+  private async handleOrderAliasEdit(
+    value: { orderId?: string; offset?: number },
+    ctx: CommandContext,
+  ): Promise<CardActionResponse | void> {
+    this.orderStore.reload();
+    const order = this.orderStore.get().find((o) => o.id === value.orderId);
+    return this.showOrderEditCard(value, ctx, {
+      title: '✏️ 给指令起别名',
+      hint: '💡 输入别名名后点击右侧 ✓ 提交；留空提交 = 删除该别名',
+      inputName: 'aliasName',
+      placeholder: '输入 $别名名（如 all）...',
+      defaultValue: order?.alias ?? '',
+      inputCmd: 'order.aliasInput',
+    });
   }
 
   /**
@@ -1562,7 +1612,7 @@ export class CommandRouter {
     const offset = Math.max(0, Math.trunc(Number(value.offset) || 0));
     const name = value.inputValue ?? (value.formValue?.['aliasName'] as string | undefined);
     if (!orderId) {
-      return { toast: { type: 'error', content: '卡片 payload 缺少必要信息' } };
+      return { toast: { type: 'error', content: CARD_PAYLOAD_MISSING } };
     }
     this.orderStore.reload();
     const order = this.orderStore.get().find((o) => o.id === orderId);
@@ -1599,7 +1649,7 @@ export class CommandRouter {
     const orderId = value.orderId;
     const offset = Math.max(0, Math.trunc(Number(value.offset) || 0));
     if (!orderId) {
-      return { toast: { type: 'error', content: '卡片 payload 缺少必要信息' } };
+      return { toast: { type: 'error', content: CARD_PAYLOAD_MISSING } };
     }
     this.orderStore.reload();
     const order = this.orderStore.get().find((o) => o.id === orderId);
@@ -1630,73 +1680,20 @@ export class CommandRouter {
     value: { orderId?: string; offset?: number },
     ctx: CommandContext,
   ): Promise<CardActionResponse | void> {
-    const orderId = value.orderId;
-    const offset = Math.max(0, Math.trunc(Number(value.offset) || 0));
-    if (!orderId) {
-      return { toast: { type: 'error', content: '卡片 payload 缺少必要信息' } };
-    }
     this.orderStore.reload();
-    const order = this.orderStore.get().find((o) => o.id === orderId);
-    if (!order) {
-      return { toast: { type: 'error', content: '指令不存在或已被删除' } };
-    }
-    // 列表卡显示的是截断版（≤100 字符 + ...），编辑卡预览也保持一致；
-    // input 组件 default_value 预填完整 text（不受截断影响），用户提交后生效完整文本。
-    const displayText = order.text.length > 100 ? order.text.slice(0, 97) + '...' : order.text;
-    // CardKit 2.0 input 自带 ✓ 提交图标（input_value 经 raw 回传，红线）。
-    // 不用 form 容器（触发 300123 无 submit button / 200621 嵌套 column）。
-    const editCard = {
-      schema: '2.0',
-      config: { wide_screen_mode: true },
-      header: {
-        template: 'blue',
-        title: { tag: 'plain_text', content: '✏️ 编辑指令' },
-      },
-      body: {
-        elements: [
-          {
-            tag: 'div',
-            text: { tag: 'lark_md', content: `**当前指令:**\n\`${displayText}\`` },
-          },
-          { tag: 'hr' },
-          {
-            tag: 'div',
-            text: {
-              tag: 'lark_md',
-              content: '💡 修改后点击右侧 ✓ 提交；空白提交 = 报错；最多 200 字符',
-            },
-          },
-          {
-            tag: 'column_set',
-            columns: [
-              {
-                tag: 'column',
-                width: 'weighted',
-                weight: 3,
-                elements: [
-                  {
-                    tag: 'input',
-                    name: 'text',
-                    placeholder: { tag: 'plain_text', content: '输入新的指令文本...' },
-                    default_value: order.text,
-                    // max_length 与 MAX_TEXT_LENGTH=200 对齐：超长在输入侧直接截断，
-                    // 避免提交后才报错（后端 updateText 仍会二次校验，双保险）。
-                    max_length: 200,
-                    behaviors: [
-                      {
-                        type: 'callback',
-                        value: { cmd: 'order.textInput', orderId, offset },
-                      },
-                    ],
-                  },
-                ],
-              },
-            ],
-          },
-        ],
-      },
-    };
-    await this.bridge.updateCardInPlace(editCard, ctx);
+    const order = this.orderStore.get().find((o) => o.id === value.orderId);
+    // input 组件 default_value 预填完整 text（不受截断影响），提交后生效完整文本
+    return this.showOrderEditCard(value, ctx, {
+      title: '✏️ 编辑指令',
+      hint: '💡 修改后点击右侧 ✓ 提交；空白提交 = 报错；最多 200 字符',
+      inputName: 'text',
+      placeholder: '输入新的指令文本...',
+      defaultValue: order?.text ?? '',
+      inputCmd: 'order.textInput',
+      // 与 MAX_TEXT_LENGTH=200 对齐：超长在输入侧直接截断，避免提交后才报错
+      // （后端 updateText 仍会二次校验，双保险）
+      maxLength: 200,
+    });
   }
 
   /**
@@ -1719,7 +1716,7 @@ export class CommandRouter {
     const offset = Math.max(0, Math.trunc(Number(value.offset) || 0));
     const raw = value.inputValue ?? (value.formValue?.['text'] as string | undefined);
     if (!orderId) {
-      return { toast: { type: 'error', content: '卡片 payload 缺少必要信息' } };
+      return { toast: { type: 'error', content: CARD_PAYLOAD_MISSING } };
     }
     this.orderStore.reload();
     const order = this.orderStore.get().find((o) => o.id === orderId);
@@ -1809,7 +1806,7 @@ export class CommandRouter {
   ): Promise<CardActionResponse | void> {
     const name = value.name;
     if (!name) {
-      return { toast: { type: 'error', content: '卡片 payload 缺少必要信息' } };
+      return { toast: { type: 'error', content: CARD_PAYLOAD_MISSING } };
     }
 
     // Execute the removal (consumes the write-side effect; the returned text
@@ -3075,12 +3072,9 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
         })),
       ];
 
-      // Pagination calculations
-      const totalCount = allItems.length;
-      const totalPages = Math.max(1, Math.ceil(totalCount / CommandRouter.LS_PAGE_SIZE));
-      const currentPage = Math.floor(offset / CommandRouter.LS_PAGE_SIZE) + 1;
-      const pageItems = allItems.slice(offset, offset + CommandRouter.LS_PAGE_SIZE);
-      const hasPagination = totalCount > CommandRouter.LS_PAGE_SIZE;
+      // Pagination calculations（clamp 到最后一页边界，原先不 clamp 会显示空页）
+      const { totalCount, totalPages, safeOffset, currentPage, pageItems, hasPagination } =
+        pageSlice(allItems, offset, CommandRouter.LS_PAGE_SIZE);
 
       // Check if we need to show parent directory button
       const parentDir = path.dirname(targetDir);
@@ -3113,7 +3107,9 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
         text: { tag: 'plain_text', content: '刷新' },
         type: 'default',
         size: 'small',
-        behaviors: [{ type: 'callback', value: { cmd: 'ls.refresh', path: targetDir, offset } }],
+        behaviors: [
+          { type: 'callback', value: { cmd: 'ls.refresh', path: targetDir, offset: safeOffset } },
+        ],
       });
       // Show "切换" button when viewing a subdirectory (to switch cwd to this directory)
       if (isSubdir) {
@@ -3225,7 +3221,7 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
       if (hasPagination) {
         const bar = paginationBar({
           cmd: 'ls.page',
-          offset,
+          offset: safeOffset,
           pageSize: CommandRouter.LS_PAGE_SIZE,
           total: totalCount,
           extra: { path: targetDir },
@@ -3313,13 +3309,14 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
 
         // Pagination calculations (mirror cmdOrder): clamp stale/out-of-range
         // offsets so prev/next always step by WS_PAGE_SIZE.
-        const totalCount = entries.length;
-        const totalPages = Math.max(1, Math.ceil(totalCount / WS_PAGE_SIZE));
-        const maxOffset = Math.max(0, (totalPages - 1) * WS_PAGE_SIZE);
-        const safeOffset = clampInt(offset, 0, maxOffset);
-        const currentPage = Math.floor(safeOffset / WS_PAGE_SIZE) + 1;
-        const pageEntries = entries.slice(safeOffset, safeOffset + WS_PAGE_SIZE);
-        const hasPagination = totalCount > WS_PAGE_SIZE;
+        const {
+          totalCount,
+          totalPages,
+          safeOffset,
+          currentPage,
+          pageItems: pageEntries,
+          hasPagination,
+        } = pageSlice(entries, offset, WS_PAGE_SIZE);
 
         // Build body elements: current cwd + workspace list with dividers
         const bodyElements: object[] = [];
@@ -3778,8 +3775,7 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
 
     // Pagination bar (only shown when there are more sessions than pageSize)
     if (total > pageSize) {
-      const totalPages = Math.ceil(total / pageSize);
-      const currentPage = Math.floor(pageOffset / pageSize) + 1;
+      const { totalPages, currentPage } = pageInfo(total, pageOffset, pageSize);
 
       const bar = paginationBar({
         cmd: 'resume.page',
@@ -3848,9 +3844,9 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
   ): CommandResult {
     const totalCount = activeRuns.length + activeBashRuns.length;
     const pageSize = ACTIVE_PAGE_SIZE;
-    const safeOffset = Math.max(0, Math.min(offset, Math.max(0, totalCount - 1)));
-    const totalPages = Math.max(1, Math.ceil(totalCount / pageSize));
-    const currentPage = Math.floor(safeOffset / pageSize) + 1;
+    // 统一 clamp 到最后一页边界（原先 clamp 到 totalCount-1，过期 offset 会
+    // 泄漏成「第 1 页只显示末尾几条」的残页）
+    const { totalPages, safeOffset, currentPage } = pageInfo(totalCount, offset, pageSize);
 
     // Slice: distribute offset across agent runs first, then bash runs
     const elements: object[] = [];
@@ -4197,14 +4193,14 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
         elements.push({ tag: 'div', text: { tag: 'lark_md', content: '暂无指令' } });
       } else {
         // Pagination calculations
-        const totalCount = allOrders.length;
-        const totalPages = Math.max(1, Math.ceil(totalCount / ORDER_PAGE_SIZE));
-        // Clamp offset to last page boundary to avoid empty pages
-        const maxOffset = Math.max(0, (totalPages - 1) * ORDER_PAGE_SIZE);
-        const safeOffset = clampInt(offset, 0, maxOffset);
-        const currentPage = Math.floor(safeOffset / ORDER_PAGE_SIZE) + 1;
-        const pageOrders = allOrders.slice(safeOffset, safeOffset + ORDER_PAGE_SIZE);
-        const hasPagination = totalCount > ORDER_PAGE_SIZE;
+        const {
+          totalCount,
+          totalPages,
+          safeOffset,
+          currentPage,
+          pageItems: pageOrders,
+          hasPagination,
+        } = pageSlice(allOrders, offset, ORDER_PAGE_SIZE);
 
         for (let i = 0; i < pageOrders.length; i++) {
           const order = pageOrders[i];

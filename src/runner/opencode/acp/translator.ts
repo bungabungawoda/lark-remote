@@ -43,6 +43,10 @@ import {
   type SessionUpdateNotification,
   type RequestPermissionParams,
 } from '../../common/acp/protocol-types.js';
+import {
+  deriveAcpAvailableDecisions,
+  truncateWithEllipsis,
+} from '../../common/acp/protocol-helpers.js';
 import { getLogger } from '../../../logger/index.js';
 
 // =============================================================================
@@ -336,10 +340,10 @@ export class OpencodeAcpTranslator {
       requestId,
       kind: 'command',
       command: params.toolCall.title ?? undefined,
-      reason: rawInput ? truncate(stringify(rawInput), 200) : undefined,
+      reason: rawInput ? truncateWithEllipsis(stringify(rawInput), 200) : undefined,
       // §P4: 从服务端 options kind 派生——带 allow_always（或 approve_always）
       // 才提供「本会话总是允许」（acceptForSession）。
-      availableDecisions: this.deriveAvailableDecisions(params),
+      availableDecisions: deriveAcpAvailableDecisions(params.options ?? []),
     };
 
     return [
@@ -361,16 +365,6 @@ export class OpencodeAcpTranslator {
    * accept/decline/cancel are universal; acceptForSession requires an
    * always-class option (opencode `allow_always`, kimi `approve_always`).
    */
-  private deriveAvailableDecisions(params: RequestPermissionParams): string[] {
-    const decisions: string[] = ['accept', 'decline', 'cancel'];
-    const hasAlwaysOption = (params.options ?? []).some(
-      (opt) => opt.kind === 'allow_always' || opt.kind === 'approve_always',
-    );
-    if (hasAlwaysOption) {
-      decisions.push('acceptForSession');
-    }
-    return decisions;
-  }
 
   // =========================================================================
   // Private helpers
@@ -414,10 +408,6 @@ function extractToolResultContent(event: ToolCallUpdateEvent): unknown {
     if (texts.length > 0) return texts.join('\n');
   }
   return '';
-}
-
-function truncate(text: string, maxLen: number): string {
-  return text.length <= maxLen ? text : text.slice(0, maxLen) + '…';
 }
 
 function stringify(value: unknown): string {

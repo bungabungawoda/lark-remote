@@ -9,7 +9,7 @@
  */
 
 /** Default page size for listSessions. */
-export const DEFAULT_LIST_LIMIT = 20;
+const DEFAULT_LIST_LIMIT = 20;
 
 /**
  * Paginate a (already-ordered) full item list by offset + limit.

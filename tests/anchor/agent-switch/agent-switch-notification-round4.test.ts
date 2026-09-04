@@ -5,9 +5,13 @@ import os from 'node:os';
 import fs from 'node:fs';
 import { SessionStore } from '../../../src/session/index.js';
 import { CommandRouter } from '../../../src/router/index.js';
-import { AppConfigSchema } from '../../../src/config/index.js';
 import type { AppConfig } from '../../../src/config/index.js';
-import { lastNotice, allNotices } from '../../../tests/lib/agent-switch-helpers.js';
+import { lastNotice, allNotices } from '../../lib/agent-switch-helpers.js';
+import {
+  buildAgentSwitchConfig as buildConfig,
+  AGENTS,
+  DISPLAY,
+} from '../../lib/agent-switch-helpers.js';
 
 /**
  * Round 4/5 anchors + Round 6 upgraded anchors（原 probes，断言未动）:
@@ -30,38 +34,6 @@ import { lastNotice, allNotices } from '../../../tests/lib/agent-switch-helpers.
  * T4 boundaries: 5-agent pairwise matrix (claude/codex/pi/opencode/kimi) 文案 +
  * 调用次数；sendResult 失败兜底必须携带当前切换文案且状态一致。
  */
-function buildConfig(overrides?: Partial<AppConfig>): AppConfig {
-  return AppConfigSchema.parse({
-    feishu: { appId: 'test', appSecret: 'test' },
-    defaultAgent: 'claude',
-    claude: {
-      model: 'opus',
-      stopGraceMs: 5000,
-    },
-    agents: {
-      pi: { provider: 'Volcano', model: 'glm-5.2', thinking: 'medium' },
-      codex: { model: 'claude-sonnet-4-20250514' },
-      opencode: { model: 'gpt-5' },
-      kimi: { model: 'kimi-k2' },
-    },
-    workspace: { default: '' },
-    output: {
-      showThinking: true,
-      showToolUse: false,
-      showToolResult: false,
-    },
-    ...overrides,
-  });
-}
-
-const AGENTS = ['claude', 'codex', 'pi', 'opencode', 'kimi'] as const;
-const DISPLAY: Record<string, string> = {
-  claude: 'Claude',
-  codex: 'Codex',
-  pi: 'Pi',
-  opencode: 'Opencode',
-  kimi: 'Kimi',
-};
 
 interface PersistedUserData {
   cwd?: string;
