@@ -34,16 +34,9 @@ vi.mock('../../../src/logger/index.js', () => ({
 import { loadCodexConfig, invalidateCodexBundledCache } from '../../../src/config/codex-config.js';
 
 /** 与 src/config/codex-config.ts FALLBACK_MODELS 一致的契约 fixture */
-const FALLBACK_MODELS = [
-  'o3',
-  'o4-mini',
-  'gpt-4o',
-  'gpt-4.1',
-  'gpt-4.1-mini',
-  'gpt-4.1-nano',
-  'claude-sonnet-4-20250514',
-  'claude-opus-4-20250115',
-];
+const FALLBACK_MODELS = ['o3', 'o4-mini', 'gpt-4o', 'gpt-4.1', 'gpt-4.1-mini', 'gpt-4.1-nano'];
+/** 与 src/config/codex-config.ts ANTHROPIC_FALLBACK_MODELS 一致的契约 fixture */
+const ANTHROPIC_FALLBACK_MODELS = ['claude-sonnet-4-20250514', 'claude-opus-4-20250115'];
 
 describe('codex both catalog commands fail - anchor', () => {
   let tmpDir: string;
@@ -111,5 +104,34 @@ describe('codex both catalog commands fail - anchor', () => {
     // anthropic 非 codex 内置 provider（P3-2 对齐），fallback 只含 openai
     expect(cfg!.providerNames).toEqual(['openai']);
     expect(cfg!.modelOptions('openai')).toEqual(FALLBACK_MODELS);
+  });
+
+  it('test_anchor_both_fail_explicit_anthropic_provider_uses_anthropic_fallback_models', () => {
+    // A5a：claude 模型已移入独立的 ANTHROPIC_FALLBACK_MODELS（与 openai 兜底表隔离）。
+    // 用户显式配置 [model_providers.anthropic] 且 catalog 两命令均失败时：
+    // anthropic 下拉 = claude 兜底表；openai 下拉不得混入 claude 模型。
+    fs.writeFileSync(
+      path.join(tmpDir, 'config.toml'),
+      [
+        'model = "gpt-4.1"',
+        '',
+        '[model_providers.anthropic]',
+        'name = "Anthropic"',
+        'base_url = "https://api.example.com/v1"',
+        'env_key = "ANTHROPIC_API_KEY"',
+        '',
+      ].join('\n'),
+    );
+    invalidateCodexBundledCache();
+
+    let cfg: ReturnType<typeof loadCodexConfig>;
+    expect(() => {
+      cfg = loadCodexConfig();
+    }).not.toThrow();
+
+    expect(cfg!.providerNames).toContain('anthropic');
+    expect(cfg!.modelOptions('anthropic')).toEqual(ANTHROPIC_FALLBACK_MODELS);
+    expect(cfg!.modelOptions('openai')).toEqual(FALLBACK_MODELS);
+    expect(cfg!.modelOptions('openai').some((m) => m.startsWith('claude-'))).toBe(false);
   });
 });

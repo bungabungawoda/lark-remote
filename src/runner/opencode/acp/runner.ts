@@ -44,11 +44,13 @@ import {
   type SessionCancelParams,
   type SessionSetModeParams,
   type RequestPermissionParams,
-  type RequestPermissionResponse,
   type PermissionOption,
   RpcErrorCode,
 } from '../../common/acp/protocol-types.js';
-import { findOptionIdByKind } from '../../common/acp/protocol-helpers.js';
+import {
+  OPENCODE_APPROVAL_KINDS,
+  buildAcpPermissionOutcome,
+} from '../../common/acp/protocol-helpers.js';
 import { getLogger } from '../../../logger/index.js';
 import { ConnectionBasedRunner } from '../../common/connection-based-runner.js';
 import { OpencodeLogErrorMonitor, resolveOpencodeLogPath } from './error-monitor.js';
@@ -81,50 +83,6 @@ export interface OpencodeAcpRunnerOptions {
   errorMonitorLogPath?: string;
   /** Tail poll interval for the opencode log error monitor. Defaults to 2000ms. */
   errorMonitorPollIntervalMs?: number;
-}
-
-/**
- * Build the ACP protocol response for a permission approval decision.
- *
- * accept            → {outcome:{outcome:'selected', optionId:<allow_once kind>}}
- * accept_for_session → {outcome:{outcome:'selected', optionId:<allow_always kind>}}
- * decline           → {outcome:{outcome:'selected', optionId:<reject kind>}}
- * cancel            → {outcome:{outcome:'cancelled'}}
- *
- * optionId is opaque and echoed back as-is (opencode permission.ts:20-24
- * offers once/always/reject with kinds allow_once/allow_always/reject_once;
- * the server maps optionId 'once'/'always' → approve, anything else →
- * reject — permission.ts:219-223). If no matching option is found, fall
- * back to cancelled (safe universal default).
- */
-function buildApprovalResponse(
-  action: string,
-  pending: PendingApproval,
-): RequestPermissionResponse {
-  if (action === 'cancel') {
-    return { outcome: { outcome: 'cancelled' } };
-  }
-  if (action === 'accept') {
-    const optionId = findOptionIdByKind(pending.options, ['allow_once', 'allow_always']);
-    if (optionId) {
-      return { outcome: { outcome: 'selected', optionId } };
-    }
-    return { outcome: { outcome: 'cancelled' } };
-  }
-  if (action === 'accept_for_session') {
-    // §P4: 卡片「允许本次会话」→ always 类 optionId（opencode 'always'）
-    const optionId = findOptionIdByKind(pending.options, ['allow_always', 'approve_always']);
-    if (optionId) {
-      return { outcome: { outcome: 'selected', optionId } };
-    }
-    return { outcome: { outcome: 'cancelled' } };
-  }
-  // decline
-  const optionId = findOptionIdByKind(pending.options, ['reject_once', 'reject']);
-  if (optionId) {
-    return { outcome: { outcome: 'selected', optionId } };
-  }
-  return { outcome: { outcome: 'cancelled' } };
 }
 
 interface PendingApproval {
@@ -365,7 +323,7 @@ export class OpencodeAcpRunner extends ConnectionBasedRunner<
     if (!client || !pending) return;
 
     const action = (response as { action?: string })?.action ?? 'decline';
-    const acpResponse = buildApprovalResponse(action, pending);
+    const acpResponse = buildAcpPermissionOutcome(action, pending.options, OPENCODE_APPROVAL_KINDS);
     client.respond(requestId, acpResponse);
     this.pendingApprovals.delete(requestId);
     getLogger().info(`[${this.logTag}] approval responded requestId=${requestId} action=${action}`);

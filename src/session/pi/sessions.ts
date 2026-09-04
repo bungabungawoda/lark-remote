@@ -3,7 +3,11 @@ import path from 'node:path';
 import os from 'node:os';
 import { findJsonlLine, scanJsonlLines, readJsonlLinesFromOffset } from '../common/jsonl.js';
 import { extractContentBlocks, type ContentBlockMapping } from '../common/content-blocks.js';
-import { UsageAccumulator } from '../common/usage-accumulator.js';
+import {
+  UsageAccumulator,
+  contextWindowOccupancy,
+  cumulativeUsageFields,
+} from '../common/usage-accumulator.js';
 import type {
   AgentSession,
   AgentSessionReader,
@@ -14,6 +18,8 @@ import type {
 
 import { STALE_MS } from '../common/constants.js';
 import { capEvents, paginate } from '../common/pagination.js';
+import { sortByRecencyDesc } from '../common/recency.js';
+import { TtlCache } from '../../common/ttl-cache.js';
 
 /** PI JSONL entry type definitions for usage extraction. */
 type PiJsonlEntry =
@@ -60,10 +66,7 @@ function projectDirForCwd(cwd: string, sessionsDir: string): string {
  * P1-19: TTL cache for pi directory scans (mirror codex getSessionIndex's
  * 5s TTL). Repeated /resume pages re-scan the whole sessions dir per call.
  */
-const PI_LIST_TTL_MS = 5000;
-/** Upper bound on cached listings; FIFO eviction past this. */
-const PI_LIST_MAX_ENTRIES = 32;
-const piListCache = new Map<string, { builtAt: number; sessions: AgentSession[] }>();
+const piListCache = new TtlCache<string, AgentSession[]>(5_000, 32);
 
 /** Pi-specific field-name mapping for content block extraction. */
 export const PI_MAPPING: ContentBlockMapping = {
@@ -280,21 +283,16 @@ function buildPiUsage(acc: UsageAccumulator): AgentSessionUsage | undefined {
     return undefined;
   }
   const l = acc.last!;
-  const contextLength = l.input + l.cacheRead + l.cacheCreation;
   return {
     inputTokens: l.input,
     outputTokens: l.output,
-    contextLength,
+    contextLength: contextWindowOccupancy(l),
     compactCount: acc.compactCount > 0 ? acc.compactCount : undefined,
     cacheReadTokens: l.cacheRead > 0 ? l.cacheRead : 0,
     cacheCreationTokens: l.cacheCreation > 0 ? l.cacheCreation : 0,
     totalTokens: l.total > 0 ? l.total : undefined,
     // Cumulative (session-wide): sum of ALL runs in the jsonl file.
-    cumulativeTotalTokens: t.input + t.output + t.cacheRead + t.cacheCreation,
-    cumulativeInputTokens: t.input,
-    cumulativeOutputTokens: t.output,
-    cumulativeCacheReadTokens: t.cacheRead,
-    cumulativeCacheCreationTokens: t.cacheCreation,
+    ...cumulativeUsageFields(t),
   };
 }
 
@@ -451,8 +449,8 @@ export class PiSessionReader implements AgentSessionReader {
   private listSessionsByScan(cwd: string): AgentSession[] {
     const cacheKey = `${this.sessionsDir}\u0000${cwd}`;
     const cached = piListCache.get(cacheKey);
-    if (cached && Date.now() - cached.builtAt < PI_LIST_TTL_MS) {
-      return cached.sessions;
+    if (cached) {
+      return cached;
     }
 
     const dir = projectDirForCwd(cwd, this.sessionsDir);
@@ -486,14 +484,13 @@ export class PiSessionReader implements AgentSessionReader {
     }
 
     // Same-mtime ties: secondary key keeps the full order deterministic.
-    sessions.sort((a, b) => b.mtime - a.mtime || a.sessionId.localeCompare(b.sessionId));
+    sortByRecencyDesc(
+      sessions,
+      (s) => s.mtime,
+      (s) => s.sessionId,
+    );
 
-    piListCache.set(cacheKey, { builtAt: Date.now(), sessions });
-    // Bound the cache (map iteration order = insertion order).
-    if (piListCache.size > PI_LIST_MAX_ENTRIES) {
-      const oldest = piListCache.keys().next().value;
-      if (oldest !== undefined) piListCache.delete(oldest);
-    }
+    piListCache.set(cacheKey, sessions);
     return sessions;
   }
 }

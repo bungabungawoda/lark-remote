@@ -51,7 +51,10 @@ import {
   RpcErrorCode,
   ServerRequestMethod,
 } from '../../common/acp/protocol-types.js';
-import { findOptionIdByKind } from '../../common/acp/protocol-helpers.js';
+import {
+  KIMI_APPROVAL_KINDS,
+  buildAcpPermissionOutcome,
+} from '../../common/acp/protocol-helpers.js';
 import { mapAnswersByIndex } from '../../question-common.js';
 import { getLogger } from '../../../logger/index.js';
 import { ConnectionBasedRunner } from '../../common/connection-based-runner.js';
@@ -76,18 +79,18 @@ export interface KimiAcpRunnerOptions {
   idleTtlMs?: number;
   /** How long to wait for turn output before failing. Defaults to 10 min. */
   turnIdleTimeoutMs?: number;
-  /** R2: how long to poll wire.jsonl for the compaction record after the
-   *  /compact prompt settles. Defaults to 30s; WARN (not fail) on timeout. */
-  compactPollTimeoutMs?: number;
+  /** §5.2: compaction 等待的沉默超时——距上次观察到任何新 compaction 记录
+   *  （begin/terminal）超过该时长仍未终态才放弃（outcome unknown，卡片 error，
+   *  不再「超时=成功」）。默认 10 分钟（对齐 turnIdleTimeoutMs）。压缩是完整
+   *  LLM 请求（引擎带重试），时长无上限，旧的固定 30s 轮询超时已删除。 */
+  compactIdleTimeoutMs?: number;
   model?: string;
   /** Kimi permission mode (user-facing: manual/auto/yolo). */
   permissionMode?: 'manual' | 'auto' | 'yolo';
 }
 
-/** R2: how long to wait for the background compaction record after the
- *  /compact prompt settles (design doc §6.1). Real kimi 0.36.0 lands
- *  context.apply_compaction ~8s after end_turn. */
-const COMPACT_POLL_TIMEOUT_MS = 30_000;
+/** §5.2: compaction 等待的默认沉默超时（对齐 turnIdleTimeoutMs 默认值）。 */
+const COMPACT_IDLE_TIMEOUT_MS = 10 * 60_000;
 /** Poll interval for the wire.jsonl compaction record. */
 const COMPACT_POLL_INTERVAL_MS = 1_000;
 
@@ -125,10 +128,25 @@ interface TerminalHandle {
  *  {type, time} only). */
 interface CompactionRecordLike {
   type: string;
+  source?: string;
   compactedCount?: number;
   tokensBefore?: number;
   tokensAfter?: number;
   time: number;
+}
+
+/** 压缩终态记录：complete / apply_compaction 完成，cancel 为失败或取消（共用）。 */
+function isCompactionTerminalLike(record: CompactionRecordLike): boolean {
+  return (
+    record.type === 'full_compaction.complete' ||
+    record.type === 'context.apply_compaction' ||
+    record.type === 'full_compaction.cancel'
+  );
+}
+
+/** 沉默窗口的展示文案（测试用小窗口显示秒，生产默认显示分钟）。 */
+function formatIdleWindow(ms: number): string {
+  return ms >= 60_000 ? `${Math.round(ms / 60_000)} 分钟` : `${Math.round(ms / 1000)} 秒`;
 }
 
 /** Duck-typed capability on the session reader for R2 polling. */
@@ -157,57 +175,6 @@ function toAcpMode(mode: 'manual' | 'auto' | 'yolo'): AcpMode {
     case 'yolo':
       return 'yolo';
   }
-}
-
-/**
- * Build the ACP protocol response for a permission approval decision.
- *
- * accept            → {outcome:{outcome:'selected', optionId:<approve_once kind>}}
- * accept_for_session → {outcome:{outcome:'selected', optionId:<approve_always kind>}}
- * decline           → {outcome:{outcome:'selected', optionId:<reject kind>}}
- * cancel            → {outcome:{outcome:'cancelled'}}
- *
- * optionId is looked up from the request's options[] by kind (approval.ts:28-29):
- * approve_once / approve_always / allow_once for accept;
- * approve_always / allow_always for accept_for_session;
- * reject / reject_once for decline. If not found, fall back to cancelled
- * (safe universal default — the server treats it as "user declined").
- *
- * 2026-08-15 live test: approve_once + approve_always + reject observed.
- */
-function buildApprovalResponse(
-  action: string,
-  pending: PendingApproval,
-): RequestPermissionResponse {
-  if (action === 'cancel') {
-    return { outcome: { outcome: 'cancelled' } };
-  }
-  if (action === 'accept') {
-    const optionId = findOptionIdByKind(pending.options, [
-      'approve_once',
-      'approve_always',
-      'allow_once',
-    ]);
-    if (optionId) {
-      return { outcome: { outcome: 'selected', optionId } };
-    }
-    // Fallback: can't find allow option → cancel is safe
-    return { outcome: { outcome: 'cancelled' } };
-  }
-  if (action === 'accept_for_session') {
-    // §P4: 卡片「允许本次会话」→ always 类 optionId（kimi approve_always）
-    const optionId = findOptionIdByKind(pending.options, ['approve_always', 'allow_always']);
-    if (optionId) {
-      return { outcome: { outcome: 'selected', optionId } };
-    }
-    return { outcome: { outcome: 'cancelled' } };
-  }
-  // decline
-  const optionId = findOptionIdByKind(pending.options, ['reject', 'reject_once']);
-  if (optionId) {
-    return { outcome: { outcome: 'selected', optionId } };
-  }
-  return { outcome: { outcome: 'cancelled' } };
 }
 
 /**
@@ -286,7 +253,7 @@ export class KimiAcpRunner extends ConnectionBasedRunner<KimiAcpClient, AcpTrans
   private activeSessionId: string | null = null;
   private model?: string;
   private permissionMode: 'manual' | 'auto' | 'yolo';
-  private readonly compactPollTimeoutMs: number;
+  private readonly compactIdleTimeoutMs: number;
 
   /** Pending approval requests: requestId → kind + view + options. */
   private pendingApprovals = new Map<number | string, PendingApproval>();
@@ -314,7 +281,7 @@ export class KimiAcpRunner extends ConnectionBasedRunner<KimiAcpClient, AcpTrans
     super({ kind: opts.kind, sessionReader: opts.sessionReader }, opts.turnIdleTimeoutMs);
     this.model = opts.model;
     this.permissionMode = opts.permissionMode ?? 'manual';
-    this.compactPollTimeoutMs = opts.compactPollTimeoutMs ?? COMPACT_POLL_TIMEOUT_MS;
+    this.compactIdleTimeoutMs = opts.compactIdleTimeoutMs ?? COMPACT_IDLE_TIMEOUT_MS;
 
     const managerOpts: KimiAcpConnectionManagerOptions = {
       binary: opts.binary ?? 'kimi',
@@ -454,17 +421,21 @@ export class KimiAcpRunner extends ConnectionBasedRunner<KimiAcpClient, AcpTrans
         prompt: [{ type: 'text', text: '/compact' }],
       };
 
-      // R2: compaction is a BACKGROUND task — the prompt settles before the
-      // wire.jsonl compaction record lands (real kimi: ~8s). Baseline the
-      // record count, fire the prompt without awaiting (notifications flow
-      // through consumeTurn), then poll for a NEW record before producing
-      // the result. This keeps the connection alive while the background
-      // compaction finishes — otherwise dispose/exit kills it and the record
-      // never lands (S5/S6 打回复现).
+      // §5.2: compaction is a BACKGROUND task — the prompt settles before the
+      // wire.jsonl terminal record lands. Baseline the terminal record count,
+      // fire the prompt without awaiting (notifications flow through
+      // consumeTurn), then wait for a NEW terminal (complete/apply →
+      // completed; cancel → cancelled) before producing the result. There is
+      // NO total timeout — silence beyond compactIdleTimeoutMs yields
+      // 'unknown' (never a fake success). Keeps the connection alive while the
+      // background compaction finishes — otherwise dispose/exit kills it and
+      // the record never lands (S5/S6 打回复现 / 2026-08-31 事故).
       const compactionReader = (this.sessionReader as CompactionRecordReader).readCompactionRecords;
-      const baselineCount = compactionReader
-        ? compactionReader.call(this.sessionReader, sessionId, opts.cwd).length
-        : 0;
+      const baselineRecords = compactionReader
+        ? compactionReader.call(this.sessionReader, sessionId, opts.cwd)
+        : [];
+      const baselineTerminalCount = baselineRecords.filter(isCompactionTerminalLike).length;
+      const baselineTotalCount = baselineRecords.length;
 
       this.promptSettled = false;
       // ACP holds the session/prompt response for the ENTIRE turn (unlike
@@ -481,12 +452,45 @@ export class KimiAcpRunner extends ConnectionBasedRunner<KimiAcpClient, AcpTrans
           this.promptSettled = true;
           if (this.stopRequested) return; // already cancelled
           if (compactionReader) {
-            await this.waitForCompactionRecord(compactionReader, opts, baselineCount);
+            // §5.4 可选防线（日志探针）：prompt settle 后既无新 begin 也无新
+            // terminal → compact 未被引擎接受（可能已在跑或被拒绝）。不解析
+            // "already running" 文本、不影响卡片。
+            const totalNow = compactionReader.call(this.sessionReader, sessionId, opts.cwd).length;
+            if (totalNow === baselineTotalCount) {
+              getLogger().warn(
+                `[${this.logTag}] compact 未被引擎接受（无新 begin/terminal 记录，可能已在跑或被拒绝）`,
+              );
+            }
+            const outcome = await this.waitForCompactionTerminal(
+              compactionReader,
+              opts,
+              baselineTerminalCount,
+            );
+            if (this.forceFinish) return; // stopped while polling
+            if (outcome === 'completed') {
+              // 压缩完成：正常翻译 prompt 结果（subtype success）。
+              const resultEvent = translator.handlePromptResponse(sessionId, result);
+              this.pushEvents([resultEvent]);
+            } else if (outcome === 'cancelled') {
+              this.pushEvents([
+                translator.produceErrorResult(
+                  sessionId,
+                  '压缩未完成：已被取消或压缩请求失败（可重试）',
+                ),
+              ]);
+            } else if (outcome === 'unknown') {
+              this.pushEvents([
+                translator.produceErrorResult(
+                  sessionId,
+                  `压缩状态未知：超过 ${formatIdleWindow(this.compactIdleTimeoutMs)} 未观察到完成/取消记录，压缩可能仍在后台进行`,
+                ),
+              ]);
+            }
+            // outcome === 'stopped'：不推 result，由 consumeTurn 的 interrupted 兜底。
+          } else {
+            const resultEvent = translator.handlePromptResponse(sessionId, result);
+            this.pushEvents([resultEvent]);
           }
-          if (this.forceFinish) return; // stopped while polling
-          // Translate prompt result into a result event
-          const resultEvent = translator.handlePromptResponse(sessionId, result);
-          this.pushEvents([resultEvent]);
         },
         (err) => {
           this.promptSettled = true;
@@ -516,7 +520,7 @@ export class KimiAcpRunner extends ConnectionBasedRunner<KimiAcpClient, AcpTrans
     const acpResponse =
       pending.kind === 'question'
         ? buildQuestionResponse(action, pending, response)
-        : buildApprovalResponse(action, pending);
+        : buildAcpPermissionOutcome(action, pending.options, KIMI_APPROVAL_KINDS);
     client.respond(requestId, acpResponse);
     this.pendingApprovals.delete(requestId);
     getLogger().info(`[${this.logTag}] approval responded requestId=${requestId} action=${action}`);
@@ -612,8 +616,8 @@ export class KimiAcpRunner extends ConnectionBasedRunner<KimiAcpClient, AcpTrans
     this.activeSessionId = sessionId;
 
     // CC-07: 下发配置的模型（provider/model）。session/new|resume 只带 cwd/mcpServers，
-    // 不带 model；不主动下发则实际跑 kimi 服务端默认模型（旧 KimiRunner 通过 -m 传模型，
-    // 迁移到纯 ACP 后丢失）。仿 opencode 用 session/set_config_option。失败仅告警不阻断。
+    // 不带 model；不主动下发则实际跑 kimi 服务端默认模型。
+    // 仿 opencode 用 session/set_config_option。失败仅告警不阻断。
     if (this.model) {
       try {
         await client.request('session/set_config_option', {
@@ -694,35 +698,54 @@ export class KimiAcpRunner extends ConnectionBasedRunner<KimiAcpClient, AcpTrans
   }
 
   /**
-   * R2: poll wire.jsonl until a NEW compaction record
-   * (context.apply_compaction / full_compaction.complete) appears.
+   * §5.2: 等 wire.jsonl 出现 NEW 压缩终态记录，返回判别结果而非 void。
    *
-   * The /compact prompt settles before the background compaction lands its
-   * record; returning early would let the caller dispose the connection and
-   * kill the background job. Timeout is WARN-only (the compact may have been
-   * a no-op) — never fails the turn. Aborts early on stop/forceFinish.
+   * 压缩是完整 LLM 请求（引擎 ≤5 次重试 + overflow 收缩重试），时长无上限；
+   * 旧「固定 30s 超时 = 成功」已删除。出口：
+   *   completed — 观察到 full_compaction.complete / context.apply_compaction；
+   *   cancelled — 观察到 full_compaction.cancel（API 失败/abort 与用户取消共用，
+   *               绝不当成功）；
+   *   stopped   — 等待中 stop()/forceFinish（consumeTurn 产 interrupted 兜底）；
+   *   unknown   — 距上次观察到任何新 compaction 记录（begin/terminal）超过
+   *               compactIdleTimeoutMs（沉默超时，压缩可能仍在后台进行）。
+   * 观察到新记录即重置沉默时钟，并顺带重置 turn idle 时钟（lastEventAt +
+   * wakeWaiters），避免数分钟的压缩被 consumeTurn 滚动空闲看门狗误杀。
    */
-  private async waitForCompactionRecord(
+  private async waitForCompactionTerminal(
     reader: (sessionId: string, cwd: string) => CompactionRecordLike[],
     opts: SpawnOptions,
-    baselineCount: number,
-  ): Promise<void> {
+    baselineTerminalCount: number,
+  ): Promise<'completed' | 'cancelled' | 'stopped' | 'unknown'> {
     const sessionId = this.activeSessionId ?? opts.sessionId ?? '';
-    const deadline = Date.now() + this.compactPollTimeoutMs;
-    while (Date.now() < deadline) {
-      if (this.forceFinish || this.stopRequested) return;
+    let lastActivityAt = Date.now();
+    let lastTotalCount = reader.call(this.sessionReader, sessionId, opts.cwd).length;
+    while (true) {
+      if (this.forceFinish || this.stopRequested) return 'stopped';
       const records = reader.call(this.sessionReader, sessionId, opts.cwd);
-      if (records.length > baselineCount) {
+      if (records.length !== lastTotalCount) {
+        lastTotalCount = records.length;
+        lastActivityAt = Date.now();
+        // 压缩仍在活动（新 begin / 重试 / terminal）：重置 turn idle 时钟，
+        // 让 consumeTurn 重新计算滚动截止时间。
+        this.lastEventAt = Date.now();
+        this.wakeWaiters();
+      }
+      const terminalRecords = records.filter(isCompactionTerminalLike);
+      if (terminalRecords.length > baselineTerminalCount) {
+        const newest = terminalRecords[terminalRecords.length - 1];
         getLogger().info(
-          `[${this.logTag}] compaction record observed (${records.length} > baseline ${baselineCount})`,
+          `[${this.logTag}] compaction terminal observed (${newest.type}, ${terminalRecords.length} > baseline ${baselineTerminalCount})`,
         );
-        return;
+        return newest.type === 'full_compaction.cancel' ? 'cancelled' : 'completed';
+      }
+      if (Date.now() - lastActivityAt >= this.compactIdleTimeoutMs) {
+        getLogger().warn(
+          `[${this.logTag}] no compaction terminal within ${this.compactIdleTimeoutMs}ms of last activity (baselineTerminal=${baselineTerminalCount}); reporting unknown`,
+        );
+        return 'unknown';
       }
       await new Promise((resolve) => setTimeout(resolve, COMPACT_POLL_INTERVAL_MS));
     }
-    getLogger().warn(
-      `[${this.logTag}] compaction record not observed within ${this.compactPollTimeoutMs}ms (baseline=${baselineCount}); proceeding without confirmation`,
-    );
   }
 
   private handleNotification(method: string, params: unknown): void {
