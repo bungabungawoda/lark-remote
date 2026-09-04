@@ -26,8 +26,8 @@ describe('BashProcessRunner', () => {
     const elapsed = Date.now() - start;
     console.log(`nohup command elapsed: ${elapsed}ms, events: ${events.join(',')}`);
 
-    // BUG: 当前代码监听 close 事件，导致 exit 事件延迟 30 秒
-    // 修复后：bash 退出后立即触发 exit，elapsed 应该 < 500ms
+    // 回归守卫：bash 退出后必须立即触发 exit（历史 bug 曾监听 close 导致
+    // exit 延迟 30 秒），elapsed 应 < 500ms
     expect(elapsed).toBeLessThan(500);
     expect(events).toContain('exit');
   });

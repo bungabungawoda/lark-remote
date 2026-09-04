@@ -12,6 +12,7 @@
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
+  appendFileSync,
   chmodSync,
   mkdirSync,
   mkdtempSync,
@@ -314,6 +315,21 @@ describe('KimiAcpRunner', () => {
     );
     return { kimiDir, wirePath };
   }
+
+  it('pins ConnectionBasedRunner contract: workspace lifetime and live usage authority', () => {
+    // 基类 ConnectionBasedRunner 的常量真值（lifetime='workspace' /
+    // getUsageAuthority()='live'）无独立测试文件，用真实 KimiAcpRunner 实例钉住。
+    const runner = new KimiAcpRunner({
+      kind: 'kimi',
+      sessionReader: createStubSessionReader(),
+      binary: serverScript,
+      acpArgs: [],
+      turnIdleTimeoutMs: 30_000,
+    });
+
+    expect(runner.lifetime).toBe('workspace');
+    expect(runner.getUsageAuthority()).toBe('live');
+  });
 
   it('runs a full turn with text notifications and success result', async () => {
     const { wrapper, workspace } = writeScenario(tmpDir, serverScript, 'kimi', {
@@ -965,28 +981,6 @@ describe('KimiAcpRunner', () => {
     expect(info.extras?.permissionMode).toBe('manual');
   });
 
-  it('returns live usage authority', () => {
-    const runner = new KimiAcpRunner({
-      kind: 'kimi',
-      sessionReader: createStubSessionReader(),
-      binary: 'kimi',
-      acpArgs: [],
-    });
-
-    expect(runner.getUsageAuthority()).toBe('live');
-  });
-
-  it('has workspace lifetime', () => {
-    const runner = new KimiAcpRunner({
-      kind: 'kimi',
-      sessionReader: createStubSessionReader(),
-      binary: 'kimi',
-      acpArgs: [],
-    });
-
-    expect(runner.lifetime).toBe('workspace');
-  });
-
   it('runCompact requires a sessionId', async () => {
     const { wrapper, workspace } = writeScenario(tmpDir, serverScript, 'kimi');
 
@@ -1081,7 +1075,7 @@ describe('KimiAcpRunner', () => {
       binary: wrapper,
       acpArgs: [],
       turnIdleTimeoutMs: 30_000,
-      compactPollTimeoutMs: 5000,
+      compactIdleTimeoutMs: 5000,
     });
 
     const events: AgentEvent[] = [];
@@ -1124,38 +1118,6 @@ describe('KimiAcpRunner', () => {
 
     await runner.dispose();
   }, 15000);
-
-  it('runCompact times out polling with a WARN and still succeeds when no compaction record appears (R2)', async () => {
-    const { wrapper, workspace } = writeScenario(tmpDir, serverScript, 'kimi', {
-      delayMs: 20,
-      compactionRecordDelayMs: null,
-    });
-    const { kimiDir } = makeKimiSessionDir(workspace);
-
-    const runner = new KimiAcpRunner({
-      kind: 'kimi',
-      sessionReader: new KimiSessionReader(kimiDir),
-      binary: wrapper,
-      acpArgs: [],
-      turnIdleTimeoutMs: 30_000,
-      compactPollTimeoutMs: 1000,
-    });
-
-    const events: AgentEvent[] = [];
-    for await (const event of runner.runCompact('', {
-      cwd: workspace,
-      sessionId: SESSION_ID,
-    })) {
-      events.push(event);
-    }
-
-    const result = events.find((e) => e.type === 'result') as
-      (AgentEvent & { subtype?: string }) | undefined;
-    expect(result).toBeDefined();
-    expect(result?.subtype).toBe('success');
-
-    await runner.dispose();
-  }, 10000);
 
   it('sends literal outbound wire shapes: initialize / session/new / session/set_mode (R4)', async () => {
     const capturePath = join(tmpDir, 'received.jsonl');
@@ -1743,5 +1705,166 @@ fi
     expect(truncatedOutput).toBe('hello');
 
     await runner.dispose();
+  });
+
+  // =========================================================================
+  // runCompact 等待机制（kimi-compact-wait-redesign §5.2）
+  // 压缩是完整 LLM 请求（时长无上限）：删除「固定 30s 超时 = 成功」的旧语义，
+  // 改为等 wire 终态记录（complete/apply/cancel），沉默超过 compactIdleTimeoutMs
+  // 才放弃。测试用 bounded race 驱动真实 mock server，红绿差异确定、不依赖 fake timer。
+  // =========================================================================
+  describe('KimiAcpRunner runCompact 等待机制（§5.2）', () => {
+    function sleepReal(ms: number): Promise<void> {
+      return new Promise((resolve) => setTimeout(resolve, ms));
+    }
+
+    async function waitForResult(
+      events: AgentEvent[],
+      timeoutMs: number,
+    ): Promise<AgentEvent | undefined> {
+      const deadline = Date.now() + timeoutMs;
+      while (Date.now() < deadline) {
+        const result = events.find((e) => e.type === 'result');
+        if (result) return result;
+        await sleepReal(50);
+      }
+      return undefined;
+    }
+
+    function startRunCompactCollect(
+      runner: KimiAcpRunner,
+      workspace: string,
+    ): { events: AgentEvent[]; done: Promise<void> } {
+      const events: AgentEvent[] = [];
+      const done = (async () => {
+        for await (const event of runner.runCompact('', {
+          cwd: workspace,
+          sessionId: SESSION_ID,
+        })) {
+          events.push(event);
+        }
+      })();
+      return { events, done };
+    }
+
+    it('runCompact 落 cancel 记录 → error result「压缩未完成」', async () => {
+      const { wrapper, workspace } = writeScenario(tmpDir, serverScript, 'kimi', {
+        delayMs: 0,
+      });
+      const { kimiDir, wirePath } = makeKimiSessionDir(workspace);
+      const runner = new KimiAcpRunner({
+        kind: 'kimi',
+        sessionReader: new KimiSessionReader(kimiDir),
+        binary: wrapper,
+        acpArgs: [],
+        turnIdleTimeoutMs: 30_000,
+        compactIdleTimeoutMs: 5000,
+      });
+      const { events, done } = startRunCompactCollect(runner, workspace);
+
+      // prompt settle 后（~30ms）再落 cancel：引擎失败/取消共用 full_compaction.cancel。
+      const cancelTimer = setTimeout(() => {
+        appendFileSync(
+          wirePath,
+          JSON.stringify({ type: 'full_compaction.cancel', time: Date.now() }) + '\n',
+        );
+      }, 400);
+      const result = await waitForResult(events, 4000);
+      clearTimeout(cancelTimer);
+      if (!result) await runner.stop();
+      await done;
+
+      expect(result?.subtype).toBe('error');
+      expect(result?.errorMessage).toContain('压缩未完成');
+
+      await runner.dispose();
+    }, 20000);
+
+    it('runCompact 等待超过旧 30s 上限的 complete 记录 → 不误报完成（等记录落盘）', async () => {
+      const { wrapper, workspace } = writeScenario(tmpDir, serverScript, 'kimi', {
+        delayMs: 0,
+      });
+      const { kimiDir, wirePath } = makeKimiSessionDir(workspace);
+      const runner = new KimiAcpRunner({
+        kind: 'kimi',
+        sessionReader: new KimiSessionReader(kimiDir),
+        binary: wrapper,
+        acpArgs: [],
+        turnIdleTimeoutMs: 30_000,
+        // 沉默窗口 6s 远大于 complete 记录落盘时刻（2.5s）：新实现必须等到
+        // 记录（结果晚于落盘），绝不在记录前报完成。
+        compactIdleTimeoutMs: 6000,
+      });
+      const { events, done } = startRunCompactCollect(runner, workspace);
+
+      const startedAtMs = Date.now();
+      const appendTimer = setTimeout(() => {
+        appendFileSync(
+          wirePath,
+          JSON.stringify({ type: 'full_compaction.complete', time: Date.now() }) + '\n',
+        );
+      }, 2500);
+      let resultAtMs = 0;
+      const result = await waitForResult(events, 8000);
+      if (result) resultAtMs = Date.now();
+      clearTimeout(appendTimer);
+      if (!result) await runner.stop();
+      await done;
+
+      expect(result?.subtype).toBe('success');
+      // 结果必须晚于 complete 记录落盘时刻（旧实现 1s 假成功 → 必然提前 → 红）。
+      expect(resultAtMs).toBeGreaterThanOrEqual(startedAtMs + 2500);
+
+      await runner.dispose();
+    }, 20000);
+
+    it('runCompact 沉默超时不再假成功：无记录 → error result「压缩状态未知」', async () => {
+      const { wrapper, workspace } = writeScenario(tmpDir, serverScript, 'kimi', {
+        delayMs: 0,
+      });
+      const { kimiDir } = makeKimiSessionDir(workspace);
+      const runner = new KimiAcpRunner({
+        kind: 'kimi',
+        sessionReader: new KimiSessionReader(kimiDir),
+        binary: wrapper,
+        acpArgs: [],
+        turnIdleTimeoutMs: 30_000,
+        compactIdleTimeoutMs: 1000,
+      });
+      const { events, done } = startRunCompactCollect(runner, workspace);
+
+      const result = await waitForResult(events, 5000);
+      if (!result) await runner.stop();
+      await done;
+
+      expect(result?.subtype).toBe('error');
+      expect(result?.errorMessage).toContain('压缩状态未知');
+
+      await runner.dispose();
+    }, 20000);
+
+    it('runCompact 等待期间 stop → interrupted（停止等待，压缩仍在后台）', async () => {
+      const { wrapper, workspace } = writeScenario(tmpDir, serverScript, 'kimi', {
+        delayMs: 0,
+      });
+      const { kimiDir } = makeKimiSessionDir(workspace);
+      const runner = new KimiAcpRunner({
+        kind: 'kimi',
+        sessionReader: new KimiSessionReader(kimiDir),
+        binary: wrapper,
+        acpArgs: [],
+        turnIdleTimeoutMs: 30_000,
+      });
+      const { events, done } = startRunCompactCollect(runner, workspace);
+
+      await sleepReal(500); // prompt settle + 轮询已开始，等待中
+      await runner.stop();
+      const result = await waitForResult(events, 3000);
+      await done;
+
+      expect(result?.subtype).toBe('interrupted');
+
+      await runner.dispose();
+    }, 15000);
   });
 });
