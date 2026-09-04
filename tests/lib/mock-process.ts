@@ -85,3 +85,13 @@ export class MockChildProcess extends EventEmitter implements ChildProcess {
 export function createMockProc(opts: MockProcOptions = {}): ChildProcess {
   return new MockChildProcess(opts);
 }
+
+/** Simulate process exit on a mock ChildProcess (sets exitCode/signalCode then emits 'exit'). */
+export function emitExit(
+  proc: ChildProcess,
+  code: number | null,
+  signal: NodeJS.Signals | null,
+): void {
+  Object.assign(proc, { exitCode: code, signalCode: signal });
+  proc.emit('exit', code, signal);
+}

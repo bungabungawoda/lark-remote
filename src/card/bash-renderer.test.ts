@@ -42,6 +42,20 @@ describe('renderBashCard stop button', () => {
       expect(hasStopButton).toBe(false);
     }
   });
+
+  it('terminal states map to the correct header titles', () => {
+    const expected: Array<[BashState['terminal'], string]> = [
+      ['done', '命令执行完成'],
+      ['error', '命令执行失败'],
+      ['interrupted', '⏹ 已终止'],
+    ];
+    for (const [terminal, title] of expected) {
+      const card = renderBashCard(makeState({ terminal }), {}) as {
+        header?: { title?: { content?: string } };
+      };
+      expect(card.header?.title?.content, `terminal=${terminal}`).toContain(title);
+    }
+  });
 });
 
 // CardKit 2.0 renderer — renderBashCard2 coverage (2.0 path

@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { readJsonlLines as readJsonlLinesShared, readLastNJsonlLines } from '../common/jsonl.js';
-import { UsageAccumulator } from '../common/usage-accumulator.js';
+import { UsageAccumulator, cumulativeUsageFields } from '../common/usage-accumulator.js';
 import { getLogger } from '../../logger/index.js';
 import type {
   AgentSession,
@@ -14,6 +14,8 @@ import type {
 
 import { STALE_MS } from '../common/constants.js';
 import { capEvents, paginate } from '../common/pagination.js';
+import { sortByRecencyDesc } from '../common/recency.js';
+import { TtlCache } from '../../common/ttl-cache.js';
 import { truncateUtf8, TOOL_RESULT_MAX_BYTES } from '../../common/truncate.js';
 import { truncateToolInput } from '../common/content-blocks.js';
 
@@ -103,7 +105,13 @@ interface KimiTurnPromptEvent {
  * `messagesCompacted` 是死字段，真实 record 里不存在——禁止再写。
  */
 export interface KimiCompactionRecord {
-  type: 'full_compaction.complete' | 'context.apply_compaction';
+  type:
+    | 'full_compaction.begin'
+    | 'full_compaction.complete'
+    | 'full_compaction.cancel'
+    | 'context.apply_compaction';
+  /** 压缩来源（仅 full_compaction.begin 携带）：'manual' | 'auto'。 */
+  source?: string;
   /** 压缩掉的消息条数（仅 context.apply_compaction 携带）。 */
   compactedCount?: number;
   /** 压缩前上下文 token 水位（仅 context.apply_compaction 携带）。 */
@@ -135,6 +143,20 @@ function isTurnPrompt(entry: KimiJsonlEntry): entry is KimiTurnPromptEvent {
 
 function isCompactionComplete(entry: KimiJsonlEntry): entry is KimiCompactionRecord {
   return entry.type === 'full_compaction.complete' || entry.type === 'context.apply_compaction';
+}
+
+/** full_compaction.begin：压缩开始（手动 /compact 或自动触发都写）。 */
+function isCompactionBegin(entry: KimiJsonlEntry): entry is KimiCompactionRecord {
+  return entry.type === 'full_compaction.begin';
+}
+
+/** 压缩终态：完成（complete/apply）或失败/取消（cancel）共用 cancel 记录。 */
+function isCompactionTerminal(entry: KimiJsonlEntry): entry is KimiCompactionRecord {
+  return (
+    entry.type === 'full_compaction.complete' ||
+    entry.type === 'context.apply_compaction' ||
+    entry.type === 'full_compaction.cancel'
+  );
 }
 
 /**
@@ -171,10 +193,7 @@ function lastLoopEventIsStepEnd(lines: readonly string[]): boolean {
 }
 
 /** Cache for JSONL file contents to avoid repeated full reads */
-const jsonlCache: Map<string, { mtime: number; cachedAt: number; lines: string[] }> = new Map();
-const CACHE_TTL_MS = 5000; // 5 second cache TTL
-/** Upper bound on cached files; evict the least-recently-used entry past this. */
-const CACHE_MAX_ENTRIES = 32;
+const jsonlCache = new TtlCache<string, { mtime: number; lines: string[] }>(5_000, 32);
 
 /**
  * Read lines from a JSONL file with caching.
@@ -186,26 +205,16 @@ function readJsonlLines(filePath: string): Iterable<string> {
     const stat = fs.statSync(filePath);
     const mtime = stat.mtimeMs;
 
+    // P1-17: TTL 由 TtlCache 按缓存写入时间判定（不是文件 mtime），命中即 LRU 刷新；
+    // mtime 变化视为失效（文件被改写后不得返回旧行）。
     const cached = jsonlCache.get(filePath);
-    // P1-17: TTL must be measured from the cache-write time (cachedAt), not
-    // the FILE mtime — a file modified an hour ago would otherwise never hit
-    // the cache, making every call re-read and re-write the same entry.
-    if (cached && mtime === cached.mtime && Date.now() - cached.cachedAt < CACHE_TTL_MS) {
-      // LRU refresh on hit: re-insert so recently-used entries survive eviction.
-      jsonlCache.delete(filePath);
-      jsonlCache.set(filePath, cached);
+    if (cached && mtime === cached.mtime) {
       return cached.lines;
     }
 
     const lines = readJsonlLinesShared(filePath);
 
-    jsonlCache.set(filePath, { mtime, cachedAt: Date.now(), lines });
-    // P1-17: bound the cache. Map iteration is insertion order; after the LRU
-    // refresh above the least-recently-used entry is the first key.
-    if (jsonlCache.size > CACHE_MAX_ENTRIES) {
-      const oldest = jsonlCache.keys().next().value;
-      if (oldest !== undefined) jsonlCache.delete(oldest);
-    }
+    jsonlCache.set(filePath, { mtime, lines });
 
     return lines;
   } catch {
@@ -400,7 +409,11 @@ export class KimiSessionReader implements AgentSessionReader {
 
       // Sort by mtime descending; same-mtime ties use a deterministic
       // secondary key so ordering is stable across scans.
-      sessions.sort((a, b) => b.mtime - a.mtime || a.sessionId.localeCompare(b.sessionId));
+      sortByRecencyDesc(
+        sessions,
+        (s) => s.mtime,
+        (s) => s.sessionId,
+      );
 
       const { items, total } = paginate(sessions, opts ?? {});
       return {
@@ -612,11 +625,7 @@ export class KimiSessionReader implements AgentSessionReader {
         totalTokens: t.input + t.output + t.cacheRead + t.cacheCreation,
         // Cumulative (session-wide): kimi sums all usage.records; mirrors
         // inputTokens/outputTokens which are already session totals.
-        cumulativeTotalTokens: t.input + t.output + t.cacheRead + t.cacheCreation,
-        cumulativeInputTokens: t.input,
-        cumulativeOutputTokens: t.output,
-        cumulativeCacheReadTokens: t.cacheRead > 0 ? t.cacheRead : 0,
-        cumulativeCacheCreationTokens: t.cacheCreation > 0 ? t.cacheCreation : 0,
+        ...cumulativeUsageFields(t),
         // §6.3: compaction stats from wire.jsonl
         compactCount,
         ...(compactPreContextLength !== undefined ? { compactPreContextLength } : {}),
@@ -634,11 +643,12 @@ export class KimiSessionReader implements AgentSessionReader {
   }
 
   /**
-   * Read the compaction records (context.apply_compaction /
-   * full_compaction.complete) from a session's wire.jsonl.
+   * Read the compaction records (full_compaction.begin / complete / cancel /
+   * context.apply_compaction) from a session's wire.jsonl.
    *
    * Same cwd guard as readSessionContent. Used by KimiAcpRunner.runCompact
-   * (R2) to wait for the background compaction to land before ending the run.
+   * to wait for the background compaction terminal before ending the run, and
+   * by readCompactionState to detect an in-flight compaction.
    */
   readCompactionRecords(sessionId: string, cwd: string): KimiCompactionRecord[] {
     const wirePath = this.resolveSessionWirePath(sessionId, cwd);
@@ -650,9 +660,10 @@ export class KimiSessionReader implements AgentSessionReader {
       for (const line of readJsonlLines(wirePath)) {
         try {
           const entry = JSON.parse(line) as KimiJsonlEntry;
-          if (isCompactionComplete(entry)) {
+          if (isCompactionBegin(entry) || isCompactionTerminal(entry)) {
             records.push({
               type: entry.type,
+              ...(entry.source !== undefined ? { source: entry.source } : {}),
               ...(entry.compactedCount !== undefined
                 ? { compactedCount: entry.compactedCount }
                 : {}),
@@ -670,6 +681,37 @@ export class KimiSessionReader implements AgentSessionReader {
       return [];
     }
     return records;
+  }
+
+  /**
+   * 由 begin/terminal 记录重建压缩状态机：最后一次 begin 无更新的 terminal
+   * 记录 = 在途（kimi-compact-wait-redesign §5.1）。崩溃墓碑由 kimi resume
+   * 时补写 full_compaction.cancel，天然闭合。
+   */
+  readCompactionState(
+    sessionId: string,
+    cwd: string,
+  ): {
+    inFlight: boolean;
+    /** 在途 begin 的 time（epoch ms）。 */
+    inFlightSince?: number;
+    records: KimiCompactionRecord[];
+  } {
+    const records = [...this.readCompactionRecords(sessionId, cwd)].sort((a, b) => a.time - b.time);
+    let pendingBeginAt: number | undefined;
+    for (const record of records) {
+      if (isCompactionBegin(record)) {
+        pendingBeginAt = record.time;
+      } else {
+        // 终态（complete/apply/cancel）闭合当前在途压缩。
+        pendingBeginAt = undefined;
+      }
+    }
+    return {
+      inFlight: pendingBeginAt !== undefined,
+      ...(pendingBeginAt !== undefined ? { inFlightSince: pendingBeginAt } : {}),
+      records,
+    };
   }
 
   /**

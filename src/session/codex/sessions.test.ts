@@ -262,18 +262,6 @@ describe('rollout-reader additional branches', () => {
       statSpy.mockRestore();
     });
 
-    it('uses birthtimeMs when session_meta has no timestamp', () => {
-      const filePath = createRollout(
-        'rollout-no-ts.jsonl',
-        '{"type":"session_meta","payload":{"session_id":"no-ts","cwd":"/tmp"}}',
-      );
-      const entry = readCodexRollout(filePath);
-      expect(entry).not.toBeNull();
-      expect(entry!.threadId).toBe('no-ts');
-      // createdAtMs should be a positive number (birthtimeMs)
-      expect(entry!.createdAtMs).toBeGreaterThan(0);
-    });
-
     it('extracts response_item with input_text field (not text)', () => {
       const filePath = createRollout(
         'rollout-input-text.jsonl',

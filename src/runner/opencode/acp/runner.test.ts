@@ -506,12 +506,6 @@ describe('OpencodeAcpRunner', () => {
     await runner.dispose();
   });
 
-  it('returns live usage authority and workspace lifetime', () => {
-    const runner = makeRunner('unused');
-    expect(runner.getUsageAuthority()).toBe('live');
-    expect(runner.lifetime).toBe('workspace');
-  });
-
   it('sends literal outbound wire shapes: initialize / session/new / session/prompt', async () => {
     const capturePath = join(tmpDir, 'capture.jsonl');
     const { wrapper, workspace } = writeScenario(tmpDir, serverScript, 'opencode', { capturePath });

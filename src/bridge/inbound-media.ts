@@ -136,7 +136,6 @@ export function imageExtension(mimeType: string | undefined, head: Buffer): stri
 
 /** 按 UTF-8 字节数截断字符串（避免截在多字节字符中间）。 */
 import { truncateUtf8 } from '../common/truncate.js';
-export { truncateUtf8 };
 
 /**
  * 文件名长度限制（字节级，保留扩展名），避免 ENAMETOOLONG 整文件失败。
