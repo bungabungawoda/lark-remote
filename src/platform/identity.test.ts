@@ -1,0 +1,272 @@
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { PassThrough } from 'node:stream';
+import type { ChildProcess } from 'node:child_process';
+import { createMockProc, emitExit } from '../../tests/lib/mock-process.js';
+
+// 不真起进程：identity 的全部断言都基于 spawn 的入参与 stdout 解析
+vi.mock('node:child_process', () => ({ spawn: vi.fn() }));
+
+import { spawn } from 'node:child_process';
+import { queryProcessIdentity, tokenizeCommandLine, verifyPidIdentity } from './identity.js';
+
+const mockSpawn = vi.mocked(spawn);
+
+/** stdout 吐出给定文本后以 exitCode 退出（数据先于 exit 事件，贴合真实时序）。 */
+function procWithStdout(stdout: string, exitCode = 0): ChildProcess {
+  const stream = new PassThrough();
+  const proc = createMockProc({ stdout: stream, stderr: new PassThrough() });
+  stream.end(stdout);
+  setTimeout(() => emitExit(proc, exitCode, null), 0);
+  return proc;
+}
+
+/** 永不退出的子进程（超时路径）。 */
+function procNeverExits(): ChildProcess {
+  const kill = vi.fn(() => true);
+  return createMockProc({ stdout: new PassThrough(), pid: 4242, kill });
+}
+
+/** spawn 失败（如 powershell 不存在）。 */
+function procError(err: Error): ChildProcess {
+  const proc = createMockProc({ stdout: new PassThrough() });
+  process.nextTick(() => proc.emit('error', err));
+  return proc;
+}
+
+/** 取出第一次 spawn 调用的 (file, args)，不锁死 options。 */
+function spawnCall(): { file: string; args: string[] } {
+  const call = mockSpawn.mock.calls[0] as [string, string[], unknown] | undefined;
+  expect(call).toBeDefined();
+  return { file: call![0], args: call![1] };
+}
+
+// 真实 CIM 形态：含空格路径带双引号（朴素 split(/\s+/) 会切碎该 token）
+const CIM_COMMAND_LINE =
+  '"C:\\Program Files\\nodejs\\node.exe" C:\\Users\\user\\AppData\\Roaming\\npm\\node_modules\\pkg\\cli.js';
+const CIM_CREATION_DATE = '20260904215415.123456+480';
+
+beforeEach(() => {
+  mockSpawn.mockReset();
+});
+
+describe('queryProcessIdentity (posix)', () => {
+  it('用 ps -o command= -p <pid> 取命令行并去掉首尾空白', async () => {
+    mockSpawn.mockReturnValue(procWithStdout('/usr/local/bin/claude --verbose\n'));
+    const identity = await queryProcessIdentity(4242, { platform: 'linux' });
+    expect(identity).toEqual({ commandLine: '/usr/local/bin/claude --verbose' });
+    const { file, args } = spawnCall();
+    expect(file).toBe('ps');
+    expect(args).toEqual(['-o', 'command=', '-p', '4242']);
+  });
+
+  it('pid 不存在（空输出）→ null', async () => {
+    mockSpawn.mockReturnValue(procWithStdout('', 1));
+    await expect(queryProcessIdentity(4242, { platform: 'darwin' })).resolves.toBeNull();
+  });
+
+  it('ps 非零退出 → null', async () => {
+    mockSpawn.mockReturnValue(procWithStdout('  PID TTY\n', 1));
+    await expect(queryProcessIdentity(4242, { platform: 'linux' })).resolves.toBeNull();
+  });
+
+  it('spawn 失败（ENOENT）→ null，不抛', async () => {
+    mockSpawn.mockReturnValue(procError(new Error('spawn ps ENOENT')));
+    await expect(queryProcessIdentity(4242, { platform: 'linux' })).resolves.toBeNull();
+  });
+
+  it('子进程挂住不退出 → 超时返回 null 并杀掉子进程', async () => {
+    const proc = procNeverExits();
+    mockSpawn.mockReturnValue(proc);
+    await expect(
+      queryProcessIdentity(4242, { platform: 'linux', timeoutMs: 5 }),
+    ).resolves.toBeNull();
+    expect(proc.kill).toHaveBeenCalled();
+  });
+});
+
+describe('queryProcessIdentity (win32)', () => {
+  it('走 CIM（Win32_Process + ConvertTo-Json），解析 CommandLine 与 CreationDate', async () => {
+    mockSpawn.mockReturnValue(
+      procWithStdout(
+        JSON.stringify({ CommandLine: CIM_COMMAND_LINE, CreationDate: CIM_CREATION_DATE }),
+      ),
+    );
+    const identity = await queryProcessIdentity(4242, { platform: 'win32' });
+    expect(identity).toEqual({ commandLine: CIM_COMMAND_LINE, creationDate: CIM_CREATION_DATE });
+    const { file, args } = spawnCall();
+    // 只锁「走 CIM + 出 JSON」这个设计决策，不锁整串命令
+    expect(file.toLowerCase()).toMatch(/^(powershell|pwsh)(\.exe)?$/);
+    const joined = args.join(' ');
+    expect(joined).toContain('Win32_Process');
+    expect(joined).toContain('4242');
+    expect(joined).toMatch(/ConvertTo-Json/);
+  });
+
+  it('CIM 返回数组 → 取首个元素', async () => {
+    mockSpawn.mockReturnValue(
+      procWithStdout(
+        JSON.stringify([
+          { CommandLine: CIM_COMMAND_LINE, CreationDate: CIM_CREATION_DATE },
+          { CommandLine: 'C:\\other.exe', CreationDate: '20260101000000.000000+480' },
+        ]),
+      ),
+    );
+    const identity = await queryProcessIdentity(4242, { platform: 'win32' });
+    expect(identity).toEqual({ commandLine: CIM_COMMAND_LINE, creationDate: CIM_CREATION_DATE });
+  });
+
+  it('进程已退出（空输出）→ null', async () => {
+    mockSpawn.mockReturnValue(procWithStdout('   \n'));
+    await expect(queryProcessIdentity(4242, { platform: 'win32' })).resolves.toBeNull();
+  });
+
+  it('CommandLine 缺失（权限不足）→ null', async () => {
+    mockSpawn.mockReturnValue(
+      procWithStdout(JSON.stringify({ CommandLine: null, CreationDate: CIM_CREATION_DATE })),
+    );
+    await expect(queryProcessIdentity(4242, { platform: 'win32' })).resolves.toBeNull();
+  });
+});
+
+describe('verifyPidIdentity', () => {
+  it('posix：命令行首个 token 的 basename 与期望二进制一致 → true', async () => {
+    mockSpawn.mockReturnValue(procWithStdout('/usr/local/bin/claude --verbose\n'));
+    await expect(
+      verifyPidIdentity(4242, { platform: 'linux', expectedBinary: 'claude' }),
+    ).resolves.toBe(true);
+  });
+
+  it('posix：basename 不一致 → false（防 pid 复用误杀）', async () => {
+    mockSpawn.mockReturnValue(procWithStdout('/usr/local/bin/codex --verbose\n'));
+    await expect(
+      verifyPidIdentity(4242, { platform: 'linux', expectedBinary: 'claude' }),
+    ).resolves.toBe(false);
+  });
+
+  it('posix：解释器跑 cli.js 的命令行不匹配裸 agent 名 → false', async () => {
+    mockSpawn.mockReturnValue(procWithStdout('node /home/user/pkg/cli.js --run\n'));
+    await expect(
+      verifyPidIdentity(4242, { platform: 'linux', expectedBinary: 'claude' }),
+    ).resolves.toBe(false);
+  });
+
+  it('posix：脚本路径 basename 匹配 → true（node 跑的 agent 入口）', async () => {
+    mockSpawn.mockReturnValue(procWithStdout('node /home/user/.local/bin/claude --verbose\n'));
+    await expect(
+      verifyPidIdentity(4242, { platform: 'linux', expectedBinary: 'claude' }),
+    ).resolves.toBe(true);
+  });
+
+  it('posix：任意位置裸参数恰好等于期望名 → false（防误杀无辜进程）', async () => {
+    // bash 跑一个恰好叫 claude 的脚本、grep 参数引用 claude——都不是 claude 进程
+    mockSpawn.mockReturnValue(procWithStdout('bash claude\n'));
+    await expect(
+      verifyPidIdentity(4242, { platform: 'linux', expectedBinary: 'claude' }),
+    ).resolves.toBe(false);
+    mockSpawn.mockReturnValue(procWithStdout('grep claude /var/log/app.log\n'));
+    await expect(
+      verifyPidIdentity(4242, { platform: 'linux', expectedBinary: 'claude' }),
+    ).resolves.toBe(false);
+  });
+
+  it('win32：含空格引号路径不被空白切碎（引号感知 tokenizer）', async () => {
+    mockSpawn.mockReturnValue(
+      procWithStdout(
+        JSON.stringify({ CommandLine: CIM_COMMAND_LINE, CreationDate: CIM_CREATION_DATE }),
+      ),
+    );
+    await expect(
+      verifyPidIdentity(4242, { platform: 'win32', expectedBinary: 'node' }),
+    ).resolves.toBe(true);
+  });
+
+  it('win32：.exe 扩展与大小写不敏感', async () => {
+    mockSpawn.mockReturnValue(
+      procWithStdout(
+        JSON.stringify({ CommandLine: CIM_COMMAND_LINE, CreationDate: CIM_CREATION_DATE }),
+      ),
+    );
+    await expect(
+      verifyPidIdentity(4242, { platform: 'win32', expectedBinary: 'node' }),
+    ).resolves.toBe(true);
+    mockSpawn.mockReturnValue(
+      procWithStdout(
+        JSON.stringify({
+          CommandLine: 'C:\\Node\\NODE.EXE C:\\pkg\\cli.js',
+          CreationDate: CIM_CREATION_DATE,
+        }),
+      ),
+    );
+    await expect(
+      verifyPidIdentity(4242, { platform: 'win32', expectedBinary: 'claude' }),
+    ).resolves.toBe(false);
+  });
+
+  it('大小写敏感性跟随平台：darwin 不敏感，linux 严格', async () => {
+    mockSpawn.mockReturnValue(procWithStdout('/usr/bin/CLAUDE --verbose\n'));
+    await expect(
+      verifyPidIdentity(4242, { platform: 'darwin', expectedBinary: 'claude' }),
+    ).resolves.toBe(true);
+    mockSpawn.mockReturnValue(procWithStdout('/usr/bin/CLAUDE --verbose\n'));
+    await expect(
+      verifyPidIdentity(4242, { platform: 'linux', expectedBinary: 'claude' }),
+    ).resolves.toBe(false);
+  });
+
+  it('win32：CreationDate 匹配才通过；旧 pid 文件缺省该字段退化为仅命令行匹配', async () => {
+    const cimOut = JSON.stringify({
+      CommandLine: CIM_COMMAND_LINE,
+      CreationDate: CIM_CREATION_DATE,
+    });
+    mockSpawn.mockReturnValue(procWithStdout(cimOut));
+    await expect(
+      verifyPidIdentity(4242, {
+        platform: 'win32',
+        expectedBinary: 'node',
+        expectedCreationDate: CIM_CREATION_DATE,
+      }),
+    ).resolves.toBe(true);
+
+    mockSpawn.mockReturnValue(procWithStdout(cimOut));
+    await expect(
+      verifyPidIdentity(4242, {
+        platform: 'win32',
+        expectedBinary: 'node',
+        expectedCreationDate: '20200101000000.000000+480',
+      }),
+    ).resolves.toBe(false);
+
+    mockSpawn.mockReturnValue(procWithStdout(cimOut));
+    await expect(
+      verifyPidIdentity(4242, { platform: 'win32', expectedBinary: 'node' }),
+    ).resolves.toBe(true);
+  });
+
+  it('身份查询失败（进程不存在）→ false', async () => {
+    mockSpawn.mockReturnValue(procWithStdout('', 1));
+    await expect(
+      verifyPidIdentity(4242, { platform: 'win32', expectedBinary: 'node' }),
+    ).resolves.toBe(false);
+  });
+});
+
+describe('tokenizeCommandLine', () => {
+  it('双引号段整体保留，空白只在引号外切分', () => {
+    expect(tokenizeCommandLine('"C:\\Program Files\\nodejs\\node.exe" --verbose')).toEqual([
+      'C:\\Program Files\\nodejs\\node.exe',
+      '--verbose',
+    ]);
+  });
+
+  it('无引号退化为空白切分；空引号段也是 token', () => {
+    expect(tokenizeCommandLine('/usr/local/bin/claude --verbose')).toEqual([
+      '/usr/local/bin/claude',
+      '--verbose',
+    ]);
+    expect(tokenizeCommandLine('node "" x')).toEqual(['node', '', 'x']);
+  });
+
+  it('末尾未闭合引号不吞 token', () => {
+    expect(tokenizeCommandLine('claude "unclosed')).toEqual(['claude', 'unclosed']);
+  });
+});

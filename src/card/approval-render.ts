@@ -8,6 +8,7 @@
 import type { ApprovalView } from '../runner/types.js';
 import { collapsibleMarkdownPanel } from './collapsible.js';
 import { truncateUtf8, truncateMarkdownTables } from './text-truncate.js';
+import { cardButton } from './card-shared.js';
 
 /** Unique nonce for card button callbacks (SDK dedup + router validation). */
 function mkNonce(): string {
@@ -113,23 +114,19 @@ function renderDecisionButtons(
   // 决策按钮逐个作为 body 直接元素返回（CardKit body 纵向堆叠 = 上下排列）。
   // 不能用 column_set width:auto 横排：手机窄屏下多个按钮挤在一行，按钮文字
   // 被截断成省略号，用户无法辨认审批动作。
-  return offered.map((d) => ({
-    tag: 'button',
-    text: { tag: 'plain_text', content: BUTTONS[d].label },
-    type: BUTTONS[d].type,
-    behaviors: [
+  return offered.map((d) =>
+    cardButton(
+      BUTTONS[d].label,
       {
-        type: 'callback',
-        value: {
-          cmd: 'approval.respond',
-          decision: d,
-          requestId: approval.requestId,
-          runId,
-          nonce: mkNonce(),
-        },
+        cmd: 'approval.respond',
+        decision: d,
+        requestId: approval.requestId,
+        runId,
+        nonce: mkNonce(),
       },
-    ],
-  }));
+      { type: BUTTONS[d].type },
+    ),
+  );
 }
 
 // =============================================================================
@@ -411,28 +408,20 @@ function renderPermissionsApproval(
         tag: 'div',
         text: { tag: 'lark_md', content: `${icon} ${item.label}` },
       });
-      elements.push({
-        tag: 'button',
-        text: {
-          tag: 'plain_text',
-          content: item.selected ? '取消授予' : '授予',
-        },
-        type: item.selected ? 'default' : 'primary',
-        size: 'small',
-        behaviors: [
+      elements.push(
+        cardButton(
+          item.selected ? '取消授予' : '授予',
           {
-            type: 'callback',
-            value: {
-              cmd: 'approval.toggle',
-              requestId: approval.requestId,
-              permId: item.id,
-              selected: !item.selected,
-              runId,
-              nonce: mkNonce(),
-            },
+            cmd: 'approval.toggle',
+            requestId: approval.requestId,
+            permId: item.id,
+            selected: !item.selected,
+            runId,
+            nonce: mkNonce(),
           },
-        ],
-      });
+          { type: item.selected ? 'default' : 'primary', size: 'small' },
+        ),
+      );
     }
   }
 
@@ -562,23 +551,19 @@ function renderQuestionApproval(
 
     // 多选问题：有勾选才给提交按钮（单选在协调器内即时提交）。
     if (q.multiSelect && selected.length > 0) {
-      elements.push({
-        tag: 'button',
-        text: { tag: 'plain_text', content: `✅ 提交答案（已选 ${selected.length} 项）` },
-        type: 'primary',
-        behaviors: [
+      elements.push(
+        cardButton(
+          `✅ 提交答案（已选 ${selected.length} 项）`,
           {
-            type: 'callback',
-            value: {
-              cmd: 'approval.answerSubmit',
-              requestId: approval.requestId,
-              questionIndex: i,
-              runId,
-              nonce: mkNonce(),
-            },
+            cmd: 'approval.answerSubmit',
+            requestId: approval.requestId,
+            questionIndex: i,
+            runId,
+            nonce: mkNonce(),
           },
-        ],
-      });
+          { type: 'primary' },
+        ),
+      );
     }
   }
 
@@ -586,23 +571,19 @@ function renderQuestionApproval(
   // （coordinator 对 question 允许 decline 作为安全兜底），runner 按协议映射
   // 跳过语义（Claude deny / Codex 空 answers / Kimi action decline / Pi cancelled）。
   if (!expired) {
-    elements.push({
-      tag: 'button',
-      text: { tag: 'plain_text', content: '⏭️ 跳过回答' },
-      type: 'default',
-      behaviors: [
+    elements.push(
+      cardButton(
+        '⏭️ 跳过回答',
         {
-          type: 'callback',
-          value: {
-            cmd: 'approval.respond',
-            decision: 'decline',
-            requestId: approval.requestId,
-            runId,
-            nonce: mkNonce(),
-          },
+          cmd: 'approval.respond',
+          decision: 'decline',
+          requestId: approval.requestId,
+          runId,
+          nonce: mkNonce(),
         },
-      ],
-    });
+        { type: 'default' },
+      ),
+    );
   }
 
   return elements;
@@ -629,27 +610,19 @@ function renderOptionRow(
         width: 'auto',
         vertical_align: 'center',
         elements: [
-          {
-            tag: 'button',
-            text: { tag: 'plain_text', content: isSelected ? '取消选择' : '选择' },
-            type: isSelected ? 'default' : 'primary',
-            size: 'small',
-            // 固定宽度让所有选项行的按钮左对齐（描述长短不影响按钮列）。
-            width: '100px',
-            behaviors: [
-              {
-                type: 'callback',
-                value: {
-                  cmd: 'approval.answer',
-                  requestId,
-                  questionIndex,
-                  option: option.label,
-                  runId,
-                  nonce: mkNonce(),
-                },
-              },
-            ],
-          },
+          // 固定宽度让所有选项行的按钮左对齐（描述长短不影响按钮列）。
+          cardButton(
+            isSelected ? '取消选择' : '选择',
+            {
+              cmd: 'approval.answer',
+              requestId,
+              questionIndex,
+              option: option.label,
+              runId,
+              nonce: mkNonce(),
+            },
+            { type: isSelected ? 'default' : 'primary', size: 'small', width: '100px' },
+          ),
         ],
       },
       {

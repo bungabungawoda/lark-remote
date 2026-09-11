@@ -7,8 +7,12 @@ import {
 // 直接在模块顶层定义 mock（兼容 bun 的 vitest，与既有 opencode 测试同模式）
 const mockExecSync = vi.fn();
 
-vi.mock('node:child_process', () => ({
-  execSync: (...args: any[]) => mockExecSync(...args),
+vi.mock('../../../src/platform/command.js', () => ({
+  resolveExecutable: () => ({ kind: 'direct', file: '/usr/local/bin/opencode' }),
+}));
+vi.mock('../../../src/platform/spawn.js', () => ({
+  useDetachedProcessGroup: vi.fn(() => true),
+  spawnProcessSync: (...args: unknown[]) => mockExecSync(...args),
 }));
 
 vi.mock('../../../src/logger/index.js', () => ({
@@ -49,7 +53,7 @@ describe(' opencode execSync 必须带 TTL 缓存 (anchor)', () => {
    *
    */
   it('anchor: TTL 内命中缓存不重复 execSync', () => {
-    mockExecSync.mockReturnValue(FAKE_OUTPUT);
+    mockExecSync.mockReturnValue({ status: 0, stdout: FAKE_OUTPUT, stderr: '' });
     loadOpencodeConfig();
     loadOpencodeConfig();
     expect(mockExecSync).toHaveBeenCalledTimes(1); // 现状：2 次 → RED
@@ -76,7 +80,7 @@ describe(' opencode execSync 必须带 TTL 缓存 (anchor)', () => {
   it('probe: TTL 过期后重新 execSync', () => {
     vi.useFakeTimers();
     try {
-      mockExecSync.mockReturnValue(FAKE_OUTPUT);
+      mockExecSync.mockReturnValue({ status: 0, stdout: FAKE_OUTPUT, stderr: '' });
       loadOpencodeConfig();
       loadOpencodeConfig(); // 命中缓存
       vi.advanceTimersByTime(61_000);

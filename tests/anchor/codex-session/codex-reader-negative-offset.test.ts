@@ -23,7 +23,7 @@
  *   - plan §2.1 分页区间定义 "[offset, offset+limit)" 隐含 offset 非负；
  *     reader 层未定义负 offset 语义是 spec gap（Round 8 探测结论）
  *   - router 既有 clamp：resume.page 已对负 offset clamp 到 0
- *     （tests/probe/resume-pagination-boundary-probes.test.ts 验证 pass）
+ *     （tests/anchor/resume/resume-pagination-boundary.test.ts 验证 pass）
  *   - Round 9 裁决：reader 层统一 `offset < 0 → 0`（不静默空页），
  *     并在 codex reader 上锁 anchor
  */

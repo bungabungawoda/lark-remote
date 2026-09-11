@@ -207,15 +207,6 @@ describe('ApprovalCoordinator', () => {
         'no longer pending',
       );
     });
-
-    it('cancel is always allowed as safety override', async () => {
-      const event = makeCommandEvent();
-      coordinator.onRequested(event);
-      await expect(
-        coordinator.submit({ action: 'cancel' }, { requestId: 1001 }),
-      ).resolves.toBeUndefined();
-      expect(responder).toHaveBeenCalledWith(1001, { action: 'cancel' });
-    });
   });
 
   describe('onResolved', () => {

@@ -77,13 +77,51 @@ function eventLabel(ev: AgentSessionContentEvent, agentKind: string): string {
 
 export { markdownDiv };
 
+/** 分页卡「跳转页码」输入框的组件 name（仅用于结构断言与可读性）。 */
+export const PAGE_JUMP_INPUT_NAME = 'pageInput';
+
+/** 页码输入非法时的统一提示文案（/ls /ws /resume /active /order 共用）。 */
+export const PAGE_JUMP_INVALID_HINT = '请输入有效的页码（正整数）';
+
 /**
- * Build a CardKit 2.0 pagination bar (prev-button / page-label / next-button
- * columns). Shared by /ls, /ws, /resume, /active, /order.
+ * 解析分页卡「跳转页码」输入框的提交值。
  *
- * Returns the `column_set` element (plus caller appends an `hr`). Each caller
- * supplies its own callback cmd + extra value fields and label text (semantic
- * differences are preserved, not silently unified).
+ * 三态返回：
+ * - `undefined` — 未输入（空串/非字符串），调用方应回退到 `offset`（上一页/下一页）
+ * - `null`      — 输入非法（非正整数），调用方应回错误 toast 且不刷新卡片
+ * - `number`    — 页码换算出的 offset（页码从 1 开始）
+ */
+export function parseJumpOffset(inputValue: unknown, pageSize: number): number | null | undefined {
+  if (typeof inputValue !== 'string' || inputValue.trim() === '') return undefined;
+  const raw = inputValue.trim();
+  if (!/^[0-9]+$/.test(raw)) return null;
+  const page = Number(raw);
+  if (!Number.isFinite(page) || page < 1) return null;
+  const size = Number.isFinite(pageSize) && pageSize > 0 ? Math.trunc(pageSize) : 1;
+  return (page - 1) * size;
+}
+
+/**
+ * Build the CardKit 2.0 pagination block shared by /ls, /ws, /resume, /active,
+ * /order.
+ *
+ * 第一性原理（2026-09-10 窄屏重设计）：分页栏要同时承载「页码信息」和「翻页
+ * 控件」两类需求。旧布局把两者塞进同一行 `column_set`（文案 weighted 4 : 输入
+ * weighted 2），手机窄屏下 auto 按钮先占走固有宽度，剩余宽度按 4:2 切分后文案
+ * 列只有百来像素、输入框只有几十像素——文案折行、输入框窄到没法点。
+ * 拆成两行后每一类都有足够的横向空间：
+ *
+ *   1. 页码文案独占整行（顶层 `div`），窄屏不折行；
+ *   2. 控件行 `column_set` = [上一页 auto] [跳转页码 input weighted] [下一页 auto]，
+ *      input 吃掉 auto 按钮之外的剩余宽度（窄屏约百来像素，桌面端更宽）。
+ *
+ * Returns an array of body elements: `[page-label div, controls column_set]`；
+ * 调用方展开进 `body.elements`（+ 自己的 `hr`）。input 仍留在控件 column_set
+ * 内部，不用 form 容器（form 触发 300123 / 200621 整卡不可用）。CardKit 2.0
+ * input 自带 ✓ 提交图标，提交值经 raw `action.input_value` 回传，见 connector
+ * includeRawEvent + router/card-action-payload.ts。
+ *
+ * 每个调用方自带 callback cmd / extra value / 文案（语义差异保留，不强行统一）。
  *
  * @param opts.cmd       The pagination callback command (e.g. 'ls.page').
  * @param opts.offset    Current page offset.
@@ -102,15 +140,15 @@ export function paginationBar(opts: {
   label: string;
   prevText?: string;
   nextText?: string;
-}): object {
+}): object[] {
   const hasPrev = opts.offset > 0;
   const hasNext = opts.offset + opts.pageSize < opts.total;
   const prevText = opts.prevText ?? '⬅ 上一页';
   const nextText = opts.nextText ?? '下一页 ➡';
 
-  const pageColumns: object[] = [];
+  const controls: object[] = [];
   if (hasPrev) {
-    pageColumns.push({
+    controls.push({
       tag: 'column',
       width: 'auto',
       vertical_align: 'center',
@@ -130,15 +168,30 @@ export function paginationBar(opts: {
       ],
     });
   }
-  pageColumns.push({
+  // 跳转页码输入：占满 auto 按钮之外的剩余宽度（窄屏可点、桌面不局促）。
+  // 提交后值经 raw.action.input_value 回传，见 connector includeRawEvent +
+  // router/card-action-payload.ts。
+  controls.push({
     tag: 'column',
     width: 'weighted',
     weight: 1,
     vertical_align: 'center',
-    elements: [{ tag: 'div', text: { tag: 'lark_md', content: opts.label } }],
+    elements: [
+      {
+        tag: 'input',
+        name: PAGE_JUMP_INPUT_NAME,
+        placeholder: { tag: 'plain_text', content: '跳转页码' },
+        behaviors: [
+          {
+            type: 'callback',
+            value: { cmd: opts.cmd, pageSize: opts.pageSize, ...opts.extra },
+          },
+        ],
+      },
+    ],
   });
   if (hasNext) {
-    pageColumns.push({
+    controls.push({
       tag: 'column',
       width: 'auto',
       vertical_align: 'center',
@@ -158,7 +211,10 @@ export function paginationBar(opts: {
       ],
     });
   }
-  return { tag: 'column_set', columns: pageColumns };
+  return [
+    { tag: 'div', text: { tag: 'lark_md', content: opts.label } },
+    { tag: 'column_set', columns: controls },
+  ];
 }
 
 /**

@@ -66,7 +66,7 @@ describe('codex active catalog provider list - anchor', () => {
       [
         'model = "deepseek-v4-flash"',
         'model_provider = "deepseek"',
-        `model_catalog_json = "${path.join(tmpDir, 'models.json')}"`,
+        `model_catalog_json = "${path.join(tmpDir, 'models.json').replaceAll('\\', '/')}"`,
         '',
         '[model_providers.deepseek]',
         'name = "deepseek"',

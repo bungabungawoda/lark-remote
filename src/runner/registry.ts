@@ -11,10 +11,10 @@ let globalRegistry: AgentRegistry | undefined;
  * factory per available agent at startup; `Bridge.getRunner(workspace)` looks
  * up `config.defaultAgent` here to pick the concrete runner.
  *
- * Singleton caching: the factory MAY cache its instance internally. Most
- * current spawn-type agents (claude, opencode, pi, kimi) are spawn-per-message; codex is
- * workspace-lifetime (app-server); dsh is HTTP+WS direct connection (no local
- * subprocess). Each factory returns a runner per call.
+ * Singleton caching: the factory MAY cache its instance internally. All
+ * local-subprocess agents (claude/codex/opencode/pi/kimi) are
+ * workspace-lifetime (long-lived session); dsh is HTTP+WS direct connection
+ * (no local subprocess). Each factory returns a runner per call.
  *
  * Dynamic config reload: factory can read latest config via registry's
  * configContainer, enabling runtime config changes to take effect.

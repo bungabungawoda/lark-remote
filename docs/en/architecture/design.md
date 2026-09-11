@@ -207,7 +207,8 @@ Claude conversation output is constructed as a CardKit 2.0 card by `RunState` an
 - thinking, text, tool use/result are reduced in JSONL order, preserving event `timestamp`;
 - When live `stream-json` events lack a timestamp, `createJSONLStream` fills in the event arrival time;
 - Card timestamps are uniformly displayed in local time `YYYY-MM-DD HH:mm`;
-- `showThinking`, `showToolUse`, `showToolResult` continue to control visible content;
+- Thinking, text, tool use and tool result are always shown (the legacy `output.show*`
+  switches were removed; the card no longer offers display toggles);
 - Long content uses sliding window, truncation, tool folding, `collapsible_panel` visual folding, and UTF-8 byte budget;
 - The card is a lossy progress summary; the complete transcript is not currently persisted;
 - SDK applies throttle and FIFO UpdateQueue for patches;
@@ -238,11 +239,6 @@ codex:
   approvalPolicy: on-request  # Codex official AskForApproval: untrusted | on-request | never (default on-request)
   sandbox: workspace-write  # Codex official SandboxMode: read-only | workspace-write | danger-full-access (default workspace-write)
 
-output:
-  showThinking: true
-  showToolUse: true
-  showToolResult: true
-
 logging:
   level: info             # debug | info | warn | error
 
@@ -251,6 +247,8 @@ idle:
 ```
 
 When `feishu.appId`/`appSecret` is not detected on first launch: interactive terminal (both stdin/stdout are TTY) goes through the scan-to-create wizard (`src/config/wizard.ts`, calling `@larksuite/channel`'s `registerApp`), which prints a QR code in the terminal; the user scans it with the Feishu App to create the app, and the returned `client_id`/`client_secret` is written back to the config file before continuing startup; non-interactive environments (no TTY) fall through to `loadConfig` which generates a template and exits.
+
+QR rendering lives in `src/config/qr.ts`: one module matrix, two renderers — full blocks (two `█` per module, Windows-safe) and half blocks (two QR rows per text row, compact). Windows only gets full blocks (half blocks' `▀`/`▄` usually render wrong in Windows console fonts, which is why the printed symbol cannot be scanned); POSIX falls back to half blocks when full blocks do not fit. Both renderers emit the 4-module quiet zone the QR spec requires (the previous `qrcode-terminal` half-block output had none). When the terminal cannot fit a whole symbol — or always on Windows — the wizard writes the symbol to `<configDir>/qr-code.gif` and prints the path, and removes it when the scan finishes or the process exits.
 
 ---
 
@@ -325,9 +323,9 @@ Feishu WebSocket provides at-least-once delivery; the same event may be pushed m
 
 **cardAction dedup design flaw**: `actionId = tag|name|option|JSON.stringify(value)`, which **does not include timestamp/event sequence/messageId**. When the same user clicks the same button on the same card, all three segments of the eventId are identical → the second click is treated as a duplicate by seenCache and dropped, and the handler is not executed.
 
-**High-risk scenario for in-place card updates**: `updateCardInPlace` does not send a new card; the user always operates on the same card. Config card toggle buttons (`{cmd:'config.toggle', key: field.key}`) have fixed callback values. When a user clicks twice in succession (e.g., "show tool results" on→off→on):
-- First click: eventId not in cache → toggle takes effect → card changes to "disabled" → finally adds eventId to seenCache
-- Second click (within TTL): eventId already in cache → **drop duplicate action** → toggle not executed → card stuck at "disabled"
+**High-risk scenario for in-place card updates**: `updateCardInPlace` does not send a new card; the user always operates on the same card. Fixed-value callback buttons (e.g. config toggles, run-card action buttons) keep the same callback value. When a user clicks the same button twice in succession:
+- First click: eventId not in cache → callback runs → finally adds eventId to seenCache
+- Second click (within TTL): eventId already in cache → **drop duplicate action** → callback does not run, and state stays at the first click's result (e.g. a toggle button stuck at "disabled")
 
 `configActionQueue` (`src/router/index.ts`) serialization cannot help — the dropped event never reaches the router.
 

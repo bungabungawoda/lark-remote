@@ -24,6 +24,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { PiSessionReader } from '../../../src/session/pi/sessions.js';
+import { piEncodeCwd } from '../../lib/session-fixtures.js';
 
 const { mockLogger } = vi.hoisted(() => ({
   mockLogger: {
@@ -45,7 +46,7 @@ describe('A2: AgentSessionReader.listSessions paginated contract (pi)', () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'lark-a2-pi-'));
     try {
       const reader = new PiSessionReader({ piDir: tmpDir });
-      const encodedCwd = cwd.replace(/^\//, '').replace(/\//g, '-');
+      const encodedCwd = piEncodeCwd(cwd);
       const sessionsDir = path.join(tmpDir, 'sessions', `--${encodedCwd}--`);
       fs.mkdirSync(sessionsDir, { recursive: true });
 
@@ -58,7 +59,7 @@ describe('A2: AgentSessionReader.listSessions paginated contract (pi)', () => {
         const timestamp = mtime.toISOString().replace(/[:.]/g, '-');
         const filePath = path.join(sessionsDir, `${timestamp}_${sessionId}.jsonl`);
         const lines = [
-          `{"type":"session","id":"${sessionId}","cwd":"${cwd}","provider":"glm","modelId":"glm-5.2"}`,
+          `{"type":"session","id":"${sessionId}","cwd":${JSON.stringify(cwd)},"provider":"glm","modelId":"glm-5.2"}`,
           `{"type":"message","message":{"role":"user","content":[{"type":"text","text":"task ${i}"}]}}`,
         ];
         fs.writeFileSync(filePath, lines.join('\n') + '\n');

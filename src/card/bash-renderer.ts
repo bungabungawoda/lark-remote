@@ -100,22 +100,18 @@ function assembleCard(state: BashState, elements: object[]): object {
 }
 
 /**
- * Build elements for the normal path: full output/stderr (each ≤ OUTPUT_MAX_BYTES).
+ * Build output/stderr elements shared by normal & degraded paths (W2.3 单源）：
+ * 除截断预算（OUTPUT_MAX_BYTES / DEGRADED_OUTPUT_BYTES）外逐行同构。
  */
-function buildNormalElements(state: BashState): object[] {
+function buildOutputElements(state: BashState, maxBytes: number): object[] {
   const { terminal, runId, output, stderr } = state;
   const elements: object[] = [buildStatusRow(state)];
 
   const truncatedOutput = output
-    ? truncateUtf8(output, OUTPUT_MAX_BYTES, true, '…（输出已截断，共 ' + output.length + ' 字符）')
+    ? truncateUtf8(output, maxBytes, true, '…（输出已截断，共 ' + output.length + ' 字符）')
     : '';
   const truncatedStderr = stderr
-    ? truncateUtf8(
-        stderr,
-        OUTPUT_MAX_BYTES,
-        true,
-        '…（诊断输出已截断，共 ' + stderr.length + ' 字符）',
-      )
+    ? truncateUtf8(stderr, maxBytes, true, '…（诊断输出已截断，共 ' + stderr.length + ' 字符）')
     : '';
 
   if (truncatedOutput) elements.push(markdownDiv(`\`\`\`\n${truncatedOutput}\n\`\`\``));
@@ -131,40 +127,18 @@ function buildNormalElements(state: BashState): object[] {
 }
 
 /**
+ * Build elements for the normal path: full output/stderr (each ≤ OUTPUT_MAX_BYTES).
+ */
+function buildNormalElements(state: BashState): object[] {
+  return buildOutputElements(state, OUTPUT_MAX_BYTES);
+}
+
+/**
  * Build elements for the degraded path: output/stderr truncated to a smaller
  * budget. Preserves command (status row) and exitCode (footer).
  */
 function buildDegradedElements(state: BashState): object[] {
-  const { terminal, runId, output, stderr } = state;
-  const elements: object[] = [buildStatusRow(state)];
-
-  const truncatedOutput = output
-    ? truncateUtf8(
-        output,
-        DEGRADED_OUTPUT_BYTES,
-        true,
-        '…（输出已截断，共 ' + output.length + ' 字符）',
-      )
-    : '';
-  const truncatedStderr = stderr
-    ? truncateUtf8(
-        stderr,
-        DEGRADED_OUTPUT_BYTES,
-        true,
-        '…（诊断输出已截断，共 ' + stderr.length + ' 字符）',
-      )
-    : '';
-
-  if (truncatedOutput) elements.push(markdownDiv(`\`\`\`\n${truncatedOutput}\n\`\`\``));
-  if (truncatedStderr)
-    elements.push(markdownDiv(`📋 诊断输出:\n\`\`\`\n${truncatedStderr}\n\`\`\``));
-
-  if (terminal === 'running') {
-    elements.push({ tag: 'div', text: { content: '‎', tag: 'lark_md' } }, stopButton(runId));
-  }
-
-  elements.push(...buildExitFooter(state));
-  return elements;
+  return buildOutputElements(state, DEGRADED_OUTPUT_BYTES);
 }
 
 /**

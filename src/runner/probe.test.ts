@@ -7,81 +7,58 @@ import {
   _clearCacheForTest,
 } from './probe.js';
 
-// Mock child_process.spawn to avoid spawning real processes
-vi.mock('child_process', () => ({
-  spawn: vi.fn(),
+// 探测已收进 platform seam（纯 Node PATH 查找，无子进程）：
+// 这里 mock resolveExecutable 断言 probe 层的映射、缓存与 dsh 短路语义
+vi.mock('../platform/command.js', () => ({
+  resolveExecutable: vi.fn(),
 }));
 
-import { spawn } from 'child_process';
+import { resolveExecutable } from '../platform/command.js';
 
-const mockSpawn = vi.mocked(spawn);
-
-/** Helper: create a mock ChildProcess that emits 'exit' with the given code. */
-function makeMockProc(exitCode: number) {
-  return {
-    on(event: string, handler: (...args: unknown[]) => void) {
-      // Auto-fire exit on next tick
-      if (event === 'exit') {
-        process.nextTick(() => handler(exitCode, null));
-      }
-      return this;
-    },
-  };
-}
-
-/** Helper: create a mock ChildProcess that emits 'error' (e.g. ENOENT). */
-function makeErrorProc(error: Error) {
-  return {
-    on(event: string, handler: (...args: unknown[]) => void) {
-      if (event === 'error') {
-        process.nextTick(() => handler(error));
-      }
-      return this;
-    },
-  };
-}
+const mockProbe = vi.mocked(resolveExecutable);
 
 describe('probe', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockProbe.mockReset();
     _clearCacheForTest();
   });
 
   describe('probeAgentAvailability', () => {
-    it('returns true when which finds the binary on PATH', async () => {
-      mockSpawn.mockReturnValue(makeMockProc(0) as never);
-      const result = await probeAgentAvailability('claude');
-      expect(result).toBe(true);
-      expect(mockSpawn).toHaveBeenCalledWith('which', ['claude'], { stdio: 'ignore' });
-    });
+    it.each([
+      ['claude', '/usr/bin/mock-bin', true],
+      ['codex', null, false],
+    ] as const)(
+      '%s availability follows seam resolution (%s)',
+      async (kind, resolved, expected) => {
+        mockProbe.mockReturnValue(resolved);
+        const result = await probeAgentAvailability(kind);
+        expect(result).toBe(expected);
+        expect(mockProbe).toHaveBeenCalledWith(kind);
+      },
+    );
 
-    it('returns false when which exits with non-zero code (binary not on PATH)', async () => {
-      mockSpawn.mockReturnValue(makeMockProc(1) as never);
-      const result = await probeAgentAvailability('codex');
+    it('reports dsh unavailable without touching the seam (no CLI binary)', async () => {
+      const result = await probeAgentAvailability('dsh');
       expect(result).toBe(false);
-    });
-
-    it('returns false when spawn emits error (e.g. which itself missing)', async () => {
-      mockSpawn.mockReturnValue(makeErrorProc(new Error('ENOENT')) as never);
-      const result = await probeAgentAvailability('pi');
-      expect(result).toBe(false);
+      expect(mockProbe).not.toHaveBeenCalled();
     });
 
     it('caches result and does not re-probe within TTL', async () => {
-      mockSpawn.mockReturnValue(makeMockProc(0) as never);
+      mockProbe.mockReturnValue('/usr/bin/mock-bin');
       await probeAgentAvailability('opencode');
-      expect(mockSpawn).toHaveBeenCalledTimes(1);
+      expect(mockProbe).toHaveBeenCalledTimes(1);
 
       // Second call should use cache
       const result = await probeAgentAvailability('opencode');
       expect(result).toBe(true);
-      expect(mockSpawn).toHaveBeenCalledTimes(1);
+      expect(mockProbe).toHaveBeenCalledTimes(1);
     });
   });
 
   describe('probeAllAgents', () => {
-    it('probes all 5 agents concurrently', async () => {
-      mockSpawn.mockReturnValue(makeMockProc(0) as never);
+    it('probes all 5 spawn-able agents concurrently', async () => {
+      mockProbe.mockReturnValue('/usr/bin/mock-bin');
       const result = await probeAllAgents();
       expect(result.size).toBe(5);
       expect(result.get('claude')).toBe(true);
@@ -93,13 +70,9 @@ describe('probe', () => {
 
     it('reports mixed availability correctly', async () => {
       // claude/opencode available, codex/pi/kimi unavailable
-      mockSpawn.mockImplementation((_cmd: string, args: string[]) => {
-        const binary = args[0];
-        if (binary === 'claude' || binary === 'opencode') {
-          return makeMockProc(0) as never;
-        }
-        return makeMockProc(1) as never;
-      });
+      mockProbe.mockImplementation((name: string) =>
+        name === 'claude' || name === 'opencode' ? '/usr/bin/mock-bin' : null,
+      );
       const result = await probeAllAgents();
       expect(result.get('claude')).toBe(true);
       expect(result.get('codex')).toBe(false);
@@ -114,14 +87,8 @@ describe('probe', () => {
       expect(getCachedAvailability('claude')).toBeUndefined();
     });
 
-    it('returns cached boolean after probe', async () => {
-      mockSpawn.mockReturnValue(makeMockProc(0) as never);
-      await probeAgentAvailability('claude');
-      expect(getCachedAvailability('claude')).toBe(true);
-    });
-
-    it('returns undefined after cache is cleared', async () => {
-      mockSpawn.mockReturnValue(makeMockProc(0) as never);
+    it('returns cached boolean after probe; undefined after cache is cleared', async () => {
+      mockProbe.mockReturnValue('/usr/bin/mock-bin');
       await probeAgentAvailability('claude');
       expect(getCachedAvailability('claude')).toBe(true);
       _clearCacheForTest();
@@ -129,7 +96,7 @@ describe('probe', () => {
     });
 
     it('clears all cache entries', async () => {
-      mockSpawn.mockReturnValue(makeMockProc(0) as never);
+      mockProbe.mockReturnValue('/usr/bin/mock-bin');
       await probeAllAgents();
       for (const kind of ['claude', 'codex', 'opencode', 'pi', 'kimi']) {
         expect(getCachedAvailability(kind as AgentKind)).toBe(true);
