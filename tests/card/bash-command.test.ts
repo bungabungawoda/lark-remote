@@ -29,8 +29,6 @@ afterEach(() => {
 
 function createRouter(overrides?: {
   runner?: Runner;
-  output?: Partial<AppConfig['output']>;
-
   exitHandler?: () => void;
   projectsDir?: string;
   bridge?: Bridge;
@@ -46,12 +44,6 @@ function createRouter(overrides?: {
       stopGraceMs: 5000,
     },
     workspace: { default: '' },
-    output: {
-      showThinking: true,
-      showToolUse: false,
-      showToolResult: false,
-      ...overrides?.output,
-    },
   });
   const router = new CommandRouter({
     sessionStore,

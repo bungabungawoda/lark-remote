@@ -162,11 +162,6 @@ describe('Pi card adaptation', () => {
         },
         agents: { pi: { provider: 'Volcano', model: 'glm-5.2', thinking: 'medium' } },
         defaultAgent: 'pi',
-        output: {
-          showThinking: true,
-          showToolUse: true,
-          showToolResult: true,
-        },
       });
       const router = new CommandRouter({
         sessionStore,

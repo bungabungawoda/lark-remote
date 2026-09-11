@@ -54,7 +54,6 @@ describe(': bridge catch calls runner.stop()', () => {
     config = AppConfigSchema.parse({
       feishu: { appId: 'test', appSecret: 'test' },
       claude: { model: 'opus', stopGraceMs: 5000 },
-      output: { showThinking: true, showToolUse: false, showToolResult: false },
     });
   });
 

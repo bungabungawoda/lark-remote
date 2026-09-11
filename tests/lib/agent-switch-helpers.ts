@@ -26,11 +26,6 @@ export function buildAgentSwitchConfig(overrides?: Partial<AppConfig>): AppConfi
       kimi: { model: 'kimi-k2' },
     },
     workspace: { default: '' },
-    output: {
-      showThinking: true,
-      showToolUse: false,
-      showToolResult: false,
-    },
     ...overrides,
   });
 }

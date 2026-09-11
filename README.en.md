@@ -73,11 +73,6 @@ claude:
   # permissionMode is hardcoded to bypassPermissions (inside the runner)
   stopGraceMs: 5000
 
-output:
-  showThinking: true
-  showToolUse: true
-  showToolResult: true
-
 logging:
   level: info               # debug | info | warn | error
 
