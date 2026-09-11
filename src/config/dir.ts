@@ -42,9 +42,9 @@ export function parseCliArgs(args: string[] = process.argv.slice(2)): CliArgs {
 
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
-    if (arg === '-h' || arg === '--help') {
+    if (arg === '-h' || arg === '--help' || arg === 'help') {
       result.help = true;
-    } else if (arg === '-v' || arg === '--version') {
+    } else if (arg === '-v' || arg === '--version' || arg === 'version') {
       result.version = true;
     } else if (arg === '--config-dir' && i + 1 < args.length) {
       // P1-20: peek, don't consume — when the next arg is itself a flag,
@@ -61,7 +61,10 @@ export function parseCliArgs(args: string[] = process.argv.slice(2)): CliArgs {
       }
     } else if (arg === '--dev') {
       result.dev = true;
-    } else if (arg === '--update') {
+    } else if (arg === '--update' || arg === 'update') {
+      // 裸子命令等价形式：`lark-remote update` 与 `--update` 同义。
+      // 不识别时它会落到守护进程路径去抢单例锁，被正在运行的实例挡下
+      // （"already running"），而 update 根本不是守护类命令。
       result.update = true;
     }
   }
@@ -78,7 +81,9 @@ export function getVersion(): string {
     'package.json',
   );
   const pkg = JSON.parse(readFileSync(pkgPath, 'utf8')) as { version?: string };
-  return pkg.version ?? '0.0.0';
+  // 不用 `??`：本模块会被 dist/cli.js 静态引入，而 cli.js 必须在很旧的 Node
+  // （实测 WSL v12）上也 **能解析** —— node<14 不认识 ??，会直接 SyntaxError。
+  return typeof pkg.version === 'string' ? pkg.version : '0.0.0';
 }
 
 /** Print version to stdout. */
@@ -92,7 +97,12 @@ export function printHelp(): void {
     'lark-remote — 飞书私聊 ↔ 本地 Coding Agent CLI 桥接',
     '',
     'Usage:',
-    '  lark-remote [options]',
+    '  lark-remote [command] [options]',
+    '',
+    'Commands:',
+    '  update                 等同 --update：升级到最新版本后退出（不被运行中的实例阻塞）',
+    '  version                等同 --version',
+    '  help                   等同 --help',
     '',
     'Options:',
     '  --config-dir <path>   自定义配置目录（默认 ~/.lark-remote，可用于同机多实例）',

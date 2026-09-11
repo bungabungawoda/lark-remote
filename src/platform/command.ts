@@ -24,6 +24,35 @@ export type { LaunchSpec } from './types.js';
 const DEFAULT_PATHEXT = ['.exe', '.bat', '.cmd'] as const;
 
 /**
+ * win32 的「假 bash」：`%SystemRoot%\system32\bash.exe`（SysWOW64 同理）不是
+ * Git Bash，而是 WSL 启动器（wsl.exe 的 bash 别名）。PATH 里 system32 通常
+ * 排在 Git\cmd 之前，按目录顺序命中它会把整条 `!` 命令丢进 WSL 发行版执行：
+ * 工作目录变成 /mnt/d/...、node 变成 WSL 里装的那个版本。实测本机 WSL node
+ * 为 v12，加载 dist/index.js 的 ES2022 语法（?? / ?.）直接
+ * `SyntaxError: Unexpected token '?'`，`!lark-remote -v` 因此失败。
+ *
+ * 因此解析 `bash` 时必须跳过它，继续在 PATH 中找真正的 Git Bash。
+ *
+ * 判定只看两层目录名（`<...>\system32\bash.exe`）：Git Bash 装在
+ * `<Git>\bin` / `<Git>\usr\bin`，不会叫 system32；反过来把真正的 Git Bash
+ * 装在名为 system32 的目录里也可以忽略。
+ */
+const WSL_BASH_PARENT_DIRS = ['system32', 'syswow64'];
+
+/** 判断一个已命中的 bash.exe 是否只是 WSL 启动器（而非 Git Bash）。 */
+export function isWslBashLauncher(file: string): boolean {
+  const normalized = file.replaceAll('/', '\\').toLowerCase();
+  if (path.win32.basename(normalized) !== 'bash.exe') return false;
+  return WSL_BASH_PARENT_DIRS.includes(path.win32.basename(path.win32.dirname(normalized)));
+}
+
+/** 查询目标是 bash（`bash` 或显式 `bash.exe`）时才走上面的特例。 */
+function isBashQuery(name: string): boolean {
+  const lower = name.toLowerCase();
+  return lower === 'bash' || lower === 'bash.exe';
+}
+
+/**
  * 缓存 TTL：probe 层（runner/probe.ts）5 分钟，本层更短——bridge 运行期间
  * 用户新装/卸载 agent（典型场景：按 /config 不可用提示去安装）后，最迟
  * TTL 过期即可被重新探测到，不必重启。null（未找到）结果同样过期重查。
@@ -77,20 +106,42 @@ function existsWin32(file: string): string | null {
   return null;
 }
 
+/**
+ * Git for Windows 只把 `Git\cmd` 放进 PATH（里面没有 bash.exe），真正的
+ * bash 在 `Git\bin\bash.exe` / `Git\usr\bin\bash.exe`。PATH 里只暴露 cmd
+ * 目录时，从 cmd 反推安装根再找 bash。
+ */
+function resolveBashFromGitCmdDir(pathEnv: string): LaunchSpec | null {
+  for (const dir of listPathDirs(pathEnv, 'win32')) {
+    if (path.win32.basename(dir).toLowerCase() !== 'cmd') continue;
+    const root = path.win32.dirname(dir);
+    for (const rel of ['bin\\bash.exe', 'usr\\bin\\bash.exe']) {
+      const found = existsWin32(path.win32.join(root, rel));
+      if (found) return { kind: 'direct', file: found };
+    }
+  }
+  return null;
+}
+
 function resolveWin32(
   name: string,
   pathEnv: string,
   pathExt: readonly string[],
 ): LaunchSpec | null {
   const hasExtension = /\.[A-Za-z0-9]+$/.test(name);
+  const bashQuery = isBashQuery(name);
   for (const dir of listPathDirs(pathEnv, 'win32')) {
     const candidates = hasExtension ? [name] : pathExt.map((ext) => name + ext);
     for (const candidate of candidates) {
       const found = existsWin32(path.win32.join(dir, candidate));
+      if (!found) continue;
+      // WSL 启动器不是 Git Bash：跳过，继续找后面的 PATH 目录
+      if (bashQuery && isWslBashLauncher(found)) continue;
       // .cmd/.bat 垫片命中即报告垫片路径本身；执行语义由 cross-spawn 负责
-      if (found) return { kind: 'direct', file: found };
+      return { kind: 'direct', file: found };
     }
   }
+  if (bashQuery) return resolveBashFromGitCmdDir(pathEnv);
   return null;
 }
 

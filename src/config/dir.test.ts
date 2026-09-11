@@ -41,6 +41,33 @@ describe('parseCliArgs update flag', () => {
   });
 });
 
+/**
+ * 裸子命令等价形式：`lark-remote update`。
+ * 不识别时 `update` 会被当成普通参数忽略 → 走守护进程路径抢单例锁 →
+ * 被已运行的实例挡下（"already running"），而 update 根本不是守护类命令。
+ */
+describe('parseCliArgs 裸子命令', () => {
+  it('update 等价 --update', () => {
+    expect(parseCliArgs(['update']).update).toBe(true);
+  });
+
+  it('update 与 --config-dir 共存', () => {
+    expect(parseCliArgs(['update', '--config-dir', '/tmp/foo'])).toEqual({
+      update: true,
+      configDir: '/tmp/foo',
+    });
+  });
+
+  it('version / help 裸子命令', () => {
+    expect(parseCliArgs(['version']).version).toBe(true);
+    expect(parseCliArgs(['help']).help).toBe(true);
+  });
+
+  it('--config-dir 的值不会被误判成子命令', () => {
+    expect(parseCliArgs(['--config-dir', 'update'])).toEqual({ configDir: 'update' });
+  });
+});
+
 describe('printVersion', () => {
   afterEach(() => {
     vi.restoreAllMocks();
