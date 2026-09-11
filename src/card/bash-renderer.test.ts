@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { renderBashCard, type BashState } from './bash-renderer.js';
+import { expectNoV1ActionContainer } from '../../tests/lib/card-view.js';
 
 function makeState(overrides: Partial<BashState> = {}): BashState {
   return {
@@ -81,7 +82,7 @@ describe('renderBashCard2 (CardKit 2.0)', () => {
     // No tabs in streaming mode - content is inline
     expect(card.body?.elements?.find((e) => e.tag === 'tabs')).toBeUndefined();
     // 200861 铁律：2.0 卡片禁止混入 1.x `tag:"action"` 容器
-    expect(json).not.toMatch(/"tag"\s*:\s*"action"[^}]*"actions"/);
+    expectNoV1ActionContainer(json);
   });
 
   it('running card has stop button with 2.0 behaviors bound to runId', () => {

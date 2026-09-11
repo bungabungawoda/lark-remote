@@ -1,5 +1,4 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import type { ChildProcess } from 'node:child_process';
 import { createMockProc, emitExit } from '../../tests/lib/mock-process.js';
 
 const { mockLogger } = vi.hoisted(() => ({
@@ -9,14 +8,6 @@ const { mockLogger } = vi.hoisted(() => ({
 vi.mock('../logger/index.js', () => ({ getLogger: () => mockLogger }));
 
 import { createPosixTerminator, ProcessStopper } from './terminator-posix.js';
-
-function simulateExit(
-  proc: ChildProcess,
-  code: number | null,
-  signal: NodeJS.Signals | null,
-): void {
-  emitExit(proc, code, signal);
-}
 
 describe('createPosixTerminator', () => {
   let killSpy: ReturnType<typeof vi.spyOn>;
@@ -37,7 +28,7 @@ describe('createPosixTerminator', () => {
     const proc = createMockProc();
     const stopPromise = terminator.stop(proc, { immediate: false });
 
-    simulateExit(proc, 0, null);
+    emitExit(proc, 0, null);
     const result = await stopPromise;
 
     expect(result).toEqual({ requested: true, via: 'cooperative' });
@@ -52,7 +43,7 @@ describe('createPosixTerminator', () => {
     const stopPromise = terminator.stop(proc, { immediate: false });
 
     await vi.advanceTimersByTimeAsync(1000);
-    simulateExit(proc, null, 'SIGKILL');
+    emitExit(proc, null, 'SIGKILL');
     const result = await stopPromise;
 
     expect(result).toEqual({ requested: true, via: 'taskkill' });
@@ -74,6 +65,23 @@ describe('createPosixTerminator', () => {
 
     await vi.advanceTimersByTimeAsync(30000);
     expect(killSpy).toHaveBeenCalledTimes(2);
+  });
+
+  it('immediate：SIGKILL ESRCH 容错（进程已死）不抛错（自 process-stopper.test.ts 迁入）', async () => {
+    const terminator = createPosixTerminator({ graceMs: 5000 });
+    const proc = createMockProc();
+
+    // SIGTERM 成功，SIGKILL 抛 ESRCH（进程已消失）
+    killSpy.mockImplementationOnce(() => true);
+    killSpy.mockImplementationOnce(() => {
+      const err = Object.assign(new Error('ESRCH'), { code: 'ESRCH' });
+      throw err;
+    });
+
+    await expect(terminator.stop(proc, { immediate: true })).resolves.toEqual({
+      requested: true,
+      via: 'taskkill',
+    });
   });
 
   it('已退出 / 无 pid → already-exited，一个信号都不发', async () => {
@@ -121,7 +129,7 @@ describe('ProcessStopper（既有调用方兼容壳）', () => {
 
     const proc = createMockProc();
     const stopPromise = stopper.stop(proc);
-    simulateExit(proc, 0, null);
+    emitExit(proc, 0, null);
     await expect(stopPromise).resolves.toBeUndefined();
     expect(killSpy).toHaveBeenCalledWith(-12345, 'SIGTERM');
   });

@@ -2,8 +2,11 @@
  * KimiAcpTranslator: translates ACP session/update notifications and
  * session/request_permission server requests into AgentEvents.
  *
- * Per-turn stateful: accumulates text/thinking deltas, tracks tool calls,
- * and produces turn_started events with operationKind.
+ * Extends BaseAcpTranslator (shared envelope dispatch, prompt-response
+ * stopReason mapping, tool_call normalization, usage occupancy). Kimi's
+ * divergence from opencode is the content channel: per-turn stateful —
+ * accumulates text/thinking deltas and emits turn_diff snapshots (NOT
+ * assistant deltas — see handleAgentMessageChunk), plus question elicitation.
  *
  * Wire envelope (R1, source: kimi-code packages/acp-server/src/events-map.ts,
  * verified live 2026-08-15/16 against kimi 0.36.0):
@@ -13,82 +16,42 @@
  * Event mapping (design doc §4.2):
  *   agent_message_chunk   → turn_diff text snapshot (content.text accumulation)
  *   agent_thought_chunk   → turn_diff reasoning snapshot (content.text accumulation)
- *   tool_call             → assistant/tool_use (rawInput object passthrough,
- *                           string → JSON.parse fallback)
- *   tool_call_update      → user/tool_result (status:'failed' → is_error:true)
- *   plan / available_commands_update / session_info_update /
- *   current_mode_update / config_option_update → discard
- *   usage_update          → live context occupancy {used, size} →
- *                           {total_tokens, context_limit}; NO input/output
- *                           split exists on the wire — cumulative token stats
- *                           fall back to wire.jsonl usage.record (dual path)
+ *   tool_call / tool_call_update / usage_update / plan / control-plane noise →
+ *                         base class (BaseAcpTranslator)
  *   prompt stopReason:'end_turn'   → result success
  *   prompt stopReason:'cancelled'  → result interrupted (独立终态)
  *   prompt other stopReason/error  → result error
  *   turn_started (self-produced)   → operationKind 'turn'/'compaction'
- *   session/request_permission     → approval_requested
+ *   session/request_permission     → approval_requested（含 question 桥）
+ *   elicitation/create             → question approval event
  */
 
-import type { AgentEvent, ApprovalView, ResultEvent, UserQuestion } from '../../types.js';
-import type { ApprovalRequestedEvent } from '../../types.js';
+import type { ApprovalRequestedEvent, ApprovalView, UserQuestion } from '../../types.js';
 import { makeQuestionApprovalEvent } from '../../question-common.js';
 import {
-  NotificationMethod,
   ServerRequestMethod,
-  SessionEventType,
-  type AgentMessageChunkEvent,
-  type AgentThoughtChunkEvent,
-  type ToolCallEvent,
-  type ToolCallUpdateEvent,
-  type UsageUpdateEvent,
-  type SessionUpdateNotification,
   type RequestPermissionParams,
   type ElicitationCreateParams,
   type ElicitationPropertySchema,
   type ElicitationEnumOption,
+  type AgentMessageChunkEvent,
+  type AgentThoughtChunkEvent,
 } from '../../common/acp/protocol-types.js';
 import {
   deriveAcpAvailableDecisions,
   truncateWithEllipsis,
 } from '../../common/acp/protocol-helpers.js';
 import { getLogger } from '../../../logger/index.js';
+import { BaseAcpTranslator, type AcpTranslatorEvent } from '../../common/acp/base-translator.js';
 
-// =============================================================================
-// Local event types
-// =============================================================================
-
-/** Self-produced turn_started event (no wire equivalent — produced on prompt start). */
-export interface AcpTurnStartedEvent {
-  type: 'turn_started';
-  threadId: string;
-  turnId: string;
-  operationKind: 'turn' | 'compaction';
-  timestamp?: string;
-}
-
-/**
- * Live usage snapshot from usage_update. The wire only carries context
- * occupancy (`used`) and the model context window (`size`) — there is NO
- * input/output token split (events-map.ts:505-516). input_tokens/output_tokens
- * stay undefined so the bridge falls back to wire.jsonl usage.record for
- * cumulative token stats (R1 dual path).
- */
-export interface AcpLiveUsage {
-  total_tokens?: number;
-  context_limit?: number;
-  input_tokens?: number;
-  output_tokens?: number;
-}
-
-/** Usage update event for live token display. */
-export interface AcpUsageEvent {
-  type: 'usage';
-  usage: AcpLiveUsage;
-  timestamp?: string;
-}
-
-export type AcpTranslatorEvent =
-  AgentEvent | AcpTurnStartedEvent | AcpUsageEvent | ApprovalRequestedEvent;
+// Shared translator event types — re-exported under their established kimi
+// names so runner/reader imports stay stable.
+export type {
+  AcpTurnStartedEvent,
+  AcpLiveUsage,
+  AcpUsageEvent,
+  AcpTranslatorEvent,
+} from '../../common/acp/base-translator.js';
 
 /**
  * Fixed snapshot item ids: ACP has exactly one text stream and one thinking
@@ -102,171 +65,19 @@ const THINKING_ITEM_ID = 'thinking';
 // Translator
 // =============================================================================
 
-export class KimiAcpTranslator {
+export class KimiAcpTranslator extends BaseAcpTranslator {
+  protected readonly logTag = 'kimi-acp-translator';
+
   /** Accumulated text per tool-call or message (keyed by a logical item id). */
   private textByItem = new Map<string, string>();
   /** Accumulated thinking per item. */
   private thinkingByItem = new Map<string, string>();
-  /** Pending tool calls keyed by toolCallId (for matching tool_call_update). */
-  private pendingToolCalls = new Map<string, { id: string; name: string; input: unknown }>();
-  /** Current operation kind (turn vs compact). */
-  private operationKind: 'turn' | 'compact' = 'turn';
-  /** Live usage snapshot from usage_update events (context occupancy only). */
-  private liveUsage: AcpLiveUsage = {};
-  /** Whether any usage_update has been seen this turn (no update → no usage). */
-  private hasLiveUsage = false;
-  /** Current turn id, set by produceTurnStarted; carried on turn_diff events. */
-  private currentTurnId = '';
-
-  /**
-   * Handle a notification from the ACP server and return translated events.
-   */
-  handleNotification(method: string, params: unknown): AcpTranslatorEvent[] {
-    if (method !== NotificationMethod.SESSION_UPDATE) {
-      return [];
-    }
-
-    // R1: real envelope is {sessionId, update: {sessionUpdate: ...}}.
-    const notif = params as SessionUpdateNotification['params'];
-    const update = notif.update;
-
-    switch (update.sessionUpdate) {
-      case SessionEventType.AGENT_MESSAGE_CHUNK:
-        return this.handleAgentMessageChunk(update as AgentMessageChunkEvent, notif.sessionId);
-      case SessionEventType.AGENT_THOUGHT_CHUNK:
-        return this.handleAgentThoughtChunk(update as AgentThoughtChunkEvent, notif.sessionId);
-      case SessionEventType.TOOL_CALL:
-        return this.handleToolCall(update as ToolCallEvent, notif.sessionId);
-      case SessionEventType.TOOL_CALL_UPDATE:
-        return this.handleToolCallUpdate(update as ToolCallUpdateEvent, notif.sessionId);
-      case SessionEventType.PLAN:
-        getLogger().debug(`[kimi-acp-translator] discarding plan event`);
-        return [];
-      case SessionEventType.AVAILABLE_COMMANDS_UPDATE:
-      case SessionEventType.SESSION_INFO_UPDATE:
-      case SessionEventType.CURRENT_MODE_UPDATE:
-      case SessionEventType.CONFIG_OPTION_UPDATE:
-        // Control-plane noise (command list, mode/config echoes) — not content.
-        return [];
-      case SessionEventType.USAGE_UPDATE:
-        return this.handleUsageUpdate(update as UsageUpdateEvent);
-      default:
-        return [];
-    }
-  }
-
-  /**
-   * Handle a server request (reverse RPC from the ACP server).
-   */
-  handleServerRequest(id: number | string, method: string, params: unknown): AcpTranslatorEvent[] {
-    if (method === ServerRequestMethod.REQUEST_PERMISSION) {
-      return this.handleRequestPermission(id, params as RequestPermissionParams);
-    }
-    if (method === ServerRequestMethod.ELICITATION_CREATE) {
-      return this.handleElicitationCreate(id, params as ElicitationCreateParams);
-    }
-
-    return [];
-  }
-
-  /**
-   * Kimi elicitation form：requestedSchema.properties 按顺序解析为 UserQuestion[]
-   * （type:array → 多选；oneOf/anyOf const → 选项 label；title → header??question）。
-   * 题面完整文本只在 form 级 message 里合并出现（逐字段 title 可能只是短 header），
-   * 因此 message 作为卡片概要行（view.intro）透传。
-   * form 会丢弃非声明选项值 → isOther=false（卡片隐藏自定义答案输入）。
-   */
-  private handleElicitationCreate(
-    requestId: number | string,
-    params: ElicitationCreateParams,
-  ): AcpTranslatorEvent[] {
-    const properties = params.requestedSchema?.properties ?? {};
-    const questions: UserQuestion[] = [];
-    for (const [key, prop] of Object.entries(properties)) {
-      const q = elicitationPropertyToQuestion(prop);
-      if (!q) {
-        getLogger().warn(`[kimi-acp-translator] elicitation property skipped: key=${key}`);
-        continue;
-      }
-      questions.push(q);
-    }
-    if (questions.length === 0) {
-      // 无法解析 → 交还 runner 自动响应（不悬挂服务端）。
-      return [];
-    }
-    const message = params.message?.trim();
-    const single = questions.length === 1;
-    const intro = message && (!single || message !== questions[0]!.question) ? message : undefined;
-    const event = makeQuestionApprovalEvent(requestId, questions, params.sessionId);
-    if (intro) event.view.intro = intro;
-    return [event];
-  }
-
-  /**
-   * Produce a turn_started event. Called by the runner when session/prompt
-   * is sent (no wire notification for this — self-produced).
-   */
-  produceTurnStarted(sessionId: string, turnId: string): AcpTurnStartedEvent {
-    this.currentTurnId = turnId;
-    return {
-      type: 'turn_started',
-      threadId: sessionId,
-      turnId,
-      operationKind: this.operationKind === 'compact' ? 'compaction' : 'turn',
-      timestamp: new Date().toISOString(),
-    };
-  }
-
-  /**
-   * Translate a prompt response into a result event. Carries the live usage
-   * snapshot only when a usage_update was seen (otherwise undefined, so the
-   * bridge falls back to wire.jsonl usage.record readback).
-   */
-  handlePromptResponse(sessionId: string, result: { stopReason: string }): AgentEvent {
-    // §4.2: cancelled is independent terminal state, must NOT merge into error
-    const subtype =
-      result.stopReason === 'end_turn'
-        ? 'success'
-        : result.stopReason === 'cancelled'
-          ? 'interrupted'
-          : 'error';
-
-    return {
-      type: 'result',
-      subtype,
-      session_id: sessionId,
-      ...(this.hasLiveUsage ? { usage: this.liveUsageSnapshot() } : {}),
-      ...(subtype === 'error'
-        ? { errorMessage: `Prompt ended with stopReason: ${result.stopReason}` }
-        : {}),
-    };
-  }
-
-  /**
-   * Produce an error result event (for JSON-RPC errors during prompt).
-   */
-  produceErrorResult(sessionId: string, errorMessage: string): AgentEvent {
-    return {
-      type: 'result',
-      subtype: 'error',
-      session_id: sessionId,
-      errorMessage,
-      ...(this.hasLiveUsage ? { usage: this.liveUsageSnapshot() } : {}),
-    };
-  }
-
-  /**
-   * Set the operation kind (turn vs compact).
-   */
-  setOperationKind(kind: 'turn' | 'compact'): void {
-    this.operationKind = kind;
-  }
 
   // =========================================================================
-  // Private notification handlers
+  // Content channel: wire deltas → turn_diff snapshots
   // =========================================================================
 
-  private handleAgentMessageChunk(
+  protected override handleAgentMessageChunk(
     event: AgentMessageChunkEvent,
     sessionId: string,
   ): AcpTranslatorEvent[] {
@@ -294,11 +105,15 @@ export class KimiAcpTranslator {
         threadId: sessionId,
         turnId: this.currentTurnId,
         timestamp: new Date().toISOString(),
+        // 卡片块锚点时间刷新为本次 diff 时间：'text' 是整轮累积流，工具间隙
+        // 仍会续写增量；首见时间（如 08:39）会让标题与 move-to-end 后的位置
+        // 看起来“乱序”。这里显式声明 diff 时间即块的最新写入时间。
+        refreshTimestamp: true,
       },
     ];
   }
 
-  private handleAgentThoughtChunk(
+  protected override handleAgentThoughtChunk(
     event: AgentThoughtChunkEvent,
     sessionId: string,
   ): AcpTranslatorEvent[] {
@@ -318,92 +133,16 @@ export class KimiAcpTranslator {
         threadId: sessionId,
         turnId: this.currentTurnId,
         timestamp: new Date().toISOString(),
+        refreshTimestamp: true,
       },
     ];
-  }
-
-  private handleToolCall(event: ToolCallEvent, _sessionId: string): AcpTranslatorEvent[] {
-    // rawInput arrives as an object on the wire; older kimi versions sent a
-    // JSON string — parse defensively in that case. The acp-server's
-    // lazy-create tool_call (first args delta, events-map.ts
-    // toolCallLazyCreateToSessionUpdate) carries NO rawInput field at all —
-    // normalize to an empty object so the card renders an empty args summary
-    // instead of crashing on undefined input (2026-08-17 live TypeError).
-    let input: unknown = event.rawInput ?? {};
-    if (typeof event.rawInput === 'string') {
-      try {
-        input = JSON.parse(event.rawInput);
-      } catch {
-        // Keep raw string as-is
-      }
-    }
-
-    this.pendingToolCalls.set(event.toolCallId, {
-      id: event.toolCallId,
-      name: event.title,
-      input,
-    });
-
-    return [
-      {
-        type: 'assistant',
-        message: {
-          content: [
-            {
-              type: 'tool_use',
-              id: event.toolCallId,
-              name: event.title,
-              input,
-            },
-          ],
-        },
-        timestamp: new Date().toISOString(),
-      },
-    ];
-  }
-
-  private handleToolCallUpdate(
-    event: ToolCallUpdateEvent,
-    _sessionId: string,
-  ): AcpTranslatorEvent[] {
-    // §4.2: status:'failed' → is_error:true (fixes CLI mode's is_error always false)
-    const isError = event.status === 'failed';
-    const content = event.rawOutput ?? '';
-
-    return [
-      {
-        type: 'user',
-        message: {
-          content: [
-            {
-              type: 'tool_result',
-              tool_use_id: event.toolCallId,
-              content,
-              is_error: isError,
-            },
-          ],
-        },
-        timestamp: new Date().toISOString(),
-      },
-    ];
-  }
-
-  private handleUsageUpdate(event: UsageUpdateEvent): AcpTranslatorEvent[] {
-    // R1: usage_update is {sessionUpdate:'usage_update', used, size}
-    // (events-map.ts:505-516) — context occupancy, not cumulative tokens.
-    this.liveUsage = {
-      total_tokens: event.used,
-      context_limit: event.size,
-    };
-    this.hasLiveUsage = true;
-    return [];
   }
 
   // =========================================================================
-  // Private approval handlers
+  // Approval + question elicitation
   // =========================================================================
 
-  private handleRequestPermission(
+  protected override handleRequestPermission(
     requestId: number | string,
     params: RequestPermissionParams,
   ): AcpTranslatorEvent[] {
@@ -453,6 +192,50 @@ export class KimiAcpTranslator {
     ];
   }
 
+  protected override handleOtherServerRequest(
+    requestId: number | string,
+    method: string,
+    params: unknown,
+  ): AcpTranslatorEvent[] {
+    if (method !== ServerRequestMethod.ELICITATION_CREATE) {
+      return [];
+    }
+    return this.handleElicitationCreate(requestId, params as ElicitationCreateParams);
+  }
+
+  /**
+   * Kimi elicitation form：requestedSchema.properties 按顺序解析为 UserQuestion[]
+   * （type:array → 多选；oneOf/anyOf const → 选项 label；title → header??question）。
+   * 题面完整文本只在 form 级 message 里合并出现（逐字段 title 可能只是短 header），
+   * 因此 message 作为卡片概要行（view.intro）透传。
+   * form 会丢弃非声明选项值 → isOther=false（卡片隐藏自定义答案输入）。
+   */
+  private handleElicitationCreate(
+    requestId: number | string,
+    params: ElicitationCreateParams,
+  ): AcpTranslatorEvent[] {
+    const properties = params.requestedSchema?.properties ?? {};
+    const questions: UserQuestion[] = [];
+    for (const [key, prop] of Object.entries(properties)) {
+      const q = elicitationPropertyToQuestion(prop);
+      if (!q) {
+        getLogger().warn(`[kimi-acp-translator] elicitation property skipped: key=${key}`);
+        continue;
+      }
+      questions.push(q);
+    }
+    if (questions.length === 0) {
+      // 无法解析 → 交还 runner 自动响应（不悬挂服务端）。
+      return [];
+    }
+    const message = params.message?.trim();
+    const single = questions.length === 1;
+    const intro = message && (!single || message !== questions[0]!.question) ? message : undefined;
+    const event = makeQuestionApprovalEvent(requestId, questions, params.sessionId);
+    if (intro) event.view.intro = intro;
+    return [event];
+  }
+
   /**
    * request_permission 兜底桥（elicitation/create 失败或旧版 kimi）：
    * 选项为 q{n}_opt_{i}（allow_once，label 直取 name）+ q{n}_skip（reject_once，
@@ -478,26 +261,6 @@ export class KimiAcpTranslator {
       },
     ];
     return [makeQuestionApprovalEvent(requestId, questions, params.sessionId)];
-  }
-
-  /**
-   * Derive the approval decision list from the server's offered options.
-   * accept/decline/cancel are universal; acceptForSession requires an
-   * always-class option (kimi `approve_always`, opencode `allow_always`).
-   */
-
-  // =========================================================================
-  // Private helpers
-  // =========================================================================
-
-  /**
-   * ResultEvent.usage requires input_tokens/output_tokens: number, but the
-   * ACP wire has no such split — the live snapshot is context occupancy only.
-   * Cast is deliberate: consumers must tolerate undefined input/output (the
-   * bridge's kimi path already falls back to wire.jsonl readback).
-   */
-  private liveUsageSnapshot(): ResultEvent['usage'] {
-    return { ...this.liveUsage } as ResultEvent['usage'];
   }
 }
 

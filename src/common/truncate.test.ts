@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { truncate } from './card-shared.js';
+import { truncate } from './truncate.js';
 
 describe('truncate', () => {
   it('returns string unchanged if within limit', () => {

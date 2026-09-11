@@ -7,6 +7,7 @@ import {
   type RunState,
 } from './run-state.js';
 import { renderRunCard } from './run-renderer.js';
+import { expectNoV1ActionContainer } from '../../tests/lib/card-view.js';
 
 describe('renderRunCard', () => {
   it('test_anchor_approval_area_renders_v2_buttons_without_v1_action_container', () => {
@@ -34,7 +35,7 @@ describe('renderRunCard', () => {
     expect(serialized).toContain('ls -la');
     expect(serialized).toContain('approval.respond');
     // 200861 铁律：禁止 tag:"action" 容器
-    expect(serialized).not.toMatch(/"tag"\s*:\s*"action"[^}]*"actions"/);
+    expectNoV1ActionContainer(serialized);
 
     // approval_resolved 清除审批区域
     state = reduceRunState(state, {
@@ -71,7 +72,7 @@ describe('renderRunCard', () => {
     expect(serialized).toContain('命令审批');
     expect(serialized).toContain('允许所有');
     expect(serialized).toContain('approval.respond');
-    expect(serialized).not.toMatch(/"tag"\s*:\s*"action"[^}]*"actions"/);
+    expectNoV1ActionContainer(serialized);
   });
 
   it('test_anchor_command_approval_neutralizes_backticks', () => {
@@ -144,7 +145,7 @@ describe('renderRunCard', () => {
     expect(serialized).not.toContain('ExitPlanMode');
     expect(serialized).not.toContain('允许所有');
     expect(serialized).not.toContain('{}');
-    expect(serialized).not.toMatch(/"tag"\s*:\s*"action"[^}]*"actions"/);
+    expectNoV1ActionContainer(serialized);
 
     // 修改意见回流回显：planFeedback 随 approval_view_updated 重渲染。
     state = reduceRunState(state, {
@@ -222,7 +223,7 @@ describe('renderRunCard', () => {
     expect(serialized).toContain('approval.answerCustom');
     expect(serialized).toContain('自定义答案');
     expect(serialized).toContain('"tag":"input"');
-    expect(serialized).not.toMatch(/"tag"\s*:\s*"action"[^}]*"actions"/);
+    expectNoV1ActionContainer(serialized);
   });
 
   it('test_anchor_ask_user_question_option_row_left_button_right_description_with_distinct_icons', () => {
@@ -275,7 +276,7 @@ describe('renderRunCard', () => {
     expect(serialized).toContain('取消选择');
     expect(serialized).toContain('approval.answerSubmit');
     // 200861 铁律：不得出现 V1 action 容器
-    expect(serialized).not.toMatch(/"tag"\s*:\s*"action"[^}]*"actions"/);
+    expectNoV1ActionContainer(serialized);
   });
 
   it('test_anchor_ask_user_question_custom_answer_selection_visible', () => {
@@ -308,7 +309,7 @@ describe('renderRunCard', () => {
     expect(card.schema).toBe('2.0');
     const serialized = JSON.stringify(card);
     expect(serialized).toContain('✍️ 自定义答案：自定义紫色');
-    expect(serialized).not.toMatch(/"tag"\s*:\s*"action"[^}]*"actions"/);
+    expectNoV1ActionContainer(serialized);
   });
 
   it('test_anchor_ask_user_question_free_text_renders_input_without_options', () => {
@@ -345,7 +346,7 @@ describe('renderRunCard', () => {
     // 无选项 → 不渲染选项行按钮
     expect(serialized).not.toContain('"cmd":"approval.answer"');
     expect(serialized).not.toContain('"option":"');
-    expect(serialized).not.toMatch(/"tag"\s*:\s*"action"[^}]*"actions"/);
+    expectNoV1ActionContainer(serialized);
   });
 
   it('test_anchor_ask_user_question_free_text_echoes_answered_text', () => {
@@ -379,7 +380,7 @@ describe('renderRunCard', () => {
 
     const serialized = JSON.stringify(renderRunCard(state));
     expect(serialized).toContain('✍️ 已答：feat: ask-user-question');
-    expect(serialized).not.toMatch(/"tag"\s*:\s*"action"[^}]*"actions"/);
+    expectNoV1ActionContainer(serialized);
   });
 
   it('test_anchor_ask_user_question_note_input_gated_by_allowNote', () => {
@@ -411,7 +412,7 @@ describe('renderRunCard', () => {
     expect(withNoteSerialized).toContain('approval.answerNote');
     expect(withNoteSerialized).toContain('补充说明（可选）');
     expect(withNoteSerialized).toContain('📝 先验证 PostgreSQL 17 兼容性');
-    expect(withNoteSerialized).not.toMatch(/"tag"\s*:\s*"action"[^}]*"actions"/);
+    expectNoV1ActionContainer(withNoteSerialized);
 
     let withoutNote = createInitialRunState('run-question-no-note');
     withoutNote = reduceRunState(withoutNote, {
@@ -547,7 +548,7 @@ describe('renderRunCard', () => {
     } as never);
     const shownSerialized = JSON.stringify(renderRunCard(shown));
     expect(shownSerialized).toContain('approval.answerCustom');
-    expect(shownSerialized).not.toMatch(/"tag"\s*:\s*"action"[^}]*"actions"/);
+    expectNoV1ActionContainer(shownSerialized);
   });
 
   it('test_anchor_ask_user_question_renders_skip_button_via_approval_respond', () => {
@@ -579,7 +580,7 @@ describe('renderRunCard', () => {
     expect(serialized).toContain('跳过回答');
     expect(serialized).toContain('approval.respond');
     expect(serialized).toContain('"decision":"decline"');
-    expect(serialized).not.toMatch(/"tag"\s*:\s*"action"[^}]*"actions"/);
+    expectNoV1ActionContainer(serialized);
   });
 
   it('test_anchor_concurrent_approvals_render_all_slots_and_resolve_independently', () => {
@@ -924,7 +925,7 @@ describe('renderRunCard', () => {
     expect(serialized).toContain('/home/user/project/a.txt');
     expect(serialized).toContain('+hello');
     // 200861 铁律：禁止 tag:"action" 容器
-    expect(serialized).not.toMatch(/"tag"\s*:\s*"action"[^}]*"actions"/);
+    expectNoV1ActionContainer(serialized);
   });
 
   it('test_anchor_file_approval_diff_budget_omits_overflow', () => {
@@ -956,7 +957,7 @@ describe('renderRunCard', () => {
     const serialized = JSON.stringify(renderRunCard(state));
     expect(serialized).toContain('/home/user/project/a.ts');
     expect(serialized).toMatch(/diff 已省略/);
-    expect(serialized).not.toMatch(/"tag"\s*:\s*"action"[^}]*"actions"/);
+    expectNoV1ActionContainer(serialized);
   });
 
   it('test_anchor_approval_view_updated_rerenders_changes', () => {
@@ -999,7 +1000,7 @@ describe('renderRunCard', () => {
     const serialized = JSON.stringify(renderRunCard(state));
     expect(serialized).toContain('/home/user/project/a.txt');
     expect(serialized).toContain('+hello');
-    expect(serialized).not.toMatch(/"tag"\s*:\s*"action"[^}]*"actions"/);
+    expectNoV1ActionContainer(serialized);
   });
 
   it('test_anchor_command_approval_renders_protocol_decision_buttons', () => {
@@ -1035,7 +1036,7 @@ describe('renderRunCard', () => {
     expect(serialized).toContain('acceptWithExecpolicyAmendment');
     expect(serialized).toContain('"decision":"decline"');
     // 200861 铁律
-    expect(serialized).not.toMatch(/"tag"\s*:\s*"action"[^}]*"actions"/);
+    expectNoV1ActionContainer(serialized);
   });
 
   it('test_anchor_running_card_is_v2_and_stop_is_bound_to_run', () => {
@@ -1530,6 +1531,69 @@ describe('renderRunCard', () => {
     expect(json).toContain('/home/user/project/a.txt');
   });
 
+  it('kimi refreshTimestamp advances thinking/text header to the latest diff time', () => {
+    const oldTz = process.env.TZ;
+    process.env.TZ = 'Asia/Shanghai';
+    try {
+      let state = createInitialRunState('run-kimi-refresh');
+      const reduce = (e: unknown) => {
+        state = reduceRunState(state, e as never);
+      };
+      // 整轮累积流的首见时间（卡片此前会一直显示这两个旧标签）
+      reduce({
+        type: 'turn_diff',
+        itemId: 'thinking',
+        reasoning: 'R1',
+        threadId: 'th-aaa-111',
+        turnId: 'tn-111',
+        timestamp: '2026-09-06T00:14:40.000Z',
+        refreshTimestamp: true,
+      });
+      reduce({
+        type: 'turn_diff',
+        itemId: 'text',
+        text: 'T1',
+        threadId: 'th-aaa-111',
+        turnId: 'tn-111',
+        timestamp: '2026-09-06T00:39:10.000Z',
+        refreshTimestamp: true,
+      });
+      // 工具间隙的迟到增量：锚点时间必须刷新为 diff 时间
+      reduce({
+        type: 'turn_diff',
+        itemId: 'thinking',
+        reasoning: 'R1 late',
+        threadId: 'th-aaa-111',
+        turnId: 'tn-111',
+        timestamp: '2026-09-06T00:58:34.000Z',
+        refreshTimestamp: true,
+      });
+      reduce({
+        type: 'turn_diff',
+        itemId: 'text',
+        text: 'T1 late',
+        threadId: 'th-aaa-111',
+        turnId: 'tn-111',
+        timestamp: '2026-09-06T00:58:36.000Z',
+        refreshTimestamp: true,
+      });
+
+      const thinking = state.blocks.find((b) => b.kind === 'thinking');
+      const text = state.blocks.find((b) => b.kind === 'text');
+      expect(thinking?.kind === 'thinking' ? thinking.timestamp : undefined).toBe(
+        '2026-09-06T00:58:34.000Z',
+      );
+      expect(text?.kind === 'text' ? text.timestamp : undefined).toBe('2026-09-06T00:58:36.000Z');
+
+      const json = JSON.stringify(renderRunCard(state));
+      expect(json).toContain('思考完成** (2026-09-06 08:58)');
+      expect(json).toContain('💬 **输出** (2026-09-06 08:58)');
+    } finally {
+      if (oldTz === undefined) delete process.env.TZ;
+      else process.env.TZ = oldTz;
+    }
+  });
+
   it('renders app-server interleaved items in real chronology (thinking→text→thinking→command→text)', () => {
     const oldTz = process.env.TZ;
     process.env.TZ = 'Asia/Shanghai';
@@ -1902,7 +1966,7 @@ describe('renderRunCard (CardKit 2.0)', () => {
     // No tabs in streaming mode - content is inline
     expect(card.body?.elements?.find((e) => e.tag === 'tabs')).toBeUndefined();
     // 200861 铁律：2.0 卡片禁止混入 1.x `tag:"action"` 容器
-    expect(json).not.toMatch(/"tag"\s*:\s*"action"[^}]*"actions"/);
+    expectNoV1ActionContainer(json);
   });
 
   it('compact button shows on every terminal state for a normal turn (incl. abnormal exits)', () => {
@@ -2224,8 +2288,11 @@ describe('renderRunCard (CardKit 2.0)', () => {
     // Old one-line summary format should NOT appear
     expect(json).not.toMatch(/\d+ 次工具调用$/);
 
-    // 6. CardKit 2.0 schema compliance — no V1 action container
-    expect(json).not.toMatch(/"tag"\s*:\s*"action"[^}]*"actions"/);
+    // 6. 极端兜底必须保留 new-session 按钮（RED-test 断言折入主用例，W3.4）
+    expect(json).toContain('"cmd":"new-session"');
+
+    // 7. CardKit 2.0 schema compliance — no V1 action container
+    expectNoV1ActionContainer(json);
   });
 
   it('extreme fallback: degrades further when even degraded card exceeds 28KB', () => {
@@ -2326,8 +2393,11 @@ describe('renderRunCard (CardKit 2.0)', () => {
     // Old one-line summary should NOT appear
     expect(json).not.toMatch(/\d+ 次工具调用$/);
 
+    // 极端兜底必须保留 new-session 按钮（RED-test 断言折入主用例，W3.4）
+    expect(json).toContain('"cmd":"new-session"');
+
     // CardKit 2.0 schema compliance
-    expect(json).not.toMatch(/"tag"\s*:\s*"action"[^}]*"actions"/);
+    expectNoV1ActionContainer(json);
   });
 
   it('budget boundary: complete rendering when card fits within 28KB', () => {
@@ -2439,146 +2509,52 @@ describe('renderRunCard (CardKit 2.0)', () => {
     expect(json).toContain('"runId":"run-compat"');
 
     // CardKit 2.0 schema compliance
-    expect(json).not.toMatch(/"tag"\s*:\s*"action"[^}]*"actions"/);
-  });
-
-  // RED test: degraded card must still have new-session button
-  it('degraded card has new-session button even when budget exceeded', () => {
-    // Build a RunState that exceeds 28KB to trigger degraded rendering
-    const state: RunState = {
-      runId: 'run-degraded-buttons',
-      terminal: 'done',
-      footer: null,
-      blocks: [],
-      sessionId: 's1',
-      resultSubtype: 'success',
-    };
-
-    // Add multiple large thinking blocks (triggers degraded path)
-    for (let i = 0; i < 7; i++) {
-      state.blocks.push({
-        kind: 'thinking',
-        content: '思考' + (i + 1) + ':' + 'x'.repeat(2500),
-        active: false,
-        timestamp: `2026-07-14T10:0${i}:00.000Z`,
-      });
-    }
-
-    // Add large tool outputs
-    for (let i = 0; i < 5; i++) {
-      state.blocks.push({
-        kind: 'tool',
-        tool: {
-          id: 'tool-d-' + i,
-          name: 'Bash',
-          input: { command: 'cmd' + i },
-          output: 'o'.repeat(3500),
-          status: 'ok',
-          startedAt: '2026-07-14T10:10:00.000Z',
-          completedAt: '2026-07-14T10:11:00.000Z',
-        },
-      });
-    }
-
-    // Add large text content
-    state.blocks.push({
-      kind: 'text',
-      content: '重要输出必须保留。' + 'T'.repeat(8000),
-      timestamp: '2026-07-14T10:30:00.000Z',
-    });
-
-    const card = renderRunCard(state);
-    const json = JSON.stringify(card);
-    const cardBytes = Buffer.byteLength(json, 'utf8');
-
-    // Must be under budget after degradation
-    expect(cardBytes).toBeLessThan(28_000);
-
-    // Degraded path must preserve the new-session button
-    expect(json).toContain('"cmd":"new-session"');
-  });
-
-  // RED test: extreme fallback card must still have new-session button
-  it('extreme fallback card has new-session button even when budget exceeded', () => {
-    // Build an even larger state to trigger extreme fallback
-    const state: RunState = {
-      runId: 'run-extreme-buttons',
-      terminal: 'done',
-      footer: null,
-      blocks: [],
-      sessionId: 's-extreme',
-      resultSubtype: 'success',
-    };
-
-    // 20 thinking blocks with 5KB each
-    for (let i = 0; i < 20; i++) {
-      state.blocks.push({
-        kind: 'thinking',
-        content: '思考' + (i + 1) + ':' + 'X'.repeat(5000),
-        active: false,
-        timestamp: `2026-07-14T10:${String(i).padStart(2, '0')}:00.000Z`,
-      });
-    }
-
-    // Large text blocks
-    for (let i = 0; i < 3; i++) {
-      state.blocks.push({
-        kind: 'text',
-        content: '文本块' + (i + 1) + ':关键信息' + 'T'.repeat(12000),
-        timestamp: `2026-07-14T12:0${i}:00.000Z`,
-      });
-    }
-
-    state.blocks.push({
-      kind: 'text',
-      content: 'F'.repeat(12000) + '最终关键输出尾部信息',
-      timestamp: '2026-07-14T13:00:00.000Z',
-    });
-
-    const card = renderRunCard(state);
-    const json = JSON.stringify(card);
-    const cardBytes = Buffer.byteLength(json, 'utf8');
-
-    // Must fit in budget
-    expect(cardBytes).toBeLessThanOrEqual(28_000);
-
-    // Extreme fallback must preserve new-session button
-    expect(json).toContain('"cmd":"new-session"');
+    expectNoV1ActionContainer(json);
   });
 
   // =========================================================================
-  // Text block: terminal state uses collapsible_panel (to protect tables from 11310)
+  // Text block: 三态统一 collapsible_panel（W3.4 参数化；终端态折叠展开语义见
+  // renderTextBlock —— 注：collapsible_panel 并不豁免 11310 表格计数，表格靠
+  // truncateMarkdownTables 显式截断保护）
   // =========================================================================
-  describe('text block: terminal state uses collapsible_panel', () => {
-    it('done state text block IS wrapped in collapsible_panel (to protect tables)', () => {
-      // Output is wrapped in collapsible_panel (expanded) to protect markdown tables
-      // from being counted toward 11310 limit (5 tables max per card).
-      let state = createInitialRunState('run-text-unfold');
-      state = reduceRunState(state, {
-        type: 'assistant',
-        timestamp: '2026-07-19T10:03:00.000Z',
-        message: { content: [{ type: 'text', text: '这是重要输出' }] },
-      });
-      state = finishRun(state, 'done', { resultSubtype: 'success' });
+  describe('text block: collapsible_panel across terminal states', () => {
+    // done/running/finalizing 三态：text 都渲染为 expanded=true 的 collapsible_panel
+    it.each([
+      ['done', '这是重要输出'],
+      ['running', '流式输出'],
+      ['finalizing', '等待退出'],
+    ] as const)(
+      '%s state text block is wrapped in expanded collapsible_panel',
+      (_terminal, text) => {
+        let state = createInitialRunState(`run-text-panel-${_terminal}`);
+        state = reduceRunState(state, {
+          type: 'assistant',
+          timestamp: '2026-07-19T10:03:00.000Z',
+          message: { content: [{ type: 'text', text }] },
+        });
+        if (_terminal === 'done') {
+          state = finishRun(state, 'done', { resultSubtype: 'success' });
+        } else if (_terminal === 'finalizing') {
+          state = reduceRunState(state, {
+            type: 'result',
+            subtype: 'success',
+            session_id: `run-text-panel-${_terminal}`,
+            total_cost_usd: 0.01,
+          });
+        } // running: 不加终态
 
-      const card = renderRunCard(state) as {
-        body?: { elements?: Array<Record<string, unknown>> };
-      };
-      const elements = card.body?.elements ?? [];
-      const json = JSON.stringify(card);
+        const card = renderRunCard(state) as {
+          body?: { elements?: Array<Record<string, unknown>> };
+        };
+        const elements = card.body?.elements ?? [];
 
-      // Content must be visible
-      expect(json).toContain('这是重要输出');
-
-      // Find the element containing the text content - should be in collapsible_panel
-      const textElement = elements.find(
-        (el) => el.tag === 'collapsible_panel' && JSON.stringify(el).includes('这是重要输出'),
-      );
-
-      // Text MUST be inside a collapsible_panel in terminal state (to protect tables from 11310)
-      expect(textElement).toBeDefined();
-      expect((textElement as Record<string, unknown>)?.expanded).toBe(true);
-    });
+        const textPanel = elements.find(
+          (el) => el.tag === 'collapsible_panel' && JSON.stringify(el).includes(text),
+        );
+        expect(textPanel).toBeDefined();
+        expect((textPanel as Record<string, unknown>)?.expanded).toBe(true);
+      },
+    );
 
     it('done state text block uses notation font size inside panel', () => {
       let state = createInitialRunState('run-text-fontsize');
@@ -2633,58 +2609,6 @@ describe('renderRunCard (CardKit 2.0)', () => {
         if (oldTz === undefined) delete process.env.TZ;
         else process.env.TZ = oldTz;
       }
-    });
-
-    it('running state text block still uses collapsible_panel with expanded=true', () => {
-      let state = createInitialRunState('run-text-running');
-      state = reduceRunState(state, {
-        type: 'assistant',
-        timestamp: '2026-07-19T10:03:00.000Z',
-        message: { content: [{ type: 'text', text: '流式输出' }] },
-      });
-
-      const card = renderRunCard(state) as {
-        body?: { elements?: Array<Record<string, unknown>> };
-      };
-      const elements = card.body?.elements ?? [];
-
-      // Find the collapsible_panel containing the text
-      const panelElement = elements.find(
-        (el) => el.tag === 'collapsible_panel' && JSON.stringify(el).includes('流式输出'),
-      );
-
-      // Running state: text must be in a collapsible_panel
-      expect(panelElement).toBeDefined();
-      // And it must be expanded (visible)
-      expect((panelElement as Record<string, unknown>)?.expanded).toBe(true);
-    });
-
-    it('GREEN: finalizing state text block also uses collapsible_panel (like done)', () => {
-      // Finalizing: result received, process not yet exited. Output is complete, uses panel.
-      let state = createInitialRunState('run-text-finalizing');
-      state = reduceRunState(state, {
-        type: 'assistant',
-        timestamp: '2026-07-19T10:03:00.000Z',
-        message: { content: [{ type: 'text', text: '等待退出' }] },
-      });
-      state = reduceRunState(state, {
-        type: 'result',
-        subtype: 'success',
-        session_id: 'run-text-finalizing',
-        total_cost_usd: 0.01,
-      });
-
-      const card = renderRunCard(state) as {
-        body?: { elements?: Array<Record<string, unknown>> };
-      };
-      const elements = card.body?.elements ?? [];
-
-      // finalizing state: text MUST be in a collapsible_panel (to protect tables)
-      const textPanel = elements.find(
-        (el) => el.tag === 'collapsible_panel' && JSON.stringify(el).includes('等待退出'),
-      );
-      expect(textPanel).toBeDefined();
-      expect((textPanel as Record<string, unknown>)?.expanded).toBe(true);
     });
 
     it('degraded path also uses collapsible_panel in terminal state', () => {
