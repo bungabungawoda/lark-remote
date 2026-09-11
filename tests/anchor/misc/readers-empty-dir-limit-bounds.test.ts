@@ -33,7 +33,7 @@ const { mockLogger } = vi.hoisted(() => ({
   },
 }));
 
-import { encodedProjectDir } from '../../lib/session-fixtures.js';
+import { encodedProjectDir, piEncodeCwd } from '../../lib/session-fixtures.js';
 vi.mock('../../../src/logger/index.js', () => ({
   getLogger: () => mockLogger,
   initLogger: () => mockLogger,
@@ -96,7 +96,7 @@ describe('Round 10 reader anchors', () => {
       const p = path.join(claudeProj, `${id}.jsonl`);
       fs.writeFileSync(
         p,
-        `{"type":"system","subtype":"init","session_id":"${id}","cwd":"${cwd}","model":"opus"}\n` +
+        `{"type":"system","subtype":"init","session_id":"${id}","cwd":${JSON.stringify(cwd)},"model":"opus"}\n` +
           `{"type":"user","message":{"role":"user","content":"task ${i}"}}\n`,
       );
       const t = new Date(baseTime + i * 60_000);
@@ -111,7 +111,7 @@ describe('Round 10 reader anchors', () => {
       const p = path.join(codexDay, `rollout-${id}.jsonl`);
       fs.writeFileSync(
         p,
-        `{"type":"session_meta","payload":{"session_id":"${id}","cwd":"${cwd}","originator":"x"}}\n`,
+        `{"type":"session_meta","payload":{"session_id":"${id}","cwd":${JSON.stringify(cwd)},"originator":"x"}}\n`,
         'utf-8',
       );
       const t = new Date(baseTime + i * 60_000);
@@ -120,7 +120,7 @@ describe('Round 10 reader anchors', () => {
 
     // pi fixture: sessions/<encoded>/<timestamp>_<uuid>.jsonl。
     const piDir = path.join(tmpDir, 'pi');
-    const piEncoded = cwd.replace(/^\//, '').replace(/\//g, '-');
+    const piEncoded = piEncodeCwd(cwd);
     const piSessions = path.join(piDir, 'sessions', `--${piEncoded}--`);
     fs.mkdirSync(piSessions, { recursive: true });
     ids.forEach((id, i) => {
@@ -129,7 +129,7 @@ describe('Round 10 reader anchors', () => {
       const p = path.join(piSessions, `${stamp}_${id}.jsonl`);
       fs.writeFileSync(
         p,
-        `{"type":"session","id":"${id}","cwd":"${cwd}","provider":"glm","modelId":"glm-5.2"}\n` +
+        `{"type":"session","id":"${id}","cwd":${JSON.stringify(cwd)},"provider":"glm","modelId":"glm-5.2"}\n` +
           `{"type":"message","message":{"role":"user","content":[{"type":"text","text":"task ${i}"}]}}\n`,
       );
       fs.utimesSync(p, mtime, mtime);

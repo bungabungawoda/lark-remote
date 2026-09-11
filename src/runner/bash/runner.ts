@@ -6,6 +6,7 @@ import {
   type ShellBackend,
 } from '../../platform/shell.js';
 import { createTerminator, type Terminator } from '../../platform/terminator.js';
+import { useDetachedProcessGroup } from '../../platform/spawn.js';
 import { registerExitCleanup, unregisterExitCleanup } from '../common/spawning-runner.js';
 
 interface BashOutputEvent {
@@ -86,8 +87,9 @@ export class BashProcessRunner implements BashRunner {
         cwd: opts.cwd,
         options: {
           stdio: ['ignore', 'pipe', 'pipe'],
-          // Spawn in new process group so we can kill the entire group
-          detached: true,
+          // posix 建新进程组（负 PID 组杀）；win32 不 detached（`.cmd` 垫片丢 stdio）
+          detached: useDetachedProcessGroup(),
+          windowsHide: true,
         },
       });
     } catch (err) {

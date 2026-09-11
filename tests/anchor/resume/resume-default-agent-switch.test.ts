@@ -70,7 +70,7 @@ describe('/resume uses new defaultAgent reader after config.save', () => {
     const claudeSid = 'claude-session-after-switch';
     fs.writeFileSync(
       path.join(claudeProjDir, `${claudeSid}.jsonl`),
-      `{"type":"system","subtype":"init","session_id":"${claudeSid}","cwd":"${canonicalCwd}","model":"opus"}\n` +
+      `{"type":"system","subtype":"init","session_id":"${claudeSid}","cwd":${JSON.stringify(canonicalCwd)},"model":"opus"}\n` +
         `{"type":"user","message":{"role":"user","content":"test task after agent switch"}}\n`,
     );
 

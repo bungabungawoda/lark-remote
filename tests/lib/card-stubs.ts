@@ -44,18 +44,22 @@ export function makeStreamCardConnector(opts: StreamCardConnectorOpts = {}): {
 } {
   const messageId = opts.messageId ?? 'card-1';
   let updateCall = 0;
-  const makeUpdate = () => {
+  const makeUpdate = (): CardStreamController['update'] => {
     const behavior = opts.controllerUpdate;
     // W3.2：转发 controller.update 的实参（patch 对象/reducer）给 behavior ——
     // 此前不转发导致 capture 类行为拿不到卡片参数，工厂无法表达 update 捕获变体。
-    return async (...args: [card: object]) => {
+    return async (next) => {
       if (behavior instanceof Error) throw behavior;
       if (Array.isArray(behavior)) {
         const item = behavior[Math.min(updateCall++, behavior.length - 1)];
         if (item instanceof Error) throw item;
-        return item(...args);
+        // Await rather than return: the array variant's item type permits an
+        // `Error` *return value*, but `controller.update` is contractually
+        // `Promise<void>` (production never resolves to an error object).
+        await item(next);
+        return;
       }
-      return behavior?.(...args);
+      await behavior?.(next);
     };
   };
 

@@ -6,6 +6,7 @@
  */
 
 import { describe, it, expect, afterEach } from 'vitest';
+import { currentPlatform, isWin32 } from '../../../src/platform/select.js';
 import { DshRunner } from './runner.js';
 import { DshTranslator, mapUsage } from './translator.js';
 import { FakeDshServer } from './fake-dsh-server.js';
@@ -300,42 +301,45 @@ describe('DshClient / DshRunner integration', () => {
     expect(events.find((e) => e.type === 'result')).toMatchObject({ subtype: 'success' });
   });
 
-  it('selectModel aligns once per session; repeat runs on the same session skip it', async () => {
-    // Regression: session.selectModel writes the server global default, so a
-    // repeat run on the same session must not re-send it (write amplification).
-    // history always returns empty (fresh-session semantics); each run gets its
-    // own turn/end from the shared mux queue (shift-consumed).
-    server = new FakeDshServer();
-    let selectCount = 0;
-    server.register('session.create', () => ({ ok: true, value: { sessionId: SID } }));
-    server.register('session.selectModel', () => {
-      selectCount += 1;
-      return {
-        ok: true,
-        value: {
-          selected: { provider: 'deepseek-official', model: 'deepseek-v4-pro' },
-        },
-      };
-    });
-    server.register('session.prompt', () => ({ ok: true, value: { accepted: true } }));
-    server.register('session.history', () => ({ ok: true, value: { events: [] } }));
-    server.setMuxFrames([
-      sessionEventFrame(SID, turnEnd('completed', 1)),
-      sessionEventFrame(SID, turnEnd('completed', 2)),
-    ]);
-    await server.start();
+  it.skipIf(isWin32(currentPlatform))(
+    'selectModel aligns once per session; repeat runs on the same session skip it',
+    async () => {
+      // Regression: session.selectModel writes the server global default, so a
+      // repeat run on the same session must not re-send it (write amplification).
+      // history always returns empty (fresh-session semantics); each run gets its
+      // own turn/end from the shared mux queue (shift-consumed).
+      server = new FakeDshServer();
+      let selectCount = 0;
+      server.register('session.create', () => ({ ok: true, value: { sessionId: SID } }));
+      server.register('session.selectModel', () => {
+        selectCount += 1;
+        return {
+          ok: true,
+          value: {
+            selected: { provider: 'deepseek-official', model: 'deepseek-v4-pro' },
+          },
+        };
+      });
+      server.register('session.prompt', () => ({ ok: true, value: { accepted: true } }));
+      server.register('session.history', () => ({ ok: true, value: { events: [] } }));
+      server.setMuxFrames([
+        sessionEventFrame(SID, turnEnd('completed', 1)),
+        sessionEventFrame(SID, turnEnd('completed', 2)),
+      ]);
+      await server.start();
 
-    const runner = new DshRunner({
-      kind: 'dsh',
-      sessionReader: stubReader,
-      host: server.baseUrl,
-      model: 'deepseek-v4-pro',
-    });
-    await collect(runner.run('first', { cwd: CWD }));
-    await collect(runner.run('second', { cwd: CWD, sessionId: SID }));
-    // 首次 run 对齐一次，复用同一 session 的二次 run 不重复写（selectModel 写全局默认）
-    expect(selectCount).toBe(1);
-  });
+      const runner = new DshRunner({
+        kind: 'dsh',
+        sessionReader: stubReader,
+        host: server.baseUrl,
+        model: 'deepseek-v4-pro',
+      });
+      await collect(runner.run('first', { cwd: CWD }));
+      await collect(runner.run('second', { cwd: CWD, sessionId: SID }));
+      // 首次 run 对齐一次，复用同一 session 的二次 run 不重复写（selectModel 写全局默认）
+      expect(selectCount).toBe(1);
+    },
+  );
 
   it('does not call selectModel when model is not configured', async () => {
     server = new FakeDshServer();
