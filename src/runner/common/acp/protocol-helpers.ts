@@ -5,6 +5,8 @@
  * Shape source: approval.ts:28-29 — optionId is opaque, echo back as-is.
  */
 
+import type { ApprovalView } from '../../types.js';
+import { getLogger } from '../../../logger/index.js';
 import type { PermissionOption } from './protocol-types.js';
 
 /**
@@ -89,4 +91,71 @@ export function deriveAcpAvailableDecisions(options: PermissionOption[]): string
 /** 截断长文本并追加省略号（translator 审批 reason 用，原先两份相同拷贝）。 */
 export function truncateWithEllipsis(text: string, maxLen: number): string {
   return text.length <= maxLen ? text : text.slice(0, maxLen) + '…';
+}
+
+// =============================================================================
+// W2.11 审批生命周期骨架（kimi/opencode ACP runner 共用）
+// =============================================================================
+
+/**
+ * 待审批请求登记（requestId → 登记，runner 持 Map）。
+ * kimi 的提问分叉额外带 proto 来源标记。
+ */
+export interface AcpPendingApproval {
+  kind: 'command' | 'file' | 'permissions' | 'question' | 'tool';
+  view: ApprovalView;
+  options: PermissionOption[];
+  /** 提问来源（kimi elicitation）：elicitation form / request_permission 兜底桥。 */
+  proto?: 'elicitation' | 'permission';
+}
+
+/**
+ * respondApproval 共用骨架：取 pending → 构建 ACP 响应 → respond + 清除 + 日志。
+ * buildOutcome 由调用方注入（kimi question 走 elicitation 回编，其余走
+ * buildAcpPermissionOutcome）。client 缺失或 requestId 未知时静默丢弃。
+ */
+export function respondAcpApproval(opts: {
+  client: { respond(requestId: number | string, response: unknown): void } | null | undefined;
+  pendingApprovals: Map<number | string, AcpPendingApproval>;
+  requestId: number | string;
+  response: unknown;
+  logTag: string;
+  buildOutcome: (action: string, pending: AcpPendingApproval, response: unknown) => unknown;
+}): void {
+  const pending = opts.pendingApprovals.get(opts.requestId);
+  if (!opts.client || !pending) return;
+
+  const action = (opts.response as { action?: string })?.action ?? 'decline';
+  const acpResponse = opts.buildOutcome(action, pending, opts.response);
+  opts.client.respond(opts.requestId, acpResponse);
+  opts.pendingApprovals.delete(opts.requestId);
+  getLogger().info(
+    `[${opts.logTag}] approval responded requestId=${opts.requestId} action=${action}`,
+  );
+}
+
+/**
+ * updateApprovalMode 共用尾段：本地缓存已由调用方按各自语义更新，会话在连时
+ * 重发 session/set_mode。失败非致命（下一次 setupTurn 会重新套用缓存模式）。
+ */
+export async function sendAcpSetMode(opts: {
+  client: { request(method: string, params: unknown): Promise<unknown> } | null | undefined;
+  activeSessionId: string | null | undefined;
+  modeId: string;
+  logTag: string;
+}): Promise<void> {
+  if (!opts.client || !opts.activeSessionId) return;
+  try {
+    await opts.client.request('session/set_mode', {
+      sessionId: opts.activeSessionId,
+      modeId: opts.modeId,
+    });
+    getLogger().info(
+      `[${opts.logTag}] session/set_mode hot-applied session=${opts.activeSessionId} modeId=${opts.modeId}`,
+    );
+  } catch (err) {
+    getLogger().warn(
+      `[${opts.logTag}] session/set_mode failed (non-fatal): ${(err as Error).message}`,
+    );
+  }
 }

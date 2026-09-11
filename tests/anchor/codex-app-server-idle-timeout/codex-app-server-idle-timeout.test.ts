@@ -40,7 +40,9 @@ describe('Codex app-server turn idle timeout', () => {
       sessionReader: makeSessionReader(),
       binary: process.execPath,
       appServerArgs: [server, requestLog],
-      turnTimeoutMs: 80,
+      // 400ms：须显著大于子进程冷启动（CI 慢环境下 ~50ms+），idle 窗口从
+      // run() 启动就开始计；20/40/80ms 级裕度会被冷启动吃光导致假红。
+      turnTimeoutMs: 400,
     });
 
     const events: AgentEvent[] = [];
@@ -78,7 +80,10 @@ describe('Codex app-server turn idle timeout', () => {
       sessionReader: makeSessionReader(),
       binary: process.execPath,
       appServerArgs: [server, requestLog],
-      turnTimeoutMs: 60,
+      // 裕度须覆盖子进程冷启动。turn/completed 在 500ms > 400ms 初始 deadline
+      // 才到达：滚动重置坏掉（定时器不随通知重置）时 turn 必先超时变红，
+      // 本用例才能确定性地验证「输出流动 → idle 不超时」语义。
+      turnTimeoutMs: 400,
     });
 
     const events: AgentEvent[] = [];

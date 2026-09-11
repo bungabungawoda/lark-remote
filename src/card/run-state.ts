@@ -263,6 +263,11 @@ function reduceTurnDiffEvent(state: RunState, event: TurnDiffEvent): RunState {
             return {
               ...textBlock,
               content: keepTail(event.text!, MAX_TEXT_CHARS),
+              // kimi：块锚点时间改为本次 diff 时间（整轮累积流不断续写，
+              // 标题应反映“最后写入时刻”而非首见时刻；move-to-end 后位置
+              // 与标题才一致）。codex app-server 不置 refreshTimestamp，
+              // 保持“首见时间戳不刷新”的既有契约。
+              ...(event.refreshTimestamp ? { timestamp: ts } : {}),
               ...(complete ? { completedAt: ts } : {}),
             };
           },
@@ -294,6 +299,7 @@ function reduceTurnDiffEvent(state: RunState, event: TurnDiffEvent): RunState {
               ...thinkingBlock,
               content: keepTail(event.reasoning!, MAX_REASONING_CHARS),
               active: !complete,
+              ...(event.refreshTimestamp ? { timestamp: ts } : {}),
               ...(complete ? { completedAt: ts } : {}),
             };
           },
