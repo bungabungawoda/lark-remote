@@ -4,7 +4,8 @@ import path from 'node:path';
 import os from 'node:os';
 import { PiRpcRunner } from './runner.js';
 import type { AgentSessionReader } from '../../types.js';
-import { prependPath, restorePath, writeMockBin } from '../../../../tests/lib/path-mock.js';
+import { prependPath, restorePath, writeMockSource } from '../../../../tests/lib/path-mock.js';
+import { rmRf } from '../../../../tests/lib/tmp-cleanup.js';
 
 const { mockLogger } = vi.hoisted(() => ({
   mockLogger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
@@ -67,12 +68,12 @@ let savedPath: string | undefined;
 beforeEach(() => {
   tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'lark-pi-rpc-test-'));
   savedPath = prependPath(tmpDir);
-  writeMockBin(tmpDir, 'pi', MOCK_SERVER);
+  writeMockSource(tmpDir, 'pi', MOCK_SERVER);
 });
 
 afterEach(() => {
   restorePath(savedPath);
-  fs.rmSync(tmpDir, { recursive: true, force: true });
+  rmRf(tmpDir);
   vi.clearAllMocks();
 });
 

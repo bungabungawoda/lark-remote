@@ -10,6 +10,7 @@ import path from 'node:path';
 import fs from 'node:fs';
 import os from 'node:os';
 import { PiSessionReader } from '../../../src/session/pi/index.js';
+import { piEncodeCwd } from '../../lib/session-fixtures.js';
 
 // ---------------------------------------------------------------------------
 // PiSessionReader stale db
@@ -29,7 +30,7 @@ describe('Anchor: PiSessionReader 必须基于文件系统返回真正最新的�
 
     // Create the CORRECT encoded project directory that listSessionsByScan expects
     // Format: --<cwd-without-leading-/>-- (double dashes, no leading slash)
-    const encodedCwd = cwd.replace(/^\//, '').replace(/\//g, '-');
+    const encodedCwd = piEncodeCwd(cwd);
     const encodedProjectDir = path.join(sessionsDir, `--${encodedCwd}--`);
     fs.mkdirSync(encodedProjectDir, { recursive: true });
 
@@ -72,7 +73,7 @@ describe('Anchor: PiSessionReader 必须基于文件系统返回真正最新的�
     const oldTimestamp = new Date(now - 24 * 60 * 60 * 1000).toISOString(); // 1 day ago
 
     // Use correct encoding: --<cwd-without-leading-/>--
-    const encodedCwd = cwd.replace(/^\//, '').replace(/\//g, '-');
+    const encodedCwd = piEncodeCwd(cwd);
     const encodedProjectDir = path.join(sessionsDir, `--${encodedCwd}--`);
 
     // Recent session (should be #1 after fix)
@@ -168,7 +169,7 @@ describe('Anchor: PiSessionReader 必须基于文件系统返回真正最新的�
   it('test_anchor_sessions_sorted_by_mtime_not_db_updatedAt', () => {
     const now = Date.now();
     // Use correct encoding: --<cwd-without-leading-/>--
-    const encodedCwd = cwd.replace(/^\//, '').replace(/\//g, '-');
+    const encodedCwd = piEncodeCwd(cwd);
     const encodedProjectDir = path.join(sessionsDir, `--${encodedCwd}--`);
 
     // Create 3 sessions, writing them in REVERSE mtime order (oldest first)

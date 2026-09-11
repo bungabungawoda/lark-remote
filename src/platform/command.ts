@@ -96,7 +96,10 @@ function resolveWin32(
 
 function resolvePosix(name: string, pathEnv: string): LaunchSpec | null {
   for (const dir of listPathDirs(pathEnv, 'linux')) {
-    const file = path.join(dir, name);
+    // 与 win32 分支对称：join 必须跟随注入 platform，而非宿主 path。
+    // 宿主是 win32 时用 path.join 会把 `/tmp/a` + `agent` 拼成 `\tmp\a\agent`，
+    // posix 语义测试在 Windows 宿主上必然落空。
+    const file = path.posix.join(dir, name);
     try {
       fs.accessSync(file, fs.constants.X_OK);
       return { kind: 'direct', file };

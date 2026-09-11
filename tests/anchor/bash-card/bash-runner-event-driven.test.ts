@@ -49,6 +49,7 @@ vi.mock('../../../src/logger/index.js', () => ({
 }));
 
 vi.mock('../../../src/platform/spawn.js', () => ({
+  useDetachedProcessGroup: vi.fn(() => true),
   spawnProcess: mockSpawn,
 }));
 

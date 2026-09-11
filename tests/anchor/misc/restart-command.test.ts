@@ -27,9 +27,11 @@ import {
   spawnReplacementBridge,
   waitForPreviousInstance,
 } from '../../../src/restart.js';
+import { currentPlatform, isWin32 } from '../../../src/platform/select.js';
 
 const spawnMock = vi.hoisted(() => vi.fn());
 vi.mock('../../../src/platform/spawn.js', () => ({
+  useDetachedProcessGroup: vi.fn(() => true),
   spawnProcess: spawnMock,
 }));
 
@@ -394,7 +396,8 @@ describe('/restart 命令', () => {
     }
   });
 
-  it('test_anchor_spawn_replacement_propagates_fs_errors', () => {
+  // 0o555 只读目录阻止写入是 POSIX 权限原语；Windows 的 chmod 不拦写，skipIf 门控
+  it.skipIf(isWin32(currentPlatform))('test_anchor_spawn_replacement_propagates_fs_errors', () => {
     // 验证行为：logsDir 不可写（mkdir/open 失败）时 spawnReplacementBridge 抛错，
     //   由 cmdRestart 的 catch 转为「重启失败…」文案——异常必须可传播到上层，
     //   不得被吞掉变成"spawn 成功"假象。

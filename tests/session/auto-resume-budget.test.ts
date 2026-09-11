@@ -36,7 +36,7 @@ describe('ws.use auto-resume budget bug - anchor', () => {
 
     // 创建 session：最后一个 user 后有 20 个 assistant 事件
     const lines: string[] = [
-      `{"type":"system","subtype":"init","session_id":"${sessionId}","cwd":"${cwd}","model":"opus"}`,
+      `{"type":"system","subtype":"init","session_id":"${sessionId}","cwd":${JSON.stringify(cwd)},"model":"opus"}`,
     ];
 
     lines.push(
@@ -103,7 +103,7 @@ describe('ws.use auto-resume budget bug - anchor', () => {
     const sessionId = 'test-boundary-more';
 
     const lines: string[] = [
-      `{"type":"system","subtype":"init","session_id":"${sessionId}","cwd":"${cwd}","model":"opus"}`,
+      `{"type":"system","subtype":"init","session_id":"${sessionId}","cwd":${JSON.stringify(cwd)},"model":"opus"}`,
       `{"type":"user","message":{"role":"user","content":[{"type":"text","text":"question"}]}}`,
       `{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"answer"}]}}`,
     ];
@@ -125,7 +125,7 @@ describe('ws.use auto-resume budget bug - anchor', () => {
     const sessionId = 'test-boundary-zero';
 
     const lines: string[] = [
-      `{"type":"system","subtype":"init","session_id":"${sessionId}","cwd":"${cwd}","model":"opus"}`,
+      `{"type":"system","subtype":"init","session_id":"${sessionId}","cwd":${JSON.stringify(cwd)},"model":"opus"}`,
       `{"type":"user","message":{"role":"user","content":[{"type":"text","text":"question"}]}}`,
       `{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"answer"}]}}`,
     ];
@@ -146,7 +146,7 @@ describe('ws.use auto-resume budget bug - anchor', () => {
     const sessionId = 'test-backward-compat';
 
     const lines: string[] = [
-      `{"type":"system","subtype":"init","session_id":"${sessionId}","cwd":"${cwd}","model":"opus"}`,
+      `{"type":"system","subtype":"init","session_id":"${sessionId}","cwd":${JSON.stringify(cwd)},"model":"opus"}`,
       `{"type":"user","message":{"role":"user","content":[{"type":"text","text":"question"}]}}`,
     ];
     for (let i = 1; i <= 15; i++) {
@@ -174,7 +174,7 @@ describe('ws.use auto-resume budget bug - anchor', () => {
     const sessionId = 'test-multi-block';
 
     const lines: string[] = [
-      `{"type":"system","subtype":"init","session_id":"${sessionId}","cwd":"${cwd}","model":"opus"}`,
+      `{"type":"system","subtype":"init","session_id":"${sessionId}","cwd":${JSON.stringify(cwd)},"model":"opus"}`,
       `{"type":"user","message":{"role":"user","content":[{"type":"text","text":"question"}]}}`,
       // 第一条 assistant：1 个 text block
       `{"type":"assistant","message":{"id":"m1","role":"assistant","content":[{"type":"text","text":"first answer"}]}}`,

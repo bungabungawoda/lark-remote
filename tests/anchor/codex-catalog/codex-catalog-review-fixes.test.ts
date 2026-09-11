@@ -85,7 +85,7 @@ describe('codex catalog review fixes - anchor', () => {
       [
         'model = "deepseek-v4-flash"',
         'model_provider = "deepseek"',
-        `model_catalog_json = "${path.join(tmpDir, 'missing.json')}"`,
+        `model_catalog_json = "${path.join(tmpDir, 'missing.json').replaceAll('\\', '/')}"`,
         '',
         '[model_providers.deepseek]',
         'name = "deepseek"',
@@ -113,7 +113,7 @@ describe('codex catalog review fixes - anchor', () => {
       path.join(tmpDir, 'config.toml'),
       [
         'model_provider = "deepseek"',
-        `model_catalog_json = "${path.join(tmpDir, 'missing.json')}"`,
+        `model_catalog_json = "${path.join(tmpDir, 'missing.json').replaceAll('\\', '/')}"`,
         '',
         '[model_providers.deepseek]',
         'name = "deepseek"',
@@ -137,7 +137,7 @@ describe('codex catalog review fixes - anchor', () => {
       path.join(tmpDir, 'config.toml'),
       [
         'model = "deepseek-v4-flash"',
-        `model_catalog_json = "${path.join(tmpDir, 'missing.json')}"`,
+        `model_catalog_json = "${path.join(tmpDir, 'missing.json').replaceAll('\\', '/')}"`,
         '',
       ].join('\n'),
     );
@@ -155,7 +155,7 @@ describe('codex catalog review fixes - anchor', () => {
       path.join(tmpDir, 'config.toml'),
       [
         'model = "deepseek-v4-flash"',
-        `model_catalog_json = "${path.join(tmpDir, 'models.json')}"`,
+        `model_catalog_json = "${path.join(tmpDir, 'models.json').replaceAll('\\', '/')}"`,
         '',
       ].join('\n'),
     );

@@ -8,6 +8,7 @@ import { createMockProc } from '../../tests/lib/mock-process.js';
 vi.mock('../platform/spawn.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../platform/spawn.js')>()),
   spawnProcess: vi.fn(),
+  spawnProcessSync: vi.fn(),
 }));
 
 // W3.5：PATH 可用性检测走 seam（resolveExecutable），mock 后可真断言 fallback 顺序
@@ -15,7 +16,7 @@ vi.mock('../platform/command.js', () => ({
   resolveExecutable: vi.fn(),
 }));
 
-import { spawnProcess } from '../platform/spawn.js';
+import { spawnProcess, spawnProcessSync } from '../platform/spawn.js';
 import { resolveExecutable } from '../platform/command.js';
 
 type MockExecCallback = (err: Error | null, stdout: unknown, stderr: unknown) => void;
@@ -117,6 +118,15 @@ describe('detectPackageManager', () => {
 
   it('invalid env / no marker path / no env → PATH availability fallback（npm→bun→pnpm）', () => {
     const mockResolve = vi.mocked(resolveExecutable);
+    // win32 宿主有 where.exe 兜底（install.ts fallback 循环第二段）：不 mock
+    // 的话 `where.exe npm` 在装了 npm 的机器上命中，永远轮不到 pnpm——与
+    // posix 上「resolve mock 直接决定结果」的语义不一致。这里统一 mock 成
+    // where 不可用，让 fallback 顺序完全由 resolveExecutable mock 决定。
+    vi.mocked(spawnProcessSync).mockReset();
+    vi.mocked(spawnProcessSync).mockReturnValue({
+      error: true,
+      status: null,
+    } as unknown as ReturnType<typeof spawnProcessSync>);
 
     // 无 env：npm/bun 解析失败、pnpm 可用 → 必须按顺序落到 pnpm
     delete process.env.LARK_REMOTE_MANAGED_BY;

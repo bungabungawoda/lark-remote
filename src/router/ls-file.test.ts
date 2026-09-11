@@ -11,6 +11,13 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 
+/**
+ * 断言对象是 `JSON.stringify` 的结果，而 win32 路径的反斜杠在 JSON 里会被
+ * 转义成 `\\` —— 直接 `toContain(homeDir)`（`C:\Users\x`）在 Windows 上永远
+ * 不成立。这里统一取「JSON 字符串内部形态」再比较（POSIX 上是恒等变换）。
+ */
+const norm = (p: string): string => JSON.stringify(p).slice(1, -1);
+
 describe('ls file action', () => {
   let router: CommandRouter;
   let sessionStore: SessionStore;
@@ -150,11 +157,11 @@ describe('ls tilde expansion', () => {
     expect(card).toBeDefined();
     // The card body first element shows the targetDir in backticks
     const bodyText = JSON.stringify(card.body.elements);
-    expect(bodyText).toContain(homeDir);
+    expect(bodyText).toContain(norm(homeDir));
     // The header div should show homeDir as the listed directory
     const headerDiv = card.body.elements[0];
     const headerContent = JSON.stringify(headerDiv);
-    expect(headerContent).toContain(homeDir);
+    expect(headerContent).toContain(norm(homeDir));
   });
 
   it('test_anchor_ls_tilde_with_subpath_expands_correctly', async () => {
@@ -171,11 +178,11 @@ describe('ls tilde expansion', () => {
     const card = sentCard.card;
     expect(card).toBeDefined();
     const bodyText = JSON.stringify(card.body.elements);
-    expect(bodyText).toContain(projectsDir);
+    expect(bodyText).toContain(norm(projectsDir));
     // The header div should show projectsDir as the listed directory
     const headerDiv = card.body.elements[0];
     const headerContent = JSON.stringify(headerDiv);
-    expect(headerContent).toContain(projectsDir);
+    expect(headerContent).toContain(norm(projectsDir));
   });
 
   it('test_anchor_ls_invalid_path_returns_error_not_fallback', async () => {
@@ -255,7 +262,7 @@ describe('ls on a file path lists the file itself', () => {
     const bodyText = JSON.stringify((sent.card as { body: object }).body);
     expect(bodyText).not.toContain('Not a directory');
     // 展示文件本身（完整路径 + 文件名）
-    expect(bodyText).toContain(testFilePath);
+    expect(bodyText).toContain(norm(testFilePath));
     expect(bodyText).toContain('lr.zip');
     // 200861 铁律 + CardKit 2.0 结构断言
     expect((sent.card as { schema?: string }).schema).toBe('2.0');
@@ -269,7 +276,7 @@ describe('ls on a file path lists the file itself', () => {
     );
     // 下载按钮走既有 ls.file 回调，payload 携带该文件绝对路径
     expect(bodyText).toContain('ls.file');
-    expect(bodyText).toContain(testFilePath);
+    expect(bodyText).toContain(norm(testFilePath));
   });
 
   it('file card offers an 上级 button to browse the parent directory', async () => {
@@ -278,14 +285,14 @@ describe('ls on a file path lists the file itself', () => {
       (mockBridge.sendResult.mock.calls[0][0].card as { body: object }).body,
     );
     expect(bodyText).toContain('ls.browse');
-    expect(bodyText).toContain(tempDir);
+    expect(bodyText).toContain(norm(tempDir));
   });
 
   it('relative file name resolves against cwd', async () => {
     await router.handle('/ls lr.zip', ctx);
     const sent = mockBridge.sendResult.mock.calls[0][0];
     expect(sent.card).toBeDefined();
-    expect(JSON.stringify((sent.card as { body: object }).body)).toContain(testFilePath);
+    expect(JSON.stringify((sent.card as { body: object }).body)).toContain(norm(testFilePath));
   });
 
   it('missing path still reports No such file or directory', async () => {

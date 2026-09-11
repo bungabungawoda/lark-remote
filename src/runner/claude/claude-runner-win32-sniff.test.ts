@@ -49,7 +49,7 @@ const runners: ClaudeRunner[] = [];
 
 function createMockClaude(env: Record<string, string> = {}): void {
   const mockPath = path.resolve(__dirname, '../../../tests/lib/mock-claude.js');
-  writeMockBin(tmpDir, 'claude', `#!/bin/bash\nexec node "${mockPath}"`);
+  writeMockBin(tmpDir, 'claude', mockPath);
   Object.assign(process.env, env);
 }
 

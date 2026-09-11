@@ -16,6 +16,7 @@ import {
   createStubRunner,
   createStubConnector,
 } from '../../lib/bridge-stubs.js';
+import { piEncodeCwd } from '../../lib/session-fixtures.js';
 /**
  * Anchor: resume.use 恢复非默认 agent session（仅 set sessionId，不切换 defaultAgent）
  *
@@ -53,7 +54,7 @@ describe('resume.use resumes non-default agent session (set sessionId only)', ()
     const canonicalCwd = fs.realpathSync(tmpDir);
 
     // 创建 pi session
-    const piEncodedCwd = canonicalCwd.replace(/^\//, '').replace(/\//g, '-');
+    const piEncodedCwd = piEncodeCwd(canonicalCwd);
     const piProjectDir = path.join(piSessionsDir, `--${piEncodedCwd}--`);
     fs.mkdirSync(piProjectDir, { recursive: true });
     const piSessionId = 'eeeeeeee-1111-2222-3333-444444444444';
