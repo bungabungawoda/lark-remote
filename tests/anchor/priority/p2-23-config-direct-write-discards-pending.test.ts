@@ -48,18 +48,12 @@ const stubRunner: Runner = {
   },
 };
 
-function createRouter(overrides?: { output?: Partial<AppConfig['output']> }) {
+function createRouter() {
   const sessionStore = new SessionStore();
   const connector = createStubConnector();
   const config: AppConfig = AppConfigSchema.parse({
     feishu: { appId: 'test', appSecret: 'test' },
     claude: { model: 'claude-opus-4-8', stopGraceMs: 5000 },
-    output: {
-      showThinking: true,
-      showToolUse: false,
-      showToolResult: false,
-      ...overrides?.output,
-    },
     idle: { watchdogMinutes: 15 },
   });
   const configPath = path.join(tmpDir, 'config.yaml');
@@ -102,17 +96,15 @@ describe('P2-23 /config 直写丢弃 pendingConfig 提示 (anchor)', () => {
    * 依据: P2-23 缺陷契约。
    */
   it('test_anchor_config_direct_write_warns_discarded_pending', async () => {
-    // showThinking 初始 false，toggle 后 pendingConfig.showThinking = true（1 项差异）
-    const { router, connector } = createRouter({
-      output: { showThinking: false },
-    });
+    // inboundMedia.enabled 默认 true，toggle 后 pendingConfig 变 false（1 项差异）
+    const { router, connector } = createRouter();
 
     // 1. 通过卡片交互产生 pendingConfig 差异（走公开 handleCardAction 路径）
-    await router.handleCardAction({ cmd: 'config.toggle', key: 'output.showThinking' }, ctx);
+    await router.handleCardAction({ cmd: 'config.toggle', key: 'inboundMedia.enabled' }, ctx);
     // 确认 pendingConfig 确实有差异（1 项）
     const pendingConfig = router.pendingConfig;
     expect(pendingConfig).not.toBeNull();
-    expect(pendingConfig!.output.showThinking).toBe(true);
+    expect(pendingConfig!.inboundMedia.enabled).toBe(false);
 
     // 2. 发送 /config <key> <value> 直写命令（走公开 handle 路径）
     await router.handle('/config idle.watchdogMinutes 30', ctx);

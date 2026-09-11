@@ -61,11 +61,6 @@ claude:
   permissionMode: bypassPermissions  # Claude official --permission-mode: default | acceptEdits | auto | bypassPermissions | manual | dontAsk | plan (switchable via /config card)
   stopGraceMs: 5000         # Grace period for idle-timeout auto-stop: SIGTERM→SIGKILL (milliseconds)
 
-output:
-  showThinking: true        # Whether to send thinking blocks
-  showToolUse: true         # Whether to display tool calls
-  showToolResult: true      # Whether to display tool results
-
 logging:
   level: info               # debug | info | warn | error
 
@@ -127,7 +122,7 @@ Any message not starting with `/` is forwarded to Claude. Messages starting with
 | `/stop` | `/t` | Terminate the current agent process (SIGTERM then immediate SIGKILL, no grace wait) |
 | `/ps` | - | Check whether a process is running |
 | `/reconnect` | - | Reconnect to Feishu WebSocket |
-| `/config` | `/c` | View configuration (interactive card; boolean values toggle on click, others use button selection) |
+| `/config` | `/c` | View configuration (interactive card: dropdowns/inputs plus a save button) |
 | `/order save <text>` | `/o` | Save a frequently used instruction |
 | `/order` `/order list` | `/o` | List saved instructions (card; supports alias / edit / delete) |
 | `/order edit <orderId\|N> <new text>` | `/o` | Edit the saved text of an instruction (alias and usedAt are preserved) |
@@ -284,11 +279,12 @@ You: Start it up now
 
 ## 7. Output Format
 
-Each Claude run creates only one CardKit 2.0 card on the normal path and continuously updates it in place:
+Each Claude run creates only one CardKit 2.0 card on the normal path and continuously updates it in place.
+Thinking, tool_use and tool_result are always shown (there is no display toggle):
 
-- **thinking**: Controlled by `showThinking`; title displays local timestamp
+- **thinking**: Always shown; title displays local timestamp
 - **Body**: Retains the latest scrolling window; local timestamp displayed before the body
-- **tool_use / tool_result**: Controlled by `showToolUse` / `showToolResult`; older tools auto-collapse; tool title displays local timestamp
+- **tool_use / tool_result**: Always shown; older tools auto-collapse; tool title displays local timestamp
 - **Run state**: Thinking, calling tools, or producing output
 - **Terminal state**: Completed, error, interrupted, idle timeout; terminal state removes the stop button
 - **Emoji reaction**: On your original message, `Typing` is added during processing; at completion, the terminal state determines the final emoji: `Done` (completed) / `ERROR` (error) / `Alarm` (idle timeout) / `SHHH` (user `/stop`). Bash (`!`) commands always get `Done`. Keys come from the official Feishu emoji list; new terminal state mappings require同步 anchor tests.

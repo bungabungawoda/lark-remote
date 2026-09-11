@@ -119,9 +119,6 @@ function renderTextBlock(
 }
 
 export interface RunCardRenderOptions {
-  showThinking?: boolean;
-  showToolUse?: boolean;
-  showToolResult?: boolean;
   /**
    * Agent kind for the run card header title (e.g. "Claude · 思考中").
    * Defaults to 'claude' when not provided; the bridge passes `config.defaultAgent`.
@@ -240,9 +237,9 @@ function groupBlocks(blocks: RunBlock[]): BlockGroup[] {
  * - Running tool: expanded (user can watch live)
  * - Completed tool: collapsed (click to inspect)
  */
-function renderTool(tool: ToolEntry, finalized: boolean, showResult: boolean): object {
+function renderTool(tool: ToolEntry, finalized: boolean): object {
   const border: PanelBorder = tool.status === 'error' ? 'red' : 'grey';
-  const body = showResult ? toolBodyMd(tool) : toolBodyMd({ ...tool, output: undefined });
+  const body = toolBodyMd(tool);
   return collapsibleMarkdownPanel({
     title: toolTitle(tool),
     expanded: !finalized && tool.status === 'running',
@@ -400,7 +397,6 @@ function buildFallbackElements(
   // Render thinking/text/tool in chronological order using groupBlocks
   for (const group of groupBlocks(filteredBlocks)) {
     if (group.kind === 'thinking') {
-      if (options.showThinking === false) continue;
       const ts = formatTimestamp(group.timestamp);
       const title = '💭 **思考完成**';
       const content = truncateUtf8(group.content, tier.thinkingBytes);
@@ -420,8 +416,7 @@ function buildFallbackElements(
       elements.push(...renderTextBlock(content, ts, true));
     } else if (group.kind === 'tool') {
       // Show tool individually (each tool is independent now)
-      if (options.showToolUse === false) continue;
-      elements.push(renderTool(group.tool, true, options.showToolResult !== false)); // finalized=true
+      elements.push(renderTool(group.tool, true)); // finalized=true
     }
   }
 
@@ -552,9 +547,6 @@ export function estimateCardBytes(
   shared?: { groups?: BlockGroup[]; prepared?: GroupContentPrepared },
 ): number {
   const finalized = state.terminal !== 'running';
-  const showResult = options.showToolResult !== false;
-  const showThinking = options.showThinking !== false;
-  const showToolUse = options.showToolUse !== false;
   // P1-2：renderRunCard 传入共享 groups/prepared 时直接复用（截断只做一次）；
   // 独立调用（测试/预算探针）时自建，行为与原先一致。
   const groups = shared?.groups ?? groupBlocks(state.blocks);
@@ -599,7 +591,6 @@ export function estimateCardBytes(
   let renderedAny = false;
   for (const group of groups) {
     if (group.kind === 'thinking') {
-      if (!showThinking) continue;
       renderedAny = true;
       const ts = formatTimestamp(group.timestamp);
       const title = group.active ? '💭 **思考中**' : '💭 **思考完成**';
@@ -636,10 +627,9 @@ export function estimateCardBytes(
       const header = `💬 **输出**${ts ? ` (${ts})` : ''}`;
       total += measurePanelBytes(header, true, 'grey', content);
     } else if (group.kind === 'tool') {
-      if (!showToolUse) continue;
       renderedAny = true;
       // tool 直接实测真实渲染元素（复用 renderTool，output ≤1200 字符，物化廉价）
-      total += measureJson(renderTool(group.tool, finalized, showResult));
+      total += measureJson(renderTool(group.tool, finalized));
     }
   }
 
@@ -741,13 +731,11 @@ function buildChronologicalContent(
   const elements: object[] = [];
   // finalized = 非 running（含 finalizing：主结果已出，thinking 折叠）
   const finalized = state.terminal !== 'running';
-  const showResult = options.showToolResult !== false;
 
   // P1-2：renderRunCard 传入同一 groups 数组时直接复用（prepared 的键是组对象
   // 引用，重建数组会让 prepared.get 永远 miss，退化为二次截断）。
   for (const group of groups ?? groupBlocks(state.blocks)) {
     if (group.kind === 'thinking') {
-      if (options.showThinking === false) continue;
       const ts = formatTimestamp(group.timestamp);
       const title = group.active ? '💭 **思考中**' : '💭 **思考完成**';
       const content = prepared?.get(group) ?? truncateUtf8(group.content, REASONING_BYTES);
@@ -808,8 +796,7 @@ function buildChronologicalContent(
       const els = renderTextBlock(content, ts, finalized);
       elements.push(...els);
     } else if (group.kind === 'tool') {
-      if (options.showToolUse === false) continue;
-      elements.push(renderTool(group.tool, finalized, showResult));
+      elements.push(renderTool(group.tool, finalized));
     }
   }
 

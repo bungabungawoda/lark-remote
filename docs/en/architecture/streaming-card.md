@@ -171,9 +171,10 @@ Strict single-card is only guaranteed on the normal stream path; failure paths f
 
 ## 9. Configuration Semantics
 
-- `showThinking`: Whether to render thinking
-- `showToolUse`: Whether to render tool blocks
-- `showToolResult`: Whether to render tool output
+- Thinking, tool_use and tool_result are always rendered (the legacy `output.show*`
+  options were removed; there are no display toggles);
+- `RunCardRenderOptions` only carries card-level metadata (`agentKind` for the header,
+  `compactSupported` for the Compact button gate).
 
 ## 10. Automated Coverage
 
