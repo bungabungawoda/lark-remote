@@ -1,12 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { renderRunCard } from '../../src/card/run-renderer.js';
-import type { RunState } from '../../src/card/run-state.js';
-import { expectNoV1ActionContainer } from '../lib/card-view.js';
+import { renderRunCard } from '../../../src/card/run-renderer.js';
+import type { RunState } from '../../../src/card/run-state.js';
+import { expectNoV1ActionContainer } from '../../lib/card-view.js';
 
 /**
  * PROBE (估算保守性边界 — 不误降级 + 不漏降级) — P1-2 的「先估后建」引入了
  * DEGRADED_THRESHOLD=24000 阈值：估算 < 24000 走正常路径，≥24000 跳过完整卡
- * 直接 degraded。本 probe 刻画阈值附近的行为正确性边界，防止优化引入两类退化：
+ * 直接 degraded。本锚点测试 刻画阈值附近的行为正确性边界，防止优化引入两类退化：
  *
  * ① UX 退化（估算高估误降级）：估算值 ≥24000 但真实完整卡 stringify 明显 < 28KB
  *    时，直接 degraded 会丢失早期 thinking/tool——本可完整展示却被压缩。
@@ -16,7 +16,7 @@ import { expectNoV1ActionContainer } from '../lib/card-view.js';
  *    违背 P1-2「先估后建省一次完整 render」初衷。安全网兜底不超 28KB，非正确性
  *    bug，标记优化缺口。
  *
- * 本 probe 不直接断言 estimateCardBytes（虽已导出于 src/card/run-renderer.ts，
+ * 本锚点测试 不直接断言 estimateCardBytes（虽已导出于 src/card/run-renderer.ts，
  * 但属估算实现细节），而是通过「产物 ≤28KB
  * + 内容契约」间接验证：无论阈值附近走哪条路，正确性底线（≤28KB + 保留关键内容）
  * 都必须成立。GREEN 则优化未引入正确性退化；RED 则暴露估算偏差导致的契约破坏。
@@ -24,7 +24,7 @@ import { expectNoV1ActionContainer } from '../lib/card-view.js';
  * 依据：P1-2 spec（estimateCardBytes 保守性 + DEGRADED_THRESHOLD 阈值）。
  */
 
-describe('renderRunCard estimate threshold boundary (probe)', () => {
+describe('renderRunCard estimate threshold boundary (anchor)', () => {
   /**
    * 构造一个「估算接近 24000 阈值但真实 stringify 远低于 28KB」的卡：
    * 多个中等 thinking（每个 ~1.5KB content）。
@@ -33,10 +33,10 @@ describe('renderRunCard estimate threshold boundary (probe)', () => {
    * N=10 × 1.5KB thinking ≈ 21.3KB < 24000 → 走正常路径全量渲染（不误降级）。
    * 此前的「×1.2 因子估算」会把 N=10 估到 ~24000 ≥ 阈值触发 degraded——
    * 即 UX 退化缺口（保守降级，正确但非最优）。影子测量已关闭该缺口。
-   * 本 probe 断言互斥不变量：要么降级（早期省略）要么完整（全部保留），
+   * 本锚点测试 断言互斥不变量：要么降级（早期省略）要么完整（全部保留），
    * 不能既降级又完整（矛盾态）。
    */
-  it('probe_estimate_overcount_still_within_budget_does_not_break_correctness', () => {
+  it('test_anchor_estimate_overcount_still_within_budget_does_not_break_correctness', () => {
     const state: RunState = {
       runId: 'run-threshold-boundary',
       terminal: 'done',
@@ -84,7 +84,7 @@ describe('renderRunCard estimate threshold boundary (probe)', () => {
    * 若估算低估 → 走正常路径 → stringify 兜底发现 >28KB → fallthrough degraded。
    * 安全网救回，产物仍 ≤28KB，但浪费了一次完整构建（优化缺口，非正确性 bug）。
    */
-  it('probe_high_escape_content_estimate_undercount_falls_back_safely', () => {
+  it('test_anchor_high_escape_content_estimate_undercount_falls_back_safely', () => {
     const state: RunState = {
       runId: 'run-high-escape',
       terminal: 'done',
@@ -123,7 +123,7 @@ describe('renderRunCard estimate threshold boundary (probe)', () => {
    * Set 过滤重建必须仍正确保留 last N thinking + last N tool + 全部 text，
    * 且 text 合并（groupBlocks 连续 text 合并）不被分桶破坏。
    */
-  it('probe_interleaved_order_filter_merge_equivalence', () => {
+  it('test_anchor_interleaved_order_filter_merge_equivalence', () => {
     const state: RunState = {
       runId: 'run-interleaved',
       terminal: 'done',

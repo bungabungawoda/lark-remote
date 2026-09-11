@@ -1,6 +1,6 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import type { CardStreamController } from '@larksuite/channel';
-import { RunCardSession } from '../../src/card/run-card-session.js';
+import { RunCardSession } from '../../../src/card/run-card-session.js';
 
 /**
  * PROBE (P1-3 push await 语义边界) — 合批路径 push 必须 fire-and-forget
@@ -12,7 +12,7 @@ import { RunCardSession } from '../../src/card/run-card-session.js';
  * 后立即生效的契约，见 run-card-session-error.test.ts / run-card-stream-error.test.ts
  * 5 处 coalesceMs:0）。
  *
- * 本 probe 锁定两条边界：
+ * 本锚点测试 锁定两条边界：
  * ① 合批路径：push 在 flushTimer 到期前已 resolve（不等 render）。
  * ② 禁用路径：push 在 flush 完成后 resolve（含 fallback update）。
  *
@@ -20,7 +20,7 @@ import { RunCardSession } from '../../src/card/run-card-session.js';
  * - 合批路径若 await render：bridge 循环串行化 render，事件逐个 flush，合批失效。
  * - 禁用路径若 fire-and-forget：错误处理测试断言的「push 后 update 已发生」被破坏。
  */
-describe('RunCardSession push await semantics (P1-3 probe)', () => {
+describe('RunCardSession push await semantics (P1-3 anchor)', () => {
   let controller: CardStreamController;
 
   beforeEach(() => {
@@ -63,7 +63,7 @@ describe('RunCardSession push await semantics (P1-3 probe)', () => {
     return { session, updateCalls };
   }
 
-  it('probe_coalesced_push_resolves_before_window_flush_fire_and_forget', async () => {
+  it('test_anchor_coalesced_push_resolves_before_window_flush_fire_and_forget', async () => {
     // 合批路径：让 controller.update 模拟耗时（若 push await render，push 会阻塞）
     let updateStarted = false;
     controller.update = async () => {
@@ -90,7 +90,7 @@ describe('RunCardSession push await semantics (P1-3 probe)', () => {
     await session.settle();
   });
 
-  it('probe_disabled_push_resolves_only_after_synchronous_flush', async () => {
+  it('test_anchor_disabled_push_resolves_only_after_synchronous_flush', async () => {
     // 禁用路径：push 必须等 flush 完成才 resolve（update 已发生）
     let updateHappened = false;
     controller.update = async () => {

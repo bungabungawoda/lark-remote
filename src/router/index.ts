@@ -27,7 +27,13 @@ import type {
 } from '../runner/index.js';
 import { getLogger } from '../logger/index.js';
 import { type SessionDisplayUsage, activeRunUsage, clampInt } from './utils.js';
-import { markdownDiv, buildSessionHistoryCard, paginationBar } from './card-helpers.js';
+import {
+  markdownDiv,
+  buildSessionHistoryCard,
+  paginationBar,
+  parseJumpOffset,
+  PAGE_JUMP_INVALID_HINT,
+} from './card-helpers.js';
 import { MAX_FILE_UPLOAD_SIZE } from '../connector/file-limits.js';
 import { atomicWrite } from '../persistence/atomic-write.js';
 import {
@@ -92,6 +98,15 @@ function pageSlice<T>(
 }
 
 const ACTIVE_PAGE_SIZE = 20;
+
+/** 人类可读字节数（B/KB/MB/GB）；/ls 列表与单文件卡共用。 */
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes}B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)}KB`;
+  if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)}MB`;
+  return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)}GB`;
+}
+
 /**
  * /order 列表页大小；指令超过此数量时显示分页导航栏。
  * 2026-08-13 实测：每行 2 个元素（div + column_set，行间 hr），20 行 + 分页栏
@@ -113,16 +128,26 @@ const WS_PAGE_SIZE = 5;
  * 归一化卡片分页参数：clamp pageSize 到 [1,maxPageSize]，offset 归整为
  * 非负整数并对齐到页边界。非数字 payload（如 'abc'）不得产生 NaN slice。
  *
+ * 「跳转页码」输入框（paginationBar 内置）的提交值优先于 offset；非法输入
+ * 返回 `error` 文案，调用方应回错误 toast 且不刷新卡片。
+ *
  * resume.page / active.page 共用，避免两处重复实现分页归一化。
  */
 function normalizePageArgs(
-  value: { pageSize?: unknown; offset?: unknown },
+  value: { pageSize?: unknown; offset?: unknown; inputValue?: unknown },
   maxPageSize: number,
-): { pageSize: number; alignedOffset: number } {
+): { pageSize: number; alignedOffset: number; error?: string } {
   const rawPageSize = Number(value.pageSize);
   const pageSize = Number.isFinite(rawPageSize)
     ? clampInt(Math.trunc(rawPageSize), 1, maxPageSize)
     : maxPageSize;
+  const jump = parseJumpOffset(value.inputValue, pageSize);
+  if (jump === null) {
+    return { pageSize, alignedOffset: 0, error: PAGE_JUMP_INVALID_HINT };
+  }
+  if (jump !== undefined) {
+    return { pageSize, alignedOffset: Math.floor(jump / pageSize) * pageSize };
+  }
   const rawOffset = Number(value.offset);
   const offset = Number.isFinite(rawOffset) ? Math.max(0, Math.trunc(rawOffset)) : 0;
   return { pageSize, alignedOffset: Math.floor(offset / pageSize) * pageSize };
@@ -195,6 +220,11 @@ export interface CardActionPayload {
   key?: string;
   /** /ls 与 /resume 列表分页起点（条目数）。 */
   offset?: number;
+  /**
+   * `/ls` 浏览起点（本次 `/ls <dir>` 指定的目录；省略时 = cwd）。
+   * 卡片上的「返回」按钮回到这里，而不是回到 workspace cwd。
+   */
+  root?: string;
   /** /resume 列表的 agent 类型。 */
   agent?: string;
   /** /resume 列表页大小覆盖。 */
@@ -1258,6 +1288,24 @@ export class CommandRouter {
   }
 
   /**
+   * 分页卡动作的 offset 解析：优先读取「跳转页码」输入框（paginationBar 内置
+   * 的 CardKit 2.0 input），未输入则回退 `payload.offset`（上一页/下一页按钮）。
+   * 非法页码返回 `{ error }`，调用方应回错误 toast 且不刷新卡片。
+   */
+  private pagingOffset(
+    value: CardActionPayload,
+    defaultPageSize: number,
+  ): { offset: number } | { error: string } {
+    const rawSize = Number(value.pageSize);
+    const pageSize =
+      Number.isFinite(rawSize) && rawSize > 0 ? Math.trunc(rawSize) : defaultPageSize;
+    const jump = parseJumpOffset(value.inputValue, pageSize);
+    if (jump === null) return { error: PAGE_JUMP_INVALID_HINT };
+    if (jump !== undefined) return { offset: jump };
+    return { offset: payloadOffset(value) };
+  }
+
+  /**
    * Handle ls.switch: switch cwd to target directory after path validation.
    */
   private async handleLsSwitch(value: CardActionPayload, ctx: CommandContext): Promise<void> {
@@ -1289,8 +1337,10 @@ export class CommandRouter {
     }
     // Set cwd + auto-resume + user notification (shared with /cd and /ws use)
     const notifyResult = this.switchCwdAndNotify(ctx.userId, canonical, ctx);
-    // Card channel: refresh ls card in-place (existing behavior preserved)
-    const card = this.cmdLs([canonical], ctx, 0);
+    // Card channel: refresh ls card in-place (existing behavior preserved)。
+    // value.root 是本次 /ls 浏览的起点（绝对路径，不受 cwd 变更影响），透传后
+    // 「返回」仍回到用户最初 /ls 的那个目录。
+    const card = this.cmdLs([canonical], ctx, 0, value.root);
     await this.bridge.updateCardInPlace(card.card!, ctx);
     // Message channel: send switch confirmation / auto-resume card to chat
     await this.bridge.sendResult(notifyResult, ctx);
@@ -1311,10 +1361,10 @@ export class CommandRouter {
     try {
       card =
         targetPath && fs.existsSync(targetPath) && fs.statSync(targetPath).isDirectory()
-          ? this.cmdLs([targetPath], ctx, offset)
-          : this.cmdLs([], ctx, offset);
+          ? this.cmdLs([targetPath], ctx, offset, value.root)
+          : this.cmdLs([], ctx, offset, value.root);
     } catch {
-      card = this.cmdLs([], ctx, offset);
+      card = this.cmdLs([], ctx, offset, value.root);
     }
     await this.bridge.updateCardInPlace(card.card!, ctx);
   }
@@ -1327,9 +1377,12 @@ export class CommandRouter {
     ctx: CommandContext,
   ): Promise<CardActionResponse> {
     const targetPath = value.path;
-    const offset = value.offset ?? 0;
     if (!targetPath) {
       return { toast: { type: 'error', content: '卡片 payload 缺少 path' } };
+    }
+    const paging = this.pagingOffset(value, CommandRouter.LS_PAGE_SIZE);
+    if ('error' in paging) {
+      return { toast: { type: 'error', content: paging.error } };
     }
     const resolvedTarget = path.resolve(targetPath);
     // TOCTOU guard (review P2-2): existsSync → statSync can race; without the
@@ -1344,7 +1397,7 @@ export class CommandRouter {
     if (!isDir) {
       return { toast: { type: 'error', content: `路径无效: ${resolvedTarget}` } };
     }
-    const card = this.cmdLs([resolvedTarget], ctx, offset);
+    const card = this.cmdLs([resolvedTarget], ctx, paging.offset, value.root);
     // 直接更新卡片，与 ls.browse/ls.refresh 行为一致
     await this.bridge.updateCardInPlace(card.card!, ctx);
     return { toast: { type: 'success', content: '' } };
@@ -1364,7 +1417,10 @@ export class CommandRouter {
       ? (resumeAgent as (typeof validAgents)[number])
       : this.config.defaultAgent;
 
-    const { pageSize, alignedOffset } = normalizePageArgs(value, RESUME_PAGE_SIZE);
+    const { pageSize, alignedOffset, error } = normalizePageArgs(value, RESUME_PAGE_SIZE);
+    if (error) {
+      return { toast: { type: 'error', content: error } };
+    }
 
     const entry = this.sessionStore.get(ctx.userId);
     const cwd = entry?.cwd;
@@ -1397,7 +1453,10 @@ export class CommandRouter {
     value: CardActionPayload,
     ctx: CommandContext,
   ): Promise<CardActionResponse> {
-    const { alignedOffset } = normalizePageArgs(value, ACTIVE_PAGE_SIZE);
+    const { alignedOffset, error } = normalizePageArgs(value, ACTIVE_PAGE_SIZE);
+    if (error) {
+      return { toast: { type: 'error', content: error } };
+    }
 
     const result = this.cmdActive([], ctx, alignedOffset);
     if (!result.card) {
@@ -1422,7 +1481,7 @@ export class CommandRouter {
       return;
     }
     // Always reset to page 0 when browsing to a new directory
-    const card = this.cmdLs([resolvedTarget], ctx, 0);
+    const card = this.cmdLs([resolvedTarget], ctx, 0, value.root);
     await this.bridge.updateCardInPlace(card.card!, ctx);
   }
 
@@ -1570,8 +1629,12 @@ export class CommandRouter {
     value: CardActionPayload,
     ctx: CommandContext,
   ): Promise<CardActionResponse> {
+    const paging = this.pagingOffset(value, ORDER_PAGE_SIZE);
+    if ('error' in paging) {
+      return { toast: { type: 'error', content: paging.error } };
+    }
     // cmdOrder internally clamps stale/out-of-range offsets
-    await this.refreshListCard('order', value, ctx);
+    await this.refreshListCard('order', { offset: paging.offset }, ctx);
     return { toast: { type: 'success', content: '' } };
   }
 
@@ -1878,8 +1941,12 @@ export class CommandRouter {
     value: CardActionPayload,
     ctx: CommandContext,
   ): Promise<CardActionResponse> {
+    const paging = this.pagingOffset(value, WS_PAGE_SIZE);
+    if ('error' in paging) {
+      return { toast: { type: 'error', content: paging.error } };
+    }
     // cmdWs internally clamps stale/out-of-range offsets
-    await this.refreshListCard('ws', value, ctx);
+    await this.refreshListCard('ws', { offset: paging.offset }, ctx);
     return { toast: { type: 'success', content: '' } };
   }
 
@@ -1910,34 +1977,44 @@ export class CommandRouter {
       await this.bridge.sendResult({ text: '卡片 payload 缺少 path' }, ctx);
       return;
     }
+    const result = await this.deliverFileToFeishu(path.resolve(target), ctx);
+    if (result) await this.bridge.sendResult(result, ctx);
+  }
 
-    const resolvedTarget = path.resolve(target);
-
-    if (!fs.existsSync(resolvedTarget)) {
-      await this.bridge.sendResult({ text: `文件不存在: ${resolvedTarget}` }, ctx);
-      return;
+  /**
+   * 校验并发送本地文件到飞书（≤30MB）。成功返回 null（文件已发出），失败返回
+   * 错误 CommandResult 由调用方展示。
+   *
+   * `/download` 与 `ls.file` 卡片按钮共用，避免两处重复 30MB/存在性校验。
+   */
+  private async deliverFileToFeishu(
+    resolved: string,
+    ctx: CommandContext,
+  ): Promise<CommandResult | null> {
+    if (!fs.existsSync(resolved)) {
+      return { text: `文件不存在: ${resolved}` };
     }
-
-    // Check it's a file, not directory
-    if (!fs.statSync(resolvedTarget).isFile()) {
-      await this.bridge.sendResult({ text: `不是文件: ${resolvedTarget}` }, ctx);
-      return;
+    let stat: fs.Stats;
+    try {
+      stat = fs.statSync(resolved);
+    } catch {
+      return { text: `无法读取: ${resolved}` };
     }
-
-    // Check file size (30MB, aligned with Feishu im/v1/files API)
-    const stat = fs.statSync(resolvedTarget);
+    if (stat.isDirectory()) {
+      return { text: `这是一个目录，不能作为文件发送: ${resolved}\n用 /ls 查看目录内容` };
+    }
+    if (!stat.isFile()) {
+      return { text: `不是普通文件: ${resolved}` };
+    }
+    // 30MB，与飞书 im/v1/files API 对齐
     if (stat.size > MAX_FILE_UPLOAD_SIZE) {
       const sizeMB = (stat.size / (1024 * 1024)).toFixed(1);
-      await this.bridge.sendResult(
-        {
-          text: `文件太大 (${sizeMB}MB)，超过 ${MAX_FILE_UPLOAD_SIZE / (1024 * 1024)}MB 限制不能发送`,
-        },
-        ctx,
-      );
-      return;
+      return {
+        text: `文件太大 (${sizeMB}MB)，超过 ${MAX_FILE_UPLOAD_SIZE / (1024 * 1024)}MB 限制不能发送`,
+      };
     }
-
-    await this.bridge.sendFile(resolvedTarget, ctx);
+    await this.bridge.sendFile(resolved, ctx);
+    return null;
   }
 
   // --- PendingConfig 辅助方法 ---
@@ -2344,6 +2421,9 @@ export class CommandRouter {
         return this.cmdCd(args, ctx);
       case 'ls':
         return this.cmdLs(args, ctx);
+      case 'download':
+      case 'd':
+        return await this.cmdDownload(args, ctx);
       case 'ws':
         return this.cmdWs(args, ctx);
       case 'resume':
@@ -2391,7 +2471,16 @@ export class CommandRouter {
     // 文本组（需带参数，不宜用按钮；以纯文本行展示）
     const textCommands = [
       { cmd: 'cd', label: '/cd <path>', desc: '切换工作目录' },
-      { cmd: 'ls', label: '/ls [dir]', desc: '列出当前目录，可指定子目录' },
+      {
+        cmd: 'ls',
+        label: '/ls [dir|file]',
+        desc: '列出当前目录（可指定子目录）；指定文件时列出该文件',
+      },
+      {
+        cmd: 'download',
+        label: '/download /d <path>',
+        desc: '直接下载（发送）指定文件到飞书，上限 30MB',
+      },
       { cmd: 'resume', label: '/resume /r [agent] [list|id|N]', desc: '列出或切换 Agent session' },
       {
         cmd: 'order',
@@ -3005,8 +3094,16 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
 
   private static readonly LS_PAGE_SIZE = 30;
 
-  /** /ls 实现（public：测试直接调用，替代 as unknown as）。 */
-  cmdLs(args: string[], ctx: CommandContext, offset = 0): CommandResult {
+  /**
+   * `/ls` 实现（public：测试直接调用，替代 as unknown as）。
+   *
+   * @param args    [] 列出 cwd；[path] 列出指定目录（或文件）
+   * @param offset  分页起点（条目数）
+   * @param rootDir 浏览起点：卡片「返回」按钮回到这里。省略时默认 = 本次列出的
+   *                目录（`/ls <dir>` 的起点即该目录），因此「返回」不会把用户
+   *                丢回 workspace cwd（用户明确反馈过）。
+   */
+  cmdLs(args: string[], ctx: CommandContext, offset = 0, rootDir?: string): CommandResult {
     const cwd = this.sessionStore.getCwd(ctx.userId);
     if (!cwd) {
       return { text: '请先使用 /cd <path> 设置工作目录' };
@@ -3028,11 +3125,25 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
       if (!fs.existsSync(potentialDir)) {
         return { text: `ls: ${args[0]}: No such file or directory` };
       }
-      if (!fs.statSync(potentialDir).isDirectory()) {
-        return { text: `ls: ${args[0]}: Not a directory` };
+      let isDir: boolean;
+      try {
+        isDir = fs.statSync(potentialDir).isDirectory();
+      } catch {
+        // TOCTOU：existsSync 与 statSync 之间目标被删
+        return { text: `ls: ${args[0]}: No such file or directory` };
+      }
+      if (!isDir) {
+        // 命中文件：列出该文件本身（用户可能想下载它或确认是否存在），
+        // 不再回 `ls: xxx: Not a directory` 把文件路径当错误。
+        return this.buildFileCard(potentialDir);
       }
       targetDir = potentialDir;
     }
+
+    // 浏览起点（「返回」按钮的目标）：`/ls <dir>` 的起点就是该目录本身，之后
+    // 进入子目录/翻页/刷新时由卡片 payload 的 root 一路带过来。省略时 = 本次
+    // 列出的目录，因此「返回」永远不会把用户丢回 workspace cwd。
+    const browseRoot = rootDir ? path.resolve(cwd, rootDir) : targetDir;
 
     try {
       const entries = fs.readdirSync(targetDir, { withFileTypes: true });
@@ -3060,7 +3171,10 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
       // Check if we need to show parent directory button
       const parentDir = path.dirname(targetDir);
       const hasParent = parentDir !== targetDir;
+      // 「切换」相对 cwd（把工作目录切到当前浏览目录）
       const isSubdir = targetDir !== cwd;
+      // 「返回」相对浏览起点：在 `/ls <dir>` 的起点上不显示（无路可返）
+      const canReturn = targetDir !== browseRoot;
 
       // Build header with parent button
       const headerElements: object[] = [];
@@ -3070,17 +3184,21 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
           text: { tag: 'plain_text', content: '上级' },
           type: 'default',
           size: 'small',
-          behaviors: [{ type: 'callback', value: { cmd: 'ls.browse', path: parentDir } }],
+          behaviors: [
+            { type: 'callback', value: { cmd: 'ls.browse', path: parentDir, root: browseRoot } },
+          ],
         });
       }
-      // Show "返回" button when viewing a subdirectory
-      if (isSubdir) {
+      // Show "返回" button when browsing away from the /ls root (回到 /ls 指定的目录)
+      if (canReturn) {
         headerElements.push({
           tag: 'button',
           text: { tag: 'plain_text', content: '返回' },
           type: 'default',
           size: 'small',
-          behaviors: [{ type: 'callback', value: { cmd: 'ls.browse', path: cwd } }],
+          behaviors: [
+            { type: 'callback', value: { cmd: 'ls.browse', path: browseRoot, root: browseRoot } },
+          ],
         });
       }
       headerElements.push({
@@ -3089,7 +3207,15 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
         type: 'default',
         size: 'small',
         behaviors: [
-          { type: 'callback', value: { cmd: 'ls.refresh', path: targetDir, offset: safeOffset } },
+          {
+            type: 'callback',
+            value: {
+              cmd: 'ls.refresh',
+              path: targetDir,
+              offset: safeOffset,
+              root: browseRoot,
+            },
+          },
         ],
       });
       // Show "切换" button when viewing a subdirectory (to switch cwd to this directory)
@@ -3099,15 +3225,13 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
           text: { tag: 'plain_text', content: '切换' },
           type: 'primary',
           size: 'small',
-          behaviors: [{ type: 'callback', value: { cmd: 'ls.switch', path: targetDir } }],
+          // 切换只改 cwd，**不重置浏览起点**：root 一路带到切换后的卡片，
+          // 否则「返回」会退化成「回到刚切换到的目录」（用户反馈的缺陷）。
+          behaviors: [
+            { type: 'callback', value: { cmd: 'ls.switch', path: targetDir, root: browseRoot } },
+          ],
         });
       }
-
-      const formatSize = (bytes: number): string => {
-        if (bytes < 1024) return `${bytes}B`;
-        if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)}KB`;
-        return `${(bytes / (1024 * 1024)).toFixed(1)}MB`;
-      };
 
       // Helper to create directory button - use targetDir
       const dirButton = (name: string): object => ({
@@ -3115,13 +3239,20 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
         text: { tag: 'plain_text', content: `📁 ${name}` },
         type: 'default',
         behaviors: [
-          { type: 'callback', value: { cmd: 'ls.browse', path: path.join(targetDir, name) } },
+          {
+            type: 'callback',
+            value: {
+              cmd: 'ls.browse',
+              path: path.join(targetDir, name),
+              root: browseRoot,
+            },
+          },
         ],
       });
 
       // Helper to create file button with size - use targetDir
       const fileButton = (name: string, size?: number): object => {
-        const sizeStr = size !== undefined ? ` (${formatSize(size)})` : '';
+        const sizeStr = size !== undefined ? ` (${formatBytes(size)})` : '';
         return {
           tag: 'button',
           text: { tag: 'plain_text', content: `📄 ${name}${sizeStr}` },
@@ -3137,10 +3268,9 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
       // Note: div+elements is not supported in CardKit 2.0, use column_set instead
       const elements: object[] = [];
 
-      // Status line showing directory contents count (with pagination info)
-      const status = hasPagination
-        ? `\n共 ${dirs.length} 目录, ${files.length} 文件 · 第 ${currentPage}/${totalPages} 页（共 ${totalCount} 项）`
-        : `\n共 ${dirs.length} 目录, ${files.length} 文件`;
+      // Status line：只报条目构成；页码/总数交给分页栏文案行（同一信息不重复
+      // 渲染两遍——2026-09-10 分页栏改成整行文案后重复会很明显）。
+      const status = `\n共 ${dirs.length} 目录, ${files.length} 文件`;
 
       // Header info + navigation buttons - show targetDir in header
       elements.push({ tag: 'div', text: { tag: 'lark_md', content: `\`${targetDir}\`${status}` } });
@@ -3205,11 +3335,11 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
           offset: safeOffset,
           pageSize: CommandRouter.LS_PAGE_SIZE,
           total: totalCount,
-          extra: { path: targetDir },
+          extra: { path: targetDir, root: browseRoot },
           label: `**第 ${currentPage}/${totalPages} 页**（共 ${totalCount} 项）`,
         });
         elements.push({ tag: 'hr' });
-        elements.push(bar);
+        elements.push(...bar);
       }
 
       return {
@@ -3228,6 +3358,101 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
     } catch (err) {
       return { text: `读取目录失败: ${(err as Error).message}` };
     }
+  }
+
+  /**
+   * `/download <path>`（别名 `/d`）：把本地文件直接发送到飞书。
+   *
+   * 路径解析与 `/ls` 一致：`~` 展开到 home；相对路径基于当前 cwd（无 cwd 时
+   * 必须给绝对路径）。成功时文件本身即回复，返回 null（不额外发文本）。
+   */
+  async cmdDownload(args: string[], ctx: CommandContext): Promise<CommandResult | null> {
+    const raw = args.join(' ').trim();
+    if (raw === '') {
+      return { text: '用法: /download <path>（别名 /d）' };
+    }
+    // 路径可能含空格：args 按空白切分后再拼回（未加引号也能还原原路径）
+    let input = raw;
+    if (input.startsWith('~')) {
+      input = path.join(os.homedir(), input.slice(1));
+    }
+    if (!path.isAbsolute(input)) {
+      const cwd = this.sessionStore.getCwd(ctx.userId);
+      if (!cwd) return { text: '请先使用 /cd <path> 设置工作目录' };
+      input = path.resolve(cwd, input);
+    }
+    return this.deliverFileToFeishu(path.resolve(input), ctx);
+  }
+
+  /**
+   * 单文件 ls 结果卡：路径 / 大小 / 修改时间 + 「下载」+「上级」。
+   *
+   * `/ls <file>` 命中普通文件时使用——用户可能想下载该文件或确认它是否存在，
+   * 此前直接回 `ls: xxx: Not a directory` 把文件路径当成错误处理。
+   */
+  private buildFileCard(filePath: string): CommandResult {
+    let stat: fs.Stats | undefined;
+    try {
+      stat = fs.statSync(filePath);
+    } catch {
+      stat = undefined;
+    }
+    const sizeText = stat ? formatBytes(stat.size) : '未知';
+    const mtimeText = stat ? stat.mtime.toLocaleString('zh-CN', { hour12: false }) : '未知';
+
+    const parentDir = path.dirname(filePath);
+    const buttons: object[] = [
+      {
+        tag: 'button',
+        text: { tag: 'plain_text', content: '📎 下载' },
+        type: 'primary',
+        size: 'small',
+        behaviors: [{ type: 'callback', value: { cmd: 'ls.file', path: filePath } }],
+      },
+    ];
+    if (parentDir !== filePath) {
+      buttons.push({
+        tag: 'button',
+        text: { tag: 'plain_text', content: '上级' },
+        type: 'default',
+        size: 'small',
+        // 浏览起点 = 文件所在目录：进入后「返回」回到这里，不回 workspace cwd
+        behaviors: [
+          { type: 'callback', value: { cmd: 'ls.browse', path: parentDir, root: parentDir } },
+        ],
+      });
+    }
+
+    return {
+      card: {
+        schema: '2.0',
+        config: { wide_screen_mode: true, update_multi: true },
+        header: {
+          title: { tag: 'plain_text', content: `📄 ${path.basename(filePath)}` },
+          template: 'blue',
+        },
+        body: {
+          elements: [
+            {
+              tag: 'div',
+              text: {
+                tag: 'lark_md',
+                content: `\`${filePath}\`\n文件 · 大小 ${sizeText} · 修改时间 ${mtimeText}`,
+              },
+            },
+            {
+              tag: 'column_set',
+              columns: buttons.map((b) => ({ tag: 'column', width: 'auto', elements: [b] })),
+            },
+            { tag: 'hr' },
+            {
+              tag: 'div',
+              text: { tag: 'lark_md', content: '💡 也可用 `/download <path>` 直接下载该文件' },
+            },
+          ],
+        },
+      },
+    };
   }
 
   private cmdWs(args: string[], ctx: CommandContext, offset = 0): CommandResult {
@@ -3418,7 +3643,7 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
               nextText: '➡',
             });
             bodyElements.push({ tag: 'hr' });
-            bodyElements.push(bar);
+            bodyElements.push(...bar);
           }
         }
 
@@ -3767,7 +3992,7 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
         label: `第 ${currentPage}/${totalPages} 页 · 共 ${total} 个会话`,
       });
       elements.push({ tag: 'hr' });
-      elements.push(bar);
+      elements.push(...bar);
     }
 
     const card = {
@@ -3904,7 +4129,7 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
     // offset±pageSize 与原先 currentPage±1 的页码换算等价）
     if (totalPages > 1) {
       elements.push(
-        paginationBar({
+        ...paginationBar({
           cmd: 'active.page',
           offset: safeOffset,
           pageSize,
@@ -4315,7 +4540,7 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
             label: `**第 ${currentPage}/${totalPages} 页**（共 ${totalCount} 条）`,
           });
           elements.push({ tag: 'hr' });
-          elements.push(bar);
+          elements.push(...bar);
         }
       }
 

@@ -1,6 +1,6 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import type { CardStreamController } from '@larksuite/channel';
-import { RunCardSession } from '../../src/card/run-card-session.js';
+import { RunCardSession } from '../../../src/card/run-card-session.js';
 
 /**
  * PROBE (P1-3 flush-in-flight push 不丢内容) — 第 5 轮 review 发现的覆盖缺口：
@@ -8,12 +8,12 @@ import { RunCardSession } from '../../src/card/run-card-session.js';
  * scheduleFlush 会被 flushInFlight 守卫挡掉（不调度新 timer）。该 push 的内容
  * 已 reduce 进 this.state，但当前 in-flight flush 可能已渲染旧 state。
  *
- * 本 probe 验证：① flush-in-flight 期间的 push 不会调度冗余 timer（合批守卫）
+ * 本锚点测试 验证：① flush-in-flight 期间的 push 不会调度冗余 timer（合批守卫）
  * ② 但 push 的内容不会永久丢失——finish 渲染完整 state 时含该内容
  * （finish 是最终一致性的保证）。即：flush-in-flight 窗口内事件至多延迟到
  * finish 才上卡，不是丢失。
  */
-describe('RunCardSession flush-in-flight push (P1-3 probe)', () => {
+describe('RunCardSession flush-in-flight push (P1-3 anchor)', () => {
   let controller: CardStreamController;
 
   beforeEach(() => {
@@ -26,7 +26,7 @@ describe('RunCardSession flush-in-flight push (P1-3 probe)', () => {
   });
   afterEach(() => vi.useRealTimers());
 
-  it('probe_push_during_inflight_flush_content_preserved_by_finish', async () => {
+  it('test_anchor_push_during_inflight_flush_content_preserved_by_finish', async () => {
     // 让 flush 的 controller.update（第 2 次调用，第 1 次是 start 初始）阻塞，
     // 制造 in-flight 窗口；收集终态 patch JSON 验证最终一致性。
     let resolveUpdate: (() => void) | undefined;

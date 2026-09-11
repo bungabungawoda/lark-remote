@@ -1,9 +1,9 @@
 /**
- * Round 8 termination probes (plan §4.1/§4.3): resume.page callback and
+ * Round 8 termination anchors (plan §4.1/§4.3): resume.page callback and
  * /resume [N] page-size override boundary attacks.
  *
- * Each `test_probe_*` is an independent assumption about behavior the spec
- * does not fully pin down (T6). Expected results recorded per probe in the
+ * Each `test_anchor_*` is an independent assumption about behavior the spec
+ * does not fully pin down (T6). Expected results recorded per case in the
  * round report; a fail here is a candidate RED, not a spec violation by
  * itself — the orchestrator decides upgrade/discard.
  */
@@ -11,21 +11,21 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { SessionStore } from '../../src/session/index.js';
-import { CommandRouter } from '../../src/router/index.js';
-import { Bridge } from '../../src/bridge/index.js';
-import type { AppConfig } from '../../src/config/index.js';
-import { AppConfigSchema } from '../../src/config/index.js';
-import { SessionReaderRegistry } from '../../src/session/registry.js';
-import { ClaudeSessionReader } from '../../src/session/claude/index.js';
+import { SessionStore } from '../../../src/session/index.js';
+import { CommandRouter } from '../../../src/router/index.js';
+import { Bridge } from '../../../src/bridge/index.js';
+import type { AppConfig } from '../../../src/config/index.js';
+import { AppConfigSchema } from '../../../src/config/index.js';
+import { SessionReaderRegistry } from '../../../src/session/registry.js';
+import { ClaudeSessionReader } from '../../../src/session/claude/index.js';
 
-import { encodedProjectDir, writeSessionJsonl } from '../lib/session-fixtures.js';
+import { encodedProjectDir, writeSessionJsonl } from '../../lib/session-fixtures.js';
 import {
   createStubAgentRegistry,
   createStubSessionReaderRegistry,
   createStubRunner,
   createStubConnector,
-} from '../lib/bridge-stubs.js';
+} from '../../lib/bridge-stubs.js';
 type CardElement = {
   tag?: string;
   text?: { content?: string };
@@ -54,7 +54,9 @@ function findDivWithText(elements: CardElement[], needle: string): CardElement |
 }
 
 function resumePageButtons(elements: CardElement[]): CardElement[] {
-  return elements.filter((el) => el.behaviors?.[0]?.value?.cmd === 'resume.page');
+  return elements.filter(
+    (el) => el.tag === 'button' && el.behaviors?.[0]?.value?.cmd === 'resume.page',
+  );
 }
 
 function resumeUseButtons(elements: CardElement[]): CardElement[] {
@@ -122,18 +124,18 @@ function buildHarness(tmpDir: string, projectsDir: string, sessionCount: number)
   return { router, ctx, connector, sessionStore, cardOf };
 }
 
-describe('Round 8 probes: resume.page boundary behaviors', () => {
+describe('Round 8 anchors: resume.page boundary behaviors', () => {
   let tmpDir: string;
 
   beforeEach(() => {
-    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'resume-page-probes-'));
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'resume-page-anchors-'));
   });
 
   afterEach(() => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  it('test_probe_resume_page_negative_offset_clamps_to_first_page', async () => {
+  it('test_anchor_resume_page_negative_offset_clamps_to_first_page', async () => {
     // 假设：负 offset 与正越界 offset 一样 clamp 到合法页首（router 层
     // offset < 0 → 0），显示第 1/5 页而不是空页/错位页/崩溃。
     // spec 缺口：plan §2.3 只写了 "offset clamp 到 [0, max(0, total - pageSize)]"，
@@ -150,7 +152,7 @@ describe('Round 8 probes: resume.page boundary behaviors', () => {
     expect(resumeUseButtons(els)).toHaveLength(5);
   });
 
-  it('test_probe_resume_page_non_default_agent_no_sessions_returns_error_toast', async () => {
+  it('test_anchor_resume_page_non_default_agent_no_sessions_returns_error_toast', async () => {
     // P3-5 新语义（Round 13，2026-08-01）：resume.page 翻到空目录/无会话时
     // 只返回 error toast，不再 sendResult 文本 + success toast。
     // toast 文案带 agent 显示名（agentDisplayName('pi') = 'Pi'），
@@ -175,7 +177,7 @@ describe('Round 8 probes: resume.page boundary behaviors', () => {
     expect(h.connector._updates).toHaveLength(0);
   });
 
-  it('test_probe_resume_page_missing_agent_small_page_size', async () => {
+  it('test_anchor_resume_page_missing_agent_small_page_size', async () => {
     // 假设：value 缺 agent 时按 defaultAgent（claude）兜底，且 pageSize=5
     // 生效 → 第 1/5 页 · 共 25 个会话（小页大小必须影响分页栏与翻页步长）。
     // spec 缺口：plan §2.3 覆盖"缺 agent 兜底"与"pageSize 覆盖"，但未组合
@@ -189,7 +191,7 @@ describe('Round 8 probes: resume.page boundary behaviors', () => {
     expect(resumeUseButtons(els)).toHaveLength(5);
   });
 
-  it('test_probe_resume_n_override_affects_pagination_bar', async () => {
+  it('test_anchor_resume_n_override_affects_pagination_bar', async () => {
     // 假设：`/resume 3` 的 N=3 页大小覆盖必须同时作用于列表条数与分页栏
     // （ceil(25/3)=9 页 → `第 1/9 页 · 共 25 个会话`，下一页 offset=3）。
     // spec 缺口：plan §2.3 写 N "作为页大小覆盖"，A4 只锚了默认页

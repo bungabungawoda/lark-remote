@@ -1,12 +1,12 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import type { CardStreamController } from '@larksuite/channel';
-import { RunCardSession } from '../../src/card/run-card-session.js';
+import { RunCardSession } from '../../../src/card/run-card-session.js';
 
 /**
  * PROBE (P1-3 coalesced-path flush error handling) — 生产路径使用默认 coalesceMs=100，
  * push fire-and-forget 调 scheduleFlush → timer 回调 `void this.flush()`。若
  * flush() → updateCard() 内部抛错，`void` 丢弃的 rejection 变成 detached
- * unhandled rejection。本 probe 验证：
+ * unhandled rejection。本锚点测试 验证：
  *
  * ① coalesced flush 的 controller.update 抛错时，不导致 unhandled rejection
  *    崩溃进程（updateCard 内部 try/catch 捕获）。
@@ -18,7 +18,7 @@ import { RunCardSession } from '../../src/card/run-card-session.js';
  * 当前所有 push 错误处理测试都设 coalesceMs:0（同步路径），生产路径的 detached
  * flush rejection 无覆盖。
  */
-describe('RunCardSession coalesced-path flush error (P1-3 probe)', () => {
+describe('RunCardSession coalesced-path flush error (P1-3 anchor)', () => {
   let unhandledRejections: unknown[];
 
   beforeEach(() => {
@@ -64,7 +64,7 @@ describe('RunCardSession coalesced-path flush error (P1-3 probe)', () => {
     });
   }
 
-  it('probe_coalesced_flush_controller_throws_no_unhandled_rejection', async () => {
+  it('test_anchor_coalesced_flush_controller_throws_no_unhandled_rejection', async () => {
     const session = makeSession({
       controllerUpdate: async () => {
         throw new Error('coalesced controller update failed');
@@ -89,7 +89,7 @@ describe('RunCardSession coalesced-path flush error (P1-3 probe)', () => {
     await session.settle();
   });
 
-  it('probe_coalesced_flush_both_paths_throw_no_unhandled_rejection', async () => {
+  it('test_anchor_coalesced_flush_both_paths_throw_no_unhandled_rejection', async () => {
     const session = makeSession({
       controllerUpdate: async () => {
         throw new Error('coalesced controller failed');
@@ -114,7 +114,7 @@ describe('RunCardSession coalesced-path flush error (P1-3 probe)', () => {
     await session.settle();
   });
 
-  it('probe_finish_await_inflight_flush_then_terminal_wins', async () => {
+  it('test_anchor_finish_await_inflight_flush_then_terminal_wins', async () => {
     // 验证 P2 修复核心路径：finish await in-flight flush，保证 terminal patch 在
     // pre-terminal 之后。人为延迟 flush 的 controller.update 让它在 finish 时仍
     // in-flight。时序：push → timer 到期触发 flush（flush 的 controller.update
@@ -186,7 +186,7 @@ describe('RunCardSession coalesced-path flush error (P1-3 probe)', () => {
     await session.settle();
   });
 
-  it('probe_terminal_guard_skips_flush_after_finish', async () => {
+  it('test_anchor_terminal_guard_skips_flush_after_finish', async () => {
     // flush 的终态守卫：finish 转终态后，延迟触发的 flush 跳过 patch
     let updateCount = 0;
     const session = makeSession({

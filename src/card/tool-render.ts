@@ -11,6 +11,7 @@
  */
 
 import type { ToolEntry } from './run-state.js';
+import { truncate } from '../common/truncate.js';
 
 const HEADER_SUMMARY_MAX = 80;
 const BODY_FIELD_MAX = 600;
@@ -37,8 +38,10 @@ export function toolHeaderText(tool: ToolEntry): string {
   const summary = summarizeInput(tool.name, input);
   // 信息保真 C3.1：ACP kind 映射后 name 与原始 title 不同时，title 以
   // ` — {summary}` 追加在标题末尾（截断沿用 HEADER_SUMMARY_MAX）。
+  // 用 truncate（suffix 为空）而非裸 slice：裸 slice 按 UTF-16 码元切，
+  // 切点落在 emoji 代理对中间会留下孤立代理项（P2-31 同族）。
   const blockSummary = tool.summary
-    ? tool.summary.replace(/\s+/g, ' ').trim().slice(0, HEADER_SUMMARY_MAX)
+    ? truncate(tool.summary.replace(/\s+/g, ' ').trim(), HEADER_SUMMARY_MAX, { suffix: '' })
     : '';
   const parts = [summary, blockSummary].filter(Boolean);
   return parts.length > 0
@@ -72,7 +75,8 @@ export function toolBodyMd(tool: ToolEntry): string {
 
   const body = parts.join('\n\n');
   if (body.length <= BODY_TOTAL_MAX) return body;
-  return `${body.slice(0, BODY_TOTAL_MAX)}…\n\n_（body 已截断，完整内容查日志）_`;
+  // 同上：走 truncate 保证切点不落在代理对中间（末尾 '…' 由 truncate 附加以对齐预算）。
+  return `${truncate(body, BODY_TOTAL_MAX)}\n\n_（body 已截断，完整内容查日志）_`;
 }
 
 function summarizeInput(name: string, input: unknown): string {
@@ -220,8 +224,4 @@ function asRecord(input: unknown): Record<string, unknown> | null {
     }
   }
   return null;
-}
-
-function truncate(s: string, max: number): string {
-  return s.length > max ? `${s.slice(0, max)}…` : s;
 }

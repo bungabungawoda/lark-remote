@@ -1,11 +1,11 @@
 /**
- * Round 10 termination probes (plan §2.1/§2.2/§4.2): 5 reader 层边界。
+ * Round 10 termination anchors (plan §2.1/§2.2/§4.2): 5 reader 层边界。
  *
- * Each `test_probe_*` is an independent assumption; a fail here is a
+ * Each `test_anchor_*` is an independent assumption; a fail here is a
  * candidate RED for the orchestrator to upgrade/drop.
  *
  * Focus areas:
- * - P10-8: TTL staleness 为 spec §2.2 设计内行为（list 走 5s 缓存），非缺陷，probe 已丢弃。
+ * - P10-8: TTL staleness 为 spec §2.2 设计内行为（list 走 5s 缓存），非缺陷，对应探测项已裁决丢弃。
  * - P10-9: 5 个 reader 空目录（0 会话）下返回 { sessions: [], total: 0 }，
  *   任何 offset/limit 组合不抛异常。
  * - P10-10: 4 个可 fixture 的 reader（claude/pi/codex/kimi）在 5 会话
@@ -16,13 +16,13 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { ClaudeSessionReader } from '../../src/session/claude/index.js';
-import { CodexSessionReader } from '../../src/session/codex/index.js';
-import { clearSessionIndexCache } from '../../src/session/codex/rollout-reader.js';
-import { OpencodeSessionReader } from '../../src/session/opencode/index.js';
-import { PiSessionReader } from '../../src/session/pi/index.js';
-import { KimiSessionReader } from '../../src/session/kimi/index.js';
-import type { AgentSessionReader } from '../../src/runner/index.js';
+import { ClaudeSessionReader } from '../../../src/session/claude/index.js';
+import { CodexSessionReader } from '../../../src/session/codex/index.js';
+import { clearSessionIndexCache } from '../../../src/session/codex/rollout-reader.js';
+import { OpencodeSessionReader } from '../../../src/session/opencode/index.js';
+import { PiSessionReader } from '../../../src/session/pi/index.js';
+import { KimiSessionReader } from '../../../src/session/kimi/index.js';
+import type { AgentSessionReader } from '../../../src/runner/index.js';
 
 const { mockLogger } = vi.hoisted(() => ({
   mockLogger: {
@@ -33,17 +33,17 @@ const { mockLogger } = vi.hoisted(() => ({
   },
 }));
 
-import { encodedProjectDir } from '../lib/session-fixtures.js';
-vi.mock('../../src/logger/index.js', () => ({
+import { encodedProjectDir } from '../../lib/session-fixtures.js';
+vi.mock('../../../src/logger/index.js', () => ({
   getLogger: () => mockLogger,
   initLogger: () => mockLogger,
 }));
 
-describe('Round 10 reader probes', () => {
+describe('Round 10 reader anchors', () => {
   let tmpDir: string;
 
   beforeEach(() => {
-    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'round10-reader-probes-'));
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'round10-reader-anchors-'));
     clearSessionIndexCache();
   });
 
@@ -51,7 +51,7 @@ describe('Round 10 reader probes', () => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  it('test_probe_readers_empty_dir_returns_zero_total', () => {
+  it('test_anchor_readers_empty_dir_returns_zero_total', () => {
     // 假设：5 个 reader 在空目录/无二进制可用下都返回 { sessions: [], total: 0 }
     // 且不抛异常（任何 offset/limit 组合）。
     const cwd = fs.realpathSync(tmpDir);
@@ -78,7 +78,7 @@ describe('Round 10 reader probes', () => {
     }
   });
 
-  it('test_probe_readers_fixture_limit_zero_and_offset_bounds', () => {
+  it('test_anchor_readers_fixture_limit_zero_and_offset_bounds', () => {
     // 假设：5 会话 fixture 下，limit=0 → 空页但 total=5；offset=total → 空页；
     // offset=total-pageSize → 末页起点；limit 超大 → 全集；负 offset → 第一页
     // （R9 裁决：reader 层统一 offset<0 → 0，不静默空页）。

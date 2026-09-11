@@ -6,6 +6,7 @@ import { SessionStore } from '../session/index.js';
 import type { Bridge } from '../bridge/index.js';
 import type { AppConfig } from '../config/index.js';
 import { createMockBridge, createStubSessionReaderRegistry } from '../../tests/lib/bridge-stubs.js';
+import { expectNoV1ActionContainer } from '../../tests/lib/card-view.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -200,5 +201,96 @@ describe('ls tilde expansion', () => {
       const text = sentCard.text ?? '';
       expect(text).toMatch(/不存在|无效|No such|not found|invalid/i);
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// /ls <file>：列出文件本身（原先直接报 "Not a directory"，用户无法确认存在性
+// 或下载该文件）。
+// ---------------------------------------------------------------------------
+
+describe('ls on a file path lists the file itself', () => {
+  let router: CommandRouter;
+  let sessionStore: SessionStore;
+  let mockBridge: ReturnType<typeof createMockBridge>;
+  let tempDir: string;
+  let testFilePath: string;
+
+  const ctx = { userId: 'user1', chatId: 'chat1', messageId: 'msg1' };
+
+  beforeEach(() => {
+    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ls-filecard-test-'));
+    testFilePath = path.join(tempDir, 'lr.zip');
+    fs.writeFileSync(testFilePath, 'zip-content');
+
+    sessionStore = new SessionStore();
+    sessionStore.set('user1', { sessions: new Map(), previousSessions: new Map(), cwd: tempDir });
+    mockBridge = createMockBridge();
+
+    const config: AppConfig = {
+      feishu: { appId: 'test', appSecret: 'test' },
+      claude: { model: 'claude-sonnet-4-20250514', effort: 'medium', stopGraceMs: 5000 },
+      idle: { watchdogMinutes: 15 },
+      logging: { level: 'info' },
+      defaultAgent: 'claude',
+    };
+
+    router = new CommandRouter({
+      sessionStore,
+      bridge: mockBridge,
+      config,
+      configPath: '/tmp/config.yaml',
+      sessionReaderRegistry: createStubSessionReaderRegistry(),
+    });
+  });
+
+  it('test_anchor_ls_file_returns_card_not_not_a_directory', async () => {
+    await router.handle(`/ls ${testFilePath}`, ctx);
+
+    const sent = mockBridge.sendResult.mock.calls[0][0];
+    // 不再是 "ls: xxx: Not a directory" 文本
+    expect(sent.text).toBeUndefined();
+    expect(sent.card).toBeDefined();
+
+    const bodyText = JSON.stringify((sent.card as { body: object }).body);
+    expect(bodyText).not.toContain('Not a directory');
+    // 展示文件本身（完整路径 + 文件名）
+    expect(bodyText).toContain(testFilePath);
+    expect(bodyText).toContain('lr.zip');
+    // 200861 铁律 + CardKit 2.0 结构断言
+    expect((sent.card as { schema?: string }).schema).toBe('2.0');
+    expectNoV1ActionContainer(sent.card);
+  });
+
+  it('file card offers a download button (ls.file callback)', async () => {
+    await router.handle(`/ls ${testFilePath}`, ctx);
+    const bodyText = JSON.stringify(
+      (mockBridge.sendResult.mock.calls[0][0].card as { body: object }).body,
+    );
+    // 下载按钮走既有 ls.file 回调，payload 携带该文件绝对路径
+    expect(bodyText).toContain('ls.file');
+    expect(bodyText).toContain(testFilePath);
+  });
+
+  it('file card offers an 上级 button to browse the parent directory', async () => {
+    await router.handle(`/ls ${testFilePath}`, ctx);
+    const bodyText = JSON.stringify(
+      (mockBridge.sendResult.mock.calls[0][0].card as { body: object }).body,
+    );
+    expect(bodyText).toContain('ls.browse');
+    expect(bodyText).toContain(tempDir);
+  });
+
+  it('relative file name resolves against cwd', async () => {
+    await router.handle('/ls lr.zip', ctx);
+    const sent = mockBridge.sendResult.mock.calls[0][0];
+    expect(sent.card).toBeDefined();
+    expect(JSON.stringify((sent.card as { body: object }).body)).toContain(testFilePath);
+  });
+
+  it('missing path still reports No such file or directory', async () => {
+    await router.handle('/ls /nonexistent/nope.bin', ctx);
+    const sent = mockBridge.sendResult.mock.calls[0][0];
+    expect(sent.text).toContain('No such file or directory');
   });
 });
