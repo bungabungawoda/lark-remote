@@ -62,7 +62,6 @@ const config: AppConfig = AppConfigSchema.parse({
     stopGraceMs: 5000,
   },
   workspace: { default: '' },
-  output: { showThinking: true, showToolUse: false, showToolResult: false },
   logging: { level: 'info' },
 });
 

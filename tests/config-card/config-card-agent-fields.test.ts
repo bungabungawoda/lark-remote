@@ -56,11 +56,6 @@ function buildCodexConfig(): AppConfig {
       model: 'claude-sonnet-4-20250514',
     },
     workspace: { default: '' },
-    output: {
-      showThinking: true,
-      showToolUse: false,
-      showToolResult: false,
-    },
   });
 }
 
@@ -73,11 +68,6 @@ function buildClaudeConfig(): AppConfig {
       stopGraceMs: 5000,
     },
     workspace: { default: '' },
-    output: {
-      showThinking: true,
-      showToolUse: false,
-      showToolResult: false,
-    },
   });
 }
 
@@ -142,11 +132,6 @@ function buildPiConfig(): AppConfig {
       stopGraceMs: 5000,
     },
     agents: { pi: { provider: 'Volcano', model: 'glm-5.2', thinking: 'medium' } },
-    output: {
-      showThinking: true,
-      showToolUse: false,
-      showToolResult: false,
-    },
   });
 }
 
@@ -159,11 +144,6 @@ function buildOpencodeConfig(): AppConfig {
       stopGraceMs: 5000,
     },
     agents: { opencode: { password: 'test-pass', baseUrl: 'http://localhost:8080' } },
-    output: {
-      showThinking: true,
-      showToolUse: false,
-      showToolResult: false,
-    },
   });
 }
 

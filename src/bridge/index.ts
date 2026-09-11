@@ -1044,9 +1044,6 @@ export class Bridge {
       replyTo: ctx.messageId,
       runId,
       renderOptions: {
-        showThinking: this.config.output.showThinking,
-        showToolUse: this.config.output.showToolUse,
-        showToolResult: this.config.output.showToolResult,
         // Run card header shows the current agent name (e.g. "Claude · 思考中")
         agentKind,
         // Compact 按钮能力门控与 resume 卡 / auto-resume 卡一致（hasRunCompact
@@ -1590,9 +1587,6 @@ export class Bridge {
         const sent = await this.sendResult(
           {
             card: renderRunCard(cardSession.currentState, {
-              showThinking: this.config.output.showThinking,
-              showToolUse: this.config.output.showToolUse,
-              showToolResult: this.config.output.showToolResult,
               agentKind: activeRun.agentKind,
               // 与 createRunSession 的 renderOptions 一致：fallback 卡也要按
               // runner 能力门控 Compact 按钮（缺省 undefined = 显示按钮，
@@ -2118,9 +2112,6 @@ export class Bridge {
       replyTo: ctx.messageId,
       runId: compactRunId,
       renderOptions: {
-        showThinking: this.config.output.showThinking,
-        showToolUse: this.config.output.showToolUse,
-        showToolResult: this.config.output.showToolResult,
         agentKind,
       },
     });

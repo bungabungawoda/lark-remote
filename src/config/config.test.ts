@@ -28,11 +28,6 @@ const VALID_CONFIG = `feishu:
 claude:
   model: claude-opus-4-8
   stopGraceMs: 5000
-
-output:
-  showThinking: true
-  showToolUse: false
-  showToolResult: false
 `;
 
 describe('loadConfig', () => {
@@ -44,7 +39,6 @@ describe('loadConfig', () => {
 
     expect(config.claude.model).toBe('claude-opus-4-8');
     expect(config.claude.stopGraceMs).toBe(5000);
-    expect(config.output.showThinking).toBe(true);
   });
 
   it('fills defaults for optional fields', () => {
@@ -61,9 +55,17 @@ describe('loadConfig', () => {
     expect(config.claude.permissionMode).toBe('bypassPermissions');
     expect(config.claude.approvalTimeoutMs).toBe(5 * 60 * 1000);
     expect(config.claude.idleTtlMinutes).toBe(30);
-    expect(config.output.showThinking).toBe(true);
     // defaultAgent defaults to 'claude' when absent
     expect(config.defaultAgent).toBe('claude');
+  });
+
+  it('tolerates legacy output.show* keys in existing config files (stripped)', () => {
+    const p = writeConfig(
+      VALID_CONFIG +
+        '\noutput:\n  showThinking: true\n  showToolUse: true\n  showToolResult: true\n',
+    );
+    const config = loadConfig(p);
+    expect((config as unknown as Record<string, unknown>).output).toBeUndefined();
   });
 
   it('claude permissionMode accepts official --permission-mode enum plus default', () => {
@@ -237,7 +239,6 @@ describe('getConfigValue', () => {
       model: 'claude-opus-4-8',
       stopGraceMs: 5000,
     },
-    output: { showThinking: true, showToolUse: false, showToolResult: false },
   });
 
   it('gets top-level nested value', () => {
@@ -267,8 +268,8 @@ describe('setConfigValue', () => {
   it('parses boolean values', () => {
     const p = writeConfig(VALID_CONFIG);
     const config = loadConfig(p);
-    const updated = setConfigValue(p, config, 'output.showToolUse', 'true');
-    expect(updated.output.showToolUse).toBe(true);
+    const updated = setConfigValue(p, config, 'checkUpdateOnStartup', 'true');
+    expect(updated.checkUpdateOnStartup).toBe(true);
   });
 
   it('parses numeric values', () => {

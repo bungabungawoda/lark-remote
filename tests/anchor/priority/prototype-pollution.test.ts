@@ -22,11 +22,6 @@ const VALID_CONFIG = `feishu:
 claude:
   model: claude-opus-4-8
   stopGraceMs: 5000
-
-output:
-  showThinking: true
-  showToolUse: false
-  showToolResult: false
 `;
 
 function makeConfig(): { p: string; config: AppConfig } {

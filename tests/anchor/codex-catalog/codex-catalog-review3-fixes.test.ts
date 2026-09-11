@@ -110,7 +110,6 @@ function buildCodexConfig(model: string, reasoningEffort: string): AppConfig {
         stopGraceMs: 5000,
       },
     },
-    output: { showThinking: true, showToolUse: true, showToolResult: true },
     idle: { watchdogMinutes: 15 },
     logging: { level: 'info' },
   });

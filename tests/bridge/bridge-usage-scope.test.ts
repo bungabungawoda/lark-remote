@@ -56,7 +56,6 @@ beforeEach(() => {
     feishu: { appId: 'test', appSecret: 'test' },
     claude: { model: 'opus', stopGraceMs: 5000 },
     defaultAgent: 'claude',
-    output: { showThinking: true, showToolUse: false, showToolResult: false },
   });
 });
 
@@ -268,11 +267,6 @@ describe('Bridge usage scope: live 优先、jsonl 兜底', () => {
       feishu: { appId: 'test', appSecret: 'test' },
       claude: { model: 'opus', stopGraceMs: 5000 },
       defaultAgent: 'kimi',
-      output: {
-        showThinking: true,
-        showToolUse: false,
-        showToolResult: false,
-      },
     });
     const kimiRunner = asAgentRunner(
       createStubRunner({

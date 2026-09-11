@@ -42,7 +42,6 @@ function createRouter(overrides?: {
       stopGraceMs: 5000,
     },
     defaultAgent: overrides?.defaultAgent ?? 'claude',
-    output: { showThinking: true, showToolUse: false, showToolResult: false },
   });
 
   const registry = overrides?.sessionReaderRegistry ?? createStubSessionReaderRegistry();
@@ -208,7 +207,6 @@ describe('P1: multi-agent legacy issues — bridge stream end', () => {
       defaultAgent: 'codex',
       codex: { model: 'gpt-5.2', stopGraceMs: 5000 },
       workspace: { default: '' },
-      output: { showThinking: true, showToolUse: false, showToolResult: false },
     });
     const { bridge, sessionStore, connector } = makeBridge({
       runner: createStubRunner({
