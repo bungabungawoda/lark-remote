@@ -15,6 +15,7 @@ vi.mock('../../src/runner/probe.js', () => ({
   getCachedAvailability: vi.fn(() => undefined),
 }));
 import { getCachedAvailability } from '../../src/runner/probe.js';
+import { expectNoV1ActionContainer } from '../lib/card-view.js';
 // ---------------------------------------------------------------------------
 // Helpers: extract field keys from a CardKit 2.0 config card JSON
 // ---------------------------------------------------------------------------
@@ -368,7 +369,7 @@ describe('Config card agent-aware fields (design: 2026-07-11)', () => {
       const cardStr = JSON.stringify(result.card);
 
       expect(cardStr).toContain('"schema":"2.0"');
-      expect(cardStr).not.toMatch(/"tag"\s*:\s*"action"[^}]*"actions"/);
+      expectNoV1ActionContainer(cardStr);
     });
   });
 

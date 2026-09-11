@@ -8,14 +8,14 @@ import {
 } from './probe.js';
 
 // 探测已收进 platform seam（纯 Node PATH 查找，无子进程）：
-// 这里 mock seam 断言 probe 层的映射、缓存与 dsh 短路语义
-vi.mock('../platform/probe.js', () => ({
-  isExecutableAvailable: vi.fn(),
+// 这里 mock resolveExecutable 断言 probe 层的映射、缓存与 dsh 短路语义
+vi.mock('../platform/command.js', () => ({
+  resolveExecutable: vi.fn(),
 }));
 
-import { isExecutableAvailable } from '../platform/probe.js';
+import { resolveExecutable } from '../platform/command.js';
 
-const mockProbe = vi.mocked(isExecutableAvailable);
+const mockProbe = vi.mocked(resolveExecutable);
 
 describe('probe', () => {
   beforeEach(() => {
@@ -25,19 +25,18 @@ describe('probe', () => {
   });
 
   describe('probeAgentAvailability', () => {
-    it('returns true when the seam resolves the binary on PATH', async () => {
-      mockProbe.mockReturnValue(true);
-      const result = await probeAgentAvailability('claude');
-      expect(result).toBe(true);
-      expect(mockProbe).toHaveBeenCalledWith('claude');
-    });
-
-    it('returns false when the binary is not on PATH', async () => {
-      mockProbe.mockReturnValue(false);
-      const result = await probeAgentAvailability('codex');
-      expect(result).toBe(false);
-      expect(mockProbe).toHaveBeenCalledWith('codex');
-    });
+    it.each([
+      ['claude', '/usr/bin/mock-bin', true],
+      ['codex', null, false],
+    ] as const)(
+      '%s availability follows seam resolution (%s)',
+      async (kind, resolved, expected) => {
+        mockProbe.mockReturnValue(resolved);
+        const result = await probeAgentAvailability(kind);
+        expect(result).toBe(expected);
+        expect(mockProbe).toHaveBeenCalledWith(kind);
+      },
+    );
 
     it('reports dsh unavailable without touching the seam (no CLI binary)', async () => {
       const result = await probeAgentAvailability('dsh');
@@ -46,7 +45,7 @@ describe('probe', () => {
     });
 
     it('caches result and does not re-probe within TTL', async () => {
-      mockProbe.mockReturnValue(true);
+      mockProbe.mockReturnValue('/usr/bin/mock-bin');
       await probeAgentAvailability('opencode');
       expect(mockProbe).toHaveBeenCalledTimes(1);
 
@@ -59,7 +58,7 @@ describe('probe', () => {
 
   describe('probeAllAgents', () => {
     it('probes all 5 spawn-able agents concurrently', async () => {
-      mockProbe.mockReturnValue(true);
+      mockProbe.mockReturnValue('/usr/bin/mock-bin');
       const result = await probeAllAgents();
       expect(result.size).toBe(5);
       expect(result.get('claude')).toBe(true);
@@ -71,7 +70,9 @@ describe('probe', () => {
 
     it('reports mixed availability correctly', async () => {
       // claude/opencode available, codex/pi/kimi unavailable
-      mockProbe.mockImplementation((name: string) => name === 'claude' || name === 'opencode');
+      mockProbe.mockImplementation((name: string) =>
+        name === 'claude' || name === 'opencode' ? '/usr/bin/mock-bin' : null,
+      );
       const result = await probeAllAgents();
       expect(result.get('claude')).toBe(true);
       expect(result.get('codex')).toBe(false);
@@ -86,14 +87,8 @@ describe('probe', () => {
       expect(getCachedAvailability('claude')).toBeUndefined();
     });
 
-    it('returns cached boolean after probe', async () => {
-      mockProbe.mockReturnValue(true);
-      await probeAgentAvailability('claude');
-      expect(getCachedAvailability('claude')).toBe(true);
-    });
-
-    it('returns undefined after cache is cleared', async () => {
-      mockProbe.mockReturnValue(true);
+    it('returns cached boolean after probe; undefined after cache is cleared', async () => {
+      mockProbe.mockReturnValue('/usr/bin/mock-bin');
       await probeAgentAvailability('claude');
       expect(getCachedAvailability('claude')).toBe(true);
       _clearCacheForTest();
@@ -101,7 +96,7 @@ describe('probe', () => {
     });
 
     it('clears all cache entries', async () => {
-      mockProbe.mockReturnValue(true);
+      mockProbe.mockReturnValue('/usr/bin/mock-bin');
       await probeAllAgents();
       for (const kind of ['claude', 'codex', 'opencode', 'pi', 'kimi']) {
         expect(getCachedAvailability(kind as AgentKind)).toBe(true);

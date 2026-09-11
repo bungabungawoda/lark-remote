@@ -4,6 +4,7 @@ import { sleep } from '../common/sleep.js';
 import type { AgentRegistry } from '../runner/registry.js';
 import type { SessionReaderRegistry, SessionStore } from '../session/index.js';
 import type { AppConfig } from '../config/index.js';
+import { resolveFinalUsage, errorMessage } from './final-usage.js';
 import { getLogger } from '../logger/index.js';
 import { RunCardSession, type RunCardChannel } from '../card/run-card-session.js';
 import { renderRunCard } from '../card/run-renderer.js';
@@ -85,6 +86,16 @@ interface BridgeChannel extends RunCardChannel {
   sendFile(chatId: string, filePath: string): Promise<string>;
   addReaction(messageId: string, emoji: string): Promise<void>;
   removeReactionByEmoji(messageId: string, emoji: string): Promise<void>;
+}
+
+/**
+ * W2.4 单点化：`'runCompact' in runner` 鸭子探测（compact 按钮门控，
+ * design doc §6.2-2）。codex app-server + kimi/opencode ACP runner 满足。
+ */
+function runnerHasRunCompact(runner: Runner): boolean {
+  return (
+    'runCompact' in runner && typeof (runner as Record<string, unknown>).runCompact === 'function'
+  );
 }
 
 /** Caller context for a bridge operation. */
@@ -388,9 +399,7 @@ export class Bridge {
    */
   hasRunCompact(workspace: string, kind: AgentKind = this.config.defaultAgent): boolean {
     const runner = this.getRunner(workspace, kind);
-    return (
-      'runCompact' in runner && typeof (runner as Record<string, unknown>).runCompact === 'function'
-    );
+    return runnerHasRunCompact(runner);
   }
 
   /** 入队时刻快照：当前 defaultAgent + 该 agent 的 sessionId（无 session 则 undefined）。
@@ -1462,7 +1471,13 @@ export class Bridge {
       const finalSessionId = this.sessionStore.getSessionId(ctx.userId, agentKind);
       const finalUsage = resultNotSuccess
         ? undefined
-        : this.resolveFinalUsage(finalSessionId, cwd, agentKind);
+        : resolveFinalUsage(
+            this.sessionReaderRegistry,
+            this.config.defaultAgent,
+            finalSessionId,
+            cwd,
+            agentKind,
+          );
       finalContextLength = finalUsage?.contextLength ?? contextLength;
       finalContextLimit = finalUsage?.contextLimit ?? liveContextLimit;
       finalCompactCount = finalUsage?.compactCount;
@@ -1641,9 +1656,7 @@ export class Bridge {
         // §6.2-3：写入条件从「codex 终态」放宽为「runner 有 runCompact 的终态」
         // （codex app-server + kimi acp 均满足）。
         const runTerminal = cardSession.currentState.terminal;
-        const runnerHasCompact =
-          'runCompact' in activeRun.runner &&
-          typeof (activeRun.runner as Record<string, unknown>).runCompact === 'function';
+        const runnerHasCompact = runnerHasRunCompact(activeRun.runner);
         if (
           runnerHasCompact &&
           activeRun.runner.lifetime === 'workspace' &&
@@ -1665,71 +1678,6 @@ export class Bridge {
         }
         getLogger().info(`[bridge] activeRuns.delete cwd=${cwd} runId=${runId}`);
       }
-    }
-  }
-
-  /**
-   * Read final usage (contextLength + compactCount + cache tokens) from the session jsonl.
-   * Called after a run finishes: live stream-json does not emit compact_boundary,
-   * so the live contextLength (fallback to result.usage input+output) is
-   * unreliable. The jsonl is authoritative for postTokens + compact event count.
-   */
-  private resolveFinalUsage(
-    sessionId: string | undefined,
-    cwd: string,
-    agentKind: AgentKind = this.config.defaultAgent,
-  ):
-    | {
-        contextLength?: number;
-        contextLimit?: number;
-        compactCount?: number;
-        compactPreContextLength?: number;
-        cacheReadTokens?: number;
-        cacheCreationTokens?: number;
-        totalTokens?: number;
-        inputTokens?: number;
-        outputTokens?: number;
-        cumulativeTotalTokens?: number;
-        cumulativeInputTokens?: number;
-        cumulativeOutputTokens?: number;
-        cumulativeCacheReadTokens?: number;
-        cumulativeCacheCreationTokens?: number;
-      }
-    | undefined {
-    if (!sessionId) return undefined;
-    try {
-      const content = this.sessionReaderRegistry.get(agentKind).readSessionContent(sessionId, cwd);
-      if (!content.usage) {
-        // EnterWorktree relocate (2026-08-04): jsonl read silently returned no
-        // usage (e.g. transcript moved mid-session). Surface it so token-stat
-        // fallback to per-run live usage is visible in logs, not silent.
-        getLogger().warn(
-          `[bridge] resolveFinalUsage: no usage from jsonl sessionId=${sessionId} cwd=${cwd} agent=${agentKind}, card falls back to per-run live usage`,
-        );
-      }
-      return content.usage
-        ? {
-            contextLength: content.usage.contextLength,
-            contextLimit: content.usage.contextLimit,
-            compactCount: content.usage.compactCount,
-            compactPreContextLength: content.usage.compactPreContextLength,
-            cacheReadTokens: content.usage.cacheReadTokens,
-            cacheCreationTokens: content.usage.cacheCreationTokens,
-            totalTokens: content.usage.totalTokens,
-            inputTokens: content.usage.inputTokens,
-            outputTokens: content.usage.outputTokens,
-            cumulativeTotalTokens: content.usage.cumulativeTotalTokens,
-            cumulativeInputTokens: content.usage.cumulativeInputTokens,
-            cumulativeOutputTokens: content.usage.cumulativeOutputTokens,
-            cumulativeCacheReadTokens: content.usage.cumulativeCacheReadTokens,
-            cumulativeCacheCreationTokens: content.usage.cumulativeCacheCreationTokens,
-          }
-        : undefined;
-    } catch (err) {
-      getLogger().warn(
-        `[bridge] resolveFinalUsage failed sessionId=${sessionId}: ${errorMessage(err)}`,
-      );
-      return undefined;
     }
   }
 
@@ -2008,10 +1956,7 @@ export class Bridge {
 
     // Check that the runner has runCompact method
     const runner = this.getRunner(cwd, last.agentKind);
-    if (
-      !('runCompact' in runner) ||
-      typeof (runner as Record<string, unknown>).runCompact !== 'function'
-    ) {
+    if (!runnerHasRunCompact(runner)) {
       await this.sendResult({ text: '⚠️ 当前运行模式不支持 Compact' }, ctx);
       return;
     }
@@ -2154,10 +2099,22 @@ export class Bridge {
       // 压缩结束后从会话 jsonl 读权威统计（压缩后上下文、压缩次数、本次压缩
       // token 消耗与会话累计）。thread/compacted 通知与 jsonl 落盘几乎同时
       // （实测差 ~9ms），compactCount 未读到则短重试，仍失败优雅降级（无统计）。
-      let finalUsage = this.resolveFinalUsage(sessionId, cwd, agentKind);
+      let finalUsage = resolveFinalUsage(
+        this.sessionReaderRegistry,
+        this.config.defaultAgent,
+        sessionId,
+        cwd,
+        agentKind,
+      );
       for (let attempt = 0; !finalUsage?.compactCount && attempt < 2; attempt++) {
         await sleep(150);
-        finalUsage = this.resolveFinalUsage(sessionId, cwd, agentKind);
+        finalUsage = resolveFinalUsage(
+          this.sessionReaderRegistry,
+          this.config.defaultAgent,
+          sessionId,
+          cwd,
+          agentKind,
+        );
       }
       await cardSession.finish(terminal, {
         resultSubtype: resultSubtype ?? 'error',
@@ -2254,10 +2211,7 @@ export class Bridge {
 
     // Check that the runner has runCompact（codex/kimi/opencode/pi/claude 鸭子探测）。
     const runner = this.getRunner(cwd, agentKind);
-    if (
-      !('runCompact' in runner) ||
-      typeof (runner as Record<string, unknown>).runCompact !== 'function'
-    ) {
+    if (!runnerHasRunCompact(runner)) {
       await this.sendResult({ text: '⚠️ 当前运行模式不支持 Compact' }, ctx);
       return;
     }
@@ -2422,8 +2376,4 @@ export class Bridge {
       void this.connector.addReaction(ctx.messageId, 'Done');
     }
   }
-}
-
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }

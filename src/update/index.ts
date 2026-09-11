@@ -6,6 +6,10 @@
  * and the combined workflow for the /update command and --update CLI flag.
  */
 
-export { isNewer, checkLatestVersion, type VersionCheckResult } from './version-check.js';
+export {
+  isNewer,
+  checkLatestVersion,
+  formatUpdateHint,
+  type VersionCheckResult,
+} from './version-check.js';
 export { runInstallLatest, type InstallResult } from './install.js';
-export { formatUpdateHint } from './startup-hint.js';

@@ -17,7 +17,9 @@ export interface StreamCardConnectorOpts {
    * arrays). Default: resolves (no-op).
    */
   controllerUpdate?:
-    (() => Promise<void> | void) | Error | Array<() => Promise<void> | void | Error>;
+    | ((card: object) => Promise<void> | void)
+    | Error
+    | Array<(card: object) => Promise<void> | void | Error>;
   /**
    * `updateCard` behavior for the connector. A function is called as-is; an
    * `Error` is thrown. Default: resolves (no-op).
@@ -44,14 +46,16 @@ export function makeStreamCardConnector(opts: StreamCardConnectorOpts = {}): {
   let updateCall = 0;
   const makeUpdate = () => {
     const behavior = opts.controllerUpdate;
-    return async () => {
+    // W3.2：转发 controller.update 的实参（patch 对象/reducer）给 behavior ——
+    // 此前不转发导致 capture 类行为拿不到卡片参数，工厂无法表达 update 捕获变体。
+    return async (...args: [card: object]) => {
       if (behavior instanceof Error) throw behavior;
       if (Array.isArray(behavior)) {
         const item = behavior[Math.min(updateCall++, behavior.length - 1)];
         if (item instanceof Error) throw item;
-        return item();
+        return item(...args);
       }
-      return behavior?.();
+      return behavior?.(...args);
     };
   };
 

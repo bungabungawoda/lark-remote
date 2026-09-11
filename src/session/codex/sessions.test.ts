@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { createRollout, metaLine } from '../../../tests/lib/codex-rollout-fixture.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -37,28 +38,11 @@ afterEach(() => {
   clearSessionIndexCache();
 });
 
-/** Create a rollout file in the standard YYYY/MM/DD directory structure. */
-function createRollout(filename: string, content: string, datePath = '2026/07/13'): string {
-  const dir = path.join(tmpDir, 'sessions', ...datePath.split('/'));
-  fs.mkdirSync(dir, { recursive: true });
-  const filePath = path.join(dir, filename);
-  fs.writeFileSync(filePath, content, 'utf-8');
-  return filePath;
-}
-
-/** Build a minimal session_meta JSONL line. */
-function metaLine(sessionId: string, cwd = '/tmp', extra: Record<string, unknown> = {}): string {
-  return JSON.stringify({
-    type: 'session_meta',
-    payload: { session_id: sessionId, cwd, originator: 'test', ...extra },
-    timestamp: '2026-07-13T10:00:00.000Z',
-  });
-}
-
 describe('CodexSessionReader', () => {
   describe('listSessions', () => {
     it('returns sessions with summary from firstUserMessage', () => {
       createRollout(
+        tmpDir,
         'rollout-s1.jsonl',
         [
           metaLine('s1', '/tmp'),
@@ -78,7 +62,7 @@ describe('CodexSessionReader', () => {
 
     it('replaces "(no user message)" placeholder with empty string', () => {
       // Session with no user messages → firstUserMessage === '(no user message)'
-      createRollout('rollout-empty.jsonl', metaLine('empty-sess', '/tmp'));
+      createRollout(tmpDir, 'rollout-empty.jsonl', metaLine('empty-sess', '/tmp'));
 
       const reader = new CodexSessionReader({ codexHome: tmpDir });
       const result = reader.listSessions('/tmp');
@@ -88,8 +72,8 @@ describe('CodexSessionReader', () => {
     });
 
     it('filters by cwd', () => {
-      createRollout('rollout-a.jsonl', metaLine('sa', '/project/a'));
-      createRollout('rollout-b.jsonl', metaLine('sb', '/project/b'));
+      createRollout(tmpDir, 'rollout-a.jsonl', metaLine('sa', '/project/a'));
+      createRollout(tmpDir, 'rollout-b.jsonl', metaLine('sb', '/project/b'));
 
       const reader = new CodexSessionReader({ codexHome: tmpDir });
       const result = reader.listSessions('/project/a');
@@ -100,7 +84,7 @@ describe('CodexSessionReader', () => {
 
     it('applies limit and offset', () => {
       for (let i = 0; i < 5; i++) {
-        createRollout(`rollout-${i}.jsonl`, metaLine(`s${i}`, '/tmp'));
+        createRollout(tmpDir, `rollout-${i}.jsonl`, metaLine(`s${i}`, '/tmp'));
       }
 
       const reader = new CodexSessionReader({ codexHome: tmpDir });
@@ -120,8 +104,8 @@ describe('CodexSessionReader', () => {
 
   describe('getNewestSession', () => {
     it('returns the newest session for a cwd', () => {
-      const file1 = createRollout('rollout-old.jsonl', metaLine('old', '/tmp'));
-      const file2 = createRollout('rollout-new.jsonl', metaLine('new', '/tmp'));
+      const file1 = createRollout(tmpDir, 'rollout-old.jsonl', metaLine('old', '/tmp'));
+      const file2 = createRollout(tmpDir, 'rollout-new.jsonl', metaLine('new', '/tmp'));
 
       // Set different mtimes
       const oldTime = new Date('2026-07-13T08:00:00Z').getTime() / 1000;
@@ -145,6 +129,7 @@ describe('CodexSessionReader', () => {
   describe('readSessionContent', () => {
     it('delegates to readCodexSessionContent', () => {
       createRollout(
+        tmpDir,
         'rollout-content.jsonl',
         [
           metaLine('content-sess', '/tmp'),
@@ -164,6 +149,7 @@ describe('CodexSessionReader', () => {
 
     it('returns empty events when cwd mismatches session cwd', () => {
       createRollout(
+        tmpDir,
         'rollout-cwd-guard.jsonl',
         [
           metaLine('cwd-guard-sess', '/home/user/project-a'),
@@ -181,6 +167,7 @@ describe('CodexSessionReader', () => {
 
     it('returns content when cwd matches session cwd', () => {
       createRollout(
+        tmpDir,
         'rollout-cwd-match.jsonl',
         [
           metaLine('cwd-match-sess', '/tmp'),
@@ -197,7 +184,7 @@ describe('CodexSessionReader', () => {
 
   describe('isSessionActive', () => {
     it('delegates to isCodexSessionActive', () => {
-      const file = createRollout('rollout-active.jsonl', metaLine('active-sess', '/tmp'));
+      const file = createRollout(tmpDir, 'rollout-active.jsonl', metaLine('active-sess', '/tmp'));
       const now = Date.now();
       fs.utimesSync(file, now / 1000, now / 1000);
 
@@ -215,6 +202,7 @@ describe('rollout-reader additional branches', () => {
   describe('readCodexRollout edge cases', () => {
     it('returns null for session_meta with empty session_id', () => {
       const filePath = createRollout(
+        tmpDir,
         'rollout-no-id.jsonl',
         '{"type":"session_meta","payload":{"session_id":"","cwd":"/tmp"}}',
       );
@@ -223,6 +211,7 @@ describe('rollout-reader additional branches', () => {
 
     it('falls back to session_meta.id when session_id is missing', () => {
       const filePath = createRollout(
+        tmpDir,
         'rollout-alt-id.jsonl',
         [
           '{"type":"session_meta","payload":{"id":"alt-id-123","cwd":"/tmp"}}',
@@ -236,6 +225,7 @@ describe('rollout-reader additional branches', () => {
 
     it('returns null when session_meta has neither session_id nor id', () => {
       const filePath = createRollout(
+        tmpDir,
         'rollout-neither.jsonl',
         '{"type":"session_meta","payload":{"cwd":"/tmp"}}',
       );
@@ -244,7 +234,11 @@ describe('rollout-reader additional branches', () => {
 
     it('handles outer catch when fs.statSync fails after successful parse', () => {
       // Create a valid file
-      const filePath = createRollout('rollout-stat-fail.jsonl', metaLine('stat-fail', '/tmp'));
+      const filePath = createRollout(
+        tmpDir,
+        'rollout-stat-fail.jsonl',
+        metaLine('stat-fail', '/tmp'),
+      );
       // Mock fs.statSync to throw for this specific file.
       // readCodexRollout calls statSync at the end to get mtime; if it throws,
       // the outer catch should return null and log a warning.
@@ -264,6 +258,7 @@ describe('rollout-reader additional branches', () => {
 
     it('extracts response_item with input_text field (not text)', () => {
       const filePath = createRollout(
+        tmpDir,
         'rollout-input-text.jsonl',
         [
           metaLine('it-sess', '/tmp'),
@@ -280,6 +275,7 @@ describe('rollout-reader additional branches', () => {
 
     it('skips response_item with non-array content', () => {
       const filePath = createRollout(
+        tmpDir,
         'rollout-nonarray.jsonl',
         [
           metaLine('na-sess', '/tmp'),
@@ -292,6 +288,7 @@ describe('rollout-reader additional branches', () => {
 
     it('skips response_item with non-message type', () => {
       const filePath = createRollout(
+        tmpDir,
         'rollout-nonmsg.jsonl',
         [
           metaLine('nm-sess', '/tmp'),
@@ -304,6 +301,7 @@ describe('rollout-reader additional branches', () => {
 
     it('skips line with non-string type field', () => {
       const filePath = createRollout(
+        tmpDir,
         'rollout-nonstr-type.jsonl',
         [metaLine('nst-sess', '/tmp'), '{"type":42,"payload":{}}'].join('\n'),
       );
@@ -314,6 +312,7 @@ describe('rollout-reader additional branches', () => {
 
     it('skips line without payload for event_msg/response_item', () => {
       const filePath = createRollout(
+        tmpDir,
         'rollout-no-payload.jsonl',
         [metaLine('np-sess', '/tmp'), '{"type":"event_msg"}', '{"type":"response_item"}'].join(
           '\n',
@@ -326,6 +325,7 @@ describe('rollout-reader additional branches', () => {
 
     it('skips user_message with non-string message field', () => {
       const filePath = createRollout(
+        tmpDir,
         'rollout-nonstr-msg.jsonl',
         [
           metaLine('nsm-sess', '/tmp'),
@@ -339,6 +339,7 @@ describe('rollout-reader additional branches', () => {
 
     it('skips user_message with empty string message', () => {
       const filePath = createRollout(
+        tmpDir,
         'rollout-empty-msg.jsonl',
         [
           metaLine('em-sess', '/tmp'),
@@ -353,7 +354,7 @@ describe('rollout-reader additional branches', () => {
   describe('listCodexRollouts deeper branches', () => {
     it('applies offset correctly', () => {
       for (let i = 0; i < 4; i++) {
-        const f = createRollout(`rollout-off-${i}.jsonl`, metaLine(`off-${i}`, '/tmp'));
+        const f = createRollout(tmpDir, `rollout-off-${i}.jsonl`, metaLine(`off-${i}`, '/tmp'));
         // Set staggered mtimes so order is deterministic
         const t = (Date.now() - (3 - i) * 1000) / 1000;
         fs.utimesSync(f, t, t);
@@ -368,6 +369,7 @@ describe('rollout-reader additional branches', () => {
   describe('readCodexSessionContent deeper branches', () => {
     it('maxEvents <= 0 returns empty events array', () => {
       createRollout(
+        tmpDir,
         'rollout-max0.jsonl',
         [
           metaLine('max0', '/tmp'),
@@ -382,6 +384,7 @@ describe('rollout-reader additional branches', () => {
 
     it('maxEvents with negative value returns empty events array', () => {
       createRollout(
+        tmpDir,
         'rollout-maxneg.jsonl',
         [
           metaLine('maxneg', '/tmp'),
@@ -394,7 +397,7 @@ describe('rollout-reader additional branches', () => {
     });
 
     it('returns undefined displayTitle when no real user messages', () => {
-      createRollout('rollout-nodisplay.jsonl', [metaLine('nodisplay', '/tmp')].join('\n'));
+      createRollout(tmpDir, 'rollout-nodisplay.jsonl', [metaLine('nodisplay', '/tmp')].join('\n'));
 
       const content = readCodexSessionContent('nodisplay', { codexHome: tmpDir });
       expect(content.displayTitle).toBeUndefined();
@@ -413,7 +416,7 @@ describe('rollout-reader additional branches', () => {
       // session_meta with a different id after index was built.
       // Simpler: just test the "rollout is null" path by deleting file after
       // index build.
-      createRollout('rollout-mismatch.jsonl', metaLine('mismatch-id', '/tmp'));
+      createRollout(tmpDir, 'rollout-mismatch.jsonl', metaLine('mismatch-id', '/tmp'));
 
       // Build the index by listing first
       listCodexRollouts({ codexHome: tmpDir });
@@ -430,7 +433,7 @@ describe('rollout-reader additional branches', () => {
 
   describe('isCodexSessionActive deeper branches', () => {
     it('returns false when statSync throws (file deleted after index build)', () => {
-      createRollout('rollout-deleted.jsonl', metaLine('deleted', '/tmp'));
+      createRollout(tmpDir, 'rollout-deleted.jsonl', metaLine('deleted', '/tmp'));
 
       // Build the index
       listCodexRollouts({ codexHome: tmpDir });
@@ -448,7 +451,7 @@ describe('rollout-reader additional branches', () => {
     });
 
     it('uses default 10-minute activeThresholdMs', () => {
-      const file = createRollout('rollout-threshold.jsonl', metaLine('threshold', '/tmp'));
+      const file = createRollout(tmpDir, 'rollout-threshold.jsonl', metaLine('threshold', '/tmp'));
 
       // Set mtime to 5 minutes ago — within 10-minute default threshold
       const fiveMinAgo = (Date.now() - 5 * 60 * 1000) / 1000;
@@ -461,8 +464,18 @@ describe('rollout-reader additional branches', () => {
   describe('getSessionIndex conflict resolution', () => {
     it('among same mtime, picks lexicographically smaller filePath', () => {
       // Two files with same session_id and same mtime — filePath tie-breaker
-      const file1 = createRollout('rollout-aaa.jsonl', metaLine('tie-id', '/tmp'), '2026/07/13');
-      const file2 = createRollout('rollout-zzz.jsonl', metaLine('tie-id', '/tmp'), '2026/07/13');
+      const file1 = createRollout(
+        tmpDir,
+        'rollout-aaa.jsonl',
+        metaLine('tie-id', '/tmp'),
+        '2026/07/13',
+      );
+      const file2 = createRollout(
+        tmpDir,
+        'rollout-zzz.jsonl',
+        metaLine('tie-id', '/tmp'),
+        '2026/07/13',
+      );
 
       // Same mtime
       const t = Date.now() / 1000;
@@ -477,6 +490,7 @@ describe('rollout-reader additional branches', () => {
 
     it('source.subagent marker also marks entry as subagent', () => {
       createRollout(
+        tmpDir,
         'rollout-source-sub.jsonl',
         metaLine('source-sub-id', '/tmp', { source: { subagent: true } }),
       );
@@ -738,6 +752,7 @@ describe('rollout-reader additional branches', () => {
       // But let's test it explicitly if the function were exported.
       // Since it's not exported, we test via readCodexRollout.
       const filePath = createRollout(
+        tmpDir,
         'rollout-nonarray2.jsonl',
         [
           metaLine('na2', '/tmp'),
@@ -750,6 +765,7 @@ describe('rollout-reader additional branches', () => {
 
     it('extracts text from item.input_text when item.text is absent', () => {
       const filePath = createRollout(
+        tmpDir,
         'rollout-input-text-only.jsonl',
         [
           metaLine('ito', '/tmp'),

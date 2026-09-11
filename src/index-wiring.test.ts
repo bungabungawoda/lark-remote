@@ -18,27 +18,21 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 describe('index.ts card action dispatch wiring guard (§9.19)', () => {
-  it('approval 家族 / order.aliasInput / order.textInput 必须在直接返回分支（不落入串行队列）', () => {
+  it('直返分支必须查 router 单源 DIRECT_RETURN_CMDS（不落入串行队列）', () => {
+    // W2.1 后 index.ts 的直返清单收敛为 router 的 DIRECT_RETURN_CMDS Set 查表
+    //（命令名一致性由 router.test.ts 的三清单一致性测试钉住）。
     const source = fs.readFileSync(path.resolve(__dirname, 'index.ts'), 'utf-8');
-    // 有界片段匹配（不用 /s 全文件模糊）：从 queue.input 条件到直接返回分支的
-    // 右括号，允许多行 if 条件格式。窗口 600 覆盖当前 12 个 cmd 的白名单块。
-    // 结构守卫：`{0,600}?\) \{` 在首个 `) {` 处停止，若中间出现额外 `) {`
-    // 会截断；新增一个 cmd 超出窗口时测试失败（不是静默匹配失败）。
+    // 直返分支本体：查 router 单源 Set
+    expect(source).toContain('if (DIRECT_RETURN_CMDS.has(actionValue.cmd)) {');
+    // 分支体内直返 router.handleCardAction（同步 toast/card 回调）
     const directReturnBlock = source.match(
-      /actionValue\.cmd === 'queue\.input'[\s\S]{0,600}?\) \{/,
+      /if \(DIRECT_RETURN_CMDS\.has\(actionValue\.cmd\)\) \{[\s\S]{0,300}?\n {4}\}/,
     );
     expect(directReturnBlock).not.toBeNull();
     const block = directReturnBlock?.[0] ?? '';
-    expect(block).toContain("actionValue.cmd === 'approval.respond'");
-    expect(block).toContain("actionValue.cmd === 'approval.toggle'");
-    expect(block).toContain("actionValue.cmd === 'approval.answer'");
-    expect(block).toContain("actionValue.cmd === 'approval.answerSubmit'");
-    expect(block).toContain("actionValue.cmd === 'approval.answerCustom'");
-    expect(block).toContain("actionValue.cmd === 'approval.answerNote'");
-    expect(block).toContain("actionValue.cmd === 'approval.planFeedback'");
-    expect(block).toContain("actionValue.cmd === 'order.aliasInput'");
-    expect(block).toContain("actionValue.cmd === 'order.aliasRemove'");
-    expect(block).toContain("actionValue.cmd === 'order.textInput'");
+    expect(block).toContain('router.handleCardAction(fullValue');
+    // 直返名单来源必须从 router 导入（防本地复制名单再漂移）
+    expect(source).toContain('DIRECT_RETURN_CMDS,\n  type CardActionPayload,');
   });
 });
 

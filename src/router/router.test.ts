@@ -2,7 +2,12 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { CommandRouter, isImmediateAction } from './index.js';
+import {
+  CommandRouter,
+  isImmediateAction,
+  DIRECT_RETURN_CMDS,
+  APPROVAL_ACTION_CMDS,
+} from './index.js';
 import { formatTimestamp } from '../card/time.js';
 import { Bridge } from '../bridge/index.js';
 import { SessionStore } from '../session/index.js';
@@ -21,6 +26,7 @@ import {
   createStubSessionReader,
 } from '../../tests/lib/bridge-stubs.js';
 import { encodedProjectDir, writeSessionJsonl } from '../../tests/lib/session-fixtures.js';
+import { expectNoV1ActionContainer } from '../../tests/lib/card-view.js';
 
 /**
  * Create a stub session reader registry.
@@ -48,6 +54,70 @@ type TestCard = {
 };
 
 /** 递归收集卡片正文文本（含 column_set 内嵌 div/按钮的 text）。 */
+// W3.7：三处局部递归校验函数（原 checkColumnTags ×2 / checkElements ×3 /
+// checkAll ×1 逐字重复）提升到文件顶层单源。
+
+/** 递归断言辅助：收集每个 column_set 下 tag !== 'column' 的违规路径。 */
+function findColumnTagViolations(els: TestCardElement[], path: string): string[] {
+  const violations: string[] = [];
+  for (let i = 0; i < els.length; i++) {
+    const el = els[i];
+    const p = `${path}[${i}]`;
+    if (el.tag === 'column_set' && el.columns) {
+      for (let j = 0; j < el.columns.length; j++) {
+        const col = el.columns[j] as Record<string, unknown>;
+        const cp = `${p}.columns[${j}]`;
+        if (col.tag !== 'column') {
+          violations.push(`${cp}.tag is "${col.tag ?? 'undefined'}", expected "column"`);
+        }
+        if (col.elements)
+          violations.push(
+            ...findColumnTagViolations(col.elements as TestCardElement[], `${cp}.elements`),
+          );
+      }
+    }
+  }
+  return violations;
+}
+
+/** 递归断言辅助：收集空 columns[].elements（ErrCode 200621）的违规路径。 */
+function findEmptyColumnElementViolations(els: TestCardElement[], path: string): string[] {
+  const violations: string[] = [];
+  for (let i = 0; i < els.length; i++) {
+    const el = els[i];
+    const p = `${path}[${i}]`;
+    if (el.columns) {
+      for (let j = 0; j < el.columns.length; j++) {
+        const col = el.columns[j];
+        const cp = `${p}.columns[${j}]`;
+        if (!col.elements || col.elements.length === 0) {
+          violations.push(`${cp}.elements is empty (tag=${el.tag || 'none'})`);
+        } else {
+          violations.push(...findEmptyColumnElementViolations(col.elements, `${cp}.elements`));
+        }
+      }
+    }
+  }
+  return violations;
+}
+
+/** 递归断言辅助：全卡深度遍历，收集所有空的 elements 数组路径。 */
+function findEmptyElementsViolations(obj: unknown, path: string): string[] {
+  const violations: string[] = [];
+  if (!obj || typeof obj !== 'object') return violations;
+  if (Array.isArray(obj)) {
+    if (obj.length === 0 && path.endsWith('elements')) {
+      violations.push(`${path} is empty`);
+    }
+    obj.forEach((v, i) => violations.push(...findEmptyElementsViolations(v, `${path}[${i}]`)));
+    return violations;
+  }
+  for (const [k, v] of Object.entries(obj as Record<string, unknown>)) {
+    violations.push(...findEmptyElementsViolations(v, `${path}.${k}`));
+  }
+  return violations;
+}
+
 function collectCardTexts(elements: TestCardElement[]): string[] {
   const out: string[] = [];
   for (const el of elements) {
@@ -228,7 +298,7 @@ describe('CommandRouter', () => {
     const card = connector._sent[0].input as { card: object };
     const cardStr = JSON.stringify(card.card);
     // 2.0 cards MUST NOT mix in 1.x `tag:"action"` containers (200861 root cause).
-    expect(cardStr).not.toMatch(/"tag"\s*:\s*"action"[^}]*"actions"/);
+    expectNoV1ActionContainer(cardStr);
   });
 
   // 2026-07-04: /help 卡片重构
@@ -526,7 +596,7 @@ describe('CommandRouter', () => {
     const cardStr = JSON.stringify((connector._sent[0].input as { card: object }).card);
     expect(cardStr).toContain('"schema":"2.0"');
     // 2.0 cards MUST NOT mix in 1.x `tag:"action"` containers (200861 root cause).
-    expect(cardStr).not.toMatch(/"tag"\s*:\s*"action"[^}]*"actions"/);
+    expectNoV1ActionContainer(cardStr);
     // ls.browse buttons use 2.0 behaviors, not 1.x `value`
     expect(cardStr).toContain('"cmd":"ls.browse"');
   });
@@ -678,25 +748,7 @@ describe('CommandRouter', () => {
     const card = input.card;
 
     // Recursively assert: every column in every column_set has tag === 'column'
-    const violations: string[] = [];
-    function checkColumnTags(els: TestCardElement[], path: string): void {
-      for (let i = 0; i < els.length; i++) {
-        const el = els[i];
-        const p = `${path}[${i}]`;
-        if (el.tag === 'column_set' && el.columns) {
-          for (let j = 0; j < el.columns.length; j++) {
-            const col = el.columns[j] as Record<string, unknown>;
-            const cp = `${p}.columns[${j}]`;
-            if (col.tag !== 'column') {
-              violations.push(`${cp}.tag is "${col.tag ?? 'undefined'}", expected "column"`);
-            }
-            if (col.elements) checkColumnTags(col.elements as TestCardElement[], `${cp}.elements`);
-          }
-        }
-      }
-    }
-    checkColumnTags(card.body.elements, 'body.elements');
-    expect(violations).toEqual([]);
+    expect(findColumnTagViolations(card.body.elements, 'body.elements')).toEqual([]);
   });
 
   it('/ls pagination: no column with empty elements (regression: ErrCode 200621)', async () => {
@@ -713,27 +765,7 @@ describe('CommandRouter', () => {
     const card = input.card;
 
     // Recursively assert: no elements[] or columns[].elements[] is empty
-    const violations: string[] = [];
-    function checkElements(els: TestCardElement[], path: string): void {
-      for (let i = 0; i < els.length; i++) {
-        const el = els[i];
-        const p = `${path}[${i}]`;
-        if (el.columns) {
-          for (let j = 0; j < el.columns.length; j++) {
-            const col = el.columns[j];
-            const cp = `${p}.columns[${j}]`;
-            if (!col.elements || col.elements.length === 0) {
-              violations.push(`${cp}.elements is empty (tag=${el.tag || 'none'})`);
-            } else {
-              checkElements(col.elements, `${cp}.elements`);
-            }
-          }
-        }
-        // Also check direct elements on the element itself (e.g. button elements)
-      }
-    }
-    checkElements(card.body.elements, 'body.elements');
-    expect(violations).toEqual([]);
+    expect(findEmptyColumnElementViolations(card.body.elements, 'body.elements')).toEqual([]);
 
     // First page should NOT have 上一页 (hasPrev=false), but SHOULD have 下一页
     const cardStr = JSON.stringify(card);
@@ -797,22 +829,7 @@ describe('CommandRouter', () => {
     await router.handle('/ls', ctx);
     const input = connector._sent[0].input as { card: { body: { elements: TestCardElement[] } } };
 
-    const violations: string[] = [];
-    function checkAll(obj: unknown, path: string): void {
-      if (!obj || typeof obj !== 'object') return;
-      if (Array.isArray(obj)) {
-        if (obj.length === 0 && path.endsWith('elements')) {
-          violations.push(`${path} is empty`);
-        }
-        obj.forEach((v, i) => checkAll(v, `${path}[${i}]`));
-        return;
-      }
-      for (const [k, v] of Object.entries(obj as Record<string, unknown>)) {
-        checkAll(v, `${path}.${k}`);
-      }
-    }
-    checkAll(input.card, 'card');
-    expect(violations).toEqual([]);
+    expect(findEmptyElementsViolations(input.card, 'card')).toEqual([]);
   });
 
   it('/ws save/use/remove/list with card (§6.3)', async () => {
@@ -883,7 +900,7 @@ describe('CommandRouter', () => {
     const input = connector._sent[1].input as { card: TestCard };
     expect(input.card).toBeDefined();
     // 200861 铁律：2.0 卡片不得出现 tag:action + actions
-    expect(JSON.stringify(input.card)).not.toMatch(/"tag"\s*:\s*"action"[^}]*"actions"/);
+    expectNoV1ActionContainer(JSON.stringify(input.card));
 
     const elements = input.card.body!.elements ?? [];
     const buttons = elements
@@ -975,7 +992,7 @@ describe('CommandRouter', () => {
     const input = connector._sent[connector._sent.length - 1].input as { card: TestCard };
     expect(input.card).toBeDefined();
     // 200861 铁律：2.0 卡片不得出现 tag:action + actions
-    expect(JSON.stringify(input.card)).not.toMatch(/"tag"\s*:\s*"action"[^}]*"actions"/);
+    expectNoV1ActionContainer(JSON.stringify(input.card));
 
     const elements = input.card.body!.elements ?? [];
     // 新布局：1(cwd) + 3(sort指示: hr+column_set+hr) + 5*3(行) - 1(末行 hr 被 pop) + 1(hr) + 1(分页column_set) = 19
@@ -1714,7 +1731,7 @@ describe('CommandRouter', () => {
       );
 
       const cardStr = lastSendResultJson(sendResult);
-      expect(cardStr).not.toMatch(/"tag"\s*:\s*"action"[^}]*"actions"/);
+      expectNoV1ActionContainer(cardStr);
     });
 
     it('test_anchor_resume_compact_card_action_dispatches_to_bridge', async () => {
@@ -2709,26 +2726,7 @@ describe('CommandRouter', () => {
       const input = connector._sent[0].input as { card: { body: { elements: TestCardElement[] } } };
       const card = input.card;
 
-      const violations: string[] = [];
-      function checkColumnTags(els: TestCardElement[], path: string): void {
-        for (let i = 0; i < els.length; i++) {
-          const el = els[i];
-          const p = `${path}[${i}]`;
-          if (el.tag === 'column_set' && el.columns) {
-            for (let j = 0; j < el.columns.length; j++) {
-              const col = el.columns[j] as Record<string, unknown>;
-              const cp = `${p}.columns[${j}]`;
-              if (col.tag !== 'column') {
-                violations.push(`${cp}.tag is "${col.tag ?? 'undefined'}", expected "column"`);
-              }
-              if (col.elements)
-                checkColumnTags(col.elements as TestCardElement[], `${cp}.elements`);
-            }
-          }
-        }
-      }
-      checkColumnTags(card.body.elements, 'body.elements');
-      expect(violations).toEqual([]);
+      expect(findColumnTagViolations(card.body.elements, 'body.elements')).toEqual([]);
     });
 
     it('/ws pagination: no column with empty elements (regression: ErrCode 200621)', async () => {
@@ -2741,26 +2739,7 @@ describe('CommandRouter', () => {
       const input = connector._sent[0].input as { card: { body: { elements: TestCardElement[] } } };
       const card = input.card;
 
-      const violations: string[] = [];
-      function checkElements(els: TestCardElement[], path: string): void {
-        for (let i = 0; i < els.length; i++) {
-          const el = els[i];
-          const p = `${path}[${i}]`;
-          if (el.columns) {
-            for (let j = 0; j < el.columns.length; j++) {
-              const col = el.columns[j];
-              const cp = `${p}.columns[${j}]`;
-              if (!col.elements || col.elements.length === 0) {
-                violations.push(`${cp}.elements is empty (tag=${el.tag || 'none'})`);
-              } else {
-                checkElements(col.elements, `${cp}.elements`);
-              }
-            }
-          }
-        }
-      }
-      checkElements(card.body.elements, 'body.elements');
-      expect(violations).toEqual([]);
+      expect(findEmptyColumnElementViolations(card.body.elements, 'body.elements')).toEqual([]);
 
       // First page: no ⬅ (prev), has ➡ (next)
       const cardStr = JSON.stringify(card);
@@ -2798,7 +2777,7 @@ describe('CommandRouter', () => {
       const input = connector._sent[0].input as { card: TestCard };
       const cardStr = JSON.stringify(input.card);
       // 200861 regression: no V1 action containers
-      expect(cardStr).not.toMatch(/"tag"\s*:\s*"action"[^}]*"actions"/);
+      expectNoV1ActionContainer(cardStr);
       // No pagination bar when count <= page size
       expect(cardStr).not.toContain('"content":"⬅"');
       expect(cardStr).not.toContain('"content":"➡"');
@@ -3093,7 +3072,7 @@ describe('CommandRouter', () => {
     const cardStr = JSON.stringify((connector._sent[0].input as { card: object }).card);
     expect(cardStr).toContain('"schema":"2.0"');
     // 2.0 cards MUST NOT mix in 1.x `tag:"action"` containers (200861 root cause).
-    expect(cardStr).not.toMatch(/"tag"\s*:\s*"action"[^}]*"actions"/);
+    expectNoV1ActionContainer(cardStr);
     // config callbacks use 2.0 behaviors
     expect(cardStr).toContain('"cmd":"config.');
   });
@@ -3716,8 +3695,9 @@ describe('/active card pagination', () => {
     await router.handle('/active', { userId: 'user1', chatId: 'chat1', messageId: 'msg1' });
     const card = (connector._sent[0].input as { card?: { body?: { elements?: unknown[] } } }).card!;
     const elements = card.body?.elements ?? [];
-    // 页信息 1 + Agent 头 1 + 15*4 + Bash 头 1 + 5*4 + 分页栏 1 = 84
-    expect(elements.length).toBe(84);
+    // Agent 头 1 + 15*4 + Bash 头 1 + 5*4 + 分页栏 1 = 83
+    // （W2.9：独立页信息 div 并入 paginationBar 的 label 列，元素数 -1）
+    expect(elements.length).toBe(83);
     expect(elements.length).toBeLessThanOrEqual(90);
   });
 
@@ -3799,7 +3779,7 @@ describe('P0: /active card must use CardKit 2.0 (not 1.x action container)', () 
 
     const cardStr = JSON.stringify(response.card);
     // 2.0 cards MUST NOT mix in 1.x `tag:"action"` containers (200861 root cause)
-    expect(cardStr).not.toMatch(/"tag"\s*:\s*"action"[^}]*"actions"/);
+    expectNoV1ActionContainer(cardStr);
   });
 
   it('test_anchor_kimi_config_clears_runner_cache', async () => {
@@ -3982,5 +3962,34 @@ describe('config switch agent sends Resume card', () => {
     expect(switchCards.length).toBeGreaterThanOrEqual(1);
     const header = (switchCards[0].input as { card?: TestCard }).card?.header?.title?.content ?? '';
     expect(header).toContain('Kimi');
+  });
+});
+
+// ===========================================================================
+// W2.1 命令名单一致性（防再漂移）：直返/immediate/审批 spec 三份知识共享
+// 同一命令名来源。历史上四份拷贝曾两次漂移（order.textInput 漏 immediate、
+// answer 家族漏直返），此测试钉住「单一事实源 + 清单间包含关系」。
+// ===========================================================================
+describe('W2.1 command list consistency (direct-return / immediate / approval specs)', () => {
+  it('direct-return list is a subset of the immediate list', () => {
+    for (const cmd of DIRECT_RETURN_CMDS) {
+      expect(isImmediateAction(cmd), `direct-return cmd '${cmd}' must be immediate`).toBe(true);
+    }
+  });
+
+  it('every approval spec key is in both direct-return and immediate lists', () => {
+    expect(APPROVAL_ACTION_CMDS.length).toBeGreaterThanOrEqual(7);
+    for (const cmd of APPROVAL_ACTION_CMDS) {
+      expect(DIRECT_RETURN_CMDS.has(cmd), `approval cmd '${cmd}' must be direct-return`).toBe(true);
+      expect(isImmediateAction(cmd), `approval cmd '${cmd}' must be immediate`).toBe(true);
+    }
+  });
+
+  it('known drift victims are covered (order.textInput / approval.answer family)', () => {
+    // 2026-08-12 两次事故的具体命令，防止「重构后意外收窄名单」回归。
+    expect(DIRECT_RETURN_CMDS.has('order.textInput')).toBe(true);
+    expect(DIRECT_RETURN_CMDS.has('approval.answerSubmit')).toBe(true);
+    expect(isImmediateAction('order.textInput')).toBe(true);
+    expect(isImmediateAction('approval.planFeedback')).toBe(true);
   });
 });

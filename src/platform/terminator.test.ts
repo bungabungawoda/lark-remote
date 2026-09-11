@@ -39,30 +39,6 @@ function lastSpawnCommand(): string[] | undefined {
   return call ? [call[0], ...call[1]] : undefined;
 }
 
-describe('grace 等待器（默认实现）', () => {
-  it('与 exit 事件竞速：进程在 grace 内退出则不等满窗口', async () => {
-    const proc = aliveProc();
-    setTimeout(() => emitExit(proc, 0, null), 5);
-    const stoppers = new AgentStopperRegistry();
-    stoppers.register('claude', vi.fn());
-    const terminator = createWin32Terminator({ graceMs: 300, stoppers, agent: 'claude' });
-    const started = Date.now();
-    const result = await terminator.stop(proc, { immediate: false });
-    expect(Date.now() - started).toBeLessThan(200);
-    expect(result.via).toBe('cooperative');
-  });
-
-  it('grace 内未退出 → 报告仍存活并补树杀', async () => {
-    const proc = aliveProc();
-    const stoppers = new AgentStopperRegistry();
-    stoppers.register('claude', vi.fn());
-    const terminator = createWin32Terminator({ graceMs: 10, stoppers, agent: 'claude' });
-    const result = await terminator.stop(proc, { immediate: false });
-    expect(result).toEqual({ requested: true, via: 'taskkill' });
-    expect(lastSpawnCommand()).toEqual(['taskkill', '/PID', '4242', '/T', '/F']);
-  });
-});
-
 describe('createWin32Terminator — 立即停止', () => {
   it('taskkill /PID <pid> /T /F', async () => {
     const proc = aliveProc(4242);
@@ -91,7 +67,7 @@ describe('createWin32Terminator — 立即停止', () => {
 });
 
 describe('createWin32Terminator — 优雅停止', () => {
-  it('有协议通道且 grace 内退出 → cooperative，不树杀', async () => {
+  it('有协议通道且 grace 内退出 → cooperative，不树杀（grace 内不等满窗口）', async () => {
     const proc = aliveProc();
     const stopper = vi.fn(() => {
       setTimeout(() => emitExit(proc, 0, null), 5);
@@ -100,7 +76,10 @@ describe('createWin32Terminator — 优雅停止', () => {
     stoppers.register('claude', stopper);
     const terminator = createWin32Terminator({ graceMs: 200, stoppers, agent: 'claude' });
 
+    const started = Date.now();
     const result = await terminator.stop(proc, { immediate: false });
+    // 原独立「grace 等待器」用例的计时断言（W3.7 并入）：grace 200ms 内 5ms 退出
+    expect(Date.now() - started).toBeLessThan(200);
     expect(stopper).toHaveBeenCalledTimes(1);
     expect(stopper.mock.calls[0]![0]).toBe(proc);
     expect(result).toEqual({ requested: true, via: 'cooperative' });

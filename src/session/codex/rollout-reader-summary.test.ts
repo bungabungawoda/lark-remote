@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { createRollout, metaLine } from '../../../tests/lib/codex-rollout-fixture.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -34,22 +35,6 @@ afterEach(() => {
   clearSessionIndexCache();
 });
 
-function createRollout(filename: string, content: string, datePath = '2026/07/13'): string {
-  const dir = path.join(tmpDir, 'sessions', ...datePath.split('/'));
-  fs.mkdirSync(dir, { recursive: true });
-  const filePath = path.join(dir, filename);
-  fs.writeFileSync(filePath, content, 'utf-8');
-  return filePath;
-}
-
-function metaLine(sessionId: string, cwd = '/tmp'): string {
-  return JSON.stringify({
-    type: 'session_meta',
-    payload: { session_id: sessionId, cwd, originator: 'test' },
-    timestamp: '2026-07-13T10:00:00.000Z',
-  });
-}
-
 const TOKEN_EVENT = JSON.stringify({
   type: 'event_msg',
   payload: {
@@ -75,6 +60,7 @@ const TOKEN_EVENT = JSON.stringify({
 describe('codex-rollout-reader readCodexSessionSummary', () => {
   it('returns displayTitle + usage parity with full content, without events', () => {
     createRollout(
+      tmpDir,
       'rollout-summary.jsonl',
       [
         metaLine('summary-sess', '/tmp'),
@@ -100,6 +86,7 @@ describe('codex-rollout-reader readCodexSessionSummary', () => {
 
   it('respects cwd guard (empty summary on cwd mismatch)', () => {
     createRollout(
+      tmpDir,
       'rollout-summary-cwd.jsonl',
       [
         metaLine('summary-cwd', '/home/user/project-a'),

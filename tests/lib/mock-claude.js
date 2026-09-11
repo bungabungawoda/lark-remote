@@ -32,6 +32,13 @@ const cwd = process.env.MOCK_CWD || '/tmp';
 const recordStdin = process.env.MOCK_RECORD_STDIN;
 const marker = process.env.MOCK_MARKER;
 const approvalsPerTurn = Number(process.env.MOCK_APPROVALS || '1');
+// 注入 stderr 噪音行（win32 command-not-found 嗅探回归：agent 正常输出可能
+// 引用 "is not recognized" 文本，不得被误杀/误判）。
+const stderrNoise = process.env.MOCK_STDERR_NOISE;
+
+if (stderrNoise) {
+  process.stderr.write(stderrNoise + '\n');
+}
 
 if (marker) {
   fs.appendFileSync(marker, `spawn ${process.pid}\n`);
