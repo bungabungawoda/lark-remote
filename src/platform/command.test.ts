@@ -2,7 +2,7 @@ import { describe, it, expect, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { resolveExecutable, clearResolveCache } from './command.js';
+import { resolveExecutable, clearResolveCache, isWslBashLauncher } from './command.js';
 import { describePosix } from '../../tests/lib/platform.js';
 
 const tmpDirs: string[] = [];
@@ -120,6 +120,82 @@ describe('resolveExecutable (win32)', () => {
     expect(
       resolveExecutable('agent', { platform: 'win32', pathEnv: `${first};${second}` }),
     ).toEqual({ kind: 'direct', file: shim });
+  });
+});
+
+/**
+ * win32 上 `bash` 的特例：%SystemRoot%\system32\bash.exe 是 WSL 启动器而不是
+ * Git Bash，PATH 里它通常排在 Git 前面。命中它会把 `!` 命令丢进 WSL 执行
+ * （cwd 变 /mnt/d/...、node 换成 WSL 里的旧版本 → ES2022 语法 SyntaxError）。
+ */
+describe('resolveExecutable (win32) — bash 必须避开 WSL 启动器', () => {
+  it('system32\\bash.exe 在前 → 跳过，取后面的 Git Bash', () => {
+    const win = mkdtemp();
+    const sys32 = path.join(win, 'system32');
+    fs.mkdirSync(sys32);
+    fs.writeFileSync(path.join(sys32, 'bash.exe'), 'MZ'); // WSL 启动器
+
+    const git = mkdtemp();
+    const gitBash = path.join(git, 'bash.exe');
+    fs.writeFileSync(gitBash, 'MZ');
+
+    expect(resolveExecutable('bash', { platform: 'win32', pathEnv: `${sys32};${git}` })).toEqual({
+      kind: 'direct',
+      file: gitBash,
+    });
+  });
+
+  it('只有 system32\\bash.exe 且 PATH 里有 Git\\cmd → 从 cmd 反推 Git\\bin\\bash.exe', () => {
+    const win = mkdtemp();
+    const sys32 = path.join(win, 'system32');
+    fs.mkdirSync(sys32);
+    fs.writeFileSync(path.join(sys32, 'bash.exe'), 'MZ');
+
+    const gitRoot = mkdtemp();
+    const gitCmd = path.join(gitRoot, 'cmd');
+    fs.mkdirSync(gitCmd);
+    fs.writeFileSync(path.join(gitCmd, 'git.exe'), 'MZ');
+    const gitBash = path.join(gitRoot, 'bin', 'bash.exe');
+    fs.mkdirSync(path.dirname(gitBash));
+    fs.writeFileSync(gitBash, 'MZ');
+
+    expect(resolveExecutable('bash', { platform: 'win32', pathEnv: `${sys32};${gitCmd}` })).toEqual(
+      { kind: 'direct', file: gitBash },
+    );
+  });
+
+  it('大小写不敏感：C:\\WINDOWS\\SysWOW64\\bash.exe 同样被跳过', () => {
+    const win = mkdtemp();
+    const syswow = path.join(win, 'SysWOW64');
+    fs.mkdirSync(syswow);
+    fs.writeFileSync(path.join(syswow, 'bash.exe'), 'MZ');
+    expect(isWslBashLauncher(path.join(syswow, 'bash.exe'))).toBe(true);
+    expect(isWslBashLauncher('C:/WINDOWS/system32/bash.exe')).toBe(true);
+  });
+
+  it('非 bash 查询不受影响：system32 里的其它可执行文件照常命中', () => {
+    const win = mkdtemp();
+    const sys32 = path.join(win, 'system32');
+    fs.mkdirSync(sys32);
+    const exe = path.join(sys32, 'agent.exe');
+    fs.writeFileSync(exe, 'MZ');
+    expect(resolveExecutable('agent', { platform: 'win32', pathEnv: sys32 })).toEqual({
+      kind: 'direct',
+      file: exe,
+    });
+  });
+
+  it('Git Bash 装在 usr\\bin 时也能反推命中', () => {
+    const gitRoot = mkdtemp();
+    const gitCmd = path.join(gitRoot, 'cmd');
+    fs.mkdirSync(gitCmd);
+    const gitBash = path.join(gitRoot, 'usr', 'bin', 'bash.exe');
+    fs.mkdirSync(path.dirname(gitBash), { recursive: true });
+    fs.writeFileSync(gitBash, 'MZ');
+    expect(resolveExecutable('bash', { platform: 'win32', pathEnv: gitCmd })).toEqual({
+      kind: 'direct',
+      file: gitBash,
+    });
   });
 });
 
