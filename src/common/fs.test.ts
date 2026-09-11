@@ -48,23 +48,21 @@ describe('withBusyRetry（§6 win32 句柄占用重试，仅 win32 生效）', (
     expect(onGiveUp).toHaveBeenCalledWith(expect.objectContaining({ code: 'EBUSY' }));
   });
 
-  it('posix：占用错误不重试、立即失败（避免忙等阻塞事件循环），仍回调 onGiveUp', () => {
-    const op = vi.fn<() => never>().mockImplementation(() => {
-      throw busyErr('EPERM');
-    });
-    const onGiveUp = vi.fn();
-    expect(() => withBusyRetry(op, { platform: 'linux', onGiveUp })).toThrow('EPERM');
-    expect(op).toHaveBeenCalledTimes(1);
-    expect(onGiveUp).toHaveBeenCalledTimes(1);
-  });
-
-  it('darwin：同 posix 立即失败（门控按是否 win32）', () => {
-    const op = vi.fn<() => never>().mockImplementation(() => {
-      throw busyErr('EBUSY');
-    });
-    expect(() => withBusyRetry(op, { platform: 'darwin' })).toThrow('EBUSY');
-    expect(op).toHaveBeenCalledTimes(1);
-  });
+  it.each([
+    ['linux', 'EPERM'],
+    ['darwin', 'EBUSY'],
+  ] as const)(
+    '%s（非 win32）：占用错误不重试、立即失败（避免忙等阻塞事件循环）',
+    (platform, code) => {
+      const op = vi.fn<() => never>().mockImplementation(() => {
+        throw busyErr(code);
+      });
+      const onGiveUp = vi.fn();
+      expect(() => withBusyRetry(op, { platform, onGiveUp })).toThrow(code);
+      expect(op).toHaveBeenCalledTimes(1);
+      expect(onGiveUp).toHaveBeenCalledTimes(1);
+    },
+  );
 
   it('非占用错误两平台都立即抛出，不重试', () => {
     const op = vi.fn<() => never>().mockImplementation(() => {

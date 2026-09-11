@@ -320,6 +320,16 @@ export interface TurnDiffEvent {
    * tool status ok, completedAt stamped. Never reorders blocks.
    */
   complete?: boolean;
+  /**
+   * Kimi ACP snapshot semantics: replace the existing block's anchor
+   * timestamp with THIS diff's timestamp on every update (text/reasoning).
+   * Kimi's `'text'`/`'thinking'` are whole-turn accumulators that keep
+   * receiving late deltas while tools run, so a first-sight timestamp makes
+   * the header (and its position after move-to-bottom) look stale. Other
+   * snapshot streams (codex app-server) keep the first-sight timestamp by
+   * contract — this flag stays false/undefined for them.
+   */
+  refreshTimestamp?: boolean;
   /** Authoritative tool status at completion (commandExecution item). */
   toolStatus?: 'ok' | 'error';
   threadId: string;

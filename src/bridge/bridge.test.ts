@@ -8,7 +8,13 @@ import { SessionStore } from '../session/index.js';
 import { SessionReaderRegistry } from '../session/registry.js';
 import { AppConfigSchema } from '../config/index.js';
 import type { AppConfig } from '../config/index.js';
-import type { AgentEvent, AgentRunner, AgentSessionReader, Runner } from '../runner/index.js';
+import type {
+  AgentEvent,
+  AgentRunner,
+  AgentSessionReader,
+  AgentSessionUsage,
+  Runner,
+} from '../runner/index.js';
 import {
   createStubSessionReaderRegistry,
   createStubConnector,
@@ -87,6 +93,54 @@ function createHangingRunner(): HangingRunner {
 
 let tmpDir: string;
 let config: AppConfig;
+
+const notFoundRead: AgentSessionReader['readSessionContent'] =
+  createStubSessionReader().readSessionContent;
+
+/** W3.7：readSessionContent 兜底返回「单条 tail + 指定 usage」的同形状闭包。 */
+function tailRead(usage?: AgentSessionUsage): AgentSessionReader['readSessionContent'] {
+  return () => ({
+    events: [{ type: 'text', content: 'tail' }],
+    usage,
+    aiTitle: undefined,
+    recap: undefined,
+    displayTitle: 'placeholder',
+    reason: 'ok',
+  });
+}
+
+function makeCompactBridge(opts: {
+  runner?: Runner;
+  read?: AgentSessionReader['readSessionContent'];
+  /** resume.compact 场景别名（与 read 等价，保留调用点语义可读）。 */
+  codexRead?: AgentSessionReader['readSessionContent'];
+  /** 覆盖指定 agent 的 reader（如带 readCompactionState 的 kimi/claude reader）。 */
+  readers?: Record<string, AgentSessionReader>;
+}) {
+  const sessionStore = new SessionStore();
+  const connector = createStubConnector();
+  const runner = opts.runner ?? createStubRunner();
+  const read = opts.read ?? opts.codexRead ?? notFoundRead;
+  const defaultReader: AgentSessionReader = {
+    listSessions: () => ({ sessions: [], total: 0 }),
+    getNewestSession: () => null,
+    readSessionContent: vi.fn(read),
+    isSessionActive: () => false,
+  };
+  const registry = new SessionReaderRegistry();
+  for (const agent of ['claude', 'codex', 'opencode', 'pi', 'kimi'] as const) {
+    registry.register(agent, opts.readers?.[agent] ?? defaultReader);
+  }
+  const bridge = new Bridge({
+    runner,
+    connector,
+    sessionStore,
+    config,
+    agentRegistry: createStubAgentRegistry(runner),
+    sessionReaderRegistry: registry,
+  });
+  return { bridge, sessionStore, connector, runner };
+}
 
 beforeEach(() => {
   tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'lark-bridge-test-'));
@@ -3060,39 +3114,6 @@ describe('Bridge handleResumeCompact（resume 卡 Compact 按钮）', () => {
   }
 
   /** 默认 readSessionContent 返回「未找到」（共享 stub 的空结果形状）。 */
-  const notFoundRead: AgentSessionReader['readSessionContent'] =
-    createStubSessionReader().readSessionContent;
-
-  function makeResumeCompactBridge(opts: {
-    runner?: Runner;
-    codexRead?: AgentSessionReader['readSessionContent'];
-  }) {
-    const sessionStore = new SessionStore();
-    const connector = createStubConnector();
-    const runner = opts.runner ?? createStubRunner();
-    const read = opts.codexRead ?? notFoundRead;
-    const reader: AgentSessionReader = {
-      listSessions: () => ({ sessions: [], total: 0 }),
-      getNewestSession: () => null,
-      readSessionContent: vi.fn(read),
-      isSessionActive: () => false,
-    };
-    const registry = new SessionReaderRegistry();
-    registry.register('claude', reader);
-    registry.register('codex', reader);
-    registry.register('opencode', reader);
-    registry.register('pi', reader);
-    registry.register('kimi', reader);
-    const bridge = new Bridge({
-      runner,
-      connector,
-      sessionStore,
-      config,
-      agentRegistry: createStubAgentRegistry(runner),
-      sessionReaderRegistry: registry,
-    });
-    return { bridge, sessionStore, connector, runner };
-  }
 
   it('test_anchor_handle_resume_compact_runs_runcompact_and_finishes_card', async () => {
     // 验证什么：happy path 调 runner.runCompact('', {cwd, sessionId}) 并流式渲染
@@ -3101,15 +3122,13 @@ describe('Bridge handleResumeCompact（resume 卡 Compact 按钮）', () => {
     const cwd = fs.realpathSync(tmpDir);
     const runCompactSpy = vi.fn(compactTurnEvents);
     const runner: CompactRunner = { ...createStubRunner(), runCompact: runCompactSpy };
-    const { bridge, sessionStore, connector } = makeResumeCompactBridge({
+    const { bridge, sessionStore, connector } = makeCompactBridge({
       runner,
-      codexRead: () => ({
-        events: [{ type: 'text', content: 'tail' }],
-        usage: { inputTokens: 10, outputTokens: 20, contextLength: 5000, compactCount: 1 },
-        aiTitle: undefined,
-        recap: undefined,
-        displayTitle: 'placeholder',
-        reason: 'ok',
+      codexRead: tailRead({
+        inputTokens: 10,
+        outputTokens: 20,
+        contextLength: 5000,
+        compactCount: 1,
       }),
     });
     sessionStore.setCwd('user1', cwd);
@@ -3131,22 +3150,15 @@ describe('Bridge handleResumeCompact（resume 卡 Compact 按钮）', () => {
     const cwd = fs.realpathSync(tmpDir);
     const runCompactSpy = vi.fn(compactTurnEvents);
     const runner: CompactRunner = { ...createStubRunner(), runCompact: runCompactSpy };
-    const { bridge, sessionStore, connector } = makeResumeCompactBridge({
+    const { bridge, sessionStore, connector } = makeCompactBridge({
       runner,
-      codexRead: () => ({
-        events: [{ type: 'text', content: 'tail' }],
-        usage: {
-          inputTokens: 10,
-          outputTokens: 20,
-          contextLength: 5000,
-          contextLimit: 100000,
-          compactCount: 1,
-          compactPreContextLength: 21000,
-        },
-        aiTitle: undefined,
-        recap: undefined,
-        displayTitle: 'placeholder',
-        reason: 'ok',
+      codexRead: tailRead({
+        inputTokens: 10,
+        outputTokens: 20,
+        contextLength: 5000,
+        contextLimit: 100000,
+        compactCount: 1,
+        compactPreContextLength: 21000,
       }),
     });
     sessionStore.setCwd('user1', cwd);
@@ -3163,7 +3175,7 @@ describe('Bridge handleResumeCompact（resume 卡 Compact 按钮）', () => {
     const cwd = fs.realpathSync(tmpDir);
     const runCompactSpy = vi.fn(compactTurnEvents);
     const runner: CompactRunner = { ...createStubRunner(), runCompact: runCompactSpy };
-    const { bridge, sessionStore, connector } = makeResumeCompactBridge({ runner });
+    const { bridge, sessionStore, connector } = makeCompactBridge({ runner });
     sessionStore.setCwd('user1', cwd);
 
     await bridge.handleResumeCompact({}, ctx);
@@ -3179,7 +3191,7 @@ describe('Bridge handleResumeCompact（resume 卡 Compact 按钮）', () => {
     const cwd = fs.realpathSync(tmpDir);
     const runCompactSpy = vi.fn(compactTurnEvents);
     const runner: CompactRunner = { ...createStubRunner(), runCompact: runCompactSpy };
-    const { bridge, sessionStore, connector } = makeResumeCompactBridge({ runner });
+    const { bridge, sessionStore, connector } = makeCompactBridge({ runner });
     sessionStore.setCwd('user1', cwd);
 
     await bridge.handleResumeCompact({ sessionId: 'ghost-session', agent: 'codex' }, ctx);
@@ -3193,15 +3205,8 @@ describe('Bridge handleResumeCompact（resume 卡 Compact 按钮）', () => {
     // 验证什么：runner 无 runCompact 时报「不支持 Compact」。
     // 缺失会导致执行时 TypeError，卡片点击无友好反馈。
     const cwd = fs.realpathSync(tmpDir);
-    const { bridge, sessionStore, connector } = makeResumeCompactBridge({
-      codexRead: () => ({
-        events: [{ type: 'text', content: 'tail' }],
-        usage: undefined,
-        aiTitle: undefined,
-        recap: undefined,
-        displayTitle: 'placeholder',
-        reason: 'ok',
-      }),
+    const { bridge, sessionStore, connector } = makeCompactBridge({
+      codexRead: tailRead(undefined),
     });
     sessionStore.setCwd('user1', cwd);
 
@@ -3219,16 +3224,9 @@ describe('Bridge handleResumeCompact（resume 卡 Compact 按钮）', () => {
       throw new Error('CodexAppServerRunner is already running');
     });
     const runner: CompactRunner = { ...createStubRunner(), runCompact: runCompactSpy };
-    const { bridge, sessionStore, connector } = makeResumeCompactBridge({
+    const { bridge, sessionStore, connector } = makeCompactBridge({
       runner,
-      codexRead: () => ({
-        events: [{ type: 'text', content: 'tail' }],
-        usage: undefined,
-        aiTitle: undefined,
-        recap: undefined,
-        displayTitle: 'placeholder',
-        reason: 'ok',
-      }),
+      codexRead: tailRead(undefined),
     });
     sessionStore.setCwd('user1', cwd);
 
@@ -3337,40 +3335,6 @@ describe('Bridge compact 终态映射 + 在途检测（§5.3）', () => {
     ) => AsyncGenerator<AgentEvent>;
   }
 
-  const notFoundRead: AgentSessionReader['readSessionContent'] =
-    createStubSessionReader().readSessionContent;
-
-  function makeCompactBridge(opts: {
-    runner?: Runner;
-    read?: AgentSessionReader['readSessionContent'];
-    /** 覆盖指定 agent 的 reader（如带 readCompactionState 的 kimi/claude reader）。 */
-    readers?: Record<string, AgentSessionReader>;
-  }) {
-    const sessionStore = new SessionStore();
-    const connector = createStubConnector();
-    const runner = opts.runner ?? createStubRunner();
-    const read = opts.read ?? notFoundRead;
-    const defaultReader: AgentSessionReader = {
-      listSessions: () => ({ sessions: [], total: 0 }),
-      getNewestSession: () => null,
-      readSessionContent: vi.fn(read),
-      isSessionActive: () => false,
-    };
-    const registry = new SessionReaderRegistry();
-    for (const agent of ['claude', 'codex', 'opencode', 'pi', 'kimi'] as const) {
-      registry.register(agent, opts.readers?.[agent] ?? defaultReader);
-    }
-    const bridge = new Bridge({
-      runner,
-      connector,
-      sessionStore,
-      config,
-      agentRegistry: createStubAgentRegistry(runner),
-      sessionReaderRegistry: registry,
-    });
-    return { bridge, sessionStore, connector, runner };
-  }
-
   function makeKimiInFlightReader(read: AgentSessionReader['readSessionContent']) {
     return {
       listSessions: () => ({ sessions: [], total: 0 }),
@@ -3398,14 +3362,7 @@ describe('Bridge compact 终态映射 + 在途检测（§5.3）', () => {
     const runner: CompactRunner = { ...createStubRunner(), runCompact: runCompactSpy };
     const { bridge, sessionStore, connector } = makeCompactBridge({
       runner,
-      read: () => ({
-        events: [{ type: 'text', content: 'tail' }],
-        usage: { compactCount: 0, contextLength: 100 },
-        aiTitle: undefined,
-        recap: undefined,
-        displayTitle: 'placeholder',
-        reason: 'ok',
-      }),
+      read: tailRead({ compactCount: 0, contextLength: 100 }),
     });
     sessionStore.setCwd('user1', cwd);
 
@@ -3508,14 +3465,7 @@ describe('Bridge compact 终态映射 + 在途检测（§5.3）', () => {
     // reader 必须返回非空内容，handleResumeCompact 的 session 校验才会放行到 runCompact。
     const { bridge, sessionStore } = makeCompactBridge({
       runner,
-      read: () => ({
-        events: [{ type: 'text', content: 'tail' }],
-        usage: undefined,
-        aiTitle: undefined,
-        recap: undefined,
-        displayTitle: 'placeholder',
-        reason: 'ok',
-      }),
+      read: tailRead(undefined),
     });
     sessionStore.setCwd('user1', cwd);
 

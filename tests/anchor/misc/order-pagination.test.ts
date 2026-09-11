@@ -16,6 +16,7 @@ import {
   createStubRunner,
   createStubConnector,
 } from '../../lib/bridge-stubs.js';
+import { expectNoV1ActionContainer } from '../../lib/card-view.js';
 
 let tmpDir: string;
 let ordersFile: string;
@@ -203,7 +204,7 @@ describe('/order pagination anchor tests', () => {
     const cardStr = JSON.stringify(r.card);
 
     // 2.0 cards MUST NOT mix in 1.x `tag:"action"` containers (200861)
-    expect(cardStr).not.toMatch(/"tag"\s*:\s*"action"[^}]*"actions"/);
+    expectNoV1ActionContainer(cardStr);
     expect(cardStr).toContain('"schema":"2.0"');
   });
 

@@ -11,13 +11,10 @@ describe('select', () => {
     expect(currentPlatform).toBe(process.platform);
   });
 
-  it('isWin32 只对 win32 为真', () => {
+  it('isWin32 只对 win32 为真；默认取当前宿主平台', () => {
     expect(isWin32('win32')).toBe(true);
     expect(isWin32('linux')).toBe(false);
     expect(isWin32('darwin')).toBe(false);
-  });
-
-  it('isWin32 默认取当前宿主平台', () => {
     expect(isWin32()).toBe(process.platform === 'win32');
   });
 });

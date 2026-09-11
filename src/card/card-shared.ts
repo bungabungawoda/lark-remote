@@ -22,8 +22,6 @@ export function agentDisplayName(kind: string): string {
   return kind;
 }
 
-export { truncate } from '../common/truncate.js';
-
 const TERMINAL_LABELS: Record<string, string> = {
   done: '已完成',
   error: '出错',
@@ -48,15 +46,37 @@ export function terminalToColor(terminal: string): string {
 }
 
 /**
+ * Create a CardKit 2.0 button with a callback behavior. Shared constructor
+ * for every callback button in the card module (stop/new-session/compact/
+ * approval decisions/question options/…) — previously each render site
+ * hand-rolled the `{tag, text, type, behaviors}` object and they had drifted
+ * (plain_text tag sometimes present, sometimes omitted).
+ */
+export function cardButton(
+  text: string,
+  value: Record<string, unknown>,
+  opts: {
+    type?: 'primary' | 'default' | 'danger';
+    size?: 'small' | 'medium' | 'large';
+    /** Fixed width, e.g. '100px' (keeps option-row buttons left-aligned). */
+    width?: string;
+  } = {},
+): object {
+  return {
+    tag: 'button',
+    text: { tag: 'plain_text', content: text },
+    ...(opts.type ? { type: opts.type } : {}),
+    ...(opts.size ? { size: opts.size } : {}),
+    ...(opts.width ? { width: opts.width } : {}),
+    behaviors: [{ type: 'callback', value }],
+  };
+}
+
+/**
  * Create a CardKit 2.0 stop button with behaviors callback.
  */
 export function stopButton(runId: string): object {
-  return {
-    tag: 'button',
-    text: { content: '⏹ 停止' },
-    type: 'danger',
-    behaviors: [{ type: 'callback', value: { cmd: 'stop', runId } }],
-  };
+  return cardButton('⏹ 停止', { cmd: 'stop', runId }, { type: 'danger' });
 }
 
 /**
@@ -64,12 +84,7 @@ export function stopButton(runId: string): object {
  * Standardized: ✨ 新会话 + primary type
  */
 export function newSessionButton(): object {
-  return {
-    tag: 'button',
-    text: { content: '✨ 新会话' },
-    type: 'primary',
-    behaviors: [{ type: 'callback', value: { cmd: 'new-session' } }],
-  };
+  return cardButton('✨ 新会话', { cmd: 'new-session' }, { type: 'primary' });
 }
 
 /**
@@ -79,12 +94,7 @@ export function newSessionButton(): object {
  * runId 解析 agentKind，claude 走 stream-json 内建 /compact）。
  */
 export function compactButton(runId: string): object {
-  return {
-    tag: 'button',
-    text: { content: '🗜 Compact' },
-    type: 'primary',
-    behaviors: [{ type: 'callback', value: { cmd: 'codex.compact', runId } }],
-  };
+  return cardButton('🗜 Compact', { cmd: 'codex.compact', runId }, { type: 'primary' });
 }
 
 /**
@@ -96,19 +106,13 @@ export function compactButton(runId: string): object {
  * non-default agent.
  */
 export function resumeCompactButton(sessionId: string, agent: string): object {
-  return {
-    tag: 'button',
-    text: { content: '🗜 Compact' },
-    type: 'primary',
-    behaviors: [{ type: 'callback', value: { cmd: 'resume.compact', sessionId, agent } }],
-  };
+  return cardButton('🗜 Compact', { cmd: 'resume.compact', sessionId, agent }, { type: 'primary' });
 }
 
 export function resumeUseButton(sessionId: string, agent: AgentKind): object {
-  return {
-    tag: 'button',
-    text: { tag: 'plain_text', content: '🔁 切换到此会话' },
-    type: 'primary',
-    behaviors: [{ type: 'callback', value: { cmd: 'resume.use', sessionId, agent } }],
-  };
+  return cardButton(
+    '🔁 切换到此会话',
+    { cmd: 'resume.use', sessionId, agent },
+    { type: 'primary' },
+  );
 }

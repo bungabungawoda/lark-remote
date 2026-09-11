@@ -47,16 +47,26 @@ describe('KimiAcpTranslator', () => {
 
     expect(events1).toHaveLength(1);
     expect(events1[0].type).toBe('turn_diff');
-    const diff1 = events1[0] as { itemId: string; text: string; threadId: string; turnId: string };
+    const diff1 = events1[0] as {
+      itemId: string;
+      text: string;
+      threadId: string;
+      turnId: string;
+      refreshTimestamp: boolean;
+    };
     // Full accumulated snapshot, scoped to the fixed text item.
     expect(diff1.text).toBe('Hello');
     expect(diff1.itemId).toBe('text');
     expect(diff1.threadId).toBe(SESSION_ID);
     expect(diff1.turnId).toBe('turn-1');
+    // 整轮累积流：每个 chunk 的 diff 时间都刷新块锚点时间戳（卡片标题显示
+    // “最后写入时刻”，与 move-to-end 后的位置一致，而不是首见时间）。
+    expect(diff1.refreshTimestamp).toBe(true);
 
     expect(events2).toHaveLength(1);
-    const diff2 = events2[0] as { text: string };
+    const diff2 = events2[0] as { text: string; refreshTimestamp: boolean };
     expect(diff2.text).toBe('Hello world');
+    expect(diff2.refreshTimestamp).toBe(true);
   });
 
   it('maps agent_thought_chunk to turn_diff reasoning snapshot', () => {
@@ -71,9 +81,10 @@ describe('KimiAcpTranslator', () => {
 
     expect(events).toHaveLength(1);
     expect(events[0].type).toBe('turn_diff');
-    const diff = events[0] as { itemId: string; reasoning: string };
+    const diff = events[0] as { itemId: string; reasoning: string; refreshTimestamp: boolean };
     expect(diff.reasoning).toBe('Let me think...');
     expect(diff.itemId).toBe('thinking');
+    expect(diff.refreshTimestamp).toBe(true);
   });
 
   it('maps tool_call (rawInput as args object) to assistant/tool_use', () => {

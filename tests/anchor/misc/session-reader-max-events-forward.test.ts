@@ -6,6 +6,7 @@ import type { AgentSessionReader } from '../../../src/runner/index.js';
 import { ClaudeSessionReader } from '../../../src/session/claude/index.js';
 import { OpencodeSessionReader } from '../../../src/session/opencode/index.js';
 import { PiSessionReader } from '../../../src/session/pi/index.js';
+import { encodeClaudeProjectDir } from '../../lib/session-fixtures.js';
 
 /**
  * Red Agent - Anchor (Bug 模式)
@@ -63,7 +64,7 @@ afterEach(() => {
 // ============================================================
 
 function writeClaudeSession(cwd: string, sessionId: string, assistantCount: number): void {
-  const encoded = cwd.replace(/\//g, '-');
+  const encoded = encodeClaudeProjectDir(cwd);
   const dir = path.join(tmpDir, encoded);
   fs.mkdirSync(dir, { recursive: true });
   const lines: string[] = [

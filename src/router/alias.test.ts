@@ -6,6 +6,7 @@ import { CommandRouter } from './index.js';
 import { SessionStore } from '../session/index.js';
 import { AppConfigSchema, type AppConfig } from '../config/index.js';
 import { createMockBridge, createStubSessionReaderRegistry } from '../../tests/lib/bridge-stubs.js';
+import { expectNoV1ActionContainer } from '../../tests/lib/card-view.js';
 
 let tmpDir: string;
 let router: CommandRouter;
@@ -55,7 +56,7 @@ describe('order 别名卡片（order.alias*）', () => {
     const contents = card.body.elements.map((e) => e.text?.content ?? '');
     expect(contents.some((c) => c.includes('`$all`'))).toBe(true);
     // 200861 铁律：禁止 V1 action 容器
-    expect(JSON.stringify(card)).not.toMatch(/"tag"\s*:\s*"action"[^}]*"actions"/);
+    expectNoV1ActionContainer(JSON.stringify(card));
   });
 
   it('order.aliasEdit 弹出别名编辑卡（schema 2.0 + input + behaviors）', async () => {
@@ -92,7 +93,7 @@ describe('order 别名卡片（order.alias*）', () => {
     // input 带 behaviors 回调（提交图标触发 order.aliasInput）
     expect(deepFind(sentCard.body.elements, (e) => Array.isArray(e.behaviors))).toBe(true);
     // 200861 铁律
-    expect(JSON.stringify(sentCard)).not.toMatch(/"tag"\s*:\s*"action"[^}]*"actions"/);
+    expectNoV1ActionContainer(JSON.stringify(sentCard));
   });
 
   it('order.aliasInput 绑定别名并重渲染列表卡', async () => {
