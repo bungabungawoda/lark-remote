@@ -5,6 +5,31 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0] - 2026-09-11
+
+### 新增
+
+- **Windows 平台支持（预发布）**：新增跨平台平台层（`src/platform/`）——路径、可执行文件发现、进程终止、spawn、shell 的抽象与 posix / win32 双实现；命令拉起统一走 `cross-spawn`，posix 行为零变化。Windows 尚未正式发布，README 前置条件已相应标注
+- **`/download <path>`（别名 `/d`）**：把本地文件直接发到会话，不经 `/ls` 卡片。路径规则同 `/ls`（`~` 展开、相对 cwd、30MB 上限），目录 / 不存在 / 超限给出明确错误
+- **`/ls <file>` 单文件卡**：传入文件路径渲染单文件卡（完整路径、大小、修改时间、「📎 下载」+「上级」按钮），不再报 `ls: xxx: Not a directory`
+- **分页栏页码跳转**：所有分页卡片（`/ls`、`/ws`、`/resume`、`/active`、`/order`）支持在分页栏输入页码直达；越界钳到末页，非数字输入报错且不刷新卡片
+- **扫码向导跨平台**：二维码渲染改用 `qrcode-generator`，Windows 全块渲染 + 静区 + 图片兜底
+
+### 修复
+
+- `/ls` 的「返回」改为回到浏览起点（`/ls <dir>` 指定的目录），不再跳回 workspace cwd；浏览起点随卡片 payload 传递，翻页 / 刷新 / 上级 / 目录按钮不会丢失
+- codex 会话兼容 rollout ≥0.153.4 的 `item_completed` 词表，修复 `/resume` 标题丢失
+- compact 卡片空内容渲染「Compact 完成」，不再显示通用空占位
+- 信息保真：notices 改为时间线消息渲染、省略提示固定置顶、工具卡片消除孤立代理项
+- Windows：隐藏 cmd.exe 控制台窗口（`windowsHide`）
+
+### 变更
+
+- **移除 `output.showThinking` / `showToolUse` / `showToolResult` 配置项与 `/config` 的「📤 输出」页签**：thinking、工具调用与工具结果恒常展示；旧配置文件的 `output` 段在加载时自动忽略，并在下次保存时从磁盘清理
+- 代码精简：ACP / translator / session 共享层下沉（`BaseAcpTranslator` / `BaseAcpRunner` / two-pass 扫描），死代码清理与平行重复收敛
+- 依赖：`qrcode-terminal` 换为 `qrcode-generator`；新增 `cross-spawn`（Windows 命令拉起）
+- 测试基建：新增 scoped typecheck（`tsconfig.test-infra.json`）覆盖 `tests/lib/**` 共享工厂；跨平台测试稳定化（win32 路径归一化、并行 vitest 内存上限）
+
 ## [0.1.13] - 2026-09-04
 
 ### 修复
