@@ -127,7 +127,7 @@ export interface StubConnectorOpts {
 export function createStubConnector(opts?: StubConnectorOpts) {
   const sent: { chatId: string; input: unknown; opts?: unknown }[] = [];
   const cards: object[] = [];
-  const updates: { card: object }[] = [];
+  const updates: { messageId: string; card: object }[] = [];
   return {
     sendWithRetry: async (chatId: string, input: unknown, opts2?: unknown) => {
       sent.push({ chatId, input, opts: opts2 });
@@ -344,7 +344,11 @@ export function createMockSessionReaderRegistry(
   } else {
     // Legacy semantics: get() returns undefined (callers guard for it, e.g.
     // the config.save restore fallback), NOT the real registry's throw.
-    vi.spyOn(registry, 'get').mockImplementation(() => undefined);
+    //
+    // The real signature is `get(kind): AgentSessionReader` — it throws on a
+    // miss — so `undefined` cannot be expressed through it. The assertion
+    // states the deliberately looser stub contract in one place.
+    vi.spyOn(registry, 'get').mockReturnValue(undefined as never);
   }
   // Legacy mock-only member (not on the real class): keep for any consumer
   // that still probes registered agent kinds.
@@ -452,7 +456,6 @@ export function makeBridge(opts: MakeBridgeOpts = {}) {
   const connector = opts.connector ?? createStubConnector();
   const runner = opts.runner ?? createStubRunner();
   const bridge = new Bridge({
-    runner,
     connector,
     sessionStore,
     config: opts.config ?? defaultTestConfig(),

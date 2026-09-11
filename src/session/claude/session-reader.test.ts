@@ -26,7 +26,7 @@ function writeSession(cwd: string, lines: string[], sessionId = 'test-session-12
   const encoded = encodeClaudeProjectDir(cwd);
   const dir = path.join(tmpDir, encoded);
   fs.mkdirSync(dir, { recursive: true });
-  const initLine = `{"type":"system","subtype":"init","session_id":"${sessionId}","cwd":"${cwd}","model":"opus"}`;
+  const initLine = `{"type":"system","subtype":"init","session_id":"${sessionId}","cwd":${JSON.stringify(cwd)},"model":"opus"}`;
   const allLines = [initLine, ...lines];
   fs.writeFileSync(path.join(dir, `${sessionId}.jsonl`), allLines.join('\n') + '\n');
   return sessionId;

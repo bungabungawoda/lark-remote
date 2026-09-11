@@ -18,6 +18,7 @@ import type {
 } from '../../runner/index.js';
 
 import { isStale } from '../common/constants.js';
+import { encodeProjectDirName } from '../../platform/path.js';
 import { paginate } from '../common/pagination.js';
 import { sortByRecencyDesc } from '../common/recency.js';
 import { TtlCache } from '../../common/ttl-cache.js';
@@ -56,9 +57,15 @@ function defaultPiDir(): string {
   return path.join(os.homedir(), '.pi', 'agent');
 }
 
-/** Encode cwd to pi's directory name format: '--<cwd-with-/->- + '-' --' */
+/**
+ * Encode cwd to pi's directory name format: '--<cwd with / \ : -> - --'
+ *
+ * 与 claude 共用 `encodeProjectDirName`（同一套 win32 归一规则），再去掉
+ * 前导分隔符产生的首个 `-`：`/Users/x` -> `Users-x`（不是 `-Users-x`）。
+ * win32 同理：`C:\Users\x` -> `C--Users-x`。
+ */
 function projectDirForCwd(cwd: string, sessionsDir: string): string {
-  const encodedCwd = cwd.replace(/^\//, '').replace(/\//g, '-');
+  const encodedCwd = encodeProjectDirName(cwd).replace(/^-+/, '');
   const encoded = `--${encodedCwd}--`;
   return path.join(sessionsDir, encoded);
 }

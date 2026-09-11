@@ -7,19 +7,21 @@
  * flows thread/start → turn/start → notifications → turn/completed.
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync, chmodSync } from 'node:fs';
+import { it, expect, beforeEach, afterEach } from 'vitest';
+import { describePosix } from '../../../../tests/lib/platform.js';
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, chmodSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { AgentEvent, TurnDiffEvent } from '../../types.js';
 import { createInitialRunState, reduceRunState } from '../../../card/run-state.js';
 import { CodexAppServerRunner } from './runner.js';
 import { createStubSessionReader } from '../../../../tests/lib/bridge-stubs.js';
+import { rmRf } from '../../../../tests/lib/tmp-cleanup.js';
 
 const FAKE_SERVER = join(process.cwd(), 'tests', 'fake-app-server', 'server.mjs');
 const FIXTURES = join(process.cwd(), 'tests', 'fake-app-server', 'fixtures');
 
-describe('CodexAppServerRunner integration', () => {
+describePosix('CodexAppServerRunner integration', () => {
   let tmpDir: string;
 
   beforeEach(() => {
@@ -27,7 +29,7 @@ describe('CodexAppServerRunner integration', () => {
   });
 
   afterEach(() => {
-    rmSync(tmpDir, { recursive: true, force: true });
+    rmRf(tmpDir);
   });
 
   it('runs a full turn with sandbox/approval/model config forwarded in protocol params', async () => {
@@ -225,8 +227,13 @@ describe('CodexAppServerRunner integration', () => {
     const firstPid = Number(readFileSync(pidFile, 'utf8').trim());
     expect(firstPid).toBeGreaterThan(0);
 
-    // 模拟外部误杀：SIGKILL app-server 子进程
-    process.kill(firstPid, 'SIGKILL');
+    // 模拟外部误杀：SIGKILL app-server 子进程。win32 上 pid 可能恰在退出
+    // 中（TerminateProcess 竞态 EPERM/ESRCH），杀死失败不影响「已死」语义。
+    try {
+      process.kill(firstPid, 'SIGKILL');
+    } catch {
+      /* already gone */
+    }
 
     // 等旧进程真正退出（transport exit 事件触发、连接槽清理完成）
     const deadline = Date.now() + 5000;

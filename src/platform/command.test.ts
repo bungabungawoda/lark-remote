@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { resolveExecutable, clearResolveCache } from './command.js';
+import { describePosix } from '../../tests/lib/platform.js';
 
 const tmpDirs: string[] = [];
 function mkdtemp(): string {
@@ -15,10 +16,13 @@ afterEach(() => {
   clearResolveCache();
 });
 
-describe('resolveExecutable (posix)', () => {
+// posix 的 PATH 分隔符就是 `:`；Windows 临时目录路径自带盘符冒号
+// （`C:\Users\...`），按 `:` 拆分必然把路径截成两段——posix PATH 语义
+// 无法用 Windows 宿主路径模拟，只能门控（tests/lib/platform.ts 规则）。
+describePosix('resolveExecutable (posix)', () => {
   it('finds executable in PATH dir → direct spec', () => {
     const dir = mkdtemp();
-    const bin = path.join(dir, 'agent');
+    const bin = path.posix.join(dir, 'agent');
     fs.writeFileSync(bin, '#!/bin/sh\nexit 0\n', { mode: 0o755 });
     expect(resolveExecutable('agent', { platform: 'linux', pathEnv: dir })).toEqual({
       kind: 'direct',
@@ -35,7 +39,8 @@ describe('resolveExecutable (posix)', () => {
       resolveExecutable('agent', { platform: 'linux', pathEnv: `${first}:${second}` }),
     ).toEqual({
       kind: 'direct',
-      file: path.join(first, 'agent'),
+      // posix 分支按 posix 规则 join（不读宿主 path），两侧口径一致
+      file: path.posix.join(first, 'agent'),
     });
   });
 
@@ -43,7 +48,7 @@ describe('resolveExecutable (posix)', () => {
     const first = mkdtemp();
     const second = mkdtemp();
     fs.writeFileSync(path.join(first, 'agent'), 'x', { mode: 0o644 });
-    const bin = path.join(second, 'agent');
+    const bin = path.posix.join(second, 'agent');
     fs.writeFileSync(bin, 'x', { mode: 0o755 });
     expect(
       resolveExecutable('agent', { platform: 'linux', pathEnv: `${first}:${second}` }),
@@ -121,9 +126,9 @@ describe('resolveExecutable (win32)', () => {
 describe('resolveExecutable cache', () => {
   it('caches resolution results per (platform, pathEnv, name); clearResolveCache resets', () => {
     const dir = mkdtemp();
-    const bin = path.join(dir, 'cached');
-    fs.writeFileSync(bin, 'x', { mode: 0o755 });
-    const opts = { platform: 'linux' as const, pathEnv: dir };
+    const bin = path.join(dir, 'cached.cmd');
+    fs.writeFileSync(bin, '@echo off');
+    const opts = { platform: 'win32' as const, pathEnv: dir };
     expect(resolveExecutable('cached', opts)).toEqual({ kind: 'direct', file: bin });
     // 删除真实文件后再次解析 → TTL 内缓存命中，仍返回旧结果
     fs.unlinkSync(bin);
@@ -136,9 +141,9 @@ describe('resolveExecutable cache', () => {
     vi.useFakeTimers();
     try {
       const dir = mkdtemp();
-      const bin = path.join(dir, 'cached');
-      fs.writeFileSync(bin, 'x', { mode: 0o755 });
-      const opts = { platform: 'linux' as const, pathEnv: dir };
+      const bin = path.join(dir, 'cached.cmd');
+      fs.writeFileSync(bin, '@echo off');
+      const opts = { platform: 'win32' as const, pathEnv: dir };
       expect(resolveExecutable('cached', opts)).toEqual({ kind: 'direct', file: bin });
       fs.unlinkSync(bin);
       vi.advanceTimersByTime(60_000);
@@ -152,18 +157,18 @@ describe('resolveExecutable cache', () => {
     vi.useFakeTimers();
     try {
       const dir = mkdtemp();
-      const opts = { platform: 'linux' as const, pathEnv: dir };
+      const opts = { platform: 'win32' as const, pathEnv: dir };
       // 未安装 → null（null 结果同样缓存）
       expect(resolveExecutable('claude', opts)).toBeNull();
       // 用户按 /config 提示安装成功
-      fs.writeFileSync(path.join(dir, 'claude'), 'x', { mode: 0o755 });
+      fs.writeFileSync(path.join(dir, 'claude.cmd'), '@echo off');
       // TTL 内仍命中旧 null
       expect(resolveExecutable('claude', opts)).toBeNull();
       // TTL 过期 → 重新解析可见
       vi.advanceTimersByTime(60_000);
       expect(resolveExecutable('claude', opts)).toEqual({
         kind: 'direct',
-        file: path.join(dir, 'claude'),
+        file: path.join(dir, 'claude.cmd'),
       });
     } finally {
       vi.useRealTimers();

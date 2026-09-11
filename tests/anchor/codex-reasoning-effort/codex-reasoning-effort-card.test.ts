@@ -400,7 +400,7 @@ describe('codex config card effort follows model - anchor', () => {
       [
         'model = "deepseek-v4-flash"',
         'model_provider = "deepseek"',
-        `model_catalog_json = "${path.join(catalogHome, 'models.json')}"`,
+        `model_catalog_json = "${path.join(catalogHome, 'models.json').replaceAll('\\', '/')}"`,
         '',
         '[model_providers.deepseek]',
         'name = "deepseek"',

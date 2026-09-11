@@ -1,5 +1,6 @@
 import { EventEmitter } from 'node:events';
-import type { ChildProcess, Readable, Writable } from 'node:child_process';
+import type { ChildProcess } from 'node:child_process';
+import type { Readable, Writable } from 'node:stream';
 
 /**
  * Shared mock ChildProcess factory.
@@ -75,9 +76,14 @@ export class MockChildProcess extends EventEmitter implements ChildProcess {
     this.spawnargs = opts.spawnargs ?? [];
     this.spawnfile = opts.spawnfile ?? '';
     this.kill = opts.kill ?? (() => true);
-    if (opts.once) this.once = opts.once;
-    if (opts.on) this.on = opts.on;
-    if (opts.removeAllListeners) this.removeAllListeners = opts.removeAllListeners;
+    // EventEmitter's methods are `this`-polymorphic (`=> this`), so the base
+    // `EventEmitter['once']` type (which returns `EventEmitter`) is not
+    // assignable; the assertion re-attaches the class's own method type.
+    if (opts.once) this.once = opts.once as typeof this.once;
+    if (opts.on) this.on = opts.on as typeof this.on;
+    if (opts.removeAllListeners) {
+      this.removeAllListeners = opts.removeAllListeners as typeof this.removeAllListeners;
+    }
   }
 }
 

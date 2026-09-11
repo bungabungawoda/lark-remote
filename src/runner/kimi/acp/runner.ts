@@ -20,7 +20,7 @@
 
 import type { AgentKind, AgentSessionReader, AgentStatusInfo, SpawnOptions } from '../../types.js';
 import type { ChildProcess } from 'node:child_process';
-import { spawnProcess, mergeProcessEnv } from '../../../platform/spawn.js';
+import { spawnProcess, mergeProcessEnv, useDetachedProcessGroup } from '../../../platform/spawn.js';
 
 import { StringDecoder } from 'node:string_decoder';
 import {
@@ -698,8 +698,10 @@ export class KimiAcpRunner extends BaseAcpRunner<KimiAcpTranslator> {
       stdio: ['ignore', 'pipe', 'pipe'],
       // ProcessStopper 用负 PID 杀进程组（kill(-pgid)）；子进程必须是组长
       // 才能命中，否则 kill(-pid) 抛 ESRCH 被吞 → kill/release/清理全失效。
-      // 与 JsonlRpcTransport / spawning-runner 的 detached:true 同模式。
-      detached: true,
+      // 与 JsonlRpcTransport / spawning-runner 同模式；win32 不 detached
+      // （`.cmd` 垫片在 DETACHED_PROCESS 下丢 stdio），树杀由 taskkill /T 负责。
+      detached: useDetachedProcessGroup(),
+      windowsHide: true,
     });
 
     // 每个流独立 decoder：多字节字符跨 chunk 拆分时由 decoder 保留不完整

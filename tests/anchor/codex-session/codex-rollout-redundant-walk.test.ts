@@ -72,7 +72,7 @@ function createRollout(sessionId: string, cwd: string, opts?: { mtimeMs?: number
   const filePath = path.join(dayDir, fileName);
   const content =
     [
-      `{"type":"session_meta","payload":{"session_id":"${sessionId}","cwd":"${cwd}","originator":"lark-remote"},"timestamp":"2026-07-31T12:00:00.000Z"}`,
+      `{"type":"session_meta","payload":{"session_id":"${sessionId}","cwd":${JSON.stringify(cwd)},"originator":"lark-remote"},"timestamp":"2026-07-31T12:00:00.000Z"}`,
       `{"type":"event_msg","payload":{"type":"user_message","message":"hello ${sessionId}"}}`,
       `{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"hello ${sessionId}"}]}}`,
       `{"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"text","text":"hi"}]}}`,

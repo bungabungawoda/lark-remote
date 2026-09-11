@@ -66,6 +66,10 @@ function makeDeps(overrides: Partial<BootstrapDeps> = {}) {
     args: ['--config-dir', '/tmp/x'],
     isBun: false,
     probe: { error: false, status: 0 },
+    // 信号注册随 platform 分支（posix: SIGHUP / win32: SIGBREAK）。显式注入
+    // posix 宿主，让 SIGHUP 断言在 win32 开发机上同样成立；win32 信号集由
+    // 下方「registers SIGBREAK instead of SIGHUP on win32」用例覆盖。
+    platform: 'linux',
     importEntry: vi.fn(async () => undefined),
     spawnBun: vi.fn(() => child),
     onSignal: vi.fn(),

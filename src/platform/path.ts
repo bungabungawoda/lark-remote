@@ -107,7 +107,28 @@ export function samePath(a: string, b: string, opts?: PathOptions): boolean {
   return norm(a).toLowerCase() === norm(b).toLowerCase();
 }
 
+/**
+ * cwd → 会话项目目录名（Claude/pi 的 on-disk 编码，lossy N-to-N）。
+ *
+ * 只可用于**定位**目录，绝不可反解回 cwd——cwd 必须从 JSONL 内容读取
+ * （回归 2026-06-21 /resume & /cd 路径错乱）。
+ *
+ * posix：`/` → `-`（`_` 同样归一，与 Claude Code 一致）。
+ * win32：`\` 与 `/` **都是**分隔符、`:` 是非法文件名字符，三者都必须归一，
+ * 否则 `C:\Users\x\proj` 会原样拼进目录名，mkdir/stat 必然失败。
+ * 反过来，posix 上 `:` 是**合法**文件名字符，不能动——否则既有目录定位不到。
+ */
+export function encodeProjectDirName(cwd: string, opts?: PathOptions): string {
+  const { platform } = resolveOptions(opts);
+  return isWin32(platform)
+    ? cwd.replace(/[/\\:]/g, '-').replace(/_/g, '-')
+    : cwd.replace(/\//g, '-').replace(/_/g, '-');
+}
+
 export function displayName(p: string, opts?: PathOptions): string {
   const { platform } = resolveOptions(opts);
-  return isWin32(platform) ? path.win32.basename(p) : path.basename(p);
+  // 必须用与注入 platform 对应的 path 实现，而非宿主 `path`：宿主为 win32 时
+  // `path.basename` 会把 `\` 当分隔符，posix 语义（反斜杠是合法文件名字符）
+  // 就被宿主机悄悄改写。win32/posix 各用各的实现后，结果与宿主无关。
+  return isWin32(platform) ? path.win32.basename(p) : path.posix.basename(p);
 }

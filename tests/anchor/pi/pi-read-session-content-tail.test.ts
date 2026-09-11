@@ -35,6 +35,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import { piEncodeCwd } from '../../lib/session-fixtures.js';
 
 const { mockLogger, jsonlSpy } = vi.hoisted(() => ({
   mockLogger: {
@@ -91,7 +92,7 @@ afterEach(() => {
 
 /** Encode cwd to pi's directory name format: --<cwd-with-/->- */
 function encodeCwd(cwd: string): string {
-  const encodedCwd = cwd.replace(/^\//, '').replace(/\//g, '-');
+  const encodedCwd = piEncodeCwd(cwd);
   return `--${encodedCwd}--`;
 }
 

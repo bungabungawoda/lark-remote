@@ -174,7 +174,7 @@ describe('codex catalog review3 fixes - anchor', () => {
 
   it('test_anchor_p1_empty_declared_levels_stay_empty_and_default_used', async () => {
     writeCatalogConfig(
-      `model_catalog_json = "${path.join(tmpDir, 'models.json')}"`,
+      `model_catalog_json = "${path.join(tmpDir, 'models.json').replaceAll('\\', '/')}"`,
       'model = "empty-levels-model"',
     );
     fs.writeFileSync(path.join(tmpDir, 'models.json'), EMPTY_LEVELS_CATALOG);

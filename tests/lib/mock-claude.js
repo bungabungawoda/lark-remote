@@ -31,6 +31,9 @@ const sessionId = process.env.MOCK_SESSION_ID || 's1';
 const cwd = process.env.MOCK_CWD || '/tmp';
 const recordStdin = process.env.MOCK_RECORD_STDIN;
 const marker = process.env.MOCK_MARKER;
+// 记录收到的 argv（旧 sh fixture 用 `echo "$@"` 实现）。改为 Node 启动器后
+// 由 mock 自己写，避免依赖 POSIX shell，Windows 上同样可用。
+const argsFile = process.env.MOCK_ARGS_FILE;
 const approvalsPerTurn = Number(process.env.MOCK_APPROVALS || '1');
 // 注入 stderr 噪音行（win32 command-not-found 嗅探回归：agent 正常输出可能
 // 引用 "is not recognized" 文本，不得被误杀/误判）。
@@ -42,6 +45,10 @@ if (stderrNoise) {
 
 if (marker) {
   fs.appendFileSync(marker, `spawn ${process.pid}\n`);
+}
+
+if (argsFile) {
+  fs.writeFileSync(argsFile, process.argv.slice(2).join(' '));
 }
 
 function emit(obj) {

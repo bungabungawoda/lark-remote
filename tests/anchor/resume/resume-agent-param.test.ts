@@ -63,7 +63,7 @@ describe('/resume [agent] [N] dual-parameter feature', () => {
     const codexSid = 'codex-list-header-session';
     fs.writeFileSync(
       path.join(codexProjDir, `${codexSid}.jsonl`),
-      `{"type":"system","subtype":"init","session_id":"${codexSid}","cwd":"${canonicalCwd}","model":"opus"}\n` +
+      `{"type":"system","subtype":"init","session_id":"${codexSid}","cwd":${JSON.stringify(canonicalCwd)},"model":"opus"}\n` +
         `{"type":"user","message":{"role":"user","content":"codex task"}}\n`,
     );
 
@@ -130,7 +130,7 @@ describe('/resume [agent] [N] dual-parameter feature', () => {
     const claudeSid = 'claude-list-header-session';
     fs.writeFileSync(
       path.join(claudeProjDir, `${claudeSid}.jsonl`),
-      `{"type":"system","subtype":"init","session_id":"${claudeSid}","cwd":"${canonicalCwd}","model":"opus"}\n` +
+      `{"type":"system","subtype":"init","session_id":"${claudeSid}","cwd":${JSON.stringify(canonicalCwd)},"model":"opus"}\n` +
         `{"type":"user","message":{"role":"user","content":"claude task"}}\n`,
     );
 
@@ -197,7 +197,7 @@ describe('/resume [agent] [N] dual-parameter feature', () => {
     const claudeSid = 'unregistered-agent-test';
     fs.writeFileSync(
       path.join(claudeProjDir, `${claudeSid}.jsonl`),
-      `{"type":"system","subtype":"init","session_id":"${claudeSid}","cwd":"${canonicalCwd}","model":"opus"}\n` +
+      `{"type":"system","subtype":"init","session_id":"${claudeSid}","cwd":${JSON.stringify(canonicalCwd)},"model":"opus"}\n` +
         `{"type":"user","message":{"role":"user","content":"test task"}}\n`,
     );
 
@@ -269,7 +269,7 @@ describe('/resume [agent] [N] dual-parameter feature', () => {
     const codexSid = 'codex-session-abc123';
     fs.writeFileSync(
       path.join(codexProjDir, `${codexSid}.jsonl`),
-      `{"type":"system","subtype":"init","session_id":"${codexSid}","cwd":"${canonicalCwd}","model":"opus"}\n` +
+      `{"type":"system","subtype":"init","session_id":"${codexSid}","cwd":${JSON.stringify(canonicalCwd)},"model":"opus"}\n` +
         `{"type":"user","message":{"role":"user","content":"codex task"}}\n`,
     );
 

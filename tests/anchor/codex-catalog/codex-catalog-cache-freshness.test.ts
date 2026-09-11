@@ -50,7 +50,11 @@ describe('codex catalog cache freshness - anchor', () => {
     modelsPath = path.join(tmpDir, 'models.json');
     fs.writeFileSync(
       path.join(tmpDir, 'config.toml'),
-      ['model = "deepseek-v4-flash"', `model_catalog_json = "${modelsPath}"`, ''].join('\n'),
+      [
+        'model = "deepseek-v4-flash"',
+        `model_catalog_json = "${modelsPath.replaceAll('\\', '/')}"`,
+        '',
+      ].join('\n'),
     );
     fs.writeFileSync(modelsPath, catalogJson('deepseek-v4-flash'));
     process.env.CODEX_HOME = tmpDir;

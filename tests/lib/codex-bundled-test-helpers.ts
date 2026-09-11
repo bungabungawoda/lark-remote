@@ -50,6 +50,7 @@ export function getCodexBundledModels(): BundledModelInfo[] {
       maxBuffer: 4 * 1024 * 1024,
       env: process.env,
       stdio: ['ignore', 'pipe', 'ignore'],
+      windowsHide: true, // codex 是 npm .cmd 垫片：win32 下不隐藏会闪 cmd.exe 控制台
     });
     const models = parseCodexModelsOutput(stdout);
     if (models.length > 0) {

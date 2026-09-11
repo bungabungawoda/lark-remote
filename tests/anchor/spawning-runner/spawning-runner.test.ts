@@ -10,6 +10,7 @@
  * 心跳 start/notify、win32 嗅探置位）经最小 spawnChild harness 驱动。
  */
 import { describe, it, expect, test, vi, beforeEach, afterEach } from 'vitest';
+import { currentPlatform, isWin32 } from '../../../src/platform/select.js';
 import { Readable } from 'node:stream';
 import fs from 'node:fs';
 import type { ChildProcess } from 'node:child_process';
@@ -38,6 +39,7 @@ vi.mock('../../../src/logger/index.js', () => ({
 }));
 
 vi.mock('../../../src/platform/spawn.js', () => ({
+  useDetachedProcessGroup: vi.fn(() => true),
   spawnProcess: vi.fn(),
   mergeProcessEnv: vi.fn((base, overrides) => ({ ...base, ...overrides })),
   isWindowsCommandNotFoundLine: vi.fn(() => false),
@@ -470,31 +472,34 @@ describe('SpawningRunner stop / killOrphan / isRunning', () => {
     expect(stopperStopSpy.mock.calls[0][1]).toEqual({ immediate: true });
   });
 
-  it('test_anchor_spawning_runner_kill_orphan_reads_pid_sends_sigterm_cleans_file', () => {
-    const pidDir = '/tmp/spawning-runner-anchor-test-r12';
-    fs.mkdirSync(pidDir, { recursive: true });
+  it.skipIf(isWin32(currentPlatform))(
+    'test_anchor_spawning_runner_kill_orphan_reads_pid_sends_sigterm_cleans_file',
+    () => {
+      const pidDir = '/tmp/spawning-runner-anchor-test-r12';
+      fs.mkdirSync(pidDir, { recursive: true });
 
-    const runner = new SpawnChildHarness({ binary: 'fake-binary', pidDir });
+      const runner = new SpawnChildHarness({ binary: 'fake-binary', pidDir });
 
-    const pidFilePath = runner.testPidFilePath;
-    fs.rmSync(pidFilePath, { force: true });
-    fs.writeFileSync(pidFilePath, '13579', 'utf-8');
+      const pidFilePath = runner.testPidFilePath;
+      fs.rmSync(pidFilePath, { force: true });
+      fs.writeFileSync(pidFilePath, '13579', 'utf-8');
 
-    const killSpy = vi.spyOn(process, 'kill').mockImplementation(() => true);
+      const killSpy = vi.spyOn(process, 'kill').mockImplementation(() => true);
 
-    expect(fs.existsSync(pidFilePath)).toBe(true);
+      expect(fs.existsSync(pidFilePath)).toBe(true);
 
-    vi.mocked(execFileSync).mockReturnValue('fake-binary --some-flag');
+      vi.mocked(execFileSync).mockReturnValue('fake-binary --some-flag');
 
-    try {
-      runner.killOrphan();
+      try {
+        runner.killOrphan();
 
-      expect(killSpy).toHaveBeenCalledWith(-13579, 'SIGTERM');
-      expect(fs.existsSync(pidFilePath)).toBe(false);
-    } finally {
-      killSpy.mockRestore();
-    }
-  });
+        expect(killSpy).toHaveBeenCalledWith(-13579, 'SIGTERM');
+        expect(fs.existsSync(pidFilePath)).toBe(false);
+      } finally {
+        killSpy.mockRestore();
+      }
+    },
+  );
 
   it('test_anchor_spawning_runner_kill_orphan_silent_when_no_pid_file', () => {
     const pidDir = '/tmp/spawning-runner-anchor-test-r13';
