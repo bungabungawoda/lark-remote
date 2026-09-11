@@ -1,27 +1,24 @@
 /**
  * Agent availability probe — detect whether each CLI binary is installed
- * by checking whether it resolves on PATH via `which`.
+ * via a pure-Node PATH lookup (platform seam `resolveExecutable`).
  *
- * Why `which` over `<binary> --help`:
+ * Why a PATH lookup over `<binary> --help`:
  * - `--help` starts a full Node.js process per agent (2–8 s on
  *   resource-constrained devices like Raspberry Pi). Under startup load
  *   (auto-resume spawns, CPU contention) probes time out and installed
  *   agents are falsely reported as unavailable.
- * - `which` is a lightweight PATH lookup (<10 ms), immune to CPU contention.
+ * - A PATH lookup is lightweight (<10 ms), immune to CPU contention.
  * - "Installed but broken" cases surface at run time via SpawningRunner's
  *   ENOENT/error handling (src/runner/common/spawning-runner.ts), which
  *   shows a friendly error card instead of a startup-time mislabel.
  *
- * Why `which` over `command -v`:
- * - `which` is a standalone executable (e.g. /usr/bin/which on macOS and
- *   Debian-based Linux), so no `shell: true` and no Node DEP0190 warning.
- * - Caveat: `which` is not POSIX-guaranteed. macOS, Raspberry Pi OS and
- *   other Debian-based distributions ship it by default; if Windows or
- *   minimal Alpine containers become supported, prefer a pure-Node
- *   PATH + X_OK lookup instead.
+ * Why the platform seam over spawning `which`:
+ * - `which` is not POSIX-guaranteed and does not exist on Windows; the seam
+ *   does PATH + X_OK on posix (same semantics) and PATH × PATHEXT on win32,
+ *   with no child process at all.
  */
 
-import { spawn } from 'child_process';
+import { resolveExecutable } from '../platform/command.js';
 import type { AgentKind } from './types.js';
 
 /** Map from AgentKind to its CLI binary name. */
@@ -31,8 +28,8 @@ const BINARY_MAP: Record<AgentKind, string> = {
   opencode: 'opencode',
   pi: 'pi',
   kimi: 'kimi',
-  // DSH is an HTTP-only agent (no CLI). `which ''` fails → reported unavailable,
-  // which is semantically correct for the /config availability display.
+  // DSH is an HTTP-only agent (no CLI) → reported unavailable, which is
+  // semantically correct for the /config availability display.
   dsh: '',
 };
 
@@ -47,16 +44,14 @@ interface CacheEntry {
 const cache = new Map<AgentKind, CacheEntry>();
 
 /**
- * Probe a single agent's availability by spawning `which <binary>`.
- * Exit code 0 = binary on PATH; error / non-zero = unavailable.
+ * Probe a single agent's availability (pure PATH lookup; dsh has no CLI
+ * binary and is always unavailable here).
  */
 async function probeOne(kind: AgentKind): Promise<boolean> {
   const binary = BINARY_MAP[kind];
-  return new Promise((resolve) => {
-    const proc = spawn('which', [binary], { stdio: 'ignore' });
-    proc.on('error', () => resolve(false));
-    proc.on('exit', (code) => resolve(code === 0));
-  });
+  if (!binary) return false;
+  // resolveExecutable 纯 Node PATH 查找（win32 PATH×PATHEXT），命中即可用。
+  return resolveExecutable(binary) !== null;
 }
 
 /**
@@ -75,7 +70,7 @@ export async function probeAgentAvailability(kind: AgentKind): Promise<boolean> 
 /**
  * Probe all agents concurrently.
  *
- * Concurrent (not sequential) because `which` is a lightweight PATH lookup
+ * Concurrent (not sequential) because the lookup is a lightweight PATH scan
  * (<10 ms) with no CPU contention risk — unlike the previous `--help`
  * probes, which needed to run one-at-a-time to avoid starving each other
  * on resource-constrained devices.

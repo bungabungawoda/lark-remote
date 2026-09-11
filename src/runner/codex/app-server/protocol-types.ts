@@ -286,12 +286,44 @@ export interface DiffItem {
   timestamp: number;
 }
 
+/** Web search item（来源：codex-rs ThreadItem::WebSearch / v2 schema）。 */
+export interface WebSearchItem {
+  type: 'webSearch';
+  id: string;
+  query: string;
+  action?: unknown;
+}
+
+/** MCP tool call item（来源：codex-rs ThreadItem::McpToolCall / v2 schema）。 */
+export interface McpToolCallItem {
+  type: 'mcpToolCall';
+  id: string;
+  server: string;
+  tool: string;
+  arguments?: Record<string, unknown>;
+  result?: unknown;
+  error?: unknown;
+  status?: string;
+}
+
+/** Dynamic (client-registered) tool call item（来源：ThreadItem::DynamicToolCall）。 */
+export interface DynamicToolCallItem {
+  type: 'dynamicToolCall';
+  id: string;
+  tool: string;
+  arguments?: Record<string, unknown>;
+  status?: string;
+}
+
 export type ThreadItem =
   | AgentMessageItem
   | ReasoningItem
   | CommandExecutionItem
   | PlanItem
   | FileChangeItem
+  | WebSearchItem
+  | McpToolCallItem
+  | DynamicToolCallItem
   | ObservationItem
   | DiffItem
   | { type: 'userMessage'; id: string; content: unknown[] }
@@ -516,6 +548,11 @@ export interface ModelReroutedNotification {
     reason?: string;
     timestamp?: string;
   };
+}
+
+export interface TurnPlanUpdatedNotification {
+  method: 'turn/plan/updated';
+  params: { threadId: string; turnId?: string; plan: PlanStep[] };
 }
 
 // =============================================================================

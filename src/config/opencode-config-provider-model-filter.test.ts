@@ -12,10 +12,15 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { loadOpencodeConfig, invalidateOpencodeConfigCache } from '../config/opencode-config.js';
 
 // 直接在模块顶层定义 mock（兼容 bun 的 vitest）
-const mockExecSync = vi.fn();
+const mockSpawnSync = vi.fn();
+const mockResolveExecutable = vi.fn();
 
-vi.mock('node:child_process', () => ({
-  execSync: (...args: any[]) => mockExecSync(...args),
+vi.mock('../platform/command.js', () => ({
+  resolveExecutable: (...args: unknown[]) => mockResolveExecutable(...args),
+}));
+vi.mock('../platform/spawn.js', () => ({
+  useDetachedProcessGroup: vi.fn(() => true),
+  spawnProcessSync: (...args: unknown[]) => mockSpawnSync(...args),
 }));
 
 describe('opencode-config provider-model filtering', () => {
@@ -28,8 +33,9 @@ describe('opencode-config provider-model filtering', () => {
   describe('provider-model isolation', () => {
     it('should return only models for the specified provider', () => {
       // Mock opencode models --verbose output
-      mockExecSync.mockReturnValue(
-        `opencode/big-pickle
+      mockSpawnSync.mockReturnValue({
+        status: 0,
+        stdout: `opencode/big-pickle
 {
   "id": "big-pickle",
   "name": "Big Pickle",
@@ -48,7 +54,8 @@ minimax-cn-coding-plan/MiniMax-M2.5
   "context": 128000
 }
 `,
-      );
+        stderr: '',
+      });
 
       const result = loadOpencodeConfig();
 
@@ -79,8 +86,9 @@ minimax-cn-coding-plan/MiniMax-M2.5
     it('should NOT leak models from one provider into another provider list', () => {
       // This test verifies the bug that was fixed in Codex doesn't exist in OpenCode
 
-      mockExecSync.mockReturnValue(
-        `opencode/big-pickle
+      mockSpawnSync.mockReturnValue({
+        status: 0,
+        stdout: `opencode/big-pickle
 {
   "id": "big-pickle"
 }
@@ -89,7 +97,8 @@ deepseek/deepseek-chat
   "id": "deepseek-chat"
 }
 `,
-      );
+        stderr: '',
+      });
 
       const result = loadOpencodeConfig();
 
@@ -101,8 +110,9 @@ deepseek/deepseek-chat
     });
 
     it('should return all models when no provider specified', () => {
-      mockExecSync.mockReturnValue(
-        `opencode/big-pickle
+      mockSpawnSync.mockReturnValue({
+        status: 0,
+        stdout: `opencode/big-pickle
 {
   "id": "big-pickle"
 }
@@ -115,7 +125,8 @@ minimax-cn-coding-plan/MiniMax-M2.5
   "id": "MiniMax-M2.5"
 }
 `,
-      );
+        stderr: '',
+      });
 
       const result = loadOpencodeConfig();
       const allModels = result.modelOptions();
@@ -128,13 +139,15 @@ minimax-cn-coding-plan/MiniMax-M2.5
     });
 
     it('should handle unknown provider gracefully', () => {
-      mockExecSync.mockReturnValue(
-        `opencode/big-pickle
+      mockSpawnSync.mockReturnValue({
+        status: 0,
+        stdout: `opencode/big-pickle
 {
   "id": "big-pickle"
 }
 `,
-      );
+        stderr: '',
+      });
 
       const result = loadOpencodeConfig();
 
@@ -145,7 +158,7 @@ minimax-cn-coding-plan/MiniMax-M2.5
     });
 
     it('should use fallback when opencode command fails', () => {
-      mockExecSync.mockImplementation(() => {
+      mockSpawnSync.mockImplementation(() => {
         throw new Error('opencode not found');
       });
 

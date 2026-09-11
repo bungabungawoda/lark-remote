@@ -173,9 +173,8 @@ run。
 
 ## 9. 配置语义
 
-- `showThinking`：是否渲染 thinking
-- `showToolUse`：是否渲染工具块
-- `showToolResult`：是否渲染工具输出
+- thinking / tool_use / tool_result 恒常渲染（原 `output.show*` 配置已移除，无显示开关）；
+- `RunCardRenderOptions` 仅承载卡片级元信息（agentKind 标题、compactSupported 按钮门控）。
 
 ## 10. 自动化覆盖
 

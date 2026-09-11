@@ -143,11 +143,6 @@ describe('kimi done card shows session-wide real usage end-to-end (anchor)', () 
       feishu: { appId: 'test', appSecret: 'test' },
       claude: { model: 'opus', stopGraceMs: 5000 },
       defaultAgent: 'kimi',
-      output: {
-        showThinking: true,
-        showToolUse: false,
-        showToolResult: false,
-      },
     });
   });
 

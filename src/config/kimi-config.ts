@@ -82,6 +82,7 @@ export function loadKimiConfig(): KimiConfigResult {
       stdio: ['ignore', 'pipe', 'ignore'],
       timeout: 10000,
       maxBuffer: 2 * 1024 * 1024,
+      windowsHide: true, // kimi 是 npm .cmd 垫片：不隐藏会闪 cmd.exe 控制台
     });
 
     const data = JSON.parse(output.toString()) as KimiProviderListJson;

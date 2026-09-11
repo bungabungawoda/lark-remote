@@ -39,7 +39,6 @@ function buildPiConfig(): AppConfig {
       codex: { model: 'claude-sonnet-4-20250514' },
     },
     workspace: { default: '' },
-    output: { showThinking: true, showToolUse: false, showToolResult: false },
   });
 }
 

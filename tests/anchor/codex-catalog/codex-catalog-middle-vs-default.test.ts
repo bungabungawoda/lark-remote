@@ -88,7 +88,6 @@ function buildCodexConfig(model: string, reasoningEffort: string): AppConfig {
         stopGraceMs: 5000,
       },
     },
-    output: { showThinking: true, showToolUse: true, showToolResult: true },
     idle: { watchdogMinutes: 15 },
     logging: { level: 'info' },
   });
@@ -109,7 +108,7 @@ describe('codex catalog middle vs default - anchor', () => {
       [
         'model = "deepseek-v4-flash"',
         'model_provider = "deepseek"',
-        `model_catalog_json = "${path.join(tmpDir, 'models.json')}"`,
+        `model_catalog_json = "${path.join(tmpDir, 'models.json').replaceAll('\\', '/')}"`,
         '',
         '[model_providers.deepseek]',
         'name = "deepseek"',

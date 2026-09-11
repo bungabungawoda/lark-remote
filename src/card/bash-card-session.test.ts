@@ -1,37 +1,28 @@
 import { describe, expect, it, vi, afterEach } from 'vitest';
-import type { CardStreamController } from '@larksuite/channel';
 import { BashCardSession, BASH_OUTPUT_STORE_CAP } from './bash-card-session.js';
+import { makeStreamCardConnector } from '../../tests/lib/card-stubs.js';
 
-function makeController(capture: { updates: object[] }): CardStreamController {
-  return {
-    messageId: 'card-1',
-    current: {},
-    update: async (card) => {
-      capture.updates.push(typeof card === 'function' ? card({}) : card);
-    },
-  };
-}
-
-function makeConnector(controller: CardStreamController, opts: { throwOnStream?: boolean } = {}) {
-  return {
-    streamCard: async (
-      _chatId: string,
-      _initial: object,
-      producer: (ctrl: CardStreamController) => Promise<void>,
-    ) => {
-      await producer(controller);
-      if (opts.throwOnStream) throw new Error('complete failed');
-      return 'card-1';
-    },
-    updateCard: async () => {},
-  };
+/**
+ * W3.2：共享工厂的组合封装（原先与 tests/anchor/bash-card/bash-card.test.ts
+ * 逐字符同构的本地 stub 副本迁到 tests/lib/card-stubs）。
+ */
+function makeBashTestConnector(
+  opts: { capture?: { updates: object[] }; throwOnStream?: boolean } = {},
+) {
+  return makeStreamCardConnector({
+    controllerUpdate: opts.capture
+      ? (card) => {
+          opts.capture.updates.push(typeof card === 'function' ? card({}) : card);
+        }
+      : undefined,
+    streamCardThrowsAfterProducer: opts.throwOnStream ? new Error('complete failed') : undefined,
+  });
 }
 
 describe('BashCardSession', () => {
   it('streams a single card: start → update → finish → settle (one message, multiple patches)', async () => {
     const capture = { updates: [] as object[] };
-    const controller = makeController(capture);
-    const connector = makeConnector(controller);
+    const { connector } = makeBashTestConnector({ capture });
 
     const session = new BashCardSession({
       connector,
@@ -63,20 +54,12 @@ describe('BashCardSession', () => {
 
   it('falls back to updateCard when the stream fails to complete', async () => {
     const updated: Array<{ messageId: string; card: object }> = [];
-    const controller = makeController({ updates: [] });
-    const connector = {
-      streamCard: async (
-        _chatId: string,
-        _initial: object,
-        producer: (ctrl: CardStreamController) => Promise<void>,
-      ) => {
-        await producer(controller);
-        throw new Error('complete failed');
-      },
-      updateCard: async (messageId: string, card: object) => {
+    const { connector } = makeStreamCardConnector({
+      updateCard: async (messageId, card) => {
         updated.push({ messageId, card });
       },
-    };
+      streamCardThrowsAfterProducer: new Error('complete failed'),
+    });
 
     const session = new BashCardSession({
       connector,
@@ -100,8 +83,7 @@ describe('BashCardSession coalescing', () => {
 
   it('coalesceMs=0: each update triggers immediate flush', async () => {
     const capture = { updates: [] as object[] };
-    const controller = makeController(capture);
-    const connector = makeConnector(controller);
+    const { connector } = makeBashTestConnector({ capture });
 
     const session = new BashCardSession({
       connector,
@@ -125,8 +107,7 @@ describe('BashCardSession coalescing', () => {
   it('rapid sequential updates are coalesced into a single flush', async () => {
     vi.useFakeTimers();
     const capture = { updates: [] as object[] };
-    const controller = makeController(capture);
-    const connector = makeConnector(controller);
+    const { connector } = makeBashTestConnector({ capture });
 
     const session = new BashCardSession({
       connector,
@@ -313,8 +294,7 @@ describe('BashCardSession coalescing', () => {
   it('cancelPendingFlush: settle cancels pending timer', async () => {
     vi.useFakeTimers();
     const capture = { updates: [] as object[] };
-    const controller = makeController(capture);
-    const connector = makeConnector(controller);
+    const { connector } = makeBashTestConnector({ capture });
 
     const session = new BashCardSession({
       connector,
@@ -341,8 +321,7 @@ describe('BashCardSession coalescing', () => {
 describe('BashCardSession output capping', () => {
   it('caps output to BASH_OUTPUT_STORE_CAP characters', async () => {
     const capture = { updates: [] as object[] };
-    const controller = makeController(capture);
-    const connector = makeConnector(controller);
+    const { connector } = makeBashTestConnector({ capture });
 
     const session = new BashCardSession({
       connector,
@@ -366,8 +345,7 @@ describe('BashCardSession output capping', () => {
 
   it('caps stderr in finish meta', async () => {
     const capture = { updates: [] as object[] };
-    const controller = makeController(capture);
-    const connector = makeConnector(controller);
+    const { connector } = makeBashTestConnector({ capture });
 
     const session = new BashCardSession({
       connector,

@@ -1,0 +1,11 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "rootDir": ".",
+    "declaration": false,
+    "sourceMap": false
+  },
+  "include": ["src", "tests/lib", "tests/feishu-live/live-helpers.ts"],
+  "exclude": ["node_modules", "dist", "src/**/*.test.ts"]
+}

@@ -31,7 +31,6 @@ describe('pi config path mapping bug', () => {
         stopGraceMs: 5000,
       },
       idle: { watchdogMinutes: 15 },
-      output: { showThinking: true, showToolUse: true, showToolResult: true },
       logging: { level: 'info' },
     };
 
