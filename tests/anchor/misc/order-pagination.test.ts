@@ -16,6 +16,7 @@ import {
   createStubRunner,
   createStubConnector,
 } from '../../lib/bridge-stubs.js';
+import { expectNoV1ActionContainer } from '../../lib/card-view.js';
 
 let tmpDir: string;
 let ordersFile: string;
@@ -39,7 +40,6 @@ function createRouter(overrides?: { ordersPath?: string }) {
       model: 'claude-opus-4-8',
       stopGraceMs: 5000,
     },
-    output: { showThinking: true, showToolUse: false, showToolResult: false },
   });
 
   const ordersPath = overrides?.ordersPath ?? ordersFile;
@@ -204,7 +204,7 @@ describe('/order pagination anchor tests', () => {
     const cardStr = JSON.stringify(r.card);
 
     // 2.0 cards MUST NOT mix in 1.x `tag:"action"` containers (200861)
-    expect(cardStr).not.toMatch(/"tag"\s*:\s*"action"[^}]*"actions"/);
+    expectNoV1ActionContainer(cardStr);
     expect(cardStr).toContain('"schema":"2.0"');
   });
 
@@ -275,7 +275,8 @@ describe('/order pagination anchor tests', () => {
     // 2026-08-13 线上同类故障：ORDER_PAGE_SIZE=20 时，21+ 条指令第 1 页
     // （20 行 + 分页栏 = 61 个 body 元素）触发飞书 ErrCode 11310。
     // 2026-08-19 别名并卡后每行 3 个元素（文本 div + 操作 column_set + hr），
-    // 页大小 8：3*8 - 1 + 2 = 25 个 body 元素，远低于 60 上限。
+    // 页大小 8：3*8 - 1 + 2 = 25；2026-09-10 分页栏拆成「文案行 + 控件行」
+    // 两个元素 → 26 个 body 元素，仍远低于 60 上限。
     const orderStore = new OrderStore(ordersFile);
     for (let i = 0; i < 20; i++) {
       orderStore.save(`指令 ${i + 1}`);
@@ -289,7 +290,7 @@ describe('/order pagination anchor tests', () => {
       elements?: unknown[];
     };
     const elements = card.body?.elements ?? [];
-    expect(elements.length).toBe(25);
+    expect(elements.length).toBe(26);
     expect(elements.length).toBeLessThanOrEqual(60);
   });
 });

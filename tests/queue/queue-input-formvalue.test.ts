@@ -1,57 +1,28 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import fs from 'node:fs';
-import path from 'node:path';
-import os from 'node:os';
-import { Bridge } from '../../src/bridge/index.js';
-import { SessionStore } from '../../src/session/index.js';
-import { CommandRouter } from '../../src/router/index.js';
-import { AppConfigSchema } from '../../src/config/index.js';
-import type { AppConfig } from '../../src/config/index.js';
-import { SessionReaderRegistry } from '../../src/session/registry.js';
-
 import {
-  createStubAgentRegistry,
-  createStubSessionReaderRegistry,
-  createStubConnector,
-  createStubRunner,
-} from '../lib/bridge-stubs.js';
-// 直接在模块顶层定义 mock（兼容 bun 的 vitest）
-const mockLogger = {
-  debug: vi.fn(),
-  info: vi.fn(),
-  warn: vi.fn(),
-  error: vi.fn(),
-};
+  cleanupQueueTestContext,
+  makeQueueTestContext,
+  setupTwoTaskQueueScenario,
+  type QueueTestContext,
+} from '../lib/queue-scenario.js';
+
+const { mockLogger } = vi.hoisted(() => ({
+  mockLogger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+}));
 
 vi.mock('../logger/index.js', () => ({
   getLogger: () => mockLogger,
   initLogger: () => mockLogger,
 }));
 
-let tmpDir: string;
-let config: AppConfig;
+let ctx: QueueTestContext;
 
 beforeEach(() => {
-  // 重置 mock
-  mockLogger.debug.mockReset();
-  mockLogger.info.mockReset();
-  mockLogger.warn.mockReset();
-  mockLogger.error.mockReset();
-
-  tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'lark-queue-input-test-'));
-  config = AppConfigSchema.parse({
-    feishu: { appId: 'test', appSecret: 'test' },
-    claude: {
-      model: 'opus',
-      stopGraceMs: 5000,
-    },
-    workspace: { default: '' },
-    output: { showThinking: true, showToolUse: false, showToolResult: false },
-  });
+  ctx = makeQueueTestContext();
 });
 
 afterEach(() => {
-  fs.rmSync(tmpDir, { recursive: true, force: true });
+  cleanupQueueTestContext(ctx);
 });
 
 describe('queue.input isBusyFor blocking', () => {
@@ -61,68 +32,11 @@ describe('queue.input isBusyFor blocking', () => {
     // executing) — editing its message preview should work even when another
     // task is running in the same workspace.
 
-    const sessionStore = new SessionStore();
-    const connector = createStubConnector();
-    const runner = createStubRunner();
-    const bridge = new Bridge({
-      runner,
-      agentRegistry: createStubAgentRegistry(runner),
-      sessionReaderRegistry: createStubSessionReaderRegistry(),
-      connector,
-      sessionStore,
-      config,
+    const { bridge, router, tmpDir } = ctx;
+    const { release1 } = await setupTwoTaskQueueScenario(bridge, ctx.connector, tmpDir, {
+      firstMessagePreview: 'task 1 running',
+      secondMessagePreview: 'original content',
     });
-
-    const router = new CommandRouter({
-      sessionStore,
-      bridge,
-      config,
-      configPath: path.join(tmpDir, 'config.yaml'),
-      workspacePath: path.join(tmpDir, 'workspace.json'),
-      sessionReaderRegistry: new SessionReaderRegistry(),
-    });
-
-    // Task 1: starts immediately, hangs (blocks the queue)
-    let release1: () => void = () => {};
-    const hang1 = new Promise<void>((resolve) => {
-      release1 = resolve;
-    });
-    bridge.enqueue(
-      tmpDir,
-      async () => {
-        await hang1;
-      },
-      {
-        taskMeta: {
-          userId: 'u1',
-          chatId: 'c1',
-          messageId: 'msg-1',
-          messagePreview: 'task 1 running',
-        },
-      },
-    );
-
-    // Give task 1 time to start
-    await new Promise((r) => setTimeout(r, 50));
-
-    // Task 2: queued behind task 1 (gets a queue card)
-    bridge.enqueue(
-      tmpDir,
-      async () => {
-        /* quick */
-      },
-      {
-        taskMeta: {
-          userId: 'u1',
-          chatId: 'c1',
-          messageId: 'msg-2',
-          messagePreview: 'original content',
-        },
-      },
-    );
-
-    // Wait for queue card to be sent
-    await new Promise((r) => setTimeout(r, 100));
 
     // Verify task 2 is in the queue
     const task = bridge.getQueuedTask(tmpDir, 'msg-2');
@@ -135,7 +49,7 @@ describe('queue.input isBusyFor blocking', () => {
     const updateSpy = vi.spyOn(bridge, 'updateMessagePreview');
 
     // Simulate submitting new content via queue.input
-    const ctx = { userId: 'u1', chatId: 'c1', messageId: 'msg-card-2' };
+    const cardCtx = { userId: 'u1', chatId: 'c1', messageId: 'msg-card-2' };
     await router.handleCardAction(
       {
         cmd: 'queue.input',
@@ -143,7 +57,7 @@ describe('queue.input isBusyFor blocking', () => {
         messageId: 'msg-2',
         inputValue: 'new edited content',
       },
-      ctx,
+      cardCtx,
     );
 
     // Bug: handleQueueInput returns early when isBusyFor returns true,

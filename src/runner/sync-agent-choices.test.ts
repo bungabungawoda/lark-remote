@@ -14,7 +14,6 @@ const baseConfig: AppConfig = {
   claude: { model: 'claude-opus-4-8', effort: 'medium', stopGraceMs: 5000 },
   defaultAgent: 'codex',
   idle: { watchdogMinutes: 15 },
-  output: { showThinking: true, showToolUse: true, showToolResult: true },
   logging: { level: 'info' },
   agents: { codex: {} },
 };

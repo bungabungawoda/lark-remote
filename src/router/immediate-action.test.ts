@@ -8,125 +8,74 @@ import { isImmediateAction } from './index.js';
  * and execute immediately via enqueue({ immediate: true }).
  *
  * Immediate actions (return true):
- * - Control operations that don't spawn Claude: new-session, stop, ls.file,
- *   ws.remove, resume.use, help.*, ws.use,
- *   queue.cancel, queue.immediate, queue.diagnose, order.delete
+ * - Control operations that don't spawn Claude（表驱动清单与生产
+ *   IMMEDIATE_ACTION_CMDS 一一对应）
+ * - help.* wildcard
  *
  * Non-immediate actions (return false):
  * - order.exec: WORK operation that calls forwardToClaude to spawn claude
+ *   （index.ts 在 enqueue 边界拦截，不经本分发器，故不在此断言）
  * - Other regular user messages (non-cardAction)
  */
 
 describe('isImmediateAction (§9.19)', () => {
   describe('control operations that should return true (immediate)', () => {
-    // §9.19: new-session - 只清 sessionId
-    it('new-session should return true', () => {
-      expect(isImmediateAction('new-session')).toBe(true);
+    // W3.7：24 个单行 it 收敛为表驱动（用例名即命令名，语义不变）。
+    it.each([
+      ['new-session', '§9.19: 只清 sessionId'],
+      ['stop', '§9.19: 中止当前运行'],
+      ['ls.file', '§9.19: 只发送文件'],
+      ['ls.refresh', '列表刷新（只读）'],
+      ['ls.browse', '目录浏览（只读）'],
+      ['ls.switch', '目录切换（只写 sessionId）'],
+      ['ls.page', '分页（control operation）'],
+      ['ws.remove', '§9.19: 只删除 workspace 别名'],
+      ['resume.use', '§9.19: 只设置 sessionId'],
+      ['resume.page', '分页（control operation）'],
+      ['ws.use', '§9.6 workspace switch'],
+      ['ws.page', 'pagination is a control operation'],
+      ['ws.sort', '排序切换（control operation）'],
+      ['active.page', '分页操作，只更新卡片，不 spawn agent'],
+      ['queue.cancel', '§9.6 queue management'],
+      ['queue.immediate', '§9.6 queue management'],
+      ['queue.diagnose', '§9.6 queue management'],
+      ['queue.edit', '§9.6 queue management'],
+      ['queue.input', '§9.6 queue management'],
+      ['order.delete', '§9.19: 只删除指令，不涉及 Claude 执行'],
+      ['order.page', '分页（control operation）'],
+      ['order.aliasEdit', '弹编辑卡（control operation）'],
+      ['order.aliasInput', '提交别名（control operation）'],
+      ['order.aliasRemove', '删除别名（control operation）'],
+      ['order.textEdit', '弹编辑卡（control operation）'],
+      ['order.textInput', '提交文本编辑（control operation）'],
+      ['config.toggle', 'config 卡片操作（串行化见 config.save 注释）'],
+      ['config.set', 'config 卡片操作'],
+      ['config.input', 'config 卡片操作'],
+      ['config.save', 'config 保存'],
+      [
+        'approval.respond',
+        '审批响应必须即时触达在途 run（串行会死锁，见 IMMEDIATE_ACTION_CMDS 注释）',
+      ],
+      ['approval.toggle', '权限切换（同审批死锁语义）'],
+      ['approval.answer', 'AskUserQuestion 即时响应'],
+      ['approval.answerSubmit', 'AskUserQuestion 多选提交'],
+      ['approval.answerCustom', 'AskUserQuestion 自定义答案'],
+      ['approval.answerNote', 'AskUserQuestion 补充说明'],
+      ['approval.planFeedback', '计划审批修改意见即时保存'],
+    ])('%s should return true', (cmd) => {
+      expect(isImmediateAction(cmd)).toBe(true);
     });
 
-    // §9.19: stop - 中止当前运行
-    it('stop should return true', () => {
-      expect(isImmediateAction('stop')).toBe(true);
-    });
-
-    // §9.19: ls.file - 只发送文件
-    it('ls.file should return true', () => {
-      expect(isImmediateAction('ls.file')).toBe(true);
-    });
-
-    // §9.19: ws.remove - 只删除 workspace 别名
-    it('ws.remove should return true', () => {
-      expect(isImmediateAction('ws.remove')).toBe(true);
-    });
-
-    // §9.19: resume.use - 只设置 sessionId
-    it('resume.use should return true', () => {
-      expect(isImmediateAction('resume.use')).toBe(true);
-    });
-
-    // §9.19: help.* - help 按钮执行只读命令
-    it('help.status should return true', () => {
-      expect(isImmediateAction('help.status')).toBe(true);
-    });
-
-    it('help.ps should return true', () => {
-      expect(isImmediateAction('help.ps')).toBe(true);
-    });
-
-    it('help.stop should return true', () => {
-      expect(isImmediateAction('help.stop')).toBe(true);
-    });
-
-    // Existing workspace switch commands (§9.6)
-    it('ws.use should return true', () => {
-      expect(isImmediateAction('ws.use')).toBe(true);
-    });
-
-    // Queue management commands (§9.6)
-    it('queue.cancel should return true', () => {
-      expect(isImmediateAction('queue.cancel')).toBe(true);
-    });
-
-    it('queue.immediate should return true', () => {
-      expect(isImmediateAction('queue.immediate')).toBe(true);
-    });
-
-    it('queue.diagnose should return true', () => {
-      expect(isImmediateAction('queue.diagnose')).toBe(true);
-    });
-
-    // §9.19: order.delete - 只删除指令，不涉及 Claude 执行
-    it('order.delete should return true', () => {
-      expect(isImmediateAction('order.delete')).toBe(true);
-    });
-
-    // active.page - 分页操作，只更新卡片，不 spawn agent
-    it('active.page should return true', () => {
-      expect(isImmediateAction('active.page')).toBe(true);
-    });
-
-    // 审批响应必须即时触达在途 run（同 stop 类控制动作）：若走串行队列会排在
-    // 正在等待审批的 run 之后形成死锁（run 不结束审批不执行；run 结束
-    // coordinator 已删、响应空转）——线上复现为「card action: approval.respond
-    // 排队」卡片且审批永不生效。
-    it('approval.respond should return true', () => {
-      expect(isImmediateAction('approval.respond')).toBe(true);
-    });
-
-    it('approval.toggle should return true', () => {
-      expect(isImmediateAction('approval.toggle')).toBe(true);
-    });
-
-    it('approval.answer should return true (AskUserQuestion 即时响应)', () => {
-      expect(isImmediateAction('approval.answer')).toBe(true);
-    });
-
-    it('approval.answerSubmit should return true (AskUserQuestion 多选提交)', () => {
-      expect(isImmediateAction('approval.answerSubmit')).toBe(true);
-    });
-
-    it('approval.answerCustom should return true (AskUserQuestion 自定义答案)', () => {
-      expect(isImmediateAction('approval.answerCustom')).toBe(true);
-    });
-
-    it('approval.answerNote should return true (AskUserQuestion 补充说明)', () => {
-      expect(isImmediateAction('approval.answerNote')).toBe(true);
-    });
-
-    it('approval.planFeedback should return true (计划审批修改意见即时保存)', () => {
-      expect(isImmediateAction('approval.planFeedback')).toBe(true);
-    });
-
-    it('ws.page should return true (pagination is a control operation)', () => {
-      expect(isImmediateAction('ws.page')).toBe(true);
-    });
+    // help.* wildcard: help 按钮执行只读命令
+    it.each(['help.status', 'help.ps', 'help.stop'])(
+      '%s should return true (help.* wildcard)',
+      (cmd) => {
+        expect(isImmediateAction(cmd)).toBe(true);
+      },
+    );
   });
 
   describe('work operations that should return false (enqueue)', () => {
-    // Note: order.exec is no longer routed through isImmediateAction —
-    // index.ts intercepts it at the enqueue boundary (resolveOrderExecForQueue)
-    // before this dispatcher is consulted. It is therefore not asserted here.
-
     // Unknown commands should return false (will be enqueued normally)
     it('unknown command should return false', () => {
       expect(isImmediateAction('bogus')).toBe(false);

@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { ClaudeSessionReader } from '../../session/claude/session-reader.js';
+import { encodeClaudeProjectDir } from '../../../tests/lib/session-fixtures.js';
 import {
   listClaudeSessions,
   getNewestSession,
@@ -22,10 +23,10 @@ afterEach(() => {
 
 // Helper: write a fake jsonl session file under <tmpDir>/<encodedCwd>/
 function writeSession(cwd: string, lines: string[], sessionId = 'test-session-1234'): string {
-  const encoded = cwd.replace(/\//g, '-');
+  const encoded = encodeClaudeProjectDir(cwd);
   const dir = path.join(tmpDir, encoded);
   fs.mkdirSync(dir, { recursive: true });
-  const initLine = `{"type":"system","subtype":"init","session_id":"${sessionId}","cwd":"${cwd}","model":"opus"}`;
+  const initLine = `{"type":"system","subtype":"init","session_id":"${sessionId}","cwd":${JSON.stringify(cwd)},"model":"opus"}`;
   const allLines = [initLine, ...lines];
   fs.writeFileSync(path.join(dir, `${sessionId}.jsonl`), allLines.join('\n') + '\n');
   return sessionId;
@@ -61,7 +62,7 @@ describe('ClaudeSessionReader', () => {
       '{"type":"user","message":{"role":"user","content":[{"type":"text","text":"first"}]}}',
     ]);
     // second session with a newer mtime — write a different sessionId
-    const encoded = cwd.replace(/\//g, '-');
+    const encoded = encodeClaudeProjectDir(cwd);
     const dir = path.join(tmpDir, encoded);
     const newerPath = path.join(dir, 'newer-session.jsonl');
     fs.writeFileSync(

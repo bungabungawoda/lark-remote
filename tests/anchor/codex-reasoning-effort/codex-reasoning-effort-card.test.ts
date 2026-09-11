@@ -86,7 +86,6 @@ function buildCodexConfig(): AppConfig {
       },
     },
     idle: { watchdogMinutes: 15 },
-    output: { showThinking: true, showToolUse: true, showToolResult: true },
     logging: { level: 'info' },
   });
 }
@@ -283,7 +282,6 @@ function buildCodexConfigForModel(
         stopGraceMs: 5000,
       },
     },
-    output: { showThinking: true, showToolUse: true, showToolResult: true },
     idle: { watchdogMinutes: 15 },
     logging: { level: 'info' },
   });
@@ -402,7 +400,7 @@ describe('codex config card effort follows model - anchor', () => {
       [
         'model = "deepseek-v4-flash"',
         'model_provider = "deepseek"',
-        `model_catalog_json = "${path.join(catalogHome, 'models.json')}"`,
+        `model_catalog_json = "${path.join(catalogHome, 'models.json').replaceAll('\\', '/')}"`,
         '',
         '[model_providers.deepseek]',
         'name = "deepseek"',

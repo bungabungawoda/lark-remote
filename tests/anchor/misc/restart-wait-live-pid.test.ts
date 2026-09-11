@@ -23,6 +23,7 @@ describe('waitForPreviousInstance 等待语义', () => {
     // spec 依据：方案 §2「子进程轮询 process.kill(oldPid, 0) 直到旧进程死」。
     const child = spawn(process.execPath, ['-e', 'setTimeout(()=>{}, 30000)'], {
       stdio: 'ignore',
+      windowsHide: true,
     });
     try {
       await new Promise<void>((resolve, reject) => {

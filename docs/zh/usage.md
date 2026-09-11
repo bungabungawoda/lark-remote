@@ -75,11 +75,6 @@ agents:
     model: ''                     # 模型名（如 deepseek-v4-flash / deepseek-v4-pro）；留空 = 跟随服务端默认
     reasoningEffort: ''           # off/low/high/max；留空 = 跟随服务端默认
 
-output:
-  showThinking: true        # 是否发送 thinking 块
-  showToolUse: true         # 是否展示工具调用
-  showToolResult: true      # 是否展示工具结果
-
 logging:
   level: info               # debug | info | warn | error
 
@@ -121,14 +116,15 @@ bridge 启动后不在终端输出，运行日志写入 `~/.lark-remote/logs/`�
 
 ## 五、命令
 
-直接发非 `/` 开头的消息即转发给 Claude。以 `/` 开头走内置命令，**部分命令支持单字母别名**（`/help /h`、`/status /s`、`/stop /t`、`/exit /e`、`/resume /r`、`/config /c`、`/order /o`）：
+直接发非 `/` 开头的消息即转发给 Claude。以 `/` 开头走内置命令，**部分命令支持单字母别名**（`/help /h`、`/status /s`、`/stop /t`、`/exit /e`、`/resume /r`、`/config /c`、`/order /o`、`/download /d`）：
 
 | 命令 | 别名 | 行为 |
 |------|------|------|
 | `/help` | `/h` | 显示命令列表 |
 | `/cd <path>` | - | 切换 Claude 工作目录（支持 `~`、绝对/相对路径，会清空当前会话，下次消息开新对话） |
 | `/cd` | - | 不带参数时显示当前目录 |
-| `/ls` | - | 弹出目录/文件卡片；点击目录切换，点击 30MB 内文件发送到飞书 |
+| `/ls [dir\|file]` | - | 弹出目录/文件卡片；点击目录切换，点击 30MB 内文件发送到飞书；条目 >30 时分页（可直接输入页码跳转）。传文件路径时列出该文件本身 |
+| `/download <path>` | `/d` | 直接下载（发送）指定文件到飞书，上限 30MB |
 | `/ws save <name>` | - | 把当前目录保存为命名别名 |
 | `/ws use <name>` | - | 切换到别名目录（清空会话） |
 | `/ws remove <name>` | - | 删除别名 |
@@ -141,7 +137,7 @@ bridge 启动后不在终端输出，运行日志写入 `~/.lark-remote/logs/`�
 | `/stop` | `/t` | 终止当前 agent 进程（SIGTERM 后立即 SIGKILL，不等宽限期） |
 | `/ps` | - | 查询是否有进程在跑 |
 | `/reconnect` | - | 重连飞书 WebSocket |
-| `/config` | `/c` | 查看配置（卡片交互，布尔值点击切换，其他用按钮选择） |
+| `/config` | `/c` | 查看配置（卡片交互：下拉/输入选择，保存按钮落盘） |
 | `/order save <text>` | `/o` | 保存常用指令 |
 | `/order` `/order list` | `/o` | 列出已保存的指令（卡片，可给指令起别名、编辑、删除） |
 | `/order edit <orderId\|序号> <新文本>` | `/o` | 编辑指令文本（卡片「编辑」按钮是主入口，保留别名和使用统计） |
@@ -156,6 +152,18 @@ bridge 启动后不在终端输出，运行日志写入 `~/.lark-remote/logs/`�
 
 - **`/cd <path>`** 支持 `~`（展开为 home 目录）、绝对路径和相对路径（相对当前目录）。切换后会清空 session，因为 `--resume` 会恢复 Claude 记忆中的旧 cwd，不清则文件读写错乱。
 - **`/ls [dir]`** 返回 CardKit 2.0 卡片，列出当前目录的**全部**子目录和文件；传 `[dir]` 可列出指定子目录（等价于 bash `ls <dir>`）。点击目录按钮即浏览该目录（`ls.browse`，不切换 cwd），"切换"按钮把工作目录切换到当前浏览的绝对路径（`ls.switch`，校验目标存在且是目录）。点击文件按钮会把 30MB 内的文件上传并发送到当前飞书私聊，超过限制会返回错误提示。
+- **「返回」按钮回到本次 `/ls` 的起点**：`/ls <dir>` 的起点是 `<dir>` 本身（所以起点卡片上没有「返回」，只有「切换」）；进入子目录后「返回」回到 `<dir>`，**不会把你丢回 workspace 工作目录**。不带参数的 `/ls` 起点即当前工作目录，行为与以前一致。翻页、刷新都不会丢掉这个起点。
+- **`/ls <file>`** 传文件路径时不再报 `Not a directory`，而是渲染一张单文件卡片（路径、大小、修改时间，附「下载」与「上级」按钮），方便先确认文件是否存在再决定是否下载。
+- **分页跳转**：`/ls`、`/ws`、`/resume`、`/active`、`/order` 的列表超过一页时，分页栏除「上一页/下一页」外还有一个页码输入框；输入页码点 ✓ 提交即可直接跳到该页（超出范围会 clamp 到最后一页，非法输入给出提示且不刷新卡片）。
+
+#### `/download`：直接下载文件
+
+**`/download <path>`**（别名 `/d`）把指定文件直接上传并发送到当前飞书私聊，不需要先进 `/ls` 卡片再点文件按钮。路径规则与 `/ls` 一致：支持 `~`（展开为 home 目录）、绝对路径与相对路径（相对当前工作目录，需先 `/cd`）。上限 30MB，与飞书 `im/v1/files` API 一致；目录、不存在的路径、超限文件都会返回明确的错误提示而不发送。
+
+```text
+/download ~/reports/2026H1.pdf     # 直接发送该文件
+/d lr.zip                          # 相对当前工作目录
+```
 
 #### `/ws`：workspace 别名
 
@@ -318,11 +326,12 @@ bot: 已切换到: /Users/you/code/my-app
 
 ## 七、输出格式
 
-每次 Claude run 正常路径只创建一张 CardKit 2.0 卡片，并持续原地更新：
+每次 Claude run 正常路径只创建一张 CardKit 2.0 卡片，并持续原地更新。thinking、
+tool_use / tool_result 恒常展示（不做配置开关）：
 
-- **thinking**：由 `showThinking` 控制，标题显示本地时间戳
+- **thinking**：始终展示，标题显示本地时间戳
 - **正文**：保留最新滚动窗口，正文前显示本地时间戳
-- **tool_use / tool_result**：由 `showToolUse` / `showToolResult` 控制，旧工具自动折叠，工具标题显示本地时间戳
+- **tool_use / tool_result**：始终展示，旧工具自动折叠，工具标题显示本地时间戳
 - **运行状态**：正在思考、调用工具或输出
 - **终态**：完成、出错、中断、空闲超时；终态会移除停止按钮
 - **表情回应**：你的原消息上，处理中先打 `Typing`；结束时按终态补打 `Done`（完成）/ `ERROR`（出错）/ `Alarm`（空闲超时）/ `SHHH`（用户 `/stop`）。bash（`!`）命令始终打 `Done`。key 来自飞书官方表情清单，新增终态映射需同步 anchor 测试。

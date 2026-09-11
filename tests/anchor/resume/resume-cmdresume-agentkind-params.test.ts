@@ -16,6 +16,7 @@ import {
   createStubRunner,
   createStubConnector,
 } from '../../lib/bridge-stubs.js';
+import { piEncodeCwd } from '../../lib/session-fixtures.js';
 /**
  * Anchor AC2: cmdResume 支持通过 args 首位指定 agentKind 覆盖默认推断
  *
@@ -55,7 +56,7 @@ describe('AC2: cmdResume supports agentKind via args', () => {
 
     // 创建 pi session（存在）
     // 注意：pi 的目录编码会去掉前导 /
-    const piEncodedCwd = canonicalCwd.replace(/^\//, '').replace(/\//g, '-');
+    const piEncodedCwd = piEncodeCwd(canonicalCwd);
     const piProjectDir = path.join(piSessionsDir, `--${piEncodedCwd}--`);
     fs.mkdirSync(piProjectDir, { recursive: true });
     const piSessionId = 'eeeeeeee-1111-2222-3333-444444444444';

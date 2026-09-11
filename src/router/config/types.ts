@@ -19,6 +19,8 @@ export interface SelectOption {
 export interface ConfigField {
   key: string;
   label: string;
+  // boolean 目前无真实 UI 字段（output.show* 开关已于 2026-09-04 移除），
+  // 保留作为扩展点：未来新增 boolean 配置项时可直接声明并在卡片渲染。
   type: 'boolean' | 'select' | 'input' | 'note';
   /** For select type: the list of options shown in the dropdown.
    *  Accepts plain strings (text=value) or {text, value} objects for

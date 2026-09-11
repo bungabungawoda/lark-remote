@@ -41,6 +41,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import { encodeClaudeProjectDir } from '../../lib/session-fixtures.js';
 
 const { mockLogger, jsonlSpy } = vi.hoisted(() => ({
   mockLogger: {
@@ -108,10 +109,10 @@ function writeSession(
   lines: string[],
   sessionId = 'test-session-1234',
 ): { sessionId: string; filePath: string } {
-  const encoded = cwd.replace(/\//g, '-').replace(/_/g, '-');
+  const encoded = encodeClaudeProjectDir(cwd);
   const dir = path.join(tmpDir, encoded);
   fs.mkdirSync(dir, { recursive: true });
-  const initLine = `{"type":"system","subtype":"init","session_id":"${sessionId}","cwd":"${cwd}","model":"opus"}`;
+  const initLine = `{"type":"system","subtype":"init","session_id":"${sessionId}","cwd":${JSON.stringify(cwd)},"model":"opus"}`;
   const allLines = [initLine, ...lines];
   const filePath = path.join(dir, `${sessionId}.jsonl`);
   fs.writeFileSync(filePath, allLines.join('\n') + '\n');

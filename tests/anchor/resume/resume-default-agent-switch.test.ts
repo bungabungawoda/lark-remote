@@ -10,6 +10,7 @@ import { AppConfigSchema } from '../../../src/config/index.js';
 import { SessionReaderRegistry } from '../../../src/session/registry.js';
 import { ClaudeSessionReader } from '../../../src/session/claude/index.js';
 import { PiSessionReader } from '../../../src/session/pi/index.js';
+import { encodedProjectDir } from '../../lib/session-fixtures.js';
 
 import {
   createStubAgentRegistry,
@@ -61,15 +62,15 @@ describe('/resume uses new defaultAgent reader after config.save', () => {
     const canonicalCwd = fs.realpathSync(tmpDir);
 
     // 写一个真实的 claude session JSONL 文件，让 ClaudeSessionReader 能列出 1 条
-    // 编码必须与 projectDirForCwd 一致：cwd.replace(/\//g, '-').replace(/_/g, '-')
+    // 编码必须与 projectDirForCwd 一致（共享 helper：encodedProjectDir）
     // （Claude CLI 把 / 和 _ 都换成 -，参见 cwd 编码条目）
-    const claudeEncoded = canonicalCwd.replace(/\//g, '-').replace(/_/g, '-');
+    const claudeEncoded = encodedProjectDir(canonicalCwd);
     const claudeProjDir = path.join(claudeProjectsDir, claudeEncoded);
     fs.mkdirSync(claudeProjDir, { recursive: true });
     const claudeSid = 'claude-session-after-switch';
     fs.writeFileSync(
       path.join(claudeProjDir, `${claudeSid}.jsonl`),
-      `{"type":"system","subtype":"init","session_id":"${claudeSid}","cwd":"${canonicalCwd}","model":"opus"}\n` +
+      `{"type":"system","subtype":"init","session_id":"${claudeSid}","cwd":${JSON.stringify(canonicalCwd)},"model":"opus"}\n` +
         `{"type":"user","message":{"role":"user","content":"test task after agent switch"}}\n`,
     );
 

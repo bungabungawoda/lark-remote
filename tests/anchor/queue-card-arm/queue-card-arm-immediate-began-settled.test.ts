@@ -109,7 +109,6 @@ beforeEach(() => {
       stopGraceMs: 5000,
     },
     defaultAgent: 'claude',
-    output: { showThinking: true, showToolUse: false, showToolResult: false },
   });
 });
 

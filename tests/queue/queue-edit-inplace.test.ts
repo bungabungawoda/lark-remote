@@ -1,92 +1,29 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import fs from 'node:fs';
-import path from 'node:path';
-import os from 'node:os';
-import { Bridge } from '../../src/bridge/index.js';
-import { SessionStore } from '../../src/session/index.js';
-import { CommandRouter } from '../../src/router/index.js';
-import { AppConfigSchema } from '../../src/config/index.js';
-import type { AppConfig } from '../../src/config/index.js';
-import { SessionReaderRegistry } from '../../src/session/registry.js';
-
 import {
-  createStubAgentRegistry,
-  createStubSessionReaderRegistry,
-  createStubRunner,
-  createStubConnector,
-} from '../lib/bridge-stubs.js';
-// 直接在模块顶层定义 mock（兼容 bun 的 vitest）
-const mockLogger = {
-  debug: vi.fn(),
-  info: vi.fn(),
-  warn: vi.fn(),
-  error: vi.fn(),
-};
+  cleanupQueueTestContext,
+  makeQueueTestContext,
+  setupTwoTaskQueueScenario,
+  type QueueTestContext,
+} from '../lib/queue-scenario.js';
+
+const { mockLogger } = vi.hoisted(() => ({
+  mockLogger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+}));
 
 vi.mock('../logger/index.js', () => ({
   getLogger: () => mockLogger,
   initLogger: () => mockLogger,
 }));
 
-let tmpDir: string;
-let config: AppConfig;
+let ctx: QueueTestContext;
 
 beforeEach(() => {
-  // 重置 mock
-  mockLogger.debug.mockReset();
-  mockLogger.info.mockReset();
-  mockLogger.warn.mockReset();
-  mockLogger.error.mockReset();
-
-  tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'lark-queue-edit-test-'));
-  config = AppConfigSchema.parse({
-    feishu: { appId: 'test', appSecret: 'test' },
-    claude: {
-      model: 'opus',
-      stopGraceMs: 5000,
-    },
-    workspace: { default: '' },
-    output: { showThinking: true, showToolUse: false, showToolResult: false },
-  });
+  ctx = makeQueueTestContext();
 });
 
 afterEach(() => {
-  fs.rmSync(tmpDir, { recursive: true, force: true });
+  cleanupQueueTestContext(ctx);
 });
-
-/** Set up: task-1 hangs (blocks queue), task-2 is queued behind it. */
-async function setupQueuedTask(bridge: Bridge, queuedMessageId: string, preview: string) {
-  let release1: () => void = () => {};
-  const hang1 = new Promise<void>((resolve) => {
-    release1 = resolve;
-  });
-  bridge.enqueue(
-    tmpDir,
-    async () => {
-      await hang1;
-    },
-    {
-      taskMeta: {
-        userId: 'u1',
-        chatId: 'c1',
-        messageId: 'msg-1-blocking',
-        messagePreview: 'blocking task',
-      },
-    },
-  );
-  await new Promise((r) => setTimeout(r, 50));
-  bridge.enqueue(
-    tmpDir,
-    async () => {
-      /* quick */
-    },
-    {
-      taskMeta: { userId: 'u1', chatId: 'c1', messageId: queuedMessageId, messagePreview: preview },
-    },
-  );
-  await new Promise((r) => setTimeout(r, 100));
-  return release1;
-}
 
 describe('queue.edit 原地更新修复', () => {
   it('test_anchor_queueEdit_uses_input_with_default_value_and_behaviors', async () => {
@@ -94,27 +31,14 @@ describe('queue.edit 原地更新修复', () => {
     // 这导致飞书 callback 不回传 input 值 -> "缺少新消息内容"
     // 预期：input 应使用 default_value + 自带 behaviors（对齐 config.input）
 
-    const sessionStore = new SessionStore();
-    const connector = createStubConnector();
-    const runner = createStubRunner();
-    const bridge = new Bridge({
-      runner,
-      agentRegistry: createStubAgentRegistry(runner),
-      sessionReaderRegistry: createStubSessionReaderRegistry(),
-      connector,
-      sessionStore,
-      config,
+    const { bridge, router, connector, tmpDir } = ctx;
+    const { release1 } = await setupTwoTaskQueueScenario(bridge, connector, tmpDir, {
+      firstMessageId: 'msg-1-blocking',
+      firstMessagePreview: 'blocking task',
+      secondMessagePreview: 'original message',
+      // 不拦截 updateCard：本文件断言依赖 stub 的 _updateCardCalls 记录
+      interceptUpdateCard: false,
     });
-    const router = new CommandRouter({
-      sessionStore,
-      bridge,
-      config,
-      configPath: path.join(tmpDir, 'config.yaml'),
-      workspacePath: path.join(tmpDir, 'workspace.json'),
-      sessionReaderRegistry: new SessionReaderRegistry(),
-    });
-
-    const release = await setupQueuedTask(bridge, 'msg-2', 'original message');
 
     // 触发编辑
     await router.handleCardAction(
@@ -182,7 +106,7 @@ describe('queue.edit 原地更新修复', () => {
     const behaviors = inputElement?.behaviors as Array<Record<string, unknown>> | undefined;
     expect(behaviors?.[0]?.value).toMatchObject({ cmd: 'queue.input' });
 
-    release();
+    release1();
     await new Promise((r) => setTimeout(r, 100));
   });
 
@@ -190,27 +114,14 @@ describe('queue.edit 原地更新修复', () => {
     // 完整流程：编辑 -> 提交新内容 -> 消息预览更新
     // 验证 queue.input 能正确读取 inputValue（由 index.ts 从 raw.action.input_value 提取）
 
-    const sessionStore = new SessionStore();
-    const connector = createStubConnector();
-    const runner = createStubRunner();
-    const bridge = new Bridge({
-      runner,
-      agentRegistry: createStubAgentRegistry(runner),
-      sessionReaderRegistry: createStubSessionReaderRegistry(),
-      connector,
-      sessionStore,
-      config,
+    const { bridge, router, tmpDir } = ctx;
+    const { release1 } = await setupTwoTaskQueueScenario(bridge, ctx.connector, tmpDir, {
+      firstMessageId: 'msg-1-blocking',
+      firstMessagePreview: 'blocking task',
+      secondMessagePreview: 'original message',
+      // 不拦截 updateCard：本文件断言依赖 stub 的 _updateCardCalls 记录
+      interceptUpdateCard: false,
     });
-    const router = new CommandRouter({
-      sessionStore,
-      bridge,
-      config,
-      configPath: path.join(tmpDir, 'config.yaml'),
-      workspacePath: path.join(tmpDir, 'workspace.json'),
-      sessionReaderRegistry: new SessionReaderRegistry(),
-    });
-
-    const release = await setupQueuedTask(bridge, 'msg-2', 'original message');
 
     // 1. 点击编辑
     await router.handleCardAction(
@@ -233,7 +144,7 @@ describe('queue.edit 原地更新修复', () => {
     const task = bridge.getQueuedTask(tmpDir, 'msg-2');
     expect(task?.messagePreview).toBe('edited content');
 
-    release();
+    release1();
     await new Promise((r) => setTimeout(r, 100));
   });
 
@@ -241,27 +152,14 @@ describe('queue.edit 原地更新修复', () => {
     // Bug: handleQueueEdit 用 sendResult 发送新卡片
     // 预期：使用 updateCardInPlace 原地更新原卡片
 
-    const sessionStore = new SessionStore();
-    const connector = createStubConnector();
-    const runner = createStubRunner();
-    const bridge = new Bridge({
-      runner,
-      agentRegistry: createStubAgentRegistry(runner),
-      sessionReaderRegistry: createStubSessionReaderRegistry(),
-      connector,
-      sessionStore,
-      config,
+    const { bridge, router, connector, tmpDir } = ctx;
+    const { release1 } = await setupTwoTaskQueueScenario(bridge, connector, tmpDir, {
+      firstMessageId: 'msg-1-blocking',
+      firstMessagePreview: 'blocking task',
+      secondMessagePreview: 'original message',
+      // 不拦截 updateCard：本文件断言依赖 stub 的 _updateCardCalls 记录
+      interceptUpdateCard: false,
     });
-    const router = new CommandRouter({
-      sessionStore,
-      bridge,
-      config,
-      configPath: path.join(tmpDir, 'config.yaml'),
-      workspacePath: path.join(tmpDir, 'workspace.json'),
-      sessionReaderRegistry: new SessionReaderRegistry(),
-    });
-
-    const release = await setupQueuedTask(bridge, 'msg-2', 'original message');
 
     // 监视 updateCardInPlace
     const updateInPlaceSpy = vi.spyOn(bridge, 'updateCardInPlace');
@@ -279,7 +177,7 @@ describe('queue.edit 原地更新修复', () => {
     // 即 handleQueueEdit 不应该直接调用 sendResult
     expect(sendResultSpy).not.toHaveBeenCalled();
 
-    release();
+    release1();
     await new Promise((r) => setTimeout(r, 100));
   });
 });

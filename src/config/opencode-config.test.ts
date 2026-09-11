@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 
-const mockExecSync = vi.fn();
+const mockSpawnSync = vi.fn();
+const mockResolveExecutable = vi.fn();
 const mockLogger = {
   debug: vi.fn(),
   info: vi.fn(),
@@ -8,8 +9,12 @@ const mockLogger = {
   error: vi.fn(),
 };
 
-vi.mock('node:child_process', () => ({
-  execSync: (...args: any[]) => mockExecSync(...args),
+vi.mock('../platform/command.js', () => ({
+  resolveExecutable: (...args: unknown[]) => mockResolveExecutable(...args),
+}));
+vi.mock('../platform/spawn.js', () => ({
+  useDetachedProcessGroup: vi.fn(() => true),
+  spawnProcessSync: (...args: unknown[]) => mockSpawnSync(...args),
 }));
 vi.mock('../logger/index.js', () => ({
   getLogger: () => mockLogger,
@@ -19,7 +24,9 @@ vi.mock('../logger/index.js', () => ({
 import { loadOpencodeConfig, invalidateOpencodeConfigCache } from './opencode-config.js';
 
 beforeEach(() => {
-  mockExecSync.mockReset();
+  mockSpawnSync.mockReset();
+  mockResolveExecutable.mockReset();
+  mockResolveExecutable.mockReturnValue({ kind: 'direct', file: '/usr/local/bin/opencode' });
   mockLogger.warn.mockReset();
   invalidateOpencodeConfigCache();
 });
@@ -36,7 +43,7 @@ const VALID_OUTPUT = [
 
 describe('loadOpencodeConfig', () => {
   it('parses valid model list output', () => {
-    mockExecSync.mockReturnValue(VALID_OUTPUT);
+    mockSpawnSync.mockReturnValue({ status: 0, stdout: VALID_OUTPUT, stderr: '' });
 
     const cfg = loadOpencodeConfig();
 
@@ -48,7 +55,7 @@ describe('loadOpencodeConfig', () => {
   });
 
   it('returns all models sorted when modelOptions called without provider', () => {
-    mockExecSync.mockReturnValue(VALID_OUTPUT);
+    mockSpawnSync.mockReturnValue({ status: 0, stdout: VALID_OUTPUT, stderr: '' });
 
     const cfg = loadOpencodeConfig();
     const allModels = cfg.modelOptions();
@@ -57,7 +64,7 @@ describe('loadOpencodeConfig', () => {
   });
 
   it('returns fallback result when execSync throws', () => {
-    mockExecSync.mockImplementation(() => {
+    mockSpawnSync.mockImplementation(() => {
       throw new Error('spawn opencode ENOENT');
     });
 
@@ -71,7 +78,7 @@ describe('loadOpencodeConfig', () => {
   });
 
   it('returns fallback models when model list output is empty', () => {
-    mockExecSync.mockReturnValue('');
+    mockSpawnSync.mockReturnValue({ status: 0, stdout: '', stderr: '' });
 
     const cfg = loadOpencodeConfig();
 
@@ -82,26 +89,26 @@ describe('loadOpencodeConfig', () => {
   });
 
   it('caches result: second call returns cached result without re-executing', () => {
-    mockExecSync.mockReturnValue(VALID_OUTPUT);
+    mockSpawnSync.mockReturnValue({ status: 0, stdout: VALID_OUTPUT, stderr: '' });
 
     loadOpencodeConfig();
     loadOpencodeConfig();
 
-    expect(mockExecSync).toHaveBeenCalledTimes(1);
+    expect(mockSpawnSync).toHaveBeenCalledTimes(1);
   });
 
   it('re-executes after cache invalidation', () => {
-    mockExecSync.mockReturnValue(VALID_OUTPUT);
+    mockSpawnSync.mockReturnValue({ status: 0, stdout: VALID_OUTPUT, stderr: '' });
 
     loadOpencodeConfig();
     invalidateOpencodeConfigCache();
     loadOpencodeConfig();
 
-    expect(mockExecSync).toHaveBeenCalledTimes(2);
+    expect(mockSpawnSync).toHaveBeenCalledTimes(2);
   });
 
   it('uses negative cache after failure: second call does not re-exec within TTL', () => {
-    mockExecSync.mockImplementation(() => {
+    mockSpawnSync.mockImplementation(() => {
       throw new Error('spawn opencode ENOENT');
     });
 
@@ -109,7 +116,7 @@ describe('loadOpencodeConfig', () => {
     const cfg2 = loadOpencodeConfig();
 
     // Both calls hit execSync only once; second uses negative cache
-    expect(mockExecSync).toHaveBeenCalledTimes(1);
+    expect(mockSpawnSync).toHaveBeenCalledTimes(1);
     // Both return fallback
     expect(cfg1.providerNames).toEqual(cfg2.providerNames);
     expect(cfg1.modelOptions('opencode')).toEqual(['big-pickle']);
@@ -117,7 +124,11 @@ describe('loadOpencodeConfig', () => {
   });
 
   it('returns fallback when output is not parseable as model lines', () => {
-    mockExecSync.mockReturnValue('some random output\nno model headers here');
+    mockSpawnSync.mockReturnValue({
+      status: 0,
+      stdout: 'some random output\nno model headers here',
+      stderr: '',
+    });
 
     const cfg = loadOpencodeConfig();
 
@@ -127,7 +138,7 @@ describe('loadOpencodeConfig', () => {
 
   it('handles model IDs with dots and underscores', () => {
     const output = 'provider-a/model.v2_beta\nprovider-b/gpt-4o-mini\n';
-    mockExecSync.mockReturnValue(output);
+    mockSpawnSync.mockReturnValue({ status: 0, stdout: output, stderr: '' });
 
     const cfg = loadOpencodeConfig();
 
@@ -138,7 +149,7 @@ describe('loadOpencodeConfig', () => {
 
   it('dedupes models across providers in modelOptions()', () => {
     const output = 'provider-a/shared-model\nprovider-b/shared-model\n';
-    mockExecSync.mockReturnValue(output);
+    mockSpawnSync.mockReturnValue({ status: 0, stdout: output, stderr: '' });
 
     const cfg = loadOpencodeConfig();
     const allModels = cfg.modelOptions();
@@ -149,7 +160,7 @@ describe('loadOpencodeConfig', () => {
 
   it('sorts provider names alphabetically', () => {
     const output = 'zebra/z-model\nalpha/a-model\nmid/m-model\n';
-    mockExecSync.mockReturnValue(output);
+    mockSpawnSync.mockReturnValue({ status: 0, stdout: output, stderr: '' });
 
     const cfg = loadOpencodeConfig();
 
@@ -159,7 +170,7 @@ describe('loadOpencodeConfig', () => {
 
 describe('fallback result structure', () => {
   it('has correct providerNames', () => {
-    mockExecSync.mockImplementation(() => {
+    mockSpawnSync.mockImplementation(() => {
       throw new Error('fail');
     });
 
@@ -171,7 +182,7 @@ describe('fallback result structure', () => {
   });
 
   it('modelOptions without provider returns all fallback models sorted and deduped', () => {
-    mockExecSync.mockImplementation(() => {
+    mockSpawnSync.mockImplementation(() => {
       throw new Error('fail');
     });
 
@@ -182,7 +193,7 @@ describe('fallback result structure', () => {
   });
 
   it('modelOptions for unknown provider returns empty array', () => {
-    mockExecSync.mockImplementation(() => {
+    mockSpawnSync.mockImplementation(() => {
       throw new Error('fail');
     });
 
