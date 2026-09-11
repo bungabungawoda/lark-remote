@@ -210,6 +210,10 @@ interface ToolUseContent {
   id: string;
   name: string;
   input: unknown;
+  /**
+   * 工具原始 title（ACP kind 映射后与 name 不同时保存；渲染层做面板副标题）。
+   */
+  summary?: string;
 }
 
 interface ToolResultContent {
@@ -259,6 +263,8 @@ export interface ResultEvent {
     /** 当前模型 context window 上限（codex app-server tokenUsage.modelContextWindow
      *  透传）。仅 app-server 提供；缺省时卡片只显示绝对量、不显示百分比。 */
     context_limit?: number;
+    /** 推理 token（pi 提供）。缺省不展示。 */
+    reasoning_tokens?: number;
   };
   total_cost_usd?: number;
   errorMessage?: string; // For auth errors and other run failures
@@ -275,6 +281,23 @@ export type TokenUsage = NonNullable<ResultEvent['usage']>;
 export interface PlanEvent {
   type: 'plan';
   plan: string; // delta-accumulated plan text
+  timestamp?: string;
+}
+
+/** 运行期通知（warning、模型重路由、压缩提示等）。translator 产出，公共层无分支渲染。 */
+export interface NoticeEvent {
+  type: 'notice';
+  level: 'info' | 'warn' | 'error';
+  code?: string;
+  text: string;
+  timestamp?: string;
+}
+
+/** 会话元信息（ACP session_info_update / current_mode_update）。字段缺省表示本次未变。 */
+export interface SessionInfoEvent {
+  type: 'session_info';
+  title?: string;
+  mode?: string;
   timestamp?: string;
 }
 
@@ -332,12 +355,19 @@ export interface TurnDiffEvent {
   refreshTimestamp?: boolean;
   /** Authoritative tool status at completion (commandExecution item). */
   toolStatus?: 'ok' | 'error';
+  /** 工具身份（commandExecution/mcpToolCall 等 item 首次发出时携带）。 */
+  toolName?: string;
+  toolInput?: Record<string, unknown>;
+  toolHint?: ToolHint;
   threadId: string;
   turnId: string;
   timestamp?: string;
 }
 
 export type RunnerLifetime = 'turn' | 'workspace';
+
+/** 工具渲染 hint：runner 自愿声明，渲染层只消费不推断。 */
+export type ToolHint = 'shell' | 'file' | 'search' | 'web' | 'patch';
 
 export type AgentEvent =
   | SystemInitEvent
@@ -352,7 +382,9 @@ export type AgentEvent =
   | PlanEvent
   | FileChangeEvent
   | TurnStartedEvent
-  | TurnDiffEvent;
+  | TurnDiffEvent
+  | NoticeEvent
+  | SessionInfoEvent;
 
 // =============================================================================
 // Runner Interface
