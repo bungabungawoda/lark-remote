@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### 新增
+
+- **Windows 正式支持**：原生 Windows 支持已在真机完成验证，README / getting-started 的平台前置条件从「macOS / Linux，暂不支持 Windows」更新为 macOS / Linux / Windows 10+
+
+### 变更
+
+- **安全文档措辞更新**：README 安全警告与 `SECURITY.md` 反映 Claude 审批模式——`permissionMode` 可配置（默认 `bypassPermissions`，配置为其他值即启用飞书卡片交互式审批），不再表述为「固定 bypassPermissions」；审批卡片描述从 Codex 专属改为 Claude / Codex / Kimi 通用
+
 ## [0.2.0] - 2026-09-11
 
 ### 新增
