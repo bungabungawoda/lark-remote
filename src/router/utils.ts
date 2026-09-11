@@ -87,6 +87,12 @@ export function formatUsageStats(
     cumulativeCacheReadTokens?: number;
     /** Session-cumulative cache creation tokens (all runs). */
     cumulativeCacheCreationTokens?: number;
+    /** 实际生效模型（system.init 携带）。非空字符串才显示。 */
+    model?: string;
+    /** 本次 run 花费（USD）。存在才显示。 */
+    costUsd?: number;
+    /** 推理 token（pi 提供）。> 0 才显示。 */
+    reasoningTokens?: number;
   },
   options?: { showResult?: boolean; result?: string },
 ): string {
@@ -94,6 +100,11 @@ export function formatUsageStats(
 
   // 1. Success 状态（通用格式，无具体结果值）
   lines.push('✅ 已完成');
+
+  // 1.4. 实际生效模型（非空字符串才显示）
+  if (usage?.model) {
+    lines.push(`Model - ${usage.model}`);
+  }
 
   // 1.5. 可选的结果行（showResult 为 true 时显示）
   if (options?.showResult && options?.result) {
@@ -208,6 +219,16 @@ export function formatUsageStats(
       );
       lines.push(`Total token - ${formatTokenK(totalTokens)}${withCumGuard(totalTokens)}`);
     }
+  }
+
+  // 8. 本次 run 花费（USD）
+  if (usage?.costUsd !== undefined) {
+    lines.push(`Cost - $${usage.costUsd.toFixed(4)}`);
+  }
+
+  // 9. 推理 token（> 0 才显示，格式对齐既有 token 行）
+  if (usage?.reasoningTokens !== undefined && usage.reasoningTokens > 0) {
+    lines.push(`Reasoning token - ${formatTokenK(usage.reasoningTokens)}`);
   }
 
   return lines.join('\n');

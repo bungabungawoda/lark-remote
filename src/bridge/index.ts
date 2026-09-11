@@ -1134,6 +1134,8 @@ export class Bridge {
     let finalCumulativeOutputTokens: number | undefined;
     let finalCumulativeCacheReadTokens: number | undefined;
     let finalCumulativeCacheCreationTokens: number | undefined;
+    // Reasoning tokens (pi usage.reasoning) from the live result event.
+    let finalReasoningTokens: number | undefined;
     // 统一的 usage meta 构造（finalize 各分支共享，本方法内原先 5 处手写 11-15
     // 字段对象；第 6 处 streamCodexCompact 形状不同未收敛）。
     // catch 路径需覆盖 flow 字段时在展开后覆写即可。catch error 路径亦复用此
@@ -1153,6 +1155,7 @@ export class Bridge {
       cumulativeOutputTokens: finalCumulativeOutputTokens,
       cumulativeCacheReadTokens: finalCumulativeCacheReadTokens,
       cumulativeCacheCreationTokens: finalCumulativeCacheCreationTokens,
+      reasoningTokens: finalReasoningTokens,
     });
 
     try {
@@ -1385,6 +1388,9 @@ export class Bridge {
             }
             if (u.totalTokens !== undefined) {
               finalTotalTokens = u.totalTokens;
+            }
+            if (u.reasoningTokens !== undefined) {
+              finalReasoningTokens = u.reasoningTokens;
             }
           }
         }
