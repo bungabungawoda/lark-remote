@@ -1,4 +1,4 @@
-import { spawn } from 'node:child_process';
+import { spawnProcess } from './platform/spawn.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { getLogger } from './logger/index.js';
@@ -27,10 +27,12 @@ const POLL_MS = 100;
 export function spawnReplacementBridge(logsDir: string): number {
   fs.mkdirSync(logsDir, { recursive: true });
   const out = fs.openSync(path.join(logsDir, 'restart-child.log'), 'a');
-  const child = spawn(process.execPath, process.argv.slice(1), {
+  const child = spawnProcess(process.execPath, process.argv.slice(1), {
     cwd: process.cwd(),
     env: { ...process.env, [RESTART_WAIT_PID_ENV]: String(process.pid) },
     detached: true,
+    // win32：detached 继任者默认会闪控制台窗口（§3.7）
+    windowsHide: true,
     stdio: ['ignore', out, out],
   });
   // Late spawn errors (e.g. binary removed mid-run) must not crash the
