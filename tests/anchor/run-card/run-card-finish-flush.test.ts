@@ -1,11 +1,11 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import type { CardStreamController } from '@larksuite/channel';
-import { RunCardSession } from '../../src/card/run-card-session.js';
+import { RunCardSession } from '../../../src/card/run-card-session.js';
 
 /**
  * PROBE (P1-3 finish 立即 flush + 残留窗口不丢) — spec 红线：finish() 必须立即
  * flush 不能合批（终态要即时显示）；最后一次 push 后的残留窗口必须 flush（否则
- * 丢最后一批事件）。本 probe 验证合批引入后这两条不变量未退化。
+ * 丢最后一批事件）。本锚点测试 验证合批引入后这两条不变量未退化。
  *
  * ① finish 立即 flush：push 一批事件（窗口内未 flush），紧接着 finish()，不推进
  *    timer，断言终态卡已含 finish 的内容（done 标记/usage）。若 finish 等窗口，
@@ -18,7 +18,7 @@ import { RunCardSession } from '../../src/card/run-card-session.js';
  * 依据：§P1-3「注意：finish() 必须立即 flush 不能合批
  * （终态要即时显示）」+「需保证最后一次 push 后 flush 残留窗口」。
  */
-describe('RunCardSession finish flush + residual window (P1-3 probe)', () => {
+describe('RunCardSession finish flush + residual window (P1-3 anchor)', () => {
   let updates: object[];
   let controller: CardStreamController;
 
@@ -53,7 +53,7 @@ describe('RunCardSession finish flush + residual window (P1-3 probe)', () => {
     return new RunCardSession({ connector, chatId: 'chat-1', runId: 'run-f', coalesceMs });
   }
 
-  it('probe_finish_flushes_immediately_without_waiting_for_coalesce_window', async () => {
+  it('test_anchor_finish_flushes_immediately_without_waiting_for_coalesce_window', async () => {
     const session = makeSession(100);
     await session.start();
     vi.clearAllMocks();
@@ -78,7 +78,7 @@ describe('RunCardSession finish flush + residual window (P1-3 probe)', () => {
     await session.settle();
   });
 
-  it('probe_residual_window_flush_does_not_lose_last_events', async () => {
+  it('test_anchor_residual_window_flush_does_not_lose_last_events', async () => {
     const session = makeSession(100);
     await session.start();
     vi.clearAllMocks();
@@ -102,7 +102,7 @@ describe('RunCardSession finish flush + residual window (P1-3 probe)', () => {
     await session.settle();
   });
 
-  it('probe_finish_cancels_pending_flush_no_stale_overwrite', async () => {
+  it('test_anchor_finish_cancels_pending_flush_no_stale_overwrite', async () => {
     const session = makeSession(100);
     await session.start();
     vi.clearAllMocks();

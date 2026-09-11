@@ -29,14 +29,14 @@
  *   `agents/*\/wire.jsonl`，可求和字段跨文件累加，contextLength 仅取 main；
  *   展示事件（events/displayTitle）维持 main 来源不变（subagent 细节已由 main
  *   流程里的 Task 工具调用呈现）。isSessionActive(:397)/列表(:514) 是否同步
- *   调整由绿 agent 判断，本 probe 只锁定 usage 聚合语义。
+ *   调整由绿 agent 判断，本锚点测试 只锁定 usage 聚合语义。
  *
  * fixture：tmp 目录构造 main（2 条 record）+ agent-0/agent-1（各 1 条 record），
  *   数值设计为可区分"仅 main"（inputTokens=4000）与"全 session"（=34000）。
  *   用真实 KimiSessionReader 实现而非 mock（同 tests/anchor/kimi/kimi-session-usage-aggregation.test.ts 模式）。
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { KimiSessionReader } from '../../src/session/kimi/sessions.js';
+import { KimiSessionReader } from '../../../src/session/kimi/sessions.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -50,7 +50,7 @@ const { mockLogger } = vi.hoisted(() => ({
   },
 }));
 
-vi.mock('../../src/logger/index.js', () => ({
+vi.mock('../../../src/logger/index.js', () => ({
   getLogger: () => mockLogger,
   initLogger: () => mockLogger,
 }));
@@ -68,7 +68,7 @@ function usageRecordLine(
   });
 }
 
-describe('KimiSessionReader usage aggregation must cover subagent wire.jsonl files (probe)', () => {
+describe('KimiSessionReader usage aggregation must cover subagent wire.jsonl files (anchor)', () => {
   let kimiDir: string;
   let cwd: string;
   let sessionDir: string;
@@ -108,7 +108,7 @@ describe('KimiSessionReader usage aggregation must cover subagent wire.jsonl fil
     fs.rmSync(cwd, { recursive: true, force: true });
   });
 
-  it('test_probe_kimi_usage_aggregates_subagent_wire_files_session_wide', () => {
+  it('test_anchor_kimi_usage_aggregates_subagent_wire_files_session_wide', () => {
     // main 末条 record 的 inputOther+inputCacheRead+inputCacheCreation = 3000+7000+400 = 10400，
     // 用于断言 contextLength 只取 main（不混入 subagent、不求和；excludes output，review P2-8）。
     fs.writeFileSync(

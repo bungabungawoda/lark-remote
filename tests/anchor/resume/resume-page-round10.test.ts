@@ -1,7 +1,7 @@
 /**
- * Round 10 termination probes (plan §2.3/§4.1/§4.3): resume.page 翻页边界。
+ * Round 10 termination anchors (plan §2.3/§4.1/§4.3): resume.page 翻页边界。
  *
- * Each `test_probe_*` is an independent assumption about behavior the spec
+ * Each `test_anchor_*` is an independent assumption about behavior the spec
  * does not fully pin down; a fail here is a candidate RED for the
  * orchestrator to upgrade/drop, NOT a spec violation by itself.
  *
@@ -19,22 +19,22 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { SessionStore } from '../../src/session/index.js';
-import { CommandRouter } from '../../src/router/index.js';
-import { Bridge } from '../../src/bridge/index.js';
-import { CARD_BUDGET_BYTES } from '../../src/card/text-truncate.js';
-import type { AppConfig } from '../../src/config/index.js';
-import { AppConfigSchema } from '../../src/config/index.js';
-import { SessionReaderRegistry } from '../../src/session/registry.js';
-import { ClaudeSessionReader } from '../../src/session/claude/index.js';
+import { SessionStore } from '../../../src/session/index.js';
+import { CommandRouter } from '../../../src/router/index.js';
+import { Bridge } from '../../../src/bridge/index.js';
+import { CARD_BUDGET_BYTES } from '../../../src/card/text-truncate.js';
+import type { AppConfig } from '../../../src/config/index.js';
+import { AppConfigSchema } from '../../../src/config/index.js';
+import { SessionReaderRegistry } from '../../../src/session/registry.js';
+import { ClaudeSessionReader } from '../../../src/session/claude/index.js';
 
-import { encodedProjectDir, writeSessionJsonl } from '../lib/session-fixtures.js';
+import { encodedProjectDir, writeSessionJsonl } from '../../lib/session-fixtures.js';
 import {
   createStubAgentRegistry,
   createStubSessionReaderRegistry,
   createStubRunner,
   createStubConnector,
-} from '../lib/bridge-stubs.js';
+} from '../../lib/bridge-stubs.js';
 type CardElement = {
   tag?: string;
   text?: { content?: string };
@@ -69,7 +69,9 @@ function findDivWithText(elements: CardElement[], needle: string): CardElement |
 }
 
 function resumePageButtons(elements: CardElement[]): CardElement[] {
-  return elements.filter((el) => el.behaviors?.[0]?.value?.cmd === 'resume.page');
+  return elements.filter(
+    (el) => el.tag === 'button' && el.behaviors?.[0]?.value?.cmd === 'resume.page',
+  );
 }
 
 function resumeUseButtons(elements: CardElement[]): CardElement[] {
@@ -162,18 +164,18 @@ function hugeVirtualReader(total: number) {
   };
 }
 
-describe('Round 10 router probes: resume.page 边界', () => {
+describe('Round 10 router anchors: resume.page 边界', () => {
   let tmpDir: string;
 
   beforeEach(() => {
-    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'round10-router-probes-'));
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'round10-router-anchors-'));
   });
 
   afterEach(() => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  it('test_probe_resume_clamped_page_prev_button_targets_previous_page', async () => {
+  it('test_anchor_resume_clamped_page_prev_button_targets_previous_page', async () => {
     // 假设：offset=1000 越界被 clamp 到末页起点 20 后（A6 已锚定的输入），
     // 渲染的"上一页"按钮 value.offset 必须基于实际展示页 pageOffset（20）
     // 计算为 15（指向第 4 页）——按钮语义是"从当前展示页回退一页"。
@@ -198,9 +200,9 @@ describe('Round 10 router probes: resume.page 边界', () => {
     });
   });
 
-  it('test_probe_resume_prev_click_after_clamp_reaches_previous_page', async () => {
+  it('test_anchor_resume_prev_click_after_clamp_reaches_previous_page', async () => {
     // 假设：clamp 后渲染出的"上一页"按钮被点击时，必须把用户带回第 4 页。
-    // 这是上一 probe 的可观测后果：如果按钮 value 用原始 offset 计算
+    // 这是上一锚点测试 的可观测后果：如果按钮 value 用原始 offset 计算
     // （980），点击后再次 clamp 回 20 → 卡片仍是 第 5/5 页 → 按钮"假死"。
     // spec 依据：§4.1 "上一页/下一页 原地翻页正确，内容不重复不遗漏"。
     const h = buildHarness(tmpDir, path.join(tmpDir, 'claude-projects'), 25);
@@ -227,7 +229,7 @@ describe('Round 10 router probes: resume.page 边界', () => {
     expect(resumeUseButtons(afterEls)).toHaveLength(5);
   });
 
-  it('test_probe_resume_page_negative_page_size_clamps_to_min', async () => {
+  it('test_anchor_resume_page_negative_page_size_clamps_to_min', async () => {
     // 假设：resume.page 的 pageSize 与 `/resume N` 是同一个页大小旋钮，
     // 负值必须按 cmdResume 的 N clamp [1,5] 语义处理（负数 → 1 →
     // 第 1/25 页 · 共 25 个会话），而不是被当成 sessionId 走"未找到"。
@@ -244,7 +246,7 @@ describe('Round 10 router probes: resume.page 边界', () => {
     expect(resumeUseButtons(els)).toHaveLength(1);
   });
 
-  it('test_probe_resume_page_zero_page_size_clamps_to_min', async () => {
+  it('test_anchor_resume_page_zero_page_size_clamps_to_min', async () => {
     // 假设：pageSize=0 被 clamp 到 1（与 `/resume 0` 语义一致，
     // A3 anchor 已锁定 N=0 → 1），不崩溃、不空页。
     const h = buildHarness(tmpDir, path.join(tmpDir, 'claude-projects'), 25);
@@ -259,7 +261,7 @@ describe('Round 10 router probes: resume.page 边界', () => {
     expect(resumeUseButtons(els)).toHaveLength(1);
   });
 
-  it('test_probe_resume_next_button_clickable', async () => {
+  it('test_anchor_resume_next_button_clickable', async () => {
     // 假设：21 个会话、`/resume 20`（clamp 到 5）后分页栏 `第 1/5 页`，
     // 下一页 offset=5 可点，点击后 `第 2/5 页` 且恰有 5 个会话。
     const h = buildHarness(tmpDir, path.join(tmpDir, 'claude-projects'), 21);
@@ -284,7 +286,7 @@ describe('Round 10 router probes: resume.page 边界', () => {
     expect(resumeUseButtons(page2Els)).toHaveLength(5);
   });
 
-  it('test_probe_resume_total_huge_pagination_no_nan', async () => {
+  it('test_anchor_resume_total_huge_pagination_no_nan', async () => {
     // 假设：total=99999 时 `第 1/20000 页 · 共 99999 个会话`（无 NaN/Infinity），
     // offset=99995 落在页对齐末页起点 → `第 20000/20000 页`，
     // 页面非空（4 条）、无下一页按钮。
@@ -314,7 +316,7 @@ describe('Round 10 router probes: resume.page 边界', () => {
     expect(JSON.stringify(h.connector._updates[0].card)).not.toMatch(/NaN|Infinity/);
   });
 
-  it('test_probe_resume_page5_card_within_budget', async () => {
+  it('test_anchor_resume_page5_card_within_budget', async () => {
     // 假设：pageSize=5 满页 + 每个会话 150 字标题时，卡片 JSON 字节数
     // < 28KB、body 顶层 elements < 200（§4.3 回归红线；spec §2.4 预算复核
     // "5 条 × 约 3 elements ≈ 15 elements；字节远低于 28KB"）。

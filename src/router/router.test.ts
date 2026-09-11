@@ -130,6 +130,24 @@ function collectCardTexts(elements: TestCardElement[]): string[] {
   }
   return out;
 }
+
+/** 递归查找 label 完全匹配的 button，返回其 behaviors[0].value（用于断言按钮目标）。 */
+function findButtonValue(
+  elements: TestCardElement[],
+  label: string,
+): Record<string, unknown> | undefined {
+  for (const el of elements) {
+    if (el.tag === 'button' && (el.text?.content ?? '') === label) {
+      const behaviors = el.behaviors as Array<{ value?: Record<string, unknown> }> | undefined;
+      return behaviors?.[0]?.value;
+    }
+    for (const col of el.columns ?? []) {
+      const found = findButtonValue(col.elements ?? [], label);
+      if (found) return found;
+    }
+  }
+  return undefined;
+}
 function createBackgroundRunningRunner(events: AgentEvent[]) {
   let release: () => void = () => {};
   const wait = new Promise<void>((resolve) => {
@@ -343,14 +361,14 @@ describe('CommandRouter', () => {
     // 文本组至少含 /cd /ls /resume /order
     expect(textGroup.length).toBeGreaterThanOrEqual(4);
 
-    // /ls 文本行标签应为 `/ls [dir]`（不再 [A-Z|0-9|#]）
+    // /ls 文本行标签应为 `/ls [dir|file]`（支持目录与文件；不再 [A-Z|0-9|#]）
     const lsTextRow = textGroup.find((d) => {
       const content = (d as { text?: { content?: string } }).text?.content ?? '';
       return content.includes('/ls');
     });
     expect(lsTextRow).toBeDefined();
     const lsContent = (lsTextRow as { text: { content: string } }).text.content;
-    expect(lsContent).toMatch(/\/ls \[dir\]/);
+    expect(lsContent).toMatch(/\/ls \[dir\|file\]/);
     expect(lsContent).not.toMatch(/\[A-Z/);
   });
 
@@ -722,17 +740,157 @@ describe('CommandRouter', () => {
     // (we're inside parent now, so parent of parent is different)
   });
 
-  it('/ls shows "返回" button when viewing subdirectory', async () => {
+  it('/ls <dir> 是浏览起点：起点卡片不显示「返回」（不再回 workspace cwd）', async () => {
     const { router, sessionStore, connector } = createRouter();
     fs.mkdirSync(path.join(tmpDir, 'subdir'));
     sessionStore.setCwd('user1', fs.realpathSync(tmpDir));
 
-    // /ls subdir should show a "返回" button to go back to cwd
+    // `/ls subdir` 的起点就是 subdir 本身 → 无「返回」可点
     await router.handle('/ls subdir', ctx);
     const cardStr = JSON.stringify((connector._sent[0].input as { card: object }).card);
+    expect(cardStr).not.toContain('返回');
+    // 「切换」语义仍相对 cwd（把工作目录切到当前浏览目录）
+    expect(cardStr).toContain('切换');
+  });
 
-    // Should have a 返回 button
-    expect(cardStr).toContain('返回');
+  it('/ls 深入子目录后「返回」回到 /ls 指定目录，而非 workspace cwd', async () => {
+    const { router, sessionStore, connector } = createRouter();
+    const rootDir = path.join(tmpDir, 'a');
+    const deepDir = path.join(rootDir, 'b');
+    fs.mkdirSync(deepDir, { recursive: true });
+    const cwd = fs.realpathSync(tmpDir);
+    const rootReal = fs.realpathSync(rootDir);
+    const deepReal = fs.realpathSync(deepDir);
+    sessionStore.setCwd('user1', cwd);
+
+    await router.handle('/ls a', ctx);
+    const startCard = (
+      connector._sent[0].input as { card: { body: { elements: TestCardElement[] } } }
+    ).card;
+    // 起点（= /ls 指定的 a）没有「返回」
+    expect(findButtonValue(startCard.body.elements, '返回')).toBeUndefined();
+
+    // 用真实卡片上的「📁 b」按钮进入 a/b —— 顺带验证 root 一路透传
+    const bButton = findButtonValue(startCard.body.elements, '📁 b');
+    expect(bButton).toMatchObject({ cmd: 'ls.browse', path: deepReal, root: rootReal });
+    await router.handleCardAction(bButton as never, ctx);
+
+    const deepCard = connector._cards.at(-1) as { body: { elements: TestCardElement[] } };
+    const backValue = findButtonValue(deepCard.body.elements, '返回');
+    expect(backValue).toBeDefined();
+    // 「返回」目标是 /ls 指定的目录 a，而不是 workspace cwd
+    expect(backValue).toMatchObject({ cmd: 'ls.browse', path: rootReal, root: rootReal });
+    expect(backValue!.path).not.toBe(cwd);
+    // 「刷新」同样带着 root（翻页/刷新不会把起点丢掉）
+    expect(findButtonValue(deepCard.body.elements, '刷新')).toMatchObject({
+      path: deepReal,
+      root: rootReal,
+    });
+
+    // 点「返回」→ 回到 a（又是起点卡片，无「返回」）
+    await router.handleCardAction(backValue as never, ctx);
+    const backCard = connector._cards.at(-1) as {
+      body: { elements: TestCardElement[] };
+      header: { title: { content: string } };
+    };
+    expect(backCard.header.title.content).toContain('a');
+    expect(findButtonValue(backCard.body.elements, '返回')).toBeUndefined();
+  });
+
+  it('/ls（无参数）进入子目录后「返回」回到 cwd（起点 = cwd，行为不变）', async () => {
+    const { router, sessionStore, connector } = createRouter();
+    const subDir = path.join(tmpDir, 'sub');
+    fs.mkdirSync(subDir);
+    const cwd = fs.realpathSync(tmpDir);
+    sessionStore.setCwd('user1', cwd);
+
+    await router.handle('/ls', ctx);
+    const startCard = (
+      connector._sent[0].input as { card: { body: { elements: TestCardElement[] } } }
+    ).card;
+    expect(findButtonValue(startCard.body.elements, '返回')).toBeUndefined();
+
+    const subButton = findButtonValue(startCard.body.elements, '📁 sub');
+    expect(subButton).toMatchObject({ cmd: 'ls.browse', path: fs.realpathSync(subDir), root: cwd });
+    await router.handleCardAction(subButton as never, ctx);
+
+    const subCard = connector._cards.at(-1) as { body: { elements: TestCardElement[] } };
+    expect(findButtonValue(subCard.body.elements, '返回')).toMatchObject({
+      cmd: 'ls.browse',
+      path: cwd,
+      root: cwd,
+    });
+  });
+
+  it('test_anchor_ls_switch_keeps_browse_root：切换 cwd 后再「返回」仍回 /ls 起点（不回切换到的目录）', async () => {
+    // 2026-09-10 用户反馈：/ls 进入子目录 → 点「切换」（改 cwd）→ 再点「返回」，
+    // 回到了刚切换到的目录，而不是 /ls 最初的起点。根因：ls.switch 按钮 value
+    // 没带 root，handleLsSwitch 重新渲染时把浏览起点重置成了新 cwd。
+    const { router, sessionStore, connector } = createRouter();
+    const deepDir = path.join(tmpDir, 'sub', 'deep');
+    fs.mkdirSync(deepDir, { recursive: true });
+    const cwd = fs.realpathSync(tmpDir);
+    const subReal = fs.realpathSync(path.join(tmpDir, 'sub'));
+    const deepReal = fs.realpathSync(deepDir);
+    sessionStore.setCwd('user1', cwd);
+
+    // /ls（起点 = cwd）→ sub → deep：root 一路透传
+    await router.handle('/ls', ctx);
+    const startCard = (
+      connector._sent[0].input as { card: { body: { elements: TestCardElement[] } } }
+    ).card;
+    await router.handleCardAction(findButtonValue(startCard.body.elements, '📁 sub') as never, ctx);
+    const subCard = connector._cards.at(-1) as { body: { elements: TestCardElement[] } };
+    await router.handleCardAction(findButtonValue(subCard.body.elements, '📁 deep') as never, ctx);
+
+    // deep 卡上的「切换」必须带 root = /ls 起点 cwd（bug 时缺这个字段）
+    const deepCard = connector._cards.at(-1) as { body: { elements: TestCardElement[] } };
+    const switchValue = findButtonValue(deepCard.body.elements, '切换');
+    expect(switchValue).toMatchObject({ cmd: 'ls.switch', path: deepReal, root: cwd });
+
+    await router.handleCardAction(switchValue as never, ctx);
+    expect(sessionStore.getCwd('user1')).toBe(deepReal);
+
+    // 切换后的卡片仍以 cwd 之后的**原始起点**为 root：「返回」指向 cwd 而非 deep
+    const switchedCard = connector._cards.at(-1) as { body: { elements: TestCardElement[] } };
+    expect(findButtonValue(switchedCard.body.elements, '返回')).toMatchObject({
+      cmd: 'ls.browse',
+      path: cwd,
+      root: cwd,
+    });
+    // 「刷新」/「上级」同样带着原始 root（翻页、导航不丢起点）
+    expect(findButtonValue(switchedCard.body.elements, '刷新')).toMatchObject({
+      path: deepReal,
+      root: cwd,
+    });
+    expect(findButtonValue(switchedCard.body.elements, '上级')).toMatchObject({
+      path: subReal,
+      root: cwd,
+    });
+
+    // 切换后再往上走一级，此刻 targetDir 已 ≠ 刚切换到的目录，但「返回」仍回
+    // /ls 起点（cwd）——旧实现对这里会回到 deep（切换到的目录）
+    await router.handleCardAction(
+      findButtonValue(switchedCard.body.elements, '上级') as never,
+      ctx,
+    );
+    const upCard = connector._cards.at(-1) as {
+      body: { elements: TestCardElement[] };
+      header: { title: { content: string } };
+    };
+    expect(upCard.header.title.content).toContain('sub');
+    const backValue = findButtonValue(upCard.body.elements, '返回');
+    expect(backValue).toMatchObject({ cmd: 'ls.browse', path: cwd, root: cwd });
+    expect(backValue!.path).not.toBe(deepReal);
+
+    // 点「返回」→ 回到 /ls 起点（cwd），起点卡片不再显示「返回」
+    await router.handleCardAction(backValue as never, ctx);
+    const backCard = connector._cards.at(-1) as {
+      body: { elements: TestCardElement[] };
+      header: { title: { content: string } };
+    };
+    expect(backCard.header.title.content).toContain(path.basename(cwd));
+    expect(findButtonValue(backCard.body.elements, '返回')).toBeUndefined();
   });
 
   it('/ls pagination: every column in column_set has tag="column" (regression: ErrCode 200621)', async () => {
@@ -3695,9 +3853,9 @@ describe('/active card pagination', () => {
     await router.handle('/active', { userId: 'user1', chatId: 'chat1', messageId: 'msg1' });
     const card = (connector._sent[0].input as { card?: { body?: { elements?: unknown[] } } }).card!;
     const elements = card.body?.elements ?? [];
-    // Agent 头 1 + 15*4 + Bash 头 1 + 5*4 + 分页栏 1 = 83
-    // （W2.9：独立页信息 div 并入 paginationBar 的 label 列，元素数 -1）
-    expect(elements.length).toBe(83);
+    // Agent 头 1 + 15*4 + Bash 头 1 + 5*4 + 分页栏 2 = 84
+    // （2026-09-10 窄屏重设计：分页栏拆成「文案整行 div + 控件 column_set」两元素）
+    expect(elements.length).toBe(84);
     expect(elements.length).toBeLessThanOrEqual(90);
   });
 
