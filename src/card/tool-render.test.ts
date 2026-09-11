@@ -535,3 +535,112 @@ describe('asRecord edge cases (via toolHeaderText / toolBodyMd)', () => {
     expect(toolBodyMd(tool)).toContain('fallback');
   });
 });
+
+// ============================================================================
+// 信息保真 C5：toolHint 优先渲染（runner 自愿声明，渲染层只消费不推断）
+// ============================================================================
+
+describe('tool-render toolHint (信息保真 C5)', () => {
+  function makeTool(overrides: Partial<ToolEntry> & Pick<ToolEntry, 'name'>): ToolEntry {
+    return {
+      id: 't1',
+      name: overrides.name,
+      status: overrides.status ?? 'ok',
+      input: overrides.input ?? {},
+      ...overrides,
+    };
+  }
+
+  it('hint shell + unknown name renders the Bash command body', () => {
+    const tool = makeTool({
+      name: 'weird_custom_name',
+      toolHint: 'shell',
+      input: { command: 'bun test' },
+    });
+    const body = toolBodyMd(tool);
+    expect(body).toContain('```bash');
+    expect(body).toContain('bun test');
+    expect(body).toContain('**Command**');
+  });
+
+  it('no hint + unknown name keeps current behavior (body empty, header summarizeInput fallback)', () => {
+    const tool = makeTool({
+      name: 'weird_custom_name',
+      input: { command: 'bun test' },
+    });
+    // 回归：无 hint 时行为与现状一致——body 无结构化渲染，
+    // 标题靠 summarizeInput 的 default 分支兜底（取 command）。
+    expect(toolBodyMd(tool)).not.toContain('**Command**');
+    expect(toolHeaderText(tool)).toContain('bun test');
+  });
+
+  it('hint file + unknown name renders file path', () => {
+    const tool = makeTool({
+      name: 'weird_file_tool',
+      toolHint: 'file',
+      input: { path: '/home/user/project/a.ts' },
+    });
+    expect(toolBodyMd(tool)).toContain('**File**');
+    expect(toolBodyMd(tool)).toContain('/home/user/project/a.ts');
+  });
+
+  it('hint search + unknown name renders pattern', () => {
+    const tool = makeTool({
+      name: 'weird_search_tool',
+      toolHint: 'search',
+      input: { pattern: 'placeholder', path: '/home/user/project' },
+    });
+    expect(toolBodyMd(tool)).toContain('**Pattern**');
+    expect(toolBodyMd(tool)).toContain('placeholder');
+  });
+
+  it('hint web + unknown name renders query', () => {
+    const tool = makeTool({
+      name: 'weird_web_tool',
+      toolHint: 'web',
+      input: { query: 'placeholder' },
+    });
+    expect(toolBodyMd(tool)).toContain('**Query**');
+    expect(toolBodyMd(tool)).toContain('placeholder');
+  });
+
+  it('hint web + url input renders URL（url 优先于 query）', () => {
+    const tool = makeTool({
+      name: 'weird_fetch_tool',
+      toolHint: 'web',
+      input: { url: 'https://example.com/page' },
+    });
+    expect(toolBodyMd(tool)).toContain('**URL**');
+    expect(toolBodyMd(tool)).toContain('https://example.com/page');
+  });
+
+  it('hint patch + unknown name renders file path（对齐规范的 Edit 语义）', () => {
+    const tool = makeTool({
+      name: 'weird_patch_tool',
+      toolHint: 'patch',
+      input: { file_path: '/home/user/project/b.ts' },
+    });
+    expect(toolBodyMd(tool)).toContain('**File**');
+    expect(toolBodyMd(tool)).toContain('/home/user/project/b.ts');
+  });
+
+  it('header appends original title as — summary subtitle when name is mapped (C3 配套直测)', () => {
+    // kind 映射后 name='Read'，原始 title='placeholder' → 标题末尾追加副标题。
+    const tool = makeTool({
+      name: 'Read',
+      summary: 'placeholder',
+      input: { path: '/home/user/project/a.ts' },
+      parsedInput: { path: '/home/user/project/a.ts' },
+    });
+    expect(toolHeaderText(tool)).toBe('✅ **Read** — /home/user/project/a.ts — placeholder');
+  });
+
+  it('header without summary stays unchanged (回归)', () => {
+    const tool = makeTool({
+      name: 'Read',
+      input: { path: '/home/user/project/a.ts' },
+      parsedInput: { path: '/home/user/project/a.ts' },
+    });
+    expect(toolHeaderText(tool)).toBe('✅ **Read** — /home/user/project/a.ts');
+  });
+});

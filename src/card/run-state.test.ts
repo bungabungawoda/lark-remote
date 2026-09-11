@@ -596,4 +596,262 @@ describe('RunState', () => {
     const footers: RunFooter[] = ['thinking', 'tool_running', 'streaming', null];
     expect(footers).not.toContain('background');
   });
+
+  // ===========================================================================
+  // 信息保真 C1：model / costUsd / notices / omittedBlocks / reasoningTokens
+  // ===========================================================================
+
+  it('test_anchor_system_init_stores_model', () => {
+    // system.init 携带的实际生效模型必须进 RunState（渲染统计行用）。
+    const state = reduceRunState(createInitialRunState('run-c1-model'), {
+      type: 'system',
+      subtype: 'init',
+      session_id: 's1',
+      cwd: '/home/user/project',
+      model: 'test-model',
+    } as never);
+    expect(state.model).toBe('test-model');
+  });
+
+  it('test_anchor_result_event_captures_costUsd', () => {
+    // result.total_cost_usd → state.costUsd（首个非 undefined 胜出）。
+    let state = reduceRunState(createInitialRunState('run-c1-cost'), {
+      type: 'system',
+      subtype: 'init',
+      session_id: 's1',
+      cwd: '/home/user/project',
+      model: 'test-model',
+    } as never);
+    state = reduceRunState(state, {
+      type: 'result',
+      subtype: 'success',
+      session_id: 's1',
+      total_cost_usd: 0.42,
+    } as never);
+    expect(state.costUsd).toBe(0.42);
+  });
+
+  it('test_anchor_notice_event_appends_to_notices', () => {
+    // notice 事件（warning / 重路由 / 压缩提示）按到达顺序累积。
+    let state = reduceRunState(createInitialRunState('run-c1-notice'), {
+      type: 'notice',
+      level: 'warn',
+      code: 'model/rerouted',
+      text: 'placeholder',
+    } as never);
+    state = reduceRunState(state, {
+      type: 'notice',
+      level: 'info',
+      text: 'placeholder-2',
+    } as never);
+    expect(state.notices).toHaveLength(2);
+    expect(state.notices![0]).toEqual({
+      level: 'warn',
+      code: 'model/rerouted',
+      text: 'placeholder',
+    });
+    expect(state.notices![1]).toEqual({ level: 'info', text: 'placeholder-2' });
+  });
+
+  it('notice 事件保留到达时间（渲染层按时间线插入内容流）', () => {
+    const state = reduceRunState(createInitialRunState('run-c1-notice-ts'), {
+      type: 'notice',
+      level: 'warn',
+      code: 'model/rerouted',
+      text: 'placeholder',
+      timestamp: '2026-07-04T10:30:00.000Z',
+    } as never);
+    expect(state.notices).toHaveLength(1);
+    expect(state.notices![0]).toEqual({
+      level: 'warn',
+      code: 'model/rerouted',
+      text: 'placeholder',
+      timestamp: '2026-07-04T10:30:00.000Z',
+    });
+  });
+
+  it('test_anchor_session_info_event_updates_title_and_mode', () => {
+    // session_info：title/mode 缺省不覆盖，存在才写。
+    let state = reduceRunState(createInitialRunState('run-c1-si'), {
+      type: 'session_info',
+      title: 'placeholder-title',
+    } as never);
+    expect(state.sessionTitle).toBe('placeholder-title');
+    expect(state.mode).toBeUndefined();
+    state = reduceRunState(state, { type: 'session_info', mode: 'plan' } as never);
+    expect(state.sessionTitle).toBe('placeholder-title');
+    expect(state.mode).toBe('plan');
+  });
+
+  it('test_anchor_block_cap_counts_omittedBlocks', () => {
+    // 超过 MAX_BLOCKS=24 的早期块被截断时必须计数（渲染「已省略 N 个早期步骤」）。
+    let state = createInitialRunState('run-c1-omit');
+    state = reduceRunState(state, {
+      type: 'system',
+      subtype: 'init',
+      session_id: 's1',
+      cwd: '/home/user/project',
+      model: 'test-model',
+    } as never);
+    for (let i = 0; i < 30; i++) {
+      state = reduceRunState(state, {
+        type: 'turn_diff',
+        itemId: `item-${i}`,
+        text: `placeholder-${i}`,
+        threadId: 'th-1',
+        turnId: 'tn-1',
+      } as never);
+    }
+    expect(state.blocks).toHaveLength(24);
+    expect(state.omittedBlocks).toBe(6);
+  });
+
+  it('test_anchor_finishRun_threads_reasoningTokens', () => {
+    // pi usage.reasoning 累加 → finish meta → RunState（统计行渲染）。
+    const finished = finishRun(createInitialRunState('run-c1-rt'), 'done', {
+      reasoningTokens: 100,
+    });
+    expect(finished.reasoningTokens).toBe(100);
+  });
+
+  it('test_anchor_assistant_content_summary_passthrough_to_tool_entry', () => {
+    // C3：content block 的 summary（ACP kind 映射后与 name 不同的 title）透传
+    // 到 ToolEntry，渲染层做面板副标题。
+    let state = createInitialRunState('run-c3-summary');
+    state = reduceRunState(state, {
+      type: 'assistant',
+      message: {
+        content: [
+          {
+            type: 'tool_use',
+            id: 'tool-sum',
+            name: 'Read',
+            input: { path: '/home/user/project/a.ts' },
+            summary: 'placeholder',
+          },
+        ],
+      },
+    } as never);
+    const toolBlock = state.blocks.find((b) => b.kind === 'tool');
+    expect(toolBlock && toolBlock.kind === 'tool' ? toolBlock.tool.summary : undefined).toBe(
+      'placeholder',
+    );
+  });
+
+  it('test_anchor_turn_diff_tool_identity_lands_on_tool_block', () => {
+    // C2：turn_diff 携带 toolName/toolInput/toolHint → 工具块不再是硬编码
+    // 'command'，parsedInput 可供渲染层直接消费。
+    let state = createInitialRunState('run-c2-tool');
+    state = reduceRunState(state, {
+      type: 'turn_diff',
+      itemId: 'item-c1',
+      toolOutput: '',
+      toolName: 'Bash',
+      toolInput: { command: 'bun run typecheck' },
+      toolHint: 'shell',
+      threadId: 'th-1',
+      turnId: 'tn-1',
+    } as never);
+    const toolBlock = state.blocks.find((b) => b.kind === 'tool');
+    expect(toolBlock && toolBlock.kind === 'tool' ? toolBlock.tool : undefined).toMatchObject({
+      id: 'item-c1',
+      name: 'Bash',
+      toolHint: 'shell',
+    });
+    expect(toolBlock && toolBlock.kind === 'tool' ? toolBlock.tool.parsedInput : undefined).toEqual(
+      { command: 'bun run typecheck' },
+    );
+    // 后续更新路径（existing 分支）不动身份：只更新 output/status。
+    state = reduceRunState(state, {
+      type: 'turn_diff',
+      itemId: 'item-c1',
+      toolOutput: 'ok',
+      complete: true,
+      threadId: 'th-1',
+      turnId: 'tn-1',
+    } as never);
+    const doneBlock = state.blocks.find((b) => b.kind === 'tool');
+    expect(doneBlock && doneBlock.kind === 'tool' ? doneBlock.tool : undefined).toMatchObject({
+      name: 'Bash',
+      output: 'ok',
+      status: 'ok',
+    });
+  });
+
+  // ===========================================================================
+  // 信息保真 C4.4：存储截断必须留痕（keepTailMarked）
+  // ===========================================================================
+
+  it('test_anchor_thinking_storage_over_cap_is_marked_turn_diff_path', () => {
+    // 5000 字符 thinking（> MAX_REASONING_CHARS=4000）：存储内容以截断标记开头。
+    let state = createInitialRunState('run-c4-think');
+    state = reduceRunState(state, {
+      type: 'turn_diff',
+      itemId: 'item-think',
+      reasoning: 'R'.repeat(5000),
+      threadId: 'th-1',
+      turnId: 'tn-1',
+    } as never);
+    const thinking = state.blocks.find((b) => b.kind === 'thinking');
+    const content = thinking && thinking.kind === 'thinking' ? thinking.content : '';
+    expect(content.startsWith('…（前 ')).toBe(true);
+    expect(content).toContain('字符已省略');
+    // 计数精确（验收修复）：marker 计入 4000 预算，省略数 = 5000 - 实际保留数。
+    // marker `…（前 N 字符已省略）\n` 长 16 字符（N 为 4 位数），保留 3984 → 省略 1016。
+    expect(content.startsWith('…（前 1016 字符已省略）\n')).toBe(true);
+    expect(content.length).toBe(4000);
+  });
+
+  it('test_anchor_thinking_storage_under_cap_is_not_marked', () => {
+    // 3000 字符（未超 4000）：无标记（回归：不误标）。
+    let state = createInitialRunState('run-c4-think-ok');
+    state = reduceRunState(state, {
+      type: 'turn_diff',
+      itemId: 'item-think-ok',
+      reasoning: 'R'.repeat(3000),
+      threadId: 'th-1',
+      turnId: 'tn-1',
+    } as never);
+    const thinking = state.blocks.find((b) => b.kind === 'thinking');
+    const content = thinking && thinking.kind === 'thinking' ? thinking.content : '';
+    expect(content.startsWith('…（前 ')).toBe(false);
+    expect(content).toBe('R'.repeat(3000));
+  });
+
+  it('test_anchor_text_storage_over_cap_is_marked', () => {
+    // 13000 字符 text（> MAX_TEXT_CHARS=12000）：存储内容以截断标记开头。
+    let state = createInitialRunState('run-c4-text');
+    state = reduceRunState(state, {
+      type: 'turn_diff',
+      itemId: 'item-text',
+      text: 'T'.repeat(13000),
+      threadId: 'th-1',
+      turnId: 'tn-1',
+    } as never);
+    const text = state.blocks.find((b) => b.kind === 'text');
+    const content = text && text.kind === 'text' ? text.content : '';
+    expect(content.startsWith('…（前 ')).toBe(true);
+  });
+
+  it('test_anchor_assistant_thinking_storage_over_cap_is_marked', () => {
+    // assistant 路径同样需要标记（5000 字符 thinking）。
+    let state = createInitialRunState('run-c4-asst');
+    state = reduceRunState(state, {
+      type: 'assistant',
+      message: { content: [{ type: 'thinking', thinking: 'R'.repeat(5000) }] },
+    } as never);
+    const thinking = state.blocks.find((b) => b.kind === 'thinking');
+    const content = thinking && thinking.kind === 'thinking' ? thinking.content : '';
+    expect(content.startsWith('…（前 ')).toBe(true);
+  });
+
+  it('test_anchor_plan_storage_over_cap_is_marked', () => {
+    // plan 存储截断复用 thinking 的标记语义。
+    let state = createInitialRunState('run-c4-plan');
+    state = reduceRunState(state, {
+      type: 'plan',
+      plan: 'P'.repeat(9000),
+    } as never);
+    expect(state.plan?.startsWith('…（前 ')).toBe(true);
+  });
 });

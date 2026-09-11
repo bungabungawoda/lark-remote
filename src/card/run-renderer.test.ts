@@ -2673,3 +2673,387 @@ describe('renderRunCard (CardKit 2.0)', () => {
     });
   });
 });
+
+// ============================================================================
+// 信息保真 C4：所有丢弃必须可见
+// ============================================================================
+
+describe('信息保真 C4：丢弃留痕', () => {
+  it('MAX_BLOCKS 丢弃提示：omittedBlocks>0 时卡片最前部出现「已省略 N 个早期步骤」', () => {
+    let state = createInitialRunState('run-c4-omit');
+    state = reduceRunState(state, {
+      type: 'system',
+      subtype: 'init',
+      session_id: 's1',
+      cwd: '/home/user/project',
+      model: 'test-model',
+    } as never);
+    for (let i = 0; i < 30; i++) {
+      state = reduceRunState(state, {
+        type: 'turn_diff',
+        itemId: `item-${i}`,
+        text: `placeholder-${i}`,
+        threadId: 'th-1',
+        turnId: 'tn-1',
+      } as never);
+    }
+    expect(state.omittedBlocks).toBe(6);
+    const json = JSON.stringify(renderRunCard(state));
+    expect(json).toContain('已省略 6 个早期步骤');
+  });
+
+  it('degraded 路径：plan/file_change 块不再静默丢弃，出现计数提示', () => {
+    const state: RunState = {
+      runId: 'run-c4-degraded',
+      terminal: 'done',
+      footer: null,
+      blocks: [],
+      sessionId: 's-c4',
+      resultSubtype: 'success',
+    };
+    // 12 个 5KB thinking 块 → 估算远超 24KB 阈值 → degraded。
+    for (let i = 0; i < 12; i++) {
+      state.blocks.push({
+        kind: 'thinking',
+        content: '思考' + i + ':' + 'X'.repeat(5000),
+        active: false,
+        timestamp: `2026-07-04T10:${String(i).padStart(2, '0')}:00.000Z`,
+      });
+    }
+    state.blocks.push({
+      kind: 'plan',
+      content: '计划内容占位',
+      active: false,
+      timestamp: '2026-07-04T11:00:00.000Z',
+    });
+    state.blocks.push({
+      kind: 'plan',
+      content: '第二份计划内容占位',
+      active: false,
+      timestamp: '2026-07-04T11:01:00.000Z',
+    });
+    state.blocks.push({
+      kind: 'file_change',
+      path: '/home/user/project/a.ts',
+      operation: 'edit',
+      diff: 'placeholder diff',
+      timestamp: '2026-07-04T11:02:00.000Z',
+    });
+    state.blocks.push({
+      kind: 'file_change',
+      path: '/home/user/project/b.ts',
+      operation: 'create',
+      timestamp: '2026-07-04T11:03:00.000Z',
+    });
+    const json = JSON.stringify(renderRunCard(state));
+    expect(json).toContain('另外 4 个计划/文件变更已省略');
+  });
+
+  it('degraded 路径：plan/file_change 省略提示置于顶部，输出仍在内容流末尾收尾', () => {
+    const state: RunState = {
+      runId: 'run-c4-degraded-order',
+      terminal: 'done',
+      footer: null,
+      blocks: [],
+      sessionId: 's-c4-order',
+      resultSubtype: 'success',
+    };
+    // 12 个 5KB thinking 块 → 估算远超 24KB 阈值 → degraded。
+    for (let i = 0; i < 12; i++) {
+      state.blocks.push({
+        kind: 'thinking',
+        content: '思考' + i + ':' + 'X'.repeat(5000),
+        active: false,
+        timestamp: `2026-07-04T10:${String(i).padStart(2, '0')}:00.000Z`,
+      });
+    }
+    // 时间线上早于最终输出的 file_change 块：降级只计数不渲染内容。
+    state.blocks.push({
+      kind: 'file_change',
+      path: '/home/user/project/a.ts',
+      operation: 'edit',
+      diff: 'placeholder diff',
+      timestamp: '2026-07-04T11:00:00.000Z',
+    });
+    state.blocks.push({
+      kind: 'text',
+      content: '最后一条输出必须保留在内容流末尾',
+      timestamp: '2026-07-04T11:01:00.000Z',
+    });
+
+    const card = renderRunCard(state);
+    const json = JSON.stringify(card);
+    // degraded 已触发且留痕提示存在
+    expect(json).toContain('另外 1 个计划/文件变更已省略');
+    expect(json).toContain('最后一条输出必须保留在内容流末尾');
+    // 省略提示与 thinking/tool 省略提示同在顶部，先于内容流出现；
+    // 输出仍在内容流末尾，不在省略提示之后。
+    const hintIndex = json.indexOf('另外 1 个计划/文件变更已省略');
+    const outputIndex = json.indexOf('最后一条输出必须保留在内容流末尾');
+    expect(hintIndex).toBeGreaterThan(-1);
+    expect(outputIndex).toBeGreaterThan(hintIndex);
+    expectNoV1ActionContainer(card);
+  });
+
+  it('skeleton 兜底：审批按钮与停止/新会话按钮必须同时保留', () => {
+    const state: RunState = {
+      runId: 'run-c4-skeleton',
+      terminal: 'running',
+      footer: 'tool_running',
+      blocks: [],
+      approvals: [
+        {
+          view: {
+            requestId: 'req-c4-1',
+            kind: 'command',
+            command: 'rm -rf /tmp/test',
+            commandCwd: '/home/user/project',
+            availableDecisions: ['accept', 'decline', 'cancel'],
+          },
+          expired: false,
+        },
+      ],
+    };
+    // 8 个 12KB text 块，用 plan 块分隔避免 groupBlocks 合并 → extreme 仍超
+    // 28KB（8 组 × 5KB 尾部）→ 落入 skeleton 兜底。
+    for (let i = 0; i < 8; i++) {
+      state.blocks.push({
+        kind: 'text',
+        content: '文本' + i + ':' + 'T'.repeat(12000),
+        timestamp: `2026-07-04T12:0${i}:00.000Z`,
+      });
+      state.blocks.push({
+        kind: 'plan',
+        content: '分隔计划' + i,
+        active: false,
+        timestamp: `2026-07-04T12:1${i}:00.000Z`,
+      });
+    }
+    const json = JSON.stringify(renderRunCard(state));
+    // 确认确实落入 skeleton 路径（否则断言可能被 extreme 的既有审批区满足）
+    expect(json).toContain('已省略全部内容');
+    // 审批按钮在 skeleton 中可见（信息保真 #20：极端兜底不丢审批入口）
+    expect(json).toContain('✅ 允许');
+    expect(json).toContain('❌ 拒绝');
+    // 红线复核：stop + new-session 按钮必须还在
+    expect(json).toContain('⏹ 停止');
+    expect(json).toContain('✨ 新会话');
+    // 200861 铁律：skeleton 卡含新增交互组件，必须断言无 V1 action 容器
+    expectNoV1ActionContainer(renderRunCard(state));
+  });
+
+  it('degraded 路径同样渲染 omittedBlocks 计数提示（专项：与正常路径共用 hint 函数）', () => {
+    const state: RunState = {
+      runId: 'run-c4-degraded-omit',
+      terminal: 'done',
+      footer: null,
+      blocks: [],
+      sessionId: 's-c4-omit',
+      resultSubtype: 'success',
+      omittedBlocks: 6,
+    };
+    // 12 个 5KB thinking 块 → 估算超 24KB 阈值 → degraded。
+    for (let i = 0; i < 12; i++) {
+      state.blocks.push({
+        kind: 'thinking',
+        content: '思考' + i + ':' + 'X'.repeat(5000),
+        active: false,
+        timestamp: `2026-07-04T10:${String(i).padStart(2, '0')}:00.000Z`,
+      });
+    }
+    const json = JSON.stringify(renderRunCard(state));
+    expect(json).toContain('已省略 6 个早期步骤');
+  });
+
+  it('extreme 路径同样渲染 omittedBlocks 计数提示', () => {
+    const state: RunState = {
+      runId: 'run-c4-extreme-omit',
+      terminal: 'done',
+      footer: null,
+      blocks: [],
+      sessionId: 's-c4-omit-x',
+      resultSubtype: 'success',
+      omittedBlocks: 9,
+    };
+    // 4 个 12KB text 块（plan 分隔防合并）：degraded 4×10KB 超 28KB，
+    // extreme 4×5KB≈20KB 恰好容纳 → 精确落在 extreme 路径。
+    for (let i = 0; i < 4; i++) {
+      state.blocks.push({
+        kind: 'text',
+        content: '文本' + i + ':' + 'T'.repeat(12000),
+        timestamp: `2026-07-04T12:0${i}:00.000Z`,
+      });
+      state.blocks.push({
+        kind: 'plan',
+        content: '分隔计划' + i,
+        active: false,
+        timestamp: `2026-07-04T12:1${i}:00.000Z`,
+      });
+    }
+    const json = JSON.stringify(renderRunCard(state));
+    expect(json).toContain('已省略 9 个早期步骤');
+  });
+});
+
+describe('运行期通知作为普通消息', () => {
+  it('正常路径：早于内容的 notice 内联在内容流之前，且不重复渲染到 summary', () => {
+    const state: RunState = {
+      runId: 'run-notice-normal',
+      terminal: 'done',
+      footer: null,
+      blocks: [],
+      sessionId: 's-notice-normal',
+      resultSubtype: 'success',
+      notices: [
+        {
+          level: 'warn',
+          code: 'model/rerouted',
+          text: 'notice-early-marker',
+          timestamp: '2026-07-04T10:00:00.000Z',
+        },
+      ],
+    };
+    state.blocks.push({
+      kind: 'text',
+      content: 'final-output-marker',
+      timestamp: '2026-07-04T10:30:00.000Z',
+    });
+
+    const card = renderRunCard(state);
+    const json = JSON.stringify(card);
+    // notice 只有一处（内联），未在 summary 重复
+    expect(json.split('notice-early-marker').length - 1).toBe(1);
+    expect(json).toContain('⚠️ notice-early-marker');
+    // notice 位于内容流（输出）之前；输出仍是内容流末尾
+    const noticeIndex = json.indexOf('notice-early-marker');
+    const outputIndex = json.indexOf('final-output-marker');
+    expect(noticeIndex).toBeGreaterThan(-1);
+    expect(outputIndex).toBeGreaterThan(noticeIndex);
+    expectNoV1ActionContainer(card);
+  });
+
+  it('正常路径：到达时间落在内容流中间的 notice 插在对应位置', () => {
+    const state: RunState = {
+      runId: 'run-notice-mid',
+      terminal: 'done',
+      footer: null,
+      blocks: [],
+      sessionId: 's-notice-mid',
+      resultSubtype: 'success',
+      notices: [
+        {
+          level: 'info',
+          code: 'compaction',
+          text: 'notice-mid-marker',
+          timestamp: '2026-07-04T10:01:30.000Z',
+        },
+      ],
+    };
+    state.blocks.push({
+      kind: 'text',
+      content: 'first-output-marker',
+      timestamp: '2026-07-04T10:00:00.000Z',
+    });
+    state.blocks.push({
+      kind: 'plan',
+      content: 'plan-output-marker',
+      active: false,
+      timestamp: '2026-07-04T10:01:00.000Z',
+    });
+    state.blocks.push({
+      kind: 'text',
+      content: 'last-output-marker',
+      timestamp: '2026-07-04T10:02:00.000Z',
+    });
+
+    const json = JSON.stringify(renderRunCard(state));
+    expect(json.split('notice-mid-marker').length - 1).toBe(1);
+    const firstIndex = json.indexOf('first-output-marker');
+    const planIndex = json.indexOf('plan-output-marker');
+    const noticeIndex = json.indexOf('notice-mid-marker');
+    const lastIndex = json.indexOf('last-output-marker');
+    expect(firstIndex).toBeGreaterThan(-1);
+    expect(planIndex).toBeGreaterThan(firstIndex);
+    expect(noticeIndex).toBeGreaterThan(planIndex);
+    expect(lastIndex).toBeGreaterThan(noticeIndex);
+  });
+
+  it('degraded 路径：notice 内联在保留内容的时间位置，不重复渲染', () => {
+    const state: RunState = {
+      runId: 'run-notice-degraded',
+      terminal: 'done',
+      footer: null,
+      blocks: [],
+      sessionId: 's-notice-degraded',
+      resultSubtype: 'success',
+      notices: [
+        {
+          level: 'warn',
+          text: 'notice-degraded-marker',
+          timestamp: '2026-07-04T10:30:00.000Z',
+        },
+      ],
+    };
+    // 12 个 5KB thinking 块 → 估算远超 24KB 阈值 → degraded。
+    for (let i = 0; i < 12; i++) {
+      state.blocks.push({
+        kind: 'thinking',
+        content: '思考' + i + ':' + 'X'.repeat(5000),
+        active: false,
+        timestamp: `2026-07-04T10:${String(i).padStart(2, '0')}:00.000Z`,
+      });
+    }
+    state.blocks.push({
+      kind: 'text',
+      content: 'degraded-tail-output-marker',
+      timestamp: '2026-07-04T11:00:00.000Z',
+    });
+
+    const json = JSON.stringify(renderRunCard(state));
+    expect(json).toMatch(/\d+ 个早期思考已省略/);
+    expect(json.split('notice-degraded-marker').length - 1).toBe(1);
+    const noticeIndex = json.indexOf('notice-degraded-marker');
+    const tailIndex = json.indexOf('degraded-tail-output-marker');
+    expect(noticeIndex).toBeGreaterThan(-1);
+    expect(tailIndex).toBeGreaterThan(noticeIndex);
+  });
+
+  it('skeleton 兜底：内容整体省略时 notice 仍在 summary 可见', () => {
+    const state: RunState = {
+      runId: 'run-notice-skeleton',
+      terminal: 'done',
+      footer: null,
+      blocks: [],
+      sessionId: 's-notice-skeleton',
+      resultSubtype: 'success',
+      notices: [
+        {
+          level: 'warn',
+          text: 'notice-skeleton-marker',
+          timestamp: '2026-07-04T10:00:00.000Z',
+        },
+      ],
+    };
+    // 8 个 12KB text 块，用 plan 块分隔避免 groupBlocks 合并 → extreme 仍超
+    // 28KB（8 组 × 5KB 尾部）→ 落入 skeleton 兜底。
+    for (let i = 0; i < 8; i++) {
+      state.blocks.push({
+        kind: 'text',
+        content: '文本' + i + ':' + 'T'.repeat(12000),
+        timestamp: `2026-07-04T12:0${i}:00.000Z`,
+      });
+      state.blocks.push({
+        kind: 'plan',
+        content: '分隔计划' + i,
+        active: false,
+        timestamp: `2026-07-04T12:1${i}:00.000Z`,
+      });
+    }
+
+    const json = JSON.stringify(renderRunCard(state));
+    // 确认确实落入 skeleton 路径
+    expect(json).toContain('已省略全部内容');
+    expect(json.split('notice-skeleton-marker').length - 1).toBe(1);
+    expect(json).toContain('⚠️ notice-skeleton-marker');
+  });
+});
