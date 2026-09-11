@@ -400,6 +400,226 @@ describe('Codex App Server Runner', () => {
       });
     });
 
+    // =========================================================================
+    // 信息保真 C2：工具身份（toolName/toolInput/toolHint）+ warning/rerouted
+    // + turn/plan/updated
+    // =========================================================================
+    describe('tool identity and runtime notices (信息保真 C2)', () => {
+      it('commandExecution item/started carries tool identity on the emitted turn_diff', () => {
+        const translator = new CodexAppServerTranslator();
+        const started = translator.handleNotification('item/started', {
+          threadId: 'th-aaa-111',
+          turnId: 'tn-111',
+          item: {
+            type: 'commandExecution',
+            id: 'item-c1',
+            command: 'bun run typecheck',
+            cwd: '/home/user/project',
+          },
+          startedAtMs: 1,
+        });
+        const diff = started[0] as {
+          toolName?: string;
+          toolInput?: Record<string, unknown>;
+          toolHint?: string;
+        };
+        expect(diff.toolName).toBe('Bash');
+        expect(diff.toolInput).toEqual({
+          command: 'bun run typecheck',
+          cwd: '/home/user/project',
+        });
+        expect(diff.toolHint).toBe('shell');
+      });
+
+      it('commandExecution outputDelta and completed turn_diffs keep the same identity', () => {
+        const translator = new CodexAppServerTranslator();
+        translator.handleNotification('item/started', {
+          threadId: 'th-aaa-111',
+          turnId: 'tn-111',
+          item: { type: 'commandExecution', id: 'item-c1', command: 'ls' },
+          startedAtMs: 1,
+        });
+        const out = translator.handleNotification('item/commandExecution/outputDelta', {
+          threadId: 'th-aaa-111',
+          turnId: 'tn-111',
+          itemId: 'item-c1',
+          delta: 'a.ts',
+        });
+        const outDiff = out[0] as { toolName?: string; toolHint?: string };
+        expect(outDiff.toolName).toBe('Bash');
+        expect(outDiff.toolHint).toBe('shell');
+
+        const done = translator.handleNotification('item/completed', {
+          threadId: 'th-aaa-111',
+          turnId: 'tn-111',
+          item: {
+            type: 'commandExecution',
+            id: 'item-c1',
+            command: 'ls',
+            aggregatedOutput: 'a.ts',
+            status: 'success',
+          },
+          completedAtMs: 2,
+        });
+        const doneDiff = done[0] as { toolName?: string; toolHint?: string };
+        expect(doneDiff.toolName).toBe('Bash');
+        expect(doneDiff.toolHint).toBe('shell');
+      });
+
+      it('webSearch item/started emits a turn_diff with WebSearch identity', () => {
+        const translator = new CodexAppServerTranslator();
+        const started = translator.handleNotification('item/started', {
+          threadId: 'th-aaa-111',
+          turnId: 'tn-111',
+          item: { type: 'webSearch', id: 'item-w1', query: 'placeholder' },
+          startedAtMs: 1,
+        });
+        expect(started).toHaveLength(1);
+        const diff = started[0] as {
+          toolName?: string;
+          toolInput?: Record<string, unknown>;
+          toolHint?: string;
+          toolOutput?: string;
+          itemId?: string;
+        };
+        expect(diff.itemId).toBe('item-w1');
+        expect(diff.toolName).toBe('WebSearch');
+        expect(diff.toolInput).toEqual({ query: 'placeholder' });
+        expect(diff.toolHint).toBe('web');
+      });
+
+      it('mcpToolCall item/started emits mcp__server__tool identity', () => {
+        const translator = new CodexAppServerTranslator();
+        const started = translator.handleNotification('item/started', {
+          threadId: 'th-aaa-111',
+          turnId: 'tn-111',
+          item: {
+            type: 'mcpToolCall',
+            id: 'item-m1',
+            server: 'test-server',
+            tool: 'query',
+            arguments: { sql: 'placeholder' },
+          },
+          startedAtMs: 1,
+        });
+        const diff = started[0] as {
+          toolName?: string;
+          toolInput?: Record<string, unknown>;
+          toolHint?: string;
+        };
+        expect(diff.toolName).toBe('mcp__test-server__query');
+        expect(diff.toolInput).toEqual({ sql: 'placeholder' });
+        expect(diff.toolHint).toBe('search');
+      });
+
+      it('dynamicToolCall item/started emits the tool name as identity', () => {
+        const translator = new CodexAppServerTranslator();
+        const started = translator.handleNotification('item/started', {
+          threadId: 'th-aaa-111',
+          turnId: 'tn-111',
+          item: {
+            type: 'dynamicToolCall',
+            id: 'item-d1',
+            tool: 'run_query',
+            arguments: { q: 'placeholder' },
+          },
+          startedAtMs: 1,
+        });
+        const diff = started[0] as {
+          toolName?: string;
+          toolInput?: Record<string, unknown>;
+        };
+        expect(diff.toolName).toBe('run_query');
+        expect(diff.toolInput).toEqual({ q: 'placeholder' });
+      });
+
+      it('webSearch/mcp/dynamic item/completed finalizes the tool block with identity', () => {
+        // 信息保真 C2 验收修复：无专属 completed 分支的工具 item 也必须收尾，
+        // 否则 run-state 侧工具块永挂 running、toolItemMeta 泄漏。
+        const translator = new CodexAppServerTranslator();
+        translator.handleNotification('item/started', {
+          threadId: 'th-aaa-111',
+          turnId: 'tn-111',
+          item: { type: 'webSearch', id: 'item-w2', query: 'placeholder' },
+          startedAtMs: 1,
+        });
+        const completed = translator.handleNotification('item/completed', {
+          threadId: 'th-aaa-111',
+          turnId: 'tn-111',
+          item: { type: 'webSearch', id: 'item-w2', query: 'placeholder' },
+        });
+        expect(completed).toHaveLength(1);
+        const diff = completed[0] as {
+          complete?: boolean;
+          toolName?: string;
+          toolInput?: Record<string, unknown>;
+          itemId?: string;
+        };
+        expect(diff.itemId).toBe('item-w2');
+        expect(diff.complete).toBe(true);
+        expect(diff.toolName).toBe('WebSearch');
+        expect(diff.toolInput).toEqual({ query: 'placeholder' });
+        // meta 已释放：重复 completed 不再产事件
+        const again = translator.handleNotification('item/completed', {
+          threadId: 'th-aaa-111',
+          turnId: 'tn-111',
+          item: { type: 'webSearch', id: 'item-w2', query: 'placeholder' },
+        });
+        expect(again).toHaveLength(0);
+      });
+
+      it('warning notification produces a notice event', () => {
+        const translator = new CodexAppServerTranslator();
+        const events = translator.handleNotification('warning', {
+          code: 'rate_limit',
+          message: 'placeholder',
+        });
+        expect(events).toHaveLength(1);
+        const notice = events[0] as {
+          type: string;
+          level: string;
+          code?: string;
+          text: string;
+        };
+        expect(notice.type).toBe('notice');
+        expect(notice.level).toBe('warn');
+        expect(notice.code).toBe('rate_limit');
+        expect(notice.text).toBe('placeholder');
+      });
+
+      it('model/rerouted notification produces a notice with model and reason', () => {
+        const translator = new CodexAppServerTranslator();
+        const events = translator.handleNotification('model/rerouted', {
+          threadId: 'th-aaa-111',
+          model: 'test-model-2',
+          reason: 'placeholder',
+        });
+        expect(events).toHaveLength(1);
+        const notice = events[0] as { type: string; level: string; code?: string; text: string };
+        expect(notice.type).toBe('notice');
+        expect(notice.level).toBe('warn');
+        expect(notice.code).toBe('model/rerouted');
+        expect(notice.text).toContain('test-model-2');
+        expect(notice.text).toContain('placeholder');
+      });
+
+      it('turn/plan/updated notification produces a plan event with status icons', () => {
+        const translator = new CodexAppServerTranslator();
+        const events = translator.handleNotification('turn/plan/updated', {
+          threadId: 'th-aaa-111',
+          plan: [
+            { title: 'step one', status: 'completed' },
+            { title: 'step two', status: 'in_progress' },
+          ],
+        });
+        expect(events).toHaveLength(1);
+        const plan = events[0] as { type: string; plan: string };
+        expect(plan.type).toBe('plan');
+        expect(plan.plan).toContain('✅ step one');
+        expect(plan.plan).toContain('🔄 step two');
+      });
+    });
+
     describe('turn/completed notification', () => {
       it('synthesizes result event with proper status', () => {
         const translator = new CodexAppServerTranslator();

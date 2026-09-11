@@ -8,7 +8,13 @@
  * app-server v2 protocol (see protocol-types.ts).
  */
 
-import type { AgentEvent, TokenUsage, TurnStartedEvent, TurnDiffEvent } from '../../types.js';
+import type {
+  AgentEvent,
+  TokenUsage,
+  ToolHint,
+  TurnStartedEvent,
+  TurnDiffEvent,
+} from '../../types.js';
 import type {
   ApprovalView,
   ApprovalRequestedEvent,
@@ -41,6 +47,11 @@ import {
   type FileUpdateChange,
   type FileUpdateChangeKind,
   type CommandExecutionApprovalDecision,
+  type WarningNotification,
+  type ModelReroutedNotification,
+  type TurnPlanUpdatedNotification,
+  type McpToolCallItem,
+  type DynamicToolCallItem,
   UNSUPPORTED_SERVER_REQUEST_METHODS,
 } from './protocol-types.js';
 
@@ -65,6 +76,14 @@ export class CodexAppServerTranslator {
   private reasoningByItem = new Map<string, { content: Map<number, string>; summary: string }>();
   /** Full command output per item id (item-scoped snapshot). */
   private toolOutputByItem = new Map<string, string>();
+  /**
+   * Tool identity per item id (信息保真 C2): recorded at item/started, spread
+   * into every toolOutput turn_diff, released at item/completed.
+   */
+  private toolItemMeta = new Map<
+    string,
+    { toolName: string; toolInput?: Record<string, unknown>; toolHint?: ToolHint }
+  >();
   /** Full plan text per item id (item-scoped snapshot). */
   private planByItem = new Map<string, string>();
   /** commandExecution items that emitted item/started (tool block position anchor). */
@@ -116,6 +135,12 @@ export class CodexAppServerTranslator {
         );
       case NotificationMethod.TURN_COMPLETED:
         return this.handleTurnCompleted(params as TurnCompletedNotification['params']);
+      case NotificationMethod.WARNING:
+        return this.handleWarning(params as WarningNotification['params']);
+      case NotificationMethod.MODEL_REROUTED:
+        return this.handleModelRerouted(params as ModelReroutedNotification['params']);
+      case NotificationMethod.TURN_PLAN_UPDATED:
+        return this.handleTurnPlanUpdated(params as TurnPlanUpdatedNotification['params']);
       case NotificationMethod.ERROR:
         return this.handleError(params as ErrorNotification['params']);
       case NotificationMethod.THREAD_COMPACTED:
@@ -286,6 +311,7 @@ export class CodexAppServerTranslator {
     this.textByItem.clear();
     this.reasoningByItem.clear();
     this.toolOutputByItem.clear();
+    this.toolItemMeta.clear();
     this.planByItem.clear();
     this.startedToolItems.clear();
     this.fileChangeItems.clear();
@@ -395,10 +421,14 @@ export class CodexAppServerTranslator {
         return [];
       }
       this.toolOutputByItem.set(item.id, authoritative);
+      // 信息保真 C2：完成事件同样携带身份，并在发出后释放 meta。
+      const meta = this.toolItemMeta.get(item.id);
+      this.toolItemMeta.delete(item.id);
       return [
         {
           type: 'turn_diff',
           toolOutput: authoritative,
+          ...meta,
           itemId: item.id,
           complete: true,
           toolStatus: commandExecutionStatusToToolStatus(
@@ -450,6 +480,26 @@ export class CodexAppServerTranslator {
         ];
       }
     }
+    // 信息保真 C2：webSearch/mcpToolCall/dynamicToolCall 等无专属 completed 分支的
+    // 工具 item 也必须收尾——否则 run-state 侧工具块永挂 running（无 completedAt/终态），
+    // toolItemMeta 泄漏到下个 turn 的 clear() 才被释放。
+    if (this.startedToolItems.has(item.id)) {
+      const meta = this.toolItemMeta.get(item.id);
+      this.toolItemMeta.delete(item.id);
+      this.startedToolItems.delete(item.id);
+      return [
+        {
+          type: 'turn_diff',
+          toolOutput: this.toolOutputByItem.get(item.id) ?? '',
+          ...meta,
+          itemId: item.id,
+          complete: true,
+          threadId: params.threadId,
+          turnId: params.turnId,
+          timestamp: this.now(),
+        } as TurnDiffEvent,
+      ];
+    }
     return [];
   }
 
@@ -482,6 +532,7 @@ export class CodexAppServerTranslator {
       {
         type: 'turn_diff',
         toolOutput: next,
+        ...this.toolItemMeta.get(params.itemId),
         itemId: params.itemId,
         threadId: params.threadId,
         turnId: params.turnId,
@@ -520,6 +571,51 @@ export class CodexAppServerTranslator {
       contextLimit: params.tokenUsage.modelContextWindow,
     };
     return [];
+  }
+
+  /**
+   * warning 通知 → notice 事件（信息保真 C2：运行期告警不再静默丢弃）。
+   */
+  private handleWarning(params: WarningNotification['params']): AgentEvent[] {
+    return [
+      {
+        type: 'notice',
+        level: 'warn',
+        code: params.code,
+        text: params.message,
+        timestamp: this.now(),
+      },
+    ];
+  }
+
+  /**
+   * model/rerouted 通知 → notice 事件（模型重路由必须用户可见）。
+   */
+  private handleModelRerouted(params: ModelReroutedNotification['params']): AgentEvent[] {
+    return [
+      {
+        type: 'notice',
+        level: 'warn',
+        code: 'model/rerouted',
+        text: `模型已切换为 ${params.model}${params.reason ? `：${params.reason}` : ''}`,
+        timestamp: this.now(),
+      },
+    ];
+  }
+
+  /**
+   * turn/plan/updated 通知 → plan 事件（PlanStep[] 渲染为 markdown 清单）。
+   * status 缺省或未知一律按 pending 处理（防御 wire 枚举漂移）。
+   */
+  private handleTurnPlanUpdated(params: TurnPlanUpdatedNotification['params']): AgentEvent[] {
+    const ICON = { completed: '✅', in_progress: '🔄', pending: '⬜', error: '❌' } as const;
+    const markdown = params.plan
+      .map((s) => {
+        const status = s.status && s.status in ICON ? s.status : 'pending';
+        return `${ICON[status]} ${s.title}${s.subtitle ? ` — ${s.subtitle}` : ''}`;
+      })
+      .join('\n');
+    return [{ type: 'plan', plan: markdown, timestamp: this.now() }];
   }
 
   private handleError(params: ErrorNotification['params']): AgentEvent[] {
@@ -685,10 +781,77 @@ export class CodexAppServerTranslator {
       // item/started 锚定工具块位置（真实时序）：命令开始时即创建工具块，
       // 而不是等到首个输出 delta——否则后续 reasoning item 会插到 command 之前。
       this.startedToolItems.add(item.id);
+      // 信息保真 C2：记录工具身份，随 turn_diff 透传（run-state 首见时写入）。
+      this.toolItemMeta.set(item.id, {
+        toolName: 'Bash',
+        toolInput: { command: item.command, ...(item.cwd ? { cwd: item.cwd } : {}) },
+        toolHint: 'shell',
+      });
       return [
         {
           type: 'turn_diff',
           toolOutput: '',
+          ...this.toolItemMeta.get(item.id),
+          itemId: item.id,
+          threadId: params.threadId,
+          turnId: params.turnId,
+          timestamp: this.now(),
+        } as TurnDiffEvent,
+      ];
+    }
+    if (item.type === 'webSearch') {
+      this.startedToolItems.add(item.id);
+      this.toolItemMeta.set(item.id, {
+        toolName: 'WebSearch',
+        toolInput: { query: item.query },
+        toolHint: 'web',
+      });
+      return [
+        {
+          type: 'turn_diff',
+          toolOutput: '',
+          ...this.toolItemMeta.get(item.id),
+          itemId: item.id,
+          threadId: params.threadId,
+          turnId: params.turnId,
+          timestamp: this.now(),
+        } as TurnDiffEvent,
+      ];
+    }
+    if (item.type === 'mcpToolCall') {
+      // ThreadItem union 含 catch-all 成员，判别收窄会与泛型成员并集；
+      // 显式断言到具体 interface（字段名已经 v2 schema 确认）。
+      const mcpItem = item as McpToolCallItem;
+      this.startedToolItems.add(item.id);
+      this.toolItemMeta.set(item.id, {
+        toolName: `mcp__${mcpItem.server}__${mcpItem.tool}`,
+        toolInput: mcpItem.arguments ?? {},
+        toolHint: 'search',
+      });
+      return [
+        {
+          type: 'turn_diff',
+          toolOutput: '',
+          ...this.toolItemMeta.get(item.id),
+          itemId: item.id,
+          threadId: params.threadId,
+          turnId: params.turnId,
+          timestamp: this.now(),
+        } as TurnDiffEvent,
+      ];
+    }
+    if (item.type === 'dynamicToolCall') {
+      const dynItem = item as DynamicToolCallItem;
+      this.startedToolItems.add(item.id);
+      this.toolItemMeta.set(item.id, {
+        toolName: dynItem.tool,
+        toolInput: dynItem.arguments ?? {},
+      });
+      return [
+        {
+          type: 'turn_diff',
+          toolOutput: '',
+          ...this.toolItemMeta.get(item.id),
           itemId: item.id,
           threadId: params.threadId,
           turnId: params.turnId,

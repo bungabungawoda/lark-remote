@@ -206,16 +206,71 @@ describe('KimiAcpTranslator', () => {
     expect(content[0].is_error).toBe(false);
   });
 
-  it('discards plan event', () => {
+  it('maps plan update to a plan event with status icons (信息保真 C3：不再显式丢弃)', () => {
     const t = new KimiAcpTranslator();
     const events = t.handleNotification(
       NotificationMethod.SESSION_UPDATE,
       sessionUpdate(SESSION_ID, {
         sessionUpdate: SessionEventType.PLAN,
-        entries: [{ content: 'plan item', priority: 'medium', status: 'pending' }],
+        entries: [
+          { content: 'plan item one', priority: 'medium', status: 'completed' },
+          { content: 'plan item two', priority: 'medium', status: 'pending' },
+        ],
       }),
     );
-    expect(events).toHaveLength(0);
+    expect(events).toHaveLength(1);
+    const plan = events[0] as { type: string; plan: string };
+    expect(plan.type).toBe('plan');
+    expect(plan.plan).toContain('✅ plan item one');
+    expect(plan.plan).toContain('⬜ plan item two');
+  });
+
+  it('maps tool_call kind:read to tool_use name Read with title as summary (信息保真 C3)', () => {
+    const t = new KimiAcpTranslator();
+    const events = t.handleNotification(
+      NotificationMethod.SESSION_UPDATE,
+      sessionUpdate(SESSION_ID, {
+        sessionUpdate: SessionEventType.TOOL_CALL,
+        toolCallId: 'tc-kind-read',
+        title: 'placeholder',
+        kind: 'read',
+        status: 'in_progress',
+        rawInput: { path: '/home/user/project/a.ts' },
+      }),
+    );
+    const content = (
+      events[0] as {
+        message: {
+          content: Array<{ type: string; name: string; summary?: string; input: unknown }>;
+        };
+      }
+    ).message.content;
+    expect(content[0].type).toBe('tool_use');
+    expect(content[0].name).toBe('Read');
+    expect(content[0].summary).toBe('placeholder');
+    expect(content[0].input).toEqual({ path: '/home/user/project/a.ts' });
+  });
+
+  it('falls back to title as name for unknown kind without summary (信息保真 C3 回归)', () => {
+    const t = new KimiAcpTranslator();
+    const events = t.handleNotification(
+      NotificationMethod.SESSION_UPDATE,
+      sessionUpdate(SESSION_ID, {
+        sessionUpdate: SessionEventType.TOOL_CALL,
+        toolCallId: 'tc-kind-unknown',
+        title: 'placeholder',
+        kind: 'unknown_kind',
+        status: 'in_progress',
+        rawInput: {},
+      }),
+    );
+    const content = (
+      events[0] as {
+        message: { content: Array<{ type: string; name: string; summary?: string }> };
+      }
+    ).message.content;
+    expect(content[0].name).toBe('placeholder');
+    expect(content[0].summary).toBeUndefined();
   });
 
   it('discards available_commands_update event', () => {
@@ -230,7 +285,22 @@ describe('KimiAcpTranslator', () => {
     expect(events).toHaveLength(0);
   });
 
-  it('discards session_info_update / current_mode_update / config_option_update', () => {
+  it('session_info_update with title produces a session_info event (信息保真 C3)', () => {
+    const t = new KimiAcpTranslator();
+    const events = t.handleNotification(
+      NotificationMethod.SESSION_UPDATE,
+      sessionUpdate(SESSION_ID, {
+        sessionUpdate: SessionEventType.SESSION_INFO_UPDATE,
+        title: 'placeholder',
+      }),
+    );
+    expect(events).toHaveLength(1);
+    const info = events[0] as { type: string; title?: string; mode?: string };
+    expect(info.type).toBe('session_info');
+    expect(info.title).toBe('placeholder');
+  });
+
+  it('session_info_update without title stays silent (title 缺省不发)', () => {
     const t = new KimiAcpTranslator();
     expect(
       t.handleNotification(
@@ -241,15 +311,25 @@ describe('KimiAcpTranslator', () => {
         }),
       ),
     ).toHaveLength(0);
-    expect(
-      t.handleNotification(
-        NotificationMethod.SESSION_UPDATE,
-        sessionUpdate(SESSION_ID, {
-          sessionUpdate: SessionEventType.CURRENT_MODE_UPDATE,
-          currentModeId: 'default',
-        }),
-      ),
-    ).toHaveLength(0);
+  });
+
+  it('current_mode_update produces a session_info event with mode (信息保真 C3)', () => {
+    const t = new KimiAcpTranslator();
+    const events = t.handleNotification(
+      NotificationMethod.SESSION_UPDATE,
+      sessionUpdate(SESSION_ID, {
+        sessionUpdate: SessionEventType.CURRENT_MODE_UPDATE,
+        currentModeId: 'plan',
+      }),
+    );
+    expect(events).toHaveLength(1);
+    const info = events[0] as { type: string; title?: string; mode?: string };
+    expect(info.type).toBe('session_info');
+    expect(info.mode).toBe('plan');
+  });
+
+  it('discards config_option_update event', () => {
+    const t = new KimiAcpTranslator();
     expect(
       t.handleNotification(
         NotificationMethod.SESSION_UPDATE,
