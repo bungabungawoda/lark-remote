@@ -35,13 +35,24 @@ export function toolHeaderText(tool: ToolEntry): string {
   // P3-6: use the cached parsed record when available (avoids per-render parse).
   const input = tool.parsedInput !== undefined ? tool.parsedInput : tool.input;
   const summary = summarizeInput(tool.name, input);
-  return summary ? `${icon} **${tool.name}** — ${summary}` : `${icon} **${tool.name}**`;
+  // 信息保真 C3.1：ACP kind 映射后 name 与原始 title 不同时，title 以
+  // ` — {summary}` 追加在标题末尾（截断沿用 HEADER_SUMMARY_MAX）。
+  const blockSummary = tool.summary
+    ? tool.summary.replace(/\s+/g, ' ').trim().slice(0, HEADER_SUMMARY_MAX)
+    : '';
+  const parts = [summary, blockSummary].filter(Boolean);
+  return parts.length > 0
+    ? `${icon} **${tool.name}** — ${parts.join(' — ')}`
+    : `${icon} **${tool.name}**`;
 }
 
 /**
  * Structured body markdown for a tool call. Renders input fields by tool name
  * (Bash → command, Read/Edit/Write → file_path, etc.) and output in a code
- * block. Falls back to a raw JSON dump for unknown tools.
+ * block. An explicit `toolHint` (declared by the runner, 信息保真 C5) selects
+ * the same rendering by family instead of name. There is no raw-JSON fallback
+ * for unknown tools: `default` returns '' and unknown tools only surface their
+ * args through the panel header's `summarizeInput` fallback.
  */
 export function toolBodyMd(tool: ToolEntry): string {
   const parts: string[] = [];
@@ -108,6 +119,43 @@ function summarizeInput(name: string, input: unknown): string {
   }
 }
 
+// --- Named render bodies (shared by tool-name cases and toolHint branches) ---
+
+function renderBashInput(str: (k: string) => string): string {
+  const cmd = str('command');
+  return cmd ? `**Command**\n\`\`\`bash\n${truncate(cmd, BODY_FIELD_MAX)}\n\`\`\`` : '';
+}
+
+function renderFileInput(str: (k: string) => string): string {
+  const fp = str('file_path') || str('path');
+  return fp ? `**File** \`${fp}\`` : '';
+}
+
+function renderGrepInput(str: (k: string) => string): string {
+  const lines: string[] = [];
+  if (str('pattern')) lines.push(`**Pattern** \`${str('pattern')}\``);
+  if (str('path')) lines.push(`**Path** \`${str('path')}\``);
+  return lines.join('\n');
+}
+
+function renderGlobInput(str: (k: string) => string): string {
+  const p = str('pattern');
+  return p ? `**Pattern** \`${truncate(p, BODY_FIELD_MAX)}\`` : '';
+}
+
+function renderLsInput(str: (k: string) => string): string {
+  const p = str('path');
+  return p ? `**Path** \`${p}\`` : '';
+}
+
+function renderWebFetchInput(str: (k: string) => string): string {
+  return str('url') ? `**URL** ${str('url')}` : '';
+}
+
+function renderWebSearchInput(str: (k: string) => string): string {
+  return str('query') ? `**Query** \`${truncate(str('query'), BODY_FIELD_MAX)}\`` : '';
+}
+
 function renderInput(tool: ToolEntry): string {
   // P3-6: use the cached parsed record when available (avoids per-render parse).
   const input = tool.parsedInput !== undefined ? tool.parsedInput : tool.input;
@@ -115,42 +163,46 @@ function renderInput(tool: ToolEntry): string {
   if (!rec) return '';
   const str = (k: string): string => (typeof rec[k] === 'string' ? (rec[k] as string) : '');
 
+  // 信息保真 C5：hint 优先（runner 自愿声明，只消费不推断）；缺失时与现状
+  // 完全一致。hint 分支与 name case 共用同一渲染函数，无复制粘贴。
+  switch (tool.toolHint) {
+    case 'shell':
+      return renderBashInput(str);
+    case 'file':
+    case 'patch':
+      return renderFileInput(str);
+    case 'search':
+      return renderGrepInput(str);
+    case 'web':
+      return renderWebFetchInput(str) || renderWebSearchInput(str);
+    default:
+      break;
+  }
+
   switch (tool.name) {
     case 'Bash':
-    case 'bash': {
-      const cmd = str('command');
-      return cmd ? `**Command**\n\`\`\`bash\n${truncate(cmd, BODY_FIELD_MAX)}\n\`\`\`` : '';
-    }
+    case 'bash':
+      return renderBashInput(str);
     case 'Read':
     case 'Edit':
     case 'Write':
     case 'NotebookEdit':
     case 'read':
     case 'edit':
-    case 'write': {
-      const fp = str('file_path') || str('path');
-      return fp ? `**File** \`${fp}\`` : '';
-    }
+    case 'write':
+      return renderFileInput(str);
     case 'Grep':
-    case 'grep': {
-      const lines: string[] = [];
-      if (str('pattern')) lines.push(`**Pattern** \`${str('pattern')}\``);
-      if (str('path')) lines.push(`**Path** \`${str('path')}\``);
-      return lines.join('\n');
-    }
+    case 'grep':
+      return renderGrepInput(str);
     case 'Glob':
-    case 'find': {
-      const p = str('pattern');
-      return p ? `**Pattern** \`${truncate(p, BODY_FIELD_MAX)}\`` : '';
-    }
-    case 'ls': {
-      const p = str('path');
-      return p ? `**Path** \`${p}\`` : '';
-    }
+    case 'find':
+      return renderGlobInput(str);
+    case 'ls':
+      return renderLsInput(str);
     case 'WebFetch':
-      return str('url') ? `**URL** ${str('url')}` : '';
+      return renderWebFetchInput(str);
     case 'WebSearch':
-      return str('query') ? `**Query** \`${truncate(str('query'), BODY_FIELD_MAX)}\`` : '';
+      return renderWebSearchInput(str);
     default:
       return '';
   }

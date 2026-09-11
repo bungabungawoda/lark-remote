@@ -1,4 +1,4 @@
-import type { RunBlock, RunFooter, RunState, ToolEntry } from './run-state.js';
+import type { RunBlock, RunFooter, RunNotice, RunState, ToolEntry } from './run-state.js';
 import {
   terminalToColor,
   terminalToLabel,
@@ -149,6 +149,66 @@ type BlockGroup =
       diff?: string;
       timestamp?: string;
     };
+
+/** 内容时间线上的普通消息：内容组（原 blocks）或 notice 行。 */
+type ContentItem = BlockGroup | { kind: 'notice'; notice: RunNotice };
+
+/** 运行期通知作为普通消息渲染：与内容流同级的一行斜体提示。 */
+function renderNoticeRow(notice: RunNotice): object {
+  const icon = notice.level === 'info' ? 'ℹ️' : '⚠️';
+  return markdownDiv(`_${icon} ${notice.text}_`);
+}
+
+/** 内容组用于时间线插值的锚点时刻（与面板标题展示的时间戳一致）。 */
+function groupTimeMs(group: BlockGroup): number | undefined {
+  if (group.kind === 'tool') {
+    const ts = group.tool.completedAt ?? group.tool.startedAt;
+    return ts ? Date.parse(ts) : undefined;
+  }
+  return group.timestamp ? Date.parse(group.timestamp) : undefined;
+}
+
+/**
+ * 把 notices 作为普通消息并入内容时间线：按到达时间插到对应内容组之间。
+ * 内容组自身的相对顺序不被改动（仍由 run-state 的块数组决定），时间戳只决定
+ * notice 的落点；无时间戳的 notice 无法定位，兜底置于内容流末尾。
+ */
+function mergeNoticesIntoContent(
+  groups: BlockGroup[],
+  notices: RunNotice[] | undefined,
+): ContentItem[] {
+  if (!notices || notices.length === 0) return groups;
+  const timed: RunNotice[] = [];
+  const untimed: RunNotice[] = [];
+  for (const notice of notices) {
+    if (notice.timestamp) timed.push(notice);
+    else untimed.push(notice);
+  }
+  const items: ContentItem[] = [];
+  let cursor = 0;
+  for (const notice of timed) {
+    const t = Date.parse(notice.timestamp!);
+    if (!Number.isNaN(t)) {
+      while (
+        cursor < groups.length &&
+        groupTimeMs(groups[cursor]) !== undefined &&
+        (groupTimeMs(groups[cursor]) as number) <= t
+      ) {
+        items.push(groups[cursor]);
+        cursor++;
+      }
+    }
+    items.push({ kind: 'notice', notice });
+  }
+  while (cursor < groups.length) {
+    items.push(groups[cursor]);
+    cursor++;
+  }
+  for (const notice of untimed) {
+    items.push({ kind: 'notice', notice });
+  }
+  return items;
+}
 
 /** 每个块的截断后内容（thinking/plan/text），测量与渲染共用（P1-2 建议项）。 */
 type GroupContentPrepared = Map<BlockGroup, string>;
@@ -317,7 +377,9 @@ function actionRow(state: RunState, options: RunCardRenderOptions): object[] {
   ];
 }
 
-/** 审批区位于 body 最底部（底部操作行之后）：待审批时决策按钮不遮挡内容流。 */
+/** 审批区位于 body 最底部（底部操作行之后）：待审批时决策按钮不遮挡内容流。
+ *  例外：skeleton 兜底路径中 approvalArea 在 actionRow 之前（信息保真 C4.3），
+ *  保证极端降级时审批入口与 stop/new-session 按钮同时可见。 */
 function approvalArea(state: RunState): object[] {
   const elements: object[] = [];
   for (const slot of state.approvals ?? []) {
@@ -330,6 +392,13 @@ function approvalArea(state: RunState): object[] {
     );
   }
   return elements;
+}
+
+/** 底部操作行之前的内容区提示：被 MAX_BLOCKS 截掉的早期块计数（信息保真 C4.1）。 */
+function omittedBlocksHint(state: RunState): object[] {
+  return state.omittedBlocks !== undefined && state.omittedBlocks > 0
+    ? [markdownDiv(`_💡 已省略 ${state.omittedBlocks} 个早期步骤_`)]
+    : [];
 }
 
 /** Assemble the card shell (schema/config/header) around body elements. */
@@ -362,6 +431,7 @@ function buildFallbackElements(
   const elements: object[] = [];
 
   elements.push(statusRow(state));
+  elements.push(...omittedBlocksHint(state));
 
   // 单遍分桶：thinking / tool（保持原相对顺序）
   const { thinking: allThinkingBlocks, tool: allToolBlocks } = bucketThinkingAndTool(state.blocks);
@@ -399,8 +469,28 @@ function buildFallbackElements(
     return true; // keep all non-thinking, non-tool blocks
   });
 
-  // Render thinking/text/tool in chronological order using groupBlocks
-  for (const group of groupBlocks(filteredBlocks)) {
+  // 信息保真 C4.2：plan/file_change 块在降级路径不渲染内容（正常路径已可见，
+  // 降级预算紧张），但必须计数留痕，禁止静默丢弃。
+  // 计数在渲染前完成，提示与 thinking/tool 省略提示一并置于卡片顶部——不能等
+  // 内容循环结束再追加，否则提示会落在最后一条输出之后，打乱「输出收尾」观感。
+  const groupsToRender = groupBlocks(filteredBlocks);
+  const omittedPlanOrFileChange = groupsToRender.filter(
+    (g) => g.kind === 'plan' || g.kind === 'file_change',
+  ).length;
+  if (omittedPlanOrFileChange > 0) {
+    elements.push(markdownDiv(`_💡 另外 ${omittedPlanOrFileChange} 个计划/文件变更已省略_`));
+  }
+
+  // notices 作为普通消息按时间插入内容流（与正常路径同语义）；降级只裁剪
+  // 内容块，不裁剪运行期通知。
+  const contentItems = mergeNoticesIntoContent(groupsToRender, state.notices);
+  // Render thinking/text/tool/notice in chronological order
+  for (const item of contentItems) {
+    if (item.kind === 'notice') {
+      elements.push(renderNoticeRow(item.notice));
+      continue;
+    }
+    const group = item;
     if (group.kind === 'thinking') {
       const ts = formatTimestamp(group.timestamp);
       const title = '💭 **思考完成**';
@@ -429,7 +519,7 @@ function buildFallbackElements(
     elements.push(markdownDiv('_暂无输出_'));
   }
 
-  elements.push(...buildSummaryContent(state));
+  elements.push(...buildSummaryContent(state, { includeNotices: false }));
   elements.push(...actionRow(state, options));
   elements.push(...approvalArea(state));
 
@@ -496,6 +586,10 @@ function buildSkeletonElements(state: RunState, options: RunCardRenderOptions): 
 
   // Summary (token stats etc.) — static, bounded size
   elements.push(...buildSummaryContent(state));
+
+  // 信息保真 C4.3：skeleton 也渲染审批区——极端兜底不丢审批入口
+  //（待审批被静默吞掉 = 用户永远看不到审批请求）。
+  elements.push(...approvalArea(state));
 
   // Bottom action row: stop (if running/finalizing) + compact (if applicable) + new session (always).
   // Degraded paths must keep the action buttons reachable (design constraint).
@@ -604,7 +698,7 @@ export function estimateCardBytes(
   let total =
     measureJson(assembleRunCard(state, options, [])) +
     measureJson(statusRow(state)) +
-    measureJson(buildSummaryContent(state)) +
+    measureJson(buildSummaryContent(state, { includeNotices: false })) +
     measureJson(actionRow(state, options));
 
   // 块内容：与 buildChronologicalContent 同源（describePanelGroup 单源，W2.2）
@@ -629,6 +723,13 @@ export function estimateCardBytes(
     if (!spec) continue;
     renderedAny = true;
     total += measurePanelBytes(spec.title, spec.expanded, spec.border, spec.content);
+  }
+
+  // notices 在正常路径作为普通消息内联渲染（与 buildChronologicalContent 同源，
+  // renderNoticeRow 单源）；行体积与位置无关，直接按条累加。
+  for (const notice of state.notices ?? []) {
+    renderedAny = true;
+    total += measureJson(renderNoticeRow(notice));
   }
 
   if (!renderedAny) {
@@ -674,8 +775,9 @@ export function renderRunCard(state: RunState, options: RunCardRenderOptions = {
   if (estimate < DEGRADED_THRESHOLD) {
     const elements: object[] = [
       statusRow(state),
+      ...omittedBlocksHint(state),
       ...buildChronologicalContent(state, prepared, groups),
-      ...buildSummaryContent(state),
+      ...buildSummaryContent(state, { includeNotices: false }),
       ...actionRow(state, options),
       ...approvalArea(state),
     ];
@@ -732,7 +834,14 @@ function buildChronologicalContent(
   // P1-2：renderRunCard 传入同一 groups 数组时直接复用（prepared 的键是组对象
   // 引用，重建数组会让 prepared.get 永远 miss，退化为二次截断）。
   // W2.2：面板组描述经 describePanelGroup 与估算共享同一份模板。
-  for (const group of groups) {
+  // notices 作为普通消息按到达时间插入内容流（有内容时不再沉到 summary）。
+  const contentItems = mergeNoticesIntoContent(groups, state.notices);
+  for (const item of contentItems) {
+    if (item.kind === 'notice') {
+      elements.push(renderNoticeRow(item.notice));
+      continue;
+    }
+    const group = item;
     if (group.kind === 'tool') {
       elements.push(renderTool(group.tool, finalized));
       continue;
@@ -764,8 +873,20 @@ function buildChronologicalContent(
 }
 
 /** Build summary tab content */
-function buildSummaryContent(state: RunState): object[] {
+function buildSummaryContent(
+  state: RunState,
+  options: { includeNotices?: boolean } = {},
+): object[] {
   const elements: object[] = [];
+
+  // 运行期通知默认仍走 summary（skeleton 兜底：内容区整体缺失时唯一可见位置）。
+  // 正常/degraded/extreme 路径传入 includeNotices:false——通知已作为普通消息
+  // 按时间线内联渲染（renderNoticeRow），避免同一通知渲染两遍。
+  if (options.includeNotices !== false) {
+    for (const notice of state.notices ?? []) {
+      elements.push(renderNoticeRow(notice));
+    }
+  }
 
   // running 时不显示统计（仍在生成）；finalizing 显示等待提示
   if (state.terminal === 'running') {
@@ -822,6 +943,9 @@ function buildSummaryContent(state: RunState): object[] {
         cumulativeOutputTokens: state.cumulativeOutputTokens,
         cumulativeCacheReadTokens: state.cumulativeCacheReadTokens,
         cumulativeCacheCreationTokens: state.cumulativeCacheCreationTokens,
+        model: state.model,
+        costUsd: state.costUsd,
+        reasoningTokens: state.reasoningTokens,
       },
       { showResult: true, result },
     );
