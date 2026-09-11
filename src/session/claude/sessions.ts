@@ -8,6 +8,7 @@ import {
   readJsonlLinesFromOffset,
 } from '../common/jsonl.js';
 import { STALE_MS } from '../common/constants.js';
+import { samePath } from '../../platform/path.js';
 import { capEvents } from '../common/pagination.js';
 import { extractContentBlocks } from '../common/content-blocks.js';
 import {
@@ -57,7 +58,8 @@ function fileContainsCwd(filePath: string, cwd: string): boolean {
     findJsonlLine(filePath, (l) => {
       try {
         const obj = JSON.parse(l) as { cwd?: unknown };
-        return typeof obj.cwd === 'string' && obj.cwd === cwd;
+        // PathKit.samePath：darwin/win32 大小写不敏感 + 尾分隔符不敏感，linux 严格
+        return typeof obj.cwd === 'string' && samePath(obj.cwd, cwd);
       } catch {
         return false; // skip malformed line
       }

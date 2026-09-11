@@ -18,6 +18,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { readJsonlLines, findJsonlLine } from '../common/jsonl.js';
 import { STALE_MS } from '../common/constants.js';
+import { samePath } from '../../platform/path.js';
 import { paginate, capEvents } from '../common/pagination.js';
 import { sortByRecencyDesc } from '../common/recency.js';
 import { getLogger } from '../../logger/index.js';
@@ -383,7 +384,7 @@ export function listCodexRollouts(opts: ListCodexRolloutsOptions = {}): {
     // sessions: exclude them explicitly (plan §2.1) so a pure-subagent
     // session (main file missing) never pollutes the list or total.
     if (entry.isSubagent) continue;
-    if (filterCwd && entry.cwd !== filterCwd) continue;
+    if (filterCwd && !samePath(entry.cwd, filterCwd)) continue;
     matched.push(entry);
   }
 
@@ -446,7 +447,7 @@ export function readCodexSessionContent(
   // Codex has no relocation (no EnterWorktree equivalent), so a simple equality
   // check suffices — unlike claude which needs jsonlContainsCwd to handle
   // relocated sessions with multiple cwd values.
-  if (opts.cwd && entry.cwd !== opts.cwd) {
+  if (opts.cwd && !samePath(entry.cwd, opts.cwd)) {
     return { events: [] };
   }
 
@@ -496,7 +497,7 @@ export function readCodexSessionSummary(
 
   // Cwd guard: same semantics as readCodexSessionContent — when a cwd is
   // provided, the session's working directory must match.
-  if (opts.cwd && entry.cwd !== opts.cwd) {
+  if (opts.cwd && !samePath(entry.cwd, opts.cwd)) {
     return {};
   }
 
@@ -551,7 +552,7 @@ export function isCodexSessionActive(
   }
   // Cwd guard: when a cwd is provided, the session's working directory must
   // match (align with claude/pi/opencode which validate cwd).
-  if (opts.cwd && entry.cwd !== opts.cwd) {
+  if (opts.cwd && !samePath(entry.cwd, opts.cwd)) {
     return false;
   }
 

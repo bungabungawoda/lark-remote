@@ -35,12 +35,18 @@ vi.mock('../../../src/logger/index.js', () => ({
   initLogger: () => mockLogger,
 }));
 
+vi.mock('../../../src/platform/spawn.js', () => ({
+  spawnProcess: vi.fn(),
+  mergeProcessEnv: vi.fn((base, overrides) => ({ ...base, ...overrides })),
+  isWindowsCommandNotFoundLine: vi.fn(() => false),
+}));
+
 vi.mock('node:child_process', () => ({
-  spawn: vi.fn(),
   execFileSync: vi.fn(),
 }));
 
-import { spawn, execFileSync } from 'node:child_process';
+import { spawnProcess as spawn } from '../../../src/platform/spawn.js';
+import { execFileSync } from 'node:child_process';
 
 // ---------------------------------------------------------------------------
 // TestRunner subclasses
@@ -936,5 +942,118 @@ describe('SpawningRunner.buildResultEvent()', () => {
     expect(event.session_id).toBe('sess-456');
     expect(event.usage).toBeUndefined();
     expect(event.errorMessage).toBeUndefined();
+  });
+});
+
+describe('SpawningRunner — win32 command-not-found 嗅探接线（v2 §4.4，双条件）', () => {
+  /** 构造 runner + 可手工注入 stderr 的运行上下文。 */
+  async function setupSniffFixture(closeCode: number | null) {
+    const { isWindowsCommandNotFoundLine } = await import('../../../src/platform/spawn.js');
+    const sniffMock = vi.mocked(isWindowsCommandNotFoundLine);
+    sniffMock.mockImplementation((line: string) => line.includes('is not recognized'));
+
+    const runner = new TestRunner({
+      binary: 'fake-binary',
+      pidDir: '/tmp/spawning-runner-anchor-test-sniff',
+    });
+    const stopperStopSpy = vi.spyOn(runner.testStopper, 'stop').mockResolvedValue(undefined);
+
+    const stdout = new Readable({
+      read() {
+        this.push(null);
+      },
+    });
+    const stderrHandlers: Array<(chunk: Buffer) => void> = [];
+    const stderr = {
+      on: vi.fn((event: string, handler: (chunk: Buffer) => void) => {
+        if (event === 'data') stderrHandlers.push(handler);
+      }),
+      destroy: vi.fn(),
+    };
+    const proc = makeMockProc({
+      stdout,
+      stderr,
+      close: (event, cb) => {
+        if (event === 'close') setTimeout(() => cb(closeCode, null), 20);
+      },
+    });
+    // close 事件后真实进程的 exitCode 已落定；mock 必须同步，否则 run() finally
+    // 的孤儿兜底会把「已正常退出」误判为存活并调用 stop，污染防误杀断言。
+    const rawOnce = proc.once as unknown as (
+      ev: string,
+      cb: (...args: unknown[]) => void,
+    ) => unknown;
+    proc.once = ((event: string, cb: (...args: unknown[]) => void) => {
+      if (event === 'close') {
+        return rawOnce.call(proc, event, (code: number | null, signal: NodeJS.Signals | null) => {
+          proc.exitCode = code;
+          proc.signalCode = signal;
+          cb(code, signal);
+        });
+      }
+      return rawOnce.call(proc, event, cb);
+    }) as typeof proc.once;
+    vi.mocked(spawn).mockReturnValue(proc);
+
+    const events: Array<{ subtype?: string; errorMessage?: string }> = [];
+    const runPromise = (async () => {
+      for await (const event of runner.run('hi', { cwd: '/tmp/fake' })) {
+        if (event.type === 'result') {
+          const e = event as { subtype?: string; errorMessage?: string };
+          events.push({ subtype: e.subtype, errorMessage: e.errorMessage });
+        }
+      }
+    })();
+
+    return {
+      sniffMock,
+      stopperStopSpy,
+      stderrHandlers,
+      events,
+      runPromise,
+      emitSniffLine: () =>
+        stderrHandlers[0](
+          Buffer.from("'fake-binary' is not recognized as an internal or external command.\n"),
+        ),
+    };
+  }
+
+  it('嗅探命中但进程零退出 → 只记嫌疑，不杀进程，run 正常成功（防误杀）', async () => {
+    const f = await setupSniffFixture(0);
+    await vi.waitFor(() => {
+      expect(f.stderrHandlers.length).toBeGreaterThan(0);
+    });
+    f.emitSniffLine();
+    await expect(f.runPromise).resolves.toBeUndefined();
+    expect(f.stopperStopSpy).not.toHaveBeenCalled();
+    expect(f.events).toEqual([expect.objectContaining({ subtype: 'success' })]);
+    f.sniffMock.mockRestore();
+  });
+
+  it('嗅探命中 + 非零退出 → 双条件定性：错误结果点名「命令未找到」', async () => {
+    const f = await setupSniffFixture(1);
+    await vi.waitFor(() => {
+      expect(f.stderrHandlers.length).toBeGreaterThan(0);
+    });
+    f.emitSniffLine();
+    await expect(f.runPromise).resolves.toBeUndefined();
+    expect(f.events).toHaveLength(1);
+    expect(f.events[0].subtype).toBe('error');
+    expect(f.events[0].errorMessage).toContain('命令未找到');
+    expect(f.events[0].errorMessage).toContain('is not recognized');
+    f.sniffMock.mockRestore();
+  });
+
+  it('未嗅探命中 + 非零退出 → 普通错误文案（exited code），不点名命令未找到', async () => {
+    const f = await setupSniffFixture(1);
+    await vi.waitFor(() => {
+      expect(f.stderrHandlers.length).toBeGreaterThan(0);
+    });
+    // 不注入特征行（sniff mock 对普通行返回 false）
+    await expect(f.runPromise).resolves.toBeUndefined();
+    expect(f.events[0].subtype).toBe('error');
+    expect(f.events[0].errorMessage).toContain('exited code=1');
+    expect(f.events[0].errorMessage).not.toContain('命令未找到');
+    f.sniffMock.mockRestore();
   });
 });

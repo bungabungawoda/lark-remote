@@ -1,5 +1,16 @@
-import { describe, it, expect, beforeEach, afterAll } from 'vitest';
+import { describe, it, expect, beforeEach, afterAll, vi } from 'vitest';
+import { PassThrough } from 'node:stream';
 import { detectPackageManager, inferPackageManagerFromPath, runInstallLatest } from './install.js';
+import { createMockProc } from '../../tests/lib/mock-process.js';
+
+// 默认执行通道必须走 platform/spawn.ts（win32 .cmd 垫片经 cross-spawn）——
+// 不 mock 的话测试会真拉起 npm install
+vi.mock('../platform/spawn.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../platform/spawn.js')>()),
+  spawnProcess: vi.fn(),
+}));
+
+import { spawnProcess } from '../platform/spawn.js';
 
 type MockExecCallback = (err: Error | null, stdout: unknown, stderr: unknown) => void;
 
@@ -194,5 +205,40 @@ describe('runInstallLatest', () => {
     await runInstallLatest({ packageManager: 'pnpm', execFn: recordingExec });
     expect(calls[2].cmd).toBe('pnpm');
     expect(calls[2].args).toEqual(['add', '-g', 'lark-remote@latest']);
+  });
+
+  describe('默认执行通道（不注入 execFn）', () => {
+    beforeEach(() => {
+      vi.mocked(spawnProcess).mockReset();
+    });
+
+    it('走 platform/spawnProcess（cross-spawn：win32 .cmd 垫片安全），成功路径', async () => {
+      const proc = createMockProc({ stdout: new PassThrough(), stderr: new PassThrough() });
+      vi.mocked(spawnProcess).mockReturnValue(proc);
+      const promise = runInstallLatest({ packageManager: 'npm' });
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(vi.mocked(spawnProcess)).toHaveBeenCalledWith(
+        'npm',
+        ['install', '-g', 'lark-remote@latest'],
+        expect.objectContaining({ timeout: 120_000 }),
+      );
+      proc.emit('close', 0, null);
+      await expect(promise).resolves.toEqual({ success: true });
+    });
+
+    it('非 0 退出 → err.message 含 stderr（execFile 同款失败语义，EACCES 提示依赖它）', async () => {
+      const stdout = new PassThrough();
+      const stderr = new PassThrough();
+      const proc = createMockProc({ stdout, stderr });
+      vi.mocked(spawnProcess).mockReturnValue(proc);
+      const promise = runInstallLatest({ packageManager: 'npm' });
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      stderr.end('npm ERR! code EACCES');
+      proc.emit('close', 1, null);
+      const result = await promise;
+      expect(result.success).toBe(false);
+      // EACCES 命中 install.ts 的分类提示（sudo 建议），证明 stderr 进入 err.message
+      expect(result.error).toContain('sudo');
+    });
   });
 });

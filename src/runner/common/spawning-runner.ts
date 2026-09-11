@@ -1,4 +1,5 @@
-import { spawn, execFileSync, type ChildProcess } from 'node:child_process';
+import { execFileSync, type ChildProcess } from 'node:child_process';
+import { spawnProcess, isWindowsCommandNotFoundLine } from '../../platform/spawn.js';
 import path from 'node:path';
 import os from 'node:os';
 import fs from 'node:fs';
@@ -165,6 +166,13 @@ export abstract class SpawningRunner {
    * (error vs success) and the error message precedence.
    */
   protected stoppedByUser: boolean = false;
+  /**
+   * §4.4 win32 command-not-found 嗅探嫌疑标记：stderr 命中特征行时置位，
+   * 但**不**立即杀进程——agent 正常输出可能引用该错误文本（调试 Windows
+   * 报错场景），见行即杀会误杀 run。定性走双条件：run 收尾时「标记在 +
+   * 非零退出」才判 command-not-found；真挂起由既有 grace/超时兜底。
+   */
+  protected commandNotFoundSeen = false;
 
   constructor(opts: {
     pidDir?: string;
@@ -273,7 +281,7 @@ export abstract class SpawningRunner {
    * STDERR_TAIL_BYTES cap.
    */
   protected async spawnChild(opts: SpawnOptions): Promise<ChildProcess> {
-    const proc = spawn(this.binary, this.buildArgv(opts), {
+    const proc = spawnProcess(this.binary, this.buildArgv(opts), {
       cwd: opts.cwd,
       stdio: this.getStdio(),
       env: process.env,
@@ -324,6 +332,14 @@ export abstract class SpawningRunner {
       const text = chunk.toString('utf-8').trim();
       if (text) {
         this.spawnStderr = (this.spawnStderr + '\n' + text).trim().slice(-STDERR_TAIL_BYTES);
+        // §4.4 win32 command-not-found 嗅探：经 cmd 垫片启动失败不是 spawn 的
+        // ENOENT，而是 stderr 的 "is not recognized..." 行。命中只记嫌疑标记
+        // （双条件之一），不立即杀——定性由 run() 收尾的「标记 + 非零退出」
+        // 双条件完成；子进程真挂起由既有 grace/超时看门狗兜底。
+        if (isWindowsCommandNotFoundLine(text)) {
+          this.commandNotFoundSeen = true;
+          getLogger().error(`[${this.logTag}] command not found suspected (win32 shim): ${text}`);
+        }
         // P2-16: most agent CLIs emit progress/warnings/deprecation notices on
         // stderr, not real errors. Logging each chunk at error level drowns out
         // genuine errors. Downgrade to warn — the accumulated stderr is already
@@ -351,6 +367,7 @@ export abstract class SpawningRunner {
       throw new Error(`${this.binary} process already running`);
     }
     this.stoppedByUser = false;
+    this.commandNotFoundSeen = false;
     this.currentMessage = message;
 
     let proc: ChildProcess;
@@ -454,6 +471,19 @@ export abstract class SpawningRunner {
       const nonUserError =
         !this.stoppedByUser && ((code !== null && code !== 0) || signal !== null);
 
+      // §4.4 双条件定性：嗅探嫌疑标记 + 用户未停 + 非零正常退出 → command-not-found
+      const commandNotFound =
+        this.commandNotFoundSeen &&
+        !this.stoppedByUser &&
+        signal === null &&
+        code !== null &&
+        code !== 0;
+      if (commandNotFound) {
+        getLogger().error(
+          `[${this.logTag}] command not found confirmed (win32 shim): exit=${code} stderr=${this.spawnStderr.slice(-STDERR_LOG_TAIL)}`,
+        );
+      }
+
       yield this.buildResultEvent({
         code,
         signal,
@@ -461,6 +491,7 @@ export abstract class SpawningRunner {
         sessionId: translator?.getSessionId?.() ?? '',
         usage: translator?.getLastUsage?.(),
         translatorError,
+        commandNotFound,
       });
 
       if (nonUserError) {
@@ -657,6 +688,8 @@ export abstract class SpawningRunner {
     sessionId?: string;
     usage?: Record<string, unknown>;
     translatorError?: string;
+    /** §4.4 双条件定性：嗅探命中 + 非零退出 → 错误文案点名「命令未找到」 */
+    commandNotFound?: boolean;
   }): AgentEvent {
     const isError =
       this.stoppedByUser ||
@@ -677,7 +710,10 @@ export abstract class SpawningRunner {
       } else if (opts.signal !== null) {
         errorMessage = `${this.binary} killed by signal ${opts.signal}${stderrTail ? `: ${stderrTail}` : ''}`;
       } else {
-        errorMessage = `${this.binary} exited code=${opts.code}${stderrTail ? `: ${stderrTail}` : ''}`;
+        const cause = opts.commandNotFound
+          ? `${this.binary} 命令未找到（win32 垫片启动失败：未安装或不在 PATH）`
+          : `${this.binary} exited code=${opts.code}`;
+        errorMessage = `${cause}${stderrTail ? `: ${stderrTail}` : ''}`;
       }
 
       return {

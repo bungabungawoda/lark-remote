@@ -1,7 +1,11 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { BashProcessRunner } from './index.js';
+import { describePosix } from '../../../tests/lib/platform.js';
+import { ShellUnavailableError, type ShellBackend } from '../../platform/shell.js';
+import type { Terminator } from '../../platform/terminator.js';
 
-describe('BashProcessRunner', () => {
+// 明确依赖 POSIX 原语（真实 bash + nohup/disown），win32 上跳过（§10.2）
+describePosix('BashProcessRunner', () => {
   let runner: BashProcessRunner;
 
   beforeEach(() => {
@@ -66,5 +70,35 @@ describe('BashProcessRunner', () => {
     expect(elapsed).toBeLessThan(2000);
     expect(events).toContain('exit');
     expect(exitCode).toBe(0);
+  });
+});
+
+describe('BashProcessRunner — shell 不可用（win32 Git Bash 缺失，§7.2）', () => {
+  it('同步抛 ShellUnavailableError → stderr 明确提示 + exit 1，不注册退出清理', async () => {
+    const throwingShell: ShellBackend = {
+      kind: 'bash',
+      spawn: () => {
+        throw new ShellUnavailableError(
+          'bash',
+          'Windows 上执行 bash 命令需要 Git Bash（未在 PATH 中找到 bash.exe）；请安装 Git for Windows 后重试',
+        );
+      },
+    };
+    const terminator: Terminator = {
+      stop: async () => ({ requested: false, via: 'already-exited' }),
+      cleanupOnExit: () => {},
+    };
+    const runner = new BashProcessRunner({ shell: throwingShell, terminator });
+
+    const events: Array<{ type: string; content: string; exitCode?: number }> = [];
+    for await (const event of runner.run('echo hi', { cwd: '/home/user/project' })) {
+      events.push(event);
+    }
+
+    expect(events).toHaveLength(2);
+    expect(events[0]).toMatchObject({ type: 'stderr' });
+    expect(events[0].content).toContain('Git Bash');
+    expect(events[1]).toMatchObject({ type: 'exit', exitCode: 1 });
+    expect(runner.isRunning).toBe(false);
   });
 });
