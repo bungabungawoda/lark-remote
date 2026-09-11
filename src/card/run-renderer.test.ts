@@ -2015,6 +2015,49 @@ describe('renderRunCard (CardKit 2.0)', () => {
     expect(json).not.toContain('"cmd":"codex.compact"');
   });
 
+  it('compaction card with no content renders "Compact 完成", not the empty placeholder', () => {
+    // 压缩不会返回 agent 正文，空内容属正常（2026-09 用户反馈）。旧实现套用
+    // 普通 run 的「（未返回内容）」，看起来像异常，实际只是一次成功压缩。
+    let state = createInitialRunState('run-compact-empty');
+    state = reduceRunState(state, {
+      type: 'turn_started',
+      threadId: 'th-aaa-1',
+      turnId: 'tn-1',
+      operationKind: 'compaction',
+    } as never);
+    state = finishRun(state, 'done', { resultSubtype: 'success' });
+    const json = JSON.stringify(renderRunCard(state));
+    expect(state.blocks).toHaveLength(0);
+    expect(json).toContain('Compact 完成');
+    expect(json).not.toContain('未返回内容');
+  });
+
+  it('non-compaction run with no content still renders the empty placeholder', () => {
+    // 普通 run 空内容才是真正的异常信号，占位符必须保留（防上面改动扩大范围）。
+    let state = createInitialRunState('run-turn-empty');
+    state = reduceRunState(state, {
+      type: 'turn_started',
+      threadId: 'th-aaa-1',
+      turnId: 'tn-1',
+      operationKind: 'turn',
+    } as never);
+    state = finishRun(state, 'done', { resultSubtype: 'success' });
+    const json = JSON.stringify(renderRunCard(state));
+    expect(json).toContain('未返回内容');
+    expect(json).not.toContain('Compact 完成');
+  });
+
+  it('claude compaction (no turn_started, operationKind undefined) keeps the empty placeholder', () => {
+    // claude 走 stream-json，compact 卡由 bridge 显式推 turn_started
+    // operationKind='compaction'（见 streamCodexCompact）；若该事件缺失则退化为
+    // 普通空 run，仍按异常信号展示——这个边界由本用例锁定。
+    let state = createInitialRunState('run-claude-compact-empty');
+    state = finishRun(state, 'done', { resultSubtype: 'success' });
+    expect(state.operationKind).toBeUndefined();
+    const json = JSON.stringify(renderRunCard(state));
+    expect(json).toContain('未返回内容');
+  });
+
   it('claude stream-json run (no turn_started) shows compact button on terminal state', () => {
     // claude 走 stream-json，从不发射 turn_started → operationKind 恒 undefined。
     // 回归：2026-08-19 缺陷——shouldShowCompactButton 以 operationKind==='turn'

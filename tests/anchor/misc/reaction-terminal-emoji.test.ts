@@ -15,7 +15,7 @@ import { Bridge } from '../../../src/bridge/index.js';
 import { SessionStore } from '../../../src/session/index.js';
 import { AppConfigSchema } from '../../../src/config/index.js';
 import type { AppConfig } from '../../../src/config/index.js';
-import type { Runner } from '../../../src/runner/index.js';
+import type { Runner, AgentEvent } from '../../../src/runner/index.js';
 
 import {
   createStubAgentRegistry,
@@ -177,5 +177,73 @@ describe('reaction emoji by run terminal (anchor)', () => {
     await promise;
 
     expect(connector.addReaction).toHaveBeenCalledWith(ctx.messageId, 'SHHH');
+  });
+
+  /**
+   * 验证什么：runner 正常完成（result success）→ done 终态 → reaction 保持 'Done'。
+   * 缺失/错误会导致什么：映射改造后成功路径表情被误改，用户看不到绿勾。
+   * 依据：round-log spec「done → 'Done'（保持现状）」，2026-08-02 用户确认（原 probe 转正）。
+   */
+  it('test_anchor_done_terminal_keeps_done_reaction', async () => {
+    const events: AgentEvent[] = [
+      { type: 'system', subtype: 'init', session_id: 's1', cwd: tmpDir, model: 'opus' },
+      { type: 'result', subtype: 'success', session_id: 's1' },
+    ];
+    const runner: Runner = {
+      isRunning: false,
+      stop: async () => {},
+      killOrphan: () => {},
+      registerExitHandlers: () => {},
+      run: async function* () {
+        for (const e of events) yield e;
+      },
+    };
+    const connector = createStubConnector({ addReactionSpy: true });
+    const sessionStore = new SessionStore();
+    sessionStore.setCwd(ctx.userId, fs.realpathSync(tmpDir));
+    const bridge = new Bridge({
+      runner,
+      agentRegistry: createStubAgentRegistry(runner),
+      sessionReaderRegistry: createStubSessionReaderRegistry(),
+      connector,
+      sessionStore,
+      config,
+      idleTimeoutMs: 60_000,
+    });
+
+    await bridge.forwardToClaude('hello', ctx);
+
+    expect(connector.addReaction).toHaveBeenCalledWith(ctx.messageId, 'Done');
+  });
+
+  /**
+   * 验证什么：`!` bash 命令路径（executeBashInternal）不受终态映射改造影响，仍打 'Done'。
+   * 缺失/错误会导致什么：bash 路径被误改成按 exitCode 区分表情，与用户确认的「bash 不管」冲突。
+   * 依据：round-log spec「bash 命令保持 'Done' 不动」，2026-08-02 用户确认（原 probe 转正）。
+   */
+  it('test_anchor_bash_path_keeps_done_reaction', async () => {
+    const connector = createStubConnector({ addReactionSpy: true });
+    const sessionStore = new SessionStore();
+    sessionStore.setCwd(ctx.userId, fs.realpathSync(tmpDir));
+    const inlineRunner = {
+      isRunning: false,
+      stop: async () => {},
+      killOrphan: () => {},
+      registerExitHandlers: () => {},
+      run: async function* () {},
+    };
+    const bridge = new Bridge({
+      runner: inlineRunner,
+      agentRegistry: createStubAgentRegistry(inlineRunner),
+      sessionReaderRegistry: createStubSessionReaderRegistry(),
+      connector,
+      sessionStore,
+      config,
+      idleTimeoutMs: 60_000,
+    });
+
+    await bridge.executeBash('echo hello', ctx);
+
+    expect(connector.addReaction).toHaveBeenCalledWith(ctx.messageId, 'Done');
   });
 });

@@ -23,6 +23,8 @@
 - CardKit 2.0 `input` component has a built-in ✓ submit icon that triggers a callback
 - However, `input_value` is dropped by the SDK normalizer; you must set `includeRawEvent: true` and read from `action.raw.action.input_value`
 - Do not wrap input + button in a `form`; use `column_set` + `input` + `button` directly
+- **Never squeeze a label and an input into one row**: when a row holds label + input + buttons, the `auto` buttons take their intrinsic width first and the rest is split by weight — on a narrow phone screen (roughly 330px usable) the label column shrinks to about a hundred pixels and the input to a few dozen, so the text wraps and the input is unusable (real pagination-bar defect, 2026-09-10). Split it into **two rows**: the informational label as a top-level `div` on its own full-width line, and the controls in their own `column_set` (previous `auto` + input `weighted weight:1` + next `auto`, the input filling the space left by the buttons). Reference implementation: `paginationBar` in `src/router/card-helpers.ts` (shared by `/ls` `/ws` `/resume` `/active` `/order`).
+- **Do not wrap input + buttons in a `form`** (see above), and do not put the input as the second element of the label's column (same-column elements stack). Column widths use only `weighted`/`auto`; don't introduce pixel widths (e.g. `'90px'`) without verification
 
 ## Button Components
 

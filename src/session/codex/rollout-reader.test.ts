@@ -18,7 +18,10 @@ const { mockLogger } = vi.hoisted(() => ({
   },
 }));
 
-vi.mock('../logger/index.js', () => ({
+// Path must resolve to src/logger (the reader imports '../../logger/index.js');
+// the previous '../logger/index.js' pointed at a non-existent src/session/logger
+// and silently left the mock dead.
+vi.mock('../../logger/index.js', () => ({
   getLogger: () => mockLogger,
   initLogger: () => mockLogger,
 }));
@@ -434,6 +437,179 @@ not valid json
     it('returns false for non-existent session', () => {
       const active = isCodexSessionActive('019f-nonexistent', { codexHome: tmpDir });
       expect(active).toBe(false);
+    });
+  });
+
+  // codex CLI ≥0.153.4 把顶层 `user_message` 事件换成了
+  // `event_msg` → `item_completed`（item.type === 'UserMessage'），导致
+  // displayTitle 静默变空、/resume 卡片只剩 sessionId（2026-09 事故）。
+  // 这些用例锁定「两套词表都要认」的契约。
+  describe('item_completed channel (codex CLI ≥0.153.4 vocabulary drift)', () => {
+    /** Build a new-format rollout file; `text` is the human input. */
+    function newFormatLine(sessionId: string, ...lines: string[]): string {
+      return [
+        `{"type":"session_meta","payload":{"session_id":"${sessionId}","cwd":"/home/user/project","originator":"lark-remote"}}`,
+        ...lines,
+      ].join('\n');
+    }
+
+    function itemCompletedUserMessage(text: string): string {
+      return JSON.stringify({
+        type: 'event_msg',
+        payload: {
+          type: 'item_completed',
+          thread_id: 'thread-1',
+          turn_id: 'turn-1',
+          item: { type: 'UserMessage', id: 'item-1', content: [{ type: 'text', text }] },
+        },
+      });
+    }
+
+    it('reads first/last human input from item_completed UserMessage', () => {
+      const sessionsDir = path.join(tmpDir, 'sessions', '2026', '09', '10');
+      fs.mkdirSync(sessionsDir, { recursive: true });
+      const file = path.join(sessionsDir, 'rollout-new-format.jsonl');
+      fs.writeFileSync(
+        file,
+        newFormatLine(
+          'aaaaaaa1-1111-2222-3333-444444444444',
+          itemCompletedUserMessage('first human turn'),
+          itemCompletedUserMessage('last human turn'),
+        ),
+        'utf-8',
+      );
+
+      const entry = readCodexRollout(file);
+      expect(entry).not.toBeNull();
+      expect(entry!.firstUserMessage).toBe('first human turn');
+      expect(entry!.lastRealUserMessage).toBe('last human turn');
+    });
+
+    it('excludes injected AGENTS.md response_items, keeps only UserMessage text', () => {
+      // 新词表下注入脚手架仍是 response_item role:user，没有 UserMessage 事件，
+      // 因此绝不会被当成真人输入。
+      const sessionsDir = path.join(tmpDir, 'sessions', '2026', '09', '10');
+      fs.mkdirSync(sessionsDir, { recursive: true });
+      const file = path.join(sessionsDir, 'rollout-new-inject.jsonl');
+      fs.writeFileSync(
+        file,
+        newFormatLine(
+          'aaaaaaa2-1111-2222-3333-444444444444',
+          JSON.stringify({
+            type: 'response_item',
+            payload: {
+              type: 'message',
+              role: 'user',
+              content: [{ type: 'input_text', text: '# AGENTS.md instructions\n<INSTRUCTIONS>' }],
+            },
+          }),
+          itemCompletedUserMessage('真实输入'),
+          JSON.stringify({
+            type: 'response_item',
+            payload: {
+              type: 'message',
+              role: 'user',
+              content: [
+                { type: 'input_text', text: '<environment_context>…</environment_context>' },
+              ],
+            },
+          }),
+        ),
+        'utf-8',
+      );
+
+      const content = readCodexSessionContent('aaaaaaa2-1111-2222-3333-444444444444', {
+        codexHome: tmpDir,
+      });
+      expect(content.displayTitle).toBe('真实输入');
+      expect(content.displayTitle).not.toContain('AGENTS.md');
+      expect(content.displayTitle).not.toContain('environment_context');
+    });
+
+    it('takes only the text part of a UserMessage, ignoring injected skill parts', () => {
+      // `$skill-name` 调用会把 skill 文件作为 content 的一部分注入同一
+      // UserMessage；skill 部分绝不能进标题。
+      const sessionsDir = path.join(tmpDir, 'sessions', '2026', '09', '10');
+      fs.mkdirSync(sessionsDir, { recursive: true });
+      const file = path.join(sessionsDir, 'rollout-new-skill.jsonl');
+      fs.writeFileSync(
+        file,
+        newFormatLine(
+          'aaaaaaa3-1111-2222-3333-444444444444',
+          JSON.stringify({
+            type: 'event_msg',
+            payload: {
+              type: 'item_completed',
+              item: {
+                type: 'UserMessage',
+                id: 'item-1',
+                content: [
+                  { type: 'text', text: 'placeholder skill invocation' },
+                  { type: 'skill', name: 'neat-freak', path: '/home/user/.agents/skills/SKILL.md' },
+                ],
+              },
+            },
+          }),
+        ),
+        'utf-8',
+      );
+
+      const entry = readCodexRollout(file);
+      expect(entry!.lastRealUserMessage).toBe('placeholder skill invocation');
+      expect(entry!.lastRealUserMessage).not.toContain('SKILL.md');
+    });
+
+    it('keeps both channels readable when a session mixes legacy and item events', () => {
+      // 过渡期（0.147–0.149）同一 CLI 世代可能先用旧词表起会话、升级后用新词表
+      // 追加；两段都要按顺序识别。
+      const sessionsDir = path.join(tmpDir, 'sessions', '2026', '09', '10');
+      fs.mkdirSync(sessionsDir, { recursive: true });
+      const file = path.join(sessionsDir, 'rollout-mixed.jsonl');
+      fs.writeFileSync(
+        file,
+        newFormatLine(
+          'aaaaaaa4-1111-2222-3333-444444444444',
+          '{"type":"event_msg","payload":{"type":"user_message","message":"legacy turn"}}',
+          itemCompletedUserMessage('item turn'),
+        ),
+        'utf-8',
+      );
+
+      const entry = readCodexRollout(file);
+      expect(entry!.firstUserMessage).toBe('legacy turn');
+      expect(entry!.lastRealUserMessage).toBe('item turn');
+    });
+
+    it('test_anchor_codex_drift_probe_warns_when_injected_user_items_have_no_human_message', () => {
+      // 漂移探针：一旦出现「有 role:user 注入但识别不出真人输入」，说明 codex
+      // 又换了词表，必须留 WARN（displayTitle 静默变空正是 2026-09 的事故形态）。
+      mockLogger.warn.mockClear();
+      const sessionsDir = path.join(tmpDir, 'sessions', '2026', '09', '10');
+      fs.mkdirSync(sessionsDir, { recursive: true });
+      const file = path.join(sessionsDir, 'rollout-drift.jsonl');
+      fs.writeFileSync(
+        file,
+        newFormatLine(
+          'aaaaaaa5-1111-2222-3333-444444444444',
+          JSON.stringify({
+            type: 'response_item',
+            payload: {
+              type: 'message',
+              role: 'user',
+              content: [{ type: 'input_text', text: '# AGENTS.md instructions' }],
+            },
+          }),
+        ),
+        'utf-8',
+      );
+
+      const entry = readCodexRollout(file);
+      expect(entry!.firstUserMessage).toBe('(no user message)');
+      expect(entry!.lastRealUserMessage).toBe('');
+      const warned = mockLogger.warn.mock.calls.some((call) =>
+        String(call[0]).includes('no human user message recognised'),
+      );
+      expect(warned).toBe(true);
     });
   });
 });

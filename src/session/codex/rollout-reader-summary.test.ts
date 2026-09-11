@@ -106,4 +106,54 @@ describe('codex-rollout-reader readCodexSessionSummary', () => {
   it('returns empty summary for unknown session id', () => {
     expect(readCodexSessionSummary('ghost-id', { codexHome: tmpDir })).toEqual({});
   });
+
+  // /resume 列表的标题预取走的是这条快路径；新词表（item_completed）下它
+  // 必须和全量读取给出同样的 displayTitle，否则卡片又会只剩 sessionId。
+  it('reads displayTitle from item_completed UserMessage (codex CLI ≥0.153.4)', () => {
+    createRollout(
+      tmpDir,
+      'rollout-summary-item.jsonl',
+      [
+        metaLine('summary-item', '/tmp'),
+        JSON.stringify({
+          type: 'response_item',
+          payload: {
+            type: 'message',
+            role: 'user',
+            content: [{ type: 'input_text', text: '# AGENTS.md instructions' }],
+          },
+        }),
+        JSON.stringify({
+          type: 'event_msg',
+          payload: {
+            type: 'item_completed',
+            item: {
+              type: 'UserMessage',
+              id: 'item-1',
+              content: [{ type: 'text', text: 'first input' }],
+            },
+          },
+        }),
+        JSON.stringify({
+          type: 'event_msg',
+          payload: {
+            type: 'item_completed',
+            item: {
+              type: 'UserMessage',
+              id: 'item-2',
+              content: [{ type: 'text', text: 'last input' }],
+            },
+          },
+        }),
+        TOKEN_EVENT,
+      ].join('\n'),
+    );
+
+    const summary = readCodexSessionSummary('summary-item', { codexHome: tmpDir });
+    const full = readCodexSessionContent('summary-item', { codexHome: tmpDir });
+
+    expect(summary.displayTitle).toBe('last input');
+    expect(summary.displayTitle).toBe(full.displayTitle);
+    expect(summary.usage).toEqual(full.usage);
+  });
 });

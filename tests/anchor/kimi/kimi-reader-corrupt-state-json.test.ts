@@ -31,8 +31,8 @@
  *      reason === 'export_corrupt' 降级。
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { KimiSessionReader } from '../../src/session/kimi/sessions.js';
-import type { SessionContent } from '../../src/runner/index.js';
+import { KimiSessionReader } from '../../../src/session/kimi/sessions.js';
+import type { SessionContent } from '../../../src/runner/index.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -46,7 +46,7 @@ const { mockLogger } = vi.hoisted(() => ({
   },
 }));
 
-vi.mock('../../src/logger/index.js', () => ({
+vi.mock('../../../src/logger/index.js', () => ({
   getLogger: () => mockLogger,
   initLogger: () => mockLogger,
 }));
@@ -108,7 +108,7 @@ describe('KimiSessionReader with corrupt state.json (truncated CLI write)', () =
     fs.rmSync(cwd, { recursive: true, force: true });
   });
 
-  it('test_probe_kimi_reader_corrupt_state_json_does_not_throw_into_router_card_path', () => {
+  it('test_anchor_kimi_reader_corrupt_state_json_does_not_throw_into_router_card_path', () => {
     let thrown: unknown;
     let content: SessionContent | undefined;
     try {
