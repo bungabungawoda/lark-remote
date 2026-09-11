@@ -1427,297 +1427,317 @@ describe('KimiAcpRunner', () => {
 
   // 依赖真实 `bash -c`（POSIX）：kimi terminal/create 协议固定 bash，Windows 需
   // Git Bash 在 PATH。门控到 win32 具备该前置为止。
-  it.skipIf(isWin32(currentPlatform))('executes kimi terminal/create bash commands locally and serves output/wait_for_exit/release (terminal protocol)', async () => {
-    const capturePath = join(tmpDir, 'terminal-capture.jsonl');
-    const markerPath = join(tmpDir, 'terminal-marker.txt');
-    const workspace = join(tmpDir, 'workspace');
-    mkdirSync(workspace, { recursive: true });
-    // stdout 也要有 hello（output 轮询断言），marker 文件同时落盘（本地执行断言）。
-    const { wrapper } = writeTerminalMockServer(tmpDir, {
-      capturePath,
-      workspace,
-      script: `echo hello | tee ${JSON.stringify(markerPath)}`,
-    });
+  it.skipIf(isWin32(currentPlatform))(
+    'executes kimi terminal/create bash commands locally and serves output/wait_for_exit/release (terminal protocol)',
+    async () => {
+      const capturePath = join(tmpDir, 'terminal-capture.jsonl');
+      const markerPath = join(tmpDir, 'terminal-marker.txt');
+      const workspace = join(tmpDir, 'workspace');
+      mkdirSync(workspace, { recursive: true });
+      // stdout 也要有 hello（output 轮询断言），marker 文件同时落盘（本地执行断言）。
+      const { wrapper } = writeTerminalMockServer(tmpDir, {
+        capturePath,
+        workspace,
+        script: `echo hello | tee ${JSON.stringify(markerPath)}`,
+      });
 
-    const runner = new KimiAcpRunner({
-      kind: 'kimi',
-      sessionReader: createStubSessionReader(),
-      binary: wrapper,
-      acpArgs: [],
-      turnIdleTimeoutMs: 30_000,
-    });
+      const runner = new KimiAcpRunner({
+        kind: 'kimi',
+        sessionReader: createStubSessionReader(),
+        binary: wrapper,
+        acpArgs: [],
+        turnIdleTimeoutMs: 30_000,
+      });
 
-    const events = await collectEvents(runner, 'run bash', { cwd: workspace });
+      const events = await collectEvents(runner, 'run bash', { cwd: workspace });
 
-    const result = events.find((e) => e.type === 'result') as
-      (AgentEvent & { subtype?: string }) | undefined;
-    expect(result).toBeDefined();
-    expect(result?.subtype).toBe('success');
+      const result = events.find((e) => e.type === 'result') as
+        (AgentEvent & { subtype?: string }) | undefined;
+      expect(result).toBeDefined();
+      expect(result?.subtype).toBe('success');
 
-    // Proves the client really spawned `bash -c <script>` locally.
-    expect(readFileSync(markerPath, 'utf8')).toContain('hello');
+      // Proves the client really spawned `bash -c <script>` locally.
+      expect(readFileSync(markerPath, 'utf8')).toContain('hello');
 
-    // Wire-shape assertions against the captured client->server messages.
-    const captured = readCapture(capturePath);
-    const createResp = captured.find((m) => m.id === 100);
-    expect(createResp).toBeDefined();
-    expect(createResp?.error).toBeUndefined();
-    const createResult = createResp?.result as { terminalId?: string } | undefined;
-    expect(createResult?.terminalId).toBeTypeOf('string');
-    expect((createResult?.terminalId ?? '').length).toBeGreaterThan(0);
+      // Wire-shape assertions against the captured client->server messages.
+      const captured = readCapture(capturePath);
+      const createResp = captured.find((m) => m.id === 100);
+      expect(createResp).toBeDefined();
+      expect(createResp?.error).toBeUndefined();
+      const createResult = createResp?.result as { terminalId?: string } | undefined;
+      expect(createResult?.terminalId).toBeTypeOf('string');
+      expect((createResult?.terminalId ?? '').length).toBeGreaterThan(0);
 
-    const outputResps = captured.filter(
-      (m) => m.id === 101 || (typeof m.id === 'number' && m.id >= 201 && m.id <= 205),
-    );
-    expect(outputResps.length).toBeGreaterThan(0);
-    const outputWithHello = outputResps.find((m) => {
-      if (m.error !== undefined) return false;
-      const output = (m.result as { output?: string } | undefined)?.output ?? '';
-      return output.includes('hello');
-    });
-    expect(outputWithHello).toBeDefined();
+      const outputResps = captured.filter(
+        (m) => m.id === 101 || (typeof m.id === 'number' && m.id >= 201 && m.id <= 205),
+      );
+      expect(outputResps.length).toBeGreaterThan(0);
+      const outputWithHello = outputResps.find((m) => {
+        if (m.error !== undefined) return false;
+        const output = (m.result as { output?: string } | undefined)?.output ?? '';
+        return output.includes('hello');
+      });
+      expect(outputWithHello).toBeDefined();
 
-    const waitResp = captured.find((m) => m.id === 102);
-    expect(waitResp).toBeDefined();
-    expect(waitResp?.error).toBeUndefined();
-    const waitResult = waitResp?.result as
-      { exitCode?: number | null; signal?: string | null } | undefined;
-    expect(waitResult?.exitCode).toBe(0);
-    expect(waitResult?.signal).toBeNull();
+      const waitResp = captured.find((m) => m.id === 102);
+      expect(waitResp).toBeDefined();
+      expect(waitResp?.error).toBeUndefined();
+      const waitResult = waitResp?.result as
+        { exitCode?: number | null; signal?: string | null } | undefined;
+      expect(waitResult?.exitCode).toBe(0);
+      expect(waitResult?.signal).toBeNull();
 
-    const releaseResp = captured.find((m) => m.id === 103);
-    expect(releaseResp).toBeDefined();
-    expect(releaseResp?.error).toBeUndefined();
+      const releaseResp = captured.find((m) => m.id === 103);
+      expect(releaseResp).toBeDefined();
+      expect(releaseResp?.error).toBeUndefined();
 
-    await runner.dispose();
-  });
+      await runner.dispose();
+    },
+  );
 
-  it.skipIf(isWin32(currentPlatform))('emits runner-owned Bash tool_use/tool_result with command and local output (terminal visibility)', async () => {
-    const capturePath = join(tmpDir, 'terminal-enrich-capture.jsonl');
-    const markerPath = join(tmpDir, 'terminal-enrich-marker.txt');
-    const workspace = join(tmpDir, 'workspace');
-    mkdirSync(workspace, { recursive: true });
-    const { wrapper } = writeTerminalMockServer(tmpDir, {
-      capturePath,
-      workspace,
-      script: `echo hello | tee ${JSON.stringify(markerPath)}`,
-      // 模拟真实 kimi acp-server：tool_call 通知 + terminal embed 更新。
-      sendTerminalEmbedUpdates: true,
-    });
+  it.skipIf(isWin32(currentPlatform))(
+    'emits runner-owned Bash tool_use/tool_result with command and local output (terminal visibility)',
+    async () => {
+      const capturePath = join(tmpDir, 'terminal-enrich-capture.jsonl');
+      const markerPath = join(tmpDir, 'terminal-enrich-marker.txt');
+      const workspace = join(tmpDir, 'workspace');
+      mkdirSync(workspace, { recursive: true });
+      const { wrapper } = writeTerminalMockServer(tmpDir, {
+        capturePath,
+        workspace,
+        script: `echo hello | tee ${JSON.stringify(markerPath)}`,
+        // 模拟真实 kimi acp-server：tool_call 通知 + terminal embed 更新。
+        sendTerminalEmbedUpdates: true,
+      });
 
-    const runner = new KimiAcpRunner({
-      kind: 'kimi',
-      sessionReader: createStubSessionReader(),
-      binary: wrapper,
-      acpArgs: [],
-      turnIdleTimeoutMs: 30_000,
-    });
+      const runner = new KimiAcpRunner({
+        kind: 'kimi',
+        sessionReader: createStubSessionReader(),
+        binary: wrapper,
+        acpArgs: [],
+        turnIdleTimeoutMs: 30_000,
+      });
 
-    const events = await collectEvents(runner, 'run bash', { cwd: workspace });
+      const events = await collectEvents(runner, 'run bash', { cwd: workspace });
 
-    const result = events.find((e) => e.type === 'result') as
-      (AgentEvent & { subtype?: string }) | undefined;
-    expect(result).toBeDefined();
-    expect(result?.subtype).toBe('success');
+      const result = events.find((e) => e.type === 'result') as
+        (AgentEvent & { subtype?: string }) | undefined;
+      expect(result).toBeDefined();
+      expect(result?.subtype).toBe('success');
 
-    // runner 自产 assistant/tool_use（Bash 面板，带真实命令），且仅一份
-    // （kimi 的 Bash 通知必须被过滤，否则双份面板）。
-    const bashToolUses = events.filter(
-      (e) =>
-        e.type === 'assistant' &&
-        (
-          e as { message?: { content?: Array<{ type?: string; name?: string; input?: unknown }> } }
-        ).message?.content?.filter((c) => c.type === 'tool_use' && c.name === 'Bash').length === 1,
-    );
-    expect(bashToolUses.length).toBe(1);
-    const bashToolUse = (
-      bashToolUses[0] as {
-        message?: {
-          content?: Array<{ type?: string; name?: string; input?: { command?: string } }>;
-        };
-      }
-    ).message?.content?.find((c) => c.type === 'tool_use');
-    expect(bashToolUse?.input?.command).toContain('echo hello');
-
-    // runner 自产 tool_result 必须带上本地缓冲的真实输出。
-    const toolResults = events.filter(
-      (
-        e,
-      ): e is AgentEvent & { message?: { content?: Array<{ type?: string; content?: string }> } } =>
-        e.type === 'user' &&
-        (e as { message?: { content?: unknown[] } }).message?.content?.some(
-          (c) => (c as { type?: string }).type === 'tool_result',
-        ),
-    );
-    expect(toolResults.length).toBeGreaterThan(0);
-    const outputs = toolResults.flatMap((e) =>
-      (e.message?.content ?? [])
-        .filter((c) => c.type === 'tool_result')
-        .map((c) => c.content ?? ''),
-    );
-    expect(outputs.some((o) => o.includes('hello'))).toBe(true);
-
-    await runner.dispose();
-  });
-
-  it.skipIf(isWin32(currentPlatform))('terminal/kill really terminates a long-running local bash process (kill regression)', async () => {
-    const capturePath = join(tmpDir, 'terminal-kill-capture.jsonl');
-    const pidPath = join(tmpDir, 'terminal-pid.txt');
-    const workspace = join(tmpDir, 'workspace');
-    mkdirSync(workspace, { recursive: true });
-    const { wrapper } = writeTerminalMockServer(tmpDir, {
-      capturePath,
-      workspace,
-      pidPath,
-      killAfterCreate: true,
-      // $$ 是 bash 自身 PID；sleep 30 保证 kill 到达前进程一定还在跑。
-      script: `echo $$ > ${JSON.stringify(pidPath)}; sleep 30`,
-    });
-
-    const runner = new KimiAcpRunner({
-      kind: 'kimi',
-      sessionReader: createStubSessionReader(),
-      binary: wrapper,
-      acpArgs: [],
-      turnIdleTimeoutMs: 30_000,
-    });
-
-    const events = await collectEvents(runner, 'run bash', { cwd: workspace });
-
-    const result = events.find((e) => e.type === 'result') as
-      (AgentEvent & { subtype?: string }) | undefined;
-    expect(result).toBeDefined();
-    expect(result?.subtype).toBe('success');
-
-    const captured = readCapture(capturePath);
-    const killResp = captured.find((m) => m.id === 104);
-    expect(killResp).toBeDefined();
-    expect(killResp?.error).toBeUndefined();
-
-    // 核心断言：kill 响应后 bash 必须真的死掉（负 PID 杀进程组），不能只回 {}。
-    const pid = Number(readFileSync(pidPath, 'utf8').trim());
-    expect(Number.isInteger(pid)).toBe(true);
-    let dead = false;
-    try {
-      for (let i = 0; i < 40; i++) {
-        try {
-          process.kill(pid, 0);
-        } catch {
-          dead = true;
-          break;
+      // runner 自产 assistant/tool_use（Bash 面板，带真实命令），且仅一份
+      // （kimi 的 Bash 通知必须被过滤，否则双份面板）。
+      const bashToolUses = events.filter(
+        (e) =>
+          e.type === 'assistant' &&
+          (
+            e as {
+              message?: { content?: Array<{ type?: string; name?: string; input?: unknown }> };
+            }
+          ).message?.content?.filter((c) => c.type === 'tool_use' && c.name === 'Bash').length ===
+            1,
+      );
+      expect(bashToolUses.length).toBe(1);
+      const bashToolUse = (
+        bashToolUses[0] as {
+          message?: {
+            content?: Array<{ type?: string; name?: string; input?: { command?: string } }>;
+          };
         }
-        await new Promise((resolve) => setTimeout(resolve, 50));
+      ).message?.content?.find((c) => c.type === 'tool_use');
+      expect(bashToolUse?.input?.command).toContain('echo hello');
+
+      // runner 自产 tool_result 必须带上本地缓冲的真实输出。
+      const toolResults = events.filter(
+        (
+          e,
+        ): e is AgentEvent & {
+          message?: { content?: Array<{ type?: string; content?: string }> };
+        } =>
+          e.type === 'user' &&
+          (e as { message?: { content?: unknown[] } }).message?.content?.some(
+            (c) => (c as { type?: string }).type === 'tool_result',
+          ),
+      );
+      expect(toolResults.length).toBeGreaterThan(0);
+      const outputs = toolResults.flatMap((e) =>
+        (e.message?.content ?? [])
+          .filter((c) => c.type === 'tool_result')
+          .map((c) => c.content ?? ''),
+      );
+      expect(outputs.some((o) => o.includes('hello'))).toBe(true);
+
+      await runner.dispose();
+    },
+  );
+
+  it.skipIf(isWin32(currentPlatform))(
+    'terminal/kill really terminates a long-running local bash process (kill regression)',
+    async () => {
+      const capturePath = join(tmpDir, 'terminal-kill-capture.jsonl');
+      const pidPath = join(tmpDir, 'terminal-pid.txt');
+      const workspace = join(tmpDir, 'workspace');
+      mkdirSync(workspace, { recursive: true });
+      const { wrapper } = writeTerminalMockServer(tmpDir, {
+        capturePath,
+        workspace,
+        pidPath,
+        killAfterCreate: true,
+        // $$ 是 bash 自身 PID；sleep 30 保证 kill 到达前进程一定还在跑。
+        script: `echo $$ > ${JSON.stringify(pidPath)}; sleep 30`,
+      });
+
+      const runner = new KimiAcpRunner({
+        kind: 'kimi',
+        sessionReader: createStubSessionReader(),
+        binary: wrapper,
+        acpArgs: [],
+        turnIdleTimeoutMs: 30_000,
+      });
+
+      const events = await collectEvents(runner, 'run bash', { cwd: workspace });
+
+      const result = events.find((e) => e.type === 'result') as
+        (AgentEvent & { subtype?: string }) | undefined;
+      expect(result).toBeDefined();
+      expect(result?.subtype).toBe('success');
+
+      const captured = readCapture(capturePath);
+      const killResp = captured.find((m) => m.id === 104);
+      expect(killResp).toBeDefined();
+      expect(killResp?.error).toBeUndefined();
+
+      // 核心断言：kill 响应后 bash 必须真的死掉（负 PID 杀进程组），不能只回 {}。
+      const pid = Number(readFileSync(pidPath, 'utf8').trim());
+      expect(Number.isInteger(pid)).toBe(true);
+      let dead = false;
+      try {
+        for (let i = 0; i < 40; i++) {
+          try {
+            process.kill(pid, 0);
+          } catch {
+            dead = true;
+            break;
+          }
+          await new Promise((resolve) => setTimeout(resolve, 50));
+        }
+        expect(dead).toBe(true);
+      } finally {
+        // 测试失败时兜底清理，避免孤儿 sleep 进程污染后续用例。
+        if (!dead) {
+          try {
+            process.kill(pid, 'SIGKILL');
+          } catch {}
+        }
       }
-      expect(dead).toBe(true);
-    } finally {
-      // 测试失败时兜底清理，避免孤儿 sleep 进程污染后续用例。
-      if (!dead) {
-        try {
-          process.kill(pid, 'SIGKILL');
-        } catch {}
+
+      await runner.dispose();
+    },
+  );
+
+  it.skipIf(isWin32(currentPlatform))(
+    'buffers terminal output byte-accurately: intact UTF-8 and outputByteLimit enforced',
+    async () => {
+      const capturePath = join(tmpDir, 'terminal-buffer-capture.jsonl');
+      const workspace = join(tmpDir, 'workspace');
+      mkdirSync(workspace, { recursive: true });
+      const { wrapper } = writeTerminalMockServer(tmpDir, {
+        capturePath,
+        workspace,
+        pollForTruncated: true,
+        outputByteLimit: 5,
+        // 第一个 write 只有 1 字节（多字节字符被拆到两个 chunk），随后补全；
+        // 总输出 '你你好' 9 字节 > 5 字节上限，必须截断且不产生 U+FFFD。
+        script: `printf '\\xe4'; sleep 0.05; printf '\\xbd\\xa0\\xe4\\xbd\\xa0\\xe5\\xa5\\xbd'`,
+      });
+
+      const runner = new KimiAcpRunner({
+        kind: 'kimi',
+        sessionReader: createStubSessionReader(),
+        binary: wrapper,
+        acpArgs: [],
+        turnIdleTimeoutMs: 30_000,
+      });
+
+      const events = await collectEvents(runner, 'run bash', { cwd: workspace });
+
+      const result = events.find((e) => e.type === 'result') as
+        (AgentEvent & { subtype?: string }) | undefined;
+      expect(result).toBeDefined();
+      expect(result?.subtype).toBe('success');
+
+      const captured = readCapture(capturePath);
+      const outputResps = captured.filter(
+        (m) => m.id === 101 || (typeof m.id === 'number' && m.id >= 201 && m.id <= 205),
+      );
+      expect(outputResps.length).toBeGreaterThan(0);
+
+      // 字节准确截断：truncated 响应的输出不得超过 outputByteLimit（5 字节）。
+      const truncatedResp = outputResps.find((m) => {
+        if (m.error !== undefined) return false;
+        return (m.result as { truncated?: boolean } | undefined)?.truncated === true;
+      });
+      expect(truncatedResp).toBeDefined();
+      const truncatedOutput = (truncatedResp?.result as { output?: string }).output ?? '';
+      expect(Buffer.byteLength(truncatedOutput)).toBeLessThanOrEqual(5);
+
+      // 跨 chunk 拆分多字节字符不得产生 U+FFFD 替换符。
+      for (const m of outputResps) {
+        const output = (m.result as { output?: string } | undefined)?.output ?? '';
+        expect(output.includes('\uFFFD')).toBe(false);
       }
-    }
 
-    await runner.dispose();
-  });
+      await runner.dispose();
+    },
+  );
 
-  it.skipIf(isWin32(currentPlatform))('buffers terminal output byte-accurately: intact UTF-8 and outputByteLimit enforced', async () => {
-    const capturePath = join(tmpDir, 'terminal-buffer-capture.jsonl');
-    const workspace = join(tmpDir, 'workspace');
-    mkdirSync(workspace, { recursive: true });
-    const { wrapper } = writeTerminalMockServer(tmpDir, {
-      capturePath,
-      workspace,
-      pollForTruncated: true,
-      outputByteLimit: 5,
-      // 第一个 write 只有 1 字节（多字节字符被拆到两个 chunk），随后补全；
-      // 总输出 '你你好' 9 字节 > 5 字节上限，必须截断且不产生 U+FFFD。
-      script: `printf '\\xe4'; sleep 0.05; printf '\\xbd\\xa0\\xe4\\xbd\\xa0\\xe5\\xa5\\xbd'`,
-    });
+  it.skipIf(isWin32(currentPlatform))(
+    'reports truncated when output exactly reaches outputByteLimit (spec: buffer >= limit)',
+    async () => {
+      const capturePath = join(tmpDir, 'terminal-exact-cap-capture.jsonl');
+      const workspace = join(tmpDir, 'workspace');
+      mkdirSync(workspace, { recursive: true });
+      const { wrapper } = writeTerminalMockServer(tmpDir, {
+        capturePath,
+        workspace,
+        pollForTruncated: true,
+        outputByteLimit: 5,
+        // 'hello' 恰好 5 字节 = outputByteLimit：契约要求 truncated=true（缓冲>=上限），
+        // 且恰好填满时不能丢数据（输出仍应完整）。
+        script: `printf 'hello'`,
+      });
 
-    const runner = new KimiAcpRunner({
-      kind: 'kimi',
-      sessionReader: createStubSessionReader(),
-      binary: wrapper,
-      acpArgs: [],
-      turnIdleTimeoutMs: 30_000,
-    });
+      const runner = new KimiAcpRunner({
+        kind: 'kimi',
+        sessionReader: createStubSessionReader(),
+        binary: wrapper,
+        acpArgs: [],
+        turnIdleTimeoutMs: 30_000,
+      });
 
-    const events = await collectEvents(runner, 'run bash', { cwd: workspace });
+      const events = await collectEvents(runner, 'run bash', { cwd: workspace });
 
-    const result = events.find((e) => e.type === 'result') as
-      (AgentEvent & { subtype?: string }) | undefined;
-    expect(result).toBeDefined();
-    expect(result?.subtype).toBe('success');
+      const result = events.find((e) => e.type === 'result') as
+        (AgentEvent & { subtype?: string }) | undefined;
+      expect(result).toBeDefined();
+      expect(result?.subtype).toBe('success');
 
-    const captured = readCapture(capturePath);
-    const outputResps = captured.filter(
-      (m) => m.id === 101 || (typeof m.id === 'number' && m.id >= 201 && m.id <= 205),
-    );
-    expect(outputResps.length).toBeGreaterThan(0);
+      const captured = readCapture(capturePath);
+      const outputResps = captured.filter(
+        (m) => m.id === 101 || (typeof m.id === 'number' && m.id >= 201 && m.id <= 205),
+      );
+      expect(outputResps.length).toBeGreaterThan(0);
+      const truncatedResp = outputResps.find((m) => {
+        if (m.error !== undefined) return false;
+        return (m.result as { truncated?: boolean } | undefined)?.truncated === true;
+      });
+      expect(truncatedResp).toBeDefined();
+      const truncatedOutput = (truncatedResp?.result as { output?: string }).output ?? '';
+      expect(truncatedOutput).toBe('hello');
 
-    // 字节准确截断：truncated 响应的输出不得超过 outputByteLimit（5 字节）。
-    const truncatedResp = outputResps.find((m) => {
-      if (m.error !== undefined) return false;
-      return (m.result as { truncated?: boolean } | undefined)?.truncated === true;
-    });
-    expect(truncatedResp).toBeDefined();
-    const truncatedOutput = (truncatedResp?.result as { output?: string }).output ?? '';
-    expect(Buffer.byteLength(truncatedOutput)).toBeLessThanOrEqual(5);
-
-    // 跨 chunk 拆分多字节字符不得产生 U+FFFD 替换符。
-    for (const m of outputResps) {
-      const output = (m.result as { output?: string } | undefined)?.output ?? '';
-      expect(output.includes('\uFFFD')).toBe(false);
-    }
-
-    await runner.dispose();
-  });
-
-  it.skipIf(isWin32(currentPlatform))('reports truncated when output exactly reaches outputByteLimit (spec: buffer >= limit)', async () => {
-    const capturePath = join(tmpDir, 'terminal-exact-cap-capture.jsonl');
-    const workspace = join(tmpDir, 'workspace');
-    mkdirSync(workspace, { recursive: true });
-    const { wrapper } = writeTerminalMockServer(tmpDir, {
-      capturePath,
-      workspace,
-      pollForTruncated: true,
-      outputByteLimit: 5,
-      // 'hello' 恰好 5 字节 = outputByteLimit：契约要求 truncated=true（缓冲>=上限），
-      // 且恰好填满时不能丢数据（输出仍应完整）。
-      script: `printf 'hello'`,
-    });
-
-    const runner = new KimiAcpRunner({
-      kind: 'kimi',
-      sessionReader: createStubSessionReader(),
-      binary: wrapper,
-      acpArgs: [],
-      turnIdleTimeoutMs: 30_000,
-    });
-
-    const events = await collectEvents(runner, 'run bash', { cwd: workspace });
-
-    const result = events.find((e) => e.type === 'result') as
-      (AgentEvent & { subtype?: string }) | undefined;
-    expect(result).toBeDefined();
-    expect(result?.subtype).toBe('success');
-
-    const captured = readCapture(capturePath);
-    const outputResps = captured.filter(
-      (m) => m.id === 101 || (typeof m.id === 'number' && m.id >= 201 && m.id <= 205),
-    );
-    expect(outputResps.length).toBeGreaterThan(0);
-    const truncatedResp = outputResps.find((m) => {
-      if (m.error !== undefined) return false;
-      return (m.result as { truncated?: boolean } | undefined)?.truncated === true;
-    });
-    expect(truncatedResp).toBeDefined();
-    const truncatedOutput = (truncatedResp?.result as { output?: string }).output ?? '';
-    expect(truncatedOutput).toBe('hello');
-
-    await runner.dispose();
-  });
+      await runner.dispose();
+    },
+  );
 
   // =========================================================================
   // runCompact 等待机制（kimi-compact-wait-redesign §5.2）
