@@ -15,7 +15,7 @@
  * Why the platform seam over spawning `which`:
  * - `which` is not POSIX-guaranteed and does not exist on Windows; the seam
  *   does PATH + X_OK on posix (same semantics) and PATH × PATHEXT on win32,
- *   with no child process at all (windows-support-design.md §4.3).
+ *   with no child process at all.
  */
 
 import { resolveExecutable } from '../platform/command.js';

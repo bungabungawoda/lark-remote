@@ -7,8 +7,8 @@
  * executable named exactly like the agent in a temp dir on PATH instead of
  * injecting a custom binary path.
  *
- * Fixtures are **platform-neutral by construction** (windows-support-design-v2.md
- * §9.1「优先把 fixture 从 sh wrapper 改成 Node 启动器，压缩门控面」): a mock
+ * Fixtures are **platform-neutral by construction** (prefer Node launchers over
+ * sh wrappers, minimizing the platform-gated surface): a mock
  * agent is always a Node launcher, never a POSIX shell script.
  *   - posix: writes `<name>` — a `#!/bin/sh` wrapper that `exec`s node on the
  *     entry, so the direct child is node itself (pid identity preserved);

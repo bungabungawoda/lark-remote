@@ -20,7 +20,7 @@ export function silentlyUnlink(path: string): void {
 }
 
 /**
- * win32 句柄占用重试（windows-support-design.md §6）：rename/unlink 目标被
+ * win32 句柄占用重试：rename/unlink 目标被
  * 其他句柄持有时报 EPERM/EBUSY（共享冲突），短暂退避后重试通常即可成功。
  * 仅 win32 启用重试：posix 上这两个错误码不是「占用瞬态」语义（如 NFS 权限
  * 问题），立即失败——避免忙等阻塞单线程 bridge 的事件循环。
@@ -28,7 +28,7 @@ export function silentlyUnlink(path: string): void {
 const BUSY_CODES = new Set(['EPERM', 'EBUSY']);
 
 /**
- * 退避参数（windows-support-design-v2.md §6，取参照项目上线验证值）：
+ * 退避参数（取参照项目上线验证值）：
  * 最多 5 次，第 n 次失败后睡 BASE_RETRY_DELAY_MS × n——总阻塞上界 ~250ms。
  * Windows 上杀毒/索引器持锁更久，窗口比短退避更稳。
  */

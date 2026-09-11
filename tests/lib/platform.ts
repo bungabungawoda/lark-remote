@@ -1,5 +1,5 @@
 /**
- * 平台门控测试 helper（windows-support-design.md §10.2）。
+ * 平台门控测试 helper。
  *
  * 规则：现有「行为与 OS 无关」的测试不 skip；只有明确依赖 POSIX 原语的用例
  * （负 PID 组杀、sh wrapper fixture、真实 bash）才用 describePosix 门控。

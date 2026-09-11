@@ -68,8 +68,7 @@ function waitForCondition(check: () => boolean, timeoutMs = 6000): Promise<void>
 /**
  * fixture 平台中立：直接以 `process.execPath` 启动 Node 脚本，不再写 POSIX
  * `#!/bin/sh` wrapper（Windows 既不能执行无扩展名脚本、也不认 shebang →
- * 子进程起不来 → env/文件缺失、exit:1 等假红）。见 windows-support-design-v2
- * §9.1「优先把 fixture 从 sh wrapper 改成 Node 启动器」。
+ * 子进程起不来 → env/文件缺失、exit:1 等假红）。
  */
 function nodeLaunch(script: string, extraArgs: string[] = []) {
   return { binary: process.execPath, args: [script, ...extraArgs] };

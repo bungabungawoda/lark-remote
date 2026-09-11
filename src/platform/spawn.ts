@@ -1,5 +1,5 @@
 /**
- * spawn 统一收口（windows-support-design-v2.md §2 / §4.2 / §8.3）。
+ * spawn 统一收口。
  *
  * 全部子进程拉起必须走本模块，禁止直接 child_process.spawn：
  * - cross-spawn 在 posix 是 child_process.spawn 直通（零行为差异）；win32 上

@@ -1,5 +1,5 @@
 /**
- * resolveExecutable —— 可执行文件发现（windows-support-design-v2.md §4.3）。
+ * resolveExecutable —— 可执行文件发现。
  *
  * 职责收窄为「探测/诊断」：报告 agent 装在哪、装没装（可用性探测 probe.ts、
  * 自更新安装源检测 update/install.ts）。**执行**统一走 platform/spawn.ts 的

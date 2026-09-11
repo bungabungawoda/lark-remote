@@ -42,7 +42,7 @@ vi.mock('../../../src/logger/index.js', () => ({
 
 // POSIX 门控：fixture 依赖 POSIX 原语（真实 `sleep` 长驻进程 + 负 PID 组杀）。
 // killOrphan 的 win32 身份校验（CIM CommandLine/CreationDate）尚未接线（见
-// windows-support-design-v2 §11 M2 遗留项），接线后再放开 win32 并补真机验证。
+// Windows 平台 M2 遗留项），接线后再放开 win32 并补真机验证。
 describePosix('P1-10: killOrphan process identity verification', () => {
   let tmpDir: string;
 

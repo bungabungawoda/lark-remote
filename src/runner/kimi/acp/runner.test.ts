@@ -1337,7 +1337,7 @@ describe('KimiAcpRunner', () => {
 
     // Spawn counter: first invocation crashes, second succeeds.
     // 平台中立 launcher（Node）——不再写 POSIX `#!/bin/sh` wrapper：Windows 既不能
-    // 直接执行无扩展名脚本、shell 算术也不可用（windows-support-design-v2 §9.1）。
+    // 直接执行无扩展名脚本、shell 算术也不可用。
     const spawnCountFile = join(tmpDir, 'spawn-count');
     const launcher = join(tmpDir, 'retry-server.mjs');
     writeFileSync(
@@ -1426,7 +1426,7 @@ describe('KimiAcpRunner', () => {
   });
 
   // 依赖真实 `bash -c`（POSIX）：kimi terminal/create 协议固定 bash，Windows 需
-  // Git Bash 在 PATH（windows-support-design-v2 §7）。门控到 win32 具备该前置为止。
+  // Git Bash 在 PATH。门控到 win32 具备该前置为止。
   it.skipIf(isWin32(currentPlatform))('executes kimi terminal/create bash commands locally and serves output/wait_for_exit/release (terminal protocol)', async () => {
     const capturePath = join(tmpDir, 'terminal-capture.jsonl');
     const markerPath = join(tmpDir, 'terminal-marker.txt');

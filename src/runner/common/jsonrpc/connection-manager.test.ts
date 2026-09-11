@@ -9,7 +9,7 @@ import { rmRf } from '../../../../tests/lib/tmp-cleanup.js';
  * fixture 平台中立：直接以 `process.execPath` 启动 Node 假 server，不再包 POSIX
  * `#!/bin/sh` wrapper（Windows 起不来 → acquire 失败、pid 文件缺失等假红）。
  * pid 由脚本自写 `process.pid`——原先 `#!/bin/sh ... exec node` 里 `$$` 与 node
- * 同 pid，语义等价。见 windows-support-design-v2 §9.1。
+ * 同 pid，语义等价。
  */
 function nodeLaunch(script: string) {
   return { binary: process.execPath, args: [script] };

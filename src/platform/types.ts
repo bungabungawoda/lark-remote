@@ -1,5 +1,5 @@
 /**
- * 平台 seam 纯类型（windows-support-design-v2.md §2）。
+ * 平台 seam 纯类型。
  */
 
 /**

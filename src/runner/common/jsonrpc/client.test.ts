@@ -10,7 +10,7 @@ import { rmRf } from '../../../../tests/lib/tmp-cleanup.js';
  * 启动一个 Node 假 ACP server。fixture 平台中立：直接以 `process.execPath`
  * 启动脚本，**不再包一层 POSIX `#!/bin/sh` wrapper**（Windows 既不能执行
  * 无扩展名脚本、也不认 shebang，wrapper 会让子进程起不来 →
- * env/capture 文件缺失、exit:1 等假红）。见 windows-support-design-v2 §9.1。
+ * env/capture 文件缺失、exit:1 等假红）。
  */
 function nodeLaunch(script: string, extraArgs: string[] = []) {
   return { binary: process.execPath, args: [script, ...extraArgs] };
