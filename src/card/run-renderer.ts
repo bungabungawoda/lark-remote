@@ -925,7 +925,15 @@ function buildSummaryContent(
     const result = state.resultSubtype ?? 'success';
 
     const hasContent = state.blocks.length > 0;
-    const empty = !hasContent ? '\n\n（未返回内容）' : '';
+    // 压缩（operationKind='compaction'）不会返回 agent 正文——引擎只压缩上下文
+    // 窗口，空内容属正常，不能沿用普通 run 的「（未返回内容）」异常信号
+    // （2026-09 用户反馈）。所有会压缩的 agent（codex/claude/kimi/opencode/pi）
+    // 都经 streamCodexCompact 走这条共享渲染路径，一处覆盖全部。
+    const empty = hasContent
+      ? ''
+      : state.operationKind === 'compaction'
+        ? '\n\n🗜 Compact 完成'
+        : '\n\n（未返回内容）';
 
     const usageStatsStr = formatUsageStats(
       {

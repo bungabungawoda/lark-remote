@@ -1,5 +1,5 @@
 /**
- * P3 probe: onTurnEnded 只标记 expired，不调 responder。
+ * P3 anchor: onTurnEnded 只标记 expired，不调 responder。
  *
  * ① 验证什么：turn 结束时，所有 pending 审批被标记为 expired 且
  *    timer 清除；之后即使时间流逝，也不会向 server 发送 cancel——turn 已结束，
@@ -13,7 +13,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ApprovalCoordinator } from '../../../src/bridge/approval-coordinator.js';
 import type { ApprovalRequestedEvent } from '../../../src/runner/types.js';
 
-describe('probe: approval expiry turn end', () => {
+describe('anchor: approval expiry turn end', () => {
   let coordinator: ApprovalCoordinator;
   let responder: ReturnType<typeof vi.fn>;
   let interruptTurn: ReturnType<typeof vi.fn>;
@@ -58,7 +58,7 @@ describe('probe: approval expiry turn end', () => {
     vi.useRealTimers();
   });
 
-  it('test_probe_turn_ended_marks_expired_without_responder', async () => {
+  it('test_anchor_turn_ended_marks_expired_without_responder', async () => {
     coordinator.onRequested(makeCommandEvent());
     coordinator.onTurnEnded();
 

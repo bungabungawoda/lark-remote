@@ -24,7 +24,7 @@
  *   contextLength 10400（末条 3000+7000+400，excludes output，不求和）
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { KimiSessionReader } from '../../src/session/kimi/sessions.js';
+import { KimiSessionReader } from '../../../src/session/kimi/sessions.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -38,7 +38,7 @@ const { mockLogger } = vi.hoisted(() => ({
   },
 }));
 
-vi.mock('../../src/logger/index.js', () => ({
+vi.mock('../../../src/logger/index.js', () => ({
   getLogger: () => mockLogger,
   initLogger: () => mockLogger,
 }));
@@ -80,7 +80,7 @@ describe('KimiSessionReader usage aggregation with malformed record (missing fie
     fs.rmSync(cwd, { recursive: true, force: true });
   });
 
-  it('test_probe_kimi_usage_malformed_record_does_not_poison_aggregates', () => {
+  it('test_anchor_kimi_usage_malformed_record_does_not_poison_aggregates', () => {
     const records = [
       { inputOther: 1000, output: 100, inputCacheRead: 5000, inputCacheCreation: 200 },
       // 残缺行：缺 inputCacheCreation（旧协议版本/截断行的现实形态）

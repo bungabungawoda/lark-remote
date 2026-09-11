@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { renderRunCard } from '../../src/card/run-renderer.js';
-import type { RunState } from '../../src/card/run-state.js';
+import { renderRunCard } from '../../../src/card/run-renderer.js';
+import type { RunState } from '../../../src/card/run-state.js';
 
 /**
  * ADVERSARIAL PROBE — 攻击 renderRunCard 的 ≤28KB 不变量。
@@ -11,7 +11,7 @@ import type { RunState } from '../../src/card/run-state.js';
  * 转义字符，估算的 1.2 因子严重低估真实 stringify 体积。
  *
  * 安全网理论：估算低估 → 走正常路径 → stringify 兜底发现 >28KB → fallthrough
- * degraded/extreme → 最终 ≤28KB。本 probe 用病态输入验证这条安全网在极端转义
+ * degraded/extreme → 最终 ≤28KB。本锚点测试 用病态输入验证这条安全网在极端转义
  * 膨胀下**真的兜得住**——任一产出 >28KB 即暴露安全网漏洞（真 bug）。
  *
  * 攻击向量：

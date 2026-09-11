@@ -81,7 +81,9 @@ function findDivWithText(elements: CardElement[], needle: string): CardElement |
 }
 
 function resumePageButtons(elements: CardElement[]): CardElement[] {
-  return elements.filter((el) => el.behaviors?.[0]?.value?.cmd === 'resume.page');
+  return elements.filter(
+    (el) => el.tag === 'button' && el.behaviors?.[0]?.value?.cmd === 'resume.page',
+  );
 }
 
 function resumeUseButtons(elements: CardElement[]): CardElement[] {

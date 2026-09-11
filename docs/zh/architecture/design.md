@@ -330,6 +330,13 @@ idle:
 终端打印二维码，用户用飞书 App 扫码创建应用，返回的 `client_id`/`client_secret`
 写回配置文件后继续启动；非交互环境（无 TTY）落到 `loadConfig` 生成模板并退出。
 
+二维码渲染见 `src/config/qr.ts`：符号从同一模块矩阵出两种渲染——
+全块（每模块两个 `█`，Windows 安全）与半块（每文本行两个 QR 行，紧凑）。
+Windows 只用全块（半块的 `▀`/`▄` 在 Windows 控制台字体下常渲染错位导致扫不出来）；
+POSIX 在全块放不下时回退半块。两种渲染都带 QR 规范要求的 4 模块静区
+（旧实现用 `qrcode-terminal` 半块且无静区）。终端放不下完整符号时（或 Windows 下）
+向导把符号写成 `<configDir>/qr-code.gif` 并打印路径，扫码结束/退出时清理。
+
 `codex.appServer` 与审批/沙箱字段的完整语义见
 [`docs/zh/guides/codex-config.md`](../guides/codex-config.md)。
 `kimi` 的 permissionMode/acp 字段完整语义见

@@ -1,5 +1,5 @@
 /**
- * Round 8 termination probe (plan §2.1): CodexSessionReader.listSessions
+ * Round 8 termination anchor (plan §2.1): CodexSessionReader.listSessions
  * offset/limit combination boundaries.
  *
  * Assumption: `listSessions(cwd, { limit, offset })` must never go out of
@@ -15,8 +15,8 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { CodexSessionReader } from '../../src/session/codex/index.js';
-import { clearSessionIndexCache } from '../../src/session/codex/rollout-reader.js';
+import { CodexSessionReader } from '../../../src/session/codex/index.js';
+import { clearSessionIndexCache } from '../../../src/session/codex/rollout-reader.js';
 
 const { mockLogger } = vi.hoisted(() => ({
   mockLogger: {
@@ -27,7 +27,7 @@ const { mockLogger } = vi.hoisted(() => ({
   },
 }));
 
-vi.mock('../../src/logger/index.js', () => ({
+vi.mock('../../../src/logger/index.js', () => ({
   getLogger: () => mockLogger,
   initLogger: () => mockLogger,
 }));
@@ -38,7 +38,7 @@ let tmpDir: string;
 let reader: CodexSessionReader;
 
 beforeEach(() => {
-  tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'lark-codex-offset-probe-'));
+  tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'lark-codex-offset-anchor-'));
   clearSessionIndexCache();
 
   // 25 real rollout files under sessions/YYYY/MM/DD with distinct mtimes.
@@ -46,7 +46,7 @@ beforeEach(() => {
   fs.mkdirSync(sessionsDir, { recursive: true });
   const baseSec = Math.floor(Date.now() / 1000) - 86400;
   for (let i = 0; i < SESSION_COUNT; i++) {
-    const sessionId = `probe-sess-${String(i).padStart(2, '0')}`;
+    const sessionId = `anchor-sess-${String(i).padStart(2, '0')}`;
     const filePath = path.join(sessionsDir, `rollout-${sessionId}.jsonl`);
     const firstLine =
       `{"type":"session_meta","payload":{"session_id":"${sessionId}","cwd":"/proj",` +
@@ -62,8 +62,8 @@ afterEach(() => {
   fs.rmSync(tmpDir, { recursive: true, force: true });
 });
 
-describe('Round 8 probe: codex reader offset/limit bounds', () => {
-  it('test_probe_codex_reader_list_sessions_positive_bounds_keep_total', () => {
+describe('Round 8 anchor: codex reader offset/limit bounds', () => {
+  it('test_anchor_codex_reader_list_sessions_positive_bounds_keep_total', () => {
     // In-bounds, page boundary, and beyond-the-end offsets: total stays 25,
     // sessions never overlaps pages / never throws, limit beyond total is fine.
     const page1 = reader.listSessions('/proj', { limit: 20, offset: 0 });

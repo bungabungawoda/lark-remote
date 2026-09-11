@@ -18,13 +18,13 @@
  *   完成通知卡与刚显示 ✅ done 的 run 卡自相矛盾。
  *   （router 已改为只看内存 activeRun，不受影响。）
  *
- * 本 probe 用真实事件序 fixture 锁定：turn 完成（step.end + 尾随 usage.record）
+ * 本锚点测试 用真实事件序 fixture 锁定：turn 完成（step.end + 尾随 usage.record）
  *   ⇒ isSessionActive === false 且 usage 聚合数据正常返回。
  * 双锁：尾随的 usage.record 仍是有效聚合数据（usage 正常返回），
  * 防止绿实现用「丢弃末行/忽略 usage.record」误伤 R1-R6 聚合语义。
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { KimiSessionReader } from '../../src/session/kimi/sessions.js';
+import { KimiSessionReader } from '../../../src/session/kimi/sessions.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -38,7 +38,7 @@ const { mockLogger } = vi.hoisted(() => ({
   },
 }));
 
-vi.mock('../../src/logger/index.js', () => ({
+vi.mock('../../../src/logger/index.js', () => ({
   getLogger: () => mockLogger,
   initLogger: () => mockLogger,
 }));
@@ -80,7 +80,7 @@ describe('KimiSessionReader completed-turn tail ordering (step.end → usage.rec
     fs.rmSync(cwd, { recursive: true, force: true });
   });
 
-  it('test_probe_kimi_completed_turn_trailing_usage_record_not_reported_as_finalizing', () => {
+  it('test_anchor_kimi_completed_turn_trailing_usage_record_not_reported_as_finalizing', () => {
     // 已完成 turn 的事件序尾部：
     // turn.prompt → step.begin → content.part → step.end → usage.record（末行）
     const base = 1784380436258;
