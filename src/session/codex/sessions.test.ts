@@ -71,6 +71,47 @@ describe('CodexSessionReader', () => {
       expect(result.sessions[0].summary).toBe('');
     });
 
+    it('returns summary from item_completed UserMessage (codex CLI ≥0.153.4)', () => {
+      // 新词表：顶层 user_message 事件已被移除，真人输入改由
+      // event_msg/item_completed(item.type === 'UserMessage') 承载。
+      // 未适配时 summary 落到占位符 → router 判定 summaryIsPlaceholder
+      // → /resume 卡片整段标题不渲染（2026-09 事故）。
+      createRollout(
+        tmpDir,
+        'rollout-new-format.jsonl',
+        [
+          metaLine('new-fmt', '/tmp'),
+          JSON.stringify({
+            type: 'response_item',
+            payload: {
+              type: 'message',
+              role: 'user',
+              content: [{ type: 'input_text', text: '# AGENTS.md instructions' }],
+            },
+          }),
+          JSON.stringify({
+            type: 'event_msg',
+            payload: {
+              type: 'item_completed',
+              item: {
+                type: 'UserMessage',
+                id: 'item-1',
+                content: [{ type: 'text', text: '新词表输入' }],
+              },
+            },
+          }),
+        ].join('\n'),
+      );
+
+      const reader = new CodexSessionReader({ codexHome: tmpDir });
+      const result = reader.listSessions('/tmp');
+
+      expect(result.sessions).toHaveLength(1);
+      expect(result.sessions[0].summary).toBe('新词表输入');
+      // 预取路径（/resume 卡片标题）同样必须给出标题。
+      expect(reader.readSessionSummary('new-fmt', '/tmp').displayTitle).toBe('新词表输入');
+    });
+
     it('filters by cwd', () => {
       createRollout(tmpDir, 'rollout-a.jsonl', metaLine('sa', '/project/a'));
       createRollout(tmpDir, 'rollout-b.jsonl', metaLine('sb', '/project/b'));

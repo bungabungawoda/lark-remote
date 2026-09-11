@@ -21,7 +21,7 @@
  *   当 jsonl 对 usage 一无所述时，如实显示 = 不显示 token 块（formatUsageStats
  *   估算路径本就有「全空则不输出任何 token 行」的护栏，src/router/index.ts:3904-3905
  *   inputRef>0||cacheRead>0||cacheCreation>0 才输出），而不是展示合成零值。
- *   注意与 R5 probe 的区别：R5 是「存在 record 但字段残缺 → 缺失字段按 0 计」；
+ *   注意与 R5 æ¢æµé¡¹ 的区别：R5 是「存在 record 但字段残缺 → 缺失字段按 0 计」；
  *   本条是「一条 record 都没有 → 整个 usage 对象不应存在」。部分缺失按 0 是
  *   聚合语义，整体缺失按 0 是凭空造数。
  *   现实触发形态：kimi 协议演进（sessions.ts:64-66 注释自述旧版本/截断的
@@ -41,19 +41,19 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { Bridge } from '../../src/bridge/index.js';
-import { SessionStore } from '../../src/session/index.js';
-import { SessionReaderRegistry } from '../../src/session/registry.js';
-import { KimiSessionReader } from '../../src/session/kimi/sessions.js';
-import { AppConfigSchema } from '../../src/config/index.js';
-import type { AppConfig } from '../../src/config/index.js';
-import type { AgentRunner, Runner } from '../../src/runner/index.js';
+import { Bridge } from '../../../src/bridge/index.js';
+import { SessionStore } from '../../../src/session/index.js';
+import { SessionReaderRegistry } from '../../../src/session/registry.js';
+import { KimiSessionReader } from '../../../src/session/kimi/sessions.js';
+import { AppConfigSchema } from '../../../src/config/index.js';
+import type { AppConfig } from '../../../src/config/index.js';
+import type { AgentRunner, Runner } from '../../../src/runner/index.js';
 
 import {
   createStubAgentRegistry,
   createStubConnector,
   createStubRunner,
-} from '../lib/bridge-stubs.js';
+} from '../../lib/bridge-stubs.js';
 const { mockLogger } = vi.hoisted(() => ({
   mockLogger: {
     debug: vi.fn(),
@@ -63,7 +63,7 @@ const { mockLogger } = vi.hoisted(() => ({
   },
 }));
 
-vi.mock('../../src/logger/index.js', () => ({
+vi.mock('../../../src/logger/index.js', () => ({
   getLogger: () => mockLogger,
   initLogger: () => mockLogger,
 }));
@@ -86,7 +86,7 @@ function asAgentRunner(r: Runner): AgentRunner {
 
 const SESSION_ID = 'session_no_usage_x';
 
-describe('kimi done card must not fabricate an all-zero token block when jsonl has no usage.record (probe)', () => {
+describe('kimi done card must not fabricate an all-zero token block when jsonl has no usage.record (anchor)', () => {
   let kimiDir: string;
   let workDir: string;
   let config: AppConfig;
@@ -154,7 +154,7 @@ describe('kimi done card must not fabricate an all-zero token block when jsonl h
 
   const ctx = { userId: 'user1', chatId: 'chat1', messageId: 'msg1' };
 
-  it('test_probe_kimi_done_card_shows_no_token_block_when_jsonl_has_no_usage_record', async () => {
+  it('test_anchor_kimi_done_card_shows_no_token_block_when_jsonl_has_no_usage_record', async () => {
     // 真实依赖链：真实 KimiSessionReader（读上面的无 usage.record fixture）+ 真实 registry。
     const registry = new SessionReaderRegistry();
     registry.register('kimi', new KimiSessionReader(kimiDir));

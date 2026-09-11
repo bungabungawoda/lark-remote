@@ -1,5 +1,5 @@
 /**
- * P2 probe: responder 抛错时状态置 failed，且调用 interruptTurn() 兜底。
+ * P2 anchor: responder 抛错时状态置 failed，且调用 interruptTurn() 兜底。
  *
  * ① 验证什么：过期 cancel 发送失败（responder reject）时，协调器把审批状态
  *    从 expired 改为 failed，并调用 interruptTurn() 终止 turn——杜绝
@@ -13,7 +13,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ApprovalCoordinator } from '../../../src/bridge/approval-coordinator.js';
 import type { ApprovalRequestedEvent } from '../../../src/runner/types.js';
 
-describe('probe: approval expiry responder failure', () => {
+describe('anchor: approval expiry responder failure', () => {
   let coordinator: ApprovalCoordinator;
   let responder: ReturnType<typeof vi.fn>;
   let interruptTurn: ReturnType<typeof vi.fn>;
@@ -58,7 +58,7 @@ describe('probe: approval expiry responder failure', () => {
     vi.useRealTimers();
   });
 
-  it('test_probe_approval_expired_responder_failure_marks_failed_and_interrupts', async () => {
+  it('test_anchor_approval_expired_responder_failure_marks_failed_and_interrupts', async () => {
     responder.mockRejectedValue(new Error('connection closed'));
     coordinator.onRequested(makeCommandEvent());
 

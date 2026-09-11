@@ -393,4 +393,21 @@ describe('/restart 命令', () => {
       fs.rmSync(logsDir, { recursive: true, force: true });
     }
   });
+
+  it('test_anchor_spawn_replacement_propagates_fs_errors', () => {
+    // 验证行为：logsDir 不可写（mkdir/open 失败）时 spawnReplacementBridge 抛错，
+    //   由 cmdRestart 的 catch 转为「重启失败…」文案——异常必须可传播到上层，
+    //   不得被吞掉变成"spawn 成功"假象。
+    // 依据：方案 §5.5 异常路径验收「logsDir 指向只读路径 → 重启失败，
+    //   旧进程仍存活」（原 probe 转正）。
+    const parent = fs.mkdtempSync(path.join(os.tmpdir(), 'restart-readonly-'));
+    const logsDir = path.join(parent, 'nested', 'logs');
+    fs.chmodSync(parent, 0o555);
+    try {
+      expect(() => spawnReplacementBridge(logsDir)).toThrow();
+    } finally {
+      fs.chmodSync(parent, 0o755);
+      fs.rmSync(parent, { recursive: true, force: true });
+    }
+  });
 });

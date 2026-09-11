@@ -10,6 +10,16 @@
  * {"timestamp":"...","type":"response_item","payload":{"type":"message","role":"user|developer","content":[...]}}
  * ```
  *
+ * Event vocabulary drift (codex CLI ≥0.153.4, transitional from 0.147.0): the
+ * top-level `user_message` / `agent_message` events were removed; the same
+ * payloads now ride on `event_msg` → `item_completed` envelopes whose
+ * `item.type` is `UserMessage` / `AgentMessage` / `CommandExecution` / … .
+ * Both spellings stay readable — `extractRealUserText` adapts per file.
+ *
+ * Deprecation: if ~6 months pass (≈2027-03) with the legacy `user_message` /
+ * `agent_message` events still absent from every codex CLI and the old-codex
+ * session tail effectively gone, drop the legacy branch + its fixtures.
+ *
  * Note: This handles the **rollout file format** (historical logging), NOT the
  * `codex exec --json` stdout format（已随 exec 模式移除）。
  */
@@ -170,15 +180,23 @@ function scanCodexRollout(filePath: string, includeEvents: boolean): CodexRollou
   const lines = readJsonlLines(filePath);
   const events: AgentSessionContentEvent[] = [];
   let sessionMeta: Record<string, unknown> | null = null;
-  // Real user input is identified by a paired `event_msg` whose
-  // payload.type === "user_message" - codex emits this ONLY for text the
-  // human actually typed. Injected scaffolding (project rules,
-  // <environment_context>, permissions) is also written as `role:"user"`
-  // response_items but has NO user_message event, so it must be excluded
-  // from displayTitle/recap/summary. Regression 2026-07-13: the first
-  // `role:user` message is the injected project rules, mistakenly shown as
-  // "最近输入".
+  // Real user input comes from the authoritative "human typed this" event —
+  // `user_message` on old codex, `item_completed`/UserMessage on new codex
+  // (see `extractRealUserText`). Injected scaffolding (project rules,
+  // <environment_context>, permissions) is written as `role:"user"`
+  // response_items but gets NEITHER event, so it stays excluded from
+  // displayTitle/recap/summary. Regression 2026-07-13: the first `role:user`
+  // message is the injected project rules, mistakenly shown as "最近输入".
   const realUserMessages: string[] = [];
+  // Which channel produced the last pushed message — used only to collapse a
+  // hypothetical double-write (same turn logged by both the legacy and the
+  // item channel), never to drop real consecutive input.
+  let lastUserMessageSource: 'legacy' | 'item' | null = null;
+  // Drift probe: count of `role:"user"` response_items (injected scaffolding
+  // included). If a file has those but yields zero real user messages, the
+  // event vocabulary changed again and displayTitle silently went empty —
+  // exactly the 0.153 compatibility incident shape.
+  let userResponseItemCount = 0;
   // token_count tracking: codex emits cumulative `total_token_usage` and an
   // incremental `last_token_usage`. We want the LAST turn's usage (matches
   // pi/opencode /resume "last turn" display semantics). When
@@ -219,13 +237,22 @@ function scanCodexRollout(filePath: string, includeEvents: boolean): CodexRollou
       if (parsed.type === 'session_meta' && parsed.payload) {
         sessionMeta = parsed.payload as Record<string, unknown>;
       } else if (parsed.type === 'event_msg' && parsed.payload) {
-        // user_message events carry the authoritative human-typed text.
         const payload = parsed.payload as Record<string, unknown>;
-        if (payload.type === 'user_message') {
-          const text = stringValue(payload.message);
-          if (text) {
-            realUserMessages.push(text.slice(0, 200));
+        const human = extractRealUserText(payload);
+        if (human) {
+          const text = human.text.slice(0, 200);
+          const prev = realUserMessages[realUserMessages.length - 1];
+          // 过渡期防御：同一 turn 若被旧版 user_message 与新版 item_completed
+          // 各写一次，会得到相邻重复。仅在「通道切换且文本与上一条完全相同」
+          // 时跳过——同通道连续相同输入（真人连发两条一样的话）不受影响。
+          const duplicateAcrossChannels =
+            lastUserMessageSource !== null &&
+            lastUserMessageSource !== human.source &&
+            prev === text;
+          if (!duplicateAcrossChannels) {
+            realUserMessages.push(text);
           }
+          lastUserMessageSource = human.source;
         } else if (payload.type === 'token_count') {
           const info = payload.info as Record<string, unknown> | undefined;
           const last = info?.last_token_usage as RawTokenUsage | undefined;
@@ -272,6 +299,7 @@ function scanCodexRollout(filePath: string, includeEvents: boolean): CodexRollou
       } else if (includeEvents && parsed.type === 'response_item' && parsed.payload) {
         const payload = parsed.payload as Record<string, unknown>;
         if (payload.type === 'message' && Array.isArray(payload.content)) {
+          if (payload.role === 'user') userResponseItemCount++;
           // Extract text content for display
           const messages = extractMessageContent(payload);
           for (const msg of messages) {
@@ -287,6 +315,17 @@ function scanCodexRollout(filePath: string, includeEvents: boolean): CodexRollou
       // Skip malformed lines
       continue;
     }
+  }
+
+  // 兼容性漂移探针：文件里有 `role:"user"` 注入，却识别不出任何真人输入 ——
+  // 说明 codex 又换了 event_msg 词表，displayTitle 会静默变空（0.153 事故形态）。
+  // 只告警不兜底：误用注入文本当标题正是 2026-07-13 修掉的缺陷。
+  if (realUserMessages.length === 0 && userResponseItemCount > 0) {
+    getLogger().warn(
+      `[codex-rollout-reader] no human user message recognised in ${filePath} ` +
+        `(${userResponseItemCount} role:"user" response_items seen) — codex rollout ` +
+        `event vocabulary may have changed; session title will be empty`,
+    );
   }
 
   return {
@@ -744,6 +783,55 @@ function getSessionIndex(
 /** Clear the session index cache. Exposed for tests. */
 export function clearSessionIndexCache(): void {
   sessionIndexCache.clear();
+}
+
+/**
+ * Extract the human-typed text from a rollout `event_msg` payload, adapting to
+ * codex's two rollout event vocabularies.
+ *
+ * - Legacy (CLI ≤0.150.1): a dedicated `{"type":"user_message","message":…}`
+ *   event. Codex emitted it ONLY for text the human actually typed; injected
+ *   scaffolding (project rules, `<environment_context>`, permissions) is
+ *   written as `role:"user"` response_items but gets NO such event, so it stays
+ *   out of displayTitle/recap/summary. (Regression 2026-07-13: the first
+ *   `role:user` message is the injected project rules, once shown as 最近输入.)
+ * - Current (CLI ≥0.153.4, transitional from 0.147.0): the `user_message` /
+ *   `agent_message` events were removed; the same authoritative text now rides
+ *   on `{"type":"item_completed","item":{"type":"UserMessage","content":[…]}}`.
+ *   A UserMessage may bundle several content parts — `text` parts are the human
+ *   input, `skill` parts are injected skill files (e.g. a `$skill-name`
+ *   invocation) that must not leak into the title.
+ *
+ * Real-data note (2026-09): no rollout file observed carries BOTH spellings;
+ * 0.147–0.149 are transitional (either spelling per file), 0.153.4+/0.154.0 are
+ * item_completed-only. `source` reports which spelling matched so the scanner
+ * can collapse a hypothetical double-write of the same turn.
+ *
+ * TODO(2027-03-11): drop the legacy branch (and its fixtures) once ~6 months
+ * pass with the event still absent from every CLI and old-codex tails gone —
+ * mirrors the deprecation note in the module header.
+ */
+function extractRealUserText(
+  payload: Record<string, unknown>,
+): { text: string; source: 'legacy' | 'item' } | null {
+  if (payload.type === 'user_message') {
+    const text = stringValue(payload.message);
+    return text ? { text, source: 'legacy' } : null;
+  }
+  if (payload.type === 'item_completed') {
+    const item = payload.item;
+    if (!isRecord(item) || item.type !== 'UserMessage' || !Array.isArray(item.content)) {
+      return null;
+    }
+    const texts: string[] = [];
+    for (const part of item.content) {
+      if (!isRecord(part) || part.type !== 'text') continue;
+      const text = stringValue(part.text);
+      if (text) texts.push(text);
+    }
+    return texts.length > 0 ? { text: texts.join('\n'), source: 'item' } : null;
+  }
+  return null;
 }
 
 function extractMessageContent(

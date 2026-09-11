@@ -102,14 +102,15 @@ Logs rotate daily and are stored at `~/.lark-remote/logs/YYYY-MM-DD/lark-remote-
 
 ## 5. Commands
 
-Any message not starting with `/` is forwarded to Claude. Messages starting with `/` are treated as built-in commands. **Some commands support single-letter aliases** (`/help /h`, `/status /s`, `/stop /t`, `/exit /e`, `/resume /r`, `/config /c`, `/order /o`):
+Any message not starting with `/` is forwarded to Claude. Messages starting with `/` are treated as built-in commands. **Some commands support single-letter aliases** (`/help /h`, `/status /s`, `/stop /t`, `/exit /e`, `/resume /r`, `/config /c`, `/order /o`, `/download /d`):
 
 | Command | Alias | Behavior |
 |---------|-------|----------|
 | `/help` | `/h` | Show command list |
 | `/cd <path>` | - | Switch Claude's working directory (supports `~`, absolute/relative paths; clears current session, next message starts a new conversation) |
 | `/cd` | - | Without arguments, shows the current directory |
-| `/ls` | - | Pop up a directory/file card; click a directory to browse, click a file under 30MB to send it to Feishu |
+| `/ls [dir\|file]` | - | Pop up a directory/file card; click a directory to browse, click a file under 30MB to send it to Feishu; paginates beyond 30 entries (page-number jump supported). Passing a file path lists that file itself |
+| `/download <path>` | `/d` | Send a local file straight to the chat, capped at 30MB |
 | `/ws save <name>` | - | Save the current directory as a named alias |
 | `/ws use <name>` | - | Switch to the alias directory (clears session) |
 | `/ws remove <name>` | - | Remove an alias |
@@ -137,6 +138,18 @@ Any message not starting with `/` is forwarded to Claude. Messages starting with
 
 - **`/cd <path>`** supports `~` (expanded to home directory), absolute paths, and relative paths (relative to current directory). Switching clears the session because `--resume` would restore Claude's memory of the old cwd; not clearing would cause file read/write confusion.
 - **`/ls [dir]`** returns a CardKit 2.0 card listing **all** subdirectories and files in the current directory; pass `[dir]` to list a specific subdirectory (equivalent to bash `ls <dir>`). Clicking a directory button browses that directory (`ls.browse`, does not switch cwd); the "Switch" button changes the working directory to the currently browsed absolute path (`ls.switch`, validates that the target exists and is a directory). Clicking a file button uploads files under 30MB and sends them to the current Feishu private chat; files exceeding the limit return an error message.
+- **The "Back" button returns to the root of this `/ls`**, not to the workspace cwd: the root of `/ls <dir>` is `<dir>` itself (so the root card has no "Back" button, only "Switch"); after browsing into a subdirectory, "Back" returns to `<dir>`. `/ls` without arguments roots at the current working directory (same behaviour as before). Paging and refresh never lose the root.
+- **`/ls <file>`** no longer fails with `Not a directory`; it renders a single-file card (path, size, mtime plus "Download" and "Up" buttons) so you can confirm the file exists before downloading it.
+- **Page-number jump**: when `/ls`, `/ws`, `/resume`, `/active` or `/order` lists span multiple pages, the pagination bar has a page-number input next to the page label; type a page number and press ✓ to jump directly (out-of-range clamps to the last page, invalid input shows an error toast without refreshing).
+
+#### `/download`: Send a File Directly
+
+**`/download <path>`** (alias `/d`) uploads a local file and sends it to the current Feishu private chat without going through an `/ls` card. Path rules match `/ls`: `~` expands to the home directory; relative paths resolve against the current working directory (set one with `/cd` first). The 30MB cap matches the Feishu `im/v1/files` API; directories, missing paths and oversized files are rejected with a clear error and nothing is sent.
+
+```text
+/download ~/reports/2026H1.pdf     # send that file directly
+/d lr.zip                          # relative to the current working directory
+```
 
 #### `/ws`: Workspace Aliases
 
