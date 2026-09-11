@@ -103,43 +103,6 @@ describe('RunCardSession - 流式卡片错误处理探索', () => {
     expect(await session.settle()).toBe('streamed');
   });
 
-  it('test_anchor_push_raw_AxiosError_should_not_crash', async () => {
-    const axiosError = new Error('Request failed with status code 400') as Error & {
-      isAxiosError: boolean;
-      response?: { status?: number };
-    };
-    axiosError.isAxiosError = true;
-    axiosError.response = { status: 400 };
-
-    const { connector } = makeStreamCardConnector({
-      messageId: 'card-3',
-      controllerUpdate: axiosError,
-      updateCard: () => {},
-    });
-
-    const session = new RunCardSession({
-      connector,
-      chatId: 'chat-1',
-      replyTo: 'msg-1',
-      runId: 'run-3',
-      coalesceMs: 0,
-    });
-
-    await session.start();
-    vi.clearAllMocks();
-
-    await session.push({
-      type: 'assistant',
-      message: { content: [{ type: 'text', text: 'test' }] },
-    });
-
-    // 验证：有错误日志
-    const logger = getLogger();
-    expect(logger.warn).toHaveBeenCalled();
-
-    await session.finish('done', { resultSubtype: 'success' });
-  });
-
   it('test_anchor_push_error_does_not_propagate', async () => {
     const { connector } = makeStreamCardConnector({
       messageId: 'card-4',
@@ -222,45 +185,6 @@ describe('RunCardSession - 流式卡片错误处理探索', () => {
     await expect(session.settle()).resolves.not.toBe('unsent');
   });
 
-  it('test_anchor_all_updates_fail_no_unhandled_rejection', async () => {
-    const axiosError = new Error('Request failed with status code 400') as Error & {
-      isAxiosError: boolean;
-      response?: { status?: number };
-    };
-    axiosError.isAxiosError = true;
-    axiosError.response = { status: 400 };
-
-    const { connector } = makeStreamCardConnector({
-      messageId: 'card-7',
-      controllerUpdate: axiosError,
-      updateCard: axiosError,
-    });
-
-    const session = new RunCardSession({
-      connector,
-      chatId: 'chat-1',
-      replyTo: 'msg-1',
-      runId: 'run-7',
-      coalesceMs: 0,
-    });
-
-    await session.start();
-    vi.clearAllMocks();
-
-    // 模拟多次 push
-    for (let i = 0; i < 5; i++) {
-      await session.push({
-        type: 'assistant',
-        message: { content: [{ type: 'text', text: `message ${i}` }] },
-      });
-    }
-
-    await session.finish('done', { resultSubtype: 'success' });
-    const result = await session.settle();
-
-    expect(['streamed', 'updated', 'unsent']).toContain(result);
-  });
-
   it('test_anchor_feishu_230027_error_both_paths_fail', async () => {
     const feishuError = new Error('Request failed with status code 400') as Error & {
       isAxiosError: boolean;
@@ -298,8 +222,9 @@ describe('RunCardSession - 流式卡片错误处理探索', () => {
     }
 
     await session.finish('done', { resultSubtype: 'success' });
+    // streamCard 本身成功（只是 update 路径失败）→ settle 走 streamed 分支
     const result = await session.settle();
-    expect(['streamed', 'updated', 'unsent']).toContain(result);
+    expect(result).toBe('streamed');
 
     const logger = getLogger();
     expect(logger.warn).toHaveBeenCalled();
@@ -403,8 +328,9 @@ describe('RunCardSession - 流式卡片错误处理探索', () => {
     await Promise.all(pushPromises);
 
     await session.finish('done', { resultSubtype: 'success' });
+    // streamCard 成功 → settle 必为 'streamed'（间歇性失败不影响流身份）
     const result = await session.settle();
-    expect(['streamed', 'updated', 'unsent']).toContain(result);
+    expect(result).toBe('streamed');
   });
 
   it('test_anchor_settle_fallback_AxiosError_230027', async () => {

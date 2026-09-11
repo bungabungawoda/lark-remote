@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { QueueManager } from './queue-manager.js';
+import { expectNoV1ActionContainer } from '../../tests/lib/card-view.js';
 
 const { mockLogger } = vi.hoisted(() => ({
   mockLogger: {
@@ -340,7 +341,7 @@ describe('QueueManager', () => {
     expect(execBtn!.disabled).not.toBe(true);
 
     // CardKit 2.0 铁律：禁止 V1 action 容器与 V2 behaviors 混用（飞书 200861 整卡不可用）
-    expect(JSON.stringify(card)).not.toMatch(/"tag"\s*:\s*"action"[^}]*"actions"/);
+    expectNoV1ActionContainer(JSON.stringify(card));
 
     release1();
     await new Promise((r) => setTimeout(r, 50));
@@ -412,7 +413,7 @@ describe('QueueManager', () => {
     expect(execBtn!.disabled).not.toBe(true);
 
     // CardKit 2.0 铁律：禁止 V1 action 容器与 V2 behaviors 混用
-    expect(JSON.stringify(card)).not.toMatch(/"tag"\s*:\s*"action"[^}]*"actions"/);
+    expectNoV1ActionContainer(JSON.stringify(card));
 
     release1();
     await new Promise((r) => setTimeout(r, 50));

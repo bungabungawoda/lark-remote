@@ -10,7 +10,13 @@ vi.mock('../platform/spawn.js', async (importOriginal) => ({
   spawnProcess: vi.fn(),
 }));
 
+// W3.5：PATH 可用性检测走 seam（resolveExecutable），mock 后可真断言 fallback 顺序
+vi.mock('../platform/command.js', () => ({
+  resolveExecutable: vi.fn(),
+}));
+
 import { spawnProcess } from '../platform/spawn.js';
+import { resolveExecutable } from '../platform/command.js';
 
 type MockExecCallback = (err: Error | null, stdout: unknown, stderr: unknown) => void;
 
@@ -86,20 +92,6 @@ describe('detectPackageManager', () => {
     expect(detectPackageManager()).toBe('bun');
   });
 
-  it('returns null for invalid LARK_REMOTE_MANAGED_BY value', () => {
-    process.env.LARK_REMOTE_MANAGED_BY = 'yarn';
-    // Invalid value falls through to which detection
-    const result = detectPackageManager();
-    // Could be null or a valid PM depending on environment
-    expect(result === null || ['npm', 'bun', 'pnpm'].includes(result!)).toBe(true);
-  });
-
-  it('falls through to which detection when no env override', () => {
-    delete process.env.LARK_REMOTE_MANAGED_BY;
-    const result = detectPackageManager();
-    // In CI/test environments npm is usually available
-    expect(result === null || ['npm', 'bun', 'pnpm'].includes(result!)).toBe(true);
-  });
   it('infers PM from running script path before which detection', () => {
     delete process.env.LARK_REMOTE_MANAGED_BY;
     // pnpm install layout: must pick pnpm even though npm exists on this machine
@@ -123,11 +115,24 @@ describe('detectPackageManager', () => {
     );
   });
 
-  it('falls through to which detection when script path has no marker', () => {
+  it('invalid env / no marker path / no env → PATH availability fallback（npm→bun→pnpm）', () => {
+    const mockResolve = vi.mocked(resolveExecutable);
+
+    // 无 env：npm/bun 解析失败、pnpm 可用 → 必须按顺序落到 pnpm
     delete process.env.LARK_REMOTE_MANAGED_BY;
-    const result = detectPackageManager('/home/user/code/lark-remote/dist/index.js');
-    // In CI/test environments npm is usually available
-    expect(result === null || ['npm', 'bun', 'pnpm'].includes(result!)).toBe(true);
+    mockResolve.mockReset();
+    mockResolve.mockImplementation((cmd: string) => (cmd === 'pnpm' ? '/usr/bin/pnpm' : null));
+    expect(detectPackageManager('/home/user/code/lark-remote/dist/index.js')).toBe('pnpm');
+
+    // PATH 全 miss → null（fail-closed）
+    mockResolve.mockReset();
+    expect(detectPackageManager()).toBeNull();
+
+    // 非法 env 值 → 同样落 PATH 检测
+    process.env.LARK_REMOTE_MANAGED_BY = 'yarn';
+    mockResolve.mockReset();
+    mockResolve.mockImplementation((cmd: string) => (cmd === 'npm' ? '/usr/bin/npm' : null));
+    expect(detectPackageManager()).toBe('npm');
   });
 });
 

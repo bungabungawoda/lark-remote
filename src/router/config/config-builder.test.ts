@@ -13,6 +13,7 @@ import { KimiConfigBuilder } from './kimi.js';
 import { buildConfigCardFromTabs, type ConfigTab } from './common/render.js';
 import type { AppConfig } from '../../config/index.js';
 import { AppConfigSchema } from '../../config/index.js';
+import { expectNoV1ActionContainer } from '../../../tests/lib/card-view.js';
 
 /** Build a minimal valid AppConfig for testing. */
 function makeConfig(overrides?: Partial<AppConfig>): AppConfig {
@@ -127,7 +128,7 @@ describe('router/config common/render', () => {
     const card = buildConfigCardFromTabs(tabs, config);
     const json = JSON.stringify(card);
     // 200861: CardKit 2.0 cards must NOT contain V1 `tag:"action"` containers
-    expect(json).not.toMatch(/"tag"\s*:\s*"action"[^}]*"actions"/);
+    expectNoV1ActionContainer(json);
   });
 
   it('boolean field renders toggle button with callback behavior', () => {

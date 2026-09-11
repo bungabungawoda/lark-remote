@@ -1,7 +1,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { findJsonlLine, scanJsonlLines, readJsonlLinesFromOffset } from '../common/jsonl.js';
+import { findJsonlLine } from '../common/jsonl.js';
+import { scanJsonlOnce, tailOffsetAfter, scanTailEvents } from '../common/two-pass.js';
 import { extractContentBlocks, type ContentBlockMapping } from '../common/content-blocks.js';
 import {
   UsageAccumulator,
@@ -16,8 +17,8 @@ import type {
   AgentSessionContentEvent,
 } from '../../runner/index.js';
 
-import { STALE_MS } from '../common/constants.js';
-import { capEvents, paginate } from '../common/pagination.js';
+import { isStale } from '../common/constants.js';
+import { paginate } from '../common/pagination.js';
 import { sortByRecencyDesc } from '../common/recency.js';
 import { TtlCache } from '../../common/ttl-cache.js';
 
@@ -219,13 +220,8 @@ function piScalarScan(filePath: string): PiScanResult {
   let tailOffset = -1;
   let lastUserText: string | undefined;
 
-  scanJsonlLines(filePath, (line, offset) => {
-    let obj: PiJsonlEntry;
-    try {
-      obj = JSON.parse(line) as PiJsonlEntry;
-    } catch {
-      return;
-    }
+  scanJsonlOnce(filePath, (rawObj, line, offset) => {
+    const obj = rawObj as PiJsonlEntry;
 
     if (obj.type === 'message') {
       const msg = (obj as { message?: PiMessageEntry }).message;
@@ -245,9 +241,9 @@ function piScalarScan(filePath: string): PiScanResult {
 
       // last user message offset + displayTitle. Record the byte offset
       // where the tail should start: the beginning of the NEXT line after
-      // this user message.
+      // this user message (see tailOffsetAfter).
       if (msg.role === 'user') {
-        tailOffset = offset + Buffer.byteLength(line, 'utf-8') + 1;
+        tailOffset = tailOffsetAfter(line, offset);
         const text = extractPiText(msg.content);
         // Compress skill-injection bodies so the "最近输入" label shows what
         // the user invoked (skill:x) + any trailing real input, not a
@@ -297,55 +293,48 @@ function buildPiUsage(acc: UsageAccumulator): AgentSessionUsage | undefined {
 }
 
 /**
- * P2-6 + P2-5 second-pass: extract content-block events from the tail
- * (lines after the last user message), re-parsing only those lines.
- * `tailLines` is already the tail-only slice (read via
- * `readJsonlLinesFromOffset`), so both raw line-string memory and parsed-
- * object memory are O(tail), not O(whole file) — P2-6 + P2-5.
+ * P2-6 + P2-5 second-pass tail mapper: expand one parsed tail line into
+ * content-block events. Re-parses only tail lines (scanTailEvents does the
+ * offset re-read + line filtering), so both raw line-string memory and
+ * parsed-object memory are O(tail), not O(whole file) — P2-6 + P2-5.
+ * `maxEvents` capping is applied by scanTailEvents.
  */
-function extractPiEventsFromTail(tailLines: string[]): AgentSessionContentEvent[] {
+function mapPiTailLine(rawObj: Record<string, unknown>): AgentSessionContentEvent[] {
   const events: AgentSessionContentEvent[] = [];
-  for (const line of tailLines) {
-    if (!line.trim()) continue;
-    try {
-      const obj = JSON.parse(line) as {
-        type?: string;
-        message?: {
-          content?: unknown;
-          role?: string;
-          stopReason?: string;
-          errorMessage?: string;
-        };
-        timestamp?: string;
-      };
-      if (obj.type !== 'message' || !obj.message) continue;
+  const obj = rawObj as {
+    type?: string;
+    message?: {
+      content?: unknown;
+      role?: string;
+      stopReason?: string;
+      errorMessage?: string;
+    };
+    timestamp?: string;
+  };
+  if (obj.type !== 'message' || !obj.message) return events;
 
-      const message = obj.message;
-      // Handle error messages: when stopReason is "error", content is empty
-      // but errorMessage has details
-      if (message.stopReason === 'error' && message.errorMessage) {
-        events.push({
-          type: 'error',
-          content: `❌ ${message.errorMessage}`,
-          timestamp: obj.timestamp,
-        });
-        continue;
-      }
+  const message = obj.message;
+  // Handle error messages: when stopReason is "error", content is empty
+  // but errorMessage has details
+  if (message.stopReason === 'error' && message.errorMessage) {
+    events.push({
+      type: 'error',
+      content: `❌ ${message.errorMessage}`,
+      timestamp: obj.timestamp,
+    });
+    return events;
+  }
 
-      const blocks = extractContentBlocks(message.content, PI_MAPPING) as Array<{
-        type: string;
-        content: string;
-      }>;
-      const role = message.role ?? 'unknown';
-      for (const block of blocks) {
-        events.push({ type: block.type, content: block.content, timestamp: obj.timestamp });
-      }
-      if (blocks.length === 0 && message.role) {
-        events.push({ type: role, content: `(${role} event)`, timestamp: obj.timestamp });
-      }
-    } catch {
-      /* skip */
-    }
+  const blocks = extractContentBlocks(message.content, PI_MAPPING) as Array<{
+    type: string;
+    content: string;
+  }>;
+  const role = message.role ?? 'unknown';
+  for (const block of blocks) {
+    events.push({ type: block.type, content: block.content, timestamp: obj.timestamp });
+  }
+  if (blocks.length === 0 && message.role) {
+    events.push({ type: role, content: `(${role} event)`, timestamp: obj.timestamp });
   }
   return events;
 }
@@ -401,34 +390,18 @@ export class PiSessionReader implements AgentSessionReader {
       return { events: [] };
     }
 
-    // P2-5 + P2-6: First pass STREAMS the file once via `scanJsonlLines`
-    // (no `string[]` materialized), parsing each line once to collect
-    // scalars (usage, tailOffset, displayTitle) while retaining no parsed
-    // objects and no whole-file line array. The tailOffset is the byte
-    // offset where the tail begins (start of the line after the last user
-    // message). A second pass re-reads ONLY the tail from that offset via
-    // `readJsonlLinesFromOffset` and re-parses it for events — O(tail)
-    // memory for both raw line strings and parsed objects, instead of
-    // O(whole file).
-    //
-    // Parse ratio: ≈1.0–1.5× line count when a user message exists.
-    // When the session has NO user message, tailOffset stays -1 and the
-    // tail IS the whole file → scan(N) + tail(N) = 2.0× — the known
-    // asymptotic upper bound of the two-phase design.
+    // P2-5 + P2-6: Two-pass scan (see `scanJsonlOnce` / `scanTailEvents` in
+    // session/common/two-pass.ts): pass 1 streams the file once collecting
+    // scalars (usage, tailOffset, displayTitle) with O(1) parsed-object
+    // retention; pass 2 re-reads ONLY the tail and re-parses it for events,
+    // capped at maxEvents (keeps the LAST N events, matching
+    // CodexSessionReader's slice(-maxEvents), so auto-resume cards don't
+    // load the entire session).
     const scan = piScalarScan(filePath);
-    const tailLines = readJsonlLinesFromOffset(
-      filePath,
-      scan.tailOffset >= 0 ? scan.tailOffset : 0,
-    );
-    const events = extractPiEventsFromTail(tailLines);
-
-    // Apply maxEvents cap: keep the LAST N events (most recent), matching
-    // CodexSessionReader's slice(-maxEvents). maxEvents limits the catch-up
-    // tail so auto-resume cards don't load the entire session.
-    const cappedEvents = capEvents(events, opts?.maxEvents);
+    const events = scanTailEvents(filePath, scan.tailOffset, mapPiTailLine, opts?.maxEvents);
 
     return {
-      events: cappedEvents,
+      events,
       usage: scan.usage,
       displayTitle: scan.displayTitle,
     };
@@ -439,7 +412,7 @@ export class PiSessionReader implements AgentSessionReader {
     if (!filePath) return false;
     try {
       const st = fs.statSync(filePath);
-      return Date.now() - st.mtimeMs < STALE_MS;
+      return !isStale(st.mtimeMs);
     } catch {
       return false;
     }

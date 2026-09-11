@@ -12,14 +12,13 @@ import {
   setConfigValue,
   setConfigValues,
   mapAgentKey,
-  assertSafeKeyPart,
-  walkNestedContainer,
   getAgentConfig,
 } from '../config/index.js';
 import { syncAgentChoices } from '../runner/index.js';
 import { WorkspaceStore } from '../workspace/index.js';
 import { OrderStore, type OrderEntry } from '../order/index.js';
 import { resolveAlias } from '../order/alias-resolve.js';
+import { diffConfig, setNestedValue } from './config-diff.js';
 import type {
   AgentKind,
   AgentSession,
@@ -177,48 +176,8 @@ interface CommandResult {
 export function isImmediateAction(cmd: string): boolean {
   // help.* wildcard: any command starting with "help."
   if (cmd.startsWith('help.')) return true;
-  return (
-    cmd === 'new-session' ||
-    cmd === 'stop' ||
-    cmd === 'ls.file' ||
-    cmd === 'ls.refresh' ||
-    cmd === 'ls.browse' ||
-    cmd === 'ls.switch' ||
-    cmd === 'ls.page' ||
-    cmd === 'resume.page' || // control operation: paginate only, never spawns claude
-    cmd === 'active.page' || // control operation: paginate active card
-    cmd === 'ws.page' || // control operation: paginate /ws list only
-    cmd === 'ws.remove' ||
-    cmd === 'ws.sort' || // control operation: toggle sort mode only
-    cmd === 'resume.use' ||
-    cmd === 'ws.use' ||
-    cmd === 'queue.immediate' ||
-    cmd === 'queue.cancel' ||
-    cmd === 'queue.diagnose' ||
-    cmd === 'queue.edit' ||
-    cmd === 'queue.input' ||
-    cmd === 'order.delete' ||
-    cmd === 'order.page' ||
-    cmd === 'order.aliasEdit' ||
-    cmd === 'order.aliasInput' ||
-    cmd === 'order.aliasRemove' ||
-    cmd === 'order.textEdit' ||
-    cmd === 'order.textInput' ||
-    cmd === 'config.toggle' ||
-    cmd === 'config.set' ||
-    cmd === 'config.input' ||
-    cmd === 'config.save' ||
-    // 审批响应/权限切换必须即时触达在途 run（同 stop 类控制动作）。若走串行
-    // 队列会排在等待审批的 run 之后形成死锁：run 不结束审批不执行，run 结束
-    // coordinator 已删响应空转（线上复现：approval.respond 排队卡、审批永不生效）。
-    cmd === 'approval.respond' ||
-    cmd === 'approval.toggle' ||
-    cmd === 'approval.answer' ||
-    cmd === 'approval.answerSubmit' ||
-    cmd === 'approval.answerCustom' ||
-    cmd === 'approval.answerNote' ||
-    cmd === 'approval.planFeedback'
-  );
+  // 名单在 APPROVAL_ACTION_SPECS 之后定义（模块初始化完成后才可能被调用）。
+  return IMMEDIATE_ACTION_CMDS.has(cmd);
 }
 
 /** Payload carried by a card button click. */
@@ -412,6 +371,73 @@ const APPROVAL_ACTION_SPECS: Record<string, ApprovalActionSpec> = {
     failureToast: (msg) => ({ toast: { type: 'error', content: `修改意见保存失败：${msg}` } }),
   },
 };
+
+// ===========================================================================
+// W2.1 命令名单单一事实源
+// 直返语义（cardAction 同步返回 toast 给飞书回调，index.ts 控制层据此不经
+// 队列直接处理）与即时语义（绕串行队列 enqueueImmediate，§9.6）正交，两个
+// 独立清单只共享审批命令名来源（APPROVAL_ACTION_SPECS keys）——历史上同一
+// 份知识四份拷贝曾两次漂移（order.textInput 漏 immediate、answer 家族漏直返）。
+// ===========================================================================
+
+/** 审批命令名清单（APPROVAL_ACTION_SPECS keys，handleCardAction 分发共用）。 */
+export const APPROVAL_ACTION_CMDS: readonly string[] = Object.keys(APPROVAL_ACTION_SPECS);
+
+/**
+ * 直返命令：点击后同步返回 toast 给飞书回调，不经队列。
+ * index.ts 控制层直返清单的唯一来源（勿在别处复制名单）。
+ */
+export const DIRECT_RETURN_CMDS: ReadonlySet<string> = new Set([
+  'queue.input',
+  'order.aliasInput',
+  'order.aliasRemove',
+  'order.textInput',
+  'config.save',
+  ...APPROVAL_ACTION_CMDS,
+]);
+
+/** 即时命令清单（绕串行队列 enqueueImmediate）。 */
+const IMMEDIATE_ACTION_CMDS: ReadonlySet<string> = new Set([
+  'new-session',
+  'stop',
+  'ls.file',
+  'ls.refresh',
+  'ls.browse',
+  'ls.switch',
+  'ls.page', // control operation: paginate only, never spawns claude
+  'resume.page', // control operation: paginate only, never spawns claude
+  'active.page', // control operation: paginate active card
+  'ws.page', // control operation: paginate /ws list only
+  'ws.remove',
+  'ws.sort', // control operation: toggle sort mode only
+  'resume.use',
+  'ws.use',
+  'queue.immediate',
+  'queue.cancel',
+  'queue.diagnose',
+  'queue.edit',
+  'queue.input',
+  'order.delete',
+  'order.page',
+  'order.aliasEdit',
+  'order.aliasInput',
+  'order.aliasRemove',
+  'order.textEdit',
+  'order.textInput',
+  'config.toggle',
+  'config.set',
+  'config.input',
+  'config.save',
+  // 审批响应/权限切换必须即时触达在途 run（同 stop 类控制动作）。若走串行
+  // 队列会排在等待审批的 run 之后形成死锁：run 不结束审批不执行，run 结束
+  // coordinator 已删响应空转（线上复现：approval.respond 排队卡、审批永不生效）。
+  ...APPROVAL_ACTION_CMDS,
+]);
+
+/** W2.8 单源：payload.offset → 钳位 offset（原先 9 处逐字副本）。 */
+function payloadOffset(value: { offset?: number }): number {
+  return Math.max(0, Math.trunc(Number(value.offset) || 0));
+}
 
 /** 卡片 cardAction payload 缺字段的统一报错文案（原先 12 处手写且已漂移出两种前缀）。 */
 const CARD_PAYLOAD_MISSING = '⚠️ 卡片 payload 缺少必要信息';
@@ -609,6 +635,11 @@ export class CommandRouter {
     value: CardActionPayload,
     ctx: CommandContext,
   ): Promise<CardActionResponse | void> {
+    // W2.1：审批家族以 APPROVAL_ACTION_SPECS keys 为单一来源分发
+    // （原 7 个 case 与 spec keys 是同一份知识的两份拷贝，已两次漂移）。
+    if (APPROVAL_ACTION_CMDS.includes(value.cmd)) {
+      return this.handleApprovalAction(value, ctx);
+    }
     switch (value.cmd) {
       case 'ls.file':
         await this.cardLsFile(value.path, ctx);
@@ -724,14 +755,6 @@ export class CommandRouter {
         // 调 updateCardInPlace → Feishu API 乱序到达导致 toggle 卡死。
         // 2026-07-18: 返回 enqueueConfigAction 的结果以支持 toast 响应
         return this.enqueueConfigAction(value, ctx);
-      case 'approval.respond':
-      case 'approval.toggle':
-      case 'approval.answer':
-      case 'approval.answerSubmit':
-      case 'approval.answerCustom':
-      case 'approval.answerNote':
-      case 'approval.planFeedback':
-        return this.handleApprovalAction(value, ctx);
       case 'codex.compact':
         await this.bridge.handleCodexCompact(value, ctx);
         return;
@@ -1454,6 +1477,66 @@ export class CommandRouter {
     };
   }
   /**
+   * W2.8 单源：重建 order/ws 列表卡（不投递，card 进 callback 响应体用）。
+   */
+  private rebuildListCard(
+    kind: 'order' | 'ws',
+    offset: number,
+    ctx: CommandContext,
+  ): object | undefined {
+    return kind === 'order'
+      ? this.cmdOrder([], ctx, offset).card
+      : this.cmdWs([], ctx, offset).card;
+  }
+
+  /**
+   * W2.8 单源：「重建列表卡 → updateCardInPlace」原地刷新骨架（列表卡删除/
+   * 翻页/移除/排序动作共用）。返回重建后的卡片；无卡时返回 undefined 且跳过更新。
+   */
+  private async refreshListCard(
+    kind: 'order' | 'ws',
+    value: { offset?: number },
+    ctx: CommandContext,
+  ): Promise<object | undefined> {
+    const card = this.rebuildListCard(kind, payloadOffset(value), ctx);
+    if (!card) return undefined;
+    await this.bridge.updateCardInPlace(card, ctx);
+    return card;
+  }
+
+  /**
+   * W2.8 单源：order 三个 input handler（aliasInput/aliasRemove/textInput）
+   * 的公共骨架——校验 orderId → reload+find → mutate → 成功后 toast + raw 卡。
+   * mutate 返回 error 时仅回 error toast，不重渲染。
+   * 注意：本 helper 只服务「toast + card 进响应体」语义（飞书需用响应体原地
+   * 替换 pre-click 编辑卡）；updateCardInPlace 原地刷新走 refreshListCard。
+   */
+  private async mutateOrderAndRefreshCard(
+    value: { orderId?: string; offset?: number },
+    ctx: CommandContext,
+    opts: { missingToast: string },
+    mutate: (order: OrderEntry) => { ok: true; toast: string } | { ok: false; error: string },
+  ): Promise<CardActionResponse | void> {
+    if (!value.orderId) {
+      return { toast: { type: 'error', content: CARD_PAYLOAD_MISSING } };
+    }
+    this.orderStore.reload();
+    const order = this.orderStore.get().find((o) => o.id === value.orderId);
+    if (!order) {
+      return { toast: { type: 'error', content: opts.missingToast } };
+    }
+    const outcome = mutate(order);
+    if (!outcome.ok) {
+      return { toast: { type: 'error', content: outcome.error } };
+    }
+    const result = this.cmdOrder([], ctx, payloadOffset(value));
+    return {
+      toast: { type: 'success', content: outcome.toast },
+      card: { type: 'raw', data: result.card! },
+    };
+  }
+
+  /**
    * Handle order.delete: remove the order and update card in place.
    */
   private async handleOrderDelete(
@@ -1474,9 +1557,7 @@ export class CommandRouter {
     this.orderStore.remove(orderId);
 
     // Refresh the order list and update card in place, preserving current page
-    const currentOffset = Math.max(0, Math.trunc(Number(value.offset) || 0));
-    const result = this.cmdOrder([], ctx, currentOffset);
-    await this.bridge.updateCardInPlace(result.card!, ctx);
+    await this.refreshListCard('order', value, ctx);
 
     return { toast: { type: 'success', content: '已删除指令' } };
   }
@@ -1489,10 +1570,8 @@ export class CommandRouter {
     value: CardActionPayload,
     ctx: CommandContext,
   ): Promise<CardActionResponse> {
-    const offset = Math.max(0, Math.trunc(Number(value.offset) || 0));
     // cmdOrder internally clamps stale/out-of-range offsets
-    const result = this.cmdOrder([], ctx, offset);
-    await this.bridge.updateCardInPlace(result.card!, ctx);
+    await this.refreshListCard('order', value, ctx);
     return { toast: { type: 'success', content: '' } };
   }
 
@@ -1518,7 +1597,7 @@ export class CommandRouter {
     },
   ): Promise<CardActionResponse | void> {
     const orderId = value.orderId;
-    const offset = Math.max(0, Math.trunc(Number(value.offset) || 0));
+    const offset = payloadOffset(value);
     if (!orderId) {
       return { toast: { type: 'error', content: CARD_PAYLOAD_MISSING } };
     }
@@ -1609,37 +1688,27 @@ export class CommandRouter {
     },
     ctx: CommandContext,
   ): Promise<CardActionResponse | void> {
-    const orderId = value.orderId;
-    const offset = Math.max(0, Math.trunc(Number(value.offset) || 0));
     const name = value.inputValue ?? (value.formValue?.['aliasName'] as string | undefined);
-    if (!orderId) {
-      return { toast: { type: 'error', content: CARD_PAYLOAD_MISSING } };
-    }
-    this.orderStore.reload();
-    const order = this.orderStore.get().find((o) => o.id === orderId);
-    if (!order) {
-      return { toast: { type: 'error', content: '指令不存在或已被删除' } };
-    }
-    const trimmed = name?.trim() ?? '';
-    // 变更前快照旧别名：setAlias 会原地变异 order 对象（delete entry.alias），
-    // 删除后 order.alias 已为 undefined，直接用会让成功文案显示 `$undefined`。
-    const prevAlias = order.alias;
-    try {
-      this.orderStore.setAlias(order.id, trimmed === '' ? undefined : trimmed);
-    } catch (err) {
-      return { toast: { type: 'error', content: (err as Error).message } };
-    }
-    // 成功：重渲染列表卡（保持页码）。必须把 card 放进 callback 响应体让飞书
-    // 原地替换 pre-click 编辑卡——toast-only 响应会停留在编辑界面（飞书保留
-    // 点击前那张卡），见 handleQueueInput 同款注释。
-    const result = this.cmdOrder([], ctx, offset);
-    return {
-      toast: {
-        type: 'success',
-        content: trimmed === '' ? `✅ 已移除别名 $${prevAlias ?? ''}` : `✅ 已绑定别名 $${trimmed}`,
+    return this.mutateOrderAndRefreshCard(
+      value,
+      ctx,
+      { missingToast: '指令不存在或已被删除' },
+      (order) => {
+        const trimmed = name?.trim() ?? '';
+        // 变更前快照旧别名：setAlias 会原地变异 order 对象（delete entry.alias），
+        // 删除后 order.alias 已为 undefined，直接用会让成功文案显示 `$undefined`。
+        const prevAlias = order.alias;
+        try {
+          this.orderStore.setAlias(order.id, trimmed === '' ? undefined : trimmed);
+        } catch (err) {
+          return { ok: false as const, error: (err as Error).message };
+        }
+        return {
+          ok: true as const,
+          toast: trimmed === '' ? `✅ 已移除别名 $${prevAlias ?? ''}` : `✅ 已绑定别名 $${trimmed}`,
+        };
       },
-      card: { type: 'raw', data: result.card! },
-    };
+    );
   }
 
   /** Handle order.aliasRemove: 删除某条指令的别名并原地重渲染列表卡。 */
@@ -1647,27 +1716,21 @@ export class CommandRouter {
     value: { orderId?: string; offset?: number },
     ctx: CommandContext,
   ): Promise<CardActionResponse | void> {
-    const orderId = value.orderId;
-    const offset = Math.max(0, Math.trunc(Number(value.offset) || 0));
-    if (!orderId) {
-      return { toast: { type: 'error', content: CARD_PAYLOAD_MISSING } };
-    }
-    this.orderStore.reload();
-    const order = this.orderStore.get().find((o) => o.id === orderId);
-    if (!order || !order.alias) {
-      return { toast: { type: 'error', content: '指令不存在或没有别名' } };
-    }
-    // 变更前快照旧别名：setAlias(undefined) 会原地变异 order（delete alias），
-    // 删除后 order.alias 已为 undefined，直接拼会让成功文案显示 `$undefined`。
-    const removedAlias = order.alias;
-    this.orderStore.setAlias(order.id, undefined);
-    // 必须把 card 放进 callback 响应体让飞书原地替换 pre-click 卡片，否则删除
-    // 后卡片停留在旧状态（别名视觉上未消失）。同 handleQueueInput 语义。
-    const result = this.cmdOrder([], ctx, offset);
-    return {
-      toast: { type: 'success', content: `✅ 已移除别名 $${removedAlias}` },
-      card: { type: 'raw', data: result.card! },
-    };
+    return this.mutateOrderAndRefreshCard(
+      value,
+      ctx,
+      { missingToast: '指令不存在或没有别名' },
+      (order) => {
+        if (!order.alias) {
+          return { ok: false as const, error: '指令不存在或没有别名' };
+        }
+        // 变更前快照旧别名：setAlias(undefined) 会原地变异 order（delete alias），
+        // 删除后 order.alias 已为 undefined，直接拼会让成功文案显示 `$undefined`。
+        const removedAlias = order.alias;
+        this.orderStore.setAlias(order.id, undefined);
+        return { ok: true as const, toast: `✅ 已移除别名 $${removedAlias}` };
+      },
+    );
   }
 
   /**
@@ -1713,36 +1776,26 @@ export class CommandRouter {
     },
     ctx: CommandContext,
   ): Promise<CardActionResponse | void> {
-    const orderId = value.orderId;
-    const offset = Math.max(0, Math.trunc(Number(value.offset) || 0));
     const raw = value.inputValue ?? (value.formValue?.['text'] as string | undefined);
-    if (!orderId) {
-      return { toast: { type: 'error', content: CARD_PAYLOAD_MISSING } };
-    }
-    this.orderStore.reload();
-    const order = this.orderStore.get().find((o) => o.id === orderId);
-    if (!order) {
-      return { toast: { type: 'error', content: '指令不存在或已被删除' } };
-    }
-    let updated: OrderEntry | undefined;
-    try {
-      updated = this.orderStore.updateText(order.id, raw ?? '');
-    } catch (err) {
-      return { toast: { type: 'error', content: (err as Error).message } };
-    }
-    if (!updated) {
-      // reload + find 后 updateText 不应返回 undefined；防御性兜底（如并发删除）。
-      return { toast: { type: 'error', content: '指令不存在或已被删除' } };
-    }
-    // 成功：重渲染列表卡（保持页码）。必须把 card 放进 callback 响应体让飞书
-    // 原地替换 pre-click 编辑卡——toast-only 响应会停留在编辑界面（飞书保留
-    // 点击前那张卡），见 handleQueueInput / handleOrderAliasInput 同款注释。
-    const result = this.cmdOrder([], ctx, offset);
-    const preview = updated.text.length > 50 ? updated.text.slice(0, 50) + '...' : updated.text;
-    return {
-      toast: { type: 'success', content: `✅ 已更新指令: ${preview}` },
-      card: { type: 'raw', data: result.card! },
-    };
+    return this.mutateOrderAndRefreshCard(
+      value,
+      ctx,
+      { missingToast: '指令不存在或已被删除' },
+      (order) => {
+        let updated: OrderEntry | undefined;
+        try {
+          updated = this.orderStore.updateText(order.id, raw ?? '');
+        } catch (err) {
+          return { ok: false as const, error: (err as Error).message };
+        }
+        if (!updated) {
+          // reload + find 后 updateText 不应返回 undefined；防御性兜底（如并发删除）。
+          return { ok: false as const, error: '指令不存在或已被删除' };
+        }
+        const preview = updated.text.length > 50 ? updated.text.slice(0, 50) + '...' : updated.text;
+        return { ok: true as const, toast: `✅ 已更新指令: ${preview}` };
+      },
+    );
   }
 
   /**
@@ -1781,11 +1834,7 @@ export class CommandRouter {
     }
 
     // Refresh the /ws list card in place so "recent" sort is immediately visible
-    const currentOffset = Math.max(0, Math.trunc(Number(value.offset) || 0));
-    const refreshed = this.cmdWs([], ctx, currentOffset);
-    if (refreshed.card) {
-      await this.bridge.updateCardInPlace(refreshed.card, ctx);
-    }
+    await this.refreshListCard('ws', value, ctx);
 
     // Toast feedback (suppress text when a persistent message was already sent)
     return {
@@ -1816,9 +1865,7 @@ export class CommandRouter {
 
     // Rebuild the /ws list card and update it in place, preserving the page
     // the user was on when they clicked 删除.
-    const currentOffset = Math.max(0, Math.trunc(Number(value.offset) || 0));
-    const refreshed = this.cmdWs([], ctx, currentOffset);
-    await this.bridge.updateCardInPlace(refreshed.card!, ctx);
+    await this.refreshListCard('ws', value, ctx);
 
     return { toast: { type: 'success', content: `已删除 workspace "${name}"` } };
   }
@@ -1831,10 +1878,8 @@ export class CommandRouter {
     value: CardActionPayload,
     ctx: CommandContext,
   ): Promise<CardActionResponse> {
-    const offset = Math.max(0, Math.trunc(Number(value.offset) || 0));
     // cmdWs internally clamps stale/out-of-range offsets
-    const result = this.cmdWs([], ctx, offset);
-    await this.bridge.updateCardInPlace(result.card!, ctx);
+    await this.refreshListCard('ws', value, ctx);
     return { toast: { type: 'success', content: '' } };
   }
 
@@ -1850,8 +1895,7 @@ export class CommandRouter {
     const current = this.wsSortPreference.get(userId) ?? 'recent';
     const next = current === 'recent' ? 'alpha' : 'recent';
     this.wsSortPreference.set(userId, next);
-    const result = this.cmdWs([], ctx, 0);
-    await this.bridge.updateCardInPlace(result.card!, ctx);
+    await this.refreshListCard('ws', { offset: 0 }, ctx);
     const nextLabel = next === 'recent' ? '🕐 最近使用' : '🔤 字母顺序';
     return {
       toast: { type: 'success', content: `已切换为 ${nextLabel}` },
@@ -2082,77 +2126,11 @@ export class CommandRouter {
   /** 设置嵌套属性值（仅修改内存对象，不写盘） */
   /** 在 pendingConfig 上按 dot-separated key 设置嵌套值（config 卡片编辑用）。 */
   setNestedValue(target: AppConfig, key: string, value: unknown): void {
-    // Path mapping 共用 config 模块的 mapAgentKey（G11 Inconsistency 修复）：
-    // pi.xxx/codex.xxx/opencode.xxx → agents.xxx，claude.xxx 保持顶层
-    const mappedKey = mapAgentKey(key);
-    const parts = mappedKey.split('.');
-    // 复用 config 模块的 walkNestedContainer（含 __proto__/prototype/constructor
-    // 守卫与中间段补 {}），router 只保留 value=undefined → delete 分支。
-    const container = walkNestedContainer(target, parts, true);
-    const lastPart = parts[parts.length - 1];
-    assertSafeKeyPart(lastPart);
-    if (value === undefined) {
-      // value=undefined 表示"删除键"（如清空 reasoningEffort），
-      // 不能写成 undefined 值——diffConfig 会把 undefined 转成字面量 "undefined"
-      // 写入 config.yaml 并透传给 codex（ReasoningEffort::Custom("undefined")）。
-      delete container![lastPart];
-    } else {
-      container![lastPart] = value;
-    }
+    setNestedValue(target, key, value);
   }
 
-  /** 对比原始 config 与 pendingConfig，返回变化的 key→string 映射 */
-  /** config diff（public：测试直接调用，替代 as unknown as）。 */
   diffConfig(original: AppConfig, pending: AppConfig): Record<string, string | undefined> {
-    const updates: Record<string, string | undefined> = {};
-    this.collectDiff('', original, pending, updates);
-    return updates;
-  }
-
-  /** 递归收集差异 */
-  private collectDiff(
-    prefix: string,
-    original: unknown,
-    pending: unknown,
-    result: Record<string, string | undefined>,
-  ): void {
-    if (original === pending) return;
-    // 如果 pending 是对象（非 null）但 original 不是对象，
-    // 把 original 当作空对象递归进入 pending 内部，
-    // 避免把整个对象转成 "[object Object]" 字符串
-    if (
-      typeof pending === 'object' &&
-      pending !== null &&
-      (typeof original !== 'object' || original === null)
-    ) {
-      const pendObj = pending as Record<string, unknown>;
-      for (const k of Object.keys(pendObj)) {
-        const newKey = prefix ? `${prefix}.${k}` : k;
-        this.collectDiff(newKey, undefined, pendObj[k], result);
-      }
-      return;
-    }
-    if (
-      typeof original !== 'object' ||
-      typeof pending !== 'object' ||
-      original === null ||
-      pending === null
-    ) {
-      // 叶子节点，记录差异
-      const key = prefix || 'root';
-      // pending 为 undefined 表示键被删除，必须保留 undefined 语义，
-      // 不能 String(pending) 成 "undefined"
-      result[key] = pending === undefined ? undefined : String(pending);
-      return;
-    }
-    // 两者都是对象，递归比较
-    const origObj = original as Record<string, unknown>;
-    const pendObj = pending as Record<string, unknown>;
-    const allKeys = new Set([...Object.keys(origObj), ...Object.keys(pendObj)]);
-    for (const k of allKeys) {
-      const newKey = prefix ? `${prefix}.${k}` : k;
-      this.collectDiff(newKey, origObj[k], pendObj[k], result);
-    }
+    return diffConfig(original, pending);
   }
 
   /**
@@ -3854,17 +3832,6 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
     // Slice: distribute offset across agent runs first, then bash runs
     const elements: object[] = [];
 
-    // Page info
-    if (totalPages > 1) {
-      elements.push({
-        tag: 'div',
-        text: {
-          tag: 'lark_md',
-          content: `**第 ${currentPage}/${totalPages} 页** （共 ${totalCount} 项）`,
-        },
-      });
-    }
-
     let remaining = pageSize;
     let skipped = safeOffset;
 
@@ -3933,37 +3900,20 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
       }
     }
 
-    // Pagination buttons
+    // Pagination bar（W2.9 复用 paginationBar：safeOffset 已对齐页边界，
+    // offset±pageSize 与原先 currentPage±1 的页码换算等价）
     if (totalPages > 1) {
-      const paginationButtons: object[] = [];
-      if (currentPage > 1) {
-        const prevOffset = (currentPage - 2) * pageSize;
-        paginationButtons.push({
-          tag: 'button',
-          text: { tag: 'plain_text', content: '◀ 上一页' },
-          type: 'default',
-          size: 'small',
-          behaviors: [{ type: 'callback', value: { cmd: 'active.page', offset: prevOffset } }],
-        });
-      }
-      if (currentPage < totalPages) {
-        const nextOffset = currentPage * pageSize;
-        paginationButtons.push({
-          tag: 'button',
-          text: { tag: 'plain_text', content: '下一页 ▶' },
-          type: 'primary',
-          size: 'small',
-          behaviors: [{ type: 'callback', value: { cmd: 'active.page', offset: nextOffset } }],
-        });
-      }
-      elements.push({
-        tag: 'column_set',
-        columns: paginationButtons.map((btn) => ({
-          tag: 'column',
-          width: 'auto',
-          elements: [btn],
-        })),
-      });
+      elements.push(
+        paginationBar({
+          cmd: 'active.page',
+          offset: safeOffset,
+          pageSize,
+          total: totalCount,
+          label: `**第 ${currentPage}/${totalPages} 页** （共 ${totalCount} 项）`,
+          prevText: '◀ 上一页',
+          nextText: '下一页 ▶',
+        }),
+      );
     }
 
     const card = {

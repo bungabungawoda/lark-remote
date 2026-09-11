@@ -2,6 +2,7 @@ import { describe, it, expect, vi } from 'vitest';
 import { KimiConfigBuilder } from './kimi.js';
 import { buildConfigCardFromTabs } from './common/render.js';
 import type { AppConfig } from '../../config/index.js';
+import { expectNoV1ActionContainer } from '../../../tests/lib/card-view.js';
 
 vi.mock('../../config/kimi-config.js', () => ({
   loadKimiConfig: vi.fn(() => ({
@@ -190,7 +191,7 @@ describe('KimiConfigBuilder', () => {
       // Must be CardKit 2.0
       expect(cardStr).toContain('"schema":"2.0"');
       // 2.0 cards MUST NOT mix in 1.x `tag:"action"` containers (200861 root cause).
-      expect(cardStr).not.toMatch(/"tag"\s*:\s*"action"[^}]*"actions"/);
+      expectNoV1ActionContainer(cardStr);
       // Config callbacks use 2.0 behaviors
       expect(cardStr).toContain('"cmd":"config.');
       // ACP fields must appear in card

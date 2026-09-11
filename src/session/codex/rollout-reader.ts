@@ -409,6 +409,25 @@ export function listCodexRollouts(opts: ListCodexRolloutsOptions = {}): {
 }
 
 /**
+ * W2.6 单源：三处（readCodexSessionContent / readCodexSessionSummary /
+ * isCodexSessionActive）共用的「索引查找 + miss 强制刷新重查」。
+ * cwd 守卫与 subagent 过滤语义各异，留在调用方。
+ */
+function resolveRolloutEntry(sessionId: string, codexHome: string): SessionIndexEntry | undefined {
+  // P2-4: Use session index for direct file lookup
+  let index = getSessionIndex(codexHome);
+  let entry = index.get(sessionId);
+  // P3-2: On miss, the index may be stale (a rollout file created after the
+  // cache was built but within the 5s TTL). Force a refresh and recheck so a
+  // brand-new session is found without waiting for TTL expiry.
+  if (!entry) {
+    index = getSessionIndex(codexHome, true);
+    entry = index.get(sessionId);
+  }
+  return entry;
+}
+
+/**
  * Read the full content of a specific session by its threadId.
  *
  * P2-4: Uses session index for O(1) file lookup instead of walking the
@@ -427,16 +446,7 @@ export function readCodexSessionContent(
 ): SessionContent {
   const codexHome = resolveCodexHome(opts.codexHome);
 
-  // P2-4: Use session index for direct file lookup
-  let index = getSessionIndex(codexHome);
-  let entry = index.get(sessionId);
-  // P3-2: On miss, the index may be stale (a rollout file created after the
-  // cache was built but within the 5s TTL). Force a refresh and recheck so a
-  // brand-new session is found without waiting for TTL expiry.
-  if (!entry) {
-    index = getSessionIndex(codexHome, true);
-    entry = index.get(sessionId);
-  }
+  const entry = resolveRolloutEntry(sessionId, codexHome);
   if (!entry) {
     return { events: [] };
   }
@@ -485,12 +495,7 @@ export function readCodexSessionSummary(
 ): SessionSummary {
   const codexHome = resolveCodexHome(opts.codexHome);
 
-  let index = getSessionIndex(codexHome);
-  let entry = index.get(sessionId);
-  if (!entry) {
-    index = getSessionIndex(codexHome, true);
-    entry = index.get(sessionId);
-  }
+  const entry = resolveRolloutEntry(sessionId, codexHome);
   if (!entry) {
     return {};
   }
@@ -533,14 +538,7 @@ export function isCodexSessionActive(
   const threshold = opts.activeThresholdMs ?? STALE_MS;
 
   // P2-4: Use session index for direct file lookup + mtime check
-  let index = getSessionIndex(codexHome);
-  let entry = index.get(sessionId);
-  // P3-2: On miss, refresh the index in case the session file was created
-  // after the cache was built (within the 5s TTL). See readCodexSessionContent.
-  if (!entry) {
-    index = getSessionIndex(codexHome, true);
-    entry = index.get(sessionId);
-  }
+  const entry = resolveRolloutEntry(sessionId, codexHome);
   if (!entry) {
     return false;
   }

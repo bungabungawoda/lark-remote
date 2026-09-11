@@ -7,17 +7,12 @@ import { getLogger } from '../logger/index.js';
  *
  * @param filePath - Path to the JSON file
  * @param fallback - Value to return if file doesn't exist or is corrupted
- * @param parseFn - Optional custom parser (defaults to JSON.parse)
  */
-export function loadJsonFile<T>(
-  filePath: string,
-  fallback: T,
-  parseFn: (raw: string) => T = JSON.parse,
-): T {
+export function loadJsonFile<T>(filePath: string, fallback: T): T {
   try {
     if (!fs.existsSync(filePath)) return fallback;
     const raw = fs.readFileSync(filePath, 'utf-8');
-    return parseFn(raw);
+    return JSON.parse(raw) as T;
   } catch (err) {
     getLogger().warn(`[persistence] failed to load ${filePath}, using fallback:`, err);
     return fallback;

@@ -20,6 +20,7 @@ import os from 'node:os';
 import * as jsonlModule from '../../../src/session/common/jsonl.js';
 import { listClaudeSessions } from '../../../src/session/claude/sessions.js';
 import { PiSessionReader } from '../../../src/session/pi/sessions.js';
+import { encodeClaudeProjectDir } from '../../lib/session-fixtures.js';
 
 const { mockLogger } = vi.hoisted(() => ({
   mockLogger: {
@@ -50,7 +51,7 @@ afterEach(() => {
 
 /** Write a fake Claude session jsonl under <tmpDir>/<encodedCwd>/ */
 function writeClaudeSession(cwd: string, userLines: string[], paddingLineCount: number): string {
-  const encoded = cwd.replace(/\//g, '-');
+  const encoded = encodeClaudeProjectDir(cwd);
   const dir = path.join(tmpDir, 'claude', encoded);
   fs.mkdirSync(dir, { recursive: true });
   const sessionId = `sess-${Math.random().toString(36).slice(2, 8)}`;
@@ -115,7 +116,7 @@ describe('P2-3: summarizeSession uses streaming early-stop (claude)', () => {
     const spy = vi.spyOn(jsonlModule, 'readJsonlLines');
 
     const cwd = '/tmp/p23-claude-no-user';
-    const encoded = cwd.replace(/\//g, '-');
+    const encoded = encodeClaudeProjectDir(cwd);
     const dir = path.join(tmpDir, 'claude', encoded);
     fs.mkdirSync(dir, { recursive: true });
     const sessionId = 'no-user-sess';

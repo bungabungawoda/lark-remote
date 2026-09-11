@@ -9,9 +9,8 @@ import { getLogger } from '../../logger/index.js';
 import { ProcessStopper } from './process-stopper.js';
 import { SpawnHeartbeat } from './spawn-heartbeat.js';
 import { createJSONLStream } from './jsonl-stream.js';
-import { authErrorEvent, syntheticInitEvent } from './runner-utils.js';
 import { DEFAULT_STOP_GRACE_MS } from '../../config/index.js';
-import type { AgentEvent, SpawnOptions } from '../types.js';
+import type { SpawnOptions } from '../types.js';
 
 /**
  * Magic-number constants (Clean Code P3-1, G25 Replace Magic Numbers with
@@ -20,31 +19,30 @@ import type { AgentEvent, SpawnOptions } from '../types.js';
  */
 /** Max bytes of stderr retained for the result-event error message. */
 const STDERR_TAIL_BYTES = 4000;
-/** Max bytes of stderr surfaced in the non-zero-exit log line. */
-const STDERR_LOG_TAIL = 500;
 /** Error thrown by `spawnChild` when the child process fails to spawn. */
 class SpawnChildError extends Error {}
 /**
  * Timeout (ms) for awaiting the spawn 'error' event when proc.pid === undefined
  * (review P2-11). Node guarantees 'error' for ENOENT/EACCES, but some binaries
- * fail silently; the race keeps a silent failure from hanging run() forever.
- * Matches the 5s race kimi's override used before it was hoisted to the base.
+ * fail silently; the race keeps a silent failure from hanging the spawn lead-in
+ * forever. Matches the 5s race kimi's override used before it was hoisted to
+ * the base.
  */
 const SPAWN_ERROR_TIMEOUT_MS = 5000;
 
 /**
  * 进程级退出监听单例分发（P1-1 修复，2026-08-02）。
  *
- * 背景：5 个 runner（claude/codex/opencode/pi/kimi）的 registerExitHandlers 曾是
- * 同构复制，每个实例 process.on('exit'|'SIGINT'|'SIGTERM') 注册 3 个永不移除的
- * 闭包（捕获整个 runner 实例 + sessionReader + pidFilePath）。Bridge 每次 run
- * 结束淘汰 (cwd, kind) 槽位、下次 run cache miss 新建实例再注册 → 约第 4 个 run
- * 起 MaxListenersExceededWarning 刷屏，历史实例被闭包永久持有，内存无界增长。
+ * 背景：各 agent runner 的 registerExitHandlers 曾是同构复制，每个实例
+ * process.on('exit'|'SIGINT'|'SIGTERM') 注册 3 个永不移除的闭包（捕获整个
+ * runner 实例 + sessionReader + pidFilePath）。Bridge 每次 run 结束淘汰
+ * (cwd, kind) 槽位、下次 run cache miss 新建实例再注册 → 约第 4 个 run 起
+ * MaxListenersExceededWarning 刷屏，历史实例被闭包永久持有，内存无界增长。
  *
- * 现在：进程级监听只注册一次，内部 Set<SpawningRunner> 管理注册实例；
- * registerExitHandlers() 只把实例加入集合（幂等），桥接层在淘汰槽位时调
- * unregisterExitHandlers() 移除实例，让 runner 可被 GC。SIGINT/SIGTERM 语义
- * 保持原样：cleanup 全部已注册实例后 exit 130/143。
+ * 现在：进程级监听只注册一次，内部 Set 管理注册实例；registerExitHandlers()
+ * 只把实例加入集合（幂等），桥接层在淘汰槽位时调 unregisterExitHandlers()
+ * 移除实例，让 runner 可被 GC。SIGINT/SIGTERM 语义保持原样：cleanup 全部
+ * 已注册实例后 exit 130/143。
  */
 /**
  * Exit-cleanup contract: anything that spawns a child process group and wants
@@ -90,48 +88,22 @@ export function unregisterExitCleanup(handler: ExitCleanupHandler): void {
 }
 
 /**
- * Stateful translator contract for runners that need per-run translation state
- * (codex/opencode/pi/kimi). Subclasses return an instance from
- * `createTranslator(opts)`; the base `run()` loop calls `translate(raw)` per
- * event, then folds terminal state into `buildResultEvent(...)` at the end.
+ * Abstract base class encapsulating the spawn lifecycle shared by agent
+ * runners: spawn lead-in (pid-undefined check, pid file write, heartbeat,
+ * stderr tail accumulation), user-initiated stop, orphan kill with pid
+ * identity verification, and process-exit cleanup registration.
  *
- * `translate()` returns `AgentEvent | AgentEvent[] | null` (single event,
- * multiple events, or filtered-out). `isTerminal()` / `finish()` / `getTerminalError()`
- * / `hasAgentTerminalError()` are folded into the unified result event at the
- * end of `run()`.
+ * The sole production subclass is ClaudeSession (src/runner/claude/session.ts),
+ * a long-lived interactive session that overrides `run()` with its own
+ * per-turn consumption loop and reads `spawnStderr` / `stoppedByUser` /
+ * `commandNotFoundSeen` to build its terminal result events.
  *
- * `getSessionId()` / `getLastUsage()` are optional because ClaudeRunner uses
- * the stateless `translate()` hook (no translator object) and reads neither.
- */
-export interface RunnerTranslator {
-  translate(raw: unknown): AgentEvent | AgentEvent[] | null;
-  isTerminal(): boolean;
-  finish(reason: 'failed' | 'interrupted' | 'timeout'): void;
-  getTerminalError(): string | undefined;
-  hasAgentTerminalError(): boolean;
-  getSessionId?(): string | undefined;
-  getLastUsage?(): Record<string, unknown> | undefined;
-}
-
-/**
- * Abstract base class for runners that spawn a child process per turn.
- *
- * Encapsulates the spawn + completion + cleanup orchestration shared by
- * Claude/Pi runners. Subclasses override:
- *   - buildArgv(opts)              → agent-specific CLI flags (required)
- *   - createTranslator(opts)       → stateful translator (pi)
- *     OR translate(raw, ctx)       → stateless passthrough (claude)
+ * Subclasses override:
+ *   - buildArgv(opts) → agent-specific CLI flags (required)
  *
  * Optional hooks (with sensible defaults):
- *   - getStdio()                   → stdio config (default ['ignore','pipe','pipe'])
- *   - createStreamReader(stdout)   → JSONL or readline parser (default createJSONLStream)
- *   - awaitSpawnError(proc)        → wait for spawn error (default once('error'))
- *
- * The base class always emits a unified result event at the end of `run()`
- * via `buildResultEvent(...)` — never throws on non-zero exit. This matches
- * the contract pinned by the agent subclass anchors and the bridge's
- * `runAgentStreamToEnd` error handling (which accepts both thrown errors and
- * yielded error-result events).
+ *   - getStdio()                 → stdio config (default ['ignore','pipe','pipe'])
+ *   - createStreamReader(stdout) → JSONL or readline parser (default createJSONLStream)
  */
 export abstract class SpawningRunner {
   protected currentProcess: ChildProcess | null = null;
@@ -146,30 +118,20 @@ export abstract class SpawningRunner {
    * Log prefix used in all operational log lines emitted by this runner
    * (spawn, pid file, non-zero exit, stderr, killOrphan, stop cleanup) and
    * as the SpawnHeartbeat label. Subclasses pass their own tag (e.g.
-   * 'claude-runner') so operators can grep agent-specific logs; the default
-   * 'spawning-runner' keeps the base-class anchor tests' neutral identity.
+   * 'claude-runner') so operators can grep agent-specific logs.
    */
   protected readonly logTag: string;
   /**
-   * The `message` argument from the most recent `run(message, opts)` call.
-   * Set in `run()` before `buildArgv(opts)` is invoked so subclasses can
-   * embed the message in their agent-specific argv (e.g. claude's `-p
-   * <message>`). This avoids changing the `buildArgv(opts)` signature,
-   * which would break existing anchor subclasses.
-   */
-  protected currentMessage: string = '';
-  /**
    * Whether the current run was interrupted by user-initiated stop().
    * Set to true by stop() when a running process is being terminated;
-   * reset to false at the top of run(). `resolveTranslatorError()` and
-   * `buildResultEvent()` read this to decide result event subtype
-   * (error vs success) and the error message precedence.
+   * subclasses reset it at the start of a turn and read it when building
+   * the terminal result event (interrupted vs error precedence).
    */
   protected stoppedByUser: boolean = false;
   /**
    * §4.4 win32 command-not-found 嗅探嫌疑标记：stderr 命中特征行时置位，
    * 但**不**立即杀进程——agent 正常输出可能引用该错误文本（调试 Windows
-   * 报错场景），见行即杀会误杀 run。定性走双条件：run 收尾时「标记在 +
+   * 报错场景），见行即杀会误杀 run。定性走双条件：子类收尾时「标记在 +
    * 非零退出」才判 command-not-found；真挂起由既有 grace/超时兜底。
    */
   protected commandNotFoundSeen = false;
@@ -217,8 +179,8 @@ export abstract class SpawningRunner {
   // --- Hooks (subclasses override as needed) ---
 
   /**
-   * stdio config for spawn. Default: stdin ignored (claude/kimi/pi pass the
-   * prompt via argv).
+   * stdio config for spawn. Default: stdin ignored (agents pass the prompt
+   * via argv).
    */
   protected getStdio(): ('ignore' | 'pipe')[] {
     return ['ignore', 'pipe', 'pipe'];
@@ -226,7 +188,7 @@ export abstract class SpawningRunner {
 
   /**
    * Create an async iterator over the child's stdout. Default: createJSONLStream
-   * (claude/kimi/pi) with P1-4 backpressure enabled (pauseThreshold=100).
+   * with P1-4 backpressure enabled (pauseThreshold=100).
    */
   protected createStreamReader(stdout: Readable): AsyncGenerator<unknown> {
     return createJSONLStream(stdout, {
@@ -239,21 +201,13 @@ export abstract class SpawningRunner {
   }
 
   /**
-   * Create a stateful translator for this run. Default: null (uses the
-   * stateless passthrough). pi overrides to return its translator instance.
-   */
-  protected createTranslator(_opts: SpawnOptions): RunnerTranslator | null {
-    return null;
-  }
-
-  /**
    * Await the spawn 'error' event when proc.pid === undefined. Races a
    * finite timeout (review P2-11) against the 'error' event: Node guarantees
    * 'error' for ENOENT/EACCES, but some binaries fail silently without ever
-   * emitting it (kimi's CLI is documented to do so). Without the race, run()
-   * hangs forever → the workspace serial queue never settles → permanent
-   * deadlock, and /stop can't recover (ProcessStopper returns early when
-   * pid === undefined). The timeout keeps the deadlock bounded.
+   * emitting it. Without the race, the spawn lead-in hangs forever → the
+   * workspace serial queue never settles → permanent deadlock, and /stop
+   * can't recover (ProcessStopper returns early when pid === undefined).
+   * The timeout keeps the deadlock bounded.
    */
   protected awaitSpawnError(proc: ChildProcess): Promise<Error | undefined> {
     return Promise.race([
@@ -273,12 +227,7 @@ export abstract class SpawningRunner {
    *
    * Throws a `SpawnChildError` (carrying the user-facing spawn failure
    * message) when the process fails to spawn (binary missing / pid undefined).
-   * On success returns the spawned child plus the accumulated stderr tail.
-   *
-   * Shared by the base `run()` (yields an authErrorEvent on failure) and
-   * ClaudeSession's `doStartProcess` (returns the error message), which would
-   * otherwise duplicate ~60 lines of spawn lead-in with two copies of the
-   * STDERR_TAIL_BYTES cap.
+   * On success returns the spawned child.
    */
   protected async spawnChild(opts: SpawnOptions): Promise<ChildProcess> {
     const proc = spawnProcess(this.binary, this.buildArgv(opts), {
@@ -334,7 +283,7 @@ export abstract class SpawningRunner {
         this.spawnStderr = (this.spawnStderr + '\n' + text).trim().slice(-STDERR_TAIL_BYTES);
         // §4.4 win32 command-not-found 嗅探：经 cmd 垫片启动失败不是 spawn 的
         // ENOENT，而是 stderr 的 "is not recognized..." 行。命中只记嫌疑标记
-        // （双条件之一），不立即杀——定性由 run() 收尾的「标记 + 非零退出」
+        // （双条件之一），不立即杀——定性由子类收尾的「标记 + 非零退出」
         // 双条件完成；子进程真挂起由既有 grace/超时看门狗兜底。
         if (isWindowsCommandNotFoundLine(text)) {
           this.commandNotFoundSeen = true;
@@ -352,178 +301,10 @@ export abstract class SpawningRunner {
   }
 
   /**
-   * Spawn the agent binary with argv built by buildArgv(opts), iterate its
-   * stdout stream, and yield translated events. Always emits a unified
-   * result event at the end via `buildResultEvent(...)` — never throws on
-   * non-zero exit (the bridge accepts both thrown errors and yielded
-   * error-result events, and the latter carries richer diagnostic info).
-   *
-   * Spawn failures (binary missing, pid undefined) yield an `authErrorEvent`
-   * instead of throwing, so the user sees a friendly error card.
-   */
-  async *run(message: string, opts: SpawnOptions): AsyncGenerator<AgentEvent> {
-    if (this.isRunning) {
-      getLogger().warn(`[${this.logTag}] run() called while already running, refusing`);
-      throw new Error(`${this.binary} process already running`);
-    }
-    this.stoppedByUser = false;
-    this.commandNotFoundSeen = false;
-    this.currentMessage = message;
-
-    let proc: ChildProcess;
-    try {
-      proc = await this.spawnChild(opts);
-    } catch (err) {
-      // §9.22: yield synthetic init before the error result so bridge/run-state
-      // guards don't silently drop it.
-      yield syntheticInitEvent(opts.sessionId);
-      yield authErrorEvent((err as Error).message);
-      return;
-    }
-
-    const completion = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>(
-      (resolve) => {
-        proc.once('error', (err) => {
-          this.spawnHeartbeat.clear();
-          getLogger().error(
-            `[${this.logTag}] spawn failed: ${err.message} binary=${this.binary} cwd=${opts.cwd}`,
-          );
-          // Resolve (not reject) so the unified result event is emitted
-          // via buildResultEvent instead of throwing past the finally
-          // into the bridge's catch (which would leak the pid file).
-          // P2-12: a post-spawn 'error' (e.g. kill failure, broken pipe)
-          // MUST surface as an error result, not success. Previously
-          // {code:null,signal:null} was classified as success by
-          // buildResultEvent; code=1 forces the error branch so the
-          // failure is never silently swallowed as a successful run.
-          resolve({ code: 1, signal: null });
-        });
-        proc.once('close', (code, signal) => {
-          this.spawnHeartbeat.clear();
-          resolve({ code, signal });
-        });
-      },
-    );
-
-    // Create translator (per-run state) — null for stateless passthrough
-    const translator = this.createTranslator(opts);
-
-    // Create stream reader (jsonl or readline)
-    const stream = this.createStreamReader(proc.stdout!);
-
-    try {
-      // Stream loop wrapped in try/catch so a stream error (e.g. stdout
-      // 'error' event propagated through the async generator) does not
-      // bypass the completion await and result event emission. Matches
-      // kimi's long-standing behavior; safe for all runners because the
-      // completion promise still resolves via proc 'close'.
-      try {
-        for await (const rawEvent of stream) {
-          let translated: AgentEvent | AgentEvent[] | null;
-          if (translator) {
-            // Per-event error isolation: a translator throw must not kill
-            // the stream (pi's accumulator could throw on malformed input).
-            try {
-              translated = translator.translate(rawEvent);
-            } catch (err) {
-              getLogger().warn(
-                `[${this.logTag}] translator error: ${(err as Error).message}, raw: ${JSON.stringify(rawEvent).slice(0, 100)}`,
-              );
-              continue;
-            }
-          } else {
-            translated = this.translate(rawEvent, { message, opts });
-          }
-          if (translated === null) continue;
-          if (Array.isArray(translated)) {
-            for (const e of translated) yield e;
-          } else {
-            yield translated;
-          }
-        }
-      } catch (error) {
-        getLogger().error(`[${this.logTag}] stream error: ${error}`);
-      }
-
-      const { code, signal } = await completion;
-
-      // If the stream ended before a terminal event, let the translator
-      // record its terminal state (e.g. codex `finish('failed')` stashes
-      // "stream ended before a terminal event"). The runner folds this
-      // into buildResultEvent below.
-      if (translator && !translator.isTerminal()) {
-        const reason = this.stoppedByUser ? 'interrupted' : 'failed';
-        translator.finish(reason);
-      }
-
-      // Resolve translatorError precedence (most-specific first):
-      //   - agent-reported terminal error always wins
-      //   - stream-ended-early symptom only surfaces with no external cause
-      let translatorError: string | undefined;
-      if (translator) {
-        const agentError = translator.hasAgentTerminalError();
-        const hasExternalCause =
-          this.stoppedByUser || signal !== null || (code !== null && code !== 0);
-        translatorError =
-          agentError || !hasExternalCause ? translator.getTerminalError() : undefined;
-      }
-
-      const nonUserError =
-        !this.stoppedByUser && ((code !== null && code !== 0) || signal !== null);
-
-      // §4.4 双条件定性：嗅探嫌疑标记 + 用户未停 + 非零正常退出 → command-not-found
-      const commandNotFound =
-        this.commandNotFoundSeen &&
-        !this.stoppedByUser &&
-        signal === null &&
-        code !== null &&
-        code !== 0;
-      if (commandNotFound) {
-        getLogger().error(
-          `[${this.logTag}] command not found confirmed (win32 shim): exit=${code} stderr=${this.spawnStderr.slice(-STDERR_LOG_TAIL)}`,
-        );
-      }
-
-      yield this.buildResultEvent({
-        code,
-        signal,
-        stderr: this.spawnStderr,
-        sessionId: translator?.getSessionId?.() ?? '',
-        usage: translator?.getLastUsage?.(),
-        translatorError,
-        commandNotFound,
-      });
-
-      if (nonUserError) {
-        getLogger().error(
-          `[${this.logTag}] non-zero exit code=${code} signal=${signal} stderr=${this.spawnStderr.slice(-STDERR_LOG_TAIL)}`,
-        );
-      }
-    } finally {
-      this.spawnHeartbeat.clear();
-      // P1-11: 消费者提前关闭生成器（for-await 循环体抛错/break 触发的 .return()）
-      // 会跳过 completion await 直接进 finally——此时子进程可能仍在运行。若不杀，
-      // 它会成为 stop()（currentProcess 已置 null）、killOrphan()（pid 文件已删）、
-      // exit handler（同一字段）都够不到的孤儿黑洞，且 stdout 管道背压会把它永久
-      // 阻塞。正常完成路径进程已退出，stop 是 no-op，零成本。
-      const proc = this.currentProcess;
-      if (proc && proc.exitCode === null && proc.signalCode === null) {
-        try {
-          await this.stopper.stop(proc, { immediate: true });
-        } catch {
-          /* ignore */
-        }
-      }
-      this.currentProcess = null;
-      silentlyUnlink(this.pidFilePath);
-    }
-  }
-
-  /**
    * Stop the current process if one is running. Delegates the actual
    * SIGTERM → grace → SIGKILL sequence to `this.stopper.stop(proc, opts)`
    * (see `src/runner/common/process-stopper.ts`), forwarding the `immediate`
-   * flag verbatim so all 5 subclasses inherit identical stop semantics.
+   * flag verbatim so all subclasses inherit identical stop semantics.
    */
   async stop(opts?: { immediate?: boolean }): Promise<void> {
     const proc = this.currentProcess;
@@ -641,7 +422,7 @@ export abstract class SpawningRunner {
   /**
    * Shared process-exit cleanup: SIGTERM the still-running child process and
    * remove the pid file. Called by the singleton dispatcher for every
-   * registered runner; previously duplicated verbatim in all 5 runner
+   * registered runner; previously duplicated verbatim in the runner
    * subclasses.
    */
   cleanupOnExit(): void {
@@ -656,92 +437,5 @@ export abstract class SpawningRunner {
     silentlyUnlink(this.pidFilePath);
   }
 
-  /**
-   * Build a unified result event from process exit state. Centralizes the
-   * result-event semantics specified in Candidate 2:
-   *   - stoppedByUser → error ("interrupted by user")
-   *   - translatorError set → error (translator-supplied message, e.g. codex
-   *     `turn.failed` or "stream ended before a terminal event")
-   *   - code !== 0 && code !== null → error (exit code + stderr tail)
-   *   - signal !== null → error (killed by signal)
-   *   - otherwise → success (with optional usage)
-   *
-   * Error message precedence (most-specific first):
-   *   - stoppedByUser:  "{binary} interrupted by user"
-   *   - translatorError: verbatim translator-supplied message
-   *   - signal:         "{binary} killed by signal {signal}{stderr tail}"
-   *   - non-zero code:  "{binary} exited code={code}{stderr tail}"
-   *
-   * @param opts.code            - Process exit code (null if killed by signal)
-   * @param opts.signal          - Process signal code (null if exited normally)
-   * @param opts.stderr          - Accumulated stderr (tail included in code/signal errors)
-   * @param opts.sessionId       - Session ID to include in the result event
-   * @param opts.usage           - Token usage to include on success
-   * @param opts.translatorError - Agent-specific terminal error message (e.g.
-   *                                codex turn.failed, or "stream ended early")
-   * @returns AgentEvent with type='result'
-   */
-  protected buildResultEvent(opts: {
-    code: number | null;
-    signal: NodeJS.Signals | null;
-    stderr?: string;
-    sessionId?: string;
-    usage?: Record<string, unknown>;
-    translatorError?: string;
-    /** §4.4 双条件定性：嗅探命中 + 非零退出 → 错误文案点名「命令未找到」 */
-    commandNotFound?: boolean;
-  }): AgentEvent {
-    const isError =
-      this.stoppedByUser ||
-      opts.translatorError !== undefined ||
-      (opts.code !== null && opts.code !== 0) ||
-      opts.signal !== null;
-
-    const sessionId = opts.sessionId ?? '';
-
-    if (isError) {
-      let errorMessage: string;
-      const stderrTail = opts.stderr ? opts.stderr.slice(-STDERR_LOG_TAIL) : '';
-
-      if (this.stoppedByUser) {
-        errorMessage = `${this.binary} interrupted by user`;
-      } else if (opts.translatorError !== undefined) {
-        errorMessage = opts.translatorError;
-      } else if (opts.signal !== null) {
-        errorMessage = `${this.binary} killed by signal ${opts.signal}${stderrTail ? `: ${stderrTail}` : ''}`;
-      } else {
-        const cause = opts.commandNotFound
-          ? `${this.binary} 命令未找到（win32 垫片启动失败：未安装或不在 PATH）`
-          : `${this.binary} exited code=${opts.code}`;
-        errorMessage = `${cause}${stderrTail ? `: ${stderrTail}` : ''}`;
-      }
-
-      return {
-        type: 'result',
-        subtype: 'error',
-        session_id: sessionId,
-        errorMessage,
-      } as AgentEvent;
-    }
-
-    return {
-      type: 'result',
-      subtype: 'success',
-      session_id: sessionId,
-      ...(opts.usage ? { usage: opts.usage } : {}),
-    } as AgentEvent;
-  }
-
   protected abstract buildArgv(opts: SpawnOptions): string[];
-
-  /**
-   * Stateless passthrough translator hook. Used by ClaudeRunner
-   * which does not need per-run translation state. Subclasses that return
-   * a translator from `createTranslator(opts)` leave this as the default
-   * no-op — the base `run()` loop only calls `translate()` when
-   * `createTranslator()` returns null.
-   */
-  protected translate(_rawEvent: unknown, _ctx: unknown): AgentEvent | AgentEvent[] | null {
-    return null;
-  }
 }

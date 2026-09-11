@@ -1,27 +1,13 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import fs from 'node:fs';
-import path from 'node:path';
-import os from 'node:os';
-import { Bridge } from '../../src/bridge/index.js';
-import { SessionStore } from '../../src/session/index.js';
-import { CommandRouter } from '../../src/router/index.js';
-import { AppConfigSchema } from '../../src/config/index.js';
-import type { AppConfig } from '../../src/config/index.js';
-import { SessionReaderRegistry } from '../../src/session/registry.js';
-
 import {
-  createStubAgentRegistry,
-  createStubSessionReaderRegistry,
-  createStubRunner,
-  createStubConnector,
-} from '../lib/bridge-stubs.js';
+  cleanupQueueTestContext,
+  makeQueueTestContext,
+  setupTwoTaskQueueScenario,
+  type QueueTestContext,
+} from '../lib/queue-scenario.js';
+
 const { mockLogger } = vi.hoisted(() => ({
-  mockLogger: {
-    debug: vi.fn(),
-    info: vi.fn(),
-    warn: vi.fn(),
-    error: vi.fn(),
-  },
+  mockLogger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
 }));
 
 vi.mock('../logger/index.js', () => ({
@@ -29,23 +15,14 @@ vi.mock('../logger/index.js', () => ({
   initLogger: () => mockLogger,
 }));
 
-let tmpDir: string;
-let config: AppConfig;
+let ctx: QueueTestContext;
 
 beforeEach(() => {
-  tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'lark-queue-input-toast-'));
-  config = AppConfigSchema.parse({
-    feishu: { appId: 'test', appSecret: 'test' },
-    claude: {
-      model: 'opus',
-      stopGraceMs: 5000,
-    },
-    workspace: { default: '' },
-  });
+  ctx = makeQueueTestContext();
 });
 
 afterEach(() => {
-  fs.rmSync(tmpDir, { recursive: true, force: true });
+  cleanupQueueTestContext(ctx);
 });
 
 describe('queue.input returns toast instead of sending message', () => {
@@ -55,53 +32,18 @@ describe('queue.input returns toast instead of sending message', () => {
     // 回调响应给点击用户即时反馈，不再发送正文。
     // 链路：connector cardAction listener return + index.ts return + router return toast。
 
-    const sessionStore = new SessionStore();
-    const connector = createStubConnector();
-    const runner = createStubRunner();
-    const bridge = new Bridge({
-      runner,
-      agentRegistry: createStubAgentRegistry(runner),
-      sessionReaderRegistry: createStubSessionReaderRegistry(),
-      connector,
-      sessionStore,
-      config,
-    });
-    const router = new CommandRouter({
-      sessionStore,
-      bridge,
-      config,
-      configPath: path.join(tmpDir, 'config.yaml'),
-      workspacePath: path.join(tmpDir, 'workspace.json'),
-      sessionReaderRegistry: new SessionReaderRegistry(),
+    const { bridge, router, connector, tmpDir } = ctx;
+    const { release1 } = await setupTwoTaskQueueScenario(bridge, connector, tmpDir, {
+      firstMessagePreview: 'task 1',
+      secondMessagePreview: 'original',
     });
 
-    // Enqueue a task so there's a queued message to edit
-    let release1: () => void = () => {};
-    const hang1 = new Promise<void>((resolve) => {
-      release1 = resolve;
-    });
-    bridge.enqueue(
-      tmpDir,
-      async () => {
-        await hang1;
-      },
-      {
-        taskMeta: { userId: 'u1', chatId: 'c1', messageId: 'msg-1', messagePreview: 'task 1' },
-      },
-    );
-    await new Promise((r) => setTimeout(r, 50));
-
-    bridge.enqueue(tmpDir, async () => {}, {
-      taskMeta: { userId: 'u1', chatId: 'c1', messageId: 'msg-2', messagePreview: 'original' },
-    });
-    await new Promise((r) => setTimeout(r, 100));
-
-    const ctx = { userId: 'u1', chatId: 'c1', messageId: 'msg-card-2' };
+    const cardCtx = { userId: 'u1', chatId: 'c1', messageId: 'msg-card-2' };
 
     // Submit edited content via queue.input
     const result = await router.handleCardAction(
       { cmd: 'queue.input', workspace: tmpDir, messageId: 'msg-2', inputValue: 'edited message' },
-      ctx,
+      cardCtx,
     );
 
     // Assert: returns a CardActionResponse with a success toast AND an

@@ -13,6 +13,7 @@ import { createMockBridge, createMockSessionReaderRegistry } from '../lib/bridge
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { extractFieldOptions, isSelectField } from '../lib/pi-card-fields.js';
 import { CommandRouter } from '../../src/router/index.js';
 import { SessionStore } from '../../src/session/index.js';
 import { AppConfigSchema } from '../../src/config/index.js';
@@ -49,108 +50,6 @@ function buildPiConfig(): AppConfig {
       dir: 'logs',
     },
   });
-}
-
-/**
- * 从 card JSON 中提取字段的选项（简化版）
- */
-function extractFieldOptions(card: object, fieldKey: string): string[] {
-  const json = JSON.stringify(card);
-  const keyIndex = json.indexOf(`"key":"${fieldKey}"`);
-  if (keyIndex === -1) return [];
-
-  // 从 key 位置往后找到一个 column_set 的 options
-  const columnSetStart = json.indexOf('{"tag":"column_set"', keyIndex);
-  if (columnSetStart === -1) return [];
-
-  // 找到该 column_set 内的所有选项
-  // 先找 select_static，如果没有就找 input
-  const selectStart = json.indexOf('"tag":"select_static"', columnSetStart);
-  const inputStart = json.indexOf('"tag":"input"', columnSetStart);
-
-  // 看哪个更近
-  const tagStart =
-    selectStart !== -1 && (inputStart === -1 || selectStart < inputStart)
-      ? selectStart
-      : inputStart;
-
-  if (tagStart === -1) return [];
-
-  // 对于 select_static，找 options 数组
-  if (selectStart !== -1 && (inputStart === -1 || selectStart < inputStart)) {
-    const optionsStart = json.indexOf('"options":[', selectStart);
-    if (optionsStart === -1) return [];
-
-    // 找到 options 数组的结束位置
-    let depth = 0;
-    let inString = false;
-    let escape = false;
-    let optionsEnd = -1;
-
-    for (let i = optionsStart + 9; i < json.length; i++) {
-      const char = json[i];
-      if (escape) {
-        escape = false;
-        continue;
-      }
-      if (char === '\\') {
-        escape = true;
-        continue;
-      }
-      if (char === '"' && !escape) {
-        inString = !inString;
-        continue;
-      }
-      if (inString) continue;
-
-      if (char === '[') depth++;
-      if (char === ']') {
-        depth--;
-        if (depth === 0) {
-          optionsEnd = i;
-          break;
-        }
-      }
-    }
-
-    if (optionsEnd === -1) return [];
-
-    const optionsJson = json.substring(optionsStart, optionsEnd + 1);
-    // 提取所有 "value": "xxx" 中的 xxx
-    const valueMatches = optionsJson.matchAll(/"value"\s*:\s*"([^"]+)"/g);
-    const options: string[] = [];
-    for (const m of valueMatches) {
-      options.push(m[1]);
-    }
-    return options;
-  }
-
-  // 对于 input 类型，返回空数组（input 没有预定义选项）
-  return [];
-}
-
-/**
- * 从 card JSON 中判断字段是否是 select 类型
- */
-function isSelectField(card: object, fieldKey: string): boolean {
-  const json = JSON.stringify(card);
-  const keyIndex = json.indexOf(`"key":"${fieldKey}"`);
-  if (keyIndex === -1) return false;
-
-  // 从 key 位置往后找一个 column_set，然后检查里面的 tag
-  const columnSetStart = json.indexOf('{"tag":"column_set"', keyIndex);
-  if (columnSetStart === -1) return false;
-
-  // 在这个 column_set 内找 select_static 或 input
-  const selectStatic = json.indexOf('"tag":"select_static"', columnSetStart);
-  const input = json.indexOf('"tag":"input"', columnSetStart);
-
-  // 看哪个更近
-  if (selectStatic !== -1 && (input === -1 || selectStatic < input)) {
-    return true;
-  }
-
-  return false;
 }
 
 /** Write a models.json into the current PI_CONFIG_DIR */
@@ -239,7 +138,8 @@ describe('pi provider/model config from pi files', () => {
     });
 
     const models = getPiModelOptions();
-    expect(models.length).toBeGreaterThan(0);
+    // 精确断言（W3.7）：配置文件声明的模型必须出现在选项里，而非仅「非空」
+    expect(models).toContain('glm-5.2');
   });
 
   /**
@@ -324,7 +224,10 @@ describe('pi provider/model config from pi files', () => {
     const providerOptions = extractFieldOptions(card, 'agents.pi.provider');
     const modelOptions = extractFieldOptions(card, 'agents.pi.model');
 
-    expect(providerOptions.length).toBeGreaterThan(0);
-    expect(modelOptions.length).toBeGreaterThan(0);
+    // 精确断言（W3.7）：provider 选项含两个配置项；model 选项按当前选中
+    // provider 过滤，只含 Volcano 的模型（见 anchor 过滤语义用例）
+    expect(providerOptions).toEqual(expect.arrayContaining(['Volcano', 'lt']));
+    expect(modelOptions).toContain('glm-5.2');
+    expect(modelOptions).not.toContain('glm-5.1');
   });
 });

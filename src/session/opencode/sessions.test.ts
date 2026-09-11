@@ -14,7 +14,7 @@ vi.mock('node:child_process', async () => {
 });
 
 import { execFileSync } from 'node:child_process';
-import { TOOL_RESULT_MAX_BYTES, DEFAULT_TRUNCATE_SUFFIX } from '../../card/text-truncate.js';
+import { TOOL_RESULT_MAX_BYTES, DEFAULT_TRUNCATE_SUFFIX } from '../../common/truncate.js';
 
 // Helper: build a minimal valid opencode export JSON payload.
 function buildExportJson(opts: {

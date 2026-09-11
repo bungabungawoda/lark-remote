@@ -33,7 +33,6 @@ import { readFile } from 'node:fs/promises';
 import { silentlyUnlink } from '../../common/fs.js';
 import { getLogger } from '../../logger/index.js';
 import { SpawningRunner } from '../common/spawning-runner.js';
-import { pipeAllStdio } from '../common/runner-utils.js';
 import { authErrorEvent, syntheticInitEvent } from '../common/runner-utils.js';
 import type { AgentEvent, ApprovalView, SpawnOptions, UserQuestion } from '../types.js';
 import { makeQuestionApprovalEvent } from '../question-common.js';
@@ -312,7 +311,8 @@ export class ClaudeSession extends SpawningRunner {
   // =========================================================================
 
   protected getStdio(): ('ignore' | 'pipe')[] {
-    return pipeAllStdio();
+    // stdin 也要 pipe：长驻会话经 stdin 写用户消息/审批响应。
+    return ['pipe', 'pipe', 'pipe'];
   }
 
   protected buildArgv(opts: SpawnOptions): string[] {
@@ -387,6 +387,8 @@ export class ClaudeSession extends SpawningRunner {
     this.cwd = opts.cwd;
     this.autoApprove = false;
     this.pendingToolInputs.clear();
+    // §4.4 win32 嗅探嫌疑标记每次 spawn 重置（spawnChild 置位，收尾双条件消费）。
+    this.commandNotFoundSeen = false;
     // 每次 run 独立：上次 run 会话内跟踪到的计划文件不得泄漏到本次
     // （否则本次 ExitPlanMode 无 plan/planFilePath 时 resolvePlanContent
     // 会误读上一次的计划文件当当前计划）。
@@ -500,7 +502,10 @@ export class ClaudeSession extends SpawningRunner {
     }
   }
 
-  /** 构造进程退出且无终态 result 时的统一错误结果（对齐 SpawningRunner 语义）。 */
+  /**
+   * 构造进程退出且无终态 result 时的统一错误结果（对齐原 SpawningRunner
+   * buildResultEvent 语义，含 §4.4 win32 command-not-found 双条件定性）。
+   */
   private async buildStreamEndedError(): Promise<AgentEvent> {
     // 进程已死但 proc 'close' 事件可能略晚于 stdout 关闭：等退出登记拿可靠
     // code/signal。stdout 关闭 = 进程退出（claude 独占 stdout），'close' 必然
@@ -513,7 +518,18 @@ export class ClaudeSession extends SpawningRunner {
     } else if (exited.signal !== null) {
       errorMessage = `${this.binary} killed by signal ${exited.signal}${stderrTail ? `: ${stderrTail}` : ''}`;
     } else if (exited.code !== null && exited.code !== 0) {
-      errorMessage = `${this.binary} exited code=${exited.code}${stderrTail ? `: ${stderrTail}` : ''}`;
+      // §4.4 双条件定性：本分支已保证「用户未停 + signal 为 null + 非零退出」，
+      // 这里只补嗅探嫌疑标记这第二个条件。
+      const commandNotFound = this.commandNotFoundSeen;
+      if (commandNotFound) {
+        getLogger().error(
+          `[${this.logTag}] command not found confirmed (win32 shim): exit=${exited.code} stderr=${this.spawnStderr.slice(-500)}`,
+        );
+      }
+      const cause = commandNotFound
+        ? `${this.binary} 命令未找到（win32 垫片启动失败：未安装或不在 PATH）`
+        : `${this.binary} exited code=${exited.code}`;
+      errorMessage = `${cause}${stderrTail ? `: ${stderrTail}` : ''}`;
     } else {
       errorMessage = `${this.binary} 输出流已结束，但未收到 result 事件${stderrTail ? `: ${stderrTail}` : ''}`;
     }

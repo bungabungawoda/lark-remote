@@ -1,6 +1,6 @@
 /**
  * Agent availability probe — detect whether each CLI binary is installed
- * via a pure-Node PATH lookup (platform seam `isExecutableAvailable`).
+ * via a pure-Node PATH lookup (platform seam `resolveExecutable`).
  *
  * Why a PATH lookup over `<binary> --help`:
  * - `--help` starts a full Node.js process per agent (2–8 s on
@@ -18,7 +18,7 @@
  *   with no child process at all (windows-support-design.md §4.3).
  */
 
-import { isExecutableAvailable } from '../platform/probe.js';
+import { resolveExecutable } from '../platform/command.js';
 import type { AgentKind } from './types.js';
 
 /** Map from AgentKind to its CLI binary name. */
@@ -50,7 +50,8 @@ const cache = new Map<AgentKind, CacheEntry>();
 async function probeOne(kind: AgentKind): Promise<boolean> {
   const binary = BINARY_MAP[kind];
   if (!binary) return false;
-  return isExecutableAvailable(binary);
+  // resolveExecutable 纯 Node PATH 查找（win32 PATH×PATHEXT），命中即可用。
+  return resolveExecutable(binary) !== null;
 }
 
 /**

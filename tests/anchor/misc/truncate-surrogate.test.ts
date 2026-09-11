@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { truncate } from '../../../src/card/card-shared.js';
+import { truncate } from '../../../src/common/truncate.js';
 
 /**
- * P2-31 anchor: `truncate` in `card-shared.ts` cuts by UTF-16 code unit
+ * P2-31 anchor: `truncate` in `common/truncate.ts` cuts by UTF-16 code unit
  * (`String.slice`), which can split a surrogate pair and emit a lone
  * surrogate. `JSON.stringify` then renders `\ud83d`, and strict JSON
  * parsers may reject the whole card payload.
@@ -13,7 +13,7 @@ import { truncate } from '../../../src/card/card-shared.js';
  * whose `codePointAt(0)` is 0xD83D (inside the surrogate range
  * [0xD800, 0xDFFF]).
  */
-describe('anchor: card-shared truncate splits surrogate pair', () => {
+describe('anchor: truncate splits surrogate pair', () => {
   it('test_anchor_p2_31_truncate_should_not_emit_lone_surrogate', () => {
     const input = 'a'.repeat(5) + '\u{1F600}' + 'b'.repeat(10); // 'aaaaa😀bbbbbbbbbb'
     // max=6 so slice(0,6) cuts inside the emoji (5 a's + high surrogate).

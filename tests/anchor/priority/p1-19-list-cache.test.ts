@@ -19,6 +19,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { listClaudeSessions } from '../../../src/session/claude/sessions.js';
 import { PiSessionReader } from '../../../src/session/pi/index.js';
+import { encodeClaudeProjectDir } from '../../lib/session-fixtures.js';
 
 const { mockLogger } = vi.hoisted(() => ({
   mockLogger: {
@@ -38,11 +39,6 @@ function encodeProjectDir(cwd: string): string {
   return `--${cwd.replace(/^\//, '').replace(/\//g, '-')}--`;
 }
 
-/** claude 的目录编码：/ 与 _ 都替换为 -（见 src/session/claude/sessions.ts）。 */
-function encodeClaudeDir(cwd: string): string {
-  return cwd.replace(/\//g, '-').replace(/_/g, '-');
-}
-
 describe('P1-19 session list TTL cache', () => {
   it('test_anchor_claude_list_sessions_ttl_cached', () => {
     // ① 验证什么行为：5s TTL 内连续两次 listClaudeSessions 只扫描一次目录
@@ -55,7 +51,7 @@ describe('P1-19 session list TTL cache', () => {
     const projectDir = fs.mkdtempSync(path.join(os.tmpdir(), 'p1-19-claude-'));
     try {
       const realCwd = fs.realpathSync(projectDir);
-      const dir = path.join(projectDir, encodeClaudeDir(realCwd));
+      const dir = path.join(projectDir, encodeClaudeProjectDir(realCwd));
       fs.mkdirSync(dir, { recursive: true });
       for (let i = 0; i < 3; i++) {
         fs.writeFileSync(

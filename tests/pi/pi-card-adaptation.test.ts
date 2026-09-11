@@ -17,6 +17,7 @@ import {
   createStubRunner,
   createStubConnector,
 } from '../lib/bridge-stubs.js';
+import { expectNoV1ActionContainer } from '../lib/card-view.js';
 let tmpDir: string;
 
 beforeEach(() => {
@@ -188,7 +189,7 @@ describe('Pi card adaptation', () => {
       const cardStr = JSON.stringify(card);
 
       // 200861 铁律：无 "tag":"action"+"actions"
-      expect(cardStr).not.toMatch(/"tag"\s*:\s*"action"[^}]*"actions"/);
+      expectNoV1ActionContainer(cardStr);
 
       // CardKit 2.0 schema
       expect(cardStr).toContain('"schema":"2.0"');

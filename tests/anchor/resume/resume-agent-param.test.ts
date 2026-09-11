@@ -9,6 +9,7 @@ import type { AppConfig } from '../../../src/config/index.js';
 import { AppConfigSchema } from '../../../src/config/index.js';
 import { SessionReaderRegistry } from '../../../src/session/registry.js';
 import { ClaudeSessionReader } from '../../../src/session/claude/index.js';
+import { encodedProjectDir } from '../../lib/session-fixtures.js';
 
 import {
   createStubAgentRegistry,
@@ -56,7 +57,7 @@ describe('/resume [agent] [N] dual-parameter feature', () => {
     const canonicalCwd = fs.realpathSync(tmpDir);
 
     // 写一个 codex session，确保列表分支返回卡片而非纯文本
-    const codexEncoded = canonicalCwd.replace(/\//g, '-').replace(/_/g, '-');
+    const codexEncoded = encodedProjectDir(canonicalCwd);
     const codexProjDir = path.join(codexProjectsDir, codexEncoded);
     fs.mkdirSync(codexProjDir, { recursive: true });
     const codexSid = 'codex-list-header-session';
@@ -123,7 +124,7 @@ describe('/resume [agent] [N] dual-parameter feature', () => {
     const canonicalCwd = fs.realpathSync(tmpDir);
 
     // 写一个 claude session，确保列表分支返回卡片而非纯文本
-    const claudeEncoded = canonicalCwd.replace(/\//g, '-').replace(/_/g, '-');
+    const claudeEncoded = encodedProjectDir(canonicalCwd);
     const claudeProjDir = path.join(claudeProjectsDir, claudeEncoded);
     fs.mkdirSync(claudeProjDir, { recursive: true });
     const claudeSid = 'claude-list-header-session';
@@ -189,8 +190,8 @@ describe('/resume [agent] [N] dual-parameter feature', () => {
     const canonicalCwd = fs.realpathSync(tmpDir);
 
     // 写一个 claude session
-    // 编码必须与 projectDirForCwd 一致：cwd.replace(/\//g, '-').replace(/_/g, '-')
-    const claudeEncoded = canonicalCwd.replace(/\//g, '-').replace(/_/g, '-');
+    // 编码必须与 projectDirForCwd 一致（共享 helper：encodedProjectDir）
+    const claudeEncoded = encodedProjectDir(canonicalCwd);
     const claudeProjDir = path.join(claudeProjectsDir, claudeEncoded);
     fs.mkdirSync(claudeProjDir, { recursive: true });
     const claudeSid = 'unregistered-agent-test';
@@ -261,8 +262,8 @@ describe('/resume [agent] [N] dual-parameter feature', () => {
     const canonicalCwd = fs.realpathSync(tmpDir);
 
     // 写一个 codex session（在 codex projects dir）
-    // 编码必须与 projectDirForCwd 一致：cwd.replace(/\//g, '-').replace(/_/g, '-')
-    const codexEncoded = canonicalCwd.replace(/\//g, '-').replace(/_/g, '-');
+    // 编码必须与 projectDirForCwd 一致（共享 helper：encodedProjectDir）
+    const codexEncoded = encodedProjectDir(canonicalCwd);
     const codexProjDir = path.join(codexProjectsDir, codexEncoded);
     fs.mkdirSync(codexProjDir, { recursive: true });
     const codexSid = 'codex-session-abc123';
