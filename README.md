@@ -16,20 +16,20 @@
 
 ## ⚠️ 安全警告（必读）
 
-本工具会把飞书消息直接转为本地 agent 执行。Claude 默认以**完全权限**运行（固定 `bypassPermissions`）；Codex 采用 **app-server 审批模式**（默认 `approvalPolicy=on-request`，执行命令需在飞书卡片上确认，沙箱默认 `workspace-write`），相对安全；其他 agent 以各自 CLI 的默认权限运行。agent 仍可读写你指定的本地目录，请务必：
+本工具会把飞书消息直接转为本地 agent 执行。**开箱默认是不弹审批的**：Claude 默认以 `bypassPermissions` 运行（无审批卡），但该权限模式**可配置**——把它改成 `bypassPermissions` 以外的值（`default` / `acceptEdits` / `auto` / `dontAsk` / `plan`）即启用交互式审批，高风险操作会在飞书卡片上等你确认；Codex 采用 **app-server 审批模式**（默认 `approvalPolicy=on-request`，执行命令需在飞书卡片上确认，沙箱默认 `workspace-write`）；Kimi 默认 `manual`（逐条审批）；其他 agent 以各自 CLI 的默认权限运行。**无论哪种模式**，agent 都能读写你指定的本地目录，请务必：
 
 - **仅限你自己的私聊（p2p）使用**。不要把机器人拉进任何群聊，不要让任何其他人能与它对话。
 - 在飞书开放平台把应用可见范围限制到**只有你自己**。
 - 运行本工具的机器上不要存放与损失承受力不符的数据；建议在独立用户/机器/容器里运行。
 - `appSecret` 等凭据只在本地 `config.yaml`，**不要提交到任何仓库**。
 
-Codex 审批模式下，执行命令前会收到审批卡片，可直接在飞书里允许或拒绝：
+审批模式下（Claude、Codex、Kimi），执行命令前会收到审批卡片，可直接在飞书里允许或拒绝：
 
-![Codex 命令审批卡片示例](docs/images/approval-card.png)
+![命令审批卡片示例](docs/images/approval-card.png)
 
 ## 前置条件
 
-- 操作系统：macOS / Linux。**暂不支持 Windows**（原生 Windows 支持在建设中：平台 seam 已落地，待真机验证后发布）
+- 操作系统：macOS / Linux / Windows 10+（原生 Windows 支持已完成真机验证，行为与 macOS/Linux 对齐）
 - Node.js 20+（开发时用 [Bun](https://bun.sh/)）
 - 飞书自建应用（二选一）：扫码创建（首次启动终端弹二维码，飞书 App 扫码即自动创建并写入凭据）；或手动在开放平台建应用——开启机器人能力，订阅 `im.message.receive_v1` 和 `card.action.trigger`，订阅方式选「长连接」（WebSocket，无需公网地址），权限至少 `im:message`。
 - Claude Code CLI：本地安装并在终端完成一次登录（`claude` → 浏览器 OAuth）。使用其他 agent（codex / opencode / pi / kimi）同理，先装好对应 CLI；DSH 需本地 DSH Web Host 在跑（默认 `http://127.0.0.1:3080`），lark-remote 通过 HTTP+WebSocket 直连、不 spawn 本地子进程。
@@ -70,7 +70,7 @@ defaultAgent: claude
 claude:
   model: claude-opus-4-8
   effort: medium            # low | medium | high | xhigh | max
-  # permissionMode 硬编码为 bypassPermissions（runner 内部）
+  permissionMode: bypassPermissions  # Claude 官方 --permission-mode：default | acceptEdits | auto | bypassPermissions | manual | dontAsk | plan（`/config` 卡片可切换；非 bypassPermissions 会启用审批）
   stopGraceMs: 5000
 
 logging:

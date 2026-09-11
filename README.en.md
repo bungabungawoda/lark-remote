@@ -16,20 +16,20 @@ Designed for a single-user, peer-to-peer private chat. The agent's system prompt
 
 ## ⚠️ Security Warning (read first)
 
-This tool turns Feishu messages directly into local agent executions. Claude runs with **full permissions** by default (fixed `bypassPermissions`); Codex uses the **app-server approval mode** (default `approvalPolicy=on-request` — command execution requires your confirmation on the Feishu card, sandbox defaults to `workspace-write`), which is relatively safe; other agents run with their CLI defaults. Agents can still read and write the local directories you specify. You MUST:
+This tool turns Feishu messages directly into local agent executions. **Out of the box, agents run without approval prompts**: Claude defaults to `bypassPermissions` (no approval card), but that permission mode is **configurable** — set it to anything other than `bypassPermissions` (`default` / `acceptEdits` / `auto` / `dontAsk` / `plan`) to enable interactive approval, where high-risk actions wait for your confirmation on the Feishu card. Codex uses the **app-server approval mode** (default `approvalPolicy=on-request` — command execution requires your confirmation on the Feishu card, sandbox defaults to `workspace-write`); Kimi defaults to `manual` (per-action approval); other agents run with their CLI defaults. **In any mode**, agents can read and write the local directories you specify. You MUST:
 
 - **Use it only in your own private (p2p) chat.** Never add the bot to any group chat; never let anyone else talk to it.
 - Restrict the app's visibility to **yourself only** in the Feishu Open Platform.
 - Don't run it on a machine holding data you can't afford to lose; prefer a dedicated user / machine / container.
 - Keep credentials such as `appSecret` in your local `config.yaml` only — **never commit them anywhere**.
 
-In Codex approval mode, an approval card arrives before any command runs — approve or reject it right in Feishu:
+In approval mode (Claude, Codex, Kimi), an approval card arrives before a command runs — approve or reject it right in Feishu:
 
-![Codex command approval card example](docs/images/approval-card.png)
+![Command approval card example](docs/images/approval-card.png)
 
 ## Prerequisites
 
-- OS: macOS / Linux. **Windows is not supported yet** (relies on POSIX behaviors such as Unix signals, bash, and file locks)
+- OS: macOS / Linux / Windows 10+ (native Windows support is verified on real hardware, with behavior matching macOS/Linux)
 - Node.js 20+ ([Bun](https://bun.sh/) for development)
 - A Feishu custom app (either way): scan-to-create (a QR code pops up in the terminal on first launch; scan it with the Feishu app to create the app and write credentials automatically); or create one manually in the Open Platform — enable bot capability, subscribe to `im.message.receive_v1` and `card.action.trigger` via **long connection** (WebSocket, no public address needed), with at least the `im:message` scope.
 - Claude Code CLI installed locally and logged in once in a terminal (`claude` → browser OAuth). Same idea for other agents (codex / opencode / pi / kimi): install the corresponding CLI first. DSH connects to a local DSH Web Host via HTTP+WebSocket (no local subprocess), default address `http://127.0.0.1:3080`.
@@ -70,7 +70,7 @@ defaultAgent: claude
 claude:
   model: claude-opus-4-8
   effort: medium            # low | medium | high | xhigh | max
-  # permissionMode is hardcoded to bypassPermissions (inside the runner)
+  permissionMode: bypassPermissions  # Claude official --permission-mode: default | acceptEdits | auto | bypassPermissions | manual | dontAsk | plan (switchable via /config card; anything other than bypassPermissions enables approval)
   stopGraceMs: 5000
 
 logging:

@@ -22,7 +22,7 @@ lark-remote 就是飞书和 Claude Code 之间的「传话筒」。
 
 ## 1. 你需要准备什么
 
-> 操作系统仅支持 macOS / Linux，**暂不支持 Windows**。
+> 支持 macOS / Linux / Windows 10+。
 
 | 工具 | 是什么 | 怎么装 |
 |------|--------|--------|
