@@ -13,6 +13,7 @@ import type {
 } from '../../runner/index.js';
 
 import { STALE_MS } from '../common/constants.js';
+import { samePath } from '../../platform/path.js';
 import { capEvents, paginate } from '../common/pagination.js';
 import { sortByRecencyDesc } from '../common/recency.js';
 import { TtlCache } from '../../common/ttl-cache.js';
@@ -256,7 +257,7 @@ export type CwdGuardResult = 'verified' | 'failed' | 'unverifiable';
 export function checkCwdGuard(state: KimiSessionState, realCwd: string): CwdGuardResult {
   const sessionWorkDir = extractWorkDir(state);
   if (sessionWorkDir === undefined) return 'unverifiable';
-  if (sessionWorkDir === realCwd) return 'verified';
+  if (samePath(sessionWorkDir, realCwd)) return 'verified';
   return 'failed';
 }
 

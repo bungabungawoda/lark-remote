@@ -23,11 +23,12 @@ vi.mock('../../../src/logger/index.js', () => ({
   getLogger: () => mockLogger,
   initLogger: () => mockLogger,
 }));
-vi.mock('node:child_process', () => ({
-  spawn: vi.fn(),
-  execFileSync: vi.fn(),
+vi.mock('../../../src/platform/spawn.js', () => ({
+  spawnProcess: vi.fn(),
+  mergeProcessEnv: vi.fn((base, overrides) => ({ ...base, ...overrides })),
+  isWindowsCommandNotFoundLine: vi.fn(() => false),
 }));
-import { spawn } from 'node:child_process';
+import { spawnProcess as spawn } from '../../../src/platform/spawn.js';
 
 class TestRunner extends SpawningRunner {
   constructor() {

@@ -25,7 +25,7 @@
   ],
   "scripts": {
     "dev": "bun src/index.ts",
-    "build": "rm -rf dist && tsc && chmod +x dist/index.js dist/cli.js",
+    "build": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\" && tsc && node -e \"if(process.platform!=='win32'){const fs=require('fs');for(const f of ['dist/index.js','dist/cli.js'])fs.chmodSync(f,0o755)}\"",
     "typecheck": "tsc --noEmit",
     "lint": "eslint src tests",
     "lint:fix": "eslint src tests --fix",
@@ -42,6 +42,7 @@
     "test:config": "vitest run --project infra-config",
     "test:order": "vitest run --project infra-order",
     "test:misc": "vitest run --project infra-misc",
+    "test:platform": "vitest run --project infra-platform",
     "test:claude": "vitest run --project agent-claude",
     "test:codex": "vitest run --project agent-codex",
     "test:opencode": "vitest run --project agent-opencode",
@@ -57,7 +58,7 @@
     "test:pi-full": "vitest run --project agent-pi --project infra-runner --project infra-session",
     "test:kimi-full": "vitest run --project agent-kimi --project infra-runner --project infra-session",
     "test:live": "vitest run --project live",
-    "prepublishOnly": "tsc --noEmit && vitest run && rm -rf dist && tsc && chmod +x dist/index.js dist/cli.js",
+    "prepublishOnly": "tsc --noEmit && vitest run && npm run build",
     "prepack": "node -e \"const fs=require('fs');if(!fs.existsSync('dist/cli.js')){console.error('dist/ missing — run bun run build first');process.exit(1)}\""
   },
   "publishConfig": {
@@ -94,6 +95,7 @@
     "@iarna/toml": "^2.2.5",
     "@larksuite/channel": "^0.3.0",
     "axios": "^1.18.0",
+    "cross-spawn": "^7.0.6",
     "form-data": "^4.0.6",
     "qrcode-terminal": "^0.12.0",
     "yaml": "^2.9.0",
@@ -101,6 +103,7 @@
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
+    "@types/cross-spawn": "^6.0.6",
     "@types/node": "^26.1.2",
     "@types/qrcode-terminal": "^0.12.2",
     "@vitest/coverage-v8": "4.1.10",

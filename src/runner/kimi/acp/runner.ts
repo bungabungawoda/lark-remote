@@ -20,7 +20,9 @@ import type {
   ApprovalView,
   SpawnOptions,
 } from '../../types.js';
-import { spawn, type ChildProcess } from 'node:child_process';
+import type { ChildProcess } from 'node:child_process';
+import { spawnProcess, mergeProcessEnv } from '../../../platform/spawn.js';
+
 import { StringDecoder } from 'node:string_decoder';
 import {
   ConnectionManager as KimiAcpConnectionManager,
@@ -907,9 +909,10 @@ export class KimiAcpRunner extends ConnectionBasedRunner<KimiAcpClient, AcpTrans
     const cwd = params.cwd ?? this.activeCwd ?? undefined;
     const outputLimit = params.outputByteLimit ?? TERMINAL_DEFAULT_OUTPUT_LIMIT;
 
-    const proc = spawn(params.command, params.args ?? [], {
+    const proc = spawnProcess(params.command, params.args ?? [], {
       cwd,
-      env: env ? { ...process.env, ...env } : undefined,
+      // env 覆盖大小写不敏感合并（win32 PATH/Path 双键防护，v2 §8.3）
+      env: env ? mergeProcessEnv(process.env, env) : undefined,
       stdio: ['ignore', 'pipe', 'pipe'],
       // ProcessStopper 用负 PID 杀进程组（kill(-pgid)）；子进程必须是组长
       // 才能命中，否则 kill(-pid) 抛 ESRCH 被吞 → kill/release/清理全失效。
