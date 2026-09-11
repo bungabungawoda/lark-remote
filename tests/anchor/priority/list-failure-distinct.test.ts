@@ -37,7 +37,6 @@ function buildConfig(): AppConfig {
     defaultAgent: 'claude',
     claude: { model: 'opus', stopGraceMs: 5000 },
     workspace: { default: '' },
-    output: { showThinking: true, showToolUse: false, showToolResult: false },
   });
 }
 

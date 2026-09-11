@@ -83,7 +83,6 @@ describe('AgentRegistry', () => {
           stopGraceMs: overrides.stopGraceMs ?? DEFAULT_STOP_GRACE_MS,
         },
         idle: { watchdogMinutes: 15 },
-        output: { showThinking: true, showToolUse: true, showToolResult: true },
         logging: { level: 'info' },
         defaultAgent: 'claude',
       } as AppConfig;

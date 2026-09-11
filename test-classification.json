@@ -34,7 +34,6 @@
     "tests/anchor/priority/p0-bash-output.test.ts",
     "tests/anchor/priority/p0-fit-utf8.test.ts",
     "tests/anchor/misc/card-session-second-start-timeout.test.ts",
-    "tests/anchor/misc/degraded-showtoolresult-ignored.test.ts",
     "tests/probe/run-card-budget-invariant-adversarial.test.ts",
     "tests/probe/run-card-coalesced-flush-error-probe.test.ts",
     "tests/probe/run-card-estimate-threshold-probe.test.ts",

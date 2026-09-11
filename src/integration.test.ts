@@ -71,12 +71,6 @@ function buildConfig(overrides?: Partial<AppConfig>): AppConfig {
       model: 'claude-opus-4-8',
       stopGraceMs: 5000,
     },
-    output: {
-      showThinking: true,
-      showToolUse: false,
-      showToolResult: false,
-      ...overrides?.output,
-    },
     ...overrides,
   });
 }
@@ -135,7 +129,7 @@ describe('端到端流程', () => {
     expect(finalCard).toContain('success');
   });
 
-  it('多轮 tool use：showToolUse=true 时展示工具调用，=false 时隐藏', async () => {
+  it('多轮 tool use 始终展示工具调用与正文（无输出配置）', async () => {
     const events: AgentEvent[] = [
       { type: 'system', subtype: 'init', session_id: 's1', cwd: tmpDir, model: 'opus' },
       {
@@ -156,40 +150,15 @@ describe('端到端流程', () => {
       { type: 'result', subtype: 'success', session_id: 's1' },
     ];
 
-    // showToolUse true → tool name appears in sent messages
-    const captureShow: CapturedSpawn[] = [];
-    const show = createRouter({
-      runner: createCapturingRunner(events, captureShow),
-      config: {
-        output: {
-          showThinking: true,
-          showToolUse: true,
-          showToolResult: false,
-        },
-      },
+    const capture: CapturedSpawn[] = [];
+    const { router, sessionStore, connector } = createRouter({
+      runner: createCapturingRunner(events, capture),
     });
-    show.sessionStore.setCwd('user1', tmpDir);
-    await show.router.handle('read the file', ctx);
-    const showText = JSON.stringify(show.connector._cards.at(-1));
-    expect(showText).toContain('Read');
-
-    // showToolUse false → tool name hidden, only final text + result
-    const captureHide: CapturedSpawn[] = [];
-    const hide = createRouter({
-      runner: createCapturingRunner(events, captureHide),
-      config: {
-        output: {
-          showThinking: true,
-          showToolUse: false,
-          showToolResult: false,
-        },
-      },
-    });
-    hide.sessionStore.setCwd('user1', tmpDir);
-    await hide.router.handle('read the file', ctx);
-    const hideText = JSON.stringify(hide.connector._cards.at(-1));
-    expect(hideText).not.toContain('Read');
-    expect(hideText).toContain('done reading');
+    sessionStore.setCwd('user1', tmpDir);
+    await router.handle('read the file', ctx);
+    const cardText = JSON.stringify(connector._cards.at(-1));
+    expect(cardText).toContain('Read');
+    expect(cardText).toContain('done reading');
   });
 
   it('/new 后新对话不包含旧上下文（下次不带 --resume）', async () => {

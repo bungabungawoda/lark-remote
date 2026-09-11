@@ -39,7 +39,6 @@ function createRouter(overrides?: { ordersPath?: string }) {
       model: 'claude-opus-4-8',
       stopGraceMs: 5000,
     },
-    output: { showThinking: true, showToolUse: false, showToolResult: false },
   });
 
   const ordersPath = overrides?.ordersPath ?? ordersFile;

@@ -36,11 +36,6 @@ describe('ls file action', () => {
       },
       // 2026-07-05: idle 已合并到 /config 卡片，router 构造时读取此字段
       idle: { watchdogMinutes: 15 },
-      output: {
-        showThinking: true,
-        showToolUse: false,
-        showToolResult: false,
-      },
       logging: { level: 'info' },
       defaultAgent: 'claude',
     };
@@ -127,11 +122,6 @@ describe('ls tilde expansion', () => {
         stopGraceMs: 5000,
       },
       idle: { watchdogMinutes: 15 },
-      output: {
-        showThinking: true,
-        showToolUse: false,
-        showToolResult: false,
-      },
       logging: { level: 'info' },
       defaultAgent: 'claude',
     };

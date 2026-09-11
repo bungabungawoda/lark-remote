@@ -45,7 +45,6 @@ describe('reaction emoji regression locks (probe)', () => {
     config = AppConfigSchema.parse({
       feishu: { appId: 'test', appSecret: 'test' },
       claude: { model: 'opus', stopGraceMs: 5000 },
-      output: { showThinking: true, showToolUse: false, showToolResult: false },
     });
   });
 

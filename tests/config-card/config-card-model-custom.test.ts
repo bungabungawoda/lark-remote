@@ -96,11 +96,6 @@ function buildClaudeConfig(model: string = 'opus'): AppConfig {
       effort: 'medium',
       stopGraceMs: 5000,
     },
-    output: {
-      showThinking: true,
-      showToolUse: true,
-      showToolResult: true,
-    },
     idle: { watchdogMinutes: 15 },
     logging: { level: 'info' },
   });

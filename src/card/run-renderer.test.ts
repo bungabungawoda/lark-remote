@@ -1286,24 +1286,6 @@ describe('renderRunCard', () => {
     expect(allJson).toContain('第二段文本');
   });
 
-  it('respects showThinking false by filtering thinking from interleaved output', () => {
-    let state = createInitialRunState('run-no-thinking');
-    state = reduceRunState(state, {
-      type: 'assistant',
-      message: { content: [{ type: 'thinking', thinking: 'hidden' }] },
-    });
-    state = reduceRunState(state, {
-      type: 'assistant',
-      message: { content: [{ type: 'text', text: 'visible text' }] },
-    });
-
-    const card = renderRunCard(state, { showThinking: false }) as { elements: object[] };
-    const serialized = JSON.stringify(card);
-
-    expect(serialized).not.toContain('hidden');
-    expect(serialized).toContain('visible text');
-  });
-
   it('test_probe_token_stats_use_K_units', () => {
     // Test that done state renders token stats in K units (e.g., 120K instead of 120,000)
     let state = createInitialRunState('run-token');

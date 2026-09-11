@@ -41,7 +41,6 @@ function createRouter(overrides?: { runner?: Runner; sessionStore?: SessionStore
       effort: 'medium',
       stopGraceMs: 5000,
     },
-    output: { showThinking: true, showToolUse: false, showToolResult: false },
   });
 
   const bridge = new Bridge({
