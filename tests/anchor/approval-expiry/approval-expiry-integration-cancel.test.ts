@@ -11,13 +11,15 @@
  * ③ 依据：bug spec R1/R4——过期即通知 server，cancel 链路从 bridge 一直
  *    打通到 client（以 L2 bridge → runner → client seam 作为链路等价覆盖）。
  */
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { afterEach, beforeEach, expect, it, vi } from 'vitest';
+import { describePosix } from '../../../tests/lib/platform.js';
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { AgentSessionReader } from '../../../src/runner/types.js';
 import { ApprovalCoordinator } from '../../../src/bridge/approval-coordinator.js';
 import { CodexAppServerRunner } from '../../../src/runner/codex/app-server/runner.js';
+import { rmRf } from '../../../tests/lib/tmp-cleanup.js';
 
 const FAKE_SERVER = join(process.cwd(), 'tests', 'fake-app-server', 'server.mjs');
 const FIXTURES = join(process.cwd(), 'tests', 'fake-app-server', 'fixtures');
@@ -31,7 +33,7 @@ function makeSessionReader(): AgentSessionReader {
   };
 }
 
-describe('anchor: approval expiry integration to server', () => {
+describePosix('anchor: approval expiry integration to server', () => {
   let tmpDir: string;
 
   beforeEach(() => {
@@ -39,7 +41,7 @@ describe('anchor: approval expiry integration to server', () => {
   });
 
   afterEach(() => {
-    rmSync(tmpDir, { recursive: true, force: true });
+    rmRf(tmpDir);
   });
 
   it('test_anchor_approval_expiry_cancel_flows_to_server', async () => {

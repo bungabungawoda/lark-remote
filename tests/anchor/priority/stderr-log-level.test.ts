@@ -29,6 +29,7 @@ vi.mock('../../../src/logger/index.js', () => ({
   initLogger: () => mockLogger,
 }));
 vi.mock('../../../src/platform/spawn.js', () => ({
+  useDetachedProcessGroup: vi.fn(() => true),
   spawnProcess: vi.fn(),
   mergeProcessEnv: vi.fn((base, overrides) => ({ ...base, ...overrides })),
   isWindowsCommandNotFoundLine: vi.fn(() => false),

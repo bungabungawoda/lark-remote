@@ -29,23 +29,34 @@ describe('spawnProcess / spawnProcessSync（cross-spawn 收口）', () => {
     mockCrossSpawnSync.mockReset();
   });
 
-  it('args 原样透传给 cross-spawn（含选项）', () => {
+  it('args 原样透传给 cross-spawn（含选项），并默认注入 windowsHide', () => {
     const proc = { pid: 123 };
     mockCrossSpawn.mockReturnValue(proc);
     expect(spawnProcess('claude', ['-p', 'hi'], { cwd: '/tmp' })).toBe(proc);
-    expect(mockCrossSpawn).toHaveBeenCalledWith('claude', ['-p', 'hi'], { cwd: '/tmp' });
+    expect(mockCrossSpawn).toHaveBeenCalledWith('claude', ['-p', 'hi'], {
+      windowsHide: true,
+      cwd: '/tmp',
+    });
   });
 
-  it('args 缺省为空数组', () => {
+  it('args 缺省为空数组（仍注入 windowsHide 默认值）', () => {
     spawnProcess('bash');
-    expect(mockCrossSpawn).toHaveBeenCalledWith('bash', [], {});
+    expect(mockCrossSpawn).toHaveBeenCalledWith('bash', [], { windowsHide: true });
   });
 
-  it('sync 版透传并返回结果', () => {
+  it('sync 版透传并返回结果（含 windowsHide 默认值）', () => {
     const res = { status: 0, stdout: 'ok' } as unknown as SpawnSyncReturns<string | Buffer>;
     mockCrossSpawnSync.mockReturnValue(res);
     expect(spawnProcessSync('curl', ['-s', 'x'], { timeout: 1000 })).toBe(res);
-    expect(mockCrossSpawnSync).toHaveBeenCalledWith('curl', ['-s', 'x'], { timeout: 1000 });
+    expect(mockCrossSpawnSync).toHaveBeenCalledWith('curl', ['-s', 'x'], {
+      windowsHide: true,
+      timeout: 1000,
+    });
+  });
+
+  it('调用方显式传 windowsHide: false 可覆盖默认值', () => {
+    spawnProcess('foo', [], { windowsHide: false });
+    expect(mockCrossSpawn).toHaveBeenCalledWith('foo', [], { windowsHide: false });
   });
 });
 
