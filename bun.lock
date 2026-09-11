@@ -8,6 +8,7 @@
         "@iarna/toml": "^2.2.5",
         "@larksuite/channel": "^0.3.0",
         "axios": "^1.18.0",
+        "cross-spawn": "^7.0.6",
         "form-data": "^4.0.6",
         "qrcode-terminal": "^0.12.0",
         "yaml": "^2.9.0",
@@ -15,6 +16,7 @@
       },
       "devDependencies": {
         "@eslint/js": "^10.0.1",
+        "@types/cross-spawn": "^6.0.6",
         "@types/node": "^26.1.2",
         "@types/qrcode-terminal": "^0.12.2",
         "@vitest/coverage-v8": "4.1.10",
@@ -132,6 +134,8 @@
     "@standard-schema/spec": ["@standard-schema/spec@1.1.0", "", {}, "sha512-l2aFy5jALhniG5HgqrD6jXLi/rUWrKvqN/qJx6yoJsgKhblVd+iqqU4RCXavm/jPityDo5TCvKMnpjKnOriy0w=="],
 
     "@types/chai": ["@types/chai@5.2.3", "", { "dependencies": { "@types/deep-eql": "4.0.2", "assertion-error": "2.0.1" } }, "sha512-Mw558oeA9fFbv65/y4mHtXDs9bPnFMZAL/jxdPFUpOHHIXX91mcgEHbS5Lahr+pwZFR8A7GQleRWeI6cGFC2UA=="],
+
+    "@types/cross-spawn": ["@types/cross-spawn@6.0.6", "", { "dependencies": { "@types/node": "*" } }, "sha512-fXRhhUkG4H3TQk5dBhQ7m/JDdSNHKwR2BBia62lhwEIq9xGiQKLxd6LymNhn47SjXhsUEPmxi+PKw2OkW4LLjA=="],
 
     "@types/deep-eql": ["@types/deep-eql@4.0.2", "", {}, "sha512-c9h9dVVMigMPc4bwTvC5dxqtqJZwQPePsWjPlpSOnojbor6pGqdk541lfA7AqFQr5pB1BRdq0juY9db81BwyFw=="],
 

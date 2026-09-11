@@ -156,9 +156,7 @@ if (scenario === 'no-stdout') {
       emit({
         type: 'assistant',
         message: {
-          content: [
-            { type: 'text', text: allowed ? 'allowed and done' : 'denied, stopping' },
-          ],
+          content: [{ type: 'text', text: allowed ? 'allowed and done' : 'denied, stopping' }],
         },
       });
       if (current >= approvalsPerTurn) {

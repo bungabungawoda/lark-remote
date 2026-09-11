@@ -138,6 +138,7 @@ const RESUME_CONTENT_PREFETCH = 5;
  */
 const RESUME_SUMMARY_PLACEHOLDERS = new Set(['', '(no user message)', '(无摘要)', 'New Session']);
 import { newSessionButton, resumeCompactButton, agentDisplayName } from '../card/card-shared.js';
+import { displayName } from '../platform/path.js';
 
 interface CommandContext {
   userId: string;
@@ -3878,7 +3879,7 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
 
         elements.push({
           tag: 'div',
-          text: { tag: 'lark_md', content: `**📂 ${run.cwd.split('/').pop() ?? run.cwd}**` },
+          text: { tag: 'lark_md', content: `**📂 ${displayName(run.cwd)}**` },
         });
         elements.push({
           tag: 'div',
