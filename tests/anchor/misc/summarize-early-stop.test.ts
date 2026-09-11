@@ -20,6 +20,7 @@ import os from 'node:os';
 import * as jsonlModule from '../../../src/session/common/jsonl.js';
 import { listClaudeSessions } from '../../../src/session/claude/sessions.js';
 import { PiSessionReader } from '../../../src/session/pi/sessions.js';
+import { encodeClaudeProjectDir, piEncodeCwd } from '../../lib/session-fixtures.js';
 
 const { mockLogger } = vi.hoisted(() => ({
   mockLogger: {
@@ -50,11 +51,11 @@ afterEach(() => {
 
 /** Write a fake Claude session jsonl under <tmpDir>/<encodedCwd>/ */
 function writeClaudeSession(cwd: string, userLines: string[], paddingLineCount: number): string {
-  const encoded = cwd.replace(/\//g, '-');
+  const encoded = encodeClaudeProjectDir(cwd);
   const dir = path.join(tmpDir, 'claude', encoded);
   fs.mkdirSync(dir, { recursive: true });
   const sessionId = `sess-${Math.random().toString(36).slice(2, 8)}`;
-  const initLine = `{"type":"system","subtype":"init","session_id":"${sessionId}","cwd":"${cwd}","model":"opus"}`;
+  const initLine = `{"type":"system","subtype":"init","session_id":"${sessionId}","cwd":${JSON.stringify(cwd)},"model":"opus"}`;
   const allLines = [initLine, ...userLines];
   for (let i = 0; i < paddingLineCount; i++) {
     allLines.push(
@@ -115,12 +116,12 @@ describe('P2-3: summarizeSession uses streaming early-stop (claude)', () => {
     const spy = vi.spyOn(jsonlModule, 'readJsonlLines');
 
     const cwd = '/tmp/p23-claude-no-user';
-    const encoded = cwd.replace(/\//g, '-');
+    const encoded = encodeClaudeProjectDir(cwd);
     const dir = path.join(tmpDir, 'claude', encoded);
     fs.mkdirSync(dir, { recursive: true });
     const sessionId = 'no-user-sess';
     const lines = [
-      `{"type":"system","subtype":"init","session_id":"${sessionId}","cwd":"${cwd}","model":"opus"}`,
+      `{"type":"system","subtype":"init","session_id":"${sessionId}","cwd":${JSON.stringify(cwd)},"model":"opus"}`,
       '{"type":"assistant","message":{"id":"m1","role":"assistant","content":[{"type":"text","text":"no user here"}]}}',
     ];
     fs.writeFileSync(path.join(dir, `${sessionId}.jsonl`), lines.join('\n') + '\n');
@@ -136,14 +137,14 @@ describe('P2-3: summarizeSession uses streaming early-stop (claude)', () => {
 
 /** Write a fake pi session jsonl under <tmpDir>/sessions/--<encodedCwd>--/ */
 function writePiSession(cwd: string, userText: string, paddingLineCount: number): string {
-  const encodedCwd = cwd.replace(/^\//, '').replace(/\//g, '-');
+  const encodedCwd = piEncodeCwd(cwd);
   const dir = path.join(tmpDir, 'pi', 'sessions', `--${encodedCwd}--`);
   fs.mkdirSync(dir, { recursive: true });
   const sessionId = Math.random().toString(36).slice(2, 18);
   const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
   const filename = `${timestamp}_${sessionId}.jsonl`;
   const allLines: string[] = [
-    `{"type":"session","id":"${sessionId}","cwd":"${cwd}","provider":"glm","modelId":"glm-5.2"}`,
+    `{"type":"session","id":"${sessionId}","cwd":${JSON.stringify(cwd)},"provider":"glm","modelId":"glm-5.2"}`,
     `{"type":"message","message":{"role":"user","content":[{"type":"text","text":"${userText}"}]}}`,
   ];
   for (let i = 0; i < paddingLineCount; i++) {
@@ -190,14 +191,14 @@ describe('P2-3: summarizePiSession uses streaming early-stop (pi)', () => {
     const spy = vi.spyOn(jsonlModule, 'readJsonlLines');
 
     const cwd = '/tmp/p23-pi-no-user';
-    const encodedCwd = cwd.replace(/^\//, '').replace(/\//g, '-');
+    const encodedCwd = piEncodeCwd(cwd);
     const dir = path.join(tmpDir, 'pi', 'sessions', `--${encodedCwd}--`);
     fs.mkdirSync(dir, { recursive: true });
     const sessionId = 'no-user-pi';
     const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
     const filename = `${timestamp}_${sessionId}.jsonl`;
     const lines = [
-      `{"type":"session","id":"${sessionId}","cwd":"${cwd}","provider":"glm","modelId":"glm-5.2"}`,
+      `{"type":"session","id":"${sessionId}","cwd":${JSON.stringify(cwd)},"provider":"glm","modelId":"glm-5.2"}`,
       '{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"no user here"}]}}',
     ];
     fs.writeFileSync(path.join(dir, filename), lines.join('\n') + '\n');

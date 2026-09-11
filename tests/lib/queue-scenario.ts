@@ -1,5 +1,17 @@
-import type { Bridge } from '../../src/bridge/index.js';
-import type { createStubConnector } from './bridge-stubs.js';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { Bridge } from '../../src/bridge/index.js';
+import { SessionStore } from '../../src/session/index.js';
+import { CommandRouter } from '../../src/router/index.js';
+import { AppConfigSchema, type AppConfig } from '../../src/config/index.js';
+import { SessionReaderRegistry } from '../../src/session/registry.js';
+import {
+  createStubAgentRegistry,
+  createStubConnector,
+  createStubRunner,
+  createStubSessionReaderRegistry,
+} from './bridge-stubs.js';
 
 export interface TwoTaskQueueScenario {
   /** 拦截到的 updateCard 调用（task 状态卡 PATCH）。 */
@@ -22,14 +34,23 @@ export async function setupTwoTaskQueueScenario(
   bridge: Bridge,
   connector: ReturnType<typeof createStubConnector>,
   workspace: string,
-  opts: { secondMessagePreview?: string } = {},
+  opts: {
+    secondMessagePreview?: string;
+    firstMessageId?: string;
+    firstMessagePreview?: string;
+    secondMessageId?: string;
+    /** 拦截 updateCard 记录调用（需要断言 PATCH 卡的用例开；默认开）。 */
+    interceptUpdateCard?: boolean;
+  } = {},
 ): Promise<TwoTaskQueueScenario> {
   const updateCardCalls: Array<{ messageId: string; card: object }> = [];
   const originalUpdateCard = connector.updateCard;
-  connector.updateCard = async (messageId: string, card: object) => {
-    updateCardCalls.push({ messageId, card });
-    connector._cards.push(card);
-  };
+  if (opts.interceptUpdateCard !== false) {
+    connector.updateCard = async (messageId: string, card: object) => {
+      updateCardCalls.push({ messageId, card });
+      connector._cards.push(card);
+    };
+  }
 
   let release1: () => void = () => {};
   const hang1 = new Promise<void>((resolve) => {
@@ -42,7 +63,14 @@ export async function setupTwoTaskQueueScenario(
     async () => {
       await hang1;
     },
-    { taskMeta: { userId: 'u1', chatId: 'c1', messageId: 'msg-1', messagePreview: 'long task' } },
+    {
+      taskMeta: {
+        userId: 'u1',
+        chatId: 'c1',
+        messageId: opts.firstMessageId ?? 'msg-1',
+        messagePreview: opts.firstMessagePreview ?? 'long task',
+      },
+    },
   );
 
   // Give task1 time to start
@@ -53,7 +81,7 @@ export async function setupTwoTaskQueueScenario(
     taskMeta: {
       userId: 'u1',
       chatId: 'c1',
-      messageId: 'msg-2',
+      messageId: opts.secondMessageId ?? 'msg-2',
       messagePreview: opts.secondMessagePreview ?? 'original message content',
     },
   });
@@ -77,7 +105,59 @@ export async function setupTwoTaskQueueScenario(
     initialCards,
     release1,
     restoreUpdateCard: () => {
-      connector.updateCard = originalUpdateCard;
+      if (opts.interceptUpdateCard !== false) {
+        connector.updateCard = originalUpdateCard;
+      }
     },
   };
+}
+
+// ===========================================================================
+// W3.3：queue 测试共享接线（原先 6 个文件各持 ~54 行 header + 每 it ~20 行
+// Bridge/Router 接线；queue-message-edit 已验证共享路径可行）。
+// 注意：vi.mock('<相对路径>/logger/index.js') 必须留在每个测试文件内
+// （vitest 按文件 hoist），这里只共享工厂体之外的纯接线。
+// ===========================================================================
+
+export interface QueueTestContext {
+  tmpDir: string;
+  config: AppConfig;
+  sessionStore: SessionStore;
+  connector: ReturnType<typeof createStubConnector>;
+  bridge: Bridge;
+  router: CommandRouter;
+}
+
+/** 一把梭：tmpDir + config + stub connector/runner + Bridge + Router 接线。 */
+export function makeQueueTestContext(): QueueTestContext {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'lark-queue-test-'));
+  const config = AppConfigSchema.parse({
+    feishu: { appId: 'test', appSecret: 'test' },
+    claude: { model: 'opus', stopGraceMs: 5000 },
+    workspace: { default: '' },
+  });
+  const sessionStore = new SessionStore();
+  const connector = createStubConnector();
+  const runner = createStubRunner();
+  const bridge = new Bridge({
+    agentRegistry: createStubAgentRegistry(runner),
+    sessionReaderRegistry: createStubSessionReaderRegistry(),
+    connector,
+    sessionStore,
+    config,
+  });
+  const router = new CommandRouter({
+    sessionStore,
+    bridge,
+    config,
+    configPath: path.join(tmpDir, 'config.yaml'),
+    workspacePath: path.join(tmpDir, 'workspace.json'),
+    sessionReaderRegistry: new SessionReaderRegistry(),
+  });
+  return { tmpDir, config, sessionStore, connector, bridge, router };
+}
+
+/** 测试收尾：清理 tmpDir（beforeEach/afterEach 配对使用）。 */
+export function cleanupQueueTestContext(ctx: QueueTestContext): void {
+  fs.rmSync(ctx.tmpDir, { recursive: true, force: true });
 }

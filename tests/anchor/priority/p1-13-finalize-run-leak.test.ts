@@ -91,7 +91,6 @@ describe('P1-13 finalizeRun cleanup', () => {
         feishu: { appId: 'test', appSecret: 'test' },
         claude: { model: 'opus', stopGraceMs: 5000 },
         workspace: { default: '' },
-        output: { showThinking: true, showToolUse: false, showToolResult: false },
       });
       const sessionStore = new SessionStore();
       sessionStore.setCwd('u1', tmpDir);

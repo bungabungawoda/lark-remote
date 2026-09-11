@@ -5,6 +5,8 @@ import os from 'node:os';
 import { ClaudeRunner } from './index.js';
 import { prependPath, restorePath, writeMockBin } from '../../../tests/lib/path-mock.js';
 import type { AgentEvent } from '../types.js';
+import { rmRf } from '../../../tests/lib/tmp-cleanup.js';
+import { currentPlatform, isWin32 } from '../../platform/select.js';
 
 const { mockLogger } = vi.hoisted(() => ({
   mockLogger: {
@@ -25,9 +27,10 @@ let savedPath: string | undefined;
 const runners: ClaudeRunner[] = [];
 
 /** 共享 Node mock claude（tests/lib/mock-claude.js，MOCK_SCENARIO 驱动）。 */
+const MOCK_CLAUDE = path.resolve(__dirname, '../../../tests/lib/mock-claude.js');
+
 function createMockClaude(env: Record<string, string> = {}): void {
-  const mockPath = path.resolve(__dirname, '../../../tests/lib/mock-claude.js');
-  writeMockBin(tmpDir, 'claude', `#!/bin/bash\nexec node "${mockPath}"`);
+  writeMockBin(tmpDir, 'claude', MOCK_CLAUDE);
   Object.assign(process.env, env);
 }
 
@@ -88,18 +91,13 @@ afterEach(async () => {
     if (key.startsWith('MOCK_')) delete process.env[key];
   }
   restorePath(savedPath);
-  fs.rmSync(tmpDir, { recursive: true, force: true });
+  rmRf(tmpDir);
 });
 
 describe('ClaudeRunner (long-lived interactive session)', () => {
   it('test_anchor_spawns_with_interactive_stream_json_args', async () => {
     const argsFile = path.join(tmpDir, 'args.txt');
-    const mockPath = path.resolve(__dirname, '../../../tests/lib/mock-claude.js');
-    writeMockBin(
-      tmpDir,
-      'claude',
-      `#!/bin/bash\necho "$@" > "${argsFile}"\nexec node "${mockPath}"`,
-    );
+    createMockClaude({ MOCK_ARGS_FILE: argsFile });
     const runner = makeRunner();
 
     for await (const _ of runner.run('hello', { cwd: '/tmp' })) {
@@ -125,12 +123,7 @@ describe('ClaudeRunner (long-lived interactive session)', () => {
 
   it('test_anchor_model_effort_settings_flags', async () => {
     const argsFile = path.join(tmpDir, 'args.txt');
-    const mockPath = path.resolve(__dirname, '../../../tests/lib/mock-claude.js');
-    writeMockBin(
-      tmpDir,
-      'claude',
-      `#!/bin/bash\necho "$@" > "${argsFile}"\nexec node "${mockPath}"`,
-    );
+    createMockClaude({ MOCK_ARGS_FILE: argsFile });
     const runner = makeRunner({ settings: '/tmp/settings.json' });
 
     for await (const _ of runner.run('hello', {
@@ -152,12 +145,7 @@ describe('ClaudeRunner (long-lived interactive session)', () => {
 
   it('test_anchor_permission_mode_default_omits_flag', async () => {
     const argsFile = path.join(tmpDir, 'args.txt');
-    const mockPath = path.resolve(__dirname, '../../../tests/lib/mock-claude.js');
-    writeMockBin(
-      tmpDir,
-      'claude',
-      `#!/bin/bash\necho "$@" > "${argsFile}"\nexec node "${mockPath}"`,
-    );
+    createMockClaude({ MOCK_ARGS_FILE: argsFile });
     const runner = makeRunner({ permissionMode: 'default' });
 
     for await (const _ of runner.run('hello', { cwd: '/tmp' })) {
@@ -171,12 +159,7 @@ describe('ClaudeRunner (long-lived interactive session)', () => {
 
   it('test_anchor_includes_resume_when_session_id', async () => {
     const argsFile = path.join(tmpDir, 'args.txt');
-    const mockPath = path.resolve(__dirname, '../../../tests/lib/mock-claude.js');
-    writeMockBin(
-      tmpDir,
-      'claude',
-      `#!/bin/bash\necho "$@" > "${argsFile}"\nexec node "${mockPath}"`,
-    );
+    createMockClaude({ MOCK_ARGS_FILE: argsFile });
     const runner = makeRunner();
 
     for await (const _ of runner.run('hello', { cwd: '/tmp', sessionId: 'sess-123' })) {
@@ -680,20 +663,23 @@ describe('ClaudeRunner (long-lived interactive session)', () => {
     expect(spawns).toHaveLength(2);
   });
 
-  it('test_anchor_idle_ttl_stops_process_between_turns', async () => {
-    createMockClaude();
-    const runner = makeRunner({ idleTtlMs: 50 });
+  it.skipIf(isWin32(currentPlatform))(
+    'test_anchor_idle_ttl_stops_process_between_turns',
+    async () => {
+      createMockClaude();
+      const runner = makeRunner({ idleTtlMs: 50 });
 
-    for await (const _ of runner.run('hello', { cwd: '/tmp' })) {
-      // consume
-    }
-    expect(runner.isRunning).toBe(true);
+      for await (const _ of runner.run('hello', { cwd: '/tmp' })) {
+        // consume
+      }
+      expect(runner.isRunning).toBe(true);
 
-    // turn 结束后 idleTtlMs 无新消息 → 会话级空闲回收停止进程。
-    await vi.waitFor(() => expect(runner.isRunning).toBe(false));
-    const pidFile = path.join(tmpDir, 'claude-test.pid');
-    expect(fs.existsSync(pidFile)).toBe(false);
-  });
+      // turn 结束后 idleTtlMs 无新消息 → 会话级空闲回收停止进程。
+      await vi.waitFor(() => expect(runner.isRunning).toBe(false));
+      const pidFile = path.join(tmpDir, 'claude-test.pid');
+      expect(fs.existsSync(pidFile)).toBe(false);
+    },
+  );
 
   it('test_anchor_resume_replay_stale_result_dropped', async () => {
     createMockClaude({ MOCK_SCENARIO: 'stale-result' });
@@ -710,7 +696,7 @@ describe('ClaudeRunner (long-lived interactive session)', () => {
     expect(results).toHaveLength(1);
   });
 
-  it('test_anchor_stop_kills_process_and_cleans_pid', async () => {
+  it.skipIf(isWin32(currentPlatform))('test_anchor_stop_kills_process_and_cleans_pid', async () => {
     createMockClaude({ MOCK_SCENARIO: 'hang' });
     const runner = makeRunner({ stopGraceMs: 500 });
     const runPromise = (async () => {
@@ -757,7 +743,7 @@ describe('ClaudeRunner (long-lived interactive session)', () => {
     expect(result.errorMessage).toContain('authentication failed');
   });
 
-  it('test_anchor_throws_if_turn_active', async () => {
+  it.skipIf(isWin32(currentPlatform))('test_anchor_throws_if_turn_active', async () => {
     createMockClaude({ MOCK_SCENARIO: 'hang' });
     const runner = makeRunner();
     const runPromise = (async () => {
@@ -779,27 +765,30 @@ describe('ClaudeRunner (long-lived interactive session)', () => {
     await runPromise;
   });
 
-  it('test_anchor_yields_error_event_when_binary_not_found', async () => {
-    const saved = process.env.PATH;
-    process.env.PATH = path.join(tmpDir, 'no-bin');
-    try {
-      const runner = makeRunner();
-      const events: AgentEvent[] = [];
-      for await (const ev of runner.run('hello', { cwd: tmpDir })) {
-        events.push(ev);
-      }
+  it.skipIf(isWin32(currentPlatform))(
+    'test_anchor_yields_error_event_when_binary_not_found',
+    async () => {
+      const saved = process.env.PATH;
+      process.env.PATH = path.join(tmpDir, 'no-bin');
+      try {
+        const runner = makeRunner();
+        const events: AgentEvent[] = [];
+        for await (const ev of runner.run('hello', { cwd: tmpDir })) {
+          events.push(ev);
+        }
 
-      expect(events).toHaveLength(2);
-      expect(events[0].type).toBe('system');
-      const result = events[1];
-      if (result.type !== 'result') throw new Error('expected result event');
-      expect(result.subtype).toBe('error');
-      expect(result.errorMessage).toMatch(/不可用|not found|ENOENT/i);
-      expect(runner.isRunning).toBe(false);
-    } finally {
-      restorePath(saved);
-    }
-  });
+        expect(events).toHaveLength(2);
+        expect(events[0].type).toBe('system');
+        const result = events[1];
+        if (result.type !== 'result') throw new Error('expected result event');
+        expect(result.subtype).toBe('error');
+        expect(result.errorMessage).toMatch(/不可用|not found|ENOENT/i);
+        expect(runner.isRunning).toBe(false);
+      } finally {
+        restorePath(saved);
+      }
+    },
+  );
 });
 
 // --- Logging probes (regression: 2026-06-20 spawn logs missing) ---
@@ -859,34 +848,37 @@ describe('ClaudeRunner logging probes', () => {
     expect(String(exitLogs[0]?.[0])).toContain('authentication failed');
   });
 
-  it('test_anchor_fires_spawn_stage_stalled_warn_without_stdout', async () => {
-    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
-    try {
-      createMockClaude({ MOCK_SCENARIO: 'no-stdout' });
-      const runner = makeRunner({ spawnHeartbeatMs: 50 });
-      const runPromise = (async () => {
-        for await (const _ of runner.run('hello', { cwd: '/tmp' })) {
-          // consume
-        }
-      })();
+  it.skipIf(isWin32(currentPlatform))(
+    'test_anchor_fires_spawn_stage_stalled_warn_without_stdout',
+    async () => {
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+      try {
+        createMockClaude({ MOCK_SCENARIO: 'no-stdout' });
+        const runner = makeRunner({ spawnHeartbeatMs: 50 });
+        const runPromise = (async () => {
+          for await (const _ of runner.run('hello', { cwd: '/tmp' })) {
+            // consume
+          }
+        })();
 
-      await vi.advanceTimersByTimeAsync(0);
-      expect(runner.pid).toBeGreaterThan(0);
-      await vi.advanceTimersByTimeAsync(50);
+        await vi.advanceTimersByTimeAsync(0);
+        expect(runner.pid).toBeGreaterThan(0);
+        await vi.advanceTimersByTimeAsync(50);
 
-      const stalled = callsAt(
-        'warn',
-        (m) => typeof m === 'string' && m.includes('[claude-runner] spawn stage stalled'),
-      );
-      expect(stalled.length).toBeGreaterThanOrEqual(1);
-      expect(String(stalled[0]?.[0])).toContain('pid=');
+        const stalled = callsAt(
+          'warn',
+          (m) => typeof m === 'string' && m.includes('[claude-runner] spawn stage stalled'),
+        );
+        expect(stalled.length).toBeGreaterThanOrEqual(1);
+        expect(String(stalled[0]?.[0])).toContain('pid=');
 
-      await runner.stop({ immediate: true });
-      await runPromise.catch(() => {});
-    } finally {
-      vi.useRealTimers();
-    }
-  });
+        await runner.stop({ immediate: true });
+        await runPromise.catch(() => {});
+      } finally {
+        vi.useRealTimers();
+      }
+    },
+  );
 
   it('test_anchor_no_stall_warn_when_stdout_arrives', async () => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
@@ -919,30 +911,33 @@ describe('ClaudeRunner logging probes', () => {
     }
   });
 
-  it('test_anchor_stop_immediate_sends_sigterm_and_sigkill', async () => {
-    createMockClaude({ MOCK_SCENARIO: 'hang' });
-    const runner = makeRunner({ stopGraceMs: 30_000 });
-    const runPromise = (async () => {
-      for await (const _ of runner.run('hello', { cwd: '/tmp' })) {
-        // consume
-      }
-    })();
-    await vi.waitFor(() => expect(runner.isRunning).toBe(true));
+  it.skipIf(isWin32(currentPlatform))(
+    'test_anchor_stop_immediate_sends_sigterm_and_sigkill',
+    async () => {
+      createMockClaude({ MOCK_SCENARIO: 'hang' });
+      const runner = makeRunner({ stopGraceMs: 30_000 });
+      const runPromise = (async () => {
+        for await (const _ of runner.run('hello', { cwd: '/tmp' })) {
+          // consume
+        }
+      })();
+      await vi.waitFor(() => expect(runner.isRunning).toBe(true));
 
-    const t0 = Date.now();
-    await runner.stop({ immediate: true });
-    const elapsed = Date.now() - t0;
-    expect(elapsed).toBeLessThan(5_000);
-    expect(runner.isRunning).toBe(false);
-    await runPromise.catch(() => {});
+      const t0 = Date.now();
+      await runner.stop({ immediate: true });
+      const elapsed = Date.now() - t0;
+      expect(elapsed).toBeLessThan(5_000);
+      expect(runner.isRunning).toBe(false);
+      await runPromise.catch(() => {});
 
-    const sigtermLogs = callsAt(
-      'debug',
-      (m) => typeof m === 'string' && m.includes('sending SIGTERM'),
-    );
-    expect(sigtermLogs.length).toBeGreaterThanOrEqual(1);
-    expect(String(sigtermLogs[sigtermLogs.length - 1]?.[0])).toContain('immediate=true');
-  });
+      const sigtermLogs = callsAt(
+        'debug',
+        (m) => typeof m === 'string' && m.includes('sending SIGTERM'),
+      );
+      expect(sigtermLogs.length).toBeGreaterThanOrEqual(1);
+      expect(String(sigtermLogs[sigtermLogs.length - 1]?.[0])).toContain('immediate=true');
+    },
+  );
 });
 
 // ClaudeRunner implements AgentRunner (kind/sessionReader).

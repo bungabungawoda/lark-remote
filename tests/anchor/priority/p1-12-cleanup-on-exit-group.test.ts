@@ -18,12 +18,13 @@
  *   组内无存活进程）；修复建议「cleanup 统一改用 process.kill(-proc.pid, ...)
  *   或复用 this.stopper.stop(proc, ...)」。
  */
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { ClaudeRunner } from '../../../src/runner/claude/index.js';
-import { prependPath, restorePath, writeMockBin } from '../../lib/path-mock.js';
+import { prependPath, restorePath, writeMockSource } from '../../lib/path-mock.js';
+import { describePosix } from '../../lib/platform.js';
 import { waitForOrThrow } from '../../lib/wait-for.js';
 
 const { mockLogger } = vi.hoisted(() => ({
@@ -49,7 +50,7 @@ function isAlive(pid: number): boolean {
   }
 }
 
-describe('P1-12: cleanupOnExit kills whole process group', () => {
+describePosix('P1-12: cleanupOnExit kills whole process group', () => {
   let tmpDir: string;
   let savedPath: string | undefined;
   const spawnedPids = new Set<number>();
@@ -79,14 +80,20 @@ describe('P1-12: cleanupOnExit kills whole process group', () => {
 
   it('test_anchor_cleanup_on_exit_kills_whole_group', async () => {
     const childPidFile = path.join(tmpDir, 'child.pid');
-    writeMockBin(
+    // mock CLI 恒为 Node 启动器（path-mock 契约，见其文件头）：打印 init 后
+    // 在**同一进程组**里起一个后台 sleep（不 detached → 继承 pgid），只有组杀
+    // kill(-pid) 能连它一起收掉；常驻 setInterval 让 leader 不自行退出。
+    writeMockSource(
       tmpDir,
       'claude',
-      `#!/bin/bash
-echo '{"type":"system","subtype":"init","session_id":"s1","cwd":"/tmp","model":"m"}'
-sleep 300 &
-echo $! > "${childPidFile}"
-exec sleep 300
+      `const { spawn } = require('node:child_process');
+const fs = require('node:fs');
+process.stdout.write(
+  JSON.stringify({ type: 'system', subtype: 'init', session_id: 's1', cwd: '/tmp', model: 'm' }) + '\\n',
+);
+const child = spawn('sleep', ['300'], { stdio: 'ignore' });
+fs.writeFileSync(${JSON.stringify(childPidFile)}, String(child.pid));
+setInterval(() => {}, 1000);
 `,
     );
 

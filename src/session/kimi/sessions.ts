@@ -12,7 +12,8 @@ import type {
   AgentSessionContentEvent,
 } from '../../runner/index.js';
 
-import { STALE_MS } from '../common/constants.js';
+import { isStale } from '../common/constants.js';
+import { samePath } from '../../platform/path.js';
 import { capEvents, paginate } from '../common/pagination.js';
 import { sortByRecencyDesc } from '../common/recency.js';
 import { TtlCache } from '../../common/ttl-cache.js';
@@ -256,7 +257,7 @@ export type CwdGuardResult = 'verified' | 'failed' | 'unverifiable';
 export function checkCwdGuard(state: KimiSessionState, realCwd: string): CwdGuardResult {
   const sessionWorkDir = extractWorkDir(state);
   if (sessionWorkDir === undefined) return 'unverifiable';
-  if (sessionWorkDir === realCwd) return 'verified';
+  if (samePath(sessionWorkDir, realCwd)) return 'verified';
   return 'failed';
 }
 
@@ -346,35 +347,36 @@ export class KimiSessionReader implements AgentSessionReader {
       const sessions: AgentSession[] = [];
 
       for (const entry of this.scanSessionIndex()) {
+        // W2.7：state.json 一次读取共用（cwd 兜底 + summary），I/O 减半。
+        // 两次 catch 语义保留：解析失败 = 无法判 cwd → 跳过（continue）；
+        // 解析成功但字段缺失 = summary 落 wire.jsonl 提取。
+        const statePath = path.join(entry.sessionDir, 'state.json');
+        let state: KimiSessionState | null = null;
+        let stateParsed = false;
+        if (fs.existsSync(statePath)) {
+          try {
+            state = JSON.parse(fs.readFileSync(statePath, 'utf-8')) as KimiSessionState;
+            stateParsed = true;
+          } catch {
+            // Corrupt state.json — cannot determine cwd → skip below
+          }
+        }
+
         // Index workDir is v1-only; v2 sessions may have empty/missing workDir.
         // When index workDir is absent, fall back to state.json's cwd field.
         let entryWorkDir: string | undefined = entry.workDir;
         if (!entryWorkDir) {
-          const statePath = path.join(entry.sessionDir, 'state.json');
-          try {
-            if (fs.existsSync(statePath)) {
-              const state = JSON.parse(fs.readFileSync(statePath, 'utf-8')) as KimiSessionState;
-              entryWorkDir = extractWorkDir(state);
-            }
-          } catch {
-            // Unreadable state — cannot determine cwd, skip
-          }
+          if (stateParsed && state) entryWorkDir = extractWorkDir(state);
+          // Unreadable state — cannot determine cwd, entryWorkDir stays undefined
         }
         if (entryWorkDir !== realCwd) {
           continue;
         }
 
-        const statePath = path.join(entry.sessionDir, 'state.json');
         let summary = 'New Session';
-
-        if (fs.existsSync(statePath)) {
-          try {
-            const state = JSON.parse(fs.readFileSync(statePath, 'utf-8')) as KimiSessionState;
-            // v1: state.title / state.lastPrompt; v2: these fields may be absent
-            summary = state.title || state.lastPrompt || '';
-          } catch {
-            // Corrupt state.json — fall through to wire.jsonl extraction
-          }
+        if (stateParsed && state) {
+          // v1: state.title / state.lastPrompt; v2: these fields may be absent
+          summary = state.title || state.lastPrompt || '';
         }
 
         // v2 state.json omits title/lastPrompt: extract from wire.jsonl's last
@@ -715,21 +717,19 @@ export class KimiSessionReader implements AgentSessionReader {
   }
 
   /**
-   * Resolve the main wire.jsonl path for a session after passing the cwd
-   * guard (state.json + session index fallback). Returns null when the
-   * session is unknown, fails the guard, or has no wire file.
+   * W2.5 单源：resolveSessionWirePath 与 isSessionActive 共用的 cwd 守卫
+   * （realpathSync → state.json workDir/cwd 三态 → index workDir 兜底 →
+   * fail-closed）。返回 sessionDir；会话未知或守卫不过返回 null。
    */
-  private resolveSessionWirePath(sessionId: string, cwd: string): string | null {
+  private verifySessionCwd(sessionId: string, cwd: string): { sessionDir: string } | null {
     // Find session directory from index (also retrieve index entry for
     // fallback cwd guard when state.json is missing or unparseable)
     const indexEntry = this.findSessionIndexEntry(sessionId);
     const sessionDir = indexEntry?.sessionDir ?? null;
-
     if (!sessionDir) {
       return null;
     }
 
-    const statePath = path.join(sessionDir, 'state.json');
     let realCwd: string;
     try {
       realCwd = fs.realpathSync(cwd);
@@ -740,7 +740,7 @@ export class KimiSessionReader implements AgentSessionReader {
       return null;
     }
     let cwdGuardPassed = false;
-
+    const statePath = path.join(sessionDir, 'state.json');
     try {
       if (fs.existsSync(statePath)) {
         const state = JSON.parse(fs.readFileSync(statePath, 'utf-8')) as KimiSessionState;
@@ -748,14 +748,13 @@ export class KimiSessionReader implements AgentSessionReader {
         if (guardResult === 'failed') {
           return null;
         }
-        if (guardResult === 'unverifiable') {
+        if (guardResult === 'verified') {
+          cwdGuardPassed = true;
+        } else {
           getLogger().warn(
             `[kimi-session-reader] state.json has no workDir/cwd field for session ${sessionId}, falling back to index workDir`,
           );
           // Fall through to index-based guard below
-        } else {
-          // verified — state.json cwd matches
-          cwdGuardPassed = true;
         }
       }
     } catch {
@@ -786,7 +785,19 @@ export class KimiSessionReader implements AgentSessionReader {
       }
     }
 
-    const wirePath = path.join(sessionDir, 'agents', 'main', 'wire.jsonl');
+    return { sessionDir };
+  }
+
+  /**
+   * Resolve the main wire.jsonl path for a session after passing the cwd
+   * guard (state.json + session index fallback). Returns null when the
+   * session is unknown, fails the guard, or has no wire file.
+   */
+  private resolveSessionWirePath(sessionId: string, cwd: string): string | null {
+    const verified = this.verifySessionCwd(sessionId, cwd);
+    if (!verified) return null;
+
+    const wirePath = path.join(verified.sessionDir, 'agents', 'main', 'wire.jsonl');
     if (!fs.existsSync(wirePath)) {
       return null;
     }
@@ -797,43 +808,11 @@ export class KimiSessionReader implements AgentSessionReader {
    * Check if a session is currently active
    */
   isSessionActive(sessionId: string, cwd: string): boolean {
-    const indexEntry = this.findSessionIndexEntry(sessionId);
-    const sessionDir = indexEntry?.sessionDir;
+    // W2.5：cwd 守卫与 resolveSessionWirePath 共用 verifySessionCwd（单源）。
+    const verified = this.verifySessionCwd(sessionId, cwd);
+    if (!verified) return false;
 
-    if (!sessionDir) {
-      return false;
-    }
-
-    // Cwd guard: the session's working directory must match the requested
-    // cwd (align with claude/pi/opencode). Mirrors readSessionContent's
-    // fail-closed cwd check (state.json workDir/cwd, then index workDir).
-    let realCwd: string;
-    try {
-      realCwd = fs.realpathSync(cwd);
-    } catch {
-      return false;
-    }
-    let cwdGuardPassed = false;
-    const statePath = path.join(sessionDir, 'state.json');
-    try {
-      if (fs.existsSync(statePath)) {
-        const state = JSON.parse(fs.readFileSync(statePath, 'utf-8')) as KimiSessionState;
-        const guardResult = checkCwdGuard(state, realCwd);
-        if (guardResult === 'failed') return false;
-        if (guardResult === 'verified') cwdGuardPassed = true;
-      }
-    } catch {
-      // state.json unparseable — fall through to index-based guard
-    }
-    if (!cwdGuardPassed) {
-      const indexWorkDir = indexEntry?.workDir;
-      if (indexWorkDir && indexWorkDir !== realCwd) return false;
-      // v2 sessions have empty index workDir (v1-only field) and may lack
-      // state.json cwd — fail-closed to prevent cross-workspace access.
-      if (!indexWorkDir) return false;
-    }
-
-    const wirePath = path.join(sessionDir, 'agents', 'main', 'wire.jsonl');
+    const wirePath = path.join(verified.sessionDir, 'agents', 'main', 'wire.jsonl');
     if (!fs.existsSync(wirePath)) {
       return false;
     }
@@ -843,7 +822,7 @@ export class KimiSessionReader implements AgentSessionReader {
       const now = Date.now();
 
       // Check mtime freshness
-      if (now - stat.mtimeMs > STALE_MS) {
+      if (isStale(stat.mtimeMs, now)) {
         return false;
       }
 

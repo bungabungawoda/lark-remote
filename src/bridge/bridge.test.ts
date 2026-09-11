@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { currentPlatform, isWin32 } from '../platform/select.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -8,7 +9,13 @@ import { SessionStore } from '../session/index.js';
 import { SessionReaderRegistry } from '../session/registry.js';
 import { AppConfigSchema } from '../config/index.js';
 import type { AppConfig } from '../config/index.js';
-import type { AgentEvent, AgentRunner, AgentSessionReader, Runner } from '../runner/index.js';
+import type {
+  AgentEvent,
+  AgentRunner,
+  AgentSessionReader,
+  AgentSessionUsage,
+  Runner,
+} from '../runner/index.js';
 import {
   createStubSessionReaderRegistry,
   createStubConnector,
@@ -18,6 +25,7 @@ import {
   createStubSessionReader,
 } from '../../tests/lib/bridge-stubs.js';
 import { prependPath, restorePath, writeMockBin } from '../../tests/lib/path-mock.js';
+import { rmRf } from '../../tests/lib/tmp-cleanup.js';
 
 const { mockLogger } = vi.hoisted(() => ({
   mockLogger: {
@@ -88,6 +96,54 @@ function createHangingRunner(): HangingRunner {
 let tmpDir: string;
 let config: AppConfig;
 
+const notFoundRead: AgentSessionReader['readSessionContent'] =
+  createStubSessionReader().readSessionContent;
+
+/** W3.7：readSessionContent 兜底返回「单条 tail + 指定 usage」的同形状闭包。 */
+function tailRead(usage?: AgentSessionUsage): AgentSessionReader['readSessionContent'] {
+  return () => ({
+    events: [{ type: 'text', content: 'tail' }],
+    usage,
+    aiTitle: undefined,
+    recap: undefined,
+    displayTitle: 'placeholder',
+    reason: 'ok',
+  });
+}
+
+function makeCompactBridge(opts: {
+  runner?: Runner;
+  read?: AgentSessionReader['readSessionContent'];
+  /** resume.compact 场景别名（与 read 等价，保留调用点语义可读）。 */
+  codexRead?: AgentSessionReader['readSessionContent'];
+  /** 覆盖指定 agent 的 reader（如带 readCompactionState 的 kimi/claude reader）。 */
+  readers?: Record<string, AgentSessionReader>;
+}) {
+  const sessionStore = new SessionStore();
+  const connector = createStubConnector();
+  const runner = opts.runner ?? createStubRunner();
+  const read = opts.read ?? opts.codexRead ?? notFoundRead;
+  const defaultReader: AgentSessionReader = {
+    listSessions: () => ({ sessions: [], total: 0 }),
+    getNewestSession: () => null,
+    readSessionContent: vi.fn(read),
+    isSessionActive: () => false,
+  };
+  const registry = new SessionReaderRegistry();
+  for (const agent of ['claude', 'codex', 'opencode', 'pi', 'kimi'] as const) {
+    registry.register(agent, opts.readers?.[agent] ?? defaultReader);
+  }
+  const bridge = new Bridge({
+    runner,
+    connector,
+    sessionStore,
+    config,
+    agentRegistry: createStubAgentRegistry(runner),
+    sessionReaderRegistry: registry,
+  });
+  return { bridge, sessionStore, connector, runner };
+}
+
 beforeEach(() => {
   tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'lark-bridge-test-'));
   config = AppConfigSchema.parse({
@@ -96,7 +152,6 @@ beforeEach(() => {
       model: 'opus',
       stopGraceMs: 5000,
     },
-    output: { showThinking: true, showToolUse: false, showToolResult: false },
   });
 });
 
@@ -146,7 +201,7 @@ describe('Bridge approval reaction retract', () => {
 });
 
 afterEach(() => {
-  fs.rmSync(tmpDir, { recursive: true, force: true });
+  rmRf(tmpDir);
 });
 
 const ctx = { userId: 'user1', chatId: 'chat1', messageId: 'msg1' };
@@ -467,65 +522,75 @@ describe('Bridge + ClaudeRunner approval integration', () => {
       if (key.startsWith('MOCK_')) delete process.env[key];
     }
     restorePath(savedPath);
-    fs.rmSync(integrationTmpDir, { recursive: true, force: true });
+    rmRf(integrationTmpDir);
   });
 
-  it('test_anchor_approval_request_shows_card_and_accept_writes_back_to_done', async () => {
-    // 端到端链路：真实 ClaudeRunner（mock claude 协议）→ bridge 事件循环 →
-    // ApprovalCoordinator → run 卡审批区 → 点击允许 → control_response 回写 →
-    // mock 继续执行 → result → 卡片 done。协议单测在 runner 层、审批 UI 在
-    // bridge 层，本测试覆盖中间的接线（review P3-5）。
-    const mockPath = path.resolve(__dirname, '../../tests/lib/mock-claude.js');
-    writeMockBin(integrationTmpDir, 'claude', `#!/bin/bash\nexec node "${mockPath}"`);
-    process.env.MOCK_SCENARIO = 'approval';
+  it.skipIf(isWin32(currentPlatform))(
+    'test_anchor_approval_request_shows_card_and_accept_writes_back_to_done',
+    async () => {
+      // 端到端链路：真实 ClaudeRunner（mock claude 协议）→ bridge 事件循环 →
+      // ApprovalCoordinator → run 卡审批区 → 点击允许 → control_response 回写 →
+      // mock 继续执行 → result → 卡片 done。协议单测在 runner 层、审批 UI 在
+      // bridge 层，本测试覆盖中间的接线（review P3-5）。
+      const mockPath = path.resolve(__dirname, '../../tests/lib/mock-claude.js');
+      writeMockBin(integrationTmpDir, 'claude', mockPath);
+      process.env.MOCK_SCENARIO = 'approval';
 
-    const runner = new ClaudeRunner({
-      pidDir: integrationTmpDir,
-      workspace: integrationTmpDir,
-      permissionMode: 'default',
-      idleTtlMs: 0,
-    });
-    integrationRunners.push(runner);
+      const runner = new ClaudeRunner({
+        pidDir: integrationTmpDir,
+        workspace: integrationTmpDir,
+        permissionMode: 'default',
+        idleTtlMs: 0,
+      });
+      integrationRunners.push(runner);
 
-    const { bridge, sessionStore, connector } = makeBridge({
-      runner,
-      idleTimeoutMs: 60_000,
-    });
-    sessionStore.setCwd(ctx.userId, integrationTmpDir);
+      const { bridge, sessionStore, connector } = makeBridge({
+        runner,
+        idleTimeoutMs: 60_000,
+      });
+      sessionStore.setCwd(ctx.userId, integrationTmpDir);
 
-    const runPromise = bridge.forwardToClaude('run the command', ctx);
+      const runPromise = bridge.forwardToClaude('run the command', ctx);
 
-    // 等审批区出现在流式卡上（不新增消息，卡上直接出现「命令审批」）
-    await vi.waitFor(() => {
-      const card = connector._cards.at(-1);
-      expect(JSON.stringify(card)).toContain('命令审批');
-    });
+      // 等审批区出现在流式卡上（不新增消息，卡上直接出现「命令审批」）
+      // 超时必须显式给足：本用例等的是一个真实子进程（mock claude）走完
+      // spawn → system.init → 首条 user 事件 → control_request 的整轮握手。
+      // 单文件跑（无并发）约 300ms，全量并行跑（8 worker）实测到 1.6s，
+      // vi.waitFor 的默认 1000ms 预算会周期性判假失败（2026-09-11 全量复现）。
+      await vi.waitFor(
+        () => {
+          const card = connector._cards.at(-1);
+          expect(JSON.stringify(card)).toContain('命令审批');
+        },
+        { timeout: 15_000, interval: 100 },
+      );
 
-    // 从审批按钮提取 runId + requestId，走真实卡片动作路径响应
-    const lastCard = JSON.stringify(connector._cards.at(-1));
-    const respondMatch = lastCard.match(
-      /"cmd":"approval\.respond","decision":"accept","requestId":([^,]+),"runId":"([^"]+)"/,
-    );
-    expect(respondMatch).not.toBeNull();
-    const rawRequestId = respondMatch![1];
-    const requestId = rawRequestId.startsWith('"')
-      ? rawRequestId.replace(/"/g, '')
-      : Number(rawRequestId);
-    const runId = respondMatch![2];
+      // 从审批按钮提取 runId + requestId，走真实卡片动作路径响应
+      const lastCard = JSON.stringify(connector._cards.at(-1));
+      const respondMatch = lastCard.match(
+        /"cmd":"approval\.respond","decision":"accept","requestId":([^,]+),"runId":"([^"]+)"/,
+      );
+      expect(respondMatch).not.toBeNull();
+      const rawRequestId = respondMatch![1];
+      const requestId = rawRequestId.startsWith('"')
+        ? rawRequestId.replace(/"/g, '')
+        : Number(rawRequestId);
+      const runId = respondMatch![2];
 
-    await bridge.handleApprovalRespond({
-      runId,
-      requestId,
-      decision: 'accept',
-      nonce: 'integration-n1',
-    });
-    await runPromise;
+      await bridge.handleApprovalRespond({
+        runId,
+        requestId,
+        decision: 'accept',
+        nonce: 'integration-n1',
+      });
+      await runPromise;
 
-    const finalCard = JSON.stringify(connector._cards.at(-1));
-    expect(finalCard).toContain('已完成');
-    // 审批区已随 resolved 移除（不再残留按钮）
-    expect(finalCard).not.toContain('命令审批');
-  });
+      const finalCard = JSON.stringify(connector._cards.at(-1));
+      expect(finalCard).toContain('已完成');
+      // 审批区已随 resolved 移除（不再残留按钮）
+      expect(finalCard).not.toContain('命令审批');
+    },
+  );
 });
 
 // --- forwardToClaude core flow ---
@@ -1042,7 +1107,6 @@ describe('Bridge.syncActiveApprovalModes (§P5 hot push)', () => {
         claude: { model: 'opus', stopGraceMs: 5000 },
         defaultAgent: 'kimi',
         agents: { kimi: { model: 'kimi-code/k3', permissionMode: 'manual' } },
-        output: { showThinking: true, showToolUse: false, showToolResult: false },
       }),
     });
     const cwd = fs.realpathSync(tmpDir);
@@ -1058,7 +1122,6 @@ describe('Bridge.syncActiveApprovalModes (§P5 hot push)', () => {
       claude: { model: 'opus', stopGraceMs: 5000 },
       defaultAgent: 'kimi',
       agents: { kimi: { model: 'kimi-code/k3', permissionMode: 'yolo' } },
-      output: { showThinking: true, showToolUse: false, showToolResult: false },
     });
     bridge.setConfig(newConfig);
     bridge.syncActiveApprovalModes();
@@ -1080,7 +1143,6 @@ describe('Bridge.syncActiveApprovalModes (§P5 hot push)', () => {
         agents: {
           opencode: { providerID: 'anthropic', modelID: 'claude-sonnet-4-20250514', mode: 'build' },
         },
-        output: { showThinking: true, showToolUse: false, showToolResult: false },
       }),
     });
     const cwd = fs.realpathSync(tmpDir);
@@ -1098,7 +1160,6 @@ describe('Bridge.syncActiveApprovalModes (§P5 hot push)', () => {
       agents: {
         opencode: { providerID: 'anthropic', modelID: 'claude-sonnet-4-20250514', mode: 'plan' },
       },
-      output: { showThinking: true, showToolUse: false, showToolResult: false },
     });
     bridge.setConfig(newConfig);
     bridge.syncActiveApprovalModes();
@@ -3065,39 +3126,6 @@ describe('Bridge handleResumeCompact（resume 卡 Compact 按钮）', () => {
   }
 
   /** 默认 readSessionContent 返回「未找到」（共享 stub 的空结果形状）。 */
-  const notFoundRead: AgentSessionReader['readSessionContent'] =
-    createStubSessionReader().readSessionContent;
-
-  function makeResumeCompactBridge(opts: {
-    runner?: Runner;
-    codexRead?: AgentSessionReader['readSessionContent'];
-  }) {
-    const sessionStore = new SessionStore();
-    const connector = createStubConnector();
-    const runner = opts.runner ?? createStubRunner();
-    const read = opts.codexRead ?? notFoundRead;
-    const reader: AgentSessionReader = {
-      listSessions: () => ({ sessions: [], total: 0 }),
-      getNewestSession: () => null,
-      readSessionContent: vi.fn(read),
-      isSessionActive: () => false,
-    };
-    const registry = new SessionReaderRegistry();
-    registry.register('claude', reader);
-    registry.register('codex', reader);
-    registry.register('opencode', reader);
-    registry.register('pi', reader);
-    registry.register('kimi', reader);
-    const bridge = new Bridge({
-      runner,
-      connector,
-      sessionStore,
-      config,
-      agentRegistry: createStubAgentRegistry(runner),
-      sessionReaderRegistry: registry,
-    });
-    return { bridge, sessionStore, connector, runner };
-  }
 
   it('test_anchor_handle_resume_compact_runs_runcompact_and_finishes_card', async () => {
     // 验证什么：happy path 调 runner.runCompact('', {cwd, sessionId}) 并流式渲染
@@ -3106,15 +3134,13 @@ describe('Bridge handleResumeCompact（resume 卡 Compact 按钮）', () => {
     const cwd = fs.realpathSync(tmpDir);
     const runCompactSpy = vi.fn(compactTurnEvents);
     const runner: CompactRunner = { ...createStubRunner(), runCompact: runCompactSpy };
-    const { bridge, sessionStore, connector } = makeResumeCompactBridge({
+    const { bridge, sessionStore, connector } = makeCompactBridge({
       runner,
-      codexRead: () => ({
-        events: [{ type: 'text', content: 'tail' }],
-        usage: { inputTokens: 10, outputTokens: 20, contextLength: 5000, compactCount: 1 },
-        aiTitle: undefined,
-        recap: undefined,
-        displayTitle: 'placeholder',
-        reason: 'ok',
+      codexRead: tailRead({
+        inputTokens: 10,
+        outputTokens: 20,
+        contextLength: 5000,
+        compactCount: 1,
       }),
     });
     sessionStore.setCwd('user1', cwd);
@@ -3136,22 +3162,15 @@ describe('Bridge handleResumeCompact（resume 卡 Compact 按钮）', () => {
     const cwd = fs.realpathSync(tmpDir);
     const runCompactSpy = vi.fn(compactTurnEvents);
     const runner: CompactRunner = { ...createStubRunner(), runCompact: runCompactSpy };
-    const { bridge, sessionStore, connector } = makeResumeCompactBridge({
+    const { bridge, sessionStore, connector } = makeCompactBridge({
       runner,
-      codexRead: () => ({
-        events: [{ type: 'text', content: 'tail' }],
-        usage: {
-          inputTokens: 10,
-          outputTokens: 20,
-          contextLength: 5000,
-          contextLimit: 100000,
-          compactCount: 1,
-          compactPreContextLength: 21000,
-        },
-        aiTitle: undefined,
-        recap: undefined,
-        displayTitle: 'placeholder',
-        reason: 'ok',
+      codexRead: tailRead({
+        inputTokens: 10,
+        outputTokens: 20,
+        contextLength: 5000,
+        contextLimit: 100000,
+        compactCount: 1,
+        compactPreContextLength: 21000,
       }),
     });
     sessionStore.setCwd('user1', cwd);
@@ -3168,7 +3187,7 @@ describe('Bridge handleResumeCompact（resume 卡 Compact 按钮）', () => {
     const cwd = fs.realpathSync(tmpDir);
     const runCompactSpy = vi.fn(compactTurnEvents);
     const runner: CompactRunner = { ...createStubRunner(), runCompact: runCompactSpy };
-    const { bridge, sessionStore, connector } = makeResumeCompactBridge({ runner });
+    const { bridge, sessionStore, connector } = makeCompactBridge({ runner });
     sessionStore.setCwd('user1', cwd);
 
     await bridge.handleResumeCompact({}, ctx);
@@ -3184,7 +3203,7 @@ describe('Bridge handleResumeCompact（resume 卡 Compact 按钮）', () => {
     const cwd = fs.realpathSync(tmpDir);
     const runCompactSpy = vi.fn(compactTurnEvents);
     const runner: CompactRunner = { ...createStubRunner(), runCompact: runCompactSpy };
-    const { bridge, sessionStore, connector } = makeResumeCompactBridge({ runner });
+    const { bridge, sessionStore, connector } = makeCompactBridge({ runner });
     sessionStore.setCwd('user1', cwd);
 
     await bridge.handleResumeCompact({ sessionId: 'ghost-session', agent: 'codex' }, ctx);
@@ -3198,15 +3217,8 @@ describe('Bridge handleResumeCompact（resume 卡 Compact 按钮）', () => {
     // 验证什么：runner 无 runCompact 时报「不支持 Compact」。
     // 缺失会导致执行时 TypeError，卡片点击无友好反馈。
     const cwd = fs.realpathSync(tmpDir);
-    const { bridge, sessionStore, connector } = makeResumeCompactBridge({
-      codexRead: () => ({
-        events: [{ type: 'text', content: 'tail' }],
-        usage: undefined,
-        aiTitle: undefined,
-        recap: undefined,
-        displayTitle: 'placeholder',
-        reason: 'ok',
-      }),
+    const { bridge, sessionStore, connector } = makeCompactBridge({
+      codexRead: tailRead(undefined),
     });
     sessionStore.setCwd('user1', cwd);
 
@@ -3224,16 +3236,9 @@ describe('Bridge handleResumeCompact（resume 卡 Compact 按钮）', () => {
       throw new Error('CodexAppServerRunner is already running');
     });
     const runner: CompactRunner = { ...createStubRunner(), runCompact: runCompactSpy };
-    const { bridge, sessionStore, connector } = makeResumeCompactBridge({
+    const { bridge, sessionStore, connector } = makeCompactBridge({
       runner,
-      codexRead: () => ({
-        events: [{ type: 'text', content: 'tail' }],
-        usage: undefined,
-        aiTitle: undefined,
-        recap: undefined,
-        displayTitle: 'placeholder',
-        reason: 'ok',
-      }),
+      codexRead: tailRead(undefined),
     });
     sessionStore.setCwd('user1', cwd);
 
@@ -3342,40 +3347,6 @@ describe('Bridge compact 终态映射 + 在途检测（§5.3）', () => {
     ) => AsyncGenerator<AgentEvent>;
   }
 
-  const notFoundRead: AgentSessionReader['readSessionContent'] =
-    createStubSessionReader().readSessionContent;
-
-  function makeCompactBridge(opts: {
-    runner?: Runner;
-    read?: AgentSessionReader['readSessionContent'];
-    /** 覆盖指定 agent 的 reader（如带 readCompactionState 的 kimi/claude reader）。 */
-    readers?: Record<string, AgentSessionReader>;
-  }) {
-    const sessionStore = new SessionStore();
-    const connector = createStubConnector();
-    const runner = opts.runner ?? createStubRunner();
-    const read = opts.read ?? notFoundRead;
-    const defaultReader: AgentSessionReader = {
-      listSessions: () => ({ sessions: [], total: 0 }),
-      getNewestSession: () => null,
-      readSessionContent: vi.fn(read),
-      isSessionActive: () => false,
-    };
-    const registry = new SessionReaderRegistry();
-    for (const agent of ['claude', 'codex', 'opencode', 'pi', 'kimi'] as const) {
-      registry.register(agent, opts.readers?.[agent] ?? defaultReader);
-    }
-    const bridge = new Bridge({
-      runner,
-      connector,
-      sessionStore,
-      config,
-      agentRegistry: createStubAgentRegistry(runner),
-      sessionReaderRegistry: registry,
-    });
-    return { bridge, sessionStore, connector, runner };
-  }
-
   function makeKimiInFlightReader(read: AgentSessionReader['readSessionContent']) {
     return {
       listSessions: () => ({ sessions: [], total: 0 }),
@@ -3403,14 +3374,7 @@ describe('Bridge compact 终态映射 + 在途检测（§5.3）', () => {
     const runner: CompactRunner = { ...createStubRunner(), runCompact: runCompactSpy };
     const { bridge, sessionStore, connector } = makeCompactBridge({
       runner,
-      read: () => ({
-        events: [{ type: 'text', content: 'tail' }],
-        usage: { compactCount: 0, contextLength: 100 },
-        aiTitle: undefined,
-        recap: undefined,
-        displayTitle: 'placeholder',
-        reason: 'ok',
-      }),
+      read: tailRead({ compactCount: 0, contextLength: 100 }),
     });
     sessionStore.setCwd('user1', cwd);
 
@@ -3513,14 +3477,7 @@ describe('Bridge compact 终态映射 + 在途检测（§5.3）', () => {
     // reader 必须返回非空内容，handleResumeCompact 的 session 校验才会放行到 runCompact。
     const { bridge, sessionStore } = makeCompactBridge({
       runner,
-      read: () => ({
-        events: [{ type: 'text', content: 'tail' }],
-        usage: undefined,
-        aiTitle: undefined,
-        recap: undefined,
-        displayTitle: 'placeholder',
-        reason: 'ok',
-      }),
+      read: tailRead(undefined),
     });
     sessionStore.setCwd('user1', cwd);
 

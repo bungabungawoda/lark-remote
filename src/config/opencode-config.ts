@@ -4,7 +4,8 @@
  * 从 opencode models --verbose 命令获取 provider 和 model 信息
  */
 
-import { execSync } from 'node:child_process';
+import { resolveExecutable } from '../platform/command.js';
+import { spawnProcessSync } from '../platform/spawn.js';
 import { getLogger } from '../logger/index.js';
 
 interface OpencodeConfigResult {
@@ -84,13 +85,23 @@ export function loadOpencodeConfig(): OpencodeConfigResult {
   }
 
   try {
+    // 经 seam 解析真实可执行文件（win32 PATHEXT），cross-spawn 同步执行
+    const resolved = resolveExecutable('opencode');
+    if (!resolved) throw new Error('opencode not found');
     // 执行 opencode models --verbose 获取所有模型信息
-    const output = execSync('opencode models --verbose', {
+    const res = spawnProcessSync(resolved.file, ['models', '--verbose'], {
       encoding: 'utf-8',
       // P1-8：30s → 10s，与 codex/kimi 对齐；maxBuffer 防模型清单 ENOBUFS 隐性截断
       timeout: 10000,
       maxBuffer: 64 * 1024 * 1024,
     });
+    if (res.error) throw res.error;
+    if (res.status !== 0) {
+      throw new Error(
+        `opencode models exited code=${res.status}: ${String(res.stderr).slice(-200)}`,
+      );
+    }
+    const output = String(res.stdout);
 
     // 按 provider 分组收集模型（只存 model ID，不存 provider/model 完整格式）
     const providerModels = new Map<string, string[]>();

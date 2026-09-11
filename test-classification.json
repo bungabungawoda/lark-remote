@@ -13,12 +13,11 @@
     "tests/anchor/priority/p1-21-completion-card.test.ts",
     "tests/anchor/misc/bridge-runner-opts.test.ts",
     "tests/anchor/misc/reaction-terminal-emoji.test.ts",
-    "tests/probe/reaction-terminal-emoji-probes.test.ts",
     "tests/anchor/approval-expiry/approval-expiry-expire-decline.test.ts",
-    "tests/probe/approval-expiry/approval-expiry-coordinator-idempotency-probe.test.ts",
-    "tests/probe/approval-expiry/approval-expiry-responder-failure-probe.test.ts",
-    "tests/probe/approval-expiry/approval-expiry-turn-end-probe.test.ts",
-    "tests/probe/approval-expiry/approval-expiry-multiple-pending-probe.test.ts"
+    "tests/anchor/approval-expiry/approval-expiry-coordinator-idempotency.test.ts",
+    "tests/anchor/approval-expiry/approval-expiry-responder-failure.test.ts",
+    "tests/anchor/approval-expiry/approval-expiry-turn-end.test.ts",
+    "tests/anchor/approval-expiry/approval-expiry-multiple-pending.test.ts"
   ],
   "infra-card": [
     "src/card/**/*.test.ts",
@@ -29,18 +28,11 @@
     "tests/card/run-card-budget-plan-filechange.test.ts",
     "tests/card/run-state-plan-filechange.test.ts",
     "tests/card/thinking-blocks.test.ts",
-    "tests/anchor/misc/card-shared-truncate-surrogate.test.ts",
+    "tests/anchor/misc/truncate-surrogate.test.ts",
     "tests/anchor/priority/p0-1-estimate-reuse.test.ts",
     "tests/anchor/priority/p0-bash-output.test.ts",
     "tests/anchor/priority/p0-fit-utf8.test.ts",
     "tests/anchor/misc/card-session-second-start-timeout.test.ts",
-    "tests/anchor/misc/degraded-showtoolresult-ignored.test.ts",
-    "tests/probe/run-card-budget-invariant-adversarial.test.ts",
-    "tests/probe/run-card-coalesced-flush-error-probe.test.ts",
-    "tests/probe/run-card-estimate-threshold-probe.test.ts",
-    "tests/probe/run-card-finish-flush-probe.test.ts",
-    "tests/probe/run-card-inflight-push-probe.test.ts",
-    "tests/probe/run-card-push-await-semantics-probe.test.ts",
     "tests/anchor/approval-expiry/approval-expiry-card-render.test.ts",
     "tests/anchor/approval-expiry/approval-expiry-reducer-mismatch.test.ts"
   ],
@@ -56,6 +48,8 @@
     "src/router/immediate-action.test.ts",
     "src/router/card-action-payload.test.ts",
     "src/router/ls-file.test.ts",
+    "src/router/paging-jump.test.ts",
+    "src/router/download.test.ts",
     "src/router/order-exec-dispatch.test.ts",
     "src/router/order-exec.test.ts",
     "src/router/router.test.ts",
@@ -83,8 +77,6 @@
     "tests/anchor/misc/order-text-edit-validation.test.ts",
     "tests/card/bash-command.test.ts",
     "tests/misc/multi-agent-commands.test.ts",
-    "tests/probe/resume-pagination-boundary-probes.test.ts",
-    "tests/probe/round10-router-probes.test.ts",
     "tests/anchor/approval-expiry/approval-expiry-user-feedback.test.ts"
   ],
   "infra-session": [
@@ -99,8 +91,7 @@
     "tests/anchor/misc/summarize-early-stop.test.ts",
     "tests/anchor/misc/session-reader-max-events-forward.test.ts",
     "tests/anchor/priority/p1-19-list-cache.test.ts",
-    "tests/probe/jsonl-stream-thrashing-probe.test.ts",
-    "tests/probe/round10-reader-probes.test.ts"
+    "tests/anchor/misc/readers-empty-dir-limit-bounds.test.ts"
   ],
   "infra-runner": [
     "src/runner/common/**/*.test.ts",
@@ -119,7 +110,6 @@
     "tests/anchor/priority/p1-22-bash-exit-cleanup.test.ts",
     "tests/anchor/priority/p1-9-index-factories-workspace.test.ts",
     "tests/anchor/priority/p2-11-base-await-spawn-error-timeout.test.ts",
-    "tests/anchor/priority/p2-12-spawn-error-after-success.test.ts",
     "tests/anchor/priority/p2-13-spawn-failure-cause.test.ts",
     "tests/anchor/priority/p2-15-process-stopper-grace-timer.test.ts",
     "tests/anchor/priority/p2-16-stderr-log-level.test.ts",
@@ -135,11 +125,15 @@
     "tests/anchor/priority/p1-7-config-save-atomic-write.test.ts",
     "tests/anchor/priority/p2-23-config-direct-write-discards-pending.test.ts",
     "tests/anchor/priority/p2-24-config-set-unknown-key-strips.test.ts",
-    "tests/anchor/misc/resolve-config-dir-expands-tilde.test.ts"
+    "tests/anchor/misc/resolve-config-dir-expands-tilde.test.ts",
+    "src/config/qr.test.ts"
   ],
   "infra-order": [
     "src/order/**/*.test.ts",
     "tests/misc/order.test.ts"
+  ],
+  "infra-platform": [
+    "src/platform/**/*.test.ts"
   ],
   "infra-misc": [
     "src/integration.test.ts",
@@ -148,6 +142,8 @@
     "src/startup-contact.test.ts",
     "src/binder.test.ts",
     "src/error-classification.test.ts",
+    "src/common/fs.test.ts",
+    "src/common/truncate.test.ts",
     "src/common/guards.test.ts",
     "src/common/ttl-cache.test.ts",
     "src/workspace/workspace.test.ts",
@@ -160,8 +156,7 @@
     "tests/anchor/priority/p2-19-logger-write-safety.test.ts",
     "tests/anchor/misc/restart-command.test.ts",
     "tests/anchor/misc/restart-wait-live-pid.test.ts",
-    "tests/misc/global-exception-handler.test.ts",
-    "tests/probe/restart-command-probes.test.ts"
+    "tests/misc/global-exception-handler.test.ts"
   ],
   "agent-claude": [
     "src/runner/claude/**/*.test.ts",
@@ -196,7 +191,7 @@
     "tests/anchor/codex-session/codex-same-mtime-stable-order.test.ts",
     "tests/anchor/codex-session/codex-session-active-excludes-subagent.test.ts",
     "tests/anchor/codex-session/codex-session-reader-max-events.test.ts",
-    "tests/probe/codex-reader-offset-boundary-probe.test.ts",
+    "tests/anchor/codex-session/codex-reader-offset-boundary.test.ts",
     "tests/anchor/approval-expiry/approval-expiry-integration-cancel.test.ts"
   ],
   "agent-opencode": [
@@ -223,12 +218,7 @@
     "tests/anchor/kimi/**/*.test.ts",
     "tests/anchor/priority/p1-16-kimi-wire-mtime.test.ts",
     "tests/anchor/priority/p1-17-kimi-jsonl-cache.test.ts",
-    "tests/anchor/misc/bridge-kimi-usage-threading.test.ts",
-    "tests/probe/kimi-reader-corrupt-state-json-probe.test.ts",
-    "tests/probe/kimi-session-active-tail-ordering-probe.test.ts",
-    "tests/probe/kimi-session-usage-malformed-record-probe.test.ts",
-    "tests/probe/kimi-session-usage-subagent-aggregation-probe.test.ts",
-    "tests/probe/kimi-usage-no-record-no-fake-zero-probe.test.ts"
+    "tests/anchor/misc/bridge-kimi-usage-threading.test.ts"
   ],
   "agent-dsh": [
     "src/runner/dsh/**/*.test.ts",

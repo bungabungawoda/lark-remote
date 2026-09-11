@@ -1,4 +1,4 @@
-import type { RunBlock, RunFooter, RunState, ToolEntry } from './run-state.js';
+import type { RunBlock, RunFooter, RunNotice, RunState, ToolEntry } from './run-state.js';
 import {
   terminalToColor,
   terminalToLabel,
@@ -119,9 +119,6 @@ function renderTextBlock(
 }
 
 export interface RunCardRenderOptions {
-  showThinking?: boolean;
-  showToolUse?: boolean;
-  showToolResult?: boolean;
   /**
    * Agent kind for the run card header title (e.g. "Claude · 思考中").
    * Defaults to 'claude' when not provided; the bridge passes `config.defaultAgent`.
@@ -152,6 +149,66 @@ type BlockGroup =
       diff?: string;
       timestamp?: string;
     };
+
+/** 内容时间线上的普通消息：内容组（原 blocks）或 notice 行。 */
+type ContentItem = BlockGroup | { kind: 'notice'; notice: RunNotice };
+
+/** 运行期通知作为普通消息渲染：与内容流同级的一行斜体提示。 */
+function renderNoticeRow(notice: RunNotice): object {
+  const icon = notice.level === 'info' ? 'ℹ️' : '⚠️';
+  return markdownDiv(`_${icon} ${notice.text}_`);
+}
+
+/** 内容组用于时间线插值的锚点时刻（与面板标题展示的时间戳一致）。 */
+function groupTimeMs(group: BlockGroup): number | undefined {
+  if (group.kind === 'tool') {
+    const ts = group.tool.completedAt ?? group.tool.startedAt;
+    return ts ? Date.parse(ts) : undefined;
+  }
+  return group.timestamp ? Date.parse(group.timestamp) : undefined;
+}
+
+/**
+ * 把 notices 作为普通消息并入内容时间线：按到达时间插到对应内容组之间。
+ * 内容组自身的相对顺序不被改动（仍由 run-state 的块数组决定），时间戳只决定
+ * notice 的落点；无时间戳的 notice 无法定位，兜底置于内容流末尾。
+ */
+function mergeNoticesIntoContent(
+  groups: BlockGroup[],
+  notices: RunNotice[] | undefined,
+): ContentItem[] {
+  if (!notices || notices.length === 0) return groups;
+  const timed: RunNotice[] = [];
+  const untimed: RunNotice[] = [];
+  for (const notice of notices) {
+    if (notice.timestamp) timed.push(notice);
+    else untimed.push(notice);
+  }
+  const items: ContentItem[] = [];
+  let cursor = 0;
+  for (const notice of timed) {
+    const t = Date.parse(notice.timestamp!);
+    if (!Number.isNaN(t)) {
+      while (
+        cursor < groups.length &&
+        groupTimeMs(groups[cursor]) !== undefined &&
+        (groupTimeMs(groups[cursor]) as number) <= t
+      ) {
+        items.push(groups[cursor]);
+        cursor++;
+      }
+    }
+    items.push({ kind: 'notice', notice });
+  }
+  while (cursor < groups.length) {
+    items.push(groups[cursor]);
+    cursor++;
+  }
+  for (const notice of untimed) {
+    items.push({ kind: 'notice', notice });
+  }
+  return items;
+}
 
 /** 每个块的截断后内容（thinking/plan/text），测量与渲染共用（P1-2 建议项）。 */
 type GroupContentPrepared = Map<BlockGroup, string>;
@@ -240,9 +297,9 @@ function groupBlocks(blocks: RunBlock[]): BlockGroup[] {
  * - Running tool: expanded (user can watch live)
  * - Completed tool: collapsed (click to inspect)
  */
-function renderTool(tool: ToolEntry, finalized: boolean, showResult: boolean): object {
+function renderTool(tool: ToolEntry, finalized: boolean): object {
   const border: PanelBorder = tool.status === 'error' ? 'red' : 'grey';
-  const body = showResult ? toolBodyMd(tool) : toolBodyMd({ ...tool, output: undefined });
+  const body = toolBodyMd(tool);
   return collapsibleMarkdownPanel({
     title: toolTitle(tool),
     expanded: !finalized && tool.status === 'running',
@@ -287,8 +344,8 @@ const EXTREME_TIER: BudgetTierConfig = {
   textBytes: DEGRADED_TEXT_BYTES,
 };
 
-/** Bottom action row: stop (if running) + compact (if applicable) + new session (always). */
-function actionRow(state: RunState, options: RunCardRenderOptions): object[] {
+/** Bottom action buttons: stop (if running) + compact (if applicable) + new session (always). */
+function actionButtonList(state: RunState, options: RunCardRenderOptions): object[] {
   const actionButtons: object[] = [];
   // finalizing 也显示停止按钮（进程未退出，用户可 /stop）
   const showStop = state.terminal === 'running' || state.terminal === 'finalizing';
@@ -300,7 +357,12 @@ function actionRow(state: RunState, options: RunCardRenderOptions): object[] {
     actionButtons.push(compactButton(state.runId));
   }
   actionButtons.push(newSessionButton());
+  return actionButtons;
+}
 
+/** Bottom action row: spacer + column_set of actionButtonList (估算与渲染共用，W2.2）。 */
+function actionRow(state: RunState, options: RunCardRenderOptions): object[] {
+  const actionButtons = actionButtonList(state, options);
   if (actionButtons.length === 0) return [];
   return [
     { tag: 'div', text: { content: '‎', tag: 'lark_md' } }, // spacer
@@ -315,7 +377,9 @@ function actionRow(state: RunState, options: RunCardRenderOptions): object[] {
   ];
 }
 
-/** 审批区位于 body 最底部（底部操作行之后）：待审批时决策按钮不遮挡内容流。 */
+/** 审批区位于 body 最底部（底部操作行之后）：待审批时决策按钮不遮挡内容流。
+ *  例外：skeleton 兜底路径中 approvalArea 在 actionRow 之前（信息保真 C4.3），
+ *  保证极端降级时审批入口与 stop/new-session 按钮同时可见。 */
 function approvalArea(state: RunState): object[] {
   const elements: object[] = [];
   for (const slot of state.approvals ?? []) {
@@ -328,6 +392,13 @@ function approvalArea(state: RunState): object[] {
     );
   }
   return elements;
+}
+
+/** 底部操作行之前的内容区提示：被 MAX_BLOCKS 截掉的早期块计数（信息保真 C4.1）。 */
+function omittedBlocksHint(state: RunState): object[] {
+  return state.omittedBlocks !== undefined && state.omittedBlocks > 0
+    ? [markdownDiv(`_💡 已省略 ${state.omittedBlocks} 个早期步骤_`)]
+    : [];
 }
 
 /** Assemble the card shell (schema/config/header) around body elements. */
@@ -360,6 +431,7 @@ function buildFallbackElements(
   const elements: object[] = [];
 
   elements.push(statusRow(state));
+  elements.push(...omittedBlocksHint(state));
 
   // 单遍分桶：thinking / tool（保持原相对顺序）
   const { thinking: allThinkingBlocks, tool: allToolBlocks } = bucketThinkingAndTool(state.blocks);
@@ -397,10 +469,29 @@ function buildFallbackElements(
     return true; // keep all non-thinking, non-tool blocks
   });
 
-  // Render thinking/text/tool in chronological order using groupBlocks
-  for (const group of groupBlocks(filteredBlocks)) {
+  // 信息保真 C4.2：plan/file_change 块在降级路径不渲染内容（正常路径已可见，
+  // 降级预算紧张），但必须计数留痕，禁止静默丢弃。
+  // 计数在渲染前完成，提示与 thinking/tool 省略提示一并置于卡片顶部——不能等
+  // 内容循环结束再追加，否则提示会落在最后一条输出之后，打乱「输出收尾」观感。
+  const groupsToRender = groupBlocks(filteredBlocks);
+  const omittedPlanOrFileChange = groupsToRender.filter(
+    (g) => g.kind === 'plan' || g.kind === 'file_change',
+  ).length;
+  if (omittedPlanOrFileChange > 0) {
+    elements.push(markdownDiv(`_💡 另外 ${omittedPlanOrFileChange} 个计划/文件变更已省略_`));
+  }
+
+  // notices 作为普通消息按时间插入内容流（与正常路径同语义）；降级只裁剪
+  // 内容块，不裁剪运行期通知。
+  const contentItems = mergeNoticesIntoContent(groupsToRender, state.notices);
+  // Render thinking/text/tool/notice in chronological order
+  for (const item of contentItems) {
+    if (item.kind === 'notice') {
+      elements.push(renderNoticeRow(item.notice));
+      continue;
+    }
+    const group = item;
     if (group.kind === 'thinking') {
-      if (options.showThinking === false) continue;
       const ts = formatTimestamp(group.timestamp);
       const title = '💭 **思考完成**';
       const content = truncateUtf8(group.content, tier.thinkingBytes);
@@ -420,8 +511,7 @@ function buildFallbackElements(
       elements.push(...renderTextBlock(content, ts, true));
     } else if (group.kind === 'tool') {
       // Show tool individually (each tool is independent now)
-      if (options.showToolUse === false) continue;
-      elements.push(renderTool(group.tool, true, options.showToolResult !== false)); // finalized=true
+      elements.push(renderTool(group.tool, true)); // finalized=true
     }
   }
 
@@ -429,7 +519,7 @@ function buildFallbackElements(
     elements.push(markdownDiv('_暂无输出_'));
   }
 
-  elements.push(...buildSummaryContent(state));
+  elements.push(...buildSummaryContent(state, { includeNotices: false }));
   elements.push(...actionRow(state, options));
   elements.push(...approvalArea(state));
 
@@ -497,6 +587,10 @@ function buildSkeletonElements(state: RunState, options: RunCardRenderOptions): 
   // Summary (token stats etc.) — static, bounded size
   elements.push(...buildSummaryContent(state));
 
+  // 信息保真 C4.3：skeleton 也渲染审批区——极端兜底不丢审批入口
+  //（待审批被静默吞掉 = 用户永远看不到审批请求）。
+  elements.push(...approvalArea(state));
+
   // Bottom action row: stop (if running/finalizing) + compact (if applicable) + new session (always).
   // Degraded paths must keep the action buttons reachable (design constraint).
   elements.push(...actionRow(state, options));
@@ -545,6 +639,46 @@ function bucketThinkingAndTool(blocks: RunBlock[]): {
  * 走正常路径，renderRunCard 仍会 stringify 确认 ≤28KB；若估算低估，仍 fallback
  * 到 degraded（安全网不丢）。
  */
+/**
+ * W2.2 镜像对单源：thinking/plan/file_change 三个 collapsible 面板组的
+ * { title, expanded, border, content } 描述，估算（measurePanelBytes）与渲染
+ * （collapsibleMarkdownPanel）共用——此前同一套标题/opIcon/内容模板写两遍。
+ * text（renderTextBlock）与 tool（renderTool）形态特殊，由调用方各自处理；
+ * 返回 null 表示该组不是 collapsible 面板。
+ */
+function describePanelGroup(
+  group: BlockGroup,
+  prepared: GroupContentPrepared,
+): { title: string; expanded: boolean; border: PanelBorder; content: string } | null {
+  if (group.kind === 'tool') return null;
+  const ts = formatTimestamp(group.timestamp);
+  const suffix = ts ? ` (${ts})` : '';
+  if (group.kind === 'thinking') {
+    const title = (group.active ? '💭 **思考中**' : '💭 **思考完成**') + suffix;
+    return { title, expanded: group.active, border: 'grey', content: prepared.get(group) ?? '' };
+  }
+  if (group.kind === 'plan') {
+    const title = (group.active ? '📋 **执行计划**' : '📋 **计划完成**') + suffix;
+    return { title, expanded: group.active, border: 'blue', content: prepared.get(group) ?? '' };
+  }
+  if (group.kind === 'file_change') {
+    const opIcon =
+      group.operation === 'create'
+        ? '🆕'
+        : group.operation === 'edit'
+          ? '✏️'
+          : group.operation === 'delete'
+            ? '🗑️'
+            : '📖';
+    const title = `${opIcon} **文件改动**${suffix}`;
+    const content = group.diff
+      ? `**${group.path}**\n\n\`\`\`\n${group.diff}\n\`\`\``
+      : `**${group.path}** (${group.operation})`;
+    return { title, expanded: false, border: 'grey', content };
+  }
+  return null;
+}
+
 /** 导出供测试断言估算精度（估算 ≈ 实际渲染字节，见 tests/anchor/run-card/run-card.test.ts）。 */
 export function estimateCardBytes(
   state: RunState,
@@ -552,95 +686,50 @@ export function estimateCardBytes(
   shared?: { groups?: BlockGroup[]; prepared?: GroupContentPrepared },
 ): number {
   const finalized = state.terminal !== 'running';
-  const showResult = options.showToolResult !== false;
-  const showThinking = options.showThinking !== false;
-  const showToolUse = options.showToolUse !== false;
   // P1-2：renderRunCard 传入共享 groups/prepared 时直接复用（截断只做一次）；
   // 独立调用（测试/预算探针）时自建，行为与原先一致。
   const groups = shared?.groups ?? groupBlocks(state.blocks);
   const prepared = shared?.prepared ?? prepareGroupContent(groups);
 
-  // 卡片外壳 + 状态行 + summary（小对象实测，动态文案精确）
+  // 卡片外壳直接实测 assembleRunCard 空元素产物（schema/config/header/body 结构
+  // 与正式渲染完全一致，W2.2）；status/summary/操作行同样实测渲染结构。
+  // 注：审批区（approvalArea）不参与估算——待审批通常在途且体积小，超预算由
+  // renderRunCard 的 stringify 兜底捕获。
   let total =
-    measureJson({
-      schema: '2.0',
-      config: { wide_screen_mode: true, update_multi: true },
-      header: {
-        template: headerTemplate2(state),
-        title: { content: headerTitle2(state, options), tag: 'plain_text' },
-      },
-      body: { elements: [] },
-    }) +
+    measureJson(assembleRunCard(state, options, [])) +
     measureJson(statusRow(state)) +
-    measureJson(buildSummaryContent(state));
+    measureJson(buildSummaryContent(state, { includeNotices: false })) +
+    measureJson(actionRow(state, options));
 
-  // 底部操作行：spacer + 操作按钮（与 renderRunCard normal 分支一致）
-  const actionButtons: object[] = [];
-  if (state.terminal === 'running' || state.terminal === 'finalizing') {
-    actionButtons.push(stopButton(state.runId));
-  }
-  if (shouldShowCompactButton(state, options)) {
-    actionButtons.push(compactButton(state.runId));
-  }
-  actionButtons.push(newSessionButton());
-  total += measureJson([
-    { tag: 'div', text: { content: '‎', tag: 'lark_md' } },
-    {
-      tag: 'column_set',
-      columns: actionButtons.map((btn) => ({
-        tag: 'column',
-        width: 'auto',
-        elements: [btn],
-      })),
-    },
-  ]);
-
-  // 块内容：与 buildChronologicalContent 同源（groupBlocks 合并语义一致）
+  // 块内容：与 buildChronologicalContent 同源（describePanelGroup 单源，W2.2）
   let renderedAny = false;
   for (const group of groups) {
-    if (group.kind === 'thinking') {
-      if (!showThinking) continue;
+    if (group.kind === 'tool') {
       renderedAny = true;
-      const ts = formatTimestamp(group.timestamp);
-      const title = group.active ? '💭 **思考中**' : '💭 **思考完成**';
-      const header = ts ? `${title} (${ts})` : title;
-      total += measurePanelBytes(header, group.active, 'grey', prepared.get(group) ?? '');
-    } else if (group.kind === 'plan') {
-      renderedAny = true;
-      const ts = formatTimestamp(group.timestamp);
-      const title = group.active ? '📋 **执行计划**' : '📋 **计划完成**';
-      const header = ts ? `${title} (${ts})` : title;
-      total += measurePanelBytes(header, group.active, 'blue', prepared.get(group) ?? '');
-    } else if (group.kind === 'file_change') {
-      renderedAny = true;
-      const ts = formatTimestamp(group.timestamp);
-      const opIcon =
-        group.operation === 'create'
-          ? '🆕'
-          : group.operation === 'edit'
-            ? '✏️'
-            : group.operation === 'delete'
-              ? '🗑️'
-              : '📖';
-      const title = `${opIcon} **文件改动**`;
-      const content = group.diff
-        ? `**${group.path}**\n\n\`\`\`\n${group.diff}\n\`\`\``
-        : `**${group.path}** (${group.operation})`;
-      const header = ts ? `${title} (${ts})` : title;
-      total += measurePanelBytes(header, false, 'grey', content);
-    } else if (group.kind === 'text') {
+      // tool 直接实测真实渲染元素（复用 renderTool，output ≤1200 字符，物化廉价）
+      total += measureJson(renderTool(group.tool, finalized));
+      continue;
+    }
+    if (group.kind === 'text') {
       const content = prepared.get(group) ?? '';
       if (!content.trim()) continue;
       renderedAny = true;
       const ts = formatTimestamp(group.timestamp);
       const header = `💬 **输出**${ts ? ` (${ts})` : ''}`;
       total += measurePanelBytes(header, true, 'grey', content);
-    } else if (group.kind === 'tool') {
-      if (!showToolUse) continue;
-      renderedAny = true;
-      // tool 直接实测真实渲染元素（复用 renderTool，output ≤1200 字符，物化廉价）
-      total += measureJson(renderTool(group.tool, finalized, showResult));
+      continue;
     }
+    const spec = describePanelGroup(group, prepared);
+    if (!spec) continue;
+    renderedAny = true;
+    total += measurePanelBytes(spec.title, spec.expanded, spec.border, spec.content);
+  }
+
+  // notices 在正常路径作为普通消息内联渲染（与 buildChronologicalContent 同源，
+  // renderNoticeRow 单源）；行体积与位置无关，直接按条累加。
+  for (const notice of state.notices ?? []) {
+    renderedAny = true;
+    total += measureJson(renderNoticeRow(notice));
   }
 
   if (!renderedAny) {
@@ -686,8 +775,9 @@ export function renderRunCard(state: RunState, options: RunCardRenderOptions = {
   if (estimate < DEGRADED_THRESHOLD) {
     const elements: object[] = [
       statusRow(state),
-      ...buildChronologicalContent(state, options, prepared, groups),
-      ...buildSummaryContent(state),
+      ...omittedBlocksHint(state),
+      ...buildChronologicalContent(state, prepared, groups),
+      ...buildSummaryContent(state, { includeNotices: false }),
       ...actionRow(state, options),
       ...approvalArea(state),
     ];
@@ -734,83 +824,45 @@ export function renderRunCard(state: RunState, options: RunCardRenderOptions = {
 /** Build content in chronological order using groupBlocks to interleave thinking/text/tools. */
 function buildChronologicalContent(
   state: RunState,
-  options: RunCardRenderOptions,
-  prepared?: GroupContentPrepared,
-  groups?: BlockGroup[],
+  prepared: GroupContentPrepared,
+  groups: BlockGroup[],
 ): object[] {
   const elements: object[] = [];
   // finalized = 非 running（含 finalizing：主结果已出，thinking 折叠）
   const finalized = state.terminal !== 'running';
-  const showResult = options.showToolResult !== false;
 
   // P1-2：renderRunCard 传入同一 groups 数组时直接复用（prepared 的键是组对象
   // 引用，重建数组会让 prepared.get 永远 miss，退化为二次截断）。
-  for (const group of groups ?? groupBlocks(state.blocks)) {
-    if (group.kind === 'thinking') {
-      if (options.showThinking === false) continue;
-      const ts = formatTimestamp(group.timestamp);
-      const title = group.active ? '💭 **思考中**' : '💭 **思考完成**';
-      const content = prepared?.get(group) ?? truncateUtf8(group.content, REASONING_BYTES);
-      const header = ts ? `${title} (${ts})` : title;
-      elements.push(
-        collapsibleMarkdownPanel({
-          title: header,
-          expanded: group.active,
-          border: 'grey',
-          content,
-          textSize: 'notation',
-        }),
-      );
-    } else if (group.kind === 'plan') {
-      // Plan blocks: render as collapsible panel (default collapsed)
-      const ts = formatTimestamp(group.timestamp);
-      const title = group.active ? '📋 **执行计划**' : '📋 **计划完成**';
-      const content = prepared?.get(group) ?? truncateUtf8(group.content, REASONING_BYTES * 2);
-      const header = ts ? `${title} (${ts})` : title;
-      elements.push(
-        collapsibleMarkdownPanel({
-          title: header,
-          expanded: group.active, // expand while active, collapse when done
-          border: 'blue',
-          content,
-          textSize: 'notation',
-        }),
-      );
-    } else if (group.kind === 'file_change') {
-      // File change blocks: render as collapsible panel (default collapsed)
-      const ts = formatTimestamp(group.timestamp);
-      const opIcon =
-        group.operation === 'create'
-          ? '🆕'
-          : group.operation === 'edit'
-            ? '✏️'
-            : group.operation === 'delete'
-              ? '🗑️'
-              : '📖';
-      const title = `${opIcon} **文件改动**`;
-      const content = group.diff
-        ? `**${group.path}**\n\n\`\`\`\n${group.diff}\n\`\`\``
-        : `**${group.path}** (${group.operation})`;
-      const header = ts ? `${title} (${ts})` : title;
-      elements.push(
-        collapsibleMarkdownPanel({
-          title: header,
-          expanded: false,
-          border: 'grey',
-          content,
-          textSize: 'notation',
-        }),
-      );
-    } else if (group.kind === 'text') {
-      const content =
-        prepared?.get(group) ?? truncateUtf8(group.content, TEXT_BYTES, true, '…（已截断）\n');
-      const ts = formatTimestamp(group.timestamp);
-      const els = renderTextBlock(content, ts, finalized);
-      elements.push(...els);
-    } else if (group.kind === 'tool') {
-      if (options.showToolUse === false) continue;
-      elements.push(renderTool(group.tool, finalized, showResult));
+  // W2.2：面板组描述经 describePanelGroup 与估算共享同一份模板。
+  // notices 作为普通消息按到达时间插入内容流（有内容时不再沉到 summary）。
+  const contentItems = mergeNoticesIntoContent(groups, state.notices);
+  for (const item of contentItems) {
+    if (item.kind === 'notice') {
+      elements.push(renderNoticeRow(item.notice));
+      continue;
     }
+    const group = item;
+    if (group.kind === 'tool') {
+      elements.push(renderTool(group.tool, finalized));
+      continue;
+    }
+    if (group.kind === 'text') {
+      const content = prepared.get(group) ?? '';
+      const ts = formatTimestamp(group.timestamp);
+      elements.push(...renderTextBlock(content, ts, finalized));
+      continue;
+    }
+    const spec = describePanelGroup(group, prepared);
+    if (!spec) continue;
+    elements.push(
+      collapsibleMarkdownPanel({
+        title: spec.title,
+        expanded: spec.expanded,
+        border: spec.border,
+        content: spec.content,
+        textSize: 'notation',
+      }),
+    );
   }
 
   if (elements.length === 0) {
@@ -821,8 +873,20 @@ function buildChronologicalContent(
 }
 
 /** Build summary tab content */
-function buildSummaryContent(state: RunState): object[] {
+function buildSummaryContent(
+  state: RunState,
+  options: { includeNotices?: boolean } = {},
+): object[] {
   const elements: object[] = [];
+
+  // 运行期通知默认仍走 summary（skeleton 兜底：内容区整体缺失时唯一可见位置）。
+  // 正常/degraded/extreme 路径传入 includeNotices:false——通知已作为普通消息
+  // 按时间线内联渲染（renderNoticeRow），避免同一通知渲染两遍。
+  if (options.includeNotices !== false) {
+    for (const notice of state.notices ?? []) {
+      elements.push(renderNoticeRow(notice));
+    }
+  }
 
   // running 时不显示统计（仍在生成）；finalizing 显示等待提示
   if (state.terminal === 'running') {
@@ -861,7 +925,15 @@ function buildSummaryContent(state: RunState): object[] {
     const result = state.resultSubtype ?? 'success';
 
     const hasContent = state.blocks.length > 0;
-    const empty = !hasContent ? '\n\n（未返回内容）' : '';
+    // 压缩（operationKind='compaction'）不会返回 agent 正文——引擎只压缩上下文
+    // 窗口，空内容属正常，不能沿用普通 run 的「（未返回内容）」异常信号
+    // （2026-09 用户反馈）。所有会压缩的 agent（codex/claude/kimi/opencode/pi）
+    // 都经 streamCodexCompact 走这条共享渲染路径，一处覆盖全部。
+    const empty = hasContent
+      ? ''
+      : state.operationKind === 'compaction'
+        ? '\n\n🗜 Compact 完成'
+        : '\n\n（未返回内容）';
 
     const usageStatsStr = formatUsageStats(
       {
@@ -879,6 +951,9 @@ function buildSummaryContent(state: RunState): object[] {
         cumulativeOutputTokens: state.cumulativeOutputTokens,
         cumulativeCacheReadTokens: state.cumulativeCacheReadTokens,
         cumulativeCacheCreationTokens: state.cumulativeCacheCreationTokens,
+        model: state.model,
+        costUsd: state.costUsd,
+        reasoningTokens: state.reasoningTokens,
       },
       { showResult: true, result },
     );

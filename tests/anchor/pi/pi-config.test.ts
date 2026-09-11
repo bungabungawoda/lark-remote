@@ -27,6 +27,7 @@ import {
 } from '../../../src/config/pi-config.js';
 import { CommandRouter } from '../../../src/router/index.js';
 import { SessionStore } from '../../../src/session/index.js';
+import { extractFieldOptions } from '../../lib/pi-card-fields.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -34,60 +35,6 @@ import os from 'node:os';
 // ---------------------------------------------------------------------------
 // Shared stub factories
 // ---------------------------------------------------------------------------
-/** 从 card JSON 中提取指定 key 字段的 select 选项值 */
-function extractFieldOptions(card: object, fieldKey: string): string[] {
-  const json = JSON.stringify(card);
-  const keyPattern = `"key":"${fieldKey}"`;
-  const keyIndex = json.indexOf(keyPattern);
-  if (keyIndex === -1) return [];
-
-  const columnSetPattern = '{"tag":"column_set"';
-  const columnSetStart = json.lastIndexOf(columnSetPattern, keyIndex);
-  if (columnSetStart === -1) return [];
-
-  const searchEnd = Math.min(keyIndex + 500, json.length);
-  const searchArea = json.substring(columnSetStart, searchEnd);
-
-  const selectStart = searchArea.indexOf('"tag":"select_static"');
-  if (selectStart === -1) return [];
-
-  const optionsStart = searchArea.indexOf('"options":[', selectStart);
-  if (optionsStart === -1) return [];
-
-  let depth = 0;
-  let inString = false;
-  let escape = false;
-  let optionsEnd = -1;
-  for (let i = optionsStart + 9; i < searchArea.length; i++) {
-    const c = searchArea[i];
-    if (escape) {
-      escape = false;
-      continue;
-    }
-    if (c === '\\') {
-      escape = true;
-      continue;
-    }
-    if (c === '"') {
-      inString = !inString;
-      continue;
-    }
-    if (inString) continue;
-    if (c === '[') depth++;
-    if (c === ']') {
-      depth--;
-      if (depth === 0) {
-        optionsEnd = i;
-        break;
-      }
-    }
-  }
-  if (optionsEnd === -1) return [];
-
-  const optionsJson = searchArea.substring(optionsStart, optionsEnd + 1);
-  const matches = optionsJson.matchAll(/"value"\s*:\s*"([^"]+)"/g);
-  return Array.from(matches, (m) => m[1]);
-}
 
 /** Write a models.json into the current PI_CONFIG_DIR */
 function writeModelsJson(providers: Record<string, unknown>): void {
@@ -143,7 +90,6 @@ describe('config path mapping', () => {
         },
       },
       idle: { watchdogMinutes: 15 },
-      output: { showThinking: true, showToolUse: true, showToolResult: true },
       logging: { level: 'info' },
       defaultAgent: 'claude',
     });
@@ -203,7 +149,6 @@ describe('config path mapping', () => {
           },
         },
         idle: { watchdogMinutes: 15 },
-        output: { showThinking: true, showToolUse: true, showToolResult: true },
         logging: { level: 'info' },
         defaultAgent: 'claude',
       };

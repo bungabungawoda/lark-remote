@@ -12,14 +12,13 @@ import {
   setConfigValue,
   setConfigValues,
   mapAgentKey,
-  assertSafeKeyPart,
-  walkNestedContainer,
   getAgentConfig,
 } from '../config/index.js';
 import { syncAgentChoices } from '../runner/index.js';
 import { WorkspaceStore } from '../workspace/index.js';
 import { OrderStore, type OrderEntry } from '../order/index.js';
 import { resolveAlias } from '../order/alias-resolve.js';
+import { diffConfig, setNestedValue } from './config-diff.js';
 import type {
   AgentKind,
   AgentSession,
@@ -28,7 +27,13 @@ import type {
 } from '../runner/index.js';
 import { getLogger } from '../logger/index.js';
 import { type SessionDisplayUsage, activeRunUsage, clampInt } from './utils.js';
-import { markdownDiv, buildSessionHistoryCard, paginationBar } from './card-helpers.js';
+import {
+  markdownDiv,
+  buildSessionHistoryCard,
+  paginationBar,
+  parseJumpOffset,
+  PAGE_JUMP_INVALID_HINT,
+} from './card-helpers.js';
 import { MAX_FILE_UPLOAD_SIZE } from '../connector/file-limits.js';
 import { atomicWrite } from '../persistence/atomic-write.js';
 import {
@@ -93,6 +98,15 @@ function pageSlice<T>(
 }
 
 const ACTIVE_PAGE_SIZE = 20;
+
+/** 人类可读字节数（B/KB/MB/GB）；/ls 列表与单文件卡共用。 */
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes}B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)}KB`;
+  if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)}MB`;
+  return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)}GB`;
+}
+
 /**
  * /order 列表页大小；指令超过此数量时显示分页导航栏。
  * 2026-08-13 实测：每行 2 个元素（div + column_set，行间 hr），20 行 + 分页栏
@@ -114,16 +128,26 @@ const WS_PAGE_SIZE = 5;
  * 归一化卡片分页参数：clamp pageSize 到 [1,maxPageSize]，offset 归整为
  * 非负整数并对齐到页边界。非数字 payload（如 'abc'）不得产生 NaN slice。
  *
+ * 「跳转页码」输入框（paginationBar 内置）的提交值优先于 offset；非法输入
+ * 返回 `error` 文案，调用方应回错误 toast 且不刷新卡片。
+ *
  * resume.page / active.page 共用，避免两处重复实现分页归一化。
  */
 function normalizePageArgs(
-  value: { pageSize?: unknown; offset?: unknown },
+  value: { pageSize?: unknown; offset?: unknown; inputValue?: unknown },
   maxPageSize: number,
-): { pageSize: number; alignedOffset: number } {
+): { pageSize: number; alignedOffset: number; error?: string } {
   const rawPageSize = Number(value.pageSize);
   const pageSize = Number.isFinite(rawPageSize)
     ? clampInt(Math.trunc(rawPageSize), 1, maxPageSize)
     : maxPageSize;
+  const jump = parseJumpOffset(value.inputValue, pageSize);
+  if (jump === null) {
+    return { pageSize, alignedOffset: 0, error: PAGE_JUMP_INVALID_HINT };
+  }
+  if (jump !== undefined) {
+    return { pageSize, alignedOffset: Math.floor(jump / pageSize) * pageSize };
+  }
   const rawOffset = Number(value.offset);
   const offset = Number.isFinite(rawOffset) ? Math.max(0, Math.trunc(rawOffset)) : 0;
   return { pageSize, alignedOffset: Math.floor(offset / pageSize) * pageSize };
@@ -138,6 +162,7 @@ const RESUME_CONTENT_PREFETCH = 5;
  */
 const RESUME_SUMMARY_PLACEHOLDERS = new Set(['', '(no user message)', '(无摘要)', 'New Session']);
 import { newSessionButton, resumeCompactButton, agentDisplayName } from '../card/card-shared.js';
+import { displayName } from '../platform/path.js';
 
 interface CommandContext {
   userId: string;
@@ -176,48 +201,8 @@ interface CommandResult {
 export function isImmediateAction(cmd: string): boolean {
   // help.* wildcard: any command starting with "help."
   if (cmd.startsWith('help.')) return true;
-  return (
-    cmd === 'new-session' ||
-    cmd === 'stop' ||
-    cmd === 'ls.file' ||
-    cmd === 'ls.refresh' ||
-    cmd === 'ls.browse' ||
-    cmd === 'ls.switch' ||
-    cmd === 'ls.page' ||
-    cmd === 'resume.page' || // control operation: paginate only, never spawns claude
-    cmd === 'active.page' || // control operation: paginate active card
-    cmd === 'ws.page' || // control operation: paginate /ws list only
-    cmd === 'ws.remove' ||
-    cmd === 'ws.sort' || // control operation: toggle sort mode only
-    cmd === 'resume.use' ||
-    cmd === 'ws.use' ||
-    cmd === 'queue.immediate' ||
-    cmd === 'queue.cancel' ||
-    cmd === 'queue.diagnose' ||
-    cmd === 'queue.edit' ||
-    cmd === 'queue.input' ||
-    cmd === 'order.delete' ||
-    cmd === 'order.page' ||
-    cmd === 'order.aliasEdit' ||
-    cmd === 'order.aliasInput' ||
-    cmd === 'order.aliasRemove' ||
-    cmd === 'order.textEdit' ||
-    cmd === 'order.textInput' ||
-    cmd === 'config.toggle' ||
-    cmd === 'config.set' ||
-    cmd === 'config.input' ||
-    cmd === 'config.save' ||
-    // 审批响应/权限切换必须即时触达在途 run（同 stop 类控制动作）。若走串行
-    // 队列会排在等待审批的 run 之后形成死锁：run 不结束审批不执行，run 结束
-    // coordinator 已删响应空转（线上复现：approval.respond 排队卡、审批永不生效）。
-    cmd === 'approval.respond' ||
-    cmd === 'approval.toggle' ||
-    cmd === 'approval.answer' ||
-    cmd === 'approval.answerSubmit' ||
-    cmd === 'approval.answerCustom' ||
-    cmd === 'approval.answerNote' ||
-    cmd === 'approval.planFeedback'
-  );
+  // 名单在 APPROVAL_ACTION_SPECS 之后定义（模块初始化完成后才可能被调用）。
+  return IMMEDIATE_ACTION_CMDS.has(cmd);
 }
 
 /** Payload carried by a card button click. */
@@ -235,6 +220,11 @@ export interface CardActionPayload {
   key?: string;
   /** /ls 与 /resume 列表分页起点（条目数）。 */
   offset?: number;
+  /**
+   * `/ls` 浏览起点（本次 `/ls <dir>` 指定的目录；省略时 = cwd）。
+   * 卡片上的「返回」按钮回到这里，而不是回到 workspace cwd。
+   */
+  root?: string;
   /** /resume 列表的 agent 类型。 */
   agent?: string;
   /** /resume 列表页大小覆盖。 */
@@ -411,6 +401,73 @@ const APPROVAL_ACTION_SPECS: Record<string, ApprovalActionSpec> = {
     failureToast: (msg) => ({ toast: { type: 'error', content: `修改意见保存失败：${msg}` } }),
   },
 };
+
+// ===========================================================================
+// W2.1 命令名单单一事实源
+// 直返语义（cardAction 同步返回 toast 给飞书回调，index.ts 控制层据此不经
+// 队列直接处理）与即时语义（绕串行队列 enqueueImmediate，§9.6）正交，两个
+// 独立清单只共享审批命令名来源（APPROVAL_ACTION_SPECS keys）——历史上同一
+// 份知识四份拷贝曾两次漂移（order.textInput 漏 immediate、answer 家族漏直返）。
+// ===========================================================================
+
+/** 审批命令名清单（APPROVAL_ACTION_SPECS keys，handleCardAction 分发共用）。 */
+export const APPROVAL_ACTION_CMDS: readonly string[] = Object.keys(APPROVAL_ACTION_SPECS);
+
+/**
+ * 直返命令：点击后同步返回 toast 给飞书回调，不经队列。
+ * index.ts 控制层直返清单的唯一来源（勿在别处复制名单）。
+ */
+export const DIRECT_RETURN_CMDS: ReadonlySet<string> = new Set([
+  'queue.input',
+  'order.aliasInput',
+  'order.aliasRemove',
+  'order.textInput',
+  'config.save',
+  ...APPROVAL_ACTION_CMDS,
+]);
+
+/** 即时命令清单（绕串行队列 enqueueImmediate）。 */
+const IMMEDIATE_ACTION_CMDS: ReadonlySet<string> = new Set([
+  'new-session',
+  'stop',
+  'ls.file',
+  'ls.refresh',
+  'ls.browse',
+  'ls.switch',
+  'ls.page', // control operation: paginate only, never spawns claude
+  'resume.page', // control operation: paginate only, never spawns claude
+  'active.page', // control operation: paginate active card
+  'ws.page', // control operation: paginate /ws list only
+  'ws.remove',
+  'ws.sort', // control operation: toggle sort mode only
+  'resume.use',
+  'ws.use',
+  'queue.immediate',
+  'queue.cancel',
+  'queue.diagnose',
+  'queue.edit',
+  'queue.input',
+  'order.delete',
+  'order.page',
+  'order.aliasEdit',
+  'order.aliasInput',
+  'order.aliasRemove',
+  'order.textEdit',
+  'order.textInput',
+  'config.toggle',
+  'config.set',
+  'config.input',
+  'config.save',
+  // 审批响应/权限切换必须即时触达在途 run（同 stop 类控制动作）。若走串行
+  // 队列会排在等待审批的 run 之后形成死锁：run 不结束审批不执行，run 结束
+  // coordinator 已删响应空转（线上复现：approval.respond 排队卡、审批永不生效）。
+  ...APPROVAL_ACTION_CMDS,
+]);
+
+/** W2.8 单源：payload.offset → 钳位 offset（原先 9 处逐字副本）。 */
+function payloadOffset(value: { offset?: number }): number {
+  return Math.max(0, Math.trunc(Number(value.offset) || 0));
+}
 
 /** 卡片 cardAction payload 缺字段的统一报错文案（原先 12 处手写且已漂移出两种前缀）。 */
 const CARD_PAYLOAD_MISSING = '⚠️ 卡片 payload 缺少必要信息';
@@ -608,6 +665,11 @@ export class CommandRouter {
     value: CardActionPayload,
     ctx: CommandContext,
   ): Promise<CardActionResponse | void> {
+    // W2.1：审批家族以 APPROVAL_ACTION_SPECS keys 为单一来源分发
+    // （原 7 个 case 与 spec keys 是同一份知识的两份拷贝，已两次漂移）。
+    if (APPROVAL_ACTION_CMDS.includes(value.cmd)) {
+      return this.handleApprovalAction(value, ctx);
+    }
     switch (value.cmd) {
       case 'ls.file':
         await this.cardLsFile(value.path, ctx);
@@ -723,14 +785,6 @@ export class CommandRouter {
         // 调 updateCardInPlace → Feishu API 乱序到达导致 toggle 卡死。
         // 2026-07-18: 返回 enqueueConfigAction 的结果以支持 toast 响应
         return this.enqueueConfigAction(value, ctx);
-      case 'approval.respond':
-      case 'approval.toggle':
-      case 'approval.answer':
-      case 'approval.answerSubmit':
-      case 'approval.answerCustom':
-      case 'approval.answerNote':
-      case 'approval.planFeedback':
-        return this.handleApprovalAction(value, ctx);
       case 'codex.compact':
         await this.bridge.handleCodexCompact(value, ctx);
         return;
@@ -1234,6 +1288,24 @@ export class CommandRouter {
   }
 
   /**
+   * 分页卡动作的 offset 解析：优先读取「跳转页码」输入框（paginationBar 内置
+   * 的 CardKit 2.0 input），未输入则回退 `payload.offset`（上一页/下一页按钮）。
+   * 非法页码返回 `{ error }`，调用方应回错误 toast 且不刷新卡片。
+   */
+  private pagingOffset(
+    value: CardActionPayload,
+    defaultPageSize: number,
+  ): { offset: number } | { error: string } {
+    const rawSize = Number(value.pageSize);
+    const pageSize =
+      Number.isFinite(rawSize) && rawSize > 0 ? Math.trunc(rawSize) : defaultPageSize;
+    const jump = parseJumpOffset(value.inputValue, pageSize);
+    if (jump === null) return { error: PAGE_JUMP_INVALID_HINT };
+    if (jump !== undefined) return { offset: jump };
+    return { offset: payloadOffset(value) };
+  }
+
+  /**
    * Handle ls.switch: switch cwd to target directory after path validation.
    */
   private async handleLsSwitch(value: CardActionPayload, ctx: CommandContext): Promise<void> {
@@ -1265,8 +1337,10 @@ export class CommandRouter {
     }
     // Set cwd + auto-resume + user notification (shared with /cd and /ws use)
     const notifyResult = this.switchCwdAndNotify(ctx.userId, canonical, ctx);
-    // Card channel: refresh ls card in-place (existing behavior preserved)
-    const card = this.cmdLs([canonical], ctx, 0);
+    // Card channel: refresh ls card in-place (existing behavior preserved)。
+    // value.root 是本次 /ls 浏览的起点（绝对路径，不受 cwd 变更影响），透传后
+    // 「返回」仍回到用户最初 /ls 的那个目录。
+    const card = this.cmdLs([canonical], ctx, 0, value.root);
     await this.bridge.updateCardInPlace(card.card!, ctx);
     // Message channel: send switch confirmation / auto-resume card to chat
     await this.bridge.sendResult(notifyResult, ctx);
@@ -1287,10 +1361,10 @@ export class CommandRouter {
     try {
       card =
         targetPath && fs.existsSync(targetPath) && fs.statSync(targetPath).isDirectory()
-          ? this.cmdLs([targetPath], ctx, offset)
-          : this.cmdLs([], ctx, offset);
+          ? this.cmdLs([targetPath], ctx, offset, value.root)
+          : this.cmdLs([], ctx, offset, value.root);
     } catch {
-      card = this.cmdLs([], ctx, offset);
+      card = this.cmdLs([], ctx, offset, value.root);
     }
     await this.bridge.updateCardInPlace(card.card!, ctx);
   }
@@ -1303,9 +1377,12 @@ export class CommandRouter {
     ctx: CommandContext,
   ): Promise<CardActionResponse> {
     const targetPath = value.path;
-    const offset = value.offset ?? 0;
     if (!targetPath) {
       return { toast: { type: 'error', content: '卡片 payload 缺少 path' } };
+    }
+    const paging = this.pagingOffset(value, CommandRouter.LS_PAGE_SIZE);
+    if ('error' in paging) {
+      return { toast: { type: 'error', content: paging.error } };
     }
     const resolvedTarget = path.resolve(targetPath);
     // TOCTOU guard (review P2-2): existsSync → statSync can race; without the
@@ -1320,7 +1397,7 @@ export class CommandRouter {
     if (!isDir) {
       return { toast: { type: 'error', content: `路径无效: ${resolvedTarget}` } };
     }
-    const card = this.cmdLs([resolvedTarget], ctx, offset);
+    const card = this.cmdLs([resolvedTarget], ctx, paging.offset, value.root);
     // 直接更新卡片，与 ls.browse/ls.refresh 行为一致
     await this.bridge.updateCardInPlace(card.card!, ctx);
     return { toast: { type: 'success', content: '' } };
@@ -1340,7 +1417,10 @@ export class CommandRouter {
       ? (resumeAgent as (typeof validAgents)[number])
       : this.config.defaultAgent;
 
-    const { pageSize, alignedOffset } = normalizePageArgs(value, RESUME_PAGE_SIZE);
+    const { pageSize, alignedOffset, error } = normalizePageArgs(value, RESUME_PAGE_SIZE);
+    if (error) {
+      return { toast: { type: 'error', content: error } };
+    }
 
     const entry = this.sessionStore.get(ctx.userId);
     const cwd = entry?.cwd;
@@ -1373,7 +1453,10 @@ export class CommandRouter {
     value: CardActionPayload,
     ctx: CommandContext,
   ): Promise<CardActionResponse> {
-    const { alignedOffset } = normalizePageArgs(value, ACTIVE_PAGE_SIZE);
+    const { alignedOffset, error } = normalizePageArgs(value, ACTIVE_PAGE_SIZE);
+    if (error) {
+      return { toast: { type: 'error', content: error } };
+    }
 
     const result = this.cmdActive([], ctx, alignedOffset);
     if (!result.card) {
@@ -1398,7 +1481,7 @@ export class CommandRouter {
       return;
     }
     // Always reset to page 0 when browsing to a new directory
-    const card = this.cmdLs([resolvedTarget], ctx, 0);
+    const card = this.cmdLs([resolvedTarget], ctx, 0, value.root);
     await this.bridge.updateCardInPlace(card.card!, ctx);
   }
 
@@ -1453,6 +1536,66 @@ export class CommandRouter {
     };
   }
   /**
+   * W2.8 单源：重建 order/ws 列表卡（不投递，card 进 callback 响应体用）。
+   */
+  private rebuildListCard(
+    kind: 'order' | 'ws',
+    offset: number,
+    ctx: CommandContext,
+  ): object | undefined {
+    return kind === 'order'
+      ? this.cmdOrder([], ctx, offset).card
+      : this.cmdWs([], ctx, offset).card;
+  }
+
+  /**
+   * W2.8 单源：「重建列表卡 → updateCardInPlace」原地刷新骨架（列表卡删除/
+   * 翻页/移除/排序动作共用）。返回重建后的卡片；无卡时返回 undefined 且跳过更新。
+   */
+  private async refreshListCard(
+    kind: 'order' | 'ws',
+    value: { offset?: number },
+    ctx: CommandContext,
+  ): Promise<object | undefined> {
+    const card = this.rebuildListCard(kind, payloadOffset(value), ctx);
+    if (!card) return undefined;
+    await this.bridge.updateCardInPlace(card, ctx);
+    return card;
+  }
+
+  /**
+   * W2.8 单源：order 三个 input handler（aliasInput/aliasRemove/textInput）
+   * 的公共骨架——校验 orderId → reload+find → mutate → 成功后 toast + raw 卡。
+   * mutate 返回 error 时仅回 error toast，不重渲染。
+   * 注意：本 helper 只服务「toast + card 进响应体」语义（飞书需用响应体原地
+   * 替换 pre-click 编辑卡）；updateCardInPlace 原地刷新走 refreshListCard。
+   */
+  private async mutateOrderAndRefreshCard(
+    value: { orderId?: string; offset?: number },
+    ctx: CommandContext,
+    opts: { missingToast: string },
+    mutate: (order: OrderEntry) => { ok: true; toast: string } | { ok: false; error: string },
+  ): Promise<CardActionResponse | void> {
+    if (!value.orderId) {
+      return { toast: { type: 'error', content: CARD_PAYLOAD_MISSING } };
+    }
+    this.orderStore.reload();
+    const order = this.orderStore.get().find((o) => o.id === value.orderId);
+    if (!order) {
+      return { toast: { type: 'error', content: opts.missingToast } };
+    }
+    const outcome = mutate(order);
+    if (!outcome.ok) {
+      return { toast: { type: 'error', content: outcome.error } };
+    }
+    const result = this.cmdOrder([], ctx, payloadOffset(value));
+    return {
+      toast: { type: 'success', content: outcome.toast },
+      card: { type: 'raw', data: result.card! },
+    };
+  }
+
+  /**
    * Handle order.delete: remove the order and update card in place.
    */
   private async handleOrderDelete(
@@ -1473,9 +1616,7 @@ export class CommandRouter {
     this.orderStore.remove(orderId);
 
     // Refresh the order list and update card in place, preserving current page
-    const currentOffset = Math.max(0, Math.trunc(Number(value.offset) || 0));
-    const result = this.cmdOrder([], ctx, currentOffset);
-    await this.bridge.updateCardInPlace(result.card!, ctx);
+    await this.refreshListCard('order', value, ctx);
 
     return { toast: { type: 'success', content: '已删除指令' } };
   }
@@ -1488,10 +1629,12 @@ export class CommandRouter {
     value: CardActionPayload,
     ctx: CommandContext,
   ): Promise<CardActionResponse> {
-    const offset = Math.max(0, Math.trunc(Number(value.offset) || 0));
+    const paging = this.pagingOffset(value, ORDER_PAGE_SIZE);
+    if ('error' in paging) {
+      return { toast: { type: 'error', content: paging.error } };
+    }
     // cmdOrder internally clamps stale/out-of-range offsets
-    const result = this.cmdOrder([], ctx, offset);
-    await this.bridge.updateCardInPlace(result.card!, ctx);
+    await this.refreshListCard('order', { offset: paging.offset }, ctx);
     return { toast: { type: 'success', content: '' } };
   }
 
@@ -1517,7 +1660,7 @@ export class CommandRouter {
     },
   ): Promise<CardActionResponse | void> {
     const orderId = value.orderId;
-    const offset = Math.max(0, Math.trunc(Number(value.offset) || 0));
+    const offset = payloadOffset(value);
     if (!orderId) {
       return { toast: { type: 'error', content: CARD_PAYLOAD_MISSING } };
     }
@@ -1608,37 +1751,27 @@ export class CommandRouter {
     },
     ctx: CommandContext,
   ): Promise<CardActionResponse | void> {
-    const orderId = value.orderId;
-    const offset = Math.max(0, Math.trunc(Number(value.offset) || 0));
     const name = value.inputValue ?? (value.formValue?.['aliasName'] as string | undefined);
-    if (!orderId) {
-      return { toast: { type: 'error', content: CARD_PAYLOAD_MISSING } };
-    }
-    this.orderStore.reload();
-    const order = this.orderStore.get().find((o) => o.id === orderId);
-    if (!order) {
-      return { toast: { type: 'error', content: '指令不存在或已被删除' } };
-    }
-    const trimmed = name?.trim() ?? '';
-    // 变更前快照旧别名：setAlias 会原地变异 order 对象（delete entry.alias），
-    // 删除后 order.alias 已为 undefined，直接用会让成功文案显示 `$undefined`。
-    const prevAlias = order.alias;
-    try {
-      this.orderStore.setAlias(order.id, trimmed === '' ? undefined : trimmed);
-    } catch (err) {
-      return { toast: { type: 'error', content: (err as Error).message } };
-    }
-    // 成功：重渲染列表卡（保持页码）。必须把 card 放进 callback 响应体让飞书
-    // 原地替换 pre-click 编辑卡——toast-only 响应会停留在编辑界面（飞书保留
-    // 点击前那张卡），见 handleQueueInput 同款注释。
-    const result = this.cmdOrder([], ctx, offset);
-    return {
-      toast: {
-        type: 'success',
-        content: trimmed === '' ? `✅ 已移除别名 $${prevAlias ?? ''}` : `✅ 已绑定别名 $${trimmed}`,
+    return this.mutateOrderAndRefreshCard(
+      value,
+      ctx,
+      { missingToast: '指令不存在或已被删除' },
+      (order) => {
+        const trimmed = name?.trim() ?? '';
+        // 变更前快照旧别名：setAlias 会原地变异 order 对象（delete entry.alias），
+        // 删除后 order.alias 已为 undefined，直接用会让成功文案显示 `$undefined`。
+        const prevAlias = order.alias;
+        try {
+          this.orderStore.setAlias(order.id, trimmed === '' ? undefined : trimmed);
+        } catch (err) {
+          return { ok: false as const, error: (err as Error).message };
+        }
+        return {
+          ok: true as const,
+          toast: trimmed === '' ? `✅ 已移除别名 $${prevAlias ?? ''}` : `✅ 已绑定别名 $${trimmed}`,
+        };
       },
-      card: { type: 'raw', data: result.card! },
-    };
+    );
   }
 
   /** Handle order.aliasRemove: 删除某条指令的别名并原地重渲染列表卡。 */
@@ -1646,27 +1779,21 @@ export class CommandRouter {
     value: { orderId?: string; offset?: number },
     ctx: CommandContext,
   ): Promise<CardActionResponse | void> {
-    const orderId = value.orderId;
-    const offset = Math.max(0, Math.trunc(Number(value.offset) || 0));
-    if (!orderId) {
-      return { toast: { type: 'error', content: CARD_PAYLOAD_MISSING } };
-    }
-    this.orderStore.reload();
-    const order = this.orderStore.get().find((o) => o.id === orderId);
-    if (!order || !order.alias) {
-      return { toast: { type: 'error', content: '指令不存在或没有别名' } };
-    }
-    // 变更前快照旧别名：setAlias(undefined) 会原地变异 order（delete alias），
-    // 删除后 order.alias 已为 undefined，直接拼会让成功文案显示 `$undefined`。
-    const removedAlias = order.alias;
-    this.orderStore.setAlias(order.id, undefined);
-    // 必须把 card 放进 callback 响应体让飞书原地替换 pre-click 卡片，否则删除
-    // 后卡片停留在旧状态（别名视觉上未消失）。同 handleQueueInput 语义。
-    const result = this.cmdOrder([], ctx, offset);
-    return {
-      toast: { type: 'success', content: `✅ 已移除别名 $${removedAlias}` },
-      card: { type: 'raw', data: result.card! },
-    };
+    return this.mutateOrderAndRefreshCard(
+      value,
+      ctx,
+      { missingToast: '指令不存在或没有别名' },
+      (order) => {
+        if (!order.alias) {
+          return { ok: false as const, error: '指令不存在或没有别名' };
+        }
+        // 变更前快照旧别名：setAlias(undefined) 会原地变异 order（delete alias），
+        // 删除后 order.alias 已为 undefined，直接拼会让成功文案显示 `$undefined`。
+        const removedAlias = order.alias;
+        this.orderStore.setAlias(order.id, undefined);
+        return { ok: true as const, toast: `✅ 已移除别名 $${removedAlias}` };
+      },
+    );
   }
 
   /**
@@ -1712,36 +1839,26 @@ export class CommandRouter {
     },
     ctx: CommandContext,
   ): Promise<CardActionResponse | void> {
-    const orderId = value.orderId;
-    const offset = Math.max(0, Math.trunc(Number(value.offset) || 0));
     const raw = value.inputValue ?? (value.formValue?.['text'] as string | undefined);
-    if (!orderId) {
-      return { toast: { type: 'error', content: CARD_PAYLOAD_MISSING } };
-    }
-    this.orderStore.reload();
-    const order = this.orderStore.get().find((o) => o.id === orderId);
-    if (!order) {
-      return { toast: { type: 'error', content: '指令不存在或已被删除' } };
-    }
-    let updated: OrderEntry | undefined;
-    try {
-      updated = this.orderStore.updateText(order.id, raw ?? '');
-    } catch (err) {
-      return { toast: { type: 'error', content: (err as Error).message } };
-    }
-    if (!updated) {
-      // reload + find 后 updateText 不应返回 undefined；防御性兜底（如并发删除）。
-      return { toast: { type: 'error', content: '指令不存在或已被删除' } };
-    }
-    // 成功：重渲染列表卡（保持页码）。必须把 card 放进 callback 响应体让飞书
-    // 原地替换 pre-click 编辑卡——toast-only 响应会停留在编辑界面（飞书保留
-    // 点击前那张卡），见 handleQueueInput / handleOrderAliasInput 同款注释。
-    const result = this.cmdOrder([], ctx, offset);
-    const preview = updated.text.length > 50 ? updated.text.slice(0, 50) + '...' : updated.text;
-    return {
-      toast: { type: 'success', content: `✅ 已更新指令: ${preview}` },
-      card: { type: 'raw', data: result.card! },
-    };
+    return this.mutateOrderAndRefreshCard(
+      value,
+      ctx,
+      { missingToast: '指令不存在或已被删除' },
+      (order) => {
+        let updated: OrderEntry | undefined;
+        try {
+          updated = this.orderStore.updateText(order.id, raw ?? '');
+        } catch (err) {
+          return { ok: false as const, error: (err as Error).message };
+        }
+        if (!updated) {
+          // reload + find 后 updateText 不应返回 undefined；防御性兜底（如并发删除）。
+          return { ok: false as const, error: '指令不存在或已被删除' };
+        }
+        const preview = updated.text.length > 50 ? updated.text.slice(0, 50) + '...' : updated.text;
+        return { ok: true as const, toast: `✅ 已更新指令: ${preview}` };
+      },
+    );
   }
 
   /**
@@ -1780,11 +1897,7 @@ export class CommandRouter {
     }
 
     // Refresh the /ws list card in place so "recent" sort is immediately visible
-    const currentOffset = Math.max(0, Math.trunc(Number(value.offset) || 0));
-    const refreshed = this.cmdWs([], ctx, currentOffset);
-    if (refreshed.card) {
-      await this.bridge.updateCardInPlace(refreshed.card, ctx);
-    }
+    await this.refreshListCard('ws', value, ctx);
 
     // Toast feedback (suppress text when a persistent message was already sent)
     return {
@@ -1815,9 +1928,7 @@ export class CommandRouter {
 
     // Rebuild the /ws list card and update it in place, preserving the page
     // the user was on when they clicked 删除.
-    const currentOffset = Math.max(0, Math.trunc(Number(value.offset) || 0));
-    const refreshed = this.cmdWs([], ctx, currentOffset);
-    await this.bridge.updateCardInPlace(refreshed.card!, ctx);
+    await this.refreshListCard('ws', value, ctx);
 
     return { toast: { type: 'success', content: `已删除 workspace "${name}"` } };
   }
@@ -1830,10 +1941,12 @@ export class CommandRouter {
     value: CardActionPayload,
     ctx: CommandContext,
   ): Promise<CardActionResponse> {
-    const offset = Math.max(0, Math.trunc(Number(value.offset) || 0));
+    const paging = this.pagingOffset(value, WS_PAGE_SIZE);
+    if ('error' in paging) {
+      return { toast: { type: 'error', content: paging.error } };
+    }
     // cmdWs internally clamps stale/out-of-range offsets
-    const result = this.cmdWs([], ctx, offset);
-    await this.bridge.updateCardInPlace(result.card!, ctx);
+    await this.refreshListCard('ws', { offset: paging.offset }, ctx);
     return { toast: { type: 'success', content: '' } };
   }
 
@@ -1849,8 +1962,7 @@ export class CommandRouter {
     const current = this.wsSortPreference.get(userId) ?? 'recent';
     const next = current === 'recent' ? 'alpha' : 'recent';
     this.wsSortPreference.set(userId, next);
-    const result = this.cmdWs([], ctx, 0);
-    await this.bridge.updateCardInPlace(result.card!, ctx);
+    await this.refreshListCard('ws', { offset: 0 }, ctx);
     const nextLabel = next === 'recent' ? '🕐 最近使用' : '🔤 字母顺序';
     return {
       toast: { type: 'success', content: `已切换为 ${nextLabel}` },
@@ -1865,34 +1977,44 @@ export class CommandRouter {
       await this.bridge.sendResult({ text: '卡片 payload 缺少 path' }, ctx);
       return;
     }
+    const result = await this.deliverFileToFeishu(path.resolve(target), ctx);
+    if (result) await this.bridge.sendResult(result, ctx);
+  }
 
-    const resolvedTarget = path.resolve(target);
-
-    if (!fs.existsSync(resolvedTarget)) {
-      await this.bridge.sendResult({ text: `文件不存在: ${resolvedTarget}` }, ctx);
-      return;
+  /**
+   * 校验并发送本地文件到飞书（≤30MB）。成功返回 null（文件已发出），失败返回
+   * 错误 CommandResult 由调用方展示。
+   *
+   * `/download` 与 `ls.file` 卡片按钮共用，避免两处重复 30MB/存在性校验。
+   */
+  private async deliverFileToFeishu(
+    resolved: string,
+    ctx: CommandContext,
+  ): Promise<CommandResult | null> {
+    if (!fs.existsSync(resolved)) {
+      return { text: `文件不存在: ${resolved}` };
     }
-
-    // Check it's a file, not directory
-    if (!fs.statSync(resolvedTarget).isFile()) {
-      await this.bridge.sendResult({ text: `不是文件: ${resolvedTarget}` }, ctx);
-      return;
+    let stat: fs.Stats;
+    try {
+      stat = fs.statSync(resolved);
+    } catch {
+      return { text: `无法读取: ${resolved}` };
     }
-
-    // Check file size (30MB, aligned with Feishu im/v1/files API)
-    const stat = fs.statSync(resolvedTarget);
+    if (stat.isDirectory()) {
+      return { text: `这是一个目录，不能作为文件发送: ${resolved}\n用 /ls 查看目录内容` };
+    }
+    if (!stat.isFile()) {
+      return { text: `不是普通文件: ${resolved}` };
+    }
+    // 30MB，与飞书 im/v1/files API 对齐
     if (stat.size > MAX_FILE_UPLOAD_SIZE) {
       const sizeMB = (stat.size / (1024 * 1024)).toFixed(1);
-      await this.bridge.sendResult(
-        {
-          text: `文件太大 (${sizeMB}MB)，超过 ${MAX_FILE_UPLOAD_SIZE / (1024 * 1024)}MB 限制不能发送`,
-        },
-        ctx,
-      );
-      return;
+      return {
+        text: `文件太大 (${sizeMB}MB)，超过 ${MAX_FILE_UPLOAD_SIZE / (1024 * 1024)}MB 限制不能发送`,
+      };
     }
-
-    await this.bridge.sendFile(resolvedTarget, ctx);
+    await this.bridge.sendFile(resolved, ctx);
+    return null;
   }
 
   // --- PendingConfig 辅助方法 ---
@@ -1943,6 +2065,8 @@ export class CommandRouter {
   ): Promise<CardActionResponse | void> {
     switch (value.cmd) {
       case 'config.toggle': {
+        // 通用 boolean 翻转：目前无卡片字段使用（output.show* 已移除），
+        // 保留供未来 boolean 配置项复用；configActionQueue 串行化覆盖连击。
         const key = value.key as string | undefined;
         if (!key) {
           await this.bridge.sendResult({ text: '缺少配置项 key' }, ctx);
@@ -2079,77 +2203,11 @@ export class CommandRouter {
   /** 设置嵌套属性值（仅修改内存对象，不写盘） */
   /** 在 pendingConfig 上按 dot-separated key 设置嵌套值（config 卡片编辑用）。 */
   setNestedValue(target: AppConfig, key: string, value: unknown): void {
-    // Path mapping 共用 config 模块的 mapAgentKey（G11 Inconsistency 修复）：
-    // pi.xxx/codex.xxx/opencode.xxx → agents.xxx，claude.xxx 保持顶层
-    const mappedKey = mapAgentKey(key);
-    const parts = mappedKey.split('.');
-    // 复用 config 模块的 walkNestedContainer（含 __proto__/prototype/constructor
-    // 守卫与中间段补 {}），router 只保留 value=undefined → delete 分支。
-    const container = walkNestedContainer(target, parts, true);
-    const lastPart = parts[parts.length - 1];
-    assertSafeKeyPart(lastPart);
-    if (value === undefined) {
-      // value=undefined 表示"删除键"（如清空 reasoningEffort），
-      // 不能写成 undefined 值——diffConfig 会把 undefined 转成字面量 "undefined"
-      // 写入 config.yaml 并透传给 codex（ReasoningEffort::Custom("undefined")）。
-      delete container![lastPart];
-    } else {
-      container![lastPart] = value;
-    }
+    setNestedValue(target, key, value);
   }
 
-  /** 对比原始 config 与 pendingConfig，返回变化的 key→string 映射 */
-  /** config diff（public：测试直接调用，替代 as unknown as）。 */
   diffConfig(original: AppConfig, pending: AppConfig): Record<string, string | undefined> {
-    const updates: Record<string, string | undefined> = {};
-    this.collectDiff('', original, pending, updates);
-    return updates;
-  }
-
-  /** 递归收集差异 */
-  private collectDiff(
-    prefix: string,
-    original: unknown,
-    pending: unknown,
-    result: Record<string, string | undefined>,
-  ): void {
-    if (original === pending) return;
-    // 如果 pending 是对象（非 null）但 original 不是对象，
-    // 把 original 当作空对象递归进入 pending 内部，
-    // 避免把整个对象转成 "[object Object]" 字符串
-    if (
-      typeof pending === 'object' &&
-      pending !== null &&
-      (typeof original !== 'object' || original === null)
-    ) {
-      const pendObj = pending as Record<string, unknown>;
-      for (const k of Object.keys(pendObj)) {
-        const newKey = prefix ? `${prefix}.${k}` : k;
-        this.collectDiff(newKey, undefined, pendObj[k], result);
-      }
-      return;
-    }
-    if (
-      typeof original !== 'object' ||
-      typeof pending !== 'object' ||
-      original === null ||
-      pending === null
-    ) {
-      // 叶子节点，记录差异
-      const key = prefix || 'root';
-      // pending 为 undefined 表示键被删除，必须保留 undefined 语义，
-      // 不能 String(pending) 成 "undefined"
-      result[key] = pending === undefined ? undefined : String(pending);
-      return;
-    }
-    // 两者都是对象，递归比较
-    const origObj = original as Record<string, unknown>;
-    const pendObj = pending as Record<string, unknown>;
-    const allKeys = new Set([...Object.keys(origObj), ...Object.keys(pendObj)]);
-    for (const k of allKeys) {
-      const newKey = prefix ? `${prefix}.${k}` : k;
-      this.collectDiff(newKey, origObj[k], pendObj[k], result);
-    }
+    return diffConfig(original, pending);
   }
 
   /**
@@ -2363,6 +2421,9 @@ export class CommandRouter {
         return this.cmdCd(args, ctx);
       case 'ls':
         return this.cmdLs(args, ctx);
+      case 'download':
+      case 'd':
+        return await this.cmdDownload(args, ctx);
       case 'ws':
         return this.cmdWs(args, ctx);
       case 'resume':
@@ -2410,7 +2471,16 @@ export class CommandRouter {
     // 文本组（需带参数，不宜用按钮；以纯文本行展示）
     const textCommands = [
       { cmd: 'cd', label: '/cd <path>', desc: '切换工作目录' },
-      { cmd: 'ls', label: '/ls [dir]', desc: '列出当前目录，可指定子目录' },
+      {
+        cmd: 'ls',
+        label: '/ls [dir|file]',
+        desc: '列出当前目录（可指定子目录）；指定文件时列出该文件',
+      },
+      {
+        cmd: 'download',
+        label: '/download /d <path>',
+        desc: '直接下载（发送）指定文件到飞书，上限 30MB',
+      },
       { cmd: 'resume', label: '/resume /r [agent] [list|id|N]', desc: '列出或切换 Agent session' },
       {
         cmd: 'order',
@@ -3024,8 +3094,16 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
 
   private static readonly LS_PAGE_SIZE = 30;
 
-  /** /ls 实现（public：测试直接调用，替代 as unknown as）。 */
-  cmdLs(args: string[], ctx: CommandContext, offset = 0): CommandResult {
+  /**
+   * `/ls` 实现（public：测试直接调用，替代 as unknown as）。
+   *
+   * @param args    [] 列出 cwd；[path] 列出指定目录（或文件）
+   * @param offset  分页起点（条目数）
+   * @param rootDir 浏览起点：卡片「返回」按钮回到这里。省略时默认 = 本次列出的
+   *                目录（`/ls <dir>` 的起点即该目录），因此「返回」不会把用户
+   *                丢回 workspace cwd（用户明确反馈过）。
+   */
+  cmdLs(args: string[], ctx: CommandContext, offset = 0, rootDir?: string): CommandResult {
     const cwd = this.sessionStore.getCwd(ctx.userId);
     if (!cwd) {
       return { text: '请先使用 /cd <path> 设置工作目录' };
@@ -3047,11 +3125,25 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
       if (!fs.existsSync(potentialDir)) {
         return { text: `ls: ${args[0]}: No such file or directory` };
       }
-      if (!fs.statSync(potentialDir).isDirectory()) {
-        return { text: `ls: ${args[0]}: Not a directory` };
+      let isDir: boolean;
+      try {
+        isDir = fs.statSync(potentialDir).isDirectory();
+      } catch {
+        // TOCTOU：existsSync 与 statSync 之间目标被删
+        return { text: `ls: ${args[0]}: No such file or directory` };
+      }
+      if (!isDir) {
+        // 命中文件：列出该文件本身（用户可能想下载它或确认是否存在），
+        // 不再回 `ls: xxx: Not a directory` 把文件路径当错误。
+        return this.buildFileCard(potentialDir);
       }
       targetDir = potentialDir;
     }
+
+    // 浏览起点（「返回」按钮的目标）：`/ls <dir>` 的起点就是该目录本身，之后
+    // 进入子目录/翻页/刷新时由卡片 payload 的 root 一路带过来。省略时 = 本次
+    // 列出的目录，因此「返回」永远不会把用户丢回 workspace cwd。
+    const browseRoot = rootDir ? path.resolve(cwd, rootDir) : targetDir;
 
     try {
       const entries = fs.readdirSync(targetDir, { withFileTypes: true });
@@ -3079,7 +3171,10 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
       // Check if we need to show parent directory button
       const parentDir = path.dirname(targetDir);
       const hasParent = parentDir !== targetDir;
+      // 「切换」相对 cwd（把工作目录切到当前浏览目录）
       const isSubdir = targetDir !== cwd;
+      // 「返回」相对浏览起点：在 `/ls <dir>` 的起点上不显示（无路可返）
+      const canReturn = targetDir !== browseRoot;
 
       // Build header with parent button
       const headerElements: object[] = [];
@@ -3089,17 +3184,21 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
           text: { tag: 'plain_text', content: '上级' },
           type: 'default',
           size: 'small',
-          behaviors: [{ type: 'callback', value: { cmd: 'ls.browse', path: parentDir } }],
+          behaviors: [
+            { type: 'callback', value: { cmd: 'ls.browse', path: parentDir, root: browseRoot } },
+          ],
         });
       }
-      // Show "返回" button when viewing a subdirectory
-      if (isSubdir) {
+      // Show "返回" button when browsing away from the /ls root (回到 /ls 指定的目录)
+      if (canReturn) {
         headerElements.push({
           tag: 'button',
           text: { tag: 'plain_text', content: '返回' },
           type: 'default',
           size: 'small',
-          behaviors: [{ type: 'callback', value: { cmd: 'ls.browse', path: cwd } }],
+          behaviors: [
+            { type: 'callback', value: { cmd: 'ls.browse', path: browseRoot, root: browseRoot } },
+          ],
         });
       }
       headerElements.push({
@@ -3108,7 +3207,15 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
         type: 'default',
         size: 'small',
         behaviors: [
-          { type: 'callback', value: { cmd: 'ls.refresh', path: targetDir, offset: safeOffset } },
+          {
+            type: 'callback',
+            value: {
+              cmd: 'ls.refresh',
+              path: targetDir,
+              offset: safeOffset,
+              root: browseRoot,
+            },
+          },
         ],
       });
       // Show "切换" button when viewing a subdirectory (to switch cwd to this directory)
@@ -3118,15 +3225,13 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
           text: { tag: 'plain_text', content: '切换' },
           type: 'primary',
           size: 'small',
-          behaviors: [{ type: 'callback', value: { cmd: 'ls.switch', path: targetDir } }],
+          // 切换只改 cwd，**不重置浏览起点**：root 一路带到切换后的卡片，
+          // 否则「返回」会退化成「回到刚切换到的目录」（用户反馈的缺陷）。
+          behaviors: [
+            { type: 'callback', value: { cmd: 'ls.switch', path: targetDir, root: browseRoot } },
+          ],
         });
       }
-
-      const formatSize = (bytes: number): string => {
-        if (bytes < 1024) return `${bytes}B`;
-        if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)}KB`;
-        return `${(bytes / (1024 * 1024)).toFixed(1)}MB`;
-      };
 
       // Helper to create directory button - use targetDir
       const dirButton = (name: string): object => ({
@@ -3134,13 +3239,20 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
         text: { tag: 'plain_text', content: `📁 ${name}` },
         type: 'default',
         behaviors: [
-          { type: 'callback', value: { cmd: 'ls.browse', path: path.join(targetDir, name) } },
+          {
+            type: 'callback',
+            value: {
+              cmd: 'ls.browse',
+              path: path.join(targetDir, name),
+              root: browseRoot,
+            },
+          },
         ],
       });
 
       // Helper to create file button with size - use targetDir
       const fileButton = (name: string, size?: number): object => {
-        const sizeStr = size !== undefined ? ` (${formatSize(size)})` : '';
+        const sizeStr = size !== undefined ? ` (${formatBytes(size)})` : '';
         return {
           tag: 'button',
           text: { tag: 'plain_text', content: `📄 ${name}${sizeStr}` },
@@ -3156,10 +3268,9 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
       // Note: div+elements is not supported in CardKit 2.0, use column_set instead
       const elements: object[] = [];
 
-      // Status line showing directory contents count (with pagination info)
-      const status = hasPagination
-        ? `\n共 ${dirs.length} 目录, ${files.length} 文件 · 第 ${currentPage}/${totalPages} 页（共 ${totalCount} 项）`
-        : `\n共 ${dirs.length} 目录, ${files.length} 文件`;
+      // Status line：只报条目构成；页码/总数交给分页栏文案行（同一信息不重复
+      // 渲染两遍——2026-09-10 分页栏改成整行文案后重复会很明显）。
+      const status = `\n共 ${dirs.length} 目录, ${files.length} 文件`;
 
       // Header info + navigation buttons - show targetDir in header
       elements.push({ tag: 'div', text: { tag: 'lark_md', content: `\`${targetDir}\`${status}` } });
@@ -3224,11 +3335,11 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
           offset: safeOffset,
           pageSize: CommandRouter.LS_PAGE_SIZE,
           total: totalCount,
-          extra: { path: targetDir },
+          extra: { path: targetDir, root: browseRoot },
           label: `**第 ${currentPage}/${totalPages} 页**（共 ${totalCount} 项）`,
         });
         elements.push({ tag: 'hr' });
-        elements.push(bar);
+        elements.push(...bar);
       }
 
       return {
@@ -3247,6 +3358,101 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
     } catch (err) {
       return { text: `读取目录失败: ${(err as Error).message}` };
     }
+  }
+
+  /**
+   * `/download <path>`（别名 `/d`）：把本地文件直接发送到飞书。
+   *
+   * 路径解析与 `/ls` 一致：`~` 展开到 home；相对路径基于当前 cwd（无 cwd 时
+   * 必须给绝对路径）。成功时文件本身即回复，返回 null（不额外发文本）。
+   */
+  async cmdDownload(args: string[], ctx: CommandContext): Promise<CommandResult | null> {
+    const raw = args.join(' ').trim();
+    if (raw === '') {
+      return { text: '用法: /download <path>（别名 /d）' };
+    }
+    // 路径可能含空格：args 按空白切分后再拼回（未加引号也能还原原路径）
+    let input = raw;
+    if (input.startsWith('~')) {
+      input = path.join(os.homedir(), input.slice(1));
+    }
+    if (!path.isAbsolute(input)) {
+      const cwd = this.sessionStore.getCwd(ctx.userId);
+      if (!cwd) return { text: '请先使用 /cd <path> 设置工作目录' };
+      input = path.resolve(cwd, input);
+    }
+    return this.deliverFileToFeishu(path.resolve(input), ctx);
+  }
+
+  /**
+   * 单文件 ls 结果卡：路径 / 大小 / 修改时间 + 「下载」+「上级」。
+   *
+   * `/ls <file>` 命中普通文件时使用——用户可能想下载该文件或确认它是否存在，
+   * 此前直接回 `ls: xxx: Not a directory` 把文件路径当成错误处理。
+   */
+  private buildFileCard(filePath: string): CommandResult {
+    let stat: fs.Stats | undefined;
+    try {
+      stat = fs.statSync(filePath);
+    } catch {
+      stat = undefined;
+    }
+    const sizeText = stat ? formatBytes(stat.size) : '未知';
+    const mtimeText = stat ? stat.mtime.toLocaleString('zh-CN', { hour12: false }) : '未知';
+
+    const parentDir = path.dirname(filePath);
+    const buttons: object[] = [
+      {
+        tag: 'button',
+        text: { tag: 'plain_text', content: '📎 下载' },
+        type: 'primary',
+        size: 'small',
+        behaviors: [{ type: 'callback', value: { cmd: 'ls.file', path: filePath } }],
+      },
+    ];
+    if (parentDir !== filePath) {
+      buttons.push({
+        tag: 'button',
+        text: { tag: 'plain_text', content: '上级' },
+        type: 'default',
+        size: 'small',
+        // 浏览起点 = 文件所在目录：进入后「返回」回到这里，不回 workspace cwd
+        behaviors: [
+          { type: 'callback', value: { cmd: 'ls.browse', path: parentDir, root: parentDir } },
+        ],
+      });
+    }
+
+    return {
+      card: {
+        schema: '2.0',
+        config: { wide_screen_mode: true, update_multi: true },
+        header: {
+          title: { tag: 'plain_text', content: `📄 ${path.basename(filePath)}` },
+          template: 'blue',
+        },
+        body: {
+          elements: [
+            {
+              tag: 'div',
+              text: {
+                tag: 'lark_md',
+                content: `\`${filePath}\`\n文件 · 大小 ${sizeText} · 修改时间 ${mtimeText}`,
+              },
+            },
+            {
+              tag: 'column_set',
+              columns: buttons.map((b) => ({ tag: 'column', width: 'auto', elements: [b] })),
+            },
+            { tag: 'hr' },
+            {
+              tag: 'div',
+              text: { tag: 'lark_md', content: '💡 也可用 `/download <path>` 直接下载该文件' },
+            },
+          ],
+        },
+      },
+    };
   }
 
   private cmdWs(args: string[], ctx: CommandContext, offset = 0): CommandResult {
@@ -3437,7 +3643,7 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
               nextText: '➡',
             });
             bodyElements.push({ tag: 'hr' });
-            bodyElements.push(bar);
+            bodyElements.push(...bar);
           }
         }
 
@@ -3786,7 +3992,7 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
         label: `第 ${currentPage}/${totalPages} 页 · 共 ${total} 个会话`,
       });
       elements.push({ tag: 'hr' });
-      elements.push(bar);
+      elements.push(...bar);
     }
 
     const card = {
@@ -3851,17 +4057,6 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
     // Slice: distribute offset across agent runs first, then bash runs
     const elements: object[] = [];
 
-    // Page info
-    if (totalPages > 1) {
-      elements.push({
-        tag: 'div',
-        text: {
-          tag: 'lark_md',
-          content: `**第 ${currentPage}/${totalPages} 页** （共 ${totalCount} 项）`,
-        },
-      });
-    }
-
     let remaining = pageSize;
     let skipped = safeOffset;
 
@@ -3876,7 +4071,7 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
 
         elements.push({
           tag: 'div',
-          text: { tag: 'lark_md', content: `**📂 ${run.cwd.split('/').pop() ?? run.cwd}**` },
+          text: { tag: 'lark_md', content: `**📂 ${displayName(run.cwd)}**` },
         });
         elements.push({
           tag: 'div',
@@ -3930,37 +4125,20 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
       }
     }
 
-    // Pagination buttons
+    // Pagination bar（W2.9 复用 paginationBar：safeOffset 已对齐页边界，
+    // offset±pageSize 与原先 currentPage±1 的页码换算等价）
     if (totalPages > 1) {
-      const paginationButtons: object[] = [];
-      if (currentPage > 1) {
-        const prevOffset = (currentPage - 2) * pageSize;
-        paginationButtons.push({
-          tag: 'button',
-          text: { tag: 'plain_text', content: '◀ 上一页' },
-          type: 'default',
-          size: 'small',
-          behaviors: [{ type: 'callback', value: { cmd: 'active.page', offset: prevOffset } }],
-        });
-      }
-      if (currentPage < totalPages) {
-        const nextOffset = currentPage * pageSize;
-        paginationButtons.push({
-          tag: 'button',
-          text: { tag: 'plain_text', content: '下一页 ▶' },
-          type: 'primary',
-          size: 'small',
-          behaviors: [{ type: 'callback', value: { cmd: 'active.page', offset: nextOffset } }],
-        });
-      }
-      elements.push({
-        tag: 'column_set',
-        columns: paginationButtons.map((btn) => ({
-          tag: 'column',
-          width: 'auto',
-          elements: [btn],
-        })),
-      });
+      elements.push(
+        ...paginationBar({
+          cmd: 'active.page',
+          offset: safeOffset,
+          pageSize,
+          total: totalCount,
+          label: `**第 ${currentPage}/${totalPages} 页** （共 ${totalCount} 项）`,
+          prevText: '◀ 上一页',
+          nextText: '下一页 ▶',
+        }),
+      );
     }
 
     const card = {
@@ -4125,15 +4303,6 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
         id: 'idle',
         label: '⏱️ 空闲',
         fields: [{ key: 'idle.watchdogMinutes', label: '空闲超时(分钟, 0关闭)', type: 'input' }],
-      },
-      {
-        id: 'output',
-        label: '📤 输出',
-        fields: [
-          { key: 'output.showThinking', label: '显示思考过程', type: 'boolean' },
-          { key: 'output.showToolUse', label: '显示工具调用', type: 'boolean' },
-          { key: 'output.showToolResult', label: '显示工具结果', type: 'boolean' },
-        ],
       },
       {
         id: 'logging',
@@ -4371,7 +4540,7 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
             label: `**第 ${currentPage}/${totalPages} 页**（共 ${totalCount} 条）`,
           });
           elements.push({ tag: 'hr' });
-          elements.push(bar);
+          elements.push(...bar);
         }
       }
 

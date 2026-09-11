@@ -1,27 +1,13 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import fs from 'node:fs';
-import path from 'node:path';
-import os from 'node:os';
-import { Bridge } from '../../src/bridge/index.js';
-import { SessionStore } from '../../src/session/index.js';
-import { CommandRouter } from '../../src/router/index.js';
-import { AppConfigSchema } from '../../src/config/index.js';
-import type { AppConfig } from '../../src/config/index.js';
-import { SessionReaderRegistry } from '../../src/session/registry.js';
-
 import {
-  createStubAgentRegistry,
-  createStubSessionReaderRegistry,
-  createStubConnector,
-  createStubRunner,
-} from '../lib/bridge-stubs.js';
+  cleanupQueueTestContext,
+  makeQueueTestContext,
+  setupTwoTaskQueueScenario,
+  type QueueTestContext,
+} from '../lib/queue-scenario.js';
+
 const { mockLogger } = vi.hoisted(() => ({
-  mockLogger: {
-    debug: vi.fn(),
-    info: vi.fn(),
-    warn: vi.fn(),
-    error: vi.fn(),
-  },
+  mockLogger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
 }));
 
 vi.mock('../logger/index.js', () => ({
@@ -29,24 +15,14 @@ vi.mock('../logger/index.js', () => ({
   initLogger: () => mockLogger,
 }));
 
-let tmpDir: string;
-let config: AppConfig;
+let ctx: QueueTestContext;
 
 beforeEach(() => {
-  tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'lark-queue-imm-test-'));
-  config = AppConfigSchema.parse({
-    feishu: { appId: 'test', appSecret: 'test' },
-    claude: {
-      model: 'opus',
-      stopGraceMs: 5000,
-    },
-    workspace: { default: '' },
-    output: { showThinking: true, showToolUse: false, showToolResult: false },
-  });
+  ctx = makeQueueTestContext();
 });
 
 afterEach(() => {
-  fs.rmSync(tmpDir, { recursive: true, force: true });
+  cleanupQueueTestContext(ctx);
 });
 
 describe('queue.immediate stale card', () => {
@@ -56,84 +32,24 @@ describe('queue.immediate stale card', () => {
     // those removed tasks. Their queue cards remain showing "⏳ 消息排队中"
     // instead of being updated to "❌ 已撤销".
 
-    const sessionStore = new SessionStore();
-    const connector = createStubConnector();
-    const runner = createStubRunner();
-    const bridge = new Bridge({
-      runner,
-      agentRegistry: createStubAgentRegistry(runner),
-      sessionReaderRegistry: createStubSessionReaderRegistry(),
-      connector,
-      sessionStore,
-      config,
-    });
-
-    const router = new CommandRouter({
-      sessionStore,
-      bridge,
-      config,
-      configPath: path.join(tmpDir, 'config.yaml'),
-      workspacePath: path.join(tmpDir, 'workspace.json'),
-      sessionReaderRegistry: new SessionReaderRegistry(),
+    const { bridge, router, connector, tmpDir } = ctx;
+    const { release1 } = await setupTwoTaskQueueScenario(bridge, connector, tmpDir, {
+      firstMessagePreview: 'task 1 running',
+      secondMessagePreview: 'task 2 queued',
     });
 
     // Spy on updateQueueCardToCancelled to track calls
     const cancelSpy = vi.spyOn(bridge, 'updateQueueCardToCancelled');
 
-    // Task 1: starts immediately, hangs (blocks the queue)
-    let release1: () => void = () => {};
-    const hang1 = new Promise<void>((resolve) => {
-      release1 = resolve;
-    });
-    bridge.enqueue(
-      tmpDir,
-      async () => {
-        await hang1;
-      },
-      {
-        taskMeta: {
-          userId: 'u1',
-          chatId: 'c1',
-          messageId: 'msg-1',
-          messagePreview: 'task 1 running',
-        },
-      },
-    );
-
-    // Give task 1 time to start
-    await new Promise((r) => setTimeout(r, 50));
-
-    // Task 2: queued behind task 1 (gets a queue card)
-    bridge.enqueue(
-      tmpDir,
-      async () => {
-        /* quick */
-      },
-      {
-        taskMeta: {
-          userId: 'u1',
-          chatId: 'c1',
-          messageId: 'msg-2',
-          messagePreview: 'task 2 queued',
-        },
-      },
-    );
-
     // Task 3: queued behind task 1 and 2 (gets a queue card) — this is the target
-    bridge.enqueue(
-      tmpDir,
-      async () => {
-        /* quick */
+    bridge.enqueue(tmpDir, async () => {}, {
+      taskMeta: {
+        userId: 'u1',
+        chatId: 'c1',
+        messageId: 'msg-3',
+        messagePreview: 'task 3 queued',
       },
-      {
-        taskMeta: {
-          userId: 'u1',
-          chatId: 'c1',
-          messageId: 'msg-3',
-          messagePreview: 'task 3 queued',
-        },
-      },
-    );
+    });
 
     // Wait for queue cards to be sent
     await new Promise((r) => setTimeout(r, 100));
@@ -144,10 +60,10 @@ describe('queue.immediate stale card', () => {
     expect(tasks.find((t) => t.messageId === 'msg-3')).toBeDefined();
 
     // Simulate clicking "立即执行" on task 3's queue card
-    const ctx = { userId: 'u1', chatId: 'c1', messageId: 'msg-card-3' };
+    const cardCtx = { userId: 'u1', chatId: 'c1', messageId: 'msg-card-3' };
     await router.handleCardAction(
       { cmd: 'queue.immediate', workspace: tmpDir, messageId: 'msg-3' },
-      ctx,
+      cardCtx,
     );
 
     // Bug: handleQueueImmediate removes task 2 from the queue but does NOT

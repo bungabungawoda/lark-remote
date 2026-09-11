@@ -19,6 +19,7 @@ import os from 'node:os';
 import { FeishuConnector } from '../../src/connector/index.js';
 import { loadConfig } from '../../src/config/index.js';
 import { TEST_CONFIG_DIR, configPath, skipIfNoConfig, describeLive } from './live-helpers.js';
+import { paginationBar } from '../../src/router/card-helpers.js';
 
 // 使用独立的测试配置目录
 
@@ -87,7 +88,7 @@ describeLive('飞书 API 集成测试 - /ls 分页栏 CardKit 2.0 column 校验'
             tag: 'div',
             text: {
               tag: 'lark_md',
-              content: '`/tmp/test`\n共 31 目录, 0 文件 · 第 1/2 页（共 31 项）',
+              content: '`/tmp/test`\n共 31 目录, 0 文件',
             },
           },
           // Navigation buttons
@@ -145,44 +146,16 @@ describeLive('飞书 API 集成测试 - /ls 分页栏 CardKit 2.0 column 校验'
             ],
           })),
           { tag: 'hr' },
-          // Pagination bar - THIS IS THE KEY TEST
-          // The bug was: pageColumns.push() without tag: 'column'
-          {
-            tag: 'column_set',
-            columns: [
-              // 页码文本 - WITHOUT tag: 'column' was the bug!
-              // Fixed version has: tag: 'column'
-              {
-                tag: 'column',
-                width: 'weighted',
-                weight: 1,
-                vertical_align: 'center',
-                elements: [
-                  { tag: 'div', text: { tag: 'lark_md', content: '**第 1/2 页**（共 31 项）' } },
-                ],
-              },
-              // 下一页按钮
-              {
-                tag: 'column',
-                width: 'auto',
-                vertical_align: 'center',
-                elements: [
-                  {
-                    tag: 'button',
-                    text: { tag: 'plain_text', content: '下一页 ➡' },
-                    type: 'default',
-                    size: 'small',
-                    behaviors: [
-                      {
-                        type: 'callback',
-                        value: { cmd: 'ls.page', path: '/tmp/test', offset: 30 },
-                      },
-                    ],
-                  },
-                ],
-              },
-            ],
-          },
+          // Pagination bar - THIS IS THE KEY TEST：直接用生产的 paginationBar 输出
+          // （单源，避免测试里手搓一份会随实现漂移的旧结构）
+          ...paginationBar({
+            cmd: 'ls.page',
+            offset: 0,
+            pageSize: 30,
+            total: 31,
+            extra: { path: '/tmp/test', root: '/tmp/test' },
+            label: '**第 1/2 页**（共 31 项）',
+          }),
         ],
       },
     };
@@ -218,6 +191,32 @@ describeLive('飞书 API 集成测试 - /ls 分页栏 CardKit 2.0 column 校验'
       }
       throw err;
     }
+  });
+
+  it('窄屏两行分页栏（文案整行 + 控件行）打真实 API 应该成功（2026-09-10 重设计）', async () => {
+    if (skipIfNoConfig() || !connector || !testChatId) {
+      console.log('⚠️ 跳过：connector 或 chatId 不可用');
+      return;
+    }
+
+    // 五个分页卡共用同一个 paginationBar，结构差异只在 cmd/value；发一张即可
+    // 验证飞书 API 接受两行布局（无 200621 / 230025），而不是只在单测里断言 JSON。
+    const elements = paginationBar({
+      cmd: 'ls.page',
+      offset: 30,
+      pageSize: 30,
+      total: 90,
+      label: '**第 2/3 页**（共 90 项）',
+    });
+    const card = {
+      schema: '2.0',
+      config: { wide_screen_mode: true, update_multi: true },
+      header: { title: { tag: 'plain_text', content: '分页栏窄屏布局（两行）' }, template: 'blue' },
+      body: { elements },
+    };
+    const messageId = await connector.sendWithRetry(testChatId, { card });
+    expect(typeof messageId).toBe('string');
+    console.log('✅ 两行分页栏卡片发送成功! messageId:', messageId);
   });
 
   it('发送包含 column_set 但 column 缺少 tag 的卡片，应该触发 200621 错误（验证测试正确性）', async () => {

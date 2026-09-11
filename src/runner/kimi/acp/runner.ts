@@ -6,37 +6,32 @@
  * → synthetic init → session/prompt → consume session/update notifications
  * until prompt settles → result event.
  *
- * Structurally aligned with codex AppServerRunner (design doc §3.1) via the
- * shared ConnectionBasedRunner base: same notification queue + waitResolve
- * pattern, same forceFinish/stopRequested semantics, same turn idle timeout,
- * same ConnectionLostError retry.
+ * Turn/connection/compact/approval orchestration lives in BaseAcpRunner.
+ * Kimi-specific parts:
+ * - compaction is a BACKGROUND task: after the compact prompt settles, poll
+ *   wire.jsonl for a NEW terminal compaction record (§5.2, never fake success)
+ * - terminal/* reverse RPC: kimi delegates Bash execution to the client —
+ *   this runner spawns one-shot local bash processes (handleTerminalRequest)
+ * - terminal-backed Bash tool notifications are filtered (bashToolCallIds) so
+ *   the run card doesn't get duplicate output-less Bash panels
+ * - AskUserQuestion flows through elicitation forms + a request_permission
+ *   question bridge (buildQuestionResponse)
  */
 
-import type {
-  AgentKind,
-  AgentSessionReader,
-  AgentEvent,
-  AgentStatusInfo,
-  ApprovalView,
-  SpawnOptions,
-} from '../../types.js';
-import { spawn, type ChildProcess } from 'node:child_process';
+import type { AgentKind, AgentSessionReader, AgentStatusInfo, SpawnOptions } from '../../types.js';
+import type { ChildProcess } from 'node:child_process';
+import { spawnProcess, mergeProcessEnv, useDetachedProcessGroup } from '../../../platform/spawn.js';
+
 import { StringDecoder } from 'node:string_decoder';
 import {
-  ConnectionManager as KimiAcpConnectionManager,
-  type ConnectionManagerOptions as KimiAcpConnectionManagerOptions,
+  ConnectionManager,
+  type ConnectionManagerOptions,
 } from '../../common/jsonrpc/connection-manager.js';
-import { JsonRpcClient as KimiAcpClient } from '../../common/jsonrpc/client.js';
-import { KimiAcpTranslator, type AcpTranslatorEvent } from './translator.js';
+import { JsonRpcClient } from '../../common/jsonrpc/client.js';
+import { KimiAcpTranslator } from './translator.js';
 import {
   type AcpMode,
-  type SessionNewParams,
-  type SessionNewResult,
-  type SessionResumeParams,
-  type SessionResumeResult,
-  type SessionPromptParams,
   type SessionPromptResult,
-  type SessionCancelParams,
   type SessionSetModeParams,
   type RequestPermissionParams,
   type RequestPermissionResponse,
@@ -46,18 +41,18 @@ import {
   type TerminalWaitForExitParams,
   type TerminalKillParams,
   type TerminalReleaseParams,
-  type PermissionOption,
   NotificationMethod,
   RpcErrorCode,
   ServerRequestMethod,
 } from '../../common/acp/protocol-types.js';
 import {
   KIMI_APPROVAL_KINDS,
+  type AcpPendingApproval,
   buildAcpPermissionOutcome,
 } from '../../common/acp/protocol-helpers.js';
 import { mapAnswersByIndex } from '../../question-common.js';
 import { getLogger } from '../../../logger/index.js';
-import { ConnectionBasedRunner } from '../../common/connection-based-runner.js';
+import { BaseAcpRunner } from '../../common/acp/base-acp-runner.js';
 import { ProcessStopper } from '../../common/process-stopper.js';
 
 // =============================================================================
@@ -188,7 +183,7 @@ function toAcpMode(mode: 'manual' | 'auto' | 'yolo'): AcpMode {
  */
 function buildQuestionResponse(
   action: string,
-  pending: PendingApproval,
+  pending: AcpPendingApproval,
   response: unknown,
 ): RequestPermissionResponse | ElicitationCreateResponse {
   if (pending.proto === 'elicitation') {
@@ -235,28 +230,19 @@ function buildQuestionResponse(
   return { outcome: { outcome: 'cancelled' } };
 }
 
-interface PendingApproval {
-  kind: 'command' | 'file' | 'permissions' | 'question' | 'tool';
-  view: ApprovalView;
-  options: PermissionOption[];
-  /** 提问来源：elicitation form / request_permission 兜底桥（决定回编形状）。 */
-  proto?: 'elicitation' | 'permission';
-}
-
 // =============================================================================
 // Runner
 // =============================================================================
 
-export class KimiAcpRunner extends ConnectionBasedRunner<KimiAcpClient, AcpTranslatorEvent> {
-  private connectionManager: KimiAcpConnectionManager;
-  private currentTranslator: KimiAcpTranslator | null = null;
-  private activeSessionId: string | null = null;
-  private model?: string;
+export class KimiAcpRunner extends BaseAcpRunner<KimiAcpTranslator> {
   private permissionMode: 'manual' | 'auto' | 'yolo';
   private readonly compactIdleTimeoutMs: number;
-
-  /** Pending approval requests: requestId → kind + view + options. */
-  private pendingApprovals = new Map<number | string, PendingApproval>();
+  /**
+   * §5.2 compaction baseline: wire.jsonl records sampled by compactBaseline()
+   * BEFORE the compact prompt fires (reset per compact run). onCompactPromptFired
+   * derives both the terminal-count baseline and the total-count probe from it.
+   */
+  private compactBaselineRecords: CompactionRecordLike[] = [];
 
   /** 存活 terminal（kimi 把 Bash 执行下放客户端）：terminalId → 本地句柄。 */
   private terminals = new Map<string, TerminalHandle>();
@@ -274,16 +260,8 @@ export class KimiAcpRunner extends ConnectionBasedRunner<KimiAcpClient, AcpTrans
   private activeCwd: string | null = null;
   private readonly processStopper = new ProcessStopper({ graceMs: 2_000 });
 
-  /** Tracker for the in-flight prompt request — needed for cancellation. */
-  private promptSettled = false;
-
   constructor(opts: KimiAcpRunnerOptions) {
-    super({ kind: opts.kind, sessionReader: opts.sessionReader }, opts.turnIdleTimeoutMs);
-    this.model = opts.model;
-    this.permissionMode = opts.permissionMode ?? 'manual';
-    this.compactIdleTimeoutMs = opts.compactIdleTimeoutMs ?? COMPACT_IDLE_TIMEOUT_MS;
-
-    const managerOpts: KimiAcpConnectionManagerOptions = {
+    const managerOpts: ConnectionManagerOptions = {
       binary: opts.binary ?? 'kimi',
       args: opts.acpArgs ?? ['acp'],
       env: opts.env,
@@ -309,7 +287,17 @@ export class KimiAcpRunner extends ConnectionBasedRunner<KimiAcpClient, AcpTrans
         },
       },
     };
-    this.connectionManager = new KimiAcpConnectionManager(managerOpts);
+    super(
+      {
+        kind: opts.kind,
+        sessionReader: opts.sessionReader,
+        turnIdleTimeoutMs: opts.turnIdleTimeoutMs,
+      },
+      new ConnectionManager(managerOpts),
+    );
+    this.model = opts.model;
+    this.permissionMode = opts.permissionMode ?? 'manual';
+    this.compactIdleTimeoutMs = opts.compactIdleTimeoutMs ?? COMPACT_IDLE_TIMEOUT_MS;
   }
 
   protected get logTag(): string {
@@ -324,297 +312,19 @@ export class KimiAcpRunner extends ConnectionBasedRunner<KimiAcpClient, AcpTrans
     return 'Kimi ACP turn interrupted';
   }
 
-  protected currentSessionId(): string | null {
-    return this.activeSessionId;
+  protected get connectionClosedMessage(): string {
+    return 'Kimi ACP connection closed';
   }
 
   protected shouldDeferStop(): boolean {
     return !this.promptSettled;
   }
 
-  protected async cancelCurrentTurn(): Promise<void> {
-    if (!this.currentClient || !this.activeSessionId) return;
-    try {
-      // session/cancel is a NOTIFICATION (no id, no response) per ACP spec.
-      const cancelParams: SessionCancelParams = { sessionId: this.activeSessionId };
-      this.currentClient.notify('session/cancel', cancelParams);
-    } catch (err) {
-      getLogger().warn(`[${this.logTag}] session/cancel failed: ${(err as Error).message}`);
-    }
+  protected createTranslator(): KimiAcpTranslator {
+    return new KimiAcpTranslator();
   }
 
-  protected clearTurnState(): void {
-    this.currentTranslator = null;
-    this.promptSettled = false;
-    this.activeSessionId = null;
-    this.activeCwd = null;
-  }
-
-  protected async releaseConnection(cwd: string): Promise<void> {
-    await this.connectionManager.release(cwd);
-  }
-
-  protected notifyIdle(cwd: string): void {
-    this.connectionManager.notifyIdle(cwd);
-  }
-
-  protected async disposeConnections(): Promise<void> {
-    // 关闭前 kill/release 所有存活 terminal，避免孤儿 bash 进程。
-    await this.cleanupTerminals();
-    await this.connectionManager.disposeAll();
-  }
-
-  /**
-   * Run a compact operation on the current session.
-   *
-   * Design doc §6.1: acquire → session/resume → session/prompt with "/compact"
-   * text (builtin slash command, host intercepts) → consume notifications until
-   * prompt settles.
-   */
-  async *runCompact(_message: string, opts: SpawnOptions): AsyncGenerator<AgentEvent> {
-    yield* this.executeTurn(opts, async () => {
-      const client = await this.connectionManager.acquire(opts.cwd);
-      this.connectionManager.notifyActivity(opts.cwd);
-      this.currentClient = client;
-      this.activeCwd = opts.cwd;
-      client.setHooks({
-        onNotification: (method, params) => this.handleNotification(method, params),
-        onServerRequest: (id, method, params) => this.handleServerRequest(id, method, params),
-        onClose: () => {
-          void this.cleanupTerminals();
-          this.failTurn('Kimi ACP connection closed');
-        },
-      });
-
-      const sessionId = opts.sessionId;
-      if (!sessionId) {
-        throw new Error('compact requires a sessionId');
-      }
-      this.activeSessionId = sessionId;
-
-      // Cold-connection fallback: session/resume loads the session into memory.
-      // On a reused connection the session is already loaded — resume is
-      // idempotent and harmless; after connection rebuild it's required.
-      const resumeParams: SessionResumeParams = {
-        sessionId,
-        cwd: opts.cwd,
-      };
-      await client.request<SessionResumeParams, SessionResumeResult>(
-        'session/resume',
-        resumeParams,
-      );
-
-      const translator = new KimiAcpTranslator();
-      translator.setOperationKind('compact');
-      this.currentTranslator = translator;
-
-      // Emit turn_started with operationKind='compaction' before the prompt
-      // (consumeTurn yields it while the background compaction runs).
-      const turnId = `compact-${Date.now()}`;
-      const turnStarted = translator.produceTurnStarted(sessionId, turnId);
-      this.currentTurnId = turnId;
-      this.pushEvents([turnStarted]);
-
-      // Send /compact as prompt text
-      const promptParams: SessionPromptParams = {
-        sessionId,
-        prompt: [{ type: 'text', text: '/compact' }],
-      };
-
-      // §5.2: compaction is a BACKGROUND task — the prompt settles before the
-      // wire.jsonl terminal record lands. Baseline the terminal record count,
-      // fire the prompt without awaiting (notifications flow through
-      // consumeTurn), then wait for a NEW terminal (complete/apply →
-      // completed; cancel → cancelled) before producing the result. There is
-      // NO total timeout — silence beyond compactIdleTimeoutMs yields
-      // 'unknown' (never a fake success). Keeps the connection alive while the
-      // background compaction finishes — otherwise dispose/exit kills it and
-      // the record never lands (S5/S6 打回复现 / 2026-08-31 事故).
-      const compactionReader = (this.sessionReader as CompactionRecordReader).readCompactionRecords;
-      const baselineRecords = compactionReader
-        ? compactionReader.call(this.sessionReader, sessionId, opts.cwd)
-        : [];
-      const baselineTerminalCount = baselineRecords.filter(isCompactionTerminalLike).length;
-      const baselineTotalCount = baselineRecords.length;
-
-      this.promptSettled = false;
-      // ACP holds the session/prompt response for the ENTIRE turn (unlike
-      // codex turn/start), so the RPC-level timeout must not apply here —
-      // turn liveness is guarded by the rolling idle watchdog instead.
-      const promptPromise = client.request<SessionPromptParams, SessionPromptResult>(
-        'session/prompt',
-        promptParams,
-        Number.POSITIVE_INFINITY,
-      );
-
-      promptPromise.then(
-        async (result) => {
-          this.promptSettled = true;
-          if (this.stopRequested) return; // already cancelled
-          if (compactionReader) {
-            // §5.4 可选防线（日志探针）：prompt settle 后既无新 begin 也无新
-            // terminal → compact 未被引擎接受（可能已在跑或被拒绝）。不解析
-            // "already running" 文本、不影响卡片。
-            const totalNow = compactionReader.call(this.sessionReader, sessionId, opts.cwd).length;
-            if (totalNow === baselineTotalCount) {
-              getLogger().warn(
-                `[${this.logTag}] compact 未被引擎接受（无新 begin/terminal 记录，可能已在跑或被拒绝）`,
-              );
-            }
-            const outcome = await this.waitForCompactionTerminal(
-              compactionReader,
-              opts,
-              baselineTerminalCount,
-            );
-            if (this.forceFinish) return; // stopped while polling
-            if (outcome === 'completed') {
-              // 压缩完成：正常翻译 prompt 结果（subtype success）。
-              const resultEvent = translator.handlePromptResponse(sessionId, result);
-              this.pushEvents([resultEvent]);
-            } else if (outcome === 'cancelled') {
-              this.pushEvents([
-                translator.produceErrorResult(
-                  sessionId,
-                  '压缩未完成：已被取消或压缩请求失败（可重试）',
-                ),
-              ]);
-            } else if (outcome === 'unknown') {
-              this.pushEvents([
-                translator.produceErrorResult(
-                  sessionId,
-                  `压缩状态未知：超过 ${formatIdleWindow(this.compactIdleTimeoutMs)} 未观察到完成/取消记录，压缩可能仍在后台进行`,
-                ),
-              ]);
-            }
-            // outcome === 'stopped'：不推 result，由 consumeTurn 的 interrupted 兜底。
-          } else {
-            const resultEvent = translator.handlePromptResponse(sessionId, result);
-            this.pushEvents([resultEvent]);
-          }
-        },
-        (err) => {
-          this.promptSettled = true;
-          if (this.stopRequested) {
-            getLogger().warn(
-              `[${this.logTag}] compact prompt rejected after stopRequested: ${(err as Error).message}`,
-            );
-            return;
-          }
-          const resultEvent = translator.produceErrorResult(sessionId, (err as Error).message);
-          this.pushEvents([resultEvent]);
-        },
-      );
-    });
-  }
-
-  /**
-   * Respond to an approval server request. `response` is the bridge
-   * ApprovalAction (`{ action: 'accept' | 'decline' | 'cancel' }`).
-   */
-  async respondApproval(requestId: number | string, response: unknown): Promise<void> {
-    const client = this.currentClient;
-    const pending = this.pendingApprovals.get(requestId);
-    if (!client || !pending) return;
-
-    const action = (response as { action?: string })?.action ?? 'decline';
-    const acpResponse =
-      pending.kind === 'question'
-        ? buildQuestionResponse(action, pending, response)
-        : buildAcpPermissionOutcome(action, pending.options, KIMI_APPROVAL_KINDS);
-    client.respond(requestId, acpResponse);
-    this.pendingApprovals.delete(requestId);
-    getLogger().info(`[${this.logTag}] approval responded requestId=${requestId} action=${action}`);
-  }
-
-  getStatusInfo(): AgentStatusInfo {
-    return {
-      kind: this.kind,
-      model: this.model ?? '(kimi-acp)',
-      extras: {
-        mode: 'acp',
-        permissionMode: this.permissionMode,
-      },
-    };
-  }
-
-  /**
-   * Hot-apply a permission-mode change to the live ACP session (§P5).
-   *
-   * The local cache is always updated so `getStatusInfo()` (and therefore
-   * `/s`) reflects the new mode immediately. When a session is connected,
-   * re-sends `session/set_mode` so the running session picks up the new mode
-   * without waiting for the runner to be evicted/recreated. Failure is
-   * non-fatal: the next setupTurn re-applies the cached mode unconditionally.
-   */
-  async updateApprovalMode(settings: {
-    permissionMode?: 'manual' | 'auto' | 'yolo';
-  }): Promise<void> {
-    if (settings.permissionMode !== undefined) {
-      this.permissionMode = settings.permissionMode;
-    }
-    if (!this.currentClient || !this.activeSessionId) return;
-
-    const modeParams: SessionSetModeParams = {
-      sessionId: this.activeSessionId,
-      modeId: toAcpMode(this.permissionMode),
-    };
-    try {
-      await this.currentClient.request('session/set_mode', modeParams);
-      getLogger().info(
-        `[${this.logTag}] session/set_mode hot-applied session=${this.activeSessionId} modeId=${modeParams.modeId}`,
-      );
-    } catch (err) {
-      getLogger().warn(
-        `[${this.logTag}] session/set_mode failed (non-fatal): ${(err as Error).message}`,
-      );
-    }
-  }
-
-  // =========================================================================
-  // Internal
-  // =========================================================================
-
-  /**
-   * Acquire the connection and set up the turn:
-   * session/new (new session) or session/resume (existing sessionId)
-   * → set permission mode if needed → session/prompt.
-   */
-  protected async setupTurn(message: string, opts: SpawnOptions): Promise<void> {
-    const client = await this.connectionManager.acquire(opts.cwd);
-    this.connectionManager.notifyActivity(opts.cwd);
-    this.currentClient = client;
-    this.activeCwd = opts.cwd;
-    client.setHooks({
-      onNotification: (method, params) => this.handleNotification(method, params),
-      onServerRequest: (id, method, params) => this.handleServerRequest(id, method, params),
-      onClose: () => {
-        getLogger().warn(`[${this.logTag}] client connection closed`);
-        void this.cleanupTerminals();
-        this.failTurn('Kimi ACP connection closed');
-      },
-    });
-
-    let sessionId: string;
-    if (opts.sessionId) {
-      const resumeParams: SessionResumeParams = {
-        sessionId: opts.sessionId,
-        cwd: opts.cwd,
-      };
-      await client.request<SessionResumeParams, SessionResumeResult>(
-        'session/resume',
-        resumeParams,
-      );
-      sessionId = opts.sessionId;
-    } else {
-      const newParams: SessionNewParams = { cwd: opts.cwd, mcpServers: [] };
-      const newResult = await client.request<SessionNewParams, SessionNewResult>(
-        'session/new',
-        newParams,
-      );
-      sessionId = newResult.sessionId;
-    }
-    this.activeSessionId = sessionId;
-
+  protected async applyTurnSettings(client: JsonRpcClient, sessionId: string): Promise<void> {
     // CC-07: 下发配置的模型（provider/model）。session/new|resume 只带 cwd/mcpServers，
     // 不带 model；不主动下发则实际跑 kimi 服务端默认模型。
     // 仿 opencode 用 session/set_config_option。失败仅告警不阻断。
@@ -648,54 +358,132 @@ export class KimiAcpRunner extends ConnectionBasedRunner<KimiAcpClient, AcpTrans
         `[${this.logTag}] session/set_mode failed (non-fatal): ${(err as Error).message}`,
       );
     }
+  }
 
-    const translator = new KimiAcpTranslator();
-    this.currentTranslator = translator;
+  /**
+   * §5.2: compaction is a BACKGROUND task — the prompt settles before the
+   * wire.jsonl terminal record lands. Baselines are captured BEFORE the
+   * compact prompt fires (see compactBaseline override — a begin record
+   * landing after the fire must count as new activity, not baseline), then
+   * wait for a NEW terminal (complete/apply → completed; cancel → cancelled)
+   * before producing the result. There is NO total timeout — silence beyond
+   * compactIdleTimeoutMs yields 'unknown' (never a fake success). Keeps the
+   * connection alive while the background compaction finishes — otherwise
+   * dispose/exit kills it and the record never lands (S5/S6 打回复现 /
+   * 2026-08-31 事故).
+   */
+  protected override compactBaseline(sessionId: string, opts: SpawnOptions): number {
+    const compactionReader = (this.sessionReader as CompactionRecordReader).readCompactionRecords;
+    this.compactBaselineRecords = compactionReader
+      ? compactionReader.call(this.sessionReader, sessionId, opts.cwd)
+      : [];
+    return this.compactBaselineRecords.length;
+  }
 
-    // Emit turn_started before prompt
-    const turnId = `turn-${Date.now()}`;
-    const turnStarted = translator.produceTurnStarted(sessionId, turnId);
-    this.currentTurnId = turnId;
-    this.pushEvents([turnStarted]);
+  protected onCompactPromptFired(
+    promptPromise: Promise<SessionPromptResult>,
+    translator: KimiAcpTranslator,
+    sessionId: string,
+    opts: SpawnOptions,
+    baselineTotalCount: number,
+  ): void {
+    const compactionReader = (this.sessionReader as CompactionRecordReader).readCompactionRecords;
+    // Derived from the pre-fire snapshot captured by compactBaseline() —
+    // re-reading here would race the prompt fire and misclassify new records.
+    const baselineTerminalCount =
+      this.compactBaselineRecords.filter(isCompactionTerminalLike).length;
 
-    // Send the prompt
-    const promptParams: SessionPromptParams = {
-      sessionId,
-      prompt: [{ type: 'text', text: message }],
-    };
-
-    // Fire the prompt request; notifications will be buffered in the queue.
-    // We process them concurrently.
-    this.promptSettled = false;
-
-    const promptPromise = client.request<SessionPromptParams, SessionPromptResult>(
-      'session/prompt',
-      promptParams,
-      Number.POSITIVE_INFINITY, // response held for the whole turn; idle watchdog guards liveness
-    );
-
-    // Wait for prompt to settle, then push the result event.
-    // Notifications are pushed concurrently by the hook handlers.
     promptPromise.then(
-      (result) => {
+      async (result) => {
         this.promptSettled = true;
         if (this.stopRequested) return; // already cancelled
-        const resultEvent = translator.handlePromptResponse(sessionId, result);
-        this.pushEvents([resultEvent]);
-      },
-      (err) => {
-        this.promptSettled = true;
-        if (this.stopRequested) {
-          getLogger().warn(
-            `[${this.logTag}] prompt rejected after stopRequested: ${(err as Error).message}`,
+        if (compactionReader) {
+          // §5.4 可选防线（日志探针）：prompt settle 后既无新 begin 也无新
+          // terminal → compact 未被引擎接受（可能已在跑或被拒绝）。不解析
+          // "already running" 文本、不影响卡片。
+          const totalNow = compactionReader.call(this.sessionReader, sessionId, opts.cwd).length;
+          if (totalNow === baselineTotalCount) {
+            getLogger().warn(
+              `[${this.logTag}] compact 未被引擎接受（无新 begin/terminal 记录，可能已在跑或被拒绝）`,
+            );
+          }
+          const outcome = await this.waitForCompactionTerminal(
+            compactionReader,
+            opts,
+            baselineTerminalCount,
           );
-          return;
+          if (this.forceFinish) return; // stopped while polling
+          if (outcome === 'completed') {
+            // 压缩完成：正常翻译 prompt 结果（subtype success）。
+            const resultEvent = translator.handlePromptResponse(sessionId, result);
+            this.pushEvents([resultEvent]);
+          } else if (outcome === 'cancelled') {
+            this.pushEvents([
+              translator.produceErrorResult(
+                sessionId,
+                '压缩未完成：已被取消或压缩请求失败（可重试）',
+              ),
+            ]);
+          } else if (outcome === 'unknown') {
+            this.pushEvents([
+              translator.produceErrorResult(
+                sessionId,
+                `压缩状态未知：超过 ${formatIdleWindow(this.compactIdleTimeoutMs)} 未观察到完成/取消记录，压缩可能仍在后台进行`,
+              ),
+            ]);
+          }
+          // outcome === 'stopped'：不推 result，由 consumeTurn 的 interrupted 兜底。
+        } else {
+          const resultEvent = translator.handlePromptResponse(sessionId, result);
+          this.pushEvents([resultEvent]);
         }
-        const resultEvent = translator.produceErrorResult(sessionId, (err as Error).message);
-        this.pushEvents([resultEvent]);
       },
+      (err) => this.handlePromptRejected(err, translator, sessionId, 'compact'),
     );
   }
+
+  protected buildApprovalOutcome(
+    action: string,
+    pending: AcpPendingApproval,
+    response: unknown,
+  ): unknown {
+    return pending.kind === 'question'
+      ? buildQuestionResponse(action, pending, response)
+      : buildAcpPermissionOutcome(action, pending.options, KIMI_APPROVAL_KINDS);
+  }
+
+  getStatusInfo(): AgentStatusInfo {
+    return {
+      kind: this.kind,
+      model: this.model ?? '(kimi-acp)',
+      extras: {
+        mode: 'acp',
+        permissionMode: this.permissionMode,
+      },
+    };
+  }
+
+  /**
+   * Hot-apply a permission-mode change to the live ACP session (§P5).
+   *
+   * The local cache is always updated so `getStatusInfo()` (and therefore
+   * `/s`) reflects the new mode immediately. When a session is connected,
+   * re-sends `session/set_mode` so the running session picks up the new mode
+   * without waiting for the runner to be evicted/recreated. Failure is
+   * non-fatal: the next setupTurn re-applies the cached mode unconditionally.
+   */
+  async updateApprovalMode(settings: {
+    permissionMode?: 'manual' | 'auto' | 'yolo';
+  }): Promise<void> {
+    if (settings.permissionMode !== undefined) {
+      this.permissionMode = settings.permissionMode;
+    }
+    await this.sendApprovalModeUpdate(toAcpMode(this.permissionMode));
+  }
+
+  // =========================================================================
+  // Internal
+  // =========================================================================
 
   /**
    * §5.2: 等 wire.jsonl 出现 NEW 压缩终态记录，返回判别结果而非 void。
@@ -748,7 +536,7 @@ export class KimiAcpRunner extends ConnectionBasedRunner<KimiAcpClient, AcpTrans
     }
   }
 
-  private handleNotification(method: string, params: unknown): void {
+  protected override handleNotification(method: string, params: unknown): void {
     // Terminal-backed Bash 的通知走 runner 自产事件（见 bashToolCallIds），
     // 不交给 translator；其余通知（Read/Edit/text/thinking）正常翻译。
     if (method === NotificationMethod.SESSION_UPDATE && this.filterBashNotifications(params)) {
@@ -795,7 +583,11 @@ export class KimiAcpRunner extends ConnectionBasedRunner<KimiAcpClient, AcpTrans
     return false;
   }
 
-  private handleServerRequest(id: number | string, method: string, params: unknown): void {
+  protected override handleServerRequest(
+    id: number | string,
+    method: string,
+    params: unknown,
+  ): void {
     // kimi terminal 工具：Bash 执行下放客户端（acp-terminal reverse RPC）。
     // 请求本身是纯 request/response I/O，不交给 translator（避免落入下方
     // 「空事件 → 拒绝」兜底）；对应的 tool_use/tool_result 事件由
@@ -830,19 +622,11 @@ export class KimiAcpRunner extends ConnectionBasedRunner<KimiAcpClient, AcpTrans
       return;
     }
 
-    for (const ev of events) {
-      if (ev.type === 'approval_requested') {
-        this.pendingApprovals.set(ev.requestId, {
-          kind: ev.kind,
-          view: ev.view,
-          options: (params as RequestPermissionParams).options,
-          proto: method === ServerRequestMethod.ELICITATION_CREATE ? 'elicitation' : 'permission',
-        });
-        getLogger().info(
-          `[${this.logTag}] approval requested requestId=${ev.requestId} kind=${ev.kind}`,
-        );
-      }
-    }
+    this.registerApprovalEvents(
+      events,
+      (params as RequestPermissionParams).options,
+      method === ServerRequestMethod.ELICITATION_CREATE ? 'elicitation' : 'permission',
+    );
     this.pushEvents(events);
   }
 
@@ -907,14 +691,17 @@ export class KimiAcpRunner extends ConnectionBasedRunner<KimiAcpClient, AcpTrans
     const cwd = params.cwd ?? this.activeCwd ?? undefined;
     const outputLimit = params.outputByteLimit ?? TERMINAL_DEFAULT_OUTPUT_LIMIT;
 
-    const proc = spawn(params.command, params.args ?? [], {
+    const proc = spawnProcess(params.command, params.args ?? [], {
       cwd,
-      env: env ? { ...process.env, ...env } : undefined,
+      // env 覆盖大小写不敏感合并（win32 PATH/Path 双键防护，v2 §8.3）
+      env: env ? mergeProcessEnv(process.env, env) : undefined,
       stdio: ['ignore', 'pipe', 'pipe'],
       // ProcessStopper 用负 PID 杀进程组（kill(-pgid)）；子进程必须是组长
       // 才能命中，否则 kill(-pid) 抛 ESRCH 被吞 → kill/release/清理全失效。
-      // 与 JsonlRpcTransport / spawning-runner 的 detached:true 同模式。
-      detached: true,
+      // 与 JsonlRpcTransport / spawning-runner 同模式；win32 不 detached
+      // （`.cmd` 垫片在 DETACHED_PROCESS 下丢 stdio），树杀由 taskkill /T 负责。
+      detached: useDetachedProcessGroup(),
+      windowsHide: true,
     });
 
     // 每个流独立 decoder：多字节字符跨 chunk 拆分时由 decoder 保留不完整
@@ -1105,5 +892,26 @@ export class KimiAcpRunner extends ConnectionBasedRunner<KimiAcpClient, AcpTrans
     for (const handle of handles) {
       await this.processStopper.stop(handle.proc, { immediate: true });
     }
+  }
+
+  // =========================================================================
+  // BaseAcpRunner hooks
+  // =========================================================================
+
+  protected override onConnectionAcquired(opts: SpawnOptions): void {
+    this.activeCwd = opts.cwd;
+  }
+
+  protected override onConnectionClosed(): void {
+    void this.cleanupTerminals();
+  }
+
+  protected override onClearTurnState(): void {
+    this.activeCwd = null;
+  }
+
+  protected override async beforeDisposeConnections(): Promise<void> {
+    // 关闭前 kill/release 所有存活 terminal，避免孤儿 bash 进程。
+    await this.cleanupTerminals();
   }
 }

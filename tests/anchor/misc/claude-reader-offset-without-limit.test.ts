@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { ClaudeSessionReader } from '../../../src/session/claude/session-reader.js';
+import { encodeClaudeProjectDir } from '../../lib/session-fixtures.js';
 
 let tmpDir: string;
 
@@ -16,11 +17,11 @@ afterEach(() => {
 
 // Helper: write a fake jsonl session file under <tmpDir>/<encodedCwd>/
 function writeSession(cwd: string, sessionId: string, summary: string): string {
-  const encoded = cwd.replace(/\//g, '-');
+  const encoded = encodeClaudeProjectDir(cwd);
   const dir = path.join(tmpDir, encoded);
   fs.mkdirSync(dir, { recursive: true });
   const filePath = path.join(dir, `${sessionId}.jsonl`);
-  const initLine = `{"type":"system","subtype":"init","session_id":"${sessionId}","cwd":"${cwd}","model":"opus"}`;
+  const initLine = `{"type":"system","subtype":"init","session_id":"${sessionId}","cwd":${JSON.stringify(cwd)},"model":"opus"}`;
   const userLine = `{"type":"user","message":{"role":"user","content":[{"type":"text","text":"${summary}"}]}}`;
   fs.writeFileSync(filePath, initLine + '\n' + userLine + '\n');
   return filePath;
