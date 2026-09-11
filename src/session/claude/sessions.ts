@@ -3,7 +3,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { findJsonlLine, readLastJsonlLine } from '../common/jsonl.js';
 import { isStale } from '../common/constants.js';
-import { samePath } from '../../platform/path.js';
+import { samePath, encodeProjectDirName } from '../../platform/path.js';
 import { extractContentBlocks } from '../common/content-blocks.js';
 import { scanJsonlOnce, tailOffsetAfter, scanTailEvents } from '../common/two-pass.js';
 import {
@@ -27,6 +27,8 @@ import {
  * Directory Claude Code uses to store session transcripts for a given cwd.
  * Claude encodes the cwd by replacing `/` with `-` (e.g.
  * `/Users/x/proj` -> `-Users-x-proj`). Underscores are also replaced with `-`.
+ * win32 上 `\` 同样是分隔符、`:` 是非法文件名字符，一并归一为 `-`
+ * （`C:\Users\x\proj` -> `C--Users-x-proj`）；见 encodeProjectDirName。
  *
  * Note: this encoding is LOSSY (`disk_d/foo` and `disk-d/foo` both encode to
  * `disk-d-foo`). It is only safe to use the result to **locate** files; never
@@ -34,8 +36,7 @@ import {
  * from the JSONL content (regression 2026-06-21 /resume & /cd 路径错乱).
  */
 function projectDirForCwd(cwd: string, projectsDir: string): string {
-  const encoded = cwd.replace(/\//g, '-').replace(/_/g, '-');
-  return path.join(projectsDir, encoded);
+  return path.join(projectsDir, encodeProjectDirName(cwd));
 }
 
 /**

@@ -62,7 +62,7 @@ describe('codex active catalog reasoning effort - anchor', () => {
       path.join(tmpDir, 'config.toml'),
       [
         'model = "deepseek-v4-flash"',
-        `model_catalog_json = "${path.join(tmpDir, 'models.json')}"`,
+        `model_catalog_json = "${path.join(tmpDir, 'models.json').replaceAll('\\', '/')}"`,
         '',
       ].join('\n'),
     );

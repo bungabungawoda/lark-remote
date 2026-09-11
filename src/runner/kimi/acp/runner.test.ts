@@ -18,11 +18,11 @@ import {
   mkdtempSync,
   readFileSync,
   realpathSync,
-  rmSync,
   statSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
+import { rmRf } from '../../../../tests/lib/tmp-cleanup.js';
 import { join } from 'node:path';
 import type { AgentEvent } from '../../types.js';
 import { KimiAcpRunner } from './runner.js';
@@ -34,6 +34,7 @@ import {
 } from '../../../../tests/lib/mock-acp-server.js';
 import { createStubSessionReader } from '../../../../tests/lib/bridge-stubs.js';
 import { KimiSessionReader } from '../../../session/kimi/sessions.js';
+import { currentPlatform, isWin32 } from '../../../platform/select.js';
 
 const SESSION_ID = 'aaaaaaaa-1111-2222-3333-444444444444';
 
@@ -265,9 +266,19 @@ rl.on('line', (line) => {
 });
 `,
   );
-  const wrapper = join(tmpDir, 'terminal-server.sh');
-  writeFileSync(wrapper, `#!/bin/sh\nexec "${process.execPath}" "${server}" "${configPath}"\n`);
-  chmodSync(wrapper, 0o755);
+  // 与 writeScenario 同理由：win32 用 .cmd 垫片直启 node，避免 Git Bash 慢启动
+  let wrapper: string;
+  if (process.platform === 'win32') {
+    wrapper = join(tmpDir, 'terminal-server.cmd');
+    writeFileSync(wrapper, `@echo off\r\n"${process.execPath}" "${server}" "${configPath}" %*\r\n`);
+  } else {
+    wrapper = join(tmpDir, 'terminal-server.sh');
+    writeFileSync(
+      wrapper,
+      `#!/bin/sh\nexec "${process.execPath}" "${server}" "${configPath}" "$@"\n`,
+    );
+    chmodSync(wrapper, 0o755);
+  }
   return { wrapper };
 }
 
@@ -281,7 +292,8 @@ describe('KimiAcpRunner', () => {
   });
 
   afterEach(() => {
-    rmSync(tmpDir, { recursive: true, force: true });
+    // win32：子进程退出后句柄释放有毫秒级延迟，直接 rmSync 会 EBUSY
+    rmRf(tmpDir);
   });
 
   /**
@@ -1323,30 +1335,28 @@ describe('KimiAcpRunner', () => {
     const normalWorkspace = join(tmpDir, 'normal-workspace');
     mkdirSync(normalWorkspace, { recursive: true });
 
-    // Spawn counter: first invocation crashes, second succeeds
+    // Spawn counter: first invocation crashes, second succeeds.
+    // 平台中立 launcher（Node）——不再写 POSIX `#!/bin/sh` wrapper：Windows 既不能
+    // 直接执行无扩展名脚本、shell 算术也不可用（windows-support-design-v2 §9.1）。
     const spawnCountFile = join(tmpDir, 'spawn-count');
-    const wrapper = join(tmpDir, 'retry-server.sh');
+    const launcher = join(tmpDir, 'retry-server.mjs');
     writeFileSync(
-      wrapper,
-      `#!/bin/sh
-if [ ! -f "${spawnCountFile}" ]; then printf '0\\n' > "${spawnCountFile}"; fi
-n=$(cat "${spawnCountFile}")
-n=$((n+1))
-printf '%s\\n' "$n" > "${spawnCountFile}"
-if [ "$n" -eq 1 ]; then
-  exec "${process.execPath}" "${serverScript}" "${crashConfigPath}"
-else
-  exec "${process.execPath}" "${serverScript}" "${normalConfigPath}"
-fi
-`,
+      launcher,
+      `import { existsSync, readFileSync, writeFileSync } from 'node:fs';\n` +
+        `import { spawnSync } from 'node:child_process';\n` +
+        `const countFile = ${JSON.stringify(spawnCountFile)};\n` +
+        `const n = (existsSync(countFile) ? Number(readFileSync(countFile, 'utf8').trim()) : 0) + 1;\n` +
+        `writeFileSync(countFile, String(n));\n` +
+        `const configPath = n === 1 ? ${JSON.stringify(crashConfigPath)} : ${JSON.stringify(normalConfigPath)};\n` +
+        `const { status } = spawnSync(process.execPath, [${JSON.stringify(serverScript)}, configPath], { stdio: 'inherit' });\n` +
+        `process.exit(status ?? 0);\n`,
     );
-    chmodSync(wrapper, 0o755);
 
     const runner = new KimiAcpRunner({
       kind: 'kimi',
       sessionReader: createStubSessionReader(),
-      binary: wrapper,
-      acpArgs: [],
+      binary: process.execPath,
+      acpArgs: [launcher],
       turnIdleTimeoutMs: 30_000,
     });
 
@@ -1415,7 +1425,9 @@ fi
     await runner.dispose();
   });
 
-  it('executes kimi terminal/create bash commands locally and serves output/wait_for_exit/release (terminal protocol)', async () => {
+  // 依赖真实 `bash -c`（POSIX）：kimi terminal/create 协议固定 bash，Windows 需
+  // Git Bash 在 PATH（windows-support-design-v2 §7）。门控到 win32 具备该前置为止。
+  it.skipIf(isWin32(currentPlatform))('executes kimi terminal/create bash commands locally and serves output/wait_for_exit/release (terminal protocol)', async () => {
     const capturePath = join(tmpDir, 'terminal-capture.jsonl');
     const markerPath = join(tmpDir, 'terminal-marker.txt');
     const workspace = join(tmpDir, 'workspace');
@@ -1480,7 +1492,7 @@ fi
     await runner.dispose();
   });
 
-  it('emits runner-owned Bash tool_use/tool_result with command and local output (terminal visibility)', async () => {
+  it.skipIf(isWin32(currentPlatform))('emits runner-owned Bash tool_use/tool_result with command and local output (terminal visibility)', async () => {
     const capturePath = join(tmpDir, 'terminal-enrich-capture.jsonl');
     const markerPath = join(tmpDir, 'terminal-enrich-marker.txt');
     const workspace = join(tmpDir, 'workspace');
@@ -1548,7 +1560,7 @@ fi
     await runner.dispose();
   });
 
-  it('terminal/kill really terminates a long-running local bash process (kill regression)', async () => {
+  it.skipIf(isWin32(currentPlatform))('terminal/kill really terminates a long-running local bash process (kill regression)', async () => {
     const capturePath = join(tmpDir, 'terminal-kill-capture.jsonl');
     const pidPath = join(tmpDir, 'terminal-pid.txt');
     const workspace = join(tmpDir, 'workspace');
@@ -1609,7 +1621,7 @@ fi
     await runner.dispose();
   });
 
-  it('buffers terminal output byte-accurately: intact UTF-8 and outputByteLimit enforced', async () => {
+  it.skipIf(isWin32(currentPlatform))('buffers terminal output byte-accurately: intact UTF-8 and outputByteLimit enforced', async () => {
     const capturePath = join(tmpDir, 'terminal-buffer-capture.jsonl');
     const workspace = join(tmpDir, 'workspace');
     mkdirSync(workspace, { recursive: true });
@@ -1662,7 +1674,7 @@ fi
     await runner.dispose();
   });
 
-  it('reports truncated when output exactly reaches outputByteLimit (spec: buffer >= limit)', async () => {
+  it.skipIf(isWin32(currentPlatform))('reports truncated when output exactly reaches outputByteLimit (spec: buffer >= limit)', async () => {
     const capturePath = join(tmpDir, 'terminal-exact-cap-capture.jsonl');
     const workspace = join(tmpDir, 'workspace');
     mkdirSync(workspace, { recursive: true });
@@ -1762,15 +1774,18 @@ fi
       });
       const { events, done } = startRunCompactCollect(runner, workspace);
 
-      // prompt settle 后（~30ms）再落 cancel：引擎失败/取消共用 full_compaction.cancel。
-      const cancelTimer = setTimeout(() => {
+      // prompt settle 后落 cancel：引擎失败/取消共用 full_compaction.cancel。
+      // Windows 握手可达数秒，固定一次 append 会落在 baseline 建立之前被
+      // 「已有记录」吸收（等待器只看新增）；周期性 append 保证 baseline 之后
+      // 必然出现新增 cancel 记录，posix 上第一条即触发，语义不变。
+      const cancelTimer = setInterval(() => {
         appendFileSync(
           wirePath,
           JSON.stringify({ type: 'full_compaction.cancel', time: Date.now() }) + '\n',
         );
-      }, 400);
-      const result = await waitForResult(events, 4000);
-      clearTimeout(cancelTimer);
+      }, 1000);
+      const result = await waitForResult(events, 15000);
+      clearInterval(cancelTimer);
       if (!result) await runner.stop();
       await done;
 

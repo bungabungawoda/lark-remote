@@ -3,7 +3,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { OpencodeSessionReader } from '../../../src/session/opencode/sessions.js';
-import { prependPath, restorePath, writeMockBin } from '../../lib/path-mock.js';
+import { prependPath, restorePath, writeMockSource } from '../../lib/path-mock.js';
+import { rmRf } from '../../../tests/lib/tmp-cleanup.js';
 
 const { mockLogger } = vi.hoisted(() => ({
   mockLogger: {
@@ -40,7 +41,7 @@ describe('P1-15 opencode session list maxBuffer', () => {
       // Entries must carry directory === process.cwd() (the reader passes its
       // realpath cwd to execFileSync) so listSessions' directory filter keeps them.
       const saved = prependPath(tmpDir);
-      writeMockBin(
+      writeMockSource(
         tmpDir,
         'opencode',
         `#!/usr/bin/env node
@@ -71,7 +72,7 @@ process.stdout.write(JSON.stringify(entries));
         restorePath(saved);
       }
     } finally {
-      fs.rmSync(tmpDir, { recursive: true, force: true });
+      rmRf(tmpDir);
     }
   });
 });

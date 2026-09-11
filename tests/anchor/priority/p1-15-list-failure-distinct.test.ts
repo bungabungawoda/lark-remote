@@ -16,7 +16,8 @@ import { SessionStore, SessionReaderRegistry } from '../../../src/session/index.
 import { AppConfigSchema } from '../../../src/config/index.js';
 import type { AppConfig } from '../../../src/config/index.js';
 import type { AgentSessionReader } from '../../../src/runner/index.js';
-import { prependPath, restorePath, writeMockBin } from '../../lib/path-mock.js';
+import { prependPath, restorePath, writeMockSource } from '../../lib/path-mock.js';
+import { rmRf } from '../../../tests/lib/tmp-cleanup.js';
 
 const { mockLogger } = vi.hoisted(() => ({
   mockLogger: {
@@ -45,7 +46,7 @@ describe('P1-15 list failure vs empty', () => {
   let tmpDir: string;
 
   afterEach(() => {
-    if (tmpDir) fs.rmSync(tmpDir, { recursive: true, force: true });
+    if (tmpDir) rmRf(tmpDir);
   });
 
   it('test_anchor_opencode_list_failure_throws_not_silent_empty', () => {
@@ -58,7 +59,7 @@ describe('P1-15 list failure vs empty', () => {
     //    error 级日志 + 向上抛出让 router 显示『读取失败』」。
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'p1-15-fail-'));
     const saved = prependPath(tmpDir);
-    writeMockBin(tmpDir, 'opencode', '#!/bin/sh\necho "boom" >&2\nexit 1\n');
+    writeMockSource(tmpDir, 'opencode', "process.stderr.write('boom\\n');\nprocess.exit(1);\n");
 
     try {
       const reader = new OpencodeSessionReader();

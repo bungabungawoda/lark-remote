@@ -26,7 +26,8 @@
   "scripts": {
     "dev": "bun src/index.ts",
     "build": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\" && tsc && node -e \"if(process.platform!=='win32'){const fs=require('fs');for(const f of ['dist/index.js','dist/cli.js'])fs.chmodSync(f,0o755)}\"",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit && tsc -p tsconfig.test-infra.json",
+    "typecheck:test-infra": "tsc -p tsconfig.test-infra.json",
     "lint": "eslint src tests",
     "lint:fix": "eslint src tests --fix",
     "format": "prettier --write 'src/**/*.ts' 'tests/**/*.ts'",
@@ -58,7 +59,7 @@
     "test:pi-full": "vitest run --project agent-pi --project infra-runner --project infra-session",
     "test:kimi-full": "vitest run --project agent-kimi --project infra-runner --project infra-session",
     "test:live": "vitest run --project live",
-    "prepublishOnly": "tsc --noEmit && vitest run && npm run build",
+    "prepublishOnly": "npm run typecheck && vitest run && npm run build",
     "prepack": "node -e \"const fs=require('fs');if(!fs.existsSync('dist/cli.js')){console.error('dist/ missing — run bun run build first');process.exit(1)}\""
   },
   "publishConfig": {

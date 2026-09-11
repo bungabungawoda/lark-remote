@@ -1,5 +1,9 @@
 import { execFileSync, type ChildProcess } from 'node:child_process';
-import { spawnProcess, isWindowsCommandNotFoundLine } from '../../platform/spawn.js';
+import {
+  spawnProcess,
+  isWindowsCommandNotFoundLine,
+  useDetachedProcessGroup,
+} from '../../platform/spawn.js';
 import path from 'node:path';
 import os from 'node:os';
 import fs from 'node:fs';
@@ -234,10 +238,11 @@ export abstract class SpawningRunner {
       cwd: opts.cwd,
       stdio: this.getStdio(),
       env: process.env,
-      // Spawn in a new process group so we can kill the entire group
-      // when stopping. This ensures child processes (shell wrappers,
-      // sub-processes) are also terminated.
-      detached: true,
+      // posix 建新进程组以便负 PID 组杀（壳包装/子进程一并终止）；win32 不
+      // detached —— `.cmd` 垫片在 DETACHED_PROCESS 下丢 stdio（见
+      // useDetachedProcessGroup），树杀由 taskkill /T 负责。
+      detached: useDetachedProcessGroup(),
+      windowsHide: true,
     });
     this.currentProcess = proc;
 

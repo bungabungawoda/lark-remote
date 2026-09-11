@@ -69,7 +69,7 @@ function writeRollout(dayDir: string, sessionId: string, cwd: string, mtimeMs: n
   fs.mkdirSync(dayDir, { recursive: true });
   const filePath = path.join(dayDir, `rollout-${sessionId}.jsonl`);
   const firstLine =
-    `{"type":"session_meta","payload":{"session_id":"${sessionId}","cwd":"${cwd}",` +
+    `{"type":"session_meta","payload":{"session_id":"${sessionId}","cwd":${JSON.stringify(cwd)},` +
     `"originator":"x"}}\n`;
   fs.writeFileSync(filePath, firstLine, 'utf-8');
   fs.utimesSync(filePath, mtimeMs / 1000, mtimeMs / 1000);

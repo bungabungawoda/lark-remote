@@ -18,12 +18,13 @@
  *   匹配 this.binary」（本项目落地为 `-o command=` 全命令行匹配，因为 agent
  *   二进制可能是 bash wrapper，comm 只会显示解释器名）。
  */
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { ClaudeRunner } from '../../../src/runner/claude/index.js';
+import { describePosix } from '../../lib/platform.js';
 
 const { mockLogger } = vi.hoisted(() => ({
   mockLogger: {
@@ -39,7 +40,10 @@ vi.mock('../../../src/logger/index.js', () => ({
   initLogger: () => mockLogger,
 }));
 
-describe('P1-10: killOrphan process identity verification', () => {
+// POSIX 门控：fixture 依赖 POSIX 原语（真实 `sleep` 长驻进程 + 负 PID 组杀）。
+// killOrphan 的 win32 身份校验（CIM CommandLine/CreationDate）尚未接线（见
+// windows-support-design-v2 §11 M2 遗留项），接线后再放开 win32 并补真机验证。
+describePosix('P1-10: killOrphan process identity verification', () => {
   let tmpDir: string;
 
   beforeEach(() => {

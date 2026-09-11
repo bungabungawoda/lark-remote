@@ -1,16 +1,27 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { JsonRpcClient, RpcError, RpcTimeoutError, ConnectionLostError } from './client.js';
 import { JsonlRpcTransport } from './transport.js';
+import { rmRf } from '../../../../tests/lib/tmp-cleanup.js';
+
+/**
+ * 启动一个 Node 假 ACP server。fixture 平台中立：直接以 `process.execPath`
+ * 启动脚本，**不再包一层 POSIX `#!/bin/sh` wrapper**（Windows 既不能执行
+ * 无扩展名脚本、也不认 shebang，wrapper 会让子进程起不来 →
+ * env/capture 文件缺失、exit:1 等假红）。见 windows-support-design-v2 §9.1。
+ */
+function nodeLaunch(script: string, extraArgs: string[] = []) {
+  return { binary: process.execPath, args: [script, ...extraArgs] };
+}
 
 /** Fake ACP server that answers initialize and handles requests. */
 function makeFakeServer(
   tmpDir: string,
   handlers: Record<string, (msg: Record<string, unknown>) => unknown>,
 ): {
-  wrapper: string;
+  server: string;
 } {
   const server = join(tmpDir, 'acp-server.mjs');
   // Serialize handlers into a self-contained script
@@ -27,10 +38,7 @@ function makeFakeServer(
     server,
     `import { createInterface } from 'node:readline';\nconst rl = createInterface({ input: process.stdin });\nrl.on('line', (line) => {\n  const msg = JSON.parse(line);\n  if (msg.method === 'initialize') {\n    process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: msg.id, result: { protocolVersion: 1, agentInfo: { name: 'kimi-acp', version: '0.36.0' } } }) + '\\n');\n    return;\n  }\n  switch (msg.method) {\n    ${handlerSource}\n    default:\n    if (msg.id !== undefined) {\n      process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: msg.id, result: { ok: true } }) + '\\n');\n    }\n  }\n});\n`,
   );
-  const wrapper = join(tmpDir, 'acp-server.sh');
-  writeFileSync(wrapper, `#!/bin/sh\nexec "${process.execPath}" "${server}"\n`);
-  chmodSync(wrapper, 0o755);
-  return { wrapper };
+  return { server };
 }
 
 describe('JsonRpcClient request/response id matching', () => {
@@ -41,12 +49,12 @@ describe('JsonRpcClient request/response id matching', () => {
   });
 
   afterEach(() => {
-    rmSync(tmpDir, { recursive: true, force: true });
+    rmRf(tmpDir);
   });
 
   it('matches request/response by id', async () => {
-    const { wrapper } = makeFakeServer(tmpDir, {});
-    const transport = new JsonlRpcTransport({ binary: wrapper, args: [], cwd: tmpDir });
+    const { server } = makeFakeServer(tmpDir, {});
+    const transport = new JsonlRpcTransport({ ...nodeLaunch(server), cwd: tmpDir });
     const client = new JsonRpcClient(transport, {
       onNotification: () => {},
       onServerRequest: () => {},
@@ -69,11 +77,8 @@ describe('JsonRpcClient request/response id matching', () => {
       server,
       `import { createInterface } from 'node:readline';\nconst rl = createInterface({ input: process.stdin });\nrl.on('line', (line) => {\n  const msg = JSON.parse(line);\n  if (msg.method === 'initialize') {\n    process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: msg.id, result: { protocolVersion: 1, agentInfo: { name: 'kimi-acp', version: '0.36.0' } } }) + '\\n');\n    return;\n  }\n  if (msg.method === 'session/new') {\n    process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: msg.id, error: { code: -32600, message: 'bad params' } }) + '\\n');\n    return;\n  }\n});\n`,
     );
-    const wrapper = join(tmpDir, 'error-server.sh');
-    writeFileSync(wrapper, `#!/bin/sh\nexec "${process.execPath}" "${server}"\n`);
-    chmodSync(wrapper, 0o755);
 
-    const transport = new JsonlRpcTransport({ binary: wrapper, args: [], cwd: tmpDir });
+    const transport = new JsonlRpcTransport({ ...nodeLaunch(server), cwd: tmpDir });
     const client = new JsonRpcClient(transport, {
       onNotification: () => {},
       onServerRequest: () => {},
@@ -96,11 +101,8 @@ describe('JsonRpcClient request/response id matching', () => {
       server,
       `import { createInterface } from 'node:readline';\nconst rl = createInterface({ input: process.stdin });\nrl.on('line', (line) => {\n  const msg = JSON.parse(line);\n  if (msg.method === 'initialize') {\n    process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: msg.id, result: { protocolVersion: 1, agentInfo: { name: 'kimi-acp', version: '0.36.0' } } }) + '\\n');\n  }\n  // ignore all other requests — client will timeout\n});\n`,
     );
-    const wrapper = join(tmpDir, 'timeout-server.sh');
-    writeFileSync(wrapper, `#!/bin/sh\nexec "${process.execPath}" "${server}"\n`);
-    chmodSync(wrapper, 0o755);
 
-    const transport = new JsonlRpcTransport({ binary: wrapper, args: [], cwd: tmpDir });
+    const transport = new JsonlRpcTransport({ ...nodeLaunch(server), cwd: tmpDir });
     const client = new JsonRpcClient(
       transport,
       {
@@ -124,11 +126,8 @@ describe('JsonRpcClient request/response id matching', () => {
       server,
       `import { createInterface } from 'node:readline';\nconst rl = createInterface({ input: process.stdin });\nrl.on('line', (line) => {\n  const msg = JSON.parse(line);\n  if (msg.method === 'initialize') {\n    process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: msg.id, result: { protocolVersion: 1, agentInfo: { name: 'kimi-acp', version: '0.36.0' } } }) + '\\n');\n  }\n  if (msg.method === 'trigger-notif') {\n    process.stdout.write(JSON.stringify({ jsonrpc: '2.0', method: 'session/update', params: { event: { type: 'agent_message_chunk', delta: 'hello' } } }) + '\\n');\n    process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: msg.id, result: { ok: true } }) + '\\n');\n  }\n});\n`,
     );
-    const wrapper = join(tmpDir, 'notif-server.sh');
-    writeFileSync(wrapper, `#!/bin/sh\nexec "${process.execPath}" "${server}"\n`);
-    chmodSync(wrapper, 0o755);
 
-    const transport = new JsonlRpcTransport({ binary: wrapper, args: [], cwd: tmpDir });
+    const transport = new JsonlRpcTransport({ ...nodeLaunch(server), cwd: tmpDir });
 
     const notifications: Array<{ method: string; params: unknown }> = [];
     const client = new JsonRpcClient(transport, {
@@ -164,11 +163,8 @@ describe('JsonRpcClient request/response id matching', () => {
       server,
       `import { createInterface } from 'node:readline';\nconst rl = createInterface({ input: process.stdin });\nrl.on('line', (line) => {\n  const msg = JSON.parse(line);\n  if (msg.method === 'initialize') {\n    process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: msg.id, result: { protocolVersion: 1, agentInfo: { name: 'kimi-acp', version: '0.36.0' } } }) + '\\n');\n  }\n  if (msg.method === 'trigger-approval') {\n    process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: 999, method: 'session/request_permission', params: { sessionId: 'sess-1', options: [{ optionId: 'approve_once', name: 'Approve', kind: 'approve_once' }] } }) + '\\n');\n    process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: msg.id, result: { ok: true } }) + '\\n');\n  }\n});\n`,
     );
-    const wrapper = join(tmpDir, 'rpc-server.sh');
-    writeFileSync(wrapper, `#!/bin/sh\nexec "${process.execPath}" "${server}"\n`);
-    chmodSync(wrapper, 0o755);
 
-    const transport = new JsonlRpcTransport({ binary: wrapper, args: [], cwd: tmpDir });
+    const transport = new JsonlRpcTransport({ ...nodeLaunch(server), cwd: tmpDir });
 
     const serverRequests: Array<{ id: number | string; method: string; params: unknown }> = [];
     const client = new JsonRpcClient(transport, {
@@ -203,11 +199,8 @@ describe('JsonRpcClient request/response id matching', () => {
       server,
       `import { createInterface } from 'node:readline';\nconst rl = createInterface({ input: process.stdin });\nrl.on('line', (line) => {\n  const msg = JSON.parse(line);\n  if (msg.method === 'initialize') {\n    process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: msg.id, result: { protocolVersion: 1, agentInfo: { name: 'kimi-acp', version: '0.36.0' } } }) + '\\n');\n    setTimeout(() => process.exit(0), 100);\n  }\n});\n`,
     );
-    const wrapper = join(tmpDir, 'exit-server.sh');
-    writeFileSync(wrapper, `#!/bin/sh\nexec "${process.execPath}" "${server}"\n`);
-    chmodSync(wrapper, 0o755);
 
-    const transport = new JsonlRpcTransport({ binary: wrapper, args: [], cwd: tmpDir });
+    const transport = new JsonlRpcTransport({ ...nodeLaunch(server), cwd: tmpDir });
     let onCloseFired = false;
     const client = new JsonRpcClient(transport, {
       onNotification: () => {},
@@ -238,12 +231,9 @@ describe('JsonRpcClient request/response id matching', () => {
       server,
       `import { createInterface } from 'node:readline';\nconst rl = createInterface({ input: process.stdin });\nrl.on('line', (line) => {\n  const msg = JSON.parse(line);\n  if (msg.method === 'initialize') {\n    process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: msg.id, result: { protocolVersion: 1, agentInfo: { name: 'kimi-acp', version: '0.36.0' } } }) + '\\n');\n    // After initialize, send a server request (reverse RPC)\n    process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: 42, method: 'session/request_permission', params: { sessionId: 's1', options: [{ optionId: 'approve_once', name: 'Approve', kind: 'approve_once' }] } }) + '\\n');\n    return;\n  }\n  // Client's response to our server request (has id + result, no method)\n  if (msg.id === 42 && msg.result !== undefined && !msg.method) {\n    process.stdout.write(JSON.stringify({ jsonrpc: '2.0', method: 'approval_confirmed', params: { responseId: msg.id, outcome: msg.result.outcome } }) + '\\n');\n  }\n});\n`,
     );
-    const wrapper = join(tmpDir, 'respond-server.sh');
-    writeFileSync(wrapper, `#!/bin/sh\nexec "${process.execPath}" "${server}"\n`);
-    chmodSync(wrapper, 0o755);
 
     const confirmations: Array<{ responseId: number; outcome: unknown }> = [];
-    const transport = new JsonlRpcTransport({ binary: wrapper, args: [], cwd: tmpDir });
+    const transport = new JsonlRpcTransport({ ...nodeLaunch(server), cwd: tmpDir });
     const client = new JsonRpcClient(transport, {
       onNotification: (method, params) => {
         if (method === 'approval_confirmed') {
@@ -273,8 +263,8 @@ describe('JsonRpcClient request/response id matching', () => {
   }, 10000);
 
   it('throws ConnectionLostError when client is disposed', async () => {
-    const { wrapper } = makeFakeServer(tmpDir, {});
-    const transport = new JsonlRpcTransport({ binary: wrapper, args: [], cwd: tmpDir });
+    const { server } = makeFakeServer(tmpDir, {});
+    const transport = new JsonlRpcTransport({ ...nodeLaunch(server), cwd: tmpDir });
     const client = new JsonRpcClient(transport, {
       onNotification: () => {},
       onServerRequest: () => {},
@@ -294,11 +284,8 @@ describe('JsonRpcClient request/response id matching', () => {
       server,
       `import { createInterface } from 'node:readline';\nimport { appendFileSync } from 'node:fs';\nconst rl = createInterface({ input: process.stdin });\nrl.on('line', (line) => {\n  const msg = JSON.parse(line);\n  appendFileSync(${JSON.stringify(capturePath)}, JSON.stringify(msg) + '\\n');\n  if (msg.method === 'initialize') {\n    process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: msg.id, result: { protocolVersion: 1, agentInfo: { name: 'kimi-acp', version: '0.36.0' } } }) + '\\n');\n  }\n});\n`,
     );
-    const wrapper = join(tmpDir, 'capture-server.sh');
-    writeFileSync(wrapper, `#!/bin/sh\nexec "${process.execPath}" "${server}"\n`);
-    chmodSync(wrapper, 0o755);
 
-    const transport = new JsonlRpcTransport({ binary: wrapper, args: [], cwd: tmpDir });
+    const transport = new JsonlRpcTransport({ ...nodeLaunch(server), cwd: tmpDir });
     const client = new JsonRpcClient(
       transport,
       {

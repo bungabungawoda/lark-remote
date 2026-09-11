@@ -27,6 +27,8 @@ import {
 } from '../../tests/lib/bridge-stubs.js';
 import { encodedProjectDir, writeSessionJsonl } from '../../tests/lib/session-fixtures.js';
 import { expectNoV1ActionContainer } from '../../tests/lib/card-view.js';
+import { rmRf } from '../../tests/lib/tmp-cleanup.js';
+import { currentPlatform, isWin32 } from '../platform/select.js';
 
 /**
  * Create a stub session reader registry.
@@ -176,7 +178,7 @@ beforeEach(() => {
   tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'lark-router-test-'));
 });
 afterEach(() => {
-  fs.rmSync(tmpDir, { recursive: true, force: true });
+  rmRf(tmpDir);
 });
 
 function createRouter(overrides?: {
@@ -497,23 +499,27 @@ describe('CommandRouter', () => {
     expect(entry?.sessions.get('claude')).toBe('');
   });
 
-  it('/cd resolves symlinks so cwd matches Claude JSONL cwd field (2026-06-21)', async () => {
-    // On macOS `/tmp` is a symlink to `/private/tmp`. Claude writes the
-    // symlink-resolved cwd into JSONL. If `/cd /tmp/foo` stores `/tmp/foo`
-    // (not resolved), session lookups never find
-    // matching sessions. Regression: 2026-06-21 /active paths.
-    const real = path.join(tmpDir, 'real-target');
-    fs.mkdirSync(real);
-    const link = path.join(tmpDir, 'alias-link');
-    fs.symlinkSync(real, link);
+  // 目录 symlink 是 POSIX 原语（win32 创建目录链接需要特权/ Junction 语义），门控
+  it.skipIf(isWin32(currentPlatform))(
+    '/cd resolves symlinks so cwd matches Claude JSONL cwd field (2026-06-21)',
+    async () => {
+      // On macOS `/tmp` is a symlink to `/private/tmp`. Claude writes the
+      // symlink-resolved cwd into JSONL. If `/cd /tmp/foo` stores `/tmp/foo`
+      // (not resolved), session lookups never find
+      // matching sessions. Regression: 2026-06-21 /active paths.
+      const real = path.join(tmpDir, 'real-target');
+      fs.mkdirSync(real);
+      const link = path.join(tmpDir, 'alias-link');
+      fs.symlinkSync(real, link);
 
-    const { router, sessionStore } = createRouter();
-    await router.handle(`/cd ${link}`, ctx);
+      const { router, sessionStore } = createRouter();
+      await router.handle(`/cd ${link}`, ctx);
 
-    // sessionStore cwd must be the resolved target, not the symlink.
-    expect(sessionStore.getCwd('user1')).toBe(fs.realpathSync(real));
-    expect(sessionStore.getCwd('user1')).not.toBe(link);
-  });
+      // sessionStore cwd must be the resolved target, not the symlink.
+      expect(sessionStore.getCwd('user1')).toBe(fs.realpathSync(real));
+      expect(sessionStore.getCwd('user1')).not.toBe(link);
+    },
+  );
 
   it('/cd nonexistent path returns error', async () => {
     const { router, sessionStore, connector } = createRouter();
@@ -2626,19 +2632,22 @@ describe('CommandRouter', () => {
       expect(connector._cards.length).toBe(0);
     });
 
-    it('ls.switch canonicalizes a symlink target via realpath (not the link path)', async () => {
-      const { router, sessionStore, connector } = createRouter();
-      sessionStore.setCwd('user1', fs.realpathSync(tmpDir));
-      const real = path.join(tmpDir, 'real-dir');
-      const link = path.join(tmpDir, 'link-to-real');
-      fs.mkdirSync(real);
-      fs.symlinkSync(real, link);
-      await router.handleCardAction({ cmd: 'ls.switch', path: link }, ctx);
-      expect(sessionStore.getCwd('user1')).toBe(fs.realpathSync(real));
-      expect(sessionStore.getCwd('user1')).not.toBe(link);
-      // Success path DOES update the card in place (contrast with failure cases).
-      expect(connector._cards.length).toBe(1);
-    });
+    it.skipIf(isWin32(currentPlatform))(
+      'ls.switch canonicalizes a symlink target via realpath (not the link path)',
+      async () => {
+        const { router, sessionStore, connector } = createRouter();
+        sessionStore.setCwd('user1', fs.realpathSync(tmpDir));
+        const real = path.join(tmpDir, 'real-dir');
+        const link = path.join(tmpDir, 'link-to-real');
+        fs.mkdirSync(real);
+        fs.symlinkSync(real, link);
+        await router.handleCardAction({ cmd: 'ls.switch', path: link }, ctx);
+        expect(sessionStore.getCwd('user1')).toBe(fs.realpathSync(real));
+        expect(sessionStore.getCwd('user1')).not.toBe(link);
+        // Success path DOES update the card in place (contrast with failure cases).
+        expect(connector._cards.length).toBe(1);
+      },
+    );
 
     it('ls.switch allows a deeper nested path', async () => {
       const { router, sessionStore } = createRouter();

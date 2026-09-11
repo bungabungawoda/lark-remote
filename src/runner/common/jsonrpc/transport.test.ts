@@ -1,8 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { currentPlatform, isWin32 } from '../../../platform/select.js';
+import { chmodSync, existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { JsonlRpcTransport } from './transport.js';
+import { rmRf } from '../../../../tests/lib/tmp-cleanup.js';
 
 function waitForProcessGone(pid: number, timeoutMs = 6000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
@@ -63,6 +65,16 @@ function waitForCondition(check: () => boolean, timeoutMs = 6000): Promise<void>
   });
 }
 
+/**
+ * fixture 平台中立：直接以 `process.execPath` 启动 Node 脚本，不再写 POSIX
+ * `#!/bin/sh` wrapper（Windows 既不能执行无扩展名脚本、也不认 shebang →
+ * 子进程起不来 → env/文件缺失、exit:1 等假红）。见 windows-support-design-v2
+ * §9.1「优先把 fixture 从 sh wrapper 改成 Node 启动器」。
+ */
+function nodeLaunch(script: string, extraArgs: string[] = []) {
+  return { binary: process.execPath, args: [script, ...extraArgs] };
+}
+
 describe('JsonlRpcTransport safety and cleanup', () => {
   let tmpDir: string;
 
@@ -71,7 +83,7 @@ describe('JsonlRpcTransport safety and cleanup', () => {
   });
 
   afterEach(() => {
-    rmSync(tmpDir, { recursive: true, force: true });
+    rmRf(tmpDir);
     delete process.env.SECRET_TEST_VAR;
     delete process.env.OPENAI_API_KEY;
     delete process.env.DEEPSEEK_API_KEY;
@@ -85,24 +97,20 @@ describe('JsonlRpcTransport safety and cleanup', () => {
     // 会打断认证与网络，因此必须全量透传 process.env。回归锚点：白名单收窄
     // 曾导致 provider env key 到不了子进程（认证失败）。
     const dumpFile = join(tmpDir, 'env.txt');
-    const wrapper = join(tmpDir, 'env-dump.sh');
+    const script = join(tmpDir, 'env-dump.mjs');
     writeFileSync(
-      wrapper,
-      `#!/bin/sh\n` +
-        `printf '%s\\n' "OPENAI_API_KEY=\${OPENAI_API_KEY-}" "DEEPSEEK_API_KEY=\${DEEPSEEK_API_KEY-}" "HTTP_PROXY=\${HTTP_PROXY-}" "HTTPS_PROXY=\${HTTPS_PROXY-}" "SECRET_TEST_VAR=\${SECRET_TEST_VAR-}" > "${dumpFile}"\n`,
+      script,
+      `import { writeFileSync } from 'node:fs';\n` +
+        `const keys = ['OPENAI_API_KEY', 'DEEPSEEK_API_KEY', 'HTTP_PROXY', 'HTTPS_PROXY', 'SECRET_TEST_VAR'];\n` +
+        `writeFileSync(${JSON.stringify(dumpFile)}, keys.map((k) => k + '=' + (process.env[k] ?? '')).join('\\n') + '\\n');\n`,
     );
-    chmodSync(wrapper, 0o755);
     process.env.OPENAI_API_KEY = 'sk-test-openai';
     process.env.DEEPSEEK_API_KEY = 'sk-test-deepseek';
     process.env.HTTP_PROXY = 'http://127.0.0.1:7890';
     process.env.HTTPS_PROXY = 'http://127.0.0.1:7890';
     process.env.SECRET_TEST_VAR = 'passes-through';
 
-    const transport = new JsonlRpcTransport({
-      binary: wrapper,
-      args: [],
-      cwd: tmpDir,
-    });
+    const transport = new JsonlRpcTransport({ ...nodeLaunch(script), cwd: tmpDir });
 
     await new Promise<void>((resolve) => {
       void transport.start({ onMessage: () => {}, onClose: () => resolve() });
@@ -123,17 +131,16 @@ describe('JsonlRpcTransport safety and cleanup', () => {
     // 调用方显式传入的 env（ConnectionManager → runner opts.env）覆盖
     // process.env 同名键；未传入的键仍来自 process.env 全量透传。
     const dumpFile = join(tmpDir, 'env-override.txt');
-    const wrapper = join(tmpDir, 'env-override.sh');
+    const script = join(tmpDir, 'env-override.mjs');
     writeFileSync(
-      wrapper,
-      `#!/bin/sh\nprintf '%s\\n' "OPENAI_API_KEY=\${OPENAI_API_KEY-}" "PATH=\${PATH-}" > "${dumpFile}"\n`,
+      script,
+      `import { writeFileSync } from 'node:fs';\n` +
+        `writeFileSync(${JSON.stringify(dumpFile)}, 'OPENAI_API_KEY=' + (process.env.OPENAI_API_KEY ?? '') + '\\n' + 'PATH=' + (process.env.PATH ?? '') + '\\n');\n`,
     );
-    chmodSync(wrapper, 0o755);
     process.env.OPENAI_API_KEY = 'sk-process-env';
 
     const transport = new JsonlRpcTransport({
-      binary: wrapper,
-      args: [],
+      ...nodeLaunch(script),
       cwd: tmpDir,
       env: { OPENAI_API_KEY: 'sk-caller-override' },
     });
@@ -155,15 +162,8 @@ describe('JsonlRpcTransport safety and cleanup', () => {
       collect,
       `import { createInterface } from 'node:readline';\nimport { appendFileSync } from 'node:fs';\nconst out = process.argv[2];\nconst rl = createInterface({ input: process.stdin });\nlet count = 0;\nrl.on('line', (line) => {\n  appendFileSync(out, line + '\\n');\n  count++;\n  if (count === 3) process.exit(0);\n});\n`,
     );
-    const wrapper = join(tmpDir, 'echo-lines.sh');
-    writeFileSync(wrapper, `#!/bin/sh\nexec "${process.execPath}" "${collect}" "$1"\n`);
-    chmodSync(wrapper, 0o755);
 
-    const transport = new JsonlRpcTransport({
-      binary: wrapper,
-      args: [outFile],
-      cwd: tmpDir,
-    });
+    const transport = new JsonlRpcTransport({ ...nodeLaunch(collect, [outFile]), cwd: tmpDir });
 
     const closed = new Promise<void>((resolve) => {
       void transport.start({ onMessage: () => {}, onClose: () => resolve() });
@@ -180,82 +180,83 @@ describe('JsonlRpcTransport safety and cleanup', () => {
     expect(lines.map((l) => l.id)).toEqual([1, 2, 3]);
   });
 
-  it('test_anchor_transport_kills_child_on_oversized_line', async () => {
-    const pidFile = join(tmpDir, 'child.pid');
-    const wrapper = join(tmpDir, 'huge-line.sh');
-    writeFileSync(
-      wrapper,
-      `#!/bin/sh\necho $$ > "${pidFile}"\nexec "${process.execPath}" -e 'process.stdout.write("x".repeat(10 * 1024 * 1024 + 1) + "\\n"); setInterval(() => {}, 1000)'\n`,
-    );
-    chmodSync(wrapper, 0o755);
+  it.skipIf(isWin32(currentPlatform))(
+    'test_anchor_transport_kills_child_on_oversized_line',
+    async () => {
+      const pidFile = join(tmpDir, 'child.pid');
+      const wrapper = join(tmpDir, 'huge-line.sh');
+      writeFileSync(
+        wrapper,
+        `#!/bin/sh\necho $$ > "${pidFile}"\nexec "${process.execPath}" -e 'process.stdout.write("x".repeat(10 * 1024 * 1024 + 1) + "\\n"); setInterval(() => {}, 1000)'\n`,
+      );
+      chmodSync(wrapper, 0o755);
 
-    const transport = new JsonlRpcTransport({
-      binary: wrapper,
-      args: [],
-      cwd: tmpDir,
-    });
+      const transport = new JsonlRpcTransport({
+        binary: wrapper,
+        args: [],
+        cwd: tmpDir,
+      });
 
-    const reason = await new Promise<string>((resolve) => {
-      void transport.start({ onMessage: () => {}, onClose: resolve });
-    });
+      const reason = await new Promise<string>((resolve) => {
+        void transport.start({ onMessage: () => {}, onClose: resolve });
+      });
 
-    expect(reason).toBe('parse_error');
-    const pid = Number(readFileSync(pidFile, 'utf8').trim());
-    await waitForProcessGone(pid, 10000);
-  }, 15000);
+      expect(reason).toBe('parse_error');
+      const pid = Number(readFileSync(pidFile, 'utf8').trim());
+      await waitForProcessGone(pid, 10000);
+    },
+    15000,
+  );
 
-  it('test_anchor_transport_closes_on_epipe_and_kills_child', async () => {
-    const pidFile = join(tmpDir, 'epipe-child.pid');
-    const readyFile = join(tmpDir, 'epipe-ready.txt');
-    const wrapper = join(tmpDir, 'epipe-child.sh');
-    // 子进程先关闭 stdin（fd 0），再写 ready 文件作为「已关闭 stdin」的可观测信号。
-    // 父进程轮询到 ready 文件后才 write —— 保证 write 时管道读端已关闭，必然 EPIPE，
-    // 不再依赖固定 500ms 睡眠（并行负载下子进程 boot 延迟不可控，曾导致 flaky）。
-    writeFileSync(
-      wrapper,
-      `#!/bin/sh\n` +
-        `echo $$ > "${pidFile}"\n` +
-        `exec "${process.execPath}" -e 'require("fs").closeSync(0); require("fs").writeFileSync(${JSON.stringify(
-          readyFile,
-        )}, "ready"); setInterval(() => {}, 1000)'\n`,
-    );
-    chmodSync(wrapper, 0o755);
+  it.skipIf(isWin32(currentPlatform))(
+    'test_anchor_transport_closes_on_epipe_and_kills_child',
+    async () => {
+      const pidFile = join(tmpDir, 'epipe-child.pid');
+      const readyFile = join(tmpDir, 'epipe-ready.txt');
+      const wrapper = join(tmpDir, 'epipe-child.sh');
+      // 子进程先关闭 stdin（fd 0），再写 ready 文件作为「已关闭 stdin」的可观测信号。
+      // 父进程轮询到 ready 文件后才 write —— 保证 write 时管道读端已关闭，必然 EPIPE，
+      // 不再依赖固定 500ms 睡眠（并行负载下子进程 boot 延迟不可控，曾导致 flaky）。
+      writeFileSync(
+        wrapper,
+        `#!/bin/sh\n` +
+          `echo $$ > "${pidFile}"\n` +
+          `exec "${process.execPath}" -e 'require("fs").closeSync(0); require("fs").writeFileSync(${JSON.stringify(
+            readyFile,
+          )}, "ready"); setInterval(() => {}, 1000)'\n`,
+      );
+      chmodSync(wrapper, 0o755);
 
-    const transport = new JsonlRpcTransport({
-      binary: wrapper,
-      args: [],
-      cwd: tmpDir,
-    });
+      const transport = new JsonlRpcTransport({
+        binary: wrapper,
+        args: [],
+        cwd: tmpDir,
+      });
 
-    let closeResolve: (reason: string) => void = () => {};
-    const closed = new Promise<string>((resolve) => {
-      closeResolve = resolve;
-    });
-    await transport.start({ onMessage: () => {}, onClose: closeResolve });
-    await waitForFile(readyFile, 6000);
-    transport.write({ method: 'ping' });
+      let closeResolve: (reason: string) => void = () => {};
+      const closed = new Promise<string>((resolve) => {
+        closeResolve = resolve;
+      });
+      await transport.start({ onMessage: () => {}, onClose: closeResolve });
+      await waitForFile(readyFile, 6000);
+      transport.write({ method: 'ping' });
 
-    const reason = await closed;
-    expect(reason).toBe('epipe');
-    const pid = Number(readFileSync(pidFile, 'utf8').trim());
-    await waitForProcessGone(pid, 3000);
-  }, 10000);
+      const reason = await closed;
+      expect(reason).toBe('epipe');
+      const pid = Number(readFileSync(pidFile, 'utf8').trim());
+      await waitForProcessGone(pid, 3000);
+    },
+    10000,
+  );
 
   it('receives NDJSON messages line by line', async () => {
-    const wrapper = join(tmpDir, 'ndjson-server.sh');
     const server = join(tmpDir, 'server.mjs');
     writeFileSync(
       server,
       `import { createInterface } from 'node:readline';\nconst rl = createInterface({ input: process.stdin });\nrl.on('line', (line) => {\n  const msg = JSON.parse(line);\n  if (msg.method === 'initialize') {\n    process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: msg.id, result: { protocolVersion: 1, agentInfo: { name: 'kimi-acp', version: '0.36.0' } } }) + '\\n');\n  }\n  if (msg.method === 'ping') {\n    process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: msg.id, result: 'pong' }) + '\\n');\n    process.stdout.write(JSON.stringify({ jsonrpc: '2.0', method: 'session/update', params: { event: { type: 'agent_message_chunk', delta: 'hi' } } }) + '\\n');\n  }\n});\n`,
     );
-    writeFileSync(wrapper, `#!/bin/sh\nexec "${process.execPath}" "${server}"\n`);
-    chmodSync(wrapper, 0o755);
 
-    const transport = new JsonlRpcTransport({
-      binary: wrapper,
-      args: [],
-      cwd: tmpDir,
-    });
+    const transport = new JsonlRpcTransport({ ...nodeLaunch(server), cwd: tmpDir });
 
     const messages: unknown[] = [];
     await transport.start({
@@ -310,18 +311,13 @@ describe('JsonlRpcTransport safety and cleanup', () => {
   it('test_anchor_transport_flushes_complete_json_line_without_trailing_newline_on_exit', async () => {
     // 子进程最后一行不带尾部换行直接退出：onExit 必须 flush 残留 remainder，
     // 否则最后一个完整消息会丢失（无尾换行的末行处理，见 session/common/jsonl.ts 同款约定）。
-    const wrapper = join(tmpDir, 'no-trailing-newline.sh');
+    const script = join(tmpDir, 'no-trailing-newline.mjs');
     writeFileSync(
-      wrapper,
-      `#!/bin/sh\nexec "${process.execPath}" -e 'process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id: 9, result: "final" }))'\n`,
+      script,
+      `process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: 9, result: 'final' }));\n`,
     );
-    chmodSync(wrapper, 0o755);
 
-    const transport = new JsonlRpcTransport({
-      binary: wrapper,
-      args: [],
-      cwd: tmpDir,
-    });
+    const transport = new JsonlRpcTransport({ ...nodeLaunch(script), cwd: tmpDir });
 
     const messages: unknown[] = [];
     const closed = new Promise<string>((resolve) => {
@@ -341,18 +337,10 @@ describe('JsonlRpcTransport safety and cleanup', () => {
   it('test_anchor_transport_ignores_trailing_partial_line_on_exit', async () => {
     // 子进程退出时残留的是不完整 JSON 片段：onExit flush 解析失败必须忽略，
     // 不抛异常、仍正常以 exit 原因关闭。
-    const wrapper = join(tmpDir, 'trailing-garbage.sh');
-    writeFileSync(
-      wrapper,
-      `#!/bin/sh\nexec "${process.execPath}" -e 'process.stdout.write("{\\"jsonrpc\\":\\"2.0" )'\n`,
-    );
-    chmodSync(wrapper, 0o755);
+    const script = join(tmpDir, 'trailing-garbage.mjs');
+    writeFileSync(script, `process.stdout.write('{"jsonrpc":"2.0');\n`);
 
-    const transport = new JsonlRpcTransport({
-      binary: wrapper,
-      args: [],
-      cwd: tmpDir,
-    });
+    const transport = new JsonlRpcTransport({ ...nodeLaunch(script), cwd: tmpDir });
 
     const closed = new Promise<string>((resolve) => {
       void transport.start({ onMessage: () => {}, onClose: resolve });
@@ -362,29 +350,33 @@ describe('JsonlRpcTransport safety and cleanup', () => {
     expect(transport.closed).toBe(true);
   }, 10000);
 
-  it('test_anchor_transport_clean_close_terminates_live_child', async () => {
-    // close() 优雅停机：子进程存活时调用 close()，SIGTERM→grace→SIGKILL 收掉
-    // 进程并 end stdin，不留孤儿。
-    const pidFile = join(tmpDir, 'close-child.pid');
-    const wrapper = join(tmpDir, 'close-child.sh');
-    writeFileSync(
-      wrapper,
-      `#!/bin/sh\necho $$ > "${pidFile}"\nexec "${process.execPath}" -e 'setInterval(() => {}, 1000)'\n`,
-    );
-    chmodSync(wrapper, 0o755);
+  it.skipIf(isWin32(currentPlatform))(
+    'test_anchor_transport_clean_close_terminates_live_child',
+    async () => {
+      // close() 优雅停机：子进程存活时调用 close()，SIGTERM→grace→SIGKILL 收掉
+      // 进程并 end stdin，不留孤儿。
+      const pidFile = join(tmpDir, 'close-child.pid');
+      const wrapper = join(tmpDir, 'close-child.sh');
+      writeFileSync(
+        wrapper,
+        `#!/bin/sh\necho $$ > "${pidFile}"\nexec "${process.execPath}" -e 'setInterval(() => {}, 1000)'\n`,
+      );
+      chmodSync(wrapper, 0o755);
 
-    const transport = new JsonlRpcTransport({
-      binary: wrapper,
-      args: [],
-      cwd: tmpDir,
-    });
+      const transport = new JsonlRpcTransport({
+        binary: wrapper,
+        args: [],
+        cwd: tmpDir,
+      });
 
-    await transport.start({ onMessage: () => {}, onClose: () => {} });
-    await waitForFile(pidFile, 6000);
-    const pid = Number(readFileSync(pidFile, 'utf8').trim());
+      await transport.start({ onMessage: () => {}, onClose: () => {} });
+      await waitForFile(pidFile, 6000);
+      const pid = Number(readFileSync(pidFile, 'utf8').trim());
 
-    await transport.close();
-    expect(transport.closed).toBe(true);
-    await waitForProcessGone(pid, 10000);
-  }, 15000);
+      await transport.close();
+      expect(transport.closed).toBe(true);
+      await waitForProcessGone(pid, 10000);
+    },
+    15000,
+  );
 });
