@@ -136,7 +136,7 @@ describe('router/config common/render', () => {
       {
         id: 'tab1',
         label: 'Section',
-        fields: [{ key: 'output.showThinking', label: 'Show Thinking', type: 'boolean' }],
+        fields: [{ key: 'inboundMedia.enabled', label: 'Media Enabled', type: 'boolean' }],
       },
     ];
     const card = buildConfigCardFromTabs(tabs, config) as {
@@ -161,7 +161,7 @@ describe('router/config common/render', () => {
     };
     expect(button.tag).toBe('button');
     expect(button.behaviors[0].value.cmd).toBe('config.toggle');
-    expect(button.behaviors[0].value.key).toBe('output.showThinking');
+    expect(button.behaviors[0].value.key).toBe('inboundMedia.enabled');
   });
 
   it('select field renders select_static with callback behavior', () => {

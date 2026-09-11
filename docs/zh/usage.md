@@ -75,11 +75,6 @@ agents:
     model: ''                     # 模型名（如 deepseek-v4-flash / deepseek-v4-pro）；留空 = 跟随服务端默认
     reasoningEffort: ''           # off/low/high/max；留空 = 跟随服务端默认
 
-output:
-  showThinking: true        # 是否发送 thinking 块
-  showToolUse: true         # 是否展示工具调用
-  showToolResult: true      # 是否展示工具结果
-
 logging:
   level: info               # debug | info | warn | error
 
@@ -141,7 +136,7 @@ bridge 启动后不在终端输出，运行日志写入 `~/.lark-remote/logs/`�
 | `/stop` | `/t` | 终止当前 agent 进程（SIGTERM 后立即 SIGKILL，不等宽限期） |
 | `/ps` | - | 查询是否有进程在跑 |
 | `/reconnect` | - | 重连飞书 WebSocket |
-| `/config` | `/c` | 查看配置（卡片交互，布尔值点击切换，其他用按钮选择） |
+| `/config` | `/c` | 查看配置（卡片交互：下拉/输入选择，保存按钮落盘） |
 | `/order save <text>` | `/o` | 保存常用指令 |
 | `/order` `/order list` | `/o` | 列出已保存的指令（卡片，可给指令起别名、编辑、删除） |
 | `/order edit <orderId\|序号> <新文本>` | `/o` | 编辑指令文本（卡片「编辑」按钮是主入口，保留别名和使用统计） |
@@ -318,11 +313,12 @@ bot: 已切换到: /Users/you/code/my-app
 
 ## 七、输出格式
 
-每次 Claude run 正常路径只创建一张 CardKit 2.0 卡片，并持续原地更新：
+每次 Claude run 正常路径只创建一张 CardKit 2.0 卡片，并持续原地更新。thinking、
+tool_use / tool_result 恒常展示（不做配置开关）：
 
-- **thinking**：由 `showThinking` 控制，标题显示本地时间戳
+- **thinking**：始终展示，标题显示本地时间戳
 - **正文**：保留最新滚动窗口，正文前显示本地时间戳
-- **tool_use / tool_result**：由 `showToolUse` / `showToolResult` 控制，旧工具自动折叠，工具标题显示本地时间戳
+- **tool_use / tool_result**：始终展示，旧工具自动折叠，工具标题显示本地时间戳
 - **运行状态**：正在思考、调用工具或输出
 - **终态**：完成、出错、中断、空闲超时；终态会移除停止按钮
 - **表情回应**：你的原消息上，处理中先打 `Typing`；结束时按终态补打 `Done`（完成）/ `ERROR`（出错）/ `Alarm`（空闲超时）/ `SHHH`（用户 `/stop`）。bash（`!`）命令始终打 `Done`。key 来自飞书官方表情清单，新增终态映射需同步 anchor 测试。

@@ -86,7 +86,6 @@ function buildCodexConfig(): AppConfig {
       },
     },
     idle: { watchdogMinutes: 15 },
-    output: { showThinking: true, showToolUse: true, showToolResult: true },
     logging: { level: 'info' },
   });
 }
@@ -283,7 +282,6 @@ function buildCodexConfigForModel(
         stopGraceMs: 5000,
       },
     },
-    output: { showThinking: true, showToolUse: true, showToolResult: true },
     idle: { watchdogMinutes: 15 },
     logging: { level: 'info' },
   });

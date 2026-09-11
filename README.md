@@ -73,11 +73,6 @@ claude:
   # permissionMode 硬编码为 bypassPermissions（runner 内部）
   stopGraceMs: 5000
 
-output:
-  showThinking: true
-  showToolUse: true
-  showToolResult: true
-
 logging:
   level: info               # debug | info | warn | error
 

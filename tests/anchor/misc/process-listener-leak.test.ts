@@ -83,7 +83,6 @@ describe('P1-1: registerExitHandlers 不累积 process 监听器', () => {
           },
         },
         idle: { watchdogMinutes: 15 },
-        output: { showThinking: true, showToolUse: true, showToolResult: true },
         logging: { level: 'info' },
       });
 

@@ -469,7 +469,6 @@ function defaultTestConfig(): AppConfig {
     feishu: { appId: 'test', appSecret: 'test' },
     claude: { model: 'opus', stopGraceMs: 5000 },
     workspace: { default: '' },
-    output: { showThinking: true, showToolUse: false, showToolResult: false },
   });
 }
 
