@@ -1,5 +1,5 @@
-import { describe, it, expect, vi } from 'vitest';
-import { bootstrap, decideRuntime } from './cli.js';
+import { describe, it, expect, vi, afterEach } from 'vitest';
+import { bootstrap, decideRuntime, handlePreflight } from './cli.js';
 
 interface BunProbe {
   error: boolean;
@@ -25,6 +25,52 @@ interface BootstrapDeps {
   killSelf: (signal: NodeJS.Signals) => void;
   exit: (code: number) => void;
 }
+
+/**
+ * handlePreflight 的两件事：
+ * ① -v/-h 在 import 应用模块图之前处理掉（node<14 上 dist/index.js 的 ES2022
+ *    语法会直接 SyntaxError，看不出是版本问题）；
+ * ② 运行时过旧时给一句人话，而不是抛 V8 的解析错误。
+ */
+describe('handlePreflight', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('-v / --version / version → 打印版本号并 exit 0（不加载应用模块图）', () => {
+    const writeSpy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    for (const arg of ['-v', '--version', 'version']) {
+      writeSpy.mockClear();
+      expect(handlePreflight([arg], '12.22.9')).toBe(0);
+      expect(writeSpy).toHaveBeenCalledWith(expect.stringMatching(/^lark-remote \d+\.\d+\.\d+\n$/));
+    }
+  });
+
+  it('-h / --help / help → 打印帮助并 exit 0', () => {
+    const writeSpy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    for (const arg of ['-h', '--help', 'help']) {
+      writeSpy.mockClear();
+      expect(handlePreflight([arg], '12.22.9')).toBe(0);
+      expect(writeSpy).toHaveBeenCalledWith(expect.stringContaining('Usage:'));
+    }
+  });
+
+  it('超出 engines 的低版本 node → 明确报错，退出码 1', () => {
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    expect(handlePreflight(['--update'], '12.22.9')).toBe(1);
+    expect(errSpy).toHaveBeenCalledWith(expect.stringContaining('Node >= 18'));
+  });
+
+  it('版本够新 / 非信息类参数 → 返回 null（继续正常启动）', () => {
+    expect(handlePreflight([], '22.22.2')).toBeNull();
+    expect(handlePreflight(['--config-dir', '/tmp/x'], '20.0.0')).toBeNull();
+  });
+
+  it('版本字符串异常时不硬拦（解析不出主版本 → 放过）', () => {
+    expect(handlePreflight([], '')).toBeNull();
+    expect(handlePreflight([], 'unknown')).toBeNull();
+  });
+});
 
 describe('decideRuntime', () => {
   it('prefers bun when it is usable', () => {
