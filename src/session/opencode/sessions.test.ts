@@ -4,16 +4,24 @@ import os from 'node:os';
 import path from 'node:path';
 import { OpencodeSessionReader } from '../../session/opencode/sessions.js';
 
-// Mock execFileSync
-vi.mock('node:child_process', async () => {
-  const actual = await vi.importActual('node:child_process');
-  return {
-    ...actual,
-    execFileSync: vi.fn(),
-  };
-});
+// Mock spawnProcessSync（生产代码用 cross-spawn 收口执行 opencode CLI，
+// win32 上 execFileSync 无法解析 npm .cmd 垫片）
+vi.mock('../../platform/spawn.js', async () => ({
+  ...(await vi.importActual('../../platform/spawn.js')),
+  spawnProcessSync: vi.fn(),
+}));
 
-import { execFileSync } from 'node:child_process';
+import { spawnProcessSync } from '../../platform/spawn.js';
+
+// spawnProcessSync 返回 SpawnSyncReturns<string|Buffer>；helper 把 stdout 文本
+// 包装成成功结果，替换旧 execFileSync 直返字符串的 mock 形态。
+function mockSpawnResult(stdout: string): void {
+  vi.mocked(spawnProcessSync).mockReturnValue({
+    status: 0,
+    stdout,
+    stderr: '',
+  } as unknown as ReturnType<typeof spawnProcessSync>);
+}
 import { TOOL_RESULT_MAX_BYTES, DEFAULT_TRUNCATE_SUFFIX } from '../../common/truncate.js';
 
 // Helper: build a minimal valid opencode export JSON payload.
@@ -55,18 +63,18 @@ describe('OpencodeSessionReader - L1: empty output handling', () => {
 
   it('handles empty string output from opencode session list gracefully', () => {
     // opencode session list returns empty string (0 bytes) when no sessions exist
-    vi.mocked(execFileSync).mockReturnValue('');
+    mockSpawnResult('');
 
     const sessions = reader.listSessions('/tmp/empty-dir');
 
     expect(sessions).toEqual({ sessions: [], total: 0 });
     // Should NOT throw SyntaxError: Unexpected end of JSON input
-    expect(execFileSync).toHaveBeenCalled();
+    expect(spawnProcessSync).toHaveBeenCalled();
   });
 
   it('handles whitespace-only output from opencode session list gracefully', () => {
     // Some edge cases might produce whitespace-only output
-    vi.mocked(execFileSync).mockReturnValue('   \n  \n  ');
+    mockSpawnResult('   \n  \n  ');
 
     const sessions = reader.listSessions('/tmp/empty-dir');
 
@@ -93,7 +101,7 @@ describe('OpencodeSessionReader - L1: empty output handling', () => {
           directory: resolvedCwd,
         },
       ]);
-      vi.mocked(execFileSync).mockReturnValue(validJson);
+      mockSpawnResult(validJson);
 
       const sessions = reader.listSessions(tmpDir);
 
@@ -111,17 +119,17 @@ describe('OpencodeSessionReader - L1: empty output handling', () => {
   it('throws on corrupt JSON (P1-15: failure distinct from empty)', () => {
     // P1-15：CLI 返回不可解析输出是真实读取失败，必须上抛让 router 显示
     // 「读取失败」；旧契约静默返回 [] 与「真空」不可区分（review §P1-15）。
-    vi.mocked(execFileSync).mockReturnValue('not valid json{{{');
+    mockSpawnResult('not valid json{{{');
 
     expect(() => reader.listSessions('/tmp/test')).toThrow(/读取失败/);
   });
 
   it('passes cwd to opencode session list command', () => {
-    vi.mocked(execFileSync).mockReturnValue('[]');
+    mockSpawnResult('[]');
 
     reader.listSessions('/home/user/project');
 
-    expect(execFileSync).toHaveBeenCalledWith(
+    expect(spawnProcessSync).toHaveBeenCalledWith(
       'opencode',
       ['session', 'list', '--format', 'json'],
       expect.objectContaining({
@@ -144,13 +152,10 @@ describe('OpencodeSessionReader - L1: empty output handling', () => {
     // Real Node behavior: execFileSync with a non-existent cwd throws ENOENT
     // (chdir fails before spawn). Simulate that so the test does not depend on
     // a real opencode binary being absent/present on the host.
-    vi.mocked(execFileSync).mockImplementation(() => {
-      const err: NodeJS.ErrnoException = new Error(
-        "spawn opencode ENOENT: chdir '/tmp/opencode-stale-enoent'",
-      );
-      err.code = 'ENOENT';
-      throw err;
-    });
+    vi.mocked(spawnProcessSync).mockReturnValue({
+      status: null,
+      error: Object.assign(new Error('spawn opencode ENOENT'), { code: 'ENOENT' }),
+    } as unknown as ReturnType<typeof spawnProcessSync>);
 
     const sessions = reader.listSessions('/tmp/opencode-stale-enoent');
 
@@ -178,14 +183,14 @@ describe('OpencodeSessionReader - L1: empty output handling', () => {
         directory: differentDirectory,
       },
     ]);
-    vi.mocked(execFileSync).mockReturnValue(validJson);
+    mockSpawnResult(validJson);
 
     const sessions = reader.listSessions(staleCwd);
 
     expect(sessions).toEqual({ sessions: [], total: 0 });
     // Ensure the filter (not the CLI throw) is what excluded it: CLI was called
     // and returned data, yet no session survived the directory match.
-    expect(execFileSync).toHaveBeenCalled();
+    expect(spawnProcessSync).toHaveBeenCalled();
   });
 });
 
@@ -231,17 +236,17 @@ describe('OpencodeSessionReader - L1/L2/L3: large/corrupt export handling', () =
   // L1 transport: the DEFAULT captureExport must route stdout to a file fd
   // (not 'pipe'), which bypasses opencode's pipe truncation for large output.
   it('L1: default captureExport routes stdout to a file fd (not a pipe)', () => {
-    vi.mocked(execFileSync).mockReturnValue('');
+    mockSpawnResult('');
     const r = new OpencodeSessionReader({ cacheTtlMs: 0 });
     // execFileSync is mocked (writes nothing), so the temp file is empty -> ''.
     const out = r.captureExport('ses_tr');
     expect(out).toBe('');
-    expect(execFileSync).toHaveBeenCalledWith(
+    expect(spawnProcessSync).toHaveBeenCalledWith(
       'opencode',
       ['export', 'ses_tr'],
       expect.objectContaining({ timeout: 30000 }),
     );
-    const opts = vi.mocked(execFileSync).mock.calls[0]![2] as Record<string, unknown>;
+    const opts = vi.mocked(spawnProcessSync).mock.calls[0]![2] as Record<string, unknown>;
     expect(Array.isArray(opts.stdio)).toBe(true);
     const stdio = opts.stdio as unknown[];
     expect(stdio[0]).toBe('ignore'); // stdin ignored

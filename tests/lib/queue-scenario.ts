@@ -140,7 +140,6 @@ export function makeQueueTestContext(): QueueTestContext {
   const connector = createStubConnector();
   const runner = createStubRunner();
   const bridge = new Bridge({
-    runner,
     agentRegistry: createStubAgentRegistry(runner),
     sessionReaderRegistry: createStubSessionReaderRegistry(),
     connector,

@@ -22,6 +22,7 @@ import {
   createStubSessionReaderRegistry,
   createStubConnector,
 } from '../../lib/bridge-stubs.js';
+import { rmRf } from '../../lib/tmp-cleanup.js';
 const { mockLogger } = vi.hoisted(() => ({
   mockLogger: {
     debug: vi.fn(),
@@ -53,7 +54,9 @@ describe('reaction emoji by run terminal (anchor)', () => {
   });
 
   afterEach(() => {
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    // Windows：executeBash 拉起的子进程 cwd 可能就是 tmpDir，句柄未释放时裸
+    // rmSync 会 EPERM。走重试 + 精准杀占用进程的 rmRf。
+    rmRf(tmpDir);
   });
 
   /**

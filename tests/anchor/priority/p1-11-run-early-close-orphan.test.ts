@@ -19,12 +19,13 @@
  *   修复建议「run() 的 finally 中，若 this.currentProcess 仍存活则
  *   await this.stopper.stop(proc, { immediate: true }) 再清理」。
  */
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { ClaudeRunner } from '../../../src/runner/claude/index.js';
-import { prependPath, restorePath, writeMockBin } from '../../lib/path-mock.js';
+import { prependPath, restorePath, writeMockSource } from '../../lib/path-mock.js';
+import { describePosix } from '../../lib/platform.js';
 import { waitForOrThrow } from '../../lib/wait-for.js';
 
 const { mockLogger } = vi.hoisted(() => ({
@@ -50,7 +51,7 @@ function isAlive(pid: number): boolean {
   }
 }
 
-describe('P1-11: run() early close must not orphan the child process', () => {
+describePosix('P1-11: run() early close must not orphan the child process', () => {
   let tmpDir: string;
   let savedPath: string | undefined;
 
@@ -65,16 +66,20 @@ describe('P1-11: run() early close must not orphan the child process', () => {
   });
 
   it('test_anchor_run_early_close_kills_child_process', async () => {
-    // side pid 文件由 mock 自己写（$$ 在 exec 前后同一 pid），避免与 run() finally
-    // 会 unlink 的 runner pid 文件竞争读取窗口
+    // side pid 文件由 mock 自己写（同 runner pid 文件同一 pid），避免与 run()
+    // finally 会 unlink 的 runner pid 文件竞争读取窗口。mock CLI 恒为 Node
+    // 启动器（path-mock 契约，见其文件头）：`exec sleep` 在 Node 里没有对应物，
+    // 用 setInterval 常驻——SIGTERM/SIGKILL 默认动作照样终止进程。
     const sidePidFile = path.join(tmpDir, 'side.pid');
-    writeMockBin(
+    writeMockSource(
       tmpDir,
       'claude',
-      `#!/bin/bash
-echo $$ > "${sidePidFile}"
-echo '{"type":"system","subtype":"init","session_id":"s1","cwd":"/tmp","model":"m"}'
-exec sleep 60
+      `const fs = require('node:fs');
+fs.writeFileSync(${JSON.stringify(sidePidFile)}, String(process.pid));
+process.stdout.write(
+  JSON.stringify({ type: 'system', subtype: 'init', session_id: 's1', cwd: '/tmp', model: 'm' }) + '\\n',
+);
+setInterval(() => {}, 1000);
 `,
     );
 

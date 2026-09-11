@@ -19,6 +19,7 @@ vi.mock('../platform/command.js', () => ({
   resolveExecutable: (...args: unknown[]) => mockResolveExecutable(...args),
 }));
 vi.mock('../platform/spawn.js', () => ({
+  useDetachedProcessGroup: vi.fn(() => true),
   spawnProcessSync: (...args: unknown[]) => mockSpawnSync(...args),
 }));
 

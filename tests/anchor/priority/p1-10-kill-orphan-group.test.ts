@@ -15,13 +15,14 @@
  * ③ 依据：review.md §P1-10 修复建议「杀进程用 process.kill(-pid, 'SIGTERM')
  *   杀整个组（与 ProcessStopper 对齐）」。
  */
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { ClaudeRunner } from '../../../src/runner/claude/index.js';
-import { prependPath, restorePath, writeMockBin } from '../../lib/path-mock.js';
+import { prependPath, restorePath, writeMockSource } from '../../lib/path-mock.js';
+import { describePosix } from '../../lib/platform.js';
 import { waitForOrThrow } from '../../lib/wait-for.js';
 
 const { mockLogger } = vi.hoisted(() => ({
@@ -58,7 +59,7 @@ const PS_AVAILABLE =
   spawnSync('ps', ['-p', String(process.pid), '-o', 'command='], { encoding: 'utf-8' }).status ===
   0;
 
-describe('P1-10: killOrphan group kill on identity match', () => {
+describePosix('P1-10: killOrphan group kill on identity match', () => {
   let tmpDir: string;
   let savedPath: string | undefined;
   const spawnedPids = new Set<number>();
@@ -90,15 +91,22 @@ describe('P1-10: killOrphan group kill on identity match', () => {
     'test_anchor_kill_orphan_kills_whole_group_when_identity_matches',
     async () => {
       const childPidFile = path.join(tmpDir, 'child.pid');
-      writeMockBin(
+      // mock CLI 恒为 Node 启动器（path-mock 契约，见其文件头）：打印 init 后
+      // 在**同一进程组**里起一个后台 sleep（不 detached → 继承 pgid），因此只有
+      // 组杀 kill(-pid) 能连它一起收掉——正是本锚点要验的语义。启动器路径
+      // `<tmp>/claude.mock.js` 含 "claude"，killOrphan 的 ps 身份校验
+      // （`ps -o command=` 含 binary 名）可命中 → 走「身份匹配 → 组杀」路径。
+      writeMockSource(
         tmpDir,
         'claude',
-        `#!/bin/bash
-echo '{"type":"system","subtype":"init","session_id":"s1","cwd":"/tmp","model":"m"}'
-sleep 300 &
-echo $! > "${childPidFile}"
-# 前台 sleep 保持 bash 身份（ps command 含 mockBin 路径，身份校验可命中）
-sleep 300
+        `const { spawn } = require('node:child_process');
+const fs = require('node:fs');
+process.stdout.write(
+  JSON.stringify({ type: 'system', subtype: 'init', session_id: 's1', cwd: '/tmp', model: 'm' }) + '\\n',
+);
+const child = spawn('sleep', ['300'], { stdio: 'ignore' });
+fs.writeFileSync(${JSON.stringify(childPidFile)}, String(child.pid));
+setInterval(() => {}, 1000);
 `,
       );
 

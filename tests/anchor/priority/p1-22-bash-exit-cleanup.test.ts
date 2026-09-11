@@ -25,6 +25,8 @@ import os from 'node:os';
 import { BashProcessRunner } from '../../../src/runner/bash/index.js';
 import { SpawningRunner } from '../../../src/runner/common/spawning-runner.js';
 import { waitForOrThrow } from '../../lib/wait-for.js';
+import { rmRf } from '../../../tests/lib/tmp-cleanup.js';
+import { currentPlatform, isWin32 } from '../../../src/platform/select.js';
 
 const { mockLogger } = vi.hoisted(() => ({
   mockLogger: {
@@ -71,41 +73,44 @@ describe('P1-22: bash runner exit cleanup', () => {
       }
     }
     spawnedPids.clear();
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    rmRf(tmpDir);
   });
 
-  it('test_anchor_bash_runner_registers_exit_cleanup_and_kills_group', async () => {
-    const leaderPidFile = path.join(tmpDir, 'leader.pid');
-    const childPidFile = path.join(tmpDir, 'child.pid');
-    const before = SpawningRunner.getRegisteredExitHandlerCount();
+  it.skipIf(isWin32(currentPlatform))(
+    'test_anchor_bash_runner_registers_exit_cleanup_and_kills_group',
+    async () => {
+      const leaderPidFile = path.join(tmpDir, 'leader.pid');
+      const childPidFile = path.join(tmpDir, 'child.pid');
+      const before = SpawningRunner.getRegisteredExitHandlerCount();
 
-    const runner = new BashProcessRunner();
-    const iter = runner.run(
-      `echo start; echo $$ > "${leaderPidFile}"; sleep 300 & echo $! > "${childPidFile}"; exec sleep 300`,
-      { cwd: tmpDir },
-    );
-    const first = await iter.next();
-    expect(first.done).toBe(false);
+      const runner = new BashProcessRunner();
+      const iter = runner.run(
+        `echo start; echo $$ > "${leaderPidFile}"; sleep 300 & echo $! > "${childPidFile}"; exec sleep 300`,
+        { cwd: tmpDir },
+      );
+      const first = await iter.next();
+      expect(first.done).toBe(false);
 
-    // 运行中的 bash runner 必须已注册到进程级 exit 分发器（当前实现无注册 → RED）
-    expect(SpawningRunner.getRegisteredExitHandlerCount()).toBe(before + 1);
+      // 运行中的 bash runner 必须已注册到进程级 exit 分发器（当前实现无注册 → RED）
+      expect(SpawningRunner.getRegisteredExitHandlerCount()).toBe(before + 1);
 
-    const leaderPid = Number(fs.readFileSync(leaderPidFile, 'utf-8'));
-    expect(leaderPid).toBeGreaterThan(0);
-    spawnedPids.add(leaderPid);
-    await waitForOrThrow(() => fs.existsSync(childPidFile), 3000);
-    const childPid = Number(fs.readFileSync(childPidFile, 'utf-8'));
-    spawnedPids.add(childPid);
+      const leaderPid = Number(fs.readFileSync(leaderPidFile, 'utf-8'));
+      expect(leaderPid).toBeGreaterThan(0);
+      spawnedPids.add(leaderPid);
+      await waitForOrThrow(() => fs.existsSync(childPidFile), 3000);
+      const childPid = Number(fs.readFileSync(childPidFile, 'utf-8'));
+      spawnedPids.add(childPid);
 
-    // 触发进程级清理（分发器最终都调 cleanupOnExit）→ 必须组杀
-    runner.cleanupOnExit();
-    await waitForOrThrow(() => !isAlive(leaderPid) && !isAlive(childPid), 5000);
-    expect(isAlive(leaderPid)).toBe(false);
-    expect(isAlive(childPid)).toBe(false);
+      // 触发进程级清理（分发器最终都调 cleanupOnExit）→ 必须组杀
+      runner.cleanupOnExit();
+      await waitForOrThrow(() => !isAlive(leaderPid) && !isAlive(childPid), 5000);
+      expect(isAlive(leaderPid)).toBe(false);
+      expect(isAlive(childPid)).toBe(false);
 
-    // run() 自然结束（exit 事件）后必须从分发器移除，集合回到基线
-    await iter.next(); // exit 事件
-    await iter.next(); // done
-    expect(SpawningRunner.getRegisteredExitHandlerCount()).toBe(before);
-  });
+      // run() 自然结束（exit 事件）后必须从分发器移除，集合回到基线
+      await iter.next(); // exit 事件
+      await iter.next(); // done
+      expect(SpawningRunner.getRegisteredExitHandlerCount()).toBe(before);
+    },
+  );
 });

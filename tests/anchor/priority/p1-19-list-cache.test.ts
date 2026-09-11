@@ -19,7 +19,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { listClaudeSessions } from '../../../src/session/claude/sessions.js';
 import { PiSessionReader } from '../../../src/session/pi/index.js';
-import { encodeClaudeProjectDir } from '../../lib/session-fixtures.js';
+import { encodeClaudeProjectDir, piEncodeCwd } from '../../lib/session-fixtures.js';
 
 const { mockLogger } = vi.hoisted(() => ({
   mockLogger: {
@@ -36,7 +36,7 @@ vi.mock('../../../src/logger/index.js', () => ({
 }));
 
 function encodeProjectDir(cwd: string): string {
-  return `--${cwd.replace(/^\//, '').replace(/\//g, '-')}--`;
+  return `--${piEncodeCwd(cwd)}--`;
 }
 
 describe('P1-19 session list TTL cache', () => {
@@ -56,7 +56,7 @@ describe('P1-19 session list TTL cache', () => {
       for (let i = 0; i < 3; i++) {
         fs.writeFileSync(
           path.join(dir, `sess-${i}.jsonl`),
-          `{"type":"user","cwd":"${realCwd}","prompt":"hi ${i}","sessionId":"s${i}"}\n`,
+          `{"type":"user","cwd":${JSON.stringify(realCwd)},"prompt":"hi ${i}","sessionId":"s${i}"}\n`,
           'utf-8',
         );
       }
@@ -89,7 +89,7 @@ describe('P1-19 session list TTL cache', () => {
       for (let i = 0; i < 3; i++) {
         fs.writeFileSync(
           path.join(dir, `1700000000000_s${i}.jsonl`),
-          `{"type":"session","id":"s${i}","cwd":"${realCwd}","provider":"p","modelId":"m"}\n`,
+          `{"type":"session","id":"s${i}","cwd":${JSON.stringify(realCwd)},"provider":"p","modelId":"m"}\n`,
           'utf-8',
         );
       }

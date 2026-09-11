@@ -29,7 +29,7 @@ function writeSession(cwd: string, lines: string[]): string {
   const dir = path.join(tmpDir, encoded);
   fs.mkdirSync(dir, { recursive: true });
   const sessionId = 'test-session-1234';
-  const initLine = `{"type":"system","subtype":"init","session_id":"${sessionId}","cwd":"${cwd}","model":"opus"}`;
+  const initLine = `{"type":"system","subtype":"init","session_id":"${sessionId}","cwd":${JSON.stringify(cwd)},"model":"opus"}`;
   const allLines = [initLine, ...lines];
   fs.writeFileSync(path.join(dir, `${sessionId}.jsonl`), allLines.join('\n') + '\n');
   return sessionId;
@@ -675,19 +675,19 @@ function writeRelocatedSessionFixture(
   const lines: string[] = [];
   if (opts.withInit !== false) {
     lines.push(
-      `{"type":"system","subtype":"init","session_id":"${sid}","cwd":"${cwdSet[0]}","model":"opus"}`,
+      `{"type":"system","subtype":"init","session_id":"${sid}","cwd":${JSON.stringify(cwdSet[0])},"model":"opus"}`,
     );
   }
   for (let i = 0; i < cwdSet.length; i++) {
     const cwd = cwdSet[i];
     const userContent = opts.userContents?.[i] ?? 'placeholder';
     lines.push(
-      `{"type":"user","cwd":"${cwd}","message":{"role":"user","content":"${userContent}"}}`,
+      `{"type":"user","cwd":${JSON.stringify(cwd)},"message":{"role":"user","content":"${userContent}"}}`,
     );
     const usage = opts.usages?.[i] ?? { input: 100 * (i + 1), output: 10 * (i + 1) };
     const text = opts.assistantTexts?.[i] ?? 'done';
     lines.push(
-      `{"type":"assistant","cwd":"${cwd}","message":{"id":"m${i + 1}","role":"assistant","content":[{"type":"text","text":"${text}"}],"usage":{"input_tokens":${usage.input},"output_tokens":${usage.output}}}}`,
+      `{"type":"assistant","cwd":${JSON.stringify(cwd)},"message":{"id":"m${i + 1}","role":"assistant","content":[{"type":"text","text":"${text}"}],"usage":{"input_tokens":${usage.input},"output_tokens":${usage.output}}}}`,
     );
   }
   const filePath = path.join(dirTarget, `${sid}.jsonl`);
@@ -1085,7 +1085,7 @@ describe('listClaudeSessions - S2 relocated-out gap fix', () => {
     const dir = path.join(projectsDir, encoded);
     fs.mkdirSync(dir, { recursive: true });
     const lines = [
-      `{"type":"system","subtype":"init","session_id":"${sid}","cwd":"${cwd}","model":"opus"}`,
+      `{"type":"system","subtype":"init","session_id":"${sid}","cwd":${JSON.stringify(cwd)},"model":"opus"}`,
       `{"type":"user","message":{"role":"user","content":[{"type":"text","text":"normal session ${sid}"}]}}`,
     ];
     fs.writeFileSync(path.join(dir, `${sid}.jsonl`), lines.join('\n') + '\n');
@@ -1149,7 +1149,7 @@ describe('listClaudeSessions - S2 relocated-out gap fix', () => {
       fs.mkdirSync(primaryDir, { recursive: true });
       fs.writeFileSync(
         path.join(primaryDir, 'shared-sid.jsonl'),
-        `{"type":"system","subtype":"init","session_id":"shared-sid","cwd":"${cwd}","model":"opus"}\n` +
+        `{"type":"system","subtype":"init","session_id":"shared-sid","cwd":${JSON.stringify(cwd)},"model":"opus"}\n` +
           '{"type":"user","message":{"role":"user","content":[{"type":"text","text":"in primary"}]}}\n',
       );
 
@@ -1158,7 +1158,7 @@ describe('listClaudeSessions - S2 relocated-out gap fix', () => {
       fs.mkdirSync(otherDir, { recursive: true });
       fs.writeFileSync(
         path.join(otherDir, 'shared-sid.jsonl'),
-        `{"type":"system","subtype":"init","session_id":"shared-sid","cwd":"${cwd}","model":"opus"}\n` +
+        `{"type":"system","subtype":"init","session_id":"shared-sid","cwd":${JSON.stringify(cwd)},"model":"opus"}\n` +
           '{"type":"user","message":{"role":"user","content":[{"type":"text","text":"in other"}]}}\n',
       );
 
@@ -1281,10 +1281,10 @@ describe('readSessionContent / isClaudeSessionActive - session-index guard integ
     const dir = path.join(projectsDir, dirName);
     fs.mkdirSync(dir, { recursive: true });
     const lines: string[] = [
-      `{"type":"system","subtype":"init","session_id":"${sid}","cwd":"${cwdSet[0]}","model":"opus"}`,
+      `{"type":"system","subtype":"init","session_id":"${sid}","cwd":${JSON.stringify(cwdSet[0])},"model":"opus"}`,
       ...cwdSet.map(
         (c, i) =>
-          `{"type":"user","cwd":"${c}","message":{"role":"user","content":"placeholder ${i}"}}`,
+          `{"type":"user","cwd":${JSON.stringify(c)},"message":{"role":"user","content":"placeholder ${i}"}}`,
       ),
       ...tailLines,
     ];
@@ -1341,7 +1341,7 @@ describe('readSessionContent / isClaudeSessionActive - session-index guard integ
       // append B 段 → fingerprint 变化
       fs.appendFileSync(
         path.join(localTmp, encodedA, `${SID}.jsonl`),
-        `{"type":"user","cwd":"${CWD_B}","message":{"role":"user","content":"worktree b"}}\n` +
+        `{"type":"user","cwd":${JSON.stringify(CWD_B)},"message":{"role":"user","content":"worktree b"}}\n` +
           '{"type":"assistant","message":{"id":"m2","role":"assistant","content":[{"type":"text","text":"done in b"}],"usage":{"input_tokens":20,"output_tokens":10}}}\n',
       );
 

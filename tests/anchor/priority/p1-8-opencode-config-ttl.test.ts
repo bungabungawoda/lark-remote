@@ -11,6 +11,7 @@ vi.mock('../../../src/platform/command.js', () => ({
   resolveExecutable: () => ({ kind: 'direct', file: '/usr/local/bin/opencode' }),
 }));
 vi.mock('../../../src/platform/spawn.js', () => ({
+  useDetachedProcessGroup: vi.fn(() => true),
   spawnProcessSync: (...args: unknown[]) => mockExecSync(...args),
 }));
 

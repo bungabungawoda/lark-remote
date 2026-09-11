@@ -32,6 +32,9 @@ nohup.out
 # npm auth tokens
 .npmrc
 
+# npm 误生成的 lockfile（本项目用 bun.lock，npm install 的产物不入库）
+package-lock.json
+
 # IDE
 .idea/
 .vscode/

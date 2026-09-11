@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { currentPlatform, isWin32 } from '../platform/select.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -24,6 +25,7 @@ import {
   createStubSessionReader,
 } from '../../tests/lib/bridge-stubs.js';
 import { prependPath, restorePath, writeMockBin } from '../../tests/lib/path-mock.js';
+import { rmRf } from '../../tests/lib/tmp-cleanup.js';
 
 const { mockLogger } = vi.hoisted(() => ({
   mockLogger: {
@@ -199,7 +201,7 @@ describe('Bridge approval reaction retract', () => {
 });
 
 afterEach(() => {
-  fs.rmSync(tmpDir, { recursive: true, force: true });
+  rmRf(tmpDir);
 });
 
 const ctx = { userId: 'user1', chatId: 'chat1', messageId: 'msg1' };
@@ -520,65 +522,75 @@ describe('Bridge + ClaudeRunner approval integration', () => {
       if (key.startsWith('MOCK_')) delete process.env[key];
     }
     restorePath(savedPath);
-    fs.rmSync(integrationTmpDir, { recursive: true, force: true });
+    rmRf(integrationTmpDir);
   });
 
-  it('test_anchor_approval_request_shows_card_and_accept_writes_back_to_done', async () => {
-    // 端到端链路：真实 ClaudeRunner（mock claude 协议）→ bridge 事件循环 →
-    // ApprovalCoordinator → run 卡审批区 → 点击允许 → control_response 回写 →
-    // mock 继续执行 → result → 卡片 done。协议单测在 runner 层、审批 UI 在
-    // bridge 层，本测试覆盖中间的接线（review P3-5）。
-    const mockPath = path.resolve(__dirname, '../../tests/lib/mock-claude.js');
-    writeMockBin(integrationTmpDir, 'claude', `#!/bin/bash\nexec node "${mockPath}"`);
-    process.env.MOCK_SCENARIO = 'approval';
+  it.skipIf(isWin32(currentPlatform))(
+    'test_anchor_approval_request_shows_card_and_accept_writes_back_to_done',
+    async () => {
+      // 端到端链路：真实 ClaudeRunner（mock claude 协议）→ bridge 事件循环 →
+      // ApprovalCoordinator → run 卡审批区 → 点击允许 → control_response 回写 →
+      // mock 继续执行 → result → 卡片 done。协议单测在 runner 层、审批 UI 在
+      // bridge 层，本测试覆盖中间的接线（review P3-5）。
+      const mockPath = path.resolve(__dirname, '../../tests/lib/mock-claude.js');
+      writeMockBin(integrationTmpDir, 'claude', mockPath);
+      process.env.MOCK_SCENARIO = 'approval';
 
-    const runner = new ClaudeRunner({
-      pidDir: integrationTmpDir,
-      workspace: integrationTmpDir,
-      permissionMode: 'default',
-      idleTtlMs: 0,
-    });
-    integrationRunners.push(runner);
+      const runner = new ClaudeRunner({
+        pidDir: integrationTmpDir,
+        workspace: integrationTmpDir,
+        permissionMode: 'default',
+        idleTtlMs: 0,
+      });
+      integrationRunners.push(runner);
 
-    const { bridge, sessionStore, connector } = makeBridge({
-      runner,
-      idleTimeoutMs: 60_000,
-    });
-    sessionStore.setCwd(ctx.userId, integrationTmpDir);
+      const { bridge, sessionStore, connector } = makeBridge({
+        runner,
+        idleTimeoutMs: 60_000,
+      });
+      sessionStore.setCwd(ctx.userId, integrationTmpDir);
 
-    const runPromise = bridge.forwardToClaude('run the command', ctx);
+      const runPromise = bridge.forwardToClaude('run the command', ctx);
 
-    // 等审批区出现在流式卡上（不新增消息，卡上直接出现「命令审批」）
-    await vi.waitFor(() => {
-      const card = connector._cards.at(-1);
-      expect(JSON.stringify(card)).toContain('命令审批');
-    });
+      // 等审批区出现在流式卡上（不新增消息，卡上直接出现「命令审批」）
+      // 超时必须显式给足：本用例等的是一个真实子进程（mock claude）走完
+      // spawn → system.init → 首条 user 事件 → control_request 的整轮握手。
+      // 单文件跑（无并发）约 300ms，全量并行跑（8 worker）实测到 1.6s，
+      // vi.waitFor 的默认 1000ms 预算会周期性判假失败（2026-09-11 全量复现）。
+      await vi.waitFor(
+        () => {
+          const card = connector._cards.at(-1);
+          expect(JSON.stringify(card)).toContain('命令审批');
+        },
+        { timeout: 15_000, interval: 100 },
+      );
 
-    // 从审批按钮提取 runId + requestId，走真实卡片动作路径响应
-    const lastCard = JSON.stringify(connector._cards.at(-1));
-    const respondMatch = lastCard.match(
-      /"cmd":"approval\.respond","decision":"accept","requestId":([^,]+),"runId":"([^"]+)"/,
-    );
-    expect(respondMatch).not.toBeNull();
-    const rawRequestId = respondMatch![1];
-    const requestId = rawRequestId.startsWith('"')
-      ? rawRequestId.replace(/"/g, '')
-      : Number(rawRequestId);
-    const runId = respondMatch![2];
+      // 从审批按钮提取 runId + requestId，走真实卡片动作路径响应
+      const lastCard = JSON.stringify(connector._cards.at(-1));
+      const respondMatch = lastCard.match(
+        /"cmd":"approval\.respond","decision":"accept","requestId":([^,]+),"runId":"([^"]+)"/,
+      );
+      expect(respondMatch).not.toBeNull();
+      const rawRequestId = respondMatch![1];
+      const requestId = rawRequestId.startsWith('"')
+        ? rawRequestId.replace(/"/g, '')
+        : Number(rawRequestId);
+      const runId = respondMatch![2];
 
-    await bridge.handleApprovalRespond({
-      runId,
-      requestId,
-      decision: 'accept',
-      nonce: 'integration-n1',
-    });
-    await runPromise;
+      await bridge.handleApprovalRespond({
+        runId,
+        requestId,
+        decision: 'accept',
+        nonce: 'integration-n1',
+      });
+      await runPromise;
 
-    const finalCard = JSON.stringify(connector._cards.at(-1));
-    expect(finalCard).toContain('已完成');
-    // 审批区已随 resolved 移除（不再残留按钮）
-    expect(finalCard).not.toContain('命令审批');
-  });
+      const finalCard = JSON.stringify(connector._cards.at(-1));
+      expect(finalCard).toContain('已完成');
+      // 审批区已随 resolved 移除（不再残留按钮）
+      expect(finalCard).not.toContain('命令审批');
+    },
+  );
 });
 
 // --- forwardToClaude core flow ---

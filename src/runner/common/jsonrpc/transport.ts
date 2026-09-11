@@ -12,6 +12,7 @@ import {
   spawnProcess,
   mergeProcessEnv,
   isWindowsCommandNotFoundLine,
+  useDetachedProcessGroup,
 } from '../../../platform/spawn.js';
 import { ProcessStopper } from '../process-stopper.js';
 import { getLogger } from '../../../logger/index.js';
@@ -75,7 +76,9 @@ export class JsonlRpcTransport {
     const proc = spawnProcess(this.binary, this.args, {
       cwd: this.cwd,
       stdio: ['pipe', 'pipe', 'pipe'],
-      detached: true,
+      // posix 建新进程组（负 PID 组杀）；win32 不 detached（`.cmd` 垫片丢 stdio）
+      detached: useDetachedProcessGroup(),
+      windowsHide: true,
       env: childEnv,
     });
     this.proc = proc;

@@ -15,24 +15,31 @@
 import crossSpawn from 'cross-spawn';
 import type { ChildProcess, SpawnOptions, SpawnSyncOptions } from 'node:child_process';
 import type { SpawnSyncReturns } from 'child_process';
-import { currentPlatform } from './select.js';
+import { currentPlatform, isWin32 } from './select.js';
 
-/** cross-spawn 包装：posix 直通，win32 PATHEXT + 垫片 cmd.exe 受控执行。 */
+/**
+ * cross-spawn 包装：posix 直通，win32 PATHEXT + 垫片 cmd.exe 受控执行。
+ *
+ * 默认注入 `windowsHide: true`：win32 上 .cmd/.bat 垫片经 cmd.exe 执行时，
+ * 不加该选项会闪控制台窗口（测试批量拉起 mock agent 时尤其明显）。该选项
+ * 在 posix 上被 Node 直接忽略（Windows-only），因此默认值零跨平台影响；
+ * 调用方显式传 `windowsHide: false` 仍可覆盖。
+ */
 export function spawnProcess(
   command: string,
   args: readonly string[] = [],
   options: SpawnOptions = {},
 ): ChildProcess {
-  return crossSpawn(command, [...args], options);
+  return crossSpawn(command, [...args], { windowsHide: true, ...options });
 }
 
-/** cross-spawn 同步版（一次性命令探测/目录查询用）。 */
+/** cross-spawn 同步版（一次性命令探测/目录查询用）。默认注入同 {@link spawnProcess}。 */
 export function spawnProcessSync(
   command: string,
   args: readonly string[] = [],
   options: SpawnSyncOptions = {},
 ): SpawnSyncReturns<string | Buffer> {
-  return crossSpawn.sync(command, [...args], options);
+  return crossSpawn.sync(command, [...args], { windowsHide: true, ...options });
 }
 
 /**
@@ -60,6 +67,24 @@ export function mergeProcessEnv(
 
 const COMMAND_NOT_FOUND_PATTERN =
   /is not recognized as an internal or external command|operable program or batch file/i;
+
+/**
+ * 是否需要为子进程建独立进程组（`spawn` 的 `detached: true`）。
+ *
+ * posix：ProcessStopper 的组杀用负 PID（`kill(-pgid)`），子进程必须是组长，
+ * 否则 kill 抛 ESRCH 被吞，停止/清理链路全失效。
+ *
+ * win32：组杀已由 terminator 的 `taskkill /PID <pid> /T /F` 树杀替代，不需要
+ * 进程组；而 `detached: true` 会让 **`.cmd` 垫片丢掉父进程的 stdio 管道** ——
+ * Windows 上 `DETACHED_PROCESS` 下 cmd.exe 另建控制台并重绑标准句柄，于是
+ * 子进程（npm 安装的 agent 全是 `.cmd` 垫片）的 stdout/stderr 永不抵达父进程，
+ * 表现为 agent 全程静默、turn 超时。实测 `windowsHide: true` 不能改善，
+ * 因此 v1 §3.3「保留 detached + windowsHide」的假设据此修正为「win32 不
+ * detached」。调用方应同时传 `windowsHide: true`，避免 cmd.exe 闪控制台窗口。
+ */
+export function useDetachedProcessGroup(platform: NodeJS.Platform = currentPlatform): boolean {
+  return !isWin32(platform);
+}
 
 /**
  * win32 command-not-found 行嗅探（§4.4）：命中即视为「命令缺失」失败而非

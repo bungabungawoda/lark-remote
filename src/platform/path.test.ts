@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { canonicalPath, samePath, displayName } from './path.js';
+import { canonicalPath, samePath, displayName, encodeProjectDirName } from './path.js';
 
 describe('canonicalPath', () => {
   it('expands leading ~ to homedir and realpaths existing dirs', () => {
@@ -17,11 +17,14 @@ describe('canonicalPath', () => {
     const sub = path.join(tmpRoot, 'sub dir');
     fs.mkdirSync(sub);
     try {
-      // home 注入到临时目录，才能真正断言 `~/sub` 的展开结果
+      // home 注入到临时目录，才能真正断言 `~/sub` 的展开结果。
+      // 两侧都经 realpath，因此分隔符口径一致（win32 原生 `\`），可直接相等比较。
       expect(canonicalPath('~/sub dir', { home: tmpRoot })).toBe(fs.realpathSync(sub));
+      // realpath:false 时返回 normalizeSeparators 的结果（win32 归一为 `/`），
+      // 所以按同一口径比较；posix 宿主下 replaceAll 是 no-op。
       expect(
         canonicalPath('~\\sub dir', { platform: 'win32', home: tmpRoot, realpath: false }),
-      ).toBe(path.join(tmpRoot, 'sub dir'));
+      ).toBe(path.join(tmpRoot, 'sub dir').replaceAll('\\', '/'));
     } finally {
       fs.rmSync(tmpRoot, { recursive: true, force: true });
     }
@@ -40,7 +43,8 @@ describe('canonicalPath', () => {
 
   it('does not throw for non-existent paths — returns expanded+normalized path', () => {
     const missing = path.join(os.tmpdir(), 'platform-path-missing-xyz', 'a b');
-    expect(canonicalPath(missing)).toBe(missing);
+    // win32 下 canonicalPath 归一化分隔符为 `/`（PathKit §5.1），按同口径比较
+    expect(canonicalPath(missing)).toBe(missing.replaceAll('\\', '/'));
   });
 
   it('win32: converts backslashes to forward slashes and expands %VAR%', () => {
@@ -127,5 +131,34 @@ describe('displayName', () => {
   it('posix: backslash is a legal filename character, not a separator', () => {
     expect(displayName('/home/user/project', { platform: 'linux' })).toBe('project');
     expect(displayName('C:\\weird', { platform: 'linux' })).toBe('C:\\weird');
+  });
+});
+
+describe('encodeProjectDirName', () => {
+  it('posix: `/` 与 `_` 归一为 `-`（与 Claude Code 一致）', () => {
+    expect(encodeProjectDirName('/Users/x/proj', { platform: 'linux' })).toBe('-Users-x-proj');
+    expect(encodeProjectDirName('/Users/x/proj_j', { platform: 'linux' })).toBe('-Users-x-proj-j');
+  });
+
+  it('posix: `:` 是合法文件名字符，不能动（否则既有目录定位不到）', () => {
+    expect(encodeProjectDirName('/tmp/a:b', { platform: 'linux' })).toBe('-tmp-a:b');
+  });
+
+  it('win32: `\\` 与 `:` 一并归一，产出合法目录名', () => {
+    expect(encodeProjectDirName('C:\\Users\\x\\proj', { platform: 'win32' })).toBe(
+      'C--Users-x-proj',
+    );
+    expect(encodeProjectDirName('C:/Users/x/proj', { platform: 'win32' })).toBe('C--Users-x-proj');
+  });
+
+  it('win32: 结果不含任何非法文件名字符（mkdir 不炸）', () => {
+    const name = encodeProjectDirName('C:\\Users\\x\\proj', { platform: 'win32' });
+    expect(name).not.toMatch(/[<>:"|?*\\/]/);
+  });
+
+  it('lossy N-to-N：只可用于定位，不可反解（既有语义不变）', () => {
+    expect(encodeProjectDirName('disk_d/foo', { platform: 'linux' })).toBe(
+      encodeProjectDirName('disk-d/foo', { platform: 'linux' }),
+    );
   });
 });
