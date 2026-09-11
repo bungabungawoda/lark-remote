@@ -21,6 +21,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { readSessionContent } from '../../../src/session/claude/sessions.js';
+import { encodeClaudeProjectDir } from '../../lib/session-fixtures.js';
 
 let tmpDir: string;
 
@@ -34,7 +35,7 @@ afterEach(() => {
 
 // Same writeSession as sessions.test.ts for consistency
 function writeSession(cwd: string, lines: string[]): string {
-  const encoded = cwd.replace(/\//g, '-');
+  const encoded = encodeClaudeProjectDir(cwd);
   const dir = path.join(tmpDir, encoded);
   fs.mkdirSync(dir, { recursive: true });
   const sessionId = 'test-session-1234';
@@ -45,13 +46,17 @@ function writeSession(cwd: string, lines: string[]): string {
 }
 
 /**
- * Count JSON.parse calls attributable to the readSessionContent body
- * (excluding readCwdFromJsonl which uses findJsonlLine and is a separate
- * pre-check, not part of the allLines multi-pass problem).
- *
- * We measure: total parseCount − cwdParseCount = bodyParseCount.
- * cwdParseCount is captured by calling readCwdFromJsonl in isolation.
+ * 归因标记：readSessionContent 全链路横跨两个文件——
+ *   - src/session/claude/sessions.ts（主循环、readCwdFromJsonl 的 cwd 预检、mapLine）
+ *   - src/session/common/two-pass.ts（scalarScan 单遍扫描 + scanTailEvents 尾部重解析）
+ * 两者的 JSON.parse 都必须计入，缺一会低估计数、削弱锚点的区分能力
+ * （2026-09-06 教训：two-pass.ts 抽取后仅归因 sessions.ts，计数 11→9）。
  */
+const SESSIONS_TS_MARK = /src[\\/]session[\\/](claude[\\/]sessions|common[\\/]two-pass)\.ts/;
+
+function isParseInSessionsTs(): boolean {
+  return SESSIONS_TS_MARK.test(new Error().stack ?? '');
+}
 describe('P2-2 anchor: readSessionContent single-pass parsing', () => {
   it('JSON.parse calls in readSessionContent body ≤ allLines.length (not 3-4×)', () => {
     // Session with diverse content: user, assistant (with usage), compact,
@@ -69,7 +74,7 @@ describe('P2-2 anchor: readSessionContent single-pass parsing', () => {
     ]);
 
     // Count non-empty lines (init + 7 content = 8)
-    const encoded = '/tmp/proj'.replace(/\//g, '-');
+    const encoded = encodeClaudeProjectDir('/tmp/proj');
     const filePath = path.join(tmpDir, encoded, 'test-session-1234.jsonl');
     const nonEmptyLines = fs
       .readFileSync(filePath, 'utf-8')
@@ -79,7 +84,7 @@ describe('P2-2 anchor: readSessionContent single-pass parsing', () => {
     const originalParse = JSON.parse;
     let totalParseCount = 0;
     const spy = vi.spyOn(JSON, 'parse').mockImplementation((...args) => {
-      totalParseCount++;
+      if (isParseInSessionsTs()) totalParseCount++;
       return originalParse.apply(JSON, args as Parameters<typeof originalParse>);
     });
 
@@ -115,6 +120,10 @@ describe('P2-2 anchor: readSessionContent single-pass parsing', () => {
       //    to absorb readCwdFromJsonl's few extra parses, but strict
       //    enough to catch the 3-4× regression.
       expect(totalParseCount).toBeLessThanOrEqual(Math.ceil(nonEmptyLines * 1.5));
+      //    下界：每行至少 parse 一次（scalarScan 单遍）+ cwd 预检固定开销，
+      //    防止归因 regex 漏配文件（如 two-pass.ts 抽取后未同步）导致计数
+      //    静默走低、锚点失去区分能力。
+      expect(totalParseCount).toBeGreaterThanOrEqual(nonEmptyLines);
     } finally {
       spy.mockRestore();
     }
@@ -150,7 +159,7 @@ describe('P2-2 anchor: readSessionContent single-pass parsing', () => {
     }
     const sessionId = writeSession('/tmp/proj', lines);
 
-    const encoded = '/tmp/proj'.replace(/\//g, '-');
+    const encoded = encodeClaudeProjectDir('/tmp/proj');
     const filePath = path.join(tmpDir, encoded, 'test-session-1234.jsonl');
     const nonEmptyLines = fs
       .readFileSync(filePath, 'utf-8')
@@ -160,7 +169,7 @@ describe('P2-2 anchor: readSessionContent single-pass parsing', () => {
     const originalParse = JSON.parse;
     let totalParseCount = 0;
     const spy = vi.spyOn(JSON, 'parse').mockImplementation((...args) => {
-      totalParseCount++;
+      if (isParseInSessionsTs()) totalParseCount++;
       return originalParse.apply(JSON, args as Parameters<typeof originalParse>);
     });
 
@@ -216,7 +225,7 @@ describe('P2-2 anchor: readSessionContent single-pass parsing', () => {
 
     const sessionId = writeSession('/tmp/proj', lines);
 
-    const encoded = '/tmp/proj'.replace(/\//g, '-');
+    const encoded = encodeClaudeProjectDir('/tmp/proj');
     const filePath = path.join(tmpDir, encoded, 'test-session-1234.jsonl');
     const nonEmptyLines = fs
       .readFileSync(filePath, 'utf-8')
@@ -226,7 +235,7 @@ describe('P2-2 anchor: readSessionContent single-pass parsing', () => {
     const originalParse = JSON.parse;
     let totalParseCount = 0;
     const spy = vi.spyOn(JSON, 'parse').mockImplementation((...args) => {
-      totalParseCount++;
+      if (isParseInSessionsTs()) totalParseCount++;
       return originalParse.apply(JSON, args as Parameters<typeof originalParse>);
     });
 

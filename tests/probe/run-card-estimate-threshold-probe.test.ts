@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { renderRunCard } from '../../src/card/run-renderer.js';
 import type { RunState } from '../../src/card/run-state.js';
+import { expectNoV1ActionContainer } from '../lib/card-view.js';
 
 /**
  * PROBE (估算保守性边界 — 不误降级 + 不漏降级) — P1-2 的「先估后建」引入了
@@ -67,7 +68,7 @@ describe('renderRunCard estimate threshold boundary (probe)', () => {
     expect(json).toContain('思考块10');
 
     // CardKit 2.0 合规
-    expect(json).not.toMatch(/"tag"\s*:\s*"action"[^}]*"actions"/);
+    expectNoV1ActionContainer(json);
 
     // PROBE 刻画：影子测量下本卡走正常路径 → 早期思考全部保留（不误降级）。
     // 互斥断言防止「既降级又完整」的矛盾态回归（旧 ×1.2 估算曾让本卡降级）。
@@ -114,7 +115,7 @@ describe('renderRunCard estimate threshold boundary (probe)', () => {
     expect(cardBytes).toBeLessThanOrEqual(28_000);
 
     // CardKit 2.0 合规
-    expect(json).not.toMatch(/"tag"\s*:\s*"action"[^}]*"actions"/);
+    expectNoV1ActionContainer(json);
   });
 
   /**

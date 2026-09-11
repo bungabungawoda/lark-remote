@@ -284,8 +284,8 @@ const EXTREME_TIER: BudgetTierConfig = {
   textBytes: DEGRADED_TEXT_BYTES,
 };
 
-/** Bottom action row: stop (if running) + compact (if applicable) + new session (always). */
-function actionRow(state: RunState, options: RunCardRenderOptions): object[] {
+/** Bottom action buttons: stop (if running) + compact (if applicable) + new session (always). */
+function actionButtonList(state: RunState, options: RunCardRenderOptions): object[] {
   const actionButtons: object[] = [];
   // finalizing 也显示停止按钮（进程未退出，用户可 /stop）
   const showStop = state.terminal === 'running' || state.terminal === 'finalizing';
@@ -297,7 +297,12 @@ function actionRow(state: RunState, options: RunCardRenderOptions): object[] {
     actionButtons.push(compactButton(state.runId));
   }
   actionButtons.push(newSessionButton());
+  return actionButtons;
+}
 
+/** Bottom action row: spacer + column_set of actionButtonList (估算与渲染共用，W2.2）。 */
+function actionRow(state: RunState, options: RunCardRenderOptions): object[] {
+  const actionButtons = actionButtonList(state, options);
   if (actionButtons.length === 0) return [];
   return [
     { tag: 'div', text: { content: '‎', tag: 'lark_md' } }, // spacer
@@ -540,6 +545,46 @@ function bucketThinkingAndTool(blocks: RunBlock[]): {
  * 走正常路径，renderRunCard 仍会 stringify 确认 ≤28KB；若估算低估，仍 fallback
  * 到 degraded（安全网不丢）。
  */
+/**
+ * W2.2 镜像对单源：thinking/plan/file_change 三个 collapsible 面板组的
+ * { title, expanded, border, content } 描述，估算（measurePanelBytes）与渲染
+ * （collapsibleMarkdownPanel）共用——此前同一套标题/opIcon/内容模板写两遍。
+ * text（renderTextBlock）与 tool（renderTool）形态特殊，由调用方各自处理；
+ * 返回 null 表示该组不是 collapsible 面板。
+ */
+function describePanelGroup(
+  group: BlockGroup,
+  prepared: GroupContentPrepared,
+): { title: string; expanded: boolean; border: PanelBorder; content: string } | null {
+  if (group.kind === 'tool') return null;
+  const ts = formatTimestamp(group.timestamp);
+  const suffix = ts ? ` (${ts})` : '';
+  if (group.kind === 'thinking') {
+    const title = (group.active ? '💭 **思考中**' : '💭 **思考完成**') + suffix;
+    return { title, expanded: group.active, border: 'grey', content: prepared.get(group) ?? '' };
+  }
+  if (group.kind === 'plan') {
+    const title = (group.active ? '📋 **执行计划**' : '📋 **计划完成**') + suffix;
+    return { title, expanded: group.active, border: 'blue', content: prepared.get(group) ?? '' };
+  }
+  if (group.kind === 'file_change') {
+    const opIcon =
+      group.operation === 'create'
+        ? '🆕'
+        : group.operation === 'edit'
+          ? '✏️'
+          : group.operation === 'delete'
+            ? '🗑️'
+            : '📖';
+    const title = `${opIcon} **文件改动**${suffix}`;
+    const content = group.diff
+      ? `**${group.path}**\n\n\`\`\`\n${group.diff}\n\`\`\``
+      : `**${group.path}** (${group.operation})`;
+    return { title, expanded: false, border: 'grey', content };
+  }
+  return null;
+}
+
 /** 导出供测试断言估算精度（估算 ≈ 实际渲染字节，见 tests/anchor/run-card/run-card.test.ts）。 */
 export function estimateCardBytes(
   state: RunState,
@@ -552,85 +597,38 @@ export function estimateCardBytes(
   const groups = shared?.groups ?? groupBlocks(state.blocks);
   const prepared = shared?.prepared ?? prepareGroupContent(groups);
 
-  // 卡片外壳 + 状态行 + summary（小对象实测，动态文案精确）
+  // 卡片外壳直接实测 assembleRunCard 空元素产物（schema/config/header/body 结构
+  // 与正式渲染完全一致，W2.2）；status/summary/操作行同样实测渲染结构。
+  // 注：审批区（approvalArea）不参与估算——待审批通常在途且体积小，超预算由
+  // renderRunCard 的 stringify 兜底捕获。
   let total =
-    measureJson({
-      schema: '2.0',
-      config: { wide_screen_mode: true, update_multi: true },
-      header: {
-        template: headerTemplate2(state),
-        title: { content: headerTitle2(state, options), tag: 'plain_text' },
-      },
-      body: { elements: [] },
-    }) +
+    measureJson(assembleRunCard(state, options, [])) +
     measureJson(statusRow(state)) +
-    measureJson(buildSummaryContent(state));
+    measureJson(buildSummaryContent(state)) +
+    measureJson(actionRow(state, options));
 
-  // 底部操作行：spacer + 操作按钮（与 renderRunCard normal 分支一致）
-  const actionButtons: object[] = [];
-  if (state.terminal === 'running' || state.terminal === 'finalizing') {
-    actionButtons.push(stopButton(state.runId));
-  }
-  if (shouldShowCompactButton(state, options)) {
-    actionButtons.push(compactButton(state.runId));
-  }
-  actionButtons.push(newSessionButton());
-  total += measureJson([
-    { tag: 'div', text: { content: '‎', tag: 'lark_md' } },
-    {
-      tag: 'column_set',
-      columns: actionButtons.map((btn) => ({
-        tag: 'column',
-        width: 'auto',
-        elements: [btn],
-      })),
-    },
-  ]);
-
-  // 块内容：与 buildChronologicalContent 同源（groupBlocks 合并语义一致）
+  // 块内容：与 buildChronologicalContent 同源（describePanelGroup 单源，W2.2）
   let renderedAny = false;
   for (const group of groups) {
-    if (group.kind === 'thinking') {
+    if (group.kind === 'tool') {
       renderedAny = true;
-      const ts = formatTimestamp(group.timestamp);
-      const title = group.active ? '💭 **思考中**' : '💭 **思考完成**';
-      const header = ts ? `${title} (${ts})` : title;
-      total += measurePanelBytes(header, group.active, 'grey', prepared.get(group) ?? '');
-    } else if (group.kind === 'plan') {
-      renderedAny = true;
-      const ts = formatTimestamp(group.timestamp);
-      const title = group.active ? '📋 **执行计划**' : '📋 **计划完成**';
-      const header = ts ? `${title} (${ts})` : title;
-      total += measurePanelBytes(header, group.active, 'blue', prepared.get(group) ?? '');
-    } else if (group.kind === 'file_change') {
-      renderedAny = true;
-      const ts = formatTimestamp(group.timestamp);
-      const opIcon =
-        group.operation === 'create'
-          ? '🆕'
-          : group.operation === 'edit'
-            ? '✏️'
-            : group.operation === 'delete'
-              ? '🗑️'
-              : '📖';
-      const title = `${opIcon} **文件改动**`;
-      const content = group.diff
-        ? `**${group.path}**\n\n\`\`\`\n${group.diff}\n\`\`\``
-        : `**${group.path}** (${group.operation})`;
-      const header = ts ? `${title} (${ts})` : title;
-      total += measurePanelBytes(header, false, 'grey', content);
-    } else if (group.kind === 'text') {
+      // tool 直接实测真实渲染元素（复用 renderTool，output ≤1200 字符，物化廉价）
+      total += measureJson(renderTool(group.tool, finalized));
+      continue;
+    }
+    if (group.kind === 'text') {
       const content = prepared.get(group) ?? '';
       if (!content.trim()) continue;
       renderedAny = true;
       const ts = formatTimestamp(group.timestamp);
       const header = `💬 **输出**${ts ? ` (${ts})` : ''}`;
       total += measurePanelBytes(header, true, 'grey', content);
-    } else if (group.kind === 'tool') {
-      renderedAny = true;
-      // tool 直接实测真实渲染元素（复用 renderTool，output ≤1200 字符，物化廉价）
-      total += measureJson(renderTool(group.tool, finalized));
+      continue;
     }
+    const spec = describePanelGroup(group, prepared);
+    if (!spec) continue;
+    renderedAny = true;
+    total += measurePanelBytes(spec.title, spec.expanded, spec.border, spec.content);
   }
 
   if (!renderedAny) {
@@ -676,7 +674,7 @@ export function renderRunCard(state: RunState, options: RunCardRenderOptions = {
   if (estimate < DEGRADED_THRESHOLD) {
     const elements: object[] = [
       statusRow(state),
-      ...buildChronologicalContent(state, options, prepared, groups),
+      ...buildChronologicalContent(state, prepared, groups),
       ...buildSummaryContent(state),
       ...actionRow(state, options),
       ...approvalArea(state),
@@ -724,9 +722,8 @@ export function renderRunCard(state: RunState, options: RunCardRenderOptions = {
 /** Build content in chronological order using groupBlocks to interleave thinking/text/tools. */
 function buildChronologicalContent(
   state: RunState,
-  options: RunCardRenderOptions,
-  prepared?: GroupContentPrepared,
-  groups?: BlockGroup[],
+  prepared: GroupContentPrepared,
+  groups: BlockGroup[],
 ): object[] {
   const elements: object[] = [];
   // finalized = 非 running（含 finalizing：主结果已出，thinking 折叠）
@@ -734,70 +731,29 @@ function buildChronologicalContent(
 
   // P1-2：renderRunCard 传入同一 groups 数组时直接复用（prepared 的键是组对象
   // 引用，重建数组会让 prepared.get 永远 miss，退化为二次截断）。
-  for (const group of groups ?? groupBlocks(state.blocks)) {
-    if (group.kind === 'thinking') {
-      const ts = formatTimestamp(group.timestamp);
-      const title = group.active ? '💭 **思考中**' : '💭 **思考完成**';
-      const content = prepared?.get(group) ?? truncateUtf8(group.content, REASONING_BYTES);
-      const header = ts ? `${title} (${ts})` : title;
-      elements.push(
-        collapsibleMarkdownPanel({
-          title: header,
-          expanded: group.active,
-          border: 'grey',
-          content,
-          textSize: 'notation',
-        }),
-      );
-    } else if (group.kind === 'plan') {
-      // Plan blocks: render as collapsible panel (default collapsed)
-      const ts = formatTimestamp(group.timestamp);
-      const title = group.active ? '📋 **执行计划**' : '📋 **计划完成**';
-      const content = prepared?.get(group) ?? truncateUtf8(group.content, REASONING_BYTES * 2);
-      const header = ts ? `${title} (${ts})` : title;
-      elements.push(
-        collapsibleMarkdownPanel({
-          title: header,
-          expanded: group.active, // expand while active, collapse when done
-          border: 'blue',
-          content,
-          textSize: 'notation',
-        }),
-      );
-    } else if (group.kind === 'file_change') {
-      // File change blocks: render as collapsible panel (default collapsed)
-      const ts = formatTimestamp(group.timestamp);
-      const opIcon =
-        group.operation === 'create'
-          ? '🆕'
-          : group.operation === 'edit'
-            ? '✏️'
-            : group.operation === 'delete'
-              ? '🗑️'
-              : '📖';
-      const title = `${opIcon} **文件改动**`;
-      const content = group.diff
-        ? `**${group.path}**\n\n\`\`\`\n${group.diff}\n\`\`\``
-        : `**${group.path}** (${group.operation})`;
-      const header = ts ? `${title} (${ts})` : title;
-      elements.push(
-        collapsibleMarkdownPanel({
-          title: header,
-          expanded: false,
-          border: 'grey',
-          content,
-          textSize: 'notation',
-        }),
-      );
-    } else if (group.kind === 'text') {
-      const content =
-        prepared?.get(group) ?? truncateUtf8(group.content, TEXT_BYTES, true, '…（已截断）\n');
-      const ts = formatTimestamp(group.timestamp);
-      const els = renderTextBlock(content, ts, finalized);
-      elements.push(...els);
-    } else if (group.kind === 'tool') {
+  // W2.2：面板组描述经 describePanelGroup 与估算共享同一份模板。
+  for (const group of groups) {
+    if (group.kind === 'tool') {
       elements.push(renderTool(group.tool, finalized));
+      continue;
     }
+    if (group.kind === 'text') {
+      const content = prepared.get(group) ?? '';
+      const ts = formatTimestamp(group.timestamp);
+      elements.push(...renderTextBlock(content, ts, finalized));
+      continue;
+    }
+    const spec = describePanelGroup(group, prepared);
+    if (!spec) continue;
+    elements.push(
+      collapsibleMarkdownPanel({
+        title: spec.title,
+        expanded: spec.expanded,
+        border: spec.border,
+        content: spec.content,
+        textSize: 'notation',
+      }),
+    );
   }
 
   if (elements.length === 0) {

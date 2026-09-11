@@ -96,7 +96,7 @@ interface OpencodeExportData {
   messages: OpencodeExportMessage[];
 }
 
-import { STALE_MS } from '../common/constants.js';
+import { isStale } from '../common/constants.js';
 import { samePath } from '../../platform/path.js';
 import { paginate, capEvents } from '../common/pagination.js';
 import { sortByRecencyDesc } from '../common/recency.js';
@@ -392,7 +392,7 @@ export class OpencodeSessionReader implements AgentSessionReader {
       if (!entry) return false;
 
       // Check if updated within STALE_MS
-      return Date.now() - entry.updated < STALE_MS;
+      return !isStale(entry.updated);
     } catch {
       return false;
     }

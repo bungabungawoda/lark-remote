@@ -1,16 +1,11 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import {
-  findJsonlLine,
-  readLastJsonlLine,
-  scanJsonlLines,
-  readJsonlLinesFromOffset,
-} from '../common/jsonl.js';
-import { STALE_MS } from '../common/constants.js';
+import { findJsonlLine, readLastJsonlLine } from '../common/jsonl.js';
+import { isStale } from '../common/constants.js';
 import { samePath } from '../../platform/path.js';
-import { capEvents } from '../common/pagination.js';
 import { extractContentBlocks } from '../common/content-blocks.js';
+import { scanJsonlOnce, tailOffsetAfter, scanTailEvents } from '../common/two-pass.js';
 import {
   UsageAccumulator,
   contextWindowOccupancy,
@@ -182,7 +177,7 @@ export function getNewestSession(
 
 function isSessionActive(filePath: string, mtimeMs: number, now: number = Date.now()): boolean {
   // Hard signal: file untouched for over an hour → can't be from a live process
-  if (now - mtimeMs > STALE_MS) return false;
+  if (isStale(mtimeMs, now)) return false;
 
   const lastLine = readLastJsonlLine(filePath);
   if (!lastLine) return false;
@@ -318,14 +313,7 @@ function scalarScan(filePath: string): ScanResult {
   let lastRecap: string | undefined;
   let lastUserMessage: string | undefined;
 
-  scanJsonlLines(filePath, (line, offset) => {
-    let obj: Record<string, unknown>;
-    try {
-      obj = JSON.parse(line);
-    } catch {
-      return;
-    }
-
+  scanJsonlOnce(filePath, (obj, line, offset) => {
     // --- usage aggregation (was aggregateSessionUsage) ---
     if (obj.type === 'assistant') {
       const msg = obj.message as Record<string, unknown> | undefined;
@@ -363,12 +351,11 @@ function scalarScan(filePath: string): ScanResult {
 
     // --- last user message offset ---
     // Record the byte offset where the tail should start: the beginning of
-    // the NEXT line after this user message. We compute it as this line's
-    // start offset + its byte length + 1 (the trailing '\n').
+    // the NEXT line after this user message (see tailOffsetAfter).
     if (obj.type === 'user') {
       const msg = obj.message as Record<string, unknown> | undefined;
       if (msg?.role === 'user') {
-        tailOffset = offset + Buffer.byteLength(line, 'utf-8') + 1;
+        tailOffset = tailOffsetAfter(line, offset);
       }
     }
 
@@ -457,52 +444,32 @@ function scalarScan(filePath: string): ScanResult {
 }
 
 /**
- * P2-2 + P2-5 second-pass: extract content-block events from the tail
- * (lines after the last user message), re-parsing only those lines.
- * `tailLines` is already the tail-only slice (read via
- * `readJsonlLinesFromOffset`), so both raw line-string memory and parsed-
- * object memory are O(tail), not O(whole file) — P3-1 + P2-5.
+ * P2-2 + P2-5 second-pass tail mapper: expand one parsed tail line into
+ * content-block events. Re-parses only tail lines (scanTailEvents does the
+ * offset re-read + line filtering), so both raw line-string memory and
+ * parsed-object memory are O(tail), not O(whole file) — P3-1 + P2-5.
  *
- * `maxEvents` (optional): when set, only the LAST `maxEvents` events are kept
- * (review P2-7 — unified "last N events" contract across all five readers,
- * matching codex/opencode/pi's `slice(-maxEvents)`). The whole tail is parsed
- * first (usage/title extraction above already scanned the file; this pass only
- * re-parses the short tail), then `slice(-maxEvents)` keeps the most recent
- * events. `maxEvents <= 0` returns `[]` (guards the `slice(-0) === slice(0)`
- * full-array trap).
+ * `maxEvents` capping (review P2-7 — unified "last N events" contract across
+ * all readers) is applied by scanTailEvents.
  */
-function extractEventsFromTail(
-  tailLines: string[],
-  maxEvents?: number,
-): AgentSessionContentEvent[] {
+function mapClaudeTailLine(obj: Record<string, unknown>): AgentSessionContentEvent[] {
+  const message = obj.message as { content?: unknown; role?: string } | undefined;
+
+  // Expand all content blocks from this message into separate events.
+  const blocks = extractContentBlocks(message?.content, CLAUDE_MAPPING);
+  const role = message?.role ?? (obj.type as string | undefined) ?? 'unknown';
+  const timestamp = obj.timestamp as string | undefined;
   const events: AgentSessionContentEvent[] = [];
-  for (const line of tailLines) {
-    if (!line.trim()) continue;
-
-    let obj: Record<string, unknown>;
-    try {
-      obj = JSON.parse(line);
-    } catch {
-      continue;
-    }
-
-    const message = obj.message as { content?: unknown; role?: string } | undefined;
-
-    // Expand all content blocks from this message into separate events.
-    const blocks = extractContentBlocks(message?.content, CLAUDE_MAPPING);
-    const role = message?.role ?? (obj.type as string | undefined) ?? 'unknown';
-    const timestamp = obj.timestamp as string | undefined;
-    for (const block of blocks) {
-      events.push({ type: block.type, content: block.content, timestamp });
-    }
-
-    // If message has no content blocks (e.g., metadata-only lines like last-prompt),
-    // still emit an event with the raw type so users see what happened
-    if (blocks.length === 0 && message?.role) {
-      events.push({ type: role, content: `(${role} event)`, timestamp });
-    }
+  for (const block of blocks) {
+    events.push({ type: block.type, content: block.content, timestamp });
   }
-  return capEvents(events, maxEvents);
+
+  // If message has no content blocks (e.g., metadata-only lines like last-prompt),
+  // still emit an event with the raw type so users see what happened
+  if (blocks.length === 0 && message?.role) {
+    events.push({ type: role, content: `(${role} event)`, timestamp });
+  }
+  return events;
 }
 
 export function readSessionContent(
@@ -577,8 +544,7 @@ export function readSessionContent(
   // only the tail. If no user message was found (tailOffset === -1), fall
   // back to re-reading the whole file so the card still has something to
   // show.
-  const tailLines = readJsonlLinesFromOffset(filePath, scan.tailOffset >= 0 ? scan.tailOffset : 0);
-  const events = extractEventsFromTail(tailLines, maxEvents);
+  const events = scanTailEvents(filePath, scan.tailOffset, mapClaudeTailLine, maxEvents);
 
   // Use aiTitle if available, otherwise fallback to last user message.
   // Truncation is deferred to the consumer (router card building).

@@ -7,12 +7,17 @@
  *
  * 修复：spawnErr 非空时把 spawnErr.message 拼进 errorMessage。
  *
- * 这个 anchor 让 awaitSpawnError 返回一个 EMFILE 错误（非 ENOENT），断言
- * errorMessage 含真实原因文本。真红 = 当前固定文案不含 "EMFILE"。
+ * 这个 anchor 让 awaitSpawnError 返回一个 EMFILE 错误（非 ENOENT），直调
+ * spawnChild 断言 SpawnChildError 携带真实原因文本。真红 = 当前固定文案不含
+ * "EMFILE"。
+ *
+ * W1.1 备注：基类 run() 收窄后 spawn 失败的消费方是 ClaudeSession（捕获
+ * SpawnChildError → authErrorEvent），本 anchor 直调 spawnChild 钉住基类
+ * spawnChild 的错误文案语义。
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { SpawningRunner } from '../../../src/runner/common/spawning-runner.js';
-import type { AgentEvent, SpawnOptions } from '../../../src/runner/types.js';
+import type { SpawnOptions } from '../../../src/runner/types.js';
 import { PassThrough } from 'node:stream';
 import { createMockProc } from '../../../tests/lib/mock-process.js';
 
@@ -42,8 +47,9 @@ class TestRunner extends SpawningRunner {
   protected buildArgv(_opts: SpawnOptions): string[] {
     return ['--fake'];
   }
-  protected translate(_rawEvent: unknown, _ctx: unknown): AgentEvent | AgentEvent[] | null {
-    return null;
+  // Expose protected hook for testing.
+  public callSpawnChild(opts: SpawnOptions): Promise<import('node:child_process').ChildProcess> {
+    return this.spawnChild(opts);
   }
 }
 
@@ -73,20 +79,14 @@ describe('P2-13: spawn failure errorMessage includes real cause', () => {
     vi.mocked(spawn).mockReturnValue(mockProc);
 
     const runner = new TestRunner();
-    const events: AgentEvent[] = [];
-    for await (const event of runner.run('hi', { cwd: '/tmp/p2-13' })) {
-      events.push(event);
-    }
 
-    const result = events.find((e) => e.type === 'result') as
-      { subtype?: string; errorMessage?: string } | undefined;
-    expect(result).toBeDefined();
-    expect(result!.subtype).toBe('error');
     // RED today: errorMessage is the fixed "命令不可用（未找到或不可执行）..."
-    // text with NO mention of EMFILE. GREEN: errorMessage includes the real
-    // cause text ("EMFILE" / "too many open files") so the user is not
-    // misdiagnosed into reinstalling the binary when the real problem is fd
-    // exhaustion / permissions / bad cwd.
-    expect(result!.errorMessage).toMatch(/EMFILE|too many open files/);
+    // text with NO mention of EMFILE. GREEN: SpawnChildError message includes
+    // the real cause text ("EMFILE" / "too many open files") so the user is
+    // not misdiagnosed into reinstalling the binary when the real problem is
+    // fd exhaustion / permissions / bad cwd.
+    await expect(runner.callSpawnChild({ cwd: '/tmp/p2-13' })).rejects.toThrow(
+      /EMFILE|too many open files/,
+    );
   });
 });

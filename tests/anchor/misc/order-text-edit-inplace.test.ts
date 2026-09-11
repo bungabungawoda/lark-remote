@@ -17,6 +17,7 @@ import {
   createStubConnector,
   createStubRunner,
 } from '../../lib/bridge-stubs.js';
+import { expectNoV1ActionContainer } from '../../lib/card-view.js';
 
 let tmpDir: string;
 let ordersFile: string;
@@ -104,7 +105,7 @@ describe('Anchor: order.textEdit opens input card in place', () => {
     // CardKit 2.0 schema
     expect(cardStr).toContain('"schema":"2.0"');
     // 200861 — no V1 action container
-    expect(cardStr).not.toMatch(/"tag"\s*:\s*"action"[^}]*"actions"/);
+    expectNoV1ActionContainer(cardStr);
     // header title shows edit intent
     expect(lastCard.header?.title?.content).toContain('编辑指令');
     // input component pre-filled with full current text (not truncated)
@@ -158,7 +159,7 @@ describe('Anchor: order.textInput updates card in place', () => {
     expect(refreshedCardStr).not.toContain('原文本');
     // 200861 / schema sanity on the refreshed list card
     expect(refreshedCardStr).toContain('"schema":"2.0"');
-    expect(refreshedCardStr).not.toMatch(/"tag"\s*:\s*"action"[^}]*"actions"/);
+    expectNoV1ActionContainer(refreshedCardStr);
 
     // assert 2: store actually persisted new text
     orderStore.reload();

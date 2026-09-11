@@ -4,18 +4,21 @@
  * 背景（review.md P2-16）：spawning-runner 的 stderr handler 对每个 chunk
  * 都调 getLogger().error(...)。多数 agent CLI 把进度/告警/废弃提示写到
  * stderr（非真实错误），按 error 级每 chunk 记一条淹没真实错误日志、污染
- * 日志面板。错误语义已在 non-zero-exit 路径统一上报（line ~526）。
+ * 日志面板。错误语义已在 non-zero-exit 路径统一上报。
  *
  * 修复：降级为 warn（保留诊断，不污染 error 级）。
  *
- * 这个 anchor 让 fake proc 的 stderr 连发多个 chunk，断言 mockLogger.error
- * 没有为 stderr chunk 被调用（应改走 warn）。真红 = 当前实现每 chunk 一条
- * error 日志。
+ * 这个 anchor 让 mock proc 的 stderr 连发多个 chunk，直调 spawnChild 后断言
+ * mockLogger.error 没有为 stderr chunk 被调用（应改走 warn）。真红 = 当前
+ * 实现每 chunk 一条 error 日志。
+ *
+ * W1.1 备注：spawnChild 保留 stderr handler，本 anchor 直调 spawnChild 钉住
+ * 其日志级别语义。
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { Readable } from 'node:stream';
 import { SpawningRunner } from '../../../src/runner/common/spawning-runner.js';
-import type { AgentEvent, SpawnOptions } from '../../../src/runner/types.js';
+import type { SpawnOptions } from '../../../src/runner/types.js';
+import { Readable } from 'node:stream';
 import { createMockProc } from '../../../tests/lib/mock-process.js';
 
 const { mockLogger } = vi.hoisted(() => ({
@@ -25,11 +28,12 @@ vi.mock('../../../src/logger/index.js', () => ({
   getLogger: () => mockLogger,
   initLogger: () => mockLogger,
 }));
-vi.mock('node:child_process', () => ({
-  spawn: vi.fn(),
-  execFileSync: vi.fn(),
+vi.mock('../../../src/platform/spawn.js', () => ({
+  spawnProcess: vi.fn(),
+  mergeProcessEnv: vi.fn((base, overrides) => ({ ...base, ...overrides })),
+  isWindowsCommandNotFoundLine: vi.fn(() => false),
 }));
-import { spawn } from 'node:child_process';
+import { spawnProcess as spawn } from '../../../src/platform/spawn.js';
 
 class TestRunner extends SpawningRunner {
   constructor() {
@@ -43,8 +47,9 @@ class TestRunner extends SpawningRunner {
   protected buildArgv(_opts: SpawnOptions): string[] {
     return ['--fake'];
   }
-  protected translate(_rawEvent: unknown, _ctx: unknown): AgentEvent | AgentEvent[] | null {
-    return null;
+  // Expose protected hook for testing.
+  public callSpawnChild(opts: SpawnOptions): Promise<import('node:child_process').ChildProcess> {
+    return this.spawnChild(opts);
   }
 }
 
@@ -69,19 +74,13 @@ describe('P2-16: stderr is not logged at error level per chunk', () => {
       stdout,
       stderr: stderrReadable,
       kill: vi.fn(),
-      once: vi.fn((event: string, cb: (...args: unknown[]) => void) => {
-        if (event === 'close') setTimeout(() => cb(0, null), 10);
-      }),
+      once: vi.fn(),
     });
 
     vi.mocked(spawn).mockReturnValue(mockProc);
 
     const runner = new TestRunner();
-    const runPromise = runner.run('hi', { cwd: '/tmp/p2-16' });
-    // Drain the generator.
-    for await (const _ of await runPromise) {
-      void _;
-    }
+    await runner.callSpawnChild({ cwd: '/tmp/p2-16' });
 
     // Emit several stderr chunks (agent progress/warnings, not real errors).
     stderrReadable.push(Buffer.from('warning: experimental feature\n'));
@@ -99,5 +98,9 @@ describe('P2-16: stderr is not logged at error level per chunk', () => {
     // GREEN: stderr chunks are logged at warn level, NOT error. RED today:
     // each chunk produces one error-level log line.
     expect(errorCalls).toHaveLength(0);
+    const warnCalls = mockLogger.warn.mock.calls.filter((c) =>
+      String(c[0]).includes('[test-runner stderr]'),
+    );
+    expect(warnCalls.length).toBeGreaterThanOrEqual(3);
   });
 });

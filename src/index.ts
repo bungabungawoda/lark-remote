@@ -33,7 +33,12 @@ import {
   KimiSessionReader,
   DshSessionReader,
 } from './session/index.js';
-import { CommandRouter, isImmediateAction, type CardActionPayload } from './router/index.js';
+import {
+  CommandRouter,
+  isImmediateAction,
+  DIRECT_RETURN_CMDS,
+  type CardActionPayload,
+} from './router/index.js';
 import { dispatchOrderExecForQueue } from './router/order-exec-dispatch.js';
 import { buildCardActionFullValue } from './router/card-action-payload.js';
 import { Bridge } from './bridge/index.js';
@@ -191,13 +196,16 @@ function initializeRunner(
 } {
   const agentRegistry = new AgentRegistry();
 
+  // W2.10 单点化：runner factory 取最新 config 的唯一入口（P1-15 语义保持，
+  // container 未接线时回退启动快照）。
+  const latest = (): AppConfig =>
+    (agentRegistry.getConfigContainer()?.current as AppConfig) ?? config;
+
   // P1-15: Claude factory reads from configContainer (not closure) so runtime
   // config changes (model, effort, stopGraceMs) take effect after
   // bridge.setConfig() + clearRunners(). Same pattern as codex/pi/kimi.
   agentRegistry.register('claude', (ws) => {
-    const container = agentRegistry.getConfigContainer();
-    const latestConfig = (container?.current as AppConfig) ?? config;
-    const claudeConfig = latestConfig.claude;
+    const claudeConfig = latest().claude;
     return new ClaudeRunner({
       model: claudeConfig.model,
       effort: claudeConfig.effort,
@@ -217,9 +225,7 @@ function initializeRunner(
   // + clearRunners().
   const codexSessionReader = new CodexSessionReader({ codexHome: process.env.CODEX_HOME });
   agentRegistry.register('codex', (_ws: string) => {
-    const container = agentRegistry.getConfigContainer();
-    const latestConfig = (container?.current as AppConfig) ?? config;
-    const codexConfig = getAgentConfig(latestConfig, 'codex');
+    const codexConfig = getAgentConfig(latest(), 'codex');
     return new CodexAppServerRunner({
       kind: 'codex',
       model: codexConfig?.model,
@@ -250,10 +256,7 @@ function initializeRunner(
   const opencodeSessionReader = new OpencodeSessionReader();
 
   agentRegistry.register('opencode', (_ws: string) => {
-    // Get latest config from container (set below for pi)
-    const container = agentRegistry.getConfigContainer();
-    const latestConfig = (container?.current as AppConfig) ?? config;
-    const ocConfig = getAgentConfig(latestConfig, 'opencode');
+    const ocConfig = getAgentConfig(latest(), 'opencode');
 
     // Build model string with validation: provider/model format
     let model: string | undefined;
@@ -284,10 +287,7 @@ function initializeRunner(
   agentRegistry.setConfigContainer(configContainer);
   const piSessionReader = new PiSessionReader();
   agentRegistry.register('pi', (ws: string) => {
-    // 每次 factory 调用时从 registry 获取最新 config
-    const container = agentRegistry.getConfigContainer();
-    const latestConfig = (container?.current as AppConfig) ?? config;
-    const piConf = getAgentConfig(latestConfig, 'pi');
+    const piConf = getAgentConfig(latest(), 'pi');
     return new PiRpcRunner({
       provider: piConf?.provider ?? 'Volcano',
       model: piConf?.model ?? 'glm-5.2',
@@ -305,10 +305,7 @@ function initializeRunner(
   // Register KimiAcpRunner (pure ACP mode) and KimiSessionReader
   const kimiSessionReader = new KimiSessionReader();
   agentRegistry.register('kimi', (_ws: string) => {
-    // 每次 factory 调用时从 registry 获取最新 config
-    const container = agentRegistry.getConfigContainer();
-    const latestConfig = (container?.current as AppConfig) ?? config;
-    const kimiConf = getAgentConfig(latestConfig, 'kimi');
+    const kimiConf = getAgentConfig(latest(), 'kimi');
 
     const acpConf = kimiConf?.acp;
     return new KimiAcpRunner({
@@ -331,18 +328,10 @@ function initializeRunner(
   const dshSessionReader = new DshSessionReader({
     // hostProvider 每次调用读最新 config：/config 修改 host 后 runner 重建为
     // 新 host，reader（/resume、用量、完成卡）也跟随新 host（CC-02）。
-    hostProvider: () => {
-      const container = agentRegistry.getConfigContainer();
-      const latestConfig = (container?.current as AppConfig) ?? config;
-      return getAgentConfig(latestConfig, 'dsh')?.host;
-    },
+    hostProvider: () => getAgentConfig(latest(), 'dsh')?.host,
   });
   agentRegistry.register('dsh', (_ws: string) => {
-    // Read latest config from container so /config host changes take effect
-    // after bridge.setConfig() + clearRunners().
-    const container = agentRegistry.getConfigContainer();
-    const latestConfig = (container?.current as AppConfig) ?? config;
-    const dshConf = getAgentConfig(latestConfig, 'dsh');
+    const dshConf = getAgentConfig(latest(), 'dsh');
     return new DshRunner({
       kind: 'dsh',
       sessionReader: dshSessionReader,
@@ -674,20 +663,9 @@ function setupMessageHandlers(
     // order.aliasInput / order.aliasRemove / order.textInput 也返回 toast+card，
     // 需直返避免被吞（order.textInput 曾漏在列表外，编辑卡停留在编辑界面）。
     // approval.planFeedback 同 answer 系列：附意见的 toast 需直返 + 不落串行队列。
-    if (
-      actionValue.cmd === 'queue.input' ||
-      actionValue.cmd === 'order.aliasInput' ||
-      actionValue.cmd === 'order.aliasRemove' ||
-      actionValue.cmd === 'order.textInput' ||
-      actionValue.cmd === 'config.save' ||
-      actionValue.cmd === 'approval.respond' ||
-      actionValue.cmd === 'approval.toggle' ||
-      actionValue.cmd === 'approval.answer' ||
-      actionValue.cmd === 'approval.answerSubmit' ||
-      actionValue.cmd === 'approval.answerCustom' ||
-      actionValue.cmd === 'approval.answerNote' ||
-      actionValue.cmd === 'approval.planFeedback'
-    ) {
+    // W2.1：直返名单以 router 的 DIRECT_RETURN_CMDS 为单一来源（历史注释：
+    // order.textInput 曾漏在列表外、answer 家族曾漏在直返列表外——两份拷贝漂移）。
+    if (DIRECT_RETURN_CMDS.has(actionValue.cmd)) {
       return router.handleCardAction(fullValue, { userId, chatId, messageId });
     }
 

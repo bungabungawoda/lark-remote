@@ -119,19 +119,14 @@ describe('win32 shell 后端', () => {
 });
 
 describe('createShellBackend — 平台分发', () => {
+  // W3.7：spawn 行为已在上方 posix/win32 后端 describe 覆盖，分发层只钉 kind。
   it('posix → bash 后端', () => {
-    const backend = createShellBackend({ platform: 'linux' });
-    expect(backend.kind).toBe('bash');
-    backend.spawn('pwd', { cwd: '/home/user' });
-    expect(spawnCall()).toMatchObject({ file: 'bash', args: ['-c', 'pwd'] });
+    expect(createShellBackend({ platform: 'linux' }).kind).toBe('bash');
   });
 
   it('win32 → 默认 Git Bash 后端', () => {
     const dir = mkdtemp();
     fs.writeFileSync(path.join(dir, 'bash.exe'), 'MZ');
-    const backend = createShellBackend({ platform: 'win32', pathEnv: dir });
-    expect(backend.kind).toBe('bash');
-    backend.spawn('pwd', { cwd: 'C:\\tmp' });
-    expect(spawnCall()).toMatchObject({ args: ['-c', 'pwd'] });
+    expect(createShellBackend({ platform: 'win32', pathEnv: dir }).kind).toBe('bash');
   });
 });

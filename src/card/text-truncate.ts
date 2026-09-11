@@ -28,16 +28,6 @@ export const FEISHU_MAX_TABLES = 5;
 export const CARD_BUDGET_BYTES = 28_000;
 
 /**
- * Max byte budget for a single session `tool_result` event's content when
- * replaying an opencode session (L2 pre-fold). The static card budget enforcer
- * (`enforceCardBudget`, maxPanelContentBytes = 2000) would truncate it again at
- * render time anyway; pre-folding here bounds the in-memory `events[]` array
- * and the intermediate card JSON so a single pathological tool_result (e.g. a
- * 500KB file listing) never inflates the replay payload to megabytes.
- */
-export const TOOL_RESULT_MAX_BYTES = 4000;
-
-/**
  * Count the number of markdown tables in a string.
  *
  * A markdown table is identified by a separator line matching `/^\|[-: |]+\$/m`
