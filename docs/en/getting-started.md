@@ -22,7 +22,7 @@ lark-remote is the "messenger" between Feishu and Claude Code.
 
 ## 1. What You Need to Prepare
 
-> Only macOS / Linux are supported. **Windows is not supported yet.**
+> macOS / Linux / Windows 10+ are supported.
 
 | Tool | What It Is | How to Install |
 |------|-----------|----------------|
