@@ -14,6 +14,7 @@ import { sleep } from '../common/sleep.js';
 import axios from 'axios';
 import fs from 'node:fs';
 import { silentlyUnlink } from '../common/fs.js';
+import { displayName } from '../platform/path.js';
 import https from 'node:https';
 import os from 'node:os';
 import path from 'node:path';
@@ -559,7 +560,7 @@ export class FeishuConnector {
       );
     }
 
-    const fileName = filePath.split('/').pop() ?? 'file';
+    const fileName = displayName(filePath);
 
     // P2-18: capture the read stream so it can be destroyed on any failure
     // path. Without this, a token/upload/send failure leaks the fd (axios

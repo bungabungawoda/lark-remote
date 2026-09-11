@@ -29,8 +29,8 @@ import {
 } from '../../../src/restart.js';
 
 const spawnMock = vi.hoisted(() => vi.fn());
-vi.mock('node:child_process', () => ({
-  spawn: spawnMock,
+vi.mock('../../../src/platform/spawn.js', () => ({
+  spawnProcess: spawnMock,
 }));
 
 function buildRouter(

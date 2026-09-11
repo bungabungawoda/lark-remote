@@ -13,11 +13,12 @@
  *   session-wide usage accumulation (assistant/message.usage).
  */
 
-import { spawnSync } from 'node:child_process';
+import { spawnProcessSync } from '../../platform/spawn.js';
 import { cumulativeUsageFields } from '../common/usage-accumulator.js';
 import { sortByRecencyDesc } from '../common/recency.js';
 import { getLogger } from '../../logger/index.js';
 import { DEFAULT_DSH_HOST } from '../../config/index.js';
+import { samePath } from '../../platform/path.js';
 import type {
   AgentSession,
   AgentSessionReader,
@@ -59,7 +60,7 @@ function defaultSyncRequest(baseUrl: string, method: string, payload: unknown): 
     method,
     payload,
   });
-  const res = spawnSync(
+  const res = spawnProcessSync(
     'curl',
     [
       '-s',
@@ -78,7 +79,7 @@ function defaultSyncRequest(baseUrl: string, method: string, payload: unknown): 
   }
   let parsed: { result?: { ok?: boolean; value?: unknown; error?: { message?: string } } };
   try {
-    parsed = JSON.parse(res.stdout) as typeof parsed;
+    parsed = JSON.parse(String(res.stdout)) as typeof parsed;
   } catch (err) {
     throw new Error(`DSH ${method} returned non-JSON: ${(err as Error).message}`, {
       cause: err,
@@ -118,7 +119,7 @@ export class DshSessionReader implements AgentSessionReader {
       const value = this.unary('session.list', {}) as DshSessionListValue;
       const items = value.items ?? [];
       const filtered = items
-        .filter((i) => i.cwd === cwd)
+        .filter((i) => i.cwd !== undefined && samePath(i.cwd, cwd))
         .map((i) => ({
           sessionId: String(i.sessionId),
           summary: '',
@@ -222,7 +223,7 @@ export class DshSessionReader implements AgentSessionReader {
     try {
       const value = this.unary('session.list', {}) as DshSessionListValue;
       const found = (value.items ?? []).find(
-        (i) => String(i.sessionId) === sessionId && i.cwd === cwd,
+        (i) => String(i.sessionId) === sessionId && i.cwd !== undefined && samePath(i.cwd, cwd),
       );
       return found?.running === true;
     } catch (error) {
