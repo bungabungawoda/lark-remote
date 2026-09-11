@@ -174,4 +174,125 @@ describe('PiRpcTranslator', () => {
       errorMessage: 'Nothing to compact (session too small)',
     });
   });
+
+  // =========================================================================
+  // 信息保真 C3.4：compaction 通知 / reasoning token / toolcall 占位
+  // =========================================================================
+
+  it('test_anchor_compaction_start_produces_info_notice_with_reason', () => {
+    const t = new PiRpcTranslator();
+    const events = t.handleEvent({ type: 'compaction_start', reason: 'placeholder' });
+    expect(events).toHaveLength(1);
+    const notice = events[0] as { type: string; level: string; code?: string; text: string };
+    expect(notice.type).toBe('notice');
+    expect(notice.level).toBe('info');
+    expect(notice.code).toBe('compaction');
+    expect(notice.text).toContain('placeholder');
+  });
+
+  it('test_anchor_compaction_end_aborted_produces_warn_notice', () => {
+    const t = new PiRpcTranslator();
+    const events = t.handleEvent({
+      type: 'compaction_end',
+      aborted: true,
+      errorMessage: 'placeholder',
+    });
+    expect(events).toHaveLength(1);
+    const notice = events[0] as { type: string; level: string; code?: string; text: string };
+    expect(notice.type).toBe('notice');
+    expect(notice.level).toBe('warn');
+    expect(notice.code).toBe('compaction');
+    expect(notice.text).toContain('placeholder');
+  });
+
+  it('test_anchor_compaction_end_success_produces_info_notice', () => {
+    const t = new PiRpcTranslator();
+    const events = t.handleEvent({ type: 'compaction_end', aborted: false });
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({ type: 'notice', level: 'info' });
+  });
+
+  it('test_anchor_accumulates_reasoning_tokens_into_result_usage', () => {
+    const t = new PiRpcTranslator();
+    t.setSessionId('aaaaaaaa-1111-2222-3333-444444444444');
+    t.handleEvent({
+      type: 'message_end',
+      message: {
+        role: 'assistant',
+        content: [{ type: 'text', text: 'a' }],
+        usage: { input: 100, output: 20, reasoning: 50 },
+      },
+    });
+    t.handleEvent({
+      type: 'message_end',
+      message: {
+        role: 'assistant',
+        content: [{ type: 'text', text: 'b' }],
+        usage: { input: 50, output: 10, reasoning: 50 },
+      },
+    });
+    const result = t.produceResultFromSettled();
+    expect(result).toMatchObject({
+      type: 'result',
+      usage: { input_tokens: 150, reasoning_tokens: 100 },
+    });
+  });
+
+  it('test_anchor_toolcall_start_emits_no_tool_use_placeholder', () => {
+    const t = new PiRpcTranslator();
+    t.setSessionId('aaaaaaaa-1111-2222-3333-444444444444');
+    t.handleEvent({ type: 'message_start', message: { role: 'assistant', content: [] } });
+    const startEvents = t.handleEvent(update('toolcall_start'));
+    // toolcall_start 不再发空壳 tool_use（占位被工具块首见前的空 name 渲染）。
+    expect(startEvents).toEqual([]);
+
+    const endEvents = t.handleEvent(
+      update('toolcall_end', {
+        toolCall: { id: 'tool-1', name: 'Bash', arguments: { command: 'ls' } },
+      }),
+    );
+    expect(endEvents).toEqual([]);
+    const end = t.handleEvent({
+      type: 'message_end',
+      message: { role: 'assistant', content: [] },
+    });
+    expect(end).toHaveLength(1);
+    const content = (
+      end[0] as {
+        message: { content: Array<{ type: string; id: string; name: string; input: unknown }> };
+      }
+    ).message.content;
+    expect(content).toHaveLength(1);
+    expect(content[0]).toMatchObject({
+      type: 'tool_use',
+      id: 'tool-1',
+      name: 'Bash',
+      input: { command: 'ls' },
+    });
+  });
+
+  it('test_anchor_message_end_resets_pending_tool_call', () => {
+    // 防御：toolcall_start 后若永无 toolcall_end（异常流），message_end 必须
+    // 复位 pending 状态——否则下一条 assistant 消息的 toolcall_end 会凭空
+    // 补发一个无 start 的 tool_use。
+    const t = new PiRpcTranslator();
+    t.setSessionId('aaaaaaaa-1111-2222-3333-444444444444');
+    t.handleEvent({ type: 'message_start', message: { role: 'assistant', content: [] } });
+    t.handleEvent(update('toolcall_start'));
+    t.handleEvent({ type: 'message_end', message: { role: 'assistant', content: [] } });
+
+    // 下一条消息：未 start 直接 end → 不应产出 tool_use
+    t.handleEvent({ type: 'message_start', message: { role: 'assistant', content: [] } });
+    t.handleEvent(
+      update('toolcall_end', {
+        toolCall: { id: 'tool-orphan', name: 'Bash', arguments: { command: 'ls' } },
+      }),
+    );
+    const end = t.handleEvent({
+      type: 'message_end',
+      message: { role: 'assistant', content: [] },
+    });
+    const content = (end[0] as { message: { content: Array<{ type: string }> } }).message.content;
+    expect(content.filter((c) => c.type === 'tool_use')).toHaveLength(0);
+  });
 });
