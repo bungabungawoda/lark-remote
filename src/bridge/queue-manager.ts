@@ -1,4 +1,5 @@
 import { getLogger } from '../logger/index.js';
+import { displayName } from '../platform/path.js';
 import type { AgentKind } from '../runner/types.js';
 
 /**
@@ -530,7 +531,7 @@ export class QueueManager {
     messageId: string,
     messagePreview?: string,
   ): object[] {
-    const workspaceName = workspace.split('/').pop() ?? workspace;
+    const workspaceName = displayName(workspace);
     const isRunning = this.isWorkspaceRunning(workspace);
     const elements: object[] = [
       {
@@ -639,7 +640,7 @@ export class QueueManager {
       return;
     }
 
-    const workspaceName = workspace.split('/').pop() ?? workspace;
+    const workspaceName = displayName(workspace);
 
     try {
       // Prefer the live preview: an edited task's messagePreview is updated in
@@ -722,7 +723,7 @@ export class QueueManager {
       return;
     }
 
-    const workspaceName = workspace.split('/').pop() ?? workspace;
+    const workspaceName = displayName(workspace);
     const card = {
       schema: '2.0',
       config: { wide_screen_mode: true },

@@ -140,6 +140,9 @@
     "src/order/**/*.test.ts",
     "tests/misc/order.test.ts"
   ],
+  "infra-platform": [
+    "src/platform/**/*.test.ts"
+  ],
   "infra-misc": [
     "src/integration.test.ts",
     "src/cli.test.ts",
@@ -147,6 +150,7 @@
     "src/startup-contact.test.ts",
     "src/binder.test.ts",
     "src/error-classification.test.ts",
+    "src/common/fs.test.ts",
     "src/common/guards.test.ts",
     "src/common/ttl-cache.test.ts",
     "src/workspace/workspace.test.ts",

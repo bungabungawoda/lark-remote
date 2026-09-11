@@ -97,6 +97,7 @@ interface OpencodeExportData {
 }
 
 import { STALE_MS } from '../common/constants.js';
+import { samePath } from '../../platform/path.js';
 import { paginate, capEvents } from '../common/pagination.js';
 import { sortByRecencyDesc } from '../common/recency.js';
 import { TtlCache } from '../../common/ttl-cache.js';
@@ -129,7 +130,7 @@ export class OpencodeSessionReader implements AgentSessionReader {
     const entries = this.fetchSessionList(realCwd);
 
     // Filter by directory === realpath(cwd)
-    const filtered = entries.filter((e) => e.directory === realCwd);
+    const filtered = entries.filter((e) => samePath(e.directory, realCwd));
 
     // Sort by updated descending; same-updated ties use id as a deterministic
     // secondary key so CLI/list-cache rebuilds never reorder the page.
@@ -387,7 +388,7 @@ export class OpencodeSessionReader implements AgentSessionReader {
 
     try {
       const entries = this.fetchSessionList(realCwd);
-      const entry = entries.find((e) => e.id === sessionId && e.directory === realCwd);
+      const entry = entries.find((e) => e.id === sessionId && samePath(e.directory, realCwd));
       if (!entry) return false;
 
       // Check if updated within STALE_MS
