@@ -1,14 +1,6 @@
 import type { AgentEvent } from '../types.js';
 
 /**
- * Return the stdio config ['pipe','pipe','pipe'] used by the runner that
- * writes the prompt to the child's stdin (claude).
- */
-export function pipeAllStdio(): ('ignore' | 'pipe')[] {
-  return ['pipe', 'pipe', 'pipe'];
-}
-
-/**
  * Build a synthetic system.init event for pre-spawn failure paths.
  *
  * When the runner exits before spawning a process (e.g. ENOENT spawn failure),

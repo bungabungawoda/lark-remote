@@ -226,12 +226,6 @@ const IdleConfigSchema = z.object({
   watchdogMinutes: z.number().int().min(0).default(DEFAULTS.IDLE_WATCHDOG_MINUTES),
 });
 
-const OutputConfigSchema = z.object({
-  showThinking: z.boolean().default(true),
-  showToolUse: z.boolean().default(true),
-  showToolResult: z.boolean().default(true),
-});
-
 const LoggingConfigSchema = z.object({
   level: z.enum(['debug', 'info', 'warn', 'error']).default('info'),
 });
@@ -284,7 +278,6 @@ export const AppConfigSchema = z.object({
   /** Agent-specific saved choices for quick switching. */
   agentChoices: AgentChoicesSchema.optional(),
   idle: IdleConfigSchema.default(IdleConfigSchema.parse({})),
-  output: OutputConfigSchema.default(OutputConfigSchema.parse({})),
   logging: LoggingConfigSchema.default(LoggingConfigSchema.parse({})),
   /** 入站媒体（图片/文件）落盘配置。 */
   inboundMedia: InboundMediaConfigSchema.default(InboundMediaConfigSchema.parse({})),
@@ -310,11 +303,6 @@ claude:
 
 idle:
   watchdogMinutes: ${DEFAULTS.IDLE_WATCHDOG_MINUTES}
-
-output:
-  showThinking: true
-  showToolUse: true
-  showToolResult: true
 
 logging:
   level: info

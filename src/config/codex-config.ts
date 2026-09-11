@@ -243,6 +243,7 @@ export function getCodexCatalogModels(codexHome?: string): BundledModelInfo[] {
       maxBuffer: 4 * 1024 * 1024,
       env: process.env,
       stdio: ['ignore', 'pipe', 'ignore'],
+      windowsHide: true, // codex 是 npm .cmd 垫片：不隐藏会闪 cmd.exe 控制台
     });
     const models = parseCodexModelsOutput(stdout);
     catalogCache = { key, models, ts: now, failed: models.length === 0 };
@@ -360,6 +361,7 @@ function execFileAsync(file: string, args: string[]): Promise<string> {
         timeout: 8_000,
         maxBuffer: 4 * 1024 * 1024,
         env: process.env,
+        windowsHide: true,
       },
       (err: Error | null, stdout: string) => {
         if (err) reject(err);

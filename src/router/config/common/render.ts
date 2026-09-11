@@ -2,7 +2,7 @@
  * Shared config card rendering logic.
  *
  * Builds CardKit 2.0 elements for config fields (boolean toggle, select dropdown, input).
- * Used by all agent config builders and the shared tabs (idle, output, logging).
+ * Used by all agent config builders and the shared tabs (idle, logging).
  */
 
 import { getConfigValue, type AppConfig } from '../../../config/index.js';

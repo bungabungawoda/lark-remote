@@ -118,6 +118,12 @@ export class InstanceLock {
         this.release();
         process.exit(129);
       });
+    } else {
+      // win32 无 SIGHUP；CTRL_BREAK 退出前也要释放锁（§3.5，对照 cli.ts 信号转发）
+      process.on('SIGBREAK', () => {
+        this.release();
+        process.exit(149);
+      });
     }
   }
 

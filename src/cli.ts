@@ -23,7 +23,7 @@ export function decideRuntime(isBun: boolean, probe: BunProbe): RuntimeChoice {
 /** Check whether `bun` is present and runs `--version` successfully. */
 function probeBun(): BunProbe {
   try {
-    const res = spawnSync('bun', ['--version'], { stdio: 'ignore' });
+    const res = spawnSync('bun', ['--version'], { stdio: 'ignore', windowsHide: true });
     return { error: res.error !== undefined, status: res.status };
   } catch {
     return { error: true, status: null };
@@ -116,7 +116,7 @@ function main(): void {
     isBun: (process as NodeJS.Process & { isBun?: boolean }).isBun ?? false,
     probe: probeBun(),
     importEntry: () => import(entryUrl.href),
-    spawnBun: (e, a) => spawn('bun', [e, ...a], { stdio: 'inherit' }),
+    spawnBun: (e, a) => spawn('bun', [e, ...a], { stdio: 'inherit', windowsHide: true }),
     onSignal: (sig, handler) => process.on(sig, handler),
     offSignal: (sig, handler) => process.off(sig, handler),
     killSelf: (sig) => process.kill(process.pid, sig),

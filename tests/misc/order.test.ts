@@ -10,6 +10,7 @@ import type { AppConfig } from '../../src/config/index.js';
 import type { Runner } from '../../src/runner/index.js';
 import { AppConfigSchema } from '../../src/config/index.js';
 import { SessionReaderRegistry } from '../../src/session/registry.js';
+import { expectNoV1ActionContainer } from '../lib/card-view.js';
 
 let tmpDir: string;
 let ordersFile: string;
@@ -72,11 +73,6 @@ describe('cmdOrder 列表命令 (Anchor #2)', () => {
         stopGraceMs: 5000,
       },
       workspace: { default: '' },
-      output: {
-        showThinking: true,
-        showToolUse: false,
-        showToolResult: false,
-      },
     });
   });
 
@@ -131,7 +127,7 @@ describe('cmdOrder 列表命令 (Anchor #2)', () => {
     const cardStr = JSON.stringify(r.card);
     expect(cardStr).toContain('"schema":"2.0"');
     // 2.0 cards MUST NOT mix in 1.x `tag:"action"` containers (200861 root cause).
-    expect(cardStr).not.toMatch(/"tag"\s*:\s*"action"[^}]*"actions"/);
+    expectNoV1ActionContainer(cardStr);
     // order callbacks use 2.0 behaviors
     expect(cardStr).toContain('"cmd":"order.');
   });

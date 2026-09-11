@@ -163,11 +163,6 @@ function buildCodexConfig(model: string = 'gpt-5.2'): AppConfig {
         stopGraceMs: 5000,
       },
     },
-    output: {
-      showThinking: true,
-      showToolUse: true,
-      showToolResult: true,
-    },
     idle: { watchdogMinutes: 15 },
     logging: { level: 'info' },
   });
@@ -297,7 +292,7 @@ describe('codex config card custom model input - ANCHOR', () => {
       [
         'model = "deepseek-v4-flash"',
         'model_provider = "deepseek"',
-        `model_catalog_json = "${path.join(catalogHome, 'models.json')}"`,
+        `model_catalog_json = "${path.join(catalogHome, 'models.json').replaceAll('\\', '/')}"`,
         '',
         '[model_providers.deepseek]',
         'name = "deepseek"',

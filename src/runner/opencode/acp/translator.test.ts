@@ -166,14 +166,11 @@ describe('OpencodeAcpTranslator', () => {
     expect(c.is_error).toBe(true);
   });
 
-  it('discards control-plane updates (available_commands_update etc.)', () => {
+  it('discards control-plane updates (available_commands_update / config_option_update)', () => {
     const t = new OpencodeAcpTranslator();
     for (const kind of [
       SessionEventType.AVAILABLE_COMMANDS_UPDATE,
-      SessionEventType.SESSION_INFO_UPDATE,
-      SessionEventType.CURRENT_MODE_UPDATE,
       SessionEventType.CONFIG_OPTION_UPDATE,
-      SessionEventType.PLAN,
     ]) {
       expect(
         t.handleNotification(
@@ -182,6 +179,21 @@ describe('OpencodeAcpTranslator', () => {
         ),
       ).toEqual([]);
     }
+  });
+
+  it('maps plan update to a plan event via the shared base handler (信息保真 C3)', () => {
+    const t = new OpencodeAcpTranslator();
+    const events = t.handleNotification(
+      NotificationMethod.SESSION_UPDATE,
+      sessionUpdate(SESSION_ID, {
+        sessionUpdate: SessionEventType.PLAN,
+        entries: [{ content: 'step one', priority: 'medium', status: 'in_progress' }],
+      }),
+    );
+    expect(events).toHaveLength(1);
+    const plan = events[0] as { type: string; plan: string };
+    expect(plan.type).toBe('plan');
+    expect(plan.plan).toContain('🔄 step one');
   });
 
   it('folds usage_update into the result event (context occupancy + cost)', () => {

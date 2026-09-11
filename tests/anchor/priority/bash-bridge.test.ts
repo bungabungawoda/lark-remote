@@ -69,7 +69,6 @@ function makeConfig(): AppConfig {
       },
     },
     idle: { watchdogMinutes: 15 },
-    output: { showThinking: true, showToolUse: true, showToolResult: true },
     logging: { level: 'info' },
   });
 }

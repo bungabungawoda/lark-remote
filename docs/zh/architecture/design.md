@@ -265,7 +265,8 @@ Claude 对话输出由 `RunState` 和 `renderRunCard` 构造成 CardKit 2.0 卡�
 - thinking、text、tool use/result 按 JSONL 顺序 reduce，并保留事件 `timestamp`；
 - live `stream-json` 事件缺 timestamp 时，`createJSONLStream` 以事件到达时间补齐；
 - 卡片时间戳统一按本地时间 `YYYY-MM-DD HH:mm` 展示；
-- `showThinking`、`showToolUse`、`showToolResult` 继续控制可见内容；
+- thinking / text / tool use / tool result 恒常展示（原 `output.show*` 开关已移除，
+  卡片不再提供「显示思考/工具」配置）；
 - 长内容使用滚动窗口、截断、工具折叠、`collapsible_panel` 视觉折叠和 UTF-8 字节预算；
 - 卡片是有损进度摘要，当前不持久化完整 transcript；
 - SDK 对 patch 使用 throttle 和 FIFO UpdateQueue；
@@ -317,11 +318,6 @@ agents:
     model: ''                    # 留空 = 跟随服务端默认
     reasoningEffort: ''          # 留空 = 跟随服务端默认
 
-output:
-  showThinking: true
-  showToolUse: true
-  showToolResult: true
-
 logging:
   level: info             # debug | info | warn | error
 
@@ -333,6 +329,13 @@ idle:
 走扫码创建向导（`src/config/wizard.ts`，调用 `@larksuite/channel` 的 `registerApp`），
 终端打印二维码，用户用飞书 App 扫码创建应用，返回的 `client_id`/`client_secret`
 写回配置文件后继续启动；非交互环境（无 TTY）落到 `loadConfig` 生成模板并退出。
+
+二维码渲染见 `src/config/qr.ts`：符号从同一模块矩阵出两种渲染——
+全块（每模块两个 `█`，Windows 安全）与半块（每文本行两个 QR 行，紧凑）。
+Windows 只用全块（半块的 `▀`/`▄` 在 Windows 控制台字体下常渲染错位导致扫不出来）；
+POSIX 在全块放不下时回退半块。两种渲染都带 QR 规范要求的 4 模块静区
+（旧实现用 `qrcode-terminal` 半块且无静区）。终端放不下完整符号时（或 Windows 下）
+向导把符号写成 `<configDir>/qr-code.gif` 并打印路径，扫码结束/退出时清理。
 
 `codex.appServer` 与审批/沙箱字段的完整语义见
 [`docs/zh/guides/codex-config.md`](../guides/codex-config.md)。
@@ -456,10 +459,11 @@ this.sessionStore.setCwd(ctx.userId, canonical);
 全相同 → 第二次点击被 seenCache 当重复丢弃，handler 不执行。
 
 **原地更新卡片的高危场景**：`updateCardInPlace` 不发新卡，用户始终在同一张卡上操作。
-config 卡片的 toggle 按钮（`{cmd:'config.toggle', key: field.key}`）callback value 固定，
-用户连点两次（如"显示工具结果" on→off→on）时：
-- 第一次：eventId 不在缓存 → toggle 生效 → 卡片变"已关闭" → finally 把 eventId 加入 seenCache
-- 第二次（TTL 内）：eventId 已在缓存 → **drop duplicate action** → toggle 没执行 → 卡片卡在"已关闭"
+固定 value 的回调按钮（如 config 卡片 toggle、run 卡操作按钮）callback value 不变，
+用户连点两次同一按钮时：
+- 第一次：eventId 不在缓存 → 回调执行 → finally 把 eventId 加入 seenCache
+- 第二次（TTL 内）：eventId 已在缓存 → **drop duplicate action** → 回调没执行，
+  状态卡在第一次的结果（如 toggle 类按钮停留在"已关闭"）
 
 `configActionQueue`（`src/router/index.ts`）的串行化救不了——被 drop 的事件根本没到 router。
 

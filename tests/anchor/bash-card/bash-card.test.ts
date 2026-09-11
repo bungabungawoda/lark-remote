@@ -13,41 +13,28 @@ import { describe, expect, it, vi } from 'vitest';
 import type { CardStreamController } from '@larksuite/channel';
 import { BashCardSession } from '../../../src/card/bash-card-session.js';
 import * as cardBudget from '../../../src/card/card-budget.js';
+import { makeStreamCardConnector } from '../../../tests/lib/card-stubs.js';
 import { renderBashCard, type BashState } from '../../../src/card/bash-renderer.js';
 
 // ---------------------------------------------------------------------------
 // Shared helpers
 // ---------------------------------------------------------------------------
 
-function makeController(capture: { updates: object[] }): CardStreamController {
-  return {
-    messageId: 'card-1',
-    current: {},
-    update: async (card) => {
-      capture.updates.push(typeof card === 'function' ? card({}) : card);
-    },
-  };
-}
-
-function makeConnector(controller: CardStreamController, options?: { throwOnComplete?: boolean }) {
-  return {
-    streamCard: async (
-      _chatId: string,
-      _initial: object,
-      producer: (ctrl: CardStreamController) => Promise<void>,
-    ) => {
-      await producer(controller);
-      if (options?.throwOnComplete) {
-        throw new Error('complete failed');
-      }
-      return 'card-1';
-    },
-    updateCard: async (_messageId?: string, _card?: object) => {
-      if (options?.throwOnComplete) {
-        // Store updates for settle fallback verification
-      }
-    },
-  };
+/**
+ * W3.2：共享工厂的组合封装（原先与 src/card/bash-card-session.test.ts 逐字符
+ * 同构的本地 stub 副本迁到 tests/lib/card-stubs）。
+ */
+function makeBashTestConnector(
+  opts: { capture?: { updates: object[] }; throwOnComplete?: boolean } = {},
+) {
+  return makeStreamCardConnector({
+    controllerUpdate: opts.capture
+      ? (card) => {
+          opts.capture.updates.push(typeof card === 'function' ? card({}) : card);
+        }
+      : undefined,
+    streamCardThrowsAfterProducer: opts.throwOnComplete ? new Error('complete failed') : undefined,
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -89,8 +76,7 @@ describe('BashCardSession explicit budget protection contract (anchor)', () => {
     // （bash 卡跳过静态裁剪层，靠自身 degraded/extreme fallback）。
     const spy = vi.spyOn(cardBudget, 'enforceCardBudget');
     const capture = { updates: [] as object[] };
-    const controller = makeController(capture);
-    const connector = makeConnector(controller);
+    const { connector } = makeBashTestConnector({ capture });
 
     const session = new BashCardSession({
       connector,

@@ -339,12 +339,24 @@ export function writeScenario(
     }),
   );
 
-  const wrapper = join(tmpDir, 'acp-server.sh');
-  writeFileSync(
-    wrapper,
-    `#!/bin/sh\nexec "${process.execPath}" "${serverScript}" "${configPath}"\n`,
-  );
-  chmodSync(wrapper, 0o755);
+  // win32：`#!/bin/sh` wrapper 要经 Git Bash 启动（bash.exe 初始化 + node
+  // 共 5s+，吃穿默认 5s testTimeout）；`.cmd` 垫片直启 node（cmd.exe + node
+  // ~1s）。posix 语义不变（design windows-support §9.1：fixture 不用 sh wrapper）。
+  let wrapper: string;
+  if (process.platform === 'win32') {
+    wrapper = join(tmpDir, 'acp-server.cmd');
+    writeFileSync(
+      wrapper,
+      `@echo off\r\n"${process.execPath}" "${serverScript}" "${configPath}" %*\r\n`,
+    );
+  } else {
+    wrapper = join(tmpDir, 'acp-server.sh');
+    writeFileSync(
+      wrapper,
+      `#!/bin/sh\nexec "${process.execPath}" "${serverScript}" "${configPath}" "$@"\n`,
+    );
+    chmodSync(wrapper, 0o755);
+  }
 
   return { wrapper, workspace };
 }

@@ -12,14 +12,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import {
-  appendFileSync,
-  existsSync,
-  mkdtempSync,
-  readFileSync,
-  rmSync,
-  writeFileSync,
-} from 'node:fs';
+import { appendFileSync, existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { AgentEvent } from '../../types.js';
@@ -32,6 +25,7 @@ import {
 } from '../../../../tests/lib/mock-acp-server.js';
 import { createStubSessionReader } from '../../../../tests/lib/bridge-stubs.js';
 import { waitFor } from '../../../../tests/lib/wait-for.js';
+import { rmRf } from '../../../../tests/lib/tmp-cleanup.js';
 
 const SESSION_ID = 'aaaaaaaa-1111-2222-3333-444444444444';
 
@@ -68,7 +62,7 @@ describe('OpencodeAcpRunner', () => {
   });
 
   afterEach(() => {
-    rmSync(tmpDir, { recursive: true, force: true });
+    rmRf(tmpDir);
   });
 
   it('runs a full turn: streaming text deltas on the assistant channel + success result + usage folded', async () => {
