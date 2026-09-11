@@ -96,7 +96,6 @@ beforeEach(() => {
       model: 'opus',
       stopGraceMs: 5000,
     },
-    output: { showThinking: true, showToolUse: false, showToolResult: false },
   });
 });
 
@@ -1042,7 +1041,6 @@ describe('Bridge.syncActiveApprovalModes (§P5 hot push)', () => {
         claude: { model: 'opus', stopGraceMs: 5000 },
         defaultAgent: 'kimi',
         agents: { kimi: { model: 'kimi-code/k3', permissionMode: 'manual' } },
-        output: { showThinking: true, showToolUse: false, showToolResult: false },
       }),
     });
     const cwd = fs.realpathSync(tmpDir);
@@ -1058,7 +1056,6 @@ describe('Bridge.syncActiveApprovalModes (§P5 hot push)', () => {
       claude: { model: 'opus', stopGraceMs: 5000 },
       defaultAgent: 'kimi',
       agents: { kimi: { model: 'kimi-code/k3', permissionMode: 'yolo' } },
-      output: { showThinking: true, showToolUse: false, showToolResult: false },
     });
     bridge.setConfig(newConfig);
     bridge.syncActiveApprovalModes();
@@ -1080,7 +1077,6 @@ describe('Bridge.syncActiveApprovalModes (§P5 hot push)', () => {
         agents: {
           opencode: { providerID: 'anthropic', modelID: 'claude-sonnet-4-20250514', mode: 'build' },
         },
-        output: { showThinking: true, showToolUse: false, showToolResult: false },
       }),
     });
     const cwd = fs.realpathSync(tmpDir);
@@ -1098,7 +1094,6 @@ describe('Bridge.syncActiveApprovalModes (§P5 hot push)', () => {
       agents: {
         opencode: { providerID: 'anthropic', modelID: 'claude-sonnet-4-20250514', mode: 'plan' },
       },
-      output: { showThinking: true, showToolUse: false, showToolResult: false },
     });
     bridge.setConfig(newConfig);
     bridge.syncActiveApprovalModes();

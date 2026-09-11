@@ -144,11 +144,6 @@ describe('kimi done card must not fabricate an all-zero token block when jsonl h
       feishu: { appId: 'test', appSecret: 'test' },
       claude: { model: 'opus', stopGraceMs: 5000 },
       defaultAgent: 'kimi',
-      output: {
-        showThinking: true,
-        showToolUse: false,
-        showToolResult: false,
-      },
     });
   });
 

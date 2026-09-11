@@ -72,11 +72,6 @@ describe('cmdOrder 列表命令 (Anchor #2)', () => {
         stopGraceMs: 5000,
       },
       workspace: { default: '' },
-      output: {
-        showThinking: true,
-        showToolUse: false,
-        showToolResult: false,
-      },
     });
   });
 

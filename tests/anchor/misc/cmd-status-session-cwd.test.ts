@@ -11,7 +11,6 @@ describe('cmdStatus sessionCwd display', () => {
     feishu: { appId: 'test', appSecret: 'test' },
     claude: { model: 'opus', stopGraceMs: 5000 },
     workspace: { default: '' },
-    output: { showThinking: true, showToolUse: false, showToolResult: false },
   });
 
   let store: SessionStore;

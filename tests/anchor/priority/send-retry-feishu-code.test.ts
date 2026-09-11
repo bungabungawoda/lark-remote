@@ -37,7 +37,6 @@ const config: AppConfig = {
   },
   idle: { watchdogMinutes: 15 },
   defaultAgent: 'claude',
-  output: { showThinking: true, showToolUse: false, showToolResult: false },
   logging: { level: 'info' },
 };
 

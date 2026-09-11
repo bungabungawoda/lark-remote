@@ -93,7 +93,6 @@ afterEach(() => {
 
 function createRouter(overrides?: {
   runner?: Runner;
-  output?: Partial<AppConfig['output']>;
   idle?: Partial<AppConfig['idle']>;
 
   exitHandler?: () => void;
@@ -113,12 +112,6 @@ function createRouter(overrides?: {
     claude: {
       model: 'claude-opus-4-8',
       stopGraceMs: 5000,
-    },
-    output: {
-      showThinking: true,
-      showToolUse: false,
-      showToolResult: false,
-      ...overrides?.output,
     },
     ...(overrides?.idle ? { idle: { watchdogMinutes: 15, ...overrides.idle } } : {}),
     ...(overrides?.defaultAgent ? { defaultAgent: overrides.defaultAgent } : {}),
@@ -3074,7 +3067,8 @@ describe('CommandRouter', () => {
     expect(content).toContain('**🤖 Claude**');
     // 2026-07-04: workspace 分组已删除（无默认目录概念，必须用户 /cd 指定）
     expect(content).not.toContain('**📂 工作区**');
-    expect(content).toContain('**📤 输出**');
+    // 2026-09-04: thinking/tool 展示不再可配置（始终开启），输出分组已删除
+    expect(content).not.toContain('**📤 输出**');
     expect(content).toContain('**📝 日志**');
     // Check user-friendly field labels
     // 2026-07-05: claude.binary（执行程序）已从卡片删除 — 有了 defaultAgent，binary 是 agent 实现细节
@@ -3122,46 +3116,19 @@ describe('CommandRouter', () => {
   // save 才一次性写盘，cancel 清空 pendingConfig
 
   it('config.toggle updates pendingConfig without writing disk', async () => {
-    const { router, connector } = createRouter({ output: { showThinking: false } });
+    const { router, connector } = createRouter();
 
-    // 点击 toggle 按钮（config.toggle + key）
-    await router.handleCardAction({ cmd: 'config.toggle', key: 'output.showThinking' }, ctx);
+    // 点击 toggle（inboundMedia.enabled 默认 true → false）
+    await router.handleCardAction({ cmd: 'config.toggle', key: 'inboundMedia.enabled' }, ctx);
 
     // 2026-07-04: 原地更新路径走 connector.updateCard，卡片进 _cards 而非 _sent
     expect(connector._sent.length).toBe(0);
     expect(connector._cards.length).toBeGreaterThan(0);
-    const card = connector._cards[connector._cards.length - 1] as {
-      body?: { elements?: object[] };
-    };
-    const cardStr = JSON.stringify(card.body?.elements);
-    expect(cardStr).toContain('✅ 已开启'); // toggle 后应为开启状态
 
-    // pendingConfig 应有值
+    // pendingConfig 只改内存，不写盘
     expect(router.pendingConfig).not.toBeNull();
-  });
-
-  // 2026-07-04 回归测试：toggle 必须可逆（on→off→on）
-  // 用户报告：显示工具调用 点击已开启→已关闭，再点击已关闭无法变回已开启
-  it('config.toggle is reversible (on→off→on)', async () => {
-    const { router, connector } = createRouter({ output: { showToolUse: true } });
-
-    // 第一次 toggle: true → false
-    await router.handleCardAction({ cmd: 'config.toggle', key: 'output.showToolUse' }, ctx);
-    let card = connector._cards[connector._cards.length - 1] as { body?: { elements?: object[] } };
-    let cardStr = JSON.stringify(card.body?.elements);
-    expect(cardStr).toContain('⚪ 已关闭');
-
-    // 第二次 toggle: false → true（必须能切回）
-    await router.handleCardAction({ cmd: 'config.toggle', key: 'output.showToolUse' }, ctx);
-    card = connector._cards[connector._cards.length - 1] as { body?: { elements?: object[] } };
-    cardStr = JSON.stringify(card.body?.elements);
-    expect(cardStr).toContain('✅ 已开启');
-
-    // 第三次 toggle: true → false（验证多次切换稳定）
-    await router.handleCardAction({ cmd: 'config.toggle', key: 'output.showToolUse' }, ctx);
-    card = connector._cards[connector._cards.length - 1] as { body?: { elements?: object[] } };
-    cardStr = JSON.stringify(card.body?.elements);
-    expect(cardStr).toContain('⚪ 已关闭');
+    expect(router.pendingConfig!.inboundMedia.enabled).toBe(false);
+    expect(fs.existsSync(path.join(tmpDir, 'config.yaml'))).toBe(false);
   });
 
   it('config.set reads option into pendingConfig', async () => {
@@ -3231,30 +3198,27 @@ describe('CommandRouter', () => {
   // 1) 两次连续 toggle 后 pendingConfig 反映两次翻转（true→false→true）
   // 2) 两次 toggle 都各自触发了一次卡片更新（_cards 长度 +2）
   it('config.toggle serializes concurrent actions through configActionQueue', async () => {
-    const { router, connector } = createRouter({ output: { showToolUse: true } });
+    const { router, connector } = createRouter();
     const cardsBefore = connector._cards.length;
 
     // 并发触发两次 toggle，不 await 第一个（模拟用户快速双击）
-    const p1 = router.handleCardAction({ cmd: 'config.toggle', key: 'output.showToolUse' }, ctx);
-    const p2 = router.handleCardAction({ cmd: 'config.toggle', key: 'output.showToolUse' }, ctx);
+    const p1 = router.handleCardAction({ cmd: 'config.toggle', key: 'inboundMedia.enabled' }, ctx);
+    const p2 = router.handleCardAction({ cmd: 'config.toggle', key: 'inboundMedia.enabled' }, ctx);
     await Promise.all([p1, p2]);
 
     // 两次 toggle = 回到初始状态 (true → false → true)
-    expect(router.pendingConfig?.output.showToolUse).toBe(true);
+    expect(router.pendingConfig?.inboundMedia.enabled).toBe(true);
     // 两次 toggle 各自触发一次卡片更新
     expect(connector._cards.length).toBe(cardsBefore + 2);
   });
 
   it('config.save writes all pending changes to disk', async () => {
-    // 用 idle.watchdogMinutes 作为数值型 config key 测 save 路径
-    const { router, connector: _connector } = createRouter({
-      output: { showThinking: false },
-      idle: { watchdogMinutes: 10 },
-    });
+    // 用 inboundMedia.enabled（boolean）+ idle.watchdogMinutes（数值）测 save 路径
+    const { router, connector: _connector } = createRouter({ idle: { watchdogMinutes: 10 } });
     const configPath = router.configPath;
 
-    // 先 toggle
-    await router.handleCardAction({ cmd: 'config.toggle', key: 'output.showThinking' }, ctx);
+    // 先 toggle boolean（默认 true → false）
+    await router.handleCardAction({ cmd: 'config.toggle', key: 'inboundMedia.enabled' }, ctx);
     // 再修改 input
     await router.handleCardAction(
       {
@@ -3273,7 +3237,7 @@ describe('CommandRouter', () => {
 
     // 磁盘文件应一次性写入所有改动（configPath 存在且包含更新后的值）
     const diskContent = fs.readFileSync(configPath, 'utf-8');
-    expect(diskContent).toContain('showThinking: true');
+    expect(diskContent).toContain('enabled: false');
     expect(diskContent).toContain('watchdogMinutes: 30');
 
     // pendingConfig 应清空
@@ -3521,7 +3485,7 @@ describe('CommandRouter', () => {
     expect(finalCard).toContain('success');
   });
 
-  it('hides tool_use when showToolUse is false', async () => {
+  it('always shows tool_use on the streaming run card (no output config)', async () => {
     const events: AgentEvent[] = [
       { type: 'system', subtype: 'init', session_id: 's1', cwd: tmpDir, model: 'opus' },
       {
@@ -3533,7 +3497,6 @@ describe('CommandRouter', () => {
     ];
     const { router, sessionStore, connector } = createRouter({
       runner: createStubRunner({ mode: 'streaming', events, withStatusInfo: true }),
-      output: { showToolUse: false },
     });
     sessionStore.setCwd('user1', fs.realpathSync(tmpDir));
     await router.handle('hello', ctx);
@@ -3541,7 +3504,7 @@ describe('CommandRouter', () => {
     expect(connector._sent.length).toBeGreaterThan(0);
     const finalCard = JSON.stringify(connector._cards.at(-1));
     expect(finalCard).toContain('done');
-    expect(finalCard).not.toContain('Read');
+    expect(finalCard).toContain('Read');
   });
 
   it('/active shows empty state when no sessions are active', async () => {
@@ -3602,7 +3565,6 @@ describe('/active card pagination', () => {
     const config: AppConfig = AppConfigSchema.parse({
       feishu: { appId: 'test', appSecret: 'test' },
       claude: { model: 'claude-opus-4-8', stopGraceMs: 5000 },
-      output: { showThinking: true, showToolUse: false, showToolResult: false },
     });
     const bridge = new Bridge({
       runner,
@@ -3781,7 +3743,6 @@ describe('P0: /active card must use CardKit 2.0 (not 1.x action container)', () 
     const config: AppConfig = AppConfigSchema.parse({
       feishu: { appId: 'test', appSecret: 'test' },
       claude: { model: 'claude-opus-4-8', stopGraceMs: 5000 },
-      output: { showThinking: true, showToolUse: false, showToolResult: false },
     });
     const bridge = new Bridge({
       runner,
@@ -3849,7 +3810,6 @@ describe('P0: /active card must use CardKit 2.0 (not 1.x action container)', () 
     const config: AppConfig = AppConfigSchema.parse({
       feishu: { appId: 'test', appSecret: 'test' },
       claude: { model: 'claude-opus-4-8', stopGraceMs: 5000 },
-      output: { showThinking: true, showToolUse: false, showToolResult: false },
       defaultAgent: 'kimi',
     });
 
@@ -3989,7 +3949,7 @@ describe('config switch agent sends Resume card', () => {
     sessionStore.setCwd('user1', dir);
 
     // Toggle a non-agent config and save
-    await router.handleCardAction({ cmd: 'config.toggle', key: 'output.showThinking' }, ctx);
+    await router.handleCardAction({ cmd: 'config.toggle', key: 'inboundMedia.enabled' }, ctx);
     const sentBefore = connector._sent.length;
     await router.handleCardAction({ cmd: 'config.save' }, ctx);
 

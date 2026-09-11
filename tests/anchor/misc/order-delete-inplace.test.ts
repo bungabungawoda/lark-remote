@@ -45,7 +45,6 @@ function createRouter(overrides?: {
       effort: 'medium',
       stopGraceMs: 5000,
     },
-    output: { showThinking: true, showToolUse: false, showToolResult: false },
   });
 
   const ordersPath = overrides?.ordersPath ?? ordersFile;

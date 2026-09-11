@@ -52,7 +52,6 @@ const config: AppConfig = {
     stopGraceMs: 5000,
   },
   idle: { watchdogMinutes: 15 },
-  output: { showThinking: true, showToolUse: false, showToolResult: false },
   logging: { level: 'info' },
   defaultAgent: 'claude',
 };

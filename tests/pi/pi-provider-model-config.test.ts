@@ -44,11 +44,6 @@ function buildPiConfig(): AppConfig {
       },
     },
     idle: { watchdogMinutes: 15 },
-    output: {
-      showThinking: true,
-      showToolUse: false,
-      showToolResult: false,
-    },
     logging: {
       level: 'info',
       dir: 'logs',

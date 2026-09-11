@@ -79,7 +79,6 @@ describe(' queue lane vs execution cwd', () => {
         feishu: { appId: 'test', appSecret: 'test' },
         claude: { model: 'opus', stopGraceMs: 5000 },
         workspace: { default: '' },
-        output: { showThinking: true, showToolUse: false, showToolResult: false },
       });
       const sessionStore = new SessionStore();
       const connector = createStubConnector();

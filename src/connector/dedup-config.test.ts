@@ -38,7 +38,6 @@ const config: AppConfig = {
     stopGraceMs: 5000,
   },
   idle: { watchdogMinutes: 15 },
-  output: { showThinking: true, showToolUse: false, showToolResult: false },
   logging: { level: 'info' },
   defaultAgent: 'claude',
 };
@@ -48,7 +47,7 @@ const config: AppConfig = {
 // 根因：SDK 的 cardAction dedup eventId = card:{messageId}:{operator}:{actionId}，
 // actionId = tag|name|option|JSON.stringify(value)，不含时间戳。config 卡片原地更新，
 // 用户在同一张卡连点 toggle 时三段都相同 → eventId 相同 → 第二次被 seenCache drop，
-// toggle 不可逆（"显示工具结果"第二次点击静默失效）。
+// toggle 不可逆（同一按钮第二次点击静默失效）。
 //
 // 此 bug 无法在 stub connector 测试中复现（测试绕过 SDK safety 层），只能靠
 // 常量区间断言防止 ttl 被改回长窗口。详见 design.md §9.8。

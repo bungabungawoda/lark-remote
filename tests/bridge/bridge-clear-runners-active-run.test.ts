@@ -84,7 +84,6 @@ beforeEach(() => {
     feishu: { appId: 'test', appSecret: 'test' },
     claude: { model: 'opus', stopGraceMs: 5000 },
     defaultAgent: 'claude',
-    output: { showThinking: true, showToolUse: false, showToolResult: false },
   });
 });
 

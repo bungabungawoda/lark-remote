@@ -1943,6 +1943,8 @@ export class CommandRouter {
   ): Promise<CardActionResponse | void> {
     switch (value.cmd) {
       case 'config.toggle': {
+        // 通用 boolean 翻转：目前无卡片字段使用（output.show* 已移除），
+        // 保留供未来 boolean 配置项复用；configActionQueue 串行化覆盖连击。
         const key = value.key as string | undefined;
         if (!key) {
           await this.bridge.sendResult({ text: '缺少配置项 key' }, ctx);
@@ -4125,15 +4127,6 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
         id: 'idle',
         label: '⏱️ 空闲',
         fields: [{ key: 'idle.watchdogMinutes', label: '空闲超时(分钟, 0关闭)', type: 'input' }],
-      },
-      {
-        id: 'output',
-        label: '📤 输出',
-        fields: [
-          { key: 'output.showThinking', label: '显示思考过程', type: 'boolean' },
-          { key: 'output.showToolUse', label: '显示工具调用', type: 'boolean' },
-          { key: 'output.showToolResult', label: '显示工具结果', type: 'boolean' },
-        ],
       },
       {
         id: 'logging',

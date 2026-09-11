@@ -41,7 +41,6 @@ function createInitialConfig() {
     },
     // 没有 agents.pi 段
     idle: { watchdogMinutes: 15 },
-    output: { showThinking: true, showToolUse: true, showToolResult: true },
     logging: { level: 'info' },
   });
 }

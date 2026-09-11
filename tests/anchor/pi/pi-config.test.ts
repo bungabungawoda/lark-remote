@@ -143,7 +143,6 @@ describe('config path mapping', () => {
         },
       },
       idle: { watchdogMinutes: 15 },
-      output: { showThinking: true, showToolUse: true, showToolResult: true },
       logging: { level: 'info' },
       defaultAgent: 'claude',
     });
@@ -203,7 +202,6 @@ describe('config path mapping', () => {
           },
         },
         idle: { watchdogMinutes: 15 },
-        output: { showThinking: true, showToolUse: true, showToolResult: true },
         logging: { level: 'info' },
         defaultAgent: 'claude',
       };
