@@ -55,7 +55,7 @@ describe('codex catalog empty effort filter - anchor', () => {
       [
         'model = "empty-effort-model"',
         'model_provider = "deepseek"',
-        `model_catalog_json = "${path.join(tmpDir, 'models.json')}"`,
+        `model_catalog_json = "${path.join(tmpDir, 'models.json').replaceAll('\\', '/')}"`,
         '',
         '[model_providers.deepseek]',
         'name = "deepseek"',

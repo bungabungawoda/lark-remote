@@ -17,6 +17,7 @@ import {
   createStubConnector,
   createStubRunner,
 } from '../../lib/bridge-stubs.js';
+import { expectNoV1ActionContainer } from '../../lib/card-view.js';
 
 let tmpDir: string;
 let ordersFile: string;
@@ -41,7 +42,6 @@ function createRouter(overrides?: { runner?: Runner; sessionStore?: SessionStore
       effort: 'medium',
       stopGraceMs: 5000,
     },
-    output: { showThinking: true, showToolUse: false, showToolResult: false },
   });
 
   const bridge = new Bridge({
@@ -98,7 +98,7 @@ describe('Anchor: order.textEdit card structure (CardKit 2.0 / 200861)', () => {
     // CardKit 2.0 schema
     expect(cardStr).toContain('"schema":"2.0"');
     // 200861 regression — no V1 action container mixed in
-    expect(cardStr).not.toMatch(/"tag"\s*:\s*"action"[^}]*"actions"/);
+    expectNoV1ActionContainer(cardStr);
     // input component + behaviors callback
     expect(cardStr).toContain('"tag":"input"');
     expect(cardStr).toContain('"cmd":"order.textInput"');

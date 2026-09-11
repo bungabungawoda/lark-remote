@@ -5,6 +5,7 @@ import os from 'node:os';
 import { readSessionContent } from '../../src/session/claude/sessions.js';
 import { enforceCardBudget } from '../../src/card/card-budget.js';
 import type { CardView } from '../../tests/lib/card-view.js';
+import { encodeClaudeProjectDir } from '../lib/session-fixtures.js';
 
 describe('ws.use auto-resume budget bug - anchor', () => {
   let tmpDir: string;
@@ -28,14 +29,14 @@ describe('ws.use auto-resume budget bug - anchor', () => {
    */
   it('FIX: readSessionContent should support maxEvents parameter to limit events', () => {
     const cwd = '/tmp/test-project';
-    const encoded = cwd.replace(/\//g, '-');
+    const encoded = encodeClaudeProjectDir(cwd);
     const dir = path.join(tmpDir, encoded);
     fs.mkdirSync(dir, { recursive: true });
     const sessionId = 'test-session-many-events';
 
     // 创建 session：最后一个 user 后有 20 个 assistant 事件
     const lines: string[] = [
-      `{"type":"system","subtype":"init","session_id":"${sessionId}","cwd":"${cwd}","model":"opus"}`,
+      `{"type":"system","subtype":"init","session_id":"${sessionId}","cwd":${JSON.stringify(cwd)},"model":"opus"}`,
     ];
 
     lines.push(
@@ -96,13 +97,13 @@ describe('ws.use auto-resume budget bug - anchor', () => {
    */
   it('maxEvents greater than actual event count returns all events', () => {
     const cwd = '/tmp/test-boundary-more';
-    const encoded = cwd.replace(/\//g, '-');
+    const encoded = encodeClaudeProjectDir(cwd);
     const dir = path.join(tmpDir, encoded);
     fs.mkdirSync(dir, { recursive: true });
     const sessionId = 'test-boundary-more';
 
     const lines: string[] = [
-      `{"type":"system","subtype":"init","session_id":"${sessionId}","cwd":"${cwd}","model":"opus"}`,
+      `{"type":"system","subtype":"init","session_id":"${sessionId}","cwd":${JSON.stringify(cwd)},"model":"opus"}`,
       `{"type":"user","message":{"role":"user","content":[{"type":"text","text":"question"}]}}`,
       `{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"answer"}]}}`,
     ];
@@ -118,13 +119,13 @@ describe('ws.use auto-resume budget bug - anchor', () => {
    */
   it('maxEvents=0 returns zero events', () => {
     const cwd = '/tmp/test-boundary-zero';
-    const encoded = cwd.replace(/\//g, '-');
+    const encoded = encodeClaudeProjectDir(cwd);
     const dir = path.join(tmpDir, encoded);
     fs.mkdirSync(dir, { recursive: true });
     const sessionId = 'test-boundary-zero';
 
     const lines: string[] = [
-      `{"type":"system","subtype":"init","session_id":"${sessionId}","cwd":"${cwd}","model":"opus"}`,
+      `{"type":"system","subtype":"init","session_id":"${sessionId}","cwd":${JSON.stringify(cwd)},"model":"opus"}`,
       `{"type":"user","message":{"role":"user","content":[{"type":"text","text":"question"}]}}`,
       `{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"answer"}]}}`,
     ];
@@ -139,13 +140,13 @@ describe('ws.use auto-resume budget bug - anchor', () => {
    */
   it('without maxEvents reads all events (backward compatible)', () => {
     const cwd = '/tmp/test-backward-compat';
-    const encoded = cwd.replace(/\//g, '-');
+    const encoded = encodeClaudeProjectDir(cwd);
     const dir = path.join(tmpDir, encoded);
     fs.mkdirSync(dir, { recursive: true });
     const sessionId = 'test-backward-compat';
 
     const lines: string[] = [
-      `{"type":"system","subtype":"init","session_id":"${sessionId}","cwd":"${cwd}","model":"opus"}`,
+      `{"type":"system","subtype":"init","session_id":"${sessionId}","cwd":${JSON.stringify(cwd)},"model":"opus"}`,
       `{"type":"user","message":{"role":"user","content":[{"type":"text","text":"question"}]}}`,
     ];
     for (let i = 1; i <= 15; i++) {
@@ -167,13 +168,13 @@ describe('ws.use auto-resume budget bug - anchor', () => {
    */
   it('maxEvents keeps the LAST N events (review P2-7 unified contract)', () => {
     const cwd = '/tmp/test-multi-block';
-    const encoded = cwd.replace(/\//g, '-');
+    const encoded = encodeClaudeProjectDir(cwd);
     const dir = path.join(tmpDir, encoded);
     fs.mkdirSync(dir, { recursive: true });
     const sessionId = 'test-multi-block';
 
     const lines: string[] = [
-      `{"type":"system","subtype":"init","session_id":"${sessionId}","cwd":"${cwd}","model":"opus"}`,
+      `{"type":"system","subtype":"init","session_id":"${sessionId}","cwd":${JSON.stringify(cwd)},"model":"opus"}`,
       `{"type":"user","message":{"role":"user","content":[{"type":"text","text":"question"}]}}`,
       // 第一条 assistant：1 个 text block
       `{"type":"assistant","message":{"id":"m1","role":"assistant","content":[{"type":"text","text":"first answer"}]}}`,

@@ -1,6 +1,8 @@
-import { execFile, execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import { getLogger } from '../logger/index.js';
+import { resolveExecutable } from '../platform/command.js';
+import { currentPlatform, isWin32 } from '../platform/select.js';
+import { spawnProcess, spawnProcessSync } from '../platform/spawn.js';
 
 /** Supported package managers for global install. */
 export type PackageManager = 'npm' | 'bun' | 'pnpm';
@@ -23,6 +25,58 @@ type ExecFileFn = (
   options: object,
   callback: ExecFileCallback,
 ) => void;
+
+/**
+ * execFile 回调风格适配 cross-spawn（platform/spawn.ts）。
+ *
+ * npm/pnpm 在 Windows 是 .cmd 垫片，execFile 不经 shell 无法执行——Node 自
+ * CVE-2024-27980 收紧后对无 shell 启动 .cmd 直接抛错，win32 上 /update 会
+ * 永远失败。执行统一走 spawnProcess（cross-spawn 处理 PATHEXT + .cmd 经
+ * cmd.exe 受控执行），错误/退出码语义对齐 execFile：
+ * - 非 0 退出 → err.message 为 execFile 同款 "Command failed: ..." 形态
+ *   （含 stderr 首段，EACCES 提示逻辑依赖它）；
+ * - 'error' 事件（ENOENT 等）→ 原样回调。
+ */
+function execViaSpawnProcess(
+  file: string,
+  args: readonly string[],
+  options: { timeout?: number; encoding?: string },
+  callback: ExecFileCallback,
+): void {
+  const proc = spawnProcess(file, args, {
+    timeout: options.timeout,
+    stdio: ['ignore', 'pipe', 'pipe'],
+    windowsHide: true,
+  });
+  let stdout = '';
+  let stderr = '';
+  let settled = false;
+  const finish = (error: Error | null): void => {
+    if (settled) return;
+    settled = true;
+    callback(error, stdout, stderr);
+  };
+  proc.stdout?.setEncoding('utf8');
+  proc.stdout?.on('data', (chunk: string) => {
+    stdout += chunk;
+  });
+  proc.stderr?.setEncoding('utf8');
+  proc.stderr?.on('data', (chunk: string) => {
+    stderr += chunk;
+  });
+  proc.on('error', (err) => finish(err));
+  proc.on('close', (code, signal) => {
+    if (code === 0) {
+      finish(null);
+      return;
+    }
+    const detail = stderr.trim() || stdout.trim();
+    const how = signal ? ` terminated with ${signal}` : ` with exit code ${code ?? 'unknown'}`;
+    finish(
+      new Error(`Command failed: ${file} ${args.join(' ')}${how}${detail ? `\n${detail}` : ''}`),
+    );
+  });
+}
 
 /**
  * Infer the installing package manager from the real path of the running
@@ -74,14 +128,14 @@ export function detectPackageManager(scriptPath?: string): PackageManager | null
     if (inferred) return inferred;
   }
 
-  // 3. which availability fallback
+  // 3. availability fallback: 纯 Node PATH 解析（win32 PATHEXT），不再依赖外部 which
+  //    （Windows 无 which）；win32 再用 where.exe 兜底罕见的解析失败场景（v2 §4.3）
   const candidates: PackageManager[] = ['npm', 'bun', 'pnpm'];
   for (const cmd of candidates) {
-    try {
-      execFileSync('which', [cmd], { stdio: 'pipe', timeout: 3000 });
-      return cmd;
-    } catch {
-      // Not found, try next
+    if (resolveExecutable(cmd)) return cmd;
+    if (isWin32(currentPlatform)) {
+      const res = spawnProcessSync('where.exe', [cmd], { stdio: 'pipe', timeout: 3000 });
+      if (!res.error && res.status === 0) return cmd;
     }
   }
   return null;
@@ -103,7 +157,8 @@ function getInstallCommand(pm: PackageManager): { cmd: string; args: string[] } 
  * Run the global install command to upgrade lark-remote to the latest version.
  *
  * @param opts.packageManager - Override detected package manager
- * @param opts.execFn - Override execFile for testing
+ * @param opts.execFn - Override exec for testing; default routes through
+ *   platform/spawn.ts (cross-spawn, win32 .cmd shim safe)
  */
 export function runInstallLatest(opts?: {
   packageManager?: PackageManager | null;
@@ -127,7 +182,7 @@ export function runInstallLatest(opts?: {
   }
 
   const { cmd, args } = getInstallCommand(pm);
-  const execFn = opts?.execFn ?? ((...args) => execFile(...(args as Parameters<typeof execFile>)));
+  const execFn = opts?.execFn ?? execViaSpawnProcess;
   const logger = getLogger();
 
   logger.info(`[update] running: ${cmd} ${args.join(' ')}`);

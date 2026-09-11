@@ -29,7 +29,7 @@ Codex 审批模式下，执行命令前会收到审批卡片，可直接在飞�
 
 ## 前置条件
 
-- 操作系统：macOS / Linux。**暂不支持 Windows**（依赖 Unix 信号、bash、文件锁等 POSIX 行为）
+- 操作系统：macOS / Linux。**暂不支持 Windows**（原生 Windows 支持在建设中：平台 seam 已落地，待真机验证后发布）
 - Node.js 20+（开发时用 [Bun](https://bun.sh/)）
 - 飞书自建应用（二选一）：扫码创建（首次启动终端弹二维码，飞书 App 扫码即自动创建并写入凭据）；或手动在开放平台建应用——开启机器人能力，订阅 `im.message.receive_v1` 和 `card.action.trigger`，订阅方式选「长连接」（WebSocket，无需公网地址），权限至少 `im:message`。
 - Claude Code CLI：本地安装并在终端完成一次登录（`claude` → 浏览器 OAuth）。使用其他 agent（codex / opencode / pi / kimi）同理，先装好对应 CLI；DSH 需本地 DSH Web Host 在跑（默认 `http://127.0.0.1:3080`），lark-remote 通过 HTTP+WebSocket 直连、不 spawn 本地子进程。
@@ -73,11 +73,6 @@ claude:
   # permissionMode 硬编码为 bypassPermissions（runner 内部）
   stopGraceMs: 5000
 
-output:
-  showThinking: true
-  showToolUse: true
-  showToolResult: true
-
 logging:
   level: info               # debug | info | warn | error
 
@@ -113,7 +108,8 @@ bridge 启动后不在终端输出，运行日志写入 `~/.lark-remote/logs/YYY
 |------|------|------|
 | `/help` | `/h` | 命令列表 |
 | `/cd <path>` | - | 切换 agent 工作目录（支持 `~`、绝对/相对路径，清空会话） |
-| `/ls [dir]` | - | 弹出目录/文件卡片；点击目录切换，点击 30MB 内文件发送到飞书；条目 >30 时支持翻页 |
+| `/ls [dir\|file]` | - | 弹出目录/文件卡片；点击目录切换，点击 30MB 内文件发送到飞书；条目 >30 时支持翻页与直接输入页码跳转。传文件路径时直接列出该文件（可下载） |
+| `/download <path>` | `/d` | 直接下载（发送）指定文件到飞书（支持 `~`、绝对/相对路径，上限 30MB） |
 | `/ws save\|use\|remove` | - | 命名目录别名管理（`/ws` 默认列出） |
 | `/resume [agent] [N\|id]` | `/r` | 列出/切换当前目录的 agent session（卡片） |
 | `/active` | - | 列出所有正在进行中的 session |

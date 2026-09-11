@@ -15,6 +15,7 @@ import {
   createStubSessionReaderRegistry,
   createStubConnector,
 } from '../lib/bridge-stubs.js';
+import { rmRf } from '../lib/tmp-cleanup.js';
 // Stub session reader for tests
 
 // Test utilities
@@ -24,13 +25,13 @@ beforeEach(() => {
   tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'lark-bash-test-'));
 });
 afterEach(() => {
-  fs.rmSync(tmpDir, { recursive: true, force: true });
+  // Windows：`!` bash 命令的子进程 cwd 可能就是 tmpDir，用例结束后句柄未释放，
+  // 裸 rmSync 会 EPERM。走重试 + 精准杀占用进程的 rmRf。
+  rmRf(tmpDir);
 });
 
 function createRouter(overrides?: {
   runner?: Runner;
-  output?: Partial<AppConfig['output']>;
-
   exitHandler?: () => void;
   projectsDir?: string;
   bridge?: Bridge;
@@ -46,12 +47,6 @@ function createRouter(overrides?: {
       stopGraceMs: 5000,
     },
     workspace: { default: '' },
-    output: {
-      showThinking: true,
-      showToolUse: false,
-      showToolResult: false,
-      ...overrides?.output,
-    },
   });
   const router = new CommandRouter({
     sessionStore,

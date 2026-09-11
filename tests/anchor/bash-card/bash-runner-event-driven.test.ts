@@ -48,8 +48,9 @@ vi.mock('../../../src/logger/index.js', () => ({
   initLogger: () => mockLogger,
 }));
 
-vi.mock('node:child_process', () => ({
-  spawn: mockSpawn,
+vi.mock('../../../src/platform/spawn.js', () => ({
+  useDetachedProcessGroup: vi.fn(() => true),
+  spawnProcess: mockSpawn,
 }));
 
 import { BashProcessRunner } from '../../../src/runner/bash/index.js';

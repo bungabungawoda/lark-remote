@@ -7,6 +7,7 @@ import { SessionStore } from '../../../src/session/index.js';
 import { AppConfigSchema } from '../../../src/config/index.js';
 import type { AppConfig } from '../../../src/config/index.js';
 import { createMockBridge, createStubSessionReaderRegistry } from '../../lib/bridge-stubs.js';
+import { expectNoV1ActionContainer } from '../../lib/card-view.js';
 
 // P2-28 anchor (red): handleQueueDiagnose 的诊断卡片仍是 CardKit V1 结构
 // （缺 schema:'2.0'，缺 body:{elements}，顶层用 elements）。
@@ -24,7 +25,6 @@ function makeConfig(): AppConfig {
   return AppConfigSchema.parse({
     feishu: { appId: 'test', appSecret: 'test' },
     claude: { model: 'claude-opus-4-8', stopGraceMs: 5000 },
-    output: { showThinking: true, showToolUse: false, showToolResult: false },
   });
 }
 
@@ -91,7 +91,7 @@ describe('anchor: queue diagnose card v2', () => {
     expect(card.elements).toBeUndefined();
 
     // 200861 铁律正则：禁止 V1/V2 混用
-    expect(cardStr).not.toMatch(/"tag"\s*:\s*"action"[^}]*"actions"/);
+    expectNoV1ActionContainer(cardStr);
 
     // NOTE: wide_screen_mode 是合法 CardKit 2.0 config 字段（/active、/ls、/order 卡
     // 均在 schema:'2.0' 下使用），不是 V1 残留。故不断言 card.config 为 undefined。

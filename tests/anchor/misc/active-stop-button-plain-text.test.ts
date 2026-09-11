@@ -50,7 +50,6 @@ describe('P2-27: /active card stop buttons must have tag:plain_text', () => {
     const config: AppConfig = AppConfigSchema.parse({
       feishu: { appId: 'test', appSecret: 'test' },
       claude: { model: 'claude-opus-4-8', stopGraceMs: 5000 },
-      output: { showThinking: true, showToolUse: false, showToolResult: false },
     });
     const bridge = new Bridge({
       runner,

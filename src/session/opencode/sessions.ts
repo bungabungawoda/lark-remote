@@ -14,7 +14,7 @@
  * - Simple memory cache with TTL.
  */
 
-import { execFileSync } from 'node:child_process';
+import { spawnProcessSync } from '../../platform/spawn.js';
 import fs from 'node:fs';
 import { silentlyUnlink } from '../../common/fs.js';
 import os from 'node:os';
@@ -96,7 +96,8 @@ interface OpencodeExportData {
   messages: OpencodeExportMessage[];
 }
 
-import { STALE_MS } from '../common/constants.js';
+import { isStale } from '../common/constants.js';
+import { samePath } from '../../platform/path.js';
 import { paginate, capEvents } from '../common/pagination.js';
 import { sortByRecencyDesc } from '../common/recency.js';
 import { TtlCache } from '../../common/ttl-cache.js';
@@ -129,7 +130,7 @@ export class OpencodeSessionReader implements AgentSessionReader {
     const entries = this.fetchSessionList(realCwd);
 
     // Filter by directory === realpath(cwd)
-    const filtered = entries.filter((e) => e.directory === realCwd);
+    const filtered = entries.filter((e) => samePath(e.directory, realCwd));
 
     // Sort by updated descending; same-updated ties use id as a deterministic
     // secondary key so CLI/list-cache rebuilds never reorder the page.
@@ -387,11 +388,11 @@ export class OpencodeSessionReader implements AgentSessionReader {
 
     try {
       const entries = this.fetchSessionList(realCwd);
-      const entry = entries.find((e) => e.id === sessionId && e.directory === realCwd);
+      const entry = entries.find((e) => e.id === sessionId && samePath(e.directory, realCwd));
       if (!entry) return false;
 
       // Check if updated within STALE_MS
-      return Date.now() - entry.updated < STALE_MS;
+      return !isStale(entry.updated);
     } catch {
       return false;
     }
@@ -416,8 +417,12 @@ export class OpencodeSessionReader implements AgentSessionReader {
     }
 
     try {
+      // spawnProcessSync（cross-spawn）而非 execFileSync：opencode 是 npm 安装
+      // 的 .cmd 垫片，win32 上 execFileSync 不做 PATHEXT 解析会直接 ENOENT，
+      // 会话列表永远为空；cross-spawn 走与 runner spawn 相同的垫片执行路径
+      // （posix 为 child_process.spawnSync 直通，行为不变）。
       // Pass cwd to execFileSync so opencode CLI returns sessions for the correct directory
-      const output = execFileSync(this.binary, ['session', 'list', '--format', 'json'], {
+      const res = spawnProcessSync(this.binary, ['session', 'list', '--format', 'json'], {
         encoding: 'utf-8',
         timeout: 10000,
         // P1-15: default maxBuffer is 1MiB — a large session list (>1MiB JSON)
@@ -425,7 +430,18 @@ export class OpencodeSessionReader implements AgentSessionReader {
         // user sees "no sessions" even though the CLI returned healthy data.
         maxBuffer: 64 * 1024 * 1024,
         cwd: realCwd, // Key fix: pass user cwd to CLI
-      }).trim();
+        windowsHide: true, // opencode 是 npm .cmd 垫片：不隐藏会闪 cmd.exe 控制台
+      });
+      if (res.error) {
+        const enoent = (res.error as NodeJS.ErrnoException).code === 'ENOENT';
+        if (enoent) return [];
+        throw res.error;
+      }
+      if (res.status !== 0) {
+        const stderr = String(res.stderr ?? '').trim();
+        throw new Error(`exit ${res.status}${stderr ? `: ${stderr}` : ''}`);
+      }
+      const output = String(res.stdout ?? '').trim();
       // CLI returns empty string when no sessions exist - treat as empty array
       if (!output) {
         return [];
@@ -478,7 +494,7 @@ export class OpencodeSessionReader implements AgentSessionReader {
     let fd: number | undefined;
     try {
       fd = fs.openSync(tmp, 'w');
-      execFileSync(this.binary, ['export', sessionId], {
+      spawnProcessSync(this.binary, ['export', sessionId], {
         encoding: 'utf-8',
         timeout: 30000,
         stdio: ['ignore', fd, 'pipe'],
@@ -486,6 +502,7 @@ export class OpencodeSessionReader implements AgentSessionReader {
         // stderr) would throw ENOBUFS and lose the export. Keep the default
         // stdout file-fd transport unaffected by raising the pipe cap.
         maxBuffer: 64 * 1024 * 1024,
+        windowsHide: true,
       });
       return fs.readFileSync(tmp, 'utf-8');
     } finally {

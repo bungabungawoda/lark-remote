@@ -10,11 +10,45 @@
  *   - run-card-skip-budget.test.ts
  */
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
-import type { CardStreamController } from '@larksuite/channel';
 import { RunCardSession } from '../../../src/card/run-card-session.js';
+import { makeStreamCardConnector } from '../../../tests/lib/card-stubs.js';
+
+/**
+ * W3.2 单源：本文件原先 5 份 streamCard/updateCard 字面量收敛为共享工厂
+ * （tests/lib/card-stubs）的组合封装。capture 走 controllerUpdate 回调，
+ * updateCard 捕获与 producer 后 throw 走工厂参数。
+ */
+function makeRunCardConnector(
+  opts: {
+    messageId?: string;
+    capture?: { updates: object[] };
+    updateCapture?: Array<{ messageId: string; card: object }>;
+    throwAfterProducer?: boolean;
+  } = {},
+) {
+  return makeStreamCardConnector({
+    messageId: opts.messageId,
+    controllerUpdate: opts.capture
+      ? (card) => {
+          opts.capture.updates.push(
+            typeof card === 'function' ? (card as (cur: object) => object)({}) : card,
+          );
+        }
+      : undefined,
+    updateCard: opts.updateCapture
+      ? async (messageId: string, card: object) => {
+          opts.updateCapture.push({ messageId, card });
+        }
+      : undefined,
+    streamCardThrowsAfterProducer: opts.throwAfterProducer
+      ? new Error('complete failed')
+      : undefined,
+  });
+}
 import * as cardBudget from '../../../src/card/card-budget.js';
 import { renderRunCard, estimateCardBytes } from '../../../src/card/run-renderer.js';
 import type { RunState } from '../../../src/card/run-state.js';
+import { expectNoV1ActionContainer } from '../../lib/card-view.js';
 
 // ---------------------------------------------------------------------------
 // RunCardSession budget skip (push path)
@@ -42,24 +76,7 @@ describe('RunCardSession budget skip', () => {
     const spy = vi.spyOn(cardBudget, 'enforceCardBudget');
 
     const capture = { updates: [] as object[] };
-    const controller: CardStreamController = {
-      messageId: 'card-1',
-      current: {},
-      update: async (card) => {
-        capture.updates.push(typeof card === 'function' ? card({}) : card);
-      },
-    };
-    const connector = {
-      streamCard: async (
-        _chatId: string,
-        _initial: object,
-        producer: (ctrl: CardStreamController) => Promise<void>,
-      ) => {
-        await producer(controller);
-        return 'card-1';
-      },
-      updateCard: async () => {},
-    };
+    const { connector } = makeRunCardConnector({ capture });
 
     const session = new RunCardSession({
       connector,
@@ -102,22 +119,7 @@ describe('RunCardSession start/settle budget skip (anchor)', () => {
   it('test_anchor_run_card_start_skips_enforce_budget', async () => {
     const spy = vi.spyOn(cardBudget, 'enforceCardBudget');
 
-    const controller: CardStreamController = {
-      messageId: 'card-1',
-      current: {},
-      update: async () => {},
-    };
-    const connector = {
-      streamCard: async (
-        _chatId: string,
-        _initial: object,
-        producer: (ctrl: CardStreamController) => Promise<void>,
-      ) => {
-        await producer(controller);
-        return 'card-1';
-      },
-      updateCard: async () => {},
-    };
+    const { connector } = makeRunCardConnector();
 
     const session = new RunCardSession({
       connector,
@@ -137,26 +139,11 @@ describe('RunCardSession start/settle budget skip (anchor)', () => {
   it('test_anchor_run_card_settle_skips_enforce_budget', async () => {
     const spy = vi.spyOn(cardBudget, 'enforceCardBudget');
 
-    const controller: CardStreamController = {
-      messageId: 'card-1',
-      current: {},
-      update: async () => {},
-    };
     const updated: Array<{ messageId: string; card: object }> = [];
-    const connector = {
-      streamCard: async (
-        _chatId: string,
-        _initial: object,
-        producer: (ctrl: CardStreamController) => Promise<void>,
-      ) => {
-        await producer(controller);
-        // producer 完成后 throw，使 streamOutcome reject → settle 走 fallback
-        throw new Error('complete failed');
-      },
-      updateCard: async (messageId: string, card: object) => {
-        updated.push({ messageId, card });
-      },
-    };
+    const { connector } = makeRunCardConnector({
+      updateCapture: updated,
+      throwAfterProducer: true,
+    });
 
     const session = new RunCardSession({
       connector,
@@ -214,18 +201,10 @@ describe('RunCardSession start/settle budget skip (anchor)', () => {
  */
 describe('RunCardSession push coalescing (P1-3)', () => {
   let updates: object[];
-  let controller: CardStreamController;
 
   beforeEach(() => {
     vi.useFakeTimers();
     updates = [];
-    controller = {
-      messageId: 'card-coal',
-      current: {},
-      update: async (card) => {
-        updates.push(typeof card === 'function' ? (card as (cur: object) => object)({}) : card);
-      },
-    };
   });
 
   afterEach(() => {
@@ -233,17 +212,7 @@ describe('RunCardSession push coalescing (P1-3)', () => {
   });
 
   it('test_anchor_push_coalesces_multiple_text_deltas_into_fewer_updates', async () => {
-    const connector = {
-      streamCard: async (
-        _chatId: string,
-        _initial: object,
-        producer: (ctrl: CardStreamController) => Promise<void>,
-      ) => {
-        await producer(controller);
-        return 'card-coal';
-      },
-      updateCard: async () => {},
-    };
+    const { connector } = makeRunCardConnector({ messageId: 'card-coal', capture: { updates } });
     const session = new RunCardSession({
       connector,
       chatId: 'chat-1',
@@ -299,17 +268,10 @@ describe('RunCardSession push coalescing (P1-3)', () => {
    * e2 必须被一次 follow-up render 捕获（不能停留在 e1）。
    */
   it('test_anchor_event_pushed_during_in_flight_flush_is_re_rendered', async () => {
-    const connector = {
-      streamCard: async (
-        _chatId: string,
-        _initial: object,
-        producer: (ctrl: CardStreamController) => Promise<void>,
-      ) => {
-        await producer(controller);
-        return 'card-inflight';
-      },
-      updateCard: async () => {},
-    };
+    const { connector } = makeRunCardConnector({
+      messageId: 'card-inflight',
+      capture: { updates },
+    });
 
     const session = new RunCardSession({
       connector,
@@ -519,7 +481,7 @@ describe('renderRunCard budget estimate = shadow measurement', () => {
     // 无 omission hint → 未走降级路径
     expect(json).not.toMatch(/已省略/);
 
-    expect(json).not.toMatch(/"tag"\s*:\s*"action"[^}]*"actions"/);
+    expectNoV1ActionContainer(json);
   });
 
   it('test_anchor_huge_cjk_stays_within_budget', () => {
@@ -548,7 +510,7 @@ describe('renderRunCard budget estimate = shadow measurement', () => {
     const card = renderRunCard(state);
     const json = JSON.stringify(card);
     expect(Buffer.byteLength(json, 'utf8')).toBeLessThanOrEqual(28_000);
-    expect(json).not.toMatch(/"tag"\s*:\s*"action"[^}]*"actions"/);
+    expectNoV1ActionContainer(json);
   });
 });
 
@@ -650,7 +612,7 @@ describe('renderRunCard budget estimate (A2+A3)', () => {
     expect(json).toContain('思考7');
 
     // CardKit 2.0 schema 合规
-    expect(json).not.toMatch(/"tag"\s*:\s*"action"[^}]*"actions"/);
+    expectNoV1ActionContainer(json);
   });
 });
 
@@ -743,6 +705,6 @@ describe('renderRunCard extreme fallback ≤28KB invariant', () => {
     expect(cardBytes).toBeLessThanOrEqual(28_000);
 
     // CardKit 2.0 schema 合规
-    expect(json).not.toMatch(/"tag"\s*:\s*"action"[^}]*"actions"/);
+    expectNoV1ActionContainer(json);
   });
 });

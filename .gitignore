@@ -32,6 +32,9 @@ nohup.out
 # npm auth tokens
 .npmrc
 
+# npm 误生成的 lockfile（本项目用 bun.lock，npm install 的产物不入库）
+package-lock.json
+
 # IDE
 .idea/
 .vscode/
@@ -48,6 +51,8 @@ tsconfig.tsbuildinfo
 
 # 锁文件统一使用 bun.lock，不保留 pnpm-lock.yaml
 pnpm-lock.yaml
+
+.workbuddy/
 
 # 内部工作文档与本地草稿（不入库）
 docs/**/*-plan.md

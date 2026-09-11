@@ -2,7 +2,12 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { CommandRouter, isImmediateAction } from './index.js';
+import {
+  CommandRouter,
+  isImmediateAction,
+  DIRECT_RETURN_CMDS,
+  APPROVAL_ACTION_CMDS,
+} from './index.js';
 import { formatTimestamp } from '../card/time.js';
 import { Bridge } from '../bridge/index.js';
 import { SessionStore } from '../session/index.js';
@@ -21,6 +26,9 @@ import {
   createStubSessionReader,
 } from '../../tests/lib/bridge-stubs.js';
 import { encodedProjectDir, writeSessionJsonl } from '../../tests/lib/session-fixtures.js';
+import { expectNoV1ActionContainer } from '../../tests/lib/card-view.js';
+import { rmRf } from '../../tests/lib/tmp-cleanup.js';
+import { currentPlatform, isWin32 } from '../platform/select.js';
 
 /**
  * Create a stub session reader registry.
@@ -48,6 +56,70 @@ type TestCard = {
 };
 
 /** 递归收集卡片正文文本（含 column_set 内嵌 div/按钮的 text）。 */
+// W3.7：三处局部递归校验函数（原 checkColumnTags ×2 / checkElements ×3 /
+// checkAll ×1 逐字重复）提升到文件顶层单源。
+
+/** 递归断言辅助：收集每个 column_set 下 tag !== 'column' 的违规路径。 */
+function findColumnTagViolations(els: TestCardElement[], path: string): string[] {
+  const violations: string[] = [];
+  for (let i = 0; i < els.length; i++) {
+    const el = els[i];
+    const p = `${path}[${i}]`;
+    if (el.tag === 'column_set' && el.columns) {
+      for (let j = 0; j < el.columns.length; j++) {
+        const col = el.columns[j] as Record<string, unknown>;
+        const cp = `${p}.columns[${j}]`;
+        if (col.tag !== 'column') {
+          violations.push(`${cp}.tag is "${col.tag ?? 'undefined'}", expected "column"`);
+        }
+        if (col.elements)
+          violations.push(
+            ...findColumnTagViolations(col.elements as TestCardElement[], `${cp}.elements`),
+          );
+      }
+    }
+  }
+  return violations;
+}
+
+/** 递归断言辅助：收集空 columns[].elements（ErrCode 200621）的违规路径。 */
+function findEmptyColumnElementViolations(els: TestCardElement[], path: string): string[] {
+  const violations: string[] = [];
+  for (let i = 0; i < els.length; i++) {
+    const el = els[i];
+    const p = `${path}[${i}]`;
+    if (el.columns) {
+      for (let j = 0; j < el.columns.length; j++) {
+        const col = el.columns[j];
+        const cp = `${p}.columns[${j}]`;
+        if (!col.elements || col.elements.length === 0) {
+          violations.push(`${cp}.elements is empty (tag=${el.tag || 'none'})`);
+        } else {
+          violations.push(...findEmptyColumnElementViolations(col.elements, `${cp}.elements`));
+        }
+      }
+    }
+  }
+  return violations;
+}
+
+/** 递归断言辅助：全卡深度遍历，收集所有空的 elements 数组路径。 */
+function findEmptyElementsViolations(obj: unknown, path: string): string[] {
+  const violations: string[] = [];
+  if (!obj || typeof obj !== 'object') return violations;
+  if (Array.isArray(obj)) {
+    if (obj.length === 0 && path.endsWith('elements')) {
+      violations.push(`${path} is empty`);
+    }
+    obj.forEach((v, i) => violations.push(...findEmptyElementsViolations(v, `${path}[${i}]`)));
+    return violations;
+  }
+  for (const [k, v] of Object.entries(obj as Record<string, unknown>)) {
+    violations.push(...findEmptyElementsViolations(v, `${path}.${k}`));
+  }
+  return violations;
+}
+
 function collectCardTexts(elements: TestCardElement[]): string[] {
   const out: string[] = [];
   for (const el of elements) {
@@ -59,6 +131,24 @@ function collectCardTexts(elements: TestCardElement[]): string[] {
     }
   }
   return out;
+}
+
+/** 递归查找 label 完全匹配的 button，返回其 behaviors[0].value（用于断言按钮目标）。 */
+function findButtonValue(
+  elements: TestCardElement[],
+  label: string,
+): Record<string, unknown> | undefined {
+  for (const el of elements) {
+    if (el.tag === 'button' && (el.text?.content ?? '') === label) {
+      const behaviors = el.behaviors as Array<{ value?: Record<string, unknown> }> | undefined;
+      return behaviors?.[0]?.value;
+    }
+    for (const col of el.columns ?? []) {
+      const found = findButtonValue(col.elements ?? [], label);
+      if (found) return found;
+    }
+  }
+  return undefined;
 }
 function createBackgroundRunningRunner(events: AgentEvent[]) {
   let release: () => void = () => {};
@@ -88,12 +178,11 @@ beforeEach(() => {
   tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'lark-router-test-'));
 });
 afterEach(() => {
-  fs.rmSync(tmpDir, { recursive: true, force: true });
+  rmRf(tmpDir);
 });
 
 function createRouter(overrides?: {
   runner?: Runner;
-  output?: Partial<AppConfig['output']>;
   idle?: Partial<AppConfig['idle']>;
 
   exitHandler?: () => void;
@@ -113,12 +202,6 @@ function createRouter(overrides?: {
     claude: {
       model: 'claude-opus-4-8',
       stopGraceMs: 5000,
-    },
-    output: {
-      showThinking: true,
-      showToolUse: false,
-      showToolResult: false,
-      ...overrides?.output,
     },
     ...(overrides?.idle ? { idle: { watchdogMinutes: 15, ...overrides.idle } } : {}),
     ...(overrides?.defaultAgent ? { defaultAgent: overrides.defaultAgent } : {}),
@@ -235,7 +318,7 @@ describe('CommandRouter', () => {
     const card = connector._sent[0].input as { card: object };
     const cardStr = JSON.stringify(card.card);
     // 2.0 cards MUST NOT mix in 1.x `tag:"action"` containers (200861 root cause).
-    expect(cardStr).not.toMatch(/"tag"\s*:\s*"action"[^}]*"actions"/);
+    expectNoV1ActionContainer(cardStr);
   });
 
   // 2026-07-04: /help 卡片重构
@@ -280,14 +363,14 @@ describe('CommandRouter', () => {
     // 文本组至少含 /cd /ls /resume /order
     expect(textGroup.length).toBeGreaterThanOrEqual(4);
 
-    // /ls 文本行标签应为 `/ls [dir]`（不再 [A-Z|0-9|#]）
+    // /ls 文本行标签应为 `/ls [dir|file]`（支持目录与文件；不再 [A-Z|0-9|#]）
     const lsTextRow = textGroup.find((d) => {
       const content = (d as { text?: { content?: string } }).text?.content ?? '';
       return content.includes('/ls');
     });
     expect(lsTextRow).toBeDefined();
     const lsContent = (lsTextRow as { text: { content: string } }).text.content;
-    expect(lsContent).toMatch(/\/ls \[dir\]/);
+    expect(lsContent).toMatch(/\/ls \[dir\|file\]/);
     expect(lsContent).not.toMatch(/\[A-Z/);
   });
 
@@ -416,23 +499,27 @@ describe('CommandRouter', () => {
     expect(entry?.sessions.get('claude')).toBe('');
   });
 
-  it('/cd resolves symlinks so cwd matches Claude JSONL cwd field (2026-06-21)', async () => {
-    // On macOS `/tmp` is a symlink to `/private/tmp`. Claude writes the
-    // symlink-resolved cwd into JSONL. If `/cd /tmp/foo` stores `/tmp/foo`
-    // (not resolved), session lookups never find
-    // matching sessions. Regression: 2026-06-21 /active paths.
-    const real = path.join(tmpDir, 'real-target');
-    fs.mkdirSync(real);
-    const link = path.join(tmpDir, 'alias-link');
-    fs.symlinkSync(real, link);
+  // 目录 symlink 是 POSIX 原语（win32 创建目录链接需要特权/ Junction 语义），门控
+  it.skipIf(isWin32(currentPlatform))(
+    '/cd resolves symlinks so cwd matches Claude JSONL cwd field (2026-06-21)',
+    async () => {
+      // On macOS `/tmp` is a symlink to `/private/tmp`. Claude writes the
+      // symlink-resolved cwd into JSONL. If `/cd /tmp/foo` stores `/tmp/foo`
+      // (not resolved), session lookups never find
+      // matching sessions. Regression: 2026-06-21 /active paths.
+      const real = path.join(tmpDir, 'real-target');
+      fs.mkdirSync(real);
+      const link = path.join(tmpDir, 'alias-link');
+      fs.symlinkSync(real, link);
 
-    const { router, sessionStore } = createRouter();
-    await router.handle(`/cd ${link}`, ctx);
+      const { router, sessionStore } = createRouter();
+      await router.handle(`/cd ${link}`, ctx);
 
-    // sessionStore cwd must be the resolved target, not the symlink.
-    expect(sessionStore.getCwd('user1')).toBe(fs.realpathSync(real));
-    expect(sessionStore.getCwd('user1')).not.toBe(link);
-  });
+      // sessionStore cwd must be the resolved target, not the symlink.
+      expect(sessionStore.getCwd('user1')).toBe(fs.realpathSync(real));
+      expect(sessionStore.getCwd('user1')).not.toBe(link);
+    },
+  );
 
   it('/cd nonexistent path returns error', async () => {
     const { router, sessionStore, connector } = createRouter();
@@ -533,7 +620,7 @@ describe('CommandRouter', () => {
     const cardStr = JSON.stringify((connector._sent[0].input as { card: object }).card);
     expect(cardStr).toContain('"schema":"2.0"');
     // 2.0 cards MUST NOT mix in 1.x `tag:"action"` containers (200861 root cause).
-    expect(cardStr).not.toMatch(/"tag"\s*:\s*"action"[^}]*"actions"/);
+    expectNoV1ActionContainer(cardStr);
     // ls.browse buttons use 2.0 behaviors, not 1.x `value`
     expect(cardStr).toContain('"cmd":"ls.browse"');
   });
@@ -659,17 +746,157 @@ describe('CommandRouter', () => {
     // (we're inside parent now, so parent of parent is different)
   });
 
-  it('/ls shows "返回" button when viewing subdirectory', async () => {
+  it('/ls <dir> 是浏览起点：起点卡片不显示「返回」（不再回 workspace cwd）', async () => {
     const { router, sessionStore, connector } = createRouter();
     fs.mkdirSync(path.join(tmpDir, 'subdir'));
     sessionStore.setCwd('user1', fs.realpathSync(tmpDir));
 
-    // /ls subdir should show a "返回" button to go back to cwd
+    // `/ls subdir` 的起点就是 subdir 本身 → 无「返回」可点
     await router.handle('/ls subdir', ctx);
     const cardStr = JSON.stringify((connector._sent[0].input as { card: object }).card);
+    expect(cardStr).not.toContain('返回');
+    // 「切换」语义仍相对 cwd（把工作目录切到当前浏览目录）
+    expect(cardStr).toContain('切换');
+  });
 
-    // Should have a 返回 button
-    expect(cardStr).toContain('返回');
+  it('/ls 深入子目录后「返回」回到 /ls 指定目录，而非 workspace cwd', async () => {
+    const { router, sessionStore, connector } = createRouter();
+    const rootDir = path.join(tmpDir, 'a');
+    const deepDir = path.join(rootDir, 'b');
+    fs.mkdirSync(deepDir, { recursive: true });
+    const cwd = fs.realpathSync(tmpDir);
+    const rootReal = fs.realpathSync(rootDir);
+    const deepReal = fs.realpathSync(deepDir);
+    sessionStore.setCwd('user1', cwd);
+
+    await router.handle('/ls a', ctx);
+    const startCard = (
+      connector._sent[0].input as { card: { body: { elements: TestCardElement[] } } }
+    ).card;
+    // 起点（= /ls 指定的 a）没有「返回」
+    expect(findButtonValue(startCard.body.elements, '返回')).toBeUndefined();
+
+    // 用真实卡片上的「📁 b」按钮进入 a/b —— 顺带验证 root 一路透传
+    const bButton = findButtonValue(startCard.body.elements, '📁 b');
+    expect(bButton).toMatchObject({ cmd: 'ls.browse', path: deepReal, root: rootReal });
+    await router.handleCardAction(bButton as never, ctx);
+
+    const deepCard = connector._cards.at(-1) as { body: { elements: TestCardElement[] } };
+    const backValue = findButtonValue(deepCard.body.elements, '返回');
+    expect(backValue).toBeDefined();
+    // 「返回」目标是 /ls 指定的目录 a，而不是 workspace cwd
+    expect(backValue).toMatchObject({ cmd: 'ls.browse', path: rootReal, root: rootReal });
+    expect(backValue!.path).not.toBe(cwd);
+    // 「刷新」同样带着 root（翻页/刷新不会把起点丢掉）
+    expect(findButtonValue(deepCard.body.elements, '刷新')).toMatchObject({
+      path: deepReal,
+      root: rootReal,
+    });
+
+    // 点「返回」→ 回到 a（又是起点卡片，无「返回」）
+    await router.handleCardAction(backValue as never, ctx);
+    const backCard = connector._cards.at(-1) as {
+      body: { elements: TestCardElement[] };
+      header: { title: { content: string } };
+    };
+    expect(backCard.header.title.content).toContain('a');
+    expect(findButtonValue(backCard.body.elements, '返回')).toBeUndefined();
+  });
+
+  it('/ls（无参数）进入子目录后「返回」回到 cwd（起点 = cwd，行为不变）', async () => {
+    const { router, sessionStore, connector } = createRouter();
+    const subDir = path.join(tmpDir, 'sub');
+    fs.mkdirSync(subDir);
+    const cwd = fs.realpathSync(tmpDir);
+    sessionStore.setCwd('user1', cwd);
+
+    await router.handle('/ls', ctx);
+    const startCard = (
+      connector._sent[0].input as { card: { body: { elements: TestCardElement[] } } }
+    ).card;
+    expect(findButtonValue(startCard.body.elements, '返回')).toBeUndefined();
+
+    const subButton = findButtonValue(startCard.body.elements, '📁 sub');
+    expect(subButton).toMatchObject({ cmd: 'ls.browse', path: fs.realpathSync(subDir), root: cwd });
+    await router.handleCardAction(subButton as never, ctx);
+
+    const subCard = connector._cards.at(-1) as { body: { elements: TestCardElement[] } };
+    expect(findButtonValue(subCard.body.elements, '返回')).toMatchObject({
+      cmd: 'ls.browse',
+      path: cwd,
+      root: cwd,
+    });
+  });
+
+  it('test_anchor_ls_switch_keeps_browse_root：切换 cwd 后再「返回」仍回 /ls 起点（不回切换到的目录）', async () => {
+    // 2026-09-10 用户反馈：/ls 进入子目录 → 点「切换」（改 cwd）→ 再点「返回」，
+    // 回到了刚切换到的目录，而不是 /ls 最初的起点。根因：ls.switch 按钮 value
+    // 没带 root，handleLsSwitch 重新渲染时把浏览起点重置成了新 cwd。
+    const { router, sessionStore, connector } = createRouter();
+    const deepDir = path.join(tmpDir, 'sub', 'deep');
+    fs.mkdirSync(deepDir, { recursive: true });
+    const cwd = fs.realpathSync(tmpDir);
+    const subReal = fs.realpathSync(path.join(tmpDir, 'sub'));
+    const deepReal = fs.realpathSync(deepDir);
+    sessionStore.setCwd('user1', cwd);
+
+    // /ls（起点 = cwd）→ sub → deep：root 一路透传
+    await router.handle('/ls', ctx);
+    const startCard = (
+      connector._sent[0].input as { card: { body: { elements: TestCardElement[] } } }
+    ).card;
+    await router.handleCardAction(findButtonValue(startCard.body.elements, '📁 sub') as never, ctx);
+    const subCard = connector._cards.at(-1) as { body: { elements: TestCardElement[] } };
+    await router.handleCardAction(findButtonValue(subCard.body.elements, '📁 deep') as never, ctx);
+
+    // deep 卡上的「切换」必须带 root = /ls 起点 cwd（bug 时缺这个字段）
+    const deepCard = connector._cards.at(-1) as { body: { elements: TestCardElement[] } };
+    const switchValue = findButtonValue(deepCard.body.elements, '切换');
+    expect(switchValue).toMatchObject({ cmd: 'ls.switch', path: deepReal, root: cwd });
+
+    await router.handleCardAction(switchValue as never, ctx);
+    expect(sessionStore.getCwd('user1')).toBe(deepReal);
+
+    // 切换后的卡片仍以 cwd 之后的**原始起点**为 root：「返回」指向 cwd 而非 deep
+    const switchedCard = connector._cards.at(-1) as { body: { elements: TestCardElement[] } };
+    expect(findButtonValue(switchedCard.body.elements, '返回')).toMatchObject({
+      cmd: 'ls.browse',
+      path: cwd,
+      root: cwd,
+    });
+    // 「刷新」/「上级」同样带着原始 root（翻页、导航不丢起点）
+    expect(findButtonValue(switchedCard.body.elements, '刷新')).toMatchObject({
+      path: deepReal,
+      root: cwd,
+    });
+    expect(findButtonValue(switchedCard.body.elements, '上级')).toMatchObject({
+      path: subReal,
+      root: cwd,
+    });
+
+    // 切换后再往上走一级，此刻 targetDir 已 ≠ 刚切换到的目录，但「返回」仍回
+    // /ls 起点（cwd）——旧实现对这里会回到 deep（切换到的目录）
+    await router.handleCardAction(
+      findButtonValue(switchedCard.body.elements, '上级') as never,
+      ctx,
+    );
+    const upCard = connector._cards.at(-1) as {
+      body: { elements: TestCardElement[] };
+      header: { title: { content: string } };
+    };
+    expect(upCard.header.title.content).toContain('sub');
+    const backValue = findButtonValue(upCard.body.elements, '返回');
+    expect(backValue).toMatchObject({ cmd: 'ls.browse', path: cwd, root: cwd });
+    expect(backValue!.path).not.toBe(deepReal);
+
+    // 点「返回」→ 回到 /ls 起点（cwd），起点卡片不再显示「返回」
+    await router.handleCardAction(backValue as never, ctx);
+    const backCard = connector._cards.at(-1) as {
+      body: { elements: TestCardElement[] };
+      header: { title: { content: string } };
+    };
+    expect(backCard.header.title.content).toContain(path.basename(cwd));
+    expect(findButtonValue(backCard.body.elements, '返回')).toBeUndefined();
   });
 
   it('/ls pagination: every column in column_set has tag="column" (regression: ErrCode 200621)', async () => {
@@ -685,25 +912,7 @@ describe('CommandRouter', () => {
     const card = input.card;
 
     // Recursively assert: every column in every column_set has tag === 'column'
-    const violations: string[] = [];
-    function checkColumnTags(els: TestCardElement[], path: string): void {
-      for (let i = 0; i < els.length; i++) {
-        const el = els[i];
-        const p = `${path}[${i}]`;
-        if (el.tag === 'column_set' && el.columns) {
-          for (let j = 0; j < el.columns.length; j++) {
-            const col = el.columns[j] as Record<string, unknown>;
-            const cp = `${p}.columns[${j}]`;
-            if (col.tag !== 'column') {
-              violations.push(`${cp}.tag is "${col.tag ?? 'undefined'}", expected "column"`);
-            }
-            if (col.elements) checkColumnTags(col.elements as TestCardElement[], `${cp}.elements`);
-          }
-        }
-      }
-    }
-    checkColumnTags(card.body.elements, 'body.elements');
-    expect(violations).toEqual([]);
+    expect(findColumnTagViolations(card.body.elements, 'body.elements')).toEqual([]);
   });
 
   it('/ls pagination: no column with empty elements (regression: ErrCode 200621)', async () => {
@@ -720,27 +929,7 @@ describe('CommandRouter', () => {
     const card = input.card;
 
     // Recursively assert: no elements[] or columns[].elements[] is empty
-    const violations: string[] = [];
-    function checkElements(els: TestCardElement[], path: string): void {
-      for (let i = 0; i < els.length; i++) {
-        const el = els[i];
-        const p = `${path}[${i}]`;
-        if (el.columns) {
-          for (let j = 0; j < el.columns.length; j++) {
-            const col = el.columns[j];
-            const cp = `${p}.columns[${j}]`;
-            if (!col.elements || col.elements.length === 0) {
-              violations.push(`${cp}.elements is empty (tag=${el.tag || 'none'})`);
-            } else {
-              checkElements(col.elements, `${cp}.elements`);
-            }
-          }
-        }
-        // Also check direct elements on the element itself (e.g. button elements)
-      }
-    }
-    checkElements(card.body.elements, 'body.elements');
-    expect(violations).toEqual([]);
+    expect(findEmptyColumnElementViolations(card.body.elements, 'body.elements')).toEqual([]);
 
     // First page should NOT have 上一页 (hasPrev=false), but SHOULD have 下一页
     const cardStr = JSON.stringify(card);
@@ -804,22 +993,7 @@ describe('CommandRouter', () => {
     await router.handle('/ls', ctx);
     const input = connector._sent[0].input as { card: { body: { elements: TestCardElement[] } } };
 
-    const violations: string[] = [];
-    function checkAll(obj: unknown, path: string): void {
-      if (!obj || typeof obj !== 'object') return;
-      if (Array.isArray(obj)) {
-        if (obj.length === 0 && path.endsWith('elements')) {
-          violations.push(`${path} is empty`);
-        }
-        obj.forEach((v, i) => checkAll(v, `${path}[${i}]`));
-        return;
-      }
-      for (const [k, v] of Object.entries(obj as Record<string, unknown>)) {
-        checkAll(v, `${path}.${k}`);
-      }
-    }
-    checkAll(input.card, 'card');
-    expect(violations).toEqual([]);
+    expect(findEmptyElementsViolations(input.card, 'card')).toEqual([]);
   });
 
   it('/ws save/use/remove/list with card (§6.3)', async () => {
@@ -890,7 +1064,7 @@ describe('CommandRouter', () => {
     const input = connector._sent[1].input as { card: TestCard };
     expect(input.card).toBeDefined();
     // 200861 铁律：2.0 卡片不得出现 tag:action + actions
-    expect(JSON.stringify(input.card)).not.toMatch(/"tag"\s*:\s*"action"[^}]*"actions"/);
+    expectNoV1ActionContainer(JSON.stringify(input.card));
 
     const elements = input.card.body!.elements ?? [];
     const buttons = elements
@@ -982,7 +1156,7 @@ describe('CommandRouter', () => {
     const input = connector._sent[connector._sent.length - 1].input as { card: TestCard };
     expect(input.card).toBeDefined();
     // 200861 铁律：2.0 卡片不得出现 tag:action + actions
-    expect(JSON.stringify(input.card)).not.toMatch(/"tag"\s*:\s*"action"[^}]*"actions"/);
+    expectNoV1ActionContainer(JSON.stringify(input.card));
 
     const elements = input.card.body!.elements ?? [];
     // 新布局：1(cwd) + 3(sort指示: hr+column_set+hr) + 5*3(行) - 1(末行 hr 被 pop) + 1(hr) + 1(分页column_set) = 19
@@ -1721,7 +1895,7 @@ describe('CommandRouter', () => {
       );
 
       const cardStr = lastSendResultJson(sendResult);
-      expect(cardStr).not.toMatch(/"tag"\s*:\s*"action"[^}]*"actions"/);
+      expectNoV1ActionContainer(cardStr);
     });
 
     it('test_anchor_resume_compact_card_action_dispatches_to_bridge', async () => {
@@ -2458,19 +2632,22 @@ describe('CommandRouter', () => {
       expect(connector._cards.length).toBe(0);
     });
 
-    it('ls.switch canonicalizes a symlink target via realpath (not the link path)', async () => {
-      const { router, sessionStore, connector } = createRouter();
-      sessionStore.setCwd('user1', fs.realpathSync(tmpDir));
-      const real = path.join(tmpDir, 'real-dir');
-      const link = path.join(tmpDir, 'link-to-real');
-      fs.mkdirSync(real);
-      fs.symlinkSync(real, link);
-      await router.handleCardAction({ cmd: 'ls.switch', path: link }, ctx);
-      expect(sessionStore.getCwd('user1')).toBe(fs.realpathSync(real));
-      expect(sessionStore.getCwd('user1')).not.toBe(link);
-      // Success path DOES update the card in place (contrast with failure cases).
-      expect(connector._cards.length).toBe(1);
-    });
+    it.skipIf(isWin32(currentPlatform))(
+      'ls.switch canonicalizes a symlink target via realpath (not the link path)',
+      async () => {
+        const { router, sessionStore, connector } = createRouter();
+        sessionStore.setCwd('user1', fs.realpathSync(tmpDir));
+        const real = path.join(tmpDir, 'real-dir');
+        const link = path.join(tmpDir, 'link-to-real');
+        fs.mkdirSync(real);
+        fs.symlinkSync(real, link);
+        await router.handleCardAction({ cmd: 'ls.switch', path: link }, ctx);
+        expect(sessionStore.getCwd('user1')).toBe(fs.realpathSync(real));
+        expect(sessionStore.getCwd('user1')).not.toBe(link);
+        // Success path DOES update the card in place (contrast with failure cases).
+        expect(connector._cards.length).toBe(1);
+      },
+    );
 
     it('ls.switch allows a deeper nested path', async () => {
       const { router, sessionStore } = createRouter();
@@ -2716,26 +2893,7 @@ describe('CommandRouter', () => {
       const input = connector._sent[0].input as { card: { body: { elements: TestCardElement[] } } };
       const card = input.card;
 
-      const violations: string[] = [];
-      function checkColumnTags(els: TestCardElement[], path: string): void {
-        for (let i = 0; i < els.length; i++) {
-          const el = els[i];
-          const p = `${path}[${i}]`;
-          if (el.tag === 'column_set' && el.columns) {
-            for (let j = 0; j < el.columns.length; j++) {
-              const col = el.columns[j] as Record<string, unknown>;
-              const cp = `${p}.columns[${j}]`;
-              if (col.tag !== 'column') {
-                violations.push(`${cp}.tag is "${col.tag ?? 'undefined'}", expected "column"`);
-              }
-              if (col.elements)
-                checkColumnTags(col.elements as TestCardElement[], `${cp}.elements`);
-            }
-          }
-        }
-      }
-      checkColumnTags(card.body.elements, 'body.elements');
-      expect(violations).toEqual([]);
+      expect(findColumnTagViolations(card.body.elements, 'body.elements')).toEqual([]);
     });
 
     it('/ws pagination: no column with empty elements (regression: ErrCode 200621)', async () => {
@@ -2748,26 +2906,7 @@ describe('CommandRouter', () => {
       const input = connector._sent[0].input as { card: { body: { elements: TestCardElement[] } } };
       const card = input.card;
 
-      const violations: string[] = [];
-      function checkElements(els: TestCardElement[], path: string): void {
-        for (let i = 0; i < els.length; i++) {
-          const el = els[i];
-          const p = `${path}[${i}]`;
-          if (el.columns) {
-            for (let j = 0; j < el.columns.length; j++) {
-              const col = el.columns[j];
-              const cp = `${p}.columns[${j}]`;
-              if (!col.elements || col.elements.length === 0) {
-                violations.push(`${cp}.elements is empty (tag=${el.tag || 'none'})`);
-              } else {
-                checkElements(col.elements, `${cp}.elements`);
-              }
-            }
-          }
-        }
-      }
-      checkElements(card.body.elements, 'body.elements');
-      expect(violations).toEqual([]);
+      expect(findEmptyColumnElementViolations(card.body.elements, 'body.elements')).toEqual([]);
 
       // First page: no ⬅ (prev), has ➡ (next)
       const cardStr = JSON.stringify(card);
@@ -2805,7 +2944,7 @@ describe('CommandRouter', () => {
       const input = connector._sent[0].input as { card: TestCard };
       const cardStr = JSON.stringify(input.card);
       // 200861 regression: no V1 action containers
-      expect(cardStr).not.toMatch(/"tag"\s*:\s*"action"[^}]*"actions"/);
+      expectNoV1ActionContainer(cardStr);
       // No pagination bar when count <= page size
       expect(cardStr).not.toContain('"content":"⬅"');
       expect(cardStr).not.toContain('"content":"➡"');
@@ -3074,7 +3213,8 @@ describe('CommandRouter', () => {
     expect(content).toContain('**🤖 Claude**');
     // 2026-07-04: workspace 分组已删除（无默认目录概念，必须用户 /cd 指定）
     expect(content).not.toContain('**📂 工作区**');
-    expect(content).toContain('**📤 输出**');
+    // 2026-09-04: thinking/tool 展示不再可配置（始终开启），输出分组已删除
+    expect(content).not.toContain('**📤 输出**');
     expect(content).toContain('**📝 日志**');
     // Check user-friendly field labels
     // 2026-07-05: claude.binary（执行程序）已从卡片删除 — 有了 defaultAgent，binary 是 agent 实现细节
@@ -3099,7 +3239,7 @@ describe('CommandRouter', () => {
     const cardStr = JSON.stringify((connector._sent[0].input as { card: object }).card);
     expect(cardStr).toContain('"schema":"2.0"');
     // 2.0 cards MUST NOT mix in 1.x `tag:"action"` containers (200861 root cause).
-    expect(cardStr).not.toMatch(/"tag"\s*:\s*"action"[^}]*"actions"/);
+    expectNoV1ActionContainer(cardStr);
     // config callbacks use 2.0 behaviors
     expect(cardStr).toContain('"cmd":"config.');
   });
@@ -3122,46 +3262,19 @@ describe('CommandRouter', () => {
   // save 才一次性写盘，cancel 清空 pendingConfig
 
   it('config.toggle updates pendingConfig without writing disk', async () => {
-    const { router, connector } = createRouter({ output: { showThinking: false } });
+    const { router, connector } = createRouter();
 
-    // 点击 toggle 按钮（config.toggle + key）
-    await router.handleCardAction({ cmd: 'config.toggle', key: 'output.showThinking' }, ctx);
+    // 点击 toggle（inboundMedia.enabled 默认 true → false）
+    await router.handleCardAction({ cmd: 'config.toggle', key: 'inboundMedia.enabled' }, ctx);
 
     // 2026-07-04: 原地更新路径走 connector.updateCard，卡片进 _cards 而非 _sent
     expect(connector._sent.length).toBe(0);
     expect(connector._cards.length).toBeGreaterThan(0);
-    const card = connector._cards[connector._cards.length - 1] as {
-      body?: { elements?: object[] };
-    };
-    const cardStr = JSON.stringify(card.body?.elements);
-    expect(cardStr).toContain('✅ 已开启'); // toggle 后应为开启状态
 
-    // pendingConfig 应有值
+    // pendingConfig 只改内存，不写盘
     expect(router.pendingConfig).not.toBeNull();
-  });
-
-  // 2026-07-04 回归测试：toggle 必须可逆（on→off→on）
-  // 用户报告：显示工具调用 点击已开启→已关闭，再点击已关闭无法变回已开启
-  it('config.toggle is reversible (on→off→on)', async () => {
-    const { router, connector } = createRouter({ output: { showToolUse: true } });
-
-    // 第一次 toggle: true → false
-    await router.handleCardAction({ cmd: 'config.toggle', key: 'output.showToolUse' }, ctx);
-    let card = connector._cards[connector._cards.length - 1] as { body?: { elements?: object[] } };
-    let cardStr = JSON.stringify(card.body?.elements);
-    expect(cardStr).toContain('⚪ 已关闭');
-
-    // 第二次 toggle: false → true（必须能切回）
-    await router.handleCardAction({ cmd: 'config.toggle', key: 'output.showToolUse' }, ctx);
-    card = connector._cards[connector._cards.length - 1] as { body?: { elements?: object[] } };
-    cardStr = JSON.stringify(card.body?.elements);
-    expect(cardStr).toContain('✅ 已开启');
-
-    // 第三次 toggle: true → false（验证多次切换稳定）
-    await router.handleCardAction({ cmd: 'config.toggle', key: 'output.showToolUse' }, ctx);
-    card = connector._cards[connector._cards.length - 1] as { body?: { elements?: object[] } };
-    cardStr = JSON.stringify(card.body?.elements);
-    expect(cardStr).toContain('⚪ 已关闭');
+    expect(router.pendingConfig!.inboundMedia.enabled).toBe(false);
+    expect(fs.existsSync(path.join(tmpDir, 'config.yaml'))).toBe(false);
   });
 
   it('config.set reads option into pendingConfig', async () => {
@@ -3231,30 +3344,27 @@ describe('CommandRouter', () => {
   // 1) 两次连续 toggle 后 pendingConfig 反映两次翻转（true→false→true）
   // 2) 两次 toggle 都各自触发了一次卡片更新（_cards 长度 +2）
   it('config.toggle serializes concurrent actions through configActionQueue', async () => {
-    const { router, connector } = createRouter({ output: { showToolUse: true } });
+    const { router, connector } = createRouter();
     const cardsBefore = connector._cards.length;
 
     // 并发触发两次 toggle，不 await 第一个（模拟用户快速双击）
-    const p1 = router.handleCardAction({ cmd: 'config.toggle', key: 'output.showToolUse' }, ctx);
-    const p2 = router.handleCardAction({ cmd: 'config.toggle', key: 'output.showToolUse' }, ctx);
+    const p1 = router.handleCardAction({ cmd: 'config.toggle', key: 'inboundMedia.enabled' }, ctx);
+    const p2 = router.handleCardAction({ cmd: 'config.toggle', key: 'inboundMedia.enabled' }, ctx);
     await Promise.all([p1, p2]);
 
     // 两次 toggle = 回到初始状态 (true → false → true)
-    expect(router.pendingConfig?.output.showToolUse).toBe(true);
+    expect(router.pendingConfig?.inboundMedia.enabled).toBe(true);
     // 两次 toggle 各自触发一次卡片更新
     expect(connector._cards.length).toBe(cardsBefore + 2);
   });
 
   it('config.save writes all pending changes to disk', async () => {
-    // 用 idle.watchdogMinutes 作为数值型 config key 测 save 路径
-    const { router, connector: _connector } = createRouter({
-      output: { showThinking: false },
-      idle: { watchdogMinutes: 10 },
-    });
+    // 用 inboundMedia.enabled（boolean）+ idle.watchdogMinutes（数值）测 save 路径
+    const { router, connector: _connector } = createRouter({ idle: { watchdogMinutes: 10 } });
     const configPath = router.configPath;
 
-    // 先 toggle
-    await router.handleCardAction({ cmd: 'config.toggle', key: 'output.showThinking' }, ctx);
+    // 先 toggle boolean（默认 true → false）
+    await router.handleCardAction({ cmd: 'config.toggle', key: 'inboundMedia.enabled' }, ctx);
     // 再修改 input
     await router.handleCardAction(
       {
@@ -3273,7 +3383,7 @@ describe('CommandRouter', () => {
 
     // 磁盘文件应一次性写入所有改动（configPath 存在且包含更新后的值）
     const diskContent = fs.readFileSync(configPath, 'utf-8');
-    expect(diskContent).toContain('showThinking: true');
+    expect(diskContent).toContain('enabled: false');
     expect(diskContent).toContain('watchdogMinutes: 30');
 
     // pendingConfig 应清空
@@ -3521,7 +3631,7 @@ describe('CommandRouter', () => {
     expect(finalCard).toContain('success');
   });
 
-  it('hides tool_use when showToolUse is false', async () => {
+  it('always shows tool_use on the streaming run card (no output config)', async () => {
     const events: AgentEvent[] = [
       { type: 'system', subtype: 'init', session_id: 's1', cwd: tmpDir, model: 'opus' },
       {
@@ -3533,7 +3643,6 @@ describe('CommandRouter', () => {
     ];
     const { router, sessionStore, connector } = createRouter({
       runner: createStubRunner({ mode: 'streaming', events, withStatusInfo: true }),
-      output: { showToolUse: false },
     });
     sessionStore.setCwd('user1', fs.realpathSync(tmpDir));
     await router.handle('hello', ctx);
@@ -3541,7 +3650,7 @@ describe('CommandRouter', () => {
     expect(connector._sent.length).toBeGreaterThan(0);
     const finalCard = JSON.stringify(connector._cards.at(-1));
     expect(finalCard).toContain('done');
-    expect(finalCard).not.toContain('Read');
+    expect(finalCard).toContain('Read');
   });
 
   it('/active shows empty state when no sessions are active', async () => {
@@ -3602,7 +3711,6 @@ describe('/active card pagination', () => {
     const config: AppConfig = AppConfigSchema.parse({
       feishu: { appId: 'test', appSecret: 'test' },
       claude: { model: 'claude-opus-4-8', stopGraceMs: 5000 },
-      output: { showThinking: true, showToolUse: false, showToolResult: false },
     });
     const bridge = new Bridge({
       runner,
@@ -3754,7 +3862,8 @@ describe('/active card pagination', () => {
     await router.handle('/active', { userId: 'user1', chatId: 'chat1', messageId: 'msg1' });
     const card = (connector._sent[0].input as { card?: { body?: { elements?: unknown[] } } }).card!;
     const elements = card.body?.elements ?? [];
-    // 页信息 1 + Agent 头 1 + 15*4 + Bash 头 1 + 5*4 + 分页栏 1 = 84
+    // Agent 头 1 + 15*4 + Bash 头 1 + 5*4 + 分页栏 2 = 84
+    // （2026-09-10 窄屏重设计：分页栏拆成「文案整行 div + 控件 column_set」两元素）
     expect(elements.length).toBe(84);
     expect(elements.length).toBeLessThanOrEqual(90);
   });
@@ -3781,7 +3890,6 @@ describe('P0: /active card must use CardKit 2.0 (not 1.x action container)', () 
     const config: AppConfig = AppConfigSchema.parse({
       feishu: { appId: 'test', appSecret: 'test' },
       claude: { model: 'claude-opus-4-8', stopGraceMs: 5000 },
-      output: { showThinking: true, showToolUse: false, showToolResult: false },
     });
     const bridge = new Bridge({
       runner,
@@ -3838,7 +3946,7 @@ describe('P0: /active card must use CardKit 2.0 (not 1.x action container)', () 
 
     const cardStr = JSON.stringify(response.card);
     // 2.0 cards MUST NOT mix in 1.x `tag:"action"` containers (200861 root cause)
-    expect(cardStr).not.toMatch(/"tag"\s*:\s*"action"[^}]*"actions"/);
+    expectNoV1ActionContainer(cardStr);
   });
 
   it('test_anchor_kimi_config_clears_runner_cache', async () => {
@@ -3849,7 +3957,6 @@ describe('P0: /active card must use CardKit 2.0 (not 1.x action container)', () 
     const config: AppConfig = AppConfigSchema.parse({
       feishu: { appId: 'test', appSecret: 'test' },
       claude: { model: 'claude-opus-4-8', stopGraceMs: 5000 },
-      output: { showThinking: true, showToolUse: false, showToolResult: false },
       defaultAgent: 'kimi',
     });
 
@@ -3989,7 +4096,7 @@ describe('config switch agent sends Resume card', () => {
     sessionStore.setCwd('user1', dir);
 
     // Toggle a non-agent config and save
-    await router.handleCardAction({ cmd: 'config.toggle', key: 'output.showThinking' }, ctx);
+    await router.handleCardAction({ cmd: 'config.toggle', key: 'inboundMedia.enabled' }, ctx);
     const sentBefore = connector._sent.length;
     await router.handleCardAction({ cmd: 'config.save' }, ctx);
 
@@ -4022,5 +4129,34 @@ describe('config switch agent sends Resume card', () => {
     expect(switchCards.length).toBeGreaterThanOrEqual(1);
     const header = (switchCards[0].input as { card?: TestCard }).card?.header?.title?.content ?? '';
     expect(header).toContain('Kimi');
+  });
+});
+
+// ===========================================================================
+// W2.1 命令名单一致性（防再漂移）：直返/immediate/审批 spec 三份知识共享
+// 同一命令名来源。历史上四份拷贝曾两次漂移（order.textInput 漏 immediate、
+// answer 家族漏直返），此测试钉住「单一事实源 + 清单间包含关系」。
+// ===========================================================================
+describe('W2.1 command list consistency (direct-return / immediate / approval specs)', () => {
+  it('direct-return list is a subset of the immediate list', () => {
+    for (const cmd of DIRECT_RETURN_CMDS) {
+      expect(isImmediateAction(cmd), `direct-return cmd '${cmd}' must be immediate`).toBe(true);
+    }
+  });
+
+  it('every approval spec key is in both direct-return and immediate lists', () => {
+    expect(APPROVAL_ACTION_CMDS.length).toBeGreaterThanOrEqual(7);
+    for (const cmd of APPROVAL_ACTION_CMDS) {
+      expect(DIRECT_RETURN_CMDS.has(cmd), `approval cmd '${cmd}' must be direct-return`).toBe(true);
+      expect(isImmediateAction(cmd), `approval cmd '${cmd}' must be immediate`).toBe(true);
+    }
+  });
+
+  it('known drift victims are covered (order.textInput / approval.answer family)', () => {
+    // 2026-08-12 两次事故的具体命令，防止「重构后意外收窄名单」回归。
+    expect(DIRECT_RETURN_CMDS.has('order.textInput')).toBe(true);
+    expect(DIRECT_RETURN_CMDS.has('approval.answerSubmit')).toBe(true);
+    expect(isImmediateAction('order.textInput')).toBe(true);
+    expect(isImmediateAction('approval.planFeedback')).toBe(true);
   });
 });

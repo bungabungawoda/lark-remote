@@ -7,7 +7,13 @@
  * sends a JSON line to stdin.
  */
 
-import { spawn, type ChildProcess } from 'node:child_process';
+import type { ChildProcess } from 'node:child_process';
+import {
+  spawnProcess,
+  mergeProcessEnv,
+  isWindowsCommandNotFoundLine,
+  useDetachedProcessGroup,
+} from '../../../platform/spawn.js';
 import { ProcessStopper } from '../process-stopper.js';
 import { getLogger } from '../../../logger/index.js';
 
@@ -34,6 +40,8 @@ export class JsonlRpcTransport {
   /** JSON lines buffered while stdin is under backpressure (bounded by callers). */
   private writeQueue: Buffer[] = [];
   private flushing = false;
+  /** §4.4 win32 嗅探嫌疑标记（双条件定性见下方 onExit）。 */
+  private commandNotFoundSeen = false;
 
   constructor(opts: {
     binary: string;
@@ -58,15 +66,19 @@ export class JsonlRpcTransport {
    */
   async start(events: TransportEvents): Promise<void> {
     this.events = events;
+    this.commandNotFoundSeen = false;
     // agent 是用户自己的可信二进制，provider 认证依赖 API key /
     // 自定义 provider 的 env_key，代理环境依赖 HTTP(S)_PROXY、TMPDIR 等；
     // 任何白名单收窄都会打断认证或网络。调用方 this.env 覆盖 process.env 同名键。
-    const childEnv: NodeJS.ProcessEnv = { ...process.env, ...this.env };
+    // env 覆盖必须大小写不敏感合并（win32 PATH/Path 双键防护，v2 §8.3）
+    const childEnv: NodeJS.ProcessEnv = mergeProcessEnv(process.env, this.env);
 
-    const proc = spawn(this.binary, this.args, {
+    const proc = spawnProcess(this.binary, this.args, {
       cwd: this.cwd,
       stdio: ['pipe', 'pipe', 'pipe'],
-      detached: true,
+      // posix 建新进程组（负 PID 组杀）；win32 不 detached（`.cmd` 垫片丢 stdio）
+      detached: useDetachedProcessGroup(),
+      windowsHide: true,
       env: childEnv,
     });
     this.proc = proc;
@@ -95,6 +107,16 @@ export class JsonlRpcTransport {
       const text = chunk.toString('utf-8');
       stderrBuf = (stderrBuf + text).slice(-MAX_STDERR_BYTES);
       getLogger().debug(`[jsonrpc-transport] stderr: ${text.trimEnd()}`);
+      // §4.4 win32 command-not-found 嗅探：命中只记嫌疑标记，不立即杀——
+      // agent 正常输出可能引用该错误文本（调试 Windows 报错场景），见行即杀
+      // 会误杀 run；定性由 onExit 的「标记 + 非零退出」双条件完成，真挂起由
+      // 上层超时兜底
+      if (isWindowsCommandNotFoundLine(text)) {
+        this.commandNotFoundSeen = true;
+        getLogger().error(
+          `[jsonrpc-transport] command not found suspected (win32 shim): ${text.trimEnd()}`,
+        );
+      }
     });
 
     // Stdout: line-split with 10MB line limit
@@ -137,7 +159,15 @@ export class JsonlRpcTransport {
           // ignore trailing incomplete line
         }
       }
-      const reason = signal ? `signal:${signal}` : `exit:${code}`;
+      // §4.4 双条件定性：嫌疑标记 + 非零正常退出 → command-not-found。
+      // reason 仅供日志/诊断，消费方不解析该字符串（baseOnClose 无参）。
+      let reason = signal ? `signal:${signal}` : `exit:${code}`;
+      if (this.commandNotFoundSeen && signal === null && code !== null && code !== 0) {
+        getLogger().error(
+          `[jsonrpc-transport] command not found confirmed (win32 shim): exit=${code} stderr=${stderrBuf.slice(-512)}`,
+        );
+        reason = `command_not_found:${reason}`;
+      }
       events.onClose(reason);
       getLogger().info(
         `[jsonrpc-transport] process exited pid=${proc.pid} code=${code} signal=${signal}`,

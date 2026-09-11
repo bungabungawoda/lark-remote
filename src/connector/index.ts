@@ -14,6 +14,7 @@ import { sleep } from '../common/sleep.js';
 import axios from 'axios';
 import fs from 'node:fs';
 import { silentlyUnlink } from '../common/fs.js';
+import { displayName } from '../platform/path.js';
 import https from 'node:https';
 import os from 'node:os';
 import path from 'node:path';
@@ -39,9 +40,10 @@ const noKeepAliveAgent = new https.Agent({ keepAlive: false });
  * 必须远小于用户连击间隔，否则同一按钮的连续点击会被当成"重复事件"丢弃：
  * - SDK 的 cardAction dedup eventId = `card:{messageId}:{operator.openId}:{actionId}`
  * - actionId = `tag|name|option|JSON.stringify(value)`，不含时间戳/事件序号
- * - config 卡片原地更新（updateCardInPlace），用户在同一张卡上连点 toggle：
+ * - config 卡片原地更新（updateCardInPlace），用户在同一张卡上重复触发
+ *   固定 value 的按钮（如 config.toggle）：
  *   messageId / operator / value 三段都相同 → eventId 完全相同 → 第二次点击被
- *   seenCache drop，toggle 不可逆（"显示工具结果"等开关第二次点击静默失效）。
+ *   seenCache drop，toggle 不可逆（第二次点击静默失效）。
  *
  * SDK 默认 12h 太长；60s 仍会误伤连击。300ms 挡飞书瞬时重投递（<100ms 级），
  * 放过用户连击（慢点两次通常 >500ms）。代价：削弱 message 秒级重投递防护——
@@ -557,7 +559,7 @@ export class FeishuConnector {
       );
     }
 
-    const fileName = filePath.split('/').pop() ?? 'file';
+    const fileName = displayName(filePath);
 
     // P2-18: capture the read stream so it can be destroyed on any failure
     // path. Without this, a token/upload/send failure leaks the fd (axios

@@ -27,11 +27,6 @@ describe('file upload size limit: 30MB', () => {
         stopGraceMs: 5000,
       },
       idle: { watchdogMinutes: 15 },
-      output: {
-        showThinking: true,
-        showToolUse: false,
-        showToolResult: false,
-      },
       logging: { level: 'info' },
       defaultAgent: 'claude',
     };
@@ -89,11 +84,6 @@ describe('file upload size limit: 30MB', () => {
         stopGraceMs: 5000,
       },
       idle: { watchdogMinutes: 15 },
-      output: {
-        showThinking: true,
-        showToolUse: false,
-        showToolResult: false,
-      },
       logging: { level: 'info' },
       defaultAgent: 'claude',
     };

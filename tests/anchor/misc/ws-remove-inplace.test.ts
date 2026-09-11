@@ -16,6 +16,7 @@ import {
   createStubConnector,
   createStubRunner,
 } from '../../lib/bridge-stubs.js';
+import { expectNoV1ActionContainer } from '../../lib/card-view.js';
 let tmpDir: string;
 let workspacePath: string;
 
@@ -40,7 +41,6 @@ function createRouter() {
       effort: 'medium',
       stopGraceMs: 5000,
     },
-    output: { showThinking: true, showToolUse: false, showToolResult: false },
   });
 
   const bridge = new Bridge({
@@ -119,7 +119,7 @@ describe('Anchor: ws.remove updates card in place', () => {
     //   (wide_screen_mode is a legitimate 2.0 config field — /ls and /order
     //   cards use it under schema:"2.0" — so it is NOT V1 residue.)
     expect(cardStr).toMatch(/"schema"\s*:\s*"2\.0"/);
-    expect(cardStr).not.toMatch(/"tag"\s*:\s*"action"[^}]*"actions"/);
+    expectNoV1ActionContainer(cardStr);
 
     // Assert 4: the refreshed /ws list card must NOT be sent as a brand-new
     //   message via sendWithRetry (that would duplicate the card instead of

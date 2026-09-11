@@ -11,9 +11,10 @@
  *   - `agent_settled` is ignored for compaction turns (no double result).
  */
 
-import type { AgentEvent, AssistantContent, ResultEvent } from '../../types.js';
+import type { AgentEvent, AssistantContent, NoticeEvent, ResultEvent } from '../../types.js';
 import {
   type PiRpcEvent,
+  type PiRpcCompactionEvent,
   type PiRpcMessageEndEvent,
   type PiRpcMessageStartEvent,
   type PiRpcMessageUpdateEvent,
@@ -43,8 +44,12 @@ export class PiRpcTranslator {
   private accOutput = 0;
   private accCacheRead = 0;
   private accCacheCreation = 0;
+  private accReasoning = 0;
   private lastTotalTokens: number | undefined;
   private hasUsage = false;
+
+  /** toolcall_start bookkeeping：占位不发事件，end 时补发完整 tool_use（C3.4）。 */
+  private pendingToolCall = false;
 
   /** Provider failure (stopReason="error") on the final assistant message. */
   private lastAssistantStopReason: string | undefined;
@@ -69,6 +74,7 @@ export class PiRpcTranslator {
       this.accOutput === 0 &&
       this.accCacheRead === 0 &&
       this.accCacheCreation === 0 &&
+      this.accReasoning === 0 &&
       this.lastTotalTokens === undefined
     ) {
       return undefined;
@@ -78,6 +84,8 @@ export class PiRpcTranslator {
       output_tokens: this.accOutput,
       cache_read_tokens: this.accCacheRead,
       cache_creation_tokens: this.accCacheCreation,
+      // 推理 token（pi usage.reasoning 累加）：> 0 才携带，缺省不展示。
+      ...(this.accReasoning > 0 ? { reasoning_tokens: this.accReasoning } : {}),
       ...(this.lastTotalTokens != null ? { total_tokens: this.lastTotalTokens } : {}),
     };
   }
@@ -122,9 +130,36 @@ export class PiRpcTranslator {
         }
         return [];
       }
+      case 'compaction_start': {
+        // 信息保真 C3.4：压缩过程用户可见（info 通知），不再静默。
+        const c = evt as PiRpcCompactionEvent;
+        return [
+          {
+            type: 'notice',
+            level: 'info',
+            code: 'compaction',
+            text: `上下文压缩中${c.reason ? `（${c.reason}）` : ''}`,
+            timestamp: new Date().toISOString(),
+          } as NoticeEvent,
+        ];
+      }
+      case 'compaction_end': {
+        // 压缩中止（aborted）是 warn：用户需要知道压缩未完成。
+        const c = evt as PiRpcCompactionEvent;
+        return [
+          {
+            type: 'notice',
+            level: c.aborted ? 'warn' : 'info',
+            code: 'compaction',
+            text: c.aborted ? `上下文压缩未完成：${c.errorMessage ?? '已中止'}` : '上下文压缩完成',
+            timestamp: new Date().toISOString(),
+          } as NoticeEvent,
+        ];
+      }
       default:
-        // turn_start/turn_end, agent_start/agent_end, compaction_start/end,
-        // tool_execution_*, and unknown types are ignored.
+        // turn_start/turn_end, agent_start/agent_end, tool_execution_*, and
+        // unknown types are ignored. (compaction_start/end 自 C3.4 起映射为
+        // notice 事件，不再静默。)
         return [];
     }
   }
@@ -190,6 +225,9 @@ export class PiRpcTranslator {
   private handleMessageEnd(evt: PiRpcMessageEndEvent): PiRpcTranslatorEvent[] {
     const m = evt.message;
     if (m.role === 'assistant') {
+      // pendingToolCall 复位：消息边界后 start/end 配对作废（防御 start 后
+      // 永无 end 的异常流，避免跨消息串扰到下一条 assistant 消息）。
+      this.pendingToolCall = false;
       this.lastAssistantStopReason = m.stopReason;
       this.lastAssistantErrorMessage = m.stopReason === 'error' ? m.errorMessage : undefined;
       if (m.usage) this.addUsage(m.usage);
@@ -229,6 +267,7 @@ export class PiRpcTranslator {
     this.accOutput += u.output ?? 0;
     this.accCacheRead += u.cacheRead ?? 0;
     this.accCacheCreation += u.cacheWrite ?? 0;
+    this.accReasoning += u.reasoning ?? 0;
     if (u.totalTokens != null) this.lastTotalTokens = u.totalTokens;
   }
 
@@ -278,21 +317,20 @@ export class PiRpcTranslator {
         }
         break;
       case 'toolcall_start':
-        this.content.push({ type: 'tool_use', id: '', name: '', input: {} });
-        this.currentContentIndex++;
+        // 信息保真 C3.4：不再 push 空壳 tool_use（空 id/name 会被渲染成
+        // 无意义工具块）。只保留 bookkeeping，toolcall_end 补发完整事件。
+        this.pendingToolCall = true;
         break;
       case 'toolcall_end':
-        if (
-          this.currentContentIndex >= 0 &&
-          this.content[this.currentContentIndex]?.type === 'tool_use' &&
-          evt.toolCall
-        ) {
-          this.content[this.currentContentIndex] = {
+        if (this.pendingToolCall && evt.toolCall) {
+          this.content.push({
             type: 'tool_use',
             id: evt.toolCall.id,
             name: evt.toolCall.name,
             input: evt.toolCall.arguments,
-          };
+          });
+          this.currentContentIndex = this.content.length - 1;
+          this.pendingToolCall = false;
         }
         break;
       default:

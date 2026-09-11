@@ -1,6 +1,12 @@
-import { spawn, type ChildProcess } from 'node:child_process';
+import type { ChildProcess } from 'node:child_process';
 import { getLogger } from '../../logger/index.js';
-import { ProcessStopper } from '../common/process-stopper.js';
+import {
+  createShellBackend,
+  ShellUnavailableError,
+  type ShellBackend,
+} from '../../platform/shell.js';
+import { createTerminator, type Terminator } from '../../platform/terminator.js';
+import { useDetachedProcessGroup } from '../../platform/spawn.js';
 import { registerExitCleanup, unregisterExitCleanup } from '../common/spawning-runner.js';
 
 interface BashOutputEvent {
@@ -35,16 +41,28 @@ export class BashProcessRunner implements BashRunner {
    */
   private readonly queueHighWater: number;
   private readonly queueLowWater: number;
-  private stopper: ProcessStopper;
+  private readonly terminator: Terminator;
+  private readonly shell: ShellBackend;
 
-  constructor(opts?: { stopGraceMs?: number; queueHighWater?: number; queueLowWater?: number }) {
+  constructor(opts?: {
+    stopGraceMs?: number;
+    queueHighWater?: number;
+    queueLowWater?: number;
+    /** shell 后端注入（测试用）；默认按平台分发 */
+    shell?: ShellBackend;
+    /** 终止器注入（测试用）；默认按平台分发 */
+    terminator?: Terminator;
+  }) {
     const stopGraceMs = opts?.stopGraceMs ?? 1000;
     this.queueHighWater = opts?.queueHighWater ?? 32;
     this.queueLowWater = opts?.queueLowWater ?? 16;
     if (this.queueLowWater > this.queueHighWater) {
       this.queueLowWater = this.queueHighWater;
     }
-    this.stopper = new ProcessStopper({ graceMs: stopGraceMs });
+    // `!` bash 无协议停止通道（§3.3）：posix 走组杀（与原 ProcessStopper 同实现），
+    // win32 优雅段显式跳过后树杀。
+    this.terminator = opts?.terminator ?? createTerminator({ graceMs: stopGraceMs, agent: 'bash' });
+    this.shell = opts?.shell ?? createShellBackend();
   }
 
   get isRunning(): boolean {
@@ -63,14 +81,33 @@ export class BashProcessRunner implements BashRunner {
 
     getLogger().debug(`[bash-runner] spawning command="${command}" cwd=${opts.cwd}`);
 
-    const proc = spawn('bash', ['-c', command], {
-      cwd: opts.cwd,
-      stdio: ['ignore', 'pipe', 'pipe'],
-      // Spawn in new process group so we can kill the entire group
-      detached: true,
-    });
+    let proc: ChildProcess;
+    try {
+      proc = this.shell.spawn(command, {
+        cwd: opts.cwd,
+        options: {
+          stdio: ['ignore', 'pipe', 'pipe'],
+          // posix 建新进程组（负 PID 组杀）；win32 不 detached（`.cmd` 垫片丢 stdio）
+          detached: useDetachedProcessGroup(),
+          windowsHide: true,
+        },
+      });
+    } catch (err) {
+      // win32 Git Bash 缺失（§7.2）：同步抛出，转成明确错误输出而非悬死。
+      if (err instanceof ShellUnavailableError) {
+        getLogger().warn(`[bash-runner] shell unavailable: ${err.message}`);
+        yield { type: 'stderr', content: `${err.message}\n` };
+        yield { type: 'exit', content: '', exitCode: 1 };
+        return;
+      }
+      throw err;
+    }
 
     this.currentProcess = proc;
+    // stdio 固定为 ['ignore','pipe','pipe']，两条流必为 pipe（backend 返回的
+    // 宽化 ChildProcess 类型丢掉了这一点，这里收窄一次）
+    const stdout = proc.stdout!;
+    const stderr = proc.stderr!;
     getLogger().info(
       `[bash-runner] spawn pid=${proc.pid} command="${command.slice(0, 50)}..." cwd=${opts.cwd}`,
     );
@@ -90,25 +127,25 @@ export class BashProcessRunner implements BashRunner {
     const maybePauseStdout = (): void => {
       if (!stdoutPaused && stdoutQueue.length > this.queueHighWater) {
         stdoutPaused = true;
-        proc.stdout.pause();
+        stdout.pause();
       }
     };
     const maybeResumeStdout = (): void => {
       if (stdoutPaused && stdoutQueue.length <= this.queueLowWater) {
         stdoutPaused = false;
-        proc.stdout.resume();
+        stdout.resume();
       }
     };
     const maybePauseStderr = (): void => {
       if (!stderrPaused && stderrQueue.length > this.queueHighWater) {
         stderrPaused = true;
-        proc.stderr.pause();
+        stderr.pause();
       }
     };
     const maybeResumeStderr = (): void => {
       if (stderrPaused && stderrQueue.length <= this.queueLowWater) {
         stderrPaused = false;
-        proc.stderr.resume();
+        stderr.resume();
       }
     };
     // Resolved by a `data` event to signal "more output may be available,
@@ -123,7 +160,7 @@ export class BashProcessRunner implements BashRunner {
       }
     };
 
-    proc.stdout?.on('data', (chunk: Buffer) => {
+    stdout.on('data', (chunk: Buffer) => {
       const text = chunk.toString('utf-8');
       getLogger().debug(`[bash-runner] stdout: ${text.slice(0, 100)}`);
       stdoutQueue.push(text);
@@ -131,7 +168,7 @@ export class BashProcessRunner implements BashRunner {
       notifyData();
     });
 
-    proc.stderr?.on('data', (chunk: Buffer) => {
+    stderr.on('data', (chunk: Buffer) => {
       const text = chunk.toString('utf-8');
       getLogger().debug(`[bash-runner] stderr: ${text.slice(0, 100)}`);
       stderrQueue.push(text);
@@ -217,13 +254,13 @@ export class BashProcessRunner implements BashRunner {
   /**
    * P1-22: called by the process-level exit dispatcher on SIGINT/SIGTERM/exit.
    * Kills the whole process group (leader + background children) via
-   * ProcessStopper, matching agent-runner cleanupOnExit semantics.
+   * Terminator, matching agent-runner cleanupOnExit semantics.
    */
   cleanupOnExit(): void {
     const proc = this.currentProcess;
     if (!proc || proc.exitCode !== null || proc.signalCode !== null) return;
     try {
-      void this.stopper.stop(proc, { immediate: true });
+      this.terminator.cleanupOnExit(proc);
     } catch {
       // fire-and-forget: nothing else to do at process exit
     }
@@ -236,8 +273,8 @@ export class BashProcessRunner implements BashRunner {
       return;
     }
 
-    // Delegate to ProcessStopper for unified stop semantics
-    await this.stopper.stop(proc, { immediate: opts?.immediate });
+    // Delegate to Terminator for unified stop semantics
+    await this.terminator.stop(proc, { immediate: opts?.immediate === true });
 
     this.currentProcess = null;
   }
