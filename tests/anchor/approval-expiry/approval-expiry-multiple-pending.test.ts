@@ -1,5 +1,5 @@
 /**
- * P4 probe: 多个 pending 审批各自独立过期。
+ * P4 anchor: 多个 pending 审批各自独立过期。
  *
  * ① 验证什么：多个审批各自持有独立 timer——到期后各自触发一次 responder
  *    （requestId 一一对应）；其中一个提前 resolved 不影响其余审批过期。
@@ -11,7 +11,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ApprovalCoordinator } from '../../../src/bridge/approval-coordinator.js';
 import type { ApprovalRequestedEvent } from '../../../src/runner/types.js';
 
-describe('probe: approval expiry multiple pending', () => {
+describe('anchor: approval expiry multiple pending', () => {
   let coordinator: ApprovalCoordinator;
   let responder: ReturnType<typeof vi.fn>;
   let interruptTurn: ReturnType<typeof vi.fn>;
@@ -56,7 +56,7 @@ describe('probe: approval expiry multiple pending', () => {
     vi.useRealTimers();
   });
 
-  it('test_probe_multiple_pending_expire_independently', () => {
+  it('test_anchor_multiple_pending_expire_independently', () => {
     coordinator.onRequested(makeCommandEvent(1001));
     coordinator.onRequested(makeCommandEvent(1002));
 
@@ -75,7 +75,7 @@ describe('probe: approval expiry multiple pending', () => {
     ]);
   });
 
-  it('test_probe_resolved_one_does_not_expire_other', () => {
+  it('test_anchor_resolved_one_does_not_expire_other', () => {
     coordinator.onRequested(makeCommandEvent(1001));
     coordinator.onRequested(makeCommandEvent(1002));
     coordinator.onResolved(1001);

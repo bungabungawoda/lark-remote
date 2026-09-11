@@ -248,6 +248,8 @@ idle:
 
 When `feishu.appId`/`appSecret` is not detected on first launch: interactive terminal (both stdin/stdout are TTY) goes through the scan-to-create wizard (`src/config/wizard.ts`, calling `@larksuite/channel`'s `registerApp`), which prints a QR code in the terminal; the user scans it with the Feishu App to create the app, and the returned `client_id`/`client_secret` is written back to the config file before continuing startup; non-interactive environments (no TTY) fall through to `loadConfig` which generates a template and exits.
 
+QR rendering lives in `src/config/qr.ts`: one module matrix, two renderers — full blocks (two `█` per module, Windows-safe) and half blocks (two QR rows per text row, compact). Windows only gets full blocks (half blocks' `▀`/`▄` usually render wrong in Windows console fonts, which is why the printed symbol cannot be scanned); POSIX falls back to half blocks when full blocks do not fit. Both renderers emit the 4-module quiet zone the QR spec requires (the previous `qrcode-terminal` half-block output had none). When the terminal cannot fit a whole symbol — or always on Windows — the wizard writes the symbol to `<configDir>/qr-code.gif` and prints the path, and removes it when the scan finishes or the process exits.
+
 ---
 
 ## 9. Known Pitfalls

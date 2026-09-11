@@ -70,7 +70,9 @@ function findDivWithText(elements: CardElement[], needle: string): CardElement |
 }
 
 function resumePageButtons(elements: CardElement[]): CardElement[] {
-  return elements.filter((el) => el.behaviors?.[0]?.value?.cmd === 'resume.page');
+  return elements.filter(
+    (el) => el.tag === 'button' && el.behaviors?.[0]?.value?.cmd === 'resume.page',
+  );
 }
 
 // Build a full router harness wired to a real ClaudeSessionReader over the

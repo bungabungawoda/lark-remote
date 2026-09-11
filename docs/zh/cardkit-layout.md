@@ -23,6 +23,8 @@
 - CardKit 2.0 `input` 组件自带 ✓ 提交图标触发回调
 - 但 `input_value` 会被 SDK normalizer 丢弃，必须 `includeRawEvent: true`，从 `action.raw.action.input_value` 读取
 - 不要用 `form` 包裹 input + button，直接用 `column_set` + `input` + `button`
+- **input 不要和文案挤在同一行**：同一行里放「文案 + input + 按钮」时，`auto` 按钮先占走固有宽度，剩下的宽度再按 weight 切分——手机窄屏（可用宽约 330px）下文案列只剩百来像素、input 只有几十像素，文案折行且输入框没法点（2026-09-10 分页栏真实故障）。正确做法是**拆成两行**：信息文案用顶层 `div` 独占整行，控件放进自己的 `column_set`（上一页 `auto` + input `weighted weight:1` + 下一页 `auto`，input 吃满按钮之外的剩余宽度）。参考实现：`src/router/card-helpers.ts` 的 `paginationBar`（`/ls` `/ws` `/resume` `/active` `/order` 共用）。
+- **不要用 form 包裹 input + 按钮**（见上）；也不要放进文案同一个 column 的第二个 element（同列会上下堆叠）。列宽只用 `weighted`/`auto`，未经验证不要引入像素宽度（如 `'90px'`）
 
 ## 按钮组件
 

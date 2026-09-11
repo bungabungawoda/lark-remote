@@ -1,5 +1,5 @@
 /**
- * P1 probe: 过期幂等——已过期/已响应/已 resolved 的请求不得重复触发 responder。
+ * P1 anchor: 过期幂等——已过期/已响应/已 resolved 的请求不得重复触发 responder。
  *
  * ① 验证什么：ApprovalCoordinator 超时只触发一次 cancel；过期后 submit 不会
  *    再次触发 responder；审批已 resolved 后超时也不触发 responder。
@@ -11,7 +11,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ApprovalCoordinator } from '../../../src/bridge/approval-coordinator.js';
 import type { ApprovalRequestedEvent } from '../../../src/runner/types.js';
 
-describe('probe: approval expiry idempotency', () => {
+describe('anchor: approval expiry idempotency', () => {
   let coordinator: ApprovalCoordinator;
   let responder: ReturnType<typeof vi.fn>;
   let interruptTurn: ReturnType<typeof vi.fn>;
@@ -56,7 +56,7 @@ describe('probe: approval expiry idempotency', () => {
     vi.useRealTimers();
   });
 
-  it('test_probe_approval_expired_double_timeout_responder_once', () => {
+  it('test_anchor_approval_expired_double_timeout_responder_once', () => {
     coordinator.onRequested(makeCommandEvent());
 
     vi.advanceTimersByTime(approvalTimeoutMs);
@@ -66,7 +66,7 @@ describe('probe: approval expiry idempotency', () => {
     expect(responder).toHaveBeenCalledWith(1001, { action: 'cancel' });
   });
 
-  it('test_probe_approval_expired_submit_after_expiry_no_responder', async () => {
+  it('test_anchor_approval_expired_submit_after_expiry_no_responder', async () => {
     coordinator.onRequested(makeCommandEvent());
 
     vi.advanceTimersByTime(approvalTimeoutMs);
@@ -80,7 +80,7 @@ describe('probe: approval expiry idempotency', () => {
     expect(responder).toHaveBeenCalledTimes(1);
   });
 
-  it('test_probe_approval_resolved_before_timeout_no_responder', () => {
+  it('test_anchor_approval_resolved_before_timeout_no_responder', () => {
     coordinator.onRequested(makeCommandEvent());
     coordinator.onResolved(1001);
 
