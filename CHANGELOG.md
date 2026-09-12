@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.2] - 2026-09-12
+
+### 修复
+
+- **Windows `!` 命令修复**：解析 `bash` 时跳过 `system32` / `SysWOW64` 下的 WSL 启动器（那不是 Git Bash），并从 PATH 中的 `Git\cmd` 目录反推 `Git\bin\bash.exe` / `Git\usr\bin\bash.exe`；修复 `!` 命令被整条丢进 WSL 执行后因旧版 Node 解析不了新语法而报 `SyntaxError` 的问题
+- **`lark-remote update` 不再被运行中的实例阻塞**：裸子命令 `update` / `version` / `help` 现在与 `--update` / `--version` / `--help` 等价；此前裸 `update` 会被当作位置参数落进守护进程路径去抢单例锁，被运行中的实例以 "already running" 挡下
+
+### 变更
+
+- **移除 `/reconnect` 命令**：路由分发、`/help` 按钮、Bridge 与 FeishuConnector 的重连实现及文档一并删除；重连需求已由 `/restart` 覆盖
+- **消息合并提示**：飞书把极短间隔连发的多条消息合并成一条时，首行命令之后若还有以 `/` 开头的整行，会在执行第一条命令的同时提示被忽略的原始内容，不再静默丢弃
+- **旧 Node 运行时友好化**：`dist/cli.js` 作为入口保持极旧 Node 可解析（避免 `??` / `?.` 语法），版本检查在加载应用模块图前由 preflight 处理；Node < 18 时给出明确的人话报错而非解析错误
+
 ## [0.2.1] - 2026-09-11
 
 ### 新增
