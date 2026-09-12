@@ -165,7 +165,6 @@ const sessions = new Map<string, SessionEntry>();
 | `/ps` | 是否有进程在跑 |
 | `/help` | 命令列表 |
 | `/exit` | 退出 bridge |
-| `/reconnect` | 重连 WebSocket |
 | `/restart` | 原地自重启 bridge：spawn detached 继任者 → 旧进程释放单例锁退出 |
 | `/config get\|set` | 查改运行时配置（卡片交互，agent-aware 字段） |
 | `/order save\|list\|edit` | 保存、列出或编辑常用指令（保留别名/使用统计）；>8 条分页（`order.page` 原地翻页，受飞书单卡 60 个 body 元素上限约束） |

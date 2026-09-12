@@ -89,7 +89,6 @@ describe('P1-1: registerExitHandlers 不累积 process 监听器', () => {
       const sessionStore = new SessionStore();
       const connector = {
         sendWithRetry: vi.fn().mockResolvedValue('msg-id'),
-        reconnect: async () => {},
         addReaction: async () => {},
         streamCard: vi.fn().mockResolvedValue('msg-id'),
         updateCard: vi.fn().mockResolvedValue(undefined),

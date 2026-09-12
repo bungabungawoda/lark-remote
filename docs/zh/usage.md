@@ -136,7 +136,6 @@ bridge 启动后不在终端输出，运行日志写入 `~/.lark-remote/logs/`�
 | `/status` | `/s` | 显示工作目录、会话目录（不同时）、session、模型、进程状态 |
 | `/stop` | `/t` | 终止当前 agent 进程（SIGTERM 后立即 SIGKILL，不等宽限期） |
 | `/ps` | - | 查询是否有进程在跑 |
-| `/reconnect` | - | 重连飞书 WebSocket |
 | `/config` | `/c` | 查看配置（卡片交互：下拉/输入选择，保存按钮落盘） |
 | `/order save <text>` | `/o` | 保存常用指令 |
 | `/order` `/order list` | `/o` | 列出已保存的指令（卡片，可给指令起别名、编辑、删除） |

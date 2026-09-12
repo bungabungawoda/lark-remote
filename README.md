@@ -117,7 +117,6 @@ bridge 启动后不在终端输出，运行日志写入 `~/.lark-remote/logs/YYY
 | `/status` | `/s` | 当前目录、session、模型、进程状态 |
 | `/stop` | `/t` | 终止当前 agent 进程（SIGKILL） |
 | `/ps` | - | 是否有进程在跑 |
-| `/reconnect` | - | 重连飞书 |
 | `/restart` | - | 原地自重启 bridge（新进程同 config 接管） |
 | `/config get\|set` | `/c` | 查改运行时配置（agent-aware 卡片） |
 | `/order save\|list\|edit\|alias` | `/o` | 收藏常用指令；`/order edit` 修改指令文本（保留别名/使用统计）；`/order alias` 注册快捷别名（输入 `$name` 展开） |

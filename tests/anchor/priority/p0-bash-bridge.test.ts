@@ -94,7 +94,6 @@ describe('P0-2 B4: bridge 集成（10k chunk 洪峰）', () => {
       },
       updateCard: async () => {},
       sendWithRetry: async () => 'msg-id',
-      reconnect: async () => {},
       sendFile: async () => 'file-id',
       addReaction: async () => {},
       connected: true,
