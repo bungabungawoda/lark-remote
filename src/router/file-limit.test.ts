@@ -69,7 +69,6 @@ describe('file upload size limit: 30MB', () => {
       sendFile: vi.fn().mockResolvedValue(undefined),
       forwardToClaude: vi.fn(),
       isBusyFor: vi.fn().mockReturnValue(false),
-      reconnect: vi.fn(),
       setConfig: vi.fn(),
       setIdleTimeout: vi.fn(),
       enqueue: vi.fn().mockResolvedValue(undefined),

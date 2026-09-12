@@ -99,6 +99,24 @@ function pageSlice<T>(
 
 const ACTIVE_PAGE_SIZE = 20;
 
+/**
+ * 飞书会把极短间隔连发的多条消息合并成一条换行分隔的消息：用户侧看是两条消息，
+ * 本端收到的却是 `/a\n/b`。命令执行是「一条消息一条」，首行之外的内容不会作为
+ * 独立命令执行。命中时返回首行之外的原始内容（即被忽略的部分），未命中返回 null。
+ * 绝对路径参数（如 `/cd /tmp`）与命令同处首行，不会误判。
+ */
+function findMergedCommandTail(message: string): string | null {
+  const lines = message.split('\n');
+  if (lines.length < 2) return null;
+  const tail = lines.slice(1).join('\n').trim();
+  if (!tail) return null;
+  const hasSlashLine = lines.slice(1).some((line) => {
+    const trimmed = line.trim();
+    return trimmed.length > 1 && trimmed.startsWith('/') && !trimmed.startsWith('/ ');
+  });
+  return hasSlashLine ? tail : null;
+}
+
 /** 人类可读字节数（B/KB/MB/GB）；/ls 列表与单文件卡共用。 */
 function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes}B`;
@@ -2397,6 +2415,21 @@ export class CommandRouter {
     const cmd = parts[0]?.toLowerCase();
     const args = parts.slice(1);
 
+    // 飞书会把短间隔连发的消息合并成一条换行分隔的消息（见 findMergedCommandTail）。
+    // 先提示被忽略的内容，再照常执行第一条命令，避免第二条被静默丢弃。
+    const mergedTail = findMergedCommandTail(message);
+    if (mergedTail) {
+      await this.bridge.sendResult(
+        {
+          text:
+            `⚠️ 已忽略：${mergedTail}\n` +
+            '一条消息只能执行一条命令\n' +
+            '如果发得太快，也可能被飞书合并成一条消息',
+        },
+        ctx,
+      );
+    }
+
     switch (cmd) {
       case 'help':
       case 'h':
@@ -2431,8 +2464,6 @@ export class CommandRouter {
         return this.cmdResume(args, ctx);
       case 'active':
         return this.cmdActive(args, ctx);
-      case 'reconnect':
-        return await this.cmdReconnect();
       case 'config':
       case 'c':
         return await this.cmdConfig(args, ctx);
@@ -2465,7 +2496,6 @@ export class CommandRouter {
       { cmd: 'restart', label: '/restart', desc: '重启 bridge（新进程，config 不变）' },
       { cmd: 'update', label: '/update /u', desc: '检查并升级到最新版本' },
       { cmd: 'status', label: '/status /s', desc: '显示当前状态' },
-      { cmd: 'reconnect', label: '/reconnect', desc: '重连飞书' },
     ].sort((a, b) => a.label.length - b.label.length || a.cmd.localeCompare(b.cmd));
 
     // 文本组（需带参数，不宜用按钮；以纯文本行展示）
@@ -2497,9 +2527,9 @@ export class CommandRouter {
     // 跨行不对齐（按钮列右边界参差）。改用 weighted 后，每行 column_set
     // 总宽相同（同级 body.elements），weight 比例一致，列宽跨行恒等。
     // 2026-07-05 手机排版修复：weight 1:3 → 2:3。1:3 时按钮列只占 25%，
-    // 手机窄屏（~330px 可用）下约 82px，容不下 `/reconnect`（10 字符 ≈ 100px），
+    // 手机窄屏（~330px 可用）下约 82px，容不下 `/config /c`（10 字符 ≈ 100px），
     // 按钮文字被截断成 "..."。改 2:3 后按钮列占 40% ≈ 132px，足够显示
-    // 最长的 /reconnect，文本列仍占 60% 足以放下描述。
+    // 最长的 /config /c，文本列仍占 60% 足以放下描述。
     for (const c of buttonCommands) {
       bodyElements.push({
         tag: 'column_set',
@@ -4152,15 +4182,6 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
     };
 
     return { card };
-  }
-
-  private async cmdReconnect(): Promise<CommandResult> {
-    try {
-      await this.bridge.reconnect();
-      return { text: '已重连飞书' };
-    } catch {
-      return { text: '重连失败，请检查网络和配置' };
-    }
   }
 
   private async cmdConfig(args: string[], ctx: CommandContext): Promise<CommandResult> {

@@ -122,7 +122,6 @@ Any message not starting with `/` is forwarded to Claude. Messages starting with
 | `/status` | `/s` | Show working directory, session directory (if different), session, model, process status |
 | `/stop` | `/t` | Terminate the current agent process (SIGTERM then immediate SIGKILL, no grace wait) |
 | `/ps` | - | Check whether a process is running |
-| `/reconnect` | - | Reconnect to Feishu WebSocket |
 | `/config` | `/c` | View configuration (interactive card: dropdowns/inputs plus a save button) |
 | `/order save <text>` | `/o` | Save a frequently used instruction |
 | `/order` `/order list` | `/o` | List saved instructions (card; supports alias / edit / delete) |

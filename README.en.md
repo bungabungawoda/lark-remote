@@ -117,7 +117,6 @@ Your original message also gets an emoji reaction: `Typing` while the run is in 
 | `/status` | `/s` | Current directory, session, model, process status |
 | `/stop` | `/t` | Kill the current agent process (SIGKILL) |
 | `/ps` | - | Whether a process is running |
-| `/reconnect` | - | Reconnect to Feishu |
 | `/restart` | - | In-place bridge self-restart (new process takes over with the same config) |
 | `/config get\|set` | `/c` | View/change runtime config (agent-aware card) |
 | `/order save\|list\|edit` | `/o` | Save, list, or edit frequently used prompts |

@@ -96,7 +96,6 @@ describe('ls tilde expansion', () => {
     sendFile: MockFn;
     forwardToClaude: MockFn;
     isBusyFor: MockFn;
-    reconnect: MockFn;
     setConfig: MockFn;
     setIdleTimeout: MockFn;
     enqueue: MockFn;
@@ -115,7 +114,6 @@ describe('ls tilde expansion', () => {
       sendFile: vi.fn().mockResolvedValue(undefined),
       forwardToClaude: vi.fn(),
       isBusyFor: vi.fn().mockReturnValue(false),
-      reconnect: vi.fn(),
       setConfig: vi.fn(),
       setIdleTimeout: vi.fn(),
       enqueue: vi.fn().mockResolvedValue(undefined),

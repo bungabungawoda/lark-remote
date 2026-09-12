@@ -51,7 +51,6 @@ function createRouter(ordersPath: string) {
       return 'msg-id';
     },
     sendFile: async () => 'file-msg-id',
-    reconnect: async () => {},
     addReaction: async () => {},
     streamCard: async () => 'stream-msg-id',
     updateCard: async () => {},

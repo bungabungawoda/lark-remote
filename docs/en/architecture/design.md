@@ -118,7 +118,6 @@ const sessions = new Map<string, SessionEntry>();
 | `/ps` | Whether a process is running |
 | `/help` | Command list |
 | `/exit` | Exit bridge |
-| `/reconnect` | Reconnect WebSocket |
 | `/restart` | In-place self-restart bridge: spawn detached successor → old process releases instance lock and exits |
 | `/config get\|set` | Query/modify runtime config (card interaction, agent-aware fields) |
 | `/order save\|list\|edit` | Save, list, or edit frequent prompts |

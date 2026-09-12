@@ -3540,6 +3540,42 @@ describe('CommandRouter', () => {
     expect((connector._sent[0].input as { text: string }).text).toContain('未知命令');
   });
 
+  // 飞书会把短间隔连发的多条消息合并成一条换行分隔的消息（`/a\n/b`）。命令是
+  // 「一条消息一条」，第二条必须给出提示，而不是被静默丢弃。
+  it('merged multi-command message warns and still runs the first command', async () => {
+    const { router, connector } = createRouter();
+    await router.handle('/s\n/c', ctx);
+    const texts = connector._sent.map((s) => (s.input as { text?: string }).text ?? '');
+    const hint = texts.find((t) => t.includes('已忽略')) ?? '';
+    expect(hint).toContain('/c');
+    expect(hint).toContain('一条消息只能执行一条命令');
+    expect(hint).toContain('被飞书合并');
+    // 第一条命令（/s = /status）照常执行
+    const last = connector._sent.at(-1)?.input as { markdown?: string };
+    expect(last.markdown).toContain('当前状态');
+  });
+
+  it('merged-command hint shows the full ignored content, not just the command name', async () => {
+    const { router, connector } = createRouter();
+    await router.handle('/s\n/c claude.model', ctx);
+    const texts = connector._sent.map((s) => (s.input as { text?: string }).text ?? '');
+    expect(texts.some((t) => t.includes('/c claude.model'))).toBe(true);
+  });
+
+  it('absolute path argument on a single line is not flagged as a merged command', async () => {
+    const { router, connector } = createRouter();
+    await router.handle('/cd /tmp', ctx);
+    const texts = connector._sent.map((s) => (s.input as { text?: string }).text ?? '');
+    expect(texts.some((t) => t.includes('已忽略'))).toBe(false);
+  });
+
+  it('newline-separated non-command line is not flagged as a merged command', async () => {
+    const { router, connector } = createRouter();
+    await router.handle('/s\n普通文本', ctx);
+    const texts = connector._sent.map((s) => (s.input as { text?: string }).text ?? '');
+    expect(texts.some((t) => t.includes('已忽略'))).toBe(false);
+  });
+
   // Alias tests: single-letter shortcuts
   it('/h is alias for /help', async () => {
     const { router, connector } = createRouter();
