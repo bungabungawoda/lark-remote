@@ -57,7 +57,6 @@ function createStreamRejectingConnector() {
       return 'msg-id';
     },
     sendFile: async () => 'file-msg-id',
-    reconnect: async () => {},
     addReaction: async () => {},
     streamCard: async () => {
       throw new Error('stream unavailable');

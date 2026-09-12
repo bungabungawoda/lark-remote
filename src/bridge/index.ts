@@ -72,9 +72,8 @@ function terminalReactionEmoji(terminal: RunTerminal): string {
 /**
  * Seam (§7): the channel capabilities the bridge needs. `sendWithRetry` is
  * the minimum a Feishu channel must offer for the bridge to push messages
- * through it; `reconnect` lets `/reconnect` be served through the bridge
- * without the router holding a separate connector reference. Declared here
- * so tests can satisfy it structurally without `as unknown as` casts.
+ * through it. Declared here so tests can satisfy it structurally without
+ * `as unknown as` casts.
  */
 interface BridgeChannel extends RunCardChannel {
   sendWithRetry(
@@ -82,7 +81,6 @@ interface BridgeChannel extends RunCardChannel {
     input: { text: string } | { markdown: string } | { card: object },
     opts?: { replyTo?: string },
   ): Promise<string>;
-  reconnect(): Promise<void>;
   sendFile(chatId: string, filePath: string): Promise<string>;
   addReaction(messageId: string, emoji: string): Promise<void>;
   removeReactionByEmoji(messageId: string, emoji: string): Promise<void>;
@@ -927,11 +925,6 @@ export class Bridge {
   /** 冲刷全部待合批提示（/exit、/restart 干净退出前调用）。 */
   async flushAllMediaNotifications(): Promise<void> {
     await this.mediaHandler.flushAllPending();
-  }
-
-  /** Reconnect the underlying Feishu channel. */
-  async reconnect(): Promise<void> {
-    await this.connector.reconnect();
   }
 
   /**
