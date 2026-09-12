@@ -47,7 +47,6 @@ function createStreamRejectingConnector() {
   return {
     sendWithRetry: async () => 'msg-id',
     sendFile: async () => 'file-msg-id',
-    reconnect: async () => {},
     addReaction: async () => {},
     // streamCard rejects: stream unavailable -> settle() returns 'unsent' ->
     // finalizeRun takes the sendResult(renderRunCard(...)) branch.

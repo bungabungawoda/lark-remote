@@ -51,7 +51,6 @@ function createUniqueMsgIdConnector() {
       });
       return `file-msg-${msgIdCounter}`;
     },
-    reconnect: async () => {},
     addReaction: async () => {},
     streamCard: async (
       chatId: string,

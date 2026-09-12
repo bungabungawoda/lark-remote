@@ -77,7 +77,6 @@ function createLiveBridge(conn: FeishuConnector): Bridge {
     enqueue: vi.fn(),
     enqueueImmediate: vi.fn(),
     interruptCurrentRun: vi.fn().mockResolvedValue(false),
-    reconnect: vi.fn().mockResolvedValue(undefined),
     setConfig: vi.fn(),
     setIdleTimeout: vi.fn(),
     clearRunners: vi.fn(),

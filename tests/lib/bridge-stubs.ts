@@ -137,7 +137,6 @@ export function createStubConnector(opts?: StubConnectorOpts) {
       sent.push({ chatId, input: { file: filePath }, opts: undefined });
       return 'file-msg-id';
     },
-    reconnect: async () => {},
     addReaction: opts?.addReactionSpy ? vi.fn().mockResolvedValue(undefined) : async () => {},
     removeReactionByEmoji: opts?.removeReactionSpy
       ? vi.fn().mockResolvedValue(undefined)
@@ -203,7 +202,6 @@ export function createStubConnectorWithGatedCardUpdate() {
       sent.push({ chatId, input: { file: filePath }, opts: undefined });
       return 'file-msg-id';
     },
-    reconnect: async () => {},
     addReaction: async () => {},
     streamCard: async (
       chatId: string,
@@ -280,7 +278,6 @@ export function createStubConnectorWithPendingQueueCard() {
       sent.push({ chatId, input: { file: filePath }, opts: undefined });
       return 'file-msg-id';
     },
-    reconnect: async () => {},
     addReaction: async () => {},
     streamCard: async (
       chatId: string,
@@ -491,7 +488,6 @@ export function createMockBridge(overrides?: Partial<Bridge>): Bridge {
     isBusyFor: vi.fn().mockReturnValue(false),
     enqueue: vi.fn(),
     interruptCurrentRun: vi.fn().mockResolvedValue(false),
-    reconnect: vi.fn().mockResolvedValue(undefined),
     setConfig: vi.fn(),
     setIdleTimeout: vi.fn(),
     removeFromQueue: vi.fn().mockReturnValue(false),
