@@ -47,7 +47,6 @@ describe('Bridge clearRunners on config change', () => {
     const connector = {
       sendWithRetry: async () => 'msg-id',
       sendFile: async () => 'file-msg-id',
-      reconnect: async () => {},
       addReaction: async () => {},
       streamCard: async () => 'msg-id',
       updateCard: async () => {},

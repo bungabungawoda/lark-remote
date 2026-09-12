@@ -3050,7 +3050,6 @@ describe('sendResult fallback: card send failure sends text to user', () => {
     const connector = {
       sendWithRetry,
       sendFile: vi.fn().mockResolvedValue(undefined),
-      reconnect: vi.fn().mockResolvedValue(undefined),
       addReaction: vi.fn().mockResolvedValue(undefined),
       removeReactionByEmoji: vi.fn().mockResolvedValue(undefined),
       streamCard: vi.fn().mockResolvedValue('stream-msg-id'),
@@ -3088,7 +3087,6 @@ describe('sendResult fallback: card send failure sends text to user', () => {
     const connector = {
       sendWithRetry,
       sendFile: vi.fn().mockResolvedValue(undefined),
-      reconnect: vi.fn().mockResolvedValue(undefined),
       addReaction: vi.fn().mockResolvedValue(undefined),
       removeReactionByEmoji: vi.fn().mockResolvedValue(undefined),
       streamCard: vi.fn().mockResolvedValue('stream-msg-id'),

@@ -426,13 +426,6 @@ export class FeishuConnector {
     }
   }
 
-  async reconnect(): Promise<void> {
-    // disconnect() swallows its own errors internally, so no try/catch needed
-    // here — it always resolves.
-    await this.disconnect();
-    await this.connect();
-  }
-
   /**
    * Send a message with automatic rate-limit retry (§9.5).
    * Encounters rate_limited / feishuCode 99991400|99991401（SDK 归类为

@@ -280,29 +280,3 @@ describe('FeishuConnector.disconnect', () => {
     await expect(connector.disconnect()).resolves.not.toThrow();
   });
 });
-
-describe('FeishuConnector.reconnect', () => {
-  let connector: FeishuConnector;
-  let mockChannel: { disconnect: ReturnType<typeof vi.fn>; connect: ReturnType<typeof vi.fn> };
-
-  beforeEach(() => {
-    connector = new FeishuConnector(config);
-    mockChannel = connector.channel;
-  });
-
-  it('should handle disconnect failure during reconnect gracefully', async () => {
-    mockChannel.disconnect.mockRejectedValueOnce(new Error('disconnect failed'));
-    mockChannel.connect.mockResolvedValueOnce(undefined);
-
-    // Should not throw unhandled rejection
-    await expect(connector.reconnect()).resolves.not.toThrow();
-  });
-
-  it('should propagate connect failure during reconnect', async () => {
-    mockChannel.disconnect.mockResolvedValueOnce(undefined);
-    mockChannel.connect.mockRejectedValueOnce(new Error('connect failed'));
-
-    // reconnect should throw but not crash
-    await expect(connector.reconnect()).rejects.toThrow();
-  });
-});
