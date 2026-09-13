@@ -141,6 +141,7 @@
     "src/instance-lock.test.ts",
     "src/startup-contact.test.ts",
     "src/binder.test.ts",
+    "src/clone.test.ts",
     "src/error-classification.test.ts",
     "src/common/fs.test.ts",
     "src/common/truncate.test.ts",

@@ -137,6 +137,10 @@ export function createStubConnector(opts?: StubConnectorOpts) {
       sent.push({ chatId, input: { file: filePath }, opts: undefined });
       return 'file-msg-id';
     },
+    sendImage: async (chatId: string, filePath: string) => {
+      sent.push({ chatId, input: { image: filePath }, opts: undefined });
+      return 'image-msg-id';
+    },
     addReaction: opts?.addReactionSpy ? vi.fn().mockResolvedValue(undefined) : async () => {},
     removeReactionByEmoji: opts?.removeReactionSpy
       ? vi.fn().mockResolvedValue(undefined)
