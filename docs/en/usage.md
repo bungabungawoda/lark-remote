@@ -130,6 +130,7 @@ Any message not starting with `/` is forwarded to Claude. Messages starting with
 | `/order alias [remove <name>]` | `/o` | List all aliases (merged into the `/order` card) / remove an alias |
 | `/exit` | `/e` | Exit the bridge |
 | `/restart` | - | Restart the bridge in place: the new process takes over with the same config, startup notification arrives shortly |
+| `/clone <name>` | - | Clone the bridge: copies the config into a new directory and walks you through creating a new Feishu app by QR scan; on completion it binds automatically and launches the new instance |
 
 ### Command Details
 
@@ -191,6 +192,17 @@ Each agent's (claude/codex/opencode/pi/kimi/dsh) conversation has a session id. 
 - **Please `/stop` or wait for tasks to complete before restarting**: In-progress claude/bash runs are not preserved; when the old process exits, its in-memory state is lost (sessions in jsonl files remain and can be resumed via `/resume`).
 - **Spawn failure does not exit the old process**: If the successor cannot be launched (e.g., log directory not writable), you will receive "Restart failed: ..., old process is still running", and the bridge continues serving.
 - **Development mode note**: `bun run dev` restarts from source, `bun dist/cli.js` restarts from dist — if you modify code and `/restart` without `bun run build`, the new process still runs the old dist.
+
+#### `/clone`: Clone the Bridge
+
+**`/clone [name]`** (the "/clone" button on the `/help` card starts the same flow as the bare command) creates a "clone" config directory next to the current one (`<configDir>-<name>`; with the name omitted, a random suffix of 2 digits + 2 alphanumerics is generated). Everything is copied except the Feishu `appId`/`appSecret`, then you are guided to create a brand-new Feishu app by scanning a QR code:
+
+1. The QR code is sent into the private chat as an **image message** (you can also open the link in a browser to create the app; valid for about 10 minutes);
+2. While waiting for the scan, all messages enter the clone flow and are never forwarded to the coding agent: type "resend" to regenerate the QR code, type `/Q` to cancel (nothing is written), any other input gets a guidance hint;
+3. After a successful scan, binding completes automatically (the new app's openId is written straight into the new directory's `startup-contact.json` — no claim message needed), and workspace aliases, saved prompts, working directory, and session state are carried over (sessions are re-bound to the new app's openId, so auto-resume continues the conversation); the new instance pointing at the new directory is launched automatically (the new app receives its startup notification once it is up);
+4. The original app receives a completion receipt: the new app's App ID, config directory, and process id. To start it manually: `lark-remote --config-dir <new directory>`.
+
+The name must not contain path separators, must not start with `.` / end with a dot or space, and must not be a Windows reserved device name (`con`/`nul`/`com1`, etc.); if the target directory already exists the command refuses and asks for a different name.
 
 ### Inbound Images / Files: Auto-Save
 
