@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] - 2026-09-13
+
+### 新增
+
+- **`/clone [name]`（复制分身）**：把当前配置目录克隆为一份新分身（`<configDir>-<name>`，省略名字时随机生成后缀；除飞书 `appId`/`appSecret` 外全部复制），引导你扫码创建全新飞书应用——二维码以图片消息直接发进私聊，约 10 分钟内有效。扫码成功后自动完成绑定并把 workspace 别名、常用指令、工作目录与会话状态一并同步到分身，随后自动拉起新实例（新应用会收到它的启动通知），原应用回执新应用 App ID、配置目录与进程号。等待扫码期间消息不转发给 agent：输入「重发」重新生成二维码，`/Q` 取消。`/help` 卡片的「/clone」按钮可直接点击开始
+- **一键复制分身按钮**：`/help` 卡片按钮区新增「/clone」，与无参 `/clone` 等价
+
+### 变更
+
+- **首次绑定简化**：未绑定时首条私聊消息（任意内容）即完成 owner 绑定，移除原 4 位 PIN。飞书自建应用私聊入口本身由 owner 掌控，把应用分享出去才属主动行为；绑定成功会回执确认
+
+### 修复
+
+- **Codex / Kimi CLI 版本探测走平台 spawn 收口**：CLI 可执行文件探测统一经由跨平台 spawn 层，修复 Windows 下的探测兼容性问题
+- **`bun run test:live` 退出码**：在 `bun run` 下正确透传退出码，不再误报失败
+
 ## [0.2.2] - 2026-09-12
 
 ### 修复
