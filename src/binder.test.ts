@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { OwnerBinder, formatPinGuidance } from './binder.js';
+import { OwnerBinder, formatBindGuidance } from './binder.js';
 import { StartupContactStore } from './startup-contact.js';
 
 vi.mock('./logger/index.js', () => ({
@@ -27,48 +27,43 @@ afterEach(() => {
 });
 
 describe('OwnerBinder - unbound bootstrap', () => {
-  it('generates a 4-digit PIN when unbound', () => {
+  it('starts unbound with no pending pin', () => {
     const store = new StartupContactStore(storePath);
     const binder = new OwnerBinder(store);
 
     expect(binder.isBound()).toBe(false);
-    expect(binder.pendingPin).toMatch(/^\d{4}$/);
+    expect(binder.boundOpenId()).toBeUndefined();
   });
 
-  it('binds on correct PIN and clears the PIN', () => {
+  it('binds on the first message with any content', () => {
     const store = new StartupContactStore(storePath);
     const binder = new OwnerBinder(store);
-    const pin = binder.pendingPin!;
 
-    const decision = binder.classify('ou_owner1', pin, 'chat-1');
+    const decision = binder.classify('ou_owner1', '你好', 'chat-1');
 
     expect(decision.kind).toBe('bind_success');
     expect(binder.isBound()).toBe(true);
     expect(binder.boundOpenId()).toBe('ou_owner1');
-    expect(binder.pendingPin).toBeUndefined();
+    expect(store.getContact()).toEqual({ chatId: 'chat-1', userId: 'ou_owner1' });
   });
 
-  it('silently ignores wrong PIN and never binds', () => {
+  it('binds on slash commands and whitespace-padded content alike', () => {
     const store = new StartupContactStore(storePath);
     const binder = new OwnerBinder(store);
-    const pin = binder.pendingPin!;
 
-    // 输错：静默，不绑定，PIN 保持不变
-    expect(binder.classify('ou_x', 'not-a-pin', 'chat-x').kind).toBe('pin_wrong');
-    expect(binder.isBound()).toBe(false);
-    expect(binder.pendingPin).toBe(pin);
+    expect(binder.classify('ou_owner1', '/help', 'chat-1').kind).toBe('bind_success');
 
-    // 多次输错仍不绑定、PIN 不变（无重生成）
-    for (let i = 0; i < 20; i++) binder.classify('ou_x', 'not-a-pin', 'chat-x');
-    expect(binder.isBound()).toBe(false);
-    expect(binder.pendingPin).toBe(pin);
+    const store2 = new StartupContactStore(path.join(tmpDir, 'other.json'));
+    const binder2 = new OwnerBinder(store2);
+    expect(binder2.classify('ou_owner2', '  hello  ', 'chat-2').kind).toBe('bind_success');
+    expect(store2.getContact()?.userId).toBe('ou_owner2');
   });
 });
 
 describe('OwnerBinder - bound state', () => {
   function bindOwner(store: StartupContactStore, openId = 'ou_owner'): OwnerBinder {
     const binder = new OwnerBinder(store);
-    binder.classify(openId, binder.pendingPin!, 'chat-owner');
+    binder.classify(openId, 'hello', 'chat-owner');
     return binder;
   }
 
@@ -106,20 +101,19 @@ describe('OwnerBinder - bound state', () => {
     const store = new StartupContactStore(storePath);
     bindOwner(store, 'ou_owner');
 
-    // Simulate restart: a fresh binder over the same store must be bound, no new PIN
+    // Simulate restart: a fresh binder over the same store must be bound
     const restarted = new OwnerBinder(store);
     expect(restarted.isBound()).toBe(true);
-    expect(restarted.pendingPin).toBeUndefined();
     expect(restarted.boundOpenId()).toBe('ou_owner');
     expect(restarted.isOwner('ou_owner')).toBe(true);
     expect(restarted.isOwner('ou_attacker')).toBe(false);
   });
 });
 
-describe('formatPinGuidance', () => {
-  it('includes the PIN and binding instructions', () => {
-    const text = formatPinGuidance('4827');
-    expect(text).toContain('4827');
+describe('formatBindGuidance', () => {
+  it('instructs the user to send any message to bind', () => {
+    const text = formatBindGuidance();
+    expect(text).toContain('任意消息');
     expect(text).toContain('首次绑定');
     expect(text).toContain('startup-contact.json');
   });

@@ -44,7 +44,8 @@ import { buildCardActionFullValue } from './router/card-action-payload.js';
 import { Bridge } from './bridge/index.js';
 import { initLogger, getLogger } from './logger/index.js';
 import { StartupContactStore, sendStartupHello } from './startup-contact.js';
-import { OwnerBinder, formatPinGuidance } from './binder.js';
+import { OwnerBinder, formatBindGuidance } from './binder.js';
+import { CloneSession } from './clone.js';
 import { InstanceAlreadyRunningError, InstanceLock } from './instance-lock.js';
 import { spawnReplacementBridge, waitForPreviousInstance } from './restart.js';
 import { checkLatestVersion, isNewer, runInstallLatest, formatUpdateHint } from './update/index.js';
@@ -55,6 +56,15 @@ import { newSessionButton, resumeCompactButton, agentDisplayName } from './card/
 import path from 'node:path';
 import fs from 'node:fs';
 import { silentlyUnlink } from './common/fs.js';
+
+/**
+ * /stop 命令别名单源：普通消息的停止分支与 clone 活跃期拦截的排除条件
+ * 共用同一判定，防止将来加别名时两处漂移。
+ */
+function isStopCommand(text: string): boolean {
+  const t = text.trim().toLowerCase();
+  return t === '/stop' || t === '/t';
+}
 
 /** Session display state from readSessionContent */
 interface SessionDisplayState {
@@ -390,6 +400,7 @@ function setupMessageHandlers(
   binder: OwnerBinder,
   logger: ReturnType<typeof getLogger>,
   config: AppConfig,
+  cloneSession: CloneSession,
 ): void {
   // 入站媒体（图片/文件）：先认证后下载（P1 review 修复）。
   // connector 只上报"媒体到达"，这里先过 owner + enabled 闸门，通过后才
@@ -438,11 +449,9 @@ function setupMessageHandlers(
   });
 
   connector.setMessageHandler((msg) => {
-    // 绑定/授权闸门：仅 owner 放行；非 owner 静默丢弃；未绑定时要求 PIN 认领
+    // 绑定/授权闸门：仅 owner 放行；非 owner 静默丢弃；未绑定时首条消息（任意内容）认领
     const decision = binder.classify(msg.userId, msg.content, msg.chatId);
     if (decision.kind === 'rejected') return;
-    // 未绑定且 PIN 错误：完全静默丢弃（不回复、不提醒）
-    if (decision.kind === 'pin_wrong') return;
     if (decision.kind === 'bind_success') {
       // First-run onboarding: set default cwd + send welcome + Help card.
       // setCwd is synchronous (outside the async closure) so that the user's
@@ -501,13 +510,25 @@ function setupMessageHandlers(
     // Add Typing reaction to indicate "still alive"
     void connector.addReaction(msg.messageId, 'Typing');
 
+    // 复制分身流程活跃期：一切消息先经 clone 状态机（stop 命令除外，保留其
+    // 绕队列停止能力），不转发 coding agent、不进命令分发、不展开别名。
+    if (cloneSession.isActive() && !isStopCommand(msg.content)) {
+      void cloneSession
+        .handleMessage(msg.content, {
+          userId: msg.userId,
+          chatId: msg.chatId,
+          messageId: msg.messageId,
+        })
+        .catch((err: unknown) => logger.error('[clone] message handling failed:', err));
+      return;
+    }
+
     // 别名展开：命令分发前对消息做一次 $name 展开（不递归）。
     // `!` / `/` 开头的消息不会进入展开路径（$PATH、$HOME 等 shell 变量不受影响），
     // 未知 $xxx 原样透传；展开结果若以 `/` 开头会自然落入命令路径。
     const content = router.expandAliasMessage(msg.content);
 
-    const trimmedLower = content.trim().toLowerCase();
-    if (trimmedLower === '/stop' || trimmedLower === '/t') {
+    if (isStopCommand(content)) {
       void (async () => {
         const stopped = await bridge.interruptCurrentRun({
           userId: msg.userId,
@@ -769,10 +790,10 @@ async function main() {
   const connector = new FeishuConnector(config);
   const startupContactStore = new StartupContactStore(path.join(configDir, 'startup-contact.json'));
   const binder = new OwnerBinder(startupContactStore);
-  if (binder.pendingPin) {
-    // 未绑定：控制台（stderr）展示 PIN。守护模式下被 watchdog 重定向到 daemon 日志
-    console.error(formatPinGuidance(binder.pendingPin));
-    logger.info('[binder] awaiting first binding (PIN printed to stderr)');
+  if (!binder.isBound()) {
+    // 未绑定：控制台（stderr）引导任意消息绑定。守护模式下被 watchdog 重定向到日志
+    console.error(formatBindGuidance());
+    logger.info('[binder] awaiting first binding (any first private message binds)');
   } else {
     logger.info(`[binder] bound to owner openId=${binder.boundOpenId()}`);
   }
@@ -790,6 +811,11 @@ async function main() {
     agentRegistry,
     sessionReaderRegistry,
   });
+  const cloneSession = new CloneSession({
+    connector,
+    configPath: path.join(configDir, 'config.yaml'),
+    configDir,
+  });
   const router = new CommandRouter({
     sessionStore,
     bridge,
@@ -801,6 +827,7 @@ async function main() {
     sessionReaderRegistry,
     devMode: cliArgs.dev,
     updateCachePath: path.join(configDir, 'update-cache.json'),
+    cloneSession,
   });
 
   setupMessageHandlers(
@@ -812,6 +839,7 @@ async function main() {
     binder,
     logger,
     config,
+    cloneSession,
   );
 
   try {

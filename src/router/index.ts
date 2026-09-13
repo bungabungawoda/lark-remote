@@ -26,6 +26,7 @@ import type {
   AgentSessionReader,
 } from '../runner/index.js';
 import { getLogger } from '../logger/index.js';
+import type { CloneSession } from '../clone.js';
 import { type SessionDisplayUsage, activeRunUsage, clampInt } from './utils.js';
 import {
   markdownDiv,
@@ -514,6 +515,9 @@ export class CommandRouter {
   private devMode: boolean;
   /** Cache file for version checks (<configDir>/update-cache.json). */
   private updateCachePath?: string;
+
+  /** 复制分身状态机（/clone 入口 + 活跃期消息拦截）。 */
+  private cloneSession?: CloneSession;
   /** Injected update functions (for testability; defaults to real implementation). */
   private updateFns: {
     checkLatestVersion: (opts?: {
@@ -574,6 +578,8 @@ export class CommandRouter {
     devMode?: boolean;
     /** Version check cache path (<configDir>/update-cache.json). */
     updateCachePath?: string;
+    /** 复制分身状态机（/clone；index.ts 构造注入，未注入时命令回报不可用）。 */
+    cloneSession?: CloneSession;
     /** Override update functions for testability. */
     updateFns?: {
       checkLatestVersion?: (opts?: {
@@ -601,6 +607,7 @@ export class CommandRouter {
     this.sessionReaderRegistry = opts.sessionReaderRegistry;
     this.devMode = opts.devMode ?? false;
     this.updateCachePath = opts.updateCachePath;
+    this.cloneSession = opts.cloneSession;
     this.updateFns = {
       checkLatestVersion: opts.updateFns?.checkLatestVersion ?? defaultCheckLatestVersion,
       isNewer: opts.updateFns?.isNewer ?? defaultIsNewer,
@@ -630,6 +637,14 @@ export class CommandRouter {
     getLogger().info(
       `[router] handle message="${message.slice(0, 50)}..." trimmed="${trimmed.slice(0, 50)}..." startsWithSlash=${startsWithSlash} startsWithBang=${startsWithBang}`,
     );
+
+    // 复制分身流程活跃期：一切消息（含命令）交给 clone 状态机处理，
+    // 不转发 coding agent、不进命令分发（index.ts 已在入队前拦截，这里
+    // 兜住 order.exec 等其他 router.handle 入口）。
+    if (this.cloneSession?.isActive()) {
+      await this.cloneSession.handleMessage(trimmed, ctx);
+      return null;
+    }
 
     if (startsWithSlash) {
       const result = await this.executeCommand(trimmed, ctx);
@@ -2473,6 +2488,8 @@ export class CommandRouter {
       case 'update':
       case 'u':
         return await this.cmdUpdate(args, ctx);
+      case 'clone':
+        return await this.cmdClone(args, ctx);
       default:
         return { text: `未知命令 /${cmd}，输入 /help 查看可用命令` };
     }
@@ -2495,6 +2512,11 @@ export class CommandRouter {
       { cmd: 'exit', label: '/exit /e', desc: '退出 bridge' },
       { cmd: 'restart', label: '/restart', desc: '重启 bridge（新进程，config 不变）' },
       { cmd: 'update', label: '/update /u', desc: '检查并升级到最新版本' },
+      {
+        cmd: 'clone',
+        label: '/clone',
+        desc: '复制分身：克隆配置并扫码创建新应用',
+      },
       { cmd: 'status', label: '/status /s', desc: '显示当前状态' },
     ].sort((a, b) => a.label.length - b.label.length || a.cmd.localeCompare(b.cmd));
 
@@ -2770,6 +2792,18 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
 
     // 4. Report success (no auto-restart — user decides when to /restart)
     return { text: `✅ 升级成功 (${current} → ${latest})，发送 /restart 重启后生效` };
+  }
+
+  /**
+   * /clone [name] — 复制分身：进入 clone 状态机（发二维码、等扫码、自动绑定）。
+   * 全程由 CloneSession 自己经 connector 发消息（含二维码图片），故返回 null。
+   */
+  private async cmdClone(args: string[], ctx: CommandContext): Promise<CommandResult | null> {
+    if (!this.cloneSession) {
+      return { text: '当前环境未启用创建分身功能' };
+    }
+    await this.cloneSession.start(args[0], ctx);
+    return null;
   }
 
   private cmdNew(ctx: CommandContext): CommandResult {
