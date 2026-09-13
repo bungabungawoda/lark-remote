@@ -19,35 +19,57 @@ const WAIT_TIMEOUT_MS = 20_000;
 const POLL_MS = 100;
 
 /**
+ * Spawn a detached bridge process (shared by /restart replacement and /clone
+ * new-instance) whose early output — before the child's own file logger
+ * initializes — lands on logFilePath. Returns the child pid, or null when
+ * spawn failed synchronously / no pid; filesystem errors (unwritable log
+ * dir) propagate. Caller picks throw-vs-degrade semantics.
+ *
+ * Two disciplines live here so every caller inherits them for free:
+ * - windowsHide: win32 detached children would flash a console window (§3.7);
+ * - the 'error' handler is attached BEFORE the pid check — a failed spawn
+ *   emits 'error' asynchronously (ENOENT/EACCES), and the synchronous pid
+ *   check throws/returns first, so attaching after would leave the 'error'
+ *   event unhandled → uncaughtException kills the parent.
+ */
+export function spawnDetachedBridge(
+  args: string[],
+  logFilePath: string,
+  opts?: { env?: NodeJS.ProcessEnv },
+): number | null {
+  fs.mkdirSync(path.dirname(logFilePath), { recursive: true });
+  const out = fs.openSync(logFilePath, 'a');
+  try {
+    const child = spawnProcess(process.execPath, args, {
+      cwd: process.cwd(),
+      env: opts?.env ?? process.env,
+      detached: true,
+      windowsHide: true,
+      stdio: ['ignore', out, out],
+    });
+    child.on('error', () => {});
+    if (child.pid === undefined) return null;
+    child.unref();
+    return child.pid;
+  } finally {
+    fs.closeSync(out);
+  }
+}
+
+/**
  * Spawn a detached replacement bridge with the same executable and argv
  * (including --config-dir) and return its pid. The caller is expected to
  * exit right after. stdio is redirected to restart-child.log so early
  * startup failures (before the file logger initializes) are not lost.
  */
 export function spawnReplacementBridge(logsDir: string): number {
-  fs.mkdirSync(logsDir, { recursive: true });
-  const out = fs.openSync(path.join(logsDir, 'restart-child.log'), 'a');
-  const child = spawnProcess(process.execPath, process.argv.slice(1), {
-    cwd: process.cwd(),
+  const pid = spawnDetachedBridge(process.argv.slice(1), path.join(logsDir, 'restart-child.log'), {
     env: { ...process.env, [RESTART_WAIT_PID_ENV]: String(process.pid) },
-    detached: true,
-    // win32：detached 继任者默认会闪控制台窗口（§3.7）
-    windowsHide: true,
-    stdio: ['ignore', out, out],
   });
-  // Late spawn errors (e.g. binary removed mid-run) must not crash the
-  // exiting parent via an unhandled 'error' event. Attach BEFORE the pid
-  // check — a failed spawn emits 'error' asynchronously (ENOENT/EACCES),
-  // and the pid check below throws synchronously first, so attaching after
-  // the throw would leave the 'error' event unhandled → uncaughtException
-  // → the old bridge exits despite having promised to stay alive.
-  child.on('error', () => {});
-  fs.closeSync(out);
-  if (child.pid === undefined) {
+  if (pid === null) {
     throw new Error('spawn replacement bridge failed: no pid');
   }
-  child.unref();
-  return child.pid;
+  return pid;
 }
 
 /**

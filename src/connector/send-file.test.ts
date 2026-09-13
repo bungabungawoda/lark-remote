@@ -118,3 +118,67 @@ describe('FeishuConnector.sendFile', () => {
     );
   });
 });
+
+describe('FeishuConnector.sendImage', () => {
+  it('uploads images with the message image type', async () => {
+    vi.mocked(axios.post)
+      .mockResolvedValueOnce({ data: { code: 0, tenant_access_token: 'token', expire: 7200 } })
+      .mockResolvedValueOnce({ data: { code: 0, data: { image_key: 'image-key' } } })
+      .mockResolvedValueOnce({ data: { code: 0, data: { message_id: 'message-id' } } });
+
+    const imagePath = path.join(tmpDir, 'qr.gif');
+    fs.writeFileSync(imagePath, 'gif-bytes');
+
+    await new FeishuConnector(config).sendImage('chat-1', imagePath);
+
+    // 上传端点与 form 字段：im/v1/images + image_type=message
+    expect(axios.post).toHaveBeenNthCalledWith(
+      2,
+      'https://open.feishu.cn/open-apis/im/v1/images',
+      expect.anything(),
+      expect.objectContaining({
+        headers: expect.objectContaining({ Authorization: 'Bearer token' }),
+        timeout: 120000,
+        httpsAgent: expect.objectContaining({ keepAlive: false }),
+      }),
+    );
+    const uploadForm = vi.mocked(FormData).mock.results[0].value as {
+      append: ReturnType<typeof vi.fn>;
+    };
+    expect(uploadForm.append).toHaveBeenCalledWith('image_type', 'message');
+    expect(uploadForm.append).toHaveBeenCalledWith('image', 'file-stream');
+  });
+
+  it('sends the uploaded image message to a chat_id receiver', async () => {
+    vi.mocked(axios.post)
+      .mockResolvedValueOnce({ data: { code: 0, tenant_access_token: 'token', expire: 7200 } })
+      .mockResolvedValueOnce({ data: { code: 0, data: { image_key: 'image-key' } } })
+      .mockResolvedValueOnce({ data: { code: 0, data: { message_id: 'message-id' } } });
+
+    const imagePath = path.join(tmpDir, 'qr.gif');
+    fs.writeFileSync(imagePath, 'gif-bytes');
+
+    await new FeishuConnector(config).sendImage('chat-1', imagePath);
+
+    expect(axios.post).toHaveBeenNthCalledWith(
+      3,
+      'https://open.feishu.cn/open-apis/im/v1/messages',
+      {
+        receive_id: 'chat-1',
+        msg_type: 'image',
+        content: JSON.stringify({ image_key: 'image-key' }),
+      },
+      expect.objectContaining({
+        params: { receive_id_type: 'chat_id' },
+        timeout: 30000,
+      }),
+    );
+  });
+
+  it('rejects missing image files before any network call', async () => {
+    await expect(
+      new FeishuConnector(config).sendImage('chat-1', path.join(tmpDir, 'no.gif')),
+    ).rejects.toThrow('file not found');
+    expect(axios.post).not.toHaveBeenCalled();
+  });
+});

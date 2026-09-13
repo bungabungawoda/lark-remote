@@ -8,6 +8,7 @@ import {
   DIRECT_RETURN_CMDS,
   APPROVAL_ACTION_CMDS,
 } from './index.js';
+import { CloneSession } from '../clone.js';
 import { formatTimestamp } from '../card/time.js';
 import { Bridge } from '../bridge/index.js';
 import { SessionStore } from '../session/index.js';
@@ -193,6 +194,7 @@ function createRouter(overrides?: {
   sessionReaderRegistry?: SessionReaderRegistry;
   projectsDir?: string; // For tests that need to read real session files
   codex?: Partial<AppConfig['codex']>; // codex config overrides
+  cloneSession?: CloneSession;
 }) {
   const sessionStore = new SessionStore();
   const connector = createStubConnector();
@@ -230,6 +232,7 @@ function createRouter(overrides?: {
       createStubSessionReaderRegistry(
         overrides?.projectsDir ? { claudeProjectsDir: overrides.projectsDir } : undefined,
       ),
+    cloneSession: overrides?.cloneSession,
   });
   return { router, sessionStore, connector };
 }
@@ -4194,5 +4197,91 @@ describe('W2.1 command list consistency (direct-return / immediate / approval sp
     expect(DIRECT_RETURN_CMDS.has('approval.answerSubmit')).toBe(true);
     expect(isImmediateAction('order.textInput')).toBe(true);
     expect(isImmediateAction('approval.planFeedback')).toBe(true);
+  });
+});
+
+// ── /clone 复制分身：router 分发与 clone 活跃期拦截 ──────────────────────
+
+/** 真实 CloneSession（依赖全部注入 stub），注册挂在 hang 住的 registerApp 上。 */
+function makeCloneSession(configDir: string): {
+  session: CloneSession;
+  sessionConnector: ReturnType<typeof createStubConnector>;
+} {
+  const sessionConnector = createStubConnector();
+  const session = new CloneSession({
+    connector: sessionConnector,
+    configPath: path.join(configDir, 'config.yaml'),
+    configDir,
+    registerAppFn: () => new Promise(() => {}),
+    generateSuffix: () => '42ab',
+    spawnNewInstance: () => 4321,
+  });
+  return { session, sessionConnector };
+}
+
+describe('CommandRouter /clone dispatch', () => {
+  it('/clone <name> 进入 clone 状态机（状态机自行发消息，命令本身不回文本）', async () => {
+    const { session, sessionConnector } = makeCloneSession(tmpDir);
+    const { router } = createRouter({ cloneSession: session });
+
+    await router.handle('/clone myclone', ctx);
+
+    expect(session.currentState).toBe('awaiting_scan');
+    expect(session.pendingTargetDir).toBe(path.join(`${tmpDir}-myclone`));
+    const intro = sessionConnector._sent[0].input as { text?: string };
+    expect(intro.text).toContain('开始创建分身');
+  });
+
+  it('clone 活跃期普通消息被拦截进状态机，不转发 coding agent、不进命令分发', async () => {
+    const { session, sessionConnector } = makeCloneSession(tmpDir);
+    const { router } = createRouter({ cloneSession: session });
+    await router.handle('/clone', ctx);
+    sessionConnector._sent.length = 0;
+
+    // 普通消息与命令都进 clone 状态机（收到引导文案，而非 agent 回复/help 卡）
+    await router.handle('帮我写个脚本', ctx);
+    await router.handle('/help', ctx);
+
+    expect(session.currentState).toBe('awaiting_scan');
+    const texts = sessionConnector._sent.map((s) => (s.input as { text?: string }).text ?? '');
+    expect(texts).toHaveLength(2);
+    for (const t of texts) {
+      expect(t).toContain('等待你扫码');
+    }
+  });
+
+  it('未注入 cloneSession 时 /clone 回报不可用', async () => {
+    const { router, connector } = createRouter();
+
+    await router.handle('/clone', ctx);
+
+    const sent = connector._sent[0].input as { text?: string };
+    expect(sent.text).toContain('当前环境未启用创建分身功能');
+  });
+});
+
+describe('CommandRouter /clone on help card', () => {
+  it('/help 卡片带「/clone」按钮（behavior 指向 help.clone）', async () => {
+    const { router, connector } = createRouter({ cloneSession: makeCloneSession(tmpDir).session });
+
+    await router.handle('/help', ctx);
+
+    const input = connector._sent.at(-1)?.input as { card?: TestCard };
+    const value = findButtonValue(input.card?.body?.elements ?? [], '/clone');
+    expect(value?.['cmd']).toBe('help.clone');
+  });
+
+  it('点击 help.clone 按钮等价无参 /clone：进入 clone 状态机', async () => {
+    const { session } = makeCloneSession(tmpDir);
+    const { router } = createRouter({ cloneSession: session });
+
+    await router.handleCardAction({ cmd: 'help.clone' }, ctx);
+
+    expect(session.currentState).toBe('awaiting_scan');
+    expect(session.pendingTargetDir).toBe(path.join(`${tmpDir}-42ab`));
+  });
+
+  it('help.* 即时名单命中（按钮点击绕串行队列，在途 run 不阻塞）', () => {
+    expect(isImmediateAction('help.clone')).toBe(true);
   });
 });
