@@ -14,8 +14,8 @@
  * truth for the parsing contract.
  */
 
-import { execFileSync } from 'node:child_process';
 import { getLogger } from '../../src/logger/index.js';
+import { spawnProcessSync } from '../../src/platform/spawn.js';
 import { parseCodexModelsOutput, type BundledModelInfo } from '../../src/config/codex-config.js';
 
 interface BundledCacheEntry {
@@ -44,14 +44,20 @@ export function getCodexBundledModels(): BundledModelInfo[] {
   }
 
   try {
-    const stdout = execFileSync(binary, ['debug', 'models', '--bundled'], {
+    // spawnProcessSync（cross-spawn）而非 execFileSync：codex 是 npm .cmd 垫片，
+    // win32 上 execFileSync 不做 PATHEXT 解析（与生产路径 codex-config.ts 同理）。
+    const res = spawnProcessSync(binary, ['debug', 'models', '--bundled'], {
       encoding: 'utf-8',
       timeout: 8_000,
       maxBuffer: 4 * 1024 * 1024,
-      env: process.env,
-      stdio: ['ignore', 'pipe', 'ignore'],
-      windowsHide: true, // codex 是 npm .cmd 垫片：win32 下不隐藏会闪 cmd.exe 控制台
+      stdio: ['ignore', 'pipe', 'pipe'],
     });
+    if (res.error) throw res.error;
+    if (res.status !== 0) {
+      const stderr = String(res.stderr ?? '').trim();
+      throw new Error(`codex exited ${res.status}${stderr ? `: ${stderr.slice(0, 200)}` : ''}`);
+    }
+    const stdout = String(res.stdout ?? '');
     const models = parseCodexModelsOutput(stdout);
     if (models.length > 0) {
       bundledCache = { binary, models, ts: now };

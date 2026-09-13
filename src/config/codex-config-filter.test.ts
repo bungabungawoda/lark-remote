@@ -14,11 +14,19 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-// 直接在模块顶层定义 mock（兼容 bun 的 vitest）
-const mockExecFileSync = vi.fn();
+// 直接在模块顶层定义 mock（兼容 bun 的 vitest）。
+// 生产代码经 platform/spawn（cross-spawn）调用 codex，mock 该 seam；
+// mock 直接返回字符串时自动包装成 spawnProcessSync 的成功结果形态。
+const mockSpawnSync = vi.fn();
 
-vi.mock('node:child_process', () => ({
-  execFileSync: (...args: any[]) => mockExecFileSync(...args),
+vi.mock('../platform/spawn.js', () => ({
+  spawnProcessSync: (...args: any[]) => {
+    const v = mockSpawnSync(...args);
+    return typeof v === 'string' ? { status: 0, stdout: v, stderr: '' } : v;
+  },
+  spawnProcess: () => {
+    throw new Error('filter test must not spawn async');
+  },
 }));
 
 describe('codex-config model filtering', () => {
@@ -50,7 +58,7 @@ wire_api = "responses"
     fs.writeFileSync(path.join(testCodexHome, 'config.toml'), configContent);
 
     // Mock bundled models
-    mockExecFileSync.mockReturnValue(
+    mockSpawnSync.mockReturnValue(
       JSON.stringify({
         models: [
           {
@@ -110,7 +118,7 @@ wire_api = "responses"
 `;
     fs.writeFileSync(path.join(testCodexHome, 'config.toml'), configContent);
 
-    mockExecFileSync.mockReturnValue(
+    mockSpawnSync.mockReturnValue(
       JSON.stringify({
         models: [
           {
@@ -161,7 +169,7 @@ model_provider = "openai"
 `;
     fs.writeFileSync(path.join(testCodexHome, 'config.toml'), configContent);
 
-    mockExecFileSync.mockReturnValue(
+    mockSpawnSync.mockReturnValue(
       JSON.stringify({
         models: [
           {
@@ -191,7 +199,7 @@ model_provider = "openai"
 `;
     fs.writeFileSync(path.join(testCodexHome, 'config.toml'), configContent);
 
-    mockExecFileSync.mockReturnValue(
+    mockSpawnSync.mockReturnValue(
       JSON.stringify({
         models: [
           {
@@ -227,7 +235,7 @@ wire_api = "responses"
 `;
     fs.writeFileSync(path.join(testCodexHome, 'config.toml'), configContent);
 
-    mockExecFileSync.mockReturnValue(
+    mockSpawnSync.mockReturnValue(
       JSON.stringify({
         models: [
           {
@@ -278,7 +286,7 @@ wire_api = "responses"
 `;
     fs.writeFileSync(path.join(testCodexHome, 'config.toml'), configContent);
 
-    mockExecFileSync.mockReturnValue(
+    mockSpawnSync.mockReturnValue(
       JSON.stringify({
         models: [
           {
@@ -316,7 +324,7 @@ wire_api = "responses"
 `;
     fs.writeFileSync(path.join(testCodexHome, 'config.toml'), configContent);
 
-    mockExecFileSync.mockReturnValue(
+    mockSpawnSync.mockReturnValue(
       JSON.stringify({
         models: [
           {

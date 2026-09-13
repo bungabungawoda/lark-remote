@@ -5,8 +5,8 @@
  * provides dynamic dropdown options for /config card.
  */
 
-import { execFileSync } from 'node:child_process';
 import { getLogger } from '../logger/index.js';
+import { spawnProcessSync } from '../platform/spawn.js';
 
 /** Valid thinking effort values for kimi (Layer 1: Schema enum source) */
 export const KIMI_THINKING_EFFORTS = ['low', 'high', 'max'] as const;
@@ -78,14 +78,24 @@ export function loadKimiConfig(): KimiConfigResult {
   const logger = getLogger();
 
   try {
-    const output = execFileSync('kimi', ['provider', 'list', '--json'], {
-      stdio: ['ignore', 'pipe', 'ignore'],
+    // spawnProcessSync（cross-spawn）而非 execFileSync：kimi 是 npm 全局安装的
+    // .cmd 垫片，win32 上 execFileSync 不做 PATHEXT 解析（裸名解析到无扩展名的
+    // sh 脚本直接执行失败，.cmd 又 EINVAL）；cross-spawn 与 runner spawn 走
+    // 同一垫片执行路径（posix 直通）。stderr 参与 pipe 以便失败信息可诊断。
+    const res = spawnProcessSync('kimi', ['provider', 'list', '--json'], {
+      stdio: ['ignore', 'pipe', 'pipe'],
       timeout: 10000,
       maxBuffer: 2 * 1024 * 1024,
-      windowsHide: true, // kimi 是 npm .cmd 垫片：不隐藏会闪 cmd.exe 控制台
+      encoding: 'utf-8',
     });
+    if (res.error) throw res.error;
+    if (res.status !== 0) {
+      const stderr = String(res.stderr ?? '').trim();
+      throw new Error(`kimi exited ${res.status}${stderr ? `: ${stderr.slice(0, 200)}` : ''}`);
+    }
+    const output = String(res.stdout ?? '');
 
-    const data = JSON.parse(output.toString()) as KimiProviderListJson;
+    const data = JSON.parse(output) as KimiProviderListJson;
 
     if (!data.models || Object.keys(data.models).length === 0) {
       logger.warn('[kimi-config] no models found in provider list, using defaults');

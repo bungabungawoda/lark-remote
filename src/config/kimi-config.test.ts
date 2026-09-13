@@ -1,15 +1,24 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { loadKimiConfig, invalidateKimiConfigCache } from './kimi-config.js';
 
-vi.mock('node:child_process', () => ({
-  execFileSync: vi.fn(),
+// 生产代码经 platform/spawn（cross-spawn）调用 kimi，mock 该 seam；
+// mock 返回 string/Buffer 时自动包装成 spawnProcessSync 的成功结果形态，
+// mock 抛错则原样穿透（对齐 spawn error 语义）。
+const mockSpawnSync = vi.fn();
+
+vi.mock('../platform/spawn.js', () => ({
+  spawnProcessSync: (...args: any[]) => {
+    const v = mockSpawnSync(...args);
+    if (typeof v === 'string' || Buffer.isBuffer(v)) {
+      return { status: 0, stdout: v, stderr: '' };
+    }
+    return v;
+  },
 }));
 
 vi.mock('../logger/index.js', () => ({
   getLogger: () => ({ warn: vi.fn(), info: vi.fn(), error: vi.fn() }),
 }));
-
-const mockExecFileSync = vi.mocked(await import('node:child_process')).execFileSync;
 
 function makeProviderListJson(overrides: {
   models?: Record<string, object>;
@@ -39,8 +48,8 @@ describe('loadKimiConfig', () => {
     vi.clearAllMocks();
   });
 
-  it('returns default result when execFileSync throws', () => {
-    mockExecFileSync.mockImplementation(() => {
+  it('returns default result when spawnProcessSync errors', () => {
+    mockSpawnSync.mockImplementation(() => {
       throw new Error('kimi not found');
     });
 
@@ -58,7 +67,7 @@ describe('loadKimiConfig', () => {
   });
 
   it('uses first modelOption as fallback when kimi-code/k3 does not exist', () => {
-    mockExecFileSync.mockReturnValue(
+    mockSpawnSync.mockReturnValue(
       Buffer.from(
         makeProviderListJson({
           models: {
@@ -90,7 +99,7 @@ describe('loadKimiConfig', () => {
   });
 
   it('returns defaults when models object is empty', () => {
-    mockExecFileSync.mockReturnValue(Buffer.from(makeProviderListJson({ models: {} })));
+    mockSpawnSync.mockReturnValue(Buffer.from(makeProviderListJson({ models: {} })));
 
     const result = loadKimiConfig();
 
@@ -102,30 +111,30 @@ describe('loadKimiConfig', () => {
     ]);
   });
 
-  it('caches result and does not call execFileSync again on second call', () => {
-    mockExecFileSync.mockReturnValue(Buffer.from(makeProviderListJson({})));
+  it('caches result and does not spawn again on second call', () => {
+    mockSpawnSync.mockReturnValue(Buffer.from(makeProviderListJson({})));
 
     const result1 = loadKimiConfig();
     const result2 = loadKimiConfig();
 
     expect(result1).toBe(result2);
-    expect(mockExecFileSync).toHaveBeenCalledTimes(1);
+    expect(mockSpawnSync).toHaveBeenCalledTimes(1);
   });
 
-  it('re-executes execFileSync after cache invalidation', () => {
-    mockExecFileSync.mockReturnValue(Buffer.from(makeProviderListJson({})));
+  it('re-spawns after cache invalidation', () => {
+    mockSpawnSync.mockReturnValue(Buffer.from(makeProviderListJson({})));
 
     loadKimiConfig();
-    expect(mockExecFileSync).toHaveBeenCalledTimes(1);
+    expect(mockSpawnSync).toHaveBeenCalledTimes(1);
 
     invalidateKimiConfigCache();
 
     loadKimiConfig();
-    expect(mockExecFileSync).toHaveBeenCalledTimes(2);
+    expect(mockSpawnSync).toHaveBeenCalledTimes(2);
   });
 
   it('populates modelOptions, modelDisplayNames, modelEfforts, modelDefaultEfforts from valid data', () => {
-    mockExecFileSync.mockReturnValue(
+    mockSpawnSync.mockReturnValue(
       Buffer.from(
         makeProviderListJson({
           models: {
@@ -171,7 +180,7 @@ describe('loadKimiConfig', () => {
   });
 
   it('filters out efforts not in KIMI_THINKING_EFFORTS', () => {
-    mockExecFileSync.mockReturnValue(
+    mockSpawnSync.mockReturnValue(
       Buffer.from(
         makeProviderListJson({
           models: {
@@ -196,7 +205,7 @@ describe('loadKimiConfig', () => {
   });
 
   it('falls back to FALLBACK_EFFORTS when all efforts are filtered out', () => {
-    mockExecFileSync.mockReturnValue(
+    mockSpawnSync.mockReturnValue(
       Buffer.from(
         makeProviderListJson({
           models: {
@@ -220,7 +229,7 @@ describe('loadKimiConfig', () => {
   });
 
   it('falls back to max when defaultEffort is not a valid KimiThinkingEffort', () => {
-    mockExecFileSync.mockReturnValue(
+    mockSpawnSync.mockReturnValue(
       Buffer.from(
         makeProviderListJson({
           models: {
@@ -244,7 +253,7 @@ describe('loadKimiConfig', () => {
   });
 
   it('defaults to max when defaultEffort is not provided', () => {
-    mockExecFileSync.mockReturnValue(
+    mockSpawnSync.mockReturnValue(
       Buffer.from(
         makeProviderListJson({
           models: {
@@ -268,7 +277,7 @@ describe('loadKimiConfig', () => {
   });
 
   it('uses FALLBACK_EFFORTS when supportEfforts is absent', () => {
-    mockExecFileSync.mockReturnValue(
+    mockSpawnSync.mockReturnValue(
       Buffer.from(
         makeProviderListJson({
           models: {
