@@ -118,12 +118,15 @@ Your original message also gets an emoji reaction: `Typing` while the run is in 
 | `/stop` | `/t` | Kill the current agent process (SIGKILL) |
 | `/ps` | - | Whether a process is running |
 | `/restart` | - | In-place bridge self-restart (new process takes over with the same config) |
+| `/clone [name]` | - | Clone the bridge: copies the current config into a new directory and walks you through creating a brand-new Feishu app by QR scan; on success it binds, syncs state, and launches the new instance |
 | `/config get\|set` | `/c` | View/change runtime config (agent-aware card) |
 | `/order save\|list\|edit` | `/o` | Save, list, or edit frequently used prompts |
 | `!<cmd>` | - | Run a bash command with streaming card output (bypasses the serial queue) |
 | `/exit` | `/e` | Exit the bridge |
 
 Any message not starting with `/` is forwarded to the current default agent.
+
+**Clone the bridge (`/clone`)**: to run an independent bridge instance next to another project directory, send `/clone <name>` — the current config directory is cloned to `<configDir>-<name>` (everything except the Feishu credentials), a QR code is sent into the chat as an image to create a brand-new Feishu app, and once you scan it the new app is bound automatically with workspace aliases, saved prompts, working directory, and session state carried over; the new instance launches itself and is ready to chat. You can also hit the "/clone" button on the `/help` card. See [docs/en/usage.md](docs/en/usage.md) for details.
 
 ## Testing
 
