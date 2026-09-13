@@ -20,12 +20,24 @@ import os from 'node:os';
  * Spec basis: codex-y review findings P1-1/P1-2/P2-3/P2-5 + codex 源码。
  */
 
-const { mockExecFileSync, mockLogger } = vi.hoisted(() => ({
-  mockExecFileSync: vi.fn(),
+const { mockSpawnSync, mockLogger } = vi.hoisted(() => ({
+  mockSpawnSync: vi.fn(),
   mockLogger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
 }));
 
-vi.mock('node:child_process', () => ({ execFileSync: mockExecFileSync }));
+vi.mock('../../../src/platform/spawn.js', () => ({
+  // 兼容历史 mock 形态：返回 string/Buffer 视为成功 stdout，抛错/其余原样穿透
+  spawnProcessSync: (...args: any[]) => {
+    const v = mockSpawnSync(...args);
+    if (typeof v === 'string' || Buffer.isBuffer(v)) {
+      return { status: 0, stdout: v, stderr: '' };
+    }
+    return v;
+  },
+  spawnProcess: () => {
+    throw new Error('anchor test must not spawn async');
+  },
+}));
 vi.mock('../../../src/logger/index.js', () => ({
   getLogger: () => mockLogger,
   initLogger: () => mockLogger,
@@ -53,14 +65,14 @@ describe('codex catalog review fixes - anchor', () => {
   let oldCodexHome: string | undefined;
 
   beforeEach(() => {
-    mockExecFileSync.mockReset();
+    mockSpawnSync.mockReset();
     mockLogger.warn.mockReset();
     invalidateCodexBundledCache();
     oldCodexHome = process.env.CODEX_HOME;
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-review-fixes-'));
     process.env.CODEX_HOME = tmpDir;
     // 默认：活动目录命令失败，bundled 可用（用于证明不被回退）
-    mockExecFileSync.mockImplementation((_binary: string, args: string[]) => {
+    mockSpawnSync.mockImplementation((_binary: string, args: string[]) => {
       if (args[0] === 'debug' && args[1] === 'models' && args.includes('--bundled')) {
         return makeCatalog([makeModel('gpt-5.6-sol', [{ effort: 'low' }])]);
       }
@@ -160,7 +172,7 @@ describe('codex catalog review fixes - anchor', () => {
       ].join('\n'),
     );
     fs.writeFileSync(path.join(tmpDir, 'models.json'), CUSTOM_CATALOG_JSON);
-    mockExecFileSync.mockImplementation((_binary: string, args: string[]) => {
+    mockSpawnSync.mockImplementation((_binary: string, args: string[]) => {
       if (args[0] === 'debug' && args[1] === 'models' && !args.includes('--bundled')) {
         return CUSTOM_CATALOG_JSON;
       }

@@ -9,12 +9,19 @@
  * - 非 catalog 模式：openai 用 bundled 全量；anthropic 仅在用户显式配置时存在
  */
 
-import { execFileSync, execFile } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import TOML from '@iarna/toml';
 import { getLogger } from '../logger/index.js';
+import { spawnProcess, spawnProcessSync } from '../platform/spawn.js';
+
+/** codex CLI 名（cross-spawn 负责 win32 .cmd 垫片解析）。 */
+const CODEX_BINARY = 'codex';
+
+/** codex CLI 调用超时 / 输出上限（同步与异步路径一致）。 */
+const CODEX_TIMEOUT_MS = 8_000;
+const CODEX_MAX_BUFFER = 4 * 1024 * 1024;
 
 /**
  * Resolve codex home directory.
@@ -237,14 +244,7 @@ export function getCodexCatalogModels(codexHome?: string): BundledModelInfo[] {
 
   const now = Date.now();
   try {
-    const stdout = execFileSync('codex', catalogArgs(bundled), {
-      encoding: 'utf-8',
-      timeout: 8_000,
-      maxBuffer: 4 * 1024 * 1024,
-      env: process.env,
-      stdio: ['ignore', 'pipe', 'ignore'],
-      windowsHide: true, // codex 是 npm .cmd 垫片：不隐藏会闪 cmd.exe 控制台
-    });
+    const stdout = runCodexCommandSync(catalogArgs(bundled));
     const models = parseCodexModelsOutput(stdout);
     catalogCache = { key, models, ts: now, failed: models.length === 0 };
     return models;
@@ -277,7 +277,7 @@ export async function loadCodexCatalogModelsAsync(codexHome?: string): Promise<B
   const p = (async (): Promise<BundledModelInfo[]> => {
     const now = Date.now();
     try {
-      const stdout = await execFileAsync('codex', catalogArgs(bundled));
+      const stdout = await runCodexCommandAsync(catalogArgs(bundled));
       const models = parseCodexModelsOutput(stdout);
       catalogCache = { key, models, ts: now, failed: models.length === 0 };
       return models;
@@ -308,7 +308,7 @@ export function warmCodexCatalogCache(codexHome?: string): void {
 
 /** 计算目录缓存键（binary/home/mode + 指纹），同步与异步路径共享。 */
 function computeCodexCatalogKey(codexHome?: string): { key: string; bundled: boolean } {
-  const binary = 'codex';
+  const binary = CODEX_BINARY;
   const home = resolveCodexHome(codexHome);
   const catalogPath = readModelCatalogJsonPath(home);
   const bundled = catalogPath === undefined || catalogPath === TOML_PARSE_FAILED_SENTINEL;
@@ -350,24 +350,76 @@ function catalogArgs(bundled: boolean): string[] {
   return bundled ? ['debug', 'models', '--bundled'] : ['debug', 'models'];
 }
 
-/** Promisify execFile with the same 8s timeout / 4MB cap as the sync path. */
-function execFileAsync(file: string, args: string[]): Promise<string> {
+/**
+ * 同步运行 codex CLI（`debug models ...`），成功返回 stdout。
+ *
+ * 必须经 platform/spawn（cross-spawn）而非裸 execFileSync：codex 是 npm 全局
+ * 安装的 .cmd 垫片，win32 上 execFileSync 不做 PATHEXT 解析 —— 裸名 'codex'
+ * 会被解析到无扩展名的 sh 脚本（给 Git Bash/WSL 用的那份），Windows 原生
+ * 执行直接失败（bun 下 exit 1「系统找不到指定的路径」，node 下 ENOENT）；
+ * 而 execFileSync('codex.cmd') 又因 execFile 不经 shell 直接 EINVAL。
+ * cross-spawn 与 runner spawn 走同一垫片执行路径（posix 直通）。
+ * stderr 参与 pipe：失败信息带上 stderr 片段，避免只留一句无诊断价值的
+ * "Command failed"（历史教训：真因只存在于被丢弃的 stderr 里）。
+ */
+function runCodexCommandSync(args: string[]): string {
+  const res = spawnProcessSync(CODEX_BINARY, args, {
+    encoding: 'utf-8',
+    timeout: CODEX_TIMEOUT_MS,
+    maxBuffer: CODEX_MAX_BUFFER,
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  if (res.error) throw res.error;
+  if (res.status !== 0) {
+    const stderr = String(res.stderr ?? '').trim();
+    throw new Error(`codex exited ${res.status}${stderr ? `: ${stderr.slice(0, 200)}` : ''}`);
+  }
+  return String(res.stdout ?? '');
+}
+
+/**
+ * 异步运行 codex CLI（spawnProcess + 流式收集），成功返回完整 stdout。
+ * 与同步路径同超时 / 输出上限；stdout 超 4MB 主动 kill（对齐 execFile maxBuffer 语义）。
+ */
+function runCodexCommandAsync(args: string[]): Promise<string> {
   return new Promise((resolve, reject) => {
-    execFile(
-      file,
-      args,
-      {
-        encoding: 'utf-8',
-        timeout: 8_000,
-        maxBuffer: 4 * 1024 * 1024,
-        env: process.env,
-        windowsHide: true,
-      },
-      (err: Error | null, stdout: string) => {
-        if (err) reject(err);
-        else resolve(stdout);
-      },
-    );
+    const child = spawnProcess(CODEX_BINARY, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+    let stdout = '';
+    let stderr = '';
+    let settled = false;
+    const settle = (fn: () => void): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      fn();
+    };
+    const timer = setTimeout(() => {
+      settle(() => {
+        child.kill();
+        reject(new Error(`codex timed out after ${CODEX_TIMEOUT_MS}ms`));
+      });
+    }, CODEX_TIMEOUT_MS);
+    child.stdout?.on('data', (chunk: string | Buffer) => {
+      stdout += String(chunk);
+      if (stdout.length > CODEX_MAX_BUFFER) {
+        settle(() => reject(new Error('codex stdout exceeded maxBuffer (4MB)')));
+        child.kill();
+      }
+    });
+    child.stderr?.on('data', (chunk: string | Buffer) => {
+      stderr += String(chunk);
+    });
+    child.on('error', (err: Error) => settle(() => reject(err)));
+    child.on('close', (code: number | null) => {
+      settle(() => {
+        if (code === 0) {
+          resolve(stdout);
+        } else {
+          const tail = stderr.trim().slice(0, 200);
+          reject(new Error(`codex exited ${code}${tail ? `: ${tail}` : ''}`));
+        }
+      });
+    });
   });
 }
 

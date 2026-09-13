@@ -19,8 +19,8 @@ import path from 'node:path';
 import os from 'node:os';
 import fs from 'node:fs';
 
-const { mockExecFileSync, mockLogger } = vi.hoisted(() => ({
-  mockExecFileSync: vi.fn(),
+const { mockSpawnSync, mockLogger } = vi.hoisted(() => ({
+  mockSpawnSync: vi.fn(),
   mockLogger: {
     debug: vi.fn(),
     info: vi.fn(),
@@ -29,7 +29,19 @@ const { mockExecFileSync, mockLogger } = vi.hoisted(() => ({
   },
 }));
 
-vi.mock('node:child_process', () => ({ execFileSync: mockExecFileSync }));
+vi.mock('../../../src/platform/spawn.js', () => ({
+  // 兼容历史 mock 形态：返回 string/Buffer 视为成功 stdout，抛错/其余原样穿透
+  spawnProcessSync: (...args: any[]) => {
+    const v = mockSpawnSync(...args);
+    if (typeof v === 'string' || Buffer.isBuffer(v)) {
+      return { status: 0, stdout: v, stderr: '' };
+    }
+    return v;
+  },
+  spawnProcess: () => {
+    throw new Error('anchor test must not spawn async');
+  },
+}));
 vi.mock('../../../src/logger/index.js', () => ({
   getLogger: () => mockLogger,
   initLogger: () => mockLogger,
@@ -108,14 +120,14 @@ const BUNDLED_JSON_WITH_REASONING = JSON.stringify({
  */
 describe('getCodexBundledModels - anchor', () => {
   beforeEach(() => {
-    mockExecFileSync.mockReset();
+    mockSpawnSync.mockReset();
     mockLogger.warn.mockReset();
     invalidateCodexBundledCache();
     invalidateCodexBundledTestCache();
   });
 
   it('test_anchor_bundled_models_contain_reasoning_levels', () => {
-    mockExecFileSync.mockReturnValue(BUNDLED_JSON_WITH_REASONING);
+    mockSpawnSync.mockReturnValue(BUNDLED_JSON_WITH_REASONING);
 
     const models = getCodexBundledModels();
 
@@ -145,7 +157,7 @@ describe('getCodexBundledModels - anchor', () => {
   });
 
   it('test_anchor_bundled_models_excludes_hidden', () => {
-    mockExecFileSync.mockReturnValue(BUNDLED_JSON_WITH_REASONING);
+    mockSpawnSync.mockReturnValue(BUNDLED_JSON_WITH_REASONING);
 
     const models = getCodexBundledModels();
 
@@ -158,7 +170,7 @@ describe('getCodexBundledModels - anchor', () => {
   });
 
   it('test_anchor_bundled_models_sorted_by_priority', () => {
-    mockExecFileSync.mockReturnValue(BUNDLED_JSON_WITH_REASONING);
+    mockSpawnSync.mockReturnValue(BUNDLED_JSON_WITH_REASONING);
 
     const models = getCodexBundledModels();
 
@@ -168,7 +180,7 @@ describe('getCodexBundledModels - anchor', () => {
   });
 
   it('test_anchor_model_with_fewer_reasoning_levels', () => {
-    mockExecFileSync.mockReturnValue(BUNDLED_JSON_WITH_REASONING);
+    mockSpawnSync.mockReturnValue(BUNDLED_JSON_WITH_REASONING);
 
     const models = getCodexBundledModels();
     const gpt54 = models.find((m) => m.slug === 'gpt-5.4');
@@ -190,14 +202,14 @@ describe('getCodexBundledModels - anchor', () => {
 
 describe('getReasoningEffortOptions - anchor', () => {
   beforeEach(() => {
-    mockExecFileSync.mockReset();
+    mockSpawnSync.mockReset();
     mockLogger.warn.mockReset();
     invalidateCodexBundledCache();
     invalidateCodexBundledTestCache();
   });
 
   it('test_anchor_get_reasoning_effort_options_returns_model_specific_list', () => {
-    mockExecFileSync.mockReturnValue(BUNDLED_JSON_WITH_REASONING);
+    mockSpawnSync.mockReturnValue(BUNDLED_JSON_WITH_REASONING);
 
     const solOptions = getReasoningEffortOptions('gpt-5.6-sol');
     expect(solOptions).toEqual(['low', 'medium', 'high', 'xhigh', 'max', 'ultra']);
@@ -207,14 +219,14 @@ describe('getReasoningEffortOptions - anchor', () => {
   });
 
   it('test_anchor_get_reasoning_effort_options_unknown_model_returns_empty', () => {
-    mockExecFileSync.mockReturnValue(BUNDLED_JSON_WITH_REASONING);
+    mockSpawnSync.mockReturnValue(BUNDLED_JSON_WITH_REASONING);
 
     const unknownOptions = getReasoningEffortOptions('unknown-model');
     expect(unknownOptions).toEqual([]);
   });
 
   it('test_anchor_get_reasoning_effort_options_empty_bundled_returns_empty', () => {
-    mockExecFileSync.mockReturnValue(JSON.stringify({ models: [] }));
+    mockSpawnSync.mockReturnValue(JSON.stringify({ models: [] }));
 
     const options = getReasoningEffortOptions('any-model');
     expect(options).toEqual([]);
@@ -223,14 +235,14 @@ describe('getReasoningEffortOptions - anchor', () => {
 
 describe('getDefaultReasoningEffort - anchor', () => {
   beforeEach(() => {
-    mockExecFileSync.mockReset();
+    mockSpawnSync.mockReset();
     mockLogger.warn.mockReset();
     invalidateCodexBundledCache();
     invalidateCodexBundledTestCache();
   });
 
   it('test_anchor_get_default_reasoning_effort_returns_model_default', () => {
-    mockExecFileSync.mockReturnValue(BUNDLED_JSON_WITH_REASONING);
+    mockSpawnSync.mockReturnValue(BUNDLED_JSON_WITH_REASONING);
 
     expect(getDefaultReasoningEffort('gpt-5.6-sol')).toBe('low');
     expect(getDefaultReasoningEffort('gpt-5.6-terra')).toBe('medium');
@@ -238,7 +250,7 @@ describe('getDefaultReasoningEffort - anchor', () => {
   });
 
   it('test_anchor_get_default_reasoning_effort_unknown_model_returns_medium', () => {
-    mockExecFileSync.mockReturnValue(BUNDLED_JSON_WITH_REASONING);
+    mockSpawnSync.mockReturnValue(BUNDLED_JSON_WITH_REASONING);
 
     expect(getDefaultReasoningEffort('unknown-model')).toBeUndefined();
   });
@@ -264,7 +276,7 @@ describe('P2-2: reasoning effort functions read bundled catalog', () => {
   let oldCodexHome: string | undefined;
 
   beforeEach(() => {
-    mockExecFileSync.mockReset();
+    mockSpawnSync.mockReset();
     mockLogger.warn.mockReset();
     invalidateCodexBundledCache();
     oldCodexHome = process.env.CODEX_HOME;
@@ -283,7 +295,7 @@ describe('P2-2: reasoning effort functions read bundled catalog', () => {
   });
 
   it('test_anchor_getReasoningEffortOptions_reads_bundled_catalog', () => {
-    mockExecFileSync.mockReturnValue(
+    mockSpawnSync.mockReturnValue(
       JSON.stringify({
         models: [
           {
@@ -301,11 +313,11 @@ describe('P2-2: reasoning effort functions read bundled catalog', () => {
 
     const options = getReasoningEffortOptions('custom-model');
     expect(options).toEqual(['low', 'high']);
-    expect(mockExecFileSync).toHaveBeenCalledWith('codex', expect.any(Array), expect.any(Object));
+    expect(mockSpawnSync).toHaveBeenCalledWith('codex', expect.any(Array), expect.any(Object));
   });
 
   it('test_anchor_getDefaultReasoningEffort_reads_bundled_catalog', () => {
-    mockExecFileSync.mockReturnValue(
+    mockSpawnSync.mockReturnValue(
       JSON.stringify({
         models: [
           {
@@ -392,10 +404,10 @@ const modelSwitchTmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-model-swi
 
 describe('Config card codex model switch reasoning adjustment - anchor', () => {
   beforeEach(() => {
-    mockExecFileSync.mockReset();
+    mockSpawnSync.mockReset();
     mockLogger.warn.mockReset();
     invalidateCodexBundledCache();
-    mockExecFileSync.mockReturnValue(MODEL_SWITCH_BUNDLED_JSON);
+    mockSpawnSync.mockReturnValue(MODEL_SWITCH_BUNDLED_JSON);
   });
 
   afterEach(() => {

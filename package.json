@@ -58,7 +58,7 @@
     "test:opencode-full": "vitest run --project agent-opencode --project infra-runner --project infra-session",
     "test:pi-full": "vitest run --project agent-pi --project infra-runner --project infra-session",
     "test:kimi-full": "vitest run --project agent-kimi --project infra-runner --project infra-session",
-    "test:live": "vitest run --project live",
+    "test:live": "node node_modules/vitest/vitest.mjs run --project live",
     "prepublishOnly": "npm run typecheck && vitest run && npm run build",
     "prepack": "node -e \"const fs=require('fs');if(!fs.existsSync('dist/cli.js')){console.error('dist/ missing — run bun run build first');process.exit(1)}\""
   },

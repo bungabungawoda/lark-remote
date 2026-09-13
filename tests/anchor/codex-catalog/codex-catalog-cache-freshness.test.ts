@@ -15,12 +15,24 @@ import os from 'node:os';
  * Spec basis: P3-4（review 发现）。
  */
 
-const { mockExecFileSync, mockLogger } = vi.hoisted(() => ({
-  mockExecFileSync: vi.fn(),
+const { mockSpawnSync, mockLogger } = vi.hoisted(() => ({
+  mockSpawnSync: vi.fn(),
   mockLogger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
 }));
 
-vi.mock('node:child_process', () => ({ execFileSync: mockExecFileSync }));
+vi.mock('../../../src/platform/spawn.js', () => ({
+  // 兼容历史 mock 形态：返回 string/Buffer 视为成功 stdout，抛错/其余原样穿透
+  spawnProcessSync: (...args: any[]) => {
+    const v = mockSpawnSync(...args);
+    if (typeof v === 'string' || Buffer.isBuffer(v)) {
+      return { status: 0, stdout: v, stderr: '' };
+    }
+    return v;
+  },
+  spawnProcess: () => {
+    throw new Error('anchor test must not spawn async');
+  },
+}));
 vi.mock('../../../src/logger/index.js', () => ({
   getLogger: () => mockLogger,
   initLogger: () => mockLogger,
@@ -42,7 +54,7 @@ describe('codex catalog cache freshness - anchor', () => {
   let modelsPath: string;
 
   beforeEach(() => {
-    mockExecFileSync.mockReset();
+    mockSpawnSync.mockReset();
     mockLogger.warn.mockReset();
     invalidateCodexBundledCache();
     oldCodexHome = process.env.CODEX_HOME;
@@ -59,7 +71,7 @@ describe('codex catalog cache freshness - anchor', () => {
     fs.writeFileSync(modelsPath, catalogJson('deepseek-v4-flash'));
     process.env.CODEX_HOME = tmpDir;
     // mock 直接返回 models.json 当前内容（等价于真实 codex debug models 的输出）
-    mockExecFileSync.mockImplementation((_binary: string, args: string[]) => {
+    mockSpawnSync.mockImplementation((_binary: string, args: string[]) => {
       if (args[0] === 'debug' && args[1] === 'models' && !args.includes('--bundled')) {
         return fs.readFileSync(modelsPath, 'utf-8');
       }
@@ -86,13 +98,13 @@ describe('codex catalog cache freshness - anchor', () => {
     // 首次读取
     const first = getCodexCatalogModels();
     expect(first.map((m) => m.slug)).toEqual(['deepseek-v4-flash']);
-    expect(mockExecFileSync).toHaveBeenCalledTimes(1);
+    expect(mockSpawnSync).toHaveBeenCalledTimes(1);
 
     // 修改 models.json（换模型 + 显式推进 mtime）→ 必须重新执行命令，不得命中旧缓存
     fs.writeFileSync(modelsPath, catalogJson('deepseek-v4-pro'));
     fs.utimesSync(modelsPath, t2, t2);
     const second = getCodexCatalogModels();
     expect(second.map((m) => m.slug)).toEqual(['deepseek-v4-pro']);
-    expect(mockExecFileSync).toHaveBeenCalledTimes(2);
+    expect(mockSpawnSync).toHaveBeenCalledTimes(2);
   });
 });
