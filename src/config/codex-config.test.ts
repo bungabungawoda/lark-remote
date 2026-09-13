@@ -3,8 +3,9 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-// 直接在模块顶层定义 mock（兼容 bun 的 vitest）
-const mockExecFileSync = vi.fn();
+// 直接在模块顶层定义 mock（兼容 bun 的 vitest）。
+// 生产代码经 platform/spawn（cross-spawn）调用 codex，mock 该 seam。
+const mockSpawnSync = vi.fn();
 const mockLogger = {
   debug: vi.fn(),
   info: vi.fn(),
@@ -12,8 +13,11 @@ const mockLogger = {
   error: vi.fn(),
 };
 
-vi.mock('node:child_process', () => ({
-  execFileSync: (...args: any[]) => mockExecFileSync(...args),
+vi.mock('../platform/spawn.js', () => ({
+  spawnProcessSync: (...args: any[]) => mockSpawnSync(...args),
+  spawnProcess: () => {
+    throw new Error('sync test must not spawn async');
+  },
 }));
 vi.mock('../logger/index.js', () => ({
   getLogger: () => mockLogger,
@@ -26,8 +30,13 @@ import {
   invalidateCodexBundledTestCache,
 } from '../../tests/lib/codex-bundled-test-helpers.js';
 
+/** spawnProcessSync 成功返回形态 */
+const syncOk = (stdout: string) => ({ status: 0, stdout, stderr: '' });
+/** spawnProcessSync 失败返回形态（spawn error，如 ENOENT） */
+const syncErr = (message: string) => ({ status: null, error: new Error(message), stdout: '' });
+
 beforeEach(() => {
-  mockExecFileSync.mockReset();
+  mockSpawnSync.mockReset();
   mockLogger.warn.mockReset();
   invalidateCodexBundledCache();
   invalidateCodexBundledTestCache();
@@ -93,46 +102,42 @@ describe('resolveCodexHome', () => {
 
 describe('getCodexBundledModelSlugs', () => {
   it('excludes visibility:"hide" and sorts by priority ascending', () => {
-    mockExecFileSync.mockReturnValue(BUNDLED_JSON);
+    mockSpawnSync.mockReturnValue(syncOk(BUNDLED_JSON));
 
     const slugs = getCodexBundledModelSlugs();
 
     expect(slugs).toEqual(['gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.4']);
     expect(slugs).not.toContain('codex-auto-review');
     // invoked once
-    expect(mockExecFileSync).toHaveBeenCalledTimes(1);
-    expect(mockExecFileSync).toHaveBeenCalledWith(
+    expect(mockSpawnSync).toHaveBeenCalledTimes(1);
+    expect(mockSpawnSync).toHaveBeenCalledWith(
       'codex',
       ['debug', 'models', '--bundled'],
-      expect.objectContaining({ encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'] }),
+      expect.objectContaining({ encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'] }),
     );
   });
 
   it('caches: repeated calls within TTL only spawn once', () => {
-    mockExecFileSync.mockReturnValue(BUNDLED_JSON);
+    mockSpawnSync.mockReturnValue(syncOk(BUNDLED_JSON));
 
     getCodexBundledModelSlugs();
     getCodexBundledModelSlugs();
 
-    expect(mockExecFileSync).toHaveBeenCalledTimes(1);
+    expect(mockSpawnSync).toHaveBeenCalledTimes(1);
   });
 
   it('refetches after invalidateCodexBundledTestCache', () => {
-    mockExecFileSync.mockReturnValue(BUNDLED_JSON);
+    mockSpawnSync.mockReturnValue(syncOk(BUNDLED_JSON));
 
     getCodexBundledModelSlugs();
     invalidateCodexBundledTestCache();
     getCodexBundledModelSlugs();
 
-    expect(mockExecFileSync).toHaveBeenCalledTimes(2);
+    expect(mockSpawnSync).toHaveBeenCalledTimes(2);
   });
 
   it('returns [] and warns on spawn failure (ENOENT)', () => {
-    mockExecFileSync.mockImplementation(() => {
-      const err = new Error('spawn codex ENOENT') as Error & { code?: string };
-      (err as { code?: string }).code = 'ENOENT';
-      throw err;
-    });
+    mockSpawnSync.mockReturnValue(syncErr('spawn codex ENOENT'));
 
     const slugs = getCodexBundledModelSlugs();
 
@@ -141,16 +146,16 @@ describe('getCodexBundledModelSlugs', () => {
   });
 
   it('returns [] and warns on invalid JSON', () => {
-    mockExecFileSync.mockReturnValue('not json {{{');
+    mockSpawnSync.mockReturnValue(syncOk('not json {{{'));
     expect(getCodexBundledModelSlugs()).toEqual([]);
     expect(mockLogger.warn).toHaveBeenCalled();
   });
 
   it('treats models array missing/empty as empty result (no crash)', () => {
-    mockExecFileSync.mockReturnValue(JSON.stringify({ models: [] }));
+    mockSpawnSync.mockReturnValue(syncOk(JSON.stringify({ models: [] })));
     expect(getCodexBundledModelSlugs()).toEqual([]);
 
-    mockExecFileSync.mockReturnValue(JSON.stringify({}));
+    mockSpawnSync.mockReturnValue(syncOk(JSON.stringify({})));
     expect(getCodexBundledModelSlugs()).toEqual([]);
   });
 });
@@ -189,7 +194,7 @@ describe('loadCodexConfig model options merge', () => {
         '',
       ].join('\n'),
     );
-    mockExecFileSync.mockReturnValue(BUNDLED_JSON);
+    mockSpawnSync.mockReturnValue(syncOk(BUNDLED_JSON));
 
     const cfg = loadCodexConfig({ codexHome });
     const opts = cfg.modelOptions();
@@ -215,7 +220,7 @@ describe('loadCodexConfig model options merge', () => {
         '',
       ].join('\n'),
     );
-    mockExecFileSync.mockReturnValue(BUNDLED_JSON);
+    mockSpawnSync.mockReturnValue(syncOk(BUNDLED_JSON));
 
     const opts = loadCodexConfig({ codexHome }).modelOptions();
 
@@ -238,7 +243,7 @@ describe('loadCodexConfig model options merge', () => {
         '',
       ].join('\n'),
     );
-    mockExecFileSync.mockReturnValue(BUNDLED_JSON);
+    mockSpawnSync.mockReturnValue(syncOk(BUNDLED_JSON));
 
     const cfg = loadCodexConfig({ codexHome });
 
@@ -263,9 +268,7 @@ describe('loadCodexConfig model options merge', () => {
         '',
       ].join('\n'),
     );
-    mockExecFileSync.mockImplementation(() => {
-      throw new Error('spawn ENOENT');
-    });
+    mockSpawnSync.mockReturnValue(syncErr('spawn ENOENT'));
 
     const opts = loadCodexConfig({ codexHome }).modelOptions();
 
@@ -276,7 +279,7 @@ describe('loadCodexConfig model options merge', () => {
   });
 
   it('returns fallback providers + merged options when config.toml absent', () => {
-    mockExecFileSync.mockReturnValue(BUNDLED_JSON);
+    mockSpawnSync.mockReturnValue(syncOk(BUNDLED_JSON));
 
     const cfg = loadCodexConfig({ codexHome: path.join(tmpRoot, 'no-such-home') });
     const opts = cfg.modelOptions();

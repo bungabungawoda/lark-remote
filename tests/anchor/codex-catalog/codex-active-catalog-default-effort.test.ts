@@ -17,12 +17,24 @@ import os from 'node:os';
  * Spec basis: A2 —— getDefaultReasoningEffort 按 活动目录 → 内置目录 → 'medium' 解析。
  */
 
-const { mockExecFileSync, mockLogger } = vi.hoisted(() => ({
-  mockExecFileSync: vi.fn(),
+const { mockSpawnSync, mockLogger } = vi.hoisted(() => ({
+  mockSpawnSync: vi.fn(),
   mockLogger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
 }));
 
-vi.mock('node:child_process', () => ({ execFileSync: mockExecFileSync }));
+vi.mock('../../../src/platform/spawn.js', () => ({
+  // 兼容历史 mock 形态：返回 string/Buffer 视为成功 stdout，抛错/其余原样穿透
+  spawnProcessSync: (...args: any[]) => {
+    const v = mockSpawnSync(...args);
+    if (typeof v === 'string' || Buffer.isBuffer(v)) {
+      return { status: 0, stdout: v, stderr: '' };
+    }
+    return v;
+  },
+  spawnProcess: () => {
+    throw new Error('anchor test must not spawn async');
+  },
+}));
 vi.mock('../../../src/logger/index.js', () => ({
   getLogger: () => mockLogger,
   initLogger: () => mockLogger,
@@ -54,7 +66,7 @@ describe('codex active catalog default reasoning effort - anchor', () => {
   let oldCodexHome: string | undefined;
 
   beforeEach(() => {
-    mockExecFileSync.mockReset();
+    mockSpawnSync.mockReset();
     mockLogger.warn.mockReset();
     invalidateCodexBundledCache();
     oldCodexHome = process.env.CODEX_HOME;
@@ -69,7 +81,7 @@ describe('codex active catalog default reasoning effort - anchor', () => {
     );
     fs.writeFileSync(path.join(tmpDir, 'models.json'), ACTIVE_CATALOG_JSON);
     process.env.CODEX_HOME = tmpDir;
-    mockExecFileSync.mockImplementation((_binary: string, args: string[]) => {
+    mockSpawnSync.mockImplementation((_binary: string, args: string[]) => {
       if (args[0] === 'debug' && args[1] === 'models' && !args.includes('--bundled')) {
         return ACTIVE_CATALOG_JSON;
       }
@@ -92,7 +104,7 @@ describe('codex active catalog default reasoning effort - anchor', () => {
     expect(getDefaultReasoningEffort('deepseek-v4-flash')).toBe('high');
 
     // 数据源必须是 `codex debug models`（无 --bundled）
-    const calls = mockExecFileSync.mock.calls as Array<[string, string[]]>;
+    const calls = mockSpawnSync.mock.calls as Array<[string, string[]]>;
     const catalogCall = calls.find(([, args]) => args[0] === 'debug' && args[1] === 'models');
     expect(catalogCall).toBeTruthy();
     expect(catalogCall![1]).not.toContain('--bundled');

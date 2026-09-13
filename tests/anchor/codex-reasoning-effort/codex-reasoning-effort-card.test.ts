@@ -17,8 +17,8 @@ import path from 'node:path';
 import os from 'node:os';
 import fs from 'node:fs';
 
-const { mockExecFileSync, mockLogger } = vi.hoisted(() => ({
-  mockExecFileSync: vi.fn(),
+const { mockSpawnSync, mockLogger } = vi.hoisted(() => ({
+  mockSpawnSync: vi.fn(),
   mockLogger: {
     debug: vi.fn(),
     info: vi.fn(),
@@ -27,7 +27,19 @@ const { mockExecFileSync, mockLogger } = vi.hoisted(() => ({
   },
 }));
 
-vi.mock('node:child_process', () => ({ execFileSync: mockExecFileSync }));
+vi.mock('../../../src/platform/spawn.js', () => ({
+  // 兼容历史 mock 形态：返回 string/Buffer 视为成功 stdout，抛错/其余原样穿透
+  spawnProcessSync: (...args: any[]) => {
+    const v = mockSpawnSync(...args);
+    if (typeof v === 'string' || Buffer.isBuffer(v)) {
+      return { status: 0, stdout: v, stderr: '' };
+    }
+    return v;
+  },
+  spawnProcess: () => {
+    throw new Error('anchor test must not spawn async');
+  },
+}));
 vi.mock('../../../src/logger/index.js', () => ({
   getLogger: () => mockLogger,
   initLogger: () => mockLogger,
@@ -95,13 +107,13 @@ describe('Config card codex reasoningEffort - anchor', () => {
   let oldCodexHome: string | undefined;
 
   beforeEach(() => {
-    mockExecFileSync.mockReset();
+    mockSpawnSync.mockReset();
     mockLogger.warn.mockReset();
     invalidateCodexBundledCache();
     oldCodexHome = process.env.CODEX_HOME;
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-card-test-'));
     process.env.CODEX_HOME = tmpDir;
-    mockExecFileSync.mockImplementation((_binary: string, args: string[]) => {
+    mockSpawnSync.mockImplementation((_binary: string, args: string[]) => {
       if (args.includes('--bundled')) {
         return BUNDLED_FIXTURE;
       }
@@ -328,7 +340,7 @@ describe('codex config card effort follows model - anchor', () => {
   let oldCodexHome: string | undefined;
 
   beforeEach(() => {
-    mockExecFileSync.mockReset();
+    mockSpawnSync.mockReset();
     mockLogger.warn.mockReset();
     invalidateCodexBundledCache();
     oldCodexHome = process.env.CODEX_HOME;
@@ -362,7 +374,7 @@ describe('codex config card effort follows model - anchor', () => {
   }
 
   it('test_anchor_openai_model_shows_medium_and_switching_model_updates_effort_dropdown', async () => {
-    mockExecFileSync.mockImplementation((_binary: string, args: string[]) => {
+    mockSpawnSync.mockImplementation((_binary: string, args: string[]) => {
       if (args[0] === 'debug' && args[1] === 'models' && args.includes('--bundled')) {
         return BUNDLED_JSON;
       }
@@ -411,7 +423,7 @@ describe('codex config card effort follows model - anchor', () => {
     fs.writeFileSync(path.join(catalogHome, 'models.json'), ACTIVE_CATALOG_JSON);
     process.env.CODEX_HOME = catalogHome;
     invalidateCodexBundledCache();
-    mockExecFileSync.mockImplementation((_binary: string, args: string[]) => {
+    mockSpawnSync.mockImplementation((_binary: string, args: string[]) => {
       if (args[0] === 'debug' && args[1] === 'models' && !args.includes('--bundled')) {
         return ACTIVE_CATALOG_JSON;
       }
