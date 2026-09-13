@@ -91,3 +91,29 @@ describe('index.ts alias expansion wiring guard', () => {
     expect(block).not.toContain('messagePreview: msg.content.slice(0, 3000)');
   });
 });
+
+/**
+ * 入口 wiring 静态守卫：复制分身（/clone）活跃期的一切消息必须先经 clone
+ * 状态机（不转发 coding agent、不进命令分发、不展开别名），且 stop 命令
+ * 走单源谓词 isStopCommand 旁路（其绕队列停止能力不受 clone 流程影响，
+ * 别名单源见 index.ts isStopCommand）。拦截块若被挪到别名展开/命令分发
+ * 之后，clone 消息会静默流向 agent——此处钉住相对顺序。
+ */
+describe('index.ts clone flow wiring guard', () => {
+  it('clone 拦截位于别名展开之前，且 stop 命令经单源谓词旁路', () => {
+    const source = fs.readFileSync(path.resolve(__dirname, 'index.ts'), 'utf-8');
+    const cloneBlock = source.match(
+      /if \(cloneSession\.isActive\(\) && !isStopCommand\(msg\.content\)\) \{[\s\S]{0,500}?logger\.error\('\[clone\] message handling failed:'/,
+    );
+    expect(cloneBlock).not.toBeNull();
+    // stop 分支与 clone 排除共用同一谓词（防别名名单两份拷贝漂移）
+    expect(source).toContain('if (isStopCommand(content)) {');
+    expect(source).toContain('function isStopCommand(text: string): boolean');
+    // 顺序保证：clone 拦截必须在别名展开（→命令分发）之前
+    const cloneIdx = source.indexOf('if (cloneSession.isActive() && !isStopCommand(');
+    const aliasIdx = source.indexOf('const content = router.expandAliasMessage(msg.content);');
+    expect(cloneIdx).toBeGreaterThan(-1);
+    expect(aliasIdx).toBeGreaterThan(-1);
+    expect(cloneIdx).toBeLessThan(aliasIdx);
+  });
+});

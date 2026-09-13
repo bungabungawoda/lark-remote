@@ -529,51 +529,55 @@ export class FeishuConnector {
   }
 
   /**
-   * Upload a file to Feishu and send it to the specified chat.
-   * Uses the im/v1/files upload API.
+   * sendFile/sendImage 共用：校验文件存在与大小上限（30MB，对齐飞书
+   * im/v1 上传 API）。noun 是消息里的小写名词（'file'/'image'）。
    */
-  async sendFile(chatId: string, filePath: string): Promise<string> {
-    // Check file existence first with proper error handling
+  private checkUploadable(filePath: string, noun: string): void {
     let stat: fs.Stats;
     try {
       stat = fs.statSync(filePath);
     } catch (err) {
       const code = (err as NodeJS.ErrnoException).code;
       if (code === 'ENOENT') {
-        throw new Error(`Cannot access file: file not found (${filePath})`, { cause: err });
+        throw new Error(`Cannot access ${noun}: file not found (${filePath})`, { cause: err });
       }
-      throw new Error(`Cannot access file: ${(err as Error).message}`, { cause: err });
+      throw new Error(`Cannot access ${noun}: ${(err as Error).message}`, { cause: err });
     }
-
-    // Check file size limit (30MB, aligned with Feishu im/v1/files API)
     if (stat.size > MAX_FILE_UPLOAD_SIZE) {
+      const nounCap = noun.charAt(0).toUpperCase() + noun.slice(1);
       throw new Error(
-        `File too large (${(stat.size / 1_000_000).toFixed(1)}MB), exceeds ${MAX_FILE_UPLOAD_SIZE / (1024 * 1024)}MB limit`,
+        `${nounCap} too large (${(stat.size / 1_000_000).toFixed(1)}MB), exceeds ${MAX_FILE_UPLOAD_SIZE / (1024 * 1024)}MB limit`,
       );
     }
+  }
 
-    const fileName = displayName(filePath);
-
-    // P2-18: capture the read stream so it can be destroyed on any failure
-    // path. Without this, a token/upload/send failure leaks the fd (axios
-    // only closes the stream when it fully consumes it on success).
+  /**
+   * sendFile/sendImage 共用骨架：token → 上传（流在任何失败路径销毁，P2-18）
+   * → 发送媒体消息。上传端点 / form 字段 / 响应 key / msg_type 的差异由调用方
+   * 以 uploadUrl + buildForm + keyField + msgType 表达；timeout、noKeepAliveAgent
+   * （Bun keep-alive 修复）与错误包装在此单源。label 是对外错误前缀与日志
+   * 标签（'sendFile' | 'sendImage'）。
+   */
+  private async uploadAndSendMedia(
+    chatId: string,
+    filePath: string,
+    label: string,
+    uploadUrl: string,
+    buildForm: (stream: fs.ReadStream) => FormData,
+    keyField: 'file_key' | 'image_key',
+    msgType: 'file' | 'image',
+  ): Promise<string> {
     let fileStream: fs.ReadStream | null = null;
     try {
-      // P2-18: tenant_access_token cache. Avoid re-fetching on every file send
-      // (token is valid ~2h); validate data.code before trusting the token.
+      // P2-18: tenant_access_token cache（~2h），避免每次发送都取 token。
       const accessToken = await this.getTenantAccessToken();
 
-      // Upload file
-      const form = new FormData();
       fileStream = fs.createReadStream(filePath);
-      form.append('file', fileStream);
-      form.append('file_name', fileName);
-      form.append('file_type', 'stream');
+      const form = buildForm(fileStream);
 
-      // P2-18: timeout on the upload (large file, slow link) — 120s.
-      // httpsAgent: noKeepAlive — prevents Bun from reusing a server-RST'd
-      // keep-alive socket (ECONNRESET after ~30s; see noKeepAliveAgent docs).
-      const uploadResp = await axios.post('https://open.feishu.cn/open-apis/im/v1/files', form, {
+      // P2-18: timeout 120s（大文件慢链路）；httpsAgent: noKeepAlive 防止
+      // Bun 复用已被服务端 RST 的 keep-alive socket（ECONNRESET after ~30s）。
+      const uploadResp = await axios.post(uploadUrl, form, {
         headers: {
           ...form.getHeaders(),
           Authorization: `Bearer ${accessToken}`,
@@ -581,21 +585,18 @@ export class FeishuConnector {
         timeout: 120000,
         httpsAgent: noKeepAliveAgent,
       });
-
       if (uploadResp.data.code !== 0) {
-        throw new Error(`File upload failed: ${uploadResp.data.msg}`);
+        throw new Error(`Upload failed: ${uploadResp.data.msg}`);
       }
+      const mediaKey = uploadResp.data.data[keyField];
 
-      const fileKey = uploadResp.data.data.file_key;
-
-      // Send file message. P2-18: timeout 30s.
-      // httpsAgent: noKeepAlive — same Bun keep-alive fix as upload above.
+      // P2-18: timeout 30s；noKeepAlive 同上。
       const sendResp = await axios.post(
         'https://open.feishu.cn/open-apis/im/v1/messages',
         {
           receive_id: chatId,
-          msg_type: 'file',
-          content: JSON.stringify({ file_key: fileKey }),
+          msg_type: msgType,
+          content: JSON.stringify({ [keyField]: mediaKey }),
         },
         {
           headers: {
@@ -607,11 +608,9 @@ export class FeishuConnector {
           httpsAgent: noKeepAliveAgent,
         },
       );
-
       if (sendResp.data.code !== 0) {
-        throw new Error(`File message failed: ${sendResp.data.msg}`);
+        throw new Error(`Media message failed: ${sendResp.data.msg}`);
       }
-
       return sendResp.data.data.message_id;
     } catch (err) {
       // P2-18: destroy the read stream on failure so the fd is released.
@@ -622,11 +621,56 @@ export class FeishuConnector {
           /* already destroyed */
         }
       }
-      // Log the error but throw a formatted error to prevent unhandled rejection
       const errorInfo = this.formatError(err);
-      getLogger().error('[feishu] sendFile failed:', errorInfo);
-      throw new Error(`sendFile failed: ${errorInfo}`, { cause: err });
+      getLogger().error(`[feishu] ${label} failed:`, errorInfo);
+      throw new Error(`${label} failed: ${errorInfo}`, { cause: err });
     }
+  }
+
+  /**
+   * Upload a file to Feishu and send it to the specified chat.
+   * Uses the im/v1/files upload API.
+   */
+  async sendFile(chatId: string, filePath: string): Promise<string> {
+    this.checkUploadable(filePath, 'file');
+    return this.uploadAndSendMedia(
+      chatId,
+      filePath,
+      'sendFile',
+      'https://open.feishu.cn/open-apis/im/v1/files',
+      (stream) => {
+        const form = new FormData();
+        form.append('file', stream);
+        form.append('file_name', displayName(filePath));
+        form.append('file_type', 'stream');
+        return form;
+      },
+      'file_key',
+      'file',
+    );
+  }
+
+  /**
+   * Upload a local image file to Feishu and send it as an image message
+   * (im/v1/images + msg_type=image). Used by the clone wizard to deliver the
+   * scan-to-create QR code inline instead of as a downloadable file.
+   */
+  async sendImage(chatId: string, filePath: string): Promise<string> {
+    this.checkUploadable(filePath, 'image');
+    return this.uploadAndSendMedia(
+      chatId,
+      filePath,
+      'sendImage',
+      'https://open.feishu.cn/open-apis/im/v1/images',
+      (stream) => {
+        const form = new FormData();
+        form.append('image_type', 'message');
+        form.append('image', stream);
+        return form;
+      },
+      'image_key',
+      'image',
+    );
   }
 
   /**
