@@ -22,6 +22,9 @@
  *    以 `turn_diff` 快照发出——禁止把 delta 直接当快照或把全文当增量重复追加。
  * 4. `tool_call` 事件可能**没有 rawInput**（工具 lazy-create，参数在后续
  *    tool_call_update 才补齐）；translator 必须归一化为 `{}`，不得因缺失崩溃。
+ * 5. `session/request_permission` 的 toolCall **不一定带 rawInput**（kimi 实测：
+ *    审批门先于 tool.call.started，只有 title + content 截断摘要）；完整命令
+ *    需按 toolCallId 关联审批前的流式 args 文本恢复（BaseAcpTranslator 追踪）。
  */
 
 // =============================================================================
@@ -311,9 +314,20 @@ export interface PermissionOption {
 
 export interface RequestPermissionParams {
   sessionId: string;
+  /**
+   * Approval target. Divergence by server (2026-09-13 live probes):
+   *  - kimi 0.42: {toolCallId, title: toolName, content: [truncated summary
+   *    text]} — NO rawInput; the approval gate fires BEFORE tool.call.started,
+   *    so the full args only exist in the pre-approval tool_call/_update
+   *    streaming deltas (correlate by toolCallId, see BaseAcpTranslator).
+   *  - opencode: {toolCallId, title: full command for bash/shell, rawInput:
+   *    full input object} — title/rawInput are directly usable.
+   */
   toolCall?: {
-    title: string;
-    rawInput: string;
+    toolCallId?: string;
+    title?: string;
+    rawInput?: unknown;
+    content?: unknown[];
     [key: string]: unknown;
   };
   options: PermissionOption[];

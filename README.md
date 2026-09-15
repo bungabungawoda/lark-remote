@@ -16,7 +16,7 @@
 
 ## ⚠️ 安全警告（必读）
 
-本工具会把飞书消息直接转为本地 agent 执行。**开箱默认是不弹审批的**：Claude 默认以 `bypassPermissions` 运行（无审批卡），但该权限模式**可配置**——把它改成 `bypassPermissions` 以外的值（`default` / `acceptEdits` / `auto` / `dontAsk` / `plan`）即启用交互式审批，高风险操作会在飞书卡片上等你确认；Codex 采用 **app-server 审批模式**（默认 `approvalPolicy=on-request`，执行命令需在飞书卡片上确认，沙箱默认 `workspace-write`）；Kimi 默认 `manual`（逐条审批）；其他 agent 以各自 CLI 的默认权限运行。**无论哪种模式**，agent 都能读写你指定的本地目录，请务必：
+本工具会把飞书消息直接转为本地 agent 执行。**开箱默认是不弹审批的**：Claude 默认以 `bypassPermissions` 运行（无审批卡），但该权限模式**可配置**——把它改成 `bypassPermissions` 以外的值（`default` / `acceptEdits` / `auto` / `dontAsk` / `plan`）即启用交互式审批，高风险操作会在飞书卡片上等你确认；Codex 采用 **app-server 审批模式**（默认 `approvalPolicy=on-request`，执行命令需在飞书卡片上确认，沙箱默认 `workspace-write`）；Kimi 默认 `manual`（逐条审批；注意 kimi 0.40+ 起 `yolo` 已改为「必要时询问」而非全部放行，要完全不弹审批需选 `auto`）；其他 agent 以各自 CLI 的默认权限运行。**无论哪种模式**，agent 都能读写你指定的本地目录，请务必：
 
 - **仅限你自己的私聊（p2p）使用**。不要把机器人拉进任何群聊，不要让任何其他人能与它对话。
 - 在飞书开放平台把应用可见范围限制到**只有你自己**。
