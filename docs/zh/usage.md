@@ -63,7 +63,7 @@ claude:
 
 agents:
   kimi:                     # 纯 ACP 模式（kimi acp 持久连接，支持审批 + compact）
-    permissionMode: manual  # manual | auto | yolo
+    permissionMode: manual  # manual（始终询问）| yolo（必要时询问）| auto（完全自动）；kimi 0.40+ 语义，无人值守全放行用 auto
     acp:                    # acp 连接参数
       binary: kimi
       requestTimeoutMs: 60000

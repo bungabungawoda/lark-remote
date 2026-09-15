@@ -15,9 +15,10 @@ import type { AgentConfigCardBuilder, ConfigField, SelectOption } from './types.
 import { DEFAULT_TURN_IDLE_TIMEOUT_MINUTES, type AppConfig } from '../../config/index.js';
 
 const PERMISSION_MODE_OPTIONS: SelectOption[] = [
-  { text: 'manual（逐项审批）', value: 'manual' },
-  { text: 'auto（引擎裁决）', value: 'auto' },
-  { text: 'yolo（全部放行）', value: 'yolo' },
+  // kimi 0.40.0（2026-09-02）起官方语义：manual=始终询问 / yolo=必要时询问 / auto=完全自动
+  { text: 'manual（始终询问）', value: 'manual' },
+  { text: 'auto（完全自动）', value: 'auto' },
+  { text: 'yolo（必要时询问）', value: 'yolo' },
 ];
 
 export class KimiConfigBuilder implements AgentConfigCardBuilder {

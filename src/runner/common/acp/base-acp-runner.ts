@@ -31,7 +31,12 @@ import {
   type SessionCancelParams,
   type RequestPermissionParams,
 } from './protocol-types.js';
-import { respondAcpApproval, sendAcpSetMode, type AcpPendingApproval } from './protocol-helpers.js';
+import {
+  respondAcpApproval,
+  sendAcpSetMode,
+  truncateWithEllipsis,
+  type AcpPendingApproval,
+} from './protocol-helpers.js';
 import { getLogger } from '../../../logger/index.js';
 import { ConnectionBasedRunner } from '../connection-based-runner.js';
 import { BaseAcpTranslator, type AcpTranslatorEvent } from './base-translator.js';
@@ -179,8 +184,13 @@ export abstract class BaseAcpRunner<
           options,
           ...(proto ? { proto } : {}),
         });
+        // 命令预览进日志：审批卡在飞书侧，日志是本地唯一的事后追溯通道
+        // （kimi 的 request_permission 不带 rawInput，曾只剩 kind=command 可查）。
+        const commandPreview = ev.view.command
+          ? ` command=${truncateWithEllipsis(ev.view.command, 120)}`
+          : '';
         getLogger().info(
-          `[${this.logTag}] approval requested requestId=${ev.requestId} kind=${ev.kind}`,
+          `[${this.logTag}] approval requested requestId=${ev.requestId} kind=${ev.kind}${commandPreview}`,
         );
       }
     }
