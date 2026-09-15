@@ -23,6 +23,7 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { rmRf } from '../../../../tests/lib/tmp-cleanup.js';
+import { waitFor } from '../../../../tests/lib/wait-for.js';
 import { join } from 'node:path';
 import type { AgentEvent } from '../../types.js';
 import { KimiAcpRunner } from './runner.js';
@@ -959,11 +960,11 @@ describe('KimiAcpRunner', () => {
       }
     })();
 
-    // Wait for synthetic init (turn setup complete) before stopping
-    for (let i = 0; i < 200 && !events.some((e) => e.type === 'system'); i++) {
-      await new Promise((resolve) => setTimeout(resolve, 10));
-    }
-    expect(events.some((e) => e.type === 'system')).toBe(true);
+    // Wait for synthetic init (turn setup complete) before stopping. 走共享
+    // waitFor：固定 2s 轮询预算在 vitest 多 worker 并行下会被 spawn + ACP
+    // 握手的抖动吃穿，失败点在这里（stop() 之前），session/cancel 根本没跑到。
+    const initEmitted = await waitFor(() => events.some((e) => e.type === 'system'), 5000);
+    expect(initEmitted).toBe(true);
 
     await runner.stop();
     await runPromise;

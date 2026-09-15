@@ -332,12 +332,15 @@ export class InboundMediaHandler {
     const overflow =
       batch.saved.length > MAX_PATHS_IN_NOTIFICATION ? `\n… 等 ${batch.saved.length} 个文件` : '';
     const failures = batch.errors.length > 0 ? `\n⚠️ ${batch.errors.join('；')}` : '';
+    // 提示带上保存目录：用户把整句转给 agent 即可定位，无需靠目录约定反查。
+    // 合批窗口跨分钟时可能落在两个目录，此时全部列出。
+    const dirs = [...new Set(batch.saved.map((p) => path.dirname(p)))];
+    const hint =
+      dirs.length === 1
+        ? `\n💡 你可以直接说：请处理 ${dirs[0]} 下的文件`
+        : `\n💡 你可以直接说：请处理以下目录下的文件：${dirs.join('、')}`;
     const text =
-      `📎 已保存 ${batch.saved.length} 个文件：\n` +
-      lines.join('\n') +
-      overflow +
-      failures +
-      '\n💡 你可以直接说：请处理刚才保存的文件';
+      `📎 已保存 ${batch.saved.length} 个文件：\n` + lines.join('\n') + overflow + failures + hint;
 
     await this.deps.send(
       {

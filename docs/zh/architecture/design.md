@@ -322,6 +322,9 @@ logging:
 
 idle:
   watchdogMinutes: 15     # 0 关闭空闲看门狗
+
+preventSleep: true        # 阻止系统休眠（macOS caffeinate / Windows SetThreadExecutionState），
+                          # 默认开；不影响显示器睡眠，false 关闭
 ```
 
 首次启动检测不到 `feishu.appId`/`appSecret` 时：交互式终端（stdin/stdout 均 TTY）

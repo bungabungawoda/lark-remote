@@ -78,6 +78,8 @@ logging:
 
 idle:
   watchdogMinutes: 15       # 0 disables the idle timeout auto-stop
+
+preventSleep: true          # prevent system sleep (default on; display sleep unaffected), false to disable
 ```
 
 Override the config directory with `--config-dir <path>`; override the Claude settings path with `--settings <path>` or the `CLAUDE_SETTINGS_PATH` environment variable.

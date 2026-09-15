@@ -78,6 +78,8 @@ logging:
 
 idle:
   watchdogMinutes: 15       # 0 关闭空闲超时自动停止
+
+preventSleep: true          # 阻止系统休眠（默认开，不影响显示器睡眠），false 关闭
 ```
 
 配置目录可用 `--config-dir <path>` 覆盖；Claude settings 路径可用 `--settings <path>` 或 `CLAUDE_SETTINGS_PATH` 环境变量覆盖。
@@ -129,8 +131,9 @@ bridge 启动后不在终端输出，运行日志写入 `~/.lark-remote/logs/YYY
 **复制分身（`/clone`）**：想在另一个项目/机器目录旁跑一个独立 bridge 实例时，发 `/clone 名字` 即可——当前配置目录会被克隆为 `<configDir>-<名字>`（除飞书凭据外全部复制），二维码以图片消息发进私聊引导你扫码创建一个全新飞书应用；扫码成功后自动完成绑定，workspace 别名、常用指令、工作目录与会话状态一并迁移，新实例自动拉起并可直接续聊。也可直接点 `/help` 卡片上的「/clone」按钮。详见 [docs/zh/usage.md](docs/zh/usage.md)。
 
 往飞书私聊发**图片/文件**会自动保存到当前目录的 `.lark-remote-temp/<YYYYMMDDHHmm>/`
-（建议把 `.lark-remote-temp/` 加进项目 `.gitignore`），随后说「请处理刚才保存的文件」
-即可让 agent 直接读本地文件。更多用法见 [docs/zh/usage.md](docs/zh/usage.md)。
+（建议把 `.lark-remote-temp/` 加进项目 `.gitignore`），保存提示里会带上目录完整路径，
+随后说「请处理刚才保存的文件」（或直接把提示转给 agent）即可让 agent 直接读本地文件。
+更多用法见 [docs/zh/usage.md](docs/zh/usage.md)。
 
 ## 测试
 

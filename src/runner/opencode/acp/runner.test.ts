@@ -380,11 +380,25 @@ describe('OpencodeAcpRunner', () => {
       }
     })();
 
-    // Wait for synthetic init (turn setup complete) before stopping
-    for (let i = 0; i < 200 && !events.some((e) => e.type === 'system'); i++) {
-      await new Promise((resolve) => setTimeout(resolve, 10));
-    }
-    expect(events.some((e) => e.type === 'system')).toBe(true);
+    // Turn setup is spawn → initialize → session/new → set_mode → prompt; under
+    // vitest's multi-worker pool that handshake can outlast a fixed poll budget.
+    // The old 200×10ms loop then failed on the synthetic-init assertion below —
+    // i.e. BEFORE stop() — so session/cancel was never exercised (flaky, not a
+    // real regression). Gate on the actual precondition instead: session/prompt
+    // observed on the wire, which is also what sets promptSent (making stop()
+    // cancel immediately rather than take the deferred-stop branch).
+    const promptInFlight = await waitFor(
+      () =>
+        existsSync(capturePath) &&
+        readCapture(capturePath).some((m) => m.method === 'session/prompt'),
+      5000,
+    );
+    expect(promptInFlight).toBe(true);
+
+    // Synthetic init is emitted right after setupTurn resolves; wait for it too
+    // so this assertion never races the generator/consumer handoff.
+    const initEmitted = await waitFor(() => events.some((e) => e.type === 'system'), 2000);
+    expect(initEmitted).toBe(true);
 
     await runner.stop();
     await runPromise;
