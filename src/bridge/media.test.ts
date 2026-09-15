@@ -102,6 +102,8 @@ describe('InboundMediaHandler 落盘', () => {
     expect(sentTexts(connector)).toHaveLength(1);
     expect(sentTexts(connector)[0]).toContain('📎 已保存 1 个文件');
     expect(sentTexts(connector)[0]).toContain(files[0]);
+    // 提示语带保存目录路径，用户直接转发即可让 agent 定位
+    expect(sentTexts(connector)[0]).toContain(`请处理 ${path.dirname(files[0])} 下的文件`);
   });
 
   it('图片缺 MIME 时按魔数推断扩展名（png/jpeg）', async () => {

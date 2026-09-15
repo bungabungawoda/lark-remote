@@ -324,6 +324,15 @@ describe('CommandRouter', () => {
     expectNoV1ActionContainer(cardStr);
   });
 
+  it('/help 卡片含「系统休眠」说明段（preventSleep 行为可见性）', async () => {
+    const { router, connector } = createRouter();
+    await router.handle('/help', ctx);
+    const card = connector._sent[0].input as { card: object };
+    const cardStr = JSON.stringify(card.card);
+    expect(cardStr).toContain('系统休眠');
+    expect(cardStr).toContain('preventSleep');
+  });
+
   // 2026-07-04: /help 卡片重构
   // - 按钮组在上、文本组在下，中间 hr 分隔
   // - /reset 别名删除、/doctor 命令删除
