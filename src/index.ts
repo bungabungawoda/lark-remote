@@ -48,6 +48,8 @@ import { OwnerBinder, formatBindGuidance } from './binder.js';
 import { CloneSession } from './clone.js';
 import { InstanceAlreadyRunningError, InstanceLock } from './instance-lock.js';
 import { spawnReplacementBridge, waitForPreviousInstance } from './restart.js';
+import { currentPlatform } from './platform/select.js';
+import { startSleepBlocker } from './platform/sleep-blocker.js';
 import { checkLatestVersion, isNewer, runInstallLatest, formatUpdateHint } from './update/index.js';
 import { classifyRejection } from './error-classification.js';
 import { WorkspaceStore } from './workspace/index.js';
@@ -776,6 +778,17 @@ async function main() {
   await waitForPreviousInstance();
 
   setupInstanceLockAndHandlers(instanceLock, logger, configDir);
+
+  // 阻止系统休眠（macOS caffeinate / Windows SetThreadExecutionState）：bridge
+  // 场景是人不在电脑前远程使用，系统休眠即失联。helper 进程绑定本进程生命周期
+  // （caffeinate -w / powershell 轮询父 pid），崩溃也能自清理；'exit' 钩子里的
+  // stop() 仅覆盖优雅退出路径。
+  if (config.preventSleep) {
+    const sleepBlocker = startSleepBlocker({ platform: currentPlatform, pid: process.pid });
+    if (sleepBlocker) {
+      process.on('exit', () => sleepBlocker.stop());
+    }
+  }
 
   logger.info('config loaded');
   logger.info(`configDir = ${configDir}`);

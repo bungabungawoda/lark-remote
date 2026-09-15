@@ -17,6 +17,7 @@ import { createInitialRunState, reduceRunState } from '../../../card/run-state.j
 import { CodexAppServerRunner } from './runner.js';
 import { createStubSessionReader } from '../../../../tests/lib/bridge-stubs.js';
 import { rmRf } from '../../../../tests/lib/tmp-cleanup.js';
+import { waitFor } from '../../../../tests/lib/wait-for.js';
 
 const FAKE_SERVER = join(process.cwd(), 'tests', 'fake-app-server', 'server.mjs');
 const FIXTURES = join(process.cwd(), 'tests', 'fake-app-server', 'fixtures');
@@ -878,10 +879,10 @@ describePosix('CodexAppServerRunner integration', () => {
     })();
 
     // 等 turn setup 完成（synthetic init 已产出）再 stop，避免与 setup 竞态。
-    for (let i = 0; i < 100 && !events.some((e) => e.type === 'system'); i++) {
-      await new Promise((resolve) => setTimeout(resolve, 10));
-    }
-    expect(events.some((e) => e.type === 'system')).toBe(true);
+    // 走共享 waitFor：固定 1s 轮询预算在 vitest 多 worker 并行下会被 spawn
+    // 抖动吃穿，失败点在 stop() 之前（与 opencode/kimi 同类 flake）。
+    const initEmitted = await waitFor(() => events.some((e) => e.type === 'system'), 5000);
+    expect(initEmitted).toBe(true);
 
     await runner.stop();
     await runPromise;

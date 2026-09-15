@@ -2630,6 +2630,18 @@ export class CommandRouter {
       },
     });
 
+    // 系统休眠说明
+    bodyElements.push({ tag: 'hr' });
+    bodyElements.push({
+      tag: 'div',
+      text: {
+        tag: 'lark_md',
+        content:
+          '**系统休眠**\nbridge 运行期间会阻止系统休眠（macOS caffeinate / Windows execution state），' +
+          '不影响显示器睡眠；config.yaml 设 `preventSleep: false` 可关闭',
+      },
+    });
+
     return {
       card: {
         schema: '2.0',
