@@ -774,20 +774,18 @@ async function main() {
   const { config, configDir, logger, instanceLock } = await initializeCliAndConfig();
 
   // Restart handoff: if spawned as a /restart replacement, wait for the old
-  // bridge to die (and release the instance lock) before acquiring it.
+  // lark-remote to die (and release the instance lock) before acquiring it.
   await waitForPreviousInstance();
 
   setupInstanceLockAndHandlers(instanceLock, logger, configDir);
 
-  // 阻止系统休眠（macOS caffeinate / Windows SetThreadExecutionState）：bridge
-  // 场景是人不在电脑前远程使用，系统休眠即失联。helper 进程绑定本进程生命周期
-  // （caffeinate -w / powershell 轮询父 pid），崩溃也能自清理；'exit' 钩子里的
-  // stop() 仅覆盖优雅退出路径。
-  if (config.preventSleep) {
-    const sleepBlocker = startSleepBlocker({ platform: currentPlatform, pid: process.pid });
-    if (sleepBlocker) {
-      process.on('exit', () => sleepBlocker.stop());
-    }
+  // 阻止系统休眠（macOS caffeinate / Windows SetThreadExecutionState）：lark-remote
+  // 的场景是人不在电脑前远程使用，系统休眠即失联。恒开启、无配置开关；helper 进程
+  // 绑定本进程生命周期（caffeinate -w / powershell 轮询父 pid），崩溃也能自清理；
+  // 'exit' 钩子里的 stop() 仅覆盖优雅退出路径。
+  const sleepBlocker = startSleepBlocker({ platform: currentPlatform, pid: process.pid });
+  if (sleepBlocker) {
+    process.on('exit', () => sleepBlocker.stop());
   }
 
   logger.info('config loaded');
@@ -941,7 +939,7 @@ async function main() {
     }
   }
 
-  logger.info('bridge is running, press Ctrl+C to exit');
+  logger.info('lark-remote is running, press Ctrl+C to exit');
 }
 
 main().catch((err) => {

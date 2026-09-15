@@ -2509,8 +2509,8 @@ export class CommandRouter {
       { cmd: 'ws', label: '/ws', desc: 'workspace 管理（save|use|remove）' },
       { cmd: 'config', label: '/config /c', desc: '查看和修改配置（卡片交互）' },
       { cmd: 'active', label: '/active', desc: '查看所有正在进行中的 session' },
-      { cmd: 'exit', label: '/exit /e', desc: '退出 bridge' },
-      { cmd: 'restart', label: '/restart', desc: '重启 bridge（新进程，config 不变）' },
+      { cmd: 'exit', label: '/exit /e', desc: '退出 lark-remote' },
+      { cmd: 'restart', label: '/restart', desc: '重启 lark-remote（新进程，config 不变）' },
       { cmd: 'update', label: '/update /u', desc: '检查并升级到最新版本' },
       {
         cmd: 'clone',
@@ -2637,8 +2637,8 @@ export class CommandRouter {
       text: {
         tag: 'lark_md',
         content:
-          '**系统休眠**\nbridge 运行期间会阻止系统休眠（macOS caffeinate / Windows execution state），' +
-          '不影响显示器睡眠；config.yaml 设 `preventSleep: false` 可关闭',
+          '**系统休眠**\nlark-remote 运行期间会阻止系统自动休眠，以免远程连接不上，' +
+          '不影响显示器睡眠',
       },
     });
 
@@ -2738,7 +2738,7 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
   private async cmdExit(): Promise<CommandResult> {
     // Signal handle() to invoke exitHandler after the reply is sent.
     this.pendingExit = true;
-    return { text: 'bridge 正在退出...' };
+    return { text: 'lark-remote 正在退出...' };
   }
 
   private cmdRestart(): CommandResult {
@@ -2751,7 +2751,7 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
       // 链路——spawn 失败则旧进程保持存活，不会两头落空。
       const pid = this.restartSpawner();
       this.pendingExit = true;
-      return { text: `♻️ bridge 重启中（新进程 pid ${pid}），启动通知稍后送达…` };
+      return { text: `♻️ lark-remote 重启中（新进程 pid ${pid}），启动通知稍后送达…` };
     } catch (err) {
       getLogger().error('[router] restart spawn failed:', err);
       return { text: `重启失败：${(err as Error).message}，旧进程仍在运行` };
@@ -4086,8 +4086,8 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
   }
 
   private cmdActive(_args: string[], _ctx: CommandContext, offset = 0): CommandResult {
-    // List all active runs from bridge memory (not from file system scan)
-    // New semantics (2026-07-20): only shows runs started by THIS bridge process
+    // List all active runs from lark-remote memory (not from file system scan)
+    // New semantics (2026-07-20): only shows runs started by THIS lark-remote process
 
     const activeRuns = this.bridge.getActiveRuns();
     const activeBashRuns = this.bridge.getActiveBashRuns();

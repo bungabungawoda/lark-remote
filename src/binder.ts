@@ -7,7 +7,7 @@ type BindDecision = { kind: 'owner' } | { kind: 'rejected' } | { kind: 'bind_suc
 /**
  * Owner 绑定器：首次私聊发送任意消息完成"认领"，此后仅该 openId 可用。
  *
- * 设计依据：bridge 进程持有用户本机完整权限，唯一合法主体是 owner 本人。
+ * 设计依据：lark-remote 进程持有用户本机完整权限，唯一合法主体是 owner 本人。
  * 飞书自建应用的私聊入口本身就是 owner 掌控的（应用只有 owner 能看到/使用，
  * 分享出去属于 owner 的主动行为），因此首次消息即绑定，不再要求输入 PIN。
  * 本类复用已有 startup-contact.json，不新增配置字段。

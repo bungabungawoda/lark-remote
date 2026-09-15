@@ -14,7 +14,7 @@ lark-remote runs coding agents with their **configured** permission mode. The de
 - **Codex**: defaults to app-server approval mode (`approvalPolicy=on-request`, `workspace-write` sandbox).
 - **Kimi**: defaults to `manual` (per-action approval).
 
-Regardless of mode, this bridge is intended for **single-user, private-chat (p2p) use only**. Never add the bot to group chats.
+Regardless of mode, lark-remote is intended for **single-user, private-chat (p2p) use only**. Never add the bot to group chats.
 
 ### Reporting a Vulnerability
 

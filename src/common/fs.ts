@@ -23,7 +23,7 @@ export function silentlyUnlink(path: string): void {
  * win32 句柄占用重试：rename/unlink 目标被
  * 其他句柄持有时报 EPERM/EBUSY（共享冲突），短暂退避后重试通常即可成功。
  * 仅 win32 启用重试：posix 上这两个错误码不是「占用瞬态」语义（如 NFS 权限
- * 问题），立即失败——避免忙等阻塞单线程 bridge 的事件循环。
+ * 问题），立即失败——避免忙等阻塞单线程 lark-remote 的事件循环。
  */
 const BUSY_CODES = new Set(['EPERM', 'EBUSY']);
 

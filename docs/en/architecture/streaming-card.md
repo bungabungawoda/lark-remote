@@ -85,7 +85,7 @@ Event transitions:
 | assistant.tool_use | Add running tool, footer=tool_running |
 | user.tool_result | Match tool id, set ok/error and output |
 | result.success / result.error | finalizing (cache subtype/errorMsg, not terminal) |
-| CLI process exit (for-await ends) + still finalizing | done / error (bridge finally transition) |
+| CLI process exit (for-await ends) + still finalizing | done / error (lark-remote finally transition) |
 | Non-zero exit or run throws | error |
 | stdout exhausted without result | error |
 | `/stop` or stop button | interrupted (can transition from running or finalizing) |

@@ -53,7 +53,7 @@ export function resolveFinalUsage(
       // usage (e.g. transcript moved mid-session). Surface it so token-stat
       // fallback to per-run live usage is visible in logs, not silent.
       getLogger().warn(
-        `[bridge] resolveFinalUsage: no usage from jsonl sessionId=${sessionId} cwd=${cwd} agent=${agentKind}, card falls back to per-run live usage`,
+        `[lark-remote] resolveFinalUsage: no usage from jsonl sessionId=${sessionId} cwd=${cwd} agent=${agentKind}, card falls back to per-run live usage`,
       );
     }
     return content.usage
@@ -76,7 +76,7 @@ export function resolveFinalUsage(
       : undefined;
   } catch (err) {
     getLogger().warn(
-      `[bridge] resolveFinalUsage failed sessionId=${sessionId}: ${errorMessage(err)}`,
+      `[lark-remote] resolveFinalUsage failed sessionId=${sessionId}: ${errorMessage(err)}`,
     );
     return undefined;
   }

@@ -206,10 +206,10 @@ afterEach(() => {
 
 const ctx = { userId: 'user1', chatId: 'chat1', messageId: 'msg1' };
 
-// RED TEST: Problem 1 - After bridge restart (sessionStore cleared), bash commands should still work
+// RED TEST: Problem 1 - After lark-remote restart (sessionStore cleared), bash commands should still work
 // if user has saved workspaces. The expected behavior is that workspace alias should be used
 // to restore cwd, not require user to manually /cd again.
-describe('executeBash after bridge restart (REGRESSION)', () => {
+describe('executeBash after lark-remote restart (REGRESSION)', () => {
   it('should execute bash when user has saved workspace, even if sessionStore was cleared', async () => {
     // Create a workspace store with a saved workspace
     const workspacePath = path.join(tmpDir, 'workspace.json');
@@ -1208,7 +1208,7 @@ describe('Bridge.forwardToClaude logging probes', () => {
     // 1. Entry debug log
     const entries = callsAt(
       'debug',
-      (m) => typeof m === 'string' && m.includes('[bridge] forward entry'),
+      (m) => typeof m === 'string' && m.includes('[lark-remote] forward entry'),
     );
     expect(entries.length).toBeGreaterThanOrEqual(1);
     expect(String(entries[0]?.[0])).toContain('user1');
@@ -1216,47 +1216,55 @@ describe('Bridge.forwardToClaude logging probes', () => {
     // 2. activeRuns.set
     const setLogs = callsAt(
       'info',
-      (m) => typeof m === 'string' && m.includes('[bridge] activeRuns.set'),
+      (m) => typeof m === 'string' && m.includes('[lark-remote] activeRuns.set'),
     );
     expect(setLogs.length).toBe(1);
 
     // 3. cardSession.start ok
     expect(
-      callsAt('info', (m) => typeof m === 'string' && m.includes('[bridge] cardSession.start() ok'))
-        .length,
+      callsAt(
+        'info',
+        (m) => typeof m === 'string' && m.includes('[lark-remote] cardSession.start() ok'),
+      ).length,
     ).toBe(1);
 
     // 4. runner.run begin
     expect(
-      callsAt('info', (m) => typeof m === 'string' && m.includes('[bridge] runner.run() begin'))
-        .length,
+      callsAt(
+        'info',
+        (m) => typeof m === 'string' && m.includes('[lark-remote] runner.run() begin'),
+      ).length,
     ).toBe(1);
     // runner.run begin should include the message preview
     expect(
       String(
         callsAt(
           'info',
-          (m) => typeof m === 'string' && m.includes('[bridge] runner.run() begin'),
+          (m) => typeof m === 'string' && m.includes('[lark-remote] runner.run() begin'),
         )[0]?.[0],
       ),
     ).toContain('hello world');
 
     // 5. system.init received
     expect(
-      callsAt('info', (m) => typeof m === 'string' && m.includes('[bridge] system.init received'))
-        .length,
+      callsAt(
+        'info',
+        (m) => typeof m === 'string' && m.includes('[lark-remote] system.init received'),
+      ).length,
     ).toBe(1);
 
     // 6. result event received
     expect(
-      callsAt('info', (m) => typeof m === 'string' && m.includes('[bridge] result event received'))
-        .length,
+      callsAt(
+        'info',
+        (m) => typeof m === 'string' && m.includes('[lark-remote] result event received'),
+      ).length,
     ).toBe(1);
 
     // 7. runner stream end with sawResult=true
     const streamEnd = callsAt(
       'info',
-      (m) => typeof m === 'string' && m.includes('[bridge] runner stream end'),
+      (m) => typeof m === 'string' && m.includes('[lark-remote] runner stream end'),
     );
     expect(streamEnd.length).toBe(1);
     expect(String(streamEnd[0]?.[0])).toContain('sawResult=true');
@@ -1264,7 +1272,7 @@ describe('Bridge.forwardToClaude logging probes', () => {
     // 8. activeRuns.delete — CRITICAL: was missing before, blocks the queue forever if not emitted
     const deleteLogs = callsAt(
       'info',
-      (m) => typeof m === 'string' && m.includes('[bridge] activeRuns.delete'),
+      (m) => typeof m === 'string' && m.includes('[lark-remote] activeRuns.delete'),
     );
     expect(deleteLogs.length).toBe(1);
 
@@ -1288,7 +1296,7 @@ describe('Bridge.forwardToClaude logging probes', () => {
 
     const busy = callsAt(
       'warn',
-      (m) => typeof m === 'string' && m.includes('[bridge] workspace busy, dropping message'),
+      (m) => typeof m === 'string' && m.includes('[lark-remote] workspace busy, dropping message'),
     );
     expect(busy.length).toBe(1);
     expect(String(busy[0]?.[0])).toContain('user1');
@@ -1319,20 +1327,24 @@ describe('Bridge.forwardToClaude logging probes', () => {
 
     // 1. runner.run begin was logged (entered runner)
     expect(
-      callsAt('info', (m) => typeof m === 'string' && m.includes('[bridge] runner.run() begin'))
-        .length,
+      callsAt(
+        'info',
+        (m) => typeof m === 'string' && m.includes('[lark-remote] runner.run() begin'),
+      ).length,
     ).toBe(1);
 
     // 2. Watchdog log fired
     expect(
-      callsAt('warn', (m) => typeof m === 'string' && m.includes('[bridge] claude idle timeout'))
-        .length,
+      callsAt(
+        'warn',
+        (m) => typeof m === 'string' && m.includes('[lark-remote] claude idle timeout'),
+      ).length,
     ).toBe(1);
 
     // 3. activeRuns.delete emitted — THIS IS THE BUG WE'RE GUARDING AGAINST
     const deleteLogs = callsAt(
       'info',
-      (m) => typeof m === 'string' && m.includes('[bridge] activeRuns.delete'),
+      (m) => typeof m === 'string' && m.includes('[lark-remote] activeRuns.delete'),
     );
     expect(deleteLogs.length).toBe(1);
 
@@ -1871,7 +1883,7 @@ describe('Bridge agentRegistry / sessionReaderRegistry', () => {
     expect(readSpy).toHaveBeenCalledWith('sess-final', tmpDir);
     const finalLogs = mockLogger.info.mock.calls
       .map((c) => String(c[0]))
-      .filter((m) => m.includes('[bridge] final usage'));
+      .filter((m) => m.includes('[lark-remote] final usage'));
     expect(finalLogs.length).toBe(1);
     expect(finalLogs[0]).toContain('compactCount=3');
     expect(finalLogs[0]).toContain('contextLength=5000');
@@ -1879,7 +1891,7 @@ describe('Bridge agentRegistry / sessionReaderRegistry', () => {
 
   it('test_anchor_final_usage_logs_context_limit_from_jsonl', async () => {
     // 验证：resolveFinalUsage 把 jsonl usage.contextLimit 透传到最终 usage，
-    // "[bridge] final usage" 探针日志输出 contextLimit=...，Run 卡片据此渲染百分比。
+    // "[lark-remote] final usage" 探针日志输出 contextLimit=...，Run 卡片据此渲染百分比。
     // 缺失/错误会导致：codex 会话的 context 上限在卡片链路中途丢失，只能显示绝对量。
     // 依据：spec 摘要第 1、2 条（codex jsonl → bridge → 卡片链路）。
     const { SessionReaderRegistry } = await import('../session/registry.js');
@@ -1926,7 +1938,7 @@ describe('Bridge agentRegistry / sessionReaderRegistry', () => {
     expect(readSpy).toHaveBeenCalledWith('sess-ctx', tmpDir);
     const finalLogs = mockLogger.info.mock.calls
       .map((c) => String(c[0]))
-      .filter((m) => m.includes('[bridge] final usage'));
+      .filter((m) => m.includes('[lark-remote] final usage'));
     expect(finalLogs.length).toBe(1);
     expect(finalLogs[0]).toContain('contextLimit=200000');
   });
@@ -2101,7 +2113,7 @@ describe('Bridge agentRegistry / sessionReaderRegistry', () => {
     expect(readSpy).not.toHaveBeenCalled();
     const finalLogs = mockLogger.info.mock.calls
       .map((c) => String(c[0]))
-      .filter((m) => m.includes('[bridge] final usage'));
+      .filter((m) => m.includes('[lark-remote] final usage'));
     expect(finalLogs.length).toBe(1);
     // 不应出现历史 contextLength
     expect(finalLogs[0]).not.toContain('contextLength=24439');

@@ -53,7 +53,7 @@ function isBashQuery(name: string): boolean {
 }
 
 /**
- * 缓存 TTL：probe 层（runner/probe.ts）5 分钟，本层更短——bridge 运行期间
+ * 缓存 TTL：probe 层（runner/probe.ts）5 分钟，本层更短——lark-remote 运行期间
  * 用户新装/卸载 agent（典型场景：按 /config 不可用提示去安装）后，最迟
  * TTL 过期即可被重新探测到，不必重启。null（未找到）结果同样过期重查。
  */
