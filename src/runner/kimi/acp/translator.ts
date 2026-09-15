@@ -166,13 +166,34 @@ export class KimiAcpTranslator extends BaseAcpTranslator {
       return [];
     }
 
+    // 命令恢复（2026-09-13 对 kimi 0.42.0 实测）：审批门在 tool.call.started
+    // 之前触发，request_permission 的 toolCall 只有 title（"Bash"）+ content
+    // 里一句截断摘要（"Requesting approval to Running: <cmd>…"），无 rawInput；
+    // 完整命令只从审批前的 tool_call/tool_call_update 流式 args 累积文本拿到
+    // （基类按 toolCallId 追踪）。解析顺序：流式 args JSON 的 command 字段 →
+    // title；流式缺失时退回 content 摘要放进 reason（旧版 kimi 不推 delta）。
+    const tracked =
+      typeof toolCall.toolCallId === 'string'
+        ? this.getTrackedToolCallArgs(toolCall.toolCallId)
+        : undefined;
+    const argsCommand = tracked ? extractCommandFromArgsText(tracked) : undefined;
+    const rawInput =
+      typeof toolCall.rawInput === 'string' && toolCall.rawInput.length > 0
+        ? toolCall.rawInput
+        : undefined;
+    const summary = extractPermissionSummaryText(toolCall.content);
+
     const view: ApprovalView = {
       requestId,
       kind: 'command',
-      command: params.toolCall?.title ?? undefined,
-      reason: params.toolCall?.rawInput
-        ? truncateWithEllipsis(params.toolCall.rawInput, 200)
-        : undefined,
+      command: argsCommand ?? toolCall.title ?? undefined,
+      reason: argsCommand
+        ? undefined
+        : rawInput
+          ? truncateWithEllipsis(rawInput, 200)
+          : summary
+            ? truncateWithEllipsis(summary, 200)
+            : undefined,
       // §P4: 从服务端 options kind 派生——带 approve_always（或 allow_always）
       // 才提供「本会话总是允许」（acceptForSession）；否则与旧行为一致。
       availableDecisions: deriveAcpAvailableDecisions(params.options ?? []),
@@ -305,4 +326,41 @@ function extractQuestionText(toolCall: RequestPermissionParams['toolCall']): str
     }
   }
   return toolCall?.title?.trim() || '请选择';
+}
+
+/**
+ * 从流式累积的 args 文本恢复命令：完整 JSON 且含 string command 字段时取该
+ * 字段；否则（非 Bash 工具 / 防御性半截 JSON）返回原文。
+ */
+function extractCommandFromArgsText(argsText: string): string {
+  try {
+    const parsed: unknown = JSON.parse(argsText);
+    if (parsed && typeof parsed === 'object') {
+      const command = (parsed as { command?: unknown }).command;
+      if (typeof command === 'string' && command.length > 0) return command;
+    }
+  } catch {
+    // 半截 JSON（审批正常在 args 流式完成后才到，此处纯防御）——用原文。
+  }
+  return argsText;
+}
+
+/**
+ * request_permission toolCall.content 里的摘要文本（kimi 0.42：
+ * "Requesting approval to Running: <cmd>…"，约 64 字符截断）。无文本返回
+ * undefined。
+ */
+function extractPermissionSummaryText(content: unknown): string | undefined {
+  if (!Array.isArray(content)) return undefined;
+  let text = '';
+  let found = false;
+  for (const block of content) {
+    const t = (block as { type?: string; content?: { type?: string; text?: unknown } })?.content
+      ?.text;
+    if (typeof t === 'string' && t.length > 0) {
+      text += t;
+      found = true;
+    }
+  }
+  return found ? text : undefined;
 }
