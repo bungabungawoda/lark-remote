@@ -11,6 +11,7 @@ import { getLogger } from '../logger/index.js';
 import { MAX_FILE_UPLOAD_SIZE } from './file-limits.js';
 import { DEFAULT_INBOUND_MEDIA_MAX_SIZE_MB } from '../config/index.js';
 import { sleep } from '../common/sleep.js';
+import { isTransientTransportError } from '../error-classification.js';
 import axios from 'axios';
 import fs from 'node:fs';
 import { silentlyUnlink } from '../common/fs.js';
@@ -192,6 +193,78 @@ interface PatchableMessageService {
 }
 
 /**
+ * 卡片 patch 的重试上限。含义：1 次原始尝试 + 最多 PATCH_MAX_RETRIES 次重试。
+ */
+export const PATCH_MAX_RETRIES = 3;
+/** 重试退避基数（ms）；第 n 次重试前等待 n × 基数，给对端恢复的时间。 */
+export const PATCH_RETRY_BASE_DELAY_MS = 150;
+
+/** 记日志用的错误摘要（不打印 axios 巨型循环对象）。 */
+function formatErrorForLog(err: unknown): string {
+  if (err instanceof Error) {
+    // For axios errors, extract useful info without circular refs
+    const axiosErr = err as { response?: { status?: number }; code?: string };
+    if (axiosErr.response?.status) {
+      return `${err.message} (HTTP ${axiosErr.response.status})`;
+    }
+    if (axiosErr.code) {
+      return `${err.message} (code: ${axiosErr.code})`;
+    }
+    return err.message;
+  }
+  return String(err);
+}
+
+/**
+ * 卡片 patch 是否值得重试：传输层瞬态失败 + 5xx。
+ * 4xx（业务拒绝/请求构造错误）不重试 —— 重试只会得到同样的结果。
+ */
+function isRetryablePatchError(err: unknown): boolean {
+  if (isTransientTransportError(err)) return true;
+  if (err == null || typeof err !== 'object') return false;
+  const status = (err as { response?: { status?: number } }).response?.status;
+  return typeof status === 'number' && status >= 500 && status < 600;
+}
+
+/**
+ * 带重试的 `im.v1.message.patch`。
+ *
+ * 为什么必须在这一层重试：流式卡片的 patch 由 @larksuite/channel 的
+ * CardStreamController 经 throttle 延迟触发 —— `controller.update()` 调完
+ * `throttle.note()` 就 resolve，不等真正的 patch。失败时是一条脱离 await 链的
+ * detached rejection，只能冒泡到 `process.unhandledRejection`，调用方的
+ * try/catch 根本挡不住。2026-09-15 00:09 的事故正是如此：卡片 patch 时
+ * socket 被关（AxiosError `ERR_SOCKET_CLOSED`），整进程退出，正在跑的 run 陪葬。
+ *
+ * 这里在唯一的底层 patch 出口上兜住：瞬态错误重试最多 PATCH_MAX_RETRIES 次，
+ * 全部失败才把最后一个错误抛出去（此时上层 classifyRejection 也会判为
+ * recoverable，不会击穿进程）。patch 是整卡替换，重试天然幂等。
+ */
+async function patchWithRetry(
+  patchFn: PatchableMessageService['patch'],
+  request: Parameters<PatchableMessageService['patch']>[0],
+  options: Parameters<PatchableMessageService['patch']>[1],
+): Promise<Awaited<ReturnType<PatchableMessageService['patch']>>> {
+  let lastError: unknown;
+  for (let attempt = 0; attempt <= PATCH_MAX_RETRIES; attempt += 1) {
+    try {
+      return await patchFn(request, options);
+    } catch (err) {
+      lastError = err;
+      if (attempt === PATCH_MAX_RETRIES || !isRetryablePatchError(err)) throw err;
+      const delayMs = PATCH_RETRY_BASE_DELAY_MS * (attempt + 1);
+      getLogger().warn(
+        `[feishu] message.patch transient failure ` +
+          `(attempt ${attempt + 1}/${PATCH_MAX_RETRIES + 1}), retrying in ${delayMs}ms: ` +
+          `${formatErrorForLog(err)}`,
+      );
+      await sleep(delayMs);
+    }
+  }
+  throw lastError;
+}
+
+/**
  * Safely extract the im.v1.message.patch service from a LarkChannel.
  * Returns undefined when the channel mock omits rawClient (unit tests).
  */
@@ -236,16 +309,19 @@ export class FeishuConnector {
       },
     });
 
-    // 观测探针（2026-08-11 run 卡定格事故）：飞书业务码错误以 HTTP 200 + {code!=0}
-    // 返回时，lark SDK 正常 resolve、@larksuite/channel 的 patchCard 丢弃返回值，
-    // 导致终态卡 patch 被业务层拒绝时全链路无日志无兜底。这里只观测不改行为——
-    // 不 throw、不重试，返回值原样透传。
+    // 卡片 patch 的统一出口（观测 + 重试）：
+    // 1) 观测（2026-08-11 run 卡定格事故）：飞书业务码错误以 HTTP 200 + {code!=0}
+    //    返回时，lark SDK 正常 resolve、@larksuite/channel 的 patchCard 丢弃返回值，
+    //    导致终态卡 patch 被业务层拒绝时全链路无日志无兜底。这里把业务码记 warn，
+    //    返回值原样透传。
+    // 2) 重试（2026-09-15 socket-close 事故）：瞬态传输失败就地重试，最多
+    //    PATCH_MAX_RETRIES 次，不把失败直接落到 unhandledRejection 打死进程。
     // Guard: unit-test mocks may omit rawClient; skip probe installation in that case.
     const messageService = tryGetPatchService(this.channel);
     if (messageService?.patch) {
       const origPatch = messageService.patch.bind(messageService);
       messageService.patch = (async (request, options) => {
-        const res = await origPatch(request, options);
+        const res = await patchWithRetry(origPatch, request, options);
         if (typeof res?.code === 'number' && res.code !== 0) {
           const content = request?.data?.content;
           const bytes =
@@ -494,18 +570,7 @@ export class FeishuConnector {
 
   /** Format error for logging without causing circular serialization */
   private formatError(err: unknown): string {
-    if (err instanceof Error) {
-      // For axios errors, extract useful info without circular refs
-      const axiosErr = err as { response?: { status?: number }; code?: string };
-      if (axiosErr.response?.status) {
-        return `${err.message} (HTTP ${axiosErr.response.status})`;
-      }
-      if (axiosErr.code) {
-        return `${err.message} (code: ${axiosErr.code})`;
-      }
-      return err.message;
-    }
-    return String(err);
+    return formatErrorForLog(err);
   }
 
   async addReaction(messageId: string, emoji: string): Promise<void> {
