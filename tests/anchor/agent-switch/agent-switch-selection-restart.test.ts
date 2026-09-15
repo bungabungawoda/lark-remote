@@ -18,7 +18,7 @@ import { buildAgentSwitchConfig as buildConfig } from '../../lib/agent-switch-he
  * - T4 任务的 restart 场景是「显式分支已跑、arrival=选择 已持久化」后的重建，
  *   该场景走既有恢复（另有守卫）。
  * - 本测试是 T4 的「重启前置」变体：/resume 选择后、首次 config.save 切入前
- *   bridge 重启——arrival[new] 从未被任何分支写入（用户从未「到达」new），
+ *   lark-remote 重启——arrival[new] 从未被任何分支写入（用户从未「到达」new），
  *   但 SessionStore.load() 的迁移缺省「arrival 缺失 → 默认 = session」给从未
  *   到达过的非当前 agent 伪造了一条到达基线，Step 2.5 触发条件被洗成相等，
  *   显式选择在切入时被清空并发「session 已清空」。
@@ -114,7 +114,7 @@ describe('R3 red: explicit selection survives restart before first switch-in', (
      *    显式选择必须存活：切入应走显式分支（sessions/arrival=P1、消息
      *    「已使用所选 session」、prev[codex]=C1 停车）。
      * ② 缺失/错误影响：用户明确选择的会话在系统重启后被丢弃，收到误导性
-     *    「session 已清空」；bridge 重启/崩溃/看门狗拉起都属于系统事件，不是
+     *    「session 已清空」；lark-remote 重启/崩溃/看门狗拉起都属于系统事件，不是
      *    用户活动，也不构成一次「到达」——Round 5 设计明确系统动作不得被当作
      *    活动基线（见 test_anchor_r9_startup_auto_resume_*）。
      * ③ 依据：spec 验收 1-2（触发条件：sessions[new] 非空且 ≠ arrival——用户
@@ -140,7 +140,7 @@ describe('R3 red: explicit selection survives restart before first switch-in', (
     expect(sessionStore.getSessionId(userId, 'pi')).toBe('pi-session-P1');
     expect(sessionStore.getArrivalSessionId(userId, 'pi')).toBeUndefined();
 
-    // bridge 重启：SessionStore 从 last-session.json 重建
+    // lark-remote 重启：SessionStore 从 last-session.json 重建
     makeRouter('codex', new SessionStore(filePath));
     expect(sessionStore.getSessionId(userId, 'pi')).toBe('pi-session-P1');
     // 重启后非当前 agent 不伪造 arrival，显式选择信号保留

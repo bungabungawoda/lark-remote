@@ -13,7 +13,7 @@ lark-remote 采用多 agent 架构设计，通过以下三个 registry 实现可
 2. **SessionReaderRegistry** (`src/session/registry.ts`) - session reader 注册中心
 3. **ConfigBuilderRegistry** (`src/router/config/index.ts`) - 配置卡片构建器注册中心
 
-添加新 agent 只需在对应 registry 注册，无需修改 router 或 bridge 的逻辑代码。
+添加新 agent 只需在对应 registry 注册，无需修改 router 或 lark-remote 的逻辑代码。
 
 ## 完整 10 步接入流程
 

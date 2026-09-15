@@ -52,7 +52,7 @@ git clone https://github.com/bungabungawoda/lark-remote.git
 cd lark-remote
 bun install
 bun run build
-bun install -g "$(pwd)"  # install globally as the lark-remote command (bun parses `.` as an empty package name; use an absolute path)
+bun install -g "$(pwd)"  # install globally as lark-remote command (bun parses `.` as an empty package name; use an absolute path)
 ```
 
 ## Configuration
@@ -78,8 +78,6 @@ logging:
 
 idle:
   watchdogMinutes: 15       # 0 disables the idle timeout auto-stop
-
-preventSleep: true          # prevent system sleep (default on; display sleep unaffected), false to disable
 ```
 
 Override the config directory with `--config-dir <path>`; override the Claude settings path with `--settings <path>` or the `CLAUDE_SETTINGS_PATH` environment variable.
@@ -96,7 +94,7 @@ lark-remote --config-dir ~/.lark-remote-test    # custom config dir (multiple in
 lark-remote --settings ~/.claude/settings.json  # specify Claude settings file
 ```
 
-The bridge prints nothing to the terminal after startup; logs go to `~/.lark-remote/logs/YYYY-MM-DD/lark-remote-<pid>.log` (rotated daily, one subdirectory per day). Only one `lark-remote` instance is allowed per `configDir` — a duplicate start fails with the existing pid. After connecting to Feishu, a startup notification (with start time and pid) is sent to the most recent private chat.
+lark-remote prints nothing to the terminal after startup; logs go to `~/.lark-remote/logs/YYYY-MM-DD/lark-remote-<pid>.log` (rotated daily, one subdirectory per day). Only one `lark-remote` instance is allowed per `configDir` — a duplicate start fails with the existing pid. After connecting to Feishu, a startup notification (with start time and pid) is sent to the most recent private chat.
 
 Each agent run creates one CardKit 2.0 card that updates in place with thinking, body text, and tool summaries in real time.
 Timestamps are read from the JSONL and shown in local time as `YYYY-MM-DD HH:mm` for thinking, body, tool call/result, and session history events.
@@ -119,12 +117,12 @@ Your original message also gets an emoji reaction: `Typing` while the run is in 
 | `/status` | `/s` | Current directory, session, model, process status |
 | `/stop` | `/t` | Kill the current agent process (SIGKILL) |
 | `/ps` | - | Whether a process is running |
-| `/restart` | - | In-place bridge self-restart (new process takes over with the same config) |
-| `/clone [name]` | - | Clone the bridge: copies the current config into a new directory and walks you through creating a brand-new Feishu app by QR scan; on success it binds, syncs state, and launches the new instance |
+| `/restart` | - | In-place lark-remote self-restart (new process takes over with the same config) |
+| `/clone [name]` | - | Clone lark-remote: copies the current config into a new directory and walks you through creating a brand-new Feishu app by QR scan; on success it binds, syncs state, and launches the new instance |
 | `/config get\|set` | `/c` | View/change runtime config (agent-aware card) |
 | `/order save\|list\|edit` | `/o` | Save, list, or edit frequently used prompts |
 | `!<cmd>` | - | Run a bash command with streaming card output (bypasses the serial queue) |
-| `/exit` | `/e` | Exit the bridge |
+| `/exit` | `/e` | Exit lark-remote |
 
 Any message not starting with `/` is forwarded to the current default agent.
 

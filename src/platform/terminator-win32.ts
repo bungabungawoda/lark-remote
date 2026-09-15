@@ -122,7 +122,7 @@ export function createWin32Terminator(deps: Win32TerminatorDeps): Terminator {
       // M0 真机验证项（§9.2 矩阵）：本方法在 process.on('exit') 里调用，而
       // killTree 依赖 libuv uv_spawn 在 exit handler 内同步发起 taskkill——
       // 大概率可用（uv_spawn 本身同步），但与 posix 路径（同步 process.kill）
-      // 可靠性不等价；失败表现为 win32 上 bridge 退出后 agent 变孤儿。
+      // 可靠性不等价；失败表现为 win32 上 lark-remote 退出后 agent 变孤儿。
       if (!isAlive(proc)) return;
       killTree(proc.pid);
     },

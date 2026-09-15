@@ -6,7 +6,7 @@
  *    messageReaction.create 接受（SDK 原样透传 emoji_type，key 不合法会抛错）
  * 2. 验证后清理：移除本次添加的 reaction，不留垃圾数据
  *
- * 背景：bridge 按 run 终态给用户原消息打 reaction（done→Done / error→ERROR /
+ * 背景：lark-remote 按 run 终态给用户原消息打 reaction（done→Done / error→ERROR /
  * idle_timeout→Alarm / interrupted→SHHH，2026-08-02 用户确认）。
  * FeishuConnector.addReaction 吞错误只记日志，无法感知 key 拒绝，
  * 所以本测试直连 raw channel 断言每个 key 都能成功。

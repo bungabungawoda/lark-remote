@@ -127,7 +127,7 @@ setInterval(() => {}, 1000);
       const childPid = Number(fs.readFileSync(childPidFile, 'utf-8'));
       spawnedPids.add(childPid);
 
-      // 模拟 bridge 重启：新 runner 实例做 killOrphan（身份匹配）
+      // lark-remote 重启：新 runner 实例做 killOrphan（身份匹配）
       const r2 = new ClaudeRunner({
         workspace: 'test',
         pidDir: tmpDir,

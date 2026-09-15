@@ -81,7 +81,7 @@ describe('/restart 命令', () => {
   it('test_anchor_restart_without_spawner_returns_unsupported', async () => {
     // 验证行为：未注入 restartSpawner 时 /restart 返回明确的不支持文案，
     //   且 exitHandler 不得被调用（pendingExit 不置位）。
-    // 缺失/错误会导致：用户得到误导性回复，或 exitHandler 被误触发导致 bridge 退出。
+    // 缺失/错误会导致：用户得到误导性回复，或 exitHandler 被误触发导致 lark-remote 退出。
     // spec 依据：方案 §4.1 第一条「未注入 restartSpawner → 返回当前环境不支持 /restart」；
     //   §6.2「spawn 失败时 pendingExit 不得置位」（未注入等价于 spawn 不可能成功）。
     let exited = false;
@@ -120,9 +120,13 @@ describe('/restart 命令', () => {
 
     expect(spawner).toHaveBeenCalledTimes(1);
     expect(result?.text).toContain('4242');
-    expect(result?.text).toContain('重启');
+    // 文案规范（2026-09-14）：用户可见文案禁止自称 bridge。**必须断言完整自称**——
+    // 只断言「重启」会连「bridge 重启中」一起放过（该漏改曾真的上线）。
+    expect(result?.text).toContain('lark-remote 重启中');
+    expect(result?.text).not.toContain('bridge');
     const sent = connector._sent[0].input as { text?: string };
     expect(sent.text).toContain('4242');
+    expect(sent.text).not.toContain('bridge');
     // handle() 在 sendResult 送达后才消费 pendingExit → exitHandler 必被调用
     expect(exited).toBe(true);
   });
@@ -165,7 +169,7 @@ describe('/restart 命令', () => {
   it('test_anchor_restart_spawn_failure_keeps_old_process_alive', async () => {
     // 验证行为：spawn 抛错 → 回复「重启失败：…，旧进程仍在运行」，
     //   且 pendingExit 不得置位（exitHandler 不被调用）——旧进程保持存活。
-    // 缺失/错误会导致：spawn 失败但进程仍退出 → 新旧两头落空，bridge 无人接管。
+    // 缺失/错误会导致：spawn 失败但进程仍退出 → 新旧两头落空，lark-remote 无人接管。
     // spec 依据：方案 §6.2「先 spawn 后退出，顺序不可颠倒；spawn 失败时
     //   pendingExit 不得置位」+ §5.5 异常路径验收文案。
     let exited = false;
@@ -231,7 +235,7 @@ describe('/restart 命令', () => {
 
   it('test_anchor_help_lists_restart_command', async () => {
     // 验证行为：/help 卡片包含 /restart 条目——按钮 label 为 /restart、
-    //   callback cmd 为 help.restart、描述含「重启 bridge」。
+    //   callback cmd 为 help.restart、描述含「重启 lark-remote」。
     // 缺失/错误会导致：用户不知道存在 /restart 命令，功能不可发现。
     // spec 依据：方案 §3「/help 列表加 /restart 条目」+ §4.1「帮助列表含
     //   /restart 条目」。
@@ -270,8 +274,30 @@ describe('/restart 命令', () => {
     walk(card);
 
     expect(texts).toContain('/restart');
-    expect(texts.some((t) => t.includes('重启 bridge'))).toBe(true);
+    expect(texts.some((t) => t.includes('重启 lark-remote'))).toBe(true);
     expect(behaviors.some((b) => b.cmd === 'help.restart')).toBe(true);
+    // 文案规范（2026-09-14）：/help 全卡（按钮 desc + 说明段，含「系统休眠」）
+    // 不得出现 bridge 自称；小写精确匹配，不会误伤 `Bridge` 类名这类标识符。
+    expect(JSON.stringify(card)).not.toContain('bridge');
+  });
+
+  it('test_anchor_exit_reply_uses_lark_remote_self_name', async () => {
+    // 验证行为：/exit 回执与 /restart 回执同属用户可见文案，必须自称 lark-remote。
+    // 缺失/错误会导致：用户看到「bridge 正在退出」——类名当自称、与产品名不一致。
+    let exited = false;
+    const { router, connector } = buildRouter({
+      exitHandler: () => {
+        exited = true;
+      },
+    });
+
+    const result = await router.handle('/exit', ctx);
+
+    expect(result?.text).toBe('lark-remote 正在退出...');
+    const sent = connector._sent[0].input as { text?: string };
+    expect(sent.text).toContain('lark-remote');
+    expect(sent.text).not.toContain('bridge');
+    expect(exited).toBe(true);
   });
 
   it('test_anchor_help_restart_button_click_completes_handoff', async () => {
@@ -306,7 +332,7 @@ describe('/restart 命令', () => {
     // 验证行为：/r 仍解析为 /resume（返回 resume 语义文案），不得落到
     //   /restart（不触发 spawner / exitHandler / 重启文案）。
     // 缺失/错误会导致：/r 被 /restart 抢占后用户无法用短别名恢复会话，
-    //   且误触发 bridge 重启（破坏性副作用）。
+    //   且误触发 lark-remote 重启（破坏性副作用）。
     // spec 依据：方案 §7.2「/r 别名已被 /resume 占用，/restart 不要加
     //   单字母别名」。
     let exited = false;
@@ -378,7 +404,7 @@ describe('/restart 命令', () => {
     // 验证行为：spawn 同步失败（pid === undefined，抛错）时，'error' 兜底
     //   handler 也必须在抛错之前已注册——异步 spawn 失败（如运行中二进制被删/
     //   ENOENT）会在下一 tick 发 'error' 事件，若无人监听 → uncaughtException
-    //   → 旧 bridge 的 uncaughtException handler release 锁 + exit(1)，旧进程
+    //   → 旧 lark-remote 的 uncaughtException handler release 锁 + exit(1)，旧进程
     //   在刚回复「重启失败，旧进程仍在运行」后反而退出 = 两头落空。
     // 缺失/错误会导致：违反方案 §6.6「late spawn error（如运行中二进制被删）
     //   不能让濒死的父进程再吃一个 unhandled error」+ §6.2「spawn 失败 →
