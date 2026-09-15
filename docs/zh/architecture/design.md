@@ -16,7 +16,7 @@ I/O 由程序完成，不修改 Claude 的 system prompt，只支持 p2p 私聊�
 权限至少需要 `im:message`。
 
 **Claude Code CLI**：本地安装并在终端完成一次登录（`claude` → 浏览器 OAuth）。
-bridge 不处理 OAuth，首次未登录会导致 claude 进程挂起。
+lark-remote 不处理 OAuth，首次未登录会导致 claude 进程挂起。
 
 **Tech stack**：Node.js 20+，TypeScript，`@larksuite/channel`（飞书 WebSocket 长连接 + 消息/卡片 API），
 `axios`（文件上传/发送等直连 `open-apis/im/v1/*` REST 调用），`zod` + `yaml`（配置）。
@@ -29,7 +29,7 @@ bridge 不处理 OAuth，首次未登录会导致 claude 进程挂起。
 飞书服务器
     │ WebSocket（@larksuite/channel SDK）
     ▼
-InstanceLock             同一 configDir 只允许一个 bridge 主进程
+InstanceLock             同一 configDir 只允许一个 lark-remote 主进程
     │
 FeishuConnector          接收 p2p message + cardAction，发送/更新卡片/文件
     │
@@ -56,7 +56,7 @@ ClaudeRunner 从「一次一跑」（`claude -p`）升级为**长驻交互会话
 一个长驻进程，stdout 是 stream-json 事件流，stdin 是双向 JSON 控制通道
 （`--input-format stream-json`）。每次用户消息 = 写一条 `user` 事件 + 消费事件
 直到本 turn 的 `result`；进程在 turn 之间保持存活，被 `/stop`、`/new`、`/cd`、
-会话级空闲回收（`claude.idleTtlMinutes`，默认 30 分钟）或 bridge 退出时经
+会话级空闲回收（`claude.idleTtlMinutes`，默认 30 分钟）或 lark-remote 退出时经
 `ProcessStopper` 组杀，下条消息按 SessionStore 的 sessionId `--resume` 恢复。
 进程编排（pid 文件、killOrphan 身份校验、心跳、退出分发）由 `ClaudeSession`
 继承 `SpawningRunner` 复用；`ClaudeRunner` 是 workspace-lifetime 薄包装。
@@ -87,7 +87,7 @@ claude \
 - `cwd`：通过 spawn 的 `cwd` 选项传入，不写进 prompt
 
 **交互式审批链路**：`control_request`（工具调用/AskUserQuestion）→ runner 翻译
-为 `approval_requested` → bridge `ApprovalCoordinator` → run 卡底部审批区
+为 `approval_requested` → lark-remote `ApprovalCoordinator` → run 卡底部审批区
 （允许 / 拒绝 / 允许所有；AskUserQuestion 为选项卡片）→ 用户决策 →
 `control_response` 回写。审批等待期间暂停桥级空闲看门狗；`claude.approvalTimeoutMs`
 （默认 5 分钟）超时自动发 cancel（deny + 中断 turn），终态显示「审批超时未响应，
@@ -141,12 +141,12 @@ interface SessionEntry {
 const sessions = new Map<string, SessionEntry>();
 ```
 
-- `system.init` 到达时只同步 `sessionId` 和 `sessionCwds[agent]`（会话实际目录），`cwd`（受控工作目录）保持 bridge 启动 Claude 时传入值，**永不被 `event.cwd` 覆盖**；Claude 回报 cwd 不一致（如 `EnterWorktree` relocate 后 resume）只记 INFO，`/s` 按差异展示「会话目录」
+- `system.init` 到达时只同步 `sessionId` 和 `sessionCwds[agent]`（会话实际目录），`cwd`（受控工作目录）保持 lark-remote 启动 Claude 时传入值，**永不被 `event.cwd` 覆盖**；Claude 回报 cwd 不一致（如 `EnterWorktree` relocate 后 resume）只记 INFO，`/s` 按差异展示「会话目录」
 - 下次发消息带 `--resume sessionId`
 - `/new` 只清空 `sessionId` + `sessionCwds`，保留当前 `cwd`
 - `/cd` 和 `/ws use` 时**必须清空 sessionId**（见坑 §9.1）
 - `/config` 切 defaultAgent 时：旧 agent 的 sessionId 存入 `previousSessions`（停车位），新 agent 从 `arrivalSessions` 恢复上次到达基线；切回时可恢复停车位
-- 持久化 `<configDir>/last-session.json` 保存全部 5 个字段，任一缺失视为损坏跳过；bridge 重启恢复 cwd + 上次使用的 sessionId
+- 持久化 `<configDir>/last-session.json` 保存全部 5 个字段，任一缺失视为损坏跳过；lark-remote 重启恢复 cwd + 上次使用的 sessionId
 
 ---
 
@@ -164,8 +164,8 @@ const sessions = new Map<string, SessionEntry>();
 | `/stop` | SIGTERM 立刻 SIGKILL（不等 grace） |
 | `/ps` | 是否有进程在跑 |
 | `/help` | 命令列表 |
-| `/exit` | 退出 bridge |
-| `/restart` | 原地自重启 bridge：spawn detached 继任者 → 旧进程释放单例锁退出 |
+| `/exit` | 退出 lark-remote |
+| `/restart` | 原地自重启 lark-remote：spawn detached 继任者 → 旧进程释放单例锁退出 |
 | `/config get\|set` | 查改运行时配置（卡片交互，agent-aware 字段） |
 | `/order save\|list\|edit` | 保存、列出或编辑常用指令（保留别名/使用统计）；>8 条分页（`order.page` 原地翻页，受飞书单卡 60 个 body 元素上限约束） |
 | `!<cmd>` | 执行 bash 命令并流式输出到卡片（绕过串行队列） |
@@ -270,7 +270,7 @@ Claude 对话输出由 `RunState` 和 `renderRunCard` 构造成 CardKit 2.0 卡�
 - 卡片是有损进度摘要，当前不持久化完整 transcript；
 - SDK 对 patch 使用 throttle 和 FIFO UpdateQueue；
 - result.success / result.error → finalizing（非终态，CLI 仍在等后台任务）；
-  CLI 进程退出后由 bridge finally 块 transition 到 done/error；非零退出或无 result 耗尽 → error；
+  CLI 进程退出后由 lark-remote finally 块 transition 到 done/error；非零退出或无 result 耗尽 → error；
 - 正常路径不再发送多条 markdown/text，也不再发送结束分隔线。
 
 ---
@@ -283,7 +283,7 @@ feishu:
   appSecret: xxx
 
 # 默认 agent 展示顺序（/config 卡片）：codex → claude → opencode → pi → kimi → dsh；
-# 未安装（CLI 不在 PATH）的 agent 排到后面。defaultAgent 决定 bridge spawn
+# 未安装（CLI 不在 PATH）的 agent 排到后面。defaultAgent 决定 lark-remote spawn
 # 哪个 agent、run 卡片 header 显示哪个 agent 名
 defaultAgent: claude
 
@@ -322,9 +322,6 @@ logging:
 
 idle:
   watchdogMinutes: 15     # 0 关闭空闲看门狗
-
-preventSleep: true        # 阻止系统休眠（macOS caffeinate / Windows SetThreadExecutionState），
-                          # 默认开；不影响显示器睡眠，false 关闭
 ```
 
 首次启动检测不到 `feishu.appId`/`appSecret` 时：交互式终端（stdin/stdout 均 TTY）
@@ -357,7 +354,7 @@ POSIX 在全块放不下时回退半块。两种渲染都带 QR 规范要求的 
 文件读写会错乱。`/cd` 和 `/ws use` 都必须清空 session_id。
 
 `/cd` 路径解析必须先展开 `~`：`path.resolve` 不识别 `~`，直接传 `~/projects` 会被
-当相对路径拼成 `<bridge process.cwd()>/~/projects`（如 `<repo>/~/projects`）。
+当相对路径拼成 `<lark-remote process.cwd()>/~/projects`（如 `<repo>/~/projects`）。
 `cmdCd` 用 `path.join(os.homedir(), target.slice(1))` 预处理 `~` 开头的输入。
 
 ### 9.2 `--verbose` 缺失导致无 thinking 输出
@@ -368,7 +365,7 @@ POSIX 在全块放不下时回退半块。两种渲染都带 QR 规范要求的 
 ### 9.3 claude 首次运行需 OAuth
 
 `claude`（print/交互模式）未登录时触发交互式浏览器 OAuth，非 TTY 下进程挂起或报错退出。
-bridge 无法代替这一步——首次启动若发现 OAuth 未完成，会在日志中记录并由用户去终端手动 `claude` 完成登录。
+lark-remote 无法代替这一步——首次启动若发现 OAuth 未完成，会在日志中记录并由用户去终端手动 `claude` 完成登录。
 
 ### 9.4 JSONL 末行可能无换行符
 
@@ -397,7 +394,7 @@ tool use/result 展示可进一步减小卡片更新量。
 enqueue(task: () => Promise<void>): void {
   this.queue = this.queue
     .then(() => task())
-    .catch((err) => getLogger().error('[bridge] queue task error:', err));
+    .catch((err) => getLogger().error('[lark-remote] queue task error:', err));
 }
 ```
 
@@ -492,11 +489,11 @@ cardAction）。300ms 挡飞书瞬时重投递（<100ms 级），放过用户连
 
 ### 9.9 进程与单例
 
-同一 `configDir` 只能同时运行一个 bridge 主进程。启动时 `InstanceLock` 读取 `<configDir>/lark-remote.pid`：若 pid 仍存活则拒绝启动，若 pid 已不存在则覆盖陈旧锁；进程退出时只清理属于当前 pid 的锁。
+同一 `configDir` 只能同时运行一个 lark-remote 主进程。启动时 `InstanceLock` 读取 `<configDir>/lark-remote.pid`：若 pid 仍存活则拒绝启动，若 pid 已不存在则覆盖陈旧锁；进程退出时只清理属于当前 pid 的锁。
 
-bridge 崩溃时 agent 子进程变孤儿。启动时读 `<configDir>/<agent>-*.pid`（按 workspace
+lark-remote 崩溃时 agent 子进程变孤儿。启动时读 `<configDir>/<agent>-*.pid`（按 workspace
 隔离，P1-9），先做进程身份校验（`ps -o command=` 匹配 binary，防 pid 复用误杀，
-P1-10）再对整个进程组发 SIGTERM；bridge 退出时（`process.on('exit'|'SIGINT'|'SIGTERM')`）
+P1-10）再对整个进程组发 SIGTERM；lark-remote 退出时（`process.on('exit'|'SIGINT'|'SIGTERM')`）
 对进程组做 SIGTERM+SIGKILL 清理并删 pid 文件。
 
 ### 9.10 workspace.json 写入原子性
@@ -533,11 +530,11 @@ SIGTERM 发完立刻 SIGKILL，不等 grace——用户主动停永远不等。`
 
 ### 9.13 `/active` 与 `/resume` 的 session 状态判定
 
-**新语义**：`/active` 不再扫描文件系统，只显示本 bridge 进程内存中的活跃任务。
+**新语义**：`/active` 不再扫描文件系统，只显示本 lark-remote 进程内存中的活跃任务。
 通过 `Bridge.getActiveRuns()` 获取 Agent 任务，`Bridge.getActiveBashRuns()` 获取 Bash 命令。
 只显示 `terminal` 为 `running` 或 `finalizing` 的任务，已完成（done/error/interrupted）的任务不显示。
 `/resume` 和 `/cd` / `/ws use` 自动恢复卡片使用 `readSessionContent` 读取最后一个用户输入
-之后的会话内容。后台任务状态优先合并当前 bridge 进程内 `Bridge.getActiveRunFor(cwd)` 的
+之后的会话内容。后台任务状态优先合并当前 lark-remote 进程内 `Bridge.getActiveRunFor(cwd)` 的
 内存 active run；只有当 `activeRun.sessionId === sessionId` 且 terminal 为
 `finalizing` 时才复用内存状态。JSONL 作为 fallback：`result` 后尚无
 `permission-mode`，或尾部出现 `system.away_summary`，都显示为完成中——但必须叠加
@@ -606,7 +603,7 @@ watchdog 覆盖**——watchdog 在 `for await (runner.run())` 循环里，要�
 
 ### 9.16 `/active` 内存实现
 
-> ⚠️ **新语义**：以下内容已废弃旧的 jsonl 扫描方式。`/active` 现在只显示本 bridge 进程内存中的活跃任务。
+> ⚠️ **新语义**：以下内容已废弃旧的 jsonl 扫描方式。`/active` 现在只显示本 lark-remote 进程内存中的活跃任务。
 
 **新实现**：`/active` 不再扫描 `~/.claude/projects/` 全部子目录。
 
@@ -617,7 +614,7 @@ watchdog 覆盖**——watchdog 在 `for await (runner.run())` 循环里，要�
   2. 语义清晰：用户只看"现在有什么在跑"
   3. 与 `/stop` 一致：都基于内存 runId
 **`Bridge.enqueue` 防御性检查**：生产日志反复出现
-`[bridge] queue task error: TypeError: task is not a function`，根因是非函数 task
+`[lark-remote] queue task error: TypeError: task is not a function`，根因是非函数 task
 溜进 Promise 链污染整条 workspace 队列。`enqueue` 入口加 `typeof task === 'function'`
 守卫，非函数时 warn + 早退，不破坏后续任务推进。
 
@@ -653,7 +650,7 @@ watchdog 覆盖**——watchdog 在 `for await (runner.run())` 循环里，要�
 `collapsible_panel` 中，最后 2 条默认展开（用户刚恢复需看最新内容），历史事件折叠。
 
 **Dashboard 卡片折叠**（`/active`）：每个 session 包在 collapsed panel
-中，切换目录按钮放 panel 外保持可操作。/active 已重写为内存 dashboard（`buildActiveCardFromMemory`），显示 bridge 进程内存中的活跃任务，单卡展示。
+中，切换目录按钮放 panel 外保持可操作。/active 已重写为内存 dashboard（`buildActiveCardFromMemory`），显示 lark-remote 进程内存中的活跃任务，单卡展示。
 
 **`/ls` 折叠**：同字母分组 >5 个 entry 时，整组按钮包在 collapsed panel 中。
 
@@ -747,7 +744,7 @@ run 卡片流式 patch 走 SDK `@larksuite/channel` 的 throttle + FIFO `UpdateQ
 | **recoverable** | 502/503/504/ETIMEDOUT/ECONNRESET；或飞书 4xx 业务错误（`status∈[400,500)` 且 `data.code` 为数字，如 230027/230025） | 只记日志，进程继续 |
 | **fatal** | TypeError 等编程错误；HTTP 5xx；纯 HTTP 400 无飞书 code（非 SDK patch 路径的真错误） | release 锁 + `exit(1)` |
 
-飞书 4xx 业务错误判 recoverable 的理由：只影响单张卡的某次 patch，不应拖垮整个 bridge；
+飞书 4xx 业务错误判 recoverable 的理由：只影响单张卡的某次 patch，不应拖垮整个 lark-remote；
 后续 patch 仍可能成功。230027 曾被旧 handler 当
 fatal 退出。
 
@@ -801,12 +798,12 @@ live 口径），与 opencode 一致走 live 优先；`contextLength`/`compactCo
 = 分项和）、pi `extractUsage`（`totalTokens = usage.totalTokens`）、opencode reader
 （`cache.write`/`total`）、codex `readCodexRollout` 解析 `token_count`
 事件（`raw = last_token_usage ?? subtract(total, prev_total)`，跟踪 `previousTotals`
-做累计差）。改 token 展示时，四个 reader + `formatUsageStats` + bridge 五处要保持一致。
+做累计差）。改 token 展示时，四个 reader + `formatUsageStats` + lark-remote 五处要保持一致。
 
 **contextLength**：claude/pi reader 用 `max(末次 compact 的
 postTokens, 末轮完整 prompt input+output+cacheRead+cacheCreation)`——postTokens 随
 session 增长过期（实测低估 85-95%），pi 不再用 compaction 前的 `tokensBefore`；
-codex reader 用末 turn raw `input_tokens`（含 cache 的完整 prompt 大小）；bridge 实时
+codex reader 用末 turn raw `input_tokens`（含 cache 的完整 prompt 大小）；lark-remote 实时
 路径 fallback `totalTokens ?? (input+cacheRead+cacheCreation+output)`（input 已非缓存，
 不能只用 `input+output`）。
 

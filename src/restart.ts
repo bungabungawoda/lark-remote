@@ -6,7 +6,7 @@ import { sleep } from './common/sleep.js';
 
 /**
  * Self-restart without an external watchdog/cron: the only process that can
- * reliably start the successor is the dying bridge itself. The old process
+ * reliably start the successor is the dying lark-remote itself. The old process
  * spawns a detached replacement (same executable + argv, hence same
  * --config-dir), then exits cleanly. The child learns the old pid via env
  * and waits for it to die before acquiring the instance lock, so the lock
@@ -19,7 +19,7 @@ const WAIT_TIMEOUT_MS = 20_000;
 const POLL_MS = 100;
 
 /**
- * Spawn a detached bridge process (shared by /restart replacement and /clone
+ * Spawn a detached lark-remote process (shared by /restart replacement and /clone
  * new-instance) whose early output — before the child's own file logger
  * initializes — lands on logFilePath. Returns the child pid, or null when
  * spawn failed synchronously / no pid; filesystem errors (unwritable log
@@ -57,7 +57,7 @@ export function spawnDetachedBridge(
 }
 
 /**
- * Spawn a detached replacement bridge with the same executable and argv
+ * Spawn a detached replacement lark-remote with the same executable and argv
  * (including --config-dir) and return its pid. The caller is expected to
  * exit right after. stdio is redirected to restart-child.log so early
  * startup failures (before the file logger initializes) are not lost.
@@ -67,14 +67,14 @@ export function spawnReplacementBridge(logsDir: string): number {
     env: { ...process.env, [RESTART_WAIT_PID_ENV]: String(process.pid) },
   });
   if (pid === null) {
-    throw new Error('spawn replacement bridge failed: no pid');
+    throw new Error('spawn replacement lark-remote failed: no pid');
   }
   return pid;
 }
 
 /**
  * On startup, if this process was spawned as a restart replacement, wait for
- * the previous bridge process to exit (and release the instance lock) before
+ * the previous lark-remote process to exit (and release the instance lock) before
  * continuing. No-op for normal starts. On timeout, proceed anyway — lock
  * acquisition remains the authority.
  */

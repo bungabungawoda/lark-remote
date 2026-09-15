@@ -22,7 +22,7 @@ export interface WorkspaceEntry {
  *
  * Atomic write (§9.10): writes a temp file then `fs.rename` so a crash
  * mid-write cannot leave a truncated JSON file. On load, a corrupt file
- * is treated as empty (with a warning) so the bridge can still start.
+ * is treated as empty (with a warning) so the lark-remote can still start.
  *
  * lastUsedAt 语义（2026-08-19 语义对齐）：保存（save）与使用（use/touch）
  * 都会把时间戳更新为当前时间。save 内部调用 touch，保证「最近使用」排序

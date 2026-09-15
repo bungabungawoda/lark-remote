@@ -80,9 +80,6 @@ logging:
 
 idle:
   watchdogMinutes: 15       # 空闲超时自动停止，0 关闭
-
-preventSleep: true          # 阻止系统休眠（默认开）：macOS 用 caffeinate、Windows 用
-                            # SetThreadExecutionState，均不影响显示器睡眠；false 关闭
 ```
 
 配置文件路径可用 `--config-dir` CLI 参数覆盖（如 `lark-remote --config-dir /path/to/dir`）。
@@ -100,7 +97,7 @@ DSH 与其他 5 个 agent 不同：**不 spawn 本地子进程**，而是直接�
 - `agents.dsh.model`：模型 ID（默认服务端 `deepseek-v4-flash`）；保留 session，会话首次 run 时对齐一次（`session.selectModel`，同一 session 不重复调用）。
 - `agents.dsh.reasoningEffort`：off / low / high / max；保留 session，会话首次 run 时对齐一次。
 
-跑 dsh 期间如果服务端发出 `approval/requested`，bridge 会在卡片上提示「请到 DSH Web UI 处理」并保留 turn 存活（不静默 park），等用户在 Web UI 解决或 turn 被取消 / 超时。
+跑 dsh 期间如果服务端发出 `approval/requested`，lark-remote 会在卡片上提示「请到 DSH Web UI 处理」并保留 turn 存活（不静默 park），等用户在 Web UI 解决或 turn 被取消 / 超时。
 
 ---
 
@@ -111,9 +108,9 @@ bun run dev      # 开发（bun 直跑 TS）
 lark-remote      # 全局安装后直接用
 ```
 
-bridge 启动后不在终端输出，运行日志写入 `~/.lark-remote/logs/`（见下）。同一 `configDir` 只允许一个实例；重复启动会退出并提示已有 pid。连接飞书成功后，bridge 会向最近私聊用户发送启动通知，包含启动时间和进程号。
+lark-remote 启动后不在终端输出，运行日志写入 `~/.lark-remote/logs/`（见下）。同一 `configDir` 只允许一个实例；重复启动会退出并提示已有 pid。连接飞书成功后，lark-remote 会向最近私聊用户发送启动通知，包含启动时间和进程号。
 
-bridge 运行期间会**阻止系统休眠**（macOS 用 `caffeinate`、Windows 用 `SetThreadExecutionState`）——典型用法是人不在电脑前远程使用，系统一旦休眠飞书连接即断。只阻止系统休眠，不影响显示器睡眠；bridge 退出（含异常退出）后自动解除。不需要时在 config.yaml 设 `preventSleep: false`。注意：MacBook 合盖睡眠无法阻止（除非接电源并外接显示器）。
+lark-remote 运行期间会**阻止系统自动休眠**，以免远程连接不上（macOS 用 `caffeinate`、Windows 用 `SetThreadExecutionState`）——典型用法是人不在电脑前远程使用，系统一旦休眠飞书连接即断。只阻止系统自动休眠，不影响显示器睡眠；lark-remote 退出（含异常退出）后自动解除。该行为恒开启，无配置开关。注意：MacBook 合盖睡眠无法阻止（除非接电源并外接显示器）。
 
 日志按日期轮转，落在 `~/.lark-remote/logs/YYYY-MM-DD/lark-remote-<pid>.log`（每天一个子目录，路径由 configDir 推导，级别由 `logging.level` 配置）。
 
@@ -147,8 +144,8 @@ bridge 运行期间会**阻止系统休眠**（macOS 用 `caffeinate`、Windows 
 | `/order edit <orderId\|序号> <新文本>` | `/o` | 编辑指令文本（卡片「编辑」按钮是主入口，保留别名和使用统计） |
 | `/order alias add <orderId\|序号> <别名名>` | `/o` | 给指令绑定别名（也可在卡片上「＋别名」操作），之后输入 `$name` 即展开 |
 | `/order alias rm <orderId\|序号>` | `/o` | 移除指令的别名 |
-| `/exit` | `/e` | 退出 bridge |
-| `/restart` | - | 原地自重启 bridge：新进程同 config 接管，启动通知稍后送达 |
+| `/exit` | `/e` | 退出 lark-remote |
+| `/restart` | - | 原地自重启 lark-remote：新进程同 config 接管，启动通知稍后送达 |
 | `/clone <name>` | - | 复制分身：克隆配置到新目录并扫码创建新应用，完成后自动绑定并拉起新实例 |
 
 ### 命令详解
@@ -183,7 +180,7 @@ bridge 运行期间会**阻止系统休眠**（macOS 用 `caffeinate`、Windows 
 
 #### `/resume`：切换历史 session
 
-每个 agent（claude/codex/opencode/pi/kimi/dsh）的对话都有一个 session id，bridge 默认在每次 run 后记住它，下条消息用 `--resume` 续上。`/resume` 用来在历史 session 之间切换：
+每个 agent（claude/codex/opencode/pi/kimi/dsh）的对话都有一个 session id，lark-remote 默认在每次 run 后记住它，下条消息用 `--resume` 续上。`/resume` 用来在历史 session 之间切换：
 
 - **`/resume`** 或 **`/resume list`**：列出当前目录下当前 agent 的 session（卡片，按最近使用排序，每页 5 条带分页栏；点击按钮即切换）。当前 session 标记 ✓。
 - **`/resume <agent>`**：查看指定 agent 的 session 列表（如 `/resume codex`）。
@@ -207,10 +204,10 @@ bridge 运行期间会**阻止系统休眠**（macOS 用 `caffeinate`、Windows 
 （`stopGraceMs` 只服务空闲超时自动停止的收尾流程，默认 5s，不可由用户调整）。
 运行卡片上的「⏹ 终止」按钮行为相同。
 
-#### `/restart`：自重启 bridge
+#### `/restart`：自重启 lark-remote
 
-`/restart` 让 bridge 进程原地重启：旧进程在持锁期间 spawn 一个 detached 继任者
-（继承同一命令行参数，即同一 `--config-dir`），回复「♻️ bridge 重启中（新进程
+`/restart` 让 lark-remote 进程原地重启：旧进程在持锁期间 spawn 一个 detached 继任者
+（继承同一命令行参数，即同一 `--config-dir`），回复「♻️ lark-remote 重启中（新进程
 pid N），启动通知稍后送达…」后干净退出并释放单例锁；新进程等旧进程死亡后走正常
 锁 acquire 接管（最多等 20s，超时仍继续尝试 acquire——若旧进程真的还活着会撞锁
 退出，不会出现双实例）。重启完成后向最近私聊联系人发送启动通知。
@@ -220,7 +217,7 @@ pid N），启动通知稍后送达…」后干净退出并释放单例锁；新
 - **重启前请先 `/stop` 或等任务完成**：进行中的 claude/bash run 不会被保留，旧进程
   退出后其内存状态随之消失（jsonl 里的 session 仍在，可用 `/resume` 恢复上下文）。
 - **spawn 失败不会退出旧进程**：若无法拉起继任者（如日志目录不可写），会收到
-  「重启失败：…，旧进程仍在运行」，bridge 继续服务。
+  「重启失败：…，旧进程仍在运行」，lark-remote 继续服务。
 - **开发形态注意**：`bun run dev` 重启的是源码、`bun dist/cli.js` 重启的是 dist——
   改完代码后不 `bun run build` 就 `/restart`，新进程跑的还是旧 dist。
 
@@ -237,7 +234,7 @@ pid N），启动通知稍后送达…」后干净退出并释放单例锁；新
 
 ### 入站图片/文件：自动落盘
 
-往飞书私聊发图片或文件，bridge 会自动下载并保存到**当前工作目录**的
+往飞书私聊发图片或文件，lark-remote 会自动下载并保存到**当前工作目录**的
 `.lark-remote-temp/<YYYYMMDDHHmm>/`（按分钟分子目录），然后回复一条
 「已保存 N 个文件」提示，提示里会带上保存目录的完整路径——把提示整段转给
 agent（或说「请处理刚才保存的文件」）即可，agent 用现有 Read/Bash 工具读本地
@@ -361,9 +358,9 @@ tool_use / tool_result 恒常展示（不做配置开关）：
 
 | 情况 | 行为 |
 |------|------|
-| claude 进程被外部 kill | bridge 报错但不崩溃，下一条消息正常处理 |
+| claude 进程被外部 kill | lark-remote 报错但不崩溃，下一条消息正常处理 |
 | claude 长时间无输出（挂起） | 15 分钟空闲超时自动终止进程，原卡片显示超时，queue 解除阻塞 |
-| bridge 异常退出 | 残留 claude 进程被清理（启动时读 pid 文件 kill 孤儿） |
+| lark-remote 异常退出 | 残留 claude 进程被清理（启动时读 pid 文件 kill 孤儿） |
 | 同一 configDir 重复启动 | 第二个实例直接退出并提示已有 pid |
 | 飞书限流（99991400） | 自动 sleep 200ms 重试一次 |
 | `/ls` 点击文件发送失败 | 返回 `发送文件失败: ...`，30MB 以上文件在上传前拒绝 |
@@ -380,7 +377,7 @@ bun run typecheck   # tsc --noEmit 静态检查
 ```
 
 测试覆盖：config、session、workspace、runner（JSONL 解析 + exit code）、card（状态机、渲染、
-stream 生命周期）、bridge（work queue + control lane + 空闲超时自动停止 + 降级）、router 以及 integration。
+stream 生命周期）、lark-remote（work queue + control lane + 空闲超时自动停止 + 降级）、router 以及 integration。
 
 ---
 

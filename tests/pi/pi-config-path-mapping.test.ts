@@ -60,7 +60,7 @@ describe('pi config path mapping bug', () => {
     const updates = { 'pi.provider': 'lt' };
     setConfigValues(configPath, config, updates);
 
-    // 4. 重新加载配置（模拟 bridge 重启后读取）
+    // 4. 重新加载配置（lark-remote 重启后读取）
     const reloadedConfig = loadConfig(configPath);
 
     // 5. 验证：配置应该保存到 agents.pi.provider

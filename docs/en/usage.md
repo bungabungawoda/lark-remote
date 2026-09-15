@@ -66,10 +66,6 @@ logging:
 
 idle:
   watchdogMinutes: 15       # Idle timeout auto-stop, 0 to disable
-
-preventSleep: true          # Prevent system sleep (default on): macOS via caffeinate,
-                            # Windows via SetThreadExecutionState; display sleep is not
-                            # affected; set false to disable
 ```
 
 The configuration file path can be overridden with the `--config-dir` CLI parameter (e.g., `lark-remote --config-dir /path/to/dir`).
@@ -87,7 +83,7 @@ Configurable fields (all editable via the `/config` card):
 - `agents.dsh.model`: model ID (server default: `deepseek-v4-flash`); session preserved, aligned once per session (first run) via `session.selectModel` — not repeated for subsequent runs of the same session.
 - `agents.dsh.reasoningEffort`: off / low / high / max; session preserved, aligned once per session.
 
-If the server emits `approval/requested` during a dsh run, the bridge shows a "Please resolve in the DSH Web UI" prompt on the card and keeps the turn alive (never silently parks); the turn resolves when the user resolves it in the Web UI, or when the turn is cancelled / times out.
+If the server emits `approval/requested` during a dsh run, lark-remote shows a "Please resolve in the DSH Web UI" prompt on the card and keeps the turn alive (never silently parks); the turn resolves when the user resolves it in the Web UI, or when the turn is cancelled / times out.
 
 ---
 
@@ -98,9 +94,9 @@ bun run dev      # Development (bun runs TS directly)
 lark-remote      # Use directly after global install
 ```
 
-The bridge produces no terminal output after startup. Runtime logs are written to `~/.lark-remote/logs/` (see below). Only one instance is allowed per `configDir`; a second launch will exit and report the existing pid. After successfully connecting to Feishu, the bridge sends a startup notification to the most recent private chat user, including the startup time and process ID.
+lark-remote produces no terminal output after startup. Runtime logs are written to `~/.lark-remote/logs/` (see below). Only one instance is allowed per `configDir`; a second launch will exit and report the existing pid. After successfully connecting to Feishu, lark-remote sends a startup notification to the most recent private chat user, including the startup time and process ID.
 
-While running, the bridge **prevents the system from sleeping** (via `caffeinate` on macOS and `SetThreadExecutionState` on Windows) — the typical use case is remote access while away from the machine, and system sleep would sever the Feishu connection. Only system sleep is prevented; display sleep is unaffected, and the block is released automatically when the bridge exits (even on a crash). Set `preventSleep: false` in config.yaml to opt out. Note: closing a MacBook lid still sleeps the machine unless it is on AC power with an external display attached.
+While running, lark-remote **prevents the system from automatically sleeping** so that remote access never drops (via `caffeinate` on macOS and `SetThreadExecutionState` on Windows) — the typical use case is remote access while away from the machine, and system sleep would sever the Feishu connection. Only automatic system sleep is prevented; display sleep is unaffected, and the block is released automatically when lark-remote exits (even on a crash). This behaviour is always on and has no configuration switch. Note: closing a MacBook lid still sleeps the machine unless it is on AC power with an external display attached.
 
 Logs rotate daily and are stored at `~/.lark-remote/logs/YYYY-MM-DD/lark-remote-<pid>.log` (one subdirectory per day; path derived from configDir; level configured via `logging.level`).
 
@@ -134,9 +130,9 @@ Any message not starting with `/` is forwarded to Claude. Messages starting with
 | `/order edit <orderId\|N> <new text>` | `/o` | Edit the saved text of an instruction (alias and usedAt are preserved) |
 | `/order alias <name> <text>` | `/o` | Register a quick alias (e.g. `/order alias fix 请修复报错`); typing `$fix` expands it |
 | `/order alias [remove <name>]` | `/o` | List all aliases (merged into the `/order` card) / remove an alias |
-| `/exit` | `/e` | Exit the bridge |
-| `/restart` | - | Restart the bridge in place: the new process takes over with the same config, startup notification arrives shortly |
-| `/clone <name>` | - | Clone the bridge: copies the config into a new directory and walks you through creating a new Feishu app by QR scan; on completion it binds automatically and launches the new instance |
+| `/exit` | `/e` | Exit lark-remote |
+| `/restart` | - | Restart lark-remote in place: the new process takes over with the same config, startup notification arrives shortly |
+| `/clone <name>` | - | Clone lark-remote: copies the config into a new directory and walks you through creating a new Feishu app by QR scan; on completion it binds automatically and launches the new instance |
 
 ### Command Details
 
@@ -170,7 +166,7 @@ Save frequently used directories as short names, avoiding typing long paths each
 
 #### `/resume`: Switching Historical Sessions
 
-Each agent's (claude/codex/opencode/pi/kimi/dsh) conversation has a session id. The bridge remembers it after each run and uses `--resume` to continue with the next message. `/resume` is used to switch between historical sessions:
+Each agent's (claude/codex/opencode/pi/kimi/dsh) conversation has a session id. lark-remote remembers it after each run and uses `--resume` to continue with the next message. `/resume` is used to switch between historical sessions:
 
 - **`/resume`** or **`/resume list`**: List sessions for the current agent in the current directory (card, sorted by most recently used, 5 per page with pagination; click a button to switch). The current session is marked with ✓.
 - **`/resume <agent>`**: View the session list for a specific agent (e.g., `/resume codex`).
@@ -192,11 +188,11 @@ Each agent's (claude/codex/opencode/pi/kimi/dsh) conversation has a session id. 
 
 #### `/restart`: Restarting the Bridge
 
-`/restart` restarts the bridge process in place: while the old process still holds the lock, it spawns a detached successor (inheriting the same command-line arguments, i.e., the same `--config-dir`), replies with "♻️ Bridge restarting (new process pid N), startup notification will arrive shortly...", then exits cleanly and releases the singleton lock; the new process waits for the old one to die before acquiring the lock normally (waits up to 20s; on timeout it still attempts to acquire — if the old process is truly still alive, it will hit the lock and exit, so two instances cannot coexist). After restart completes, a startup notification is sent to the most recent private chat contact.
+`/restart` restarts lark-remote in place: while the old process still holds the lock, it spawns a detached successor (inheriting the same command-line arguments, i.e., the same `--config-dir`), replies with "♻️ lark-remote restarting (new process pid N), startup notification will arrive shortly...", then exits cleanly and releases the singleton lock; the new process waits for the old one to die before acquiring the lock normally (waits up to 20s; on timeout it still attempts to acquire — if the old process is truly still alive, it will hit the lock and exit, so two instances cannot coexist). After restart completes, a startup notification is sent to the most recent private chat contact.
 
 - **No single-letter alias**: `/r` remains assigned to `/resume`. Use the full `/restart` command (the `/restart` button on the `/help` card behaves identically to typing it).
 - **Please `/stop` or wait for tasks to complete before restarting**: In-progress claude/bash runs are not preserved; when the old process exits, its in-memory state is lost (sessions in jsonl files remain and can be resumed via `/resume`).
-- **Spawn failure does not exit the old process**: If the successor cannot be launched (e.g., log directory not writable), you will receive "Restart failed: ..., old process is still running", and the bridge continues serving.
+- **Spawn failure does not exit the old process**: If the successor cannot be launched (e.g., log directory not writable), you will receive "Restart failed: ..., old process is still running", and lark-remote continues serving.
 - **Development mode note**: `bun run dev` restarts from source, `bun dist/cli.js` restarts from dist — if you modify code and `/restart` without `bun run build`, the new process still runs the old dist.
 
 #### `/clone`: Clone the Bridge
@@ -212,7 +208,7 @@ The name must not contain path separators, must not start with `.` / end with a 
 
 ### Inbound Images / Files: Auto-Save
 
-Sending an image or file in the Feishu private chat makes the bridge download it
+Sending an image or file in the Feishu private chat makes lark-remote download it
 into the **current working directory** under
 `.lark-remote-temp/<YYYYMMDDHHmm>/` (one subdirectory per minute), then reply with
 an "N files saved" notice that includes the full path of the save directory.
@@ -225,10 +221,10 @@ sent") — the agent reads the local files with its existing Read/Bash tools, so
   inferred from the MIME type;
 - Name collisions get a numeric suffix; existing files are never overwritten;
   the per-file limit defaults to 50MB (configurable via `inboundMedia.maxFileSizeMb`);
-- If no working directory is set, the bridge asks you to `/cd` or `/ws use` first;
+- If no working directory is set, lark-remote asks you to `/cd` or `/ws use` first;
 - Multiple images sent in quick succession are merged into one save notice
   (500ms window);
-- **Add `.lark-remote-temp/` to your project's `.gitignore`**: the bridge never
+- **Add `.lark-remote-temp/` to your project's `.gitignore`**: lark-remote never
   cleans up or modifies these files.
 
 Optional config.yaml (defaults work out of the box):
@@ -346,7 +342,7 @@ bun run test        # vitest all tests
 bun run typecheck   # tsc --noEmit static check
 ```
 
-Test coverage: config, session, workspace, runner (JSONL parsing + exit code), card (state machine, rendering, stream lifecycle), bridge (work queue + control lane + idle timeout + degradation), router, and integration.
+Test coverage: config, session, workspace, runner (JSONL parsing + exit code), card (state machine, rendering, stream lifecycle), lark-remote (work queue + control lane + idle timeout + degradation), router, and integration.
 
 ---
 

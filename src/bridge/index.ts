@@ -353,7 +353,7 @@ export class Bridge {
       const settings = this.approvalModeSettingsFor(active.agentKind);
       if (!settings) continue;
       void runner.updateApprovalMode(settings).catch((err: Error) => {
-        getLogger().warn(`[bridge] sync approval mode failed cwd=${cwd}: ${err.message}`);
+        getLogger().warn(`[lark-remote] sync approval mode failed cwd=${cwd}: ${err.message}`);
       });
     }
   }
@@ -737,7 +737,7 @@ export class Bridge {
       if (active.userId === input.userId && active.chatId === input.chatId) {
         if (input.runId && active.runId !== input.runId) continue;
         getLogger().info(
-          `[bridge] interrupt hit runId=${active.runId} cwd=${cwd} userId=${input.userId}`,
+          `[lark-remote] interrupt hit runId=${active.runId} cwd=${cwd} userId=${input.userId}`,
         );
         // Stop the EXACT runner instance that is running (carried by activeRun),
         // not whatever getRunner(cwd) would return now. clearRunners() may have
@@ -781,7 +781,7 @@ export class Bridge {
         if (stoppedSlot !== undefined) {
           this.queueManager.resetExecutingCount(cwd, stoppedSlot);
         }
-        getLogger().info(`[bridge] interrupt stop done runId=${active.runId}`);
+        getLogger().info(`[lark-remote] interrupt stop done runId=${active.runId}`);
         return true;
       }
     }
@@ -792,17 +792,17 @@ export class Bridge {
       if (b.userId === input.userId && b.chatId === input.chatId) {
         if (input.runId && runId !== input.runId) continue;
         getLogger().info(
-          `[bridge] interrupt hit bash runId=${runId} cwd=${b.cwd} userId=${input.userId}`,
+          `[lark-remote] interrupt hit bash runId=${runId} cwd=${b.cwd} userId=${input.userId}`,
         );
         await b.bashRunner.stop({ immediate: true });
         // Update card to show interrupted state
         await b.cardSession.finish('interrupted', { exitCode: -1 });
         this.activeBashRuns.delete(runId);
-        getLogger().info(`[bridge] interrupt bash stop done runId=${runId}`);
+        getLogger().info(`[lark-remote] interrupt bash stop done runId=${runId}`);
         return true;
       }
     }
-    getLogger().debug(`[bridge] interrupt miss userId=${input.userId}`);
+    getLogger().debug(`[lark-remote] interrupt miss userId=${input.userId}`);
     return false;
   }
 
@@ -821,11 +821,11 @@ export class Bridge {
 
         if (wasTruncated) {
           getLogger().info(
-            `[bridge] card size exceeded limit, applied budget enforcement: reason=${reason} bytesBefore=${bytesBefore} bytesAfter=${bytesAfter}`,
+            `[lark-remote] card size exceeded limit, applied budget enforcement: reason=${reason} bytesBefore=${bytesBefore} bytesAfter=${bytesAfter}`,
           );
         }
 
-        getLogger().debug(`[bridge] sendResult kind=card chatId=${ctx.chatId}`);
+        getLogger().debug(`[lark-remote] sendResult kind=card chatId=${ctx.chatId}`);
         await this.connector.sendWithRetry(
           ctx.chatId,
           { card: safeCard },
@@ -833,7 +833,7 @@ export class Bridge {
         );
         return true;
       } else if (result.markdown) {
-        getLogger().debug(`[bridge] sendResult kind=markdown chatId=${ctx.chatId}`);
+        getLogger().debug(`[lark-remote] sendResult kind=markdown chatId=${ctx.chatId}`);
         await this.connector.sendWithRetry(
           ctx.chatId,
           { markdown: result.markdown },
@@ -841,7 +841,7 @@ export class Bridge {
         );
         return true;
       } else if (result.text) {
-        getLogger().debug(`[bridge] sendResult kind=text chatId=${ctx.chatId}`);
+        getLogger().debug(`[lark-remote] sendResult kind=text chatId=${ctx.chatId}`);
         await this.connector.sendWithRetry(
           ctx.chatId,
           { text: result.text },
@@ -851,7 +851,7 @@ export class Bridge {
       }
       return false;
     } catch (err) {
-      getLogger().error('[bridge] failed to send result:', err);
+      getLogger().error('[lark-remote] failed to send result:', err);
       // 不静默：向用户发送一条纯文本消息，告知具体错误（如飞书 11310 element exceeds
       // the limit）。如果用户看到空白无反馈，无法判断是命令无效还是卡片发送失败。
       try {
@@ -862,7 +862,7 @@ export class Bridge {
           { replyTo: ctx.messageId },
         );
       } catch (fallbackErr) {
-        getLogger().error('[bridge] fallback text send also failed:', fallbackErr);
+        getLogger().error('[lark-remote] fallback text send also failed:', fallbackErr);
       }
       return false;
     }
@@ -883,17 +883,21 @@ export class Bridge {
    */
   async updateCardInPlace(card: object, ctx: BridgeContext): Promise<boolean> {
     if (!ctx.messageId) {
-      getLogger().warn('[bridge] updateCardInPlace missing messageId, falling back to sendResult');
+      getLogger().warn(
+        '[lark-remote] updateCardInPlace missing messageId, falling back to sendResult',
+      );
       await this.sendResult({ card }, ctx);
       return false;
     }
     try {
-      getLogger().debug(`[bridge] updateCardInPlace messageId=${ctx.messageId}`);
+      getLogger().debug(`[lark-remote] updateCardInPlace messageId=${ctx.messageId}`);
       await this.connector.updateCard(ctx.messageId, card);
       return true;
     } catch (err) {
       const errMsg = (err as Error).message ?? String(err);
-      getLogger().warn(`[bridge] updateCardInPlace failed, falling back to sendResult: ${errMsg}`);
+      getLogger().warn(
+        `[lark-remote] updateCardInPlace failed, falling back to sendResult: ${errMsg}`,
+      );
       // 先尝试 fallback 发卡片；若卡片本身有问题（如 11310），
       // sendResult 内部 catch 会发纯文本通知用户。
       await this.sendResult({ card }, ctx);
@@ -904,10 +908,10 @@ export class Bridge {
   /** Send a file to the user via Feishu. */
   async sendFile(filePath: string, ctx: BridgeContext): Promise<void> {
     try {
-      getLogger().debug(`[bridge] sendFile path=${filePath} chatId=${ctx.chatId}`);
+      getLogger().debug(`[lark-remote] sendFile path=${filePath} chatId=${ctx.chatId}`);
       await this.connector.sendFile(ctx.chatId, filePath);
     } catch (err) {
-      getLogger().error('[bridge] failed to send file:', err);
+      getLogger().error('[lark-remote] failed to send file:', err);
       await this.sendResult({ text: `发送文件失败: ${(err as Error).message}` }, ctx);
     }
   }
@@ -941,7 +945,7 @@ export class Bridge {
         // NOTE: fallback uses insertion order, not sort preference — by design
         // (cwd fallback stays insertion-order for now)
         cwd = workspaces[0].path;
-        getLogger().info(`[bridge] resolveCwd fallback cwd=${cwd} (first saved workspace)`);
+        getLogger().info(`[lark-remote] resolveCwd fallback cwd=${cwd} (first saved workspace)`);
       }
     }
     return cwd;
@@ -976,13 +980,15 @@ export class Bridge {
 
     const entry = this.sessionStore.get(ctx.userId);
     getLogger().debug(
-      `[bridge] forward entry userId=${ctx.userId} chatId=${ctx.chatId} cwd=${cwd} ` +
+      `[lark-remote] forward entry userId=${ctx.userId} chatId=${ctx.chatId} cwd=${cwd} ` +
         `agent=${agentKind} sessionId=${opts?.binding?.sessionId ?? entry?.sessions?.get(agentKind) ?? '(none)'} message=${message.slice(0, 100)}`,
     );
 
     // Check if current workspace already has a run in progress
     if (this.activeRuns.has(cwd)) {
-      getLogger().warn(`[bridge] workspace busy, dropping message userId=${ctx.userId} cwd=${cwd}`);
+      getLogger().warn(
+        `[lark-remote] workspace busy, dropping message userId=${ctx.userId} cwd=${cwd}`,
+      );
       await this.sendResult({ text: '此 workspace 正在处理中，请 /stop 后重试' }, ctx);
       return;
     }
@@ -1037,7 +1043,7 @@ export class Bridge {
     agentKind: AgentKind = this.config.defaultAgent,
   ): { runId: string; cardSession: RunCardSession; activeRun: ActiveRun } {
     const runId = randomUUID();
-    getLogger().debug(`[bridge] creating runCard runId=${runId}`);
+    getLogger().debug(`[lark-remote] creating runCard runId=${runId}`);
     // D5: agentKind 来自入队绑定（forwardToClaude 解析），不再读 live config。
     // 缓存键 (cwd, agentKind) 和 eviction 都用这个值（review P2-3）。
     const cardSession = new RunCardSession({
@@ -1063,7 +1069,7 @@ export class Bridge {
       agentKind,
     };
     this.activeRuns.set(cwd, activeRun);
-    getLogger().info(`[bridge] activeRuns.set cwd=${cwd} runId=${runId}`);
+    getLogger().info(`[lark-remote] activeRuns.set cwd=${cwd} runId=${runId}`);
     return { runId, cardSession, activeRun };
   }
 
@@ -1153,18 +1159,18 @@ export class Bridge {
 
     try {
       try {
-        getLogger().debug(`[bridge] cardSession.start() begin runId=${runId}`);
+        getLogger().debug(`[lark-remote] cardSession.start() begin runId=${runId}`);
         await cardSession.start();
-        getLogger().info(`[bridge] cardSession.start() ok runId=${runId}`);
+        getLogger().info(`[lark-remote] cardSession.start() ok runId=${runId}`);
       } catch (err) {
-        getLogger().warn('[bridge] card stream unavailable, will use static fallback:', err);
+        getLogger().warn('[lark-remote] card stream unavailable, will use static fallback:', err);
         // Card stream failed - continue with static fallback below, but ensure
         // we don't silently fail if the fallback also fails (covered in catch below).
       }
 
       if (cardSession.currentState.terminal !== 'running') {
         // Card session did not enter running state - still try to send static fallback
-        getLogger().info(`[bridge] cardSession not running, using static fallback`);
+        getLogger().info(`[lark-remote] cardSession not running, using static fallback`);
       }
 
       // P2-1: 单 interval 看门狗。事件到来时只刷新 lastEventTs（无 timer 操作）；
@@ -1184,7 +1190,7 @@ export class Bridge {
         }
         if (idleInterval) clearInterval(idleInterval);
         idleInterval = null;
-        getLogger().warn(`[bridge] claude idle timeout, stopping process runId=${runId}`);
+        getLogger().warn(`[lark-remote] claude idle timeout, stopping process runId=${runId}`);
         void Promise.allSettled([
           cardSession.finish('idle_timeout', {
             idleTimeoutMinutes: Math.max(1, Math.round(this.idleTimeoutMs / 60_000)),
@@ -1207,7 +1213,7 @@ export class Bridge {
 
       let contextLength: number | undefined;
       getLogger().info(
-        `[bridge] runner.run() begin runId=${runId} message=${message.slice(0, 100)}`,
+        `[lark-remote] runner.run() begin runId=${runId} message=${message.slice(0, 100)}`,
       );
 
       // Extract agent-specific options from config
@@ -1242,7 +1248,7 @@ export class Bridge {
             this.sessionStore.getSessionEpoch(ctx.userId, agentKind) !== sessionEpochAtStart;
           if (pointerMoved) {
             getLogger().info(
-              `[bridge] system.init write-back skipped: session pointer moved since run start runId=${runId} sessionId=${event.session_id}`,
+              `[lark-remote] system.init write-back skipped: session pointer moved since run start runId=${runId} sessionId=${event.session_id}`,
             );
           } else {
             // L5: Use session's real directory from event.cwd (not runner's cwd parameter)
@@ -1255,7 +1261,7 @@ export class Bridge {
               // Session has its own cwd (e.g. EnterWorktree relocate). Keep the
               // workspace cwd unchanged; record the session's actual cwd in sessionCwds.
               getLogger().info(
-                `[bridge] system.init: workspace cwd=${cwd}, session cwd=${event.cwd}`,
+                `[lark-remote] system.init: workspace cwd=${cwd}, session cwd=${event.cwd}`,
               );
               this.sessionStore.setSessionIdAndSessionCwd(
                 ctx.userId,
@@ -1278,7 +1284,7 @@ export class Bridge {
             }
           }
           getLogger().info(
-            `[bridge] system.init received runId=${runId} sessionId=${event.session_id} cwd=${event.cwd}`,
+            `[lark-remote] system.init received runId=${runId} sessionId=${event.session_id} cwd=${event.cwd}`,
           );
         }
         if (event.type === 'turn_started') {
@@ -1291,11 +1297,11 @@ export class Bridge {
           if (!pointerMoved) {
             this.sessionStore.setSessionIdAndCwd(ctx.userId, agentKind, event.threadId, cwd);
             getLogger().info(
-              `[bridge] turn_started session write-back runId=${runId} sessionId=${event.threadId}`,
+              `[lark-remote] turn_started session write-back runId=${runId} sessionId=${event.threadId}`,
             );
           } else {
             getLogger().info(
-              `[bridge] turn_started write-back skipped: session pointer moved since run start runId=${runId} sessionId=${event.threadId}`,
+              `[lark-remote] turn_started write-back skipped: session pointer moved since run start runId=${runId} sessionId=${event.threadId}`,
             );
           }
         }
@@ -1322,7 +1328,9 @@ export class Bridge {
           // 卡片不会把半初始化的 run 当作已收尾。
           const preInitResult = !sawInit;
           if (preInitResult && usageAuthority !== 'live') {
-            getLogger().info(`[bridge] pre-init result ignored (resume replay) runId=${runId}`);
+            getLogger().info(
+              `[lark-remote] pre-init result ignored (resume replay) runId=${runId}`,
+            );
             // Still reset idle timer — the CLI is alive and producing events.
             resetIdle();
             // Do NOT push to cardSession: the run-state reducer would also
@@ -1336,8 +1344,8 @@ export class Bridge {
           resultNotSuccess = event.subtype !== 'success';
           getLogger().info(
             preInitResult
-              ? `[bridge] pre-init result from live runner (app-server setup failure) runId=${runId}`
-              : `[bridge] result event received runId=${runId}`,
+              ? `[lark-remote] pre-init result from live runner (app-server setup failure) runId=${runId}`
+              : `[lark-remote] result event received runId=${runId}`,
           );
 
           // app-server 模式 setup 失败路径（thread/start 成功后 turn/start 失败）
@@ -1352,7 +1360,7 @@ export class Bridge {
           ) {
             this.sessionStore.setSessionIdAndCwd(ctx.userId, agentKind, event.session_id, cwd);
             getLogger().info(
-              `[bridge] result session write-back runId=${runId} sessionId=${event.session_id}`,
+              `[lark-remote] result session write-back runId=${runId} sessionId=${event.session_id}`,
             );
           }
 
@@ -1396,14 +1404,14 @@ export class Bridge {
               await this.connector.removeReactionByEmoji(ctx.messageId, 'Typing');
             } catch (err) {
               getLogger().warn(
-                `[bridge] remove Typing reaction failed runId=${runId}: ${errorMessage(err)}`,
+                `[lark-remote] remove Typing reaction failed runId=${runId}: ${errorMessage(err)}`,
               );
             }
             try {
               await this.connector.addReaction(ctx.messageId, 'Typing');
             } catch (err) {
               getLogger().warn(
-                `[bridge] re-add Typing reaction failed runId=${runId}: ${errorMessage(err)}`,
+                `[lark-remote] re-add Typing reaction failed runId=${runId}: ${errorMessage(err)}`,
               );
             }
           })();
@@ -1431,7 +1439,7 @@ export class Bridge {
             });
             this.approvalCoordinators.set(runId, coordinator);
             getLogger().info(
-              `[bridge] approval coordinator created runId=${runId.slice(0, 8)} requestId=${event.requestId}`,
+              `[lark-remote] approval coordinator created runId=${runId.slice(0, 8)} requestId=${event.requestId}`,
             );
           }
           coordinator.onRequested(event);
@@ -1452,7 +1460,7 @@ export class Bridge {
 
         await cardSession.push(event);
       }
-      getLogger().info(`[bridge] runner stream end runId=${runId} sawResult=${sawResult}`);
+      getLogger().info(`[lark-remote] runner stream end runId=${runId} sawResult=${sawResult}`);
 
       // §9.12 红线（§P1-2 方案 A 第 2 点）：for-await 自然结束 = CLI 已退出，
       // 看门狗使命结束，立即摘除 interval（不再等 finally），堵掉「stream 已结束、
@@ -1512,7 +1520,7 @@ export class Bridge {
       }
 
       getLogger().info(
-        `[bridge] final usage runId=${runId} contextLength=${finalContextLength} contextLimit=${finalContextLimit ?? 'undefined'} compactCount=${finalCompactCount ?? 'undefined'} cacheRead=${finalCacheReadTokens ?? 'undefined'} cacheCreate=${finalCacheCreationTokens ?? 'undefined'}`,
+        `[lark-remote] final usage runId=${runId} contextLength=${finalContextLength} contextLimit=${finalContextLimit ?? 'undefined'} compactCount=${finalCompactCount ?? 'undefined'} cacheRead=${finalCacheReadTokens ?? 'undefined'} cacheCreate=${finalCacheCreationTokens ?? 'undefined'}`,
       );
 
       // for-await 自然结束 = stream 关闭 = CLI 进程退出。
@@ -1544,13 +1552,13 @@ export class Bridge {
       }
       // else: 已终态且未收到 result（如 spawn 失败后 interrupted）-> 无 usage 可补，跳过
     } catch (err) {
-      getLogger().error(`[bridge] claude run error runId=${runId}:`, err);
+      getLogger().error(`[lark-remote] claude run error runId=${runId}:`, err);
       // P1-11 双保险：run() 的 finally 已负责杀子进程，但 catch 路径再补一次
       // runner.stop()（与 bash 路径对齐），覆盖任何 finally 之外的残留窗口。
       try {
         await runner.stop();
       } catch (stopErr) {
-        getLogger().warn(`[bridge] runner stop failed:`, stopErr);
+        getLogger().warn(`[lark-remote] runner stop failed:`, stopErr);
       }
       // 终态守卫：running 或 finalizing（非终态）-> 转 error；
       // 已终态（interrupted/idle_timeout/done/error）-> 保留首终态，仅补充 usage。
@@ -1564,7 +1572,7 @@ export class Bridge {
         });
       } else {
         getLogger().info(
-          `[bridge] skip error finish: state already terminal (${catchTerminal}) runId=${runId}`,
+          `[lark-remote] skip error finish: state already terminal (${catchTerminal}) runId=${runId}`,
         );
         if (sawResult) {
           await cardSession.finish(catchTerminal, usageMeta());
@@ -1593,7 +1601,7 @@ export class Bridge {
     const runId = activeRun.runId;
     try {
       getLogger().debug(
-        `[bridge] finally settle runId=${runId} state.terminal=${cardSession.currentState.terminal}`,
+        `[lark-remote] finally settle runId=${runId} state.terminal=${cardSession.currentState.terminal}`,
       );
       const settleResult = await cardSession.settle();
       let runCardSent = false;
@@ -1675,7 +1683,7 @@ export class Bridge {
             });
           }
         }
-        getLogger().info(`[bridge] activeRuns.delete cwd=${cwd} runId=${runId}`);
+        getLogger().info(`[lark-remote] activeRuns.delete cwd=${cwd} runId=${runId}`);
       }
     }
   }
@@ -1724,15 +1732,15 @@ export class Bridge {
       const sent = await this.sendResult({ card }, ctx);
       if (sent) {
         getLogger().debug(
-          `[bridge] completion notification sent sessionId=${sessionId} chatId=${ctx.chatId}`,
+          `[lark-remote] completion notification sent sessionId=${sessionId} chatId=${ctx.chatId}`,
         );
       } else {
         getLogger().warn(
-          `[bridge] failed to send completion notification card sessionId=${sessionId}`,
+          `[lark-remote] failed to send completion notification card sessionId=${sessionId}`,
         );
       }
     } catch (err) {
-      getLogger().warn(`[bridge] failed to send completion notification card:`, err);
+      getLogger().warn(`[lark-remote] failed to send completion notification card:`, err);
     }
   }
 
@@ -1752,7 +1760,7 @@ export class Bridge {
     if (!coordinator) {
       // P2-7: run 已结束（coordinator 已释放）时点击审批按钮必须给用户明确反馈，
       // 不能静默。router 会把该异常转成 error toast。
-      getLogger().warn(`[bridge] no approval coordinator for runId=${runId.slice(0, 8)}`);
+      getLogger().warn(`[lark-remote] no approval coordinator for runId=${runId.slice(0, 8)}`);
       throw new Error('任务已结束，审批无法响应');
     }
     return fn(coordinator);
@@ -1770,7 +1778,7 @@ export class Bridge {
   }): Promise<void> {
     const log = getLogger();
     log.info(
-      `[bridge] handleApprovalRespond runId=${opts.runId.slice(0, 8)}... requestId=${opts.requestId} decision=${opts.decision}`,
+      `[lark-remote] handleApprovalRespond runId=${opts.runId.slice(0, 8)}... requestId=${opts.requestId} decision=${opts.decision}`,
     );
     return this.withCoordinator(opts.runId, async (coordinator) => {
       // Build ApprovalAction from the decision string
@@ -1809,7 +1817,7 @@ export class Bridge {
   }): Promise<void> {
     const log = getLogger();
     log.info(
-      `[bridge] handleApprovalToggle runId=${opts.runId.slice(0, 8)}... requestId=${opts.requestId} permId=${opts.permId}`,
+      `[lark-remote] handleApprovalToggle runId=${opts.runId.slice(0, 8)}... requestId=${opts.requestId} permId=${opts.permId}`,
     );
 
     return this.withCoordinator(opts.runId, async (coordinator) => {
@@ -1835,7 +1843,7 @@ export class Bridge {
   }): Promise<void> {
     const log = getLogger();
     log.info(
-      `[bridge] handleApprovalAnswer runId=${opts.runId.slice(0, 8)}... requestId=${opts.requestId} question=${opts.questionIndex}`,
+      `[lark-remote] handleApprovalAnswer runId=${opts.runId.slice(0, 8)}... requestId=${opts.requestId} question=${opts.questionIndex}`,
     );
     return this.withCoordinator(opts.runId, (coordinator) =>
       coordinator.toggleAnswer(
@@ -1857,7 +1865,7 @@ export class Bridge {
   }): Promise<void> {
     const log = getLogger();
     log.info(
-      `[bridge] handleApprovalAnswerSubmit runId=${opts.runId.slice(0, 8)}... requestId=${opts.requestId} question=${opts.questionIndex}`,
+      `[lark-remote] handleApprovalAnswerSubmit runId=${opts.runId.slice(0, 8)}... requestId=${opts.requestId} question=${opts.questionIndex}`,
     );
     return this.withCoordinator(opts.runId, (coordinator) =>
       coordinator.submitAnswers(
@@ -1880,7 +1888,7 @@ export class Bridge {
   }): Promise<void> {
     const log = getLogger();
     log.info(
-      `[bridge] handleApprovalAnswerCustom runId=${opts.runId.slice(0, 8)}... requestId=${opts.requestId} question=${opts.questionIndex}`,
+      `[lark-remote] handleApprovalAnswerCustom runId=${opts.runId.slice(0, 8)}... requestId=${opts.requestId} question=${opts.questionIndex}`,
     );
     return this.withCoordinator(opts.runId, (coordinator) =>
       coordinator.answerCustom(
@@ -1904,7 +1912,7 @@ export class Bridge {
   }): Promise<void> {
     const log = getLogger();
     log.info(
-      `[bridge] handleApprovalAnswerNote runId=${opts.runId.slice(0, 8)}... requestId=${opts.requestId} question=${opts.questionIndex}`,
+      `[lark-remote] handleApprovalAnswerNote runId=${opts.runId.slice(0, 8)}... requestId=${opts.requestId} question=${opts.questionIndex}`,
     );
     return this.withCoordinator(opts.runId, (coordinator) =>
       coordinator.answerNote(
@@ -1923,7 +1931,7 @@ export class Bridge {
   async handleCodexCompact(value: { runId?: string }, ctx: BridgeContext): Promise<void> {
     const log = getLogger();
     log.info(
-      `[bridge] handleCodexCompact userId=${ctx.userId} runId=${value.runId?.slice(0, 8)}...`,
+      `[lark-remote] handleCodexCompact userId=${ctx.userId} runId=${value.runId?.slice(0, 8)}...`,
     );
 
     const { runId } = value;
@@ -1960,7 +1968,7 @@ export class Bridge {
       return;
     }
 
-    log.info(`[bridge] handleCodexCompact executing runCompact for runId=${runId} cwd=${cwd}`);
+    log.info(`[lark-remote] handleCodexCompact executing runCompact for runId=${runId} cwd=${cwd}`);
     await this.streamCodexCompact({
       sessionId: last.sessionId,
       cwd,
@@ -2010,7 +2018,7 @@ export class Bridge {
       }
     } catch (err) {
       getLogger().warn(
-        `[bridge] readCompactionState failed sessionId=${sessionId}: ${errorMessage(err)}`,
+        `[lark-remote] readCompactionState failed sessionId=${sessionId}: ${errorMessage(err)}`,
       );
     }
     return false;
@@ -2035,7 +2043,7 @@ export class Bridge {
   }): Promise<void> {
     const log = getLogger();
     const { sessionId, cwd, agentKind, runner, ctx } = opts;
-    log.info(`[bridge] streamCodexCompact sessionId=${sessionId} cwd=${cwd}`);
+    log.info(`[lark-remote] streamCodexCompact sessionId=${sessionId} cwd=${cwd}`);
 
     // 防御性能力检查：调用方已校验（runId / resume 两条路径），此处双保险并
     // 让 TS 收窄 runner 类型（'runCompact' in runner 之后的 cast 才合法）。
@@ -2134,10 +2142,10 @@ export class Bridge {
         cumulativeCacheCreationTokens: finalUsage?.cumulativeCacheCreationTokens,
       });
       log.info(
-        `[bridge] streamCodexCompact finished sessionId=${sessionId} sawResult=${sawResult} subtype=${resultSubtype ?? 'none'}`,
+        `[lark-remote] streamCodexCompact finished sessionId=${sessionId} sawResult=${sawResult} subtype=${resultSubtype ?? 'none'}`,
       );
     } catch (err) {
-      log.error(`[bridge] streamCodexCompact failed: ${errorMessage(err)}`);
+      log.error(`[lark-remote] streamCodexCompact failed: ${errorMessage(err)}`);
       await cardSession.finish('error', { errorMsg: errorMessage(err) });
     }
   }
@@ -2157,7 +2165,7 @@ export class Bridge {
   ): Promise<void> {
     const log = getLogger();
     log.info(
-      `[bridge] handleResumeCompact userId=${ctx.userId} sessionId=${value.sessionId?.slice(0, 16)} agent=${value.agent ?? 'default'}`,
+      `[lark-remote] handleResumeCompact userId=${ctx.userId} sessionId=${value.sessionId?.slice(0, 16)} agent=${value.agent ?? 'default'}`,
     );
 
     const { sessionId } = value;
@@ -2215,7 +2223,9 @@ export class Bridge {
       return;
     }
 
-    log.info(`[bridge] handleResumeCompact executing runCompact sessionId=${sessionId} cwd=${cwd}`);
+    log.info(
+      `[lark-remote] handleResumeCompact executing runCompact sessionId=${sessionId} cwd=${cwd}`,
+    );
     await this.streamCodexCompact({ sessionId, cwd, agentKind, runner, ctx });
   }
 
@@ -2229,11 +2239,11 @@ export class Bridge {
     const cwd = this.resolveCwd(ctx.userId);
 
     getLogger().info(
-      `[bridge] executeBash start userId=${ctx.userId} sessionCwd=${this.sessionStore.get(ctx.userId)?.cwd} command="${command.slice(0, 30)}..."`,
+      `[lark-remote] executeBash start userId=${ctx.userId} sessionCwd=${this.sessionStore.get(ctx.userId)?.cwd} command="${command.slice(0, 30)}..."`,
     );
 
     if (!cwd) {
-      getLogger().info(`[bridge] executeBash no cwd, sending error`);
+      getLogger().info(`[lark-remote] executeBash no cwd, sending error`);
       await this.sendResult(
         { text: '请先使用 /cd <path> 设置工作目录，或保存一个 workspace (/ws save <name>)' },
         ctx,
@@ -2241,7 +2251,7 @@ export class Bridge {
       return;
     }
 
-    getLogger().info(`[bridge] executeBash proceeding cwd=${cwd}`);
+    getLogger().info(`[lark-remote] executeBash proceeding cwd=${cwd}`);
 
     // `!` commands bypass the serial queue entirely (design.md §9.6):
     // index.ts dispatches `!` to router.handle → executeBash directly, NOT via
@@ -2264,7 +2274,7 @@ export class Bridge {
     cwd: string,
   ): Promise<void> {
     getLogger().debug(
-      `[bridge] executeBashInternal userId=${ctx.userId} chatId=${ctx.chatId} cwd=${cwd} command="${command.slice(0, 50)}..."`,
+      `[lark-remote] executeBashInternal userId=${ctx.userId} chatId=${ctx.chatId} cwd=${cwd} command="${command.slice(0, 50)}..."`,
     );
 
     // Note: We don't check activeRuns here because bash bypasses the serial
@@ -2309,13 +2319,13 @@ export class Bridge {
 
     try {
       getLogger().info(
-        `[bridge] executeBashInternal about to start stream chatId=${ctx.chatId} messageId=${ctx.messageId}`,
+        `[lark-remote] executeBashInternal about to start stream chatId=${ctx.chatId} messageId=${ctx.messageId}`,
       );
       try {
         await cardSession.start();
-        getLogger().info(`[bridge] executeBash stream started runId=${runId}`);
+        getLogger().info(`[lark-remote] executeBash stream started runId=${runId}`);
       } catch (err) {
-        getLogger().warn('[bridge] bash card stream unavailable:', err);
+        getLogger().warn('[lark-remote] bash card stream unavailable:', err);
       }
 
       for await (const event of bashRunner.run(command, { cwd })) {
@@ -2336,7 +2346,7 @@ export class Bridge {
 
       await cardSession.finish(exitCode === 0 ? 'done' : 'error', { exitCode, output, stderr });
     } catch (err) {
-      getLogger().error(`[bridge] bash run error runId=${runId}:`, err);
+      getLogger().error(`[lark-remote] bash run error runId=${runId}:`, err);
       // If for-await threw mid-stream the bash child may still be running.
       // Stop it before finalizing the card — otherwise the finally block
       // removes the activeBashRuns entry and /stop can no longer reach it,
@@ -2344,7 +2354,7 @@ export class Bridge {
       try {
         await bashRunner.stop();
       } catch (stopErr) {
-        getLogger().warn(`[bridge] bash stop failed:`, stopErr);
+        getLogger().warn(`[lark-remote] bash stop failed:`, stopErr);
       }
       await cardSession.finish('error', {
         exitCode: 1,
@@ -2368,7 +2378,7 @@ export class Bridge {
       }
       if (this.activeBashRuns.has(runId)) {
         this.activeBashRuns.delete(runId);
-        getLogger().info(`[bridge] executeBash done runId=${runId} exitCode=${exitCode}`);
+        getLogger().info(`[lark-remote] executeBash done runId=${runId} exitCode=${exitCode}`);
       }
 
       // Add a Done emoji reaction to the user's original message to signal completion

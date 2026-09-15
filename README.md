@@ -78,8 +78,6 @@ logging:
 
 idle:
   watchdogMinutes: 15       # 0 关闭空闲超时自动停止
-
-preventSleep: true          # 阻止系统休眠（默认开，不影响显示器睡眠），false 关闭
 ```
 
 配置目录可用 `--config-dir <path>` 覆盖；Claude settings 路径可用 `--settings <path>` 或 `CLAUDE_SETTINGS_PATH` 环境变量覆盖。
@@ -96,7 +94,7 @@ lark-remote --config-dir ~/.lark-remote-test    # 自定义配置目录（同机
 lark-remote --settings ~/.claude/settings.json  # 指定 Claude 配置文件
 ```
 
-bridge 启动后不在终端输出，运行日志写入 `~/.lark-remote/logs/YYYY-MM-DD/lark-remote-<pid>.log`（按日期轮转，每天一个子目录）。同一 `configDir` 只允许一个 `lark-remote` 实例，重复启动会直接报错并提示已有 pid。连接飞书成功后会向最近私聊用户发送启动通知，包含启动时间和进程号。
+lark-remote 启动后不在终端输出，运行日志写入 `~/.lark-remote/logs/YYYY-MM-DD/lark-remote-<pid>.log`（按日期轮转，每天一个子目录）。同一 `configDir` 只允许一个 `lark-remote` 实例，重复启动会直接报错并提示已有 pid。连接飞书成功后会向最近私聊用户发送启动通知，包含启动时间和进程号。
 
 每次 agent 运行会创建一张 CardKit 2.0 卡片，并在原地实时更新 thinking、正文和工具摘要。
 卡片会读取 JSONL 的 `timestamp`，以本地时间 `YYYY-MM-DD HH:mm` 显示 thinking、正文、tool call/result 和会话历史事件。
@@ -119,16 +117,16 @@ bridge 启动后不在终端输出，运行日志写入 `~/.lark-remote/logs/YYY
 | `/status` | `/s` | 当前目录、session、模型、进程状态 |
 | `/stop` | `/t` | 终止当前 agent 进程（SIGKILL） |
 | `/ps` | - | 是否有进程在跑 |
-| `/restart` | - | 原地自重启 bridge（新进程同 config 接管） |
+| `/restart` | - | 原地自重启 lark-remote（新进程同 config 接管） |
 | `/clone [name]` | - | 复制分身：克隆当前配置到新目录并扫码创建新飞书应用，完成后自动绑定、同步状态并拉起新实例 |
 | `/config get\|set` | `/c` | 查改运行时配置（agent-aware 卡片） |
 | `/order save\|list\|edit\|alias` | `/o` | 收藏常用指令；`/order edit` 修改指令文本（保留别名/使用统计）；`/order alias` 注册快捷别名（输入 `$name` 展开） |
 | `!<cmd>` | - | 执行 bash 命令并流式输出到卡片（绕过串行队列） |
-| `/exit` | `/e` | 退出 bridge |
+| `/exit` | `/e` | 退出 lark-remote |
 
 直接发非 `/` 开头的消息即转发给当前默认 agent。
 
-**复制分身（`/clone`）**：想在另一个项目/机器目录旁跑一个独立 bridge 实例时，发 `/clone 名字` 即可——当前配置目录会被克隆为 `<configDir>-<名字>`（除飞书凭据外全部复制），二维码以图片消息发进私聊引导你扫码创建一个全新飞书应用；扫码成功后自动完成绑定，workspace 别名、常用指令、工作目录与会话状态一并迁移，新实例自动拉起并可直接续聊。也可直接点 `/help` 卡片上的「/clone」按钮。详见 [docs/zh/usage.md](docs/zh/usage.md)。
+**复制分身（`/clone`）**：想在另一个项目/机器目录旁跑一个独立 lark-remote 实例时，发 `/clone 名字` 即可——当前配置目录会被克隆为 `<configDir>-<名字>`（除飞书凭据外全部复制），二维码以图片消息发进私聊引导你扫码创建一个全新飞书应用；扫码成功后自动完成绑定，workspace 别名、常用指令、工作目录与会话状态一并迁移，新实例自动拉起并可直接续聊。也可直接点 `/help` 卡片上的「/clone」按钮。详见 [docs/zh/usage.md](docs/zh/usage.md)。
 
 往飞书私聊发**图片/文件**会自动保存到当前目录的 `.lark-remote-temp/<YYYYMMDDHHmm>/`
 （建议把 `.lark-remote-temp/` 加进项目 `.gitignore`），保存提示里会带上目录完整路径，

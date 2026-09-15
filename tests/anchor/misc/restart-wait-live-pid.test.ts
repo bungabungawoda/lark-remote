@@ -3,7 +3,7 @@
  * spec: restart 自重启方案 §3/§6.4/§7.5
  *
  * 本文件不 mock node:child_process：需要真实短命子进程验证轮询等待。
- * 不 spawn bridge 本身（§7.7 测试约定），只 spawn 一个几百毫秒的辅助进程。
+ * 不 spawn lark-remote 本身（§7.7 测试约定），只 spawn 一个几百毫秒的辅助进程。
  */
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { spawn } from 'node:child_process';

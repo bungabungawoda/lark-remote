@@ -10,7 +10,7 @@ Bridges Feishu private chat messages to the local Claude Code CLI. When a user s
 
 **Feishu custom app**: Enable bot capability, subscribe to `im.message.receive_v1` and `card.action.trigger` events, select "Long Connection" (WebSocket, no public URL required) as the subscription method. Requires at least the `im:message` permission.
 
-**Claude Code CLI**: Installed locally with one login completed in the terminal (`claude` -> browser OAuth). The bridge does not handle OAuth; an unauthenticated first run will cause the claude process to hang.
+**Claude Code CLI**: Installed locally with one login completed in the terminal (`claude` -> browser OAuth). lark-remote does not handle OAuth; an unauthenticated first run will cause the claude process to hang.
 
 **Tech stack**: Node.js 20+, TypeScript, `@larksuite/channel` (Feishu WebSocket long connection + message/card API), `axios` (file upload/send and other direct `open-apis/im/v1/*` REST calls), `zod` + `yaml` (configuration).
 
@@ -22,7 +22,7 @@ Bridges Feishu private chat messages to the local Claude Code CLI. When a user s
 Feishu Server
     │ WebSocket (@larksuite/channel SDK)
     ▼
-InstanceLock             Only one bridge main process per configDir
+InstanceLock             Only one lark-remote main process per configDir
     │
 FeishuConnector          Receive p2p message + cardAction, send/update cards/files
     │
@@ -94,12 +94,12 @@ interface SessionEntry {
 const sessions = new Map<string, SessionEntry>();
 ```
 
-- When `system.init` arrives, only `sessionId` and `sessionCwds[agent]` (the session's actual directory) are synced; `cwd` (the controlled working directory) retains the value passed when the bridge spawned Claude and **is never overwritten by `event.cwd`**; if Claude reports a cwd mismatch (e.g., after `EnterWorktree` relocate on resume), only log INFO, and `/s` displays "session directory" when they differ
+- When `system.init` arrives, only `sessionId` and `sessionCwds[agent]` (the session's actual directory) are synced; `cwd` (the controlled working directory) retains the value passed when lark-remote spawned Claude and **is never overwritten by `event.cwd`**; if Claude reports a cwd mismatch (e.g., after `EnterWorktree` relocate on resume), only log INFO, and `/s` displays "session directory" when they differ
 - Next message includes `--resume sessionId`
 - `/new` only clears `sessionId` + `sessionCwds`, keeping the current `cwd`
 - `/cd` and `/ws use` **must clear sessionId** (see pitfall §9.1)
 - When `/config` switches `defaultAgent`: the old agent's sessionId is parked in `previousSessions`, the new agent restores from its `arrivalSessions` baseline; switching back restores the parked session
-- `<configDir>/last-session.json` persists all 5 fields; any missing field is treated as corrupt and skipped; bridge restart restores cwd + last-used sessionId
+- `<configDir>/last-session.json` persists all 5 fields; any missing field is treated as corrupt and skipped; lark-remote restart restores cwd + last-used sessionId
 
 ---
 
@@ -117,8 +117,8 @@ const sessions = new Map<string, SessionEntry>();
 | `/stop` | SIGTERM then immediately SIGKILL (no grace wait) |
 | `/ps` | Whether a process is running |
 | `/help` | Command list |
-| `/exit` | Exit bridge |
-| `/restart` | In-place self-restart bridge: spawn detached successor → old process releases instance lock and exits |
+| `/exit` | Exit lark-remote |
+| `/restart` | In-place self-restart lark-remote: spawn detached successor → old process releases instance lock and exits |
 | `/config get\|set` | Query/modify runtime config (card interaction, agent-aware fields) |
 | `/order save\|list\|edit` | Save, list, or edit frequent prompts |
 | `!<cmd>` | Execute bash command with streaming output to card (bypasses serial queue) |
@@ -212,7 +212,7 @@ Claude conversation output is constructed as a CardKit 2.0 card by `RunState` an
 - The card is a lossy progress summary; the complete transcript is not currently persisted;
 - SDK applies throttle and FIFO UpdateQueue for patches;
 - result.success / result.error → finalizing (not a terminal state, CLI may still be waiting for background tasks);
-  After the CLI process exits, the bridge's finally block transitions to done/error; non-zero exit or exhaustion without result → error;
+  After the CLI process exits, lark-remote's finally block transitions to done/error; non-zero exit or exhaustion without result → error;
 - The normal path no longer sends multiple markdown/text messages, nor does it send an end separator.
 
 ---
@@ -225,7 +225,7 @@ feishu:
   appSecret: xxx
 
 # Default agent: claude | codex | opencode | pi | kimi | dsh
-# Determines which agent the bridge spawns and which agent name the run card header displays
+# Determines which agent lark-remote spawns and which agent name the run card header displays
 defaultAgent: claude
 
 claude:
@@ -243,10 +243,6 @@ logging:
 
 idle:
   watchdogMinutes: 15     # 0 disables the idle watchdog
-
-preventSleep: true        # Prevent system sleep (macOS caffeinate / Windows
-                          # SetThreadExecutionState), default on; display sleep is not
-                          # affected, set false to disable
 ```
 
 When `feishu.appId`/`appSecret` is not detected on first launch: interactive terminal (both stdin/stdout are TTY) goes through the scan-to-create wizard (`src/config/wizard.ts`, calling `@larksuite/channel`'s `registerApp`), which prints a QR code in the terminal; the user scans it with the Feishu App to create the app, and the returned `client_id`/`client_secret` is written back to the config file before continuing startup; non-interactive environments (no TTY) fall through to `loadConfig` which generates a template and exits.
@@ -261,7 +257,7 @@ QR rendering lives in `src/config/qr.ts`: one module matrix, two renderers — f
 
 `claude --resume <session_id>` restores the context from Claude's memory (including the old cwd). If `session_id` is not cleared after `/cd`, Claude's remembered directory and the actual spawn cwd will be inconsistent, causing file read/write errors. Both `/cd` and `/ws use` must clear session_id.
 
-`/cd` path resolution must expand `~` first: `path.resolve` does not recognize `~`, and passing `~/projects` directly would be treated as a relative path, resulting in `<bridge process.cwd()>/~/projects` (e.g., `<repo>/~/projects`). `cmdCd` uses `path.join(os.homedir(), target.slice(1))` to preprocess `~`-prefixed input.
+`/cd` path resolution must expand `~` first: `path.resolve` does not recognize `~`, and passing `~/projects` directly would be treated as a relative path, resulting in `<lark-remote process.cwd()>/~/projects` (e.g., `<repo>/~/projects`). `cmdCd` uses `path.join(os.homedir(), target.slice(1))` to preprocess `~`-prefixed input.
 
 ### 9.2 Missing `--verbose` Causes No Thinking Output
 
@@ -269,7 +265,7 @@ QR rendering lives in `src/config/qr.ts`: one module matrix, two renderers — f
 
 ### 9.3 Claude First Run Requires OAuth
 
-`claude -p` triggers interactive browser OAuth when not logged in; with `stdin=ignore`, the process hangs or exits with an error. The bridge cannot perform this step on behalf of the user — if OAuth is incomplete on first launch, it will be logged and the user must run `claude` in the terminal manually to complete login.
+`claude -p` triggers interactive browser OAuth when not logged in; with `stdin=ignore`, the process hangs or exits with an error. lark-remote cannot perform this step on behalf of the user — if OAuth is incomplete on first launch, it will be logged and the user must run `claude` in the terminal manually to complete login.
 
 ### 9.4 JSONL Last Line May Lack Newline
 
@@ -288,7 +284,7 @@ Concurrently processing multiple messages would cause multiple claude processes 
 enqueue(task: () => Promise<void>): void {
   this.queue = this.queue
     .then(() => task())
-    .catch((err) => getLogger().error('[bridge] queue task error:', err));
+    .catch((err) => getLogger().error('[lark-remote] queue task error:', err));
 }
 ```
 
@@ -350,9 +346,9 @@ Feishu WebSocket provides at-least-once delivery; the same event may be pushed m
 
 ### 9.9 Process and Singleton
 
-Only one bridge main process can run simultaneously per `configDir`. On startup, `InstanceLock` reads `<configDir>/lark-remote.pid`: if the pid is still alive, it refuses to start; if the pid no longer exists, it overwrites the stale lock; on process exit, only the lock belonging to the current pid is cleaned up.
+Only one lark-remote main process can run simultaneously per `configDir`. On startup, `InstanceLock` reads `<configDir>/lark-remote.pid`: if the pid is still alive, it refuses to start; if the pid no longer exists, it overwrites the stale lock; on process exit, only the lock belonging to the current pid is cleaned up.
 
-When the bridge crashes, agent child processes become orphans. On startup, read `<configDir>/<agent>-*.pid` (isolated by workspace, P1-9), first verify process identity (`ps -o command=` matching binary to prevent pid reuse mistaken kills, P1-10), then send SIGTERM to the entire process group; on bridge exit (`process.on('exit'|'SIGINT'|'SIGTERM')`), send SIGTERM+SIGKILL cleanup to the process group and delete pid files.
+When lark-remote crashes, agent child processes become orphans. On startup, read `<configDir>/<agent>-*.pid` (isolated by workspace, P1-9), first verify process identity (`ps -o command=` matching binary to prevent pid reuse mistaken kills, P1-10), then send SIGTERM to the entire process group; on lark-remote exit (`process.on('exit'|'SIGINT'|'SIGTERM')`), send SIGTERM+SIGKILL cleanup to the process group and delete pid files.
 
 ### 9.10 workspace.json Write Atomicity
 
@@ -372,7 +368,7 @@ Fatal errors in `config/index.ts` **before** logger initialization (template gen
 
 ### 9.13 `/active` and `/resume` Session State Determination
 
-**New semantics**: `/active` no longer scans the filesystem; it only shows active tasks in this bridge process's memory. Agent tasks are obtained via `Bridge.getActiveRuns()`, and Bash commands via `Bridge.getActiveBashRuns()`. Only tasks with `terminal` as `running` or `finalizing` are shown; completed tasks (done/error/interrupted) are not displayed. `/resume` and `/cd` / `/ws use` auto-resume cards use `readSessionContent` to read session content after the last user input. Background task state preferentially merges the in-memory `Bridge.getActiveRunFor(cwd)` active run from the current bridge process; memory state is only reused when `activeRun.sessionId === sessionId` and terminal is `finalizing`. JSONL serves as fallback: after `result` there is no `permission-mode`, or `system.away_summary` appears at the tail — both display as "finalizing" — but must be combined with mtime freshness check (`STALE_MS = 1h`, same source as `isSessionActive`): a file that hasn't been written to for over 1 hour cannot be from a still-running process. (Any completed normal turn ends with `result` and has no `permission-mode`; mtime gating is used to exclude such stale files.) The card's `stop` button, when `interruptCurrentRun` misses (runId mismatch or already exited), replies via `bridge.sendResult` with "task has ended, no need to stop", rather than silently returning.
+**New semantics**: `/active` no longer scans the filesystem; it only shows active tasks in this lark-remote process's memory. Agent tasks are obtained via `Bridge.getActiveRuns()`, and Bash commands via `Bridge.getActiveBashRuns()`. Only tasks with `terminal` as `running` or `finalizing` are shown; completed tasks (done/error/interrupted) are not displayed. `/resume` and `/cd` / `/ws use` auto-resume cards use `readSessionContent` to read session content after the last user input. Background task state preferentially merges the in-memory `Bridge.getActiveRunFor(cwd)` active run from the current lark-remote process; memory state is only reused when `activeRun.sessionId === sessionId` and terminal is `finalizing`. JSONL serves as fallback: after `result` there is no `permission-mode`, or `system.away_summary` appears at the tail — both display as "finalizing" — but must be combined with mtime freshness check (`STALE_MS = 1h`, same source as `isSessionActive`): a file that hasn't been written to for over 1 hour cannot be from a still-running process. (Any completed normal turn ends with `result` and has no `permission-mode`; mtime gating is used to exclude such stale files.) The card's `stop` button, when `interruptCurrentRun` misses (runId mismatch or already exited), replies via `bridge.sendResult` with "task has ended, no need to stop", rather than silently returning.
 
 If jsonl contains no user messages at all (very old/corrupted), fallback to reading the entire file instead of returning an empty card, to avoid `/resume use` getting a sessionId and then only showing a plain text "session_id has been set" without a history card.
 
@@ -408,7 +404,7 @@ Test coverage: `src/bridge/bridge.test.ts` `Bridge.forwardToClaude logging probe
 
 ### 9.16 `/active` In-Memory Implementation
 
-> **New semantics**: The following content supersedes the old jsonl scanning approach. `/active` now only shows active tasks in this bridge process's memory.
+> **New semantics**: The following content supersedes the old jsonl scanning approach. `/active` now only shows active tasks in this lark-remote process's memory.
 
 **New implementation**: `/active` no longer scans all subdirectories of `~/.claude/projects/`.
 
@@ -419,7 +415,7 @@ Test coverage: `src/bridge/bridge.test.ts` `Bridge.forwardToClaude logging probe
   2. Clear semantics: users only see "what's running now"
   3. Consistent with `/stop`: both based on in-memory runId
 
-**`Bridge.enqueue` defensive check**: Production logs repeatedly showed `[bridge] queue task error: TypeError: task is not a function`; root cause was non-function tasks slipping into the Promise chain and polluting the entire workspace queue. `enqueue` entry adds a `typeof task === 'function'` guard; non-functions get a warning + early return, not breaking subsequent task progression.
+**`Bridge.enqueue` defensive check**: Production logs repeatedly showed `[lark-remote] queue task error: TypeError: task is not a function`; root cause was non-function tasks slipping into the Promise chain and polluting the entire workspace queue. `enqueue` entry adds a `typeof task === 'function'` guard; non-functions get a warning + early return, not breaking subsequent task progression.
 
 ### 9.17 Card Folding (`collapsible_panel`)
 
@@ -442,7 +438,7 @@ Secondary information for all card types is wrapped in CardKit `collapsible_pane
 
 **Session content card folding** (auto-resume, `/resume <id>`): Each event is wrapped in `collapsible_panel`, with the last 2 expanded by default (user just resumed and needs to see the latest content), historical events collapsed.
 
-**Dashboard card folding** (`/active`): Each session is wrapped in a collapsed panel, with the switch directory button placed outside the panel to remain operable. /active has been rewritten as an in-memory dashboard (`buildActiveCardFromMemory`), showing active tasks in the bridge process's memory, single card display.
+**Dashboard card folding** (`/active`): Each session is wrapped in a collapsed panel, with the switch directory button placed outside the panel to remain operable. /active has been rewritten as an in-memory dashboard (`buildActiveCardFromMemory`), showing active tasks in lark-remote process's memory, single card display.
 
 **`/ls` folding**: When same-letter group has >5 entries, the entire group of buttons is wrapped in a collapsed panel.
 
@@ -492,7 +488,7 @@ Run card streaming patches go through SDK `@larksuite/channel`'s throttle + FIFO
 | **recoverable** | 502/503/504/ETIMEDOUT/ECONNRESET; or Feishu 4xx business error (`status∈[400,500)` and `data.code` is numeric, e.g., 230027/230025) | Log only, process continues |
 | **fatal** | TypeError and other programming errors; HTTP 5xx; pure HTTP 400 without Feishu code (not SDK patch path, real error) | Release lock + `exit(1)` |
 
-Feishu 4xx business errors are classified as recoverable because they only affect a single card's patch attempt and should not bring down the entire bridge; subsequent patches may still succeed. 230027 was previously treated as fatal by the old handler, causing process exit.
+Feishu 4xx business errors are classified as recoverable because they only affect a single card's patch attempt and should not bring down the entire lark-remote; subsequent patches may still succeed. 230027 was previously treated as fatal by the old handler, causing process exit.
 
 **Refactoring reminder**: When modifying the handler / `classifyRejection`, preserve the detach escape regression test (`src/card/run-card-stream-error.test.ts`'s `test_anchor_sdk_throttle_detach_rejection_escapes_session`: simulates `controller.update` resolving immediately + `setTimeout` async fire of rejected patch, asserting rejection bubbles to `unhandledRejection`) and classification boundary tests (`src/error-classification.test.ts`). Old tests using `controller.update: async () => { throw }` synchronous throw **cannot reproduce detach** — must use `setTimeout` async fire to simulate SDK's real detached semantics.
 
@@ -509,9 +505,9 @@ Run card done statistics and `/resume` tail statistics share `formatUsageStats` 
 **Passthrough chain and scope unification**: result event usage → `Bridge` extracts live values (claude native naming `cache_read_input_tokens`/`cache_creation_input_tokens` is compatible with unified naming); after process exit, `resolveFinalUsage` reads jsonl. **Flow fields (input/output/cache/total): when live has input/output, use live entirely (this-run scope); otherwise jsonl fallback.** The codex app-server `turn.completed` carries the protocol's `tokenUsage.last` (single-turn incremental, live scope), so it follows the same live-first rule as opencode; `contextLength`/`compactCount` always prefer jsonl (watermark/history count). A single card must not mix scopes (previously Input was this-run while Cache/Total were session cumulative, with cache% numerator and denominator from different sources).
 → `FinishMeta` → `RunState` → `run-renderer` passes to `formatUsageStats`.
 
-**`/resume` populated by each session reader**: claude `aggregateSessionUsage` (`totalTokens` = component sum), pi `extractUsage` (`totalTokens = usage.totalTokens`), opencode reader (`cache.write`/`total`), codex `readCodexRollout` parses `token_count` events (`raw = last_token_usage ?? subtract(total, prev_total)`, tracking `previousTotals` for cumulative diff). When modifying token display, four readers + `formatUsageStats` + bridge must be kept consistent.
+**`/resume` populated by each session reader**: claude `aggregateSessionUsage` (`totalTokens` = component sum), pi `extractUsage` (`totalTokens = usage.totalTokens`), opencode reader (`cache.write`/`total`), codex `readCodexRollout` parses `token_count` events (`raw = last_token_usage ?? subtract(total, prev_total)`, tracking `previousTotals` for cumulative diff). When modifying token display, four readers + `formatUsageStats` + lark-remote must be kept consistent.
 
-**contextLength**: claude/pi reader uses `max(last compact's postTokens, last turn's complete prompt input+output+cacheRead+cacheCreation)` — postTokens becomes stale as session grows (measured 85-95% underestimation); pi no longer uses pre-compaction `tokensBefore`; codex reader uses last turn's raw `input_tokens` (full prompt size including cache); bridge live path fallback `totalTokens ?? (input+cacheRead+cacheCreation+output)` (input is already uncached, cannot use just `input+output`).
+**contextLength**: claude/pi reader uses `max(last compact's postTokens, last turn's complete prompt input+output+cacheRead+cacheCreation)` — postTokens becomes stale as session grows (measured 85-95% underestimation); pi no longer uses pre-compaction `tokensBefore`; codex reader uses last turn's raw `input_tokens` (full prompt size including cache); lark-remote live path fallback `totalTokens ?? (input+cacheRead+cacheCreation+output)` (input is already uncached, cannot use just `input+output`).
 
 ### 9.22 `/resume` List Pagination
 

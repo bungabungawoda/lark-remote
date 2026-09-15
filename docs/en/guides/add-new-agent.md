@@ -13,7 +13,7 @@ lark-remote uses a multi-agent architecture with pluggable integration via three
 2. **SessionReaderRegistry** (`src/session/registry.ts`) — session reader registry
 3. **ConfigBuilderRegistry** (`src/router/config/index.ts`) — config card builder registry
 
-Adding a new agent only requires registering with the corresponding registries — no modifications to router or bridge logic code are needed.
+Adding a new agent only requires registering with the corresponding registries — no modifications to router or lark-remote logic code are needed.
 
 ## Complete 10-Step Integration Process
 

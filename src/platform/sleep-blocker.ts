@@ -1,17 +1,17 @@
 /**
- * 阻止系统休眠（sleep-blocker）——bridge 的典型场景是「人不在电脑前，飞书远程
- * 连本机」，系统一旦休眠 WebSocket 即断，bridge 失效。
+ * 阻止系统休眠（sleep-blocker）——lark-remote 的典型场景是「人不在电脑前，飞书远程
+ * 连本机」，系统一旦休眠 WebSocket 即断，lark-remote 失效。
  *
  * - darwin：`caffeinate -i -w <pid>`（系统自带）。`-i` 只阻止系统空闲睡眠，不
- *   阻止显示器睡眠；`-w <pid>` 把 power assertion 绑定到 bridge 进程生命周期，
- *   bridge 退出/崩溃/被 kill -9 时 caffeinate 自动退出释放——零清理、无孤儿
+ *   阻止显示器睡眠；`-w <pid>` 把 power assertion 绑定到 lark-remote 进程生命周期，
+ *   lark-remote 退出/崩溃/被 kill -9 时 caffeinate 自动退出释放——零清理、无孤儿
  *   唤醒锁。已知局限：MacBook 合盖（clamshell）睡眠无法阻止。
  * - win32：Windows 没有自带命令行工具能持有 execution state（powercfg 是改全局
  *   电源计划；bun:ffi 在 Windows ARM64 被禁且 bin 入口会回退 node），因此 spawn
  *   一个长寿 powershell.exe 子进程 P/Invoke 调一次
  *   `SetThreadExecutionState(ES_CONTINUOUS | ES_SYSTEM_REQUIRED)`，随后每 30s
  *   轮询父进程 pid，父进程消失即自行退出（对应 `caffeinate -w` 的自清理机制，
- *   防止 bridge 崩溃后留下孤儿永久阻止睡眠；最坏 30s 孤儿窗口只多挡一会儿空闲
+ *   防止 lark-remote 崩溃后留下孤儿永久阻止睡眠；最坏 30s 孤儿窗口只多挡一会儿空闲
  *   睡眠，无正确性影响）。
  *
  *   win32 的释放语义（MSDN「Mobile PC Power Management」明确）：execution state
@@ -25,16 +25,16 @@
  *
  * 两平台的 assertion / execution state 都是并集 + 引用计数语义：多实例（多
  * configDir）各起一个 helper 互不冲突，任一存活即阻止睡眠，单个实例退出只释放
- * 自己那份。每个 bridge 生命周期只 spawn 一次 helper，无任何周期性命令。
+ * 自己那份。每个 lark-remote 生命周期只 spawn 一次 helper，无任何周期性命令。
  *
- * best-effort：spawn 失败只记 warn，绝不阻断 bridge 启动。
+ * best-effort：spawn 失败只记 warn，绝不阻断 lark-remote 启动。
  */
 import type { ChildProcess } from 'node:child_process';
 import { spawnProcess } from './spawn.js';
 import { getLogger } from '../logger/index.js';
 
 export interface SleepBlocker {
-  /** 防御性停止 helper（正常路径 helper 随 bridge 死亡自行退出）。 */
+  /** 防御性停止 helper（正常路径 helper 随 lark-remote 死亡自行退出）。 */
   stop(): void;
 }
 
@@ -103,7 +103,7 @@ export function startSleepBlocker(opts: SleepBlockerOptions): SleepBlocker | nul
       `[sleep-blocker] ${command} exited unexpectedly (code=${code}, signal=${signal}), sleep prevention off`,
     );
   });
-  // helper 不得阻止 bridge 自身退出；父进程死后 helper 走各自的自清理机制退出
+  // helper 不得阻止 lark-remote 自身退出；父进程死后 helper 走各自的自清理机制退出
   proc.unref();
 
   logger.info(`[sleep-blocker] active via ${command} pid=${proc.pid}`);

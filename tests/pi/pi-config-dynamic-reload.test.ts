@@ -2,7 +2,7 @@
  * ADVERSARIAL TEST: 验证 config.save 后 pi provider 是否真正动态生效
  *
  * 攻击思路：
- * 1. 启动 bridge，创建 PiRunner 实例（provider = 'Volcano'）
+ * 1. lark-remote 启动，创建 PiRunner 实例（provider = 'Volcano'）
  * 2. 用户通过 /config 卡片修改 provider 为 'lt'，保存到 config.yaml
  * 3. router 调用 clearRunners() 清除缓存
  * 4. 下次 getRunner() 应该拿到带新 provider 的实例
@@ -70,7 +70,7 @@ describe('ADVERSARIAL: pi provider config dynamic reload', () => {
    * 4. 再次 getRunner() 时 factory 读到新 provider
    */
   it('SHOULD create new PiRunner instance after clearRunners (not reuse stale singleton)', () => {
-    // 1. 模拟 bridge 启动时的初始化
+    // 1. 模拟 lark-remote 启动时的初始化
     const initialConfig = createInitialConfig();
 
     // 2. 创建 registry 并设置 configContainer（修复后的正确方式）
