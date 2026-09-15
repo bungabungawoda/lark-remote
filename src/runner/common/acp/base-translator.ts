@@ -52,6 +52,35 @@ const KIND_TO_TOOL: Record<string, string> = {
   fetch: 'WebFetch',
 };
 
+/**
+ * Join the text payloads of a tool_call(/_update) content array
+ * (`[{type:'content', content:{type:'text', text}}]` entries). Returns
+ * undefined when no text entry exists (diff/terminal-only content).
+ */
+function extractToolCallContentText(content: unknown[] | undefined): string | undefined {
+  if (!Array.isArray(content)) return undefined;
+  let text = '';
+  let found = false;
+  for (const entry of content) {
+    const e = entry as { type?: string; content?: { type?: string; text?: unknown } } | null;
+    if (e?.type === 'content' && e.content?.type === 'text' && typeof e.content.text === 'string') {
+      text += e.content.text;
+      found = true;
+    }
+  }
+  return found ? text : undefined;
+}
+
+/** Best-effort stringify for tracked rawInput objects (never throws). */
+function stringifyUnknown(value: unknown): string {
+  if (typeof value === 'string') return value;
+  try {
+    return JSON.stringify(value) ?? String(value);
+  } catch {
+    return String(value);
+  }
+}
+
 // =============================================================================
 // Shared event types (consumed by runners via per-agent re-exports)
 // =============================================================================
@@ -105,6 +134,17 @@ export abstract class BaseAcpTranslator {
   protected liveCostUsd?: number;
   /** Current turn id, set by produceTurnStarted. */
   protected currentTurnId = '';
+
+  /**
+   * Latest streaming-args text per tool call (keyed by wire toolCallId).
+   * kimi ACP sends the permission request BEFORE tool.call.started (verified
+   * live against kimi 0.42.0, 2026-09-13): the request_permission toolCall
+   * carries only title + a truncated summary in content, NO rawInput — the
+   * full args only ever reach the client as accumulated text in the
+   * tool_call/tool_call_update streaming deltas. Tracking them here lets the
+   * approval handler correlate by toolCallId and recover the real command.
+   */
+  private toolCallArgsByCallId = new Map<string, string>();
 
   /**
    * Handle a notification from the ACP server and return translated events.
@@ -289,6 +329,13 @@ export abstract class BaseAcpTranslator {
       }
     }
 
+    const argsText = extractToolCallContentText(event.content);
+    if (argsText !== undefined) {
+      this.trackToolCallArgs(event.toolCallId, argsText);
+    } else if (event.rawInput !== undefined && event.rawInput !== null) {
+      this.trackToolCallArgs(event.toolCallId, stringifyUnknown(event.rawInput));
+    }
+
     const mapped = event.kind ? KIND_TO_TOOL[event.kind] : undefined;
     const name = mapped ?? event.title;
     const summary = mapped && event.title && event.title !== name ? event.title : undefined;
@@ -322,6 +369,21 @@ export abstract class BaseAcpTranslator {
     const isError = event.status === 'failed';
     const content = this.extractToolResultContent(event);
 
+    // Terminal updates end the args-streaming phase — drop the tracked entry.
+    // In-progress delta text is cumulative (events-map.ts
+    // toolCallDeltaToSessionUpdate: content.text = accumulator.args), so the
+    // latest text replaces the previous one rather than appending.
+    if (event.status === 'completed' || event.status === 'failed') {
+      this.toolCallArgsByCallId.delete(event.toolCallId);
+    } else {
+      const argsText = extractToolCallContentText(event.content);
+      if (argsText !== undefined) {
+        this.trackToolCallArgs(event.toolCallId, argsText);
+      } else if (event.rawInput !== undefined && event.rawInput !== null) {
+        this.trackToolCallArgs(event.toolCallId, stringifyUnknown(event.rawInput));
+      }
+    }
+
     return [
       {
         type: 'user',
@@ -338,6 +400,26 @@ export abstract class BaseAcpTranslator {
         timestamp: new Date().toISOString(),
       },
     ];
+  }
+
+  /**
+   * Latest tracked streaming-args text for a tool call (undefined when never
+   * seen or already terminated). Approval handlers correlate
+   * request_permission's toolCall.toolCallId against this to recover the real
+   * command (see toolCallArgsByCallId).
+   */
+  protected getTrackedToolCallArgs(toolCallId: string): string | undefined {
+    return this.toolCallArgsByCallId.get(toolCallId);
+  }
+
+  /** Record latest args text, bounded so a long session cannot grow it forever. */
+  private trackToolCallArgs(toolCallId: string, argsText: string): void {
+    this.toolCallArgsByCallId.delete(toolCallId);
+    this.toolCallArgsByCallId.set(toolCallId, argsText);
+    if (this.toolCallArgsByCallId.size > 100) {
+      const oldest = this.toolCallArgsByCallId.keys().next().value;
+      if (oldest !== undefined) this.toolCallArgsByCallId.delete(oldest);
+    }
   }
 
   /**

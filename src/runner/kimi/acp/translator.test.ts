@@ -459,6 +459,146 @@ describe('KimiAcpTranslator', () => {
     expect(approval.view.availableDecisions).toContain('acceptForSession');
   });
 
+  // =========================================================================
+  // 审批命令恢复（2026-09-13 kimi 0.42.0 wire 探针实测形状）
+  // 审批门先于 tool.call.started：request_permission 只有 title + content 截断
+  // 摘要，完整命令按 toolCallId 从审批前的流式 args delta 恢复。
+  // =========================================================================
+
+  /** 按探针实测形状喂一个 lazy tool_call + 累积 args delta。 */
+  function feedStreamingArgs(
+    t: KimiAcpTranslator,
+    toolCallId: string,
+    argsSnapshots: string[],
+  ): void {
+    t.handleNotification(
+      NotificationMethod.SESSION_UPDATE,
+      sessionUpdate(SESSION_ID, {
+        sessionUpdate: SessionEventType.TOOL_CALL,
+        toolCallId,
+        title: 'Bash',
+        kind: 'execute',
+        status: 'pending',
+        content: [{ type: 'content', content: { type: 'text', text: '' } }],
+      }),
+    );
+    for (const args of argsSnapshots) {
+      t.handleNotification(
+        NotificationMethod.SESSION_UPDATE,
+        sessionUpdate(SESSION_ID, {
+          sessionUpdate: SessionEventType.TOOL_CALL_UPDATE,
+          toolCallId,
+          status: 'in_progress',
+          content: [{ type: 'content', content: { type: 'text', text: args } }],
+        }),
+      );
+    }
+  }
+
+  const PERMISSION_OPTIONS = [
+    { optionId: 'approve_once', name: 'Approve once', kind: 'allow_once' },
+    { optionId: 'approve_always', name: 'Approve for this session', kind: 'allow_always' },
+    { optionId: 'reject', name: 'Reject', kind: 'reject_once' },
+  ];
+
+  it('permission correlates streaming args by toolCallId → full command in view.command', () => {
+    const t = new KimiAcpTranslator();
+    const toolCallId = '0:tool_aaaaaaaa111122223333';
+    const fullArgs = JSON.stringify({ command: 'echo probe-7x29q && ls -la /tmp/probe' });
+    feedStreamingArgs(t, toolCallId, [
+      '{"command":"echo',
+      '{"command":"echo probe-7x29q',
+      fullArgs,
+    ]);
+
+    // 探针实测的 request_permission 形状：无 rawInput，content 是截断摘要。
+    const events = t.handleServerRequest(50, ServerRequestMethod.REQUEST_PERMISSION, {
+      sessionId: SESSION_ID,
+      toolCall: {
+        toolCallId,
+        title: 'Bash',
+        content: [
+          {
+            type: 'content',
+            content: {
+              type: 'text',
+              text: 'Requesting approval to Running: echo probe-7x29q && ls -la /tmp/pro…',
+            },
+          },
+        ],
+      },
+      options: PERMISSION_OPTIONS,
+    });
+
+    expect(events).toHaveLength(1);
+    const approval = events[0] as ApprovalRequestedEvent;
+    expect(approval.view.command).toBe('echo probe-7x29q && ls -la /tmp/probe');
+    expect(approval.view.reason).toBeUndefined();
+  });
+
+  it('permission without tool-call history falls back to title + truncated summary as reason', () => {
+    const t = new KimiAcpTranslator();
+    const events = t.handleServerRequest(51, ServerRequestMethod.REQUEST_PERMISSION, {
+      sessionId: SESSION_ID,
+      toolCall: {
+        toolCallId: '0:tool_bbbbbbbb111122223333',
+        title: 'Bash',
+        content: [
+          {
+            type: 'content',
+            content: { type: 'text', text: 'Requesting approval to Running: echo fallback…' },
+          },
+        ],
+      },
+      options: PERMISSION_OPTIONS,
+    });
+
+    const approval = events[0] as ApprovalRequestedEvent;
+    expect(approval.view.command).toBe('Bash');
+    expect(approval.view.reason).toBe('Requesting approval to Running: echo fallback…');
+  });
+
+  it('permission with non-JSON tracked args uses raw args text as command', () => {
+    const t = new KimiAcpTranslator();
+    const toolCallId = '0:tool_cccccccc111122223333';
+    feedStreamingArgs(t, toolCallId, ['{"command":"echo broken']);
+
+    const events = t.handleServerRequest(52, ServerRequestMethod.REQUEST_PERMISSION, {
+      sessionId: SESSION_ID,
+      toolCall: { toolCallId, title: 'Bash' },
+      options: PERMISSION_OPTIONS,
+    });
+
+    const approval = events[0] as ApprovalRequestedEvent;
+    expect(approval.view.command).toBe('{"command":"echo broken');
+  });
+
+  it('terminal tool_call_update clears tracked args (stale entries never leak into approvals)', () => {
+    const t = new KimiAcpTranslator();
+    const toolCallId = '0:tool_dddddddd111122223333';
+    feedStreamingArgs(t, toolCallId, [JSON.stringify({ command: 'echo stale' })]);
+    t.handleNotification(
+      NotificationMethod.SESSION_UPDATE,
+      sessionUpdate(SESSION_ID, {
+        sessionUpdate: SessionEventType.TOOL_CALL_UPDATE,
+        toolCallId,
+        status: 'completed',
+        content: [{ type: 'content', content: { type: 'text', text: 'stale output' } }],
+        rawOutput: 'stale output',
+      }),
+    );
+
+    const events = t.handleServerRequest(53, ServerRequestMethod.REQUEST_PERMISSION, {
+      sessionId: SESSION_ID,
+      toolCall: { toolCallId, title: 'Bash' },
+      options: PERMISSION_OPTIONS,
+    });
+
+    const approval = events[0] as ApprovalRequestedEvent;
+    expect(approval.view.command).toBe('Bash');
+    expect(approval.view.reason).toBeUndefined();
+  });
+
   it('session/request_permission question elicitation → empty (auto-cancelled by runner)', () => {
     const t = new KimiAcpTranslator();
     const events = t.handleServerRequest(43, ServerRequestMethod.REQUEST_PERMISSION, {

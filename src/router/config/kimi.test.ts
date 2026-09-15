@@ -68,9 +68,9 @@ describe('KimiConfigBuilder', () => {
       // §7: options use SelectOption objects with text + value separation
       const permOptions = permField!.options!;
       expect(permOptions).toEqual([
-        { text: 'manual（逐项审批）', value: 'manual' },
-        { text: 'auto（引擎裁决）', value: 'auto' },
-        { text: 'yolo（全部放行）', value: 'yolo' },
+        { text: 'manual（始终询问）', value: 'manual' },
+        { text: 'auto（完全自动）', value: 'auto' },
+        { text: 'yolo（必要时询问）', value: 'yolo' },
       ]);
       // currentValue is the raw config value (without Chinese annotation)
       expect(permField!.currentValue).toBe('auto');
