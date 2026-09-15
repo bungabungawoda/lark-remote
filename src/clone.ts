@@ -13,7 +13,7 @@ import { spawnDetachedBridge } from './restart.js';
 /**
  * 复制分身（/clone）状态机。
  *
- * 在当前 bridge 进程内引导用户扫码创建一个新飞书应用，并生成一份"分身"
+ * 在当前 lark-remote 进程内引导用户扫码创建一个新飞书应用，并生成一份"分身"
  * 配置目录：除 feishu.appId/appSecret 来自新应用外，其余配置原样复制；
  * 创建完成后用新应用拿到的用户 openId 直接写好绑定（owner 无需再输入
  * 任意内容认领），并 detached 拉起指向新配置目录的新实例——启动后新

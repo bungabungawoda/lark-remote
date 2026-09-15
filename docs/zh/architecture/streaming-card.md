@@ -85,7 +85,7 @@ Run/Bash 卡片的 CardKit 2.0 单卡流式架构说明，覆盖数据流、状�
 | assistant.tool_use | 新增 running tool，footer=tool_running |
 | user.tool_result | 匹配 tool id，置 ok/error 与 output |
 | result.success / result.error | finalizing（暂存 subtype/errorMsg，非终态） |
-| CLI 进程退出（for-await 结束） + 仍 finalizing | done / error（bridge finally transition） |
+| CLI 进程退出（for-await 结束） + 仍 finalizing | done / error（lark-remote finally transition） |
 | 非零退出或 run 抛错 | error |
 | stdout 耗尽但无 result | error |
 | `/stop` 或停止按钮 | interrupted（可从 running 或 finalizing 转） |

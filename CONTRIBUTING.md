@@ -33,7 +33,7 @@ bun install
 | `bun run format:check` | Prettier check |
 | `bun run format` | Prettier auto-format |
 | `bun run build` | Build (`rm -rf dist && tsc`) |
-| `bun run dev` | Start bridge in dev mode |
+| `bun run dev` | Start lark-remote in dev mode |
 
 **After any code change, you must run `typecheck` then `test`. Both must pass.**
 
@@ -97,7 +97,7 @@ bun install
 | `bun run format:check` | Prettier 检查 |
 | `bun run format` | Prettier 自动格式化 |
 | `bun run build` | 构建 (`rm -rf dist && tsc`) |
-| `bun run dev` | 开发模式启动 bridge |
+| `bun run dev` | 开发模式启动 lark-remote |
 
 **改代码后必须先 `typecheck` 再 `test`，都过才算完成。**
 

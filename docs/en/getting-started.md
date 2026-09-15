@@ -80,7 +80,7 @@ bun run dev
 
 The first time you run it, a **QR code** will appear in the terminal. Open the Feishu app → scan in the top-right corner → scan this QR code → Feishu will automatically create a "custom app" (i.e., a bot) for you and write the credentials into `~/.lark-remote/config.yaml`.
 
-**After that, the terminal will continue running and eventually sit there waiting** — this is normal, it means the bridge is listening for Feishu messages.
+**After that, the terminal will continue running and eventually sit there waiting** — this is normal, it means lark-remote is listening for Feishu messages.
 
 > **If the terminal shows a "non-interactive environment" error**: It means your terminal doesn't support displaying a QR code. Create the app manually instead:
 > 1. Open https://open.feishu.cn in your browser and log in to Feishu;
@@ -125,7 +125,7 @@ In a Feishu private chat, anything starting with `/` is a command. **Memorize th
 | `/stop` | Force stop Claude if it's running away or stuck | Just send `/stop` |
 | `/new` | Clear the current conversation and start fresh | Just send `/new` |
 | `/resume` | View past sessions, click a button to restore one | Just send `/resume` |
-| `/exit` | Shut down the bridge | Just send `/exit` |
+| `/exit` | Shut down lark-remote | Just send `/exit` |
 
 **Anything not starting with `/` is just chatting with Claude.** For example:
 
@@ -170,7 +170,7 @@ After exiting, the Feishu bot will no longer respond to messages. To use it agai
 
 ## 9. Reading Logs: How to Troubleshoot Problems
 
-After the bridge starts, it doesn't output to the terminal. Logs are written to files:
+After lark-remote starts, it doesn't output to the terminal. Logs are written to files:
 
 ```
 ~/.lark-remote/logs/YYYY-MM-DD/lark-remote-<pid>.log

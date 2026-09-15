@@ -283,13 +283,8 @@ export const AppConfigSchema = z.object({
   inboundMedia: InboundMediaConfigSchema.default(InboundMediaConfigSchema.parse({})),
   /** Default agent for new runs. */
   defaultAgent: z.enum(['claude', 'codex', 'opencode', 'pi', 'kimi', 'dsh']).default('claude'),
-  /** Check for updates on bridge startup (default: false). */
+  /** Check for updates on lark-remote startup (default: false). */
   checkUpdateOnStartup: z.boolean().default(false),
-  /**
-   * 阻止系统休眠（macOS caffeinate / Windows SetThreadExecutionState，默认开）。
-   * bridge 场景是人不在电脑前远程使用，系统休眠即失联；不影响显示器睡眠。
-   */
-  preventSleep: z.boolean().default(true),
 });
 
 export type AppConfig = z.infer<typeof AppConfigSchema>;
