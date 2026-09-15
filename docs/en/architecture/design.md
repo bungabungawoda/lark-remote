@@ -243,6 +243,10 @@ logging:
 
 idle:
   watchdogMinutes: 15     # 0 disables the idle watchdog
+
+preventSleep: true        # Prevent system sleep (macOS caffeinate / Windows
+                          # SetThreadExecutionState), default on; display sleep is not
+                          # affected, set false to disable
 ```
 
 When `feishu.appId`/`appSecret` is not detected on first launch: interactive terminal (both stdin/stdout are TTY) goes through the scan-to-create wizard (`src/config/wizard.ts`, calling `@larksuite/channel`'s `registerApp`), which prints a QR code in the terminal; the user scans it with the Feishu App to create the app, and the returned `client_id`/`client_secret` is written back to the config file before continuing startup; non-interactive environments (no TTY) fall through to `loadConfig` which generates a template and exits.
