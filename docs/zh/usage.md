@@ -80,6 +80,9 @@ logging:
 
 idle:
   watchdogMinutes: 15       # 空闲超时自动停止，0 关闭
+
+preventSleep: true          # 阻止系统休眠（默认开）：macOS 用 caffeinate、Windows 用
+                            # SetThreadExecutionState，均不影响显示器睡眠；false 关闭
 ```
 
 配置文件路径可用 `--config-dir` CLI 参数覆盖（如 `lark-remote --config-dir /path/to/dir`）。
@@ -109,6 +112,8 @@ lark-remote      # 全局安装后直接用
 ```
 
 bridge 启动后不在终端输出，运行日志写入 `~/.lark-remote/logs/`（见下）。同一 `configDir` 只允许一个实例；重复启动会退出并提示已有 pid。连接飞书成功后，bridge 会向最近私聊用户发送启动通知，包含启动时间和进程号。
+
+bridge 运行期间会**阻止系统休眠**（macOS 用 `caffeinate`、Windows 用 `SetThreadExecutionState`）——典型用法是人不在电脑前远程使用，系统一旦休眠飞书连接即断。只阻止系统休眠，不影响显示器睡眠；bridge 退出（含异常退出）后自动解除。不需要时在 config.yaml 设 `preventSleep: false`。注意：MacBook 合盖睡眠无法阻止（除非接电源并外接显示器）。
 
 日志按日期轮转，落在 `~/.lark-remote/logs/YYYY-MM-DD/lark-remote-<pid>.log`（每天一个子目录，路径由 configDir 推导，级别由 `logging.level` 配置）。
 
@@ -234,8 +239,9 @@ pid N），启动通知稍后送达…」后干净退出并释放单例锁；新
 
 往飞书私聊发图片或文件，bridge 会自动下载并保存到**当前工作目录**的
 `.lark-remote-temp/<YYYYMMDDHHmm>/`（按分钟分子目录），然后回复一条
-「已保存 N 个文件」提示。之后直接说「请处理刚才保存的文件」即可——agent 用现有
-Read/Bash 工具读本地文件，**runner 无需任何改造**。
+「已保存 N 个文件」提示，提示里会带上保存目录的完整路径——把提示整段转给
+agent（或说「请处理刚才保存的文件」）即可，agent 用现有 Read/Bash 工具读本地
+文件，**runner 无需任何改造**。
 
 - 文件消息保留原始文件名（自动 sanitize 防路径穿越）；图片消息按
   `image_<HHmmss>_<n>.<ext>` 命名，扩展名按 MIME 推断；

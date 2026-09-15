@@ -66,6 +66,10 @@ logging:
 
 idle:
   watchdogMinutes: 15       # Idle timeout auto-stop, 0 to disable
+
+preventSleep: true          # Prevent system sleep (default on): macOS via caffeinate,
+                            # Windows via SetThreadExecutionState; display sleep is not
+                            # affected; set false to disable
 ```
 
 The configuration file path can be overridden with the `--config-dir` CLI parameter (e.g., `lark-remote --config-dir /path/to/dir`).
@@ -95,6 +99,8 @@ lark-remote      # Use directly after global install
 ```
 
 The bridge produces no terminal output after startup. Runtime logs are written to `~/.lark-remote/logs/` (see below). Only one instance is allowed per `configDir`; a second launch will exit and report the existing pid. After successfully connecting to Feishu, the bridge sends a startup notification to the most recent private chat user, including the startup time and process ID.
+
+While running, the bridge **prevents the system from sleeping** (via `caffeinate` on macOS and `SetThreadExecutionState` on Windows) — the typical use case is remote access while away from the machine, and system sleep would sever the Feishu connection. Only system sleep is prevented; display sleep is unaffected, and the block is released automatically when the bridge exits (even on a crash). Set `preventSleep: false` in config.yaml to opt out. Note: closing a MacBook lid still sleeps the machine unless it is on AC power with an external display attached.
 
 Logs rotate daily and are stored at `~/.lark-remote/logs/YYYY-MM-DD/lark-remote-<pid>.log` (one subdirectory per day; path derived from configDir; level configured via `logging.level`).
 
@@ -209,8 +215,9 @@ The name must not contain path separators, must not start with `.` / end with a 
 Sending an image or file in the Feishu private chat makes the bridge download it
 into the **current working directory** under
 `.lark-remote-temp/<YYYYMMDDHHmm>/` (one subdirectory per minute), then reply with
-an "N files saved" notice. You can then say "please process the files I just
-sent" — the agent reads the local files with its existing Read/Bash tools, so
+an "N files saved" notice that includes the full path of the save directory.
+Forward the notice to the agent (or say "please process the files I just
+sent") — the agent reads the local files with its existing Read/Bash tools, so
 **no runner changes are needed**.
 
 - File messages keep their original name (sanitized against path traversal);
