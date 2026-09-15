@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] - 2026-09-15
+
+### 新增
+
+- **运行期间阻止系统休眠**：运行中自动阻止系统休眠（macOS 用 `caffeinate`、Windows 用 `SetThreadExecutionState`）——典型用法是人不在电脑前远程使用，系统一旦休眠连接即断。只阻止系统休眠，不影响显示器睡眠；退出（含异常退出）后自动解除，helper 意外退出也会留痕兜底。注意：MacBook 合盖睡眠无法阻止（除非接电源并外接显示器）
+- **入站媒体保存提示带完整路径**：收到的图片/文件落盘后，提示带目录完整路径，方便直接定位
+
+### 修复
+
+- **卡片更新瞬态失败自动重试**：飞书卡片更新遇到连接瞬时中断等瞬态传输错误时就地重试（最多 3 次），不再把失败直接落到未处理 rejection 上导致进程退出
+- **Kimi 审批卡恢复完整 Bash 命令**：审批卡片按 `toolCallId` 关联流式参数，恢复展示完整命令而非截断片段
+- **Kimi 权限模式文案对齐 kimi 0.40+ 语义**：`yolo` 现指「必要时询问」而非完全放行，完全自动请选 `auto`；README 与配置文档同步更新
+
+### 变更
+
+- **文档自称统一**：README、使用文档与架构文档中的自称统一为 lark-remote
+
 ## [0.3.0] - 2026-09-13
 
 ### 新增
