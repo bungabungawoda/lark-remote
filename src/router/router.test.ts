@@ -324,13 +324,15 @@ describe('CommandRouter', () => {
     expectNoV1ActionContainer(cardStr);
   });
 
-  it('/help 卡片含「系统休眠」说明段（preventSleep 行为可见性）', async () => {
+  it('/help 卡片含「系统休眠」说明段（阻止系统自动休眠的可见性）', async () => {
     const { router, connector } = createRouter();
     await router.handle('/help', ctx);
     const card = connector._sent[0].input as { card: object };
     const cardStr = JSON.stringify(card.card);
     expect(cardStr).toContain('系统休眠');
-    expect(cardStr).toContain('preventSleep');
+    expect(cardStr).toContain('lark-remote 运行期间会阻止系统自动休眠');
+    // 文案规范（2026-09-14）：/help 全卡不得出现 bridge 自称（小写精确匹配）。
+    expect(cardStr).not.toContain('bridge');
   });
 
   // 2026-07-04: /help 卡片重构

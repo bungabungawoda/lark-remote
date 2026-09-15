@@ -234,7 +234,7 @@ describe('端到端流程', () => {
 // --- 异常场景 ---
 
 describe('异常场景', () => {
-  it('claude 进程异常退出后 bridge 不崩溃，下一条消息可正常处理', async () => {
+  it('claude 进程异常退出后 lark-remote 不崩溃，下一条消息可正常处理', async () => {
     const capture: CapturedSpawn[] = [];
     const goodEvents: AgentEvent[] = [
       { type: 'system', subtype: 'init', session_id: 's2', cwd: tmpDir, model: 'opus' },
@@ -248,13 +248,13 @@ describe('异常场景', () => {
     });
     sessionStore.setCwd('user1', tmpDir);
 
-    // first message → claude crashes, error sent but bridge survives
+    // first message → claude crashes, error sent but lark-remote survives
     await router.handle('hello', ctx);
     expect(JSON.stringify(connector._cards.at(-1))).toContain('claude died (exit 137)');
 
     // Swap in a working runner to simulate next message succeeding.
     // We rebuild the router with the same sessionStore/connector to verify
-    // the bridge recovers after a crash.
+    // the lark-remote recovers after a crash.
     const workingRouter = new CommandRouter({
       sessionStore,
       bridge: new Bridge({
@@ -277,10 +277,10 @@ describe('异常场景', () => {
     expect(texts).toContain('recovered');
   });
 
-  it('bridge 异常退出后重启，残留 claude 进程被 kill', async () => {
+  it('lark-remote 异常退出后重启，残留 claude 进程被 kill', async () => {
     // Directly test WorkspaceStore + ClaudeRunner.killOrphan is covered in
-    // claude-runner.test.ts. Here we verify the pid-file cleanup path the
-    // bridge relies on: a stale pid file is removed after killOrphan().
+    // claude-runner.test.ts. Here we verify the pid-file cleanup path
+    // lark-remote relies on: a stale pid file is removed after killOrphan().
     const { ClaudeRunner } = await import('./runner/index.js');
     const pidDir = path.join(tmpDir, 'pids');
     fs.mkdirSync(pidDir, { recursive: true });

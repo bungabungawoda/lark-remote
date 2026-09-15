@@ -19,7 +19,7 @@ interface SessionEntry {
 /**
  * Per-user session store. Persists cwd + per-agent sessions to disk so that
  * the last workspace AND the last-used sessionId per agent are restored after
- * a bridge restart.
+ * a lark-remote restart.
  *
  * Persistence strategy:
  * - Persists `cwd`, `sessions` (per-agent sessionId), `previousSessions`
