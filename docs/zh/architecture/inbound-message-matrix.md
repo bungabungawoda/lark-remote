@@ -5,13 +5,13 @@
 > 而非"是否携带可下载资源"），并发现同一根因下还有一批同类漏判。
 >
 > 数据来源：`@larksuite/channel@0.3.0` 的 `normalize()` **实测**（构造 22 种 `message_type` 跑真实 SDK 输出），
-> 非读源码推断。判定点：`src/connector/index.ts:344-352`。
+> 非读源码推断。判定点：修复前 `src/connector/index.ts` 的入站分派分支。
 > **SDK 给出的 `resources` 不等于"飞书允许下载"** —— 官方接口的硬限制见 §4（表情包、合并转发都不给下载）。
 
-## 0. 判定点与当前判据
+## 0. 判定点与修复前判据
 
 ```ts
-// src/connector/index.ts:344-352
+// 修复前的 src/connector/index.ts 入站分派（白名单已移除，现判据为 msg.resources）
 if (
   (msg.rawContentType === 'image' || msg.rawContentType === 'file') &&
   msg.resources.length > 0
@@ -78,7 +78,7 @@ this.onMessage?.({ ... content: msg.content }); // 文本通道：content 原样
 |---|---|---|---|
 | 5 | `sticker` 漏判 | `<sticker key="…"/>` 占位符当文本进 agent | **不能按 #1 处理**：飞书明确"暂不支持获取表情包资源"，`type=file` 的说明也注明"表情包除外" → 应归「不支持类」，回提示、不进 agent（详见 §4） |
 | 6 | `inboundMedia.enabled: false` 时行为不一致 | image/file 走媒体通道 → 回"已关闭"提示；**video/audio/sticker 不匹配白名单 → 直接当 prompt 转发给 agent** | 判据统一后自然消除；提示文案需从"图片/文件"改为覆盖全部资源类型 |
-| 7 | 未绑定用户先发媒体 → 静默丢弃且不完成绑定 | `index.ts:410-412` 媒体闸门只调 `binder.isOwner()`（未绑定恒 false），文本通道有 `classify()` 的"首条任意消息即绑定"兜底，媒体通道没有 → 新实例首条消息是图/视频时**什么都不发生**，用户以为程序坏了 | 媒体闸门也用 `classify()` 走绑定判定，或未绑定时回一条引导 |
+| 7 | 未绑定用户先发媒体 → 静默丢弃且不完成绑定 | `index.ts` 的 `setupMessageHandlers` 媒体闸门只调 `binder.isOwner()`（未绑定恒 false），文本通道有 `classify()` 的"首条任意消息即绑定"兜底，媒体通道没有 → 新实例首条消息是图/视频时**什么都不发生**，用户以为程序坏了 | 媒体闸门也用 `classify()` 走绑定判定，或未绑定时回一条引导 |
 | 8 | 落盘命名对无 fileName 资源不可用 | `buildFileName` 的 file 分支：无 fileName → `file_HHmmss_n`（**无扩展名**），agent/用户无法判断格式 | 按 MIME + 魔数补扩展名（视频/音频/表情） |
 
 ### P2 — 噪声进 agent
