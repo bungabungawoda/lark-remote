@@ -25,9 +25,13 @@ import type {
 import { ConnectionLostError } from './jsonrpc/client.js';
 import { getLogger } from '../../logger/index.js';
 import { syntheticInitEvent } from './runner-utils.js';
+import { DEFAULT_TURN_IDLE_TIMEOUT_MINUTES } from '../../config/index.js';
 
-/** How long to wait for turn output notifications before failing. */
-const TURN_IDLE_TIMEOUT_MS = 10 * 60 * 1000;
+/** How long to wait for turn output notifications before failing.
+ *  30 分钟（单源于 config 的 DEFAULT_TURN_IDLE_TIMEOUT_MINUTES）：ACP/app-server
+ *  类 agent 常因长工具调用（pip/npm install 等）或等待 SubAgent 长时间静默，
+ *  10 分钟会误杀正常进行中的 run。未接配置的 runner（如 opencode）直接吃此默认。 */
+const TURN_IDLE_TIMEOUT_MS = DEFAULT_TURN_IDLE_TIMEOUT_MINUTES * 60 * 1000;
 
 export abstract class ConnectionBasedRunner<TClient, TEvent = AgentEvent> implements AgentRunner {
   readonly kind: AgentKind;

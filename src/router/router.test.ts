@@ -335,6 +335,16 @@ describe('CommandRouter', () => {
     expect(cardStr).not.toContain('bridge');
   });
 
+  // /help 卡不放 /advancehelp：高级配置参考只面向 coding agent（CLI --advance-help），
+  // 飞书侧 Agent 不可被程序调用、入口只暴露给人类，故两个渠道都不出现。
+  it('/help 卡片不出现 advancehelp（入口只在 CLI --advance-help）', async () => {
+    const { router, connector } = createRouter();
+    await router.handle('/help', ctx);
+    const card = connector._sent[0].input as { card: object };
+    const cardStr = JSON.stringify(card.card);
+    expect(cardStr).not.toContain('advancehelp');
+  });
+
   // 2026-07-04: /help 卡片重构
   // - 按钮组在上、文本组在下，中间 hr 分隔
   // - /reset 别名删除、/doctor 命令删除
