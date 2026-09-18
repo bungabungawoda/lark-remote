@@ -133,7 +133,7 @@ resources.length === 0 且 content 是结构化占位符  →  不支持类：�
 1. **表情包（sticker）大概率不可下载** —— 文档原文「暂不支持获取表情包资源」，且 `file` 的说明里再次注明"表情包除外"。
    ⚠️ 但要注意：文档的 `type` 枚举只明确排除了 **`file`** 分支 —— `image` 的说明是"消息中的图片或富文本消息中的图片"，
    **未提及表情包**。参考项目 cc-connect 对 sticker 走的正是 `downloadImage(...)` 即 **`type=image`**，并带失败降级分支
-   （`platform/feishu/feishu.go:1692-1724`；`downloadImage` 定义在 `:3022`，内部 `Type("image")`）。
+   （其 `downloadImage` 内部传 `Type("image")`）。
    → sticker 应标为「**待实测**」：用 `type=image` 与 `type=file` 各试一次（发一个表情给 bot 即可定性），
    不要在没有实测的情况下把它写死成"不支持"，也不要按 #1 直接并进媒体通道（那会走 `type=file`，大概率失败）。
 2. **合并转发（含子消息）的资源下载被列为不支持** —— 错误码 `234043 Unsupported message type` 的示例即"合并转发消息（包括子消息）、消息卡片"。
@@ -149,7 +149,7 @@ resources.length === 0 且 content 是结构化占位符  →  不支持类：�
 ### 5.1 先纠正一个事实（本文件早前版本的错误结论）
 
 `LarkChannel.registerDispatcherHandlers()` 在 `normalizeOpts` 里**已经注入** `fetchSubMessages`
-（实现为 `rawClient.im.v1.message.get({ message_id })`，见 `dist/index.mjs:3791-3805`，另 `fetchMessage()` 3731 行也有）。
+（实现为 `rawClient.im.v1.message.get({ message_id })`，SDK 里 `fetchMessage()` 同样有）。
 所以生产链路上合并转发的子消息**文本**会被渲染成 `[时间] 发送人:` + 缩进内容；
 `<forwarded_messages/>` 只是"能力缺失 / 调用失败"时的降级态 —— 裸调 `normalize()`（不传 capability）测到的正是这个降级态。
 
@@ -206,21 +206,21 @@ GET /open-apis/im/v1/messages/{子 message_id}/resources/{file_key}?type=image
 | 维度 | lark-remote（现状） | lark-coding-agent-bridge | cc-connect |
 |---|---|---|---|
 | 判据 | `msg_type` 白名单 `{image,file}` | **`resources` 非空**（消费 SDK 归一化） | `switch msg_type`（枚举 8 类 + `default`） |
-| 视频 `media` | ❌ 当文本进 agent | 识别 → 下载 → 立即 `skipped/unsupported-kind` | 识别 → **不下视频本体**，给 `[video: name, 80s]` + 封面图（`:1726-1762`） |
-| 语音 `audio` | ❌ 当文本进 agent | 识别 → skip | 下载 `audio/opus` → 引擎 **转写成文字**（`:1584-1618`） |
-| 表情 `sticker` | ❌ 当文本进 agent | 识别 → 不下载（skipped） | **真下载**（`type=image`），失败降级 `[sticker]`（`:1692-1724`） |
-| 合并转发 | ❌ 当文本（白名单不认） | SDK 展开；`fetch_failed` → 回提示并**中断 run** | **自建遍历**，用**子消息自己的 msgID** 下载嵌套图片/文件（`:2635`、`:2704`） |
-| 不支持类型 | 静默当 prompt | 当文本，但 `stripAttachmentRefs` 剥掉占位符 | 主消息**静默丢弃**（debug 日志）；子消息渲染 `[xxx message]`（`:1803-1804`） |
+| 视频 `media` | ❌ 当文本进 agent | 识别 → 下载 → 立即 `skipped/unsupported-kind` | 识别 → **不下视频本体**，给 `[video: name, 80s]` + 封面图 |
+| 语音 `audio` | ❌ 当文本进 agent | 识别 → skip | 下载 `audio/opus` → 引擎 **转写成文字** |
+| 表情 `sticker` | ❌ 当文本进 agent | 识别 → 不下载（skipped） | **真下载**（`type=image`），失败降级 `[sticker]` |
+| 合并转发 | ❌ 当文本（白名单不认） | SDK 展开；`fetch_failed` → 回提示并**中断 run** | **自建遍历**，用**子消息自己的 msgID** 下载嵌套图片/文件 |
+| 不支持类型 | 静默当 prompt | 当文本，但 `stripAttachmentRefs` 剥掉占位符 | 主消息**静默丢弃**（debug 日志）；子消息渲染 `[xxx message]` |
 | 附件如何告知 agent | 发提示卡，用户自己再说一句 | **自动注入 prompt** 的 attachments 段 | **自动追加** `(Files saved locally, please read them: <abs>)` |
 | 失败反馈 | 提示卡列 failures | — | 每种下载失败都回 `⚠️ … download failed (network error). Please resend.` |
 
 ### 6.1 可直接借鉴的四条
 
-1. **判据换成 `resources`** —— `lark-coding-agent-bridge` 用同款 SDK 在生产环境就是这么做的（`src/bot/channel.ts:832`
+1. **判据换成 `resources`** —— `lark-coding-agent-bridge` 用同款 SDK 在生产环境就是这么做的（`src/bot/channel.ts`
    把 `resources` 与消息的 `messageId` 配对后交给 media resolver），是本文 §3 骨架的现实印证。
 2. **占位符剥离** —— 即使某类型不打算支持，也要把 `![image](key)`、`<video key="…"/>` 这类占位符从 prompt 里剥掉
-   （参考实现 `src/bot/channel.ts:1919-1926` 的正则），否则"不特殊处理"等于把 XML 噪声喂给 agent。
-3. **合并转发照 cc-connect 的 `parseMergeForward` 抄**（`feishu.go:2635`）：`message.get` → 按 `upper_message_id`
+   （参考其 `src/bot/channel.ts` 中的剥离正则），否则"不特殊处理"等于把 XML 噪声喂给 agent。
+3. **合并转发可参考 cc-connect 的 `parseMergeForward`**：`message.get` → 按 `upper_message_id`
    建树 → 递归 `formatMergeForwardTree`（含 10 层深度截断）→ 每个子消息用**自己的 `msgID`** 下载资源
    （`case "image"` / `case "file"` 分支明确传 `msgID`）。这既是 §5 Step 2 的现成蓝本，
    也说明"用子消息 id 下载"在同类项目里是**预期可行**的做法（该路径无测试覆盖，仍需真机确认）。
