@@ -124,6 +124,13 @@ export class FakeDshServer {
     this.muxFrames = frames;
   }
 
+  /** Append a single frame at response time (real DSH only produces a turn's
+   *  events after accepting its prompt) — avoids pre-queued frames racing a
+   *  previous run's still-closing mux subscription. */
+  pushMuxFrame(frame: object | { close: true }): void {
+    this.muxFrames.push(frame);
+  }
+
   setHistoryValue(value: unknown): void {
     this.historyValue = value;
   }
