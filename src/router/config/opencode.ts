@@ -4,7 +4,7 @@
 
 import { loadOpencodeConfig } from '../../config/opencode-config.js';
 import type { AgentConfigCardBuilder, ConfigField } from './types.js';
-import type { AppConfig } from '../../config/index.js';
+import { DEFAULT_TURN_IDLE_TIMEOUT_MINUTES, type AppConfig } from '../../config/index.js';
 import { resetModelPatch } from './common/model-patch.js';
 
 const MODE_OPTIONS = [
@@ -46,6 +46,18 @@ export class OpencodeConfigBuilder implements AgentConfigCardBuilder {
       type: 'select',
       options: MODE_OPTIONS,
       currentValue: currentMode,
+    });
+
+    // Turn 空闲超时（纯 ACP 对齐 kimi：卡片暴露 turnIdleTimeoutMinutes，
+    // binary/requestTimeoutMs/idleTtlMs 为 YAML-only 工程参数）
+    const currentTurnIdleTimeoutMinutes =
+      displayConfig.agents?.opencode?.acp?.turnIdleTimeoutMinutes ??
+      DEFAULT_TURN_IDLE_TIMEOUT_MINUTES;
+    fields.push({
+      key: 'agents.opencode.acp.turnIdleTimeoutMinutes',
+      label: 'Turn 空闲超时(分钟, 0关闭)',
+      type: 'input',
+      currentValue: String(currentTurnIdleTimeoutMinutes),
     });
 
     return fields;

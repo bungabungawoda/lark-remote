@@ -290,6 +290,13 @@ function initializeRunner(
       model,
       sessionReader: opencodeSessionReader,
       mode: ocConfig?.mode ?? 'build',
+      binary: ocConfig?.acp?.binary,
+      requestTimeoutMs: ocConfig?.acp?.requestTimeoutMs,
+      idleTtlMs: ocConfig?.acp?.idleTtlMs,
+      turnIdleTimeoutMs:
+        ocConfig?.acp?.turnIdleTimeoutMinutes != null
+          ? ocConfig.acp.turnIdleTimeoutMinutes * 60_000
+          : undefined,
     });
   });
   sessionReaderRegistry.register('opencode', opencodeSessionReader);
