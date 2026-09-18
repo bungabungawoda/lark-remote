@@ -85,9 +85,13 @@ describe('opencode config card ANCHOR: opencode fields must use select type', ()
       }
     }
 
-    // ANCHOR: opencode 字段不应该有任何 input 元素
-    // 如果 opencodeInputs 非空，说明使用了 input（错误）
-    expect(opencodeInputs).toHaveLength(0);
+    // ANCHOR: opencode 的 model/provider/mode 字段不应该有 input 元素
+    // （2026-09-17 起 opencode 纯 ACP 对齐 kimi：acp.turnIdleTimeoutMinutes
+    //  有意使用 input 文本框（数值输入），不在此白名单内——若它换回 select
+    //  或其它新 opencode 字段使用 input，本断言变红，需人工确认意图）
+    expect(opencodeInputs.filter((n) => !n.includes('turnIdleTimeoutMinutes'))).toHaveLength(0);
+    // Turn 空闲超时必须以 input 形式存在（与 kimi 卡片对齐的回归锚）
+    expect(opencodeInputs.some((n) => n.includes('turnIdleTimeoutMinutes'))).toBe(true);
   });
 
   /**
