@@ -1,6 +1,7 @@
 {
   "infra-bridge": [
     "src/bridge/**/*.test.ts",
+    "src/inbound/**/*.test.ts",
     "tests/bridge/**/*.test.ts",
     "tests/anchor/queue-card-arm/**/*.test.ts",
     "tests/queue/**/*.test.ts",
@@ -50,6 +51,7 @@
     "src/router/ls-file.test.ts",
     "src/router/paging-jump.test.ts",
     "src/router/download.test.ts",
+    "src/router/command-guard.test.ts",
     "src/router/order-exec-dispatch.test.ts",
     "src/router/order-exec.test.ts",
     "src/router/router.test.ts",

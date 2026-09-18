@@ -27,6 +27,7 @@ import { ApprovalCoordinator, decisionToApprovalAction } from './approval-coordi
 import type { ApprovalAction, ApprovalToggleAction } from './approval-coordinator.js';
 import { InboundMediaHandler } from './inbound-media.js';
 import type { InboundMediaPayload } from '../connector/index.js';
+import type { MediaOutcome } from '../inbound/turn.js';
 
 /**
  * Max events to read for the completion notification card (mirror router's
@@ -275,7 +276,6 @@ export class Bridge {
     this.mediaHandler = new InboundMediaHandler({
       resolveCwd: (userId) => this.resolveCwd(userId),
       getConfig: () => this.config,
-      send: async (ctx, text) => this.sendResult({ text }, ctx),
     });
   }
 
@@ -916,19 +916,12 @@ export class Bridge {
     }
   }
 
-  /** 入站媒体落盘入口（connector 下载完成后调用）。 */
-  async onInboundMedia(payload: InboundMediaPayload): Promise<void> {
-    await this.mediaHandler.handle(payload);
-  }
-
-  /** 文本消息到达时立即冲刷待合批的媒体保存提示。 */
-  flushMediaNotifications(userId: string, chatId: string): void {
-    this.mediaHandler.flushAll(userId, chatId);
-  }
-
-  /** 冲刷全部待合批提示（/exit、/restart 干净退出前调用）。 */
-  async flushAllMediaNotifications(): Promise<void> {
-    await this.mediaHandler.flushAllPending();
+  /**
+   * 入站媒体落盘（connector 下载完成后调用）：只落盘并回报结果，
+   * 时间语义与回执由 `InboundTurnAssembler` 统一负责。
+   */
+  async saveInboundMedia(payload: InboundMediaPayload): Promise<MediaOutcome> {
+    return this.mediaHandler.save(payload);
   }
 
   /**

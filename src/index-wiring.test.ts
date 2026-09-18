@@ -46,22 +46,25 @@ describe('index.ts card action dispatch wiring guard (§9.19)', () => {
 describe('index.ts inbound media wiring guard（先认证后下载）', () => {
   it('setInboundMediaDetectedHandler 回调内先 isOwner/enabled 再 downloadInboundMedia', () => {
     const source = fs.readFileSync(path.resolve(__dirname, 'index.ts'), 'utf-8');
-    const mediaBlock = source.match(
-      /connector\.setInboundMediaDetectedHandler\(\(msg\) => \{[\s\S]{0,1600}?logger\.error\('\[media\] inbound media download\/save failed:'/,
-    );
-    expect(mediaBlock).not.toBeNull();
-    const block = mediaBlock?.[0] ?? '';
+    const start = source.indexOf('connector.setInboundMediaDetectedHandler((msg) => {');
+    const end = source.indexOf('connector.setMessageHandler((msg) => {');
+    expect(start).toBeGreaterThan(-1);
+    expect(end).toBeGreaterThan(start);
+    const block = source.slice(start, end);
     expect(block).toContain('binder.isOwner(msg.userId)');
     // 活引用：读 router.config（/config 保存后是新对象，启动快照会过期）
     expect(block).toContain('router.config.inboundMedia.enabled');
     expect(block).toContain('connector.downloadInboundMedia(msg, {');
     expect(block).toContain('maxFileSizeMb: router.config.inboundMedia.maxFileSizeMb');
-    expect(block).toContain('bridge.onInboundMedia(payload)');
+    // 落盘结果回报给装配器（时间语义统一由 700ms 静默期窗口负责）
+    expect(block).toContain('return await bridge.saveInboundMedia(payload);');
+    expect(block).toContain("kind: 'media',");
+    expect(block).toContain('outcome,');
     // 意外抛错时兜底清理临时文件
     expect(block).toContain('silentlyUnlink(item.tempPath)');
-    // 关闭配置时不静默：owner 收到明确反馈（P3 review），且不进入下载
+    // 关闭配置时不静默：进 rejected 随 turn 回执发出（P3 review），且不进入下载
     expect(block).toContain('入站媒体保存已关闭');
-    expect(block).toContain('.sendResult(');
+    expect(block).toContain("kind: 'rejected',");
     // 顺序保证：owner 检查必须在下载之前
     expect(block.indexOf('binder.isOwner(msg.userId)')).toBeLessThan(
       block.indexOf('connector.downloadInboundMedia(msg, {'),
@@ -73,6 +76,42 @@ describe('index.ts inbound media wiring guard（先认证后下载）', () => {
 });
 
 /**
+ * 入口 wiring 静态守卫（B1/B3 2026-09-15 入站统一处理）：
+ * 命令前缀判定必须发生在占位符剥离之后，且只有纯文本消息（rawContentType === 'text'）
+ * 才有命令语义；普通消息进装配器窗口，装配器 commit 后强制关闭命令前缀。
+ */
+describe('index.ts inbound unified input wiring guard', () => {
+  it('占位符剥离在命令判定之前，且命令分支携带 allowCommandPrefix: true', () => {
+    const source = fs.readFileSync(path.resolve(__dirname, 'index.ts'), 'utf-8');
+    expect(source).toContain('const stripped = stripPlaceholders(content);');
+    expect(source).toContain("msg.rawContentType === 'text'");
+    expect(source).toContain("stripped.clean.startsWith('/')");
+    expect(source).toContain("stripped.clean.startsWith('!')");
+    expect(source).toMatch(/\.handle\(\s*stripped\.clean,/);
+    expect(source).toContain('{ allowCommandPrefix: true }');
+    // 顺序：别名展开 → 清洗 → 判命令
+    expect(source.indexOf('stripPlaceholders(content)')).toBeGreaterThan(
+      source.indexOf('router.expandAliasMessage(msg.content)'),
+    );
+    expect(source.indexOf("stripped.clean.startsWith('/')")).toBeGreaterThan(
+      source.indexOf('stripPlaceholders(content)'),
+    );
+  });
+
+  it('普通消息进装配器（不再直接 enqueue），装配器 commit 强制关闭命令前缀', () => {
+    const source = fs.readFileSync(path.resolve(__dirname, 'index.ts'), 'utf-8');
+    expect(source).toContain('new InboundTurnAssembler({');
+    expect(source).toContain("kind: 'text',");
+    expect(source).toContain('placeholders: stripped.kinds,');
+    // commit 路径：enqueue + router.handle(prompt, …, allowCommandPrefix: false)
+    expect(source).toContain('messagePreview: prompt.slice(0, 3000)');
+    expect(source).toContain('allowCommandPrefix: false,');
+    // 退出前冲刷装配器窗口
+    expect(source).toContain("router.setInboundFlusher(() => assembler.flushAll('flush'));");
+  });
+});
+
+/**
  * 入口 wiring 静态守卫：别名展开必须在命令分发前完成，且 /、! 分支与
  * 入队 payload 都必须使用展开后的 content（而非原始 msg.content）。
  */
@@ -80,15 +119,17 @@ describe('index.ts alias expansion wiring guard', () => {
   it('消息处理使用 expandAliasMessage 的结果分发', () => {
     const source = fs.readFileSync(path.resolve(__dirname, 'index.ts'), 'utf-8');
     const aliasBlock = source.match(
-      /const content = router\.expandAliasMessage\(msg\.content\);[\s\S]{0,6000}?messagePreview: content\.slice\(0, 3000\)/,
+      /const content = router\.expandAliasMessage\(msg\.content\);[\s\S]{0,6000}?placeholders: stripped\.kinds,/,
     );
     expect(aliasBlock).not.toBeNull();
     const block = aliasBlock?.[0] ?? '';
-    expect(block).toContain("content.trim().startsWith('/')");
-    expect(block).toContain("content.trim().startsWith('!')");
-    expect(block).toMatch(/router\.handle\(\s+content,/);
-    // 展开结果不得再被原始消息覆盖
-    expect(block).not.toContain('messagePreview: msg.content.slice(0, 3000)');
+    expect(block).toContain('const stripped = stripPlaceholders(content);');
+    expect(block).toContain("stripped.clean.startsWith('/')");
+    expect(block).toContain("stripped.clean.startsWith('!')");
+    expect(block).toMatch(/\.handle\(\s*stripped\.clean,/);
+    expect(block).toContain('text: stripped.clean,');
+    // 展开结果不得再被原始消息覆盖（不得回到 msg.content 转发）
+    expect(block).not.toContain('text: msg.content');
   });
 });
 
