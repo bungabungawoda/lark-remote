@@ -22,6 +22,9 @@ credentials*
 image.png
 nohup.out
 
+# lark-remote 入站媒体落盘目录（用户消息里的图片/文件，不入库）
+.lark-remote-temp/
+
 # Claude Code worktrees
 .worktrees/
 .claude/worktrees/
@@ -61,6 +64,7 @@ docs/**/*-manual.md
 docs/**/*-integration.md
 docs/**/*-playbook.md
 docs/**/*-experiment.md
+docs/**/*-tasks.md
 docs/**/lessons-*.md
 docs/**/architecture/*-config.md
 playbook*.md
