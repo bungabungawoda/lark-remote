@@ -504,9 +504,7 @@ export function createMockBridge(overrides?: Partial<Bridge>): Bridge {
     updateCardInPlace: vi.fn().mockResolvedValue(undefined),
     hasRunCompact: vi.fn().mockReturnValue(false),
     syncActiveApprovalModes: vi.fn(),
-    onInboundMedia: vi.fn().mockResolvedValue(undefined),
-    flushMediaNotifications: vi.fn(),
-    flushAllMediaNotifications: vi.fn().mockResolvedValue(undefined),
+    saveInboundMedia: vi.fn().mockResolvedValue({ attachments: [], rejected: [] }),
     ...overrides,
   } as Bridge;
 }
