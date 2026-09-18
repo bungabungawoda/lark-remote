@@ -306,10 +306,11 @@ describe('DshClient / DshRunner integration', () => {
     async () => {
       // Regression: session.selectModel writes the server global default, so a
       // repeat run on the same session must not re-send it (write amplification).
-      // history always returns empty (fresh-session semantics); each run gets its
-      // own turn/end from the shared mux queue (shift-consumed).
+      // history always returns empty (fresh-session semantics); each run's turn/end
+      // is pushed when that run's prompt is accepted (causal, no pre-queued frames).
       server = new FakeDshServer();
       let selectCount = 0;
+      let promptCount = 0;
       server.register('session.create', () => ({ ok: true, value: { sessionId: SID } }));
       server.register('session.selectModel', () => {
         selectCount += 1;
@@ -320,12 +321,15 @@ describe('DshClient / DshRunner integration', () => {
           },
         };
       });
-      server.register('session.prompt', () => ({ ok: true, value: { accepted: true } }));
+      server.register('session.prompt', () => {
+        promptCount += 1;
+        // 与真实 DSH 一致：turn/end 只在该 prompt 被接受后产生。若两帧预先入队，
+        // 固定间隔推送会让 run1 尚未关闭的订阅吞掉第二帧，run2 饿死等自己的
+        // turn/end（CI 调度抖动下 20s 超时的根因）。
+        server.pushMuxFrame(sessionEventFrame(SID, turnEnd('completed', promptCount)));
+        return { ok: true, value: { accepted: true } };
+      });
       server.register('session.history', () => ({ ok: true, value: { events: [] } }));
-      server.setMuxFrames([
-        sessionEventFrame(SID, turnEnd('completed', 1)),
-        sessionEventFrame(SID, turnEnd('completed', 2)),
-      ]);
       await server.start();
 
       const runner = new DshRunner({
