@@ -63,7 +63,7 @@ export interface OpencodeAcpRunnerOptions {
   requestTimeoutMs?: number;
   /** Idle TTL for connection manager. */
   idleTtlMs?: number;
-  /** How long to wait for turn output before failing. Defaults to 10 min. */
+  /** How long to wait for turn output before failing. Defaults to 30 min. */
   turnIdleTimeoutMs?: number;
   model?: string;
   /** Configured session mode: 'build' (default) or 'plan' (opencode agent names). */
