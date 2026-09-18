@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { printHelp, printVersion } from './config/dir.js';
+import { printAdvanceHelp, printHelp, printVersion } from './config/dir.js';
 
 const entryUrl = new URL('./index.js', import.meta.url);
 const entry = fileURLToPath(entryUrl);
@@ -38,6 +38,10 @@ export function handlePreflight(
     }
     if (arg === '-h' || arg === '--help' || arg === 'help') {
       printHelp();
+      return 0;
+    }
+    if (arg === '--advance-help') {
+      printAdvanceHelp();
       return 0;
     }
   }

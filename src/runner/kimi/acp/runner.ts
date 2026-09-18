@@ -72,7 +72,7 @@ export interface KimiAcpRunnerOptions {
   requestTimeoutMs?: number;
   /** Idle TTL for connection manager. */
   idleTtlMs?: number;
-  /** How long to wait for turn output before failing. Defaults to 10 min. */
+  /** How long to wait for turn output before failing. Defaults to 30 min. */
   turnIdleTimeoutMs?: number;
   /** §5.2: compaction 等待的沉默超时——距上次观察到任何新 compaction 记录
    *  （begin/terminal）超过该时长仍未终态才放弃（outcome unknown，卡片 error，
@@ -84,7 +84,7 @@ export interface KimiAcpRunnerOptions {
   permissionMode?: 'manual' | 'auto' | 'yolo';
 }
 
-/** §5.2: compaction 等待的默认沉默超时（对齐 turnIdleTimeoutMs 默认值）。 */
+/** §5.2: compaction 等待的默认沉默超时（10 分钟，独立于 turn idle 默认 30 分钟）。 */
 const COMPACT_IDLE_TIMEOUT_MS = 10 * 60_000;
 /** Poll interval for the wire.jsonl compaction record. */
 const COMPACT_POLL_INTERVAL_MS = 1_000;

@@ -142,7 +142,7 @@ export const CodexConfigSchema = z.object({
   appServer: CodexAppServerConfigSchema.optional(),
 });
 
-/** OpenCode-specific configuration (run mode: opencode run --format json --auto). */
+/** OpenCode-specific configuration (pure ACP mode: `opencode acp` over stdio). */
 const OpencodeConfigSchema = z.object({
   /** Provider ID for the LLM backend (e.g. 'anthropic'). */
   providerID: z.string().default('anthropic'),
@@ -150,6 +150,21 @@ const OpencodeConfigSchema = z.object({
   modelID: z.string().default('claude-sonnet-4-20250514'),
   /** Session mode (opencode agent name): 'build' (default) or 'plan'. */
   mode: z.enum(['build', 'plan']).default('build'),
+  /** ACP sub-configuration. Structurally mirrors kimi: the card exposes
+   *  turnIdleTimeoutMinutes; binary/requestTimeoutMs/idleTtlMs are YAML-only
+   *  engineering params. */
+  acp: z
+    .object({
+      /** Path to opencode binary for ACP mode. */
+      binary: z.string().default('opencode'),
+      /** Request timeout in milliseconds. */
+      requestTimeoutMs: z.number().int().min(0).default(60000),
+      /** Idle TTL for ACP connection in milliseconds. */
+      idleTtlMs: z.number().int().min(0).default(1800000),
+      /** Turn idle timeout in minutes (0 disables). */
+      turnIdleTimeoutMinutes: z.number().int().min(0).default(DEFAULT_TURN_IDLE_TIMEOUT_MINUTES),
+    })
+    .optional(),
 });
 
 /** Pi-specific configuration. pi is a spawn-per-message CLI like Claude. */
