@@ -206,24 +206,37 @@ Each agent's (claude/codex/opencode/pi/kimi/dsh) conversation has a session id. 
 
 The name must not contain path separators, must not start with `.` / end with a dot or space, and must not be a Windows reserved device name (`con`/`nul`/`com1`, etc.); if the target directory already exists the command refuses and asks for a different name.
 
-### Inbound Images / Files: Auto-Save
+### Inbound Media: Auto-Save and Prompt Injection
 
-Sending an image or file in the Feishu private chat makes lark-remote download it
-into the **current working directory** under
-`.lark-remote-temp/<YYYYMMDDHHmm>/` (one subdirectory per minute), then reply with
-an "N files saved" notice that includes the full path of the save directory.
-Forward the notice to the agent (or say "please process the files I just
-sent") — the agent reads the local files with its existing Read/Bash tools, so
-**no runner changes are needed**.
+Send an image, file, video, voice message, or sticker in the Feishu private chat.
+lark-remote downloads it into the **current working directory** under
+`.lark-remote-temp/<YYYYMMDDHHmm>/` (one subdirectory per minute). The absolute
+path goes into the agent prompt automatically. The agent reads the local file
+with its existing Read/Bash tools, so **no runner changes are needed**.
 
 - File messages keep their original name (sanitized against path traversal);
-  image messages are named `image_<HHmmss>_<n>.<ext>` with the extension
-  inferred from the MIME type;
-- Name collisions get a numeric suffix; existing files are never overwritten;
-  the per-file limit defaults to 50MB (configurable via `inboundMedia.maxFileSizeMb`);
+  image messages are named `image_<HHmmss>_<n>.<ext>`; video, voice, and sticker
+  items keep their original name. If there is no original name, lark-remote
+  reads the extension from the MIME type or from the file header
+  (for example `.mp4` or `.opus`);
+- lark-remote merges messages that arrive in the same minute into one turn. An
+  image before the text and an image after the text give the agent the same
+  prompt. That prompt contains the text and the attachment paths;
+- lark-remote does not send a separate "files saved" notice when you also send
+  text: the paths are already in the agent prompt. If you send an attachment
+  without text, lark-remote does not start the agent. It replies with
+  "N files saved" and asks you to send a sentence to start the work;
+- Name collisions get a numeric suffix; existing files are never overwritten.
+  The per-file limit defaults to 100 MB (configurable via
+  `inboundMedia.maxFileSizeMb`). Feishu needs a chunked download for files
+  larger than 100 MB. lark-remote does not do a chunked download, so a larger
+  limit does not make larger files available;
 - If no working directory is set, lark-remote asks you to `/cd` or `/ws use` first;
-- Multiple images sent in quick succession are merged into one save notice
-  (500ms window);
+- If you send a card, location, vote, calendar, or other unsupported message,
+  lark-remote sends a "not supported" notice only. It does not give that message
+  to the agent as your input;
+- The merge window is 700 ms. Text and attachments that arrive in this window
+  belong to the same turn;
 - **Add `.lark-remote-temp/` to your project's `.gitignore`**: lark-remote never
   cleans up or modifies these files.
 
@@ -233,10 +246,10 @@ Optional config.yaml (defaults work out of the box):
 inboundMedia:
   enabled: true
   dirName: ".lark-remote-temp"
-  maxFileSizeMb: 50
+  maxFileSizeMb: 100
 ```
 
-With `enabled: false`, images/files are not saved, but you still get a notice
+With `enabled: false`, attachments are not saved, but you still get a notice
 that the feature is off (never silent).
 
 ### Quick Aliases (`$name`)

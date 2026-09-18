@@ -4,8 +4,9 @@ import { DEFAULT_INBOUND_MEDIA_DIR_NAME, type AppConfig } from '../config/index.
 import { atomicMoveFile } from '../persistence/atomic-write.js';
 import { getLogger } from '../logger/index.js';
 import { silentlyUnlink } from '../common/fs.js';
+import type { InboundAttachment, MediaOutcome } from '../inbound/turn.js';
 import type {
-  InboundMediaFailure,
+  InboundResourceKind,
   InboundMediaItem,
   InboundMediaPayload,
 } from '../connector/index.js';
@@ -14,24 +15,18 @@ import type {
  * 入站媒体落盘。
  *
  * 核心设计：
- * - 存储"到达即存"：每个 media 立即原子写入
+ * - 存储「到达即存」：每个 media 立即原子写入
  *   `<cwd>/.lark-remote-temp/<YYYYMMDDHHmm>/`，不等待合批窗口；
- * - 合批只影响提示：500ms 窗口内同一 (userId, chatId, replyTo) 的保存结果
- *   合并成一条"已保存 N 个文件"提示；
- * - 文本消息到达时由 Bridge.flushMediaNotifications 立即冲刷批次
- *   （"先图后文字时文字到达先冲刷批次"），避免提示被后续消息淹没。
+ * - 只负责「落盘 + 报告结果」：把落盘路径与失败原因交回装配器
+ *   （`InboundTurnAssembler`），由装配器决定注入 prompt 还是发回执。
+ *   时间语义统一由装配器的静默期窗口负责（2026-09-15 起取代旧的
+ *   500ms 合批提示窗口 ——「现有合批窗口由 700ms 装配窗口取代」）。
  */
-
-/** 合批窗口（毫秒）。同一窗口内到达的保存提示合并为一条。 */
-const DEFAULT_BATCH_WINDOW_MS = 500;
-
-/** 单条提示最多列出的文件数；超出折叠为 "… 等 N 个文件"。 */
-const MAX_PATHS_IN_NOTIFICATION = 10;
 
 /** 文件名最长字节数（macOS/APFS 单组件上限 255 字节，留余量用 240）。 */
 const MAX_FILE_NAME_BYTES = 240;
 
-/** 魔数检测读取的头部字节数（png/jpg/gif/webp 签名都在前 12 字节内）。 */
+/** 魔数检测读取的头部字节数（png/jpg/gif/webp/mp4/ogg 签名都在前 12 字节内）。 */
 const MAGIC_HEAD_BYTES = 12;
 
 export interface InboundMediaDeps {
@@ -39,23 +34,28 @@ export interface InboundMediaDeps {
   resolveCwd: (userId: string) => string | undefined;
   /** 读取当前配置（活引用，随 /config 保存更新，避免启动快照过期）。 */
   getConfig: () => AppConfig;
-  /** 发送提示消息（bridge.sendResult 包装）。 */
-  send(ctx: { userId: string; chatId: string; messageId: string }, text: string): Promise<boolean>;
-}
-
-interface PendingBatch {
-  /** 批次代表消息（第一条），用于 replyTo。 */
-  payload: InboundMediaPayload;
-  saved: string[];
-  errors: string[];
-  timer: ReturnType<typeof setTimeout>;
 }
 
 const MIME_TO_EXT: Record<string, string> = {
   'image/png': 'png',
   'image/jpeg': 'jpg',
+  'image/jpg': 'jpg',
   'image/gif': 'gif',
   'image/webp': 'webp',
+  'image/bmp': 'bmp',
+  'video/mp4': 'mp4',
+  'video/quicktime': 'mov',
+  'video/webm': 'webm',
+  'video/x-matroska': 'mkv',
+  'audio/opus': 'opus',
+  'audio/ogg': 'ogg',
+  'audio/mpeg': 'mp3',
+  'audio/mp3': 'mp3',
+  'audio/wav': 'wav',
+  'audio/x-wav': 'wav',
+  'audio/aac': 'aac',
+  'audio/amr': 'amr',
+  'audio/mp4': 'm4a',
 };
 
 function pad2(n: number): string {
@@ -107,17 +107,29 @@ export function sanitizeFileName(name: string): string {
 }
 
 /**
- * image 消息扩展名：优先 MIME 映射，未知时按魔数兜底；
+ * 资源扩展名（图片/视频/语音）：优先 MIME 映射，未知时按魔数兜底；
  * 两者都无法识别时返回 undefined（调用方省略扩展名，避免错误标注格式）。
  */
-export function imageExtension(mimeType: string | undefined, head: Buffer): string | undefined {
-  if (mimeType && MIME_TO_EXT[mimeType]) return MIME_TO_EXT[mimeType];
+export function extensionFor(
+  _kind: InboundResourceKind,
+  mimeType: string | undefined,
+  head: Buffer,
+): string | undefined {
+  const normalized = mimeType?.split(';')[0]?.trim().toLowerCase();
+  if (normalized && MIME_TO_EXT[normalized]) return MIME_TO_EXT[normalized];
   if (
     head.length >= 12 &&
     head.subarray(0, 4).toString('latin1') === 'RIFF' &&
     head.subarray(8, 12).toString('latin1') === 'WEBP'
   ) {
     return 'webp';
+  }
+  if (
+    head.length >= 12 &&
+    head.subarray(0, 4).toString('latin1') === 'RIFF' &&
+    head.subarray(8, 12).toString('latin1') === 'WAVE'
+  ) {
+    return 'wav';
   }
   if (
     head.length >= 8 &&
@@ -130,6 +142,29 @@ export function imageExtension(mimeType: string | undefined, head: Buffer): stri
   }
   if (head.length >= 4 && head.subarray(0, 4).toString('latin1') === 'GIF8') {
     return 'gif';
+  }
+  if (head.length >= 4 && head.subarray(0, 4).toString('latin1') === 'OggS') {
+    return 'opus';
+  }
+  // MP4/MOV 家族：ISO BMFF 在偏移 4 处写 'ftyp'。
+  if (head.length >= 8 && head.subarray(4, 8).toString('latin1') === 'ftyp') {
+    return 'mp4';
+  }
+  if (head.length >= 2 && head[0] === 0x42 && head[1] === 0x4d) {
+    return 'bmp';
+  }
+  if (head.length >= 3 && head.subarray(0, 3).toString('latin1') === 'ID3') {
+    return 'mp3';
+  }
+  // MPEG audio frame sync（0xFFE0 掩码）+ 常见 layer/bitrate 组合。
+  if (head.length >= 2 && head[0] === 0xff && (head[1] & 0xfe) === 0xfa) {
+    return 'mp3';
+  }
+  if (head.length >= 5 && head.subarray(0, 5).toString('latin1') === '#!AMR') {
+    return 'amr';
+  }
+  if (head.length >= 4 && head.readUInt32BE(0) === 0x1a45dfa3) {
+    return 'mkv';
   }
   return undefined;
 }
@@ -164,19 +199,16 @@ function readFileHead(filePath: string, maxBytes = MAGIC_HEAD_BYTES): Buffer {
 
 /**
  * 生成落盘文件名：
- * - file 消息：保留原始文件名（已 sanitize）；无文件名兜底 file_<HHmmss>_<n>；
- * - image 消息：image_<HHmmss>_<n>.<ext>，ext 按 MIME。
+ * - image：`image_<HHmmss>_<n>.<ext>`（ext 按 MIME/魔数）；
+ * - 其它有原名的资源（file/video/audio/sticker）：保留原名（已 sanitize）；
+ * - 无原名的资源：`<kind>_<HHmmss>_<n>.<ext>`，ext 按 MIME/魔数
+ *   （旧实现落成无扩展名的 `file_HHmmss_n`，mp4/opus/gif 都不可识别）。
  */
 export function buildFileName(item: InboundMediaItem, index: number, receivedAt: Date): string {
-  if (item.type === 'file') {
-    const sanitized = item.fileName ? sanitizeFileName(item.fileName) : '';
-    return (
-      (sanitized ? limitFileNameLength(sanitized) : '') ||
-      `file_${timeStampHms(receivedAt)}_${index}`
-    );
-  }
-  const ext = imageExtension(item.mimeType, readFileHead(item.tempPath));
-  return `image_${timeStampHms(receivedAt)}_${index}${ext ? `.${ext}` : ''}`;
+  const original = item.fileName ? limitFileNameLength(sanitizeFileName(item.fileName)) : '';
+  if (item.kind !== 'image' && original) return original;
+  const ext = extensionFor(item.kind, item.mimeType, readFileHead(item.tempPath));
+  return `${item.kind}_${timeStampHms(receivedAt)}_${index}${ext ? `.${ext}` : ''}`;
 }
 
 /** 同名冲突自动加序号（name-1.ext、name-2.ext…），不覆盖已有文件。 */
@@ -192,32 +224,27 @@ export function uniqueTargetPath(dir: string, fileName: string): string {
   return candidate;
 }
 
-function formatFailure(f: InboundMediaFailure): string {
-  return f.fileName ? `${f.fileName}: ${f.reason}` : f.reason;
-}
-
-function batchKey(payload: InboundMediaPayload): string {
-  return `${payload.userId}:${payload.chatId}:${payload.replyToMessageId ?? ''}`;
-}
-
 export class InboundMediaHandler {
-  private readonly pending = new Map<string, PendingBatch>();
-  private readonly batchWindowMs: number;
+  constructor(private readonly deps: InboundMediaDeps) {}
 
-  constructor(private readonly deps: InboundMediaDeps) {
-    this.batchWindowMs = DEFAULT_BATCH_WINDOW_MS;
-  }
-
-  /** 落盘并安排/合并提示。 */
-  async handle(payload: InboundMediaPayload): Promise<void> {
+  /**
+   * 落盘并返回结果（不改时间语义、不发消息）。
+   * 失败/超限/无 cwd 一律进 `rejected`，由装配器决定回执文案。
+   */
+  async save(payload: InboundMediaPayload): Promise<MediaOutcome> {
     const cwd = this.resolveCwd(payload.userId);
     if (!cwd) {
       this.cleanupTemps(payload);
-      await this.deps.send(
-        { userId: payload.userId, chatId: payload.chatId, messageId: payload.messageId },
-        '⚠️ 未设置工作目录，无法保存文件。请先使用 /cd <path> 或 /ws use 设置',
-      );
-      return;
+      return {
+        attachments: [],
+        rejected: [
+          {
+            kind: 'file',
+            reason: '未设置工作目录，无法保存文件。请先使用 /cd <path> 或 /ws use 设置',
+            sourceMsgId: payload.messageId,
+          },
+        ],
+      };
     }
 
     const receivedAt = new Date();
@@ -227,66 +254,51 @@ export class InboundMediaHandler {
     } catch (err) {
       // 写盘失败必须明确提示；临时文件一并清理避免泄漏。
       this.cleanupTemps(payload);
-      await this.deps.send(
-        { userId: payload.userId, chatId: payload.chatId, messageId: payload.messageId },
-        `⚠️ 保存失败：无法创建目录 ${dir}：${(err as Error).message}`,
-      );
-      return;
+      return {
+        attachments: [],
+        rejected: [
+          {
+            kind: 'file',
+            reason: `保存失败：无法创建目录 ${dir}：${(err as Error).message}`,
+            sourceMsgId: payload.messageId,
+          },
+        ],
+      };
     }
 
-    const errors: string[] = payload.failures.map(formatFailure);
-    const saved: string[] = [];
+    const rejected = payload.failures.map((f) => ({
+      kind: f.kind ?? 'file',
+      reason: f.fileName ? `${f.fileName}: ${f.reason}` : f.reason,
+      sourceMsgId: payload.messageId,
+    }));
+    const attachments: InboundAttachment[] = [];
 
     for (let i = 0; i < payload.media.length; i += 1) {
       const item = payload.media[i];
       try {
         const target = uniqueTargetPath(dir, buildFileName(item, i + 1, receivedAt));
         atomicMoveFile(item.tempPath, target);
-        saved.push(target);
+        attachments.push({
+          path: target,
+          kind: item.kind,
+          sourceMsgId: payload.messageId,
+          originalName: item.fileName,
+          durationMs: item.durationMs,
+        });
       } catch (err) {
         silentlyUnlink(item.tempPath);
         const label = item.fileName
           ? sanitizeFileName(item.fileName) || item.fileName
           : `第 ${i + 1} 个`;
-        errors.push(`${label}: ${(err as Error).message}`);
+        rejected.push({
+          kind: item.kind,
+          reason: `${label}: ${(err as Error).message}`,
+          sourceMsgId: payload.messageId,
+        });
       }
     }
 
-    if (saved.length === 0) {
-      await this.deps.send(
-        { userId: payload.userId, chatId: payload.chatId, messageId: payload.messageId },
-        `⚠️ 保存失败：${errors.join('；') || '未知错误'}`,
-      );
-      return;
-    }
-
-    const key = batchKey(payload);
-    const existing = this.pending.get(key);
-    if (existing) {
-      existing.saved.push(...saved);
-      existing.errors.push(...errors);
-      clearTimeout(existing.timer);
-      existing.timer = setTimeout(() => void this.flush(key), this.batchWindowMs);
-      return;
-    }
-    const timer = setTimeout(() => void this.flush(key), this.batchWindowMs);
-    this.pending.set(key, { payload, saved, errors, timer });
-  }
-
-  /** 立即冲刷某用户的全部待合批提示（文本到达时调用）。 */
-  flushAll(userId: string, chatId: string): void {
-    for (const key of [...this.pending.keys()]) {
-      const batch = this.pending.get(key);
-      if (batch && batch.payload.userId === userId && batch.payload.chatId === chatId) {
-        void this.flush(key);
-      }
-    }
-  }
-
-  /** 冲刷全部待合批提示（/exit、/restart 干净退出前调用，避免丢最后一条提示）。 */
-  async flushAllPending(): Promise<void> {
-    const keys = [...this.pending.keys()];
-    await Promise.all(keys.map((key) => this.flush(key)));
+    return { attachments, rejected };
   }
 
   /**
@@ -320,35 +332,5 @@ export class InboundMediaHandler {
 
   private resolveCwd(userId: string): string | undefined {
     return this.deps.resolveCwd(userId);
-  }
-
-  private async flush(key: string): Promise<void> {
-    const batch = this.pending.get(key);
-    if (!batch) return;
-    this.pending.delete(key);
-    clearTimeout(batch.timer);
-
-    const lines = batch.saved.slice(0, MAX_PATHS_IN_NOTIFICATION).map((p) => `- ${p}`);
-    const overflow =
-      batch.saved.length > MAX_PATHS_IN_NOTIFICATION ? `\n… 等 ${batch.saved.length} 个文件` : '';
-    const failures = batch.errors.length > 0 ? `\n⚠️ ${batch.errors.join('；')}` : '';
-    // 提示带上保存目录：用户把整句转给 agent 即可定位，无需靠目录约定反查。
-    // 合批窗口跨分钟时可能落在两个目录，此时全部列出。
-    const dirs = [...new Set(batch.saved.map((p) => path.dirname(p)))];
-    const hint =
-      dirs.length === 1
-        ? `\n💡 你可以直接说：请处理 ${dirs[0]} 下的文件`
-        : `\n💡 你可以直接说：请处理以下目录下的文件：${dirs.join('、')}`;
-    const text =
-      `📎 已保存 ${batch.saved.length} 个文件：\n` + lines.join('\n') + overflow + failures + hint;
-
-    await this.deps.send(
-      {
-        userId: batch.payload.userId,
-        chatId: batch.payload.chatId,
-        messageId: batch.payload.messageId,
-      },
-      text,
-    );
   }
 }

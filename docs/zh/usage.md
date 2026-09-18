@@ -232,21 +232,29 @@ pid N），启动通知稍后送达…」后干净退出并释放单例锁；新
 
 名字不能包含路径分隔符、不能以 `.` 开头/以点或空格结尾，也不能是 Windows 保留设备名（`con`/`nul`/`com1` 等）；目标目录已存在时会拒绝并提示换名。
 
-### 入站图片/文件：自动落盘
+### 入站媒体：自动落盘并注入 prompt
 
-往飞书私聊发图片或文件，lark-remote 会自动下载并保存到**当前工作目录**的
-`.lark-remote-temp/<YYYYMMDDHHmm>/`（按分钟分子目录），然后回复一条
-「已保存 N 个文件」提示，提示里会带上保存目录的完整路径——把提示整段转给
-agent（或说「请处理刚才保存的文件」）即可，agent 用现有 Read/Bash 工具读本地
-文件，**runner 无需任何改造**。
+往飞书私聊发图片、文件、视频、语音或表情，lark-remote 会自动下载并保存到
+**当前工作目录**的 `.lark-remote-temp/<YYYYMMDDHHmm>/`（按分钟分子目录）。
+附件路径会自动写进 agent 的 prompt，agent 用现有 Read/Bash 工具读本地文件，
+**runner 无需任何改造**。
 
 - 文件消息保留原始文件名（自动 sanitize 防路径穿越）；图片消息按
-  `image_<HHmmss>_<n>.<ext>` 命名，扩展名按 MIME 推断；
-- 同名冲突自动加序号，不覆盖；单文件上限默认 50MB
-  （config.yaml `inboundMedia.maxFileSizeMb` 可调）；
+  `image_<HHmmss>_<n>.<ext>` 命名；视频、语音、表情保留原名，没有原名时按
+  MIME 类型或文件头推断扩展名（例如 `.mp4`、`.opus`）；
+- 同一分钟内的多条消息合并成一个回合。先发图再发文字，或先发文字再发图，
+  agent 收到的 prompt 相同，且同时包含文字与附件路径；
+- 发图时不再单独回复一条「已保存」提示：路径已经在 agent 的 prompt 里。
+  只发附件、不配文字时，lark-remote 不启动 agent，只回复「已保存 N 个文件」
+  并提示你说一句话即可开始处理；
+- 同名冲突自动加序号，不覆盖；单文件上限默认 100 MB
+  （config.yaml `inboundMedia.maxFileSizeMb` 可调）。飞书要求大于 100 MB 的文件
+  分片下载，本工具暂不支持分片，所以上限调得再高也保存不了更大的文件；
 - 未设置工作目录时会提示先 `/cd` 或 `/ws use`；
-- 连续发送的多张图片合批成一条保存提示（500ms 窗口内）；
-- **`.lark-remote-temp/` 建议加入项目的 `.gitignore`**：本工具不会自动清理
+- 收到卡片、位置、投票、日程等不支持的媒体消息时，lark-remote 只回复一条
+  「暂不支持」提示，不会把这些消息当成你的输入发给 agent；
+- 合并窗口为 700 ms。窗口内到达的文字与附件算同一个回合；
+- **`.lark-remote-temp/` 建议加入项目的 `.gitignore`**：lark-remote 不会自动清理
   或修改这些文件，避免临时文件被提交。
 
 config.yaml 可选配置（默认即可用）：
@@ -255,10 +263,10 @@ config.yaml 可选配置（默认即可用）：
 inboundMedia:
   enabled: true
   dirName: ".lark-remote-temp"
-  maxFileSizeMb: 50
+  maxFileSizeMb: 100
 ```
 
-`enabled: false` 时不会保存图片/文件，但会收到一条「已关闭」的提示（不静默）。
+`enabled: false` 时不会保存附件，但会收到一条「已关闭」的提示（不静默）。
 
 ### 快捷别名 `$name`
 
