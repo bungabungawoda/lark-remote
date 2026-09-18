@@ -52,7 +52,7 @@ const modelOptions = codexCfg.modelOptions();  // catalog 模式：活动目录 
 
 - provider 下拉 = 内置 `openai` + `[model_providers.*]`（对齐 codex
   `merge_configured_model_providers(built_in_model_providers, cfg.model_providers)`，
-  `core/src/config/mod.rs:3655`；`model_provider` 未声明时默认 `"openai"`，mod.rs:3659）；
+  `core/src/config/mod.rs`；`model_provider` 未声明时默认 `"openai"`）；
   `anthropic`/`amazon-bedrock`/`ollama`/`lmstudio` 等其余内置 provider 未显式配置
   section/凭据时不列出（当前单用户 API-key 场景）；
 - 模型下拉只列活动目录中的模型；

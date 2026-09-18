@@ -51,7 +51,7 @@ Therefore, in catalog mode, the card:
 
 - Provider dropdown = built-in `openai` + `[model_providers.*]` (aligned with codex
   `merge_configured_model_providers(built_in_model_providers, cfg.model_providers)`,
-  `core/src/config/mod.rs:3655`; when `model_provider` is undeclared, defaults to `"openai"`, mod.rs:3659);
+  `core/src/config/mod.rs`; when `model_provider` is undeclared, defaults to `"openai"`);
   `anthropic`/`amazon-bedrock`/`ollama`/`lmstudio` and other built-in providers are not listed without
   explicit section/credentials configuration (current single-user API-key scenario);
 - Model dropdown only lists models in the active catalog;
