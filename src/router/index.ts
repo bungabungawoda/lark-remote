@@ -27,6 +27,7 @@ import type {
 } from '../runner/index.js';
 import { getLogger } from '../logger/index.js';
 import type { CloneSession } from '../clone.js';
+import { stripPlaceholders } from '../inbound/placeholder.js';
 import { type SessionDisplayUsage, activeRunUsage, clampInt } from './utils.js';
 import {
   markdownDiv,
@@ -510,6 +511,11 @@ export class CommandRouter {
    * returns its pid. Injected from index.ts; /restart is unavailable without it.
    */
   private restartSpawner?: () => number;
+  /**
+   * 冲刷装配器窗口内未提交的入站 turn（/exit、/restart 干净退出前调用，
+   * 避免静默期窗口内的内容丢失）。index.ts 注入。
+   */
+  private flushInbound?: () => Promise<void>;
   private idleTimeoutMs: number;
   /** Dev mode flag: --dev means the bridge was started from source (bun src/index.ts). */
   private devMode: boolean;
@@ -624,16 +630,37 @@ export class CommandRouter {
   }
 
   /**
+   * 注入入站装配器的冲刷回调（/exit、/restart 干净退出前调用，
+   * 避免静默期窗口内未提交的 turn 丢失）。index.ts 在构造后接线。
+   */
+  setInboundFlusher(flush: () => Promise<void>): void {
+    this.flushInbound = flush;
+  }
+
+  /**
    * Route a message: if it starts with /, handle as command; if it starts with !, execute as bash; otherwise forward to Claude.
+   *
+   * 命令识别前置条件（2026-09-15 P0 修复）：
+   * 裸前缀判定会被结构占位符命中 —— SDK 把富文本里的图片渲染成 `![image](img_v3_…)`，
+   * 首字符恰好是 `!`，整段用户消息被当 shell 命令执行（`executeBash "[image](img_v3_…"`）。
+   * 因此命令前缀只在「调用方声明纯文本 + 剥离占位符后非空且无占位符 + 首字符是 / 或 !」
+   * 三条同时成立时生效，其余一律按文本转发。
    */
   async handle(
     message: string,
     ctx: CommandContext,
-    opts?: { cwdOverride?: string; binding?: AgentBinding },
+    opts?: { cwdOverride?: string; binding?: AgentBinding; allowCommandPrefix?: boolean },
   ): Promise<CommandResult | null> {
     const trimmed = message.trim();
-    const startsWithBang = trimmed.startsWith('!');
-    const startsWithSlash = trimmed.startsWith('/');
+    // 双保险：任何调用点都必须先剥离结构占位符，再判命令前缀
+    //（index.ts 传 allowCommandPrefix = rawContentType === 'text'，但那层不是唯一入口）。
+    const guard = stripPlaceholders(trimmed);
+    // 默认 true：order.exec 等既有内部调用点传的是用户已确认的指令文本，
+    // 且剥离后无占位符 —— 默认放行不改变它们的语义（见 command-guard.test.ts）。
+    const allowCommandPrefix = opts?.allowCommandPrefix ?? true;
+    const commandEligible = allowCommandPrefix && guard.kinds.length === 0 && guard.clean !== '';
+    const startsWithBang = commandEligible && guard.clean.startsWith('!');
+    const startsWithSlash = commandEligible && guard.clean.startsWith('/');
     getLogger().info(
       `[router] handle message="${message.slice(0, 50)}..." trimmed="${trimmed.slice(0, 50)}..." startsWithSlash=${startsWithSlash} startsWithBang=${startsWithBang}`,
     );
@@ -647,21 +674,21 @@ export class CommandRouter {
     }
 
     if (startsWithSlash) {
-      const result = await this.executeCommand(trimmed, ctx);
+      const result = await this.executeCommand(guard.clean, ctx);
       if (result) {
         await this.bridge.sendResult(result, ctx);
       }
       if (this.pendingExit) {
-        // 干净退出前冲刷待合批的媒体保存提示，避免 500ms 窗口内的提示丢失。
-        await this.bridge.flushAllMediaNotifications();
+        // 干净退出前冲刷装配器窗口内未提交的入站 turn，避免静默期窗口内的内容丢失。
+        await this.flushInbound?.();
         this.exitHandler();
       }
       return result;
     }
 
     // Handle bang commands (!command)
-    if (trimmed.startsWith('!')) {
-      const cmd = trimmed.slice(1).trim();
+    if (startsWithBang) {
+      const cmd = guard.clean.slice(1).trim();
       if (!cmd) {
         await this.bridge.sendResult({ text: '请输入要执行的命令，例如 !ls' }, ctx);
         return null;
@@ -673,7 +700,9 @@ export class CommandRouter {
     // Forward to Claude (P1-14: pass the enqueue-time workspace through so the
     // run uses the same cwd as the serial queue lane, even if /cd ran while
     // the message was queued)
-    await this.bridge.forwardToClaude(trimmed, ctx, opts);
+    // 剥离占位符后再转发：agent 只该看到用户文本（附图已转成 attachments 块，
+    // 那是装配器生成的协议块，stripPlaceholders 会原样保留）。
+    await this.bridge.forwardToClaude(guard.clean, ctx, opts);
     return null;
   }
 
@@ -837,7 +866,7 @@ export class CommandRouter {
           // 必须同样消费，否则点击 /restart 按钮 spawn 成功后旧进程不退出，
           // 新进程撞单例锁退出 → 重启两头落空（2026-08-01 红绿 anchor 锁定）。
           if (this.pendingExit) {
-            await this.bridge.flushAllMediaNotifications();
+            await this.flushInbound?.();
             this.exitHandler();
           }
           return;

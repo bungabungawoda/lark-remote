@@ -63,6 +63,17 @@ describe('loadConfig', () => {
     expect(config.defaultAgent).toBe('claude');
   });
 
+  it('inboundMedia defaults: enabled + .lark-remote-temp + 100MB 上限', () => {
+    // 100MB 是飞书侧不做 Range 分片时的实际可用上限（再大必失败 234037），
+    // 50MB 对视频偏小（2026-09-15 mp4 被当文本转发的事故）。
+    const config = loadConfig(writeConfig(VALID_CONFIG));
+    expect(config.inboundMedia).toEqual({
+      enabled: true,
+      dirName: '.lark-remote-temp',
+      maxFileSizeMb: 100,
+    });
+  });
+
   it('tolerates legacy output.show* keys in existing config files (stripped)', () => {
     const p = writeConfig(
       VALID_CONFIG +

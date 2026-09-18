@@ -57,9 +57,16 @@ export const DEFAULT_STOP_GRACE_MS = DEFAULTS.STOP_GRACE_MS;
 /** Codex app-server turn idle timeout default (minutes). */
 export const DEFAULT_TURN_IDLE_TIMEOUT_MINUTES = DEFAULTS.TURN_IDLE_TIMEOUT_MINUTES;
 
-/** 入站媒体默认配置（schema 默认与 connector 兜底共用，避免双源漂移）。 */
+/**
+ * 入站媒体默认配置（schema 默认与 connector 兜底共用，避免双源漂移）。
+ *
+ * 单文件上限默认 100MB：50MB 对视频偏小（2026-09-15 事故就是 mp4 被丢弃）。
+ * 注意飞书侧 `type=file` 超过 100MB 必须用 Range 分片下载，而 SDK 的
+ * `downloadResourceToFile` 不分片（必报 234037），所以 100 是实际可用上限
+ * （inbound-message-matrix.md §4.4）。
+ */
 export const DEFAULT_INBOUND_MEDIA_DIR_NAME = '.lark-remote-temp';
-export const DEFAULT_INBOUND_MEDIA_MAX_SIZE_MB = 50;
+export const DEFAULT_INBOUND_MEDIA_MAX_SIZE_MB = 100;
 
 /** 模型 ID → alias 映射。 */
 export const MODEL_ID_TO_ALIAS: Record<string, string> = {

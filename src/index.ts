@@ -53,6 +53,9 @@ import { startSleepBlocker } from './platform/sleep-blocker.js';
 import { checkLatestVersion, isNewer, runInstallLatest, formatUpdateHint } from './update/index.js';
 import { classifyRejection } from './error-classification.js';
 import { WorkspaceStore } from './workspace/index.js';
+import { InboundTurnAssembler } from './inbound/turn-assembler.js';
+import { stripPlaceholders } from './inbound/placeholder.js';
+import type { MediaOutcome } from './inbound/turn.js';
 import { buildSessionHistoryCard } from './router/card-helpers.js';
 import { newSessionButton, resumeCompactButton, agentDisplayName } from './card/card-shared.js';
 import path from 'node:path';
@@ -404,9 +407,52 @@ function setupMessageHandlers(
   config: AppConfig,
   cloneSession: CloneSession,
 ): void {
-  // 入站媒体（图片/文件）：先认证后下载（P1 review 修复）。
+  // 入站统一装配器（2026-09-15）：图/文任意顺序 → 同一个 turn、同一个 prompt，
+  // 附件路径统一注入 prompt；无文本纯附件只回执（决策 2）。
+  const assembler = new InboundTurnAssembler({
+    onCommit: (turn, prompt) => {
+      // 入队时刻（T0）快照 workspace + agent/session 绑定，语义与旧路径一致
+      // （排队期间 /cd、/config 不再导致语义漂移）。
+      const messageId = turn.messageIds[turn.messageIds.length - 1] ?? '';
+      const ctx = { userId: turn.userId, chatId: turn.chatId, messageId };
+      let workspace = sessionStore.getCwd(turn.userId) ?? '';
+      if (!workspace && workspaceStore) {
+        const workspaces = workspaceStore.list();
+        if (workspaces.length > 0) workspace = workspaces[0].path;
+      }
+      const binding = bridge.currentBinding(turn.userId);
+      bridge.enqueue(
+        workspace,
+        async () => {
+          // allowCommandPrefix: false —— prompt 已剥离占位符，绝不再做命令分发。
+          await router.handle(prompt, ctx, {
+            cwdOverride: workspace,
+            binding,
+            allowCommandPrefix: false,
+          });
+        },
+        {
+          taskMeta: {
+            userId: turn.userId,
+            chatId: turn.chatId,
+            messageId,
+            messagePreview: prompt.slice(0, 3000),
+            binding,
+          },
+        },
+      );
+    },
+    onReceipt: async (ctx, text) => {
+      await bridge.sendResult({ text }, ctx);
+    },
+  });
+  router.setInboundFlusher(() => assembler.flushAll('flush'));
+
+  // 入站媒体（图片/文件/视频/语音/表情）：先认证后下载（P1 review 修复）。
   // connector 只上报"媒体到达"，这里先过 owner + enabled 闸门，通过后才
   // 下载——未认证/关闭配置时不会发生任何网络下载或内存/磁盘占用。
+  // 下载是异步的：立刻把在途 promise 交给装配器（`kind: 'media'`），
+  // 保证「先图后文」不会先提交一个只含文本的 turn。
   connector.setInboundMediaDetectedHandler((msg) => {
     if (!binder.isOwner(msg.userId)) {
       logger.warn(`[media] rejected inbound media from non-owner ${msg.userId}`);
@@ -416,38 +462,45 @@ function setupMessageHandlers(
     // 启动时捕获的 config 参数会过期（P2 review 修复）。
     if (!router.config.inboundMedia.enabled) {
       // 不静默（P3 review）：关闭时给 owner 明确反馈，避免发图后无任何反应。
-      // 不下载、不落盘，只回一条说明。
-      void bridge
-        .sendResult(
-          {
-            text:
-              '⚠️ 入站媒体保存已关闭（inboundMedia.enabled: false），未保存文件。' +
-              '如需自动保存图片/文件，请开启后重试',
-          },
-          {
-            userId: msg.userId,
-            chatId: msg.chatId,
-            messageId: msg.messageId,
-          },
-        )
-        .catch((err: unknown) => logger.error('[media] disabled feedback send failed:', err));
+      // 不下载、不落盘，只进 rejected（随 turn 回执一起发出）。
+      assembler.ingest({
+        kind: 'rejected',
+        userId: msg.userId,
+        chatId: msg.chatId,
+        messageId: msg.messageId,
+        replyToMessageId: msg.replyToMessageId,
+        rawContentType: msg.rawContentType,
+        rejectedKind: 'file',
+        reason:
+          '入站媒体保存已关闭（inboundMedia.enabled: false），未保存文件。' +
+          '如需自动保存图片/文件，请开启后重试',
+      });
       return;
     }
-    void (async () => {
+    const outcome = (async (): Promise<MediaOutcome> => {
       const payload = await connector.downloadInboundMedia(msg, {
         maxFileSizeMb: router.config.inboundMedia.maxFileSizeMb,
       });
       try {
-        await bridge.onInboundMedia(payload);
+        return await bridge.saveInboundMedia(payload);
       } catch (err) {
-        // handle() 的正常路径会清理临时文件；这里兜底 handle 进入 mkdir
+        // save() 的正常路径会清理临时文件；这里兜底 save 进入 mkdir
         // try 之前意外抛错的情况，避免 os.tmpdir 残留。
         for (const item of payload.media) {
           silentlyUnlink(item.tempPath);
         }
         throw err;
       }
-    })().catch((err: unknown) => logger.error('[media] inbound media download/save failed:', err));
+    })();
+    assembler.ingest({
+      kind: 'media',
+      userId: msg.userId,
+      chatId: msg.chatId,
+      messageId: msg.messageId,
+      replyToMessageId: msg.replyToMessageId,
+      rawContentType: msg.rawContentType,
+      outcome,
+    });
   });
 
   connector.setMessageHandler((msg) => {
@@ -503,11 +556,7 @@ function setupMessageHandlers(
     }
 
     // decision.kind === 'owner'：正常处理（不再每条覆盖 startup-contact）
-    logger.info(`message from ${msg.userId}: ${msg.content.slice(0, 100)}`);
-
-    // 文本到达先冲刷待合批的媒体保存提示（先图后文字时文字到达
-    // 先冲刷批次，避免合批提示被后续消息淹没/丢图）。
-    bridge.flushMediaNotifications(msg.userId, msg.chatId);
+    logger.info(`message from ${msg.userId} (${msg.rawContentType}): ${msg.content.slice(0, 100)}`);
 
     // Add Typing reaction to indicate "still alive"
     void connector.addReaction(msg.messageId, 'Typing');
@@ -549,77 +598,48 @@ function setupMessageHandlers(
       })().catch((err: unknown) => logger.error('[control] /stop failed:', err));
       return;
     }
-    if (content.trim().startsWith('/')) {
-      void router
-        .handle(content, {
-          userId: msg.userId,
-          chatId: msg.chatId,
-          messageId: msg.messageId,
-        })
-        .catch((err: unknown) => logger.error('[control] slash command failed:', err));
-      return;
+    // 先清洗，后判语义（§5.6）：结构占位符永远不能触发命令分发。
+    // `![image](img_v3_…)` 的首字符恰好是 `!` —— 2026-09-15 事故就是这么进 shell 的。
+    const stripped = stripPlaceholders(content);
+    if (stripped.unknownTags.length > 0) {
+      logger.warn(
+        `[inbound] unknown placeholder tags stripped: ${stripped.unknownTags.join(', ')} ` +
+          `(msg_type=${msg.rawContentType})`,
+      );
     }
-    // `!` bash commands bypass the serial queue: they don't start claude and
-    // don't touch session state, so they must run in parallel with claude runs
-    // in the same workspace (design.md §9.6: the queue exists to prevent
-    // concurrent claude runs, not to serialize bash). router.handle dispatches
-    // `!` to bridge.executeBash, which tracks the run independently.
-    if (content.trim().startsWith('!')) {
-      void router
-        .handle(content, {
-          userId: msg.userId,
-          chatId: msg.chatId,
-          messageId: msg.messageId,
-        })
-        .catch((err: unknown) => logger.error('[control] bang command failed:', err));
-      return;
-    }
-    // Compute workspace with same fallback logic as executeBash:
-    // 1. sessionStore cwd → 2. first saved workspace
-    let workspace = sessionStore.getCwd(msg.userId) ?? '';
-    if (!workspace && workspaceStore) {
-      const workspaces = workspaceStore.list();
-      if (workspaces.length > 0) {
-        // NOTE: fallback uses insertion order, not sort preference — by design
-        // (cwd fallback stays insertion-order for now)
-        workspace = workspaces[0].path;
-      }
-    }
+    const commandEligible =
+      msg.rawContentType === 'text' && stripped.kinds.length === 0 && stripped.clean !== '';
 
-    // Step4/D4: 入队时刻（T0）快照 agent+session，随任务闭包带到 T1 执行时刻，
-    // 避免排队期间 /new、/config 改写 live 状态导致语义漂移（方案 D4）。唯一
-    // 捕获点 Bridge.currentBinding。
-    const binding = bridge.currentBinding(msg.userId);
-
-    bridge.enqueue(
-      workspace,
-      async () => {
-        await router.handle(
-          content,
+    // 命令消息旁路装配窗口：其它 /命令 立即执行，窗口内已装配的内容
+    // 作为独立提交冲刷（/stop 已在上面处理，立即生效不等待）。
+    if (commandEligible && (stripped.clean.startsWith('/') || stripped.clean.startsWith('!'))) {
+      void assembler.flush(msg.userId, msg.chatId, 'flush');
+      void router
+        .handle(
+          stripped.clean,
           {
             userId: msg.userId,
             chatId: msg.chatId,
             messageId: msg.messageId,
           },
-          // P1-14: lane 与执行 cwd 同源 —— 入队时捕获的 workspace 显式传给
-          // forwardToClaude，排队期间 /cd 不再导致旧 lane 消息被 busy-drop。
-          // D4/Step4: binding 同源 —— 入队时快照的 agent+session 一并透传，
-          // 排队期间 /new、/config 不再导致旧 lane 消息语义漂移。
-          { cwdOverride: workspace, binding },
-        );
-      },
-      {
-        taskMeta: {
-          userId: msg.userId,
-          chatId: msg.chatId,
-          messageId: msg.messageId,
-          messagePreview: content.slice(0, 3000),
-          // D3/Step4: binding 随 taskMeta 存进 QueuedTask，供替换闭包
-          // （queue.edit/queue.immediate）复用，不重新快照。
-          binding,
-        },
-      },
-    );
+          { allowCommandPrefix: true },
+        )
+        .catch((err: unknown) => logger.error('[control] command failed:', err));
+      return;
+    }
+
+    // 普通消息：进装配器，等静默期窗口到期（下载落定）后合并成一个 turn。
+    assembler.ingest({
+      kind: 'text',
+      userId: msg.userId,
+      chatId: msg.chatId,
+      messageId: msg.messageId,
+      replyToMessageId: msg.replyToMessageId,
+      rawContentType: msg.rawContentType,
+      text: stripped.clean,
+      placeholders: stripped.kinds,
+      unknownTags: stripped.unknownTags,
+    });
   });
 
   connector.setCardActionHandler(async (action) => {

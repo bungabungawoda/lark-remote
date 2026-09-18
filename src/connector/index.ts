@@ -10,6 +10,7 @@ import type { AppConfig } from '../config/index.js';
 import { getLogger } from '../logger/index.js';
 import { MAX_FILE_UPLOAD_SIZE } from './file-limits.js';
 import { DEFAULT_INBOUND_MEDIA_MAX_SIZE_MB } from '../config/index.js';
+import { stripPlaceholders } from '../inbound/placeholder.js';
 import { sleep } from '../common/sleep.js';
 import { isTransientTransportError } from '../error-classification.js';
 import axios from 'axios';
@@ -56,11 +57,44 @@ const noKeepAliveAgent = new https.Agent({ keepAlive: false });
  */
 export const DEDUP_TTL_MS = 300;
 
+/**
+ * SDK converter 注册表支持的 msg_type（@larksuite/channel 0.3.0 实测）。
+ * 带资源但类型不在其中 = 未来新增类型：照常下载 + warn（default-deny）。
+ */
+const KNOWN_RESOURCE_CONTENT_TYPES = new Set([
+  'text',
+  'post',
+  'image',
+  'file',
+  'audio',
+  'video',
+  'media',
+  'sticker',
+  'interactive',
+  'merge_forward',
+  'share_chat',
+  'share_user',
+  'location',
+  'system',
+  'vote',
+  'todo',
+  'calendar',
+  'general_calendar',
+  'share_calendar_event',
+  'folder',
+  'hongbao',
+  'video_chat',
+]);
+
 interface FeishuMessage {
   userId: string;
   messageId: string;
   chatId: string;
   content: string;
+  /** 飞书原始 msg_type（`text` / `image` / `post` / `merge_forward` …）。 */
+  rawContentType: string;
+  /** 引用消息 id（回复某条消息时存在）。 */
+  replyToMessageId?: string;
 }
 
 type MessageHandler = (msg: FeishuMessage) => void;
@@ -71,12 +105,19 @@ type MessageHandler = (msg: FeishuMessage) => void;
  * （bridge 负责把这些失败提示回用户）。
  */
 export interface InboundMediaItem {
-  /** 资源类型：image 消息按 MIME 生成 image_<HHmmss>_<n>.<ext>，file 保留文件名。 */
+  /**
+   * 下载 type（飞书 `im.v1.messageResource.get` 只认 image/file 两个值，
+   * 见 inbound-message-matrix.md §4 —— 不要扩展成 video/audio/sticker）。
+   */
   type: 'image' | 'file';
+  /** 资源种类（image/file/video/audio/sticker）：命名/展示语义，与下载 type 分离。 */
+  kind: InboundResourceKind;
   /** 原始文件名（file 消息有；image 消息无，由 bridge 按 MIME 生成）。 */
   fileName?: string;
   /** 服务端 content-type（参数已剥离；可能缺失，bridge 有兜底）。 */
   mimeType?: string;
+  /** 视频/语音时长（毫秒），透传给 prompt 附件块。 */
+  durationMs?: number;
   /**
    * 下载内容所在临时文件（流式落盘，避免大文件全量进堆内存）。
    * 由 bridge 移动到最终位置；任何未移动路径都必须清理该文件。
@@ -85,6 +126,8 @@ export interface InboundMediaItem {
 }
 
 export interface InboundMediaFailure {
+  /** 资源种类（排障/回执分组用）。 */
+  kind?: InboundResourceKind;
   fileName?: string;
   reason: string;
 }
@@ -101,6 +144,16 @@ export interface InboundMediaPayload {
 
 /** 单资源下载超时（毫秒）：SDK 无内置超时，挂起会导致提示丢失 + 残留临时文件。 */
 const RESOURCE_DOWNLOAD_TIMEOUT_MS = 5 * 60 * 1000;
+
+/**
+ * 合并转发（merge_forward）的聚合资源缺少 `message_id`，飞书要求 key 与 message_id
+ * 同属一条消息（234003），且合并转发的资源下载本身被列为不支持（234043）。
+ * 自建子消息遍历需要真机验证（inbound-message-matrix.md §5 Step 3），
+ * 在验证完成前下载必然失败的场景给用户可执行的替代方案。
+ */
+const MERGE_FORWARD_HINT: Record<string, string> = {
+  merge_forward: '（合并转发里的附件暂不支持保存，可逐条转发或直接发送文件）',
+};
 
 function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
   return new Promise<T>((resolve, reject) => {
@@ -122,13 +175,26 @@ function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise
  * 媒体消息到达的轻量描述（未下载）：供上层先做 owner/配置闸门，
  * 通过后再调 downloadInboundMedia —— 下载发生在认证之后（P1 review 修复）。
  */
+/** SDK 给出的可下载资源种类（`resources[].type`）。 */
+export type InboundResourceKind = 'image' | 'file' | 'audio' | 'video' | 'sticker';
+
 export interface InboundMediaMessage {
   userId: string;
   chatId: string;
   messageId: string;
+  /** 飞书原始 msg_type（未识别类型时用于 warn，default-deny 而非 default-text）。 */
+  rawContentType: string;
   /** 引用上下文：不同 replyTo 强制拆批。 */
   replyToMessageId?: string;
-  resources: Array<{ type: 'image' | 'file'; fileKey: string; fileName?: string }>;
+  resources: Array<{
+    /** 飞书下载接口 type（只有 image/file 两值）。 */
+    type: 'image' | 'file';
+    /** 资源种类（透传 SDK 的 `resources[].type`）。 */
+    kind: InboundResourceKind;
+    fileKey: string;
+    fileName?: string;
+    durationMs?: number;
+  }>;
 }
 
 type InboundMediaDetectedHandler = (msg: InboundMediaMessage) => void | Promise<void>;
@@ -338,24 +404,27 @@ export class FeishuConnector {
     this.channel.on('message', (msg: NormalizedMessage) => {
       if (msg.chatType !== 'p2p') return;
 
-      // 入站图片/文件：不转发文本内容（图片消息的 content 只是占位文案），
-      // 而是下载资源后交给 bridge 落盘（runner 零改动）。
-      if (
-        (msg.rawContentType === 'image' || msg.rawContentType === 'file') &&
-        msg.resources.length > 0
-      ) {
-        // 只上报"媒体到达"，不在此下载：owner/配置闸门在 index.ts 里先执行，
+      // 判据是「是否携带可下载资源」（`msg.resources`），不是 `msg_type` 白名单：
+      // SDK 只为 image/file/audio/video/media/sticker 五类产出非空 resources，
+      // 枚举 msg_type 必然漏（2026-09-15 事故：mp4 被当文本转发给 agent）。
+      // 一条消息可以**同时**产出资源事件与文本事件（post 既有文字又有图），
+      // 由 B3 的装配器合并成同一个 turn。
+      const hasResources = msg.resources.length > 0;
+      if (hasResources) {
+        // 只上报「媒体到达」，不在此下载：owner/配置闸门在 index.ts 里先执行，
         // 通过后才调用 downloadInboundMedia（避免未认证大文件下载打爆内存）。
         void this.handleInboundMediaDetected(msg);
-        return;
       }
-
-      this.onMessage?.({
-        userId: msg.senderId,
-        messageId: msg.messageId,
-        chatId: msg.chatId,
-        content: msg.content,
-      });
+      if (!hasResources || stripPlaceholders(msg.content).clean !== '') {
+        this.onMessage?.({
+          userId: msg.senderId,
+          messageId: msg.messageId,
+          chatId: msg.chatId,
+          content: msg.content,
+          rawContentType: msg.rawContentType,
+          replyToMessageId: msg.replyToMessageId,
+        });
+      }
     });
 
     this.channel.on('cardAction', (action: CardActionEvent) => {
@@ -404,16 +473,28 @@ export class FeishuConnector {
       getLogger().warn('[feishu] inbound media received but no detected handler registered');
       return;
     }
+    // default-deny 但可见：未识别类型（未来 SDK 新增）照常下载，但必须留痕，
+    // 否则会重演「静默降级成占位符」的事故。
+    if (!KNOWN_RESOURCE_CONTENT_TYPES.has(msg.rawContentType)) {
+      getLogger().warn(
+        `[feishu] inbound media with unrecognized msg_type="${msg.rawContentType}" ` +
+          `resources=${msg.resources.length}, downloading anyway`,
+      );
+    }
     try {
       await this.onInboundMediaDetected({
         userId: msg.senderId,
         chatId: msg.chatId,
         messageId: msg.messageId,
+        rawContentType: msg.rawContentType,
         replyToMessageId: msg.replyToMessageId,
         resources: msg.resources.map((r) => ({
+          // 下载 type 只有 image/file 两个合法值（传 video/audio/sticker 会 400）。
           type: r.type === 'image' ? ('image' as const) : ('file' as const),
+          kind: r.type,
           fileKey: r.fileKey,
           fileName: r.fileName,
+          durationMs: r.durationMs,
         })),
       });
     } catch (err) {
@@ -447,16 +528,24 @@ export class FeishuConnector {
         );
         if (bytesWritten > maxBytes) {
           silentlyUnlink(tmpPath);
+          const limitMb = maxBytes / (1024 * 1024);
           failures.push({
+            kind: res.kind,
             fileName: res.fileName,
-            reason: `超过 ${maxBytes / (1024 * 1024)}MB 大小限制`,
+            // 飞书侧 >100MB 必须 Range 分片（SDK 不分片），到上限就是下不动：
+            // 提示写清楚，避免用户以为"再放大上限就能存"（matrix §4.4/§2 #11）。
+            reason:
+              `超过 ${limitMb}MB 大小限制` +
+              (limitMb >= 100 ? '（飞书 >100MB 的文件需分片下载，暂不支持）' : ''),
           });
           continue;
         }
         media.push({
           type: res.type,
+          kind: res.kind,
           fileName: res.fileName,
           mimeType: contentType,
+          durationMs: res.durationMs,
           tempPath: tmpPath,
         });
       } catch (err) {
@@ -465,7 +554,11 @@ export class FeishuConnector {
           `[feishu] downloadResource failed fileKey=${res.fileKey} type=${res.type}:`,
           (err as Error).message,
         );
-        failures.push({ fileName: res.fileName, reason: `下载失败: ${(err as Error).message}` });
+        failures.push({
+          kind: res.kind,
+          fileName: res.fileName,
+          reason: `下载失败: ${(err as Error).message}${MERGE_FORWARD_HINT[msg.rawContentType] ?? ''}`,
+        });
       }
     }
 
