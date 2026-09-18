@@ -37,7 +37,7 @@ SDK 的 `convertPost` 把 `img` 元素渲染为 `![image](${image_key})`，与�
 ### 1.2 关键事实：图**从未下载**
 
 对该日志 `grep -cE "\[media\]|inbound media|downloadResource"` = **0**。
-因为 `post` 不在判据白名单 `{image, file}` 里（`src/connector/index.ts:344-352`），
+因为 `post` 不在判据白名单 `{image, file}` 里（修复前 `src/connector/index.ts` 的入站分派分支），
 消息整体走了文本通道，`resources` 里的 `image` 被直接丢弃。
 
 ### 1.3 表现差异的**真正原因**：`!` 被当成 bash 命令
@@ -49,15 +49,15 @@ SDK 的 `convertPost` 把 `img` 元素渲染为 `![image](${image_key})`，与�
 22:09:34.796  [bash-runner] process exited with code=2
 ```
 
-`src/router/index.ts:634-671` 的判据是**裸文本前缀**：
+修复前 `src/router/index.ts` 的 `CommandRouter.handle` 判据是**裸文本前缀**：
 
 ```ts
 const trimmed = message.trim();
-const startsWithBang = trimmed.startsWith('!');   // :635
+const startsWithBang = trimmed.startsWith('!');
 …
-if (trimmed.startsWith('!')) {                    // :663
+if (trimmed.startsWith('!')) {
   const cmd = trimmed.slice(1).trim();
-  await this.bridge.executeBash(cmd, ctx);        // :669  → 整段用户消息进了 bash
+  await this.bridge.executeBash(cmd, ctx);   // → 整段用户消息进了 bash
 }
 ```
 
@@ -77,9 +77,9 @@ if (trimmed.startsWith('!')) {                    // :663
 
 | # | 根因 | 位置 | 后果 |
 |---|---|---|---|
-| R1 | 判据是**消息类型白名单**，而 SDK 已给出"是否携带资源"（`resources`） | `connector/index.ts:344-352` | video/audio/sticker/post/merge_forward 全漏 |
-| R2 | 没有"用户意图装配"层：资源事件与文本事件各自触发动作、互不知情 | `index.ts:410-451`（媒体） vs `:505-510`+`router`（文本） | 附件路径永远进不了 agent prompt |
-| R3 | 命令识别只看**裸文本前缀**，且发生在任何语义清洗之前 | `router/index.ts:634-671` | 富文本/占位符被当命令执行（P0） |
+| R1 | 判据是**消息类型白名单**，而 SDK 已给出"是否携带资源"（`resources`） | 修复前 `connector/index.ts` 白名单分支 | video/audio/sticker/post/merge_forward 全漏 |
+| R2 | 没有"用户意图装配"层：资源事件与文本事件各自触发动作、互不知情 | 修复前 `index.ts`（媒体闸门） vs `index.ts`+`router`（文本通道） | 附件路径永远进不了 agent prompt |
+| R3 | 命令识别只看**裸文本前缀**，且发生在任何语义清洗之前 | 修复前 `router/index.ts` 的 `handle` | 富文本/占位符被当命令执行（P0） |
 
 ## 3. 设计原则
 
@@ -273,12 +273,12 @@ InboundTurnAssembler               ← 新增层（§7）
 
 | 位置 | 改动 |
 |---|---|
-| `src/connector/index.ts:339-360` | 去掉 `{image,file}` 白名单；统一上报事件（文本/资源/占位），只保留 owner 闸门的调用时机语义 |
-| `src/index.ts:410-451` | 媒体闸门 → 改为向 assembler 投递资源事件；owner/enabled 判定保留 |
-| `src/index.ts:505-510` | 文本投递 assembler；`flushMediaNotifications` 由窗口机制取代 |
-| `src/router/index.ts:634-671` | 命令识别加前置条件（§5.6），`handle` 入参显式化 |
+| `src/connector/index.ts`（入站分派分支） | 去掉 `{image,file}` 白名单；统一上报事件（文本/资源/占位），只保留 owner 闸门的调用时机语义 |
+| `src/index.ts`（`setupMessageHandlers` 媒体闸门） | 媒体闸门 → 改为向 assembler 投递资源事件；owner/enabled 判定保留 |
+| `src/index.ts`（`setupMessageHandlers` 文本投递） | 文本投递 assembler；`flushMediaNotifications` 由窗口机制取代 |
+| `src/router/index.ts`（`CommandRouter.handle`） | 命令识别加前置条件（§5.6），`handle` 入参显式化 |
 | `src/bridge/inbound-media.ts` | 保留下载/落盘；`kind` 与命名规则扩展（§5.3）；提示卡降级为"回执来源之一" |
-| `src/bridge/index.ts:920-932` | `onInboundMedia` 改为向 assembler 回传落盘结果；`forwardToClaude` 接受组装后的 prompt |
+| `src/bridge/index.ts`（`saveInboundMedia`） | `saveInboundMedia` 向 assembler 回传落盘结果；`forwardToClaude` 接受组装后的 prompt |
 
 **不改**：runner 契约、卡片渲染、命令实现、session 管理。
 
