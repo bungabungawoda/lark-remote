@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.1] - 2026-09-18
+
+### 新增
+
+- **入站消息统一处理（图 + 文合并为一个回合）**：图片、文件、视频、语音、表情、富文本内嵌图一律自动保存到当前工作目录（`.lark-remote-temp/<时间目录>/`），附件绝对路径**自动写进 agent 的提示词**，不再需要你把"文件已保存"提示卡整段转述给 agent。同一静默期窗口（700 毫秒）内到达的文字与附件合并成一个回合：先发图再发文字、先发文字再发图，agent 拿到的内容完全相同
+- **附件按种类命名**：视频/语音/表情保留原文件名；无原名时按 MIME 类型或文件头自动补扩展名（`.mp4` / `.opus` / `.gif` 等）
+- **不支持消息类型明确回执**：卡片、位置、投票、日程、合并转发等拿不到内容的消息，回一条"暂不支持"提示，不再把占位符静默塞给 agent；纯附件无文字时只回执"已保存 N 个文件" + 引导语，不自动起回合（避免误耗 token）
+- **`--advance-help` 高级配置参考**：命令行可输出高级配置项说明
+- **OpenCode 配置卡支持回合空闲超时**：`turnIdleTimeoutMinutes`（默认 30 分钟，0 关闭），回合长时间无输出自动结束
+
+### 修复
+
+- **P0：以图片占位符开头的消息被误当 shell 命令执行**：飞书会把"图片 + 文字"合成富文本，图片被渲染成 `![image](…)` 后首字符恰好是 `!`，命中 `!` 命令判定，整段用户消息被送进 shell 执行。现在命令识别有前置条件：仅当消息是纯文本、剥离结构占位符后仍以 `/` 或 `!` 开头时才按命令处理，其余一律按文本转发
+
+### 变更
+
+- `inboundMedia.maxFileSizeMb` 默认值 50 → **100 MB**（更大的飞书文件需要分片下载，SDK 不支持，超限提示里已写明）
+
 ## [0.4.0] - 2026-09-15
 
 ### 新增
