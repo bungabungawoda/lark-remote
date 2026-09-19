@@ -229,7 +229,7 @@ channel.on('cardAction', async (action) => {
 - 交互组件（button/select_static/input）**直接挂 body.elements**，禁止包 `action` 容器
 - 回调统一用 `behaviors:[{type:"callback",value:{cmd,key}}]`
 - 流式输出不需要 tabs，内容直接 inline 排列
-- SDK 0.3.0+ 从 `action.action.value` 读 payload，select 项在 `action.option`、input 值在 `action.formValue`（input 提交图标的 `input_value` 需 `includeRawEvent: true` 从 `action.raw.action.input_value` 读）
+- SDK 0.3.0+ 从 `action.action.value` 读 payload，select 项在 `action.option`、input 值在 `action.formValue`（input 提交回传的 `input_value` 需 `includeRawEvent: true` 从 `action.raw.action.input_value` 读）
 
 ### 6.4 `/ws` 卡片
 
