@@ -245,9 +245,9 @@ function renderPlanApproval(approval: ApprovalView, expired?: boolean, runId?: s
 }
 
 /**
- * 计划修改意见输入行：输入后点击右侧 ✓ 提交图标，input_value 经 connector
- * raw 事件回传（CardKit input 的 input_value 会被 SDK normalizer 丢弃，
- * 必须走 includeRawEvent 路径，同 answerNote）。
+ * 计划修改意见输入行：输入后提交（移动端键盘回车/完成键，桌面端右侧提交图标），
+ * input_value 经 connector raw 事件回传（CardKit input 的 input_value 会被
+ * SDK normalizer 丢弃，必须走 includeRawEvent 路径，同 answerNote）。
  */
 function renderPlanFeedbackInput(requestId: number | string, runId?: string): object {
   return {
@@ -519,8 +519,9 @@ function renderQuestionApproval(
       });
     }
 
-    // review P3-4：单选问题提供自定义答案（Other）输入——输入文本后点击
-    // 输入框右侧 ✓ 提交图标，input_value 经 connector raw 事件回传。
+    // review P3-4：单选问题提供自定义答案（Other）输入——输入文本后提交
+    // （移动端键盘回车/完成键，桌面端输入框右侧提交图标），input_value 经
+    // connector raw 事件回传。
     // 显隐按 isOther !== false：Kimi form 会丢弃非声明选项值，翻译时置
     // isOther=false 隐藏输入；Claude 未设置该字段默认显示（行为不变）。
     if (!q.multiSelect && q.isOther !== false) {
@@ -647,9 +648,9 @@ function renderOptionRow(
 }
 
 /**
- * 文本输入行（Other 输入与自由文本题共用）：输入后点击右侧 ✓ 提交图标，
- * input_value 经 connector raw 事件回传（CardKit input 的 input_value 会被
- * SDK normalizer 丢弃，必须走 includeRawEvent 路径）。
+ * 文本输入行（Other 输入与自由文本题共用）：输入后提交（移动端键盘回车/完成键，
+ * 桌面端右侧提交图标），input_value 经 connector raw 事件回传（CardKit input 的
+ * input_value 会被 SDK normalizer 丢弃，必须走 includeRawEvent 路径）。
  */
 function renderAnswerInput(
   requestId: number | string,
