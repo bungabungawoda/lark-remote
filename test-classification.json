@@ -79,7 +79,8 @@
     "tests/anchor/misc/order-text-edit-validation.test.ts",
     "tests/card/bash-command.test.ts",
     "tests/misc/multi-agent-commands.test.ts",
-    "tests/anchor/approval-expiry/approval-expiry-user-feedback.test.ts"
+    "tests/anchor/approval-expiry/approval-expiry-user-feedback.test.ts",
+    "src/router/ws-ls-filter.test.ts"
   ],
   "infra-session": [
     "src/session/*.test.ts",
