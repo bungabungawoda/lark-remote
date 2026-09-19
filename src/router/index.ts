@@ -1244,7 +1244,7 @@ export class CommandRouter {
     }
 
     // Build edit card
-    // CardKit 2.0 input 自带 ✓ 提交图标，点击时输入值走 raw.action.input_value
+    // CardKit 2.0 input 提交（回车/完成键）时输入值走 raw.action.input_value
     // （SDK normalizer 丢弃，需 connector includeRawEvent: true + index.ts 从 raw 提取）。
     // 用 column_set + input + behaviors，不用 form 容器（form 触发 300123 无 submit button /
     // 200621 嵌套 column，submit-typed button 也被 CardKit 2.0 拒绝 HTTP 400）。
@@ -1764,7 +1764,7 @@ export class CommandRouter {
   }
 
   /**
-   * Handle order.aliasEdit: 展示别名编辑卡（input + ✓ 提交图标）。
+   * Handle order.aliasEdit: 展示别名编辑卡（input，回车/完成键提交）。
    * 有别名时预填；提交 `order.aliasInput` 处理（含校验与唯一性）。
    */
   /**
@@ -1796,7 +1796,7 @@ export class CommandRouter {
     }
     // 列表卡显示的是截断版（≤100 字符 + ...），编辑卡预览保持一致
     const displayText = order.text.length > 100 ? order.text.slice(0, 97) + '...' : order.text;
-    // CardKit 2.0 input 自带 ✓ 提交图标（input_value 经 raw 回传，红线）。
+    // CardKit 2.0 input 提交（回车/完成键；input_value 经 raw 回传，红线）。
     // 不用 form 容器（触发 300123 无 submit button / 200621 嵌套 column）。
     const editCard = {
       schema: '2.0',
@@ -1922,7 +1922,7 @@ export class CommandRouter {
   }
 
   /**
-   * Handle order.textEdit: 展示指令文本编辑卡（input + ✓ 提交图标）。
+   * Handle order.textEdit: 展示指令文本编辑卡（input，回车/完成键提交）。
    * 预填当前 text（完整内容，不截断——input 组件有自有滚动条）；
    * 提交 `order.textInput` 处理（trim + 长度校验 + OrderStore.updateText）。
    * 完全镜像 handleOrderAliasEdit 的 4 段结构（reload → find → 构造 editCard →
@@ -2251,7 +2251,7 @@ export class CommandRouter {
       }
       case 'config.input': {
         // Handle input field: value.key is the field key.
-        // 2026-07-04: CardKit 2.0 input 自带提交图标触发 callback，回传 input_value。
+        // 2026-07-04: CardKit 2.0 input 提交（回车/完成键）触发 callback，回传 input_value。
         // Fall back to formValue[key]: the SDK currently reports input values
         // via action.formValue for form-wrapped inputs.
         const key = value.key as string | undefined;
@@ -4750,7 +4750,7 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
                         ],
                       },
                       {
-                        // 编辑：弹蓝色 header 输入卡（CardKit 2.0 input + ✓ 提交），
+                        // 编辑：弹蓝色 header 输入卡（CardKit 2.0 input，回车提交），
                         // 镜像 order.aliasEdit 流程。order.textEdit 是 control-only action
                         // （isImmediateAction 注册），不 spawn agent。
                         tag: 'column',
