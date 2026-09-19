@@ -10,6 +10,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { CommandRouter } from './index.js';
+import type { CardActionPayload } from './index.js';
 import { searchBar, SEARCH_INPUT_NAME } from './card-helpers.js';
 import { Bridge } from '../bridge/index.js';
 import { SessionStore } from '../session/index.js';
@@ -39,7 +40,8 @@ type CardEl = {
   weight?: number;
   elements?: CardEl[];
   columns?: CardEl[];
-  behaviors?: Array<{ type?: string; value?: Record<string, unknown> }>;
+  /** callback value 按生产契约收窄成 CardActionPayload：漏字段/拼错名编译期就红。 */
+  behaviors?: Array<{ type?: string; value?: CardActionPayload }>;
 };
 
 type Card = { schema?: string; body?: { elements?: CardEl[] } };
@@ -67,7 +69,7 @@ function allText(card: Card | undefined): string {
 }
 
 /** 组件的 callback value（无 callback 的组件返回 null，便于过滤）。 */
-function payloadOf(el: CardEl): Record<string, unknown> | null {
+function payloadOf(el: CardEl): CardActionPayload | null {
   const v = el.behaviors?.find((b) => b.type === 'callback')?.value;
   return v ?? null;
 }
@@ -80,11 +82,7 @@ function componentsForCmd(card: Card | undefined, cmd: string, tag: string): Car
   return flatten(bodyOf(card)).filter((el) => el.tag === tag && payloadOf(el)?.cmd === cmd);
 }
 
-function payloadsForCmd(
-  card: Card | undefined,
-  cmd: string,
-  tag: string,
-): Record<string, unknown>[] {
+function payloadsForCmd(card: Card | undefined, cmd: string, tag: string): CardActionPayload[] {
   return componentsForCmd(card, cmd, tag).map((el) => payloadOf(el)!);
 }
 
@@ -93,10 +91,10 @@ function searchInputs(card: Card | undefined): CardEl[] {
 }
 
 /** 卡上所有带 callback 的组件（向后兼容锚点：无筛选时一个 q 都不该出现）。 */
-function allCallbackPayloads(card: Card | undefined): Record<string, unknown>[] {
+function allCallbackPayloads(card: Card | undefined): CardActionPayload[] {
   return flatten(bodyOf(card))
     .map((el) => payloadOf(el))
-    .filter((v): v is Record<string, unknown> => v !== null);
+    .filter((v): v is CardActionPayload => v !== null);
 }
 
 // ── fixture ──────────────────────────────────────────────────────────────
@@ -141,7 +139,6 @@ function makeFixture(opts: {
   const router = new CommandRouter({
     sessionStore,
     bridge: new Bridge({
-      runner,
       agentRegistry: createStubAgentRegistry(runner),
       sessionReaderRegistry: createStubSessionReaderRegistry(),
       connector,
@@ -192,13 +189,13 @@ describe('searchBar', () => {
   it('返回单个 column_set，input 独占加权列（窄屏不被按钮挤压）', () => {
     const row = searchBar({
       cmd: 'ls.filter',
-      placeholder: '搜索本层目录/文件名，输完点 ✓',
-      currentQuery: 'foo',
+      placeholder: '搜索本层目录/文件名，输完回车',
       extra: { path: '/home/user/project', root: '/home/user/project' },
     }) as { tag: string; columns: CardEl[] };
 
     // paginationBar 返回数组、searchBar 返回单对象——写反了要到渲染期才炸
     expect(row.tag).toBe('column_set');
+    // 无关键词 = 没有可清除的东西，只有输入框一列
     expect(row.columns).toHaveLength(1);
     const col = row.columns[0];
     expect(col.width).toBe('weighted');
@@ -206,11 +203,36 @@ describe('searchBar', () => {
 
     const input = col.elements![0];
     expect(input.tag).toBe('input');
-    // placeholder 必须写明确认制交互（CardKit 无逐键回调）
-    expect(input.placeholder?.content).toContain('输完点 ✓');
+    // placeholder 必须写明提交式交互（CardKit 无逐键回调，只能回车提交）
+    expect(input.placeholder?.content).toContain('输完回车');
     expect(input.max_length).toBe(100);
     expect(payloadOf(input)).toMatchObject({
       cmd: 'ls.filter',
+      path: '/home/user/project',
+      root: '/home/user/project',
+    });
+  });
+
+  it('有 currentQuery 就自动加「清除筛选」按钮（不依赖清空回车）', () => {
+    const row = searchBar({
+      cmd: 'ls.filter',
+      placeholder: '搜索本层目录/文件名，输完回车',
+      currentQuery: 'foo',
+      extra: { path: '/home/user/project', root: '/home/user/project' },
+    }) as { tag: string; columns: CardEl[] };
+
+    expect(row.columns).toHaveLength(2);
+    const [inputCol, clearCol] = row.columns;
+    expect(inputCol.width).toBe('weighted');
+    expect(clearCol.width).toBe('auto');
+
+    const btn = clearCol.elements![0];
+    expect(btn.tag).toBe('button');
+    expect(btn.text?.content).toBe('清除筛选');
+    // 按钮 payload 带 clearQuery 标记 + /ls 必需的 path/root，但不带 q
+    expect(payloadOf(btn)).toEqual({
+      cmd: 'ls.filter',
+      clearQuery: true,
       path: '/home/user/project',
       root: '/home/user/project',
     });
@@ -227,7 +249,7 @@ describe('searchBar', () => {
 
   it('不用 form / action 容器（300123 / 200621 / 200861 红线）', () => {
     const json = JSON.stringify(
-      searchBar({ cmd: 'ws.filter', placeholder: '搜索名称或路径，输完点 ✓' }),
+      searchBar({ cmd: 'ws.filter', placeholder: '搜索名称或路径，输完回车' }),
     );
     expect(json).not.toContain('"tag":"form"');
     expect(json).not.toContain('"tag":"action"');
@@ -273,10 +295,8 @@ describe('/ws 关键词筛选', () => {
   it('筛选后零命中：无匹配提示 + 搜索行仍在 + 无分页栏', () => {
     const { router } = makeFixture({ workspaces: eight });
     const unfiltered = wsCardOf(router);
-    expect(componentsForCmd(unfiltered, 'ws.page', 'button').length).toBeGreaterThan(
-      0,
-      '前置条件：未筛选时应有分页按钮',
-    );
+    // 前置条件：未筛选时应有分页按钮，否则下面「零命中不渲染分页栏」是空断言
+    expect(componentsForCmd(unfiltered, 'ws.page', 'button').length).toBeGreaterThan(0);
 
     const card = wsCardOf(router, 'zzz-no-such-name');
     expect(allText(card)).toContain('无匹配条目');
@@ -310,6 +330,20 @@ describe('/ws 关键词筛选', () => {
 
     // 搜索行提交回到 ws.filter
     expect(payloadOf(searchInputs(card)[0])?.cmd).toBe('ws.filter');
+  });
+
+  it('筛选态搜索行右侧有「清除筛选」按钮，未筛选态没有', () => {
+    const { router } = makeFixture({ workspaces: eight });
+    const card = wsCardOf(router, 'WORK');
+    const clearBtns = componentsForCmd(card, 'ws.filter', 'button');
+    expect(clearBtns).toHaveLength(1);
+    expect(clearBtns[0].text?.content).toBe('清除筛选');
+    expect(payloadOf(clearBtns[0])).toEqual({ cmd: 'ws.filter', clearQuery: true });
+
+    // 未筛选态不出按钮（输入框恢复独占整行），且搜索行仍然在
+    const plain = wsCardOf(router);
+    expect(componentsForCmd(plain, 'ws.filter', 'button')).toHaveLength(0);
+    expect(searchInputs(plain)).toHaveLength(1);
   });
 
   it('无筛选时（/ws 命令路径）卡片上没有任何 q 字段（旧 payload 形态不变）', async () => {
@@ -373,6 +407,22 @@ describe('/ls 关键词筛选', () => {
     const { router } = lsFixture();
     const text = allText(lsCardOf(router, 'foo-upper'));
     expect(text).toContain('FOO-upper.txt');
+  });
+
+  it('筛选态「清除筛选」按钮带 path/root（点它才知道刷哪个目录）', () => {
+    const { router, root } = lsFixture();
+    const card = lsCardOf(router, 'foo', [], root);
+    const clearBtns = componentsForCmd(card, 'ls.filter', 'button');
+    expect(clearBtns).toHaveLength(1);
+    expect(clearBtns[0].text?.content).toBe('清除筛选');
+    expect(payloadOf(clearBtns[0])).toMatchObject({
+      cmd: 'ls.filter',
+      clearQuery: true,
+      path: root,
+      root,
+    });
+    // 未筛选态不出按钮
+    expect(componentsForCmd(lsCardOf(router), 'ls.filter', 'button')).toHaveLength(0);
   });
 
   it('筛选态：ls.page 与 ls.refresh 带 q；ls.browse 与 ls.switch 不带 q（清除语义）', () => {
@@ -486,6 +536,38 @@ describe('ws.filter / ls.filter handler', () => {
     // 卡片上不该再有 q（payload 形态回到未筛选态）
     for (const p of allCallbackPayloads(card)) expect(p).not.toHaveProperty('q');
     expect(searchInputs(card)[0].default_value).toBeUndefined();
+  });
+
+  it('点「清除筛选」按钮：clearQuery 强制清除，即使客户端回传输入框残值', async () => {
+    const { router, connector } = makeFixture({ workspaces: eight });
+    await router.handleCardAction({ cmd: 'ws.filter', inputValue: 'w1' }, ctx);
+    const filtered = lastUpdatedCard(connector);
+    // 用卡片上真实渲染出的按钮 payload，避免手写常量与生产漂移
+    const payload = payloadOf(componentsForCmd(filtered, 'ws.filter', 'button')[0])!;
+
+    const res = await router.handleCardAction({ ...payload, inputValue: 'w1' }, ctx);
+    expect(toastOf(res)?.content).toBe('已清除筛选');
+    const text = allText(lastUpdatedCard(connector));
+    expect(text).toContain('**1/2**（8）');
+    expect(text).not.toContain('筛选：');
+  });
+
+  it('ls.filter：点「清除筛选」按钮恢复完整列表（不依赖清空输入再回车）', async () => {
+    const { router, connector, root } = makeFixture({
+      dirs: ['foo_dir'],
+      files: ['foo.txt', 'readme.md'],
+    });
+    await router.handleCardAction({ cmd: 'ls.filter', path: root, inputValue: 'foo' }, ctx);
+    const filtered = lastUpdatedCard(connector);
+    expect(allText(filtered)).toContain('共 1 目录, 1 文件');
+    const payload = payloadOf(componentsForCmd(filtered, 'ls.filter', 'button')[0])!;
+
+    // 带上输入框残值：清除只能靠 clearQuery 标记，靠「读不到输入值」会退化成筛选
+    await router.handleCardAction({ ...payload, inputValue: 'foo' }, ctx);
+    const text = allText(lastUpdatedCard(connector));
+    expect(text).not.toContain('筛选：');
+    expect(text).toContain('readme.md');
+    expect(text).toContain('共 1 目录, 2 文件');
   });
 
   it('formValue 回退通道也能取到提交值（inputValue 缺失时）', async () => {

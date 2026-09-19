@@ -20,7 +20,9 @@
 - 不能用 `width: 'auto'`——`auto` 让按钮只占文字宽度，右边缘和 select/input 对不齐
 
 ### input 组件
-- CardKit 2.0 `input` 组件自带 ✓ 提交图标触发回调
+- CardKit 2.0 `input` 组件**没有逐键回调**，只有用户提交（移动端键盘回车/完成键，桌面端输入框右侧的提交图标）时才触发一次 callback；没有逐键 change 事件，所以「边输边过滤」做不到
+- **文案不要写「点 ✓」**：移动端没有那个图标，只有键盘回车/完成键（2026-09-19 用户反馈）。统一写「按回车提交」
+- **不要依赖「清空输入再提交」作为取消手段**：官方文档没有承诺空串会发回调，且 2026-09-19 用户在手机飞书实测「清空后回车没有反应」——把它当唯一取消路径会在部分客户端变成死路。需要「清除/重置」语义时，在同一行放一个显式 `auto` 宽按钮承载（按钮 callback 不带 `input_value`，用 payload 里的标记字段强制清除，别靠「读不到输入值」这一隐式条件）。参考实现：`src/router/card-helpers.ts` 的 `searchBar`（有 `currentQuery` 即渲染「清除筛选」按钮 + `clearQuery` 标记）
 - 但 `input_value` 会被 SDK normalizer 丢弃，必须 `includeRawEvent: true`，从 `action.raw.action.input_value` 读取
 - 不要用 `form` 包裹 input + button，直接用 `column_set` + `input` + `button`
 - **input 不要和文案挤在同一行**：同一行里放「文案 + input + 按钮」时，`auto` 按钮先占走固有宽度，剩下的宽度再按 weight 切分——手机窄屏（可用宽约 330px）下文案列只剩百来像素、input 只有几十像素，文案折行且输入框没法点（2026-09-10 分页栏真实故障）。正确做法是**拆成两行**：信息文案用顶层 `div` 独占整行，控件放进自己的 `column_set`（上一页 `auto` + input `weighted weight:1` + 下一页 `auto`，input 吃满按钮之外的剩余宽度）。参考实现：`src/router/card-helpers.ts` 的 `paginationBar`（`/ls` `/ws` `/resume` `/active` `/order` 共用）。
