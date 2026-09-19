@@ -256,9 +256,14 @@ export interface CardActionPayload {
    * callback value 传递，且仅在非空时注入，旧卡片 payload 形态不变。
    */
   q?: string;
+  /**
+   * 「清除筛选」按钮标记。按钮 callback 不带 input_value，但显式标记比依赖
+   * 「读不到输入值」更稳（部分客户端可能把输入框残值一并回传）。
+   */
+  clearQuery?: boolean;
   option?: string;
   formValue?: Record<string, unknown>;
-  /** CardKit 2.0 input 组件自带提交图标触发回调时回传的输入值 */
+  /** CardKit 2.0 input 组件提交（键盘回车/完成键）时回传的输入值 */
   inputValue?: string;
   orderId?: string;
   /** Approval request ID for approval card actions. */
@@ -499,12 +504,14 @@ function payloadOffset(value: { offset?: number }): number {
 }
 
 /**
- * 搜索框提交值单源读取：`inputValue` 主路（CardKit 2.0 input 的 ✓ 提交经 raw
- * `action.input_value` 回传，SDK normalizer 会丢弃 `action.input_value`，依赖
- * connector 的 includeRawEvent）+ `formValue[searchInput]` 回退。空串/纯空白
- * 一律归一为 undefined = 清除筛选，不是报错也不是无操作。
+ * 搜索框提交值单源读取：`inputValue` 主路（CardKit 2.0 input 提交（键盘回车/
+ * 完成键）经 raw `action.input_value` 回传，SDK normalizer 会丢弃
+ * `action.input_value`，依赖 connector 的 includeRawEvent）+
+ * `formValue[searchInput]` 回退。空串/纯空白一律归一为 undefined = 清除筛选，
+ * 不是报错也不是无操作。「清除筛选」按钮带 `clearQuery`，直接短路为 undefined。
  */
 function searchQueryFrom(value: CardActionPayload): string | undefined {
+  if (value.clearQuery) return undefined;
   const raw = value.inputValue ?? (value.formValue?.[SEARCH_INPUT_NAME] as string | undefined);
   return raw?.trim() || undefined;
 }
@@ -1257,7 +1264,7 @@ export class CommandRouter {
           { tag: 'hr' },
           {
             tag: 'div',
-            text: { tag: 'lark_md', content: '💡 输入新内容后点击右侧 ✓ 提交图标' },
+            text: { tag: 'lark_md', content: '💡 输入新内容后按回车提交' },
           },
           {
             tag: 'column_set',
@@ -1848,7 +1855,7 @@ export class CommandRouter {
     const order = this.orderStore.get().find((o) => o.id === value.orderId);
     return this.showOrderEditCard(value, ctx, {
       title: '✏️ 给指令起别名',
-      hint: '💡 输入别名名后点击右侧 ✓ 提交；留空提交 = 删除该别名',
+      hint: '💡 输入别名名后按回车提交；删除别名请点列表卡别名旁的 ✕',
       inputName: 'aliasName',
       placeholder: '输入 $别名名（如 all）...',
       defaultValue: order?.alias ?? '',
@@ -1930,7 +1937,7 @@ export class CommandRouter {
     // input 组件 default_value 预填完整 text（不受截断影响），提交后生效完整文本
     return this.showOrderEditCard(value, ctx, {
       title: '✏️ 编辑指令',
-      hint: '💡 修改后点击右侧 ✓ 提交；空白提交 = 报错；最多 200 字符',
+      hint: '💡 修改后按回车提交；空白提交 = 报错；最多 200 字符',
       inputName: 'text',
       placeholder: '输入新的指令文本...',
       defaultValue: order?.text ?? '',
@@ -3479,7 +3486,7 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
       elements.push(
         searchBar({
           cmd: 'ls.filter',
-          placeholder: '搜索本层目录/文件名，输完点 ✓',
+          placeholder: '搜索本层目录/文件名，输完回车',
           currentQuery: filter,
           extra: { path: targetDir, root: browseRoot },
         }),
@@ -3489,7 +3496,7 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
           tag: 'div',
           text: {
             tag: 'lark_md',
-            content: `🔍 筛选："${filter}" · 命中 ${totalCount} 项（清空输入点 ✓ 取消）`,
+            content: `🔍 筛选："${filter}" · 命中 ${totalCount} 项（点「清除筛选」取消）`,
           },
         });
       }
@@ -3500,7 +3507,7 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
 
       if (filter && visibleItems.length === 0) {
         // 筛选零命中：两个区标题都不渲染（两行空区标题只是噪音），搜索行仍在，
-        // 用户可直接改词再点 ✓。
+        // 用户可直接改词再回车，或点「清除筛选」。
         elements.push({
           tag: 'div',
           text: { tag: 'lark_md', content: `🔍 无匹配条目（关键词："${filter}"）` },
@@ -3780,7 +3787,7 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
         bodyElements.push(
           searchBar({
             cmd: 'ws.filter',
-            placeholder: '搜索名称或路径，输完点 ✓',
+            placeholder: '搜索名称或路径，输完回车',
             currentQuery: filter,
           }),
         );
@@ -3789,7 +3796,7 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
             tag: 'div',
             text: {
               tag: 'lark_md',
-              content: `🔍 筛选："${filter}" · 命中 ${totalCount} 个 workspace（清空输入点 ✓ 取消）`,
+              content: `🔍 筛选："${filter}" · 命中 ${totalCount} 个 workspace（点「清除筛选」取消）`,
             },
           });
         }
