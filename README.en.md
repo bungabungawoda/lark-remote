@@ -108,9 +108,9 @@ Your original message also gets an emoji reaction: `Typing` while the run is in 
 |---------|-------|----------|
 | `/help` | `/h` | Command list |
 | `/cd <path>` | - | Switch agent working directory (`~`, absolute/relative; clears the session) |
-| `/ls [dir\|file]` | - | Directory/file card; click a directory to browse, click a file ≤30MB to send it to Feishu; paginates beyond 30 entries with a page-number jump input. Passing a file path lists that file itself |
+| `/ls [dir\|file]` | - | Directory/file card; click a directory to browse, click a file ≤30MB to send it to Feishu; paginates beyond 30 entries with a page-number jump input, and current-level entries can be filtered by keyword. Passing a file path lists that file itself |
 | `/download <path>` | `/d` | Send a local file straight to the chat (`~`, absolute/relative paths, 30MB cap) |
-| `/ws save\|use\|remove` | - | Named directory aliases (`/ws` lists by default) |
+| `/ws save\|use\|remove` | - | Named directory aliases (`/ws` lists by default, filterable by alias name or path keyword) |
 | `/resume [agent] [N\|id]` | `/r` | List/switch agent sessions for the current directory (card) |
 | `/active` | - | List all running sessions |
 | `/new` | - | Clear the current session (keeps cwd) |
