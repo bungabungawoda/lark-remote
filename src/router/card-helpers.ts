@@ -118,8 +118,9 @@ export function parseJumpOffset(inputValue: unknown, pageSize: number): number |
  * Returns an array of body elements: `[page-label div, controls column_set]`；
  * 调用方展开进 `body.elements`（+ 自己的 `hr`）。input 仍留在控件 column_set
  * 内部，不用 form 容器（form 触发 300123 / 200621 整卡不可用）。CardKit 2.0
- * input 自带 ✓ 提交图标，提交值经 raw `action.input_value` 回传，见 connector
- * includeRawEvent + router/card-action-payload.ts。
+ * input 提交（移动端键盘回车/完成键，桌面端输入框右侧提交图标）时值经 raw
+ * `action.input_value` 回传，见 connector includeRawEvent +
+ * router/card-action-payload.ts。
  *
  * 每个调用方自带 callback cmd / extra value / 文案（语义差异保留，不强行统一）。
  *
@@ -226,19 +227,25 @@ export const SEARCH_INPUT_NAME = 'searchInput';
 /**
  * Build the CardKit 2.0 keyword-search row shared by /ws and /ls list cards.
  *
- * 飞书 input 组件没有逐键回调——只有用户点击输入框右侧的 ✓ 提交图标时才触发
- * 一次 callback，所以交互只能是「输完点 ✓」确认制，placeholder 必须写明。
+ * 飞书 input 组件没有逐键回调，只有提交（键盘回车/完成键）时才触发一次
+ * callback，所以交互是「输完回车」确认制，placeholder 必须写明。
  *
- * 与 `paginationBar` 的控件行同一套窄屏安全模式：input 独占整行
- * （`width: 'weighted', weight: 1`），不与任何按钮同行，避免手机上被按钮
- * 挤到没法点。禁用 form 容器（300123 / 200621）与 `tag: "action"`（200861）。
+ * 清空输入再回车在部分客户端不可靠（用户实测：手机飞书清空后回车没反应，
+ * 空串是否发回调也没有文档保证），因此**有 `currentQuery` 就自动**在输入框
+ * 右侧补一个「清除筛选」按钮：按钮 callback 不带 input_value，handler 靠
+ * `clearQuery` 标记强制清除，不依赖「读不到输入值」这一隐式条件。
+ *
+ * 与 `paginationBar` 的控件行同一套窄屏安全模式：input 用 `weighted/weight: 1`
+ * 吃满清除按钮之外的剩余宽度，清除按钮 `auto`，手机上输入框仍可点。禁用 form
+ * 容器（300123 / 200621）与 `tag: "action"`（200861）。
  *
  * 返回**单个** `column_set` 元素（`paginationBar` 返回两个，调用处写法不同：
  * `elements.push(searchBar({...}))` vs `elements.push(...paginationBar({...}))`）。
  *
  * @param opts.cmd         提交回调的 cmd（'ws.filter' / 'ls.filter'）。
- * @param opts.placeholder 输入框占位文案（必须含「输完点 ✓」）。
- * @param opts.currentQuery 当前筛选词，非空时写进 default_value 回显。
+ * @param opts.placeholder 输入框占位文案（必须含「输完回车」）。
+ * @param opts.currentQuery 当前筛选词，非空时写进 default_value 回显，并据此
+ *                          显示「清除筛选」按钮。
  * @param opts.extra       透传进 callback value 的附加字段（/ls 用 path/root）。
  */
 export function searchBar(opts: {
@@ -247,32 +254,51 @@ export function searchBar(opts: {
   currentQuery?: string;
   extra?: Record<string, unknown>;
 }): object {
-  return {
-    tag: 'column_set',
-    columns: [
-      {
-        tag: 'column',
-        width: 'weighted',
-        weight: 1,
-        vertical_align: 'center',
-        elements: [
-          {
-            tag: 'input',
-            name: SEARCH_INPUT_NAME,
-            placeholder: { tag: 'plain_text', content: opts.placeholder },
-            ...(opts.currentQuery ? { default_value: opts.currentQuery } : {}),
-            max_length: 100,
-            behaviors: [
-              {
-                type: 'callback',
-                value: { cmd: opts.cmd, ...opts.extra },
-              },
-            ],
-          },
-        ],
-      },
-    ],
-  };
+  const columns: object[] = [
+    {
+      tag: 'column',
+      width: 'weighted',
+      weight: 1,
+      vertical_align: 'center',
+      elements: [
+        {
+          tag: 'input',
+          name: SEARCH_INPUT_NAME,
+          placeholder: { tag: 'plain_text', content: opts.placeholder },
+          ...(opts.currentQuery ? { default_value: opts.currentQuery } : {}),
+          max_length: 100,
+          behaviors: [
+            {
+              type: 'callback',
+              value: { cmd: opts.cmd, ...opts.extra },
+            },
+          ],
+        },
+      ],
+    },
+  ];
+  if (opts.currentQuery) {
+    columns.push({
+      tag: 'column',
+      width: 'auto',
+      vertical_align: 'center',
+      elements: [
+        {
+          tag: 'button',
+          text: { tag: 'plain_text', content: '清除筛选' },
+          type: 'default',
+          size: 'small',
+          behaviors: [
+            {
+              type: 'callback',
+              value: { cmd: opts.cmd, clearQuery: true, ...opts.extra },
+            },
+          ],
+        },
+      ],
+    });
+  }
+  return { tag: 'column_set', columns };
 }
 
 /**
