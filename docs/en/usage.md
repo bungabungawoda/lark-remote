@@ -111,12 +111,12 @@ Any message not starting with `/` is forwarded to Claude. Messages starting with
 | `/help` | `/h` | Show command list |
 | `/cd <path>` | - | Switch Claude's working directory (supports `~`, absolute/relative paths; clears current session, next message starts a new conversation) |
 | `/cd` | - | Without arguments, shows the current directory |
-| `/ls [dir\|file]` | - | Pop up a directory/file card; click a directory to browse, click a file under 30MB to send it to Feishu; paginates beyond 30 entries (page-number jump supported). Passing a file path lists that file itself |
+| `/ls [dir\|file]` | - | Pop up a directory/file card; click a directory to browse, click a file under 30MB to send it to Feishu; paginates beyond 30 entries (page-number jump supported) and entries on the current level can be filtered by keyword. Passing a file path lists that file itself |
 | `/download <path>` | `/d` | Send a local file straight to the chat, capped at 30MB |
 | `/ws save <name>` | - | Save the current directory as a named alias |
 | `/ws use <name>` | - | Switch to the alias directory (clears session) |
 | `/ws remove <name>` | - | Remove an alias |
-| `/ws` `/ws list` | - | List all aliases (card with "Use" and "Remove" buttons) |
+| `/ws` `/ws list` | - | List all aliases (card with "Use" and "Remove" buttons, filterable by alias name or path keyword) |
 | `/resume [agent] [N]` | `/r` | List/switch agent sessions in the current directory (card, paginated, default 5 per page) |
 | `/resume <id>` | - | Manually switch to a specific session id |
 | `/active` | - | List in-progress tasks in the current process memory (including agent tasks and bash commands) |
@@ -143,6 +143,7 @@ Any message not starting with `/` is forwarded to Claude. Messages starting with
 - **The "Back" button returns to the root of this `/ls`**, not to the workspace cwd: the root of `/ls <dir>` is `<dir>` itself (so the root card has no "Back" button, only "Switch"); after browsing into a subdirectory, "Back" returns to `<dir>`. `/ls` without arguments roots at the current working directory (same behaviour as before). Paging and refresh never lose the root.
 - **`/ls <file>`** no longer fails with `Not a directory`; it renders a single-file card (path, size, mtime plus "Download" and "Up" buttons) so you can confirm the file exists before downloading it.
 - **Page-number jump**: when `/ls`, `/ws`, `/resume`, `/active` or `/order` lists span multiple pages, the pagination bar has a page-number input next to the page label; type a page number and press Enter to jump directly (out-of-range clamps to the last page, invalid input shows an error toast without refreshing).
+- **Keyword search**: the `/ls` and `/ws` cards each carry one search input in their upper section. Type a keyword and **press Enter to submit** — Feishu CardKit's `input` has no per-keystroke callback, so the value only reaches the card on submit. `/ws` matches the alias name or the full path; `/ls` matches entry names on the **current level only** (it does not recurse into subdirectories). Both are case-insensitive substring matches. While a filter is active, `/ws` keeps the keyword across paging, sorting and the Use/Remove buttons, and `/ls` keeps it across paging and refresh; browsing to another directory (a subdirectory, Up or Back) or switching the working directory clears the filter (a keyword from the previous directory would be meaningless). To cancel a filter, press the **清除筛选 (Clear filter)** button at the right end of the search row — clearing the input and submitting again does not trigger a callback on some clients, so that path is not relied on. Item counts and page numbers are always computed over the filtered result.
 
 #### `/download`: Send a File Directly
 
