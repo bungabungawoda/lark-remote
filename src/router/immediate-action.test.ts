@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { isImmediateAction } from './index.js';
+import { isImmediateAction, DIRECT_RETURN_CMDS } from './index.js';
 
 /**
  * Tests for isImmediateAction function (§9.19).
@@ -29,11 +29,13 @@ describe('isImmediateAction (§9.19)', () => {
       ['ls.browse', '目录浏览（只读）'],
       ['ls.switch', '目录切换（只写 sessionId）'],
       ['ls.page', '分页（control operation）'],
+      ['ls.filter', '关键词筛选（只重渲染卡片，control operation）'],
       ['ws.remove', '§9.19: 只删除 workspace 别名'],
       ['resume.use', '§9.19: 只设置 sessionId'],
       ['resume.page', '分页（control operation）'],
       ['ws.use', '§9.6 workspace switch'],
       ['ws.page', 'pagination is a control operation'],
+      ['ws.filter', '关键词筛选（只重渲染卡片，control operation）'],
       ['ws.sort', '排序切换（control operation）'],
       ['active.page', '分页操作，只更新卡片，不 spawn agent'],
       ['queue.cancel', '§9.6 queue management'],
@@ -71,6 +73,17 @@ describe('isImmediateAction (§9.19)', () => {
       '%s should return true (help.* wildcard)',
       (cmd) => {
         expect(isImmediateAction(cmd)).toBe(true);
+      },
+    );
+  });
+
+  describe('搜索/分页同类控制操作不进 DIRECT_RETURN_CMDS（§4 Step 5.7 / §5.11）', () => {
+    // DIRECT_RETURN = 只同步回 toast、不做任何卡片更新。filter/page 都要原地刷卡片，
+    // 进错清单会变成「点了搜索框卡片没反应」且无编译错误，只能靠本守卫拦。
+    it.each(['ws.filter', 'ls.filter', 'ws.page', 'ls.page'])(
+      '%s must not be in DIRECT_RETURN_CMDS',
+      (cmd) => {
+        expect(DIRECT_RETURN_CMDS.has(cmd)).toBe(false);
       },
     );
   });

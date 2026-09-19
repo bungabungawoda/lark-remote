@@ -33,7 +33,9 @@ import {
   markdownDiv,
   buildSessionHistoryCard,
   paginationBar,
+  searchBar,
   parseJumpOffset,
+  SEARCH_INPUT_NAME,
   PAGE_JUMP_INVALID_HINT,
 } from './card-helpers.js';
 import { MAX_FILE_UPLOAD_SIZE } from '../connector/file-limits.js';
@@ -249,6 +251,11 @@ export interface CardActionPayload {
   agent?: string;
   /** /resume 列表页大小覆盖。 */
   pageSize?: number;
+  /**
+   * /ws 与 /ls 列表的关键词筛选（空/缺省 = 无筛选）。服务端零状态：只随卡片
+   * callback value 传递，且仅在非空时注入，旧卡片 payload 形态不变。
+   */
+  q?: string;
   option?: string;
   formValue?: Record<string, unknown>;
   /** CardKit 2.0 input 组件自带提交图标触发回调时回传的输入值 */
@@ -455,9 +462,11 @@ const IMMEDIATE_ACTION_CMDS: ReadonlySet<string> = new Set([
   'ls.browse',
   'ls.switch',
   'ls.page', // control operation: paginate only, never spawns claude
+  'ls.filter', // control operation: refilter the /ls list only
   'resume.page', // control operation: paginate only, never spawns claude
   'active.page', // control operation: paginate active card
   'ws.page', // control operation: paginate /ws list only
+  'ws.filter', // control operation: refilter the /ws list only
   'ws.remove',
   'ws.sort', // control operation: toggle sort mode only
   'resume.use',
@@ -487,6 +496,17 @@ const IMMEDIATE_ACTION_CMDS: ReadonlySet<string> = new Set([
 /** W2.8 单源：payload.offset → 钳位 offset（原先 9 处逐字副本）。 */
 function payloadOffset(value: { offset?: number }): number {
   return Math.max(0, Math.trunc(Number(value.offset) || 0));
+}
+
+/**
+ * 搜索框提交值单源读取：`inputValue` 主路（CardKit 2.0 input 的 ✓ 提交经 raw
+ * `action.input_value` 回传，SDK normalizer 会丢弃 `action.input_value`，依赖
+ * connector 的 includeRawEvent）+ `formValue[searchInput]` 回退。空串/纯空白
+ * 一律归一为 undefined = 清除筛选，不是报错也不是无操作。
+ */
+function searchQueryFrom(value: CardActionPayload): string | undefined {
+  const raw = value.inputValue ?? (value.formValue?.[SEARCH_INPUT_NAME] as string | undefined);
+  return raw?.trim() || undefined;
 }
 
 /** 卡片 cardAction payload 缺字段的统一报错文案（原先 12 处手写且已漂移出两种前缀）。 */
@@ -747,8 +767,12 @@ export class CommandRouter {
         return;
       case 'ls.page':
         return this.handleLsPage(value, ctx);
+      case 'ls.filter':
+        return this.handleLsFilter(value, ctx);
       case 'ws.page':
         return this.handleWsPage(value, ctx);
+      case 'ws.filter':
+        return this.handleWsFilter(value, ctx);
       case 'ws.use':
         return await this.handleWsUse(value, ctx);
       case 'ws.sort':
@@ -1423,10 +1447,10 @@ export class CommandRouter {
     try {
       card =
         targetPath && fs.existsSync(targetPath) && fs.statSync(targetPath).isDirectory()
-          ? this.cmdLs([targetPath], ctx, offset, value.root)
-          : this.cmdLs([], ctx, offset, value.root);
+          ? this.cmdLs([targetPath], ctx, offset, value.root, value.q)
+          : this.cmdLs([], ctx, offset, value.root, value.q);
     } catch {
-      card = this.cmdLs([], ctx, offset, value.root);
+      card = this.cmdLs([], ctx, offset, value.root, value.q);
     }
     await this.bridge.updateCardInPlace(card.card!, ctx);
   }
@@ -1459,10 +1483,41 @@ export class CommandRouter {
     if (!isDir) {
       return { toast: { type: 'error', content: `路径无效: ${resolvedTarget}` } };
     }
-    const card = this.cmdLs([resolvedTarget], ctx, paging.offset, value.root);
+    const card = this.cmdLs([resolvedTarget], ctx, paging.offset, value.root, value.q);
     // 直接更新卡片，与 ls.browse/ls.refresh 行为一致
     await this.bridge.updateCardInPlace(card.card!, ctx);
     return { toast: { type: 'success', content: '' } };
+  }
+
+  /**
+   * Handle ls.filter: 按搜索框提交的关键词重新渲染当前目录卡。
+   *
+   * offset 恒重置为 0（新筛选从第 1 页开始）。路径校验与 TOCTOU 兜底照
+   * handleLsPage——校验失败只回错误 toast，绝不动卡片（否则用户看到一张空卡）。
+   * ls.browse / ls.switch 的 value 里刻意不带 q，换目录即清除筛选（设计文档 §2.3）。
+   */
+  private async handleLsFilter(
+    value: CardActionPayload,
+    ctx: CommandContext,
+  ): Promise<CardActionResponse> {
+    const targetPath = value.path;
+    if (!targetPath) {
+      return { toast: { type: 'error', content: '卡片 payload 缺少 path' } };
+    }
+    const q = searchQueryFrom(value);
+    const resolvedTarget = path.resolve(targetPath);
+    let isDir: boolean;
+    try {
+      isDir = fs.existsSync(resolvedTarget) && fs.statSync(resolvedTarget).isDirectory();
+    } catch {
+      isDir = false;
+    }
+    if (!isDir) {
+      return { toast: { type: 'error', content: `路径无效: ${resolvedTarget}` } };
+    }
+    const card = this.cmdLs([resolvedTarget], ctx, 0, value.root, q);
+    await this.bridge.updateCardInPlace(card.card!, ctx);
+    return { toast: { type: 'success', content: q ? `筛选："${q}"` : '已清除筛选' } };
   }
 
   /**
@@ -1599,27 +1654,28 @@ export class CommandRouter {
   }
   /**
    * W2.8 单源：重建 order/ws 列表卡（不投递，card 进 callback 响应体用）。
+   * `q` 只服务 ws 卡的关键词筛选；order 卡无此功能，不透传。
    */
   private rebuildListCard(
     kind: 'order' | 'ws',
     offset: number,
     ctx: CommandContext,
+    q?: string,
   ): object | undefined {
-    return kind === 'order'
-      ? this.cmdOrder([], ctx, offset).card
-      : this.cmdWs([], ctx, offset).card;
+    if (kind === 'order') return this.cmdOrder([], ctx, offset).card;
+    return this.cmdWs([], ctx, offset, q).card;
   }
 
   /**
    * W2.8 单源：「重建列表卡 → updateCardInPlace」原地刷新骨架（列表卡删除/
-   * 翻页/移除/排序动作共用）。返回重建后的卡片；无卡时返回 undefined 且跳过更新。
+   * 翻页/移除/排序/筛选动作共用）。返回重建后的卡片；无卡时返回 undefined 且跳过更新。
    */
   private async refreshListCard(
     kind: 'order' | 'ws',
-    value: { offset?: number },
+    value: { offset?: number; q?: string },
     ctx: CommandContext,
   ): Promise<object | undefined> {
-    const card = this.rebuildListCard(kind, payloadOffset(value), ctx);
+    const card = this.rebuildListCard(kind, payloadOffset(value), ctx, value.q);
     if (!card) return undefined;
     await this.bridge.updateCardInPlace(card, ctx);
     return card;
@@ -1932,7 +1988,7 @@ export class CommandRouter {
    * If auto-resume produces a card, it is sent as a separate reply.
    */
   private async handleWsUse(
-    value: { name?: string; offset?: number },
+    value: { name?: string; offset?: number; q?: string },
     ctx: CommandContext,
   ): Promise<CardActionResponse> {
     const name = value.name ?? '';
@@ -1976,7 +2032,7 @@ export class CommandRouter {
    * remain visible on the card the user just clicked.
    */
   private async handleWsRemove(
-    value: { name?: string; offset?: number },
+    value: { name?: string; offset?: number; q?: string },
     ctx: CommandContext,
   ): Promise<CardActionResponse | void> {
     const name = value.name;
@@ -2008,8 +2064,21 @@ export class CommandRouter {
       return { toast: { type: 'error', content: paging.error } };
     }
     // cmdWs internally clamps stale/out-of-range offsets
-    await this.refreshListCard('ws', { offset: paging.offset }, ctx);
+    await this.refreshListCard('ws', { offset: paging.offset, q: value.q }, ctx);
     return { toast: { type: 'success', content: '' } };
+  }
+
+  /**
+   * Handle ws.filter: 按搜索框提交的关键词重新渲染列表卡。
+   * offset 恒重置为 0（新筛选从第 1 页开始）；提交空串 = 清除筛选。
+   */
+  private async handleWsFilter(
+    value: CardActionPayload,
+    ctx: CommandContext,
+  ): Promise<CardActionResponse> {
+    const q = searchQueryFrom(value);
+    await this.refreshListCard('ws', { offset: 0, q }, ctx);
+    return { toast: { type: 'success', content: q ? `筛选："${q}"` : '已清除筛选' } };
   }
 
   /**
@@ -2024,7 +2093,7 @@ export class CommandRouter {
     const current = this.wsSortPreference.get(userId) ?? 'recent';
     const next = current === 'recent' ? 'alpha' : 'recent';
     this.wsSortPreference.set(userId, next);
-    await this.refreshListCard('ws', { offset: 0 }, ctx);
+    await this.refreshListCard('ws', { offset: 0, q: value.q }, ctx);
     const nextLabel = next === 'recent' ? '🕐 最近使用' : '🔤 字母顺序';
     return {
       toast: { type: 'success', content: `已切换为 ${nextLabel}` },
@@ -3207,12 +3276,21 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
    * @param rootDir 浏览起点：卡片「返回」按钮回到这里。省略时默认 = 本次列出的
    *                目录（`/ls <dir>` 的起点即该目录），因此「返回」不会把用户
    *                丢回 workspace cwd（用户明确反馈过）。
+   * @param q       关键词筛选：只匹配**当前层**条目名（不递归），大小写不敏感。
+   *                省略/空 = 无筛选。
    */
-  cmdLs(args: string[], ctx: CommandContext, offset = 0, rootDir?: string): CommandResult {
+  cmdLs(
+    args: string[],
+    ctx: CommandContext,
+    offset = 0,
+    rootDir?: string,
+    q?: string,
+  ): CommandResult {
     const cwd = this.sessionStore.getCwd(ctx.userId);
     if (!cwd) {
       return { text: '请先使用 /cd <path> 设置工作目录' };
     }
+    const filter = q?.trim() || undefined;
 
     // args can be:
     // - [] : list current cwd
@@ -3269,9 +3347,18 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
         })),
       ];
 
+      // 关键词筛选：只匹配当前层条目名（不递归子目录）。大小写不敏感的子串包含
+      // ——禁止 new RegExp(q)（用户搜 `foo(` 会直接抛）。插在排序之后、分页之前。
+      const ql = filter?.toLowerCase();
+      const visibleItems = ql
+        ? allItems.filter((i) => i.name.toLowerCase().includes(ql))
+        : allItems;
+      const visibleDirCount = visibleItems.reduce((n, i) => n + (i.isDir ? 1 : 0), 0);
+      const visibleFileCount = visibleItems.length - visibleDirCount;
+
       // Pagination calculations（clamp 到最后一页边界，原先不 clamp 会显示空页）
       const { totalCount, totalPages, safeOffset, currentPage, pageItems, hasPagination } =
-        pageSlice(allItems, offset, CommandRouter.LS_PAGE_SIZE);
+        pageSlice(visibleItems, offset, CommandRouter.LS_PAGE_SIZE);
 
       // Check if we need to show parent directory button
       const parentDir = path.dirname(targetDir);
@@ -3319,6 +3406,7 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
               path: targetDir,
               offset: safeOffset,
               root: browseRoot,
+              ...(filter ? { q: filter } : {}),
             },
           },
         ],
@@ -3374,8 +3462,9 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
       const elements: object[] = [];
 
       // Status line：只报条目构成；页码/总数交给分页栏文案行（同一信息不重复
-      // 渲染两遍——2026-09-10 分页栏改成整行文案后重复会很明显）。
-      const status = `\n共 ${dirs.length} 目录, ${files.length} 文件`;
+      // 渲染两遍——2026-09-10 分页栏改成整行文案后重复会很明显）。筛选态一律用
+      // 过滤后的计数，否则标题说 12 项、列表只有 3 项，卡片自相矛盾。
+      const status = `\n共 ${visibleDirCount} 目录, ${visibleFileCount} 文件`;
 
       // Header info + navigation buttons - show targetDir in header
       elements.push({ tag: 'div', text: { tag: 'lark_md', content: `\`${targetDir}\`${status}` } });
@@ -3385,52 +3474,81 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
       });
       elements.push({ tag: 'hr' });
 
-      // Section 1: Directories (show only items on current page)
+      // 搜索行：头部导航按钮之下、内容区之上（主导航在上、过滤紧随其后、内容区
+      // 在下）。path/root 必须进 callback value，否则提交后 handler 不知道刷哪。
+      elements.push(
+        searchBar({
+          cmd: 'ls.filter',
+          placeholder: '搜索本层目录/文件名，输完点 ✓',
+          currentQuery: filter,
+          extra: { path: targetDir, root: browseRoot },
+        }),
+      );
+      if (filter) {
+        elements.push({
+          tag: 'div',
+          text: {
+            tag: 'lark_md',
+            content: `🔍 筛选："${filter}" · 命中 ${totalCount} 项（清空输入点 ✓ 取消）`,
+          },
+        });
+      }
+
+      // Section 1 + 2: Directories / Files (show only items on current page)
       const pageDirs = pageItems.filter((i) => i.isDir);
       const pageFiles = pageItems.filter((i) => !i.isDir);
 
-      elements.push({
-        tag: 'div',
-        text: { tag: 'lark_md', content: `**📂 目录 (${dirs.length})**` },
-      });
-      if (pageDirs.length > 0) {
-        for (const d of pageDirs) {
-          elements.push({
-            tag: 'column_set',
-            flex_mode: 'none',
-            columns: [{ tag: 'column', width: 'auto', elements: [dirButton(d.name)] }],
-          });
-        }
-      } else if (dirs.length === 0) {
-        elements.push({ tag: 'div', text: { tag: 'lark_md', content: '无子目录' } });
+      if (filter && visibleItems.length === 0) {
+        // 筛选零命中：两个区标题都不渲染（两行空区标题只是噪音），搜索行仍在，
+        // 用户可直接改词再点 ✓。
+        elements.push({
+          tag: 'div',
+          text: { tag: 'lark_md', content: `🔍 无匹配条目（关键词："${filter}"）` },
+        });
       } else {
         elements.push({
           tag: 'div',
-          text: { tag: 'lark_md', content: `（第 ${currentPage} 页无目录）` },
+          text: { tag: 'lark_md', content: `**📂 目录 (${visibleDirCount})**` },
         });
-      }
-      elements.push({ tag: 'hr' });
+        if (pageDirs.length > 0) {
+          for (const d of pageDirs) {
+            elements.push({
+              tag: 'column_set',
+              flex_mode: 'none',
+              columns: [{ tag: 'column', width: 'auto', elements: [dirButton(d.name)] }],
+            });
+          }
+        } else if (visibleDirCount === 0) {
+          elements.push({ tag: 'div', text: { tag: 'lark_md', content: '无子目录' } });
+        } else {
+          elements.push({
+            tag: 'div',
+            text: { tag: 'lark_md', content: `（第 ${currentPage} 页无目录）` },
+          });
+        }
+        elements.push({ tag: 'hr' });
 
-      // Section 2: Files
-      elements.push({
-        tag: 'div',
-        text: { tag: 'lark_md', content: `**📄 文件 (${files.length})**` },
-      });
-      if (pageFiles.length > 0) {
-        for (const f of pageFiles) {
-          elements.push({
-            tag: 'column_set',
-            flex_mode: 'none',
-            columns: [{ tag: 'column', width: 'auto', elements: [fileButton(f.name, f.size)] }],
-          });
-        }
-      } else if (files.length === 0) {
-        elements.push({ tag: 'div', text: { tag: 'lark_md', content: '无文件' } });
-      } else {
+        // Section 2: Files
         elements.push({
           tag: 'div',
-          text: { tag: 'lark_md', content: `（第 ${currentPage} 页无文件）` },
+          text: { tag: 'lark_md', content: `**📄 文件 (${visibleFileCount})**` },
         });
+        if (pageFiles.length > 0) {
+          for (const f of pageFiles) {
+            elements.push({
+              tag: 'column_set',
+              flex_mode: 'none',
+              columns: [{ tag: 'column', width: 'auto', elements: [fileButton(f.name, f.size)] }],
+            });
+          }
+        } else if (visibleFileCount === 0) {
+          elements.push({ tag: 'div', text: { tag: 'lark_md', content: '无文件' } });
+        } else {
+          elements.push({
+            tag: 'div',
+            text: { tag: 'lark_md', content: `（第 ${currentPage} 页无文件）` },
+          });
+        }
       }
 
       // Pagination bar (only shown when there are more items than PAGE_SIZE)
@@ -3440,7 +3558,7 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
           offset: safeOffset,
           pageSize: CommandRouter.LS_PAGE_SIZE,
           total: totalCount,
-          extra: { path: targetDir, root: browseRoot },
+          extra: { path: targetDir, root: browseRoot, ...(filter ? { q: filter } : {}) },
           label: `**第 ${currentPage}/${totalPages} 页**（共 ${totalCount} 项）`,
         });
         elements.push({ tag: 'hr' });
@@ -3560,7 +3678,14 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
     };
   }
 
-  private cmdWs(args: string[], ctx: CommandContext, offset = 0): CommandResult {
+  /**
+   * `/ws` 实现（public：测试直接调用，替代 as unknown as，与 cmdLs 同款）。
+   *
+   * @param offset list 分支的分页起点（条目数）
+   * @param q      list 分支的关键词筛选：name 或完整 path 命中即保留，大小写
+   *               不敏感。省略/空 = 无筛选。
+   */
+  cmdWs(args: string[], ctx: CommandContext, offset = 0, q?: string): CommandResult {
     const sub = args[0]?.toLowerCase();
 
     switch (sub) {
@@ -3602,6 +3727,7 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
       }
       case 'list':
       default: {
+        const filter = q?.trim() || undefined;
         const entries = this.workspaceStore.list();
         const currentCwd = this.sessionStore.getCwd(ctx.userId);
         const sortMode = this.wsSortPreference.get(ctx.userId) ?? 'recent';
@@ -3618,6 +3744,16 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
           entries.sort((a, b) => a.name.localeCompare(b.name));
         }
 
+        // 关键词筛选：alias name 或完整 path 命中即保留，大小写不敏感的子串包含
+        // （禁止 new RegExp(q)——用户搜 `foo(` 会直接抛）。插在排序之后、分页
+        // 之前：先分页再过滤会出现某页只剩 1 条的残页，且翻页时筛选像是丢了。
+        const ql = filter?.toLowerCase();
+        const visible = ql
+          ? entries.filter(
+              (e) => e.name.toLowerCase().includes(ql) || e.path.toLowerCase().includes(ql),
+            )
+          : entries;
+
         // Pagination calculations (mirror cmdOrder): clamp stale/out-of-range
         // offsets so prev/next always step by WS_PAGE_SIZE.
         const {
@@ -3627,7 +3763,7 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
           currentPage,
           pageItems: pageEntries,
           hasPagination,
-        } = pageSlice(entries, offset, WS_PAGE_SIZE);
+        } = pageSlice(visible, offset, WS_PAGE_SIZE);
 
         // Build body elements: current cwd + workspace list with dividers
         const bodyElements: object[] = [];
@@ -3637,12 +3773,36 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
           tag: 'div',
           text: { tag: 'lark_md', content: `📂 当前工作目录：\`${currentCwd ?? '(未设置)'}\`` },
         });
+        bodyElements.push({ tag: 'hr' });
 
-        if (entries.length === 0) {
-          bodyElements.push({ tag: 'hr' });
+        // 搜索行：「当前工作目录」之下、排序行之上（与 /ls 同一视觉动线：主信息
+        // 在上、过滤紧随其后、列表在下）
+        bodyElements.push(
+          searchBar({
+            cmd: 'ws.filter',
+            placeholder: '搜索名称或路径，输完点 ✓',
+            currentQuery: filter,
+          }),
+        );
+        if (filter) {
+          bodyElements.push({
+            tag: 'div',
+            text: {
+              tag: 'lark_md',
+              content: `🔍 筛选："${filter}" · 命中 ${totalCount} 个 workspace（清空输入点 ✓ 取消）`,
+            },
+          });
+        }
+
+        if (entries.length === 0 && !filter) {
           bodyElements.push({
             tag: 'div',
             text: { tag: 'lark_md', content: '没有保存的 workspace' },
+          });
+        } else if (filter && visible.length === 0) {
+          bodyElements.push({
+            tag: 'div',
+            text: { tag: 'lark_md', content: `🔍 无匹配条目（关键词："${filter}"）` },
           });
         } else {
           // Sort mode indicator + toggle button: placed above the list so the user
@@ -3676,7 +3836,12 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
                     text: { tag: 'plain_text', content: `切换为 ${switchLabel}` },
                     type: 'default',
                     size: 'small',
-                    behaviors: [{ type: 'callback', value: { cmd: 'ws.sort' } }],
+                    behaviors: [
+                      {
+                        type: 'callback',
+                        value: { cmd: 'ws.sort', ...(filter ? { q: filter } : {}) },
+                      },
+                    ],
                   },
                 ],
               },
@@ -3705,7 +3870,12 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
                       behaviors: [
                         {
                           type: 'callback',
-                          value: { cmd: 'ws.use', name: entry.name, offset: safeOffset },
+                          value: {
+                            cmd: 'ws.use',
+                            name: entry.name,
+                            offset: safeOffset,
+                            ...(filter ? { q: filter } : {}),
+                          },
                         },
                       ],
                     },
@@ -3723,7 +3893,12 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
                       behaviors: [
                         {
                           type: 'callback',
-                          value: { cmd: 'ws.remove', name: entry.name, offset: safeOffset },
+                          value: {
+                            cmd: 'ws.remove',
+                            name: entry.name,
+                            offset: safeOffset,
+                            ...(filter ? { q: filter } : {}),
+                          },
                         },
                       ],
                     },
@@ -3743,6 +3918,7 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
               offset: safeOffset,
               pageSize: WS_PAGE_SIZE,
               total: totalCount,
+              extra: filter ? { q: filter } : {},
               label: `**${currentPage}/${totalPages}**（${totalCount}）`,
               prevText: '⬅',
               nextText: '➡',
