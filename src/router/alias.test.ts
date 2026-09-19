@@ -90,7 +90,7 @@ describe('order 别名卡片（order.alias*）', () => {
     expect(
       deepFind(sentCard.body.elements, (e) => e.tag === 'input' && e.name === 'aliasName'),
     ).toBe(true);
-    // input 带 behaviors 回调（提交图标触发 order.aliasInput）
+    // input 带 behaviors 回调（提交触发 order.aliasInput）
     expect(deepFind(sentCard.body.elements, (e) => Array.isArray(e.behaviors))).toBe(true);
     // 200861 铁律
     expectNoV1ActionContainer(JSON.stringify(sentCard));

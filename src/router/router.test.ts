@@ -3344,10 +3344,10 @@ describe('CommandRouter', () => {
     expect(router.pendingConfig?.idle.watchdogMinutes).toBe('30');
   });
 
-  // 2026-07-04 回归测试：CardKit 2.0 input 自带提交图标回传 input_value
-  // 这是新增路径：移除每个 input 旁的 💾 按钮后，提交图标触发 callback 时
+  // 2026-07-04 回归测试：CardKit 2.0 input 提交（回车/完成键）回传 input_value
+  // 这是新增路径：移除每个 input 旁的 💾 按钮后，提交触发 callback 时
   // 飞书回传 action.input_value，dispatcher 转成 fullValue.inputValue 传给 router
-  it('config.input reads inputValue (CardKit 2.0 input submit icon) into pendingConfig', async () => {
+  it('config.input reads inputValue (CardKit 2.0 input submission) into pendingConfig', async () => {
     // 2026-07-14: claude.settings 字段已从 schema 和卡片删除，改测 claude.model
     const { router } = createRouter();
 

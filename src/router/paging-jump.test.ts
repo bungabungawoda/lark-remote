@@ -1,4 +1,4 @@
-// 分页卡「直接跳转页码」：paginationBar 内置 CardKit 2.0 input（✓ 提交图标），
+// 分页卡「直接跳转页码」：paginationBar 内置 CardKit 2.0 input（回车/完成键提交），
 // 用户输入页码即可跳到对应页；覆盖 /ls /ws /resume /active /order 全部多页卡片。
 import { describe, it, expect, beforeEach } from 'vitest';
 import fs from 'node:fs';

@@ -180,7 +180,7 @@ This project uses CardKit 2.0 exclusively (no 1.x code paths remain). 2.0 card c
 - Interactive components (button/select_static/input) **attach directly to body.elements**, wrapping in `action` container is forbidden
 - Callbacks uniformly use `behaviors:[{type:"callback",value:{cmd,key}}]`
 - Streaming output doesn't need tabs; content is arranged inline
-- SDK 0.3.0+ reads payload from `action.action.value`, select selection from `action.option`, input value from `action.formValue` (the input submit icon's `input_value` is dropped by the normalizer — read from `action.raw.action.input_value` with `includeRawEvent: true`)
+- SDK 0.3.0+ reads payload from `action.action.value`, select selection from `action.option`, input value from `action.formValue` (the `input_value` sent on input submission is dropped by the normalizer — read from `action.raw.action.input_value` with `includeRawEvent: true`)
 
 ### 6.4 `/ws` Card
 
