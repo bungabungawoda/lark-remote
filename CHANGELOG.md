@@ -5,6 +5,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.3] - 2026-09-24
+
+### 新增
+
+- **富文本消息的顶层附件也能落盘了**：`@larksuite/channel` 从 `0.3.0` 升到 `0.7.1`。富文本（`post`）消息在**正文之外**的顶层附件区（`<file key=… name=…/>`，文件夹为 `<folder …/>`）此前不产出资源、会被当噪声丢掉；现在按序号识别并保存到当前工作目录，附件绝对路径照常写进 agent 提示词。往群里发一条「正文 + PDF」的富文本消息，agent 拿到的和普通文件消息一致（文件夹不产资源，只保留正文）
+- **Windows 上收摊改走协议通道**：进程终止不再依赖跨进程 `SIGTERM`（win32 上本就不可靠），各 runner 统一登记「协议停止请求」，由 agent 自己响应后退出
+
+### 修复
+
+- **审批重投不再永不过期**：同一个 `requestId` 被重复投递时重新计时，并保证一个 requestId 最多只有一条待触发计时器。此前重投会留下两条计时器——要么审批永远等不到超时（server 无限等待），要么旧计时器提前把新窗口咬掉
+- **Windows 防休眠此前从未生效**：`SetThreadExecutionState` 的 flags 因 Int32 溢出被截断，脚本一直静默失败。现按无符号 32 位、以十进制字面量传参，并把非终止错误升级为终止错误，让失败能落到告警分支而不是无声无息
+- **资源下载超时不再静默**：超时只停止等待，底层下载照跑，晚到的结果由回调补做清理——避免「界面说超时、文件其实落了盘却没人管」
+- **租户 token 失效会自动恢复**：识别 `tenant_access_token` 失效（飞书业务码 `99991663` 与 HTTP 401）并刷新后重试，不再让整条消息处理链失败
+- **卡片 patch 失败不再成为无人接的 rejection**：流式卡片的 patch 由 throttle 触发、脱离 await 链（`Throttle.fireSoon` 丢掉 promise），业务码异常时改为记 warn 并原样透传返回值；需要抛出的场景收敛到带 await 的更新入口
+
+### 变更
+
+- **平台能力收口**：进程终止统一走 `Terminator` 抽象（删除 `ProcessStopper` 兼容壳），路径、进程身份、休眠能力按平台各自实现
+- **claude 权限模式取值口径修正**：`permissionMode` 的 `default` 表示**省略该参数**（不是 CLI 的取值），与其他 agent 的配置语义对齐
+- **测试套件平台无关化**：消除用例与 fixture 对宿主平台的隐性依赖（Windows 上全量失败从 25 条降到 0）；同步 CLI 探测通道短路，不再依赖本机装了哪些 agent CLI
+- **测试临时目录统一自清**：文件级钩子 + 全局兜底清扫，消除 `%TEMP%` 泄漏，被强杀或超时的场景也能收拾干净
+
 ## [0.4.2] - 2026-09-19
 
 ### 新增
