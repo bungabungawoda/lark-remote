@@ -3,6 +3,8 @@ import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { ConnectionManager } from './connection-manager.js';
+import { AgentStopperRegistry } from '../../../platform/agent-stopper.js';
+import { binaryName } from '../../../platform/identity.js';
 import { rmRf } from '../../../../tests/lib/tmp-cleanup.js';
 
 /**
@@ -252,5 +254,35 @@ describe('ConnectionManager hook layering (review P2-1)', () => {
     });
 
     await expect(manager.acquire(tmpDir)).rejects.toThrow();
+  }, 10000);
+
+  it('test_anchor_connection_manager_plumbs_cooperative_stop_channel', async () => {
+    // design §3.3：runner 只提供「通道工厂」，登记/注销由连接层负责——连接是
+    // agent 进程的生命周期边界，pid 也只有这里知道（transport.pid）。
+    // 工厂必须拿到**连接本身**：协议取消只能发在这条连接上。
+    const { script, pidFile } = makeIdleServer(tmpDir);
+    const stoppers = new AgentStopperRegistry();
+    const seen: Array<{ pid: number; client: unknown }> = [];
+
+    const manager = new ConnectionManager({
+      ...nodeLaunch(script),
+      initializeParams: INIT_PARAMS,
+      stoppers,
+    });
+    // 与 kimi/opencode 同款接线方式：runner 在构造后赋值（manager 建在 super()
+    // 实参里时 this 尚不可用）
+    manager.stopper = ({ pid, client }) => {
+      seen.push({ pid, client });
+      return () => {};
+    };
+
+    const client = await manager.acquire(tmpDir);
+    const pid = Number(readFileSync(pidFile, 'utf8').trim());
+    expect(seen).toEqual([{ pid, client }]);
+    // agent 键取 binary 名（与 transport 建 Terminator 时同一来源，保证查表命中）
+    expect(stoppers.has(binaryName(process.execPath), pid)).toBe(true);
+
+    await manager.disposeAll();
+    expect(stoppers.has(binaryName(process.execPath), pid)).toBe(false);
   }, 10000);
 });

@@ -3,13 +3,20 @@ import { PassThrough } from 'node:stream';
 import type { ChildProcess } from 'node:child_process';
 import { createMockProc, emitExit } from '../../tests/lib/mock-process.js';
 
-// 不真起进程：identity 的全部断言都基于 spawn 的入参与 stdout 解析
-vi.mock('node:child_process', () => ({ spawn: vi.fn() }));
+// 不真起进程：identity 的全部断言都基于 spawn/execFileSync 的入参与 stdout 解析
+vi.mock('node:child_process', () => ({ spawn: vi.fn(), execFileSync: vi.fn() }));
 
-import { spawn } from 'node:child_process';
-import { queryProcessIdentity, tokenizeCommandLine, verifyPidIdentity } from './identity.js';
+import { execFileSync, spawn } from 'node:child_process';
+import {
+  queryProcessIdentity,
+  tokenizeCommandLine,
+  verifyPidIdentity,
+  verifyPidIdentityVerdict,
+  verifyPidIdentityVerdictSync,
+} from './identity.js';
 
 const mockSpawn = vi.mocked(spawn);
+const mockExecFileSync = vi.mocked(execFileSync);
 
 /** stdout 吐出给定文本后以 exitCode 退出（数据先于 exit 事件，贴合真实时序）。 */
 function procWithStdout(stdout: string, exitCode = 0): ChildProcess {
@@ -47,6 +54,7 @@ const CIM_CREATION_DATE = '20260904215415.123456+480';
 
 beforeEach(() => {
   mockSpawn.mockReset();
+  mockExecFileSync.mockReset();
 });
 
 describe('queryProcessIdentity (posix)', () => {
@@ -268,5 +276,187 @@ describe('tokenizeCommandLine', () => {
 
   it('末尾未闭合引号不吞 token', () => {
     expect(tokenizeCommandLine('claude "unclosed')).toEqual(['claude', 'unclosed']);
+  });
+});
+
+/**
+ * 匹配强度分档（2026-09-20）。fixture 取自本机实测的**真实安装形态**（脱敏，
+ * 家目录用 /home/user 占位），对应 identity.ts 的 IdentityMatchMode 注释：
+ *   - claude → `bin/claude.exe`（Mach-O 原生单文件，ps 首 token 就是它）
+ *   - codex  → `@openai/codex/bin/codex.js`（`#!/usr/bin/env node`，basename 恰好同名）
+ *   - pi     → `@earendil-works/pi-coding-agent/dist/bundle/cli.js`（名字只在目录里）
+ *   - dsh    → `@deepseek-ai/dsh/lib/bin.js`（同上）
+ * 后两者用 'executable' 档恒判 mismatch → 那两个 agent 的 killOrphan 会静默失效。
+ * 这就是这一档存在的全部理由，不是风格偏好。
+ */
+const NODE_BIN = '/home/user/.nvm/versions/node/v25.6.1/bin/node';
+const PI_CMD = `${NODE_BIN} /home/user/.nvm/versions/node/v25.6.1/lib/node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js --flag`;
+
+describe('matchMode：executable（默认）vs agent-invocation', () => {
+  it('agent-invocation：agent 名只在路径段里也命中（pi / dsh 真实安装形态）', async () => {
+    mockSpawn.mockReturnValue(procWithStdout(`${PI_CMD}\n`));
+    await expect(
+      verifyPidIdentity(4242, {
+        platform: 'linux',
+        expectedBinary: 'pi',
+        matchMode: 'agent-invocation',
+      }),
+    ).resolves.toBe(true);
+
+    mockSpawn.mockReturnValue(
+      procWithStdout(
+        `${NODE_BIN} /home/user/.nvm/versions/node/v25.6.1/lib/node_modules/@deepseek-ai/dsh/lib/bin.js\n`,
+      ),
+    );
+    await expect(
+      verifyPidIdentity(4242, {
+        platform: 'linux',
+        expectedBinary: 'dsh',
+        matchMode: 'agent-invocation',
+      }),
+    ).resolves.toBe(true);
+  });
+
+  it('默认 executable 档对同一命令行判 mismatch（InstanceLock 必须保持严格）', async () => {
+    // 锁文件记的是 binaryName(process.execPath)（node/bun）。放松成路径段匹配会让
+    // 形如 node-18 的无关进程被判成「锁还在」→ 新实例再也起不来。
+    mockSpawn.mockReturnValue(procWithStdout(`${PI_CMD}\n`));
+    await expect(
+      verifyPidIdentity(4242, { platform: 'linux', expectedBinary: 'pi' }),
+    ).resolves.toBe(false);
+  });
+
+  it('agent-invocation：basename 恰好同名的形态本来就命中（codex / claude 原生）', async () => {
+    mockSpawn.mockReturnValue(
+      procWithStdout(
+        `${NODE_BIN} /home/user/.nvm/versions/node/v25.6.1/lib/node_modules/@openai/codex/bin/codex.js\n`,
+      ),
+    );
+    await expect(
+      verifyPidIdentity(4242, {
+        platform: 'linux',
+        expectedBinary: 'codex',
+        matchMode: 'agent-invocation',
+      }),
+    ).resolves.toBe(true);
+
+    mockSpawn.mockReturnValue(
+      procWithStdout(
+        '/home/user/.nvm/versions/node/v25.6.1/lib/node_modules/@anthropic-ai/claude-code/bin/claude.exe --verbose\n',
+      ),
+    );
+    await expect(
+      verifyPidIdentity(4242, {
+        platform: 'linux',
+        expectedBinary: 'claude',
+        matchMode: 'agent-invocation',
+      }),
+    ).resolves.toBe(true);
+  });
+
+  it('agent-invocation 仍拒绝裸参数与「整条路径里没有该名字」（防误杀）', async () => {
+    for (const cmd of [
+      'bash claude',
+      'grep claude /var/log/app.log',
+      `${NODE_BIN} /home/user/pkg/cli.js --run`,
+    ]) {
+      mockSpawn.mockReturnValue(procWithStdout(`${cmd}\n`));
+      await expect(
+        verifyPidIdentity(4242, {
+          platform: 'linux',
+          expectedBinary: 'claude',
+          matchMode: 'agent-invocation',
+        }),
+      ).resolves.toBe(false);
+    }
+  });
+
+  it('段前缀必须紧跟非字母数字（claude-code 命中；claudette / claudeAgent 不命中）', async () => {
+    mockSpawn.mockReturnValue(procWithStdout(`${NODE_BIN} /home/user/claude-code/cli.js\n`));
+    await expect(
+      verifyPidIdentity(4242, {
+        platform: 'linux',
+        expectedBinary: 'claude',
+        matchMode: 'agent-invocation',
+      }),
+    ).resolves.toBe(true);
+
+    for (const dir of ['claudette', 'claudeAgent']) {
+      mockSpawn.mockReturnValue(procWithStdout(`${NODE_BIN} /home/user/${dir}/x.js\n`));
+      await expect(
+        verifyPidIdentity(4242, {
+          platform: 'linux',
+          expectedBinary: 'claude',
+          matchMode: 'agent-invocation',
+        }),
+      ).resolves.toBe(false);
+    }
+  });
+
+  it('已知代价：段前缀档对短名偏松（pi 会命中 pi-data/），换的是 pi/dsh 真能回收', async () => {
+    mockSpawn.mockReturnValue(procWithStdout(`${NODE_BIN} /home/user/pi-data/x.js\n`));
+    await expect(
+      verifyPidIdentity(4242, {
+        platform: 'linux',
+        expectedBinary: 'pi',
+        matchMode: 'agent-invocation',
+      }),
+    ).resolves.toBe(true);
+  });
+
+  it('三态区分：不匹配 → mismatch；查不到进程 → unknown', async () => {
+    mockSpawn.mockReturnValue(procWithStdout(`${NODE_BIN} /home/user/pkg/cli.js\n`));
+    await expect(
+      verifyPidIdentityVerdict(4242, {
+        platform: 'linux',
+        expectedBinary: 'pi',
+        matchMode: 'agent-invocation',
+      }),
+    ).resolves.toBe('mismatch');
+
+    mockSpawn.mockReturnValue(procWithStdout('', 1));
+    await expect(
+      verifyPidIdentityVerdict(4242, { platform: 'linux', expectedBinary: 'pi' }),
+    ).resolves.toBe('unknown');
+  });
+});
+
+describe('verifyPidIdentityVerdictSync（killOrphan 的同步入口）', () => {
+  it('posix：execFileSync 取 ps 命令行，按 matchMode 裁决', () => {
+    mockExecFileSync.mockReturnValue(`${PI_CMD}\n`);
+    expect(
+      verifyPidIdentityVerdictSync(4242, {
+        expectedBinary: 'pi',
+        matchMode: 'agent-invocation',
+      }),
+    ).toBe('match');
+
+    mockExecFileSync.mockReturnValue(`${NODE_BIN} /home/user/pkg/cli.js\n`);
+    expect(
+      verifyPidIdentityVerdictSync(4242, {
+        expectedBinary: 'pi',
+        matchMode: 'agent-invocation',
+      }),
+    ).toBe('mismatch');
+  });
+
+  it('查询失败（进程不存在 / ps 不可用）→ unknown（fail-closed，调用方不杀）', () => {
+    mockExecFileSync.mockImplementation(() => {
+      throw Object.assign(new Error('no such process'), { code: 'ESRCH' });
+    });
+    expect(verifyPidIdentityVerdictSync(4242, { expectedBinary: 'pi' })).toBe('unknown');
+  });
+
+  it('win32：同步档恒 unknown（CIM 无同步形态），且不发起任何查询', () => {
+    mockExecFileSync.mockReturnValue('anything\n');
+    expect(
+      verifyPidIdentityVerdictSync(4242, { platform: 'win32', expectedBinary: 'claude' }),
+    ).toBe('unknown');
+    expect(mockExecFileSync).not.toHaveBeenCalled();
+  });
+
+  it('非法 pid → unknown，不发起查询', () => {
+    expect(verifyPidIdentityVerdictSync(0, { expectedBinary: 'pi' })).toBe('unknown');
+    expect(mockExecFileSync).not.toHaveBeenCalled();
   });
 });

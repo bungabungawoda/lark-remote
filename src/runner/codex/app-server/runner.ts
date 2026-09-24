@@ -205,6 +205,9 @@ export class CodexAppServerRunner extends ConnectionBasedRunner<
       },
     };
     this.connectionManager = new ConnectionManager<JsonRpcClient<InitializeResult>>(managerOpts);
+    // 协议停止通道（design §3.3）：codex 的 cancel 是 `turn/interrupt` 请求，已由
+    // cancelCurrentTurn 实现；登记后 win32 优雅停止才有通道可用（否则一路树杀）。
+    this.connectionManager.stopper = ({ client }) => this.buildCooperativeStop(client);
   }
 
   protected get logTag(): string {

@@ -1,4 +1,4 @@
-import { execFileSync, type ChildProcess } from 'node:child_process';
+import type { ChildProcess } from 'node:child_process';
 import {
   spawnProcess,
   isWindowsCommandNotFoundLine,
@@ -10,7 +10,9 @@ import fs from 'node:fs';
 import type { Readable } from 'node:stream';
 import { silentlyUnlink } from '../../common/fs.js';
 import { getLogger } from '../../logger/index.js';
-import { ProcessStopper } from './process-stopper.js';
+import { binaryName, verifyPidIdentityVerdictSync } from '../../platform/identity.js';
+import { createTerminator, type Terminator } from '../../platform/terminator.js';
+import { agentStopperRegistry, type AgentStopper } from '../../platform/agent-stopper.js';
 import { SpawnHeartbeat } from './spawn-heartbeat.js';
 import { createJSONLStream } from './jsonl-stream.js';
 import { DEFAULT_STOP_GRACE_MS } from '../../config/index.js';
@@ -112,7 +114,7 @@ export function unregisterExitCleanup(handler: ExitCleanupHandler): void {
 export abstract class SpawningRunner {
   protected currentProcess: ChildProcess | null = null;
   protected readonly pidFilePath: string;
-  protected readonly stopper: ProcessStopper;
+  protected readonly terminator: Terminator;
   protected readonly spawnHeartbeat: SpawnHeartbeat;
   protected binary: string;
   protected stopGraceMs: number;
@@ -139,6 +141,13 @@ export abstract class SpawningRunner {
    * 非零退出」才判 command-not-found；真挂起由既有 grace/超时兜底。
    */
   protected commandNotFoundSeen = false;
+  /**
+   * 本 runner 的 agent key（'claude'/…）：win32 上既是 Terminator 查协议停止
+   * 通道的键，也是这里登记通道的键。undefined = 无通道（如 `!` bash）。
+   */
+  protected readonly agent?: string;
+  /** 已登记的协议停止通道（agent+pid 键）；null = 未登记。 */
+  private stopperRegistration: { pid: number; stopper: AgentStopper } | null = null;
 
   constructor(opts: {
     pidDir?: string;
@@ -159,16 +168,25 @@ export abstract class SpawningRunner {
      * spawn-stage-stalled WARN identifies the right agent.
      */
     logTag?: string;
+    /**
+     * 当前 run 所属 agent（'claude'/'kimi'/…）：win32 上按这个 key 查协议停止
+     * 通道。缺省 undefined = 无通道（Terminator 会显式记录后走树杀，不空等）。
+     */
+    agent?: string;
+    /** 终止器注入（测试用）；默认按平台建 POSIX/win32 实现 */
+    terminator?: Terminator;
   }) {
     // Subclasses set this.binary after super()
     this.binary = '';
     this.stopGraceMs = opts.stopGraceMs ?? DEFAULT_STOP_GRACE_MS;
     this.logTag = opts.logTag ?? 'spawning-runner';
+    this.agent = opts.agent;
     const pidDir = opts.pidDir ?? path.join(os.homedir(), '.lark-remote');
     const workspaceSuffix = `-${opts.workspace.replace(/[^a-zA-Z0-9]/g, '_')}`;
     const pidFilePrefix = opts.pidFilePrefix ?? 'spawning';
     this.pidFilePath = path.join(pidDir, `${pidFilePrefix}${workspaceSuffix}.pid`);
-    this.stopper = new ProcessStopper({ graceMs: this.stopGraceMs });
+    this.terminator =
+      opts.terminator ?? createTerminator({ graceMs: this.stopGraceMs, agent: opts.agent });
     this.spawnHeartbeat = new SpawnHeartbeat(opts.spawnHeartbeatMs ?? 30_000, this.logTag);
   }
 
@@ -210,7 +228,7 @@ export abstract class SpawningRunner {
    * 'error' for ENOENT/EACCES, but some binaries fail silently without ever
    * emitting it. Without the race, the spawn lead-in hangs forever → the
    * workspace serial queue never settles → permanent deadlock, and /stop
-   * can't recover (ProcessStopper returns early when pid === undefined).
+   * can't recover (Terminator.stop returns early when pid === undefined).
    * The timeout keeps the deadlock bounded.
    */
   protected awaitSpawnError(proc: ChildProcess): Promise<Error | undefined> {
@@ -281,6 +299,10 @@ export abstract class SpawningRunner {
       this.spawnHeartbeat.notifyStdout();
     });
 
+    // 协议停止通道登记（design §3.3）：子进程起来后立刻登记，win32 上
+    // Terminator 停这个 pid 时才能取到通道；进程退出/被停后注销。
+    this.registerStopper(proc);
+
     this.spawnStderr = '';
     proc.stderr?.on('data', (chunk: Buffer) => {
       const text = chunk.toString('utf-8').trim();
@@ -306,26 +328,80 @@ export abstract class SpawningRunner {
   }
 
   /**
+   * 登记本进程的协议停止通道（design §3.3 表）：win32 上没有可拦截的跨进程
+   * SIGTERM，「优雅停止」只能经 agent 自有通道请求对方自行退出。stdio 型 agent
+   * CLI 的通道就是关 stdin（cc-connect 已验证 claude：关 stdin → 干净退出并跑
+   * Stop hooks）。
+   *
+   * 只在子进程真的挂了 stdin 管道时登记：stdin 为 'ignore' 的子类若照登一条空
+   * 通道，优雅段会从「无通道 → 显式跳过 + 直接树杀」退化成「空转满 grace 再
+   * 树杀」——照样能停，但白等一个不会被消费的请求。
+   */
+  protected registerStopper(proc: ChildProcess): void {
+    const pid = proc.pid;
+    if (this.agent === undefined || pid === undefined || !proc.stdin) return;
+    const stopper: AgentStopper = (target) => {
+      target.stdin?.end();
+    };
+    // 上一次 spawn 的登记先撤掉：进程换代后旧 pid 的条目会一直挂在注册表里
+    // （pid 被系统复用时可能指向无关进程）。
+    this.unregisterStopper();
+    agentStopperRegistry.register(this.agent, pid, stopper);
+    this.stopperRegistration = { pid, stopper };
+  }
+
+  /** 注销本 runner 登记的通道（幂等；未登记时无操作）。 */
+  protected unregisterStopper(): void {
+    const reg = this.stopperRegistration;
+    if (!reg || this.agent === undefined) return;
+    this.stopperRegistration = null;
+    agentStopperRegistry.unregister(this.agent, reg.pid, reg.stopper);
+  }
+
+  /**
    * Stop the current process if one is running. Delegates the actual
-   * SIGTERM → grace → SIGKILL sequence to `this.stopper.stop(proc, opts)`
-   * (see `src/runner/common/process-stopper.ts`), forwarding the `immediate`
-   * flag verbatim so all subclasses inherit identical stop semantics.
+   * posix SIGTERM → grace → SIGKILL / win32 协议通道 → grace → taskkill 序列
+   * 给 `this.terminator.stop(proc, { immediate })`（见
+   * `src/platform/terminator.ts`），`immediate` 在这里收敛成显式 boolean，
+   * 所有子类继承同一套停止语义。
    */
   async stop(opts?: { immediate?: boolean }): Promise<void> {
     const proc = this.currentProcess;
     if (!proc || proc.exitCode !== null || proc.signalCode !== null) {
       this.spawnHeartbeat.clear();
       this.currentProcess = null;
+      this.unregisterStopper();
       return;
     }
     this.stoppedByUser = true;
-    await this.stopper.stop(proc, { immediate: opts?.immediate });
+    // `immediate: opts?.immediate === true`：Terminator 契约要求显式 boolean，
+    // 旧 ProcessStopper 的 `immediate?: boolean` 会静默接受 undefined。
+    await this.terminator.stop(proc, { immediate: opts?.immediate === true });
+    // 注销必须在 stop() 之后：Terminator 就是在上面那次调用里查表取通道的
+    // （immediate 路径不查表，但一并注销同样正确——进程已进入终止流程）。
+    this.unregisterStopper();
 
     this.currentProcess = null;
     silentlyUnlink(this.pidFilePath);
     getLogger().debug(`[${this.logTag}] cleaned pid file ${this.pidFilePath}`);
   }
 
+  /**
+   * P1-10: 杀掉上一次崩溃留下的孤儿 agent 进程。**身份校验是动手的前置条件**：
+   * pid 文件里的 pid 可能已被系统回收给无关进程，`kill(pid, 0)` 存活探测分不出来。
+   *
+   * 判定单源 = `platform/identity`（posix `ps -o command=` / win32 CIM），三态：
+   *   - match    → 杀整个进程组（detached:true 下 agent 是组长，与 Terminator
+   *                posix 路径的 kill(-pid) 同语义，P1-12 子进程不孤儿化）；
+   *   - mismatch → pid 已被无关进程占用：绝不杀，文件是陈旧垃圾，清除自愈；
+   *   - unknown  → 查不到身份（ps 不可用/超时/CIM 被拒）：同样不杀，清文件。
+   * 统一原则：只有身份匹配才杀，验证失败一律不杀（fail-closed）。
+   *
+   * 同步实现是有意为之：调用方（Bridge.getRunner）是同步方法，改成异步会级联
+   * 整个 runner 接口。posix 上的成本与迁移前逐字相同（一次 execFileSync ps）；
+   * **win32 上同步路径恒返回 `unknown`**（CIM 必须经 PowerShell 收 stdout，没有同步
+   * 形态）→ 落到 fail-closed 分支「不杀 + 清文件」，语义正确而不是能力缺失。
+   */
   killOrphan(): void {
     if (!fs.existsSync(this.pidFilePath)) return;
     try {
@@ -336,24 +412,26 @@ export abstract class SpawningRunner {
         return;
       }
 
-      // P1-10: pid 复用防护。pid 文件里的 pid 可能是 bridge 崩溃后系统回收复用
-      // 给了无关进程——kill(pid, 0) 存活探测无法区分，必须先验证进程身份。
-      const match = this.matchPidToBinary(pid);
-      if (match !== 'match') {
-        // 'gone'：ps 查不到/报错 → 进程已消失，陈旧追踪物自愈清除（不杀）。
-        // 'mismatch'：身份不匹配 → pid 已被无关进程占用，绝不能杀；文件是
-        // 陈旧垃圾，一并清除。
-        // 统一原则：只有身份匹配才杀；验证失败一律不杀。
+      const expectedBinary = binaryName(this.binary);
+      // matchMode 'agent-invocation'（不是默认的 'executable'）：agent CLI 普遍是
+      // `#!/usr/bin/env node` 脚本，ps 看到的是 `node <安装路径>/…/cli.js`，名字只在
+      // 路径段里（pi → @earendil-works/pi-coding-agent/…）。用默认档会恒判 mismatch
+      // → 这些 agent 的孤儿永远回收不掉（2026-09-20 实测安装形态）。
+      const verdict = verifyPidIdentityVerdictSync(pid, {
+        expectedBinary,
+        matchMode: 'agent-invocation',
+      });
+      if (verdict !== 'match') {
         getLogger().warn(
-          `[${this.logTag}] killOrphan: pid ${pid} not confirmed as ${this.binary} ` +
-            `(${match}), skipping kill`,
+          `[${this.logTag}] killOrphan: pid ${pid} not confirmed as ${expectedBinary} ` +
+            `(${verdict}), skipping kill`,
         );
         silentlyUnlink(this.pidFilePath);
         return;
       }
 
       // 身份匹配：杀整个进程组（detached:true 下 agent 是组长），与
-      // ProcessStopper 的 kill(-pid) 语义对齐，子进程不会孤儿化（P1-12）。
+      // Terminator 的 kill(-pid) 语义对齐，子进程不会孤儿化（P1-12）。
       getLogger().info(`[${this.logTag}] killing orphan process group ${-pid}`);
       try {
         process.kill(-pid, 'SIGTERM');
@@ -363,35 +441,6 @@ export abstract class SpawningRunner {
       silentlyUnlink(this.pidFilePath);
     } catch {
       // ignore
-    }
-  }
-
-  /**
-   * P1-10: verify the process behind a stale pid file is actually ours before
-   * sending any signal. `ps -o command=` (not `comm=`) is used because agent
-   * binaries may be bash-wrapped scripts whose comm is the interpreter name
-   * (`/bin/bash`); the full command line contains the binary path/basename.
-   *
-   * Returns:
-   *   'match'    — ps succeeded and the command line contains this.binary
-   *                (absolute path) or its basename (PATH lookup).
-   *   'mismatch' — ps succeeded but the command line is clearly a different
-   *                process (pid was recycled to an unrelated process).
-   *   'unknown'  — ps failed / process gone / output unreadable: cannot tell.
-   */
-  private matchPidToBinary(pid: number): 'match' | 'mismatch' | 'gone' {
-    try {
-      const out = execFileSync('ps', ['-p', String(pid), '-o', 'command='], {
-        encoding: 'utf-8',
-      }).trim();
-      if (!out || out.includes('<defunct>')) return 'gone';
-      const binary = this.binary;
-      if (!binary) return 'gone';
-      const needle = binary.includes('/') ? binary : path.basename(binary);
-      return out.includes(needle) ? 'match' : 'mismatch';
-    } catch {
-      // ps 失败（进程不存在/权限）→ 视作 gone：不杀，让陈旧文件自愈
-      return 'gone';
     }
   }
 
@@ -434,11 +483,13 @@ export abstract class SpawningRunner {
     if (this.currentProcess && this.currentProcess.exitCode === null) {
       try {
         // P1-12: 只杀组长会让组内子进程（工具调用起的后台进程）reparent 成孤儿。
-        // 复用 ProcessStopper 的 immediate 组杀（SIGTERM+SIGKILL 同步发出，
-        // 进程退出路径 fire-and-forget 足够；正常进程退出时是 no-op）。
-        void this.stopper.stop(this.currentProcess, { immediate: true });
+        // Terminator.cleanupOnExit 在两种平台上都是「fire-and-forget 强杀整个
+        // 进程组/进程树」（posix kill(-pgid, SIGKILL) / win32 taskkill /T /F），
+        // 退出路径上无法等待，也不需要优雅段。
+        this.terminator.cleanupOnExit(this.currentProcess);
       } catch {}
     }
+    this.unregisterStopper();
     silentlyUnlink(this.pidFilePath);
   }
 

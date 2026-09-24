@@ -49,11 +49,15 @@ function isAlive(pid: number): boolean {
 }
 
 /**
- * ps 可用性探测：killOrphan 的身份校验（matchPidToBinary）依赖
+ * ps 可用性探测：killOrphan 的身份校验（`platform/identity`）依赖
  * `ps -p <pid> -o command=`。ps 被禁用的环境（沙箱 CI/受限容器）里校验恒返回
- * 'gone'，killOrphan 按设计 fail-closed 不杀任何进程——本锚点的
+ * 'unknown'，killOrphan 按设计 fail-closed 不杀任何进程——本锚点的
  * 「身份匹配 → 组杀」端到端路径无法执行，只能 skip（组杀语义在本环境由
  * p1-12-cleanup-on-exit-group 锚点覆盖，不依赖 ps）。
+ *
+ * 注意这里 skip 掉的是**唯一**覆盖 killOrphan 身份的端到端用例：匹配规则本身
+ * （含 pi/dsh 那种「名字只在路径段里」的安装形态）由 `src/platform/identity.test.ts`
+ * 的 matchMode 用例离线固定，不依赖 ps。
  */
 const PS_AVAILABLE =
   spawnSync('ps', ['-p', String(process.pid), '-o', 'command='], { encoding: 'utf-8' }).status ===
@@ -94,8 +98,8 @@ describePosix('P1-10: killOrphan group kill on identity match', () => {
       // mock CLI 恒为 Node 启动器（path-mock 契约，见其文件头）：打印 init 后
       // 在**同一进程组**里起一个后台 sleep（不 detached → 继承 pgid），因此只有
       // 组杀 kill(-pid) 能连它一起收掉——正是本锚点要验的语义。启动器路径
-      // `<tmp>/claude.mock.js` 含 "claude"，killOrphan 的 ps 身份校验
-      // （`ps -o command=` 含 binary 名）可命中 → 走「身份匹配 → 组杀」路径。
+      // `<tmp>/claude.mock.js` 的末段以 "claude" 开头，killOrphan 的 ps 身份校验
+      // （'agent-invocation' 档，路径段前缀规则）可命中 → 走「身份匹配 → 组杀」路径。
       writeMockSource(
         tmpDir,
         'claude',

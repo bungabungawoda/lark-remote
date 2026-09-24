@@ -11,13 +11,14 @@
  */
 import { describe, it, expect, test, vi, beforeEach, afterEach } from 'vitest';
 import { currentPlatform, isWin32 } from '../../../src/platform/select.js';
-import { Readable } from 'node:stream';
+import { Readable, Writable } from 'node:stream';
 import fs from 'node:fs';
 import type { ChildProcess } from 'node:child_process';
 import { SpawningRunner } from '../../../src/runner/common/spawning-runner.js';
 import type { SpawnOptions } from '../../../src/runner/types.js';
 import type { SpawnHeartbeat } from '../../../src/runner/common/spawn-heartbeat.js';
-import type { ProcessStopper } from '../../../src/runner/common/process-stopper.js';
+import type { Terminator } from '../../../src/platform/terminator.js';
+import { agentStopperRegistry } from '../../../src/platform/agent-stopper.js';
 import { createMockProc } from '../../../tests/lib/mock-process.js';
 
 // ---------------------------------------------------------------------------
@@ -57,8 +58,8 @@ import { execFileSync } from 'node:child_process';
 // ---------------------------------------------------------------------------
 
 class SpawnChildHarness extends SpawningRunner {
-  constructor(opts: { binary?: string; pidDir?: string } = {}) {
-    super({ workspace: 'test', pidDir: opts.pidDir });
+  constructor(opts: { binary?: string; pidDir?: string; agent?: string } = {}) {
+    super({ workspace: 'test', pidDir: opts.pidDir, agent: opts.agent });
     this.binary = opts.binary ?? 'testbin';
   }
 
@@ -83,8 +84,8 @@ class SpawnChildHarness extends SpawningRunner {
     return this.spawnHeartbeat;
   }
 
-  get testStopper(): ProcessStopper {
-    return this.stopper;
+  get testTerminator(): Terminator {
+    return this.terminator;
   }
 
   get testCurrentProcess(): ChildProcess | null {
@@ -403,7 +404,9 @@ describe('SpawningRunner stoppedByUser state', () => {
       pidDir: '/tmp/spawning-runner-r21',
     });
 
-    const stopperStopSpy = vi.spyOn(runner.testStopper, 'stop').mockResolvedValue(undefined);
+    const terminatorStopSpy = vi
+      .spyOn(runner.testTerminator, 'stop')
+      .mockResolvedValue({ requested: true, via: 'cooperative' });
 
     const fakeProc = createMockProc({
       pid: 12345,
@@ -420,7 +423,7 @@ describe('SpawningRunner stoppedByUser state', () => {
     await runner.stop({ immediate: true });
 
     expect(runner.testStoppedByUser).toBe(true);
-    expect(stopperStopSpy).toHaveBeenCalledOnce();
+    expect(terminatorStopSpy).toHaveBeenCalledOnce();
   });
 
   it('test_anchor_stop_does_not_set_stopped_by_user_when_no_process', async () => {
@@ -446,13 +449,15 @@ describe('SpawningRunner stoppedByUser state', () => {
 describe('SpawningRunner stop / killOrphan / isRunning', () => {
   beforeEach(() => vi.clearAllMocks());
 
-  it('test_anchor_spawning_runner_stop_delegates_to_stopper_with_immediate', async () => {
+  it('test_anchor_spawning_runner_stop_delegates_to_terminator_with_immediate', async () => {
     const runner = new SpawnChildHarness({
       binary: 'fake-binary',
       pidDir: '/tmp/spawning-runner-anchor-test-r11',
     });
 
-    const stopperStopSpy = vi.spyOn(runner.testStopper, 'stop').mockResolvedValue(undefined);
+    const terminatorStopSpy = vi
+      .spyOn(runner.testTerminator, 'stop')
+      .mockResolvedValue({ requested: true, via: 'cooperative' });
 
     const fakeProc = createMockProc({
       pid: 24680,
@@ -467,9 +472,9 @@ describe('SpawningRunner stop / killOrphan / isRunning', () => {
 
     await runner.stop({ immediate: true });
 
-    expect(stopperStopSpy).toHaveBeenCalledOnce();
-    expect(stopperStopSpy.mock.calls[0][0]).toBe(fakeProc);
-    expect(stopperStopSpy.mock.calls[0][1]).toEqual({ immediate: true });
+    expect(terminatorStopSpy).toHaveBeenCalledOnce();
+    expect(terminatorStopSpy.mock.calls[0][0]).toBe(fakeProc);
+    expect(terminatorStopSpy.mock.calls[0][1]).toEqual({ immediate: true });
   });
 
   it.skipIf(isWin32(currentPlatform))(
@@ -568,5 +573,76 @@ describe('SpawningRunner stop / killOrphan / isRunning', () => {
     mockProc.exitCode = null;
     mockProc.signalCode = 'SIGTERM';
     expect(runner.isRunning).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 协议停止通道登记（design §3.3）
+// ---------------------------------------------------------------------------
+
+describe('SpawningRunner 协议停止通道登记', () => {
+  const PID_DIR = '/tmp/spawning-runner-anchor-test';
+
+  beforeEach(() => vi.clearAllMocks());
+
+  it('test_anchor_spawning_runner_registers_stdin_close_stop_channel', async () => {
+    // win32 上没有可拦截的跨进程 SIGTERM：不登记通道，优雅段恒被判「无通道」
+    // 后直接树杀（不报错、无信号可查）；登记了却语义不对，则白等满 grace。
+    // 这里钉住：子进程挂了 stdin 管道 + 声明了 agent → 按 agent+pid 登记一条
+    // 「关 stdin」通道，且 stop 后注销（不留死 pid 条目）。
+    const stdin = new Writable({ write: (_c, _e, cb) => cb() });
+    const endSpy = vi.spyOn(stdin, 'end');
+    const mockProc = createMockProc({ pid: 99001, stdin, stdout: null });
+    vi.mocked(spawn).mockReturnValue(mockProc);
+
+    const runner = new SpawnChildHarness({
+      binary: 'claude',
+      pidDir: PID_DIR,
+      agent: 'claude',
+    });
+    await runner.callSpawnChild({ cwd: '/tmp/fake' });
+
+    const stopper = agentStopperRegistry.get('claude', 99001);
+    expect(stopper).toBeDefined();
+
+    // 通道语义 = 关 stdin（cc-connect 已验证 claude 关 stdin 后干净退出并跑 Stop hooks）
+    await stopper!(createMockProc({ pid: 99001, stdin }));
+    expect(endSpy).toHaveBeenCalled();
+
+    await runner.cleanupSpawnSideEffects();
+    expect(agentStopperRegistry.get('claude', 99001)).toBeUndefined();
+  });
+
+  it('test_anchor_spawning_runner_skips_channel_without_agent_key', async () => {
+    // 未声明 agent（如 `!` bash）= 该 agent 没有协议通道：**不登记**，让
+    // Terminator 显式走「无通道 → 跳过优雅段 + 直接树杀」，而不是塞一条空通道
+    // 让优雅段空转到 grace 超时。
+    const mockProc = createMockProc({
+      pid: 99002,
+      stdin: new Writable({ write: (_c, _e, cb) => cb() }),
+      stdout: null,
+    });
+    vi.mocked(spawn).mockReturnValue(mockProc);
+
+    const runner = new SpawnChildHarness({ binary: 'claude', pidDir: PID_DIR });
+    await runner.callSpawnChild({ cwd: '/tmp/fake' });
+
+    expect(agentStopperRegistry.has('claude', 99002)).toBe(false);
+
+    await runner.cleanupSpawnSideEffects();
+  });
+
+  it('test_anchor_spawning_runner_skips_channel_without_stdin_pipe', async () => {
+    // 子进程没挂 stdin（getStdio 默认 'ignore'）：关 stdin 无从谈起，
+    // 照登一条空通道只会把「跳过优雅段」变成「空转满 grace」。
+    const mockProc = createMockProc({ pid: 99003, stdin: null, stdout: null });
+    vi.mocked(spawn).mockReturnValue(mockProc);
+
+    const runner = new SpawnChildHarness({ binary: 'claude', pidDir: PID_DIR, agent: 'claude' });
+    await runner.callSpawnChild({ cwd: '/tmp/fake' });
+
+    expect(agentStopperRegistry.has('claude', 99003)).toBe(false);
+
+    await runner.cleanupSpawnSideEffects();
   });
 });

@@ -25,7 +25,7 @@
  * 生命周期：一个 workspace 一个长驻进程（lifetime='workspace'）。每次
  * run(message) = 写一条 user 消息 + 消费 stdout 事件直到本 turn 的 result；
  * 进程在 turn 之间保持存活（stdin 不关闭），/stop / /new / /cd / 看门狗超时
- * 时经 ProcessStopper 组杀，下条消息按 SessionStore 的 sessionId --resume。
+ * 时经 Terminator 组杀，下条消息按 SessionStore 的 sessionId --resume。
  */
 
 import type { ChildProcess } from 'node:child_process';
@@ -81,7 +81,7 @@ export interface PermissionResult {
 
 /**
  * ClaudeSession extends SpawningRunner 复用其 spawn/pid 文件/killOrphan/
- * ProcessStopper/SpawnHeartbeat/退出分发器机制（P1-1/P1-10/P1-11 契约保持），
+ * Terminator/SpawnHeartbeat/退出分发器机制（P1-1/P1-10/P1-11 契约保持），
  * 但 run() 覆盖为「长驻 + 按 turn 消费」：进程跨 turn 存活，turn 结束以
  * stream-json result 事件（非 compact）为界，而不是进程退出。
  */
@@ -139,6 +139,8 @@ export class ClaudeSession extends SpawningRunner {
       spawnHeartbeatMs: opts.spawnHeartbeatMs,
       pidFilePrefix: 'claude',
       logTag: 'claude-runner',
+      // win32 查协议停止通道用的 agent key（claude 的 channel = 控制通道/关 stdin）
+      agent: 'claude',
     });
     this.binary = 'claude';
     this.permissionMode = opts.permissionMode ?? 'bypassPermissions';
@@ -451,6 +453,9 @@ export class ClaudeSession extends SpawningRunner {
         if (generation === this.processGeneration) {
           this.streamEnded = true;
           this.currentProcess = null;
+          // 进程自行结束（崩溃/上游退出）：注销协议停止通道，别把死 pid 的
+          // 条目留在注册表里等 pid 复用。
+          this.unregisterStopper();
           silentlyUnlink(this.pidFilePath);
           this.wakeWaiters();
         }

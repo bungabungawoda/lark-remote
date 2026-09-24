@@ -115,7 +115,7 @@
     "tests/anchor/priority/p1-9-index-factories-workspace.test.ts",
     "tests/anchor/priority/p2-11-base-await-spawn-error-timeout.test.ts",
     "tests/anchor/priority/p2-13-spawn-failure-cause.test.ts",
-    "tests/anchor/priority/p2-15-process-stopper-grace-timer.test.ts",
+    "tests/anchor/priority/p2-15-terminator-grace-timer.test.ts",
     "tests/anchor/priority/p2-16-stderr-log-level.test.ts",
     "tests/anchor/misc/process-listener-leak.test.ts"
   ],

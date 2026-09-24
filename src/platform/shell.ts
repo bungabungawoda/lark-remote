@@ -18,6 +18,20 @@ import { spawnProcess } from './spawn.js';
 
 export type ShellKind = 'bash' | 'powershell' | 'cmd';
 
+/** 首 token 是这些名字时按「要一个 shell」处理（win32 上它们只能来自 Git Bash）。 */
+const SHELL_COMMANDS = new Set(['bash', 'sh', 'zsh', 'dash']);
+
+/** 取命令名（去目录、去扩展名、小写）：`C:\Program Files\Git\bin\bash.exe` → `bash`。 */
+function commandBaseName(file: string): string {
+  const base = file.split(/[/\\]/).pop() ?? file;
+  const dot = base.lastIndexOf('.');
+  return (dot > 0 ? base.slice(0, dot) : base).toLowerCase();
+}
+
+const MISSING_GIT_BASH_MESSAGE =
+  'Windows 上执行 bash 命令需要 Git Bash（未在 PATH 中找到 bash.exe）；' +
+  '请安装 Git for Windows 后重试';
+
 export interface ShellBackend {
   readonly kind: ShellKind;
   /**
@@ -25,6 +39,21 @@ export interface ShellBackend {
    * win32 会强制附加 `windowsHide: true`，调用方无法覆盖。
    */
   spawn(command: string, opts: { cwd: string; options?: SpawnOptions }): ChildProcess;
+  /**
+   * 执行一段 **argv**（不是 shell 字符串）。ACP 的 terminal/create 这类协议
+   * 直接给 command + args，逐 token 语义必须保留（拼成字符串会改写引号/转义），
+   * 所以这里**只把「可执行文件在哪」收进 seam**，不改写参数也不加 `-c`：
+   *
+   * - posix：原样透传（与迁移前 `spawnProcess(command, args, ...)` 逐字一致）；
+   * - win32：首 token 是 shell（bash/sh/zsh/dash）时按 Git Bash 解析，缺失则抛
+   *   {@link ShellUnavailableError}——kimi agent 在 Windows 上可用的前置条件
+   *   （§4.4）。其余命令交给 cross-spawn 做 PATH/PATHEXT 解析，不做命令翻译。
+   */
+  spawnArgv(
+    file: string,
+    args: readonly string[],
+    opts?: { cwd?: string; options?: SpawnOptions },
+  ): ChildProcess;
 }
 
 /** shell 不可用（如 win32 上没装 Git Bash）：调用方应转成明确错误卡。 */
@@ -65,6 +94,10 @@ export function createBashShellBackend(deps: ShellBackendDeps = {}): ShellBacken
     spawn(command, opts): ChildProcess {
       return spawnFn('bash', ['-c', command], { cwd: opts.cwd, ...opts.options });
     },
+    spawnArgv(file, args, opts = {}): ChildProcess {
+      // posix 不做任何翻译：调用方给的 argv 已经是最终形态（迁移前行为）。
+      return spawnFn(file, [...args], { cwd: opts.cwd, ...opts.options });
+    },
   };
 }
 
@@ -72,6 +105,24 @@ export function createBashShellBackend(deps: ShellBackendDeps = {}): ShellBacken
 export function createWin32ShellBackend(deps: ShellBackendDeps = {}): ShellBackend {
   const spawnFn = deps.spawn ?? spawnProcess;
   const kind = deps.kind ?? 'bash';
+
+  /**
+   * argv 路径与「`!` 用哪个 shell」无关：ACP 的 terminal/create 要的是 bash
+   * 本身，因此三种后端的 spawnArgv 共用同一套语义（shell 名 → Git Bash，
+   * 其余按 PATH/PATHEXT 透传）。
+   */
+  const spawnArgv: ShellBackend['spawnArgv'] = (file, args, opts = {}) => {
+    const spawnOpts = { cwd: opts.cwd, ...opts.options, windowsHide: true };
+    if (!SHELL_COMMANDS.has(commandBaseName(file))) {
+      return spawnFn(file, [...args], spawnOpts);
+    }
+    const resolve = deps.resolve ?? resolveExecutable;
+    const spec = resolve('bash', { platform: 'win32', pathEnv: deps.pathEnv });
+    if (!spec) {
+      throw new ShellUnavailableError('bash', MISSING_GIT_BASH_MESSAGE);
+    }
+    return spawnFn(spec.file, [...args], spawnOpts);
+  };
 
   if (kind === 'powershell') {
     return {
@@ -83,6 +134,7 @@ export function createWin32ShellBackend(deps: ShellBackendDeps = {}): ShellBacke
           windowsHide: true,
         });
       },
+      spawnArgv,
     };
   }
 
@@ -96,6 +148,7 @@ export function createWin32ShellBackend(deps: ShellBackendDeps = {}): ShellBacke
           windowsHide: true,
         });
       },
+      spawnArgv,
     };
   }
 
@@ -105,11 +158,7 @@ export function createWin32ShellBackend(deps: ShellBackendDeps = {}): ShellBacke
       const resolve = deps.resolve ?? resolveExecutable;
       const spec = resolve('bash', { platform: 'win32', pathEnv: deps.pathEnv });
       if (!spec) {
-        throw new ShellUnavailableError(
-          'bash',
-          'Windows 上执行 bash 命令需要 Git Bash（未在 PATH 中找到 bash.exe）；' +
-            '请安装 Git for Windows 后重试',
-        );
+        throw new ShellUnavailableError('bash', MISSING_GIT_BASH_MESSAGE);
       }
       // 执行语义由 cross-spawn 负责（垫片 cmd.exe 受控执行）；这里只保证
       // bash 存在性并给出明确的「需要 Git Bash」错误
@@ -119,6 +168,7 @@ export function createWin32ShellBackend(deps: ShellBackendDeps = {}): ShellBacke
         windowsHide: true,
       });
     },
+    spawnArgv,
   };
 }
 

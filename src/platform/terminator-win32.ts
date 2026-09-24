@@ -98,10 +98,14 @@ export function createWin32Terminator(deps: Win32TerminatorDeps): Terminator {
         return { requested: true, via: 'taskkill' };
       }
       const agent = deps.agent;
-      const stopper = agent === undefined ? undefined : stoppers.get(agent);
+      // 按 agent + pid 查：同一 agent 可能有多条长驻连接（每 workspace 一条），
+      // 只有 pid 能把通道归属钉到手上这个 proc 上。
+      const stopper = agent === undefined ? undefined : stoppers.get(agent, proc.pid);
       if (!stopper) {
         // 无通道是合法状态：显式记录后走树杀，不做无意义的优雅空转
-        log?.(`win32 优雅停止跳过：agent=${agent ?? '(unknown)'} 无协议停止通道，直接树杀`);
+        log?.(
+          `win32 优雅停止跳过：agent=${agent ?? '(unknown)'} pid=${proc.pid} 无协议停止通道，直接树杀`,
+        );
         killTree(proc.pid);
         return { requested: true, via: 'skipped-no-channel' };
       }
