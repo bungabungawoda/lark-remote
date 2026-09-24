@@ -66,6 +66,7 @@ docs/**/*-playbook.md
 docs/**/*-experiment.md
 docs/**/*-tasks.md
 docs/**/lessons-*.md
+docs/**/rules/
 docs/**/architecture/*-config.md
 playbook*.md
 docs/feishu-card-*/
