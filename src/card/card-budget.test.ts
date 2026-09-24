@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { enforceCardBudget, countCardTables } from './card-budget.js';
+import { enforceCardBudget } from './card-budget.js';
 import { CARD_BUDGET_BYTES, FEISHU_MAX_TABLES } from './text-truncate.js';
 import { sessionEventPanel } from '../router/card-helpers.js';
 import { markdownDiv } from './collapsible.js';
@@ -252,9 +252,8 @@ describe('enforceCardBudget', () => {
     const resultStr = JSON.stringify(result.card);
     // 原始30KB的header不应完整存在
     expect(Buffer.byteLength(resultStr, 'utf8')).toBeLessThanOrEqual(CARD_BUDGET_BYTES);
-    if (result.reason?.includes('text_truncated')) {
-      expect(resultStr).toContain('small text'); // 小 div 不受影响
-    }
+    expect(result.reason).toContain('text_truncated');
+    expect(resultStr).toContain('small text'); // 小 div 不受影响
   });
 
   // ========== 阶段5：最终兜底 minimal card ==========
@@ -265,14 +264,17 @@ describe('enforceCardBudget', () => {
     const card = {
       schema: '2.0',
       config: { wide_screen_mode: true },
-      header: { title: { tag: 'plain_text', content: hugeContent } },
+      header: { title: { tag: 'plain_text', content: hugeContent }, template: 'blue' },
       body: { elements: [] },
     };
 
     const result = enforceCardBudget(card);
-    // 可能走到 extreme_fallback 或 text_truncated（取决于 header 是否被处理）
+    // 走哪一级降级都可接受，唯一不可接受的是把 50KB 原样发出去
     expect(result.wasTruncated).toBe(true);
-    expect(result.bytesAfter).toBeLessThanOrEqual(CARD_BUDGET_BYTES + 500); // minimal card ~small
+    expect(Buffer.byteLength(JSON.stringify(result.card), 'utf8')).toBeLessThanOrEqual(
+      CARD_BUDGET_BYTES,
+    );
+    expect(result.bytesAfter).toBeLessThan(result.bytesBefore);
   });
 
   // ========== bytesBefore/bytesAfter 可观测性 ==========
@@ -283,9 +285,8 @@ describe('enforceCardBudget', () => {
 
     expect(result.bytesBefore).toBeGreaterThan(0);
     expect(result.bytesAfter).toBeGreaterThan(0);
-    if (result.wasTruncated) {
-      expect(result.bytesAfter).toBeLessThan(result.bytesBefore);
-    }
+    expect(result.wasTruncated).toBe(true);
+    expect(result.bytesAfter).toBeLessThan(result.bytesBefore);
   });
 
   it('should report equal bytesBefore/bytesAfter when not truncated', () => {
@@ -327,20 +328,25 @@ describe('enforceCardBudget', () => {
     const card = buildTestCard({ eventCount: 10, contentLength: 5000 });
     const result = enforceCardBudget(card, { maxEventPanels: 3 });
 
-    if (result.wasTruncated) {
-      const panelCount = countAllPanels(result.card);
-      expect(panelCount).toBeLessThanOrEqual(3);
-    }
+    // 守卫式 `if (result.wasTruncated)` 让这条用例在没触发裁剪时空跑；
+    // 50KB 输入必然超限，先把它断死，再验面板上限。
+    expect(result.wasTruncated).toBe(true);
+    expect(result.bytesBefore).toBeGreaterThan(CARD_BUDGET_BYTES);
+    expect(countAllPanels(result.card)).toBeLessThanOrEqual(3);
+    expect(Buffer.byteLength(JSON.stringify(result.card), 'utf8')).toBeLessThanOrEqual(
+      CARD_BUDGET_BYTES,
+    );
   });
 
   it('should respect custom maxPanelContentBytes', () => {
     const card = buildTestCard({ eventCount: 10, contentLength: 5000 });
     const result = enforceCardBudget(card, { maxPanelContentBytes: 1000 });
 
-    if (result.wasTruncated) {
-      const content = getFirstPanelContent(result.card);
-      expect(Buffer.byteLength(content, 'utf8')).toBeLessThanOrEqual(1100);
-    }
+    expect(result.wasTruncated).toBe(true);
+    expect(result.reason).toContain('panel_content_truncated');
+    const content = getFirstPanelContent(result.card);
+    expect(content).not.toBe('');
+    expect(Buffer.byteLength(content, 'utf8')).toBeLessThanOrEqual(1100);
   });
 
   it('should respect custom truncationHint', () => {
@@ -350,14 +356,9 @@ describe('enforceCardBudget', () => {
       truncationHint: '⚠️ {count} events hidden',
     });
 
-    const cardStr = JSON.stringify(result.card);
-    // 应该使用自定义提示（如果触发了面板移除）
-    if (
-      result.reason?.includes('event_count_limited') ||
-      result.reason?.includes('panels_dropped')
-    ) {
-      expect(cardStr).toMatch(/events hidden|未显示/);
-    }
+    expect(result.wasTruncated).toBe(true);
+    expect(result.reason).toMatch(/event_count_limited|panels_dropped/);
+    expect(JSON.stringify(result.card)).toContain('events hidden');
   });
 
   // ========== 边界情况测试 ==========
@@ -463,23 +464,47 @@ describe('enforceCardBudget 阶段0：整卡 table 预算', () => {
     };
   }
 
+  /**
+   * 独立 oracle：递归遍历整张卡 JSON 的**所有**字符串值，数 markdown 分隔行。
+   *
+   * 不复用生产的表格遍历——生产里计数与裁剪同走一条递归，递归若漏掉某类容器，
+   * 裁剪与断言会一起瞎（自证循环）。飞书 11310 的口径是「这张卡里有几张表」，
+   * 与表格落在哪个字段/容器无关，所以这里按整卡独立数一遍。
+   */
+  function tablesInCard(card: unknown): number {
+    let n = 0;
+    const visit = (v: unknown): void => {
+      if (typeof v === 'string') {
+        for (const line of v.split('\n')) if (/^\|[-: |]+$/.test(line.trim())) n++;
+        return;
+      }
+      if (Array.isArray(v)) {
+        for (const item of v) visit(item);
+        return;
+      }
+      if (v && typeof v === 'object') for (const inner of Object.values(v)) visit(inner);
+    };
+    visit(card);
+    return n;
+  }
+
   it('test_anchor_card_table_budget_spans_fields', () => {
     // 6 个字段各 1 张表：整卡 6 > 5，字段级 1 ≤ 5
     const card = cardWithTableFields([1, 1, 1, 1, 1, 1]);
-    expect(countCardTables(card)).toBe(6);
+    expect(tablesInCard(card)).toBe(6);
 
     const result = enforceCardBudget(card);
 
     expect(result.reason).toContain('table_count_limited');
     expect(result.wasTruncated).toBe(true);
-    expect(countCardTables(result.card)).toBeLessThanOrEqual(FEISHU_MAX_TABLES);
+    expect(tablesInCard(result.card)).toBeLessThanOrEqual(FEISHU_MAX_TABLES);
   });
 
   it('跨字段预算删最旧、留最新，并留下省略提示', () => {
     const result = enforceCardBudget(cardWithTableFields([1, 1, 1, 1, 1, 1]));
     const str = JSON.stringify(result.card);
 
-    expect(countCardTables(result.card)).toBe(FEISHU_MAX_TABLES);
+    expect(tablesInCard(result.card)).toBe(FEISHU_MAX_TABLES);
     expect(str).toContain('F5T0'); // 最新一张保住
     expect(str).not.toContain('F0T0'); // 文档顺序最旧的一张被删
     expect(str).toContain('表格已省略');
@@ -490,7 +515,7 @@ describe('enforceCardBudget 阶段0：整卡 table 预算', () => {
     const result = enforceCardBudget(cardWithTableFields([3, 3, 3]));
     const str = JSON.stringify(result.card);
 
-    expect(countCardTables(result.card)).toBe(FEISHU_MAX_TABLES);
+    expect(tablesInCard(result.card)).toBe(FEISHU_MAX_TABLES);
     expect(str).not.toContain('F0T0');
     expect(str).not.toContain('F0T2');
     expect(str).not.toContain('F1T0');
@@ -504,5 +529,177 @@ describe('enforceCardBudget 阶段0：整卡 table 预算', () => {
 
     expect(result.wasTruncated).toBe(false);
     expect(result.card).toEqual(card);
+  });
+});
+
+// ========== 边界值：产物「正好等于」预算/上限时，必须停在当前阶段 ==========
+//
+// 变异消融在本模块翻了 12 个比较符（`<=`→`<`、`>`→`>=`）全部存活：原有用例的输入
+// 都离边界很远，等号写错一档没人察觉。这里逐个把**检查点尺寸**卡在恰好相等上——翻转
+// 一档要么多降一级（reason / 面板数变了），要么少降一级。
+//
+// 注意「检查点尺寸」不等于返回的 bytesAfter：阶段2/3 是先比 size() 再插「N 个事件未
+// 显示」提示，产物比检查点多出提示那一截；所以这几例对齐的是**裁剪后的卡片形状**本身。
+
+describe('enforceCardBudget 边界值（恰好等于预算/上限）', () => {
+  /** 纯 ASCII 填充：1 字符 = 1 字节，用来精确对齐卡片字节数。 */
+  const filler = (n: number): string => 'x'.repeat(n);
+  const byteLen = (value: unknown): number => Buffer.byteLength(JSON.stringify(value), 'utf8');
+
+  /** 内容恰好为 content 的可折叠面板（阶段1 的裁剪对象）。 */
+  function panelWithContent(content: string): object {
+    return {
+      tag: 'collapsible_panel',
+      elements: [{ tag: 'div', text: { tag: 'lark_md', content } }],
+    };
+  }
+
+  function cardWithElements(elements: object[]): object {
+    return cardWithHeader('', elements);
+  }
+
+  /** 标题填了 pad 字节的卡片：header 不参与任何阶段的裁剪，用来顶住骨架体积。 */
+  function cardWithHeader(pad: string, elements: object[]): object {
+    return {
+      schema: '2.0',
+      config: { wide_screen_mode: true },
+      header: { title: { tag: 'plain_text', content: `🔁 恢复会话${pad}` } },
+      body: { elements },
+    };
+  }
+
+  /**
+   * 解出填充长度，使**裁剪后**的卡片形状恰好等于预算。
+   *
+   * 调用方给出该档位裁剪完剩下的形状（只用本文件的构造器，不重复生产的裁剪逻辑），
+   * 字节数对 pad 线性（ASCII 1 字符 = 1 字节），一次反算即对齐；自检确保真的踩在等号上。
+   */
+  function padLandingOnBudget(landed: (pad: number) => object): number {
+    const pad = CARD_BUDGET_BYTES - byteLen(landed(0));
+    expect(pad).toBeGreaterThan(0);
+    expect(byteLen(landed(pad))).toBe(CARD_BUDGET_BYTES);
+    return pad;
+  }
+
+  it('字节数正好等于预算 → 原对象直接返回，不进裁剪', () => {
+    const base = byteLen(cardWithElements([markdownDiv('')]));
+    const card = cardWithElements([markdownDiv(filler(CARD_BUDGET_BYTES - base))]);
+    expect(byteLen(card)).toBe(CARD_BUDGET_BYTES);
+
+    const result = enforceCardBudget(card);
+
+    // `<=`→`<` 翻转会进裁剪流水线并返回克隆对象——身份断言即红。
+    expect(result.wasTruncated).toBe(false);
+    expect(result.bytesBefore).toBe(CARD_BUDGET_BYTES);
+    expect(result.card).toBe(card);
+  });
+
+  it('删表后正好等于预算 → 停在阶段0，不进字节裁剪', () => {
+    const oneTable = (i: number): string => `| h${i} | x |\n|---|---|\n| ${i} | y |`;
+    const build = (pad: number): object =>
+      cardWithElements([
+        markdownDiv(Array.from({ length: 6 }, (_, i) => oneTable(i)).join('\n\n')),
+        markdownDiv(filler(pad)),
+      ]);
+    // 阶段0 不插提示，报出来的 bytesAfter 就是它的检查点尺寸，可以直接反算。
+    const probe = enforceCardBudget(build(4000));
+    const card = build(4000 + (CARD_BUDGET_BYTES - probe.bytesAfter));
+
+    const result = enforceCardBudget(card);
+
+    expect(result.reason).toBe('table_count_limited');
+    expect(result.bytesAfter).toBe(CARD_BUDGET_BYTES);
+  });
+
+  it('面板内容正好等于 maxPanelContentBytes → 不算内容截断', () => {
+    const cap = 1000;
+    const card = cardWithElements(Array.from({ length: 30 }, () => panelWithContent(filler(cap))));
+    expect(byteLen(card)).toBeGreaterThan(CARD_BUDGET_BYTES);
+
+    const result = enforceCardBudget(card, { maxPanelContentBytes: cap, maxEventPanels: 30 });
+
+    // `>`→`>=`（阶段1 判据）或 `modifications > 0` 翻转都会多出
+    // panel_content_truncated，而这里一个字都没该截。
+    expect(result.reason).toBe('panels_dropped');
+    expect(countAllPanels(result.card)).toBe(0);
+  });
+
+  it('面板数正好等于 maxEventPanels → 一个面板都不删', () => {
+    const card = cardWithElements(Array.from({ length: 4 }, () => panelWithContent(filler(9000))));
+
+    const result = enforceCardBudget(card, { maxEventPanels: 4, maxPanelContentBytes: 2000 });
+
+    expect(result.reason).toBe('panel_content_truncated');
+    expect(countAllPanels(result.card)).toBe(4);
+  });
+
+  it('没有面板被移除时不写「N 个事件未显示」提示', () => {
+    const card = cardWithElements([
+      panelWithContent(filler(20_000)),
+      panelWithContent(filler(20_000)),
+    ]);
+
+    const result = enforceCardBudget(card, { maxEventPanels: 5, maxPanelContentBytes: 2000 });
+
+    // `omitted <= 0`→`<` 翻转会在卡头插入「还有 0 个事件未显示」——凭空噪声。
+    expect(result.reason).toBe('panel_content_truncated');
+    expect(countAllPanels(result.card)).toBe(2);
+    expect(JSON.stringify(result.card)).not.toContain('未显示');
+  });
+
+  it('阶段2 后正好等于预算 → 停在这里，不再丢面板', () => {
+    const cap = 1000;
+    const opts = { maxEventPanels: 4, maxPanelContentBytes: cap };
+    // 阶段2 的比较发生在插提示之前，所以踩在等号上的是「删完最旧面板剩下的形状」。
+    const pad = padLandingOnBudget((p) =>
+      cardWithElements([
+        ...Array.from({ length: 4 }, () => panelWithContent(filler(cap))),
+        markdownDiv(filler(p)),
+      ]),
+    );
+    const card = cardWithElements([
+      ...Array.from({ length: 8 }, () => panelWithContent(filler(cap))),
+      markdownDiv(filler(pad)),
+    ]);
+    expect(byteLen(card)).toBeGreaterThan(CARD_BUDGET_BYTES);
+
+    const result = enforceCardBudget(card, opts);
+
+    // `<=`→`<` 翻转会再进阶段3 把剩下 4 个面板也丢光，reason 多出 panels_dropped。
+    expect(result.reason).toBe('event_count_limited');
+    expect(countAllPanels(result.card)).toBe(4);
+  });
+
+  it('阶段3 丢完面板后正好等于预算 → 停在这里，不截骨架文本', () => {
+    // 阶段3 的比较同样发生在插提示之前：踩等号的是「只剩骨架」那一版卡片。
+    const pad = padLandingOnBudget((p) => cardWithElements([markdownDiv(filler(p))]));
+    const card = cardWithElements([
+      panelWithContent(filler(9000)),
+      panelWithContent(filler(9000)),
+      markdownDiv(filler(pad)),
+    ]);
+    expect(byteLen(card)).toBeGreaterThan(CARD_BUDGET_BYTES);
+
+    const result = enforceCardBudget(card);
+
+    // `<=`→`<` 翻转会进阶段4，把骨架 div 截掉一截（reason 多出 text_truncated）。
+    expect(result.reason).toBe('panel_content_truncated+panels_dropped');
+    expect(countAllPanels(result.card)).toBe(0);
+    expect(result.bytesAfter).toBeGreaterThan(CARD_BUDGET_BYTES);
+  });
+
+  it('阶段4 截完骨架文本正好等于预算 → 不进极端兜底', () => {
+    // header 不归任何阶段管，用它顶住体积；能被阶段4 裁的只剩顶层 div。
+    // 阶段4 的检查点在插提示之后（提示这里不会插：没有面板被移除），所以
+    // 「产物恰好等于预算」与「检查点恰好等于预算」是同一件事。
+    const pad = padLandingOnBudget((p) => cardWithHeader(filler(p), [markdownDiv(filler(2000))]));
+    const card = cardWithHeader(filler(pad), [markdownDiv(filler(20_000))]);
+
+    const result = enforceCardBudget(card);
+
+    // `<=`→`<` 翻转会整卡换成「⚠️ 内容已截断」，骨架和 usage 全丢。
+    expect(result.reason).toBe('text_truncated');
+    expect(result.bytesAfter).toBe(CARD_BUDGET_BYTES);
+    expect(JSON.stringify(result.card)).toContain('恢复会话');
   });
 });

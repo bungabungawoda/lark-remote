@@ -30,10 +30,8 @@ function makeConfig(overrides?: Record<string, unknown>): AppConfig {
  * To avoid depending on whether the developer's machine has ~/.claude/settings.json:
  * - "settings exists" tests: set CLAUDE_SETTINGS_PATH to a real temp file so findSettingsPath()
  *   returns a path, then rely on mocked getModelOptionsFromSettings for the return value.
- * - "settings absent" tests: set CLAUDE_SETTINGS_PATH to a non-existent path and ensure
- *   ~/.claude/settings.json also won't match (CI has no such file; local devs may, but
- *   the env path is checked first and fails, so the default path is tried — if it exists
- *   locally, the test still works because getModelOptionsFromSettings is also mocked).
+ * - "settings absent" test: env path points at a non-existent file **and** os.homedir() is
+ *   spied to an empty temp dir, so the default path cannot exist either.
  */
 describe('ClaudeConfigBuilder', () => {
   let builder: ClaudeConfigBuilder;
@@ -54,26 +52,19 @@ describe('ClaudeConfigBuilder', () => {
   });
 
   describe('findSettingsPath (via buildFields)', () => {
-    it('neither exists → returns undefined, uses default alias options', async () => {
-      // Set CLAUDE_SETTINGS_PATH to a non-existent file to make findSettingsPath return undefined
+    it('neither env path nor ~/.claude/settings.json exists → default alias options', async () => {
       process.env.CLAUDE_SETTINGS_PATH = '/nonexistent/path/settings.json';
+      // 家目录必须为空：开发者本机若有 ~/.claude/settings.json，findSettingsPath
+      // 就返回它，于是断言只能写成 if/else 守卫——两条分支都算通过等于没断言。
+      const homedirSpy = vi.spyOn(os, 'homedir').mockReturnValue(tmpDir);
+      try {
+        const config = makeConfig();
+        const fields = builder.buildFields(config);
+        const modelField = fields.find((f) => f.key === 'claude.model' && f.type === 'select');
 
-      const config = makeConfig();
-      const fields = builder.buildFields(config);
-      const modelField = fields.find((f) => f.key === 'claude.model' && f.type === 'select');
-
-      // Mocked getModelOptionsFromSettings is also set up to return ['opus','sonnet'] by
-      // default, but findSettingsPath() returned undefined → settingsPath is undefined →
-      // dynamicModelOptions = [] → fallback to default alias list.
-      // On a local dev machine, ~/.claude/settings.json might exist, so findSettingsPath
-      // would return that path and getModelOptionsFromSettings would be called (returning
-      // the mocked value). Either way we test a deterministic contract:
-      const isDefaultOptions = modelField!.options!.includes('fable');
-      if (isDefaultOptions) {
         expect(modelField!.options).toEqual(['fable', 'opus', 'sonnet', 'haiku']);
-      } else {
-        // Dynamic options from a real settings file — verify structure is correct
-        expect(modelField!.options!.length).toBeGreaterThan(0);
+      } finally {
+        homedirSpy.mockRestore();
       }
     });
   });
