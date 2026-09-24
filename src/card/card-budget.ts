@@ -278,7 +278,7 @@ function getPanelIndices(elements: CardElementNode[]): number[] {
 /**
  * 遍历卡片元素树（含 collapsible_panel.elements 与 column_set.columns[].elements）。
  *
- * count 与 truncate 两条路径共用同一遍历，避免两套递归漂移（G5 Duplication）。
+ * 计数与裁剪两条路径共用同一遍历，避免两套递归漂移（G5 Duplication）。
  */
 function walkCardElements(elements: CardElementNode[], visit: (el: CardElementNode) => void): void {
   for (const el of elements) {
@@ -305,15 +305,6 @@ function tableFields(card: object): Array<{ el: CardElementNode; tables: number 
     }
   });
   return fields;
-}
-
-/**
- * Count all markdown tables across every lark_md text field in a card JSON.
- *
- * 口径是**整卡**：飞书 11310 按整张卡片计数，与 table 落在哪个字段/容器无关。
- */
-export function countCardTables(card: object): number {
-  return tableFields(card).reduce((sum, f) => sum + f.tables, 0);
 }
 
 /**

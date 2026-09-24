@@ -20,7 +20,6 @@ import type {
   DshPresetListValue,
   DshServerRequest,
   DshSessionEvent,
-  DshSessionModelsValue,
   DshStreamItem,
   DshTokenUsage,
 } from './types.js';
@@ -137,11 +136,6 @@ export class DshClient {
       selected: DshModelSelection;
     };
     return value.selected;
-  }
-
-  /** Read the session's current model selection + full model catalog. */
-  async sessionModels(sessionId: string): Promise<DshSessionModelsValue> {
-    return (await this.unary('session.models', { sessionId })) as DshSessionModelsValue;
   }
 
   /** Read the model catalog (session-independent, llm.models). */

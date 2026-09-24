@@ -35,3 +35,34 @@ export function expectNoV1ActionContainer(card: unknown): void {
     V1_ACTION_CONTAINER_PATTERN,
   );
 }
+
+/**
+ * 收集卡片里所有 callback 的 `value.cmd`（递归整棵 JSON 树，不假设容器形状）。
+ *
+ * 用途：断言「这到底是哪张卡」。回调 cmd 是各卡片独有的标识——卡片文案改一个
+ * 字不该让测试红，但命令接错（`/h` 渲染出 `/config` 卡）必须红，这正是
+ * `expect(card).toBeDefined()` 给不了的区分能力。
+ */
+export function collectCallbackCmds(card: unknown): string[] {
+  const cmds: string[] = [];
+  const visit = (v: unknown): void => {
+    if (Array.isArray(v)) {
+      for (const item of v) visit(item);
+      return;
+    }
+    if (!v || typeof v !== 'object') return;
+    const obj = v as Record<string, unknown>;
+    const behaviors = obj['behaviors'];
+    if (Array.isArray(behaviors)) {
+      for (const behavior of behaviors) {
+        const value = (behavior as { value?: unknown })?.value;
+        if (!value || typeof value !== 'object') continue;
+        const cmd = (value as Record<string, unknown>)['cmd'];
+        if (typeof cmd === 'string') cmds.push(cmd);
+      }
+    }
+    for (const inner of Object.values(obj)) visit(inner);
+  };
+  visit(card);
+  return cmds;
+}

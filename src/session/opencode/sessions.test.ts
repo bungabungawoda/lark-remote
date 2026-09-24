@@ -1,8 +1,10 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { OpencodeSessionReader } from '../../session/opencode/sessions.js';
+import { STALE_MS } from '../common/constants.js';
+import { rmRf } from '../../../tests/lib/tmp-cleanup.js';
 
 // Mock spawnProcessSync（生产代码用 cross-spawn 收口执行 opencode CLI，
 // win32 上 execFileSync 无法解析 npm .cmd 垫片）
@@ -129,12 +131,18 @@ describe('OpencodeSessionReader - L1: empty output handling', () => {
 
     reader.listSessions('/home/user/project');
 
+    // 整包选项逐字锁死：maxBuffer 回落到默认 1MiB 会让大会话列表 ENOBUFS → 静默
+    // 变成「没有 session」（P1-15），timeout 与 windowsHide 同理只在出错时才看得见。
     expect(spawnProcessSync).toHaveBeenCalledWith(
       'opencode',
       ['session', 'list', '--format', 'json'],
-      expect.objectContaining({
+      {
+        encoding: 'utf-8',
+        timeout: 10_000,
+        maxBuffer: 64 * 1024 * 1024,
         cwd: '/home/user/project',
-      }),
+        windowsHide: true,
+      },
     );
   });
 
@@ -244,9 +252,19 @@ describe('OpencodeSessionReader - L1/L2/L3: large/corrupt export handling', () =
     expect(spawnProcessSync).toHaveBeenCalledWith(
       'opencode',
       ['export', 'ses_tr'],
-      expect.objectContaining({ timeout: 30000 }),
+      // §P1-15：stdout 走文件 fd，stderr 仍是 pipe，所以 maxBuffer 也要拉起；
+      // opencode 是 npm .cmd 垫片，windowsHide 关掉会闪控制台。
+      expect.objectContaining({
+        encoding: 'utf-8',
+        timeout: 30000,
+        maxBuffer: 64 * 1024 * 1024,
+        windowsHide: true,
+      }),
     );
     const opts = vi.mocked(spawnProcessSync).mock.calls[0]![2] as Record<string, unknown>;
+    expect(Object.keys(opts).sort()).toEqual(
+      ['encoding', 'maxBuffer', 'stdio', 'timeout', 'windowsHide'].sort(),
+    );
     expect(Array.isArray(opts.stdio)).toBe(true);
     const stdio = opts.stdio as unknown[];
     expect(stdio[0]).toBe('ignore'); // stdin ignored
@@ -465,5 +483,148 @@ describe('OpencodeSessionReader - usage extraction (ccusage-aligned)', () => {
     // cumulative still sums everything; the zero stub contributes nothing.
     expect(content.usage!.cumulativeInputTokens).toBe(656);
     expect(content.usage!.cumulativeTotalTokens).toBe(492529);
+  });
+
+  it('still reports cumulative tokens when no step carries a usable total', () => {
+    // 每条 step 的 total 都是 0（per-turn 无从取值）但 input 有数：这类不一致
+    // 报文下 per-turn 留 0，累计口径仍然要报出来，不能整块 usage 消失。
+    const json = buildExportJson({
+      directory: cwd,
+      messages: [
+        { role: 'user', parts: [{ type: 'text', text: 'hi' }] },
+        {
+          role: 'assistant',
+          parts: [
+            {
+              type: 'step-finish',
+              reason: 'stop',
+              tokens: { total: 0, input: 5, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+            },
+          ],
+        },
+      ],
+    });
+    const r = new OpencodeSessionReader({
+      cacheTtlMs: 0,
+      captureExport: () => json,
+    });
+    const content = r.readSessionContent('ses_cumulative_only', cwd);
+
+    expect(content.usage!.inputTokens).toBe(0);
+    expect(content.usage!.cumulativeInputTokens).toBe(5);
+  });
+});
+
+// isSessionActive 此前零直测：/active 与 auto-resume 每次都要问它「这条会话还在跑吗」，
+// 判错的表现是活跃会话被漏掉、或早已结束的会话被当成还在跑。
+describe('OpencodeSessionReader - isSessionActive', () => {
+  let reader: OpencodeSessionReader;
+  let tmpDir: string;
+  /** entry.directory 要和 production 的 realpath(cwd) 一致，所以落在真实目录上。 */
+  let directory: string;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    reader = new OpencodeSessionReader({ cacheTtlMs: 0 });
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'opencode-active-'));
+    directory = fs.realpathSync(tmpDir);
+  });
+
+  afterEach(() => {
+    rmRf(tmpDir);
+  });
+
+  function mockSessionList(entries: Array<Record<string, unknown>>): void {
+    mockSpawnResult(
+      JSON.stringify(
+        entries.map((e) => ({
+          id: 'ses_target',
+          title: 't',
+          created: 0,
+          projectId: 'p',
+          updated: Date.now(),
+          directory,
+          ...e,
+        })),
+      ),
+    );
+  }
+
+  it('treats a session updated within the stale window as active', () => {
+    mockSessionList([{}]);
+
+    expect(reader.isSessionActive('ses_target', tmpDir)).toBe(true);
+  });
+
+  it('treats a session older than the stale window as inactive', () => {
+    mockSessionList([{ updated: Date.now() - STALE_MS - 1000 }]);
+
+    expect(reader.isSessionActive('ses_target', tmpDir)).toBe(false);
+  });
+
+  it('does not match a session that belongs to another directory', () => {
+    mockSessionList([{ directory: '/other/project' }]);
+
+    expect(reader.isSessionActive('ses_target', tmpDir)).toBe(false);
+  });
+
+  it('does not match another session of the same directory', () => {
+    mockSessionList([{ id: 'ses_other' }]);
+
+    // id 与 directory 是 AND：只按 directory 命中就会拿别人的 updated 判活。
+    expect(reader.isSessionActive('ses_target', tmpDir)).toBe(false);
+  });
+
+  it('returns false instead of throwing when the CLI read fails', () => {
+    // listSessions 侧的契约是「失败上抛、与真空可区分」（P1-15）；isSessionActive
+    // 相反：它只用来判活，读不到就当作不活跃，不能让 /active 整页挂掉。
+    mockSpawnResult('not valid json{{{');
+
+    expect(reader.isSessionActive('ses_target', tmpDir)).toBe(false);
+  });
+});
+
+// displayTitle 是 /active 列表与恢复卡上给看的那一行标题，此前零直测。
+describe('OpencodeSessionReader - displayTitle', () => {
+  const cwd = '/synth/title-test';
+
+  function read(
+    messages: Array<{ role: 'user' | 'assistant'; parts: Array<Record<string, unknown>> }>,
+  ): {
+    displayTitle?: string;
+  } {
+    const r = new OpencodeSessionReader({
+      cacheTtlMs: 0,
+      captureExport: () => buildExportJson({ directory: cwd, messages }),
+    });
+    return r.readSessionContent('ses_title', cwd);
+  }
+
+  it('uses the first text part of the last user message', () => {
+    const content = read([
+      { role: 'user', parts: [{ type: 'text', text: 'old task' }] },
+      { role: 'assistant', parts: [{ type: 'text', text: 'old reply' }] },
+      {
+        role: 'user',
+        parts: [
+          { type: 'text', text: 'current task' },
+          { type: 'text', text: 'appended note' },
+        ],
+      },
+    ]);
+
+    // 「首个」写错成「末个」时标题会变成补充说明，看起来仍然是正常文本。
+    expect(content.displayTitle).toBe('current task');
+  });
+
+  it('falls back to the first user text when the tail has none', () => {
+    const content = read([
+      { role: 'user', parts: [{ type: 'text', text: 'old task' }] },
+      { role: 'assistant', parts: [{ type: 'text', text: 'old reply' }] },
+      // 最后一条 user 只有 step 事件、没有正文：catch-up 尾巴里取不到标题。
+      { role: 'user', parts: [{ type: 'step-start' }] },
+    ]);
+
+    expect(content.displayTitle).toBe('old task');
   });
 });

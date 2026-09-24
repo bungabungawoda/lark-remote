@@ -27,7 +27,7 @@ import {
   createStubSessionReader,
 } from '../../tests/lib/bridge-stubs.js';
 import { encodedProjectDir, writeSessionJsonl } from '../../tests/lib/session-fixtures.js';
-import { expectNoV1ActionContainer } from '../../tests/lib/card-view.js';
+import { collectCallbackCmds, expectNoV1ActionContainer } from '../../tests/lib/card-view.js';
 import { rmRf } from '../../tests/lib/tmp-cleanup.js';
 import { currentPlatform, isWin32 } from '../platform/select.js';
 
@@ -3601,13 +3601,17 @@ describe('CommandRouter', () => {
   });
 
   // Alias tests: single-letter shortcuts
+  //
+  // 每条断言锁定**该命令独有的产物标识**（卡片回调 cmd / 命令专属文案）。写
+  // `expect(card).toBeDefined()` 不算断言：2026-09-22 消融把 `/t` 改指 cmdHelp、
+  // `/o` 改指 cmdPs，全量测试仍绿——别名接错只能靠"这是哪张卡"抓住。
   it('/h is alias for /help', async () => {
     const { router, connector } = createRouter();
     await router.handle('/h', ctx);
-    const card = (
-      connector._sent[0].input as { card: { body?: { elements: object[] }; elements?: object[] } }
-    ).card;
-    expect(card).toBeDefined();
+    const card = (connector._sent[0].input as { card: object }).card;
+    // 帮助卡独有：每条命令一个 `help.<cmd>` 回调按钮 + 带参数的文本组
+    expect(collectCallbackCmds(card)).toContain('help.stop');
+    expect(JSON.stringify(card)).toContain('/cd <path>');
   });
 
   it('/s is alias for /status', async () => {
@@ -3627,8 +3631,9 @@ describe('CommandRouter', () => {
   it('/t is alias for /stop', async () => {
     const { router, connector } = createRouter();
     await router.handle('/t', ctx);
-    // /stop returns no text when nothing is running
-    expect(connector._sent.length).toBeGreaterThanOrEqual(0);
+    // 无在途 run 时 /stop 回自己的终态文案：/ps 是「当前无进程在跑」或「请先
+    // /cd 设置工作目录」，/help 是卡片——接错即红。
+    expect((connector._sent[0].input as { text: string }).text).toBe('当前没有运行中的进程');
   });
 
   it('/e is alias for /exit', async () => {
@@ -3646,24 +3651,42 @@ describe('CommandRouter', () => {
   it('/c is alias for /config', async () => {
     const { router, connector } = createRouter();
     await router.handle('/c', ctx);
-    const card = (
-      connector._sent[0].input as { card: { body?: { elements: object[] }; elements?: object[] } }
-    ).card;
-    expect(card).toBeDefined();
+    const card = (connector._sent[0].input as { card: object }).card;
+    // 配置卡独有：pendingConfig 暂存区的保存按钮。帮助卡没有任何 `config.*` 回调。
+    expect(collectCallbackCmds(card)).toContain('config.save');
   });
 
   it('/r is alias for /resume', async () => {
-    const { router, connector } = createRouter();
+    const { router, sessionStore, connector } = createRouter();
+    // 必须带 cwd：无 cwd 时 /resume 与 /ps 都回「请先 /cd 设置工作目录」，
+    // 别名接到 /ps 上测试也发现不了（2026-09-22 消融确认的盲区）。
+    sessionStore.setCwd('user1', '/tmp');
     await router.handle('/r', ctx);
-    // /resume without cwd prompts to /cd
-    expect((connector._sent[0].input as { text: string }).text).toContain('/cd');
+    const input = connector._sent[0].input as { text?: string; markdown?: string };
+    const rendered = input.text ?? input.markdown ?? '';
+    // 空列表文案是 /resume 独有的；/ps 在同一 cwd 只回「当前无进程在跑」
+    expect(rendered).toContain('session 记录');
+    expect(rendered).toContain('/tmp');
   });
 
   it('/o is alias for /order', async () => {
     const { router, connector } = createRouter();
+    await router.handle('/order save 列出今天的改动', ctx);
+    connector._sent.length = 0;
     await router.handle('/o', ctx);
-    // /order default lists — returns text about no orders or a list
-    expect(connector._sent.length).toBeGreaterThan(0);
+    const card = (connector._sent[0].input as { card: object }).card;
+    // 指令列表卡独有：每行一个执行/删除回调，且带上刚存的那条指令
+    expect(collectCallbackCmds(card)).toEqual(
+      expect.arrayContaining(['order.exec', 'order.delete']),
+    );
+    expect(JSON.stringify(card)).toContain('列出今天的改动');
+  });
+
+  it('/d is alias for /download', async () => {
+    const { router, connector } = createRouter();
+    await router.handle('/d', ctx);
+    // 缺参数时回 /download 自己的用法行（`/ls` 无此文案，`/help` 是卡片）
+    expect((connector._sent[0].input as { text: string }).text).toContain('/download <path>');
   });
 
   it('non-command message without cwd prompts to /cd', async () => {

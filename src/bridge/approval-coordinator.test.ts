@@ -772,4 +772,93 @@ describe('ApprovalCoordinator', () => {
       ).rejects.toThrow('请输入补充说明');
     });
   });
+
+  // 消融审计补洞：turn 收尾的按态改写、cancel 的安全兜底、提交中/失败态，
+  // 这三处改错此前全部测试仍绿。
+  describe('turn 收尾与安全兜底', () => {
+    it('onTurnEnded expires only pending approvals and clears their timers', async () => {
+      coordinator.onRequested(makeCommandEvent({ requestId: 1001 }));
+      coordinator.onRequested(makeFileEvent({ requestId: 1002 }));
+      await coordinator.submit({ action: 'accept' }, { requestId: 1002 });
+
+      coordinator.onTurnEnded();
+
+      expect(coordinator.pendingCount()).toBe(0);
+      // 改写成 expired（不是 failed），且只动 pending 的那一个。
+      await expect(coordinator.submit({ action: 'accept' }, { requestId: 1001 })).rejects.toThrow(
+        'no longer pending (state=expired)',
+      );
+      await expect(coordinator.submit({ action: 'accept' }, { requestId: 1002 })).rejects.toThrow(
+        'no longer pending (state=resolved)',
+      );
+      // 计时器随之清掉：再推进也不该补发一路 cancel。
+      responder.mockClear();
+      vi.advanceTimersByTime(60_000);
+      expect(responder).not.toHaveBeenCalled();
+    });
+
+    it('allows cancel even when the server list omits it', async () => {
+      coordinator.onRequested(
+        makeCommandEvent({
+          view: { ...makeCommandEvent().view, availableDecisions: ['accept'] },
+        }),
+      );
+
+      await expect(coordinator.submit({ action: 'cancel' }, { requestId: 1001 })).resolves.toBe(
+        undefined,
+      );
+      expect(responder).toHaveBeenCalledWith(1001, { action: 'cancel' });
+    });
+
+    it('reports the submitting state while the response is in flight', async () => {
+      // 'submitting' 的唯一可观察出口是二次提交的态名：卡片按它区分
+      // 「已点在路上了」和「已经答完了」。
+      coordinator = new ApprovalCoordinator({
+        approvalTimeoutMs: 30_000,
+        responder: vi.fn(() => new Promise<void>(() => {})),
+        interruptTurn,
+        pushToCard,
+      });
+      coordinator.onRequested(makeCommandEvent());
+
+      void coordinator.submit({ action: 'accept' }, { requestId: 1001, nonce: 'n-inflight-1' });
+      await expect(
+        coordinator.submit({ action: 'accept' }, { requestId: 1001, nonce: 'n-inflight-2' }),
+      ).rejects.toThrow('no longer pending (state=submitting)');
+    });
+
+    it('reports the failed state when the response could not be sent', async () => {
+      coordinator = new ApprovalCoordinator({
+        approvalTimeoutMs: 30_000,
+        responder: vi.fn().mockRejectedValue(new Error('server down')),
+        interruptTurn,
+        pushToCard,
+      });
+      coordinator.onRequested(makeCommandEvent());
+
+      await expect(
+        coordinator.submit({ action: 'accept' }, { requestId: 1001, nonce: 'n-fail-1' }),
+      ).resolves.toBeUndefined();
+      await expect(
+        coordinator.submit({ action: 'accept' }, { requestId: 1001, nonce: 'n-fail-2' }),
+      ).rejects.toThrow('no longer pending (state=failed)');
+    });
+
+    it('prefers the feedback carried by the click over the stored one', async () => {
+      coordinator.onRequested(makePlanExitEvent());
+      await coordinator.planFeedback(
+        { text: '输入框里留下的旧意见' },
+        { requestId: 2001, nonce: 'fb-1' },
+      );
+
+      await coordinator.submit(
+        { action: 'decline_with_feedback', message: '这次点按钮带的意见' },
+        { requestId: 2001, nonce: 'd-1' },
+      );
+      expect(responder).toHaveBeenCalledWith(2001, {
+        action: 'decline_with_feedback',
+        message: '这次点按钮带的意见',
+      });
+    });
+  });
 });

@@ -246,6 +246,41 @@ describe('FeishuConnector tenant token 失效与合流（B13）', () => {
     expect(vi.mocked(axios.post).mock.calls).toHaveLength(2);
   });
 
+  it('HTTP 401 与业务码 99991663 同口径：清缓存重取后重做一次', async () => {
+    // token 被拒有两种外壳：飞书返回业务码，或整跳被网关拦成 HTTP 401。
+    // 只认前者的话，401 会一直用坏 token 撞到自然过期（~2h）才恢复。
+    vi.mocked(axios.post)
+      .mockResolvedValueOnce(tokenOk('stale'))
+      .mockRejectedValueOnce(
+        Object.assign(new Error('Unauthorized'), { response: { status: 401 } }),
+      )
+      .mockResolvedValueOnce(tokenOk('fresh'))
+      .mockResolvedValueOnce(uploadOk('file-key'))
+      .mockResolvedValueOnce(sendOk('message-id'));
+
+    await expect(new FeishuConnector(config).sendFile('chat-1', filePath)).resolves.toBe(
+      'message-id',
+    );
+
+    const calls = vi.mocked(axios.post).mock.calls;
+    expect(calls).toHaveLength(5);
+    expect(calls[2]?.[0]).toBe(TOKEN_URL);
+    expect(authHeaderAt(3)).toBe('Bearer fresh');
+  });
+
+  it('其它 HTTP 状态不算 token 失效，不清缓存重取', async () => {
+    vi.mocked(axios.post)
+      .mockResolvedValueOnce(tokenOk('token'))
+      .mockRejectedValueOnce(
+        Object.assign(new Error('Bad Gateway'), { response: { status: 502 } }),
+      );
+
+    await expect(new FeishuConnector(config).sendFile('chat-1', filePath)).rejects.toThrow(
+      /sendFile failed/,
+    );
+    expect(vi.mocked(axios.post).mock.calls).toHaveLength(2);
+  });
+
   it('并发发送只取一次 token（in-flight 合流）', async () => {
     let tokenFetches = 0;
     const gate = (delayMs: number) => new Promise((resolve) => setTimeout(resolve, delayMs));

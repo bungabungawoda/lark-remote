@@ -65,4 +65,16 @@ describe('connector dedup TTL', () => {
     };
     expect(arg.safety?.dedup?.ttl).toBe(DEDUP_TTL_MS);
   });
+
+  it('opens p2p DMs without requiring an @mention', () => {
+    createLarkChannelMock.mockClear();
+
+    new FeishuConnector(config);
+
+    // 单 owner 私聊机器人：requireMention 一旦被改回 true，所有不带 @ 的消息静默丢弃。
+    const arg = createLarkChannelMock.mock.calls[0]?.[0] as {
+      policy?: { dmMode?: string; requireMention?: boolean };
+    };
+    expect(arg.policy).toEqual({ dmMode: 'open', requireMention: false });
+  });
 });

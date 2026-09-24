@@ -148,16 +148,4 @@ describe('resolveOrderExecForQueue: order.exec → equivalent queued message', (
 
     expect(router.resolveOrderExecForQueue('non-existent-id')).toBeNull();
   });
-
-  it('records usedAt at resolve time (crash-safe, before the task runs)', () => {
-    const ordersPath = path.join(tmpDir, 'orders-resolve4.json');
-    const orderStore = new OrderStore(ordersPath);
-    const order = orderStore.save('usedat at resolve');
-
-    const { router } = createRouter({ ordersPath });
-    router.resolveOrderExecForQueue(order.id);
-
-    const reloaded = new OrderStore(ordersPath);
-    expect(reloaded.get()[0]?.usedAt).toBeDefined();
-  });
 });

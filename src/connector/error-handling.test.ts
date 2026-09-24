@@ -90,6 +90,40 @@ describe('FeishuConnector.sendWithRetry', () => {
     expect(mockChannel).toHaveBeenCalledTimes(1);
   });
 
+  // §9.5（§P1-3 修正）：@larksuite/channel 把飞书限流码 99991400/99991401 归成
+  // code='permission_denied'，原始业务码只留在 context / cause 链上，低版本 SDK
+  // 干脆拼进 message。只认 code==='rate_limited' 会让这条重试路径对设计目标完全
+  // 死亡 —— 所以每种形态各自钉住，缺一条就是线上「限流不重试」。
+  const rateLimitShapes: Array<[string, unknown]> = [
+    ['context.feishuCode', { code: 'permission_denied', context: { feishuCode: 99991400 } }],
+    ['cause.code', { code: 'permission_denied', cause: { code: 99991401 } }],
+    ['cause.data.code', { code: 'permission_denied', cause: { data: { code: 99991400 } } }],
+    [
+      'cause.response.data.code',
+      { code: 'permission_denied', cause: { response: { data: { code: 99991401 } } } },
+    ],
+    ['message 里的业务码', new Error('send failed: 99991400 request frequency limited')],
+  ];
+  it.each(rateLimitShapes)('retries once on rate limit reported as %s', async (_shape, err) => {
+    mockChannel.mockRejectedValueOnce(err).mockResolvedValueOnce({ messageId: 'msg-789' });
+
+    await expect(connector.sendWithRetry('chat-1', { text: 'hello' })).resolves.toBe('msg-789');
+    expect(mockChannel).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not retry a permission_denied that is not a rate limit (99991663)', async () => {
+    // 缺 scope 这类真权限错误重试无意义，只会放大无效出站。
+    mockChannel.mockRejectedValueOnce({
+      code: 'permission_denied',
+      context: { feishuCode: 99991663 },
+    });
+
+    await expect(connector.sendWithRetry('chat-1', { text: 'hello' })).rejects.toMatchObject({
+      code: 'permission_denied',
+    });
+    expect(mockChannel).toHaveBeenCalledTimes(1);
+  });
+
   it('should handle 502 Bad Gateway and throw gracefully', async () => {
     const axiosError = new Error('Request failed with status code 502');
     Object.assign(axiosError, {
@@ -273,5 +307,24 @@ describe('FeishuConnector.disconnect', () => {
 
     // Should not throw unhandled rejection - error is logged but not propagated
     await expect(connector.disconnect()).resolves.not.toThrow();
+  });
+
+  it('clears the connected flag on a clean disconnect', async () => {
+    await connector.connect();
+    expect(connector.connected).toBe(true);
+
+    await connector.disconnect();
+
+    // /restart 与看门狗都读 connected：置位漏掉会让进程以为还连着，不再重连
+    expect(connector.connected).toBe(false);
+  });
+
+  it('clears the connected flag even when the SDK throws', async () => {
+    await connector.connect();
+    mockChannel.mockRejectedValueOnce(new Error('WebSocket error'));
+
+    await connector.disconnect();
+
+    expect(connector.connected).toBe(false);
   });
 });

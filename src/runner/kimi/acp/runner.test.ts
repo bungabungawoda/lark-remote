@@ -565,33 +565,22 @@ describe('KimiAcpRunner', () => {
 
     const events = await collectEvents(runner, 'list files', { cwd: workspace });
 
-    // Should have tool_use in assistant events
-    const toolUse = events.find(
-      (e) =>
-        e.type === 'assistant' &&
-        'message' in e &&
-        Array.isArray(
-          (e as { message?: { content?: Array<{ type?: string }> } }).message?.content,
-        ) &&
-        (e as { message: { content: Array<{ type: string }> } }).message.content.some(
-          (c) => c.type === 'tool_use',
-        ),
-    );
-    expect(toolUse).toBeDefined();
-
-    // Should have tool_result in user events
-    const toolResult = events.find(
-      (e) =>
-        e.type === 'user' &&
-        'message' in e &&
-        Array.isArray(
-          (e as { message?: { content?: Array<{ type?: string }> } }).message?.content,
-        ) &&
-        (e as { message: { content: Array<{ type: string }> } }).message.content.some(
-          (c) => c.type === 'tool_result',
-        ),
-    );
-    expect(toolResult).toBeDefined();
+    // 只断言「存在 tool_use/tool_result」不算断言：translator 把 id/name/input
+    // 和 tool_use_id/content/is_error 映射错了也照样绿。锁事件通道 + 整个 block。
+    const blocksOf = (kind: string) =>
+      events
+        .filter((e) => e.type === kind)
+        .flatMap(
+          (e) =>
+            (e as { message?: { content?: Array<Record<string, unknown>> } }).message?.content ??
+            [],
+        );
+    expect(blocksOf('assistant').filter((b) => b.type === 'tool_use')).toEqual([
+      { type: 'tool_use', id: 'tc-001', name: 'Read', input: { file_path: 'a.ts' } },
+    ]);
+    expect(blocksOf('user').filter((b) => b.type === 'tool_result')).toEqual([
+      { type: 'tool_result', tool_use_id: 'tc-001', content: 'a.ts', is_error: false },
+    ]);
 
     await runner.dispose();
   });
@@ -1014,8 +1003,10 @@ describe('KimiAcpRunner', () => {
   });
 
   it('cancels approval with cancelled outcome', async () => {
+    const capturePath = join(tmpDir, 'approval-cancel-capture.jsonl');
     const { wrapper, workspace } = writeScenario(tmpDir, serverScript, 'kimi', {
       sendApproval: true,
+      capturePath,
     });
 
     const runner = new KimiAcpRunner({
@@ -1027,20 +1018,21 @@ describe('KimiAcpRunner', () => {
       turnIdleTimeoutMs: 30_000,
     });
 
-    const events = await collectEvents(
-      runner,
-      'do something',
-      { cwd: workspace },
-      async (event) => {
-        if (event.type === 'approval_requested') {
-          await runner.respondApproval(event.requestId, { action: 'cancel' });
-        }
-      },
-    );
+    let approvalResponded = false;
+    await collectEvents(runner, 'do something', { cwd: workspace }, async (event) => {
+      if (event.type === 'approval_requested') {
+        await runner.respondApproval(event.requestId, { action: 'cancel' });
+        approvalResponded = true;
+      }
+    });
 
-    const result = events.find((e) => e.type === 'result') as
-      (AgentEvent & { subtype?: string }) | undefined;
-    expect(result).toBeDefined();
+    // 「cancel」的语义在线上：cancelled outcome。只断言有 result 事件抓不住
+    // 误接成 accept/decline（那三种都会让 prompt 正常结束）。
+    expect(approvalResponded).toBe(true);
+    const cancelResponse = readCapture(capturePath).find(
+      (m) => m.id === 42 && m.method === undefined,
+    );
+    expect(cancelResponse?.result).toEqual({ outcome: { outcome: 'cancelled' } });
 
     await runner.dispose();
   });
