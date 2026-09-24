@@ -2,7 +2,8 @@
  * 占位符剥离表驱动测试。
  *
  * 输入串直接取自 `docs/zh/architecture/inbound-message-matrix.md` §1 的
- * `@larksuite/channel@0.3.0` 实测渲染结果（22 种 message_type）。
+ * `@larksuite/channel@0.7.1` 实测渲染结果（22 种 message_type + post
+ * 顶层附件区 / 合并转发抓取失败态两个增量变体）。
  * 这是 B1（P0 安全）的守护测试：任何以占位符开头的消息都不能被当成命令判据。
  */
 import { describe, it, expect } from 'vitest';
@@ -65,6 +66,18 @@ describe('stripPlaceholders 全类型矩阵（matrix §1 实测渲染串）', ()
       raw: '<forwarded_messages/>',
       clean: '',
       kinds: ['forwarded'],
+    },
+    {
+      name: 'merge_forward（子消息抓取失败态，0.4.1+ 带属性自闭合）',
+      raw: '<forwarded_messages status="fetch_failed"/>',
+      clean: '',
+      kinds: ['forwarded'],
+    },
+    {
+      name: 'post（富文本顶层附件区，0.6.0+）',
+      raw: '**T**\n\n看一下附件\n<file key="file_v3_a" name="report.pdf"/>\n<folder key="file_v3_b" name="folder"/>',
+      clean: '**T**\n\n看一下附件',
+      kinds: ['file', 'folder'],
     },
     { name: 'interactive', raw: '[interactive card]', clean: '', kinds: ['unsupported'] },
     {
