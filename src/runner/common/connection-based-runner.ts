@@ -22,10 +22,12 @@ import type {
   AgentStatusInfo,
   SpawnOptions,
 } from '../types.js';
+import type { ChildProcess } from 'node:child_process';
 import { ConnectionLostError } from './jsonrpc/client.js';
 import { getLogger } from '../../logger/index.js';
 import { syntheticInitEvent } from './runner-utils.js';
 import { DEFAULT_TURN_IDLE_TIMEOUT_MINUTES } from '../../config/index.js';
+import type { AgentStopper } from '../../platform/agent-stopper.js';
 
 /** How long to wait for turn output notifications before failing.
  *  30 分钟（单源于 config 的 DEFAULT_TURN_IDLE_TIMEOUT_MINUTES）：ACP/app-server
@@ -84,6 +86,39 @@ export abstract class ConnectionBasedRunner<TClient, TEvent = AgentEvent> implem
 
   /** Set up the turn: acquire + thread|session new/resume + prompt. */
   protected abstract setupTurn(message: string, opts: SpawnOptions): Promise<void>;
+
+  /**
+   * 本连接的协议停止通道（design §3.3）。
+   *
+   * win32 上「优雅停止」没有可拦截的跨进程 SIGTERM，只能经 agent 自有协议通道
+   * 请求对方收摊。子类把这个方法的结果交给 ConnectionManager.stopper，由后者按
+   * `agent + pid` 登记到 AgentStopperRegistry，Terminator 停进程时按 pid 取回。
+   *
+   * 两件事，顺序不能反：
+   *   1. 若本连接就是当前在途 turn 的连接，先发协议取消（codex turn/interrupt /
+   *      ACP session/cancel / pi abort）。**归属判定不能省**：runner 实例按 agent
+   *      维度共享（一个实例管多条 workspace 连接），无条件调用
+   *      `cancelCurrentTurn()` 会用它自己的 currentClient/activeSessionId 去打断
+   *      **另一个 workspace** 正在跑的 turn；
+   *   2. 关 stdin。stdio 型 agent server 在 stdin EOF 后自行退出——只发协议取消
+   *      不会让进程退出，优雅段会空转到 grace 超时后照样树杀，等于通道白注册。
+   */
+  protected buildCooperativeStop(client: TClient): AgentStopper {
+    return async (proc: ChildProcess): Promise<void> => {
+      if (this.currentClient === client) {
+        try {
+          await this.cancelCurrentTurn();
+        } catch (err) {
+          getLogger().warn(
+            `[${this.logTag}] cooperative stop: cancel failed: ${(err as Error).message}`,
+          );
+        }
+      }
+      if (proc.stdin && !proc.stdin.destroyed) {
+        proc.stdin.end();
+      }
+    };
+  }
 
   get isRunning(): boolean {
     return this._isRunning;

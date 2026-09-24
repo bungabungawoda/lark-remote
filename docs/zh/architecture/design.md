@@ -57,9 +57,10 @@ ClaudeRunner 从「一次一跑」（`claude -p`）升级为**长驻交互会话
 （`--input-format stream-json`）。每次用户消息 = 写一条 `user` 事件 + 消费事件
 直到本 turn 的 `result`；进程在 turn 之间保持存活，被 `/stop`、`/new`、`/cd`、
 会话级空闲回收（`claude.idleTtlMinutes`，默认 30 分钟）或 lark-remote 退出时经
-`ProcessStopper` 组杀，下条消息按 SessionStore 的 sessionId `--resume` 恢复。
-进程编排（pid 文件、killOrphan 身份校验、心跳、退出分发）由 `ClaudeSession`
-继承 `SpawningRunner` 复用；`ClaudeRunner` 是 workspace-lifetime 薄包装。
+`Terminator`（posix 负 PID 组杀 / win32 taskkill 树杀）停止，下条消息按 SessionStore
+的 sessionId `--resume` 恢复。进程编排（pid 文件、killOrphan 身份校验、心跳、
+退出分发）由 `ClaudeSession` 继承 `SpawningRunner` 复用；`ClaudeRunner` 是
+workspace-lifetime 薄包装。
 
 ```bash
 claude \

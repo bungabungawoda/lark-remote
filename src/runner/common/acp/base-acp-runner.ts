@@ -66,6 +66,10 @@ export abstract class BaseAcpRunner<
   ) {
     super(opts);
     this.connectionManager = connectionManager;
+    // 协议停止通道（design §3.3）：ACP 的 cancel 就是 `session/cancel`，已由
+    // cancelCurrentTurn 实现。这里只做登记接线——manager 建在 super() 实参里，
+    // 那时 this 不可用，所以只能等 super() 返回后再赋值。
+    connectionManager.stopper = ({ client }) => this.buildCooperativeStop(client);
   }
 
   /** failTurn message when the ACP connection drops mid-turn. */

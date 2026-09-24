@@ -4,6 +4,8 @@ import { chmodSync, existsSync, mkdtempSync, readFileSync, writeFileSync } from 
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { JsonlRpcTransport } from './transport.js';
+import { AgentStopperRegistry } from '../../../platform/agent-stopper.js';
+import { createTerminator } from '../../../platform/terminator.js';
 import { rmRf } from '../../../../tests/lib/tmp-cleanup.js';
 
 function waitForProcessGone(pid: number, timeoutMs = 6000): Promise<void> {
@@ -378,4 +380,98 @@ describe('JsonlRpcTransport safety and cleanup', () => {
     },
     15000,
   );
+
+  it('test_anchor_transport_registers_cooperative_stop_channel_by_pid', async () => {
+    // design §3.3 的接线闭合点：win32 上没有可拦截的跨进程 SIGTERM，优雅停止
+    // 只能靠协议通道。注册表此前在生产侧**没有任何注册点**（只出现在
+    // terminator.test.ts），win32 上非立即停止恒走 `skipped-no-channel` 后直接
+    // 树杀——没有信号可查、也没有报错。
+    //
+    // 这里注入 win32 终止器，把「优雅段按 pid 查表 → 调通道 → 进程自行退出」
+    // 这条链路在 macOS 上真跑一遍（子进程收到 stdin EOF 后退出，等价于真实
+    // agent server 的关 stdin 收摊）。
+    const script = join(tmpDir, 'stdin-eof-server.mjs');
+    writeFileSync(
+      script,
+      `process.stdin.resume();\nprocess.stdin.on('end', () => process.exit(0));\n`,
+    );
+
+    const stoppers = new AgentStopperRegistry();
+    const channelCalls: number[] = [];
+    const transport = new JsonlRpcTransport({
+      ...nodeLaunch(script),
+      cwd: tmpDir,
+      agent: 'codex',
+      stoppers,
+      stopper: (pid) => (proc) => {
+        channelCalls.push(pid);
+        proc.stdin?.end();
+      },
+      terminator: createTerminator({
+        platform: 'win32',
+        graceMs: 500,
+        agent: 'codex',
+        stoppers,
+        log: () => {},
+      }),
+    });
+
+    await transport.start({ onMessage: () => {}, onClose: () => {} });
+    const pid = transport.pid;
+    expect(pid).toBeGreaterThan(0);
+    // spawn 后立刻按 agent+pid 登记
+    expect(stoppers.has('codex', pid!)).toBe(true);
+
+    await transport.close();
+    // 通道被优雅段消费（不是空等 grace 后树杀），且子进程自己退了
+    expect(channelCalls).toEqual([pid]);
+    expect(transport.closed).toBe(true);
+    await waitForProcessGone(pid!, 6000);
+    // 关掉即注销，不留死 pid 条目
+    expect(stoppers.has('codex', pid!)).toBe(false);
+  }, 15000);
+
+  it('进程自行退出后通道被注销（不留死 pid 条目）', async () => {
+    const script = join(tmpDir, 'exit-immediately.mjs');
+    writeFileSync(script, `process.exit(0);\n`);
+
+    const stoppers = new AgentStopperRegistry();
+    const transport = new JsonlRpcTransport({
+      ...nodeLaunch(script),
+      cwd: tmpDir,
+      agent: 'kimi',
+      stoppers,
+      stopper: () => () => {},
+    });
+
+    const closed = new Promise<string>((resolve) => {
+      void transport.start({ onMessage: () => {}, onClose: resolve });
+    });
+    expect(await closed).toBe('exit:0');
+    expect(stoppers.size).toBe(0);
+  }, 10000);
+
+  it('未提供通道工厂时不登记任何通道（「无通道」是合法状态，不是空通道）', async () => {
+    // 反例防回归：给无通道的 agent 塞一条空通道，会让 win32 优雅段从
+    // 「显式跳过 + 直接树杀」退化成「空转满 grace 再树杀」——照样停得掉，
+    // 但白等一个不会被消费的请求。
+    const script = join(tmpDir, 'no-channel-server.mjs');
+    writeFileSync(script, `process.stdin.resume();\nsetInterval(() => {}, 60000);\n`);
+
+    const stoppers = new AgentStopperRegistry();
+    const transport = new JsonlRpcTransport({
+      ...nodeLaunch(script),
+      cwd: tmpDir,
+      agent: 'dsh',
+      stoppers,
+    });
+
+    await transport.start({ onMessage: () => {}, onClose: () => {} });
+    expect(transport.pid).toBeGreaterThan(0);
+    expect(stoppers.size).toBe(0);
+
+    const pid = transport.pid!;
+    await transport.close();
+    await waitForProcessGone(pid, 10000);
+  }, 15000);
 });

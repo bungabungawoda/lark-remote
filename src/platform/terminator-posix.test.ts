@@ -7,7 +7,7 @@ const { mockLogger } = vi.hoisted(() => ({
 
 vi.mock('../logger/index.js', () => ({ getLogger: () => mockLogger }));
 
-import { createPosixTerminator, ProcessStopper } from './terminator-posix.js';
+import { createPosixTerminator } from './terminator-posix.js';
 
 describe('createPosixTerminator', () => {
   let killSpy: ReturnType<typeof vi.spyOn>;
@@ -141,31 +141,5 @@ describe('createPosixTerminator', () => {
     killSpy.mockClear();
     terminator.cleanupOnExit(createMockProc({ exitCode: 0 }));
     expect(killSpy).not.toHaveBeenCalled();
-  });
-});
-
-describe('ProcessStopper（既有调用方兼容壳）', () => {
-  let killSpy: ReturnType<typeof vi.spyOn>;
-
-  beforeEach(() => {
-    vi.useFakeTimers();
-    killSpy = vi.spyOn(process, 'kill').mockImplementation(() => true);
-    vi.clearAllMocks();
-  });
-
-  afterEach(() => {
-    vi.useRealTimers();
-    killSpy.mockRestore();
-  });
-
-  it('保留原契约：返回 void、接受 null proc', async () => {
-    const stopper = new ProcessStopper({ graceMs: 5000 });
-    await expect(stopper.stop(null)).resolves.toBeUndefined();
-
-    const proc = createMockProc();
-    const stopPromise = stopper.stop(proc);
-    emitExit(proc, 0, null);
-    await expect(stopPromise).resolves.toBeUndefined();
-    expect(killSpy).toHaveBeenCalledWith(-12345, 'SIGTERM');
   });
 });

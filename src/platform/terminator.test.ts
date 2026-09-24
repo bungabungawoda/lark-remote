@@ -73,7 +73,7 @@ describe('createWin32Terminator — 优雅停止', () => {
       setTimeout(() => emitExit(proc, 0, null), 5);
     });
     const stoppers = new AgentStopperRegistry();
-    stoppers.register('claude', stopper);
+    stoppers.register('claude', 4242, stopper);
     const terminator = createWin32Terminator({ graceMs: 200, stoppers, agent: 'claude' });
 
     const started = Date.now();
@@ -90,13 +90,39 @@ describe('createWin32Terminator — 优雅停止', () => {
     const proc = aliveProc(909);
     const stopper = vi.fn(async () => {});
     const stoppers = new AgentStopperRegistry();
-    stoppers.register('codex', stopper);
+    stoppers.register('codex', 909, stopper);
     const terminator = createWin32Terminator({ graceMs: 5, stoppers, agent: 'codex' });
 
     const result = await terminator.stop(proc, { immediate: false });
     expect(stopper).toHaveBeenCalledTimes(1);
     expect(result).toEqual({ requested: true, via: 'taskkill' });
     expect(lastSpawnCommand()).toEqual(['taskkill', '/PID', '909', '/T', '/F']);
+  });
+
+  it('通道登记在**别的 pid** 上 → 不误用（走无通道分支，不空等）', async () => {
+    // 同一 agent 同时有多条长驻连接（每 workspace 一条）时，只有 pid 能把通道
+    // 钉到手上这个 proc。按 agent 单键查会让 A 工作区的 turn-cancel 打到 B 工
+    // 作区的进程上。
+    const proc = aliveProc(1001);
+    const stopper = vi.fn(async () => {});
+    const stoppers = new AgentStopperRegistry();
+    stoppers.register('codex', 2002, stopper); // 另一条连接
+    const waitForExit = vi.fn(async () => true);
+    const log = vi.fn();
+    const terminator = createWin32Terminator({
+      graceMs: 1000,
+      stoppers,
+      agent: 'codex',
+      waitForExit,
+      log,
+    });
+
+    const result = await terminator.stop(proc, { immediate: false });
+    expect(stopper).not.toHaveBeenCalled();
+    expect(waitForExit).not.toHaveBeenCalled();
+    expect(result).toEqual({ requested: true, via: 'skipped-no-channel' });
+    expect(lastSpawnCommand()).toEqual(['taskkill', '/PID', '1001', '/T', '/F']);
+    expect(String(log.mock.calls[0]![0])).toContain('1001');
   });
 
   it('无协议通道 → 打日志显式跳过优雅段并直接树杀（不等一个不会来的事件）', async () => {
@@ -123,7 +149,7 @@ describe('createWin32Terminator — 优雅停止', () => {
     const proc = aliveProc();
     const log = vi.fn();
     const stoppers = new AgentStopperRegistry();
-    stoppers.register('claude', () => {
+    stoppers.register('claude', 4242, () => {
       throw new Error('stdin closed');
     });
     const terminator = createWin32Terminator({ graceMs: 5, stoppers, agent: 'claude', log });
@@ -137,7 +163,7 @@ describe('createWin32Terminator — 优雅停止', () => {
     const proc = exitedProc();
     const stopper = vi.fn();
     const stoppers = new AgentStopperRegistry();
-    stoppers.register('claude', stopper);
+    stoppers.register('claude', 4242, stopper);
     const terminator = createWin32Terminator({ graceMs: 5, stoppers, agent: 'claude' });
 
     const result = await terminator.stop(proc, { immediate: false });
@@ -162,36 +188,71 @@ describe('createWin32Terminator — cleanupOnExit', () => {
 });
 
 describe('AgentStopperRegistry', () => {
-  it('register/get/has 按 agent key 隔离', () => {
+  it('register/get/has 按 agent + pid 隔离', () => {
     const registry = new AgentStopperRegistry();
-    const claude = vi.fn();
+    const claudeW1 = vi.fn();
+    const claudeW2 = vi.fn();
     const codex = vi.fn();
-    expect(registry.has('claude')).toBe(false);
-    expect(registry.get('claude')).toBeUndefined();
+    expect(registry.has('claude', 100)).toBe(false);
+    expect(registry.get('claude', 100)).toBeUndefined();
 
-    registry.register('claude', claude);
-    registry.register('codex', codex);
-    expect(registry.has('claude')).toBe(true);
-    expect(registry.get('claude')).toBe(claude);
-    expect(registry.get('codex')).toBe(codex);
-    expect(registry.has('pi')).toBe(false);
+    registry.register('claude', 100, claudeW1);
+    registry.register('claude', 200, claudeW2);
+    registry.register('codex', 100, codex);
+    expect(registry.size).toBe(3);
+    // 同一 agent 两条连接各自成键（后注册的不覆盖前一个）
+    expect(registry.get('claude', 100)).toBe(claudeW1);
+    expect(registry.get('claude', 200)).toBe(claudeW2);
+    // 同 pid 不同 agent 也各自成键
+    expect(registry.get('codex', 100)).toBe(codex);
+    expect(registry.has('claude', 999)).toBe(false);
   });
 
-  it('重复注册同一 agent 以最后一次为准', () => {
+  it('重复注册同一 agent+pid 以最后一次为准', () => {
     const registry = new AgentStopperRegistry();
     const first = vi.fn();
     const second = vi.fn();
-    registry.register('claude', first);
-    registry.register('claude', second);
-    expect(registry.get('claude')).toBe(second);
+    registry.register('claude', 100, first);
+    registry.register('claude', 100, second);
+    expect(registry.get('claude', 100)).toBe(second);
+    expect(registry.size).toBe(1);
+  });
+
+  it('unregister 只删指定 agent+pid', () => {
+    const registry = new AgentStopperRegistry();
+    registry.register('claude', 100, vi.fn());
+    registry.register('claude', 200, vi.fn());
+    expect(registry.unregister('claude', 100)).toBe(true);
+    expect(registry.has('claude', 100)).toBe(false);
+    expect(registry.has('claude', 200)).toBe(true);
+    // 不存在 / 已删过的键：返回 false，不抛
+    expect(registry.unregister('claude', 100)).toBe(false);
+    expect(registry.unregister('pi', 100)).toBe(false);
+  });
+
+  it('带身份校验的 unregister 不误删同 pid 上的新通道', () => {
+    // 重连/进程换代可能让同一 pid 上已经换了新通道：旧连接收尾时若无脑删，
+    // 新连接就裸奔（win32 上静默退化成直接树杀）。
+    const registry = new AgentStopperRegistry();
+    const oldStopper = vi.fn();
+    const newStopper = vi.fn();
+    registry.register('codex', 500, oldStopper);
+    registry.register('codex', 500, newStopper);
+
+    expect(registry.unregister('codex', 500, oldStopper)).toBe(false);
+    expect(registry.get('codex', 500)).toBe(newStopper);
+    expect(registry.unregister('codex', 500, newStopper)).toBe(true);
+    expect(registry.has('codex', 500)).toBe(false);
   });
 
   it('clear 清空全部通道', () => {
     const registry = new AgentStopperRegistry();
-    registry.register('claude', vi.fn());
+    registry.register('claude', 100, vi.fn());
+    registry.register('codex', 200, vi.fn());
     registry.clear();
-    expect(registry.has('claude')).toBe(false);
-    expect(registry.get('claude')).toBeUndefined();
+    expect(registry.has('claude', 100)).toBe(false);
+    expect(registry.has('codex', 200)).toBe(false);
+    expect(registry.size).toBe(0);
   });
 });
 

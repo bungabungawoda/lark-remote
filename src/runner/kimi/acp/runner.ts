@@ -20,7 +20,8 @@
 
 import type { AgentKind, AgentSessionReader, AgentStatusInfo, SpawnOptions } from '../../types.js';
 import type { ChildProcess } from 'node:child_process';
-import { spawnProcess, mergeProcessEnv, useDetachedProcessGroup } from '../../../platform/spawn.js';
+import { mergeProcessEnv, useDetachedProcessGroup } from '../../../platform/spawn.js';
+import { createShellBackend, type ShellBackend } from '../../../platform/shell.js';
 
 import { StringDecoder } from 'node:string_decoder';
 import {
@@ -53,7 +54,7 @@ import {
 import { mapAnswersByIndex } from '../../question-common.js';
 import { getLogger } from '../../../logger/index.js';
 import { BaseAcpRunner } from '../../common/acp/base-acp-runner.js';
-import { ProcessStopper } from '../../common/process-stopper.js';
+import { createTerminator, type Terminator } from '../../../platform/terminator.js';
 
 // =============================================================================
 // Configuration
@@ -265,7 +266,17 @@ export class KimiAcpRunner extends BaseAcpRunner<KimiAcpTranslator> {
   private bashToolCallIds = new Set<string>();
   /** 当前 run 的 session cwd（terminal/create 未给 cwd 时回退用）。 */
   private activeCwd: string | null = null;
-  private readonly processStopper = new ProcessStopper({ graceMs: 2_000 });
+  /**
+   * 终端子进程终止器（terminal/kill|release 与 dispose 清理用）。agent 必须是
+   * 'kimi'：win32 上优雅段靠协议停止通道，查错 key 会静默退化成直接树杀。
+   */
+  private readonly terminator: Terminator = createTerminator({ graceMs: 2_000, agent: 'kimi' });
+  /**
+   * shell seam：terminal/create 的可执行解析走这里（design.md §7.2）。kimi 的
+   * ACP 服务端固定要 `bash -c`，win32 上没有 Git Bash 时必须在 seam 里变成
+   * 明确错误，而不是一个语焉不详的 spawn ENOENT。
+   */
+  private readonly shell: ShellBackend = createShellBackend();
 
   constructor(opts: KimiAcpRunnerOptions) {
     const managerOpts: ConnectionManagerOptions = {
@@ -741,17 +752,23 @@ export class KimiAcpRunner extends BaseAcpRunner<KimiAcpTranslator> {
     const cwd = params.cwd ?? this.activeCwd ?? undefined;
     const outputLimit = params.outputByteLimit ?? TERMINAL_DEFAULT_OUTPUT_LIMIT;
 
-    const proc = spawnProcess(params.command, params.args ?? [], {
+    // 走 shell seam（design.md §7.2）：argv 逐 token 保留，只把「可执行文件在哪」
+    // 收口——win32 上 Git Bash 缺失时在这里抛 ShellUnavailableError，由
+    // handleTerminalRequest 转成明确的 Terminal request failed 回执，而不是一个
+    // 语焉不详的 spawn ENOENT。
+    const proc = this.shell.spawnArgv(params.command, params.args ?? [], {
       cwd,
-      // env 覆盖大小写不敏感合并（win32 PATH/Path 双键防护，v2 §8.3）
-      env: env ? mergeProcessEnv(process.env, env) : undefined,
-      stdio: ['ignore', 'pipe', 'pipe'],
-      // ProcessStopper 用负 PID 杀进程组（kill(-pgid)）；子进程必须是组长
-      // 才能命中，否则 kill(-pid) 抛 ESRCH 被吞 → kill/release/清理全失效。
-      // 与 JsonlRpcTransport / spawning-runner 同模式；win32 不 detached
-      // （`.cmd` 垫片在 DETACHED_PROCESS 下丢 stdio），树杀由 taskkill /T 负责。
-      detached: useDetachedProcessGroup(),
-      windowsHide: true,
+      options: {
+        // env 覆盖大小写不敏感合并（win32 PATH/Path 双键防护，v2 §8.3）
+        env: env ? mergeProcessEnv(process.env, env) : undefined,
+        stdio: ['ignore', 'pipe', 'pipe'],
+        // Terminator 用负 PID 杀进程组（kill(-pgid)）；子进程必须是组长
+        // 才能命中，否则 kill(-pid) 抛 ESRCH 被吞 → kill/release/清理全失效。
+        // 与 JsonlRpcTransport / spawning-runner 同模式；win32 不 detached
+        // （`.cmd` 垫片在 DETACHED_PROCESS 下丢 stdio），树杀由 taskkill /T 负责。
+        detached: useDetachedProcessGroup(),
+        windowsHide: true,
+      },
     });
 
     // 每个流独立 decoder：多字节字符跨 chunk 拆分时由 decoder 保留不完整
@@ -911,7 +928,7 @@ export class KimiAcpRunner extends BaseAcpRunner<KimiAcpTranslator> {
       );
       return;
     }
-    await this.processStopper.stop(handle.proc, { immediate: true });
+    await this.terminator.stop(handle.proc, { immediate: true });
     this.currentClient?.respond(id, {});
   }
 
@@ -931,7 +948,7 @@ export class KimiAcpRunner extends BaseAcpRunner<KimiAcpTranslator> {
     }
     this.terminals.delete(params.terminalId);
     // stop 对已退出进程是 no-op；仍在跑则立即 SIGTERM+SIGKILL。
-    await this.processStopper.stop(handle.proc, { immediate: true });
+    await this.terminator.stop(handle.proc, { immediate: true });
     this.currentClient?.respond(id, {});
   }
 
@@ -940,7 +957,7 @@ export class KimiAcpRunner extends BaseAcpRunner<KimiAcpTranslator> {
     const handles = [...this.terminals.values()];
     this.terminals.clear();
     for (const handle of handles) {
-      await this.processStopper.stop(handle.proc, { immediate: true });
+      await this.terminator.stop(handle.proc, { immediate: true });
     }
   }
 
