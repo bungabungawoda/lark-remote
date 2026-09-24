@@ -30,13 +30,7 @@ import os from 'node:os';
 import { CodexSessionReader } from '../../../src/session/codex/index.js';
 import { clearSessionIndexCache } from '../../../src/session/codex/rollout-reader.js';
 
-const { mockLogger, state } = vi.hoisted(() => ({
-  mockLogger: {
-    debug: vi.fn(),
-    info: vi.fn(),
-    warn: vi.fn(),
-    error: vi.fn(),
-  },
+const { state } = vi.hoisted(() => ({
   // Scripted readdirSync results keyed by absolute directory path —
   // deterministic simulation of APFS hash order.
   state: {
@@ -44,10 +38,9 @@ const { mockLogger, state } = vi.hoisted(() => ({
   },
 }));
 
-vi.mock('../../../src/logger/index.js', () => ({
-  getLogger: () => mockLogger,
-  initLogger: () => mockLogger,
-}));
+vi.mock('../../../src/logger/index.js', async () =>
+  (await import('../../lib/logger-mock.js')).loggerModuleMock(),
+);
 
 vi.mock('node:fs', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:fs')>();

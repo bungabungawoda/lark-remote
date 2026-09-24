@@ -1,19 +1,10 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { SpawnHeartbeat } from './spawn-heartbeat.js';
+import { mockLogger } from '../../../tests/lib/logger-mock.js';
 
-const { mockLogger } = vi.hoisted(() => ({
-  mockLogger: {
-    debug: vi.fn(),
-    info: vi.fn(),
-    warn: vi.fn(),
-    error: vi.fn(),
-  },
-}));
-
-vi.mock('../../logger/index.js', () => ({
-  getLogger: () => mockLogger,
-  initLogger: () => mockLogger,
-}));
+vi.mock('../../logger/index.js', async () =>
+  (await import('../../../tests/lib/logger-mock.js')).loggerModuleMock(),
+);
 
 /**
  * SpawnHeartbeat 的契约是纯时钟逻辑（start/notifyStdout/clear + setTimeout），

@@ -26,20 +26,11 @@ import {
 } from '../../tests/lib/bridge-stubs.js';
 import { prependPath, restorePath, writeMockBin } from '../../tests/lib/path-mock.js';
 import { rmRf } from '../../tests/lib/tmp-cleanup.js';
+import { mockLogger } from '../../tests/lib/logger-mock.js';
 
-const { mockLogger } = vi.hoisted(() => ({
-  mockLogger: {
-    debug: vi.fn(),
-    info: vi.fn(),
-    warn: vi.fn(),
-    error: vi.fn(),
-  },
-}));
-
-vi.mock('../logger/index.js', () => ({
-  getLogger: () => mockLogger,
-  initLogger: () => mockLogger,
-}));
+vi.mock('../logger/index.js', async () =>
+  (await import('../../tests/lib/logger-mock.js')).loggerModuleMock(),
+);
 
 // --- Stubs ---
 /** A runner that yields events, then hangs forever until stop() releases it.

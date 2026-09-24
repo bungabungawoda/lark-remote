@@ -319,22 +319,11 @@ describe('/resume [agent] [N] dual-parameter feature', () => {
       messageId: 'msg1',
     });
 
-    // 调试：检查 sessionStore 中是否保存了 sessionId
-    const savedSessionId = sessionStore.getSessionId('user1', 'codex');
-    console.log('Saved sessionId for codex:', savedSessionId);
-
-    // 也检查 defaultAgent (claude) 的 session
-    const claudeSessionId = sessionStore.getSessionId('user1', 'claude');
-    console.log('Saved sessionId for claude:', claudeSessionId);
-
     const sent = connector._sent;
-    console.log('Sent length:', sent.length);
-    console.log('First input:', JSON.stringify(sent[0]?.input ?? {}).slice(0, 300));
 
     // 验证输出包含 sessionId（abc-123）而不是 agent+session 组合
     const input = sent[0].input as { text?: string; card?: unknown };
     if (input.text) {
-      console.log('Text output:', input.text);
       // 应该返回"未找到 session abc-123"，而不是"未找到 session codex abc-123"
       expect(input.text).toContain('abc-123');
       expect(input.text).not.toContain('codex abc-123');

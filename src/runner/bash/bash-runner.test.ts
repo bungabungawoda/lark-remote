@@ -28,7 +28,6 @@ describePosix('BashProcessRunner', () => {
     }
 
     const elapsed = Date.now() - start;
-    console.log(`nohup command elapsed: ${elapsed}ms, events: ${events.join(',')}`);
 
     // 回归守卫：bash 退出后必须立即触发 exit（历史 bug 曾监听 close 导致
     // exit 延迟 30 秒），elapsed 应 < 500ms
@@ -46,7 +45,6 @@ describePosix('BashProcessRunner', () => {
     }
 
     const elapsed = Date.now() - start;
-    console.log(`disown command elapsed: ${elapsed}ms, events: ${events.join(',')}`);
 
     // 修复后应该 < 500ms
     expect(elapsed).toBeLessThan(500);

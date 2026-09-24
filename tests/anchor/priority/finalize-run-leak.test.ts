@@ -12,20 +12,11 @@ import {
   createStubAgentRegistry,
   createStubSessionReaderRegistry,
 } from '../../lib/bridge-stubs.js';
-const { mockLogger, renderCalls } = vi.hoisted(() => ({
-  mockLogger: {
-    debug: vi.fn(),
-    info: vi.fn(),
-    warn: vi.fn(),
-    error: vi.fn(),
-  },
-  renderCalls: { n: 0 },
-}));
+const { renderCalls } = vi.hoisted(() => ({ renderCalls: { n: 0 } }));
 
-vi.mock('../../../src/logger/index.js', () => ({
-  getLogger: () => mockLogger,
-  initLogger: () => mockLogger,
-}));
+vi.mock('../../../src/logger/index.js', async () =>
+  (await import('../../lib/logger-mock.js')).loggerModuleMock(),
+);
 
 // finalizeRun is the renderRunCard(...) argument evaluation at the sendResult
 // call site. Calls 1-2 are cardSession.start() initial render and the

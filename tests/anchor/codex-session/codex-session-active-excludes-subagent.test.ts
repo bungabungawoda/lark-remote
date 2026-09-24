@@ -29,19 +29,9 @@ import {
   clearSessionIndexCache,
 } from '../../../src/session/codex/rollout-reader.js';
 
-const { mockLogger } = vi.hoisted(() => ({
-  mockLogger: {
-    debug: vi.fn(),
-    info: vi.fn(),
-    warn: vi.fn(),
-    error: vi.fn(),
-  },
-}));
-
-vi.mock('../../../src/logger/index.js', () => ({
-  getLogger: () => mockLogger,
-  initLogger: () => mockLogger,
-}));
+vi.mock('../../../src/logger/index.js', async () =>
+  (await import('../../lib/logger-mock.js')).loggerModuleMock(),
+);
 
 const SESSION_MAIN = 'sess-shared-active-check';
 const SESSION_ORPHAN_SUB = 'sess-orphan-active-check';

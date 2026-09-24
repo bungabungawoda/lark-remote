@@ -2,27 +2,21 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { EventEmitter } from 'node:events';
 import path from 'node:path';
 import os from 'node:os';
+import { mockLogger } from '../../tests/lib/logger-mock.js';
 
 // 生产代码异步路径经 platform/spawn 的 spawnProcess（cross-spawn）拉起 codex，
 // mock 该 seam：spawnProcess 返回 fake ChildProcess（stdout/stderr 流 + close 事件）；
 // 同步路径的 spawnProcessSync 在本文件只用于断言「绝不被调用」。
 const mockSpawnProcess = vi.fn();
 const mockSpawnSync = vi.fn();
-const mockLogger = {
-  debug: vi.fn(),
-  info: vi.fn(),
-  warn: vi.fn(),
-  error: vi.fn(),
-};
 
 vi.mock('../platform/spawn.js', () => ({
   spawnProcess: (...args: any[]) => mockSpawnProcess(...args),
   spawnProcessSync: (...args: any[]) => mockSpawnSync(...args),
 }));
-vi.mock('../logger/index.js', () => ({
-  getLogger: () => mockLogger,
-  initLogger: () => mockLogger,
-}));
+vi.mock('../logger/index.js', async () =>
+  (await import('../../tests/lib/logger-mock.js')).loggerModuleMock(),
+);
 
 import {
   loadCodexCatalogModelsAsync,

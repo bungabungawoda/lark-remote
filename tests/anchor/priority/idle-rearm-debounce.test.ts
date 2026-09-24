@@ -5,19 +5,10 @@ import os from 'node:os';
 import type { AgentEvent, Runner } from '../../../src/runner/index.js';
 
 import { createStubRunner, makeBridge } from '../../lib/bridge-stubs.js';
-const { mockLogger } = vi.hoisted(() => ({
-  mockLogger: {
-    debug: vi.fn(),
-    info: vi.fn(),
-    warn: vi.fn(),
-    error: vi.fn(),
-  },
-}));
 
-vi.mock('../../../src/logger/index.js', () => ({
-  getLogger: () => mockLogger,
-  initLogger: () => mockLogger,
-}));
+vi.mock('../../../src/logger/index.js', async () =>
+  (await import('../../lib/logger-mock.js')).loggerModuleMock(),
+);
 /** A runner that yields a few events, then hangs forever until stop() releases it.
  *  Used to test that the idle watchdog still fires after some events were received. */
 interface EventThenHangRunner extends Runner {

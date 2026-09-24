@@ -9,6 +9,27 @@ import { CommandRouter } from '../../../src/router/index.js';
 import { AppConfigSchema } from '../../../src/config/index.js';
 import type { AppConfig } from '../../../src/config/index.js';
 
+// 测试隔离（设计文档 §9.5「禁真跑 agent」）：本用例走的 config 加载链
+// （codex debug models / opencode models --verbose / kimi provider list --json）
+// 会经 spawnProcessSync 真起 agent CLI —— Windows 上单次 2-7s，且行为取决于本机
+// 装没装这些 CLI，会让「切换 agent」这类用例变成负载相关的偶发红。
+// 这里只把同步 CLI 通道短路成「命令失败」，配置层对失败已有 FALLBACK_MODELS 兜底，
+// 断言面不变；其余导出保持真实。
+vi.mock('../../../src/platform/spawn.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../../src/platform/spawn.js')>();
+  return {
+    ...actual,
+    spawnProcessSync: (() => ({
+      pid: 0,
+      output: [],
+      stdout: '',
+      stderr: '',
+      status: 1,
+      signal: null,
+    })) as unknown as typeof actual.spawnProcessSync,
+  };
+});
+
 /**
  * Anchor: config.save 切换 agent 再切回来时，应恢复之前的 session
  *

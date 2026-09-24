@@ -422,10 +422,13 @@ describe('matchMode：executable（默认）vs agent-invocation', () => {
 });
 
 describe('verifyPidIdentityVerdictSync（killOrphan 的同步入口）', () => {
+  // platform 必须显式钉死：同步档在 win32 上**恒** unknown（CIM 无同步形态，见下一条
+  // 用例），不钉就会跟着宿主漂——在 macOS 上「默认档=posix」通过，在 Windows 上必红。
   it('posix：execFileSync 取 ps 命令行，按 matchMode 裁决', () => {
     mockExecFileSync.mockReturnValue(`${PI_CMD}\n`);
     expect(
       verifyPidIdentityVerdictSync(4242, {
+        platform: 'linux',
         expectedBinary: 'pi',
         matchMode: 'agent-invocation',
       }),
@@ -434,6 +437,7 @@ describe('verifyPidIdentityVerdictSync（killOrphan 的同步入口）', () => {
     mockExecFileSync.mockReturnValue(`${NODE_BIN} /home/user/pkg/cli.js\n`);
     expect(
       verifyPidIdentityVerdictSync(4242, {
+        platform: 'linux',
         expectedBinary: 'pi',
         matchMode: 'agent-invocation',
       }),
@@ -444,7 +448,9 @@ describe('verifyPidIdentityVerdictSync（killOrphan 的同步入口）', () => {
     mockExecFileSync.mockImplementation(() => {
       throw Object.assign(new Error('no such process'), { code: 'ESRCH' });
     });
-    expect(verifyPidIdentityVerdictSync(4242, { expectedBinary: 'pi' })).toBe('unknown');
+    expect(verifyPidIdentityVerdictSync(4242, { platform: 'linux', expectedBinary: 'pi' })).toBe(
+      'unknown',
+    );
   });
 
   it('win32：同步档恒 unknown（CIM 无同步形态），且不发起任何查询', () => {

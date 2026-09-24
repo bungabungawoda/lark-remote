@@ -7,15 +7,11 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { InboundTurnAssembler } from './turn-assembler.js';
 import type { InboundAttachment, InboundTurn, MediaOutcome } from './turn.js';
+import { mockLogger } from '../../tests/lib/logger-mock.js';
 
-const { mockLogger } = vi.hoisted(() => ({
-  mockLogger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
-}));
-
-vi.mock('../logger/index.js', () => ({
-  getLogger: () => mockLogger,
-  initLogger: () => mockLogger,
-}));
+vi.mock('../logger/index.js', async () =>
+  (await import('../../tests/lib/logger-mock.js')).loggerModuleMock(),
+);
 
 const ATTACHMENT: InboundAttachment = {
   path: '/tmp/20260915/image_220934_1.png',

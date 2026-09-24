@@ -16,20 +16,11 @@ import type { AgentRunner } from '../../../src/runner/index.js';
 import { AgentRegistry } from '../../../src/runner/registry.js';
 import { SessionReaderRegistry } from '../../../src/session/registry.js';
 import { sleep, waitFor } from '../../lib/wait-for.js';
+import { mockLogger } from '../../lib/logger-mock.js';
 
-const { mockLogger } = vi.hoisted(() => ({
-  mockLogger: {
-    debug: vi.fn(),
-    info: vi.fn(),
-    warn: vi.fn(),
-    error: vi.fn(),
-  },
-}));
-
-vi.mock('../../../src/logger/index.js', () => ({
-  getLogger: () => mockLogger,
-  initLogger: () => mockLogger,
-}));
+vi.mock('../../../src/logger/index.js', async () =>
+  (await import('../../lib/logger-mock.js')).loggerModuleMock(),
+);
 
 /**
  * Stub connector returning a UNIQUE card message id per sendWithRetry call,

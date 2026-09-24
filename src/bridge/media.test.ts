@@ -13,14 +13,9 @@ import { makeBridge } from '../../tests/lib/bridge-stubs.js';
 import { AppConfigSchema } from '../config/index.js';
 import type { InboundMediaPayload, InboundResourceKind } from '../connector/index.js';
 
-const { mockLogger } = vi.hoisted(() => ({
-  mockLogger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
-}));
-
-vi.mock('../logger/index.js', () => ({
-  getLogger: () => mockLogger,
-  initLogger: () => mockLogger,
-}));
+vi.mock('../logger/index.js', async () =>
+  (await import('../../tests/lib/logger-mock.js')).loggerModuleMock(),
+);
 
 const pngBytes = Buffer.from([
   0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d,

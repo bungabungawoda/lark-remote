@@ -1,11 +1,10 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { createMockProc, emitExit } from '../../tests/lib/mock-process.js';
+import { mockLogger } from '../../tests/lib/logger-mock.js';
 
-const { mockLogger } = vi.hoisted(() => ({
-  mockLogger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
-}));
-
-vi.mock('../logger/index.js', () => ({ getLogger: () => mockLogger }));
+vi.mock('../logger/index.js', async () =>
+  (await import('../../tests/lib/logger-mock.js')).loggerModuleMock(),
+);
 
 import { createPosixTerminator } from './terminator-posix.js';
 

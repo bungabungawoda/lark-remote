@@ -6,19 +6,10 @@ import type { Runner } from '../../../src/runner/index.js';
 import { sleep } from '../../lib/wait-for.js';
 
 import { makeBridge } from '../../lib/bridge-stubs.js';
-const { mockLogger } = vi.hoisted(() => ({
-  mockLogger: {
-    debug: vi.fn(),
-    info: vi.fn(),
-    warn: vi.fn(),
-    error: vi.fn(),
-  },
-}));
 
-vi.mock('../../../src/logger/index.js', () => ({
-  getLogger: () => mockLogger,
-  initLogger: () => mockLogger,
-}));
+vi.mock('../../../src/logger/index.js', async () =>
+  (await import('../../lib/logger-mock.js')).loggerModuleMock(),
+);
 
 interface ResultThenHangRunner extends Runner {
   stopCalled: boolean;

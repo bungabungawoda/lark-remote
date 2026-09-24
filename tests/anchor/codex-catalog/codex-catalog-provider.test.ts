@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import { mockLogger } from '../../lib/logger-mock.js';
 
 /**
  * Red Agent - Round 2 - Anchor (Bug 模式, A3)
@@ -16,10 +17,7 @@ import os from 'node:os';
  * 模型列表仍只来自活动目录——openai+内置 gpt-5.x 的失效路径不因 provider 合并复活。
  */
 
-const { mockSpawnSync, mockLogger } = vi.hoisted(() => ({
-  mockSpawnSync: vi.fn(),
-  mockLogger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
-}));
+const { mockSpawnSync } = vi.hoisted(() => ({ mockSpawnSync: vi.fn() }));
 
 vi.mock('../../../src/platform/spawn.js', () => ({
   // 兼容历史 mock 形态：返回 string/Buffer 视为成功 stdout，抛错/其余原样穿透
@@ -34,10 +32,9 @@ vi.mock('../../../src/platform/spawn.js', () => ({
     throw new Error('anchor test must not spawn async');
   },
 }));
-vi.mock('../../../src/logger/index.js', () => ({
-  getLogger: () => mockLogger,
-  initLogger: () => mockLogger,
-}));
+vi.mock('../../../src/logger/index.js', async () =>
+  (await import('../../lib/logger-mock.js')).loggerModuleMock(),
+);
 
 import { loadCodexConfig, invalidateCodexBundledCache } from '../../../src/config/codex-config.js';
 import { makeModel, makeCatalog } from '../../fixtures/codex-catalog-fixture.js';

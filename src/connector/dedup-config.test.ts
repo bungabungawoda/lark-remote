@@ -18,14 +18,9 @@ vi.mock('@larksuite/channel', () => ({
   createLarkChannel: createLarkChannelMock,
 }));
 
-vi.mock('../logger/index.js', () => ({
-  getLogger: () => ({
-    info: vi.fn(),
-    warn: vi.fn(),
-    error: vi.fn(),
-    debug: vi.fn(),
-  }),
-}));
+vi.mock('../logger/index.js', async () =>
+  (await import('../../tests/lib/logger-mock.js')).loggerModuleMock(),
+);
 
 import { FeishuConnector, DEDUP_TTL_MS } from './index.js';
 import type { AppConfig } from '../config/index.js';

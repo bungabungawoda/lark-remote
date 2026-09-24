@@ -16,16 +16,9 @@ import { makeModel, makeCatalog } from '../../fixtures/codex-catalog-fixture.js'
 import path from 'node:path';
 import os from 'node:os';
 import fs from 'node:fs';
+import { mockLogger } from '../../lib/logger-mock.js';
 
-const { mockSpawnSync, mockLogger } = vi.hoisted(() => ({
-  mockSpawnSync: vi.fn(),
-  mockLogger: {
-    debug: vi.fn(),
-    info: vi.fn(),
-    warn: vi.fn(),
-    error: vi.fn(),
-  },
-}));
+const { mockSpawnSync } = vi.hoisted(() => ({ mockSpawnSync: vi.fn() }));
 
 vi.mock('../../../src/platform/spawn.js', () => ({
   // 兼容历史 mock 形态：返回 string/Buffer 视为成功 stdout，抛错/其余原样穿透
@@ -40,10 +33,9 @@ vi.mock('../../../src/platform/spawn.js', () => ({
     throw new Error('anchor test must not spawn async');
   },
 }));
-vi.mock('../../../src/logger/index.js', () => ({
-  getLogger: () => mockLogger,
-  initLogger: () => mockLogger,
-}));
+vi.mock('../../../src/logger/index.js', async () =>
+  (await import('../../lib/logger-mock.js')).loggerModuleMock(),
+);
 
 /** Bundled fixture using codex-catalog-fixture helpers */
 const BUNDLED_FIXTURE = makeCatalog([
