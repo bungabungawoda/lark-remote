@@ -71,6 +71,7 @@ docs/**/*-tasks.md
 docs/**/lessons-*.md
 docs/**/rules/
 docs/**/architecture/*-config.md
+docs/**/architecture/*-support-design*.md
 playbook*.md
 docs/feishu-card-*/
 docs/images/*.original.gif
