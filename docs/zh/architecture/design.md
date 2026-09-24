@@ -377,7 +377,7 @@ claude 异常退出时 stdout 最后一块数据可能无尾部 `\n`，`readline
 
 新消息发送约 5 req/s。`sendWithRetry` 对可重试错误 sleep 200ms 后重试一次：SDK 的
 `rate_limited`（HTTP 429，SDK 已内置退避重试，此处仅作兜底），以及飞书业务码
-99991400/99991401（频率控制）——后者被 `@larksuite/channel@0.3.0` 的 `classifyError`
+99991400/99991401（频率控制）——后者被 `@larksuite/channel@0.7.1` 的 `classifyError`
 归类为 `permission_denied` 且 SDK 对 `permission_denied` fail-fast，必须由
 `shouldRetrySendError` 从 `cause` 链（`cause.response.data.code`）识别才不至于让
 限流重试路径死掉。普通 `permission_denied`（如缺 scope）不重试。

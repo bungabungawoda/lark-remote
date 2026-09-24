@@ -17,7 +17,7 @@ Run/Bash 卡片的 CardKit 2.0 单卡流式架构说明，覆盖数据流、状�
 
 ## 2. 已验证的 SDK 机制
 
-当前依赖为 `@larksuite/channel@0.1.2`。
+当前依赖为 `@larksuite/channel@0.7.1`。
 
 `channel.stream(..., { card })` 的 card 模式：
 

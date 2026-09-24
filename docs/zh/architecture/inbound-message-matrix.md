@@ -5,7 +5,8 @@
 > 而非"是否携带可下载资源"），并发现同一根因下还有一批同类漏判。
 >
 > 数据来源：`@larksuite/channel@0.3.0` 的 `normalize()` **实测**（构造 22 种 `message_type` 跑真实 SDK 输出），
-> 非读源码推断。判定点：修复前 `src/connector/index.ts` 的入站分派分支。
+> 非读源码推断；`post` 顶层附件区与合并转发抓取失败态两行于 `@larksuite/channel@0.7.1` 复测补齐
+> （离线契约锚点：`src/inbound/sdk-normalize-contract.test.ts`）。判定点：修复前 `src/connector/index.ts` 的入站分派分支。
 > **SDK 给出的 `resources` 不等于"飞书允许下载"** —— 官方接口的硬限制见 §4（表情包、合并转发都不给下载）。
 
 ## 0. 判定点与修复前判据
@@ -41,12 +42,13 @@ this.onMessage?.({ ... content: msg.content }); // 文本通道：content 原样
 | `file` | `<file key="…" name="report.pdf"/>` | `file` + fileName | MEDIA | 正常 |
 | `post`（含图） | `**T**\n\n看这张图 ![image](…)` | `image`（可多个） | TEXT | **漏资源** + 文本被转发 |
 | `post`（纯文字） | `纯文字富文本` | — | TEXT | 正常（但注意与含图分支行为不一致） |
+| `post`（顶层附件区，0.6.0+） | 正文 + `<file key="…" name="report.pdf"/>`（folder 为 `<folder …/>`） | `file` + fileName（folder 不产资源） | MEDIA + TEXT | 正常：附件落盘、正文保留 |
 | `media` | `<video key="…" name="1755000000.mp4" duration="80.9s"/>` | `video` + fileName + coverImageKey | TEXT | **本次事故** |
 | `video` | 同上（SDK 把 `video`/`media` 都注册到 `convertVideo`） | `video` | TEXT | **漏资源** |
 | `media`（无 file_name） | `<video key="…" duration="80.9s"/>` | `video`，**无 fileName** | TEXT | **漏资源** + 兜底无名 |
 | `audio`（语音） | `<audio key="…" duration="3s"/>` | `audio`，**无 fileName** | TEXT | **漏资源** |
 | `sticker`（表情） | `<sticker key="…"/>` | `sticker`，**无 fileName** | TEXT | **不可下载**（飞书限制，见 §4） |
-| `merge_forward` | 有子消息能力时渲染成 `[时间] 发送人:` + 缩进内容的树；能力缺失时 `<forwarded_messages/>` | 子消息内的资源**会被聚合进顶层 resources** | TEXT | 文本可用；**资源被丢**（见 §2 P0 #4） |
+| `merge_forward` | 有子消息能力时渲染成 `[时间] 发送人:` + 缩进内容的树；能力缺失时 `<forwarded_messages/>`；子消息抓取失败（0.4.1+，重试耗尽）时 `<forwarded_messages status="fetch_failed"/>` | 子消息内的资源**会被聚合进顶层 resources** | TEXT | 文本可用；**资源被丢**（见 §2 P0 #4） |
 | `interactive` | `[interactive card]` | — | TEXT | 噪声 |
 | `folder` | `<folder key="…" name="myfolder"/>` | `[]` | TEXT | 噪声（key 不可用 messageResource 下载） |
 | `share_chat` | `<group_card id="oc_…"/>` | — | TEXT | 噪声 |
@@ -236,10 +238,16 @@ GET /open-apis/im/v1/messages/{子 message_id}/resources/{file_key}?type=image
 
 ### 6.3 已核查的一条否定结论
 
-SDK 从 `0.3.0` 到 `0.6.0`，`ResourceDescriptor` **始终不带 `message_id`**（已下载 0.6.0 实物对比确认），
+SDK 从 `0.3.0` 到 `0.7.1`，`ResourceDescriptor` **始终不带 `message_id`**（0.6.0 实物对比确认，0.7.1 类型复核），
 `merge_forward` 的子资源聚合逻辑（`formatSubTree` / `renderItem`）也未变化
 → **升级 SDK 不能解决合并转发的凭据配对问题，必须自建遍历。**
 
+> 待复核：0.7.1 的 `merge-forward.ts` 源码注释声称飞书 `messageResource.get` 接受**顶层合并转发容器
+> 的 `message_id`** 来下载子消息资源（"verified against a real forward"），与本节的"必须自建遍历"结论
+> 相左。两者都未在本项目真机复验；升级到 0.7.1 后应发一条含附件的合并转发实测，再决定 B5 是否还需要
+> 自建子消息遍历。
+
 ---
 
-_生成于 2026-09-15，基于 SDK 实测 + 日志现场 + 飞书官方文档核查；修复前请复核 `@larksuite/channel` 版本（0.3.0）。_
+_生成于 2026-09-15，基于 SDK 实测 + 日志现场 + 飞书官方文档核查；`post` 顶层附件区与合并转发抓取
+失败态于 2026-09-20 用 `@larksuite/channel@0.7.1` 复测补齐。_
