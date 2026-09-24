@@ -8,9 +8,9 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import path from 'node:path';
 import fs from 'node:fs';
-import os from 'node:os';
 import { PiSessionReader } from '../../../src/session/pi/index.js';
 import { piEncodeCwd } from '../../lib/session-fixtures.js';
+import { makeTempDir } from '../../lib/temp-dir.js';
 
 // ---------------------------------------------------------------------------
 // PiSessionReader stale db
@@ -23,7 +23,7 @@ describe('Anchor: PiSessionReader 必须基于文件系统返回真正最新的�
   const cwd = '/test/cwd/project';
 
   beforeEach(() => {
-    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-stale-db-anchor-'));
+    tmpDir = makeTempDir('pi-stale-db-anchor-');
     piDir = path.join(tmpDir, 'pi-agent');
     sessionsDir = path.join(piDir, 'sessions');
     fs.mkdirSync(sessionsDir, { recursive: true });

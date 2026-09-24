@@ -17,15 +17,15 @@
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { Bridge } from '../../../src/bridge/index.js';
 import { SessionStore } from '../../../src/session/index.js';
 import { AppConfigSchema } from '../../../src/config/index.js';
 import { SpawningRunner } from '../../../src/runner/common/spawning-runner.js';
 import { ClaudeRunner } from '../../../src/runner/index.js';
+import { makeTempDir } from '../../lib/temp-dir.js';
 
-const PID_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'p1-1-anchor-'));
+const PID_DIR = makeTempDir('p1-1-anchor-');
 
 describe('P1-1: registerExitHandlers 不累积 process 监听器', () => {
   let beforeExit: number;
@@ -66,7 +66,7 @@ describe('P1-1: registerExitHandlers 不累积 process 监听器', () => {
     // A7（内存回收）：bridge 淘汰 (cwd, kind) 槽位时必须把 runner 从单例分发器注销，
     // 否则 Set<Runner> 永久持有每个历史 runner 实例（review §P1-1 后果②：内存随 run 数无界增长）。
     const baseline = SpawningRunner.getRegisteredExitHandlerCount();
-    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'p1-1-bridge-'));
+    const tmpDir = makeTempDir('p1-1-bridge-');
     try {
       const config = AppConfigSchema.parse({
         feishu: { appId: 'test', appSecret: 'test' },

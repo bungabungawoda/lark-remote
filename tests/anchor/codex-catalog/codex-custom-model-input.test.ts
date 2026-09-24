@@ -22,6 +22,7 @@ import path from 'node:path';
 import os from 'node:os';
 import fs from 'node:fs';
 import { mockLogger } from '../../lib/logger-mock.js';
+import { rmRf } from '../../lib/tmp-cleanup.js';
 
 /**
  * P2-2（codex-y review）：本文件此前未 mock node:child_process，卡片构建会真实调用
@@ -234,8 +235,10 @@ describe('codex config card custom model input - ANCHOR', () => {
     } else {
       process.env.CODEX_HOME = oldCodexHome;
     }
-    fs.rmSync(fallbackHome, { recursive: true, force: true });
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    // 裸 rmSync 在 Windows 上撞 EBUSY/EPERM 会失败（runner 子进程的 cwd 可能仍钉在
+    // 目录上）；rmRf 带重试 + 精准杀占用进程，这也是本文件此前往 %TEMP% 漏目录的原因。
+    rmRf(fallbackHome);
+    rmRf(tmpDir);
     invalidateCodexBundledCache();
   });
 
@@ -349,6 +352,6 @@ describe('codex config card custom model input - ANCHOR', () => {
     expect(providerOptions2).toContain('openai');
     expect(providerOptions2).not.toContain('anthropic');
 
-    fs.rmSync(catalogHome, { recursive: true, force: true });
+    rmRf(catalogHome);
   });
 });

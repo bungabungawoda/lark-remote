@@ -7,6 +7,8 @@ import type { Bridge } from '../bridge/index.js';
 import type { AppConfig } from '../config/index.js';
 import { createMockBridge, createStubSessionReaderRegistry } from '../../tests/lib/bridge-stubs.js';
 import { expectNoV1ActionContainer } from '../../tests/lib/card-view.js';
+import { makeTempDir } from '../../tests/lib/temp-dir.js';
+import { writeSizedFile } from '../../tests/lib/sized-file.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -26,7 +28,7 @@ describe('ls file action', () => {
   let testFilePath: string;
 
   beforeEach(() => {
-    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ls-file-test-'));
+    tempDir = makeTempDir('ls-file-test-');
     testFilePath = path.join(tempDir, 'test.txt');
     fs.writeFileSync(testFilePath, 'hello world');
 
@@ -69,10 +71,9 @@ describe('ls file action', () => {
   });
 
   it('should reject file larger than 30MB', async () => {
-    // Create a file larger than 30MB
+    // 只断言 size，稀疏文件即可（原来真写 31 MiB 零字节）
     const bigFilePath = path.join(tempDir, 'big.txt');
-    const largeBuffer = Buffer.alloc(31 * 1024 * 1024); // 31MB
-    fs.writeFileSync(bigFilePath, largeBuffer);
+    writeSizedFile(bigFilePath, 31 * 1024 * 1024);
 
     sessionStore.set('user1', { sessions: new Map(), previousSessions: new Map(), cwd: tempDir });
 
@@ -104,7 +105,7 @@ describe('ls tilde expansion', () => {
   let tempDir: string;
 
   beforeEach(() => {
-    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ls-tilde-test-'));
+    tempDir = makeTempDir('ls-tilde-test-');
 
     sessionStore = new SessionStore();
     sessionStore.set('user1', { sessions: new Map(), previousSessions: new Map(), cwd: tempDir });
@@ -224,7 +225,7 @@ describe('ls on a file path lists the file itself', () => {
   const ctx = { userId: 'user1', chatId: 'chat1', messageId: 'msg1' };
 
   beforeEach(() => {
-    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ls-filecard-test-'));
+    tempDir = makeTempDir('ls-filecard-test-');
     testFilePath = path.join(tempDir, 'lr.zip');
     fs.writeFileSync(testFilePath, 'zip-content');
 

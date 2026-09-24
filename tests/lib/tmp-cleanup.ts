@@ -11,7 +11,11 @@
  *      随后继续重试直到删除成功。
  */
 import fs from 'node:fs';
+import os from 'node:os';
+import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
+
+const { tmpdir } = os;
 
 const RETRYABLE_CODES = new Set(['EBUSY', 'EPERM', 'ENOTEMPTY', 'EMFILE']);
 const MAX_ATTEMPTS = 100;
@@ -41,6 +45,106 @@ function killHolders(target: string): void {
     ],
     { stdio: 'ignore', timeout: 15_000, windowsHide: true },
   );
+}
+
+/**
+ * 本仓测试在 `os.tmpdir()` 下使用的专属前缀。
+ *
+ * 只放「grep 回仓确认过归属、别处不会用」的前缀 —— sweep 会按前缀直接删目录，
+ * 前缀写宽了就会误伤。特别注意**不要**把 `lark-remote-inbound-` 放进来：
+ * 那是 `src/connector/index.ts` 的**运行时**缓存目录，不是测试产物。
+ */
+export const OUR_TEMP_PREFIXES = [
+  // router / 卡片类用例
+  'paging-jump-',
+  'download-cmd-',
+  'ls-filecard-test-',
+  'ls-tilde-test-',
+  'ls-file-test-',
+  // anchor 类用例
+  'codex-card-test-',
+  'codex-effort-',
+  'codex-model-switch-test-',
+  'codex-custom-model-',
+  'codex-custom-home-',
+  'codex-custom-catalog-home-',
+  'pi-stale-db-anchor-',
+  'bridge-clear-test-',
+  'p1-1-anchor-',
+  // runner / bridge 类用例
+  'lark-kimi-runner-',
+  'lark-runner-test-',
+  'lark-codex-appserver-',
+  'lark-codex-idle-timeout-',
+  'lark-transport-',
+  'lark-opencode-acp-',
+  'lark-jsonrpc-client-',
+  'lark-registry-test-',
+  'lark-bridge-test-',
+  'lark-pi-rpc-test-',
+  'lark-bash-test-',
+  'lark-cm-',
+  // 2026-09-22 补漏：这三个前缀 09-21 收口时漏登记，兜底扫不到，
+  // 导致 09-10/09-11 的残留一直留在 %TEMP%（测试文件本身已用 rmRf，非泄漏）。
+  'lark-approval-integration-',
+  'lark-reaction-anchor-',
+  // 大文件用例：目录里躺 20-31 MiB 的稀疏文件，被强杀后最需要兜底
+  'file-limit-test-',
+] as const;
+
+/**
+ * 清扫本仓测试在 `os.tmpdir()` 下的残留。
+ *
+ * 定位是**兜底**：整轮 run 结束后调用一次（vitest globalTeardown），把
+ * 「钩子没来得及跑」的残留清掉 —— 用例被强杀、超时、worker 崩溃时 afterEach
+ * 不会执行。主动线是 `temp-dir.ts` 的 `makeTempDir()` + afterAll。
+ *
+ * `baselineMs` 必须是**本轮 run 启动的时刻**（globalSetup 里取），只删 mtime
+ * 早于它的条目。没有这道门限就会误伤并行 worktree：本仓流程要求每个改动开
+ * 独立 worktree，两个套件同时在跑是常态，A 的 teardown 会把 B 正在用的目录
+ * 整片删掉。目录 mtime 在增删条目时会刷新，所以「本轮启动前就没再动过」本身就是
+ * 一个可用的失活信号；仍留下的窗口是「比本轮更早启动、且至今仍在跑的套件」里
+ * 那些早于基线、之后没再写入的在用目录 —— 要彻底消除得靠占用进程探活，代价不
+ * 划算，这里不收口。
+ *
+ * 跨平台（macOS / Linux 走同一个 `os.tmpdir()`）；删除复用 `rmRf` 的
+ * Windows EBUSY 重试，避免刚退出的子进程句柄把目录钉住。
+ *
+ * @returns 删除成功数与失败清单（失败只报告不抛，别让兜底本身把 run 弄红）
+ */
+export function sweepProjectTempDirs(baselineMs: number): {
+  removed: number;
+  failed: string[];
+} {
+  const tmpRoot = tmpdir();
+  let removed = 0;
+  const failed: string[] = [];
+  let entries: string[];
+  try {
+    entries = fs.readdirSync(tmpRoot);
+  } catch {
+    return { removed, failed };
+  }
+  for (const name of entries) {
+    if (!OUR_TEMP_PREFIXES.some((prefix) => name.startsWith(prefix))) continue;
+    const full = join(tmpRoot, name);
+    let stat: fs.Stats;
+    try {
+      stat = fs.lstatSync(full);
+    } catch {
+      continue;
+    }
+    if (!stat.isDirectory()) continue;
+    // 基线之后动过的目录留给它自己的套件（见函数注释）
+    if (stat.mtimeMs >= baselineMs) continue;
+    try {
+      rmRf(full);
+      removed++;
+    } catch {
+      failed.push(full);
+    }
+  }
+  return { removed, failed };
 }
 
 export function rmRf(target: string): void {
