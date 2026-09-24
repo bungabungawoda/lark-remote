@@ -672,3 +672,37 @@ function lsFixtureForToctou() {
   fs.rmSync(path.join(fixture.root, 'foo_dir'), { recursive: true });
   return fixture;
 }
+
+describe('/ls 符号链接与坏条目（B5）', () => {
+  it('符号链接按目标归类：链接目录可进入，链接文件带大小', () => {
+    const { router, root } = makeFixture({ dirs: ['real_dir'], files: ['target.txt'] });
+    fs.writeFileSync(path.join(root, 'target.txt'), 'hello world!');
+    fs.symlinkSync(path.join(root, 'real_dir'), path.join(root, 'link_dir'));
+    fs.symlinkSync(path.join(root, 'target.txt'), path.join(root, 'link_file.txt'));
+
+    const card = lsCardOf(router);
+    const text = allText(card);
+    // 旧实现：Dirent.isSymbolicLink 既不是 dir 也不是 file → 两个链接根本不出现
+    expect(text).toContain('link_dir');
+    expect(text).toContain('link_file.txt');
+    expect(text).toContain('共 2 目录, 2 文件');
+    // 链接目录归类为目录才会带 ls.browse（点进去）；文件按钮才是 ls.file
+    const browsePaths = payloadsForCmd(card, 'ls.browse', 'button').map((v) =>
+      String(v.path ?? ''),
+    );
+    expect(browsePaths).toContain(path.join(root, 'link_dir'));
+    expectNoV1ActionContainer(card);
+  });
+
+  it('悬空符号链接照常列出，不让整次 /ls 变成「读取目录失败」', () => {
+    const { router, root } = makeFixture({ files: ['keep.txt'] });
+    fs.symlinkSync(path.join(root, 'nowhere.bin'), path.join(root, 'dangling.bin'));
+
+    const text = allText(lsCardOf(router));
+    // stat 失败只让该条目降级（无大小），其余条目必须还在
+    expect(text).toContain('dangling.bin');
+    expect(text).toContain('keep.txt');
+    expect(text).toContain('共 0 目录, 2 文件');
+    expect(text).not.toContain('读取目录失败');
+  });
+});

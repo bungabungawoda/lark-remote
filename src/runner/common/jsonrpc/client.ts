@@ -181,7 +181,13 @@ export class JsonRpcClient<InitializeResult = unknown> {
     return new Promise<R>((resolve, reject) => {
       // Clamp to setTimeout's max: callers may pass Infinity for turn-scoped
       // requests (session/prompt) — Infinity would fire immediately in Node.
-      const effectiveTimeout = Math.min(timeoutMs ?? this.requestTimeoutMs, 2_147_483_647);
+      // 配置里的 `requestTimeoutMs: 0` = 不超时（同族 `turnIdleTimeoutMinutes`、
+      // `claude.idleTtlMinutes` 都是「0 = 禁用」）。按 0 直接 setTimeout 会让
+      // 每个请求在响应到达前抢先 reject，等于整个 agent 不可用。
+      const budget =
+        timeoutMs ??
+        (this.requestTimeoutMs === 0 ? Number.POSITIVE_INFINITY : this.requestTimeoutMs);
+      const effectiveTimeout = Math.min(budget, 2_147_483_647);
       const timer = setTimeout(() => {
         this.pendingRequests.delete(id);
         reject(new RpcTimeoutError(`request timed out: ${method}`));

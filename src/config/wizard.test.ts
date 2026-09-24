@@ -99,6 +99,45 @@ describe('ensureConfig', () => {
     expect(written.feishu.appSecret).toBe('secret_wizard');
   });
 
+  /**
+   * 验证什么：wizard 落盘带 appSecret 的配置必须走 tmp+rename（atomicWrite），
+   *   不得对目标文件裸 writeFileSync。
+   * 缺失/错误会导致什么：崩溃/断电正好落在写一半时，留在盘上的是一份被截断的
+   *   含密钥配置——下次启动既读不出凭据、又可能泄露半截 secret。仓库里
+   *   `config/index.ts` 的保存路径已经统一走 atomicWrite，向导是漏网的那条。
+   * 依据：clean_review §B11（对照 src/persistence/atomic-write.ts）。
+   */
+  it('writes the credential file via tmp + rename, never bare-writing the target', async () => {
+    const cfg = path.join(tmpDir, 'atomic', 'config.yaml');
+    setTTY(true);
+    mockedRegisterApp.mockImplementation(async () => ({
+      client_id: 'cli_atomic',
+      client_secret: 'secret_atomic',
+    }));
+
+    const targets: string[] = [];
+    const realWrite = fs.writeFileSync;
+    const spy = vi.spyOn(fs, 'writeFileSync').mockImplementation(((
+      ...args: Parameters<typeof realWrite>
+    ) => {
+      targets.push(String(args[0]));
+      return (realWrite as unknown as (...a: unknown[]) => void)(...args);
+    }) as typeof fs.writeFileSync);
+
+    try {
+      await ensureConfig(cfg);
+    } finally {
+      spy.mockRestore();
+    }
+
+    // 写只发生在 .tmp 上，目标文件靠 rename 到位
+    expect(targets).toContain(`${cfg}.tmp`);
+    expect(targets).not.toContain(cfg);
+    expect(fs.existsSync(`${cfg}.tmp`)).toBe(false);
+    const written = YAML.parse(fs.readFileSync(cfg, 'utf-8'));
+    expect(written.feishu.appSecret).toBe('secret_atomic');
+  });
+
   it('prints a scan-friendly QR without half-height block glyphs', async () => {
     const cfg = path.join(tmpDir, 'config.yaml');
     setTTY(true);

@@ -107,7 +107,7 @@ describe('QueueManager - queue card must be sent for a message enqueued after an
       },
     );
     await sleep(50);
-    // 当前实现（begin 路径不重新武装计数）只发 1 张，这里必须真红。
+    // 修复前（begin 路径不重新武装计数）只发 1 张。
     expect(sentCards.length).toBe(2);
 
     // --- 清理：放行 T2，让队列链自然收尾 ---

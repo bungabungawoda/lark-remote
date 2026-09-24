@@ -180,8 +180,8 @@ describe('queue.immediate final feedback must say the target STARTED when it beg
       .map((s) => (s.input as { text?: string } | undefined)?.text)
       .filter((t): t is string => typeof t === 'string');
 
-    // 当前实现：步骤 6 对"已开始执行"与"已撤销"共用
-    // "…（可能已被撤销或已开始执行），未安排执行。…" 文案。这里必须真红：
+    // 修复前：步骤 6 对"已开始执行"与"已撤销"共用
+    // "…（可能已被撤销或已开始执行），未安排执行。…" 文案。本用例钉住：
     // 目标正在执行，最终反馈不得宣称"未安排执行"。
     expect(sentTexts.some((t) => t.includes('未安排执行'))).toBe(false);
     // 正向契约：反馈必须承认目标已开始执行（与卡片 "▶️ 已开始执行" 一致）。

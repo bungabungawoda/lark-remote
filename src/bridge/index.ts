@@ -102,6 +102,12 @@ interface BridgeContext {
   userId: string;
   chatId: string;
   messageId: string;
+  /**
+   * 本轮（装配窗口）全部入站 messageId，`messageId` 是其中最后一条。
+   * 只有走入站装配器的路径会填；卡片动作等单消息路径留空，收尾退化为只处理
+   * `messageId`。缺它会导致合并轮次里先到的消息挂着 Typing 不撤（§B8）。
+   */
+  turnMessageIds?: string[];
 }
 
 /** A sendable result payload (mirror of the router's CommandResult shape). */
@@ -171,6 +177,12 @@ interface ActiveRun {
    * with a stale config snapshot.
    */
   agentKind: AgentKind;
+}
+
+/** `startIdleWatchdog` 的句柄：事件到达时 `touch()`，流结束/收尾时 `stop()`。 */
+interface IdleWatchdog {
+  touch(): void;
+  stop(): void;
 }
 
 /**
@@ -1067,6 +1079,56 @@ export class Bridge {
   }
 
   /**
+   * §9.12 空闲看门狗：单 interval + 截止时间判定（P2-1），普通 run 与 compact
+   * 共用同一套兜底。事件到达只 `touch()` 刷新时间戳（无 timer 操作）；静默超过
+   * `idleTimeoutMs` 才 finish('idle_timeout') + runner.stop()，让该工作区的串行
+   * 队列继续推进（否则一个挂死的 run 永久堵住后续消息）。
+   */
+  private startIdleWatchdog(opts: {
+    runId: string;
+    session: RunCardSession;
+    runner: Runner;
+    /** >0 = 正在等人工审批：「等审批」不是「挂死」，刷新窗口而不是终止。 */
+    pendingApprovals?: () => number;
+  }): IdleWatchdog {
+    let lastEventTs = Date.now();
+    let interval: NodeJS.Timeout | null = null;
+    const stop = (): void => {
+      if (interval) clearInterval(interval);
+      interval = null;
+    };
+    if (this.idleTimeoutMs > 0) {
+      // 周期取 idleTimeoutMs/2：停滞后最多在 1.5× idleTimeoutMs 内触发
+      // （半个窗口延迟，看门狗语义可接受）
+      const tickMs = Math.max(1, Math.floor(this.idleTimeoutMs / 2));
+      interval = setInterval(() => {
+        if (Date.now() - lastEventTs <= this.idleTimeoutMs) return;
+        // 权限等待期间暂停空闲看门狗：claude/codex 等待人工决策时无 stdout
+        // 事件。审批由 ApprovalCoordinator 的超时（默认 5 分钟 < 看门狗窗口）
+        // 自愈：cancel 送达 + 中断 turn，不会无限挂起。
+        if ((opts.pendingApprovals?.() ?? 0) > 0) {
+          lastEventTs = Date.now();
+          return;
+        }
+        stop();
+        getLogger().warn(`[lark-remote] claude idle timeout, stopping process runId=${opts.runId}`);
+        void Promise.allSettled([
+          opts.session.finish('idle_timeout', {
+            idleTimeoutMinutes: Math.max(1, Math.round(this.idleTimeoutMs / 60_000)),
+          }),
+          opts.runner.stop(),
+        ]);
+      }, tickMs);
+    }
+    return {
+      touch: () => {
+        lastEventTs = Date.now();
+      },
+      stop,
+    };
+  }
+
+  /**
    * Step 2 of forwardToClaude: Run the agent and consume its event stream.
    * Handles idle watchdog, event processing, session sync, and state transitions.
    */
@@ -1087,13 +1149,8 @@ export class Bridge {
       runner as Runner & { getUsageAuthority?: () => 'live' | 'jsonl' }
     ).getUsageAuthority?.();
 
-    // P2-1: idle watchdog 用单 interval + lastEventTs 截止时间判定，而非每事件
-    // clearTimeout + setTimeout 重建 timer。高频事件流下 timer 重建次数与事件数
-    // 成正比（N 事件 = N 次 setTimeout + N 个闭包/秒）；interval 方案只建一个
-    // interval，事件到来时仅刷新时间戳（无 timer 操作）。语义不变：事件流停滞
-    // 超过 idleTimeoutMs 仍触发 runner.stop()（§9.12）。
-    let lastEventTs = Date.now();
-    let idleInterval: NodeJS.Timeout | null = null;
+    // §9.12 空闲看门狗：判定口径见 startIdleWatchdog；武装点在 cardSession.start() 之后。
+    let watchdog: IdleWatchdog | null = null;
     let sawResult = false;
     // 记录 result 是否为 error: error 时跳过 jsonl usage 读取 (见 stream end 处说明)
     let resultNotSuccess = false;
@@ -1166,43 +1223,15 @@ export class Bridge {
         getLogger().info(`[lark-remote] cardSession not running, using static fallback`);
       }
 
-      // P2-1: 单 interval 看门狗。事件到来时只刷新 lastEventTs（无 timer 操作）；
-      // interval 周期检查 `now - lastEventTs > idleTimeoutMs`，超时才触发 stop。
-      // 这样高频事件流下 timer 重建次数与事件数解耦（只建一个 interval），而
-      // "15min 无事件即 stop" 的语义不变（§9.12）。周期取 idleTimeoutMs/2，使停滞
-      // 后最多在 1.5× idleTimeoutMs 内触发（半个窗口延迟，watchdog 语义可接受）。
-      const fireIdleTimeout = () => {
-        // 权限等待期间暂停空闲看门狗：claude/codex 等待人工决策时无 stdout
-        // 事件，「等审批」不是「挂死」。审批由 ApprovalCoordinator 的超时
-        // （默认 5 分钟 < 看门狗窗口）自愈：cancel 送达 + 中断 turn，不会无限
-        // 挂起。
-        const pendingApproval = this.approvalCoordinators.get(runId)?.pendingCount() ?? 0;
-        if (pendingApproval > 0) {
-          lastEventTs = Date.now();
-          return;
-        }
-        if (idleInterval) clearInterval(idleInterval);
-        idleInterval = null;
-        getLogger().warn(`[lark-remote] claude idle timeout, stopping process runId=${runId}`);
-        void Promise.allSettled([
-          cardSession.finish('idle_timeout', {
-            idleTimeoutMinutes: Math.max(1, Math.round(this.idleTimeoutMs / 60_000)),
-          }),
-          runner.stop(),
-        ]);
-      };
-      const resetIdle = () => {
-        lastEventTs = Date.now();
-      };
-      if (this.idleTimeoutMs > 0) {
-        const tickMs = Math.max(1, Math.floor(this.idleTimeoutMs / 2));
-        idleInterval = setInterval(() => {
-          if (Date.now() - lastEventTs > this.idleTimeoutMs) {
-            fireIdleTimeout();
-          }
-        }, tickMs);
-      }
-      resetIdle();
+      // P2-1: 单 interval 看门狗。事件到来时只刷新时间戳（无 timer 操作）；
+      // interval 周期检查静默时长，超时才 finish('idle_timeout') + stop()。
+      // 武装点在建卡之后，与原实现一致（宽限期不含 cardSession.start() 耗时）。
+      watchdog = this.startIdleWatchdog({
+        runId,
+        session: cardSession,
+        runner,
+        pendingApprovals: () => this.approvalCoordinators.get(runId)?.pendingCount() ?? 0,
+      });
 
       let contextLength: number | undefined;
       getLogger().info(
@@ -1325,7 +1354,7 @@ export class Bridge {
               `[lark-remote] pre-init result ignored (resume replay) runId=${runId}`,
             );
             // Still reset idle timer — the CLI is alive and producing events.
-            resetIdle();
+            watchdog?.touch();
             // Do NOT push to cardSession: the run-state reducer would also
             // skip it (sessionId === undefined), but skipping at the bridge
             // layer avoids the push + render overhead for a no-op event.
@@ -1449,7 +1478,7 @@ export class Bridge {
         // lastEventTs 重新武装看门狗。result 后 CLI 进程做 jsonl flush/清理（finalizing
         // 过渡）期间，宽限期恢复为完整的 idleTimeoutMs，避免已产出结果的 turn 被误标
         // idle_timeout。旧实现 `else { resetIdle(); }` 漏掉 result 分支。
-        resetIdle();
+        watchdog?.touch();
 
         await cardSession.push(event);
       }
@@ -1458,10 +1487,7 @@ export class Bridge {
       // §9.12 红线（§P1-2 方案 A 第 2 点）：for-await 自然结束 = CLI 已退出，
       // 看门狗使命结束，立即摘除 interval（不再等 finally），堵掉「stream 已结束、
       // 收尾处理跨过死线被误标 idle_timeout」的同源小窗口（P2-4 随本修复一并关闭）。
-      if (idleInterval) {
-        clearInterval(idleInterval);
-        idleInterval = null;
-      }
+      watchdog?.stop();
 
       // stream 结束 = CLI 退出 = jsonl 已落盘。读 jsonl 拿准确的 contextLength + compactCount：
       // live stream-json 不发 compact_boundary，live contextLength 会被 result 的 input+output 兜底失真。
@@ -1572,12 +1598,31 @@ export class Bridge {
         }
       }
     } finally {
-      if (idleInterval) clearInterval(idleInterval);
+      watchdog?.stop();
       const coordinator = this.approvalCoordinators.get(runId);
       if (coordinator) {
         coordinator.onTurnEnded();
         this.approvalCoordinators.delete(runId);
       }
+    }
+  }
+
+  /**
+   * 终态 reaction 收尾：撤掉 Typing、打上下方终态表情。
+   *
+   * 逐条挂 Typing（`src/index.ts` 对每条入站消息都加），但 ctx.messageId 只是
+   * 装配窗口里的最后一条——只对它收尾会让先到的那几条永远停在「正在输入」。
+   * connector 的两个 reaction 方法自带 try/catch（缺失 reaction 是 no-op），
+   * 所以这里 fire-and-forget 即可，不额外兜错。
+   */
+  private finishTurnReactions(ctx: BridgeContext, emoji: string): void {
+    const ids = ctx.turnMessageIds?.length
+      ? [...new Set([...ctx.turnMessageIds, ctx.messageId])]
+      : [ctx.messageId];
+    // 两类 emoji 互不相干（撤 Typing / 打终态），并发发出没有顺序依赖。
+    for (const id of ids) {
+      void this.connector.removeReactionByEmoji(id, 'Typing');
+      void this.connector.addReaction(id, emoji);
     }
   }
 
@@ -1625,10 +1670,7 @@ export class Bridge {
       }
 
       // Add a terminal-state emoji reaction to the user's original message
-      void this.connector.addReaction(
-        ctx.messageId,
-        terminalReactionEmoji(cardSession.currentState.terminal),
-      );
+      this.finishTurnReactions(ctx, terminalReactionEmoji(cardSession.currentState.terminal));
     } finally {
       // P1-13: cleanup must survive mid-finalize errors. The only unguarded
       // expression in finalizeRun is the renderRunCard(...) argument evaluated
@@ -2048,6 +2090,15 @@ export class Bridge {
       return;
     }
 
+    // activeRuns 以 cwd 为键：注册前先确认槽位空闲，否则压缩会覆盖在跑的 run 的
+    // 记录，令 /stop 只停到最后注册的那个。
+    const busyWith = this.activeRuns.get(cwd);
+    if (busyWith) {
+      log.info(`[lark-remote] compact refused: workspace busy cwd=${cwd} runId=${busyWith.runId}`);
+      await this.sendResult({ text: '⚠️ 该工作区正在运行任务，请等待结束或先 /stop' }, ctx);
+      return;
+    }
+
     await this.sendResult({ text: '🗜 Compact 已触发，正在压缩会话…' }, ctx);
 
     const compactRunId = randomUUID();
@@ -2060,9 +2111,29 @@ export class Bridge {
         agentKind,
       },
     });
+    // A6：压缩与普通 run 共用同一套生命周期——注册进 activeRuns（/stop 有对象可停、
+    // /active 看得见）、挂 §9.12 空闲看门狗、终态后补 reaction。缺任何一环，卡住的
+    // 压缩都只能等 runner 级超时，用户既停不掉也看不出它还在跑。
+    const activeRun: ActiveRun = {
+      runId: compactRunId,
+      userId: ctx.userId,
+      chatId: ctx.chatId,
+      session: cardSession,
+      cwd,
+      runner,
+      agentKind,
+    };
+    this.activeRuns.set(cwd, activeRun);
+    getLogger().info(`[lark-remote] activeRuns.set cwd=${cwd} runId=${compactRunId} compact=true`);
+    let watchdog: IdleWatchdog | null = null;
 
     try {
       await cardSession.start();
+      watchdog = this.startIdleWatchdog({
+        runId: compactRunId,
+        session: cardSession,
+        runner,
+      });
       // operationKind=compaction：卡片不渲染 Compact 按钮（防递归 Compact）。
       await cardSession.push({
         type: 'turn_started',
@@ -2081,11 +2152,23 @@ export class Bridge {
           ) => AsyncGenerator<AgentEvent>;
         }
       ).runCompact('', { cwd, sessionId })) {
+        // 已终态（/stop、空闲看门狗）后不再消费事件：与 runAgentStreamToEnd 同口径，
+        // 否则迟到的 result 会把终态卡改写成「已完成」。
+        const cardTerminal = cardSession.currentState.terminal;
+        if (
+          cardTerminal === 'done' ||
+          cardTerminal === 'error' ||
+          cardTerminal === 'interrupted' ||
+          cardTerminal === 'idle_timeout'
+        ) {
+          continue;
+        }
         if (event.type === 'result') {
           sawResult = true;
           resultSubtype = (event as { subtype?: 'success' | 'error' | 'interrupted' }).subtype;
           resultError = (event as { errorMessage?: string }).errorMessage;
         }
+        watchdog?.touch();
         await cardSession.push(event);
       }
       // §5.3: 卡片终态必须等于引擎真实终态。旧实现只看 sawResult 布尔——error
@@ -2139,7 +2222,26 @@ export class Bridge {
       );
     } catch (err) {
       log.error(`[lark-remote] streamCodexCompact failed: ${errorMessage(err)}`);
-      await cardSession.finish('error', { errorMsg: errorMessage(err) });
+      // 终态守卫（与 runAgentStreamToEnd 同口径）：running/finalizing 才转 error，
+      // 已终态（interrupted/idle_timeout）保留首终态，不被迟到的异常改写。
+      const catchTerminal = cardSession.currentState.terminal;
+      if (catchTerminal === 'running' || catchTerminal === 'finalizing') {
+        await cardSession.finish('error', { errorMsg: errorMessage(err) });
+      } else {
+        log.info(
+          `[lark-remote] skip compact error finish: state already terminal (${catchTerminal}) runId=${compactRunId}`,
+        );
+      }
+    } finally {
+      watchdog?.stop();
+      // 只摘自己的槽位：/stop 可能已删掉本条并让排队的下一条占住同一 cwd。
+      if (this.activeRuns.get(cwd) === activeRun) {
+        this.activeRuns.delete(cwd);
+        getLogger().info(`[lark-remote] activeRuns.delete cwd=${cwd} runId=${compactRunId}`);
+      }
+      // 终态 reaction：与普通 run 同一口径（done→Done / error→ERROR /
+      // interrupted→SHHH / idle_timeout→Alarm）。
+      this.finishTurnReactions(ctx, terminalReactionEmoji(cardSession.currentState.terminal));
     }
   }
 
@@ -2375,7 +2477,7 @@ export class Bridge {
       }
 
       // Add a Done emoji reaction to the user's original message to signal completion
-      void this.connector.addReaction(ctx.messageId, 'Done');
+      this.finishTurnReactions(ctx, 'Done');
     }
   }
 }

@@ -11,7 +11,7 @@
  *
  * 这个 anchor 用一个**永不发 'error' 事件的假 proc**直接调 awaitSpawnError（通过
  * TestRunner 子类暴露 protected hook），断言它在有限时间内 resolve(undefined)——
- * 真红 = 当前基类无限等待，测试会超时失败（vitest 默认 5s test timeout）。
+ * 守住的失败模式：基类无限等待，测试会超时失败（vitest 默认 5s test timeout）。
  */
 import { describe, it, expect, vi } from 'vitest';
 import { SpawningRunner } from '../../../src/runner/common/spawning-runner.js';

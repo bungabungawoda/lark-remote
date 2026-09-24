@@ -14,11 +14,13 @@ import { KIMI_THINKING_EFFORTS } from './kimi-config.js';
 export const CLAUDE_EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'] as const;
 
 /**
- * Claude 官方 --permission-mode 枚举（claude --help 输出，2026-08 实测）。
- * 额外支持 'default'：Claude settings.json 的官方未设置值，等价于不传
- * --permission-mode（交互式默认：高风险工具逐个询问）。
- * 'manual' 是 'default' 的别名（claude CLI 等价），schema 保留以向后兼容旧配置，
- * 但 UI 下拉不展示（见 router/config/claude.ts）。
+ * Claude 的权限模式取值：'default' 之外都是 CLI `--permission-mode` 的真实枚举
+ * （2026-09-20 实测 claude --help：acceptEdits | auto | bypassPermissions | manual
+ * | dontAsk | plan）。
+ * 'default' 是本项目自造的值，不是 CLI 的取值 —— 它表示"不传 --permission-mode"，
+ * 由 CLI 自己决定默认模式，转换在 runner/claude/session.ts 的 spawn 参数处。
+ * 'manual' 与 'default' 不是别名关系：一个是显式传给 CLI 的取值，一个是省略该参数，
+ * schema 保留两者只为兼容旧配置（UI 下拉的处理见 router/config/claude.ts）。
  */
 export const CLAUDE_PERMISSION_MODES = [
   'default',
@@ -110,9 +112,9 @@ const ClaudeConfigSchema = z.object({
 const CodexAppServerConfigSchema = z.object({
   /** Path to the codex binary for app-server mode. */
   binary: z.string().default('codex'),
-  /** Request timeout in milliseconds. */
+  /** Request timeout in milliseconds. 0 = 不设超时（不是「0ms 即超时」）。 */
   requestTimeoutMs: z.number().int().min(0).default(60000),
-  /** Idle TTL for connection pool in milliseconds. */
+  /** Idle TTL in milliseconds. 0 = 不回收常驻连接（对齐 claude.idleTtlMinutes）。 */
   idleTtlMs: z.number().int().min(0).default(1800000),
   /** Turn idle timeout in minutes: no app-server output for this long triggers
    *  turn/interrupt and fails the run. 0 disables the timeout. */
@@ -157,9 +159,9 @@ const OpencodeConfigSchema = z.object({
     .object({
       /** Path to opencode binary for ACP mode. */
       binary: z.string().default('opencode'),
-      /** Request timeout in milliseconds. */
+      /** Request timeout in milliseconds. 0 = 不设超时（不是「0ms 即超时」）。 */
       requestTimeoutMs: z.number().int().min(0).default(60000),
-      /** Idle TTL for ACP connection in milliseconds. */
+      /** Idle TTL in milliseconds. 0 = 不回收常驻连接（对齐 claude.idleTtlMinutes）。 */
       idleTtlMs: z.number().int().min(0).default(1800000),
       /** Turn idle timeout in minutes (0 disables). */
       turnIdleTimeoutMinutes: z.number().int().min(0).default(DEFAULT_TURN_IDLE_TIMEOUT_MINUTES),
@@ -183,7 +185,7 @@ const PiConfigSchema = z.object({
 const KimiConfigSchema = z.object({
   /** Model ID or alias, e.g. 'kimi-code/k3'. */
   model: z.string().default('kimi-code/k3'),
-  /** Thinking effort: 'on', 'max'. */
+  /** Thinking effort，取值见 KIMI_THINKING_EFFORTS（'low' | 'high' | 'max'）。 */
   thinkingEffort: z.enum(KIMI_THINKING_EFFORTS).default('max'),
   /** Permission mode: 'manual' (approve each), 'auto' (engine decides), 'yolo' (allow all). */
   permissionMode: z.enum(['manual', 'auto', 'yolo']).default('manual'),
@@ -192,9 +194,9 @@ const KimiConfigSchema = z.object({
     .object({
       /** Path to kimi binary for ACP mode. */
       binary: z.string().default('kimi'),
-      /** Request timeout in milliseconds. */
+      /** Request timeout in milliseconds. 0 = 不设超时（不是「0ms 即超时」）。 */
       requestTimeoutMs: z.number().int().min(0).default(60000),
-      /** Idle TTL for ACP connection in milliseconds. */
+      /** Idle TTL in milliseconds. 0 = 不回收常驻连接（对齐 claude.idleTtlMinutes）。 */
       idleTtlMs: z.number().int().min(0).default(1800000),
       /** Turn idle timeout in minutes (0 disables). */
       turnIdleTimeoutMinutes: z.number().int().min(0).default(DEFAULT_TURN_IDLE_TIMEOUT_MINUTES),
@@ -494,8 +496,50 @@ export function setConfigValues(
     throw new Error(`[lark-remote] config validation failed:\n${errors}`);
   }
 
-  atomicWrite(configPath, YAML.stringify(result.data));
+  atomicWrite(configPath, renderConfigPatch(configPath, updates, result.data));
   return result.data;
+}
+
+/**
+ * 写盘内容：读磁盘原文，把改动逐条打在 YAML Document 上（setIn 会按需补中间层），
+ * 而不是把校验结果整份 stringify —— 后者会把 dir.ts 正引导用户手写的注释、以及
+ * schema 不认识的键（Zod 默认剥离）在第一次保存时清光，还会把每个默认值都落进文件。
+ *
+ * 原文读不到或解析不了（进程启动后被改坏）时退回校验结果：那份原文已无保留价值，
+ * 与修复前的行为一致。
+ */
+function renderConfigPatch(
+  configPath: string,
+  updates: Record<string, string | undefined>,
+  validated: AppConfig,
+): string {
+  let doc: ReturnType<typeof YAML.parseDocument>;
+  try {
+    doc = YAML.parseDocument(fs.readFileSync(configPath, 'utf-8'), { prettyErrors: true });
+    if (doc.errors.length > 0) throw new Error(doc.errors[0].message);
+  } catch (err) {
+    getLogger().warn(
+      `[config] existing file unusable, rewriting from validated config: ${(err as Error).message}`,
+    );
+    return YAML.stringify(validated);
+  }
+  for (const [key, value] of Object.entries(updates)) {
+    const parts = mapAgentKey(key).split('.');
+    if (value === undefined) {
+      doc.deleteIn(parts);
+      continue;
+    }
+    // 保存载荷里只写"校验结果中存活下来"的键：schema 不认识的键（§P2-24 的 foo.bar）
+    // 会被 Zod 剥掉，跟着打在 Document 上就是把垃圾永久写进用户配置文件。
+    // 磁盘上原有的未知键不受影响 —— 那是用户手写的，本函数不碰。
+    const accepted = getConfigValue(validated, parts.join('.'));
+    if (accepted === undefined) {
+      getLogger().warn(`[config] save payload key not in schema, not written: ${key}`);
+      continue;
+    }
+    doc.setIn(parts, accepted);
+  }
+  return doc.toString();
 }
 
 /**

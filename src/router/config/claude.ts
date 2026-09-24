@@ -26,8 +26,10 @@ const PERMISSION_MODE_LABELS: Record<string, string> = {
 };
 
 /**
- * 下拉选项排除 manual：manual 是 default 的别名（claude CLI 等价），
- * 只保留 default 一个，避免下拉出现两个等价项。schema 仍接受 manual（旧配置向后兼容）。
+ * 下拉不展示 manual：CLI 认这个值（claude --help），但它和 'default' 是两个不同的
+ * 配置口径（显式传参 vs 省略参数），并列展示用户无从分辨取舍，所以只留 'default'。
+ * 代价：配置里手写的 manual 在卡片上按 'default' 显示，改动其它项保存时会被写回
+ * 'default'（见 buildFields 的 displayedPermissionMode）。
  */
 const PERMISSION_MODE_OPTIONS = CLAUDE_PERMISSION_MODES.filter((m) => m !== 'manual').map((m) => ({
   text: `${m}（${PERMISSION_MODE_LABELS[m] ?? ''}）`,
@@ -100,10 +102,11 @@ export class ClaudeConfigBuilder implements AgentConfigCardBuilder {
       currentValue: currentEffort,
     });
 
-    // 权限模式（Claude 官方 --permission-mode 枚举；bypassPermissions 为 schema 默认，
-    // 保持旧行为无审批卡，配置为其他值后激活交互式审批）
+    // 权限模式（取值见 CLAUDE_PERMISSION_MODES：除自造的 default 外都是 CLI 的
+    // --permission-mode 枚举；bypassPermissions 为 schema 默认，保持旧行为无审批卡，
+    // 配置为其他值后激活交互式审批）
     const currentPermissionMode = displayConfig.claude?.permissionMode ?? 'bypassPermissions';
-    // manual 是 default 的别名：旧配置按 default 显示（下拉无 manual 项，避免空选）
+    // manual 不在下拉里：旧配置按 default 显示，避免打开卡片时该项空选
     const displayedPermissionMode =
       currentPermissionMode === 'manual' ? 'default' : currentPermissionMode;
     fields.push({

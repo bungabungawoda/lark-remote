@@ -8,7 +8,7 @@
  * 修复：spawnErr 非空时把 spawnErr.message 拼进 errorMessage。
  *
  * 这个 anchor 让 awaitSpawnError 返回一个 EMFILE 错误（非 ENOENT），直调
- * spawnChild 断言 SpawnChildError 携带真实原因文本。真红 = 当前固定文案不含
+ * spawnChild 断言 SpawnChildError 携带真实原因文本。守住的失败模式：固定文案不含
  * "EMFILE"。
  *
  * W1.1 备注：基类 run() 收窄后 spawn 失败的消费方是 ClaudeSession（捕获

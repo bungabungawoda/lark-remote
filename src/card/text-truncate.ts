@@ -27,6 +27,9 @@ export const FEISHU_MAX_TABLES = 5;
  */
 export const CARD_BUDGET_BYTES = 28_000;
 
+/** markdown table 分隔行判据：以 `|` 开头，只含 `| - : 空格`。 */
+const TABLE_SEPARATOR_RE = /^\|[-: |]+$/;
+
 /**
  * Count the number of markdown tables in a string.
  *
@@ -37,58 +40,34 @@ export const CARD_BUDGET_BYTES = 28_000;
 export function countMarkdownTables(text: string): number {
   let count = 0;
   for (const line of text.split('\n')) {
-    if (/^\|[-: |]+$/.test(line.trim())) {
+    if (TABLE_SEPARATOR_RE.test(line.trim())) {
       count++;
     }
   }
   return count;
 }
 
+/** A removable table: header row + separator row + data rows. */
+interface TableBlock {
+  /** 块起始行下标（含向上并入的前置空行 / `###` 标题行） */
+  start: number;
+  /** 块结束后第一行下标（不含） */
+  end: number;
+}
+
 /**
- * Truncate markdown tables in a string to at most `maxTables`, keeping the
- * **newest** (last) tables and removing the oldest ones.
+ * 按文档顺序定位字符串里的 markdown table 块。
  *
- * Strategy: find all table separator lines, determine which tables to remove
- * (those whose separator is among the oldest `count - maxTables`), then remove
- * each such table entirely (header row + separator row + data rows).
- *
- * A "table block" is a contiguous run of lines where the first line is the
- * header row, the second is the separator row (`|---|`), and subsequent lines
- * are data rows. We remove entire table blocks from the text.
- *
- * When tables are removed, a hint is inserted at the removal point indicating
- * how many earlier tables were omitted.
+ * `truncateMarkdownTables`（单串）与 `enforceCardBudget`（整卡预算）共用这一份
+ * 识别口径——两处各写一遍分隔行正数是下一个 bug 的温床。
  */
-export function truncateMarkdownTables(
-  text: string,
-  maxTables: number = FEISHU_MAX_TABLES,
-): string {
-  if (maxTables <= 0) return text;
-
-  const tableCount = countMarkdownTables(text);
-  if (tableCount <= maxTables) return text;
-
+function findMarkdownTableBlocks(text: string): TableBlock[] {
   const lines = text.split('\n');
-
-  // Step 1: Find all table separator line indices
-  const separatorIndices: number[] = [];
-  for (let i = 0; i < lines.length; i++) {
-    if (/^\|[-: |]+$/.test(lines[i].trim())) {
-      separatorIndices.push(i);
-    }
-  }
-
-  // Step 2: For each separator, identify the full table block
-  // A table block = [headerLine, separatorLine, ...dataLines]
-  // headerLine is separatorIndex - 1, dataLines continue while line starts with '|'
-  interface TableBlock {
-    start: number; // header line index
-    end: number; // first line AFTER the table (exclusive)
-    separatorIdx: number;
-  }
-
   const blocks: TableBlock[] = [];
-  for (const sepIdx of separatorIndices) {
+
+  for (let sepIdx = 0; sepIdx < lines.length; sepIdx++) {
+    if (!TABLE_SEPARATOR_RE.test(lines[sepIdx].trim())) continue;
+
     // Header is the line just before the separator
     let start = sepIdx - 1;
     if (start < 0) continue; // malformed table, skip
@@ -111,33 +90,39 @@ export function truncateMarkdownTables(
       end++;
     }
 
-    blocks.push({ start, end, separatorIdx: sepIdx });
+    blocks.push({ start, end });
   }
 
-  // Step 3: Determine which blocks to remove (oldest first)
-  const toRemoveCount = blocks.length - maxTables;
-  // blocks are in document order (oldest first), so remove from the front
-  const blocksToRemove = new Set(blocks.slice(0, toRemoveCount));
-  // Map: start line index → block (for lookup when processing lines)
+  return blocks;
+}
+
+/**
+ * 删掉 `text` 中文档顺序**最旧**的至多 `maxDrop` 个 table 块（保留其余，含最新
+ * 的那些），并在最后一个删除点插入省略提示。`maxDrop <= 0` 时原样返回。
+ *
+ * 与 `truncateMarkdownTables` 同一口径：删最旧、留最新。
+ */
+export function dropOldestMarkdownTables(text: string, maxDrop: number): string {
+  if (maxDrop <= 0) return text;
+
+  const lines = text.split('\n');
+  const blocksToRemove = findMarkdownTableBlocks(text).slice(0, maxDrop);
+  if (blocksToRemove.length === 0) return text;
+
   const blockByStart = new Map<number, TableBlock>();
-  for (const b of blocks) {
-    blockByStart.set(b.start, b);
-  }
+  for (const b of blocksToRemove) blockByStart.set(b.start, b);
+  const toRemove = blocksToRemove.length;
 
-  // Step 4: Rebuild the text, skipping removed table blocks and inserting hints
   const result: string[] = [];
   let i = 0;
-  let removedSoFar = 0;
-
+  let dropped = 0;
   while (i < lines.length) {
     const block = blockByStart.get(i);
-    if (block && blocksToRemove.has(block)) {
-      // Skip the entire table block
-      removedSoFar++;
+    if (block) {
+      dropped++;
       i = block.end;
-      // Insert hint at the removal point
-      if (removedSoFar === toRemoveCount) {
-        result.push(`_💡 前 ${toRemoveCount} 个表格已省略_`);
+      if (dropped === toRemove) {
+        result.push(`_💡 前 ${dropped} 个表格已省略_`);
       }
       continue;
     }
@@ -146,4 +131,21 @@ export function truncateMarkdownTables(
   }
 
   return result.join('\n');
+}
+
+/**
+ * Truncate markdown tables in a string to at most `maxTables`, keeping the
+ * **newest** (last) tables and removing the oldest ones.
+ *
+ * 注意：`maxTables` 是**这一个字符串**的上限。飞书 11310 数的是**整卡**，
+ * 表分散在多个字段时必须走 `card-budget.ts` 的整卡预算，不能逐字段调用本函数。
+ */
+export function truncateMarkdownTables(
+  text: string,
+  maxTables: number = FEISHU_MAX_TABLES,
+): string {
+  if (maxTables <= 0) return text;
+  const dropCount = findMarkdownTableBlocks(text).length - maxTables;
+  if (dropCount <= 0) return text;
+  return dropOldestMarkdownTables(text, dropCount);
 }

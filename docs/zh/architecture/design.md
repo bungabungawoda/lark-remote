@@ -68,7 +68,7 @@ claude \
   --permission-prompt-tool stdio \
   --replay-user-messages \
   --verbose \
-  [--permission-mode <default|acceptEdits|auto|bypassPermissions|manual|dontAsk|plan>] \
+  [--permission-mode <acceptEdits|auto|bypassPermissions|manual|dontAsk|plan>] \
   [--resume <session_id>] \
   [--model <model>] \
   [--settings <settings_json_path>]
@@ -82,7 +82,9 @@ claude \
 - `--replay-user-messages`：把用户消息回显到 stdout（`isReplay`），协议层据此
   确认消息已被接收
 - `--permission-mode`：默认 `bypassPermissions`（无审批卡，行为与旧版一致）；
-  配置为其他值后激活交互式审批
+  配置为其他值后激活交互式审批。配置值 `default` **不是** CLI 的取值（`claude --help`
+  2026-09-20 实测 choices 里没有它），含义是"省略该参数"，由 CLI 自己决定默认模式，
+  转换在 `runner/claude/session.ts` 拼参数时完成
 - `--settings`：可选，指定 Claude 配置文件（由 CLI 参数 `--settings` 传入，或自动从 `CLAUDE_SETTINGS_PATH` 环境变量 / `~/.claude/settings.json` 检测）
 - `cwd`：通过 spawn 的 `cwd` 选项传入，不写进 prompt
 
@@ -290,7 +292,7 @@ defaultAgent: claude
 claude:
   model: claude-opus-4-8
   effort: medium           # low | medium | high | xhigh | max
-  permissionMode: bypassPermissions  # Claude 官方 --permission-mode：default | acceptEdits | auto | bypassPermissions | manual | dontAsk | plan
+  permissionMode: bypassPermissions  # 取值：default（=不传 --permission-mode）| acceptEdits | auto | bypassPermissions | manual | dontAsk | plan
   approvalTimeoutMs: 300000          # 审批超时（ms），默认 5 分钟，勿随意改短
   idleTtlMinutes: 30                 # 会话级空闲回收（分钟），0=禁用
   stopGraceMs: 5000

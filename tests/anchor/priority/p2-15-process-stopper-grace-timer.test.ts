@@ -10,7 +10,7 @@
  *
  * 这个 anchor 让一个 fake proc 在 race 开始后立即 exit（resolve(true)），
  * 同时用 fake timer 拦截 setTimeout，断言 race 结束后 clearTimeout 被调用
- * 了对应那个 grace 定时器。真红 = 当前实现不 clearTimeout，游离定时器
+ * 了对应那个 grace 定时器。守住的失败模式：不 clearTimeout，游离定时器
  * tick 到 graceMs。
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';

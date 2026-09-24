@@ -9,7 +9,7 @@
  * 修复：write() 整体 try/catch，吞掉写入异常（最多 stderr 兜底一行）。
  *
  * 这个 anchor 让 fs.appendFileSync 抛出 EACCES，断言 logger.error/info 调用
- * 不抛、返回 undefined。真红 = 当前实现 write 抛出穿透调用方。
+ * 不抛、返回 undefined。守住的失败模式：修复前 write 抛出穿透调用方。
  *
  * 同轮一并修 P2-19②：timestampStr 用 toISOString()（UTC），与 todayStr（本地
  * 时区）不一致——本地午夜后前 8 小时新目录里的日志行时间戳还是前一天。修复

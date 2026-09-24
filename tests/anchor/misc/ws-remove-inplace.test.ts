@@ -68,6 +68,10 @@ function createRouter() {
 
 const ctx = { userId: 'user1', chatId: 'chat1', messageId: 'msg1' };
 
+function toastOf(res: unknown): { type: string; content: string } | undefined {
+  return (res as { toast?: { type: string; content: string } })?.toast;
+}
+
 describe('Anchor: ws.remove updates card in place', () => {
   it('test_anchor_ws_remove_updates_card_in_place', async () => {
     /**
@@ -128,5 +132,46 @@ describe('Anchor: ws.remove updates card in place', () => {
       .map((s) => (s.input as { card?: object }).card)
       .filter(Boolean);
     expect(sentCards.length).toBe(0);
+  }, 10000);
+
+  it('test_anchor_ws_remove_toast_follows_cmdWs_outcome', async () => {
+    /**
+     * 验证行为：ws.remove 的 toast 由 cmdWs(['remove', …]) 的返回值决定——
+     *   删除成功才报「已删除」，别名已不存在时报 error toast 说明原因。
+     * 缺失后果：卡片可能停留在陈旧列表（别名被另一个窗口/另一次点击删掉），
+     *   旧实现丢弃 cmdWs 返回值后无条件返回 success「已删除」，用户以为删掉
+     *   的是别的东西；toast 与卡片状态互相矛盾。
+     * 依据：clean_review §B6（router/index.ts handleWsRemove 无条件 success）。
+     */
+    const projectDir = path.join(tmpDir, 'project');
+    fs.mkdirSync(projectDir, { recursive: true });
+    fs.writeFileSync(
+      workspacePath,
+      JSON.stringify({ 'keep-ws': projectDir, 'other-ws': projectDir }),
+    );
+
+    const { router, sessionStore, connector } = createRouter();
+    sessionStore.set('user1', {
+      sessions: new Map([['claude', 'session-1']]),
+      previousSessions: new Map(),
+      cwd: projectDir,
+    });
+
+    // 成功分支：toast 文案来自 cmdWs 本身，不另起一份字符串
+    const ok = toastOf(await router.handleCardAction({ cmd: 'ws.remove', name: 'keep-ws' }, ctx));
+    expect(ok).toMatchObject({ type: 'success' });
+    expect(ok?.content).toContain('已删除');
+    expect(ok?.content).toContain('keep-ws');
+
+    // 失败分支：别名已不在 store（陈旧卡片上再点一次）
+    const stale = toastOf(
+      await router.handleCardAction({ cmd: 'ws.remove', name: 'keep-ws' }, ctx),
+    );
+    expect(stale).toMatchObject({ type: 'error' });
+    expect(stale?.content).toContain('不存在');
+    expect(stale?.content).not.toContain('已删除');
+
+    // 失败也要把卡片刷成真实状态，不能只弹 toast
+    expect(connector._cards.length).toBeGreaterThanOrEqual(2);
   }, 10000);
 });

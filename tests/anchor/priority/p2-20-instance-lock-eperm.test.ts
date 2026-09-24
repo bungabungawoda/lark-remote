@@ -9,7 +9,7 @@
  * 修复：EPERM 单独区分返回 true（进程存在，只是无权 signal）。
  *
  * 这个 anchor 让 process.kill 对记录的 pid 抛 EPERM，断言 acquire() 拒绝
- * （throw InstanceAlreadyRunningError）。真红 = 当前 EPERM 被吞成 false，
+ * （throw InstanceAlreadyRunningError）。守住的失败模式：EPERM 被吞成 false，
  * acquire() 走陈旧锁路径成功覆盖锁文件。
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';

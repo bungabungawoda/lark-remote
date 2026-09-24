@@ -11,7 +11,7 @@
 
 import { describe, it, expect } from 'vitest';
 import { DshSessionReader } from './sessions.js';
-import { FakeDshServer } from '../../runner/dsh/fake-dsh-server.js';
+import { FakeDshServer } from '../../../tests/lib/fake-dsh-server.js';
 import type { DshSessionEvent } from '../../runner/dsh/types.js';
 
 const CWD = '/home/user/project';

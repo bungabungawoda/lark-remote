@@ -210,25 +210,8 @@ describe('端到端流程', () => {
     expect(capture[0].cwd).toBe(fs.realpathSync(newDir));
   });
 
-  it('ls.switch 卡片从 cwd 外的兄弟目录切换（2026-07-31 放宽后允许）', async () => {
-    const events: AgentEvent[] = [];
-    const capture: CapturedSpawn[] = [];
-    const { router, sessionStore } = createRouter({
-      runner: createCapturingRunner(events, capture),
-    });
-    const dirA = fs.mkdtempSync(path.join(os.tmpdir(), 'lark-int-switch-a-'));
-    const dirB = fs.mkdtempSync(path.join(os.tmpdir(), 'lark-int-switch-b-'));
-    try {
-      sessionStore.setCwd('user1', dirA);
-      await router.handleCardAction({ cmd: 'ls.switch', path: dirB }, ctx);
-      // Canonical cwd, and session untouched (no resume context).
-      expect(sessionStore.getCwd('user1')).toBe(fs.realpathSync(dirB));
-      expect(sessionStore.getSessionId('user1')).toBeUndefined();
-    } finally {
-      fs.rmSync(dirA, { recursive: true, force: true });
-      fs.rmSync(dirB, { recursive: true, force: true });
-    }
-  });
+  // ls.switch 的兄弟目录切换由 router.test.ts 的
+  // test_anchor_ls_switch_allows_sibling_outside_cwd_subtree 专测（同断言，不重复）。
 });
 
 // --- 异常场景 ---

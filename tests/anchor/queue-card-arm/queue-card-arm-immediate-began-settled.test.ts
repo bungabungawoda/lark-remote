@@ -252,8 +252,8 @@ describe('queue.immediate final feedback must not claim "未安排执行" when t
       const sentTexts = connector._sent
         .map((s) => (s.input as { text?: string } | undefined)?.text)
         .filter((t): t is string => typeof t === 'string');
-      // 当前实现：目标 begin 后已 settle → hasTaskBegan=false → 落入撤销分支，
-      // 发送 "⚠️ 目标消息已不在队列中（可能已被撤销），未安排执行。…"。必须真红：
+      // 修复前：目标 begin 后已 settle → hasTaskBegan=false → 落入撤销分支，
+      // 发送 "⚠️ 目标消息已不在队列中（可能已被撤销），未安排执行。…"。本用例钉住：
       // 目标明明执行完毕，正文不得宣称"未安排执行"。
       expect(sentTexts.some((t) => t.includes('未安排执行'))).toBe(false);
       // 正向契约：反馈必须承认目标已开始执行（与卡片 "▶️ 已开始执行" 一致）。

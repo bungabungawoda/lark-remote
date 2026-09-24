@@ -211,9 +211,9 @@ describe('queue.immediate must not promise execution in its final toast after th
       .filter((t): t is string => typeof t === 'string');
     expect(sentTexts).toContain('✅ 已从队列中撤销');
 
-    // 当前实现：handler 不重新校验成员资格，最后 toast 仍发送
+    // 修复前：handler 不重新校验成员资格，最后 toast 仍发送
     // "⚡ 已停止当前任务，清除了 0 条排队消息。您的消息将立即执行。"
-    // 这里必须真红：目标已撤销，正文不得再承诺执行。
+    // 本用例钉住：目标已撤销，正文不得再承诺执行。
     expect(sentTexts.some((t) => t.includes('您的消息将立即执行'))).toBe(false);
 
     // --- 清理：放行 T1、A、T2（T2 槽位已被取消守卫跳过），让队列链自然收尾 ---

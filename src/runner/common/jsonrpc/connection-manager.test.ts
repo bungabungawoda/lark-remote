@@ -149,6 +149,38 @@ describe('ConnectionManager hook layering (review P2-1)', () => {
     await manager.disposeAll();
   }, 10000);
 
+  /**
+   * 验证什么：`idleTtlMs: 0` = 禁用空闲回收（连接常驻），不是「立即回收」。
+   * 缺失/错误会导致什么：同仓库其它 TTL 一律「0 = 不回收」（claude
+   *   `session.ts` armIdleTimer 的 `<= 0` 守卫、`claude.idleTtlMinutes` schema
+   *   注释），而这里 0 会 setTimeout(...,0) 把刚建好的连接秒删——用户在 YAML
+   *   里照 `dir.ts` 的引导手改这个键，得到的是"每条消息都重起进程"。
+   * 依据：clean_review §B9（两种语义取其一并对齐注释，这里统一到 0=禁用）。
+   */
+  it('idleTtlMs 0 disables idle recycling instead of dropping the connection', async () => {
+    const { script } = makeIdleServer(tmpDir);
+
+    vi.useFakeTimers();
+
+    const manager = new ConnectionManager({
+      ...nodeLaunch(script),
+      idleTtlMs: 0,
+      initializeParams: INIT_PARAMS,
+    });
+
+    const client = await manager.acquire(tmpDir);
+    expect(client.ready).toBe(true);
+
+    manager.notifyIdle(tmpDir);
+    vi.advanceTimersByTime(5 * 60 * 1000);
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(client.healthy).toBe(true);
+
+    vi.useRealTimers();
+    await manager.disposeAll();
+  }, 10000);
+
   it('notifyActivity disarms idle timer', async () => {
     const { script } = makeIdleServer(tmpDir);
 

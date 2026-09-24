@@ -155,9 +155,26 @@ const MERGE_FORWARD_HINT: Record<string, string> = {
   merge_forward: '（合并转发里的附件暂不支持保存，可逐条转发或直接发送文件）',
 };
 
-function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+/** withTimeout 的超时专用错误：catch 侧据此知道清理已交给补删路径。 */
+class ResourceTimeoutError extends Error {}
+
+/**
+ * 给没有超时的 SDK 调用套一层超时。**超时只是不再等它，底层操作照跑**
+ * （`downloadResourceToFile` 没有 abort 入参），所以 onLateSettle 在操作自己
+ * 结束时补做清理：此刻 unlink 在 win32 会被句柄占用挡到放弃、在 posix 只删掉
+ * 目录项把空间留给未关闭的 fd，两种平台都可能留下孤儿文件。
+ */
+function withTimeout<T>(
+  promise: Promise<T>,
+  ms: number,
+  label: string,
+  onLateSettle?: () => void,
+): Promise<T> {
   return new Promise<T>((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms);
+    const timer = setTimeout(() => {
+      reject(new ResourceTimeoutError(`${label} timed out after ${ms}ms`));
+      if (onLateSettle) promise.then(onLateSettle, onLateSettle);
+    }, ms);
     promise.then(
       (value) => {
         clearTimeout(timer);
@@ -293,6 +310,32 @@ function isRetryablePatchError(err: unknown): boolean {
 }
 
 /**
+ * 飞书的「tenant_access_token 无效」业务码（HTTP 200 + body code）。
+ * appSecret 在后台被重置后，此前签发的 token 立刻落到这个码。
+ */
+const FEISHU_TOKEN_INVALID_CODE = 99991663;
+
+/** 带飞书业务码的失败：日志与错误文案只留 message，判定要另存 code。 */
+class FeishuBusinessError extends Error {
+  readonly code: number;
+  constructor(message: string, code: number) {
+    super(message);
+    this.name = 'FeishuBusinessError';
+    this.code = code;
+  }
+}
+
+/**
+ * 这次失败是否等于「缓存里的 token 已失效」：body code 99991663 或 HTTP 401。
+ * 判定发生在内层 try 抓到的原始错误上，外层 `${label} failed: …` 包装在其之后。
+ */
+function isAccessTokenRejected(err: unknown): boolean {
+  if (err instanceof FeishuBusinessError) return err.code === FEISHU_TOKEN_INVALID_CODE;
+  const resp = (err as { response?: { status?: number } } | null)?.response;
+  return resp?.status === 401;
+}
+
+/**
  * 带重试的 `im.v1.message.patch`。
  *
  * 为什么必须在这一层重试：流式卡片的 patch 由 @larksuite/channel 的
@@ -305,6 +348,11 @@ function isRetryablePatchError(err: unknown): boolean {
  * 这里在唯一的底层 patch 出口上兜住：瞬态错误重试最多 PATCH_MAX_RETRIES 次，
  * 全部失败才把最后一个错误抛出去（此时上层 classifyRejection 也会判为
  * recoverable，不会击穿进程）。patch 是整卡替换，重试天然幂等。
+ *
+ * 重试期间不会有更新的帧插到前面：@larksuite/channel 的 CardStreamController 用
+ * `Throttle.inFlight`（在途 fire 未结束则新 fire 延后）+ 每流 FIFO `UpdateQueue`
+ * 两层串行，本函数就在 `fire()` 的 await 链上，所以后续帧一定排在本次重试之后。
+ * 终态帧另走 `flushNow()` + `queue.drain()`。不需要在这里补 sequence 机制。
  */
 async function patchWithRetry(
   patchFn: PatchableMessageService['patch'],
@@ -378,10 +426,13 @@ export class FeishuConnector {
     // 卡片 patch 的统一出口（观测 + 重试）：
     // 1) 观测（2026-08-11 run 卡定格事故）：飞书业务码错误以 HTTP 200 + {code!=0}
     //    返回时，lark SDK 正常 resolve、@larksuite/channel 的 patchCard 丢弃返回值，
-    //    导致终态卡 patch 被业务层拒绝时全链路无日志无兜底。这里把业务码记 warn，
-    //    返回值原样透传。
+    //    导致终态卡 patch 被业务层拒绝时全链路无日志无兜底。这里把业务码记 warn。
+    //    **不在这里抛**：流式卡片的 patch 由 throttle 触发、脱离 await 链
+    //    （`Throttle.fireSoon` 丢掉 doFire 的 promise），抛出即成 detached rejection。
+    //    恢复链路只覆盖有 await 的调用方：见 `updateCard()` 读业务码后抛。
     // 2) 重试（2026-09-15 socket-close 事故）：瞬态传输失败就地重试，最多
     //    PATCH_MAX_RETRIES 次，不把失败直接落到 unhandledRejection 打死进程。
+    //    业务码是确定性失败，不进重试循环。
     // Guard: unit-test mocks may omit rawClient; skip probe installation in that case.
     const messageService = tryGetPatchService(this.channel);
     if (messageService?.patch) {
@@ -525,6 +576,7 @@ export class FeishuConnector {
           this.channel.downloadResourceToFile(msg.messageId, res.fileKey, res.type, tmpPath),
           timeoutMs,
           `downloadResource fileKey=${res.fileKey}`,
+          () => silentlyUnlink(tmpPath),
         );
         if (bytesWritten > maxBytes) {
           silentlyUnlink(tmpPath);
@@ -549,7 +601,8 @@ export class FeishuConnector {
           tempPath: tmpPath,
         });
       } catch (err) {
-        silentlyUnlink(tmpPath);
+        // 超时不在这里删文件：上面已把清理挂到底层传输的 settle 上。
+        if (!(err instanceof ResourceTimeoutError)) silentlyUnlink(tmpPath);
         getLogger().warn(
           `[feishu] downloadResource failed fileKey=${res.fileKey} type=${res.type}:`,
           (err as Error).message,
@@ -641,23 +694,52 @@ export class FeishuConnector {
       );
       return result.messageId;
     } catch (err) {
-      // Log the error but don't throw - this prevents unhandled rejection
+      // 抛出去前先落一条格式化日志（调用方只看到包装后的 message）。
+      // 抛普通 Error 而不是原 err：axios 错误对象跨层序列化会丢信息。
       const errorInfo = this.formatError(err);
       getLogger().error('[feishu] streamCard failed:', errorInfo);
-      // Throw a plain error to avoid axios error serialization issues
       throw new Error(`streamCard failed: ${errorInfo}`, { cause: err });
     }
   }
 
+  /**
+   * 原地替换已发消息的卡片内容。
+   *
+   * 走 `rawClient.im.v1.message.patch` 而不是 `channel.updateCard()`，唯一目的就是
+   * 拿到返回值：飞书的业务码拒绝以 HTTP 200 + `{code!=0}` 返回，SDK 的 `patchCard`
+   * 把返回值丢了，调用方于是拿到假成功（卡片定格在被打回的那一帧，用户却收到
+   * 「已保存」）。抛出去让 `bridge.updateCardInPlace()` 的 catch 走 sendResult 兜底。
+   * `rawClient` 缺失（测试 mock）时回退 SDK 入口，行为退化为「看不见业务码」。
+   */
   async updateCard(messageId: string, card: object): Promise<void> {
+    const messageService = tryGetPatchService(this.channel);
+    let rejection: { code: number; msg?: string } | undefined;
+
     try {
-      await this.channel.updateCard(messageId, card);
+      if (messageService?.patch) {
+        const res = await messageService.patch({
+          path: { message_id: messageId },
+          data: { content: JSON.stringify(card) },
+        });
+        if (typeof res?.code === 'number' && res.code !== 0) {
+          rejection = { code: res.code, msg: res.msg };
+        }
+      } else {
+        await this.channel.updateCard(messageId, card);
+      }
     } catch (err) {
-      // Log the error but don't throw - this prevents unhandled rejection
+      // Log the error but don't swallow it - a plain error avoids axios
+      // serialization issues in the logger.
       const errorInfo = this.formatError(err);
       getLogger().error('[feishu] updateCard failed:', errorInfo);
-      // Throw a plain error to avoid axios error serialization issues
       throw new Error(`updateCard failed: ${errorInfo}`, { cause: err });
+    }
+
+    if (rejection) {
+      throw new Error(
+        `updateCard failed: Feishu rejected the card (code=${rejection.code} msg=${rejection.msg ?? ''})`,
+        { cause: rejection },
+      );
     }
   }
 
@@ -725,15 +807,54 @@ export class FeishuConnector {
     keyField: 'file_key' | 'image_key',
     msgType: 'file' | 'image',
   ): Promise<string> {
+    try {
+      // 被判 token 无效时清缓存重取，整段上传重做**一次**（appSecret 在飞书后台
+      // 被重置后，缓存里的旧 token 立刻失效；不清缓存就要一直失败到自然过期
+      // ~2h，期间发文件全报错）。只重试一次：持续被拒说明问题不在 token 缓存。
+      for (let attempt = 0; ; attempt++) {
+        const accessToken = await this.getTenantAccessToken();
+        try {
+          return await this.uploadWithToken(
+            accessToken,
+            chatId,
+            filePath,
+            uploadUrl,
+            buildForm,
+            keyField,
+            msgType,
+          );
+        } catch (err) {
+          if (attempt === 0 && isAccessTokenRejected(err)) {
+            this.invalidateTenantToken();
+            getLogger().warn(`[feishu] ${label}: tenant token rejected, refetching once`);
+            continue;
+          }
+          throw err;
+        }
+      }
+    } catch (err) {
+      const errorInfo = this.formatError(err);
+      getLogger().error(`[feishu] ${label} failed:`, errorInfo);
+      throw new Error(`${label} failed: ${errorInfo}`, { cause: err });
+    }
+  }
+
+  /** 单次「上传 + 发媒体消息」；文件流在此拥有，任何失败路径都销毁（P2-18）。 */
+  private async uploadWithToken(
+    accessToken: string,
+    chatId: string,
+    filePath: string,
+    uploadUrl: string,
+    buildForm: (stream: fs.ReadStream) => FormData,
+    keyField: 'file_key' | 'image_key',
+    msgType: 'file' | 'image',
+  ): Promise<string> {
     let fileStream: fs.ReadStream | null = null;
     try {
-      // P2-18: tenant_access_token cache（~2h），避免每次发送都取 token。
-      const accessToken = await this.getTenantAccessToken();
-
       fileStream = fs.createReadStream(filePath);
       const form = buildForm(fileStream);
 
-      // P2-18: timeout 120s（大文件慢链路）；httpsAgent: noKeepAlive 防止
+      // P2-18: timeout 120s（大文件慢链路）；httpsAgent: noKeepAliveAgent 防止
       // Bun 复用已被服务端 RST 的 keep-alive socket（ECONNRESET after ~30s）。
       const uploadResp = await axios.post(uploadUrl, form, {
         headers: {
@@ -744,7 +865,10 @@ export class FeishuConnector {
         httpsAgent: noKeepAliveAgent,
       });
       if (uploadResp.data.code !== 0) {
-        throw new Error(`Upload failed: ${uploadResp.data.msg}`);
+        throw new FeishuBusinessError(
+          `Upload failed: ${uploadResp.data.msg}`,
+          uploadResp.data.code,
+        );
       }
       const mediaKey = uploadResp.data.data[keyField];
 
@@ -767,7 +891,10 @@ export class FeishuConnector {
         },
       );
       if (sendResp.data.code !== 0) {
-        throw new Error(`Media message failed: ${sendResp.data.msg}`);
+        throw new FeishuBusinessError(
+          `Media message failed: ${sendResp.data.msg}`,
+          sendResp.data.code,
+        );
       }
       return sendResp.data.data.message_id;
     } catch (err) {
@@ -779,9 +906,7 @@ export class FeishuConnector {
           /* already destroyed */
         }
       }
-      const errorInfo = this.formatError(err);
-      getLogger().error(`[feishu] ${label} failed:`, errorInfo);
-      throw new Error(`${label} failed: ${errorInfo}`, { cause: err });
+      throw err;
     }
   }
 
@@ -836,15 +961,33 @@ export class FeishuConnector {
    * fetching it on every file send wastes a round-trip and an unguarded fetch
    * could return data.code != 0 with an undefined token. Cache with expiry and
    * validate the response code.
+   *
+   * 缓存的两条失效路径：到期（下面 expire）与被服务端判 token 无效
+   * （invalidateTenantToken，见 §B13）。
    */
   private cachedToken: string | null = null;
   private cachedTokenExpireAt = 0;
+  /** 在途的取 token 请求：并发发送合流成一次请求（飞书该端点有限流）。 */
+  private tokenFetch: Promise<string> | null = null;
 
   private async getTenantAccessToken(): Promise<string> {
     const now = Date.now();
     if (this.cachedToken && now < this.cachedTokenExpireAt) {
       return this.cachedToken;
     }
+    this.tokenFetch ??= this.fetchTenantAccessToken().finally(() => {
+      this.tokenFetch = null;
+    });
+    return this.tokenFetch;
+  }
+
+  /** 清掉缓存的 token：鉴权被拒时旧值已经没有价值，留着只会继续失败。 */
+  private invalidateTenantToken(): void {
+    this.cachedToken = null;
+    this.cachedTokenExpireAt = 0;
+  }
+
+  private async fetchTenantAccessToken(): Promise<string> {
     // P2-18: timeout 30s on the token request.
     // httpsAgent: noKeepAlive — same Bun keep-alive fix as upload above.
     const tokenResp = await axios.post(
@@ -860,15 +1003,16 @@ export class FeishuConnector {
       },
     );
     if (tokenResp.data.code !== 0) {
-      throw new Error(
+      throw new FeishuBusinessError(
         `Failed to get tenant_access_token: ${tokenResp.data.msg ?? 'unknown error'}`,
+        tokenResp.data.code,
       );
     }
     const token = tokenResp.data.tenant_access_token;
     // Expire is in seconds; refresh 5min early as a safety margin.
     const expire = (tokenResp.data.expire ?? 7200) as number;
     this.cachedToken = token;
-    this.cachedTokenExpireAt = now + (expire - 300) * 1000;
+    this.cachedTokenExpireAt = Date.now() + (expire - 300) * 1000;
     return token;
   }
 }

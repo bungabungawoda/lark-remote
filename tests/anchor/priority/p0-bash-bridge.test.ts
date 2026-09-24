@@ -96,6 +96,7 @@ describe('P0-2 B4: bridge 集成（10k chunk 洪峰）', () => {
       sendWithRetry: async () => 'msg-id',
       sendFile: async () => 'file-id',
       addReaction: async () => {},
+      removeReactionByEmoji: async () => {},
       connected: true,
     };
 

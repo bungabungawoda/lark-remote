@@ -215,7 +215,7 @@ describe('InstanceLock readPidAndComm edge cases', () => {
     });
 
     // release on non-existent lock should not throw
-    lock.release();
+    expect(() => lock.release()).not.toThrow();
   });
 });
 
