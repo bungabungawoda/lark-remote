@@ -58,7 +58,7 @@ defaultAgent: claude
 claude:
   model: claude-opus-4-8    # 模型
   effort: medium            # 推理强度 low | medium | high | xhigh | max
-  permissionMode: bypassPermissions  # Claude 官方 --permission-mode：default | acceptEdits | auto | bypassPermissions | manual | dontAsk | plan（/config 卡片可切换）
+  permissionMode: bypassPermissions  # 取值：default（=不传 --permission-mode，CLI 无此值）| acceptEdits | auto | bypassPermissions | manual | dontAsk | plan（/config 卡片可切换）
   stopGraceMs: 5000         # 空闲超时自动停止时的优雅关闭宽限时间（毫秒）
 
 agents:

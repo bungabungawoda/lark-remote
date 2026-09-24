@@ -11,14 +11,8 @@ import path from 'node:path';
 interface PiProviderInfo {
   /** Provider 名称 */
   name: string;
-  /** API 端点（可选） */
-  baseUrl?: string;
-  /** API 类型 */
-  api?: string;
   /** 该 provider 下的模型列表 */
   models: string[];
-  /** 是否有认证信息 */
-  isAuthenticated: boolean;
 }
 
 /** loadPiConfig() 的返回类型，包含 provider 和 model 的聚合信息 */
@@ -34,9 +28,12 @@ export interface PiConfigResult {
  * 默认 ~/.pi/agent。每次调用时动态读取环境变量，避免模块级缓存导致
  * singleFork 模式下测试设置 env 过晚（与 CLAUDE_SETTINGS_PATH 模式类似，
  * 但 pi-config 的常量原本在模块级求值，改为惰性求值以支持运行时切换）。
+ *
+ * 空串/纯空白按「未设置」处理：`??` 只挡 undefined，放过空串会让 models.json
+ * 解析成相对**进程 cwd** 的路径。
  */
 function getPiConfigDir(): string {
-  return process.env.PI_CONFIG_DIR ?? path.join(os.homedir(), '.pi', 'agent');
+  return process.env.PI_CONFIG_DIR?.trim() || path.join(os.homedir(), '.pi', 'agent');
 }
 
 /** @internal Exported for testing only — verify env var is respected. */
@@ -83,7 +80,8 @@ function getPiModelFallback(provider?: string): string[] {
 /**
  * 读取 pi 的 provider 和 model 配置
  *
- * @returns provider 列表，每个 provider 包含名称、模型列表和认证状态
+ * @returns provider 列表，每项含名称与其模型列表；auth.json 里有凭据但
+ * models.json 未声明的 provider 以空模型列出（只为让 provider 选项不丢）
  */
 export function loadPiProviderConfig(): PiProviderInfo[] {
   const results = new Map<string, PiProviderInfo>();
@@ -113,18 +111,11 @@ export function loadPiProviderConfig(): PiProviderInfo[] {
   // 3. 从 models.json 提取 providers
   const providers = modelsData.providers ?? {};
   for (const [name, config] of Object.entries(providers)) {
-    const cfg = config as {
-      baseUrl?: string;
-      api?: string;
-      models?: Array<{ id: string }>;
-    };
+    const cfg = config as { models?: Array<{ id: string }> };
 
     results.set(name, {
       name,
-      baseUrl: cfg.baseUrl,
-      api: cfg.api,
       models: (cfg.models ?? []).map((m) => m.id),
-      isAuthenticated: !!authData[name],
     });
   }
 
@@ -135,7 +126,6 @@ export function loadPiProviderConfig(): PiProviderInfo[] {
       results.set(name, {
         name,
         models: [],
-        isAuthenticated: true,
       });
     }
   }

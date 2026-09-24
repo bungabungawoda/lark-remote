@@ -134,5 +134,16 @@ describe('pi-config model options', () => {
     it('should use PI_CONFIG_DIR instead of ~/.pi/agent', () => {
       expect(_getModelsFilePath()).toBe(path.join(tmpDir, 'models.json'));
     });
+
+    it('空串/纯空白视为未设置：落回 ~/.pi/agent（纯字符串比较，不碰真实目录）', () => {
+      // `??` 只挡 undefined：`PI_CONFIG_DIR=''` 会把 models.json 解析成相对
+      // 进程 cwd 的路径，同一份配置在不同启动目录下指向两个文件。
+      const fallback = path.join(os.homedir(), '.pi', 'agent', 'models.json');
+      for (const value of ['', '   ']) {
+        process.env.PI_CONFIG_DIR = value;
+        expect(_getModelsFilePath()).toBe(fallback);
+      }
+      expect(path.isAbsolute(_getModelsFilePath())).toBe(true);
+    });
   });
 });

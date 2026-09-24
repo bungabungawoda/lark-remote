@@ -31,11 +31,6 @@ export function resolveAgentChoices(config: AppConfig): AppConfig {
 
   // Clone to avoid mutation
   const resolved = structuredClone(config);
-  // agents.codex 在 schema 中必填（带默认值），此处按旧语义补空对象；
-  // 运行时只往 [agent] 槽位写字段，不依赖 codex 默认值。
-  if (!resolved.agents) {
-    resolved.agents = {} as AppConfig['agents'];
-  }
   const agents = resolved.agents;
   const target = ((agents as Record<string, Record<string, unknown>>)[agent] ??= {});
   const source = agentChoices;

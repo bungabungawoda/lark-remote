@@ -118,9 +118,13 @@ function makeCompactBridge(opts: {
   codexRead?: AgentSessionReader['readSessionContent'];
   /** 覆盖指定 agent 的 reader（如带 readCompactionState 的 kimi/claude reader）。 */
   readers?: Record<string, AgentSessionReader>;
+  /** 缩短空闲看门狗窗口（默认 15min），让「挂死的 run」类测试能在毫秒级观察到兜底。 */
+  idleTimeoutMs?: number;
+  /** 断言终态 reaction 时打开（addReaction 变 vi.fn 探针）。 */
+  addReactionSpy?: boolean;
 }) {
   const sessionStore = new SessionStore();
-  const connector = createStubConnector();
+  const connector = createStubConnector({ addReactionSpy: opts.addReactionSpy });
   const runner = opts.runner ?? createStubRunner();
   const read = opts.read ?? opts.codexRead ?? notFoundRead;
   const defaultReader: AgentSessionReader = {
@@ -140,6 +144,7 @@ function makeCompactBridge(opts: {
     config,
     agentRegistry: createStubAgentRegistry(runner),
     sessionReaderRegistry: registry,
+    idleTimeoutMs: opts.idleTimeoutMs,
   });
   return { bridge, sessionStore, connector, runner };
 }
@@ -3520,5 +3525,150 @@ describe('Bridge compact 终态映射 + 在途检测（§5.3）', () => {
     // streamCodexCompact 收尾含 2×150ms usage 短重试，留足余量。
     await new Promise((r) => setTimeout(r, 1000));
     expect(runSpy).toHaveBeenCalledTimes(1);
+  }, 10000);
+});
+
+// =============================================================================
+// A6：compact run 与普通 run 共用同一套生命周期（activeRuns 注册 + §9.12 空闲
+// 看门狗 + 终态 reaction）。回归：streamCodexCompact 自成一路 —— 引擎卡住时
+// /stop 找不到这个 run（控制通道无对象可停）、没有桥级看门狗兜底、终态后原消息
+// 上也没有状态表情。
+// =============================================================================
+describe('Bridge compact run 注册 / 看门狗 / 终态 reaction（A6）', () => {
+  type MockFn = ReturnType<typeof vi.fn>;
+
+  /** 挂死的 runCompact：不发事件、直到 stop() 放行（模拟引擎压缩途中卡死）。 */
+  function makeHangingCompactRunner(): {
+    runner: Runner & { runCompact: MockFn };
+    stopSpy: MockFn;
+  } {
+    let release: () => void = () => {};
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const stopSpy = vi.fn(async () => {
+      release();
+    });
+    const runCompact = vi.fn(async function* (): AsyncGenerator<AgentEvent> {
+      await gate;
+    });
+    return {
+      runner: {
+        ...createStubRunner(),
+        stop: stopSpy,
+        runCompact,
+      } as unknown as Runner & { runCompact: MockFn },
+      stopSpy,
+    };
+  }
+
+  async function waitUntil(pred: () => boolean, timeoutMs = 3000): Promise<void> {
+    const deadline = Date.now() + timeoutMs;
+    while (!pred()) {
+      if (Date.now() > deadline) throw new Error('waitUntil 超时');
+      await new Promise((r) => setTimeout(r, 20));
+    }
+  }
+
+  it('test_anchor_stop_reaches_in_flight_compact_and_ends_interrupted', async () => {
+    // 验证什么：压缩在途时 /stop 必须能命中这个 run（activeRuns 里有它），
+    // 卡片转 interrupted 终态、压缩后工作区不再忙。缺失后果：compact 卡住时
+    // 用户没有任何手段终止，/stop 回「没有正在运行的任务」。
+    const cwd = fs.realpathSync(tmpDir);
+    const { runner, stopSpy } = makeHangingCompactRunner();
+    const { bridge, sessionStore, connector } = makeCompactBridge({
+      runner,
+      read: tailRead(undefined),
+      addReactionSpy: true,
+    });
+    sessionStore.setCwd('user1', cwd);
+
+    const compactPromise = bridge.handleResumeCompact(
+      { sessionId: 'codex-session-1', agent: 'codex' },
+      ctx,
+    );
+    await waitUntil(() => runner.runCompact.mock.calls.length > 0);
+    // 注册：压缩在途期间工作区算活跃 run（/active、/stop 都看得到）
+    expect(bridge.isBusy).toBe(true);
+
+    const stopped = await bridge.interruptCurrentRun({ userId: ctx.userId, chatId: ctx.chatId });
+    await compactPromise;
+
+    expect(stopped).toBe(true);
+    expect(stopSpy).toHaveBeenCalled();
+    expect(bridge.isBusy).toBe(false);
+    const lastCard = JSON.stringify(connector._cards.at(-1) ?? '');
+    expect(lastCard).toContain('已中断');
+    const reactions = (connector.addReaction as ReturnType<typeof vi.fn>).mock.calls;
+    expect(reactions.some((c) => c[0] === ctx.messageId && c[1] === 'SHHH')).toBe(true);
+  }, 10000);
+
+  it('idle 看门狗兜底挂死的压缩：终态转已超时并摘掉活跃槽位', async () => {
+    // 验证什么：引擎静默超过 idleTimeoutMs 时，桥级看门狗（§9.12）对 compact
+    // 同样生效——停进程、卡片转 idle_timeout、reaction=Alarm、槽位释放。缺失
+    // 后果：只能等 runner 级 30min 超时拿一个语义泛化的 turn error。
+    const cwd = fs.realpathSync(tmpDir);
+    const { runner, stopSpy } = makeHangingCompactRunner();
+    const { bridge, sessionStore, connector } = makeCompactBridge({
+      runner,
+      read: tailRead(undefined),
+      addReactionSpy: true,
+      idleTimeoutMs: 60,
+    });
+    sessionStore.setCwd('user1', cwd);
+
+    await bridge.handleResumeCompact({ sessionId: 'codex-session-1', agent: 'codex' }, ctx);
+
+    expect(stopSpy).toHaveBeenCalled();
+    const lastCard = JSON.stringify(connector._cards.at(-1) ?? '');
+    expect(lastCard).toContain('已超时');
+    expect(bridge.isBusy).toBe(false);
+    const reactions = (connector.addReaction as ReturnType<typeof vi.fn>).mock.calls;
+    expect(reactions.some((c) => c[0] === ctx.messageId && c[1] === 'Alarm')).toBe(true);
+  }, 10000);
+
+  it('压缩在途时不抢占已有活跃 run 的槽位，直接拒绝', async () => {
+    // 验证什么：activeRuns 以 cwd 为键，compact 注册前必须确认槽位空闲；否则
+    // 会覆盖正在跑的 run 的记录，令 /stop 只能停到最后注册的那个。
+    const cwd = fs.realpathSync(tmpDir);
+    const { runner, stopSpy } = makeHangingCompactRunner();
+    const runSpy = vi.fn(async function* (): AsyncGenerator<AgentEvent> {
+      yield {
+        type: 'system',
+        subtype: 'init',
+        session_id: 'codex-session-1',
+        cwd,
+        model: 'gpt',
+      } as AgentEvent;
+      await new Promise<void>((resolve) => {
+        stopSpy.mockImplementationOnce(async () => {
+          resolve();
+        });
+      });
+      yield { type: 'result', subtype: 'interrupted', session_id: 'codex-session-1' } as AgentEvent;
+    });
+    runner.run = runSpy;
+    const { bridge, sessionStore, connector } = makeCompactBridge({
+      runner,
+      read: tailRead(undefined),
+    });
+    sessionStore.setCwd('user1', cwd);
+
+    const runPromise = bridge.forwardToClaude('hello', ctx);
+    await waitUntil(() => runSpy.mock.calls.length > 0);
+    expect(bridge.isBusy).toBe(true);
+
+    await bridge.handleResumeCompact({ sessionId: 'codex-session-1', agent: 'codex' }, ctx);
+
+    expect(runner.runCompact).not.toHaveBeenCalled();
+    const sentJsons = connector._sent.map((s) => JSON.stringify(s.input));
+    expect(sentJsons.some((j) => j.includes('正在运行'))).toBe(true);
+    // 原 run 的注册信息未被压缩覆盖
+    expect(bridge.getActiveRuns()).toHaveLength(1);
+
+    stopSpy.mock.calls.length = 0;
+    await bridge.interruptCurrentRun({ userId: ctx.userId, chatId: ctx.chatId });
+    await runPromise;
+    expect(bridge.isBusy).toBe(false);
   }, 10000);
 });

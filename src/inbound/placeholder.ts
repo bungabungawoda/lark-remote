@@ -34,7 +34,7 @@ export type PlaceholderKind =
   | 'unknown';
 
 export interface StripResult {
-  /** 剥离占位符后的文本（trim 后；forwarded 块只剥标签、保留内部文本）。 */
+  /** 剥离占位符后的文本（trim 后；forwarded 与未知成对标签只剥标签、保留内部文本）。 */
   clean: string;
   /** 命中的占位符种类（去重、保序），用于 rejected 回执与排障。 */
   kinds: PlaceholderKind[];
@@ -107,9 +107,13 @@ const BRACKET_FALLBACK_RE =
 /**
  * 未知标签兜底：只在「有属性」或「成对闭合」时才剥离。
  * 要求有属性可显著降低误伤——用户正文里的 `<3`、`a < b`、`<div>` 不会被吃掉。
+ *
+ * 成对标签**只剥标签、保留内文本**（与 `AT_TAG_RE`、`FORWARDED_TAG_RE` 同口径）：
+ * 内文本是用户打出来的正文（`<b>重点</b>`、`<info>disk full</info>`），整块吃掉
+ * 会让 coding agent 拿到残缺输入，而用户完全无从察觉。
  */
 const UNKNOWN_SELF_CLOSING_RE = /<([a-z][a-z0-9_]*)\s[^<>]*\/>/g;
-const UNKNOWN_PAIRED_RE = /<([a-z][a-z0-9_]*)(?:\s[^<>]*)?>[\s\S]*?<\/\1>/g;
+const UNKNOWN_PAIRED_RE = /<([a-z][a-z0-9_]*)(?:\s[^<>]*)?>([\s\S]*?)<\/\1>/g;
 
 /** 剥离后遗留的连续空行折叠为单空行（属剥离产物，不算对用户文本加工）。 */
 function collapseBlankLines(text: string): string {
@@ -176,15 +180,15 @@ export function stripPlaceholders(raw: string): StripResult {
   });
 
   // 8. 未知标签兜底（未来 SDK 新增类型）：剥离 + 记录 tag 名。
-  working = working.replace(UNKNOWN_SELF_CLOSING_RE, (match, tag: string) => {
+  working = working.replace(UNKNOWN_SELF_CLOSING_RE, (_match, tag: string) => {
     hit('unknown');
     if (!unknownTags.includes(tag)) unknownTags.push(tag);
     return '';
   });
-  working = working.replace(UNKNOWN_PAIRED_RE, (match, tag: string) => {
+  working = working.replace(UNKNOWN_PAIRED_RE, (_match, tag: string, inner: string) => {
     hit('unknown');
     if (!unknownTags.includes(tag)) unknownTags.push(tag);
-    return '';
+    return inner;
   });
 
   // 9. 放回协议块。

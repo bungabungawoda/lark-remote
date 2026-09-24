@@ -48,6 +48,7 @@
     "src/router/file-limit.test.ts",
     "src/router/immediate-action.test.ts",
     "src/router/card-action-payload.test.ts",
+    "src/router/card-action-feedback.test.ts",
     "src/router/ls-file.test.ts",
     "src/router/paging-jump.test.ts",
     "src/router/download.test.ts",

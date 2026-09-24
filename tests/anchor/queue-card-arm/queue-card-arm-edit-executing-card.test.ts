@@ -114,9 +114,9 @@ describe('QueueManager - executing card for an edited task must show the edited 
     expect(await waitFor(() => t2Started)).toBe(true);
     await sleep(50);
 
-    // 当前实现：begin 路径用 enqueue 时捕获的 taskMeta.messagePreview
+    // 修复前：begin 路径用 enqueue 时捕获的 taskMeta.messagePreview
     // （'original message'）构建执行卡，updatedCards 里只有旧预览。
-    // 这里必须真红：期望执行卡展示 edited message，且不得展示 original。
+    // 本用例钉住：期望执行卡展示 edited message，且不得展示 original。
     const executingUpdates = updatedCards.filter((u) => headerTitle(u) === '▶️ 已开始执行');
     expect(executingUpdates.length).toBe(1);
     const previewLine = divContents(executingUpdates[0]).find((c) => c.includes('📝'));

@@ -293,4 +293,35 @@ describe('setConfigValue', () => {
     const updated = setConfigValue(p, config, 'idle.watchdogMinutes', '20');
     expect(updated.idle.watchdogMinutes).toBe(20);
   });
+
+  it('保存只打改动：注释与 schema 之外的手工键原样保留', () => {
+    // dir.ts 引导用户手改 config.yaml，保存动作把整份文件重写成 Zod 裁剪输出
+    // 等于第一次点卡片就把用户写的内容清光。
+    const p = writeConfig(
+      `# 全局注释：不能被保存动作吃掉
+feishu:
+  appId: cli_test123
+  appSecret: secret_test123
+
+# schema 不认识的手工键，留给新版本用
+futureTuning:
+  threshold: 7
+
+claude:
+  # 这一项的理由：换模型要重开会话
+  model: claude-opus-4-8
+  stopGraceMs: 5000
+`,
+    );
+    const config = loadConfig(p);
+    const updated = setConfigValue(p, config, 'claude.model', 'claude-sonnet-4-20250514');
+    expect(updated.claude.model).toBe('claude-sonnet-4-20250514');
+
+    const text = fs.readFileSync(p, 'utf-8');
+    expect(text).toContain('# 全局注释');
+    expect(text).toContain('# 这一项的理由');
+    expect(text).toContain('futureTuning:');
+    expect(text).toContain('threshold: 7');
+    expect(loadConfig(p).claude.model).toBe('claude-sonnet-4-20250514');
+  });
 });

@@ -189,8 +189,8 @@ describe('queue.immediate must not remove tasks queued BEHIND the target when th
     resolveStop(true);
     await immediateDone;
 
-    // 当前实现：快照 [msg-3] 中没有 msg-2 可 break → T3 被 removeFromQueue 误删。
-    // 这里必须真红（期望 T3 仍在排队，因为它排在目标任务**之后**）。
+    // 修复前：快照 [msg-3] 中没有 msg-2 可 break → T3 被 removeFromQueue 误删。
+    // 本用例钉住（期望 T3 仍在排队，因为它排在目标任务**之后**）。
     expect(bridge.getQueuedTask(tmpDir, 'msg-3')).toBeDefined();
 
     // --- 清理：放行 T2，让队列链自然收尾 ---

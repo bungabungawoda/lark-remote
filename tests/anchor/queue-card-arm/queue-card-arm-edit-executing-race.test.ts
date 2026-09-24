@@ -117,8 +117,8 @@ describe('QueueManager - immediate executing card must re-read live preview afte
     await markPromise;
     await sleep(20);
 
-    // 当前实现：执行卡仍使用参数里的 'original message'（await 前快照）。
-    // 这里必须真红：期望执行卡展示 edited message，且不得展示 original。
+    // 修复前：执行卡仍使用参数里的 'original message'（await 前快照）。
+    // 本用例钉住：期望执行卡展示 edited message，且不得展示 original。
     const executingUpdates = updatedCards.filter((u) => headerTitle(u) === '▶️ 已开始执行');
     expect(executingUpdates.length).toBe(1);
     const previewLine = divContents(executingUpdates[0]).find((c) => c.includes('📝'));
