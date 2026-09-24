@@ -1,13 +1,13 @@
 /**
- * posix 终止器：`src/runner/common/process-stopper.ts` 的原样迁移（design.md §3.2）。
+ * posix 终止器（design.md §3.2）。
  *
- * 语义与迁移前逐条对齐：SIGTERM 打负 PID 进程组 → 等 graceMs → SIGKILL；
- * immediate 则两个信号连发。本次只新增两样东西：
+ * 语义：SIGTERM 打负 PID 进程组 → 等 graceMs → SIGKILL；immediate 则两个信号
+ * 连发。相对原来的 `process-stopper` 类多两样东西：
  *   - 返回 {@link TerminateResult} 让终止途经可观测（与 win32 同构）；
  *   - `cleanupOnExit`（Terminator 接口要求的进程级退出清理）。
  *
- * `ProcessStopper` 保留为兼容壳：行为（含日志文案）零变化，既有调用方与
- * 测试无需改动；M2 调用点迁移时逐个换成 Terminator 后即可删除。
+ * 原 `ProcessStopper` 兼容壳与 `runner/common/process-stopper.ts` 已随调用点
+ * 迁移完成（transport / spawning-runner / kimi acp 三个模块）删除。
  */
 import type { ChildProcess } from 'node:child_process';
 import { getLogger } from '../logger/index.js';
@@ -132,33 +132,4 @@ export function createPosixTerminator(deps: PosixTerminatorDeps): Terminator {
       }
     },
   };
-}
-
-interface ProcessStopperOptions {
-  graceMs: number;
-}
-
-interface StopOptions {
-  immediate?: boolean;
-}
-
-/**
- * 迁移前的类名（兼容壳）：返回 void、接受 null proc。
- * 新代码请用 {@link createPosixTerminator} / `createTerminator`。
- */
-export class ProcessStopper {
-  private graceMs: number;
-
-  constructor(opts: ProcessStopperOptions) {
-    this.graceMs = opts.graceMs;
-  }
-
-  async stop(proc: ChildProcess | null, opts?: StopOptions): Promise<void> {
-    if (!proc) return;
-    await stopPosix(
-      proc,
-      { graceMs: this.graceMs, immediate: opts?.immediate === true },
-      defaultLog,
-    );
-  }
 }

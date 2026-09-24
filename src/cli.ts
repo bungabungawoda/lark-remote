@@ -1,4 +1,21 @@
 #!/usr/bin/env node
+/**
+ * CLI 引导层（bootstrap）：在 import 应用模块图之前决定运行时（bun/node）并拉起它。
+ *
+ * **这是全仓唯一被认可的 spawn 收口例外**（即 AGENTS.md「子进程 spawn 只走
+ * platform/spawn.ts」红线的显式豁免）。三个理由缺一不可：
+ *   1. 时序：preflight（Node 版本守卫、-v/-h/--advance-help）必须在 import 应用
+ *      模块图之前跑完——dist/cli.js 刻意不使用 ES2020+ 语法以便在 node 12 上仍
+ *      可被解析，而 dist/index.js 是 ES2022；先 import platform/spawn 就等于先把
+ *      应用模块图拖进来，守卫当场失效（报错堆栈全落在 Node 内部）。
+ *   2. 依赖：platform/spawn.ts 依赖 cross-spawn（应用依赖树的一部分），在「刚
+ *      诊断出 Node 太老」的那个时刻并不可加载。
+ *   3. 语义：这里 spawn 的是**另一份运行时**（bun 重启自己），不是 agent/工具
+ *      子进程，不参与组杀、pid 文件、windowsHide 注入这整套 runner 语义。
+ *
+ * 结论：不要为了“统一收口”把这里改走 platform/spawn；反过来，除本文件之外
+ * 任何地方新增子进程都必须走 platform/spawn.ts。
+ */
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
