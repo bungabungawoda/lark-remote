@@ -17,32 +17,29 @@
  *   长驻会话生命周期：src/runner/claude/session.ts（新增）参照
  *   common/spawning-runner + codex app-server 模式。
  */
-import { describe, it, expect, afterEach } from 'vitest';
-import fs from 'node:fs';
+import { describe, it, expect, beforeEach } from 'vitest';
 import { ClaudeRunner } from '../../../src/runner/index.js';
 import { ClaudeSession } from '../../../src/runner/claude/session.js';
 import { SpawningRunner } from '../../../src/runner/common/spawning-runner.js';
-
-const PID_DIR = '/tmp/r16-claude-base-test';
+import { makeTempDir } from '../../lib/temp-dir.js';
 
 describe('R16: ClaudeSession extends SpawningRunner (runner delegates)', () => {
-  afterEach(() => {
-    // Defensive: ClaudeRunner constructor does not write the pid file, but
-    // if a future change does, we don't want to leak state across runs.
-    try {
-      fs.rmSync(PID_DIR, { recursive: true, force: true });
-    } catch {
-      /* ignore */
-    }
+  // pidDir 是生产代码真会 mkdir + 写 pid 文件的位置。固定 '/tmp/...' 在 win32 上
+  // 会解析成仓库外的 D:\tmp（跨进程共享、兜底 sweep 扫不到）—— 改用本用例独占的
+  // mkdtemp 目录，跑完由 temp-dir.ts 的 afterAll 统一清理。
+  // 见 tests/misc/temp-dir-hygiene.test.ts 的「固定 POSIX 绝对路径」守卫。
+  let pidDir: string;
+  beforeEach(() => {
+    pidDir = makeTempDir('lark-r16-claude-base-');
   });
 
   it('test_anchor_claude_session_extends_spawning_runner', () => {
-    const runner = new ClaudeRunner({ workspace: 'test', pidDir: PID_DIR });
+    const runner = new ClaudeRunner({ workspace: 'test', pidDir });
 
     // 核心契约：进程编排在 ClaudeSession（IS-A SpawningRunner），ClaudeRunner
     // 委托而非重复实现。访问 session 需通过公开方法验证（无公开 getter 时用
     // 行为断言：killOrphan 等必须可用且走 base 语义）。
-    const session = new ClaudeSession({ workspace: 'test', pidDir: PID_DIR });
+    const session = new ClaudeSession({ workspace: 'test', pidDir });
     expect(session).toBeInstanceOf(SpawningRunner);
 
     // 会话继承的公共方法（原型链来自 base，非子类重复实现）。

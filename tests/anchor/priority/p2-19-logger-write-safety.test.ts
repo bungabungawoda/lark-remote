@@ -18,10 +18,15 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
 import { Logger } from '../../../src/logger/index.js';
+import { makeTempDir } from '../../lib/temp-dir.js';
 
 describe('P2-19: logger.write never throws on disk failure', () => {
   let appendSpy: ReturnType<typeof vi.spyOn>;
+  // Logger 构造时就会 mkdir 日志目录 —— 固定 '/tmp/...' 在 win32 上落到仓库外的
+  // D:\tmp（跨进程共享 + 兜底 sweep 扫不到）。用本用例独占的 mkdtemp 目录。
+  let logDir: string;
   beforeEach(() => {
+    logDir = makeTempDir('lark-p2-19-logger-');
     appendSpy = vi.spyOn(fs, 'appendFileSync').mockImplementation(() => {
       throw Object.assign(new Error('EACCES: permission denied'), { code: 'EACCES' });
     });
@@ -31,7 +36,7 @@ describe('P2-19: logger.write never throws on disk failure', () => {
   });
 
   it('test_anchor_logger_write_does_not_throw_on_disk_error', () => {
-    const logger = new Logger({ dir: '/tmp/p2-19-logger-test', level: 'info', pid: 12345 });
+    const logger = new Logger({ dir: logDir, level: 'info', pid: 12345 });
     // RED today: write() does not catch appendFileSync → this throws EACCES
     // up through error(), which in an uncaughtException handler would abort
     // Node and skip instanceLock.release(). GREEN: write() swallows the
@@ -57,7 +62,7 @@ describe('P2-19: logger.write never throws on disk failure', () => {
     vi.spyOn(fs, 'appendFileSync').mockImplementation(() => {});
     const now = new Date('2026-08-02T17:30:00.000Z');
     const logger = new Logger({
-      dir: '/tmp/p2-19-logger-test',
+      dir: logDir,
       level: 'info',
       pid: 12346,
       now: () => now,

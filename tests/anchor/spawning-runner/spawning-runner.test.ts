@@ -9,7 +9,7 @@
  * Spawn 编排语义钉（pid 文件生命周期、stderr 4000 截尾、ENOENT 文案、
  * 心跳 start/notify、win32 嗅探置位）经最小 spawnChild harness 驱动。
  */
-import { describe, it, expect, test, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, test, vi, beforeEach } from 'vitest';
 import { currentPlatform, isWin32 } from '../../../src/platform/select.js';
 import { Readable, Writable } from 'node:stream';
 import fs from 'node:fs';
@@ -21,6 +21,20 @@ import type { Terminator } from '../../../src/platform/terminator.js';
 import { agentStopperRegistry } from '../../../src/platform/agent-stopper.js';
 import { createMockProc } from '../../../tests/lib/mock-process.js';
 import { mockLogger } from '../../lib/logger-mock.js';
+import { makeTempDir } from '../../lib/temp-dir.js';
+
+/**
+ * 每个用例独占的 pidDir。
+ *
+ * production 的 `spawnChild` 真会 `mkdirSync(pidDir)` + 写 pid 文件；固定写
+ * '/tmp/spawning-runner-...' 在 win32 上是**仓库外的 D:\tmp**（仓库外、名字固定、
+ * 跨进程共享，且不在 os.tmpdir() 下 → 兜底 sweep 扫不到）。并行 worktree 会抢写
+ * 同一 pid 文件，本机实测残留 `D:\tmp\spawning-runner-anchor-test*`。
+ * 见 tests/misc/temp-dir-hygiene.test.ts 的「固定 POSIX 绝对路径」守卫。
+ */
+function newPidDir(): string {
+  return makeTempDir('lark-spawning-runner-anchor-');
+}
 
 // ---------------------------------------------------------------------------
 // Shared mock setup
@@ -158,23 +172,13 @@ describe('SpawningRunner.spawnChild() spawn orchestration', () => {
     vi.clearAllMocks();
   });
 
-  afterEach(() => {
-    for (const dir of ['/tmp/spawning-runner-anchor-test', '/tmp/spawning-runner-anchor-test-r2']) {
-      try {
-        fs.rmSync(dir, { recursive: true, force: true });
-      } catch {
-        /* dir may not exist */
-      }
-    }
-  });
-
   it('test_anchor_spawning_runner_spawns_with_build_argv', async () => {
     const mockProc = makeMockProc({ pid: 99001 });
     vi.mocked(spawn).mockReturnValue(mockProc);
 
     const runner = new SpawnChildHarness({
       binary: 'fake-binary',
-      pidDir: '/tmp/spawning-runner-anchor-test',
+      pidDir: newPidDir(),
     });
 
     await runner.callSpawnChild({ cwd: '/tmp/fake' });
@@ -193,8 +197,7 @@ describe('SpawningRunner.spawnChild() spawn orchestration', () => {
   });
 
   it('test_anchor_spawning_runner_writes_pid_file_after_spawn', async () => {
-    const pidDir = '/tmp/spawning-runner-anchor-test-r2';
-    fs.mkdirSync(pidDir, { recursive: true });
+    const pidDir = newPidDir();
     const runner = new SpawnChildHarness({ binary: 'fake-binary', pidDir });
     const pidFilePath = runner.testPidFilePath;
     fs.rmSync(pidFilePath, { force: true });
@@ -223,7 +226,7 @@ describe('SpawningRunner.spawnChild() spawn orchestration', () => {
 
     const runner = new SpawnChildHarness({
       binary: 'fake-binary',
-      pidDir: '/tmp/spawning-runner-anchor-test',
+      pidDir: newPidDir(),
     });
 
     // P2-13: spawn 失败必须携带真实原因（此处 ENOENT），而非只给固定文案。
@@ -240,7 +243,7 @@ describe('SpawningRunner.spawnChild() spawn orchestration', () => {
 
     const runner = new SpawnChildHarness({
       binary: 'fake-binary',
-      pidDir: '/tmp/spawning-runner-anchor-test',
+      pidDir: newPidDir(),
     });
 
     const startSpy = vi.spyOn(runner.testSpawnHeartbeat, 'start');
@@ -271,7 +274,7 @@ describe('SpawningRunner.spawnChild() spawn orchestration', () => {
 
     const runner = new SpawnChildHarness({
       binary: 'fake-binary',
-      pidDir: '/tmp/spawning-runner-anchor-test',
+      pidDir: newPidDir(),
     });
 
     const notifySpy = vi.spyOn(runner.testSpawnHeartbeat, 'notifyStdout');
@@ -301,7 +304,7 @@ describe('SpawningRunner.spawnChild() spawn orchestration', () => {
 
     const runner = new SpawnChildHarness({
       binary: 'fake-binary',
-      pidDir: '/tmp/spawning-runner-anchor-test',
+      pidDir: newPidDir(),
     });
 
     await runner.callSpawnChild({ cwd: '/tmp/r8' });
@@ -334,7 +337,7 @@ describe('SpawningRunner.spawnChild() spawn orchestration', () => {
 
     const runner = new SpawnChildHarness({
       binary: 'fake-binary',
-      pidDir: '/tmp/spawning-runner-anchor-test',
+      pidDir: newPidDir(),
     });
 
     await runner.callSpawnChild({ cwd: '/tmp/fake' });
@@ -389,7 +392,7 @@ describe('SpawningRunner stoppedByUser state', () => {
   it('test_anchor_stopped_by_user_initially_false', () => {
     const runner = new SpawnChildHarness({
       binary: 'fake',
-      pidDir: '/tmp/spawning-runner-r21',
+      pidDir: newPidDir(),
     });
     expect(runner.testStoppedByUser).toBe(false);
   });
@@ -397,7 +400,7 @@ describe('SpawningRunner stoppedByUser state', () => {
   it('test_anchor_stop_sets_stopped_by_user_true_when_process_running', async () => {
     const runner = new SpawnChildHarness({
       binary: 'fake',
-      pidDir: '/tmp/spawning-runner-r21',
+      pidDir: newPidDir(),
     });
 
     const terminatorStopSpy = vi
@@ -425,7 +428,7 @@ describe('SpawningRunner stoppedByUser state', () => {
   it('test_anchor_stop_does_not_set_stopped_by_user_when_no_process', async () => {
     const runner = new SpawnChildHarness({
       binary: 'fake',
-      pidDir: '/tmp/spawning-runner-r21',
+      pidDir: newPidDir(),
     });
 
     expect(runner.testCurrentProcess).toBe(null);
@@ -448,7 +451,7 @@ describe('SpawningRunner stop / killOrphan / isRunning', () => {
   it('test_anchor_spawning_runner_stop_delegates_to_terminator_with_immediate', async () => {
     const runner = new SpawnChildHarness({
       binary: 'fake-binary',
-      pidDir: '/tmp/spawning-runner-anchor-test-r11',
+      pidDir: newPidDir(),
     });
 
     const terminatorStopSpy = vi
@@ -476,8 +479,7 @@ describe('SpawningRunner stop / killOrphan / isRunning', () => {
   it.skipIf(isWin32(currentPlatform))(
     'test_anchor_spawning_runner_kill_orphan_reads_pid_sends_sigterm_cleans_file',
     () => {
-      const pidDir = '/tmp/spawning-runner-anchor-test-r12';
-      fs.mkdirSync(pidDir, { recursive: true });
+      const pidDir = newPidDir();
 
       const runner = new SpawnChildHarness({ binary: 'fake-binary', pidDir });
 
@@ -503,8 +505,7 @@ describe('SpawningRunner stop / killOrphan / isRunning', () => {
   );
 
   it('test_anchor_spawning_runner_kill_orphan_silent_when_no_pid_file', () => {
-    const pidDir = '/tmp/spawning-runner-anchor-test-r13';
-    fs.mkdirSync(pidDir, { recursive: true });
+    const pidDir = newPidDir();
 
     const runner = new SpawnChildHarness({ binary: 'fake-binary', pidDir });
 
@@ -527,8 +528,7 @@ describe('SpawningRunner stop / killOrphan / isRunning', () => {
   });
 
   it('test_anchor_spawning_runner_kill_orphan_cleans_file_and_returns_on_non_numeric_pid', () => {
-    const pidDir = '/tmp/spawning-runner-anchor-test-r14';
-    fs.mkdirSync(pidDir, { recursive: true });
+    const pidDir = newPidDir();
 
     const runner = new SpawnChildHarness({ binary: 'fake-binary', pidDir });
 
@@ -553,7 +553,7 @@ describe('SpawningRunner stop / killOrphan / isRunning', () => {
   it('test_anchor_spawning_runner_is_running_reflects_process_state', () => {
     const runner = new SpawnChildHarness({
       binary: 'fake-binary',
-      pidDir: '/tmp/spawning-runner-anchor-test-r15',
+      pidDir: newPidDir(),
     });
 
     expect(runner.isRunning).toBe(false);
@@ -577,9 +577,13 @@ describe('SpawningRunner stop / killOrphan / isRunning', () => {
 // ---------------------------------------------------------------------------
 
 describe('SpawningRunner 协议停止通道登记', () => {
-  const PID_DIR = '/tmp/spawning-runner-anchor-test';
+  // 每个用例独占 pidDir（production 真会 mkdir + 写 pid 文件）。
+  let PID_DIR: string;
 
-  beforeEach(() => vi.clearAllMocks());
+  beforeEach(() => {
+    vi.clearAllMocks();
+    PID_DIR = newPidDir();
+  });
 
   it('test_anchor_spawning_runner_registers_stdin_close_stop_channel', async () => {
     // win32 上没有可拦截的跨进程 SIGTERM：不登记通道，优雅段恒被判「无通道」

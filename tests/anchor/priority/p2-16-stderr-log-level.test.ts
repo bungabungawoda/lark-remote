@@ -32,11 +32,15 @@ vi.mock('../../../src/platform/spawn.js', () => ({
   isWindowsCommandNotFoundLine: vi.fn(() => false),
 }));
 import { spawnProcess as spawn } from '../../../src/platform/spawn.js';
+import { makeTempDir } from '../../lib/temp-dir.js';
 
 class TestRunner extends SpawningRunner {
-  constructor() {
+  // pidDir 是 production 真会 mkdir + 写 pid 文件的位置。默认给本用例独占的
+  // mkdtemp 目录：固定 '/tmp/...' 在 win32 上会落到仓库外的 D:\tmp
+  // （跨进程共享 + 兜底 sweep 扫不到）。见 temp-dir-hygiene 守卫。
+  constructor(pidDir = makeTempDir('lark-p2-16-stderr-')) {
     super({
-      pidDir: '/tmp/p2-16-test',
+      pidDir,
       workspace: 'test',
       logTag: 'test-runner',
     });

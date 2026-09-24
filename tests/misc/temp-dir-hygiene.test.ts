@@ -39,7 +39,208 @@ type FileFacts = {
   tmpRootPrefixes: string[];
   usesMakeTempDir: boolean;
   hasCleanupCall: boolean;
+  /** 把固定 POSIX 绝对路径当**落盘位置**用的站点（见 fixedPathOffenders）。 */
+  fixedPathSites: string[];
+  /** 把固定 POSIX 绝对路径当 **cwd** 递给真实 spawn 的站点。 */
+  fixedCwdSites: string[];
+  /** 文件整体只在 posix 上跑（describePosix / skipIf(isWin32)）→ 允许 POSIX 路径。 */
+  posixOnly: boolean;
+  /** 文件 mock 掉了 spawn 出口 → cwd 只是断言数据，不触真文件系统。 */
+  mocksSpawn: boolean;
 };
+
+/**
+ * 固定 POSIX 绝对路径当落盘位置 —— 2026-09-22 实测出的 Windows 故障源。
+ *
+ * `/tmp` 这类**根绝对路径**在 win32 上没有盘符，`path.resolve('/tmp')` 会补成
+ * 「当前盘符的 \tmp」，即仓库外的 `D:\tmp`。用它当落盘目录有三个叠加毛病：
+ *   1. 仓库外、名字固定、跨进程共享 → 并行 worktree / 残留 worker 会抢写同一文件，
+ *      win32 表现为 `EBUSY`（libuv 把 ERROR_SHARING_VIOLATION 映射成 EBUSY）；
+ *   2. 不在 `os.tmpdir()` 下 → `sweepProjectTempDirs()` 兜底扫不到，残留永久留盘；
+ *   3. 机器上恰好没有 `D:\tmp` 时，直接 ENOENT（见下面的 cwd 守卫）。
+ *
+ * 2026-09-22 首次暴雷：`src/update/version-check.test.ts` 把缓存写在
+ * `path.join('/tmp', ...)`，全量并行时 1 例 EBUSY。收口后 `D:\tmp` 仍留有
+ * `p2-16-test` / `p2-19-logger-test` / `spawning-runner-*` 等同源活残留。
+ */
+const WRITE_LOCATION_KEYS = [
+  'pidDir',
+  'pidFile',
+  'logDir',
+  'dir',
+  'configPath',
+  'workspacePath',
+  'ordersPath',
+  'cachePath',
+  'statePath',
+  'dbPath',
+  'logPath',
+] as const;
+
+/** 位置类字段被先赋给常量、再传下去时，字面量落在赋值右侧。 */
+const WRITE_LOCATION_VARS = [
+  'pidDir',
+  'logDir',
+  'configDir',
+  'PID_DIR',
+  'LOG_DIR',
+  'CONFIG_PATH',
+  'WORKSPACE_PATH',
+  'ORDERS_PATH',
+  'CACHE_PATH',
+  'STATE_PATH',
+  'TMP_DIR',
+] as const;
+
+/** 把第一个参数当路径写盘的 fs API。 */
+const FS_MUTATIONS = [
+  'mkdirSync',
+  'writeFileSync',
+  'appendFileSync',
+  'rmSync',
+  'unlinkSync',
+  'rmdirSync',
+  'renameSync',
+  'copyFileSync',
+  'createWriteStream',
+  'mkdtempSync',
+] as const;
+
+/** `/tmp` 或 `/tmp/<任意>`（不含引号）。 */
+const POSIX_ABS = '/tmp(?:/[^\'"]*)?';
+
+/** 会真正起进程、把 cwd 落到 shell/exec 上的调用。 */
+const SPAWN_ENTRY_POINTS = ['run', 'runCompact', 'callSpawnChild'] as const;
+
+/**
+ * 行级白名单出口。个别站点必须写出「旧共享路径」这个字面量（例如断言
+ * 「缓存路径不等于旧的固定共享路径」），那不是落盘点。放一个可 grep 的标记：
+ *
+ * ```ts
+ * expect(cachePath).not.toBe(path.join('/tmp', 'x.json')); // temp-hygiene:allow-fixed-path
+ * ```
+ *
+ * 标记写在命中行或其前一行都算。**不要**用它给真实的落盘点开后门 ——
+ * 那等于把门禁关掉，只是看着绿。
+ */
+const ALLOW_MARKER = 'temp-hygiene:allow-fixed-path';
+
+/**
+ * 把注释替换成等长空白（**保留偏移**，行号不变）。
+ *
+ * 必要性：注释里经常引用这些字面量作为**反例**（本文件自己的文档就在写
+ * `path.join('/tmp', ...)`），不剥掉就会把说明文字当成违规站点。
+ * 字符串内的 `//` 会被正确忽略；模板字面量整体当字符串处理（本守卫匹配的字面量
+ * 都带引号，模板串本来也不该被算落盘点）。
+ */
+function stripComments(source: string): string {
+  let out = '';
+  let i = 0;
+  let state: 'code' | 'line' | 'block' | 'single' | 'double' | 'template' = 'code';
+  while (i < source.length) {
+    const c = source[i];
+    const next = source[i + 1];
+    if (state === 'code') {
+      if (c === '/' && next === '/') {
+        state = 'line';
+        out += '  ';
+        i += 2;
+        continue;
+      }
+      if (c === '/' && next === '*') {
+        state = 'block';
+        out += '  ';
+        i += 2;
+        continue;
+      }
+      if (c === "'") state = 'single';
+      else if (c === '"') state = 'double';
+      else if (c === '`') state = 'template';
+      out += c;
+      i++;
+      continue;
+    }
+    if (state === 'line') {
+      out += c === '\n' ? '\n' : ' ';
+      if (c === '\n') state = 'code';
+      i++;
+      continue;
+    }
+    if (state === 'block') {
+      if (c === '*' && next === '/') {
+        state = 'code';
+        out += '  ';
+        i += 2;
+        continue;
+      }
+      out += c === '\n' ? '\n' : ' ';
+      i++;
+      continue;
+    }
+    // 字符串内部
+    if (c === '\\') {
+      out += c + (next ?? '');
+      i += 2;
+      continue;
+    }
+    if (
+      (state === 'single' && c === "'") ||
+      (state === 'double' && c === '"') ||
+      (state === 'template' && c === '`')
+    ) {
+      state = 'code';
+    }
+    out += c;
+    i++;
+  }
+  return out;
+}
+
+function collectSites(rawSource: string, patterns: string[][], label: string): string[] {
+  const code = stripComments(rawSource);
+  const lines = rawSource.split('\n');
+  const found: string[] = [];
+  for (const [pattern, kind] of patterns) {
+    for (const match of code.matchAll(new RegExp(pattern, 'g'))) {
+      const lineNo = code.slice(0, match.index).split('\n').length;
+      const window = [lines[lineNo - 2] ?? '', lines[lineNo - 1] ?? ''].join('\n');
+      if (window.includes(ALLOW_MARKER)) continue;
+      found.push(`${label} L${lineNo} ${kind}: ${match[0].replace(/\s+/g, ' ')}`);
+    }
+  }
+  return found;
+}
+
+/**
+ * 静态守卫只能看出「字面量直接当路径用」，看不出变量里装的是什么 ——
+ * 因此这里只覆盖直接字面量，间接传递（`const p = '/tmp/x'` 后再 `run(p)`）
+ * 由 code review 兜。宁可漏一点，也不要造出会误伤别人的假阳性门禁。
+ */
+function fixedPathOffenders(source: string): string[] {
+  return collectSites(
+    source,
+    [
+      [`\\b(?:${WRITE_LOCATION_KEYS.join('|')})\\s*:\\s*['"](${POSIX_ABS})['"]`, '落盘字段字面量'],
+      [`\\b(?:${WRITE_LOCATION_VARS.join('|')})\\s*=\\s*['"](${POSIX_ABS})['"]`, '位置常量字面量'],
+      [`\\b(?:${FS_MUTATIONS.join('|')})\\s*\\(\\s*['"](${POSIX_ABS})['"]`, 'fs 调用字面量'],
+      [`path\\.join\\(\\s*['"](${POSIX_ABS})['"]`, 'path.join 字面量'],
+    ],
+    'fixed-path',
+  );
+}
+
+function fixedCwdOffenders(source: string): string[] {
+  return collectSites(
+    source,
+    [
+      [
+        `\\.(?:${SPAWN_ENTRY_POINTS.join('|')})\\([^)]{0,140}?cwd:\\s*['"](${POSIX_ABS})['"]`,
+        'cwd 字面量',
+      ],
+    ],
+    'fixed-cwd',
+  );
+}
 
 /**
  * `mkdtempSync(path.join(os.tmpdir(), 'x-'))` 才算「在临时根下建目录」；
@@ -61,6 +262,12 @@ function readFacts(file: string): FileFacts {
     tmpRootPrefixes,
     usesMakeTempDir: /makeTempDir\(/.test(source),
     hasCleanupCall: /rmRf\(|rmSync\(/.test(source),
+    fixedPathSites: fixedPathOffenders(source),
+    fixedCwdSites: fixedCwdOffenders(source),
+    posixOnly: /describePosix\(/.test(source),
+    mocksSpawn: /vi\.mock\(\s*['"][^'"]*(?:node:child_process|platform\/spawn\.js)['"]/.test(
+      source,
+    ),
   };
 }
 
@@ -133,6 +340,29 @@ describe('测试临时目录卫生守卫', () => {
     expect(
       offenders,
       `落盘换 tests/lib/sized-file.ts 的 writeSizedFile()；内存里要大字符串用 'x'.repeat(n)`,
+    ).toEqual([]);
+  });
+
+  it('不把固定 POSIX 绝对路径当落盘位置（win32 会解析成仓库外的 \\tmp，抢写/漏扫/ENOENT）', () => {
+    const offenders = facts
+      .filter((f) => !f.posixOnly)
+      .flatMap((f) => f.fixedPathSites.map((site) => `${f.file} → ${site}`));
+    expect(
+      offenders,
+      `固定 /tmp/... 在 win32 是「当前盘符的 \\tmp」：仓库外、跨进程共享、sweep 扫不到。` +
+        `改写 makeTempDir()（见 tests/lib/temp-dir.ts），或把前缀登记进 OUR_TEMP_PREFIXES。`,
+    ).toEqual([]);
+  });
+
+  it('不把固定 POSIX 绝对路径当 cwd 递给真实 spawn（机器上没有该目录时 ENOENT）', () => {
+    // mock 掉 spawn 出口的文件里 cwd 只是断言数据，不触文件系统 —— 放行。
+    const offenders = facts
+      .filter((f) => !f.posixOnly && !f.mocksSpawn)
+      .flatMap((f) => f.fixedCwdSites.map((site) => `${f.file} → ${site}`));
+    expect(
+      offenders,
+      `cwd 传 '/tmp' 时进程真实 cwd 是 D:\\tmp：本机恰好存在才侥幸绿，干净机器上 spawn ENOENT。` +
+        `改用本用例的 tmpDir（mkdtemp / makeTempDir）。`,
     ).toEqual([]);
   });
 });

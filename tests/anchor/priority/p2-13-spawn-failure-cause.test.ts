@@ -20,6 +20,7 @@ import { SpawningRunner } from '../../../src/runner/common/spawning-runner.js';
 import type { SpawnOptions } from '../../../src/runner/types.js';
 import { PassThrough } from 'node:stream';
 import { createMockProc } from '../../../tests/lib/mock-process.js';
+import { makeTempDir } from '../../lib/temp-dir.js';
 
 vi.mock('../../../src/logger/index.js', async () =>
   (await import('../../lib/logger-mock.js')).loggerModuleMock(),
@@ -33,9 +34,12 @@ vi.mock('../../../src/platform/spawn.js', () => ({
 import { spawnProcess as spawn } from '../../../src/platform/spawn.js';
 
 class TestRunner extends SpawningRunner {
-  constructor() {
+  // pidDir 是 production 真会 mkdir + 写 pid 文件的位置。默认给本用例独占的
+  // mkdtemp 目录：固定 '/tmp/...' 在 win32 上会落到仓库外的 D:\tmp
+  // （跨进程共享 + 兜底 sweep 扫不到）。见 temp-dir-hygiene 守卫。
+  constructor(pidDir = makeTempDir('lark-p2-13-cause-')) {
     super({
-      pidDir: '/tmp/p2-13-test',
+      pidDir,
       workspace: 'test',
       logTag: 'test-runner',
     });

@@ -84,6 +84,21 @@ export const OUR_TEMP_PREFIXES = [
   'lark-pi-rpc-test-',
   'lark-bash-test-',
   'lark-cm-',
+  // update 版本检查用例：cache 文件不再落到共享固定路径（win32 会解析成
+  // 仓库外的 D:\tmp\，且兜底扫不到），改为 makeTempDir 独占目录
+  'lark-remote-update-cache-',
+  // 2026-09-22 收口「固定 POSIX 绝对路径当落盘位置」：这些位置的 production
+  // 代码真会 mkdir/write（pidDir / Logger dir / configPath / workspacePath），
+  // 原先写死 '/tmp/...' 在 win32 上落到仓库外的 D:\tmp\。守卫见
+  // tests/misc/temp-dir-hygiene.test.ts 的「固定 POSIX 绝对路径」两条。
+  'lark-spawning-runner-anchor-',
+  'lark-r16-claude-base-',
+  'lark-cmd-status-cwd-',
+  'lark-restart-cmd-',
+  'lark-p2-11-base-',
+  'lark-p2-13-cause-',
+  'lark-p2-16-stderr-',
+  'lark-p2-19-logger-',
   // 2026-09-22 补漏：这三个前缀 09-21 收口时漏登记，兜底扫不到，
   // 导致 09-10/09-11 的残留一直留在 %TEMP%（测试文件本身已用 rmRf，非泄漏）。
   'lark-approval-integration-',
