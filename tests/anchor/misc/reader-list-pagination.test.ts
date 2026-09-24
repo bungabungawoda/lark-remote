@@ -26,19 +26,9 @@ import os from 'node:os';
 import { PiSessionReader } from '../../../src/session/pi/sessions.js';
 import { piEncodeCwd } from '../../lib/session-fixtures.js';
 
-const { mockLogger } = vi.hoisted(() => ({
-  mockLogger: {
-    debug: vi.fn(),
-    info: vi.fn(),
-    warn: vi.fn(),
-    error: vi.fn(),
-  },
-}));
-
-vi.mock('../../../src/logger/index.js', () => ({
-  getLogger: () => mockLogger,
-  initLogger: () => mockLogger,
-}));
+vi.mock('../../../src/logger/index.js', async () =>
+  (await import('../../lib/logger-mock.js')).loggerModuleMock(),
+);
 
 describe('A2: AgentSessionReader.listSessions paginated contract (pi)', () => {
   it('test_anchor_pi_reader_list_sessions_paginated_with_total', () => {

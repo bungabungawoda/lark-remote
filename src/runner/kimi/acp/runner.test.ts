@@ -1986,7 +1986,11 @@ describe('KimiAcpRunner', () => {
       });
       const { events, done } = startRunCompactCollect(runner, workspace);
 
-      const result = await waitForResult(events, 5000);
+      // 预算给足（15s，与本文件其它用例上限对齐）：这里等的是「最终是否会产出
+      // error result」这一语义，不是延迟。`compactIdleTimeoutMs: 1000` 只是空闲窗口
+      // 长度；8 worker 并行时子进程 spawn 与定时器都会被拉伸（本文件单跑已 72s），
+      // 5s 预算曾在全量并行下等不到结果 → `undefined toBe 'error'` 假红。
+      const result = await waitForResult(events, 15000);
       if (!result) await runner.stop();
       await done;
 

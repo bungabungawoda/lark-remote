@@ -7,20 +7,11 @@ import { prependPath, restorePath, writeMockBin } from '../../../tests/lib/path-
 import type { AgentEvent } from '../types.js';
 import { rmRf } from '../../../tests/lib/tmp-cleanup.js';
 import { currentPlatform, isWin32 } from '../../platform/select.js';
+import { mockLogger } from '../../../tests/lib/logger-mock.js';
 
-const { mockLogger } = vi.hoisted(() => ({
-  mockLogger: {
-    debug: vi.fn(),
-    info: vi.fn(),
-    warn: vi.fn(),
-    error: vi.fn(),
-  },
-}));
-
-vi.mock('../../logger/index.js', () => ({
-  getLogger: () => mockLogger,
-  initLogger: () => mockLogger,
-}));
+vi.mock('../../logger/index.js', async () =>
+  (await import('../../../tests/lib/logger-mock.js')).loggerModuleMock(),
+);
 
 let tmpDir: string;
 let savedPath: string | undefined;

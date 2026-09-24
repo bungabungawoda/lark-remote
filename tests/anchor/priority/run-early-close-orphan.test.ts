@@ -28,19 +28,9 @@ import { prependPath, restorePath, writeMockSource } from '../../lib/path-mock.j
 import { describePosix } from '../../lib/platform.js';
 import { waitForOrThrow } from '../../lib/wait-for.js';
 
-const { mockLogger } = vi.hoisted(() => ({
-  mockLogger: {
-    debug: vi.fn(),
-    info: vi.fn(),
-    warn: vi.fn(),
-    error: vi.fn(),
-  },
-}));
-
-vi.mock('../../../src/logger/index.js', () => ({
-  getLogger: () => mockLogger,
-  initLogger: () => mockLogger,
-}));
+vi.mock('../../../src/logger/index.js', async () =>
+  (await import('../../lib/logger-mock.js')).loggerModuleMock(),
+);
 
 function isAlive(pid: number): boolean {
   try {

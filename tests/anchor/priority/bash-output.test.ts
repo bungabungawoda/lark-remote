@@ -22,20 +22,11 @@ import {
 } from '../../../src/card/bash-card-session.js';
 import { renderBashCard } from '../../../src/card/bash-renderer.js';
 
-const { mockSpawn, mockLogger } = vi.hoisted(() => ({
-  mockSpawn: vi.fn(),
-  mockLogger: {
-    debug: vi.fn(),
-    info: vi.fn(),
-    warn: vi.fn(),
-    error: vi.fn(),
-  },
-}));
+const { mockSpawn } = vi.hoisted(() => ({ mockSpawn: vi.fn() }));
 
-vi.mock('../../../src/logger/index.js', () => ({
-  getLogger: () => mockLogger,
-  initLogger: () => mockLogger,
-}));
+vi.mock('../../../src/logger/index.js', async () =>
+  (await import('../../lib/logger-mock.js')).loggerModuleMock(),
+);
 
 vi.mock('../../../src/platform/spawn.js', () => ({
   useDetachedProcessGroup: vi.fn(() => true),

@@ -11,7 +11,7 @@ import { createMockBridge, createMockSessionReaderRegistry } from '../lib/bridge
  * 3. 我们通过检查 opencode 相关的回调 key 对应的元素类型来判断
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { CommandRouter } from '../../src/router/index.js';
 import { SessionStore } from '../../src/session/index.js';
 import { AppConfigSchema } from '../../src/config/index.js';
@@ -19,6 +19,27 @@ import type { AppConfig } from '../../src/config/index.js';
 import path from 'node:path';
 import os from 'node:os';
 import fs from 'node:fs';
+
+// 测试隔离（设计文档 §9.5「禁真跑 agent」）：本用例走的 config 加载链
+// （codex debug models / opencode models --verbose / kimi provider list --json）
+// 会经 spawnProcessSync 真起 agent CLI —— Windows 上单次 2-7s，且行为取决于本机
+// 装没装这些 CLI，会让「切换 agent」这类用例变成负载相关的偶发红。
+// 这里只把同步 CLI 通道短路成「命令失败」，配置层对失败已有 FALLBACK_MODELS 兜底，
+// 断言面不变；其余导出保持真实。
+vi.mock('../../src/platform/spawn.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../src/platform/spawn.js')>();
+  return {
+    ...actual,
+    spawnProcessSync: (() => ({
+      pid: 0,
+      output: [],
+      stdout: '',
+      stderr: '',
+      status: 1,
+      signal: null,
+    })) as unknown as typeof actual.spawnProcessSync,
+  };
+});
 
 function buildOpencodeConfig(): AppConfig {
   return AppConfigSchema.parse({
@@ -114,25 +135,8 @@ describe('opencode config card ANCHOR: opencode fields must use select type', ()
     const result = router.buildConfigCard();
     const json = JSON.stringify(result.card);
 
-    // 检查是否有任何 select_static 元素
-    console.log('Total select_static count:', (json.match(/"tag":"select_static"/g) || []).length);
-
-    // 打印所有 select_static 元素内容（找 name 属性）
-    const selectBlocks = json.match(/"tag":"select_static"[\s\S]{0,300}?"/g) || [];
-    console.log('Sample select_static block:', selectBlocks[0]?.slice(0, 200));
-
-    // 找所有包含 agents.opencode 或 opencode 的字段
-    // 回调 key 在 callback value 中
-    const callbackKeys = json.match(/"cmd":"config\.","key":"([^"]+)"/g) || [];
-    console.log('Callback keys sample:', callbackKeys.slice(0, 5));
-
-    // 真正的问题是：检查卡片中是否有 opencode 相关的 select_static
-    // 如果 modelID 字段是 select 类型，应该有对应的 select_static 元素
-    // 且该元素的 name 应该是 'agents.opencode.modelID' 或类似
-
-    // 最直接的检查：卡片中是否有 name 包含 opencode 的 select_static
+    // 卡片中是否有 opencode 相关的 select_static 元素
     const hasOpencodeSelect = json.includes('opencode') && json.includes('select_static');
-    console.log('Has opencode + select_static:', hasOpencodeSelect);
 
     // ANCHOR: opencode 字段应该有 select_static 元素
     expect(hasOpencodeSelect).toBe(true);

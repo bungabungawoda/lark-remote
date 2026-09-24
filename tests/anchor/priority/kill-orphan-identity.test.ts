@@ -26,19 +26,9 @@ import os from 'node:os';
 import { ClaudeRunner } from '../../../src/runner/claude/index.js';
 import { describePosix } from '../../lib/platform.js';
 
-const { mockLogger } = vi.hoisted(() => ({
-  mockLogger: {
-    debug: vi.fn(),
-    info: vi.fn(),
-    warn: vi.fn(),
-    error: vi.fn(),
-  },
-}));
-
-vi.mock('../../../src/logger/index.js', () => ({
-  getLogger: () => mockLogger,
-  initLogger: () => mockLogger,
-}));
+vi.mock('../../../src/logger/index.js', async () =>
+  (await import('../../lib/logger-mock.js')).loggerModuleMock(),
+);
 
 // POSIX 门控：fixture 依赖 POSIX 原语（真实 `sleep` 长驻进程 + 负 PID 组杀）。
 // killOrphan 的 win32 身份校验（CIM CommandLine/CreationDate）尚未接线（见

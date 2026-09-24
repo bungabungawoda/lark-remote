@@ -44,15 +44,6 @@ import {
 import { getLogger } from '../../../logger/index.js';
 import { BaseAcpTranslator, type AcpTranslatorEvent } from '../../common/acp/base-translator.js';
 
-// Shared translator event types — re-exported under their established kimi
-// names so runner/reader imports stay stable.
-export type {
-  AcpTurnStartedEvent,
-  AcpLiveUsage,
-  AcpUsageEvent,
-  AcpTranslatorEvent,
-} from '../../common/acp/base-translator.js';
-
 /**
  * Fixed snapshot item ids: ACP has exactly one text stream and one thinking
  * stream per turn (no itemId on the wire), so turn_diff snapshots use these

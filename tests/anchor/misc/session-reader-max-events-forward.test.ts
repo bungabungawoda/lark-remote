@@ -35,19 +35,9 @@ import { encodeClaudeProjectDir, piEncodeCwd } from '../../lib/session-fixtures.
  *   typecheck 通过，运行时验证 maxEvents 是否真的被转发。
  */
 
-const { mockLogger } = vi.hoisted(() => ({
-  mockLogger: {
-    debug: vi.fn(),
-    info: vi.fn(),
-    warn: vi.fn(),
-    error: vi.fn(),
-  },
-}));
-
-vi.mock('../../../src/logger/index.js', () => ({
-  getLogger: () => mockLogger,
-  initLogger: () => mockLogger,
-}));
+vi.mock('../../../src/logger/index.js', async () =>
+  (await import('../../lib/logger-mock.js')).loggerModuleMock(),
+);
 
 let tmpDir: string;
 

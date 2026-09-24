@@ -12,20 +12,11 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { EventEmitter } from 'node:events';
 import { JsonlRpcTransport } from './transport.js';
+import { mockLogger } from '../../../../tests/lib/logger-mock.js';
 
-const { mockLogger } = vi.hoisted(() => ({
-  mockLogger: {
-    debug: vi.fn(),
-    info: vi.fn(),
-    warn: vi.fn(),
-    error: vi.fn(),
-  },
-}));
-
-vi.mock('../../../logger/index.js', () => ({
-  getLogger: () => mockLogger,
-  initLogger: () => mockLogger,
-}));
+vi.mock('../../../logger/index.js', async () =>
+  (await import('../../../../tests/lib/logger-mock.js')).loggerModuleMock(),
+);
 
 const { spawned } = vi.hoisted(() => ({ spawned: [] as unknown[] }));
 

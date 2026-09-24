@@ -5,14 +5,9 @@ import os from 'node:os';
 import { OwnerBinder, formatBindGuidance } from './binder.js';
 import { StartupContactStore } from './startup-contact.js';
 
-vi.mock('./logger/index.js', () => ({
-  getLogger: () => ({
-    info: vi.fn(),
-    warn: vi.fn(),
-    error: vi.fn(),
-    debug: vi.fn(),
-  }),
-}));
+vi.mock('./logger/index.js', async () =>
+  (await import('../tests/lib/logger-mock.js')).loggerModuleMock(),
+);
 
 let tmpDir: string;
 let storePath: string;

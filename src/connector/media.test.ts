@@ -2,11 +2,11 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import fs from 'node:fs';
 import { FeishuConnector, type InboundMediaMessage } from './index.js';
 import { AppConfigSchema } from '../config/index.js';
+import { mockLogger } from '../../tests/lib/logger-mock.js';
 
-const { messageHandlers, downloadResourceToFile, mockLogger } = vi.hoisted(() => ({
+const { messageHandlers, downloadResourceToFile } = vi.hoisted(() => ({
   messageHandlers: new Map<string, (msg: unknown) => void>(),
   downloadResourceToFile: vi.fn(),
-  mockLogger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
 }));
 
 vi.mock('@larksuite/channel', () => ({
@@ -26,10 +26,9 @@ vi.mock('@larksuite/channel', () => ({
   }),
 }));
 
-vi.mock('../logger/index.js', () => ({
-  getLogger: () => mockLogger,
-  initLogger: () => mockLogger,
-}));
+vi.mock('../logger/index.js', async () =>
+  (await import('../../tests/lib/logger-mock.js')).loggerModuleMock(),
+);
 
 const config = AppConfigSchema.parse({
   feishu: { appId: 'app-id', appSecret: 'app-secret' },
