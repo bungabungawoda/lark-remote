@@ -16,13 +16,9 @@ import {
   createStubRunner,
   createStubSessionReaderRegistry,
 } from '../../tests/lib/bridge-stubs.js';
-const { mockLogger } = vi.hoisted(() => ({
-  mockLogger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
-}));
-vi.mock('../logger/index.js', () => ({
-  getLogger: () => mockLogger,
-  initLogger: () => mockLogger,
-}));
+vi.mock('../logger/index.js', async () =>
+  (await import('../../tests/lib/logger-mock.js')).loggerModuleMock(),
+);
 
 /** A promise that stays pending until `release()` is called. Keeps a task
  *  blocking the serial queue so subsequently enqueued tasks stay queued. */

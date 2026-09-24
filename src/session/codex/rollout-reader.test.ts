@@ -8,23 +8,14 @@ import {
   readCodexSessionContent,
   isCodexSessionActive,
 } from '../../session/codex/rollout-reader.js';
-
-const { mockLogger } = vi.hoisted(() => ({
-  mockLogger: {
-    debug: vi.fn(),
-    info: vi.fn(),
-    warn: vi.fn(),
-    error: vi.fn(),
-  },
-}));
+import { mockLogger } from '../../../tests/lib/logger-mock.js';
 
 // Path must resolve to src/logger (the reader imports '../../logger/index.js');
 // the previous '../logger/index.js' pointed at a non-existent src/session/logger
 // and silently left the mock dead.
-vi.mock('../../logger/index.js', () => ({
-  getLogger: () => mockLogger,
-  initLogger: () => mockLogger,
-}));
+vi.mock('../../logger/index.js', async () =>
+  (await import('../../../tests/lib/logger-mock.js')).loggerModuleMock(),
+);
 
 let tmpDir: string;
 
