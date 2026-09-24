@@ -3,16 +3,16 @@ import { CommandRouter } from './index.js';
 import { SessionStore } from '../session/index.js';
 import type { AppConfig } from '../config/index.js';
 import { createMockBridge, createStubSessionReaderRegistry } from '../../tests/lib/bridge-stubs.js';
-import fs from 'node:fs';
+import { makeTempDir } from '../../tests/lib/temp-dir.js';
+import { writeSizedFile } from '../../tests/lib/sized-file.js';
 import path from 'node:path';
-import os from 'node:os';
 
 describe('file upload size limit: 30MB', () => {
   it('router cardLsFile rejects files > 30MB with 30MB in message', async () => {
-    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'file-limit-test-'));
-    // 31MB file (> 30MB limit)
+    const tempDir = makeTempDir('file-limit-test-');
+    // 31MB file (> 30MB limit)——只断言 size，稀疏文件即可
     const bigFilePath = path.join(tempDir, 'big-31mb.txt');
-    fs.writeFileSync(bigFilePath, Buffer.alloc(31 * 1024 * 1024));
+    writeSizedFile(bigFilePath, 31 * 1024 * 1024);
 
     const sessionStore = new SessionStore();
     sessionStore.set('user1', { sessions: new Map(), previousSessions: new Map(), cwd: tempDir });
@@ -50,16 +50,13 @@ describe('file upload size limit: 30MB', () => {
     expect(result.text).toContain('太大');
     // Should NOT contain old "10MB" limit
     expect(result.text).not.toContain('10MB');
-
-    // Cleanup
-    fs.rmSync(tempDir, { recursive: true, force: true });
   });
 
   it('router cardLsFile accepts files between 10MB and 30MB', async () => {
-    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'file-limit-test-'));
-    // 20MB file (between old 10MB and new 30MB limit)
+    const tempDir = makeTempDir('file-limit-test-');
+    // 20MB file (between old 10MB and new 30MB limit)——只断言 size，稀疏文件即可
     const midFilePath = path.join(tempDir, 'mid-20mb.txt');
-    fs.writeFileSync(midFilePath, Buffer.alloc(20 * 1024 * 1024));
+    writeSizedFile(midFilePath, 20 * 1024 * 1024);
 
     const sessionStore = new SessionStore();
     sessionStore.set('user1', { sessions: new Map(), previousSessions: new Map(), cwd: tempDir });
@@ -107,9 +104,6 @@ describe('file upload size limit: 30MB', () => {
       call[0]?.text?.includes('太大'),
     );
     expect(sizeRejectCalls).toHaveLength(0);
-
-    // Cleanup
-    fs.rmSync(tempDir, { recursive: true, force: true });
   });
 
   it('connector sendFile rejects files > 30MB with 30MB in error', async () => {
@@ -119,14 +113,11 @@ describe('file upload size limit: 30MB', () => {
       feishu: { appId: 'app-id', appSecret: 'app-secret' },
     } as AppConfig);
 
-    const tmpDir = os.tmpdir();
-    const largeFile = path.join(tmpDir, 'test-31mb-' + Date.now() + '.txt');
-    fs.writeFileSync(largeFile, Buffer.alloc(31 * 1024 * 1024));
+    // 落在登记的临时目录里，不再直接写 os.tmpdir() 根目录
+    const tempDir = makeTempDir('file-limit-test-');
+    const largeFile = path.join(tempDir, 'big-31mb.txt');
+    writeSizedFile(largeFile, 31 * 1024 * 1024);
 
-    try {
-      await expect(connector.sendFile('chat-id', largeFile)).rejects.toThrow(/30\s*MB/i);
-    } finally {
-      fs.unlinkSync(largeFile);
-    }
+    await expect(connector.sendFile('chat-id', largeFile)).rejects.toThrow(/30\s*MB/i);
   });
 });

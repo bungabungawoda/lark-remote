@@ -1,12 +1,10 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import fs from 'node:fs';
-import path from 'node:path';
-import os from 'node:os';
 import { Bridge } from '../../src/bridge/index.js';
 import { SessionStore } from '../../src/session/index.js';
 import { AgentRegistry } from '../../src/runner/registry.js';
 import { AppConfigSchema } from '../../src/config/index.js';
 import type { AppConfig } from '../../src/config/index.js';
+import { makeTempDir } from '../lib/temp-dir.js';
 
 // 创建一个 mock runner，包含 getStatusInfo
 function createMockRunner(kind: string) {
@@ -31,7 +29,7 @@ let tmpDir: string;
 let config: AppConfig;
 
 beforeEach(() => {
-  tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'bridge-clear-test-'));
+  tmpDir = makeTempDir('bridge-clear-test-');
   config = AppConfigSchema.parse({
     feishu: { appId: 'test', appSecret: 'test' },
     claude: { model: 'opus', stopGraceMs: 5000 },
