@@ -159,6 +159,26 @@ describe('FeishuConnector inbound media 两阶段流程（先认证后下载）'
     expect((textMessages[0] as { rawContentType: string }).rawContentType).toBe('post');
   });
 
+  it('post 富文本顶层附件（0.6.0+）→ file 资源进媒体通道，正文同时转发', async () => {
+    const { detected, textMessages } = makeConnector();
+    fireMessage({
+      chatType: 'p2p',
+      senderId: 'user-1',
+      messageId: 'msg-post-file',
+      chatId: 'chat-1',
+      content: '**报告**\n\n看一下附件\n<file key="file_v3_att" name="report.pdf"/>',
+      rawContentType: 'post',
+      resources: [{ type: 'file', fileKey: 'file_v3_att', fileName: 'report.pdf' }],
+    });
+    await Promise.resolve();
+
+    expect(detected).toHaveLength(1);
+    expect(detected[0].resources).toEqual([
+      { type: 'file', kind: 'file', fileKey: 'file_v3_att', fileName: 'report.pdf' },
+    ]);
+    expect(textMessages).toHaveLength(1);
+  });
+
   it('未识别类型但带资源 → 照常下载 + warn（default-deny 而非 default-text）', async () => {
     const { detected } = makeConnector();
     fireMessage({

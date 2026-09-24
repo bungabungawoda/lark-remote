@@ -17,7 +17,7 @@ A card is a lossy progress summary, not a complete transcript. Content beyond th
 
 ## 2. Verified SDK Mechanisms
 
-The current dependency is `@larksuite/channel@0.1.2`.
+The current dependency is `@larksuite/channel@0.7.1`.
 
 `channel.stream(..., { card })` in card mode:
 
