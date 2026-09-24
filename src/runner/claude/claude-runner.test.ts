@@ -52,7 +52,7 @@ async function collectRunWithTimeout(
     return await Promise.race([
       (async () => {
         const events: AgentEvent[] = [];
-        for await (const ev of runner.run(message, { cwd: '/tmp' })) {
+        for await (const ev of runner.run(message, { cwd: tmpDir })) {
           events.push(ev);
         }
         return events;
@@ -91,7 +91,7 @@ describe('ClaudeRunner (long-lived interactive session)', () => {
     createMockClaude({ MOCK_ARGS_FILE: argsFile });
     const runner = makeRunner();
 
-    for await (const _ of runner.run('hello', { cwd: '/tmp' })) {
+    for await (const _ of runner.run('hello', { cwd: tmpDir })) {
       // consume
     }
 
@@ -118,7 +118,7 @@ describe('ClaudeRunner (long-lived interactive session)', () => {
     const runner = makeRunner({ settings: '/tmp/settings.json' });
 
     for await (const _ of runner.run('hello', {
-      cwd: '/tmp',
+      cwd: tmpDir,
       model: 'claude-sonnet-4-6',
       effort: 'high',
     })) {
@@ -139,7 +139,7 @@ describe('ClaudeRunner (long-lived interactive session)', () => {
     createMockClaude({ MOCK_ARGS_FILE: argsFile });
     const runner = makeRunner({ permissionMode: 'default' });
 
-    for await (const _ of runner.run('hello', { cwd: '/tmp' })) {
+    for await (const _ of runner.run('hello', { cwd: tmpDir })) {
       // consume
     }
 
@@ -153,7 +153,7 @@ describe('ClaudeRunner (long-lived interactive session)', () => {
     createMockClaude({ MOCK_ARGS_FILE: argsFile });
     const runner = makeRunner();
 
-    for await (const _ of runner.run('hello', { cwd: '/tmp', sessionId: 'sess-123' })) {
+    for await (const _ of runner.run('hello', { cwd: tmpDir, sessionId: 'sess-123' })) {
       // consume
     }
 
@@ -167,7 +167,7 @@ describe('ClaudeRunner (long-lived interactive session)', () => {
     createMockClaude({ MOCK_RECORD_STDIN: stdinFile });
     const runner = makeRunner();
 
-    for await (const _ of runner.run('hello world', { cwd: '/tmp' })) {
+    for await (const _ of runner.run('hello world', { cwd: tmpDir })) {
       // consume
     }
 
@@ -187,7 +187,7 @@ describe('ClaudeRunner (long-lived interactive session)', () => {
     expect('runCompact' in runner).toBe(true);
     const events: AgentEvent[] = [];
 
-    for await (const ev of runner.runCompact('', { cwd: '/tmp', sessionId: 's1' })) {
+    for await (const ev of runner.runCompact('', { cwd: tmpDir, sessionId: 's1' })) {
       events.push(ev);
     }
 
@@ -207,7 +207,7 @@ describe('ClaudeRunner (long-lived interactive session)', () => {
 
     await expect(
       (async () => {
-        for await (const _ of runner.runCompact('', { cwd: '/tmp' })) {
+        for await (const _ of runner.runCompact('', { cwd: tmpDir })) {
           // consume
         }
       })(),
@@ -219,7 +219,7 @@ describe('ClaudeRunner (long-lived interactive session)', () => {
     const runner = makeRunner({ permissionMode: 'default' });
     const events: AgentEvent[] = [];
 
-    for await (const ev of runner.run('run the command', { cwd: '/tmp' })) {
+    for await (const ev of runner.run('run the command', { cwd: tmpDir })) {
       events.push(ev);
       if (ev.type === 'approval_requested') {
         await runner.respondApproval(ev.requestId, { action: 'accept' });
@@ -248,7 +248,7 @@ describe('ClaudeRunner (long-lived interactive session)', () => {
     const runner = makeRunner({ permissionMode: 'default' });
     const events: AgentEvent[] = [];
 
-    for await (const ev of runner.run('approve the plan', { cwd: '/tmp' })) {
+    for await (const ev of runner.run('approve the plan', { cwd: tmpDir })) {
       events.push(ev);
       if (ev.type === 'approval_requested') {
         await runner.respondApproval(ev.requestId, { action: 'accept' });
@@ -291,7 +291,7 @@ describe('ClaudeRunner (long-lived interactive session)', () => {
     const runner = makeRunner({ permissionMode: 'default' });
     const events: AgentEvent[] = [];
 
-    for await (const ev of runner.run('approve the plan', { cwd: '/tmp' })) {
+    for await (const ev of runner.run('approve the plan', { cwd: tmpDir })) {
       events.push(ev);
       if (ev.type === 'approval_requested') {
         await runner.respondApproval(ev.requestId, { action: 'accept' });
@@ -310,7 +310,7 @@ describe('ClaudeRunner (long-lived interactive session)', () => {
     createMockClaude({ MOCK_SCENARIO: 'approval-exit-plan', MOCK_RECORD_STDIN: stdinFile });
     const runner = makeRunner({ permissionMode: 'default' });
 
-    for await (const ev of runner.run('approve the plan', { cwd: '/tmp' })) {
+    for await (const ev of runner.run('approve the plan', { cwd: tmpDir })) {
       if (ev.type === 'approval_requested') {
         await runner.respondApproval(ev.requestId, {
           action: 'decline_with_feedback',
@@ -331,7 +331,7 @@ describe('ClaudeRunner (long-lived interactive session)', () => {
     createMockClaude({ MOCK_SCENARIO: 'approval-exit-plan', MOCK_RECORD_STDIN: stdinFile });
     const runner = makeRunner({ permissionMode: 'default' });
 
-    for await (const ev of runner.run('approve the plan', { cwd: '/tmp' })) {
+    for await (const ev of runner.run('approve the plan', { cwd: tmpDir })) {
       if (ev.type === 'approval_requested') {
         await runner.respondApproval(ev.requestId, {
           action: 'accept_with_feedback',
@@ -356,7 +356,7 @@ describe('ClaudeRunner (long-lived interactive session)', () => {
     createMockClaude({ MOCK_SCENARIO: 'approval-exit-plan', MOCK_RECORD_STDIN: stdinFile });
     const runner = makeRunner({ permissionMode: 'default' });
 
-    for await (const ev of runner.run('approve the plan', { cwd: '/tmp' })) {
+    for await (const ev of runner.run('approve the plan', { cwd: tmpDir })) {
       if (ev.type === 'approval_requested') {
         await runner.respondApproval(ev.requestId, { action: 'accept_all' });
       }
@@ -374,7 +374,7 @@ describe('ClaudeRunner (long-lived interactive session)', () => {
     const runner = makeRunner({ permissionMode: 'default' });
     const events: AgentEvent[] = [];
 
-    for await (const ev of runner.run('run the command', { cwd: '/tmp' })) {
+    for await (const ev of runner.run('run the command', { cwd: tmpDir })) {
       events.push(ev);
       if (ev.type === 'approval_requested') {
         await runner.respondApproval(ev.requestId, { action: 'decline' });
@@ -394,7 +394,7 @@ describe('ClaudeRunner (long-lived interactive session)', () => {
     const runner = makeRunner({ permissionMode: 'default' });
     const events: AgentEvent[] = [];
 
-    for await (const ev of runner.run('run two commands', { cwd: '/tmp' })) {
+    for await (const ev of runner.run('run two commands', { cwd: tmpDir })) {
       events.push(ev);
       if (ev.type === 'approval_requested') {
         await runner.respondApproval(ev.requestId, { action: 'accept_all' });
@@ -415,7 +415,7 @@ describe('ClaudeRunner (long-lived interactive session)', () => {
     const events: AgentEvent[] = [];
     let questionSeen = false;
 
-    for await (const ev of runner.run('run then ask', { cwd: '/tmp' })) {
+    for await (const ev of runner.run('run then ask', { cwd: tmpDir })) {
       events.push(ev);
       if (ev.type === 'approval_requested') {
         if (ev.kind === 'command') {
@@ -446,7 +446,7 @@ describe('ClaudeRunner (long-lived interactive session)', () => {
     createMockClaude({ MOCK_SCENARIO: 'approval', MOCK_RECORD_STDIN: stdinFile });
     const runner = makeRunner({ permissionMode: 'default' });
 
-    for await (const ev of runner.run('run the command', { cwd: '/tmp' })) {
+    for await (const ev of runner.run('run the command', { cwd: tmpDir })) {
       if (ev.type === 'approval_requested') {
         await runner.respondApproval(ev.requestId, { action: 'accept' });
       }
@@ -479,7 +479,7 @@ describe('ClaudeRunner (long-lived interactive session)', () => {
     const runner = makeRunner();
     const events: AgentEvent[] = [];
 
-    for await (const ev of runner.run('hello', { cwd: '/tmp' })) {
+    for await (const ev of runner.run('hello', { cwd: tmpDir })) {
       events.push(ev);
     }
 
@@ -528,7 +528,7 @@ describe('ClaudeRunner (long-lived interactive session)', () => {
     });
     const runner = makeRunner({ permissionMode: 'default' });
 
-    for await (const ev of runner.run('run two commands', { cwd: '/tmp' })) {
+    for await (const ev of runner.run('run two commands', { cwd: tmpDir })) {
       if (ev.type === 'approval_requested') {
         await runner.respondApproval(ev.requestId, { action: 'accept_all' });
       }
@@ -573,7 +573,7 @@ describe('ClaudeRunner (long-lived interactive session)', () => {
     const runner = makeRunner({ permissionMode: 'default' });
     const events: AgentEvent[] = [];
 
-    for await (const ev of runner.run('ask me', { cwd: '/tmp' })) {
+    for await (const ev of runner.run('ask me', { cwd: tmpDir })) {
       events.push(ev);
       if (ev.type === 'approval_requested') {
         expect(ev.kind).toBe('question');
@@ -601,13 +601,13 @@ describe('ClaudeRunner (long-lived interactive session)', () => {
 
     // 生产路径：第一条消息不带 sessionId → fresh spawn → init 上报 session_id
     // （mock 默认 's1'）→ bridge 写回 SessionStore。
-    for await (const _ of runner.run('first', { cwd: '/tmp' })) {
+    for await (const _ of runner.run('first', { cwd: tmpDir })) {
       // consume
     }
     // 第二条消息带着写回的 sessionId 来：进程当前会话与之相同 → 必须复用，
     // 不得因「spawn 请求值 '' ≠ 's1'」误判切换而杀进程重启（review P0 回归）。
     const firstEvents: AgentEvent[] = [];
-    for await (const ev of runner.run('second', { cwd: '/tmp', sessionId: 's1' })) {
+    for await (const ev of runner.run('second', { cwd: tmpDir, sessionId: 's1' })) {
       firstEvents.push(ev);
     }
 
@@ -623,11 +623,11 @@ describe('ClaudeRunner (long-lived interactive session)', () => {
     createMockClaude({ MOCK_MARKER: marker, MOCK_SESSION_ID: 'sess-abc' });
     const runner = makeRunner();
 
-    for await (const _ of runner.run('first', { cwd: '/tmp', sessionId: 'sess-abc' })) {
+    for await (const _ of runner.run('first', { cwd: tmpDir, sessionId: 'sess-abc' })) {
       // consume
     }
     const secondEvents: AgentEvent[] = [];
-    for await (const ev of runner.run('second', { cwd: '/tmp' })) {
+    for await (const ev of runner.run('second', { cwd: tmpDir })) {
       secondEvents.push(ev);
     }
 
@@ -643,10 +643,10 @@ describe('ClaudeRunner (long-lived interactive session)', () => {
     createMockClaude({ MOCK_MARKER: marker, MOCK_SESSION_ID: 'sess-abc' });
     const runner = makeRunner();
 
-    for await (const _ of runner.run('first', { cwd: '/tmp', sessionId: 'sess-abc' })) {
+    for await (const _ of runner.run('first', { cwd: tmpDir, sessionId: 'sess-abc' })) {
       // consume
     }
-    for await (const _ of runner.run('second', { cwd: '/tmp', sessionId: 'sess-xyz' })) {
+    for await (const _ of runner.run('second', { cwd: tmpDir, sessionId: 'sess-xyz' })) {
       // consume
     }
 
@@ -660,7 +660,7 @@ describe('ClaudeRunner (long-lived interactive session)', () => {
       createMockClaude();
       const runner = makeRunner({ idleTtlMs: 50 });
 
-      for await (const _ of runner.run('hello', { cwd: '/tmp' })) {
+      for await (const _ of runner.run('hello', { cwd: tmpDir })) {
         // consume
       }
       expect(runner.isRunning).toBe(true);
@@ -677,7 +677,7 @@ describe('ClaudeRunner (long-lived interactive session)', () => {
     const runner = makeRunner();
     const events: AgentEvent[] = [];
 
-    for await (const ev of runner.run('resume me', { cwd: '/tmp', sessionId: 's1' })) {
+    for await (const ev of runner.run('resume me', { cwd: tmpDir, sessionId: 's1' })) {
       events.push(ev);
     }
 
@@ -691,7 +691,7 @@ describe('ClaudeRunner (long-lived interactive session)', () => {
     createMockClaude({ MOCK_SCENARIO: 'hang' });
     const runner = makeRunner({ stopGraceMs: 500 });
     const runPromise = (async () => {
-      for await (const _ of runner.run('hello', { cwd: '/tmp' })) {
+      for await (const _ of runner.run('hello', { cwd: tmpDir })) {
         // consume
       }
     })();
@@ -709,7 +709,7 @@ describe('ClaudeRunner (long-lived interactive session)', () => {
     const runner = makeRunner();
     const pidFile = path.join(tmpDir, 'claude-test.pid');
 
-    for await (const _ of runner.run('hello', { cwd: '/tmp' })) {
+    for await (const _ of runner.run('hello', { cwd: tmpDir })) {
       // consume
     }
 
@@ -722,7 +722,7 @@ describe('ClaudeRunner (long-lived interactive session)', () => {
     const runner = makeRunner();
     const events: AgentEvent[] = [];
 
-    for await (const ev of runner.run('hello', { cwd: '/tmp' })) {
+    for await (const ev of runner.run('hello', { cwd: tmpDir })) {
       events.push(ev);
     }
 
@@ -738,7 +738,7 @@ describe('ClaudeRunner (long-lived interactive session)', () => {
     createMockClaude({ MOCK_SCENARIO: 'hang' });
     const runner = makeRunner();
     const runPromise = (async () => {
-      for await (const _ of runner.run('hello', { cwd: '/tmp' })) {
+      for await (const _ of runner.run('hello', { cwd: tmpDir })) {
         // consume
       }
     })();
@@ -746,7 +746,7 @@ describe('ClaudeRunner (long-lived interactive session)', () => {
     await vi.waitFor(() => expect(runner.isRunning).toBe(true));
     await expect(
       (async () => {
-        for await (const _ of runner.run('hello2', { cwd: '/tmp' })) {
+        for await (const _ of runner.run('hello2', { cwd: tmpDir })) {
           // consume
         }
       })(),
@@ -802,7 +802,7 @@ describe('ClaudeRunner logging probes', () => {
   it('test_anchor_logs_spawn_and_pid_file_write', async () => {
     createMockClaude();
     const runner = makeRunner();
-    for await (const _ of runner.run('hello', { cwd: '/tmp', sessionId: 's1' })) {
+    for await (const _ of runner.run('hello', { cwd: tmpDir, sessionId: 's1' })) {
       // consume
     }
 
@@ -813,7 +813,7 @@ describe('ClaudeRunner logging probes', () => {
     expect(spawnLogs.length).toBe(1);
     const spawnMsg = String(spawnLogs[0]?.[0]);
     expect(spawnMsg).toContain('binary=claude');
-    expect(spawnMsg).toContain('cwd=/tmp');
+    expect(spawnMsg).toContain(`cwd=${tmpDir}`);
     expect(spawnMsg).toContain('sessionId=s1');
 
     const pidLogs = callsAt(
@@ -826,7 +826,7 @@ describe('ClaudeRunner logging probes', () => {
   it('test_anchor_logs_non_zero_exit_with_stderr', async () => {
     createMockClaude({ MOCK_SCENARIO: 'crash' });
     const runner = makeRunner();
-    for await (const _ of runner.run('hello', { cwd: '/tmp' })) {
+    for await (const _ of runner.run('hello', { cwd: tmpDir })) {
       // consume
     }
 
@@ -847,7 +847,7 @@ describe('ClaudeRunner logging probes', () => {
         createMockClaude({ MOCK_SCENARIO: 'no-stdout' });
         const runner = makeRunner({ spawnHeartbeatMs: 50 });
         const runPromise = (async () => {
-          for await (const _ of runner.run('hello', { cwd: '/tmp' })) {
+          for await (const _ of runner.run('hello', { cwd: tmpDir })) {
             // consume
           }
         })();
@@ -881,7 +881,7 @@ describe('ClaudeRunner logging probes', () => {
         resolveFirstEvent = resolve;
       });
       const runPromise = (async () => {
-        for await (const e of runner.run('hello', { cwd: '/tmp' })) {
+        for await (const e of runner.run('hello', { cwd: tmpDir })) {
           if (e.type === 'system') resolveFirstEvent();
         }
       })();
@@ -908,7 +908,7 @@ describe('ClaudeRunner logging probes', () => {
       createMockClaude({ MOCK_SCENARIO: 'hang' });
       const runner = makeRunner({ stopGraceMs: 30_000 });
       const runPromise = (async () => {
-        for await (const _ of runner.run('hello', { cwd: '/tmp' })) {
+        for await (const _ of runner.run('hello', { cwd: tmpDir })) {
           // consume
         }
       })();

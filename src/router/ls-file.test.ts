@@ -54,7 +54,7 @@ describe('ls file action', () => {
       sessionStore,
       bridge: mockBridge,
       config,
-      configPath: '/tmp/config.yaml',
+      configPath: path.join(tempDir, 'config.yaml'),
       sessionReaderRegistry: createStubSessionReaderRegistry(),
     });
   });
@@ -137,7 +137,7 @@ describe('ls tilde expansion', () => {
       sessionStore,
       bridge: mockBridge,
       config,
-      configPath: '/tmp/config.yaml',
+      configPath: path.join(tempDir, 'config.yaml'),
       sessionReaderRegistry: createStubSessionReaderRegistry(),
     });
   });
@@ -245,7 +245,7 @@ describe('ls on a file path lists the file itself', () => {
       sessionStore,
       bridge: mockBridge,
       config,
-      configPath: '/tmp/config.yaml',
+      configPath: path.join(tempDir, 'config.yaml'),
       sessionReaderRegistry: createStubSessionReaderRegistry(),
     });
   });

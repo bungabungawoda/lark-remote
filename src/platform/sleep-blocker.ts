@@ -9,7 +9,10 @@
  * - win32：Windows 没有自带命令行工具能持有 execution state（powercfg 是改全局
  *   电源计划；bun:ffi 在 Windows ARM64 被禁且 bin 入口会回退 node），因此 spawn
  *   一个长寿 powershell.exe 子进程 P/Invoke 调一次
- *   `SetThreadExecutionState(ES_CONTINUOUS | ES_SYSTEM_REQUIRED)`，随后每 30s
+ *   `SetThreadExecutionState(ES_CONTINUOUS | ES_SYSTEM_REQUIRED)` **（flags 必须以
+ *   十进制插入脚本：十六进制写法会被 PowerShell 按 Int32 解析成负数，抛的是**非终止
+ *   错误**——脚本不中断、API 静默不被调用，2026-09-22 真机踩过；详见下方常量注释）**，
+ *   随后每 30s
  *   轮询父进程 pid，父进程消失即自行退出（对应 `caffeinate -w` 的自清理机制，
  *   防止 lark-remote 崩溃后留下孤儿永久阻止睡眠；最坏 30s 孤儿窗口只多挡一会儿空闲
  *   睡眠，无正确性影响）。
@@ -45,17 +48,42 @@ export interface SleepBlockerOptions {
   spawnFn?: typeof spawnProcess;
 }
 
-/** ES_CONTINUOUS (0x80000000) | ES_SYSTEM_REQUIRED (0x00000001)。 */
-const ES_FLAGS = '0x80000001';
+/**
+ * ES_CONTINUOUS (0x80000000) | ES_SYSTEM_REQUIRED (0x00000001)。
+ *
+ * **必须按无符号 32 位取值**：`0x80000001` = 2147483649 超出 Int32 正数上界
+ * （2147483647），而 PowerShell 的数字字面量按 Int32 解析 —— 十六进制写法一旦
+ * 进了脚本就会被解析成 **-2147483647**，传给 P/Invoke 声明的 `uint` 形参时抛
+ * `MethodArgumentConversionInvalidCastArgument`（2026-09-22 真机复现）。
+ */
+const ES_FLAGS_UINT32 = (0x80000000 | 0x00000001) >>> 0;
+
+/**
+ * 插入 PowerShell 脚本的 ES flags 字面量，**十进制**（`2147483649`）。
+ *
+ * 上面那个异常是**非终止错误**：PowerShell 不中断脚本，后面的看门循环照跑 ——
+ * 于是 helper 进程一直活着、`SetThreadExecutionState` 却从未被调用，防休眠彻底
+ * 失效，而「helper 退出」这条唯一的告警通道恰好不触发（日志里只剩一句 `active`，
+ * 系统照记 Kernel-Power id=42 / System Idle 睡眠）。十进制字面量走
+ * Int64 → UInt32 转换，可安全传递。
+ */
+const WIN32_ES_FLAGS_LITERAL = String(ES_FLAGS_UINT32);
 
 /**
  * PowerShell 托管脚本：声明 P/Invoke → 设置持续唤醒 → 轮询父 pid 直至父进程消失。
  * 单字符串经 `-Command` 传入（不经 shell，内嵌双引号安全）；父 pid 是 number，插值安全。
+ *
+ * 首句 `$ErrorActionPreference = 'Stop'` 把非终止错误**升级为终止错误**：P/Invoke
+ * 声明或调用一旦出问题，helper 立刻退出，从而走到 startSleepBlocker 的 `exit`
+ * 告警路径。否则「进程活着但 execution state 没设置上」属于静默态，日志里查不出来。
+ * 看门循环自带 `-ErrorAction SilentlyContinue`，不受该设置影响（父进程消失本就是
+ * 正常结束路径）。
  */
 export function win32SleepBlockerScript(parentPid: number): string {
   return [
+    `$ErrorActionPreference = 'Stop'`,
     `Add-Type -TypeDefinition 'using System.Runtime.InteropServices; public static class SleepBlocker { [DllImport("kernel32.dll")] public static extern uint SetThreadExecutionState(uint esFlags); }'`,
-    `[SleepBlocker]::SetThreadExecutionState(${ES_FLAGS}) | Out-Null`,
+    `[SleepBlocker]::SetThreadExecutionState(${WIN32_ES_FLAGS_LITERAL}) | Out-Null`,
     `while (Get-Process -Id ${parentPid} -ErrorAction SilentlyContinue) { Start-Sleep -Seconds 30 }`,
   ].join('; ');
 }
@@ -94,8 +122,10 @@ export function startSleepBlocker(opts: SleepBlockerOptions): SleepBlocker | nul
     logger.warn(`[sleep-blocker] ${command} error:`, err);
   });
   // helper 意外死亡 = 防休眠静默失效（win32 上 Add-Type 动态编译被企业策略/
-  // 杀软拦掉、Get-Process 权限失败；darwin 上 caffeinate 早退）。桥此时还活着，
-  // 是唯一能留痕的时机——否则日志里只剩启动那句 "active"，误以为防休眠在生效。
+  // 杀软拦掉、P/Invoke 调用抛错——脚本首句已用 $ErrorActionPreference='Stop' 把
+  // 非终止错误升级为终止错误，确保这类失败能落到这条分支；darwin 上 caffeinate
+  // 早退）。桥此时还活着，是唯一能留痕的时机——否则日志里只剩启动那句 "active"，
+  // 误以为防休眠在生效。
   let stopping = false;
   proc.on('exit', (code, signal) => {
     if (stopping) return;
