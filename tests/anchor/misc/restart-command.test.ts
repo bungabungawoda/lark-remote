@@ -28,12 +28,20 @@ import {
   waitForPreviousInstance,
 } from '../../../src/restart.js';
 import { currentPlatform, isWin32 } from '../../../src/platform/select.js';
+import { makeTempDir } from '../../lib/temp-dir.js';
 
 const spawnMock = vi.hoisted(() => vi.fn());
 vi.mock('../../../src/platform/spawn.js', () => ({
   useDetachedProcessGroup: vi.fn(() => true),
   spawnProcess: spawnMock,
 }));
+
+/**
+ * configPath 指向本文件独占的临时目录。固定写成 '/tmp/restart-test-config.yaml'
+ * 在 win32 上是仓库外的 D:\tmp（跨进程共享 + 兜底 sweep 扫不到），而 `/config`
+ * 类路径真会 atomicWrite 到这个文件 —— 同源抢写/串味。见 temp-dir-hygiene 守卫。
+ */
+const CONFIG_PATH = path.join(makeTempDir('lark-restart-cmd-'), 'config.yaml');
 
 function buildRouter(
   overrides: {
@@ -67,7 +75,7 @@ function buildRouter(
     sessionStore,
     bridge,
     config,
-    configPath: '/tmp/restart-test-config.yaml',
+    configPath: CONFIG_PATH,
     exitHandler: overrides.exitHandler,
     restartSpawner: overrides.restartSpawner,
     sessionReaderRegistry: createStubSessionReaderRegistry(),
