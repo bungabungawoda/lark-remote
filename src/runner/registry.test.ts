@@ -2,11 +2,9 @@ import { describe, it, expect } from 'vitest';
 import { AgentRegistry } from './registry.js';
 import { ClaudeRunner } from './index.js';
 import { DEFAULT_STOP_GRACE_MS, type AppConfig } from '../config/index.js';
-import os from 'node:os';
-import path from 'node:path';
-import fs from 'node:fs';
+import { makeTempDir } from '../../tests/lib/temp-dir.js';
 
-const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'lark-registry-test-'));
+const tmpDir = makeTempDir('lark-registry-test-');
 
 describe('AgentRegistry', () => {
   it('register + get returns the runner produced by the factory', () => {

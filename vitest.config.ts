@@ -9,6 +9,12 @@ const classification: Record<string, string[]> = JSON.parse(
 
 const exclude = ['**/node_modules/**', '**/dist/**', '**/.worktrees/**', '**/.claude/worktrees/**'];
 
+// 临时目录治理（见 tests/lib/temp-dir.ts 的说明）：
+//   setupFiles   —— 每个测试文件加载时登记文件级清理钩子（afterAll）
+//   globalSetup  —— 整轮 run 收尾时按专属前缀兜底清扫（覆盖被强杀/超时的场景）
+const setupFiles = [resolve(import.meta.dirname, 'tests/lib/vitest-setup.ts')];
+const globalSetup = [resolve(import.meta.dirname, 'tests/lib/vitest-global-teardown.ts')];
+
 // Windows 上 spawn 子进程 + 首次模块加载在受限环境可达 7-10s，默认 5s
 // 会把一批 spawn 型用例误判为超时（posix 上无感，富余只是吃不到）。
 const WIN_SPAWN_TIMEOUT = 20_000;
@@ -36,6 +42,7 @@ function makeProject(name: string, includes: string[]) {
       exclude,
       testTimeout: WIN_SPAWN_TIMEOUT,
       hookTimeout: WIN_SPAWN_TIMEOUT,
+      setupFiles,
       // live 套件命中真实飞书 API 且共享 ~/.lark-remote-test，必须串行，否则会
       // 互相踩配置目录、触发真实副作用。注意 Vitest 4 已无 `singleFork`/`minWorkers`
       // （旧配置里的 singleFork 是空操作），串行靠 maxWorkers:1 + fileParallelism:false。
@@ -47,6 +54,10 @@ function makeProject(name: string, includes: string[]) {
 export default defineConfig({
   test: {
     projects: Object.entries(classification).map(([name, includes]) => makeProject(name, includes)),
+    // 顶层也放一份：projects 派生配置对这两个字段的继承行为在各 vitest 版本不一，
+    // 双写是幂等的（setup 里的 registerTempDirCleanup 自带去重）。
+    setupFiles,
+    globalSetup,
     // 关键优化：threads pool + 多 worker 并行，取代原先 maxWorkers:1 的纯串行。
     pool: 'threads',
     maxWorkers,

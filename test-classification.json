@@ -161,7 +161,8 @@
     "tests/anchor/priority/p2-19-logger-write-safety.test.ts",
     "tests/anchor/misc/restart-command.test.ts",
     "tests/anchor/misc/restart-wait-live-pid.test.ts",
-    "tests/misc/global-exception-handler.test.ts"
+    "tests/misc/global-exception-handler.test.ts",
+    "tests/misc/temp-dir-hygiene.test.ts"
   ],
   "agent-claude": [
     "src/runner/claude/**/*.test.ts",

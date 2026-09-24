@@ -1,8 +1,7 @@
 // 分页卡「直接跳转页码」：paginationBar 内置 CardKit 2.0 input（回车/完成键提交），
 // 用户输入页码即可跳到对应页；覆盖 /ls /ws /resume /active /order 全部多页卡片。
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeAll, beforeEach } from 'vitest';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { CommandRouter } from '../router/index.js';
 import { paginationBar } from './card-helpers.js';
@@ -10,6 +9,7 @@ import { SessionStore } from '../session/index.js';
 import type { AppConfig } from '../config/index.js';
 import { createMockBridge, createStubSessionReaderRegistry } from '../../tests/lib/bridge-stubs.js';
 import { expectNoV1ActionContainer } from '../../tests/lib/card-view.js';
+import { makeTempDir } from '../../tests/lib/temp-dir.js';
 
 const ctx = { userId: 'user1', chatId: 'chat1', messageId: 'msg1' };
 
@@ -28,8 +28,23 @@ let router: CommandRouter;
 let sessionStore: SessionStore;
 let mockBridge: ReturnType<typeof createMockBridge>;
 
+/**
+ * `/ls` 翻页用的只读目录：65 个文件建一次、整份文件共享。
+ * 用例只列目录不写它 —— 原来 3 个用例各自在 beforeEach 的新目录里重建 65 个文件，
+ * 一轮就是 195 次写入 + 3 个只多不少的目录。前缀仍落在 `paging-jump-` 之下，
+ * 以便被 `tmp-cleanup.ts` 的 OUR_TEMP_PREFIXES 兜底覆盖。
+ */
+let lsDir: string;
+
+beforeAll(() => {
+  lsDir = makeTempDir('paging-jump-ls-');
+  for (let i = 0; i < 65; i++) {
+    fs.writeFileSync(path.join(lsDir, `f-${String(i).padStart(3, '0')}.txt`), 'x');
+  }
+});
+
 beforeEach(() => {
-  tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'paging-jump-'));
+  tmpDir = makeTempDir('paging-jump-');
   sessionStore = new SessionStore();
   sessionStore.set('user1', { sessions: new Map(), previousSessions: new Map(), cwd: tmpDir });
   mockBridge = createMockBridge();
@@ -116,12 +131,8 @@ describe('paginationBar 内置页码跳转输入', () => {
 
 describe('/ls 分页跳转', () => {
   it('输入页码直接跳到该页', async () => {
-    for (let i = 0; i < 65; i++) {
-      fs.writeFileSync(path.join(tmpDir, `f-${String(i).padStart(3, '0')}.txt`), 'x');
-    }
-
     await router.handleCardAction(
-      { cmd: 'ls.page', path: tmpDir, pageSize: 30, inputValue: '3' },
+      { cmd: 'ls.page', path: lsDir, pageSize: 30, inputValue: '3' },
       ctx,
     );
 
@@ -135,14 +146,11 @@ describe('/ls 分页跳转', () => {
   });
 
   it('非法页码回错误 toast，不刷新卡片', async () => {
-    for (let i = 0; i < 65; i++) {
-      fs.writeFileSync(path.join(tmpDir, `f-${String(i).padStart(3, '0')}.txt`), 'x');
-    }
     const before = (mockBridge.updateCardInPlace as unknown as { mock: { calls: unknown[][] } })
       .mock.calls.length;
 
     const res = await router.handleCardAction(
-      { cmd: 'ls.page', path: tmpDir, pageSize: 30, inputValue: 'abc' },
+      { cmd: 'ls.page', path: lsDir, pageSize: 30, inputValue: 'abc' },
       ctx,
     );
 
@@ -154,12 +162,8 @@ describe('/ls 分页跳转', () => {
   });
 
   it('超出范围的页码被 clamp 到最后一页', async () => {
-    for (let i = 0; i < 65; i++) {
-      fs.writeFileSync(path.join(tmpDir, `f-${String(i).padStart(3, '0')}.txt`), 'x');
-    }
-
     await router.handleCardAction(
-      { cmd: 'ls.page', path: tmpDir, pageSize: 30, inputValue: '99' },
+      { cmd: 'ls.page', path: lsDir, pageSize: 30, inputValue: '99' },
       ctx,
     );
 

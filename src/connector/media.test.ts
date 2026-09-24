@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import { FeishuConnector, type InboundMediaMessage } from './index.js';
 import { AppConfigSchema } from '../config/index.js';
 import { mockLogger } from '../../tests/lib/logger-mock.js';
+import { writeSizedFile } from '../../tests/lib/sized-file.js';
 
 const { messageHandlers, downloadResourceToFile } = vi.hoisted(() => ({
   messageHandlers: new Map<string, (msg: unknown) => void>(),
@@ -243,10 +244,9 @@ describe('FeishuConnector inbound media 两阶段流程（先认证后下载）'
     downloadResourceToFile.mockImplementation(
       async (_m: string, _k: string, _t: string, destPath: string) => {
         writtenTo = destPath;
-        fs.writeFileSync(
-          destPath,
-          Buffer.alloc((config.inboundMedia.maxFileSizeMb + 1) * 1024 * 1024),
-        );
+        // 门禁看的是 mock 自己返回的 bytesWritten，文件内容从不被读；这里保持
+        // 落盘 size 与声称值一致（稀疏文件），万一门禁改成读 stat 行为不变。
+        writeSizedFile(destPath, (config.inboundMedia.maxFileSizeMb + 1) * 1024 * 1024);
         return {
           contentType: 'application/pdf',
           bytesWritten: (config.inboundMedia.maxFileSizeMb + 1) * 1024 * 1024,
@@ -275,7 +275,7 @@ describe('FeishuConnector inbound media 两阶段流程（先认证后下载）'
     downloadResourceToFile.mockImplementation(
       async (_m: string, _k: string, _t: string, destPath: string) => {
         writtenTo = destPath;
-        fs.writeFileSync(destPath, Buffer.alloc(1024 * 1024 + 1));
+        writeSizedFile(destPath, 1024 * 1024 + 1);
         return { contentType: 'application/pdf', bytesWritten: 1024 * 1024 + 1 };
       },
     );
