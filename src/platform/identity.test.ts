@@ -10,7 +10,6 @@ import { execFileSync, spawn } from 'node:child_process';
 import {
   queryProcessIdentity,
   tokenizeCommandLine,
-  verifyPidIdentity,
   verifyPidIdentityVerdict,
   verifyPidIdentityVerdictSync,
 } from './identity.js';
@@ -136,45 +135,45 @@ describe('queryProcessIdentity (win32)', () => {
   });
 });
 
-describe('verifyPidIdentity', () => {
-  it('posix：命令行首个 token 的 basename 与期望二进制一致 → true', async () => {
+describe('verifyPidIdentityVerdict（异步入口：posix ps / win32 CIM 取身份后判定）', () => {
+  it('posix：命令行首个 token 的 basename 与期望二进制一致 → match', async () => {
     mockSpawn.mockReturnValue(procWithStdout('/usr/local/bin/claude --verbose\n'));
     await expect(
-      verifyPidIdentity(4242, { platform: 'linux', expectedBinary: 'claude' }),
-    ).resolves.toBe(true);
+      verifyPidIdentityVerdict(4242, { platform: 'linux', expectedBinary: 'claude' }),
+    ).resolves.toBe('match');
   });
 
-  it('posix：basename 不一致 → false（防 pid 复用误杀）', async () => {
+  it('posix：basename 不一致 → mismatch（防 pid 复用误杀）', async () => {
     mockSpawn.mockReturnValue(procWithStdout('/usr/local/bin/codex --verbose\n'));
     await expect(
-      verifyPidIdentity(4242, { platform: 'linux', expectedBinary: 'claude' }),
-    ).resolves.toBe(false);
+      verifyPidIdentityVerdict(4242, { platform: 'linux', expectedBinary: 'claude' }),
+    ).resolves.toBe('mismatch');
   });
 
-  it('posix：解释器跑 cli.js 的命令行不匹配裸 agent 名 → false', async () => {
+  it('posix：解释器跑 cli.js 的命令行不匹配裸 agent 名 → mismatch', async () => {
     mockSpawn.mockReturnValue(procWithStdout('node /home/user/pkg/cli.js --run\n'));
     await expect(
-      verifyPidIdentity(4242, { platform: 'linux', expectedBinary: 'claude' }),
-    ).resolves.toBe(false);
+      verifyPidIdentityVerdict(4242, { platform: 'linux', expectedBinary: 'claude' }),
+    ).resolves.toBe('mismatch');
   });
 
-  it('posix：脚本路径 basename 匹配 → true（node 跑的 agent 入口）', async () => {
+  it('posix：脚本路径 basename 匹配 → match（node 跑的 agent 入口）', async () => {
     mockSpawn.mockReturnValue(procWithStdout('node /home/user/.local/bin/claude --verbose\n'));
     await expect(
-      verifyPidIdentity(4242, { platform: 'linux', expectedBinary: 'claude' }),
-    ).resolves.toBe(true);
+      verifyPidIdentityVerdict(4242, { platform: 'linux', expectedBinary: 'claude' }),
+    ).resolves.toBe('match');
   });
 
-  it('posix：任意位置裸参数恰好等于期望名 → false（防误杀无辜进程）', async () => {
+  it('posix：任意位置裸参数恰好等于期望名 → mismatch（防误杀无辜进程）', async () => {
     // bash 跑一个恰好叫 claude 的脚本、grep 参数引用 claude——都不是 claude 进程
     mockSpawn.mockReturnValue(procWithStdout('bash claude\n'));
     await expect(
-      verifyPidIdentity(4242, { platform: 'linux', expectedBinary: 'claude' }),
-    ).resolves.toBe(false);
+      verifyPidIdentityVerdict(4242, { platform: 'linux', expectedBinary: 'claude' }),
+    ).resolves.toBe('mismatch');
     mockSpawn.mockReturnValue(procWithStdout('grep claude /var/log/app.log\n'));
     await expect(
-      verifyPidIdentity(4242, { platform: 'linux', expectedBinary: 'claude' }),
-    ).resolves.toBe(false);
+      verifyPidIdentityVerdict(4242, { platform: 'linux', expectedBinary: 'claude' }),
+    ).resolves.toBe('mismatch');
   });
 
   it('win32：含空格引号路径不被空白切碎（引号感知 tokenizer）', async () => {
@@ -184,8 +183,8 @@ describe('verifyPidIdentity', () => {
       ),
     );
     await expect(
-      verifyPidIdentity(4242, { platform: 'win32', expectedBinary: 'node' }),
-    ).resolves.toBe(true);
+      verifyPidIdentityVerdict(4242, { platform: 'win32', expectedBinary: 'node' }),
+    ).resolves.toBe('match');
   });
 
   it('win32：.exe 扩展与大小写不敏感', async () => {
@@ -195,8 +194,8 @@ describe('verifyPidIdentity', () => {
       ),
     );
     await expect(
-      verifyPidIdentity(4242, { platform: 'win32', expectedBinary: 'node' }),
-    ).resolves.toBe(true);
+      verifyPidIdentityVerdict(4242, { platform: 'win32', expectedBinary: 'node' }),
+    ).resolves.toBe('match');
     mockSpawn.mockReturnValue(
       procWithStdout(
         JSON.stringify({
@@ -206,55 +205,57 @@ describe('verifyPidIdentity', () => {
       ),
     );
     await expect(
-      verifyPidIdentity(4242, { platform: 'win32', expectedBinary: 'claude' }),
-    ).resolves.toBe(false);
+      verifyPidIdentityVerdict(4242, { platform: 'win32', expectedBinary: 'claude' }),
+    ).resolves.toBe('mismatch');
   });
 
-  it('大小写敏感性跟随平台：darwin 不敏感，linux 严格', async () => {
+  it('大小写敏感性跟随平台：darwin 不敏感 → match，linux 严格 → mismatch', async () => {
     mockSpawn.mockReturnValue(procWithStdout('/usr/bin/CLAUDE --verbose\n'));
     await expect(
-      verifyPidIdentity(4242, { platform: 'darwin', expectedBinary: 'claude' }),
-    ).resolves.toBe(true);
+      verifyPidIdentityVerdict(4242, { platform: 'darwin', expectedBinary: 'claude' }),
+    ).resolves.toBe('match');
     mockSpawn.mockReturnValue(procWithStdout('/usr/bin/CLAUDE --verbose\n'));
     await expect(
-      verifyPidIdentity(4242, { platform: 'linux', expectedBinary: 'claude' }),
-    ).resolves.toBe(false);
+      verifyPidIdentityVerdict(4242, { platform: 'linux', expectedBinary: 'claude' }),
+    ).resolves.toBe('mismatch');
   });
 
-  it('win32：CreationDate 匹配才通过；旧 pid 文件缺省该字段退化为仅命令行匹配', async () => {
+  it('win32：CreationDate 匹配才 match；旧 pid 文件缺省该字段退化为仅命令行匹配', async () => {
     const cimOut = JSON.stringify({
       CommandLine: CIM_COMMAND_LINE,
       CreationDate: CIM_CREATION_DATE,
     });
     mockSpawn.mockReturnValue(procWithStdout(cimOut));
     await expect(
-      verifyPidIdentity(4242, {
+      verifyPidIdentityVerdict(4242, {
         platform: 'win32',
         expectedBinary: 'node',
         expectedCreationDate: CIM_CREATION_DATE,
       }),
-    ).resolves.toBe(true);
+    ).resolves.toBe('match');
 
     mockSpawn.mockReturnValue(procWithStdout(cimOut));
     await expect(
-      verifyPidIdentity(4242, {
+      verifyPidIdentityVerdict(4242, {
         platform: 'win32',
         expectedBinary: 'node',
         expectedCreationDate: '20200101000000.000000+480',
       }),
-    ).resolves.toBe(false);
+    ).resolves.toBe('mismatch');
 
     mockSpawn.mockReturnValue(procWithStdout(cimOut));
     await expect(
-      verifyPidIdentity(4242, { platform: 'win32', expectedBinary: 'node' }),
-    ).resolves.toBe(true);
+      verifyPidIdentityVerdict(4242, { platform: 'win32', expectedBinary: 'node' }),
+    ).resolves.toBe('match');
   });
 
-  it('身份查询失败（进程不存在）→ false', async () => {
+  it('身份查询失败（进程不存在）→ unknown，不是 mismatch', async () => {
+    // 两者在生产里处置方向相反：killOrphan 都不杀，但 InstanceLock 只有
+    // mismatch 才接管锁，unknown 必须退回存活探测。
     mockSpawn.mockReturnValue(procWithStdout('', 1));
     await expect(
-      verifyPidIdentity(4242, { platform: 'win32', expectedBinary: 'node' }),
-    ).resolves.toBe(false);
+      verifyPidIdentityVerdict(4242, { platform: 'win32', expectedBinary: 'node' }),
+    ).resolves.toBe('unknown');
   });
 });
 
@@ -296,12 +297,12 @@ describe('matchMode：executable（默认）vs agent-invocation', () => {
   it('agent-invocation：agent 名只在路径段里也命中（pi / dsh 真实安装形态）', async () => {
     mockSpawn.mockReturnValue(procWithStdout(`${PI_CMD}\n`));
     await expect(
-      verifyPidIdentity(4242, {
+      verifyPidIdentityVerdict(4242, {
         platform: 'linux',
         expectedBinary: 'pi',
         matchMode: 'agent-invocation',
       }),
-    ).resolves.toBe(true);
+    ).resolves.toBe('match');
 
     mockSpawn.mockReturnValue(
       procWithStdout(
@@ -309,12 +310,12 @@ describe('matchMode：executable（默认）vs agent-invocation', () => {
       ),
     );
     await expect(
-      verifyPidIdentity(4242, {
+      verifyPidIdentityVerdict(4242, {
         platform: 'linux',
         expectedBinary: 'dsh',
         matchMode: 'agent-invocation',
       }),
-    ).resolves.toBe(true);
+    ).resolves.toBe('match');
   });
 
   it('默认 executable 档对同一命令行判 mismatch（InstanceLock 必须保持严格）', async () => {
@@ -322,8 +323,8 @@ describe('matchMode：executable（默认）vs agent-invocation', () => {
     // 形如 node-18 的无关进程被判成「锁还在」→ 新实例再也起不来。
     mockSpawn.mockReturnValue(procWithStdout(`${PI_CMD}\n`));
     await expect(
-      verifyPidIdentity(4242, { platform: 'linux', expectedBinary: 'pi' }),
-    ).resolves.toBe(false);
+      verifyPidIdentityVerdict(4242, { platform: 'linux', expectedBinary: 'pi' }),
+    ).resolves.toBe('mismatch');
   });
 
   it('agent-invocation：basename 恰好同名的形态本来就命中（codex / claude 原生）', async () => {
@@ -333,12 +334,12 @@ describe('matchMode：executable（默认）vs agent-invocation', () => {
       ),
     );
     await expect(
-      verifyPidIdentity(4242, {
+      verifyPidIdentityVerdict(4242, {
         platform: 'linux',
         expectedBinary: 'codex',
         matchMode: 'agent-invocation',
       }),
-    ).resolves.toBe(true);
+    ).resolves.toBe('match');
 
     mockSpawn.mockReturnValue(
       procWithStdout(
@@ -346,12 +347,12 @@ describe('matchMode：executable（默认）vs agent-invocation', () => {
       ),
     );
     await expect(
-      verifyPidIdentity(4242, {
+      verifyPidIdentityVerdict(4242, {
         platform: 'linux',
         expectedBinary: 'claude',
         matchMode: 'agent-invocation',
       }),
-    ).resolves.toBe(true);
+    ).resolves.toBe('match');
   });
 
   it('agent-invocation 仍拒绝裸参数与「整条路径里没有该名字」（防误杀）', async () => {
@@ -362,46 +363,46 @@ describe('matchMode：executable（默认）vs agent-invocation', () => {
     ]) {
       mockSpawn.mockReturnValue(procWithStdout(`${cmd}\n`));
       await expect(
-        verifyPidIdentity(4242, {
+        verifyPidIdentityVerdict(4242, {
           platform: 'linux',
           expectedBinary: 'claude',
           matchMode: 'agent-invocation',
         }),
-      ).resolves.toBe(false);
+      ).resolves.toBe('mismatch');
     }
   });
 
   it('段前缀必须紧跟非字母数字（claude-code 命中；claudette / claudeAgent 不命中）', async () => {
     mockSpawn.mockReturnValue(procWithStdout(`${NODE_BIN} /home/user/claude-code/cli.js\n`));
     await expect(
-      verifyPidIdentity(4242, {
+      verifyPidIdentityVerdict(4242, {
         platform: 'linux',
         expectedBinary: 'claude',
         matchMode: 'agent-invocation',
       }),
-    ).resolves.toBe(true);
+    ).resolves.toBe('match');
 
     for (const dir of ['claudette', 'claudeAgent']) {
       mockSpawn.mockReturnValue(procWithStdout(`${NODE_BIN} /home/user/${dir}/x.js\n`));
       await expect(
-        verifyPidIdentity(4242, {
+        verifyPidIdentityVerdict(4242, {
           platform: 'linux',
           expectedBinary: 'claude',
           matchMode: 'agent-invocation',
         }),
-      ).resolves.toBe(false);
+      ).resolves.toBe('mismatch');
     }
   });
 
   it('已知代价：段前缀档对短名偏松（pi 会命中 pi-data/），换的是 pi/dsh 真能回收', async () => {
     mockSpawn.mockReturnValue(procWithStdout(`${NODE_BIN} /home/user/pi-data/x.js\n`));
     await expect(
-      verifyPidIdentity(4242, {
+      verifyPidIdentityVerdict(4242, {
         platform: 'linux',
         expectedBinary: 'pi',
         matchMode: 'agent-invocation',
       }),
-    ).resolves.toBe(true);
+    ).resolves.toBe('match');
   });
 
   it('三态区分：不匹配 → mismatch；查不到进程 → unknown', async () => {
