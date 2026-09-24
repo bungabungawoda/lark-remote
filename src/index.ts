@@ -161,13 +161,15 @@ async function initializeCliAndConfig(): Promise<{
 }
 
 /** Acquire instance lock and setup global exception handlers. */
-function setupInstanceLockAndHandlers(
+async function setupInstanceLockAndHandlers(
   instanceLock: InstanceLock,
   logger: ReturnType<typeof getLogger>,
   configDir: string,
-): void {
+): Promise<void> {
   try {
-    instanceLock.acquire();
+    // acquire 是异步的（身份校验走 platform/identity，win32 侧是异步 CIM 查询）：
+    // 必须 await，否则会在校验完成前就放行第二条实例。
+    await instanceLock.acquire();
   } catch (err) {
     if (err instanceof InstanceAlreadyRunningError) {
       logger.error(
@@ -824,7 +826,7 @@ async function main() {
   // lark-remote to die (and release the instance lock) before acquiring it.
   await waitForPreviousInstance();
 
-  setupInstanceLockAndHandlers(instanceLock, logger, configDir);
+  await setupInstanceLockAndHandlers(instanceLock, logger, configDir);
 
   // 阻止系统休眠（macOS caffeinate / Windows SetThreadExecutionState）：lark-remote
   // 的场景是人不在电脑前远程使用，系统休眠即失联。恒开启、无配置开关；helper 进程

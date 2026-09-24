@@ -7,7 +7,7 @@
  *
  * 架构：ClaudeRunner 是 workspace-lifetime 的薄包装，进程与协议细节在
  * ClaudeSession（src/runner/claude/session.ts，extends SpawningRunner 复用
- * pid 文件/killOrphan/ProcessStopper/心跳/退出分发器机制）。每次 run() 委托
+ * pid 文件/killOrphan/Terminator/心跳/退出分发器机制）。每次 run() 委托
  * session：确保进程（可 --resume）→ 写 user 消息 → 消费事件直到本 turn result。
  */
 import { ClaudeSessionReader } from '../../session/claude/index.js';

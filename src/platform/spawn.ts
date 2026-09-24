@@ -71,7 +71,7 @@ const COMMAND_NOT_FOUND_PATTERN =
 /**
  * 是否需要为子进程建独立进程组（`spawn` 的 `detached: true`）。
  *
- * posix：ProcessStopper 的组杀用负 PID（`kill(-pgid)`），子进程必须是组长，
+ * posix：Terminator 的组杀用负 PID（`kill(-pgid)`），子进程必须是组长，
  * 否则 kill 抛 ESRCH 被吞，停止/清理链路全失效。
  *
  * win32：组杀已由 terminator 的 `taskkill /PID <pid> /T /F` 树杀替代，不需要

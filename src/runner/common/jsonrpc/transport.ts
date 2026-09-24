@@ -15,7 +15,13 @@ import {
   isWindowsCommandNotFoundLine,
   useDetachedProcessGroup,
 } from '../../../platform/spawn.js';
-import { ProcessStopper } from '../process-stopper.js';
+import { binaryName } from '../../../platform/identity.js';
+import { createTerminator, type Terminator } from '../../../platform/terminator.js';
+import {
+  AgentStopperRegistry,
+  agentStopperRegistry,
+  type AgentStopper,
+} from '../../../platform/agent-stopper.js';
 import { getLogger } from '../../../logger/index.js';
 
 /** Max bytes for a single line before we disconnect (10MB). */
@@ -33,11 +39,17 @@ export class JsonlRpcTransport {
   private proc: ChildProcess | null = null;
   private _closed = false;
   private events: TransportEvents | null = null;
-  private stopper: ProcessStopper;
+  private terminator: Terminator;
   private readonly binary: string;
   private readonly args: string[];
   private readonly cwd: string;
   private readonly env: Record<string, string | undefined>;
+  /** 协议停止通道查找键（与 Terminator 用的 agent key 同一来源，见构造函数）。 */
+  private readonly agent: string;
+  private readonly stoppers: AgentStopperRegistry;
+  private readonly stopperFactory?: (pid: number) => AgentStopper | undefined;
+  /** 已登记的通道（agent+pid 键）；null = 本连接没有可用通道或已注销。 */
+  private registration: { pid: number; stopper: AgentStopper } | null = null;
   /** JSON lines buffered while stdin is under backpressure (bounded by callers). */
   private writeQueue: Buffer[] = [];
   private flushing = false;
@@ -49,12 +61,38 @@ export class JsonlRpcTransport {
     args: string[];
     cwd: string;
     env?: Record<string, string | undefined>;
+    /** win32 查协议停止通道用的 agent key；缺省取 binary 名（'kimi'/'codex'/…） */
+    agent?: string;
+    /** 终止器注入（测试用）；默认按平台建实现 */
+    terminator?: Terminator;
+    /**
+     * 协议停止通道工厂（design §3.3）：spawn 成功后按 pid 建通道并登记到
+     * AgentStopperRegistry，进程退出/关闭时注销。返回 undefined = 无通道。
+     */
+    stopper?: (pid: number) => AgentStopper | undefined;
+    /** 协议通道注册表注入（测试隔离）；默认进程级单例 */
+    stoppers?: AgentStopperRegistry;
   }) {
     this.binary = opts.binary;
     this.args = opts.args;
     this.cwd = opts.cwd;
     this.env = opts.env ?? {};
-    this.stopper = new ProcessStopper({ graceMs: 5000 });
+    // 协议停止通道按 agent key 索引：调用方（connection-manager）只给 binary，
+    // 这里用 binaryName 归一（含 win32 的 `.cmd` 垫片与全路径两种形态），
+    // 免得每个协议 runner 都要重复传一遍 agent 名。
+    this.agent = opts.agent ?? binaryName(opts.binary);
+    this.stoppers = opts.stoppers ?? agentStopperRegistry;
+    this.stopperFactory = opts.stopper;
+    // Terminator 与注册表共用同一个 agent key 和同一张表：两边任一取错来源，
+    // 查表就静默失配（优雅段退化回树杀还不报错），所以都从这里下传。
+    this.terminator =
+      opts.terminator ??
+      createTerminator({ graceMs: 5000, agent: this.agent, stoppers: this.stoppers });
+  }
+
+  /** 子进程 pid（spawn 前/退出后为 undefined）；供测试与连接层按 pid 定位。 */
+  get pid(): number | undefined {
+    return this.proc?.pid;
   }
 
   get closed(): boolean {
@@ -97,6 +135,9 @@ export class JsonlRpcTransport {
     }
 
     getLogger().info(`[jsonrpc-transport] spawned pid=${proc.pid} binary=${this.binary}`);
+    // 子进程起来后立刻登记协议停止通道：win32 上 graceful stop 没有信号可拦，
+    // 只有这条通道能让 agent server 自己收摊（关 stdin / 取消在途 turn）。
+    this.registerStopper(proc.pid);
     proc.stdin?.on('error', (err) => {
       getLogger().warn(`[jsonrpc-transport] stdin error: ${err.message}`);
       this.handleClose('epipe');
@@ -166,6 +207,8 @@ export class JsonlRpcTransport {
     // Handle process exit
     const onExit = (code: number | null, signal: string | null) => {
       this._closed = true;
+      // 进程已经没了：留着旧 pid 的通道只会在 pid 复用后指向无关进程。
+      this.unregisterStopper();
       this.proc = null;
       // Flush remaining buffer（decoder.end() 吐出最后半个多字节字符）
       remainder += decoder.end();
@@ -261,7 +304,7 @@ export class JsonlRpcTransport {
     const proc = this.proc;
     if (proc) {
       try {
-        await this.stopper.stop(proc);
+        await this.terminator.stop(proc, { immediate: false });
       } catch {
         // Ignore stop errors — process may already be dead
       }
@@ -269,6 +312,27 @@ export class JsonlRpcTransport {
         proc.stdin.end();
       }
     }
+    // 注销必须在 stop() 之后：Terminator 就是在上面那次调用里查表取通道的。
+    this.unregisterStopper();
+  }
+
+  /**
+   * 按 pid 登记协议停止通道（工厂返回 undefined = 该 agent 无通道）。
+   * pid 是归属键：同一 agent 的多条长驻连接各有自己的通道，不能互相顶替。
+   */
+  private registerStopper(pid: number): void {
+    const stopper = this.stopperFactory?.(pid);
+    if (!stopper) return;
+    this.stoppers.register(this.agent, pid, stopper);
+    this.registration = { pid, stopper };
+  }
+
+  /** 注销自己登记的那条通道（幂等；带身份校验，防误删同 pid 上的新通道）。 */
+  private unregisterStopper(): void {
+    const reg = this.registration;
+    if (!reg) return;
+    this.registration = null;
+    this.stoppers.unregister(this.agent, reg.pid, reg.stopper);
   }
 
   private handleClose(reason: string): void {
@@ -288,13 +352,19 @@ export class JsonlRpcTransport {
       }
       // 异常路径（EPIPE/超长行/进程 error）也要收掉子进程，避免孤儿进程
       // 继续运行（如超长行场景子进程还在往 stdout 灌数据）。
-      void this.stopper.stop(proc).catch((err: unknown) => {
-        getLogger().warn(
-          `[jsonrpc-transport] failed to stop process during close: ${
-            err instanceof Error ? err.message : String(err)
-          }`,
-        );
-      });
+      void this.terminator
+        .stop(proc, { immediate: false })
+        .catch((err: unknown) => {
+          getLogger().warn(
+            `[jsonrpc-transport] failed to stop process during close: ${
+              err instanceof Error ? err.message : String(err)
+            }`,
+          );
+        })
+        .finally(() => {
+          // 通道查表发生在上面这次 stop() 里，注销必须等它落定。
+          this.unregisterStopper();
+        });
     }
     // 统一关闭出口：EPIPE/超长行/进程 error 都必须通知上层（connection-manager
     // 靠 onClose 删除 slot、client 靠它 failPending），否则 slot 悬挂死连接。

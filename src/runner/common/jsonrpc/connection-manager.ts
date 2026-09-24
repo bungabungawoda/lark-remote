@@ -17,6 +17,11 @@
 import { JsonlRpcTransport } from './transport.js';
 import { JsonRpcClient } from './client.js';
 import { getLogger } from '../../../logger/index.js';
+import {
+  AgentStopperRegistry,
+  agentStopperRegistry,
+  type AgentStopper,
+} from '../../../platform/agent-stopper.js';
 
 const DEFAULT_IDLE_TTL_MS = 30 * 60 * 1000; // 30 minutes
 const DEFAULT_REQUEST_TIMEOUT_MS = 60_000; // 60 seconds
@@ -84,6 +89,8 @@ export interface ConnectionManagerOptions<TClient extends ConnectionClient = Jso
   }) => boolean;
   /** Log tag prefix for operational log lines. */
   logTag?: string;
+  /** 协议停止通道注册表注入（测试隔离）；默认进程级单例，透传给 transport。 */
+  stoppers?: AgentStopperRegistry;
 }
 
 interface Slot<TClient extends ConnectionClient> {
@@ -110,9 +117,21 @@ export class ConnectionManager<TClient extends ConnectionClient = JsonRpcClient>
     boundSessionId: string | undefined;
   }) => boolean;
   private readonly logTag: string;
+  private readonly stoppers: AgentStopperRegistry;
 
   /** Callback when a connection is lost — cleared from slot map. */
   onConnectionLost?: (workspace: string) => void;
+
+  /**
+   * 协议停止通道工厂（design §3.3）：连接建立后按 pid 登记到 AgentStopperRegistry，
+   * 供 Terminator 在**优雅**停止时回调（win32 上没有可拦截的 SIGTERM，只能靠
+   * 协议通道让 agent 自己收摊）。返回 undefined = 该协议无通道。
+   *
+   * 做成「构造后赋值的字段」而不是构造选项：kimi/opencode 的 manager 建在
+   * `super(...)` 的实参里，那时 `this` 尚不可用，runner 无法把
+   * cancelCurrentTurn 塞进选项——只能等 super() 返回后赋值。
+   */
+  stopper?: (ctx: { pid: number; client: TClient }) => AgentStopper | undefined;
 
   constructor(opts: ConnectionManagerOptions<TClient>) {
     this.binary = opts.binary;
@@ -136,6 +155,7 @@ export class ConnectionManager<TClient extends ConnectionClient = JsonRpcClient>
         ) as unknown as TClient);
     this.shouldReuse = opts.shouldReuse ?? (({ client }) => client.ready && client.healthy);
     this.logTag = opts.logTag ?? 'jsonrpc-connection-manager';
+    this.stoppers = opts.stoppers ?? agentStopperRegistry;
   }
 
   /**
@@ -262,14 +282,22 @@ export class ConnectionManager<TClient extends ConnectionClient = JsonRpcClient>
   // =========================================================================
 
   private async createClient(workspace: string, req: AcquireRequest): Promise<TClient> {
+    let client: TClient | null = null;
     const transport = new JsonlRpcTransport({
       binary: this.binary,
       args: this.buildArgs(req),
       cwd: workspace,
       env: this.env,
+      stoppers: this.stoppers,
+      // 通道工厂要拿到**连接本身**：协议取消（codex turn/interrupt、ACP
+      // session/cancel）必须发在这条连接上，不能借 runner 的共享状态——那会
+      // 打断另一 workspace 正在跑的 turn。工厂是在 transport.start() 内侧调用
+      // 的，那时 client 已由下面的 clientFactory 赋好。
+      stopper: this.stopper
+        ? (pid: number) => this.stopper?.({ pid, client: client as TClient })
+        : undefined,
     });
 
-    let client: TClient | null = null;
     client = this.clientFactory({
       transport,
       requestTimeoutMs: this.requestTimeoutMs,
