@@ -273,7 +273,7 @@ When claude exits abnormally, the last chunk of stdout data may lack a trailing 
 
 ### 9.5 Feishu Rate Limiting (Error Code 99991400)
 
-New message sending is approximately 5 req/s. `sendWithRetry` retries once after sleeping 200ms for retryable errors: SDK's `rate_limited` (HTTP 429, SDK has built-in backoff retry, this is just a fallback), and Feishu business codes 99991400/99991401 (frequency control) — the latter are classified as `permission_denied` by `@larksuite/channel@0.3.0`'s `classifyError`, and the SDK fail-fasts on `permission_denied`. `shouldRetrySendError` must identify them from the `cause` chain (`cause.response.data.code`) to prevent the rate-limit retry path from dying. Regular `permission_denied` (e.g., missing scope) is not retried. Run card patches are controlled by the channel SDK's throttle + FIFO UpdateQueue; disabling tool use/result display by default further reduces card update volume.
+New message sending is approximately 5 req/s. `sendWithRetry` retries once after sleeping 200ms for retryable errors: SDK's `rate_limited` (HTTP 429, SDK has built-in backoff retry, this is just a fallback), and Feishu business codes 99991400/99991401 (frequency control) — the latter are classified as `permission_denied` by `@larksuite/channel@0.7.1`'s `classifyError`, and the SDK fail-fasts on `permission_denied`. `shouldRetrySendError` must identify them from the `cause` chain (`cause.response.data.code`) to prevent the rate-limit retry path from dying. Regular `permission_denied` (e.g., missing scope) is not retried. Run card patches are controlled by the channel SDK's throttle + FIFO UpdateQueue; disabling tool use/result display by default further reduces card update volume.
 
 ### 9.6 Serial Message Processing
 
