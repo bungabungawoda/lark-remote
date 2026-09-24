@@ -14,9 +14,9 @@ import type { AppConfig } from '../../../src/config/index.js';
 import { invalidateCodexBundledCache } from '../../../src/config/codex-config.js';
 import { makeModel, makeCatalog } from '../../fixtures/codex-catalog-fixture.js';
 import path from 'node:path';
-import os from 'node:os';
 import fs from 'node:fs';
 import { mockLogger } from '../../lib/logger-mock.js';
+import { makeTempDir } from '../../lib/temp-dir.js';
 
 const { mockSpawnSync } = vi.hoisted(() => ({ mockSpawnSync: vi.fn() }));
 
@@ -103,7 +103,7 @@ describe('Config card codex reasoningEffort - anchor', () => {
     mockLogger.warn.mockReset();
     invalidateCodexBundledCache();
     oldCodexHome = process.env.CODEX_HOME;
-    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-card-test-'));
+    tmpDir = makeTempDir('codex-card-test-');
     process.env.CODEX_HOME = tmpDir;
     mockSpawnSync.mockImplementation((_binary: string, args: string[]) => {
       if (args.includes('--bundled')) {
@@ -120,7 +120,6 @@ describe('Config card codex reasoningEffort - anchor', () => {
       process.env.CODEX_HOME = oldCodexHome;
     }
     fs.rmSync(tmpDir, { recursive: true, force: true });
-    fs.mkdirSync(tmpDir, { recursive: true });
     invalidateCodexBundledCache();
   });
 
@@ -336,7 +335,7 @@ describe('codex config card effort follows model - anchor', () => {
     mockLogger.warn.mockReset();
     invalidateCodexBundledCache();
     oldCodexHome = process.env.CODEX_HOME;
-    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-effort-follows-'));
+    tmpDir = makeTempDir('codex-effort-follows-');
     process.env.CODEX_HOME = tmpDir;
   });
 

@@ -8,6 +8,8 @@ import { CommandRouter } from '../router/index.js';
 import { SessionStore } from '../session/index.js';
 import type { AppConfig } from '../config/index.js';
 import { createMockBridge, createStubSessionReaderRegistry } from '../../tests/lib/bridge-stubs.js';
+import { makeTempDir } from '../../tests/lib/temp-dir.js';
+import { writeSizedFile } from '../../tests/lib/sized-file.js';
 
 const ctx = { userId: 'user1', chatId: 'chat1', messageId: 'msg1' };
 
@@ -17,7 +19,7 @@ let mockBridge: ReturnType<typeof createMockBridge>;
 let filePath: string;
 
 beforeEach(() => {
-  tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'download-cmd-'));
+  tmpDir = makeTempDir('download-cmd-');
   filePath = path.join(tmpDir, 'report.pdf');
   fs.writeFileSync(filePath, 'pdf-bytes');
 
@@ -96,7 +98,7 @@ describe('/download', () => {
 
   it('files larger than 30MB are rejected', async () => {
     const big = path.join(tmpDir, 'big.bin');
-    fs.writeFileSync(big, Buffer.alloc(31 * 1024 * 1024));
+    writeSizedFile(big, 31 * 1024 * 1024);
     await router.handle(`/download ${big}`, ctx);
     expect(mockBridge.sendFile).not.toHaveBeenCalled();
     const text = sentTexts().find((t) => t.includes('30MB')) ?? '';
