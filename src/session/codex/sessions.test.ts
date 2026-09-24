@@ -127,10 +127,21 @@ describe('CodexSessionReader', () => {
       expect(result.sessions).toHaveLength(2);
     });
 
-    it('uses default codexHome when not provided', () => {
-      const reader = new CodexSessionReader();
-      // Should not throw — resolveCodexHome falls back to ~/.codex
-      expect(reader).toBeDefined();
+    it('resolves codexHome from $CODEX_HOME when the option is omitted', () => {
+      // 不注入 codexHome 时必须走 resolveCodexHome 的 env 分支。旧断言是
+      // `expect(reader).toBeDefined()` + 真实 ~/.codex：构造函数不可能返回
+      // undefined，且结果取决于开发者家目录。
+      const original = process.env.CODEX_HOME;
+      process.env.CODEX_HOME = tmpDir;
+      try {
+        createRollout(tmpDir, 'rollout-env-home.jsonl', metaLine('env-home', '/tmp'));
+
+        const result = new CodexSessionReader().listSessions('/tmp');
+        expect(result.sessions.map((s) => s.sessionId)).toEqual(['env-home']);
+      } finally {
+        if (original === undefined) delete process.env.CODEX_HOME;
+        else process.env.CODEX_HOME = original;
+      }
     });
   });
 

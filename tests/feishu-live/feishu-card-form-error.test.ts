@@ -273,7 +273,8 @@ describeLive('飞书 API 集成测试 - CardKit 2.0 form 校验', () => {
 
     // This should succeed (no form element)
     const messageId = await connector.sendWithRetry(testChatId, { card: helpCard });
-    expect(messageId).toBeDefined();
+    expect(typeof messageId).toBe('string');
+    expect(messageId.length).toBeGreaterThan(0);
     console.log('✅ /help 卡片发送成功（无 form 元素）');
   });
 
@@ -335,7 +336,8 @@ describeLive('飞书 API 集成测试 - CardKit 2.0 form 校验', () => {
     };
 
     const messageId = await connector.sendWithRetry(testChatId, { card: fixedLsCard });
-    expect(messageId).toBeDefined();
+    expect(typeof messageId).toBe('string');
+    expect(messageId.length).toBeGreaterThan(0);
     console.log('✅ 修复后的 /ls 卡片发送成功');
   });
 
@@ -399,7 +401,8 @@ describeLive('飞书 API 集成测试 - CardKit 2.0 form 校验', () => {
     };
 
     const messageId = await connector.sendWithRetry(testChatId, { card: fixedConfigCard });
-    expect(messageId).toBeDefined();
+    expect(typeof messageId).toBe('string');
+    expect(messageId.length).toBeGreaterThan(0);
     console.log('✅ 修复后的 /config 卡片发送成功');
   });
 });

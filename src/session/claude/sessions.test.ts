@@ -518,49 +518,21 @@ describe('cwd decoded from JSONL (regression: 2026-06-21 /resume & /cd paths)', 
   });
 
   it('readSessionContent returns empty when a sessionId is found but cwd does not match', () => {
-    // directory-name collision: same filename, different cwd fields.
-    // /resume <sid> with the wrong cwd must NOT return the wrong session's
-    // content (regression: 2026-06-21 /resume cross-cwd leak).
-    const dirA = path.join(tmpDir, 'collide-a');
-    const dirB = path.join(tmpDir, 'collide-b');
-    fs.mkdirSync(dirA, { recursive: true });
-    fs.mkdirSync(dirB, { recursive: true });
+    // 目录编码是有损的（`_` 与 `-` 都编成 `-`）：/real/cwd_A 和 /real/cwd-A 落到
+    // 同一个项目目录，sid 又相同 → jsonl 里的 cwd 字段是唯一裁判。
+    // 用错 cwd 的 /resume <sid> 必须拿不到内容（regression 2026-06-21 cross-cwd leak）。
+    const ownerCwd = '/real/cwd_A';
+    const otherCwd = '/real/cwd-A';
+    expect(encodeClaudeProjectDir(ownerCwd)).toBe(encodeClaudeProjectDir(otherCwd));
 
-    const sid = 'same-sid';
-    fs.writeFileSync(
-      path.join(dirA, `${sid}.jsonl`),
-      '{"type":"system","subtype":"init","session_id":"' +
-        sid +
-        '","cwd":"/real/cwd/A","model":"opus"}\n' +
-        '{"type":"user","message":{"role":"user","content":[{"type":"text","text":"task A"}]}}\n' +
-        '{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"reply A"}]}}\n',
-    );
-    fs.writeFileSync(
-      path.join(dirB, `${sid}.jsonl`),
-      '{"type":"system","subtype":"init","session_id":"' +
-        sid +
-        '","cwd":"/real/cwd/B","model":"opus"}\n' +
-        '{"type":"user","message":{"role":"user","content":[{"type":"text","text":"task B"}]}}\n' +
-        '{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"reply B"}]}}\n',
-    );
+    const sid = writeSession(ownerCwd, [
+      '{"type":"user","message":{"role":"user","content":[{"type":"text","text":"task A"}]}}',
+      '{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"reply A"}]}}',
+    ]);
 
-    // Same sid under both dirs. projectDirForCwd('/real/cwd/B') encodes
-    // the same way as '/real/cwd/A' if they differ only by `_` vs `-`.
-    // Either way: asking for cwd A should not return B's content.
-    const resultA = readSessionContent(sid, '/real/cwd/A', { projectsDir: tmpDir });
-    const resultB = readSessionContent(sid, '/real/cwd/B', { projectsDir: tmpDir });
-
-    // One of these will land on the wrong directory because the dir names
-    // are different here; the important thing is the cwd-field check
-    // prevents leaking the wrong content.
-    if (resultA.events.length > 0) {
-      expect(resultA.events.map((e) => e.content).join('|')).toContain('A');
-      expect(resultA.events.map((e) => e.content).join('|')).not.toContain('B');
-    }
-    if (resultB.events.length > 0) {
-      expect(resultB.events.map((e) => e.content).join('|')).toContain('B');
-      expect(resultB.events.map((e) => e.content).join('|')).not.toContain('A');
-    }
+    const hit = readSessionContent(sid, ownerCwd, { projectsDir: tmpDir });
+    expect(hit.events.map((e) => e.content).join('|')).toBe('reply A');
+    expect(readSessionContent(sid, otherCwd, { projectsDir: tmpDir }).events).toEqual([]);
   });
 });
 

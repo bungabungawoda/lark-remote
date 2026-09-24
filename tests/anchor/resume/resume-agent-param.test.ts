@@ -320,13 +320,15 @@ describe('/resume [agent] [N] dual-parameter feature', () => {
     });
 
     const sent = connector._sent;
+    expect(sent.length).toBeGreaterThan(0);
 
     // 验证输出包含 sessionId（abc-123）而不是 agent+session 组合
+    // 形状必须先硬断言：写成 `if (input.text)` 守卫时，输出改成卡片就一条断言都不跑。
     const input = sent[0].input as { text?: string; card?: unknown };
-    if (input.text) {
-      // 应该返回"未找到 session abc-123"，而不是"未找到 session codex abc-123"
-      expect(input.text).toContain('abc-123');
-      expect(input.text).not.toContain('codex abc-123');
-    }
+    expect(input.card).toBeUndefined();
+    // 应该返回"未找到 session abc-123"，而不是"未找到 session codex abc-123"
+    expect(input.text).toContain('未找到');
+    expect(input.text).toContain('abc-123');
+    expect(input.text).not.toContain('codex abc-123');
   });
 });

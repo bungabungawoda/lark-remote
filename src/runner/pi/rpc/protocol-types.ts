@@ -33,6 +33,10 @@ export type PiRpcCommand =
 // Responses (server → client)
 // =============================================================================
 
+/**
+ * get_state 的完整返回体。桥只读 sessionId，其余字段照上游 schema 保留：当前没有
+ * consumer 是有意为之（静态扫描报的"零引用导出类型"即指此处），别据此删除。
+ */
 export interface PiRpcGetStateData {
   model?: unknown;
   sessionId: string;

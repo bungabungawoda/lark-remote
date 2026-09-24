@@ -87,17 +87,26 @@ describe('syncAgentChoices', () => {
     expect(updated).toEqual(config);
   });
 
-  it('handles claude agent (top-level config, not synced through agents)', () => {
-    const config = { ...baseConfig } as AppConfig;
+  it('does not sync claude (top-level config, no agents mapping)', () => {
+    const config = {
+      ...baseConfig,
+      agents: { claude: { model: 'must-not-be-synced' } },
+    } as AppConfig;
     const updated = syncAgentChoices(config, 'claude');
-    expect(updated.claude).toBeDefined();
+
+    // 短路：原对象直接返回，既不克隆也不写出 agentChoices.claude。
+    // 旧断言 `expect(updated.claude).toBeDefined()` 恒真——baseConfig 本来就有 claude。
+    expect(updated).toBe(config);
+    expect(choicesOf(updated, 'claude')).toBeUndefined();
   });
 
-  it('handles config without agents field (agents is undefined)', () => {
+  it('returns config unchanged when the agents field is missing entirely', () => {
     const config = { ...baseConfig } as AppConfig;
     delete (config as Partial<AppConfig>).agents;
-    const updated = syncAgentChoices(config, 'claude');
-    expect(updated.claude).toBeDefined();
+    const updated = syncAgentChoices(config, 'codex');
+
+    expect(updated).toBe(config);
+    expect(updated.agentChoices).toBeUndefined();
   });
 
   it('creates the agentChoices object when it does not exist', () => {
