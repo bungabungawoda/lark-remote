@@ -59,6 +59,7 @@ function createStreamRejectingConnector() {
     },
     sendFile: async () => 'file-msg-id',
     addReaction: async () => {},
+    removeReactionByEmoji: async () => {},
     streamCard: async () => {
       throw new Error('stream unavailable');
     },

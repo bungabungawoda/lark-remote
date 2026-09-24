@@ -14,7 +14,7 @@ import { getLogger } from '../logger/index.js';
 import type { Terminator } from './terminator.js';
 import type { TerminateResult } from './types.js';
 
-export type LogLevel = 'debug' | 'info';
+export type LogLevel = 'debug' | 'info' | 'warn';
 export type TerminatorLogger = (level: LogLevel, message: string) => void;
 
 export interface PosixTerminatorDeps {
@@ -28,12 +28,30 @@ export interface PosixTerminatorDeps {
 function defaultLog(level: LogLevel, message: string): void {
   const logger = getLogger();
   if (level === 'debug') logger.debug(message);
+  else if (level === 'warn') logger.warn(message);
   else logger.info(message);
 }
 
 /** 退出判定统一口径（CLAUDE.md 红线）：exitCode !== null || signalCode !== null。 */
 function isAlive(proc: ChildProcess): boolean {
   return proc.exitCode === null && proc.signalCode === null;
+}
+
+/**
+ * 向进程组发一个信号；返回失败原因，null 表示已送达或无需送达。
+ *
+ * ESRCH（进程组已经没了）与杀成功同等处置——这正是「停止」想要的结果；
+ * 其余失败（EPERM 等）必须报出去，否则调用方拿到假成功，事后既不知也没得查。
+ */
+function signalGroup(pgid: number, signal: NodeJS.Signals): string | null {
+  try {
+    process.kill(pgid, signal);
+    return null;
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code === 'ESRCH') return null;
+    return `${signal} 未送达 pgid=${pgid}: ${code ?? (err as Error).message}`;
+  }
 }
 
 async function stopPosix(
@@ -53,18 +71,18 @@ async function stopPosix(
   const pgid = -pid;
 
   log('debug', `[process-stopper] sending SIGTERM to pgid=${pgid} immediate=${opts.immediate}`);
-  try {
-    process.kill(pgid, 'SIGTERM');
-  } catch {
-    /* process may have exited */
+  const termErr = signalGroup(pgid, 'SIGTERM');
+  if (termErr) {
+    log('warn', `[process-stopper] ${termErr}`);
+    return { requested: false, via: 'cooperative', error: termErr };
   }
 
   if (opts.immediate) {
     // 不等待：SIGKILL 紧随其后；进程已死时 kill 抛 ESRCH，忽略即可
-    try {
-      process.kill(pgid, 'SIGKILL');
-    } catch {
-      /* process already gone */
+    const killErr = signalGroup(pgid, 'SIGKILL');
+    if (killErr) {
+      log('warn', `[process-stopper] ${killErr}`);
+      return { requested: false, via: 'taskkill', error: killErr };
     }
     return { requested: true, via: 'taskkill' };
   }
@@ -87,10 +105,10 @@ async function stopPosix(
       'info',
       `[process-stopper] process group ${pgid} did not exit within grace period, sending SIGKILL`,
     );
-    try {
-      process.kill(pgid, 'SIGKILL');
-    } catch {
-      /* process already gone */
+    const killErr = signalGroup(pgid, 'SIGKILL');
+    if (killErr) {
+      log('warn', `[process-stopper] ${killErr}`);
+      return { requested: false, via: 'taskkill', error: killErr };
     }
     return { requested: true, via: 'taskkill' };
   }

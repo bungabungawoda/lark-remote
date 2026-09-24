@@ -8,7 +8,7 @@
  * 不匹配 → 判陈旧锁，允许覆盖。isProcessRunning 抽成可注入依赖以便测试。
  *
  * 这个 anchor 注入一个 probe：pid 活着但 comm 与锁文件记录的不匹配，断言
- * acquire() 覆盖陈旧锁（而非拒绝）。真红 = 旧实现只看 pid 不看 comm，会拒绝。
+ * acquire() 覆盖陈旧锁（而非拒绝）。守住的失败模式：只看 pid 不看 comm 会拒绝。
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';

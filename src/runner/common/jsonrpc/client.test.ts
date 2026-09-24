@@ -120,6 +120,42 @@ describe('JsonRpcClient request/response id matching', () => {
     await client.dispose();
   }, 10000);
 
+  /**
+   * 验证什么：`requestTimeoutMs: 0` = 不设请求超时（对齐同族里
+   *   `turnIdleTimeoutMinutes`/`claude.idleTtlMinutes` 的「0 = 禁用」口径），
+   *   不是「每个请求 0ms 超时」。
+   * 缺失/错误会导致什么：schema 是 `.min(0)`，`Math.min(0, MAX)` 仍是 0，
+   *   `setTimeout(..., 0)` 必然抢在子进程响应之前 reject → 用户在 YAML 里写
+   *   `requestTimeoutMs: 0` 之后 codex/kimi/opencode 每一次 RPC 都超时，
+   *   agent 整体不可用（且 dir.ts 正把这个键列给用户手改）。
+   * 依据：clean_review §B9。
+   */
+  it('treats requestTimeoutMs 0 as "no timeout"', async () => {
+    // initialize 立即回，其余请求延后 80ms 回——0ms 预算下必输给它。
+    const server = join(tmpDir, 'delayed-server.mjs');
+    writeFileSync(
+      server,
+      `import { createInterface } from 'node:readline';\nconst rl = createInterface({ input: process.stdin });\nrl.on('line', (line) => {\n  const msg = JSON.parse(line);\n  if (msg.method === 'initialize') {\n    process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: msg.id, result: { protocolVersion: 1, agentInfo: { name: 'kimi-acp', version: '0.36.0' } } }) + '\\n');\n    return;\n  }\n  setTimeout(() => {\n    process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: msg.id, result: { ok: true } }) + '\\n');\n  }, 80);\n});\n`,
+    );
+
+    const transport = new JsonlRpcTransport({ ...nodeLaunch(server), cwd: tmpDir });
+    const client = new JsonRpcClient(
+      transport,
+      {
+        onNotification: () => {},
+        onServerRequest: () => {},
+        onClose: () => {},
+      },
+      0,
+    );
+
+    await client.connect();
+    const result = await client.request<unknown, { ok: boolean }>('session/new', { cwd: tmpDir });
+    expect(result.ok).toBe(true);
+
+    await client.dispose();
+  }, 10000);
+
   it('dispatches notifications to hooks', async () => {
     const server = join(tmpDir, 'notif-server.mjs');
     writeFileSync(

@@ -249,4 +249,52 @@ describe('reaction emoji by run terminal (anchor)', () => {
 
     expect(connector.addReaction).toHaveBeenCalledWith(ctx.messageId, 'Done');
   });
+
+  /**
+   * 验证什么：装配窗口把多条消息并成一个 turn 时，终态收尾（撤 Typing + 打终态
+   *   表情）必须覆盖本轮每一条入站消息，而不只是 ctx.messageId（最后一条）。
+   * 缺失/错误会导致什么：`src/index.ts` 对每条入站消息逐条挂 Typing，而
+   *   ctx.messageId 只取最后一条、全仓唯一的 removeReactionByEmoji 调用点也只对
+   *   它——先到的那几条永远停在「正在输入」，用户以为还有任务在跑。
+   * 依据：clean_review §B8（提交时遍历本轮全部 messageId 收尾）。
+   */
+  it('test_anchor_terminal_reactions_cover_every_message_of_turn', async () => {
+    const events: AgentEvent[] = [
+      { type: 'system', subtype: 'init', session_id: 's1', cwd: tmpDir, model: 'opus' },
+      { type: 'result', subtype: 'success', session_id: 's1' },
+    ];
+    const runner: Runner = {
+      isRunning: false,
+      stop: async () => {},
+      killOrphan: () => {},
+      registerExitHandlers: () => {},
+      run: async function* () {
+        for (const e of events) yield e;
+      },
+    };
+    const connector = createStubConnector({ addReactionSpy: true, removeReactionSpy: true });
+    const sessionStore = new SessionStore();
+    sessionStore.setCwd(ctx.userId, fs.realpathSync(tmpDir));
+    const bridge = new Bridge({
+      runner,
+      agentRegistry: createStubAgentRegistry(runner),
+      sessionReaderRegistry: createStubSessionReaderRegistry(),
+      connector,
+      sessionStore,
+      config,
+      idleTimeoutMs: 60_000,
+    });
+
+    // 三条消息合成一个 turn：msg1、msg2 先到，msg3（= ctx.messageId）触发提交
+    await bridge.forwardToClaude('hello', {
+      ...ctx,
+      messageId: 'msg3',
+      turnMessageIds: ['msg1', 'msg2', 'msg3'],
+    });
+
+    for (const id of ['msg1', 'msg2', 'msg3']) {
+      expect(connector.removeReactionByEmoji).toHaveBeenCalledWith(id, 'Typing');
+      expect(connector.addReaction).toHaveBeenCalledWith(id, 'Done');
+    }
+  });
 });

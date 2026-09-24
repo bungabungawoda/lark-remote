@@ -150,7 +150,7 @@ describe('codex listCodexRollouts global-newest + total', () => {
 
     // total = cwd 精确匹配的全集大小（分页前）：50 + 1，不含 /other 的 2 个。
     expect(result.total).toBe(51);
-    // entries = 全局最新 limit 条（当前实现返回数组，无 total → 真红）。
+    // entries = 全局最新 limit 条（修复前只返回裸数组、没有 total）。
     expect(result.entries).toHaveLength(20);
     // 全局最新必须是 day 31 的会话；若只补 total 不修排序，这里照样拦住。
     expect(result.entries[0].threadId).toBe(newestSessionId);

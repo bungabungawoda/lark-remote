@@ -20,6 +20,9 @@ export interface TerminateResult {
   /**
    * 终止途经：协议停止 / 强制终止 / 进程已退出 / 无通道跳过优雅段。
    * 强制终止在 posix 下是 SIGKILL 组杀、win32 下是 taskkill 树杀，同枚举值。
+   * `requested: false` 时取值为**尝试过的那条途经**，配合 {@link error} 判读。
    */
   via: 'cooperative' | 'taskkill' | 'already-exited' | 'skipped-no-channel';
+  /** 请求未送达的原因（ESRCH/进程已消失不算失败，不带此字段） */
+  error?: string;
 }

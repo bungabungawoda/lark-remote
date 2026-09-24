@@ -9,8 +9,8 @@
  * 修复：内层 `catch (retryErr) { ...; throw retryErr; }`。
  *
  * 这个 anchor 让 stub channel.send 第一次抛限流错误（可重试），第二次抛一个
- * 不同的鉴权错误（重试失败），断言最终 reject 的是重试错误。真红 = 当前实现
- * reject 第一次的限流错误。
+ * 不同的鉴权错误（重试失败），断言最终 reject 的是重试错误。守住的失败模式：
+ * 修复前 reject 第一次的限流错误。
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 

@@ -182,3 +182,98 @@ describe('FeishuConnector.sendImage', () => {
     expect(axios.post).not.toHaveBeenCalled();
   });
 });
+
+const TOKEN_URL = 'https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal';
+const tokenOk = (tok: string) => ({ data: { code: 0, tenant_access_token: tok, expire: 7200 } });
+const uploadOk = (key: string) => ({ data: { code: 0, data: { file_key: key } } });
+const sendOk = (id: string) => ({ data: { code: 0, data: { message_id: id } } });
+/** 第 N 次 axios.post 的 Authorization 头。上传是 form 请求，options 在第 3 个参数位。 */
+function authHeaderAt(callIndex: number): string | undefined {
+  const call = vi.mocked(axios.post).mock.calls[callIndex] as unknown[] | undefined;
+  const [a, b] = (call ?? []).slice(2);
+  const hasHeaders = (v: unknown): v is { headers: Record<string, string> } =>
+    typeof v === 'object' && v !== null && 'headers' in v;
+  const opts = hasHeaders(a) ? a : hasHeaders(b) ? b : undefined;
+  return opts?.headers.Authorization;
+}
+
+/**
+ * clean_review §B13：tenant_access_token 缓存只按到期时间失效，鉴权失败不清
+ * 缓存、并发请求也不合流。
+ *
+ * ① appSecret 在飞书后台被重置后，缓存里的旧 token 立刻失效，但缓存要到自然
+ *   过期（~2h）才刷新——这期间 sendFile/sendImage 持续失败，用户看到的是
+ *   "发文件一直报错"，且只能重启进程才能恢复。
+ * ② 缓存过期的一瞬间，N 个并发发送会各发一次取 token 请求（飞书侧有限流）。
+ */
+describe('FeishuConnector tenant token 失效与合流（B13）', () => {
+  it('上传被判 token 无效：清缓存重取，并用新 token 重做一次', async () => {
+    vi.mocked(axios.post)
+      .mockResolvedValueOnce(tokenOk('stale'))
+      .mockResolvedValueOnce({ data: { code: 99991663, msg: 'tenant access token invalid' } })
+      .mockResolvedValueOnce(tokenOk('fresh'))
+      .mockResolvedValueOnce(uploadOk('file-key'))
+      .mockResolvedValueOnce(sendOk('message-id'));
+
+    await expect(new FeishuConnector(config).sendFile('chat-1', filePath)).resolves.toBe(
+      'message-id',
+    );
+
+    // 取 token 两次（第 2 次必须是清缓存后重取，不是复用旧值）
+    const calls = vi.mocked(axios.post).mock.calls;
+    expect(calls).toHaveLength(5);
+    expect(calls[2]?.[0]).toBe(TOKEN_URL);
+    expect(authHeaderAt(3)).toBe('Bearer fresh');
+    expect(authHeaderAt(4)).toBe('Bearer fresh');
+  });
+
+  it('只重试一次：第二次仍被判无效就如实报错，不留无限循环', async () => {
+    vi.mocked(axios.post)
+      .mockResolvedValueOnce(tokenOk('stale'))
+      .mockResolvedValueOnce({ data: { code: 99991663, msg: 'tenant access token invalid' } })
+      .mockResolvedValueOnce(tokenOk('stale-again'))
+      .mockResolvedValueOnce({ data: { code: 99991663, msg: 'tenant access token invalid' } });
+
+    await expect(new FeishuConnector(config).sendFile('chat-1', filePath)).rejects.toThrow(
+      /sendFile failed/,
+    );
+    expect(vi.mocked(axios.post).mock.calls).toHaveLength(4);
+  });
+
+  it('非鉴权类业务错误不清缓存、不重试（错误文案不变）', async () => {
+    vi.mocked(axios.post)
+      .mockResolvedValueOnce(tokenOk('token'))
+      .mockResolvedValueOnce({ data: { code: 230001, msg: 'invalid file format' } });
+
+    await expect(new FeishuConnector(config).sendFile('chat-1', filePath)).rejects.toThrow(
+      /Upload failed: invalid file format/,
+    );
+    expect(vi.mocked(axios.post).mock.calls).toHaveLength(2);
+  });
+
+  it('并发发送只取一次 token（in-flight 合流）', async () => {
+    let tokenFetches = 0;
+    const gate = (delayMs: number) => new Promise((resolve) => setTimeout(resolve, delayMs));
+    vi.mocked(axios.post).mockImplementation(async (url: unknown) => {
+      if (url === TOKEN_URL) {
+        tokenFetches += 1;
+        await gate(20);
+        return tokenOk('shared') as never;
+      }
+      if (url === 'https://open.feishu.cn/open-apis/im/v1/files') {
+        return uploadOk('file-key') as never;
+      }
+      return sendOk('message-id') as never;
+    });
+
+    const connector = new FeishuConnector(config);
+    const results = await Promise.all([
+      connector.sendFile('chat-1', filePath),
+      connector.sendFile('chat-1', filePath),
+      connector.sendFile('chat-1', filePath),
+    ]);
+
+    expect(results).toEqual(['message-id', 'message-id', 'message-id']);
+    expect(tokenFetches).toBe(1);
+  });
+});

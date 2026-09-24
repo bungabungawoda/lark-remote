@@ -98,6 +98,20 @@ describe('resolveCodexHome', () => {
     delete process.env.CODEX_HOME;
     expect(resolveCodexHome()).toBe(path.join(os.homedir(), '.codex'));
   });
+
+  it('空串/纯空白不算「已设置」：落回 ~/.codex，且结果恒为绝对路径', () => {
+    // `??` 只挡 undefined：`CODEX_HOME=''` 会带着空串往下走，
+    // path.join('', 'config.toml') 变成相对**进程 cwd** 的路径——同一个
+    // resolveCodexHome 在两种启动目录下解析出两个不同文件（红线：路径解析单源）。
+    for (const value of ['', '   ']) {
+      process.env.CODEX_HOME = value;
+      expect(resolveCodexHome()).toBe(path.join(os.homedir(), '.codex'));
+    }
+    process.env.CODEX_HOME = '/from-env';
+    expect(resolveCodexHome('')).toBe('/from-env');
+    expect(resolveCodexHome('  /from-env  ')).toBe('/from-env');
+    expect(path.isAbsolute(path.join(resolveCodexHome(''), 'config.toml'))).toBe(true);
+  });
 });
 
 describe('getCodexBundledModelSlugs', () => {

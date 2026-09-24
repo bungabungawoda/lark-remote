@@ -161,8 +161,8 @@ describe('an edited order.exec queued task must keep the router.handle dispatch 
     const handleCalls = handleSpy.mock.calls.map((c) => c[0] as string);
     const fwdCalls = fwdSpy.mock.calls.map((c) => c[0] as string);
 
-    // 当前实现：replacement 调 forwardToClaude('/active')，router.handle 从未收到
-    // 编辑后的命令（handleCalls 为空或只有原始文本）。这里必须真红：期望
+    // 修复前：replacement 调 forwardToClaude('/active')，router.handle 从未收到
+    // 编辑后的命令（handleCalls 为空或只有原始文本）。本用例钉住：期望
     // router.handle 收到 '/active'，且该文本不得被当作普通消息 forward。
     expect(handleCalls).toContain('/active');
     expect(fwdCalls).not.toContain('/active');

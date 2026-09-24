@@ -11,7 +11,7 @@
  * token 响应校验 data.code；token 简单缓存（有效期内复用）。
  *
  * 这个 anchor 让 token 请求成功但上传请求 reject，断言文件读取流在失败路径
- * 被显式 destroy。真红 = 当前实现 catch 里不碰流，流泄漏。
+ * 被显式 destroy。守住的失败模式：catch 里不碰流，流泄漏。
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Readable } from 'node:stream';

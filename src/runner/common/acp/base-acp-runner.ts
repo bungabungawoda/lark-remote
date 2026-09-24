@@ -120,6 +120,9 @@ export abstract class BaseAcpRunner<
     this.promptSettled = false;
     this.promptSent = false;
     this.activeSessionId = null;
+    // 未答的审批随轮次一起作废：连接是按工作区长驻的，请求 id 会从 1 重新
+    // 计数，留着旧条目等于让下一轮的迟到的卡片点击回信到一条无关请求上。
+    this.pendingApprovals.clear();
   }
 
   protected async releaseConnection(cwd: string): Promise<void> {

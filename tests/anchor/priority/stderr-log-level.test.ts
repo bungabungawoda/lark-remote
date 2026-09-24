@@ -9,8 +9,8 @@
  * 修复：降级为 warn（保留诊断，不污染 error 级）。
  *
  * 这个 anchor 让 mock proc 的 stderr 连发多个 chunk，直调 spawnChild 后断言
- * mockLogger.error 没有为 stderr chunk 被调用（应改走 warn）。真红 = 当前
- * 实现每 chunk 一条 error 日志。
+ * mockLogger.error 没有为 stderr chunk 被调用（应改走 warn）。本用例守住的
+ * 失败模式：修复前每 chunk 一条 error 日志。
  *
  * W1.1 备注：spawnChild 保留 stderr handler，本 anchor 直调 spawnChild 钉住
  * 其日志级别语义。

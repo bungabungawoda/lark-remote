@@ -9,7 +9,7 @@ import { describe, it, expect, afterEach } from 'vitest';
 import { currentPlatform, isWin32 } from '../../../src/platform/select.js';
 import { DshRunner } from './runner.js';
 import { DshTranslator, mapUsage } from './translator.js';
-import { FakeDshServer } from './fake-dsh-server.js';
+import { FakeDshServer } from '../../../tests/lib/fake-dsh-server.js';
 import type { DshSessionEvent } from './types.js';
 import type { AgentSessionReader } from '../types.js';
 

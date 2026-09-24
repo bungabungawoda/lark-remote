@@ -158,3 +158,29 @@ describe('index.ts clone flow wiring guard', () => {
     expect(cloneIdx).toBeLessThan(aliasIdx);
   });
 });
+
+/**
+ * 入口 wiring 静态守卫（clean_review §B7）：非直返 card action 的 handler 返回值
+ * 必须经 `actionFeedbackText` 收敛成持久文本消息。两个 enqueue 出口都是
+ * fire-and-forget，回调响应早已被飞书收走——返回值一旦无人消费，失败
+ * （陈旧 /ws 列表、路径已删、payload 缺失）就完全静默。
+ */
+describe('index.ts card action feedback wiring guard (§B7)', () => {
+  it('enqueueImmediate 与 enqueue 两个分支都消费 handleCardAction 的返回值', () => {
+    const source = fs.readFileSync(path.resolve(__dirname, 'index.ts'), 'utf-8');
+    const start = source.indexOf('const forwardActionFeedback = ');
+    expect(start).toBeGreaterThan(-1);
+    // 到 setCardActionHandler 收尾为止（2 空格缩进的 `});`），覆盖两个异步出口
+    const end = source.indexOf('\n  });', start);
+    expect(end).toBeGreaterThan(start);
+    const body = source.slice(start, end);
+    // 判定逻辑住在 router/card-action-feedback.ts（可行为测试），入口只做发送
+    expect(body).toContain('actionFeedbackText(res)');
+    expect(body).toContain('.sendResult({ text }, { userId, chatId, messageId })');
+    // 两个异步出口都必须把返回值交给它，且不得再有裸 await
+    expect(body).toContain('bridge.enqueueImmediate(workspace, async () => {');
+    expect(body).toContain('bridge.enqueue(');
+    expect((body.match(/forwardActionFeedback\(res\)/g) ?? []).length).toBe(2);
+    expect((body.match(/await router\.handleCardAction\(fullValue/g) ?? []).length).toBe(2);
+  });
+});

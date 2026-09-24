@@ -12,8 +12,11 @@ import { spawnProcessSync } from '../platform/spawn.js';
 export const KIMI_THINKING_EFFORTS = ['low', 'high', 'max'] as const;
 export type KimiThinkingEffort = (typeof KIMI_THINKING_EFFORTS)[number];
 
-/** Fallback efforts when all values are filtered out */
-export const FALLBACK_EFFORTS: readonly string[] = ['low', 'high', 'max'];
+/**
+ * 兜底 effort 全集就是 schema 枚举本身（不是另一份字面量，否则新增取值要改两处）。
+ * 类型放宽为 readonly string[]：消费侧拿的是外部输入过滤后的兜底列表，不做枚举窄化。
+ */
+export const FALLBACK_EFFORTS: readonly string[] = KIMI_THINKING_EFFORTS;
 
 /** Kimi provider list JSON structure */
 interface KimiProviderListJson {
