@@ -304,6 +304,37 @@ describe('ApprovalCoordinator', () => {
       expect(coordinator.pendingCount()).toBe(0);
       expect(responder).toHaveBeenCalledWith(1001, { action: 'cancel' });
     });
+
+    it('re-arms the timeout when the same requestId is requested again', () => {
+      // server 对同一 requestId 重投 request_permission（第一次已被 resolved 清掉
+      // 计时器）时，这一路审批必须重新计时：否则它永不过期，server 无限等待，
+      // 桥侧一直挂着「✋ 等待审批」。
+      coordinator.onRequested(makeCommandEvent());
+      coordinator.onResolved(1001);
+      coordinator.onRequested(makeCommandEvent({ timeoutMs: 5000 }));
+
+      expect(coordinator.pendingCount()).toBe(1);
+      vi.advanceTimersByTime(4999);
+      expect(coordinator.pendingCount()).toBe(1);
+      vi.advanceTimersByTime(2);
+      expect(coordinator.pendingCount()).toBe(0);
+      expect(responder).toHaveBeenCalledWith(1001, { action: 'cancel' });
+    });
+
+    it('leaves at most one live timer per requestId', () => {
+      // 重投换时长时旧计时器必须作废：否则它会在下一路审批仍挂着时到点，
+      // 把人家 30s 的窗口咬成 10s。
+      coordinator.onRequested(makeCommandEvent());
+      coordinator.onRequested(makeCommandEvent({ timeoutMs: 20_000 }));
+      vi.advanceTimersByTime(20_001);
+      expect(coordinator.pendingCount()).toBe(0);
+
+      coordinator.onRequested(makeCommandEvent({ timeoutMs: 30_000 }));
+      vi.advanceTimersByTime(9_999);
+      expect(coordinator.pendingCount()).toBe(1);
+      vi.advanceTimersByTime(20_001);
+      expect(coordinator.pendingCount()).toBe(0);
+    });
   });
 
   describe('protocol decision space (real availableDecisions)', () => {

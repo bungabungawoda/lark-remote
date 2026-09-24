@@ -72,20 +72,20 @@ export class ApprovalCoordinator {
    * Handle an approval_requested event.
    */
   onRequested(event: ApprovalRequestedEvent): void {
+    // 事件级 timeoutMs 优先（Codex autoResolutionMs / Pi extension timeout），
+    // 缺省回落 run 级默认超时。放在事件上而非桥按 agentKind 分支，公共层
+    // 保持无 agent 分支。
+    const timeoutMs = event.timeoutMs ?? this.approvalTimeoutMs;
     const existing = this.approvals.get(event.requestId);
     if (existing) {
       // Already tracked — update state
       existing.state = 'pending';
       existing.view = event.view;
+      // 重投必须重新计时：上一路的计时器在 resolved/expired 时已清掉，不重装
+      // 这条审批就永不过期，server 只能无限等待（红线「审批超时自动 cancel」）。
+      this.armTimeout(existing, timeoutMs);
       return;
     }
-
-    // 事件级 timeoutMs 优先（Codex autoResolutionMs / Pi extension timeout），
-    // 缺省回落 run 级默认超时。放在事件上而非桥按 agentKind 分支，公共层
-    // 保持无 agent 分支。
-    const timer = setTimeout(() => {
-      this.expireApproval(event.requestId);
-    }, event.timeoutMs ?? this.approvalTimeoutMs);
 
     const tracked: TrackedApproval = {
       requestId: event.requestId,
@@ -93,10 +93,11 @@ export class ApprovalCoordinator {
       state: 'pending',
       view: event.view,
       createdAt: Date.now(),
-      timeoutTimer: timer,
+      timeoutTimer: null,
     };
 
     this.approvals.set(event.requestId, tracked);
+    this.armTimeout(tracked, timeoutMs);
   }
 
   /**
@@ -416,6 +417,14 @@ export class ApprovalCoordinator {
       clearTimeout(tracked.timeoutTimer);
       tracked.timeoutTimer = null;
     }
+  }
+
+  /** 装超时计时器；先清掉旧的，保证一个 requestId 最多只有一条待触发的计时。 */
+  private armTimeout(tracked: TrackedApproval, timeoutMs: number): void {
+    this.clearTimer(tracked);
+    tracked.timeoutTimer = setTimeout(() => {
+      this.expireApproval(tracked.requestId);
+    }, timeoutMs);
   }
 
   /** nonce 去重：同一 nonce 只允许生效一次（防连点/飞书重投递）。 */
