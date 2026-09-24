@@ -190,6 +190,8 @@ interface CommandContext {
   userId: string;
   chatId: string;
   messageId: string;
+  /** 本轮（装配窗口）全部入站 messageId，`messageId` 是最后一条。见 BridgeContext 同名字段（§B8）。 */
+  turnMessageIds?: string[];
 }
 
 interface CommandResult {
@@ -2047,15 +2049,17 @@ export class CommandRouter {
       return { toast: { type: 'error', content: CARD_PAYLOAD_MISSING } };
     }
 
-    // Execute the removal (consumes the write-side effect; the returned text
-    // is discarded — feedback flows through the toast + refreshed card).
-    this.cmdWs(['remove', name], ctx);
+    // Execute the removal and let its result decide the toast: the card can be
+    // a stale list (alias already deleted elsewhere), and an unconditional
+    // "已删除" would then contradict what the refreshed card shows.
+    const result = this.cmdWs(['remove', name], ctx);
+    const text = result.text ?? `删除 workspace "${name}" 失败`;
 
     // Rebuild the /ws list card and update it in place, preserving the page
     // the user was on when they clicked 删除.
     await this.refreshListCard('ws', value, ctx);
 
-    return { toast: { type: 'success', content: `已删除 workspace "${name}"` } };
+    return { toast: { type: text.startsWith('已删除') ? 'success' : 'error', content: text } };
   }
 
   /**
@@ -3338,20 +3342,34 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
     try {
       const entries = fs.readdirSync(targetDir, { withFileTypes: true });
 
-      // Separate directories and files
-      const dirs = entries
-        .filter((e) => e.isDirectory())
-        .sort((a, b) => a.name.localeCompare(b.name));
-      const files = entries.filter((e) => e.isFile()).sort((a, b) => a.name.localeCompare(b.name));
+      // 逐条目分类。`Dirent.isFile()/isDirectory()` 对符号链接恒 false（旧实现
+      // 因此完全不列链接）；必须 stat 解析目标。单条目 stat 失败（悬空链接、
+      // readdir 与 stat 之间被删、无权限）只让该条目降级为「大小未知」，不能
+      // 让整次列目录失败——一个坏邻居毁掉整张卡是旧实现的第二宗罪。
+      const dirs: string[] = [];
+      const files: Array<{ name: string; size?: number }> = [];
+      for (const entry of entries) {
+        let isDir = entry.isDirectory();
+        let size: number | undefined;
+        if (!isDir) {
+          try {
+            const st = fs.statSync(path.join(targetDir, entry.name));
+            isDir = st.isDirectory();
+            if (!isDir) size = st.size;
+          } catch {
+            // 目标拿不到：按文件列出，size 留空
+          }
+        }
+        if (isDir) dirs.push(entry.name);
+        else files.push({ name: entry.name, size });
+      }
+      dirs.sort((a, b) => a.localeCompare(b));
+      files.sort((a, b) => a.name.localeCompare(b.name));
 
       // Merge dirs and files for pagination, preserving type info
       const allItems: Array<{ name: string; isDir: boolean; size?: number }> = [
-        ...dirs.map((d) => ({ name: d.name, isDir: true })),
-        ...files.map((f) => ({
-          name: f.name,
-          isDir: false,
-          size: fs.statSync(path.join(targetDir, f.name)).size,
-        })),
+        ...dirs.map((name) => ({ name, isDir: true })),
+        ...files.map((f) => ({ name: f.name, isDir: false, size: f.size })),
       ];
 
       // 关键词筛选：只匹配当前层条目名（不递归子目录）。大小写不敏感的子串包含

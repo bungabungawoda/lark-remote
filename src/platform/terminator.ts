@@ -41,7 +41,7 @@ export interface TerminatorDeps {
   /** 协议通道注册表注入（测试隔离）；默认进程级单例 */
   stoppers?: AgentStopperRegistry;
   /** 日志注入（测试用）；默认走 logger 单例 */
-  log?: (level: 'debug' | 'info', message: string) => void;
+  log?: (level: 'debug' | 'info' | 'warn', message: string) => void;
 }
 
 /**

@@ -178,9 +178,9 @@ describe('queue.immediate on an edited task must keep the target position ahead 
 
     const calls = fwdSpy.mock.calls.map((c) => c[0] as string);
 
-    // 当前实现：编辑分支重新 enqueue 追加到链尾，T3 先执行、T2' 最后执行
+    // 修复前：编辑分支重新 enqueue 追加到链尾，T3 先执行、T2' 最后执行
     // （calls = ['task 3 queued behind', 'edited message']）。
-    // 这里必须真红：期望编辑后的立即执行任务在 T3 之前执行。
+    // 本用例钉住：期望编辑后的立即执行任务在 T3 之前执行。
     expect(calls).toEqual(['edited message', 'task 3 queued behind']);
   });
 });

@@ -239,8 +239,12 @@ export class ConnectionManager<TClient extends ConnectionClient = JsonRpcClient>
 
   /**
    * Notify that the workspace is idle — arm the idle timer.
+   *
+   * `idleTtlMs: 0` = 不回收（与 claude 会话层的 `armIdleTimer` 同口径；按 0
+   * setTimeout 会秒删刚建好的连接，等于每条消息重起一次进程）。
    */
   notifyIdle(workspace: string): void {
+    if (this.idleTtlMs <= 0) return;
     const slot = this.slots.get(workspace);
     if (slot) {
       this.clearIdleTimer(slot);

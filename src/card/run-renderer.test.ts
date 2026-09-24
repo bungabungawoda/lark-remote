@@ -2885,6 +2885,42 @@ describe('信息保真 C4：丢弃留痕', () => {
     expectNoV1ActionContainer(renderRunCard(state));
   });
 
+  it('B4：末级硬截断（skeleton 本身也超限）仍保留审批区与 stop/新会话按钮', () => {
+    const state: RunState = {
+      runId: 'run-b4-hard-truncate',
+      terminal: 'running',
+      footer: 'tool_running',
+      blocks: [],
+      sessionId: 's-b4',
+      // skeleton 里唯一无界的文本入口：notices 进 summary（skeleton 不内联去重）
+      notices: [{ level: 'warn', text: 'N'.repeat(60_000) }],
+      approvals: [
+        {
+          view: {
+            requestId: 'req-b4-1',
+            kind: 'command',
+            command: 'rm -rf /tmp/test',
+            commandCwd: '/home/user/project',
+            availableDecisions: ['accept', 'decline', 'cancel'],
+          },
+          expired: false,
+        },
+      ],
+    };
+
+    const card = renderRunCard(state);
+    const json = JSON.stringify(card);
+    // 确实落到末级：skeleton 的固定文案已被替换
+    expect(json).not.toContain('已省略全部内容');
+    expect(json).toContain('⚠️ 输出过大_');
+    expect(json).not.toContain('NNNNNN');
+    // 红线：任何一级兜底都不许截掉 stop / 新会话 / 审批入口
+    expect(json).toContain('⏹ 停止');
+    expect(json).toContain('✨ 新会话');
+    expect(json).toContain('✅ 允许');
+    expectNoV1ActionContainer(card);
+  });
+
   it('degraded 路径同样渲染 omittedBlocks 计数提示（专项：与正常路径共用 hint 函数）', () => {
     const state: RunState = {
       runId: 'run-c4-degraded-omit',

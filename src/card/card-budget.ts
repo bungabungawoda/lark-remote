@@ -1,6 +1,6 @@
 import {
   truncateUtf8,
-  truncateMarkdownTables,
+  dropOldestMarkdownTables,
   countMarkdownTables,
   FEISHU_MAX_TABLES,
   CARD_BUDGET_BYTES,
@@ -67,16 +67,14 @@ export function enforceCardBudget(
   // 小体积可以含很多 table，大体积可以没有 table。必须在字节检查之前独立判断。
   const cardStr = JSON.stringify(card);
   const bytesBefore = Buffer.byteLength(cardStr, 'utf8');
-  const totalTables = countCardTables(JSON.parse(cardStr));
-  if (totalTables > FEISHU_MAX_TABLES) {
-    // 深拷贝后对每个 lark_md 文本做 truncateMarkdownTables
-    const fixed = JSON.parse(cardStr) as CardNode;
-    truncateCardMarkdownTables(fixed);
-    const fixedStr = JSON.stringify(fixed);
+  const parsed = JSON.parse(cardStr) as CardNode;
+  const droppedTables = capCardMarkdownTables(parsed, FEISHU_MAX_TABLES);
+  if (droppedTables > 0) {
+    const fixedStr = JSON.stringify(parsed);
     // table 截断后可能仍超字节预算，继续走后续阶段
     if (Buffer.byteLength(fixedStr, 'utf8') <= CARD_BUDGET_BYTES) {
       return {
-        card: fixed,
+        card: parsed,
         wasTruncated: true,
         reason: 'table_count_limited',
         bytesBefore,
@@ -84,7 +82,7 @@ export function enforceCardBudget(
       };
     }
     // table 修好了但字节仍超，用 fixed 作为后续处理的起点
-    return enforceByteBudget(fixed, opts, bytesBefore);
+    return enforceByteBudget(parsed, opts, bytesBefore);
   }
 
   if (bytesBefore <= CARD_BUDGET_BYTES) {
@@ -295,29 +293,52 @@ function walkCardElements(elements: CardElementNode[], visit: (el: CardElementNo
 }
 
 /**
- * Count all markdown tables across every lark_md text field in a card JSON.
+ * 卡片里含 markdown table 的 lark_md 字段，按**文档顺序**（计数与裁剪共用同一
+ * 份遍历，避免两套递归漂移）。
  */
-function countCardTables(card: CardNode): number {
-  let total = 0;
-  walkCardElements(card?.body?.elements ?? [], (el) => {
+function tableFields(card: object): Array<{ el: CardElementNode; tables: number }> {
+  const fields: Array<{ el: CardElementNode; tables: number }> = [];
+  walkCardElements((card as CardNode)?.body?.elements ?? [], (el) => {
     if (el.text?.tag === 'lark_md' && typeof el.text.content === 'string') {
-      total += countMarkdownTables(el.text.content);
+      const tables = countMarkdownTables(el.text.content);
+      if (tables > 0) fields.push({ el, tables });
     }
   });
-  return total;
+  return fields;
 }
 
 /**
- * In-place truncate markdown tables in every lark_md text field of a card,
- * keeping at most FEISHU_MAX_TABLES per field.
+ * Count all markdown tables across every lark_md text field in a card JSON.
+ *
+ * 口径是**整卡**：飞书 11310 按整张卡片计数，与 table 落在哪个字段/容器无关。
  */
-function truncateCardMarkdownTables(card: CardNode): void {
-  walkCardElements(card?.body?.elements ?? [], (el) => {
-    if (el.text?.tag === 'lark_md' && typeof el.text.content === 'string') {
-      const truncated = truncateMarkdownTables(el.text.content);
-      if (truncated !== el.text.content) {
-        el.text.content = truncated;
-      }
-    }
-  });
+export function countCardTables(card: object): number {
+  return tableFields(card).reduce((sum, f) => sum + f.tables, 0);
+}
+
+/**
+ * 按**整卡**预算删除 markdown table：`maxTables` 是整张卡的上限，不是每个字段的。
+ *
+ * 逐字段各限 5 张是空操作（11310 红线失效）：table 分散在多个字段时，每个字段
+ * 都「没超限」，一张都不会被删，而守卫照样上报 `table_count_limited`。
+ * 这里按文档顺序累计，超出预算的**最旧** table 整块删除、保留最新 `maxTables`
+ * 张——与 `truncateMarkdownTables()` 的「删最旧、留最新」口径一致。
+ *
+ * @returns 实际删除的 table 数（0 = 无需处理，未改动 card）
+ */
+function capCardMarkdownTables(card: CardNode, maxTables: number): number {
+  const fields = tableFields(card);
+  const total = fields.reduce((sum, f) => sum + f.tables, 0);
+
+  let dropped = 0;
+  for (const { el, tables } of fields) {
+    // 每轮按「还差几张」重算：某字段的分隔行数可能多于可删块（畸形表），
+    // 只按声明数删会漏。
+    const toDrop = total - dropped - maxTables;
+    if (toDrop <= 0) break;
+    const content = el.text!.content!;
+    el.text!.content = dropOldestMarkdownTables(content, Math.min(toDrop, tables));
+    dropped += tables - countMarkdownTables(el.text!.content!);
+  }
+  return dropped;
 }

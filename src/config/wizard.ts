@@ -5,6 +5,7 @@ import YAML from 'yaml';
 import { AppConfigSchema } from './index.js';
 import { needsQrImage, renderQrImage, renderTerminalQr } from './qr.js';
 import { silentlyUnlink } from '../common/fs.js';
+import { atomicWrite } from '../persistence/atomic-write.js';
 
 interface WizardResult {
   appId: string;
@@ -110,12 +111,15 @@ function hasFeishuCredentials(configPath: string): boolean {
   return Boolean(feishu && feishu.appId && feishu.appSecret);
 }
 
-/** Persist a full config file seeded with the given feishu credentials. */
+/**
+ * Persist a full config file seeded with the given feishu credentials.
+ *
+ * 走 atomicWrite（tmp+rename）而不是裸 writeFileSync：这份文件里有 appSecret，
+ * 半截落盘 = 下次启动读不出凭据 + 盘上留着残密钥。目录创建由 atomicWrite 负责。
+ */
 function writeConfigWithCredentials(configPath: string, appId: string, appSecret: string): void {
-  const dir = path.dirname(configPath);
-  fs.mkdirSync(dir, { recursive: true });
   const config = AppConfigSchema.parse({ feishu: { appId, appSecret } });
-  fs.writeFileSync(configPath, YAML.stringify(config), 'utf-8');
+  atomicWrite(configPath, YAML.stringify(config));
 }
 
 /**

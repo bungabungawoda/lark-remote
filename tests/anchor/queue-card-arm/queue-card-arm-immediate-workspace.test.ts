@@ -224,9 +224,9 @@ describe('queue.immediate must stop the run blocking the SAME workspace, not a p
       );
       await sleep(50);
 
-      // 当前实现：interruptCurrentRun 先命中 activeRuns 里的 ws1 run（Map 插入序
+      // 修复前：interruptCurrentRun 先命中 activeRuns 里的 ws1 run（Map 插入序
       // ws1 在前），runner1.stopCalls=1、runner2.stopCalls=0；ws1 被误停、
-      // ws2 的阻塞 run 仍在。以下断言在正确实现下应全绿、当前实现必须真红。
+      // ws2 的阻塞 run 仍在。以下断言钉住正确行为。
       expect(runner1.stopCalls).toBe(0); // ws1 的并行 run 不得被停
       expect(runner2.stopCalls).toBe(1); // 阻塞 ws2 队列的 run 必须被停
       expect(bridge.isBusyFor(ws1)).toBe(true); // ws1 任务继续运行

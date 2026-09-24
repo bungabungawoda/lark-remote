@@ -24,8 +24,10 @@ function configFor(
   return {
     ...baseConfig,
     defaultAgent: agent,
+    // schema 解析后的 config 恒有 agents（AgentsConfigSchema.default），
+    // 夹具自己补上空槽位，别指望生产代码替它兜底。
+    agents: { [agent]: opts.agents ?? {} },
     ...(opts.choices ? { agentChoices: { [agent]: opts.choices } } : {}),
-    ...(opts.agents ? { agents: { [agent]: opts.agents } } : {}),
   } as unknown as AppConfig;
 }
 
@@ -172,15 +174,6 @@ describe('resolveAgentChoices', () => {
     resolveAgentChoices(config);
 
     expect(config.agents).toBe(originalAgents);
-  });
-
-  it('creates the agents object when agents is undefined', () => {
-    const config = configFor('pi', { choices: { model: 'glm-5.1' } });
-    delete (config as Partial<AppConfig>).agents;
-    const resolved = resolveAgentChoices(config);
-
-    expect(resolved.agents).toBeDefined();
-    expect(agentSlot(resolved, 'pi')?.model).toBe('glm-5.1');
   });
 
   it('creates the agent sub-key when agents exists without it (partial choices)', () => {

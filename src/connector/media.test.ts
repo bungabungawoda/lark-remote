@@ -326,6 +326,56 @@ describe('FeishuConnector inbound media 两阶段流程（先认证后下载）'
     }
   });
 
+  it('下载超时不提前删文件：等这次传输自己结束后补删（否则 os.tmpdir 留孤儿）', async () => {
+    vi.useFakeTimers();
+    try {
+      const { connector } = makeConnector();
+      const unlink = vi.spyOn(fs, 'unlinkSync');
+      let writtenTo = '';
+      let finish: (() => void) | undefined;
+      downloadResourceToFile.mockImplementation(
+        (_m: string, _k: string, _t: string, destPath: string) => {
+          writtenTo = destPath;
+          return new Promise((resolve) => {
+            finish = () => {
+              fs.writeFileSync(destPath, 'late-bytes');
+              resolve({ contentType: 'application/pdf', bytesWritten: 10 });
+            };
+          });
+        },
+      );
+
+      const promise = connector.downloadInboundMedia(
+        {
+          userId: 'user-1',
+          chatId: 'chat-1',
+          messageId: 'msg-4d',
+          rawContentType: 'file',
+          resources: [
+            { type: 'file', kind: 'file', fileKey: 'file-key-4d', fileName: 'slow2.pdf' },
+          ],
+        },
+        { downloadTimeoutMs: 1000 },
+      );
+      await vi.advanceTimersByTimeAsync(1001);
+      const payload = await promise;
+
+      expect(payload.failures[0].reason).toContain('timed out');
+      // 超时当下不能 unlink：SDK 没有 abort 入参，这次传输还在往文件里写
+      // （win32 会因句柄占用重试到放弃、posix 只删掉目录项把空间留给未关的 fd）。
+      expect(unlink).not.toHaveBeenCalled();
+
+      expect(finish).toBeDefined();
+      finish?.(); // 传输迟到完成，文件真的落到 tmpdir
+      await vi.advanceTimersByTimeAsync(0);
+      expect(fs.existsSync(writtenTo)).toBe(false);
+
+      unlink.mockRestore();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('下载失败进入 failures 并清理临时文件，不影响其他资源', async () => {
     const { connector } = makeConnector();
     const tempPaths: string[] = [];

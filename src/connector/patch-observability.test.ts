@@ -192,3 +192,52 @@ describe('message.patch business-code observability', () => {
     expect(logMsg).toContain('bytes=unknown');
   });
 });
+
+/**
+ * 业务码拒绝必须传导回 await 的调用方（2026-08-11 run 卡定格事故的恢复链路）。
+ *
+ * 观测只解决了「日志里有」：`patchCard` 丢弃返回值 → `updateCard()` 正常 resolve
+ * → `updateCardInPlace()` 用 try/catch 划成败，不抛就算成功 → 用户收到「已保存」
+ * toast，卡片永远停在被打回的那一帧。
+ */
+describe('updateCard 业务码失败传导', () => {
+  beforeEach(() => {
+    warnFn = vi.fn();
+    patchStub = vi.fn();
+  });
+
+  it('test_anchor_update_card_business_code_rejects', async () => {
+    patchStub.mockResolvedValue({ code: 11310, msg: 'too many tables' });
+    const connector = new FeishuConnector(config);
+
+    await expect(connector.updateCard('om_test_010', { schema: '2.0' })).rejects.toThrow('11310');
+  });
+
+  it('业务码拒绝时不重试（确定性失败，重试只会同样被打回）', async () => {
+    patchStub.mockResolvedValue({ code: 11310, msg: 'too many tables' });
+    const connector = new FeishuConnector(config);
+
+    await expect(connector.updateCard('om_test_011', { schema: '2.0' })).rejects.toThrow('11310');
+    expect(patchStub).toHaveBeenCalledTimes(1);
+  });
+
+  it('code=0 正常返回，不抛不重发', async () => {
+    patchStub.mockResolvedValue({ code: 0, msg: 'ok' });
+    const connector = new FeishuConnector(config);
+    const card = { schema: '2.0', body: { elements: [] } };
+
+    await expect(connector.updateCard('om_test_012', card)).resolves.toBeUndefined();
+    expect(patchStub).toHaveBeenCalledTimes(1);
+    expect(patchStub.mock.calls[0][0]).toEqual({
+      path: { message_id: 'om_test_012' },
+      data: { content: JSON.stringify(card) },
+    });
+  });
+
+  it('无 code 字段的响应按成功处理（SDK/mock 形状）', async () => {
+    patchStub.mockResolvedValue({});
+    const connector = new FeishuConnector(config);
+
+    await expect(connector.updateCard('om_test_013', { schema: '2.0' })).resolves.toBeUndefined();
+  });
+});

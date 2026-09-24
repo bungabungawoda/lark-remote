@@ -161,7 +161,7 @@ describe('edited queue.immediate must register its replacement before any awaiti
     await sleep(50);
 
     // --- 步骤 5：此时放行 T1 —— 队列链前进到 T2 begin ---
-    // 当前实现：replacement 尚未注册（markQueueCardExecuting 还在等卡片 send），
+    // 修复前：replacement 尚未注册（markQueueCardExecuting 还在等卡片 send），
     // T2 begin 消费不到 replacement → 执行旧闭包 'original message'。
     release1();
     expect(await waitFor(() => fwdSpy.mock.calls.length >= 1)).toBe(true);
@@ -172,8 +172,8 @@ describe('edited queue.immediate must register its replacement before any awaiti
     await sleep(20);
 
     const calls = fwdSpy.mock.calls.map((c) => c[0] as string);
-    // 当前实现：calls = ['original message']（旧闭包先跑，编辑内容从未执行）。
-    // 这里必须真红：期望编辑后的内容执行，且旧内容不得执行。
+    // 修复前：calls = ['original message']（旧闭包先跑，编辑内容从未执行）。
+    // 本用例钉住：期望编辑后的内容执行，且旧内容不得执行。
     expect(calls).toEqual(['edited message']);
   });
 });
