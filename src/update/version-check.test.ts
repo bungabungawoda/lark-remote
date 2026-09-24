@@ -3,7 +3,40 @@ import http from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { isNewer, checkLatestVersion, type UpdateCache, CACHE_TTL_MS } from './version-check.js';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
+import { makeTempDir } from '../../tests/lib/temp-dir.js';
+
+/**
+ * 本文件独占的临时目录 + 其中的 cache 文件（在 beforeEach 里分配，见下）。
+ * 模块级声明是为了让「缓存路径隔离」断言与其他用例共用同一份定义。
+ */
+let tmpDir = '';
+let cachePath = '';
+
+// 每个用例独占一个 mkdtemp 目录：把缓存写在固定共享路径上，只要还有第二个写者
+// （并行 worktree、上一轮残留的 worker）就会抢写同一文件。跑完由 temp-dir.ts
+// 注册的 afterAll 统一清理，不会往 temp 根目录漏文件。
+beforeEach(() => {
+  tmpDir = makeTempDir('lark-remote-update-cache-');
+  cachePath = path.join(tmpDir, 'update-cache.json');
+});
+
+describe('cache path isolation', () => {
+  it('keeps the cache inside a per-file private temp dir, not a shared fixed path', () => {
+    // 旧写法 `path.join('/tmp', 'lark-remote-test-update-cache.json')` 在 win32 上是
+    // **驱动器相对路径**（无盘符的 `\tmp\...`），会落到 cwd 所在盘符的 `D:\tmp\` ——
+    // 一个仓库外、名字固定、跨进程共享的位置。只要还有第二个写者（并行 worktree、
+    // 上一轮残留的 worker），就会抢写同一文件，win32 上表现为
+    // `EBUSY: resource busy or locked`（并发 probe 实测：same-family 的
+    // `EPERM: rename` / `ENOENT` 共 71 次）。而且它不在 os.tmpdir() 下，
+    // `sweepProjectTempDirs` 兜底清扫也覆盖不到 → 残留会永久留在磁盘上。
+    // temp-hygiene:allow-fixed-path —— 字面量只作**反例**（断言不等于旧共享路径）
+    expect(cachePath).not.toBe(path.join('/tmp', 'lark-remote-test-update-cache.json'));
+    expect(cachePath.startsWith(os.tmpdir() + path.sep)).toBe(true);
+    expect(path.dirname(cachePath)).toBe(tmpDir);
+  });
+});
 
 describe('isNewer', () => {
   it('returns true when latest > current', () => {
@@ -36,7 +69,6 @@ describe('isNewer', () => {
 });
 
 describe('checkLatestVersion', () => {
-  const cachePath = path.join('/tmp', 'lark-remote-test-update-cache.json');
   let server: http.Server;
   let registryUrl: string;
   let requestCount = 0;
@@ -61,13 +93,7 @@ describe('checkLatestVersion', () => {
   });
 
   beforeEach(() => {
-    // Clean up cache file
     requestCount = 0;
-    try {
-      fs.unlinkSync(cachePath);
-    } catch {
-      // ignore
-    }
   });
 
   it('returns current and latest versions on success', async () => {

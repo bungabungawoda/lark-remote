@@ -35,7 +35,7 @@ describe('file upload size limit: 30MB', () => {
       sessionStore,
       bridge: mockBridge,
       config,
-      configPath: '/tmp/config.yaml',
+      configPath: path.join(tempDir, 'config.yaml'),
       sessionReaderRegistry: createStubSessionReaderRegistry(),
     });
 
@@ -88,7 +88,7 @@ describe('file upload size limit: 30MB', () => {
       sessionStore,
       bridge: mockBridge,
       config,
-      configPath: '/tmp/config.yaml',
+      configPath: path.join(tempDir, 'config.yaml'),
       sessionReaderRegistry: createStubSessionReaderRegistry(),
     });
 

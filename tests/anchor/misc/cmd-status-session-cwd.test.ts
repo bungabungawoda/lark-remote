@@ -5,6 +5,8 @@ import { CommandRouter } from '../../../src/router/index.js';
 import { AppConfigSchema } from '../../../src/config/index.js';
 import type { AppConfig } from '../../../src/config/index.js';
 import { createMockBridge } from '../../lib/bridge-stubs.js';
+import { makeTempDir } from '../../lib/temp-dir.js';
+import path from 'node:path';
 
 describe('cmdStatus sessionCwd display', () => {
   const config: AppConfig = AppConfigSchema.parse({
@@ -15,8 +17,13 @@ describe('cmdStatus sessionCwd display', () => {
 
   let store: SessionStore;
   let router: CommandRouter;
+  // 这三个路径 production 真会读/写盘：固定 '/tmp/...' 在 win32 上是仓库外的
+  // D:\tmp（跨进程共享 + 兜底 sweep 扫不到）；万一别的 run 真在那留下 config.yaml，
+  // 本用例的 config 还会被外来文件覆盖 —— 同源串味。改用本用例独占的 mkdtemp 目录。
+  let tmpDir: string;
 
   beforeEach(() => {
+    tmpDir = makeTempDir('lark-cmd-status-cwd-');
     store = new SessionStore();
     // Minimal bridge mock — only the methods CommandRouter constructor and cmdStatus call
     const bridge = createMockBridge({
@@ -35,9 +42,9 @@ describe('cmdStatus sessionCwd display', () => {
       sessionStore: store,
       bridge,
       config,
-      configPath: '/tmp/test-config.yaml',
-      workspacePath: '/tmp/test-workspace.json',
-      ordersPath: '/tmp/test-orders.json',
+      configPath: path.join(tmpDir, 'config.yaml'),
+      workspacePath: path.join(tmpDir, 'workspace.json'),
+      ordersPath: path.join(tmpDir, 'orders.json'),
       sessionReaderRegistry: new SessionReaderRegistry(),
     });
   });
