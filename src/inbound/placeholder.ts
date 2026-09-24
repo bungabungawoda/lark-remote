@@ -6,7 +6,8 @@
  * `src/router/index.ts` 的裸前缀判定当成 bash 命令执行了整段消息。
  *
  * 规则来源：`docs/zh/architecture/inbound-message-matrix.md` §1 的 22 种 message_type
- * 实测渲染串。判定顺序**先清洗后判语义**：任何前缀判定都必须发生在剥离之后。
+ * 实测渲染串（`@larksuite/channel@0.7.1`）。判定顺序**先清洗后判语义**：任何前缀
+ * 判定都必须发生在剥离之后。
  *
  * 取舍（有意为之）：剥离对所有消息生效，所以用户在**纯文本**消息里手打
  * `![image](…)` / `<file key="…"/>` 这类字面量也会被当成占位符剥掉。代价是极少数
@@ -88,8 +89,13 @@ const BLOCK_RULES: ReadonlyArray<readonly [RegExp, PlaceholderKind]> = [
 /** 图片渲染串：`![image](img_v3_…)` / `![]()`,富文本内嵌图与纯 image 消息同形。 */
 const IMAGE_MD_RE = /!\[(?:image)?\]\([^)]*\)/g;
 
-/** 合并转发：只剥标签、保留内部文本（子消息文本有语义）。 */
-const FORWARDED_TAG_RE = /<\/?forwarded_messages\s*\/?>/g;
+/**
+ * 合并转发：只剥标签、保留内部文本（子消息文本有语义）。
+ * `@larksuite/channel@0.4.1+` 在子消息抓取重试耗尽后渲染
+ * `<forwarded_messages status="fetch_failed"/>`（带属性、自闭合）——属性段必须
+ * 一起吃掉，否则落到「未知标签」分支，被判为 unsupported 并污染排障日志。
+ */
+const FORWARDED_TAG_RE = /<\/?forwarded_messages(?:\s[^<>]*)?\/?>/g;
 
 /** 提及标签：保留内部显示名，不作为占位符上报。 */
 const AT_TAG_RE = /<at(?:\s[^<>]*)?>([\s\S]*?)<\/at>/g;

@@ -58,7 +58,7 @@ const noKeepAliveAgent = new https.Agent({ keepAlive: false });
 export const DEDUP_TTL_MS = 300;
 
 /**
- * SDK converter 注册表支持的 msg_type（@larksuite/channel 0.3.0 实测）。
+ * SDK converter 注册表支持的 msg_type（@larksuite/channel 0.7.1 实测）。
  * 带资源但类型不在其中 = 未来新增类型：照常下载 + warn（default-deny）。
  */
 const KNOWN_RESOURCE_CONTENT_TYPES = new Set([
@@ -212,7 +212,7 @@ type CardActionHandler = (
 /**
  * 判断 send 失败是否值得重试一次（§9.5 限流重试口径，§P1-3 修正）。
  *
- * @larksuite/channel@0.3.0 的 classifyError 把飞书业务码 99991400/99991401
+ * @larksuite/channel@0.7.1 的 classifyError 把飞书业务码 99991400/99991401
  * （频率控制）归类为 `code='permission_denied'`（SDK 源码实证），并保留原始
  * axios 错误在 `cause` 链上（`cause.response.data.code`）。因此仅判
  * `code === 'rate_limited'` 会让这条重试路径对设计目标完全死亡。判定覆盖：

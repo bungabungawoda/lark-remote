@@ -6,7 +6,7 @@
       "name": "lark-remote",
       "dependencies": {
         "@iarna/toml": "^2.2.5",
-        "@larksuite/channel": "^0.3.0",
+        "@larksuite/channel": "^0.7.1",
         "axios": "^1.18.0",
         "cross-spawn": "^7.0.6",
         "form-data": "^4.0.6",
@@ -74,9 +74,9 @@
 
     "@jridgewell/trace-mapping": ["@jridgewell/trace-mapping@0.3.31", "", { "dependencies": { "@jridgewell/resolve-uri": "^3.1.0", "@jridgewell/sourcemap-codec": "^1.4.14" } }, "sha512-zzNR+SdQSDJzc8joaeP8QQoCQr8NuYx2dIIytl1QeBEZHJ9uW6hebsrYgbz8hJwUQao3TWCMtmfV8Nu1twOLAw=="],
 
-    "@larksuite/channel": ["@larksuite/channel@0.3.0", "", { "dependencies": { "@larksuiteoapi/node-sdk": "1.72.0", "https-proxy-agent": "9.1.0" } }, "sha512-nSP0ySQOscKtA6x1G6EaRckgMq3u+xDCBAX8RUbCIP9YtR3KmiI6qmh21Y9kmmTInpP7g0HEKS9YFY1SEFYB+A=="],
+    "@larksuite/channel": ["@larksuite/channel@0.7.1", "", { "dependencies": { "@larksuiteoapi/node-sdk": "^1.73.1", "https-proxy-agent": "^9.0.0" } }, "sha512-wtfpVl8fOZz6H+O93r7ZKQtXTAuZrCv+CVFkX/E77R+qK2hx7Slr1emfq5tqJ9h/iwUez/pcmo2mMUw85+Xv1A=="],
 
-    "@larksuiteoapi/node-sdk": ["@larksuiteoapi/node-sdk@1.72.0", "", { "dependencies": { "axios": "1.19.0", "lodash.identity": "3.0.0", "lodash.merge": "4.6.2", "lodash.pickby": "4.6.0", "protobufjs": "7.6.5", "qs": "6.15.3", "ws": "8.21.2" } }, "sha512-8oKnaTxRFRNPQfeeG69yafdLzWvvrvXlIqX3QRvozR1/6kvZyi9iMhp6lwC+hMgJA/GCFwMZRadkJzlUE+kyvQ=="],
+    "@larksuiteoapi/node-sdk": ["@larksuiteoapi/node-sdk@1.74.0", "", { "dependencies": { "axios": "^1.16.0", "lodash.identity": "^3.0.0", "lodash.merge": "^4.6.2", "lodash.pickby": "^4.6.0", "protobufjs": "^7.2.6", "qs": "^6.14.2", "ws": "^8.19.0" } }, "sha512-K2WoGy6x97u2kPPSFsu0v9X8CY+0q4OwO3rhXiOSRXYjGS7ovydFpEH07AS5VYcBnbQCoc5sGezo0IEGVViuoA=="],
 
     "@oxc-project/types": ["@oxc-project/types@0.143.0", "", {}, "sha512-u6JZdLBTLotrNC9Vd6vPssINdzcCzleKAH6EJKImQb7GtYvX5keN2dxkoK44stCc4tffE6QQRtZTXVSzsLUlWA=="],
 
