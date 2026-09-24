@@ -1,13 +1,8 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { mockLogger } from '../../tests/lib/logger-mock.js';
 
 const mockSpawnSync = vi.fn();
 const mockResolveExecutable = vi.fn();
-const mockLogger = {
-  debug: vi.fn(),
-  info: vi.fn(),
-  warn: vi.fn(),
-  error: vi.fn(),
-};
 
 vi.mock('../platform/command.js', () => ({
   resolveExecutable: (...args: unknown[]) => mockResolveExecutable(...args),
@@ -16,10 +11,9 @@ vi.mock('../platform/spawn.js', () => ({
   useDetachedProcessGroup: vi.fn(() => true),
   spawnProcessSync: (...args: unknown[]) => mockSpawnSync(...args),
 }));
-vi.mock('../logger/index.js', () => ({
-  getLogger: () => mockLogger,
-  initLogger: () => mockLogger,
-}));
+vi.mock('../logger/index.js', async () =>
+  (await import('../../tests/lib/logger-mock.js')).loggerModuleMock(),
+);
 
 import { loadOpencodeConfig, invalidateOpencodeConfigCache } from './opencode-config.js';
 

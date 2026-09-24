@@ -9,19 +9,11 @@ import { AppConfigSchema } from '../../src/config/index.js';
 import type { AppConfig } from '../../src/config/index.js';
 import type { Runner, AgentRunner } from '../../src/runner/index.js';
 import { AgentRegistry } from '../../src/runner/registry.js';
+import { mockLogger } from '../lib/logger-mock.js';
 
-// 直接在模块顶层定义 mock（兼容 bun 的 vitest）
-const mockLogger = {
-  debug: vi.fn(),
-  info: vi.fn(),
-  warn: vi.fn(),
-  error: vi.fn(),
-};
-
-vi.mock('../../src/logger/index.js', () => ({
-  getLogger: () => mockLogger,
-  initLogger: () => mockLogger,
-}));
+vi.mock('../../src/logger/index.js', async () =>
+  (await import('../lib/logger-mock.js')).loggerModuleMock(),
+);
 
 /**
  * A runner whose run() hangs forever until stop() releases it -- faithful to a

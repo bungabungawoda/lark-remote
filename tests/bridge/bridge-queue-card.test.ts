@@ -5,18 +5,11 @@ import os from 'node:os';
 
 import { makeBridge } from '../lib/bridge-stubs.js';
 import { setupTwoTaskQueueScenario } from '../lib/queue-scenario.js';
-// 直接在模块顶层定义 mock（兼容 bun 的 vitest）
-const mockLogger = {
-  debug: vi.fn(),
-  info: vi.fn(),
-  warn: vi.fn(),
-  error: vi.fn(),
-};
+import { mockLogger } from '../lib/logger-mock.js';
 
-vi.mock('../logger/index.js', () => ({
-  getLogger: () => mockLogger,
-  initLogger: () => mockLogger,
-}));
+vi.mock('../../src/logger/index.js', async () =>
+  (await import('../lib/logger-mock.js')).loggerModuleMock(),
+);
 
 let tmpDir: string;
 

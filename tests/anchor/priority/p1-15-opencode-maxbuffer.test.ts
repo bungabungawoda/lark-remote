@@ -5,20 +5,11 @@ import os from 'node:os';
 import { OpencodeSessionReader } from '../../../src/session/opencode/sessions.js';
 import { prependPath, restorePath, writeMockSource } from '../../lib/path-mock.js';
 import { rmRf } from '../../../tests/lib/tmp-cleanup.js';
+import { mockLogger } from '../../lib/logger-mock.js';
 
-const { mockLogger } = vi.hoisted(() => ({
-  mockLogger: {
-    debug: vi.fn(),
-    info: vi.fn(),
-    warn: vi.fn(),
-    error: vi.fn(),
-  },
-}));
-
-vi.mock('../../../src/logger/index.js', () => ({
-  getLogger: () => mockLogger,
-  initLogger: () => mockLogger,
-}));
+vi.mock('../../../src/logger/index.js', async () =>
+  (await import('../../lib/logger-mock.js')).loggerModuleMock(),
+);
 
 describe('P1-15 opencode session list maxBuffer', () => {
   afterEach(() => {

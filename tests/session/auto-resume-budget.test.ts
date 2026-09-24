@@ -88,8 +88,6 @@ describe('ws.use auto-resume budget bug - anchor', () => {
     // 验证：10 个事件 → 10 个面板（不被截断）
     expect(panelCount).toBe(10);
     expect(budgetResult.wasTruncated).toBe(false);
-
-    console.log('FIX VERIFIED: user can see', panelCount, 'events (not just 5)');
   });
 
   /**

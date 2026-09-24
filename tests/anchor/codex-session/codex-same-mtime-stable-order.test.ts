@@ -29,23 +29,16 @@ import {
   clearSessionIndexCache,
 } from '../../../src/session/codex/rollout-reader.js';
 
-const { mockLogger, state } = vi.hoisted(() => ({
-  mockLogger: {
-    debug: vi.fn(),
-    info: vi.fn(),
-    warn: vi.fn(),
-    error: vi.fn(),
-  },
+const { state } = vi.hoisted(() => ({
   // Scripted readdirSync results keyed by absolute directory path.
   state: {
     scriptedReaddir: new Map<string, string[]>(),
   },
 }));
 
-vi.mock('../../../src/logger/index.js', () => ({
-  getLogger: () => mockLogger,
-  initLogger: () => mockLogger,
-}));
+vi.mock('../../../src/logger/index.js', async () =>
+  (await import('../../lib/logger-mock.js')).loggerModuleMock(),
+);
 
 const T_SAME_MS = Date.parse('2026-07-01T08:00:01.000Z');
 

@@ -2,16 +2,11 @@ import { describe, it, expect, beforeEach, afterEach, afterAll, vi } from 'vites
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { mockLogger } from '../../tests/lib/logger-mock.js';
 
 // 直接在模块顶层定义 mock（兼容 bun 的 vitest）。
 // 生产代码经 platform/spawn（cross-spawn）调用 codex，mock 该 seam。
 const mockSpawnSync = vi.fn();
-const mockLogger = {
-  debug: vi.fn(),
-  info: vi.fn(),
-  warn: vi.fn(),
-  error: vi.fn(),
-};
 
 vi.mock('../platform/spawn.js', () => ({
   spawnProcessSync: (...args: any[]) => mockSpawnSync(...args),
@@ -19,10 +14,9 @@ vi.mock('../platform/spawn.js', () => ({
     throw new Error('sync test must not spawn async');
   },
 }));
-vi.mock('../logger/index.js', () => ({
-  getLogger: () => mockLogger,
-  initLogger: () => mockLogger,
-}));
+vi.mock('../logger/index.js', async () =>
+  (await import('../../tests/lib/logger-mock.js')).loggerModuleMock(),
+);
 
 import { resolveCodexHome, loadCodexConfig, invalidateCodexBundledCache } from './codex-config.js';
 import {

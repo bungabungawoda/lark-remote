@@ -20,24 +20,15 @@ import type { SpawnHeartbeat } from '../../../src/runner/common/spawn-heartbeat.
 import type { Terminator } from '../../../src/platform/terminator.js';
 import { agentStopperRegistry } from '../../../src/platform/agent-stopper.js';
 import { createMockProc } from '../../../tests/lib/mock-process.js';
+import { mockLogger } from '../../lib/logger-mock.js';
 
 // ---------------------------------------------------------------------------
 // Shared mock setup
 // ---------------------------------------------------------------------------
 
-const { mockLogger } = vi.hoisted(() => ({
-  mockLogger: {
-    debug: vi.fn(),
-    info: vi.fn(),
-    warn: vi.fn(),
-    error: vi.fn(),
-  },
-}));
-
-vi.mock('../../../src/logger/index.js', () => ({
-  getLogger: () => mockLogger,
-  initLogger: () => mockLogger,
-}));
+vi.mock('../../../src/logger/index.js', async () =>
+  (await import('../../lib/logger-mock.js')).loggerModuleMock(),
+);
 
 vi.mock('../../../src/platform/spawn.js', () => ({
   useDetachedProcessGroup: vi.fn(() => true),
@@ -46,8 +37,13 @@ vi.mock('../../../src/platform/spawn.js', () => ({
   isWindowsCommandNotFoundLine: vi.fn(() => false),
 }));
 
+// node:child_process 的 mock 面必须是**宿主无关的**：win32 宿主上 createTerminator 选
+// terminator-win32，它在构造期就取 `node:child_process.spawn` 作为 taskkill 的默认实现
+// （posix 实现只用 process.kill，从不碰这些导出）；少给一个导出，vitest 的 mock Proxy
+// 读取时直接抛「No "spawn" export is defined」，于是同一份用例在 macOS 绿、Windows 红。
 vi.mock('node:child_process', () => ({
   execFileSync: vi.fn(),
+  spawn: vi.fn(),
 }));
 
 import { spawnProcess as spawn } from '../../../src/platform/spawn.js';

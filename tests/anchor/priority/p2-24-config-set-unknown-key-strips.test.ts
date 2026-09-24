@@ -4,15 +4,9 @@ import path from 'node:path';
 import os from 'node:os';
 import { AppConfigSchema, setConfigValues, type AppConfig } from '../../../src/config/index.js';
 
-vi.mock('../../../src/logger/index.js', () => ({
-  getLogger: () => ({
-    debug: vi.fn(),
-    info: vi.fn(),
-    warn: vi.fn(),
-    error: vi.fn(),
-  }),
-  initLogger: () => ({}),
-}));
+vi.mock('../../../src/logger/index.js', async () =>
+  (await import('../../lib/logger-mock.js')).loggerModuleMock(),
+);
 
 let tmpDir: string;
 

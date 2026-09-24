@@ -26,19 +26,9 @@ import os from 'node:os';
  * Pyramid: L1 (unit) — 直接调用 reader，验证事件数 <= maxEvents
  */
 
-const { mockLogger } = vi.hoisted(() => ({
-  mockLogger: {
-    debug: vi.fn(),
-    info: vi.fn(),
-    warn: vi.fn(),
-    error: vi.fn(),
-  },
-}));
-
-vi.mock('../../../src/logger/index.js', () => ({
-  getLogger: () => mockLogger,
-  initLogger: () => mockLogger,
-}));
+vi.mock('../../../src/logger/index.js', async () =>
+  (await import('../../lib/logger-mock.js')).loggerModuleMock(),
+);
 
 import { CodexSessionReader } from '../../../src/session/codex/sessions.js';
 import { readCodexSessionContent } from '../../../src/session/codex/rollout-reader.js';

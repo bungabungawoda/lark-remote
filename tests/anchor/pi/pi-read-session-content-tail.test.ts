@@ -37,13 +37,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { piEncodeCwd } from '../../lib/session-fixtures.js';
 
-const { mockLogger, jsonlSpy } = vi.hoisted(() => ({
-  mockLogger: {
-    debug: vi.fn(),
-    info: vi.fn(),
-    warn: vi.fn(),
-    error: vi.fn(),
-  },
+const { jsonlSpy } = vi.hoisted(() => ({
   jsonlSpy: {
     readJsonlLines: vi.fn(),
     readLastJsonlLine: vi.fn(),
@@ -51,10 +45,9 @@ const { mockLogger, jsonlSpy } = vi.hoisted(() => ({
   },
 }));
 
-vi.mock('../../../src/logger/index.js', () => ({
-  getLogger: () => mockLogger,
-  initLogger: () => mockLogger,
-}));
+vi.mock('../../../src/logger/index.js', async () =>
+  (await import('../../lib/logger-mock.js')).loggerModuleMock(),
+);
 
 // Spy the shared jsonl module. Real implementations are delegated via
 // importOriginal so parity still works; call counts are tracked so the

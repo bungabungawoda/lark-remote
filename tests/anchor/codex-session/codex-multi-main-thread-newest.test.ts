@@ -28,22 +28,15 @@ import {
   clearSessionIndexCache,
 } from '../../../src/session/codex/rollout-reader.js';
 
-const { mockLogger, state } = vi.hoisted(() => ({
-  mockLogger: {
-    debug: vi.fn(),
-    info: vi.fn(),
-    warn: vi.fn(),
-    error: vi.fn(),
-  },
+const { state } = vi.hoisted(() => ({
   state: {
     scriptedReaddir: new Map<string, string[]>(),
   },
 }));
 
-vi.mock('../../../src/logger/index.js', () => ({
-  getLogger: () => mockLogger,
-  initLogger: () => mockLogger,
-}));
+vi.mock('../../../src/logger/index.js', async () =>
+  (await import('../../lib/logger-mock.js')).loggerModuleMock(),
+);
 
 const SESSION_ID = 'sess-multi-main';
 const T_OLD_MS = Date.parse('2026-08-01T10:00:00.000Z');

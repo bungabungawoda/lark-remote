@@ -19,19 +19,9 @@ import type { AgentSessionReader } from '../../../src/runner/index.js';
 import { prependPath, restorePath, writeMockSource } from '../../lib/path-mock.js';
 import { rmRf } from '../../../tests/lib/tmp-cleanup.js';
 
-const { mockLogger } = vi.hoisted(() => ({
-  mockLogger: {
-    debug: vi.fn(),
-    info: vi.fn(),
-    warn: vi.fn(),
-    error: vi.fn(),
-  },
-}));
-
-vi.mock('../../../src/logger/index.js', () => ({
-  getLogger: () => mockLogger,
-  initLogger: () => mockLogger,
-}));
+vi.mock('../../../src/logger/index.js', async () =>
+  (await import('../../lib/logger-mock.js')).loggerModuleMock(),
+);
 
 function buildConfig(): AppConfig {
   return AppConfigSchema.parse({

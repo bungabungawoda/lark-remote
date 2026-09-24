@@ -41,15 +41,6 @@ import {
 import { getLogger } from '../../../logger/index.js';
 import { BaseAcpTranslator, type AcpTranslatorEvent } from '../../common/acp/base-translator.js';
 
-// Shared translator event types — the event union keeps its established
-// opencode name so runner imports stay stable.
-export type {
-  AcpTurnStartedEvent as OpencodeAcpTurnStartedEvent,
-  AcpLiveUsage as OpencodeAcpLiveUsage,
-  AcpUsageEvent as OpencodeAcpUsageEvent,
-  AcpTranslatorEvent as OpencodeAcpTranslatorEvent,
-} from '../../common/acp/base-translator.js';
-
 // =============================================================================
 // Translator
 // =============================================================================

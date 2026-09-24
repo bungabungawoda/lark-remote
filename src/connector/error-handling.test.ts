@@ -23,14 +23,9 @@ vi.mock('axios', () => ({
   },
 }));
 
-vi.mock('../logger/index.js', () => ({
-  getLogger: () => ({
-    info: vi.fn(),
-    warn: vi.fn(),
-    error: vi.fn(),
-    debug: vi.fn(),
-  }),
-}));
+vi.mock('../logger/index.js', async () =>
+  (await import('../../tests/lib/logger-mock.js')).loggerModuleMock(),
+);
 
 const config: AppConfig = {
   feishu: { appId: 'app-id', appSecret: 'app-secret' },

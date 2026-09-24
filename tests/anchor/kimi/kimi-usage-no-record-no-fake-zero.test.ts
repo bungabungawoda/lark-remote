@@ -54,19 +54,10 @@ import {
   createStubConnector,
   createStubRunner,
 } from '../../lib/bridge-stubs.js';
-const { mockLogger } = vi.hoisted(() => ({
-  mockLogger: {
-    debug: vi.fn(),
-    info: vi.fn(),
-    warn: vi.fn(),
-    error: vi.fn(),
-  },
-}));
 
-vi.mock('../../../src/logger/index.js', () => ({
-  getLogger: () => mockLogger,
-  initLogger: () => mockLogger,
-}));
+vi.mock('../../../src/logger/index.js', async () =>
+  (await import('../../lib/logger-mock.js')).loggerModuleMock(),
+);
 
 // --- 边界测试替身（仅 runner；同 tests/anchor/kimi/kimi-usage-e2e-card.test.ts 模式） ---
 /** Wrap a stub Runner with AgentRunner fields。 */

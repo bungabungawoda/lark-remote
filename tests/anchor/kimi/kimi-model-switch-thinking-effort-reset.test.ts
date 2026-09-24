@@ -18,15 +18,7 @@ import { AppConfigSchema } from '../../../src/config/index.js';
  * key='agents.kimi.thinkingEffort' 的重置补丁（value 为 newModel 支持的合法档位）。
  */
 
-const { mockLoadKimiConfig, mockLogger } = vi.hoisted(() => ({
-  mockLoadKimiConfig: vi.fn(),
-  mockLogger: {
-    debug: vi.fn(),
-    info: vi.fn(),
-    warn: vi.fn(),
-    error: vi.fn(),
-  },
-}));
+const { mockLoadKimiConfig } = vi.hoisted(() => ({ mockLoadKimiConfig: vi.fn() }));
 
 vi.mock('../../../src/config/kimi-config.js', () => ({
   loadKimiConfig: mockLoadKimiConfig,
@@ -34,10 +26,9 @@ vi.mock('../../../src/config/kimi-config.js', () => ({
   FALLBACK_EFFORTS: ['low', 'high', 'max'] as readonly string[],
 }));
 
-vi.mock('../../../src/logger/index.js', () => ({
-  getLogger: () => mockLogger,
-  initLogger: () => mockLogger,
-}));
+vi.mock('../../../src/logger/index.js', async () =>
+  (await import('../../lib/logger-mock.js')).loggerModuleMock(),
+);
 
 beforeEach(() => {
   mockLoadKimiConfig.mockReset();

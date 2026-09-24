@@ -38,9 +38,9 @@ vi.mock('@larksuite/channel', () => ({
   createLarkChannel: () => mockChannel,
 }));
 
-vi.mock('../../../src/logger/index.js', () => ({
-  getLogger: () => ({ debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() }),
-}));
+vi.mock('../../../src/logger/index.js', async () =>
+  (await import('../../lib/logger-mock.js')).loggerModuleMock(),
+);
 
 import { FeishuConnector } from '../../../src/connector/index.js';
 import { AppConfigSchema } from '../../../src/config/index.js';

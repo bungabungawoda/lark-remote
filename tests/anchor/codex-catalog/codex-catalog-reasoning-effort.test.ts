@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import { mockLogger } from '../../lib/logger-mock.js';
 
 /**
  * Red Agent - Round 1 - Anchor (Bug 模式, A1)
@@ -18,10 +19,7 @@ import os from 'node:os';
  * 且调用参数含 --bundled。
  */
 
-const { mockSpawnSync, mockLogger } = vi.hoisted(() => ({
-  mockSpawnSync: vi.fn(),
-  mockLogger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
-}));
+const { mockSpawnSync } = vi.hoisted(() => ({ mockSpawnSync: vi.fn() }));
 
 vi.mock('../../../src/platform/spawn.js', () => ({
   // 兼容历史 mock 形态：返回 string/Buffer 视为成功 stdout，抛错/其余原样穿透
@@ -36,10 +34,9 @@ vi.mock('../../../src/platform/spawn.js', () => ({
     throw new Error('anchor test must not spawn async');
   },
 }));
-vi.mock('../../../src/logger/index.js', () => ({
-  getLogger: () => mockLogger,
-  initLogger: () => mockLogger,
-}));
+vi.mock('../../../src/logger/index.js', async () =>
+  (await import('../../lib/logger-mock.js')).loggerModuleMock(),
+);
 
 import { makeModel, makeCatalog } from '../../fixtures/codex-catalog-fixture.js';
 import {

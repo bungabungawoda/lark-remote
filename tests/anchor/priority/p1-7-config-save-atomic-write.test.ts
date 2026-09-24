@@ -16,15 +16,9 @@ import {
   createStubSessionReaderRegistry,
   createStubConnector,
 } from '../../lib/bridge-stubs.js';
-vi.mock('../../../src/logger/index.js', () => ({
-  getLogger: () => ({
-    debug: vi.fn(),
-    info: vi.fn(),
-    warn: vi.fn(),
-    error: vi.fn(),
-  }),
-  initLogger: () => ({}),
-}));
+vi.mock('../../../src/logger/index.js', async () =>
+  (await import('../../lib/logger-mock.js')).loggerModuleMock(),
+);
 
 vi.mock('../../../src/persistence/atomic-write.js', async (importOriginal) => {
   const mod = await importOriginal<typeof import('../../../src/persistence/atomic-write.js')>();

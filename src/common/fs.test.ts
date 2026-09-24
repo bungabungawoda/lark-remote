@@ -1,11 +1,9 @@
 import { describe, it, expect, vi } from 'vitest';
 import { withBusyRetry, isBusyError } from './fs.js';
 
-const { mockLogger } = vi.hoisted(() => ({
-  mockLogger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
-}));
-
-vi.mock('../logger/index.js', () => ({ getLogger: () => mockLogger }));
+vi.mock('../logger/index.js', async () =>
+  (await import('../../tests/lib/logger-mock.js')).loggerModuleMock(),
+);
 
 function busyErr(code: 'EPERM' | 'EBUSY'): Error {
   return Object.assign(new Error(code), { code });

@@ -21,6 +21,7 @@ import { makeModel, makeCatalog } from '../../fixtures/codex-catalog-fixture.js'
 import path from 'node:path';
 import os from 'node:os';
 import fs from 'node:fs';
+import { mockLogger } from '../../lib/logger-mock.js';
 
 /**
  * P2-2（codex-y review）：本文件此前未 mock node:child_process，卡片构建会真实调用
@@ -28,10 +29,7 @@ import fs from 'node:fs';
  * 镜像真实 codex：config.toml 声明 model_catalog_json → 返回该文件内容；否则返回
  * bundled fixture（gpt-5.2 等，覆盖 AC1-3 的预设断言）。
  */
-const { mockSpawnSync, mockLogger } = vi.hoisted(() => ({
-  mockSpawnSync: vi.fn(),
-  mockLogger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
-}));
+const { mockSpawnSync } = vi.hoisted(() => ({ mockSpawnSync: vi.fn() }));
 
 vi.mock('../../../src/platform/spawn.js', () => ({
   // 兼容历史 mock 形态：返回 string/Buffer 视为成功 stdout，抛错/其余原样穿透
@@ -46,10 +44,9 @@ vi.mock('../../../src/platform/spawn.js', () => ({
     throw new Error('anchor test must not spawn async');
   },
 }));
-vi.mock('../../../src/logger/index.js', () => ({
-  getLogger: () => mockLogger,
-  initLogger: () => mockLogger,
-}));
+vi.mock('../../../src/logger/index.js', async () =>
+  (await import('../../lib/logger-mock.js')).loggerModuleMock(),
+);
 
 const BUNDLED_FIXTURE = makeCatalog([
   makeModel('gpt-5.2', [{ effort: 'medium' }], {

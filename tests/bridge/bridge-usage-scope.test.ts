@@ -13,18 +13,11 @@ import {
   createStubConnector,
   createStubRunner,
 } from '../lib/bridge-stubs.js';
-// 直接在模块顶层定义 mock（兼容 bun 的 vitest）
-const mockLogger = {
-  debug: vi.fn(),
-  info: vi.fn(),
-  warn: vi.fn(),
-  error: vi.fn(),
-};
+import { mockLogger } from '../lib/logger-mock.js';
 
-vi.mock('../../src/logger/index.js', () => ({
-  getLogger: () => mockLogger,
-  initLogger: () => mockLogger,
-}));
+vi.mock('../../src/logger/index.js', async () =>
+  (await import('../lib/logger-mock.js')).loggerModuleMock(),
+);
 
 // --- Stubs（同 tests/anchor/misc/bridge-kimi-usage-threading.test.ts 模式） ---
 function asAgentRunner(r: Runner, kind: AgentKind): AgentRunner {

@@ -18,13 +18,9 @@ import { SpawningRunner } from '../../../src/runner/common/spawning-runner.js';
 import type { AgentEvent, SpawnOptions } from '../../../src/runner/types.js';
 import { createMockProc } from '../../../tests/lib/mock-process.js';
 
-const { mockLogger } = vi.hoisted(() => ({
-  mockLogger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
-}));
-vi.mock('../../../src/logger/index.js', () => ({
-  getLogger: () => mockLogger,
-  initLogger: () => mockLogger,
-}));
+vi.mock('../../../src/logger/index.js', async () =>
+  (await import('../../lib/logger-mock.js')).loggerModuleMock(),
+);
 
 class TestRunner extends SpawningRunner {
   constructor() {

@@ -24,20 +24,36 @@ import { PiSessionReader } from '../../../src/session/pi/index.js';
 import { KimiSessionReader } from '../../../src/session/kimi/index.js';
 import type { AgentSessionReader } from '../../../src/runner/index.js';
 
-const { mockLogger } = vi.hoisted(() => ({
-  mockLogger: {
-    debug: vi.fn(),
-    info: vi.fn(),
-    warn: vi.fn(),
-    error: vi.fn(),
-  },
-}));
-
 import { encodedProjectDir, piEncodeCwd } from '../../lib/session-fixtures.js';
-vi.mock('../../../src/logger/index.js', () => ({
-  getLogger: () => mockLogger,
-  initLogger: () => mockLogger,
-}));
+vi.mock('../../../src/logger/index.js', async () =>
+  (await import('../../lib/logger-mock.js')).loggerModuleMock(),
+);
+
+// 测试隔离（设计文档 §9.5「禁真跑 agent」）：本用例的前提就是「**无二进制可用**」
+// （见下方 `test_anchor_readers_empty_dir_returns_zero_total` 的注释），而 5 个 reader
+// 里只有 OpencodeSessionReader 走 CLI（`opencode session list --format json`）——不 mock
+// 就会真起本机 opencode，Windows 上单次 2-7s，全量并行时直接顶爆 20s hook 预算。
+//
+// 短路语义必须与「CLI 未安装」一致：返回 **ENOENT**，而不是 exit≠0。
+// 因为 `OpencodeSessionReader.fetchSessionList`（P1-15）对两者处理不同——
+//   · ENOENT          → 返回 []（陈旧 cwd / 二进制缺失，优雅降级）
+//   · exit≠0 / 解析错 → 抛「读取失败」（避免静默 [] 与真空不可区分）
+// 给 exit≠0 会让本用例抛异常，恰好把这条不变量打反。其余导出保持真实。
+vi.mock('../../../src/platform/spawn.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../../src/platform/spawn.js')>();
+  return {
+    ...actual,
+    spawnProcessSync: (() => ({
+      pid: 0,
+      output: [],
+      stdout: '',
+      stderr: '',
+      status: null,
+      signal: null,
+      error: Object.assign(new Error('spawn opencode ENOENT'), { code: 'ENOENT' }),
+    })) as unknown as typeof actual.spawnProcessSync,
+  };
+});
 
 describe('Round 10 reader anchors', () => {
   let tmpDir: string;

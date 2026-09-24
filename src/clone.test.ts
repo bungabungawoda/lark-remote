@@ -4,14 +4,9 @@ import os from 'node:os';
 import path from 'node:path';
 import { CloneSession, generateCloneSuffix, isValidCloneName, type CloneContext } from './clone.js';
 
-vi.mock('./logger/index.js', () => ({
-  getLogger: () => ({
-    info: vi.fn(),
-    warn: vi.fn(),
-    error: vi.fn(),
-    debug: vi.fn(),
-  }),
-}));
+vi.mock('./logger/index.js', async () =>
+  (await import('../tests/lib/logger-mock.js')).loggerModuleMock(),
+);
 
 const SOURCE_CONFIG = [
   'feishu:',

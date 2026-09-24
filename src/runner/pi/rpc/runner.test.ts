@@ -7,13 +7,9 @@ import type { AgentSessionReader } from '../../types.js';
 import { prependPath, restorePath, writeMockSource } from '../../../../tests/lib/path-mock.js';
 import { rmRf } from '../../../../tests/lib/tmp-cleanup.js';
 
-const { mockLogger } = vi.hoisted(() => ({
-  mockLogger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
-}));
-vi.mock('../../../logger/index.js', () => ({
-  getLogger: () => mockLogger,
-  initLogger: () => mockLogger,
-}));
+vi.mock('../../../logger/index.js', async () =>
+  (await import('../../../../tests/lib/logger-mock.js')).loggerModuleMock(),
+);
 
 const SESSION_ID = 'aaaaaaaa-1111-2222-3333-444444444444';
 

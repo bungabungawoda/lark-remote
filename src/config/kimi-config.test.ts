@@ -16,9 +16,9 @@ vi.mock('../platform/spawn.js', () => ({
   },
 }));
 
-vi.mock('../logger/index.js', () => ({
-  getLogger: () => ({ warn: vi.fn(), info: vi.fn(), error: vi.fn() }),
-}));
+vi.mock('../logger/index.js', async () =>
+  (await import('../../tests/lib/logger-mock.js')).loggerModuleMock(),
+);
 
 function makeProviderListJson(overrides: {
   models?: Record<string, object>;

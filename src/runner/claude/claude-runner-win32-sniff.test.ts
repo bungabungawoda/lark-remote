@@ -17,20 +17,11 @@ import os from 'node:os';
 import { ClaudeRunner } from './index.js';
 import { prependPath, restorePath, writeMockBin } from '../../../tests/lib/path-mock.js';
 import type { AgentEvent } from '../types.js';
+import { mockLogger } from '../../../tests/lib/logger-mock.js';
 
-const { mockLogger } = vi.hoisted(() => ({
-  mockLogger: {
-    debug: vi.fn(),
-    info: vi.fn(),
-    warn: vi.fn(),
-    error: vi.fn(),
-  },
-}));
-
-vi.mock('../../logger/index.js', () => ({
-  getLogger: () => mockLogger,
-  initLogger: () => mockLogger,
-}));
+vi.mock('../../logger/index.js', async () =>
+  (await import('../../../tests/lib/logger-mock.js')).loggerModuleMock(),
+);
 
 // 强制 win32 嗅探语义：其余 spawn 导出（spawnProcess/mergeProcessEnv 等）
 // 保持原实现，spawnProcess 仍真实起子进程。

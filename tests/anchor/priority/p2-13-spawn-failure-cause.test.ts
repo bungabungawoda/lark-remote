@@ -21,13 +21,9 @@ import type { SpawnOptions } from '../../../src/runner/types.js';
 import { PassThrough } from 'node:stream';
 import { createMockProc } from '../../../tests/lib/mock-process.js';
 
-const { mockLogger } = vi.hoisted(() => ({
-  mockLogger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
-}));
-vi.mock('../../../src/logger/index.js', () => ({
-  getLogger: () => mockLogger,
-  initLogger: () => mockLogger,
-}));
+vi.mock('../../../src/logger/index.js', async () =>
+  (await import('../../lib/logger-mock.js')).loggerModuleMock(),
+);
 vi.mock('../../../src/platform/spawn.js', () => ({
   useDetachedProcessGroup: vi.fn(() => true),
   spawnProcess: vi.fn(),
