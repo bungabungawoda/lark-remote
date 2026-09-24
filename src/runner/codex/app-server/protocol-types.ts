@@ -6,6 +6,10 @@
  * field names use the wire format exactly: camelCase paths for methods
  * (`item/agentMessage/delta`) and snake_case only where the server requires it
  * (e.g. permission profile fields).
+ *
+ * 本文件是上游 schema 的完整镜像，不是"用到什么抄什么"：少数导出类型当前没有
+ * consumer，是有意保留（接新通知/新方法时不必回头重抄 schema）。静态扫描再报
+ * "零引用导出类型"指的就是这一批，别据此删除。
  */
 
 // =============================================================================

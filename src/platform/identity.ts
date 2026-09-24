@@ -268,8 +268,8 @@ function stripExtension(base: string): string {
  *   - killOrphan：两者都不杀（fail-closed，宁可留孤儿也不误杀无辜进程）；
  *   - InstanceLock：`unknown` 退回纯存活探测（不 clobber 无法证伪的锁），
  *     只有 `mismatch` 才判陈旧并接管。
- * 布尔接口无法同时表达这两种语义，因此这里作为唯一判定源，`verifyPidIdentity`
- * 退化为它的二值便利入口。
+ * 布尔接口无法同时表达这两种语义，因此这里（async + sync 两个 verdict 入口）是
+ * 唯一判定源。
  */
 export type IdentityVerdict = 'match' | 'mismatch' | 'unknown';
 
@@ -336,15 +336,4 @@ export function verifyPidIdentityVerdictSync(
   const commandLine = stdout.split('\n')[0]?.trim() ?? '';
   if (!commandLine) return 'unknown';
   return decideIdentity({ commandLine }, opts, platform);
-}
-
-/**
- * pid 身份验证：进程存活且命令行确实属于期望二进制（+ CreationDate 一致）才 true。
- * `unknown` 与 `mismatch` 一并不通过——「只有身份匹配才动手」。
- */
-export async function verifyPidIdentity(
-  pid: number,
-  opts: VerifyPidIdentityOptions,
-): Promise<boolean> {
-  return (await verifyPidIdentityVerdict(pid, opts)) === 'match';
 }

@@ -19,13 +19,6 @@ export interface DshSessionEvent {
   data: Record<string, unknown>;
 }
 
-/** assistant/chunk chunk payload (StreamChunk). */
-export interface DshChunk {
-  type: string;
-  index?: number;
-  text?: string;
-}
-
 /** TokenUsage from assistant/message.usage (dsh-llm TokenUsage). */
 export interface DshTokenUsage {
   inputTokens: number;
@@ -91,14 +84,6 @@ export interface DshModelSelection {
   reasoningEffort?: string;
 }
 
-/** session.models → value. */
-export interface DshSessionModelsValue {
-  current: DshModelSelection;
-  routable: boolean;
-  groups: DshModelGroup[];
-  failures?: Array<{ id: string; name: string; message: string }>;
-}
-
 /** One preset row of agentPreset.list. */
 export interface DshPresetEntry {
   id: string;
@@ -115,19 +100,6 @@ export interface DshPresetListValue {
   authorable: boolean;
   hasDocument: boolean;
 }
-
-/** Mux frame payloads we care about (subset of MuxFrame). */
-export type DshMuxFrame =
-  | { type: 'session/event'; sessionId: string; event: DshSessionEvent }
-  | {
-      type: 'approval/requested';
-      sessionId: string;
-      approvalId: string;
-      toolName: string;
-      callId?: string;
-      reason?: string;
-    }
-  | { type: 'stream/error'; error: { code: string; message: string } };
 
 /** ServerRequest envelope (frame.method === frame.payload.type). */
 export interface DshServerRequest {

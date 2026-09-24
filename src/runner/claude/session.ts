@@ -217,13 +217,6 @@ export class ClaudeSession extends SpawningRunner {
   }
 
   /**
-   * 写一条用户消息到 stdin（--input-format stream-json 的 user 事件）。
-   */
-  async sendUserMessage(message: string): Promise<void> {
-    await this.writeUserMessage(message);
-  }
-
-  /**
    * 回写审批响应（允许/拒绝）。
    */
   async respondPermission(requestId: number | string, result: PermissionResult): Promise<void> {
