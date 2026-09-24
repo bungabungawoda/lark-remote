@@ -205,9 +205,9 @@ describe('queue executing count must not be reset onto the next task that began 
       const mQueueCards = connector._sent.filter((s) =>
         JSON.stringify(s.input).includes('M after stop'),
       );
-      // 当前实现：interruptCurrentRun 在 stop 后无条件 resetExecutingCount，
+      // 修复前：interruptCurrentRun 在 stop 后无条件 resetExecutingCount，
       // 把接跑任务 T 的计数清零并标记 T 的 slot 为 interrupted → M 入队时
-      // count=0/queueLen=0 → hasWaitingTasks=false → 不发排队卡。必须真红。
+      // count=0/queueLen=0 → hasWaitingTasks=false → 不发排队卡。
       expect(mQueueCards).toHaveLength(1);
 
       // 清理：放行 T 的 run 与 M 的挂起，让两条队列链自然收尾。

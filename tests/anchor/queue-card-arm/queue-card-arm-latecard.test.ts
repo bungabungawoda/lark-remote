@@ -108,9 +108,9 @@ describe('QueueManager - late-arriving queue card must still transition to execu
     resolveSendCard();
     await sleep(50);
 
-    // 当前实现：T2 begin 时映射不存在 → updateQueueCardToExecuting no-op；
+    // 修复前：T2 begin 时映射不存在 → updateQueueCardToExecuting no-op；
     // send 完成后映射写入但无人 reconcile → updatedCards 永远没有执行态更新。
-    // 这里必须真红（期望出现 '▶️ 已开始执行' 更新，实得 0 条）。
+    // 本用例钉住（期望出现 '▶️ 已开始执行' 更新，实得 0 条）。
     const gotExecutingUpdate = await waitFor(() => updatedCards.some(isExecutingUpdate));
     expect(gotExecutingUpdate).toBe(true);
 

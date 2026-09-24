@@ -80,6 +80,12 @@ export interface KimiAcpRunnerOptions {
    *  LLM 请求（引擎带重试），时长无上限，旧的固定 30s 轮询超时已删除。 */
   compactIdleTimeoutMs?: number;
   model?: string;
+  /**
+   * 思考强度（`low`|`high`|`max`，取值由 `KIMI_THINKING_EFFORTS` 校验）。
+   * 经 `session/set_config_option {configId:'thinking'}` 下发；不下发则跑
+   * kimi 服务端默认档（配置卡片存了也不生效）。
+   */
+  thinkingEffort?: string;
   /** Kimi permission mode (user-facing: manual/auto/yolo). */
   permissionMode?: 'manual' | 'auto' | 'yolo';
 }
@@ -236,6 +242,7 @@ function buildQuestionResponse(
 
 export class KimiAcpRunner extends BaseAcpRunner<KimiAcpTranslator> {
   private permissionMode: 'manual' | 'auto' | 'yolo';
+  private thinkingEffort?: string;
   private readonly compactIdleTimeoutMs: number;
   /**
    * §5.2 compaction baseline: wire.jsonl records sampled by compactBaseline()
@@ -296,6 +303,7 @@ export class KimiAcpRunner extends BaseAcpRunner<KimiAcpTranslator> {
       new ConnectionManager(managerOpts),
     );
     this.model = opts.model;
+    this.thinkingEffort = opts.thinkingEffort;
     this.permissionMode = opts.permissionMode ?? 'manual';
     this.compactIdleTimeoutMs = opts.compactIdleTimeoutMs ?? COMPACT_IDLE_TIMEOUT_MS;
   }
@@ -338,6 +346,27 @@ export class KimiAcpRunner extends BaseAcpRunner<KimiAcpTranslator> {
       } catch (err) {
         getLogger().warn(
           `[${this.logTag}] set_config_option model failed (non-fatal): ${(err as Error).message}`,
+        );
+      }
+    }
+
+    // A5: 下发配置的思考强度。configId 与取值不是猜的——kimi 真机（0.43.1）
+    // `session/new` 就通告 `{id:'thinking', category:'thought_level',
+    // options:[low|high|max]}`，set 成功后响应里 `currentValue` 变成新值；
+    // 未知 configId / 非法取值回 -32602（不静默接受），所以失败告警即可判定。
+    // 换模型后新模型可能不支持当前档 → 服务端拒绝、保持其默认档，卡片侧
+    // `thinkingEffortPatchForModel` 已按 supportEfforts 预挑兼容档。
+    if (this.thinkingEffort) {
+      try {
+        await client.request('session/set_config_option', {
+          sessionId,
+          configId: 'thinking',
+          value: this.thinkingEffort,
+        });
+      } catch (err) {
+        getLogger().warn(
+          `[${this.logTag}] set_config_option thinking failed (non-fatal): ` +
+            `${(err as Error).message}`,
         );
       }
     }
@@ -392,11 +421,13 @@ export class KimiAcpRunner extends BaseAcpRunner<KimiAcpTranslator> {
     // re-reading here would race the prompt fire and misclassify new records.
     const baselineTerminalCount =
       this.compactBaselineRecords.filter(isCompactionTerminalLike).length;
+    let promptRejected = false;
 
-    promptPromise.then(
-      async (result) => {
+    // prompt 结算只供两样东西：成功 result 的翻译素材（stopReason/usage）与 §5.4
+    // 探针。终态判定不再挂在它后面（A7）。
+    const promptSettled: Promise<SessionPromptResult | undefined> = promptPromise.then(
+      (result) => {
         this.promptSettled = true;
-        if (this.stopRequested) return; // already cancelled
         if (compactionReader) {
           // §5.4 可选防线（日志探针）：prompt settle 后既无新 begin 也无新
           // terminal → compact 未被引擎接受（可能已在跑或被拒绝）。不解析
@@ -407,38 +438,57 @@ export class KimiAcpRunner extends BaseAcpRunner<KimiAcpTranslator> {
               `[${this.logTag}] compact 未被引擎接受（无新 begin/terminal 记录，可能已在跑或被拒绝）`,
             );
           }
-          const outcome = await this.waitForCompactionTerminal(
-            compactionReader,
-            opts,
-            baselineTerminalCount,
-          );
-          if (this.forceFinish) return; // stopped while polling
-          if (outcome === 'completed') {
-            // 压缩完成：正常翻译 prompt 结果（subtype success）。
-            const resultEvent = translator.handlePromptResponse(sessionId, result);
-            this.pushEvents([resultEvent]);
-          } else if (outcome === 'cancelled') {
-            this.pushEvents([
-              translator.produceErrorResult(
-                sessionId,
-                '压缩未完成：已被取消或压缩请求失败（可重试）',
-              ),
-            ]);
-          } else if (outcome === 'unknown') {
-            this.pushEvents([
-              translator.produceErrorResult(
-                sessionId,
-                `压缩状态未知：超过 ${formatIdleWindow(this.compactIdleTimeoutMs)} 未观察到完成/取消记录，压缩可能仍在后台进行`,
-              ),
-            ]);
-          }
-          // outcome === 'stopped'：不推 result，由 consumeTurn 的 interrupted 兜底。
-        } else {
-          const resultEvent = translator.handlePromptResponse(sessionId, result);
-          this.pushEvents([resultEvent]);
         }
+        return result;
       },
-      (err) => this.handlePromptRejected(err, translator, sessionId, 'compact'),
+      (err) => {
+        promptRejected = true;
+        this.handlePromptRejected(err, translator, sessionId, 'compact');
+        return undefined;
+      },
+    );
+
+    if (!compactionReader) {
+      // 读不到 compaction 记录（reader 未实现）：沿用「prompt 结算即成功」的口径。
+      void promptSettled.then((result) => {
+        if (result) this.pushEvents([translator.handlePromptResponse(sessionId, result)]);
+      });
+      return;
+    }
+
+    // A7：语义等待在 prompt 触发的那一刻武装。引擎静默超过 compactIdleTimeoutMs
+    // 就给出 compact 语义终态，不等 session/prompt 结算——否则挂住的 prompt 会把
+    // 用户拖到通用 turnIdleTimeout（默认 30min），拿到的还是一个语义泛化的 turn
+    // 超时，而不是「压缩状态未知 / 可重试」。
+    void this.waitForCompactionTerminal(compactionReader, opts, baselineTerminalCount).then(
+      async (outcome) => {
+        // outcome === 'stopped'：不推 result，由 consumeTurn 的 interrupted 兜底。
+        if (outcome === 'stopped' || this.forceFinish || this.stopRequested) return;
+        if (outcome === 'cancelled') {
+          this.pushEvents([
+            translator.produceErrorResult(
+              sessionId,
+              '压缩未完成：已被取消或压缩请求失败（可重试）',
+            ),
+          ]);
+          return;
+        }
+        if (outcome === 'unknown') {
+          this.pushEvents([
+            translator.produceErrorResult(
+              sessionId,
+              `压缩状态未知：超过 ${formatIdleWindow(this.compactIdleTimeoutMs)} 未观察到完成/取消记录，压缩可能仍在后台进行`,
+            ),
+          ]);
+          return;
+        }
+        // completed：成功 result 需要 prompt 的 stopReason/usage。§5.2 的正常时序里
+        // prompt 先于终态记录结算，这里通常是在等一个已完成的 promise。
+        const result = await promptSettled;
+        if (!result || promptRejected) return; // handlePromptRejected 已产 error result
+        if (this.forceFinish || this.stopRequested) return;
+        this.pushEvents([translator.handlePromptResponse(sessionId, result)]);
+      },
     );
   }
 

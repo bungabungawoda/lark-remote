@@ -811,11 +811,18 @@ export function renderRunCard(state: RunState, options: RunCardRenderOptions = {
     return skeletonCard;
   }
 
-  // 理论上不可达：skeleton 已是静态最小结构。若仍超限，硬截断文本提示兜底。
+  // 理论上不可达：skeleton 已是静态最小结构。若仍超限（errorMsg 等无界文本
+  // 灌进 summary），硬截断只丢 summary——审批入口与 stop/新会话按钮是红线，
+  // 任何一级兜底都不能把它们截掉（丢了用户就再也停不下这个 run）。
   const truncatedSkeleton = {
     ...skeletonCard,
     body: {
-      elements: [statusRow(state), markdownDiv('_⚠️ 输出过大_'), newSessionButton()],
+      elements: [
+        statusRow(state),
+        markdownDiv('_⚠️ 输出过大_'),
+        ...approvalArea(state),
+        ...actionRow(state, options),
+      ],
     },
   };
   return truncatedSkeleton;

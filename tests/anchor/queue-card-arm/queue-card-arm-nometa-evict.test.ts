@@ -105,14 +105,14 @@ describe('QueueManager - a no-taskMeta task must not evict the next queued meta 
     expect(await waitFor(() => t2Started)).toBe(true);
     await sleep(50);
 
-    // 当前实现：T2 的 begin 走 else 分支把 T3 从 queuedTasks 提前 shift 掉，
-    // T3 已不在队列。这里必须真红：期望 T3 仍排队（它排在本该轮到它之前）。
+    // 修复前：T2 的 begin 走 else 分支把 T3 从 queuedTasks 提前 shift 掉，
+    // T3 已不在队列。本用例钉住：期望 T3 仍排队（它排在本该轮到它之前）。
     expect(qm.getQueuedTask(WORKSPACE, 'm3')).toBeDefined();
 
     // --- 步骤 5：T2 正常结束，T3 轮到自己 ---
     resolveT2();
-    // 当前实现：T3 的 begin 取消检查 indexGet 找不到 → return 跳过，永远不执行。
-    // 这里必须真红（期望 t3Started=true）。
+    // 修复前：T3 的 begin 取消检查 indexGet 找不到 → return 跳过，永远不执行。
+    // 本用例钉住（期望 t3Started=true）。
     expect(await waitFor(() => t3Started)).toBe(true);
 
     // --- 清理：放行 T3，让队列链自然收尾 ---

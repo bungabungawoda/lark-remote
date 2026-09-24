@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { enforceCardBudget } from './card-budget.js';
-import { CARD_BUDGET_BYTES } from './text-truncate.js';
+import { enforceCardBudget, countCardTables } from './card-budget.js';
+import { CARD_BUDGET_BYTES, FEISHU_MAX_TABLES } from './text-truncate.js';
 import { sessionEventPanel } from '../router/card-helpers.js';
 import { markdownDiv } from './collapsible.js';
 import type { AgentSessionContentEvent } from '../runner/index.js';
@@ -433,5 +433,76 @@ describe('enforceCardBudget', () => {
     expect(result.wasTruncated).toBe(true);
     // 必须触发了内容截断——标题无 emoji 不应阻止裁剪
     expect(result.reason).toContain('panel_content_truncated');
+  });
+});
+
+// ========== 阶段0：table 预算是**整卡**口径（11310） ==========
+
+/**
+ * 11310 按整张卡片数 table，不是按字段。表分散在多个 lark_md 字段时（每字段
+ * 一张、共 6 张），逐字段各限 5 张的裁剪一次都不会命中，守卫却照样上报
+ * 「已处理」——卡片原样发出，飞书整卡报废。
+ */
+describe('enforceCardBudget 阶段0：整卡 table 预算', () => {
+  /** 一张表，单元格带唯一标记，便于断言哪张被删。 */
+  function tableMd(field: number, table: number): string {
+    return `| F${field}T${table} | col |\n|---|-----|\n| ${field}-${table} | val |`;
+  }
+
+  /** 构造卡片：`tablesPerField[i]` = 第 i 个 lark_md 字段里的 table 数（文档顺序）。 */
+  function cardWithTableFields(tablesPerField: number[]): object {
+    return {
+      schema: '2.0',
+      config: { wide_screen_mode: true },
+      header: { title: { tag: 'plain_text', content: '📊 表格卡' } },
+      body: {
+        elements: tablesPerField.map((n, f) =>
+          markdownDiv(Array.from({ length: n }, (_, t) => tableMd(f, t)).join('\n\n')),
+        ),
+      },
+    };
+  }
+
+  it('test_anchor_card_table_budget_spans_fields', () => {
+    // 6 个字段各 1 张表：整卡 6 > 5，字段级 1 ≤ 5
+    const card = cardWithTableFields([1, 1, 1, 1, 1, 1]);
+    expect(countCardTables(card)).toBe(6);
+
+    const result = enforceCardBudget(card);
+
+    expect(result.reason).toContain('table_count_limited');
+    expect(result.wasTruncated).toBe(true);
+    expect(countCardTables(result.card)).toBeLessThanOrEqual(FEISHU_MAX_TABLES);
+  });
+
+  it('跨字段预算删最旧、留最新，并留下省略提示', () => {
+    const result = enforceCardBudget(cardWithTableFields([1, 1, 1, 1, 1, 1]));
+    const str = JSON.stringify(result.card);
+
+    expect(countCardTables(result.card)).toBe(FEISHU_MAX_TABLES);
+    expect(str).toContain('F5T0'); // 最新一张保住
+    expect(str).not.toContain('F0T0'); // 文档顺序最旧的一张被删
+    expect(str).toContain('表格已省略');
+  });
+
+  it('单个字段装不下时按字段内最旧优先继续删', () => {
+    // 3+3+3 = 9 张 → 删最旧 4 张：F0 全部 + F1 的第一张
+    const result = enforceCardBudget(cardWithTableFields([3, 3, 3]));
+    const str = JSON.stringify(result.card);
+
+    expect(countCardTables(result.card)).toBe(FEISHU_MAX_TABLES);
+    expect(str).not.toContain('F0T0');
+    expect(str).not.toContain('F0T2');
+    expect(str).not.toContain('F1T0');
+    expect(str).toContain('F1T1');
+    expect(str).toContain('F2T2');
+  });
+
+  it('整卡不超限时不动原文', () => {
+    const card = cardWithTableFields([1, 1, 1, 1, 1]);
+    const result = enforceCardBudget(card);
+
+    expect(result.wasTruncated).toBe(false);
+    expect(result.card).toEqual(card);
   });
 });

@@ -12,6 +12,30 @@ import { countMarkdownTables, FEISHU_MAX_TABLES } from '../../src/card/text-trun
  * counted regardless of container. The fix is to truncate excess tables
  * directly in the text content before rendering.
  */
+/**
+ * 整张卡里所有文本位的表格总数。
+ *
+ * 不能对 `JSON.stringify(card)` 的结果计数：无缩进的 JSON 是单行，行首 `|` 的正则
+ * 永远匹配不到，断言恒为 0 ≤ 上限，等于没断。
+ */
+function countTablesInCard(card: unknown): number {
+  let total = 0;
+  const walk = (node: unknown): void => {
+    if (Array.isArray(node)) {
+      for (const child of node) walk(child);
+      return;
+    }
+    if (node && typeof node === 'object') {
+      for (const [key, value] of Object.entries(node)) {
+        if (key === 'content' && typeof value === 'string') total += countMarkdownTables(value);
+        else walk(value);
+      }
+    }
+  };
+  walk(card);
+  return total;
+}
+
 describe('table-over-limit fix', () => {
   it('test_anchor_countMarkdownTables_various_separators', () => {
     // Standard separator
@@ -229,7 +253,7 @@ describe('table-over-limit fix', () => {
     expect(Buffer.byteLength(json, 'utf8')).toBeLessThan(28_000);
 
     // Rendered card must have at most FEISHU_MAX_TABLES tables
-    expect(countMarkdownTables(json)).toBeLessThanOrEqual(FEISHU_MAX_TABLES);
+    expect(countTablesInCard(card)).toBeLessThanOrEqual(FEISHU_MAX_TABLES);
 
     // Newest 5 tables (Behavior through Compat) should be present
     expect(json).toContain('Behavior');

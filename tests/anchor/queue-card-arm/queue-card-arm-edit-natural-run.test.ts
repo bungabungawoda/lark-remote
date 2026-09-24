@@ -161,8 +161,8 @@ describe('a queue.input-edited task must run the edited content when its turn is
     release1();
     await new Promise((r) => setTimeout(r, 300));
 
-    // 当前实现：handleQueueInput 未注册 replacement，begin 路径执行原始闭包
-    // → forwardToClaude('original message')。这里必须真红：期望 edited content。
+    // 修复前：handleQueueInput 未注册 replacement，begin 路径执行原始闭包
+    // → forwardToClaude('original message')。本用例钉住：期望 edited content。
     expect(fwdSpy.mock.calls.map((c) => c[0] as string)).toEqual(['edited message']);
   });
 });

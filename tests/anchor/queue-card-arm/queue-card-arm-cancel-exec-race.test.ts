@@ -111,8 +111,8 @@ describe('QueueManager - cancelled task card must not be flipped back to executi
     await Promise.all([cancelledUpdate, executingUpdate]);
     await sleep(20);
 
-    // 当前实现：cancelled 先落卡、executing 后落卡 → 最终卡片是"▶️ 已开始执行"，
-    // 且存在 executing 更新。这里必须真红（期望最终是"❌ 已撤销"且无 executing 更新）。
+    // 修复前：cancelled 先落卡、executing 后落卡 → 最终卡片是"▶️ 已开始执行"，
+    // 且存在 executing 更新。本用例钉住（期望最终是"❌ 已撤销"且无 executing 更新）。
     const cardUpdates = updatedCards.filter((u) => u.messageId === 'card-late-msg');
     expect(cardUpdates.length).toBeGreaterThan(0);
     expect(cardUpdates.some((u) => headerTitle(u) === '▶️ 已开始执行')).toBe(false);

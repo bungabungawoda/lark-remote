@@ -8,6 +8,7 @@
  */
 
 import type { ChildProcess } from 'node:child_process';
+import { StringDecoder } from 'node:string_decoder';
 import {
   spawnProcess,
   mergeProcessEnv,
@@ -120,27 +121,43 @@ export class JsonlRpcTransport {
     });
 
     // Stdout: line-split with 10MB line limit
+    // decoder 跨 chunk 缓冲半个多字节字符：逐 chunk toString 会把中文/emoji 打成
+    // 不可逆的 U+FFFD，且 remainder 拼接后无法复原
+    const decoder = new StringDecoder('utf8');
     let remainder = '';
     proc.stdout?.on('data', (chunk: Buffer) => {
-      remainder += chunk.toString('utf-8');
+      remainder += decoder.write(chunk);
       const lines = remainder.split('\n');
       // Lines except the last (incomplete) one
       remainder = lines.pop() ?? '';
       for (const line of lines) {
         if (line.length === 0) continue;
-        if (line.length > MAX_LINE_BYTES) {
+        // 上限量的是 UTF-8 字节：中文 1 单元 = 3 字节，用 line.length 会低估 2-3×
+        if (Buffer.byteLength(line, 'utf8') > MAX_LINE_BYTES) {
           getLogger().error(
             `[jsonrpc-transport] line exceeds ${MAX_LINE_BYTES} bytes, disconnecting`,
           );
           this.handleClose('parse_error');
           return;
         }
+        let msg: unknown;
         try {
-          const msg = JSON.parse(line);
-          events.onMessage(msg);
+          msg = JSON.parse(line);
         } catch (err) {
           getLogger().warn(
             `[jsonrpc-transport] failed to parse JSON: ${(err as Error).message} line=${line.slice(0, 200)}`,
+          );
+          continue;
+        }
+        // handler 抛错是消费方故障，与协议解码无关；单独捕获以免掩盖真实故障点，
+        // 且不能打断同一 chunk 里后续的帧
+        try {
+          events.onMessage(msg);
+        } catch (err) {
+          getLogger().error(
+            `[jsonrpc-transport] onMessage handler threw: ${
+              err instanceof Error ? err.message : String(err)
+            }`,
           );
         }
       }
@@ -150,7 +167,8 @@ export class JsonlRpcTransport {
     const onExit = (code: number | null, signal: string | null) => {
       this._closed = true;
       this.proc = null;
-      // Flush remaining buffer
+      // Flush remaining buffer（decoder.end() 吐出最后半个多字节字符）
+      remainder += decoder.end();
       if (remainder.length > 0) {
         try {
           const msg = JSON.parse(remainder);

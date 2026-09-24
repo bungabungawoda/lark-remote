@@ -26,9 +26,12 @@ const CODEX_MAX_BUFFER = 4 * 1024 * 1024;
 /**
  * Resolve codex home directory.
  * Priority: explicit codexHome param > $CODEX_HOME env > ~/.codex
+ *
+ * 空串/纯空白按「未设置」处理：`??` 只挡 undefined，放过空串会让
+ * `path.join('', 'config.toml')` 变成相对**进程 cwd** 的路径。
  */
 export function resolveCodexHome(codexHome?: string): string {
-  return codexHome ?? process.env.CODEX_HOME ?? path.join(os.homedir(), '.codex');
+  return codexHome?.trim() || process.env.CODEX_HOME?.trim() || path.join(os.homedir(), '.codex');
 }
 
 /** loadCodexConfig() return type */

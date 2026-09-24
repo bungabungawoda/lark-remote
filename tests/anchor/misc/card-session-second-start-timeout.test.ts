@@ -11,7 +11,7 @@
  *
  * 这个 anchor 构造一个 producer 永不调用 resolveController 的 stub connector
  * （controller.update 返回永不 resolve 的 promise），让首次 start 超时抛错，
- * 然后断言第二次 start 也在合理时间内超时抛错。真红 = 第二次 start 永久
+ * 然后断言第二次 start 也在合理时间内超时抛错。守住的失败模式：第二次 start 永久
  * 挂起，被外层兜底 race 在 200ms 后强制 reject，且错误不匹配 /timeout/。
  */
 import { describe, it, expect, vi } from 'vitest';
