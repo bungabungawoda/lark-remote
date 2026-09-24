@@ -12,15 +12,9 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 // Mock logger
-vi.mock('../logger/index.js', () => ({
-  getLogger: () => ({
-    error: vi.fn(),
-    info: vi.fn(),
-    warn: vi.fn(),
-    debug: vi.fn(),
-  }),
-  initLogger: vi.fn(),
-}));
+vi.mock('../../src/logger/index.js', async () =>
+  (await import('../lib/logger-mock.js')).loggerModuleMock(),
+);
 
 // Import after mocks are set up
 import { FeishuConnector } from '../../src/connector/index.js';

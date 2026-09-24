@@ -18,15 +18,9 @@ import { describe, it, expect, vi } from 'vitest';
 import type { CardStreamController, CardStreamProducer } from '@larksuite/channel';
 import { RunCardSession } from '../../../src/card/run-card-session.js';
 
-vi.mock('../../../src/logger/index.js', () => {
-  const mockLogger = {
-    debug: vi.fn(),
-    info: vi.fn(),
-    warn: vi.fn(),
-    error: vi.fn(),
-  };
-  return { getLogger: () => mockLogger };
-});
+vi.mock('../../../src/logger/index.js', async () =>
+  (await import('../../lib/logger-mock.js')).loggerModuleMock(),
+);
 
 /**
  * 构造一个 producer 永不调用 resolveController 的 connector：

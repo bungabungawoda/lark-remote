@@ -13,13 +13,9 @@ import { fileURLToPath } from 'node:url';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 // Mock logger
-vi.mock('../logger/index.js', () => ({
-  getLogger: () => ({
-    error: vi.fn(),
-    info: vi.fn(),
-  }),
-  initLogger: vi.fn(),
-}));
+vi.mock('../../src/logger/index.js', async () =>
+  (await import('../lib/logger-mock.js')).loggerModuleMock(),
+);
 
 describe('全局异常处理器 - anchor 测试', () => {
   it('应该存在 uncaughtException 全局处理器', () => {

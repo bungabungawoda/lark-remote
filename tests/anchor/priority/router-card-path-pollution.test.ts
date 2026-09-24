@@ -15,15 +15,9 @@ import {
   createStubSessionReaderRegistry,
   createStubConnector,
 } from '../../lib/bridge-stubs.js';
-vi.mock('../../../src/logger/index.js', () => ({
-  getLogger: () => ({
-    debug: vi.fn(),
-    info: vi.fn(),
-    warn: vi.fn(),
-    error: vi.fn(),
-  }),
-  initLogger: () => ({}),
-}));
+vi.mock('../../../src/logger/index.js', async () =>
+  (await import('../../lib/logger-mock.js')).loggerModuleMock(),
+);
 
 let tmpDir: string;
 

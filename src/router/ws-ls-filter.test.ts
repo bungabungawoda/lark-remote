@@ -24,6 +24,7 @@ import {
 } from '../../tests/lib/bridge-stubs.js';
 import { expectNoV1ActionContainer } from '../../tests/lib/card-view.js';
 import { rmRf } from '../../tests/lib/tmp-cleanup.js';
+import { canLinkFiles, linkDangling, linkDir, linkFile } from '../../tests/lib/fs-links.js';
 
 const ctx = { userId: 'user1', chatId: 'chat1', messageId: 'msg1' };
 
@@ -680,18 +681,18 @@ function lsFixtureForToctou() {
 }
 
 describe('/ls 符号链接与坏条目（B5）', () => {
-  it('符号链接按目标归类：链接目录可进入，链接文件带大小', () => {
+  // 目录链接走 linkDir：win32 无符号链接特权时自动降级 junction，Dirent 语义与真符号
+  // 链接等价 → 本用例在任意宿主都真跑，不需要门控（tests/lib/fs-links.ts 有论证）。
+  it('链接目录按目标归类：可进入（旧实现 Dirent 报不出类型 → 整条丢失）', () => {
     const { router, root } = makeFixture({ dirs: ['real_dir'], files: ['target.txt'] });
     fs.writeFileSync(path.join(root, 'target.txt'), 'hello world!');
-    fs.symlinkSync(path.join(root, 'real_dir'), path.join(root, 'link_dir'));
-    fs.symlinkSync(path.join(root, 'target.txt'), path.join(root, 'link_file.txt'));
+    linkDir(path.join(root, 'real_dir'), path.join(root, 'link_dir'));
 
     const card = lsCardOf(router);
     const text = allText(card);
-    // 旧实现：Dirent.isSymbolicLink 既不是 dir 也不是 file → 两个链接根本不出现
+    // 旧实现：Dirent.isSymbolicLink 既不是 dir 也不是 file → 链接根本不出现
     expect(text).toContain('link_dir');
-    expect(text).toContain('link_file.txt');
-    expect(text).toContain('共 2 目录, 2 文件');
+    expect(text).toContain('共 2 目录, 1 文件');
     // 链接目录归类为目录才会带 ls.browse（点进去）；文件按钮才是 ls.file
     const browsePaths = payloadsForCmd(card, 'ls.browse', 'button').map((v) =>
       String(v.path ?? ''),
@@ -700,9 +701,24 @@ describe('/ls 符号链接与坏条目（B5）', () => {
     expectNoV1ActionContainer(card);
   });
 
+  // 文件链接没有免特权的等价物（junction 只支持目录，硬链接不是 reparse point）→
+  // 无 SeCreateSymbolicLinkPrivilege 的 win32 上进能力探测门控（有特权的 win32 与 posix 照跑）。
+  it.skipIf(!canLinkFiles())('链接文件按目标归类：带大小', () => {
+    const { router, root } = makeFixture({ files: ['target.txt'] });
+    fs.writeFileSync(path.join(root, 'target.txt'), 'hello world!');
+    linkFile(path.join(root, 'target.txt'), path.join(root, 'link_file.txt'));
+
+    const text = allText(lsCardOf(router));
+    expect(text).toContain('link_file.txt');
+    expect(text).toContain('共 0 目录, 2 文件');
+    // 大小取自 stat 解析的目标（12B），不是 lstat 的链接本身
+    expect(text).toContain('link_file.txt (12B)');
+  });
+
+  // 悬空链接走 linkDangling：junction 建链不校验目标存在，win32 上同语义可见 → 不门控。
   it('悬空符号链接照常列出，不让整次 /ls 变成「读取目录失败」', () => {
     const { router, root } = makeFixture({ files: ['keep.txt'] });
-    fs.symlinkSync(path.join(root, 'nowhere.bin'), path.join(root, 'dangling.bin'));
+    linkDangling(path.join(root, 'nowhere.bin'), path.join(root, 'dangling.bin'));
 
     const text = allText(lsCardOf(router));
     // stat 失败只让该条目降级（无大小），其余条目必须还在

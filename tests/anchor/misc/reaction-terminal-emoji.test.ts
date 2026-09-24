@@ -23,19 +23,10 @@ import {
   createStubConnector,
 } from '../../lib/bridge-stubs.js';
 import { rmRf } from '../../lib/tmp-cleanup.js';
-const { mockLogger } = vi.hoisted(() => ({
-  mockLogger: {
-    debug: vi.fn(),
-    info: vi.fn(),
-    warn: vi.fn(),
-    error: vi.fn(),
-  },
-}));
 
-vi.mock('../../../src/logger/index.js', () => ({
-  getLogger: () => mockLogger,
-  initLogger: () => mockLogger,
-}));
+vi.mock('../../../src/logger/index.js', async () =>
+  (await import('../../lib/logger-mock.js')).loggerModuleMock(),
+);
 
 // --- Stubs（Bridge 边界测试替身，与 src/bridge/bridge.test.ts 同模式） ---
 

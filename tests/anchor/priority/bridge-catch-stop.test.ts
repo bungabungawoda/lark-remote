@@ -30,19 +30,10 @@ import {
   createStubSessionReaderRegistry,
   createStubConnector,
 } from '../../lib/bridge-stubs.js';
-const { mockLogger } = vi.hoisted(() => ({
-  mockLogger: {
-    debug: vi.fn(),
-    info: vi.fn(),
-    warn: vi.fn(),
-    error: vi.fn(),
-  },
-}));
 
-vi.mock('../../../src/logger/index.js', () => ({
-  getLogger: () => mockLogger,
-  initLogger: () => mockLogger,
-}));
+vi.mock('../../../src/logger/index.js', async () =>
+  (await import('../../lib/logger-mock.js')).loggerModuleMock(),
+);
 
 describe(': bridge catch calls runner.stop()', () => {
   let tmpDir: string;

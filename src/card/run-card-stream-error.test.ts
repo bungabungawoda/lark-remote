@@ -3,17 +3,9 @@ import { RunCardSession } from './run-card-session.js';
 import { makeStreamCardConnector } from '../../tests/lib/card-stubs.js';
 
 // Mock logger to capture log calls
-vi.mock('../logger/index.js', () => {
-  const mockLogger = {
-    debug: vi.fn(),
-    info: vi.fn(),
-    warn: vi.fn(),
-    error: vi.fn(),
-  };
-  return {
-    getLogger: () => mockLogger,
-  };
-});
+vi.mock('../logger/index.js', async () =>
+  (await import('../../tests/lib/logger-mock.js')).loggerModuleMock(),
+);
 
 import { getLogger } from '../logger/index.js';
 

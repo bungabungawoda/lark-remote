@@ -29,19 +29,9 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 
-const { mockLogger } = vi.hoisted(() => ({
-  mockLogger: {
-    debug: vi.fn(),
-    info: vi.fn(),
-    warn: vi.fn(),
-    error: vi.fn(),
-  },
-}));
-
-vi.mock('../../../src/logger/index.js', () => ({
-  getLogger: () => mockLogger,
-  initLogger: () => mockLogger,
-}));
+vi.mock('../../../src/logger/index.js', async () =>
+  (await import('../../lib/logger-mock.js')).loggerModuleMock(),
+);
 
 describe('KimiSessionReader completed-turn tail ordering (step.end → usage.record)', () => {
   let kimiDir: string;
