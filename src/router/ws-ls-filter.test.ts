@@ -289,7 +289,8 @@ describe('/ws 关键词筛选', () => {
     });
     const text = allText(wsCardOf(router, 'alpha'));
     expect(text).toContain('**one**');
-    expect(text).not.toContain('two');
+    // 用列表行的 `**name**` 形态做负断言：整卡文本含 cwd 表头，随机后缀能拼出 "two"。
+    expect(text).not.toContain('**two**');
   });
 
   it('筛选后零命中：无匹配提示 + 搜索行仍在 + 无分页栏', () => {
@@ -590,11 +591,16 @@ describe('ws.filter / ls.filter handler', () => {
 
     await router.handleCardAction({ cmd: 'ws.filter', inputValue: 'work', offset: 5 }, ctx);
     const card = lastUpdatedCard(connector);
-    const text = allText(card);
-    expect(text).toContain('**1/2**');
-    // recent 排序（lastUsedAt 递增）下第 1 页是 w8..w4，第 2 页才是 w3..w1
-    expect(text).toContain('w8');
-    expect(text).not.toContain('w1');
+    expect(allText(card)).toContain('**1/2**');
+    // recent 排序（lastUsedAt 递增）下第 1 页是 w8..w4，第 2 页才是 w3..w1。
+    // 断言落在列表条目上而不是整卡文本：表头带 cwd，mkdtemp 随机后缀能拼出 "w1"。
+    expect(payloadsForCmd(card, 'ws.use', 'button').map((p) => p.name)).toEqual([
+      'w8',
+      'w7',
+      'w6',
+      'w5',
+      'w4',
+    ]);
   });
 
   it('筛选态翻页保留 q', async () => {
