@@ -67,6 +67,18 @@ function defaultProjectsDir(): string {
   return path.join(os.homedir(), '.claude', 'projects');
 }
 
+export function getClaudeSessionFilePath(
+  sessionId: string,
+  cwd: string,
+  opts: { projectsDir?: string } = {},
+): string | undefined {
+  if (!/^[\w-]+$/.test(sessionId)) return undefined;
+  const root = opts.projectsDir ?? defaultProjectsDir();
+  const direct = path.join(projectDirForCwd(cwd, root), `${sessionId}.jsonl`);
+  const file = fs.existsSync(direct) ? direct : findSessionFileInProjects(sessionId, root, cwd);
+  return file && fileContainsCwd(file, cwd) ? file : undefined;
+}
+
 /**
  * EnterWorktree relocate support (2026-08-04): Claude Code MOVES the
  * transcript file to the new cwd's project dir mid-session, so the file may

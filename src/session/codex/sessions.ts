@@ -10,6 +10,7 @@ import {
   readCodexSessionContent,
   readCodexSessionSummary,
   isCodexSessionActive,
+  getCodexSessionFilePath,
 } from './rollout-reader.js';
 
 interface CodexSessionReaderOptions {
@@ -17,6 +18,9 @@ interface CodexSessionReaderOptions {
 }
 
 export class CodexSessionReader implements AgentSessionReader {
+  getSessionFilePath(sessionId: string, cwd: string): string | undefined {
+    return getCodexSessionFilePath(sessionId, cwd, this.codexHome);
+  }
   private readonly codexHome: string;
 
   constructor(opts: CodexSessionReaderOptions = {}) {

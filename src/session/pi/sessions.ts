@@ -353,6 +353,15 @@ function mapPiTailLine(rawObj: Record<string, unknown>): AgentSessionContentEven
  * directly. The session list comes from directory scanning.
  */
 export class PiSessionReader implements AgentSessionReader {
+  getSessionFilePath(sessionId: string, cwd: string): string | undefined {
+    if (!sessionId || !/^[\w-]+$/.test(sessionId)) return undefined;
+    const file = findSessionFile(sessionId, cwd, this.sessionsDir);
+    return file &&
+      path.basename(file).endsWith(`_${sessionId}.jsonl`) &&
+      readCwdFromPiJsonl(file) === cwd
+      ? file
+      : undefined;
+  }
   private readonly piDir: string;
   /** 会话目录（public：测试可重定向到 fixture 目录，替代 as any）。 */
   sessionsDir: string;

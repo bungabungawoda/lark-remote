@@ -828,6 +828,7 @@ async function main() {
   logger.info(`feishu.appId = ${config.feishu.appId}`);
   logger.info(`claude.model = ${config.claude.model}`);
   logger.info(`claude.autoCompactWindow = ${config.claude.autoCompactWindow}`);
+  logger.info(`recovery.dir = ${path.join(configDir, 'recovery')}; agents = pi,codex,claude`);
   if (cliArgs.settings) {
     logger.info(`claude.settings = ${cliArgs.settings}`);
   }
@@ -857,6 +858,7 @@ async function main() {
     workspaceStore,
     agentRegistry,
     sessionReaderRegistry,
+    recoveryDir: path.join(configDir, 'recovery'),
   });
   const cloneSession = new CloneSession({
     connector,

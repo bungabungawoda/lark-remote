@@ -5,6 +5,7 @@ import {
   getNewestSession,
   readSessionContent,
   isClaudeSessionActive,
+  getClaudeSessionFilePath,
 } from '../../session/claude/sessions.js';
 
 /**
@@ -22,6 +23,9 @@ import {
  * exported for tests and the reader itself.
  */
 export class ClaudeSessionReader implements AgentSessionReader {
+  getSessionFilePath(sessionId: string, cwd: string): string | undefined {
+    return getClaudeSessionFilePath(sessionId, cwd, this.readerOpts());
+  }
   private readonly projectsDir?: string;
 
   constructor(opts: { projectsDir?: string } = {}) {

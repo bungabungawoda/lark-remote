@@ -28,6 +28,7 @@ import type { ApprovalAction, ApprovalToggleAction } from './approval-coordinato
 import { InboundMediaHandler } from './inbound-media.js';
 import type { InboundMediaPayload } from '../connector/index.js';
 import type { MediaOutcome } from '../inbound/turn.js';
+import { RecoveryHandoff, RecoveryMemoryClient } from './recovery-handoff.js';
 
 /**
  * Max events to read for the completion notification card (mirror router's
@@ -146,6 +147,9 @@ interface BridgeDeps {
    * `registry.get(config.defaultAgent)`.
    */
   sessionReaderRegistry: SessionReaderRegistry;
+  /** Persistent recovery state root. Omitted in unit tests to disable side effects. */
+  recoveryDir?: string;
+  recoveryMemoryEndpoint?: string;
 }
 
 interface ActiveRun {
@@ -206,6 +210,7 @@ export class Bridge {
   private agentRegistry: AgentRegistry;
   /** Session reader registry for usage and completion cards. */
   private sessionReaderRegistry: SessionReaderRegistry;
+  private readonly recovery?: RecoveryHandoff;
   /** 入站媒体（图片/文件）落盘 + 合批提示。 */
   private readonly mediaHandler: InboundMediaHandler;
   /**
@@ -276,6 +281,15 @@ export class Bridge {
     this.idleTimeoutMs = deps.idleTimeoutMs ?? IDLE_TIMEOUT_MS;
     this.agentRegistry = deps.agentRegistry;
     this.sessionReaderRegistry = deps.sessionReaderRegistry;
+    if (deps.recoveryDir) {
+      let memory: RecoveryMemoryClient | undefined;
+      try {
+        memory = new RecoveryMemoryClient(deps.recoveryMemoryEndpoint);
+      } catch (err) {
+        getLogger().warn(`[recovery] ai-memory disabled: ${String(err)}`);
+      }
+      this.recovery = new RecoveryHandoff(deps.recoveryDir, memory);
+    }
 
     this.queueManager = new QueueManager(
       (workspace) => this.activeRuns.has(workspace),
@@ -1001,8 +1015,25 @@ export class Bridge {
 
     // D2/D5: sessionId 钉死语义——binding 有 sessionId 时用它（入队时刻快照），
     // 否则跟随 live store（无 binding 或入队时无 session 的正常路径）。
-    const sessionId =
+    const recoveryScope =
+      this.recovery && ['claude', 'codex', 'pi'].includes(agentKind)
+        ? { userId: ctx.userId, cwd, agent: agentKind }
+        : undefined;
+    let sessionId =
       opts?.binding?.sessionId ?? this.sessionStore.getSessionId(ctx.userId, agentKind);
+    const originalSessionId = sessionId;
+    let sourceCwd = this.sessionStore.getSessionCwd(ctx.userId, agentKind) ?? cwd;
+    let recovery: ReturnType<RecoveryHandoff['prepare']>;
+    try {
+      if (recoveryScope && !message.trimStart().startsWith('/')) {
+        recovery = this.recovery?.prepare(recoveryScope, sessionId);
+      }
+      if (recovery?.fresh) sessionId = undefined;
+      else if (recovery?.resumeSessionId) sessionId = recovery.resumeSessionId;
+    } catch (err) {
+      getLogger().warn(`[recovery] cannot prepare recovery: ${String(err)}`);
+    }
+    const runMessage = recovery?.message ? `${recovery.message}\n\n${message}` : message;
 
     // 会话代际快照（2026-08-09）：run 在途时 /new、/cd、/resume 会 bump epoch，
     // 该 run 后续 system.init 的 sessionId 写回即判 stale 跳过。在执行起点
@@ -1027,10 +1058,42 @@ export class Bridge {
       ctx,
       cwd,
       runId,
-      message,
+      runMessage,
       agentKind,
+      recoveryScope,
+      recovery?.id,
+      (actualCwd) => {
+        sourceCwd = actualCwd;
+      },
     );
 
+    if (this.recovery && recoveryScope) {
+      try {
+        const finalState = cardSession.currentState;
+        const finalSessionId = finalState.sessionId || originalSessionId;
+        let transcriptPath: string | undefined;
+        try {
+          transcriptPath = finalSessionId
+            ? this.sessionReaderRegistry
+                .get(agentKind)
+                .getSessionFilePath?.(finalSessionId, sourceCwd)
+            : undefined;
+        } catch {
+          getLogger().warn('[recovery] transcript unavailable; keeping session locator');
+        }
+        this.recovery.record(recoveryScope, {
+          state: finalState,
+          sessionId: finalSessionId,
+          sourceCwd,
+          transcriptPath,
+          request: message,
+          recoveryId: recovery?.id,
+        });
+        await this.recovery.sync(recoveryScope);
+      } catch (err) {
+        getLogger().error(`[recovery] could not persist recovery: ${String(err)}`);
+      }
+    }
     // Step 3: Finalize the run (error handling, fallback card, completion notification, cleanup)
     await this.finalizeRun(cardSession, activeRun, ctx, cwd);
   }
@@ -1090,6 +1153,9 @@ export class Bridge {
     runId: string,
     message: string,
     agentKind: AgentKind = this.config.defaultAgent,
+    recoveryScope?: { userId: string; cwd: string; agent: AgentKind },
+    recoveryId?: string,
+    onInitCwd?: (cwd: string) => void,
   ): Promise<void> {
     // Runner 声明的 usage 权威来源（review P3-7）：codex app-server = 'live'
     // （turn/started 的 tokenUsage.last 是本 turn 增量）。其余 runner 未声明。
@@ -1247,6 +1313,7 @@ export class Bridge {
         }
         if (event.type === 'system' && event.subtype === 'init') {
           sawInit = true;
+          onInitCwd?.(event.cwd || cwd);
           // 代际守卫：run 在途时 /new（或 new-session 卡片、/cd、/resume、
           // /config 切换）移动了 session 指针，此 init 的写回是 stale 的——
           // 跳过，否则 /new 的清空会被在途 run 静默撤销（2026-08-09 事故：
@@ -1258,6 +1325,13 @@ export class Bridge {
               `[lark-remote] system.init write-back skipped: session pointer moved since run start runId=${runId} sessionId=${event.session_id}`,
             );
           } else {
+            if (recoveryScope && recoveryId && event.session_id) {
+              try {
+                this.recovery?.bind(recoveryScope, recoveryId, event.session_id);
+              } catch (err) {
+                getLogger().error(`[recovery] cannot bind replacement: ${String(err)}`);
+              }
+            }
             // L5: Use session's real directory from event.cwd (not runner's cwd parameter)
             // L3: guard empty string too -- `??` only catches null/undefined, but a
             // translator (or older build) may emit cwd="", which must NOT overwrite

@@ -466,6 +466,15 @@ function resolveRolloutEntry(sessionId: string, codexHome: string): SessionIndex
   return entry;
 }
 
+export function getCodexSessionFilePath(
+  sessionId: string,
+  cwd: string,
+  codexHome?: string,
+): string | undefined {
+  const entry = resolveRolloutEntry(sessionId, resolveCodexHome(codexHome));
+  return entry && samePath(entry.cwd, cwd) ? entry.filePath : undefined;
+}
+
 /**
  * Read the full content of a specific session by its threadId.
  *
