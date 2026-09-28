@@ -128,11 +128,13 @@ describePosix('CodexAppServerRunner integration', () => {
       fixture: string,
       opts: { model?: string; sessionId?: string },
     ): Promise<AgentEvent[]> => {
+      const requestLog = join(tmpDir, `model-${fixture}.jsonl`);
       const runner = new CodexAppServerRunner({
         kind: 'codex',
         sessionReader: createStubSessionReader(),
         binary: process.execPath,
         appServerArgs: [FAKE_SERVER, join(FIXTURES, fixture)],
+        env: { FAKE_SERVER_LOG: requestLog },
         ...(opts.model ? { model: opts.model } : {}),
       });
       const events: AgentEvent[] = [];
@@ -143,6 +145,14 @@ describePosix('CodexAppServerRunner integration', () => {
         events.push(event);
       }
       await runner.dispose();
+      if (opts.sessionId) {
+        const requests = readFileSync(requestLog, 'utf8')
+          .split('\n')
+          .filter(Boolean)
+          .map((line) => JSON.parse(line));
+        const resume = requests.find((r) => r.method === 'thread/resume');
+        expect(resume?.params.excludeTurns).toBe(true);
+      }
       return events;
     };
 
@@ -784,6 +794,7 @@ describePosix('CodexAppServerRunner integration', () => {
       }
     ).params;
     expect(resumeParams.threadId).toBe('th-aaa-999');
+    expect((resumeParams as { excludeTurns?: boolean }).excludeTurns).toBe(true);
     // resume 路径同样下发 feature override，冷连接恢复后 request_user_input 仍可用
     expect(resumeParams.config).toEqual({
       'features.default_mode_request_user_input': true,

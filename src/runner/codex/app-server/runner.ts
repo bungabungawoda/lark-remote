@@ -298,6 +298,10 @@ export class CodexAppServerRunner extends ConnectionBasedRunner<
       // /stop、idle TTL 或进程重建后，这一步是 Compact 能工作的前提。
       const resumeParams: ThreadResumeParams = {
         threadId: opts.sessionId,
+        // The bridge needs thread metadata, not the full transcript. Without
+        // this flag a large thread is returned as one JSONL line and can trip
+        // the transport cap before compact/start begins.
+        excludeTurns: true,
         ...this.buildThreadParams(opts.cwd),
       };
       const resumeResult = await client.request<ThreadResumeParams, ThreadStartResponse>(
@@ -464,6 +468,8 @@ export class CodexAppServerRunner extends ConnectionBasedRunner<
     if (opts.sessionId) {
       const resumeParams: ThreadResumeParams = {
         threadId: opts.sessionId,
+        // Cold reconnects restore metadata; turn history is streamed separately.
+        excludeTurns: true,
         ...threadParams,
       };
       const resumeResult = await client.request<ThreadResumeParams, ThreadStartResponse>(
