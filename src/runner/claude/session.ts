@@ -719,6 +719,20 @@ export class ClaudeSession extends SpawningRunner {
       // --resume 会先重放上一轮旧 result（早于 system/init）：丢弃，否则
       // consumeTurn 把历史结果误判为当前 turn 结束。bridge 有同款守卫（双保险）。
       if (!this.sawInit) return [];
+      if (event.is_error === true) {
+        return [
+          this.withTimestamp({
+            ...event,
+            subtype: 'error',
+            errorMessage:
+              typeof event.result === 'string'
+                ? event.result
+                : Array.isArray(event.errors)
+                  ? event.errors.join('\n')
+                  : 'Claude reported an API error',
+          }),
+        ];
+      }
       return [this.withTimestamp(event)];
     }
     if (type === 'system' && event.subtype === 'init') {

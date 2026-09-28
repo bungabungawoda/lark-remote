@@ -489,7 +489,12 @@ if (scenario === 'no-stdout') {
       type: 'assistant',
       message: { content: [{ type: 'text', text: 'hello' }] },
     });
-    result('success', { result: 'hello' });
+    result(
+      'success',
+      process.env.MOCK_API_ERROR
+        ? { is_error: true, result: process.env.MOCK_API_ERROR }
+        : { result: 'hello' },
+    );
   });
 }
 

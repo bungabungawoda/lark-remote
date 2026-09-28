@@ -95,6 +95,17 @@ afterEach(async () => {
 });
 
 describe('ClaudeRunner (long-lived interactive session)', () => {
+  it('normalizes is_error=true even when Claude reports subtype success', async () => {
+    createMockClaude({ MOCK_API_ERROR: 'API Error: 400 Your input exceeds the context window' });
+    const events = await collectRunWithTimeout(makeRunner(), 'task');
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        type: 'result',
+        subtype: 'error',
+        errorMessage: 'API Error: 400 Your input exceeds the context window',
+      }),
+    );
+  });
   it('autoCompactWindow is injected as CLAUDE_CODE_AUTO_COMPACT_WINDOW (0 = inherit)', async () => {
     const envFile = path.join(tmpDir, 'env.json');
     createMockClaude({ MOCK_ENV_FILE: envFile });

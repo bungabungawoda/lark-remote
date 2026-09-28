@@ -244,6 +244,8 @@ export interface UserEvent {
 export interface ResultEvent {
   type: 'result';
   subtype: 'success' | 'error' | 'interrupted';
+  /** Some Claude-compatible gateways set this even when subtype remains success. */
+  is_error?: boolean;
   session_id: string;
   timestamp?: string;
   usage?: {
@@ -516,6 +518,8 @@ export interface SessionSummary {
  * depend only on this interface and never pass path config.
  */
 export interface AgentSessionReader {
+  /** Exact local transcript, with the same cwd guard as history reads. */
+  getSessionFilePath?(sessionId: string, cwd: string): string | undefined;
   /**
    * List sessions for a cwd, newest first by mtime.
    *

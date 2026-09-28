@@ -519,7 +519,7 @@ function reduceResultEvent(state: RunState, event: AgentEvent): RunState {
   // sessionId is set by system.init; undefined means init hasn't arrived yet.
   if (state.sessionId === undefined) return state;
   const resultEvent = event as ResultEvent;
-  const incomingSubtype = event.subtype;
+  const incomingSubtype = event.is_error ? 'error' : event.subtype;
   const incomingErrorMsg =
     incomingSubtype === 'error' ? (resultEvent.errorMessage ?? 'Agent 返回错误结果') : undefined;
 
