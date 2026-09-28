@@ -403,6 +403,35 @@ describe('executeBash / claude concurrency (! bypasses serial queue)', () => {
 // --- Idle watchdog (§9.12) ---
 
 describe('Bridge idle watchdog (§9.12)', () => {
+  it('allows a 40-minute active task with a 15-minute silence watchdog', async () => {
+    vi.useFakeTimers();
+    const stop = vi.fn(async () => {});
+    const runner = createStubRunner();
+    runner.stop = stop;
+    runner.run = async function* () {
+      yield { type: 'system', subtype: 'init', session_id: 'long', cwd: tmpDir, model: 'test' };
+      for (let i = 0; i < 4; i++) {
+        await new Promise((resolve) => setTimeout(resolve, 10 * 60_000));
+        yield {
+          type: 'assistant',
+          message: { content: [{ type: 'text', text: `Progress ${i}` }] },
+        } as AgentEvent;
+      }
+      yield { type: 'result', subtype: 'success', session_id: 'long' };
+    };
+    try {
+      const { bridge, sessionStore } = makeBridge({ runner, idleTimeoutMs: 15 * 60_000 });
+      sessionStore.setCwd(ctx.userId, tmpDir);
+      const run = bridge.forwardToClaude('Complete all stages', ctx);
+      await vi.advanceTimersByTimeAsync(41 * 60_000);
+      await run;
+      expect(stop).not.toHaveBeenCalled();
+      expect(bridge.isBusyFor(tmpDir)).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('calls runner.stop() after idleTimeoutMs and finalizes the card', async () => {
     vi.useFakeTimers();
     try {
