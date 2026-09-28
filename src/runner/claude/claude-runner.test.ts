@@ -106,6 +106,22 @@ describe('ClaudeRunner (long-lived interactive session)', () => {
       }),
     );
   });
+  it('unattended mode disables dialogs and declines residual questions without killing the session', async () => {
+    const argsFile = path.join(tmpDir, 'args.txt');
+    createMockClaude({ MOCK_ARGS_FILE: argsFile, MOCK_SCENARIO: 'question' });
+    const runner = makeRunner({ unattended: true });
+    const events = await collectRunWithTimeout(runner, 'Complete the task');
+    const args = fs.readFileSync(argsFile, 'utf8');
+    expect(args).toContain('--permission-prompts none');
+    expect(args).toContain('--disallowedTools AskUserQuestion,EnterPlanMode,ExitPlanMode');
+    expect(events.some((e) => e.type === 'approval_requested')).toBe(false);
+    expect(events).toContainEqual(expect.objectContaining({ type: 'result', subtype: 'success' }));
+    expect(runner.isRunning).toBe(true);
+    const again = await collectRunWithTimeout(runner, 'Continue verification');
+    expect(again.some((e) => e.type === 'approval_requested')).toBe(false);
+    expect(again).toContainEqual(expect.objectContaining({ type: 'result', subtype: 'success' }));
+  });
+
   it('autoCompactWindow is injected as CLAUDE_CODE_AUTO_COMPACT_WINDOW (0 = inherit)', async () => {
     const envFile = path.join(tmpDir, 'env.json');
     createMockClaude({ MOCK_ENV_FILE: envFile });
