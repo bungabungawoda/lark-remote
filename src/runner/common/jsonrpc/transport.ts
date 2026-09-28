@@ -17,8 +17,18 @@ import {
 import { ProcessStopper } from '../process-stopper.js';
 import { getLogger } from '../../../logger/index.js';
 
-/** Max bytes for a single line before we disconnect (10MB). */
-const MAX_LINE_BYTES = 10 * 1024 * 1024;
+// Max bytes for a single line before we drop the line and resync at the next
+// newline. Bumped 10MB -> 64MB
+// (2026-09-27): real codex app-server sessions doing large file reads /
+// long tool outputs were tripping the old 10MB cap and getting
+// hard-disconnected with no viable retry (the retried request emits the
+// same oversized line again, so the respawn-and-retry-once logic in the
+// callers can never succeed). 64MB keeps the same unbounded-memory-growth
+// protection while giving normal large-output turns room to finish. If
+// this still trips in practice, the real fix is likely to have the
+// upstream agent stream/truncate large tool results rather than raising
+// this further.
+const MAX_LINE_BYTES = 64 * 1024 * 1024;
 
 /** Max bytes retained from stderr for diagnostics (64KB). */
 const MAX_STDERR_BYTES = 64 * 1024;
@@ -42,6 +52,8 @@ export class JsonlRpcTransport {
   private flushing = false;
   /** §4.4 win32 嗅探嫌疑标记（双条件定性见下方 onExit）。 */
   private commandNotFoundSeen = false;
+  private clearReadBuffer: (() => void) | undefined;
+  private closeNotified = false;
 
   constructor(opts: {
     binary: string;
@@ -86,12 +98,16 @@ export class JsonlRpcTransport {
     if (proc.pid === undefined) {
       // ENOENT early check
       const err = await new Promise<Error | undefined>((resolve) => {
-        proc.once('error', (e: Error) => resolve(e));
-        setTimeout(() => resolve(undefined), 5000);
+        const timer = setTimeout(() => resolve(undefined), 5000);
+        proc.once('error', (e: Error) => {
+          clearTimeout(timer);
+          resolve(e);
+        });
       });
       this._closed = true;
+      this.proc = null;
       const reason = err ? `ENOENT: ${this.binary} not found` : `spawn failed: ${this.binary}`;
-      events.onClose(reason);
+      this.notifyClose(reason);
       return;
     }
 
@@ -119,46 +135,79 @@ export class JsonlRpcTransport {
       }
     });
 
-    // Stdout: line-split with 10MB line limit
-    let remainder = '';
+    // Stdout: byte-based line split. Keeping bytes until the newline avoids
+    // corrupting a UTF-8 code point split across Node Buffer chunks and makes
+    // the limit match the actual wire size.
+    let pieces: Buffer[] = [];
+    let bufferedBytes = 0;
+    let droppingOversizedLine = false;
+    const clearReadBuffer = () => {
+      pieces = [];
+      bufferedBytes = 0;
+      droppingOversizedLine = false;
+    };
+    this.clearReadBuffer = clearReadBuffer;
+    const deliver = (line: Buffer): void => {
+      if (!line.length || this._closed) return;
+      let msg: unknown;
+      try {
+        msg = JSON.parse(line.toString('utf8'));
+      } catch (err) {
+        getLogger().warn(
+          `[jsonrpc-transport] failed to parse JSON: ${(err as Error).message}; bytes=${line.length}`,
+        );
+        return;
+      }
+      events.onMessage(msg);
+    };
     proc.stdout?.on('data', (chunk: Buffer) => {
-      remainder += chunk.toString('utf-8');
-      const lines = remainder.split('\n');
-      // Lines except the last (incomplete) one
-      remainder = lines.pop() ?? '';
-      for (const line of lines) {
-        if (line.length === 0) continue;
-        if (line.length > MAX_LINE_BYTES) {
-          getLogger().error(
-            `[jsonrpc-transport] line exceeds ${MAX_LINE_BYTES} bytes, disconnecting`,
-          );
-          this.handleClose('parse_error');
-          return;
+      let start = 0;
+      while (!this._closed && start < chunk.length) {
+        if (droppingOversizedLine) {
+          const newline = chunk.indexOf(0x0a, start);
+          if (newline < 0) return;
+          droppingOversizedLine = false;
+          start = newline + 1;
+          continue;
         }
-        try {
-          const msg = JSON.parse(line);
-          events.onMessage(msg);
-        } catch (err) {
+        const newline = chunk.indexOf(0x0a, start);
+        const end = newline < 0 ? chunk.length : newline;
+        const part = chunk.subarray(start, end);
+        const length = bufferedBytes + part.length;
+        if (length > MAX_LINE_BYTES) {
           getLogger().warn(
-            `[jsonrpc-transport] failed to parse JSON: ${(err as Error).message} line=${line.slice(0, 200)}`,
+            `[jsonrpc-transport] line exceeds ${MAX_LINE_BYTES} bytes (actual ${
+              newline >= 0 ? length : `at least ${length}`
+            } bytes), dropping line`,
           );
+          clearReadBuffer();
+          if (newline < 0) {
+            droppingOversizedLine = true;
+            return;
+          }
+          start = end + 1;
+          continue;
         }
+        if (part.length) pieces.push(part);
+        bufferedBytes = length;
+        if (newline >= 0) {
+          const line = pieces.length === 1 ? pieces[0] : Buffer.concat(pieces, bufferedBytes);
+          clearReadBuffer();
+          deliver(line);
+        }
+        start = end + 1;
       }
     });
 
-    // Handle process exit
+    // 'close' follows stdout EOF; 'exit' may arrive before its final data.
     const onExit = (code: number | null, signal: string | null) => {
+      if (!this._closed && bufferedBytes) deliver(Buffer.concat(pieces, bufferedBytes));
+      clearReadBuffer();
+      this.clearReadBuffer = undefined;
       this._closed = true;
-      this.proc = null;
-      // Flush remaining buffer
-      if (remainder.length > 0) {
-        try {
-          const msg = JSON.parse(remainder);
-          events.onMessage(msg);
-        } catch {
-          // ignore trailing incomplete line
-        }
-      }
+      if (this.proc === proc) this.proc = null;
+      this.writeQueue = [];
+      this.flushing = false;
       // §4.4 双条件定性：嫌疑标记 + 非零正常退出 → command-not-found。
       // reason 仅供日志/诊断，消费方不解析该字符串（baseOnClose 无参）。
       let reason = signal ? `signal:${signal}` : `exit:${code}`;
@@ -168,12 +217,12 @@ export class JsonlRpcTransport {
         );
         reason = `command_not_found:${reason}`;
       }
-      events.onClose(reason);
+      this.notifyClose(reason);
       getLogger().info(
         `[jsonrpc-transport] process exited pid=${proc.pid} code=${code} signal=${signal}`,
       );
     };
-    proc.once('exit', onExit);
+    proc.once('close', onExit);
     proc.once('error', (err) => {
       getLogger().error(`[jsonrpc-transport] process error: ${err.message}`);
       this.handleClose(`error:${err.message}`);
@@ -240,6 +289,9 @@ export class JsonlRpcTransport {
   async close(): Promise<void> {
     if (this._closed) return;
     this._closed = true;
+    this.clearReadBuffer?.();
+    this.writeQueue = [];
+    this.flushing = false;
     const proc = this.proc;
     if (proc) {
       try {
@@ -257,19 +309,15 @@ export class JsonlRpcTransport {
     if (this._closed) return;
     this._closed = true;
     this.writeQueue = [];
-    // Remove the exit listener to avoid double-firing
-    if (this.proc) {
-      this.proc.removeAllListeners('exit');
-      this.proc.removeAllListeners('error');
-    }
+    this.flushing = false;
+    this.clearReadBuffer?.();
     const proc = this.proc;
     this.proc = null;
     if (proc) {
       if (proc.stdin && !proc.stdin.destroyed) {
         proc.stdin.end();
       }
-      // 异常路径（EPIPE/超长行/进程 error）也要收掉子进程，避免孤儿进程
-      // 继续运行（如超长行场景子进程还在往 stdout 灌数据）。
+      // 异常路径（EPIPE/进程 error）也要收掉子进程，避免孤儿进程继续运行。
       void this.stopper.stop(proc).catch((err: unknown) => {
         getLogger().warn(
           `[jsonrpc-transport] failed to stop process during close: ${
@@ -278,9 +326,15 @@ export class JsonlRpcTransport {
         );
       });
     }
-    // 统一关闭出口：EPIPE/超长行/进程 error 都必须通知上层（connection-manager
+    // 统一关闭出口：EPIPE/进程 error 都必须通知上层（connection-manager
     // 靠 onClose 删除 slot、client 靠它 failPending），否则 slot 悬挂死连接。
-    this.events?.onClose(reason);
+    this.notifyClose(reason);
     getLogger().info(`[jsonrpc-transport] closed: ${reason}`);
+  }
+
+  private notifyClose(reason: string): void {
+    if (this.closeNotified) return;
+    this.closeNotified = true;
+    this.events?.onClose(reason);
   }
 }

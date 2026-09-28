@@ -90,6 +90,91 @@ describe('JsonlRpcTransport safety and cleanup', () => {
     delete process.env.HTTPS_PROXY;
   });
 
+  it.each([true, false])(
+    'accepts a valid 12 MiB response, trailing newline=%s',
+    async (newline) => {
+      const script = join(tmpDir, 'large-valid.mjs');
+      writeFileSync(
+        script,
+        `process.stdout.write(JSON.stringify({id: 12, result: "x".repeat(12*1024*1024)}) + ${JSON.stringify(newline ? '\n' : '')});`,
+      );
+      const transport = new JsonlRpcTransport({ ...nodeLaunch(script), cwd: tmpDir });
+      let length = 0;
+      const closed = new Promise<string>((resolve) => {
+        void transport.start({
+          onMessage: (msg) => {
+            length = (msg as { result: string }).result.length;
+          },
+          onClose: resolve,
+        });
+      });
+      try {
+        expect(await closed).toBe('exit:0');
+        expect(length).toBe(12 * 1024 * 1024);
+      } finally {
+        await transport.close();
+      }
+    },
+    10000,
+  );
+
+  it('preserves UTF-8 split inside a multibyte code point', async () => {
+    const script = join(tmpDir, 'utf8-split.mjs');
+    writeFileSync(
+      script,
+      `
+      const bytes = Buffer.from('{"result":"\\u4e2d\\u6587\\ud83d\\ude00"}\\n{"result":"tail"}');
+      for (let i = 0; i < bytes.length; i++) {
+        await new Promise(resolve => process.stdout.write(bytes.subarray(i,i+1), resolve));
+        await new Promise(resolve => setTimeout(resolve, 2));
+      }`,
+    );
+    const transport = new JsonlRpcTransport({ ...nodeLaunch(script), cwd: tmpDir });
+    const messages: unknown[] = [];
+    await new Promise<void>((resolve) => {
+      void transport.start({ onMessage: (m) => messages.push(m), onClose: () => resolve() });
+    });
+    expect(messages).toEqual([{ result: '\u4e2d\u6587\ud83d\ude00' }, { result: 'tail' }]);
+  });
+
+  it.each(['ascii', 'multibyte'] as const)(
+    'drops an oversized %s line and continues with the next message',
+    async (scenario) => {
+      const pidFile = join(tmpDir, 'flood.pid');
+      const script = join(tmpDir, 'flood.mjs');
+      writeFileSync(
+        script,
+        `
+        import fs from 'node:fs';
+        fs.writeFileSync(${JSON.stringify(pidFile)}, String(process.pid));
+        process.stdout.write(${
+          scenario === 'multibyte'
+            ? '"\\u4e2d".repeat(23 * 1024 * 1024) + "\\n"'
+            : '"x".repeat(64 * 1024 * 1024 + 1) + "\\n"'
+        });
+        process.stdout.write(JSON.stringify({ result: "after-oversized" }) + "\\n");
+        setInterval(() => {}, 1000);`,
+      );
+      const transport = new JsonlRpcTransport({ ...nodeLaunch(script), cwd: tmpDir });
+      const closes: string[] = [];
+      const messages: unknown[] = [];
+      try {
+        await transport.start({
+          onMessage: (m) => messages.push(m),
+          onClose: (r) => closes.push(r),
+        });
+        await waitForCondition(() => messages.length > 0, 10000);
+        expect(messages).toEqual([{ result: 'after-oversized' }]);
+        expect(closes).toEqual([]);
+        const pid = Number(readFileSync(pidFile, 'utf8'));
+        expect(() => process.kill(pid, 0)).not.toThrow();
+      } finally {
+        await transport.close();
+      }
+    },
+    20000,
+  );
+
   it('test_anchor_transport_forwards_full_env_including_provider_keys', async () => {
     // agent 是用户自己的可信二进制，provider 认证靠 OPENAI_API_KEY / 自定义
     // provider 的 env_key，代理环境靠 HTTP(S)_PROXY。此前收窄到 5 键白名单
@@ -180,13 +265,13 @@ describe('JsonlRpcTransport safety and cleanup', () => {
   });
 
   it.skipIf(isWin32(currentPlatform))(
-    'test_anchor_transport_kills_child_on_oversized_line',
+    'test_anchor_transport_drops_oversized_line_and_keeps_child_alive',
     async () => {
       const pidFile = join(tmpDir, 'child.pid');
       const wrapper = join(tmpDir, 'huge-line.sh');
       writeFileSync(
         wrapper,
-        `#!/bin/sh\necho $$ > "${pidFile}"\nexec "${process.execPath}" -e 'process.stdout.write("x".repeat(10 * 1024 * 1024 + 1) + "\\n"); setInterval(() => {}, 1000)'\n`,
+        `#!/bin/sh\necho $$ > "${pidFile}"\nexec "${process.execPath}" -e 'process.stdout.write("x".repeat(64 * 1024 * 1024 + 1) + "\\n"); process.stdout.write(JSON.stringify({ result: "after-oversized" }) + "\\n"); setInterval(() => {}, 1000)'\n`,
       );
       chmodSync(wrapper, 0o755);
 
@@ -196,15 +281,24 @@ describe('JsonlRpcTransport safety and cleanup', () => {
         cwd: tmpDir,
       });
 
-      const reason = await new Promise<string>((resolve) => {
-        void transport.start({ onMessage: () => {}, onClose: resolve });
-      });
+      const messages: unknown[] = [];
+      const closes: string[] = [];
+      try {
+        await transport.start({
+          onMessage: (msg) => messages.push(msg),
+          onClose: (reason) => closes.push(reason),
+        });
 
-      expect(reason).toBe('parse_error');
-      const pid = Number(readFileSync(pidFile, 'utf8').trim());
-      await waitForProcessGone(pid, 10000);
+        await waitForCondition(() => messages.length > 0, 10000);
+        expect(messages).toEqual([{ result: 'after-oversized' }]);
+        expect(closes).toEqual([]);
+        const pid = Number(readFileSync(pidFile, 'utf8').trim());
+        expect(() => process.kill(pid, 0)).not.toThrow();
+      } finally {
+        await transport.close();
+      }
     },
-    15000,
+    30000,
   );
 
   it.skipIf(isWin32(currentPlatform))(

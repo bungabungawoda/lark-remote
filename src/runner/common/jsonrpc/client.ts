@@ -133,8 +133,8 @@ export class JsonRpcClient<InitializeResult = unknown> {
   async connect(): Promise<InitializeResult> {
     const events = {
       onMessage: (msg: object) => this.handleMessage(msg),
-      onClose: () => {
-        this.failPending(new ConnectionLostError('transport closed'));
+      onClose: (reason: string) => {
+        this.failPending(new ConnectionLostError(`transport closed: ${reason}`));
         // 先通知连接层（slot 清理 + onConnectionLost），再通知当前 run 层
         // （failTurn 等）。两层互不覆盖。
         this.baseHooks.onClose();
