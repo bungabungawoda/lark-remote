@@ -66,6 +66,13 @@ export interface ClaudeSessionOptions {
   settings?: string;
   model?: string;
   effort?: string;
+  /**
+   * Claude Code 自动压缩窗口（token）。经 CLAUDE_CODE_AUTO_COMPACT_WINDOW
+   * 传给子进程：上下文接近该值时自动摘要，避免撞上网关真实的输入上限
+   * （网关按 context_window - max_output_tokens 拒绝，而不是按模型名宣称的 1M）。
+   * 0/undefined = 不注入，沿用 settings.json / CLI 默认。
+   */
+  autoCompactWindow?: number;
   /** 会话级空闲回收 TTL（ms）：turn 之间无活动超过该窗口则停止进程。0=禁用。 */
   idleTtlMs?: number;
 }
@@ -93,6 +100,7 @@ export class ClaudeSession extends SpawningRunner {
   private readonly settings?: string;
   private readonly defaultModel?: string;
   private readonly defaultEffort?: string;
+  private readonly autoCompactWindow: number;
   private readonly idleTtlMs: number;
 
   /** 当前 turn 是否在途（防止并发 run 写乱 stdin）。 */
@@ -149,6 +157,7 @@ export class ClaudeSession extends SpawningRunner {
     this.settings = opts.settings;
     this.defaultModel = opts.model;
     this.defaultEffort = opts.effort;
+    this.autoCompactWindow = opts.autoCompactWindow ?? 0;
     this.idleTtlMs = opts.idleTtlMs ?? DEFAULT_IDLE_TTL_MS;
   }
 
@@ -317,6 +326,18 @@ export class ClaudeSession extends SpawningRunner {
   protected getStdio(): ('ignore' | 'pipe')[] {
     // stdin 也要 pipe：长驻会话经 stdin 写用户消息/审批响应。
     return ['pipe', 'pipe', 'pipe'];
+  }
+
+  /**
+   * 注入自动压缩窗口：显式值优先于 settings.json / 环境（子进程 env 覆盖
+   * 用户设置里的同名键），保证 bridge 不受全局配置被 cc-switch 重写影响。
+   */
+  protected buildSpawnEnv(): NodeJS.ProcessEnv {
+    if (this.autoCompactWindow <= 0) return process.env;
+    return {
+      ...process.env,
+      CLAUDE_CODE_AUTO_COMPACT_WINDOW: String(this.autoCompactWindow),
+    };
   }
 
   protected buildArgv(opts: SpawnOptions): string[] {

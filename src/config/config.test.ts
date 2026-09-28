@@ -59,6 +59,8 @@ describe('loadConfig', () => {
     expect(config.claude.permissionMode).toBe('bypassPermissions');
     expect(config.claude.approvalTimeoutMs).toBe(5 * 60 * 1000);
     expect(config.claude.idleTtlMinutes).toBe(30);
+    // 自动压缩窗口默认 750k，避开网关真实输入上限（见 DEFAULTS 注释）
+    expect(config.claude.autoCompactWindow).toBe(750000);
     // defaultAgent defaults to 'claude' when absent
     expect(config.defaultAgent).toBe('claude');
   });
@@ -115,6 +117,24 @@ claude:
     const config = loadConfig(p);
     expect(config.claude.approvalTimeoutMs).toBe(120000);
     expect(config.claude.idleTtlMinutes).toBe(0);
+  });
+
+  it('claude autoCompactWindow: default 750000, custom honored, 0 disables', () => {
+    const p = writeConfig(`feishu:
+  appId: cli_test123
+  appSecret: secret_test123
+claude:
+  autoCompactWindow: 600000
+`);
+    expect(loadConfig(p).claude.autoCompactWindow).toBe(600000);
+
+    const p2 = writeConfig(`feishu:
+  appId: cli_test123
+  appSecret: secret_test123
+claude:
+  autoCompactWindow: 0
+`);
+    expect(loadConfig(p2).claude.autoCompactWindow).toBe(0);
   });
 
   it('fresh config defaults codex to on-request / workspace-write', () => {

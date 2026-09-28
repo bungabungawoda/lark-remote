@@ -95,6 +95,34 @@ afterEach(async () => {
 });
 
 describe('ClaudeRunner (long-lived interactive session)', () => {
+  it('autoCompactWindow is injected as CLAUDE_CODE_AUTO_COMPACT_WINDOW (0 = inherit)', async () => {
+    const envFile = path.join(tmpDir, 'env.json');
+    createMockClaude({ MOCK_ENV_FILE: envFile });
+
+    const runner = makeRunner({ autoCompactWindow: 750000 });
+    for await (const _ of runner.run('hello', { cwd: '/tmp' })) {
+      // consume
+    }
+    expect(JSON.parse(fs.readFileSync(envFile, 'utf8'))).toEqual({
+      CLAUDE_CODE_AUTO_COMPACT_WINDOW: '750000',
+    });
+
+    // 0 = 不注入，沿用环境/settings.json 默认
+    const prior = process.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW;
+    delete process.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW;
+    const envFile2 = path.join(tmpDir, 'env2.json');
+    Object.assign(process.env, { MOCK_ENV_FILE: envFile2 });
+    const runner2 = makeRunner({ autoCompactWindow: 0 });
+    for await (const _ of runner2.run('hello', { cwd: '/tmp' })) {
+      // consume
+    }
+    expect(JSON.parse(fs.readFileSync(envFile2, 'utf8'))).toEqual({
+      CLAUDE_CODE_AUTO_COMPACT_WINDOW: null,
+    });
+    if (prior === undefined) delete process.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW;
+    else process.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW = prior;
+  });
+
   it('test_anchor_spawns_with_interactive_stream_json_args', async () => {
     const argsFile = path.join(tmpDir, 'args.txt');
     createMockClaude({ MOCK_ARGS_FILE: argsFile });

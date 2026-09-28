@@ -51,6 +51,17 @@ if (argsFile) {
   fs.writeFileSync(argsFile, process.argv.slice(2).join(' '));
 }
 
+// 记录关心的环境变量（spawn env 注入回归测试用，如自动压缩窗口）。
+const envFile = process.env.MOCK_ENV_FILE;
+if (envFile) {
+  fs.writeFileSync(
+    envFile,
+    JSON.stringify({
+      CLAUDE_CODE_AUTO_COMPACT_WINDOW: process.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW ?? null,
+    }),
+  );
+}
+
 function emit(obj) {
   process.stdout.write(JSON.stringify(obj) + '\n');
 }

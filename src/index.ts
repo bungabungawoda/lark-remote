@@ -226,6 +226,7 @@ function initializeRunner(
       unattended: latest().unattended,
       model: claudeConfig.model,
       effort: claudeConfig.effort,
+      autoCompactWindow: claudeConfig.autoCompactWindow,
       stopGraceMs: claudeConfig.stopGraceMs,
       settings: cliArgs.settings,
       pidDir: configDir,
@@ -826,6 +827,7 @@ async function main() {
   logger.info(`configDir = ${configDir}`);
   logger.info(`feishu.appId = ${config.feishu.appId}`);
   logger.info(`claude.model = ${config.claude.model}`);
+  logger.info(`claude.autoCompactWindow = ${config.claude.autoCompactWindow}`);
   if (cliArgs.settings) {
     logger.info(`claude.settings = ${cliArgs.settings}`);
   }

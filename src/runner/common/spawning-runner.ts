@@ -191,6 +191,14 @@ export abstract class SpawningRunner {
   }
 
   /**
+   * Spawn 环境变量。默认继承父进程；子类可覆盖以注入 agent 专属变量
+   * （如 Claude 的 CLAUDE_CODE_AUTO_COMPACT_WINDOW）。
+   */
+  protected buildSpawnEnv(): NodeJS.ProcessEnv {
+    return process.env;
+  }
+
+  /**
    * Create an async iterator over the child's stdout. Default: createJSONLStream
    * with P1-4 backpressure enabled (pauseThreshold=100).
    */
@@ -237,7 +245,7 @@ export abstract class SpawningRunner {
     const proc = spawnProcess(this.binary, this.buildArgv(opts), {
       cwd: opts.cwd,
       stdio: this.getStdio(),
-      env: process.env,
+      env: this.buildSpawnEnv(),
       // posix 建新进程组以便负 PID 组杀（壳包装/子进程一并终止）；win32 不
       // detached —— `.cmd` 垫片在 DETACHED_PROCESS 下丢 stdio（见
       // useDetachedProcessGroup），树杀由 taskkill /T 负责。

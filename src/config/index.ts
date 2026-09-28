@@ -45,6 +45,13 @@ const DEFAULTS = {
   APPROVAL_TIMEOUT_MS: 5 * 60 * 1000,
   /** Claude 会话级空闲回收默认 30 分钟（对齐 codex appServer.idleTtlMs）。 */
   CLAUDE_IDLE_TTL_MINUTES: 30,
+  /**
+   * Claude 自动压缩窗口默认 750k token。网关（coder.narwal.com）按
+   * context_window - max_output_tokens 拒绝超限输入（gpt-6-astra 实测上限
+   * ≈922k），而 Claude Code 依据模型名 `[1M]` 以为窗口是 1M、不会提前压缩，
+   * 撞墙后连 /compact 也 400。750k 留足余量，避免长会话卡死。
+   */
+  CLAUDE_AUTO_COMPACT_WINDOW: 750_000,
 } as const;
 
 /**
@@ -103,6 +110,12 @@ const ClaudeConfigSchema = z.object({
   approvalTimeoutMs: z.number().int().min(0).default(DEFAULTS.APPROVAL_TIMEOUT_MS),
   /** 会话级空闲回收（分钟）：turn 之间无新消息超过该窗口则停止长驻进程。 */
   idleTtlMinutes: z.number().int().min(0).default(DEFAULTS.CLAUDE_IDLE_TTL_MINUTES),
+  /**
+   * 自动压缩窗口（token）：经 CLAUDE_CODE_AUTO_COMPACT_WINDOW 传给 claude，
+   * 上下文接近该值即自动摘要，避免撞上网关真实输入上限（见 DEFAULTS 注释）。
+   * 0 = 不注入，沿用 settings.json / 环境默认。
+   */
+  autoCompactWindow: z.number().int().min(0).default(DEFAULTS.CLAUDE_AUTO_COMPACT_WINDOW),
   stopGraceMs: z.number().int().min(0).default(DEFAULTS.STOP_GRACE_MS),
 });
 
@@ -323,6 +336,7 @@ claude:
   permissionMode: bypassPermissions
   approvalTimeoutMs: ${DEFAULTS.APPROVAL_TIMEOUT_MS}
   idleTtlMinutes: ${DEFAULTS.CLAUDE_IDLE_TTL_MINUTES}
+  autoCompactWindow: ${DEFAULTS.CLAUDE_AUTO_COMPACT_WINDOW}
   stopGraceMs: ${DEFAULTS.STOP_GRACE_MS}
 
 idle:
