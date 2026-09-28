@@ -33,6 +33,47 @@ describePosix('CodexAppServerRunner integration', () => {
     rmRf(tmpDir);
   });
 
+  it.each(['question-request.jsonl', 'command-approval.json', 'permissions-approval.json'])(
+    'unattended mode resolves %s without a card or fabricated consent',
+    async (fixture) => {
+      const requestLog = join(tmpDir, 'unattended.jsonl');
+      const runner = new CodexAppServerRunner({
+        kind: 'codex',
+        sessionReader: createStubSessionReader(),
+        binary: process.execPath,
+        appServerArgs: [FAKE_SERVER, join(FIXTURES, fixture)],
+        env: { FAKE_SERVER_LOG: requestLog },
+        unattended: true,
+        approvalPolicy: 'never',
+        sandbox: 'danger-full-access',
+      });
+      try {
+        const events: AgentEvent[] = [];
+        for await (const event of runner.run('Finish the task', { cwd: tmpDir }))
+          events.push(event);
+        expect(events.some((e) => e.type === 'approval_requested')).toBe(false);
+        expect(events).toContainEqual(expect.objectContaining({ type: 'result' }));
+        const requests = readFileSync(requestLog, 'utf8')
+          .trim()
+          .split('\n')
+          .map((l) => JSON.parse(l));
+        const start = requests.find((r) => r.method === 'thread/start');
+        expect(start.params.config['features.default_mode_request_user_input']).toBe(false);
+        expect(start.params.approvalPolicy).toBe('never');
+        expect(start.params.sandbox).toBe('danger-full-access');
+        expect(requests.find((r) => r.method === 'turn/start').params.input[0].text).toContain(
+          'checkpoint',
+        );
+        const response = requests.find((r) => r.response)?.response;
+        expect(response).toBeDefined();
+        if (fixture === 'question-request.jsonl') expect(response.result).toEqual({ answers: {} });
+        else expect(JSON.stringify(response.result)).not.toContain('"accept"');
+      } finally {
+        await runner.dispose();
+      }
+    },
+  );
+
   it('runs a full turn with sandbox/approval/model config forwarded in protocol params', async () => {
     const requestLog = join(tmpDir, 'requests.jsonl');
     const cwd = join(tmpDir, 'workspace');

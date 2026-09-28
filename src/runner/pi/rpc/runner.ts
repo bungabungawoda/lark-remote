@@ -25,8 +25,10 @@ import { getLogger } from '../../../logger/index.js';
 import { PiRpcClient } from './client.js';
 import { PiRpcTranslator, type PiRpcTranslatorEvent } from './translator.js';
 import type { PiRpcEvent } from './protocol-types.js';
+import { unattendedMessage } from '../../common/unattended.js';
 
 export interface PiRpcRunnerOptions {
+  unattended?: boolean;
   /** LLM provider, e.g. 'Volcano'. */
   provider?: string;
   /** Model id or alias, e.g. 'glm-5.2'. */
@@ -47,6 +49,7 @@ export interface PiRpcRunnerOptions {
 }
 
 export class PiRpcRunner extends ConnectionBasedRunner<PiRpcClient, PiRpcTranslatorEvent> {
+  private readonly unattended: boolean;
   private readonly manager: ConnectionManager<PiRpcClient>;
   private currentTranslator: PiRpcTranslator | null = null;
   private activeSessionId: string | null = null;
@@ -62,6 +65,7 @@ export class PiRpcRunner extends ConnectionBasedRunner<PiRpcClient, PiRpcTransla
       turnIdleTimeoutMs: opts.turnIdleTimeoutMs,
     });
     this.defaultModel = opts.model ?? 'glm-5.2';
+    this.unattended = opts.unattended ?? false;
     this.provider = opts.provider ?? 'Volcano';
     this.thinking = opts.thinking ?? 'medium';
     const tools = (opts.tools ?? ['read', 'bash', 'edit', 'write', 'grep', 'find', 'ls']).join(',');
@@ -201,7 +205,10 @@ export class PiRpcRunner extends ConnectionBasedRunner<PiRpcClient, PiRpcTransla
     this.pushEvents([translator.produceTurnStarted(sessionId, turnId)]);
 
     this.promptSettled = false;
-    const response = await client.request({ type: 'prompt', message });
+    const response = await client.request({
+      type: 'prompt',
+      message: unattendedMessage(message, this.unattended),
+    });
     if (!response.success) {
       // CC-08: pi 返回 success:false（无效模型/provider 错误/忙）时立即失败，
       // 不能当成成功 ACK 继续等 agent_settled（否则最长 turn idle timeout）。

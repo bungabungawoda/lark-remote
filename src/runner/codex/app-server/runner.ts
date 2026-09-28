@@ -42,8 +42,10 @@ import { RpcErrorCode } from '../../common/acp/protocol-types.js';
 import { mapAnswersByIndex } from '../../question-common.js';
 import { getLogger } from '../../../logger/index.js';
 import { ConnectionBasedRunner } from '../../common/connection-based-runner.js';
+import { unattendedMessage } from '../../common/unattended.js';
 
 export interface CodexAppServerRunnerOptions {
+  unattended?: boolean;
   kind: AgentKind;
   sessionReader: AgentSessionReader;
   /** Path to the codex binary. Defaults to `codex`. */
@@ -166,6 +168,7 @@ export class CodexAppServerRunner extends ConnectionBasedRunner<
   TranslatorEvent
 > {
   private connectionManager: ConnectionManager<JsonRpcClient<InitializeResult>>;
+  private readonly unattended: boolean;
   private currentTranslator: CodexAppServerTranslator | null = null;
   private activeThreadId: string | null = null;
   private model?: string;
@@ -185,6 +188,7 @@ export class CodexAppServerRunner extends ConnectionBasedRunner<
   constructor(opts: CodexAppServerRunnerOptions) {
     super({ kind: opts.kind, sessionReader: opts.sessionReader }, opts.turnTimeoutMs);
     this.model = opts.model;
+    this.unattended = opts.unattended ?? false;
     this.modelProvider = opts.modelProvider;
     this.reasoningEffort = opts.reasoningEffort;
     this.sandboxConfig = opts.sandbox;
@@ -429,7 +433,9 @@ export class CodexAppServerRunner extends ConnectionBasedRunner<
       ...(this.sandboxConfig ? { sandbox: this.sandboxConfig } : {}),
       // Default 协作模式下默认启用 request_user_input（Ask User Question），
       // 协议级 override，不依赖 codex config.toml。
-      config: THREAD_CONFIG_DEFAULT_MODE_REQUEST_USER_INPUT,
+      config: this.unattended
+        ? { 'features.default_mode_request_user_input': false }
+        : THREAD_CONFIG_DEFAULT_MODE_REQUEST_USER_INPUT,
     };
     return params;
   }
@@ -437,7 +443,7 @@ export class CodexAppServerRunner extends ConnectionBasedRunner<
   private buildTurnParams(message: string, opts: SpawnOptions): TurnStartParams {
     const params: TurnStartParams = {
       threadId: this.activeThreadId ?? '',
-      input: [{ type: 'text', text: message }],
+      input: [{ type: 'text', text: unattendedMessage(message, this.unattended) }],
       ...((opts.model ?? this.model) ? { model: opts.model ?? this.model } : {}),
       ...((opts.reasoningEffort ?? this.reasoningEffort)
         ? { effort: opts.reasoningEffort ?? this.reasoningEffort }
@@ -510,6 +516,11 @@ export class CodexAppServerRunner extends ConnectionBasedRunner<
   }
 
   private handleServerRequest(id: number | string, method: string, params: unknown): void {
+    if (this.unattended && method === 'item/tool/requestUserInput') {
+      this.currentClient?.respond(id, { answers: {} });
+      getLogger().info(`[${this.logTag}] unattended question unanswered requestId=${id}`);
+      return;
+    }
     const events = this.currentTranslator?.handleServerRequest(id, method, params) ?? [];
     if (events.length === 0) {
       // 未处理/不支持的服务端请求必须显式响应（error 即"拒绝"，turn 继续），
@@ -525,12 +536,24 @@ export class CodexAppServerRunner extends ConnectionBasedRunner<
     for (const ev of events) {
       if (ev.type === 'approval_requested') {
         this.pendingApprovals.set(ev.requestId, { kind: ev.kind, view: ev.view });
+        if (this.unattended) {
+          // Residual requests must not silently grant a permission the CLI withheld.
+          void this.respondApproval(ev.requestId, { action: 'decline' }).catch((err: Error) =>
+            this.failTurn(`Unattended approval response failed: ${err.message}`),
+          );
+          getLogger().info(
+            `[${this.logTag}] unattended approval declined requestId=${ev.requestId} kind=${ev.kind}`,
+          );
+          continue;
+        }
         getLogger().info(
           `[${this.logTag}] approval requested requestId=${ev.requestId} kind=${ev.kind}`,
         );
       }
     }
-    this.pushEvents(events);
+    this.pushEvents(
+      this.unattended ? events.filter((ev) => ev.type !== 'approval_requested') : events,
+    );
   }
 
   private buildGrantedPermissions(view: ApprovalView): unknown {

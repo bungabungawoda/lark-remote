@@ -33,6 +33,7 @@ import { readFile } from 'node:fs/promises';
 import { silentlyUnlink } from '../../common/fs.js';
 import { getLogger } from '../../logger/index.js';
 import { SpawningRunner } from '../common/spawning-runner.js';
+import { unattendedMessage } from '../common/unattended.js';
 import { authErrorEvent, syntheticInitEvent } from '../common/runner-utils.js';
 import type { AgentEvent, ApprovalView, SpawnOptions, UserQuestion } from '../types.js';
 import { makeQuestionApprovalEvent } from '../question-common.js';
@@ -55,6 +56,7 @@ interface ReplayedUserEvent {
 }
 
 export interface ClaudeSessionOptions {
+  unattended?: boolean;
   pidDir?: string;
   workspace: string;
   stopGraceMs?: number;
@@ -86,6 +88,7 @@ export interface PermissionResult {
  * stream-json result 事件（非 compact）为界，而不是进程退出。
  */
 export class ClaudeSession extends SpawningRunner {
+  private readonly unattended: boolean;
   private readonly permissionMode: string;
   private readonly settings?: string;
   private readonly defaultModel?: string;
@@ -141,6 +144,7 @@ export class ClaudeSession extends SpawningRunner {
       logTag: 'claude-runner',
     });
     this.binary = 'claude';
+    this.unattended = opts.unattended ?? false;
     this.permissionMode = opts.permissionMode ?? 'bypassPermissions';
     this.settings = opts.settings;
     this.defaultModel = opts.model;
@@ -191,7 +195,7 @@ export class ClaudeSession extends SpawningRunner {
       // turn 之间的 idle 噪音（如 prompt_suggestion）不属于本 turn，先清空。
       this.eventQueue.length = 0;
       try {
-        await this.writeUserMessage(message);
+        await this.writeUserMessage(unattendedMessage(message, this.unattended));
       } catch (err) {
         // review：stop()/进程死亡与写 stdin 竞态（EPIPE/ENOTCONN）。用户
         // stop 已置 stoppedByUser（或进程已死/流已结束）时，写入失败不抛给
@@ -333,6 +337,10 @@ export class ClaudeSession extends SpawningRunner {
     // 本项目是 macOS 单用户场景不做该降级。
     if (this.permissionMode && this.permissionMode !== 'default') {
       args.push('--permission-mode', this.permissionMode);
+    }
+    if (this.unattended) {
+      args.push('--permission-prompts', 'none');
+      args.push('--disallowedTools', 'AskUserQuestion,EnterPlanMode,ExitPlanMode');
     }
 
     if (opts.sessionId) {
@@ -789,6 +797,16 @@ export class ClaudeSession extends SpawningRunner {
 
     const toolName = String(request.tool_name ?? '');
     const input = (request.input ?? {}) as Record<string, unknown>;
+    if (this.unattended) {
+      // Fail closed if an older CLI still emits a prompt. Do not kill the turn.
+      await this.writeControlResponse(requestId, {
+        behavior: 'deny',
+        message:
+          'Unattended remote session: no human answer or approval is available. Continue only within existing authorization, or report the blocker.',
+      });
+      getLogger().info(`[${this.logTag}] unattended request declined tool=${toolName}`);
+      return [];
+    }
     this.pendingToolInputs.set(requestId, input);
 
     // review P1：允许所有只放行工具权限；AskUserQuestion 不能被空 answers

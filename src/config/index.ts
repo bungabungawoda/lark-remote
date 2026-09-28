@@ -292,6 +292,8 @@ const AgentChoicesSchema = z.object({
 });
 
 export const AppConfigSchema = z.object({
+  /** Opt-in unattended execution; does not change OS or agent permission policy. */
+  unattended: z.boolean().optional(),
   feishu: FeishuConfigSchema,
   /** Claude config (top-level; other agents live under `agents`). */
   claude: ClaudeConfigSchema.default(ClaudeConfigSchema.parse({})),

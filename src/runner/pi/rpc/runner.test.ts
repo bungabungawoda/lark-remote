@@ -27,6 +27,7 @@ let stateRequests = 0;
 rl.on('line', (line) => {
   let msg; try { msg = JSON.parse(line); } catch { return; }
   if (config.commandLog) require('node:fs').appendFileSync(config.commandLog, msg.type + '\\n');
+  if (config.promptLog && msg.type === 'prompt') require('node:fs').appendFileSync(config.promptLog, JSON.stringify(msg) + '\\n');
   if (msg.type === 'get_state') {
     if (++stateRequests > 1 && config.ignoreHealth) return;
     send({ id: msg.id, type: 'response', command: 'get_state', success: true, data: { sessionId: config.sessionId || '${SESSION_ID}', model: config.model } });
@@ -93,6 +94,38 @@ function makeRunner(scenario: Record<string, unknown> = {}): PiRpcRunner {
 }
 
 describe('PiRpcRunner', () => {
+  it('unattended Pi keeps a live session and sends checkpoint guidance on every turn', async () => {
+    const promptLog = path.join(tmpDir, 'prompts.jsonl');
+    const runner = new PiRpcRunner({
+      workspace: tmpDir,
+      sessionReader: emptyReader,
+      unattended: true,
+      env: { MOCK_PI_SCENARIO: JSON.stringify({ promptLog }) },
+    });
+    try {
+      for (const sessionId of [undefined, SESSION_ID]) {
+        const events = [];
+        for await (const event of runner.run('Complete the tests', { cwd: tmpDir, sessionId })) {
+          events.push(event);
+        }
+        expect(events).toContainEqual(
+          expect.objectContaining({ type: 'result', subtype: 'success' }),
+        );
+        expect(events.some((event) => event.type === 'approval_requested')).toBe(false);
+      }
+      const prompts = fs
+        .readFileSync(promptLog, 'utf8')
+        .trim()
+        .split('\n')
+        .map((line) => JSON.parse(line));
+      expect(prompts).toHaveLength(2);
+      expect(prompts.every((prompt) => prompt.message.includes('checkpoint'))).toBe(true);
+      expect(await runner.probeHealth()).toBe(1);
+    } finally {
+      await runner.dispose();
+    }
+    expect(await runner.probeHealth()).toBe(0);
+  });
   it('test_anchor_run_new_session_captures_session_id_and_succeeds', async () => {
     const runner = makeRunner();
     const events = [];

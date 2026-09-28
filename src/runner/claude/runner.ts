@@ -50,6 +50,7 @@ export class ClaudeRunner implements AgentRunner {
   private readonly permissionMode: string;
 
   constructor(opts: {
+    unattended?: boolean;
     model?: string;
     effort?: string;
     settings?: string;
@@ -68,6 +69,7 @@ export class ClaudeRunner implements AgentRunner {
     this.permissionMode = opts.permissionMode ?? 'bypassPermissions';
     this.sessionReader = opts.sessionReader ?? new ClaudeSessionReader();
     this.session = new ClaudeSession({
+      unattended: opts.unattended,
       pidDir: opts.pidDir,
       workspace: opts.workspace,
       stopGraceMs: opts.stopGraceMs,
