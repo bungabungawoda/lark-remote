@@ -15,6 +15,8 @@
  *   handleRequestPermission                           — approval rendering (abstract)
  *   handleOtherServerRequest                          — extra reverse RPC (kimi: elicitation)
  *   extractToolResultContent                          — tool_result content (default: rawOutput)
+ *   extractToolCallArgsText                           — streaming-args source (opencode: none)
+ *   buildToolUseUpdate                                — tool_use patch from tool_call_update
  *   onUsageSample                                     — extra usage bookkeeping (opencode: cost)
  */
 import type {
@@ -145,6 +147,14 @@ export abstract class BaseAcpTranslator {
    * approval handler correlate by toolCallId and recover the real command.
    */
   private toolCallArgsByCallId = new Map<string, string>();
+
+  /**
+   * tool_use name recorded at tool_call time (kind mapping wins, else title).
+   * A later tool_call_update may carry only a title (opencode's completed
+   * update has neither kind nor rawInput); pairing it with the recorded name
+   * lets a tool_use patch render the original title as a subtitle.
+   */
+  private toolCallNameByCallId = new Map<string, string>();
 
   /**
    * Handle a notification from the ACP server and return translated events.
@@ -329,15 +339,16 @@ export abstract class BaseAcpTranslator {
       }
     }
 
-    const argsText = extractToolCallContentText(event.content);
+    const argsText = this.extractToolCallArgsText(event);
     if (argsText !== undefined) {
       this.trackToolCallArgs(event.toolCallId, argsText);
     } else if (event.rawInput !== undefined && event.rawInput !== null) {
       this.trackToolCallArgs(event.toolCallId, stringifyUnknown(event.rawInput));
     }
 
-    const mapped = event.kind ? KIND_TO_TOOL[event.kind] : undefined;
+    const mapped = this.toolNameFromKind(event.kind);
     const name = mapped ?? event.title;
+    this.trackToolCallName(event.toolCallId, name);
     const summary = mapped && event.title && event.title !== name ? event.title : undefined;
 
     return [
@@ -369,6 +380,12 @@ export abstract class BaseAcpTranslator {
     const isError = event.status === 'failed';
     const content = this.extractToolResultContent(event);
 
+    // Patch the existing tool block with identity that was not available at the
+    // initial tool_call (opencode streams args after emitting tool_call). The
+    // reducer merges by id, so this never duplicates the panel. Built before
+    // the terminal cleanup below so it can still resolve the recorded name.
+    const useUpdate = this.buildToolUseUpdate(event);
+
     // Terminal updates end the args-streaming phase — drop the tracked entry.
     // In-progress delta text is cumulative (events-map.ts
     // toolCallDeltaToSessionUpdate: content.text = accumulator.args), so the
@@ -376,7 +393,7 @@ export abstract class BaseAcpTranslator {
     if (event.status === 'completed' || event.status === 'failed') {
       this.toolCallArgsByCallId.delete(event.toolCallId);
     } else {
-      const argsText = extractToolCallContentText(event.content);
+      const argsText = this.extractToolCallArgsText(event);
       if (argsText !== undefined) {
         this.trackToolCallArgs(event.toolCallId, argsText);
       } else if (event.rawInput !== undefined && event.rawInput !== null) {
@@ -384,22 +401,23 @@ export abstract class BaseAcpTranslator {
       }
     }
 
-    return [
-      {
-        type: 'user',
-        message: {
-          content: [
-            {
-              type: 'tool_result',
-              tool_use_id: event.toolCallId,
-              content,
-              is_error: isError,
-            },
-          ],
-        },
-        timestamp: new Date().toISOString(),
+    const events: AcpTranslatorEvent[] = [];
+    if (useUpdate) events.push(useUpdate);
+    events.push({
+      type: 'user',
+      message: {
+        content: [
+          {
+            type: 'tool_result',
+            tool_use_id: event.toolCallId,
+            content,
+            is_error: isError,
+          },
+        ],
       },
-    ];
+      timestamp: new Date().toISOString(),
+    });
+    return events;
   }
 
   /**
@@ -412,6 +430,52 @@ export abstract class BaseAcpTranslator {
     return this.toolCallArgsByCallId.get(toolCallId);
   }
 
+  /** tool_use name recorded at tool_call time (kind mapping wins, else title). */
+  protected getToolCallName(toolCallId: string): string | undefined {
+    return this.toolCallNameByCallId.get(toolCallId);
+  }
+
+  /**
+   * kind → canonical tool name (信息保真 C3.1). Shared by the initial tool_call
+   * handler and the tool_call_update patch builder so both agree on the name.
+   */
+  protected toolNameFromKind(kind: string | undefined): string | undefined {
+    return kind ? KIND_TO_TOOL[kind] : undefined;
+  }
+
+  /**
+   * Streaming-args text carried by a tool_call/_update notification.
+   *
+   * Default: the notification's content text — kimi's events-map.ts encodes the
+   * accumulated args there (toolCallDeltaToSessionUpdate: content.text =
+   * accumulator.args), and the approval handler relies on it.
+   *
+   * opencode overrides this to return undefined: its tool_call/_update content
+   * is the shell OUTPUT snapshot (decompiled acp service `WP`), never args
+   * (args ride rawInput in `XC`/`BP`). Treating that output as args would
+   * corrupt approval command recovery — the hazard this hook exists to close.
+   */
+  protected extractToolCallArgsText(
+    event: ToolCallEvent | ToolCallUpdateEvent,
+  ): string | undefined {
+    return extractToolCallContentText(event.content);
+  }
+
+  /**
+   * tool_call_update → optional tool_use patch event. When an update carries
+   * richer identity than the initial tool_call did (opencode emits the
+   * tool_call while args are still streaming, then delivers the real title /
+   * rawInput in later updates), the returned `assistant`/`tool_use` block is
+   * merged into the existing tool block by the card reducer (matched by id)
+   * instead of creating a duplicate panel.
+   *
+   * Default: null (kimi self-produces its Bash tool_use from terminal/create
+   * with the real command, so it needs no patch). opencode overrides.
+   */
+  protected buildToolUseUpdate(_event: ToolCallUpdateEvent): AgentEvent | null {
+    return null;
+  }
+
   /** Record latest args text, bounded so a long session cannot grow it forever. */
   private trackToolCallArgs(toolCallId: string, argsText: string): void {
     this.toolCallArgsByCallId.delete(toolCallId);
@@ -419,6 +483,16 @@ export abstract class BaseAcpTranslator {
     if (this.toolCallArgsByCallId.size > 100) {
       const oldest = this.toolCallArgsByCallId.keys().next().value;
       if (oldest !== undefined) this.toolCallArgsByCallId.delete(oldest);
+    }
+  }
+
+  /** Record tool_use name, bounded to keep a long session from growing it. */
+  private trackToolCallName(toolCallId: string, name: string): void {
+    this.toolCallNameByCallId.delete(toolCallId);
+    this.toolCallNameByCallId.set(toolCallId, name);
+    if (this.toolCallNameByCallId.size > 100) {
+      const oldest = this.toolCallNameByCallId.keys().next().value;
+      if (oldest !== undefined) this.toolCallNameByCallId.delete(oldest);
     }
   }
 

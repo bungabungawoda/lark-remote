@@ -43,9 +43,13 @@ export function toolHeaderText(tool: ToolEntry): string {
   const blockSummary = tool.summary
     ? truncate(tool.summary.replace(/\s+/g, ' ').trim(), HEADER_SUMMARY_MAX, { suffix: '' })
     : '';
+  // opencode carries the same value in both slots (title = command/path, and
+  // the args-derived summary resolves to it too); dedupe so the header reads
+  // `✅ **Bash** — ls` instead of `✅ **Bash** — ls — ls`.
   const parts = [summary, blockSummary].filter(Boolean);
-  return parts.length > 0
-    ? `${icon} **${tool.name}** — ${parts.join(' — ')}`
+  const uniqueParts = parts.filter((part, i) => parts.indexOf(part) === i);
+  return uniqueParts.length > 0
+    ? `${icon} **${tool.name}** — ${uniqueParts.join(' — ')}`
     : `${icon} **${tool.name}**`;
 }
 
