@@ -182,13 +182,20 @@ describe('! bash command feature (Anchor Tests)', () => {
       const cards = connector._cards;
       expect(cards.length).toBeGreaterThan(0);
 
-      // Should show error message
       const responseStr = JSON.stringify(cards[cards.length - 1]);
-      expect(
-        responseStr.toLowerCase().includes('not found') ||
-          responseStr.toLowerCase().includes('error') ||
-          responseStr.toLowerCase().includes('找不到'),
-      ).toBe(true);
+
+      // 卡片回显命令名，用户才知道什么失败了
+      expect(responseStr).toContain('nonexistent_command_xyz');
+
+      // 失败用确定性信号断言：shell 以非零码退出（command not found 通常 127）。
+      // 不匹配 stderr 文案——bash 会本地化 "command not found"（zh_CN 下为「未找到命令」），
+      // 关键字断言会随宿主 locale 变化而误红。
+      const exitCode = responseStr.match(/退出码:\s*(\d+)/);
+      expect(exitCode, 'failure card must report an exit code').not.toBeNull();
+      expect(Number(exitCode![1])).toBeGreaterThan(0);
+
+      // stderr 诊断块被呈现（「诊断输出」标签由源码控制，与 locale 无关）
+      expect(responseStr).toContain('诊断输出');
     });
 
     it('shows exit code on command failure', async () => {
