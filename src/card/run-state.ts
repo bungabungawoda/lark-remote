@@ -863,24 +863,42 @@ function keepLatestBlocks(blocks: RunBlock[]): RunBlock[] {
   return blocks.length <= MAX_BLOCKS ? blocks : blocks.slice(-MAX_BLOCKS);
 }
 
+/** 截断标记前缀（`keepTailMarked` 产出，含已丢弃正文计数）。 */
+const TRUNCATION_MARKER_RE = /^…（前 (\d+) 字符已省略）\n/;
+
 /**
  * keepTail + 截断标记：被去头的存储内容以前缀如实标注（信息保真红线：禁止静默丢弃）。
  * 标记计入 maxChars 预算（存储总量仍 ≤ maxChars，保持既有长度不变量）。
+ *
+ * 计数口径（2026-10 修正）：只统计**真实丢弃的正文**，不含标记自身开销。
+ * 关键点是增量流下 `value` 往往已带上一次的标记（`marker + kept`）；若直接
+ * 用 `value.length - kept.length` 计费，会把上一帧的标记文本也算进「已省略」，
+ * 造成每帧显示十几字符的虚高。这里先剥离旧标记，把 N 定义为**从该块起始累计
+ * 丢弃的正文数**（单调不减），再按「marker 计入预算」的不动点求最小 N。
  */
 function keepTailMarked(value: string, maxChars: number): string {
-  if (value.length <= maxChars) return value;
-  // marker 计入 maxChars 预算（总量不变量）。省略数 = value.length - kept.length，
-  // 而 kept 长度取决于 marker 长度、marker 长度又取决于省略数的位数——
-  // 不动点迭代（marker 固定部分 12 字符，位数至多几次即收敛）。
-  let dropped = value.length - maxChars + 12;
+  const prior = TRUNCATION_MARKER_RE.exec(value);
+  const priorDropped = prior ? Number(prior[1]) : 0;
+  const body = prior ? value.slice(prior[0].length) : value;
+
+  // 从未截断且当前正文未超预算：原样返回（不误标）。
+  if (priorDropped === 0 && body.length <= maxChars) return value;
+
+  // 求最小累计丢弃数 N（≥ priorDropped），使 marker(N) + 保留正文 ≤ maxChars：
+  //   body.length - (N - priorDropped) + (12 + digits(N)) ≤ maxChars
+  //   ⟺ N ≥ priorDropped + body.length - maxChars + 12 + digits(N)
+  // 即 N = K + digits(N) 的不动点（K 为固定项，位数至多几次即收敛）。
+  const K = priorDropped + body.length - maxChars + 12;
+  let totalDropped = Math.max(priorDropped, K);
   for (;;) {
-    const next = value.length - maxChars + 12 + String(dropped).length;
-    if (next === dropped) break;
-    dropped = next;
+    const next = Math.max(priorDropped, K + String(totalDropped).length);
+    if (next === totalDropped) break;
+    totalDropped = next;
   }
-  const marker = `…（前 ${dropped} 字符已省略）\n`;
-  const kept = keepTail(value, Math.max(0, maxChars - marker.length));
-  return marker + kept;
+
+  const newlyDropped = totalDropped - priorDropped;
+  const kept = body.slice(newlyDropped);
+  return `…（前 ${totalDropped} 字符已省略）\n${kept}`;
 }
 
 function truncateDetail(value: string): string {
