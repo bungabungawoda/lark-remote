@@ -649,6 +649,15 @@ watchdog 覆盖**——watchdog 在 `for await (runner.run())` 循环里，要�
 截断常量：`HEADER_SUMMARY_MAX=80`、`BODY_FIELD_MAX=600`、`OUTPUT_MAX=1200`、
 `BODY_TOTAL_MAX=2500`。
 
+**工具身份回填**：opencode 的 ACP 在参数流式阶段先发 `tool_call`（part 创建时
+`input:{}`，title 回落到工具名 `bash`），命令/路径随后由 `tool_call_update` 携带
+（running 带 rawInput+title，completed 仅带 title）。translator 把它转成同 id 的
+`tool_use` patch，reducer 按 id 原地合并 input/summary（首次见 id 仍新增）——否则
+折叠面板只显示 `Bash` 而看不到命令。header 对重复的 summary/摘要去重（同一命令
+不再渲染成 `ls — ls`）。kimi 的 Bash 由 `terminal/create` 自产，不走此路径；其
+`tool_call_update` 的 content 是流式 args 文本（opencode 的是 shell 输出快照，故
+opencode 覆写 `extractToolCallArgsText` 返回 undefined，避免把输出当成 args 追踪）。
+
 **Session 内容卡片折叠**（auto-resume、`/resume <id>`）：每条 event 包在
 `collapsible_panel` 中，最后 2 条默认展开（用户刚恢复需看最新内容），历史事件折叠。
 

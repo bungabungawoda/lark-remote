@@ -25,12 +25,13 @@
  *   session/request_permission     → approval_requested (optionId echo)
  */
 
-import type { ApprovalView } from '../../types.js';
+import type { AgentEvent, ApprovalView } from '../../types.js';
 import type { ApprovalRequestedEvent } from '../../types.js';
 import type {
   RequestPermissionParams,
   AgentMessageChunkEvent,
   AgentThoughtChunkEvent,
+  ToolCallEvent,
   ToolCallUpdateEvent,
   UsageUpdateEvent,
 } from '../../common/acp/protocol-types.js';
@@ -113,6 +114,70 @@ export class OpencodeAcpTranslator extends BaseAcpTranslator {
       if (texts.length > 0) return texts.join('\n');
     }
     return '';
+  }
+
+  /**
+   * opencode tool args always arrive as rawInput (`XC`/`BP`), never as content
+   * text. A tool_call_update's content is the shell OUTPUT snapshot (`WP`), so
+   * inheriting the base args-tracking would record output as if it were the
+   * command — the corruption this override prevents. Return undefined: nothing
+   * to track from content (rawInput tracking in the base still applies).
+   */
+  protected override extractToolCallArgsText(
+    _event: ToolCallEvent | ToolCallUpdateEvent,
+  ): string | undefined {
+    return undefined;
+  }
+
+  /**
+   * opencode emits the tool_call while args are still streaming: the part is
+   * created with `state:{status:'pending',input:{}}` (decompiled acp service),
+   * so the initial title falls back to the tool name (e.g. `bash`) and the card
+   * shows no command. The real identity arrives in later tool_call_updates:
+   *   - running (`BP`): full rawInput + title = command/path
+   *   - completed (`HP`): title only (no kind, no rawInput)
+   * Emit a tool_use patch when either carries usable data; the reducer merges
+   * it into the existing block by id. Name resolves from kind (`BP`) or the
+   * name recorded at tool_call time (`HP`).
+   */
+  protected override buildToolUseUpdate(event: ToolCallUpdateEvent): AgentEvent | null {
+    const raw = event.rawInput;
+    let input: unknown = {};
+    if (raw !== undefined && raw !== null) {
+      if (typeof raw === 'string') {
+        try {
+          input = JSON.parse(raw);
+        } catch {
+          input = raw;
+        }
+      } else {
+        input = raw;
+      }
+    }
+    const inputHasKeys =
+      input !== null && typeof input === 'object' && Object.keys(input as object).length > 0;
+    const title =
+      typeof event.title === 'string' && event.title.length > 0 ? event.title : undefined;
+    if (!inputHasKeys && !title) return null;
+
+    const kind = typeof event.kind === 'string' ? event.kind : undefined;
+    const name = this.toolNameFromKind(kind) ?? this.getToolCallName(event.toolCallId) ?? '';
+    const summary = title && title !== name ? title : undefined;
+    return {
+      type: 'assistant',
+      timestamp: new Date().toISOString(),
+      message: {
+        content: [
+          {
+            type: 'tool_use',
+            id: event.toolCallId,
+            name,
+            input: inputHasKeys ? input : {},
+            ...(summary !== undefined ? { summary } : {}),
+          },
+        ],
+      },
+    };
   }
 
   /** opencode usage_update also carries session cost: {cost:{amount}} (USD). */

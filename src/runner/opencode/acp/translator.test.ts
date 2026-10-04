@@ -5,7 +5,8 @@ import {
   SessionEventType,
   ServerRequestMethod,
 } from '../../common/acp/protocol-types.js';
-import { createInitialRunState, reduceRunState } from '../../../card/run-state.js';
+import { createInitialRunState, reduceRunState, type ToolEntry } from '../../../card/run-state.js';
+import { toolHeaderText } from '../../../card/tool-render.js';
 import type { AgentEvent, ApprovalRequestedEvent } from '../../types.js';
 
 /**
@@ -374,5 +375,196 @@ describe('OpencodeAcpTranslator → run-state reducer integration (seam contract
     // Translator normalized missing rawInput to {}; the reducer renders the
     // args summary as the stringified empty object, not undefined.
     expect(tool && tool.kind === 'tool' ? tool.tool.input : undefined).toBe('{}');
+  });
+
+  // ── tool_call_update → tool_use patch (opencode streams args after tool_call) ──
+
+  it('running update with rawInput emits a tool_use patch before the tool_result', () => {
+    const t = new OpencodeAcpTranslator();
+    const events = t.handleNotification(
+      NotificationMethod.SESSION_UPDATE,
+      sessionUpdate(SESSION_ID, {
+        sessionUpdate: SessionEventType.TOOL_CALL_UPDATE,
+        toolCallId: 'call_run',
+        status: 'in_progress',
+        kind: 'execute',
+        title: 'pwd',
+        rawInput: { command: 'pwd', cwd: '/home/user/project' },
+      }),
+    );
+    expect(events).toHaveLength(2);
+    expect(events[0].type).toBe('assistant');
+    const c = (
+      events[0] as { message: { content: Array<{ type: string; name: string; input: unknown }> } }
+    ).message.content[0];
+    expect(c).toEqual({
+      type: 'tool_use',
+      id: 'call_run',
+      name: 'Bash',
+      input: { command: 'pwd', cwd: '/home/user/project' },
+      summary: 'pwd',
+    });
+    expect(events[1].type).toBe('user');
+  });
+
+  it('completed update with only a title emits a tool_use patch (input stays empty)', () => {
+    const t = new OpencodeAcpTranslator();
+    // Record the name at tool_call time (HP carries no kind).
+    t.handleNotification(
+      NotificationMethod.SESSION_UPDATE,
+      sessionUpdate(SESSION_ID, {
+        sessionUpdate: SessionEventType.TOOL_CALL,
+        toolCallId: 'call_hp',
+        title: 'bash',
+        kind: 'execute',
+        status: 'pending',
+        rawInput: {},
+      }),
+    );
+    const events = t.handleNotification(
+      NotificationMethod.SESSION_UPDATE,
+      sessionUpdate(SESSION_ID, {
+        sessionUpdate: SessionEventType.TOOL_CALL_UPDATE,
+        toolCallId: 'call_hp',
+        status: 'completed',
+        title: 'ls /home/user/project',
+        rawOutput: { output: 'file1' },
+      }),
+    );
+    expect(events).toHaveLength(2);
+    const c = (
+      events[0] as {
+        message: {
+          content: Array<{ type: string; name: string; input: unknown; summary: string }>;
+        };
+      }
+    ).message.content[0];
+    expect(c).toEqual({
+      type: 'tool_use',
+      id: 'call_hp',
+      name: 'Bash',
+      input: {},
+      summary: 'ls /home/user/project',
+    });
+  });
+
+  it('in-progress output-only update emits NO tool_use patch (only the tool_result)', () => {
+    const t = new OpencodeAcpTranslator();
+    const events = t.handleNotification(
+      NotificationMethod.SESSION_UPDATE,
+      sessionUpdate(SESSION_ID, {
+        sessionUpdate: SessionEventType.TOOL_CALL_UPDATE,
+        toolCallId: 'call_out',
+        status: 'in_progress',
+        kind: 'execute',
+        content: [{ type: 'content', content: { type: 'text', text: 'partial output' } }],
+      }),
+    );
+    expect(events).toHaveLength(1);
+    expect(events[0].type).toBe('user');
+  });
+
+  it('does not track the running output snapshot as streaming args (hazard fix)', () => {
+    // opencode running update content is the shell OUTPUT (`WP`), not args.
+    // Before the override this was stored as tracked args, corrupting approval
+    // command recovery; now nothing from content is tracked.
+    const t = new OpencodeAcpTranslator();
+    t.handleNotification(
+      NotificationMethod.SESSION_UPDATE,
+      sessionUpdate(SESSION_ID, {
+        sessionUpdate: SessionEventType.TOOL_CALL,
+        toolCallId: 'call_hazard',
+        title: 'bash',
+        kind: 'execute',
+        status: 'pending',
+      }),
+    );
+    t.handleNotification(
+      NotificationMethod.SESSION_UPDATE,
+      sessionUpdate(SESSION_ID, {
+        sessionUpdate: SessionEventType.TOOL_CALL_UPDATE,
+        toolCallId: 'call_hazard',
+        status: 'in_progress',
+        kind: 'execute',
+        content: [{ type: 'content', content: { type: 'text', text: 'shell output here' } }],
+      }),
+    );
+    const tracked = (
+      t as unknown as { getTrackedToolCallArgs(id: string): string | undefined }
+    ).getTrackedToolCallArgs('call_hazard');
+    expect(tracked).toBeUndefined();
+  });
+
+  it('end-to-end: pending tool_call (empty args) + running update → one panel showing the command', () => {
+    const t = new OpencodeAcpTranslator();
+    let state = createInitialRunState('run-command');
+    const pending = t.handleNotification(
+      NotificationMethod.SESSION_UPDATE,
+      sessionUpdate(SESSION_ID, {
+        sessionUpdate: SessionEventType.TOOL_CALL,
+        toolCallId: 'call_e2e',
+        title: 'bash',
+        kind: 'execute',
+        status: 'pending',
+        rawInput: {},
+      }),
+    );
+    for (const ev of pending) state = reduceRunState(state, ev as AgentEvent);
+    const running = t.handleNotification(
+      NotificationMethod.SESSION_UPDATE,
+      sessionUpdate(SESSION_ID, {
+        sessionUpdate: SessionEventType.TOOL_CALL_UPDATE,
+        toolCallId: 'call_e2e',
+        status: 'in_progress',
+        kind: 'execute',
+        title: 'ls -la /home/user/project',
+        rawInput: { command: 'ls -la /home/user/project', cwd: '/home/user/project' },
+      }),
+    );
+    for (const ev of running) state = reduceRunState(state, ev as AgentEvent);
+
+    const toolBlocks = state.blocks.filter((b) => b.kind === 'tool');
+    expect(toolBlocks).toHaveLength(1);
+    const tool = (toolBlocks[0] as { tool: { parsedInput?: Record<string, unknown> } }).tool;
+    expect(tool.parsedInput).toEqual({
+      command: 'ls -la /home/user/project',
+      cwd: '/home/user/project',
+    });
+  });
+
+  it('end-to-end: completed update (title only) merges the command into the panel header', () => {
+    const t = new OpencodeAcpTranslator();
+    let state = createInitialRunState('run-title');
+    for (const ev of t.handleNotification(
+      NotificationMethod.SESSION_UPDATE,
+      sessionUpdate(SESSION_ID, {
+        sessionUpdate: SessionEventType.TOOL_CALL,
+        toolCallId: 'call_title',
+        title: 'bash',
+        kind: 'execute',
+        status: 'pending',
+        rawInput: {},
+      }),
+    )) {
+      state = reduceRunState(state, ev as AgentEvent);
+    }
+    for (const ev of t.handleNotification(
+      NotificationMethod.SESSION_UPDATE,
+      sessionUpdate(SESSION_ID, {
+        sessionUpdate: SessionEventType.TOOL_CALL_UPDATE,
+        toolCallId: 'call_title',
+        status: 'completed',
+        title: 'pwd && echo done',
+        rawOutput: { output: '/home/user/project' },
+      }),
+    )) {
+      state = reduceRunState(state, ev as AgentEvent);
+    }
+    const toolBlocks = state.blocks.filter((b) => b.kind === 'tool');
+    expect(toolBlocks).toHaveLength(1);
+    const tool = (toolBlocks[0] as { tool: { name: string; summary?: string } }).tool;
+    expect(tool.summary).toBe('pwd && echo done');
+    // Header no longer hides behind the bare tool name.
+    expect(toolHeaderText(tool as unknown as ToolEntry)).toBe('✅ **Bash** — pwd && echo done');
   });
 });

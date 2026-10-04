@@ -5,6 +5,7 @@ import {
   reduceRunState,
   type RunTerminal,
   type RunFooter,
+  type ToolEntry,
 } from './run-state.js';
 
 describe('RunState', () => {
@@ -736,6 +737,70 @@ describe('RunState', () => {
     expect(toolBlock && toolBlock.kind === 'tool' ? toolBlock.tool.summary : undefined).toBe(
       'placeholder',
     );
+  });
+
+  it('test_anchor_same_id_tool_use_merges_in_place', () => {
+    // opencode emits the initial tool_call while args stream (empty input),
+    // then re-reports the command as a same-id tool_use patch. The reducer must
+    // enrich the existing block, not append a duplicate panel.
+    let state = createInitialRunState('run-merge');
+    state = reduceRunState(state, {
+      type: 'assistant',
+      timestamp: '2026-10-03T03:37:00.000Z',
+      message: {
+        content: [{ type: 'tool_use', id: 'tool-merge', name: 'Bash', input: {}, summary: 'bash' }],
+      },
+    } as never);
+    state = reduceRunState(state, {
+      type: 'assistant',
+      timestamp: '2026-10-03T03:37:01.000Z',
+      message: {
+        content: [
+          {
+            type: 'tool_use',
+            id: 'tool-merge',
+            name: 'Bash',
+            input: { command: 'bun run typecheck' },
+            summary: 'bun run typecheck',
+          },
+        ],
+      },
+    } as never);
+
+    const toolBlocks = state.blocks.filter((b) => b.kind === 'tool');
+    expect(toolBlocks).toHaveLength(1);
+    const tool = (toolBlocks[0] as { tool: ToolEntry }).tool;
+    expect(tool.name).toBe('Bash');
+    expect(tool.parsedInput).toEqual({ command: 'bun run typecheck' });
+    expect(tool.summary).toBe('bun run typecheck');
+  });
+
+  it('test_anchor_tool_use_patch_does_not_reset_terminal_status', () => {
+    // A late/out-of-order patch (empty input) must not clobber the completed
+    // tool_result status or erase a command already rendered.
+    let state = createInitialRunState('run-merge-status');
+    state = reduceRunState(state, {
+      type: 'assistant',
+      message: {
+        content: [{ type: 'tool_use', id: 'tool-s', name: 'Bash', input: { command: 'pwd' } }],
+      },
+    } as never);
+    state = reduceRunState(state, {
+      type: 'user',
+      message: {
+        content: [{ type: 'tool_result', tool_use_id: 'tool-s', content: 'ok', is_error: false }],
+      },
+    } as never);
+    state = reduceRunState(state, {
+      type: 'assistant',
+      message: {
+        content: [{ type: 'tool_use', id: 'tool-s', name: '', input: {}, summary: 'pwd' }],
+      },
+    } as never);
+
+    const tool = (state.blocks.find((b) => b.kind === 'tool') as { tool: ToolEntry }).tool;
+    expect(tool.status).toBe('ok');
+    expect(tool.parsedInput).toEqual({ command: 'pwd' });
   });
 
   it('test_anchor_turn_diff_tool_identity_lands_on_tool_block', () => {
