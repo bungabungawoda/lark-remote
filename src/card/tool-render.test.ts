@@ -643,4 +643,16 @@ describe('tool-render toolHint (信息保真 C5)', () => {
     });
     expect(toolHeaderText(tool)).toBe('✅ **Read** — /home/user/project/a.ts');
   });
+
+  it('header dedupes identical summary and args (opencode title === command)', () => {
+    // opencode sends title = command AND rawInput.command = command → the two
+    // slots carry the same value; render it once, not `ls — ls`.
+    const tool = makeTool({
+      name: 'Bash',
+      input: { command: 'ls' },
+      parsedInput: { command: 'ls' },
+      summary: 'ls',
+    });
+    expect(toolHeaderText(tool)).toBe('✅ **Bash** — ls');
+  });
 });
