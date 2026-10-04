@@ -82,7 +82,7 @@ Run/Bash 卡片的 CardKit 2.0 单卡流式架构说明，覆盖数据流、状�
 | system.init | 记录 sessionId |
 | assistant.thinking | 追加 reasoning，footer=thinking |
 | assistant.text | 合并相邻 text，footer=streaming |
-| assistant.tool_use | 新增 running tool，footer=tool_running |
+| assistant.tool_use | 首次见 id → 新增 running tool；同 id → 原地合并 input/summary（opencode 的 tool_call_update 回填命令），footer=tool_running |
 | user.tool_result | 匹配 tool id，置 ok/error 与 output |
 | result.success / result.error | finalizing（暂存 subtype/errorMsg，非终态） |
 | CLI 进程退出（for-await 结束） + 仍 finalizing | done / error（lark-remote finally transition） |

@@ -614,30 +614,69 @@ function reduceAssistantEvent(state: RunState, event: AgentEvent): RunState {
       // string as the old per-render parse, so truncation-broken JSON still
       // yields null (over-cap input renders no summary — behavior preserved).
       const inputStr = truncateDetail(stringifyUnknown(content.input));
-      const capped = [
-        ...markThinkingInactive(next.blocks),
-        {
-          kind: 'tool' as const,
-          tool: {
-            id: content.id,
-            name: content.name,
-            input: inputStr,
-            parsedInput: tryParseRecord(inputStr),
-            ...(content.summary !== undefined ? { summary: content.summary } : {}),
-            status: 'running' as const,
-            startedAt: event.timestamp,
-          },
-        },
-      ];
-      next = {
-        ...next,
-        blocks: keepLatestBlocks(capped),
-        omittedBlocks: (next.omittedBlocks ?? 0) + Math.max(0, capped.length - MAX_BLOCKS),
-        footer: 'tool_running',
+      const incomingTool: ToolEntry = {
+        id: content.id,
+        name: content.name,
+        input: inputStr,
+        parsedInput: tryParseRecord(inputStr),
+        ...(content.summary !== undefined ? { summary: content.summary } : {}),
+        status: 'running' as const,
+        startedAt: event.timestamp,
       };
+      const blocks = markThinkingInactive(next.blocks);
+      // A tool_use patch (same id) enriches an existing tool block in place:
+      // opencode emits the initial tool_call while args are still streaming,
+      // then re-reports the command/path in later tool_call_updates. Merging
+      // keeps one panel per tool call; a first-seen id still appends.
+      const existingIndex = blocks.findIndex(
+        (block) => block.kind === 'tool' && block.tool.id === content.id,
+      );
+      if (existingIndex >= 0) {
+        const existing = blocks[existingIndex] as Extract<RunBlock, { kind: 'tool' }>;
+        const merged = blocks.slice();
+        merged[existingIndex] = {
+          kind: 'tool',
+          tool: mergeToolUse(existing.tool, incomingTool),
+        };
+        next = { ...next, blocks: keepLatestBlocks(merged), footer: 'tool_running' };
+      } else {
+        const capped = [...blocks, { kind: 'tool' as const, tool: incomingTool }];
+        next = {
+          ...next,
+          blocks: keepLatestBlocks(capped),
+          omittedBlocks: (next.omittedBlocks ?? 0) + Math.max(0, capped.length - MAX_BLOCKS),
+          footer: 'tool_running',
+        };
+      }
     }
   }
   return next;
+}
+
+/**
+ * Merge a same-id tool_use patch into the existing tool block. Only fields the
+ * patch can legitimately enrich are overwritten:
+ *   - `input`/`parsedInput` — replaced only when the patch carries a non-empty
+ *     object (an empty `{}` patch must not erase a command already rendered);
+ *   - `summary` — replaced only when the patch supplies one;
+ *   - `name` — kept from first sight (a completed opencode update has no kind,
+ *     so its patch cannot know the mapped name).
+ * Everything else (`status`, `output`, `completedAt`, `toolHint`) is preserved,
+ * so an out-of-order patch after the tool_result cannot reset status to running.
+ */
+function mergeToolUse(existing: ToolEntry, incoming: ToolEntry): ToolEntry {
+  const incomingHasInput =
+    incoming.parsedInput !== undefined &&
+    incoming.parsedInput !== null &&
+    Object.keys(incoming.parsedInput).length > 0;
+  return {
+    ...existing,
+    input: incomingHasInput ? incoming.input : existing.input,
+    parsedInput: incomingHasInput ? incoming.parsedInput : existing.parsedInput,
+    name: existing.name || incoming.name,
+    ...(incoming.summary !== undefined ? { summary: incoming.summary } : {}),
+    startedAt: existing.startedAt ?? incoming.startedAt,
+  };
 }
 
 /** Handle tool_result content blocks (user message with tool results).
