@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.4] - 2026-10-04
+
+### 修复
+
+- **opencode 的工具卡片能显示完整命令了**：opencode 的 ACP 在参数流式阶段先发 `tool_call`（参数为空、标题只回落成工具名），真正的命令/路径随后由 `tool_call_update` 携带。此前卡片只显示 `Bash` 看不到执行了什么；现在按调用 id 原地回填参数，命令与路径正常展示。顺带修掉同一命令被重复渲染成 `ls — ls` 的摘要去重问题
+- **思考内容的省略计数不再虚增**：增量刷新时，旧逻辑把「前 N 字符已省略」标记自身的文本也计进被丢弃的正文，每帧约虚增 14 字符。现在只累计真实丢弃的正文，显示量始终不超过上限
+
+### 变更
+
+- **`!` 命令失败用例去掉宿主 locale 依赖**：原先匹配 stderr 文案（`command not found`），中文 locale 下 bash 输出「未找到命令」导致用例稳定误红。改为断言确定性信号——命令名回显、非零退出码、诊断块呈现
+
 ## [0.4.3] - 2026-09-24
 
 ### 新增
