@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0] - 2026-10-07
+
+### 新增
+
+- **CI 增加 Windows 全量验证**：新增 `windows-latest` job（install → typecheck → test → build → `--version`/`--help` 冒烟）。此前只有 ubuntu job，被平台门控跳过的用例在 CI 里是盲区，win32 独有回归只能靠本地发现
+
+### 修复
+
+- **一次发多图/多文件不再只保存 1 个**：飞书客户端「一次选多图/多文件」会背靠背秒发成多条独立消息，SDK 层 600ms 去抖把它们合并成一条——只保留最后一条的 `messageId`，却把多条消息的附件求并集。下载侧于是拿同一个 `messageId` 去下所有文件，除最后一条外全部报 234003（HTTP 400）。现关掉 SDK 这层合批（`chatQueue` 串行与卡片动作通道保留），合批交回项目自身的合并窗口
+- **Windows 上会话偶尔「消失」**：按工作目录查会话时，大小写/分隔符/尾斜杠的归一不统一，`C:\Work` 与 `c:/work/` 被当成两个目录，`/resume` 列表会漏列。现统一走同一套判等键
+- **Windows 上含 `<>:"|?*` 或尾点的文件名落盘失败**：入站附件名现在会剥掉 win32 非法字符与尾部点/空格（win32 会静默剥离它们，导致落盘名与记录名不一致）
+- **Windows 上可能误杀其他工作目录的 agent**：pid 文件名此前只按消毒后的目录名区分，`/w/a+b` 与 `/w/a_b` 会撞同一个文件，启动时的孤儿回收可能杀掉对方工作目录里存活的 agent。现后缀掺入原始目录的哈希
+- **`~` 开头的配置目录在 Windows 上不展开**：`~\` 形式此前不识别
+
+### 变更
+
+- **注释与测试命名清理**：去掉源码、测试注释与用例名中指向未发布内部文档的引用（评审条目号、场景号、轮次号、文件名前缀），让公开仓库里的引用都能落地。无行为变化
+
 ## [0.4.5] - 2026-10-07
 
 ### 修复
