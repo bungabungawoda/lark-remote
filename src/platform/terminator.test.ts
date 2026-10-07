@@ -78,7 +78,7 @@ describe('createWin32Terminator — 优雅停止', () => {
 
     const started = Date.now();
     const result = await terminator.stop(proc, { immediate: false });
-    // 原独立「grace 等待器」用例的计时断言（W3.7 并入）：grace 200ms 内 5ms 退出
+    // 原独立「grace 等待器」用例的计时断言（并入）：grace 200ms 内 5ms 退出
     expect(Date.now() - started).toBeLessThan(200);
     expect(stopper).toHaveBeenCalledTimes(1);
     expect(stopper.mock.calls[0]![0]).toBe(proc);

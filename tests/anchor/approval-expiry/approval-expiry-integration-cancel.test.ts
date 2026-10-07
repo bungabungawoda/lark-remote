@@ -1,5 +1,5 @@
 /**
- * A6 anchor: 集成链路——bridge coordinator 过期 → runner.respondApproval →
+ * 集成链路——bridge coordinator 过期 → runner.respondApproval →
  * client.respond 收到 cancel。
  *
  * ① 验证什么：ApprovalCoordinator 的过期回调通过 responder（bridge 中指向
@@ -8,8 +8,8 @@
  *    不触发 interruptTurn。
  * ② 缺失/错误会导致什么：协调器只改内部状态（旧事故根因）时，server 收不到
  *    cancel 只能等 10 分钟兜底；responder 接线断开会留下无限等待。
- * ③ 依据：bug spec R1/R4——过期即通知 server，cancel 链路从 bridge 一直
- *    打通到 client（以 L2 bridge → runner → client seam 作为链路等价覆盖）。
+ * ③ 依据：过期即通知 server，cancel 链路从 bridge 一直
+ *    打通到 client（以 bridge → runner → client seam 作为链路等价覆盖）。
  */
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { describePosix } from '../../../tests/lib/platform.js';

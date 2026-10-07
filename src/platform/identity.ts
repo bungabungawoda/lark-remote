@@ -1,5 +1,5 @@
 /**
- * pid 身份验证（design.md §3.4 / §3.5）。
+ * pid 身份验证。
  *
  * POSIX 现状用 `ps -o command=` 读命令行，Windows 没有 ps，等价物是 CIM：
  * PowerShell `Get-CimInstance Win32_Process` 取 CommandLine，并额外取
@@ -9,7 +9,7 @@
  * - 只在查询失败/身份不匹配时返回 null / false，绝不抛给调用方——调用方
  *   （killOrphan、实例锁陈旧判定）一律「只有身份匹配才动手」；
  * - win32 每次查询要拉起 PowerShell（冷启动约 1s），批量扫 pid 文件的场景
- *   （killOrphan）应按需调用，真机矩阵（M0）需实测整体耗时；
+ *   （killOrphan）应按需调用，真机矩阵需实测整体耗时；
  * - platform 显式注入，win32 语义可在任意宿主上单测。
  */
 import { execFileSync, spawn } from 'node:child_process';

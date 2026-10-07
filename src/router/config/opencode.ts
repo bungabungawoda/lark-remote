@@ -37,7 +37,7 @@ export class OpencodeConfigBuilder implements AgentConfigCardBuilder {
       options: modelOptions,
     });
 
-    // §P5: mode select（build/plan，默认 build）——opencode 无运行期审批档位，
+    // mode select（build/plan，默认 build）——opencode 无运行期审批档位，
     // mode 即审批粒度档位（build 逐项审批 / plan 规划模式）。
     const currentMode = displayConfig.agents?.opencode?.mode ?? 'build';
     fields.push({

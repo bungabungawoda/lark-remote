@@ -52,7 +52,7 @@ afterEach(() => {
 describe('queue.immediate entry-time missing target must not claim the queue was cleared', () => {
   it('test_anchor_immediate_entry_missing_target_feedback_does_not_claim_queue_cleared', async () => {
     // 验证什么行为：队列 [T1执行中, T2(目标任务)排队, T3(排在T2之后)排队] 上，
-    // T1 正常结束后 T2 的槽位 begin（从 queuedTasks 移除、开始执行），**之后**
+    // 正常结束后 T2 的槽位 begin（从 queuedTasks 移除、开始执行），**之后**
     // 用户才点 T2 排队卡上的「⚡ 立即执行」（真实可达：T2 begin 的卡片更新
     // updateQueueCardToExecuting 要先 await 排队卡 send 的 promise，按钮在这
     // 之前仍是可点的排队态；或 SDK 延迟投递旧回调）。handleQueueImmediate 入口
@@ -64,19 +64,19 @@ describe('queue.immediate entry-time missing target must not claim the queue was
     // 队列已清空。"——队列根本没有清空（T3 仍在排队），这是对用户可见状态的
     // 直接撒谎：①用户以为排在其后的消息已被清除，不再关注/重新发送，T3 却
     // 在队列里继续消耗 Claude；②若 T3 是用户本想撤销的危险指令，用户误以为它
-    // 已被清掉，危险指令仍会执行且无任何提示；③与 A12 锚点确立的同一契约
+    // 已被清掉，危险指令仍会执行且无任何提示；③与锚点确立的同一契约
     // （queue.immediate 的最终反馈必须与队列事实一致，不得承诺未发生的状态
-    // 变化）相冲突——A12 修的是步骤 6 的 mid-flight 撤销面，入口 `!targetTask`
+    // 变化）相冲突——修的是步骤 6 的 mid-flight 撤销面，入口 `!targetTask`
     // 分支仍是同根因的残余面：它既没有像步骤 6 那样重新校验成员资格，也没有
-    // 按真实状态修正文案，反而保留了早于 A12 修复的旧谎言。函数注释 "we can
+    // 按真实状态修正文案，反而保留了早于修复的旧谎言。函数注释 "we can
     // still clear queue" 也是死意图——代码路径上没有任何清除动作，清除也违反
-    // A13 锚点（目标任务已 begin 时，排在目标**之后**的任务必须保留）。
+    // 锚点（目标任务已 begin 时，排在目标**之后**的任务必须保留）。
     //
     // 依据：router handleQueueImmediate 步骤 1 注释（"The queue chain can
     // advance while later awaits are in flight, so the target must be read
-    // synchronously at entry"）承认入口读一次之后目标可能已 begin；A12 锚点
+    // synchronously at entry"）承认入口读一次之后目标可能已 begin；锚点
     // (queue-card-arm-immediate-cancel-toast) 确立"最终反馈必须与队列
-    // 事实一致"；A13 锚点 (queue-card-arm-immediate-target-began) 确立
+    // 事实一致"；锚点 (queue-card-arm-immediate-target-began) 确立
     // "目标已 begin 时，排在目标之后的任务必须原样保留"——本分支同样处于
     // "目标已不在队列"状态，清除队列不是合法修复，反馈只能如实报告。
     const sessionStore = new SessionStore();
@@ -183,13 +183,13 @@ describe('queue.immediate entry-time missing target must not claim the queue was
 
     // 前置（非行为断言）：handler 确实发送了"无法立即执行"的反馈，不是静默吞掉。
     expect(sentTexts.some((t) => t.includes('无法立即执行'))).toBe(true);
-    // 前置：T3 必须保持排队（A13：目标已 begin 时不清除排在目标之后的任务）。
+    // 前置：T3 必须保持排队（目标已 begin 时不清除排在目标之后的任务）。
     expect(bridge.getQueuedTask(tmpDir, 'm3')).toBeDefined();
 
     // 修复前：发送 "该消息已开始执行，无法立即执行。队列已清空。"——队列
     // 实际未被清空（T3 仍在），本用例钉住：反馈不得声称"队列已清空"。
     expect(sentTexts.some((t) => t.includes('队列已清空'))).toBe(false);
-    // 同时也不得承诺执行（A12 同族约束）。
+    // 同时也不得承诺执行（同族约束）。
     expect(sentTexts.some((t) => t.includes('您的消息将立即执行'))).toBe(false);
 
     // --- 清理：放行 T2、T3，让队列链自然收尾 ---

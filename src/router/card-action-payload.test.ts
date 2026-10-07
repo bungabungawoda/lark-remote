@@ -3,7 +3,7 @@ import type { CardActionEvent } from '@larksuite/channel';
 import { buildCardActionFullValue } from './card-action-payload.js';
 
 /**
- * Entry-layer payload assembly contract（2026-08-18 线上 P0：AskUserQuestion
+ * Entry-layer payload assembly contract（2026-08-18 线上 AskUserQuestion
  * 选项按钮点击报「缺少问题答案参数」——button 回调的 behavior value 里写好的
  * `option` 被 action.action.option（button 无此字段，恒 undefined）覆盖丢失，
  * router 参数校验拒绝，bridge 从未被调用）。
@@ -18,7 +18,7 @@ function buttonEvent(value: Record<string, unknown>): CardActionEvent {
 }
 
 describe('buildCardActionFullValue', () => {
-  it('preserves behavior-value option/formValue for button callbacks (AskUserQuestion P0)', () => {
+  it('preserves behavior-value option/formValue for button callbacks (AskUserQuestion)', () => {
     const value = {
       cmd: 'approval.answer',
       requestId: 7,

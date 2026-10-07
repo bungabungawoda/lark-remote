@@ -63,10 +63,10 @@ describe('queue.immediate must not promise execution in its final toast after th
     // 缺失会导致什么问题：handler 只在入口同步读一次 targetTask，步骤 3/4.4/4.5 全部
     // 基于"目标仍在队列"的假设，最终 toast 不重新校验成员资格。T2 被并发撤销后，
     // 用户同时看到 "❌ 已撤销" 卡片和 "您的消息将立即执行" 正文——两条反馈直接矛盾；
-    // T2 的队列槽位 begin 时被取消守卫跳过，永远不会执行，toast 是永久谎言。且用户
+    // 的队列槽位 begin 时被取消守卫跳过，永远不会执行，toast 是永久谎言。且用户
     // 已无补救入口：撤销卡与执行卡按钮全部禁用，唯一的行为依据（正文）指向相反结论。
     // 若 T2 是编辑过的危险指令修正，撤销后修正不会生效，用户却以为它即将执行——
-    // 与 A5 锚点（撤销卡不得被迟到的执行态覆盖）同族：A5 管住了卡片，toast 仍未覆盖，
+    // 与锚点（撤销卡不得被迟到的执行态覆盖）同族：管住了卡片，toast 仍未覆盖，
     // 属于同一个"跨 await 成员资格失效"根因的残余面。
     //
     // 依据：router handleQueueImmediate 步骤 1 注释明文规定 "The queue chain can
@@ -74,7 +74,7 @@ describe('queue.immediate must not promise execution in its final toast after th
     // synchronously at entry"——入口读一次只保证入口时刻的成员资格，之后的每个
     // await（interruptCurrentRun / markQueueCardExecuting）都可能改变它；步骤 4.5
     // 之后的成功 toast 是对未来事实的承诺（"您的消息将立即执行"），必须先确认目标
-    // 仍在队列。A5/A9/A12 锚点已确立同一契约：任何跨 await 的后续动作/反馈必须按
+    // 仍在队列。锚点已确立同一契约：任何跨 await 的后续动作/反馈必须按
     // 最新成员资格判定，不能沿用入口快照。卡片反馈约束（stop miss 必须
     // 可见、反馈不得静默撒谎）的同类要求。
     const sessionStore = new SessionStore();
@@ -162,7 +162,7 @@ describe('queue.immediate must not promise execution in its final toast after th
     expect(await waitFor(() => bridge.getQueuedTask(tmpDir, 'msg-A') !== undefined)).toBe(true);
     expect(await waitFor(() => bridge.getQueuedTask(tmpDir, 'msg-2') !== undefined)).toBe(true);
 
-    // --- 步骤 3：挂起 interruptCurrentRun（A12 同款：模拟 stop 在途，队列链/其他
+    // --- 步骤 3：挂起 interruptCurrentRun（同款：模拟 stop 在途，队列链/其他
     // cardAction 可在这期间推进）---
     let resolveStop: (v: boolean) => void = () => {};
     const stopInFlight = new Promise<boolean>((resolve) => {

@@ -12,7 +12,7 @@
  *   函数自身注释即意图：「we'll consider it inactive if there's a step.end」——
  *   该意图因事件序假设错误而成为死代码。
  *
- * 用户可见后果（jsonl 驱动的卡片显示不一致，spec 范围）：
+ * 用户可见后果（jsonl 驱动的卡片显示不一致）：
  *   bridge sendCompletionNotificationCard 读 session reader 的 isSessionActive
  *   来决定完成通知卡的渲染状态。run 刚结束（mtime 必新鲜）→ 误判 active →
  *   完成通知卡与刚显示 ✅ done 的 run 卡自相矛盾。
@@ -123,7 +123,7 @@ describe('KimiSessionReader completed-turn tail ordering (step.end → usage.rec
 
     const content = reader.readSessionContent('session_x', cwd);
 
-    // 双锁：尾随 usage.record 仍是有效数据，R1 聚合语义不受影响
+    // 双锁：尾随 usage.record 仍是有效数据，聚合语义不受影响
     expect(content.usage?.inputTokens, '尾随 usage.record 必须仍计入聚合').toBe(3000);
     expect(content.usage?.totalTokens).toBe(3000 + 300 + 7000 + 400);
   });

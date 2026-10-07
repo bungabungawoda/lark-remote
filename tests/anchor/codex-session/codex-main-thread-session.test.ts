@@ -1,5 +1,5 @@
 /**
- * Anchor A1 (plan §2.1): 同一 sessionId 多 rollout 文件时，readCodexSessionContent
+ * 同一 sessionId 多 rollout 文件时，readCodexSessionContent
  * 必须解析到主线程文件，不能被 subagent 线程文件"后写覆盖"抢占。
  *
  * 验证什么行为：
@@ -15,7 +15,6 @@
  *   done 卡"累计"显示冻结快照值，而主文件此时已有更大的真实累计——
  *   "累计 < 当前"且 Context 全是错值。
  *
- * 依据（spec）：
  *   "主线程优先：!isSubagent 的
  *   文件胜过 isSubagent 文件；同类取 mtimeMs 更大者；mtime 相同按 filePath 字典序
  *   取小者兜底"，且解析必须"确定性，与 readdir 顺序无关"。

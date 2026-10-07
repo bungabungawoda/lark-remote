@@ -1,5 +1,5 @@
 /**
- * Round 9 anchor (plan §2.1): CodexSessionReader.listSessions 负 offset
+ * CodexSessionReader.listSessions 负 offset
  * 必须 clamp 到 0，返回第一页而不是静默空页。
  *
  * 验证什么行为：
@@ -19,12 +19,11 @@
  *   （auto-resume / 未来分页 caller）在负 offset 下拿不到第一页，
  *   total 仍是全集数，静默空页/尾页与 router 层 clamp 语义不一致。
  *
- * 依据（spec 原文）：
- *   - plan §2.1 分页区间定义 "[offset, offset+limit)" 隐含 offset 非负；
- *     reader 层未定义负 offset 语义是 spec gap（Round 8 探测结论）
+ *   分页区间定义 "[offset, offset+limit)" 隐含 offset 非负；
+ *     reader 层未定义负 offset 语义是（探测结论）
  *   - router 既有 clamp：resume.page 已对负 offset clamp 到 0
  *     （tests/anchor/resume/resume-pagination-boundary.test.ts 验证 pass）
- *   - Round 9 裁决：reader 层统一 `offset < 0 → 0`（不静默空页），
+ *   -裁决：reader 层统一 `offset < 0 → 0`（不静默空页），
  *     并在 codex reader 上锁 anchor
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
@@ -63,7 +62,7 @@ function writeRollout(sessionsDir: string, sessionId: string, mtimeSec: number):
   fs.utimesSync(filePath, mtimeSec, mtimeSec);
 }
 
-describe('Round 9 anchor: codex reader negative offset clamps to first page', () => {
+describe('codex reader negative offset clamps to first page', () => {
   it('test_anchor_codex_reader_negative_offset_clamps_to_first_page', () => {
     // 5 个匹配 /proj 的 rollout 文件，mtime 逐秒递增 → 排序确定，
     // anchor-sess-04 是 mtime 最新，必须出现在第一页首位。

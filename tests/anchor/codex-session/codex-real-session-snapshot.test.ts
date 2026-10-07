@@ -1,5 +1,5 @@
 /**
- * Integration anchor (L2, real-data snapshot): 用多线程会话的
+ * Integration anchor (real-data snapshot): 用多线程会话的
  * rollout 文件快照验证修复后的主线程解析与 token 口径。
  *
  * 验证什么行为：

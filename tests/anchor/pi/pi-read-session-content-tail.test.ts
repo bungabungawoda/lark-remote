@@ -1,14 +1,14 @@
 /**
- *  anchor: pi readSessionContent tail-only read invariant
+ * pi readSessionContent tail-only read invariant
  *
- * Before , pi readSessionContent (src/session/pi/sessions.ts) called
+ * Before pi readSessionContent (src/session/pi/sessions.ts) called
  * `readJsonlLines(filePath)` which slurps the ENTIRE multi-MB session jsonl
- * into a `string[]`.  already cut parsed-object memory to O(tail)
+ * into a `string[]`.already cut parsed-object memory to O(tail)
  * (piScalarScan + extractPiEventsFromTail), but the raw `string[]` of
  * whole-file line strings is still fully materialized — that is the
- * remaining catch-up-path materialization cost  targets.
+ * remaining catch-up-path materialization costtargets.
  *
- * After , pi readSessionContent's catch-up path uses `readJsonlLinesFromOffset`
+ * After pi readSessionContent's catch-up path uses `readJsonlLinesFromOffset`
  * (byte-offset two-pass: piScalarScan via streaming scan recording the byte
  * offset of the last user message, then read+parse only the tail from that
  * offset). This keeps raw line-string memory O(tail) instead of O(whole file).
@@ -29,7 +29,7 @@
  *               pi session; full materialization of a multi-MB jsonl
  *               synchronously blocks the event loop for a catch-up that
  *               only needs the lines after the last user message.
- *   spec_basis: § ("tail-only 读取").
+ *   "tail-only 读取".
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
@@ -100,7 +100,7 @@ function writeSessionFile(sessionId: string, cwd: string, lines: unknown[]): str
   return filePath;
 }
 
-describe(' anchor: pi readSessionContent tail-only read', () => {
+describe('pi readSessionContent tail-only read', () => {
   it('test_anchor_p2_5_pi_read_session_content_no_full_slurp', () => {
     const sessionId = 'sess-p25-pi';
     const cwd = '/tmp/proj';

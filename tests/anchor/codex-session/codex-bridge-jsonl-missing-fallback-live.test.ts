@@ -1,5 +1,5 @@
 /**
- * Anchor A6 (plan §2.2 P1 兜底): codex 的 jsonl 无 usage 时（老版本无
+ * (兜底): codex 的 jsonl 无 usage 时（老版本无
  * token_count 事件、或文件损坏/未落盘），done 卡 flow 字段必须回退 live
  * result usage，不能显示 undefined/估算值。
  *
@@ -14,9 +14,8 @@
  *   甚至空白行——真实场景中老版本
  *   codex rollout 无 token_count 事件，/resume 与 done 卡都会退化。
  *
- * 依据（spec 原文）：
- *   plan §2.2："jsonl 缺失（如老版本无 token_count）时才回退 live"；
- *   plan §2.4 测试："codex jsonl 无 usage → 回退 live（兜底路径）"。
+ *   "jsonl 缺失（如老版本无 token_count）时才回退 live"；
+ *   "codex jsonl 无 usage → 回退 live（兜底路径）"。
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs';

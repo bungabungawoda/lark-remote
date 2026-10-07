@@ -26,7 +26,7 @@ import {
  * 缺失/错误影响：用户无法通过 /resume codex 查看 codex 的历史会话，
  * 只能看到 claude 的，多 agent 功能形同虚设。
  *
- * 依据：设计方案 — /resume [agent] [N]，第一个参数为 AgentKind 时切换 reader。
+ * 依据：/resume [agent] [N]，第一个参数为 AgentKind 时切换 reader。
  */
 
 // Stub connector that records sent messages (matching router.test.ts pattern)

@@ -41,13 +41,13 @@ describe('QueueManager - immediate executing card must re-read live preview afte
     // 落卡后映射在 finally 删除，稍后 begin 路径的 started=true 更新因映射
     // 已不存在而 no-op——旧预览成为这张执行卡的最终状态。用户看到自己已经
     // 修正过的旧指令（如去掉危险参数）在执行卡上，而实际执行的是编辑后内容，
-    // 卡片与事实相反；同一条编辑消息在 A12 的自然轮到路径显示编辑后内容，
-    // 在 immediate 路径却显示旧内容，展示不一致。A12 只覆盖了编辑先于 begin
+    // 卡片与事实相反；同一条编辑消息在的自然轮到路径显示编辑后内容，
+    // 在 immediate 路径却显示旧内容，展示不一致。只覆盖了编辑先于 begin
     // 的静止时序，本测试覆盖编辑发生在卡片 send 在途期间的竞态时序。
     //
     // 依据：queue-manager.ts updateQueueCardToExecuting 的 started=false 分支
     // 注释明文契约——"a membership guard re-checks the task right before the
-    // card update"（成员资格都可能因 await 而变，任务内容同理）；A12 锚点已
+    // card update"（成员资格都可能因 await 而变，任务内容同理）；锚点已
     // 确立执行卡展示的 preview 必须与实际执行内容一致（"不能显示 enqueue 时
     // 冻结的旧预览"）。方法在守卫处已能通过 indexGet 拿到 live 任务，重新读取
     // preview 是同一契约的自然延伸。
@@ -81,7 +81,7 @@ describe('QueueManager - immediate executing card must re-read live preview afte
     qm.enqueue(
       WORKSPACE,
       async () => {
-        // T2 闭包不需要真的执行；本测试只验证卡片内容。
+        // 闭包不需要真的执行；本测试只验证卡片内容。
       },
       {
         taskMeta: {

@@ -52,7 +52,7 @@ afterEach(() => {
   fs.rmSync(tmpDir, { recursive: true, force: true });
 });
 
-describe('queue executing count must not be reset onto the next task that began during the stop window (anchor A22)', () => {
+describe('queue executing count must not be reset onto the next task that began during the stop window (anchor)', () => {
   it('test_anchor_new_message_gets_queue_card_while_resumed_task_runs_after_stop', async () => {
     // 验证什么行为：队列 [T1 执行中, T 排队] 上，用户对 T 点「⚡ 立即执行」。
     // handleQueueImmediate → Bridge.interruptCurrentRun 在
@@ -63,7 +63,7 @@ describe('queue executing count must not be reset onto the next task that began 
     // resetExecutingCount(cwd)，会把正在运行的 T 的计数清零，并把 interrupted
     // 标记授给 T 的 slot —— T settle 时跳过 decrement，计数在整个运行期间为 0，
     // 后续入队的新消息 hasWaitingTasks=false → 不弹「⏳ 消息排队中」卡
-    // （原 A1 事故的另一个交错：A1 只覆盖了"reset 发生在 T2 接跑之前"，
+    // （原事故的另一个交错：只覆盖了"reset 发生在 T2 接跑之前"，
     // 这里 reset 发生在 T 接跑之后）。
     //
     // 期望：此时 T 仍在运行，新入队消息 M 必须收到 1 张排队卡（sentCards 增加）。
@@ -73,7 +73,7 @@ describe('queue executing count must not be reset onto the next task that began 
     // 依据：enqueue 的 hasWaitingTasks 语义（count>0 || queueLen>0 就必须发卡）
     // 是"只要队列里还有任务在排队或执行"；Bridge.interruptCurrentRun 的
     // resetExecutingCount 注释声称只清理"被外部中断的任务"的残留计数，不应
-    // 波及停止窗口内已经接跑的新任务。A1/A4 锚点确立了计数必须反映真实执行
+    // 波及停止窗口内已经接跑的新任务。锚点确立了计数必须反映真实执行
     // 状态；本测试用真实 interruptCurrentRun（gated runner 停在 runner.stop）
     // 复现其未覆盖的停止窗口。
     const created: Array<GatedRunner & AgentRunner> = [];
@@ -157,7 +157,7 @@ describe('queue executing count must not be reset onto the next task that began 
       expect(await waitFor(() => runner1.stopCalls === 1)).toBe(true);
 
       // --- 步骤 4：停止窗口内 T1 的 run settle → 队列链前进 → T 接跑并真正执行 ---
-      // T1 的 finalizeRun 清掉 runner 缓存，T 的 forwardToClaude 会经 registry
+      // 的 finalizeRun 清掉 runner 缓存，T 的 forwardToClaude 会经 registry
       // 新建 runner（created[1]）并注册新的 activeRun（executingSlot=s2）。
       runner1.releaseRun();
       expect(

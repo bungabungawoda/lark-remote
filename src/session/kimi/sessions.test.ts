@@ -855,7 +855,7 @@ describe('KimiSessionReader', () => {
   });
 });
 
-describe('KimiSessionReader compaction state machine（kimi-compact-wait-redesign §5.1）', () => {
+describe('KimiSessionReader compaction state machine', () => {
   /**
    * Write a session with the given wire lines and return a reader.
    */
