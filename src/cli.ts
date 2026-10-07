@@ -2,7 +2,8 @@
 /**
  * CLI 引导层（bootstrap）：在 import 应用模块图之前决定运行时（bun/node）并拉起它。
  *
- *XX * 缺一不可：
+ * **这是全仓唯一被认可的 spawn 收口例外**（即 AGENTS.md「子进程 spawn 只走
+ * platform/spawn.ts」红线的显式豁免）。三个理由缺一不可：
  *   1. 时序：preflight（Node 版本守卫、-v/-h/--advanced-help）必须在 import 应用
  *      模块图之前跑完——dist/cli.js 刻意不使用 ES2020+ 语法以便在 node 12 上仍
  *      可被解析，而 dist/index.js 是 ES2022；先 import platform/spawn 就等于先把

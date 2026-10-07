@@ -341,7 +341,7 @@ export function writeScenario(
 
   // win32：`#!/bin/sh` wrapper 要经 Git Bash 启动（bash.exe 初始化 + node
   // 共 5s+，吃穿默认 5s testTimeout）；`.cmd` 垫片直启 node（cmd.exe + node
-  // ~1s）。posix 语义不变（design windows-support §9.1：fixture 不用 sh wrapper）。
+  // ~1s）。posix 语义不变（fixture 不用 sh wrapper）。
   let wrapper: string;
   if (process.platform === 'win32') {
     wrapper = join(tmpDir, 'acp-server.cmd');
