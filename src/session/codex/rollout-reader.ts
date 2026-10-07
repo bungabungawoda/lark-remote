@@ -214,7 +214,7 @@ function scanCodexRollout(filePath: string, includeEvents: boolean): CodexRollou
   // token_count 增量是 input/cached/output 全 0、只有 total_tokens 有值
   // （窗口被摘要+replacement history 占据），现有 zero-filter 会跳过它，
   // 因此这里必须单独捕获，不能复用 lastRawUsage。
-  // 单位口径（review P3-9）：前后两侧统一用 total_tokens —— 压缩前取最近一次
+  // 单位口径：前后两侧统一用 total_tokens —— 压缩前取最近一次
   // 非零 token_count 的 total_tokens（input+output，即该 turn 在窗口内的全部
   // token），压缩后取收尾事件的 total_tokens（压缩后窗口）。不得一边 input
   // 一边 total，否则「压缩前 X → 压缩后 Y」两边单位不一致。
@@ -349,7 +349,7 @@ function scanCodexRollout(filePath: string, includeEvents: boolean): CodexRollou
  * (display-only, never added to total).
  * contextLength = input_tokens (= (input_tokens-cached) + cached + 0),
  * i.e. input + cacheRead + cacheCreation — the unified context-window
- * occupancy contract across all five readers (review P2-8, excludes
+ * occupancy contract across all five readers (excludes
  * output/reasoning).
  */
 function buildUsageFromScan(scan: CodexRolloutScan): AgentSessionUsage | undefined {
@@ -403,10 +403,10 @@ function buildUsageFromScan(scan: CodexRolloutScan): AgentSessionUsage | undefin
  * Returns `{ entries, total }`: `total` is the size of the full cwd-matched
  * set before pagination; `entries` are the newest `limit` entries by mtime.
  *
- * A global order over the full set is established first (plan §1.4: no early
+ * A global order over the full set is established first (no early
  * termination before ordering) using the lightweight session index — full
  * walk + first-line session_meta parse + stat mtime, 5s TTL cache. Only the
- * returned page is fully parsed for summary/usage (plan §2.2).
+ * returned page is fully parsed for summary/usage.
  */
 export function listCodexRollouts(opts: ListCodexRolloutsOptions = {}): {
   entries: CodexRolloutEntry[];
@@ -420,7 +420,7 @@ export function listCodexRollouts(opts: ListCodexRolloutsOptions = {}): {
   const matched: SessionIndexEntry[] = [];
   for (const entry of index.values()) {
     // Subagent thread rollouts are part of a thread tree, not standalone
-    // sessions: exclude them explicitly (plan §2.1) so a pure-subagent
+    // sessions: exclude them explicitly so a pure-subagent
     // session (main file missing) never pollutes the list or total.
     if (entry.isSubagent) continue;
     if (filterCwd && !samePath(entry.cwd, filterCwd)) continue;
@@ -448,15 +448,15 @@ export function listCodexRollouts(opts: ListCodexRolloutsOptions = {}): {
 }
 
 /**
- * W2.6 单源：三处（readCodexSessionContent / readCodexSessionSummary /
+ * 单源：三处（readCodexSessionContent / readCodexSessionSummary /
  * isCodexSessionActive）共用的「索引查找 + miss 强制刷新重查」。
  * cwd 守卫与 subagent 过滤语义各异，留在调用方。
  */
 function resolveRolloutEntry(sessionId: string, codexHome: string): SessionIndexEntry | undefined {
-  // P2-4: Use session index for direct file lookup
+  // Use session index for direct file lookup
   let index = getSessionIndex(codexHome);
   let entry = index.get(sessionId);
-  // P3-2: On miss, the index may be stale (a rollout file created after the
+  // On miss, the index may be stale (a rollout file created after the
   // cache was built but within the 5s TTL). Force a refresh and recheck so a
   // brand-new session is found without waiting for TTL expiry.
   if (!entry) {
@@ -469,7 +469,7 @@ function resolveRolloutEntry(sessionId: string, codexHome: string): SessionIndex
 /**
  * Read the full content of a specific session by its threadId.
  *
- * P2-4: Uses session index for O(1) file lookup instead of walking the
+ * Uses session index for O(1) file lookup instead of walking the
  * entire directory tree and fully parsing every file. Only the matching
  * file is fully parsed.
  *
@@ -562,7 +562,7 @@ export function readCodexSessionSummary(
 /**
  * Check if a session is still active (recently updated).
  *
- * P2-4: Uses session index for direct file lookup, then checks mtime
+ * Uses session index for direct file lookup, then checks mtime
  * via statSync — no full rollout parse required. This reduces the
  * cost from "walk entire directory + full-parse every file" to a single
  * statSync call for the matching file.
@@ -576,14 +576,14 @@ export function isCodexSessionActive(
   // all use STALE_MS). Previously codex used a divergent 10-minute default.
   const threshold = opts.activeThresholdMs ?? STALE_MS;
 
-  // P2-4: Use session index for direct file lookup + mtime check
+  // Use session index for direct file lookup + mtime check
   const entry = resolveRolloutEntry(sessionId, codexHome);
   if (!entry) {
     return false;
   }
   // Subagent thread rollouts are never "active sessions": their mtime
   // reflects thread-tree activity, not the parent session's liveness
-  // (plan §2.1). A pure-subagent session must report inactive.
+  // A pure-subagent session must report inactive.
   if (entry.isSubagent) {
     return false;
   }
@@ -647,7 +647,7 @@ function walkRolloutFiles(sessionsDir: string): string[] {
 }
 
 /**
- * P2-4: Lightweight session index for O(1) lookups by sessionId.
+ * Lightweight session index for O(1) lookups by sessionId.
  *
  * Instead of walking the full directory tree + fully parsing every rollout
  * file for each `readCodexSessionContent` / `isCodexSessionActive` call,

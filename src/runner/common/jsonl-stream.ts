@@ -6,7 +6,7 @@ import type { Readable } from 'node:stream';
 interface JSONLStreamOptions {
   onParseError?: (line: string) => void;
   /**
-   * Pause stdout once `lineQueue` exceeds this depth (P1-4 backpressure).
+   * Pause stdout once `lineQueue` exceeds this depth (backpressure).
    * Default 100 (matches production; tests may pass a smaller value).
    */
   pauseThreshold?: number;
@@ -26,7 +26,7 @@ interface JSONLStreamOptions {
  * - JSON parse errors: when `options.onParseError` is provided, bad lines are
  *   forwarded to the callback; otherwise a warning is logged via getLogger().warn
  *   and the line is skipped.
- * - Optional backpressure (P1-4): when `pauseThreshold` is set, stdout is
+ * - Optional backpressure: when `pauseThreshold` is set, stdout is
  *   paused once the parsed-line queue exceeds the threshold and resumed once
  *   the consumer drains it back below `resumeThreshold`, bounding memory in
  *   long runs where the producer (agent stdout) outpaces the consumer (card
@@ -43,7 +43,7 @@ export function createJSONLStream(
   options?: JSONLStreamOptions,
 ): AsyncGenerator<AgentEvent> {
   const lineQueue: string[] = [];
-  // P3-1: accumulate partial-line fragments in an array instead of repeatedly
+  // accumulate partial-line fragments in an array instead of repeatedly
   // string-concatenating a growing `partialLine`. A huge single JSON line
   // (large tool_result / text_end) spanning many chunks caused O(n²) copies:
   // each chunk rebuilt `partialLine + text` over the whole accumulated prefix.
@@ -51,7 +51,7 @@ export function createJSONLStream(
   // and push complete lines; the residual tail stays as array fragments until
   // the next newline or stream end. Net allocation: O(n) instead of O(n²).
   const partialFragments: string[] = [];
-  // P2-14: accumulated byte length of partialFragments. Backpressure (above)
+  // accumulated byte length of partialFragments. Backpressure (above)
   // only counts COMPLETE lines in lineQueue; a never-newline stream (malformed
   // output, binary garbage) accumulates fragments without ever completing a
   // line, so pause never fires and memory grows unbounded. Cap the partial
@@ -62,13 +62,13 @@ export function createJSONLStream(
   const completeLines: string[] = [];
   let done = false;
   let resolveNext: (() => void) | null = null;
-  // P1-4 backpressure thresholds. Default matches production (100).
+  // backpressure thresholds. Default matches production (100).
   const pauseThreshold = options?.pauseThreshold ?? 100;
   // Default low-water mark is half the high-water mark for meaningful hysteresis
   // (avoids per-line pause/resume thrashing when callers don't set it explicitly).
   let resumeThreshold = options?.resumeThreshold ?? Math.max(0, Math.floor(pauseThreshold / 2));
   // Clamp misconfiguration: resumeThreshold > pauseThreshold would resume at queue
-  // high water then immediately re-pause on the next line → thrash (P1-4 review nit).
+  // high water then immediately re-pause on the next line → thrash (nit).
   if (resumeThreshold > pauseThreshold) resumeThreshold = pauseThreshold;
   let paused = false;
 
@@ -80,7 +80,7 @@ export function createJSONLStream(
   }
 
   // Flush any trailing partial line and mark the stream finished. Shared by the
-  // 'end'/'close'/'error' handlers so flush logic lives in one place (P1-4 review nit).
+  // 'end'/'close'/'error' handlers so flush logic lives in one place (nit).
   function flushAndFinish() {
     if (partialFragments.length > 0) {
       const trimmed = partialFragments.join('').trim();
@@ -92,7 +92,7 @@ export function createJSONLStream(
     notify();
   }
 
-  // P2-14: flush an oversize partial line as a bad line. When partialFragments
+  // flush an oversize partial line as a bad line. When partialFragments
   // exceeds the byte cap, the partial line is treated as malformed (a single
   // JSON line should never reach 10MB) and reported via onParseError rather
   // than accumulated indefinitely. Resets the buffer so a pathological stream
@@ -113,7 +113,7 @@ export function createJSONLStream(
 
   // Apply backpressure after pushing new lines: pause stdout when the queue
   // exceeds the high-water mark so the producer stops feeding until the
-  // consumer drains it. P1-4 bounds memory in long runs.
+  // consumer drains it.bounds memory in long runs.
   function maybePause() {
     if (pauseThreshold > 0 && !paused && lineQueue.length > pauseThreshold) {
       paused = true;
@@ -132,7 +132,7 @@ export function createJSONLStream(
 
   stdout.on('data', (chunk: Buffer) => {
     const text = chunk.toString('utf-8');
-    // P3-1: split on newlines. The first segment continues the pending partial
+    // split on newlines. The first segment continues the pending partial
     // line (joined with accumulated fragments — one join per chunk, not per
     // byte); subsequent segments are complete lines. The last segment is the
     // new partial tail (kept as a single fragment).
@@ -141,7 +141,7 @@ export function createJSONLStream(
       // No newline in this chunk: the whole chunk is a partial fragment.
       partialFragments.push(segments[0]);
       partialBytes += segments[0].length;
-      // P2-14: cap the partial line. A never-newline stream would otherwise
+      // cap the partial line. A never-newline stream would otherwise
       // accumulate fragments without bound (backpressure only counts complete
       // lines). Flush as a bad line once the byte cap is exceeded.
       if (partialBytes > PARTIAL_BYTE_LIMIT) {
@@ -161,7 +161,7 @@ export function createJSONLStream(
       // Last segment is the new partial tail.
       partialFragments.push(segments[segments.length - 1]);
       partialBytes = segments[segments.length - 1].length;
-      // P2-14: the trailing partial tail can itself exceed the cap if a single
+      // the trailing partial tail can itself exceed the cap if a single
       // chunk is larger than 10MB with no internal newline.
       if (partialBytes > PARTIAL_BYTE_LIMIT) {
         flushOversizePartial();
@@ -185,7 +185,7 @@ export function createJSONLStream(
     flushAndFinish();
   });
 
-  // P1-4: handle stdout 'error' so the generator terminates instead of
+  // handle stdout 'error' so the generator terminates instead of
   // hanging forever on the `await new Promise` below. Without this, a stdout
   // error (e.g. broken pipe, runner crash) leaves the consumer awaiting a
   // notify that never comes → bridge serial queue blocks permanently. We do

@@ -3,7 +3,7 @@ import { renderBashCard, type BashState, type BashRenderOptions } from './bash-r
 import { keepTail } from '../common/truncate.js';
 
 /**
- * Store-time 输出上限（字符，P1-3 层①）。§P1-3 建议「store-time 截断，
+ * Store-time 输出上限（字符，层①）。建议「store-time 截断，
  * 保留尾部，上限如 24~64KB」——取区间下界 24_000 字符（字符上限 ×4 字节最坏
  * ~96KB/字段）。渲染层本就只展示尾部（bash-renderer 截断到 12KB 字节），store 截断
  * 不影响显示内容，只保证内存有界：!yes / !cat 大文件不再把全部输出驻留在 session
@@ -12,7 +12,7 @@ import { keepTail } from '../common/truncate.js';
 export const BASH_OUTPUT_STORE_CAP = 24_000;
 
 /**
- * Store-time 截断入口（P1-3 层①/层④共用）。bridge 本地 output/stderr 与 session
+ * Store-time 截断入口（层①/层④共用）。bridge 本地 output/stderr 与 session
  * state 都走它，保证任意路径驻留的字符串 ≤ BASH_OUTPUT_STORE_CAP 字符。
  * 调用方传入的 value 通常已 ≤ CAP（增量场景 output 恒 ≤ CAP，+chunk 后 ≤ CAP+chunk），
  * slice(-CAP) 成本 O(CAP+chunk)，不会把 O(n²) 截断问题带回桥接循环。
@@ -119,7 +119,7 @@ export class BashCardSession extends CardSession<BashState, BashRenderOptions> {
   }
 
   /**
-   * 合并 patch 并对 output/stderr 做 store-time 截断（P1-3 层①）。
+   * 合并 patch 并对 output/stderr 做 store-time 截断（层①）。
    * 截断发生在入口（store 时），渲染层无需再为大 state 付代价。
    */
   private applyCap(patch: Partial<BashState>): BashState {

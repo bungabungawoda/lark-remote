@@ -1,5 +1,5 @@
 /**
- * §4.4 win32 command-not-found 双条件定性回归（W1.1 从 SpawningRunner 基类
+ * §4.4 win32 command-not-found 双条件定性回归（从 SpawningRunner 基类
  * run() 重接到 ClaudeSession.buildStreamEndedError）。
  *
  * 独立成文件的原因：真实 isWindowsCommandNotFoundLine 在非 win32 平台恒

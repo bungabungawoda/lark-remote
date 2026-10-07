@@ -12,9 +12,9 @@ import os from 'node:os';
 import { mockLogger } from '../../lib/logger-mock.js';
 
 /**
- * Red Agent - Round 16 - Anchor（codex-y review4 P1 + P3-10 保存路径）
+ * Red Agent -- Anchor（保存路径）
  *
- * P1: 切换到档位为空/未知模型时，handleFieldChange 产出 value=undefined 的档位补丁。
+ * 切换到档位为空/未知模型时，handleFieldChange 产出 value=undefined 的档位补丁。
  *     router 的 setNestedValue 必须把 undefined 当作"删除键"，diffConfig 必须把
  *     "已删除"表达为 undefined（而非 String(undefined)="undefined"），setConfigValues
  *     必须从 YAML 中删除该键——否则 config.yaml 会写入字面量 "undefined"，
@@ -22,7 +22,7 @@ import { mockLogger } from '../../lib/logger-mock.js';
  *     ReasoningEffort::Custom("undefined") 直接发给 API（openai_models.rs:133、
  *     session/mod.rs:677）。
  *
- * Spec basis: codex-y review4 P1 + codex 源码 openai_models.rs/session/mod.rs。
+ * Spec basis: codex 源码 openai_models.rs/session/mod.rs。
  */
 
 const { mockSpawnSync } = vi.hoisted(() => ({ mockSpawnSync: vi.fn() }));

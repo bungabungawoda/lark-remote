@@ -8,12 +8,12 @@
  * accumulates text/thinking deltas and emits turn_diff snapshots (NOT
  * assistant deltas — see handleAgentMessageChunk), plus question elicitation.
  *
- * Wire envelope (R1, source: kimi-code packages/acp-server/src/events-map.ts,
+ * Wire envelope (source: kimi-code packages/acp-server/src/events-map.ts,
  * verified live 2026-08-15/16 against kimi 0.36.0):
  *   session/update params = {sessionId, update: {sessionUpdate: '<kind>', ...}}
  *   — the discriminator is `update.sessionUpdate`, NOT a nested `event.type`.
  *
- * Event mapping (design doc §4.2):
+ * Event mapping:
  *   agent_message_chunk   → turn_diff text snapshot (content.text accumulation)
  *   agent_thought_chunk   → turn_diff reasoning snapshot (content.text accumulation)
  *   tool_call / tool_call_update / usage_update / plan / control-plane noise →
@@ -75,7 +75,7 @@ export class KimiAcpTranslator extends BaseAcpTranslator {
     // Use a stable key for the current text stream. Kimi ACP doesn't
     // provide an itemId in agent_message_chunk; we use 'text' as the
     // single logical text accumulator (one text stream per turn).
-    // R1: wire chunk text lives at content.text and is a DELTA
+    // wire chunk text lives at content.text and is a DELTA
     // (kimi-code events-map.ts assistantDeltaToSessionUpdate:
     // content.text = event.delta), so we accumulate here into a full-text
     // snapshot and emit it as turn_diff. The card reducer's turn_diff path
@@ -185,7 +185,7 @@ export class KimiAcpTranslator extends BaseAcpTranslator {
           : summary
             ? truncateWithEllipsis(summary, 200)
             : undefined,
-      // §P4: 从服务端 options kind 派生——带 approve_always（或 allow_always）
+      // 从服务端 options kind 派生——带 approve_always（或 allow_always）
       // 才提供「本会话总是允许」（acceptForSession）；否则与旧行为一致。
       availableDecisions: deriveAcpAvailableDecisions(params.options ?? []),
     };

@@ -56,7 +56,7 @@ afterEach(() => {
 
 describe('Bridge.forwardToClaude session cwd sync', () => {
   it('test_anchor_system_init_uses_session_cwd_over_runner_cwd', async () => {
-    // L5 fix: When session init event reports a different cwd than the runner's cwd,
+    // fix: When session init event reports a different cwd than the runner's cwd,
     // we should update sessionStore to use the session's real cwd (not the runner's cwd).
     const runCwd = path.join(tmpRoot, 'workspace-a');
     const eventCwd = path.join(tmpRoot, 'workspace-b');
@@ -101,7 +101,7 @@ describe('Bridge.forwardToClaude session cwd sync', () => {
   });
 
   it('test_anchor_system_init_empty_cwd_falls_back_to_runner_cwd', async () => {
-    // L3 guard: `event.cwd ?? cwd` only catches null/undefined, NOT empty string.
+    // guard: `event.cwd ?? cwd` only catches null/undefined, NOT empty string.
     // A translator (or older build) emitting cwd="" must NOT overwrite the good
     // runner cwd with "", or last-session.json persists an empty cwd and breaks
     // auto-resume / /resume <id> / /active.
@@ -133,7 +133,7 @@ describe('Bridge.forwardToClaude session cwd sync', () => {
   });
 
   it('test_anchor_bridge_system_init_does_not_update_arrival_baseline', async () => {
-    // P2#1 覆盖缺口守卫：所有「用户活动」用例都
+    // 覆盖缺口守卫：所有「用户活动」用例都
     // 绕过 bridge 直写 sessionStore.setSessionId，唯一走真实 bridge system.init 的
     // anchor 只断言 session+cwd 的 exact-shape，没有断言「已有 arrival 基线保持
     // 不变」。
@@ -144,9 +144,9 @@ describe('Bridge.forwardToClaude session cwd sync', () => {
     //
     // 缺失/错误会导致：若未来在 system.init 误加 setArrivalSessionId，本测试立即
     // 变红——arrival 基线被 system.init 覆盖后 userChangedOld=false，prev[pi]=P
-    // 会被错误恢复，破坏「到达基线只由 config.save 更新」的 Round 5 设计。
+    // 会被错误恢复，破坏「到达基线只由 config.save 更新」的设计。
     //
-    // 依据：P2#1；Round 5 设计（arrival 基线只在
+    // 依据：；设计（arrival 基线只在
     // config.save 切换时更新；用户消息 /resume /new /cd /system.init 均不更新）。
     const runCwd = path.join(tmpRoot, 'workspace-a');
     const eventCwd = path.join(tmpRoot, 'workspace-b');

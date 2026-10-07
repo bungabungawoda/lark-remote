@@ -88,7 +88,7 @@ export abstract class ConnectionBasedRunner<TClient, TEvent = AgentEvent> implem
   protected abstract setupTurn(message: string, opts: SpawnOptions): Promise<void>;
 
   /**
-   * 本连接的协议停止通道（design §3.3）。
+   * 本连接的协议停止通道。
    *
    * win32 上「优雅停止」没有可拦截的跨进程 SIGTERM，只能经 agent 自有协议通道
    * 请求对方收摊。子类把这个方法的结果交给 ConnectionManager.stopper，由后者按
@@ -210,7 +210,7 @@ export abstract class ConnectionBasedRunner<TClient, TEvent = AgentEvent> implem
    */
   async stop(_opts?: { immediate?: boolean }): Promise<void> {
     if (!this._isRunning) return;
-    // CC-01: 启动阶段（client/session 未建立）也必须记录停止意图，否则 /stop 被吞、
+    // 启动阶段（client/session 未建立）也必须记录停止意图，否则 /stop 被吞、
     // turn 照常执行。executeTurn 在 setup 完成后检查 stopRequested 补发 cancel。
     this.stopRequested = true;
     this.forceFinish = true;

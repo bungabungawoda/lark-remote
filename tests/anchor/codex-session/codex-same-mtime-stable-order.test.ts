@@ -1,5 +1,5 @@
 /**
- * Anchor (P3-5): 同 mtime 的 codex 会话排序必须确定（次级键）
+ * Anchor: 同 mtime 的 codex 会话排序必须确定（次级键）
  *
  * 验证什么行为：
  *   1. `listCodexRollouts` 连续两次调用（中间 clearSessionIndexCache 强制
@@ -15,10 +15,9 @@
  *   auto-resume 与 /resume 翻页会恢复错会话，且分页 `[offset, offset+limit)`
  *   切片在两次请求间错位。
  *
- * 依据（review P3-5）：
  *   "sessions: mtime desc 排序后的 [offset, offset+limit) 切片"——同 mtime
  *   时 desc 排序本身不定义顺序，必须补确定性次级键才能保证切片稳定；
- *   review 明确"同 mtime 会话排序确定（次级键）"。
+ *   "同 mtime 会话排序确定（次级键）"。
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs';

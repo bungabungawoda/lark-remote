@@ -1,7 +1,7 @@
 /**
  * Anchor tests for SpawningRunner (spawn lifecycle base).
  *
- * W1.1 收窄后基类只承载 spawn 生命周期（spawnChild lead-in / stop /
+ * 收窄后基类只承载 spawn 生命周期（spawnChild lead-in / stop /
  * killOrphan / 退出分发器 / 心跳），不再有 run() 主循环与 buildResultEvent
  * ——结果事件语义由唯一生产子类 ClaudeSession 自行构建（见
  * src/runner/claude/claude-runner.test.ts 的 nonzero-exit / 嗅探定性用例）。
@@ -229,7 +229,7 @@ describe('SpawningRunner.spawnChild() spawn orchestration', () => {
       pidDir: newPidDir(),
     });
 
-    // P2-13: spawn 失败必须携带真实原因（此处 ENOENT），而非只给固定文案。
+    // spawn 失败必须携带真实原因（此处 ENOENT），而非只给固定文案。
     await expect(runner.callSpawnChild({ cwd: '/tmp/fake' })).rejects.toThrow(
       /不可用.*spawn ENOENT/s,
     );
@@ -353,10 +353,10 @@ describe('SpawningRunner.spawnChild() spawn orchestration', () => {
 });
 
 // ---------------------------------------------------------------------------
-// P1-4 A2: createStreamReader enables backpressure by default
+// createStreamReader enables backpressure by default
 // ---------------------------------------------------------------------------
 
-describe('P1-4 A2: createStreamReader enables backpressure by default', () => {
+describe('createStreamReader enables backpressure by default', () => {
   test('test_anchor_create_stream_reader_default_backpressure_enabled', async () => {
     const readable = new Readable({ read() {} });
     const pauseCalls: number[] = [];
@@ -573,7 +573,7 @@ describe('SpawningRunner stop / killOrphan / isRunning', () => {
 });
 
 // ---------------------------------------------------------------------------
-// 协议停止通道登记（design §3.3）
+// 协议停止通道登记
 // ---------------------------------------------------------------------------
 
 describe('SpawningRunner 协议停止通道登记', () => {

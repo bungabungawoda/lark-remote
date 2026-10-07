@@ -9,7 +9,7 @@ import type { AppConfig } from '../../../src/config/index.js';
 import { createMockBridge, createStubSessionReaderRegistry } from '../../lib/bridge-stubs.js';
 import { expectNoV1ActionContainer } from '../../lib/card-view.js';
 
-// P2-28 anchor (red): handleQueueDiagnose 的诊断卡片仍是 CardKit V1 结构
+// (red): handleQueueDiagnose 的诊断卡片仍是 CardKit V1 结构
 // （缺 schema:'2.0'，缺 body:{elements}，顶层用 elements）。
 // 这是全项目最后一张 V1 卡。本测试复现该缺陷，待绿 agent 修复 src。
 
@@ -95,6 +95,6 @@ describe('anchor: queue diagnose card v2', () => {
 
     // NOTE: wide_screen_mode 是合法 CardKit 2.0 config 字段（/active、/ls、/order 卡
     // 均在 schema:'2.0' 下使用），不是 V1 残留。故不断言 card.config 为 undefined。
-    // P2-28 真正的缺陷是缺 schema:'2.0' + 缺 body:{elements} + 顶层 elements，已由上面三条断言覆盖。
+    // 真正的缺陷是缺 schema:'2.0' + 缺 body:{elements} + 顶层 elements，已由上面三条断言覆盖。
   });
 });

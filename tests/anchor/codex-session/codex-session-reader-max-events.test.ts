@@ -4,7 +4,7 @@ import path from 'node:path';
 import os from 'node:os';
 
 /**
- * Red Agent - Round 4 - Anchor (Bug 模式)
+ * Red Agent -- Anchor (Bug 模式)
  *
  * Target: CodexSessionReader.readSessionContent 必须支持 maxEvents 限制返回事件数。
  *
@@ -15,7 +15,6 @@ import os from 'node:os';
  *   enforceCardBudget 兜底（极端降级），而其他 agent 已经有 maxEvents 早期截断。
  *   project_memory 中的硬约束已写明：maxEvents 必须在所有 agent session reader 实现。
  *
- * Spec basis:
  *   - Design constraint "maxEvents parameter must be implemented for all agent
  *     session readers (not just claude)"
  *   - lessons learned "maxEvents参数仅在claude session实现导致非claude agent的
@@ -23,7 +22,7 @@ import os from 'node:os';
  *   - src/runner/index.ts AgentSessionReader 接口签名:
  *     `readSessionContent(sessionId, cwd, opts?: { maxEvents?: number }): SessionContent`
  *
- * Pyramid: L1 (unit) — 直接调用 reader，验证事件数 <= maxEvents
+ * Pyramid: unit level — 直接调用 reader，验证事件数 <= maxEvents
  */
 
 vi.mock('../../../src/logger/index.js', async () =>

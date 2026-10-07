@@ -251,7 +251,7 @@ not valid json
       // 验证：老版本 / 无 model_context_window 的 token_count 数据，usage 仍正常提取，
       // 但 contextLimit 必须为 undefined —— "不支持就不填"，不能编造或除零。
       // 缺失/错误会导致：旧数据被塞进错误百分比，或渲染 NaN%/Infinity%。
-      // 依据：spec 摘要第 3 条；实测旧 rollout 的 token_count 只有 last/total_token_usage。
+      // 依据：实测旧 rollout 的 token_count 只有 last/total_token_usage。
       const sessionsDir = path.join(tmpDir, 'sessions', '2026', '07', '18');
       fs.mkdirSync(sessionsDir, { recursive: true });
       const file = path.join(sessionsDir, 'rollout-019f-noctx.jsonl');
@@ -353,7 +353,7 @@ not valid json
       // 压缩收尾 token_count 增量全 0，contextLength 用 total_tokens（压缩后窗口）
       expect(content.usage!.contextLength).toBe(4777);
       // 压缩前水位与压缩后同口径（total_tokens）：最近一次非零 token_count 的
-      // total = input 20430 + output 605 = 21035（review P3-9 单位统一）。
+      // total = input 20430 + output 605 = 21035（单位统一）。
       expect(content.usage!.compactPreContextLength).toBe(21035);
     });
 

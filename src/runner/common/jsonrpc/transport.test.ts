@@ -156,7 +156,7 @@ describe('JsonlRpcTransport safety and cleanup', () => {
   });
 
   it('test_anchor_transport_writes_messages_in_order', async () => {
-    // review P3-8：write() 走有界队列 + drain 续发，多条消息必须保序到达。
+    // write() 走有界队列 + drain 续发，多条消息必须保序到达。
     const outFile = join(tmpDir, 'received.txt');
     const collect = join(tmpDir, 'collect-lines.mjs');
     writeFileSync(
@@ -382,7 +382,7 @@ describe('JsonlRpcTransport safety and cleanup', () => {
   );
 
   it('test_anchor_transport_registers_cooperative_stop_channel_by_pid', async () => {
-    // design §3.3 的接线闭合点：win32 上没有可拦截的跨进程 SIGTERM，优雅停止
+    // 接线闭合点：win32 上没有可拦截的跨进程 SIGTERM，优雅停止
     // 只能靠协议通道。注册表此前在生产侧**没有任何注册点**（只出现在
     // terminator.test.ts），win32 上非立即停止恒走 `skipped-no-channel` 后直接
     // 树杀——没有信号可查、也没有报错。

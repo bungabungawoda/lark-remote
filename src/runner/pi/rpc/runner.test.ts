@@ -160,7 +160,7 @@ describe('PiRpcRunner', () => {
   });
 
   it('test_anchor_prompt_failure_success_false_produces_error_result_not_timeout', async () => {
-    // CC-08: prompt 返回 success:false（无效模型/provider/忙）时必须立即产出
+    // prompt 返回 success:false（无效模型/provider/忙）时必须立即产出
     // error result（含 pi 的错误文本），而不是忽略响应继续等 agent_settled →
     // 最长 turn idle timeout。
     const runner = makeRunner({

@@ -4,9 +4,9 @@
  *
  * 验证什么（target）:
  *   前两轮修复各自只锁了半链路：
- *     - R1（kimi-session-usage-aggregation）用真实 KimiSessionReader + tmp fixture，
+ *     - 第一层用真实 KimiSessionReader + tmp fixture，
  *       但没接 Bridge——reader 输出字段名变了它照样过；
- *     - R2（bridge-kimi-usage-threading）接了 Bridge，但 reader 是 stub——
+ *     - 第二层接了 Bridge，但 reader 是 stub——
  *       bridge 读错字段（或 registry 没注册上）它照样过。
  *   本条把完整生产链路串起来：真实 KimiSessionReader（真 tmp wire.jsonl fixture）→
  *   真实 SessionReaderRegistry → 真实 Bridge.resolveFinalUsage → 真实 formatUsageStats
@@ -18,8 +18,7 @@
  *   Output = contextLength×10%——缓存重复计、输出靠猜，误导用户对成本与上下文占用的判断。
  *   本 fixture 数值下两路径产物完全不同（见下方验算），可严格区分。
  *
- * 依据 spec（spec_basis）:
- *   spec 要求 jsonl 作为数据源、对齐 ccusage 范式，usage = 「整个 session 整体的 token
+ *   jsonl 作为数据源、对齐 ccusage 范式，usage = 「整个 session 整体的 token
  *   使用量和上下文」——终态卡片必须展示从 wire.jsonl 全量聚合的真实 usage。
  *
  * 数值验算（3 条 usage.record：{1000,100,5000,200} {2000,200,6000,300} {3000,300,7000,400}）:

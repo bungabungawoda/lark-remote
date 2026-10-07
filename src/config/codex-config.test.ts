@@ -293,7 +293,7 @@ describe('loadCodexConfig model options merge', () => {
     const opts = cfg.modelOptions();
 
     // config absent -> 默认模型取目录首个可用（codex default_model_from_available），
-    // 不再虚构 'o3'；fallback provider 只含 openai（anthropic 非 codex 内置，P3-2 对齐）
+    // 不再虚构 'o3'；fallback provider 只含 openai（anthropic 非 codex 内置，对齐）
     expect(opts[0]).toBe('gpt-5.6-sol');
     expect(opts).toEqual(['gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.4']);
     expect(cfg.currentModel).toBe('gpt-5.6-sol');

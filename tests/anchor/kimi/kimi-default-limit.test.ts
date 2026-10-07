@@ -1,5 +1,5 @@
 /**
- * A7 anchor: kimi listSessions 默认 limit=20（与其他 agent 对齐），total 为真实总数
+ * kimi listSessions 默认 limit=20（与其他 agent 对齐），total 为真实总数
  *
  * 行为：不传 opts（或 opts.limit 为 undefined）时，KimiSessionReader.listSessions
  * 返回 cwd 精确匹配、按 mtime desc 排序后的最多 20 条 session，且 total 为分页前
@@ -9,7 +9,6 @@
  * 条——第 11+ 个 kimi session 在 /resume 默认页中永远不可见，且 total 语义与其他
  * agent（默认 20）行为分裂；若绿方只改 slice 不保证 total，断言同样拦住。
  *
- * spec 依据：
  *   "kimi 默认 limit 10 → 20，与其他 agent 对齐"；§1.3
  *   "kimi | 默认 limit=10，与其他 agent 的 20 不一致"。
  */
@@ -25,7 +24,7 @@ vi.mock('../../../src/logger/index.js', async () =>
 // Import after mocks are in place so kimi sessions.ts picks up the mocked logger.
 const { KimiSessionReader } = await import('../../../src/session/kimi/index.js');
 
-describe('A7: kimi listSessions default limit', () => {
+describe('kimi listSessions default limit', () => {
   it('test_anchor_kimi_list_sessions_default_limit_20', () => {
     const SESSION_COUNT = 15;
     const projectDir = fs.mkdtempSync(path.join(os.tmpdir(), 'lark-a7-kimi-proj-'));

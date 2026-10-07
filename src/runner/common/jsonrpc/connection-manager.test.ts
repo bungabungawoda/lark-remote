@@ -47,7 +47,7 @@ const INIT_PARAMS = {
   },
 };
 
-describe('ConnectionManager hook layering (review P2-1)', () => {
+describe('ConnectionManager hook layering', () => {
   let tmpDir: string;
 
   beforeEach(() => {
@@ -59,7 +59,7 @@ describe('ConnectionManager hook layering (review P2-1)', () => {
   });
 
   it('test_anchor_connection_lost_cleanup_survives_runner_setHooks', async () => {
-    // review P2-1 回归：runner 用 setHooks 替换 per-run hooks 后，连接层的
+    // 回归：runner 用 setHooks 替换 per-run hooks 后，连接层的
     // slot 清理 + onConnectionLost 必须仍然触发（曾整体覆盖导致死 slot 残留、
     // onConnectionLost 无人订阅）。
     const { script, pidFile } = makeExitServer(tmpDir, 100);
@@ -157,7 +157,7 @@ describe('ConnectionManager hook layering (review P2-1)', () => {
    *   `session.ts` armIdleTimer 的 `<= 0` 守卫、`claude.idleTtlMinutes` schema
    *   注释），而这里 0 会 setTimeout(...,0) 把刚建好的连接秒删——用户在 YAML
    *   里照 `dir.ts` 的引导手改这个键，得到的是"每条消息都重起进程"。
-   * 依据：clean_review §B9（两种语义取其一并对齐注释，这里统一到 0=禁用）。
+   * 两种语义取其一并对齐注释，这里统一到 0=禁用。
    */
   it('idleTtlMs 0 disables idle recycling instead of dropping the connection', async () => {
     const { script } = makeIdleServer(tmpDir);
@@ -257,7 +257,7 @@ describe('ConnectionManager hook layering (review P2-1)', () => {
   }, 10000);
 
   it('test_anchor_connection_manager_plumbs_cooperative_stop_channel', async () => {
-    // design §3.3：runner 只提供「通道工厂」，登记/注销由连接层负责——连接是
+    // runner 只提供「通道工厂」，登记/注销由连接层负责——连接是
     // agent 进程的生命周期边界，pid 也只有这里知道（transport.pid）。
     // 工厂必须拿到**连接本身**：协议取消只能发在这条连接上。
     const { script, pidFile } = makeIdleServer(tmpDir);

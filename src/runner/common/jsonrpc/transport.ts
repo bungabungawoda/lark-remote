@@ -66,7 +66,7 @@ export class JsonlRpcTransport {
     /** 终止器注入（测试用）；默认按平台建实现 */
     terminator?: Terminator;
     /**
-     * 协议停止通道工厂（design §3.3）：spawn 成功后按 pid 建通道并登记到
+     * 协议停止通道工厂：spawn 成功后按 pid 建通道并登记到
      * AgentStopperRegistry，进程退出/关闭时注销。返回 undefined = 无通道。
      */
     stopper?: (pid: number) => AgentStopper | undefined;
@@ -109,7 +109,7 @@ export class JsonlRpcTransport {
     // agent 是用户自己的可信二进制，provider 认证依赖 API key /
     // 自定义 provider 的 env_key，代理环境依赖 HTTP(S)_PROXY、TMPDIR 等；
     // 任何白名单收窄都会打断认证或网络。调用方 this.env 覆盖 process.env 同名键。
-    // env 覆盖必须大小写不敏感合并（win32 PATH/Path 双键防护，v2 §8.3）
+    // env 覆盖必须大小写不敏感合并（win32 PATH/Path 双键防护）
     const childEnv: NodeJS.ProcessEnv = mergeProcessEnv(process.env, this.env);
 
     const proc = spawnProcess(this.binary, this.args, {
@@ -251,7 +251,7 @@ export class JsonlRpcTransport {
     }
     try {
       // 入队后顺序 flush；write() 返回 false（高水位）时暂停直到 drain，
-      // 避免大消息/突发消息在 Node 内部无限缓冲（review P3-8）。
+      // 避免大消息/突发消息在 Node 内部无限缓冲。
       this.writeQueue.push(Buffer.from(JSON.stringify(msg) + '\n', 'utf8'));
       this.flush();
     } catch {

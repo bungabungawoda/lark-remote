@@ -105,7 +105,7 @@ describe('FeishuConnector.sendFile', () => {
           Authorization: 'Bearer token',
         },
         params: { receive_id_type: 'chat_id' },
-        // P2-18: send-message segment now carries a 30s timeout.
+        // send-message segment now carries a 30s timeout.
         timeout: 30000,
         // Bun keep-alive stale-socket fix: dedicated Agent with keepAlive=false
         httpsAgent: expect.objectContaining({ keepAlive: false }),
@@ -193,7 +193,7 @@ function authHeaderAt(callIndex: number): string | undefined {
 }
 
 /**
- * clean_review §B13：tenant_access_token 缓存只按到期时间失效，鉴权失败不清
+ * tenant_access_token 缓存只按到期时间失效，鉴权失败不清
  * 缓存、并发请求也不合流。
  *
  * ① appSecret 在飞书后台被重置后，缓存里的旧 token 立刻失效，但缓存要到自然
@@ -201,7 +201,7 @@ function authHeaderAt(callIndex: number): string | undefined {
  *   "发文件一直报错"，且只能重启进程才能恢复。
  * ② 缓存过期的一瞬间，N 个并发发送会各发一次取 token 请求（飞书侧有限流）。
  */
-describe('FeishuConnector tenant token 失效与合流（B13）', () => {
+describe('FeishuConnector tenant token 失效与合流', () => {
   it('上传被判 token 无效：清缓存重取，并用新 token 重做一次', async () => {
     vi.mocked(axios.post)
       .mockResolvedValueOnce(tokenOk('stale'))

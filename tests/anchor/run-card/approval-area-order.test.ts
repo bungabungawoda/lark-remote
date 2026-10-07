@@ -9,7 +9,7 @@
  *    审批标题和决策按钮悬浮在「暂无输出」上方，与「审批按钮应位于卡片最下面」的
  *    预期相反；若只把审批区挪到内容之后但仍在底部操作行之前，按钮仍不是卡片
  *    最底部，同样不符合本契约。
- * ③ 依据：round-log session spec ——「审批区必须渲染在内容流之后，且作为卡片
+ * ③ 依据：「审批区必须渲染在内容流之后，且作为卡片
  *    body 最底部（位于底部操作行 stop/新会话 之后），normal/degraded/extreme
  *    全层级一致」；用户原话「这里的审判按钮，不是在最下面，在暂无输出上面」。
  */
@@ -83,7 +83,7 @@ describe('anchor: approval area card position', () => {
    * ② 缺失/错误会导致什么：若绿只在 normal 路径修了顺序、漏掉 degraded 路径
    *    （buildDegradedElements 仍把 renderApprovalArea 拼在 statusRow 之后），
    *    大输出 run 的降级卡会再次出现按钮悬浮在内容上方的问题。
-   * ③ 依据：round-log session spec「normal/degraded/extreme 全层级一致」；
+   * ③ 依据：「normal/degraded/extreme 全层级一致」；
    *    构造方式参照 tests/anchor/misc/degraded-showtoolresult-ignored.test.ts
    *    （7×2500 thinking + 5 大 tool + 大文本触发降级）。
    */

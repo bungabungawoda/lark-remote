@@ -33,7 +33,7 @@ import type { MediaOutcome } from '../inbound/turn.js';
  * Max events to read for the completion notification card (mirror router's
  * AUTO_RESUME_MAX_EVENTS = 5). Without a cap, readSessionContent returns every
  * event after the last user message and the card blows past Feishu's 28KB
- * budget (review §P1-21).
+ * budget.
  */
 const COMPLETION_NOTIFICATION_MAX_EVENTS = 5;
 
@@ -41,7 +41,7 @@ const COMPLETION_NOTIFICATION_MAX_EVENTS = 5;
 const APPROVAL_TIMEOUT_MS = 5 * 60 * 1000;
 
 /**
- * runner 缓存的工作区数量上限（review P3-3）：超过后创建新工作区槽位时
+ * runner 缓存的工作区数量上限：超过后创建新工作区槽位时
  * 顺带回收「非 active 且进程已停」的死缓存，防止随访问过的工作区数量
  * 无界增长。活进程/在途 run 一律保留（workspace-lifetime 长驻连接不能误杀）。
  */
@@ -88,8 +88,8 @@ interface BridgeChannel extends RunCardChannel {
 }
 
 /**
- * W2.4 单点化：`'runCompact' in runner` 鸭子探测（compact 按钮门控，
- * design doc §6.2-2）。codex app-server + kimi/opencode ACP runner 满足。
+ * 单点化：`'runCompact' in runner` 鸭子探测
+ * codex app-server + kimi/opencode ACP runner 满足。
  */
 function runnerHasRunCompact(runner: Runner): boolean {
   return (
@@ -105,7 +105,7 @@ export interface CommandContext {
   /**
    * 本轮（装配窗口）全部入站 messageId，`messageId` 是其中最后一条。
    * 只有走入站装配器的路径会填；卡片动作等单消息路径留空，收尾退化为只处理
-   * `messageId`。缺它会导致合并轮次里先到的消息挂着 Typing 不撤（§B8）。
+   * `messageId`。缺它会导致合并轮次里先到的消息挂着 Typing 不撤。
    */
   turnMessageIds?: string[];
 }
@@ -171,7 +171,7 @@ interface ActiveRun {
   /**
    * The agent kind that this run started with. The runner cache is keyed by
    * (cwd, agentKind); eviction must use THIS kind, not `this.config.defaultAgent`
-   * at eviction time (review P2-3). Otherwise switching defaultAgent mid-run
+   * at eviction time. Otherwise switching defaultAgent mid-run
    * (via `/config`, whose clearRunners skips the active cwd) makes finalizeRun
    * delete the wrong slot — the original agent's runner lingers in the cache
    * with a stale config snapshot.
@@ -230,7 +230,7 @@ export class Bridge {
    */
   private runners = new Map<string, Map<AgentKind, Runner>>();
   /**
-   * Runner 槽位在「活跃运行期间配置变更」时被标 stale（CC-06/P1）：clearRunners() 对
+   * Runner 槽位在「活跃运行期间配置变更」时被标 stale：clearRunners() 对
    * 活跃 cwd 只标 stale、不立即 evict（避免误杀长驻连接），当前 run 结束后由
    * finalizeRun 安全 evict+dispose，下一轮 getRunner 创建新配置的 runner。
    * key 为 `${cwd}\u0000${agentKind}`。
@@ -305,7 +305,7 @@ export class Bridge {
       return workspaceMap.get(kind)!;
     }
 
-    // review P3-3：缓存超过上限且是新工作区时才回收死槽位——刚创建未 run
+    // 缓存超过上限且是新工作区时才回收死槽位——刚创建未 run
     // 的 runner 同样是 isRunning=false，小缓存下立即回收会破坏「创建即注册」
     // 的既有语义（exit-dispatcher 计数回归）。
     if (this.runners.size >= MAX_CACHED_RUNNER_WORKSPACES && !this.runners.has(cwd)) {
@@ -397,14 +397,14 @@ export class Bridge {
     }
   }
 
-  /** Get the current runner for a cwd. Used by router for agent-specific commands (P3.2). */
+  /** Get the current runner for a cwd. Used by router for agent-specific commands (.2). */
   getCurrentRunner(cwd: string): AgentRunner {
     return this.getRunner(cwd) as AgentRunner;
   }
 
   /**
    * Whether the runner for the given agent kind has runCompact capability.
-   * Used by router for compact button gating (design doc §6.2-2: duck-typing
+   * Used by router for compact button gating (duck-typing
    * instead of hardcoding agentKind === 'codex').
    */
   hasRunCompact(cwd: string, kind: AgentKind = this.config.defaultAgent): boolean {
@@ -413,8 +413,8 @@ export class Bridge {
   }
 
   /** 入队时刻快照：当前 defaultAgent + 该 agent 的 sessionId（无 session 则 undefined）。
-   *  唯一捕获点：排队消息在 T0 把 agent+session 钉进 AgentBinding，随任务闭包带到 T1
-   *  执行时刻，避免 /new、/config 在排队期间改写 live 状态导致语义漂移（方案 D4）。 */
+   *  唯一捕获点：排队消息在入队时刻把 agent+session 钉进 AgentBinding，随任务闭包带到执行时刻
+   *  执行时刻，避免 /new、/config 在排队期间改写 live 状态导致语义漂移。 */
   currentBinding(userId: string): AgentBinding {
     const agent = this.config.defaultAgent;
     return {
@@ -437,7 +437,7 @@ export class Bridge {
     // ends, and the next run picks up the new config/agent via getRunner.
     for (const cwd of [...this.runners.keys()]) {
       if (this.activeRuns.has(cwd)) {
-        // CC-06/P1: 活跃 cwd 不能立即 evict（会误杀长驻连接），但必须标记 stale，
+        // 活跃 cwd 不能立即 evict（会误杀长驻连接），但必须标记 stale，
         // 否则 finalizeRun 对 workspace-lifetime runner 也不 evict → 下一轮复用旧配置实例。
         // 这里只标待淘汰，当前 run 结束后由 finalizeRun 安全 evict。
         for (const kind of [...this.runners.get(cwd)!.keys()]) {
@@ -454,7 +454,7 @@ export class Bridge {
 
   /**
    * Evict a (cwd, agentKind) runner cache slot. Unregisters the runner from the
-   * process-level exit dispatcher first (P1-1: without removal the singleton
+   * process-level exit dispatcher first (without removal the singleton
    * Set<Runner> retains every historical runner instance, so memory still grows
    * with run count), then deletes the slot. Every runner-discarding path
    * (clearRunners / finalizeRun / interruptCurrentRun) must go through this.
@@ -765,7 +765,7 @@ export class Bridge {
         // below may outlive the task's settle, letting the serial chain advance
         // to a successor that begins executing before we resume. An
         // unconditional reset would then zero the successor's count and mark
-        // its slot interrupted, hiding it from queue cards (A22).
+        // its slot interrupted, hiding it from queue cards.
         const stoppedSlot = this.queueManager.getExecutingSlot(cwd);
         await Promise.allSettled([
           // 用户主动中断（/stop、stop 卡按钮、queue.immediate）显式打标
@@ -781,8 +781,8 @@ export class Bridge {
           this.activeRuns.delete(cwd);
         }
         // Fix 4: Clean up this specific (cwd, agentKind) runner slot
-        // (P1-1: eviction must also unregister the runner from the exit dispatcher)
-        // P2-3: evict by the run's captured agentKind, not the live
+        // (eviction must also unregister the runner from the exit dispatcher)
+        // evict by the run's captured agentKind, not the live
         // defaultAgent (may have changed mid-run via /config).
         this.evictRunnerSlot(cwd, active.agentKind);
         // Reset queue executing count: the task was interrupted externally, so
@@ -973,9 +973,9 @@ export class Bridge {
     ctx: CommandContext,
     opts?: { cwdOverride?: string; binding?: AgentBinding },
   ): Promise<void> {
-    // D5: agentKind 一律来自绑定。无 binding 时保持现状（live defaultAgent）。
+    // agentKind 一律来自绑定。无 binding 时保持现状（live defaultAgent）。
     const agentKind = opts?.binding?.agent ?? this.config.defaultAgent;
-    // P1-14: lane 与执行 cwd 同源。消息入队时（index.ts 闭包）捕获的 cwd
+    // lane 与执行 cwd 同源。消息入队时（index.ts 闭包）捕获的 cwd
     // 作为 cwdOverride 显式传入；执行时若 sessionStore cwd 已被 /cd 等命令改写，
     // 以 lane 为准 —— 否则旧 lane 的排队消息会被 busy-drop 静默丢失。空串视为
     // 未提供（与入队前无 cwd 的兜底语义一致）。
@@ -1003,14 +1003,14 @@ export class Bridge {
     // Note: Multiple workspaces can have runs in parallel. If runner is busy,
     // runner.run() will throw and we'll catch it below.
 
-    // D2/D5: sessionId 钉死语义——binding 有 sessionId 时用它（入队时刻快照），
+    // sessionId 钉死语义——binding 有 sessionId 时用它（入队时刻快照），
     // 否则跟随 live store（无 binding 或入队时无 session 的正常路径）。
     const sessionId =
       opts?.binding?.sessionId ?? this.sessionStore.getSessionId(ctx.userId, agentKind);
 
     // 会话代际快照（2026-08-09，2026-10-07 前移）：/new、/cd、/resume 会 bump
     // epoch，该 run 后续 system.init 的 sessionId 写回即判 stale 跳过。
-    // 快照点优先取 binding.sessionEpoch（入队/commit 时刻 T0，与 sessionId 同刻）：
+    // 快照点优先取 binding.sessionEpoch（入队/commit 时刻，与 sessionId 同刻）：
     // 排队消息在「commit 后、开跑前」被 reset 时，执行起点捕获会漏判（epoch 已是
     // bump 后的值）→ 旧 sessionId 被写回复活 reset。无 binding 时回退执行起点捕获，
     // 保持非排队路径（如 /compact）的既有语义。
@@ -1055,8 +1055,8 @@ export class Bridge {
   ): { runId: string; cardSession: RunCardSession; activeRun: ActiveRun } {
     const runId = randomUUID();
     getLogger().debug(`[lark-remote] creating runCard runId=${runId}`);
-    // D5: agentKind 来自入队绑定（forwardToClaude 解析），不再读 live config。
-    // 缓存键 (cwd, agentKind) 和 eviction 都用这个值（review P2-3）。
+    // agentKind 来自入队绑定（forwardToClaude 解析），不再读 live config。
+    // 缓存键 (cwd, agentKind) 和 eviction 都用这个值。
     const cardSession = new RunCardSession({
       connector: this.connector,
       chatId: ctx.chatId,
@@ -1085,7 +1085,7 @@ export class Bridge {
   }
 
   /**
-   * §9.12 空闲看门狗：单 interval + 截止时间判定（P2-1），普通 run 与 compact
+   * §9.12 空闲看门狗：单 interval + 截止时间判定，普通 run 与 compact
    * 共用同一套兜底。事件到达只 `touch()` 刷新时间戳（无 timer 操作）；静默超过
    * `idleTimeoutMs` 才 finish('idle_timeout') + runner.stop()，让该工作区的串行
    * 队列继续推进（否则一个挂死的 run 永久堵住后续消息）。
@@ -1149,7 +1149,7 @@ export class Bridge {
     message: string,
     agentKind: AgentKind = this.config.defaultAgent,
   ): Promise<void> {
-    // Runner 声明的 usage 权威来源（review P3-7）：codex app-server = 'live'
+    // Runner 声明的 usage 权威来源：codex app-server = 'live'
     // （turn/started 的 tokenUsage.last 是本 turn 增量）。其余 runner 未声明。
     const usageAuthority = (
       runner as Runner & { getUsageAuthority?: () => 'live' | 'jsonl' }
@@ -1229,7 +1229,7 @@ export class Bridge {
         getLogger().info(`[lark-remote] cardSession not running, using static fallback`);
       }
 
-      // P2-1: 单 interval 看门狗。事件到来时只刷新时间戳（无 timer 操作）；
+      // 单 interval 看门狗。事件到来时只刷新时间戳（无 timer 操作）；
       // interval 周期检查静默时长，超时才 finish('idle_timeout') + stop()。
       // 武装点在建卡之后，与原实现一致（宽限期不含 cardSession.start() 耗时）。
       watchdog = this.startIdleWatchdog({
@@ -1279,8 +1279,8 @@ export class Bridge {
               `[lark-remote] system.init write-back skipped: session pointer moved since run start runId=${runId} sessionId=${event.session_id}`,
             );
           } else {
-            // L5: Use session's real directory from event.cwd (not runner's cwd parameter)
-            // L3: guard empty string too -- `??` only catches null/undefined, but a
+            // Use session's real directory from event.cwd (not runner's cwd parameter)
+            // guard empty string too -- `??` only catches null/undefined, but a
             // translator (or older build) may emit cwd="", which must NOT overwrite
             // the good runner cwd.
             const hasCwd = !!this.sessionStore.getCwd(ctx.userId);
@@ -1376,7 +1376,7 @@ export class Bridge {
 
           // app-server 模式 setup 失败路径（thread/start 成功后 turn/start 失败）
           // 不会有 turn_started 事件，store 不会写回新线程 id；runner 已在 result
-          // 里兜底上报（review P3-10）。此处仅当 runner 声明 live usage（app-server）
+          // 里兜底上报。此处仅当 runner 声明 live usage（app-server）
           // 且会话指针未动时写回，避免下条消息再开一个孤儿线程。其余 agent 不在
           // 此列（它们各自有 system.init / turn_started 写回）。
           if (
@@ -1478,7 +1478,7 @@ export class Bridge {
           const coordinator = this.approvalCoordinators.get(runId);
           coordinator?.updateView(event.requestId, event.view);
         }
-        // §9.12 红线（§P1-2 方案 A）：每个事件（含 result）无条件刷新
+        // §9.12 红线：每个事件（含 result）无条件刷新
         // lastEventTs 重新武装看门狗。result 后 CLI 进程做 jsonl flush/清理（finalizing
         // 过渡）期间，宽限期恢复为完整的 idleTimeoutMs，避免已产出结果的 turn 被误标
         // idle_timeout。旧实现 `else { resetIdle(); }` 漏掉 result 分支。
@@ -1488,9 +1488,9 @@ export class Bridge {
       }
       getLogger().info(`[lark-remote] runner stream end runId=${runId} sawResult=${sawResult}`);
 
-      // §9.12 红线（§P1-2 方案 A 第 2 点）：for-await 自然结束 = CLI 已退出，
+      // §9.12 红线：for-await 自然结束 = CLI 已退出，
       // 看门狗使命结束，立即摘除 interval（不再等 finally），堵掉「stream 已结束、
-      // 收尾处理跨过死线被误标 idle_timeout」的同源小窗口（P2-4 随本修复一并关闭）。
+      // 收尾处理跨过死线被误标 idle_timeout」的同源小窗口（随本修复一并关闭）。
       watchdog?.stop();
 
       // stream 结束 = CLI 退出 = jsonl 已落盘。读 jsonl 拿准确的 contextLength + compactCount：
@@ -1576,7 +1576,7 @@ export class Bridge {
       // else: 已终态且未收到 result（如 spawn 失败后 interrupted）-> 无 usage 可补，跳过
     } catch (err) {
       getLogger().error(`[lark-remote] claude run error runId=${runId}:`, err);
-      // P1-11 双保险：run() 的 finally 已负责杀子进程，但 catch 路径再补一次
+      // 双保险：run() 的 finally 已负责杀子进程，但 catch 路径再补一次
       // runner.stop()（与 bash 路径对齐），覆盖任何 finally 之外的残留窗口。
       try {
         await runner.stop();
@@ -1676,7 +1676,7 @@ export class Bridge {
       // Add a terminal-state emoji reaction to the user's original message
       this.finishTurnReactions(ctx, terminalReactionEmoji(cardSession.currentState.terminal));
     } finally {
-      // P1-13: cleanup must survive mid-finalize errors. The only unguarded
+      // cleanup must survive mid-finalize errors. The only unguarded
       // expression in finalizeRun is the renderRunCard(...) argument evaluated
       // at the sendResult call site; if it throws, the run must still release
       // its activeRuns slot — otherwise the cwd is permanently busy
@@ -1689,7 +1689,7 @@ export class Bridge {
         // evicted+disposed by clearRunners (/config) and interruptCurrentRun
         // (/stop). Spawn-per-message runners are evicted as before to prevent
         // stale process references accumulating.
-        // CC-06/P1: 配置变更期间（clearRunners 标了 stale）的 workspace-lifetime
+        // 配置变更期间（clearRunners 标了 stale）的 workspace-lifetime
         // runner 也必须在 run 结束后 evict，否则下一轮复用旧配置实例。
         const slotKey = `${cwd}\u0000${activeRun.agentKind}`;
         if (activeRun.runner.lifetime !== 'workspace' || this.staleRunnerSlots.has(slotKey)) {
@@ -1699,7 +1699,7 @@ export class Bridge {
         // Compact 卡片需要 runId + sessionId；record 供终态卡上的 Compact 按钮
         // 校验与取参（activeRuns 已清空，无法再查到）。异常退出（error/
         // interrupted/idle_timeout）同样记录——上下文往往更大，压缩后再续。
-        // §6.2-3：写入条件从「codex 终态」放宽为「runner 有 runCompact 的终态」
+        // 写入条件从「codex 终态」放宽为「runner 有 runCompact 的终态」
         // （codex app-server + kimi acp 均满足）。
         const runTerminal = cardSession.currentState.terminal;
         const runnerHasCompact = runnerHasRunCompact(activeRun.runner);
@@ -1740,7 +1740,7 @@ export class Bridge {
     agentKind: AgentKind = this.config.defaultAgent,
   ): Promise<void> {
     try {
-      // P1-21: cap the events read for the notification card — without
+      // cap the events read for the notification card — without
       // maxEvents claude returns every event after the last user message and
       // the card blows past Feishu's 28KB budget.
       const content = this.sessionReaderRegistry.get(agentKind).readSessionContent(sessionId, cwd, {
@@ -1765,7 +1765,7 @@ export class Bridge {
         },
       );
 
-      // P1-21: send through sendResult so enforceCardBudget guards the card
+      // send through sendResult so enforceCardBudget guards the card
       // (previously sent via connector directly, bypassing the budget — long
       // sessions produced >28KB cards that Feishu silently rejected).
       const sent = await this.sendResult({ card }, ctx);
@@ -1797,7 +1797,7 @@ export class Bridge {
   ): Promise<T> {
     const coordinator = this.approvalCoordinators.get(runId);
     if (!coordinator) {
-      // P2-7: run 已结束（coordinator 已释放）时点击审批按钮必须给用户明确反馈，
+      // run 已结束（coordinator 已释放）时点击审批按钮必须给用户明确反馈，
       // 不能静默。router 会把该异常转成 error toast。
       getLogger().warn(`[lark-remote] no approval coordinator for runId=${runId.slice(0, 8)}`);
       throw new Error('任务已结束，审批无法响应');
@@ -1915,7 +1915,7 @@ export class Bridge {
   }
 
   /**
-   * Claude AskUserQuestion 自定义答案（Other，review P3-4）：自由文本直接
+   * Claude AskUserQuestion 自定义答案（Other）：自由文本直接
    * 作为该单选问题的答案提交。路由到 ApprovalCoordinator.answerCustom。
    */
   async handleApprovalAnswerCustom(opts: {
@@ -2117,7 +2117,7 @@ export class Bridge {
         agentKind,
       },
     });
-    // A6：压缩与普通 run 共用同一套生命周期——注册进 activeRuns（/stop 有对象可停、
+    // 压缩与普通 run 共用同一套生命周期——注册进 activeRuns（/stop 有对象可停、
     // /active 看得见）、挂 §9.12 空闲看门狗、终态后补 reaction。缺任何一环，卡住的
     // 压缩都只能等 runner 级超时，用户既停不掉也看不出它还在跑。
     const activeRun: ActiveRun = {
@@ -2431,7 +2431,7 @@ export class Bridge {
 
       for await (const event of bashRunner.run(command, { cwd })) {
         if (event.type === 'stdout') {
-          // P1-4 层④：bridge 本地 output 也必须 store-time 截断——仅 session state
+          // 层④：bridge 本地 output 也必须 store-time 截断——仅 session state
           // 有界并不会让 `output +=` 自然有界（review 第④条表述不成立），!yes 洪峰
           // 下本地字符串仍全量驻留。capBashOutput 增量调用 O(CAP+chunk)，不会带回
           // O(n²) 截断成本（output 恒 ≤ CAP，拼接后 ≤ CAP+chunk 再 slice 尾部）。
@@ -2466,7 +2466,7 @@ export class Bridge {
       const settleResult = await cardSession.settle();
       if (settleResult === 'unsent') {
         // Stream never established a card — send a static terminal card as fallback.
-        // Use 2.0 schema to match the streaming card (M2: avoid 2.0→1.x downgrade).
+        // Use 2.0 schema to match the streaming card (avoid 2.0→1.x downgrade).
         try {
           await this.connector.sendWithRetry(
             ctx.chatId,

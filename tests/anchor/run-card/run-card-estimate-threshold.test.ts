@@ -4,7 +4,7 @@ import type { RunState } from '../../../src/card/run-state.js';
 import { expectNoV1ActionContainer } from '../../lib/card-view.js';
 
 /**
- * PROBE (估算保守性边界 — 不误降级 + 不漏降级) — P1-2 的「先估后建」引入了
+ * PROBE (估算保守性边界 — 不误降级 + 不漏降级) —的「先估后建」引入了
  * DEGRADED_THRESHOLD=24000 阈值：估算 < 24000 走正常路径，≥24000 跳过完整卡
  * 直接 degraded。本锚点测试 刻画阈值附近的行为正确性边界，防止优化引入两类退化：
  *
@@ -13,7 +13,7 @@ import { expectNoV1ActionContainer } from '../../lib/card-view.js';
  *    这不是正确性 bug（≤28KB 仍成立），是优化副作用。
  * ② 正确性退化（估算低估漏降级）：估算值 <24000 但真实完整卡 stringify > 28KB
  *    时，走正常路径靠 stringify 兜底救回（仍 ≤28KB），但浪费一次完整构建——
- *    违背 P1-2「先估后建省一次完整 render」初衷。安全网兜底不超 28KB，非正确性
+ *    违背「先估后建省一次完整 render」初衷。安全网兜底不超 28KB，非正确性
  *    bug，标记优化缺口。
  *
  * 本锚点测试 不直接断言 estimateCardBytes（虽已导出于 src/card/run-renderer.ts，
@@ -21,7 +21,7 @@ import { expectNoV1ActionContainer } from '../../lib/card-view.js';
  * + 内容契约」间接验证：无论阈值附近走哪条路，正确性底线（≤28KB + 保留关键内容）
  * 都必须成立。GREEN 则优化未引入正确性退化；RED 则暴露估算偏差导致的契约破坏。
  *
- * 依据：P1-2 spec（estimateCardBytes 保守性 + DEGRADED_THRESHOLD 阈值）。
+ * 依据：（estimateCardBytes 保守性 + DEGRADED_THRESHOLD 阈值）。
  */
 
 describe('renderRunCard estimate threshold boundary (anchor)', () => {

@@ -101,7 +101,7 @@ export class JsonRpcClient<InitializeResult = unknown> {
    * Replace the per-run hooks (used by the runner to bridge
    * notifications/server requests into the active turn's translator).
    * Connection-layer hooks (slot cleanup / onConnectionLost) are preserved:
-   * review P2-1 — an overwrite here previously silenced onClose slot cleanup,
+   * an overwrite here previously silenced onClose slot cleanup,
    * leaving dead slots behind after the server process was killed.
    */
   setHooks(hooks: ClientHooks): void {

@@ -5,19 +5,19 @@ import os from 'node:os';
 import { mockLogger } from '../../lib/logger-mock.js';
 
 /**
- * Red Agent - Round 12 - Anchor (P3-2 + P3-3, review findings → anchor)
+ * Red Agent -- Anchor (review findings → anchor)
  *
  * Target:
- *   P3-2: 无 config.toml 的 fallback provider 列表不得含 anthropic——codex 内置
+ *   无 config.toml 的 fallback provider 列表不得含 anthropic——codex 内置
  *     provider 只有 openai/amazon-bedrock/ollama/lmstudio（model-provider-info/src/lib.rs
  *     built_in_model_providers），anthropic 必须用户显式配置才存在。
- *   P3-3: config.toml 缺 model 键时，默认模型取目录首个可用模型（codex
+ *   config.toml 缺 model 键时，默认模型取目录首个可用模型（codex
  *     default_model_from_available：优先 is_default，否则第一个），不是硬编码 'o3'。
  *
  * Importance: 卡片列出的每个 provider/model 都必须是 codex 运行时真实可解析的；
  * 'anthropic' 与 'o3' 是 legacy 假值，选中即失败。
  *
- * Spec basis: P3-2/P3-3（review 发现）+ codex 源码。
+ * Spec basis: codex 源码。
  */
 
 const { mockSpawnSync } = vi.hoisted(() => ({ mockSpawnSync: vi.fn() }));

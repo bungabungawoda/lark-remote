@@ -125,7 +125,7 @@ claude:
     expect(config.agents?.codex?.sandbox).toBe('workspace-write');
   });
 
-  it('agents.opencode.mode defaults to build and accepts build/plan (§P5)', () => {
+  it('agents.opencode.mode defaults to build and accepts build/plan', () => {
     const p = writeConfig(VALID_CONFIG + '\nagents:\n  opencode:\n    providerID: anthropic\n');
     const config = loadConfig(p);
     expect(config.agents?.opencode?.mode).toBe('build');

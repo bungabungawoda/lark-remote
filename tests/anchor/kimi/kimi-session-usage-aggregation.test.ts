@@ -103,7 +103,7 @@ describe('KimiSessionReader usage session-wide aggregation', () => {
     // Spec: totalTokens = Σ 四项全加 = 6000+600+18000+900
     expect(usage!.totalTokens).toBe(25500);
     // Spec: contextLength = 最后一条 usage.record 的 (inputOther+inputCacheRead+inputCacheCreation)
-    //       = 3000+7000+400（当前上下文占用，excludes output；不可求和；锁定语义。review P2-8）
+    //       = 3000+7000+400（当前上下文占用，excludes output；不可求和；锁定语义。）
     expect(usage!.contextLength).toBe(10400);
     // Cumulative field mirrors session-wide totals (kimi sums all records).
     expect(usage!.cumulativeInputTokens).toBe(6000);

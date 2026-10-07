@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { buildReceipt, unsupportedReason } from './receipt.js';
 
-describe('buildReceipt（B4：不支持/失败必须可见）', () => {
+describe('buildReceipt（不支持/失败必须可见）', () => {
   it('无文本纯附件：已保存路径 + 引导语', () => {
     const text = buildReceipt({
       saved: ['/tmp/a/image_1.png'],

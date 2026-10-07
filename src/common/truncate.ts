@@ -13,7 +13,7 @@ export const DEFAULT_TRUNCATE_SUFFIX = '…（已截断）';
 
 /**
  * Max byte budget for a single session `tool_result` event's content when
- * replaying an opencode session (L2 pre-fold). Pre-folding here bounds the
+ * replaying an opencode session (pre-fold). Pre-folding here bounds the
  * in-memory `events[]` array and the intermediate card JSON so a single
  * pathological tool_result never inflates the replay payload to megabytes.
  */
@@ -87,7 +87,7 @@ export function truncate(str: string, max: number, options?: TruncateOptions): s
   const budget = max - suffixLen;
   if (budget <= 0) return suffix;
   // Iterate by Unicode codepoint (for...of) so the cut never lands inside a
-  // surrogate pair (P2-31 anchor: must not emit a lone surrogate).
+  // surrogate pair (must not emit a lone surrogate).
   let end = 0;
   for (const ch of s) {
     if (end + ch.length > budget) break;

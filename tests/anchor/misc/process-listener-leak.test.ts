@@ -1,5 +1,5 @@
 /**
- * Anchor Test: P1-1 — registerExitHandlers 不得累积 process 监听器（A1 claude）
+ * registerExitHandlers 不得累积 process 监听器（claude）
  *
  * ① 验证什么行为：同一进程内连续创建 5 个新的 ClaudeRunner 实例并各调用一次
  *    registerExitHandlers() 后，process 的 'exit' / 'SIGINT' / 'SIGTERM' 监听器
@@ -12,7 +12,7 @@
  *    无界增长；进程退出时遍历 N 份重复 cleanup。这是对设计目标数周驻留的 daemon
  *    的确定性泄漏，生产路径独有（bridge 测试全用 stub runner，覆盖不到）。
  *
- * ③ 依据：review.md §P1-1「每个 run 泄漏 3 个 process 监听器，长期驻留必发」，
+ * ③ 依据：「每个 run 泄漏 3 个 process 监听器，长期驻留必发」，
  *    原文附失败用例即本测试（listenerCount 增量断言）；修复建议为模块级单例分发。
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
@@ -27,7 +27,7 @@ import { makeTempDir } from '../../lib/temp-dir.js';
 
 const PID_DIR = makeTempDir('p1-1-anchor-');
 
-describe('P1-1: registerExitHandlers 不累积 process 监听器', () => {
+describe('registerExitHandlers 不累积 process 监听器', () => {
   let beforeExit: number;
   let beforeSigint: number;
   let beforeSigterm: number;
@@ -63,8 +63,8 @@ describe('P1-1: registerExitHandlers 不累积 process 监听器', () => {
   });
 
   it('test_anchor_bridge_eviction_unregisters_runner_from_exit_dispatcher', () => {
-    // A7（内存回收）：bridge 淘汰 (cwd, kind) 槽位时必须把 runner 从单例分发器注销，
-    // 否则 Set<Runner> 永久持有每个历史 runner 实例（review §P1-1 后果②：内存随 run 数无界增长）。
+    // （内存回收）：bridge 淘汰 (cwd, kind) 槽位时必须把 runner 从单例分发器注销，
+    // 否则 Set<Runner> 永久持有每个历史 runner 实例（后果②：内存随 run 数无界增长）。
     const baseline = SpawningRunner.getRegisteredExitHandlerCount();
     const tmpDir = makeTempDir('p1-1-bridge-');
     try {
@@ -135,8 +135,8 @@ describe('P1-1: registerExitHandlers 不累积 process 监听器', () => {
   });
 
   it('test_probe_exit_cleanup_still_wired_after_singleton_refactor', () => {
-    // A6 反退化 probe：收编单例后，进程 exit 仍必须触发已注册 runner 的 cleanup
-    // （SIGTERM 运行中进程 + 删除 pid 文件）。防绿用「空实现/不注册」骗过 A1-A5。
+    // 反退化 probe：收编单例后，进程 exit 仍必须触发已注册 runner 的 cleanup
+    // （SIGTERM 运行中进程 + 删除 pid 文件）。防绿用「空实现/不注册」骗过-。
     // pid 文件路径统一走 pidFileSuffix 构造（与 SpawningRunner 同源，
     // 自拼一份就是自造半迁移）
     const cwd = 'exitprobe';
@@ -158,7 +158,7 @@ describe('P1-1: registerExitHandlers 不累积 process 监听器', () => {
   });
 
   it('test_probe_register_exit_handlers_idempotent_for_same_instance', () => {
-    // A8 probe：同一实例重复 registerExitHandlers 不得重复注册（Set 幂等）——
+    // probe：同一实例重复 registerExitHandlers 不得重复注册（Set 幂等）——
     // 监听器数不变、分发器计数不变。
     const beforeExit = process.listenerCount('exit');
     const beforeCount = SpawningRunner.getRegisteredExitHandlerCount();

@@ -81,7 +81,7 @@ export class PiRpcRunner extends ConnectionBasedRunner<PiRpcClient, PiRpcTransla
       idleTtlMs: opts.idleTtlMs,
       logTag: 'pi-rpc-connection-manager',
     });
-    // 协议停止通道（design §3.3）：pi 的 cancel 是 `{type:'abort'}` 通知，已由
+    // 协议停止通道：pi 的 cancel 是 `{type:'abort'}` 通知，已由
     // cancelCurrentTurn 实现；登记后 win32 优雅停止才有通道可用（否则一路树杀）。
     this.manager.stopper = ({ client }) => this.buildCooperativeStop(client);
   }
@@ -180,7 +180,7 @@ export class PiRpcRunner extends ConnectionBasedRunner<PiRpcClient, PiRpcTransla
     this.promptSettled = false;
     const response = await client.request({ type: 'prompt', message });
     if (!response.success) {
-      // CC-08: pi 返回 success:false（无效模型/provider 错误/忙）时立即失败，
+      // pi 返回 success:false（无效模型/provider 错误/忙）时立即失败，
       // 不能当成成功 ACK 继续等 agent_settled（否则最长 turn idle timeout）。
       throw new Error(
         `pi prompt failed: ${(response as { error?: string }).error ?? 'unknown error'}`,

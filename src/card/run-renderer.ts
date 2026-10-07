@@ -26,7 +26,7 @@ const EXTREME_TOOL_KEEP = 1; // Extreme: keep last 1 tool panel
 // 影子测量：估算 = 精确复刻 normal 路径将要渲染的 JSON 字节。面板外壳、statusRow、
 // summary、header、按钮全部实测（measureJson），块内容经与渲染相同的变换
 // （truncateUtf8 截断 + markdownDiv 的 escapeMarkdown + JSON.stringify）精确测量，
-// 不依赖任何转义因子或拍脑袋常数（P1-2 第二轮：CJK/ASCII 转义双向精确）。
+// 不依赖任何转义因子或拍脑袋常数（第二轮：CJK/ASCII 转义双向精确）。
 const DEGRADED_THRESHOLD = 24_000; // 估算低于此值走正常路径（留 4KB 裕度，相对 CARD_BUDGET_BYTES=28000）；否则直接 degraded。调整时同步评估裕度是否仍覆盖估算偏差
 
 /** 精确测量对象经 JSON.stringify 后的 UTF-8 字节数。 */
@@ -210,7 +210,7 @@ function mergeNoticesIntoContent(
   return items;
 }
 
-/** 每个块的截断后内容（thinking/plan/text），测量与渲染共用（P1-2 建议项）。 */
+/** 每个块的截断后内容（thinking/plan/text），测量与渲染共用（建议项）。 */
 type GroupContentPrepared = Map<BlockGroup, string>;
 
 /**
@@ -360,7 +360,7 @@ function actionButtonList(state: RunState, options: RunCardRenderOptions): objec
   return actionButtons;
 }
 
-/** Bottom action row: spacer + column_set of actionButtonList (估算与渲染共用，W2.2）。 */
+/** Bottom action row: spacer + column_set of actionButtonList (估算与渲染共用）。 */
 function actionRow(state: RunState, options: RunCardRenderOptions): object[] {
   const actionButtons = actionButtonList(state, options);
   if (actionButtons.length === 0) return [];
@@ -378,7 +378,7 @@ function actionRow(state: RunState, options: RunCardRenderOptions): object[] {
 }
 
 /** 审批区位于 body 最底部（底部操作行之后）：待审批时决策按钮不遮挡内容流。
- *  例外：skeleton 兜底路径中 approvalArea 在 actionRow 之前（信息保真 C4.3），
+ *  例外：skeleton 兜底路径中 approvalArea 在 actionRow 之前（信息保真），
  *  保证极端降级时审批入口与 stop/new-session 按钮同时可见。 */
 function approvalArea(state: RunState): object[] {
   const elements: object[] = [];
@@ -394,7 +394,7 @@ function approvalArea(state: RunState): object[] {
   return elements;
 }
 
-/** 底部操作行之前的内容区提示：被 MAX_BLOCKS 截掉的早期块计数（信息保真 C4.1）。 */
+/** 底部操作行之前的内容区提示：被 MAX_BLOCKS 截掉的早期块计数（信息保真）。 */
 function omittedBlocksHint(state: RunState): object[] {
   return state.omittedBlocks !== undefined && state.omittedBlocks > 0
     ? [markdownDiv(`_💡 已省略 ${state.omittedBlocks} 个早期步骤_`)]
@@ -450,7 +450,7 @@ function buildFallbackElements(
     elements.push(markdownDiv(`_💡 另外 ${toolsOmitted} 个工具调用已省略_`));
   }
 
-  // P2-6: use object references (like the extreme path) instead of timestamps.
+  // use object references (like the extreme path) instead of timestamps.
   // RunBlock.timestamp has millisecond precision; ≥2 thinking blocks sharing a
   // timestamp collapse to one Set entry, so `has(block.timestamp)` lets ALL
   // same-timestamp blocks (including ones meant to be omitted) pass through —
@@ -469,7 +469,7 @@ function buildFallbackElements(
     return true; // keep all non-thinking, non-tool blocks
   });
 
-  // 信息保真 C4.2：plan/file_change 块在降级路径不渲染内容（正常路径已可见，
+  // 信息保真 plan/file_change 块在降级路径不渲染内容（正常路径已可见，
   // 降级预算紧张），但必须计数留痕，禁止静默丢弃。
   // 计数在渲染前完成，提示与 thinking/tool 省略提示一并置于卡片顶部——不能等
   // 内容循环结束再追加，否则提示会落在最后一条输出之后，打乱「输出收尾」观感。
@@ -587,7 +587,7 @@ function buildSkeletonElements(state: RunState, options: RunCardRenderOptions): 
   // Summary (token stats etc.) — static, bounded size
   elements.push(...buildSummaryContent(state));
 
-  // 信息保真 C4.3：skeleton 也渲染审批区——极端兜底不丢审批入口
+  // 信息保真 skeleton 也渲染审批区——极端兜底不丢审批入口
   //（待审批被静默吞掉 = 用户永远看不到审批请求）。
   elements.push(...approvalArea(state));
 
@@ -640,7 +640,7 @@ function bucketThinkingAndTool(blocks: RunBlock[]): {
  * 到 degraded（安全网不丢）。
  */
 /**
- * W2.2 镜像对单源：thinking/plan/file_change 三个 collapsible 面板组的
+ * 镜像对单源：thinking/plan/file_change 三个 collapsible 面板组的
  * { title, expanded, border, content } 描述，估算（measurePanelBytes）与渲染
  * （collapsibleMarkdownPanel）共用——此前同一套标题/opIcon/内容模板写两遍。
  * text（renderTextBlock）与 tool（renderTool）形态特殊，由调用方各自处理；
@@ -686,13 +686,13 @@ export function estimateCardBytes(
   shared?: { groups?: BlockGroup[]; prepared?: GroupContentPrepared },
 ): number {
   const finalized = state.terminal !== 'running';
-  // P1-2：renderRunCard 传入共享 groups/prepared 时直接复用（截断只做一次）；
+  // renderRunCard 传入共享 groups/prepared 时直接复用（截断只做一次）；
   // 独立调用（测试/预算探针）时自建，行为与原先一致。
   const groups = shared?.groups ?? groupBlocks(state.blocks);
   const prepared = shared?.prepared ?? prepareGroupContent(groups);
 
   // 卡片外壳直接实测 assembleRunCard 空元素产物（schema/config/header/body 结构
-  // 与正式渲染完全一致，W2.2）；status/summary/操作行同样实测渲染结构。
+  // 与正式渲染完全一致）；status/summary/操作行同样实测渲染结构。
   // 注：审批区（approvalArea）不参与估算——待审批通常在途且体积小，超预算由
   // renderRunCard 的 stringify 兜底捕获。
   let total =
@@ -701,7 +701,7 @@ export function estimateCardBytes(
     measureJson(buildSummaryContent(state, { includeNotices: false })) +
     measureJson(actionRow(state, options));
 
-  // 块内容：与 buildChronologicalContent 同源（describePanelGroup 单源，W2.2）
+  // 块内容：与 buildChronologicalContent 同源（describePanelGroup 单源）
   let renderedAny = false;
   for (const group of groups) {
     if (group.kind === 'tool') {
@@ -765,7 +765,7 @@ function measurePanelBytes(
  */
 export function renderRunCard(state: RunState, options: RunCardRenderOptions = {}): object {
   // 先估后建：用廉价估算预测是否超 28KB 预算，明显超预算直接跳过完整卡构建走
-  // degraded。P1-2：groups/prepared 只算一次，测量与正式渲染共用同一份截断结果，
+  // degraded。groups/prepared 只算一次，测量与正式渲染共用同一份截断结果，
   // 避免影子测量 + 正式渲染对每个超限块双倍截断。
   const groups = groupBlocks(state.blocks);
   const prepared = prepareGroupContent(groups);
@@ -838,9 +838,9 @@ function buildChronologicalContent(
   // finalized = 非 running（含 finalizing：主结果已出，thinking 折叠）
   const finalized = state.terminal !== 'running';
 
-  // P1-2：renderRunCard 传入同一 groups 数组时直接复用（prepared 的键是组对象
+  // renderRunCard 传入同一 groups 数组时直接复用（prepared 的键是组对象
   // 引用，重建数组会让 prepared.get 永远 miss，退化为二次截断）。
-  // W2.2：面板组描述经 describePanelGroup 与估算共享同一份模板。
+  // 面板组描述经 describePanelGroup 与估算共享同一份模板。
   // notices 作为普通消息按到达时间插入内容流（有内容时不再沉到 summary）。
   const contentItems = mergeNoticesIntoContent(groups, state.notices);
   for (const item of contentItems) {

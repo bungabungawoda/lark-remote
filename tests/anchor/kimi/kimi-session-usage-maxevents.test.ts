@@ -118,6 +118,6 @@ describe('KimiSessionReader usage aggregation independent of maxEvents slice', (
     expect(usage!.cacheReadTokens).toBe(18000);
     expect(usage!.cacheCreationTokens).toBe(900);
     expect(usage!.totalTokens).toBe(25500);
-    expect(usage!.contextLength).toBe(10400); // 末条 3000+7000+400（excludes output，review P2-8）
+    expect(usage!.contextLength).toBe(10400); // 末条 3000+7000+400（excludes output）
   });
 });

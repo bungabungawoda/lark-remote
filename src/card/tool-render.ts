@@ -33,13 +33,13 @@ const BODY_TOTAL_MAX = 2500;
  */
 export function toolHeaderText(tool: ToolEntry): string {
   const icon = tool.status === 'ok' ? '✅' : tool.status === 'error' ? '❌' : '⏳';
-  // P3-6: use the cached parsed record when available (avoids per-render parse).
+  // use the cached parsed record when available (avoids per-render parse).
   const input = tool.parsedInput !== undefined ? tool.parsedInput : tool.input;
   const summary = summarizeInput(tool.name, input);
-  // 信息保真 C3.1：ACP kind 映射后 name 与原始 title 不同时，title 以
+  // 信息保真 ACP kind 映射后 name 与原始 title 不同时，title 以
   // ` — {summary}` 追加在标题末尾（截断沿用 HEADER_SUMMARY_MAX）。
   // 用 truncate（suffix 为空）而非裸 slice：裸 slice 按 UTF-16 码元切，
-  // 切点落在 emoji 代理对中间会留下孤立代理项（P2-31 同族）。
+  // 切点落在 emoji 代理对中间会留下孤立代理项（同族）。
   const blockSummary = tool.summary
     ? truncate(tool.summary.replace(/\s+/g, ' ').trim(), HEADER_SUMMARY_MAX, { suffix: '' })
     : '';
@@ -56,7 +56,7 @@ export function toolHeaderText(tool: ToolEntry): string {
 /**
  * Structured body markdown for a tool call. Renders input fields by tool name
  * (Bash → command, Read/Edit/Write → file_path, etc.) and output in a code
- * block. An explicit `toolHint` (declared by the runner, 信息保真 C5) selects
+ * block. An explicit `toolHint` (declared by the runner, 信息保真) selects
  * the same rendering by family instead of name. There is no raw-JSON fallback
  * for unknown tools: `default` returns '' and unknown tools only surface their
  * args through the panel header's `summarizeInput` fallback.
@@ -165,13 +165,13 @@ function renderWebSearchInput(str: (k: string) => string): string {
 }
 
 function renderInput(tool: ToolEntry): string {
-  // P3-6: use the cached parsed record when available (avoids per-render parse).
+  // use the cached parsed record when available (avoids per-render parse).
   const input = tool.parsedInput !== undefined ? tool.parsedInput : tool.input;
   const rec = asRecord(input);
   if (!rec) return '';
   const str = (k: string): string => (typeof rec[k] === 'string' ? (rec[k] as string) : '');
 
-  // 信息保真 C5：hint 优先（runner 自愿声明，只消费不推断）；缺失时与现状
+  // 信息保真 hint 优先（runner 自愿声明，只消费不推断）；缺失时与现状
   // 完全一致。hint 分支与 name case 共用同一渲染函数，无复制粘贴。
   switch (tool.toolHint) {
     case 'shell':

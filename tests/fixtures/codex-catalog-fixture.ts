@@ -1,5 +1,5 @@
 /**
- * codex 模型目录 fixture 助手（P2-7）。
+ * codex 模型目录 fixture 助手。
  *
  * 生成的模型条目满足 codex `ModelsResponse` 严格反序列化要求
  * （protocol/src/openai_models.rs ModelInfo 必填字段：slug/display_name/

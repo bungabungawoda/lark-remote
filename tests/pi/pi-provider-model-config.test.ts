@@ -138,7 +138,7 @@ describe('pi provider/model config from pi files', () => {
     });
 
     const models = getPiModelOptions();
-    // 精确断言（W3.7）：配置文件声明的模型必须出现在选项里，而非仅「非空」
+    // 精确断言：配置文件声明的模型必须出现在选项里，而非仅「非空」
     expect(models).toContain('glm-5.2');
   });
 
@@ -224,7 +224,7 @@ describe('pi provider/model config from pi files', () => {
     const providerOptions = extractFieldOptions(card, 'agents.pi.provider');
     const modelOptions = extractFieldOptions(card, 'agents.pi.model');
 
-    // 精确断言（W3.7）：provider 选项含两个配置项；model 选项按当前选中
+    // 精确断言：provider 选项含两个配置项；model 选项按当前选中
     // provider 过滤，只含 Volcano 的模型（见 anchor 过滤语义用例）
     expect(providerOptions).toEqual(expect.arrayContaining(['Volcano', 'lt']));
     expect(modelOptions).toContain('glm-5.2');

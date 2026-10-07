@@ -206,7 +206,7 @@ describe('KimiAcpTranslator', () => {
     expect(content[0].is_error).toBe(false);
   });
 
-  it('maps plan update to a plan event with status icons (信息保真 C3：不再显式丢弃)', () => {
+  it('maps plan update to a plan event with status icons (信息保真 不再显式丢弃)', () => {
     const t = new KimiAcpTranslator();
     const events = t.handleNotification(
       NotificationMethod.SESSION_UPDATE,
@@ -225,7 +225,7 @@ describe('KimiAcpTranslator', () => {
     expect(plan.plan).toContain('⬜ plan item two');
   });
 
-  it('maps tool_call kind:read to tool_use name Read with title as summary (信息保真 C3)', () => {
+  it('maps tool_call kind:read to tool_use name Read with title as summary (信息保真)', () => {
     const t = new KimiAcpTranslator();
     const events = t.handleNotification(
       NotificationMethod.SESSION_UPDATE,
@@ -251,7 +251,7 @@ describe('KimiAcpTranslator', () => {
     expect(content[0].input).toEqual({ path: '/home/user/project/a.ts' });
   });
 
-  it('falls back to title as name for unknown kind without summary (信息保真 C3 回归)', () => {
+  it('falls back to title as name for unknown kind without summary (信息保真 回归)', () => {
     const t = new KimiAcpTranslator();
     const events = t.handleNotification(
       NotificationMethod.SESSION_UPDATE,
@@ -285,7 +285,7 @@ describe('KimiAcpTranslator', () => {
     expect(events).toHaveLength(0);
   });
 
-  it('session_info_update with title produces a session_info event (信息保真 C3)', () => {
+  it('session_info_update with title produces a session_info event (信息保真)', () => {
     const t = new KimiAcpTranslator();
     const events = t.handleNotification(
       NotificationMethod.SESSION_UPDATE,
@@ -313,7 +313,7 @@ describe('KimiAcpTranslator', () => {
     ).toHaveLength(0);
   });
 
-  it('current_mode_update produces a session_info event with mode (信息保真 C3)', () => {
+  it('current_mode_update produces a session_info event with mode (信息保真)', () => {
     const t = new KimiAcpTranslator();
     const events = t.handleNotification(
       NotificationMethod.SESSION_UPDATE,
@@ -356,7 +356,7 @@ describe('KimiAcpTranslator', () => {
     expect(events).toHaveLength(0);
 
     // But the live usage is captured: used → contextLength (total_tokens),
-    // size → context_limit. No invented input/output split (R1).
+    // size → context_limit. No invented input/output split.
     const result = t.produceErrorResult(SESSION_ID, 'boom') as { usage?: Record<string, unknown> };
     expect(result.usage?.total_tokens).toBe(27430);
     expect(result.usage?.context_limit).toBe(200000);
@@ -442,7 +442,7 @@ describe('KimiAcpTranslator', () => {
     expect(approval.view.availableDecisions).toContain('cancel');
   });
 
-  it('session/request_permission with approve_always option → acceptForSession available (§P4)', () => {
+  it('session/request_permission with approve_always option → acceptForSession available', () => {
     const t = new KimiAcpTranslator();
     const events = t.handleServerRequest(45, ServerRequestMethod.REQUEST_PERMISSION, {
       sessionId: SESSION_ID,
@@ -741,7 +741,7 @@ describe('KimiAcpTranslator', () => {
     expect(event.usage!.total_tokens).toBe(500);
     expect(event.usage!.context_limit).toBe(200000);
     // No invented input/output split: bridge falls back to wire.jsonl
-    // usage.record for token stats (dual path, R1).
+    // usage.record for token stats (dual path).
     expect(event.usage!.input_tokens).toBeUndefined();
     expect(event.usage!.output_tokens).toBeUndefined();
   });

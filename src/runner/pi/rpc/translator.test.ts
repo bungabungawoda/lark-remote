@@ -176,7 +176,7 @@ describe('PiRpcTranslator', () => {
   });
 
   // =========================================================================
-  // 信息保真 C3.4：compaction 通知 / reasoning token / toolcall 占位
+  // 信息保真 compaction 通知 / reasoning token / toolcall 占位
   // =========================================================================
 
   it('test_anchor_compaction_start_produces_info_notice_with_reason', () => {

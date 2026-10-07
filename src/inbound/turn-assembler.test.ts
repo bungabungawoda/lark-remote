@@ -1,5 +1,5 @@
 /**
- * InboundTurnAssembler 测试（B3 核心：图/文任意顺序 → 同一个 turn）。
+ * InboundTurnAssembler 测试（核心：图/文任意顺序 → 同一个 turn）。
  *
  * 用 vitest fake timers 驱动 700ms 静默期窗口；媒体下载用可控 promise 模拟
  * in-flight（这正是「先图后文」在慢下载下会丢图的路径）。

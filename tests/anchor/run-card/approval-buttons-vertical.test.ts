@@ -95,10 +95,10 @@ describe('anchor: approval decision buttons stack vertically on narrow screens',
   });
 
   it('test_probe_four_decision_buttons_also_stack_vertically', () => {
-    // T2 分支探测：协议同时给出 acceptWithExecpolicyAmendment（允许并记住命令）
+    // 分支探测：协议同时给出 acceptWithExecpolicyAmendment（允许并记住命令）
     // 时共 4 个决策按钮，同样必须纵向堆叠、不得进 column_set 横排行。
     // 红假设：持久化决策分支（offered 含 acceptWithExecpolicyAmendment）与
-    // 3 按钮分支共享同一渲染路径，布局契约应一致；spec（用户原话）未明说
+    // 3 按钮分支共享同一渲染路径，布局契约应一致；（用户原话）未明说
     // 4 按钮场景，但窄屏挤压风险同样存在，故锁定该分支防回归。
     let state = createInitialRunState('run-approval-vertical-4');
     state = reduceRunState(state, {
@@ -149,9 +149,9 @@ describe('anchor: approval decision buttons stack vertically on narrow screens',
   });
 
   it('test_probe_approval_buttons_stack_vertically_in_degraded_tier', () => {
-    // T2 分支探测：run 卡走 degraded 降级路径（大输出触发）时，审批决策按钮
+    // 分支探测：run 卡走 degraded 降级路径（大输出触发）时，审批决策按钮
     // 同样必须纵向堆叠。红假设：buildDegradedElements 与 normal 路径共用
-    // renderApprovalArea，布局契约应一致；spec（用户原话）未明说降级场景，
+    // renderApprovalArea，布局契约应一致；（用户原话）未明说降级场景，
     // 但 anchor 既有契约「normal/degraded/extreme 全层级一致」同样适用于布局。
     // 构造方式参照 tests/anchor/run-card/approval-area-order.test.ts 的
     // degraded tier 用例（7×2500 thinking + 5 大 tool + 大文本触发降级）。

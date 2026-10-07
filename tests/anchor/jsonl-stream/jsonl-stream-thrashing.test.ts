@@ -2,18 +2,18 @@ import { describe, expect, test } from 'vitest';
 import { Readable } from 'node:stream';
 
 /**
- * P1-4 anchor: createJSONLStream 背压在交替灌入/消费场景下不产生高频
+ * createJSONLStream 背压在交替灌入/消费场景下不产生高频
  * pause/resume 抖动（thrashing）。
  *
  * 红假设: 滞回（hysteresis）足够宽，pause 后至少消费到 resumeThreshold
  * 以下才 resume，resume 后至少推到 pauseThreshold 以上才 pause。
  * 连续两次 pause 之间至少消费 (pauseThreshold - resumeThreshold) 行。
- * spec 未明确定义"最小滞回宽度"，但 pauseThreshold=100/resumeThreshold=50
+ * 未明确定义"最小滞回宽度"，但 pauseThreshold=100/resumeThreshold=50
  * 暗示至少 50 行的消费间隔。
  *
  * 此锚点测试 测量实际行为，不在主循环中驱动代码改动。
  */
-describe('P1-4 anchor: backpressure thrashing resistance', () => {
+describe('backpressure thrashing resistance', () => {
   test('test_anchor_jsonl_stream_no_thrashing_on_alternating_io', async () => {
     const readable = new Readable({ read() {} });
     const { createJSONLStream } = await import('../../../src/runner/common/jsonl-stream.js');

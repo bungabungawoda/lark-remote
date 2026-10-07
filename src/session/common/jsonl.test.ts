@@ -62,11 +62,11 @@ describe('readJsonlLines', () => {
 });
 
 /**
- * Direct boundary-case tests for the P2-5 byte-offset helpers.
+ * Direct boundary-case tests for thebyte-offset helpers.
  *
  * The offset arithmetic in `scanJsonlLines` (recording the byte offset of the
  * line after the last user message) + `readJsonlLinesFromOffset` (seek + read
- * the tail) is the crux of the P2-5 tail-only read. These tests pin the exact
+ * the tail) is the crux of thetail-only read. These tests pin the exact
  * edge cases an adversarial reviewer verified empirically: user-message-is-
  * last-line (with/without trailing newline → empty tail), offset past EOF,
  * empty-line offset accounting, multi-byte UTF-8 content, and the rolling-
@@ -322,7 +322,7 @@ describe('scanJsonlLines multi-byte cross-chunk boundary', () => {
 
   /**
    * Build a JSONL file whose first line places a 3-byte UTF-8 character (`你`
-   * = E4 BD A0) so that its first byte (E4) lands exactly on the last byte of
+   * = E4 BD) so that its first byte (E4) lands exactly on the last byte of
    * the first 64 KiB chunk (offset 65535). The second line is a normal
    * assistant message that the tail read must recover intact.
    */

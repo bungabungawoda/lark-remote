@@ -5,15 +5,15 @@ import os from 'node:os';
 import { mockLogger } from '../../lib/logger-mock.js';
 
 /**
- * Red Agent - Round 16 - Anchor（codex-y review4 P3-9）
+ * Red Agent -- Anchor（回归锁定）
  *
- * P3-9: 解析器必须镜像 codex 对空串档位的严格性——`codex debug models` 的输出中
+ * 解析器必须镜像 codex 对空串档位的严格性——`codex debug models` 的输出中
  *   `supported_reasoning_levels[].effort` 或 `default_reasoning_level` 为空串时，
  *   codex 硬错误（openai_models.rs:132 `"" => Err("reasoning_effort must not be empty")`）。
  *   lark 解析器对声明原样透传，但必须过滤空串，否则卡片会出现空档位选项、
  *   schema min(1) 会拒绝保存（潜在不一致）。
  *
- * Spec basis: codex-y review4 P3-9 + openai_models.rs ReasoningEffort::from_str。
+ * Spec basis: openai_models.rs ReasoningEffort::from_str。
  */
 
 const { mockSpawnSync } = vi.hoisted(() => ({ mockSpawnSync: vi.fn() }));

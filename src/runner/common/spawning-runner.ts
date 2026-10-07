@@ -19,7 +19,7 @@ import { DEFAULT_STOP_GRACE_MS } from '../../config/index.js';
 import type { SpawnOptions } from '../types.js';
 
 /**
- * Magic-number constants (Clean Code P3-1, G25 Replace Magic Numbers with
+ * Magic-number constants (Clean Code G25 Replace Magic Numbers with
  * Named Constants). Centralized here so the truncation budgets are visible
  * and adjustable in one place rather than scattered as raw literals.
  */
@@ -29,7 +29,7 @@ const STDERR_TAIL_BYTES = 4000;
 class SpawnChildError extends Error {}
 /**
  * Timeout (ms) for awaiting the spawn 'error' event when proc.pid === undefined
- * (review P2-11). Node guarantees 'error' for ENOENT/EACCES, but some binaries
+ * Node guarantees 'error' for ENOENT/EACCES, but some binaries
  * fail silently; the race keeps a silent failure from hanging the spawn lead-in
  * forever. Matches the 5s race kimi's override used before it was hoisted to
  * the base.
@@ -37,7 +37,7 @@ class SpawnChildError extends Error {}
 const SPAWN_ERROR_TIMEOUT_MS = 5000;
 
 /**
- * 进程级退出监听单例分发（P1-1 修复，2026-08-02）。
+ * 进程级退出监听单例分发（修复，2026-08-02）。
  *
  * 背景：各 agent runner 的 registerExitHandlers 曾是同构复制，每个实例
  * process.on('exit'|'SIGINT'|'SIGTERM') 注册 3 个永不移除的闭包（捕获整个
@@ -53,7 +53,7 @@ const SPAWN_ERROR_TIMEOUT_MS = 5000;
 /**
  * Exit-cleanup contract: anything that spawns a child process group and wants
  * process-level cleanup (agent runners via SpawningRunner, and BashProcessRunner
- * for `!` commands, P1-22) registers with the singleton dispatcher.
+ * for `!` commands) registers with the singleton dispatcher.
  */
 interface ExitCleanupHandler {
   cleanupOnExit(): void;
@@ -238,7 +238,7 @@ export abstract class SpawningRunner {
 
   /**
    * Create an async iterator over the child's stdout. Default: createJSONLStream
-   * with P1-4 backpressure enabled (pauseThreshold=100).
+   * withbackpressure enabled (pauseThreshold=100).
    */
   protected createStreamReader(stdout: Readable): AsyncGenerator<unknown> {
     return createJSONLStream(stdout, {
@@ -252,7 +252,7 @@ export abstract class SpawningRunner {
 
   /**
    * Await the spawn 'error' event when proc.pid === undefined. Races a
-   * finite timeout (review P2-11) against the 'error' event: Node guarantees
+   * finite timeout against the 'error' event: Node guarantees
    * 'error' for ENOENT/EACCES, but some binaries fail silently without ever
    * emitting it. Without the race, the spawn lead-in hangs forever → the
    * cwd serial queue never settles → permanent deadlock, and /stop
@@ -308,7 +308,7 @@ export abstract class SpawningRunner {
       }
       this.currentProcess = null;
       this.spawnHeartbeat.clear();
-      // P2-13: surface the real spawn error cause instead of a fixed "binary
+      // surface the real spawn error cause instead of a fixed "binary
       // not found" message. ENOENT (binary missing) keeps the friendly hint,
       // but EMFILE/EACCES/ENOMEM/bad-cwd failures must name the actual reason
       // so the user is not misdiagnosed into reinstalling the binary.
@@ -327,7 +327,7 @@ export abstract class SpawningRunner {
       this.spawnHeartbeat.notifyStdout();
     });
 
-    // 协议停止通道登记（design §3.3）：子进程起来后立刻登记，win32 上
+    // 协议停止通道登记：子进程起来后立刻登记，win32 上
     // Terminator 停这个 pid 时才能取到通道；进程退出/被停后注销。
     this.registerStopper(proc);
 
@@ -344,7 +344,7 @@ export abstract class SpawningRunner {
           this.commandNotFoundSeen = true;
           getLogger().error(`[${this.logTag}] command not found suspected (win32 shim): ${text}`);
         }
-        // P2-16: most agent CLIs emit progress/warnings/deprecation notices on
+        // most agent CLIs emit progress/warnings/deprecation notices on
         // stderr, not real errors. Logging each chunk at error level drowns out
         // genuine errors. Downgrade to warn — the accumulated stderr is already
         // surfaced at error level in the non-zero-exit result path.
@@ -356,7 +356,7 @@ export abstract class SpawningRunner {
   }
 
   /**
-   * 登记本进程的协议停止通道（design §3.3 表）：win32 上没有可拦截的跨进程
+   * 登记本进程的协议停止通道：win32 上没有可拦截的跨进程
    * SIGTERM，「优雅停止」只能经 agent 自有通道请求对方自行退出。stdio 型 agent
    * CLI 的通道就是关 stdin（cc-connect 已验证 claude：关 stdin → 干净退出并跑
    * Stop hooks）。
@@ -415,12 +415,12 @@ export abstract class SpawningRunner {
   }
 
   /**
-   * P1-10: 杀掉上一次崩溃留下的孤儿 agent 进程。**身份校验是动手的前置条件**：
+   * 杀掉上一次崩溃留下的孤儿 agent 进程。**身份校验是动手的前置条件**：
    * pid 文件里的 pid 可能已被系统回收给无关进程，`kill(pid, 0)` 存活探测分不出来。
    *
    * 判定单源 = `platform/identity`（posix `ps -o command=` / win32 CIM），三态：
    *   - match    → 杀整个进程组（detached:true 下 agent 是组长，与 Terminator
-   *                posix 路径的 kill(-pid) 同语义，P1-12 子进程不孤儿化）；
+   *                posix 路径的 kill(-pid) 同语义，子进程不孤儿化）；
    *   - mismatch → pid 已被无关进程占用：绝不杀，文件是陈旧垃圾，清除自愈；
    *   - unknown  → 查不到身份（ps 不可用/超时/CIM 被拒）：同样不杀，清文件。
    * 统一原则：只有身份匹配才杀，验证失败一律不杀（fail-closed）。
@@ -459,7 +459,7 @@ export abstract class SpawningRunner {
       }
 
       // 身份匹配：杀整个进程组（detached:true 下 agent 是组长），与
-      // Terminator 的 kill(-pid) 语义对齐，子进程不会孤儿化（P1-12）。
+      // Terminator 的 kill(-pid) 语义对齐，子进程不会孤儿化。
       getLogger().info(`[${this.logTag}] killing orphan process group ${-pid}`);
       try {
         process.kill(-pid, 'SIGTERM');
@@ -494,7 +494,7 @@ export abstract class SpawningRunner {
 
   /**
    * Current number of runners registered with the process-level exit
-   * dispatcher. Diagnostics / test-support introspection (P1-1 anchor asserts
+   * dispatcher. Diagnostics / test-support introspection (asserts
    * the count returns to baseline after bridge eviction).
    */
   static getRegisteredExitHandlerCount(): number {
@@ -510,7 +510,7 @@ export abstract class SpawningRunner {
   cleanupOnExit(): void {
     if (this.currentProcess && this.currentProcess.exitCode === null) {
       try {
-        // P1-12: 只杀组长会让组内子进程（工具调用起的后台进程）reparent 成孤儿。
+        // 只杀组长会让组内子进程（工具调用起的后台进程）reparent 成孤儿。
         // Terminator.cleanupOnExit 在两种平台上都是「fire-and-forget 强杀整个
         // 进程组/进程树」（posix kill(-pgid, SIGKILL) / win32 taskkill /T /F），
         // 退出路径上无法等待，也不需要优雅段。

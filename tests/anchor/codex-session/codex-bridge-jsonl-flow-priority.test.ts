@@ -1,5 +1,5 @@
 /**
- * Anchor A5 (plan §2.2 P1, 2026-08-14 修订): codex app-server 的 live usage 是
+ * (2026-08-14 修订): codex app-server 的 live usage 是
  * 本 turn 增量（协议 tokenUsage.last），与 opencode 一致走 live 优先；jsonl 的
  * per-turn 值不得覆盖 live；累计后缀仍来自 jsonl。
  *

@@ -1,0 +1,69 @@
+import { describe, it, expect, afterEach, vi } from 'vitest';
+import fs from 'node:fs';
+import path from 'node:path';
+import os from 'node:os';
+import { OpencodeSessionReader } from '../../../src/session/opencode/sessions.js';
+import { prependPath, restorePath, writeMockSource } from '../../lib/path-mock.js';
+import { rmRf } from '../../../tests/lib/tmp-cleanup.js';
+import { mockLogger } from '../../lib/logger-mock.js';
+
+vi.mock('../../../src/logger/index.js', async () =>
+  (await import('../../lib/logger-mock.js')).loggerModuleMock(),
+);
+
+describe('opencode session list maxBuffer', () => {
+  afterEach(() => {
+    mockLogger.warn.mockReset();
+  });
+
+  it('test_anchor_opencode_session_list_over_1MiB_not_silently_emptied', async () => {
+    // ① 验证什么行为：session list 输出超过 execFileSync 默认 maxBuffer（1MiB）
+    //    时，reader 必须正常解析并返回 session（而非静默吞空）；「真空」与
+    //    「输出太大失败」必须可区分。
+    // ② 缺失/错误会导致什么：execFileSync 未设 maxBuffer → stdout >1MiB 抛
+    //    ENOBUFS → catch 返回 [] → 用户看到「当前目录没有 session 记录」、
+    //    isSessionActive 恒 false —— 失败静默且与「真的没有 session」不可区分。
+    // ③ 依据：「maxBuffer 截断：execFileSync 未设 maxBuffer，
+    //    默认 1MiB…stdout > 1MiB → 抛 ENOBUFS…fetchSessionList 返回 []…修复
+    //    建议：两处 execFileSync 加 maxBuffer: 64 * 1024 * 1024」。
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'p1-15-opencode-'));
+    try {
+      // Mock opencode binary: prints a valid session-list JSON array >1MiB.
+      // Entries must carry directory === process.cwd() (the reader passes its
+      // realpath cwd to execFileSync) so listSessions' directory filter keeps them.
+      const saved = prependPath(tmpDir);
+      writeMockSource(
+        tmpDir,
+        'opencode',
+        `#!/usr/bin/env node
+const cwd = process.cwd();
+const entries = [];
+for (let i = 0; i < 30000; i++) {
+  entries.push({
+    id: 's' + i,
+    title: 't' + i,
+    updated: 1000 + i,
+    created: 0,
+    projectId: 'p',
+    directory: cwd,
+  });
+}
+process.stdout.write(JSON.stringify(entries));
+`,
+      );
+
+      try {
+        const reader = new OpencodeSessionReader();
+        const result = reader.listSessions(tmpDir);
+
+        expect(result.total).toBeGreaterThan(0);
+        // Newest (largest updated) sorts first.
+        expect(result.sessions[0]?.sessionId).toBe('s29999');
+      } finally {
+        restorePath(saved);
+      }
+    } finally {
+      rmRf(tmpDir);
+    }
+  });
+});

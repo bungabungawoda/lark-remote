@@ -214,7 +214,7 @@ describe('DshSessionReader', () => {
     expect(reader.isSessionActive(SID_A, CWD)).toBe(false);
   });
 
-  it('uses a dynamic host via hostProvider so /config host changes take effect (CC-02)', () => {
+  it('uses a dynamic host via hostProvider so /config host changes take effect', () => {
     // DshRunner 每次重建读最新 host，但 reader 构造时固定 baseUrl，导致 host 变更后
     // /resume、用量、完成卡仍访问旧 host。hostProvider 每次调用解析当前 host。
     let currentHost = 'http://host-a:3080';
@@ -235,7 +235,7 @@ describe('DshSessionReader', () => {
     expect(seenUrls).toEqual(['http://host-a:3080', 'http://host-b:3080']);
   });
 
-  it('accumulates usage across the whole session, not just the first 50 events (CC-05)', () => {
+  it('accumulates usage across the whole session, not just the first 50 events', () => {
     // reader 固定请求 maxMessages=50 却把结果当 session-wide cumulative；>50 事件的会话
     // 累计 token 会少算。必须读取完整 history（或分页）再累加 usage。
     const server = new FakeDshServer();

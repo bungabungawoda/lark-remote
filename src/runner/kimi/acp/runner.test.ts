@@ -405,7 +405,7 @@ describe('KimiAcpRunner', () => {
       | undefined;
     expect(result).toBeDefined();
     expect(result?.subtype).toBe('success');
-    // R1: usage_update {used, size} → total_tokens/context_limit, no invented split
+    // usage_update {used, size} → total_tokens/context_limit, no invented split
     expect(result?.usage?.total_tokens).toBe(12345);
     expect(result?.usage?.context_limit).toBe(200000);
     expect(result?.usage?.input_tokens).toBeUndefined();
@@ -619,7 +619,7 @@ describe('KimiAcpRunner', () => {
     await runner.dispose();
   });
 
-  it('B1：轮次结束时未答审批作废，跨轮迟到的点击不回信到无关请求', async () => {
+  it('轮次结束时未答审批作废，跨轮迟到的点击不回信到无关请求', async () => {
     // 验证什么：clearTurnState() 清掉 pendingApprovals。回归：这张 Map 按
     // cwd 长驻，轮次结束后未答的审批条目还在，而 currentClient 仍指向
     // 池化连接——用户点旧卡片的「同意」会给一条服务端早已放弃（或 id 重号后
@@ -769,7 +769,7 @@ describe('KimiAcpRunner', () => {
     await runner.dispose();
   });
 
-  it('responds accept_for_session by echoing the approve_always optionId (§P4)', async () => {
+  it('responds accept_for_session by echoing the approve_always optionId', async () => {
     const capturePath = join(tmpDir, 'approval-capture.jsonl');
     const { wrapper, cwd } = writeScenario(tmpDir, serverScript, 'kimi', {
       sendApproval: true,
@@ -801,7 +801,7 @@ describe('KimiAcpRunner', () => {
     expect(result).toBeDefined();
     expect(result?.subtype).toBe('success');
 
-    // §P4: acceptForSession 决策 → always 类 optionId（approve_always），逐字 echo
+    // acceptForSession 决策 → always 类 optionId（approve_always），逐字 echo
     const approvalResponse = readFileSync(capturePath, 'utf-8')
       .trim()
       .split('\n')
@@ -815,7 +815,7 @@ describe('KimiAcpRunner', () => {
     await runner.dispose();
   });
 
-  it('updateApprovalMode hot-applies permissionMode via session/set_mode and updates status (§P5)', async () => {
+  it('updateApprovalMode hot-applies permissionMode via session/set_mode and updates status', async () => {
     const capturePath = join(tmpDir, 'mode-capture.jsonl');
     const { wrapper, cwd } = writeScenario(tmpDir, serverScript, 'kimi', {
       sendApproval: true,
@@ -855,7 +855,7 @@ describe('KimiAcpRunner', () => {
     await runner.dispose();
   });
 
-  it('updateApprovalMode without active session updates the status cache only (§P5)', async () => {
+  it('updateApprovalMode without active session updates the status cache only', async () => {
     const runner = new KimiAcpRunner({
       kind: 'kimi',
       sessionReader: createStubSessionReader(),
@@ -871,7 +871,7 @@ describe('KimiAcpRunner', () => {
   it('pushes the configured model via session/set_config_option (CC: migration regression)', async () => {
     // 旧 KimiRunner 通过 -m 传模型；迁移到纯 ACP 后模型只用于 /status 展示。
     // 必须像 opencode 一样在 setupTurn 里 session/new|resume 后 session/set_config_option 下发，
-    // 否则实际跑的是 kimi 默认模型（CC-07）。
+    // 否则实际跑的是 kimi 默认模型。
     const capturePath = join(tmpDir, 'model-capture.jsonl');
     const { wrapper, cwd } = writeScenario(tmpDir, serverScript, 'kimi', {
       capturePath,
@@ -916,8 +916,8 @@ describe('KimiAcpRunner', () => {
     await runner.dispose();
   });
 
-  it('A5：把配置的思考强度下发为 session/set_config_option configId=thinking', async () => {
-    // 卡片可存可回显但 runner 从不读取 → 三档全无效（R4 只写不读）。
+  it('把配置的思考强度下发为 session/set_config_option configId=thinking', async () => {
+    // 卡片可存可回显但 runner 从不读取 → 三档全无效（只写不读）。
     // 线形来自真机采样（kimi 0.43.1）：session/new 通告
     // `{id:'thinking', category:'thought_level', options:[low|high|max]}`，
     // 下发后服务端回 `{configOptions:[...currentValue:'low'...]}`；
@@ -970,7 +970,7 @@ describe('KimiAcpRunner', () => {
     await runner.dispose();
   });
 
-  it('A5：未配置思考强度时不发 thinking 帧（不覆盖服务端默认档）', async () => {
+  it('未配置思考强度时不发 thinking 帧（不覆盖服务端默认档）', async () => {
     const capturePath = join(tmpDir, 'thinking-absent-capture.jsonl');
     const { wrapper, cwd } = writeScenario(tmpDir, serverScript, 'kimi', { capturePath });
 
@@ -1157,7 +1157,7 @@ describe('KimiAcpRunner', () => {
     await runner.dispose();
   });
 
-  it('runCompact waits for the wire.jsonl compaction record before producing the result (R2)', async () => {
+  it('runCompact waits for the wire.jsonl compaction record before producing the result', async () => {
     const { wrapper, cwd } = writeScenario(tmpDir, serverScript, 'kimi', {
       // Compaction text chunk flows during the background compaction…
       notifications: [
@@ -1206,7 +1206,7 @@ describe('KimiAcpRunner', () => {
       if (event.type === 'result') resultAtMs = Date.now();
     }
 
-    // Compaction text chunk must flow as turn_diff text snapshot (R1 restore;
+    // Compaction text chunk must flow as turn_diff text snapshot (restore;
     // snapshot semantics, not assistant/text delta semantics).
     const hasCompactionText = events.some(
       (e) =>
@@ -1216,7 +1216,7 @@ describe('KimiAcpRunner', () => {
     );
     expect(hasCompactionText).toBe(true);
 
-    // Result must NOT be produced before the record hit disk (R2: otherwise
+    // Result must NOT be produced before the record hit disk (otherwise
     // the dispose/exit race kills the background compaction).
     const markerStat = statSync(doneMarker);
     expect(resultAtMs).toBeDefined();
@@ -1236,7 +1236,7 @@ describe('KimiAcpRunner', () => {
     await runner.dispose();
   }, 15000);
 
-  it('sends literal outbound wire shapes: initialize / session/new / session/set_mode (R4)', async () => {
+  it('sends literal outbound wire shapes: initialize / session/new / session/set_mode', async () => {
     const capturePath = join(tmpDir, 'received.jsonl');
     const { wrapper, cwd } = writeScenario(tmpDir, serverScript, 'kimi', {
       capturePath,
@@ -1478,7 +1478,7 @@ describe('KimiAcpRunner', () => {
     await runner.dispose();
   });
 
-  it('stop during setup (session/new pending) emits interrupted, does not run the turn (CC-01)', async () => {
+  it('stop during setup (session/new pending) emits interrupted, does not run the turn', async () => {
     const { wrapper, cwd } = writeScenario(tmpDir, serverScript, 'kimi', {
       delayNewMs: 500, // session/new 阻塞 500ms，制造「连接已建、session 未建立」的启动窗口
       notifications: [
@@ -1845,7 +1845,7 @@ describe('KimiAcpRunner', () => {
   );
 
   // =========================================================================
-  // runCompact 等待机制（kimi-compact-wait-redesign §5.2）
+  // runCompact 等待机制
   // 压缩是完整 LLM 请求（时长无上限）：删除「固定 30s 超时 = 成功」的旧语义，
   // 改为等 wire 终态记录（complete/apply/cancel），沉默超过 compactIdleTimeoutMs
   // 才放弃。测试用 bounded race 驱动真实 mock server，红绿差异确定、不依赖 fake timer。
@@ -2011,7 +2011,7 @@ describe('KimiAcpRunner', () => {
       await runner.dispose();
     }, 15000);
 
-    it('A7：prompt 挂住不 settle 时语义等待照样武装 → 沉默窗口到点报「压缩状态未知」', async () => {
+    it('prompt 挂住不 settle 时语义等待照样武装 → 沉默窗口到点报「压缩状态未知」', async () => {
       // 验证什么：compact 语义判定（waitForCompactionTerminal）在 prompt 触发时
       // 就武装，不等 prompt 结算。回归：判定挂在 promptPromise.then 里，引擎
       // hold 住 session/prompt 时用户只能等通用 turnIdleTimeout（默认 30min）拿

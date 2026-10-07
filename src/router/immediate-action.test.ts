@@ -20,7 +20,7 @@ import { isImmediateAction, DIRECT_RETURN_CMDS, SESSION_MUTATING_ACTION_CMDS } f
 
 describe('isImmediateAction (§9.19)', () => {
   describe('control operations that should return true (immediate)', () => {
-    // W3.7：24 个单行 it 收敛为表驱动（用例名即命令名，语义不变）。
+    // 24 个单行 it 收敛为表驱动（用例名即命令名，语义不变）。
     it.each([
       ['new-session', '§9.19: 只清 sessionId'],
       ['stop', '§9.19: 中止当前运行'],
@@ -77,7 +77,7 @@ describe('isImmediateAction (§9.19)', () => {
     );
   });
 
-  describe('搜索/分页同类控制操作不进 DIRECT_RETURN_CMDS（§4 Step 5.7 / §5.11）', () => {
+  describe('搜索/分页同类控制操作不进 DIRECT_RETURN_CMDS', () => {
     // DIRECT_RETURN = 只同步回 toast、不做任何卡片更新。filter/page 都要原地刷卡片，
     // 进错清单会变成「点了搜索框卡片没反应」且无编译错误，只能靠本守卫拦。
     it.each(['ws.filter', 'ls.filter', 'ws.page', 'ls.page'])(

@@ -8,10 +8,10 @@
  *   （Task 工具派生的 subagent 各自落一份 wire.jsonl，同属一个 sessionDir）。
  *
  * 后果：在 Task 重度 session 中，subagent 消耗未计入会显著低估 session 整体
- *   成本，用户依据卡片判断会话成本会被严重误导——与 R1（只取末条 record）
+ *   成本，用户依据卡片判断会话成本会被严重误导——与「只取末条 record」
  *   同属"usage 低估误导计费判断"缺陷类。
  *
- * 假设来源 = spec 精神外推（spec 未明说 subagent 是否计入——spec 缺口）：
+ * 假设来源 = 精神外推（未明说 subagent 是否计入——缺口）：
  *   subagent 的 wire.jsonl 物理上位于同一 sessionDir 下、由同一 session 的
  *   Task 调用产生、同一计费主体——是"整个 session 整体"的组成部分；ccusage
  *   对 Claude Code transcript 的聚合同样不剔除 sidechain（subagent）消息。
@@ -24,7 +24,7 @@
  *     = 全 session（main + 所有 agent-N）所有 usage.record 的 Σ；
  *   - contextLength 仍取 **main** 末条 record 的 (inputOther+output+inputCacheRead)
  *     ——上下文占用是"用户对话主窗口"语义，subagent 的上下文是独立窗口，不可混入
- *     （与 R1 锁定的"末条、不可求和"语义一致，只是限定在 main）。
+ *     （与锁定的"末条、不可求和"语义一致，只是限定在 main）。
  *   修复落点建议（绿 agent 参考，非强制）：readSessionContent 聚合时枚举
  *   `agents/*\/wire.jsonl`，可求和字段跨文件累加，contextLength 仅取 main；
  *   展示事件（events/displayTitle）维持 main 来源不变（subagent 细节已由 main
@@ -100,7 +100,7 @@ describe('KimiSessionReader usage aggregation must cover subagent wire.jsonl fil
 
   it('test_anchor_kimi_usage_aggregates_subagent_wire_files_session_wide', () => {
     // main 末条 record 的 inputOther+inputCacheRead+inputCacheCreation = 3000+7000+400 = 10400，
-    // 用于断言 contextLength 只取 main（不混入 subagent、不求和；excludes output，review P2-8）。
+    // 用于断言 contextLength 只取 main（不混入 subagent、不求和；excludes output）。
     fs.writeFileSync(
       path.join(sessionDir, 'agents', 'main', 'wire.jsonl'),
       [

@@ -190,7 +190,7 @@ function withTimeout<T>(
 
 /**
  * 媒体消息到达的轻量描述（未下载）：供上层先做 owner/配置闸门，
- * 通过后再调 downloadInboundMedia —— 下载发生在认证之后（P1 review 修复）。
+ * 通过后再调 downloadInboundMedia —— 下载发生在认证之后（修复）。
  */
 /** SDK 给出的可下载资源种类（`resources[].type`）。 */
 export type InboundResourceKind = 'image' | 'file' | 'audio' | 'video' | 'sticker';
@@ -227,7 +227,7 @@ type CardActionHandler = (
 ) => void | CardActionResponse | Promise<void | CardActionResponse>;
 
 /**
- * 判断 send 失败是否值得重试一次（§9.5 限流重试口径，§P1-3 修正）。
+ * 判断 send 失败是否值得重试一次（§9.5 限流重试口径）。
  *
  * @larksuite/channel@0.7.1 的 classifyError 把飞书业务码 99991400/99991401
  * （频率控制）归类为 `code='permission_denied'`（SDK 源码实证），并保留原始
@@ -472,7 +472,7 @@ export class FeishuConnector {
       // SDK 只为 image/file/audio/video/media/sticker 五类产出非空 resources，
       // 枚举 msg_type 必然漏（2026-09-15 事故：mp4 被当文本转发给 agent）。
       // 一条消息可以**同时**产出资源事件与文本事件（post 既有文字又有图），
-      // 由 B3 的装配器合并成同一个 turn。
+      // 由的装配器合并成同一个 turn。
       const hasResources = msg.resources.length > 0;
       if (hasResources) {
         // 只上报「媒体到达」，不在此下载：owner/配置闸门在 index.ts 里先执行，
@@ -682,7 +682,7 @@ export class FeishuConnector {
           const result = await this.channel.send(chatId, input, { replyTo: opts?.replyTo });
           return result.messageId;
         } catch (retryErr: unknown) {
-          // P2-17: throw the RETRY error, not the outer `err`. Previously
+          // throw the RETRY error, not the outer `err`. Previously
           // `throw err` here re-threw the first (rate-limit) failure, hiding
           // the real reason the retry attempt failed (e.g. auth invalid).
           getLogger().warn('[feishu] retry after rate limit still failed');
@@ -805,7 +805,7 @@ export class FeishuConnector {
   }
 
   /**
-   * sendFile/sendImage 共用骨架：token → 上传（流在任何失败路径销毁，P2-18）
+   * sendFile/sendImage 共用骨架：token → 上传（流在任何失败路径销毁）
    * → 发送媒体消息。上传端点 / form 字段 / 响应 key / msg_type 的差异由调用方
    * 以 uploadUrl + buildForm + keyField + msgType 表达；timeout、noKeepAliveAgent
    * （Bun keep-alive 修复）与错误包装在此单源。label 是对外错误前缀与日志
@@ -852,7 +852,7 @@ export class FeishuConnector {
     }
   }
 
-  /** 单次「上传 + 发媒体消息」；文件流在此拥有，任何失败路径都销毁（P2-18）。 */
+  /** 单次「上传 + 发媒体消息」；文件流在此拥有，任何失败路径都销毁。 */
   private async uploadWithToken(
     accessToken: string,
     chatId: string,
@@ -867,7 +867,7 @@ export class FeishuConnector {
       fileStream = fs.createReadStream(filePath);
       const form = buildForm(fileStream);
 
-      // P2-18: timeout 120s（大文件慢链路）；httpsAgent: noKeepAliveAgent 防止
+      // timeout 120s（大文件慢链路）；httpsAgent: noKeepAliveAgent 防止
       // Bun 复用已被服务端 RST 的 keep-alive socket（ECONNRESET after ~30s）。
       const uploadResp = await axios.post(uploadUrl, form, {
         headers: {
@@ -885,7 +885,7 @@ export class FeishuConnector {
       }
       const mediaKey = uploadResp.data.data[keyField];
 
-      // P2-18: timeout 30s；noKeepAlive 同上。
+      // timeout 30s；noKeepAlive 同上。
       const sendResp = await axios.post(
         'https://open.feishu.cn/open-apis/im/v1/messages',
         {
@@ -911,7 +911,7 @@ export class FeishuConnector {
       }
       return sendResp.data.data.message_id;
     } catch (err) {
-      // P2-18: destroy the read stream on failure so the fd is released.
+      // destroy the read stream on failure so the fd is released.
       if (fileStream) {
         try {
           fileStream.destroy();
@@ -970,13 +970,13 @@ export class FeishuConnector {
   }
 
   /**
-   * Cached tenant_access_token for sendFile (P2-18). The token is valid ~2h;
+   * Cached tenant_access_token for sendFile. The token is valid ~2h;
    * fetching it on every file send wastes a round-trip and an unguarded fetch
    * could return data.code != 0 with an undefined token. Cache with expiry and
    * validate the response code.
    *
    * 缓存的两条失效路径：到期（下面 expire）与被服务端判 token 无效
-   * （invalidateTenantToken，见 §B13）。
+   * （invalidateTenantToken）。
    */
   private cachedToken: string | null = null;
   private cachedTokenExpireAt = 0;
@@ -1001,7 +1001,7 @@ export class FeishuConnector {
   }
 
   private async fetchTenantAccessToken(): Promise<string> {
-    // P2-18: timeout 30s on the token request.
+    // timeout 30s on the token request.
     // httpsAgent: noKeepAlive — same Bun keep-alive fix as upload above.
     const tokenResp = await axios.post(
       'https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal',

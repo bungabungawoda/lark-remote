@@ -5,10 +5,10 @@
  * - Cached token 累计需要显示命中率百分比
  * - Cache create 累计不需要百分比
  *
- * AC1: Cached token 行显示 "· 累计 XK (Y%)" 其中 Y 是累计命中率
- * AC2: Cache create 行显示 "· 累计 XK"（不需要 %）
- * AC3: 接口支持 cumulativeCacheReadTokens
- * AC4: 接口支持 cumulativeCacheCreationTokens
+ * Cached token 行显示 "· 累计 XK (Y%)" 其中 Y 是累计命中率
+ * Cache create 行显示 "· 累计 XK"（不需要 %）
+ * 接口支持 cumulativeCacheReadTokens
+ * 接口支持 cumulativeCacheCreationTokens
  */
 
 import { describe, it, expect } from 'vitest';
@@ -16,7 +16,7 @@ import { formatUsageStats } from '../../../src/router/usage-format.js';
 
 describe('formatUsageStats - cumulative cache display', () => {
   /**
-   * AC1: Cached token 行显示累计 token 数和命中率百分比
+   * Cached token 行显示累计 token 数和命中率百分比
    * 公式: 累计 cache% = 累计 cacheRead / (累计 input + 累计 cacheRead)
    */
   it('test_anchor_cached_token_cumulative_with_percentage', () => {
@@ -43,7 +43,7 @@ describe('formatUsageStats - cumulative cache display', () => {
   });
 
   /**
-   * AC2: Cache create 行显示累计 token 数，不需要百分比
+   * Cache create 行显示累计 token 数，不需要百分比
    */
   it('test_anchor_cache_create_cumulative_without_percentage', () => {
     const out = formatUsageStats({
@@ -63,7 +63,7 @@ describe('formatUsageStats - cumulative cache display', () => {
   });
 
   /**
-   * AC3: 接口支持 cumulativeCacheReadTokens（无累计时不应 crash）
+   * 接口支持 cumulativeCacheReadTokens（无累计时不应 crash）
    */
   it('test_anchor_cumulative_cache_read_tokens_optional', () => {
     // 只有 cumulativeCacheReadTokens，没有 cumulativeInputTokens 时
@@ -84,7 +84,7 @@ describe('formatUsageStats - cumulative cache display', () => {
   });
 
   /**
-   * AC4: 接口支持 cumulativeCacheCreationTokens（无累计时不应 crash）
+   * 接口支持 cumulativeCacheCreationTokens（无累计时不应 crash）
    */
   it('test_anchor_cumulative_cache_creation_tokens_optional', () => {
     const out = formatUsageStats({

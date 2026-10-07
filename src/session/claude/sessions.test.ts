@@ -181,7 +181,7 @@ describe('readSessionContent', () => {
     const result = readSessionContent(sessionId, '/tmp/proj', { projectsDir: tmpDir });
     expect(result.usage?.compactCount).toBe(1);
     // contextLength 取 max(postTokens=5000, 末轮窗口占用=6000) = 6000
-    // (review P2-8: input+cacheRead+cacheCreation, excludes output)
+    // (input+cacheRead+cacheCreation, excludes output)
     expect(result.usage?.contextLength).toBe(6000);
   });
 
@@ -335,7 +335,7 @@ describe('readSessionContent', () => {
     ]);
     const result = readSessionContent(sessionId, '/tmp/proj', { projectsDir: tmpDir });
     // contextLength = max(postTokens=5000, 末轮窗口占用=50000+8000+2000=60000) = 60000
-    // (review P2-8: input+cacheRead+cacheCreation, excludes output)
+    // (input+cacheRead+cacheCreation, excludes output)
     expect(result.usage?.contextLength).toBe(60000);
   });
 
@@ -346,7 +346,7 @@ describe('readSessionContent', () => {
       '{"type":"assistant","message":{"id":"m1","role":"assistant","content":[{"type":"text","text":"a"}],"usage":{"input_tokens":100,"output_tokens":50,"cache_read_input_tokens":9000,"cache_creation_input_tokens":0}}}',
     ]);
     const result = readSessionContent(sessionId, '/tmp/proj', { projectsDir: tmpDir });
-    // contextLength = input+cacheRead+cacheCreation = 100+9000+0 = 9100 (excludes output, review P2-8)
+    // contextLength = input+cacheRead+cacheCreation = 100+9000+0 = 9100 (excludes output)
     expect(result.usage?.contextLength).toBe(9100);
   });
 
@@ -623,7 +623,7 @@ describe('readSessionContent - aiTitle and recap extraction', () => {
 });
 
 /**
- * W3.6 单源：EnterWorktree 搬迁会话 fixture 写入器（原先 5 个 describe 各持
+ * 单源：EnterWorktree 搬迁会话 fixture 写入器（原先 5 个 describe 各持
  * 一份近同构写入器）。按 cwdSet 各段写 user/assistant 交错行（m1..mN，usage
  * 递增），文件放在最后一段 cwd 的 encoded 项目目录（模拟「文件已搬迁到目标
  * 目录」）。opts.withInit=false 写无 init 行的旧格式（守卫读首条 cwd 用例）；
@@ -692,7 +692,6 @@ describe('readSessionContent - EnterWorktree relocated session', () => {
     //           跨 projects 子目录兜底定位到文件并返回内容。
     // 缺失后果: 搬迁会话的完成卡片读不到 jsonl usage → token 统计回退到单 run
     //           live 增量，出现"数字变少/累计消失"错觉（2026-08-04 实例）。
-    // 依据: worktree relocate 方案 §3.1 改动 A + §3.3 用例 1。
     const localTmp = fs.mkdtempSync(path.join(os.tmpdir(), 'lark-relocate-r1-'));
     try {
       const sid = 'relocated-session-1';
@@ -718,7 +717,6 @@ describe('readSessionContent - EnterWorktree relocated session', () => {
     //           cwd 字段是搬迁前的 A。守卫应接受"任一 cwd 字段匹配"而非仅首条。
     // 缺失后果: run 在 worktree cwd 发起时，文件被找到却被首条-cwd 守卫拒绝，
     //           同样静默返回空 → token 统计漂移（2026-08-04 实例 run 2）。
-    // 依据: worktree relocate 方案 §3.1 改动 B + §3.3 用例 2。
     const localTmp = fs.mkdtempSync(path.join(os.tmpdir(), 'lark-relocate-r2-'));
     try {
       const sid = 'relocated-session-2';
@@ -782,7 +780,6 @@ describe('readSessionContent - EnterWorktree relocated session', () => {
     //           regression 2026-06-21）不可被搬迁修复破坏。
     // 缺失后果: 守卫形同虚设 → 跨目录兜底会把任意 sessionId 同名文件捞回，
     //           /resume <sid> 错 cwd 泄漏其他会话内容。
-    // 依据: worktree relocate 方案 §3.1 安全性说明 + §3.3 用例 3。
     const localTmp = fs.mkdtempSync(path.join(os.tmpdir(), 'lark-relocate-r3-'));
     try {
       const sid = 'relocated-session-3';
@@ -801,14 +798,14 @@ describe('readSessionContent - EnterWorktree relocated session', () => {
   });
 
   // probe: 跨目录兜底在多个项目目录含同名 sessionId 文件时，sort 后 first-match
-  // 若被守卫拒绝不会继续尝试下一个目录。这是已知边界（方案 §3.1 接受此限制），
-  // 探针记录当前行为，供后续评估是否需要"守卫不过则继续扫描"。spec 未要求多目录
-  // fallback，故标 probe；若绿按 spec 语义（返回空）实现则 probe 绿，不阻塞。
+  // 若被守卫拒绝不会继续尝试下一个目录。这是已知边界，
+  // 探针记录当前行为，供后续评估是否需要"守卫不过则继续扫描"。未要求多目录
+  // fallback，故标 probe；若绿按 语义（返回空）实现则 probe 绿，不阻塞。
   it('test_probe_cross_dir_fallback_stops_at_first_sort_match_even_if_guard_rejects', () => {
     // 假设的预期行为: 两目录都含 sid.jsonl，sort 靠前的 dirX 文件 cwd=X（≠请求 Y），
     // dirY 文件 cwd=Y（=请求）。理想行为应继续扫描到 dirY 命中；当前实现 first-match
     // 即 dirX，守卫拒绝 → 返回空，即使 dirY 有匹配文件。
-    // spec 哪里没说清: 方案 §3.1 只说"多个目录同名时排序保证确定性，守卫负责验证；
+    // "多个目录同名时排序保证确定性，守卫负责验证；
     // 守卫不过照样返回空"，未规定是否应继续扫描下一个目录。
     // 为什么重要: 同 sessionId 跨不同 cwd 项目目录撞名虽罕见，但若发生，搬迁会话
     // 在"旧目录残留 + 新目录正本"并存时会读到空。EnterWorktree 搬迁是 move（旧目录
@@ -847,10 +844,10 @@ describe('readSessionContent - EnterWorktree relocated session', () => {
   });
 
   it('test_probe_cross_dir_fallback_returns_empty_when_projects_dir_missing', () => {
-    // 边界探针 (T4): projectsDir 本身不存在时，readSessionContent 主目录 miss，
+    // 边界探针: projectsDir 本身不存在时，readSessionContent 主目录 miss，
     // 跨目录兜底 findSessionFileInProjects 对不存在的 projectsDir readdirSync 抛错
     // 被 catch → undefined → 返回空。验证不抛未捕获异常、确定返回空。
-    // spec 依据: 方案 §3.1 findSessionFileInProjects try/catch readdirSync。
+    // findSessionFileInProjects try/catch readdirSync。
     const localTmp = fs.mkdtempSync(path.join(os.tmpdir(), 'lark-relocate-probe2-'));
     try {
       const missingProjects = path.join(localTmp, 'does-not-exist');
@@ -864,7 +861,7 @@ describe('readSessionContent - EnterWorktree relocated session', () => {
 });
 
 describe('listClaudeSessions - EnterWorktree relocated session', () => {
-  // P1 regression: Claude EnterWorktree 搬迁 session 后，transcript 文件移至新 cwd 的项目目录，
+  // regression: Claude EnterWorktree 搬迁 session 后，transcript 文件移至新 cwd 的项目目录，
   // 但文件首条 cwd 仍是搬迁前的原目录。readSessionContent 使用 fileContainsCwd（任一 cwd
   // 匹配即可）能正确读取；但 listClaudeSessions 使用 readCwdFromJsonl（仅首条 cwd）过滤，
   // 导致搬迁后的 session 不出现在 /resume 列表中。两者 cwd 判断逻辑不一致。
@@ -881,7 +878,7 @@ describe('listClaudeSessions - EnterWorktree relocated session', () => {
     // 验证行为: listClaudeSessions 对搬迁后的 worktree cwd(/home/user/proj-worktree)
     //           应列出该 session，与 readSessionContent 读取结果一致。
     // 缺失后果: /resume 列表看不到搬迁后的 session；自动恢复也找不到。
-    // 依据: P1 描述——listClaudeSessions 应复用与 readSessionContent 一致的 cwd 判断逻辑。
+    // 依据:描述——listClaudeSessions 应复用与 readSessionContent 一致的 cwd 判断逻辑。
     const localTmp = fs.mkdtempSync(path.join(os.tmpdir(), 'lark-list-relocate-1-'));
     try {
       const sid = 'relocated-for-list-1';
@@ -930,7 +927,7 @@ describe('listClaudeSessions - EnterWorktree relocated session', () => {
     //           项目目录，A 的目录下没有该文件。listClaudeSessions 通过跨目录兜底
     //           扫描 scanRelocatedSessions 找到 B 目录下的文件并验证 cwd 包含 A
     //           → 列出该 session。与 readSessionContent 行为一致。
-    // 依据: P1 修复 2026-08-10，scanClaudeSessions 增加跨目录 fallback + cwd 守卫
+    // 依据:修复 2026-08-10，scanClaudeSessions 增加跨目录 fallback + cwd 守卫
     //       从 readCwdFromJsonl 改为 fileContainsCwd。
     const localTmp = fs.mkdtempSync(path.join(os.tmpdir(), 'lark-list-relocate-3-'));
     try {
@@ -955,7 +952,7 @@ describe('listClaudeSessions - EnterWorktree relocated session', () => {
 });
 
 describe('isClaudeSessionActive - EnterWorktree relocated session', () => {
-  // P1 follow-up: isClaudeSessionActive must use the same cross-dir fallback
+  // follow-up: isClaudeSessionActive must use the same cross-dir fallback
   // + fileContainsCwd guard as readSessionContent and listClaudeSessions,
   // otherwise a relocated session can be listed but falsely reported as inactive.
 
@@ -1042,7 +1039,7 @@ describe('isClaudeSessionActive - EnterWorktree relocated session', () => {
 });
 
 describe('listClaudeSessions - S2 relocated-out gap fix', () => {
-  // S2 fix: removed primarySessions.length === 0 guard so relocated-out
+  // fix: removed primarySessions.length === 0 guard so relocated-out
   // sessions are visible even when the primary dir has other sessions.
   // scanRelocatedSessions now uses readCwdFromJsonl (first cwd only)
   // instead of fileContainsCwd (full-file scan) for ~10× performance.
@@ -1069,7 +1066,7 @@ describe('listClaudeSessions - S2 relocated-out gap fix', () => {
    * in the JSONL is `originCwd` (the pre-relocate path).
    */
   it('test_anchor_relocated_out_visible_when_primary_has_other_sessions', () => {
-    // S2 core fix: primary dir has 2 normal sessions + 3 relocated-out sessions
+    // core fix: primary dir has 2 normal sessions + 3 relocated-out sessions
     // in other project dirs. All 5 should appear in the list.
     const localTmp = fs.mkdtempSync(path.join(os.tmpdir(), 'lark-s2-gap-1-'));
     try {
@@ -1144,7 +1141,7 @@ describe('listClaudeSessions - S2 relocated-out gap fix', () => {
 
   it('test_anchor_later_cwd_visible_when_file_stays_in_origin_dir', () => {
     // session-index 修复: 文件在 A 的项目目录、但 cwdSet 含 {A, C} 时，查 C
-    // 必须列出该 session。旧 S2 实现用 readCwdFromJsonl（仅首条 cwd）做跨目录
+    // 必须列出该 session。旧实现用 readCwdFromJsonl（仅首条 cwd）做跨目录
     // 兜底，firstCwd=A ≠ C 被跳过；统一 parser 的完整 cwd 集合修掉这个缺口
     // （A→B→C 连续搬迁场景的同一家族）。
     const localTmp = fs.mkdtempSync(path.join(os.tmpdir(), 'lark-s2-limit-'));

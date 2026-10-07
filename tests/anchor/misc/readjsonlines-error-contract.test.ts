@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 /**
- * P2-37 anchor: readJsonlLines is the only jsonl helper whose `fs.openSync`
+ * readJsonlLines is the only jsonl helper whose `fs.openSync`
  * sits outside any try/catch, so a missing file throws ENOENT instead of
  * returning `[]` like every sibling helper (findJsonlLine -> null,
  * readLastJsonlLine -> null, readLastNJsonlLines -> [], scanJsonlLines -> [],

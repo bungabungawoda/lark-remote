@@ -202,7 +202,7 @@ describe('createJSONLStream', () => {
   // 背压的水位线只在"恰好等于"这一点上有意义：早一行是多一次 pause/resume 抖动，
   // 晚一行是队列再也不降、stdout 永久停住。既有锚点用例都用远离边界的深度
   // （50/10、10/5、20/10），所以把 `>` 改成 `>=`、把缺省 100 改成 0 都能全绿。
-  describe('backpressure 水位边界（P1-4）', () => {
+  describe('backpressure 水位边界', () => {
     it('pauses one line past the default high-water mark of 100', async () => {
       const { stdout, marks } = makeStdout();
       const gen = createJSONLStream(stdout);
@@ -275,10 +275,10 @@ describe('createJSONLStream', () => {
     });
   });
 
-  // P2-14 的单行字节上限：累计量必须跨 chunk 相加，而不是每个 chunk 重新计数。
+  // 的单行字节上限：累计量必须跨 chunk 相加，而不是每个 chunk 重新计数。
   // 写成 `partialBytes = segments[0].length` 后，永不换行的输出（二进制垃圾、
   // 半截 JSON）再也不会越界，内存无上限增长，而既有锚点只喂了一个 11MB 整块。
-  describe('oversize partial line（P2-14）', () => {
+  describe('oversize partial line', () => {
     it('accumulates partial bytes across chunks and drops only past the cap', async () => {
       const CAP = 10 * 1024 * 1024;
       const MB = 1024 * 1024;

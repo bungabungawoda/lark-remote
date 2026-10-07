@@ -1,14 +1,14 @@
 /**
- * P2-5 anchor: kimi isSessionActive tail-only read invariant
+ * kimi isSessionActive tail-only read invariant
  *
- * Before P2-5, kimi isSessionActive (src/session/kimi/sessions.ts) called
+ * Before kimi isSessionActive (src/session/kimi/sessions.ts) called
  * `Array.from(readJsonlLines(wirePath))` which slurps the ENTIRE wire.jsonl
  * into a `string[]`. But `lastLoopEventIsStepEnd(lines)` only scans backwards
  * from the tail (LOOP_EVENT_SCAN_LIMIT = 20 lines) to find the last
  * `context.append_loop_event`. A multi-MB wire file is fully materialized
  * just to read its last ~20 lines.
  *
- * After P2-5, isSessionActive must use a tail-only helper (e.g.
+ * After isSessionActive must use a tail-only helper (e.g.
  * `readLastNJsonlLines`) and must NOT call the full-slurp `readJsonlLines`
  * from the shared jsonl module.
  *
@@ -28,7 +28,7 @@
  *               session; full materialization of multi-MB wire files
  *               synchronously blocks the event loop and dominates I/O for
  *               a check that only needs the last ~20 lines.
- *   spec_basis: §P2-5 ("tail-only 读取").
+ *   "tail-only 读取".
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
@@ -121,7 +121,7 @@ function writeWire(wirePath: string, jsonLines: unknown[]): void {
   fs.writeFileSync(wirePath, body, 'utf-8');
 }
 
-describe('P2-5 anchor: kimi isSessionActive tail-only read', () => {
+describe('kimi isSessionActive tail-only read', () => {
   it('test_anchor_p2_5_kimi_isession_active_no_full_slurp', () => {
     const { reader, wirePath } = buildReaderWithSession('sess-p25-red');
 
@@ -174,8 +174,8 @@ describe('P2-5 anchor: kimi isSessionActive tail-only read', () => {
     // `Array.from(readJsonlLines(wirePath))` → red.
     //
     // We scope the assertion to wirePath: the small session_index.jsonl
-    // read (findSessionDirFromIndex) is a separate concern outside P2-5's
-    // scope, but slurping the wire file is exactly what P2-5 targets.
+    // read (findSessionDirFromIndex) is a separate concern outside's
+    // scope, but slurping the wire file is exactly whattargets.
     const wireSlurpCalls = jsonlSpy.readJsonlLines.mock.calls.filter(
       (call) => call[0] === wirePath,
     );

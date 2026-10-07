@@ -97,7 +97,7 @@ export class DshRunner implements AgentRunner {
     let sessionId = opts.sessionId;
     let terminalEmitted = false;
     try {
-      // CC-03: session.create 必须包进同一 try/finally，否则创建失败（服务端不可达/报错）
+      // session.create 必须包进同一 try/finally，否则创建失败（服务端不可达/报错）
       // 会在进入旧 try 之前抛异常，finally 不执行 → running 恒 true、activeAbort 残留。
       if (!sessionId) {
         const created = await this.client.createSession({
@@ -227,7 +227,7 @@ export class DshRunner implements AgentRunner {
         }
       }
     } catch (err) {
-      // CC-03: createSession 等启动期失败也产出 error result（而非抛异常），
+      // createSession 等启动期失败也产出 error result（而非抛异常），
       // 由本 catch 统一转 error result；state 清理在 finally。
       if (!abort.signal.aborted) {
         yield {

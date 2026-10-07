@@ -629,7 +629,7 @@ watchdog 覆盖**——watchdog 在 `for await (runner.run())` 循环里，要�
 （`sessionEventPanel` / `formatTimestamp`）。
 
 **关键约束**：折叠是**视觉隐藏**，JSON payload 仍含全部内容，28KB 字节预算
-（§9.14 `CARD_BUDGET_BYTES`）仍需遵守。折叠减少的是视觉高度，不是序列化大小。
+（`CARD_BUDGET_BYTES`）仍需遵守。折叠减少的是视觉高度，不是序列化大小。
 
 **Run card 折叠策略**（`src/card/run-renderer.ts` + `src/card/tool-render.ts`）：
 
@@ -833,7 +833,7 @@ listSessions(cwd: string, opts?: { limit?: number; offset?: number }): {
 };
 ```
 
-- 必须先对**全集**按 mtime desc 建立全序再切片；任何建立全序前的提前终止都错（§1.4 第一性原理）。
+- 必须先对**全集**按 mtime desc 建立全序再切片；任何建立全序前的提前终止都错（第一性原理）。
 - 负 offset 按 0 处理（6 reader 统一 `Math.max(0, offset)`，防静默空页）。
 - `getNewestSession(cwd)` 内部 = `listSessions(cwd, { limit: 1 }).sessions[0] ?? null`。
 - codex 的 `listCodexRollouts` 返回 `{ entries, total }`，基于 `getSessionIndex`

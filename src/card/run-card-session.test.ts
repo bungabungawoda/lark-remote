@@ -91,7 +91,7 @@ describe('RunCardSession', () => {
     expect(await session.settle()).toBe('unsent');
   });
 
-  // P3-7 (rejected): the two safeRenderCard() calls in start() look redundant
+  // (rejected): the two safeRenderCard() calls in start() look redundant
   // (same state), but they are NOT — the streamCard `initial` payload renders
   // EAGERLY at start time, while the producer's first controller.update
   // renders LAZILY after the controller is ready. Events pushed in between
@@ -100,7 +100,7 @@ describe('RunCardSession', () => {
   // the initial payload and the first update are DIFFERENT objects (proving two
   // distinct render moments), and an event pushed before the producer runs
   // appears in the first update but NOT in the initial payload. Reusing the
-  // initial card (the proposed P3-7 optimization) would drop early events.
+  // initial card (the proposedoptimization) would drop early events.
   it('test_anchor_start_two_rerenders_captures_early_event_second_render_distinct', async () => {
     let initialCard: object | undefined;
     let beginProducer!: () => void;

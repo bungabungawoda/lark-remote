@@ -1,5 +1,5 @@
 /**
- * posix 终止器（design.md §3.2）。
+ * posix 终止器。
  *
  * 语义：SIGTERM 打负 PID 进程组 → 等 graceMs → SIGKILL；immediate 则两个信号
  * 连发。相对原来的 `process-stopper` 类多两样东西：
@@ -87,7 +87,7 @@ async function stopPosix(
     return { requested: true, via: 'taskkill' };
   }
 
-  // 与 exit 事件竞速等 grace；用 once 避免重复 stop() 累积监听器（P2-15）
+  // 与 exit 事件竞速等 grace；用 once 避免重复 stop() 累积监听器
   let graceTimer: NodeJS.Timeout | undefined;
   const exited = await Promise.race([
     new Promise<boolean>((resolve) => {

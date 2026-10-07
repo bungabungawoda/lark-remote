@@ -424,7 +424,7 @@ const APPROVAL_ACTION_SPECS: Record<string, ApprovalActionSpec> = {
 };
 
 // ===========================================================================
-// W2.1 命令名单单一事实源
+// 命令名单单一事实源
 // 直返语义（cardAction 同步返回 toast 给飞书回调，index.ts 控制层据此不经
 // 队列直接处理）与即时语义（绕串行队列 enqueueImmediate，§9.6）正交，两个
 // 独立清单只共享审批命令名来源（APPROVAL_ACTION_SPECS keys）——历史上同一
@@ -506,7 +506,7 @@ export const SESSION_MUTATING_ACTION_CMDS: ReadonlySet<string> = new Set([
   'config.save',
 ]);
 
-/** W2.8 单源：payload.offset → 钳位 offset（原先 9 处逐字副本）。 */
+/** 单源：payload.offset → 钳位 offset（原先 9 处逐字副本）。 */
 function payloadOffset(value: { offset?: number }): number {
   return Math.max(0, Math.trunc(Number(value.offset) || 0));
 }
@@ -675,7 +675,7 @@ export class CommandRouter {
   /**
    * Route a message: if it starts with /, handle as command; if it starts with !, execute as bash; otherwise forward to Claude.
    *
-   * 命令识别前置条件（2026-09-15 P0 修复，`inbound-unified-input-design.md` §5.6）：
+   * 命令识别前置条件（2026-09-15修复，`inbound-unified-input-design.md` §5.6）：
    * 裸前缀判定会被结构占位符命中 —— SDK 把富文本里的图片渲染成 `![image](img_v3_…)`，
    * 首字符恰好是 `!`，整段用户消息被当 shell 命令执行（`executeBash "[image](img_v3_…"`）。
    * 因此命令前缀只在「调用方声明纯文本 + 剥离占位符后非空且无占位符 + 首字符是 / 或 !」
@@ -732,7 +732,7 @@ export class CommandRouter {
       return null;
     }
 
-    // Forward to Claude (P1-14: pass the enqueue-time cwd through so the
+    // Forward to Claude (pass the enqueue-time cwd through so the
     // run uses the same cwd as the serial queue lane, even if /cd ran while
     // the message was queued)
     // 剥离占位符后再转发：agent 只该看到用户文本（附图已转成 attachments 块，
@@ -762,7 +762,7 @@ export class CommandRouter {
     value: CardActionPayload,
     ctx: CommandContext,
   ): Promise<CardActionResponse | void> {
-    // W2.1：审批家族以 APPROVAL_ACTION_SPECS keys 为单一来源分发
+    // 审批家族以 APPROVAL_ACTION_SPECS keys 为单一来源分发
     // （原 7 个 case 与 spec keys 是同一份知识的两份拷贝，已两次漂移）。
     if (APPROVAL_ACTION_CMDS.includes(value.cmd)) {
       return this.handleApprovalAction(value, ctx);
@@ -810,7 +810,7 @@ export class CommandRouter {
           return;
         }
 
-        // P1-5：校验前不得写入 sessionId。旧实现先无条件 setSessionId 再调
+        // 校验前不得写入 sessionId。旧实现先无条件 setSessionId 再调
         // cmdResume 校验，过期卡片（session 不在当前 cwd）校验失败时 store 已被
         // 污染；value.sessionId 缺失时还会静默清空已有绑定。现在统一走 cmdResume
         // 的已验证路径（:2352 校验通过才写入），sessionId 缺失直接报错。
@@ -1007,7 +1007,7 @@ export class CommandRouter {
     if (!targetTask) {
       // The target already began (or was cancelled) before this handler ran. We
       // must NOT claim the queue was cleared — nothing is removed in this branch
-      // and tasks queued behind the target are still waiting (see A13).
+      // and tasks queued behind the target are still waiting.
       await this.bridge.sendResult(
         {
           text: '该消息已不在队列中（可能已开始执行或被撤销），无法立即执行。其余排队消息保持原状。',
@@ -1029,7 +1029,7 @@ export class CommandRouter {
     // which would put the edited task behind tasks queued after it.
     if (targetTask.editedMessage) {
       const editedContent = targetTask.editedMessage;
-      // D3/Step3: 替换闭包复用原任务的 binding（不重新快照）+ 恢复丢失的
+      ///Step3: 替换闭包复用原任务的 binding（不重新快照）+ 恢复丢失的
       // cwdOverride（lane cwd 同源）。否则编辑后重新执行的 run 会丢 cwd 与绑定。
       this.bridge.setTaskReplacement(cwd, messageId, async () => {
         await this.handle(editedContent, ctx, {
@@ -1092,7 +1092,7 @@ export class CommandRouter {
     const latestTask = this.bridge.getQueuedTask(cwd, messageId);
     if (latestTask?.editedMessage) {
       const editedContent = latestTask.editedMessage;
-      // D3/Step3: 复用原任务 binding + 恢复 cwdOverride（同上）。
+      ///Step3: 复用原任务 binding + 恢复 cwdOverride（同上）。
       this.bridge.setTaskReplacement(cwd, messageId, async () => {
         await this.handle(editedContent, ctx, {
           cwdOverride: cwd,
@@ -1342,7 +1342,7 @@ export class CommandRouter {
     // setTaskReplacement and the begin-path consumption are synchronous, so
     // there is no interleaving window.
     //
-    // D3/Step3：复用原任务 binding（不重新快照）+ 恢复 cwdOverride。
+    ///Step3：复用原任务 binding（不重新快照）+ 恢复 cwdOverride。
     const inputTask = this.bridge.getQueuedTask(cwd, messageId);
     if (!inputTask) {
       // Task already left the queue (began or was cancelled) before we could
@@ -1453,7 +1453,7 @@ export class CommandRouter {
   private async handleLsRefresh(value: CardActionPayload, ctx: CommandContext): Promise<void> {
     const targetPath = value.path;
     const offset = value.offset ?? 0;
-    // TOCTOU guard (review P2-2): existsSync → statSync can race (target
+    // TOCTOU guard: existsSync → statSync can race (target
     // deleted in between), throwing into enqueueImmediate's catch which only
     // logs — violating the "card button clicks must give visible feedback"
     // red line. Treat a vanished/non-dir path as "use current cwd" instead of
@@ -1486,7 +1486,7 @@ export class CommandRouter {
       return { toast: { type: 'error', content: paging.error } };
     }
     const resolvedTarget = path.resolve(targetPath);
-    // TOCTOU guard (review P2-2): existsSync → statSync can race; without the
+    // TOCTOU guard: existsSync → statSync can race; without the
     // try/catch the throw lands in enqueueImmediate's silent .catch and the
     // paginated card never updates (no visible feedback for the click).
     let isDir: boolean;
@@ -1509,7 +1509,7 @@ export class CommandRouter {
    *
    * offset 恒重置为 0（新筛选从第 1 页开始）。路径校验与 TOCTOU 兜底照
    * handleLsPage——校验失败只回错误 toast，绝不动卡片（否则用户看到一张空卡）。
-   * ls.browse / ls.switch 的 value 里刻意不带 q，换目录即清除筛选（设计文档 §2.3）。
+   * ls.browse / ls.switch 的 value 里刻意不带 q，换目录即清除筛选。
    */
   private async handleLsFilter(
     value: CardActionPayload,
@@ -1668,7 +1668,7 @@ export class CommandRouter {
     };
   }
   /**
-   * W2.8 单源：重建 order/ws 列表卡（不投递，card 进 callback 响应体用）。
+   * 单源：重建 order/ws 列表卡（不投递，card 进 callback 响应体用）。
    * `q` 只服务 ws 卡的关键词筛选；order 卡无此功能，不透传。
    */
   private rebuildListCard(
@@ -1682,7 +1682,7 @@ export class CommandRouter {
   }
 
   /**
-   * W2.8 单源：「重建列表卡 → updateCardInPlace」原地刷新骨架（列表卡删除/
+   * 单源：「重建列表卡 → updateCardInPlace」原地刷新骨架（列表卡删除/
    * 翻页/移除/排序/筛选动作共用）。返回重建后的卡片；无卡时返回 undefined 且跳过更新。
    */
   private async refreshListCard(
@@ -1697,7 +1697,7 @@ export class CommandRouter {
   }
 
   /**
-   * W2.8 单源：order 三个 input handler（aliasInput/aliasRemove/textInput）
+   * 单源：order 三个 input handler（aliasInput/aliasRemove/textInput）
    * 的公共骨架——校验 orderId → reload+find → mutate → 成功后 toast + raw 卡。
    * mutate 返回 error 时仅回 error toast，不重渲染。
    * 注意：本 helper 只服务「toast + card 进响应体」语义（飞书需用响应体原地
@@ -2308,7 +2308,7 @@ export class CommandRouter {
         try {
           const oldDefaultAgent = this.config.defaultAgent;
           this.config = setConfigValues(this.configPath, this.config, updates);
-          // P1-6：运行时传播（idleTimeout / clearRunners / syncAgentChoices /
+          // 运行时传播（idleTimeout / clearRunners / syncAgentChoices /
           // defaultAgent 切换的 session 处理）抽到共享方法，与文本直写路径共用。
           const switchResult = this.propagateConfigSave(oldDefaultAgent, updates, ctx);
 
@@ -2359,7 +2359,7 @@ export class CommandRouter {
   }
 
   /**
-   * config 写盘后的运行时传播（P1-6：自 config.save 卡片路径抽出，卡片保存与
+   * config 写盘后的运行时传播（自 config.save 卡片路径抽出，卡片保存与
    * `/config <key> <value>` 文本直写两条路径共用）。
    *
    * 1. bridge 运行时值同步：setConfig + idle watchdog timeout；
@@ -2367,7 +2367,7 @@ export class CommandRouter {
    *    配置值，/status 与真实 run 自相矛盾）；
    * 3. defaultAgent 切换 → 旧 agent session 存 previousSessions、新 agent 恢复
    *    或清空（等效 /new）；
-   * 4. 当前 agent 配置变更 → syncAgentChoices 并原子写盘（P1-7：禁裸同步写盘，
+   * 4. 当前 agent 配置变更 → syncAgentChoices 并原子写盘（禁裸同步写盘，
    *    写一半崩溃会截断 config.yaml 导致 bridge 起不来）。
    *
    * @param updates 以 config 路径形式给出的变更 key（卡片路径来自 diffConfig；
@@ -2459,7 +2459,7 @@ export class CommandRouter {
       }
     }
 
-    // DSH preset 变更 = 下次 run 新建 session（§4.3 D1）：
+    // DSH preset 变更 = 下次 run 新建 session（§4.3）：
     // preset 在 session 创建时固定，中途切换会被服务端拒绝（agent-preset-conflict）。
     // 旧 sessionId 存入 previousSessions 停车位（可手动 /resume，但 /resume 会做
     // preset 一致性校验），当前 sessionId 清空——下次 run 走 session.create 新建。
@@ -2477,7 +2477,7 @@ export class CommandRouter {
       }
     }
 
-    // DSH host 变更 = 换服务（CC-02）：旧 host 的 sessionId 发往新 host 是错的。
+    // DSH host 变更 = 换服务：旧 host 的 sessionId 发往新 host 是错的。
     // 视为 session 边界，仿 preset 分支停车 + 清空当前 sessionId，下次 run 新建会话。
     const hasDshHostChange = Object.keys(updates).some((k) => k === 'agents.dsh.host');
     if (hasDshHostChange && this.config.defaultAgent === 'dsh' && !switchNotice) {
@@ -2499,12 +2499,12 @@ export class CommandRouter {
     );
     if (hasCurrentAgentUpdate) {
       this.config = syncAgentChoices(this.config, currentAgent);
-      // P1-7：agentChoices 同步写盘必须走原子写（tmp+rename），禁裸同步写盘
+      // agentChoices 同步写盘必须走原子写（tmp+rename），禁裸同步写盘
       atomicWrite(this.configPath, YAML.stringify(this.config));
       this.bridge.setConfig(this.config);
     }
 
-    // P1-6 + live approval settings (§P5): active workspace-lifetime runners
+    // live approval settings: active workspace-lifetime runners
     // are not evicted by clearRunners() (would orphan the live subprocess).
     // Push the new approval-mode settings to those runners via the unified
     // duck method `updateApprovalMode` (codex thread/settings/update,
@@ -2969,7 +2969,7 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
     // Claude writes into JSONL (e.g. `/tmp` → `/private/tmp` on macOS).
     // Without this, a hand-typed unresolved path never matches any JSONL's
     // cwd field and the user's `/cd /tmp/foo` never finds their sessions.
-    // TOCTOU: the directory may vanish between stat and realpath (review P2-1).
+    // TOCTOU: the directory may vanish between stat and realpath.
     // Reject gracefully instead of letting realpathSync throw into the queue
     // task's .catch (which only logs — the user gets no feedback). Mirrors
     // handleLsSwitch's realpath guard so /cd and ls.switch behave identically.
@@ -3053,7 +3053,7 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
     _ctx: CommandContext,
   ): CommandResult {
     this.sessionStore.setCwd(userId, canonical);
-    // Auto-resume newest session if exists (P1-15: 读取失败不阻断切换，给可见提示)
+    // Auto-resume newest session if exists (读取失败不阻断切换，给可见提示)
     let newestSession: AgentSession | null;
     try {
       newestSession = this.sessionReader.getNewestSession(canonical);
@@ -3230,7 +3230,7 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
 
   /**
    * Whether a session of the given agent kind can be compacted from a resume
-   * card. Design doc §6.2-2: duck-typing — check if the runner has `runCompact`
+   * card. duck-typing — check if the runner has `runCompact`
    * (codex app-server, kimi acp), instead of hardcoding agentKind === 'codex'.
    */
   private canCompactSession(agentKind: string, cwd?: string): boolean {
@@ -3735,7 +3735,7 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
         if (!wsPath) return { text: `workspace "${name}" 不存在` };
         if (!fs.existsSync(wsPath)) return { text: `路径不存在: ${wsPath}` };
         // Canonicalize via realpath so it matches Claude JSONL cwd (2026-06-21).
-        // TOCTOU guard (review P2-1): mirror cmdCd — if the path vanishes
+        // TOCTOU guard: mirror cmdCd — if the path vanishes
         // between existsSync and realpath, reply gracefully instead of
         // throwing into the queue task's silent .catch.
         let canonical: string;
@@ -3971,7 +3971,7 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
   }
 
   /**
-   * L3: degraded card when a session's export is non-empty but unparseable
+   * degraded card when a session's export is non-empty but unparseable
    * (truncated by opencode's pipe cap on huge sessions, or otherwise corrupt).
    * The session exists, so reuse listSessions metadata (title) instead of the
    * misleading "未找到". Reuses the same card-builder helpers (markdownDiv) as
@@ -4079,7 +4079,7 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
         }
       }
 
-      // L3: 校验通过后才写入
+      // 校验通过后才写入
       this.sessionStore.setSessionId(ctx.userId, agentKind, sessionIdArg, cwd);
 
       const {
@@ -4156,7 +4156,7 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
         pageResult = reader.listSessions(cwd, { limit: pageSize, offset: pageOffset });
       }
     } catch (err) {
-      // P1-15: 读取失败必须给用户可见反馈，而不是误导性的「没有 session 记录」
+      // 读取失败必须给用户可见反馈，而不是误导性的「没有 session 记录」
       const msg = err instanceof Error ? err.message : String(err);
       return { text: `读取 ${agentDisplayName(agentKind)} session 列表失败: ${msg}` };
     }
@@ -4234,7 +4234,7 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
       const prefetchedTitle = meta?.displayTitle;
       // aiTitle 不能单独作为"预取标题"键：若 displayTitle 缺失（理论上 opencode
       // info.title 非空但 export 无 user text），标题兜底是 summary，label 必须
-      // 是中性"会话摘要"而不是"最近输入"（Review R3 P2-1 边缘分支）。
+      // 是中性"会话摘要"而不是"最近输入"（Review 边缘分支）。
       const titleText = prefetchedTitle ?? (summaryIsPlaceholder ? '' : s.summary);
       const titleLabel = prefetchedTitle
         ? meta?.aiTitle
@@ -4437,7 +4437,7 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
       }
     }
 
-    // Pagination bar（W2.9 复用 paginationBar：safeOffset 已对齐页边界，
+    // Pagination bar（复用 paginationBar：safeOffset 已对齐页边界，
     // offset±pageSize 与原先 currentPage±1 的页码换算等价）
     if (totalPages > 1) {
       elements.push(
@@ -4480,14 +4480,14 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
       const value = args.slice(1).join(' ');
       try {
         const oldDefaultAgent = this.config.defaultAgent;
-        // P2-23：直写前若 pendingConfig 存在未保存差异，提示用户被丢弃的条数，
+        // 直写前若 pendingConfig 存在未保存差异，提示用户被丢弃的条数，
         // 避免静默清空导致用户在卡片上的修改无反馈丢失。差异必须在 setConfigValue
         // 之前计算——直写本身也会改变 config，不应计入「被丢弃的未保存修改」。
         const discarded = this.pendingConfig
           ? Object.keys(this.diffConfig(this.config, this.pendingConfig)).length
           : 0;
         this.config = setConfigValue(this.configPath, this.config, key, value);
-        // P1-6：直写路径与 config.save 卡片路径共用运行时传播（idleTimeout /
+        // 直写路径与 config.save 卡片路径共用运行时传播（idleTimeout /
         // clearRunners / syncAgentChoices / defaultAgent 切换）。key 经 mapAgentKey
         // 归一化，pi./codex./opencode./kimi. 命中 agents.* 判定；claude. 与
         // defaultAgent 不再漏判。

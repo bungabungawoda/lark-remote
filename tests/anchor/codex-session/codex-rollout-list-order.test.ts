@@ -1,5 +1,5 @@
 /**
- * Bug-mode anchor (Round 1): listCodexRollouts 必须返回全局最新 + 真实 total。
+ * Bug-mode anchor: listCodexRollouts 必须返回全局最新 + 真实 total。
  *
  * 验证什么行为：
  *   listCodexRollouts({ codexHome, cwd, limit }) 返回
@@ -16,15 +16,14 @@
  *   且没有 total 概念，router 把截断后长度当真实总数显示 → auto-resume
  *   恢复错会话、"/resume N" 第 21 条之后永远看不到。
  *
- * 依据（spec 原文）：
- *   - plan §1.2 根因："walkRolloutFiles 用 fs.readdirSync 逐层遍历从不排序……
+ *   "walkRolloutFiles 用 fs.readdirSync 逐层遍历从不排序……
  *     而 listCodexRollouts 在收集到 limit*2（41）条匹配后 break 提前退出。
  *     先 break 后排序 → 返回的是'任意子集中的最新 20 条'，不是全局最新 20 条"
- *   - plan §2.2 目标实现："index values → filter cwd → 按 mtimeMs desc 排序
+ *   "index values → filter cwd → 按 mtimeMs desc 排序
  *     → total = length"
- *   - plan §1.4 设计原则："必须先对全集建立全序再切片。任何在建立全序之前
+ *   "必须先对全集建立全序再切片。任何在建立全序之前
  *     的提前终止都必然错"
- *   - plan §4.2 测试验收："codex 单测：跨多日 fixture，断言返回全局最新 N
+ *   "codex 单测：跨多日 fixture，断言返回全局最新 N
  *     （与 readdir 顺序无关）、total 为真实全集数"
  *
  * 确定性复现策略：
@@ -134,7 +133,7 @@ describe('codex listCodexRollouts global-newest + total', () => {
     state.scriptedReaddir.set(day20Dir, day20Files);
     state.scriptedReaddir.set(day31Dir, [`rollout-${newestSessionId}.jsonl`]);
 
-    // ── Contract under test (plan §2.2) ─────────────────────────────────
+    // ── Contract under test ─────────────────────────────────
     const result = listCodexRollouts({
       codexHome: tmpDir,
       cwd: '/proj',

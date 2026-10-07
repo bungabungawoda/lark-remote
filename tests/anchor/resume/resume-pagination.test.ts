@@ -18,7 +18,7 @@ import {
   createStubConnector,
 } from '../../lib/bridge-stubs.js';
 /**
- * Anchor (A3): `/resume` 默认页大小 5，`/resume [N]` 的 N clamp 到 [1, 5]
+ * Anchor: `/resume` 默认页大小 5，`/resume [N]` 的 N clamp 到 [1, 5]
  *
  * 验证：
  * 1. `/resume`（不带 N）在 cwd 有 25 个 session 时，首屏列出 **5** 个会话
@@ -30,7 +30,6 @@ import {
  * 明确"现状默认 3 取消，首页直接给满一页"）；N=0 得到空列表用户无会话可点；
  * N>20 时第 21 个之后的会话永远不可见，分页失去意义。
  *
- * 依据：
  * "新增 RESUME_PAGE_SIZE = 5 常量。`/resume [agent] [N]`：N 作为页大小覆盖，
  * clamp 到 `[1, 5]`；默认 5（2026-08-02 由 20 调为 5，首页直接给满一页）。"
  */
@@ -47,7 +46,7 @@ function countResumeButtons(card: { body?: { elements?: CardElement[] } }): numb
   return buttons.filter((b) => b.behaviors?.[0]?.value?.cmd === 'resume.use').length;
 }
 
-describe('A3 /resume 默认页大小 5 + N clamp [1,5]', () => {
+describe('/resume 默认页大小 5 + N clamp [1,5]', () => {
   let tmpDir: string;
 
   beforeEach(() => {
@@ -87,7 +86,7 @@ describe('A3 /resume 默认页大小 5 + N clamp [1,5]', () => {
       defaultAgent: 'claude',
     });
 
-    // Real claude reader against the fixture; other agents stubbed (R2 shape).
+    // Real claude reader against the fixture; other agents stubbed.
     const registry = new SessionReaderRegistry();
     registry.register('claude', new ClaudeSessionReader({ projectsDir }));
     const stubReader = {

@@ -10,7 +10,7 @@ import { AppConfigSchema } from '../../../src/config/index.js';
 import type { AppConfig } from '../../../src/config/index.js';
 
 /**
- * Red Agent - Round 1 - Anchor (Bug 模式)
+ * Red Agent -- Anchor (Bug 模式)
  *
  * Target: reasoningEffort 运行时修改必须生效——
  *   1. Bridge.getAgentRunOptions() 必须为 codex 提取 reasoningEffort
@@ -22,7 +22,7 @@ import type { AppConfig } from '../../../src/config/index.js';
  * Spec basis: design.md "Codex 推理强度配置" — "存储在 agents.codex.reasoningEffort"
  *   + router config.set 切换模型时自动重置 reasoningEffort 的逻辑依赖运行时生效。
  *
- * Pyramid: L1 (unit) — 验证 getAgentRunOptions 返回值 + runner 参数传递
+ * Pyramid: unit level — 验证 getAgentRunOptions 返回值 + runner 参数传递
  */
 
 let baseConfig: AppConfig;
@@ -44,7 +44,7 @@ beforeEach(() => {
   });
 });
 
-describe('P1: reasoningEffort runtime propagation', () => {
+describe('reasoningEffort runtime propagation', () => {
   /**
    * 验证 Bridge.getAgentRunOptions() 为 codex 提取 reasoningEffort。
    * 缺失/错误：用户改推理强度后 bridge 不传新值，runner 用旧值。

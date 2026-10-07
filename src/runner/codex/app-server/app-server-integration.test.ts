@@ -309,7 +309,7 @@ describePosix('CodexAppServerRunner integration', () => {
   });
 
   it('anchors the session-key assumption: thread.id is the session key (main thread: session_meta.session_id === thread.id)', async () => {
-    // 验证行为（review P2-4）：写回 store / result 事件的 session 键取自
+    // 验证行为：写回 store / result 事件的 session 键取自
     // thread/start 响应的 thread.id（turn/started 通知同值）。该链路依赖主线程
     // 假设 thread.id === session_meta.session_id（session reader 按
     // session_meta.session_id 定位文件）；forked/subagent 场景二者会分叉
@@ -339,7 +339,7 @@ describePosix('CodexAppServerRunner integration', () => {
     await runner.dispose();
   });
 
-  it('reports the newly created thread id when turn/start fails after thread/start (review P3-10)', async () => {
+  it('reports the newly created thread id when turn/start fails after thread/start', async () => {
     // 验证行为：thread/start 成功、turn/start 失败时，error result 的 session_id
     // 必须带上新线程 id（而非 opts.sessionId ?? ''），否则下一条消息会再开一个
     // 孤儿线程。回归锚点：catch 曾用 opts.sessionId ?? ''，新线程 id 丢失。
@@ -737,7 +737,7 @@ describePosix('CodexAppServerRunner integration', () => {
     // （fileSystem.entries=[] + network.enabled=false），而不是把用户已勾选的
     // 条目作为授予发回服务端。
     // 缺失后果：用户勾选若干权限后点「❌ 拒绝」，服务端实际收到的是「授予所选
-    // 权限」，拒绝形同虚设（2026-08-12 review 发现）。
+    // 权限」，拒绝形同虚设（2026-08-12 ）。
     const cwd = join(tmpDir, 'workspace');
     mkdirSync(cwd, { recursive: true });
     const requestLog = join(tmpDir, 'perm-requests.jsonl');

@@ -249,7 +249,7 @@ export class ApprovalCoordinator {
 
     const selected = new Set(q.selected ?? []);
     if (q.multiSelect) {
-      // review P2-1：多选切换按钮同一 nonce 重复投递（双击/飞书重投递）只应
+      // 多选切换按钮同一 nonce 重复投递（双击/飞书重投递）只应
       // toggle 一次，否则勾选会被二次 toggle 抵消。单选用例的重复防护在
       // respondQuestionAnswers（提交即幂等，选中是 set 语义）。
       this.assertFreshNonce(ctx.requestId, ctx.nonce);
@@ -300,7 +300,7 @@ export class ApprovalCoordinator {
   }
 
   /**
-   * AskUserQuestion 自定义答案（Other，review P3-4）：自由文本直接作为该
+   * AskUserQuestion 自定义答案（Other）：自由文本直接作为该
    * 单选问题的答案。与单选 toggle 同语义：全部问题答完自动提交。
    */
   async answerCustom(
@@ -561,7 +561,7 @@ export class ApprovalCoordinator {
         }`,
       );
       // 响应失败不是「正常过期」：状态升级为 failed，避免误判为已正常通知
-      // server（spec R1：responder 抛错时状态置 failed）。
+      // server（spec responder 抛错时状态置 failed）。
       tracked.state = 'failed';
       // 兜底：cancel 未能送达时主动中断 turn，避免 server 无限等待审批响应。
       void this.interruptTurn().catch((interruptErr: unknown) => {

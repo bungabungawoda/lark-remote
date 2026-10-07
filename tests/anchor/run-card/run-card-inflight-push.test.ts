@@ -3,7 +3,7 @@ import type { CardStreamController } from '@larksuite/channel';
 import { RunCardSession } from '../../../src/card/run-card-session.js';
 
 /**
- * PROBE (P1-3 flush-in-flight push 不丢内容) — 第 5 轮 review 发现的覆盖缺口：
+ * PROBE (flush-in-flight push 不丢内容) — 第 5 轮 覆盖缺口：
  * 当一次 flush 正在 in-flight（await updateCard 未 resolve）时，新 push 调
  * scheduleFlush 会被 flushInFlight 守卫挡掉（不调度新 timer）。该 push 的内容
  * 已 reduce 进 this.state，但当前 in-flight flush 可能已渲染旧 state。
@@ -13,7 +13,7 @@ import { RunCardSession } from '../../../src/card/run-card-session.js';
  * （finish 是最终一致性的保证）。即：flush-in-flight 窗口内事件至多延迟到
  * finish 才上卡，不是丢失。
  */
-describe('RunCardSession flush-in-flight push (P1-3 anchor)', () => {
+describe('RunCardSession flush-in-flight push', () => {
   let controller: CardStreamController;
 
   beforeEach(() => {

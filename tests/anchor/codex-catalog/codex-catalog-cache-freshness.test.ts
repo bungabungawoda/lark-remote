@@ -5,7 +5,7 @@ import os from 'node:os';
 import { mockLogger } from '../../lib/logger-mock.js';
 
 /**
- * Red Agent - Round 13 - Anchor (P3-4, review finding → anchor)
+ * Red Agent -- Anchor (review finding → anchor)
  *
  * Target: catalog 模式下修改 models.json（内容 + mtime 变化）后，getCodexCatalogModels
  * 必须重新执行 `codex debug models`，不能继续返回 1h TTL 内的旧缓存——否则卡片最长 1 小时
@@ -13,7 +13,6 @@ import { mockLogger } from '../../lib/logger-mock.js';
  *
  * Importance: models.json 是用户经常手改的文件；卡片列表过期会误导选择。
  *
- * Spec basis: P3-4（review 发现）。
  */
 
 const { mockSpawnSync } = vi.hoisted(() => ({ mockSpawnSync: vi.fn() }));

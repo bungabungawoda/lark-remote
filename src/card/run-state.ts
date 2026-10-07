@@ -29,7 +29,7 @@ export interface ToolEntry {
   name: string;
   input: unknown;
   /**
-   * P3-6: cached parse of `input` (the truncated string) into a record, so
+   * cached parse of `input` (the truncated string) into a record, so
    * `tool-render.ts`'s `asRecord` does not re-`JSON.parse` on every render.
    * Computed once at store time in `reduceAssistantEvent` from the SAME
    * truncated string that the old per-render `asRecord` parsed — so a
@@ -140,7 +140,7 @@ export interface RunState {
   /** 压缩前上下文水位（codex compact 卡展示「压缩前 X → 压缩后 Y」）。 */
   compactPreContextLength?: number;
   /**
-   * 待审批请求列表（app-server 模式，review P2-3）。同一 turn 内并发多个审批
+   * 待审批请求列表（app-server 模式）。同一 turn 内并发多个审批
    * 时全部渲染，避免后到者顶掉先到者的按钮（单槽会丢 UI，只能等超时 cancel）。
    */
   approvals?: Array<{ view: ApprovalView; expired?: boolean }>;
@@ -608,7 +608,7 @@ function reduceAssistantEvent(state: RunState, event: AgentEvent): RunState {
         footer: 'streaming',
       };
     } else {
-      // P3-6: parse the truncated stored string ONCE here (not on every render)
+      // parse the truncated stored string ONCE here (not on every render)
       // and cache the result on `parsedInput`. tool-render's asRecord then hits
       // the object branch with zero parsing. The parse uses the SAME truncated
       // string as the old per-render parse, so truncation-broken JSON still
@@ -680,7 +680,7 @@ function mergeToolUse(existing: ToolEntry, incoming: ToolEntry): ToolEntry {
 }
 
 /** Handle tool_result content blocks (user message with tool results).
- *  P3-4: rebuild ONLY the block matching `tool_use_id`, copying every other
+ *  rebuild ONLY the block matching `tool_use_id`, copying every other
  *  block by reference. The old `.map()` recreated all block objects per
  *  tool_result (O(N) allocations on the run-card hot path). Footer still
  *  advances to 'streaming' on every content block (parity with old behavior);
@@ -843,7 +843,7 @@ function stringifyUnknown(value: unknown): string {
 }
 
 /**
- * P3-6: parse a (possibly truncated) string into a record, mirroring what
+ * parse a (possibly truncated) string into a record, mirroring what
  * `tool-render.ts`'s `asRecord` did on every render. Returns `null` when the
  * string is empty, non-JSON, or parses to a non-object — so a truncation-broken
  * JSON yields `null` exactly as the old per-render parse did. Computed once at

@@ -47,15 +47,14 @@ const BUNDLED_FIXTURE = makeCatalog([
 ]);
 
 // ---------------------------------------------------------------------------
-// Config card codex reasoningEffort (Round 6)
+// Config card codex reasoningEffort
 // ---------------------------------------------------------------------------
 
 /**
- * Red Agent - Round 6 - Anchor
+ * Red Agent -- Anchor
  *
  * Target: /config 卡片 codex 分区应显示"推理强度"下拉
  *
- * Spec basis: Codex OpenAI provider + config extension 方案 §5
  */
 
 function extractConfigFieldKeys(card: object): string[] {
@@ -205,11 +204,11 @@ describe('Config card codex reasoningEffort - anchor', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Config card effort follows model (Round 8)
+// Config card effort follows model
 // ---------------------------------------------------------------------------
 
 /**
- * Red Agent - Round 8 - Anchor（用户验收：卡片选模型后推理强度下拉按模型实际支持更新）
+ * Red Agent -- Anchor（用户验收：卡片选模型后推理强度下拉按模型实际支持更新）
  *
  * Target: /config 卡片选定模型后，推理强度下拉必须立即变为该模型实际支持的档位
  *

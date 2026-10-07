@@ -35,7 +35,7 @@ export interface BashRunner {
 export class BashProcessRunner implements BashRunner {
   private currentProcess: ChildProcess | null = null;
   /**
-   * 背压高水位/低水位（P1-4 层④，参照 jsonl-stream.ts 的 pauseThreshold/
+   * 背压高水位/低水位（层④，参照 jsonl-stream.ts 的 pauseThreshold/
    * resumeThreshold）。stdout/stderr 队列超过高水位时 pause 流（内存有界），
    * 消费者 drain 到低水位后 resume。构造可注入以便测试用小水位。
    */
@@ -59,7 +59,7 @@ export class BashProcessRunner implements BashRunner {
     if (this.queueLowWater > this.queueHighWater) {
       this.queueLowWater = this.queueHighWater;
     }
-    // `!` bash 无协议停止通道（§3.3）：posix 走组杀（与原 ProcessStopper 同实现），
+    // `!` bash 无协议停止通道：posix 走组杀（与原 ProcessStopper 同实现），
     // win32 优雅段显式跳过后树杀。
     this.terminator = opts?.terminator ?? createTerminator({ graceMs: stopGraceMs, agent: 'bash' });
     this.shell = opts?.shell ?? createShellBackend();
@@ -93,7 +93,7 @@ export class BashProcessRunner implements BashRunner {
         },
       });
     } catch (err) {
-      // win32 Git Bash 缺失（§7.2）：同步抛出，转成明确错误输出而非悬死。
+      // win32 Git Bash 缺失：同步抛出，转成明确错误输出而非悬死。
       if (err instanceof ShellUnavailableError) {
         getLogger().warn(`[bash-runner] shell unavailable: ${err.message}`);
         yield { type: 'stderr', content: `${err.message}\n` };
@@ -111,7 +111,7 @@ export class BashProcessRunner implements BashRunner {
     getLogger().info(
       `[bash-runner] spawn pid=${proc.pid} command="${command.slice(0, 50)}..." cwd=${opts.cwd}`,
     );
-    // P1-22: register with the process-level exit dispatcher while the process
+    // register with the process-level exit dispatcher while the process
     // is alive — bridge exit/restart (SIGINT/SIGTERM/exit) then kills the whole
     // group via cleanupOnExit instead of orphaning `!` processes.
     registerExitCleanup(this);
@@ -121,7 +121,7 @@ export class BashProcessRunner implements BashRunner {
     // for logging, one for queueing) -- both fired on the same chunk.
     const stdoutQueue: string[] = [];
     const stderrQueue: string[] = [];
-    // 背压状态（P1-4 层④）：队列超高水位 → pause 对应流；drain 到低水位 → resume。
+    // 背压状态（层④）：队列超高水位 → pause 对应流；drain 到低水位 → resume。
     let stdoutPaused = false;
     let stderrPaused = false;
     const maybePauseStdout = (): void => {
@@ -252,7 +252,7 @@ export class BashProcessRunner implements BashRunner {
   }
 
   /**
-   * P1-22: called by the process-level exit dispatcher on SIGINT/SIGTERM/exit.
+   * called by the process-level exit dispatcher on SIGINT/SIGTERM/exit.
    * Kills the whole process group (leader + background children) via
    * Terminator, matching agent-runner cleanupOnExit semantics.
    */

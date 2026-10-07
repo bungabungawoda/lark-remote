@@ -14,7 +14,7 @@ import { RunCardSession } from '../../../src/card/run-card-session.js';
 import { makeStreamCardConnector } from '../../../tests/lib/card-stubs.js';
 
 /**
- * W3.2 单源：本文件原先 5 份 streamCard/updateCard 字面量收敛为共享工厂
+ * 单源：本文件原先 5 份 streamCard/updateCard 字面量收敛为共享工厂
  * （tests/lib/card-stubs）的组合封装。capture 走 controllerUpdate 回调，
  * updateCard 捕获与 producer 后 throw 走工厂参数。
  */
@@ -65,10 +65,10 @@ import { expectNoV1ActionContainer } from '../../lib/card-view.js';
  *
  * 缺失/错误后果：每个 agent 事件多一次全卡 JSON.stringify（enforceCardBudget
  * 内部第 51 行 `JSON.stringify(card)` 即使未超预算也要全量序列化），流式
- * CPU -20~33% 浪费（§P1-1 测得），且与
+ * CPU -20~33% 浪费，且与
  * card-budget.ts:3-8 文件头注释"不适用于 run-renderer 的流式卡片"矛盾。
  *
- * 依据：§P1-1 + src/card/card-budget.ts:3-8 注释。
+ * src/card/card-budget.ts:3-8 注释。
  */
 describe('RunCardSession budget skip', () => {
   it('test_anchor_run_card_skips_enforce_card_budget', async () => {
@@ -101,7 +101,7 @@ describe('RunCardSession budget skip', () => {
 // ---------------------------------------------------------------------------
 
 /**
- * ANCHOR (P3) — RunCardSession start()/settle() 也跳过 enforceCardBudget。
+ * ANCHOR — RunCardSession start()/settle() 也跳过 enforceCardBudget。
  *
  * 意图（必须完整保留）：
  * ① 补齐测试覆盖对称性：run-card-skip-budget 已验证 updateCard（push）
@@ -112,7 +112,7 @@ describe('RunCardSession budget skip', () => {
  *    重新经冗余的 enforceCardBudget（静态裁剪层对 run 卡是 misfit），浪费
  *    CPU 且可能误裁剪 run 卡的 thinking/tool panels。
  *
- * 依据：§P1-1 + renderRunCard 3 层 degraded/extreme
+ * renderRunCard 3 层 degraded/extreme
  * fallback 自带预算保护。
  */
 describe('RunCardSession start/settle budget skip (anchor)', () => {
@@ -173,13 +173,13 @@ describe('RunCardSession start/settle budget skip (anchor)', () => {
 });
 
 // ---------------------------------------------------------------------------
-// P1-3: RunCardSession push coalescing
+// RunCardSession push coalescing
 // ---------------------------------------------------------------------------
 
 /**
- * ANCHOR (P1-3 push 合批核心契约) — RunCardSession.push 当前每事件一次
+ * ANCHOR (push 合批核心契约) — RunCardSession.push 当前每事件一次
  * render + controller.update（run-card-session.ts:54-57）。text 流式 50 事件/秒
- * = 50 次 render+patch/秒，是流式 CPU 主要来源（§P1-3）。
+ * = 50 次 render+patch/秒，是流式 CPU 主要来源。
  *
  * 目标行为（必须完整保留）：
  * push 加 50–100ms coalescer —— 窗口内连续多个事件只触发一次 render +
@@ -195,11 +195,11 @@ describe('RunCardSession start/settle budget skip (anchor)', () => {
  * - 若合批但丢内容：最终 update 缺少部分 text delta（延迟 flush 漏 reduce 的 state）。
  * - 若合批但永不 flush：终态前内容停留在第一帧（窗口未到期）。
  *
- * 依据：§P1-3「更短路径：在 push 加 50–100ms coalescer：
+ * 「更短路径：在 push 加 50–100ms coalescer：
  * 一个 tick/microtask 内多个事件只触发一次 renderCard + controller.update」。
- * 约束：finish() 必须立即 flush（R2）；最后 push 后残留窗口必须 flush（R3）。
+ * 约束：finish() 必须立即 flush；最后 push 后残留窗口必须 flush。
  */
-describe('RunCardSession push coalescing (P1-3)', () => {
+describe('RunCardSession push coalescing', () => {
   let updates: object[];
 
   beforeEach(() => {
@@ -254,7 +254,7 @@ describe('RunCardSession push coalescing (P1-3)', () => {
   });
 
   /**
-   * ANCHOR (P2-1 in-flight flush 期间到达的事件必须重新调度) — scheduleFlush
+   * ANCHOR (in-flight flush 期间到达的事件必须重新调度) — scheduleFlush
    * 用 `if (this.flushTimer || this.flushInFlight) return` 守卫。生产 SDK 的
    * controller.update 走 throttle + setTimeout 异步 resolve（非微任务，§9.20），
    * 当一次 flush 正在 await update 期间（flushInFlight=true）有新 push 到达：
@@ -323,7 +323,7 @@ describe('RunCardSession push coalescing (P1-3)', () => {
  * 复刻 normal 路径的产物字节，而不是近似。
  *
  * 意图（必须完整保留）：
- * P1-2 第二轮（2026-07-31）把估算从「字符数/字节数 × 转义因子 + 拍脑袋常数」改为
+ * 第二轮（2026-07-31）把估算从「字符数/字节数 × 转义因子 + 拍脑袋常数」改为
  * **影子测量**：骨架（schema/header/statusRow/summary/按钮）小对象实测，块内容经
  * 与渲染完全相同的变换（truncateUtf8 截断 + markdownDiv 的 escapeMarkdown +
  * JSON.stringify）精确测量。CJK（3 字节/字符无转义）与 ASCII 高转义（\n/" 反斜杠
@@ -342,7 +342,7 @@ describe('RunCardSession push coalescing (P1-3)', () => {
  * - 估算失真 → CJK 长会话每次事件多付「建完整卡 + stringify + 丢弃」（低估），
  *   或本可完整展示的卡被误降级丢早期 thinking/tool（高估）。
  *
- * 依据：P1-2 第一性原理分析（2026-07-31）——「不要为 CJK 特设逻辑，让估算与
+ * 依据：第一性原理分析（2026-07-31）——「不要为 CJK 特设逻辑，让估算与
  * 测量对齐，CJK 自然正确」。
  */
 type AnyBlock = Record<string, unknown>;
@@ -515,7 +515,7 @@ describe('renderRunCard budget estimate = shadow measurement', () => {
 });
 
 // ---------------------------------------------------------------------------
-// renderRunCard budget estimate (A2+A3) — large state degrades correctly
+// renderRunCard budget estimate — large state degrades correctly
 // ---------------------------------------------------------------------------
 
 /**
@@ -523,7 +523,7 @@ describe('renderRunCard budget estimate = shadow measurement', () => {
  * 必须走降级路径，保证产物 ≤28KB 且含 omission hint。
  *
  * 意图（必须完整保留）：
- * P1-2 spec 要求 renderRunCard 在构建完整卡对象之前先用廉价估算预测是否超
+ * renderRunCard 在构建完整卡对象之前先用廉价估算预测是否超
  * 28KB 预算，明显超预算直接跳过完整卡构建走 degraded。本 anchor 不断言"是否
  * 先估后建"（实现细节，行为层无法观测），而是断言**降级行为正确**——这是无论
  * 优化前后都必须成立的行为契约：
@@ -538,13 +538,13 @@ describe('renderRunCard budget estimate = shadow measurement', () => {
  * - 若绿用 `return True` 或硬编码跳过降级作弊，联合断言（≤28KB + 含 omission
  *   hint + 不含早期 thinking）会露馅：要么超 28KB，要么缺 omission hint。
  *
- * 依据：P1-2 spec（renderRunCard 预算估算优化）。
+ * 依据：（renderRunCard 预算估算优化）。
  *
  * 构造：7 个大 thinking（每个 ~2.5KB）+ 5 个大 tool output（每个 ~3.5KB）
  * + 大文本（~8KB），完整卡远超 28KB，参照 run-renderer.test.ts 的
  * `degrades thinking: keeps last 2` fixture 构造方式。
  */
-describe('renderRunCard budget estimate (A2+A3)', () => {
+describe('renderRunCard budget estimate', () => {
   it('test_anchor_run_card_budget_estimate_degrades_large_state', () => {
     const state: RunState = {
       runId: 'run-budget-estimate',
@@ -638,7 +638,7 @@ describe('renderRunCard budget estimate (A2+A3)', () => {
  * - 这是 renderRunCard 的最终安全网失效，无更深层兜底。
  *
  * 依据：飞书卡片单卡 28KB 上限（CARD_BUDGET_BYTES）；extreme fallback 必须保证
- * 任何输入下产物 ≤28KB。飞书卡片表格限制（ErrCode 11310）+ P1-2 spec
+ * 任何输入下产物 ≤28KB。飞书卡片表格限制（ErrCode 11310）+spec
  * 「不得破坏卡片 ≤28KB 保证」。
  *
  * 构造：3 个 5000-`\` text（间插 tool 阻止合并，extreme 滤掉早期 tool 后合并截 5000）

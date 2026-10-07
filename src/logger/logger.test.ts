@@ -55,7 +55,7 @@ describe('Logger', () => {
     const content = readContent(files[0]);
     expect(content).toContain('[INFO]');
     expect(content).toContain('hello world');
-    // P2-19②: timestamp is now a LOCAL ISO-with-offset string (not UTC 'Z'),
+    // timestamp is now a LOCAL ISO-with-offset string (not UTC 'Z'),
     // so its calendar date matches the daily directory date. The local date
     // for 2026-06-17T12:00:00.000Z in this timezone is 2026-06-17 (the
     // directory above), so the timestamp line must start with that local date

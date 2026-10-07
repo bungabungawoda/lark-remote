@@ -185,7 +185,7 @@ describe('QueueManager', () => {
     await new Promise((r) => setTimeout(r, 50));
   });
 
-  // P3-5: index-consistency regression anchor. A `Map<messageId, QueuedTask>`
+  // index-consistency regression anchor. A `Map<messageId, QueuedTask>`
   // index must stay in sync with the ordered `queuedTasks` array across every
   // mutation path (enqueue / task-start removal / cancel / immediate / edit).
   // Any stale index entry would make `getQueuedTask`, `removeFromQueue`,

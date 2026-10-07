@@ -57,7 +57,7 @@ type TestCard = {
 };
 
 /** 递归收集卡片正文文本（含 column_set 内嵌 div/按钮的 text）。 */
-// W3.7：三处局部递归校验函数（原 checkColumnTags ×2 / checkElements ×3 /
+// 三处局部递归校验函数（原 checkColumnTags ×2 / checkElements ×3 /
 // checkAll ×1 逐字重复）提升到文件顶层单源。
 
 /** 递归断言辅助：收集每个 column_set 下 tag !== 'column' 的违规路径。 */
@@ -1495,7 +1495,7 @@ describe('CommandRouter', () => {
     expect(allButtons[0].cmd).toBe('resume.use');
   });
 
-  it('/resume use card action sets session id for a real session (P1-5)', async () => {
+  it('/resume use card action sets session id for a real session', async () => {
     const projectsDir = path.join(tmpDir, 'claude-projects');
     const projDir = path.join(projectsDir, encodedProjectDir(tmpDir));
     fs.mkdirSync(projDir, { recursive: true });
@@ -1511,11 +1511,11 @@ describe('CommandRouter', () => {
     expect(sessionStore.getSessionId('user1')).toBe('real-session');
   });
 
-  it('/resume use card action does not set session id when session missing (P1-5)', async () => {
+  it('/resume use card action does not set session id when session missing', async () => {
     const { router, sessionStore } = createRouter();
     sessionStore.setCwd('user1', fs.realpathSync(tmpDir));
     await router.handleCardAction({ cmd: 'resume.use', sessionId: 'sid-xyz' }, ctx);
-    // P1-5：校验失败不得污染 sessionStore（旧实现会写入幽灵 sessionId）
+    // 校验失败不得污染 sessionStore（旧实现会写入幽灵 sessionId）
     expect(sessionStore.getSessionId('user1')).toBeUndefined();
   });
 
@@ -1730,7 +1730,6 @@ describe('CommandRouter', () => {
     // 验证：/resume 卡片从 session content usage 透传 contextLimit，渲染
     // "Context - X (Y%)"（resume 是独立于 Run 卡片的用户可见路径）。
     // 缺失/错误会导致：恢复会话时看不到水位，只有完成卡能看到。
-    // 依据：spec 摘要第 2 条（卡片统计输出百分比）。
     const codexReadSpy = vi.fn(() => ({
       events: [{ type: 'text', content: 'codex session tail' }],
       usage: {
@@ -1933,7 +1932,7 @@ describe('CommandRouter', () => {
     });
 
     it('test_anchor_auto_resume_card_kimi_acp_has_compact_button', async () => {
-      // 验证什么：kimi acp 模式的自动恢复卡渲染 resume.compact 按钮（§6.2-2 能力探测）。
+      // 验证什么：kimi acp 模式的自动恢复卡渲染 resume.compact 按钮（能力探测）。
       // hasRunCompact 鸭子判断：kimi acp runner 有 runCompact → 按钮出现。
       const dir = path.join(tmpDir, 'dir-kimi');
       fs.mkdirSync(dir, { recursive: true });
@@ -1977,7 +1976,7 @@ describe('CommandRouter', () => {
 
     it('test_anchor_auto_resume_card_kimi_cli_has_no_compact_button', async () => {
       // 验证什么：kimi cli 模式（runner 无 runCompact）不渲染 resume.compact 按钮。
-      // hasRunCompact 返回 false → 无按钮（§6.2-2 能力探测：cli 模式无此能力）。
+      // hasRunCompact 返回 false → 无按钮（能力探测：cli 模式无此能力）。
       const dir = path.join(tmpDir, 'dir-kimi-cli');
       fs.mkdirSync(dir, { recursive: true });
       const kimiReader: AgentSessionReader = {
@@ -3106,7 +3105,7 @@ describe('CommandRouter', () => {
         nonce: 'nonce-q-2',
       });
 
-      // review P3-4：自定义答案（Other）走 input_value → text
+      // 自定义答案（Other）走 input_value → text
       const resp3 = await router.handleCardAction(
         {
           cmd: 'approval.answerCustom',
@@ -3281,7 +3280,7 @@ describe('CommandRouter', () => {
     expect(cardStr).not.toContain('claude.binary');
   });
 
-  // P0 Config CardKit 2.0 行为测试（2026-07-02）
+  // Config CardKit 2.0 行为测试（2026-07-02）
   // 注意：config.toggle/set/input 只改内存 pendingConfig，不写盘
   // save 才一次性写盘，cancel 清空 pendingConfig
 
@@ -3448,7 +3447,7 @@ describe('CommandRouter', () => {
     expect(router.pendingConfig).toBeNull();
   });
 
-  it('config.save hot-pushes kimi permissionMode via syncActiveApprovalModes (§P5)', async () => {
+  it('config.save hot-pushes kimi permissionMode via syncActiveApprovalModes', async () => {
     const bridge = createMockBridge();
     const { router } = createRouter({ bridge });
 
@@ -3461,7 +3460,7 @@ describe('CommandRouter', () => {
     expect(bridge.syncActiveApprovalModes).toHaveBeenCalled();
   });
 
-  it('config.save hot-pushes opencode mode via syncActiveApprovalModes (§P5)', async () => {
+  it('config.save hot-pushes opencode mode via syncActiveApprovalModes', async () => {
     const bridge = createMockBridge();
     const { router } = createRouter({ bridge });
 
@@ -3474,7 +3473,7 @@ describe('CommandRouter', () => {
     expect(bridge.syncActiveApprovalModes).toHaveBeenCalled();
   });
 
-  it('/s shows the hot-updated approval mode after runner.updateApprovalMode (§P5)', async () => {
+  it('/s shows the hot-updated approval mode after runner.updateApprovalMode', async () => {
     let extras: Record<string, string> = { mode: 'acp', permissionMode: 'manual' };
     const runner: Runner = {
       isRunning: false,
@@ -3962,9 +3961,9 @@ describe('/active card pagination', () => {
   });
 });
 
-// ========== ANCHOR TESTS FOR P0 BUGS ==========
+// ========== ANCHOR TESTS FORBUGS ==========
 
-describe('P0: /active card must use CardKit 2.0 (not 1.x action container)', () => {
+describe('/active card must use CardKit 2.0 (not 1.x action container)', () => {
   it('test_anchor_active_card_no_v1_action_container', async () => {
     // Create a real bridge that we can mock
     const sessionStore = new SessionStore();
@@ -4216,11 +4215,11 @@ describe('config switch agent sends Resume card', () => {
 });
 
 // ===========================================================================
-// W2.1 命令名单一致性（防再漂移）：直返/immediate/审批 spec 三份知识共享
+// 命令名单一致性（防再漂移）：直返/immediate/审批 spec 三份知识共享
 // 同一命令名来源。历史上四份拷贝曾两次漂移（order.textInput 漏 immediate、
 // answer 家族漏直返），此测试钉住「单一事实源 + 清单间包含关系」。
 // ===========================================================================
-describe('W2.1 command list consistency (direct-return / immediate / approval specs)', () => {
+describe('command list consistency (direct-return / immediate / approval specs)', () => {
   it('direct-return list is a subset of the immediate list', () => {
     for (const cmd of DIRECT_RETURN_CMDS) {
       expect(isImmediateAction(cmd), `direct-return cmd '${cmd}' must be immediate`).toBe(true);

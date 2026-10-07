@@ -410,7 +410,7 @@ describe('ClaudeRunner (long-lived interactive session)', () => {
   });
 
   it('test_anchor_accept_all_does_not_auto_approve_ask_user_question', async () => {
-    // review P1：允许所有只放行工具权限，不能把 AskUserQuestion 也空 answers 自动放行。
+    // 允许所有只放行工具权限，不能把 AskUserQuestion 也空 answers 自动放行。
     createMockClaude({ MOCK_SCENARIO: 'approval-then-question' });
     const runner = makeRunner({ permissionMode: 'default' });
     const events: AgentEvent[] = [];
@@ -442,7 +442,7 @@ describe('ClaudeRunner (long-lived interactive session)', () => {
   });
 
   it('test_anchor_respond_permission_unknown_request_id_dropped', async () => {
-    // review P2-2：陈旧 requestId（与 control_cancel 竞态）不得回写空 updatedInput。
+    // 陈旧 requestId（与 control_cancel 竞态）不得回写空 updatedInput。
     const stdinFile = path.join(tmpDir, 'stdin.txt');
     createMockClaude({ MOCK_SCENARIO: 'approval', MOCK_RECORD_STDIN: stdinFile });
     const runner = makeRunner({ permissionMode: 'default' });
@@ -461,7 +461,7 @@ describe('ClaudeRunner (long-lived interactive session)', () => {
   });
 
   it('test_anchor_unknown_control_subtype_denied_to_avoid_hang', async () => {
-    // review P3-1：未知 control_request subtype 必须 deny 兜底，否则 claude
+    // 未知 control_request subtype 必须 deny 兜底，否则 claude
     // 等待响应而 turn 永挂（无审批卡、无超时）。
     createMockClaude({ MOCK_SCENARIO: 'unknown-subtype' });
     const runner = makeRunner({ permissionMode: 'default' });
@@ -474,7 +474,7 @@ describe('ClaudeRunner (long-lived interactive session)', () => {
   });
 
   it('test_anchor_pre_init_events_dropped', async () => {
-    // review P3-3：--resume 重放不仅含旧 result，还可能有 init 前的其他事件，
+    // --resume 重放不仅含旧 result，还可能有 init 前的其他事件，
     // 一律丢弃，避免把历史内容混进当前卡片。
     createMockClaude({ MOCK_SCENARIO: 'pre-init-assistant' });
     const runner = makeRunner();
@@ -493,7 +493,7 @@ describe('ClaudeRunner (long-lived interactive session)', () => {
   });
 
   it('test_anchor_duplicate_question_text_denied', async () => {
-    // review P3-2：answers 以问题文本为 key，重复文本会互相覆盖——协议层
+    // answers 以问题文本为 key，重复文本会互相覆盖——协议层
     // 直接拒绝该请求（解析失败同款 deny 兜底），不把坏卡片上抛给用户。
     createMockClaude({ MOCK_SCENARIO: 'question-dup' });
     const runner = makeRunner({ permissionMode: 'default' });
@@ -506,7 +506,7 @@ describe('ClaudeRunner (long-lived interactive session)', () => {
   });
 
   it('test_anchor_question_without_options_denied', async () => {
-    // review P3-2：零选项问题无法作答（多选连自定义答案都没有），解析失败
+    // 零选项问题无法作答（多选连自定义答案都没有），解析失败
     // 直接 deny 兜底，不把坏卡片上抛给用户。
     createMockClaude({ MOCK_SCENARIO: 'question-no-options' });
     const runner = makeRunner({ permissionMode: 'default' });
@@ -519,7 +519,7 @@ describe('ClaudeRunner (long-lived interactive session)', () => {
   });
 
   it('test_anchor_auto_approved_request_entry_released', async () => {
-    // review P2-1：autoApprove 路径写完响应后必须释放 pendingToolInputs 条目，
+    // autoApprove 路径写完响应后必须释放 pendingToolInputs 条目，
     // 否则长会话（允许所有）下 Map 无界增长；释放后对同 requestId 的响应被丢弃。
     const stdinFile = path.join(tmpDir, 'stdin.txt');
     createMockClaude({
@@ -550,7 +550,7 @@ describe('ClaudeRunner (long-lived interactive session)', () => {
   });
 
   it('test_anchor_parse_failed_question_entry_released', async () => {
-    // review P2-1：AskUserQuestion 解析失败 deny 后同样释放条目，避免泄漏。
+    // AskUserQuestion 解析失败 deny 后同样释放条目，避免泄漏。
     const stdinFile = path.join(tmpDir, 'stdin.txt');
     createMockClaude({
       MOCK_SCENARIO: 'question-dup',
@@ -606,7 +606,7 @@ describe('ClaudeRunner (long-lived interactive session)', () => {
       // consume
     }
     // 第二条消息带着写回的 sessionId 来：进程当前会话与之相同 → 必须复用，
-    // 不得因「spawn 请求值 '' ≠ 's1'」误判切换而杀进程重启（review P0 回归）。
+    // 不得因「spawn 请求值 '' ≠ 's1'」误判切换而杀进程重启（回归）。
     const firstEvents: AgentEvent[] = [];
     for await (const ev of runner.run('second', { cwd: tmpDir, sessionId: 's1' })) {
       firstEvents.push(ev);

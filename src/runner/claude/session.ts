@@ -80,7 +80,7 @@ export interface PermissionResult {
 
 /**
  * ClaudeSession extends SpawningRunner 复用其 spawn/pid 文件/killOrphan/
- * Terminator/SpawnHeartbeat/退出分发器机制（P1-1/P1-10/P1-11 契约保持），
+ * Terminator/SpawnHeartbeat/退出分发器机制（契约保持），
  * 但 run() 覆盖为「长驻 + 按 turn 消费」：进程跨 turn 存活，turn 结束以
  * stream-json result 事件（非 compact）为界，而不是进程退出。
  */
@@ -170,7 +170,7 @@ export class ClaudeSession extends SpawningRunner {
       // 或 --resume 目标会话）。比较进程当前 session（init 报告值）而非 spawn
       // 请求值：bridge 会把 init 的 session_id 写回 SessionStore，第二条消息
       // 带着它来；若拿 spawn 请求值（''）比较，每条消息都会误判切换、杀进程
-      // 重启，长驻设计失效（2026-08-16 review P0）。
+      // 重启，长驻设计失效（2026-08-16）。
       if (this.isRunning && this.sessionId !== (opts.sessionId ?? '')) {
         getLogger().info(
           `[${this.logTag}] session mismatch: process=${this.sessionId || '(fresh)'} ` +
@@ -223,7 +223,7 @@ export class ClaudeSession extends SpawningRunner {
       );
       return;
     }
-    // review P2-2：requestId 不在待审批表（已 control_cancel / 进程回收）时
+    // requestId 不在待审批表（已 control_cancel / 进程回收）时
     // 丢弃响应，不能以空 updatedInput allow（claude 会拿空输入执行工具）。
     if (!this.pendingToolInputs.has(requestId)) {
       getLogger().warn(
@@ -259,7 +259,7 @@ export class ClaudeSession extends SpawningRunner {
     answers: Record<string, string | string[]>,
   ): Promise<void> {
     if (!this.isRunning) return;
-    // review P2-2：未知 requestId 时不能回写缺原始 questions 的 answers
+    // 未知 requestId 时不能回写缺原始 questions 的 answers
     // （官方要求 updatedInput 必须包含原始 questions）。
     if (!this.pendingToolInputs.has(requestId)) {
       getLogger().warn(
@@ -358,7 +358,7 @@ export class ClaudeSession extends SpawningRunner {
    */
   private async startProcess(opts: SpawnOptions): Promise<string | null> {
     if (this.isRunning) {
-      // review P3-4：复用进程（跨 turn 长驻）时清掉上一轮的空闲回收 timer——
+      // 复用进程（跨 turn 长驻）时清掉上一轮的空闲回收 timer——
       // 否则长 turn 中它会空转触发一次（回调因 turnActive 空转返回，无害但
       // 多余）；新一轮结束后的 armIdleTimer 会重新武装。
       this.clearIdleTimer();
@@ -459,7 +459,7 @@ export class ClaudeSession extends SpawningRunner {
 
   /**
    * 消费事件队列直到本 turn 的 result 事件（非 compact/compaction）。
-   * 消费者提前关闭生成器（bridge 循环体抛错）→ 杀进程防孤儿（P1-11 语义）。
+   * 消费者提前关闭生成器（bridge 循环体抛错）→ 杀进程防孤儿（语义）。
    *
    * result = turn 终态（2026-08-16 真实 claude 实测：长驻模式下 result 之后
    * 不再有 stdout 事件，后台任务完成是静默的；旧 -p 流程「等进程退出再收尾」
@@ -640,7 +640,7 @@ export class ClaudeSession extends SpawningRunner {
     const event = raw as Record<string, unknown>;
     const type = event.type;
 
-    // review P3-3：--resume 会先重放上一轮历史事件（旧 result 之外还可能有
+    // --resume 会先重放上一轮历史事件（旧 result 之外还可能有
     // 旧 assistant/user 内容）。init 之前除 init 本身外一律丢弃，避免历史
     // 内容混进当前卡片（result 分支的 sawInit 守卫升级为全类型守卫）。
     if (type !== 'system' && !this.sawInit) return [];
@@ -766,7 +766,7 @@ export class ClaudeSession extends SpawningRunner {
     const request = (raw.request ?? {}) as Record<string, unknown>;
     const subtype = request.subtype;
     if (subtype !== 'can_use_tool') {
-      // review P3-1：未知 subtype 不能静默丢弃——claude 在等 control_response，
+      // 未知 subtype 不能静默丢弃——claude 在等 control_response，
       // 不回应 turn 会永久挂起（无审批卡、无超时）。deny 兜底让 claude 继续。
       getLogger().warn(
         `[${this.logTag}] unknown control request subtype=${String(subtype)} requestId=${requestId}`,
@@ -786,7 +786,7 @@ export class ClaudeSession extends SpawningRunner {
     const input = (request.input ?? {}) as Record<string, unknown>;
     this.pendingToolInputs.set(requestId, input);
 
-    // review P1：允许所有只放行工具权限；AskUserQuestion 不能被空 answers
+    // 允许所有只放行工具权限；AskUserQuestion 不能被空 answers
     // 自动放行（claude 会把空答案当作已作答），必须继续上抛卡片让用户回答。
     if (this.autoApprove && toolName !== 'AskUserQuestion') {
       getLogger().info(`[${this.logTag}] auto-approving requestId=${requestId} tool=${toolName}`);
@@ -798,7 +798,7 @@ export class ClaudeSession extends SpawningRunner {
           `[${this.logTag}] auto-approve write failed requestId=${requestId}: ${err.message}`,
         );
       });
-      // review P2-1：自动放行不经过协调器/respondPermission，条目不会随
+      // 自动放行不经过协调器/respondPermission，条目不会随
       // 响应被删除——立即释放，否则长会话（允许所有）下 Map 无界增长。
       this.pendingToolInputs.delete(requestId);
       return [];
@@ -816,7 +816,7 @@ export class ClaudeSession extends SpawningRunner {
           behavior: 'deny',
           message: '无法解析 AskUserQuestion 选项',
         }).catch(() => {});
-        // review P2-1：解析失败 deny 后同样释放条目（不经过 respondPermission）。
+        // 解析失败 deny 后同样释放条目（不经过 respondPermission）。
         this.pendingToolInputs.delete(requestId);
         return [];
       }
@@ -863,7 +863,7 @@ export class ClaudeSession extends SpawningRunner {
     }
 
     // 非命令工具的兜底防御：input 无 command 字段时 JSON 序列化，但空对象
-    // 序列化成 `{}` 对用户无意义——内容为空时回退展示工具名（review P3-5）。
+    // 序列化成 `{}` 对用户无意义——内容为空时回退展示工具名。
     const rawCommand = typeof input.command === 'string' ? input.command : JSON.stringify(input);
     const command =
       rawCommand && rawCommand !== '{}' && rawCommand !== 'null'
@@ -921,7 +921,7 @@ function parseUserQuestions(input: Record<string, unknown>): UserQuestion[] {
     const q = raw as Record<string, unknown>;
     const question = typeof q.question === 'string' ? q.question : '';
     if (!question) continue;
-    // review P3-2：answers 字典以问题文本为 key，重复文本会互相覆盖——
+    // answers 字典以问题文本为 key，重复文本会互相覆盖——
     // 视为解析失败（调用方 deny 兜底），不把坏问题上抛给用户。
     if (seenQuestions.has(question)) return [];
     seenQuestions.add(question);
@@ -940,7 +940,7 @@ function parseUserQuestions(input: Record<string, unknown>): UserQuestion[] {
         });
       }
     }
-    // review P3-2：零选项问题无法作答（多选连自定义答案都没有），视为
+    // 零选项问题无法作答（多选连自定义答案都没有），视为
     // 解析失败（调用方 deny 兜底），不把坏问题上抛给用户。
     if (options.length === 0) return [];
     questions.push({

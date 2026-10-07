@@ -36,7 +36,7 @@ import { capEvents, paginate } from '../common/pagination.js';
 import { truncateUtf8, TOOL_RESULT_MAX_BYTES } from '../../common/truncate.js';
 
 /**
- * CC-05: history 拉取上限。DSH session.history 的 maxMessages 同时限制返回条数，
+ * history 拉取上限。DSH session.history 的 maxMessages 同时限制返回条数，
  * 若用它同时充当展示截断，>50 事件的会话累计 usage 会少算。这里拉取一个足够大的
  * 上限保证 usage 累加覆盖整个会话；展示仍由 capEvents(opts?.maxEvents ?? 50) 截断。
  * （若 DSH 支持分页 cursor 可改成分页，当前用有界大拉取）
@@ -205,7 +205,7 @@ export class DshSessionReader implements AgentSessionReader {
       }
 
       return {
-        // CC-05: 展示仍按 maxEvents 尾截断（默认 50，保持原行为），usage 已在上面基于
+        // 展示仍按 maxEvents 尾截断（默认 50，保持原行为），usage 已在上面基于
         // 完整 history 累加。
         events: capEvents(events, opts?.maxEvents ?? 50),
         ...(sessionUsage ? { usage: sessionUsage } : {}),

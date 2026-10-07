@@ -1,14 +1,14 @@
 /**
  * Probe: KimiSessionReader 聚合遇残缺 usage.record 不应被 NaN 污染
  *
- * 攻击点（T2 嫌疑）：src/session/kimi/sessions.ts readSessionContent 的 usage.record
+ * 攻击点：src/session/kimi/sessions.ts readSessionContent 的 usage.record
  * 分支逐项做 `totalUsage.inputTokens += u.inputOther`。若某条 record 缺字段
  * （如 inputCacheCreation 缺失），`number + undefined = NaN`，且 NaN 会沿累加器
  * 传播到之后所有 record——最终整张卡片的 usage 全部显示 NaN。
- * 旧覆盖式实现遇残缺只是该字段 undefined，不会污染全局；这是 R1 聚合引入的
+ * 旧覆盖式实现遇残缺只是该字段 undefined，不会污染全局；这是聚合引入的
  * 真实鲁棒性回退。
  *
- * 假设来源 = 健壮性需求（spec 未明说残缺字段如何处理）：
+ * 假设来源 = 健壮性需求（残缺字段如何处理）：
  *   残缺行的缺失字段按 0 计，已有字段仍正常计入。
  *   依据：kimi 协议在演进（usageScope 等字段就是后加的），旧版本/手改/截断的
  *   wire.jsonl 缺字段是现实风险；readJsonlLines 对末行残缺本就有容错，
@@ -118,6 +118,6 @@ describe('KimiSessionReader usage aggregation with malformed record (missing fie
     expect(usage!.cacheReadTokens).toBe(18000); // 5000+6000+7000
     expect(usage!.cacheCreationTokens).toBe(600); // 200+0(缺失)+400
     expect(usage!.totalTokens).toBe(25200); // 6300+8200+10700
-    expect(usage!.contextLength).toBe(10400); // 末条 3000+7000+400（excludes output，review P2-8）
+    expect(usage!.contextLength).toBe(10400); // 末条 3000+7000+400（excludes output）
   });
 });

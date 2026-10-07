@@ -1,0 +1,91 @@
+/**
+ * bridge agent 路径 catch 必须调 runner.stop()
+ *
+ * ① 验证什么行为：
+ *   runner.run() 生成器在流中间抛错（模拟 cardSession.push flush 抛错、
+ *   sessionStore 磁盘写失败等循环体异常）时，bridge 的 catch 必须调用
+ *   runner.stop()（与 bash 路径 executeBash 的 catch 对齐，双保险）。
+ *
+ * ② 缺失/错误会导致什么问题：
+ *   run() 的 finally 修复已覆盖「生成器关闭即杀子进程」，但 bridge
+ *   catch 路径若依赖 runner 内部 finally 就漏掉了一层纵深——任何未来 runner
+ *   重构只要漏掉 finally 清理，异常路径就会把子进程留在后台（
+ *   修复建议「bridge agent 路径 catch 里补 runner.stop() 与 bash 路径对齐」）。
+ *
+ * ③ 依据：前因后果（bridge for-await 循环体内异常 →
+ *   隐式 .return()）与修复建议双保险条款；对照 bash 路径
+ *   src/bridge/index.ts executeBash catch（1470-1478 明确调用 bashRunner.stop()）。
+ */
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import fs from 'node:fs';
+import path from 'node:path';
+import os from 'node:os';
+import { Bridge } from '../../../src/bridge/index.js';
+import { SessionStore } from '../../../src/session/index.js';
+import { AppConfigSchema } from '../../../src/config/index.js';
+import type { AppConfig } from '../../../src/config/index.js';
+import type { AgentEvent, Runner } from '../../../src/runner/index.js';
+
+import {
+  createStubAgentRegistry,
+  createStubSessionReaderRegistry,
+  createStubConnector,
+} from '../../lib/bridge-stubs.js';
+
+vi.mock('../../../src/logger/index.js', async () =>
+  (await import('../../lib/logger-mock.js')).loggerModuleMock(),
+);
+
+describe('bridge catch calls runner.stop()', () => {
+  let tmpDir: string;
+  let config: AppConfig;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'p1-11-bridge-anchor-'));
+    config = AppConfigSchema.parse({
+      feishu: { appId: 'test', appSecret: 'test' },
+      claude: { model: 'opus', stopGraceMs: 5000 },
+    });
+  });
+
+  afterEach(() => {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it('test_anchor_bridge_calls_runner_stop_on_agent_stream_error', async () => {
+    const ctx = { userId: 'user1', chatId: 'chat1', messageId: 'msg1' };
+    const stopCalled = vi.fn();
+    const runner: Runner = {
+      isRunning: false,
+      stop: stopCalled,
+      killOrphan: () => {},
+      registerExitHandlers: () => {},
+      run: async function* () {
+        yield {
+          type: 'system',
+          subtype: 'init',
+          session_id: 's1',
+          cwd: '/tmp',
+          model: 'm',
+        } as AgentEvent;
+        throw new Error('stream boom');
+      },
+    };
+
+    const sessionStore = new SessionStore();
+    const bridge = new Bridge({
+      runner,
+      agentRegistry: createStubAgentRegistry(runner),
+      sessionReaderRegistry: createStubSessionReaderRegistry(),
+      connector: createStubConnector() as never,
+      sessionStore,
+      config,
+    });
+    sessionStore.setCwd(ctx.userId, tmpDir);
+
+    await bridge.forwardToClaude('hello', ctx);
+
+    // 当前 bug：agent 路径 catch 不调 stop（bash 路径有）→ 未调用 → RED
+    expect(stopCalled).toHaveBeenCalled();
+  });
+});

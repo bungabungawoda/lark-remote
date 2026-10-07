@@ -153,7 +153,7 @@ export interface SessionSetModeParams {
 //
 // REAL envelope: {sessionId, update: {sessionUpdate: '<kind>', ...}}.
 // The discriminator field is `update.sessionUpdate` — there is NO nested
-// `event.type` / `event.delta` (S5/S6 打回根因：旧实现读 params.event，
+// `event.type` / `event.delta` (旧实现读 params.event，
 // 真实通知全部静默丢弃)。
 // =============================================================================
 

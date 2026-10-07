@@ -52,7 +52,7 @@ const DEFAULTS = {
 /**
  * Default SIGTERM→SIGKILL grace period (ms). Exported so runners (SpawningRunner)
  * and config-loading paths (src/index.ts) can reuse the same source of truth
- * instead of re-literalizing `5000` (Clean Code P3-1, G25).
+ * instead of re-literalizing `5000` (Clean Code G25).
  */
 export const DEFAULT_STOP_GRACE_MS = DEFAULTS.STOP_GRACE_MS;
 
@@ -130,9 +130,9 @@ export const CodexConfigSchema = z.object({
   /**
    * Reasoning effort level。codex 标准档位 minimal/low/medium/high/xhigh/max/ultra
    * 之外还接受 none 与模型自定义值（ReasoningEffort::Custom），目录声明什么就存什么
-   * （P2-5），故用字符串而非枚举。
+   * 故用字符串而非枚举。
    */
-  // codex 拒绝空串档位（ReasoningEffort::from_str "" → Err，P3-3）
+  // codex 拒绝空串档位（ReasoningEffort::from_str "" → Err）
   reasoningEffort: z.string().min(1).optional(),
   /** Approval policy (Codex 官方 AskForApproval 标准值). 默认 on-request。 */
   approvalPolicy: z.enum(['untrusted', 'on-request', 'never']).default('on-request'),
@@ -397,7 +397,7 @@ function coerceValue(raw: string): string | number | boolean {
 }
 
 /**
- * 拒绝原型链危险 key 段（§P1-4）。
+ * 拒绝原型链危险 key 段。
  *
  * `/config` 直写路径的 key 是用户自由输入：`__proto__.polluted` 会通过
  * `current['__proto__']` 拿到 Object.prototype 并写入，污染整个进程且不可恢复；
@@ -469,7 +469,7 @@ export function setConfigValue(
  * Set multiple nested values in config, write back to YAML file once.
  *
  * 在 draft 副本上操作（structuredClone），验证通过后才写盘，避免校验失败时
- * 内存中的 config 已被污染（P0 atomicity）。
+ * 内存中的 config 已被污染（atomicity）。
  */
 export function setConfigValues(
   configPath: string,
@@ -529,7 +529,7 @@ function renderConfigPatch(
       doc.deleteIn(parts);
       continue;
     }
-    // 保存载荷里只写"校验结果中存活下来"的键：schema 不认识的键（§P2-24 的 foo.bar）
+    // 保存载荷里只写"校验结果中存活下来"的键：schema 不认识的键（foo.bar）
     // 会被 Zod 剥掉，跟着打在 Document 上就是把垃圾永久写进用户配置文件。
     // 磁盘上原有的未知键不受影响 —— 那是用户手写的，本函数不碰。
     const accepted = getConfigValue(validated, parts.join('.'));

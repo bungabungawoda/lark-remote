@@ -4,11 +4,11 @@ import { createInitialRunState, reduceRunState } from './run-state.js';
 import type { ToolEntry } from './run-state.js';
 
 /**
- * P3-6 anchors: in the real pipeline `reduceAssistantEvent` stores tool input
+ * s: in the real pipeline `reduceAssistantEvent` stores tool input
  * as `truncateDetail(stringifyUnknown(content.input))` — a STRING (truncated to
  * MAX_TOOL_DETAIL_CHARS=3000). `asRecord` re-`JSON.parse`s that string on EVERY
  * render (twice per tool — header `summarizeInput` + body `renderInput`). The
- * P3-6 refactor caches the parsed record (computed once from the truncated
+ * refactor caches the parsed record (computed once from the truncated
  * stored string) so render does zero parsing.
  *
  * These anchors build the tool via `reduceRunState` (the real store path, which
@@ -25,7 +25,7 @@ import type { ToolEntry } from './run-state.js';
  *
  * All four are GREEN today; the green refactor must keep them GREEN.
  */
-describe('tool-render input parse (P3-6)', () => {
+describe('tool-render input parse', () => {
   /** Store a tool_use via the real reducer and return its ToolEntry. */
   function storeTool(name: string, input: unknown, id = 'tool-1'): ToolEntry {
     let state = createInitialRunState('run-1');
@@ -537,10 +537,10 @@ describe('asRecord edge cases (via toolHeaderText / toolBodyMd)', () => {
 });
 
 // ============================================================================
-// 信息保真 C5：toolHint 优先渲染（runner 自愿声明，渲染层只消费不推断）
+// 信息保真 toolHint 优先渲染（runner 自愿声明，渲染层只消费不推断）
 // ============================================================================
 
-describe('tool-render toolHint (信息保真 C5)', () => {
+describe('tool-render toolHint (信息保真)', () => {
   function makeTool(overrides: Partial<ToolEntry> & Pick<ToolEntry, 'name'>): ToolEntry {
     return {
       id: 't1',

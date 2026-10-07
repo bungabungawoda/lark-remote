@@ -417,7 +417,7 @@ describe('RunState', () => {
     });
   });
 
-  // P3-4: reduceToolResultEvent must rebuild ONLY the block matching tool_use_id,
+  // reduceToolResultEvent must rebuild ONLY the block matching tool_use_id,
   // keeping every other block's object reference identical (in-place update).
   // The old `.map()` recreated every block object even when only one matched —
   // O(N) allocations per tool_result on the run-card hot path. The anchor locks
@@ -465,7 +465,7 @@ describe('RunState', () => {
     expect(state.footer).toBe('streaming');
   });
 
-  // P3-4: no matching tool_use_id → blocks array unchanged by reference (early exit).
+  // no matching tool_use_id → blocks array unchanged by reference (early exit).
   it('test_anchor_tool_result_no_match_keeps_blocks_ref', () => {
     let state = createInitialRunState('run-1');
     state = reduceRunState(state, {
@@ -493,7 +493,7 @@ describe('RunState', () => {
     expect(state.blocks).toBe(beforeBlocks);
   });
 
-  // P3-4: multiple tool_results in one user message each update their own tool.
+  // multiple tool_results in one user message each update their own tool.
   it('test_anchor_tool_result_multiple_content_each_update_own_tool', () => {
     let state = createInitialRunState('run-1');
     state = reduceRunState(state, {
@@ -599,7 +599,7 @@ describe('RunState', () => {
   });
 
   // ===========================================================================
-  // 信息保真 C1：model / costUsd / notices / omittedBlocks / reasoningTokens
+  // 信息保真 model / costUsd / notices / omittedBlocks / reasoningTokens
   // ===========================================================================
 
   it('test_anchor_system_init_stores_model', () => {
@@ -716,7 +716,7 @@ describe('RunState', () => {
   });
 
   it('test_anchor_assistant_content_summary_passthrough_to_tool_entry', () => {
-    // C3：content block 的 summary（ACP kind 映射后与 name 不同的 title）透传
+    // content block 的 summary（ACP kind 映射后与 name 不同的 title）透传
     // 到 ToolEntry，渲染层做面板副标题。
     let state = createInitialRunState('run-c3-summary');
     state = reduceRunState(state, {
@@ -804,7 +804,7 @@ describe('RunState', () => {
   });
 
   it('test_anchor_turn_diff_tool_identity_lands_on_tool_block', () => {
-    // C2：turn_diff 携带 toolName/toolInput/toolHint → 工具块不再是硬编码
+    // turn_diff 携带 toolName/toolInput/toolHint → 工具块不再是硬编码
     // 'command'，parsedInput 可供渲染层直接消费。
     let state = createInitialRunState('run-c2-tool');
     state = reduceRunState(state, {
@@ -844,7 +844,7 @@ describe('RunState', () => {
   });
 
   // ===========================================================================
-  // 信息保真 C4.4：存储截断必须留痕（keepTailMarked）
+  // 信息保真 存储截断必须留痕（keepTailMarked）
   // ===========================================================================
 
   it('test_anchor_thinking_storage_over_cap_is_marked_turn_diff_path', () => {

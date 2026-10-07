@@ -83,7 +83,7 @@ describe('createPosixTerminator', () => {
     });
   });
 
-  it('B3：SIGTERM 投递失败（EPERM）→ requested:false + 原因，不报假成功', async () => {
+  it('SIGTERM 投递失败（EPERM）→ requested:false + 原因，不报假成功', async () => {
     const terminator = createPosixTerminator({ graceMs: 5000 });
     killSpy.mockImplementation(() => {
       throw Object.assign(new Error('Operation not permitted'), { code: 'EPERM' });
@@ -98,7 +98,7 @@ describe('createPosixTerminator', () => {
     expect(mockLogger.warn).toHaveBeenCalledWith(expect.stringContaining('EPERM'));
   });
 
-  it('B3：grace 超时后 SIGKILL 也失败 → requested:false + 原因', async () => {
+  it('grace 超时后 SIGKILL 也失败 → requested:false + 原因', async () => {
     const terminator = createPosixTerminator({ graceMs: 1000 });
     const proc = createMockProc();
     // SIGTERM 送达，grace 内未退出，SIGKILL 被拒

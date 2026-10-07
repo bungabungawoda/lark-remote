@@ -32,7 +32,7 @@ const FALLBACK_PROVIDERS = Object.keys(FALLBACK_MODELS);
 const OPENCODE_CONFIG_CACHE_TTL_MS = 60_000;
 /**
  * 失败负缓存 TTL：命令失败后 30s 内直接用 fallback，避免每次 /config 卡片构建
- * 都同步阻塞事件循环最长 10s（§P1-8，与 codex-config 负缓存对齐）。
+ * 都同步阻塞事件循环最长 10s（与 codex-config 负缓存对齐）。
  */
 const OPENCODE_NEGATIVE_CACHE_TTL_MS = 30_000;
 let opencodeConfigCache: { result: OpencodeConfigResult; timestamp: number } | null = null;
@@ -71,7 +71,7 @@ function buildFallbackResult(): OpencodeConfigResult {
 export function loadOpencodeConfig(): OpencodeConfigResult {
   const now = Date.now();
 
-  // 正缓存命中：TTL 内不重复 execSync（P1-8）
+  // 正缓存命中：TTL 内不重复 execSync
   if (opencodeConfigCache && now - opencodeConfigCache.timestamp < OPENCODE_CONFIG_CACHE_TTL_MS) {
     return opencodeConfigCache.result;
   }
@@ -91,7 +91,7 @@ export function loadOpencodeConfig(): OpencodeConfigResult {
     // 执行 opencode models --verbose 获取所有模型信息
     const res = spawnProcessSync(resolved.file, ['models', '--verbose'], {
       encoding: 'utf-8',
-      // P1-8：30s → 10s，与 codex/kimi 对齐；maxBuffer 防模型清单 ENOBUFS 隐性截断
+      // 30s → 10s，与 codex/kimi 对齐；maxBuffer 防模型清单 ENOBUFS 隐性截断
       timeout: 10000,
       maxBuffer: 64 * 1024 * 1024,
     });

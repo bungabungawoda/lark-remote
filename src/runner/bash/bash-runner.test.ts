@@ -6,7 +6,7 @@ import { describePosix } from '../../../tests/lib/platform.js';
 import { ShellUnavailableError, type ShellBackend } from '../../platform/shell.js';
 import type { Terminator } from '../../platform/terminator.js';
 
-// 明确依赖 POSIX 原语（真实 bash + nohup/disown），win32 上跳过（§10.2）
+// 明确依赖 POSIX 原语（真实 bash + nohup/disown），win32 上跳过
 describePosix('BashProcessRunner', () => {
   let runner: BashProcessRunner;
 
@@ -73,7 +73,7 @@ describePosix('BashProcessRunner', () => {
   });
 });
 
-// 背压水位（P1-4 层④）此前零直测：判据写错不会崩，只会在长输出时把整段 stdout
+// 背压水位（层④）此前零直测：判据写错不会崩，只会在长输出时把整段 stdout
 // 堆进内存，或者反过来把流误停成永久 pause、`!` 命令悬死不返回。
 describe('BashProcessRunner — 输出背压水位', () => {
   const HIGH = 3;
@@ -194,7 +194,7 @@ describe('BashProcessRunner — 输出背压水位', () => {
   });
 });
 
-describe('BashProcessRunner — shell 不可用（win32 Git Bash 缺失，§7.2）', () => {
+describe('BashProcessRunner — shell 不可用（win32 Git Bash 缺失）', () => {
   it('同步抛 ShellUnavailableError → stderr 明确提示 + exit 1，不注册退出清理', async () => {
     const throwingShell: ShellBackend = {
       kind: 'bash',

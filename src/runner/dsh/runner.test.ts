@@ -431,7 +431,7 @@ describe('DshClient / DshRunner integration', () => {
   });
 
   it('recovers a turn that ends before the mux opens (initial history baseline)', async () => {
-    // P0-2 regression: prompt is accepted and the turn completes before the SSE
+    // regression: prompt is accepted and the turn completes before the SSE
     // subscription opens (empty live mux). The initial history baseline must
     // replay the already-recorded turn/end so the run reaches a success terminal
     // instead of hanging until the idle watchdog.
@@ -595,7 +595,7 @@ describe('DshRunner stop state', () => {
     await server.stop();
   });
 
-  it('createSession failure cleans up running state (CC-03)', async () => {
+  it('createSession failure cleans up running state', async () => {
     const server = new FakeDshServer();
     server.register('session.create', () => ({
       ok: false,

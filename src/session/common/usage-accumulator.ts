@@ -134,7 +134,7 @@ export class UsageAccumulator {
   }
 }
 
-/** P2-8 统一契约：上下文窗口占用 = 末轮 input + cacheRead + cacheCreation（不含 output/reasoning）。 */
+/** 统一契约：上下文窗口占用 = 末轮 input + cacheRead + cacheCreation（不含 output/reasoning）。 */
 export function contextWindowOccupancy(l: {
   input: number;
   cacheRead: number;
@@ -143,7 +143,7 @@ export function contextWindowOccupancy(l: {
   return l.input + l.cacheRead + l.cacheCreation;
 }
 
-/** P2-8 统一契约：session 全量累计字段组装（4 个 reader 共用：claude/dsh/kimi/pi；
+/** 统一契约：session 全量累计字段组装（4 个 reader 共用：claude/dsh/kimi/pi；
  * codex 走 last_token_usage 口径、opencode 保留自己的条件赋值，原为逐字段复制的 4 连拷贝）。 */
 export function cumulativeUsageFields(t: {
   input: number;

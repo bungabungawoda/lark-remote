@@ -21,7 +21,7 @@ import { renderBashCard, type BashState } from '../../../src/card/bash-renderer.
 // ---------------------------------------------------------------------------
 
 /**
- * W3.2：共享工厂的组合封装（原先与 src/card/bash-card-session.test.ts 逐字符
+ * 共享工厂的组合封装（原先与 src/card/bash-card-session.test.ts 逐字符
  * 同构的本地 stub 副本迁到 tests/lib/card-stubs）。
  */
 function makeBashTestConnector(
@@ -38,11 +38,11 @@ function makeBashTestConnector(
 }
 
 // ---------------------------------------------------------------------------
-// T1: BashCardSession explicit budget protection contract
+// BashCardSession explicit budget protection contract
 // ---------------------------------------------------------------------------
 
 /**
- * ANCHOR (T1) — explicit contract declaration for BashCardSession budget safety.
+ * ANCHOR — explicit contract declaration for BashCardSession budget safety.
  *
  * 意图（必须完整保留）：
  * ① 验证 BashCardSession 显式覆写 hasOwnBudgetProtection（即在
@@ -96,11 +96,11 @@ describe('BashCardSession explicit budget protection contract (anchor)', () => {
 });
 
 // ---------------------------------------------------------------------------
-// T1: BashCardSession settle/start budget protection symmetry
+// BashCardSession settle/start budget protection symmetry
 // ---------------------------------------------------------------------------
 
 /**
- * ANCHOR (T1) — settle()/start() budget protection symmetry.
+ * ANCHOR — settle()/start() budget protection symmetry.
  *
  * 意图（必须完整保留）：
  * ① 验证 CardSession 的三条发出路径——start() producer 初始卡、updateCard()
@@ -115,7 +115,7 @@ describe('BashCardSession explicit budget protection contract (anchor)', () => {
  * ③ 守护：settle fallback 仍须产出卡片（result==='updated'），不能因跳过
  *    enforceCardBudget 而静默失败。
  *
- * 依据：§P1-1 + renderBashCard stringify 级保护修复。
+ * renderBashCard stringify 级保护修复。
  */
 describe('BashCardSession settle/start budget protection symmetry (anchor)', () => {
   it('test_anchor_bash_card_settle_fallback_skips_enforce_budget', async () => {

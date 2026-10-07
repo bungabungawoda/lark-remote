@@ -141,7 +141,7 @@ describe('DSH preset 变更 session 语义', () => {
     expect(sessionStore.getPreviousSessionId(ctx.userId, 'dsh')).toBeUndefined();
   });
 
-  it('host 变更时把旧 sessionId 停到 previousSessions 并清空（CC-02 session 边界）', async () => {
+  it('host 变更时把旧 sessionId 停到 previousSessions 并清空（session 边界）', async () => {
     // host 变更 = 换服务，旧 host 的 sessionId 发往新 host 是错的。须像 preset 变更一样
     // 停车 + 清空当前 sessionId，下次 run 新建会话。
     const { router, sessionStore } = makeRouter([], { host: 'http://host-a:3080' });

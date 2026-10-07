@@ -8,12 +8,12 @@ vi.mock('../../../src/logger/index.js', async () =>
 
 const WORKSPACE = '/tmp/queue-card-arm-nometa-anchor-ws';
 
-describe('QueueManager - queue card for a meta task enqueued while an interrupted no-taskMeta task runs (anchor A3)', () => {
+describe('QueueManager - queue card for a meta task enqueued while an interrupted no-taskMeta task runs (anchor)', () => {
   it('test_anchor_queue_card_sent_when_nometa_task_resumes_after_interrupt', async () => {
     // 验证什么行为：T1（带 taskMeta）执行中被 stop，resetExecutingCount 清零计数
     // 并发放 skip-credit；T1 settle 消耗 credit 后，队列链进入 T2（enqueue 不带
     // taskMeta 的任务）并接跑。此时 T2 实际上正在执行，随后带 taskMeta 的
-    // T3 入队必须收到 "⏳ 消息排队中" 卡片——不变量是"只要 cwd 队列里还
+    // 入队必须收到 "⏳ 消息排队中" 卡片——不变量是"只要 cwd 队列里还
     // 有任务在排队或执行，新入队消息必须收到排队卡"，与任务是否携带 taskMeta
     // 无关（卡片是发给用户消息的，T2 执行中意味着 T3 必然等待）。
     //
@@ -24,7 +24,7 @@ describe('QueueManager - queue card for a meta task enqueued while an interrupte
     // ——与历史生产事故（消息C 入队无卡）相同的用户可见
     // 失败：实际有任务在执行，新消息却拿不到排队反馈。
     //
-    // 依据：编排者裁决（2026-08-01，round 2 分歧裁决）——spec 不变量按字面是
+    // 依据：编排者裁决（2026-08-01，round 2 分歧裁决）——按字面是
     // 通用的（"有任务在排队或执行"，未按 taskMeta 区分）；EnqueueOptions.taskMeta
     // 是可选字段，无 meta 是合法 API 形态；队列卡片服务于用户消息的可见性，
     // 与占用队列的任务是否带 meta 无关。当前无生产无-meta 调用点
@@ -96,7 +96,7 @@ describe('QueueManager - queue card for a meta task enqueued while an interrupte
     );
     await sleep(50);
     // 修复前：T2 无 messageId，begin 路径不重新武装计数（count 仍 0），
-    // T3 入队时 hasWaitingTasks=false → 不发卡。本用例钉住（期望 1 张，实得 0）。
+    // 入队时 hasWaitingTasks=false → 不发卡。本用例钉住（期望 1 张，实得 0）。
     expect(sentCards.length).toBe(1);
 
     // --- 清理：放行 T2、T3，让队列链自然收尾 ---

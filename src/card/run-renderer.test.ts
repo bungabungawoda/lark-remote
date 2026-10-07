@@ -76,7 +76,7 @@ describe('renderRunCard', () => {
   });
 
   it('test_anchor_command_approval_neutralizes_backticks', () => {
-    // review P2-2：命令里的反引号会提前终止 lark_md 行内代码 span，奇数次
+    // 命令里的反引号会提前终止 lark_md 行内代码 span，奇数次
     // 反引号极易触发 11311 解析错误导致整卡失败——必须中和后再展示。
     let state = createInitialRunState('run-claude-approval-backtick');
     state = reduceRunState(state, {
@@ -219,7 +219,7 @@ describe('renderRunCard', () => {
     expect(serialized).toContain('approval.answer');
     // 多选已勾选 → 出现提交按钮
     expect(serialized).toContain('approval.answerSubmit');
-    // review P3-4：单选问题提供自定义答案（Other）输入
+    // 单选问题提供自定义答案（Other）输入
     expect(serialized).toContain('approval.answerCustom');
     expect(serialized).toContain('自定义答案');
     expect(serialized).toContain('"tag":"input"');
@@ -280,7 +280,7 @@ describe('renderRunCard', () => {
   });
 
   it('test_anchor_ask_user_question_custom_answer_selection_visible', () => {
-    // review P3：自定义答案（Other）的选中态必须可见——选项按钮无法表示
+    // 自定义答案（Other）的选中态必须可见——选项按钮无法表示
     // 自由文本，单独展示已选文本，避免「点了没反应」的困惑。
     let state = createInitialRunState('run-question-custom');
     state = reduceRunState(state, {
@@ -438,7 +438,7 @@ describe('renderRunCard', () => {
   });
 
   it('test_anchor_ask_user_question_input_names_unique_when_other_and_note_coexist', () => {
-    // 2026-08-19 线上 P0：单选选项题同时渲染 Other 输入 + Note 输入，二者 name
+    // 2026-08-19 线上 单选选项题同时渲染 Other 输入 + Note 输入，二者 name
     // 均为 answer-custom-0-0 → 飞书 ErrCode 11310 拒绝整卡，提问卡静默失败致
     // run 挂起。回归：name 必须按 cmd 区分，同一题多个 input 互不重复。
     const cases = [
@@ -584,7 +584,7 @@ describe('renderRunCard', () => {
   });
 
   it('test_anchor_concurrent_approvals_render_all_slots_and_resolve_independently', () => {
-    // review P2-3 回归：同一 turn 内并发两个审批时，后到者不得顶掉先到者的
+    // 回归：同一 turn 内并发两个审批时，后到者不得顶掉先到者的
     // 按钮（单槽曾导致第一个审批的 UI 消失，只能等 5 分钟自动 cancel）。
     let state = createInitialRunState('run-approval-2');
     const request = (id: number, command: string) =>
@@ -1126,7 +1126,7 @@ describe('renderRunCard', () => {
     }
   });
 
-  // RED (Round 2): All block types must have timestamp in panel header (parentheses)
+  // RED: All block types must have timestamp in panel header (parentheses)
   it('test_anchor_all_block_types_timestamp_in_panel_header', () => {
     const oldTz = process.env.TZ;
     process.env.TZ = 'Asia/Shanghai';
@@ -1176,7 +1176,7 @@ describe('renderRunCard', () => {
     }
   });
 
-  // RED (Round 1): text block timestamp must be in panel header `💬 **输出** (ts)`,
+  // RED: text block timestamp must be in panel header `💬 **输出** (ts)`,
   // not in content body as `_ts_\n\ncontent`
   it('test_anchor_text_block_timestamp_in_panel_header', () => {
     const oldTz = process.env.TZ;
@@ -2331,7 +2331,7 @@ describe('renderRunCard (CardKit 2.0)', () => {
     // Old one-line summary format should NOT appear
     expect(json).not.toMatch(/\d+ 次工具调用$/);
 
-    // 6. 极端兜底必须保留 new-session 按钮（RED-test 断言折入主用例，W3.4）
+    // 6. 极端兜底必须保留 new-session 按钮（RED-test 断言折入主用例）
     expect(json).toContain('"cmd":"new-session"');
 
     // 7. CardKit 2.0 schema compliance — no V1 action container
@@ -2436,7 +2436,7 @@ describe('renderRunCard (CardKit 2.0)', () => {
     // Old one-line summary should NOT appear
     expect(json).not.toMatch(/\d+ 次工具调用$/);
 
-    // 极端兜底必须保留 new-session 按钮（RED-test 断言折入主用例，W3.4）
+    // 极端兜底必须保留 new-session 按钮（RED-test 断言折入主用例）
     expect(json).toContain('"cmd":"new-session"');
 
     // CardKit 2.0 schema compliance
@@ -2556,7 +2556,7 @@ describe('renderRunCard (CardKit 2.0)', () => {
   });
 
   // =========================================================================
-  // Text block: 三态统一 collapsible_panel（W3.4 参数化；终端态折叠展开语义见
+  // Text block: 三态统一 collapsible_panel（参数化；终端态折叠展开语义见
   // renderTextBlock —— 注：collapsible_panel 并不豁免 11310 表格计数，表格靠
   // truncateMarkdownTables 显式截断保护）
   // =========================================================================
@@ -2718,10 +2718,10 @@ describe('renderRunCard (CardKit 2.0)', () => {
 });
 
 // ============================================================================
-// 信息保真 C4：所有丢弃必须可见
+// 信息保真 所有丢弃必须可见
 // ============================================================================
 
-describe('信息保真 C4：丢弃留痕', () => {
+describe('信息保真 丢弃留痕', () => {
   it('MAX_BLOCKS 丢弃提示：omittedBlocks>0 时卡片最前部出现「已省略 N 个早期步骤」', () => {
     let state = createInitialRunState('run-c4-omit');
     state = reduceRunState(state, {
@@ -2885,7 +2885,7 @@ describe('信息保真 C4：丢弃留痕', () => {
     expectNoV1ActionContainer(renderRunCard(state));
   });
 
-  it('B4：末级硬截断（skeleton 本身也超限）仍保留审批区与 stop/新会话按钮', () => {
+  it('末级硬截断（skeleton 本身也超限）仍保留审批区与 stop/新会话按钮', () => {
     const state: RunState = {
       runId: 'run-b4-hard-truncate',
       terminal: 'running',

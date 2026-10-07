@@ -5,18 +5,18 @@ import os from 'node:os';
 import { mockLogger } from '../../lib/logger-mock.js';
 
 /**
- * Red Agent - Round 9 - Anchor（P-both-fail 升 anchor，Batch 1 用户决策）
+ * Red Agent -- Anchor（P-both-fail 升 anchor，Batch 1 用户决策）
  *
  * Target: `codex debug models` 与 `codex debug models --bundled` **都失败**（二进制缺失/
  * 损坏/超时）时，loadCodexConfig 必须：
  *   1. 不抛异常、不崩溃；
- *   2. 非 catalog 模式回退 FALLBACK_MODELS/FALLBACK_PROVIDERS（legacy 兜底，A4 回归保护）；
+ *   2. 非 catalog 模式回退 FALLBACK_MODELS/FALLBACK_PROVIDERS（legacy 兜底，回归保护）；
  *   3. 无 config.toml 时回退 FALLBACK_PROVIDERS + FALLBACK_MODELS。
  *   （catalog 模式的双命令失败回退 [currentModel] 由
  *   codex-active-catalog-failure-fallback.test.ts 更强的断言覆盖。）
  *
  * Importance: 卡片构建不能因 codex 二进制异常而炸掉；这是可靠性边界，也是
- * "非 catalog 行为不变"（A4）与"catalog 不泄漏 FALLBACK"（A5）的双重回归保护。
+ * "非 catalog 行为不变"与"catalog 不泄漏 FALLBACK"的双重回归保护。
  *
  * Spec basis: P-both-fail（Batch 1 probe，2026-08-01 用户批准升 anchor）
  */
@@ -110,13 +110,13 @@ describe('codex both catalog commands fail - anchor', () => {
       cfg = loadCodexConfig();
     }).not.toThrow();
 
-    // anthropic 非 codex 内置 provider（P3-2 对齐），fallback 只含 openai
+    // anthropic 非 codex 内置 provider（对齐），fallback 只含 openai
     expect(cfg!.providerNames).toEqual(['openai']);
     expect(cfg!.modelOptions('openai')).toEqual(FALLBACK_MODELS);
   });
 
   it('test_anchor_both_fail_explicit_anthropic_provider_uses_anthropic_fallback_models', () => {
-    // A5a：claude 模型已移入独立的 ANTHROPIC_FALLBACK_MODELS（与 openai 兜底表隔离）。
+    // a：claude 模型已移入独立的 ANTHROPIC_FALLBACK_MODELS（与 openai 兜底表隔离）。
     // 用户显式配置 [model_providers.anthropic] 且 catalog 两命令均失败时：
     // anthropic 下拉 = claude 兜底表；openai 下拉不得混入 claude 模型。
     fs.writeFileSync(

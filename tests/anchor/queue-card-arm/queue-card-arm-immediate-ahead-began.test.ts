@@ -71,16 +71,16 @@ describe('queue.immediate must not claim the target is executing when a task ahe
     // 执行与事实相反，用户无法补救（按钮已禁用、/stop 无目标）；③interruptCurrentRun
     // 恢复后按 cwd 无条件 activeRuns.delete，把停留窗口内新登记的 A 的追踪条目一并
     // 删掉（它停止的是 T1，删的是 A）——A 变成无主 run：/active 不可见、/stop
-    // 停不到，只能等它自然结束。该竞态与 A8（queue-card-arm-immediate-clear-yield）
-    // 同属"队列链在 handler await 期间前进"的已承认竞态，但 A8 只覆盖了步骤 3
+    // 停不到，只能等它自然结束。该竞态与（queue-card-arm-immediate-clear-yield）
+    // 同属"队列链在 handler await 期间前进"的已承认竞态，但只覆盖了步骤 3
     // 卡片更新窗口（A/B 仍在队列、可被同步移除），未覆盖 interruptCurrentRun 的
     // 停止窗口——此窗口内 A 已接跑，快照式清除结构性漏掉它。
     //
     // 依据：router handleQueueImmediate 步骤 3/4 注释——"Remove all tasks BEFORE
     // this one"、"The queue will naturally execute it after the current task
     // (which we just stopped)"：语义承诺停止后 T 是下一个执行者；步骤 6 的
-    // 注释明文规定最终 toast 必须反映真实状态（A13/A14 已确立"不得承诺不会发生
-    // 的执行"）。A8 锚点确立了清除必须在任何 await 前完成的不变量；本测试补上
+    // 注释明文规定最终 toast 必须反映真实状态（已确立"不得承诺不会发生
+    // 的执行"）。锚点确立了清除必须在任何 await 前完成的不变量；本测试补上
     // 其未覆盖的停止窗口：任务在快照前接跑时，handler 要么再停掉它（使 T 真正
     // 接跑），要么如实反馈 T 仍在排队——绝不能翻卡 + 承诺立即执行。
     const created: Array<GatedRunner & AgentRunner> = [];

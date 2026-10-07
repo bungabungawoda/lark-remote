@@ -3,10 +3,10 @@ import type { CardStreamController } from '@larksuite/channel';
 import { RunCardSession } from '../../../src/card/run-card-session.js';
 
 /**
- * PROBE (P1-3 push await 语义边界) — 合批路径 push 必须 fire-and-forget
+ * PROBE (push await 语义边界) — 合批路径 push 必须 fire-and-forget
  * （立即 resolve，不等 render），否则 bridge 的 `await cardSession.push(event)`
- * 串行循环被 render 阻塞，事件逐个 flush，合批无 CPU 收益（§P1-3
- * §P1-3 + §P1-4「push 改 fire-and-forget + pending flag」）。
+ * 串行循环被 render 阻塞，事件逐个 flush，合批无 CPU 收益
+ * 「push 改 fire-and-forget + pending flag」
  *
  * 同时，coalesceMs<=0 路径必须同步 flush 完成才 resolve（错误处理测试依赖 push
  * 后立即生效的契约，见 run-card-session-error.test.ts / run-card-stream-error.test.ts
@@ -20,7 +20,7 @@ import { RunCardSession } from '../../../src/card/run-card-session.js';
  * - 合批路径若 await render：bridge 循环串行化 render，事件逐个 flush，合批失效。
  * - 禁用路径若 fire-and-forget：错误处理测试断言的「push 后 update 已发生」被破坏。
  */
-describe('RunCardSession push await semantics (P1-3 anchor)', () => {
+describe('RunCardSession push await semantics', () => {
   let controller: CardStreamController;
 
   beforeEach(() => {

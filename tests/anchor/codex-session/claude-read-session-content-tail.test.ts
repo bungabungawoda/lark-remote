@@ -1,15 +1,15 @@
 /**
- * P2-5 anchor: claude readSessionContent tail-only read invariant
+ * claude readSessionContent tail-only read invariant
  *
- * Before P2-5, claude readSessionContent (src/session/claude/sessions.ts)
+ * Before claude readSessionContent (src/session/claude/sessions.ts)
  * calls `readJsonlLines(filePath)` (line 479) which slurps the ENTIRE
  * multi-MB jsonl into a `string[]`. The catch-up path (events after the
  * last user message) only needs the tail, and scalarScan already parses
- * each line once without retaining parsed objects (P2-2), but the raw
+ * each line once without retaining parsed objects, but the raw
  * `string[]` of whole-file line strings is still fully materialized —
- * that is the remaining catch-up-path materialization cost P2-5 targets.
+ * that is the remaining catch-up-path materialization costtargets.
  *
- * After P2-5, readSessionContent's catch-up path must NOT call the full-
+ * After readSessionContent's catch-up path must NOT call the full-
  * slurp `readJsonlLines` from the shared jsonl module. A tail-only
  * strategy (e.g. byte-offset two-pass: scalarScan via streaming scan
  * recording the byte offset of the last user message, then read+parse
@@ -35,7 +35,7 @@
  *               claude session; full materialization of a 10MB+ jsonl
  *               synchronously blocks the event loop for a catch-up that
  *               only needs the lines after the last user message.
- *   spec_basis: §P2-5 ("tail-only 读取").
+ *   "tail-only 读取".
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
@@ -112,7 +112,7 @@ function writeSession(
   return { sessionId, filePath };
 }
 
-describe('P2-5 anchor: claude readSessionContent tail-only read', () => {
+describe('claude readSessionContent tail-only read', () => {
   it('test_anchor_p2_5_claude_read_session_content_no_full_slurp', () => {
     // 50 user/assistant pairs (100 content lines) ending with an assistant
     // carrying usage. scalarScan must scan the whole file to find
@@ -197,7 +197,7 @@ describe('P2-5 anchor: claude readSessionContent tail-only read', () => {
     expect(result.usage?.compactCount).toBe(1);
     // contextLength = max(lastPostTokens=5000, last assistant 窗口占用).
     // lastWindow uses acc.last (the last assistant's per-message usage:
-    // 5000+800+100 = 5900, excludes output — review P2-8), NOT the cumulative total.
+    // 5000+800+100 = 5900, excludes output), NOT the cumulative total.
     expect(result.usage?.contextLength).toBe(5900);
     expect(result.usage?.totalTokens).toBe(5000 + 50 + 800 + 100); // 末轮分项和
     // session 累计（所有 run 之和）

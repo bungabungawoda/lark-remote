@@ -1,5 +1,5 @@
 /**
- * P2-3 anchor: summarizeSession / summarizePiSession 流式早停
+ * summarizeSession / summarizePiSession 流式早停
  *
  * 原实现 summarizeSession / summarizePiSession 用 readJsonlLines 全量读整个文件
  * 只为取首条 user 消息。N 个文件 × 全量读 = 大量无用 I/O + parse。
@@ -56,7 +56,7 @@ function writeClaudeSession(cwd: string, userLines: string[], paddingLineCount: 
   return sessionId;
 }
 
-describe('P2-3: summarizeSession uses streaming early-stop (claude)', () => {
+describe('summarizeSession uses streaming early-stop (claude)', () => {
   it('test_anchor_summarize_does_not_call_readJsonlLines', () => {
     const spy = vi.spyOn(jsonlModule, 'readJsonlLines');
 
@@ -146,7 +146,7 @@ function writePiSession(cwd: string, userText: string, paddingLineCount: number)
   return sessionId;
 }
 
-describe('P2-3: summarizePiSession uses streaming early-stop (pi)', () => {
+describe('summarizePiSession uses streaming early-stop (pi)', () => {
   it('test_anchor_pi_summarize_does_not_call_readJsonlLines', () => {
     const spy = vi.spyOn(jsonlModule, 'readJsonlLines');
 

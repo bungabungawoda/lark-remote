@@ -1,16 +1,16 @@
 /**
- * P2-6 anchor: pi readSessionContent single-pass parsing invariant
+ * pi readSessionContent single-pass parsing invariant
  *
- * Before P2-6, pi readSessionContent (src/session/pi/sessions.ts) parsed
+ * Before pi readSessionContent (src/session/pi/sessions.ts) parsed
  * allLines 4 times:
  *   1. last-user-message scan — JSON.parse every line
  *   2. event collection — JSON.parse from startIdx to end
  *   3. extractUsage — JSON.parse every line
  *   4. extractDisplayTitle — JSON.parse every line
  *
- * After P2-6, a single first pass must collect usage + lastUserIdx +
+ * After a single first pass must collect usage + lastUserIdx +
  * displayTitle, and a second pass re-parses only the TAIL (events after
- * the last user message) — mirroring claude's P2-2 scalarScan +
+ * the last user message) — mirroring claude'sscalarScan +
  * extractEventsFromTail pattern.
  *
  * This anchor verifies the parse-to-line ratio drops from ~4× to ≤1.5×
@@ -24,7 +24,7 @@
  *   importance: 4× JSON.parse on multi-MB pi session files makes /resume
  *               synchronously block the event loop several× longer than
  *               necessary; users perceive sluggish /resume responses.
- *   spec_basis: §P2-6 ("pi readSessionContent
+ *   "pi readSessionContent
  *               4 遍解析 → 单遍聚合，解析 CPU -75%").
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
@@ -65,7 +65,7 @@ function writeSessionFile(sessionId: string, cwd: string, lines: unknown[]): str
   return filePath;
 }
 
-describe('P2-6 anchor: pi readSessionContent single-pass parsing', () => {
+describe('pi readSessionContent single-pass parsing', () => {
   it('test_anchor_pi_read_session_content_single_pass_ratio', () => {
     const sessionId = 'sess-p26';
     const cwd = '/tmp/proj';
@@ -130,8 +130,8 @@ describe('P2-6 anchor: pi readSessionContent single-pass parsing', () => {
       expect(result.displayTitle).toBe('question 39');
 
       // Core invariant: total JSON.parse calls inside readSessionContent
-      // must be bounded. Pre-P2-6: ~4× nonEmptyLines (4 full passes).
-      // Post-P2-6: nonEmptyLines (single pass) + short tail re-parse +
+      // must be bounded. Pre-~4× nonEmptyLines (4 full passes).
+      // Post-nonEmptyLines (single pass) + short tail re-parse +
       // readCwdFromPiJsonl fixed overhead (≈1-2 parses, independent of
       // line count). On an 81-line file the fixed overhead is diluted,
       // so the ratio converges to ~1.0-1.1.

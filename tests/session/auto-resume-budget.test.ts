@@ -159,12 +159,12 @@ describe('ws.use auto-resume budget bug - anchor', () => {
   });
 
   /**
-   * Multi-block messages: review P2-7 统一 maxEvents 契约为「最后 N 个 event」
+   * Multi-block messages:统一 maxEvents 契约为「最后 N 个 event」
    * （与 codex/opencode/pi/kimi 的 slice(-maxEvents) 对齐）。旧实现取 tail 的
    * 「前 N」并在 message boundary 软截断（不拆分单消息多 block）；新实现统一为
    * 硬 slice(-maxEvents)，保留最近 N 个 event。本 anchor 同步更新为「最后 N」语义。
    */
-  it('maxEvents keeps the LAST N events (review P2-7 unified contract)', () => {
+  it('maxEvents keeps the LAST N events (unified contract)', () => {
     const cwd = '/tmp/test-multi-block';
     const encoded = encodeClaudeProjectDir(cwd);
     const dir = path.join(tmpDir, encoded);

@@ -3,7 +3,7 @@ import type { CardStreamController } from '@larksuite/channel';
 import { RunCardSession } from '../../../src/card/run-card-session.js';
 
 /**
- * PROBE (P1-3 finish 立即 flush + 残留窗口不丢) — spec 红线：finish() 必须立即
+ * PROBE (finish 立即 flush + 残留窗口不丢) — spec 红线：finish() 必须立即
  * flush 不能合批（终态要即时显示）；最后一次 push 后的残留窗口必须 flush（否则
  * 丢最后一批事件）。本锚点测试 验证合批引入后这两条不变量未退化。
  *
@@ -15,10 +15,10 @@ import { RunCardSession } from '../../../src/card/run-card-session.js';
  * ③ finish cancel pending：push 后立即 finish（窗口未到期），断言延迟 flush 不
  *    在 finish 之后触发用旧 state 覆盖终态卡（updates 末尾是终态内容）。
  *
- * 依据：§P1-3「注意：finish() 必须立即 flush 不能合批
+ * 「注意：finish() 必须立即 flush 不能合批
  * （终态要即时显示）」+「需保证最后一次 push 后 flush 残留窗口」。
  */
-describe('RunCardSession finish flush + residual window (P1-3 anchor)', () => {
+describe('RunCardSession finish flush + residual window', () => {
   let updates: object[];
   let controller: CardStreamController;
 

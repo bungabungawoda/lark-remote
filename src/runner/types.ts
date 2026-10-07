@@ -420,7 +420,7 @@ export interface Runner {
   killOrphan(): void;
   registerExitHandlers(): void;
   /**
-   * Remove the runner from the process-level exit dispatcher (P1-1). Called by
+   * Remove the runner from the process-level exit dispatcher. Called by
    * the bridge when the (cwd, kind) cache slot is evicted so the instance is
    * not retained by the singleton dispatcher. Optional so test stubs that only
    * satisfy `registerExitHandlers` remain structurally valid.

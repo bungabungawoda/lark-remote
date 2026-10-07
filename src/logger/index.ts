@@ -40,7 +40,7 @@ function todayStr(d: Date): string {
 }
 
 function timestampStr(d: Date): string {
-  // P2-19②: local ISO 8601 with milliseconds and explicit offset, e.g.
+  // local ISO 8601 with milliseconds and explicit offset, e.g.
   // 2026-08-03T01:30:00.000+08:00. Previously this used toISOString() (UTC)
   // while the daily directory boundary (todayStr) used local time — after
   // local midnight in a +08:00 zone the new day's directory held lines
@@ -107,7 +107,7 @@ export class Logger {
     fs.mkdirSync(dayDir, { recursive: true });
     this.currentFile = path.join(dayDir, `${this.prefix}-${this.pid}.log`);
     this.currentDate = dateStr;
-    // P2-19①: prune daily log directories older than the retention window so
+    // prune daily log directories older than the retention window so
     // the logs directory does not grow without bound (single-day size cap is
     // out of scope; bounded retention by day is the requested guard). Wrapped
     // defensively so cleanup failure never blocks logging.
@@ -116,7 +116,7 @@ export class Logger {
   }
 
   /**
-   * P2-19①: remove daily subdirectories older than the retention window.
+   * remove daily subdirectories older than the retention window.
    * Best-effort — any error is swallowed (logging must never throw).
    */
   private pruneOldDirs(currentDateStr: string): void {
@@ -148,7 +148,7 @@ export class Logger {
     const line = `${ts} [${LEVEL_UPPER[level]}] ${message}\n`;
 
     const file = this.ensureFile(date);
-    // P2-19③: never let a disk error (EACCES / ENOSPC / EROFS) escape write().
+    // never let a disk error (EACCES / ENOSPC / EROFS) escape write().
     // If logging itself throws — especially inside an uncaughtException handler
     // that calls logger.error(...) — a re-throw would abort Node and skip
     // instanceLock.release(), leaking the singleton lock. Logging must never

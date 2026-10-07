@@ -98,16 +98,15 @@ const BUNDLED_JSON_WITH_REASONING = JSON.stringify({
 });
 
 // ---------------------------------------------------------------------------
-// 1. getCodexBundledModels (Round 1 — uses execFileSync mock)
+// 1. getCodexBundledModels (uses execFileSync mock)
 // ---------------------------------------------------------------------------
 
 /**
- * Red Agent - Round 1 - Anchor
+ * Red Agent -- Anchor
  *
  * Target: getCodexBundledModels() 应返回完整的模型信息
  * 包含 supported_reasoning_levels、default_reasoning_level、display_name、priority
  *
- * Spec basis: Codex OpenAI provider + config extension 方案 §3.2
  */
 describe('getCodexBundledModels - anchor', () => {
   beforeEach(() => {
@@ -188,7 +187,7 @@ describe('getCodexBundledModels - anchor', () => {
 });
 
 // ---------------------------------------------------------------------------
-// getReasoningEffortOptions / getDefaultReasoningEffort (Round 1 continued)
+// getReasoningEffortOptions / getDefaultReasoningEffort (continued)
 // ---------------------------------------------------------------------------
 
 describe('getReasoningEffortOptions - anchor', () => {
@@ -248,12 +247,12 @@ describe('getDefaultReasoningEffort - anchor', () => {
 });
 
 // ---------------------------------------------------------------------------
-// P2-2: reasoning effort functions read the bundled catalog via the
-// hard-coded 'codex' binary (Round 2, binary param removed)
+// reasoning effort functions read the bundled catalog via the
+// hard-coded 'codex' binary (binary param removed)
 // ---------------------------------------------------------------------------
 
 /**
- * Red Agent - Round 2 - Anchor (Bug 模式)
+ * Red Agent -- Anchor (Bug 模式)
  *
  * Target: getReasoningEffortOptions / getDefaultReasoningEffort 必须从 codex
  * bundled 目录读取声明档位与默认档位
@@ -262,7 +261,7 @@ describe('getDefaultReasoningEffort - anchor', () => {
  * 支持自定义 binary 参数），通过 CODEX_HOME 指向无 config.toml 的临时目录走
  * bundled 目录模式。
  */
-describe('P2-2: reasoning effort functions read bundled catalog', () => {
+describe('reasoning effort functions read bundled catalog', () => {
   let tmpDir: string;
   let oldCodexHome: string | undefined;
 
@@ -329,15 +328,14 @@ describe('P2-2: reasoning effort functions read bundled catalog', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Config card codex model switch reasoning adjustment (Round 7)
+// Config card codex model switch reasoning adjustment
 // ---------------------------------------------------------------------------
 
 /**
- * Red Agent - Round 7 - Anchor
+ * Red Agent -- Anchor
  *
  * Target: 切换模型后，推理强度自动调整到新模型支持的范围
  *
- * Spec basis: Codex OpenAI provider + config extension 方案 §3.2
  */
 
 const MODEL_SWITCH_BUNDLED_JSON = JSON.stringify({

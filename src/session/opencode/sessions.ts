@@ -40,7 +40,7 @@ interface OpencodeSessionReaderOptions {
   /**
    * Override the raw `opencode export <id>` capture (returns the JSON string).
    * Default routes stdout to a temp file fd to bypass opencode's ~128KB pipe
-   * truncation on large sessions (L1). Injectable for testing.
+   * truncation on large sessions. Injectable for testing.
    */
   captureExport?: (sessionId: string) => string;
 }
@@ -146,7 +146,7 @@ export class OpencodeSessionReader implements AgentSessionReader {
       sessions: items.map((e) => ({
         sessionId: e.id,
         // CLI title 字段形状不保证恒为 string（null/缺字段时 router 的
-        // s.summary.trim() 会 TypeError）——非 string 给空串（Review R3 P3-3）。
+        // s.summary.trim() 会 TypeError）——非 string 给空串（Review）。
         summary: typeof e.title === 'string' ? e.title : '',
         mtime: e.updated,
       })),
@@ -171,7 +171,7 @@ export class OpencodeSessionReader implements AgentSessionReader {
   ): SessionContent {
     const realCwd = this.realpath(cwd);
 
-    // L1/L3: capture raw export via the injectable seam, then parse. Distinguish
+    // capture raw export via the injectable seam, then parse. Distinguish
     // a truly-missing session (empty capture) from a truncated/corrupt one
     // (non-empty but unparseable) so we never show the misleading "未找到" for
     // a session whose content is merely too large to pipe through stdout.
@@ -261,7 +261,7 @@ export class OpencodeSessionReader implements AgentSessionReader {
               const rawOut = isError
                 ? (part.state.error ?? part.state.output)
                 : (part.state.output ?? '');
-              // L2: pre-fold pathological tool_results (e.g. a 500KB file
+              // pre-fold pathological tool_results (e.g. a 500KB file
               // listing) via the shared truncateUtf8 primitive, reusing the
               // same …（已截断） suffix as the live renderer / card budget.
               events.push({
@@ -285,7 +285,7 @@ export class OpencodeSessionReader implements AgentSessionReader {
             // ccusage-aligned: cache.write -> cacheCreationTokens.
             // contextLength = input + cacheRead + cacheCreation (excludes
             // output/reasoning) — the unified context-window occupancy
-            // contract across all five readers (review P2-8).
+            // contract across all five readers.
             if ((part.tokens.total ?? 0) !== 0) {
               usage = {
                 inputTokens: part.tokens.input,
@@ -426,7 +426,7 @@ export class OpencodeSessionReader implements AgentSessionReader {
       const res = spawnProcessSync(this.binary, ['session', 'list', '--format', 'json'], {
         encoding: 'utf-8',
         timeout: 10000,
-        // P1-15: default maxBuffer is 1MiB — a large session list (>1MiB JSON)
+        // default maxBuffer is 1MiB — a large session list (>1MiB JSON)
         // throws ENOBUFS, which the catch below silently turns into [] and the
         // user sees "no sessions" even though the CLI returned healthy data.
         maxBuffer: 64 * 1024 * 1024,
@@ -454,7 +454,7 @@ export class OpencodeSessionReader implements AgentSessionReader {
 
       return data;
     } catch (err) {
-      // P1-15: 区分「读取失败」与「真空/陈旧 cwd」。
+      // 区分「读取失败」与「真空/陈旧 cwd」。
       // - ENOENT（cwd 已删除或 binary 缺失）：沿用既有契约返回 []——/resume 对
       //   陈旧 cwd 保持优雅（sessions.test.ts「Stale-cwd coverage gap」+ round10
       //   探针的跨 reader 空目录不变量都钉死此行为）。
@@ -472,7 +472,7 @@ export class OpencodeSessionReader implements AgentSessionReader {
   /**
    * Capture raw `opencode export <sessionId>` output (JSON string). Injectable
    * via the constructor; the default routes stdout to a temp file fd to bypass
-   * opencode's ~128KB pipe truncation on large sessions (L1).
+   * opencode's ~128KB pipe truncation on large sessions.
    */
   /** 导出会话内容（public：测试直接调用，替代 as unknown as）。 */
   captureExport(sessionId: string): string {
@@ -481,7 +481,7 @@ export class OpencodeSessionReader implements AgentSessionReader {
   }
 
   /**
-   * L1 default transport: run `opencode export` with stdout pointed at a
+   * default transport: run `opencode export` with stdout pointed at a
    * regular-file fd (NOT a pipe). opencode truncates piped stdout at ~128KB for
    * large sessions (huge tool_results), breaking JSON.parse; a file fd receives
    * the full output (verified: 1.3MB parses OK). execFileSync returns null when
@@ -499,7 +499,7 @@ export class OpencodeSessionReader implements AgentSessionReader {
         encoding: 'utf-8',
         timeout: 30000,
         stdio: ['ignore', fd, 'pipe'],
-        // P1-15: stderr is piped here; without maxBuffer a chatty CLI (>1MiB
+        // stderr is piped here; without maxBuffer a chatty CLI (>1MiB
         // stderr) would throw ENOBUFS and lose the export. Keep the default
         // stdout file-fd transport unaffected by raising the pipe cap.
         maxBuffer: 64 * 1024 * 1024,

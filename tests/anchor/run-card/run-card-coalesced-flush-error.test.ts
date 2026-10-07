@@ -3,7 +3,7 @@ import type { CardStreamController } from '@larksuite/channel';
 import { RunCardSession } from '../../../src/card/run-card-session.js';
 
 /**
- * PROBE (P1-3 coalesced-path flush error handling) — 生产路径使用默认 coalesceMs=100，
+ * PROBE (coalesced-path flush error handling) — 生产路径使用默认 coalesceMs=100，
  * push fire-and-forget 调 scheduleFlush → timer 回调 `void this.flush()`。若
  * flush() → updateCard() 内部抛错，`void` 丢弃的 rejection 变成 detached
  * unhandled rejection。本锚点测试 验证：
@@ -14,11 +14,11 @@ import { RunCardSession } from '../../../src/card/run-card-session.js';
  *    也抛错时，不导致 unhandled rejection（双路径均 catch）。
  * ③ flush 终态守卫：finish 转终态后，timer 触发的 flush 跳过 patch（不覆盖终态卡）。
  *
- * 依据：第三轮 review P3「coalesced-path void this.flush() rejection 完全无测试」。
+ * 依据：第三轮「coalesced-path void this.flush() rejection 完全无测试」。
  * 当前所有 push 错误处理测试都设 coalesceMs:0（同步路径），生产路径的 detached
  * flush rejection 无覆盖。
  */
-describe('RunCardSession coalesced-path flush error (P1-3 anchor)', () => {
+describe('RunCardSession coalesced-path flush error', () => {
   let unhandledRejections: unknown[];
 
   beforeEach(() => {
@@ -115,7 +115,7 @@ describe('RunCardSession coalesced-path flush error (P1-3 anchor)', () => {
   });
 
   it('test_anchor_finish_await_inflight_flush_then_terminal_wins', async () => {
-    // 验证 P2 修复核心路径：finish await in-flight flush，保证 terminal patch 在
+    // 验证修复核心路径：finish await in-flight flush，保证 terminal patch 在
     // pre-terminal 之后。人为延迟 flush 的 controller.update 让它在 finish 时仍
     // in-flight。时序：push → timer 到期触发 flush（flush 的 controller.update
     // 阻塞）→ finish → finish 等 flushP → resolve controller.update(PRE) →
@@ -178,7 +178,7 @@ describe('RunCardSession coalesced-path flush error (P1-3 anchor)', () => {
 
     await finishP;
 
-    // 最后一帧必须是 TERMINAL（P2 核心契约：finish 等 flushP → PRE 先 → TERMINAL 后）。
+    // 最后一帧必须是 TERMINAL（核心契约：finish 等 flushP → PRE 先 → TERMINAL 后）。
     expect(patches.at(-1)).toBe('TERMINAL');
     // 期间至少有一次 PRE（in-flight flush 的 pre-terminal patch 确实发生了）。
     expect(patches.filter((p) => p === 'PRE').length).toBeGreaterThanOrEqual(1);

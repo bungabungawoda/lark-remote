@@ -5,7 +5,7 @@ import type { RunState } from '../../../src/card/run-state.js';
 /**
  * ADVERSARIAL PROBE — 攻击 renderRunCard 的 ≤28KB 不变量。
  *
- * P1-2 引入 estimateCardBytes 廉价估算 + DEGRADED_THRESHOLD=24000 阈值，用估算
+ * 引入 estimateCardBytes 廉价估算 + DEGRADED_THRESHOLD=24000 阈值，用估算
  * 决定走正常路径还是 degraded。估算用 ESTIMATE_ESCAPE_FACTOR=1.2 覆盖 JSON 转义
  * 膨胀，但真实转义对 \n → \\n 是 2× 膨胀，对 " → \" 也是 2×。若 content 高密度
  * 转义字符，估算的 1.2 因子严重低估真实 stringify 体积。

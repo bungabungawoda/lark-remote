@@ -4,11 +4,11 @@
  * Consolidates the per-reader memory caches that previously hand-rolled the
  * same "mtime/TTL + entry cap" Map pattern (kimi/pi/opencode session readers).
  * Semantics follow the kimi implementation:
- * - TTL is measured from the cache-write time (P1-17 defect 2), not key mtime.
+ * - TTL is measured from the cache-write time (defect 2), not key mtime.
  *   Note: ttlMs = 0 effectively disables caching — `Date.now() - at >= 0` is
  *   always true, so every entry expires immediately.
  * - A hit refreshes recency (LRU); eviction removes the least recently
- *   inserted/used entry past `maxEntries` (P1-17 defect 1: unbounded growth).
+ *   inserted/used entry past `maxEntries` (defect 1: unbounded growth).
  *   The old pi implementation did NOT re-insert on hit (FIFO eviction); the
  *   eviction order for pi therefore changes from FIFO to LRU here.
  */

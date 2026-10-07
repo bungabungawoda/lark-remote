@@ -25,7 +25,7 @@ import { mockLogger } from '../../lib/logger-mock.js';
 import { rmRf } from '../../lib/tmp-cleanup.js';
 
 /**
- * P2-2（codex-y review）：本文件此前未 mock node:child_process，卡片构建会真实调用
+ * （评审发现）：本文件此前未 mock node:child_process，卡片构建会真实调用
  * `codex debug models`，依赖宿主机二进制且每次同步阻塞最长 8s。现改为 mock，行为
  * 镜像真实 codex：config.toml 声明 model_catalog_json → 返回该文件内容；否则返回
  * bundled fixture（gpt-5.2 等，覆盖 AC1-3 的预设断言）。
@@ -243,25 +243,25 @@ describe('codex config card custom model input - ANCHOR', () => {
   });
 
   /**
-   * ANCHOR AC1: Codex config card should have custom model input field
+   * ANCHOR: Codex config card should have custom model input field
    *
    * Expected: A field with key 'agents.codex.model' and label containing "自定义模型名"
    */
 
   /**
-   * ANCHOR AC2: When current model is not in dropdown options, input field should show custom value
+   * ANCHOR: When current model is not in dropdown options, input field should show custom value
    *
    * Expected: When model is a custom value (e.g., 'custom-model-xyz'), input shows that value
    */
 
   /**
-   * ANCHOR AC3: When current model is in dropdown options, input field should be empty
+   * ANCHOR: When current model is in dropdown options, input field should be empty
    *
    * Expected: When model is a preset option (e.g., 'o3'), input should be empty
    */
 
   /**
-   * ANCHOR AC4: config.input handler should update pendingConfig for codex custom model
+   * ANCHOR: config.input handler should update pendingConfig for codex custom model
    *
    * Expected: When user inputs custom model via config.input, pendingConfig should be updated
    */
@@ -292,7 +292,7 @@ describe('codex config card custom model input - ANCHOR', () => {
   });
 
   /**
-   * ANCHOR AC5 (catalog 模式语义，2026-07-31): 活动目录是唯一权威。
+   * ANCHOR (catalog 模式语义，2026-07-31): 活动目录是唯一权威。
    * - 活动目录内的模型（deepseek-v4-flash + deepseek provider）→ 预设，输入框为空
    * - 旧 bundled 模型（gpt-5.2 + openai provider）不在活动目录 → 视为自定义值回显
    */
@@ -346,7 +346,7 @@ describe('codex config card custom model input - ANCHOR', () => {
       (f) => f.label.includes('自定义模型名') && f.key === 'agents.codex.model',
     );
     expect(custom2?.defaultValue).toBe('gpt-5.2');
-    // 强化：provider 下拉含内置 openai（codex 合并内置 provider，review4 P2）但无 anthropic；
+    // 强化：provider 下拉含内置 openai（codex 合并内置 provider，review4）但无 anthropic；
     // openai+内置模型路径在 catalog 模式下已失效——模型下拉仍只含活动目录模型
     const providerOptions2 = extractProviderOptions(card2.card);
     expect(providerOptions2).toContain('openai');

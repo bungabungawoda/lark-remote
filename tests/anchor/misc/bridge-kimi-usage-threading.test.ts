@@ -77,8 +77,7 @@ describe('Bridge threads jsonl input/output tokens to kimi done card (anchor)', 
    *   格式化依据 src/router/index.ts:3818-3824 formatTokenK: n>=1000 →
    *   Math.round(n/1000)+"K"（7900→8K、9300→9K、10130→10K），n<1000 → 原值（800→"800"）。
    *
-   * 依据 spec（spec_basis）:
-   *   spec 要求 jsonl 作为数据源——live result 事件没有 usage 时，
+   *   jsonl 作为数据源——live result 事件没有 usage 时，
    *   终态卡片必须用 jsonl 读出的真实 inputTokens/outputTokens。
    */
   it('test_anchor_bridge_threads_jsonl_input_output_tokens_to_done_card', async () => {

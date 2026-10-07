@@ -5,7 +5,7 @@ import os from 'node:os';
 import { mockLogger } from '../../lib/logger-mock.js';
 
 /**
- * Red Agent - Round 11 - Anchor (P2-1, review finding → anchor)
+ * Red Agent -- Anchor (review finding → anchor)
  *
  * Target: 活动目录中某模型声明 `supported_reasoning_levels` 含 `minimal` 时，
  * getReasoningEffortOptions 必须保留该档位。codex 源码 ReasoningEffort 枚举
@@ -15,7 +15,7 @@ import { mockLogger } from '../../lib/logger-mock.js';
  * Importance: 未来任何目录（含自定义 models.json）声明 minimal 时，卡片会静默
  * 隐藏一个 codex 真实支持的档位——过滤集合必须与 codex 枚举对齐。
  *
- * Spec basis: P2-1（review 发现）+ codex ReasoningEffort 枚举。
+ * Spec basis: codex ReasoningEffort 枚举。
  */
 
 const { mockSpawnSync } = vi.hoisted(() => ({ mockSpawnSync: vi.fn() }));

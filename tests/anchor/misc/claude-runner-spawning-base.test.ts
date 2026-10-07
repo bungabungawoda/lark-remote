@@ -11,7 +11,7 @@
  *
  * What goes wrong if missing/incorrect (②):
  *   若 ClaudeSession 不继承 SpawningRunner，pid 文件/killOrphan/心跳/退出
- *   分发会退化为重复实现或丢失（P1-1/P1-10 契约破坏）。
+ *   分发会退化为重复实现或丢失（契约破坏）。
  *
  * Spec basis (③):
  *   长驻会话生命周期：src/runner/claude/session.ts（新增）参照

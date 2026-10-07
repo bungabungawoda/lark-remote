@@ -5,7 +5,7 @@ import os from 'node:os';
 import { mockLogger } from '../../lib/logger-mock.js';
 
 /**
- * Red Agent - Round 10 - Anchor (P2-2, review finding → anchor)
+ * Red Agent -- Anchor (review finding → anchor)
  *
  * Target: config.toml 的 `model_catalog_json` 用**相对路径**（如 "models.json"）时，
  * 必须按 codex 语义解析——codex `AbsolutePathBuf::resolve_path_against_base`
@@ -15,7 +15,7 @@ import { mockLogger } from '../../lib/logger-mock.js';
  * Importance: 相对路径是合法配置写法；解析错位会导致 isCodexCatalogMode 误判为非
  * catalog 模式，卡片退回 bundled 列表（openai+gpt-5.x）——正是本次要消灭的 bug 家族。
  *
- * Spec basis: P2-2（review 发现）+ codex 源码 AbsolutePathBuf 语义。
+ * Spec basis: codex 源码 AbsolutePathBuf 语义。
  */
 
 const { mockSpawnSync } = vi.hoisted(() => ({ mockSpawnSync: vi.fn() }));

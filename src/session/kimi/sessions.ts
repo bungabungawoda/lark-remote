@@ -206,7 +206,7 @@ function readJsonlLines(filePath: string): Iterable<string> {
     const stat = fs.statSync(filePath);
     const mtime = stat.mtimeMs;
 
-    // P1-17: TTL 由 TtlCache 按缓存写入时间判定（不是文件 mtime），命中即 LRU 刷新；
+    // TTL 由 TtlCache 按缓存写入时间判定（不是文件 mtime），命中即 LRU 刷新；
     // mtime 变化视为失效（文件被改写后不得返回旧行）。
     const cached = jsonlCache.get(filePath);
     if (cached && mtime === cached.mtime) {
@@ -340,7 +340,7 @@ export class KimiSessionReader implements AgentSessionReader {
       const sessions: AgentSession[] = [];
 
       for (const entry of this.scanSessionIndex()) {
-        // W2.7：state.json 一次读取共用（cwd 兜底 + summary），I/O 减半。
+        // state.json 一次读取共用（cwd 兜底 + summary），I/O 减半。
         // 两次 catch 语义保留：解析失败 = 无法判 cwd → 跳过（continue）；
         // 解析成功但字段缺失 = summary 落 wire.jsonl 提取。
         const statePath = path.join(entry.sessionDir, 'state.json');
@@ -380,7 +380,7 @@ export class KimiSessionReader implements AgentSessionReader {
           summary = this.extractLastPromptFromWire(wirePath) || 'New Session';
         }
 
-        // Get mtime. P1-16: the session DIRECTORY mtime only changes when
+        // Get mtime. the session DIRECTORY mtime only changes when
         // entries are created/deleted/renamed inside it — kimi appending to
         // agents/main/wire.jsonl during a run does NOT touch it, so dir-mtime
         // sorting lags real activity by minutes. Use the wire.jsonl mtime
@@ -487,7 +487,7 @@ export class KimiSessionReader implements AgentSessionReader {
           cacheCreation: inputCacheCreation,
         });
         if (updateContextLength) {
-          // review P2-8 unified contract: input + cacheRead + cacheCreation
+          // unified contract: input + cacheRead + cacheCreation
           // (excludes output — generated, not part of the input window).
           mainContextLength = inputOther + inputCacheRead + inputCacheCreation;
         }
@@ -508,7 +508,7 @@ export class KimiSessionReader implements AgentSessionReader {
           // 展示计数只计 context.apply_compaction：一次手动 /compact 会同时写
           // full_compaction.complete + context.apply_compaction 两条（2026-08-16
           // 实弹 wire.jsonl），双计会把一次压缩虚报成 2 次。full_compaction.complete
-          // 仅作 R2 runCompact 轮询的完成信号（readCompactionRecords 仍返回两种）。
+          // 仅作 runCompact 轮询的完成信号（readCompactionRecords 仍返回两种）。
           if (isCompactionComplete(entry) && entry.type === 'context.apply_compaction') {
             compactCount++;
             // Capture context length before this compaction as the pre-compact
@@ -519,7 +519,7 @@ export class KimiSessionReader implements AgentSessionReader {
             continue;
           }
 
-          // P2-7: displayTitle + display events now scan ALL lines (not a
+          // displayTitle + display events now scan ALL lines (not a
           // line-slice), then `events.slice(-maxEvents)` keeps the LAST N
           // EVENTS. Previously `lines.slice(-maxEvents)` cut raw lines, but
           // usage.record / step.begin / turn.prompt lines produce no display
@@ -560,7 +560,7 @@ export class KimiSessionReader implements AgentSessionReader {
               });
             } else if (evt.type === 'tool.result') {
               // result is { output }, { output, note }, or { isError, output }
-              // 对齐 opencode reader 的 L2 预折叠：单条 tool_result 上限
+              // 对齐 opencode reader 的预折叠：单条 tool_result 上限
               // TOOL_RESULT_MAX_BYTES，病理级输出（如 51KB 文件读取）不会
               // 撑爆 resume 卡，也约束 events[] 内存占用。
               const rawOut = evt.result?.output ?? `[tool result for ${evt.toolCallId}]`;
@@ -680,7 +680,7 @@ export class KimiSessionReader implements AgentSessionReader {
 
   /**
    * 由 begin/terminal 记录重建压缩状态机：最后一次 begin 无更新的 terminal
-   * 记录 = 在途（kimi-compact-wait-redesign §5.1）。崩溃墓碑由 kimi resume
+   * 记录 = 在途。崩溃墓碑由 kimi resume
    * 时补写 full_compaction.cancel，天然闭合。
    */
   readCompactionState(
@@ -710,7 +710,7 @@ export class KimiSessionReader implements AgentSessionReader {
   }
 
   /**
-   * W2.5 单源：resolveSessionWirePath 与 isSessionActive 共用的 cwd 守卫
+   * 单源：resolveSessionWirePath 与 isSessionActive 共用的 cwd 守卫
    * （realpathSync → state.json workDir/cwd 三态 → index workDir 兜底 →
    * fail-closed）。返回 sessionDir；会话未知或守卫不过返回 null。
    */
@@ -801,7 +801,7 @@ export class KimiSessionReader implements AgentSessionReader {
    * Check if a session is currently active
    */
   isSessionActive(sessionId: string, cwd: string): boolean {
-    // W2.5：cwd 守卫与 resolveSessionWirePath 共用 verifySessionCwd（单源）。
+    // cwd 守卫与 resolveSessionWirePath 共用 verifySessionCwd（单源）。
     const verified = this.verifySessionCwd(sessionId, cwd);
     if (!verified) return false;
 
@@ -822,7 +822,7 @@ export class KimiSessionReader implements AgentSessionReader {
       // Read the tail to check for active indicators. kimi appends
       // usage.record after step.end at turn completion, so the last loop
       // event (not the last line) decides whether the session is complete.
-      // P2-5: `lastLoopEventIsStepEnd` only scans backwards up to
+      // `lastLoopEventIsStepEnd` only scans backwards up to
       // LOOP_EVENT_SCAN_LIMIT lines, so we read only that many trailing lines
       // via the tail-only helper instead of full-slurping the whole wire log
       // (which can be multi-MB) into a string[].

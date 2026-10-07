@@ -18,7 +18,7 @@ import {
   createStubConnector,
 } from '../../lib/bridge-stubs.js';
 /**
- * Anchor (P3-1): resume.page 的 offset 数值化 + 页对齐，非法值不误导
+ * Anchor: resume.page 的 offset 数值化 + 页对齐，非法值不误导
  *
  * 验证什么行为：
  *   1. `resume.page` 回调里字符串/非法 offset（如 'abc'）必须按 0 数值化处理：
@@ -32,12 +32,11 @@ import {
  *   非法 offset 让用户看到"没有 session"的假空目录；offset 越界后分页栏页码
  *   与内容错位，用户翻页点到的不是期望的会话，且旧卡片无法原地刷新。
  *
- * 依据（review P3-1）：
  *   "offset clamp 到页对齐的末页起点（pageSize 倍数）"；回调参数来自卡片
  *   payload（JSON value），必须是数值化后参与比较/切片，任何 NaN 值都不应
  *   产生误导性空页文案。
  */
-describe('P3-1 resume.page offset 数值化 + 页对齐', () => {
+describe('resume.page offset 数值化 + 页对齐', () => {
   let tmpDir: string;
   let connector: ReturnType<typeof createStubConnector>;
   let router: CommandRouter;

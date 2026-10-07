@@ -1,6 +1,6 @@
 /**
- * Two-pass scan skeleton shared by the claude / pi session readers (P2-2 +
- * P2-5/P2-6 lineage): pass 1 STREAMS the whole file once via `scanJsonlLines`
+ * Two-pass scan skeleton shared by the claude / pi session readers (
+ * lineage): pass 1 STREAMS the whole file once via `scanJsonlLines`
  * (no `string[]` materialized), parsing each line exactly once to collect
  * scalars (usage, tail offset, title) while retaining NO parsed objects; pass
  * 2 re-reads ONLY the tail from the recorded offset and re-parses it for

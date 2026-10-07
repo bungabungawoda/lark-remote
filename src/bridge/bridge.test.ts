@@ -90,7 +90,7 @@ let config: AppConfig;
 const notFoundRead: AgentSessionReader['readSessionContent'] =
   createStubSessionReader().readSessionContent;
 
-/** W3.7：readSessionContent 兜底返回「单条 tail + 指定 usage」的同形状闭包。 */
+/** readSessionContent 兜底返回「单条 tail + 指定 usage」的同形状闭包。 */
 function tailRead(usage?: AgentSessionUsage): AgentSessionReader['readSessionContent'] {
   return () => ({
     events: [{ type: 'text', content: 'tail' }],
@@ -527,7 +527,7 @@ describe('Bridge + ClaudeRunner approval integration', () => {
       // 端到端链路：真实 ClaudeRunner（mock claude 协议）→ bridge 事件循环 →
       // ApprovalCoordinator → run 卡审批区 → 点击允许 → control_response 回写 →
       // mock 继续执行 → result → 卡片 done。协议单测在 runner 层、审批 UI 在
-      // bridge 层，本测试覆盖中间的接线（review P3-5）。
+      // bridge 层，本测试覆盖中间的接线。
       const mockPath = path.resolve(__dirname, '../../tests/lib/mock-claude.js');
       writeMockBin(integrationTmpDir, 'claude', mockPath);
       process.env.MOCK_SCENARIO = 'approval';
@@ -1063,7 +1063,7 @@ describe('Bridge.sendResult', () => {
 
 // --- setConfig ---
 
-// --- syncActiveApprovalModes (§P5 hot push) ---
+// --- syncActiveApprovalModes (hot push) ---
 
 /** Runner that records updateApprovalMode calls and holds the run until released. */
 function createApprovalHotPushRunner(): {
@@ -1093,7 +1093,7 @@ function createApprovalHotPushRunner(): {
   return { runner, release: releaseRun };
 }
 
-describe('Bridge.syncActiveApprovalModes (§P5 hot push)', () => {
+describe('Bridge.syncActiveApprovalModes (hot push)', () => {
   it('hot-pushes kimi permissionMode to the active run', async () => {
     const { runner } = createApprovalHotPushRunner();
     const { bridge, sessionStore } = makeBridge({
@@ -1464,7 +1464,7 @@ describe('Bridge agentRegistry / sessionReaderRegistry', () => {
     expect(JSON.stringify(connector._cards.at(-1))).toContain('REGISTRY-MARKER');
   });
 
-  it('getRunner reclaims stopped runner slots beyond the cache cap (P3 review)', async () => {
+  it('getRunner reclaims stopped runner slots beyond the cache cap', async () => {
     // 旧 cwd 的 runner 在会话 idle TTL 停进程后仍留在缓存里。创建新
     // cwd 槽位超过缓存上限时回收「非 active 且进程已停」的死槽位，
     // 防止缓存随访问过的 cwd 数量无界增长（活进程/在途 run 一律保留；
@@ -1517,7 +1517,7 @@ describe('Bridge agentRegistry / sessionReaderRegistry', () => {
     expect(created[10].entry.disposed).toBe(false);
   });
 
-  it('config change during an active run evicts the stale cwd runner after the run ends (P1)', async () => {
+  it('config change during an active run evicts the stale cwd runner after the run ends', async () => {
     // clearRunners() 对活跃 cwd 直接 skip，而 finalizeRun() 只 evict
     // lifetime !== 'workspace' 的 runner；全部 runner 都是 cwd → 活跃 cwd
     // 的 runner 既不因 clearRunners 被清、也不因 finalize 被清，下一轮复用旧配置实例。
@@ -1661,7 +1661,6 @@ describe('Bridge agentRegistry / sessionReaderRegistry', () => {
     // 验证：完成通知卡片（streamCard 失败回退路径）从 session content usage
     // 透传 contextLimit 渲染 "Context - X (Y%)"。
     // 缺失/错误会导致：通知卡片只看得到绝对量，看不到水位。
-    // 依据：spec 摘要第 2 条（卡片统计输出百分比）。
     const { SessionReaderRegistry } = await import('../session/registry.js');
     const readSpy = vi.fn(() => ({
       events: [{ type: 'text', content: 'notif ctx marker' }],
@@ -1889,7 +1888,6 @@ describe('Bridge agentRegistry / sessionReaderRegistry', () => {
     // 验证：resolveFinalUsage 把 jsonl usage.contextLimit 透传到最终 usage，
     // "[lark-remote] final usage" 探针日志输出 contextLimit=...，Run 卡片据此渲染百分比。
     // 缺失/错误会导致：codex 会话的 context 上限在卡片链路中途丢失，只能显示绝对量。
-    // 依据：spec 摘要第 1、2 条（codex jsonl → bridge → 卡片链路）。
     const { SessionReaderRegistry } = await import('../session/registry.js');
     const readSpy = vi.fn(() => ({
       events: [],
@@ -1943,7 +1941,6 @@ describe('Bridge agentRegistry / sessionReaderRegistry', () => {
     // 验证：jsonl usage.contextLimit 经 resolveFinalUsage → finish meta →
     // RunState → run-renderer 全链路后，done 卡片渲染 "Context - X (Y%)"。
     // 缺失/错误会导致：上限在链路中途丢失（如 finish 不透传），卡片只显示绝对量。
-    // 依据：spec 摘要第 2 条（Run 卡片显示百分比）。
     const { SessionReaderRegistry } = await import('../session/registry.js');
     const readSpy = vi.fn(() => ({
       events: [],
@@ -1999,7 +1996,7 @@ describe('Bridge agentRegistry / sessionReaderRegistry', () => {
     // tokenUsage.modelContextWindow 透传）在 jsonl 无 contextLimit 时兜底，
     // done 卡片渲染 "Context - X (Y%)"。
     // 缺失/错误会导致：jsonl 未落盘 / error run 时 app-server 卡片只有绝对量。
-    // 依据：spec 摘要第 2 条 + app-server v2 协议 thread/tokenUsage/updated。
+    // 依据：app-server v2 协议 thread/tokenUsage/updated。
     const { SessionReaderRegistry } = await import('../session/registry.js');
     const readSpy = vi.fn(() => ({
       events: [],
@@ -2121,7 +2118,6 @@ describe('Bridge agentRegistry / sessionReaderRegistry', () => {
     //           记一条 WARN 探针，含 "no usage from jsonl" + sessionId/cwd/agent。
     // 缺失后果: jsonl 兜底失败完全静默，token 统计悄悄回退到单 run live 增量，
     //           无任何日志线索。探针让同类故障一眼可见。
-    // 依据: worktree relocate 方案 §3.2。
     const { SessionReaderRegistry } = await import('../session/registry.js');
     const readSpy = vi.fn(() => ({
       events: [],
@@ -2198,9 +2194,9 @@ function sessionStore_setCwd(bridge: Bridge, userId: string, cwd: string): void 
   bridge.sessionStore.setCwd(userId, cwd);
 }
 
-// --- finalizing 专项集成测试 (§7.3) ---
+// --- finalizing 专项集成测试 ---
 
-describe('Bridge finalizing integration tests (§7.3)', () => {
+describe('Bridge finalizing integration tests', () => {
   /**
    * Test 1: result 后 state=finalizing，for-await 继续，进程退出后 finish(done)
    *
@@ -2564,10 +2560,10 @@ describe('Bridge finalizing integration tests (§7.3)', () => {
  * 验证：currentBinding(userId) 快照当前 config.defaultAgent + sessionStore.getSessionId(userId, agent)，
  * 作为入队时刻的 agent+session 绑定。
  *
- * 缺失/错误会导致：排队消息执行时（T1）读到被 /new 或 /config 改写的 live 状态，
+ * 缺失/错误会导致：排队消息执行时读到被 /new 或 /config 改写的 live 状态，
  * 语义漂移——跑进错误的 agent 或新 session。
  *
- * 依据：方案 D4「捕获实现」。
+ * 依据：「捕获实现」。
  */
 describe('Bridge.currentBinding (AgentBinding snapshot)', () => {
   it('test_anchor_current_binding_snapshots_default_agent_and_session', () => {
@@ -2596,7 +2592,7 @@ describe('Bridge.currentBinding (AgentBinding snapshot)', () => {
 });
 
 /**
- * Bridge.forwardToClaude AgentBinding (D2/D5)
+ * Bridge.forwardToClaude AgentBinding
  *
  * 验证：带 binding 调 forwardToClaude 时，runner.run 收到的 runOpts.sessionId
  * 等于 binding 钉死的 sessionId，即使 store 已被 /new 清空。
@@ -2604,9 +2600,9 @@ describe('Bridge.currentBinding (AgentBinding snapshot)', () => {
  * 缺失/错误会导致：排队消息执行时读到被 /new 改写的 live 状态（undefined），
  * 语义漂移——跑进新 session 而非入队时绑定的 session。
  *
- * 依据：方案 D2「钉死语义」+ D5「forwardToClaude 解析式」+ Step5 测试1。
+ * 依据：「钉死语义」+「forwardToClaude 解析式」+ Step5 测试1。
  */
-describe('Bridge.forwardToClaude AgentBinding (D2/D5)', () => {
+describe('Bridge.forwardToClaude AgentBinding', () => {
   it('test_anchor_binding_pins_session_id_when_store_cleared', async () => {
     // 捕获 runner.run 收到的 runOpts（第 2 个参数）
     let capturedRunOpts: { sessionId?: string; cwd?: string } | undefined;
@@ -2630,7 +2626,7 @@ describe('Bridge.forwardToClaude AgentBinding (D2/D5)', () => {
 
     const { bridge, sessionStore } = makeBridge({ runner });
 
-    // 1. 设 cwd + claude session S1
+    // 1. 设 cwd + claude session `pinned-S1`
     sessionStore.setCwd(ctx.userId, tmpDir);
     sessionStore.setSessionIdAndCwd(ctx.userId, 'claude', 'S1', tmpDir);
 
@@ -2652,7 +2648,7 @@ describe('Bridge.forwardToClaude AgentBinding (D2/D5)', () => {
   });
 
   /**
-   * 跟随语义（D2 + D5）：binding 无 sessionId 但指定 agent（codex）时，
+   * 跟随语义：binding 无 sessionId 但指定 agent（codex）时，
    * runner.run 收到的 sessionId 必须跟随**绑定 agent**（codex）的 live session，
    * 而非 live defaultAgent（claude）的 session。
    *
@@ -2660,10 +2656,10 @@ describe('Bridge.forwardToClaude AgentBinding (D2/D5)', () => {
    * 1. sessionId 解析的 `?? this.sessionStore.getSessionId(userId, agentKind)` fallback 分支
    *    （binding.sessionId 为 undefined 时跟随 live）。
    * 2. agentKind 解析 `opts?.binding?.agent ?? this.config.defaultAgent` 必须取 binding.agent
-   *    （D5）——若错误地用 live defaultAgent，会取到 claude 槽位（undefined）而非 codex 的 C2。
+   * —若错误地用 live defaultAgent，会取到 claude 槽位（undefined）而非 codex 的 `codex-session-C2`。
    *
    * 场景对应 §3 行3 边界：入队时 codex 槽位为空（currentBinding 返回 {agent:'codex',
-   * sessionId:undefined}），排队期间用户开了 codex session C2，执行时应跟随到 C2。
+   * sessionId:undefined}），排队期间用户开了 codex session `codex-session-C2`，执行时应跟随到它。
    */
   it('test_anchor_binding_follows_live_session_for_bound_agent_when_session_id_undefined', async () => {
     // 捕获 runner.run 收到的 runOpts（第 2 个参数）
@@ -2692,7 +2688,7 @@ describe('Bridge.forwardToClaude AgentBinding (D2/D5)', () => {
     sessionStore.setCwd(ctx.userId, tmpDir);
     expect(sessionStore.getSessionId(ctx.userId, 'claude')).toBeUndefined();
 
-    // 2. 给 codex 槽位设 session C2（排队期间用户开了 codex session）
+    // 2. 给 codex 槽位设 session `codex-session-C2`（排队期间用户开了 codex session）
     sessionStore.setSessionIdAndCwd(ctx.userId, 'codex', 'C2', tmpDir);
     expect(sessionStore.getSessionId(ctx.userId, 'codex')).toBe('C2');
 
@@ -2703,13 +2699,13 @@ describe('Bridge.forwardToClaude AgentBinding (D2/D5)', () => {
     // 4. 带绑定执行（binding 指定 codex，无 sessionId → 应跟随 codex live session）
     await bridge.forwardToClaude('hello', ctx, { binding });
 
-    // 5. 断言：runner 收到 codex 的 live session C2，而非 claude 的（undefined）
+    // 5. 断言：runner 收到 codex 的 live session `codex-session-C2`，而非 claude 的（undefined）
     expect(capturedRunOpts).toBeDefined();
     expect(capturedRunOpts!.sessionId).toBe('C2');
   });
 
   /**
-   * 写回目标（D5 表 1008/1018 + §3 行4 + Step5 测试3）：
+   * 写回目标（表 1008/1018 + §3 行4 + Step5 测试3）：
    * binding agent = codex、live defaultAgent = claude 时，system.init 的 session
    * 写回调用的 agent 参数必须是 codex（绑定 agent），而非 claude（live）。
    *
@@ -2757,7 +2753,7 @@ describe('Bridge.forwardToClaude AgentBinding (D2/D5)', () => {
   });
 
   /**
-   * Runner 选择（D5 表 243 + §3 行2 + Step2）：
+   * Runner 选择（表 243 + §3 行2 + Step2）：
    * binding agent = codex、live defaultAgent = claude 时，forwardToClaude 实际
    * 跑的必须是 codex 的 runner（agentRegistry.get('codex', cwd)），而非 claude 的。
    *
@@ -2966,7 +2962,7 @@ describe('Bridge session epoch guard (2026-08-09)', () => {
   });
 
   /**
-   * 2026-10-07 事故：消息在 T0 commit（binding 钉住旧 session + epoch），随后
+   * 2026-10-07 事故：消息在入队时刻 commit（binding 钉住旧 session + epoch），随后
    * 用户点「新会话」清空并 bump epoch，消息才开跑。若 epoch 仍在执行起点捕获
    * （此时已是 bump 后的值），代际守卫漏判 → 旧 sessionId 被写回复活 reset。
    * 断言：runner 收到旧 session（binding 钉死），且 run 结束后 store 仍为空。
@@ -2995,12 +2991,12 @@ describe('Bridge session epoch guard (2026-08-09)', () => {
     sessionStore.setCwd(ctx.userId, tmpDir);
     sessionStore.setSessionIdAndCwd(ctx.userId, 'claude', 's-old', tmpDir);
 
-    // T0：入队/commit 时刻快照（binding 携带 sessionId + sessionEpoch）
+    // 入队/commit 时刻快照（binding 携带 sessionId + sessionEpoch）
     const binding = bridge.currentBinding(ctx.userId);
     expect(binding.sessionId).toBe('s-old');
     expect(binding.sessionEpoch).toBeTypeOf('number');
 
-    // T1：用户点「新会话」——清空 + bump epoch（发生在消息开跑之前）
+    // 用户点「新会话」——清空 + bump epoch（发生在消息开跑之前）
     sessionStore.clearSessionId(ctx.userId, 'claude');
     expect(sessionStore.getSessionId(ctx.userId, 'claude')).toBeUndefined();
 
@@ -3417,7 +3413,7 @@ describe('Bridge handleResumeCompact（resume 卡 Compact 按钮）', () => {
   });
 });
 
-describe('app-server error result session write-back (review P3-10)', () => {
+describe('app-server error result session write-back', () => {
   it('test_anchor_error_result_session_id_is_persisted_for_live_authority_runner', async () => {
     // 验证行为：app-server runner（getUsageAuthority() === 'live'）在 setup
     // 失败路径（thread/start 成功、turn/start 失败）发出的 error result 携带
@@ -3499,7 +3495,7 @@ describe('app-server error result session write-back (review P3-10)', () => {
 });
 
 // =============================================================================
-// streamCompact 终态映射 + 在途检测（kimi-compact-wait-redesign §5.3）
+// streamCompact 终态映射 + 在途检测
 // - error subtype 的 result 必须 finish 'error'（旧实现 sawResult 布尔把 error
 //   也当 done，放大器 bug）；
 // - compact 在途（reader.readCompactionState().inFlight）时直接回文本，不开卡、
@@ -3681,12 +3677,12 @@ describe('Bridge compact 终态映射 + 在途检测（§5.3）', () => {
 });
 
 // =============================================================================
-// A6：compact run 与普通 run 共用同一套生命周期（activeRuns 注册 + §9.12 空闲
+// compact run 与普通 run 共用同一套生命周期（activeRuns 注册 + §9.12 空闲
 // 看门狗 + 终态 reaction）。回归：streamCompact 自成一路 —— 引擎卡住时
 // /stop 找不到这个 run（控制通道无对象可停）、没有桥级看门狗兜底、终态后原消息
 // 上也没有状态表情。
 // =============================================================================
-describe('Bridge compact run 注册 / 看门狗 / 终态 reaction（A6）', () => {
+describe('Bridge compact run 注册 / 看门狗 / 终态 reaction', () => {
   type MockFn = ReturnType<typeof vi.fn>;
 
   /** 挂死的 runCompact：不发事件、直到 stop() 放行（模拟引擎压缩途中卡死）。 */

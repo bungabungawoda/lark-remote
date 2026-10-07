@@ -1,5 +1,5 @@
 /**
- * Anchor Test: P2-30 CardSession.start() 二次调用无超时兜底
+ * CardSession.start() 二次调用无超时兜底
  *
  * 背景：src/card/card-session.ts:94 的 start() 在 streamOutcome 已存在时
  * 直接 `return this.controllerReady`，绕过了首次调用中的
@@ -58,7 +58,7 @@ function createHangingConnector(): {
   };
 }
 
-describe('P2-30 CardSession.start() second call timeout', () => {
+describe('CardSession.start() second call timeout', () => {
   it('test_anchor_second_start_after_timeout_should_also_timeout', async () => {
     const connector = createHangingConnector();
     const session = new RunCardSession({

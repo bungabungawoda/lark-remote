@@ -1,9 +1,9 @@
 /**
- * Round 8 termination anchors (plan §4.1/§4.3): resume.page callback and
+ * termination anchors: resume.page callback and
  * /resume [N] page-size override boundary attacks.
  *
  * Each `test_anchor_*` is an independent assumption about behavior the spec
- * does not fully pin down (T6). Expected results recorded per case in the
+ * does not fully pin down. Expected results recorded per case in the
  * round report; a fail here is a candidate RED, not a spec violation by
  * itself — the orchestrator decides upgrade/discard.
  */
@@ -124,7 +124,7 @@ function buildHarness(tmpDir: string, projectsDir: string, sessionCount: number)
   return { router, ctx, connector, sessionStore, cardOf };
 }
 
-describe('Round 8 anchors: resume.page boundary behaviors', () => {
+describe('resume.page boundary behaviors', () => {
   let tmpDir: string;
 
   beforeEach(() => {
@@ -138,7 +138,7 @@ describe('Round 8 anchors: resume.page boundary behaviors', () => {
   it('test_anchor_resume_page_negative_offset_clamps_to_first_page', async () => {
     // 假设：负 offset 与正越界 offset 一样 clamp 到合法页首（router 层
     // offset < 0 → 0），显示第 1/5 页而不是空页/错位页/崩溃。
-    // spec 缺口：plan §2.3 只写了 "offset clamp 到 [0, max(0, total - pageSize)]"，
+    // 只写了 "offset clamp 到 [0, max(0, total - pageSize)]"，
     // 未显式点名负值；负 offset 属于该 clamp 区间的直接推论。
     const h = buildHarness(tmpDir, path.join(tmpDir, 'claude-projects'), 25);
 
@@ -153,13 +153,13 @@ describe('Round 8 anchors: resume.page boundary behaviors', () => {
   });
 
   it('test_anchor_resume_page_non_default_agent_no_sessions_returns_error_toast', async () => {
-    // P3-5 新语义（Round 13，2026-08-01）：resume.page 翻到空目录/无会话时
+    // 新语义（2026-08-01）：resume.page 翻到空目录/无会话时
     // 只返回 error toast，不再 sendResult 文本 + success toast。
     // toast 文案带 agent 显示名（agentDisplayName('pi') = 'Pi'），
     // 非默认 agent（pi）没有任何会话时，handleResumePage 返回
     // `{ toast: { type: 'error', content: '当前目录没有 Pi 的 session 记录' } }`，
     // 不发新文本消息、不 updateCard。
-    // spec 缺口：plan §2.3 未写非默认 agent 空目录的翻页行为，只有
+    // 未写非默认 agent 空目录的翻页行为，只有
     // "缺 agent 兜底 defaultAgent"；此处断言对齐裁决后的 error-toast 分支。
     const h = buildHarness(tmpDir, path.join(tmpDir, 'claude-projects'), 25);
 
@@ -180,7 +180,7 @@ describe('Round 8 anchors: resume.page boundary behaviors', () => {
   it('test_anchor_resume_page_missing_agent_small_page_size', async () => {
     // 假设：value 缺 agent 时按 defaultAgent（claude）兜底，且 pageSize=5
     // 生效 → 第 1/5 页 · 共 25 个会话（小页大小必须影响分页栏与翻页步长）。
-    // spec 缺口：plan §2.3 覆盖"缺 agent 兜底"与"pageSize 覆盖"，但未组合
+    // 覆盖"缺 agent 兜底"与"pageSize 覆盖"，但未组合
     // 断言两者同时出现时的一致性。
     const h = buildHarness(tmpDir, path.join(tmpDir, 'claude-projects'), 25);
 
@@ -194,7 +194,7 @@ describe('Round 8 anchors: resume.page boundary behaviors', () => {
   it('test_anchor_resume_n_override_affects_pagination_bar', async () => {
     // 假设：`/resume 3` 的 N=3 页大小覆盖必须同时作用于列表条数与分页栏
     // （ceil(25/3)=9 页 → `第 1/9 页 · 共 25 个会话`，下一页 offset=3）。
-    // spec 缺口：plan §2.3 写 N "作为页大小覆盖"，A4 只锚了默认页
+    // 写 N "作为页大小覆盖"，只锚了默认页
     // （第 1/5 页）；N 与 total 不成整除关系（25/3）时页数取整边界未显式锚定。
     const h = buildHarness(tmpDir, path.join(tmpDir, 'claude-projects'), 25);
 

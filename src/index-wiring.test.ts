@@ -19,7 +19,7 @@ import path from 'node:path';
 
 describe('index.ts card action dispatch wiring guard (§9.19)', () => {
   it('直返分支必须查 router 单源 DIRECT_RETURN_CMDS（不落入串行队列）', () => {
-    // W2.1 后 index.ts 的直返清单收敛为 router 的 DIRECT_RETURN_CMDS Set 查表
+    // 后 index.ts 的直返清单收敛为 router 的 DIRECT_RETURN_CMDS Set 查表
     //（命令名一致性由 router.test.ts 的三清单一致性测试钉住）。
     const source = fs.readFileSync(path.resolve(__dirname, 'index.ts'), 'utf-8');
     // 直返分支本体：查 router 单源 Set
@@ -41,7 +41,7 @@ describe('index.ts card action dispatch wiring guard (§9.19)', () => {
  * 入口 wiring 静态守卫（设计豁免同 §9.19：index.ts 的 setupMessageHandlers
  * 无法行为注入测试——main() 在 import 即运行）。有界片段匹配（不用 /s 全文件）。
  *
- * 守卫目标：入站媒体必须先过 owner + enabled 闸门再下载（P1 review 修复——
+ * 守卫目标：入站媒体必须先过 owner + enabled 闸门再下载（修复——
  * 认证发生在下载之前，未认证/关闭配置时不得发生网络下载）。
  */
 describe('index.ts inbound media wiring guard（先认证后下载）', () => {
@@ -63,7 +63,7 @@ describe('index.ts inbound media wiring guard（先认证后下载）', () => {
     expect(block).toContain('outcome,');
     // 意外抛错时兜底清理临时文件
     expect(block).toContain('bestEffortUnlink(item.tempPath)');
-    // 关闭配置时不静默：进 rejected 随 turn 回执发出（P3 review），且不进入下载
+    // 关闭配置时不静默：进 rejected 随 turn 回执发出，且不进入下载
     expect(block).toContain('入站媒体保存已关闭');
     expect(block).toContain("kind: 'rejected',");
     // 顺序保证：owner 检查必须在下载之前
@@ -77,7 +77,7 @@ describe('index.ts inbound media wiring guard（先认证后下载）', () => {
 });
 
 /**
- * 入口 wiring 静态守卫（B1/B3 2026-09-15 入站统一处理）：
+ * 入口 wiring 静态守卫（2026-09-15 入站统一处理）：
  * 命令前缀判定必须发生在占位符剥离之后，且只有纯文本消息（rawContentType === 'text'）
  * 才有命令语义；普通消息进装配器窗口，装配器 commit 后强制关闭命令前缀。
  */
@@ -189,12 +189,12 @@ describe('index.ts session-mutating card action ordering guard (2026-10-07)', ()
 });
 
 /**
- * 入口 wiring 静态守卫（clean_review §B7）：非直返 card action 的 handler 返回值
+ * 入口 wiring 静态守卫：非直返 card action 的 handler 返回值
  * 必须经 `actionFeedbackText` 收敛成持久文本消息。两个 enqueue 出口都是
  * fire-and-forget，回调响应早已被飞书收走——返回值一旦无人消费，失败
  * （陈旧 /ws 列表、路径已删、payload 缺失）就完全静默。
  */
-describe('index.ts card action feedback wiring guard (§B7)', () => {
+describe('index.ts card action feedback wiring guard', () => {
   it('enqueueImmediate 与 enqueue 两个分支都消费 handleCardAction 的返回值', () => {
     const source = fs.readFileSync(path.resolve(__dirname, 'index.ts'), 'utf-8');
     const start = source.indexOf('const forwardActionFeedback = ');

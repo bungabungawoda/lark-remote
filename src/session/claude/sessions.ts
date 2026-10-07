@@ -46,7 +46,7 @@ function projectDirForCwd(cwd: string, projectsDir: string): string {
  * to actually belong to the requested cwd. A relocated session contains
  * MULTIPLE cwd values (pre- and post-relocate) — accept when ANY `cwd` field
  * matches. Early-stops on the first match (findJsonlLine), keeping the
- * P2-2 single-pass parse-count anchors intact on the fallback path.
+ * single-pass parse-count anchors intact on the fallback path.
  * Regression 2026-08-04 EnterWorktree relocate.
  */
 function fileContainsCwd(filePath: string, cwd: string): boolean {
@@ -134,8 +134,8 @@ export function listClaudeSessions(
   cwd: string,
   opts: { limit?: number; projectsDir?: string } = {},
 ): AgentSession[] {
-  // 不传 limit = 返回全集不切片；仅显式传值才 slice（契约迁移 plan §2.1，
-  // reader 拿全集算 total 后再自己按 offset/limit 切片）。
+  // 不传 limit = 返回全集不切片；仅显式传值才 slice
+  // reader 拿全集算 total 后再自己按 offset/limit 切片。
   const limit = opts.limit;
   const projectsDir = opts.projectsDir ?? defaultProjectsDir();
   const index = ensureSessionIndex(projectsDir);
@@ -254,15 +254,15 @@ export function isClaudeSessionActive(
 
 /**
  * First-pass scan result for readSessionContent.
- * P2-2: previously readSessionContent parsed allLines 3-4 times (usage,
+ * previously readSessionContent parsed allLines 3-4 times (usage,
  * findLastUser, events, title/recap). Now a first pass (scalarScan) parses
  * each line once to collect all metadata + the index of the last user
  * message; a second pass only re-parses the TAIL (events after the last user
  * message) so memory is O(tail) rather than O(whole-file) for parsed
- * objects. Total parses ≈ 1.x × line count (P3-1: replaced a parsed[]
+ * objects. Total parses ≈ 1.x × line count (replaced a parsed[]
  * array that retained every line's object for the function lifetime).
  *
- * P2-5: the index is now a **byte offset** (`tailOffset`) of the line
+ * the index is now a **byte offset** (`tailOffset`) of the line
  * AFTER the last user message, captured during a streaming scan that
  * materializes no `string[]`. The second pass re-reads only the tail from
  * that offset via `readJsonlLinesFromOffset`, so raw line-string memory is
@@ -285,7 +285,7 @@ interface ScanResult {
 }
 
 /**
- * P2-2 + P2-5 first-pass scan: stream the file once via `scanJsonlLines`
+ * first-pass scan: stream the file once via `scanJsonlLines`
  * (no `string[]` materialized), parse each line exactly once, and collect
  * all metadata needed by readSessionContent (usage, tailOffset, aiTitle,
  * recap, lastUserMessage). Does NOT retain parsed objects — the events tail
@@ -409,7 +409,7 @@ function scalarScan(filePath: string): ScanResult {
   const l = acc.last;
   // contextLength = current context-window occupancy. Prefer compact_boundary
   // postTokens (the precise post-compact size); otherwise fall back to the
-  // last turn's input + cacheRead + cacheCreation (review P2-8 unified
+  // last turn's input + cacheRead + cacheCreation (unified
   // contract — excludes output/reasoning, which are generated, not part of
   // the input window). Take the max so a pre-compact turn larger than the
   // post-compact size is not under-reported.
@@ -445,12 +445,12 @@ function scalarScan(filePath: string): ScanResult {
 }
 
 /**
- * P2-2 + P2-5 second-pass tail mapper: expand one parsed tail line into
+ * second-pass tail mapper: expand one parsed tail line into
  * content-block events. Re-parses only tail lines (scanTailEvents does the
  * offset re-read + line filtering), so both raw line-string memory and
- * parsed-object memory are O(tail), not O(whole file) — P3-1 + P2-5.
+ * parsed-object memory are O(tail), not O(whole file) —.
  *
- * `maxEvents` capping (review P2-7 — unified "last N events" contract across
+ * `maxEvents` capping (unified "last N events" contract across
  * all readers) is applied by scanTailEvents.
  */
 function mapClaudeTailLine(obj: Record<string, unknown>): AgentSessionContentEvent[] {
@@ -517,7 +517,7 @@ export function readSessionContent(
     }
   }
 
-  // P2-2 + P3-1 + P2-5: First pass STREAMS the file once via
+  // First pass STREAMS the file once via
   // `scanJsonlLines` (no `string[]` materialized), parsing each line once to
   // collect scalars (usage, tailOffset, aiTitle, recap, lastUserMessage)
   // while retaining NO parsed objects and NO whole-file line array. The
@@ -531,7 +531,7 @@ export function readSessionContent(
   // full-file scan + tail re-parse of the usually-short post-user lines).
   // When the session has NO user message, tailOffset stays -1 and the tail
   // IS the whole file → scan(N) + tail(N) = 2.0× — the known asymptotic
-  // upper bound of the body's two-phase design (still better than pre-P2-2's
+  // upper bound of the body's two-phase design (still better than pre-'s
   // ~3×). Total parse count adds the index-miss fallback guard's fixed
   // early-stop overhead (~2 parses, independent of line count).
   const scan = scalarScan(filePath);

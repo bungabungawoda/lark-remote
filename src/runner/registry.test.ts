@@ -94,7 +94,7 @@ describe('AgentRegistry', () => {
       const configContainer = { current: startupConfig };
       registry.setConfigContainer(configContainer);
 
-      // Same pattern as src/index.ts after P1-15 fix
+      // Same pattern as src/index.ts afterfix
       registry.register('claude', (ws) => {
         const container = registry.getConfigContainer();
         const latestConfig = (container?.current as AppConfig) ?? startupConfig;

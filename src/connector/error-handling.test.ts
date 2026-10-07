@@ -90,7 +90,7 @@ describe('FeishuConnector.sendWithRetry', () => {
     expect(mockChannel).toHaveBeenCalledTimes(1);
   });
 
-  // §9.5（§P1-3 修正）：@larksuite/channel 把飞书限流码 99991400/99991401 归成
+  // §9.5：@larksuite/channel 把飞书限流码 99991400/99991401 归成
   // code='permission_denied'，原始业务码只留在 context / cause 链上，低版本 SDK
   // 干脆拼进 message。只认 code==='rate_limited' 会让这条重试路径对设计目标完全
   // 死亡 —— 所以每种形态各自钉住，缺一条就是线上「限流不重试」。

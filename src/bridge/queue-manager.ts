@@ -4,8 +4,8 @@ import type { AgentKind } from '../runner/types.js';
 
 /**
  * 入队时刻快照：当前 defaultAgent + 该 agent 的 sessionId（无 session 则 undefined）。
- * 唯一捕获点：排队消息在 T0 把 agent+session 钉进 AgentBinding，随任务闭包带到 T1
- * 执行时刻，避免 /new、/config 在排队期间改写 live 状态导致语义漂移（方案 D4）。
+ * 唯一捕获点：排队消息在入队时刻把 agent+session 钉进 AgentBinding，随任务闭包带到执行时刻
+ * 执行时刻，避免 /new、/config 在排队期间改写 live 状态导致语义漂移。
  */
 export interface AgentBinding {
   agent: AgentKind;
@@ -20,7 +20,7 @@ export interface AgentBinding {
 }
 
 /**
- * Per-workspace cap on the number of tasks WAITING to execute (review P2-5).
+ * Per-workspace cap on the number of tasks WAITING to execute.
  * Without a bound, a message flood grows `queuedTasks` / the promise chain /
  * each task's captured `msg.content` closure without limit, and every enqueued
  * task fires a queue card (amplifying outbound API calls). When the waiting
@@ -67,7 +67,7 @@ export interface QueuedTask {
    * `handleQueueImmediate`).
    */
   editedMessage?: string;
-  /** 入队时刻捕获的 agent+session 绑定（方案 D4），随任务闭包带到执行时刻。 */
+  /** 入队时刻捕获的 agent+session 绑定，随任务闭包带到执行时刻。 */
   binding?: AgentBinding;
 }
 
@@ -87,7 +87,7 @@ export interface EnqueueOptions {
     feishuReplyTo?: string;
     /** Whether the queued task is editable (queue card ✏️ 编辑 button). Defaults to true. */
     editable?: boolean;
-    /** 入队时刻捕获的 agent+session 绑定（方案 D4）。 */
+    /** 入队时刻捕获的 agent+session 绑定。 */
     binding?: AgentBinding;
   };
 }
@@ -109,7 +109,7 @@ export class QueueManager {
   /** Per-workspace queued tasks for queue display cards. Key = cwd, value = task list. */
   private queuedTasks = new Map<string, QueuedTask[]>();
   /**
-   * P3-5: per-workspace `messageId → QueuedTask` index mirroring `queuedTasks`.
+   * per-workspace `messageId → QueuedTask` index mirroring `queuedTasks`.
    * O(1) lookup for the task-start removal path (replacing the old double
    * `find`+`findIndex` O(N) scan) and for `getQueuedTask`/`removeFromQueue`/
    * `updateQueuedTaskMessage`. The ordered array remains the source of truth
@@ -136,7 +136,7 @@ export class QueueManager {
    * identifies one task's execution period for the interrupt bookkeeping in
    * `executingSlot`/`interruptedSlots` — replacing the unowned skip-credit
    * counter, which any settle could consume and which therefore leaked a
-   * re-armed count after repeated resets (see A4 anchor).
+   * re-armed count after repeated resets.
    */
   private slotCounter = 0;
   /**
@@ -160,7 +160,7 @@ export class QueueManager {
   /**
    * MessageIds of tasks that have actually begun executing (cancellation check
    * passed, task removed from the queue). Entries are sticky: they remain
-   * after the task settles (A21). `handleQueueImmediate` step 6 uses this to
+   * after the task settles. `handleQueueImmediate` step 6 uses this to
    * distinguish "target was cancelled (never began)" from "target began while
    * the interrupt was in flight" so the final feedback can report the true
    * state instead of telling a running task's user that nothing was
@@ -191,7 +191,7 @@ export class QueueManager {
     this.updateCard = updateCard;
   }
 
-  /** P3-5: register a queued task in the per-workspace `messageId → task` index. */
+  /** register a queued task in the per-workspace `messageId → task` index. */
   private indexAdd(cwd: string, task: QueuedTask): void {
     let idx = this.taskIndex.get(cwd);
     if (!idx) {
@@ -201,12 +201,12 @@ export class QueueManager {
     idx.set(task.messageId, task);
   }
 
-  /** P3-5: drop a task from the per-workspace index by messageId. */
+  /** drop a task from the per-workspace index by messageId. */
   private indexRemove(cwd: string, messageId: string): void {
     this.taskIndex.get(cwd)?.delete(messageId);
   }
 
-  /** P3-5: O(1) lookup of a queued task by messageId via the index. */
+  /** O(1) lookup of a queued task by messageId via the index. */
   private indexGet(cwd: string, messageId: string): QueuedTask | undefined {
     return this.taskIndex.get(cwd)?.get(messageId);
   }
@@ -250,7 +250,7 @@ export class QueueManager {
       const currentQueueLength = this.queuedTasks.get(cwd)?.length ?? 0;
       const hasWaitingTasks = currentExecutingCount > 0 || currentQueueLength > 0;
 
-      // P2-5: bound the waiting backlog. When the queue is full, reject the
+      // bound the waiting backlog. When the queue is full, reject the
       // task with a visible card instead of appending it (which would grow
       // the promise chain + closures unboundedly under a message flood and
       // fire another queue card). Do NOT increment pendingOrExecutingCount —
@@ -339,7 +339,7 @@ export class QueueManager {
         let livePreview = taskMeta?.messagePreview ?? '';
         // Check if this task was cancelled before executing
         if (messageId) {
-          // P3-5: O(1) index lookup replaces the old `find` + `findIndex`
+          // O(1) index lookup replaces the old `find` + `findIndex`
           // double O(N) scan. The ordered array still drives removal (splice
           // preserves queue order for position display); the index stays in
           // sync via indexRemove.
@@ -415,7 +415,7 @@ export class QueueManager {
       .then(() => {
         getLogger().debug(`[queue-manager] task end cwd=${cwd}`);
         // beganMessageIds entry intentionally retained: sticky by design
-        // (A21) — the marker records "has ever begun", not "is currently
+        // the marker records "has ever begun", not "is currently
         // running", so a task that began and settled quickly still reports
         // "已开始执行" to queue.immediate.
         this.decrementExecutingCount(cwd, slotId);
@@ -423,7 +423,7 @@ export class QueueManager {
       .catch((err: unknown) => {
         getLogger().error('[queue-manager] queue task error:', err);
         // Same sticky rationale as the success settle: the marker survives
-        // even when the task errors after beginning (A21).
+        // even when the task errors after beginning.
         this.decrementExecutingCount(cwd, slotId);
       });
     this.queues.set(cwd, newQueue);
@@ -592,7 +592,7 @@ export class QueueManager {
    * state — pending cards enable both, executing/cancelled cards disable
    * both. Centralizing the pair here eliminates the 3-way duplication
    * between `buildQueueStatusCardElements`, `updateQueueCardToExecuting`,
-   * and `updateQueueCardToCancelled` (Clean Code P2-1).
+   * and `updateQueueCardToCancelled` (Clean Code).
    */
   private buildQueueActionButtons(cwd: string, messageId: string, disabled: boolean): object[] {
     return [
@@ -641,8 +641,8 @@ export class QueueManager {
     try {
       // Prefer the live preview: an edited task's messagePreview is updated in
       // place, and the passed-in snapshot may be stale if the card send was in
-      // flight while the user edited (A19). The begin path (started=true) already
-      // passes the live preview captured at begin (A12), so the fallback is only
+      // flight while the user edited. The begin path (started=true) already
+      // passes the live preview captured at begin, so the fallback is only
       // exercised when the task is no longer queued.
       const liveTask = this.indexGet(cwd, messageId);
       const stillQueued = liveTask !== undefined;
@@ -693,7 +693,7 @@ export class QueueManager {
     const taskList = this.queuedTasks.get(cwd);
     if (!taskList) return false;
 
-    // P3-5: index is the O(1) presence check; array splice keeps order.
+    // index is the O(1) presence check; array splice keeps order.
     if (!this.indexGet(cwd, messageId)) return false;
     const index = taskList.findIndex((t) => t.messageId === messageId);
     if (index >= 0) {
@@ -751,7 +751,7 @@ export class QueueManager {
 
   /** Get task metadata from queue. */
   getQueuedTask(cwd: string, messageId: string): QueuedTask | undefined {
-    // P3-5: O(1) index lookup instead of array `find`.
+    // O(1) index lookup instead of array `find`.
     return this.indexGet(cwd, messageId);
   }
 
@@ -772,7 +772,7 @@ export class QueueManager {
 
   /** Update the messagePreview for a queued task. Returns true if found and updated. */
   updateQueuedTaskMessage(cwd: string, messageId: string, newMessage: string): boolean {
-    // P3-5: O(1) index lookup instead of array `find`.
+    // O(1) index lookup instead of array `find`.
     const task = this.indexGet(cwd, messageId);
     if (!task) return false;
 
@@ -882,7 +882,7 @@ export class QueueManager {
    * slot no longer matches the interrupted task's slot, the interrupted task
    * already decremented normally — resetting now would zero the count of the
    * running successor and mark ITS slot interrupted, hiding it from the
-   * queue card (A22).
+   * queue card.
    */
   resetExecutingCount(cwd: string, expectedSlot: number): void {
     const currentSlot = this.executingSlot.get(cwd);
@@ -892,7 +892,7 @@ export class QueueManager {
       );
       return;
     }
-    // P3#9: only reset and grant an interrupt slot when there is actually a
+    // only reset and grant an interrupt slot when there is actually a
     // pending/executing task.
     const currentCount = this.pendingOrExecutingCount.get(cwd) ?? 0;
     if (currentCount === 0) {

@@ -6,7 +6,7 @@
  * - SpawningRunner owns registerExitHandlers singleton dispatch
  * - index.ts does not re-export common/ utilities
  * - claude/session.ts extends SpawningRunner; claude/runner.ts delegates without
- *   re-implementing registerExitHandlers (P1-1, 2026-08-16 长驻交互改造)
+ *   re-implementing registerExitHandlers (2026-08-16 长驻交互改造)
  *
  * Other structure checks (line counts, directory listings, export existence)
  * were removed: they are fragile against normal refactoring and provide no
@@ -30,7 +30,7 @@ describe('runner structure: architecture guards', () => {
     expect(content).not.toContain('import type { AgentSessionReader }');
   });
 
-  it('SpawningRunner owns registerExitHandlers singleton dispatch (P1-1)', () => {
+  it('SpawningRunner owns registerExitHandlers singleton dispatch', () => {
     expect(read('common/spawning-runner.ts')).toContain('registerExitHandlers()');
     expect(read('common/spawning-runner.ts')).toContain('unregisterExitHandlers()');
     expect(read('common/spawning-runner.ts')).toContain('cleanupOnExit()');
@@ -45,7 +45,7 @@ describe('runner structure: architecture guards', () => {
     expect(content).not.toContain("from './common/");
   });
 
-  it('claude/session.ts extends SpawningRunner; runner.ts delegates lifecycle (P1-1)', () => {
+  it('claude/session.ts extends SpawningRunner; runner.ts delegates lifecycle', () => {
     // 长驻交互改造：进程编排下沉到 ClaudeSession
     // （IS-A SpawningRunner），ClaudeRunner 薄包装委托。registerExitHandlers
     // 仍由 SpawningRunner 基类单例分发，两个文件都不得重复实现。
@@ -62,7 +62,7 @@ describe('runner structure: architecture guards', () => {
     expect(runner).not.toContain('unregisterExitCleanup(');
   });
 
-  it('每个 runner 都把协议停止通道接进生产（design §3.3 接线闭合）', () => {
+  it('每个 runner 都把协议停止通道接进生产（接线闭合）', () => {
     // 注册表曾长时间是死代码（只出现在 terminator.test.ts）：win32 上非立即停止
     // 恒走 `skipped-no-channel` 后直接树杀，且**不报错**——本机 macOS 跑全量永远
     // 发现不了。「登记后确实被优雅段消费」由 transport / connection-manager 的

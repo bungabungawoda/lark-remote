@@ -21,9 +21,9 @@ import { buildAgentSwitchConfig } from '../../lib/agent-switch-helpers.js';
  * 缺失影响：若切换仍按 2026-07-18 旧语义清空新 agent 的 sessionId（等效 /new），
  * 用户经 /resume 显式选择的会话会被丢弃，切换后进入错误上下文并收到误导性文案。
  *
- * 依据：2026-08-03 用户裁决新语义 A1——/resume 对非当前 agent 的显式选择在
+ * 依据：2026-08-03 用户裁决新语义——/resume 对非当前 agent 的显式选择在
  * config.save 切入时存活，优先级「显式选择 > 停车恢复 > 清空」，arrival 更新为
- * 所选 session（新基线）。本测试不经过 resume.use 卡片路径，直接播种与 A1 相同
+ * 所选 session（新基线）。本测试不经过 resume.use 卡片路径，直接播种与相同
  * 的 router 可见状态（sessions[new] ≠ arrival[new]），属「直接状态等价」变体；
  * resume.use 路径本身由 round9 的
  * test_anchor_r1_resume_selection_survives_config_save_switch 覆盖。
@@ -79,7 +79,7 @@ describe('config.save keeps explicitly selected new agent session on agent switc
 
     // Set cwd and sessionIds for BOTH agents
     // - claude (old agent): has an existing session
-    // - pi (new agent): has an existing session with arrival unset——与 A1
+    // - pi (new agent): has an existing session with arrival unset——与
     //   （/resume 显式选择：sessions[new] 非空且不等于 arrival 基线）等价的状态
     sessionStore.setCwd(userId, cwd);
     sessionStore.setSessionId(userId, 'claude', 'claude-session-123');
@@ -95,7 +95,7 @@ describe('config.save keeps explicitly selected new agent session on agent switc
     // First set the defaultAgent to pi (pendingConfig)
     await router.handleCardAction({ cmd: 'config.set', key: 'defaultAgent', option: 'pi' }, ctx);
 
-    // Then save——新语义 A1：显式选择优先，必须保留而非清空
+    // Then save——新语义 显式选择优先，必须保留而非清空
     const response = await router.handleCardAction({ cmd: 'config.save' }, ctx);
 
     // 持久化消息发送成功（sendResult resolve true）时不得回退 toast

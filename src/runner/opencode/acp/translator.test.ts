@@ -182,7 +182,7 @@ describe('OpencodeAcpTranslator', () => {
     }
   });
 
-  it('maps plan update to a plan event via the shared base handler (信息保真 C3)', () => {
+  it('maps plan update to a plan event via the shared base handler (信息保真)', () => {
     const t = new OpencodeAcpTranslator();
     const events = t.handleNotification(
       NotificationMethod.SESSION_UPDATE,
@@ -271,11 +271,11 @@ describe('OpencodeAcpTranslator', () => {
     expect(ev.type).toBe('approval_requested');
     expect(ev.requestId).toBe(42);
     expect(ev.view.command).toBe('Bash: ls');
-    // §P4: options 含 allow_always → 派生 acceptForSession
+    // options 含 allow_always → 派生 acceptForSession
     expect(ev.view.availableDecisions).toEqual(['accept', 'decline', 'cancel', 'acceptForSession']);
   });
 
-  it('permission request without always option → no acceptForSession (§P4)', () => {
+  it('permission request without always option → no acceptForSession', () => {
     const t = new OpencodeAcpTranslator();
     const events = t.handleServerRequest(44, ServerRequestMethod.REQUEST_PERMISSION, {
       sessionId: SESSION_ID,

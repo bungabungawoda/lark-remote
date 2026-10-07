@@ -12,9 +12,9 @@ import os from 'node:os';
 import { mockLogger } from '../../lib/logger-mock.js';
 
 /**
- * Red Agent - Round 16 - Anchor（codex-y review4 P3-10 测试缺口）
+ * Red Agent -- Anchor（测试缺口）
  *
- * P3-10: 既有锚点只覆盖"中位档位恰好等于声明 default"的场景。本锚点锁定
+ * 既有锚点只覆盖"中位档位恰好等于声明 default"的场景。本锚点锁定
  *   codex with_model（turn_context.rs:260-269）的真实语义：supported_reasoning_levels
  *   长度为 6 时取 index (6-1)/2=2（high），与声明 default（low）不同——
  *   切模型重置档位必须选中位而非 default。

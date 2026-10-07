@@ -86,7 +86,7 @@ export abstract class CardSession<S, RO = unknown> {
    * 调度一次延迟 flush。已有 pending 调度则复用（合批核心）；否则起一个
    * coalesceMs 定时器。flushInFlight 期间不再起 timer（避免重入叠加），但置
    * pendingReschedule 以便 in-flight flush 完成后重新调度——否则 in-flight 期间
-   * 到达的 push/update 会停留为 stale 中间帧（P2-1）。
+   * 到达的 push/update 会停留为 stale 中间帧。
    */
   protected scheduleFlush(): void {
     if (this.flushTimer) return;
@@ -119,7 +119,7 @@ export abstract class CardSession<S, RO = unknown> {
         this.flushInFlight = false;
         // flushInFlight 守卫保证同一时刻只有一个 in-flight flush，故可无条件清空。
         this.flushP = undefined;
-        // P2-1：in-flight 期间若有 push/update 到达（pendingReschedule），重新调度一次
+        // in-flight 期间若有 push/update 到达（pendingReschedule），重新调度一次
         // flush 渲染累积事件，避免 stale 中间帧。终态守卫在 flush() 入口已拦截，
         // 故 finish 后不会误触发。
         if (this.pendingReschedule) {
@@ -164,14 +164,14 @@ export abstract class CardSession<S, RO = unknown> {
   }
 
   /**
-   * P1-3 合批窗口（ms）。连续事件各触发一次全卡 render + patch 是流式 CPU 主要
+   * 合批窗口（ms）。连续事件各触发一次全卡 render + patch 是流式 CPU 主要
    * 来源；窗口内多个事件复用同一次延迟 flush。窗口大小可通过 constructor 覆盖
    * （测试用小窗口/0 禁用）。run/bash 子类共用的 flush 骨架（scheduleFlush/flush/
    * cancelPendingFlush/settle）下沉到基类。
    */
   protected readonly coalesceMs: number;
   private flushTimer: NodeJS.Timeout | undefined;
-  private flushInFlight = false; /** P2-1：in-flight flush 期间到达的 push/update 标记。scheduleFlush 在
+  private flushInFlight = false; /** in-flight flush 期间到达的 push/update 标记。scheduleFlush 在
    *  flushInFlight 时早退不调度新 timer，但事件已 reduce 进 state；若无此标志，
    *  in-flight flush 完成后该事件无 follow-up render，停留为 stale 中间帧。
    *  finally 检查此标志后重新 scheduleFlush，保证 in-flight 期间累积的事件最终被渲染。 */
@@ -179,7 +179,7 @@ export abstract class CardSession<S, RO = unknown> {
   /** 当前 in-flight flush 的 promise（若 flush 正在 await updateCard）。
    *  finish() 在终态 patch 前 await 它，保证 in-flight 的 pre-terminal patch 先落地、
    *  terminal patch 后落地——否则两条 controller.update 并发无 FIFO，
-   *  pre-terminal 可能在 terminal 之后 resolve 留下"思考中"终帧（P2）。 */
+   *  pre-terminal 可能在 terminal 之后 resolve 留下"思考中"终帧。 */
   protected flushP: Promise<void> | undefined;
 
   async start(): Promise<void> {
@@ -207,7 +207,7 @@ export abstract class CardSession<S, RO = unknown> {
     // the controller is ready — by which time events pushed before the
     // producer ran (see test_anchor_events_before_controller_ready_...) have
     // already updated `this.state`. Reusing the initial card here would drop
-    // those early events. The P3-7 "reuse first render" optimization was
+    // those early events. The"reuse first render" optimization was
     // rejected for this reason (premise "two renders with identical input"
     // does not hold).
     const stream = this.connector.streamCard(

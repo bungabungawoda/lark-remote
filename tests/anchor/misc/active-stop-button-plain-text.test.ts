@@ -42,7 +42,7 @@ function collectStopButtons(el: CardElement | undefined, out: CardElement[] = []
   return out;
 }
 
-describe('P2-27: /active card stop buttons must have tag:plain_text', () => {
+describe('/active card stop buttons must have tag:plain_text', () => {
   it('test_anchor_active_card_stop_buttons_have_plain_text_tag', async () => {
     const sessionStore = new SessionStore();
     const connector = createStubConnector();

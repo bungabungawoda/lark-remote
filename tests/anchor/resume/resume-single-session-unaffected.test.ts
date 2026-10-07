@@ -1,5 +1,5 @@
 /**
- * Round 8 regression guard (plan §4.3): `/resume <sessionId>` single-session
+ * regression guard: `/resume <sessionId>` single-session
  * path must be untouched by the pagination work.
  *
  * 验证什么行为：
@@ -14,7 +14,6 @@
  *   sessionId 写错/不写，后续 `/active`、auto-resume 全部错乱；单会话卡片
  *   出现分页文案也会让用户误以为该页面可翻页（实际没有 resume.page 回调）。
  *
- * 依据（spec 原文）：
  *   "`/resume <sessionId>`
  *   单会话路径不变：设置 sessionId + 展示会话内容卡片，与分页列表互不影响"
  *   （红线 §9.1：`/resume <id>` 恢复会话并显示内容；分页栏仅列表页
@@ -64,7 +63,7 @@ function findDivWithText(elements: CardElement[], needle: string): CardElement |
   return elements.find((el) => el.tag === 'div' && (el.text?.content ?? '').includes(needle));
 }
 
-describe('A8 /resume <sessionId> single-session path unaffected by pagination', () => {
+describe('/resume <sessionId> single-session path unaffected by pagination', () => {
   let tmpDir: string;
 
   beforeEach(() => {
@@ -76,7 +75,7 @@ describe('A8 /resume <sessionId> single-session path unaffected by pagination', 
   });
 
   it('test_anchor_resume_session_id_path_unaffected', async () => {
-    // ── 25-session fixture (same as A3/A4/A6) ────────────────────────────
+    // ── 25-session fixture (same as) ────────────────────────────
     const projectsDir = path.join(tmpDir, 'claude-projects');
     const canonicalCwd = fs.realpathSync(tmpDir);
     const projDir = path.join(projectsDir, encodedProjectDir(canonicalCwd));

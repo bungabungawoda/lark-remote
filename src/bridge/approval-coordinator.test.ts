@@ -280,7 +280,7 @@ describe('ApprovalCoordinator', () => {
     });
 
     it('expires immediately when approvalTimeoutMs is 0', () => {
-      // review P3-1：schema 允许 0，语义为「立即过期」（fail-fast，避免审批
+      // schema 允许 0，语义为「立即过期」（fail-fast，避免审批
       // 永久挂起）；文档在 config schema 注释中明确，测试固化该语义。
       coordinator = new ApprovalCoordinator({
         approvalTimeoutMs: 0,
@@ -601,7 +601,7 @@ describe('ApprovalCoordinator', () => {
     });
 
     it('test_anchor_submit_pushes_resolved_card_event_agent_agnostic', async () => {
-      // review P2-3：提交成功后的 approval_resolved 由 coordinator 统一推送
+      // 提交成功后的 approval_resolved 由 coordinator 统一推送
       // （claude 无 server 回发；codex 幂等），不再由 bridge responder 顺带做。
       coordinator.onRequested(makeCommandEvent());
       await coordinator.submit({ action: 'accept' }, { requestId: 1001, nonce: 'n1' });
@@ -662,7 +662,7 @@ describe('ApprovalCoordinator', () => {
     });
 
     it('test_anchor_multi_select_toggle_duplicate_nonce_rejected', async () => {
-      // review P2-1：多选切换按钮同一 nonce 重复投递（双击/飞书重投递）只应
+      // 多选切换按钮同一 nonce 重复投递（双击/飞书重投递）只应
       // toggle 一次，不能二次 toggle 抵消勾选。
       const event = makeQuestionEvent();
       coordinator.onRequested(event);
@@ -682,7 +682,7 @@ describe('ApprovalCoordinator', () => {
     });
 
     it('test_anchor_answer_custom_submits_free_text', async () => {
-      // review P3-4：AskUserQuestion 隐式 Other 自由文本——自定义答案文本
+      // AskUserQuestion 隐式 Other 自由文本——自定义答案文本
       // 直接作为该单选问题的答案提交。
       coordinator.onRequested(makeQuestionEvent());
       await coordinator.answerCustom(

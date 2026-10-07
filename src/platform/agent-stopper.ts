@@ -1,5 +1,5 @@
 /**
- * 每 agent 的协议停止通道注册表（design.md §3.3）。
+ * 每 agent 的协议停止通道注册表。
  *
  * Windows 没有可拦截的跨进程 SIGTERM，优雅停止只能靠协议通道（claude 的 stdin
  * 控制通道、codex 的 turn interrupt、ACP 的 session/cancel…）。「无通道」是

@@ -58,7 +58,7 @@ export class CodexConfigBuilder implements AgentConfigCardBuilder {
       key: 'agents.codex.reasoningEffort',
       label: '推理强度',
       type: 'select',
-      // 档位按目录实际声明透传（P2-5）：codex 支持 none/Custom，不再按标准枚举过滤
+      // 档位按目录实际声明透传：codex 支持 none/Custom，不再按标准枚举过滤
       options: getReasoningEffortOptions(currentCodexModel),
       currentValue: currentReasoningEffort,
     });
@@ -142,7 +142,7 @@ export class CodexConfigBuilder implements AgentConfigCardBuilder {
    * - 否则优先 supported_reasoning_levels 中位 (len-1)/2；
    * - 列表为空才用声明 default_reasoning_level；
    * - 两者皆无 → value=undefined（清空档位 = 不传 effort；router setNestedValue
-   *   对 undefined 做键删除，P1）。
+   *   对 undefined 做键删除）。
    */
   private effortPatchForModel(
     config: AppConfig,

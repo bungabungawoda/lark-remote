@@ -1,5 +1,5 @@
 /**
- * 非直返 card action 的异步回执判定（clean_review §B7）。
+ * 非直返 card action 的异步回执判定。
  *
  * @entry `src/index.ts` 的 card action 分发只有两类出口：
  *   - `DIRECT_RETURN_CMDS`：同步 return 给飞书回调，toast 能弹；

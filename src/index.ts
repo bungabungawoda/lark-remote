@@ -220,12 +220,12 @@ function initializeRunner(
 } {
   const agentRegistry = new AgentRegistry();
 
-  // W2.10 单点化：runner factory 取最新 config 的唯一入口（P1-15 语义保持，
+  // 单点化：runner factory 取最新 config 的唯一入口（语义保持，
   // container 未接线时回退启动快照）。
   const latest = (): AppConfig =>
     (agentRegistry.getConfigContainer()?.current as AppConfig) ?? config;
 
-  // P1-15: Claude factory reads from configContainer (not closure) so runtime
+  // Claude factory reads from configContainer (not closure) so runtime
   // config changes (model, effort, stopGraceMs) take effect after
   // bridge.setConfig() + clearRunners(). Same pattern as codex/pi/kimi.
   agentRegistry.register('claude', (ws) => {
@@ -359,7 +359,7 @@ function initializeRunner(
   // Register DshRunner (HTTP-only DSH Web Host agent) and DshSessionReader.
   const dshSessionReader = new DshSessionReader({
     // hostProvider 每次调用读最新 config：/config 修改 host 后 runner 重建为
-    // 新 host，reader（/resume、用量、完成卡）也跟随新 host（CC-02）。
+    // 新 host，reader（/resume、用量、完成卡）也跟随新 host。
     hostProvider: () => getAgentConfig(latest(), 'dsh')?.host,
   });
   agentRegistry.register('dsh', (_ws: string) => {
@@ -428,7 +428,7 @@ function setupMessageHandlers(
   // 附件路径统一注入 prompt；无文本纯附件只回执（决策 2）。
   const assembler = new InboundTurnAssembler({
     onCommit: (turn, prompt) => {
-      // 入队时刻（T0）快照 cwd + agent/session 绑定，语义与旧路径一致
+      // 入队时刻快照 cwd + agent/session 绑定，语义与旧路径一致
       // （排队期间 /cd、/config 不再导致语义漂移）。
       const messageId = turn.messageIds[turn.messageIds.length - 1] ?? '';
       // turnMessageIds：终态收尾要覆盖本轮每一条消息（逐条挂的 Typing 得逐条撤）
@@ -471,7 +471,7 @@ function setupMessageHandlers(
   });
   router.setInboundFlusher(() => assembler.flushAll('flush'));
 
-  // 入站媒体（图片/文件/视频/语音/表情）：先认证后下载（P1 review 修复）。
+  // 入站媒体（图片/文件/视频/语音/表情）：先认证后下载（修复）。
   // connector 只上报"媒体到达"，这里先过 owner + enabled 闸门，通过后才
   // 下载——未认证/关闭配置时不会发生任何网络下载或内存/磁盘占用。
   // 下载是异步的：立刻把在途 promise 交给装配器（`kind: 'media'`），
@@ -482,9 +482,9 @@ function setupMessageHandlers(
       return;
     }
     // 读 router.config（活引用）：/config 保存后 setConfigValues 返回新对象，
-    // 启动时捕获的 config 参数会过期（P2 review 修复）。
+    // 启动时捕获的 config 参数会过期（修复）。
     if (!router.config.inboundMedia.enabled) {
-      // 不静默（P3 review）：关闭时给 owner 明确反馈，避免发图后无任何反应。
+      // 不静默：关闭时给 owner 明确反馈，避免发图后无任何反应。
       // 不下载、不落盘，只进 rejected（随 turn 回执一起发出）。
       assembler.ingest({
         kind: 'rejected',
@@ -738,7 +738,7 @@ function setupMessageHandlers(
     // order.aliasInput / order.aliasRemove / order.textInput 也返回 toast+card，
     // 需直返避免被吞（order.textInput 曾漏在列表外，编辑卡停留在编辑界面）。
     // approval.planFeedback 同 answer 系列：附意见的 toast 需直返 + 不落串行队列。
-    // W2.1：直返名单以 router 的 DIRECT_RETURN_CMDS 为单一来源（历史注释：
+    // 直返名单以 router 的 DIRECT_RETURN_CMDS 为单一来源（历史注释：
     // order.textInput 曾漏在列表外、answer 家族曾漏在直返列表外——两份拷贝漂移）。
     if (DIRECT_RETURN_CMDS.has(actionValue.cmd)) {
       return router.handleCardAction(fullValue, { userId, chatId, messageId });
@@ -760,7 +760,7 @@ function setupMessageHandlers(
       return;
     }
 
-    // B7：非直返命令到这里已经没有回调响应可回（enqueue* 是 fire-and-forget），
+    // 非直返命令到这里已经没有回调响应可回（enqueue* 是 fire-and-forget），
     // handler 返回的 toast 必须显式转成持久文本，否则失败毫无反馈。
     const forwardActionFeedback = (res: unknown) => {
       const text = actionFeedbackText(res);

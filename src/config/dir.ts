@@ -50,7 +50,7 @@ export function parseCliArgs(args: string[] = process.argv.slice(2)): CliArgs {
     } else if (arg === '-v' || arg === '--version' || arg === 'version') {
       result.version = true;
     } else if (arg === '--config-dir' && i + 1 < args.length) {
-      // P1-20: peek, don't consume — when the next arg is itself a flag,
+      // peek, don't consume — when the next arg is itself a flag,
       // roll back so it continues parsing (previously --settings/--help
       // right after --config-dir were silently swallowed).
       const nextArg = args[i + 1];

@@ -5,7 +5,7 @@ import os from 'node:os';
 import { mockLogger } from '../../lib/logger-mock.js';
 
 /**
- * Red Agent - Round 5 - Anchor (A5 修订版)
+ * Red Agent -- Anchor (修订版)
  *
  * Target: catalog 模式下 `codex debug models`（活动目录）失败/为空时：
  *   1. loadCodexConfig 不抛异常、不崩溃；
@@ -17,7 +17,7 @@ import { mockLogger } from '../../lib/logger-mock.js';
  * 若回退到 bundled/FALLBACK，卡片会把不存在于活动目录的模型重新塞进下拉，
  * 用户选中后 run 必然失败——这正是本修复要消灭的 openai+内置模型 bug 的变体。
  *
- * Spec basis: A5（2026-07-31 orchestrator 修订）——catalog 模式唯一保真的模型是
+ * Spec basis:（2026-07-31 orchestrator 修订）——catalog 模式唯一保真的模型是
  * config.toml 的 model；非 catalog 模式兜底行为不变。
  */
 

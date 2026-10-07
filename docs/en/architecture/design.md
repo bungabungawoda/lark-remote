@@ -421,7 +421,7 @@ Test coverage: `src/bridge/bridge.test.ts` `Bridge.forwardToClaude logging probe
 
 Secondary information for all card types is wrapped in CardKit `collapsible_panel`; construction utilities are in `src/card/collapsible.ts` (`collapsiblePanel` / `collapsibleMarkdownPanel` / `markdownDiv`). Router-side shared utilities are in `src/router/card-helpers.ts` (`sessionEventPanel` / `formatTimestamp`).
 
-**Key constraint**: Folding is **visual hiding**; the JSON payload still contains all content, and the 28KB byte budget (§9.14 `CARD_BUDGET_BYTES`) still applies. Folding reduces visual height, not serialized size.
+**Key constraint**: Folding is **visual hiding**; the JSON payload still contains all content, and the 28KB byte budget (`CARD_BUDGET_BYTES`) still applies. Folding reduces visual height, not serialized size.
 
 **Run card folding strategy** (`src/card/run-renderer.ts` + `src/card/tool-render.ts`):
 
@@ -522,7 +522,7 @@ listSessions(cwd: string, opts?: { limit?: number; offset?: number }): {
 };
 ```
 
-- Must first establish a **total order** by mtime desc on the **full set** before slicing; any early termination before establishing total order is wrong (§1.4 first principles).
+- Must first establish a **total order** by mtime desc on the **full set** before slicing; any early termination before establishing total order is wrong (first principles).
 - Negative offset is treated as 0 (all 5 readers use `Math.max(0, offset)` uniformly, preventing silent empty pages).
 - `getNewestSession(cwd)` internally = `listSessions(cwd, { limit: 1 }).sessions[0] ?? null`.
 - codex's `listCodexRollouts` returns `{ entries, total }`, based on `getSessionIndex` (full walk + first-line `session_meta` + stat mtime, 5s TTL), only fully parsing files within the page.

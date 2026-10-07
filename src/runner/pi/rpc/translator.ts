@@ -47,7 +47,7 @@ export class PiRpcTranslator {
   private lastTotalTokens: number | undefined;
   private hasUsage = false;
 
-  /** toolcall_start bookkeeping：占位不发事件，end 时补发完整 tool_use（C3.4）。 */
+  /** toolcall_start bookkeeping：占位不发事件，end 时补发完整 tool_use。 */
   private pendingToolCall = false;
 
   /** Provider failure (stopReason="error") on the final assistant message. */
@@ -130,7 +130,7 @@ export class PiRpcTranslator {
         return [];
       }
       case 'compaction_start': {
-        // 信息保真 C3.4：压缩过程用户可见（info 通知），不再静默。
+        // 信息保真 压缩过程用户可见（info 通知），不再静默。
         const c = evt as PiRpcCompactionEvent;
         return [
           {
@@ -157,7 +157,7 @@ export class PiRpcTranslator {
       }
       default:
         // turn_start/turn_end, agent_start/agent_end, tool_execution_*, and
-        // unknown types are ignored. (compaction_start/end 自 C3.4 起映射为
+        // unknown types are ignored. (compaction_start/end 映射为
         // notice 事件，不再静默。)
         return [];
     }
@@ -315,7 +315,7 @@ export class PiRpcTranslator {
         }
         break;
       case 'toolcall_start':
-        // 信息保真 C3.4：不再 push 空壳 tool_use（空 id/name 会被渲染成
+        // 信息保真 不再 push 空壳 tool_use（空 id/name 会被渲染成
         // 无意义工具块）。只保留 bookkeeping，toolcall_end 补发完整事件。
         this.pendingToolCall = true;
         break;

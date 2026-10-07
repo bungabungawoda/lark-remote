@@ -63,7 +63,7 @@ export class RunCardSession extends CardSession<RunState, RunCardRenderOptions> 
   async push(event: AgentEvent): Promise<void> {
     // state 每事件立即 reduce（始终最新），但 updateCard 延迟到合批窗口末尾。
     // 窗口内多次 push 复用同一 flushTimer，只 render + controller.update 一次
-    // （P1-3）。push 立即 resolve（fire-and-forget render）—— bridge 串行
+    // push 立即 resolve（fire-and-forget render）—— bridge 串行
     // await 不被 render 阻塞，循环快速灌入事件，多个事件落进同一窗口被合并。
     //
     // 首 push 也走窗口（无 immediate-first-flush）：start() 已发初始卡（streaming
@@ -86,7 +86,7 @@ export class RunCardSession extends CardSession<RunState, RunCardRenderOptions> 
     this.cancelPendingFlush();
     // 若有 in-flight flush 正在 await updateCard，必须等它完成后再发终态 patch。
     // 否则两条并发 controller.update 无 FIFO 保证，in-flight 的 pre-terminal
-    // patch 可能在终态 patch 之后 resolve → 用户看到"思考中"终帧（P2）。
+    // patch 可能在终态 patch 之后 resolve → 用户看到"思考中"终帧。
     // await 保证顺序：pre-terminal 先落地 → terminal 后落地 → terminal 胜出。
     if (this.flushP) await this.flushP;
     this.state = finishRun(this.state, terminal, meta);

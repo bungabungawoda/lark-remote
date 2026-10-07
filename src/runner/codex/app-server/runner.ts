@@ -205,7 +205,7 @@ export class CodexAppServerRunner extends ConnectionBasedRunner<
       },
     };
     this.connectionManager = new ConnectionManager<JsonRpcClient<InitializeResult>>(managerOpts);
-    // 协议停止通道（design §3.3）：codex 的 cancel 是 `turn/interrupt` 请求，已由
+    // 协议停止通道：codex 的 cancel 是 `turn/interrupt` 请求，已由
     // cancelCurrentTurn 实现；登记后 win32 优雅停止才有通道可用（否则一路树杀）。
     this.connectionManager.stopper = ({ client }) => this.buildCooperativeStop(client);
   }
@@ -317,7 +317,7 @@ export class CodexAppServerRunner extends ConnectionBasedRunner<
     } else if (pending.kind === 'permissions') {
       // 权限审批的响应没有 decision 字段（真实协议只回 granted profile +
       // scope）：decline/cancel 必须返回空授权（拒绝全部），否则会把用户已
-      // 勾选的条目当作授予返回（2026-08-12 review 发现：勾选后点「拒绝」实
+      // 勾选的条目当作授予返回（2026-08-12 ：勾选后点「拒绝」实
       // 际授予了所选权限）。accept/acceptForSession 才带用户勾选的条目。
       const denied = action === 'decline' || action === 'cancel';
       client.respond(requestId, {
@@ -460,7 +460,7 @@ export class CodexAppServerRunner extends ConnectionBasedRunner<
         'thread/start',
         threadParams,
       );
-      // 会话键假设（review P2-4）：主线程 thread.id === session_meta.session_id，
+      // 会话键假设：主线程 thread.id === session_meta.session_id，
       // 故 thread.id 可同时用作协议 threadId 与 store/session reader 的 session
       // 键（bridge 用 turn_started 通知的 threadId 写回，/resume、Compact 按此
       // 键定位 JSONL）。forked/subagent 线程二者会分叉（openai/codex#29327），

@@ -71,7 +71,7 @@ function projectDirForCwd(cwd: string, sessionsDir: string): string {
 }
 
 /**
- * P1-19: TTL cache for pi directory scans (mirror codex getSessionIndex's
+ * TTL cache for pi directory scans (mirror codex getSessionIndex's
  * 5s TTL). Repeated /resume pages re-scan the whole sessions dir per call.
  */
 const piListCache = new TtlCache<string, AgentSession[]>(5_000, 32);
@@ -118,7 +118,7 @@ function compressSkillInjection(text: string): string {
 
 /** Get a one-line summary from a pi session JSONL (first user message text).
  *
- * P2-3 optimization: previously used `readJsonlLines` (full-file slurp)
+ * optimization: previously used `readJsonlLines` (full-file slurp)
  * just to get the first user message. Now uses `findJsonlLine` which
  * stops reading as soon as the predicate matches — typically only the
  * first few lines of the file, saving ~99% I/O on large sessions.
@@ -186,14 +186,14 @@ function findSessionFile(sessionId: string, cwd: string, sessionsDir: string): s
 }
 
 /**
- * P2-6 + P2-5 first-pass scan result for readSessionContent.
+ * first-pass scan result for readSessionContent.
  *
  * A single first pass (piScalarScan) parses each line once to collect usage +
  * the index of the last user message + the displayTitle; a second pass only
  * re-parses the TAIL (events after the last user message). Total parses ≈
  * 1.x × line count instead of ~4×.
  *
- * P2-5: the index is now a **byte offset** (`tailOffset`) of the line
+ * the index is now a **byte offset** (`tailOffset`) of the line
  * AFTER the last user message, captured during a streaming scan that
  * materializes no `string[]`. The second pass re-reads only the tail from
  * that offset via `readJsonlLinesFromOffset`, so raw line-string memory is
@@ -211,14 +211,14 @@ interface PiScanResult {
 }
 
 /**
- * P2-6 + P2-5 first-pass scan: stream the file once via `scanJsonlLines`
+ * first-pass scan: stream the file once via `scanJsonlLines`
  * (no `string[]` materialized), parse each line exactly once, and collect
  * all metadata needed by readSessionContent (usage, tailOffset, displayTitle).
  * Does NOT retain parsed objects — the events tail is re-parsed separately
  * by `extractPiEventsFromTail` so memory for both raw line strings and
  * parsed objects is O(tail), not O(whole file).
  *
- * Mirrors claude's scalarScan (P2-2 + P2-5). Preserves the skill-signature
+ * Mirrors claude's scalarScan. Preserves the skill-signature
  * compression (`<skill>…</skill>` → `skill:x`) for displayTitle and the
  * "last turn" semantics for usage tokens.
  */
@@ -276,7 +276,7 @@ function piScalarScan(filePath: string): PiScanResult {
  * Build the AgentSessionUsage from an accumulator, preserving pi's
  * "last turn" semantics: inputTokens/outputTokens use the LAST turn's
  * values, contextLength = last turn's context-window occupancy
- * (input + cacheRead + cacheCreation, excludes output — review P2-8 unified
+ * (input + cacheRead + cacheCreation, excludes output —unified
  * contract across all five readers), cumulative = session-wide sum.
  * Returns undefined when no usage data was observed.
  */
@@ -300,10 +300,10 @@ function buildPiUsage(acc: UsageAccumulator): AgentSessionUsage | undefined {
 }
 
 /**
- * P2-6 + P2-5 second-pass tail mapper: expand one parsed tail line into
+ * second-pass tail mapper: expand one parsed tail line into
  * content-block events. Re-parses only tail lines (scanTailEvents does the
  * offset re-read + line filtering), so both raw line-string memory and
- * parsed-object memory are O(tail), not O(whole file) — P2-6 + P2-5.
+ * parsed-object memory are O(tail), not O(whole file) —.
  * `maxEvents` capping is applied by scanTailEvents.
  */
 function mapPiTailLine(rawObj: Record<string, unknown>): AgentSessionContentEvent[] {
@@ -398,7 +398,7 @@ export class PiSessionReader implements AgentSessionReader {
       return { events: [] };
     }
 
-    // P2-5 + P2-6: Two-pass scan (see `scanJsonlOnce` / `scanTailEvents` in
+    // Two-pass scan (see `scanJsonlOnce` / `scanTailEvents` in
     // session/common/two-pass.ts): pass 1 streams the file once collecting
     // scalars (usage, tailOffset, displayTitle) with O(1) parsed-object
     // retention; pass 2 re-reads ONLY the tail and re-parses it for events,

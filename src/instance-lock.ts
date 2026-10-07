@@ -31,7 +31,7 @@ export class InstanceAlreadyRunningError extends Error {
 }
 
 /**
- * Probe whether a pid is alive. P2-20:
+ * Probe whether a pid is alive.
  *  - process.kill(pid, 0) returning normally → alive.
  *  - ESRCH (no such process) → dead.
  *  - EPERM (operation not permitted) → the process EXISTS but is owned by
@@ -152,7 +152,7 @@ export class InstanceLock {
         process.exit(129);
       });
     } else {
-      // win32 无 SIGHUP；CTRL_BREAK 退出前也要释放锁（§3.5，对照 cli.ts 信号转发）
+      // win32 无 SIGHUP；CTRL_BREAK 退出前也要释放锁（对照 cli.ts 信号转发）
       process.on('SIGBREAK', () => {
         this.release();
         process.exit(149);

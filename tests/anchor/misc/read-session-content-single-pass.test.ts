@@ -1,17 +1,17 @@
 /**
- * P2-2 anchor: readSessionContent single-pass parsing invariant
+ * readSessionContent single-pass parsing invariant
  *
- * Before P2-2, readSessionContent parsed allLines 3-4 times:
+ * Before readSessionContent parsed allLines 3-4 times:
  *   1. aggregateSessionUsage — JSON.parse every line
  *   2. last-user-message scan — JSON.parse every line
  *   3. event collection — JSON.parse from startIdx to end
  *   4. title/recap — JSON.parse all lines
  *
- * After P2-2, a single pass must collect all four outputs.
+ * After a single pass must collect all four outputs.
  * This anchor verifies:
  *   ① JSON.parse calls inside readSessionContent body are ≤
  *      allLines.length (one parse per line, single pass).
- *      Pre-P2-2 this was ~3× allLines.length.
+ *      Pre-this was ~3× allLines.length.
  *   ② All output fields remain identical to pre-optimization behavior
  *      (covered by existing 28 tests in sessions.test.ts + parity checks here).
  *   ③ Large session: parse-to-line ratio ≤ 1.0.
@@ -57,7 +57,7 @@ const SESSIONS_TS_MARK = /src[\\/]session[\\/](claude[\\/]sessions|common[\\/]tw
 function isParseInSessionsTs(): boolean {
   return SESSIONS_TS_MARK.test(new Error().stack ?? '');
 }
-describe('P2-2 anchor: readSessionContent single-pass parsing', () => {
+describe('readSessionContent single-pass parsing', () => {
   it('JSON.parse calls in readSessionContent body ≤ allLines.length (not 3-4×)', () => {
     // Session with diverse content: user, assistant (with usage), compact,
     // ai-title, compactSummary — exercises all 4 original passes.
@@ -111,11 +111,11 @@ describe('P2-2 anchor: readSessionContent single-pass parsing', () => {
       // ① Core invariant: total JSON.parse calls inside readSessionContent
       //    must be bounded. readCwdFromJsonl (findJsonlLine) is called
       //    once before the main loop and parses only the first few lines —
-      //    it is NOT part of the allLines multi-pass problem (P2-2).
+      //    it is NOT part of the allLines multi-pass problem.
       //    The main loop (allLines) must parse each line exactly once.
       //
-      //    Pre-P2-2: ~3× nonEmptyLines (3 full passes over all lines)
-      //    Post-P2-2: nonEmptyLines (single pass) + small cwd overhead
+      //    Pre-~3× nonEmptyLines (3 full passes over all lines)
+      //    Post-nonEmptyLines (single pass) + small cwd overhead
       //    We use 1.5× nonEmptyLines as the upper bound — generous enough
       //    to absorb readCwdFromJsonl's few extra parses, but strict
       //    enough to catch the 3-4× regression.
@@ -142,10 +142,10 @@ describe('P2-2 anchor: readSessionContent single-pass parsing', () => {
   });
 
   /**
-   * P2-2 ratio 边界：无 user 消息的 session。
+   * ratio 边界：无 user 消息的 session。
    * readSessionContent 找不到 user 消息时 startIdx 回退到 0，extractEventsFromTail
    * 重解析整个文件 → 解析次数 = scalarScan(N) + tail(N) = 2N，ratio = 2.0×。
-   * 这是 P2-2 两阶段设计的已知上界（仍优于 pre-P2-2 的 ~3×），但 1.5× 的断言
+   * 这是两阶段设计的已知上界（仍优于 pre-的 ~3×），但 1.5× 的断言
    * 不覆盖此 case。此锚点显式 pin 住无 user 消息文件的 ratio ≤ 2.0×，并防止
    * 退化到 3×+（如回退成多遍 full pass）。
    */
@@ -183,7 +183,7 @@ describe('P2-2 anchor: readSessionContent single-pass parsing', () => {
       expect(result.events.map((e) => e.content)).toContain('a0');
       expect(result.events.map((e) => e.content)).toContain('a49');
 
-      // ratio：2 阶段（scalarScan + tail 全文重解析）= ~2.0×，仍优于 pre-P2-2 的 3×。
+      // ratio：2 阶段（scalarScan + tail 全文重解析）= ~2.0×，仍优于 pre-的 3×。
       // 2.0× 是 body 的渐近上界；totalParseCount 还含 readCwdFromJsonl 的固定开销
       // （~2 parse，与行数无关），故用「2.0× 行数 + 5」给 cwd 预检留绝对余量——
       // 大文件 ratio→2.0，小文件不被固定开销挤出。3×+ 即退化信号。
@@ -250,8 +250,8 @@ describe('P2-2 anchor: readSessionContent single-pass parsing', () => {
 
       // ③ Large session: parse count ≤ 1.5× nonEmptyLines (generous bound
       //    that still catches 3-4× regression; the .5× absorbs readCwdFromJsonl).
-      //    Pre-P2-2: ~3× 101 = ~303 parses, ratio ≈ 3.0.
-      //    Post-P2-2: ~101 + small cwd overhead, ratio ≈ 1.0-1.1.
+      //    Pre-~3× 101 = ~303 parses, ratio ≈ 3.0.
+      //    Post-~101 + small cwd overhead, ratio ≈ 1.0-1.1.
       const ratio = totalParseCount / nonEmptyLines;
       expect(ratio).toBeLessThanOrEqual(1.5);
     } finally {

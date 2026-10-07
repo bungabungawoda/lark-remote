@@ -6,7 +6,7 @@ import { getLogger } from '../logger/index.js';
 /**
  * Atomically write content (string or binary Buffer) to a file via tmp + rename.
  * Falls back to copy+unlink when rename fails with EXDEV (cross-device).
- * rename 目标被占用（win32 EPERM/EBUSY）时短暂退避重试（§6）；重试耗尽后
+ * rename 目标被占用（win32 EPERM/EBUSY）时短暂退避重试；重试耗尽后
  * 保留 tmp 现场并告警，再抛出原错误。
  */
 export function atomicWrite(

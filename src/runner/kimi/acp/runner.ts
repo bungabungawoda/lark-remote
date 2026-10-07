@@ -151,7 +151,7 @@ function formatIdleWindow(ms: number): string {
   return ms >= 60_000 ? `${Math.round(ms / 60_000)} 分钟` : `${Math.round(ms / 1000)} 秒`;
 }
 
-/** Duck-typed capability on the session reader for R2 polling. */
+/** Duck-typed capability on the session reader for the completion-record polling. */
 interface CompactionRecordReader {
   readCompactionRecords?(sessionId: string, cwd: string): CompactionRecordLike[];
 }
@@ -272,7 +272,7 @@ export class KimiAcpRunner extends BaseAcpRunner<KimiAcpTranslator> {
    */
   private readonly terminator: Terminator = createTerminator({ graceMs: 2_000, agent: 'kimi' });
   /**
-   * shell seam：terminal/create 的可执行解析走这里（design.md §7.2）。kimi 的
+   * shell seam：terminal/create 的可执行解析走这里。kimi 的
    * ACP 服务端固定要 `bash -c`，win32 上没有 Git Bash 时必须在 seam 里变成
    * 明确错误，而不是一个语焉不详的 spawn ENOENT。
    */
@@ -344,7 +344,7 @@ export class KimiAcpRunner extends BaseAcpRunner<KimiAcpTranslator> {
   }
 
   protected async applyTurnSettings(client: JsonRpcClient, sessionId: string): Promise<void> {
-    // CC-07: 下发配置的模型（provider/model）。session/new|resume 只带 cwd/mcpServers，
+    // 下发配置的模型（provider/model）。session/new|resume 只带 cwd/mcpServers，
     // 不带 model；不主动下发则实际跑 kimi 服务端默认模型。
     // 仿 opencode 用 session/set_config_option。失败仅告警不阻断。
     if (this.model) {
@@ -361,7 +361,7 @@ export class KimiAcpRunner extends BaseAcpRunner<KimiAcpTranslator> {
       }
     }
 
-    // A5: 下发配置的思考强度。configId 与取值不是猜的——kimi 真机（0.43.1）
+    // 下发配置的思考强度。configId 与取值不是猜的——kimi 真机（0.43.1）
     // `session/new` 就通告 `{id:'thinking', category:'thought_level',
     // options:[low|high|max]}`，set 成功后响应里 `currentValue` 变成新值；
     // 未知 configId / 非法取值回 -32602（不静默接受），所以失败告警即可判定。
@@ -409,7 +409,7 @@ export class KimiAcpRunner extends BaseAcpRunner<KimiAcpTranslator> {
    * before producing the result. There is NO total timeout — silence beyond
    * compactIdleTimeoutMs yields 'unknown' (never a fake success). Keeps the
    * connection alive while the background compaction finishes — otherwise
-   * dispose/exit kills it and the record never lands (S5/S6 打回复现 /
+   * dispose/exit kills it and the record never lands (打回复现 /
    * 2026-08-31 事故).
    */
   protected override compactBaseline(sessionId: string, opts: SpawnOptions): number {
@@ -435,7 +435,7 @@ export class KimiAcpRunner extends BaseAcpRunner<KimiAcpTranslator> {
     let promptRejected = false;
 
     // prompt 结算只供两样东西：成功 result 的翻译素材（stopReason/usage）与 §5.4
-    // 探针。终态判定不再挂在它后面（A7）。
+    // 探针。终态判定不再挂在它后面。
     const promptSettled: Promise<SessionPromptResult | undefined> = promptPromise.then(
       (result) => {
         this.promptSettled = true;
@@ -467,7 +467,7 @@ export class KimiAcpRunner extends BaseAcpRunner<KimiAcpTranslator> {
       return;
     }
 
-    // A7：语义等待在 prompt 触发的那一刻武装。引擎静默超过 compactIdleTimeoutMs
+    // 语义等待在 prompt 触发的那一刻武装。引擎静默超过 compactIdleTimeoutMs
     // 就给出 compact 语义终态，不等 session/prompt 结算——否则挂住的 prompt 会把
     // 用户拖到通用 turnIdleTimeout（默认 30min），拿到的还是一个语义泛化的 turn
     // 超时，而不是「压缩状态未知 / 可重试」。
@@ -525,7 +525,7 @@ export class KimiAcpRunner extends BaseAcpRunner<KimiAcpTranslator> {
   }
 
   /**
-   * Hot-apply a permission-mode change to the live ACP session (§P5).
+   * Hot-apply a permission-mode change to the live ACP session.
    *
    * The local cache is always updated so `getStatusInfo()` (and therefore
    * `/s`) reflects the new mode immediately. When a session is connected,
@@ -752,14 +752,14 @@ export class KimiAcpRunner extends BaseAcpRunner<KimiAcpTranslator> {
     const cwd = params.cwd ?? this.activeCwd ?? undefined;
     const outputLimit = params.outputByteLimit ?? TERMINAL_DEFAULT_OUTPUT_LIMIT;
 
-    // 走 shell seam（design.md §7.2）：argv 逐 token 保留，只把「可执行文件在哪」
+    // 走 shell seam：argv 逐 token 保留，只把「可执行文件在哪」
     // 收口——win32 上 Git Bash 缺失时在这里抛 ShellUnavailableError，由
     // handleTerminalRequest 转成明确的 Terminal request failed 回执，而不是一个
     // 语焉不详的 spawn ENOENT。
     const proc = this.shell.spawnArgv(params.command, params.args ?? [], {
       cwd,
       options: {
-        // env 覆盖大小写不敏感合并（win32 PATH/Path 双键防护，v2 §8.3）
+        // env 覆盖大小写不敏感合并（win32 PATH/Path 双键防护）
         env: env ? mergeProcessEnv(process.env, env) : undefined,
         stdio: ['ignore', 'pipe', 'pipe'],
         // Terminator 用负 PID 杀进程组（kill(-pgid)）；子进程必须是组长

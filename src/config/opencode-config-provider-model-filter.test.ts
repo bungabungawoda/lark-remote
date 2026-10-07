@@ -25,7 +25,7 @@ vi.mock('../platform/spawn.js', () => ({
 
 describe('opencode-config provider-model filtering', () => {
   beforeEach(() => {
-    // P1-8：模块级 TTL 缓存会在测试间串状态，每个用例前清空
+    // 模块级 TTL 缓存会在测试间串状态，每个用例前清空
     invalidateOpencodeConfigCache();
     vi.clearAllMocks();
   });

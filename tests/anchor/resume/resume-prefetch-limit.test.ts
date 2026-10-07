@@ -18,7 +18,7 @@ import {
   createStubConnector,
 } from '../../lib/bridge-stubs.js';
 /**
- * Anchor (P1-1): /resume 列表页内容预取有上限（≤5），且 5 行全部有标题
+ * Anchor: /resume 列表页内容预取有上限（≤5），且 5 行全部有标题
  *
  * 验证什么行为：
  *   1. `/resume` 列表页对 `readSessionContent`（全量 JSONL 扫描：usage/事件/
@@ -35,8 +35,7 @@ import {
  *   超出页内行数做全量 JSONL 扫描，大 session（几百 KB）下 `/resume` 列表
  *   卡顿；若预取/渲染缺失，行没有标题，用户无法从列表辨认会话内容。
  *
- * 依据（review P1-1）：
- *   plan §2.2 "只有返回页内的 session 才做全量解析"（codex 侧已按此实现）；
+ *   "只有返回页内的 session 才做全量解析"（codex 侧已按此实现）；
  *   claude 侧 `/resume` 列表应复用 listSessions 已算好的 summary 做行标题
  *   兜底，全量 readSessionContent 预取上限 ≤5（列表只需要足够渲染标题）。
  */
@@ -53,7 +52,7 @@ function countResumeButtons(card: { body?: { elements?: CardElement[] } }): numb
   return buttons.filter((b) => b.behaviors?.[0]?.value?.cmd === 'resume.use').length;
 }
 
-describe('P1-1 /resume 列表页预取上限 + summary 兜底', () => {
+describe('/resume 列表页预取上限 + summary 兜底', () => {
   let tmpDir: string;
 
   beforeEach(() => {
@@ -97,7 +96,7 @@ describe('P1-1 /resume 列表页预取上限 + summary 兜底', () => {
       defaultAgent: 'claude',
     });
 
-    // Real claude reader against the fixture; other agents stubbed (R2 shape).
+    // Real claude reader against the fixture; other agents stubbed.
     const registry = new SessionReaderRegistry();
     const reader = new ClaudeSessionReader({ projectsDir });
     registry.register('claude', reader);

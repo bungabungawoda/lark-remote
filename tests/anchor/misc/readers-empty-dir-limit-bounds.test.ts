@@ -1,16 +1,16 @@
 /**
- * Round 10 termination anchors (plan §2.1/§2.2/§4.2): 5 reader 层边界。
+ * termination anchors: 5 reader 层边界。
  *
  * Each `test_anchor_*` is an independent assumption; a fail here is a
  * candidate RED for the orchestrator to upgrade/drop.
  *
  * Focus areas:
- * - P10-8: TTL staleness 为 spec §2.2 设计内行为（list 走 5s 缓存），非缺陷，对应探测项已裁决丢弃。
- * - P10-9: 5 个 reader 空目录（0 会话）下返回 { sessions: [], total: 0 }，
+ * - TTL staleness 为设计内行为（list 走 5s 缓存），非缺陷，对应探测项已裁决丢弃。
+ * - 5 个 reader 空目录（0 会话）下返回 { sessions: [], total: 0 }，
  *   任何 offset/limit 组合不抛异常。
- * - P10-10: 4 个可 fixture 的 reader（claude/pi/codex/kimi）在 5 会话
+ * - 4 个可 fixture 的 reader（claude/pi/codex/kimi）在 5 会话
  *   fixture 下：limit=0、offset=total、offset=total-pageSize、limit 超大、
- *   负 offset（R9 裁决 reader 层统一 clamp 到 0）。
+ *   负 offset（reader 层统一 clamp 到 0）。
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
@@ -29,13 +29,13 @@ vi.mock('../../../src/logger/index.js', async () =>
   (await import('../../lib/logger-mock.js')).loggerModuleMock(),
 );
 
-// 测试隔离（设计文档 §9.5「禁真跑 agent」）：本用例的前提就是「**无二进制可用**」
+// 测试隔离（「禁真跑 agent」）：本用例的前提就是「**无二进制可用**」
 // （见下方 `test_anchor_readers_empty_dir_returns_zero_total` 的注释），而 5 个 reader
 // 里只有 OpencodeSessionReader 走 CLI（`opencode session list --format json`）——不 mock
 // 就会真起本机 opencode，Windows 上单次 2-7s，全量并行时直接顶爆 20s hook 预算。
 //
 // 短路语义必须与「CLI 未安装」一致：返回 **ENOENT**，而不是 exit≠0。
-// 因为 `OpencodeSessionReader.fetchSessionList`（P1-15）对两者处理不同——
+// 因为 `OpencodeSessionReader.fetchSessionList`对两者处理不同——
 //   · ENOENT          → 返回 []（陈旧 cwd / 二进制缺失，优雅降级）
 //   · exit≠0 / 解析错 → 抛「读取失败」（避免静默 [] 与真空不可区分）
 // 给 exit≠0 会让本用例抛异常，恰好把这条不变量打反。其余导出保持真实。
@@ -45,7 +45,7 @@ vi.mock('../../../src/platform/spawn.js', async (importOriginal) => {
   return shortCircuitSpawnEnoent(actual);
 });
 
-describe('Round 10 reader anchors', () => {
+describe('reader anchors', () => {
   let tmpDir: string;
 
   beforeEach(() => {
@@ -87,7 +87,7 @@ describe('Round 10 reader anchors', () => {
   it('test_anchor_readers_fixture_limit_zero_and_offset_bounds', () => {
     // 假设：5 会话 fixture 下，limit=0 → 空页但 total=5；offset=total → 空页；
     // offset=total-pageSize → 末页起点；limit 超大 → 全集；负 offset → 第一页
-    // （R9 裁决：reader 层统一 offset<0 → 0，不静默空页）。
+    // （：reader 层统一 offset<0 → 0，不静默空页）。
     const cwdPath = path.join(tmpDir, 'proj');
     fs.mkdirSync(cwdPath, { recursive: true });
     const cwd = fs.realpathSync(cwdPath);

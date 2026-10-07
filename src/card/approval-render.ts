@@ -1,7 +1,7 @@
 /**
  * renderApprovalArea: renders the approval request area in a run card.
  *
- * Renders command/file/permissions approval areas with button mappings per §8.3.
+ * Renders command/file/permissions approval areas with button mappings.
  * Uses CardKit 2.0 (no tag:"action" container — 200861 rule).
  */
 
@@ -18,7 +18,7 @@ function mkNonce(): string {
 /** 计划面板正文字节预算（折叠展示 + 截断保护 28KB 卡片预算）。 */
 const PLAN_PANEL_BYTES = 6000;
 
-/** reason div（3 处共用）；反引号中和防 lark_md 解析错误（review P2-2）。 */
+/** reason div（3 处共用）；反引号中和防 lark_md 解析错误。 */
 function reasonDiv(approval: ApprovalView): object | null {
   if (!approval.reason) return null;
   const neutralized = approval.reason.replace(/`/g, '·');
@@ -46,7 +46,7 @@ export function renderApprovalArea(
 ): object[] {
   if (!approval) return [];
   // 终态（done/error/interrupted/idle_timeout）下 run 已结束：coordinator 已
-  // 释放，按钮点击无处响应，隐藏整个审批区避免"点了没反应"（P2-7）。
+  // 释放，按钮点击无处响应，隐藏整个审批区避免"点了没反应"。
   if (opts?.terminal && opts.terminal !== 'running' && opts.terminal !== 'finalizing') {
     return [];
   }
@@ -283,7 +283,7 @@ function renderCommandApproval(
   const elements: object[] = [];
 
   // Command display
-  // review P2-2：命令里的反引号会提前终止 lark_md 行内代码 span，奇数次
+  // 命令里的反引号会提前终止 lark_md 行内代码 span，奇数次
   // 反引号极易触发 11311 解析错误导致整卡失败（同 renderFileDiff 的中和策略）。
   const neutralizedCommand = (approval.command ?? '').replace(/`/g, '·');
   const cmdContent = neutralizedCommand
@@ -510,7 +510,7 @@ function renderQuestionApproval(
     }
 
     // 自定义答案（Other）的选中态展示：选项按钮无法表示自由文本，单独显示
-    // 已选文本，避免「点了没反应」的困惑（review P3）。
+    // 已选文本，避免「点了没反应」的困惑。
     const customSelected = q.selected?.find((s) => !q.options.some((o) => o.label === s));
     if (customSelected) {
       elements.push({
@@ -519,7 +519,7 @@ function renderQuestionApproval(
       });
     }
 
-    // review P3-4：单选问题提供自定义答案（Other）输入——输入文本后提交
+    // 单选问题提供自定义答案（Other）输入——输入文本后提交
     // （移动端键盘回车/完成键，桌面端输入框右侧提交图标），input_value 经
     // connector raw 事件回传。
     // 显隐按 isOther !== false：Kimi form 会丢弃非声明选项值，翻译时置

@@ -18,7 +18,7 @@ import {
   createStubConnector,
 } from '../../lib/bridge-stubs.js';
 /**
- * Anchor (Review P2-1): summary 占位符不得以"最近输入"label 渲染
+ * Anchor (Review): summary 占位符不得以"最近输入"label 渲染
  *
  * 验证什么行为：
  *   1. `/resume` 列表首页（25 个 claude session、每页 5 条）：5 个
@@ -32,11 +32,11 @@ import {
  * 缺失/错误会导致什么：
  *   无用户消息的 session 会显示 `🏷️ 最近输入\n(无摘要)` 这类占位符标题，
  *   用户误以为占位符是真实输入；claude/codex/kimi 的占位符文案各不相同
- *   （`(无摘要)`/`(no user message)`/`New Session`），都是 Review P2-1 所述
+ *   （`(无摘要)`/`(no user message)`/`New Session`），都是 Review所述
  *   "summary 兜底 + label 恒为最近输入"引入的可见 UX 回归（改动前每行都预取
  *   displayTitle，无 displayTitle 时整行不显示标题）。
  *
- * 依据（Review Round 2 P2-1 + design.md §9.22 列表行内容）：
+ * 依据（Review+ design.md §9.22 列表行内容）：
  *   "非预取行 `titleText = s.summary`，label 恒为 `最近输入`。但各 reader 的
  *   summary 并不等于最近输入：claude 是 `'(无摘要)'`…卡片会显示
  *   `🏷️ 最近输入\n(无摘要)` 这种误导/占位符标题。建议：兜底前过滤占位符…
@@ -70,7 +70,7 @@ function collectStrings(value: unknown, acc: string[] = []): string[] {
   return acc;
 }
 
-describe('Review P2-1 非预取行占位符 summary 不得渲染为"最近输入"', () => {
+describe('Review非预取行占位符 summary 不得渲染为"最近输入"', () => {
   let tmpDir: string;
 
   beforeEach(() => {
@@ -115,7 +115,7 @@ describe('Review P2-1 非预取行占位符 summary 不得渲染为"最近输入
       defaultAgent: 'claude',
     });
 
-    // Real claude reader against the fixture; other agents stubbed (R2 shape).
+    // Real claude reader against the fixture; other agents stubbed.
     const registry = new SessionReaderRegistry();
     registry.register('claude', new ClaudeSessionReader({ projectsDir }));
     const stubReader = {
