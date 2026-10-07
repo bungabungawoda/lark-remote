@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.5] - 2026-10-07
+
+### 修复
+
+- **消息不再漂移到新会话**：紧跟在文字消息之后点击「新会话」「切换工作目录」「继续会话」等会变更会话的卡片按钮时，此前消息可能落到新会话里执行。现在这类卡片动作会先等消息合并窗口落地（消息仍绑定旧会话/旧目录），再执行动作；同时入队时刻固定会话代际，堵住「已开新会话后又被旧消息把旧会话复活」的漏判
+
+### 变更
+
+- **内部清理重构**：删除生产死代码与重复测试脚手架，统一内部命名，无行为变化
+
 ## [0.4.4] - 2026-10-04
 
 ### 修复
