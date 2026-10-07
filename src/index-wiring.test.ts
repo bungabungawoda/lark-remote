@@ -31,8 +31,9 @@ describe('index.ts card action dispatch wiring guard (§9.19)', () => {
     expect(directReturnBlock).not.toBeNull();
     const block = directReturnBlock?.[0] ?? '';
     expect(block).toContain('router.handleCardAction(fullValue');
-    // 直返名单来源必须从 router 导入（防本地复制名单再漂移）
-    expect(source).toContain('DIRECT_RETURN_CMDS,\n  type CardActionPayload,');
+    // 直返名单来源必须从 router 导入（防本地复制名单再漂移）。
+    // 用 \s* 而非 '\n' 字面量：win32 检出是 CRLF，字面量匹配不上（Windows CI 实测）。
+    expect(source).toMatch(/DIRECT_RETURN_CMDS,\s*type CardActionPayload,/);
   });
 });
 

@@ -52,7 +52,9 @@ function makeRunner(): ClaudeRunner {
 
 async function collectRun(runner: ClaudeRunner): Promise<AgentEvent[]> {
   const events: AgentEvent[] = [];
-  for await (const ev of runner.run('hello', { cwd: '/tmp' })) {
+  // cwd 必须是真实存在的目录：'/tmp' 在 win32 不存在 → spawn ENOENT，
+  // mock 没跑起来就先落到 SpawnChildError（Windows CI 实测）。
+  for await (const ev of runner.run('hello', { cwd: tmpDir })) {
     events.push(ev);
   }
   return events;
