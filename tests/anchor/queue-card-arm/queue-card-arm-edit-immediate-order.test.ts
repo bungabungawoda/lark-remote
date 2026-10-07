@@ -59,14 +59,14 @@ describe('queue.immediate on an edited task must keep the target position ahead 
     // 缺失会导致什么问题：enqueue 只能追加到 promise 链尾部，编辑分支重新入队后
     // 队列链变为 T1 → T2-old(跳过) → T3 → T2'——T3（排在 T2 之后的普通消息）
     // 反而先于"立即执行"的编辑消息运行。用户看到 toast 承诺"您的消息将立即执行"，
-    // T2 的卡片已被 markQueueCardExecuting 翻成"▶️ 已开始执行"（按钮禁用），
+    // 的卡片已被 markQueueCardExecuting 翻成"▶️ 已开始执行"（按钮禁用），
     // 但实际先跑的是 T3；若编辑内容是对危险命令的修正（如去掉误加的参数），
     // 该修正被延迟到 T3 之后执行，副作用的顺序与用户预期相反，且卡片状态
     // 与真实执行顺序完全不符（用户无法撤销——按钮已禁用）。
     //
     // 依据：router handleQueueImmediate 步骤 4 注释明文规定目标任务"keep it in
     // queue to execute immediately"、步骤 3 只清除目标任务**之前**的消息（后面的
-    // T3 保持原相对顺序，即 T3 本来排在 T2 之后）；非编辑分支目标任务原地保留，
+    // 保持原相对顺序，即 T3 本来排在 T2 之后）；非编辑分支目标任务原地保留，
     // 在 T3 之前执行。编辑分支只是替换闭包，不能改变这一相对顺序——立即执行
     // 的目标必须仍是下一个执行的任务。
     const sessionStore = new SessionStore();

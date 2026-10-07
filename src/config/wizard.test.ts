@@ -105,7 +105,7 @@ describe('ensureConfig', () => {
    * 缺失/错误会导致什么：崩溃/断电正好落在写一半时，留在盘上的是一份被截断的
    *   含密钥配置——下次启动既读不出凭据、又可能泄露半截 secret。仓库里
    *   `config/index.ts` 的保存路径已经统一走 atomicWrite，向导是漏网的那条。
-   * 依据：clean_review §B11（对照 src/persistence/atomic-write.ts）。
+   * 对照 src/persistence/atomic-write.ts。
    */
   it('writes the credential file via tmp + rename, never bare-writing the target', async () => {
     const cfg = path.join(tmpDir, 'atomic', 'config.yaml');

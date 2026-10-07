@@ -128,7 +128,6 @@ describe('JsonRpcClient request/response id matching', () => {
    *   `setTimeout(..., 0)` 必然抢在子进程响应之前 reject → 用户在 YAML 里写
    *   `requestTimeoutMs: 0` 之后 codex/kimi/opencode 每一次 RPC 都超时，
    *   agent 整体不可用（且 dir.ts 正把这个键列给用户手改）。
-   * 依据：clean_review §B9。
    */
   it('treats requestTimeoutMs 0 as "no timeout"', async () => {
     // initialize 立即回，其余请求延后 80ms 回——0ms 预算下必输给它。
@@ -313,7 +312,7 @@ describe('JsonRpcClient request/response id matching', () => {
     await expect(client.request('session/new', {})).rejects.toThrow(ConnectionLostError);
   });
 
-  it('sends literal initialize params: protocolVersion 1 + all-false clientCapabilities (R4)', async () => {
+  it('sends literal initialize params: protocolVersion 1 + all-false clientCapabilities', async () => {
     const capturePath = join(tmpDir, 'init-capture.jsonl');
     const server = join(tmpDir, 'capture-server.mjs');
     writeFileSync(

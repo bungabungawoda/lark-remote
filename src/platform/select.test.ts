@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { currentPlatform, isWin32 } from './select.js';
 
 /**
- * select.ts 是 `process.platform` 的唯一读取点（design.md §2.2），其余模块
+ * select.ts 是 `process.platform` 的唯一读取点，其余模块
  * 一律走 `currentPlatform` / `isWin32(platform)`。这里锁住该契约，防止有人
  * 在别处重新散落平台判断。
  */

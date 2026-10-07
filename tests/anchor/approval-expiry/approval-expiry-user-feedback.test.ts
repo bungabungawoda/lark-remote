@@ -1,5 +1,5 @@
 /**
- * A3 anchor: 审批过期后点击按钮必须给用户明确 error toast。
+ * 审批过期后点击按钮必须给用户明确 error toast。
  *
  * ① 验证什么：approval.respond 卡片动作在 bridge 侧因审批已过期（submit 抛
  *    「no longer pending (state=expired)」）失败时，router 返回
@@ -7,7 +7,7 @@
  * ② 缺失/错误会导致什么：当前 handleApprovalAction 无 try/catch，handleApprovalRespond
  *    的异常直接向上抛——无 toast、无日志、SDK 回调失败，用户以为点了允许却毫无反应，
  *    只能等到 10 分钟 turn 超时（2026-08-12 实录）。
- * ③ 依据：bug spec 验收标准 C——「过期后点击审批按钮，用户收到明确 error toast，
+ * ③ 依据：「过期后点击审批按钮，用户收到明确 error toast，
  *    不静默不误导」。
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';

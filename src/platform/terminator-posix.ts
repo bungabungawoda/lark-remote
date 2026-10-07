@@ -1,5 +1,5 @@
 /**
- * posix 终止器（design.md §3.2）。
+ * posix 终止器。
  *
  * 语义：SIGTERM 打负 PID 进程组 → 等 graceMs → SIGKILL；immediate 则两个信号
  * 连发。相对原来的 `process-stopper` 类多两样东西：

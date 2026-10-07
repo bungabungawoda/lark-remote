@@ -1,12 +1,12 @@
 /**
- * A3 anchor 补强: run-state reducer 对 approval_expired 的守卫语义。
+ * 补强: run-state reducer 对 approval_expired 的守卫语义。
  *
  * ① 验证什么：approval_expired 事件仅当 requestId 与当前审批匹配时置
  *    expired:true；不匹配不改；审批已 resolved（approval 已清除）时事件
  *    不复活审批。
  * ② 缺失/错误会导致什么：reducer 无守卫时，错位/迟到的事件会把不相干的
  *    审批标成过期，或让已结束的审批「复活」成过期态。
- * ③ 依据：bug spec R2——「仅当 requestId 与对应审批槽匹配时置 expired，
+ * ③ 依据：「仅当 requestId 与对应审批槽匹配时置 expired，
  *    不匹配不改；已 resolved 时事件不复活审批」（多槽后逐槽守卫语义不变）。
  */
 import { describe, expect, it } from 'vitest';

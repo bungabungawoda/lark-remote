@@ -275,7 +275,7 @@ describe('OpencodeAcpRunner', () => {
     await runner.dispose();
   });
 
-  it('responds accept_for_session by echoing the always optionId (§P4)', async () => {
+  it('responds accept_for_session by echoing the always optionId', async () => {
     const capturePath = join(tmpDir, 'capture.jsonl');
     const { wrapper, cwd } = writeScenario(tmpDir, serverScript, 'opencode', {
       sendApproval: true,
@@ -297,7 +297,7 @@ describe('OpencodeAcpRunner', () => {
       (AgentEvent & { subtype?: string }) | undefined;
     expect(result?.subtype).toBe('success');
 
-    // §P4: acceptForSession 决策 → always 类 optionId（'always'），逐字 echo
+    // acceptForSession 决策 → always 类 optionId（'always'），逐字 echo
     const approvalResponse = readCapture(capturePath).find((m) => m.id === 42 && !m.method);
     expect(approvalResponse).toBeDefined();
     expect(approvalResponse?.result).toEqual({
@@ -306,7 +306,7 @@ describe('OpencodeAcpRunner', () => {
     await runner.dispose();
   });
 
-  it('updateApprovalMode hot-applies mode via session/set_mode and updates status (§P5)', async () => {
+  it('updateApprovalMode hot-applies mode via session/set_mode and updates status', async () => {
     const capturePath = join(tmpDir, 'capture.jsonl');
     const { wrapper, cwd } = writeScenario(tmpDir, serverScript, 'opencode', {
       sendApproval: true,
@@ -342,7 +342,7 @@ describe('OpencodeAcpRunner', () => {
     await runner.dispose();
   });
 
-  it('updateApprovalMode without active session updates the status cache only (§P5)', async () => {
+  it('updateApprovalMode without active session updates the status cache only', async () => {
     const runner = makeRunner('unused');
 
     await runner.updateApprovalMode({ mode: 'plan' });

@@ -1,12 +1,12 @@
 /**
- * P2 anchor: responder 抛错时状态置 failed，且调用 interruptTurn() 兜底。
+ * responder 抛错时状态置 failed，且调用 interruptTurn() 兜底。
  *
  * ① 验证什么：过期 cancel 发送失败（responder reject）时，协调器把审批状态
  *    从 expired 改为 failed，并调用 interruptTurn() 终止 turn——杜绝
  *    「server 永远等」的死路。
  * ② 缺失/错误会导致什么：cancel 未送达且不中断 turn 时，server 只能等 10 分钟
  *    turn 超时兜底；状态停留在 expired 会掩盖「响应失败」这一事实。
- * ③ 依据：bug spec R1——「responder 抛错时状态置 failed，且调用 interruptTurn()
+ * ③ 依据：「responder 抛错时状态置 failed，且调用 interruptTurn()
  *    兜底（best-effort）」。
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';

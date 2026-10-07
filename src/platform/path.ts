@@ -1,5 +1,5 @@
 /**
- * PathKit — 跨平台路径语义（design.md §5.1）。
+ * PathKit — 跨平台路径语义。
  *
  * 所有 cwd 相等性判断、会话目录编码、pid 文件名后缀、spawn cwd 前统一走本模块。
  * 语义映射：
@@ -38,7 +38,7 @@ export function pathKey(p: string, opts?: PathOptions): string {
   // 此处会判等（cwd 守卫假阳性）——影响面小（默认卷不敏感），如需精确需
   // 逐目录 stat 探测卷大小写属性，暂不做。
   // 尾部分隔符必须与 win32 同口径忽略，否则 `/cd ~/repo/` 与 `/cd ~/repo`
-  // 会被判成两个目录，M2 迁移后直接表现为会话目录错配。
+  // 会被判成两个目录，迁移后直接表现为会话目录错配。
   return p.replace(/\/+$/, '').toLowerCase();
 }
 

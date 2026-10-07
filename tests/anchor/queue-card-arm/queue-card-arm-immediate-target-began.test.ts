@@ -62,7 +62,7 @@ describe('queue.immediate must not remove tasks queued BEHIND the target when th
     // interrupt 挂起期间已经 begin（被移除），快照里没有 messageId 可命中，循环
     // 把**剩余全部**排队任务都 removeFromQueue——包括排在 T2 之后的 T3/T4。用户
     // 没撤销过 T3，却收到"❌ 已撤销"卡片，T3 永远不执行；toast 还报告
-    // "清除了 N 条排队消息"（N 含目标之后的消息），与 A8 锚点确立的不变量
+    // "清除了 N 条排队消息"（N 含目标之后的消息），与锚点确立的不变量
     // （"立即执行只清除目标任务之前的消息，之后的保持原相对顺序"）直接冲突。
     // 该竞态是真实可达的：handleQueueImmediate 自身注释明确承认 "The queue chain
     // can advance while later awaits (interruptCurrentRun / markQueueCardExecuting's
@@ -70,7 +70,7 @@ describe('queue.immediate must not remove tasks queued BEHIND the target when th
     // 往返，进程退出到 handler 恢复之间的窗口足以让目标任务 begin。
     //
     // 依据：router handleQueueImmediate 步骤 3 注释 "Remove all tasks BEFORE this
-    // one (by messageId, not index)"——语义边界是"目标之前"；A8 锚点
+    // one (by messageId, not index)"——语义边界是"目标之前"；锚点
     // (queue-card-arm-edit-immediate-order) 已确立 T3 保持原相对顺序、
     // 不得先于或替代目标被清除。步骤 4 注释 "DO NOT remove the target task" 同样
     // 只豁免目标本身，未授权清除目标之后的任务。
@@ -141,7 +141,7 @@ describe('queue.immediate must not remove tasks queued BEHIND the target when th
     bridge.enqueue(
       tmpDir,
       async () => {
-        // T3 应保持排队；本闭包不应执行
+        // 应保持排队；本闭包不应执行
       },
       {
         taskMeta: {
@@ -157,7 +157,7 @@ describe('queue.immediate must not remove tasks queued BEHIND the target when th
     expect(bridge.getQueuedTask(tmpDir, 'msg-3')).toBeDefined();
 
     // --- 步骤 3：挂起 interruptCurrentRun（模拟 runner.stop / 卡片 finish 在途，
-    // 即 A5/A9 同类生产竞态：外部停止操作尚未返回，队列链已可前进）---
+    // 即同类生产竞态：外部停止操作尚未返回，队列链已可前进）---
     let resolveStop: (v: boolean) => void = () => {};
     const stopInFlight = new Promise<boolean>((resolve) => {
       resolveStop = resolve;

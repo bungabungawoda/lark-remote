@@ -119,7 +119,7 @@ describe('win32 shell 后端', () => {
 });
 
 describe('createShellBackend — 平台分发', () => {
-  // W3.7：spawn 行为已在上方 posix/win32 后端 describe 覆盖，分发层只钉 kind。
+  // spawn 行为已在上方 posix/win32 后端 describe 覆盖，分发层只钉 kind。
   it('posix → bash 后端', () => {
     expect(createShellBackend({ platform: 'linux' }).kind).toBe('bash');
   });

@@ -1,7 +1,7 @@
 /**
  * 装配器事件（设计依据见 `docs/zh/architecture/inbound-unified-input-design.md`）。
  *
- * 设计文档早期的媒体事件形态是「下载完成后的 attachments/failures」。实际链路里
+ * 早期的媒体事件形态是「下载完成后的 attachments/failures」。实际链路里
  * 下载是异步的（`index.ts` 先过 owner/enabled 闸门再下载），若等下载完成才投递事件，
  * 「先图后文」在慢下载下会先提交一个只含文本的 turn（正是要修的症状）。因此媒体事件
  * 携带一个 **outcome promise**：装配器立刻知道「本 turn 还有 in-flight 下载」，

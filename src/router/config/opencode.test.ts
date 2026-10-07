@@ -48,7 +48,7 @@ describe('OpencodeConfigBuilder', () => {
       expect(modelField!.options).toEqual(['gpt-4o', 'claude-sonnet']);
     });
 
-    it('returns mode select field with build/plan options (§P5)', () => {
+    it('returns mode select field with build/plan options', () => {
       const config = makeConfig({ agents: { opencode: { mode: 'plan' } } });
       const fields = builder.buildFields(config);
 
@@ -62,7 +62,7 @@ describe('OpencodeConfigBuilder', () => {
       expect(modeField!.currentValue).toBe('plan');
     });
 
-    it('mode select defaults to build when config missing (§P5)', () => {
+    it('mode select defaults to build when config missing', () => {
       const config = makeConfig({ agents: { opencode: {} } });
       const fields = builder.buildFields(config);
 

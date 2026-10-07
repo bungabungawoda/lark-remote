@@ -141,7 +141,7 @@ describe('Anchor: ws.remove updates card in place', () => {
      * 缺失后果：卡片可能停留在陈旧列表（别名被另一个窗口/另一次点击删掉），
      *   旧实现丢弃 cmdWs 返回值后无条件返回 success「已删除」，用户以为删掉
      *   的是别的东西；toast 与卡片状态互相矛盾。
-     * 依据：clean_review §B6（router/index.ts handleWsRemove 无条件 success）。
+     * router/index.ts handleWsRemove 无条件 success。
      */
     const projectDir = path.join(tmpDir, 'project');
     fs.mkdirSync(projectDir, { recursive: true });

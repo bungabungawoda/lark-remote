@@ -123,7 +123,7 @@ export class ConnectionManager<TClient extends ConnectionClient = JsonRpcClient>
   onConnectionLost?: (cwd: string) => void;
 
   /**
-   * 协议停止通道工厂（design §3.3）：连接建立后按 pid 登记到 AgentStopperRegistry，
+   * 协议停止通道工厂：连接建立后按 pid 登记到 AgentStopperRegistry，
    * 供 Terminator 在**优雅**停止时回调（win32 上没有可拦截的 SIGTERM，只能靠
    * 协议通道让 agent 自己收摊）。返回 undefined = 该协议无通道。
    *

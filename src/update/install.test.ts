@@ -11,7 +11,7 @@ vi.mock('../platform/spawn.js', async (importOriginal) => ({
   spawnProcessSync: vi.fn(),
 }));
 
-// W3.5：PATH 可用性检测走 seam（resolveExecutable），mock 后可真断言 fallback 顺序
+// PATH 可用性检测走 seam（resolveExecutable），mock 后可真断言 fallback 顺序
 vi.mock('../platform/command.js', () => ({
   resolveExecutable: vi.fn(),
 }));

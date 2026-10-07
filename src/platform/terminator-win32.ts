@@ -1,5 +1,5 @@
 /**
- * win32 终止器：协议停止通道 → grace 等待 → taskkill 树杀（design.md §3.2）。
+ * win32 终止器：协议停止通道 → grace 等待 → taskkill 树杀。
  *
  * 状态机：
  *   1. 进程已退出 → nothing（via='already-exited'）
@@ -123,7 +123,7 @@ export function createWin32Terminator(deps: Win32TerminatorDeps): Terminator {
     },
 
     cleanupOnExit(proc): void {
-      // M0 真机验证项（§9.2 矩阵）：本方法在 process.on('exit') 里调用，而
+      // 真机验证项（§9.2 矩阵）：本方法在 process.on('exit') 里调用，而
       // killTree 依赖 libuv uv_spawn 在 exit handler 内同步发起 taskkill——
       // 大概率可用（uv_spawn 本身同步），但与 posix 路径（同步 process.kill）
       // 可靠性不等价；失败表现为 win32 上 lark-remote 退出后 agent 变孤儿。

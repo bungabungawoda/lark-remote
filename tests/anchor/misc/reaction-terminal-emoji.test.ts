@@ -5,7 +5,7 @@
  *   connector.addReaction 必须收到 'ERROR'，而不是 'Done'。
  * 缺失/错误会导致什么：失败的单子会显示成功表情，用户扫一眼误判为完成，
  *   与 spec「error → ERROR、失败不能用 done」冲突。
- * 依据：round-log spec（用户 2026-08-02 确认）。
+ * 依据：（用户 2026-08-02 确认）。
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
@@ -247,7 +247,7 @@ describe('reaction emoji by run terminal (anchor)', () => {
    * 缺失/错误会导致什么：`src/index.ts` 对每条入站消息逐条挂 Typing，而
    *   ctx.messageId 只取最后一条、全仓唯一的 removeReactionByEmoji 调用点也只对
    *   它——先到的那几条永远停在「正在输入」，用户以为还有任务在跑。
-   * 依据：clean_review §B8（提交时遍历本轮全部 messageId 收尾）。
+   * 提交时遍历本轮全部 messageId 收尾。
    */
   it('test_anchor_terminal_reactions_cover_every_message_of_turn', async () => {
     const events: AgentEvent[] = [
