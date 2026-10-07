@@ -15,7 +15,7 @@ vi.mock('../../src/runner/probe.js', () => ({
   getCachedAvailability: vi.fn(() => undefined),
 }));
 
-// 测试隔离（设计文档 §9.5「禁真跑 agent」）：本用例走的 config 加载链
+// 测试隔离（「禁真跑 agent」）：本用例走的 config 加载链
 // （codex debug models / opencode models --verbose / kimi provider list --json）
 // 以及 opencode session list 都会经 spawnProcessSync 真起 agent CLI —— Windows 上
 // 单次 2-7s，且行为取决于本机装没装这些 CLI，会让「切换 agent」这类用例变成负载

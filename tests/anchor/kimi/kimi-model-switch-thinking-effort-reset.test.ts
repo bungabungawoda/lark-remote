@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { AppConfigSchema } from '../../../src/config/index.js';
 
 /**
- * Red Agent —  — Anchor
+ * Red Agent —— Anchor
  *
  * Target: KimiConfigBuilder.handleFieldChange 切模型时重置不兼容的 thinkingEffort
  *

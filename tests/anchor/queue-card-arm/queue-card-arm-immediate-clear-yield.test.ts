@@ -61,7 +61,7 @@ describe('queue.immediate must clear EVERY task before the target before yieldin
     //
     // 缺失会导致什么问题：当前实现把 `await updateQueueCardToCancelled` 放在
     // 移除循环内部，B 在 A 的卡片更新在途期间接跑：①用户明确要求清除的
-    // B 实际执行了——与 A8 锚点确立的不变量（立即执行只清除目标之前的任务、
+    // B 实际执行了——与锚点确立的不变量（立即执行只清除目标之前的任务、
     // 目标随后执行）直接冲突；②步骤 4.5 仍把 T 的排队卡翻成
     // "▶️ 已开始执行"、toast 承诺"您的消息将立即执行"，而 T 实际还排在正在
     // 执行的 B 后面——卡片与 toast 双双撒谎，用户没有可用的补救入口
@@ -75,7 +75,7 @@ describe('queue.immediate must clear EVERY task before the target before yieldin
     // this one (by position in the current queue)"——B 在快照中位于 T 之前，
     // 属于必须清除的集合；步骤 4 注释 "The queue will naturally execute it
     // after the current task (which we just stopped)"——目标 T 是停止后下一个
-    // 执行的任务，B 抢先执行违反该顺序承诺；A8 锚点
+    // 执行的任务，B 抢先执行违反该顺序承诺；锚点
     // (queue-card-arm-edit-immediate-order) 已确立目标任务之前的
     // 任务全部清除、目标保持位置的排序契约。
     const sessionStore = new SessionStore();

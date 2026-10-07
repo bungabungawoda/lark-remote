@@ -82,7 +82,7 @@ describe('config.save sends persistent message notification on agent switch', ()
     const text = lastNotice(sendResultMock);
     expect(text).toContain('Pi');
     expect(text).toContain('切换');
-    // A5: sendResult 第二参数必须原样传 ctx（userId/chatId/messageId），保证
+    // sendResult 第二参数必须原样传 ctx（userId/chatId/messageId），保证
     // 持久化消息作为当前对话的回复发出，而不是发到别的会话
     expect(sendResultMock).toHaveBeenCalledWith(expect.anything(), ctx);
     // Success path must NOT return a toast (toast is transient, not persistent)
@@ -101,7 +101,7 @@ describe('config.save sends persistent message notification on agent switch', ()
      * 缺失影响：若切换通知被错误地发到未切换路径，或同 agent 保存也弹 toast，
      * 用户会收到误导性反馈。
      *
-     * 依据：spec 验收 4——"defaultAgent 未切换（diff 为空或仅普通配置项变更）→
+     * 依据："defaultAgent 未切换（diff 为空或仅普通配置项变更）→
      * 不发切换消息、不返回 toast（保持现状；同 agent 无变更路径仍可发
      * 「没有待保存的修改/没有变更需要保存」文本，测试不得误判为切换通知）"。
      */
@@ -135,7 +135,7 @@ describe('config.save sends persistent message notification on agent switch', ()
      * 缺失影响：持久化消息发送失败后用户得不到任何反馈，会以为切换没生效，
      * 重复点击保存；配置其实已落盘，只有通知失败。
      *
-     * 依据：spec——"sendResult 发送失败（Promise resolve false/undefined）时，
+     * 依据："sendResult 发送失败（Promise resolve false/undefined）时，
      * 必须兜底返回 toast（用户至少得到即时反馈）。配置已先落盘，通知失败不影响正确性"。
      */
     const userId = 'user1';
@@ -163,14 +163,14 @@ describe('config.save sends persistent message notification on agent switch', ()
     // 发送失败 → 兜底回退 toast（即时反馈），内容来自 propagateConfigSave 的切换文案
     expect(response?.toast).toBeTruthy();
     expect((response?.toast as { content: string }).content).toContain('已切换到 Pi');
-    // A9：兜底 toast 类型必须锁定 'info'（信息提示，不是错误/警告，
+    // 兜底 toast 类型必须锁定 'info'（信息提示，不是错误/警告，
     // 否则用户会被误导以为保存失败）
     expect((response?.toast as { type: string }).type).toBe('info');
   });
 
   it('test_anchor_config_save_switch_notice_survives_card_refresh_failure', async () => {
     /**
-     * 验证（spec Round 2 补充判据 6）：defaultAgent 切换已成功——配置写盘 +
+     * 验证（补充判据 6）：defaultAgent 切换已成功——配置写盘 +
      * session 清理/恢复已执行——但随后的 updateCardInPlace 抛错时，
      * bridge.sendResult 仍必须收到切换文案（第二参数原样 ctx）；不得被
      * catch 吞掉、不得被「保存失败」替代。
@@ -180,7 +180,7 @@ describe('config.save sends persistent message notification on agent switch', ()
      * 「保存失败」误导——实际配置已落盘、session 已处理，重复点击保存
      * 只会制造更多困惑。
      *
-     * 依据：spec Round 2 补充判据 6——"切换通知不得被卡片刷新失败吞掉……
+     * 依据：补充判据 6——"切换通知不得被卡片刷新失败吞掉……
      * catch 分支不得把切换通知误报成「保存失败」"。
      */
     const userId = 'user1';
@@ -219,13 +219,13 @@ describe('config.save sends persistent message notification on agent switch', ()
 
   it('test_anchor_config_save_no_pending_no_op_message', async () => {
     /**
-     * 验证（守卫 A7）：无 pendingConfig 时直接 config.save，必须通过
+     * 验证（守卫）：无 pendingConfig 时直接 config.save，必须通过
      * sendResult 发送「没有待保存的修改」文本，且不返回 toast。
      *
      * 缺失影响：若该路径静默吞掉或误弹 toast，用户无法区分"没有可保存内容"
      * 与"保存已成功"，会重复点击或误解状态。
      *
-     * 依据：spec 验收 4 注——"同 agent 无变更路径仍可发「没有待保存的
+     * 依据："同 agent 无变更路径仍可发「没有待保存的
      * 修改/没有变更需要保存」文本，测试不得误判为切换通知"。
      */
     const userId = 'user1';
@@ -246,14 +246,14 @@ describe('config.save sends persistent message notification on agent switch', ()
 
   it('test_anchor_config_save_empty_diff_message', async () => {
     /**
-     * 验证（守卫 A8）：pendingConfig 已存在但与当前 config 完全一致（diff
+     * 验证（守卫）：pendingConfig 已存在但与当前 config 完全一致（diff
      * 为空）时，config.save 必须发送「没有变更需要保存」文本、不返回 toast、
      * 不发切换通知。
      *
      * 缺失影响：空 diff 若被当成真实保存处理（写盘/发切换消息/toast），会
      * 产生无意义落盘与误导性反馈。
      *
-     * 依据：spec 验收 4 注——同 agent 无变更路径可发「没有变更需要保存」
+     * 依据：同 agent 无变更路径可发「没有变更需要保存」
      * 文本，测试不得误判为切换通知。
      */
     const userId = 'user1';

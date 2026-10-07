@@ -28,7 +28,7 @@ interface SessionEntry {
  * - Atomic write (temp + rename) to avoid truncated files on crash
  * - Corrupt files are treated as empty (with a warning)
  *
- * P3.3: sessions is Map<AgentKind, sessionId> (one session per agent), allowing
+ * 3: sessions is Map<AgentKind, sessionId> (one session per agent), allowing
  * each agent to maintain its own session context when switching between agents.
  */
 export class SessionStore {

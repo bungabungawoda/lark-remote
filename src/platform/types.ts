@@ -13,7 +13,7 @@ export interface LaunchSpec {
   file: string;
 }
 
-/** 终止结果（§3.2 win32 状态机产出；可观测降级用）。 */
+/** 终止结果（win32 状态机产出；可观测降级用）。 */
 export interface TerminateResult {
   /** 进程是否已确认被请求终止（不代表已退出，退出由 exit 事件驱动） */
   requested: boolean;

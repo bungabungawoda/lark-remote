@@ -401,10 +401,10 @@ describe('Codex App Server Runner', () => {
     });
 
     // =========================================================================
-    // 信息保真 C2：工具身份（toolName/toolInput/toolHint）+ warning/rerouted
+    // 信息保真 工具身份（toolName/toolInput/toolHint）+ warning/rerouted
     // + turn/plan/updated
     // =========================================================================
-    describe('tool identity and runtime notices (信息保真 C2)', () => {
+    describe('tool identity and runtime notices (信息保真)', () => {
       it('commandExecution item/started carries tool identity on the emitted turn_diff', () => {
         const translator = new CodexAppServerTranslator();
         const started = translator.handleNotification('item/started', {
@@ -534,7 +534,7 @@ describe('Codex App Server Runner', () => {
       });
 
       it('webSearch/mcp/dynamic item/completed finalizes the tool block with identity', () => {
-        // 信息保真 C2 验收修复：无专属 completed 分支的工具 item 也必须收尾，
+        // 信息保真 验收修复：无专属 completed 分支的工具 item 也必须收尾，
         // 否则 run-state 侧工具块永挂 running、toolItemMeta 泄漏。
         const translator = new CodexAppServerTranslator();
         translator.handleNotification('item/started', {

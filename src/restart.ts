@@ -26,7 +26,7 @@ const POLL_MS = 100;
  * dir) propagate. Caller picks throw-vs-degrade semantics.
  *
  * Two disciplines live here so every caller inherits them for free:
- * - windowsHide: win32 detached children would flash a console window (§3.7);
+ * - windowsHide: win32 detached children would flash a console window;
  * - the 'error' handler is attached BEFORE the pid check — a failed spawn
  *   emits 'error' asynchronously (ENOENT/EACCES), and the synchronous pid
  *   check throws/returns first, so attaching after would leave the 'error'

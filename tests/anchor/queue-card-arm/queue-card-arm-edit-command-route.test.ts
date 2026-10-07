@@ -66,7 +66,7 @@ describe('an edited order.exec queued task must keep the router.handle dispatch 
     //
     // 依据：order.exec 的契约是 "equivalent queued message"——order 文本与手敲消息
     // 一样经 router.handle 路由（order-exec-dispatch.ts 注释 + dispatch 实现）；
-    // queue.edit 的契约是"修改这条消息将被执行的内容"（A7/A10 anchor 已确立编辑
+    // queue.edit 的契约是"修改这条消息将被执行的内容"（已确立编辑
     // 内容必须替换旧闭包）。replacement 只是换掉闭包捕获的文本，不应同时换掉
     // 分发语义；直接 forwardToClaude 只覆盖"普通消息"这一种文本形态。
     const sessionStore = new SessionStore();

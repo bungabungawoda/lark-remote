@@ -680,7 +680,7 @@ function lsFixtureForToctou() {
   return fixture;
 }
 
-describe('/ls 符号链接与坏条目（B5）', () => {
+describe('/ls 符号链接与坏条目', () => {
   // 目录链接走 linkDir：win32 无符号链接特权时自动降级 junction，Dirent 语义与真符号
   // 链接等价 → 本用例在任意宿主都真跑，不需要门控（tests/lib/fs-links.ts 有论证）。
   it('链接目录按目标归类：可进入（旧实现 Dirent 报不出类型 → 整条丢失）', () => {

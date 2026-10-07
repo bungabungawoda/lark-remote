@@ -5,7 +5,7 @@ import os from 'node:os';
 import { mockLogger } from '../../lib/logger-mock.js';
 
 /**
- * Red Agent - Round 1 - Anchor (Bug 模式, A1)
+ * Red Agent -- Anchor (Bug 模式)
  *
  * Target: catalog 模式（config.toml 配置 model_catalog_json）下，推理强度选项
  * 必须来自活动目录 `codex debug models`（无 --bundled），而不是内置目录。

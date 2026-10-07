@@ -1,11 +1,11 @@
 /**
- * P1 anchor: 过期幂等——已过期/已响应/已 resolved 的请求不得重复触发 responder。
+ * 过期幂等——已过期/已响应/已 resolved 的请求不得重复触发 responder。
  *
  * ① 验证什么：ApprovalCoordinator 超时只触发一次 cancel；过期后 submit 不会
  *    再次触发 responder；审批已 resolved 后超时也不触发 responder。
  * ② 缺失/错误会导致什么：过期回调重复执行（timer 未清）会向 server 发送多条
  *    响应；过期后 submit 若还能走 responder，会与「已过期」状态冲突。
- * ③ 依据：bug spec R1——「已过期/已响应/已 resolved 的请求不得重复触发 responder」。
+ * ③ 依据：「已过期/已响应/已 resolved 的请求不得重复触发 responder」。
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ApprovalCoordinator } from '../../../src/bridge/approval-coordinator.js';

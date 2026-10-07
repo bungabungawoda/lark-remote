@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 /**
- * W3.7 共享 fixture：codex rollout 文件 + session_meta 行
+ * 共享 fixture：codex rollout 文件 + session_meta 行
  * （原 src/session/codex/sessions.test.ts 与 rollout-reader-summary.test.ts
  * 各持逐字同构副本；rollout-reader.test.ts 的 createRolloutFile 是另一形态
  * ——平铺 tmpDir、无日期目录——刻意不并入）。

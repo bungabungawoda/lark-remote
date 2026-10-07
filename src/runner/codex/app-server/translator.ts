@@ -77,7 +77,7 @@ export class CodexAppServerTranslator {
   /** Full command output per item id (item-scoped snapshot). */
   private toolOutputByItem = new Map<string, string>();
   /**
-   * Tool identity per item id (信息保真 C2): recorded at item/started, spread
+   * Tool identity per item id (信息保真): recorded at item/started, spread
    * into every toolOutput turn_diff, released at item/completed.
    */
   private toolItemMeta = new Map<
@@ -421,7 +421,7 @@ export class CodexAppServerTranslator {
         return [];
       }
       this.toolOutputByItem.set(item.id, authoritative);
-      // 信息保真 C2：完成事件同样携带身份，并在发出后释放 meta。
+      // 信息保真 完成事件同样携带身份，并在发出后释放 meta。
       const meta = this.toolItemMeta.get(item.id);
       this.toolItemMeta.delete(item.id);
       return [
@@ -480,7 +480,7 @@ export class CodexAppServerTranslator {
         ];
       }
     }
-    // 信息保真 C2：webSearch/mcpToolCall/dynamicToolCall 等无专属 completed 分支的
+    // 信息保真 webSearch/mcpToolCall/dynamicToolCall 等无专属 completed 分支的
     // 工具 item 也必须收尾——否则 run-state 侧工具块永挂 running（无 completedAt/终态），
     // toolItemMeta 泄漏到下个 turn 的 clear() 才被释放。
     if (this.startedToolItems.has(item.id)) {
@@ -574,7 +574,7 @@ export class CodexAppServerTranslator {
   }
 
   /**
-   * warning 通知 → notice 事件（信息保真 C2：运行期告警不再静默丢弃）。
+   * warning 通知 → notice 事件（信息保真 运行期告警不再静默丢弃）。
    */
   private handleWarning(params: WarningNotification['params']): AgentEvent[] {
     return [
@@ -781,7 +781,7 @@ export class CodexAppServerTranslator {
       // item/started 锚定工具块位置（真实时序）：命令开始时即创建工具块，
       // 而不是等到首个输出 delta——否则后续 reasoning item 会插到 command 之前。
       this.startedToolItems.add(item.id);
-      // 信息保真 C2：记录工具身份，随 turn_diff 透传（run-state 首见时写入）。
+      // 信息保真 记录工具身份，随 turn_diff 透传（run-state 首见时写入）。
       this.toolItemMeta.set(item.id, {
         toolName: 'Bash',
         toolInput: { command: item.command, ...(item.cwd ? { cwd: item.cwd } : {}) },

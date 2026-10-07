@@ -158,7 +158,7 @@ export class ClaudeRunner implements AgentRunner {
         await this.session.respondPermission(requestId, { behavior: 'deny' });
         return;
       case 'cancel': {
-        // 审批超时/取消：deny 送达后中断 turn（对齐方案验收「审批超时未响应，
+        // 审批超时/取消：deny 送达后中断 turn（对齐「审批超时未响应，
         // 已自动取消」终态；仅 deny 会让 claude 继续回合导致卡片 done）。
         await this.session.respondPermission(requestId, {
           behavior: 'deny',

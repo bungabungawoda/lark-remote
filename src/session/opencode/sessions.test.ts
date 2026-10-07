@@ -119,9 +119,9 @@ describe('OpencodeSessionReader - L1: empty output handling', () => {
     }
   });
 
-  it('throws on corrupt JSON (: failure distinct from empty)', () => {
-    // ：CLI 返回不可解析输出是真实读取失败，必须上抛让 router 显示
-    // 「读取失败」；旧契约静默返回 [] 与「真空」不可区分（review §）。
+  it('throws on corrupt JSON (failure distinct from empty)', () => {
+    // CLI 返回不可解析输出是真实读取失败，必须上抛让 router 显示
+    // 「读取失败」；旧契约静默返回 [] 与「真空」不可区分。
     mockSpawnResult('not valid json{{{');
 
     expect(() => reader.listSessions('/tmp/test')).toThrow(/读取失败/);
@@ -210,7 +210,7 @@ describe('OpencodeSessionReader - L1/L2/L3: large/corrupt export handling', () =
     vi.clearAllMocks();
   });
 
-  // L1: readSessionContent must use the captureExport seam and parse large
+  // readSessionContent must use the captureExport seam and parse large
   // exports correctly. The injected seam returns the full payload.
   it('L1: parses a huge export and returns events + aiTitle (not not_found)', () => {
     const bigOutput = 'x'.repeat(2_000_000); // 2MB tool_result
@@ -242,7 +242,7 @@ describe('OpencodeSessionReader - L1/L2/L3: large/corrupt export handling', () =
     expect(content.events.length).toBeGreaterThan(0);
   });
 
-  // L1 transport: the DEFAULT captureExport must route stdout to a file fd
+  // transport: the DEFAULT captureExport must route stdout to a file fd
   // (not 'pipe'), which bypasses opencode's pipe truncation for large output.
   it('L1: default captureExport routes stdout to a file fd (not a pipe)', () => {
     mockSpawnResult('');
@@ -253,7 +253,7 @@ describe('OpencodeSessionReader - L1/L2/L3: large/corrupt export handling', () =
     expect(spawnProcessSync).toHaveBeenCalledWith(
       'opencode',
       ['export', 'ses_tr'],
-      // §：stdout 走文件 fd，stderr 仍是 pipe，所以 maxBuffer 也要拉起；
+      // stdout 走文件 fd，stderr 仍是 pipe，所以 maxBuffer 也要拉起；
       // opencode 是 npm .cmd 垫片，windowsHide 关掉会闪控制台。
       expect.objectContaining({
         encoding: 'utf-8',
@@ -273,7 +273,7 @@ describe('OpencodeSessionReader - L1/L2/L3: large/corrupt export handling', () =
     expect(stdio[2]).toBe('pipe'); // stderr still captured
   });
 
-  // L2: a pathological tool_result output is pre-folded at event-build time,
+  // a pathological tool_result output is pre-folded at event-build time,
   // reusing the shared truncateUtf8 primitive + 已截断 suffix.
   it('L2: folds a huge tool_result content via truncateUtf8 (bounded + 已截断)', () => {
     const huge = 'x'.repeat(100_000);

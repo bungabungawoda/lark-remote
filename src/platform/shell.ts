@@ -1,10 +1,9 @@
 /**
- * ShellBackend：把 `!` 命令与 kimi ACP terminal 的 shell 依赖收进 seam
- * （design.md §7.2）。
+ * ShellBackend：把 `!` 命令与 kimi ACP terminal 的 shell 依赖收进 seam。
  *
  * - posix：`bash -c <command>`（与现状 BashProcessRunner 同语义）；
  * - win32：默认 Git Bash（`bash.exe -c <command>`），powershell / cmd 仅作为
- *   显式用户选择 §7.3；
+ *   显式用户选择；
  * - 首版不做命令翻译器：Git Bash 缺失时抛 {@link ShellUnavailableError}，
  *   由调用方转成明确错误卡（提示需要 Git Bash）。
  *

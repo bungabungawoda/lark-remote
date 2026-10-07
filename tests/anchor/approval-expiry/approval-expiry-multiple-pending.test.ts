@@ -5,7 +5,7 @@
  *    （requestId 一一对应）；其中一个提前 resolved 不影响其余审批过期。
  * ② 缺失/错误会导致什么：timer 共享或清理错乱时，一个审批过期会连带误响应
  *    其他审批，或已 resolved 的审批仍被重复响应。
- * ③ 依据：bug spec R1——每个 pending 审批独立走「过期 → cancel → 卡片事件」闭环。
+ * ③ 依据：每个 pending 审批独立走「过期 → cancel → 卡片事件」闭环。
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ApprovalCoordinator } from '../../../src/bridge/approval-coordinator.js';

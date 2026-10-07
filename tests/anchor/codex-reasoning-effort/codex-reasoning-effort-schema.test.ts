@@ -8,18 +8,17 @@ import { describe, it, expect } from 'vitest';
 import { CodexConfigSchema } from '../../../src/config/index.js';
 
 // ---------------------------------------------------------------------------
-// 1. CodexConfigSchema reasoningEffort (Round 3 — no mocks needed)
+// 1. CodexConfigSchema reasoningEffort (no mocks needed)
 // ---------------------------------------------------------------------------
 
 /**
- * Red Agent - Round 3 - Anchor
+ * Red Agent -- Anchor
  *
  * Target: CodexConfigSchema 应包含 reasoningEffort 字段（z.string().optional()）
  *
  * Importance: 这是将 reasoningEffort 存储到 config.yaml 的必要步骤。
  * 只有在 schema 中声明了该字段，config 卡片才能保存和读取该值。
  *
- * Spec basis: Codex OpenAI provider + config extension 方案 §4.2
  */
 describe('CodexConfigSchema reasoningEffort - anchor', () => {
   it('test_anchor_codex_config_schema_has_reasoning_effort', () => {
@@ -72,11 +71,11 @@ describe('CodexConfigSchema reasoningEffort - anchor', () => {
 });
 
 // ---------------------------------------------------------------------------
-// : CodexConfigSchema reasoningEffort validation (custom values)
+// CodexConfigSchema reasoningEffort validation (custom values)
 // ---------------------------------------------------------------------------
 
 /**
- * Red Agent - Round 3 - Anchor (Bug 模式)
+ * Red Agent -- Anchor (Bug 模式)
  *
  * Target: CodexConfigSchema.reasoningEffort 接受标准档位与自定义档位。
  *   codex ReasoningEffort 除标准档位外还有 Custom(String)——目录声明什么档位就存什么，
@@ -85,10 +84,10 @@ describe('CodexConfigSchema reasoningEffort - anchor', () => {
  * Importance: 卡片档位下拉按模型 supported_reasoning_levels 原样透传；
  *   自定义档位存不进 config.yaml 会导致"选了但保存失败"。
  *
- * Spec basis: （codex-y review）+ codex-rs/protocol/src/openai_models.rs
+ * Spec basis:+ codex-rs/protocol/src/openai_models.rs
  *   ReasoningEffort::Custom。
  */
-describe(': CodexConfigSchema reasoningEffort validation', () => {
+describe('CodexConfigSchema reasoningEffort validation', () => {
   it('test_anchor_codex_reasoningEffort_accepts_valid_values', () => {
     for (const effort of ['minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra']) {
       const result = CodexConfigSchema.safeParse({

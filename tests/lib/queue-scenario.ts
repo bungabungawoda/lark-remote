@@ -113,7 +113,7 @@ export async function setupTwoTaskQueueScenario(
 }
 
 // ===========================================================================
-// W3.3：queue 测试共享接线（原先 6 个文件各持 ~54 行 header + 每 it ~20 行
+// queue 测试共享接线（原先 6 个文件各持 ~54 行 header + 每 it ~20 行
 // Bridge/Router 接线；queue-message-edit 已验证共享路径可行）。
 // 注意：vi.mock('<相对路径>/logger/index.js') 必须留在每个测试文件内
 // （vitest 按文件 hoist），这里只共享工厂体之外的纯接线。

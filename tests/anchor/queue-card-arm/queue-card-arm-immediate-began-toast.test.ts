@@ -55,7 +55,7 @@ describe('queue.immediate final feedback must say the target STARTED when it beg
     // 在 `await interruptCurrentRun` 挂起期间队列链前进（T1 结束、T2 槽位 begin
     // 并从 queuedTasks 移除、T2 开始执行）；stop 恢复后，步骤 6 的最终成员资格
     // 校验发现目标已不在队列，此时最终反馈必须区分两种事实：
-    //   - 目标已**撤销**：不会执行 → 反馈"未安排执行"（A17 已覆盖）；
+    //   - 目标已**撤销**：不会执行 → 反馈"未安排执行"（已覆盖）；
     //   - 目标已**开始执行**：正在运行 → 反馈必须承认"已开始执行"，
     //     绝不能发送"未安排执行"——任务明明在跑，却告诉用户没被安排执行。
     //
@@ -64,8 +64,8 @@ describe('queue.immediate final feedback must say the target STARTED when it beg
     // 排队消息。"。目标任务在 interrupt 窗口内 begin 后，用户同时看到目标的排队卡
     // 已被翻成 "▶️ 已开始执行"（begin 路径 updateQueueCardToExecuting），正文却宣称
     // "未安排执行"——卡片与正文直接矛盾；若用户在等这条消息的结果，会误以为自己的
-    // 指令被丢弃、去重复发送，实际 T2 正在执行，重复发送反而污染会话/队列。这与 A17
-    // （撤销竞态下 toast 不得承诺执行）是同一根因的另一半：A17 管住"未撤销却承诺
+    // 指令被丢弃、去重复发送，实际 T2 正在执行，重复发送反而污染会话/队列。这与
+    // （撤销竞态下 toast 不得承诺执行）是同一根因的另一半：管住"未撤销却承诺
     // 执行"，本测试管住"已开始却宣称未安排"——最终反馈必须与队列事实一致，不能对
     // 执行中的任务说"未安排执行"。
     //
@@ -73,8 +73,8 @@ describe('queue.immediate final feedback must say the target STARTED when it beg
     // 事实的承诺"（success toast 承诺"您的消息将立即执行"），因此必须先按最新成员
     // 资格判定；成员资格缺失只有"撤销"与"开始执行"两种原因，文案必须区分两者。
     // 卡片反馈约束（反馈不得与事实矛盾、miss 必须可见）同族要求；
-    // A16 锚点已确立"目标在 interrupt 窗口内 begin 是真实可达状态"（T1 结束 →
-    // T2 begin 可以在 stop 在途时完成），本测试是该状态的反馈面。
+    // 锚点已确立"目标在 interrupt 窗口内 begin 是真实可达状态"（T1 结束 →
+    // begin 可以在 stop 在途时完成），本测试是该状态的反馈面。
     const sessionStore = new SessionStore();
     const connector = createStubConnector();
     const runner = createStubRunner();
@@ -143,7 +143,7 @@ describe('queue.immediate final feedback must say the target STARTED when it beg
     );
     expect(await waitFor(() => bridge.getQueuedTask(tmpDir, 'msg-2') !== undefined)).toBe(true);
 
-    // --- 步骤 3：挂起 interruptCurrentRun（A16 同款：模拟 stop 在途，队列链
+    // --- 步骤 3：挂起 interruptCurrentRun（同款：模拟 stop 在途，队列链
     // 可在这期间推进到目标任务的 begin）---
     let resolveStop: (v: boolean) => void = () => {};
     const stopInFlight = new Promise<boolean>((resolve) => {

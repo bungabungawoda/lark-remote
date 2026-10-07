@@ -275,7 +275,7 @@ describe('createJSONLStream', () => {
     });
   });
 
-  //  的单行字节上限：累计量必须跨 chunk 相加，而不是每个 chunk 重新计数。
+  // 的单行字节上限：累计量必须跨 chunk 相加，而不是每个 chunk 重新计数。
   // 写成 `partialBytes = segments[0].length` 后，永不换行的输出（二进制垃圾、
   // 半截 JSON）再也不会越界，内存无上限增长，而既有锚点只喂了一个 11MB 整块。
   describe('oversize partial line', () => {

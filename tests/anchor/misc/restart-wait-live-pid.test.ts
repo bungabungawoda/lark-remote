@@ -1,9 +1,8 @@
 /**
  * `/restart` waitForPreviousInstance 等待语义（live pid / 20s 超时）。
- * spec: restart 自重启方案 §3/§6.4/§7.5
  *
  * 本文件不 mock node:child_process：需要真实短命子进程验证轮询等待。
- * 不 spawn lark-remote 本身（§7.7 测试约定），只 spawn 一个几百毫秒的辅助进程。
+ * 不 spawn lark-remote 本身（测试约定），只 spawn 一个几百毫秒的辅助进程。
  */
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { spawn } from 'node:child_process';
@@ -20,7 +19,7 @@ describe('waitForPreviousInstance 等待语义', () => {
     // 验证行为：env 指向活 pid 时 waitForPreviousInstance 不立即返回，
     //   而是轮询等待 pid 死亡后才 resolve（交接协议的等待窗口）。
     // 缺失/错误会导致：子进程不等待旧进程释放锁就抢锁 → 撞锁退出，重启失败。
-    // spec 依据：方案 §2「子进程轮询 process.kill(oldPid, 0) 直到旧进程死」。
+    // 「子进程轮询 process.kill(oldPid, 0) 直到旧进程死」。
     const child = spawn(process.execPath, ['-e', 'setTimeout(()=>{}, 30000)'], {
       stdio: 'ignore',
       windowsHide: true,
@@ -57,7 +56,7 @@ describe('waitForPreviousInstance 等待语义', () => {
     // 验证行为：活 pid 持续存活时，等待至 20s 超时后 resolve（告警后继续），
     //   让锁 acquire 兜底，不永久挂死。
     // 缺失/错误会导致：旧进程卡死不退时子进程永久等待 → 重启链挂死。
-    // spec 依据：方案 §2「100ms 轮询、20s 超时，超时仍继续走正常 acquire」+ §7.5。
+    // 「100ms 轮询、20s 超时，超时仍继续走正常 acquire」。
     vi.useFakeTimers();
     process.env[RESTART_WAIT_PID_ENV] = String(process.pid); // 测试进程本身，一直存活
 

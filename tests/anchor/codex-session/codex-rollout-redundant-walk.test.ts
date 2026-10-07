@@ -1,15 +1,15 @@
 /**
- *  anchor: Codex rollout reader must not redundantly full-parse every
+ * Codex rollout reader must not redundantly full-parse every
  * rollout file for simple lookups.
  *
- * Before :
+ * Before
  *   - listCodexRollouts: walkRolloutFiles + readCodexRollout (full parse) per file
  *   - readCodexSessionContent: walkRolloutFiles + readCodexRollout per file
  *     just to find one threadId → N full parses for 1 lookup
  *   - isCodexSessionActive: walkRolloutFiles + readCodexRollout per file
  *     just to check mtime → N full parses for 1 boolean
  *
- * After , readCodexSessionContent and isCodexSessionActive use a
+ * After readCodexSessionContent and isCodexSessionActive use a
  * lightweight session index (findJsonlLine for session_meta only, no
  * full file read) to find the target file, then only fully parse the
  * matching file (or just statSync for active check).
@@ -97,7 +97,7 @@ function spyOnReadJsonlLines() {
   };
 }
 
-describe(' anchor: Codex rollout reader redundant work', () => {
+describe('Codex rollout reader redundant work', () => {
   it('isCodexSessionActive must not full-read any rollout file', () => {
     const ids = ['aaa', 'bbb', 'ccc', 'ddd', 'eee'];
     for (const id of ids) {
@@ -108,9 +108,9 @@ describe(' anchor: Codex rollout reader redundant work', () => {
     try {
       const result = isCodexSessionActive('eee', { codexHome: tmpDir, activeThresholdMs: 60_000 });
 
-      // Pre-: readCodexRollout calls readJsonlLines for EVERY file
+      // Pre-readCodexRollout calls readJsonlLines for EVERY file
       // until finding the match → 5 full reads in worst case.
-      // Post-: isCodexSessionActive uses session index (findJsonlLine,
+      // Post-isCodexSessionActive uses session index (findJsonlLine,
       // not readJsonlLines) + statSync → 0 full reads.
       expect(spy.count).toBe(0);
       expect(result).toBe(true);
@@ -129,9 +129,9 @@ describe(' anchor: Codex rollout reader redundant work', () => {
     try {
       const result = readCodexSessionContent('eee', { codexHome: tmpDir });
 
-      // Pre-: walks all files, calling readCodexRollout (readJsonlLines)
+      // Pre-walks all files, calling readCodexRollout (readJsonlLines)
       // on each until finding the match → up to 5 full reads.
-      // Post-: session index finds the file, then readCodexRollout
+      // Post-session index finds the file, then readCodexRollout
       // only on that one file → 1 full read.
       expect(spy.count).toBeLessThanOrEqual(1);
       expect(result.events.length).toBeGreaterThan(0);
@@ -166,11 +166,11 @@ describe(' anchor: Codex rollout reader redundant work', () => {
       });
       expect(active).toBe(true);
 
-      // Pre-: each function independently walks + full-reads all files.
+      // Pre-each function independently walks + full-reads all files.
       // list: 3 full reads, content: up to 3 full reads, active: up to 3 full reads
       // Total: up to 9 full reads for 3 files (3× redundancy).
       //
-      // Post-: list: 3 full reads (unavoidable), content: 1 full read,
+      // Post-list: 3 full reads (unavoidable), content: 1 full read,
       // active: 0 full reads (statSync only). Total: 4 full reads.
       //
       // Anchor: total full reads ≤ 5 (generous, catches 9× regression)
@@ -181,7 +181,7 @@ describe(' anchor: Codex rollout reader redundant work', () => {
   });
 
   /**
-   *  anchor: session index must reflect newly-created rollout files
+   * session index must reflect newly-created rollout files
    * even when a stale (within-TTL) cached index already exists.
    *
    * Regression scenario (pre-fix):

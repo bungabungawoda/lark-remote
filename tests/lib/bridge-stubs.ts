@@ -257,7 +257,7 @@ export function createStubConnectorWithGatedCardUpdate() {
  * Connector 变体：队列状态卡（sendWithRetry({ card })）的发送挂起直到测试
  * release；文本发送立即 resolve。
  *
- * 复现 A5 生产竞态：飞书 API 延迟 / 99991400 限流重试使排队卡 send promise
+ * 复现生产竞态：飞书 API 延迟 / 99991400 限流重试使排队卡 send promise
  * pending，而运行中任务被 stop、settle 推进队列链。
  */
 export function createStubConnectorWithPendingQueueCard() {

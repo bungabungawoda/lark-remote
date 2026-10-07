@@ -18,7 +18,7 @@ import {
 } from '../../lib/bridge-stubs.js';
 import { piEncodeCwd } from '../../lib/session-fixtures.js';
 /**
- * Anchor AC2: cmdResume 支持通过 args 首位指定 agentKind 覆盖默认推断
+ * Anchor cmdResume 支持通过 args 首位指定 agentKind 覆盖默认推断
  *
  * 验证：
  * 1. 当 defaultAgent = 'kimi' 时，cmdResume 默认用 KimiSessionReader

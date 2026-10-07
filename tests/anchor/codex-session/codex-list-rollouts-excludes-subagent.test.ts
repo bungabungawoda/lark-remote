@@ -1,5 +1,5 @@
 /**
- * Anchor A2 (plan §2.1 review 折回): listCodexRollouts 必须显式排除 subagent
+ * listCodexRollouts 必须显式排除 subagent
  * 线程文件，一个 sessionId 只出一个主线程条目，total 只计主会话。
  *
  * 验证什么行为：
@@ -14,9 +14,8 @@
  *   session_id 是独立的（或主文件缺失），index 里仍会有 isSubagent 条目，
  *   listCodexRollouts 不排除它 → /resume 列表/auto-resume 可能列出线程树
  *   子会话。实测 2026-08-01 884 个 sessionId 0 例纯 subagent，但这是防御性
- *   不变量，spec 明文要求显式排除。
+ *   不变量，显式排除。
  *
- * 依据（spec 原文）：
  *   "listCodexRollouts 在 cwd
  *   过滤后显式排除 isSubagent 条目，不依赖'主线程优先'兜底（防纯子代理
  *   session——主文件缺失——污染列表）"。

@@ -2,7 +2,7 @@
  * ACP approval/permission mapping and lifecycle shared by the kimi and
  * opencode ACP runners.
  *
- * Extracted from runner.ts and translator.ts to avoid duplication (G5).
+ * Extracted from runner.ts and translator.ts to avoid duplication.
  * Shape source: approval.ts:28-29 — optionId is opaque, echo back as-is.
  */
 
@@ -14,7 +14,7 @@ import type { PermissionOption } from './protocol-types.js';
  * Find an option by matching its `kind` against a list of candidate values,
  * and return the `optionId` to echo back in the approval response.
  * ACP option kind values vary between kimi versions; this handles both
- * the documented names and the observed real names (§2.3).
+ * the documented names and the observed real names.
  */
 function findOptionIdByKind(
   options: PermissionOption[],
@@ -76,7 +76,7 @@ export function buildAcpPermissionOutcome(
 /**
  * 从服务端 options kind 派生审批决定列表：accept/decline/cancel 恒有；
  * 带 always 类 option（kimi approve_always / opencode allow_always）才提供
- * acceptForSession（§P4「本会话总是允许」）。kimi/opencode 两侧共用。
+ * acceptForSession（「本会话总是允许」）。kimi/opencode 两侧共用。
  */
 export function deriveAcpAvailableDecisions(options: PermissionOption[]): string[] {
   const decisions: string[] = ['accept', 'decline', 'cancel'];
@@ -95,7 +95,7 @@ export function truncateWithEllipsis(text: string, maxLen: number): string {
 }
 
 // =============================================================================
-// W2.11 审批生命周期骨架（kimi/opencode ACP runner 共用）
+// 审批生命周期骨架（kimi/opencode ACP runner 共用）
 // =============================================================================
 
 /**

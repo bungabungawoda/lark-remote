@@ -45,7 +45,7 @@ afterEach(() => {
   fs.rmSync(tmpDir, { recursive: true, force: true });
 });
 
-describe('queue.immediate final toast must not claim a stop when no run was running (anchor A24)', () => {
+describe('queue.immediate final toast must not claim a stop when no run was running (anchor)', () => {
   it('test_anchor_immediate_toast_without_stop_does_not_claim_stopped_current_task', async () => {
     // 验证什么行为：cwd 没有活跃 run（interruptCurrentRun 返回 false）时，
     // 「⚡ 立即执行」成功路径的 toast 不得包含"已停止当前任务"——没有停掉任何
@@ -53,11 +53,11 @@ describe('queue.immediate final toast must not claim a stop when no run was runn
     //
     // 缺失会导致什么问题：interruptCurrentRun 的返回值 `stopped` 被丢弃，toast
     // 恒为"⚡ 已停止当前任务，清除了 N 条…"，在无 run 可停时（链上只有排队任务、
-    // 头部任务不是 run）对用户撒谎（review P3 finding）。
+    // 头部任务不是 run）对用户撒谎（finding）。
     //
     // 依据：router handleQueueImmediate 步骤 2 捕获 `stopped`（interruptCurrentRun
     // 是否真的停到了 run），最终 toast 是对事实的承诺——没有停止就不写停止；
-    // A16/A17/A20 已确立"toast 不得与队列事实矛盾"的反馈契约。
+    // 已确立"toast 不得与队列事实矛盾"的反馈契约。
     const sessionStore = new SessionStore();
     const connector = createStubConnector();
     const runner = createStubRunner();

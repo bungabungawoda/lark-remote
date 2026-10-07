@@ -1,5 +1,5 @@
 /**
- * Anchor A3 (plan §2.4): isCodexSessionActive 必须基于主线程文件 mtime 判定，
+ * isCodexSessionActive 必须基于主线程文件 mtime 判定，
  * subagent 线程文件不得参与活跃判定；纯 subagent session 必须判不活跃。
  *
  * 验证什么行为：
@@ -13,11 +13,10 @@
  *   活跃判定若只看"该 sessionId 对应文件的最新 mtime"而不区分线程归属，
  *   subagent 线程的持续活动会让父会话被误判活跃（/active 卡片显示"进行中"），
  *   且纯 subagent session 会以"活跃会话"身份出现在 dashboard——与"线程树
- *   不参与会话展示"的设计原则（plan §1.4.1）冲突。
+ *   不参与会话展示"的设计原则冲突。
  *
- * 依据（spec 原文）：
- *   plan §2.1 影响面："isCodexSessionActive 用子代理文件 mtime 判定活跃，可能
- *   误判"；plan §2.4 测试："isCodexSessionActive 用主文件 mtime（subagent 文件
+ *   "isCodexSessionActive 用子代理文件 mtime 判定活跃，可能
+ *   误判"；"isCodexSessionActive 用主文件 mtime（subagent 文件
  *   mtime 更新不误判）"。
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';

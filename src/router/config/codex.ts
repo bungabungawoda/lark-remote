@@ -142,7 +142,7 @@ export class CodexConfigBuilder implements AgentConfigCardBuilder {
    * - 否则优先 supported_reasoning_levels 中位 (len-1)/2；
    * - 列表为空才用声明 default_reasoning_level；
    * - 两者皆无 → value=undefined（清空档位 = 不传 effort；router setNestedValue
-   *   对 undefined 做键删除，P1）。
+   *   对 undefined 做键删除）。
    */
   private effortPatchForModel(
     config: AppConfig,

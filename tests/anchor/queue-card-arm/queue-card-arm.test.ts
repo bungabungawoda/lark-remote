@@ -8,7 +8,7 @@ vi.mock('../../../src/logger/index.js', async () =>
 
 const WORKSPACE = '/tmp/queue-card-arm-ws';
 
-describe('QueueManager - queue card must be sent for a message enqueued after an interrupted task resumes (anchor A1)', () => {
+describe('QueueManager - queue card must be sent for a message enqueued after an interrupted task resumes (anchor)', () => {
   it('test_anchor_queue_card_sent_when_task_resumes_after_interrupt', async () => {
     // 验证什么行为：T2 在 T1 执行中入队（拿到排队卡）之后，用户 stop 触发
     // resetExecutingCount，T1 的挂起 promise settle 消耗 skip-credit，T2 从
@@ -19,10 +19,10 @@ describe('QueueManager - queue card must be sent for a message enqueued after an
     // pendingOrExecutingCount；resetExecutingCount 已把计数清零且 skip-credit
     // 被 T1 的 settle 消耗，T2 接跑后计数仍为 0 → T3 入队时
     // hasWaitingTasks = (count>0 || queueLen>0) = false → 排队卡不发，
-    // T3 静默排队无任何用户反馈（历史生产事故：
+    // 静默排队无任何用户反馈（历史生产事故：
     // 消息C 入队无排队卡，静默排队）。
     //
-    // 依据（本 prompt spec）：只要 cwd 队列里还有任务在排队或执行，
+    // 依据：只要 cwd 队列里还有任务在排队或执行，
     // 新入队消息必须收到排队卡；生产时序为 T2 入队(12:52:25) →
     // stop+reset(12:52:36) → T2 接跑(12:52:37) → T3 入队(12:53:57) 无卡。
     const { qm, sentCards } = makeQueueManager();

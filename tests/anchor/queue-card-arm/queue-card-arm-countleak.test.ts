@@ -21,7 +21,7 @@ describe('QueueManager - no fake queue card when queue is idle after repeated in
     // count 被 begin 重新武装的 1 却没人 decrement → count 永久泄漏为 1。
     // 队列已空仍 hasWaitingTasks=true → 之后每条新消息都收到假的排队卡
     // （消息实际立即执行，卡片却显示"第 1 位 / 排队中"），用户被持续误导；
-    // 且 count 永不归零，后续每单都 +1 再 -1，泄漏永久化。这是 A1 修复的
+    // 且 count 永不归零，后续每单都 +1 再 -1，泄漏永久化。这是修复的
     // 反向缺陷：不该弹卡时弹卡（原缺陷是该弹卡时不弹卡）。
     //
     // 依据：QueueManager 的公开契约不变量——排队卡只应在"队列里确有任务在

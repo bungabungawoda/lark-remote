@@ -100,7 +100,7 @@ function assembleCard(state: BashState, elements: object[]): object {
 }
 
 /**
- * Build output/stderr elements shared by normal & degraded paths (W2.3 单源）：
+ * Build output/stderr elements shared by normal & degraded paths (单源）：
  * 除截断预算（OUTPUT_MAX_BYTES / DEGRADED_OUTPUT_BYTES）外逐行同构。
  */
 function buildOutputElements(state: BashState, maxBytes: number): object[] {

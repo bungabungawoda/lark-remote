@@ -18,7 +18,7 @@ import {
   createStubConnector,
 } from '../../lib/bridge-stubs.js';
 /**
- * Anchor (A4): `/resume` 分页栏显示真实总数 + `resume.page` 按钮 + 假提示已删
+ * Anchor: `/resume` 分页栏显示真实总数 + `resume.page` 按钮 + 假提示已删
  *
  * 验证：
  * 1. 25 个 session、默认 pageSize=5 时，卡片显示 `第 1/5 页 · 共 25 个会话`，
@@ -34,7 +34,6 @@ import {
  * "共 N 个会话"是截断后长度而非真实总数（假提示）；按钮包 action 容器触发
  * 飞书 200861 整卡不可用。
  *
- * 依据：
  * "分页栏照搬 cmdLs 结构：`第 x/y 页 · 共 N 个会话` + `上一页`/`下一页` 按钮，
  * 仅 `total > pageSize` 时显示；N 为 reader 返回的真实总数。"
  * "新增回调 resume.page，value {cmd:'resume.page', agent, offset, pageSize}。"
@@ -138,7 +137,7 @@ function buildHarness(tmpDir: string, projectsDir: string, sessionCount: number)
   return { router, ctx, cardOf };
 }
 
-describe('A4 /resume 分页栏 + 真实总数 + 删假提示', () => {
+describe('/resume 分页栏 + 真实总数 + 删假提示', () => {
   let tmpDir25: string;
   let tmpDir5: string;
 
