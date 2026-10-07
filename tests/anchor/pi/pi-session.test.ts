@@ -9,6 +9,7 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import path from 'node:path';
 import fs from 'node:fs';
 import { PiSessionReader } from '../../../src/session/pi/index.js';
+import { currentPlatform } from '../../../src/platform/select.js';
 import { piEncodeCwd } from '../../lib/session-fixtures.js';
 import { makeTempDir } from '../../lib/temp-dir.js';
 
@@ -210,4 +211,55 @@ describe('Anchor: PiSessionReader 必须基于文件系统返回真正最新的�
     expect(result.sessions[1]?.sessionId).toBe('session-middle');
     expect(result.sessions[2]?.sessionId).toBe('session-oldest');
   });
+});
+
+// ---------------------------------------------------------------------------
+// PiSessionReader cwd 判等（review 2026-10-07 samePath 收口回归锚）
+//
+// 修复前 readSessionContent / listSessionsByScan 用裸 `fileCwd !== cwd`：pi
+// 写盘的 cwd 形态（大小写/分隔符）与查询 cwd 不逐字符一致时（win32 上 NTFS
+// 大小写不敏感，键入形态天然发散），会话静默漏列/内容读空。修复后走
+// PathKit.samePath。linux 是大小写敏感 FS、samePath 在 linux 严格相等，
+// 大小写变体用例只对 darwin/win32 有意义，故 skipIf(linux)。
+// ---------------------------------------------------------------------------
+describe('PiSessionReader cwd 判等（samePath 收口）', () => {
+  const cwd = '/test/cwd/project';
+
+  it.skipIf(currentPlatform === 'linux')(
+    'JSONL cwd 与查询 cwd 仅大小写不同时仍可列出并读取',
+    () => {
+      const tmpDir = makeTempDir('pi-cwd-key-anchor-');
+      const piDir = path.join(tmpDir, 'pi-agent');
+      const sessionsDir = path.join(piDir, 'sessions');
+      const encodedProjectDir = path.join(sessionsDir, `--${piEncodeCwd(cwd)}--`);
+      fs.mkdirSync(encodedProjectDir, { recursive: true });
+
+      // pi 写盘记录的 cwd 用另一组大小写（同一物理目录在 NTFS 上的合法形态）
+      const sessionId = '11111111-2222-3333-4444-555555555555';
+      fs.writeFileSync(
+        path.join(encodedProjectDir, `2026-01-01T00-00-00-000Z_${sessionId}.jsonl`),
+        [
+          JSON.stringify({ type: 'session', cwd: '/TEST/CWD/PROJECT' }),
+          JSON.stringify({
+            type: 'message',
+            message: { role: 'user', content: [{ type: 'text', text: 'placeholder' }] },
+          }),
+          // catch-up 尾巴取「最后一条 user 消息之后」的事件，user 行后必须有内容
+          JSON.stringify({
+            type: 'message',
+            message: { role: 'assistant', content: [{ type: 'text', text: 'reply' }] },
+          }),
+        ].join('\n') + '\n',
+        'utf-8',
+      );
+
+      const reader = new PiSessionReader({ piDir });
+      const listed = reader.listSessions(cwd, { limit: 10 });
+      expect(listed.sessions.length).toBe(1);
+      expect(listed.sessions[0]?.sessionId).toBe(sessionId);
+
+      const content = reader.readSessionContent(sessionId, cwd);
+      expect(content.events.length).toBeGreaterThan(0);
+    },
+  );
 });

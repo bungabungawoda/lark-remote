@@ -20,13 +20,17 @@ function resolveOptions(opts: PathOptions | undefined): { platform: NodeJS.Platf
   return { platform: opts?.platform ?? currentPlatform };
 }
 
-export function samePath(a: string, b: string, opts?: PathOptions): boolean {
+/**
+ * 路径的「判等键」形态：把 samePath 的平台归一规则单源化，供 Map/Set 键控
+ * 场景使用（按 cwd 建倒排索引时不能每次查询做 O(n) 两两比较）。不变量：
+ * `samePath(a, b)` 当且仅当 `pathKey(a) === pathKey(b)`。
+ */
+export function pathKey(p: string, opts?: PathOptions): string {
   const { platform } = resolveOptions(opts);
-  if (platform === 'linux') return a === b;
+  if (platform === 'linux') return p;
   if (isWin32(platform)) {
     // win32：\ 与 / 都是分隔符，且路径大小写不敏感
-    const norm = (p: string): string => p.replaceAll('\\', '/').replace(/\/+$/, '');
-    return norm(a).toLowerCase() === norm(b).toLowerCase();
+    return p.replaceAll('\\', '/').replace(/\/+$/, '').toLowerCase();
   }
   // darwin：默认按大小写不敏感处理（macOS 默认文件系统 APFS 不敏感）；
   // 反斜杠是合法文件名字符，不动。分隔符只有 /。
@@ -35,8 +39,11 @@ export function samePath(a: string, b: string, opts?: PathOptions): boolean {
   // 逐目录 stat 探测卷大小写属性，暂不做。
   // 尾部分隔符必须与 win32 同口径忽略，否则 `/cd ~/repo/` 与 `/cd ~/repo`
   // 会被判成两个目录，M2 迁移后直接表现为会话目录错配。
-  const norm = (p: string): string => p.replace(/\/+$/, '');
-  return norm(a).toLowerCase() === norm(b).toLowerCase();
+  return p.replace(/\/+$/, '').toLowerCase();
+}
+
+export function samePath(a: string, b: string, opts?: PathOptions): boolean {
+  return pathKey(a, opts) === pathKey(b, opts);
 }
 
 /**

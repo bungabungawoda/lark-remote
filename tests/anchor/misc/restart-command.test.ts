@@ -31,7 +31,10 @@ import { currentPlatform, isWin32 } from '../../../src/platform/select.js';
 import { makeTempDir } from '../../lib/temp-dir.js';
 
 const spawnMock = vi.hoisted(() => vi.fn());
-vi.mock('../../../src/platform/spawn.js', () => ({
+// mock 面必须覆盖 restart.ts 用到的全部导出（漏一个就是平台门控替身），
+// mergeProcessEnv 保持真实实现——env 注入口径是被测契约的一部分
+vi.mock('../../../src/platform/spawn.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../../src/platform/spawn.js')>()),
   useDetachedProcessGroup: vi.fn(() => true),
   spawnProcess: spawnMock,
 }));

@@ -32,7 +32,13 @@ export interface QueryIdentityOptions {
 export interface VerifyPidIdentityOptions extends QueryIdentityOptions {
   /** 期望的二进制名（basename，如 'claude'/'node'）；win32/darwin 大小写不敏感 */
   expectedBinary: string;
-  /** pid 文件记录的 CreationDate；旧文件缺省该字段则退化为仅命令行匹配 */
+  /**
+   * pid 文件记录的 CreationDate；缺省则退化为仅命令行匹配。
+   * 现状：**无生产写入方**（pid 文件/锁文件都不记 CreationDate），仅测试
+   * 使用——接线需 win32 写侧在正常启动路径多一次 PowerShell 查询自身
+   * CreationDate，与 instance-lock「CIM 只在锁已存在路径查询」的约束冲突，
+   * 故保留该字段但暂不接线。
+   */
   expectedCreationDate?: string;
   /** 匹配强度；默认 'executable'（见 {@link IdentityMatchMode}） */
   matchMode?: IdentityMatchMode;
