@@ -1,12 +1,5 @@
 import type { CommandRouter } from './index.js';
-import type { Bridge } from '../bridge/index.js';
-
-/** Context shared by all card-action dispatch paths (file-local; callers pass it structurally). */
-interface DispatchContext {
-  userId: string;
-  chatId: string;
-  messageId: string;
-}
+import type { Bridge, CommandContext } from '../bridge/index.js';
 
 /**
  * Dispatch an `order.exec` card action as an equivalent queued user message
@@ -25,11 +18,11 @@ interface DispatchContext {
 export async function dispatchOrderExecForQueue(args: {
   router: CommandRouter;
   bridge: Bridge;
-  workspace: string;
+  cwd: string;
   orderId: string | undefined;
-  ctx: DispatchContext;
+  ctx: CommandContext;
 }): Promise<'enqueued' | 'missing-id' | 'not-found'> {
-  const { router, bridge, workspace, orderId, ctx } = args;
+  const { router, bridge, cwd, orderId, ctx } = args;
 
   if (!orderId) {
     await bridge.sendResult({ text: '卡片 payload 缺少必要信息' }, ctx);
@@ -48,9 +41,9 @@ export async function dispatchOrderExecForQueue(args: {
   const binding = bridge.currentBinding(ctx.userId);
 
   bridge.enqueue(
-    workspace,
+    cwd,
     async () => {
-      await router.handle(resolved.orderText, ctx, { cwdOverride: workspace, binding });
+      await router.handle(resolved.orderText, ctx, { cwdOverride: cwd, binding });
     },
     {
       taskMeta: {

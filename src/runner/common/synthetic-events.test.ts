@@ -1,9 +1,9 @@
 import { describe, it, expect } from 'vitest';
-import { authErrorEvent } from './runner-utils.js';
+import { setupErrorEvent } from './synthetic-events.js';
 
-describe('authErrorEvent', () => {
+describe('setupErrorEvent', () => {
   it('returns correct event structure with message only', () => {
-    const event = authErrorEvent('not logged in');
+    const event = setupErrorEvent('not logged in');
     expect(event).toEqual({
       type: 'result',
       subtype: 'error',
@@ -16,7 +16,7 @@ describe('authErrorEvent', () => {
   });
 
   it('includes sessionId when provided', () => {
-    const event = authErrorEvent('auth failed', 'sess-123');
+    const event = setupErrorEvent('auth failed', 'sess-123');
     expect(event).toEqual({
       type: 'result',
       subtype: 'error',

@@ -3,7 +3,7 @@
  *
  * 时用 `proc.once('error', resolve)` 无限等待。Node 对 ENOENT/EACCES 保证发 'error'，
  * 但 kimi 的 override 注释明言 "sometimes fails silently without an 'error' event"——
- * 同类静默失败若发生在其他二进制，run() 永远挂起 → workspace 串行队列永不 settle →
+ * 同类静默失败若发生在其他二进制，run() 永远挂起 → cwd 串行队列永不 settle →
  * 永久假死（/stop 也救不了：stopper.stop 在 pid===undefined 时直接 return）。
  *
  * 修复：把 kimi 的 5s race 上移到基类默认实现。
@@ -29,7 +29,7 @@ class TestRunner extends SpawningRunner {
   constructor(pidDir = makeTempDir('lark-base-await-spawn-')) {
     super({
       pidDir,
-      workspace: 'test',
+      cwd: 'test',
       logTag: 'test-runner',
     });
     this.binary = 'fake-agent';

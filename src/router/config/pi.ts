@@ -55,12 +55,7 @@ export class PiConfigBuilder implements AgentConfigCardBuilder {
     // provider 变更时，重置 model 为新 provider 的首个模型
     if (key === 'agents.pi.provider' && typeof value === 'string') {
       const currentModel = config.agents?.pi?.model as string | undefined;
-      const modelPatch = resetModelPatch(
-        key,
-        'agents.pi.model',
-        currentModel,
-        getPiModelOptions(value),
-      );
+      const modelPatch = resetModelPatch('agents.pi.model', currentModel, getPiModelOptions(value));
       if (modelPatch) patches.push(modelPatch);
     }
 

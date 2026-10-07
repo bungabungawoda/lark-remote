@@ -1,9 +1,9 @@
 /**
- * ConnectionManager: manages agent-server connections per workspace, shared by
+ * ConnectionManager: manages agent-server connections per cwd, shared by
  * all workspace-lifetime JSON-line runners (codex app-server, kimi acp,
  * opencode acp, and pi rpc).
  *
- * Each workspace gets its own connection (transport + client). Connections are
+ * Each cwd gets its own connection (transport + client). Connections are
  * created on demand via `acquire()`, cached for reuse, and released after an
  * idle timeout (30 minutes default).
  *
@@ -120,7 +120,7 @@ export class ConnectionManager<TClient extends ConnectionClient = JsonRpcClient>
   private readonly stoppers: AgentStopperRegistry;
 
   /** Callback when a connection is lost — cleared from slot map. */
-  onConnectionLost?: (workspace: string) => void;
+  onConnectionLost?: (cwd: string) => void;
 
   /**
    * 协议停止通道工厂（design §3.3）：连接建立后按 pid 登记到 AgentStopperRegistry，
@@ -159,13 +159,13 @@ export class ConnectionManager<TClient extends ConnectionClient = JsonRpcClient>
   }
 
   /**
-   * Acquire a connection for the given workspace.
+   * Acquire a connection for the given cwd.
    * Creates a new connection if one does not exist or the previous one was lost
    * (or, for session-bound protocols, bound to a different session).
    * Serializes creation so concurrent calls share the same connection.
    */
-  async acquire(workspace: string, req: AcquireRequest = {}): Promise<TClient> {
-    const existing = this.slots.get(workspace);
+  async acquire(cwd: string, req: AcquireRequest = {}): Promise<TClient> {
+    const existing = this.slots.get(cwd);
     if (existing) {
       // If a create is in flight, wait for it
       if (existing.createPromise) {
@@ -184,11 +184,11 @@ export class ConnectionManager<TClient extends ConnectionClient = JsonRpcClient>
       ) {
         return existing.client;
       }
-      this.disposeSlot(workspace);
+      this.disposeSlot(cwd);
     }
 
-    const createPromise = this.createClient(workspace, req);
-    this.slots.set(workspace, {
+    const createPromise = this.createClient(cwd, req);
+    this.slots.set(cwd, {
       client: null as unknown as TClient, // placeholder
       boundSessionId: req.sessionId,
       idleTimer: null,
@@ -200,11 +200,11 @@ export class ConnectionManager<TClient extends ConnectionClient = JsonRpcClient>
       // 竞态：创建期间 release()/disposeAll() 已把 slot 删掉（并可能已
       // dispose 连接）。此时不能再把新连接塞回 slot——否则会复活一个无人管理、
       // 无 idle timer 的连接泄漏。归还给调用者继续使用，但不再缓存。
-      const slotAfterCreate = this.slots.get(workspace);
+      const slotAfterCreate = this.slots.get(cwd);
       if (!slotAfterCreate || slotAfterCreate.createPromise !== createPromise) {
         return client;
       }
-      this.slots.set(workspace, {
+      this.slots.set(cwd, {
         client,
         boundSessionId: req.sessionId,
         idleTimer: null,
@@ -214,9 +214,9 @@ export class ConnectionManager<TClient extends ConnectionClient = JsonRpcClient>
     } catch (err) {
       // 只删除自己的槽位：并发 release + 重新 acquire 后 slot 可能已被新的
       // createPromise 占据，误删会破坏新连接。
-      const current = this.slots.get(workspace);
+      const current = this.slots.get(cwd);
       if (current && current.createPromise === createPromise) {
-        this.slots.delete(workspace);
+        this.slots.delete(cwd);
       }
       throw err;
     }
@@ -227,16 +227,16 @@ export class ConnectionManager<TClient extends ConnectionClient = JsonRpcClient>
    * via a protocol `get_state` after a fresh spawn). This lets a subsequent run
    * resume the SAME session on the live connection instead of respawning it.
    */
-  bindSession(workspace: string, sessionId: string): void {
-    const slot = this.slots.get(workspace);
+  bindSession(cwd: string, sessionId: string): void {
+    const slot = this.slots.get(cwd);
     if (slot) slot.boundSessionId = sessionId;
   }
 
   /**
-   * Release (dispose) a connection for the given workspace.
+   * Release (dispose) a connection for the given cwd.
    */
-  async release(workspace: string): Promise<void> {
-    this.disposeSlot(workspace);
+  async release(cwd: string): Promise<void> {
+    this.disposeSlot(cwd);
   }
 
   /**
@@ -248,31 +248,29 @@ export class ConnectionManager<TClient extends ConnectionClient = JsonRpcClient>
   }
 
   /**
-   * Notify that the workspace is active — disarm the idle timer.
+   * Notify that the cwd is active — disarm the idle timer.
    */
-  notifyActivity(workspace: string): void {
-    const slot = this.slots.get(workspace);
+  notifyActivity(cwd: string): void {
+    const slot = this.slots.get(cwd);
     if (slot) {
       this.clearIdleTimer(slot);
     }
   }
 
   /**
-   * Notify that the workspace is idle — arm the idle timer.
+   * Notify that the cwd is idle — arm the idle timer.
    *
    * `idleTtlMs: 0` = 不回收（与 claude 会话层的 `armIdleTimer` 同口径；按 0
    * setTimeout 会秒删刚建好的连接，等于每条消息重起一次进程）。
    */
-  notifyIdle(workspace: string): void {
+  notifyIdle(cwd: string): void {
     if (this.idleTtlMs <= 0) return;
-    const slot = this.slots.get(workspace);
+    const slot = this.slots.get(cwd);
     if (slot) {
       this.clearIdleTimer(slot);
       slot.idleTimer = setTimeout(() => {
-        getLogger().info(
-          `[${this.logTag}] idle timeout for workspace=${workspace}, releasing connection`,
-        );
-        this.disposeSlot(workspace);
+        getLogger().info(`[${this.logTag}] idle timeout for cwd=${cwd}, releasing connection`);
+        this.disposeSlot(cwd);
       }, this.idleTtlMs);
     }
   }
@@ -281,17 +279,17 @@ export class ConnectionManager<TClient extends ConnectionClient = JsonRpcClient>
   // Internal
   // =========================================================================
 
-  private async createClient(workspace: string, req: AcquireRequest): Promise<TClient> {
+  private async createClient(cwd: string, req: AcquireRequest): Promise<TClient> {
     let client: TClient | null = null;
     const transport = new JsonlRpcTransport({
       binary: this.binary,
       args: this.buildArgs(req),
-      cwd: workspace,
+      cwd: cwd,
       env: this.env,
       stoppers: this.stoppers,
       // 通道工厂要拿到**连接本身**：协议取消（codex turn/interrupt、ACP
       // session/cancel）必须发在这条连接上，不能借 runner 的共享状态——那会
-      // 打断另一 workspace 正在跑的 turn。工厂是在 transport.start() 内侧调用
+      // 打断另一 cwd 正在跑的 turn。工厂是在 transport.start() 内侧调用
       // 的，那时 client 已由下面的 clientFactory 赋好。
       stopper: this.stopper
         ? (pid: number) => this.stopper?.({ pid, client: client as TClient })
@@ -302,12 +300,12 @@ export class ConnectionManager<TClient extends ConnectionClient = JsonRpcClient>
       transport,
       requestTimeoutMs: this.requestTimeoutMs,
       baseOnClose: () => {
-        getLogger().info(`[${this.logTag}] connection closed workspace=${workspace}`);
+        getLogger().info(`[${this.logTag}] connection closed cwd=${cwd}`);
         // 只清理自己创建的 slot：并发 release + 重新 acquire 后 slot 可能已被
         // 新连接占据，误删会破坏新连接。
-        if (this.slots.get(workspace)?.client === client) {
-          this.slots.delete(workspace);
-          this.onConnectionLost?.(workspace);
+        if (this.slots.get(cwd)?.client === client) {
+          this.slots.delete(cwd);
+          this.onConnectionLost?.(cwd);
         }
       },
     });
@@ -322,16 +320,16 @@ export class ConnectionManager<TClient extends ConnectionClient = JsonRpcClient>
     }
   }
 
-  private async disposeSlot(workspace: string): Promise<void> {
-    const slot = this.slots.get(workspace);
+  private async disposeSlot(cwd: string): Promise<void> {
+    const slot = this.slots.get(cwd);
     if (!slot) return;
-    this.slots.delete(workspace);
+    this.slots.delete(cwd);
     this.clearIdleTimer(slot);
     if (slot.client) {
       try {
         await slot.client.dispose();
       } catch (err) {
-        getLogger().warn(`[${this.logTag}] dispose error workspace=${workspace}: ${err}`);
+        getLogger().warn(`[${this.logTag}] dispose error cwd=${cwd}: ${err}`);
       }
     }
   }

@@ -13,7 +13,7 @@ describe('QueueManager - queue card for a meta task enqueued while an interrupte
     // 验证什么行为：T1（带 taskMeta）执行中被 stop，resetExecutingCount 清零计数
     // 并发放 skip-credit；T1 settle 消耗 credit 后，队列链进入 T2（enqueue 不带
     // taskMeta 的任务）并接跑。此时 T2 实际上正在执行，随后带 taskMeta 的
-    // T3 入队必须收到 "⏳ 消息排队中" 卡片——不变量是"只要 workspace 队列里还
+    // T3 入队必须收到 "⏳ 消息排队中" 卡片——不变量是"只要 cwd 队列里还
     // 有任务在排队或执行，新入队消息必须收到排队卡"，与任务是否携带 taskMeta
     // 无关（卡片是发给用户消息的，T2 执行中意味着 T3 必然等待）。
     //

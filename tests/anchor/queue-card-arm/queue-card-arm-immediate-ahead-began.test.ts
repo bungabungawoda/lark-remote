@@ -175,7 +175,7 @@ describe('queue.immediate must not claim the target is executing when a task ahe
 
       // --- 步骤 3：触发「⚡ 立即执行」（不 await），停在 runner1.stop 的 gate ---
       const immediateDone = router.handleCardAction(
-        { cmd: 'queue.immediate', workspace: tmpDir, messageId: 'mT' },
+        { cmd: 'queue.immediate', cwd: tmpDir, messageId: 'mT' },
         ctx,
       );
       expect(await waitFor(() => runner1.stopCalls === 1)).toBe(true);

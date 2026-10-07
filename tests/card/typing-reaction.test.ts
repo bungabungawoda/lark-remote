@@ -55,7 +55,7 @@ const config: AppConfig = AppConfigSchema.parse({
     model: 'claude-opus-4-8',
     stopGraceMs: 5000,
   },
-  workspace: { default: '' },
+  cwd: { default: '' },
   logging: { level: 'info' },
 });
 

@@ -85,7 +85,7 @@ describe('Anchor: ws.remove updates card in place', () => {
      *   updateCardInPlace + 返回 toast。
      */
     // Fixture: pre-populate workspace.json with a removable alias.
-    //   WorkspaceStore loads a flat Record<string,string> (see src/workspace/index.ts).
+    //   WorkspaceStore loads a flat Record<string,string> (see src/cwd/index.ts).
     const projectDir = path.join(tmpDir, 'project');
     fs.mkdirSync(projectDir, { recursive: true });
     fs.writeFileSync(

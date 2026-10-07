@@ -7,7 +7,7 @@
  */
 
 export {
-  isNewer,
+  compareVersions,
   checkLatestVersion,
   formatUpdateHint,
   type VersionCheckResult,

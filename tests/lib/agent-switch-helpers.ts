@@ -25,7 +25,7 @@ export function buildAgentSwitchConfig(overrides?: Partial<AppConfig>): AppConfi
       opencode: { model: 'gpt-5' },
       kimi: { model: 'kimi-k2' },
     },
-    workspace: { default: '' },
+    cwd: { default: '' },
     ...overrides,
   });
 }

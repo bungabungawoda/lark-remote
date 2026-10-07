@@ -11,14 +11,12 @@
  * model is not offered by the new provider (and the new provider has models),
  * patch the model to the provider's first option.
  *
- * @param providerKey  The field key that changed, e.g. 'agents.codex.modelProvider'.
  * @param modelKey     The model field to reset, e.g. 'agents.codex.model'.
  * @param currentModel The currently-configured model value (may be undefined).
  * @param newModelOptions Models offered by the newly-selected provider.
  * @returns A `{ key, value }` patch, or null when no reset is needed.
  */
 export function resetModelPatch(
-  providerKey: string,
   modelKey: string,
   currentModel: string | undefined,
   newModelOptions: string[],

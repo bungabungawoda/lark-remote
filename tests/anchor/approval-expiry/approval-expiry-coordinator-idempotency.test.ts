@@ -17,7 +17,7 @@ describe('anchor: approval expiry idempotency', () => {
   let interruptTurn: ReturnType<typeof vi.fn>;
   let pushToCard: ReturnType<typeof vi.fn>;
 
-  const workspace = '/home/user/project';
+  const cwd = '/home/user/project';
   const approvalTimeoutMs = 30000;
 
   function makeCommandEvent(requestId = 1001): ApprovalRequestedEvent {
@@ -32,7 +32,7 @@ describe('anchor: approval expiry idempotency', () => {
         requestId,
         kind: 'command',
         command: 'mv /tmp/a.txt /tmp/b.txt',
-        commandCwd: workspace,
+        commandCwd: cwd,
         reason: 'Test approval',
         availableDecisions: ['accept', 'decline', 'cancel'],
       },

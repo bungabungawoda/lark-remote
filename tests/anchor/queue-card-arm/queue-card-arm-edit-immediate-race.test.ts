@@ -38,7 +38,7 @@ beforeEach(() => {
       model: 'opus',
       stopGraceMs: 5000,
     },
-    workspace: { default: '' },
+    cwd: { default: '' },
   });
 });
 
@@ -135,19 +135,16 @@ describe('edited queue.immediate must register its replacement before any awaiti
     expect(await waitFor(() => connector._sent.length === 1)).toBe(true);
 
     // --- 步骤 3：编辑 T2 → 'edited message' ---
+    await router.handleCardAction({ cmd: 'queue.edit', cwd: tmpDir, messageId: 'msg-2' }, ctx);
     await router.handleCardAction(
-      { cmd: 'queue.edit', workspace: tmpDir, messageId: 'msg-2' },
-      ctx,
-    );
-    await router.handleCardAction(
-      { cmd: 'queue.input', workspace: tmpDir, messageId: 'msg-2', inputValue: 'edited message' },
+      { cmd: 'queue.input', cwd: tmpDir, messageId: 'msg-2', inputValue: 'edited message' },
       ctx,
     );
 
     // --- 步骤 4：fire-and-forget 触发 queue.immediate（不 await）---
     // handleQueueImmediate 会停在 markQueueCardExecuting → await 挂起的卡片 send。
     const immediatePromise = router.handleCardAction(
-      { cmd: 'queue.immediate', workspace: tmpDir, messageId: 'msg-2' },
+      { cmd: 'queue.immediate', cwd: tmpDir, messageId: 'msg-2' },
       ctx,
     );
     await sleep(50);

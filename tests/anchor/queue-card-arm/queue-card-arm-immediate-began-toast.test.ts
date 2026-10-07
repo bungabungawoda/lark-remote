@@ -40,7 +40,7 @@ beforeEach(() => {
       model: 'opus',
       stopGraceMs: 5000,
     },
-    workspace: { default: '' },
+    cwd: { default: '' },
   });
 });
 
@@ -153,7 +153,7 @@ describe('queue.immediate final feedback must say the target STARTED when it beg
 
     // --- 步骤 4：触发「立即执行」（不 await，停在 interrupt 挂起点）---
     const immediateDone = router.handleCardAction(
-      { cmd: 'queue.immediate', workspace: tmpDir, messageId: 'msg-2' },
+      { cmd: 'queue.immediate', cwd: tmpDir, messageId: 'msg-2' },
       ctx,
     );
     expect(await waitFor(() => stopSpy.mock.calls.length === 1)).toBe(true);

@@ -11,7 +11,7 @@ import { agentDisplayName } from '../card/card-shared.js';
 import { collapsibleMarkdownPanel, markdownDiv } from '../card/collapsible.js';
 import { formatTimestamp } from '../card/time.js';
 import type { AgentSessionContentEvent } from '../runner/index.js';
-import { formatUsageStats } from './utils.js';
+import { formatUsageStats } from './usage-format.js';
 
 type SessionUsageLike = Parameters<typeof formatUsageStats>[0];
 
@@ -78,7 +78,7 @@ function eventLabel(ev: AgentSessionContentEvent, agentKind: string): string {
 export { markdownDiv };
 
 /** 分页卡「跳转页码」输入框的组件 name（仅用于结构断言与可读性）。 */
-export const PAGE_JUMP_INPUT_NAME = 'pageInput';
+const PAGE_JUMP_INPUT_NAME = 'pageInput';
 
 /** 页码输入非法时的统一提示文案（/ls /ws /resume /active /order 共用）。 */
 export const PAGE_JUMP_INVALID_HINT = '请输入有效的页码（正整数）';

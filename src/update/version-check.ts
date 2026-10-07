@@ -25,10 +25,12 @@ export interface VersionCheckResult {
 
 /**
  * Compare two semver strings (major.minor.patch).
- * Returns true if latest > current, false if latest <= current,
- * null if either version is not a valid semver string.
+ *
+ * Returns the sign of `latest - current`: `1` if latest is newer, `-1` if it
+ * is older, `0` if equal. Returns `null` if either version is not a valid
+ * semver string (callers should treat `null` as "not newer").
  */
-export function isNewer(current: string, latest: string): boolean | null {
+export function compareVersions(current: string, latest: string): -1 | 0 | 1 | null {
   const parse = (v: string): { nums: [number, number, number]; pre: string } | null => {
     // Split core and pre-release suffix; compare the core numerically and treat
     // a release as newer than any pre-release of the same core version.
@@ -45,12 +47,12 @@ export function isNewer(current: string, latest: string): boolean | null {
   if (!c || !l) return null;
 
   for (let i = 0; i < 3; i++) {
-    if (l.nums[i] > c.nums[i]) return true;
-    if (l.nums[i] < c.nums[i]) return false;
+    if (l.nums[i] > c.nums[i]) return 1;
+    if (l.nums[i] < c.nums[i]) return -1;
   }
   // Equal core version: a release beats a pre-release of the same version.
-  if (c.pre !== l.pre) return l.pre === '';
-  return false;
+  if (c.pre !== l.pre) return l.pre === '' ? 1 : -1;
+  return 0;
 }
 
 /**
@@ -170,6 +172,6 @@ export async function checkLatestVersion(opts?: {
  * Returns null if no newer version is available.
  */
 export function formatUpdateHint(current: string, latest: string): string | null {
-  if (!isNewer(current, latest)) return null;
+  if (compareVersions(current, latest) !== 1) return null;
   return `📦 有新版本 ${latest} 可用（当前 ${current}），发送 /update 升级`;
 }

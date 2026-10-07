@@ -51,7 +51,7 @@ const SESSION_ID = 'aaaaaaaa-1111-2222-3333-444444444444';
 
 interface TerminalMockServerOptions {
   capturePath: string;
-  workspace: string;
+  cwd: string;
   script: string;
   /** Script writes its own pid to this file first; kill waits for it (deterministic). */
   pidPath?: string;
@@ -83,7 +83,7 @@ function writeTerminalMockServer(
     JSON.stringify({
       sessionId: SESSION_ID,
       capturePath: opts.capturePath,
-      workspace: opts.workspace,
+      cwd: opts.cwd,
       script: opts.script,
       pidPath: opts.pidPath ?? null,
       outputByteLimit: opts.outputByteLimit ?? 4194304,
@@ -253,7 +253,7 @@ rl.on('line', (line) => {
         command: 'bash',
         args: ['-c', config.script],
         env: [{ name: 'TERM', value: 'dumb' }],
-        cwd: config.workspace,
+        cwd: config.cwd,
         outputByteLimit: config.outputByteLimit,
       },
     });
@@ -301,13 +301,13 @@ describe('KimiAcpRunner', () => {
    * KimiSessionReader can resolve (session_index.jsonl + state.json +
    * wire.jsonl). All fixture data is synthetic (AABB UUIDs, tmp paths).
    */
-  function makeKimiSessionDir(workspace: string): {
+  function makeKimiSessionDir(cwd: string): {
     kimiDir: string;
     wirePath: string;
   } {
     // Reader's cwd guard compares against fs.realpathSync(cwd); on macOS the
     // tmpdir lives under /var → /private/var, so canonicalize before writing.
-    const canonicalWorkspace = realpathSync(workspace);
+    const canonicalWorkspace = realpathSync(cwd);
     const kimiDir = join(tmpDir, 'kimi-dir');
     const sessionDir = join(kimiDir, 'sessions', SESSION_ID);
     const agentsDir = join(sessionDir, 'agents', 'main');
@@ -328,7 +328,7 @@ describe('KimiAcpRunner', () => {
     return { kimiDir, wirePath };
   }
 
-  it('pins ConnectionBasedRunner contract: workspace lifetime and live usage authority', () => {
+  it('pins ConnectionBasedRunner contract: cwd lifetime and live usage authority', () => {
     // 基类 ConnectionBasedRunner 的常量真值（lifetime='workspace' /
     // getUsageAuthority()='live'）无独立测试文件，用真实 KimiAcpRunner 实例钉住。
     const runner = new KimiAcpRunner({
@@ -344,7 +344,7 @@ describe('KimiAcpRunner', () => {
   });
 
   it('runs a full turn with text notifications and success result', async () => {
-    const { wrapper, workspace } = writeScenario(tmpDir, serverScript, 'kimi', {
+    const { wrapper, cwd } = writeScenario(tmpDir, serverScript, 'kimi', {
       notifications: [
         {
           method: 'session/update',
@@ -374,7 +374,7 @@ describe('KimiAcpRunner', () => {
       turnIdleTimeoutMs: 30_000,
     });
 
-    const events = await collectEvents(runner, 'hello', { cwd: workspace });
+    const events = await collectEvents(runner, 'hello', { cwd: cwd });
 
     // Must have synthetic init
     const init = events.find((e) => e.type === 'system' && e.subtype === 'init');
@@ -419,7 +419,7 @@ describe('KimiAcpRunner', () => {
   });
 
   it('maps cancelled stopReason to interrupted (independent terminal state)', async () => {
-    const { wrapper, workspace } = writeScenario(tmpDir, serverScript, 'kimi', {
+    const { wrapper, cwd } = writeScenario(tmpDir, serverScript, 'kimi', {
       stopReason: 'cancelled',
     });
 
@@ -431,7 +431,7 @@ describe('KimiAcpRunner', () => {
       turnIdleTimeoutMs: 30_000,
     });
 
-    const events = await collectEvents(runner, 'hello', { cwd: workspace });
+    const events = await collectEvents(runner, 'hello', { cwd: cwd });
 
     const result = events.find((e) => e.type === 'result') as
       (AgentEvent & { subtype?: string }) | undefined;
@@ -443,7 +443,7 @@ describe('KimiAcpRunner', () => {
   });
 
   it('maps error stopReason to error result', async () => {
-    const { wrapper, workspace } = writeScenario(tmpDir, serverScript, 'kimi', {
+    const { wrapper, cwd } = writeScenario(tmpDir, serverScript, 'kimi', {
       stopReason: 'tool_error',
     });
 
@@ -455,7 +455,7 @@ describe('KimiAcpRunner', () => {
       turnIdleTimeoutMs: 30_000,
     });
 
-    const events = await collectEvents(runner, 'hello', { cwd: workspace });
+    const events = await collectEvents(runner, 'hello', { cwd: cwd });
 
     const result = events.find((e) => e.type === 'result') as
       (AgentEvent & { subtype?: string; errorMessage?: string }) | undefined;
@@ -467,7 +467,7 @@ describe('KimiAcpRunner', () => {
   });
 
   it('resumes an existing session by sessionId', async () => {
-    const { wrapper, workspace } = writeScenario(tmpDir, serverScript, 'kimi');
+    const { wrapper, cwd } = writeScenario(tmpDir, serverScript, 'kimi');
 
     const runner = new KimiAcpRunner({
       kind: 'kimi',
@@ -477,7 +477,7 @@ describe('KimiAcpRunner', () => {
       turnIdleTimeoutMs: 30_000,
     });
 
-    const events = await collectEvents(runner, 'hello', { cwd: workspace, sessionId: SESSION_ID });
+    const events = await collectEvents(runner, 'hello', { cwd: cwd, sessionId: SESSION_ID });
 
     const result = events.find((e) => e.type === 'result') as
       (AgentEvent & { subtype?: string; session_id?: string }) | undefined;
@@ -489,7 +489,7 @@ describe('KimiAcpRunner', () => {
   });
 
   it('emits thinking events from agent_thought_chunk', async () => {
-    const { wrapper, workspace } = writeScenario(tmpDir, serverScript, 'kimi', {
+    const { wrapper, cwd } = writeScenario(tmpDir, serverScript, 'kimi', {
       notifications: [
         {
           method: 'session/update',
@@ -512,7 +512,7 @@ describe('KimiAcpRunner', () => {
       turnIdleTimeoutMs: 30_000,
     });
 
-    const events = await collectEvents(runner, 'think', { cwd: workspace });
+    const events = await collectEvents(runner, 'think', { cwd: cwd });
 
     const thinking = events.filter((e) => e.type === 'turn_diff' && 'reasoning' in e);
     expect(thinking.length).toBeGreaterThan(0);
@@ -521,7 +521,7 @@ describe('KimiAcpRunner', () => {
   });
 
   it('emits tool_use and tool_result events', async () => {
-    const { wrapper, workspace } = writeScenario(tmpDir, serverScript, 'kimi', {
+    const { wrapper, cwd } = writeScenario(tmpDir, serverScript, 'kimi', {
       notifications: [
         {
           method: 'session/update',
@@ -562,7 +562,7 @@ describe('KimiAcpRunner', () => {
       turnIdleTimeoutMs: 30_000,
     });
 
-    const events = await collectEvents(runner, 'list files', { cwd: workspace });
+    const events = await collectEvents(runner, 'list files', { cwd: cwd });
 
     // 只断言「存在 tool_use/tool_result」不算断言：translator 把 id/name/input
     // 和 tool_use_id/content/is_error 映射错了也照样绿。锁事件通道 + 整个 block。
@@ -585,7 +585,7 @@ describe('KimiAcpRunner', () => {
   });
 
   it('surfaces approval requests and responds via respondApproval', async () => {
-    const { wrapper, workspace } = writeScenario(tmpDir, serverScript, 'kimi', {
+    const { wrapper, cwd } = writeScenario(tmpDir, serverScript, 'kimi', {
       sendApproval: true,
     });
 
@@ -600,7 +600,7 @@ describe('KimiAcpRunner', () => {
 
     const events: AgentEvent[] = [];
     let approvalResponded = false;
-    for await (const event of runner.run('do something', { cwd: workspace })) {
+    for await (const event of runner.run('do something', { cwd: cwd })) {
       events.push(event);
       if (event.type === 'approval_requested') {
         expect(event.kind).toBe('command');
@@ -620,11 +620,11 @@ describe('KimiAcpRunner', () => {
 
   it('B1：轮次结束时未答审批作废，跨轮迟到的点击不回信到无关请求', async () => {
     // 验证什么：clearTurnState() 清掉 pendingApprovals。回归：这张 Map 按
-    // workspace 长驻，轮次结束后未答的审批条目还在，而 currentClient 仍指向
+    // cwd 长驻，轮次结束后未答的审批条目还在，而 currentClient 仍指向
     // 池化连接——用户点旧卡片的「同意」会给一条服务端早已放弃（或 id 重号后
     // 属于别的方法）的请求回信。
     const capturePath = join(tmpDir, 'b1-stale-approval.jsonl');
-    const { wrapper, workspace } = writeScenario(tmpDir, serverScript, 'kimi', {
+    const { wrapper, cwd } = writeScenario(tmpDir, serverScript, 'kimi', {
       sendApproval: true,
       capturePath,
     });
@@ -639,7 +639,7 @@ describe('KimiAcpRunner', () => {
     });
 
     let sawApproval = false;
-    await collectEvents(runner, 'do something', { cwd: workspace }, (event) => {
+    await collectEvents(runner, 'do something', { cwd: cwd }, (event) => {
       if (event.type === 'approval_requested') sawApproval = true;
     });
     // 本轮没答：条目必须随轮次一起作废
@@ -656,7 +656,7 @@ describe('KimiAcpRunner', () => {
 
   it('surfaces elicitation form questions and answers via respondApproval', async () => {
     const capturePath = join(tmpDir, 'received.jsonl');
-    const { wrapper, workspace } = writeScenario(tmpDir, serverScript, 'kimi', {
+    const { wrapper, cwd } = writeScenario(tmpDir, serverScript, 'kimi', {
       sendElicitation: true,
       holdPromptUntilResponse: true,
       capturePath,
@@ -672,7 +672,7 @@ describe('KimiAcpRunner', () => {
 
     const events: AgentEvent[] = [];
     let questionSeen = false;
-    for await (const event of runner.run('ask me', { cwd: workspace })) {
+    for await (const event of runner.run('ask me', { cwd: cwd })) {
       events.push(event);
       if (event.type === 'approval_requested' && event.kind === 'question') {
         questionSeen = true;
@@ -709,7 +709,7 @@ describe('KimiAcpRunner', () => {
 
   it('declines elicitation form with action decline', async () => {
     const capturePath = join(tmpDir, 'received.jsonl');
-    const { wrapper, workspace } = writeScenario(tmpDir, serverScript, 'kimi', {
+    const { wrapper, cwd } = writeScenario(tmpDir, serverScript, 'kimi', {
       sendElicitation: true,
       holdPromptUntilResponse: true,
       capturePath,
@@ -723,7 +723,7 @@ describe('KimiAcpRunner', () => {
       turnIdleTimeoutMs: 30_000,
     });
 
-    for await (const event of runner.run('ask me', { cwd: workspace })) {
+    for await (const event of runner.run('ask me', { cwd: cwd })) {
       if (event.type === 'approval_requested' && event.kind === 'question') {
         await runner.respondApproval(event.requestId, { action: 'decline' });
       }
@@ -741,7 +741,7 @@ describe('KimiAcpRunner', () => {
   });
 
   it('declines approval with reject_once option', async () => {
-    const { wrapper, workspace } = writeScenario(tmpDir, serverScript, 'kimi', {
+    const { wrapper, cwd } = writeScenario(tmpDir, serverScript, 'kimi', {
       sendApproval: true,
     });
 
@@ -754,16 +754,11 @@ describe('KimiAcpRunner', () => {
       turnIdleTimeoutMs: 30_000,
     });
 
-    const events = await collectEvents(
-      runner,
-      'do something',
-      { cwd: workspace },
-      async (event) => {
-        if (event.type === 'approval_requested') {
-          await runner.respondApproval(event.requestId, { action: 'decline' });
-        }
-      },
-    );
+    const events = await collectEvents(runner, 'do something', { cwd: cwd }, async (event) => {
+      if (event.type === 'approval_requested') {
+        await runner.respondApproval(event.requestId, { action: 'decline' });
+      }
+    });
 
     const result = events.find((e) => e.type === 'result') as
       (AgentEvent & { subtype?: string }) | undefined;
@@ -775,7 +770,7 @@ describe('KimiAcpRunner', () => {
 
   it('responds accept_for_session by echoing the approve_always optionId (§P4)', async () => {
     const capturePath = join(tmpDir, 'approval-capture.jsonl');
-    const { wrapper, workspace } = writeScenario(tmpDir, serverScript, 'kimi', {
+    const { wrapper, cwd } = writeScenario(tmpDir, serverScript, 'kimi', {
       sendApproval: true,
       capturePath,
     });
@@ -791,7 +786,7 @@ describe('KimiAcpRunner', () => {
 
     const events: AgentEvent[] = [];
     let approvalResponded = false;
-    for await (const event of runner.run('do something', { cwd: workspace })) {
+    for await (const event of runner.run('do something', { cwd: cwd })) {
       events.push(event);
       if (event.type === 'approval_requested') {
         await runner.respondApproval(event.requestId, { action: 'accept_for_session' });
@@ -821,7 +816,7 @@ describe('KimiAcpRunner', () => {
 
   it('updateApprovalMode hot-applies permissionMode via session/set_mode and updates status (§P5)', async () => {
     const capturePath = join(tmpDir, 'mode-capture.jsonl');
-    const { wrapper, workspace } = writeScenario(tmpDir, serverScript, 'kimi', {
+    const { wrapper, cwd } = writeScenario(tmpDir, serverScript, 'kimi', {
       sendApproval: true,
       capturePath,
     });
@@ -836,7 +831,7 @@ describe('KimiAcpRunner', () => {
     });
 
     let hotApplied = false;
-    for await (const event of runner.run('do something', { cwd: workspace })) {
+    for await (const event of runner.run('do something', { cwd: cwd })) {
       if (event.type === 'approval_requested') {
         await runner.updateApprovalMode({ permissionMode: 'yolo' });
         hotApplied = true;
@@ -877,7 +872,7 @@ describe('KimiAcpRunner', () => {
     // 必须像 opencode 一样在 setupTurn 里 session/new|resume 后 session/set_config_option 下发，
     // 否则实际跑的是 kimi 默认模型。
     const capturePath = join(tmpDir, 'model-capture.jsonl');
-    const { wrapper, workspace } = writeScenario(tmpDir, serverScript, 'kimi', {
+    const { wrapper, cwd } = writeScenario(tmpDir, serverScript, 'kimi', {
       capturePath,
       configOptions: [
         {
@@ -900,7 +895,7 @@ describe('KimiAcpRunner', () => {
       turnIdleTimeoutMs: 30_000,
     });
 
-    const events = await collectEvents(runner, 'hello', { cwd: workspace });
+    const events = await collectEvents(runner, 'hello', { cwd: cwd });
     const result = events.find((e) => e.type === 'result') as
       (AgentEvent & { subtype?: string }) | undefined;
     expect(result?.subtype).toBe('success');
@@ -927,7 +922,7 @@ describe('KimiAcpRunner', () => {
     // 下发后服务端回 `{configOptions:[...currentValue:'low'...]}`；
     // 未知 configId / 非法取值回 -32602（不会静默接受）。
     const capturePath = join(tmpDir, 'thinking-capture.jsonl');
-    const { wrapper, workspace } = writeScenario(tmpDir, serverScript, 'kimi', {
+    const { wrapper, cwd } = writeScenario(tmpDir, serverScript, 'kimi', {
       capturePath,
       configOptions: [
         {
@@ -956,7 +951,7 @@ describe('KimiAcpRunner', () => {
       turnIdleTimeoutMs: 30_000,
     });
 
-    const events = await collectEvents(runner, 'hello', { cwd: workspace });
+    const events = await collectEvents(runner, 'hello', { cwd: cwd });
     const result = events.find((e) => e.type === 'result') as
       (AgentEvent & { subtype?: string }) | undefined;
     expect(result?.subtype).toBe('success');
@@ -976,7 +971,7 @@ describe('KimiAcpRunner', () => {
 
   it('A5：未配置思考强度时不发 thinking 帧（不覆盖服务端默认档）', async () => {
     const capturePath = join(tmpDir, 'thinking-absent-capture.jsonl');
-    const { wrapper, workspace } = writeScenario(tmpDir, serverScript, 'kimi', { capturePath });
+    const { wrapper, cwd } = writeScenario(tmpDir, serverScript, 'kimi', { capturePath });
 
     const runner = new KimiAcpRunner({
       kind: 'kimi',
@@ -988,7 +983,7 @@ describe('KimiAcpRunner', () => {
       turnIdleTimeoutMs: 30_000,
     });
 
-    await collectEvents(runner, 'hello', { cwd: workspace });
+    await collectEvents(runner, 'hello', { cwd: cwd });
 
     const configIds = readFileSync(capturePath, 'utf-8')
       .trim()
@@ -1003,7 +998,7 @@ describe('KimiAcpRunner', () => {
 
   it('cancels approval with cancelled outcome', async () => {
     const capturePath = join(tmpDir, 'approval-cancel-capture.jsonl');
-    const { wrapper, workspace } = writeScenario(tmpDir, serverScript, 'kimi', {
+    const { wrapper, cwd } = writeScenario(tmpDir, serverScript, 'kimi', {
       sendApproval: true,
       capturePath,
     });
@@ -1018,7 +1013,7 @@ describe('KimiAcpRunner', () => {
     });
 
     let approvalResponded = false;
-    await collectEvents(runner, 'do something', { cwd: workspace }, async (event) => {
+    await collectEvents(runner, 'do something', { cwd: cwd }, async (event) => {
       if (event.type === 'approval_requested') {
         await runner.respondApproval(event.requestId, { action: 'cancel' });
         approvalResponded = true;
@@ -1037,7 +1032,7 @@ describe('KimiAcpRunner', () => {
   });
 
   it('stop during an in-flight turn emits interrupted subtype', async () => {
-    const { wrapper, workspace } = writeScenario(tmpDir, serverScript, 'kimi', {
+    const { wrapper, cwd } = writeScenario(tmpDir, serverScript, 'kimi', {
       delayMs: 3000, // delay prompt response for 3s
       notifications: [
         {
@@ -1063,7 +1058,7 @@ describe('KimiAcpRunner', () => {
 
     const events: AgentEvent[] = [];
     const runPromise = (async () => {
-      for await (const event of runner.run('hello', { cwd: workspace })) {
+      for await (const event of runner.run('hello', { cwd: cwd })) {
         events.push(event);
       }
     })();
@@ -1103,7 +1098,7 @@ describe('KimiAcpRunner', () => {
   });
 
   it('runCompact requires a sessionId', async () => {
-    const { wrapper, workspace } = writeScenario(tmpDir, serverScript, 'kimi');
+    const { wrapper, cwd } = writeScenario(tmpDir, serverScript, 'kimi');
 
     const runner = new KimiAcpRunner({
       kind: 'kimi',
@@ -1114,7 +1109,7 @@ describe('KimiAcpRunner', () => {
     });
 
     const events: AgentEvent[] = [];
-    for await (const event of runner.runCompact('', { cwd: workspace })) {
+    for await (const event of runner.runCompact('', { cwd: cwd })) {
       events.push(event);
     }
 
@@ -1129,7 +1124,7 @@ describe('KimiAcpRunner', () => {
   });
 
   it('runCompact sends /compact prompt with compaction operationKind', async () => {
-    const { wrapper, workspace } = writeScenario(tmpDir, serverScript, 'kimi');
+    const { wrapper, cwd } = writeScenario(tmpDir, serverScript, 'kimi');
 
     const runner = new KimiAcpRunner({
       kind: 'kimi',
@@ -1141,7 +1136,7 @@ describe('KimiAcpRunner', () => {
 
     const events: AgentEvent[] = [];
     for await (const event of runner.runCompact('', {
-      cwd: workspace,
+      cwd: cwd,
       sessionId: SESSION_ID,
     })) {
       events.push(event);
@@ -1162,7 +1157,7 @@ describe('KimiAcpRunner', () => {
   });
 
   it('runCompact waits for the wire.jsonl compaction record before producing the result (R2)', async () => {
-    const { wrapper, workspace } = writeScenario(tmpDir, serverScript, 'kimi', {
+    const { wrapper, cwd } = writeScenario(tmpDir, serverScript, 'kimi', {
       // Compaction text chunk flows during the background compaction…
       notifications: [
         {
@@ -1181,7 +1176,7 @@ describe('KimiAcpRunner', () => {
       delayMs: 20,
       compactionRecordDelayMs: 600,
     });
-    const { kimiDir, wirePath } = makeKimiSessionDir(workspace);
+    const { kimiDir, wirePath } = makeKimiSessionDir(cwd);
     const doneMarker = join(tmpDir, 'compaction-done.marker');
     // Re-write the scenario with the marker path wired into the mock config.
     const configPath = join(tmpDir, 'server-config.json');
@@ -1203,7 +1198,7 @@ describe('KimiAcpRunner', () => {
     const runStartMs = Date.now();
     let resultAtMs: number | undefined;
     for await (const event of runner.runCompact('', {
-      cwd: workspace,
+      cwd: cwd,
       sessionId: SESSION_ID,
     })) {
       events.push(event);
@@ -1231,7 +1226,7 @@ describe('KimiAcpRunner', () => {
     expect(resultAtMs! - runStartMs).toBeLessThan(4000);
 
     // Post-run jsonl readback sees the compaction stats.
-    const content = new KimiSessionReader(kimiDir).readSessionContent(SESSION_ID, workspace, {
+    const content = new KimiSessionReader(kimiDir).readSessionContent(SESSION_ID, cwd, {
       maxEvents: 0,
     });
     expect(content.usage?.compactCount).toBe(1);
@@ -1242,7 +1237,7 @@ describe('KimiAcpRunner', () => {
 
   it('sends literal outbound wire shapes: initialize / session/new / session/set_mode (R4)', async () => {
     const capturePath = join(tmpDir, 'received.jsonl');
-    const { wrapper, workspace } = writeScenario(tmpDir, serverScript, 'kimi', {
+    const { wrapper, cwd } = writeScenario(tmpDir, serverScript, 'kimi', {
       capturePath,
     });
 
@@ -1254,7 +1249,7 @@ describe('KimiAcpRunner', () => {
       turnIdleTimeoutMs: 30_000,
     });
 
-    await collectEvents(runner, 'hello', { cwd: workspace });
+    await collectEvents(runner, 'hello', { cwd: cwd });
     await runner.dispose();
 
     const received = readFileSync(capturePath, 'utf-8')
@@ -1280,7 +1275,7 @@ describe('KimiAcpRunner', () => {
     });
 
     const sessionNew = received.find((m) => m.method === 'session/new');
-    expect(sessionNew?.params).toEqual({ cwd: workspace, mcpServers: [] });
+    expect(sessionNew?.params).toEqual({ cwd: cwd, mcpServers: [] });
 
     const setMode = received.find((m) => m.method === 'session/set_mode');
     expect(setMode?.params).toEqual({
@@ -1293,7 +1288,7 @@ describe('KimiAcpRunner', () => {
 
   it('sends session/set_mode unconditionally — yolo included (R6: fresh sessions start in default=manual, skipping yolo stalls tool calls on unanswered approvals)', async () => {
     const capturePath = join(tmpDir, 'received.jsonl');
-    const { wrapper, workspace } = writeScenario(tmpDir, serverScript, 'kimi', {
+    const { wrapper, cwd } = writeScenario(tmpDir, serverScript, 'kimi', {
       capturePath,
     });
 
@@ -1306,7 +1301,7 @@ describe('KimiAcpRunner', () => {
       turnIdleTimeoutMs: 30_000,
     });
 
-    for await (const _event of runner.run('hello', { cwd: workspace })) {
+    for await (const _event of runner.run('hello', { cwd: cwd })) {
       // drain
     }
     await runner.dispose();
@@ -1324,7 +1319,7 @@ describe('KimiAcpRunner', () => {
   });
 
   it('prevents concurrent runs', async () => {
-    const { wrapper, workspace } = writeScenario(tmpDir, serverScript, 'kimi', {
+    const { wrapper, cwd } = writeScenario(tmpDir, serverScript, 'kimi', {
       delayMs: 1000,
     });
 
@@ -1339,7 +1334,7 @@ describe('KimiAcpRunner', () => {
     // Start first run
     const firstRun = (async () => {
       const events: AgentEvent[] = [];
-      for await (const event of runner.run('first', { cwd: workspace })) {
+      for await (const event of runner.run('first', { cwd: cwd })) {
         events.push(event);
       }
       return events;
@@ -1353,7 +1348,7 @@ describe('KimiAcpRunner', () => {
     // Second run should throw
     await expect(
       (async () => {
-        for await (const _ of runner.run('second', { cwd: workspace })) {
+        for await (const _ of runner.run('second', { cwd: cwd })) {
           // no-op
         }
       })(),
@@ -1364,7 +1359,7 @@ describe('KimiAcpRunner', () => {
   }, 10000);
 
   it('auto-responds cancelled to question elicitation (no toolCall)', async () => {
-    const { wrapper, workspace } = writeScenario(tmpDir, serverScript, 'kimi', {
+    const { wrapper, cwd } = writeScenario(tmpDir, serverScript, 'kimi', {
       sendQuestion: true,
       notifications: [
         {
@@ -1388,7 +1383,7 @@ describe('KimiAcpRunner', () => {
       turnIdleTimeoutMs: 30_000,
     });
 
-    const events = await collectEvents(runner, 'hello', { cwd: workspace });
+    const events = await collectEvents(runner, 'hello', { cwd: cwd });
 
     // No approval_requested event should be emitted for question elicitation
     const approvals = events.filter((e) => e.type === 'approval_requested');
@@ -1407,7 +1402,7 @@ describe('KimiAcpRunner', () => {
     // Server sends prompt response with a long delay (far beyond the 200ms
     // idle timeout), and no notifications. The runner should detect the idle
     // timeout, send session/cancel, and emit an error result.
-    const { wrapper, workspace } = writeScenario(tmpDir, serverScript, 'kimi', {
+    const { wrapper, cwd } = writeScenario(tmpDir, serverScript, 'kimi', {
       delayMs: 5000, // prompt response arrives after 5s — way beyond idle
       notifications: [], // no notifications to keep lastEventAt stale
     });
@@ -1420,7 +1415,7 @@ describe('KimiAcpRunner', () => {
       turnIdleTimeoutMs: 200, // very short idle timeout
     });
 
-    const events = await collectEvents(runner, 'hello', { cwd: workspace });
+    const events = await collectEvents(runner, 'hello', { cwd: cwd });
 
     const result = events.find((e) => e.type === 'result') as
       (AgentEvent & { subtype?: string; errorMessage?: string }) | undefined;
@@ -1483,7 +1478,7 @@ describe('KimiAcpRunner', () => {
   });
 
   it('stop during setup (session/new pending) emits interrupted, does not run the turn ', async () => {
-    const { wrapper, workspace } = writeScenario(tmpDir, serverScript, 'kimi', {
+    const { wrapper, cwd } = writeScenario(tmpDir, serverScript, 'kimi', {
       delayNewMs: 500, // session/new 阻塞 500ms，制造「连接已建、session 未建立」的启动窗口
       notifications: [
         {
@@ -1510,7 +1505,7 @@ describe('KimiAcpRunner', () => {
 
     const events: AgentEvent[] = [];
     const runPromise = (async () => {
-      for await (const event of runner.run('hello', { cwd: workspace })) {
+      for await (const event of runner.run('hello', { cwd: cwd })) {
         events.push(event);
       }
     })();
@@ -1541,12 +1536,12 @@ describe('KimiAcpRunner', () => {
     async () => {
       const capturePath = join(tmpDir, 'terminal-capture.jsonl');
       const markerPath = join(tmpDir, 'terminal-marker.txt');
-      const workspace = join(tmpDir, 'workspace');
-      mkdirSync(workspace, { recursive: true });
+      const cwd = join(tmpDir, 'workspace');
+      mkdirSync(cwd, { recursive: true });
       // stdout 也要有 hello（output 轮询断言），marker 文件同时落盘（本地执行断言）。
       const { wrapper } = writeTerminalMockServer(tmpDir, {
         capturePath,
-        workspace,
+        cwd,
         script: `echo hello | tee ${JSON.stringify(markerPath)}`,
       });
 
@@ -1558,7 +1553,7 @@ describe('KimiAcpRunner', () => {
         turnIdleTimeoutMs: 30_000,
       });
 
-      const events = await collectEvents(runner, 'run bash', { cwd: workspace });
+      const events = await collectEvents(runner, 'run bash', { cwd: cwd });
 
       const result = events.find((e) => e.type === 'result') as
         (AgentEvent & { subtype?: string }) | undefined;
@@ -1609,11 +1604,11 @@ describe('KimiAcpRunner', () => {
     async () => {
       const capturePath = join(tmpDir, 'terminal-enrich-capture.jsonl');
       const markerPath = join(tmpDir, 'terminal-enrich-marker.txt');
-      const workspace = join(tmpDir, 'workspace');
-      mkdirSync(workspace, { recursive: true });
+      const cwd = join(tmpDir, 'workspace');
+      mkdirSync(cwd, { recursive: true });
       const { wrapper } = writeTerminalMockServer(tmpDir, {
         capturePath,
-        workspace,
+        cwd,
         script: `echo hello | tee ${JSON.stringify(markerPath)}`,
         // 模拟真实 kimi acp-server：tool_call 通知 + terminal embed 更新。
         sendTerminalEmbedUpdates: true,
@@ -1627,7 +1622,7 @@ describe('KimiAcpRunner', () => {
         turnIdleTimeoutMs: 30_000,
       });
 
-      const events = await collectEvents(runner, 'run bash', { cwd: workspace });
+      const events = await collectEvents(runner, 'run bash', { cwd: cwd });
 
       const result = events.find((e) => e.type === 'result') as
         (AgentEvent & { subtype?: string }) | undefined;
@@ -1685,11 +1680,11 @@ describe('KimiAcpRunner', () => {
     async () => {
       const capturePath = join(tmpDir, 'terminal-kill-capture.jsonl');
       const pidPath = join(tmpDir, 'terminal-pid.txt');
-      const workspace = join(tmpDir, 'workspace');
-      mkdirSync(workspace, { recursive: true });
+      const cwd = join(tmpDir, 'workspace');
+      mkdirSync(cwd, { recursive: true });
       const { wrapper } = writeTerminalMockServer(tmpDir, {
         capturePath,
-        workspace,
+        cwd,
         pidPath,
         killAfterCreate: true,
         // $$ 是 bash 自身 PID；sleep 30 保证 kill 到达前进程一定还在跑。
@@ -1704,7 +1699,7 @@ describe('KimiAcpRunner', () => {
         turnIdleTimeoutMs: 30_000,
       });
 
-      const events = await collectEvents(runner, 'run bash', { cwd: workspace });
+      const events = await collectEvents(runner, 'run bash', { cwd: cwd });
 
       const result = events.find((e) => e.type === 'result') as
         (AgentEvent & { subtype?: string }) | undefined;
@@ -1748,11 +1743,11 @@ describe('KimiAcpRunner', () => {
     'buffers terminal output byte-accurately: intact UTF-8 and outputByteLimit enforced',
     async () => {
       const capturePath = join(tmpDir, 'terminal-buffer-capture.jsonl');
-      const workspace = join(tmpDir, 'workspace');
-      mkdirSync(workspace, { recursive: true });
+      const cwd = join(tmpDir, 'workspace');
+      mkdirSync(cwd, { recursive: true });
       const { wrapper } = writeTerminalMockServer(tmpDir, {
         capturePath,
-        workspace,
+        cwd,
         pollForTruncated: true,
         outputByteLimit: 5,
         // 第一个 write 只有 1 字节（多字节字符被拆到两个 chunk），随后补全；
@@ -1768,7 +1763,7 @@ describe('KimiAcpRunner', () => {
         turnIdleTimeoutMs: 30_000,
       });
 
-      const events = await collectEvents(runner, 'run bash', { cwd: workspace });
+      const events = await collectEvents(runner, 'run bash', { cwd: cwd });
 
       const result = events.find((e) => e.type === 'result') as
         (AgentEvent & { subtype?: string }) | undefined;
@@ -1804,11 +1799,11 @@ describe('KimiAcpRunner', () => {
     'reports truncated when output exactly reaches outputByteLimit (spec: buffer >= limit)',
     async () => {
       const capturePath = join(tmpDir, 'terminal-exact-cap-capture.jsonl');
-      const workspace = join(tmpDir, 'workspace');
-      mkdirSync(workspace, { recursive: true });
+      const cwd = join(tmpDir, 'workspace');
+      mkdirSync(cwd, { recursive: true });
       const { wrapper } = writeTerminalMockServer(tmpDir, {
         capturePath,
-        workspace,
+        cwd,
         pollForTruncated: true,
         outputByteLimit: 5,
         // 'hello' 恰好 5 字节 = outputByteLimit：契约要求 truncated=true（缓冲>=上限），
@@ -1824,7 +1819,7 @@ describe('KimiAcpRunner', () => {
         turnIdleTimeoutMs: 30_000,
       });
 
-      const events = await collectEvents(runner, 'run bash', { cwd: workspace });
+      const events = await collectEvents(runner, 'run bash', { cwd: cwd });
 
       const result = events.find((e) => e.type === 'result') as
         (AgentEvent & { subtype?: string }) | undefined;
@@ -1874,12 +1869,12 @@ describe('KimiAcpRunner', () => {
 
     function startRunCompactCollect(
       runner: KimiAcpRunner,
-      workspace: string,
+      cwd: string,
     ): { events: AgentEvent[]; done: Promise<void> } {
       const events: AgentEvent[] = [];
       const done = (async () => {
         for await (const event of runner.runCompact('', {
-          cwd: workspace,
+          cwd: cwd,
           sessionId: SESSION_ID,
         })) {
           events.push(event);
@@ -1889,10 +1884,10 @@ describe('KimiAcpRunner', () => {
     }
 
     it('runCompact 落 cancel 记录 → error result「压缩未完成」', async () => {
-      const { wrapper, workspace } = writeScenario(tmpDir, serverScript, 'kimi', {
+      const { wrapper, cwd } = writeScenario(tmpDir, serverScript, 'kimi', {
         delayMs: 0,
       });
-      const { kimiDir, wirePath } = makeKimiSessionDir(workspace);
+      const { kimiDir, wirePath } = makeKimiSessionDir(cwd);
       const runner = new KimiAcpRunner({
         kind: 'kimi',
         sessionReader: new KimiSessionReader(kimiDir),
@@ -1901,7 +1896,7 @@ describe('KimiAcpRunner', () => {
         turnIdleTimeoutMs: 30_000,
         compactIdleTimeoutMs: 5000,
       });
-      const { events, done } = startRunCompactCollect(runner, workspace);
+      const { events, done } = startRunCompactCollect(runner, cwd);
 
       // prompt settle 后落 cancel：引擎失败/取消共用 full_compaction.cancel。
       // Windows 握手可达数秒，固定一次 append 会落在 baseline 建立之前被
@@ -1925,10 +1920,10 @@ describe('KimiAcpRunner', () => {
     }, 20000);
 
     it('runCompact 等待超过旧 30s 上限的 complete 记录 → 不误报完成（等记录落盘）', async () => {
-      const { wrapper, workspace } = writeScenario(tmpDir, serverScript, 'kimi', {
+      const { wrapper, cwd } = writeScenario(tmpDir, serverScript, 'kimi', {
         delayMs: 0,
       });
-      const { kimiDir, wirePath } = makeKimiSessionDir(workspace);
+      const { kimiDir, wirePath } = makeKimiSessionDir(cwd);
       const runner = new KimiAcpRunner({
         kind: 'kimi',
         sessionReader: new KimiSessionReader(kimiDir),
@@ -1939,7 +1934,7 @@ describe('KimiAcpRunner', () => {
         // 记录（结果晚于落盘），绝不在记录前报完成。
         compactIdleTimeoutMs: 6000,
       });
-      const { events, done } = startRunCompactCollect(runner, workspace);
+      const { events, done } = startRunCompactCollect(runner, cwd);
 
       const startedAtMs = Date.now();
       const appendTimer = setTimeout(() => {
@@ -1963,10 +1958,10 @@ describe('KimiAcpRunner', () => {
     }, 20000);
 
     it('runCompact 沉默超时不再假成功：无记录 → error result「压缩状态未知」', async () => {
-      const { wrapper, workspace } = writeScenario(tmpDir, serverScript, 'kimi', {
+      const { wrapper, cwd } = writeScenario(tmpDir, serverScript, 'kimi', {
         delayMs: 0,
       });
-      const { kimiDir } = makeKimiSessionDir(workspace);
+      const { kimiDir } = makeKimiSessionDir(cwd);
       const runner = new KimiAcpRunner({
         kind: 'kimi',
         sessionReader: new KimiSessionReader(kimiDir),
@@ -1975,7 +1970,7 @@ describe('KimiAcpRunner', () => {
         turnIdleTimeoutMs: 30_000,
         compactIdleTimeoutMs: 1000,
       });
-      const { events, done } = startRunCompactCollect(runner, workspace);
+      const { events, done } = startRunCompactCollect(runner, cwd);
 
       // 预算给足（15s，与本文件其它用例上限对齐）：这里等的是「最终是否会产出
       // error result」这一语义，不是延迟。`compactIdleTimeoutMs: 1000` 只是空闲窗口
@@ -1992,10 +1987,10 @@ describe('KimiAcpRunner', () => {
     }, 20000);
 
     it('runCompact 等待期间 stop → interrupted（停止等待，压缩仍在后台）', async () => {
-      const { wrapper, workspace } = writeScenario(tmpDir, serverScript, 'kimi', {
+      const { wrapper, cwd } = writeScenario(tmpDir, serverScript, 'kimi', {
         delayMs: 0,
       });
-      const { kimiDir } = makeKimiSessionDir(workspace);
+      const { kimiDir } = makeKimiSessionDir(cwd);
       const runner = new KimiAcpRunner({
         kind: 'kimi',
         sessionReader: new KimiSessionReader(kimiDir),
@@ -2003,7 +1998,7 @@ describe('KimiAcpRunner', () => {
         acpArgs: [],
         turnIdleTimeoutMs: 30_000,
       });
-      const { events, done } = startRunCompactCollect(runner, workspace);
+      const { events, done } = startRunCompactCollect(runner, cwd);
 
       await sleepReal(500); // prompt settle + 轮询已开始，等待中
       await runner.stop();
@@ -2020,10 +2015,10 @@ describe('KimiAcpRunner', () => {
       // 就武装，不等 prompt 结算。回归：判定挂在 promptPromise.then 里，引擎
       // hold 住 session/prompt 时用户只能等通用 turnIdleTimeout（默认 30min）拿
       // 一个语义泛化的 turn 超时，拿不到「压缩状态未知 / 可重试」。
-      const { wrapper, workspace } = writeScenario(tmpDir, serverScript, 'kimi', {
+      const { wrapper, cwd } = writeScenario(tmpDir, serverScript, 'kimi', {
         holdPromptUntilCancel: true,
       });
-      const { kimiDir } = makeKimiSessionDir(workspace);
+      const { kimiDir } = makeKimiSessionDir(cwd);
       const runner = new KimiAcpRunner({
         kind: 'kimi',
         sessionReader: new KimiSessionReader(kimiDir),
@@ -2033,7 +2028,7 @@ describe('KimiAcpRunner', () => {
         turnIdleTimeoutMs: 30_000,
         compactIdleTimeoutMs: 1000,
       });
-      const { events, done } = startRunCompactCollect(runner, workspace);
+      const { events, done } = startRunCompactCollect(runner, cwd);
 
       const startedAtMs = Date.now();
       const result = await waitForResult(events, 6000);

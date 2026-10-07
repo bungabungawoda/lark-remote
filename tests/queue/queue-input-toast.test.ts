@@ -37,7 +37,7 @@ describe('queue.input returns toast instead of sending message', () => {
 
     // Submit edited content via queue.input
     const result = await router.handleCardAction(
-      { cmd: 'queue.input', workspace: tmpDir, messageId: 'msg-2', inputValue: 'edited message' },
+      { cmd: 'queue.input', cwd: tmpDir, messageId: 'msg-2', inputValue: 'edited message' },
       cardCtx,
     );
 

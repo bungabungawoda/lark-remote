@@ -1,6 +1,6 @@
 /**
- * Pure utility functions extracted from router/index.ts.
- * Path-safety helpers, display formatting, and validation — no Router state.
+ * Format session/run usage stats (context, compact count, tokens, cost) into
+ * the display strings shown on cards. Pure — no Router state.
  */
 
 import type { ActiveRunSnapshot } from '../bridge/index.js';
@@ -26,13 +26,6 @@ export function activeRunUsage(
     cacheReadTokens: activeRun.cacheReadTokens,
     cacheCreationTokens: activeRun.cacheCreationTokens,
   };
-}
-
-// --- Extracted helpers for refactoring ---
-
-/** Clamp `v` into [min, max]. */
-export function clampInt(v: number, min: number, max: number): number {
-  return Math.min(Math.max(v, min), max);
 }
 
 /**

@@ -92,8 +92,8 @@ function assembleCard(state: BashState, elements: object[]): object {
     schema: '2.0',
     config: { wide_screen_mode: true, update_multi: true },
     header: {
-      template: bashHeaderTemplate2(state.terminal),
-      title: { content: bashHeaderTitle2(state.terminal), tag: 'plain_text' },
+      template: bashHeaderTemplate(state.terminal),
+      title: { content: bashHeaderTitle(state.terminal), tag: 'plain_text' },
     },
     body: { elements },
   };
@@ -193,7 +193,7 @@ function bashStatusTagLabel(terminal: BashState['terminal'], exitCode: number | 
 }
 
 /** CardKit 2.0 header title */
-function bashHeaderTitle2(terminal: BashState['terminal']): string {
+function bashHeaderTitle(terminal: BashState['terminal']): string {
   if (terminal === 'running') return '💻 执行命令...';
   if (terminal === 'error') return '❌ 命令执行失败';
   if (terminal === 'interrupted') return '⏹ 已终止';
@@ -201,6 +201,6 @@ function bashHeaderTitle2(terminal: BashState['terminal']): string {
 }
 
 /** CardKit 2.0 header template */
-function bashHeaderTemplate2(terminal: BashState['terminal']): string {
+function bashHeaderTemplate(terminal: BashState['terminal']): string {
   return terminalToColor(terminal);
 }

@@ -15,7 +15,7 @@ import { sleep } from '../common/sleep.js';
 import { isTransientTransportError } from '../error-classification.js';
 import axios from 'axios';
 import fs from 'node:fs';
-import { silentlyUnlink } from '../common/fs.js';
+import { bestEffortUnlink } from '../common/fs.js';
 import { displayName } from '../platform/path.js';
 import https from 'node:https';
 import os from 'node:os';
@@ -280,7 +280,7 @@ interface PatchableMessageService {
  */
 export const PATCH_MAX_RETRIES = 3;
 /** 重试退避基数（ms）；第 n 次重试前等待 n × 基数，给对端恢复的时间。 */
-export const PATCH_RETRY_BASE_DELAY_MS = 150;
+const PATCH_RETRY_BASE_DELAY_MS = 150;
 
 /** 记日志用的错误摘要（不打印 axios 巨型循环对象）。 */
 function formatErrorForLog(err: unknown): string {
@@ -576,10 +576,10 @@ export class FeishuConnector {
           this.channel.downloadResourceToFile(msg.messageId, res.fileKey, res.type, tmpPath),
           timeoutMs,
           `downloadResource fileKey=${res.fileKey}`,
-          () => silentlyUnlink(tmpPath),
+          () => bestEffortUnlink(tmpPath),
         );
         if (bytesWritten > maxBytes) {
-          silentlyUnlink(tmpPath);
+          bestEffortUnlink(tmpPath);
           const limitMb = maxBytes / (1024 * 1024);
           failures.push({
             kind: res.kind,
@@ -602,7 +602,7 @@ export class FeishuConnector {
         });
       } catch (err) {
         // 超时不在这里删文件：上面已把清理挂到底层传输的 settle 上。
-        if (!(err instanceof ResourceTimeoutError)) silentlyUnlink(tmpPath);
+        if (!(err instanceof ResourceTimeoutError)) bestEffortUnlink(tmpPath);
         getLogger().warn(
           `[feishu] downloadResource failed fileKey=${res.fileKey} type=${res.type}:`,
           (err as Error).message,

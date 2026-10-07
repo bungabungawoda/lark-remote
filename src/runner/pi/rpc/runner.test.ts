@@ -78,7 +78,7 @@ function makeRunner(scenario: Record<string, unknown> = {}): PiRpcRunner {
   return new PiRpcRunner({
     provider: 'Volcano',
     model: 'glm-5.2',
-    workspace: tmpDir,
+    cwd: tmpDir,
     sessionReader: emptyReader,
     idleTtlMs: 60_000,
     turnIdleTimeoutMs: 5000,

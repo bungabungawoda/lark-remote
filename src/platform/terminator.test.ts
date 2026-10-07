@@ -100,7 +100,7 @@ describe('createWin32Terminator — 优雅停止', () => {
   });
 
   it('通道登记在**别的 pid** 上 → 不误用（走无通道分支，不空等）', async () => {
-    // 同一 agent 同时有多条长驻连接（每 workspace 一条）时，只有 pid 能把通道
+    // 同一 agent 同时有多条长驻连接（每 cwd 一条）时，只有 pid 能把通道
     // 钉到手上这个 proc。按 agent 单键查会让 A 工作区的 turn-cancel 打到 B 工
     // 作区的进程上。
     const proc = aliveProc(1001);

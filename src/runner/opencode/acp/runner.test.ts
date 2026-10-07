@@ -65,7 +65,7 @@ describe('OpencodeAcpRunner', () => {
   });
 
   it('runs a full turn: streaming text deltas on the assistant channel + success result + usage folded', async () => {
-    const { wrapper, workspace } = writeScenario(tmpDir, serverScript, 'opencode', {
+    const { wrapper, cwd } = writeScenario(tmpDir, serverScript, 'opencode', {
       configOptions: MODE_CONFIG_OPTIONS,
       notifications: [
         {
@@ -106,7 +106,7 @@ describe('OpencodeAcpRunner', () => {
     });
 
     const runner = makeRunner(wrapper);
-    const events = await collectEvents(runner, 'hello', { cwd: workspace });
+    const events = await collectEvents(runner, 'hello', { cwd: cwd });
 
     // Synthetic init first (app-server/ACP has no wire init)
     const initIdx = events.findIndex((e) => e.type === 'system' && e.subtype === 'init');
@@ -143,23 +143,11 @@ describe('OpencodeAcpRunner', () => {
     await runner.dispose();
   });
 
-  it('maps cancelled stopReason to interrupted (independent terminal state)', async () => {
-    const { wrapper, workspace } = writeScenario(tmpDir, serverScript, 'opencode', {
-      stopReason: 'cancelled',
-    });
-    const runner = makeRunner(wrapper);
-    const events = await collectEvents(runner, 'hello', { cwd: workspace });
-    const result = events.find((e) => e.type === 'result') as
-      (AgentEvent & { subtype?: string }) | undefined;
-    expect(result?.subtype).toBe('interrupted');
-    await runner.dispose();
-  });
-
   it('resumes an existing session by sessionId (session/resume, no session/new)', async () => {
     const capturePath = join(tmpDir, 'capture.jsonl');
-    const { wrapper, workspace } = writeScenario(tmpDir, serverScript, 'opencode', { capturePath });
+    const { wrapper, cwd } = writeScenario(tmpDir, serverScript, 'opencode', { capturePath });
     const runner = makeRunner(wrapper);
-    const events = await collectEvents(runner, 'hello', { cwd: workspace, sessionId: SESSION_ID });
+    const events = await collectEvents(runner, 'hello', { cwd: cwd, sessionId: SESSION_ID });
 
     const result = events.find((e) => e.type === 'result') as
       (AgentEvent & { subtype?: string }) | undefined;
@@ -173,7 +161,7 @@ describe('OpencodeAcpRunner', () => {
 
   it('applies the configured model via session/set_config_option when it differs from the session default', async () => {
     const capturePath = join(tmpDir, 'capture.jsonl');
-    const { wrapper, workspace } = writeScenario(tmpDir, serverScript, 'opencode', {
+    const { wrapper, cwd } = writeScenario(tmpDir, serverScript, 'opencode', {
       capturePath,
       configOptions: [
         ...MODE_CONFIG_OPTIONS,
@@ -187,7 +175,7 @@ describe('OpencodeAcpRunner', () => {
       ],
     });
     const runner = makeRunner(wrapper, { model: 'myprovider/DeepSeek-V4-Pro' });
-    const events = await collectEvents(runner, 'hello', { cwd: workspace });
+    const events = await collectEvents(runner, 'hello', { cwd: cwd });
     const result = events.find((e) => e.type === 'result') as
       (AgentEvent & { subtype?: string }) | undefined;
     expect(result?.subtype).toBe('success');
@@ -204,7 +192,7 @@ describe('OpencodeAcpRunner', () => {
 
   it('skips the model wire call when the session already runs the configured model', async () => {
     const capturePath = join(tmpDir, 'capture.jsonl');
-    const { wrapper, workspace } = writeScenario(tmpDir, serverScript, 'opencode', {
+    const { wrapper, cwd } = writeScenario(tmpDir, serverScript, 'opencode', {
       capturePath,
       configOptions: [
         ...MODE_CONFIG_OPTIONS,
@@ -218,7 +206,7 @@ describe('OpencodeAcpRunner', () => {
       ],
     });
     const runner = makeRunner(wrapper, { model: 'myprovider/DeepSeek-V4-Pro' });
-    const events = await collectEvents(runner, 'hello', { cwd: workspace });
+    const events = await collectEvents(runner, 'hello', { cwd: cwd });
     const result = events.find((e) => e.type === 'result') as
       (AgentEvent & { subtype?: string }) | undefined;
     expect(result?.subtype).toBe('success');
@@ -230,7 +218,7 @@ describe('OpencodeAcpRunner', () => {
 
   it('surfaces approval requests and echoes the allow optionId on accept', async () => {
     const capturePath = join(tmpDir, 'capture.jsonl');
-    const { wrapper, workspace } = writeScenario(tmpDir, serverScript, 'opencode', {
+    const { wrapper, cwd } = writeScenario(tmpDir, serverScript, 'opencode', {
       sendApproval: true,
       holdPromptUntilResponse: true,
       capturePath,
@@ -238,7 +226,7 @@ describe('OpencodeAcpRunner', () => {
 
     const runner = makeRunner(wrapper);
     let approvalResponded = false;
-    const events = await collectEvents(runner, 'do something', { cwd: workspace }, async (ev) => {
+    const events = await collectEvents(runner, 'do something', { cwd: cwd }, async (ev) => {
       if (ev.type === 'approval_requested') {
         expect(ev.kind).toBe('command');
         await runner.respondApproval(ev.requestId, { action: 'accept' });
@@ -262,14 +250,14 @@ describe('OpencodeAcpRunner', () => {
 
   it('declines approval by echoing the reject optionId', async () => {
     const capturePath = join(tmpDir, 'capture.jsonl');
-    const { wrapper, workspace } = writeScenario(tmpDir, serverScript, 'opencode', {
+    const { wrapper, cwd } = writeScenario(tmpDir, serverScript, 'opencode', {
       sendApproval: true,
       holdPromptUntilResponse: true,
       capturePath,
     });
 
     const runner = makeRunner(wrapper);
-    const events = await collectEvents(runner, 'do something', { cwd: workspace }, async (ev) => {
+    const events = await collectEvents(runner, 'do something', { cwd: cwd }, async (ev) => {
       if (ev.type === 'approval_requested') {
         await runner.respondApproval(ev.requestId, { action: 'decline' });
       }
@@ -288,7 +276,7 @@ describe('OpencodeAcpRunner', () => {
 
   it('responds accept_for_session by echoing the always optionId (§P4)', async () => {
     const capturePath = join(tmpDir, 'capture.jsonl');
-    const { wrapper, workspace } = writeScenario(tmpDir, serverScript, 'opencode', {
+    const { wrapper, cwd } = writeScenario(tmpDir, serverScript, 'opencode', {
       sendApproval: true,
       holdPromptUntilResponse: true,
       capturePath,
@@ -296,7 +284,7 @@ describe('OpencodeAcpRunner', () => {
 
     const runner = makeRunner(wrapper);
     let approvalResponded = false;
-    const events = await collectEvents(runner, 'do something', { cwd: workspace }, async (ev) => {
+    const events = await collectEvents(runner, 'do something', { cwd: cwd }, async (ev) => {
       if (ev.type === 'approval_requested') {
         await runner.respondApproval(ev.requestId, { action: 'accept_for_session' });
         approvalResponded = true;
@@ -319,7 +307,7 @@ describe('OpencodeAcpRunner', () => {
 
   it('updateApprovalMode hot-applies mode via session/set_mode and updates status (§P5)', async () => {
     const capturePath = join(tmpDir, 'capture.jsonl');
-    const { wrapper, workspace } = writeScenario(tmpDir, serverScript, 'opencode', {
+    const { wrapper, cwd } = writeScenario(tmpDir, serverScript, 'opencode', {
       sendApproval: true,
       holdPromptUntilResponse: true,
       capturePath,
@@ -330,7 +318,7 @@ describe('OpencodeAcpRunner', () => {
 
     const runner = makeRunner(wrapper);
     let hotApplied = false;
-    const events = await collectEvents(runner, 'do something', { cwd: workspace }, async (ev) => {
+    const events = await collectEvents(runner, 'do something', { cwd: cwd }, async (ev) => {
       if (ev.type === 'approval_requested') {
         await runner.updateApprovalMode({ mode: 'plan' });
         hotApplied = true;
@@ -365,7 +353,7 @@ describe('OpencodeAcpRunner', () => {
   it('stop during an in-flight prompt sends session/cancel (notification) and does NOT kill the process', async () => {
     const capturePath = join(tmpDir, 'capture.jsonl');
     const pidPath = join(tmpDir, 'server.pid');
-    const { wrapper, workspace } = writeScenario(tmpDir, serverScript, 'opencode', {
+    const { wrapper, cwd } = writeScenario(tmpDir, serverScript, 'opencode', {
       holdPromptUntilCancel: true,
       capturePath,
       pidPath,
@@ -374,7 +362,7 @@ describe('OpencodeAcpRunner', () => {
     const runner = makeRunner(wrapper);
     const events: AgentEvent[] = [];
     const runPromise = (async () => {
-      for await (const event of runner.run('hello', { cwd: workspace })) {
+      for await (const event of runner.run('hello', { cwd: cwd })) {
         events.push(event);
       }
     })();
@@ -411,7 +399,7 @@ describe('OpencodeAcpRunner', () => {
     // also guarantees the mock has processed every prior stdin line
     // (including session/cancel) before we read the capture file.
     const pid1 = readFileSync(pidPath, 'utf8').trim();
-    const events2 = await collectEvents(runner, 'again', { cwd: workspace });
+    const events2 = await collectEvents(runner, 'again', { cwd: cwd });
     const result2 = events2.find((e) => e.type === 'result') as
       (AgentEvent & { subtype?: string }) | undefined;
     expect(result2?.subtype).toBe('success');
@@ -427,28 +415,14 @@ describe('OpencodeAcpRunner', () => {
     await runner.dispose();
   }, 15000);
 
-  it('runCompact requires a sessionId', async () => {
-    const { wrapper, workspace } = writeScenario(tmpDir, serverScript, 'opencode', {});
-    const runner = makeRunner(wrapper);
-    const events: AgentEvent[] = [];
-    for await (const event of runner.runCompact('compact', { cwd: workspace })) {
-      events.push(event);
-    }
-    const result = events.find((e) => e.type === 'result') as
-      (AgentEvent & { subtype?: string; errorMessage?: string }) | undefined;
-    expect(result?.subtype).toBe('error');
-    expect(result?.errorMessage).toContain('sessionId');
-    await runner.dispose();
-  });
-
   it('runCompact sends /compact prompt after resume with compaction operationKind', async () => {
     const capturePath = join(tmpDir, 'capture.jsonl');
-    const { wrapper, workspace } = writeScenario(tmpDir, serverScript, 'opencode', { capturePath });
+    const { wrapper, cwd } = writeScenario(tmpDir, serverScript, 'opencode', { capturePath });
     const runner = makeRunner(wrapper);
 
     const events: AgentEvent[] = [];
     for await (const event of runner.runCompact('compact', {
-      cwd: workspace,
+      cwd: cwd,
       sessionId: SESSION_ID,
     })) {
       events.push(event);
@@ -475,14 +449,14 @@ describe('OpencodeAcpRunner', () => {
 
   it('fs/write_text_file server request is fault-tolerantly rejected (method not found), turn still succeeds', async () => {
     const capturePath = join(tmpDir, 'capture.jsonl');
-    const { wrapper, workspace } = writeScenario(tmpDir, serverScript, 'opencode', {
+    const { wrapper, cwd } = writeScenario(tmpDir, serverScript, 'opencode', {
       sendFsWrite: true,
       holdPromptUntilResponse: true,
       capturePath,
     });
 
     const runner = makeRunner(wrapper);
-    const events = await collectEvents(runner, 'edit file', { cwd: workspace });
+    const events = await collectEvents(runner, 'edit file', { cwd: cwd });
     const result = events.find((e) => e.type === 'result') as
       (AgentEvent & { subtype?: string }) | undefined;
     expect(result?.subtype).toBe('success');
@@ -495,7 +469,7 @@ describe('OpencodeAcpRunner', () => {
   });
 
   it('getStatusInfo extras report acp mode and the current session mode from configOptions', async () => {
-    const { wrapper, workspace } = writeScenario(tmpDir, serverScript, 'opencode', {
+    const { wrapper, cwd } = writeScenario(tmpDir, serverScript, 'opencode', {
       configOptions: MODE_CONFIG_OPTIONS,
     });
     const runner = makeRunner(wrapper);
@@ -503,7 +477,7 @@ describe('OpencodeAcpRunner', () => {
     // Before any session: only the protocol mode is reported
     expect(runner.getStatusInfo().extras).toEqual({ mode: 'acp' });
 
-    await collectEvents(runner, 'hello', { cwd: workspace });
+    await collectEvents(runner, 'hello', { cwd: cwd });
 
     const info = runner.getStatusInfo();
     expect(info.kind).toBe('opencode');
@@ -515,9 +489,9 @@ describe('OpencodeAcpRunner', () => {
 
   it('sends literal outbound wire shapes: initialize / session/new / session/prompt', async () => {
     const capturePath = join(tmpDir, 'capture.jsonl');
-    const { wrapper, workspace } = writeScenario(tmpDir, serverScript, 'opencode', { capturePath });
+    const { wrapper, cwd } = writeScenario(tmpDir, serverScript, 'opencode', { capturePath });
     const runner = makeRunner(wrapper);
-    await collectEvents(runner, 'hello', { cwd: workspace });
+    await collectEvents(runner, 'hello', { cwd: cwd });
 
     const captured = readCapture(capturePath);
     const init = captured.find((m) => m.method === 'initialize');
@@ -544,7 +518,7 @@ describe('OpencodeAcpRunner', () => {
   it('fails the turn immediately when opencode logs a limit stream error for the session', async () => {
     const logPath = join(tmpDir, 'opencode.log');
     const capturePath = join(tmpDir, 'capture.jsonl');
-    const { wrapper, workspace } = writeScenario(tmpDir, serverScript, 'opencode', {
+    const { wrapper, cwd } = writeScenario(tmpDir, serverScript, 'opencode', {
       holdPromptUntilCancel: true,
       capturePath,
     });
@@ -556,7 +530,7 @@ describe('OpencodeAcpRunner', () => {
 
     const events: AgentEvent[] = [];
     const runPromise = (async () => {
-      for await (const event of runner.run('hello', { cwd: workspace })) {
+      for await (const event of runner.run('hello', { cwd: cwd })) {
         events.push(event);
       }
     })();

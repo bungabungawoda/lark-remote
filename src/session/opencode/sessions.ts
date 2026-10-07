@@ -16,10 +16,15 @@
 
 import { spawnProcessSync } from '../../platform/spawn.js';
 import fs from 'node:fs';
-import { silentlyUnlink } from '../../common/fs.js';
+import { bestEffortUnlink } from '../../common/fs.js';
 import os from 'node:os';
 import path from 'node:path';
 import { truncateUtf8, TOOL_RESULT_MAX_BYTES } from '../../common/truncate.js';
+import { isStale } from '../common/constants.js';
+import { samePath } from '../../platform/path.js';
+import { paginate, capEvents } from '../common/pagination.js';
+import { sortByRecencyDesc } from '../common/recency.js';
+import { TtlCache } from '../../common/ttl-cache.js';
 import { getLogger } from '../../logger/index.js';
 import type {
   AgentSession,
@@ -95,12 +100,6 @@ interface OpencodeExportData {
   };
   messages: OpencodeExportMessage[];
 }
-
-import { isStale } from '../common/constants.js';
-import { samePath } from '../../platform/path.js';
-import { paginate, capEvents } from '../common/pagination.js';
-import { sortByRecencyDesc } from '../common/recency.js';
-import { TtlCache } from '../../common/ttl-cache.js';
 
 export class OpencodeSessionReader implements AgentSessionReader {
   private readonly binary: string;
@@ -511,7 +510,7 @@ export class OpencodeSessionReader implements AgentSessionReader {
           fs.closeSync(fd);
         } catch {}
       }
-      silentlyUnlink(tmp);
+      bestEffortUnlink(tmp);
     }
   }
 }

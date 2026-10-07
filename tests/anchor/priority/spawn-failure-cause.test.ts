@@ -11,7 +11,7 @@
  * "EMFILE"。
  *
  * W1.1 备注：基类 run() 收窄后 spawn 失败的消费方是 ClaudeSession（捕获
- * SpawnChildError → authErrorEvent），本 anchor 直调 spawnChild 钉住基类
+ * SpawnChildError → setupErrorEvent），本 anchor 直调 spawnChild 钉住基类
  * spawnChild 的错误文案语义。
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
@@ -39,7 +39,7 @@ class TestRunner extends SpawningRunner {
   constructor(pidDir = makeTempDir('lark-spawn-cause-')) {
     super({
       pidDir,
-      workspace: 'test',
+      cwd: 'test',
       logTag: 'test-runner',
     });
     this.binary = 'fake-binary';

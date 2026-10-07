@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { silentlyUnlink, withBusyRetry } from '../common/fs.js';
+import { bestEffortUnlink, withBusyRetry } from '../common/fs.js';
 import { getLogger } from '../logger/index.js';
 
 /**
@@ -64,7 +64,7 @@ export function atomicWrite(
     // errors we must not leak the tmp file — except when the scene is
     // deliberately preserved after busy-retry exhaustion.
     if (!preserveTmpScene) {
-      silentlyUnlink(tmpPath);
+      bestEffortUnlink(tmpPath);
     }
   }
 }
@@ -88,7 +88,7 @@ export function atomicMoveFile(srcPath: string, destPath: string): void {
   } catch (err: unknown) {
     if ((err as NodeJS.ErrnoException).code === 'EXDEV') {
       fs.copyFileSync(srcPath, destPath);
-      silentlyUnlink(srcPath);
+      bestEffortUnlink(srcPath);
     } else {
       throw err;
     }

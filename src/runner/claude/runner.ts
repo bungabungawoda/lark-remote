@@ -55,7 +55,7 @@ export class ClaudeRunner implements AgentRunner {
     settings?: string;
     stopGraceMs?: number;
     pidDir?: string;
-    workspace: string;
+    cwd: string;
     spawnHeartbeatMs?: number;
     sessionReader?: AgentSessionReader;
     /** Claude 权限模式（官方 --permission-mode 枚举；'default'=省略参数）。 */
@@ -69,12 +69,11 @@ export class ClaudeRunner implements AgentRunner {
     this.sessionReader = opts.sessionReader ?? new ClaudeSessionReader();
     this.session = new ClaudeSession({
       pidDir: opts.pidDir,
-      workspace: opts.workspace,
+      cwd: opts.cwd,
       stopGraceMs: opts.stopGraceMs,
       spawnHeartbeatMs: opts.spawnHeartbeatMs,
       permissionMode: this.permissionMode,
       settings: opts.settings,
-      model: this.defaultModel,
       effort: this.defaultEffort,
       idleTtlMs: opts.idleTtlMs,
     });

@@ -5,7 +5,7 @@ import { getLogger } from './logger/index.js';
 type BindDecision = { kind: 'owner' } | { kind: 'rejected' } | { kind: 'bind_success' };
 
 /**
- * Owner 绑定器：首次私聊发送任意消息完成"认领"，此后仅该 openId 可用。
+ * Owner 绑定器：首次私聊发送任意消息完成"认领"，此后仅该 userId 可用。
  *
  * 设计依据：lark-remote 进程持有用户本机完整权限，唯一合法主体是 owner 本人。
  * 飞书自建应用的私聊入口本身就是 owner 掌控的（应用只有 owner 能看到/使用，
@@ -14,9 +14,10 @@ type BindDecision = { kind: 'owner' } | { kind: 'rejected' } | { kind: 'bind_suc
  *
  * 状态机：
  * - 未绑定：第一条私聊消息（任意内容）即完成绑定 -> 写入 startup-contact.json。
- * - 已绑定：仅 senderId === bound.userId 的消息放行；其余静默丢弃（计数 + debug）。
+ * - 已绑定：仅 userId === bound.userId 的消息放行；其余静默丢弃（计数 + debug）。
  *
- * cardAction 同样校验 operator.openId === bound.userId（未绑定也视为非 owner）。
+ * cardAction 同样校验 operator.openId（飞书 SDK 字段，值即 userId）=== bound.userId；
+ * 未绑定也视为非 owner。
  */
 export class OwnerBinder {
   private rejectedTotal = 0;
@@ -27,15 +28,15 @@ export class OwnerBinder {
     return this.store.getContact() !== undefined;
   }
 
-  /** 已绑定的 owner openId；未绑定时 undefined。 */
-  boundOpenId(): string | undefined {
+  /** 已绑定的 owner userId；未绑定时 undefined。 */
+  boundUserId(): string | undefined {
     return this.store.getContact()?.userId;
   }
 
-  /** 卡片操作者是否为已绑定的 owner（未绑定返回 false）。 */
-  isOwner(openId: string): boolean {
+  /** 用户是否为已绑定的 owner（未绑定返回 false）。 */
+  isOwner(userId: string): boolean {
     const bound = this.store.getContact()?.userId;
-    return bound !== undefined && bound === openId;
+    return bound !== undefined && bound === userId;
   }
 
   /** 累计被拒（非 owner）消息/卡片数，用于 DoS 可观测。 */
@@ -47,30 +48,30 @@ export class OwnerBinder {
    * 对入站私聊消息做绑定/授权判定，含副作用：
    * - `owner`：放行，调用方继续正常处理
    * - `rejected`：已绑定但非 owner，静默丢弃（计数 + debug）
-   * - `bind_success`：未绑定收到首条消息，写入绑定（任意内容均可）
+   * - `bind_success`：未绑定收到首条消息，写入绑定（任意消息均可）
    */
-  classify(senderId: string, content: string, chatId: string): BindDecision {
+  authorize(userId: string, chatId: string): BindDecision {
     const bound = this.store.getContact();
     if (bound) {
-      if (senderId === bound.userId) return { kind: 'owner' };
+      if (userId === bound.userId) return { kind: 'owner' };
       this.rejectedTotal++;
       getLogger().debug(
-        `[binder] rejected message from ${senderId} (total rejected=${this.rejectedCount})`,
+        `[binder] rejected message from ${userId} (total rejected=${this.rejectedCount})`,
       );
       return { kind: 'rejected' };
     }
 
     // 未绑定：任意内容即绑定（首条消息完成认领）
-    this.store.save({ chatId, userId: senderId });
-    getLogger().info(`[binder] owner bound: openId=${senderId} chatId=${chatId}`);
+    this.store.save({ chatId, userId });
+    getLogger().info(`[binder] owner bound: userId=${userId} chatId=${chatId}`);
     return { kind: 'bind_success' };
   }
 
   /** 卡片操作被拒时计数（与消息路径共用计数器）。 */
-  recordRejectedCardAction(openId: string): void {
+  recordRejectedCardAction(userId: string): void {
     this.rejectedTotal++;
     getLogger().debug(
-      `[binder] rejected card action from ${openId} (total rejected=${this.rejectedCount})`,
+      `[binder] rejected card action from ${userId} (total rejected=${this.rejectedCount})`,
     );
   }
 }

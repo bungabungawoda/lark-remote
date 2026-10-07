@@ -35,7 +35,7 @@ export interface PiRpcRunnerOptions {
   thinking?: string;
   /** Tool allowlist. */
   tools?: string[];
-  workspace: string;
+  cwd: string;
   sessionReader: AgentSessionReader;
   /** Path to the pi binary. Defaults to `pi`. */
   binary?: string;

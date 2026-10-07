@@ -492,9 +492,9 @@ export function readCodexSessionContent(
 
   // Cwd guard: when a cwd is provided, the session's working directory must
   // match. Without this, /resume <id> finds sessions by global ID lookup and
-  // allows resuming a session from workspace B while the user is in workspace A.
+  // allows resuming a session from cwd B while the user is in cwd A.
   // Codex has no relocation (no EnterWorktree equivalent), so a simple equality
-  // check suffices — unlike claude which needs jsonlContainsCwd to handle
+  // check suffices — unlike claude which needs fileContainsCwd to handle
   // relocated sessions with multiple cwd values.
   if (opts.cwd && !samePath(entry.cwd, opts.cwd)) {
     return { events: [] };

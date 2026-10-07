@@ -4,13 +4,13 @@ import { atomicWriteJson } from '../persistence/atomic-write.js';
 import { loadJsonFile } from '../persistence/load-json-file.js';
 import { getLogger } from '../logger/index.js';
 
-/** Internal storage format for each workspace entry. */
+/** Internal storage format for each cwd entry. */
 interface WorkspaceEntryData {
   path: string;
   lastUsedAt: number;
 }
 
-/** Public view of a workspace entry returned by list(). */
+/** Public view of a cwd entry returned by list(). */
 export interface WorkspaceEntry {
   name: string;
   path: string;
@@ -18,7 +18,7 @@ export interface WorkspaceEntry {
 }
 
 /**
- * Persistent named-alias store for workspace directories.
+ * Persistent named-alias store for cwd directories.
  *
  * Atomic write (§9.10): writes a temp file then `fs.rename` so a crash
  * mid-write cannot leave a truncated JSON file. On load, a corrupt file
@@ -26,7 +26,7 @@ export interface WorkspaceEntry {
  *
  * lastUsedAt 语义（2026-08-19 语义对齐）：保存（save）与使用（use/touch）
  * 都会把时间戳更新为当前时间。save 内部调用 touch，保证「最近使用」排序
- * 对新保存的 workspace 同样生效（新条目应排在列表最前，而非沉底）。
+ * 对新保存的 cwd 同样生效（新条目应排在列表最前，而非沉底）。
  * 同一毫秒内连续操作时 touch 会用 max+1 保证严格递增，避免 Date.now 相同
  * 导致最近排序退化为字母序。
  *
@@ -64,7 +64,7 @@ export class WorkspaceStore {
         if (typeof obj.lastUsedAt !== 'number') {
           if (obj.lastUsedAt !== undefined) {
             getLogger().warn(
-              `[workspace] "${k}" has invalid lastUsedAt (${JSON.stringify(obj.lastUsedAt)}), resetting to 0`,
+              `[cwd] "${k}" has invalid lastUsedAt (${JSON.stringify(obj.lastUsedAt)}), resetting to 0`,
             );
           }
           needsMigration = true;
@@ -87,7 +87,7 @@ export class WorkspaceStore {
   }
 
   save(name: string, dirPath: string): void {
-    // 保存即视为使用（语义对齐）：新建/覆盖的 workspace 都应拿到当前
+    // 保存即视为使用（语义对齐）：新建/覆盖的 cwd 都应拿到当前
     // lastUsedAt，而不是 0，否则「最近使用」排序下新条目会沉底。
     // touch() 负责统一写入时间戳并 persist，消除 save 写 0 / use 写 now 的不对称。
     this.data.set(name, { path: dirPath, lastUsedAt: 0 });
@@ -133,7 +133,7 @@ export class WorkspaceStore {
   }
 
   /**
-   * List all workspace entries in insertion order.
+   * List all cwd entries in insertion order.
    * Sorting is the caller's responsibility (view concern).
    */
   list(): WorkspaceEntry[] {
