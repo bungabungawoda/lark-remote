@@ -87,12 +87,12 @@ describe('dispatchOrderExecForQueue: order.exec → equivalent queued message', 
     const orderStore = new OrderStore(ordersPath);
     const order = orderStore.save('build the project');
     const { router, bridge } = createRouter(ordersPath);
-    const workspace = '/some/ws';
+    const cwd = '/some/ws';
 
     // Block the serial queue so the dispatched task stays queued (otherwise the
     // queue chain runs it synchronously and removes it from queuedTasks).
     const blocker = hang();
-    bridge.enqueue(workspace, async () => {
+    bridge.enqueue(cwd, async () => {
       await blocker.promise;
     });
     await new Promise((r) => setTimeout(r, 20));
@@ -100,7 +100,7 @@ describe('dispatchOrderExecForQueue: order.exec → equivalent queued message', 
     const status = await dispatchOrderExecForQueue({
       router,
       bridge,
-      workspace,
+      cwd,
       orderId: order.id,
       ctx,
     });
@@ -108,7 +108,7 @@ describe('dispatchOrderExecForQueue: order.exec → equivalent queued message', 
     expect(status).toBe('enqueued');
     // The queued task must carry the REAL order text as messagePreview (the
     // original bug showed "card action: order.exec" here) and a unique key.
-    const tasks = bridge.getQueuedTasks(workspace);
+    const tasks = bridge.getQueuedTasks(cwd);
     const ours = tasks.find((t) => t.messagePreview === 'build the project');
     expect(ours).toBeDefined();
     expect(ours?.messageId).toMatch(/^order-/);
@@ -124,21 +124,19 @@ describe('dispatchOrderExecForQueue: order.exec → equivalent queued message', 
     const orderStore = new OrderStore(ordersPath);
     const order = orderStore.save('repeated order');
     const { router, bridge } = createRouter(ordersPath);
-    const workspace = '/some/ws';
+    const cwd = '/some/ws';
 
     // Block the queue so both dispatches stay queued together.
     const blocker = hang();
-    bridge.enqueue(workspace, async () => {
+    bridge.enqueue(cwd, async () => {
       await blocker.promise;
     });
     await new Promise((r) => setTimeout(r, 20));
 
-    await dispatchOrderExecForQueue({ router, bridge, workspace, orderId: order.id, ctx });
-    await dispatchOrderExecForQueue({ router, bridge, workspace, orderId: order.id, ctx });
+    await dispatchOrderExecForQueue({ router, bridge, cwd, orderId: order.id, ctx });
+    await dispatchOrderExecForQueue({ router, bridge, cwd, orderId: order.id, ctx });
 
-    const tasks = bridge
-      .getQueuedTasks(workspace)
-      .filter((t) => t.messagePreview === 'repeated order');
+    const tasks = bridge.getQueuedTasks(cwd).filter((t) => t.messagePreview === 'repeated order');
     expect(tasks).toHaveLength(2);
     const keys = tasks.map((t) => t.messageId);
     expect(keys[0]).not.toBe(keys[1]);
@@ -155,11 +153,11 @@ describe('dispatchOrderExecForQueue: order.exec → equivalent queued message', 
     const orderStore = new OrderStore(ordersPath);
     const order = orderStore.save('run the tests');
     const { router, bridge } = createRouter(ordersPath);
-    const workspace = '/some/ws';
+    const cwd = '/some/ws';
 
     const handleSpy = vi.spyOn(router, 'handle');
 
-    await dispatchOrderExecForQueue({ router, bridge, workspace, orderId: order.id, ctx });
+    await dispatchOrderExecForQueue({ router, bridge, cwd, orderId: order.id, ctx });
     // The queue chain runs the closure synchronously (no blocker); let the
     // microtask settle so router.handle is invoked.
     await new Promise((r) => setTimeout(r, 20));
@@ -176,7 +174,7 @@ describe('dispatchOrderExecForQueue: order.exec → equivalent queued message', 
     const orderStore = new OrderStore(ordersPath);
     const order = orderStore.save('queued behind a runner');
     const { router, bridge, connector } = createRouter(ordersPath);
-    const workspace = '/some/ws';
+    const cwd = '/some/ws';
 
     // Block the queue so the dispatched order.exec task has to wait → a queue
     // status card is sent (the replyTo regression only manifests when waiting).
@@ -185,7 +183,7 @@ describe('dispatchOrderExecForQueue: order.exec → equivalent queued message', 
     // queue manager skips bookkeeping and the order task would not "wait".
     const blocker = hang();
     bridge.enqueue(
-      workspace,
+      cwd,
       async () => {
         await blocker.promise;
       },
@@ -200,7 +198,7 @@ describe('dispatchOrderExecForQueue: order.exec → equivalent queued message', 
     );
     await new Promise((r) => setTimeout(r, 20));
 
-    await dispatchOrderExecForQueue({ router, bridge, workspace, orderId: order.id, ctx });
+    await dispatchOrderExecForQueue({ router, bridge, cwd, orderId: order.id, ctx });
     // sendQueueStatusCard is async (awaits sendCard); let it settle.
     await new Promise((r) => setTimeout(r, 20));
 
@@ -208,7 +206,7 @@ describe('dispatchOrderExecForQueue: order.exec → equivalent queued message', 
     // Feishu card id — verified by the first test. The queue status card must
     // instead be REPLIED to the real Feishu card messageId (ctx.messageId),
     // because `replyTo` is a Feishu message id, not an internal queue key.
-    const tasks = bridge.getQueuedTasks(workspace);
+    const tasks = bridge.getQueuedTasks(cwd);
     const ours = tasks.find((t) => t.messagePreview === 'queued behind a runner');
     expect(ours).toBeDefined();
     expect(ours?.messageId).toMatch(/^order-/);
@@ -231,7 +229,7 @@ describe('dispatchOrderExecForQueue: order.exec → equivalent queued message', 
     const status = await dispatchOrderExecForQueue({
       router,
       bridge,
-      workspace: '/ws',
+      cwd: '/ws',
       orderId: undefined,
       ctx,
     });
@@ -248,7 +246,7 @@ describe('dispatchOrderExecForQueue: order.exec → equivalent queued message', 
     const status = await dispatchOrderExecForQueue({
       router,
       bridge,
-      workspace: '/ws',
+      cwd: '/ws',
       orderId: 'non-existent-id',
       ctx,
     });
@@ -262,10 +260,10 @@ describe('dispatchOrderExecForQueue: order.exec → equivalent queued message', 
     const orderStore = new OrderStore(ordersPath);
     const order = orderStore.save('capture my binding');
     const { router, bridge, sessionStore } = createRouter(ordersPath);
-    const workspace = '/some/ws';
+    const cwd = '/some/ws';
 
     // Give the claude slot a session so currentBinding captures a non-empty sessionId.
-    sessionStore.setSessionIdAndCwd(ctx.userId, 'claude', 'sess-ORDER-1', workspace);
+    sessionStore.setSessionIdAndCwd(ctx.userId, 'claude', 'sess-ORDER-1', cwd);
 
     // Spy on router.handle to capture opts (3rd arg) passed inside the enqueue closure.
     const handleSpy = vi.spyOn(router, 'handle');
@@ -273,16 +271,16 @@ describe('dispatchOrderExecForQueue: order.exec → equivalent queued message', 
     // Block the serial queue so the dispatched order task stays queued (so we can
     // read its taskMeta before it executes).
     const blocker = hang();
-    bridge.enqueue(workspace, async () => {
+    bridge.enqueue(cwd, async () => {
       await blocker.promise;
     });
     await new Promise((r) => setTimeout(r, 20));
 
-    await dispatchOrderExecForQueue({ router, bridge, workspace, orderId: order.id, ctx });
+    await dispatchOrderExecForQueue({ router, bridge, cwd, orderId: order.id, ctx });
     await new Promise((r) => setTimeout(r, 20));
 
     // Assertion A (before release): taskMeta.binding captured at enqueue time.
-    const tasks = bridge.getQueuedTasks(workspace);
+    const tasks = bridge.getQueuedTasks(cwd);
     const ours = tasks.find((t) => t.messagePreview === 'capture my binding');
     expect(ours).toBeDefined();
     expect(ours?.binding).toBeDefined();

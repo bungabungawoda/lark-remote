@@ -1984,7 +1984,7 @@ describe('renderRunCard (CardKit 2.0)', () => {
         errorMsg: terminal === 'error' ? 'boom' : undefined,
       });
       const json = JSON.stringify(renderRunCard(state));
-      expect(json).toContain('"cmd":"codex.compact"');
+      expect(json).toContain('"cmd":"compact"');
       expect(json).toContain('"cmd":"new-session"');
     }
   });
@@ -1999,7 +1999,7 @@ describe('renderRunCard (CardKit 2.0)', () => {
     } as never);
     state = finishRun(state, 'done', { resultSubtype: 'error' });
     const json = JSON.stringify(renderRunCard(state));
-    expect(json).toContain('"cmd":"codex.compact"');
+    expect(json).toContain('"cmd":"compact"');
   });
 
   it('compaction card never shows compact button (no recursive compact)', () => {
@@ -2012,7 +2012,7 @@ describe('renderRunCard (CardKit 2.0)', () => {
     } as never);
     state = finishRun(state, 'done', { resultSubtype: 'success' });
     const json = JSON.stringify(renderRunCard(state));
-    expect(json).not.toContain('"cmd":"codex.compact"');
+    expect(json).not.toContain('"cmd":"compact"');
   });
 
   it('compaction card with no content renders "Compact 完成", not the empty placeholder', () => {
@@ -2049,7 +2049,7 @@ describe('renderRunCard (CardKit 2.0)', () => {
 
   it('claude compaction (no turn_started, operationKind undefined) keeps the empty placeholder', () => {
     // claude 走 stream-json，compact 卡由 bridge 显式推 turn_started
-    // operationKind='compaction'（见 streamCodexCompact）；若该事件缺失则退化为
+    // operationKind='compaction'（见 streamCompact）；若该事件缺失则退化为
     // 普通空 run，仍按异常信号展示——这个边界由本用例锁定。
     let state = createInitialRunState('run-claude-compact-empty');
     state = finishRun(state, 'done', { resultSubtype: 'success' });
@@ -2067,7 +2067,7 @@ describe('renderRunCard (CardKit 2.0)', () => {
     state = finishRun(state, 'done', { resultSubtype: 'success' });
     expect(state.operationKind).toBeUndefined();
     const json = JSON.stringify(renderRunCard(state, { compactSupported: true }));
-    expect(json).toContain('"cmd":"codex.compact"');
+    expect(json).toContain('"cmd":"compact"');
     expect(json).toContain('"cmd":"new-session"');
   });
 
@@ -2075,7 +2075,7 @@ describe('renderRunCard (CardKit 2.0)', () => {
     let state = createInitialRunState('run-claude-no-cap');
     state = finishRun(state, 'done', { resultSubtype: 'success' });
     const json = JSON.stringify(renderRunCard(state, { compactSupported: false }));
-    expect(json).not.toContain('"cmd":"codex.compact"');
+    expect(json).not.toContain('"cmd":"compact"');
     expect(json).toContain('"cmd":"new-session"');
   });
 
@@ -2088,7 +2088,7 @@ describe('renderRunCard (CardKit 2.0)', () => {
       operationKind: 'turn',
     } as never);
     const json = JSON.stringify(renderRunCard(state));
-    expect(json).not.toContain('"cmd":"codex.compact"');
+    expect(json).not.toContain('"cmd":"compact"');
   });
 
   it('compact card shows post-compact context, pre-compact watermark and compact count', () => {

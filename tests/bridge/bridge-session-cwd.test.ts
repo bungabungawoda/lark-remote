@@ -46,7 +46,7 @@ beforeEach(() => {
       model: 'opus',
       stopGraceMs: 5000,
     },
-    workspace: { default: '' },
+    cwd: { default: '' },
   });
 });
 

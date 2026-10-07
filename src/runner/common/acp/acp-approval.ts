@@ -1,5 +1,6 @@
 /**
- * Shared helper functions for the ACP protocol layer.
+ * ACP approval/permission mapping and lifecycle shared by the kimi and
+ * opencode ACP runners.
  *
  * Extracted from runner.ts and translator.ts to avoid duplication (G5).
  * Shape source: approval.ts:28-29 — optionId is opaque, echo back as-is.
@@ -15,7 +16,7 @@ import type { PermissionOption } from './protocol-types.js';
  * ACP option kind values vary between kimi versions; this handles both
  * the documented names and the observed real names (§2.3).
  */
-export function findOptionIdByKind(
+function findOptionIdByKind(
   options: PermissionOption[],
   candidateKinds: string[],
 ): string | undefined {

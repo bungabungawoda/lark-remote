@@ -72,7 +72,7 @@ describe('cmdOrder 列表命令 (Anchor #2)', () => {
         model: 'opus',
         stopGraceMs: 5000,
       },
-      workspace: { default: '' },
+      cwd: { default: '' },
     });
   });
 

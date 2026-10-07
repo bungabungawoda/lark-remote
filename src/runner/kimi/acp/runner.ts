@@ -50,7 +50,7 @@ import {
   KIMI_APPROVAL_KINDS,
   type AcpPendingApproval,
   buildAcpPermissionOutcome,
-} from '../../common/acp/protocol-helpers.js';
+} from '../../common/acp/acp-approval.js';
 import { mapAnswersByIndex } from '../../question-common.js';
 import { getLogger } from '../../../logger/index.js';
 import { BaseAcpRunner } from '../../common/acp/base-acp-runner.js';

@@ -90,33 +90,33 @@ afterEach(() => {
   fs.rmSync(tmpDir, { recursive: true, force: true });
 });
 
-describe('queue.immediate must stop the run blocking the SAME workspace, not a parallel run in another workspace', () => {
+describe('queue.immediate must stop the run blocking the SAME cwd, not a parallel run in another workspace', () => {
   it('test_anchor_queue_immediate_stops_run_blocking_same_workspace', async () => {
-    // 验证什么行为：同一用户在两个 workspace 并行各有一个活跃 run（Bridge 明确
+    // 验证什么行为：同一用户在两个 cwd 并行各有一个活跃 run（Bridge 明确
     // 支持："Multiple workspaces can have runs in parallel"，activeRuns 按 cwd
     // 键控、interruptCurrentRun 按 (userId, chatId) 匹配）。用户在 ws2 的排队卡
-    // 上点「⚡ 立即执行」（卡片 payload 带 workspace=ws2、目标任务在 ws2 队列里），
+    // 上点「⚡ 立即执行」（卡片 payload 带 cwd=ws2、目标任务在 ws2 队列里），
     // 期望：被停止的必须是 ws2 队列头部正在运行的 R2（阻塞目标任务的 run），
     // ws1 的并行 run R1 必须原样继续执行；随后 ws2 队列链前进，目标任务立即接跑。
     //
     // 缺失会导致什么问题：handleQueueImmediate 调 interruptCurrentRun 时不传
-    // workspace/runId，interruptCurrentRun 遍历 activeRuns（Map 按 cwd 插入序），
+    // cwd/runId，interruptCurrentRun 遍历 activeRuns（Map 按 cwd 插入序），
     // 命中第一个 (userId, chatId) 匹配的活跃 run——即先启动的 ws1 的 R1。于是
-    // 「立即执行」停掉了**另一个 workspace** 的无关任务：①R1 的现场被毁
+    // 「立即执行」停掉了**另一个 cwd** 的无关任务：①R1 的现场被毁
     // （用户另一个正在执行的任务被 SIGKILL）；②真正阻塞 ws2 队列的 R2 没被停，
     // 目标消息不会"立即执行"——卡片已被 markQueueCardExecuting 翻成
     // "▶️ 已开始执行"（按钮禁用、无法撤销），toast 承诺"您的消息将立即执行"，
     // 实际 ws2 队列仍被 R2 阻塞，目标任务遥遥无期；用户看到执行中卡片却收不到
     // 结果，且没有可用的停止入口（按钮已禁用、/stop 会再次命中错误的 run）。
-    // 这是 round 6/7 引入 replacement 原位替换后仍存在的 workspace 维度串扰。
+    // 这是 round 6/7 引入 replacement 原位替换后仍存在的 cwd 维度串扰。
     //
     // 依据：router handleQueueImmediate 文档注释——"Stop current run, clear
     // queue before this message, execute this message immediately"；"current
-    // run" 的上下文是卡片所在 workspace 的串行队列（queue-manager 按 workspace
-    // 分队列、Bridge 注释 "Each workspace has its own serial queue for parallel
-    // execution across workspaces"）。卡片回调 value 携带 workspace 正是用来
-    // 标识队列身份；立即执行清的是该 workspace 队列中目标任务**之前**的任务，
-    // 停的也必须是该 workspace 当前执行的任务，否则"立即执行"的承诺对象与实际
+    // run" 的上下文是卡片所在 cwd 的串行队列（queue-manager 按 cwd
+    // 分队列、Bridge 注释 "Each cwd has its own serial queue for parallel
+    // execution across workspaces"）。卡片回调 value 携带 cwd 正是用来
+    // 标识队列身份；立即执行清的是该 cwd 队列中目标任务**之前**的任务，
+    // 停的也必须是该 cwd 当前执行的任务，否则"立即执行"的承诺对象与实际
     // 副作用对象不一致。
     const created: TrackingHangingRunner[] = [];
     const reg = new AgentRegistry();
@@ -210,7 +210,7 @@ describe('queue.immediate must stop the run blocking the SAME workspace, not a p
 
       // --- 步骤 4：对 ws2 的排队卡点「⚡ 立即执行」---
       await router.handleCardAction(
-        { cmd: 'queue.immediate', workspace: ws2, messageId: 'm-target' },
+        { cmd: 'queue.immediate', cwd: ws2, messageId: 'm-target' },
         ctx,
       );
       await sleep(50);

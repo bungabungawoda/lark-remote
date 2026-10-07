@@ -18,7 +18,7 @@ interface SessionEntry {
 
 /**
  * Per-user session store. Persists cwd + per-agent sessions to disk so that
- * the last workspace AND the last-used sessionId per agent are restored after
+ * the last cwd AND the last-used sessionId per agent are restored after
  * a lark-remote restart.
  *
  * Persistence strategy:
@@ -34,7 +34,6 @@ interface SessionEntry {
 export class SessionStore {
   private sessions = new Map<string, SessionEntry>();
   private readonly persistPath?: string;
-  private readonly defaultAgent?: AgentKind;
 
   /**
    * 进程内会话代际（2026-08-09 /new 被在途 run init 写回撤销事故）：
@@ -70,9 +69,8 @@ export class SessionStore {
     this.userEpochs.set(userId, (this.userEpochs.get(userId) ?? 0) + 1);
   }
 
-  constructor(persistPath?: string, defaultAgent?: AgentKind) {
+  constructor(persistPath?: string) {
     this.persistPath = persistPath;
-    this.defaultAgent = defaultAgent;
     if (persistPath) this.load();
   }
 

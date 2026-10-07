@@ -1,7 +1,7 @@
 /**
  * Normalized usage extracted from a result event.
  *
- * @module runner/common/usage
+ * @module runner/common/result-usage
  */
 
 import type { TokenUsage } from '../types.js';

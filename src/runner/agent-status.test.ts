@@ -30,7 +30,7 @@ afterEach(() => {
 describe('ClaudeRunner getStatusInfo', () => {
   it('returns status info with model and reasoning', () => {
     const runner = new ClaudeRunner({
-      workspace: 'test',
+      cwd: 'test',
       model: 'claude-opus-4-8',
       effort: 'high',
       pidDir: tmpDir,
@@ -45,7 +45,7 @@ describe('ClaudeRunner getStatusInfo', () => {
 
   it('returns reasoning as off for haiku', () => {
     const runner = new ClaudeRunner({
-      workspace: 'test',
+      cwd: 'test',
       model: 'claude-haiku-4-5-20250501',
       pidDir: tmpDir,
     });
@@ -59,7 +59,7 @@ describe('ClaudeRunner getStatusInfo', () => {
 
   it('returns reasoning from effort for sonnet', () => {
     const runner = new ClaudeRunner({
-      workspace: 'test',
+      cwd: 'test',
       model: 'claude-sonnet-4-6',
       effort: 'medium',
       pidDir: tmpDir,
@@ -74,7 +74,7 @@ describe('ClaudeRunner getStatusInfo', () => {
 
   it('maps unknown model IDs to themselves', () => {
     const runner = new ClaudeRunner({
-      workspace: 'test',
+      cwd: 'test',
       model: 'unknown-model-xyz',
       effort: 'medium',
       pidDir: tmpDir,
@@ -90,7 +90,7 @@ describe('ClaudeRunner getStatusInfo', () => {
 describe('PiRpcRunner getStatusInfo', () => {
   it('returns status info with model, provider and thinking', () => {
     const runner = new PiRpcRunner({
-      workspace: 'test',
+      cwd: 'test',
       sessionReader: emptyReader,
       provider: 'anthropic',
       model: 'claude-sonnet-4-20250514',
@@ -106,7 +106,7 @@ describe('PiRpcRunner getStatusInfo', () => {
   });
 
   it('returns default values when not specified', () => {
-    const runner = new PiRpcRunner({ workspace: 'test', sessionReader: emptyReader });
+    const runner = new PiRpcRunner({ cwd: 'test', sessionReader: emptyReader });
 
     const info = runner.getStatusInfo();
 

@@ -3,7 +3,7 @@
  *
  * afterEach 直接 `rmSync(tmpDir, { recursive: true })` 在 Windows 上会踩
  * EBUSY/EPERM：runner 子进程（cmd.exe 垫片 → node mock server）的 cwd 就是
- * tmpDir 下的 workspace，用例结束后子进程可能仍未退出，目录被锁定；posix
+ * tmpDir 下的 cwd，用例结束后子进程可能仍未退出，目录被锁定；posix
  * 上不存在该竞态。策略：
  *   1. 短间隔重试，覆盖「进程正在退出、句柄即将释放」的正常延迟；
  *   2. 仍 EBUSY 时按命令行精准匹配 tmpDir 路径查找占用进程并 taskkill 树杀

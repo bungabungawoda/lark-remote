@@ -3,19 +3,20 @@ import { getLogger } from '../logger/index.js';
 import { currentPlatform, isWin32 } from '../platform/select.js';
 
 /**
- * Unlink a file, silently ignoring ENOENT and other errors.
+ * Unlink a file, swallowing errors instead of throwing to the caller.
  *
  * Use for cleanup paths (pid files, temp files, stale locks) where the
  * file may already be gone or was never created — a missing file is not
- * an error worth propagating.
+ * an error worth propagating. Not truly silent: gives up on busy files
+ * with a warning log (see below).
  */
-export function silentlyUnlink(path: string): void {
+export function bestEffortUnlink(path: string): void {
   try {
     withBusyRetry(() => fs.unlinkSync(path));
   } catch (err) {
     // 占用放弃（win32 重试耗尽 / posix 首次占用即失败）：按设计「告警，
     // 不静默吞」，但清理路径不向调用方抛错（保持本函数契约）
-    getLogger().warn(`[fs] silentlyUnlink gave up on busy file ${path}: ${String(err)}`);
+    getLogger().warn(`[fs] bestEffortUnlink gave up on busy file ${path}: ${String(err)}`);
   }
 }
 

@@ -37,7 +37,7 @@ describe('queue.edit 原地更新修复', () => {
 
     // 触发编辑
     await router.handleCardAction(
-      { cmd: 'queue.edit', workspace: tmpDir, messageId: 'msg-2' },
+      { cmd: 'queue.edit', cwd: tmpDir, messageId: 'msg-2' },
       { userId: 'u1', chatId: 'c1', messageId: 'msg-card-2' },
     );
 
@@ -120,7 +120,7 @@ describe('queue.edit 原地更新修复', () => {
 
     // 1. 点击编辑
     await router.handleCardAction(
-      { cmd: 'queue.edit', workspace: tmpDir, messageId: 'msg-2' },
+      { cmd: 'queue.edit', cwd: tmpDir, messageId: 'msg-2' },
       { userId: 'u1', chatId: 'c1', messageId: 'msg-card-2' },
     );
 
@@ -128,7 +128,7 @@ describe('queue.edit 原地更新修复', () => {
     //    （SDK normalizer 丢弃，需 connector includeRawEvent: true）后传给 router 的 inputValue
     const updateSpy = vi.spyOn(bridge, 'updateMessagePreview');
     await router.handleCardAction(
-      { cmd: 'queue.input', workspace: tmpDir, messageId: 'msg-2', inputValue: 'edited content' },
+      { cmd: 'queue.input', cwd: tmpDir, messageId: 'msg-2', inputValue: 'edited content' },
       { userId: 'u1', chatId: 'c1', messageId: 'msg-card-2' },
     );
 
@@ -161,7 +161,7 @@ describe('queue.edit 原地更新修复', () => {
     const sendResultSpy = vi.spyOn(bridge, 'sendResult');
 
     await router.handleCardAction(
-      { cmd: 'queue.edit', workspace: tmpDir, messageId: 'msg-2' },
+      { cmd: 'queue.edit', cwd: tmpDir, messageId: 'msg-2' },
       { userId: 'u1', chatId: 'c1', messageId: 'msg-card-2' },
     );
 

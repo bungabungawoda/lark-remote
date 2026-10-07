@@ -1,7 +1,12 @@
 import { describe, it, expect, beforeEach, beforeAll, afterAll } from 'vitest';
 import http from 'node:http';
 import type { AddressInfo } from 'node:net';
-import { isNewer, checkLatestVersion, type UpdateCache, CACHE_TTL_MS } from './version-check.js';
+import {
+  compareVersions,
+  checkLatestVersion,
+  type UpdateCache,
+  CACHE_TTL_MS,
+} from './version-check.js';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -38,33 +43,33 @@ describe('cache path isolation', () => {
   });
 });
 
-describe('isNewer', () => {
-  it('returns true when latest > current', () => {
-    expect(isNewer('0.1.0', '0.2.0')).toBe(true);
-    expect(isNewer('1.0.0', '2.0.0')).toBe(true);
-    expect(isNewer('0.1.0', '0.1.1')).toBe(true);
+describe('compareVersions', () => {
+  it('returns 1 when latest > current', () => {
+    expect(compareVersions('0.1.0', '0.2.0')).toBe(1);
+    expect(compareVersions('1.0.0', '2.0.0')).toBe(1);
+    expect(compareVersions('0.1.0', '0.1.1')).toBe(1);
   });
 
-  it('returns false when latest <= current', () => {
-    expect(isNewer('0.2.0', '0.1.0')).toBe(false);
-    expect(isNewer('0.2.0', '0.2.0')).toBe(false);
-    expect(isNewer('1.0.0', '0.9.9')).toBe(false);
+  it('returns -1 when latest < current and 0 when equal', () => {
+    expect(compareVersions('0.2.0', '0.1.0')).toBe(-1);
+    expect(compareVersions('0.2.0', '0.2.0')).toBe(0);
+    expect(compareVersions('1.0.0', '0.9.9')).toBe(-1);
   });
 
   it('returns null for non-semver strings', () => {
-    expect(isNewer('not-semver', '0.2.0')).toBeNull();
-    expect(isNewer('0.1.0', 'not-semver')).toBeNull();
-    expect(isNewer('1', '2')).toBeNull();
-    expect(isNewer('1..0', '1.0.0')).toBeNull();
-    expect(isNewer('1.0.0.0', '1.0.0')).toBeNull();
+    expect(compareVersions('not-semver', '0.2.0')).toBeNull();
+    expect(compareVersions('0.1.0', 'not-semver')).toBeNull();
+    expect(compareVersions('1', '2')).toBeNull();
+    expect(compareVersions('1..0', '1.0.0')).toBeNull();
+    expect(compareVersions('1.0.0.0', '1.0.0')).toBeNull();
   });
 
   it('handles pre-release correctly (pre-release < release)', () => {
     // 0.1.0-alpha < 0.1.0 — a release is newer than a pre-release of the
     // same core version; a pre-release is never newer than the release.
-    expect(isNewer('0.1.0-alpha', '0.1.0')).toBe(true);
-    expect(isNewer('0.1.0', '0.1.0-alpha')).toBe(false);
-    expect(isNewer('0.1.0-alpha', '0.1.0-beta')).toBe(false);
+    expect(compareVersions('0.1.0-alpha', '0.1.0')).toBe(1);
+    expect(compareVersions('0.1.0', '0.1.0-alpha')).toBe(-1);
+    expect(compareVersions('0.1.0-alpha', '0.1.0-beta')).toBe(-1);
   });
 });
 
