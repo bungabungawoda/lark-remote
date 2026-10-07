@@ -136,6 +136,21 @@ describe('InboundTurnAssembler：图/文任意顺序等价', () => {
       '/tmp/20260915/image_220935_2.png',
     ]);
   });
+
+  // 2026-10-07：SDK 层去抖合批（delayMs）关掉后，连发的多段文本改由本装配器
+  // 在 700ms 静默窗内合并；此用例钉死"多段文本 = 一个 turn、按到达顺序换行连接"，
+  // 防止合批责任移交后文本被拆成多个 turn（或段落丢失）。
+  it('连发多段文本在静默窗内合并为一个 turn（按到达顺序换行连接）', async () => {
+    const h = makeAssembler();
+    h.assembler.ingest(textEvent('t1', '第一段'));
+    h.assembler.ingest(textEvent('t2', '第二段'));
+    h.assembler.ingest(textEvent('t3', '第三段'));
+    await vi.advanceTimersByTimeAsync(700);
+
+    expect(h.commits).toHaveLength(1);
+    expect(h.commits[0].prompt).toBe('第一段\n第二段\n第三段');
+    expect(h.commits[0].turn.messageIds).toEqual(['t1', 't2', 't3']);
+  });
 });
 
 describe('InboundTurnAssembler：窗口与 in-flight 语义', () => {
