@@ -23,7 +23,7 @@ function makeExitServer(tmpDir: string, exitAfterMs: number): { script: string; 
   const server = join(tmpDir, 'exit-server.mjs');
   writeFileSync(
     server,
-    `import { createInterface } from 'node:readline';\nimport { writeFileSync } from 'node:fs';\nconst rl = createInterface({ input: process.stdin });\nrl.on('line', (line) => {\n  const msg = JSON.parse(line);\n  if (msg.method === 'initialize') {\n    process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: msg.id, result: { protocolVersion: 1, agentInfo: { name: 'mock-agent', version: '1.0.0' } } }) + '\\n');\n  }\n});\nsetTimeout(() => process.exit(0), ${exitAfterMs});\nwriteFileSync(${JSON.stringify(pidFile)}, String(process.pid));\n`,
+    `import { createInterface } from 'node:readline';\nimport { writeFileSync } from 'node:fs';\nconst rl = createInterface({ input: process.stdin });\nrl.on('line', (line) => {\n  const msg = JSON.parse(line);\n  if (msg.method === 'initialize') {\n    process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: msg.id, result: { protocolVersion: 1, agentInfo: { name: 'mock-agent', version: '1.0.0' } } }) + '\\n');\n    // 退出计时从「initialize 已应答」起算，而非进程启动：若按启动计时，\n    // 慢 CI（spawn + 运行时启动 + 握手往返 > N ms）下进程会在握手期间退出，\n    // initialize 被 failPending 判 ConnectionLostError，acquire 直接假红。\n    setTimeout(() => process.exit(0), ${exitAfterMs});\n  }\n});\nwriteFileSync(${JSON.stringify(pidFile)}, String(process.pid));\n`,
   );
   return { script: server, pidFile };
 }
