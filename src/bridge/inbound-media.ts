@@ -86,7 +86,9 @@ function timestampHms(d: Date): string {
 
 /**
  * 文件名 sanitize：
- * path.basename 剥离目录（防 `../` 穿越），再替换控制字符与路径分隔符；
+ * path.basename 剥离目录（防 `../` 穿越），再替换控制字符、路径分隔符与
+ * win32 非法字符（`<>:"|?*`，NTFS/Win32 API 拒绝，落盘直接 EPERM/EINVAL），
+ * 并剥掉尾部的点与空格（win32 会静默剥离它们，导致落盘名 ≠ originalName）；
  * 空名 / `.` / `..` 视为无效（返回空串由调用方生成兜底名）。
  */
 function sanitizeFileName(name: string): string {
@@ -94,17 +96,18 @@ function sanitizeFileName(name: string): string {
   const chars: string[] = [];
   for (const ch of base) {
     const code = ch.charCodeAt(0);
-    // 控制字符与路径分隔符一律替换为下划线（no-control-regex 不允许字面
-    // 控制字符转义出现在正则里，逐字符判断语义等价且无 lint 冲突）。
-    if (code <= 0x1f || code === 0x7f || ch === '/' || ch === '\\') {
+    // 控制字符、路径分隔符与 win32 非法字符一律替换为下划线（no-control-regex
+    // 不允许字面控制字符转义出现在正则里，逐字符判断语义等价且无 lint 冲突）。
+    if (code <= 0x1f || code === 0x7f || '/\\<>:"|?*'.includes(ch)) {
       chars.push('_');
     } else {
       chars.push(ch);
     }
   }
-  const sanitized = chars.join('');
-  if (sanitized === '' || sanitized === '.' || sanitized === '..') return '';
-  return sanitized;
+  // 尾部的点与空格：win32 落盘时被静默剥离，提前剥掉保证记录名与磁盘名一致
+  const trimmedEnd = chars.join('').replace(/[. ]+$/, '');
+  if (trimmedEnd === '' || trimmedEnd === '.' || trimmedEnd === '..') return '';
+  return trimmedEnd;
 }
 
 /**

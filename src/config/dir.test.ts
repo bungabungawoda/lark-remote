@@ -1,5 +1,23 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
-import { parseCliArgs, printVersion } from './dir.js';
+import os from 'node:os';
+import path from 'node:path';
+import { parseCliArgs, printVersion, resolveConfigDir } from './dir.js';
+
+describe('resolveConfigDir tilde expansion', () => {
+  it('expands ~ and ~/ for posix-style input', () => {
+    expect(resolveConfigDir('~')).toBe(os.homedir());
+    expect(resolveConfigDir('~/lark-remote')).toBe(path.join(os.homedir(), 'lark-remote'));
+  });
+
+  it('expands ~\\ for Windows-style input（cmd/PowerShell 不展开 ~）', () => {
+    // join 用宿主分隔符：在 posix 宿主上 `~\x` 也展开为 <home>/x（语义等价）
+    expect(resolveConfigDir('~\\lark-remote')).toBe(path.join(os.homedir(), 'lark-remote'));
+  });
+
+  it('passes through non-tilde paths unchanged（交给 path.resolve）', () => {
+    expect(resolveConfigDir('relative/dir').endsWith('relative/dir')).toBe(true);
+  });
+});
 
 describe('parseCliArgs version flag', () => {
   afterEach(() => {

@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { ClaudeRunner } from './index.js';
+import { pidFileSuffix } from '../common/spawning-runner.js';
 import { prependPath, restorePath, writeMockBin } from '../../../tests/lib/path-mock.js';
 import type { AgentEvent } from '../types.js';
 import { rmRf } from '../../../tests/lib/tmp-cleanup.js';
@@ -667,7 +668,7 @@ describe('ClaudeRunner (long-lived interactive session)', () => {
 
       // turn 结束后 idleTtlMs 无新消息 → 会话级空闲回收停止进程。
       await vi.waitFor(() => expect(runner.isRunning).toBe(false));
-      const pidFile = path.join(tmpDir, 'claude-test.pid');
+      const pidFile = path.join(tmpDir, `claude${pidFileSuffix('test')}.pid`);
       expect(fs.existsSync(pidFile)).toBe(false);
     },
   );
@@ -700,14 +701,14 @@ describe('ClaudeRunner (long-lived interactive session)', () => {
     await runner.stop();
     expect(runner.isRunning).toBe(false);
     await runPromise;
-    const pidFile = path.join(tmpDir, 'claude-test.pid');
+    const pidFile = path.join(tmpDir, `claude${pidFileSuffix('test')}.pid`);
     expect(fs.existsSync(pidFile)).toBe(false);
   });
 
   it('test_anchor_pid_file_cleaned_after_process_exit', async () => {
     createMockClaude({ MOCK_SCENARIO: 'crash' });
     const runner = makeRunner();
-    const pidFile = path.join(tmpDir, 'claude-test.pid');
+    const pidFile = path.join(tmpDir, `claude${pidFileSuffix('test')}.pid`);
 
     for await (const _ of runner.run('hello', { cwd: tmpDir })) {
       // consume

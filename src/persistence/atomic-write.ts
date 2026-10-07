@@ -16,7 +16,14 @@ export function atomicWrite(
 ): void {
   const dir = path.dirname(filePath);
   fs.mkdirSync(dir, { recursive: true });
-  const tmpPath = filePath + '.tmp';
+  // tmp 命名：pid-ts-rand 后缀，避免固定
+  // `.tmp` 名在异常残留后被下一次写入复用/误判；必须与目标同目录（rename 原子性）
+  const tmpPath = path.join(
+    dir,
+    `.${path.basename(filePath)}.tmp-${process.pid}-${Date.now()}-${Math.random()
+      .toString(36)
+      .slice(2, 10)}`,
+  );
   // Buffer 内容忽略 encoding（writeFileSync 对 Buffer 自动以二进制写出）。
   fs.writeFileSync(tmpPath, content, encoding);
   // fsync the tmp file before rename so its data is durable on disk;
