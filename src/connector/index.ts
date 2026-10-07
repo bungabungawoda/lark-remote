@@ -420,6 +420,19 @@ export class FeishuConnector {
           ttl: DEDUP_TTL_MS,
           maxEntries: 1000,
         },
+        // 关掉 SDK 的入站去抖合批（`ChatPipeline` + `mergeBatch`），delayMs=0 让每条
+        // 消息单独成批、保留自己的 messageId（`enabled` 仍为 true，per-chat 串行与
+        // 卡片动作同通道不受影响）。
+        //
+        // 背景：SDK 默认 600ms 内把同一会话的多条消息合并成一条，`mergeBatch` 只保留
+        // **最后一条**的 `messageId` 却把多条消息的 `resources` 求并集。飞书客户端
+        // "一次选多图/多文件"会背靠背秒发成多条独立消息，被合并后下载侧拿同一个
+        // `messageId` 下所有 `fileKey`，除最后一条外全部报错 234003（HTTP 400）：
+        // 表现为"多图只有 1 张保存成功，其余下载失败"。合批本应由本项目自己的
+        // 700ms 装配器（`InboundTurnAssembler`）负责，SDK 这层是叠加的第二次合批。
+        batch: {
+          text: { delayMs: 0 },
+        },
       },
     });
 
