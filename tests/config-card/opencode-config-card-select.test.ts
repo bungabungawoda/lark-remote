@@ -28,17 +28,8 @@ import fs from 'node:fs';
 // 断言面不变；其余导出保持真实。
 vi.mock('../../src/platform/spawn.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../src/platform/spawn.js')>();
-  return {
-    ...actual,
-    spawnProcessSync: (() => ({
-      pid: 0,
-      output: [],
-      stdout: '',
-      stderr: '',
-      status: 1,
-      signal: null,
-    })) as unknown as typeof actual.spawnProcessSync,
-  };
+  const { shortCircuitSpawn } = await import('../lib/spawn-shortcircuit.js');
+  return shortCircuitSpawn(actual);
 });
 
 function buildOpencodeConfig(): AppConfig {

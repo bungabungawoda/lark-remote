@@ -201,7 +201,7 @@ describe('QueueManager - task interruption state sync', () => {
 
   it('resetExecutingCount is a no-op-safe method on the QueueManager', async () => {
     // Smoke test: the method exists, doesn't throw, and is safe to call on a
-    // workspace with no executing tasks.
+    // cwd with no executing tasks.
     const { qm } = makeQueueManager(() => false);
 
     expect(() => qm.resetExecutingCount(tmpDir, -1)).not.toThrow();

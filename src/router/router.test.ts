@@ -335,14 +335,14 @@ describe('CommandRouter', () => {
     expect(cardStr).not.toContain('bridge');
   });
 
-  // /help 卡不放 /advancehelp：高级配置参考只面向 coding agent（CLI --advance-help），
+  // /help 卡不放 /advancedhelp：高级配置参考只面向 coding agent（CLI --advanced-help），
   // 飞书侧 Agent 不可被程序调用、入口只暴露给人类，故两个渠道都不出现。
-  it('/help 卡片不出现 advancehelp（入口只在 CLI --advance-help）', async () => {
+  it('/help 卡片不出现 advancedhelp（入口只在 CLI --advanced-help）', async () => {
     const { router, connector } = createRouter();
     await router.handle('/help', ctx);
     const card = connector._sent[0].input as { card: object };
     const cardStr = JSON.stringify(card.card);
-    expect(cardStr).not.toContain('advancehelp');
+    expect(cardStr).not.toContain('advancedhelp');
   });
 
   // 2026-07-04: /help 卡片重构
@@ -490,7 +490,7 @@ describe('CommandRouter', () => {
 
   it('/new clears sessionId but keeps cwd so /resume still works (2026-06-21)', async () => {
     // Regression: /new 用 sessionStore.delete 把整个 entry 都清掉，导致
-    // /new 之后 /resume 提示"请先 /cd 设置工作目录"，但用户的 workspace
+    // /new 之后 /resume 提示"请先 /cd 设置工作目录"，但用户的 cwd
     // 还在 — 期望是只清 sessionId 保留 cwd。
     const { router, sessionStore } = createRouter();
     sessionStore.set('user1', {
@@ -770,7 +770,7 @@ describe('CommandRouter', () => {
     // (we're inside parent now, so parent of parent is different)
   });
 
-  it('/ls <dir> 是浏览起点：起点卡片不显示「返回」（不再回 workspace cwd）', async () => {
+  it('/ls <dir> 是浏览起点：起点卡片不显示「返回」（不再回 工作目录）', async () => {
     const { router, sessionStore, connector } = createRouter();
     fs.mkdirSync(path.join(tmpDir, 'subdir'));
     sessionStore.setCwd('user1', fs.realpathSync(tmpDir));
@@ -783,7 +783,7 @@ describe('CommandRouter', () => {
     expect(cardStr).toContain('切换');
   });
 
-  it('/ls 深入子目录后「返回」回到 /ls 指定目录，而非 workspace cwd', async () => {
+  it('/ls 深入子目录后「返回」回到 /ls 指定目录，而非 工作目录', async () => {
     const { router, sessionStore, connector } = createRouter();
     const rootDir = path.join(tmpDir, 'a');
     const deepDir = path.join(rootDir, 'b');
@@ -808,7 +808,7 @@ describe('CommandRouter', () => {
     const deepCard = connector._cards.at(-1) as { body: { elements: TestCardElement[] } };
     const backValue = findButtonValue(deepCard.body.elements, '返回');
     expect(backValue).toBeDefined();
-    // 「返回」目标是 /ls 指定的目录 a，而不是 workspace cwd
+    // 「返回」目标是 /ls 指定的目录 a，而不是工作目录
     expect(backValue).toMatchObject({ cmd: 'ls.browse', path: rootReal, root: rootReal });
     expect(backValue!.path).not.toBe(cwd);
     // 「刷新」同样带着 root（翻页/刷新不会把起点丢掉）
@@ -1102,7 +1102,7 @@ describe('CommandRouter', () => {
     expect(labels).toContain('删除');
     // 排序切换按钮用"切换为 X"文案（包含 emoji 和目标模式名）
     expect(labels.some((l) => l?.includes('切换为'))).toBe(true);
-    // 按钮文案不含 workspace 名字
+    // 按钮文案不含 cwd 名字
     expect(
       labels
         .filter((l) => !l?.includes('最近') && !l?.includes('字母'))
@@ -2549,7 +2549,7 @@ describe('CommandRouter', () => {
     it('ws.use auto-resumes newest session', async () => {
       const projectsDir = path.join(tmpDir, 'claude-projects');
 
-      // Create workspace with directory
+      // Create cwd with directory
       const wsDir = path.join(tmpDir, 'wsDir');
       fs.mkdirSync(wsDir);
 
@@ -2573,13 +2573,13 @@ describe('CommandRouter', () => {
       writeSessionJsonl(projDir, sid, wsDir, body);
 
       const { router, sessionStore, connector } = createRouter({ projectsDir });
-      // Set cwd to wsDir first, then save workspace
+      // Set cwd to wsDir first, then save cwd
       sessionStore.setCwd('user1', wsDir);
       await router.handle('/ws save ws1', ctx);
       // Clear session and switch to different directory first
       sessionStore.set('user1', { sessions: new Map(), previousSessions: new Map(), cwd: tmpDir });
 
-      // Now use the workspace - should auto-resume
+      // Now use the cwd - should auto-resume
       await router.handle('/ws use ws1', ctx);
 
       // Should return auto-resume card, not text
@@ -2814,7 +2814,7 @@ describe('CommandRouter', () => {
       // cmdWsUse canonicalizes via realpathSync to match Claude JSONL cwd.
       expect(entry?.cwd).toBe(fs.realpathSync(tmpDir));
       expect(entry?.sessions?.get('claude')).toBe('');
-      // No history session in the target workspace → must send a persistent
+      // No history session in the target cwd → must send a persistent
       // "已切换到" text (regression: toast-only feedback is swallowed by
       // enqueueImmediate and transient, so the user cannot perceive the switch).
       const switchTexts = connector._sent
@@ -2833,7 +2833,7 @@ describe('CommandRouter', () => {
       expect(sessionStore.get('user1')).toBeUndefined();
       expect(sessionStore.getCwd('user1')).toBeUndefined();
 
-      // But they have a saved workspace from a previous session (simulated)
+      // But they have a saved cwd from a previous session (simulated)
       sessionStore.setCwd('user1', fs.realpathSync(tmpDir));
       await router.handle('/ws save proj', ctx);
       // Now clear the session to simulate user never did /cd in current session
@@ -2843,7 +2843,7 @@ describe('CommandRouter', () => {
       // This is what happened at 03:46:58 - user clicked ws.use but had no cwd
       await router.handleCardAction({ cmd: 'ws.use', name: 'proj' }, ctx);
 
-      // Expected: workspace should switch successfully
+      // Expected: cwd should switch successfully
       const entry = sessionStore.get('user1');
       expect(entry?.cwd).toBe(fs.realpathSync(tmpDir));
       // No history session → persistent "已切换到" text so the switch is perceivable
@@ -2871,10 +2871,10 @@ describe('CommandRouter', () => {
       });
     });
 
-    // REGRESSION TEST: Verify ws.use fails gracefully when workspace name is missing
+    // REGRESSION TEST: Verify ws.use fails gracefully when cwd name is missing
     it('ws.use handles missing name gracefully', async () => {
       const { router, sessionStore, connector } = createRouter();
-      // Save a workspace first
+      // Save a cwd first
       sessionStore.setCwd('user1', fs.realpathSync(tmpDir));
       await router.handle('/ws save proj', ctx);
       connector._sent.length = 0; // Clear previous messages
@@ -2894,7 +2894,7 @@ describe('CommandRouter', () => {
       sessionStore.setCwd('user1', fs.realpathSync(tmpDir));
       await router.handle('/ws save proj', ctx);
       // Save a second alias so the refreshed list isn't empty (ensures the
-      // in-place update renders the surviving workspace, not just a toast).
+      // in-place update renders the surviving cwd, not just a toast).
       await router.handle('/ws save keep', ctx);
       await router.handleCardAction({ cmd: 'ws.remove', name: 'proj' }, ctx);
       // Refreshed /ws list card updated in place, no new card message sent
@@ -3201,8 +3201,8 @@ describe('CommandRouter', () => {
     });
   });
 
-  it('rejects message when the same workspace has a run in progress', async () => {
-    // This test now needs to simulate a running workspace
+  it('rejects message when the same cwd has a run in progress', async () => {
+    // This test now needs to simulate a running cwd
     // The actual rejection happens at bridge level when activeRuns.has(cwd) is true
     // For router-level test, we just verify the message goes to bridge
     const { router, sessionStore } = createRouter();
@@ -3235,7 +3235,7 @@ describe('CommandRouter', () => {
     const content = JSON.stringify(card.body?.elements);
     // CardKit 2.0 uses section headers instead of tabs (tabs not supported in 2.0)
     expect(content).toContain('**🤖 Claude**');
-    // 2026-07-04: workspace 分组已删除（无默认目录概念，必须用户 /cd 指定）
+    // 2026-07-04: cwd 分组已删除（无默认目录概念，必须用户 /cd 指定）
     expect(content).not.toContain('**📂 工作区**');
     // 2026-09-04: thinking/tool 展示不再可配置（始终开启），输出分组已删除
     expect(content).not.toContain('**📤 输出**');

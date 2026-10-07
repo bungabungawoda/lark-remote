@@ -160,11 +160,11 @@ describe('Bridge clearRunners must not orphan an ACTIVE runner (regression 2026-
   });
 
   /**
-   * Anchor: clearRunners() must not evict a runner whose workspace has an
+   * Anchor: clearRunners() must not evict a runner whose cwd has an
    * active run in progress.
    *
    * Target: when config.save triggers clearRunners() while a run is active,
-   * the running runner must remain the cached instance for that workspace, so
+   * the running runner must remain the cached instance for that cwd, so
    * any getRunner(cwd) call during the run (e.g. /status, or a second stop)
    * resolves to the SAME runner that owns the live subprocess.
    *

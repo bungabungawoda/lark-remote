@@ -69,7 +69,7 @@ import { execFileSync } from 'node:child_process';
 
 class SpawnChildHarness extends SpawningRunner {
   constructor(opts: { binary?: string; pidDir?: string; agent?: string } = {}) {
-    super({ workspace: 'test', pidDir: opts.pidDir, agent: opts.agent });
+    super({ cwd: 'test', pidDir: opts.pidDir, agent: opts.agent });
     this.binary = opts.binary ?? 'testbin';
   }
 

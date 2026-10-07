@@ -1,5 +1,5 @@
 /**
- * 入站回执文案（设计依据见 `docs/zh/architecture/inbound-unified-input-design.md`）。
+ * 入站回执文案（`inbound-unified-input-design.md` §5.7）。
  *
  * 两类回执合并成一条：
  * 1. 无文本纯附件（决策 2）：不自动起 turn，只回已保存路径 + 引导语；
@@ -14,7 +14,7 @@ import type { RejectedItem } from './turn.js';
 import path from 'node:path';
 
 /** 单条回执最多列出的文件数；超出折叠为 "… 等 N 个文件"（沿用旧提示口径）。 */
-export const MAX_PATHS_IN_RECEIPT = 10;
+const MAX_PATHS_IN_RECEIPT = 10;
 
 /** 占位符种类 → 面向人的名称。 */
 const PLACEHOLDER_LABELS: Record<PlaceholderKind, string> = {

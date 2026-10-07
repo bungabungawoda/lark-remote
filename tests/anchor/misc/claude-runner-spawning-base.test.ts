@@ -34,12 +34,12 @@ describe('R16: ClaudeSession extends SpawningRunner (runner delegates)', () => {
   });
 
   it('test_anchor_claude_session_extends_spawning_runner', () => {
-    const runner = new ClaudeRunner({ workspace: 'test', pidDir });
+    const runner = new ClaudeRunner({ cwd: 'test', pidDir });
 
     // 核心契约：进程编排在 ClaudeSession（IS-A SpawningRunner），ClaudeRunner
     // 委托而非重复实现。访问 session 需通过公开方法验证（无公开 getter 时用
     // 行为断言：killOrphan 等必须可用且走 base 语义）。
-    const session = new ClaudeSession({ workspace: 'test', pidDir });
+    const session = new ClaudeSession({ cwd: 'test', pidDir });
     expect(session).toBeInstanceOf(SpawningRunner);
 
     // 会话继承的公共方法（原型链来自 base，非子类重复实现）。

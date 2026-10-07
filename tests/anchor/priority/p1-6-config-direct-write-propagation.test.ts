@@ -85,7 +85,7 @@ describe('P1-6 /config 直写路径运行时传播 (anchor)', () => {
   /**
    * 验证什么（target）:
    *   `/config claude.model <model>` 文本直写后必须 clearRunners——bridge 的 runner
-   *   按 (workspace, agentKind) 缓存，缓存的 claude runner 继续用旧 model 跑，
+   *   按 (cwd, agentKind) 缓存，缓存的 claude runner 继续用旧 model 跑，
    *   /status 与真实 run 自相矛盾。旧实现的 agentConfigKeys 过滤器只匹配
    *   pi/codex/opencode/kimi + agents.*，漏掉 claude. 与 defaultAgent。
    *

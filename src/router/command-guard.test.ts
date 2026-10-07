@@ -28,10 +28,7 @@ let fixture: Fixture;
 function makeFixture(): Fixture {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'lark-command-guard-'));
   const config = AppConfigSchema.parse({ feishu: { appId: 'app-id', appSecret: 'app-secret' } });
-  const sessionStore = new SessionStore(
-    path.join(tmpDir, 'last-session.json'),
-    config.defaultAgent,
-  );
+  const sessionStore = new SessionStore(path.join(tmpDir, 'last-session.json'));
   const bridge = createMockBridge({
     executeBash: vi.fn().mockResolvedValue(undefined),
   } as never);

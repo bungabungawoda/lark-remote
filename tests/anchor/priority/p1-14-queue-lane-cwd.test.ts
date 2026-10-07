@@ -53,12 +53,12 @@ describe('P1-14 queue lane vs execution cwd', () => {
   });
 
   it('test_anchor_queued_message_not_busy_dropped_after_cd', async () => {
-    // ① 验证什么行为：消息入队时（lane）的 workspace 就是它执行时的 workspace；
+    // ① 验证什么行为：消息入队时（lane）的 cwd 就是它执行时的 cwd；
     //    排队期间 /cd 切换 cwd 后，旧 lane 的排队消息不得被 busy-drop（执行顺序
     //    与「消息将按顺序执行」的排队卡承诺保持一致）。
     // ② 缺失/错误会导致什么：lane 按入队时 cwd、执行时重新 resolveCwd 取新 cwd，
     //    两条旧/新 lane 变并行且都 resolve 到新 cwd → 先到者占 activeRuns、
-    //    后到者命中 busy-drop「此 workspace 正在处理中」→ 消息静默丢失，
+    //    后到者命中 busy-drop「此 cwd 正在处理中」→ 消息静默丢失，
     //    且执行顺序不再保证。
     // ③ 依据：review.md §P1-14「普通消息入队时 lane = 当时的 sessionStore cwd…
     //    任务真正执行时 forwardToClaude 重新 resolveCwd…拿到的是新 cwd…
@@ -71,7 +71,7 @@ describe('P1-14 queue lane vs execution cwd', () => {
       const config: AppConfig = AppConfigSchema.parse({
         feishu: { appId: 'test', appSecret: 'test' },
         claude: { model: 'opus', stopGraceMs: 5000 },
-        workspace: { default: '' },
+        cwd: { default: '' },
       });
       const sessionStore = new SessionStore();
       const connector = createStubConnector();
@@ -105,7 +105,7 @@ describe('P1-14 queue lane vs execution cwd', () => {
       expect(drops).toHaveLength(0);
       // lane 与执行 cwd 必须同源：M1（入队时 tmpA）跑在 tmpA，M2（入队时 tmpB）
       // 跑在 tmpB —— 光「不丢消息」不够，把两条消息串到同一条 lane 的退化实现
-      // 也会不丢消息，但会破坏多 workspace 并行与 lane 语义。
+      // 也会不丢消息，但会破坏多 cwd 并行与 lane 语义。
       expect(runs.map((r) => [r.message, r.cwd])).toEqual([
         ['M1', tmpA],
         ['M2', tmpB],

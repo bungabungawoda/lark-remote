@@ -206,7 +206,7 @@ describe('P1: multi-agent legacy issues — bridge stream end', () => {
       feishu: { appId: 'test', appSecret: 'test' },
       defaultAgent: 'codex',
       codex: { model: 'gpt-5.2', stopGraceMs: 5000 },
-      workspace: { default: '' },
+      cwd: { default: '' },
     });
     const { bridge, sessionStore, connector } = makeBridge({
       runner: createStubRunner({

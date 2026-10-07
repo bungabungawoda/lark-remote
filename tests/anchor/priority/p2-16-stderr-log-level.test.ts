@@ -41,7 +41,7 @@ class TestRunner extends SpawningRunner {
   constructor(pidDir = makeTempDir('lark-p2-16-stderr-')) {
     super({
       pidDir,
-      workspace: 'test',
+      cwd: 'test',
       logTag: 'test-runner',
     });
     this.binary = 'fake-binary';

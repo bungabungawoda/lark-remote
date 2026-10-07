@@ -69,7 +69,7 @@ describe('ConnectionManager hook layering (review P2-1)', () => {
       initializeParams: INIT_PARAMS,
     });
     const lost = new Promise<string>((resolve) => {
-      manager.onConnectionLost = (workspace) => resolve(workspace);
+      manager.onConnectionLost = (cwd) => resolve(cwd);
     });
 
     const client = await manager.acquire(tmpDir);
@@ -84,8 +84,8 @@ describe('ConnectionManager hook layering (review P2-1)', () => {
     });
 
     // 进程被外部杀掉（模拟 crash）：base hooks 的 slot 清理必须生效。
-    const workspace = await lost;
-    expect(workspace).toBe(tmpDir);
+    const cwd = await lost;
+    expect(cwd).toBe(tmpDir);
     expect(runOnCloseFired).toBe(true);
 
     // 死连接已从 slot 移除：重新 acquire 必须拉起全新进程，而不是复用旧 client。

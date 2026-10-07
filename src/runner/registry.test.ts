@@ -9,7 +9,7 @@ const tmpDir = makeTempDir('lark-registry-test-');
 describe('AgentRegistry', () => {
   it('register + get returns the runner produced by the factory', () => {
     const registry = new AgentRegistry();
-    registry.register('claude', (ws) => new ClaudeRunner({ pidDir: tmpDir, workspace: ws }));
+    registry.register('claude', (ws) => new ClaudeRunner({ pidDir: tmpDir, cwd: ws }));
 
     const runner = registry.get('claude', '/tmp/ws-a');
     expect(runner).toBeInstanceOf(ClaudeRunner);
@@ -18,15 +18,15 @@ describe('AgentRegistry', () => {
 
   it('get throws "agent not registered" for an unregistered kind', () => {
     const registry = new AgentRegistry();
-    registry.register('claude', () => new ClaudeRunner({ workspace: 'test', pidDir: tmpDir }));
+    registry.register('claude', () => new ClaudeRunner({ cwd: 'test', pidDir: tmpDir }));
 
     expect(() => registry.get('codex', '/tmp/ws-a')).toThrow(/agent not registered: codex/);
     expect(() => registry.get('opencode', '/tmp/ws-a')).toThrow(/agent not registered: opencode/);
   });
 
-  it('factory can return a fresh instance per workspace (claude spawn-per-message)', () => {
+  it('factory can return a fresh instance per cwd (claude spawn-per-message)', () => {
     const registry = new AgentRegistry();
-    registry.register('claude', (ws) => new ClaudeRunner({ pidDir: tmpDir, workspace: ws }));
+    registry.register('claude', (ws) => new ClaudeRunner({ pidDir: tmpDir, cwd: ws }));
 
     const a = registry.get('claude', '/tmp/ws-a');
     const b = registry.get('claude', '/tmp/ws-b');
@@ -104,7 +104,7 @@ describe('AgentRegistry', () => {
           effort: claudeConfig.effort,
           stopGraceMs: claudeConfig.stopGraceMs,
           pidDir: tmpDir,
-          workspace: ws,
+          cwd: ws,
         });
       });
 
@@ -136,7 +136,7 @@ describe('AgentRegistry', () => {
           effort: claudeConfig.effort,
           stopGraceMs: claudeConfig.stopGraceMs,
           pidDir: tmpDir,
-          workspace: ws,
+          cwd: ws,
         });
       });
 

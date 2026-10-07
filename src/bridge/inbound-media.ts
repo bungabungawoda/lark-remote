@@ -3,7 +3,8 @@ import path from 'node:path';
 import { DEFAULT_INBOUND_MEDIA_DIR_NAME, type AppConfig } from '../config/index.js';
 import { atomicMoveFile } from '../persistence/atomic-write.js';
 import { getLogger } from '../logger/index.js';
-import { silentlyUnlink } from '../common/fs.js';
+import { bestEffortUnlink } from '../common/fs.js';
+import { truncateUtf8 } from '../common/truncate.js';
 import type { InboundAttachment, MediaOutcome } from '../inbound/turn.js';
 import type {
   InboundResourceKind,
@@ -71,7 +72,7 @@ function hasControlChar(s: string): boolean {
 }
 
 /** 子目录时间戳：YYYYMMDDHHmm（本地时间，精确到分钟）。 */
-function timeStampDir(d: Date): string {
+function timestampDir(d: Date): string {
   return (
     `${d.getFullYear()}${pad2(d.getMonth() + 1)}${pad2(d.getDate())}` +
     `${pad2(d.getHours())}${pad2(d.getMinutes())}`
@@ -79,7 +80,7 @@ function timeStampDir(d: Date): string {
 }
 
 /** 文件名时间戳：HHmmss（本地时间）。 */
-function timeStampHms(d: Date): string {
+function timestampHms(d: Date): string {
   return `${pad2(d.getHours())}${pad2(d.getMinutes())}${pad2(d.getSeconds())}`;
 }
 
@@ -88,7 +89,7 @@ function timeStampHms(d: Date): string {
  * path.basename 剥离目录（防 `../` 穿越），再替换控制字符与路径分隔符；
  * 空名 / `.` / `..` 视为无效（返回空串由调用方生成兜底名）。
  */
-export function sanitizeFileName(name: string): string {
+function sanitizeFileName(name: string): string {
   const base = path.basename(name).trim();
   const chars: string[] = [];
   for (const ch of base) {
@@ -110,7 +111,7 @@ export function sanitizeFileName(name: string): string {
  * 资源扩展名（图片/视频/语音）：优先 MIME 映射，未知时按魔数兜底；
  * 两者都无法识别时返回 undefined（调用方省略扩展名，避免错误标注格式）。
  */
-export function extensionFor(
+function extensionFor(
   _kind: InboundResourceKind,
   mimeType: string | undefined,
   head: Buffer,
@@ -169,14 +170,11 @@ export function extensionFor(
   return undefined;
 }
 
-/** 按 UTF-8 字节数截断字符串（避免截在多字节字符中间）。 */
-import { truncateUtf8 } from '../common/truncate.js';
-
 /**
  * 文件名长度限制（字节级，保留扩展名），避免 ENAMETOOLONG 整文件失败。
  * 极罕见情况（扩展名本身超限）直接截断全名。
  */
-export function limitFileNameLength(name: string, maxBytes = MAX_FILE_NAME_BYTES): string {
+function limitFileNameLength(name: string, maxBytes = MAX_FILE_NAME_BYTES): string {
   if (Buffer.byteLength(name, 'utf8') <= maxBytes) return name;
   const ext = path.extname(name);
   const stem = name.slice(0, name.length - ext.length);
@@ -204,15 +202,15 @@ function readFileHead(filePath: string, maxBytes = MAGIC_HEAD_BYTES): Buffer {
  * - 无原名的资源：`<kind>_<HHmmss>_<n>.<ext>`，ext 按 MIME/魔数
  *   （旧实现落成无扩展名的 `file_HHmmss_n`，mp4/opus/gif 都不可识别）。
  */
-export function buildFileName(item: InboundMediaItem, index: number, receivedAt: Date): string {
+function buildFileName(item: InboundMediaItem, index: number, receivedAt: Date): string {
   const original = item.fileName ? limitFileNameLength(sanitizeFileName(item.fileName)) : '';
   if (item.kind !== 'image' && original) return original;
   const ext = extensionFor(item.kind, item.mimeType, readFileHead(item.tempPath));
-  return `${item.kind}_${timeStampHms(receivedAt)}_${index}${ext ? `.${ext}` : ''}`;
+  return `${item.kind}_${timestampHms(receivedAt)}_${index}${ext ? `.${ext}` : ''}`;
 }
 
 /** 同名冲突自动加序号（name-1.ext、name-2.ext…），不覆盖已有文件。 */
-export function uniqueTargetPath(dir: string, fileName: string): string {
+function uniqueTargetPath(dir: string, fileName: string): string {
   const ext = path.extname(fileName);
   const stem = fileName.slice(0, fileName.length - ext.length);
   let candidate = path.join(dir, fileName);
@@ -248,7 +246,7 @@ export class InboundMediaHandler {
     }
 
     const receivedAt = new Date();
-    const dir = path.join(cwd, this.safeDirName(), timeStampDir(receivedAt));
+    const dir = path.join(cwd, this.safeDirName(), timestampDir(receivedAt));
     try {
       fs.mkdirSync(dir, { recursive: true });
     } catch (err) {
@@ -286,7 +284,7 @@ export class InboundMediaHandler {
           durationMs: item.durationMs,
         });
       } catch (err) {
-        silentlyUnlink(item.tempPath);
+        bestEffortUnlink(item.tempPath);
         const label = item.fileName
           ? sanitizeFileName(item.fileName) || item.fileName
           : `第 ${i + 1} 个`;
@@ -326,7 +324,7 @@ export class InboundMediaHandler {
   /** 清理未被移动的临时文件（无 cwd / 目录创建失败等提前返回路径）。 */
   private cleanupTemps(payload: InboundMediaPayload): void {
     for (const item of payload.media) {
-      silentlyUnlink(item.tempPath);
+      bestEffortUnlink(item.tempPath);
     }
   }
 

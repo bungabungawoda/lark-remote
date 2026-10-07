@@ -10,6 +10,13 @@ import type { AgentKind } from '../runner/types.js';
 export interface AgentBinding {
   agent: AgentKind;
   sessionId?: string;
+  /**
+   * 会话代际快照（与 sessionId 同刻捕获）。随 binding 带到执行时刻：若执行前
+   * session 指针被移动（/new、/cd、/resume、/config 切换），该 run 的 init /
+   * turn_started 写回判 stale 跳过，避免「先发消息 → 后点新会话」时旧 sessionId
+   * 被写回复活（2026-10-07 事故）。缺省时回退到执行起点捕获，保持旧行为。
+   */
+  sessionEpoch?: number;
 }
 
 /**
@@ -42,7 +49,7 @@ export interface QueuedTask {
    * to `messageId` for hand-typed messages, where the two coincide.
    */
   feishuReplyTo?: string;
-  workspace: string;
+  cwd: string;
   timestamp: number;
   messagePreview: string;
   /**
@@ -85,7 +92,7 @@ export interface EnqueueOptions {
   };
 }
 
-/** Queue info for a workspace */
+/** Queue info for a cwd */
 interface QueueInfo {
   position: number;
   tasksAhead: number;
@@ -108,7 +115,7 @@ export class QueueManager {
    * `updateQueuedTaskMessage`. The ordered array remains the source of truth
    * (position display depends on order); the index must be kept in sync on
    * every mutation (push / splice / shift) via the `indexAdd`/`indexRemove`
-   * helpers. Same messageId is never enqueued twice in one workspace
+   * helpers. Same messageId is never enqueued twice in one cwd
    * (Feishu dedup + internal-key dedup), so no overwrite concern.
    */
   private taskIndex = new Map<string, Map<string, QueuedTask>>();
@@ -122,7 +129,7 @@ export class QueueManager {
    */
   /** queue card 的 send promise 表（public：bridge 集成测试注入/断言用）。 */
   queueCardMessages = new Map<string, Promise<string | undefined>>();
-  /** Track number of executing tasks per workspace (for queue card display). */
+  /** Track number of executing tasks per cwd (for queue card display). */
   private pendingOrExecutingCount = new Map<string, number>();
   /**
    * Monotonic counter minting a unique slot id per enqueued task. A slot
@@ -166,8 +173,8 @@ export class QueueManager {
    */
   private beganMessageIds = new Set<string>();
 
-  /** Callback to check if workspace has an active run */
-  private isWorkspaceRunning: (workspace: string) => boolean;
+  /** Callback to check if cwd has an active run */
+  private isWorkspaceRunning: (cwd: string) => boolean;
 
   /** Callback to send card updates */
   private sendCard: (chatId: string, card: object, opts?: { replyTo?: string }) => Promise<string>;
@@ -175,7 +182,7 @@ export class QueueManager {
   private updateCard: (messageId: string, card: object) => Promise<void>;
 
   constructor(
-    isWorkspaceRunning: (workspace: string) => boolean,
+    isWorkspaceRunning: (cwd: string) => boolean,
     sendCard: (chatId: string, card: object, opts?: { replyTo?: string }) => Promise<string>,
     updateCard: (messageId: string, card: object) => Promise<void>,
   ) {
@@ -185,36 +192,33 @@ export class QueueManager {
   }
 
   /** P3-5: register a queued task in the per-workspace `messageId → task` index. */
-  private indexAdd(workspace: string, task: QueuedTask): void {
-    let idx = this.taskIndex.get(workspace);
+  private indexAdd(cwd: string, task: QueuedTask): void {
+    let idx = this.taskIndex.get(cwd);
     if (!idx) {
       idx = new Map();
-      this.taskIndex.set(workspace, idx);
+      this.taskIndex.set(cwd, idx);
     }
     idx.set(task.messageId, task);
   }
 
   /** P3-5: drop a task from the per-workspace index by messageId. */
-  private indexRemove(workspace: string, messageId: string): void {
-    this.taskIndex.get(workspace)?.delete(messageId);
+  private indexRemove(cwd: string, messageId: string): void {
+    this.taskIndex.get(cwd)?.delete(messageId);
   }
 
   /** P3-5: O(1) lookup of a queued task by messageId via the index. */
-  private indexGet(workspace: string, messageId: string): QueuedTask | undefined {
-    return this.taskIndex.get(workspace)?.get(messageId);
+  private indexGet(cwd: string, messageId: string): QueuedTask | undefined {
+    return this.taskIndex.get(cwd)?.get(messageId);
   }
 
   /**
    * Enqueue a task into the workspace-level serial queue.
-   * Each workspace has its own serial queue for parallel execution across workspaces.
+   * Each cwd has its own serial queue for parallel execution across workspaces.
    */
-  enqueue(workspace: string, task: () => Promise<void>, opts?: EnqueueOptions): void {
+  enqueue(cwd: string, task: () => Promise<void>, opts?: EnqueueOptions): void {
     // Guard: reject non-function tasks that would poison the queue chain
     if (typeof task !== 'function') {
-      getLogger().warn(
-        '[queue-manager] enqueue ignored task is not a function, workspace=',
-        workspace,
-      );
+      getLogger().warn('[queue-manager] enqueue ignored task is not a function, cwd=', cwd);
       return;
     }
 
@@ -234,7 +238,7 @@ export class QueueManager {
         chatId: taskMeta.chatId,
         messageId: taskMeta.messageId,
         feishuReplyTo: taskMeta.feishuReplyTo,
-        workspace,
+        cwd,
         timestamp: Date.now(),
         messagePreview,
         editable: taskMeta.editable,
@@ -242,8 +246,8 @@ export class QueueManager {
       };
 
       // Check if there are tasks waiting BEFORE adding this one
-      const currentExecutingCount = this.pendingOrExecutingCount.get(workspace) ?? 0;
-      const currentQueueLength = this.queuedTasks.get(workspace)?.length ?? 0;
+      const currentExecutingCount = this.pendingOrExecutingCount.get(cwd) ?? 0;
+      const currentQueueLength = this.queuedTasks.get(cwd)?.length ?? 0;
       const hasWaitingTasks = currentExecutingCount > 0 || currentQueueLength > 0;
 
       // P2-5: bound the waiting backlog. When the queue is full, reject the
@@ -253,7 +257,7 @@ export class QueueManager {
       // a rejected task never executes, so it must not occupy a slot.
       if (currentQueueLength >= MAX_WAITING_QUEUE) {
         getLogger().warn(
-          `[queue-manager] queue full workspace=${workspace} depth=${currentQueueLength} rejecting task messageId=${taskMeta.messageId}`,
+          `[queue-manager] queue full cwd=${cwd} depth=${currentQueueLength} rejecting task messageId=${taskMeta.messageId}`,
         );
         void this.sendCard(
           taskMeta.chatId,
@@ -270,7 +274,7 @@ export class QueueManager {
                   tag: 'div',
                   text: {
                     tag: 'lark_md',
-                    content: `当前 workspace 已有 ${MAX_WAITING_QUEUE} 条消息排队等待，为防止积压已拒收本条消息。请等待队列消化后重发，或用 \`/stop\` 清空当前任务。`,
+                    content: `当前工作目录已有 ${MAX_WAITING_QUEUE} 条消息排队等待，为防止积压已拒收本条消息。请等待队列消化后重发，或用 \`/stop\` 清空当前任务。`,
                   },
                 },
               ],
@@ -283,22 +287,22 @@ export class QueueManager {
         return;
       }
 
-      // Add to workspace queue list
-      let taskList = this.queuedTasks.get(workspace);
+      // Add to cwd queue list
+      let taskList = this.queuedTasks.get(cwd);
       if (!taskList) {
         taskList = [];
-        this.queuedTasks.set(workspace, taskList);
+        this.queuedTasks.set(cwd, taskList);
       }
       taskList.push(queuedTask);
-      this.indexAdd(workspace, queuedTask);
+      this.indexAdd(cwd, queuedTask);
 
       // Increment executing count SYNCHRONOUSLY so subsequent enqueues see it
-      this.pendingOrExecutingCount.set(workspace, currentExecutingCount + 1);
+      this.pendingOrExecutingCount.set(cwd, currentExecutingCount + 1);
 
       // Only send the queue card if the task actually has to wait.
       if (hasWaitingTasks) {
         void this.sendQueueStatusCard(
-          workspace,
+          cwd,
           taskMeta.chatId,
           taskMeta.messageId,
           messagePreview,
@@ -308,26 +312,24 @@ export class QueueManager {
         );
       }
       getLogger().debug(
-        `[queue-manager] enqueue task queued workspace=${workspace} queueCard=${hasWaitingTasks} executing=${currentExecutingCount + 1} queueLen=${currentQueueLength + 1}`,
+        `[queue-manager] enqueue task queued cwd=${cwd} queueCard=${hasWaitingTasks} executing=${currentExecutingCount + 1} queueLen=${currentQueueLength + 1}`,
       );
     }
 
-    // Get or create the queue for this workspace
-    let queue = this.queues.get(workspace);
+    // Get or create the queue for this cwd
+    let queue = this.queues.get(cwd);
     if (!queue) {
       queue = Promise.resolve();
-      this.queues.set(workspace, queue);
+      this.queues.set(cwd, queue);
     }
-    getLogger().debug(`[queue-manager] enqueue workspace=${workspace}`);
+    getLogger().debug(`[queue-manager] enqueue cwd=${cwd}`);
 
     // Capture messageId for cancellation guard
     const messageId = taskMeta?.messageId;
     // messagePreview already captured above (outside taskMeta block)
     const newQueue = queue
       .then(() => {
-        getLogger().debug(
-          `[queue-manager] task begin workspace=${workspace} messageId=${messageId}`,
-        );
+        getLogger().debug(`[queue-manager] task begin cwd=${cwd} messageId=${messageId}`);
 
         // Live preview for the executing card: read from the QueuedTask at
         // begin time, not the enqueue-closure `taskMeta` (which is frozen).
@@ -341,21 +343,21 @@ export class QueueManager {
           // double O(N) scan. The ordered array still drives removal (splice
           // preserves queue order for position display); the index stays in
           // sync via indexRemove.
-          const task = this.indexGet(workspace, messageId);
+          const task = this.indexGet(cwd, messageId);
           if (!task) {
             getLogger().debug(
-              `[queue-manager] task skipped (cancelled) workspace=${workspace} messageId=${messageId}`,
+              `[queue-manager] task skipped (cancelled) cwd=${cwd} messageId=${messageId}`,
             );
             return;
           }
           livePreview = task.messagePreview;
           // Remove this task's metadata by messageId
-          const taskList = this.queuedTasks.get(workspace);
+          const taskList = this.queuedTasks.get(cwd);
           const idx = taskList?.findIndex((t) => t.messageId === messageId) ?? -1;
           if (taskList && idx >= 0) {
             taskList.splice(idx, 1);
           }
-          this.indexRemove(workspace, messageId);
+          this.indexRemove(cwd, messageId);
           // Cancellation check passed and the task has been removed: it is
           // about to run, so record it as began for queue.immediate feedback.
           // Bounded: ids are only consulted for the current immediate target,
@@ -373,12 +375,12 @@ export class QueueManager {
         // so a stale closure can never run on a later task.
         let replacement: (() => Promise<void>) | undefined;
         if (messageId) {
-          const workspaceReplacements = this.taskReplacements.get(workspace);
+          const workspaceReplacements = this.taskReplacements.get(cwd);
           replacement = workspaceReplacements?.get(messageId);
           if (replacement) {
             workspaceReplacements?.delete(messageId);
             if (workspaceReplacements && workspaceReplacements.size === 0) {
-              this.taskReplacements.delete(workspace);
+              this.taskReplacements.delete(cwd);
             }
           }
         }
@@ -386,7 +388,7 @@ export class QueueManager {
         // This must happen after the cancellation check: a skipped/cancelled
         // task must keep its "❌ 已撤销" card, not be flipped to executing.
         if (messageId) {
-          void this.updateQueueCardToExecuting(workspace, messageId, livePreview, true);
+          void this.updateQueueCardToExecuting(cwd, messageId, livePreview, true);
         }
         // Re-arm the pending/executing count for every task that is about to
         // run. `resetExecutingCount` (external interrupt) zeroes the count,
@@ -394,45 +396,45 @@ export class QueueManager {
         // task enqueued BEFORE the interrupt can begin with count 0. Without
         // this, a running task is invisible to later enqueues and they
         // silently skip the "⏳ 消息排队中" card. This applies regardless of
-        // taskMeta: resetExecutingCount can clear the count for any workspace,
+        // taskMeta: resetExecutingCount can clear the count for any cwd,
         // and a task that resumes after an interrupt must re-arm even when it
         // carries no metadata.
-        const currentCount = this.pendingOrExecutingCount.get(workspace) ?? 0;
+        const currentCount = this.pendingOrExecutingCount.get(cwd) ?? 0;
         if (currentCount < 1) {
-          this.pendingOrExecutingCount.set(workspace, 1);
+          this.pendingOrExecutingCount.set(cwd, 1);
           getLogger().debug(
-            `[queue-manager] re-armed pendingOrExecutingCount workspace=${workspace} (interrupt resume)`,
+            `[queue-manager] re-armed pendingOrExecutingCount cwd=${cwd} (interrupt resume)`,
           );
         }
         // Mark this task's slot as the current execution period before running
         // it. `resetExecutingCount` reads this marker to grant the interrupt
         // credit to exactly this task; the settle removes the marker.
-        this.executingSlot.set(workspace, slotId);
+        this.executingSlot.set(cwd, slotId);
         return replacement ? replacement() : task();
       })
       .then(() => {
-        getLogger().debug(`[queue-manager] task end workspace=${workspace}`);
+        getLogger().debug(`[queue-manager] task end cwd=${cwd}`);
         // beganMessageIds entry intentionally retained: sticky by design
         // (A21) — the marker records "has ever begun", not "is currently
         // running", so a task that began and settled quickly still reports
         // "已开始执行" to queue.immediate.
-        this.decrementExecutingCount(workspace, slotId);
+        this.decrementExecutingCount(cwd, slotId);
       })
       .catch((err: unknown) => {
         getLogger().error('[queue-manager] queue task error:', err);
         // Same sticky rationale as the success settle: the marker survives
         // even when the task errors after beginning (A21).
-        this.decrementExecutingCount(workspace, slotId);
+        this.decrementExecutingCount(cwd, slotId);
       });
-    this.queues.set(workspace, newQueue);
+    this.queues.set(cwd, newQueue);
   }
 
   /**
    * Execute a task immediately without going through the queue.
    * Used for / commands that should respond immediately.
    */
-  enqueueImmediate(workspace: string, task: () => Promise<void>): void {
-    getLogger().debug(`[queue-manager] enqueueImmediate workspace=${workspace}`);
+  enqueueImmediate(cwd: string, task: () => Promise<void>): void {
+    getLogger().debug(`[queue-manager] enqueueImmediate cwd=${cwd}`);
     void task().catch((err: unknown) =>
       getLogger().error('[queue-manager] immediate task error:', err),
     );
@@ -443,21 +445,19 @@ export class QueueManager {
    * place, preserving its queue position (tasks queued behind it still run
    * after it). Consumed when the task's slot begins; removed if cancelled.
    */
-  setTaskReplacement(workspace: string, messageId: string, task: () => Promise<void>): void {
-    let workspaceReplacements = this.taskReplacements.get(workspace);
+  setTaskReplacement(cwd: string, messageId: string, task: () => Promise<void>): void {
+    let workspaceReplacements = this.taskReplacements.get(cwd);
     if (!workspaceReplacements) {
       workspaceReplacements = new Map();
-      this.taskReplacements.set(workspace, workspaceReplacements);
+      this.taskReplacements.set(cwd, workspaceReplacements);
     }
     workspaceReplacements.set(messageId, task);
-    getLogger().debug(
-      `[queue-manager] set task replacement workspace=${workspace} messageId=${messageId}`,
-    );
+    getLogger().debug(`[queue-manager] set task replacement cwd=${cwd} messageId=${messageId}`);
   }
 
   /** Send a queue status card showing current queue position and actions. */
   private async sendQueueStatusCard(
-    workspace: string,
+    cwd: string,
     chatId: string,
     replyToMessageId: string,
     messagePreview?: string,
@@ -466,7 +466,7 @@ export class QueueManager {
      *  for hand-typed messages. */
     feishuReplyTo?: string,
   ): Promise<string | undefined> {
-    const taskList = this.queuedTasks.get(workspace) ?? [];
+    const taskList = this.queuedTasks.get(cwd) ?? [];
     const positionInQueue = taskList.findIndex(
       (t) => t.chatId === chatId && t.messageId === replyToMessageId,
     );
@@ -482,7 +482,7 @@ export class QueueManager {
       },
       body: {
         elements: this.buildQueueStatusCardElements(
-          workspace,
+          cwd,
           actualPosition,
           tasksAhead,
           replyToMessageId,
@@ -513,26 +513,26 @@ export class QueueManager {
     return messageId;
   }
 
-  /** Get queue info for a workspace. */
-  getQueueInfo(workspace: string): QueueInfo {
-    const taskList = this.queuedTasks.get(workspace) ?? [];
+  /** Get queue info for a cwd. */
+  getQueueInfo(cwd: string): QueueInfo {
+    const taskList = this.queuedTasks.get(cwd) ?? [];
     return {
       position: taskList.length,
       tasksAhead: Math.max(0, taskList.length - 1),
-      isRunning: this.isWorkspaceRunning(workspace),
+      isRunning: this.isWorkspaceRunning(cwd),
     };
   }
 
   /** Build queue status card elements. */
   private buildQueueStatusCardElements(
-    workspace: string,
+    cwd: string,
     actualPosition: number,
     tasksAhead: number,
     messageId: string,
     messagePreview?: string,
   ): object[] {
-    const workspaceName = displayName(workspace);
-    const isRunning = this.isWorkspaceRunning(workspace);
+    const workspaceName = displayName(cwd);
+    const isRunning = this.isWorkspaceRunning(cwd);
     const elements: object[] = [
       {
         tag: 'div',
@@ -562,7 +562,7 @@ export class QueueManager {
         tag: 'div',
         text: { tag: 'lark_md', content: `📝 \`${messagePreview}\`` },
       });
-      const task = this.indexGet(workspace, messageId);
+      const task = this.indexGet(cwd, messageId);
       if (task?.editable !== false) {
         // Edit button: a pending (queued) task is editable by default. The
         // executing/cancelled states render via dedicated card builders that
@@ -572,14 +572,14 @@ export class QueueManager {
           text: { tag: 'plain_text', content: '✏️ 编辑' },
           type: 'default',
           size: 'small',
-          behaviors: [{ type: 'callback', value: { cmd: 'queue.edit', workspace, messageId } }],
+          behaviors: [{ type: 'callback', value: { cmd: 'queue.edit', cwd, messageId } }],
         });
       }
       elements.push({ tag: 'hr' });
     }
 
     // Action buttons
-    elements.push(...this.buildQueueActionButtons(workspace, messageId, false));
+    elements.push(...this.buildQueueActionButtons(cwd, messageId, false));
 
     return elements;
   }
@@ -588,31 +588,27 @@ export class QueueManager {
    * Build the 撤销/立即执行 action button pair for a queue card.
    *
    * Both buttons route to `queue.cancel` / `queue.immediate` callbacks with
-   * the same workspace/messageId; only the `disabled` flag varies by card
+   * the same cwd/messageId; only the `disabled` flag varies by card
    * state — pending cards enable both, executing/cancelled cards disable
    * both. Centralizing the pair here eliminates the 3-way duplication
    * between `buildQueueStatusCardElements`, `updateQueueCardToExecuting`,
    * and `updateQueueCardToCancelled` (Clean Code P2-1).
    */
-  private buildQueueActionButtons(
-    workspace: string,
-    messageId: string,
-    disabled: boolean,
-  ): object[] {
+  private buildQueueActionButtons(cwd: string, messageId: string, disabled: boolean): object[] {
     return [
       {
         tag: 'button',
         text: { tag: 'plain_text', content: '❌ 撤销' },
         type: 'danger',
         disabled,
-        behaviors: [{ type: 'callback', value: { cmd: 'queue.cancel', workspace, messageId } }],
+        behaviors: [{ type: 'callback', value: { cmd: 'queue.cancel', cwd, messageId } }],
       },
       {
         tag: 'button',
         text: { tag: 'plain_text', content: '⚡ 立即执行' },
         type: 'primary',
         disabled,
-        behaviors: [{ type: 'callback', value: { cmd: 'queue.immediate', workspace, messageId } }],
+        behaviors: [{ type: 'callback', value: { cmd: 'queue.immediate', cwd, messageId } }],
       },
     ];
   }
@@ -629,7 +625,7 @@ export class QueueManager {
    * executing. The mapping is deleted in finally in both cases.
    */
   async updateQueueCardToExecuting(
-    workspace: string,
+    cwd: string,
     messageId: string,
     messagePreview: string,
     started = false,
@@ -640,7 +636,7 @@ export class QueueManager {
       return;
     }
 
-    const workspaceName = displayName(workspace);
+    const workspaceName = displayName(cwd);
 
     try {
       // Prefer the live preview: an edited task's messagePreview is updated in
@@ -648,7 +644,7 @@ export class QueueManager {
       // flight while the user edited (A19). The begin path (started=true) already
       // passes the live preview captured at begin (A12), so the fallback is only
       // exercised when the task is no longer queued.
-      const liveTask = this.indexGet(workspace, messageId);
+      const liveTask = this.indexGet(cwd, messageId);
       const stillQueued = liveTask !== undefined;
       if (!stillQueued && !started) {
         getLogger().debug(
@@ -673,7 +669,7 @@ export class QueueManager {
             { tag: 'hr' },
             { tag: 'div', text: { tag: 'lark_md', content: `📝 \`${previewForCard}\`` } },
             { tag: 'hr' },
-            ...this.buildQueueActionButtons(workspace, messageId, true),
+            ...this.buildQueueActionButtons(cwd, messageId, true),
           ],
         },
       };
@@ -687,34 +683,32 @@ export class QueueManager {
   }
 
   /** Remove a task from the queue by messageId. Returns true if found and removed. */
-  removeFromQueue(workspace: string, messageId: string): boolean {
+  removeFromQueue(cwd: string, messageId: string): boolean {
     // Drop any one-shot replacement for this task: a cancelled/removed task
     // must never leave a closure behind that could execute later.
-    const workspaceReplacements = this.taskReplacements.get(workspace);
+    const workspaceReplacements = this.taskReplacements.get(cwd);
     if (workspaceReplacements?.delete(messageId) && workspaceReplacements.size === 0) {
-      this.taskReplacements.delete(workspace);
+      this.taskReplacements.delete(cwd);
     }
-    const taskList = this.queuedTasks.get(workspace);
+    const taskList = this.queuedTasks.get(cwd);
     if (!taskList) return false;
 
     // P3-5: index is the O(1) presence check; array splice keeps order.
-    if (!this.indexGet(workspace, messageId)) return false;
+    if (!this.indexGet(cwd, messageId)) return false;
     const index = taskList.findIndex((t) => t.messageId === messageId);
     if (index >= 0) {
       taskList.splice(index, 1);
     }
-    this.indexRemove(workspace, messageId);
+    this.indexRemove(cwd, messageId);
     // Note: queueCardMessages mapping is NOT deleted here.
     // The caller (handleQueueCancel) will call updateQueueCardToCancelled
     // which will clean up the mapping after updating the card.
-    getLogger().info(
-      `[queue-manager] removed from queue workspace=${workspace} messageId=${messageId}`,
-    );
+    getLogger().info(`[queue-manager] removed from queue cwd=${cwd} messageId=${messageId}`);
     return true;
   }
 
   /** Update queue card to "cancelled" status when user clicks 撤销. */
-  async updateQueueCardToCancelled(workspace: string, messageId: string): Promise<void> {
+  async updateQueueCardToCancelled(cwd: string, messageId: string): Promise<void> {
     const cardMessageId = await this.queueCardMessages.get(messageId);
     if (!cardMessageId) {
       getLogger().debug(
@@ -723,7 +717,7 @@ export class QueueManager {
       return;
     }
 
-    const workspaceName = displayName(workspace);
+    const workspaceName = displayName(cwd);
     const card = {
       schema: '2.0',
       config: { wide_screen_mode: true },
@@ -740,7 +734,7 @@ export class QueueManager {
           { tag: 'hr' },
           { tag: 'div', text: { tag: 'lark_md', content: `📝 该消息已从队列中撤销` } },
           { tag: 'hr' },
-          ...this.buildQueueActionButtons(workspace, messageId, true),
+          ...this.buildQueueActionButtons(cwd, messageId, true),
         ],
       },
     };
@@ -756,9 +750,9 @@ export class QueueManager {
   }
 
   /** Get task metadata from queue. */
-  getQueuedTask(workspace: string, messageId: string): QueuedTask | undefined {
+  getQueuedTask(cwd: string, messageId: string): QueuedTask | undefined {
     // P3-5: O(1) index lookup instead of array `find`.
-    return this.indexGet(workspace, messageId);
+    return this.indexGet(cwd, messageId);
   }
 
   /**
@@ -771,22 +765,20 @@ export class QueueManager {
     return this.beganMessageIds.has(messageId);
   }
 
-  /** Get all queued tasks for a workspace. Returns a copy to prevent aliasing bugs. */
-  getQueuedTasks(workspace: string): QueuedTask[] {
-    return [...(this.queuedTasks.get(workspace) ?? [])];
+  /** Get all queued tasks for a cwd. Returns a copy to prevent aliasing bugs. */
+  getQueuedTasks(cwd: string): QueuedTask[] {
+    return [...(this.queuedTasks.get(cwd) ?? [])];
   }
 
   /** Update the messagePreview for a queued task. Returns true if found and updated. */
-  updateQueuedTaskMessage(workspace: string, messageId: string, newMessage: string): boolean {
+  updateQueuedTaskMessage(cwd: string, messageId: string, newMessage: string): boolean {
     // P3-5: O(1) index lookup instead of array `find`.
-    const task = this.indexGet(workspace, messageId);
+    const task = this.indexGet(cwd, messageId);
     if (!task) return false;
 
     task.messagePreview = newMessage;
     task.editedMessage = newMessage;
-    getLogger().info(
-      `[queue-manager] updated messagePreview workspace=${workspace} messageId=${messageId}`,
-    );
+    getLogger().info(`[queue-manager] updated messagePreview cwd=${cwd} messageId=${messageId}`);
     return true;
   }
 
@@ -802,12 +794,8 @@ export class QueueManager {
    * concurrent PATCH updateCard result. Returning { card } in the callback
    * response updates the card synchronously with no API race.
    */
-  buildQueueCardForEdit(
-    workspace: string,
-    messageId: string,
-    newMessagePreview: string,
-  ): object | null {
-    const taskList = this.queuedTasks.get(workspace) ?? [];
+  buildQueueCardForEdit(cwd: string, messageId: string, newMessagePreview: string): object | null {
+    const taskList = this.queuedTasks.get(cwd) ?? [];
     const positionInQueue = taskList.findIndex((t) => t.messageId === messageId);
     if (positionInQueue < 0) {
       getLogger().info(
@@ -826,7 +814,7 @@ export class QueueManager {
       },
       body: {
         elements: this.buildQueueStatusCardElements(
-          workspace,
+          cwd,
           actualPosition,
           tasksAhead,
           messageId,
@@ -837,7 +825,7 @@ export class QueueManager {
   }
 
   /**
-   * Decrement `pendingOrExecutingCount` for a workspace, honoring per-slot
+   * Decrement `pendingOrExecutingCount` for a cwd, honoring per-slot
    * interrupt bookkeeping.
    *
    * Called from the queue chain's `.then()`/`.catch()` settle with the slot
@@ -851,27 +839,27 @@ export class QueueManager {
    *    newer task (enqueued after the reset) is still running.
    * 3. Otherwise → normal decrement.
    */
-  private decrementExecutingCount(workspace: string, slotId: number): void {
-    if (this.executingSlot.get(workspace) === slotId) {
-      this.executingSlot.delete(workspace);
+  private decrementExecutingCount(cwd: string, slotId: number): void {
+    if (this.executingSlot.get(cwd) === slotId) {
+      this.executingSlot.delete(cwd);
     }
-    const interrupted = this.interruptedSlots.get(workspace);
+    const interrupted = this.interruptedSlots.get(cwd);
     if (interrupted?.has(slotId)) {
       interrupted.delete(slotId);
       if (interrupted.size === 0) {
-        this.interruptedSlots.delete(workspace);
+        this.interruptedSlots.delete(cwd);
       }
       getLogger().debug(
-        `[queue-manager] skip decrement (interrupted slot) workspace=${workspace} slot=${slotId}`,
+        `[queue-manager] skip decrement (interrupted slot) cwd=${cwd} slot=${slotId}`,
       );
       return;
     }
-    const count = this.pendingOrExecutingCount.get(workspace) ?? 1;
-    this.pendingOrExecutingCount.set(workspace, Math.max(0, count - 1));
+    const count = this.pendingOrExecutingCount.get(cwd) ?? 1;
+    this.pendingOrExecutingCount.set(cwd, Math.max(0, count - 1));
   }
 
   /**
-   * Reset the executing task count for a workspace.
+   * Reset the executing task count for a cwd.
    *
    * This should be called when a running task is interrupted externally
    * (e.g., via /stop command or "立即执行" button) so that the queue
@@ -896,49 +884,47 @@ export class QueueManager {
    * running successor and mark ITS slot interrupted, hiding it from the
    * queue card (A22).
    */
-  resetExecutingCount(workspace: string, expectedSlot: number): void {
-    const currentSlot = this.executingSlot.get(workspace);
+  resetExecutingCount(cwd: string, expectedSlot: number): void {
+    const currentSlot = this.executingSlot.get(cwd);
     if (currentSlot !== expectedSlot) {
       getLogger().debug(
-        `[queue-manager] resetExecutingCount skip (stopped task settled, slot advanced) workspace=${workspace} expectedSlot=${expectedSlot} currentSlot=${currentSlot ?? 'none'}`,
+        `[queue-manager] resetExecutingCount skip (stopped task settled, slot advanced) cwd=${cwd} expectedSlot=${expectedSlot} currentSlot=${currentSlot ?? 'none'}`,
       );
       return;
     }
     // P3#9: only reset and grant an interrupt slot when there is actually a
     // pending/executing task.
-    const currentCount = this.pendingOrExecutingCount.get(workspace) ?? 0;
+    const currentCount = this.pendingOrExecutingCount.get(cwd) ?? 0;
     if (currentCount === 0) {
-      getLogger().debug(
-        `[queue-manager] resetExecutingCount no-op (count already 0) workspace=${workspace}`,
-      );
+      getLogger().debug(`[queue-manager] resetExecutingCount no-op (count already 0) cwd=${cwd}`);
       return;
     }
     // Bind the interrupt credit to the currently executing task's slot (if
     // any; defensive against a count without an executing task). `Set.add`
     // dedupes repeated resets of the same slot.
     const slot = currentSlot;
-    this.pendingOrExecutingCount.set(workspace, 0);
+    this.pendingOrExecutingCount.set(cwd, 0);
     if (slot !== undefined) {
-      let interrupted = this.interruptedSlots.get(workspace);
+      let interrupted = this.interruptedSlots.get(cwd);
       if (!interrupted) {
         interrupted = new Set();
-        this.interruptedSlots.set(workspace, interrupted);
+        this.interruptedSlots.set(cwd, interrupted);
       }
       interrupted.add(slot);
       getLogger().debug(
-        `[queue-manager] reset pendingOrExecutingCount workspace=${workspace} interruptedSlot=${slot}`,
+        `[queue-manager] reset pendingOrExecutingCount cwd=${cwd} interruptedSlot=${slot}`,
       );
       return;
     }
     getLogger().debug(
-      `[queue-manager] reset pendingOrExecutingCount workspace=${workspace} (no executing slot)`,
+      `[queue-manager] reset pendingOrExecutingCount cwd=${cwd} (no executing slot)`,
     );
   }
 
   /**
-   * The slot id of the task currently executing in this workspace (if any).
+   * The slot id of the task currently executing in this cwd (if any).
    */
-  getExecutingSlot(workspace: string): number | undefined {
-    return this.executingSlot.get(workspace);
+  getExecutingSlot(cwd: string): number | undefined {
+    return this.executingSlot.get(cwd);
   }
 }

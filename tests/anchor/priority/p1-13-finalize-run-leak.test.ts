@@ -67,20 +67,20 @@ describe('P1-13 finalizeRun cleanup', () => {
   });
 
   it('test_anchor_finalize_run_error_does_not_leak_active_runs', async () => {
-    // ① 验证什么行为：finalizeRun 中途抛错（renderRunCard 崩溃）后，workspace
+    // ① 验证什么行为：finalizeRun 中途抛错（renderRunCard 崩溃）后，cwd
     //    不得永久假忙 —— activeRuns 清理必须不受 render 异常影响。
     // ② 缺失/错误会导致什么：activeRuns.delete(cwd) 被跳过，后续消息全部被
-    //    busy-drop「此 workspace 正在处理中，请 /stop 后重试」，只能靠用户
+    //    busy-drop「此 cwd 正在处理中，请 /stop 后重试」，只能靠用户
     //    手动 /stop 自愈 —— 确定性状态损坏。
     // ③ 依据：review.md §P1-13「finalizeRun 无 try/finally：中途抛错则
-    //    activeRuns 泄漏，workspace 永久假忙」「唯一无保护的是
+    //    activeRuns 泄漏，cwd 永久假忙」「唯一无保护的是
     //    renderRunCard(...)（index.ts:1182，在 sendResult 调用点之外求值）」。
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'p1-13-leak-'));
     try {
       const config: AppConfig = AppConfigSchema.parse({
         feishu: { appId: 'test', appSecret: 'test' },
         claude: { model: 'opus', stopGraceMs: 5000 },
-        workspace: { default: '' },
+        cwd: { default: '' },
       });
       const sessionStore = new SessionStore();
       sessionStore.setCwd('u1', tmpDir);

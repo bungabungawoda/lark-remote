@@ -367,7 +367,6 @@ export class DshClient {
    */
   async *sessionEvents(
     sessionId: string,
-    cwd: string,
     signal: AbortSignal,
     initialSeq = -1,
   ): AsyncGenerator<DshStreamItem> {

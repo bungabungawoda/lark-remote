@@ -50,7 +50,7 @@ describe('P1-1: registerExitHandlers 不累积 process 监听器', () => {
       const runner = new ClaudeRunner({
         binary: '/bin/true',
         pidDir: PID_DIR,
-        workspace: `ws${i}`,
+        cwd: `ws${i}`,
       });
       // Bridge.getRunner 对每次新 runner 实例的实际行为
       runner.registerExitHandlers();
@@ -96,8 +96,8 @@ describe('P1-1: registerExitHandlers 不累积 process 监听器', () => {
       };
       // 生产路径：agentRegistry 工厂返回真实 runner（非 stub）
       const agentRegistry = {
-        get: (_kind: string, workspace: string) =>
-          new ClaudeRunner({ binary: '/bin/true', pidDir: tmpDir, workspace }),
+        get: (_kind: string, cwd: string) =>
+          new ClaudeRunner({ binary: '/bin/true', pidDir: tmpDir, cwd }),
         isRegistered: () => true,
         listRegistered: () => ['claude'],
         setConfigContainer: () => {},
@@ -137,15 +137,15 @@ describe('P1-1: registerExitHandlers 不累积 process 监听器', () => {
   it('test_probe_exit_cleanup_still_wired_after_singleton_refactor', () => {
     // A6 反退化 probe：收编单例后，进程 exit 仍必须触发已注册 runner 的 cleanup
     // （SIGTERM 运行中进程 + 删除 pid 文件）。防绿用「空实现/不注册」骗过 A1-A5。
-    // workspace 只允许字母数字（SpawningRunner 会把其他字符消毒成 _），
+    // cwd 只允许字母数字（SpawningRunner 会把其他字符消毒成 _），
     // 用固定纯字母名保证 pidFilePath 可预测
-    const workspace = 'exitprobe';
-    const pidFile = path.join(PID_DIR, `claude-${workspace}.pid`);
+    const cwd = 'exitprobe';
+    const pidFile = path.join(PID_DIR, `claude-${cwd}.pid`);
     const runner = new ClaudeRunner({
-      workspace: 'test',
+      cwd: 'test',
       binary: '/bin/true',
       pidDir: PID_DIR,
-      workspace,
+      cwd,
     });
     runner.registerExitHandlers();
     fs.writeFileSync(pidFile, '12345', 'utf-8');
@@ -165,7 +165,7 @@ describe('P1-1: registerExitHandlers 不累积 process 监听器', () => {
     const runner = new ClaudeRunner({
       binary: '/bin/true',
       pidDir: PID_DIR,
-      workspace: 'idempotent-probe',
+      cwd: 'idempotent-probe',
     });
     runner.registerExitHandlers();
     runner.registerExitHandlers();

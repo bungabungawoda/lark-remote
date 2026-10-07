@@ -17,17 +17,8 @@ import { buildAgentSwitchConfig as buildConfig } from '../../lib/agent-switch-he
 // 断言面不变；其余导出保持真实。
 vi.mock('../../../src/platform/spawn.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../../src/platform/spawn.js')>();
-  return {
-    ...actual,
-    spawnProcessSync: (() => ({
-      pid: 0,
-      output: [],
-      stdout: '',
-      stderr: '',
-      status: 1,
-      signal: null,
-    })) as unknown as typeof actual.spawnProcessSync,
-  };
+  const { shortCircuitSpawn } = await import('../../lib/spawn-shortcircuit.js');
+  return shortCircuitSpawn(actual);
 });
 
 /**
@@ -328,7 +319,7 @@ describe('Round6 anchors: arrival baseline persistence round-trip boundaries', (
     await doSwitch('user1', ctx1, 'pi');
 
     // 模拟重启：同一文件重建 store + router（回到 codex）
-    const store2 = new SessionStore(filePath, 'codex');
+    const store2 = new SessionStore(filePath);
     makeRouter('codex', store2);
 
     // user2 条目加载正确、状态独立；user2 从未经过 config.save 切换，

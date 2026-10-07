@@ -36,7 +36,7 @@ import {
   sendAcpSetMode,
   truncateWithEllipsis,
   type AcpPendingApproval,
-} from './protocol-helpers.js';
+} from './acp-approval.js';
 import { getLogger } from '../../../logger/index.js';
 import { ConnectionBasedRunner } from '../connection-based-runner.js';
 import { BaseAcpTranslator, type AcpTranslatorEvent } from './base-translator.js';

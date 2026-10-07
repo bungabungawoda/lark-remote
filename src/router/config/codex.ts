@@ -111,7 +111,6 @@ export class CodexConfigBuilder implements AgentConfigCardBuilder {
       const codexCfg = loadCodexConfig();
       const currentModel = config.agents?.codex?.model as string | undefined;
       const modelPatch = resetModelPatch(
-        key,
         'agents.codex.model',
         currentModel,
         codexCfg.modelOptions(value),

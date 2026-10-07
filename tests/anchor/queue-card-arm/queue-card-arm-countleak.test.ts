@@ -11,7 +11,7 @@ const WORKSPACE = '/tmp/queue-card-arm-countleak-anchor-ws';
 describe('QueueManager - no fake queue card when queue is idle after repeated interrupt resets (anchor)', () => {
   it('test_anchor_no_fake_queue_card_when_idle_after_repeated_reset', async () => {
     // 验证什么行为：多次 resetExecutingCount（连续 stop / stop 与 queue.immediate
-    // 交错）且中间有新任务入队时，所有任务都 settle 后 workspace 队列空闲，
+    // 交错）且中间有新任务入队时，所有任务都 settle 后 cwd 队列空闲，
     // pendingOrExecutingCount 必须回到 0——此时新入队消息必须立即执行、
     // 不得收到 "⏳ 消息排队中" 卡片。
     //

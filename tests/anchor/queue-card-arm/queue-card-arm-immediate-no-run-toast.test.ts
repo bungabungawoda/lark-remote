@@ -37,7 +37,7 @@ beforeEach(() => {
       model: 'opus',
       stopGraceMs: 5000,
     },
-    workspace: { default: '' },
+    cwd: { default: '' },
   });
 });
 
@@ -47,7 +47,7 @@ afterEach(() => {
 
 describe('queue.immediate final toast must not claim a stop when no run was running (anchor A24)', () => {
   it('test_anchor_immediate_toast_without_stop_does_not_claim_stopped_current_task', async () => {
-    // 验证什么行为：workspace 没有活跃 run（interruptCurrentRun 返回 false）时，
+    // 验证什么行为：cwd 没有活跃 run（interruptCurrentRun 返回 false）时，
     // 「⚡ 立即执行」成功路径的 toast 不得包含"已停止当前任务"——没有停掉任何
     // 任务就不能宣称停过；"您的消息将立即执行"的承诺仍须保留。
     //
@@ -118,11 +118,8 @@ describe('queue.immediate final toast must not claim a stop when no run was runn
     );
     await new Promise((r) => setTimeout(r, 50));
 
-    // --- 步骤 3：对 T 点「⚡ 立即执行」——workspace 无活跃 run，stopped=false ---
-    await router.handleCardAction(
-      { cmd: 'queue.immediate', workspace: tmpDir, messageId: 'mT' },
-      ctx,
-    );
+    // --- 步骤 3：对 T 点「⚡ 立即执行」——cwd 无活跃 run，stopped=false ---
+    await router.handleCardAction({ cmd: 'queue.immediate', cwd: tmpDir, messageId: 'mT' }, ctx);
 
     // --- 步骤 4：断言 toast 文案 ---
     const sentTexts = connector._sent

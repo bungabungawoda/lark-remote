@@ -203,11 +203,11 @@ afterEach(() => {
 const ctx = { userId: 'user1', chatId: 'chat1', messageId: 'msg1' };
 
 // RED TEST: Problem 1 - After lark-remote restart (sessionStore cleared), bash commands should still work
-// if user has saved workspaces. The expected behavior is that workspace alias should be used
+// if user has saved workspaces. The expected behavior is that cwd alias should be used
 // to restore cwd, not require user to manually /cd again.
 describe('executeBash after lark-remote restart (REGRESSION)', () => {
-  it('should execute bash when user has saved workspace, even if sessionStore was cleared', async () => {
-    // Create a workspace store with a saved workspace
+  it('should execute bash when user has saved cwd, even if sessionStore was cleared', async () => {
+    // Create a cwd store with a saved cwd
     const workspacePath = path.join(tmpDir, 'workspace.json');
     const { WorkspaceStore } = await import('../workspace/index.js');
     const workspaceStore = new WorkspaceStore(workspacePath);
@@ -232,7 +232,7 @@ describe('executeBash after lark-remote restart (REGRESSION)', () => {
     sessionStore.delete('user1');
     expect(sessionStore.getCwd('user1')).toBeUndefined();
 
-    // Now executeBash should use the saved workspace as fallback
+    // Now executeBash should use the saved cwd as fallback
     await bridge.executeBash('./restart.sh', ctx);
 
     // Expected: bash should try to execute (not return "请先使用 /cd" error)
@@ -344,7 +344,7 @@ describe('Bridge serial queue (§9.6)', () => {
 
 // --- ! bash concurrency with claude (§9.6: ! bypasses the serial queue) ---
 describe('executeBash / claude concurrency (! bypasses serial queue)', () => {
-  it('! bash and a claude run in the same workspace do NOT block each other (regression: they shared one serial queue + activeRuns)', async () => {
+  it('! bash and a claude run in the same cwd do NOT block each other (regression: they shared one serial queue + activeRuns)', async () => {
     const runner = createHangingRunner();
     const { bridge, sessionStore, connector } = makeBridge({ runner });
     const cwd = fs.realpathSync(tmpDir);
@@ -358,14 +358,14 @@ describe('executeBash / claude concurrency (! bypasses serial queue)', () => {
     // 2. While bash is running, send a claude message. It must NOT be dropped.
     //    Regression: bash used to do `activeRuns.set(cwd, ...)`, so forwardToClaude's
     //    `if (activeRuns.has(cwd))` branch dropped the claude message with
-    //    "此 workspace 正在处理中".
+    //    "此 cwd 正在处理中".
     const claudePromise = bridge.forwardToClaude('hi', ctx);
     await new Promise((r) => setTimeout(r, 250));
 
     // claude entered activeRuns (not dropped)
     expect(bridge.isBusyFor(cwd)).toBe(true);
     const texts = connector._sent.map((s) => JSON.stringify(s.input));
-    expect(texts.some((t) => t.includes('此 workspace 正在处理中'))).toBe(false);
+    expect(texts.some((t) => t.includes('此 cwd 正在处理中'))).toBe(false);
 
     // 3. bash still completes on its own (not blocked by the hanging claude run)
     await bashPromise;
@@ -534,7 +534,7 @@ describe('Bridge + ClaudeRunner approval integration', () => {
 
       const runner = new ClaudeRunner({
         pidDir: integrationTmpDir,
-        workspace: integrationTmpDir,
+        cwd: integrationTmpDir,
         permissionMode: 'default',
         idleTtlMs: 0,
       });
@@ -663,7 +663,7 @@ describe('Bridge.forwardToClaude', () => {
     expect((connector._sent[0].input as { text: string }).text).toContain('/cd');
   });
 
-  it('rejects with a hint when the same workspace already has a run in progress', async () => {
+  it('rejects with a hint when the same cwd already has a run in progress', async () => {
     const { bridge, sessionStore, connector: _connector } = makeBridge();
     sessionStore.setCwd(ctx.userId, tmpDir);
 
@@ -727,7 +727,7 @@ describe('Bridge.forwardToClaude', () => {
     await bridge.forwardToClaude('hi', ctx);
 
     const json = JSON.stringify(connector._cards.at(-1));
-    expect(json).toContain('"cmd":"codex.compact"');
+    expect(json).toContain('"cmd":"compact"');
     expect(json).toContain('"cmd":"new-session"');
   });
 
@@ -746,7 +746,7 @@ describe('Bridge.forwardToClaude', () => {
     await bridge.forwardToClaude('hi', ctx);
 
     const json = JSON.stringify(connector._cards.at(-1));
-    expect(json).not.toContain('"cmd":"codex.compact"');
+    expect(json).not.toContain('"cmd":"compact"');
     expect(json).toContain('"cmd":"new-session"');
   });
 
@@ -779,7 +779,7 @@ describe('Bridge.forwardToClaude', () => {
     expect(fallbackPayload).toBeDefined();
     const json = JSON.stringify(fallbackPayload!.input);
     // 无 runCompact → fallback 卡不得渲染 Compact 按钮
-    expect(json).not.toContain('"cmd":"codex.compact"');
+    expect(json).not.toContain('"cmd":"compact"');
     expect(json).toContain('"cmd":"new-session"');
   });
 
@@ -1292,7 +1292,7 @@ describe('Bridge.forwardToClaude logging probes', () => {
 
     const busy = callsAt(
       'warn',
-      (m) => typeof m === 'string' && m.includes('[lark-remote] workspace busy, dropping message'),
+      (m) => typeof m === 'string' && m.includes('[lark-remote] cwd busy, dropping message'),
     );
     expect(busy.length).toBe(1);
     expect(String(busy[0]?.[0])).toContain('user1');
@@ -1369,7 +1369,7 @@ describe('Bridge queue cancel (removeFromQueue)', () => {
 describe('Bridge queue card in-place update on cancel', () => {
   it('updateQueueCardToCancelled updates card when queue card exists', async () => {
     const { bridge, connector } = makeBridge();
-    const workspace = tmpDir;
+    const cwd = tmpDir;
     const userMessageId = 'user-msg-1';
 
     // Manually simulate that a queue card was sent for this task
@@ -1378,7 +1378,7 @@ describe('Bridge queue card in-place update on cancel', () => {
     bridge.queueManager.queueCardMessages.set(userMessageId, Promise.resolve('feishu-card-msg-id'));
 
     // Call the method to update the queue card to cancelled state
-    await bridge.updateQueueCardToCancelled(workspace, userMessageId);
+    await bridge.updateQueueCardToCancelled(cwd, userMessageId);
 
     // Verify card was updated in-place (connector.updateCard was called)
     expect(connector._cards.length).toBe(1);
@@ -1407,11 +1407,11 @@ describe('Bridge queue card in-place update on cancel', () => {
 
   it('updateQueueCardToCancelled does nothing when no queue card exists', async () => {
     const { bridge, connector } = makeBridge();
-    const workspace = tmpDir;
+    const cwd = tmpDir;
     const userMessageId = 'non-existent-msg';
 
     // Call the method when no queue card exists
-    await bridge.updateQueueCardToCancelled(workspace, userMessageId);
+    await bridge.updateQueueCardToCancelled(cwd, userMessageId);
 
     // Verify no card update was attempted
     expect(connector._cards.length).toBe(0);
@@ -1465,9 +1465,9 @@ describe('Bridge agentRegistry / sessionReaderRegistry', () => {
   });
 
   it('getRunner reclaims stopped runner slots beyond the cache cap (P3 review)', async () => {
-    // 旧 workspace 的 runner 在会话 idle TTL 停进程后仍留在缓存里。创建新
-    // workspace 槽位超过缓存上限时回收「非 active 且进程已停」的死槽位，
-    // 防止缓存随访问过的 workspace 数量无界增长（活进程/在途 run 一律保留；
+    // 旧 cwd 的 runner 在会话 idle TTL 停进程后仍留在缓存里。创建新
+    // cwd 槽位超过缓存上限时回收「非 active 且进程已停」的死槽位，
+    // 防止缓存随访问过的 cwd 数量无界增长（活进程/在途 run 一律保留；
     // 小缓存下刚创建未 run 的 runner 不回收，保持「创建即注册」语义）。
     const { AgentRegistry } = await import('../runner/registry.js');
     const created: Array<{ entry: { disposed: boolean } }> = [];
@@ -1517,11 +1517,11 @@ describe('Bridge agentRegistry / sessionReaderRegistry', () => {
     expect(created[10].entry.disposed).toBe(false);
   });
 
-  it('config change during an active run evicts the stale workspace runner after the run ends (P1)', async () => {
-    // clearRunners() 对活跃 workspace 直接 skip，而 finalizeRun() 只 evict
-    // lifetime !== 'workspace' 的 runner；全部 runner 都是 workspace → 活跃 workspace
+  it('config change during an active run evicts the stale cwd runner after the run ends (P1)', async () => {
+    // clearRunners() 对活跃 cwd 直接 skip，而 finalizeRun() 只 evict
+    // lifetime !== 'workspace' 的 runner；全部 runner 都是 cwd → 活跃 cwd
     // 的 runner 既不因 clearRunners 被清、也不因 finalize 被清，下一轮复用旧配置实例。
-    // 修复：配置变更时把活跃 workspace 槽位标 stale，run 结束后 evict+dispose。
+    // 修复：配置变更时把活跃 cwd 槽位标 stale，run 结束后 evict+dispose。
     const { AgentRegistry } = await import('../runner/registry.js');
     const created: Array<{ model: string; disposed: boolean }> = [];
     let releaseRun: (() => void) | null = null;
@@ -2333,7 +2333,7 @@ describe('Bridge finalizing integration tests (§7.3)', () => {
   /**
    * Test 6: 一致性断言：forwardToClaude 返回后 !activeRuns.has(cwd)
    *
-   * Verifies: dispatch 不变式 - workspace not busy after run completes
+   * Verifies: dispatch 不变式 - cwd not busy after run completes
    */
   it('activeRuns is cleared after forwardToClaude completes', async () => {
     const events: AgentEvent[] = [
@@ -2349,7 +2349,7 @@ describe('Bridge finalizing integration tests (§7.3)', () => {
 
     await bridge.forwardToClaude('test', ctx);
 
-    // After completion, workspace should NOT be busy
+    // After completion, cwd should NOT be busy
     expect(bridge.isBusyFor(tmpDir)).toBe(false);
   });
 
@@ -2482,13 +2482,13 @@ describe('Bridge finalizing integration tests (§7.3)', () => {
   });
 
   /**
-   * Test 12: spawn 失败 authErrorEvent：finalizing -> error
+   * Test 12: spawn 失败 setupErrorEvent：finalizing -> error
    *
-   * Verifies: authErrorEvent 路径 - spawn fails before process starts
+   * Verifies: setupErrorEvent 路径 - spawn fails before process starts
    */
   it('spawn failure yields auth error event leading to error terminal', async () => {
-    // Simulate spawn failure (binary not found) - authErrorEvent returns result/error
-    // §9.22: real spawning-runner now yields syntheticInitEvent before authErrorEvent;
+    // Simulate spawn failure (binary not found) - setupErrorEvent returns result/error
+    // §9.22: real spawning-runner now yields syntheticInitEvent before setupErrorEvent;
     // the mock must match that event ordering.
     const runner: Runner = {
       isRunning: false,
@@ -2502,7 +2502,7 @@ describe('Bridge finalizing integration tests (§7.3)', () => {
           subtype: 'init',
           session_id: 's12',
         };
-        // Simulate authErrorEvent from spawning-runner.ts - yields result/error
+        // Simulate setupErrorEvent from spawning-runner.ts - yields result/error
         yield {
           type: 'result',
           subtype: 'error',
@@ -2964,6 +2964,167 @@ describe('Bridge session epoch guard (2026-08-09)', () => {
     // sessionId should be 'sess-ok'
     expect(sessionStore.getSessionId(ctx.userId, 'claude')).toBe('sess-ok');
   });
+
+  /**
+   * 2026-10-07 事故：消息在 T0 commit（binding 钉住旧 session + epoch），随后
+   * 用户点「新会话」清空并 bump epoch，消息才开跑。若 epoch 仍在执行起点捕获
+   * （此时已是 bump 后的值），代际守卫漏判 → 旧 sessionId 被写回复活 reset。
+   * 断言：runner 收到旧 session（binding 钉死），且 run 结束后 store 仍为空。
+   */
+  it('test_anchor_pinned_binding_epoch_blocks_writeback_when_pointer_moved_before_run_start', async () => {
+    let capturedSessionId: string | undefined;
+    const runner: Runner = {
+      isRunning: false,
+      stop: async () => {},
+      killOrphan: () => {},
+      registerExitHandlers: () => {},
+      run: async function* (_message, runOpts) {
+        capturedSessionId = runOpts.sessionId;
+        yield {
+          type: 'system',
+          subtype: 'init',
+          session_id: 's-old',
+          cwd: tmpDir,
+          model: 'opus',
+        } as AgentEvent;
+        yield { type: 'result', subtype: 'success', session_id: 's-old' } as AgentEvent;
+      },
+    };
+
+    const { bridge, sessionStore } = makeBridge({ runner });
+    sessionStore.setCwd(ctx.userId, tmpDir);
+    sessionStore.setSessionIdAndCwd(ctx.userId, 'claude', 's-old', tmpDir);
+
+    // T0：入队/commit 时刻快照（binding 携带 sessionId + sessionEpoch）
+    const binding = bridge.currentBinding(ctx.userId);
+    expect(binding.sessionId).toBe('s-old');
+    expect(binding.sessionEpoch).toBeTypeOf('number');
+
+    // T1：用户点「新会话」——清空 + bump epoch（发生在消息开跑之前）
+    sessionStore.clearSessionId(ctx.userId, 'claude');
+    expect(sessionStore.getSessionId(ctx.userId, 'claude')).toBeUndefined();
+
+    // 消息随后执行：必须用发送时的旧 session，且写回被代际守卫拦截
+    await bridge.forwardToClaude('重新构建', ctx, { binding });
+
+    expect(capturedSessionId).toBe('s-old');
+    expect(sessionStore.getSessionId(ctx.userId, 'claude')).toBeUndefined();
+  });
+
+  /**
+   * resume 切换发生在消息开跑前：binding 钉死旧 session，写回必须被拦截——
+   * 否则旧 run 会把用户刚 resume 的新 session 覆盖回旧值。
+   */
+  it('test_anchor_pinned_binding_epoch_survives_resume_switch_before_run', async () => {
+    let capturedSessionId: string | undefined;
+    const runner: Runner = {
+      isRunning: false,
+      stop: async () => {},
+      killOrphan: () => {},
+      registerExitHandlers: () => {},
+      run: async function* (_message, runOpts) {
+        capturedSessionId = runOpts.sessionId;
+        yield {
+          type: 'system',
+          subtype: 'init',
+          session_id: 's-old',
+          cwd: tmpDir,
+          model: 'opus',
+        } as AgentEvent;
+        yield { type: 'result', subtype: 'success', session_id: 's-old' } as AgentEvent;
+      },
+    };
+
+    const { bridge, sessionStore } = makeBridge({ runner });
+    sessionStore.setCwd(ctx.userId, tmpDir);
+    sessionStore.setSessionIdAndCwd(ctx.userId, 'claude', 's-old', tmpDir);
+    const binding = bridge.currentBinding(ctx.userId);
+
+    // 排队期间用户 resume 到新 session（setSessionId 会 bump epoch）
+    sessionStore.setSessionId(ctx.userId, 'claude', 's-resumed', tmpDir);
+
+    await bridge.forwardToClaude('hi', ctx, { binding });
+
+    // 消息仍跑发送时的旧 session；写回被拦截，用户 resume 的新 session 不被覆盖
+    expect(capturedSessionId).toBe('s-old');
+    expect(sessionStore.getSessionId(ctx.userId, 'claude')).toBe('s-resumed');
+  });
+
+  /**
+   * cwd 切换（/cd、ls.switch、ws.use → setCwd，bump user epoch）发生在消息
+   * 开跑前：消息仍跑入队时的 cwd（cwdOverride 钉死），且写回被拦截。
+   */
+  it('test_anchor_pinned_binding_epoch_after_cwd_move_runs_pinned_cwd_without_writeback', async () => {
+    let capturedCwd: string | undefined;
+    const runner: Runner = {
+      isRunning: false,
+      stop: async () => {},
+      killOrphan: () => {},
+      registerExitHandlers: () => {},
+      run: async function* (_message, runOpts) {
+        capturedCwd = runOpts.cwd;
+        yield {
+          type: 'system',
+          subtype: 'init',
+          session_id: 's-old',
+          cwd: runOpts.cwd,
+          model: 'opus',
+        } as AgentEvent;
+        yield { type: 'result', subtype: 'success', session_id: 's-old' } as AgentEvent;
+      },
+    };
+
+    const { bridge, sessionStore } = makeBridge({ runner });
+    const oldDir = path.join(tmpDir, 'old-cwd');
+    const newDir = path.join(tmpDir, 'new-cwd');
+    fs.mkdirSync(oldDir, { recursive: true });
+    fs.mkdirSync(newDir, { recursive: true });
+    sessionStore.setCwd(ctx.userId, oldDir);
+    sessionStore.setSessionIdAndCwd(ctx.userId, 'claude', 's-old', oldDir);
+    const binding = bridge.currentBinding(ctx.userId);
+
+    // 排队期间用户 /cd 到新目录（setCwd 清 session + bump user epoch）
+    sessionStore.setCwd(ctx.userId, newDir);
+
+    await bridge.forwardToClaude('hi', ctx, { cwdOverride: oldDir, binding });
+
+    // 跑入队时的 cwd；写回被拦截（store 的 session 仍为空）
+    expect(capturedCwd).toBe(oldDir);
+    expect(sessionStore.getSessionId(ctx.userId, 'claude')).toBeUndefined();
+  });
+
+  /**
+   * 防过度抑制：指针未动时，带 binding（含 sessionEpoch）的 run 仍必须正常写回。
+   */
+  it('test_anchor_pinned_binding_epoch_unchanged_still_writes_back', async () => {
+    const runner: Runner = {
+      isRunning: false,
+      stop: async () => {},
+      killOrphan: () => {},
+      registerExitHandlers: () => {},
+      run: async function* () {
+        yield {
+          type: 'system',
+          subtype: 'init',
+          session_id: 's-old',
+          cwd: tmpDir,
+          model: 'opus',
+        } as AgentEvent;
+        yield { type: 'result', subtype: 'success', session_id: 's-old' } as AgentEvent;
+      },
+    };
+
+    const { bridge, sessionStore } = makeBridge({ runner });
+    sessionStore.setCwd(ctx.userId, tmpDir);
+    sessionStore.setSessionIdAndCwd(ctx.userId, 'claude', 's-old', tmpDir);
+    const binding = bridge.currentBinding(ctx.userId);
+
+    // 无任何指针移动
+    await bridge.forwardToClaude('hi', ctx, { binding });
+
+    // 写回照常发生（binding 的 epoch 与当前一致）
+    expect(sessionStore.getSessionId(ctx.userId, 'claude')).toBe('s-old');
+  });
 });
 
 describe('Queue edit race: setTaskReplacement before await (Plan B fix)', () => {
@@ -3162,7 +3323,7 @@ describe('Bridge handleResumeCompact（resume 卡 Compact 按钮）', () => {
 
   it('test_anchor_handle_resume_compact_card_context_percentage_from_jsonl_limit', async () => {
     // 验证什么：Compact 完成卡必须像普通 run 卡一样带 Context 百分比
-    // （Context - X (Y%)）。回归：streamCodexCompact 的 finish meta 漏传
+    // （Context - X (Y%)）。回归：streamCompact 的 finish meta 漏传
     // contextLimit，导致 jsonl 里明明有 model_context_window，卡片却只显示
     // "Context - 7K（压缩前 111K）" 没有百分比。
     const cwd = fs.realpathSync(tmpDir);
@@ -3338,7 +3499,7 @@ describe('app-server error result session write-back (review P3-10)', () => {
 });
 
 // =============================================================================
-// streamCodexCompact 终态映射 + 在途检测（kimi-compact-wait-redesign §5.3）
+// streamCompact 终态映射 + 在途检测（kimi-compact-wait-redesign §5.3）
 // - error subtype 的 result 必须 finish 'error'（旧实现 sawResult 布尔把 error
 //   也当 done，放大器 bug）；
 // - compact 在途（reader.readCompactionState().inFlight）时直接回文本，不开卡、
@@ -3418,9 +3579,9 @@ describe('Bridge compact 终态映射 + 在途检测（§5.3）', () => {
     expect(sentJsons.some((j) => j.includes('Compact 已触发'))).toBe(false);
   });
 
-  it('reader 报 inFlight → handleCodexCompact 直接 sendResult，不开卡、不调 runCompact', async () => {
+  it('reader 报 inFlight → handleCompactAction 直接 sendResult，不开卡、不调 runCompact', async () => {
     const cwd = fs.realpathSync(tmpDir);
-    // 先跑一个正常 run 让 lastCompactableCodexRun 记下 runId + sessionId。
+    // 先跑一个正常 run 让 lastCompactableRun 记下 runId + sessionId。
     const baseRunner = createStubRunner({
       mode: 'streaming',
       events: [
@@ -3428,7 +3589,7 @@ describe('Bridge compact 终态映射 + 在途检测（§5.3）', () => {
         { type: 'result', subtype: 'success', session_id: 'kimi-session-1' },
       ],
     });
-    // finalizeRun 只对 workspace-lifetime runner 记录 lastCompactableCodexRun。
+    // finalizeRun 只对 workspace-lifetime runner 记录 lastCompactableRun。
     (baseRunner as unknown as { lifetime: string }).lifetime = 'workspace';
     const runCompactSpy = vi.fn();
     (baseRunner as unknown as { runCompact: unknown }).runCompact = runCompactSpy;
@@ -3449,11 +3610,11 @@ describe('Bridge compact 终态映射 + 在途检测（§5.3）', () => {
 
     await bridge.forwardToClaude('hi', ctx);
     const cardJson = JSON.stringify(connector._cards.at(-1) ?? '');
-    const runIdMatch = cardJson.match(/"cmd":"codex\.compact","runId":"([^"]+)"/);
+    const runIdMatch = cardJson.match(/"cmd":"compact","runId":"([^"]+)"/);
     expect(runIdMatch).not.toBeNull();
     const runId = runIdMatch![1];
 
-    await bridge.handleCodexCompact({ runId }, ctx);
+    await bridge.handleCompactAction({ runId }, ctx);
 
     expect(runCompactSpy).not.toHaveBeenCalled();
     const sentJsons = connector._sent.map((s) => JSON.stringify(s.input));
@@ -3513,7 +3674,7 @@ describe('Bridge compact 终态映射 + 在途检测（§5.3）', () => {
     expect(runSpy).not.toHaveBeenCalled();
 
     releaseCompact();
-    // streamCodexCompact 收尾含 2×150ms usage 短重试，留足余量。
+    // streamCompact 收尾含 2×150ms usage 短重试，留足余量。
     await new Promise((r) => setTimeout(r, 1000));
     expect(runSpy).toHaveBeenCalledTimes(1);
   }, 10000);
@@ -3521,7 +3682,7 @@ describe('Bridge compact 终态映射 + 在途检测（§5.3）', () => {
 
 // =============================================================================
 // A6：compact run 与普通 run 共用同一套生命周期（activeRuns 注册 + §9.12 空闲
-// 看门狗 + 终态 reaction）。回归：streamCodexCompact 自成一路 —— 引擎卡住时
+// 看门狗 + 终态 reaction）。回归：streamCompact 自成一路 —— 引擎卡住时
 // /stop 找不到这个 run（控制通道无对象可停）、没有桥级看门狗兜底、终态后原消息
 // 上也没有状态表情。
 // =============================================================================

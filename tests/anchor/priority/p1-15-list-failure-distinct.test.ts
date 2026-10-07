@@ -28,7 +28,7 @@ function buildConfig(): AppConfig {
     feishu: { appId: 'test', appSecret: 'test' },
     defaultAgent: 'claude',
     claude: { model: 'opus', stopGraceMs: 5000 },
-    workspace: { default: '' },
+    cwd: { default: '' },
   });
 }
 

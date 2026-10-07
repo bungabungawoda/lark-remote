@@ -65,7 +65,7 @@ describe('anchor: queue diagnose card v2', () => {
     await router.handleCardAction(
       {
         cmd: 'queue.diagnose',
-        workspace: fs.realpathSync(tmpDir),
+        cwd: fs.realpathSync(tmpDir),
         messageId: 'queued-msg-1',
         userId: 'user1',
         chatId: 'chat1',

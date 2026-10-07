@@ -8,7 +8,7 @@ import path from 'node:path';
 import os from 'node:os';
 import fs from 'node:fs';
 import type { Readable } from 'node:stream';
-import { silentlyUnlink } from '../../common/fs.js';
+import { bestEffortUnlink } from '../../common/fs.js';
 import { getLogger } from '../../logger/index.js';
 import { binaryName, verifyPidIdentityVerdictSync } from '../../platform/identity.js';
 import { createTerminator, type Terminator } from '../../platform/terminator.js';
@@ -151,7 +151,7 @@ export abstract class SpawningRunner {
 
   constructor(opts: {
     pidDir?: string;
-    workspace: string;
+    cwd: string;
     stopGraceMs?: number;
     spawnHeartbeatMs?: number;
     /**
@@ -182,7 +182,7 @@ export abstract class SpawningRunner {
     this.logTag = opts.logTag ?? 'spawning-runner';
     this.agent = opts.agent;
     const pidDir = opts.pidDir ?? path.join(os.homedir(), '.lark-remote');
-    const workspaceSuffix = `-${opts.workspace.replace(/[^a-zA-Z0-9]/g, '_')}`;
+    const workspaceSuffix = `-${opts.cwd.replace(/[^a-zA-Z0-9]/g, '_')}`;
     const pidFilePrefix = opts.pidFilePrefix ?? 'spawning';
     this.pidFilePath = path.join(pidDir, `${pidFilePrefix}${workspaceSuffix}.pid`);
     this.terminator =
@@ -227,7 +227,7 @@ export abstract class SpawningRunner {
    * finite timeout (review P2-11) against the 'error' event: Node guarantees
    * 'error' for ENOENT/EACCES, but some binaries fail silently without ever
    * emitting it. Without the race, the spawn lead-in hangs forever → the
-   * workspace serial queue never settles → permanent deadlock, and /stop
+   * cwd serial queue never settles → permanent deadlock, and /stop
    * can't recover (Terminator.stop returns early when pid === undefined).
    * The timeout keeps the deadlock bounded.
    */
@@ -382,7 +382,7 @@ export abstract class SpawningRunner {
     this.unregisterStopper();
 
     this.currentProcess = null;
-    silentlyUnlink(this.pidFilePath);
+    bestEffortUnlink(this.pidFilePath);
     getLogger().debug(`[${this.logTag}] cleaned pid file ${this.pidFilePath}`);
   }
 
@@ -408,7 +408,7 @@ export abstract class SpawningRunner {
       const pidStr = fs.readFileSync(this.pidFilePath, 'utf-8').trim();
       const pid = Number(pidStr);
       if (isNaN(pid) || pid <= 0) {
-        silentlyUnlink(this.pidFilePath);
+        bestEffortUnlink(this.pidFilePath);
         return;
       }
 
@@ -426,7 +426,7 @@ export abstract class SpawningRunner {
           `[${this.logTag}] killOrphan: pid ${pid} not confirmed as ${expectedBinary} ` +
             `(${verdict}), skipping kill`,
         );
-        silentlyUnlink(this.pidFilePath);
+        bestEffortUnlink(this.pidFilePath);
         return;
       }
 
@@ -438,7 +438,7 @@ export abstract class SpawningRunner {
       } catch {
         // process may have exited
       }
-      silentlyUnlink(this.pidFilePath);
+      bestEffortUnlink(this.pidFilePath);
     } catch {
       // ignore
     }
@@ -490,7 +490,7 @@ export abstract class SpawningRunner {
       } catch {}
     }
     this.unregisterStopper();
-    silentlyUnlink(this.pidFilePath);
+    bestEffortUnlink(this.pidFilePath);
   }
 
   protected abstract buildArgv(opts: SpawnOptions): string[];

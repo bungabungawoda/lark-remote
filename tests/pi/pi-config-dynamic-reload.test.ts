@@ -85,7 +85,7 @@ describe('ADVERSARIAL: pi provider config dynamic reload', () => {
       const latestConfig = container?.current as ReturnType<typeof createInitialConfig>;
       const piConf = getAgentConfig(latestConfig, 'pi');
       return new PiRpcRunner({
-        workspace: _workspace,
+        cwd: _workspace,
         sessionReader: emptyReader,
         provider: piConf?.provider ?? 'Volcano',
         model: piConf?.model ?? 'glm-5.2',
@@ -128,7 +128,7 @@ describe('ADVERSARIAL: pi provider config dynamic reload', () => {
     // 3. 从更新后的 config 创建新的 PiRunner
     const piConfig = getAgentConfig(config2, 'pi');
     const piRunnerFromConfig = new PiRpcRunner({
-      workspace: 'test',
+      cwd: 'test',
       sessionReader: emptyReader,
       provider: piConfig?.provider ?? 'Volcano',
       model: piConfig?.model ?? 'glm-5.2',
@@ -155,7 +155,7 @@ describe('ADVERSARIAL: pi provider config dynamic reload', () => {
     registry.register('pi', (_workspace: string) => {
       const piConf = getAgentConfig(currentConfig, 'pi');
       piRunnerInstance = new PiRpcRunner({
-        workspace: _workspace,
+        cwd: _workspace,
         sessionReader: emptyReader,
         provider: piConf?.provider ?? 'Volcano',
         model: piConf?.model ?? 'glm-5.2',

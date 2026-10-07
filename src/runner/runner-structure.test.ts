@@ -41,7 +41,7 @@ describe('runner structure: architecture guards', () => {
     expect(content).not.toContain('createJSONLStream');
     expect(content).not.toContain('ProcessStopper');
     expect(content).not.toContain('SpawnHeartbeat');
-    expect(content).not.toContain('authErrorEvent');
+    expect(content).not.toContain('setupErrorEvent');
     expect(content).not.toContain("from './common/");
   });
 

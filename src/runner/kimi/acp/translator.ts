@@ -40,7 +40,7 @@ import {
 import {
   deriveAcpAvailableDecisions,
   truncateWithEllipsis,
-} from '../../common/acp/protocol-helpers.js';
+} from '../../common/acp/acp-approval.js';
 import { getLogger } from '../../../logger/index.js';
 import { BaseAcpTranslator, type AcpTranslatorEvent } from '../../common/acp/base-translator.js';
 

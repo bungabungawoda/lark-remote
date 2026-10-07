@@ -77,7 +77,6 @@ export class OpencodeConfigBuilder implements AgentConfigCardBuilder {
       const opencodeCfg = loadOpencodeConfig();
       const currentModel = config.agents?.opencode?.modelID as string | undefined;
       const modelPatch = resetModelPatch(
-        key,
         'agents.opencode.modelID',
         currentModel,
         opencodeCfg.modelOptions(value),

@@ -23,7 +23,7 @@ function createRouter(overrides?: {
   restartSpawner?: () => number;
   exitHandler?: () => void;
   checkLatestVersion?: () => Promise<{ current: string; latest: string }>;
-  isNewer?: (current: string, latest: string) => boolean | null;
+  compareVersions?: (current: string, latest: string) => -1 | 0 | 1 | null;
   runInstallLatest?: () => Promise<{ success: boolean; error?: string }>;
 }) {
   const sessionStore = new SessionStore();
@@ -55,7 +55,7 @@ function createRouter(overrides?: {
       ? {
           checkLatestVersion:
             overrides.checkLatestVersion ?? (async () => ({ current: '0.1.0', latest: '0.1.0' })),
-          isNewer: overrides.isNewer ?? (() => false),
+          compareVersions: overrides.compareVersions ?? (() => 0),
           runInstallLatest: overrides.runInstallLatest ?? (async () => ({ success: true })),
         }
       : undefined,
@@ -69,7 +69,7 @@ describe('/update command', () => {
   it('shows "already up to date" when no newer version', async () => {
     const { router } = createRouter({
       checkLatestVersion: async () => ({ current: '0.1.0', latest: '0.1.0' }),
-      isNewer: () => false,
+      compareVersions: () => 0,
     });
     const result = await router.handle('/update', ctx);
     expect(result!.text).toContain('已是最新版本');
@@ -78,7 +78,7 @@ describe('/update command', () => {
   it('shows update available on /update check', async () => {
     const { router } = createRouter({
       checkLatestVersion: async () => ({ current: '0.1.0', latest: '0.2.0' }),
-      isNewer: () => true,
+      compareVersions: () => 1,
     });
     const result = await router.handle('/update check', ctx);
     expect(result!.text).toContain('0.2.0');
@@ -88,7 +88,7 @@ describe('/update command', () => {
     const { router } = createRouter({
       devMode: true,
       checkLatestVersion: async () => ({ current: '0.1.0', latest: '0.2.0' }),
-      isNewer: () => true,
+      compareVersions: () => 1,
     });
     const result = await router.handle('/update', ctx);
     expect(result!.text).toContain('开发模式');
@@ -98,7 +98,7 @@ describe('/update command', () => {
     let installed = false;
     const { router } = createRouter({
       checkLatestVersion: async () => ({ current: '0.1.0', latest: '0.2.0' }),
-      isNewer: () => true,
+      compareVersions: () => 1,
       runInstallLatest: async () => {
         installed = true;
         return { success: true };
@@ -114,7 +114,7 @@ describe('/update command', () => {
   it('shows error when install fails', async () => {
     const { router } = createRouter({
       checkLatestVersion: async () => ({ current: '0.1.0', latest: '0.2.0' }),
-      isNewer: () => true,
+      compareVersions: () => 1,
       runInstallLatest: async () => ({
         success: false,
         error: 'permission denied',
@@ -132,7 +132,7 @@ describe('/update command', () => {
         calls.push(opts ?? {});
         return { current: '0.1.0', latest: '0.2.0' };
       },
-      isNewer: () => true,
+      compareVersions: () => 1,
     });
     await router.handle('/update check', ctx);
     await router.handle('/update', ctx);
@@ -144,7 +144,7 @@ describe('/update command', () => {
   it('does not auto-restart when install fails', async () => {
     const { router } = createRouter({
       checkLatestVersion: async () => ({ current: '0.1.0', latest: '0.2.0' }),
-      isNewer: () => true,
+      compareVersions: () => 1,
       runInstallLatest: async () => ({
         success: false,
         error: 'network error',

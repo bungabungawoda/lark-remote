@@ -33,7 +33,7 @@ export interface TwoTaskQueueScenario {
 export async function setupTwoTaskQueueScenario(
   bridge: Bridge,
   connector: ReturnType<typeof createStubConnector>,
-  workspace: string,
+  cwd: string,
   opts: {
     secondMessagePreview?: string;
     firstMessageId?: string;
@@ -59,7 +59,7 @@ export async function setupTwoTaskQueueScenario(
 
   // Task 1: starts immediately, blocks
   bridge.enqueue(
-    workspace,
+    cwd,
     async () => {
       await hang1;
     },
@@ -77,7 +77,7 @@ export async function setupTwoTaskQueueScenario(
   await new Promise((resolve) => setTimeout(resolve, 50));
 
   // Task 2: queued behind task 1 (taskList.length > 1 triggers queue card)
-  bridge.enqueue(workspace, async () => {}, {
+  bridge.enqueue(cwd, async () => {}, {
     taskMeta: {
       userId: 'u1',
       chatId: 'c1',
@@ -134,7 +134,7 @@ export function makeQueueTestContext(): QueueTestContext {
   const config = AppConfigSchema.parse({
     feishu: { appId: 'test', appSecret: 'test' },
     claude: { model: 'opus', stopGraceMs: 5000 },
-    workspace: { default: '' },
+    cwd: { default: '' },
   });
   const sessionStore = new SessionStore();
   const connector = createStubConnector();

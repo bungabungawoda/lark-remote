@@ -12,7 +12,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { formatUsageStats } from '../../../src/router/utils.js';
+import { formatUsageStats } from '../../../src/router/usage-format.js';
 
 describe('formatUsageStats - cumulative cache display', () => {
   /**

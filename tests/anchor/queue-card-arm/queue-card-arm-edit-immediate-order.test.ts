@@ -37,7 +37,7 @@ beforeEach(() => {
       model: 'opus',
       stopGraceMs: 5000,
     },
-    workspace: { default: '' },
+    cwd: { default: '' },
   });
 });
 
@@ -149,20 +149,14 @@ describe('queue.immediate on an edited task must keep the target position ahead 
     await new Promise((r) => setTimeout(r, 100));
 
     // --- 步骤 4：编辑 T2 → "edited message" ---
+    await router.handleCardAction({ cmd: 'queue.edit', cwd: tmpDir, messageId: 'msg-2' }, ctx);
     await router.handleCardAction(
-      { cmd: 'queue.edit', workspace: tmpDir, messageId: 'msg-2' },
-      ctx,
-    );
-    await router.handleCardAction(
-      { cmd: 'queue.input', workspace: tmpDir, messageId: 'msg-2', inputValue: 'edited message' },
+      { cmd: 'queue.input', cwd: tmpDir, messageId: 'msg-2', inputValue: 'edited message' },
       ctx,
     );
 
     // --- 步骤 5：对 T2 点「⚡ 立即执行」---
-    await router.handleCardAction(
-      { cmd: 'queue.immediate', workspace: tmpDir, messageId: 'msg-2' },
-      ctx,
-    );
+    await router.handleCardAction({ cmd: 'queue.immediate', cwd: tmpDir, messageId: 'msg-2' }, ctx);
 
     // --- 步骤 6：放行 T1，队列链前进 ---
     release1();

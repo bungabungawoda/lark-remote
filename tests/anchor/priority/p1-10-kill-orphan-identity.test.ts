@@ -50,7 +50,7 @@ describePosix('P1-10: killOrphan process identity verification', () => {
     const pid = innocent.pid!;
     try {
       const runner = new ClaudeRunner({
-        workspace: 'test',
+        cwd: 'test',
         pidDir: tmpDir,
       });
       const pidFilePath = path.join(tmpDir, 'claude-test.pid');

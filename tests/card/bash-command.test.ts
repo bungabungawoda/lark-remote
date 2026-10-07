@@ -46,7 +46,7 @@ function createRouter(overrides?: {
       model: 'claude-opus-4-8',
       stopGraceMs: 5000,
     },
-    workspace: { default: '' },
+    cwd: { default: '' },
   });
   const router = new CommandRouter({
     sessionStore,

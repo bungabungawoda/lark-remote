@@ -37,7 +37,6 @@ export class PiRpcTranslator {
   private currentContentIndex = -1;
   private sessionId = '';
   private operationKind: 'turn' | 'compact' = 'turn';
-  private currentTurnId = '';
 
   // ccusage-aligned usage accumulation (per-message, summed across the turn).
   private accInput = 0;
@@ -167,7 +166,6 @@ export class PiRpcTranslator {
   /** Self-produced turn_started (no wire equivalent). */
   produceTurnStarted(sessionId: string, turnId: string): PiRpcTurnStartedEvent {
     this.sessionId = sessionId;
-    this.currentTurnId = turnId;
     return {
       type: 'turn_started',
       threadId: sessionId,

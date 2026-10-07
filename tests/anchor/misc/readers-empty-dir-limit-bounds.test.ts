@@ -41,18 +41,8 @@ vi.mock('../../../src/logger/index.js', async () =>
 // 给 exit≠0 会让本用例抛异常，恰好把这条不变量打反。其余导出保持真实。
 vi.mock('../../../src/platform/spawn.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../../src/platform/spawn.js')>();
-  return {
-    ...actual,
-    spawnProcessSync: (() => ({
-      pid: 0,
-      output: [],
-      stdout: '',
-      stderr: '',
-      status: null,
-      signal: null,
-      error: Object.assign(new Error('spawn opencode ENOENT'), { code: 'ENOENT' }),
-    })) as unknown as typeof actual.spawnProcessSync,
-  };
+  const { shortCircuitSpawnEnoent } = await import('../../lib/spawn-shortcircuit.js');
+  return shortCircuitSpawnEnoent(actual);
 });
 
 describe('Round 10 reader anchors', () => {

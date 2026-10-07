@@ -9,7 +9,7 @@
  *    `result += char` 都新建并扫描不断增长的字符串 → O(budget²)（成本随预算平方
  *    增长，与输入长度无关）。流式高峰期 renderRunCard 单次 flush 数十 ms > 100ms
  *    合批窗口（run-card-session.ts:61），flush 堆积、事件循环被长任务占满，idle
- *    看门狗 tick、飞书 WebSocket 心跳、其他 workspace 的消息处理全部被延迟——单线程
+ *    看门狗 tick、飞书 WebSocket 心跳、其他 cwd 的消息处理全部被延迟——单线程
  *    驻留进程的全局卡顿。Claude 长回答超过 MAX_TEXT_CHARS=12_000 即常态。
  *
  * ③ 依据：review.md §P0-1 原文失败用例（fitUtf8 tail-truncate is O(budget)）——

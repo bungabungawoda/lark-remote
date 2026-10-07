@@ -17,17 +17,8 @@ import type { AppConfig } from '../../../src/config/index.js';
 // 断言面不变；其余导出保持真实。
 vi.mock('../../../src/platform/spawn.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../../src/platform/spawn.js')>();
-  return {
-    ...actual,
-    spawnProcessSync: (() => ({
-      pid: 0,
-      output: [],
-      stdout: '',
-      stderr: '',
-      status: 1,
-      signal: null,
-    })) as unknown as typeof actual.spawnProcessSync,
-  };
+  const { shortCircuitSpawn } = await import('../../lib/spawn-shortcircuit.js');
+  return shortCircuitSpawn(actual);
 });
 
 /**
@@ -59,7 +50,7 @@ function buildPiConfig(): AppConfig {
       pi: { provider: 'Volcano', model: 'glm-5.2', thinking: 'medium' },
       codex: { model: 'claude-sonnet-4-20250514' },
     },
-    workspace: { default: '' },
+    cwd: { default: '' },
   });
 }
 

@@ -14,7 +14,7 @@ import type { RunTerminal } from '../card/run-state.js';
 import { buildSessionHistoryCard } from '../router/card-helpers.js';
 import { agentDisplayName, resumeUseButton } from '../card/card-shared.js';
 import { enforceCardBudget } from '../card/card-budget.js';
-import { normalizeResultUsage } from '../runner/common/usage.js';
+import { normalizeResultUsage } from '../runner/common/result-usage.js';
 import { BashProcessRunner, type BashRunner } from '../runner/index.js';
 import type { AgentKind } from '../runner/types.js';
 import {
@@ -97,8 +97,8 @@ function runnerHasRunCompact(runner: Runner): boolean {
   );
 }
 
-/** Caller context for a bridge operation. */
-interface BridgeContext {
+/** Caller context shared by bridge operations and router command handling. */
+export interface CommandContext {
   userId: string;
   chatId: string;
   messageId: string;
@@ -110,8 +110,8 @@ interface BridgeContext {
   turnMessageIds?: string[];
 }
 
-/** A sendable result payload (mirror of the router's CommandResult shape). */
-interface BridgeResult {
+/** A sendable result payload returned by a command handler. */
+export interface CommandResult {
   text?: string;
   markdown?: string;
   card?: object;
@@ -142,7 +142,7 @@ interface BridgeDeps {
   /** Override the idle watchdog timeout (default 15 min). Tests use a small value. */
   idleTimeoutMs?: number;
   /**
-   * Multi-agent registry. `getRunner(workspace)` looks up
+   * Multi-agent registry. `getRunner(cwd)` looks up
    * `config.defaultAgent` here.
    */
   agentRegistry: AgentRegistry;
@@ -191,10 +191,10 @@ interface IdleWatchdog {
  *
  * The router delegates non-command messages here via `forwardToClaude` and
  * sends command results via `sendResult`. Serial processing is enforced per
- * workspace by `enqueue`: each workspace has its own Promise chain, so at
- * most one agent process runs per workspace at a time, while different
+ * cwd by `enqueue`: each cwd has its own Promise chain, so at
+ * most one agent process runs per cwd at a time, while different
  * workspaces run in parallel (see `activeRuns`, §9.6). This is a load-bearing
- * invariant — concurrent spawns within one workspace would corrupt session
+ * invariant — concurrent spawns within one cwd would corrupt session
  * state. Most card actions go through `enqueueImmediate` (fire-and-forget,
  * outside the serial chain); only run-forwarding is serialized.
  *
@@ -231,7 +231,7 @@ export class Bridge {
   private runners = new Map<string, Map<AgentKind, Runner>>();
   /**
    * Runner 槽位在「活跃运行期间配置变更」时被标 stale（CC-06/P1）：clearRunners() 对
-   * 活跃 workspace 只标 stale、不立即 evict（避免误杀长驻连接），当前 run 结束后由
+   * 活跃 cwd 只标 stale、不立即 evict（避免误杀长驻连接），当前 run 结束后由
    * finalizeRun 安全 evict+dispose，下一轮 getRunner 创建新配置的 runner。
    * key 为 `${cwd}\u0000${agentKind}`。
    */
@@ -239,7 +239,7 @@ export class Bridge {
   /** Queue manager for per-workspace serial processing queue. */
   /** 普通消息队列管理器（public：测试注入 queue-card 状态用）。 */
   queueManager: QueueManager;
-  /** Active runs per workspace (cwd). Multiple workspaces can run in parallel. */
+  /** Active runs per cwd (cwd). Multiple workspaces can run in parallel. */
   private activeRuns = new Map<string, ActiveRun>();
   /** Approval coordinators keyed by runId. */
   private approvalCoordinators = new Map<string, ApprovalCoordinator>();
@@ -247,7 +247,7 @@ export class Bridge {
    * 最近一次已完成的、runner 有 runCompact 的 run（按 cwd）。run 结束后
    * activeRuns 已清空，Compact 需要它来校验 runId 并提供 sessionId。
    */
-  private lastCompactableCodexRun = new Map<
+  private lastCompactableRun = new Map<
     string,
     { runId: string; sessionId: string; agentKind: AgentKind }
   >();
@@ -255,7 +255,7 @@ export class Bridge {
   /**
    * Active `!` bash runs, keyed by runId (NOT cwd). Bash runs bypass the serial
    * queue and may run in parallel with claude runs / other bash runs in the same
-   * workspace, so they live outside `activeRuns`. Tracked so `/stop` can reach
+   * cwd, so they live outside `activeRuns`. Tracked so `/stop` can reach
    * the per-run BashRunner instance via interruptCurrentRun.
    */
   private activeBashRuns = new Map<
@@ -280,7 +280,7 @@ export class Bridge {
     this.sessionReaderRegistry = deps.sessionReaderRegistry;
 
     this.queueManager = new QueueManager(
-      (workspace) => this.activeRuns.has(workspace),
+      (cwd) => this.activeRuns.has(cwd),
       (chatId, card, opts) =>
         this.connector.sendWithRetry(chatId, { card }, { replyTo: opts?.replyTo }),
       (messageId, card) => this.connector.updateCard(messageId, card),
@@ -292,15 +292,15 @@ export class Bridge {
   }
 
   /**
-   * Get or create a runner for the given workspace, keyed by current defaultAgent.
+   * Get or create a runner for the given cwd, keyed by current defaultAgent.
    *
    * Fix 4 (2026-07-18): Cache key includes agentKind, so switching defaultAgent
    * creates a NEW runner under a different key without evicting the old one.
    * This eliminates the need for clearRunners() on agent switch.
    */
-  private getRunner(workspace: string, kind: AgentKind = this.config.defaultAgent): Runner {
-    // Fix 4: Check for runner under (workspace, kind) key
-    const workspaceMap = this.runners.get(workspace);
+  private getRunner(cwd: string, kind: AgentKind = this.config.defaultAgent): Runner {
+    // Fix 4: Check for runner under (cwd, kind) key
+    const workspaceMap = this.runners.get(cwd);
     if (workspaceMap?.has(kind)) {
       return workspaceMap.get(kind)!;
     }
@@ -308,7 +308,7 @@ export class Bridge {
     // review P3-3：缓存超过上限且是新工作区时才回收死槽位——刚创建未 run
     // 的 runner 同样是 isRunning=false，小缓存下立即回收会破坏「创建即注册」
     // 的既有语义（exit-dispatcher 计数回归）。
-    if (this.runners.size >= MAX_CACHED_RUNNER_WORKSPACES && !this.runners.has(workspace)) {
+    if (this.runners.size >= MAX_CACHED_RUNNER_WORKSPACES && !this.runners.has(cwd)) {
       for (const [cwd, slotMap] of [...this.runners.entries()]) {
         if (this.activeRuns.has(cwd)) continue;
         for (const [slotKind, r] of [...slotMap.entries()]) {
@@ -319,8 +319,8 @@ export class Bridge {
       }
     }
 
-    // Create new runner for this (workspace, kind) slot
-    const runner = this.agentRegistry.get(kind, workspace);
+    // Create new runner for this (cwd, kind) slot
+    const runner = this.agentRegistry.get(kind, cwd);
     // Call lifecycle methods for agent runners created via factory
     if (runner && typeof runner.killOrphan === 'function') {
       runner.killOrphan();
@@ -329,9 +329,9 @@ export class Bridge {
       runner.registerExitHandlers();
     }
 
-    // Store in nested map: Map<workspace, Map<kind, Runner>>
+    // Store in nested map: Map<cwd, Map<kind, Runner>>
     if (!workspaceMap) {
-      this.runners.set(workspace, new Map([[kind, runner]]));
+      this.runners.set(cwd, new Map([[kind, runner]]));
     } else {
       workspaceMap.set(kind, runner);
     }
@@ -397,9 +397,9 @@ export class Bridge {
     }
   }
 
-  /** Get the current runner for a workspace. Used by router for agent-specific commands (P3.2). */
-  getCurrentRunner(workspace: string): AgentRunner {
-    return this.getRunner(workspace) as AgentRunner;
+  /** Get the current runner for a cwd. Used by router for agent-specific commands (P3.2). */
+  getCurrentRunner(cwd: string): AgentRunner {
+    return this.getRunner(cwd) as AgentRunner;
   }
 
   /**
@@ -407,8 +407,8 @@ export class Bridge {
    * Used by router for compact button gating (design doc §6.2-2: duck-typing
    * instead of hardcoding agentKind === 'codex').
    */
-  hasRunCompact(workspace: string, kind: AgentKind = this.config.defaultAgent): boolean {
-    const runner = this.getRunner(workspace, kind);
+  hasRunCompact(cwd: string, kind: AgentKind = this.config.defaultAgent): boolean {
+    const runner = this.getRunner(cwd, kind);
     return runnerHasRunCompact(runner);
   }
 
@@ -417,7 +417,11 @@ export class Bridge {
    *  执行时刻，避免 /new、/config 在排队期间改写 live 状态导致语义漂移（方案 D4）。 */
   currentBinding(userId: string): AgentBinding {
     const agent = this.config.defaultAgent;
-    return { agent, sessionId: this.sessionStore.getSessionId(userId, agent) };
+    return {
+      agent,
+      sessionId: this.sessionStore.getSessionId(userId, agent),
+      sessionEpoch: this.sessionStore.getSessionEpoch(userId, agent),
+    };
   }
 
   /**
@@ -433,7 +437,7 @@ export class Bridge {
     // ends, and the next run picks up the new config/agent via getRunner.
     for (const cwd of [...this.runners.keys()]) {
       if (this.activeRuns.has(cwd)) {
-        // CC-06/P1: 活跃 workspace 不能立即 evict（会误杀长驻连接），但必须标记 stale，
+        // CC-06/P1: 活跃 cwd 不能立即 evict（会误杀长驻连接），但必须标记 stale，
         // 否则 finalizeRun 对 workspace-lifetime runner 也不 evict → 下一轮复用旧配置实例。
         // 这里只标待淘汰，当前 run 结束后由 finalizeRun 安全 evict。
         for (const kind of [...this.runners.get(cwd)!.keys()]) {
@@ -529,26 +533,26 @@ export class Bridge {
    * Enqueue a task into the workspace-level serial bridge queue.
    * Delegates to QueueManager for actual implementation.
    */
-  enqueue(workspace: string, task: () => Promise<void>, opts?: EnqueueOptions): void {
-    this.queueManager.enqueue(workspace, task, opts);
+  enqueue(cwd: string, task: () => Promise<void>, opts?: EnqueueOptions): void {
+    this.queueManager.enqueue(cwd, task, opts);
   }
 
   /**
    * Execute a task immediately without going through the queue.
    * Used for / commands that should respond immediately.
    */
-  enqueueImmediate(workspace: string, task: () => Promise<void>): void {
-    this.queueManager.enqueueImmediate(workspace, task);
+  enqueueImmediate(cwd: string, task: () => Promise<void>): void {
+    this.queueManager.enqueueImmediate(cwd, task);
   }
 
-  /** Get queue info for a workspace. */
-  getQueueInfo(workspace: string): { position: number; tasksAhead: number; isRunning: boolean } {
-    return this.queueManager.getQueueInfo(workspace);
+  /** Get queue info for a cwd. */
+  getQueueInfo(cwd: string): { position: number; tasksAhead: number; isRunning: boolean } {
+    return this.queueManager.getQueueInfo(cwd);
   }
 
   /** Remove a task from the queue by messageId. Returns true if found and removed. */
-  removeFromQueue(workspace: string, messageId: string): boolean {
-    return this.queueManager.removeFromQueue(workspace, messageId);
+  removeFromQueue(cwd: string, messageId: string): boolean {
+    return this.queueManager.removeFromQueue(cwd, messageId);
   }
 
   /**
@@ -556,13 +560,13 @@ export class Bridge {
    * place, preserving its queue position. Used by queue.immediate after the
    * user edits a queued message (see router handleQueueImmediate).
    */
-  setTaskReplacement(workspace: string, messageId: string, task: () => Promise<void>): void {
-    this.queueManager.setTaskReplacement(workspace, messageId, task);
+  setTaskReplacement(cwd: string, messageId: string, task: () => Promise<void>): void {
+    this.queueManager.setTaskReplacement(cwd, messageId, task);
   }
 
   /** Update queue card to "cancelled" status when user clicks 撤销. */
-  async updateQueueCardToCancelled(workspace: string, messageId: string): Promise<void> {
-    await this.queueManager.updateQueueCardToCancelled(workspace, messageId);
+  async updateQueueCardToCancelled(cwd: string, messageId: string): Promise<void> {
+    await this.queueManager.updateQueueCardToCancelled(cwd, messageId);
   }
 
   /** Mark a queued task's card as executing immediately (grey out buttons).
@@ -570,10 +574,10 @@ export class Bridge {
    *  instead of waiting for the queue callback. Idempotent: the queue
    *  callback's own updateQueueCardToExecuting call becomes a no-op because
    *  updateQueueCardToExecuting deletes the card-message mapping in finally. */
-  async markQueueCardExecuting(workspace: string, messageId: string): Promise<void> {
-    const task = this.getQueuedTask(workspace, messageId);
+  async markQueueCardExecuting(cwd: string, messageId: string): Promise<void> {
+    const task = this.getQueuedTask(cwd, messageId);
     await this.queueManager.updateQueueCardToExecuting(
-      workspace,
+      cwd,
       messageId,
       task?.messagePreview ?? '',
       false,
@@ -581,8 +585,8 @@ export class Bridge {
   }
 
   /** Get task metadata from queue. */
-  getQueuedTask(workspace: string, messageId: string): QueuedTask | undefined {
-    return this.queueManager.getQueuedTask(workspace, messageId);
+  getQueuedTask(cwd: string, messageId: string): QueuedTask | undefined {
+    return this.queueManager.getQueuedTask(cwd, messageId);
   }
 
   /**
@@ -596,9 +600,9 @@ export class Bridge {
     return this.queueManager.hasBegan(messageId);
   }
 
-  /** Get all queued tasks for a workspace. Returns a copy to prevent aliasing bugs. */
-  getQueuedTasks(workspace: string): QueuedTask[] {
-    return this.queueManager.getQueuedTasks(workspace);
+  /** Get all queued tasks for a cwd. Returns a copy to prevent aliasing bugs. */
+  getQueuedTasks(cwd: string): QueuedTask[] {
+    return this.queueManager.getQueuedTasks(cwd);
   }
 
   /**
@@ -609,22 +613,22 @@ export class Bridge {
    * PATCH-vs-callback-response race that left the card stuck in edit state.
    */
   async updateMessagePreview(
-    workspace: string,
+    cwd: string,
     messageId: string,
     newMessage: string,
   ): Promise<object | null> {
-    const updated = this.queueManager.updateQueuedTaskMessage(workspace, messageId, newMessage);
+    const updated = this.queueManager.updateQueuedTaskMessage(cwd, messageId, newMessage);
     if (!updated) return null;
-    return this.queueManager.buildQueueCardForEdit(workspace, messageId, newMessage);
+    return this.queueManager.buildQueueCardForEdit(cwd, messageId, newMessage);
   }
 
-  /** Whether a claude run is currently in progress in the given workspace. */
-  isBusyFor(workspace: string): boolean {
-    return this.activeRuns.has(workspace);
+  /** Whether a claude run is currently in progress in the given cwd. */
+  isBusyFor(cwd: string): boolean {
+    return this.activeRuns.has(cwd);
   }
 
-  getActiveRunFor(workspace: string): ActiveRunSnapshot | undefined {
-    const active = this.activeRuns.get(workspace);
+  getActiveRunFor(cwd: string): ActiveRunSnapshot | undefined {
+    const active = this.activeRuns.get(cwd);
     if (!active) return undefined;
     const state = active.session.currentState;
     return {
@@ -641,7 +645,7 @@ export class Bridge {
     };
   }
 
-  /** Whether any claude run is currently in progress (any workspace). */
+  /** Whether any claude run is currently in progress (any cwd). */
   get isBusy(): boolean {
     return this.activeRuns.size > 0;
   }
@@ -739,13 +743,13 @@ export class Bridge {
     userId: string;
     chatId: string;
     runId?: string;
-    /** Restrict the match to a single workspace (queue.immediate). When
-     * omitted, all workspaces are candidates (used by /stop, /t, and card stop button which don't know which workspace to target). */
-    workspace?: string;
+    /** Restrict the match to a single cwd (queue.immediate). When
+     * omitted, all workspaces are candidates (used by /stop, /t, and card stop button which don't know which cwd to target). */
+    cwd?: string;
   }): Promise<boolean> {
     // Find the active claude run matching this user/chat
     for (const [cwd, active] of this.activeRuns) {
-      if (input.workspace !== undefined && cwd !== input.workspace) continue;
+      if (input.cwd !== undefined && cwd !== input.cwd) continue;
       if (active.userId === input.userId && active.chatId === input.chatId) {
         if (input.runId && active.runId !== input.runId) continue;
         getLogger().info(
@@ -772,7 +776,7 @@ export class Bridge {
         ]);
         // The chain may have advanced while the stop was in flight: a new run
         // (from a task that began during the stop window) may now occupy this
-        // workspace. Only delete the entry we actually stopped.
+        // cwd. Only delete the entry we actually stopped.
         if (this.activeRuns.get(cwd) === active) {
           this.activeRuns.delete(cwd);
         }
@@ -800,7 +804,7 @@ export class Bridge {
     // Then check active bash runs (! commands). These bypass the serial queue
     // and are tracked separately; stop the per-run BashRunner directly.
     for (const [runId, b] of this.activeBashRuns) {
-      if (input.workspace !== undefined && b.cwd !== input.workspace) continue;
+      if (input.cwd !== undefined && b.cwd !== input.cwd) continue;
       if (b.userId === input.userId && b.chatId === input.chatId) {
         if (input.runId && runId !== input.runId) continue;
         getLogger().info(
@@ -819,7 +823,7 @@ export class Bridge {
   }
 
   /** Send a result message to the user (§7). Returns true on success, false on failure. */
-  async sendResult(result: BridgeResult, ctx: BridgeContext): Promise<boolean> {
+  async sendResult(result: CommandResult, ctx: CommandContext): Promise<boolean> {
     try {
       if (result.card) {
         // 静态卡片体积保护：确保卡片不超过飞书大小限制
@@ -893,7 +897,7 @@ export class Bridge {
    *
    * Returns true if the in-place update succeeded, false if it fell back.
    */
-  async updateCardInPlace(card: object, ctx: BridgeContext): Promise<boolean> {
+  async updateCardInPlace(card: object, ctx: CommandContext): Promise<boolean> {
     if (!ctx.messageId) {
       getLogger().warn(
         '[lark-remote] updateCardInPlace missing messageId, falling back to sendResult',
@@ -918,7 +922,7 @@ export class Bridge {
   }
 
   /** Send a file to the user via Feishu. */
-  async sendFile(filePath: string, ctx: BridgeContext): Promise<void> {
+  async sendFile(filePath: string, ctx: CommandContext): Promise<void> {
     try {
       getLogger().debug(`[lark-remote] sendFile path=${filePath} chatId=${ctx.chatId}`);
       await this.connector.sendFile(ctx.chatId, filePath);
@@ -938,7 +942,7 @@ export class Bridge {
 
   /**
    * Resolve the working directory for a user.
-   * First checks sessionStore (set by /cd), then falls back to first workspace.
+   * First checks sessionStore (set by /cd), then falls back to first cwd.
    * Returns undefined if no cwd is available.
    */
   private resolveCwd(userId: string): string | undefined {
@@ -950,7 +954,7 @@ export class Bridge {
         // NOTE: fallback uses insertion order, not sort preference — by design
         // (cwd fallback stays insertion-order for now)
         cwd = workspaces[0].path;
-        getLogger().info(`[lark-remote] resolveCwd fallback cwd=${cwd} (first saved workspace)`);
+        getLogger().info(`[lark-remote] resolveCwd fallback cwd=${cwd} (first saved cwd)`);
       }
     }
     return cwd;
@@ -966,12 +970,12 @@ export class Bridge {
    */
   async forwardToClaude(
     message: string,
-    ctx: BridgeContext,
+    ctx: CommandContext,
     opts?: { cwdOverride?: string; binding?: AgentBinding },
   ): Promise<void> {
     // D5: agentKind 一律来自绑定。无 binding 时保持现状（live defaultAgent）。
     const agentKind = opts?.binding?.agent ?? this.config.defaultAgent;
-    // P1-14: lane 与执行 cwd 同源。消息入队时（index.ts 闭包）捕获的 workspace
+    // P1-14: lane 与执行 cwd 同源。消息入队时（index.ts 闭包）捕获的 cwd
     // 作为 cwdOverride 显式传入；执行时若 sessionStore cwd 已被 /cd 等命令改写，
     // 以 lane 为准 —— 否则旧 lane 的排队消息会被 busy-drop 静默丢失。空串视为
     // 未提供（与入队前无 cwd 的兜底语义一致）。
@@ -989,12 +993,10 @@ export class Bridge {
         `agent=${agentKind} sessionId=${opts?.binding?.sessionId ?? entry?.sessions?.get(agentKind) ?? '(none)'} message=${message.slice(0, 100)}`,
     );
 
-    // Check if current workspace already has a run in progress
+    // Check if current cwd already has a run in progress
     if (this.activeRuns.has(cwd)) {
-      getLogger().warn(
-        `[lark-remote] workspace busy, dropping message userId=${ctx.userId} cwd=${cwd}`,
-      );
-      await this.sendResult({ text: '此 workspace 正在处理中，请 /stop 后重试' }, ctx);
+      getLogger().warn(`[lark-remote] cwd busy, dropping message userId=${ctx.userId} cwd=${cwd}`);
+      await this.sendResult({ text: '此工作目录正在处理中，请 /stop 后重试' }, ctx);
       return;
     }
 
@@ -1006,10 +1008,14 @@ export class Bridge {
     const sessionId =
       opts?.binding?.sessionId ?? this.sessionStore.getSessionId(ctx.userId, agentKind);
 
-    // 会话代际快照（2026-08-09）：run 在途时 /new、/cd、/resume 会 bump epoch，
-    // 该 run 后续 system.init 的 sessionId 写回即判 stale 跳过。在执行起点
-    // （而非入队点）捕获，保持 binding「钉死 resume」既有语义。
-    const sessionEpochAtStart = this.sessionStore.getSessionEpoch(ctx.userId, agentKind);
+    // 会话代际快照（2026-08-09，2026-10-07 前移）：/new、/cd、/resume 会 bump
+    // epoch，该 run 后续 system.init 的 sessionId 写回即判 stale 跳过。
+    // 快照点优先取 binding.sessionEpoch（入队/commit 时刻 T0，与 sessionId 同刻）：
+    // 排队消息在「commit 后、开跑前」被 reset 时，执行起点捕获会漏判（epoch 已是
+    // bump 后的值）→ 旧 sessionId 被写回复活 reset。无 binding 时回退执行起点捕获，
+    // 保持非排队路径（如 /compact）的既有语义。
+    const sessionEpochAtStart =
+      opts?.binding?.sessionEpoch ?? this.sessionStore.getSessionEpoch(ctx.userId, agentKind);
 
     // Resolve the runner BEFORE creating the run session so the exact instance
     // that will run is captured into activeRun. interruptCurrentRun stops THAT
@@ -1042,7 +1048,7 @@ export class Bridge {
    * Returns runId, cardSession, and activeRun object for tracking.
    */
   private createRunSession(
-    ctx: BridgeContext,
+    ctx: CommandContext,
     cwd: string,
     runner: Runner,
     agentKind: AgentKind = this.config.defaultAgent,
@@ -1137,7 +1143,7 @@ export class Bridge {
     cardSession: RunCardSession,
     sessionId: string | undefined,
     sessionEpochAtStart: number,
-    ctx: BridgeContext,
+    ctx: CommandContext,
     cwd: string,
     runId: string,
     message: string,
@@ -1186,7 +1192,7 @@ export class Bridge {
     // Reasoning tokens (pi usage.reasoning) from the live result event.
     let finalReasoningTokens: number | undefined;
     // 统一的 usage meta 构造（finalize 各分支共享，本方法内原先 5 处手写 11-15
-    // 字段对象；第 6 处 streamCodexCompact 形状不同未收敛）。
+    // 字段对象；第 6 处 streamCompact 形状不同未收敛）。
     // catch 路径需覆盖 flow 字段时在展开后覆写即可。catch error 路径亦复用此
     // 闭包，相比旧手写对象补齐了累计 cache 字段（cumulativeCacheReadTokens/
     // cumulativeCacheCreationTokens），属有意的口径对齐（向 done 路径看齐）。
@@ -1281,10 +1287,8 @@ export class Bridge {
             const realCwd = event.cwd && event.cwd.length > 0 ? event.cwd : cwd;
             if (hasCwd && event.cwd && event.cwd !== cwd) {
               // Session has its own cwd (e.g. EnterWorktree relocate). Keep the
-              // workspace cwd unchanged; record the session's actual cwd in sessionCwds.
-              getLogger().info(
-                `[lark-remote] system.init: workspace cwd=${cwd}, session cwd=${event.cwd}`,
-              );
+              // cwd unchanged; record the session's actual cwd in sessionCwds.
+              getLogger().info(`[lark-remote] system.init: cwd=${cwd}, session cwd=${event.cwd}`);
               this.sessionStore.setSessionIdAndSessionCwd(
                 ctx.userId,
                 agentKind,
@@ -1292,7 +1296,7 @@ export class Bridge {
                 realCwd,
               );
             } else {
-              // First use (no workspace cwd yet) or event.cwd matches runner cwd:
+              // First use (no cwd yet) or event.cwd matches runner cwd:
               // set sessionId + cwd as before; on first use also bootstrap sessionCwds.
               const bootstrapSessionCwd =
                 !hasCwd && event.cwd && event.cwd.length > 0 ? event.cwd : undefined;
@@ -1615,7 +1619,7 @@ export class Bridge {
    * connector 的两个 reaction 方法自带 try/catch（缺失 reaction 是 no-op），
    * 所以这里 fire-and-forget 即可，不额外兜错。
    */
-  private finishTurnReactions(ctx: BridgeContext, emoji: string): void {
+  private finishTurnReactions(ctx: CommandContext, emoji: string): void {
     const ids = ctx.turnMessageIds?.length
       ? [...new Set([...ctx.turnMessageIds, ctx.messageId])]
       : [ctx.messageId];
@@ -1633,7 +1637,7 @@ export class Bridge {
   private async finalizeRun(
     cardSession: RunCardSession,
     activeRun: ActiveRun,
-    ctx: BridgeContext,
+    ctx: CommandContext,
     cwd: string,
   ): Promise<void> {
     const runId = activeRun.runId;
@@ -1675,7 +1679,7 @@ export class Bridge {
       // P1-13: cleanup must survive mid-finalize errors. The only unguarded
       // expression in finalizeRun is the renderRunCard(...) argument evaluated
       // at the sendResult call site; if it throws, the run must still release
-      // its activeRuns slot — otherwise the workspace is permanently busy
+      // its activeRuns slot — otherwise the cwd is permanently busy
       // (every later message busy-dropped until a manual /stop).
       if (this.activeRuns.get(cwd) === activeRun) {
         this.activeRuns.delete(cwd);
@@ -1711,7 +1715,7 @@ export class Bridge {
             cardSession.currentState.sessionId ??
             this.sessionStore.getSessionId(ctx.userId, activeRun.agentKind);
           if (compactSessionId) {
-            this.lastCompactableCodexRun.set(cwd, {
+            this.lastCompactableRun.set(cwd, {
               runId: activeRun.runId,
               sessionId: compactSessionId,
               agentKind: activeRun.agentKind,
@@ -1732,7 +1736,7 @@ export class Bridge {
   private async sendCompletionNotificationCard(
     sessionId: string,
     cwd: string,
-    ctx: BridgeContext,
+    ctx: CommandContext,
     agentKind: AgentKind = this.config.defaultAgent,
   ): Promise<void> {
     try {
@@ -1958,15 +1962,15 @@ export class Bridge {
   }
 
   /**
-   * Handle codex.compact card action — trigger a compaction request for any
+   * Handle compact card action — trigger a compaction request for any
    * runCompact-capable runner（codex/kimi/opencode/pi/claude，按
-   * lastCompactableCodexRun 记录的 agentKind 路由）。Validates the run exists
+   * lastCompactableRun 记录的 agentKind 路由）。Validates the run exists
    * and is in a terminal state, then calls the runner's runCompact().
    */
-  async handleCodexCompact(value: { runId?: string }, ctx: BridgeContext): Promise<void> {
+  async handleCompactAction(value: { runId?: string }, ctx: CommandContext): Promise<void> {
     const log = getLogger();
     log.info(
-      `[lark-remote] handleCodexCompact userId=${ctx.userId} runId=${value.runId?.slice(0, 8)}...`,
+      `[lark-remote] handleCompactAction userId=${ctx.userId} runId=${value.runId?.slice(0, 8)}...`,
     );
 
     const { runId } = value;
@@ -1981,8 +1985,8 @@ export class Bridge {
       return;
     }
 
-    // 校验：run 结束后 activeRuns 已清空，用 lastCompactableCodexRun 对照 runId。
-    const last = this.lastCompactableCodexRun.get(cwd);
+    // 校验：run 结束后 activeRuns 已清空，用 lastCompactableRun 对照 runId。
+    const last = this.lastCompactableRun.get(cwd);
     if (!last || last.runId !== runId) {
       await this.sendResult({ text: '⚠️ 该任务已结束或不属于当前会话' }, ctx);
       return;
@@ -2003,8 +2007,10 @@ export class Bridge {
       return;
     }
 
-    log.info(`[lark-remote] handleCodexCompact executing runCompact for runId=${runId} cwd=${cwd}`);
-    await this.streamCodexCompact({
+    log.info(
+      `[lark-remote] handleCompactAction executing runCompact for runId=${runId} cwd=${cwd}`,
+    );
+    await this.streamCompact({
       sessionId: last.sessionId,
       cwd,
       agentKind: last.agentKind,
@@ -2023,7 +2029,7 @@ export class Bridge {
     sessionId: string,
     cwd: string,
     agentKind: AgentKind,
-    ctx: BridgeContext,
+    ctx: CommandContext,
   ): Promise<boolean> {
     const reader = this.sessionReaderRegistry.get(agentKind);
     if (!reader || !('readCompactionState' in reader)) return false;
@@ -2063,22 +2069,22 @@ export class Bridge {
    * Stream a compaction to a card: start a RunCardSession with
    * operationKind='compaction' (no recursive Compact button), consume
    * runner.runCompact() events, read authoritative jsonl usage, and finish
-   * the card. Shared by handleCodexCompact (run card button) and
+   * the card. Shared by handleCompactAction (run card button) and
    * handleResumeCompact (resume cards) so both flows stay in sync.
    *
    * Precondition: callers have already validated that `runner` implements
    * runCompact and that the session exists in `cwd`.
    */
-  private async streamCodexCompact(opts: {
+  private async streamCompact(opts: {
     sessionId: string;
     cwd: string;
     agentKind: AgentKind;
     runner: Runner;
-    ctx: BridgeContext;
+    ctx: CommandContext;
   }): Promise<void> {
     const log = getLogger();
     const { sessionId, cwd, agentKind, runner, ctx } = opts;
-    log.info(`[lark-remote] streamCodexCompact sessionId=${sessionId} cwd=${cwd}`);
+    log.info(`[lark-remote] streamCompact sessionId=${sessionId} cwd=${cwd}`);
 
     // 防御性能力检查：调用方已校验（runId / resume 两条路径），此处双保险并
     // 让 TS 收窄 runner 类型（'runCompact' in runner 之后的 cast 才合法）。
@@ -2094,7 +2100,7 @@ export class Bridge {
     // 记录，令 /stop 只停到最后注册的那个。
     const busyWith = this.activeRuns.get(cwd);
     if (busyWith) {
-      log.info(`[lark-remote] compact refused: workspace busy cwd=${cwd} runId=${busyWith.runId}`);
+      log.info(`[lark-remote] compact refused: cwd busy cwd=${cwd} runId=${busyWith.runId}`);
       await this.sendResult({ text: '⚠️ 该工作区正在运行任务，请等待结束或先 /stop' }, ctx);
       return;
     }
@@ -2218,10 +2224,10 @@ export class Bridge {
         cumulativeCacheCreationTokens: finalUsage?.cumulativeCacheCreationTokens,
       });
       log.info(
-        `[lark-remote] streamCodexCompact finished sessionId=${sessionId} sawResult=${sawResult} subtype=${resultSubtype ?? 'none'}`,
+        `[lark-remote] streamCompact finished sessionId=${sessionId} sawResult=${sawResult} subtype=${resultSubtype ?? 'none'}`,
       );
     } catch (err) {
-      log.error(`[lark-remote] streamCodexCompact failed: ${errorMessage(err)}`);
+      log.error(`[lark-remote] streamCompact failed: ${errorMessage(err)}`);
       // 终态守卫（与 runAgentStreamToEnd 同口径）：running/finalizing 才转 error，
       // 已终态（interrupted/idle_timeout）保留首终态，不被迟到的异常改写。
       const catchTerminal = cardSession.currentState.terminal;
@@ -2249,14 +2255,14 @@ export class Bridge {
    * Handle resume.compact card action — compact a session directly from a
    * resume card (auto-resume / `/resume <id>`), without a runId.
    *
-   * Unlike handleCodexCompact (which validates against the last finished run's
+   * Unlike handleCompactAction (which validates against the last finished run's
    * runId), the resume card carries the sessionId + agent it was rendered for.
    * Validation: the session must exist in the current cwd (same rule as
    * cmdResume / resume.use) and the runner must implement runCompact.
    */
   async handleResumeCompact(
     value: { sessionId?: string; agent?: string },
-    ctx: BridgeContext,
+    ctx: CommandContext,
   ): Promise<void> {
     const log = getLogger();
     log.info(
@@ -2308,7 +2314,7 @@ export class Bridge {
       return;
     }
 
-    // §5.3: kimi 压缩在途检测（与 handleCodexCompact 同一入口）。
+    // §5.3: kimi 压缩在途检测（与 handleCompactAction 同一入口）。
     if (await this.rejectIfCompactionInFlight(sessionId, cwd, agentKind, ctx)) return;
 
     // Check that the runner has runCompact（codex/kimi/opencode/pi/claude 鸭子探测）。
@@ -2321,7 +2327,7 @@ export class Bridge {
     log.info(
       `[lark-remote] handleResumeCompact executing runCompact sessionId=${sessionId} cwd=${cwd}`,
     );
-    await this.streamCodexCompact({ sessionId, cwd, agentKind, runner, ctx });
+    await this.streamCompact({ sessionId, cwd, agentKind, runner, ctx });
   }
 
   /**
@@ -2330,7 +2336,7 @@ export class Bridge {
    * bash runs in parallel with same-workspace agent runs, tracked in
    * `activeBashRuns` separately from `activeRuns`.
    */
-  async executeBash(command: string, ctx: BridgeContext): Promise<void> {
+  async executeBash(command: string, ctx: CommandContext): Promise<void> {
     const cwd = this.resolveCwd(ctx.userId);
 
     getLogger().info(
@@ -2365,7 +2371,7 @@ export class Bridge {
    */
   private async executeBashInternal(
     command: string,
-    ctx: BridgeContext,
+    ctx: CommandContext,
     cwd: string,
   ): Promise<void> {
     getLogger().debug(
@@ -2395,7 +2401,7 @@ export class Bridge {
 
     // Track this bash run independently from claude's `activeRuns`. Bash runs
     // bypass the serial queue and may run in parallel with a claude run in the
-    // same workspace, so they must NOT share activeRuns (which is keyed by cwd
+    // same cwd, so they must NOT share activeRuns (which is keyed by cwd
     // and would let bash/claude overwrite each other). Keyed by runId so
     // multiple `!` commands can run concurrently. Tracked so /stop can reach
     // the bashRunner (which is otherwise a local) via interruptCurrentRun.

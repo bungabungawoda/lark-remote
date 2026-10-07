@@ -27,7 +27,7 @@ function createMockClaude(env: Record<string, string> = {}): void {
 
 function makeRunner(opts: Record<string, unknown> = {}): ClaudeRunner {
   const runner = new ClaudeRunner({
-    workspace: 'test',
+    cwd: 'test',
     pidDir: tmpDir,
     ...opts,
   } as ConstructorParameters<typeof ClaudeRunner>[0]);
@@ -933,7 +933,7 @@ describe('ClaudeRunner logging probes', () => {
 
 // ClaudeRunner implements AgentRunner (kind/sessionReader).
 describe('ClaudeRunner AgentRunner adaptation', () => {
-  it('exposes kind="claude" and workspace lifetime', () => {
+  it('exposes kind="claude" and cwd lifetime', () => {
     const runner = makeRunner();
     expect(runner.kind).toBe('claude');
     expect(runner.lifetime).toBe('workspace');

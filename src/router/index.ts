@@ -4,7 +4,7 @@ import path from 'node:path';
 import YAML from 'yaml';
 import type { SessionStore, SessionReaderRegistry } from '../session/index.js';
 import type { AppConfig } from '../config/index.js';
-import type { Bridge } from '../bridge/index.js';
+import type { Bridge, CommandContext, CommandResult } from '../bridge/index.js';
 import type { AgentBinding } from '../bridge/queue-manager.js';
 import {
   getConfigDir,
@@ -28,7 +28,8 @@ import type {
 import { getLogger } from '../logger/index.js';
 import type { CloneSession } from '../clone.js';
 import { stripPlaceholders } from '../inbound/placeholder.js';
-import { type SessionDisplayUsage, activeRunUsage, clampInt } from './utils.js';
+import { clampInt } from '../common/clamp.js';
+import { type SessionDisplayUsage, activeRunUsage } from './usage-format.js';
 import {
   markdownDiv,
   buildSessionHistoryCard,
@@ -39,10 +40,12 @@ import {
   PAGE_JUMP_INVALID_HINT,
 } from './card-helpers.js';
 import { MAX_FILE_UPLOAD_SIZE } from '../connector/file-limits.js';
+import { newSessionButton, resumeCompactButton, agentDisplayName } from '../card/card-shared.js';
+import { displayName } from '../platform/path.js';
 import { atomicWrite } from '../persistence/atomic-write.js';
 import {
   checkLatestVersion as defaultCheckLatestVersion,
-  isNewer as defaultIsNewer,
+  compareVersions as defaultCompareVersions,
   runInstallLatest as defaultRunInstallLatest,
   type VersionCheckResult,
   type InstallResult,
@@ -183,22 +186,6 @@ const RESUME_CONTENT_PREFETCH = 5;
  * `New Session`、空串），都不是真实输入，不得渲染成行标题。
  */
 const RESUME_SUMMARY_PLACEHOLDERS = new Set(['', '(no user message)', '(无摘要)', 'New Session']);
-import { newSessionButton, resumeCompactButton, agentDisplayName } from '../card/card-shared.js';
-import { displayName } from '../platform/path.js';
-
-interface CommandContext {
-  userId: string;
-  chatId: string;
-  messageId: string;
-  /** 本轮（装配窗口）全部入站 messageId，`messageId` 是最后一条。见 BridgeContext 同名字段（§B8）。 */
-  turnMessageIds?: string[];
-}
-
-interface CommandResult {
-  text?: string;
-  markdown?: string;
-  card?: object;
-}
 
 /**
  * Card-action commands that must run with enqueue({ immediate: true }).
@@ -215,7 +202,7 @@ interface CommandResult {
  * stop        — interrupt current run
  * ls.file     — send file only
  * ws.page     — paginate /ws list only
- * ws.remove   — delete workspace alias only
+ * ws.remove   — delete cwd alias only
  * resume.use  — set sessionId + agent for correct reader routing
  * help.*      — read-only help commands
  * order.delete — delete order only
@@ -236,8 +223,8 @@ export interface CardActionPayload {
   name?: string;
   runId?: string;
   sessionId?: string;
+  /** 目标工作目录（queue.* 卡片动作定位队列；stop 等卡片回传执行目录）。 */
   cwd?: string;
-  workspace?: string;
   messageId?: string;
   userId?: string;
   chatId?: string;
@@ -246,7 +233,7 @@ export interface CardActionPayload {
   offset?: number;
   /**
    * `/ls` 浏览起点（本次 `/ls <dir>` 指定的目录；省略时 = cwd）。
-   * 卡片上的「返回」按钮回到这里，而不是回到 workspace cwd。
+   * 卡片上的「返回」按钮回到这里，而不是回到会话工作目录。
    */
   root?: string;
   /** /resume 列表的 agent 类型。 */
@@ -500,6 +487,25 @@ const IMMEDIATE_ACTION_CMDS: ReadonlySet<string> = new Set([
   ...APPROVAL_ACTION_CMDS,
 ]);
 
+/**
+ * 会话 / cwd / agent 变更类卡片动作（单源）。这些动作会改写 sessionStore 的
+ * sessionId / cwd / defaultAgent，必须与入站装配器的 700ms 静默窗口定序：
+ * 控制层（index.ts）在执行它们之前先 flush 该 user/chat 的装配窗口，保证窗口内
+ * 先到的文本消息在本动作之前 commit（绑定动作前的旧状态）。否则窗口内消息会
+ * 漂移到动作之后的新状态（2026-10-07 事故：输入「重新构建」后立即点「新会话」，
+ * 消息落到新会话）。
+ *
+ * 文本命令（/new、/cd、/resume、/config）已由 index.ts 命令分支先 flush，
+ * 不在此列——只有卡片动作绕过了该分支。
+ */
+export const SESSION_MUTATING_ACTION_CMDS: ReadonlySet<string> = new Set([
+  'new-session',
+  'resume.use',
+  'ls.switch',
+  'ws.use',
+  'config.save',
+]);
+
 /** W2.8 单源：payload.offset → 钳位 offset（原先 9 处逐字副本）。 */
 function payloadOffset(value: { offset?: number }): number {
   return Math.max(0, Math.trunc(Number(value.offset) || 0));
@@ -559,7 +565,7 @@ export class CommandRouter {
       cachePath?: string;
       bypassCache?: boolean;
     }) => Promise<VersionCheckResult>;
-    isNewer: (current: string, latest: string) => boolean | null;
+    compareVersions: (current: string, latest: string) => -1 | 0 | 1 | null;
     runInstallLatest: () => Promise<InstallResult>;
   };
   /** /config 卡片编辑暂存区（public：测试直接读取断言，替代 as unknown as）。 */
@@ -621,7 +627,7 @@ export class CommandRouter {
         cachePath?: string;
         bypassCache?: boolean;
       }) => Promise<VersionCheckResult>;
-      isNewer?: (current: string, latest: string) => boolean | null;
+      compareVersions?: (current: string, latest: string) => -1 | 0 | 1 | null;
       runInstallLatest?: () => Promise<InstallResult>;
     };
   }) {
@@ -645,7 +651,7 @@ export class CommandRouter {
     this.cloneSession = opts.cloneSession;
     this.updateFns = {
       checkLatestVersion: opts.updateFns?.checkLatestVersion ?? defaultCheckLatestVersion,
-      isNewer: opts.updateFns?.isNewer ?? defaultIsNewer,
+      compareVersions: opts.updateFns?.compareVersions ?? defaultCompareVersions,
       runInstallLatest: opts.updateFns?.runInstallLatest ?? defaultRunInstallLatest,
     };
   }
@@ -669,7 +675,7 @@ export class CommandRouter {
   /**
    * Route a message: if it starts with /, handle as command; if it starts with !, execute as bash; otherwise forward to Claude.
    *
-   * 命令识别前置条件（2026-09-15 P0 修复）：
+   * 命令识别前置条件（2026-09-15 P0 修复，`inbound-unified-input-design.md` §5.6）：
    * 裸前缀判定会被结构占位符命中 —— SDK 把富文本里的图片渲染成 `![image](img_v3_…)`，
    * 首字符恰好是 `!`，整段用户消息被当 shell 命令执行（`executeBash "[image](img_v3_…"`）。
    * 因此命令前缀只在「调用方声明纯文本 + 剥离占位符后非空且无占位符 + 首字符是 / 或 !」
@@ -726,7 +732,7 @@ export class CommandRouter {
       return null;
     }
 
-    // Forward to Claude (P1-14: pass the enqueue-time workspace through so the
+    // Forward to Claude (P1-14: pass the enqueue-time cwd through so the
     // run uses the same cwd as the serial queue lane, even if /cd ran while
     // the message was queued)
     // 剥离占位符后再转发：agent 只该看到用户文本（附图已转成 attachments 块，
@@ -880,8 +886,8 @@ export class CommandRouter {
         // 调 updateCardInPlace → Feishu API 乱序到达导致 toggle 卡死。
         // 2026-07-18: 返回 enqueueConfigAction 的结果以支持 toast 响应
         return this.enqueueConfigAction(value, ctx);
-      case 'codex.compact':
-        await this.bridge.handleCodexCompact(value, ctx);
+      case 'compact':
+        await this.bridge.handleCompactAction(value, ctx);
         return;
       case 'resume.compact':
         await this.bridge.handleResumeCompact(value, ctx);
@@ -918,16 +924,16 @@ export class CommandRouter {
    * Routes to the appropriate bridge method based on value.cmd.
    * Returns a toast response for immediate user feedback.
    */
-  /** queue.* 卡片动作通用守卫：workspace/messageId 缺失时回复错误并返回 null。 */
+  /** queue.* 卡片动作通用守卫：cwd/messageId 缺失时回复错误并返回 null。 */
   private async queuePayloadOrReply(
-    value: { workspace?: string; messageId?: string },
+    value: { cwd?: string; messageId?: string },
     ctx: CommandContext,
-  ): Promise<{ workspace: string; messageId: string } | null> {
-    if (!value.workspace || !value.messageId) {
+  ): Promise<{ cwd: string; messageId: string } | null> {
+    if (!value.cwd || !value.messageId) {
       await this.bridge.sendResult({ text: CARD_PAYLOAD_MISSING }, ctx);
       return null;
     }
-    return { workspace: value.workspace, messageId: value.messageId };
+    return { cwd: value.cwd, messageId: value.messageId };
   }
 
   /** 答案类操作的统一失败反馈：重复投递（同一 nonce 第二次点击）是已生效的
@@ -963,17 +969,17 @@ export class CommandRouter {
    * Handle queue.cancel: remove this message from the queue.
    */
   private async handleQueueCancel(
-    value: { workspace?: string; messageId?: string },
+    value: { cwd?: string; messageId?: string },
     ctx: CommandContext,
   ): Promise<void> {
     const payload = await this.queuePayloadOrReply(value, ctx);
     if (!payload) return;
-    const { workspace, messageId } = payload;
+    const { cwd, messageId } = payload;
 
-    const removed = this.bridge.removeFromQueue(workspace, messageId);
+    const removed = this.bridge.removeFromQueue(cwd, messageId);
     if (removed) {
       // Update the queue card in-place to "cancelled" state
-      await this.bridge.updateQueueCardToCancelled(workspace, messageId);
+      await this.bridge.updateQueueCardToCancelled(cwd, messageId);
       // Send a brief confirmation (user can see the card has been updated)
       await this.bridge.sendResult({ text: '✅ 已从队列中撤销' }, ctx);
     } else {
@@ -986,17 +992,17 @@ export class CommandRouter {
    * Instead of asking user to resend, we keep the target task in queue and let it execute.
    */
   private async handleQueueImmediate(
-    value: { workspace?: string; messageId?: string },
+    value: { cwd?: string; messageId?: string },
     ctx: CommandContext,
   ): Promise<void> {
     const payload = await this.queuePayloadOrReply(value, ctx);
     if (!payload) return;
-    const { workspace, messageId } = payload;
+    const { cwd, messageId } = payload;
 
     // 1. Check target exists BEFORE any await. The queue chain can advance
     // while later awaits (interruptCurrentRun / markQueueCardExecuting's card
     // send) are in flight, so the target must be read synchronously at entry.
-    const targetTask = this.bridge.getQueuedTask(workspace, messageId);
+    const targetTask = this.bridge.getQueuedTask(cwd, messageId);
 
     if (!targetTask) {
       // The target already began (or was cancelled) before this handler ran. We
@@ -1025,9 +1031,9 @@ export class CommandRouter {
       const editedContent = targetTask.editedMessage;
       // D3/Step3: 替换闭包复用原任务的 binding（不重新快照）+ 恢复丢失的
       // cwdOverride（lane cwd 同源）。否则编辑后重新执行的 run 会丢 cwd 与绑定。
-      this.bridge.setTaskReplacement(workspace, messageId, async () => {
+      this.bridge.setTaskReplacement(cwd, messageId, async () => {
         await this.handle(editedContent, ctx, {
-          cwdOverride: workspace,
+          cwdOverride: cwd,
           binding: targetTask.binding,
         });
       });
@@ -1039,7 +1045,7 @@ export class CommandRouter {
     const stopped = await this.bridge.interruptCurrentRun({
       userId: ctx.userId,
       chatId: ctx.chatId,
-      workspace,
+      cwd,
     });
     getLogger().info(`[router] queue.immediate: stopped=${stopped}`);
 
@@ -1048,7 +1054,7 @@ export class CommandRouter {
     // advances concurrently): then it is already out of the snapshot and every
     // remaining queued task is BEHIND it — clearing must stop, not run off the
     // end and delete tasks queued after the target.
-    const tasks = this.bridge.getQueuedTasks(workspace);
+    const tasks = this.bridge.getQueuedTasks(cwd);
     const targetIdx = tasks.findIndex((t) => t.messageId === messageId);
     let removedCount = 0;
     const removedIds: string[] = [];
@@ -1059,7 +1065,7 @@ export class CommandRouter {
     // in flight.
     for (let i = 0; i < targetIdx; i++) {
       const task = tasks[i];
-      if (this.bridge.removeFromQueue(workspace, task.messageId)) {
+      if (this.bridge.removeFromQueue(cwd, task.messageId)) {
         removedCount++;
         removedIds.push(task.messageId);
       }
@@ -1073,7 +1079,7 @@ export class CommandRouter {
     // target are already gone, so any chain advance can only reach the target
     // itself — the card updates may safely run in the background.
     for (const removedId of removedIds) {
-      void this.bridge.updateQueueCardToCancelled(workspace, removedId);
+      void this.bridge.updateQueueCardToCancelled(cwd, removedId);
     }
 
     // 4. DO NOT remove the target task - keep it in queue to execute immediately
@@ -1083,13 +1089,13 @@ export class CommandRouter {
     // re-registering over the same slot). Covers the user editing the message
     // again while interruptCurrentRun was awaiting; skipped automatically once
     // the task has begun, because getQueuedTask then returns undefined.
-    const latestTask = this.bridge.getQueuedTask(workspace, messageId);
+    const latestTask = this.bridge.getQueuedTask(cwd, messageId);
     if (latestTask?.editedMessage) {
       const editedContent = latestTask.editedMessage;
       // D3/Step3: 复用原任务 binding + 恢复 cwdOverride（同上）。
-      this.bridge.setTaskReplacement(workspace, messageId, async () => {
+      this.bridge.setTaskReplacement(cwd, messageId, async () => {
         await this.handle(editedContent, ctx, {
-          cwdOverride: workspace,
+          cwdOverride: cwd,
           binding: latestTask.binding,
         });
       });
@@ -1098,9 +1104,9 @@ export class CommandRouter {
     // 4.5/6. The target must only be marked executing (and the toast may only
     // promise immediate execution) when it is really the next task after the
     // stop. While interruptCurrentRun was awaiting, a task ahead of the target
-    // may have begun and now occupy the workspace — the target is still queued
+    // may have begun and now occupy the cwd — the target is still queued
     // but is NOT next, so its card must stay queued and the toast must say so.
-    const targetStillQueued = this.bridge.getQueuedTask(workspace, messageId) !== undefined;
+    const targetStillQueued = this.bridge.getQueuedTask(cwd, messageId) !== undefined;
     if (!targetStillQueued) {
       // The target began or was cancelled while earlier awaits were in flight —
       // a success toast must never promise execution of a task that will not
@@ -1124,14 +1130,14 @@ export class CommandRouter {
       }
       return;
     }
-    const workspaceBusy = this.bridge.isBusyFor(workspace);
+    const workspaceBusy = this.bridge.isBusyFor(cwd);
     if (!workspaceBusy) {
       // Normal path: nothing new began during the stop, the target is next.
       // Mark its own card as executing now so buttons grey out immediately.
       // Done BEFORE any removal so getQueuedTask still returns the task with
       // its (possibly edited) messagePreview for the card. The queue callback's
       // later updateQueueCardToExecuting call becomes a no-op (idempotent).
-      await this.bridge.markQueueCardExecuting(workspace, messageId);
+      await this.bridge.markQueueCardExecuting(cwd, messageId);
       const stopPrefix = stopped ? '⚡ 已停止当前任务，' : '';
       await this.bridge.sendResult(
         { text: `${stopPrefix}清除了 ${removedCount} 条排队消息。您的消息将立即执行。` },
@@ -1151,16 +1157,16 @@ export class CommandRouter {
    * Handle queue.diagnose: show diagnostic info for why message is queuing.
    */
   private async handleQueueDiagnose(
-    value: { workspace?: string; messageId?: string; userId?: string; chatId?: string },
+    value: { cwd?: string; messageId?: string; userId?: string; chatId?: string },
     ctx: CommandContext,
   ): Promise<void> {
     const payload = await this.queuePayloadOrReply(value, ctx);
     if (!payload) return;
-    const { workspace, messageId } = payload;
+    const { cwd, messageId } = payload;
     const targetUserId = value.userId ?? ctx.userId;
 
-    const task = this.bridge.getQueuedTask(workspace, messageId);
-    const queueInfo = this.bridge.getQueueInfo(workspace);
+    const task = this.bridge.getQueuedTask(cwd, messageId);
+    const queueInfo = this.bridge.getQueueInfo(cwd);
     const activeRuns = this.bridge.getAllActiveRuns();
 
     // Build diagnostic info
@@ -1196,7 +1202,7 @@ export class CommandRouter {
             tag: 'div',
             text: {
               tag: 'lark_md',
-              content: `**消息信息**\n- 工作目录: \`${workspace}\`\n- 会话 ID: \`${sessionId ?? '(none)'}\`\n- 消息预览: ${task?.messagePreview ?? '(unknown)'}`,
+              content: `**消息信息**\n- 工作目录: \`${cwd}\`\n- 会话 ID: \`${sessionId ?? '(none)'}\`\n- 消息预览: ${task?.messagePreview ?? '(unknown)'}`,
             },
           },
           { tag: 'hr' },
@@ -1231,15 +1237,15 @@ export class CommandRouter {
    * Handle queue.edit: show input field for editing the queued message.
    */
   private async handleQueueEdit(
-    value: { workspace?: string; messageId?: string },
+    value: { cwd?: string; messageId?: string },
     ctx: CommandContext,
   ): Promise<void> {
     const payload = await this.queuePayloadOrReply(value, ctx);
     if (!payload) return;
-    const { workspace, messageId } = payload;
+    const { cwd, messageId } = payload;
 
     // Get current message preview
-    const task = this.bridge.getQueuedTask(workspace, messageId);
+    const task = this.bridge.getQueuedTask(cwd, messageId);
     if (!task) {
       await this.bridge.sendResult({ text: '⚠️ 该消息不在队列中（可能已开始执行）' }, ctx);
       return;
@@ -1282,7 +1288,7 @@ export class CommandRouter {
                     placeholder: { tag: 'plain_text', content: '输入新的消息内容...' },
                     default_value: task.messagePreview,
                     behaviors: [
-                      { type: 'callback', value: { cmd: 'queue.input', workspace, messageId } },
+                      { type: 'callback', value: { cmd: 'queue.input', cwd, messageId } },
                     ],
                   },
                 ],
@@ -1307,7 +1313,7 @@ export class CommandRouter {
    */
   private async handleQueueInput(
     value: {
-      workspace?: string;
+      cwd?: string;
       messageId?: string;
       inputValue?: string;
       formValue?: Record<string, unknown>;
@@ -1317,7 +1323,7 @@ export class CommandRouter {
     const newMessage = value.inputValue ?? (value.formValue?.['newMessage'] as string | undefined);
     const payload = await this.queuePayloadOrReply(value, ctx);
     if (!payload) return;
-    const { workspace, messageId } = payload;
+    const { cwd, messageId } = payload;
 
     if (!newMessage) {
       await this.bridge.sendResult({ text: '⚠️ 缺少新消息内容' }, ctx);
@@ -1337,7 +1343,7 @@ export class CommandRouter {
     // there is no interleaving window.
     //
     // D3/Step3：复用原任务 binding（不重新快照）+ 恢复 cwdOverride。
-    const inputTask = this.bridge.getQueuedTask(workspace, messageId);
+    const inputTask = this.bridge.getQueuedTask(cwd, messageId);
     if (!inputTask) {
       // Task already left the queue (began or was cancelled) before we could
       // register the replacement. Return a toast so the edit-form card gets
@@ -1346,8 +1352,8 @@ export class CommandRouter {
       // toast/card field).
       return { toast: { type: 'info', content: '任务已不在队列中（可能已开始执行或被撤销）' } };
     }
-    this.bridge.setTaskReplacement(workspace, messageId, async () => {
-      await this.handle(newMessage, ctx, { cwdOverride: workspace, binding: inputTask.binding });
+    this.bridge.setTaskReplacement(cwd, messageId, async () => {
+      await this.handle(newMessage, ctx, { cwdOverride: cwd, binding: inputTask.binding });
     });
 
     // Update the message preview (and editedMessage so handleQueueImmediate
@@ -1361,7 +1367,7 @@ export class CommandRouter {
     // await here: even if the queue chain advances and the replacement is
     // consumed, the user-facing card update is best-effort (the executing card
     // is updated by updateQueueCardToExecuting instead).
-    const card = await this.bridge.updateMessagePreview(workspace, messageId, newMessage);
+    const card = await this.bridge.updateMessagePreview(cwd, messageId, newMessage);
     if (!card) {
       // Task left the queue during the await (began or cancelled). The
       // replacement was already consumed (begin path) or cleaned up
@@ -1989,7 +1995,7 @@ export class CommandRouter {
   }
 
   /**
-   * Handle ws.use card action: switch to the workspace, then refresh the /ws
+   * Handle ws.use card action: switch to the cwd, then refresh the /ws
    * list card in place so "recent" sort order is immediately visible.
    *
    * Unlike the command-line `/ws use` (which returns text), the card action
@@ -2003,7 +2009,7 @@ export class CommandRouter {
     const name = value.name ?? '';
     const useResult = this.cmdWs(['use', name], ctx);
 
-    // Error cases (workspace not found, path invalid, etc.): relay as error toast
+    // Error cases (cwd not found, path invalid, etc.): relay as error toast
     if (useResult.text && !useResult.text.includes('已切换')) {
       return { toast: { type: 'error', content: useResult.text } };
     }
@@ -2036,7 +2042,7 @@ export class CommandRouter {
   }
 
   /**
-   * Handle ws.remove: remove the workspace alias and refresh the /ws list card
+   * Handle ws.remove: remove the cwd alias and refresh the /ws list card
    * in place (mirrors handleOrderDelete). Without this the stale alias would
    * remain visible on the card the user just clicked.
    */
@@ -2890,7 +2896,7 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
       return { text: `❌ 版本检查失败: ${(err as Error).message}` };
     }
 
-    if (!this.updateFns.isNewer(current, latest)) {
+    if (this.updateFns.compareVersions(current, latest) !== 1) {
       return { text: `✅ 已是最新版本 ${current}` };
     }
 
@@ -2929,7 +2935,7 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
 
   private cmdNew(ctx: CommandContext): CommandResult {
     // 只清 sessionId 保留 cwd — 否则 /new 之后 /resume 会提示"请先 /cd
-    // 设置工作目录"，但用户的 workspace 还在。2026-06-21 复盘：用户
+    // 设置工作目录"，但用户的 cwd 还在。2026-06-21 复盘：用户
     // /new → /resume 后被误导以为需要重新 /cd。
     const agentName = agentDisplayName(this.config.defaultAgent);
     this.sessionStore.clearSessionId(ctx.userId, this.config.defaultAgent, {
@@ -3286,7 +3292,7 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
    * @param offset  分页起点（条目数）
    * @param rootDir 浏览起点：卡片「返回」按钮回到这里。省略时默认 = 本次列出的
    *                目录（`/ls <dir>` 的起点即该目录），因此「返回」不会把用户
-   *                丢回 workspace cwd（用户明确反馈过）。
+   *                丢回 工作目录（用户明确反馈过）。
    * @param q       关键词筛选：只匹配**当前层**条目名（不递归），大小写不敏感。
    *                省略/空 = 无筛选。
    */
@@ -3336,7 +3342,7 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
 
     // 浏览起点（「返回」按钮的目标）：`/ls <dir>` 的起点就是该目录本身，之后
     // 进入子目录/翻页/刷新时由卡片 payload 的 root 一路带过来。省略时 = 本次
-    // 列出的目录，因此「返回」永远不会把用户丢回 workspace cwd。
+    // 列出的目录，因此「返回」永远不会把用户丢回工作目录。
     const browseRoot = rootDir ? path.resolve(cwd, rootDir) : targetDir;
 
     try {
@@ -3664,7 +3670,7 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
         text: { tag: 'plain_text', content: '上级' },
         type: 'default',
         size: 'small',
-        // 浏览起点 = 文件所在目录：进入后「返回」回到这里，不回 workspace cwd
+        // 浏览起点 = 文件所在目录：进入后「返回」回到这里，不回 工作目录
         behaviors: [
           { type: 'callback', value: { cmd: 'ls.browse', path: parentDir, root: parentDir } },
         ],
@@ -3790,7 +3796,7 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
           hasPagination,
         } = pageSlice(visible, offset, WS_PAGE_SIZE);
 
-        // Build body elements: current cwd + workspace list with dividers
+        // Build body elements: current cwd + cwd list with dividers
         const bodyElements: object[] = [];
 
         // Current working directory section

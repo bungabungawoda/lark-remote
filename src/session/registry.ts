@@ -3,7 +3,7 @@ import type { AgentKind, AgentSessionReader } from '../runner/index.js';
  * Registry of `AgentSessionReader` instances, keyed by `AgentKind`. Mirrors
  * `AgentRegistry` but for session-history reads. `index.ts` registers one
  * reader per available agent at startup; router/bridge look up readers here
- * instead of importing `claude-sessions.ts` directly.
+ * instead of importing `sessions.ts` directly.
  */
 export class SessionReaderRegistry {
   private readonly readers = new Map<AgentKind, AgentSessionReader>();

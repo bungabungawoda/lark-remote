@@ -8,7 +8,7 @@ let globalRegistry: AgentRegistry | undefined;
 
 /**
  * Registry of agent factories, keyed by `AgentKind`. `index.ts` registers one
- * factory per available agent at startup; `Bridge.getRunner(workspace)` looks
+ * factory per available agent at startup; `Bridge.getRunner(cwd)` looks
  * up `config.defaultAgent` here to pick the concrete runner.
  *
  * Singleton caching: the factory MAY cache its instance internally. All
@@ -20,12 +20,12 @@ let globalRegistry: AgentRegistry | undefined;
  * configContainer, enabling runtime config changes to take effect.
  */
 export class AgentRegistry {
-  private readonly factories = new Map<AgentKind, (workspace: string) => Runner>();
+  private readonly factories = new Map<AgentKind, (cwd: string) => Runner>();
   private readonly displayNames = new Map<AgentKind, string>();
   /** Container for runtime config updates (pi provider dynamic reload). */
   private configContainer?: { current: unknown };
 
-  register(kind: AgentKind, factory: (workspace: string) => Runner): void {
+  register(kind: AgentKind, factory: (cwd: string) => Runner): void {
     this.factories.set(kind, factory);
   }
 
@@ -75,11 +75,11 @@ export class AgentRegistry {
     return this.configContainer;
   }
 
-  get(kind: AgentKind, workspace: string): Runner {
+  get(kind: AgentKind, cwd: string): Runner {
     const factory = this.factories.get(kind);
     if (!factory) {
       throw new Error(`agent not registered: ${kind}`);
     }
-    return factory(workspace);
+    return factory(cwd);
   }
 }

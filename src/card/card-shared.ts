@@ -90,11 +90,11 @@ export function newSessionButton(): object {
 /**
  * Create a CardKit 2.0 Compact button for any runCompact-capable runner
  * (codex/kimi/opencode/pi/claude，鸭子类型 `'runCompact' in runner` 探测）。
- * Triggers the compact flow via the codex.compact callback（handler 按
+ * Triggers the compact flow via the compact callback（handler 按
  * runId 解析 agentKind，claude 走 stream-json 内建 /compact）。
  */
 export function compactButton(runId: string): object {
-  return cardButton('🗜 Compact', { cmd: 'codex.compact', runId }, { type: 'primary' });
+  return cardButton('🗜 Compact', { cmd: 'compact', runId }, { type: 'primary' });
 }
 
 /**
