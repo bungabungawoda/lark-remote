@@ -197,7 +197,9 @@ export class OpencodeSessionReader implements AgentSessionReader {
     }
 
     try {
-      if (data.info.directory !== realCwd) {
+      // 与 listSessions 的过滤同口径（PathKit.samePath）：export 里的 directory
+      // 形态由 opencode 自行记录，裸 !== 会让会话列得出却读不出（win32 常态）
+      if (!samePath(data.info.directory, realCwd)) {
         return { events: [] };
       }
 

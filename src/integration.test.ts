@@ -395,7 +395,8 @@ describe('异常场景', () => {
     const { ClaudeRunner } = await import('./runner/index.js');
     const pidDir = path.join(tmpDir, 'pids');
     fs.mkdirSync(pidDir, { recursive: true });
-    const pidFile = path.join(pidDir, 'claude-test.pid');
+    const { pidFileSuffix } = await import('./runner/common/spawning-runner.js');
+    const pidFile = path.join(pidDir, `claude${pidFileSuffix('test')}.pid`);
 
     // Simulate a stale pid pointing to a dead process
     fs.writeFileSync(pidFile, '999999999', 'utf-8');

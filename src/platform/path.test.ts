@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { samePath, displayName, encodeProjectDirName } from './path.js';
+import { samePath, pathKey, displayName, encodeProjectDirName } from './path.js';
 
 describe('samePath', () => {
   it('win32: case-insensitive and separator-insensitive', () => {
@@ -20,6 +20,37 @@ describe('samePath', () => {
   it('linux: case-sensitive', () => {
     expect(samePath('/home/user', '/home/User', { platform: 'linux' })).toBe(false);
     expect(samePath('/home/user', '/home/user', { platform: 'linux' })).toBe(true);
+  });
+});
+
+describe('pathKey', () => {
+  it('win32: lowercase + backslash→slash + strip trailing slashes', () => {
+    expect(pathKey('C:\\Users\\X\\Proj\\', { platform: 'win32' })).toBe('c:/users/x/proj');
+    expect(pathKey('c:/users/x/proj', { platform: 'win32' })).toBe('c:/users/x/proj');
+  });
+
+  it('darwin: lowercase + strip trailing slashes, backslash untouched', () => {
+    expect(pathKey('/Home/User/', { platform: 'darwin' })).toBe('/home/user');
+    expect(pathKey('C:\\weird', { platform: 'darwin' })).toBe('c:\\weird');
+  });
+
+  it('linux: identity（与 samePath 的严格相等口径一致）', () => {
+    expect(pathKey('/Home/User/', { platform: 'linux' })).toBe('/Home/User/');
+  });
+
+  it('不变量：samePath(a,b) ⟺ pathKey(a)===pathKey(b)', () => {
+    const samples: Array<[string, string, NodeJS.Platform]> = [
+      ['C:\\Foo\\Bar', 'c:/foo/bar', 'win32'],
+      ['C:\\foo\\', 'C:\\foobar', 'win32'],
+      ['/Users/A', '/users/a/', 'darwin'],
+      ['/home/user', '/home/User', 'linux'],
+      ['/home/user/', '/home/user', 'linux'],
+    ];
+    for (const [a, b, platform] of samples) {
+      expect(pathKey(a, { platform }) === pathKey(b, { platform })).toBe(
+        samePath(a, b, { platform }),
+      );
+    }
   });
 });
 

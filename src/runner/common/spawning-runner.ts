@@ -88,6 +88,35 @@ export function registerExitCleanup(handler: ExitCleanupHandler): void {
   registeredRunners.add(handler);
 }
 
+/**
+ * FNV-1a 32 位哈希（hex，平台无关确定性）：pid 文件后缀的消歧段。
+ */
+function fnv1aHex(text: string): string {
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < text.length; i++) {
+    hash ^= text.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return (hash >>> 0).toString(16).padStart(8, '0');
+}
+
+/**
+ * pid 文件名的 workspace 后缀：`-<消毒 cwd>-<cwd hash>`。
+ *
+ * 消毒段（非字母数字 → `_`）只是可读性；不同 cwd 可能消毒出同一段
+ * （`/w/a+b` 与 `/w/a_b`），而 killOrphan 的身份校验只比对二进制名——
+ * 不掺 hash 时两个 workspace 会共用同一个 pid 文件，启动时的孤儿回收
+ * 可能误杀对方 workspace 存活的同名 agent。hash 段按**原始 cwd** 计算，
+ * 与消毒无关，消除碰撞。消毒段截到 96 字符，深路径下给 MAX_PATH 留余量。
+ *
+ * 导出给测试/anchor 复用：任何「手工构造 runner 会写出的 pid 文件路径」的
+ * 代码都必须走这里，自己拼一份就是自造半迁移。
+ */
+export function pidFileSuffix(cwd: string): string {
+  const sanitized = cwd.replace(/[^a-zA-Z0-9]/g, '_').slice(0, 96);
+  return `-${sanitized}-${fnv1aHex(cwd)}`;
+}
+
 /** Remove a handler so it can be GC'd (agent slots / finished bash runs). */
 export function unregisterExitCleanup(handler: ExitCleanupHandler): void {
   registeredRunners.delete(handler);
@@ -182,9 +211,8 @@ export abstract class SpawningRunner {
     this.logTag = opts.logTag ?? 'spawning-runner';
     this.agent = opts.agent;
     const pidDir = opts.pidDir ?? path.join(os.homedir(), '.lark-remote');
-    const workspaceSuffix = `-${opts.cwd.replace(/[^a-zA-Z0-9]/g, '_')}`;
     const pidFilePrefix = opts.pidFilePrefix ?? 'spawning';
-    this.pidFilePath = path.join(pidDir, `${pidFilePrefix}${workspaceSuffix}.pid`);
+    this.pidFilePath = path.join(pidDir, `${pidFilePrefix}${pidFileSuffix(opts.cwd)}.pid`);
     this.terminator =
       opts.terminator ?? createTerminator({ graceMs: this.stopGraceMs, agent: opts.agent });
     this.spawnHeartbeat = new SpawnHeartbeat(opts.spawnHeartbeatMs ?? 30_000, this.logTag);

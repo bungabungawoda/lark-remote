@@ -214,6 +214,29 @@ describe('InboundMediaHandler 落盘', () => {
     expect(fs.existsSync(path.join(tmpDir, 'passwd'))).toBe(false);
   });
 
+  it('file 名含 win32 非法字符/尾点时替换与剥离，落盘不失败（review 2026-10-07）', async () => {
+    const { bridge, sessionStore } = makeBridge();
+    sessionStore.setCwd('user-1', tmpDir);
+
+    await bridge.saveInboundMedia(
+      mediaPayload({
+        rawContentType: 'file',
+        media: [
+          downloaded('x', {
+            kind: 'file',
+            // `:` `?` 是 NTFS 非法字符；尾点在 win32 落盘时会被静默剥离
+            fileName: 'weird:file?.txt.',
+            mimeType: 'text/plain',
+          }),
+        ],
+      }),
+    );
+
+    const names = savedFiles().map((f) => path.basename(f));
+    expect(names).toEqual(['weird_file_.txt']);
+    expect(fs.existsSync(path.join(path.dirname(savedFiles()[0]!), 'weird_file_.txt'))).toBe(true);
+  });
+
   it('同名冲突自动加序号，不覆盖', async () => {
     const { bridge, sessionStore } = makeBridge();
     sessionStore.setCwd('user-1', tmpDir);

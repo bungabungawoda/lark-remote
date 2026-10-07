@@ -22,6 +22,8 @@ export function resolveConfigDir(configDirArg: string | undefined): string {
     let p = configDirArg;
     if (p === '~') p = os.homedir();
     else if (p.startsWith('~/')) p = path.join(os.homedir(), p.slice(2));
+    // cmd/PowerShell 不展开 ~；`~\` 是 Windows 侧的常见键入形态，与 `~/` 同口径
+    else if (p.startsWith('~\\')) p = path.join(os.homedir(), p.slice(2));
     return path.resolve(p);
   }
   return path.join(os.homedir(), DEFAULT_DIR);
@@ -127,7 +129,7 @@ export function printHelp(): void {
  */
 export function printAdvancedHelp(): void {
   const configDir = resolveConfigDir(parseCliArgs().configDir);
-  const configPath = configDir + '/config.yaml';
+  const configPath = path.join(configDir, 'config.yaml');
   const lines = [
     'lark-remote 高级配置参考（--advanced-help）',
     '',

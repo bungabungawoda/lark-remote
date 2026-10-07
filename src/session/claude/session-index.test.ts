@@ -592,3 +592,38 @@ describe('SessionIndex throttled refresh', () => {
     expect(idx.listByCwd(FAKE_CWD_1).length).toBe(2);
   });
 });
+
+// ─── cwd 判等键（review 2026-10-07 回归锚）────────────────────
+// 修复前 byCwd 倒排与 cwdSet.has 都按 JSONL 原样字符串精确键控，查询 cwd 与
+// 记录 cwd 差一个大小写/分隔符/尾斜杠（win32 常态）时 /session list 静默漏会话。
+// platform 注入使 win32 语义在任意宿主可测（seam 纪律）。
+describe('SessionIndex cwd 判等键（pathKey 归一）', () => {
+  it('win32 语义：大小写、\\// 分隔符、尾斜杠变体都能命中索引', () => {
+    writeJsonl('C--Users-X-Proj', FAKE_SESSION_ID_A, [
+      initLine('C:\\Users\\X\\Proj'),
+      userMessageLine('placeholder'),
+    ]);
+
+    const idx = new SessionIndex(projectsDir, { platform: 'win32' });
+    idx.build();
+
+    // 查询形态与记录形态逐字符不同，但按 win32 语义是同一目录
+    expect(idx.listByCwd('c:/users/x/proj/').length).toBe(1);
+    expect(idx.listByCwd('C:\\USERS\\x\\PROJ').length).toBe(1);
+    expect(idx.listByCwd('c:/users/other').length).toBe(0);
+
+    const entry = idx.findBySessionIdAndCwd(FAKE_SESSION_ID_A, 'C:/Users/x/Proj/');
+    expect(entry?.sessionId).toBe(FAKE_SESSION_ID_A);
+  });
+
+  it('darwin 语义：大小写不敏感（linux 宿主默认档不受影响）', () => {
+    writeJsonl('-home-user-project', FAKE_SESSION_ID_A, [
+      initLine('/home/user/Project'),
+      userMessageLine('placeholder'),
+    ]);
+
+    const idx = new SessionIndex(projectsDir, { platform: 'darwin' });
+    idx.build();
+    expect(idx.listByCwd('/HOME/USER/PROJECT/').length).toBe(1);
+  });
+});

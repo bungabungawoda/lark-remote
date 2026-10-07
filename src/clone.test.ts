@@ -141,6 +141,12 @@ describe('isValidCloneName', () => {
       expect(isValidCloneName(bad)).toBe(false);
     }
   });
+
+  it('rejects win32 illegal characters（NTFS/Win32 API 拒绝，失败要挡在校验层）', () => {
+    for (const bad of ['a:b', 'a*b', 'a?b', 'a"b', 'a<b', 'a>b', 'a|b']) {
+      expect(isValidCloneName(bad)).toBe(false);
+    }
+  });
 });
 
 describe('CloneSession.start', () => {
@@ -461,16 +467,31 @@ describe('CloneSession.finalize', () => {
     const { connector, reg, session } = makeFixture();
     await session.start(undefined, CTX);
     const targetDir = `${configDir}-99zz`;
-    // config.yaml.tmp 是目录 → atomicWrite 写 tmp 时 EISDIR 失败
-    fs.mkdirSync(path.join(targetDir, 'config.yaml.tmp'), { recursive: true });
+    // 写 tmp 时 EISDIR 失败（atomic-write 命名含随机段，无法预建同名目录，
+    // 用 writeFileSync 间谍对 targetDir 内的写入注入失败）
+    const realWrite = fs.writeFileSync;
+    const spy = vi.spyOn(fs, 'writeFileSync').mockImplementation(((file: unknown, ...rest) => {
+      if (String(file).startsWith(targetDir)) {
+        const err = new Error(
+          'EISDIR: illegal operation on a directory, write',
+        ) as NodeJS.ErrnoException;
+        err.code = 'EISDIR';
+        throw err;
+      }
+      return (realWrite as unknown as (...a: unknown[]) => void)(file, ...rest);
+    }) as typeof fs.writeFileSync);
 
     reg.calls[0].resolve({
       client_id: 'cli_new_app',
       client_secret: 'new_secret',
       user_info: { open_id: 'ou_x' },
     });
-    await flush();
-    await waitIdle(session);
+    try {
+      await flush();
+      await waitIdle(session);
+    } finally {
+      spy.mockRestore();
+    }
 
     expect(fs.existsSync(targetDir)).toBe(false);
     expect(connector.texts.at(-1)).toContain('配置写入失败');
@@ -480,16 +501,32 @@ describe('CloneSession.finalize', () => {
     const { connector, reg, session } = makeFixture();
     await session.start(undefined, CTX);
     const targetDir = `${configDir}-99zz`;
-    fs.mkdirSync(path.join(targetDir, 'config.yaml.tmp'), { recursive: true });
+    fs.mkdirSync(targetDir, { recursive: true });
     fs.writeFileSync(path.join(targetDir, 'keep.txt'), 'user data');
+
+    const realWrite = fs.writeFileSync;
+    const spy = vi.spyOn(fs, 'writeFileSync').mockImplementation(((file: unknown, ...rest) => {
+      if (String(file).startsWith(targetDir)) {
+        const err = new Error(
+          'EISDIR: illegal operation on a directory, write',
+        ) as NodeJS.ErrnoException;
+        err.code = 'EISDIR';
+        throw err;
+      }
+      return (realWrite as unknown as (...a: unknown[]) => void)(file, ...rest);
+    }) as typeof fs.writeFileSync);
 
     reg.calls[0].resolve({
       client_id: 'cli_new_app',
       client_secret: 'new_secret',
       user_info: { open_id: 'ou_x' },
     });
-    await flush();
-    await waitIdle(session);
+    try {
+      await flush();
+      await waitIdle(session);
+    } finally {
+      spy.mockRestore();
+    }
 
     expect(fs.existsSync(targetDir)).toBe(true);
     expect(fs.existsSync(path.join(targetDir, 'keep.txt'))).toBe(true);

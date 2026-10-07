@@ -18,6 +18,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { bestEffortUnlink } from './common/fs.js';
+import { isWin32 } from './platform/select.js';
 import { binaryName, verifyPidIdentityVerdict, type IdentityVerdict } from './platform/identity.js';
 
 export class InstanceAlreadyRunningError extends Error {
@@ -145,7 +146,7 @@ export class InstanceLock {
       this.release();
       process.exit(143);
     });
-    if (process.platform !== 'win32') {
+    if (!isWin32()) {
       process.on('SIGHUP', () => {
         this.release();
         process.exit(129);

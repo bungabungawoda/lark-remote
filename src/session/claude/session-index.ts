@@ -3,6 +3,8 @@ import path from 'node:path';
 import { scanJsonlLines } from '../common/jsonl.js';
 import { sortByRecencyDesc } from '../common/recency.js';
 import { extractContentBlocks, type ContentBlockMapping } from '../common/content-blocks.js';
+import { pathKey } from '../../platform/path.js';
+import { currentPlatform } from '../../platform/select.js';
 import { getLogger } from '../../logger/index.js';
 
 // ─── Types ──────────────────────────────────────────────────
@@ -13,12 +15,23 @@ export interface SessionIndexEntry {
   fingerprint: string;
   mtimeMs: number;
   summary: string;
+  /**
+   * cwd 判等键集合（PathKit.pathKey 归一形态，win32/darwin 大小写+分隔符
+   * 不敏感）：索引的 byCwd 倒排与 cwdSet.has 查询都按这个形态比对。注意与
+   * {@link parseSessionJsonl} 返回的 raw cwdSet 区分——后者保持 JSONL 原样，
+   * 归一只发生在索引边界（见 normalizeCwdSet）。
+   */
   cwdSet: Set<string>;
 }
 
 export interface SessionIndexOptions {
   /** Minimum interval between refresh scans (ms). Default 5000. */
   refreshIntervalMs?: number;
+  /**
+   * 平台注入（测试用）；默认当前宿主。cwd 判等键（pathKey）按它取归一口径，
+   * win32 语义（大小写 + `\`/`/` 分隔符不敏感）可在任意宿主上单测。
+   */
+  platform?: NodeJS.Platform;
 }
 
 // ─── Claude content block mapping (shared with sessions.ts) ─
@@ -147,6 +160,17 @@ export function buildFingerprint(filePath: string): string {
 // ─── SessionIndex ───────────────────────────────────────────
 
 /**
+ * raw cwd → pathKey 判等键。只允许在「解析结果进入索引」的边界调用：
+ * JSONL 里的 cwd 形态（大小写/分隔符/尾斜杠）由写方决定，与查询侧
+ * pathKey(cwd) 不保证逐字符一致（win32 尤甚），索引键控必须两侧同口径归一。
+ */
+function normalizeCwdSet(raw: Set<string>, platform: NodeJS.Platform): Set<string> {
+  const out = new Set<string>();
+  for (const cwd of raw) out.add(pathKey(cwd, { platform }));
+  return out;
+}
+
+/**
  * In-memory session index with three query views:
  *   byPath:      path → entry
  *   bySessionId: sessionId → Set<path>
@@ -158,6 +182,7 @@ export function buildFingerprint(filePath: string): string {
 export class SessionIndex {
   private readonly projectsDir: string;
   private readonly refreshIntervalMs: number;
+  private readonly platform: NodeJS.Platform;
 
   private readonly byPath = new Map<string, SessionIndexEntry>();
   private readonly bySessionId = new Map<string, Set<string>>();
@@ -174,6 +199,7 @@ export class SessionIndex {
   constructor(projectsDir: string, opts: SessionIndexOptions = {}) {
     this.projectsDir = projectsDir;
     this.refreshIntervalMs = opts.refreshIntervalMs ?? 5000;
+    this.platform = opts.platform ?? currentPlatform;
   }
 
   /** Whether a full scan has ever completed successfully (readdir succeeded). */
@@ -204,7 +230,7 @@ export class SessionIndex {
   // ── Query: listByCwd ────────────────────────────────────
 
   listByCwd(cwd: string, opts: { limit?: number; offset?: number } = {}): SessionIndexEntry[] {
-    const paths = this.byCwd.get(cwd);
+    const paths = this.byCwd.get(pathKey(cwd, { platform: this.platform }));
     if (!paths || paths.size === 0) return [];
 
     // Gather entries, deduplicate by sessionId (keep mtime newest)
@@ -262,7 +288,7 @@ export class SessionIndex {
 
       if (currentFp === entry.fingerprint) {
         // Fingerprint matches → trust index
-        if (entry.cwdSet.has(cwd)) return entry;
+        if (entry.cwdSet.has(pathKey(cwd, { platform: this.platform }))) return entry;
         continue;
       }
 
@@ -277,11 +303,11 @@ export class SessionIndex {
           fingerprint: currentFp,
           mtimeMs: Number(st.mtimeMs),
           summary: parsed.summary.replace(/\s+/g, ' ').trim(),
-          cwdSet: parsed.cwdSet,
+          cwdSet: normalizeCwdSet(parsed.cwdSet, this.platform),
         };
         this.updateEntry(p, updated);
         // Re-check cwd after update
-        if (updated.cwdSet.has(cwd)) return updated;
+        if (updated.cwdSet.has(pathKey(cwd, { platform: this.platform }))) return updated;
       } catch {
         // File gone
         this.removeEntry(p);
@@ -359,7 +385,7 @@ export class SessionIndex {
             fingerprint: fpAfter,
             mtimeMs: Number(fileStat.mtimeMs),
             summary: parsed.summary.replace(/\s+/g, ' ').trim(),
-            cwdSet: parsed.cwdSet,
+            cwdSet: normalizeCwdSet(parsed.cwdSet, this.platform),
           };
           this.updateEntry(fullPath, newEntry);
         } catch (err) {
