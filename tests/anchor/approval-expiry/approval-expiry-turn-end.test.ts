@@ -1,12 +1,12 @@
 /**
- * P3 anchor: onTurnEnded 只标记 expired，不调 responder。
+ * onTurnEnded 只标记 expired，不调 responder。
  *
  * ① 验证什么：turn 结束时，所有 pending 审批被标记为 expired 且
  *    timer 清除；之后即使时间流逝，也不会向 server 发送 cancel——turn 已结束，
  *    server 不再等待审批响应，重复响应是错误的。
  * ② 缺失/错误会导致什么：终局事件若触发 responder，会对已结束的 turn 发送
  *    多余的 cancel，污染请求日志甚至影响后续 turn。
- * ③ 依据：bug spec R1——「onTurnEnded 只标记 expired，
+ * ③ 依据：「onTurnEnded 只标记 expired，
  *    不调 responder」。
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';

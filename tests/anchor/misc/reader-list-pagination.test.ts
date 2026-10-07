@@ -1,5 +1,5 @@
 /**
- * A2 anchor: PiSessionReader.listSessions 返回 {sessions, total}，支持 offset 分页。
+ * PiSessionReader.listSessions 返回 {sessions, total}，支持 offset 分页。
  *
  * 验证行为：`listSessions(cwd, { limit, offset })` 返回 `{ sessions, total }`，
  * sessions 为按 mtime desc 排序后 `[offset, offset+limit)` 切片，total 为分页前
@@ -7,16 +7,15 @@
  * 不同的 mtime），断言三页：page1（limit 2）取最新 2 条；page2（offset 2）取
  * 第 3、4 新（与 page1 无重复无遗漏）；page3（offset 4）末页 1 条为最旧。
  *
- * 缺失会导致：plan §2.1 新契约要求 `total`（真实总数）与 `offset` 切片，当前
+ * 缺失会导致：新契约要求 `total`（真实总数）与 `offset` 切片，当前
  * 实现返回 `AgentSession[]`——`page1.total` 为 undefined，router 无法实现
  * `/resume` 分页栏的"共 N 个会话"与"第 x/y 页"；若只补 total 不实现 offset，
  * page2/page3 的无重复/末页断言仍会拦住。
  *
- * 依据 spec：
  *   "listSessions(cwd, opts?: { limit?: number; offset?: number }):
  *    { sessions: AgentSession[]; // mtime desc 排序后的 [offset, offset+limit) 切片
  *      total: number;            // cwd 精确匹配的全集大小（分页前） }"
- * §2.3 "N 为 reader 返回的真实总数"；§4.2 "其余 4 个 reader 单测：接口签名适配 +
+ * "N 为 reader 返回的真实总数"；"其余 4 个 reader 单测：接口签名适配 +
  * total 断言"。
  */
 import { describe, it, expect, vi } from 'vitest';
@@ -30,7 +29,7 @@ vi.mock('../../../src/logger/index.js', async () =>
   (await import('../../lib/logger-mock.js')).loggerModuleMock(),
 );
 
-describe('A2: AgentSessionReader.listSessions paginated contract (pi)', () => {
+describe('AgentSessionReader.listSessions paginated contract (pi)', () => {
   it('test_anchor_pi_reader_list_sessions_paginated_with_total', () => {
     const cwd = '/tmp/resume-paging-proj';
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'lark-a2-pi-'));

@@ -46,8 +46,8 @@ describe('QueueManager - executing card for an edited task must show the edited 
     // 执行卡内容因启动路径而异，展示与事实不一致。
     //
     // 依据：queue 卡的 "已开始执行" 状态契约是展示"正在执行什么"（header
-    // "▶️ 已开始执行" + `📝 <preview>`），A5 anchor 确立执行卡不得与事实相悖
-    // （绿色执行卡是用户对实际执行内容的唯一卡片依据）；A11 anchor 已确立
+    // "▶️ 已开始执行" + `📝 <preview>`），确立执行卡不得与事实相悖
+    // （绿色执行卡是用户对实际执行内容的唯一卡片依据）；已确立
     // 编辑后自然轮到必须执行 edited content——执行卡展示的 preview 必须与
     // 该实际内容一致。markQueueCardExecuting（immediate 路径）已从 live
     // task.messagePreview 取编辑后内容，begin 路径（自然运行路径）必须一致，

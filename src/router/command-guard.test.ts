@@ -1,5 +1,5 @@
 /**
- * B1（P0 安全）：命令识别前置条件 —— 用户消息里的结构占位符永远不能触发命令分发。
+ * （安全）：命令识别前置条件 —— 用户消息里的结构占位符永远不能触发命令分发。
  *
  * 事故现场（2026-09-15）：
  *   `![image](img_v3_…) \n test`   ← 富文本把图片渲染在前
@@ -55,7 +55,7 @@ afterEach(() => {
 
 const ctx = { userId: 'u1', chatId: 'c1', messageId: 'm1' };
 
-describe('router.handle 命令守卫（B1 P0）', () => {
+describe('router.handle 命令守卫', () => {
   it('![image](img_v3_x) 不触发 executeBash，且 prompt 里没有 img_v3_x', async () => {
     await fixture.router.handle('![image](img_v3_x)', ctx, { allowCommandPrefix: true });
 
@@ -78,7 +78,7 @@ describe('router.handle 命令守卫（B1 P0）', () => {
     expect(fixture.bridge.forwardToClaude).toHaveBeenCalledWith('你好', ctx, expect.anything());
   });
 
-  it('[unsupported message] 不执行命令（B4 的不支持回执路径由装配器负责）', async () => {
+  it('[unsupported message] 不执行命令（的不支持回执路径由装配器负责）', async () => {
     await fixture.router.handle('[unsupported message]', ctx, { allowCommandPrefix: true });
     expect(fixture.bridge.executeBash).not.toHaveBeenCalled();
     expect(fixture.bridge.sendResult).not.toHaveBeenCalled();

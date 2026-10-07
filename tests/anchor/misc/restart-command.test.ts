@@ -93,7 +93,7 @@ describe('/restart 命令', () => {
     // 验证行为：未注入 restartSpawner 时 /restart 返回明确的不支持文案，
     //   且 exitHandler 不得被调用（pendingExit 不置位）。
     // 缺失/错误会导致：用户得到误导性回复，或 exitHandler 被误触发导致 lark-remote 退出。
-    // spec 依据：方案 §4.1 第一条「未注入 restartSpawner → 返回当前环境不支持 /restart」；
+    // 「未注入 restartSpawner → 返回当前环境不支持 /restart」；
     //   §6.2「spawn 失败时 pendingExit 不得置位」（未注入等价于 spawn 不可能成功）。
     let exited = false;
     const { router, connector } = buildRouter({
@@ -115,7 +115,7 @@ describe('/restart 命令', () => {
     //   且 exitHandler 被调用（pendingExit 生效 = 回复送达后退出链路）。
     // 缺失/错误会导致：用户不知道新进程 pid，或 spawn 成功但 bridge 不退
     //   （旧进程不退 → 新进程撞锁退出 → 两头落空）。
-    // spec 依据：方案 §2 交接协议「spawn 成功才继续 → pendingExit = true →
+    // 「spawn 成功才继续 → pendingExit = true →
     //   回复重启中（新 pid N）→ process.exit(0)」；§6.3「先 spawn 后退出，
     //   顺序不可颠倒」。
     let exited = false;
@@ -148,7 +148,7 @@ describe('/restart 命令', () => {
     //   回复未送达时 exitHandler 不得被调用；送达后必须被调用。
     // 缺失/错误会导致：旧进程在用户收到「重启中」之前就退出，用户感知
     //   "什么都没发生"（先退出后回复被丢），或反之旧进程永不退出。
-    // spec 依据：方案 §2「先回复再退出」+ §6.3「pendingExit 的语义是
+    // 「先回复再退出」「pendingExit 的语义是
     //   本条回复送达后退出（router.handle() 里 sendResult 之后才调
     //   exitHandler）」——验收红线。
     let exited = false;
@@ -181,7 +181,7 @@ describe('/restart 命令', () => {
     // 验证行为：spawn 抛错 → 回复「重启失败：…，旧进程仍在运行」，
     //   且 pendingExit 不得置位（exitHandler 不被调用）——旧进程保持存活。
     // 缺失/错误会导致：spawn 失败但进程仍退出 → 新旧两头落空，lark-remote 无人接管。
-    // spec 依据：方案 §6.2「先 spawn 后退出，顺序不可颠倒；spawn 失败时
+    // 「先 spawn 后退出，顺序不可颠倒；spawn 失败时
     //   pendingExit 不得置位」+ §5.5 异常路径验收文案。
     let exited = false;
     const spawner = vi.fn(() => {
@@ -211,9 +211,9 @@ describe('/restart 命令', () => {
     //   调用后 env 被 delete（一次性消费，孙进程不继承等待）。
     // 缺失/错误会导致：重启链断裂（孙进程误等祖父 pid）或 env 泄漏
     //   （后续 restart 的继任者错误等待一个无关 pid）。
-    // spec 依据：方案 §6.4「env 一次性消费：waitForPreviousInstance 开头
+    // 「env 一次性消费：waitForPreviousInstance 开头
     //   delete process.env[...]，否则若新进程未来也被 /restart，孙进程会
-    //   错误等待祖父 pid」+ §4.1 各环境分支。
+    //   错误等待祖父 pid」 各环境分支。
     const saved = process.env[RESTART_WAIT_PID_ENV];
     try {
       // 1) 无 env → 立即返回（不抛错、不等待）
@@ -248,7 +248,7 @@ describe('/restart 命令', () => {
     // 验证行为：/help 卡片包含 /restart 条目——按钮 label 为 /restart、
     //   callback cmd 为 help.restart、描述含「重启 lark-remote」。
     // 缺失/错误会导致：用户不知道存在 /restart 命令，功能不可发现。
-    // spec 依据：方案 §3「/help 列表加 /restart 条目」+ §4.1「帮助列表含
+    // 「/help 列表加 /restart 条目」+ §4.1「帮助列表含
     //   /restart 条目」。
     const { router, connector } = buildRouter();
 
@@ -318,7 +318,7 @@ describe('/restart 命令', () => {
     // 缺失/错误会导致：按钮点击 spawn 成功但旧进程不退出 → 新进程等 20s 后
     //   撞单例锁退出，用户看到「重启中」但重启实际失败——help 按钮是 /restart
     //   的用户可见入口，行为必须与手打 /restart 一致。
-    // spec 依据：方案 §3「/help 列表加 /restart 条目」+ §2 交接协议「spawn
+    // 「/help 列表加 /restart 条目」「spawn
     //   成功 → pendingExit = true → 回复重启中 → 旧进程退出」。
     let exited = false;
     const spawner = vi.fn(() => 4242);
@@ -344,7 +344,7 @@ describe('/restart 命令', () => {
     //   /restart（不触发 spawner / exitHandler / 重启文案）。
     // 缺失/错误会导致：/r 被 /restart 抢占后用户无法用短别名恢复会话，
     //   且误触发 lark-remote 重启（破坏性副作用）。
-    // spec 依据：方案 §7.2「/r 别名已被 /resume 占用，/restart 不要加
+    // 「/r 别名已被 /resume 占用，/restart 不要加
     //   单字母别名」。
     let exited = false;
     const spawner = vi.fn(() => 4242);
@@ -370,8 +370,8 @@ describe('/restart 命令', () => {
     // 缺失/错误会导致：重启交接协议失效——configDir 不继承（argv 错）、子进程
     //   不等旧进程退（env 错）、早期启动失败无处可查（stdio 落 null）、late
     //   spawn error 吃掉濒死父进程的 unhandled rejection（缺 error 兜底）。
-    // spec 依据：方案 §3 spawnReplacementBridge 描述 + §6.5「stdio 不落 null」+
-    //   §6.6「child.on('error') 兜底」+ §7.6「argv 原样继承」。
+    // spawnReplacementBridge 描述 「stdio 不落 null」+
+    //   「child.on('error') 兜底」「argv 原样继承」。
     const logsDir = fs.mkdtempSync(path.join(os.tmpdir(), 'restart-logs-'));
     try {
       const child = { pid: 7777, on: vi.fn(), unref: vi.fn() };
@@ -417,7 +417,7 @@ describe('/restart 命令', () => {
     //   ENOENT）会在下一 tick 发 'error' 事件，若无人监听 → uncaughtException
     //   → 旧 lark-remote 的 uncaughtException handler release 锁 + exit(1)，旧进程
     //   在刚回复「重启失败，旧进程仍在运行」后反而退出 = 两头落空。
-    // 缺失/错误会导致：违反方案 §6.6「late spawn error（如运行中二进制被删）
+    // 缺失/错误会导致：违反「late spawn error（如运行中二进制被删）
     //   不能让濒死的父进程再吃一个 unhandled error」+ §6.2「spawn 失败 →
     //   旧进程保持存活」。
     const logsDir = fs.mkdtempSync(path.join(os.tmpdir(), 'restart-logs-'));
@@ -438,7 +438,7 @@ describe('/restart 命令', () => {
     // 验证行为：logsDir 不可写（mkdir/open 失败）时 spawnReplacementBridge 抛错，
     //   由 cmdRestart 的 catch 转为「重启失败…」文案——异常必须可传播到上层，
     //   不得被吞掉变成"spawn 成功"假象。
-    // 依据：方案 §5.5 异常路径验收「logsDir 指向只读路径 → 重启失败，
+    // 「logsDir 指向只读路径 → 重启失败，
     //   旧进程仍存活」（原 probe 转正）。
     const parent = fs.mkdtempSync(path.join(os.tmpdir(), 'restart-readonly-'));
     const logsDir = path.join(parent, 'nested', 'logs');

@@ -8,7 +8,7 @@ vi.mock('../../../src/logger/index.js', async () =>
 
 const WORKSPACE = '/tmp/queue-card-arm-send-failure-ws';
 
-describe('QueueManager - queue card send failure must clean up the promise mapping (anchor A23)', () => {
+describe('QueueManager - queue card send failure must clean up the promise mapping (anchor)', () => {
   it('test_anchor_failed_queue_card_send_does_not_leave_stale_mapping', async () => {
     // 验证什么行为：排队卡 send（Feishu 发送）失败时，queueCardMessages 中该
     // messageId 的映射必须被删除——后续 updateQueueCardToExecuting/Cancelled
@@ -17,7 +17,7 @@ describe('QueueManager - queue card send failure must clean up the promise mappi
     // 缺失会导致什么问题：sendQueueStatusCard 先注册 promise 再 await，失败后
     // promise resolve undefined；若映射不删除，长跑进程在飞书限流/瞬时失败下
     // 每条失败消息都残留一条 `messageId → resolved(undefined)` 条目，无界增长
-    // （review P2 finding：旧代码只在发送成功后写映射，无此泄漏）。
+    // （finding：旧代码只在发送成功后写映射，无此泄漏）。
     //
     // 依据：queueCardMessages 的契约是"排队卡发送到更新消费"的一次性映射，
     // 发送失败即无卡可更新，必须清理；bridge.test.ts 已有直接访问该私有字段

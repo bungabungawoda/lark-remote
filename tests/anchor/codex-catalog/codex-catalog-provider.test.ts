@@ -5,14 +5,14 @@ import os from 'node:os';
 import { mockLogger } from '../../lib/logger-mock.js';
 
 /**
- * Red Agent - Round 2 - Anchor (Bug 模式, A3)
+ * Red Agent -- Anchor (Bug 模式)
  *
  * Target: catalog 模式下 provider 列表 = 内置 openai + config.toml `[model_providers.*]`
  * （对齐 codex merge_configured_model_providers(built_in_model_providers, cfg.model_providers)，
  * core/src/config/mod.rs:3655；anthropic 非内置 provider）；每个 provider 的模型列表=
  * 活动目录全部 slug（codex 运行时目录全局，provider 与模型无绑定）。
  *
- * Spec basis: codex-y review4 P2（catalog 模式不应丢弃内置 openai provider）+
+ * Spec basis: （catalog 模式不应丢弃内置 openai provider）+
  * core/src/config/mod.rs:3655-3661（合并内置 provider、model_provider 默认 "openai"）。
  * 模型列表仍只来自活动目录——openai+内置 gpt-5.x 的失效路径不因 provider 合并复活。
  */

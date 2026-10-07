@@ -49,9 +49,9 @@ afterEach(() => {
 describe('edited queue.immediate must register its replacement before any awaiting card update', () => {
   it('test_anchor_edited_immediate_replacement_not_lost_to_pending_card_send', async () => {
     // 验证什么行为：用户编辑排队消息 T2（editedMessage='edited message'）后点
-    // 「⚡ 立即执行」。T2 的排队卡 send 仍在途（A5 生产竞态：Feishu API 延迟 /
+    // 「⚡ 立即执行」。T2 的排队卡 send 仍在途（生产竞态：Feishu API 延迟 /
     // 99991400 限流重试，映射 promise 未 resolve）时，被立即执行停掉的当前任务
-    // T1 settle，队列链前进到 T2 begin。期望：T2 无论如何必须执行编辑后的内容
+    // settle，队列链前进到 T2 begin。期望：T2 无论如何必须执行编辑后的内容
     // （'edited message'）——replacement 必须在 handleQueueImmediate 任何可能
     // 阻塞的 await（markQueueCardExecuting 等卡片 promise）之前注册，使 begin
     // 路径总能消费到它。当前实现把 setTaskReplacement 放在 markQueueCardExecuting
@@ -65,10 +65,10 @@ describe('edited queue.immediate must register its replacement before any awaiti
     // 内容执行；且 setTaskReplacement 在 begin 之后注册，replacement 永远不会被
     // 消费（一次性、无归属清理），taskReplacements 泄漏一条死闭包。
     //
-    // 依据：round 6 确立的编辑+立即执行契约（A7 anchor / queue-immediate-edited
+    // 依据：round 6 确立的编辑+立即执行契约（/ queue-immediate-edited
     // 测试：编辑后的任务必须执行编辑后内容）；router handleQueueImmediate 注释
     // 步骤 5 "If the user edited the message, the original closure ... must NOT
-    // run"。该契约不能依赖卡片 send 的完成时序——A5 已证明 send 可晚于任务接跑，
+    // run"。该契约不能依赖卡片 send 的完成时序——已证明 send 可晚于任务接跑，
     // 契约必须对任何 send 时序成立。
     const connector = createStubConnectorWithPendingQueueCard();
     const sessionStore = new SessionStore();
@@ -151,7 +151,7 @@ describe('edited queue.immediate must register its replacement before any awaiti
 
     // --- 步骤 5：此时放行 T1 —— 队列链前进到 T2 begin ---
     // 修复前：replacement 尚未注册（markQueueCardExecuting 还在等卡片 send），
-    // T2 begin 消费不到 replacement → 执行旧闭包 'original message'。
+    // begin 消费不到 replacement → 执行旧闭包 'original message'。
     release1();
     expect(await waitFor(() => fwdSpy.mock.calls.length >= 1)).toBe(true);
 

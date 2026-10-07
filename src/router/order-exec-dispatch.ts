@@ -35,7 +35,7 @@ export async function dispatchOrderExecForQueue(args: {
     return 'not-found';
   }
 
-  // Step4/D4: 入队时刻（T0）快照 agent+session，随任务闭包带到 T1 执行时刻，
+  // Step4/入队时刻快照 agent+session，随任务闭包带到执行时刻，
   // 避免排队期间 /new、/config 改写 live 状态导致语义漂移。唯一捕获点
   // Bridge.currentBinding。
   const binding = bridge.currentBinding(ctx.userId);
@@ -54,7 +54,7 @@ export async function dispatchOrderExecForQueue(args: {
         // The internal key is NOT a valid Feishu message id, so the queue
         // status card must reply to the real Feishu card message id instead.
         feishuReplyTo: ctx.messageId,
-        // D3/Step4：binding 随 taskMeta 存进 QueuedTask，供替换闭包
+        ///Step4：binding 随 taskMeta 存进 QueuedTask，供替换闭包
         // （queue.edit/queue.immediate）复用，不重新快照。
         binding,
       },

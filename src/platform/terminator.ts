@@ -1,5 +1,5 @@
 /**
- * 平台终止器 seam 的接口层（design.md §3.2 / §3.3）。
+ * 平台终止器 seam 的接口层。
  *
  * Windows 没有可拦截的跨进程 SIGTERM、负 PID 无效，因此把「进程组 + 信号」
  * 换成「协议停止通道 + 进程树杀」。本文件只放接口与平台分发，实现见
@@ -22,7 +22,7 @@ export type { AgentStopper } from './agent-stopper.js';
  * 进程终止器。
  *
  * `stop` 的 `immediate` 语义与原 `process-stopper` 的 `stop({immediate})` 对齐。
- * 设计文档声明返回 `Promise<void>`，这里收窄为 {@link TerminateResult}：降级
+ * 声明返回 `Promise<void>`，这里收窄为 {@link TerminateResult}：降级
  * 必须可观测（优雅段被跳过、走了树杀、进程早已退出），否则 win32 上「等一个
  * 不会来的退出事件」这类退化无法被发现。
  */
@@ -55,12 +55,12 @@ function defaultTerminatorLog(level: 'debug' | 'info' | 'warn', message: string)
 
 /**
  * 唯一的终止器选择入口：posix 走组杀，win32 走「协议通道 + taskkill 树杀」。
- * 其余模块一律拿这里的 Terminator，禁止散落平台 if（§2.2）。
+ * 其余模块一律拿这里的 Terminator，禁止散落平台 if。
  */
 export function createTerminator(deps: TerminatorDeps): Terminator {
   const platform = deps.platform ?? currentPlatform;
   // 默认日志出口必须真的接上：win32 的「无协议通道 → 直接树杀」「协议通道抛错
-  // → 转树杀」以及 posix 的 grace 超时都是设计要求的可观测降级信号（§3.2），
+  // → 转树杀」以及 posix 的 grace 超时都是设计要求的可观测降级信号，
   // 缺省 undefined 会让这些信号全部静默消失。
   const log = deps.log ?? defaultTerminatorLog;
   if (isWin32(platform)) {

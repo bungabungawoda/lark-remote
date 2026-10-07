@@ -3,7 +3,7 @@ import { BashCardSession, BASH_OUTPUT_STORE_CAP } from './bash-card-session.js';
 import { makeStreamCardConnector } from '../../tests/lib/card-stubs.js';
 
 /**
- * W3.2：共享工厂的组合封装（原先与 tests/anchor/bash-card/bash-card.test.ts
+ * 共享工厂的组合封装（原先与 tests/anchor/bash-card/bash-card.test.ts
  * 逐字符同构的本地 stub 副本迁到 tests/lib/card-stubs）。
  */
 function makeBashTestConnector(

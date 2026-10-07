@@ -1,4 +1,4 @@
-/** W3.7：pi 配置卡字段探针（原 tests/anchor/pi 与 tests/pi 双份字符串扫描器
+/** pi 配置卡字段探针（原 tests/anchor/pi 与 tests/pi 双份字符串扫描器
  * 的单源版；取 anchor 版实现——lastIndexOf 定位包裹 column_set，窗口 500）。 */
 /** 从 card JSON 中提取指定 key 字段的 select 选项值 */
 export function extractFieldOptions(card: object, fieldKey: string): string[] {

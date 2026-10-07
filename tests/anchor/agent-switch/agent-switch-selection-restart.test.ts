@@ -12,12 +12,12 @@ import { lastNotice } from '../../lib/agent-switch-helpers.js';
 import { buildAgentSwitchConfig as buildConfig } from '../../lib/agent-switch-helpers.js';
 
 /**
- * Round 3 red: /resume 显式选择在「重启发生在首次切入之前」时被 load 缺省洗掉。
+ * red: /resume 显式选择在「重启发生在首次切入之前」时被 load 缺省洗掉。
  *
- * 攻击点（spec 新语义 T4 变体，非 R1-R2 重复）：
- * - T4 任务的 restart 场景是「显式分支已跑、arrival=选择 已持久化」后的重建，
+ * 攻击点（，非 R1-R2 重复）：
+ * - restart 场景是「显式分支已跑、arrival=选择 已持久化」后的重建，
  *   该场景走既有恢复（另有守卫）。
- * - 本测试是 T4 的「重启前置」变体：/resume 选择后、首次 config.save 切入前
+ * - 本测试是「重启前置」变体：/resume 选择后、首次 config.save 切入前
  *   lark-remote 重启——arrival[new] 从未被任何分支写入（用户从未「到达」new），
  *   但 SessionStore.load() 的迁移缺省「arrival 缺失 → 默认 = session」给从未
  *   到达过的非当前 agent 伪造了一条到达基线，Step 2.5 触发条件被洗成相等，
@@ -105,19 +105,19 @@ describe('R3 red: explicit selection survives restart before first switch-in', (
 
   it('test_anchor_r3_selection_survives_restart_before_first_switch', async () => {
     /**
-     * ① 验证：/resume 对**从未到达过**的目标 agent（pi）显式选择 P1 后，bridge
+     * ① 验证：/resume 对**从未到达过**的目标 agent（pi）显式选择后，bridge
      *    重启（系统事件，非用户活动）发生在首次 config.save 切入之前。重启后
-     *    sessions[pi]=P1 仍持久化，但 load() 迁移缺省「arrival 缺失 → 默认 =
-     *    session」把 arrival[pi] 洗成 P1（用户从未经 config.save 到达 pi），
+     *    sessions[pi] 仍持久化，但 load() 迁移缺省「arrival 缺失 → 默认 =
+     *    session」把 arrival[pi] 洗成（用户从未经 config.save 到达 pi），
      *    Step 2.5 触发条件 (newSessionId ?? '') !== (arrival ?? '') 被洗成相等
      *    → 切入走清空分支：sessions[pi] 被清、arrival=''、消息「session 已清空」。
-     *    显式选择必须存活：切入应走显式分支（sessions/arrival=P1、消息
-     *    「已使用所选 session」、prev[codex]=C1 停车）。
+     *    显式选择必须存活：切入应走显式分支（sessions/arrival=消息
+     *    「已使用所选 session」、prev[codex]=`codex-session-C1` 停车）。
      * ② 缺失/错误影响：用户明确选择的会话在系统重启后被丢弃，收到误导性
      *    「session 已清空」；lark-remote 重启/崩溃/看门狗拉起都属于系统事件，不是
-     *    用户活动，也不构成一次「到达」——Round 5 设计明确系统动作不得被当作
+     *    用户活动，也不构成一次「到达」——设计明确系统动作不得被当作
      *    活动基线（见 test_anchor_r9_startup_auto_resume_*）。
-     * ③ 依据：spec 验收 1-2（触发条件：sessions[new] 非空且 ≠ arrival——用户
+     * ③ 依据：（触发条件：sessions[new] 非空且 ≠ arrival——用户
      *    自最近一次「到达」之后经 /resume 显式改选；行为：选择存活、arrival
      *    更新为所选）；「显式选择必须存活」无「重启前置」例外；缺失字段的
      *    记录在 load 时直接跳过，不应给从未到达过的
@@ -132,7 +132,7 @@ describe('R3 red: explicit selection survives restart before first switch-in', (
     sessionStore.setSessionId(userId, 'codex', 'codex-session-C1', tmpDir);
     sessionStore.setArrivalSessionId(userId, 'codex', 'codex-session-C1');
 
-    // /resume 对非当前 agent pi 显式选择 P1（arrival 不更新）
+    // /resume 对非当前 agent pi 显式选择（arrival 不更新）
     await router.handleCardAction(
       { cmd: 'resume.use', sessionId: 'pi-session-P1', agent: 'pi' },
       ctx,

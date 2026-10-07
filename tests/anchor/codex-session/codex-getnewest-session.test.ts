@@ -1,27 +1,26 @@
 /**
- * Round 8 regression guard (plan §4.1): CodexSessionReader.getNewestSession
+ * regression guard: CodexSessionReader.getNewestSession
  * must return the globally-newest rollout regardless of readdir walk order.
  *
  * 验证什么行为：
  *   CodexSessionReader({ codexHome }).getNewestSession('/proj') 返回
- *   { sessionId: <全局最新 session> } 而非 null —— 即复用 A1 修复后的
+ *   { sessionId: <全局最新 session> } 而非 null —— 即复用修复后的
  *   listCodexRollouts 全局排序代码路径（index values → filter cwd → mtimeMs
  *   desc 排序 → 取首条）。
  *
  * 缺失/错误会导致什么：
- *   A1 修复前 walkRolloutFiles 从不排序，且 listCodexRollouts 在收集到
+ * 修复前 walkRolloutFiles 从不排序，且 listCodexRollouts 在收集到
  *   limit*2 条匹配后 break —— day20 的 50 个旧文件会占满提前终止窗口，
  *   getNewestSession 永远看不到 day31 的最新会话（wiki 实例 /resume 全显示
  *   旧 `Say "test"` 会话的根因）。若绿方只修 listSessions 而 getNewestSession
  *   绕开同一代码路径，auto-resume 仍会恢复错会话。断言不返回 null 同时锁定
  *   "必须有结果"（不允许静默降级）。
  *
- * 依据（spec 原文）：
  *   "index values →
- *   filter cwd → 按 mtimeMs desc 排序 → total = length"；§1.4："必须先对
+ *   filter cwd → 按 mtimeMs desc 排序 → total = length"；"必须先对
  *   全集建立全序再切片。任何在建立全序之前的提前终止都必然错"。
  *   CodexSessionReader.getNewestSession 实现即 listSessions(cwd, {limit:1})
- *   的首条，必须与 A1 同一排序路径。
+ *   的首条，必须与同一排序路径。
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
@@ -85,7 +84,7 @@ function writeRollout(dayDir: string, sessionId: string, cwd: string, mtimeMs: n
 
 describe('codex getNewestSession global-newest (hostile walk order)', () => {
   it('test_anchor_codex_reader_getnewest_returns_true_newest', () => {
-    // ── Deterministic APFS-hash-order simulation (same as A1) ───────────
+    // ── Deterministic APFS-hash-order simulation (same as) ───────────
     // Walk order: 2026 → 07 → day 20 first (52 files), day 31 last
     // (1 matching /proj, globally newest). Any implementation that breaks
     // after collecting limit*2 = 2 entries (limit=1 for getNewestSession)
@@ -99,7 +98,7 @@ describe('codex getNewestSession global-newest (hostile walk order)', () => {
     state.scriptedReaddir.set(path.join(sessionsDir, '2026', '07'), ['20', '31']);
 
     // day 20: 50 matching /proj sessions (old mtime) + 2 from another cwd —
-    // enough to trip the pre-A1 early-break even with limit=1, and to prove
+    // enough to trip the pre-early-break even with limit=1, and to prove
     // cwd filtering applies before "newest" selection.
     const day20Files: string[] = [];
     for (let i = 0; i < 50; i++) {

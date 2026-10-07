@@ -16,8 +16,8 @@ describe('QueueManager - a no-taskMeta task must not evict the next queued meta 
     // 没有可清理的条目）；T3 必须保持排队状态，并在 T2 结束后轮到自己执行。
     //
     // 缺失会导致什么问题：begin 路径对无 messageId 的任务走 `taskList.shift()`
-    // 兜底——它把**下一个** meta 任务（T3）从 queuedTasks/taskIndex 提前清掉。
-    // T3 自己轮到时取消检查（indexGet 找不到）直接 return 跳过，**永远不执行**
+    // 兜底——它把**下一个** meta 任务从 queuedTasks/taskIndex 提前清掉。
+    // 自己轮到时取消检查（indexGet 找不到）直接 return 跳过，**永远不执行**
     // ——用户既没撤销也没编辑，消息静默消失；其排队卡残留 "⏳ 消息排队中" 且按钮
     // 可点，点「撤销」报 "该消息不在队列中（可能已开始执行）"（事实是根本没开始），
     // 点「立即执行」报 "该消息已开始执行" 并顺带停掉当前任务——卡片/提示与真实
@@ -27,7 +27,7 @@ describe('QueueManager - a no-taskMeta task must not evict the next queued meta 
     // 依据：QueueManager 串行队列契约——每个入队任务在其槽位轮到时执行，除非被
     // 显式取消（begin 路径 "task skipped (cancelled)" 只应为 removeFromQueue 的
     // 结果）；无 meta 任务从未写入 queuedTasks，其 begin 没有自己的元数据可移除，
-    // 移除头部等价于替下一个任务执行取消。A3 编排者裁决已确立无 meta 是合法 API
+    // 移除头部等价于替下一个任务执行取消。编排者裁决已确立无 meta 是合法 API
     // 形态（EnqueueOptions.taskMeta 可选），队列不变量不因 taskMeta 有无而失效。
     const { qm, sentCards } = makeQueueManager();
 
@@ -96,7 +96,7 @@ describe('QueueManager - a no-taskMeta task must not evict the next queued meta 
     await sleep(50);
 
     // 修复前：T2 的 begin 走 else 分支把 T3 从 queuedTasks 提前 shift 掉，
-    // T3 已不在队列。本用例钉住：期望 T3 仍排队（它排在本该轮到它之前）。
+    // 已不在队列。本用例钉住：期望 T3 仍排队（它排在本该轮到它之前）。
     expect(qm.getQueuedTask(WORKSPACE, 'm3')).toBeDefined();
 
     // --- 步骤 5：T2 正常结束，T3 轮到自己 ---

@@ -20,7 +20,6 @@ import { encodeClaudeProjectDir, piEncodeCwd } from '../../lib/session-fixtures.
  *   结果：claude/opencode/pi 会话的 auto-resume 加载整个会话，maxEvents 失效，
  *   只能靠下游 enforceCardBudget 兜底（截断不准、可能丢近期事件）。
  *
- * Spec basis:
  *   - Design constraint "session reader 必须转发 maxEvents 参数"
  *   - project_memory "maxEvents parameter must be implemented for all agent
  *     session readers (not just claude)"
@@ -28,7 +27,7 @@ import { encodeClaudeProjectDir, piEncodeCwd } from '../../lib/session-fixtures.
  *     `readSessionContent(sessionId, cwd, opts?: { maxEvents?: number }): SessionContent`
  *   - CodexSessionReader 已正确转发（codex-sessions.ts），本测试对称补全其余三个。
  *
- * Pyramid: L1 (unit) — 直接调用 reader，验证事件数 <= maxEvents
+ * Pyramid: unit level — 直接调用 reader，验证事件数 <= maxEvents
  *
  * NOTE: 三个 reader 的方法当前签名缺 opts，TS 允许实现方法参数少于接口声明，
  *   所以 opts 在运行时被丢弃。通过 `AgentSessionReader` 接口类型调用让测试

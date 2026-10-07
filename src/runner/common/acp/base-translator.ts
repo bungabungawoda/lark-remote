@@ -42,7 +42,7 @@ import {
 } from './protocol-types.js';
 
 /**
- * ACP tool kind → 常用工具名映射（信息保真 C3.1，数据驱动无 agent 分支）。
+ * ACP tool kind → 常用工具名映射（信息保真，数据驱动无 agent 分支）。
  * kind 命中映射时用映射名渲染结构化面板；否则回落 title（维持现状）。
  */
 const KIND_TO_TOOL: Record<string, string> = {
@@ -298,7 +298,7 @@ export abstract class BaseAcpTranslator {
   // =========================================================================
 
   /**
-   * plan update → PlanEvent（信息保真 C3.2：不再显式丢弃）。
+   * plan update → PlanEvent（信息保真 不再显式丢弃）。
    * ACP PlanEntry: { content, priority, status }（status: pending/in_progress/
    * completed）。基类具体方法：kimi/opencode wire 结构相同，直接复用。
    */
@@ -325,7 +325,7 @@ export abstract class BaseAcpTranslator {
    * JSON.parse (older agents send JSON strings) — keeps the card from
    * crashing on undefined input.
    *
-   * 信息保真 C3.1：kind 命中 KIND_TO_TOOL 时用映射名渲染结构化面板；
+   * 信息保真 kind 命中 KIND_TO_TOOL 时用映射名渲染结构化面板；
    * title 与 name 不同时把 title 存到 content block 的 summary 字段
    * （渲染层做面板副标题）。
    */
@@ -436,7 +436,7 @@ export abstract class BaseAcpTranslator {
   }
 
   /**
-   * kind → canonical tool name (信息保真 C3.1). Shared by the initial tool_call
+   * kind → canonical tool name (信息保真). Shared by the initial tool_call
    * handler and the tool_call_update patch builder so both agree on the name.
    */
   protected toolNameFromKind(kind: string | undefined): string | undefined {

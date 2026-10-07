@@ -1,7 +1,7 @@
 /**
  * Probe: kimi 会话 wire.jsonl 无 usage.record 时，终态卡片不得展示伪造的全 0 token 块
  *
- * 攻击点（T6 嫌疑）：src/session/kimi/sessions.ts:259-263 把 totalUsage 初始化成
+ * 攻击点：src/session/kimi/sessions.ts:259-263 把 totalUsage 初始化成
  *   { inputTokens: 0, outputTokens: 0, contextLength: 0 }，且无论 wire.jsonl 里有没有
  *   usage.record 都原样返回（return { ..., usage: totalUsage }，sessions.ts:356-361）。
  *   reader 无法区分「session 真实消耗为 0」（完成的 LLM run 不可能为 0）与
@@ -16,12 +16,12 @@
  *   「本 session 消耗 0 token、上下文占用 0」，对任何真实跑过的 session 都是假话。
  *   用户无法区分「本次免费」与「usage 追踪缺失/不可用」。
  *
- * 假设来源 = spec 精神外推（spec 未明说无数据时如何显示——spec 缺口）：
+ * 假设来源 = （未明说无数据时如何显示——缺口）：
  *   spec 要求 jsonl 作为数据源、对齐 ccusage 范式。jsonl 是数据源；
  *   当 jsonl 对 usage 一无所述时，如实显示 = 不显示 token 块（formatUsageStats
  *   估算路径本就有「全空则不输出任何 token 行」的护栏，src/router/index.ts:3904-3905
  *   inputRef>0||cacheRead>0||cacheCreation>0 才输出），而不是展示合成零值。
- *   注意与 R5 æ¢æµé¡¹ 的区别：R5 是「存在 record 但字段残缺 → 缺失字段按 0 计」；
+ *   注意与「存在 record 但字段残缺 → 缺失字段按 0 计」的区别；
  *   本条是「一条 record 都没有 → 整个 usage 对象不应存在」。部分缺失按 0 是
  *   聚合语义，整体缺失按 0 是凭空造数。
  *   现实触发形态：kimi 协议演进（sessions.ts:64-66 注释自述旧版本/截断的

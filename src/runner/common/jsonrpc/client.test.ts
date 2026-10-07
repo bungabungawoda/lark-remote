@@ -312,7 +312,7 @@ describe('JsonRpcClient request/response id matching', () => {
     await expect(client.request('session/new', {})).rejects.toThrow(ConnectionLostError);
   });
 
-  it('sends literal initialize params: protocolVersion 1 + all-false clientCapabilities (R4)', async () => {
+  it('sends literal initialize params: protocolVersion 1 + all-false clientCapabilities', async () => {
     const capturePath = join(tmpDir, 'init-capture.jsonl');
     const server = join(tmpDir, 'capture-server.mjs');
     writeFileSync(

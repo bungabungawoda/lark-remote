@@ -316,7 +316,7 @@ describe('SessionStore persistence', () => {
     store.setCwd('user1', '/tmp');
     store.setSessionId('user1', 'codex', 'codex-session-C');
     store.setPreviousSessionId('user1', 'codex', 'codex-session-C');
-    // 显式「清空到达」：'' 条目必须持久化保留（A12 语义）
+    // 显式「清空到达」：'' 条目必须持久化保留（语义）
     store.setArrivalSessionId('user1', 'codex', '');
 
     const parsed = JSON.parse(fs.readFileSync(filePath, 'utf-8'));

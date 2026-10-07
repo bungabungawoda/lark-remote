@@ -60,7 +60,7 @@ describe('spawnProcess / spawnProcessSync（cross-spawn 收口）', () => {
   });
 });
 
-describe('mergeProcessEnv（win32 env 键大小写不敏感，§8.3）', () => {
+describe('mergeProcessEnv（win32 env 键大小写不敏感）', () => {
   it('覆盖已有同键：旧键被删、新键就位', () => {
     const merged = mergeProcessEnv({ PATH: '/usr/bin', HOME: '/home/u' }, { PATH: '/opt/bin' });
     expect(merged).toEqual({ HOME: '/home/u', PATH: '/opt/bin' });

@@ -12,17 +12,17 @@ import { makeModel, makeCatalog } from '../../fixtures/codex-catalog-fixture.js'
 import { mockLogger } from '../../lib/logger-mock.js';
 
 /**
- * Red Agent - Round 6 - Anchor (A6)
+ * Red Agent -- Anchor
  *
  * Target: /config 卡片（经 CommandRouter.buildConfigCard 真实渲染）在 catalog 模式下，
  * codex 分区的推理强度下拉必须恰为活动目录声明的档位 ['low','high','max']；
- * provider 下拉=内置 openai + 配置项（codex 合并内置 provider，review4 P2），不含
+ * provider 下拉=内置 openai + 配置项（codex 合并内置 provider，review4），不含
  * anthropic；模型下拉=活动目录模型。这是用户可见的验收面。
  *
  * Importance: config 层函数正确但卡片渲染层接错（如仍走 bundled/兜底）时，用户看到的
- * 选项依然是错的——A6 是 A1/A3 的 user-visible 闭环，防止"底层修好、UI 没跟上"。
+ * 选项依然是错的——是的 user-visible 闭环，防止"底层修好、UI 没跟上"。
  *
- * Spec basis: A6 —— 自定义目录场景下卡片推理强度=low/high/max、provider 无 openai、
+ * Spec basis:—— 自定义目录场景下卡片推理强度=low/high/max、provider 无 openai、
  * model 下拉=活动目录 slug。
  */
 

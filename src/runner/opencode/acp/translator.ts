@@ -212,7 +212,7 @@ export class OpencodeAcpTranslator extends BaseAcpTranslator {
       kind: 'command',
       command: params.toolCall.title ?? undefined,
       reason: rawInput ? truncateWithEllipsis(stringify(rawInput), 200) : undefined,
-      // §P4: 从服务端 options kind 派生——带 allow_always（或 approve_always）
+      // 从服务端 options kind 派生——带 allow_always（或 approve_always）
       // 才提供「本会话总是允许」（acceptForSession）。
       availableDecisions: deriveAcpAvailableDecisions(params.options ?? []),
     };

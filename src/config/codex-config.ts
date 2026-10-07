@@ -121,7 +121,7 @@ const catalogInFlight = new Map<string, Promise<BundledModelInfo[]>>();
  * 返回语义：
  * - undefined：config.toml 不存在或**未声明**该键 → 非 catalog 模式；
  * - ''（空串哨兵）：已声明但不可用（值为空串/非字符串）→ 按"catalog 声明退化"处理
- *   （，绝不回退 bundled/FALLBACK）；
+ *   （绝不回退 bundled/FALLBACK）；
  * - TOML_PARSE_FAILED_SENTINEL：config.toml 存在但解析失败 → 无法得知是否声明，
  *   按非 catalog 处理（用户未声明 model_catalog_json 时的默认行为）；
  * - 具体路径：声明有效（含文件缺失，文件缺失由调用方按 active 命令失败处理）。
@@ -164,13 +164,13 @@ export function isCodexCatalogMode(codexHome?: string): boolean {
 
 /**
  * 单一解析器：把 `codex debug models`（活动目录）或 `--bundled`（内置目录）的原始 JSON
- * 输出解析为模型列表（ 去重）。过滤/排序镜像 codex：
+ * 输出解析为模型列表（去重）。过滤/排序镜像 codex：
  * - show_in_picker = visibility == List（openai_models.rs ModelPreset::from）；
  * - API 模式（lark 用 API key 认证）下 codex filter_by_auth 过滤 supported_in_api=false；
  * - 按 priority 升序（build_available_models）。
  * 档位按目录声明**原样透传**（含 custom/none），不按标准枚举过滤、不虚构兜底：
  * 未声明档位 → 空列表（codex with_model 语义：len=0 时用声明 default，都没有则不发
- * effort；P1）。空串档位/空串 default 被过滤（：codex ReasoningEffort::from_str
+ * effort；）。空串档位/空串 default 被过滤（codex ReasoningEffort::from_str
  * 对 "" 硬错误）。supported_in_api===true 过滤等价于 codex 的 chatgpt_mode ||
  * supported_in_api：本项目以 API-key 模式运行 codex，chatgpt_mode 恒 false。
  */
@@ -196,7 +196,7 @@ export function parseCodexModelsOutput(stdout: string): BundledModelInfo[] {
               (r): r is { effort: string } => r !== null && typeof r === 'object' && 'effort' in r,
             )
             .map((r) => String(r.effort))
-            // ：codex 拒绝空串档位（openai_models.rs from_str "" → Err）
+            // codex 拒绝空串档位（openai_models.rs from_str "" → Err）
             .filter((effort) => effort.length > 0);
           supportedReasoningLevels.push(...declared);
         }
@@ -226,8 +226,8 @@ export function parseCodexModelsOutput(stdout: string): BundledModelInfo[] {
  * manager.rs / models_endpoint.rs）；本项目以 API-key 模式运行（无 ChatGPT/命令
  * 认证），结果与 bundled 一致，故非 catalog 用 --bundled（已文档化）。
  * 缓存：键含 binary/home/mode/models.json mtime:size + config.toml mtime:size
- * （/P3-15/P3-5）；成功结果 TTL 1h，失败/空结果短 TTL 负缓存；stat 异常时
- * 指纹为空（/P3-10）。
+ * 成功结果 TTL 1h，失败/空结果短 TTL 负缓存；stat 异常时
+ * 指纹为空。
  *
  * 同步路径（卡片构建用）：缓存命中直接返回；若有一个后台异步加载
  * （`loadCodexCatalogModelsAsync` / 启动 warm）在途，则不阻塞事件循环、不重复
@@ -448,7 +448,7 @@ export function _clearCodexCatalogInFlightForTest(): void {
 export function getReasoningEffortOptions(model: string, codexHome?: string): readonly string[] {
   const models = getCodexCatalogModels(codexHome);
   const found = models.find((m) => m.slug === model);
-  // 未命中（含未知模型，codex fallback 元数据 supported 为空）→ []，不虚构档位（P1）
+  // 未命中（含未知模型，codex fallback 元数据 supported 为空）→ []，不虚构档位
   return found?.supportedReasoningLevels ?? [];
 }
 
@@ -600,7 +600,7 @@ export function loadCodexConfig(opts: LoadCodexConfigOpts = {}): CodexConfigResu
         providerEnvKeys[name] = config.env_key;
       }
     }
-    // anthropic 显式配置但未写 env_key 时保留默认键（：恢复旧版无条件映射的
+    // anthropic 显式配置但未写 env_key 时保留默认键（恢复旧版无条件映射的
     // 配置场景行为；未配置时不再虚构）
     if (
       rawProviderNames.includes('anthropic') &&

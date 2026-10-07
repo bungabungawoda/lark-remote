@@ -18,7 +18,7 @@ import {
   createStubConnector,
 } from '../../lib/bridge-stubs.js';
 /**
- * Anchor (A6): `resume.page` 回调原地翻页 + offset clamp + 缺 agent 兜底 + 无 cwd 报错
+ * Anchor: `resume.page` 回调原地翻页 + offset clamp + 缺 agent 兜底 + 无 cwd 报错
  *
  * 验证：
  * 1. `/resume` 首页（`第 1/5 页 · 共 25 个会话`，5 个 resume.use 按钮）。
@@ -39,7 +39,6 @@ import {
  * 分支（发出「未知的卡片操作」），卡片不变、第 21+ 个会话不可达；
  * 越界 offset 不 clamp 会渲染空页/错位；缺 agent 直接崩或走错 reader。
  *
- * 依据：
  * "新增回调 resume.page，value {cmd:'resume.page', agent, offset, pageSize} →
  * handleResumePage → updateCardInPlace 原地刷新"；
  * "offset clamp 到 [0, max(0, total - pageSize)]，翻页期间新会话产生不崩溃不错位"；
@@ -153,7 +152,7 @@ function buildHarness(tmpDir: string, projectsDir: string, sessionCount: number)
   return { router, ctx, connector, sessionStore, cardOf };
 }
 
-describe('A6 resume.page 原地翻页 + offset clamp + 缺 agent 兜底 + 无 cwd 报错', () => {
+describe('resume.page 原地翻页 + offset clamp + 缺 agent 兜底 + 无 cwd 报错', () => {
   let tmpDir: string;
 
   beforeEach(() => {

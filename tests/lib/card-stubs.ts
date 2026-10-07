@@ -46,7 +46,7 @@ export function makeStreamCardConnector(opts: StreamCardConnectorOpts = {}): {
   let updateCall = 0;
   const makeUpdate = (): CardStreamController['update'] => {
     const behavior = opts.controllerUpdate;
-    // W3.2：转发 controller.update 的实参（patch 对象/reducer）给 behavior ——
+    // 转发 controller.update 的实参（patch 对象/reducer）给 behavior ——
     // 此前不转发导致 capture 类行为拿不到卡片参数，工厂无法表达 update 捕获变体。
     return async (next) => {
       if (behavior instanceof Error) throw behavior;

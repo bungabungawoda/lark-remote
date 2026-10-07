@@ -1,14 +1,14 @@
 /**
- * Round 8 termination anchor (plan §2.1): CodexSessionReader.listSessions
+ * termination anchor: CodexSessionReader.listSessions
  * offset/limit combination boundaries.
  *
  * Assumption: `listSessions(cwd, { limit, offset })` must never go out of
  * bounds — total stays the real full-set size for every combo, pages beyond
  * the end are empty (not crash/undefined).
  *
- * Spec gap: plan §2.1 defines `[offset, offset+limit)` over the mtime-desc
+ * Spec gap: defines `[offset, offset+limit)` over the mtime-desc
  * full set but does not state negative-offset semantics at the reader level.
- * Negative offset is now covered by the Round 9 anchor
+ * Negative offset is now covered by the
  * (`tests/anchor/codex-session/codex-reader-negative-offset.test.ts`).
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
@@ -52,7 +52,7 @@ afterEach(() => {
   fs.rmSync(tmpDir, { recursive: true, force: true });
 });
 
-describe('Round 8 anchor: codex reader offset/limit bounds', () => {
+describe('codex reader offset/limit bounds', () => {
   it('test_anchor_codex_reader_list_sessions_positive_bounds_keep_total', () => {
     // In-bounds, page boundary, and beyond-the-end offsets: total stays 25,
     // sessions never overlaps pages / never throws, limit beyond total is fine.

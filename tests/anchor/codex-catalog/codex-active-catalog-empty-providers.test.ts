@@ -5,7 +5,7 @@ import os from 'node:os';
 import { mockLogger } from '../../lib/logger-mock.js';
 
 /**
- * Red Agent - Round 7 - Anchor (F1, review finding → anchor)
+ * Red Agent -- Anchor (F1, review finding → anchor)
  *
  * Target: catalog 模式 + config.toml 有 model_catalog_json 但 **没有** [model_providers.*]
  * 时，providerNames = 内置 openai（codex 始终合并内置 provider 且 model_provider 默认
@@ -16,7 +16,7 @@ import { mockLogger } from '../../lib/logger-mock.js';
  * 模型在运行时不存在；即便 provider 配置为空，也不该把它们当作可选模型展示——
  * 否则用户选中即失败，与本次修复的 openai+内置模型 bug 同源。
  *
- * Spec basis: A3/A5 边界 + codex-y review4 P2——catalog 模式 providerNames=内置 openai +
+ * Spec basis: 边界 + catalog 模式 providerNames=内置 openai +
  * model_providers keys（无配置时仅 openai，codex 默认 provider），
  * 模型列表=活动目录（失败则 [currentModel]）。
  */

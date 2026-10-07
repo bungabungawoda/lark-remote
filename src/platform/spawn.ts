@@ -45,7 +45,7 @@ export function spawnProcessSync(
 /**
  * env 覆盖合并：先按不区分大小写删除 base 中的同名旧键，再设新值。
  * Windows env 键大小写不敏感，`{...process.env, PATH:x}` 会产生 `PATH`/`Path`
- * 双键（§8.3）。注意 posix 上并非普通 spread：base 中大小写不同名的键（如
+ * 双键。注意 posix 上并非普通 spread：base 中大小写不同名的键（如
  * `Path`）也会被删除，而非与 `PATH` 并存——可接受（posix 语义键为全大写
  * `PATH`，大小写变体本身就不是语义键），但语义与 spread 不同，勿混淆。
  */
@@ -79,7 +79,7 @@ const COMMAND_NOT_FOUND_PATTERN =
  * Windows 上 `DETACHED_PROCESS` 下 cmd.exe 另建控制台并重绑标准句柄，于是
  * 子进程（npm 安装的 agent 全是 `.cmd` 垫片）的 stdout/stderr 永不抵达父进程，
  * 表现为 agent 全程静默、turn 超时。实测 `windowsHide: true` 不能改善，
- * 因此 v1 §3.3「保留 detached + windowsHide」的假设据此修正为「win32 不
+ * 因此 「保留 detached + windowsHide」的假设据此修正为「win32 不
  * detached」。调用方应同时传 `windowsHide: true`，避免 cmd.exe 闪控制台窗口。
  */
 export function useDetachedProcessGroup(platform: NodeJS.Platform = currentPlatform): boolean {

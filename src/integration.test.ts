@@ -217,7 +217,7 @@ describe('端到端流程', () => {
    *
    * 真实链路是「消息进装配器（700ms 静默窗）→ commit 时快照 binding →
    * 新会话卡片动作立即 clearSessionId」。此处直接模拟 commit 之后的状态：
-   * binding 已在 T0 快照（携带旧 sessionId + sessionEpoch），随后 new-session
+   * binding 已在入队时刻快照（携带旧 sessionId + sessionEpoch），随后 new-session
    * 清空并 bump epoch，消息才执行。断言：
    *   1) runner 收到发送时的旧 session（binding 钉死，不漂移到新会话）；
    *   2) run 结束后 store 仍为空（代际守卫拦截旧 sessionId 写回，reset 不被复活）。
@@ -234,10 +234,10 @@ describe('端到端流程', () => {
     sessionStore.setCwd('user1', tmpDir);
     sessionStore.setSessionIdAndCwd('user1', 'claude', 's-old', tmpDir);
 
-    // T0：消息 commit 时刻快照 binding（index.ts onCommit 的行为）
+    // 消息 commit 时刻快照 binding（index.ts onCommit 的行为）
     const binding = bridge.currentBinding('user1');
 
-    // T1：用户点「新会话」——清空 + bump epoch（在消息开跑之前）
+    // 用户点「新会话」——清空 + bump epoch（在消息开跑之前）
     sessionStore.clearSessionId('user1', 'claude');
 
     // 消息随后执行

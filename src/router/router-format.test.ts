@@ -26,7 +26,7 @@ describe('formatUsageStats', () => {
     // 保持现状只显示绝对量。
     // 缺失/错误会导致：有上限的 codex 会话无法在卡片上看到水位；无上限的
     // agent 被错误地塞进一个编造的百分比。
-    // 依据：spec 摘要第 2、3 条；百分比 = contextLength / contextLimit * 100 四舍五入。
+    // 依据：百分比 = contextLength / contextLimit * 100 四舍五入。
     const out = formatUsageStats({ contextLength: 5000, contextLimit: 200000 });
     expect(out).toContain('Context - 5K (3%)');
 
@@ -289,7 +289,7 @@ describe('formatUsageStats', () => {
   });
 
   // =========================================================================
-  // 信息保真 C1：Model / Cost / Reasoning token 三行（各自仅在值存在时）
+  // 信息保真 Model / Cost / Reasoning token 三行（各自仅在值存在时）
   // =========================================================================
 
   it('信息保真：model/costUsd/reasoningTokens 存在时输出对应三行', () => {

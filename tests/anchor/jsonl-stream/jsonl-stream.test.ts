@@ -14,10 +14,10 @@ import { describe, expect, it, test, vi } from 'vitest';
 import { Readable } from 'node:stream';
 
 // ---------------------------------------------------------------------------
-//  A1: createJSONLStream backpressure
+// createJSONLStream backpressure
 // ---------------------------------------------------------------------------
 
-describe(' A1: createJSONLStream backpressure', () => {
+describe('createJSONLStream backpressure', () => {
   test('test_anchor_jsonl_stream_pause_on_queue_depth', async () => {
     const readable = new Readable({ read() {} });
     const pauseSpy = vi.spyOn(readable, 'pause');
@@ -51,10 +51,10 @@ describe(' A1: createJSONLStream backpressure', () => {
 });
 
 // ---------------------------------------------------------------------------
-//  A3: stream error under pause
+// stream error under pause
 // ---------------------------------------------------------------------------
 
-describe(' A3: stream error under pause', () => {
+describe('stream error under pause', () => {
   test('test_anchor_jsonl_stream_error_terminates_generator', async () => {
     const readable = new Readable({ read() {} });
 
@@ -95,10 +95,10 @@ describe(' A3: stream error under pause', () => {
 });
 
 // ---------------------------------------------------------------------------
-//  A3: backpressure hysteresis invariant
+// backpressure hysteresis invariant
 // ---------------------------------------------------------------------------
 
-describe(' A3: backpressure hysteresis invariant', () => {
+describe('backpressure hysteresis invariant', () => {
   test('test_anchor_jsonl_stream_resume_below_pause_threshold', async () => {
     const readable = new Readable({ read() {} });
     const pauseTimes: number[] = [];
@@ -176,10 +176,10 @@ describe(' A3: backpressure hysteresis invariant', () => {
 });
 
 // ---------------------------------------------------------------------------
-//  A4: backpressure disabled when pauseThreshold=0
+// backpressure disabled when pauseThreshold=0
 // ---------------------------------------------------------------------------
 
-describe(' A4: backpressure disabled when pauseThreshold=0', () => {
+describe('backpressure disabled when pauseThreshold=0', () => {
   test('test_anchor_jsonl_stream_no_pause_when_disabled', async () => {
     const readable = new Readable({ read() {} });
     const pauseSpy = vi.spyOn(readable, 'pause');
@@ -202,10 +202,10 @@ describe(' A4: backpressure disabled when pauseThreshold=0', () => {
 });
 
 // ---------------------------------------------------------------------------
-//  A5: resume on drain-to-empty prevents deadlock
+// resume on drain-to-empty prevents deadlock
 // ---------------------------------------------------------------------------
 
-describe(' A5: resume on drain-to-empty prevents deadlock', () => {
+describe('resume on drain-to-empty prevents deadlock', () => {
   test('test_anchor_jsonl_stream_resume_when_queue_drained', async () => {
     const readable = new Readable({ read() {} });
     const { createJSONLStream } = await import('../../../src/runner/common/jsonl-stream.js');
@@ -267,10 +267,10 @@ describe(' A5: resume on drain-to-empty prevents deadlock', () => {
 });
 
 // ---------------------------------------------------------------------------
-// : createJSONLStream bounds a never-newline single line
+// createJSONLStream bounds a never-newline single line
 // ---------------------------------------------------------------------------
 
-describe(': createJSONLStream bounds a never-newline single line', () => {
+describe('createJSONLStream bounds a never-newline single line', () => {
   it('test_anchor_jsonl_stream_truncates_oversize_partial_line', async () => {
     const onParseError = vi.fn();
     const readable = new Readable({ read() {} });
@@ -294,10 +294,10 @@ describe(': createJSONLStream bounds a never-newline single line', () => {
 });
 
 // ---------------------------------------------------------------------------
-// : partialLine chunk-array accumulation
+// partialLine chunk-array accumulation
 // ---------------------------------------------------------------------------
 
-describe(': partialLine chunk-array accumulation', () => {
+describe('partialLine chunk-array accumulation', () => {
   test('test_anchor_jsonl_stream_large_single_line_across_chunks', async () => {
     const { createJSONLStream } = await import('../../../src/runner/common/jsonl-stream.js');
 

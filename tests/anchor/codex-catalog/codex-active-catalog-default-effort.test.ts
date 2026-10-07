@@ -5,7 +5,7 @@ import os from 'node:os';
 import { mockLogger } from '../../lib/logger-mock.js';
 
 /**
- * Red Agent - Round 4 - Anchor (A2)
+ * Red Agent -- Anchor
  *
  * Target: catalog 模式下 getDefaultReasoningEffort 必须从活动目录读 default_reasoning_level。
  * deepseek-v4-flash 活动目录声明 default_reasoning_level = high；内置目录不含该模型，
@@ -15,7 +15,7 @@ import { mockLogger } from '../../lib/logger-mock.js';
  * 模型只支持 low/high/max 时，用户看到/保存的档位不在模型契约内（codex 会静默钳制
  * 或子代理路径报错）。
  *
- * Spec basis: A2 —— getDefaultReasoningEffort 按 活动目录 → 内置目录 → 'medium' 解析。
+ * Spec basis:—— getDefaultReasoningEffort 按 活动目录 → 内置目录 → 'medium' 解析。
  */
 
 const { mockSpawnSync } = vi.hoisted(() => ({ mockSpawnSync: vi.fn() }));

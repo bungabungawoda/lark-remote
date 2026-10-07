@@ -86,7 +86,7 @@ interface SessionConfigOptionLike {
 // =============================================================================
 
 export class OpencodeAcpRunner extends BaseAcpRunner<OpencodeAcpTranslator> {
-  /** Configured session mode applied via session/set_mode (§P5). */
+  /** Configured session mode applied via session/set_mode. */
   private configuredMode: 'build' | 'plan';
   /** Current session mode id, parsed from session/new|resume configOptions. */
   private currentModeId?: string;
@@ -173,7 +173,7 @@ export class OpencodeAcpRunner extends BaseAcpRunner<OpencodeAcpTranslator> {
   }
 
   protected async applyTurnSettings(client: JsonRpcClient, sessionId: string): Promise<void> {
-    // §P5: apply the configured mode (build/plan). If the session already
+    // apply the configured mode (build/plan). If the session already
     // runs it (from session/new|resume configOptions), skip the wire call;
     // otherwise send session/set_mode and refresh the local view (opencode
     // sends no notification for set_mode).
@@ -250,7 +250,7 @@ export class OpencodeAcpRunner extends BaseAcpRunner<OpencodeAcpTranslator> {
   }
 
   /**
-   * Hot-apply a mode change to the live ACP session (§P5).
+   * Hot-apply a mode change to the live ACP session.
    *
    * opencode's session/set_mode sends no notification — the client refreshes
    * the local mode view itself. The local mode is always updated so
