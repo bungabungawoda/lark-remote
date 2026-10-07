@@ -15,7 +15,9 @@ describe('resolveConfigDir tilde expansion', () => {
   });
 
   it('passes through non-tilde paths unchanged（交给 path.resolve）', () => {
-    expect(resolveConfigDir('relative/dir').endsWith('relative/dir')).toBe(true);
+    // 断言与 path.resolve 全等而非 endsWith 字面量：win32 上 resolve 产出
+    // 反斜杠分隔符，endsWith('relative/dir') 恒 false（Windows CI 实测）。
+    expect(resolveConfigDir('relative/dir')).toBe(path.resolve('relative/dir'));
   });
 });
 
