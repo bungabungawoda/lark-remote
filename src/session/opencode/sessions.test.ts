@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { OpencodeSessionReader } from '../../session/opencode/sessions.js';
+import { currentPlatform } from '../../platform/select.js';
 import { STALE_MS } from '../common/constants.js';
 import { rmRf } from '../../../tests/lib/tmp-cleanup.js';
 
@@ -627,4 +628,34 @@ describe('OpencodeSessionReader - displayTitle', () => {
 
     expect(content.displayTitle).toBe('old task');
   });
+});
+
+// ---------------------------------------------------------------------------
+// readSessionContent cwd 判等（review 2026-10-07 samePath 收口回归锚）
+//
+// 修复前用裸 `data.info.directory !== realCwd`，而 listSessions 走 samePath：
+// opencode 自行记录的 directory 形态（大小写/尾分隔符）与 realpath(cwd) 不
+// 逐字符一致时，会话列得出却读空。linux 是大小写敏感 FS、samePath 在 linux
+// 严格相等，形态变体用例只对 darwin/win32 有意义，故 skipIf(linux)。
+// ---------------------------------------------------------------------------
+describe('readSessionContent cwd 判等（samePath 收口）', () => {
+  it.skipIf(currentPlatform === 'linux')(
+    'export 的 directory 仅差大小写/尾分隔符时仍能读出内容',
+    () => {
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'opencode-cwd-key-'));
+      try {
+        const resolved = fs.realpathSync(tmpDir);
+        const raw = buildExportJson({
+          id: 'ses_var',
+          directory: resolved.toUpperCase() + '/',
+          messages: [{ role: 'user', parts: [{ type: 'text', text: 'hello' }] }],
+        });
+        const r = new OpencodeSessionReader({ cacheTtlMs: 0, captureExport: () => raw });
+        const content = r.readSessionContent('ses_var', tmpDir);
+        expect(content.events.length).toBeGreaterThan(0);
+      } finally {
+        rmRf(tmpDir);
+      }
+    },
+  );
 });

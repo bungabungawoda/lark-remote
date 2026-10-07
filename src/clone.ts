@@ -53,11 +53,13 @@ const WIN_RESERVED_NAMES = new Set([
 
 /**
  * 校验用户指定的分身名字：路径分隔符、以 . 开头、尾点/尾空格（win32 会静默
- * 吞掉）、win32 保留设备名一律拒绝。
+ * 吞掉）、win32 非法字符（`<>:"|?*`，NTFS/Win32 API 拒绝）、win32 保留设备名
+ * 一律拒绝。
  */
 export function isValidCloneName(name: string): boolean {
   if (!name || name.includes('/') || name.includes('\\') || name.startsWith('.')) return false;
   if (/[\s.]$/.test(name)) return false;
+  if (/[<>:"|?*]/.test(name)) return false;
   if (WIN_RESERVED_NAMES.has(name.toLowerCase())) return false;
   return true;
 }
@@ -543,12 +545,14 @@ export class CloneSession {
 
   /**
    * 写配置失败时清理半成品目录。守卫：只删内容全部是本次产物
-   * （config.yaml / startup-contact.json 及其 .tmp）的目录，混入其他
-   * 文件时保留现场不动。
+   * （config.yaml / startup-contact.json 及其 tmp）的目录，混入其他
+   * 文件时保留现场不动。tmp 形态两种都认：atomic-write 现行命名
+   * （.{name}.tmp-{pid}-{ts}-{rand}）与旧版固定 `.tmp`（升级瞬间崩溃的残留）。
    */
   private cleanupPartialDir(targetDir: string): void {
     try {
-      const allowed = /^(config\.yaml|startup-contact\.json)(\.tmp)?$/;
+      const allowed =
+        /^(config\.yaml|startup-contact\.json)(\.tmp)?$|^\.(config\.yaml|startup-contact\.json)\.tmp-\d+-\d+-[a-z0-9]+$/;
       const entries = fs.readdirSync(targetDir);
       if (!entries.every((e) => allowed.test(e))) {
         getLogger().warn(`[clone] target dir has foreign entries, kept: ${targetDir}`);
