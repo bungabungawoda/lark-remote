@@ -45,7 +45,7 @@ function createMockClaude(env: Record<string, string> = {}): void {
 }
 
 function makeRunner(): ClaudeRunner {
-  const runner = new ClaudeRunner({ workspace: 'test', pidDir: tmpDir });
+  const runner = new ClaudeRunner({ cwd: 'test', pidDir: tmpDir });
   runners.push(runner);
   return runner;
 }

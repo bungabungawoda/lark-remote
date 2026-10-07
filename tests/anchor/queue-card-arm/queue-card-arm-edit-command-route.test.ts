@@ -39,7 +39,7 @@ beforeEach(() => {
       model: 'opus',
       stopGraceMs: 5000,
     },
-    workspace: { default: '' },
+    cwd: { default: '' },
   });
 });
 
@@ -124,7 +124,7 @@ describe('an edited order.exec queued task must keep the router.handle dispatch 
     const dispatchStatus = await dispatchOrderExecForQueue({
       router,
       bridge,
-      workspace: tmpDir,
+      cwd: tmpDir,
       orderId: order.id,
       ctx: cardCtx,
     });
@@ -137,11 +137,11 @@ describe('an edited order.exec queued task must keep the router.handle dispatch 
 
     // --- 步骤 3：用排队卡回调（internal key）编辑 T2 → "/active"（一条命令）---
     await router.handleCardAction(
-      { cmd: 'queue.edit', workspace: tmpDir, messageId: internalKey },
+      { cmd: 'queue.edit', cwd: tmpDir, messageId: internalKey },
       cardCtx,
     );
     await router.handleCardAction(
-      { cmd: 'queue.input', workspace: tmpDir, messageId: internalKey, inputValue: '/active' },
+      { cmd: 'queue.input', cwd: tmpDir, messageId: internalKey, inputValue: '/active' },
       cardCtx,
     );
     expect(bridge.getQueuedTask(tmpDir, internalKey)?.editedMessage).toBe('/active');

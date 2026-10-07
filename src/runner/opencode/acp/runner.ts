@@ -39,7 +39,7 @@ import {
   OPENCODE_APPROVAL_KINDS,
   type AcpPendingApproval,
   buildAcpPermissionOutcome,
-} from '../../common/acp/protocol-helpers.js';
+} from '../../common/acp/acp-approval.js';
 import { getLogger } from '../../../logger/index.js';
 import { BaseAcpRunner, type AcpTranslatorEvent } from '../../common/acp/base-acp-runner.js';
 import { OpencodeLogErrorMonitor, resolveOpencodeLogPath } from './error-monitor.js';
@@ -57,7 +57,7 @@ export interface OpencodeAcpRunnerOptions {
   env?: Record<string, string | undefined>;
   /** Args to spawn the ACP server with. Defaults to `['acp']`. Note: no
    *  explicit `--cwd` — opencode acp defaults --cwd to the process cwd, which
-   *  the transport already sets to the workspace (cli/cmd/acp.ts:13-17). */
+   *  the transport already sets to the cwd (cli/cmd/acp.ts:13-17). */
   acpArgs?: string[];
   /** Request timeout in milliseconds. */
   requestTimeoutMs?: number;

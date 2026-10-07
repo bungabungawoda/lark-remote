@@ -498,7 +498,7 @@ describe('CloneSession.finalize', () => {
 });
 
 describe('CloneSession state sync', () => {
-  it('copies workspace/orders verbatim and re-keys last-session to the new openId', async () => {
+  it('copies cwd/orders verbatim and re-keys last-session to the new openId', async () => {
     // 旧实例的绑定与状态文件
     fs.writeFileSync(
       path.join(configDir, 'startup-contact.json'),

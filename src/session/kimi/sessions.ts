@@ -298,13 +298,6 @@ export class KimiSessionReader implements AgentSessionReader {
   }
 
   /**
-   * Convenience wrapper: find sessionDir from index, or null if not found.
-   */
-  private findSessionDirFromIndex(sessionId: string): string | null {
-    return this.findSessionIndexEntry(sessionId)?.sessionDir ?? null;
-  }
-
-  /**
    * Extract the last turn.prompt text from a wire.jsonl file.
    * Used as a fallback summary source when state.json has no title/lastPrompt
    * (v2 sessions). Scans the tail of the file for efficiency.
@@ -767,7 +760,7 @@ export class KimiSessionReader implements AgentSessionReader {
     // Fallback: when state.json is missing, unparseable, or has no workDir/cwd,
     // use the workDir from the session index entry as a secondary guard.
     // This prevents /resume <id> from accessing a session belonging to a
-    // different workspace when state.json is unavailable.
+    // different cwd when state.json is unavailable.
     if (!cwdGuardPassed) {
       const indexWorkDir = indexEntry?.workDir;
       if (indexWorkDir && indexWorkDir !== realCwd) {
@@ -775,7 +768,7 @@ export class KimiSessionReader implements AgentSessionReader {
       }
       // v2 sessions have empty index workDir (v1-only field) and may lack
       // state.json cwd. When no cwd source can verify the session belongs to
-      // the requested workspace, fail-closed to prevent cross-workspace access
+      // the requested cwd, fail-closed to prevent cross-workspace access
       // (aligned with claude's fail-closed cwd guard).
       if (!indexWorkDir) {
         getLogger().warn(

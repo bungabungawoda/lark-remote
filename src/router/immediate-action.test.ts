@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { isImmediateAction, DIRECT_RETURN_CMDS } from './index.js';
+import { isImmediateAction, DIRECT_RETURN_CMDS, SESSION_MUTATING_ACTION_CMDS } from './index.js';
 
 /**
  * Tests for isImmediateAction function (§9.19).
@@ -33,7 +33,7 @@ describe('isImmediateAction (§9.19)', () => {
       ['ws.remove', '§9.19: 只删除 workspace 别名'],
       ['resume.use', '§9.19: 只设置 sessionId'],
       ['resume.page', '分页（control operation）'],
-      ['ws.use', '§9.6 workspace switch'],
+      ['ws.use', '§9.6 cwd switch'],
       ['ws.page', 'pagination is a control operation'],
       ['ws.filter', '关键词筛选（只重渲染卡片，control operation）'],
       ['ws.sort', '排序切换（control operation）'],
@@ -97,5 +97,31 @@ describe('isImmediateAction (§9.19)', () => {
     it('empty string should return false', () => {
       expect(isImmediateAction('')).toBe(false);
     });
+  });
+});
+
+/**
+ * SESSION_MUTATING_ACTION_CMDS 单源（2026-10-07 定序修复）。
+ *
+ * 这些卡片动作会改写 sessionStore 的 sessionId / cwd / defaultAgent，控制层
+ * （index.ts）执行它们之前必须先 flush 入站装配窗口，否则 700ms 窗口内先到的
+ * 文本消息会漂移到动作之后的新状态。每个成员都必须绕过装配器（immediate 或
+ * direct-return），否则它根本不在「卡片动作」路径上，列进来是死代码。
+ */
+describe('SESSION_MUTATING_ACTION_CMDS（会话/cwd/agent 变更卡片动作）', () => {
+  it('覆盖全部会话/cwd/agent 变更卡片动作', () => {
+    expect([...SESSION_MUTATING_ACTION_CMDS].sort()).toEqual([
+      'config.save',
+      'ls.switch',
+      'new-session',
+      'resume.use',
+      'ws.use',
+    ]);
+  });
+
+  it('每个成员都绕过装配器（immediate 或 direct-return）', () => {
+    for (const cmd of SESSION_MUTATING_ACTION_CMDS) {
+      expect(isImmediateAction(cmd) || DIRECT_RETURN_CMDS.has(cmd)).toBe(true);
+    }
   });
 });

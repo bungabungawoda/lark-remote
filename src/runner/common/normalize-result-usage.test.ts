@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { normalizeResultUsage } from './usage.js';
+import { normalizeResultUsage } from './result-usage.js';
 
 /** Mirror of ResultEvent['usage'] for red-phase independence. */
 type TokenUsage = {

@@ -6,7 +6,7 @@ import path from 'node:path';
 import YAML from 'yaml';
 import { getLogger } from './logger/index.js';
 import { renderQrImage } from './config/qr.js';
-import { silentlyUnlink } from './common/fs.js';
+import { bestEffortUnlink } from './common/fs.js';
 import { atomicWrite, atomicWriteJson } from './persistence/atomic-write.js';
 import { spawnDetachedBridge } from './restart.js';
 
@@ -101,7 +101,7 @@ type RegisterAppFn = (options: {
  * 默认新实例拉起：同入口 + 同参数，仅替换 --config-dir（detached，返回 pid）。
  * spawn 骨架（log fd / windowsHide / error 兜底）单源于 restart.ts。
  */
-export function spawnDetachedCloneBridge(targetDir: string): number | undefined {
+function spawnDetachedCloneBridge(targetDir: string): number | undefined {
   const args: string[] = [];
   const argv = process.argv.slice(2);
   for (let i = 0; i < argv.length; i++) {
@@ -367,7 +367,7 @@ export class CloneSession {
         .catch(() => {});
       return;
     } finally {
-      silentlyUnlink(qrPath);
+      bestEffortUnlink(qrPath);
     }
     await this.connector
       .sendWithRetry(
@@ -407,7 +407,7 @@ export class CloneSession {
   /**
    * 扫码成功后的自动绑定落地：
    * 1. 复制当前 config.yaml，仅替换 feishu.appId/appSecret；
-   * 2. 同步 workspace / 常用指令 / 会话状态（session 按 openId 重绑）；
+   * 2. 同步 cwd / 常用指令 / 会话状态（session 按 openId 重绑）；
    * 3. 用 registerApp 返回的新应用 openId 写 startup-contact.json（免认领绑定）；
    * 4. detached 拉起指向新目录的新实例（启动后自动向新应用发启动通知）；
    * 5. 在原应用回执「绑定完成 + 配置目录」，退出流程。

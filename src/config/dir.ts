@@ -14,7 +14,7 @@ interface CliArgs {
   help?: boolean;
   version?: boolean;
   update?: boolean;
-  advanceHelp?: boolean;
+  advancedHelp?: boolean;
 }
 
 export function resolveConfigDir(configDirArg: string | undefined): string {
@@ -62,8 +62,8 @@ export function parseCliArgs(args: string[] = process.argv.slice(2)): CliArgs {
       }
     } else if (arg === '--dev') {
       result.dev = true;
-    } else if (arg === '--advance-help') {
-      result.advanceHelp = true;
+    } else if (arg === '--advanced-help') {
+      result.advancedHelp = true;
     } else if (arg === '--update' || arg === 'update') {
       // 裸子命令等价形式：`lark-remote update` 与 `--update` 同义。
       // 不识别时它会落到守护进程路径去抢单例锁，被正在运行的实例挡下
@@ -112,7 +112,7 @@ export function printHelp(): void {
     '  --settings <path>     指定 Claude 配置文件路径',
     '  --dev                 开发模式：标记从源码 bun src/index.ts 启动（看门狗据此选择拉起方式）',
     '  --update              升级到最新版本后退出（用于 cron/脚本自动化升级）',
-    '  --advance-help        高级配置参考：config.yaml 全部高级字段的语义与改法（面向 coding agent）',
+    '  --advanced-help        高级配置参考：config.yaml 全部高级字段的语义与改法（面向 coding agent）',
     '  -h, --help            显示本帮助信息',
     '  -v, --version         显示版本号',
   ];
@@ -120,17 +120,16 @@ export function printHelp(): void {
 }
 
 /**
- * Print advanced-config reference to stdout (CLI `--advance-help`).
+ * Print advanced-config reference to stdout (CLI `--advanced-help`).
  *
  * 目标读者是 coding agent（用户让 agent 代改 config.yaml）：披露所有
- * /config 卡片未暴露的 YAML 字段——名称、默认值、语义、改法。飞书侧
- * 等价命令为 /advancehelp（内容同源，卡片渲染）。
+ * /config 卡片未暴露的 YAML 字段——名称、默认值、语义、改法。
  */
-export function printAdvanceHelp(): void {
+export function printAdvancedHelp(): void {
   const configDir = resolveConfigDir(parseCliArgs().configDir);
   const configPath = configDir + '/config.yaml';
   const lines = [
-    'lark-remote 高级配置参考（--advance-help）',
+    'lark-remote 高级配置参考（--advanced-help）',
     '',
     '目标读者：coding agent。用户把本输出交给 agent，agent 据此代改配置。',
     '',

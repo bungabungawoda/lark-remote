@@ -38,6 +38,7 @@ import {
   isImmediateAction,
   DIRECT_RETURN_CMDS,
   type CardActionPayload,
+  SESSION_MUTATING_ACTION_CMDS,
 } from './router/index.js';
 import { dispatchOrderExecForQueue } from './router/order-exec-dispatch.js';
 import { buildCardActionFullValue } from './router/card-action-payload.js';
@@ -51,7 +52,12 @@ import { InstanceAlreadyRunningError, InstanceLock } from './instance-lock.js';
 import { spawnReplacementBridge, waitForPreviousInstance } from './restart.js';
 import { currentPlatform } from './platform/select.js';
 import { startSleepBlocker } from './platform/sleep-blocker.js';
-import { checkLatestVersion, isNewer, runInstallLatest, formatUpdateHint } from './update/index.js';
+import {
+  checkLatestVersion,
+  compareVersions,
+  runInstallLatest,
+  formatUpdateHint,
+} from './update/index.js';
 import { classifyRejection } from './error-classification.js';
 import { WorkspaceStore } from './workspace/index.js';
 import { InboundTurnAssembler } from './inbound/turn-assembler.js';
@@ -61,7 +67,7 @@ import { buildSessionHistoryCard } from './router/card-helpers.js';
 import { newSessionButton, resumeCompactButton, agentDisplayName } from './card/card-shared.js';
 import path from 'node:path';
 import fs from 'node:fs';
-import { silentlyUnlink } from './common/fs.js';
+import { bestEffortUnlink } from './common/fs.js';
 
 /**
  * /stop 命令别名单源：普通消息的停止分支与 clone 活跃期拦截的排除条件
@@ -230,7 +236,7 @@ function initializeRunner(
       stopGraceMs: claudeConfig.stopGraceMs,
       settings: cliArgs.settings,
       pidDir: configDir,
-      workspace: ws,
+      cwd: ws,
       permissionMode: claudeConfig.permissionMode,
       idleTtlMs:
         claudeConfig.idleTtlMinutes != null ? claudeConfig.idleTtlMinutes * 60_000 : undefined,
@@ -321,7 +327,7 @@ function initializeRunner(
         .split(',')
         .map((t) => t.trim())
         .filter(Boolean),
-      workspace: ws,
+      cwd: ws,
       sessionReader: piSessionReader,
     });
   });
@@ -422,7 +428,7 @@ function setupMessageHandlers(
   // 附件路径统一注入 prompt；无文本纯附件只回执（决策 2）。
   const assembler = new InboundTurnAssembler({
     onCommit: (turn, prompt) => {
-      // 入队时刻（T0）快照 workspace + agent/session 绑定，语义与旧路径一致
+      // 入队时刻（T0）快照 cwd + agent/session 绑定，语义与旧路径一致
       // （排队期间 /cd、/config 不再导致语义漂移）。
       const messageId = turn.messageIds[turn.messageIds.length - 1] ?? '';
       // turnMessageIds：终态收尾要覆盖本轮每一条消息（逐条挂的 Typing 得逐条撤）
@@ -432,18 +438,18 @@ function setupMessageHandlers(
         messageId,
         turnMessageIds: turn.messageIds,
       };
-      let workspace = sessionStore.getCwd(turn.userId) ?? '';
-      if (!workspace && workspaceStore) {
+      let cwd = sessionStore.getCwd(turn.userId) ?? '';
+      if (!cwd && workspaceStore) {
         const workspaces = workspaceStore.list();
-        if (workspaces.length > 0) workspace = workspaces[0].path;
+        if (workspaces.length > 0) cwd = workspaces[0].path;
       }
       const binding = bridge.currentBinding(turn.userId);
       bridge.enqueue(
-        workspace,
+        cwd,
         async () => {
           // allowCommandPrefix: false —— prompt 已剥离占位符，绝不再做命令分发。
           await router.handle(prompt, ctx, {
-            cwdOverride: workspace,
+            cwdOverride: cwd,
             binding,
             allowCommandPrefix: false,
           });
@@ -504,7 +510,7 @@ function setupMessageHandlers(
         // save() 的正常路径会清理临时文件；这里兜底 save 进入 mkdir
         // try 之前意外抛错的情况，避免 os.tmpdir 残留。
         for (const item of payload.media) {
-          silentlyUnlink(item.tempPath);
+          bestEffortUnlink(item.tempPath);
         }
         throw err;
       }
@@ -521,8 +527,8 @@ function setupMessageHandlers(
   });
 
   connector.setMessageHandler((msg) => {
-    // 绑定/授权闸门：仅 owner 放行；非 owner 静默丢弃；未绑定时首条消息（任意内容）认领
-    const decision = binder.classify(msg.userId, msg.content, msg.chatId);
+    // 绑定/授权闸门：仅 owner 放行；非 owner 静默丢弃；未绑定时首条消息认领
+    const decision = binder.authorize(msg.userId, msg.chatId);
     if (decision.kind === 'rejected') return;
     if (decision.kind === 'bind_success') {
       // First-run onboarding: set default cwd + send welcome + Help card.
@@ -706,12 +712,21 @@ function setupMessageHandlers(
     }
 
     const isImmediate = isImmediateAction(actionValue.cmd);
-    const workspace = sessionStore.getCwd(userId) ?? '';
+    const cwd = sessionStore.getCwd(userId) ?? '';
 
     // Build full value object — spread all fields from actionValue, then merge
     // component out-of-band fields (option/formValue/inputValue/options) where
     // present. See card-action-payload.ts for the component-type contract.
     const fullValue = buildCardActionFullValue(actionValue, action);
+
+    // 定序（2026-10-07）：会话 / cwd / agent 变更类卡片动作（new-session、
+    // resume.use、ls.switch、ws.use、config.save）执行前先冲刷入站装配窗口，
+    // 保证窗口内先到的文本消息在本动作之前 commit（绑定旧 session/cwd/agent）。
+    // 否则 700ms 静默窗内的消息会漂移到动作之后的新状态：例如输入「重新构建」
+    // 后立即点「新会话」，消息会落到新会话。名单以 router 单源为准。
+    if (SESSION_MUTATING_ACTION_CMDS.has(actionValue.cmd)) {
+      await assembler.flush(userId, chatId, 'flush');
+    }
 
     // queue.input / config.save / approval.respond / approval.toggle /
     // approval.answer 系列返回 CardActionResponse toast 给点击用户即时反馈。
@@ -738,7 +753,7 @@ function setupMessageHandlers(
       void dispatchOrderExecForQueue({
         router,
         bridge,
-        workspace,
+        cwd,
         orderId: actionValue.orderId,
         ctx: { userId, chatId, messageId },
       }).catch((err: unknown) => logger.error('[control] order.exec dispatch failed:', err));
@@ -756,13 +771,13 @@ function setupMessageHandlers(
     };
 
     if (isImmediate) {
-      bridge.enqueueImmediate(workspace, async () => {
+      bridge.enqueueImmediate(cwd, async () => {
         const res = await router.handleCardAction(fullValue, { userId, chatId, messageId });
         forwardActionFeedback(res);
       });
     } else {
       bridge.enqueue(
-        workspace,
+        cwd,
         async () => {
           const res = await router.handleCardAction(fullValue, { userId, chatId, messageId });
           forwardActionFeedback(res);
@@ -774,7 +789,7 @@ function setupMessageHandlers(
             messageId,
             messagePreview: `card action: ${actionValue.cmd}`,
             // Compact 是单向操作，排队卡不允许编辑（编辑预览无意义）。
-            editable: actionValue.cmd !== 'codex.compact' && actionValue.cmd !== 'resume.compact',
+            editable: actionValue.cmd !== 'compact' && actionValue.cmd !== 'resume.compact',
           },
         },
       );
@@ -803,7 +818,7 @@ async function main() {
     initLogger({ dir: path.join(updateConfigDir, 'logs') });
     try {
       const { current, latest } = await checkLatestVersion();
-      if (!isNewer(current, latest)) {
+      if (compareVersions(current, latest) !== 1) {
         console.log(`Already up to date: ${current}`);
         process.exit(0);
       }
@@ -855,13 +870,10 @@ async function main() {
     console.error(formatBindGuidance());
     logger.info('[binder] awaiting first binding (any first private message binds)');
   } else {
-    logger.info(`[binder] bound to owner openId=${binder.boundOpenId()}`);
+    logger.info(`[binder] bound to owner userId=${binder.boundUserId()}`);
   }
 
-  const sessionStore = new SessionStore(
-    path.join(configDir, 'last-session.json'),
-    config.defaultAgent,
-  );
+  const sessionStore = new SessionStore(path.join(configDir, 'last-session.json'));
   const workspaceStore = new WorkspaceStore(path.join(configDir, 'workspace.json'));
   const bridge = new Bridge({
     connector,

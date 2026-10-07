@@ -16,7 +16,7 @@ import {
  * injects a reader configured with its test `projectsDir`; production code
  * uses the default (`~/.claude/projects/`).
  *
- * All methods are thin wrappers around `claude-sessions.ts` exports — zero
+ * All methods are thin wrappers around `sessions.ts` exports — zero
  * behavior change. Router and bridge reach session data exclusively through
  * this reader (via `SessionReaderRegistry`); the underlying functions remain
  * exported for tests and the reader itself.

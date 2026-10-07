@@ -69,7 +69,7 @@ export interface ParsedSession {
 /**
  * Unified parser: single streaming scan of a JSONL file producing both
  * the complete set of cwd values AND the first real user message summary.
- * Replaces the split readCwdFromJsonl (first-cwd) + jsonlContainsCwd (any-cwd).
+ * Replaces the split readCwdFromJsonl (first-cwd) + fileContainsCwd (any-cwd).
  */
 export function parseSessionJsonl(filePath: string): ParsedSession {
   const cwdSet = new Set<string>();

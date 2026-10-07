@@ -37,7 +37,7 @@ beforeEach(() => {
       model: 'opus',
       stopGraceMs: 5000,
     },
-    workspace: { default: '' },
+    cwd: { default: '' },
   });
 });
 
@@ -135,12 +135,9 @@ describe('a queue.input-edited task must run the edited content when its turn is
     expect(bridge.getQueuedTask(tmpDir, 'msg-2')?.messagePreview).toBe('original message');
 
     // --- 步骤 3：编辑 T2 → "edited message"（排队卡路径，不点立即执行）---
+    await router.handleCardAction({ cmd: 'queue.edit', cwd: tmpDir, messageId: 'msg-2' }, ctx);
     await router.handleCardAction(
-      { cmd: 'queue.edit', workspace: tmpDir, messageId: 'msg-2' },
-      ctx,
-    );
-    await router.handleCardAction(
-      { cmd: 'queue.input', workspace: tmpDir, messageId: 'msg-2', inputValue: 'edited message' },
+      { cmd: 'queue.input', cwd: tmpDir, messageId: 'msg-2', inputValue: 'edited message' },
       ctx,
     );
 

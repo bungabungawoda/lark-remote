@@ -6,6 +6,7 @@ import yaml from 'yaml';
 import { CommandRouter } from './router/index.js';
 import { Bridge } from './bridge/index.js';
 import { SessionStore } from './session/index.js';
+import { InboundTurnAssembler } from './inbound/turn-assembler.js';
 import { AppConfigSchema, loadConfig, setConfigValue } from './config/index.js';
 import type { AppConfig } from './config/index.js';
 import type { AgentEvent, Runner } from './runner/index.js';
@@ -83,22 +84,23 @@ function createRouter(opts: {
   const sessionStore = new SessionStore();
   const connector = createStubConnector();
   const config = buildConfig(opts.config);
+  const bridge = new Bridge({
+    runner: opts.runner,
+    agentRegistry: createStubAgentRegistry(opts.runner),
+    sessionReaderRegistry: createStubSessionReaderRegistry(),
+    connector,
+    sessionStore,
+    config,
+  });
   const router = new CommandRouter({
     sessionStore,
-    bridge: new Bridge({
-      runner: opts.runner,
-      agentRegistry: createStubAgentRegistry(opts.runner),
-      sessionReaderRegistry: createStubSessionReaderRegistry(),
-      connector,
-      sessionStore,
-      config,
-    }),
+    bridge,
     config,
     configPath: configFile,
     workspacePath: opts.workspacePath ?? workspaceFile,
     sessionReaderRegistry: createStubSessionReaderRegistry(),
   });
-  return { router, sessionStore, connector, config };
+  return { router, bridge, sessionStore, connector, config };
 }
 
 const ctx = { userId: 'user1', chatId: 'chat1', messageId: 'msg1' };
@@ -210,6 +212,132 @@ describe('端到端流程', () => {
     expect(capture[0].cwd).toBe(fs.realpathSync(newDir));
   });
 
+  /**
+   * 2026-10-07 事故回归：先发消息、后点「新会话」。
+   *
+   * 真实链路是「消息进装配器（700ms 静默窗）→ commit 时快照 binding →
+   * 新会话卡片动作立即 clearSessionId」。此处直接模拟 commit 之后的状态：
+   * binding 已在 T0 快照（携带旧 sessionId + sessionEpoch），随后 new-session
+   * 清空并 bump epoch，消息才执行。断言：
+   *   1) runner 收到发送时的旧 session（binding 钉死，不漂移到新会话）；
+   *   2) run 结束后 store 仍为空（代际守卫拦截旧 sessionId 写回，reset 不被复活）。
+   */
+  it('先发消息后点新会话：消息跑旧 session，且写回不复活旧 session', async () => {
+    const events: AgentEvent[] = [
+      { type: 'system', subtype: 'init', session_id: 's-old', cwd: tmpDir, model: 'opus' },
+      { type: 'result', subtype: 'success', session_id: 's-old' },
+    ];
+    const capture: CapturedSpawn[] = [];
+    const { router, bridge, sessionStore } = createRouter({
+      runner: createCapturingRunner(events, capture),
+    });
+    sessionStore.setCwd('user1', tmpDir);
+    sessionStore.setSessionIdAndCwd('user1', 'claude', 's-old', tmpDir);
+
+    // T0：消息 commit 时刻快照 binding（index.ts onCommit 的行为）
+    const binding = bridge.currentBinding('user1');
+
+    // T1：用户点「新会话」——清空 + bump epoch（在消息开跑之前）
+    sessionStore.clearSessionId('user1', 'claude');
+
+    // 消息随后执行
+    await router.handle('重新构建', ctx, {
+      cwdOverride: tmpDir,
+      binding,
+      allowCommandPrefix: false,
+    });
+
+    expect(capture[0].sessionId).toBe('s-old');
+    expect(sessionStore.getSessionId('user1', 'claude')).toBeUndefined();
+  });
+
+  /**
+   * 完整链路回归（Part 1 定序 + Part 2 防复活）：消息先到（进装配窗口），
+   * 用户立即点「新会话」——控制层先 flush 装配窗口（index.ts 的修复），再
+   * clearSessionId。断言消息跑旧 session 且 reset 不被写回复活。
+   */
+  it('装配窗口内消息 + 立即点新会话：flush 定序后跑旧 session 且不复活', async () => {
+    const events: AgentEvent[] = [
+      { type: 'system', subtype: 'init', session_id: 's-old', cwd: tmpDir, model: 'opus' },
+      { type: 'result', subtype: 'success', session_id: 's-old' },
+    ];
+    const capture: CapturedSpawn[] = [];
+    const { router, bridge, sessionStore } = createRouter({
+      runner: createCapturingRunner(events, capture),
+    });
+    sessionStore.setCwd('user1', tmpDir);
+    sessionStore.setSessionIdAndCwd('user1', 'claude', 's-old', tmpDir);
+
+    // 复刻 index.ts 的装配器 wiring：commit 时快照 binding + 入队 router.handle
+    // runGate 确保 run 在 clearSessionId 之后才开跑（复现「commit 后、开跑前被
+    // reset」的真实竞态顺序，避免微任务调度让 run 抢跑而误判通过）。
+    let releaseRun: () => void = () => {};
+    const runGate = new Promise<void>((resolve) => {
+      releaseRun = resolve;
+    });
+    let runDone: Promise<void> = Promise.resolve();
+    const assembler = new InboundTurnAssembler({
+      windowMs: 5,
+      onCommit: (turn, prompt) => {
+        const cwd = sessionStore.getCwd(turn.userId) ?? '';
+        const binding = bridge.currentBinding(turn.userId);
+        runDone = new Promise<void>((resolve) => {
+          bridge.enqueue(
+            cwd,
+            async () => {
+              await runGate;
+              try {
+                await router.handle(
+                  prompt,
+                  {
+                    userId: turn.userId,
+                    chatId: turn.chatId,
+                    messageId: turn.messageIds[turn.messageIds.length - 1] ?? '',
+                  },
+                  { cwdOverride: cwd, binding, allowCommandPrefix: false },
+                );
+              } finally {
+                resolve();
+              }
+            },
+            {
+              taskMeta: {
+                userId: turn.userId,
+                chatId: turn.chatId,
+                messageId: 'm-rebuild',
+                messagePreview: prompt.slice(0, 3000),
+              },
+            },
+          );
+        });
+      },
+    });
+
+    // 消息到达，进静默窗（此处 5ms）
+    assembler.ingest({
+      kind: 'text',
+      userId: 'user1',
+      chatId: 'chat1',
+      messageId: 'm-rebuild',
+      rawContentType: 'text',
+      text: '重新构建',
+      placeholders: [],
+      unknownTags: [],
+    });
+
+    // 用户立即点「新会话」：修复 = 先 flush 装配窗口，再清空
+    await assembler.flush('user1', 'chat1', 'flush');
+    sessionStore.clearSessionId('user1', 'claude');
+    // 放行 run（此时 clear 已完成 → 只有 Part 2 的 epoch 守卫能阻止写回复活）
+    releaseRun();
+
+    await runDone;
+
+    expect(capture[0].sessionId).toBe('s-old');
+    expect(sessionStore.getSessionId('user1', 'claude')).toBeUndefined();
+    assembler.dispose();
+  });
+
   // ls.switch 的兄弟目录切换由 router.test.ts 的
   // test_anchor_ls_switch_allows_sibling_outside_cwd_subtree 专测（同断言，不重复）。
 });
@@ -272,7 +400,7 @@ describe('异常场景', () => {
     // Simulate a stale pid pointing to a dead process
     fs.writeFileSync(pidFile, '999999999', 'utf-8');
 
-    const runner = new ClaudeRunner({ workspace: 'test', pidDir });
+    const runner = new ClaudeRunner({ cwd: 'test', pidDir });
     runner.killOrphan();
 
     expect(fs.existsSync(pidFile)).toBe(false);
@@ -307,7 +435,7 @@ describe('配置持久化验证', () => {
     ];
     const capture: CapturedSpawn[] = [];
 
-    // First "run": save a workspace alias
+    // First "run": save a cwd alias
     const r1 = createRouter({
       runner: createCapturingRunner(events, capture),
       workspacePath: workspaceFile,
@@ -322,7 +450,7 @@ describe('配置持久化验证', () => {
     // save 即视为使用：lastUsedAt 应为当前时刻（>0），而非 0
     expect(raw.proj.lastUsedAt).toBeGreaterThan(0);
 
-    // Simulate restart: new router reading the same workspace file
+    // Simulate restart: new router reading the same cwd file
     const r2 = createRouter({
       runner: createCapturingRunner(events, capture),
       workspacePath: workspaceFile,

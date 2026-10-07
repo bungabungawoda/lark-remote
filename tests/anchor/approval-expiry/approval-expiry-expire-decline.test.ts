@@ -21,7 +21,7 @@ describe('anchor: approval expiry pushes expired event to card', () => {
   let interruptTurn: ReturnType<typeof vi.fn>;
   let pushToCard: ReturnType<typeof vi.fn>;
 
-  const workspace = '/home/user/project';
+  const cwd = '/home/user/project';
   const approvalTimeoutMs = 30000;
 
   function makeCommandEvent(): ApprovalRequestedEvent {
@@ -36,7 +36,7 @@ describe('anchor: approval expiry pushes expired event to card', () => {
         requestId: 1001,
         kind: 'command',
         command: 'mv /tmp/a.txt /tmp/b.txt',
-        commandCwd: workspace,
+        commandCwd: cwd,
         reason: 'Test approval',
         availableDecisions: ['accept', 'decline', 'cancel'],
       },

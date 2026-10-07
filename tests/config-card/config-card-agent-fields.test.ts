@@ -23,17 +23,8 @@ vi.mock('../../src/runner/probe.js', () => ({
 // 配置层对失败已有 FALLBACK_MODELS 兜底，故断言面不变；其余导出保持真实。
 vi.mock('../../src/platform/spawn.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../src/platform/spawn.js')>();
-  return {
-    ...actual,
-    spawnProcessSync: (() => ({
-      pid: 0,
-      output: [],
-      stdout: '',
-      stderr: '',
-      status: 1,
-      signal: null,
-    })) as unknown as typeof actual.spawnProcessSync,
-  };
+  const { shortCircuitSpawn } = await import('../lib/spawn-shortcircuit.js');
+  return shortCircuitSpawn(actual);
 });
 
 import { getCachedAvailability } from '../../src/runner/probe.js';
@@ -78,7 +69,7 @@ function buildCodexConfig(): AppConfig {
     codex: {
       model: 'claude-sonnet-4-20250514',
     },
-    workspace: { default: '' },
+    cwd: { default: '' },
   });
 }
 
@@ -90,7 +81,7 @@ function buildClaudeConfig(): AppConfig {
       model: 'opus',
       stopGraceMs: 5000,
     },
-    workspace: { default: '' },
+    cwd: { default: '' },
   });
 }
 

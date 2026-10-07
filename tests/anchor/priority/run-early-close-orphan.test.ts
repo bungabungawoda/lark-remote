@@ -73,7 +73,7 @@ setInterval(() => {}, 1000);
     );
 
     const runner = new ClaudeRunner({
-      workspace: 'test',
+      cwd: 'test',
       pidDir: tmpDir,
       stopGraceMs: 500,
     });

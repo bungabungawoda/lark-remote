@@ -22,7 +22,7 @@
  * - result 事件 subtype 为 compact/compaction 是 turn 中途压缩，不是 turn 结束；
  *   其余 subtype（success/error/...）才是 turn 终态。
  *
- * 生命周期：一个 workspace 一个长驻进程（lifetime='workspace'）。每次
+ * 生命周期：一个 cwd 一个长驻进程（lifetime='workspace'）。每次
  * run(message) = 写一条 user 消息 + 消费 stdout 事件直到本 turn 的 result；
  * 进程在 turn 之间保持存活（stdin 不关闭），/stop / /new / /cd / 看门狗超时
  * 时经 Terminator 组杀，下条消息按 SessionStore 的 sessionId --resume。
@@ -30,10 +30,10 @@
 
 import type { ChildProcess } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
-import { silentlyUnlink } from '../../common/fs.js';
+import { bestEffortUnlink } from '../../common/fs.js';
 import { getLogger } from '../../logger/index.js';
 import { SpawningRunner } from '../common/spawning-runner.js';
-import { authErrorEvent, syntheticInitEvent } from '../common/runner-utils.js';
+import { setupErrorEvent, syntheticInitEvent } from '../common/synthetic-events.js';
 import type { AgentEvent, ApprovalView, SpawnOptions, UserQuestion } from '../types.js';
 import { makeQuestionApprovalEvent } from '../question-common.js';
 
@@ -56,13 +56,12 @@ interface ReplayedUserEvent {
 
 export interface ClaudeSessionOptions {
   pidDir?: string;
-  workspace: string;
+  cwd: string;
   stopGraceMs?: number;
   spawnHeartbeatMs?: number;
   /** Claude 权限模式（官方 --permission-mode 枚举；'default' 省略该参数）。 */
   permissionMode?: string;
   settings?: string;
-  model?: string;
   effort?: string;
   /** 会话级空闲回收 TTL（ms）：turn 之间无活动超过该窗口则停止进程。0=禁用。 */
   idleTtlMs?: number;
@@ -88,7 +87,6 @@ export interface PermissionResult {
 export class ClaudeSession extends SpawningRunner {
   private readonly permissionMode: string;
   private readonly settings?: string;
-  private readonly defaultModel?: string;
   private readonly defaultEffort?: string;
   private readonly idleTtlMs: number;
 
@@ -134,7 +132,7 @@ export class ClaudeSession extends SpawningRunner {
   constructor(opts: ClaudeSessionOptions) {
     super({
       pidDir: opts.pidDir,
-      workspace: opts.workspace,
+      cwd: opts.cwd,
       stopGraceMs: opts.stopGraceMs,
       spawnHeartbeatMs: opts.spawnHeartbeatMs,
       pidFilePrefix: 'claude',
@@ -145,7 +143,6 @@ export class ClaudeSession extends SpawningRunner {
     this.binary = 'claude';
     this.permissionMode = opts.permissionMode ?? 'bypassPermissions';
     this.settings = opts.settings;
-    this.defaultModel = opts.model;
     this.defaultEffort = opts.effort;
     this.idleTtlMs = opts.idleTtlMs ?? DEFAULT_IDLE_TTL_MS;
   }
@@ -187,7 +184,7 @@ export class ClaudeSession extends SpawningRunner {
         // §9.22 守卫：错误 result 前必须补 synthetic init，否则 bridge 的
         // pre-init result guard 与 run-state reducer 会静默丢弃错误信息。
         yield syntheticInitEvent(opts.sessionId);
-        yield authErrorEvent(spawnError);
+        yield setupErrorEvent(spawnError);
         return;
       }
       // turn 之间的 idle 噪音（如 prompt_suggestion）不属于本 turn，先清空。
@@ -449,7 +446,7 @@ export class ClaudeSession extends SpawningRunner {
           // 进程自行结束（崩溃/上游退出）：注销协议停止通道，别把死 pid 的
           // 条目留在注册表里等 pid 复用。
           this.unregisterStopper();
-          silentlyUnlink(this.pidFilePath);
+          bestEffortUnlink(this.pidFilePath);
           this.wakeWaiters();
         }
       }
@@ -560,7 +557,7 @@ export class ClaudeSession extends SpawningRunner {
       this.idleTimer = null;
       if (this.turnActive || !this.isRunning) return;
       getLogger().info(
-        `[${this.logTag}] idle timeout ${this.idleTtlMs}ms, stopping session workspace=${this.cwd}`,
+        `[${this.logTag}] idle timeout ${this.idleTtlMs}ms, stopping session cwd=${this.cwd}`,
       );
       void this.stop().catch((err: Error) => {
         getLogger().warn(`[${this.logTag}] idle stop failed: ${err.message}`);
