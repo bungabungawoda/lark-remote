@@ -70,10 +70,10 @@ async function stopPosix(
   // 负 PID = 整个进程组：shell 包装层与孙进程一并带走
   const pgid = -pid;
 
-  log('debug', `[process-stopper] sending SIGTERM to pgid=${pgid} immediate=${opts.immediate}`);
+  log('debug', `[terminator] sending SIGTERM to pgid=${pgid} immediate=${opts.immediate}`);
   const termErr = signalGroup(pgid, 'SIGTERM');
   if (termErr) {
-    log('warn', `[process-stopper] ${termErr}`);
+    log('warn', `[terminator] ${termErr}`);
     return { requested: false, via: 'cooperative', error: termErr };
   }
 
@@ -81,7 +81,7 @@ async function stopPosix(
     // 不等待：SIGKILL 紧随其后；进程已死时 kill 抛 ESRCH，忽略即可
     const killErr = signalGroup(pgid, 'SIGKILL');
     if (killErr) {
-      log('warn', `[process-stopper] ${killErr}`);
+      log('warn', `[terminator] ${killErr}`);
       return { requested: false, via: 'taskkill', error: killErr };
     }
     return { requested: true, via: 'taskkill' };
@@ -103,11 +103,11 @@ async function stopPosix(
   if (!exited) {
     log(
       'info',
-      `[process-stopper] process group ${pgid} did not exit within grace period, sending SIGKILL`,
+      `[terminator] process group ${pgid} did not exit within grace period, sending SIGKILL`,
     );
     const killErr = signalGroup(pgid, 'SIGKILL');
     if (killErr) {
-      log('warn', `[process-stopper] ${killErr}`);
+      log('warn', `[terminator] ${killErr}`);
       return { requested: false, via: 'taskkill', error: killErr };
     }
     return { requested: true, via: 'taskkill' };

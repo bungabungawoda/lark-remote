@@ -173,7 +173,6 @@ export class DshRunner implements AgentRunner {
         try {
           for await (const item of this.client.sessionEvents(
             sessionId,
-            opts.cwd,
             abort.signal,
             prePromptSeq,
           )) {

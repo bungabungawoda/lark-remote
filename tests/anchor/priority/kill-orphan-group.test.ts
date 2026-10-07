@@ -105,7 +105,7 @@ setInterval(() => {}, 1000);
       );
 
       const r1 = new ClaudeRunner({
-        workspace: 'test',
+        cwd: 'test',
         pidDir: tmpDir,
         stopGraceMs: 500,
       });
@@ -123,7 +123,7 @@ setInterval(() => {}, 1000);
 
       // lark-remote 重启：新 runner 实例做 killOrphan（身份匹配）
       const r2 = new ClaudeRunner({
-        workspace: 'test',
+        cwd: 'test',
         pidDir: tmpDir,
         stopGraceMs: 500,
       });

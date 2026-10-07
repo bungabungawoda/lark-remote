@@ -294,12 +294,12 @@ rl.on('line', (line) => {
 
 export interface WriteScenarioResult {
   wrapper: string;
-  workspace: string;
+  cwd: string;
 }
 
 /**
  * Write a scenario config and create a wrapper script.
- * Returns the wrapper script path and a real workspace directory.
+ * Returns the wrapper script path and a real cwd directory.
  */
 export function writeScenario(
   tmpDir: string,
@@ -308,8 +308,8 @@ export function writeScenario(
   opts: MockAcpScenarioOpts = {},
 ): WriteScenarioResult {
   const sessionId = opts.sessionId ?? DEFAULT_SESSION_ID;
-  const workspace = join(tmpDir, 'workspace');
-  mkdirSync(workspace, { recursive: true });
+  const cwd = join(tmpDir, 'workspace');
+  mkdirSync(cwd, { recursive: true });
 
   const configPath = join(tmpDir, 'server-config.json');
   writeFileSync(
@@ -358,7 +358,7 @@ export function writeScenario(
     chmodSync(wrapper, 0o755);
   }
 
-  return { wrapper, workspace };
+  return { wrapper, cwd };
 }
 
 // ── Shared ACP runner test harness ───────────────────────────────────

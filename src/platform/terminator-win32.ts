@@ -98,7 +98,7 @@ export function createWin32Terminator(deps: Win32TerminatorDeps): Terminator {
         return { requested: true, via: 'taskkill' };
       }
       const agent = deps.agent;
-      // 按 agent + pid 查：同一 agent 可能有多条长驻连接（每 workspace 一条），
+      // 按 agent + pid 查：同一 agent 可能有多条长驻连接（每 cwd 一条），
       // 只有 pid 能把通道归属钉到手上这个 proc 上。
       const stopper = agent === undefined ? undefined : stoppers.get(agent, proc.pid);
       if (!stopper) {

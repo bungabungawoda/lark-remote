@@ -865,13 +865,13 @@ describe('readSessionContent - EnterWorktree relocated session', () => {
 
 describe('listClaudeSessions - EnterWorktree relocated session', () => {
   // P1 regression: Claude EnterWorktree 搬迁 session 后，transcript 文件移至新 cwd 的项目目录，
-  // 但文件首条 cwd 仍是搬迁前的原目录。readSessionContent 使用 jsonlContainsCwd（任一 cwd
+  // 但文件首条 cwd 仍是搬迁前的原目录。readSessionContent 使用 fileContainsCwd（任一 cwd
   // 匹配即可）能正确读取；但 listClaudeSessions 使用 readCwdFromJsonl（仅首条 cwd）过滤，
   // 导致搬迁后的 session 不出现在 /resume 列表中。两者 cwd 判断逻辑不一致。
   //
   // 场景：session 首条 cwd=/home/user/proj（原目录），搬迁后 cwd=/home/user/proj/.claude/worktrees/fix
   // 文件仅存在于搬迁后目录的 encoded 项目目录下。用户在 worktree 目录执行 /resume 时：
-  // - readSessionContent(sid, worktreeCwd) → jsonlContainsCwd 扴到 worktreeCwd → ✅ 能读
+  // - readSessionContent(sid, worktreeCwd) → fileContainsCwd 扴到 worktreeCwd → ✅ 能读
   // - listClaudeSessions(worktreeCwd) → readCwdFromJsonl 只看首条=原目录 ≠ worktreeCwd → ❌ 不列出
   //
   // 构造方式：复用 readSessionContent 测试的 writeRelocatedSession 模式——文件仅写在 B 的
@@ -890,7 +890,7 @@ describe('listClaudeSessions - EnterWorktree relocated session', () => {
         assistantTexts: ['working on it', 'done in worktree'],
       });
 
-      // readSessionContent 确认：readSessionContent 用 jsonlContainsCwd 能读到
+      // readSessionContent 确认：readSessionContent 用 fileContainsCwd 能读到
       const content = readSessionContent(sid, '/home/user/proj-worktree', {
         projectsDir: localTmp,
       });
@@ -931,7 +931,7 @@ describe('listClaudeSessions - EnterWorktree relocated session', () => {
     //           扫描 scanRelocatedSessions 找到 B 目录下的文件并验证 cwd 包含 A
     //           → 列出该 session。与 readSessionContent 行为一致。
     // 依据: P1 修复 2026-08-10，scanClaudeSessions 增加跨目录 fallback + cwd 守卫
-    //       从 readCwdFromJsonl 改为 jsonlContainsCwd。
+    //       从 readCwdFromJsonl 改为 fileContainsCwd。
     const localTmp = fs.mkdtempSync(path.join(os.tmpdir(), 'lark-list-relocate-3-'));
     try {
       const sid = 'relocated-for-list-3';
@@ -941,7 +941,7 @@ describe('listClaudeSessions - EnterWorktree relocated session', () => {
       });
 
       // A 的 encoded 目录下没有文件 → 主扫描找不到，但跨目录兜底扫描 B 目录，
-      // jsonlContainsCwd 确认文件包含 cwd=A → 列出
+      // fileContainsCwd 确认文件包含 cwd=A → 列出
       const content = readSessionContent(sid, '/home/user/proj', { projectsDir: localTmp });
       expect(content.events.length).toBeGreaterThan(0);
 
@@ -956,7 +956,7 @@ describe('listClaudeSessions - EnterWorktree relocated session', () => {
 
 describe('isClaudeSessionActive - EnterWorktree relocated session', () => {
   // P1 follow-up: isClaudeSessionActive must use the same cross-dir fallback
-  // + jsonlContainsCwd guard as readSessionContent and listClaudeSessions,
+  // + fileContainsCwd guard as readSessionContent and listClaudeSessions,
   // otherwise a relocated session can be listed but falsely reported as inactive.
 
   it('test_anchor_is_active_finds_relocated_session_from_worktree_cwd', () => {
@@ -970,7 +970,7 @@ describe('isClaudeSessionActive - EnterWorktree relocated session', () => {
       });
 
       // File is in B's dir (worktree), not A's. isClaudeSessionActive must
-      // use findSessionFileInProjects + jsonlContainsCwd to locate and verify.
+      // use findSessionFileInProjects + fileContainsCwd to locate and verify.
       const active = isClaudeSessionActive(sid, '/home/user/proj-worktree', {
         projectsDir: localTmp,
       });
@@ -1045,7 +1045,7 @@ describe('listClaudeSessions - S2 relocated-out gap fix', () => {
   // S2 fix: removed primarySessions.length === 0 guard so relocated-out
   // sessions are visible even when the primary dir has other sessions.
   // scanRelocatedSessions now uses readCwdFromJsonl (first cwd only)
-  // instead of jsonlContainsCwd (full-file scan) for ~10× performance.
+  // instead of fileContainsCwd (full-file scan) for ~10× performance.
 
   /**
    * Write a normal session in the PRIMARY project dir for a given cwd.
@@ -1171,7 +1171,7 @@ describe('listClaudeSessions - S2 relocated-out gap fix', () => {
   });
 
   it('test_anchor_phase1_still_finds_relocated_in_sessions', () => {
-    // Phase 1 (scanDirForSessions) uses jsonlContainsCwd (any cwd match).
+    // Phase 1 (scanDirForSessions) uses fileContainsCwd (any cwd match).
     // A session that was relocated INTO the primary dir has firstCwd ≠ queryCwd
     // but a later cwd matches → Phase 1 must still find it.
     const localTmp = fs.mkdtempSync(path.join(os.tmpdir(), 'lark-s2-phase1-'));

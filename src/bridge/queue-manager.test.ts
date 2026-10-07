@@ -84,7 +84,7 @@ describe('QueueManager', () => {
 
     const { qm, updatedCards: _updatedCards } = makeQueueManager(() => true);
 
-    // Enqueue 4 tasks: task 1 starts immediately (workspace is running),
+    // Enqueue 4 tasks: task 1 starts immediately (cwd is running),
     // tasks 2-4 are queued behind it.
     // We use a hanging promise to keep task 1 running.
     let release1: () => void = () => {};
@@ -264,14 +264,14 @@ describe('QueueManager', () => {
   });
 
   it('test_anchor_pending_queue_card_buttons_enabled_even_when_workspace_running', async () => {
-    // Bug: buildQueueStatusCardElements uses isWorkspaceRunning(workspace) to
+    // Bug: buildQueueStatusCardElements uses isWorkspaceRunning(cwd) to
     // disable 撤销/立即执行 buttons and hide the 编辑 button. But a queue card
     // is only sent when hasWaitingTasks (a front task is running), so isRunning
     // is almost always true at send time -> buttons always disabled / edit
     // hidden. The button state must reflect the task's OWN lifecycle (pending
-    // = not yet executing = all actions available), not workspace busyness.
+    // = not yet executing = all actions available), not cwd busyness.
 
-    // workspace always running = the real scenario when a card is sent
+    // cwd always running = the real scenario when a card is sent
     const { qm, sentCards } = makeQueueManager(() => true);
 
     let release1: () => void = () => {};
@@ -376,7 +376,7 @@ describe('QueueManager', () => {
           userId: 'u1',
           chatId: 'c1',
           messageId: 'msg-2',
-          messagePreview: 'card action: codex.compact',
+          messagePreview: 'card action: compact',
           editable: false,
         },
       },
@@ -390,7 +390,7 @@ describe('QueueManager', () => {
     // Preview 仍然展示（排队卡内容不丢）
     const body = (card as Record<string, unknown>).body as Record<string, unknown>;
     const elements = body.elements as Array<Record<string, unknown>>;
-    expect(JSON.stringify(elements).includes('card action: codex.compact')).toBe(true);
+    expect(JSON.stringify(elements).includes('card action: compact')).toBe(true);
 
     // ✏️ 编辑 按钮必须不存在
     expect(buttons.some((b) => buttonLabel(b).includes('编辑'))).toBe(false);
@@ -488,7 +488,7 @@ describe('QueueManager', () => {
     const { qm } = makeQueueManager(() => true);
     const executed: string[] = [];
 
-    // Task 1 — 阻塞 workspace，先开始执行
+    // Task 1 — 阻塞 cwd，先开始执行
     let release1: () => void = () => {};
     const hang1 = new Promise<void>((resolve) => {
       release1 = resolve;

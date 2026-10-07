@@ -136,7 +136,7 @@ describe('RunState', () => {
 
   it('test_anchor_finishRun_from_finalizing_to_done', () => {
     // 进程退出后 bridge finally 从 finalizing 转 done（状态转移表）。
-    // 缺失会让卡片永远停在"完成中"，workspace 永久 busy（不一致）。
+    // 缺失会让卡片永远停在"完成中"，cwd 永久 busy（不一致）。
     const initial = createInitialRunState('run-1');
     const inited = reduceRunState(initial, {
       type: 'system',

@@ -23,13 +23,13 @@ export function syntheticInitEvent(sessionId = ''): AgentEvent {
 }
 
 /**
- * Build a standardized auth/error result event for yield.
+ * Build a standardized setup-failure result event for yield.
  *
- * Used when initialization or request sending fails (e.g. not logged in,
- * session creation failed). Produces a
+ * Used when setup fails before a turn can run — process spawn errors
+ * (e.g. ENOENT), not-logged-in, or session creation failure. Produces a
  * `result`/`error` event so the bridge can render a card instead of crashing.
  */
-export function authErrorEvent(errorMessage: string, sessionId = ''): AgentEvent {
+export function setupErrorEvent(errorMessage: string, sessionId = ''): AgentEvent {
   return {
     type: 'result',
     subtype: 'error',

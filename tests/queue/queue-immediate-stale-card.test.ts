@@ -57,7 +57,7 @@ describe('queue.immediate stale card', () => {
     // Simulate clicking "立即执行" on task 3's queue card
     const cardCtx = { userId: 'u1', chatId: 'c1', messageId: 'msg-card-3' };
     await router.handleCardAction(
-      { cmd: 'queue.immediate', workspace: tmpDir, messageId: 'msg-3' },
+      { cmd: 'queue.immediate', cwd: tmpDir, messageId: 'msg-3' },
       cardCtx,
     );
 

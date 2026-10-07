@@ -22,10 +22,10 @@ afterEach(() => {
 
 describe('queue.input isBusyFor blocking', () => {
   it('test_anchor_handleQueueInput_allows_editing_queued_task_when_workspace_busy', async () => {
-    // Bug: handleQueueInput checks isBusyFor(workspace) and blocks editing
-    // if the workspace is busy. But the task being edited is QUEUED (not
+    // Bug: handleQueueInput checks isBusyFor(cwd) and blocks editing
+    // if the cwd is busy. But the task being edited is QUEUED (not
     // executing) — editing its message preview should work even when another
-    // task is running in the same workspace.
+    // task is running in the same cwd.
 
     const { bridge, router, tmpDir } = ctx;
     const { release1 } = await setupTwoTaskQueueScenario(bridge, ctx.connector, tmpDir, {
@@ -37,7 +37,7 @@ describe('queue.input isBusyFor blocking', () => {
     const task = bridge.getQueuedTask(tmpDir, 'msg-2');
     expect(task).toBeDefined();
 
-    // Spy on isBusyFor to simulate a busy workspace (another task running)
+    // Spy on isBusyFor to simulate a busy cwd (another task running)
     vi.spyOn(bridge, 'isBusyFor').mockReturnValue(true);
 
     // Spy on updateMessagePreview to verify it gets called
@@ -48,7 +48,7 @@ describe('queue.input isBusyFor blocking', () => {
     await router.handleCardAction(
       {
         cmd: 'queue.input',
-        workspace: tmpDir,
+        cwd: tmpDir,
         messageId: 'msg-2',
         inputValue: 'new edited content',
       },
@@ -57,7 +57,7 @@ describe('queue.input isBusyFor blocking', () => {
 
     // Bug: handleQueueInput returns early when isBusyFor returns true,
     // so updateMessagePreview is never called. But the task is QUEUED —
-    // editing its message should work even when the workspace is busy.
+    // editing its message should work even when the cwd is busy.
     expect(updateSpy).toHaveBeenCalledWith(tmpDir, 'msg-2', 'new edited content');
 
     // Cleanup

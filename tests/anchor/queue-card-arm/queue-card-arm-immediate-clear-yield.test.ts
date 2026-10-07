@@ -38,7 +38,7 @@ beforeEach(() => {
       model: 'opus',
       stopGraceMs: 5000,
     },
-    workspace: { default: '' },
+    cwd: { default: '' },
   });
 });
 
@@ -189,7 +189,7 @@ describe('queue.immediate must clear EVERY task before the target before yieldin
 
     // --- 步骤 3：触发「立即执行」（不 await）；让它在卡片更新处挂起 ---
     const immediateDone = router.handleCardAction(
-      { cmd: 'queue.immediate', workspace: tmpDir, messageId: 'mT' },
+      { cmd: 'queue.immediate', cwd: tmpDir, messageId: 'mT' },
       ctx,
     );
     // 修复后：步骤 3 先同步移除 A、B（目标之前的全部任务，不 await），再发

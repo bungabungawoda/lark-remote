@@ -2,9 +2,8 @@
 /**
  * CLI 引导层（bootstrap）：在 import 应用模块图之前决定运行时（bun/node）并拉起它。
  *
- * **这是全仓唯一被认可的 spawn 收口例外**（即 AGENTS.md「子进程 spawn 只走
- * platform/spawn.ts」红线的显式豁免）。三个理由缺一不可：
- *   1. 时序：preflight（Node 版本守卫、-v/-h/--advance-help）必须在 import 应用
+ *XX * 缺一不可：
+ *   1. 时序：preflight（Node 版本守卫、-v/-h/--advanced-help）必须在 import 应用
  *      模块图之前跑完——dist/cli.js 刻意不使用 ES2020+ 语法以便在 node 12 上仍
  *      可被解析，而 dist/index.js 是 ES2022；先 import platform/spawn 就等于先把
  *      应用模块图拖进来，守卫当场失效（报错堆栈全落在 Node 内部）。
@@ -20,7 +19,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { printAdvanceHelp, printHelp, printVersion } from './config/dir.js';
+import { printAdvancedHelp, printHelp, printVersion } from './config/dir.js';
 
 const entryUrl = new URL('./index.js', import.meta.url);
 const entry = fileURLToPath(entryUrl);
@@ -57,8 +56,8 @@ export function handlePreflight(
       printHelp();
       return 0;
     }
-    if (arg === '--advance-help') {
-      printAdvanceHelp();
+    if (arg === '--advanced-help') {
+      printAdvancedHelp();
       return 0;
     }
   }

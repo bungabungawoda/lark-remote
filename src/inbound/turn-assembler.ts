@@ -1,7 +1,7 @@
 /**
  * InboundTurnAssembler：统一静默期窗口 + 合并 + 下载等待 + commit。
  *
- * 设计依据：`docs/zh/architecture/inbound-unified-input-design.md` §4/§5.2。
+ * 设计依据：`docs/zh/architecture/inbound-unified-input-design.md` §4、§5.2。
  *
  * 规则：
  * - 任何事件到达 → **重置** 700ms 定时器（按 `userId:chatId` 分桶），保证图/文任意顺序等价；
@@ -27,7 +27,7 @@ import {
 } from './turn.js';
 
 /** 统一静默期窗口（ms）——决策 1：不做「纯文本零延迟」快路径。 */
-export const DEFAULT_TURN_WINDOW_MS = 700;
+const DEFAULT_TURN_WINDOW_MS = 700;
 
 export interface AssemblerContext {
   userId: string;

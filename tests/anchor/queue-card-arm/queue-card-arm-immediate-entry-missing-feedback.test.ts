@@ -40,7 +40,7 @@ beforeEach(() => {
       model: 'opus',
       stopGraceMs: 5000,
     },
-    workspace: { default: '' },
+    cwd: { default: '' },
   });
 });
 
@@ -174,10 +174,7 @@ describe('queue.immediate entry-time missing target must not claim the queue was
 
     // --- 步骤 4：此时用户点 T2 的「⚡ 立即执行」→ 入口 getQueuedTask 已是
     // undefined，走 `!targetTask` 早退分支（不 await interrupt、不触碰队列）---
-    await router.handleCardAction(
-      { cmd: 'queue.immediate', workspace: tmpDir, messageId: 'm2' },
-      ctx,
-    );
+    await router.handleCardAction({ cmd: 'queue.immediate', cwd: tmpDir, messageId: 'm2' }, ctx);
     await sleep(20);
 
     const sentTexts = connector._sent

@@ -3,7 +3,7 @@
  * cleanup): formatTimestamp / formatUsageStats have no router wiring.
  */
 import { describe, it, expect } from 'vitest';
-import { formatUsageStats } from './utils.js';
+import { formatUsageStats } from './usage-format.js';
 import { formatTimestamp } from '../card/time.js';
 
 describe('formatTimestamp', () => {

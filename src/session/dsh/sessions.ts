@@ -145,7 +145,7 @@ export class DshSessionReader implements AgentSessionReader {
 
   readSessionContent(
     sessionId: string,
-    cwd: string,
+    _cwd: string,
     opts?: { maxEvents?: number },
   ): SessionContent {
     try {

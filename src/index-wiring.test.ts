@@ -61,7 +61,7 @@ describe('index.ts inbound media wiring guard（先认证后下载）', () => {
     expect(block).toContain("kind: 'media',");
     expect(block).toContain('outcome,');
     // 意外抛错时兜底清理临时文件
-    expect(block).toContain('silentlyUnlink(item.tempPath)');
+    expect(block).toContain('bestEffortUnlink(item.tempPath)');
     // 关闭配置时不静默：进 rejected 随 turn 回执发出（P3 review），且不进入下载
     expect(block).toContain('入站媒体保存已关闭');
     expect(block).toContain("kind: 'rejected',");
@@ -160,6 +160,34 @@ describe('index.ts clone flow wiring guard', () => {
 });
 
 /**
+ * 入口 wiring 静态守卫（2026-10-07 定序修复）：会话/cwd/agent 变更类卡片动作
+ * （new-session、resume.use、ls.switch、ws.use、config.save）执行前必须先
+ * flush 入站装配窗口，保证 700ms 静默窗内先到的文本消息在动作之前 commit
+ * （绑定旧状态）。否则消息会漂移到动作之后的新 session/cwd/agent——线上事故：
+ * 输入「重新构建」后立即点「新会话」，消息落到新会话。
+ *
+ * 名单以 router 单源 SESSION_MUTATING_ACTION_CMDS 为准（防本地复制漂移）。
+ */
+describe('index.ts session-mutating card action ordering guard (2026-10-07)', () => {
+  it('会话/cwd/agent 变更类卡片动作执行前先 flush 装配窗口', () => {
+    const source = fs.readFileSync(path.resolve(__dirname, 'index.ts'), 'utf-8');
+    expect(source).toContain('SESSION_MUTATING_ACTION_CMDS.has(actionValue.cmd)');
+    expect(source).toContain("await assembler.flush(userId, chatId, 'flush')");
+    // 单源：从 router 导入，不得本地复制名单
+    expect(source).toContain('SESSION_MUTATING_ACTION_CMDS,');
+    // 顺序：flush 必须在直返分支与即时/串行队列分发之前
+    const flushIdx = source.indexOf('SESSION_MUTATING_ACTION_CMDS.has(actionValue.cmd)');
+    const directIdx = source.indexOf('if (DIRECT_RETURN_CMDS.has(actionValue.cmd)) {');
+    const immediateIdx = source.indexOf('if (isImmediate) {');
+    expect(flushIdx).toBeGreaterThan(-1);
+    expect(directIdx).toBeGreaterThan(-1);
+    expect(immediateIdx).toBeGreaterThan(-1);
+    expect(flushIdx).toBeLessThan(directIdx);
+    expect(flushIdx).toBeLessThan(immediateIdx);
+  });
+});
+
+/**
  * 入口 wiring 静态守卫（clean_review §B7）：非直返 card action 的 handler 返回值
  * 必须经 `actionFeedbackText` 收敛成持久文本消息。两个 enqueue 出口都是
  * fire-and-forget，回调响应早已被飞书收走——返回值一旦无人消费，失败
@@ -178,7 +206,7 @@ describe('index.ts card action feedback wiring guard (§B7)', () => {
     expect(body).toContain('actionFeedbackText(res)');
     expect(body).toContain('.sendResult({ text }, { userId, chatId, messageId })');
     // 两个异步出口都必须把返回值交给它，且不得再有裸 await
-    expect(body).toContain('bridge.enqueueImmediate(workspace, async () => {');
+    expect(body).toContain('bridge.enqueueImmediate(cwd, async () => {');
     expect(body).toContain('bridge.enqueue(');
     expect((body.match(/forwardActionFeedback\(res\)/g) ?? []).length).toBe(2);
     expect((body.match(/await router\.handleCardAction\(fullValue/g) ?? []).length).toBe(2);

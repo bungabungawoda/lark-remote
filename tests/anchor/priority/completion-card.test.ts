@@ -113,7 +113,7 @@ describe(' completion notification card', () => {
     const config: AppConfig = AppConfigSchema.parse({
       feishu: { appId: 'test', appSecret: 'test' },
       claude: { model: 'opus', stopGraceMs: 5000 },
-      workspace: { default: '' },
+      cwd: { default: '' },
     });
     const sessionStore = new SessionStore();
     sessionStore.setCwd('u1', tmpDir);

@@ -4,7 +4,7 @@ import path from 'node:path';
 import YAML from 'yaml';
 import { AppConfigSchema } from './index.js';
 import { needsQrImage, renderQrImage, renderTerminalQr } from './qr.js';
-import { silentlyUnlink } from '../common/fs.js';
+import { bestEffortUnlink } from '../common/fs.js';
 import { atomicWrite } from '../persistence/atomic-write.js';
 
 interface WizardResult {
@@ -90,7 +90,7 @@ async function runRegistrationWizard(configPath: string): Promise<WizardResult> 
 
     return { appId: result.client_id, appSecret: result.client_secret };
   } finally {
-    if (wroteImage) silentlyUnlink(imagePath);
+    if (wroteImage) bestEffortUnlink(imagePath);
   }
 }
 

@@ -472,7 +472,7 @@ function defaultTestConfig(): AppConfig {
   return AppConfigSchema.parse({
     feishu: { appId: 'test', appSecret: 'test' },
     claude: { model: 'opus', stopGraceMs: 5000 },
-    workspace: { default: '' },
+    cwd: { default: '' },
   });
 }
 

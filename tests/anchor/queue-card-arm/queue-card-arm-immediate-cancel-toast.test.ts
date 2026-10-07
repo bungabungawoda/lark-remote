@@ -40,7 +40,7 @@ beforeEach(() => {
       model: 'opus',
       stopGraceMs: 5000,
     },
-    workspace: { default: '' },
+    cwd: { default: '' },
   });
 });
 
@@ -172,17 +172,14 @@ describe('queue.immediate must not promise execution in its final toast after th
 
     // --- 步骤 4：触发「立即执行」（不 await，停在 interrupt 挂起点）---
     const immediateDone = router.handleCardAction(
-      { cmd: 'queue.immediate', workspace: tmpDir, messageId: 'msg-2' },
+      { cmd: 'queue.immediate', cwd: tmpDir, messageId: 'msg-2' },
       ctx,
     );
     expect(await waitFor(() => stopSpy.mock.calls.length === 1)).toBe(true);
 
     // --- 步骤 5：interrupt 在途期间，用户对同一目标任务点「❌ 撤销」---
     // 撤销成功：T2 从队列移除、卡片更新为 "❌ 已撤销"、发送确认正文。
-    await router.handleCardAction(
-      { cmd: 'queue.cancel', workspace: tmpDir, messageId: 'msg-2' },
-      ctx,
-    );
+    await router.handleCardAction({ cmd: 'queue.cancel', cwd: tmpDir, messageId: 'msg-2' }, ctx);
     expect(bridge.getQueuedTask(tmpDir, 'msg-2')).toBeUndefined();
     expect(bridge.getQueuedTask(tmpDir, 'msg-A')).toBeDefined(); // T2 之前的 A 仍在排队
 

@@ -22,7 +22,7 @@ describe('QueueManager - queue card must be sent for a message enqueued after an
     // T3 静默排队无任何用户反馈（历史生产事故：
     // 消息C 入队无排队卡，静默排队）。
     //
-    // 依据（本 prompt spec）：只要 workspace 队列里还有任务在排队或执行，
+    // 依据（本 prompt spec）：只要 cwd 队列里还有任务在排队或执行，
     // 新入队消息必须收到排队卡；生产时序为 T2 入队(12:52:25) →
     // stop+reset(12:52:36) → T2 接跑(12:52:37) → T3 入队(12:53:57) 无卡。
     const { qm, sentCards } = makeQueueManager();

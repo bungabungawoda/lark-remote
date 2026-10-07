@@ -25,7 +25,7 @@ import type {
 import type { ChildProcess } from 'node:child_process';
 import { ConnectionLostError } from './jsonrpc/client.js';
 import { getLogger } from '../../logger/index.js';
-import { syntheticInitEvent } from './runner-utils.js';
+import { syntheticInitEvent } from './synthetic-events.js';
 import { DEFAULT_TURN_IDLE_TIMEOUT_MINUTES } from '../../config/index.js';
 import type { AgentStopper } from '../../platform/agent-stopper.js';
 
@@ -97,9 +97,9 @@ export abstract class ConnectionBasedRunner<TClient, TEvent = AgentEvent> implem
    * 两件事，顺序不能反：
    *   1. 若本连接就是当前在途 turn 的连接，先发协议取消（codex turn/interrupt /
    *      ACP session/cancel / pi abort）。**归属判定不能省**：runner 实例按 agent
-   *      维度共享（一个实例管多条 workspace 连接），无条件调用
+   *      维度共享（一个实例管多条 cwd 连接），无条件调用
    *      `cancelCurrentTurn()` 会用它自己的 currentClient/activeSessionId 去打断
-   *      **另一个 workspace** 正在跑的 turn；
+   *      **另一个 cwd** 正在跑的 turn；
    *   2. 关 stdin。stdio 型 agent server 在 stdin EOF 后自行退出——只发协议取消
    *      不会让进程退出，优雅段会空转到 grace 超时后照样树杀，等于通道白注册。
    */
@@ -389,10 +389,10 @@ export abstract class ConnectionBasedRunner<TClient, TEvent = AgentEvent> implem
   /** Hook: clear subclass turn state in run() finally (session ids, translator, flags). */
   protected abstract clearTurnState(): void;
 
-  /** Release the connection for a workspace (subclass dispatches to its manager). */
+  /** Release the connection for a cwd (subclass dispatches to its manager). */
   protected abstract releaseConnection(cwd: string): Promise<void>;
 
-  /** Notify the connection manager that the workspace is idle (subclass). */
+  /** Notify the connection manager that the cwd is idle (subclass). */
   protected abstract notifyIdle(cwd: string): void;
 
   /** Dispose all connections (subclass dispatches to its manager). */

@@ -60,7 +60,7 @@ beforeEach(() => {
       effort: 'medium',
       stopGraceMs: 5000,
     },
-    workspace: { default: '' },
+    cwd: { default: '' },
   });
 });
 

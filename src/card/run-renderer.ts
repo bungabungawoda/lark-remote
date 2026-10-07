@@ -11,7 +11,7 @@ import { collapsibleMarkdownPanel, markdownDiv, type PanelBorder } from './colla
 import { toolBodyMd, toolHeaderText } from './tool-render.js';
 import { truncateUtf8, truncateMarkdownTables, CARD_BUDGET_BYTES } from './text-truncate.js';
 import { formatTimestamp } from './time.js';
-import { formatUsageStats } from '../router/utils.js';
+import { formatUsageStats } from '../router/usage-format.js';
 import { renderApprovalArea } from './approval-render.js';
 
 const REASONING_BYTES = 4_500;
@@ -411,8 +411,8 @@ function assembleRunCard(
     schema: '2.0',
     config: { wide_screen_mode: true, update_multi: true },
     header: {
-      template: headerTemplate2(state),
-      title: { content: headerTitle2(state, options), tag: 'plain_text' },
+      template: headerTemplate(state),
+      title: { content: headerTitle(state, options), tag: 'plain_text' },
     },
     body: { elements },
   };
@@ -935,7 +935,7 @@ function buildSummaryContent(
     // 压缩（operationKind='compaction'）不会返回 agent 正文——引擎只压缩上下文
     // 窗口，空内容属正常，不能沿用普通 run 的「（未返回内容）」异常信号
     // （2026-09 用户反馈）。所有会压缩的 agent（codex/claude/kimi/opencode/pi）
-    // 都经 streamCodexCompact 走这条共享渲染路径，一处覆盖全部。
+    // 都经 streamCompact 走这条共享渲染路径，一处覆盖全部。
     const empty = hasContent
       ? ''
       : state.operationKind === 'compaction'
@@ -983,10 +983,10 @@ function buildDurationInfo(state: RunState): string {
   }
   // 与标题一致：审批等待期间状态行显示「等待审批中」，而不是「工具调用中」。
   if (hasPendingApproval(state)) return '✋ 等待审批中';
-  return footerText2(state.footer);
+  return footerText(state.footer);
 }
 
-function footerText2(footer: RunFooter | undefined): string {
+function footerText(footer: RunFooter | undefined): string {
   if (footer === 'tool_running') return '🧰 工具调用中';
   if (footer === 'streaming') return '✍️ 输出中';
   return '🧠 思考中';
@@ -998,7 +998,7 @@ function statusTagLabel(terminal: RunState['terminal']): string {
 }
 
 /** CardKit 2.0 header title — agent-aware via options.agentKind. */
-function headerTitle2(state: RunState, options: RunCardRenderOptions = {}): string {
+function headerTitle(state: RunState, options: RunCardRenderOptions = {}): string {
   const agent = agentDisplayName(options.agentKind ?? 'claude');
   if (state.terminal === 'done') return `✅ ${agent} · 已完成`;
   if (state.terminal === 'error') return `⚠️ ${agent} · 出错`;
@@ -1020,6 +1020,6 @@ function hasPendingApproval(state: RunState): boolean {
 }
 
 /** CardKit 2.0 header template color */
-function headerTemplate2(state: RunState): string {
+function headerTemplate(state: RunState): string {
   return terminalToColor(state.terminal);
 }

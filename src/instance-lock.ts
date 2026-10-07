@@ -17,7 +17,7 @@
  */
 import fs from 'node:fs';
 import path from 'node:path';
-import { silentlyUnlink } from './common/fs.js';
+import { bestEffortUnlink } from './common/fs.js';
 import { binaryName, verifyPidIdentityVerdict, type IdentityVerdict } from './platform/identity.js';
 
 export class InstanceAlreadyRunningError extends Error {
@@ -104,7 +104,7 @@ export class InstanceLock {
           throw new InstanceAlreadyRunningError(pid, this.lockPath);
         }
         // Stale lock: remove and retry once
-        silentlyUnlink(this.lockPath);
+        bestEffortUnlink(this.lockPath);
         try {
           const fd = fs.openSync(this.lockPath, 'wx');
           fs.writeSync(fd, this.lockContents(process.pid));
@@ -131,7 +131,7 @@ export class InstanceLock {
   release(): void {
     const { pid } = this.readPidAndName();
     if (pid === process.pid) {
-      silentlyUnlink(this.lockPath);
+      bestEffortUnlink(this.lockPath);
     }
   }
 
@@ -177,7 +177,7 @@ export class InstanceLock {
     const name = nameParts.join('\n') || undefined;
     if (Number.isInteger(pid) && pid > 0 && name) return { pid, name };
     // Malformed or missing name — treat as corrupt, unlink and return undefined
-    silentlyUnlink(this.lockPath);
+    bestEffortUnlink(this.lockPath);
     return { pid: undefined, name: undefined };
   }
 
