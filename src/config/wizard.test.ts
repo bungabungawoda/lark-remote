@@ -130,10 +130,16 @@ describe('ensureConfig', () => {
       spy.mockRestore();
     }
 
-    // 写只发生在 .tmp 上，目标文件靠 rename 到位
-    expect(targets).toContain(`${cfg}.tmp`);
+    // 写只发生在约定的 tmp 命名上（.{name}.tmp-{pid}-{ts}-{rand}），目标文件靠
+    // rename 到位，且结束后目录里不留 tmp 残留
+    const tmpTargets = targets.filter(
+      (t) =>
+        path.dirname(t) === path.dirname(cfg) &&
+        /^\.+\w[\w.-]*\.tmp-\d+-\d+-[a-z0-9]+$/.test(path.basename(t)),
+    );
+    expect(tmpTargets.length).toBeGreaterThan(0);
     expect(targets).not.toContain(cfg);
-    expect(fs.existsSync(`${cfg}.tmp`)).toBe(false);
+    expect(fs.readdirSync(path.dirname(cfg)).some((f) => f.includes('.tmp-'))).toBe(false);
     const written = YAML.parse(fs.readFileSync(cfg, 'utf-8'));
     expect(written.feishu.appSecret).toBe('secret_atomic');
   });

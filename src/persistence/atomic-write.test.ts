@@ -4,6 +4,11 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 
+/** 目录里残留的 tmp 文件（命名：.{name}.tmp-{pid}-{ts}-{rand}）。 */
+function tmpLeftovers(dir: string): string[] {
+  return fs.readdirSync(dir).filter((f) => f.includes('.tmp-'));
+}
+
 describe('atomicWriteJson', () => {
   it('writes JSON data atomically via tmp+rename', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'atomic-write-test-'));
@@ -17,7 +22,27 @@ describe('atomicWriteJson', () => {
       expect(JSON.parse(content)).toEqual(data);
 
       // No .tmp file left behind
-      expect(fs.existsSync(filePath + '.tmp')).toBe(false);
+      expect(tmpLeftovers(dir)).toEqual([]);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('names the tmp file (.{name}.tmp-{pid}-{ts}-{rand}) and cleans it up', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'atomic-write-tmpname-'));
+    const filePath = path.join(dir, 'data.json');
+    try {
+      // 用 renameSync 间谍捕获 tmp 路径（先取 mock.calls 再 restore：
+      // mockRestore 会清空调用记录）
+      const renameSpy = vi.spyOn(fs, 'renameSync');
+      atomicWrite(filePath, 'x');
+      const calls = renameSpy.mock.calls.map((c) => String(c[0]));
+      renameSpy.mockRestore();
+
+      expect(calls.length).toBe(1);
+      expect(calls[0]).toMatch(/\.data\.json\.tmp-\d+-\d+-[a-z0-9]+$/);
+      expect(path.dirname(calls[0])).toBe(dir);
+      expect(tmpLeftovers(dir)).toEqual([]);
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
@@ -92,7 +117,7 @@ describe('atomicWrite EXDEV fallback', () => {
       expect(fs.readFileSync(filePath, 'utf-8')).toBe(content);
 
       // Tmp file is cleaned up
-      expect(fs.existsSync(filePath + '.tmp')).toBe(false);
+      expect(tmpLeftovers(dir)).toEqual([]);
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
@@ -111,7 +136,7 @@ describe('atomicWrite EXDEV fallback', () => {
       expect(() => atomicWrite(filePath, content)).toThrow('permission denied');
 
       // Tmp file is cleaned up in finally
-      expect(fs.existsSync(filePath + '.tmp')).toBe(false);
+      expect(tmpLeftovers(dir)).toEqual([]);
     } finally {
       renameSpy.mockRestore();
       fs.rmSync(dir, { recursive: true, force: true });

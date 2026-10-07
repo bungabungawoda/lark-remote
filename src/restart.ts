@@ -1,4 +1,4 @@
-import { spawnProcess } from './platform/spawn.js';
+import { mergeProcessEnv, spawnProcess } from './platform/spawn.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { getLogger } from './logger/index.js';
@@ -64,7 +64,9 @@ export function spawnDetachedBridge(
  */
 export function spawnReplacementBridge(logsDir: string): number {
   const pid = spawnDetachedBridge(process.argv.slice(1), path.join(logsDir, 'restart-child.log'), {
-    env: { ...process.env, [RESTART_WAIT_PID_ENV]: String(process.pid) },
+    // env 注入统一走 mergeProcessEnv：Windows env 键大小写不敏感，
+    // 覆盖注入必须先按不区分大小写删旧键，避免双键
+    env: mergeProcessEnv(process.env, { [RESTART_WAIT_PID_ENV]: String(process.pid) }),
   });
   if (pid === null) {
     throw new Error('spawn replacement lark-remote failed: no pid');

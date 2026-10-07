@@ -18,7 +18,7 @@ import type {
 } from '../../runner/index.js';
 
 import { isStale } from '../common/constants.js';
-import { encodeProjectDirName } from '../../platform/path.js';
+import { encodeProjectDirName, samePath } from '../../platform/path.js';
 import { paginate } from '../common/pagination.js';
 import { sortByRecencyDesc } from '../common/recency.js';
 import { TtlCache } from '../../common/ttl-cache.js';
@@ -391,9 +391,10 @@ export class PiSessionReader implements AgentSessionReader {
       return { events: [] };
     }
 
-    // Verify cwd matches
+    // Verify cwd matches（PathKit.samePath：win32/darwin 大小写与分隔符不敏感，
+    // JSONL 里的 cwd 形态由写方决定，与请求 cwd 不保证逐字符一致）
     const fileCwd = readCwdFromPiJsonl(filePath);
-    if (fileCwd && fileCwd !== cwd) {
+    if (fileCwd && !samePath(fileCwd, cwd)) {
       return { events: [] };
     }
 
@@ -447,7 +448,7 @@ export class PiSessionReader implements AgentSessionReader {
       try {
         const st = fs.statSync(full);
         const fileCwd = readCwdFromPiJsonl(full);
-        if (fileCwd && fileCwd !== cwd) continue;
+        if (fileCwd && !samePath(fileCwd, cwd)) continue;
         // Extract sessionId (UUID) from filename: <timestamp>_<uuid>.jsonl
         // The timestamp and uuid are separated by '_', and neither contains '_'
         // (timestamps use '-'/'T'/':', UUIDs use '-'). Take the last '_' segment.

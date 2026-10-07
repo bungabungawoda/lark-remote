@@ -24,6 +24,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { ClaudeRunner } from '../../../src/runner/claude/index.js';
+import { pidFileSuffix } from '../../../src/runner/common/spawning-runner.js';
 import { describePosix } from '../../lib/platform.js';
 
 vi.mock('../../../src/logger/index.js', async () =>
@@ -53,7 +54,7 @@ describePosix('P1-10: killOrphan process identity verification', () => {
         cwd: 'test',
         pidDir: tmpDir,
       });
-      const pidFilePath = path.join(tmpDir, 'claude-test.pid');
+      const pidFilePath = path.join(tmpDir, `claude${pidFileSuffix('test')}.pid`);
       // 模拟 pid 复用：陈旧 pid 文件里的 pid 现在属于一个无关进程
       fs.writeFileSync(pidFilePath, String(pid), 'utf-8');
 

@@ -21,7 +21,7 @@ import path from 'node:path';
 import { Bridge } from '../../../src/bridge/index.js';
 import { SessionStore } from '../../../src/session/index.js';
 import { AppConfigSchema } from '../../../src/config/index.js';
-import { SpawningRunner } from '../../../src/runner/common/spawning-runner.js';
+import { SpawningRunner, pidFileSuffix } from '../../../src/runner/common/spawning-runner.js';
 import { ClaudeRunner } from '../../../src/runner/index.js';
 import { makeTempDir } from '../../lib/temp-dir.js';
 
@@ -137,10 +137,10 @@ describe('P1-1: registerExitHandlers 不累积 process 监听器', () => {
   it('test_probe_exit_cleanup_still_wired_after_singleton_refactor', () => {
     // A6 反退化 probe：收编单例后，进程 exit 仍必须触发已注册 runner 的 cleanup
     // （SIGTERM 运行中进程 + 删除 pid 文件）。防绿用「空实现/不注册」骗过 A1-A5。
-    // cwd 只允许字母数字（SpawningRunner 会把其他字符消毒成 _），
-    // 用固定纯字母名保证 pidFilePath 可预测
+    // pid 文件路径统一走 pidFileSuffix 构造（与 SpawningRunner 同源，
+    // 自拼一份就是自造半迁移）
     const cwd = 'exitprobe';
-    const pidFile = path.join(PID_DIR, `claude-${cwd}.pid`);
+    const pidFile = path.join(PID_DIR, `claude${pidFileSuffix(cwd)}.pid`);
     const runner = new ClaudeRunner({
       cwd: 'test',
       binary: '/bin/true',

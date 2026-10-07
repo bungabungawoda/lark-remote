@@ -21,6 +21,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { ClaudeRunner } from '../../../src/runner/claude/index.js';
+import { pidFileSuffix } from '../../../src/runner/common/spawning-runner.js';
 import { prependPath, restorePath, writeMockSource } from '../../lib/path-mock.js';
 import { describePosix } from '../../lib/platform.js';
 import { waitForOrThrow } from '../../lib/wait-for.js';
@@ -113,7 +114,7 @@ setInterval(() => {}, 1000);
       const first = await iter.next();
       expect(first.done).toBe(false);
 
-      const pidFilePath = path.join(tmpDir, 'claude-test.pid');
+      const pidFilePath = path.join(tmpDir, `claude${pidFileSuffix('test')}.pid`);
       const leaderPid = Number(fs.readFileSync(pidFilePath, 'utf-8'));
       expect(leaderPid).toBeGreaterThan(0);
       spawnedPids.add(leaderPid);
