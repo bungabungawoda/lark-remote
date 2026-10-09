@@ -3525,6 +3525,32 @@ describe('CommandRouter', () => {
     expect(hasEditPrompt).toBe(false);
   });
 
+  it('test_anchor_two_config_cards_share_one_draft_view', async () => {
+    // 验证什么：草稿（pendingConfig）是全局一份，但每张 config 卡是独立视图——
+    // 一张卡上的修改必须把其余已交互过的卡片一起刷新。
+    // 缺失后果（2026-10-08 review P3）：旧卡片停在旧视图，用户在旧卡上看到的
+    // 和点「保存」实际提交的是两套内容（保存提交共享草稿，视图却没跟上）。
+    const { router, connector } = createRouter();
+    const cardA = { ...ctx, messageId: 'om-config-A' };
+    const cardB = { ...ctx, messageId: 'om-config-B' };
+
+    // 两张卡都先交互一次（登记为已知 config 卡）
+    await router.handleCardAction({ cmd: 'config.toggle', key: 'inboundMedia.enabled' }, cardA);
+    await router.handleCardAction({ cmd: 'config.toggle', key: 'inboundMedia.enabled' }, cardB);
+    expect(router.pendingConfig?.inboundMedia.enabled).toBe(true);
+
+    // 第三次交互只点 A：A 与 B 都必须被刷到「同一份草稿」（enabled=false）
+    connector._updates.length = 0;
+    await router.handleCardAction({ cmd: 'config.toggle', key: 'inboundMedia.enabled' }, cardA);
+
+    const patchedIds = connector._updates.map((u) => u.messageId).sort();
+    expect(patchedIds).toEqual(['om-config-A', 'om-config-B']);
+    const cardFor = (id: string) =>
+      JSON.stringify(connector._updates.find((u) => u.messageId === id)?.card ?? '');
+    // 两张卡渲染的是同一份草稿（同一视图）——旧实现只刷被点击的那张，这里不等
+    expect(cardFor('om-config-A')).toBe(cardFor('om-config-B'));
+  });
+
   it('cmdConfig <key> <value> command writes to disk immediately', async () => {
     const { router, connector } = createRouter();
     const configPath = router.configPath;
@@ -4326,5 +4352,33 @@ describe('CommandRouter /clone on help card', () => {
 
   it('help.* 即时名单命中（按钮点击绕串行队列，在途 run 不阻塞）', () => {
     expect(isImmediateAction('help.clone')).toBe(true);
+  });
+});
+
+/**
+ * 排队条目身份 key 的铸造点（`CommandRouter.mintQueueTaskKey`）。
+ *
+ * 入口层（index.ts 的非即时卡片动作分支 + order.exec 文本钩子）靠它给每次
+ * 入队动作发一个 1:1 的 key；飞书卡片 messageId 是展示层 id（一张卡可点 N 次，
+ * 1:N），只能当回复目标，不能当队列 key —— 复用会让 queuedTasks 定位、taskIndex
+ * 取消判据、queueCardMessages 卡片更新三处同时串位（2026-10-08 线上：连点
+ * Compact 三次 → 三张排队卡都显示「第 1 位」、两张永久停在「等待中」，只压缩
+ * 一次）。铸造点必须保证「连续两次同步调用也拿不到同一个 key」。
+ */
+describe('队列身份 key 铸造', () => {
+  it('test_anchor_mint_queue_task_key_is_unique_per_call', () => {
+    const { router } = createRouter();
+
+    const keys = [
+      router.mintQueueTaskKey('card', 'compact'),
+      router.mintQueueTaskKey('card', 'compact'),
+      router.mintQueueTaskKey('order', 'o-1'),
+    ];
+
+    // 连点同一张卡两次 → 两个不同 key（这是整类缺陷的根因）
+    expect(new Set(keys).size).toBe(3);
+    // 形状可读：kind 与 id 保留（order.exec 的下游断言/日志依赖 order-<id>- 前缀）
+    expect(keys[0]).toMatch(/^card-compact-\d+$/);
+    expect(keys[2]).toMatch(/^order-o-1-\d+$/);
   });
 });

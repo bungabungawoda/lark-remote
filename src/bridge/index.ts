@@ -16,7 +16,7 @@ import { agentDisplayName, resumeUseButton } from '../card/card-shared.js';
 import { enforceCardBudget } from '../card/card-budget.js';
 import { normalizeResultUsage } from '../runner/common/result-usage.js';
 import { BashProcessRunner, type BashRunner } from '../runner/index.js';
-import type { AgentKind } from '../runner/types.js';
+import { AGENT_KINDS, type AgentKind } from '../runner/types.js';
 import {
   QueueManager,
   type QueuedTask,
@@ -111,6 +111,12 @@ const MAX_COMPACTABLE_RUNS_PER_CWD = 20;
 interface CompactRunRecord {
   sessionId: string;
   agentKind: AgentKind;
+  /**
+   * 该次 run 实际执行的工作目录。按 runId 反查时会跨 cwd 命中，压缩必须回到
+   * run 自己的 cwd（session 文件、runner 实例都按 cwd 解析），不能取用户
+   * 「当前」cwd —— 点击时可能已经 /cd 到别处，或排队期间被 /cd 改写。
+   */
+  cwd: string;
 }
 
 /** Caller context shared by bridge operations and router command handling. */
@@ -936,6 +942,28 @@ export class Bridge {
       // 先尝试 fallback 发卡片；若卡片本身有问题（如 11310），
       // sendResult 内部 catch 会发纯文本通知用户。
       await this.sendResult({ card }, ctx);
+      return false;
+    }
+  }
+
+  /**
+   * Best-effort in-place refresh of a KNOWN card (no fallback send).
+   *
+   * `updateCardInPlace` falls back to sending a new card when the PATCH fails,
+   * which is right for the card the user just clicked (a silent failure would
+   * leave the click with no feedback) but wrong when refreshing *sibling*
+   * cards: an expired/withdrawn card would spawn a duplicate card on every
+   * edit. Callers that fan out to several cards use this instead and drop the
+   * card id from their set on `false`.
+   */
+  async patchCard(messageId: string, card: object): Promise<boolean> {
+    try {
+      await this.connector.updateCard(messageId, card);
+      return true;
+    } catch (err) {
+      getLogger().debug(
+        `[lark-remote] patchCard failed messageId=${messageId}: ${errorMessage(err)}`,
+      );
       return false;
     }
   }
@@ -1994,7 +2022,7 @@ export class Bridge {
       this.compactableRuns.set(cwd, byRunId);
     }
     byRunId.delete(runId);
-    byRunId.set(runId, { sessionId, agentKind });
+    byRunId.set(runId, { sessionId, agentKind, cwd });
     while (byRunId.size > MAX_COMPACTABLE_RUNS_PER_CWD) {
       const oldest = byRunId.keys().next().value as string | undefined;
       if (oldest === undefined) break;
@@ -2003,10 +2031,26 @@ export class Bridge {
   }
 
   /**
+   * 按 runId 反查可压缩 run 记录（跨 cwd 扫描）。
+   *
+   * 为什么不带 cwd 过滤：按钮属于「那一次 run」，与用户此刻在哪个工作目录、
+   * 排队期间有没有 /cd 无关。`/stop` 的 interruptCurrentRun 同样是全局按 runId
+   * 找（从不查当前 cwd），compact 与它保持一致。用当前 cwd 收窄会让「切了工作区
+   * 再点旧卡片」和「排队期间 /cd」两种情况误报「该任务已结束或不属于当前会话」。
+   */
+  private findCompactableRun(runId: string): CompactRunRecord | undefined {
+    for (const byRunId of this.compactableRuns.values()) {
+      const record = byRunId.get(runId);
+      if (record) return record;
+    }
+    return undefined;
+  }
+
+  /**
    * Handle compact card action — trigger a compaction request for any
    * runCompact-capable runner（codex/kimi/opencode/pi/claude）。按钮带的是
    * 那次 run 的 runId，据此反查该 run 实际使用的 sessionId + agentKind
-   * （compactableRuns，按 runId 记录），再调 runner 的 runCompact()。
+   * + cwd（compactableRuns，按 runId 记录），再调 runner 的 runCompact()。
    */
   async handleCompactAction(value: { runId?: string }, ctx: CommandContext): Promise<void> {
     const log = getLogger();
@@ -2020,19 +2064,16 @@ export class Bridge {
       return;
     }
 
-    const cwd = this.resolveCwd(ctx.userId);
-    if (!cwd) {
-      await this.sendResult({ text: '⚠️ 未设置工作目录' }, ctx);
-      return;
-    }
-
     // 校验：run 结束后 activeRuns 已清空，只能靠按钮自带的 runId 反查记录。
-    // 按 runId 存（不按「最新的那一条」），点击到执行之间夹了新 run 收尾也不失效。
-    const target = this.compactableRuns.get(cwd)?.get(runId);
+    // 按 runId 存（不按「最新的那一条」），点击到执行之间夹了新 run 收尾也不失效；
+    // 查找也不按「当前 cwd」收窄（见 findCompactableRun）。
+    const target = this.findCompactableRun(runId);
     if (!target) {
       await this.sendResult({ text: '⚠️ 该任务已结束或不属于当前会话' }, ctx);
       return;
     }
+    // 压缩必须用那次 run 自己的 cwd（session 文件 + runner 实例都按 cwd 解析）。
+    const cwd = target.cwd;
 
     // §5.3: kimi 压缩在途检测（wire 状态机）。第二次点击在本地毫秒级如实回答，
     // 不开卡、不发 session/prompt——否则 kimi 服务端拒绝并产生「秒回」假完成。
@@ -2322,10 +2363,11 @@ export class Bridge {
     }
 
     // Resolve agent kind the same way resume.use does: card value wins,
-    // otherwise fall back to defaultAgent.
-    const validAgents: AgentKind[] = ['claude', 'codex', 'opencode', 'pi', 'kimi'];
+    // otherwise fall back to defaultAgent. 名单来自单源 AGENT_KINDS —— 手抄一份
+    // 必然再次漂移（这份曾经漏 dsh：带 dsh 的卡片会静默退回 defaultAgent，
+    // 用错 reader 报「未找到 session」）。
     const agentKind: AgentKind =
-      value.agent && (validAgents as string[]).includes(value.agent)
+      value.agent && (AGENT_KINDS as readonly string[]).includes(value.agent)
         ? (value.agent as AgentKind)
         : this.config.defaultAgent;
 

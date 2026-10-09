@@ -38,6 +38,38 @@ describe('index.ts card action dispatch wiring guard (§9.19)', () => {
 });
 
 /**
+ * 入口 wiring 静态守卫（设计豁免同上：index.ts 的 cardAction 分发无法行为注入
+ * 测试）。有界片段匹配，不用 /s 全文件模糊匹配。
+ *
+ * 守卫目标：非即时卡片动作入队的**队列身份**必须是每次入队铸造的内部 key，
+ * 卡片 messageId 只能降级成回复目标（`feishuReplyTo`）。
+ *
+ * 为什么必须钉住：同一张卡可被点击 N 次，卡片 messageId 与入队动作是 1:N；
+ * 拿它当 queue key 会让 queuedTasks 定位（findIndex 命中最早那条兄弟）、
+ * taskIndex 取消判据（第一条开始时删掉共享 key，其余兄弟被判「已撤销」静默
+ * 丢弃）、queueCardMessages 卡片更新三处同时串位。2026-10-08 线上复现：连点
+ * 同一张卡的 🗜 Compact 三次 → 三张排队卡都显示「位置: 第 1 位 / 前面还有 0 条」，
+ * 其中两张永久停在「⏳ 消息排队中」，实际只压缩了一次。
+ */
+describe('index.ts card action queue identity guard（队列 key 每次入队铸造）', () => {
+  it('非即时卡片动作入队必须铸造内部 key，卡片 id 只作 feishuReplyTo', () => {
+    const source = fs.readFileSync(path.resolve(__dirname, 'index.ts'), 'utf-8');
+    const start = source.indexOf('if (isImmediate) {');
+    const end = source.indexOf('async function main()');
+    expect(start).toBeGreaterThan(-1);
+    expect(end).toBeGreaterThan(start);
+    const block = source.slice(start, end);
+
+    // 队列身份 = 铸造出来的内部 key（唯一铸造点 router.mintQueueTaskKey）
+    expect(block).toContain("messageId: router.mintQueueTaskKey('card', actionValue.cmd),");
+    // 卡片 messageId 仍然是回复目标（内部 key 不是合法飞书 id，replyTo 用它会 400）
+    expect(block).toContain('feishuReplyTo: messageId,');
+    // 反例守卫：taskMeta.messageId 不得再直接吃卡片 id
+    expect(block).not.toMatch(/taskMeta:\s*\{[\s\S]{0,200}?\n\s+messageId,\n/);
+  });
+});
+
+/**
  * 入口 wiring 静态守卫（设计豁免同 §9.19：index.ts 的 setupMessageHandlers
  * 无法行为注入测试——main() 在 import 即运行）。有界片段匹配（不用 /s 全文件）。
  *

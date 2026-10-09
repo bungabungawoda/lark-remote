@@ -28,6 +28,7 @@ import { QueueManager } from '../../src/bridge/queue-manager.js';
 import { SessionStore } from '../../src/session/index.js';
 import { AppConfigSchema } from '../../src/config/index.js';
 import type { AppConfig } from '../../src/config/index.js';
+import { AGENT_KINDS } from '../../src/runner/types.js';
 
 // ── Agent registry ──────────────────────────────────────────────────
 
@@ -37,11 +38,11 @@ export function createStubAgentRegistry(runner: Runner): AgentRegistry {
   // AgentRegistry factories are typed `() => Runner` (see registry.ts), so a
   // shared stub runner registers directly — no cast needed.
   const asAgent = () => runner;
-  reg.register('claude', asAgent);
-  reg.register('codex', asAgent);
-  reg.register('opencode', asAgent);
-  reg.register('pi', asAgent);
-  reg.register('kimi', asAgent);
+  // 名单来自单源 AGENT_KINDS：手抄一份必然漂移（dsh 加入后这里曾漏掉，
+  // 测试里 dsh 路径直接抛 "agent not registered: dsh"）。
+  for (const kind of AGENT_KINDS) {
+    reg.register(kind, asAgent);
+  }
   return reg;
 }
 
@@ -91,11 +92,10 @@ export function createStubSessionReaderRegistry(
   const registry = new SessionReaderRegistry();
 
   if (opts?.registerStubReaders !== false) {
-    registry.register('claude', stubSessionReader);
-    registry.register('codex', stubSessionReader);
-    registry.register('opencode', stubSessionReader);
-    registry.register('pi', stubSessionReader);
-    registry.register('kimi', stubSessionReader);
+    // 同 createStubAgentRegistry：名单来自单源 AGENT_KINDS，避免漏掉新 agent。
+    for (const kind of AGENT_KINDS) {
+      registry.register(kind, stubSessionReader);
+    }
   }
 
   if (opts?.claudeProjectsDir) {

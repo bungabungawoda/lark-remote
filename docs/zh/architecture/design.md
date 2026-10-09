@@ -866,3 +866,50 @@ bridge 在 run 收尾时把该 run 实际使用的 sessionId + agentKind 记进 
 `⚠️ 该任务已结束或不属于当前会话`，与 session 是否还在、能否压缩无关（2026-10-08 线上
 缺陷）。按 runId 存让按钮自证身份，排队多久都不失效；只有不认识的 runId（进程重启后的
 旧卡、别的 cwd 的卡）才回该文案。
+
+**反查不按「当前 cwd」收窄**：记录里同时存该 run 自己的 cwd，查找是跨 cwd 的全局 scan
+（`findCompactableRun`），压缩用 `target.cwd`。按钮属于「那一次 run」，与用户此刻在哪个
+工作目录、排队期间有没有 `/cd` 无关 —— `/stop` 的 `interruptCurrentRun` 同样是全局按
+runId 找、从不查当前 cwd，两条路径保持一致。用当前 cwd 收窄会制造两个误报场景：切了
+工作区再点旧卡片、以及排队期间 `/cd`（compact 不在即时名单，`/cd` 完全可能插在点击与
+执行之间）。即使侥幸命中记录，用错 cwd 也会去错目录找 session 文件与 runner 实例。
+
+### 9.24 队列身份 key 每次入队铸造，不复用卡片 messageId
+
+排队条目的身份（`QueuedTask.messageId`，即 queuedTasks 定位、taskIndex 取消判据、
+queueCardMessages 卡片更新的 key）必须与「一次入队动作」1:1。**飞书卡片的 messageId 是
+展示层 id，同一张卡可被点击 N 次（1:N）**，只能当回复目标（`taskMeta.feishuReplyTo`）。
+唯一铸造点是 `CommandRouter.mintQueueTaskKey(kind, id?)`；调用方是非即时卡片动作
+（`src/index.ts` 的 enqueue 分支）与 order.exec 文本钩子（`resolveOrderExecForQueue`）。
+
+**同 key 的多条任务会三处同时串位**（2026-10-08 线上缺陷，连点同一张卡的 🗜 Compact
+三次）：
+
+1. 位置显示：`sendQueueStatusCard` 用 `findIndex(t => t.messageId === 本次点击 id)` 定位，
+   三次点击命中同一条最早的兄弟 → 三张排队卡都显示「位置: 第 1 位 / 前面还有 0 条」。
+2. 取消判据：入队无条件 `push` + `indexAdd` 覆盖（索引只留最后一条），第一条兄弟开始
+   执行时 `indexRemove` 删掉共享 key，其余兄弟 `indexGet` 为 `undefined` 被判
+   「cancelled」静默 `return`（且该 return 在更新卡片之前）→ 卡片永久停在
+   「⏳ 消息排队中」。
+3. 卡片更新：`queueCardMessages` 也用同一 key，后注册的覆盖先注册的 → 「▶️ 已开始执行」
+   打在最后一张卡上。
+
+实测症状：三次点击只压缩一次，另外两张卡永久等待。`QueueManager.enqueue` 现在对撞 key
+打 `duplicate queue key` warn 作为 tripwire（不改行为，只留证据）——出现该日志说明有人
+又把外部 id 当队列身份用了。
+
+**新增可重复点击的卡片按钮时**：走非即时分支就会自动拿到铸造 key，不要再手工传卡片
+messageId。
+
+### 9.25 /config 卡片：一份草稿，所有已交互卡片同步刷新
+
+`pendingConfig` 是**全局一份**草稿（`/config <key> <value>` 直写后清空、`/config`
+文本命令沿用未保存草稿——既有语义，保持不变）。但**视图**是每张卡一份：只刷新被点击
+的那张，其余卡片会停在旧视图上 —— 用户在旧卡上看到的和点「保存」实际提交的是两套
+内容（2026-10-08 review P3；飞书卡片不会自动下线，旧卡随时可点）。
+
+做法：`configCardIds` 记住交互过的 config 卡（有界 5 张，LRU 近似），任何一次编辑/保存
+后由 `refreshConfigCards` 把草稿刷到每张卡。被点击的那张走 `updateCardInPlace`（失败
+fallback 发新卡，保证点击必有反馈）；兄弟卡走 `Bridge.patchCard`（纯 best-effort PATCH，
+失败即从集合剔除）—— 兄弟卡不能走 `updateCardInPlace`：卡片过期时它每次都会补发一张
+新卡，越点越多。
