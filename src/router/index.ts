@@ -507,6 +507,15 @@ export const SESSION_MUTATING_ACTION_CMDS: ReadonlySet<string> = new Set([
   'config.save',
 ]);
 
+/**
+ * 会产生压缩工作的卡片动作（单源）。这类条目占用 lane 时必须自报身份：
+ * 排队卡写明「正在执行: 🗜 Compact」而不是「前面还有 0 条」，并且期间禁用
+ * 「立即执行」——该按钮走 interruptCurrentRun，会连带中断正在跑的压缩
+ * （2026-10-09 线上：Compact 占 lane 期间新消息的排队卡自相矛盾，且按钮
+ * 一点就会杀掉压缩）。同时它们也不允许编辑（预览不是用户文本）。
+ */
+export const COMPACT_ACTION_CMDS: ReadonlySet<string> = new Set(['compact', 'resume.compact']);
+
 /** 单源：payload.offset → 钳位 offset（原先 9 处逐字副本）。 */
 function payloadOffset(value: { offset?: number }): number {
   return Math.max(0, Math.trunc(Number(value.offset) || 0));
@@ -1038,6 +1047,19 @@ export class CommandRouter {
         {
           text: '该消息已不在队列中（可能已开始执行或被撤销），无法立即执行。其余排队消息保持原状。',
         },
+        ctx,
+      );
+      return;
+    }
+
+    // Compact 占 lane 时拒绝「立即执行」。该动作会调 interruptCurrentRun，而它
+    // 遍历 activeRuns 时会一并中断正在跑的压缩（压缩也注册在 activeRuns 里）。
+    // 渲染层已把按钮置灰，这里是旧卡片的兜底：改动前渲染的卡仍带可点的按钮。
+    // 放在存在性检查之后：目标已失效时，上一条「不在队列中」的反馈更准确。
+    const laneOccupant = this.bridge.getQueueExecutingInfo(cwd);
+    if (laneOccupant?.kind === 'compact') {
+      await this.bridge.sendResult(
+        { text: '⚠️ 正在压缩会话，消息将在压缩完成后按顺序执行。' },
         ctx,
       );
       return;

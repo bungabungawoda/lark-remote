@@ -71,6 +71,44 @@ export interface QueuedTask {
   binding?: AgentBinding;
 }
 
+/**
+ * lane 条目的展示类型。只影响排队卡如何描述「正在执行的是什么」：
+ * `message` 普通消息（缺省）、`compact` 压缩会话、`command` 其他卡片动作。
+ */
+export type LaneTaskKind = 'message' | 'compact' | 'command';
+
+/**
+ * lane 当前占用者的展示信息。由 begin 路径登记、settle 路径清除，与执行
+ * 槽位同寿命；排队卡靠它回答「我在等谁」。
+ */
+export interface ExecutingInfo {
+  /**
+   * 归属标记：与执行槽位共用同一个 slot id。清除时校验它，防止一条迟到的
+   * settle 清掉后继任务的占用者（身份不用外部 id，同 §9.24 口径）。
+   */
+  slotId: number;
+  kind: LaneTaskKind;
+  /** 展示标签，例如 '💬 消息' / '🗜 Compact' / '📋 config.save'。 */
+  label: string;
+  /** 该条目自己的排队预览（可选）。 */
+  preview?: string;
+  /** 登记时刻（epoch ms）。当前只供诊断，卡片不渲染实时时长。 */
+  startedAt: number;
+}
+
+/** 排队卡「正在执行」一行用的展示标签。 */
+function laneOccupantLabel(kind: LaneTaskKind, preview: string): string {
+  switch (kind) {
+    case 'compact':
+      return '🗜 Compact';
+    case 'command':
+      // 卡片动作的预览形如 'card action: config.save'，标签里去掉前缀更短。
+      return `📋 ${preview.replace(/^card action:\s*/, '')}`;
+    default:
+      return '💬 消息';
+  }
+}
+
 /** Options for enqueue operation */
 export interface EnqueueOptions {
   taskMeta?: {
@@ -89,6 +127,12 @@ export interface EnqueueOptions {
     editable?: boolean;
     /** 入队时刻捕获的 agent+session 绑定。 */
     binding?: AgentBinding;
+    /**
+     * lane 占用者的展示类型，缺省 'message'。
+     * 'compact' 时排队卡写明「正在执行: 🗜 Compact」，并把「立即执行」置灰
+     * ——该按钮会中断压缩（见 buildQueueActionButtons）。
+     */
+    kind?: LaneTaskKind;
   };
 }
 
@@ -134,18 +178,23 @@ export class QueueManager {
   /**
    * Monotonic counter minting a unique slot id per enqueued task. A slot
    * identifies one task's execution period for the interrupt bookkeeping in
-   * `executingSlot`/`interruptedSlots` — replacing the unowned skip-credit
+   * `executingInfo`/`interruptedSlots` — replacing the unowned skip-credit
    * counter, which any settle could consume and which therefore leaked a
    * re-armed count after repeated resets.
    */
   private slotCounter = 0;
   /**
-   * Per-workspace slot id of the task currently executing. Set in the begin
-   * path right before the task runs; deleted when that task's settle fires.
-   * `resetExecutingCount` reads it to bind the interrupt credit to exactly
-   * the interrupted task's slot.
+   * Per-workspace record of the task currently executing — the lane occupant.
+   * Set in the begin path right before the task runs; deleted by that task's
+   * settle. Carries both the slot id (`resetExecutingCount` binds the
+   * interrupt credit to exactly the interrupted task's slot) and the display
+   * info the queue card needs to name what a waiting message waits for.
+   *
+   * 2026-10-09 线上：一次 Compact 占着 lane，新消息的排队卡却写「位置: 第 1
+   * 位 / 前面还有: 0 条消息」——开卡判据看 lane（含正在执行者），位置文案只看
+   * 等待队列，两个口径的差集正是这条记录。
    */
-  private executingSlot = new Map<string, number>();
+  private executingInfo = new Map<string, ExecutingInfo>();
   /**
    * Per-workspace set of slot ids whose task was interrupted by
    * `resetExecutingCount`. When such a slot settles, its decrement is skipped
@@ -416,10 +465,18 @@ export class QueueManager {
             `[queue-manager] re-armed pendingOrExecutingCount cwd=${cwd} (interrupt resume)`,
           );
         }
-        // Mark this task's slot as the current execution period before running
-        // it. `resetExecutingCount` reads this marker to grant the interrupt
-        // credit to exactly this task; the settle removes the marker.
-        this.executingSlot.set(cwd, slotId);
+        // Mark this task as the lane occupant for its whole execution period
+        // before running it. `resetExecutingCount` reads the slot id to grant
+        // the interrupt credit to exactly this task; the settle removes the
+        // record. `kind`/`label` let a later message's queue card name what it
+        // is waiting for instead of reporting "前面还有 0 条".
+        this.executingInfo.set(cwd, {
+          slotId,
+          kind: taskMeta?.kind ?? 'message',
+          label: laneOccupantLabel(taskMeta?.kind ?? 'message', livePreview),
+          preview: livePreview,
+          startedAt: Date.now(),
+        });
         return replacement ? replacement() : task();
       })
       .then(() => {
@@ -465,6 +522,24 @@ export class QueueManager {
     getLogger().debug(`[queue-manager] set task replacement cwd=${cwd} messageId=${messageId}`);
   }
 
+  /**
+   * 排队卡头部。只有前面确实还有等待中的消息时才说「排队」；前面为空时
+   * 用户等的是当前正在执行的任务（例如 Compact），用「等待当前任务结束」
+   * 表达才不会与「前面还有 0 条」自相矛盾（2026-10-09 线上实例）。
+   */
+  private queueCardHeader(tasksAhead: number): {
+    template: string;
+    title: { tag: string; content: string };
+  } {
+    return {
+      template: 'orange',
+      title: {
+        tag: 'plain_text',
+        content: tasksAhead > 0 ? '⏳ 消息排队中' : '⏳ 等待当前任务结束',
+      },
+    };
+  }
+
   /** Send a queue status card showing current queue position and actions. */
   private async sendQueueStatusCard(
     cwd: string,
@@ -486,10 +561,7 @@ export class QueueManager {
     const card = {
       schema: '2.0',
       config: { wide_screen_mode: true },
-      header: {
-        template: 'orange',
-        title: { tag: 'plain_text', content: '⏳ 消息排队中' },
-      },
+      header: this.queueCardHeader(tasksAhead),
       body: {
         elements: this.buildQueueStatusCardElements(
           cwd,
@@ -542,25 +614,55 @@ export class QueueManager {
     messagePreview?: string,
   ): object[] {
     const workspaceName = displayName(cwd);
-    const isRunning = this.isWorkspaceRunning(cwd);
+    const occupant = this.executingInfo.get(cwd);
     const elements: object[] = [
       {
         tag: 'div',
-        text: {
-          tag: 'lark_md',
-          content: `**当前 Workspace:** \`${workspaceName}\`\n**位置:** 第 ${actualPosition} 位\n**前面还有:** ${tasksAhead} 条消息在排队`,
-        },
+        text: { tag: 'lark_md', content: `**当前 Workspace:** \`${workspaceName}\`` },
       },
-      { tag: 'hr' },
-      {
+    ];
+
+    // 「队列位置 / 前面还有」只在前面确实还有等待中的消息时渲染。前面为空时
+    // 这两个数是「第 1 位 / 0 条」，与「排队中」字面矛盾；此时挡住用户的只有
+    // 正在执行的任务，交给下一段如实说明。
+    if (tasksAhead > 0) {
+      elements.push({
         tag: 'div',
         text: {
           tag: 'lark_md',
-          content: `💡 消息将按顺序执行…当前正在处理: ${isRunning ? '有任务运行中' : '空闲'}`,
+          content: `**队列位置:** 第 ${actualPosition} 位\n**前面还有:** ${tasksAhead} 条消息`,
         },
-      },
-      { tag: 'hr' },
-    ];
+      });
+    }
+
+    if (occupant) {
+      elements.push({
+        tag: 'div',
+        text: { tag: 'lark_md', content: `**正在执行:** ${occupant.label}` },
+      });
+      elements.push({
+        tag: 'div',
+        text: {
+          tag: 'lark_md',
+          content:
+            occupant.kind === 'compact'
+              ? '💡 压缩结束后将按顺序执行你的消息'
+              : '💡 消息将按顺序执行…',
+        },
+      });
+    } else {
+      // 防御分支：开卡判据是 lane 非空，所以「有排队卡但没有占用者」说明计数
+      // 与占用者记录漂移了。不改行为，只留证据（与 duplicate queue key 同口径）。
+      getLogger().warn(
+        `[queue-manager] queue card without lane occupant cwd=${cwd} tasksAhead=${tasksAhead}`,
+      );
+      elements.push({
+        tag: 'div',
+        text: { tag: 'lark_md', content: '💡 消息将按顺序执行…' },
+      });
+    }
+
+    elements.push({ tag: 'hr' });
 
     // Show message preview with edit button (only if not executing AND the
     // task is editable). One-shot card actions like Compact enqueue with
@@ -588,8 +690,17 @@ export class QueueManager {
       elements.push({ tag: 'hr' });
     }
 
-    // Action buttons
-    elements.push(...this.buildQueueActionButtons(cwd, messageId, false));
+    // Action buttons. Compact 占着 lane 时「⚡ 立即执行」会中断压缩
+    // （interruptCurrentRun 遍历 activeRuns，压缩也注册在里面），按钮置灰并
+    // 换文案说明；执行层 handleQueueImmediate 再做一次同样的守卫兜住旧卡片。
+    elements.push(
+      ...this.buildQueueActionButtons(
+        cwd,
+        messageId,
+        false,
+        occupant?.kind === 'compact' ? { immediateLabel: '压缩完成后按顺序执行' } : undefined,
+      ),
+    );
 
     return elements;
   }
@@ -603,8 +714,17 @@ export class QueueManager {
    * both. Centralizing the pair here eliminates the 3-way duplication
    * between `buildQueueStatusCardElements`, `updateQueueCardToExecuting`,
    * and `updateQueueCardToCancelled` (Clean Code).
+   *
+   * `opts.immediateLabel`（仅 pending 卡用）在 lane 被 Compact 占用时替换
+   * 「⚡ 立即执行」并强制置灰：点击它会中断正在跑的压缩。「❌ 撤销」不参与，
+   * 它只移除等待中的消息，不触碰 Compact。
    */
-  private buildQueueActionButtons(cwd: string, messageId: string, disabled: boolean): object[] {
+  private buildQueueActionButtons(
+    cwd: string,
+    messageId: string,
+    disabled: boolean,
+    opts?: { immediateLabel?: string },
+  ): object[] {
     return [
       {
         tag: 'button',
@@ -615,9 +735,9 @@ export class QueueManager {
       },
       {
         tag: 'button',
-        text: { tag: 'plain_text', content: '⚡ 立即执行' },
+        text: { tag: 'plain_text', content: opts?.immediateLabel ?? '⚡ 立即执行' },
         type: 'primary',
-        disabled,
+        disabled: disabled || opts?.immediateLabel !== undefined,
         behaviors: [{ type: 'callback', value: { cmd: 'queue.immediate', cwd, messageId } }],
       },
     ];
@@ -818,10 +938,7 @@ export class QueueManager {
     return {
       schema: '2.0',
       config: { wide_screen_mode: true },
-      header: {
-        template: 'orange',
-        title: { tag: 'plain_text', content: '⏳ 消息排队中' },
-      },
+      header: this.queueCardHeader(tasksAhead),
       body: {
         elements: this.buildQueueStatusCardElements(
           cwd,
@@ -842,7 +959,7 @@ export class QueueManager {
    * id minted at enqueue time. Three cases:
    *
    * 1. The slot is the workspace's current executing slot → its execution
-   *    period ends (`executingSlot` marker removed).
+   *    period ends (`executingInfo` record removed).
    * 2. The slot is in `interruptedSlots` (its task was interrupted by
    *    `resetExecutingCount`) → skip the decrement: the reset already zeroed
    *    the count, so a stale decrement could wrongly zero it again while a
@@ -850,8 +967,8 @@ export class QueueManager {
    * 3. Otherwise → normal decrement.
    */
   private decrementExecutingCount(cwd: string, slotId: number): void {
-    if (this.executingSlot.get(cwd) === slotId) {
-      this.executingSlot.delete(cwd);
+    if (this.executingInfo.get(cwd)?.slotId === slotId) {
+      this.executingInfo.delete(cwd);
     }
     const interrupted = this.interruptedSlots.get(cwd);
     if (interrupted?.has(slotId)) {
@@ -888,14 +1005,14 @@ export class QueueManager {
    * `expectedSlot` binds the reset to the task that was actually interrupted:
    * the caller captures the executing slot BEFORE stopping the runner, and
    * the stop window may outlive the interrupted task's settle (the chain can
-   * advance to a NEW task, which then owns `executingSlot`). When the current
+   * advance to a NEW task, which then owns `executingInfo`). When the current
    * slot no longer matches the interrupted task's slot, the interrupted task
    * already decremented normally — resetting now would zero the count of the
    * running successor and mark ITS slot interrupted, hiding it from the
    * queue card.
    */
   resetExecutingCount(cwd: string, expectedSlot: number): void {
-    const currentSlot = this.executingSlot.get(cwd);
+    const currentSlot = this.executingInfo.get(cwd)?.slotId;
     if (currentSlot !== expectedSlot) {
       getLogger().debug(
         `[queue-manager] resetExecutingCount skip (stopped task settled, slot advanced) cwd=${cwd} expectedSlot=${expectedSlot} currentSlot=${currentSlot ?? 'none'}`,
@@ -935,6 +1052,17 @@ export class QueueManager {
    * The slot id of the task currently executing in this cwd (if any).
    */
   getExecutingSlot(cwd: string): number | undefined {
-    return this.executingSlot.get(cwd);
+    return this.executingInfo.get(cwd)?.slotId;
+  }
+
+  /**
+   * The lane occupant's display info for this cwd (if any). Queue cards read
+   * it to name what a waiting message is waiting for; `handleQueueImmediate`
+   * reads it to refuse interrupting a running Compact. Returns a copy so
+   * callers cannot mutate the live record.
+   */
+  getExecutingInfo(cwd: string): ExecutingInfo | undefined {
+    const info = this.executingInfo.get(cwd);
+    return info ? { ...info } : undefined;
   }
 }
