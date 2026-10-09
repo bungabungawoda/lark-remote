@@ -97,9 +97,14 @@ describe('bash runner exit cleanup', () => {
       expect(isAlive(leaderPid)).toBe(false);
       expect(isAlive(childPid)).toBe(false);
 
-      // run() 自然结束（exit 事件）后必须从分发器移除，集合回到基线
-      await iter.next(); // exit 事件
-      await iter.next(); // done
+      // run() 自然结束（exit 事件 + generator 收尾）后必须从分发器移除，
+      // 集合回到基线。这里排空到 done，不假设事件条数：真实 shell 每条 stderr
+      // 都会多出一个事件（locale 警告、启动脚本提示），只有把 generator 跑到
+      // done，finally 里的注销才一定执行过。
+      let drained = false;
+      while (!drained) {
+        drained = (await iter.next()).done === true;
+      }
       expect(SpawningRunner.getRegisteredExitHandlerCount()).toBe(before);
     },
   );
