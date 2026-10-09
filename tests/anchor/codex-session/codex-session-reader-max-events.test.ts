@@ -13,12 +13,10 @@ import os from 'node:os';
  *   但 CodexSessionReader.readSessionContent 当前签名是 `(sessionId, _cwd)` ——
  *   直接丢弃第三个参数。结果：codex 会话的 auto-resume 卡片依赖
  *   enforceCardBudget 兜底（极端降级），而其他 agent 已经有 maxEvents 早期截断。
- *   project_memory 中的硬约束已写明：maxEvents 必须在所有 agent session reader 实现。
+ *   硬约束：maxEvents 必须在所有 agent session reader 实现。
  *
  *   - Design constraint "maxEvents parameter must be implemented for all agent
  *     session readers (not just claude)"
- *   - lessons learned "maxEvents参数仅在claude session实现导致非claude agent的
- *     auto-resume功能依赖enforceCardBudget兜底"
  *   - src/runner/index.ts AgentSessionReader 接口签名:
  *     `readSessionContent(sessionId, cwd, opts?: { maxEvents?: number }): SessionContent`
  *
