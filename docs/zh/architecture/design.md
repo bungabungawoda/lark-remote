@@ -854,3 +854,15 @@ listSessions(cwd: string, opts?: { limit?: number; offset?: number }): {
   从越界页点击会再次 clamp 回末页，按钮假死，）。
 - `pageSize` 经 handleResumePage 数值化 clamp `[1, RESUME_PAGE_SIZE]`，非法值不被当作 sessionId。
 - 预算：每页 5 条 × 约 3 elements ≈ 15 elements（上限 200），字节远低于 28KB。
+
+### 9.23 Compact 按钮按 runId 反查，不按「每 cwd 最新一条」
+
+终态 run 卡片的 Compact 按钮只带 runId（渲染期 sessionId 可能还没到，runId 一定在）。
+bridge 在 run 收尾时把该 run 实际使用的 sessionId + agentKind 记进 `compactableRuns`
+（cwd → runId → 记录，每 cwd 保留最近 20 条），点击时按 runId 反查。
+
+**不要退回「每 cwd 只留最新一条」**：compact 卡片动作走串行队列（§9.6），用户点旧卡片时
+队列头还压着正在跑的 run，等它执行时新 run 已收尾并把单槽覆盖 —— 旧卡片的压缩必然回
+`⚠️ 该任务已结束或不属于当前会话`，与 session 是否还在、能否压缩无关（2026-10-08 线上
+缺陷）。按 runId 存让按钮自证身份，排队多久都不失效；只有不认识的 runId（进程重启后的
+旧卡、别的 cwd 的卡）才回该文案。

@@ -97,6 +97,22 @@ function runnerHasRunCompact(runner: Runner): boolean {
   );
 }
 
+/**
+ * 每个 cwd 保留的「可压缩 run」条数上限。Compact 按钮挂在终态 run 卡片上，
+ * 卡片会被后续消息不断顶上去；无上限会让长跑进程随 run 数无界增长，而用户
+ * 实际能点到的只有最近几张卡，20 条足以覆盖。
+ */
+const MAX_COMPACTABLE_RUNS_PER_CWD = 20;
+
+/**
+ * 终态 run 卡片 Compact 按钮的取参记录。按钮只带 runId（渲染期 sessionId 可能
+ * 还没到，runId 一定在），点击时据此反查该次 run 实际使用的会话。
+ */
+interface CompactRunRecord {
+  sessionId: string;
+  agentKind: AgentKind;
+}
+
 /** Caller context shared by bridge operations and router command handling. */
 export interface CommandContext {
   userId: string;
@@ -244,13 +260,16 @@ export class Bridge {
   /** Approval coordinators keyed by runId. */
   private approvalCoordinators = new Map<string, ApprovalCoordinator>();
   /**
-   * 最近一次已完成的、runner 有 runCompact 的 run（按 cwd）。run 结束后
-   * activeRuns 已清空，Compact 需要它来校验 runId 并提供 sessionId。
+   * 最近若干次已完成的、runner 有 runCompact 的 run（cwd → runId → 记录）。
+   * run 结束后 activeRuns 已清空，而终态卡上的 Compact 按钮只带 runId，
+   * 需要它反查 sessionId + agentKind。
+   *
+   * 为什么按 runId 存而不是「每 cwd 只留最新一条」：compact 卡片动作走串行
+   * 队列（会被正在跑的 run 挡住），点击到执行之间可能夹着别的 run 收尾。
+   * 单槽会被覆盖 —— 旧卡片的压缩必然报「该任务已结束或不属于当前会话」，
+   * 与 session 是否还在、能否压缩无关（2026-10-08 线上缺陷）。
    */
-  private lastCompactableRun = new Map<
-    string,
-    { runId: string; sessionId: string; agentKind: AgentKind }
-  >();
+  private compactableRuns = new Map<string, Map<string, CompactRunRecord>>();
 
   /**
    * Active `!` bash runs, keyed by runId (NOT cwd). Bash runs bypass the serial
@@ -1715,11 +1734,7 @@ export class Bridge {
             cardSession.currentState.sessionId ??
             this.sessionStore.getSessionId(ctx.userId, activeRun.agentKind);
           if (compactSessionId) {
-            this.lastCompactableRun.set(cwd, {
-              runId: activeRun.runId,
-              sessionId: compactSessionId,
-              agentKind: activeRun.agentKind,
-            });
+            this.recordCompactableRun(cwd, activeRun.runId, compactSessionId, activeRun.agentKind);
           }
         }
         getLogger().info(`[lark-remote] activeRuns.delete cwd=${cwd} runId=${runId}`);
@@ -1962,10 +1977,36 @@ export class Bridge {
   }
 
   /**
+   * 记下一次「可压缩 run」：终态卡上的 Compact 按钮点击时据此反查
+   * sessionId + agentKind。runId 是按钮自带的唯一键，同 cwd 内唯一。
+   * 超出上限按插入序淘汰最旧的一条（Map 保持插入序；重复写同一 runId
+   * 先 delete 再 set 以刷新位置）。
+   */
+  private recordCompactableRun(
+    cwd: string,
+    runId: string,
+    sessionId: string,
+    agentKind: AgentKind,
+  ): void {
+    let byRunId = this.compactableRuns.get(cwd);
+    if (!byRunId) {
+      byRunId = new Map();
+      this.compactableRuns.set(cwd, byRunId);
+    }
+    byRunId.delete(runId);
+    byRunId.set(runId, { sessionId, agentKind });
+    while (byRunId.size > MAX_COMPACTABLE_RUNS_PER_CWD) {
+      const oldest = byRunId.keys().next().value as string | undefined;
+      if (oldest === undefined) break;
+      byRunId.delete(oldest);
+    }
+  }
+
+  /**
    * Handle compact card action — trigger a compaction request for any
-   * runCompact-capable runner（codex/kimi/opencode/pi/claude，按
-   * lastCompactableRun 记录的 agentKind 路由）。Validates the run exists
-   * and is in a terminal state, then calls the runner's runCompact().
+   * runCompact-capable runner（codex/kimi/opencode/pi/claude）。按钮带的是
+   * 那次 run 的 runId，据此反查该 run 实际使用的 sessionId + agentKind
+   * （compactableRuns，按 runId 记录），再调 runner 的 runCompact()。
    */
   async handleCompactAction(value: { runId?: string }, ctx: CommandContext): Promise<void> {
     const log = getLogger();
@@ -1985,23 +2026,22 @@ export class Bridge {
       return;
     }
 
-    // 校验：run 结束后 activeRuns 已清空，用 lastCompactableRun 对照 runId。
-    const last = this.lastCompactableRun.get(cwd);
-    if (!last || last.runId !== runId) {
+    // 校验：run 结束后 activeRuns 已清空，只能靠按钮自带的 runId 反查记录。
+    // 按 runId 存（不按「最新的那一条」），点击到执行之间夹了新 run 收尾也不失效。
+    const target = this.compactableRuns.get(cwd)?.get(runId);
+    if (!target) {
       await this.sendResult({ text: '⚠️ 该任务已结束或不属于当前会话' }, ctx);
-      return;
-    }
-    if (!last.sessionId) {
-      await this.sendResult({ text: '⚠️ 未找到可压缩的会话' }, ctx);
       return;
     }
 
     // §5.3: kimi 压缩在途检测（wire 状态机）。第二次点击在本地毫秒级如实回答，
     // 不开卡、不发 session/prompt——否则 kimi 服务端拒绝并产生「秒回」假完成。
-    if (await this.rejectIfCompactionInFlight(last.sessionId, cwd, last.agentKind, ctx)) return;
+    if (await this.rejectIfCompactionInFlight(target.sessionId, cwd, target.agentKind, ctx)) {
+      return;
+    }
 
     // Check that the runner has runCompact method
-    const runner = this.getRunner(cwd, last.agentKind);
+    const runner = this.getRunner(cwd, target.agentKind);
     if (!runnerHasRunCompact(runner)) {
       await this.sendResult({ text: '⚠️ 当前运行模式不支持 Compact' }, ctx);
       return;
@@ -2011,9 +2051,9 @@ export class Bridge {
       `[lark-remote] handleCompactAction executing runCompact for runId=${runId} cwd=${cwd}`,
     );
     await this.streamCompact({
-      sessionId: last.sessionId,
+      sessionId: target.sessionId,
       cwd,
-      agentKind: last.agentKind,
+      agentKind: target.agentKind,
       runner,
       ctx,
     });
