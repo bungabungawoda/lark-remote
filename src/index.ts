@@ -786,7 +786,15 @@ function setupMessageHandlers(
           taskMeta: {
             userId,
             chatId,
-            messageId,
+            // 队列身份 key 必须与「这一次点击」1:1：同一张卡片可点 N 次
+            // （Compact 尤其明显），复用卡片 messageId 会让同 key 的多条排队
+            // 任务在 queuedTasks/taskIndex/queueCardMessages 三处 lookup 里互相
+            // 顶替（2026-10-08 线上：连点 Compact 三次 → 三张卡都显示「第 1 位」、
+            // 两张永久停在「等待中」，只压缩一次）。
+            messageId: router.mintQueueTaskKey('card', actionValue.cmd),
+            // 卡片 messageId 仍然要留着当回复目标：排队卡要回复到被点击的卡片，
+            // 内部 key 不是合法飞书 id（replyTo 用它会 400）。
+            feishuReplyTo: messageId,
             messagePreview: `card action: ${actionValue.cmd}`,
             // Compact 是单向操作，排队卡不允许编辑（编辑预览无意义）。
             editable: actionValue.cmd !== 'compact' && actionValue.cmd !== 'resume.compact',

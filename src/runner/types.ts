@@ -432,7 +432,17 @@ export interface Runner {
 // Multi-Agent Adapter Types
 // =============================================================================
 
-export type AgentKind = 'claude' | 'codex' | 'opencode' | 'pi' | 'kimi' | 'dsh';
+/**
+ * Agent 名单单源（运行时数组 + 类型同源，二者不可能漂移）。
+ *
+ * 历史上这份名单被手抄成多份（router 的 VALID_AGENTS、bridge 的 resume.compact
+ * 校验、各 agent 的 config builder…），漂移过：dsh 加入后 bridge 的
+ * resume.compact 仍只有 5 个，带 dsh 的 resume 卡片会静默退回 defaultAgent。
+ * 新增 agent 只改这里。
+ */
+export const AGENT_KINDS = ['claude', 'codex', 'opencode', 'pi', 'kimi', 'dsh'] as const;
+
+export type AgentKind = (typeof AGENT_KINDS)[number];
 
 /** Unified session descriptor returned by every AgentSessionReader. */
 export interface AgentSession {

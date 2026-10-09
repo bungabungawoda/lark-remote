@@ -293,6 +293,16 @@ export class QueueManager {
         taskList = [];
         this.queuedTasks.set(cwd, taskList);
       }
+      // 身份不变量 tripwire：同一 cwd 内 queue key 必须唯一（一次入队动作一个
+      // key，铸造点 router.mintQueueTaskKey）。撞 key 时数组（追加）与 taskIndex
+      // （覆盖）必然漂移，位置显示/撤销/立即执行/卡片更新会串到别的条目上——
+      // 2026-10-08 线上缺陷就是这么长出来的。这里不改行为，只留证据。
+      if (this.indexGet(cwd, queuedTask.messageId)) {
+        getLogger().warn(
+          `[queue-manager] duplicate queue key cwd=${cwd} messageId=${queuedTask.messageId} — ` +
+            'queue identity must be minted per enqueue action (see router.mintQueueTaskKey)',
+        );
+      }
       taskList.push(queuedTask);
       this.indexAdd(cwd, queuedTask);
 
