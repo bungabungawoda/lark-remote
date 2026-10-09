@@ -339,6 +339,60 @@ describePosix('CodexAppServerRunner integration', () => {
     await runner.dispose();
   });
 
+  it('keeps sub-agent thread notifications out of the top-level turn (session key, body, usage)', async () => {
+    // 验证行为：codex app-server 把 multi-agent v2 子 agent 线程的通知复用同一条
+    // stdio 连接（实测 2026-10-09：一次 run 内收到 4 个不同 threadId 的
+    // turn/started）。子线程通知必须被线程归属闸门挡在本轮之外，否则：
+    //   1. 子线程 turn/started 覆盖本轮 threadId → turn_started 写回把子线程 id
+    //      存成顶层会话指针，冷连接 thread/resume 报 "cannot resume an unloaded
+    //      multi-agent v2 sub-agent"（真实事故：会话无法恢复，/restart 也无效）；
+    //   2. 子线程 turn/completed 提前结束本轮 run，本轮正文丢失；
+    //   3. 子线程 tokenUsage 串进本轮 usage。
+    // fixture 特意把子 agent 的 turn/completed 排在主线程收尾之前，复现当时的
+    // 引爆顺序。
+    const cwd = join(tmpDir, 'workspace');
+    mkdirSync(cwd, { recursive: true });
+    const runner = new CodexAppServerRunner({
+      kind: 'codex',
+      sessionReader: createStubSessionReader(),
+      binary: process.execPath,
+      appServerArgs: [FAKE_SERVER, join(FIXTURES, 'subagent-thread-turn.json')],
+      model: 'deepseek-v4-flash',
+      modelProvider: 'deepseek',
+    });
+
+    const events: AgentEvent[] = [];
+    for await (const event of runner.run('hello', { cwd })) {
+      events.push(event);
+    }
+
+    // 会话键：turn_started 与 result 都必须落在主线程上
+    const turnStarted = events.find((e) => e.type === 'turn_started') as
+      (AgentEvent & { threadId?: string }) | undefined;
+    expect(turnStarted?.threadId).toBe('th-main-1');
+
+    const results = events.filter((e) => e.type === 'result') as Array<
+      AgentEvent & { subtype?: string; session_id?: string; usage?: { context_limit?: number } }
+    >;
+    expect(results).toHaveLength(1);
+    expect(results[0].subtype).toBe('success');
+    expect(results[0].session_id).toBe('th-main-1');
+
+    // 本轮正文完整：run 没有被子线程的 turn/completed 提前收场
+    const textEvents = events.filter((e) => e.type === 'turn_diff' && 'text' in e) as Array<{
+      text: string;
+    }>;
+    expect(textEvents.at(-1)?.text).toBe('main done');
+
+    // 子 agent 的内容、线程 id、token 用量都不许出现在本轮事件里
+    const serialized = JSON.stringify(events);
+    expect(serialized).not.toContain('SUBAGENT-CHATTER');
+    expect(serialized).not.toContain('th-subagent-1');
+    expect(results[0].usage?.context_limit).toBe(200000);
+
+    await runner.dispose();
+  });
+
   it('reports the newly created thread id when turn/start fails after thread/start', async () => {
     // 验证行为：thread/start 成功、turn/start 失败时，error result 的 session_id
     // 必须带上新线程 id（而非 opts.sessionId ?? ''），否则下一条消息会再开一个
