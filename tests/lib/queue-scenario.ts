@@ -89,15 +89,20 @@ export async function setupTwoTaskQueueScenario(
   // Wait for queue card to be sent
   await new Promise((resolve) => setTimeout(resolve, 100));
 
-  // Verify initial queue card was sent (header: orange, title: "排队中")
+  // Verify initial queue card was sent (header: orange). 头部有两态：前面还有
+  // 等待中的消息时是「⏳ 消息排队中」；前面为空、只等当前执行的任务时是
+  // 「⏳ 等待当前任务结束」。本场景 task2 前面只有正在跑的 task1 → 后者。
   // FIXED: Use header.title?.content instead of String(header?.title)
   const initialCards = connector._sent.filter((s: { input: unknown }) => {
     const inp = s.input as Record<string, unknown>;
     const card = inp.card as Record<string, unknown> | undefined;
     if (!card) return false;
     const header = card.header as Record<string, unknown> | undefined;
-    const titleContent = (header?.title as { content?: string } | undefined)?.content;
-    return header?.template === 'orange' && (titleContent?.includes('排队') ?? false);
+    const titleContent = (header?.title as { content?: string } | undefined)?.content ?? '';
+    return (
+      header?.template === 'orange' &&
+      (titleContent.includes('排队') || titleContent.includes('等待当前任务结束'))
+    );
   });
 
   return {

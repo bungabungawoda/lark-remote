@@ -22,6 +22,7 @@ import {
   type QueuedTask,
   type EnqueueOptions,
   type AgentBinding,
+  type ExecutingInfo,
 } from './queue-manager.js';
 import { ApprovalCoordinator, decisionToApprovalAction } from './approval-coordinator.js';
 import type { ApprovalAction, ApprovalToggleAction } from './approval-coordinator.js';
@@ -573,6 +574,14 @@ export class Bridge {
   /** Get queue info for a cwd. */
   getQueueInfo(cwd: string): { position: number; tasksAhead: number; isRunning: boolean } {
     return this.queueManager.getQueueInfo(cwd);
+  }
+
+  /**
+   * lane 当前占用者的展示信息（排队卡与「立即执行」守卫共用）。
+   * 典型用途：占用者是 Compact 时拒绝 queue.immediate，避免中断压缩。
+   */
+  getQueueExecutingInfo(cwd: string): ExecutingInfo | undefined {
+    return this.queueManager.getExecutingInfo(cwd);
   }
 
   /** Remove a task from the queue by messageId. Returns true if found and removed. */

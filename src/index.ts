@@ -39,6 +39,7 @@ import {
   DIRECT_RETURN_CMDS,
   type CardActionPayload,
   SESSION_MUTATING_ACTION_CMDS,
+  COMPACT_ACTION_CMDS,
 } from './router/index.js';
 import { dispatchOrderExecForQueue } from './router/order-exec-dispatch.js';
 import { buildCardActionFullValue } from './router/card-action-payload.js';
@@ -796,8 +797,11 @@ function setupMessageHandlers(
             // 内部 key 不是合法飞书 id（replyTo 用它会 400）。
             feishuReplyTo: messageId,
             messagePreview: `card action: ${actionValue.cmd}`,
+            // lane 占用者的展示类型：压缩类动作在排队卡上自报身份
+            // （「正在执行: 🗜 Compact」），并据此禁用「立即执行」。
+            kind: COMPACT_ACTION_CMDS.has(actionValue.cmd) ? 'compact' : 'command',
             // Compact 是单向操作，排队卡不允许编辑（编辑预览无意义）。
-            editable: actionValue.cmd !== 'compact' && actionValue.cmd !== 'resume.compact',
+            editable: !COMPACT_ACTION_CMDS.has(actionValue.cmd),
           },
         },
       );

@@ -913,3 +913,40 @@ messageId。
 fallback 发新卡，保证点击必有反馈）；兄弟卡走 `Bridge.patchCard`（纯 best-effort PATCH，
 失败即从集合剔除）—— 兄弟卡不能走 `updateCardInPlace`：卡片过期时它每次都会补发一张
 新卡，越点越多。
+
+### 9.26 排队卡按 lane 占用者渲染：Compact 占队列时自报身份并禁用立即执行
+
+**起因（2026-10-09 线上）**：用户点了一次 🗜 Compact，12 秒后发消息，收到的
+排队卡写「⏳ 消息排队中 / 位置: 第 1 位 / 前面还有: 0 条消息在排队」，等了
+7.8 秒（≈ 该次 Compact 的剩余时长）才开始执行。用户据此质疑"前面什么都没有，
+为什么排队"。
+
+**两个口径的差集**：开卡判据 `hasWaitingTasks` 看 lane
+（`pendingOrExecutingCount > 0 || queuedTasks.length > 0`，含正在执行者），而卡片文案
+`tasksAhead` 只数 `queuedTasks`（执行中的条目在 begin 时已 splice 出去）。只要 lane 被
+**非消息任务**占住，就必然渲染成「排队中 / 前面还有 0 条」。
+
+**不变量**：
+
+1. **Compact 必须与 turn 串行**（同一 runner/连接/thread；`executeTurn` 的
+   `_isRunning` 守卫 + `streamCompact` 的 `activeRuns` 占用检查）。不得为了消除排队
+   而让两者并发。
+2. **lane 占用者单源** = `QueueManager.executingInfo`（cwd →
+   `{ slotId, kind, label, preview, startedAt }`）：begin 登记、settle 清除，与
+   `executingSlot` 同寿命。清除必须校验 `slotId`，否则迟到的 settle 会清掉后继任务
+   的记录（身份不用外部 id，同 §9.24 口径）。
+3. **头部两态**：`tasksAhead > 0` → 「⏳ 消息排队中」；否则「⏳ 等待当前任务结束」。
+   `queueCardHeader` 是单源，`sendQueueStatusCard` 与 `buildQueueCardForEdit` 共用
+   ——后者是点击回调响应的渲染路径，漏改会让编辑后的卡重现同一矛盾。
+4. **`tasksAhead === 0` 不渲染「队列位置 / 前面还有」**：那段文案与"排队"字面矛盾；
+   此时只写「正在执行: `<label>`」。
+5. **占用者是 Compact 时禁用「⚡ 立即执行」**：该按钮走 `interruptCurrentRun`，会连带
+   中断正在跑的压缩（压缩也注册在 `activeRuns` 里）。渲染层置灰 + 执行层
+   `handleQueueImmediate` 守卫双保险（旧卡片仍带可点按钮）。「❌ 撤销」保持可用——
+   它只移除等待中的消息，不触碰压缩。
+6. **kind 显式声明**：`EnqueueOptions.taskMeta.kind`（`message` 缺省 / `compact` /
+   `command`）决定卡片标签；压缩类动作清单单源在 `COMPACT_ACTION_CMDS`
+   （`src/router/index.ts`），`src/index.ts` 同时用它决定 `editable`。
+
+**测试锚点**：`tests/anchor/queue-card-arm/queue-card-arm-occupant-card.test.ts`
+（身份 / 位置 / 按钮）、`queue-card-arm-occupant-immediate-guard.test.ts`（执行层守卫）。
