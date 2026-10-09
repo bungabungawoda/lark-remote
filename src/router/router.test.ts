@@ -3528,7 +3528,7 @@ describe('CommandRouter', () => {
   it('test_anchor_two_config_cards_share_one_draft_view', async () => {
     // 验证什么：草稿（pendingConfig）是全局一份，但每张 config 卡是独立视图——
     // 一张卡上的修改必须把其余已交互过的卡片一起刷新。
-    // 缺失后果（2026-10-08 review P3）：旧卡片停在旧视图，用户在旧卡上看到的
+    // 缺失后果（2026-10-08 发现的缺陷）：旧卡片停在旧视图，用户在旧卡上看到的
     // 和点「保存」实际提交的是两套内容（保存提交共享草稿，视图却没跟上）。
     const { router, connector } = createRouter();
     const cardA = { ...ctx, messageId: 'om-config-A' };
