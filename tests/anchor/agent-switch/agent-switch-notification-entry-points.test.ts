@@ -540,8 +540,8 @@ describe('config.save switch vs startup/resume/cd/syncAgentChoices entry points'
      *    覆盖恢复分支的 arrival[pi]=P。
      * ② 缺失/错误影响：若 agentChoices 同步写盘与切换的 session/arrival 副作用互相
      *    覆盖，恢复后的到达基线丢失，下一次离开会被误判为用户活动。
-     * ③ 依据： → 发消息）+设计恢复分支
-     *    （setArrivalSessionId(new, prev)）+agentChoices 原子写盘。
+     * ③ 依据：设计恢复分支（setArrivalSessionId(new, prev)）
+     *    + agentChoices 原子写盘。
      */
     makeRouter('codex');
     const userId = 'user1';
