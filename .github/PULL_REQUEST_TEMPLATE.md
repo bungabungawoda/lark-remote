@@ -10,7 +10,7 @@ Fixes #
 
 ## Checklist
 
-- [ ] I have read the [Contributing Guide](CONTRIBUTING.md)
+- [ ] I have read the [Contributing Guide](../CONTRIBUTING.md)
 - [ ] `bun run typecheck` passes
 - [ ] `bun run test` passes
 - [ ] New code includes appropriate tests
