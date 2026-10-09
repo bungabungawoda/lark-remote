@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.1] - 2026-10-09
+
+### 修复
+
+- **旧卡片上的 Compact 按钮点下去不再报「该任务已结束或不属于当前会话」**：Compact 按钮只带本轮 run 的标识，此前按「每个工作目录最新一条 run」反查会话，而 compact 动作走串行队列——排队期间后续 run 收尾会覆盖那一个槽位，旧卡片于是必然失效。现在每条 run 收尾时按自己的标识记下会话与 agent，按钮自证身份，排队多久都不失效；Compact 也改为按该 run 自己的目录反查，中途切过目录不会压错会话
+- **同一会话的多条排队卡片不再互相顶掉**：队列条目此前复用飞书卡片的消息 id 当身份，同一会话里多条卡片撞同一个 key，先入队的那条被后面的覆盖、状态更新串到别的卡片上。改为每次入队铸造独立身份
+- **排队卡片会说清「在等谁」**：Compact 与普通消息共用同一条串行队列，Compact 占着执行位时新消息卡片仍写「位置: 第 1 位 / 前面还有: 0 条」，看着像马上就能轮到自己。现在没有等待中的消息时头部改为「等待当前任务结束」、正文写明正在执行的是 Compact 并收起位置行；占用者是 Compact 时「⚡ 立即执行」在渲染层置灰、执行层再加一道守卫，「❌ 撤销」保持可用
+- **codex 多 agent 会话不再把会话指针写坏**：codex app-server 会把子 agent 的开轮通知一起推过来，此前不判断归属，子线程的事件覆盖了本轮的线程标识，顶层会话指针被写成子线程标识——该值在会话索引里不是键，之后恢复会话报 `cannot resume an unloaded multi-agent v2 sub-agent`，`/restart` 也救不回来。现在通知按线程归属过滤；审批结算仍按请求标识走，子 agent 的审批照常可以回答
+- **带 `dsh` 的卡片不再静默退回默认 agent**：agent 名单此前被手抄成多份并发生漂移，收敛为单一来源、校验由该名单派生，消除「用错 reader → 未找到 session」的静默降级
+
+### 变更
+
+- **消除两处宿主环境相关的测试假红**：宿主带上本机没有的 locale（macOS 常见的 `LC_ALL=C.UTF-8`）时，bash 每次启动都往 stderr 打 setlocale 警告，让输出断言随机变红，测试 setup 阶段现在剔掉该变量（保留 UTF-8 解析所需项）；JSON-RPC 退出计时用例的计时起点从进程启动改到收到 `initialize` 应答，慢速 Windows runner 上不再因启动耗时超过阈值而误红
+- **英文架构文档补齐**：`docs/en/architecture/design.md` 增补与中文侧对应的五个章节，英中两侧不再不对称
+- **注释与用例名清理**：延续上一版的清理，去掉剩余指向未发布文档的引用与评审编号，并修正清理过程中留下的残句。无行为变化
+
 ## [0.5.0] - 2026-10-07
 
 ### 新增
