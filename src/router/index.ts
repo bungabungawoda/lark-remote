@@ -25,6 +25,7 @@ import type {
   AgentSessionContentEvent,
   AgentSessionReader,
 } from '../runner/index.js';
+import { AGENT_KINDS } from '../runner/types.js';
 import { getLogger } from '../logger/index.js';
 import type { CloneSession } from '../clone.js';
 import { stripPlaceholders } from '../inbound/placeholder.js';
@@ -527,9 +528,19 @@ function searchQueryFrom(value: CardActionPayload): string | undefined {
 /** 卡片 cardAction payload 缺字段的统一报错文案（原先 12 处手写且已漂移出两种前缀）。 */
 const CARD_PAYLOAD_MISSING = '⚠️ 卡片 payload 缺少必要信息';
 
+/**
+ * 记住并同步刷新的 config 卡片数上限。一次 /config 会话里用户实际会交互的
+ * 卡片只有最近一两张，5 张足够覆盖；无上限会让长跑进程的 Set 随卡片数增长。
+ */
+const MAX_CONFIG_CARDS = 5;
+
 export class CommandRouter {
-  /** Valid agent kinds — single source of truth for resume.use / resume.page / cmdResume. */
-  static readonly VALID_AGENTS = ['claude', 'codex', 'opencode', 'pi', 'kimi', 'dsh'] as const;
+  /**
+   * Valid agent kinds — single source of truth for resume.use / resume.page /
+   * cmdResume. 名单本体在 `runner/types.ts` 的 AGENT_KINDS（与 AgentKind 类型
+   * 同源），这里只做别名，避免人手抄第二份。
+   */
+  static readonly VALID_AGENTS = AGENT_KINDS;
   private sessionStore: SessionStore;
   /** 飞书桥接实例（public：测试直接访问断言，替代 as unknown as）。 */
   bridge: Bridge;
@@ -571,13 +582,28 @@ export class CommandRouter {
   /** /config 卡片编辑暂存区（public：测试直接读取断言，替代 as unknown as）。 */
   pendingConfig: AppConfig | null = null;
   /**
-   * Monotonic counter minting unique internal keys for order.exec enqueue
-   * actions. One order card can be clicked many times, so the Feishu card
-   * messageId is 1:N with enqueue actions and must not be reused as the queue
-   * dedup key. Date.now() alone is unsafe (two synchronous calls can share a
-   * millisecond); the counter guarantees uniqueness regardless of timing.
+   * 已见过的 /config 卡片 messageId（有界，最近的在最后）。
+   *
+   * 草稿（pendingConfig）是全局一份：/config 文本命令重开卡片时沿用同一份草稿
+   * （这是既有语义，不改）。但**视图**是每张卡一份 —— 只刷新被点击的那张，其余
+   * 卡片就停在旧视图上：用户在旧卡上看到的和点保存实际提交的是两套内容
+   * （2026-10-08 review P3）。这里记住所有交互过的 config 卡，任何一次编辑/保存
+   * 后把草稿刷到每张卡，保证「看到的就是会保存的」。
    */
-  private orderExecKeyCounter = 0;
+  private configCardIds = new Set<string>();
+  /**
+   * 排队条目身份 key 的唯一铸造计数器（order.exec 与卡片动作共用）。
+   *
+   * 一张飞书卡片可以被点击 N 次，卡片 messageId 与入队动作是 1:N；而排队
+   * 条目的身份必须与「一次入队动作」1:1（queuedTasks 的定位、queueCardMessages
+   * 的卡片更新、taskIndex 的取消判据全部按这个 key 做 lookup）。复用卡片 id
+   * 会让同 key 的多条任务互相顶替：位置显示命中最早那条兄弟、第一条开始时删掉
+   * 索引导致其余兄弟被判「已撤销」静默丢弃（2026-10-08 线上：连点 Compact
+   * 三次 → 三张排队卡都显示「第 1 位」、两张永久停在「等待中」，只压缩一次）。
+   *
+   * Date.now() 不够（两次同步调用可落在同一毫秒）；计数器与时间无关，恒唯一。
+   */
+  private queueTaskKeyCounter = 0;
   /**
    * Per-user sort preference for /ws list (memory-only, not persisted).
    * Default 'recent' (most recently used first), can toggle to 'alpha'.
@@ -1664,8 +1690,23 @@ export class CommandRouter {
     this.orderStore.updateUsedAt(order.id);
     return {
       orderText: order.text,
-      internalKey: `order-${order.id}-${this.orderExecKeyCounter++}`,
+      internalKey: this.mintQueueTaskKey('order', order.id),
     };
+  }
+
+  /**
+   * 铸造一个排队条目身份 key（唯一铸造点）。
+   *
+   * 调用方：order.exec 文本钩子（resolveOrderExecForQueue）与入口层
+   * （index.ts）的非即时卡片动作入队。卡片 messageId 只能当「回复目标」
+   * （`taskMeta.feishuReplyTo`），不得当队列 key —— 理由见
+   * `queueTaskKeyCounter` 字段注释。
+   */
+  mintQueueTaskKey(kind: string, id?: string): string {
+    this.queueTaskKeyCounter += 1;
+    return id === undefined
+      ? `queue-${kind}-${this.queueTaskKeyCounter}`
+      : `${kind}-${id}-${this.queueTaskKeyCounter}`;
   }
   /**
    * 单源：重建 order/ws 列表卡（不投递，card 进 callback 响应体用）。
@@ -2175,6 +2216,42 @@ export class CommandRouter {
   }
 
   /**
+   * 记住一张 config 卡片 messageId（有界：超限丢最早的一张）。
+   * 无 messageId 的调用（测试/文本路径）不登记。
+   */
+  private rememberConfigCard(messageId: string | undefined): void {
+    if (!messageId) return;
+    this.configCardIds.delete(messageId);
+    this.configCardIds.add(messageId);
+    while (this.configCardIds.size > MAX_CONFIG_CARDS) {
+      const oldest = this.configCardIds.values().next().value as string | undefined;
+      if (oldest === undefined) break;
+      this.configCardIds.delete(oldest);
+    }
+  }
+
+  /**
+   * 把当前草稿刷到所有已知 config 卡片上（含本次点击的那张）。
+   *
+   * 被点击的那张走 `updateCardInPlace`（失败 fallback 发新卡，保证点击必有
+   * 反馈）；其余兄弟卡走 `patchCard`（纯 best-effort，失败即从集合剔除，不再
+   * 重复打无效 PATCH，也不会因为卡片过期而反复补发新卡）。
+   */
+  private async refreshConfigCards(ctx: CommandContext): Promise<void> {
+    this.rememberConfigCard(ctx.messageId);
+    const card = this.buildConfigCard().card;
+    if (!card) return;
+    for (const messageId of [...this.configCardIds]) {
+      if (messageId === ctx.messageId) {
+        await this.bridge.updateCardInPlace(card, ctx);
+        continue;
+      }
+      const ok = await this.bridge.patchCard(messageId, card);
+      if (!ok) this.configCardIds.delete(messageId);
+    }
+  }
+
+  /**
    * 串行化 config.* 卡片回调（2026-07-04 修复 toggle 卡死 bug）。
    *
    * CardKit 2.0 input/button 回调经 `enqueueImmediate` 分发，不进 bridge 的
@@ -2227,7 +2304,7 @@ export class CommandRouter {
         try {
           // 只改暂存区，不写盘；原地更新卡片而非发送新卡（2026-07-04）
           this.setNestedValue(this.pendingConfig!, key, !boolVal);
-          await this.bridge.updateCardInPlace(this.buildConfigCard().card!, ctx);
+          await this.refreshConfigCards(ctx);
         } catch (err) {
           await this.bridge.sendResult({ text: `设置失败: ${(err as Error).message}` }, ctx);
         }
@@ -2253,7 +2330,7 @@ export class CommandRouter {
             this.setNestedValue(this.pendingConfig!, patch.key, patch.value);
           }
 
-          await this.bridge.updateCardInPlace(this.buildConfigCard().card!, ctx);
+          await this.refreshConfigCards(ctx);
         } catch (err) {
           await this.bridge.sendResult({ text: `设置失败: ${(err as Error).message}` }, ctx);
         }
@@ -2286,7 +2363,7 @@ export class CommandRouter {
             this.setNestedValue(this.pendingConfig!, patch.key, patch.value);
           }
 
-          await this.bridge.updateCardInPlace(this.buildConfigCard().card!, ctx);
+          await this.refreshConfigCards(ctx);
         } catch (err) {
           await this.bridge.sendResult({ text: `设置失败: ${(err as Error).message}` }, ctx);
         }
@@ -2319,7 +2396,7 @@ export class CommandRouter {
           try {
             // host 可能已变更 → 重新预取 DSH 目录（内部按 host 缓存，未变不重复拉）
             await this.prefetchConfigCardCatalogs();
-            await this.bridge.updateCardInPlace(this.buildConfigCard().card!, ctx);
+            await this.refreshConfigCards(ctx);
           } catch (refreshErr) {
             getLogger().warn(
               `[router] config.save 卡片刷新失败（保存已成功）: ${(refreshErr as Error).message}`,

@@ -186,13 +186,22 @@ const builders: Record<AgentKind, AgentConfigCardBuilder> = {
 };
 ```
 
-### Step 9: Add the New Literal to the AgentKind Type
+### Step 9: Add the New Literal to the AGENT_KINDS List
 
-Modify the `AgentKind` type in `src/runner/types.ts`:
+Add one entry to `AGENT_KINDS` in `src/runner/types.ts` (**this is the only place to edit**):
 
 ```typescript
-export type AgentKind = 'claude' | 'codex' | 'opencode' | 'pi' | 'kimi' | '<agent>';
+export const AGENT_KINDS = ['claude', 'codex', 'opencode', 'pi', 'kimi', 'dsh', '<agent>'] as const;
+
+export type AgentKind = (typeof AGENT_KINDS)[number];
 ```
+
+The `AgentKind` type, `VALID_AGENTS` (resume card validation), and the bridge's
+resume.compact agent check all derive from this list. It used to be copied by hand in several
+places and drifted: after dsh was added, the bridge's resume.compact check still listed only
+five agents, so a card carrying dsh silently fell back to `defaultAgent` (wrong reader →
+"session not found"). Do not copy the agent list anywhere else; test stub registries use
+`AGENT_KINDS` too.
 
 ### Step 10: Add a Branch in the Config Functions
 
