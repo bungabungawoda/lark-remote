@@ -45,20 +45,39 @@ function makeQueueManager(isRunning: (ws: string) => boolean = () => false) {
   return { qm, sentCards, updatedCards };
 }
 
-/** Extract position/tasksAhead text from a queue card. */
+/**
+ * Extract position/tasksAhead text from a queue card.
+ *
+ * 正文分成多块 div（Workspace / 队列位置 / 正在执行），所以要扫全部文本；
+ * 且 tasksAhead === 0 时「队列位置 / 前面还有」两行整体不渲染（2026-10-09：
+ * 「排队中 / 前面还有 0 条」自相矛盾），此时返回 -1 = 这张卡不说位置。
+ */
 function extractPositionInfo(card: object): { position: number; tasksAhead: number } {
-  const body = (card as Record<string, unknown>).body as Record<string, unknown>;
-  const elements = body.elements as Array<Record<string, unknown>>;
-  const div = elements[0];
-  const text = div.text as Record<string, unknown>;
-  const content = text.content as string;
-  // Format: "**当前 Workspace:** `xxx`\n**位置:** 第 N 位\n**前面还有:** M 条消息在排队"
+  const content = extractCardText(card);
+  // Format: "**队列位置:** 第 N 位\n**前面还有:** M 条消息"
   const posMatch = content.match(/位置:\*?\*? 第 (\d+) 位/);
   const aheadMatch = content.match(/前面还有:\*?\*? (\d+) 条消息/);
   return {
     position: posMatch ? parseInt(posMatch[1], 10) : -1,
     tasksAhead: aheadMatch ? parseInt(aheadMatch[1], 10) : -1,
   };
+}
+
+/** All text content of a card body, joined by newline. */
+function extractCardText(card: object): string {
+  const body = (card as Record<string, unknown>).body as Record<string, unknown>;
+  const elements = body.elements as Array<Record<string, unknown>>;
+  return elements
+    .map((el) => (el.text as Record<string, unknown> | undefined)?.content)
+    .filter((c): c is string => typeof c === 'string')
+    .join('\n');
+}
+
+/** Queue card header title. */
+function extractHeaderTitle(card: object): string {
+  const header = (card as Record<string, unknown>).header as Record<string, unknown>;
+  const title = header.title as Record<string, unknown>;
+  return String(title.content);
 }
 
 /** Extract all button elements from a card body. */
@@ -655,11 +674,18 @@ describe('QueueManager 队列身份（连点同一张卡）', () => {
 
     await new Promise((r) => setTimeout(r, 50));
 
-    // 三张排队卡，位置各不相同且递增
+    // 三张排队卡，位置各不相同且递增。第一张前面只有正在跑的 run（没有等待
+    // 中的消息），所以它按新口径不渲染「队列位置 / 前面还有」，改报
+    // 「等待当前任务结束」+「正在执行」；后两张才数等待队列，位置 2/3。
     expect(sentCards).toHaveLength(3);
     const infos = sentCards.map((s) => extractPositionInfo(s.card));
-    expect(infos.map((i) => i.position)).toEqual([1, 2, 3]);
-    expect(infos.map((i) => i.tasksAhead)).toEqual([0, 1, 2]);
+    expect(infos.map((i) => i.position)).toEqual([-1, 2, 3]);
+    expect(infos.map((i) => i.tasksAhead)).toEqual([-1, 1, 2]);
+    expect(sentCards.map((s) => extractHeaderTitle(s.card))).toEqual([
+      '⏳ 等待当前任务结束',
+      '⏳ 消息排队中',
+      '⏳ 消息排队中',
+    ]);
 
     releaseRun();
     await new Promise((r) => setTimeout(r, 50));
