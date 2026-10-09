@@ -3411,6 +3411,79 @@ describe('Bridge handleResumeCompact（resume 卡 Compact 按钮）', () => {
     const sentJsons = connector._sent.map((s) => JSON.stringify(s.input));
     expect(sentJsons.some((j) => j.includes('already running'))).toBe(true);
   });
+
+  it('旧卡片 Compact 不被后续 run 抢走：压的是该卡那次 run 的会话', async () => {
+    // 验证什么：终态 run 卡片上的 Compact 按钮只带 runId，点击时按 runId 反查
+    // 该次 run 实际使用的 sessionId。卡片动作走串行队列，从点击到执行之间可能
+    // 夹着新 run 收尾——旧实现只有「每 cwd 一条」的记录，被新 run 覆盖后旧卡片
+    // 必然回「⚠️ 该任务已结束或不属于当前会话」（2026-10-08 线上缺陷）。
+    // 缺失后果：跑完新任务后，之前任何一张卡的 Compact 按钮全部失效。
+    const cwd = fs.realpathSync(tmpDir);
+    const runCompactSpy = vi.fn(compactTurnEvents);
+    const sessionIds = ['sess-old', 'sess-new'];
+    let runIndex = 0;
+    const runSpy = vi.fn(async function* (): AsyncGenerator<AgentEvent> {
+      const sessionId = sessionIds[Math.min(runIndex++, sessionIds.length - 1)];
+      yield {
+        type: 'system',
+        subtype: 'init',
+        session_id: sessionId,
+        cwd,
+        model: 'opus',
+      } as AgentEvent;
+      yield { type: 'result', subtype: 'success', session_id: sessionId } as AgentEvent;
+    });
+    const runner: CompactRunner = {
+      ...createStubRunner(),
+      run: runSpy,
+      runCompact: runCompactSpy,
+      // finalizeRun 只对 workspace-lifetime runner 记录可压缩 run。
+      lifetime: 'workspace',
+    };
+    const { bridge, sessionStore, connector } = makeCompactBridge({
+      runner,
+      codexRead: tailRead({ compactCount: 1, contextLength: 100 }),
+    });
+    sessionStore.setCwd('user1', cwd);
+
+    const lastRunId = (): string => {
+      const cardJson = JSON.stringify(connector._cards.at(-1) ?? '');
+      const match = cardJson.match(/"cmd":"compact","runId":"([^"]+)"/);
+      expect(match).not.toBeNull();
+      return match![1];
+    };
+
+    await bridge.forwardToClaude('第一轮', ctx, { binding: { agent: 'codex' } });
+    const oldRunId = lastRunId();
+    // 第二轮跑完：旧实现此刻把记录覆盖成第二轮，旧卡片随之失效。
+    await bridge.forwardToClaude('第二轮', ctx, { binding: { agent: 'codex' } });
+    expect(lastRunId()).not.toBe(oldRunId);
+
+    await bridge.handleCompactAction({ runId: oldRunId }, ctx);
+
+    expect(runCompactSpy).toHaveBeenCalledWith('', { cwd, sessionId: 'sess-old' });
+    const sentJsons = connector._sent.map((s) => JSON.stringify(s.input));
+    expect(sentJsons.some((j) => j.includes('该任务已结束或不属于当前会话'))).toBe(false);
+  });
+
+  it('未知 runId 的 Compact 仍回「该任务已结束或不属于当前会话」', async () => {
+    // 验证什么：按 runId 反查不等于放行一切——不认识的 runId（进程重启后的旧卡、
+    // 别的 cwd 的卡）仍必须明确拒绝，不能默默开一张压缩卡。
+    const cwd = fs.realpathSync(tmpDir);
+    const runCompactSpy = vi.fn(compactTurnEvents);
+    const runner: CompactRunner = { ...createStubRunner(), runCompact: runCompactSpy };
+    const { bridge, sessionStore, connector } = makeCompactBridge({
+      runner,
+      codexRead: tailRead({ compactCount: 1, contextLength: 100 }),
+    });
+    sessionStore.setCwd('user1', cwd);
+
+    await bridge.handleCompactAction({ runId: 'not-a-real-run-id' }, ctx);
+
+    expect(runCompactSpy).not.toHaveBeenCalled();
+    const sentJsons = connector._sent.map((s) => JSON.stringify(s.input));
+    expect(sentJsons.some((j) => j.includes('该任务已结束或不属于当前会话'))).toBe(true);
+  });
 });
 
 describe('app-server error result session write-back', () => {
