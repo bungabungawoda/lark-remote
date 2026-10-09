@@ -535,3 +535,62 @@ listSessions(cwd: string, opts?: { limit?: number; offset?: number }): {
 - Offset clamping: `[0, page-aligned last page start]` (last page start = `(ceil(total/pageSize)-1)*pageSize`, not `max(0, total-pageSize)` — the latter would produce a sliding window inconsistent with the pagination bar, violating "page navigation doesn't misalign"). After clamping, **pagination button values must use the clamped pageOffset for calculation** (otherwise clicking the previous button from an out-of-bounds page would clamp back to the last page again, causing the button to appear dead).
 - `pageSize` is numerified and clamped to `[1, RESUME_PAGE_SIZE]` via handleResumePage; invalid values are not treated as sessionIds.
 - Budget: 5 items per page × ~3 elements ≈ 15 elements (max 200), bytes well below 28KB.
+
+### 9.23 Compact Button Resolves by runId, Not by "Newest Entry per cwd"
+
+The Compact button on a terminal run card carries only runId (at render time the sessionId may not exist yet; runId always does). At run finalize the bridge records the sessionId + agentKind that run actually used into `compactableRuns` (cwd → runId → record, keeping the 20 most recent per cwd), and the click resolves through runId.
+
+**Do not revert to "keep only the newest entry per cwd"**: the compact card action goes through the serial queue (§9.6). When the user clicks an older card, the queue head is still a running run; by the time the action executes, a newer run has finalized and overwritten the single slot — the older card's compaction then invariably returns `⚠️ That task has already finished or does not belong to this session`, regardless of whether the session still exists or is compactable (2026-10-08 production defect). Storing by runId lets the button attest its own identity and never goes stale however long it was queued; only an unrecognized runId (a card from before a process restart, or a card from another cwd) returns that text.
+
+**Resolution is not narrowed by "the current cwd"**: each record also stores the cwd that run itself used, and the lookup is a cross-cwd global scan (`findCompactableRun`), with compaction using `target.cwd`. The button belongs to *that one run*, independent of which workspace the user is in now or whether a `/cd` happened while it was queued — `/stop`'s `interruptCurrentRun` likewise looks up runId globally and never consults the current cwd, and the two paths stay consistent. Narrowing by current cwd would create two false-miss scenarios: switching workspace and then clicking an older card, and `/cd` during queueing (compact is not on the immediate-execution list, so `/cd` can easily land between the click and the execution). Even when a record is hit by luck, the wrong cwd sends the search to the wrong directory for the session file and the runner instance.
+
+### 9.24 Queue Identity Key Is Minted per Enqueue, Never Reused from the Card messageId
+
+A queued entry's identity (`QueuedTask.messageId`, which doubles as the queuedTasks locator, the taskIndex cancellation criterion and the queueCardMessages card-update key) must be 1:1 with **one enqueue action**. **Feishu's card messageId is a presentation-layer id; the same card can be clicked N times (1:N)**, so it may only serve as a reply target (`taskMeta.feishuReplyTo`). The single minting point is `CommandRouter.mintQueueTaskKey(kind, id?)`; its callers are the non-immediate card-action branch (`enqueue` in `src/index.ts`) and the order.exec text hook (`resolveOrderExecForQueue`).
+
+**Several tasks sharing one key desynchronize in three places at once** (2026-10-08 production defect, clicking 🗜 Compact on the same card three times):
+
+1. Position display: `sendQueueStatusCard` locates the entry with `findIndex(t => t.messageId === this click's id)`, so all three clicks resolve to the same, earliest sibling → all three queue cards show "position: 1st / 0 messages ahead".
+2. Cancellation criterion: enqueue unconditionally `push`es and `indexAdd` overwrites (the index keeps only the last one); when the first sibling begins executing, `indexRemove` deletes the shared key, the remaining siblings' `indexGet` returns `undefined` and they are judged "cancelled" and silently `return` — and that return sits before the card update → the cards stay on "⏳ Messages queued" forever.
+3. Card update: `queueCardMessages` uses the same key too, so a later registration overwrites an earlier one → "▶️ Started executing" lands on the last card.
+
+Observed symptom: three clicks compact only once, and the other two cards wait forever. `QueueManager.enqueue` now logs a `duplicate queue key` WARN on a key collision as a tripwire (behaviour unchanged, evidence only) — if that log appears, someone is using an external id as queue identity again.
+
+**When adding a card button that can be clicked repeatedly**: route it through the non-immediate branch and it receives a minted key automatically; do not pass a card messageId by hand.
+
+### 9.25 /config Card: One Draft, All Interacted Cards Refreshed Together
+
+`pendingConfig` is **a single global draft** (cleared after a `/config <key> <value>` direct write, and the `/config` text command reuses the unsaved draft — existing semantics, unchanged). **Views**, however, are one per card: refreshing only the clicked card leaves the others on a stale view, so what the user reads on an old card and what clicking "Save" actually submits are two different things (2026-10-08; Feishu cards never expire on their own, an old card stays clickable at any time).
+
+Approach: `configCardIds` remembers the config cards that were interacted with (bounded at 5, approximate LRU), and after any edit or save `refreshConfigCards` pushes the draft to each of them. The clicked card goes through `updateCardInPlace` (falling back to sending a new card on failure, so every click gets feedback); sibling cards go through `Bridge.patchCard` (pure best-effort PATCH, dropped from the set on failure) — sibling cards must not use `updateCardInPlace`: once a card has expired it re-sends a new card on every attempt, so the more you click, the more cards appear.
+
+### 9.26 Queue Cards Render by Lane Occupant: Compact Holding the Queue Self-Reports and Disables "Run Immediately"
+
+**Origin (2026-10-09 production)**: the user clicked 🗜 Compact once, then sent a message 12 seconds later. The queue card read "⏳ Messages queued / position: 1st / 0 messages ahead", and execution began only after 7.8 seconds (≈ the remaining duration of that Compact). The user reasonably concluded "nothing is ahead of me, so why is it queued".
+
+**The gap between two measures**: the card-opening predicate `hasWaitingTasks` looks at the lane (`pendingOrExecutingCount > 0 || queuedTasks.length > 0`, which includes the executor), while the card text `tasksAhead` counts only `queuedTasks` (the executing entry was already spliced out at begin). Whenever the lane is held by a **non-message task**, the card necessarily renders "queued / 0 ahead".
+
+**Invariants**:
+
+1. **Compact must stay serial with the turn** (same runner / connection / thread; `executeTurn`'s `_isRunning` guard plus `streamCompact`'s `activeRuns` occupancy check). Do not make the two concurrent just to make queueing disappear.
+2. **Single source for the lane occupant** = `QueueManager.executingInfo` (cwd → `{ slotId, kind, label, preview, startedAt }`): registered at begin, cleared at settle, same lifetime as `executingSlot`. Clearing must verify `slotId`, otherwise a late settle wipes the successor task's record (identity does not use external ids, same caliber as §9.24).
+3. **Two header states**: `tasksAhead > 0` → "⏳ Messages queued"; otherwise "⏳ Waiting for the current task to finish". `queueCardHeader` is the single source, shared by `sendQueueStatusCard` and `buildQueueCardForEdit` — the latter is the render path for click-callback responses, and missing it reproduces the same contradiction on post-edit cards.
+4. **When `tasksAhead === 0`, render neither "queue position" nor "messages ahead"**: that text contradicts the word "queued" on its face; render only "Executing: `<label>`".
+5. **Disable "⚡ Run immediately" when the occupant is Compact**: that button goes through `interruptCurrentRun`, which would also kill the compaction in progress (compaction registers in `activeRuns` as well). Rendering-layer greying plus the execution-layer `handleQueueImmediate` guard give double insurance, because older cards still carry an enabled button. "❌ Cancel" stays usable — it only removes waiting messages and never touches the compaction.
+6. **Explicit kind**: `EnqueueOptions.taskMeta.kind` (`message` by default / `compact` / `command`) decides the card label; the compact action list is single-sourced in `COMPACT_ACTION_CMDS` (`src/router/index.ts`), and `src/index.ts` also uses it to decide `editable`.
+
+**Test anchors**: `tests/anchor/queue-card-arm/queue-card-arm-occupant-card.test.ts` (identity / position / buttons) and `queue-card-arm-occupant-immediate-guard.test.ts` (execution-layer guard).
+
+### 9.27 codex app-server: Notifications Must Be Filtered by Thread Ownership, Sub-agent Threads May Not Pollute the Session Pointer
+
+**Origin (2026-10-09 production)**: after a single run that dispatched work in parallel, every subsequent message in that codex session ended with `cannot resume an unloaded multi-agent v2 sub-agent through its parent`, and `/restart` did not help — the interrupted session could never be resumed.
+
+**Mechanism**: app-server broadcasts notifications for every thread it knows about over one shared stdio connection. Within that run, `turn/started` from the parent thread and from 3 sub-agent (multi-agent v2) threads arrived interleaved, and the bridge's write-back is last-writer-wins, so the top-level session pointer was set to a depth-2 sub-thread id. A sub-thread rollout's `session_meta.session_id` is the **parent** id (`thread_source: subagent`; see the subagent filter in `rollout-reader.ts`), so that id is not a key in the session index at all: history reads 0 entries and `thread/resume` must fail. On a hot connection the parent thread is still in memory, so resuming a sub-thread passes (the upstream error text literally says "resume the parent first"); only after the connection is released by the idle TTL or the process restarts does "silently wrong" turn into "hard failure".
+
+**Invariants**:
+
+1. **Notifications are filtered by thread ownership** (`CodexAppServerRunner.handleNotification` → `belongsToActiveThread`): only `threadId === this turn's thread` passes; notifications without a `threadId` (some `warning`s) pass; `serverRequest/resolved` stays thread-agnostic — approvals are correlated and settled by `requestId`, otherwise a sub-agent's approval entry would hang in pending forever.
+2. **Session write-back acknowledges only this turn's thread**: the threadId in `turn_started` / `result` may only be this turn's thread. Once a sub-thread id lands in the store, both `/resume` and auto-resume treat it as the top-level session.
+3. **A sub-thread's `turn/completed` and `thread/tokenUsage/updated` must not enter this turn either**: the former ends the run early (this turn's body text is lost), the latter cross-wires the Context usage.
+
+**Test anchor**: `keeps sub-agent thread notifications out of the top-level turn` in `src/runner/codex/app-server/app-server-integration.test.ts`, with fixture `tests/fake-app-server/fixtures/subagent-thread-turn.json` (the sub-agent's `turn/completed` is deliberately placed before the main thread's completion, reproducing the original detonation order).
