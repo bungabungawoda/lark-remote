@@ -146,8 +146,8 @@ describe('Bridge.forwardToClaude session cwd sync', () => {
     // 变红——arrival 基线被 system.init 覆盖后 userChangedOld=false，prev[pi]=P
     // 会被错误恢复，破坏「到达基线只由 config.save 更新」的设计。
     //
-    // 依据：；设计（arrival 基线只在
-    // config.save 切换时更新；用户消息 /resume /new /cd /system.init 均不更新）。
+    // 设计约定：arrival 基线只在 config.save 切换时更新；
+    // 用户消息 /resume /new /cd /system.init 均不更新。
     const runCwd = path.join(tmpRoot, 'workspace-a');
     const eventCwd = path.join(tmpRoot, 'workspace-b');
     fs.mkdirSync(runCwd);
