@@ -4,7 +4,7 @@
  * 同步 CLI 通道（`codex debug models` / `opencode models --verbose` /
  * `kimi provider list --json` 等）只用于探测/诊断，配置层对失败已有 FALLBACK
  * 兜底。真起 CLI 会让用例依赖本机装没装这些工具，并带 2-7s 延迟，是跨平台
- * flaky 的来源（.probe 实测归因）。
+ * flaky 的来源。
  *
  * 用法（vi.mock 工厂体，注意路径按被测文件自身相对 `tests/lib` 与 `src` 填写）：
  *

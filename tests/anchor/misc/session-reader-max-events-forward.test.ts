@@ -21,8 +21,8 @@ import { encodeClaudeProjectDir, piEncodeCwd } from '../../lib/session-fixtures.
  *   只能靠下游 enforceCardBudget 兜底（截断不准、可能丢近期事件）。
  *
  *   - Design constraint "session reader 必须转发 maxEvents 参数"
- *   - project_memory "maxEvents parameter must be implemented for all agent
- *     session readers (not just claude)"
+ *   - AgentSessionReader 接口约定（docs/en/guides/add-new-agent.md）要求所有
+ *     agent session reader 都实现 maxEvents（不只 claude）
  *   - src/runner/index.ts AgentSessionReader 接口签名:
  *     `readSessionContent(sessionId, cwd, opts?: { maxEvents?: number }): SessionContent`
  *   - CodexSessionReader 已正确转发（codex-sessions.ts），本测试对称补全其余三个。
