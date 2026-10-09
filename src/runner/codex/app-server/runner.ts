@@ -26,6 +26,7 @@ import {
 import { JsonRpcClient } from '../../common/jsonrpc/client.js';
 import { CodexAppServerTranslator, type TranslatorEvent } from './translator.js';
 import {
+  NotificationMethod,
   type AskForApproval,
   type SandboxMode,
   type SandboxPolicy,
@@ -168,6 +169,8 @@ export class CodexAppServerRunner extends ConnectionBasedRunner<
   private connectionManager: ConnectionManager<JsonRpcClient<InitializeResult>>;
   private currentTranslator: CodexAppServerTranslator | null = null;
   private activeThreadId: string | null = null;
+  /** 本轮已记录过日志的外来（子 agent）线程 id，避免逐条 delta 刷盘。 */
+  private foreignThreadIds = new Set<string>();
   private model?: string;
   private modelProvider?: string;
   private reasoningEffort?: string;
@@ -245,6 +248,7 @@ export class CodexAppServerRunner extends ConnectionBasedRunner<
   protected clearTurnState(): void {
     this.currentTranslator = null;
     this.activeThreadId = null;
+    this.foreignThreadIds.clear();
   }
 
   protected async releaseConnection(cwd: string): Promise<void> {
@@ -464,7 +468,8 @@ export class CodexAppServerRunner extends ConnectionBasedRunner<
       // 故 thread.id 可同时用作协议 threadId 与 store/session reader 的 session
       // 键（bridge 用 turn_started 通知的 threadId 写回，/resume、Compact 按此
       // 键定位 JSONL）。forked/subagent 线程二者会分叉（openai/codex#29327），
-      // 桥只把主线程作为顶层会话，不在此链路内。
+      // 桥只把主线程作为顶层会话——子线程的通知由 handleNotification 的线程
+      // 归属闸门挡掉，不会进来（见 belongsToActiveThread）。
       threadId = threadResult.thread.id;
     }
     this.activeThreadId = threadId;
@@ -480,9 +485,56 @@ export class CodexAppServerRunner extends ConnectionBasedRunner<
     this.currentTurnId = turnResult.turn.id;
   }
 
+  /**
+   * Route one server notification into the current turn's translator.
+   *
+   * App-server 把已知线程的通知全部复用同一条 stdio 连接：agent 用
+   * multi-agent v2 派生子 agent 后，子线程的 `turn/started`、`item/*`、
+   * `turn/completed`、`thread/tokenUsage/updated` 会与本轮通知交错到达
+   * （2026-10-09 实测）。一个 turn 只属于一个线程，因此外来线程的通知一律
+   * 丢弃——否则子线程的 `turn/started` 会覆盖本轮 threadId，会话写回把子
+   * 线程 id 当成顶层会话指针存盘（冷连接 `thread/resume` 直接报
+   * "cannot resume an unloaded multi-agent v2 sub-agent"），且子线程的
+   * `turn/completed` 会提前结束本轮 run、token 用量也会串台。
+   */
   private handleNotification(method: string, params: unknown): void {
+    if (!this.belongsToActiveThread(method, params)) {
+      this.noteForeignThread(params);
+      return;
+    }
     const events = this.currentTranslator?.handleNotification(method, params) ?? [];
     this.pushEvents(events);
+  }
+
+  /**
+   * 线程归属闸门：通知是否属于本轮 turn 的线程。
+   *
+   * - 无 threadId 的通知（如部分 warning）没有线程维度可用，放行；
+   * - `serverRequest/resolved` 保持线程无关：审批按 requestId 关联（桥侧
+   *   ApprovalCoordinator 跟踪），子 agent 的审批同样必须能结算，否则卡片
+   *   上的审批条目会一直挂在 pending。
+   */
+  private belongsToActiveThread(method: string, params: unknown): boolean {
+    const active = this.activeThreadId;
+    if (!active) return true;
+    if (method === NotificationMethod.SERVER_REQUEST_RESOLVED) return true;
+    const threadId = (params as { threadId?: unknown } | null | undefined)?.threadId;
+    if (typeof threadId !== 'string' || threadId.length === 0) return true;
+    return threadId === active;
+  }
+
+  /**
+   * 每个被忽略的外来线程只记一条日志：这是会话指针被污染的入口，出问题时
+   * 必须能从日志直接看到「本轮忽略了哪些子线程」，同时避免逐条 delta 刷盘。
+   */
+  private noteForeignThread(params: unknown): void {
+    const threadId = (params as { threadId?: unknown } | null | undefined)?.threadId;
+    if (typeof threadId !== 'string' || threadId.length === 0) return;
+    if (this.foreignThreadIds.has(threadId)) return;
+    this.foreignThreadIds.add(threadId);
+    getLogger().info(
+      `[${this.logTag}] ignoring notifications from foreign thread threadId=${threadId} activeThreadId=${this.activeThreadId}`,
+    );
   }
 
   private handleServerRequest(id: number | string, method: string, params: unknown): void {
