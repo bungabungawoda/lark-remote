@@ -186,13 +186,20 @@ const builders: Record<AgentKind, AgentConfigCardBuilder> = {
 };
 ```
 
-### 步骤 9: 在 AgentKind 类型添加新字面量
+### 步骤 9: 在 AGENT_KINDS 名单添加新字面量
 
-在 `src/runner/types.ts` 中修改 `AgentKind` 类型：
+在 `src/runner/types.ts` 的 `AGENT_KINDS` 数组里加一项（**只改这一处**）：
 
 ```typescript
-export type AgentKind = 'claude' | 'codex' | 'opencode' | 'pi' | 'kimi' | '<agent>';
+export const AGENT_KINDS = ['claude', 'codex', 'opencode', 'pi', 'kimi', 'dsh', '<agent>'] as const;
+
+export type AgentKind = (typeof AGENT_KINDS)[number];
 ```
+
+`AgentKind` 类型、`VALID_AGENTS`（resume 卡片校验）、bridge 的 resume.compact 校验都从
+这份名单派生。历史上这份名单被手抄成多份并漂移过：dsh 加入后 bridge 的 resume.compact
+仍只有 5 个，带 dsh 的卡片会静默退回 defaultAgent（用错 reader → 「未找到 session」）。
+不要在别处再抄一份 agent 名单；测试里的 stub registry 也一样走 `AGENT_KINDS`。
 
 ### 步骤 10: 在配置函数添加分支
 

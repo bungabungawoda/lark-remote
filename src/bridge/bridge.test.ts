@@ -16,6 +16,7 @@ import type {
   AgentSessionUsage,
   Runner,
 } from '../runner/index.js';
+import { AGENT_KINDS } from '../runner/types.js';
 import {
   createStubSessionReaderRegistry,
   createStubConnector,
@@ -125,7 +126,9 @@ function makeCompactBridge(opts: {
     isSessionActive: () => false,
   };
   const registry = new SessionReaderRegistry();
-  for (const agent of ['claude', 'codex', 'opencode', 'pi', 'kimi'] as const) {
+  // 名单来自单源 AGENT_KINDS（手抄一份必然漂移：dsh 加入后这里曾漏掉，
+  // 导致带 dsh 的 resume 卡片测试根本注册不到 dsh reader）。
+  for (const agent of AGENT_KINDS) {
     registry.register(agent, opts.readers?.[agent] ?? defaultReader);
   }
   const bridge = new Bridge({
@@ -3317,6 +3320,37 @@ describe('Bridge handleResumeCompact（resume 卡 Compact 按钮）', () => {
     expect(sentJsons.some((j) => j.includes('✅ 已完成'))).toBe(true);
   });
 
+  it('test_anchor_resume_compact_resolves_card_agent_not_default', async () => {
+    // 验证什么：卡片 payload 里的 agent 是有效名单成员时一律按它解析 reader +
+    // runner，只有不在名单里才退回 defaultAgent。
+    // 缺失后果：名单手抄漏项（历史：漏 dsh）→ dsh 卡片被当成 defaultAgent，
+    // 用错 reader 查 session（报「未找到 session」或用错会话），压缩落到错的 agent。
+    const cwd = fs.realpathSync(tmpDir);
+    const runCompactSpy = vi.fn(compactTurnEvents);
+    const dshRead = vi.fn(tailRead({ compactCount: 1, contextLength: 100 }));
+    const runner: CompactRunner = { ...createStubRunner(), runCompact: runCompactSpy };
+    const { bridge, sessionStore, connector } = makeCompactBridge({
+      runner,
+      readers: {
+        dsh: {
+          listSessions: () => ({ sessions: [], total: 0 }),
+          getNewestSession: () => null,
+          readSessionContent: dshRead,
+          isSessionActive: () => false,
+        },
+      },
+    });
+    sessionStore.setCwd('user1', cwd);
+
+    await bridge.handleResumeCompact({ sessionId: 'dsh-session-1', agent: 'dsh' }, ctx);
+
+    // reader 必须按卡片上的 dsh 解析（不是 config.defaultAgent 的 claude）
+    expect(dshRead).toHaveBeenCalledWith('dsh-session-1', cwd);
+    expect(runCompactSpy).toHaveBeenCalledWith('', { cwd, sessionId: 'dsh-session-1' });
+    const sentJsons = connector._sent.map((s) => JSON.stringify(s.input));
+    expect(sentJsons.some((j) => j.includes('未找到 session'))).toBe(false);
+  });
+
   it('test_anchor_handle_resume_compact_card_context_percentage_from_jsonl_limit', async () => {
     // 验证什么：Compact 完成卡必须像普通 run 卡一样带 Context 百分比
     // （Context - X (Y%)）。回归：streamCompact 的 finish meta 漏传
@@ -3462,6 +3496,54 @@ describe('Bridge handleResumeCompact（resume 卡 Compact 按钮）', () => {
     await bridge.handleCompactAction({ runId: oldRunId }, ctx);
 
     expect(runCompactSpy).toHaveBeenCalledWith('', { cwd, sessionId: 'sess-old' });
+    const sentJsons = connector._sent.map((s) => JSON.stringify(s.input));
+    expect(sentJsons.some((j) => j.includes('该任务已结束或不属于当前会话'))).toBe(false);
+  });
+
+  it('test_anchor_compact_resolves_run_cwd_not_current_cwd', async () => {
+    // 验证什么：runId 反查必须跨 cwd 命中，并用**那次 run 自己的 cwd** 压缩。
+    // run 结束后用户 /cd 到别的工作区（或排队期间被 /cd 改写）再点旧卡片时，
+    // 不能拿「当前 cwd」当执行目录/查找范围。
+    // 缺失后果（2026-10-08 线上）：查到记录前先用当前 cwd 收窄 → 误报
+    // 「⚠️ 该任务已结束或不属于当前会话」，压缩静默失效；即使找到记录，用错
+    // cwd 也会去错目录找 session/runner。
+    const cwdA = fs.realpathSync(tmpDir);
+    // 另一个工作区（放在 tmpDir 下，随 afterEach 一起清理）
+    const cwdB = fs.realpathSync(fs.mkdtempSync(path.join(tmpDir, 'ws-b-')));
+    const runCompactSpy = vi.fn(compactTurnEvents);
+    const runSpy = vi.fn(async function* (): AsyncGenerator<AgentEvent> {
+      yield {
+        type: 'system',
+        subtype: 'init',
+        session_id: 'sess-a',
+        cwd: cwdA,
+        model: 'opus',
+      } as AgentEvent;
+      yield { type: 'result', subtype: 'success', session_id: 'sess-a' } as AgentEvent;
+    });
+    const runner: CompactRunner = {
+      ...createStubRunner(),
+      run: runSpy,
+      runCompact: runCompactSpy,
+      lifetime: 'workspace',
+    };
+    const { bridge, sessionStore, connector } = makeCompactBridge({
+      runner,
+      codexRead: tailRead({ compactCount: 1, contextLength: 100 }),
+    });
+    sessionStore.setCwd('user1', cwdA);
+
+    await bridge.forwardToClaude('第一轮', ctx, { binding: { agent: 'codex' } });
+    const cardJson = JSON.stringify(connector._cards.at(-1) ?? '');
+    const runId = cardJson.match(/"cmd":"compact","runId":"([^"]+)"/)?.[1];
+    expect(runId).toBeDefined();
+
+    // 用户切到另一个工作区，再点 A 里那张旧卡片的 Compact
+    sessionStore.setCwd('user1', cwdB);
+    await bridge.handleCompactAction({ runId: runId! }, ctx);
+
+    // 压缩发生在 run 自己的 cwd（不是当前的 cwdB）
+    expect(runCompactSpy).toHaveBeenCalledWith('', { cwd: cwdA, sessionId: 'sess-a' });
     const sentJsons = connector._sent.map((s) => JSON.stringify(s.input));
     expect(sentJsons.some((j) => j.includes('该任务已结束或不属于当前会话'))).toBe(false);
   });

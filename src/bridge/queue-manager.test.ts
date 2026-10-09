@@ -585,3 +585,133 @@ describe('QueueManager', () => {
     expect(executed).toEqual(['A', 'B-original']);
   });
 });
+
+/**
+ * 队列身份不变量：一个 cwd 内 queue key 必须与「一次入队动作」1:1。
+ *
+ * 铸造点在入口层（`CommandRouter.mintQueueTaskKey`，index.ts 的非即时卡片动作
+ * 分支 + order.exec 文本钩子）。飞书卡片的 messageId 是展示层 id，同一张卡可被
+ * 连点 N 次（1:N），绝不能当 queue key：queuedTasks 的定位（findIndex 命中最早
+ * 那条兄弟）、taskIndex 的取消判据（第一条开始执行时 indexRemove 删掉共享 key，
+ * 其余兄弟被判「已撤销」）、queueCardMessages 的卡片更新（Map 覆盖，只留最后
+ * 一张卡）三处会同时串位。
+ *
+ * 2026-10-08 线上：连点同一张卡的 🗜 Compact 三次 → 三张排队卡都显示
+ * 「位置: 第 1 位 / 前面还有 0 条」，其中两张永久停在「⏳ 消息排队中」，
+ * 实际只压缩了一次。
+ */
+describe('QueueManager 队列身份（连点同一张卡）', () => {
+  it('test_anchor_card_action_queue_key_unique_per_enqueue_runs_all_and_numbers_positions', async () => {
+    // 验证什么：每次入队各自的 key → 位置按 1/2/3 递增、三条任务全部执行、
+    // 每张排队卡各自被更新为「已开始执行」。
+    // 缺失后果：见本 describe 的块注释（三张卡位置相同 + 两条任务静默丢弃）。
+    const { qm, sentCards, updatedCards } = makeQueueManager();
+    const chatId = 'c1';
+    const runs: string[] = [];
+
+    // 占住队列的 run（带 taskMeta，模拟正在跑的 agent run）。
+    let releaseRun: () => void = () => {};
+    const hanging = new Promise<void>((resolve) => {
+      releaseRun = resolve;
+    });
+    qm.enqueue(
+      tmpDir,
+      async () => {
+        await hanging;
+      },
+      {
+        taskMeta: {
+          userId: 'u1',
+          chatId,
+          messageId: 'om-running-run',
+          messagePreview: '正在跑的 run',
+        },
+      },
+    );
+    // 让占队任务的 begin 跑完（begin 把它从 queuedTasks 摘掉）—— 之后入队的
+    // 点击才是「第 1 位」，与线上形态一致（run 已在跑，队列里只剩点击）。
+    await new Promise((r) => setTimeout(r, 0));
+
+    // 连点同一张卡 3 次：入口层每次铸造独立 key，卡片 id 只作回复目标。
+    for (let i = 1; i <= 3; i++) {
+      const queueKey = `card-compact-${i}`;
+      qm.enqueue(
+        tmpDir,
+        async () => {
+          runs.push(queueKey);
+        },
+        {
+          taskMeta: {
+            userId: 'u1',
+            chatId,
+            messageId: queueKey,
+            feishuReplyTo: 'om-same-card',
+            messagePreview: 'card action: compact',
+            editable: false,
+          },
+        },
+      );
+    }
+
+    await new Promise((r) => setTimeout(r, 50));
+
+    // 三张排队卡，位置各不相同且递增
+    expect(sentCards).toHaveLength(3);
+    const infos = sentCards.map((s) => extractPositionInfo(s.card));
+    expect(infos.map((i) => i.position)).toEqual([1, 2, 3]);
+    expect(infos.map((i) => i.tasksAhead)).toEqual([0, 1, 2]);
+
+    releaseRun();
+    await new Promise((r) => setTimeout(r, 50));
+
+    // 三条任务全部执行（不再被当成「同一条的重复点击」静默丢弃）
+    expect(runs).toEqual(['card-compact-1', 'card-compact-2', 'card-compact-3']);
+
+    // 每张卡各自被更新：「已开始执行」不再打到别的卡上
+    expect(updatedCards.map((u) => u.messageId)).toEqual([
+      'card-msg-1',
+      'card-msg-2',
+      'card-msg-3',
+    ]);
+  });
+
+  it('同 key 入队触发 tripwire warn（身份不变量被破坏时必须留证据）', async () => {
+    // 验证什么：queue key 撞车时日志必须留痕 —— 数组（追加）与 taskIndex（覆盖）
+    // 会漂移，位置/撤销/卡片更新会串到别的条目上，静默下去就是 2026-10-08 的
+    // 「卡片永久等待中」无法从日志复现。
+    const { qm } = makeQueueManager();
+    mockLogger.warn.mockClear();
+
+    let releaseRun: () => void = () => {};
+    const hanging = new Promise<void>((resolve) => {
+      releaseRun = resolve;
+    });
+    qm.enqueue(
+      tmpDir,
+      async () => {
+        await hanging;
+      },
+      {
+        taskMeta: {
+          userId: 'u1',
+          chatId: 'c1',
+          messageId: 'om-running-run',
+          messagePreview: 'run',
+        },
+      },
+    );
+    qm.enqueue(tmpDir, async () => undefined, {
+      taskMeta: { userId: 'u1', chatId: 'c1', messageId: 'dup-key', messagePreview: 'task A' },
+    });
+    qm.enqueue(tmpDir, async () => undefined, {
+      taskMeta: { userId: 'u1', chatId: 'c1', messageId: 'dup-key', messagePreview: 'task B' },
+    });
+
+    const warnings = mockLogger.warn.mock.calls.map((c) => String(c[0])).join('\n');
+    expect(warnings).toContain('duplicate queue key');
+    expect(warnings).toContain('dup-key');
+
+    releaseRun();
+    await new Promise((r) => setTimeout(r, 30));
+  });
+});
