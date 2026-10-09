@@ -950,3 +950,34 @@ fallback 发新卡，保证点击必有反馈）；兄弟卡走 `Bridge.patchCar
 
 **测试锚点**：`tests/anchor/queue-card-arm/queue-card-arm-occupant-card.test.ts`
 （身份 / 位置 / 按钮）、`queue-card-arm-occupant-immediate-guard.test.ts`（执行层守卫）。
+
+### 9.27 codex app-server：通知必须按线程归属过滤，子 agent 线程不得污染会话指针
+
+**起因（2026-10-09 线上）**：codex 会话在一次「并行都做」的 run 之后，后续每条
+消息都以 `cannot resume an unloaded multi-agent v2 sub-agent through its parent`
+收场，`/restart` 无效——被中断的会话再也恢复不了。
+
+**机制**：app-server 把它已知的所有线程的通知复用同一条 stdio 连接广播。该 run
+内父线程与 3 个子 agent（multi-agent v2）线程的 `turn/started` 交错到达，桥的
+写回是「最后写入者胜出」，于是顶层会话指针被写成 depth-2 子线程 id。子线程
+rollout 的 `session_meta.session_id` 是**父** id（`thread_source: subagent`，见
+`rollout-reader.ts` 的 subagent 过滤），所以这个 id 在 session index 里根本不是
+键：历史读 0 条、`thread/resume` 必失败。热连接时父线程还在内存，resume 子线程
+能过（错误原文即 "resume the parent first"）；只有连接被空闲 TTL 释放或进程重启
+后，才从「静默写错」变成「硬失败」。
+
+**不变量**：
+
+1. **通知按线程归属过滤**（`CodexAppServerRunner.handleNotification` →
+   `belongsToActiveThread`）：只放行 `threadId === 本轮线程` 的通知；无 `threadId`
+   的（部分 `warning`）放行；`serverRequest/resolved` 保持线程无关——审批按
+   `requestId` 关联并结算，否则子 agent 的审批条目会永远挂在 pending。
+2. **会话写回只认本轮线程**：`turn_started` / `result` 的 threadId 只能是本轮
+   线程。子线程 id 一旦写进 store，`/resume` 与 auto-resume 都会把它当顶层会话。
+3. **子线程的 `turn/completed` 与 `thread/tokenUsage/updated` 也不得进入本轮**：
+   前者会提前结束 run（本轮正文丢失），后者会让 Context 用量串台。
+
+**测试锚点**：`src/runner/codex/app-server/app-server-integration.test.ts` 的
+`keeps sub-agent thread notifications out of the top-level turn`，fixture
+`tests/fake-app-server/fixtures/subagent-thread-turn.json`（子 agent 的
+`turn/completed` 特意排在主线程收尾之前，复现当时的引爆顺序）。
