@@ -2523,9 +2523,10 @@ export class Bridge {
       for await (const event of bashRunner.run(command, { cwd })) {
         if (event.type === 'stdout') {
           // 层④：bridge 本地 output 也必须 store-time 截断——仅 session state
-          // 有界并不会让 `output +=` 自然有界（review 第④条表述不成立），!yes 洪峰
-          // 下本地字符串仍全量驻留。capBashOutput 增量调用 O(CAP+chunk)，不会带回
-          // O(n²) 截断成本（output 恒 ≤ CAP，拼接后 ≤ CAP+chunk 再 slice 尾部）。
+          // 有界并不会让 `output +=` 自然有界（「store 有界则本地拼接自然有界」
+          // 不成立），!yes 洪峰下本地字符串仍全量驻留。capBashOutput 增量调用
+          // O(CAP+chunk)，不会带回 O(n²) 截断成本（output 恒 ≤ CAP，拼接后
+          // ≤ CAP+chunk 再 slice 尾部）。
           output = capBashOutput(output + event.content);
           await cardSession.update({ output, stderr });
         } else if (event.type === 'stderr') {
