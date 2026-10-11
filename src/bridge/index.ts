@@ -492,6 +492,19 @@ export class Bridge {
     if (evicted && typeof evicted.unregisterExitHandlers === 'function') {
       evicted.unregisterExitHandlers();
     }
+    // 2026-10-11：先标记 orphan 再 dispose。evict 与「run 刚拿走本实例」竞态时
+    // （queue 链在 interruptCurrentRun await 期间推进），dispose 只能关掉当时
+    // 已存在的连接，run 后续 acquire 的新连接会挂在无人托管的实例上——orphan
+    // 标记让 executeTurn 在 run 结束时主动 dispose 这批连接，而不是挂 idle
+    // timer 等待 30 分钟（期间持有 agent 侧会话写锁，codex 报
+    // "thread already has an active writer"）。鸭子探测与 dispose/unregister
+    // 一致：claude（stream-json，无长驻连接）无此方法，跳过。
+    if (
+      evicted &&
+      typeof (evicted as unknown as { markOrphaned?: () => void }).markOrphaned === 'function'
+    ) {
+      (evicted as unknown as { markOrphaned: () => void }).markOrphaned();
+    }
     // App-server runner owns a persistent connection — dispose it so the
     // `codex app-server` child process does not leak across runs/evictions.
     if (evicted && typeof evicted.dispose === 'function') {
@@ -818,7 +831,21 @@ export class Bridge {
         // (eviction must also unregister the runner from the exit dispatcher)
         // evict by the run's captured agentKind, not the live
         // defaultAgent (may have changed mid-run via /config).
-        this.evictRunnerSlot(cwd, active.agentKind);
+        //
+        // 2026-10-11：workspace-lifetime runner 不能在这里立即 evict+dispose。
+        // interruptCurrentRun 的 await 窗口内 queue 链会推进下一条消息，其
+        // getRunner 可能刚拿走本实例（缓存命中先于本行执行）——立即 evict 会
+        // 让那个 run 的长驻连接脱管：进程残留至 idle TTL 才回收，期间持有
+        // agent 侧会话写锁（codex "thread already has an active writer"，
+        // 线上实测）。改为标 stale，由 finalizeRun 在下一次 run 结束时统一
+        // evict+dispose；「stop 后下一 run 换新实例」的语义
+        // 保留（stale 命中即最后一轮复用）。run-per-message runner 无长驻
+        // 连接，保持立即 evict 不变。
+        if (active.runner.lifetime === 'workspace') {
+          this.staleRunnerSlots.add(`${cwd}\u0000${active.agentKind}`);
+        } else {
+          this.evictRunnerSlot(cwd, active.agentKind);
+        }
         // Reset queue executing count: the task was interrupted externally, so
         // its promise-chain settle (.then/.catch) may lag behind the process
         // kill. Without this reset, subsequent messages would incorrectly show
