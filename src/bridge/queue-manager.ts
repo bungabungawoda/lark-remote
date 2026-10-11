@@ -624,7 +624,7 @@ export class QueueManager {
 
     // 「队列位置 / 前面还有」只在前面确实还有等待中的消息时渲染。前面为空时
     // 这两个数是「第 1 位 / 0 条」，与「排队中」字面矛盾；此时挡住用户的只有
-    // 正在执行的任务，交给下一段如实说明。
+    // 正在执行的任务，由下一段的占用者说明（若占用者是普通消息则不额外渲染）。
     if (tasksAhead > 0) {
       elements.push({
         tag: 'div',
@@ -636,30 +636,27 @@ export class QueueManager {
     }
 
     if (occupant) {
-      elements.push({
-        tag: 'div',
-        text: { tag: 'lark_md', content: `**正在执行:** ${occupant.label}` },
-      });
-      elements.push({
-        tag: 'div',
-        text: {
-          tag: 'lark_md',
-          content:
-            occupant.kind === 'compact'
-              ? '💡 压缩结束后将按顺序执行你的消息'
-              : '💡 消息将按顺序执行…',
-        },
-      });
+      // 只有可能挡住队列、需要用户归因的占用者才自报身份。「正在执行: 💬 消息」
+      // 对普通消息占用者没有信息量——用户刚发的就是消息，「💡 消息将按顺序执行…」
+      // 也只是复述排队本身，一并省去（2026-10-11）。压缩额外说明何时轮到用户。
+      if (occupant.kind !== 'message') {
+        elements.push({
+          tag: 'div',
+          text: { tag: 'lark_md', content: `**正在执行:** ${occupant.label}` },
+        });
+      }
+      if (occupant.kind === 'compact') {
+        elements.push({
+          tag: 'div',
+          text: { tag: 'lark_md', content: '💡 压缩结束后将按顺序执行你的消息' },
+        });
+      }
     } else {
       // 防御分支：开卡判据是 lane 非空，所以「有排队卡但没有占用者」说明计数
       // 与占用者记录漂移了。不改行为，只留证据（与 duplicate queue key 同口径）。
       getLogger().warn(
         `[queue-manager] queue card without lane occupant cwd=${cwd} tasksAhead=${tasksAhead}`,
       );
-      elements.push({
-        tag: 'div',
-        text: { tag: 'lark_md', content: '💡 消息将按顺序执行…' },
-      });
     }
 
     elements.push({ tag: 'hr' });
