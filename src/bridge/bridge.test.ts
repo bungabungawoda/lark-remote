@@ -1597,6 +1597,97 @@ describe('Bridge agentRegistry / sessionReaderRegistry', () => {
     expect(created[1].disposed).toBe(false);
   });
 
+  it('interruptCurrentRun defers workspace-lifetime runner eviction to the next finalizeRun (2026-10-11 orphaned-connection regression)', async () => {
+    // 事故（2026-10-11 线上）：queue.immediate 的 interrupt await 期间
+    // queue 链推进下一条消息，其 getRunner 在 evict 之前拿走同一
+    // runner 实例；随后 interrupt 内的立即 evict+dispose 让那个 run 的长驻
+    // 连接脱管——codex 进程残留至 idle TTL，期间持有 thread 写锁，下一条消息
+    // resume 同 thread 报 "thread already has an active writer"。
+    //
+    // 守卫：interrupt 对 workspace-lifetime runner 只标 stale（不立即
+    // evict+dispose）；stale 标记由下一次 finalizeRun 消化（evict+dispose+
+    // markOrphaned），下一 run 拿到新实例。
+    //
+    // 变异检查：
+    //   - interrupt 内改回无条件立即 evictRunnerSlot → 「interrupt 后未 dispose」断言红；
+    //   - 去掉 stale 标记 → 「run2 结束后旧实例已 dispose」断言红。
+    const { AgentRegistry } = await import('../runner/registry.js');
+    interface Entry {
+      disposed: boolean;
+      orphaned: boolean;
+    }
+    const created: Entry[] = [];
+    let releaseRun1: (() => void) | null = null;
+    const gate1 = new Promise<void>((r) => {
+      releaseRun1 = r;
+    });
+    const reg = new AgentRegistry();
+    reg.register('claude', () => {
+      const entry: Entry = { disposed: false, orphaned: false };
+      created.push(entry);
+      return asAgentRunner({
+        lifetime: 'workspace',
+        isRunning: false,
+        run: async function* () {
+          yield { type: 'system', subtype: 'init', session_id: 'stub-session' } as AgentEvent;
+          await gate1;
+          yield { type: 'result', subtype: 'success', session_id: 'stub-session' } as AgentEvent;
+        },
+        stop: async () => {},
+        dispose: async () => {
+          entry.disposed = true;
+        },
+        markOrphaned: () => {
+          entry.orphaned = true;
+        },
+        killOrphan: () => {},
+        registerExitHandlers: () => {},
+        unregisterExitHandlers: () => {},
+      });
+    });
+    const connector = createStubConnector();
+    const bridge = new Bridge({
+      runner: createStubRunner(),
+      connector,
+      sessionStore: new SessionStore(),
+      config,
+      agentRegistry: reg,
+      sessionReaderRegistry: createStubSessionReaderRegistry(),
+    });
+    sessionStore_setCwd(bridge, ctx.userId, tmpDir);
+
+    // run1 挂起中（等价事故里被 queue.immediate 打断的 run）
+    const run1 = bridge.forwardToClaude('hello', ctx);
+    await vi.waitFor(() => {
+      expect(created.length).toBe(1);
+      expect(bridge.isBusyFor(tmpDir)).toBe(true);
+    });
+
+    // interrupt：stop 立即 resolve（activeRuns 尚未被子 run 链收尾删除）
+    await bridge.interruptCurrentRun({ userId: ctx.userId, chatId: ctx.chatId });
+    // 修复后：不立即 evict+dispose（旧行为在此已 dispose → 脱管根源）
+    expect(created[0].disposed).toBe(false);
+    expect(created[0].orphaned).toBe(false);
+
+    // run1 收尾：finalizeRun 的 evict 判断因 activeRuns 已被 interruptCurrentRun
+    // 删除而跳过；stale 标记留给下一次 finalizeRun 消化。
+    releaseRun1!();
+    await run1;
+    expect(created[0].disposed).toBe(false);
+
+    // 下一条消息（等价 queue 推进）：getRunner 仍命中旧实例（stale 但在缓存），
+    // run 结束时 finalizeRun 消化 stale → evictRunnerSlot（dispose + markOrphaned）。
+    await bridge.forwardToClaude('again', ctx);
+    expect(created[0].disposed).toBe(true);
+    expect(created[0].orphaned).toBe(true);
+    expect(created).toHaveLength(1); // run2 复用的是旧实例
+
+    // 再下一条消息：旧实例已被 evict，getRunner 新建
+    await bridge.forwardToClaude('third', ctx);
+    expect(created).toHaveLength(2);
+    expect(created[1].disposed).toBe(false);
+  });
+
   it('sendCompletionNotificationCard uses sessionReaderRegistry when present', async () => {
     const { SessionReaderRegistry } = await import('../session/registry.js');
     const readSpy = vi.fn(() => ({

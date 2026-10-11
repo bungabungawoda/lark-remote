@@ -52,6 +52,10 @@ export abstract class ConnectionBasedRunner<TClient, TEvent = AgentEvent> implem
   protected forceFinish = false;
   /** stop() 在 turn/start 或 prompt 响应前到达时置位，完成后再补发 cancel/interrupt。 */
   protected stopRequested = false;
+  /** 缓存层除名标记（evictRunnerSlot → markOrphaned）。置位后 run 结束时主动
+   *  dispose 全部连接而不是挂 idle timer：被除名实例上创建的连接无人托管，
+   *  不主动收会残留进程至 idle TTL（30 分钟），期间持有 agent 侧会话写锁。 */
+  private orphaned = false;
 
   protected constructor(
     opts: {
@@ -199,7 +203,18 @@ export abstract class ConnectionBasedRunner<TClient, TEvent = AgentEvent> implem
       this.currentTurnId = null;
       this.stopRequested = false;
       this.clearTurnState();
-      this.notifyIdle(opts.cwd);
+      if (this.orphaned) {
+        // 已被缓存层除名（evictRunnerSlot → markOrphaned）：本次 run 创建的
+        // 连接挂在无人托管的实例上。主动收掉而不是挂 idle timer——否则 agent
+        // server 进程残留至 idle TTL，期间持有 agent 侧会话写锁（codex
+        // "thread already has an active writer"，2026-10-11 线上实测）。
+        // dispose() 内部自带 try/catch，这里 fire-and-forget 不阻塞事件流收尾。
+        void this.disposeConnections().catch((err: Error) => {
+          getLogger().warn(`[${this.logTag}] orphan dispose error: ${err.message}`);
+        });
+      } else {
+        this.notifyIdle(opts.cwd);
+      }
     }
   }
 
@@ -247,6 +262,19 @@ export abstract class ConnectionBasedRunner<TClient, TEvent = AgentEvent> implem
     } catch (err) {
       getLogger().warn(`[${this.logTag}] dispose error: ${(err as Error).message}`);
     }
+  }
+
+  /**
+   * Mark this runner as evicted from the bridge's runner cache while a run may
+   * still be holding/creating connections on it (queue-advance race during
+   * interruptCurrentRun's await window, 2026-10-11). The active run's finally
+   * disposes connections eagerly instead of arming the idle TTL timer —
+   * otherwise the agent server process lingers for up to 30 minutes holding
+   * its session write lock (codex: "thread already has an active writer").
+   * One-way by design: an evicted instance never returns to the cache.
+   */
+  markOrphaned(): void {
+    this.orphaned = true;
   }
 
   getUsageAuthority(): 'live' {
