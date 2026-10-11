@@ -84,6 +84,9 @@ describe('bash runner exit cleanup', () => {
       // 运行中的 bash runner 必须已注册到进程级 exit 分发器（当前实现无注册 → RED）
       expect(SpawningRunner.getRegisteredExitHandlerCount()).toBe(before + 1);
 
+      // 首个事件只说明 shell 已在跑，`echo $$` 的重定向可能还没落盘；全量并发下
+      // 这个窗口足以让直接读取 ENOENT（与下面 child.pid 同口径做有界等待）。
+      await waitForOrThrow(() => fs.existsSync(leaderPidFile), 3000);
       const leaderPid = Number(fs.readFileSync(leaderPidFile, 'utf-8'));
       expect(leaderPid).toBeGreaterThan(0);
       spawnedPids.add(leaderPid);
