@@ -87,6 +87,17 @@ function subtractRawUsage(a: RawTokenUsage, b: RawTokenUsage): RawTokenUsage {
   };
 }
 
+/**
+ * `compacted` 事件自带的摘要调用 usage（`latest_token_usage_record.usage`）。
+ * 用于把「压缩前窗口」与「摘要调用自身的消耗」区分开——两者都写在 compacted 前。
+ */
+function readCompactedCallTotal(payload: Record<string, unknown> | undefined): number | undefined {
+  const record = payload?.latest_token_usage_record as
+    { usage?: { total_tokens?: number } } | undefined;
+  const total = record?.usage?.total_tokens;
+  return typeof total === 'number' ? total : undefined;
+}
+
 export function readCodexRollout(filePath: string): CodexRolloutEntry | null {
   if (!fs.existsSync(filePath)) {
     return null;
@@ -202,6 +213,8 @@ function scanCodexRollout(filePath: string, includeEvents: boolean): CodexRollou
   // pi/opencode /resume "last turn" display semantics). When
   // last_token_usage is absent we derive it as total - previous_total.
   let lastRawUsage: RawTokenUsage | undefined;
+  /** 上一条被接受的 raw usage；compacted 分支回退一条时用（见下方注释）。 */
+  let previousRawUsage: RawTokenUsage | undefined;
   // Context window limit from the same token_count event as lastRawUsage
   // (codex reports info.model_context_window per turn; absent on old data).
   let lastContextLimit: number | undefined;
@@ -270,6 +283,7 @@ function scanCodexRollout(filePath: string, includeEvents: boolean): CodexRollou
             lastTotalUsage = total;
           }
           if (raw && (raw.input_tokens || raw.cached_input_tokens || raw.output_tokens)) {
+            previousRawUsage = lastRawUsage;
             lastRawUsage = raw;
             const ctxWindow = info?.model_context_window;
             lastContextLimit = typeof ctxWindow === 'number' ? ctxWindow : undefined;
@@ -291,10 +305,20 @@ function scanCodexRollout(filePath: string, includeEvents: boolean): CodexRollou
           }
         }
       } else if (parsed.type === 'compacted') {
-        // 顶层 compacted 事件：压缩次数 +1，压缩前水位取最近一次非零 token_count。
+        // 顶层 compacted 事件：压缩次数 +1，压缩前水位取「压缩调用之前」那条非零
+        // token_count 的 total_tokens。真实 rollout 落盘顺序是
+        // 末轮 → 摘要调用 → compacted → 压缩后水位：摘要调用自身的 token_count 紧贴
+        // 在 compacted 之前，直接取 lastRawUsage 会把摘要调用的消耗当成压缩前窗口
+        // （实测把 363K 的窗口显示成 207K）。compacted 自带的摘要调用 usage 用于判定
+        // 并回退一条；旧数据没有 latest_token_usage_record 时保持原语义。
         compactCount++;
-        if (lastRawUsage?.total_tokens !== undefined) {
-          compactPreContextLength = lastRawUsage.total_tokens;
+        const compactCallTotal = readCompactedCallTotal(parsed.payload);
+        const preCompactUsage =
+          compactCallTotal !== undefined && lastRawUsage?.total_tokens === compactCallTotal
+            ? previousRawUsage
+            : lastRawUsage;
+        if (preCompactUsage?.total_tokens !== undefined) {
+          compactPreContextLength = preCompactUsage.total_tokens;
         }
       } else if (includeEvents && parsed.type === 'response_item' && parsed.payload) {
         const payload = parsed.payload as Record<string, unknown>;
