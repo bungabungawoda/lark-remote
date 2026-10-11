@@ -563,10 +563,19 @@ export class CodexAppServerTranslator {
     params: ThreadTokenUsageUpdatedNotification['params'],
   ): TranslatorEvent[] {
     const last = params.tokenUsage.last;
+    // 协议原生 inputTokens 含 cached（total = input + output），而 lark-remote 的
+    // 卡片契约是 ccusage 口径「input_tokens 表示未命中缓存的输入」（design §9.21）。
+    // 在入口归一，否则 done 卡 Input 会等于 Context、cache% 分母重复计数、
+    // Total 被 max(total, input+output+cache) 抬高一倍（实测 364K → 727K）。
+    // jsonl 链路有同一处减法（session/codex/rollout-reader.ts buildUsageFromScan）。
+    const cachedInputTokens =
+      last.cachedInputTokens === undefined
+        ? undefined
+        : Math.min(last.cachedInputTokens, last.inputTokens);
     this.usage = {
-      inputTokens: last.inputTokens,
+      inputTokens: last.inputTokens - (cachedInputTokens ?? 0),
       outputTokens: last.outputTokens,
-      cachedInputTokens: last.cachedInputTokens,
+      cachedInputTokens,
       totalTokens: last.totalTokens,
       contextLimit: params.tokenUsage.modelContextWindow,
     };

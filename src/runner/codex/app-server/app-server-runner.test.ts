@@ -90,7 +90,10 @@ describe('Codex App Server Runner', () => {
           AgentEvent | undefined;
         expect(resultEvent).toBeDefined();
         if (resultEvent && resultEvent.type === 'result') {
-          expect(resultEvent.usage?.input_tokens).toBe(100);
+          // 协议原生 inputTokens=100 含 cached=10（total=input+output=150）；
+          // lark-remote 契约要求 input_tokens 是未命中缓存的输入（design §9.21）。
+          expect(resultEvent.usage?.input_tokens).toBe(90);
+          expect(resultEvent.usage?.cache_read_tokens).toBe(10);
           expect(resultEvent.usage?.output_tokens).toBe(50);
         }
       });
