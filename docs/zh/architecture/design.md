@@ -776,8 +776,11 @@ run 卡片 done 统计与 `/resume` 末尾统计共用 `formatUsageStats`（src/
   `input+output`——会漏掉 cache（codex/opencode 的 cache_read 动辄占输入 90%+）。
   无 `totalTokens` 时 total = 分项和（claude JSONL 无显式 total，由 reader 算分项和）。
 - **`input_tokens` 处处表示「未命中缓存的输入」**：codex 由
-  `input_tokens − cached_input_tokens` 推导（`src/session/codex/rollout-reader.ts` 的 jsonl 兜底读取），
-  pi/opencode/claude 的原值即非缓存。
+  `input_tokens − cached_input_tokens` 推导，**jsonl 与 app-server 两条入口都要减**
+  （`src/session/codex/rollout-reader.ts` 的 reader；`src/runner/codex/app-server/translator.ts`
+  在收到 `thread/tokenUsage/updated` 时归一），pi/opencode/claude 的原值即非缓存。
+  协议原生 `input_tokens` 含 cached（`total = input + output`），漏减会让 done 卡
+  Input 等于 Context、cache% 分母重复计数、Total 被 `max(total, 分项和)` 抬高一倍。
 - **codex `total_token_usage` 是会话累计、`last_token_usage` 才是单 turn 增量**
   ：done 卡"本 run"只能用 `last_token_usage`
   （缺失时 `total − prev_total` 推导）；累计用主线程文件最后一条
@@ -795,6 +798,12 @@ run 卡片 done 统计与 `/resume` 末尾统计共用 `formatUsageStats`（src/
   同一数值由协议 `thread/tokenUsage/updated` 的 `tokenUsage.modelContextWindow`
   提供（v2 schema 与 last/total 平级），经 result event `context_limit` 透传，
   jsonl 无该字段时 live 值兜底。
+- **压缩卡「压缩前」水位**：codex 把摘要调用自身的 token_count 写在 `compacted`
+  事件之前（真实落盘顺序：末轮 → 摘要调用 → compacted → 压缩后水位），所以
+  「压缩前」必须取**摘要调用之前**那条非零 token_count 的 `total_tokens`。
+  reader 用 `compacted.payload.latest_token_usage_record.usage` 识别这次摘要调用
+  并回退一条；旧数据无该字段时退回最近一条非零 token_count（原语义）。漏掉这步
+  会把摘要调用的消耗（实测 20 万级）当成压缩前窗口。
 
 **透传链路与 scope 统一**：result event usage → `Bridge` 提取 live 值
 （claude 原生命名 `cache_read_input_tokens`/`cache_creation_input_tokens` 与统一命名
