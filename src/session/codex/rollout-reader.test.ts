@@ -357,6 +357,35 @@ not valid json
       expect(content.usage!.compactPreContextLength).toBe(21035);
     });
 
+    it('skips the compaction call usage when reading the pre-compact watermark', () => {
+      // 真实落盘顺序：末轮 → 摘要调用 → compacted → 压缩后水位。摘要调用的
+      // token_count 更贴近 compacted，不能被当成「压缩前窗口」（回归：363K 的
+      // 窗口曾显示成 207K，因为 207K 是摘要调用自身的消耗）。
+      const sessionsDir = path.join(tmpDir, 'sessions', '2026', '07', '19');
+      fs.mkdirSync(sessionsDir, { recursive: true });
+      const file = path.join(sessionsDir, 'rollout-019f-compact-call.jsonl');
+      fs.writeFileSync(
+        file,
+        `{"type":"session_meta","payload":{"session_id":"019f-compact-call","cwd":"/tmp"}}
+{"type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100,"cached_input_tokens":40,"output_tokens":20,"total_tokens":120},"total_token_usage":{"input_tokens":100,"cached_input_tokens":40,"output_tokens":20,"total_tokens":120}}}}
+{"type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100,"cached_input_tokens":40,"output_tokens":20,"total_tokens":120},"total_token_usage":{"input_tokens":100,"cached_input_tokens":40,"output_tokens":20,"total_tokens":120}}}}
+{"type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":60,"cached_input_tokens":5,"output_tokens":8,"total_tokens":68},"total_token_usage":{"input_tokens":160,"cached_input_tokens":45,"output_tokens":28,"total_tokens":188}}}}
+{"type":"compacted","payload":{"message":"summary text","window_number":1,"latest_token_usage_record":{"usage":{"input_tokens":60,"cached_input_tokens":5,"output_tokens":8,"total_tokens":68}}}}
+{"type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":0,"cached_input_tokens":0,"output_tokens":0,"total_tokens":30},"total_token_usage":{"input_tokens":160,"cached_input_tokens":45,"output_tokens":28,"total_tokens":188}}}}
+`,
+        'utf-8',
+      );
+      const content = readCodexSessionContent('019f-compact-call', { codexHome: tmpDir });
+      expect(content.usage).toBeDefined();
+      expect(content.usage!.compactCount).toBe(1);
+      // 压缩后水位仍是 30；压缩前水位必须是末轮窗口 120，不是摘要调用 68。
+      expect(content.usage!.contextLength).toBe(30);
+      expect(content.usage!.compactPreContextLength).toBe(120);
+      // 本 run 的 flow 字段仍是摘要调用自身（该卡展示压缩消耗）：input=60-5。
+      expect(content.usage!.inputTokens).toBe(55);
+      expect(content.usage!.totalTokens).toBe(68);
+    });
+
     it('keeps normal-turn context after compact and still counts compactions', () => {
       const sessionsDir = path.join(tmpDir, 'sessions', '2026', '07', '18');
       fs.mkdirSync(sessionsDir, { recursive: true });
