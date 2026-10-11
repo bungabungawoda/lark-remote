@@ -938,7 +938,9 @@ fallback 发新卡，保证点击必有反馈）；兄弟卡走 `Bridge.patchCar
    `queueCardHeader` 是单源，`sendQueueStatusCard` 与 `buildQueueCardForEdit` 共用
    ——后者是点击回调响应的渲染路径，漏改会让编辑后的卡重现同一矛盾。
 4. **`tasksAhead === 0` 不渲染「队列位置 / 前面还有」**：那段文案与"排队"字面矛盾；
-   此时只写「正在执行: `<label>`」。
+   此时由「正在执行: `<label>`」交代占用者，但仅限可能挡住队列、需要用户归因的任务
+   （`compact` / `command`）。占用者是普通消息时整行不渲染——用户刚发的就是消息，
+   「💬 消息」与「💡 消息将按顺序执行…」都只是复述排队本身（2026-10-11）。
 5. **占用者是 Compact 时禁用「⚡ 立即执行」**：该按钮走 `interruptCurrentRun`，会连带
    中断正在跑的压缩（压缩也注册在 `activeRuns` 里）。渲染层置灰 + 执行层
    `handleQueueImmediate` 守卫双保险（旧卡片仍带可点按钮）。「❌ 撤销」保持可用——

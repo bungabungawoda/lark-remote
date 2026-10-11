@@ -151,8 +151,9 @@ describe('QueueManager - 排队卡按 lane 占用者渲染（anchor）', () => {
   });
 
   it('test_anchor_queue_card_keeps_immediate_enabled_for_message_occupant', async () => {
-    // 验证什么行为：占用者不是 Compact 时行为不变——「⚡ 立即执行」仍可点，
-    // 卡片照旧说明正在执行的是普通消息。
+    // 验证什么行为：占用者是普通消息时「⚡ 立即执行」仍可点，但不渲染
+    // 「正在执行: 💬 消息」与「💡 消息将按顺序执行…」——这两行对消息占用者
+    // 没有信息量（用户刚发的就是消息），只复述排队本身（2026-10-11）。
     const { qm, sentCards } = makeQueueManager();
     const { release } = await occupyLane(qm, { preview: '正在跑的消息', messageId: 'om-run-1' });
 
@@ -162,7 +163,8 @@ describe('QueueManager - 排队卡按 lane 占用者渲染（anchor）', () => {
     expect(sentCards).toHaveLength(1);
     const card = sentCards[0].card;
     expect(cardHeaderTitle(card)).toBe('⏳ 等待当前任务结束');
-    expect(cardText(card)).toContain('**正在执行:** 💬 消息');
+    expect(cardText(card)).not.toContain('正在执行');
+    expect(cardText(card)).not.toContain('消息将按顺序执行');
     const buttons = cardButtons(card);
     expect(buttons.find((b) => b.text?.content === '⚡ 立即执行')?.disabled).toBe(false);
     expect(buttons.find((b) => b.text?.content === '❌ 撤销')?.disabled).toBe(false);
