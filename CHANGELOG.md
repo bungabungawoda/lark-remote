@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.3] - 2026-10-12
+
+### 修复
+
+- **中断后紧接着发下一条消息，不再报 `thread already has an active writer`**：点停止打断正在运行的 codex 时，中断流程会把复用的运行实例从缓存摘掉并立即销毁连接，而队列链在这一步的等待窗口里就把下一条消息发了出去、并已取到同一个实例——那条运行的长驻连接于是挂在无人托管的实例上，`codex app-server` 进程要等空闲超时（默认 30 分钟）才回收，期间一直持有该会话的写锁，同一会话的下一次恢复因此被拒。现在中断只把实例标为「待替换」，统一由下一次运行收尾时回收，标过的实例不再返回缓存；被摘掉的实例也会在运行结束时主动关闭连接，不再挂 30 分钟的超时。逐条消息新建实例的 agent 不受影响，行为照旧
+
+### 变更
+
+- **注释里的运维现场数据与仓库外引用清理**：一处测试注释记录的崩溃进程号、实例名与精确到秒的重启时间改为占位描述；若干注释不再指向仓库之外的维护规范文件名。无行为变化
+
 ## [0.5.2] - 2026-10-11
 
 ### 修复
