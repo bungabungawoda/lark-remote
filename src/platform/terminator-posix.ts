@@ -32,7 +32,7 @@ function defaultLog(level: LogLevel, message: string): void {
   else logger.info(message);
 }
 
-/** 退出判定统一口径（CLAUDE.md 红线）：exitCode !== null || signalCode !== null。 */
+/** 退出判定统一口径（红线）：exitCode !== null || signalCode !== null。 */
 function isAlive(proc: ChildProcess): boolean {
   return proc.exitCode === null && proc.signalCode === null;
 }
