@@ -8,6 +8,7 @@
  * protocol-specific behavior is selected via config flags (see ScenarioOpts).
  *
  * All fixture data must be synthetic (AABB UUIDs, /home/user/project paths) —
+ * Project red line: no real user data in test fixtures.
  */
 import { chmodSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';

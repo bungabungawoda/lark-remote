@@ -8,6 +8,7 @@
  * packages/opencode/src/acp/service.ts + permission.ts + event.ts).
  *
  * Test fixture data uses AABB UUIDs and /home/user/project paths
+ * (red line: no real user data in test fixtures).
  */
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
