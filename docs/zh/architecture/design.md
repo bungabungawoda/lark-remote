@@ -780,11 +780,15 @@ run 卡片 done 统计与 `/resume` 末尾统计共用 `formatUsageStats`（src/
   在收到 `thread/tokenUsage/updated` 时归一），pi/opencode/claude 的原值即非缓存。
   协议原生 `input_tokens` 含 cached（`total = input + output`），漏减会让 done 卡
   Input 等于 Context、cache% 分母重复计数、Total 被 `max(total, 分项和)` 抬高一倍。
-- **codex `total_token_usage` 是会话累计、`last_token_usage` 才是单 turn 增量**
-  ：done 卡"本 run"只能用 `last_token_usage`
-  （缺失时 `total − prev_total` 推导）；累计用主线程文件最后一条
-  `total_token_usage`。**不能**用"最后一个 `token_count` 事件的
-  `total_token_usage` 代表末 turn"——那是累计值，resume 长会话下会把整个会话
+- **codex `token_count` 是「每次采样一条」，单 turn 用量 = 该 turn 内所有采样之和**
+  ：done 卡"本 run"与 `/resume` 都按 turn 汇总——`last_token_usage` 只是单次采样
+  增量（实测一个 turn 内 7 次工具往返 = 7 条），只取最后一条会把多步 run 低报
+  （实测 output 3,648 显示成 679、未缓存 input 3,022 显示成 212）。turn 边界取
+  `event_msg.task_started`；app-server 链路在 `turn/started` 清零累加器，并用通知的
+  `turnId` 归属闸门挡掉 resume 重放的上一 turn 用量。旧数据（无 `task_started`）
+  退回末条 `last_token_usage`，再缺失时 `total − prev_total` 推导。累计用主线程文件
+  最后一条 `total_token_usage`。**不能**用"最后一个 `token_count` 事件的
+  `total_token_usage` 代表末 turn"——那是会话累计值，resume 长会话下会把整个会话
   的历史消耗当成单次 run（实测虚高约 240 倍）。
 - **cache 百分比**：`cacheRead/(input+cacheRead)`（input 已是未缓存值，不再减一次）。
 - **Cache create 行**：`cacheCreationTokens`（pi 的 `cacheWrite`、opencode 的
@@ -808,8 +812,9 @@ run 卡片 done 统计与 `/resume` 末尾统计共用 `formatUsageStats`（src/
 （claude 原生命名 `cache_read_input_tokens`/`cache_creation_input_tokens` 与统一命名
 都兼容）；进程退出后 `resolveFinalUsage` 读 jsonl。**flow 字段（input/output/cache/
 total）：live 有 input/output 时全部用 live（本 run scope），否则 jsonl 兜底**；
-codex app-server 的 `turn.completed` 透传协议 `tokenUsage.last`（本 turn 增量，
-live 口径），与 opencode 一致走 live 优先；`contextLength`/`compactCount` 保持 jsonl
+codex app-server 的 `turn.completed` 透传协议 `tokenUsage.last` 的 turn 内累加
+（每次采样一条，进门时按 turn 求和，live 口径），与 opencode 一致走 live 优先；
+`contextLength`/`compactCount` 保持 jsonl
 优先（水位/历史计数）。同一张卡片禁止混 scope（曾出现 Input 是本 run、Cache/Total
 是 session 累计，cache% 分子分母不同源）。
 → `FinishMeta` → `RunState` → `run-renderer` 传给 `formatUsageStats`。
@@ -818,7 +823,8 @@ live 口径），与 opencode 一致走 live 优先；`contextLength`/`compactCo
 = 分项和）、pi `extractUsage`（`totalTokens = usage.totalTokens`）、opencode reader
 （`cache.write`/`total`）、codex `readCodexRollout` 解析 `token_count`
 事件（`raw = last_token_usage ?? subtract(total, prev_total)`，跟踪 `previousTotals`
-做累计差）。改 token 展示时，四个 reader + `formatUsageStats` + lark-remote 五处要保持一致。
+做累计差；flow 字段按 `task_started` 汇总本 turn 的所有采样）。改 token 展示时，
+四个 reader + `formatUsageStats` + lark-remote 五处要保持一致。
 
 **contextLength**：claude/pi reader 用 `max(末次 compact 的
 postTokens, 末轮完整 prompt input+output+cacheRead+cacheCreation)`——postTokens 随
