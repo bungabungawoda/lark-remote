@@ -53,7 +53,7 @@ describe('reaction emoji by run terminal (anchor)', () => {
   /**
    * 验证什么：runner 直接抛错 → run 终态为 error → reaction 必须是 'ERROR'。
    * 缺失/错误会导致什么：失败的单子显示 Done（成功表情），误导用户。
-   * 依据：round-log spec「error → 'ERROR'」。
+   * 依据：终态表情映射「error → 'ERROR'」。
    */
   it('test_anchor_run_error_terminal_adds_error_reaction', async () => {
     const runner: Runner = {
@@ -86,7 +86,7 @@ describe('reaction emoji by run terminal (anchor)', () => {
   /**
    * 验证什么：空闲看门狗超时 → run 终态为 idle_timeout → reaction 必须是 'Alarm'。
    * 缺失/错误会导致什么：超时的单子显示 Done（成功表情），与 spec「idle_timeout → 'Alarm'」冲突。
-   * 依据：round-log spec（用户 2026-08-02 确认）。
+   * 依据：终态表情映射约定（2026-08-02 定）。
    */
   it('test_anchor_idle_timeout_terminal_adds_alarm_reaction', async () => {
     vi.useFakeTimers();
@@ -133,7 +133,7 @@ describe('reaction emoji by run terminal (anchor)', () => {
   /**
    * 验证什么：用户主动 /stop（interruptCurrentRun）→ run 终态为 interrupted → reaction 必须是 'SHHH'。
    * 缺失/错误会导致什么：用户叫停的单子显示 Done（成功表情），与 spec「interrupted → 'SHHH'」冲突。
-   * 依据：round-log spec（用户 2026-08-02 确认）。
+   * 依据：终态表情映射约定（2026-08-02 定）。
    */
   it('test_anchor_interrupted_terminal_adds_shhh_reaction', async () => {
     let resolveHang: () => void = () => {};
@@ -176,7 +176,7 @@ describe('reaction emoji by run terminal (anchor)', () => {
   /**
    * 验证什么：runner 正常完成（result success）→ done 终态 → reaction 保持 'Done'。
    * 缺失/错误会导致什么：映射改造后成功路径表情被误改，用户看不到绿勾。
-   * 依据：round-log spec「done → 'Done'（保持现状）」，2026-08-02 用户确认（原 probe 转正）。
+   * 依据：终态表情映射「done → 'Done'（保持现状）」，2026-08-02 定。
    */
   it('test_anchor_done_terminal_keeps_done_reaction', async () => {
     const events: AgentEvent[] = [
@@ -213,7 +213,7 @@ describe('reaction emoji by run terminal (anchor)', () => {
   /**
    * 验证什么：`!` bash 命令路径（executeBashInternal）不受终态映射改造影响，仍打 'Done'。
    * 缺失/错误会导致什么：bash 路径被误改成按 exitCode 区分表情，与用户确认的「bash 不管」冲突。
-   * 依据：round-log spec「bash 命令保持 'Done' 不动」，2026-08-02 用户确认（原 probe 转正）。
+   * 依据：终态表情映射「bash 命令保持 'Done' 不动」，2026-08-02 定。
    */
   it('test_anchor_bash_path_keeps_done_reaction', async () => {
     const connector = createStubConnector({ addReactionSpy: true });
