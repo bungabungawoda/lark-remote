@@ -336,7 +336,7 @@ not valid json
 
     it('test_anchor_codex_usage_sums_every_sampling_of_the_last_turn', () => {
       // 验证行为：codex 每个采样写一条 token_count，一个 turn 内可以有多条
-      // （实测消息 "A" 的 turn 跑了 7 次工具往返 = 7 条）。卡片/`/resume` 的
+      // （实测一次 7 步工具往返的 run 写了 7 条）。卡片/`/resume` 的
       // 「本 run」是该 turn 所有采样之和，不是最后一条 —— 只取最后一条会把
       // 多步 run 低报（实测未缓存 input 3,022 显示成 212、output 3,648 显示成 679）。
       const sessionsDir = path.join(tmpDir, 'sessions', '2026', '10', '12');
