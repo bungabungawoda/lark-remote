@@ -15,7 +15,7 @@ import type { AgentEvent, ApprovalRequestedEvent } from '../../types.js';
  * packages/opencode/src/acp/event.ts + service.ts, dev@1c965451b5).
  *
  * Test fixture data uses AABB UUIDs and /home/user/project paths
- * (CLAUDE.md red line: no real user data in test fixtures).
+ * (red line: no real user data in test fixtures).
  */
 function sessionUpdate(
   sessionId: string,

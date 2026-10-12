@@ -858,7 +858,7 @@ describe('KimiSessionReader', () => {
 describe('KimiSessionReader compaction state machine', () => {
   /**
    * Write a session with the given wire lines and return a reader.
-   * Fixture data is synthetic (AABB UUIDs, tmp paths) — CLAUDE.md red line.
+   * Fixture data is synthetic (AABB UUIDs, tmp paths) — project red line.
    */
   function makeCompactionReader(
     sessionId: string,

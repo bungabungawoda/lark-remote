@@ -36,7 +36,7 @@ export interface Win32TerminatorDeps {
   log?: (message: string) => void;
 }
 
-/** 退出判定统一口径（CLAUDE.md 红线）：exitCode !== null || signalCode !== null。 */
+/** 退出判定统一口径（红线）：exitCode !== null || signalCode !== null。 */
 function isAlive(proc: ChildProcess): boolean {
   return proc.exitCode === null && proc.signalCode === null;
 }

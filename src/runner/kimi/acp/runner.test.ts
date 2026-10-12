@@ -7,7 +7,7 @@
  * stdio, simulating the kimi acp protocol.
  *
  * Test fixture data uses AABB UUIDs and /home/user/project paths
- * (CLAUDE.md red line: no real user data in test fixtures).
+ * (red line: no real user data in test fixtures).
  */
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
