@@ -6,6 +6,7 @@
  * 2. 拿不到的东西（不支持类型 / 超限 / 下载失败 / 媒体保存已关闭）：明确告知，
  *    而不是把占位符塞给 agent。
  *
+ * 命名纪律：用户可见文案指代本程序时只能写 `lark-remote`。
  */
 
 import type { PlaceholderKind } from './placeholder.js';
