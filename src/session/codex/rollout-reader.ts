@@ -88,6 +88,22 @@ function subtractRawUsage(a: RawTokenUsage, b: RawTokenUsage): RawTokenUsage {
 }
 
 /**
+ * 单 turn 用量之和（ccusage 口径：input 已减去 cached）。
+ * codex 每次采样落一条 `token_count`，一个 turn 内通常有多条（实测 7 次工具
+ * 往返 = 7 条），卡片与 `/resume` 的「本 run」是整 turn 之和。
+ */
+interface TurnUsageTotals {
+  input: number;
+  cached: number;
+  output: number;
+  total: number;
+}
+
+function emptyTurnUsage(): TurnUsageTotals {
+  return { input: 0, cached: 0, output: 0, total: 0 };
+}
+
+/**
  * `compacted` 事件自带的摘要调用 usage（`latest_token_usage_record.usage`）。
  * 用于把「压缩前窗口」与「摘要调用自身的消耗」区分开——两者都写在 compacted 前。
  */
@@ -176,6 +192,11 @@ interface CodexRolloutScan {
   lastContextLimit: number | undefined;
   lastTotalUsage: RawTokenUsage | undefined;
   previousTotals: RawTokenUsage | undefined;
+  /**
+   * 末个 turn（`task_started` 之后）内所有采样之和；文件里没有 `task_started`
+   * （旧数据）时为 null，由调用方退回「末条 token_count」语义。
+   */
+  turnUsage: TurnUsageTotals | null;
   compactCount: number;
   compactPreContextLength: number | undefined;
   compactPostContextLength: number | undefined;
@@ -209,12 +230,19 @@ function scanCodexRollout(filePath: string, includeEvents: boolean): CodexRollou
   // exactly the 0.153 compatibility incident shape.
   let userResponseItemCount = 0;
   // token_count tracking: codex emits cumulative `total_token_usage` and an
-  // incremental `last_token_usage`. We want the LAST turn's usage (matches
-  // pi/opencode /resume "last turn" display semantics). When
+  // incremental `last_token_usage` **per sampling call** — one turn with tool
+  // round-trips logs several `token_count` lines. We want the LAST turn's usage
+  // = the sum of that turn's samplings (matches pi/opencode /resume "last turn"
+  // display semantics). Turn boundaries come from `task_started`. When
   // last_token_usage is absent we derive it as total - previous_total.
   let lastRawUsage: RawTokenUsage | undefined;
   /** 上一条被接受的 raw usage；compacted 分支回退一条时用（见下方注释）。 */
   let previousRawUsage: RawTokenUsage | undefined;
+  /**
+   * 末个 turn 的累计用量；`null` = 文件里没有 `task_started`（旧数据），
+   * 此时 flow 字段退回「末条 token_count」语义（见 buildUsageFromScan）。
+   */
+  let turnUsage: TurnUsageTotals | null = null;
   // Context window limit from the same token_count event as lastRawUsage
   // (codex reports info.model_context_window per turn; absent on old data).
   let lastContextLimit: number | undefined;
@@ -266,6 +294,11 @@ function scanCodexRollout(filePath: string, includeEvents: boolean): CodexRollou
             realUserMessages.push(text);
           }
           lastUserMessageSource = human.source;
+        } else if (payload.type === 'task_started') {
+          // turn 边界：一个 turn 一条 task_started（与 task_complete 成对，
+          // turn_id 见 session_meta 之后的 `turn_context`）。从这里开始重新
+          // 累计本 turn 的用量。
+          turnUsage = emptyTurnUsage();
         } else if (payload.type === 'token_count') {
           const info = payload.info as Record<string, unknown> | undefined;
           const last = info?.last_token_usage as RawTokenUsage | undefined;
@@ -287,6 +320,13 @@ function scanCodexRollout(filePath: string, includeEvents: boolean): CodexRollou
             lastRawUsage = raw;
             const ctxWindow = info?.model_context_window;
             lastContextLimit = typeof ctxWindow === 'number' ? ctxWindow : undefined;
+            if (turnUsage) {
+              const cached = Math.min(raw.cached_input_tokens, raw.input_tokens);
+              turnUsage.input += raw.input_tokens - cached;
+              turnUsage.cached += cached;
+              turnUsage.output += raw.output_tokens;
+              turnUsage.total += raw.total_tokens;
+            }
           }
           // 压缩后的水位：压缩收尾 token_count 全 0（raw 不满足上面 zero-filter），
           // 但 total_tokens 表达真实窗口；之后若出现普通 turn（input>0），
@@ -360,6 +400,7 @@ function scanCodexRollout(filePath: string, includeEvents: boolean): CodexRollou
     lastContextLimit,
     lastTotalUsage,
     previousTotals,
+    turnUsage,
     compactCount,
     compactPreContextLength,
     compactPostContextLength,
@@ -371,6 +412,12 @@ function scanCodexRollout(filePath: string, includeEvents: boolean): CodexRollou
  * input = raw - cached (codex reports cached input separately), cache
  * creation is never reported by codex, reasoning is a subset of output
  * (display-only, never added to total).
+ *
+ * Flow fields (input/output/cache/total) are the **sum over the last turn's
+ * samplings** when the file marks turn boundaries (`task_started`) — one codex
+ * turn logs one `token_count` per sampling, so the last line alone understates
+ * a tool-looping run (measured: 212 / 679 displayed vs 3,022 / 3,648 consumed).
+ * Legacy files without `task_started` keep the last-`token_count` semantics.
  * contextLength = input_tokens (= (input_tokens-cached) + cached + 0),
  * i.e. input + cacheRead + cacheCreation — the unified context-window
  * occupancy contract across all five readers (excludes
@@ -381,6 +428,7 @@ function buildUsageFromScan(scan: CodexRolloutScan): AgentSessionUsage | undefin
     lastRawUsage,
     lastContextLimit,
     lastTotalUsage,
+    turnUsage,
     compactCount,
     compactPreContextLength,
     compactPostContextLength,
@@ -389,14 +437,21 @@ function buildUsageFromScan(scan: CodexRolloutScan): AgentSessionUsage | undefin
 
   const r = lastRawUsage;
   const cached = Math.min(r.cached_input_tokens, r.input_tokens);
+  // 本 run = 末个 turn 全部采样之和；旧数据（无 task_started）退回末条。
+  const flow = turnUsage ?? {
+    input: r.input_tokens - cached,
+    cached,
+    output: r.output_tokens,
+    total: r.total_tokens,
+  };
   const usage: AgentSessionUsage = {
-    inputTokens: r.input_tokens - cached,
-    outputTokens: r.output_tokens,
+    inputTokens: flow.input,
+    outputTokens: flow.output,
     contextLength: r.input_tokens,
     contextLimit: lastContextLimit,
-    cacheReadTokens: cached,
+    cacheReadTokens: flow.cached,
     cacheCreationTokens: 0,
-    totalTokens: r.total_tokens,
+    totalTokens: flow.total,
   };
   // Cumulative from the final total_token_usage (non-cached input +
   // output), summed across all turns in the session.

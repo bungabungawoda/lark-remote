@@ -308,6 +308,11 @@ export class CodexAppServerTranslator {
     this.threadId = params.threadId;
     this.turnId = params.turn.id;
     this.turnStatus = params.turn.status ?? 'inProgress';
+    // 单 turn 用量从零开始累计：turn 内每次采样都会发一条
+    // `thread/tokenUsage/updated`，本 run 的用量是这些增量之和（不是最后一条）。
+    // resume 后服务端重放的上一 turn 用量若在此之后到达，由 handleTokenUsageUpdated
+    // 的 turnId 闸门挡掉。
+    this.usage = { inputTokens: 0, outputTokens: 0 };
     this.textByItem.clear();
     this.reasoningByItem.clear();
     this.toolOutputByItem.clear();
@@ -562,23 +567,32 @@ export class CodexAppServerTranslator {
   private handleTokenUsageUpdated(
     params: ThreadTokenUsageUpdatedNotification['params'],
   ): TranslatorEvent[] {
+    // 归属闸门：resume 之后服务端可能重放上一 turn 的 tokenUsage（turnId 不同），
+    // 计入会把上一 turn 的消耗算成本 run。本轮 turnId 由 turn/started 确立。
+    if (params.turnId && this.turnId && params.turnId !== this.turnId) {
+      return [];
+    }
     const last = params.tokenUsage.last;
     // 协议原生 inputTokens 含 cached（total = input + output），而 lark-remote 的
     // 卡片契约是 ccusage 口径「input_tokens 表示未命中缓存的输入」（design §9.21）。
     // 在入口归一，否则 done 卡 Input 会等于 Context、cache% 分母重复计数、
     // Total 被 max(total, input+output+cache) 抬高一倍（实测 364K → 727K）。
     // jsonl 链路有同一处减法（session/codex/rollout-reader.ts buildUsageFromScan）。
+    // 单 turn 口径：一个 turn 内每次采样各发一条通知（实测 7 次工具往返 = 7 条），
+    // 本 run 是这些增量之和——只取最后一条会把多步 run 低报（实测 3,648 output 显示成 679）。
     const cachedInputTokens =
       last.cachedInputTokens === undefined
         ? undefined
         : Math.min(last.cachedInputTokens, last.inputTokens);
-    this.usage = {
-      inputTokens: last.inputTokens - (cachedInputTokens ?? 0),
-      outputTokens: last.outputTokens,
-      cachedInputTokens,
-      totalTokens: last.totalTokens,
-      contextLimit: params.tokenUsage.modelContextWindow,
-    };
+    this.usage.inputTokens += last.inputTokens - (cachedInputTokens ?? 0);
+    this.usage.outputTokens += last.outputTokens;
+    if (cachedInputTokens !== undefined) {
+      this.usage.cachedInputTokens = (this.usage.cachedInputTokens ?? 0) + cachedInputTokens;
+    }
+    if (last.totalTokens !== undefined) {
+      this.usage.totalTokens = (this.usage.totalTokens ?? 0) + last.totalTokens;
+    }
+    this.usage.contextLimit = params.tokenUsage.modelContextWindow ?? this.usage.contextLimit;
     return [];
   }
 
