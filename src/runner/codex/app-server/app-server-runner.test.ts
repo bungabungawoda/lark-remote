@@ -771,7 +771,7 @@ describe('Codex App Server Runner', () => {
             id: 'tn-111',
             items: [],
             status: 'failed',
-            error: { type: 'internal_error', message: 'Failed' },
+            error: { message: 'Failed' },
           },
         });
 
@@ -820,13 +820,17 @@ describe('Codex App Server Runner', () => {
           reason: 'Delete temporary test directory',
         });
         expect(events).toHaveLength(1);
-        const event = events[0] as { type: string; kind: string; requestId: number };
+        const event = events[0] as {
+          type: string;
+          kind: string;
+          requestId: number;
+          view: ApprovalView;
+        };
         expect(event.type).toBe('approval_requested');
         expect(event.kind).toBe('command');
         expect(event.requestId).toBe(42);
-        const view = (event as { view: ApprovalView }).view;
-        expect(view.command).toBe('rm -rf /tmp/test');
-        expect(view.commandCwd).toBe('/home/user/project');
+        expect(event.view.command).toBe('rm -rf /tmp/test');
+        expect(event.view.commandCwd).toBe('/home/user/project');
       });
     });
 
