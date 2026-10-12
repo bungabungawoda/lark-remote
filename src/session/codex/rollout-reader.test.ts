@@ -334,6 +334,66 @@ not valid json
       expect(content.usage!.cumulativeOutputTokens).toBe(30);
     });
 
+    it('test_anchor_codex_usage_sums_every_sampling_of_the_last_turn', () => {
+      // 验证行为：codex 每个采样写一条 token_count，一个 turn 内可以有多条
+      // （实测消息 "A" 的 turn 跑了 7 次工具往返 = 7 条）。卡片/`/resume` 的
+      // 「本 run」是该 turn 所有采样之和，不是最后一条 —— 只取最后一条会把
+      // 多步 run 低报（实测未缓存 input 3,022 显示成 212、output 3,648 显示成 679）。
+      const sessionsDir = path.join(tmpDir, 'sessions', '2026', '10', '12');
+      fs.mkdirSync(sessionsDir, { recursive: true });
+      const file = path.join(sessionsDir, 'rollout-019f-turn-sum.jsonl');
+      fs.writeFileSync(
+        file,
+        `{"type":"session_meta","payload":{"session_id":"019f-turn-sum","cwd":"/tmp"}}
+{"type":"event_msg","payload":{"type":"task_started","turn_id":"tn-1"}}
+{"type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100,"cached_input_tokens":40,"output_tokens":20,"total_tokens":120},"total_token_usage":{"input_tokens":100,"cached_input_tokens":40,"output_tokens":20,"total_tokens":120}}}}
+{"type":"event_msg","payload":{"type":"task_complete","turn_id":"tn-1"}}
+{"type":"event_msg","payload":{"type":"task_started","turn_id":"tn-2"}}
+{"type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":1000,"cached_input_tokens":900,"output_tokens":50,"total_tokens":1050},"total_token_usage":{"input_tokens":1100,"cached_input_tokens":940,"output_tokens":70,"total_tokens":1170}}}}
+{"type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":2000,"cached_input_tokens":1900,"output_tokens":80,"total_tokens":2080},"total_token_usage":{"input_tokens":3100,"cached_input_tokens":2840,"output_tokens":150,"total_tokens":3250}}}}
+{"type":"event_msg","payload":{"type":"task_complete","turn_id":"tn-2"}}
+`,
+        'utf-8',
+      );
+      const content = readCodexSessionContent('019f-turn-sum', { codexHome: tmpDir });
+      expect(content.usage).toBeDefined();
+      // 末 turn（tn-2）= 两条采样之和：未缓存 input = 100 + 100，cached = 900 + 1900
+      expect(content.usage!.inputTokens).toBe(200);
+      expect(content.usage!.cacheReadTokens).toBe(2800);
+      expect(content.usage!.outputTokens).toBe(130);
+      expect(content.usage!.totalTokens).toBe(3130);
+      // 前一 turn 的采样不得混进「本 run」
+      expect(content.usage!.inputTokens).not.toBe(160);
+      // Context 仍是末次采样的窗口占用（prompt，不含 output）
+      expect(content.usage!.contextLength).toBe(2000);
+      // 累计仍取全会话最后一条 total_token_usage
+      expect(content.usage!.cumulativeInputTokens).toBe(260); // 3100 - 2840
+      expect(content.usage!.cumulativeOutputTokens).toBe(150);
+      expect(content.usage!.cumulativeTotalTokens).toBe(3250);
+    });
+
+    it('keeps last-token_count semantics for legacy files without task_started', () => {
+      // 旧 rollout（无 task_started）没有 turn 边界可用，不能臆造：退回末条
+      // token_count 语义，与改动前一致（兼容路径）。
+      const sessionsDir = path.join(tmpDir, 'sessions', '2026', '07', '20');
+      fs.mkdirSync(sessionsDir, { recursive: true });
+      const file = path.join(sessionsDir, 'rollout-019f-legacy.jsonl');
+      fs.writeFileSync(
+        file,
+        `{"type":"session_meta","payload":{"session_id":"019f-legacy","cwd":"/tmp"}}
+{"type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100,"cached_input_tokens":40,"output_tokens":20,"total_tokens":120},"total_token_usage":{"input_tokens":100,"cached_input_tokens":40,"output_tokens":20,"total_tokens":120}}}}
+{"type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":2000,"cached_input_tokens":1900,"output_tokens":80,"total_tokens":2080},"total_token_usage":{"input_tokens":2100,"cached_input_tokens":1940,"output_tokens":100,"total_tokens":2200}}}}
+`,
+        'utf-8',
+      );
+      const content = readCodexSessionContent('019f-legacy', { codexHome: tmpDir });
+      expect(content.usage).toBeDefined();
+      expect(content.usage!.inputTokens).toBe(100); // 2000 - 1900
+      expect(content.usage!.cacheReadTokens).toBe(1900);
+      expect(content.usage!.outputTokens).toBe(80);
+      expect(content.usage!.totalTokens).toBe(2080);
+    });
+
     it('counts compacted events and reports post-compact context when session ends with compact', () => {
       const sessionsDir = path.join(tmpDir, 'sessions', '2026', '07', '17');
       fs.mkdirSync(sessionsDir, { recursive: true });

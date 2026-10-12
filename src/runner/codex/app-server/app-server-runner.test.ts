@@ -131,6 +131,102 @@ describe('Codex App Server Runner', () => {
           expect(resultEvent.usage?.context_limit).toBe(200000);
         }
       });
+
+      it('test_anchor_appserver_usage_sums_every_sampling_of_the_turn', () => {
+        // 验证行为：一个 turn 内每次采样各发一条 thread/tokenUsage/updated
+        // （实测「7 次工具往返 = 7 条」），result usage 必须是该 turn 所有采样的
+        // 累加，不是最后一条 —— 只取最后一条会把多步 run 低报（实测 output
+        // 3,648 显示成 679、未缓存 input 3,022 显示成 212）。
+        const translator = new CodexAppServerTranslator();
+        translator.handleNotification('turn/started', {
+          threadId: 'th-aaa-113',
+          turn: { id: 'tn-113', items: [], status: 'inProgress' },
+        });
+
+        for (const last of [
+          { inputTokens: 1000, outputTokens: 50, cachedInputTokens: 900, totalTokens: 1050 },
+          { inputTokens: 2000, outputTokens: 80, cachedInputTokens: 1900, totalTokens: 2080 },
+        ]) {
+          translator.handleNotification('thread/tokenUsage/updated', {
+            threadId: 'th-aaa-113',
+            turnId: 'tn-113',
+            tokenUsage: {
+              last,
+              total: {
+                inputTokens: 3000,
+                outputTokens: 130,
+                cachedInputTokens: 2800,
+                totalTokens: 3130,
+              },
+              modelContextWindow: 200000,
+            },
+          });
+        }
+
+        const events = translator.handleTurnCompleted({
+          threadId: 'th-aaa-113',
+          turn: { id: 'tn-113', items: [], status: 'completed' },
+        });
+        const resultEvent = events.find((e) => (e as AgentEvent).type === 'result') as
+          AgentEvent | undefined;
+        expect(resultEvent).toBeDefined();
+        if (resultEvent && resultEvent.type === 'result') {
+          // 未缓存 input = (1000-900) + (2000-1900) = 200
+          expect(resultEvent.usage?.input_tokens).toBe(200);
+          expect(resultEvent.usage?.cache_read_tokens).toBe(2800);
+          expect(resultEvent.usage?.output_tokens).toBe(130);
+          expect(resultEvent.usage?.total_tokens).toBe(3130);
+        }
+      });
+
+      it('test_anchor_appserver_ignores_token_usage_from_another_turn', () => {
+        // 验证行为：resume 后服务端可能重放上一 turn 的用量（turnId 不同），
+        // 计入会把上一 turn 的消耗算进本 run。本轮 turnId 之外的用量必须丢弃。
+        const translator = new CodexAppServerTranslator();
+        translator.handleNotification('turn/started', {
+          threadId: 'th-aaa-114',
+          turn: { id: 'tn-114', items: [], status: 'inProgress' },
+        });
+        translator.handleNotification('thread/tokenUsage/updated', {
+          threadId: 'th-aaa-114',
+          turnId: 'tn-113', // 上一 turn 的重放
+          tokenUsage: {
+            last: {
+              inputTokens: 900000,
+              outputTokens: 900,
+              cachedInputTokens: 899000,
+              totalTokens: 900900,
+            },
+            total: {
+              inputTokens: 900000,
+              outputTokens: 900,
+              cachedInputTokens: 899000,
+              totalTokens: 900900,
+            },
+          },
+        });
+        translator.handleNotification('thread/tokenUsage/updated', {
+          threadId: 'th-aaa-114',
+          turnId: 'tn-114',
+          tokenUsage: {
+            last: { inputTokens: 100, outputTokens: 5, cachedInputTokens: 40, totalTokens: 105 },
+            total: { inputTokens: 100, outputTokens: 5, cachedInputTokens: 40, totalTokens: 105 },
+            modelContextWindow: 200000,
+          },
+        });
+
+        const events = translator.handleTurnCompleted({
+          threadId: 'th-aaa-114',
+          turn: { id: 'tn-114', items: [], status: 'completed' },
+        });
+        const resultEvent = events.find((e) => (e as AgentEvent).type === 'result') as
+          AgentEvent | undefined;
+        expect(resultEvent).toBeDefined();
+        if (resultEvent && resultEvent.type === 'result') {
+          expect(resultEvent.usage?.input_tokens).toBe(60);
+          expect(resultEvent.usage?.output_tokens).toBe(5);
+        }
+      });
     });
 
     describe('error notification', () => {
