@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.4] - 2026-10-12
+
+### 修复
+
+- **codex「本 run」token 少算（多步运行只统计了最后一步）**：codex 每发起一次模型调用就记一条 token 用量，一个回合里有几趟工具往返就有几条，而运行结束卡片与 `/resume` 末尾统计此前只取最后一条。于是一个跑了 7 趟工具往返的回合，实际输出 3,648 个 token 只显示 679、未命中缓存的输入 3,022 只显示 212。现在按回合汇总该回合内所有调用的用量，与 codex 自己按回合统计的结果逐字段一致；「Context」仍显示最后一次调用的上下文窗口占用，累计用量与 `Total` 的取法不变。恢复会话时服务端可能重放上回合的用量，已按回合标识丢弃。更早的、不带回合标识的记录保持原读法
+
+### 变更
+
+- **测试注释与用例类型对齐**：一处用例注释改为不点名具体消息；两处 app-server 用例的类型写法与协议定义对齐（这些文件不在既有类型检查覆盖范围内，改动不影响运行时行为）。无行为变化
+
 ## [0.5.3] - 2026-10-12
 
 ### 修复
