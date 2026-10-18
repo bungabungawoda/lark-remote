@@ -244,6 +244,12 @@ const DshConfigSchema = z.object({
    * 控制 + 运行时 DSH API 报错兜底。
    */
   agentPreset: z.string().optional(),
+  /**
+   * 权限预设（沙箱模式 + 审批策略）。与 agentPreset 不同，它可以在会话中
+   * 切换；lark-remote 会在会话首次 run 前执行一次 `/permission <preset>`
+   * 对齐。留空 = 不干预，跟随 DSH 当前会话/服务端默认。
+   */
+  permissionPreset: z.string().optional(),
   /** 模型 ID。留空 = 跟随服务端默认。 */
   model: z.string().optional(),
   /**

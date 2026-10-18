@@ -401,6 +401,7 @@ function initializeRunner(
       token: dshConf?.token,
       credentialsFile: dshConf?.credentialsFile,
       agentPreset: dshConf?.agentPreset,
+      permissionPreset: dshConf?.permissionPreset,
       model: dshConf?.model,
       reasoningEffort: dshConf?.reasoningEffort,
     });

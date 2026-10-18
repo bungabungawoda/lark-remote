@@ -1,6 +1,6 @@
- [English](../../en/architecture/design.md) | 简体中文
+[English](../../en/architecture/design.md) | 简体中文
 
- # lark-remote 设计文档
+# lark-remote 设计文档
 
 把飞书私聊消息桥接到本地 Claude Code CLI。用户发消息或 `/命令`，程序把消息
 传给 `claude` 进程，读取 JSONL 输出，把 thinking / text / tool 摘要实时更新到同一张
@@ -135,11 +135,11 @@ message，留在 plan 模式修订）/ 批准并采纳修改（allow + `updatedI
 
 ```typescript
 interface SessionEntry {
-  sessions: Map<AgentKind, string>;        // 每 agent 一个 sessionId
+  sessions: Map<AgentKind, string>; // 每 agent 一个 sessionId
   previousSessions: Map<AgentKind, string>; // 切走时停放的 session（/config 切 agent 后可恢复）
-  arrivalSessions: Map<AgentKind, string>;  // 到达基线：上次切到该 agent 时用户拿到的 sessionId
-  sessionCwds: Map<AgentKind, string>;      // 会话实际目录（system.init 的 event.cwd，仅 claude 可能与 cwd 不同）
-  cwd: string;                              // 受控工作目录（realpath）
+  arrivalSessions: Map<AgentKind, string>; // 到达基线：上次切到该 agent 时用户拿到的 sessionId
+  sessionCwds: Map<AgentKind, string>; // 会话实际目录（system.init 的 event.cwd，仅 claude 可能与 cwd 不同）
+  cwd: string; // 受控工作目录（realpath）
 }
 const sessions = new Map<string, SessionEntry>();
 ```
@@ -155,23 +155,23 @@ const sessions = new Map<string, SessionEntry>();
 
 ## 5. 命令列表
 
-| 命令 | 行为 |
-|------|------|
-| `/new` | 清 session（保留 cwd） |
-| `/cd <path>` | 切换 cwd，清 session |
-| `/ls [dir]` | 弹出目录/文件卡片；点击目录切换，点击 30MB 内文件发送到飞书；>30 条分页 |
-| `/ws save/use/remove` | 命名目录别名管理（`/ws` 默认 list） |
-| `/resume [list\|id]` | 列出/切换当前 agent 的 session（`/resume [agent] [N]` 双参数，N clamp [1,5] 作为页大小）；列表分页（`resume.page` 回调翻页） |
-| `/active` | 列出本进程内存中正在进行中的任务（Agent + Bash） |
-| `/status` | 显示 cwd、session_id、model、进程状态 |
-| `/stop` | SIGTERM 立刻 SIGKILL（不等 grace） |
-| `/ps` | 是否有进程在跑 |
-| `/help` | 命令列表 |
-| `/exit` | 退出 lark-remote |
-| `/restart` | 原地自重启 lark-remote：spawn detached 继任者 → 旧进程释放单例锁退出 |
-| `/config get\|set` | 查改运行时配置（卡片交互，agent-aware 字段） |
-| `/order save\|list\|edit` | 保存、列出或编辑常用指令（保留别名/使用统计）；>8 条分页（`order.page` 原地翻页，受飞书单卡 60 个 body 元素上限约束） |
-| `!<cmd>` | 执行 bash 命令并流式输出到卡片（绕过串行队列） |
+| 命令                      | 行为                                                                                                                         |
+| ------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
+| `/new`                    | 清 session（保留 cwd）                                                                                                       |
+| `/cd <path>`              | 切换 cwd，清 session                                                                                                         |
+| `/ls [dir]`               | 弹出目录/文件卡片；点击目录切换，点击 30MB 内文件发送到飞书；>30 条分页                                                      |
+| `/ws save/use/remove`     | 命名目录别名管理（`/ws` 默认 list）                                                                                          |
+| `/resume [list\|id]`      | 列出/切换当前 agent 的 session（`/resume [agent] [N]` 双参数，N clamp [1,5] 作为页大小）；列表分页（`resume.page` 回调翻页） |
+| `/active`                 | 列出本进程内存中正在进行中的任务（Agent + Bash）                                                                             |
+| `/status`                 | 显示 cwd、session_id、model、进程状态                                                                                        |
+| `/stop`                   | SIGTERM 立刻 SIGKILL（不等 grace）                                                                                           |
+| `/ps`                     | 是否有进程在跑                                                                                                               |
+| `/help`                   | 命令列表                                                                                                                     |
+| `/exit`                   | 退出 lark-remote                                                                                                             |
+| `/restart`                | 原地自重启 lark-remote：spawn detached 继任者 → 旧进程释放单例锁退出                                                         |
+| `/config get\|set`        | 查改运行时配置（卡片交互，agent-aware 字段）                                                                                 |
+| `/order save\|list\|edit` | 保存、列出或编辑常用指令（保留别名/使用统计）；>8 条分页（`order.page` 原地翻页，受飞书单卡 60 个 body 元素上限约束）        |
+| `!<cmd>`                  | 执行 bash 命令并流式输出到卡片（绕过串行队列）                                                                               |
 
 ---
 
@@ -196,7 +196,9 @@ const sessions = new Map<string, SessionEntry>();
         "tag": "button",
         "text": { "tag": "plain_text", "content": "apple" },
         "type": "default",
-        "behaviors": [{ "type": "callback", "value": { "cmd": "ls.switch", "path": "/absolute/path/to/apple" } }]
+        "behaviors": [
+          { "type": "callback", "value": { "cmd": "ls.switch", "path": "/absolute/path/to/apple" } }
+        ]
       }
     ]
   }
@@ -211,7 +213,12 @@ const sessions = new Map<string, SessionEntry>();
 
 ```typescript
 channel.on('cardAction', async (action) => {
-  const value = action.action.value as { cmd: string; path?: string; name?: string; sessionId?: string };
+  const value = action.action.value as {
+    cmd: string;
+    path?: string;
+    name?: string;
+    sessionId?: string;
+  };
   if (value.cmd === 'ls.switch') {
     // 安全校验后切换 cwd
   } else if (value.cmd === 'ls.browse') {
@@ -229,6 +236,7 @@ channel.on('cardAction', async (action) => {
 ### 6.3 CardKit 2.0 唯一标准
 
 本项目卡片全面采用 CardKit 2.0（已无 1.x 代码路径）。2.0 卡片约束：
+
 - 交互组件（button/select_static/input）**直接挂 body.elements**，禁止包 `action` 容器
 - 回调统一用 `behaviors:[{type:"callback",value:{cmd,key}}]`
 - 流式输出不需要 tabs，内容直接 inline 排列
@@ -292,45 +300,46 @@ defaultAgent: claude
 
 claude:
   model: claude-opus-4-8
-  effort: medium           # low | medium | high | xhigh | max
-  permissionMode: bypassPermissions  # 取值：default（=不传 --permission-mode）| acceptEdits | auto | bypassPermissions | manual | dontAsk | plan
-  approvalTimeoutMs: 300000          # 审批超时（ms），默认 5 分钟，勿随意改短
-  idleTtlMinutes: 30                 # 会话级空闲回收（分钟），0=禁用
+  effort: medium # low | medium | high | xhigh | max
+  permissionMode: bypassPermissions # 取值：default（=不传 --permission-mode）| acceptEdits | auto | bypassPermissions | manual | dontAsk | plan
+  approvalTimeoutMs: 300000 # 审批超时（ms），默认 5 分钟，勿随意改短
+  idleTtlMinutes: 30 # 会话级空闲回收（分钟），0=禁用
   stopGraceMs: 5000
 
 agents:
   codex:
-    approvalPolicy: on-request  # Codex 官方 AskForApproval：untrusted | on-request | never（默认 on-request）
-    sandbox: workspace-write   # Codex 官方 SandboxMode：read-only | workspace-write | danger-full-access（默认 workspace-write）
-    appServer:                # app-server 连接参数
+    approvalPolicy: on-request # Codex 官方 AskForApproval：untrusted | on-request | never（默认 on-request）
+    sandbox: workspace-write # Codex 官方 SandboxMode：read-only | workspace-write | danger-full-access（默认 workspace-write）
+    appServer: # app-server 连接参数
       binary: codex
       requestTimeoutMs: 60000
       idleTtlMs: 1800000
       turnIdleTimeoutMinutes: 10
   kimi:
-    permissionMode: manual     # manual | auto | yolo（纯 ACP 模式，kimi acp 持久连接，支持审批 + compact）
-    acp:                       # acp 连接参数
+    permissionMode: manual # manual | auto | yolo（纯 ACP 模式，kimi acp 持久连接，支持审批 + compact）
+    acp: # acp 连接参数
       binary: kimi
       requestTimeoutMs: 60000
       idleTtlMs: 1800000
       turnIdleTimeoutMinutes: 10
-  dsh:                        # DSH（DeepSeek Harness）Web Host 直连（HTTP+WS，全机共享进程）
-    host: http://127.0.0.1:3080  # 本地 DSH Web Host 地址
-    manageProcess: true          # 未运行时由 lark-remote detached 拉起
-    dshHome: ''                  # 可选：DSH_HOME
-    dshCommand: dsh              # 可选：dsh 可执行文件
-    startTimeoutMs: 30000        # 启动等待上限
-    token: ''                    # YAML-only 兜底：dsh web 启动 URL 中的 token；不在 /config 卡片展示
-    credentialsFile: ''          # 可选：DSH 凭据文件，默认 $DSH_HOME/.credentials.yaml
-    agentPreset: ''              # 留空 = 跟随服务端默认；session 创建后不可改
-    model: ''                    # 留空 = 跟随服务端默认
-    reasoningEffort: ''          # 留空 = 跟随服务端默认
+  dsh: # DSH（DeepSeek Harness）Web Host 直连（HTTP+WS，全机共享进程）
+    host: http://127.0.0.1:3080 # 本地 DSH Web Host 地址
+    manageProcess: true # 未运行时由 lark-remote detached 拉起
+    dshHome: '' # 可选：DSH_HOME
+    dshCommand: dsh # 可选：dsh 可执行文件
+    startTimeoutMs: 30000 # 启动等待上限
+    token: '' # YAML-only 兜底：dsh web 启动 URL 中的 token；不在 /config 卡片展示
+    credentialsFile: '' # 可选：DSH 凭据文件，默认 $DSH_HOME/.credentials.yaml
+    agentPreset: '' # 留空 = 跟随服务端默认；session 创建后不可改
+    permissionPreset: '' # 权限预设（沙箱 + 审批策略）；留空 = 不干预
+    model: '' # 留空 = 跟随服务端默认
+    reasoningEffort: '' # 留空 = 跟随服务端默认
 
 logging:
-  level: info             # debug | info | warn | error
+  level: info # debug | info | warn | error
 
 idle:
-  watchdogMinutes: 15     # 0 关闭空闲看门狗
+  watchdogMinutes: 15 # 0 关闭空闲看门狗
 ```
 
 首次启动检测不到 `feishu.appId`/`appSecret` 时：交互式终端（stdin/stdout 均 TTY）
@@ -349,7 +358,7 @@ POSIX 在全块放不下时回退半块。两种渲染都带 QR 规范要求的 
 [`docs/zh/guides/codex-config.md`](../guides/codex-config.md)。
 `kimi` 的 permissionMode/acp 字段完整语义见
 [`docs/zh/usage.md`](../usage.md)（kimi 为纯 ACP 模式，已无 cli/acp 切换）。
-`dsh` 的 host/token/credentialsFile/preset/model/reasoningEffort 字段语义与 DSH Web Host 直连 runner 设计见
+`dsh` 的 host/token/credentialsFile/preset/permissionPreset/model/reasoningEffort 字段语义与 DSH Web Host 直连 runner 设计见
 `docs/zh/usage.md`。
 
 DSH 的 launch token 每个进程随机生成，重启即失效；它的浏览器签名密钥则持久化在
@@ -358,6 +367,22 @@ lark-remote 默认每次请求读取该文件并现签一个短时效 v1 cookie�
 接受 v1 cookie（共享 browser peer），因此外部重启 DSH 后旧请求即使失败，下一次请求也能
 用同一签名密钥自动恢复；token 只在凭据文件不可用时兜底。凭据文件按 DSH 约定要求
 `0600`，lark-remote 只读不写，且日志中不输出密钥或 cookie。
+
+DSH 的审批与其它 agent 不同：`session/follow` 只携带持久审计事件
+`approval/asked` / `approval/decided`，真正可回答的是 `/api/remote.mux` 上独立的
+`$events` waterfall（`approval/request`）。lark-remote 用 `approvalId` 作为飞书卡片的
+稳定 requestId，用 `callId` 关联 waterfall 的 `eventId` + `clientId`，再通过
+`$events/result` 回写 `allowed-once` / `rejected`。跨 session 的 waterfall 必须回
+`next` 委托，否则会阻塞其他 workspace 的审批。权限预设通过 `commands/execute` 执行
+一次 `/permission <preset>`，失败时 fail closed（不发 prompt）。
+
+DSH 的压缩走 `commands/execute` 发 `/compact`（`dsh-command-compact`，无参数、仅空闲可用），
+**不能**走 `session/prompt`——后者只把文本当普通 user message 交给模型。该 RPC 在压缩结束后
+才返回，所以 `DshRunner.runCompact` 关闭 unary 超时（由 `/stop` 与卡片空闲看门狗兜底）；
+压缩不产生 turn 事件，卡片终态由 runner 合成；DSH 也不提供 claude 的 `compact_boundary`
+或 codex 的 `compacted` 事件，因此压缩卡不渲染「压缩前/后」统计。各 agent 的 compact 能力
+由 `runner/types.ts` 的 `COMPACT_CAPABILITY` 单源声明（键集 = `AgentKind`，缺项编译失败），
+bridge 按「声明 && runner 实现」双重门控，声明与实现的一致性由 runner 结构测试的矩阵用例保证。
 
 ---
 
@@ -429,6 +454,7 @@ resolve 到新 cwd 的竞态——先到者占 `activeRuns`，后到者 busy-dro
 抛错也不得留下永久 busy 的 workspace。
 
 **第六批 P1 语义**：
+
 - 完成通知卡：`sendCompletionNotificationCard` 读会话内容带
   `maxEvents: 5`，发送走 `sendResult`（`enforceCardBudget` 兜底），不再直连
   connector——长会话卡片不会再超 28KB 被飞书静默拒绝。
@@ -476,6 +502,7 @@ this.sessionStore.setCwd(ctx.userId, canonical);
 **原地更新卡片的高危场景**：`updateCardInPlace` 不发新卡，用户始终在同一张卡上操作。
 固定 value 的回调按钮（如 config 卡片 toggle、run 卡操作按钮）callback value 不变，
 用户连点两次同一按钮时：
+
 - 第一次：eventId 不在缓存 → 回调执行 → finally 把 eventId 加入 seenCache
 - 第二次（TTL 内）：eventId 已在缓存 → **drop duplicate action** → 回调没执行，
   状态卡在第一次的结果（如 toggle 类按钮停留在"已关闭"）
@@ -489,12 +516,13 @@ cardAction）。300ms 挡飞书瞬时重投递（<100ms 级），放过用户连
 
 **原地更新逻辑的去重风险分类**（新增原地更新按钮时参考，统一用方案 1 即小 ttl 窗口去重）：
 
-| callback value | 风险 | 说明 |
-|----------------|------|------|
-| 固定（`config.toggle`/`config.set`/`config.input`/`config.save`/`new-session`） | **高危** | 连击第二次被 drop 会卡死状态且 TTL 内无法恢复；靠 `DEDUP_TTL_MS` 小窗口放过 |
-| 含动态字段（`stop`→runId、`queue.*`→messageId、`resume.use`→sessionId、`*.cd`→path、`ws.*`→name、`order.*`→orderId） | 低危 | 不同目标 actionId 不同天然安全；同目标连击第二次 drop 属幂等无害 |
+| callback value                                                                                                       | 风险     | 说明                                                                        |
+| -------------------------------------------------------------------------------------------------------------------- | -------- | --------------------------------------------------------------------------- |
+| 固定（`config.toggle`/`config.set`/`config.input`/`config.save`/`new-session`）                                      | **高危** | 连击第二次被 drop 会卡死状态且 TTL 内无法恢复；靠 `DEDUP_TTL_MS` 小窗口放过 |
+| 含动态字段（`stop`→runId、`queue.*`→messageId、`resume.use`→sessionId、`*.cd`→path、`ws.*`→name、`order.*`→orderId） | 低危     | 不同目标 actionId 不同天然安全；同目标连击第二次 drop 属幂等无害            |
 
 **新增原地更新按钮的准则**：
+
 1. callback value 尽量带动态字段（runId/path/sessionId 等），让不同操作的 actionId 天然不同；
 2. 固定 value 的 toggle 类按钮（必然存在），不要把 `DEDUP_TTL_MS` 调大（>500ms 即可能误伤慢点）；
 3. 连击需幂等的按钮（如 `order.exec`）即便方案 1 让连击通过，也由串行队列/runId 校验兜底，无破坏。
@@ -576,8 +604,8 @@ regression: 55 turn 累加 3,328,386，实际 79,816）。`totalInput/totalOutpu
 仍累加，保留备用。
 `/resume` 末尾的 context 长度同源（`readSessionContent` 共用 `aggregateSessionUsage`）。
 
-
 `ClaudeRunner.run()` 路径探针（`src/runner/index.ts`）：
+
 - `spawn pid=... binary=... cwd=... sessionId=...` —— spawn 成功
 - `spawn failed: ...` —— `proc.once('error')` 拒绝
 - `wrote pid file path=pid` —— pid 文件写入
@@ -597,6 +625,7 @@ watchdog 覆盖**——watchdog 在 `for await (runner.run())` 循环里，要�
 已发出但不再推进的窗口，通常确实是孤儿进程。
 
 `Bridge.forwardToClaude` 路径探针（`src/bridge/index.ts`）：
+
 - `forward entry userId=... cwd=... sessionId=... message=...`
 - `workspace busy, dropping message userId=... cwd=...` —— 第 2+ 条进队列前被丢弃
 - `activeRuns.set cwd=... runId=...` / `activeRuns.delete cwd=... runId=...` —— 增删配对
@@ -628,10 +657,10 @@ watchdog 覆盖**——watchdog 在 `for await (runner.run())` 循环里，要�
   1. 确定性高：不受文件系统状态影响
   2. 语义清晰：用户只看"现在有什么在跑"
   3. 与 `/stop` 一致：都基于内存 runId
-**`Bridge.enqueue` 防御性检查**：生产日志反复出现
-`[lark-remote] queue task error: TypeError: task is not a function`，根因是非函数 task
-溜进 Promise 链污染整条 workspace 队列。`enqueue` 入口加 `typeof task === 'function'`
-守卫，非函数时 warn + 早退，不破坏后续任务推进。
+     **`Bridge.enqueue` 防御性检查**：生产日志反复出现
+     `[lark-remote] queue task error: TypeError: task is not a function`，根因是非函数 task
+     溜进 Promise 链污染整条 workspace 队列。`enqueue` 入口加 `typeof task === 'function'`
+     守卫，非函数时 warn + 早退，不破坏后续任务推进。
 
 ### 9.17 卡片折叠（`collapsible_panel`）
 
@@ -645,14 +674,14 @@ watchdog 覆盖**——watchdog 在 `for await (runner.run())` 循环里，要�
 
 **Run card 折叠策略**（`src/card/run-renderer.ts` + `src/card/tool-render.ts`）：
 
-| 内容 | 折叠行为 | 理由 |
-|------|----------|------|
-| Thinking | 运行中 `expanded:true`，完成后 `expanded:false` | 运行时关注进度，完成后是次要信息 |
-| 运行中工具 | `expanded:true`，border 跟随状态（grey→red if error） | 用户需要看到实时执行 |
-| 已完成工具（<3个） | `expanded:false` | 默认折叠，点击展开查看 |
-| 连续工具组（≥3个） | 单个 collapsed panel，body 只含 header 列表 | 参考 `collapsedToolSummary` |
-| 正文 text block | 不折叠，直接 markdown | Claude 的回复是主要信息 |
-| 终态 footer / Stop 按钮 | 不折叠 | 状态摘要必须可见 |
+| 内容                    | 折叠行为                                              | 理由                             |
+| ----------------------- | ----------------------------------------------------- | -------------------------------- |
+| Thinking                | 运行中 `expanded:true`，完成后 `expanded:false`       | 运行时关注进度，完成后是次要信息 |
+| 运行中工具              | `expanded:true`，border 跟随状态（grey→red if error） | 用户需要看到实时执行             |
+| 已完成工具（<3个）      | `expanded:false`                                      | 默认折叠，点击展开查看           |
+| 连续工具组（≥3个）      | 单个 collapsed panel，body 只含 header 列表           | 参考 `collapsedToolSummary`      |
+| 正文 text block         | 不折叠，直接 markdown                                 | Claude 的回复是主要信息          |
+| 终态 footer / Stop 按钮 | 不折叠                                                | 状态摘要必须可见                 |
 
 **工具渲染改进**（`src/card/tool-render.ts`）：折叠后的 header 显示智能摘要
 （`✅ **Bash** — pwd`、`✅ **Read** — /repo/a.ts`），并附加本地时间戳；而非无意义的 `Tool0`。
@@ -730,10 +759,10 @@ spawn claude 进程），而不是它由 slash command 触发还是 cardAction �
 
 分类定义：
 
-| 分类 | 含义 | 队列行为 |
-|------|------|----------|
+| 分类         | 含义                                           | 队列行为                                |
+| ------------ | ---------------------------------------------- | --------------------------------------- |
 | **控制操作** | 不 spawn claude，只读写 session/workspace 状态 | 免排队（`enqueueImmediate` 或直接执行） |
-| **工作操作** | spawn claude 进程或排队等待 spawn | 走串行队列（`enqueue`） |
+| **工作操作** | spawn claude 进程或排队等待 spawn              | 走串行队列（`enqueue`）                 |
 
 现行实现：`isImmediateAction` 白名单（`src/router/index.ts`）按上述语义分类，控制操作
 免排队，工作操作（`order.exec`、普通消息）走串行队列。
@@ -763,10 +792,10 @@ run 卡片流式 patch 走 SDK `@larksuite/channel` 的 throttle + FIFO `UpdateQ
 **兜底**：`src/index.ts` 的 unhandledRejection handler 调 `classifyRejection`
 （`src/error-classification.ts`，纯函数便于单测）分类：
 
-| 判定 | 条件 | 行为 |
-|------|------|------|
-| **recoverable** | 502/503/504/ETIMEDOUT/ECONNRESET；或飞书 4xx 业务错误（`status∈[400,500)` 且 `data.code` 为数字，如 230027/230025） | 只记日志，进程继续 |
-| **fatal** | TypeError 等编程错误；HTTP 5xx；纯 HTTP 400 无飞书 code（非 SDK patch 路径的真错误） | release 锁 + `exit(1)` |
+| 判定            | 条件                                                                                                                | 行为                   |
+| --------------- | ------------------------------------------------------------------------------------------------------------------- | ---------------------- |
+| **recoverable** | 502/503/504/ETIMEDOUT/ECONNRESET；或飞书 4xx 业务错误（`status∈[400,500)` 且 `data.code` 为数字，如 230027/230025） | 只记日志，进程继续     |
+| **fatal**       | TypeError 等编程错误；HTTP 5xx；纯 HTTP 400 无飞书 code（非 SDK patch 路径的真错误）                                | release 锁 + `exit(1)` |
 
 飞书 4xx 业务错误判 recoverable 的理由：只影响单张卡的某次 patch，不应拖垮整个 lark-remote；
 后续 patch 仍可能成功。230027 曾被旧 handler 当
@@ -868,6 +897,7 @@ listSessions(cwd: string, opts?: { limit?: number; offset?: number }): {
 - kimi 默认 limit 20，与其他 agent 对齐。
 
 **router `/resume` 分页**：
+
 - `RESUME_PAGE_SIZE = 5`；`/resume [agent] [N]` 的 N clamp `[1, 5]`，默认 5。
 - 分页栏照搬 `/ls` 结构：`第 x/y 页 · 共 N 个会话` + `上一页`/`下一页` 按钮，
   仅 `total > pageSize` 时显示；N 为 reader 返回的真实总数。旧假提示

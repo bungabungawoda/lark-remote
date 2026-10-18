@@ -16,7 +16,7 @@ import { agentDisplayName, resumeUseButton } from '../card/card-shared.js';
 import { enforceCardBudget } from '../card/card-budget.js';
 import { normalizeResultUsage } from '../runner/common/result-usage.js';
 import { BashProcessRunner, type BashRunner } from '../runner/index.js';
-import { AGENT_KINDS, type AgentKind } from '../runner/types.js';
+import { AGENT_KINDS, supportsCompact, type AgentKind } from '../runner/types.js';
 import {
   QueueManager,
   type QueuedTask,
@@ -96,6 +96,31 @@ function runnerHasRunCompact(runner: Runner): boolean {
   return (
     'runCompact' in runner && typeof (runner as Record<string, unknown>).runCompact === 'function'
   );
+}
+
+/**
+ * 已告警过的能力不一致 kind。能力表（`COMPACT_CAPABILITY`）是声明，runner 方法
+ * 是实现；两者不一致是开发期缺陷，只在首次冲突时打 error，避免每次渲染刷屏。
+ */
+const compactMismatchWarned = new Set<AgentKind>();
+
+/**
+ * Compact 能力的双重门控：声明的能力表 && runner 实际实现。
+ *
+ * 只做鸭子探测会把「漏实现」降级成静默隐藏按钮（dsh 就这样漏了），所以声明表
+ * 是必需项；只信声明表则可能渲染出点不动的死按钮，所以实现检查也保留。两者
+ * 不一致时打 error 日志，让缺陷在运行日志里可见。
+ */
+function runnerSupportsCompact(runner: Runner, kind: AgentKind): boolean {
+  const declared = supportsCompact(kind);
+  const implemented = runnerHasRunCompact(runner);
+  if (declared !== implemented && !compactMismatchWarned.has(kind)) {
+    compactMismatchWarned.add(kind);
+    getLogger().error(
+      `[lark-remote] compact capability mismatch kind=${kind} declared=${declared} implemented=${implemented}`,
+    );
+  }
+  return declared && implemented;
 }
 
 /**
@@ -425,6 +450,11 @@ export class Bridge {
         if (!opencodeConfig) return undefined;
         return { mode: opencodeConfig.mode };
       }
+      case 'dsh': {
+        const dshConfig = agents?.dsh;
+        if (!dshConfig) return undefined;
+        return { permissionPreset: dshConfig.permissionPreset };
+      }
       default:
         return undefined;
     }
@@ -442,7 +472,7 @@ export class Bridge {
    */
   hasRunCompact(cwd: string, kind: AgentKind = this.config.defaultAgent): boolean {
     const runner = this.getRunner(cwd, kind);
-    return runnerHasRunCompact(runner);
+    return runnerSupportsCompact(runner, kind);
   }
 
   /** 入队时刻快照：当前 defaultAgent + 该 agent 的 sessionId（无 session 则 undefined）。
@@ -1840,7 +1870,7 @@ export class Bridge {
         // 写入条件从「codex 终态」放宽为「runner 有 runCompact 的终态」
         // （codex app-server + kimi acp 均满足）。
         const runTerminal = cardSession.currentState.terminal;
-        const runnerHasCompact = runnerHasRunCompact(activeRun.runner);
+        const runnerHasCompact = runnerSupportsCompact(activeRun.runner, activeRun.agentKind);
         if (
           runnerHasCompact &&
           activeRun.runner.lifetime === 'workspace' &&
@@ -2172,9 +2202,9 @@ export class Bridge {
       return;
     }
 
-    // Check that the runner has runCompact method
+    // Check that the runner has runCompact method（声明表 && runner 实现）
     const runner = this.getRunner(cwd, target.agentKind);
-    if (!runnerHasRunCompact(runner)) {
+    if (!runnerSupportsCompact(runner, target.agentKind)) {
       await this.sendResult({ text: '⚠️ 当前运行模式不支持 Compact' }, ctx);
       return;
     }
@@ -2261,6 +2291,7 @@ export class Bridge {
     // 防御性能力检查：调用方已校验（runId / resume 两条路径），此处双保险并
     // 让 TS 收窄 runner 类型（'runCompact' in runner 之后的 cast 才合法）。
     if (
+      !runnerSupportsCompact(runner, agentKind) ||
       !('runCompact' in runner) ||
       typeof (runner as Record<string, unknown>).runCompact !== 'function'
     ) {
@@ -2490,9 +2521,10 @@ export class Bridge {
     // §5.3: kimi 压缩在途检测（与 handleCompactAction 同一入口）。
     if (await this.rejectIfCompactionInFlight(sessionId, cwd, agentKind, ctx)) return;
 
-    // Check that the runner has runCompact（codex/kimi/opencode/pi/claude 鸭子探测）。
+    // Check that the runner has runCompact（声明表 && runner 实现；
+    // codex/kimi/opencode/pi/claude/dsh 均已实现）。
     const runner = this.getRunner(cwd, agentKind);
-    if (!runnerHasRunCompact(runner)) {
+    if (!runnerSupportsCompact(runner, agentKind)) {
       await this.sendResult({ text: '⚠️ 当前运行模式不支持 Compact' }, ctx);
       return;
     }

@@ -10,6 +10,9 @@
  *  3. Live session data is a logical stream over `/api/remote.mux`:
  *     `{type:'open',streamId,endpoint:'session/follow',payload}` →
  *     `{type:'item',streamId,value}` / `{type:'end',streamId}`.
+ *     The Gateway-owned `$events` stream carries answerable
+ *     `approval/request` waterfalls; answers go back through
+ *     `$events/result`.
  *
  * The client is stateless apart from the base URL and auth cookie: each
  * `run()` opens its own remote mux subscription and closes it on terminal.
@@ -28,14 +31,19 @@ import {
   resolveDshCredentialsFile,
 } from './auth.js';
 import type {
+  DshApprovalStreamItem,
   DshFollowFrame,
   DshModelCatalogValue,
   DshModelSelection,
+  DshPermissionCatalogValue,
   DshPresetListValue,
+  DshRemoteEventFrame,
+  DshRemoteEventOutcome,
   DshSessionEvent,
   DshSessionPageValue,
   DshStreamItem,
   DshTokenUsage,
+  DshCommandResult,
 } from './types.js';
 
 interface WebSocketMessageEvent {
@@ -152,7 +160,9 @@ export function extractDshToken(raw: string | undefined): string {
 /**
  * Remote methods take named parameters. Most session methods call their single
  * argument `request`; `session/list` reserves `_request`; catalog methods take
- * no arguments. The gateway rejects any other `args` shape.
+ * no arguments. `commands/*` address the receiving agent by its wire field
+ * `agentId`, so their payload is already in wire shape (pass-through).
+ * The gateway rejects any other `args` shape.
  */
 const DSH_ARGS_KEY: Record<string, string | null> = {
   'session/list': '_request',
@@ -165,6 +175,7 @@ const DSH_ARGS_KEY: Record<string, string | null> = {
   'session/follow': 'request',
   'session/modelCatalog': null,
   'agentPresets/list': null,
+  'permissionPresets/catalog': null,
 };
 
 export function dshArgs(method: string, payload: unknown): Record<string, unknown> {
@@ -442,9 +453,66 @@ export class DshClient {
     return (await this.unary('session/modelCatalog', {})) as DshModelCatalogValue;
   }
 
+  /**
+   * Execute one slash command against a session (commands/execute).
+   *
+   * This is the only way to run a DSH command: `session/prompt` turns the text
+   * into an ordinary user message and never routes it through the command
+   * registry, so `/compact` sent as a prompt would just be model input.
+   *
+   * The RPC settles when the handler settles, not when it is accepted: DSH's
+   * `/compact` waits for the compaction to finish. Callers therefore must pass
+   * an explicit `timeoutMs` (0 = no unary budget) and rely on their own
+   * cancellation/watchdog instead of the 60s default.
+   */
+  async executeCommand(
+    sessionId: string,
+    line: string,
+    opts?: { signal?: AbortSignal; timeoutMs?: number },
+  ): Promise<DshCommandResult | undefined> {
+    const value = (await this.unary(
+      'commands/execute',
+      { agentId: sessionId, line, submittedAttachments: [] },
+      opts,
+    )) as
+      | {
+          commandId?: unknown;
+          result?: { kind?: unknown; text?: unknown; sourceEventSeq?: unknown };
+          kind?: unknown;
+          text?: unknown;
+          sourceEventSeq?: unknown;
+        }
+      | undefined;
+    if (!value || typeof value !== 'object') return undefined;
+    const result = value.result && typeof value.result === 'object' ? value.result : value;
+    return {
+      ...(typeof value.commandId === 'string' ? { commandId: value.commandId } : {}),
+      ...(result.kind === 'success' || result.kind === 'error' ? { kind: result.kind } : {}),
+      ...(typeof result.text === 'string' ? { text: result.text } : {}),
+      ...(typeof result.sourceEventSeq === 'number'
+        ? { sourceEventSeq: result.sourceEventSeq }
+        : {}),
+    };
+  }
+
   /** Read the preset catalog (agentPresets/list). */
   async listPresets(): Promise<DshPresetListValue> {
     return (await this.unary('agentPresets/list', {})) as DshPresetListValue;
+  }
+
+  /** Read the permission preset catalog (permissionPresets/catalog). */
+  async listPermissionPresets(): Promise<DshPermissionCatalogValue> {
+    return (await this.unary('permissionPresets/catalog', {})) as DshPermissionCatalogValue;
+  }
+
+  /** Answer one forwarded approval waterfall ($events/result). */
+  async answerRemoteEvent(
+    clientId: string,
+    eventId: string,
+    outcome: DshRemoteEventOutcome,
+    opts?: { signal?: AbortSignal; timeoutMs?: number },
+  ): Promise<void> {
+    await this.unary('$events/result', { clientId, eventId, outcome }, opts);
   }
 
   /**
@@ -484,26 +552,27 @@ export class DshClient {
   }
 
   /**
-   * One logical `session/follow` stream over `/api/remote.mux`. The WebSocket
-   * must carry the same auth cookie as unary calls. Ends on the server's
-   * `end` frame, socket close, error, or `signal` abort.
+   * One logical stream over `/api/remote.mux`. The WebSocket must carry the
+   * same auth cookie as unary calls. Ends on the server's `end` frame, socket
+   * close, error, or `signal` abort.
    */
-  private async *followStream(
-    sessionId: string,
+  private async *muxStream(
+    endpoint: string,
+    payload: unknown,
     signal: AbortSignal,
-  ): AsyncGenerator<DshFollowFrame> {
+  ): AsyncGenerator<unknown> {
     const cookie = await this.authCookie();
     const socket = this.webSocketImpl(
       `${this.baseUrl.replace(/^http/, 'ws')}/api/remote.mux`,
       cookie ? { headers: { cookie } } : undefined,
     );
     const streamId = `lr-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
-    const queue: DshFollowFrame[] = [];
-    let waiter: ((frame: DshFollowFrame | undefined) => void) | null = null;
+    const queue: unknown[] = [];
+    let waiter: ((frame: unknown | undefined) => void) | null = null;
     let ended = false;
     let failure: DshError | undefined;
 
-    const settle = (frame?: DshFollowFrame): void => {
+    const settle = (frame?: unknown): void => {
       if (waiter) {
         const resolve = waiter;
         waiter = null;
@@ -521,14 +590,8 @@ export class DshClient {
           JSON.stringify({
             type: 'open',
             streamId,
-            endpoint: 'session/follow',
-            payload: {
-              args: dshArgs('session/follow', {
-                address: { kind: 'session', sessionId },
-                assistantStream: true,
-                maxMessages: FOLLOW_MAX_MESSAGES,
-              }),
-            },
+            endpoint,
+            payload,
           }),
         );
       } catch (err) {
@@ -548,7 +611,7 @@ export class DshClient {
       let message: {
         type?: string;
         streamId?: string;
-        value?: DshFollowFrame;
+        value?: unknown;
         error?: { code?: string; message?: string; details?: Record<string, unknown> };
       };
       try {
@@ -612,7 +675,7 @@ export class DshClient {
     };
     signal.addEventListener('abort', onAbort, { once: true });
 
-    const next = (): Promise<DshFollowFrame | undefined> =>
+    const next = (): Promise<unknown | undefined> =>
       new Promise((resolve) => {
         if (queue.length > 0) {
           resolve(queue.shift());
@@ -644,17 +707,160 @@ export class DshClient {
     }
   }
 
+  /** One logical `session/follow` stream. */
+  private async *followStream(
+    sessionId: string,
+    signal: AbortSignal,
+  ): AsyncGenerator<DshFollowFrame> {
+    const payload = {
+      args: dshArgs('session/follow', {
+        address: { kind: 'session', sessionId },
+        assistantStream: true,
+        maxMessages: FOLLOW_MAX_MESSAGES,
+      }),
+    };
+    for await (const frame of this.muxStream('session/follow', payload, signal)) {
+      yield frame as DshFollowFrame;
+    }
+  }
+
+  /**
+   * Consume the Gateway-owned `$events` stream. The stream is owner-only and
+   * answer-capable; each waterfall for another session is delegated with
+   * `next` so a different lark-remote workspace cannot park it.
+   */
+  async *approvalEvents(
+    sessionId: string,
+    signal: AbortSignal,
+  ): AsyncGenerator<DshApprovalStreamItem> {
+    let authRefreshAttempted = false;
+    let reconnectAttempts = 0;
+    while (!signal.aborted) {
+      let streamClientId: string | undefined;
+      let sawReady = false;
+      try {
+        for await (const raw of this.muxStream('$events', { args: {} }, signal)) {
+          if (signal.aborted) return;
+          const frame = raw as DshRemoteEventFrame;
+          if (frame.type === 'ready') {
+            authRefreshAttempted = false;
+            sawReady = true;
+            streamClientId = frame.clientId;
+            yield { kind: 'ready', clientId: streamClientId };
+            continue;
+          }
+          if (frame.type === 'waterfall') {
+            if (!streamClientId) {
+              yield {
+                kind: 'unavailable',
+                message: 'DSH approval stream sent a waterfall before ready',
+              };
+              return;
+            }
+            if (frame.event !== 'approval/request' || frame.agentId !== sessionId) {
+              // Every owner answerer receives the waterfall. A non-owner of
+              // the session must explicitly delegate, otherwise DSH waits.
+              void this.answerRemoteEvent(
+                streamClientId,
+                frame.eventId,
+                { kind: 'next' },
+                { signal },
+              ).catch((err: unknown) => {
+                if (!signal.aborted) {
+                  getLogger().warn(
+                    `[dsh] approval waterfall delegation failed eventId=${frame.eventId}: ${
+                      (err as Error).message
+                    }`,
+                  );
+                }
+              });
+              continue;
+            }
+            const data = frame.request;
+            const toolName = typeof data.toolName === 'string' ? data.toolName : '';
+            const callId = typeof data.callId === 'string' ? data.callId : undefined;
+            const reason = typeof data.reason === 'string' ? data.reason : undefined;
+            yield {
+              kind: 'request',
+              eventId: frame.eventId,
+              clientId: streamClientId,
+              toolName,
+              ...(callId ? { callId } : {}),
+              ...(reason ? { reason } : {}),
+            };
+            continue;
+          }
+          if (frame.type === 'cancel') {
+            yield { kind: 'cancelled', eventId: frame.eventId };
+          }
+        }
+      } catch (err) {
+        if (signal.aborted) return;
+        if (
+          err instanceof DshError &&
+          err.code === 'http' &&
+          err.details.status === 401 &&
+          !authRefreshAttempted
+        ) {
+          authRefreshAttempted = true;
+          this.cookiePromise = undefined;
+          getLogger().warn(
+            `[dsh] approval event stream authentication expired; refreshing credentials and reconnecting once`,
+          );
+          continue;
+        }
+        const message = err instanceof Error ? err.message : String(err);
+        const forbidden =
+          (err instanceof DshError &&
+            (err.code === 'gateway/interactions-forbidden' ||
+              (err.code === 'http' && err.details.status === 403))) ||
+          message.includes('interactions-forbidden');
+        if (!forbidden && reconnectAttempts < 3) {
+          reconnectAttempts += 1;
+          getLogger().warn(
+            `[dsh] approval event stream dropped (attempt ${reconnectAttempts}/3); reconnecting`,
+          );
+          await new Promise((resolve) => setTimeout(resolve, 200));
+          continue;
+        }
+        getLogger().warn(`[dsh] approval event stream unavailable: ${message}`);
+        yield { kind: 'unavailable', message };
+        return;
+      }
+      if (!signal.aborted) {
+        if (sawReady && reconnectAttempts < 3) {
+          reconnectAttempts += 1;
+          getLogger().warn(
+            `[dsh] approval event stream ended (attempt ${reconnectAttempts}/3); reconnecting`,
+          );
+          await new Promise((resolve) => setTimeout(resolve, 200));
+          continue;
+        }
+        // A clean end before ready means the Host does not expose `$events`;
+        // fall back to the Web UI prompt instead of retrying forever.
+        yield { kind: 'unavailable', message: 'DSH approval event stream ended' };
+        return;
+      }
+    }
+  }
+
   /** Translate one durable event into a stream item (approvals are surfaced
    *  separately; everything else is forwarded to the runner). */
   private eventItem(sessionId: string, event: DshSessionEvent): DshStreamItem | undefined {
     if (event.type === 'approval/asked') {
-      const data = event.data as { id?: string; toolName?: string; reason?: string };
+      const data = event.data as {
+        id?: string;
+        toolName?: string;
+        callId?: string;
+        reason?: string;
+      };
       if (!data.id) return undefined;
       return {
         kind: 'approval',
         sessionId,
         approvalId: data.id,
         toolName: data.toolName ?? '',
+        ...(data.callId ? { callId: data.callId } : {}),
         ...(data.reason ? { reason: data.reason } : {}),
       };
     }
