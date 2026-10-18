@@ -2623,7 +2623,8 @@ export class CommandRouter {
         k === 'agents.opencode' ||
         k.startsWith('agents.opencode.') ||
         k === 'opencode' ||
-        k.startsWith('opencode.'),
+        k.startsWith('opencode.') ||
+        k === 'agents.dsh.permissionPreset',
     );
     if (hasApprovalConfigChange) {
       this.bridge.syncActiveApprovalModes();

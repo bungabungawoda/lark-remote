@@ -467,6 +467,53 @@ describe('DshClient config-plane unary methods', () => {
     expect(result.presets[0].id).toBe('code');
   });
 
+  it('listPermissionPresets uses permissionPresets/catalog', async () => {
+    let posted: unknown;
+    const value = {
+      options: [{ value: 'workspace-write', name: 'workspace-write' }],
+      defaultOptions: [{ value: 'workspace-write', name: 'workspace-write' }],
+      defaultPreset: 'workspace-write',
+    };
+    const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      posted = { url: String(input), body: JSON.parse(String(init?.body)) };
+      return jsonResponse(value);
+    }) as typeof fetch;
+    const client = new DshClient('http://127.0.0.1:3080', {
+      credentialsFile: NO_CREDENTIALS_FILE,
+      fetchImpl,
+    });
+    const result = await client.listPermissionPresets();
+    expect(posted).toMatchObject({
+      url: 'http://127.0.0.1:3080/api/permissionPresets/catalog',
+      body: { payload: { args: {} } },
+    });
+    expect(result.defaultPreset).toBe('workspace-write');
+  });
+
+  it('executeCommand posts the commands/execute named arguments', async () => {
+    let posted: unknown;
+    const fetchImpl = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+      posted = JSON.parse(String(init?.body));
+      return jsonResponse({ commandId: 'cmd-1', result: { kind: 'success' } });
+    }) as typeof fetch;
+    const client = new DshClient('http://127.0.0.1:3080', {
+      credentialsFile: NO_CREDENTIALS_FILE,
+      fetchImpl,
+    });
+    const result = await client.executeCommand(SID, '/permission workspace-write');
+    expect(posted).toMatchObject({
+      method: 'commands/execute',
+      payload: {
+        args: {
+          agentId: SID,
+          line: '/permission workspace-write',
+          submittedAttachments: [],
+        },
+      },
+    });
+    expect(result?.kind).toBe('success');
+  });
+
   it('createSession passes agentPreset through', async () => {
     const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
       const posted = JSON.parse(String(init?.body)) as { payload: unknown };
@@ -481,6 +528,45 @@ describe('DshClient config-plane unary methods', () => {
     });
     const created = await client.createSession({ cwd: CWD, agentPreset: 'code' });
     expect(created).toEqual({ sessionId: SID, agentPreset: 'code' });
+  });
+
+  it('executeCommand posts commands/execute with agentId/line and no unary budget when asked', async () => {
+    // commands/execute 的 wire 形状与 session/* 不同：参数按 wire 名 agentId
+    // 传（不是 request 包一层），且压缩这类长命令必须能关掉 60s 默认预算。
+    let method = '';
+    let posted: unknown;
+    const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      method = String(input).split('/api/')[1] ?? '';
+      posted = JSON.parse(String(init?.body));
+      return jsonResponse({ kind: 'success', text: 'Compacted 3 history items (~1200 tokens).' });
+    }) as typeof fetch;
+    const client = new DshClient('http://127.0.0.1:3080', {
+      credentialsFile: NO_CREDENTIALS_FILE,
+      fetchImpl,
+    });
+
+    const value = await client.executeCommand(SID, '/compact', { timeoutMs: 0 });
+    expect(method).toBe('commands/execute');
+    expect(posted).toMatchObject({
+      method: 'commands/execute',
+      payload: {
+        args: { agentId: SID, line: '/compact', submittedAttachments: [] },
+      },
+    });
+    expect(value).toEqual({
+      kind: 'success',
+      text: 'Compacted 3 history items (~1200 tokens).',
+    });
+  });
+
+  it('executeCommand returns undefined for an admission miss (unknown command)', async () => {
+    // 命令未注册时服务端返回 ok:true 且无 value：什么都没执行，不能当成成功。
+    const fetchImpl = (async () => jsonResponse(undefined)) as typeof fetch;
+    const client = new DshClient('http://127.0.0.1:3080', {
+      credentialsFile: NO_CREDENTIALS_FILE,
+      fetchImpl,
+    });
+    await expect(client.executeCommand(SID, '/nope')).resolves.toBeUndefined();
   });
 
   it('test_anchor_dsh_unary_times_out_and_honors_abort', async () => {

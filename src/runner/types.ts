@@ -150,6 +150,11 @@ export interface ApprovalView {
   kind: 'command' | 'file' | 'permissions' | 'question' | 'tool';
   reason?: string;
   /**
+   * Agent-agnostic scope note rendered at the top of the approval area (e.g. DSH's
+   * "this grant applies to one call only"). Keep the audit reason untouched.
+   */
+  note?: string;
+  /**
    * 提问卡顶部概要行（数据驱动，无 agent 分支）：Kimi elicitation form 的
    * 题面只在 form 级 message 里合并出现，逐字段 title 可能只是短 header，
    * 概要行用于展示完整题干。
@@ -448,6 +453,32 @@ export interface Runner {
 export const AGENT_KINDS = ['claude', 'codex', 'opencode', 'pi', 'kimi', 'dsh'] as const;
 
 export type AgentKind = (typeof AGENT_KINDS)[number];
+
+/**
+ * Compact 能力声明（运行时门控的能力清单，编译期强制完整）。
+ *
+ * 键集就是 `AgentKind`：新增 agent 时缺一项 = TypeScript 报错，必须显式回答
+ * 「这个 agent 能不能压缩」。历史教训：能力只由 runner 上有没有 `runCompact`
+ * 这个鸭子方法隐式决定，dsh 接入时漏了实现，run 卡片直接不渲染按钮——没有
+ * 报错、没有置灰、没有日志，用户只能看到一个缺失的按钮（2026-10-17）。
+ *
+ * 声明与实现的唯一性由 `src/runner/runner-structure.test.ts` 的矩阵用例保证：
+ * 每个 kind 的声明值必须等于对应 runner 类是否实现 `runCompact`。bridge 侧
+ * 仍按「声明 && 实现」双重门控（fail closed），不一致时打 error 日志。
+ */
+export const COMPACT_CAPABILITY: Readonly<Record<AgentKind, boolean>> = {
+  claude: true,
+  codex: true,
+  opencode: true,
+  pi: true,
+  kimi: true,
+  dsh: true,
+};
+
+/** 该 agent 是否声明支持 compact（渲染门控与执行门控共用的唯一判据）。 */
+export function supportsCompact(kind: AgentKind): boolean {
+  return COMPACT_CAPABILITY[kind];
+}
 
 /** Unified session descriptor returned by every AgentSessionReader. */
 export interface AgentSession {

@@ -18,12 +18,17 @@ import type { AgentConfigCardBuilder, ConfigField, SelectOption } from './types.
 import { DEFAULT_DSH_HOST, type AppConfig, type DshConfig } from '../../config/index.js';
 import { DshClient } from '../../runner/dsh/client.js';
 import { getLogger } from '../../logger/index.js';
-import type { DshModelCatalogValue, DshPresetListValue } from '../../runner/dsh/types.js';
+import type {
+  DshModelCatalogValue,
+  DshPermissionCatalogValue,
+  DshPresetListValue,
+} from '../../runner/dsh/types.js';
 
 /** DshConfigBuilder 预取只依赖的 client 方法子集。 */
 export interface DshCatalogClient {
   listModels(): Promise<DshModelCatalogValue>;
   listPresets(): Promise<DshPresetListValue>;
+  listPermissionPresets(): Promise<DshPermissionCatalogValue>;
 }
 
 /** 固定兜底 preset 清单（DSH 0.2.x 实测；动态拉取失败时使用）。 */
@@ -40,6 +45,13 @@ const FALLBACK_MODEL_OPTIONS = ['deepseek-flash', 'deepseek-v4-pro'];
 /** 固定兜底推理档位（session/modelCatalog 实际档位；动态拉取失败时使用）。 */
 const FALLBACK_EFFORT_OPTIONS = ['off', 'low', 'high', 'max'] as const;
 
+/** 固定兜底权限预设（DSH 0.2.x 实测；动态拉取失败时使用）。 */
+const FALLBACK_PERMISSION_OPTIONS: SelectOption[] = [
+  { text: 'read-only（只读）', value: 'read-only' },
+  { text: 'workspace-write（工作区可写）', value: 'workspace-write' },
+  { text: 'danger-full-access（完全访问，关闭审批）', value: 'danger-full-access' },
+];
+
 /** 「跟随服务端默认」哨兵值：select value 用空串，保存时转 undefined 删除键。 */
 const DEFAULT_SENTINEL = '';
 
@@ -48,6 +60,7 @@ export class DshConfigBuilder implements AgentConfigCardBuilder {
   private prefetchHost: string | undefined;
   private modelCatalog: DshModelCatalogValue | undefined;
   private presets: DshPresetListValue | undefined;
+  private permissionCatalog: DshPermissionCatalogValue | undefined;
   /** 可注入 client 工厂（测试用）；默认生产实现。 */
   private readonly clientFactory: (
     baseUrl: string,
@@ -86,14 +99,29 @@ export class DshConfigBuilder implements AgentConfigCardBuilder {
       );
       this.presets = undefined;
     }
+    try {
+      this.permissionCatalog = await client.listPermissionPresets();
+    } catch (err) {
+      getLogger().warn(
+        `[dsh-config] permissionPresets/catalog prefetch failed (falling back to fixed presets): ${
+          (err as Error).message
+        }`,
+      );
+      this.permissionCatalog = undefined;
+    }
     this.prefetchHost = key;
   }
 
   /** 同步注入 catalog/presets（测试用，替代异步 prefetch；标记 prefetchHost 使
    *  后续 prefetch 短路，避免测试误触发网络请求）。 */
-  setCatalog(catalog: DshModelCatalogValue, presets?: DshPresetListValue): void {
+  setCatalog(
+    catalog: DshModelCatalogValue,
+    presets?: DshPresetListValue,
+    permissionCatalog?: DshPermissionCatalogValue,
+  ): void {
     this.modelCatalog = catalog;
     if (presets) this.presets = presets;
+    if (permissionCatalog) this.permissionCatalog = permissionCatalog;
     this.prefetchHost = 'injected';
   }
 
@@ -116,6 +144,33 @@ export class DshConfigBuilder implements AgentConfigCardBuilder {
     return FALLBACK_PRESET_OPTIONS;
   }
 
+  /** 权限预设清单；配置默认只允许 defaultOptions（auto 只适用于当前会话）。 */
+  private permissionOptions(): readonly SelectOption[] {
+    const entries = this.permissionCatalog?.defaultOptions;
+    if (entries && entries.length > 0) {
+      return entries.map((p) => ({
+        text:
+          p.value === 'read-only'
+            ? 'read-only（只读）'
+            : p.value === 'workspace-write'
+              ? 'workspace-write（工作区可写）'
+              : p.value === 'danger-full-access'
+                ? 'danger-full-access（完全访问，关闭审批）'
+                : p.name && p.name !== p.value
+                  ? `${p.value}（${p.name}）`
+                  : p.value,
+        value: p.value,
+      }));
+    }
+    return FALLBACK_PERMISSION_OPTIONS;
+  }
+
+  /** “跟随服务端默认”文案带上实际默认值，避免用户不知道默认是什么。 */
+  private permissionDefaultText(): string {
+    const current = this.permissionCatalog?.defaultPreset;
+    return current ? `跟随服务端默认（当前 ${current}）` : '跟随服务端默认';
+  }
+
   /** 模型在 catalog 中声明的推理档位；无 catalog/模型不在目录时回退固定档位。 */
   private effortOptionsForModel(model?: string): readonly string[] {
     if (model && this.modelCatalog) {
@@ -133,11 +188,22 @@ export class DshConfigBuilder implements AgentConfigCardBuilder {
     const dsh = displayConfig.agents?.dsh as DshConfig | undefined;
     const currentHost = dsh?.host ?? DEFAULT_DSH_HOST;
     const currentPreset = dsh?.agentPreset ?? DEFAULT_SENTINEL;
+    const currentPermission = dsh?.permissionPreset ?? DEFAULT_SENTINEL;
     const currentModel = dsh?.model ?? DEFAULT_SENTINEL;
     const currentEffort = dsh?.reasoningEffort ?? DEFAULT_SENTINEL;
 
     const modelOptions = this.modelOptions();
     const isCustomModel = currentModel !== DEFAULT_SENTINEL && !modelOptions.includes(currentModel);
+    const permissionOptions = [...this.permissionOptions()];
+    if (
+      currentPermission !== DEFAULT_SENTINEL &&
+      !permissionOptions.some((option) => option.value === currentPermission)
+    ) {
+      permissionOptions.push({
+        text: `${currentPermission}（当前配置，服务端未列出）`,
+        value: currentPermission,
+      });
+    }
     const effortOptions = this.effortOptionsForModel(
       currentModel === DEFAULT_SENTINEL ? undefined : currentModel,
     );
@@ -151,10 +217,26 @@ export class DshConfigBuilder implements AgentConfigCardBuilder {
       },
       {
         key: 'agents.dsh.agentPreset',
-        label: '预设模式',
+        label: '预设模式（工具集）',
         type: 'select',
         options: [{ text: '跟随服务端默认', value: DEFAULT_SENTINEL }, ...this.presetOptions()],
         currentValue: currentPreset,
+      },
+      {
+        key: 'agents.dsh.permissionPreset',
+        label: '权限预设（沙箱 + 审批）',
+        type: 'select',
+        options: [
+          { text: this.permissionDefaultText(), value: DEFAULT_SENTINEL },
+          ...permissionOptions,
+        ],
+        currentValue: currentPermission,
+      },
+      {
+        key: 'agents.dsh.permissionPreset',
+        label:
+          'ℹ️ 保存后，下一条 DSH 消息的 run 前生效；运行中的 turn 不会中途切换。danger-full-access 会关闭审批，仅在信任的仓库使用。',
+        type: 'note',
       },
       {
         key: 'agents.dsh.model',

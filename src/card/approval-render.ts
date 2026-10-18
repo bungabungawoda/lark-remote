@@ -53,6 +53,14 @@ export function renderApprovalArea(
 
   const elements: object[] = [];
 
+  if (approval.note) {
+    const neutralized = approval.note.replace(/`/g, '·');
+    elements.push({
+      tag: 'div',
+      text: { tag: 'lark_md', content: `ℹ️ ${neutralized}` },
+    });
+  }
+
   if (approval.kind === 'command') {
     elements.push(...renderCommandApproval(approval, opts?.expired, opts?.runId));
   } else if (approval.kind === 'tool') {

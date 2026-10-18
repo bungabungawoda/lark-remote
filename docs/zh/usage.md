@@ -49,43 +49,44 @@ lark-remote
 
 ```yaml
 feishu:
-  appId: cli_xxx            # 飞书应用 App ID
-  appSecret: xxx            # 飞书应用 App Secret
+  appId: cli_xxx # 飞书应用 App ID
+  appSecret: xxx # 飞书应用 App Secret
 
 # 默认 agent：claude | codex | opencode | pi | kimi | dsh，默认 claude
 defaultAgent: claude
 
 claude:
-  model: claude-opus-4-8    # 模型
-  effort: medium            # 推理强度 low | medium | high | xhigh | max
-  permissionMode: bypassPermissions  # 取值：default（=不传 --permission-mode，CLI 无此值）| acceptEdits | auto | bypassPermissions | manual | dontAsk | plan（/config 卡片可切换）
-  stopGraceMs: 5000         # 空闲超时自动停止时的优雅关闭宽限时间（毫秒）
+  model: claude-opus-4-8 # 模型
+  effort: medium # 推理强度 low | medium | high | xhigh | max
+  permissionMode: bypassPermissions # 取值：default（=不传 --permission-mode，CLI 无此值）| acceptEdits | auto | bypassPermissions | manual | dontAsk | plan（/config 卡片可切换）
+  stopGraceMs: 5000 # 空闲超时自动停止时的优雅关闭宽限时间（毫秒）
 
 agents:
-  kimi:                     # 纯 ACP 模式（kimi acp 持久连接，支持审批 + compact）
-    permissionMode: manual  # manual（始终询问）| yolo（必要时询问）| auto（完全自动）；kimi 0.40+ 语义，无人值守全放行用 auto
-    acp:                    # acp 连接参数
+  kimi: # 纯 ACP 模式（kimi acp 持久连接，支持审批 + compact）
+    permissionMode: manual # manual（始终询问）| yolo（必要时询问）| auto（完全自动）；kimi 0.40+ 语义，无人值守全放行用 auto
+    acp: # acp 连接参数
       binary: kimi
       requestTimeoutMs: 60000
       idleTtlMs: 1800000
       turnIdleTimeoutMinutes: 10
-  dsh:                      # DSH（DeepSeek Harness）Web Host 直连（HTTP+WS，全机共享进程）
-    host: http://127.0.0.1:3080   # 本地 DSH Web Host 地址，默认 3080 端口
-    manageProcess: true           # 未运行时由 lark-remote 后台拉起（detached，退出不停止 DSH）
-    dshHome: ''                   # 可选：DSH_HOME，默认 $DSH_HOME 或 ~/.dsh
-    dshCommand: dsh               # 可选：dsh 可执行文件
-    startTimeoutMs: 30000         # 后台启动后等待端口可用的上限
-    token: ''                     # 可选兜底：dsh web 启动 URL 里的 token（重启后会变）
-    credentialsFile: ''           # 可选：DSH 凭据文件；默认 $DSH_HOME/.credentials.yaml 或 ~/.dsh/.credentials.yaml
-    agentPreset: ''               # preset（标准/极简/...）；留空 = 跟随服务端默认；session 创建后不可改
-    model: ''                     # 模型名（如 deepseek-v4-flash / deepseek-v4-pro）；留空 = 跟随服务端默认
-    reasoningEffort: ''           # off/low/high/max；留空 = 跟随服务端默认
+  dsh: # DSH（DeepSeek Harness）Web Host 直连（HTTP+WS，全机共享进程）
+    host: http://127.0.0.1:3080 # 本地 DSH Web Host 地址，默认 3080 端口
+    manageProcess: true # 未运行时由 lark-remote 后台拉起（detached，退出不停止 DSH）
+    dshHome: '' # 可选：DSH_HOME，默认 $DSH_HOME 或 ~/.dsh
+    dshCommand: dsh # 可选：dsh 可执行文件
+    startTimeoutMs: 30000 # 后台启动后等待端口可用的上限
+    token: '' # 可选兜底：dsh web 启动 URL 里的 token（重启后会变）
+    credentialsFile: '' # 可选：DSH 凭据文件；默认 $DSH_HOME/.credentials.yaml 或 ~/.dsh/.credentials.yaml
+    agentPreset: '' # preset（标准/极简/...）；留空 = 跟随服务端默认；session 创建后不可改
+    permissionPreset: '' # 权限预设（沙箱 + 审批策略）；留空 = 不干预
+    model: '' # 模型名（如 deepseek-v4-flash / deepseek-v4-pro）；留空 = 跟随服务端默认
+    reasoningEffort: '' # off/low/high/max；留空 = 跟随服务端默认
 
 logging:
-  level: info               # debug | info | warn | error
+  level: info # debug | info | warn | error
 
 idle:
-  watchdogMinutes: 15       # 空闲超时自动停止，0 关闭
+  watchdogMinutes: 15 # 空闲超时自动停止，0 关闭
 ```
 
 配置文件路径可用 `--config-dir` CLI 参数覆盖（如 `lark-remote --config-dir /path/to/dir`）。
@@ -98,7 +99,7 @@ DSH 与其他 5 个 agent 不同：agent runner 不持有本地子进程，而�
 
 后台拉起的 DSH 工作目录是 `DSH_HOME`，不会读取某个项目目录下的 `.env`。需要给 DSH 进程注入环境变量时，放在 `$DSH_HOME/.env` 或 lark-remote 的启动环境中。一个 `DSH_HOME` 约定只跑一个 DSH；端口用固定值（默认 3080），不要用 `--port 0`。
 
-可用配置项（`agentPreset`/`model`/`reasoningEffort` 可在 `/config` 卡片改写保存；`token`/`credentialsFile` 仅 YAML 配置，不在卡片展示或保存）：
+可用配置项（`agentPreset`/`permissionPreset`/`model`/`reasoningEffort` 可在 `/config` 卡片改写保存；`token`/`credentialsFile` 仅 YAML 配置，不在卡片展示或保存）：
 
 - `agents.dsh.host`：DSH Web Host base URL，默认 `http://127.0.0.1:3080`。**修改会触发停放当前 dsh session 到恢复槽**（下次消息新建会话，避免 host 不一致导致 session 历史归属错乱）。
 - `agents.dsh.manageProcess`：未探测到 DSH 时是否由 lark-remote 拉起，默认 `true`。子进程以 detached 方式运行，lark-remote 退出、重启都不会停止它；设为 `false` 时只连接已运行的 DSH。
@@ -108,10 +109,11 @@ DSH 与其他 5 个 agent 不同：agent runner 不持有本地子进程，而�
 - `agents.dsh.token`：可选的 YAML 兜底凭据，填 `dsh web` 启动 token 或整条启动 URL。**只在配置文件里使用，不在 `/config` 卡片展示或保存**，避免启动 token 出现在飞书卡片上。只有在默认凭据文件不可读（例如 DSH 使用了不同的 `DSH_HOME` 且未配置 `credentialsFile`）时才需要；正常自动模式下无需维护。
 - `agents.dsh.credentialsFile`：DSH 凭据文件路径（YAML 配置项）。留空时按 `$DSH_HOME/.credentials.yaml` → `~/.dsh/.credentials.yaml` 解析。lark-remote 只读取 `client-connection/browser-session` 记录，不修改文件、不打印密钥；文件权限必须是 `0600`。
 - `agents.dsh.agentPreset`：preset（standard / code / minimal / cordis 等，随服务端 profile bundle 变化）。**session 创建时固定，中途切换服务端返回 `agent-preset-conflict`**；切换 agentPreset 会清空当前 dsh session（session 历史是在该 preset 下产生的，换 preset 等于换语义上下文）。
+- `agents.dsh.permissionPreset`：权限预设（沙箱模式 + 审批策略，如 `read-only` / `workspace-write` / `danger-full-access`）。与 `agentPreset` 不同，它**可以中途切换**；lark-remote 在会话首次 run 前执行一次 `/permission <preset>` 对齐，同一 session 不重复覆盖。留空 = 不干预，跟随 DSH 当前会话/服务端默认。保存配置时如果 turn 正在运行，新预设从下一轮开始生效，不会在当前审批下面突然改权限。执行 `/permission` 失败时 run 会 fail closed（不发 prompt）。
 - `agents.dsh.model`：模型 ID（默认服务端 `deepseek-v4-flash`）；保留 session，会话首次 run 时对齐一次（`session.selectModel`，同一 session 不重复调用）。
 - `agents.dsh.reasoningEffort`：off / low / high / max；保留 session，会话首次 run 时对齐一次。
 
-跑 dsh 期间如果服务端发出 `approval/requested`，lark-remote 会在卡片上提示「请到 DSH Web UI 处理」并保留 turn 存活（不静默 park），等用户在 Web UI 解决或 turn 被取消 / 超时。
+跑 dsh 期间如果服务端发出 `approval/requested`，lark-remote 会把它渲染成 run 卡底部的审批区，显示命令/工具、模型给出的 justification，并提供「允许一次 / 拒绝」。允许只对这一次调用生效，不会改变会话权限预设。如果 `$events` 审批通道不可用（旧版 DSH 或凭据没有 answer 能力），卡片回退为「请到 DSH Web UI 处理」并保留 turn 存活；在 Web UI 先处理时，飞书审批区也会自动撤掉。
 
 ---
 
@@ -134,33 +136,33 @@ lark-remote 运行期间会**阻止系统自动休眠**，以免远程连接不�
 
 直接发非 `/` 开头的消息即转发给 Claude。以 `/` 开头走内置命令，**部分命令支持单字母别名**（`/help /h`、`/status /s`、`/stop /t`、`/exit /e`、`/resume /r`、`/config /c`、`/order /o`、`/download /d`）：
 
-| 命令 | 别名 | 行为 |
-|------|------|------|
-| `/help` | `/h` | 显示命令列表 |
-| `/cd <path>` | - | 切换 Claude 工作目录（支持 `~`、绝对/相对路径，会清空当前会话，下次消息开新对话） |
-| `/cd` | - | 不带参数时显示当前目录 |
-| `/ls [dir\|file]` | - | 弹出目录/文件卡片；点击目录切换，点击 30MB 内文件发送到飞书；条目 >30 时分页（可直接输入页码跳转），卡片内可按关键词筛选本层条目。传文件路径时列出该文件本身 |
-| `/download <path>` | `/d` | 直接下载（发送）指定文件到飞书，上限 30MB |
-| `/ws save <name>` | - | 把当前目录保存为命名别名 |
-| `/ws use <name>` | - | 切换到别名目录（清空会话） |
-| `/ws remove <name>` | - | 删除别名 |
-| `/ws` `/ws list` | - | 列出所有别名（卡片，带「使用」「删除」按钮，可按名称/路径关键词筛选） |
-| `/resume [agent] [N]` | `/r` | 列出/切换当前目录的 agent session（卡片，分页，默认每页 5 个） |
-| `/resume <id>` | - | 手动切换到指定 session id |
-| `/active` | - | 列出本进程内存中正在进行中的任务（包括 Agent 任务和 Bash 命令） |
-| `/new` | - | 清空当前 session（清 `sessionId` + `sessionCwds`，**工作目录保留**），下次消息开新对话 |
-| `/status` | `/s` | 显示工作目录、会话目录（不同时）、session、模型、进程状态 |
-| `/stop` | `/t` | 终止当前 agent 进程（SIGTERM 后立即 SIGKILL，不等宽限期） |
-| `/ps` | - | 查询是否有进程在跑 |
-| `/config` | `/c` | 查看配置（卡片交互：下拉/输入选择，保存按钮落盘） |
-| `/order save <text>` | `/o` | 保存常用指令 |
-| `/order` `/order list` | `/o` | 列出已保存的指令（卡片，可给指令起别名、编辑、删除） |
-| `/order edit <orderId\|序号> <新文本>` | `/o` | 编辑指令文本（卡片「编辑」按钮是主入口，保留别名和使用统计） |
-| `/order alias add <orderId\|序号> <别名名>` | `/o` | 给指令绑定别名（也可在卡片上「＋别名」操作），之后输入 `$name` 即展开 |
-| `/order alias rm <orderId\|序号>` | `/o` | 移除指令的别名 |
-| `/exit` | `/e` | 退出 lark-remote |
-| `/restart` | - | 原地自重启 lark-remote：新进程同 config 接管，启动通知稍后送达 |
-| `/clone <name>` | - | 复制分身：克隆配置到新目录并扫码创建新应用，完成后自动绑定并拉起新实例 |
+| 命令                                        | 别名 | 行为                                                                                                                                                         |
+| ------------------------------------------- | ---- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `/help`                                     | `/h` | 显示命令列表                                                                                                                                                 |
+| `/cd <path>`                                | -    | 切换 Claude 工作目录（支持 `~`、绝对/相对路径，会清空当前会话，下次消息开新对话）                                                                            |
+| `/cd`                                       | -    | 不带参数时显示当前目录                                                                                                                                       |
+| `/ls [dir\|file]`                           | -    | 弹出目录/文件卡片；点击目录切换，点击 30MB 内文件发送到飞书；条目 >30 时分页（可直接输入页码跳转），卡片内可按关键词筛选本层条目。传文件路径时列出该文件本身 |
+| `/download <path>`                          | `/d` | 直接下载（发送）指定文件到飞书，上限 30MB                                                                                                                    |
+| `/ws save <name>`                           | -    | 把当前目录保存为命名别名                                                                                                                                     |
+| `/ws use <name>`                            | -    | 切换到别名目录（清空会话）                                                                                                                                   |
+| `/ws remove <name>`                         | -    | 删除别名                                                                                                                                                     |
+| `/ws` `/ws list`                            | -    | 列出所有别名（卡片，带「使用」「删除」按钮，可按名称/路径关键词筛选）                                                                                        |
+| `/resume [agent] [N]`                       | `/r` | 列出/切换当前目录的 agent session（卡片，分页，默认每页 5 个）                                                                                               |
+| `/resume <id>`                              | -    | 手动切换到指定 session id                                                                                                                                    |
+| `/active`                                   | -    | 列出本进程内存中正在进行中的任务（包括 Agent 任务和 Bash 命令）                                                                                              |
+| `/new`                                      | -    | 清空当前 session（清 `sessionId` + `sessionCwds`，**工作目录保留**），下次消息开新对话                                                                       |
+| `/status`                                   | `/s` | 显示工作目录、会话目录（不同时）、session、模型、进程状态                                                                                                    |
+| `/stop`                                     | `/t` | 终止当前 agent 进程（SIGTERM 后立即 SIGKILL，不等宽限期）                                                                                                    |
+| `/ps`                                       | -    | 查询是否有进程在跑                                                                                                                                           |
+| `/config`                                   | `/c` | 查看配置（卡片交互：下拉/输入选择，保存按钮落盘）                                                                                                            |
+| `/order save <text>`                        | `/o` | 保存常用指令                                                                                                                                                 |
+| `/order` `/order list`                      | `/o` | 列出已保存的指令（卡片，可给指令起别名、编辑、删除）                                                                                                         |
+| `/order edit <orderId\|序号> <新文本>`      | `/o` | 编辑指令文本（卡片「编辑」按钮是主入口，保留别名和使用统计）                                                                                                 |
+| `/order alias add <orderId\|序号> <别名名>` | `/o` | 给指令绑定别名（也可在卡片上「＋别名」操作），之后输入 `$name` 即展开                                                                                        |
+| `/order alias rm <orderId\|序号>`           | `/o` | 移除指令的别名                                                                                                                                               |
+| `/exit`                                     | `/e` | 退出 lark-remote                                                                                                                                             |
+| `/restart`                                  | -    | 原地自重启 lark-remote：新进程同 config 接管，启动通知稍后送达                                                                                               |
+| `/clone <name>`                             | -    | 复制分身：克隆配置到新目录并扫码创建新应用，完成后自动绑定并拉起新实例                                                                                       |
 
 ### 命令详解
 
@@ -210,7 +212,6 @@ lark-remote 运行期间会**阻止系统自动休眠**，以免远程连接不�
 ```
 
 > `/cd`、`/ws use`、`/ls` 点击切换目录时都会清空 session（开新对话，§9.1），因为 `--resume` 会恢复 Claude 记忆中的旧 cwd，跨目录续 session 会导致文件读写错乱。要续旧 session 请先切回对应目录再 `/resume`。Claude 会话内 `EnterWorktree` 会 relocate 到 worktree，`/s` 显示「会话目录」告知实际位置，`/new` 可回工作目录。
-
 
 #### `/stop`：终止进程
 
@@ -277,7 +278,7 @@ config.yaml 可选配置（默认即可用）：
 ```yaml
 inboundMedia:
   enabled: true
-  dirName: ".lark-remote-temp"
+  dirName: '.lark-remote-temp'
   maxFileSizeMb: 100
 ```
 
@@ -379,16 +380,16 @@ tool_use / tool_result 恒常展示（不做配置开关）：
 
 ## 八、异常处理
 
-| 情况 | 行为 |
-|------|------|
-| claude 进程被外部 kill | lark-remote 报错但不崩溃，下一条消息正常处理 |
+| 情况                        | 行为                                                        |
+| --------------------------- | ----------------------------------------------------------- |
+| claude 进程被外部 kill      | lark-remote 报错但不崩溃，下一条消息正常处理                |
 | claude 长时间无输出（挂起） | 15 分钟空闲超时自动终止进程，原卡片显示超时，queue 解除阻塞 |
-| lark-remote 异常退出 | 残留 claude 进程被清理（启动时读 pid 文件 kill 孤儿） |
-| 同一 configDir 重复启动 | 第二个实例直接退出并提示已有 pid |
-| 飞书限流（99991400） | 自动 sleep 200ms 重试一次 |
-| `/ls` 点击文件发送失败 | 返回 `发送文件失败: ...`，30MB 以上文件在上传前拒绝 |
-| 消息并发到达 | 串行处理（Promise 链），不会启动多个 claude 进程 |
-| `/cd` 后发消息 | 清空 session，开新对话（不带 `--resume`） |
+| lark-remote 异常退出        | 残留 claude 进程被清理（启动时读 pid 文件 kill 孤儿）       |
+| 同一 configDir 重复启动     | 第二个实例直接退出并提示已有 pid                            |
+| 飞书限流（99991400）        | 自动 sleep 200ms 重试一次                                   |
+| `/ls` 点击文件发送失败      | 返回 `发送文件失败: ...`，30MB 以上文件在上传前拒绝         |
+| 消息并发到达                | 串行处理（Promise 链），不会启动多个 claude 进程            |
+| `/cd` 后发消息              | 清空 session，开新对话（不带 `--resume`）                   |
 
 ---
 
@@ -406,11 +407,11 @@ stream 生命周期）、lark-remote（work queue + control lane + 空闲超时�
 
 ## 十、深入文档
 
-| 想了解 | 看哪里 |
-|--------|--------|
-| 整体设计、JSONL 事件、坑点 | [`architecture/design.md`](architecture/design.md) |
-| 单卡流式架构与飞书验收 | [`architecture/streaming-card.md`](architecture/streaming-card.md) |
-| 新增 agent 接入模板 | [`guides/add-new-agent.md`](guides/add-new-agent.md) |
-| Codex 配置卡片指南 | [`guides/codex-config.md`](guides/codex-config.md) |
-| 飞书 CardKit 2.0 组件参考 | [飞书开放平台官方文档](https://open.feishu.cn/document/feishu-cards/card-json-v2-components/component-json-v2-overview) |
-| 入门指南 | [`getting-started.md`](getting-started.md) |
+| 想了解                     | 看哪里                                                                                                                  |
+| -------------------------- | ----------------------------------------------------------------------------------------------------------------------- |
+| 整体设计、JSONL 事件、坑点 | [`architecture/design.md`](architecture/design.md)                                                                      |
+| 单卡流式架构与飞书验收     | [`architecture/streaming-card.md`](architecture/streaming-card.md)                                                      |
+| 新增 agent 接入模板        | [`guides/add-new-agent.md`](guides/add-new-agent.md)                                                                    |
+| Codex 配置卡片指南         | [`guides/codex-config.md`](guides/codex-config.md)                                                                      |
+| 飞书 CardKit 2.0 组件参考  | [飞书开放平台官方文档](https://open.feishu.cn/document/feishu-cards/card-json-v2-components/component-json-v2-overview) |
+| 入门指南                   | [`getting-started.md`](getting-started.md)                                                                              |
