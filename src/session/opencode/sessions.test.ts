@@ -56,6 +56,24 @@ function buildExportJson(opts: {
   });
 }
 
+// Helper: build a minimal valid v2 `session export` payload. v2 flattens
+// messages to `{type,text,content}` and moves cwd under `info.location`.
+function buildV2ExportJson(opts: {
+  title?: string;
+  directory: string;
+  messages: Array<Record<string, unknown>>;
+}): string {
+  return JSON.stringify({
+    info: {
+      id: 'ses_v2',
+      title: opts.title ?? '',
+      location: { directory: opts.directory },
+      time: { created: 1, updated: 2 },
+    },
+    messages: opts.messages,
+  });
+}
+
 describe('OpencodeSessionReader - L1: empty output handling', () => {
   let reader: OpencodeSessionReader;
 
@@ -136,7 +154,7 @@ describe('OpencodeSessionReader - L1: empty output handling', () => {
     // 变成「没有 session」，timeout 与 windowsHide 同理只在出错时才看得见。
     expect(spawnProcessSync).toHaveBeenCalledWith(
       'opencode',
-      ['session', 'list', '--format', 'json'],
+      ['session', 'list', '--format', 'json', '--max-count', '10000', '--standalone'],
       {
         encoding: 'utf-8',
         timeout: 10_000,
@@ -252,7 +270,7 @@ describe('OpencodeSessionReader - L1/L2/L3: large/corrupt export handling', () =
     expect(out).toBe('');
     expect(spawnProcessSync).toHaveBeenCalledWith(
       'opencode',
-      ['export', 'ses_tr'],
+      ['session', 'export', '--standalone', 'ses_tr'],
       // stdout 走文件 fd，stderr 仍是 pipe，所以 maxBuffer 也要拉起；
       // opencode 是 npm .cmd 垫片，windowsHide 关掉会闪控制台。
       expect.objectContaining({
@@ -271,6 +289,169 @@ describe('OpencodeSessionReader - L1/L2/L3: large/corrupt export handling', () =
     expect(stdio[0]).toBe('ignore'); // stdin ignored
     expect(typeof stdio[1]).toBe('number'); // stdout -> file fd (NOT 'pipe')
     expect(stdio[2]).toBe('pipe'); // stderr still captured
+  });
+
+  it('L1: falls back to v1 top-level export when session export is unavailable', () => {
+    vi.mocked(spawnProcessSync)
+      .mockReturnValueOnce({
+        status: 1,
+        stdout: 'DESCRIPTION\n  OpenCode command line interface\n',
+        stderr: '',
+      } as unknown as ReturnType<typeof spawnProcessSync>)
+      .mockReturnValueOnce({
+        status: 1,
+        stdout: 'DESCRIPTION\n  OpenCode command line interface\n',
+        stderr: '',
+      } as unknown as ReturnType<typeof spawnProcessSync>)
+      .mockReturnValueOnce({
+        status: 0,
+        stdout: '',
+        stderr: '',
+      } as unknown as ReturnType<typeof spawnProcessSync>);
+
+    const r = new OpencodeSessionReader({ cacheTtlMs: 0 });
+    r.captureExport('ses_v1');
+
+    const calls = vi.mocked(spawnProcessSync).mock.calls;
+    expect(calls[0]![1]).toEqual(['session', 'export', '--standalone', 'ses_v1']);
+    expect(calls[1]![1]).toEqual(['session', 'export', 'ses_v1']);
+    expect(calls[2]![1]).toEqual(['export', 'ses_v1']);
+  });
+
+  it('L1: does not retry the v1 export command for a missing session', () => {
+    vi.mocked(spawnProcessSync).mockReturnValue({
+      status: 1,
+      stdout: '',
+      stderr: 'Session not found: ses_missing',
+    } as unknown as ReturnType<typeof spawnProcessSync>);
+
+    const r = new OpencodeSessionReader({ cacheTtlMs: 0 });
+    expect(r.captureExport('ses_missing')).toBe('');
+
+    const calls = vi.mocked(spawnProcessSync).mock.calls;
+    expect(calls).toHaveLength(2);
+    expect(calls[0]![1]).toEqual(['session', 'export', '--standalone', 'ses_missing']);
+    expect(calls[1]![1]).toEqual(['session', 'export', 'ses_missing']);
+  });
+
+  it('L1: v2 export maps flat messages, tool results, and message-level tokens', () => {
+    const raw = buildV2ExportJson({
+      title: 'v2 title',
+      directory: cwd,
+      messages: [
+        { id: 'm0', type: 'system', time: { created: 1 }, text: 'SYSTEM-PROMPT' },
+        { id: 'm1', type: 'user', time: { created: 2 }, text: 'hello' },
+        {
+          id: 'm2',
+          type: 'assistant',
+          time: { created: 3 },
+          agent: 'build',
+          content: [
+            { type: 'reasoning', text: 'think' },
+            { type: 'text', text: 'answer' },
+          ],
+          tokens: {
+            input: 10,
+            output: 5,
+            reasoning: 2,
+            cache: { read: 3, write: 1 },
+          },
+        },
+        { id: 'm3', type: 'user', time: { created: 4 }, text: 'second' },
+        {
+          id: 'm4',
+          type: 'assistant',
+          time: { created: 5 },
+          agent: 'build',
+          content: [
+            {
+              type: 'tool',
+              id: 'call_1',
+              name: 'bash',
+              state: {
+                status: 'completed',
+                input: { command: 'pwd' },
+                content: [{ type: 'text', text: '/repo' }],
+              },
+            },
+            { type: 'text', text: 'ok' },
+          ],
+          tokens: {
+            input: 20,
+            output: 4,
+            reasoning: 0,
+            cache: { read: 6, write: 2 },
+          },
+        },
+      ],
+    });
+    const r = new OpencodeSessionReader({
+      cacheTtlMs: 0,
+      captureExport: () => raw,
+    });
+
+    const content = r.readSessionContent('ses_v2', cwd);
+
+    expect(content.aiTitle).toBe('v2 title');
+    expect(content.displayTitle).toBe('second');
+    expect(content.events.map((e) => e.type)).toEqual(['text', 'tool_use', 'tool_result', 'text']);
+    expect(content.events[0]!.content).toBe('second');
+    expect(JSON.parse(content.events[1]!.content)).toEqual({
+      id: 'call_1',
+      name: 'bash',
+      input: { command: 'pwd' },
+    });
+    expect(content.events[2]!.content).toBe('/repo');
+    expect(content.events[3]!.content).toBe('ok');
+    expect(content.usage).toMatchObject({
+      inputTokens: 20,
+      outputTokens: 4,
+      contextLength: 28,
+      cacheReadTokens: 6,
+      cacheCreationTokens: 2,
+      totalTokens: 32,
+      cumulativeInputTokens: 30,
+      cumulativeOutputTokens: 9,
+      cumulativeCacheReadTokens: 9,
+      cumulativeCacheCreationTokens: 3,
+      cumulativeTotalTokens: 53,
+    });
+  });
+
+  it('L1: v2 error tool results surface state.error.message', () => {
+    const raw = buildV2ExportJson({
+      directory: cwd,
+      messages: [
+        { id: 'm1', type: 'user', time: { created: 1 }, text: 'run' },
+        {
+          id: 'm2',
+          type: 'assistant',
+          time: { created: 2 },
+          content: [
+            {
+              type: 'tool',
+              id: 'call_err',
+              name: 'bash',
+              state: {
+                status: 'error',
+                input: { command: 'false' },
+                content: [],
+                error: { type: 'unknown', message: 'command failed' },
+              },
+            },
+          ],
+        },
+      ],
+    });
+    const r = new OpencodeSessionReader({
+      cacheTtlMs: 0,
+      captureExport: () => raw,
+    });
+
+    const content = r.readSessionContent('ses_v2', cwd);
+
+    expect(content.events.map((e) => e.type)).toEqual(['text', 'tool_use', 'tool_result']);
+    expect(content.events[2]!.content).toBe('command failed');
   });
 
   // a pathological tool_result output is pre-folded at event-build time,

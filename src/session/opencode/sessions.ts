@@ -1,10 +1,12 @@
 /**
- * OpencodeSessionReader: CLI-based session reader using `opencode session list` and `opencode export`.
+ * OpencodeSessionReader: CLI-based session reader using `opencode session list`
+ * and `opencode session export` (v2) / `opencode export` (v1).
  *
  * Design:
  * - Uses official CLI commands instead of HTTP API.
  * - `opencode session list --format json` returns sessions with `directory` field (first-class citizen).
- * - `opencode export <sessionID>` returns full session content.
+ * - `opencode session export <sessionID>` (v2) or `opencode export <sessionID>`
+ *   (v1) returns full session content.
  * - Independent of runner (no setRunner circular dependency).
  *
  * Key features:
@@ -35,10 +37,12 @@ import type {
 } from '../../runner/index.js';
 
 interface OpencodeSessionReaderOptions {
+  /** Path to the opencode binary. Defaults to `opencode`. */
+  binary?: string;
   /** Cache TTL for session list (ms). Default: 10_000. */
   cacheTtlMs?: number;
   /**
-   * Override the raw `opencode export <id>` capture (returns the JSON string).
+   * Override the raw export capture (returns the JSON string).
    * Default routes stdout to a temp file fd to bypass opencode's ~128KB pipe
    * truncation on large sessions. Injectable for testing.
    */
@@ -86,8 +90,11 @@ interface OpencodeExportMessage {
 interface OpencodeExportData {
   info: {
     id: string;
-    title: string;
-    directory: string;
+    title?: string;
+    /** v1 export shape. */
+    directory?: string;
+    /** v2 export shape. */
+    location?: { directory?: string };
     agent?: string;
     model?: { id: string; providerID: string };
     tokens?: {
@@ -101,6 +108,112 @@ interface OpencodeExportData {
   messages: OpencodeExportMessage[];
 }
 
+/**
+ * v2 `session export` messages are flattened: `{type, text, content}` rather
+ * than v1's `{info, parts}` envelope. Keep the v2 types local to this reader —
+ * they are an external JSON contract, not an internal model.
+ */
+interface OpencodeV2Message {
+  id?: string;
+  type: string;
+  time?: { created?: number; completed?: number };
+  text?: string;
+  content?: Array<OpencodeV2ContentPart>;
+  tokens?: {
+    input: number;
+    output: number;
+    reasoning: number;
+    cache?: { read: number; write: number };
+  };
+  error?: { type?: string; message?: string };
+  command?: string;
+  output?: string;
+  callID?: string;
+  summary?: string;
+}
+
+interface OpencodeV2ContentPart {
+  type: string;
+  text?: string;
+  id?: string;
+  name?: string;
+  state?: {
+    status?: string;
+    input?: unknown;
+    content?: Array<{ type?: string; text?: string; content?: { type?: string; text?: string } }>;
+    error?: { type?: string; message?: string } | string;
+    result?: unknown;
+  };
+}
+
+interface OpencodeV2ExportData {
+  info: {
+    title?: string;
+    location?: { directory?: string };
+    directory?: string;
+  };
+  messages: OpencodeV2Message[];
+}
+
+/** v2 CLI defaults `session list` to 100 entries; keep the reader's historical
+ *  "all sessions in this cwd" contract by asking for a high explicit limit. */
+const MAX_SESSION_LIST_COUNT = 10_000;
+
+function isV2Export(data: OpencodeExportData | OpencodeV2ExportData): data is OpencodeV2ExportData {
+  if (data.info && 'location' in data.info) return true;
+  const messages = (data as { messages?: unknown }).messages;
+  if (!Array.isArray(messages)) return false;
+  return messages.some(
+    (m) =>
+      m !== null &&
+      typeof m === 'object' &&
+      typeof (m as { type?: unknown }).type === 'string' &&
+      !('info' in (m as object)),
+  );
+}
+
+/** v1 stores the cwd at `info.directory`; v2 moved it under `info.location`. */
+function exportDirectory(data: OpencodeExportData | OpencodeV2ExportData): string | undefined {
+  const info = data.info as OpencodeExportData['info'] | OpencodeV2ExportData['info'] | undefined;
+  return info?.directory ?? info?.location?.directory;
+}
+
+function parseToolInput(value: unknown): unknown {
+  if (typeof value !== 'string') return value ?? {};
+  try {
+    return JSON.parse(value) as unknown;
+  } catch {
+    return value;
+  }
+}
+
+/** v2 export tool state carries results in `content[]` (text parts) or
+ *  `error.message`; `result` is model/tool-specific and only used as a
+ *  last-resort string. */
+function v2ToolOutput(state: OpencodeV2ContentPart['state']): string | undefined {
+  if (!state) return undefined;
+  const texts: string[] = [];
+  for (const item of Array.isArray(state.content) ? state.content : []) {
+    if (typeof item?.text === 'string') {
+      texts.push(item.text);
+    } else if (item?.content?.type === 'text' && typeof item.content.text === 'string') {
+      texts.push(item.content.text);
+    }
+  }
+  if (texts.length > 0) return texts.join('\n');
+  if (typeof state.error === 'string') return state.error;
+  if (state.error && typeof state.error.message === 'string') return state.error.message;
+  if (typeof state.result === 'string') return state.result;
+  return undefined;
+}
+
+interface OpencodeCliResult {
+  status: number | null;
+  stdout?: string | Buffer;
+  stderr?: string | Buffer;
+  error?: Error;
+}
+
 export class OpencodeSessionReader implements AgentSessionReader {
   private readonly binary: string;
   private readonly cacheTtlMs: number;
@@ -110,7 +223,7 @@ export class OpencodeSessionReader implements AgentSessionReader {
   private listCache: TtlCache<string, OpencodeSessionListEntry[]>;
 
   constructor(opts: OpencodeSessionReaderOptions = {}) {
-    this.binary = 'opencode';
+    this.binary = opts.binary ?? 'opencode';
     this.cacheTtlMs = opts.cacheTtlMs ?? 10_000;
     this.listCache = new TtlCache(this.cacheTtlMs);
     this.captureExportOverride = opts.captureExport;
@@ -186,9 +299,9 @@ export class OpencodeSessionReader implements AgentSessionReader {
     if (!trimmed) {
       return { events: [] };
     }
-    let data: OpencodeExportData;
+    let data: OpencodeExportData | OpencodeV2ExportData;
     try {
-      data = JSON.parse(trimmed) as OpencodeExportData;
+      data = JSON.parse(trimmed) as OpencodeExportData | OpencodeV2ExportData;
     } catch (err) {
       getLogger().warn(
         `[opencode-session-reader] export JSON parse failed (truncated/corrupt?), raw bytes=${trimmed.length}: ${err}`,
@@ -199,8 +312,13 @@ export class OpencodeSessionReader implements AgentSessionReader {
     try {
       // 与 listSessions 的过滤同口径（PathKit.samePath）：export 里的 directory
       // 形态由 opencode 自行记录，裸 !== 会让会话列得出却读不出（win32 常态）
-      if (!samePath(data.info.directory, realCwd)) {
+      const directory = exportDirectory(data);
+      if (!directory || !samePath(directory, realCwd)) {
         return { events: [] };
+      }
+
+      if (isV2Export(data)) {
+        return this.readV2SessionContent(data, opts);
       }
 
       const events: AgentSessionContentEvent[] = [];
@@ -381,6 +499,177 @@ export class OpencodeSessionReader implements AgentSessionReader {
   }
 
   /**
+   * v2 export: messages are flat (`type` + `text`/`content`) and assistant
+   * usage lives on the message instead of a `step-finish` part. Keep this
+   * mapping isolated from the v1 parser so v1 behaviour stays unchanged.
+   */
+  private readV2SessionContent(
+    data: OpencodeV2ExportData,
+    opts?: { maxEvents?: number },
+  ): SessionContent {
+    const messages = Array.isArray(data.messages) ? data.messages : [];
+    const events: AgentSessionContentEvent[] = [];
+    const aiTitle =
+      typeof data.info.title === 'string' && data.info.title.length > 0
+        ? data.info.title
+        : undefined;
+    let displayTitle: string | undefined;
+
+    let lastUserIndex = -1;
+    for (let i = 0; i < messages.length; i++) {
+      if (messages[i]?.type === 'user') lastUserIndex = i;
+    }
+    const startIndex = lastUserIndex >= 0 ? lastUserIndex : 0;
+
+    for (let i = startIndex; i < messages.length; i++) {
+      const msg = messages[i];
+      if (!msg || typeof msg.type !== 'string') continue;
+      const timestamp = msg.time?.created ? new Date(msg.time.created).toISOString() : undefined;
+
+      if (msg.type === 'user') {
+        if (typeof msg.text === 'string' && msg.text.length > 0) {
+          if (!displayTitle) displayTitle = msg.text;
+          events.push({ type: 'text', content: msg.text, timestamp });
+        }
+        continue;
+      }
+
+      if (msg.type === 'assistant') {
+        for (const part of Array.isArray(msg.content) ? msg.content : []) {
+          if (part?.type === 'text' && typeof part.text === 'string') {
+            events.push({ type: 'text', content: part.text, timestamp });
+            continue;
+          }
+          if (part?.type === 'reasoning' && typeof part.text === 'string') {
+            events.push({ type: 'thinking', content: part.text, timestamp });
+            continue;
+          }
+          if (part?.type === 'tool') {
+            const toolId = part.id;
+            const toolName = part.name ?? '';
+            const input = parseToolInput(part.state?.input);
+            if (toolId) {
+              events.push({
+                type: 'tool_use',
+                content: JSON.stringify({ id: toolId, name: toolName, input }),
+                timestamp,
+              });
+            }
+
+            const output = v2ToolOutput(part.state);
+            if (toolId && output !== undefined) {
+              events.push({
+                type: 'tool_result',
+                content: truncateUtf8(output, TOOL_RESULT_MAX_BYTES),
+                timestamp,
+              });
+            }
+          }
+        }
+        continue;
+      }
+
+      // User-invoked shell messages are a first-class message type in v2.
+      if (msg.type === 'shell' && typeof msg.command === 'string') {
+        events.push({
+          type: 'tool_use',
+          content: JSON.stringify({
+            id: msg.callID ?? msg.id ?? 'shell',
+            name: 'bash',
+            input: { command: msg.command },
+          }),
+          timestamp,
+        });
+        if (typeof msg.output === 'string') {
+          events.push({
+            type: 'tool_result',
+            content: truncateUtf8(msg.output, TOOL_RESULT_MAX_BYTES),
+            timestamp,
+          });
+        }
+        continue;
+      }
+
+      // Keep the compact summary visible in the catch-up tail; other control
+      // messages (system/synthetic/agent-switched/model-switched) are noise.
+      if (msg.type === 'compaction' && typeof msg.summary === 'string' && msg.summary) {
+        events.push({ type: 'text', content: msg.summary, timestamp });
+      }
+    }
+
+    // If the last user message had no text (e.g. attachment-only), fall back to
+    // the first human text anywhere in the session for the card title.
+    if (!displayTitle) {
+      for (const msg of messages) {
+        if (msg?.type === 'user' && typeof msg.text === 'string' && msg.text.length > 0) {
+          displayTitle = msg.text;
+          break;
+        }
+      }
+    }
+
+    let latest: AgentSessionUsage | undefined;
+    let cumInput = 0;
+    let cumOutput = 0;
+    let cumTotal = 0;
+    let cumCacheRead = 0;
+    let cumCacheWrite = 0;
+
+    for (const msg of messages) {
+      if (msg?.type !== 'assistant' || !msg.tokens) continue;
+      const tokens = msg.tokens;
+      const cacheRead = tokens.cache?.read ?? 0;
+      const cacheWrite = tokens.cache?.write ?? 0;
+      const total = tokens.input + tokens.output + tokens.reasoning + cacheRead + cacheWrite;
+
+      cumInput += tokens.input;
+      cumOutput += tokens.output;
+      cumTotal += total;
+      cumCacheRead += cacheRead;
+      cumCacheWrite += cacheWrite;
+
+      // A long autonomous run can end on a degenerate assistant message with
+      // zero tokens; skip it so the card reflects the last real step.
+      if (total !== 0) {
+        latest = {
+          inputTokens: tokens.input,
+          outputTokens: tokens.output,
+          contextLength: tokens.input + cacheRead + cacheWrite,
+          cacheReadTokens: cacheRead,
+          cacheCreationTokens: cacheWrite,
+          totalTokens: total,
+        };
+      }
+    }
+
+    if (latest) {
+      latest.cumulativeTotalTokens = cumTotal;
+      latest.cumulativeInputTokens = cumInput;
+      latest.cumulativeOutputTokens = cumOutput;
+      latest.cumulativeCacheReadTokens = cumCacheRead;
+      latest.cumulativeCacheCreationTokens = cumCacheWrite;
+    } else if (cumInput || cumOutput || cumTotal || cumCacheRead || cumCacheWrite) {
+      latest = {
+        inputTokens: 0,
+        outputTokens: 0,
+        contextLength: 0,
+        cumulativeTotalTokens: cumTotal,
+        cumulativeInputTokens: cumInput,
+        cumulativeOutputTokens: cumOutput,
+        cumulativeCacheReadTokens: cumCacheRead,
+        cumulativeCacheCreationTokens: cumCacheWrite,
+      };
+    }
+
+    return {
+      events: capEvents(events, opts?.maxEvents),
+      usage: latest,
+      aiTitle,
+      displayTitle,
+    };
+  }
+
+  /**
    * Check if a session is active (updated within 1 hour).
    * Passes cwd to fetchSessionList so it returns sessions for the correct directory.
    */
@@ -422,8 +711,14 @@ export class OpencodeSessionReader implements AgentSessionReader {
       // 的 .cmd 垫片，win32 上 execFileSync 不做 PATHEXT 解析会直接 ENOENT，
       // 会话列表永远为空；cross-spawn 走与 runner spawn 相同的垫片执行路径
       // （posix 为 child_process.spawnSync 直通，行为不变）。
-      // Pass cwd to execFileSync so opencode CLI returns sessions for the correct directory
-      const res = spawnProcessSync(this.binary, ['session', 'list', '--format', 'json'], {
+      // Pass cwd to the CLI so opencode returns sessions for the correct directory.
+      //
+      // v2 runs CLI commands through a shared daemon and defaults the list to
+      // 100 entries. `--standalone` keeps this read-only path independent from
+      // the user's daemon state; `--max-count` preserves the reader's "all
+      // sessions in this cwd" contract. v1 accepts the same list/flags but not
+      // `--standalone`, so a failed first attempt falls back to the bare form.
+      const listOpts = {
         encoding: 'utf-8',
         timeout: 10000,
         // default maxBuffer is 1MiB — a large session list (>1MiB JSON)
@@ -432,7 +727,32 @@ export class OpencodeSessionReader implements AgentSessionReader {
         maxBuffer: 64 * 1024 * 1024,
         cwd: realCwd, // Key fix: pass user cwd to CLI
         windowsHide: true, // opencode 是 npm .cmd 垫片：不隐藏会闪 cmd.exe 控制台
-      });
+      } as const;
+      const v2Args = [
+        'session',
+        'list',
+        '--format',
+        'json',
+        '--max-count',
+        String(MAX_SESSION_LIST_COUNT),
+        '--standalone',
+      ];
+      const v1Args = [
+        'session',
+        'list',
+        '--format',
+        'json',
+        '--max-count',
+        String(MAX_SESSION_LIST_COUNT),
+      ];
+
+      let res = spawnProcessSync(this.binary, v2Args, listOpts) as OpencodeCliResult;
+      // `--standalone` is v2-only and can also fail if the private server is
+      // temporarily unavailable. Retry once without it: this is the exact v1
+      // command shape and also uses the shared daemon on v2.
+      if (res.error || res.status !== 0) {
+        res = spawnProcessSync(this.binary, v1Args, listOpts) as OpencodeCliResult;
+      }
       if (res.error) {
         const enoent = (res.error as NodeJS.ErrnoException).code === 'ENOENT';
         if (enoent) return [];
@@ -470,7 +790,7 @@ export class OpencodeSessionReader implements AgentSessionReader {
   }
 
   /**
-   * Capture raw `opencode export <sessionId>` output (JSON string). Injectable
+   * Capture raw export output (JSON string). Injectable
    * via the constructor; the default routes stdout to a temp file fd to bypass
    * opencode's ~128KB pipe truncation on large sessions.
    */
@@ -481,11 +801,12 @@ export class OpencodeSessionReader implements AgentSessionReader {
   }
 
   /**
-   * default transport: run `opencode export` with stdout pointed at a
+   * default transport: run the version-appropriate export command with stdout
+   * pointed at a
    * regular-file fd (NOT a pipe). opencode truncates piped stdout at ~128KB for
    * large sessions (huge tool_results), breaking JSON.parse; a file fd receives
-   * the full output (verified: 1.3MB parses OK). execFileSync returns null when
-   * stdout is not a pipe, so we read the file instead.
+   * the full output (verified: 1.3MB parses OK). spawnProcessSync returns null
+   * stdout when it is redirected to a file fd, so we read the file instead.
    */
   private captureExportViaFileFd(sessionId: string): string {
     const tmp = path.join(
@@ -494,17 +815,51 @@ export class OpencodeSessionReader implements AgentSessionReader {
     );
     let fd: number | undefined;
     try {
-      fd = fs.openSync(tmp, 'w');
-      spawnProcessSync(this.binary, ['export', sessionId], {
+      const exportOpts = {
         encoding: 'utf-8',
         timeout: 30000,
-        stdio: ['ignore', fd, 'pipe'],
         // stderr is piped here; without maxBuffer a chatty CLI (>1MiB
         // stderr) would throw ENOBUFS and lose the export. Keep the default
         // stdout file-fd transport unaffected by raising the pipe cap.
         maxBuffer: 64 * 1024 * 1024,
         windowsHide: true,
-      });
+      } as const;
+
+      const run = (args: string[]): OpencodeCliResult => {
+        if (fd !== undefined) {
+          try {
+            fs.closeSync(fd);
+          } catch {}
+        }
+        fd = fs.openSync(tmp, 'w');
+        return spawnProcessSync(this.binary, args, {
+          ...exportOpts,
+          stdio: ['ignore', fd, 'pipe'],
+        }) as OpencodeCliResult;
+      };
+
+      // v2 moved export under `session`; v1 only has the top-level command.
+      let res = run(['session', 'export', '--standalone', sessionId]);
+      if (res.error || res.status !== 0) {
+        // v2 without a private server may still work through the shared
+        // daemon; on v1 this is another unknown-subcommand response.
+        res = run(['session', 'export', sessionId]);
+      }
+      // Last resort: v1's top-level command. Skip only when the server has
+      // already told us the session does not exist (a syntax fallback cannot
+      // help and would only add another spawn).
+      if ((res.error || res.status !== 0) && !/Session not found/i.test(String(res.stderr ?? ''))) {
+        res = run(['export', sessionId]);
+      }
+      if (res.error) {
+        throw res.error;
+      }
+      if (res.status !== 0) {
+        const stderr = String(res.stderr ?? '').trim();
+        getLogger().warn(
+          `[opencode-session-reader] session export exited ${res.status}${stderr ? `: ${stderr}` : ''}`,
+        );
+      }
       return fs.readFileSync(tmp, 'utf-8');
     } finally {
       if (fd !== undefined) {

@@ -146,10 +146,11 @@ export const CodexConfigSchema = z.object({
 
 /** OpenCode-specific configuration (pure ACP mode: `opencode acp` over stdio). */
 const OpencodeConfigSchema = z.object({
-  /** Provider ID for the LLM backend (e.g. 'anthropic'). */
-  providerID: z.string().default('anthropic'),
-  /** Model ID for the LLM backend (e.g. 'claude-sonnet-4-20250514'). */
-  modelID: z.string().default('claude-sonnet-4-20250514'),
+  /** Provider ID for the LLM backend. `opencode` is present in both v1 and v2
+   *  catalogs; a user-selected provider/model overrides it. */
+  providerID: z.string().default('opencode'),
+  /** Model ID for the LLM backend. `big-pickle` exists in both v1 and v2. */
+  modelID: z.string().default('big-pickle'),
   /** Session mode (opencode agent name): 'build' (default) or 'plan'. */
   mode: z.enum(['build', 'plan']).default('build'),
   /** ACP sub-configuration. Structurally mirrors kimi: the card exposes

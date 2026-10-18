@@ -87,6 +87,26 @@ export abstract class BaseAcpRunner<
   protected abstract applyTurnSettings(client: JsonRpcClient, sessionId: string): Promise<void>;
 
   /**
+   * session/new|resume retry policy. Default: no retry. Agents whose ACP
+   * server sits behind a separately-starting service (opencode v2) override
+   * this to absorb a transient `ServiceUnavailableError` without failing the
+   * whole turn.
+   */
+  protected sessionSetupRetryDelaysMs(): number[] {
+    return [];
+  }
+
+  /** Whether a failed session/new|resume is safe to retry. */
+  protected isRetryableSessionSetupError(_err: unknown): boolean {
+    return false;
+  }
+
+  /** Final error surfaced to the user after retries are exhausted. */
+  protected enrichSessionSetupError(err: unknown): Error {
+    return err instanceof Error ? err : new Error(String(err));
+  }
+
+  /**
    * Dispatch the compact prompt result once fired. kimi: background
    * compaction — poll wire.jsonl for a NEW terminal record before translating
    * (§5.2). opencode: synchronous — standard prompt-settle translation.
@@ -102,6 +122,28 @@ export abstract class BaseAcpRunner<
   // =========================================================================
   // Shared plumbing
   // =========================================================================
+
+  private async withSessionSetupRetry<T>(fn: () => Promise<T>): Promise<T> {
+    const delays = this.sessionSetupRetryDelaysMs();
+    for (let attempt = 0; ; attempt++) {
+      try {
+        return await fn();
+      } catch (err) {
+        if (
+          this.stopRequested ||
+          attempt >= delays.length ||
+          !this.isRetryableSessionSetupError(err)
+        ) {
+          throw this.enrichSessionSetupError(err);
+        }
+        const delay = delays[attempt]!;
+        getLogger().warn(
+          `[${this.logTag}] session setup failed (attempt ${attempt + 1}/${delays.length + 1}), retrying in ${delay}ms: ${(err as Error).message}`,
+        );
+        await new Promise<void>((resolve) => setTimeout(resolve, delay));
+      }
+    }
+  }
 
   protected currentSessionId(): string | null {
     return this.activeSessionId;
@@ -265,17 +307,15 @@ export abstract class BaseAcpRunner<
         sessionId: opts.sessionId,
         cwd: opts.cwd,
       };
-      const resumeResult = await client.request<SessionResumeParams, SessionResumeResult>(
-        'session/resume',
-        resumeParams,
+      const resumeResult = await this.withSessionSetupRetry(() =>
+        client.request<SessionResumeParams, SessionResumeResult>('session/resume', resumeParams),
       );
       this.onSessionEstablished(resumeResult);
       sessionId = opts.sessionId;
     } else {
       const newParams: SessionNewParams = { cwd: opts.cwd, mcpServers: [] };
-      const newResult = await client.request<SessionNewParams, SessionNewResult>(
-        'session/new',
-        newParams,
+      const newResult = await this.withSessionSetupRetry(() =>
+        client.request<SessionNewParams, SessionNewResult>('session/new', newParams),
       );
       this.onSessionEstablished(newResult);
       sessionId = newResult.sessionId;
@@ -346,9 +386,8 @@ export abstract class BaseAcpRunner<
       // memory. On a reused connection the session is already loaded —
       // resume is idempotent and harmless.
       const resumeParams: SessionResumeParams = { sessionId, cwd: opts.cwd };
-      const resumeResult = await client.request<SessionResumeParams, SessionResumeResult>(
-        'session/resume',
-        resumeParams,
+      const resumeResult = await this.withSessionSetupRetry(() =>
+        client.request<SessionResumeParams, SessionResumeResult>('session/resume', resumeParams),
       );
       this.onSessionEstablished(resumeResult);
 

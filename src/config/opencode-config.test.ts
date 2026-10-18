@@ -48,6 +48,45 @@ describe('loadOpencodeConfig', () => {
     expect(cfg.modelOptions('nonexistent')).toEqual([]);
   });
 
+  it('falls back to v2 standalone models when the shared daemon is unavailable', () => {
+    mockSpawnSync
+      .mockReturnValueOnce({
+        status: 1,
+        stdout: '',
+        stderr: 'ServiceUnavailableError: Location plugins did not finish activating',
+      })
+      .mockReturnValueOnce({ status: 0, stdout: VALID_OUTPUT, stderr: '' });
+
+    const cfg = loadOpencodeConfig();
+
+    expect(mockSpawnSync).toHaveBeenNthCalledWith(
+      1,
+      '/usr/local/bin/opencode',
+      ['models'],
+      expect.objectContaining({ maxBuffer: 64 * 1024 * 1024 }),
+    );
+    expect(mockSpawnSync).toHaveBeenNthCalledWith(
+      2,
+      '/usr/local/bin/opencode',
+      ['models', '--standalone'],
+      expect.objectContaining({ maxBuffer: 64 * 1024 * 1024 }),
+    );
+    expect(cfg.modelOptions('opencode')).toEqual(['big-pickle']);
+  });
+
+  it('keeps model IDs that contain a slash (split on the first slash only)', () => {
+    mockSpawnSync.mockReturnValue({
+      status: 0,
+      stdout: 'openrouter/anthropic/claude-sonnet\n',
+      stderr: '',
+    });
+
+    const cfg = loadOpencodeConfig();
+
+    expect(cfg.providerNames).toEqual(['openrouter']);
+    expect(cfg.modelOptions('openrouter')).toEqual(['anthropic/claude-sonnet']);
+  });
+
   it('returns all models sorted when modelOptions called without provider', () => {
     mockSpawnSync.mockReturnValue({ status: 0, stdout: VALID_OUTPUT, stderr: '' });
 
@@ -64,9 +103,19 @@ describe('loadOpencodeConfig', () => {
 
     const cfg = loadOpencodeConfig();
 
-    expect(cfg.providerNames).toEqual(['opencode', 'deepseek', 'minimax-cn-coding-plan']);
+    expect(cfg.providerNames).toEqual([
+      'opencode',
+      'opencode-go',
+      'deepseek',
+      'minimax-cn-coding-plan',
+    ]);
     expect(cfg.modelOptions('opencode')).toEqual(['big-pickle']);
-    expect(cfg.modelOptions('deepseek')).toEqual(['deepseek-chat']);
+    expect(cfg.modelOptions('opencode-go')).toEqual(['deepseek-v4.1-flash']);
+    expect(cfg.modelOptions('deepseek')).toEqual([
+      'deepseek-chat',
+      'deepseek-flash',
+      'deepseek-v4-pro',
+    ]);
     expect(cfg.modelOptions('minimax-cn-coding-plan')).toEqual(['MiniMax-M2.5']);
     expect(mockLogger.warn).toHaveBeenCalled();
   });
@@ -183,7 +232,14 @@ describe('fallback result structure', () => {
     const cfg = loadOpencodeConfig();
     const allModels = cfg.modelOptions();
 
-    expect(allModels).toEqual(['MiniMax-M2.5', 'big-pickle', 'deepseek-chat']);
+    expect(allModels).toEqual([
+      'MiniMax-M2.5',
+      'big-pickle',
+      'deepseek-chat',
+      'deepseek-flash',
+      'deepseek-v4-pro',
+      'deepseek-v4.1-flash',
+    ]);
   });
 
   it('modelOptions for unknown provider returns empty array', () => {

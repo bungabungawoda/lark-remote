@@ -48,6 +48,18 @@ describe('OpencodeConfigBuilder', () => {
       expect(modelField!.options).toEqual(['gpt-4o', 'claude-sonnet']);
     });
 
+    it('keeps the configured provider/model selectable when the CLI catalog misses them', () => {
+      const config = makeConfig({
+        agents: { opencode: { providerID: 'custom-provider', modelID: 'custom-model' } },
+      });
+      const fields = builder.buildFields(config);
+
+      const providerField = fields.find((f) => f.key === 'agents.opencode.providerID');
+      const modelField = fields.find((f) => f.key === 'agents.opencode.modelID');
+      expect(providerField!.options).toContain('custom-provider');
+      expect(modelField!.options).toContain('custom-model');
+    });
+
     it('returns mode select field with build/plan options', () => {
       const config = makeConfig({ agents: { opencode: { mode: 'plan' } } });
       const fields = builder.buildFields(config);
@@ -56,7 +68,7 @@ describe('OpencodeConfigBuilder', () => {
       expect(modeField).toBeDefined();
       expect(modeField!.type).toBe('select');
       expect(modeField!.options).toEqual([
-        { text: 'build（默认，逐项审批）', value: 'build' },
+        { text: 'build（默认，按 opencode 权限配置）', value: 'build' },
         { text: 'plan（规划模式）', value: 'plan' },
       ]);
       expect(modeField!.currentValue).toBe('plan');
