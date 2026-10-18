@@ -25,6 +25,8 @@ import {
 
 const DEFAULT_IDLE_TTL_MS = 30 * 60 * 1000; // 30 minutes
 const DEFAULT_REQUEST_TIMEOUT_MS = 60_000; // 60 seconds
+/** acquire() 的轮次上限：防止 slot 被持续释放时无限重建连接。 */
+const MAX_ACQUIRE_ATTEMPTS = 5;
 
 /** Minimal client surface the manager needs from any protocol client. */
 export interface ConnectionClient {
@@ -167,63 +169,87 @@ export class ConnectionManager<TClient extends ConnectionClient = JsonRpcClient>
    * Creates a new connection if one does not exist or the previous one was lost
    * (or, for session-bound protocols, bound to a different session).
    * Serializes creation so concurrent calls share the same connection.
+   *
+   * 替换旧连接时必须先等 dispose 完成。旧实现
+   * `disposeSlot(cwd)` 不 await 就创建新连接，新旧两个 agent server 会重叠；
+   * codex 会报 "thread already has an active writer"（同一 workspace 写锁）。
+   * 现在的顺序：等旧连接真正 dispose → 重新读 slot（并发 acquire 可能已建好
+   * 新连接，直接复用/等它）→ 才进入创建。创建期间 slot 被 release/disposeAll
+   * 删掉时，新连接立即 dispose 并重试，不返回无人托管的连接。
    */
   async acquire(cwd: string, req: AcquireRequest = {}): Promise<TClient> {
-    const existing = this.slots.get(cwd);
-    if (existing) {
-      // If a create is in flight, wait for it
-      if (existing.createPromise) {
-        return existing.createPromise;
+    for (let attempt = 0; attempt < MAX_ACQUIRE_ATTEMPTS; attempt++) {
+      const existing = this.slots.get(cwd);
+      if (existing) {
+        // If a create is in flight, wait for it
+        if (existing.createPromise) {
+          return existing.createPromise;
+        }
+        // Reuse when the (session-aware) reuse predicate holds — e.g. the client
+        // is ready and its transport is alive (default), or it is bound to the
+        // requested session (pi). Otherwise replace it so the next run respawns
+        // the process.
+        if (
+          this.shouldReuse({
+            client: existing.client,
+            req,
+            boundSessionId: existing.boundSessionId,
+          })
+        ) {
+          return existing.client;
+        }
+        // Must finish before a replacement connection is created: two live
+        // agent servers for one cwd would contend on the same write lock.
+        const disposed = await this.disposeSlot(cwd);
+        if (!disposed) {
+          throw new Error(
+            `cannot replace connection for cwd=${cwd}: old connection failed to dispose`,
+          );
+        }
+        // Re-read: a concurrent acquire may have installed a new slot (or a
+        // create promise) while we awaited the dispose.
+        continue;
       }
-      // Reuse when the (session-aware) reuse predicate holds — e.g. the client
-      // is ready and its transport is alive (default), or it is bound to the
-      // requested session (pi). Otherwise replace it so the next run respawns
-      // the process.
-      if (
-        this.shouldReuse({
-          client: existing.client,
-          req,
-          boundSessionId: existing.boundSessionId,
-        })
-      ) {
-        return existing.client;
-      }
-      this.disposeSlot(cwd);
-    }
 
-    const createPromise = this.createClient(cwd, req);
-    this.slots.set(cwd, {
-      client: null as unknown as TClient, // placeholder
-      boundSessionId: req.sessionId,
-      idleTimer: null,
-      createPromise,
-    });
-
-    try {
-      const client = await createPromise;
-      // 竞态：创建期间 release()/disposeAll() 已把 slot 删掉（并可能已
-      // dispose 连接）。此时不能再把新连接塞回 slot——否则会复活一个无人管理、
-      // 无 idle timer 的连接泄漏。归还给调用者继续使用，但不再缓存。
-      const slotAfterCreate = this.slots.get(cwd);
-      if (!slotAfterCreate || slotAfterCreate.createPromise !== createPromise) {
-        return client;
-      }
-      this.slots.set(cwd, {
-        client,
+      const createPromise = this.createClient(cwd, req);
+      const slot: Slot<TClient> = {
+        client: null as unknown as TClient, // placeholder until connect resolves
         boundSessionId: req.sessionId,
         idleTimer: null,
-        createPromise: null,
-      });
-      return client;
-    } catch (err) {
-      // 只删除自己的槽位：并发 release + 重新 acquire 后 slot 可能已被新的
-      // createPromise 占据，误删会破坏新连接。
-      const current = this.slots.get(cwd);
-      if (current && current.createPromise === createPromise) {
-        this.slots.delete(cwd);
+        createPromise,
+      };
+      this.slots.set(cwd, slot);
+
+      try {
+        const client = await createPromise;
+        // 竞态：创建期间 release()/disposeAll() 已把 slot 删掉（并可能已
+        // dispose 连接）。旧实现把新连接直接交给调用方"继续使用但不缓存"，
+        // 留下一个无人管理、无 idle timer 的连接。现在主动 dispose 后重试；
+        // 连续被释放说明 manager 正在收摊，按失败上报而不是无限重连。
+        if (this.slots.get(cwd) !== slot) {
+          try {
+            await client.dispose();
+          } catch (err) {
+            getLogger().warn(
+              `[${this.logTag}] dispose of released connection failed cwd=${cwd}: ${err}`,
+            );
+          }
+          continue;
+        }
+        slot.client = client;
+        slot.createPromise = null;
+        return client;
+      } catch (err) {
+        // 只删除自己的槽位：并发 release + 重新 acquire 后 slot 可能已被新的
+        // createPromise 占据，误删会破坏新连接。
+        const current = this.slots.get(cwd);
+        if (current && current.createPromise === createPromise) {
+          this.slots.delete(cwd);
+        }
+        throw err;
       }
-      throw err;
     }
+    throw new Error(`cannot acquire connection for cwd=${cwd}: slot repeatedly released`);
   }
 
   /**
@@ -240,7 +266,7 @@ export class ConnectionManager<TClient extends ConnectionClient = JsonRpcClient>
    * Release (dispose) a connection for the given cwd.
    */
   async release(cwd: string): Promise<void> {
-    this.disposeSlot(cwd);
+    await this.disposeSlot(cwd);
   }
 
   /**
@@ -325,9 +351,14 @@ export class ConnectionManager<TClient extends ConnectionClient = JsonRpcClient>
     }
   }
 
-  private async disposeSlot(cwd: string): Promise<void> {
+  /**
+   * Dispose the slot for `cwd`. Returns false when the underlying client's
+   * dispose failed — callers replacing a connection must abort the replacement
+   * rather than let two agent servers overlap.
+   */
+  private async disposeSlot(cwd: string): Promise<boolean> {
     const slot = this.slots.get(cwd);
-    if (!slot) return;
+    if (!slot) return true;
     this.slots.delete(cwd);
     this.clearIdleTimer(slot);
     if (slot.client) {
@@ -335,7 +366,9 @@ export class ConnectionManager<TClient extends ConnectionClient = JsonRpcClient>
         await slot.client.dispose();
       } catch (err) {
         getLogger().warn(`[${this.logTag}] dispose error cwd=${cwd}: ${err}`);
+        return false;
       }
     }
+    return true;
   }
 }

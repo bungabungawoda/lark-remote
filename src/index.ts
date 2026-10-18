@@ -63,6 +63,7 @@ import {
 import { classifyRejection } from './error-classification.js';
 import { WorkspaceStore } from './workspace/index.js';
 import { InboundTurnAssembler } from './inbound/turn-assembler.js';
+import { InboundAuthorizer } from './inbound/authorize.js';
 import { stripPlaceholders } from './inbound/placeholder.js';
 import type { MediaOutcome } from './inbound/turn.js';
 import { buildSessionHistoryCard } from './router/card-helpers.js';
@@ -508,13 +509,70 @@ function setupMessageHandlers(
   });
   router.setInboundFlusher(() => assembler.flushAll('flush'));
 
+  // 统一的入站授权入口（文本 + 媒体共用）：未绑定时，首条入站消息——无论
+  // 纯文本、纯媒体还是图文混合——都完成 owner 绑定并触发一次 onboarding。
+  // 媒体入口原先只做只读 isOwner 检查，新安装用户第一条消息是截图时既不绑定、
+  // 也不保存、也没有任何反馈。
+  const authorizer = new InboundAuthorizer({
+    binder,
+    onBind: (userId, chatId) => {
+      // First-run onboarding: set default cwd + send welcome + Help card.
+      // setCwd is synchronous (before returning the async send promise) so the
+      // user's next message — which will hit the `owner` branch now that
+      // startup-contact.json has been written — finds cwd already set.
+      // process.cwd() is the only sensible default: the user started
+      // lark-remote in the directory they want to work in.
+      // setCwd only when no cwd is set yet (e.g. fresh start after bind).
+      // Don't overwrite an existing cwd — the user may have already set one
+      // via /cd or a previous bind. Use realpath for canonical form (matching
+      // Claude JSONL cwd, e.g. /tmp → /private/tmp on macOS).
+      let resolvedCwd: string;
+      try {
+        resolvedCwd = fs.realpathSync(process.cwd());
+      } catch {
+        resolvedCwd = process.cwd();
+      }
+      if (!sessionStore.getCwd(userId)) {
+        sessionStore.setCwd(userId, resolvedCwd);
+      }
+
+      return (async () => {
+        try {
+          // Message 1: bind confirmation + status (combined to avoid
+          // Feishu out-of-order delivery across three separate messages).
+          await connector.sendWithRetry(chatId, {
+            text:
+              `✅ 已绑定到本账号，此后仅你可使用本应用\n` +
+              `📂 当前工作目录: \`${resolvedCwd}\`\n` +
+              `🤖 默认 Agent: ${agentDisplayName(config.defaultAgent)}\n` +
+              `💡 直接输入消息即可开始对话，或 /cd 切换目录`,
+          });
+          // Message 2: Help card.
+          // Use router.cmdHelp() + manual send (without replyTo) so the Help
+          // card appears as an independent message, not a reply to the PIN
+          // message. router.handle('/help') would set replyTo=msg.messageId
+          // (the PIN), causing the card to nest under the PIN in Feishu UI.
+          const helpResult = router.cmdHelp();
+          if (helpResult.card) {
+            await connector.sendWithRetry(chatId, { card: helpResult.card });
+          }
+        } catch (err) {
+          logger.error('[binder] onboarding send failed:', err);
+        }
+      })();
+    },
+  });
+
   // 入站媒体（图片/文件/视频/语音/表情）：先认证后下载（修复）。
   // connector 只上报"媒体到达"，这里先过 owner + enabled 闸门，通过后才
   // 下载——未认证/关闭配置时不会发生任何网络下载或内存/磁盘占用。
   // 下载是异步的：立刻把在途 promise 交给装配器（`kind: 'media'`），
   // 保证「先图后文」不会先提交一个只含文本的 turn。
   connector.setInboundMediaDetectedHandler((msg) => {
-    if (!binder.isOwner(msg.userId)) {
+    // 与文本入口共用授权：首条纯媒体也在这里完成 owner 绑定（bind_success
+    // 继续走下载 + 装配，纯媒体最终由装配器发 no-text 回执）。
+    const authorization = authorizer.authorize(msg.userId, msg.chatId);
+    if (authorization === 'rejected') {
       logger.warn(`[media] rejected inbound media from non-owner ${msg.userId}`);
       return;
     }
@@ -564,58 +622,15 @@ function setupMessageHandlers(
   });
 
   connector.setMessageHandler((msg) => {
-    // 绑定/授权闸门：仅 owner 放行；非 owner 静默丢弃；未绑定时首条消息认领
-    const decision = binder.authorize(msg.userId, msg.chatId);
-    if (decision.kind === 'rejected') return;
-    if (decision.kind === 'bind_success') {
-      // First-run onboarding: set default cwd + send welcome + Help card.
-      // setCwd is synchronous (outside the async closure) so that the user's
-      // next message — which will hit the `owner` branch now that
-      // startup-contact.json has been written — finds cwd already set.
-      // process.cwd() is the only sensible default: the user started
-      // lark-remote in the directory they want to work in.
-      // setCwd only when no cwd is set yet (e.g. fresh start after bind).
-      // Don't overwrite an existing cwd — the user may have already set one
-      // via /cd or a previous bind. Use realpath for canonical form (matching
-      // Claude JSONL cwd, e.g. /tmp → /private/tmp on macOS).
-      let resolvedCwd: string;
-      try {
-        resolvedCwd = fs.realpathSync(process.cwd());
-      } catch {
-        resolvedCwd = process.cwd();
-      }
-      if (!sessionStore.getCwd(msg.userId)) {
-        sessionStore.setCwd(msg.userId, resolvedCwd);
-      }
+    // 绑定/授权闸门：仅 owner 放行；非 owner 静默丢弃；未绑定时首条消息认领。
+    // 与媒体入口共用 InboundAuthorizer：bind_success 的 onboarding 只跑一次
+    // （同一条 post 同时带图和文字时两个入口都会看到 bind_success）。
+    const decision = authorizer.authorize(msg.userId, msg.chatId);
+    if (decision === 'rejected') return;
+    // 首条消息只用于完成绑定，不转发给 agent（与旧行为一致）。
+    if (decision === 'bind_success') return;
 
-      void (async () => {
-        try {
-          // Message 1: bind confirmation + status (combined to avoid
-          // Feishu out-of-order delivery across three separate messages).
-          await connector.sendWithRetry(msg.chatId, {
-            text:
-              `✅ 已绑定到本账号，此后仅你可使用本应用\n` +
-              `📂 当前工作目录: \`${resolvedCwd}\`\n` +
-              `🤖 默认 Agent: ${agentDisplayName(config.defaultAgent)}\n` +
-              `💡 直接输入消息即可开始对话，或 /cd 切换目录`,
-          });
-          // Message 2: Help card.
-          // Use router.cmdHelp() + manual send (without replyTo) so the Help
-          // card appears as an independent message, not a reply to the PIN
-          // message. router.handle('/help') would set replyTo=msg.messageId
-          // (the PIN), causing the card to nest under the PIN in Feishu UI.
-          const helpResult = router.cmdHelp();
-          if (helpResult.card) {
-            await connector.sendWithRetry(msg.chatId, { card: helpResult.card });
-          }
-        } catch (err) {
-          logger.error('[binder] onboarding send failed:', err);
-        }
-      })();
-      return;
-    }
-
-    // decision.kind === 'owner'：正常处理（不再每条覆盖 startup-contact）
+    // decision === 'owner'：正常处理（不再每条覆盖 startup-contact）
     logger.info(`message from ${msg.userId} (${msg.rawContentType}): ${msg.content.slice(0, 100)}`);
 
     // Add Typing reaction to indicate "still alive"
@@ -670,12 +685,14 @@ function setupMessageHandlers(
     const commandEligible =
       msg.rawContentType === 'text' && stripped.kinds.length === 0 && stripped.clean !== '';
 
-    // 命令消息旁路装配窗口：其它 /命令 立即执行，窗口内已装配的内容
-    // 作为独立提交冲刷（/stop 已在上面处理，立即生效不等待）。
+    // 命令消息旁路装配窗口：/命令 立即执行，但必须先等窗口内已装配的内容
+    // （含在途媒体下载）提交完成。此前 `void flush()` 不等待，
+    // 有下载在途时命令会先于 commit 执行——发送在 /cd、/new 前的消息被绑定到
+    // 新 cwd/session，媒体也落到新目录。/stop 已在上面走快速路径，不受影响。
     if (commandEligible && (stripped.clean.startsWith('/') || stripped.clean.startsWith('!'))) {
-      void assembler.flush(msg.userId, msg.chatId, 'flush');
-      void router
-        .handle(
+      void (async () => {
+        await assembler.flush(msg.userId, msg.chatId, 'flush');
+        await router.handle(
           stripped.clean,
           {
             userId: msg.userId,
@@ -683,8 +700,8 @@ function setupMessageHandlers(
             messageId: msg.messageId,
           },
           { allowCommandPrefix: true },
-        )
-        .catch((err: unknown) => logger.error('[control] command failed:', err));
+        );
+      })().catch((err: unknown) => logger.error('[control] command failed:', err));
       return;
     }
 

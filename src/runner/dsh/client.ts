@@ -124,7 +124,17 @@ export interface DshClientOptions {
   cookieLifetimeMs?: number;
   fetchImpl?: typeof fetch;
   webSocketImpl?: WebSocketFactory;
+  /**
+   * Unary request timeout. DSH accepts the HTTP connection but may never answer
+   * (e.g. a stuck `session/prompt`); without a timeout the run generator stays
+   * parked in `await unary()` forever, so /stop and the idle watchdog cannot
+   * release the bridge's workspace queue.
+   */
+  requestTimeoutMs?: number;
 }
+
+/** Default unary timeout: long prompts are unbounded on the server side. */
+const DEFAULT_REQUEST_TIMEOUT_MS = 60_000;
 
 /** Extract the `token` query parameter from a pasted `dsh web` URL. */
 export function extractDshToken(raw: string | undefined): string {
@@ -173,6 +183,7 @@ export class DshClient {
   private readonly cookieLifetimeMs: number;
   private readonly fetchImpl: typeof fetch;
   private readonly webSocketImpl: WebSocketFactory;
+  private readonly requestTimeoutMs: number;
   private cookiePromise?: Promise<string | undefined>;
 
   constructor(baseUrl: string, options: DshClientOptions = {}) {
@@ -185,6 +196,7 @@ export class DshClient {
     this.cookieLifetimeMs = options.cookieLifetimeMs ?? DSH_COOKIE_LIFETIME_MS;
     this.fetchImpl = options.fetchImpl ?? fetch;
     this.webSocketImpl = options.webSocketImpl ?? defaultWebSocketFactory;
+    this.requestTimeoutMs = options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
   }
 
   /**
@@ -194,7 +206,7 @@ export class DshClient {
    * file; unlike `/connect`, the index handshake mints a v1 cookie that DSH
    * accepts for API and WebSocket requests across its own restarts.
    */
-  private async authCookie(force = false): Promise<string | undefined> {
+  private async authCookie(force = false, signal?: AbortSignal): Promise<string | undefined> {
     const fromCredentials = await this.cookieFromCredentials();
     if (fromCredentials) return fromCredentials;
     if (!this.token) return undefined;
@@ -204,8 +216,13 @@ export class DshClient {
         const url = `${this.baseUrl}/?token=${encodeURIComponent(this.token)}`;
         let res: Response;
         try {
-          res = await this.fetchImpl(url, { method: 'GET', redirect: 'manual' });
+          res = await this.fetchImpl(url, {
+            method: 'GET',
+            redirect: 'manual',
+            ...(signal ? { signal } : {}),
+          });
         } catch (err) {
+          if (signal?.aborted) throw err;
           throw new DshError('transport', `DSH auth transport error: ${(err as Error).message}`);
         }
         if (res.status !== 303 && !res.ok) {
@@ -258,14 +275,37 @@ export class DshClient {
     }
   }
 
-  /** Perform a unary POST and return the ok value; throws DshError on failure. */
-  async unary(method: string, payload: unknown): Promise<unknown> {
+  /**
+   * Perform a unary POST and return the ok value; throws DshError on failure.
+   *
+   * `signal` aborts the request when the run is stopped; a timeout (default
+   * `requestTimeoutMs`) guards against a server that accepted the connection
+   * but never answers. Both are composed into the request's AbortSignal.
+   */
+  async unary(
+    method: string,
+    payload: unknown,
+    opts: { signal?: AbortSignal; timeoutMs?: number } = {},
+  ): Promise<unknown> {
+    const _timeoutMs = opts.timeoutMs ?? this.requestTimeoutMs;
+    // 0/负数 = 不设超时（兼容「长请求不取消」的配置），其余走 AbortSignal.timeout。
+    const timeoutSignal = _timeoutMs > 0 ? AbortSignal.timeout(_timeoutMs) : undefined;
+    const signal =
+      opts.signal && timeoutSignal
+        ? AbortSignal.any([opts.signal, timeoutSignal])
+        : (opts.signal ?? timeoutSignal);
     const rpcId = `rpc-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
     for (let attempt = 0; attempt < 2; attempt++) {
+      if (opts.signal?.aborted) {
+        throw new DshError('aborted', `DSH unary ${method} aborted before send`);
+      }
       let cookie: string | undefined;
       try {
-        cookie = await this.authCookie(attempt > 0);
+        cookie = await this.authCookie(attempt > 0, signal);
       } catch (err) {
+        if (opts.signal?.aborted || signal?.aborted) {
+          throw this.abortError(method, err, opts.signal, timeoutSignal, _timeoutMs);
+        }
         // A token bootstrap can race a DSH restart; retry once with a fresh
         // credentials read before surfacing the deterministic auth failure.
         if (
@@ -291,12 +331,19 @@ export class DshClient {
             method,
             payload: { args: dshArgs(method, payload) },
           }),
+          ...(signal ? { signal } : {}),
         });
       } catch (err) {
+        if (opts.signal?.aborted || signal?.aborted) {
+          throw this.abortError(method, err, opts.signal, timeoutSignal, _timeoutMs);
+        }
         throw new DshError(
           'transport',
           `DSH unary ${method} transport error: ${(err as Error).message}`,
         );
+      }
+      if (opts.signal?.aborted) {
+        throw new DshError('aborted', `DSH unary ${method} aborted`);
       }
       if (res.status === 401 && attempt === 0) {
         this.cookiePromise = undefined;
@@ -344,13 +391,35 @@ export class DshClient {
     throw new DshError('auth', `DSH ${method} authentication failed after refresh`);
   }
 
+  /** Distinguish "run stopped" (abort) from "server did not answer" (timeout). */
+  private abortError(
+    method: string,
+    err: unknown,
+    runSignal: AbortSignal | undefined,
+    timeoutSignal: AbortSignal | undefined,
+    timeoutMs: number,
+  ): DshError {
+    if (runSignal?.aborted) {
+      return new DshError('aborted', `DSH unary ${method} aborted`, { cause: err });
+    }
+    if (timeoutSignal?.aborted) {
+      return new DshError('timeout', `DSH unary ${method} timed out after ${timeoutMs}ms`, {
+        cause: err,
+      });
+    }
+    return new DshError('aborted', `DSH unary ${method} aborted: ${(err as Error).message}`);
+  }
+
   /** Create a session. Pass `agentPreset` to pin the session's preset (fixed at
    *  creation). */
-  async createSession(payload: {
-    cwd: string;
-    agentPreset?: string;
-  }): Promise<{ sessionId: string; agentPreset?: string }> {
-    return (await this.unary('session/create', payload)) as {
+  async createSession(
+    payload: {
+      cwd: string;
+      agentPreset?: string;
+    },
+    opts?: { signal?: AbortSignal; timeoutMs?: number },
+  ): Promise<{ sessionId: string; agentPreset?: string }> {
+    return (await this.unary('session/create', payload, opts)) as {
       sessionId: string;
       agentPreset?: string;
     };
@@ -360,8 +429,9 @@ export class DshClient {
    *  server-side). Failures are surfaced as DshError for the caller to downgrade. */
   async selectModel(
     payload: DshModelSelection & { sessionId: string },
+    opts?: { signal?: AbortSignal; timeoutMs?: number },
   ): Promise<DshModelSelection> {
-    const value = (await this.unary('session/selectModel', payload)) as {
+    const value = (await this.unary('session/selectModel', payload, opts)) as {
       selected: DshModelSelection;
     };
     return value.selected;
@@ -384,8 +454,11 @@ export class DshClient {
    * high-water scan is gone in 0.2.x). The caller snapshots this before
    * `session/prompt` so a follow snapshot can skip already-completed turns.
    */
-  async latestEventSeq(sessionId: string): Promise<number> {
-    const value = (await this.unary('session/projections', { sessionId })) as {
+  async latestEventSeq(
+    sessionId: string,
+    opts?: { signal?: AbortSignal; timeoutMs?: number },
+  ): Promise<number> {
+    const value = (await this.unary('session/projections', { sessionId }, opts)) as {
       asOfSeq?: number;
     } | null;
     return typeof value?.asOfSeq === 'number' ? value.asOfSeq : -1;
@@ -397,12 +470,17 @@ export class DshClient {
     sessionId: string,
     throughSeq: number,
     maxMessages: number,
+    opts?: { signal?: AbortSignal; timeoutMs?: number },
   ): Promise<DshSessionPageValue> {
-    return (await this.unary('session/page', {
-      address: { kind: 'session', sessionId },
-      throughSeq,
-      maxMessages,
-    })) as DshSessionPageValue;
+    return (await this.unary(
+      'session/page',
+      {
+        address: { kind: 'session', sessionId },
+        throughSeq,
+        maxMessages,
+      },
+      opts,
+    )) as DshSessionPageValue;
   }
 
   /**

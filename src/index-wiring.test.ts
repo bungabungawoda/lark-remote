@@ -77,14 +77,19 @@ describe('index.ts card action queue identity guard（队列 key 每次入队铸
  * 认证发生在下载之前，未认证/关闭配置时不得发生网络下载）。
  */
 describe('index.ts inbound media wiring guard（先认证后下载）', () => {
-  it('setInboundMediaDetectedHandler 回调内先 isOwner/enabled 再 downloadInboundMedia', () => {
+  it('setInboundMediaDetectedHandler 回调内先 authorize/enabled 再 downloadInboundMedia', () => {
     const source = fs.readFileSync(path.resolve(__dirname, 'index.ts'), 'utf-8');
     const start = source.indexOf('connector.setInboundMediaDetectedHandler((msg) => {');
     const end = source.indexOf('connector.setMessageHandler((msg) => {');
     expect(start).toBeGreaterThan(-1);
     expect(end).toBeGreaterThan(start);
     const block = source.slice(start, end);
-    expect(block).toContain('binder.isOwner(msg.userId)');
+    // 媒体入口与文本入口共用同一个 InboundAuthorizer：未绑定时首条
+    // 纯媒体也能完成 owner 绑定；只读 isOwner 会让首图被静默丢弃。
+    expect(block).toContain('authorizer.authorize(msg.userId, msg.chatId)');
+    expect(block).not.toContain('binder.isOwner(msg.userId)');
+    expect(source).toContain('new InboundAuthorizer({');
+    expect(source).toContain('const authorizer = new InboundAuthorizer({');
     // 活引用：读 router.config（/config 保存后是新对象，启动快照会过期）
     expect(block).toContain('router.config.inboundMedia.enabled');
     expect(block).toContain('connector.downloadInboundMedia(msg, {');
@@ -98,13 +103,36 @@ describe('index.ts inbound media wiring guard（先认证后下载）', () => {
     // 关闭配置时不静默：进 rejected 随 turn 回执发出，且不进入下载
     expect(block).toContain('入站媒体保存已关闭');
     expect(block).toContain("kind: 'rejected',");
-    // 顺序保证：owner 检查必须在下载之前
-    expect(block.indexOf('binder.isOwner(msg.userId)')).toBeLessThan(
+    // 顺序保证：授权/绑定必须在下载之前
+    expect(block.indexOf('authorizer.authorize(msg.userId, msg.chatId)')).toBeLessThan(
       block.indexOf('connector.downloadInboundMedia(msg, {'),
     );
     expect(block.indexOf('router.config.inboundMedia.enabled')).toBeLessThan(
       block.indexOf('connector.downloadInboundMedia(msg, {'),
     );
+  });
+});
+
+/**
+ * 入口 wiring 静态守卫：命令分支必须等待装配器 flush 完成
+ * 再执行命令。原先 `void flush()` 不等待——有媒体下载在途时命令先改变
+ * cwd/session，随后 commit 的旧消息被绑定到新状态。
+ */
+describe('index.ts command branch waits for pending media commit', () => {
+  it('命令分支 await assembler.flush 之后才 await router.handle', () => {
+    const source = fs.readFileSync(path.resolve(__dirname, 'index.ts'), 'utf-8');
+    const start = source.indexOf('if (commandEligible && (stripped.clean.startsWith(');
+    const end = source.indexOf('// 普通消息：进装配器');
+    expect(start).toBeGreaterThan(-1);
+    expect(end).toBeGreaterThan(start);
+    const block = source.slice(start, end);
+    // 必须 await（不能是 void flush）——flush 在有 in-flight 下载时真正挂起。
+    expect(block).toContain("await assembler.flush(msg.userId, msg.chatId, 'flush')");
+    expect(block).toContain('await router.handle(');
+    expect(block.indexOf('await assembler.flush(')).toBeLessThan(
+      block.indexOf('await router.handle('),
+    );
+    expect(block).not.toContain('void assembler.flush(');
   });
 });
 

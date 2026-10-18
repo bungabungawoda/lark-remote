@@ -10,6 +10,7 @@ import { currentPlatform, isWin32 } from '../../../src/platform/select.js';
 import { DshRunner } from './runner.js';
 import { DshTranslator, mapUsage } from './translator.js';
 import { FakeDshServer } from '../../../tests/lib/fake-dsh-server.js';
+import { waitFor } from '../../../tests/lib/wait-for.js';
 import type { DshDaemon } from './daemon.js';
 import type { DshSessionEvent } from './types.js';
 import type { AgentSessionReader } from '../types.js';
@@ -626,8 +627,60 @@ describe('DshClient / DshRunner integration', () => {
     // 必须产出 interrupted result（不能裸 return——调用方依赖 result 收尾 run 卡）
     expect(firstResult.value).toMatchObject({ type: 'result', subtype: 'interrupted' });
     await iterator.return?.();
-    expect(cancelCalled).toBe(true);
+    // create 不跟随 run abort（abort 会丢掉刚建的 sessionId），而是落定后在后台补
+    // cancel：/stop 立即释放队列，孤儿 session 仍会被收起。
+    expect(await waitFor(() => cancelCalled, 2000)).toBe(true);
     expect(promptCalled).toBe(false);
+  });
+
+  it('test_anchor_dsh_stop_with_hung_unary_releases_run', async () => {
+    // 服务接受连接但不返回任何 unary 响应时，stop() 必须让 run 结束，
+    // 否则 workspace 串行队列被永久占住。fetchImpl 永不 resolve，只在 abort 时
+    // reject（模拟真实 fetch 的 AbortSignal 行为）。
+    const fetchImpl = ((url: string, init?: { signal?: AbortSignal }) => {
+      // cancel 照常应答（服务端还能处理控制请求），其余 unary 永不返回。
+      if (String(url).endsWith('/api/session/cancel')) {
+        return Promise.resolve(
+          new Response(JSON.stringify({ result: { ok: true, value: { accepted: true } } }), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          }),
+        );
+      }
+      return new Promise((_resolve, reject) => {
+        const onAbort = (): void => {
+          reject(Object.assign(new Error('aborted'), { name: 'AbortError' }));
+        };
+        if (init?.signal?.aborted) onAbort();
+        else init?.signal?.addEventListener('abort', onAbort, { once: true });
+      });
+    }) as unknown as typeof fetch;
+
+    const runner = new DshRunner({
+      kind: 'dsh',
+      sessionReader: stubReader,
+      host: 'http://127.0.0.1:1',
+      credentialsFile: NO_CREDENTIALS_FILE,
+      fetchImpl,
+    });
+
+    const events: AgentEvent[] = [];
+    const done = (async () => {
+      for await (const ev of runner.run('hi', { cwd: CWD, sessionId: SID })) {
+        events.push(ev);
+      }
+    })();
+
+    // 等 run 进入 unary 挂起（synthetic init 已产出）。
+    expect(await waitFor(() => events.some((e) => e.type === 'system'), 2000)).toBe(true);
+    await runner.stop({ immediate: true });
+
+    // stop 后必须收尾（不能等 60s 超时）：generator 结束 + interrupted result。
+    expect(await waitFor(() => !runner.isRunning, 2000)).toBe(true);
+    await done;
+    expect(events.find((e) => e.type === 'result')).toMatchObject({
+      subtype: 'interrupted',
+    });
   });
 });
 

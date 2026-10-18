@@ -174,8 +174,12 @@ function findSessionFile(sessionId: string, cwd: string, sessionsDir: string): s
   try {
     const files = fs.readdirSync(dir).filter((f) => f.endsWith('.jsonl'));
     for (const f of files) {
-      // pi filenames: <timestamp>_<uuid>.jsonl — match by sessionId (uuid) suffix
-      if (f.includes(sessionId)) {
+      // pi filenames: <timestamp>_<uuid>.jsonl — the session id is the exact
+      // uuid suffix. `includes()` would also match an id that is a prefix /
+      // substring of another session's uuid, so
+      // require the trailing `_<id>.jsonl` form (files without the timestamp
+      // prefix keep the plain `<id>.jsonl` form).
+      if (f === `${sessionId}.jsonl` || f.endsWith(`_${sessionId}.jsonl`)) {
         return path.join(dir, f);
       }
     }

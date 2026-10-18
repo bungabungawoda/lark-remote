@@ -200,6 +200,13 @@ interface ActiveRun {
    * with a stale config snapshot.
    */
   agentKind: AgentKind;
+  /**
+   * Session id this run actually used (from system.init / turn_started).
+   * Immutable run identity for final usage: a mid-run /new //resume //cd moves
+   * the global session pointer, so reading `sessionStore.getSessionId()` at the
+   * end attributes another session's tokens to this run.
+   */
+  sessionId?: string;
 }
 
 /** `startIdleWatchdog` 的句柄：事件到达时 `touch()`，流结束/收尾时 `stop()`。 */
@@ -1110,20 +1117,25 @@ export class Bridge {
     const { runId, cardSession, activeRun } = this.createRunSession(ctx, cwd, runner, agentKind);
 
     // Step 2: Consume the agent stream (runner.run loop, event processing, state updates)
-    await this.runAgentStreamToEnd(
-      runner,
-      cardSession,
-      sessionId,
-      sessionEpochAtStart,
-      ctx,
-      cwd,
-      runId,
-      message,
-      agentKind,
-    );
-
-    // Step 3: Finalize the run (error handling, fallback card, completion notification, cleanup)
-    await this.finalizeRun(cardSession, activeRun, ctx, cwd);
+    // 兜底：run 消费阶段任何异常都必须仍走 finalizeRun 释放 activeRuns 槽位，
+    // 否则该 cwd 永久 busy（后续消息被 busy-drop，只能手动 /stop）。
+    try {
+      await this.runAgentStreamToEnd(
+        runner,
+        cardSession,
+        activeRun,
+        sessionId,
+        sessionEpochAtStart,
+        ctx,
+        cwd,
+        runId,
+        message,
+        agentKind,
+      );
+    } finally {
+      // Step 3: Finalize the run (error handling, fallback card, completion notification, cleanup)
+      await this.finalizeRun(cardSession, activeRun, ctx, cwd);
+    }
   }
 
   /**
@@ -1224,6 +1236,7 @@ export class Bridge {
   private async runAgentStreamToEnd(
     runner: Runner,
     cardSession: RunCardSession,
+    activeRun: ActiveRun,
     sessionId: string | undefined,
     sessionEpochAtStart: number,
     ctx: CommandContext,
@@ -1358,6 +1371,9 @@ export class Bridge {
         }
         if (event.type === 'system' && event.subtype === 'init') {
           sawInit = true;
+          // 本轮真实使用的 session（不可变身份）：指针在 run 中被 /new 等移动时，
+          // 结束后的 usage 读取仍以它为准。
+          activeRun.sessionId = event.session_id;
           // 代际守卫：run 在途时 /new（或 new-session 卡片、/cd、/resume、
           // /config 切换）移动了 session 指针，此 init 的写回是 stale 的——
           // 跳过，否则 /new 的清空会被在途 run 静默撤销（2026-08-09 事故：
@@ -1408,6 +1424,8 @@ export class Bridge {
           // （§9.22 守卫前提），此处 turn_started 写回保留为双保险：两者都用
           // threadId 写回 sessionId（代际守卫一致），幂等。缺失会导致每次消息
           // 都新建线程（thread/start 而非 thread/resume），会话无法延续。
+          // init 缺失时以 threadId 作为本轮身份兜底。
+          activeRun.sessionId ??= event.threadId;
           const pointerMoved =
             this.sessionStore.getSessionEpoch(ctx.userId, agentKind) !== sessionEpochAtStart;
           if (!pointerMoved) {
@@ -1600,7 +1618,11 @@ export class Bridge {
       // 但 result=error 时跳过: 进程可能立即退出未写新 usage (如 kimi 0.26+ 拒绝 -p+--auto
       // 立即 exit=1), 此时 jsonl 里是上一次成功 turn 的历史 usage, 会被误当作本次 usage 显示,
       // 误导用户以为本次出错的请求也消耗了 token。error 时只用 live 捕获的 usage (若有)。
-      const finalSessionId = this.sessionStore.getSessionId(ctx.userId, agentKind);
+      // 本轮使用的 session：run 期间 /new //resume //cd 会移动全局
+      // 指针，结束时再读 store 会把别条会话的 token/context 显示到这张卡上。
+      // 优先级：卡片状态（本轮 init 写入）→ activeRun（本轮 init/turn_started）
+      // → 本轮开始时捕获的 sessionId。三者都没有就跳过 usage，绝不回读全局指针。
+      const finalSessionId = cardSession.currentState.sessionId ?? activeRun.sessionId ?? sessionId;
       const finalUsage = resultNotSuccess
         ? undefined
         : resolveFinalUsage(

@@ -427,6 +427,11 @@ export class KimiAcpRunner extends BaseAcpRunner<KimiAcpTranslator> {
     opts: SpawnOptions,
     baselineTotalCount: number,
   ): void {
+    // 本轮归属锚点（代际 + client），所有 settle 回调落地前复核；
+    // 旧轮迟到的 prompt 结算不得写进新轮的共享队列。
+    const generation = this.turnGeneration;
+    const client = this.currentClient;
+    const isCurrent = (): boolean => this.isCurrentTurn(generation, client);
     const compactionReader = (this.sessionReader as CompactionRecordReader).readCompactionRecords;
     // Derived from the pre-fire snapshot captured by compactBaseline() —
     // re-reading here would race the prompt fire and misclassify new records.
@@ -438,6 +443,7 @@ export class KimiAcpRunner extends BaseAcpRunner<KimiAcpTranslator> {
     // 探针。终态判定不再挂在它后面。
     const promptSettled: Promise<SessionPromptResult | undefined> = promptPromise.then(
       (result) => {
+        if (!isCurrent()) return undefined;
         this.promptSettled = true;
         if (compactionReader) {
           // §5.4 可选防线（日志探针）：prompt settle 后既无新 begin 也无新
@@ -453,6 +459,7 @@ export class KimiAcpRunner extends BaseAcpRunner<KimiAcpTranslator> {
         return result;
       },
       (err) => {
+        if (!isCurrent()) return undefined;
         promptRejected = true;
         this.handlePromptRejected(err, translator, sessionId, 'compact');
         return undefined;
@@ -462,7 +469,8 @@ export class KimiAcpRunner extends BaseAcpRunner<KimiAcpTranslator> {
     if (!compactionReader) {
       // 读不到 compaction 记录（reader 未实现）：沿用「prompt 结算即成功」的口径。
       void promptSettled.then((result) => {
-        if (result) this.pushEvents([translator.handlePromptResponse(sessionId, result)]);
+        if (!result || !isCurrent()) return;
+        this.pushEvents([translator.handlePromptResponse(sessionId, result)]);
       });
       return;
     }
@@ -473,6 +481,7 @@ export class KimiAcpRunner extends BaseAcpRunner<KimiAcpTranslator> {
     // 超时，而不是「压缩状态未知 / 可重试」。
     void this.waitForCompactionTerminal(compactionReader, opts, baselineTerminalCount).then(
       async (outcome) => {
+        if (!isCurrent()) return;
         // outcome === 'stopped'：不推 result，由 consumeTurn 的 interrupted 兜底。
         if (outcome === 'stopped' || this.forceFinish || this.stopRequested) return;
         if (outcome === 'cancelled') {
@@ -497,7 +506,7 @@ export class KimiAcpRunner extends BaseAcpRunner<KimiAcpTranslator> {
         // prompt 先于终态记录结算，这里通常是在等一个已完成的 promise。
         const result = await promptSettled;
         if (!result || promptRejected) return; // handlePromptRejected 已产 error result
-        if (this.forceFinish || this.stopRequested) return;
+        if (!isCurrent() || this.forceFinish || this.stopRequested) return;
         this.pushEvents([translator.handlePromptResponse(sessionId, result)]);
       },
     );

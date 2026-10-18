@@ -193,6 +193,11 @@ export interface ApprovalView {
   availableDecisions: string[];
   /** Raw payloads for structured decisions (e.g. acceptWithExecpolicyAmendment). */
   decisionPayloads?: Record<string, unknown>;
+  /**
+   * 最近一次响应发送失败的原因。协调器失败后回滚 pending 并写回
+   * 该字段，卡片据此渲染「提交失败，可重试」，不再让用户误以为已提交。
+   */
+  deliveryError?: string;
 }
 
 interface ThinkingContent {

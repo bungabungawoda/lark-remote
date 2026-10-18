@@ -65,6 +65,18 @@ export function renderApprovalArea(
     elements.push(...renderQuestionApproval(approval, opts?.expired, opts?.runId));
   }
 
+  // 响应发送失败：明确告知原因 + 可重试，而不是静默停在可点状态。
+  if (approval.deliveryError) {
+    const neutralized = approval.deliveryError.replace(/`/g, '·');
+    elements.push({
+      tag: 'div',
+      text: {
+        tag: 'lark_md',
+        content: `⚠️ **审批提交失败**：${neutralized}\n可直接再次点击按钮重试。`,
+      },
+    });
+  }
+
   return elements;
 }
 

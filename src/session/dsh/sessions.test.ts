@@ -64,6 +64,16 @@ function makeReader(server: FakeDshServer): DshSessionReader {
   });
 }
 
+/** Register a session/list row so the reader's cwd guard finds the session. */
+function registerSession(server: FakeDshServer, cwd = CWD): void {
+  server.register('session/list', () => ({
+    ok: true,
+    value: {
+      items: [{ sessionId: SID_A, updatedAt: 1, running: false, blank: false, cwd }],
+    },
+  }));
+}
+
 describe('DshSessionReader', () => {
   it('listSessions filters by cwd, sorts by updatedAt desc, and paginates locally', () => {
     const server = new FakeDshServer();
@@ -109,6 +119,7 @@ describe('DshSessionReader', () => {
 
   it('readSessionContent maps history events and accumulates usage', () => {
     const server = new FakeDshServer();
+    registerSession(server);
     server.register('session/page', () => ({
       ok: true,
       value: {
@@ -147,6 +158,7 @@ describe('DshSessionReader', () => {
 
   it('readSessionContent caps events with maxEvents (tail cap)', () => {
     const server = new FakeDshServer();
+    registerSession(server);
     server.register('session/page', () => ({
       ok: true,
       value: {
@@ -167,6 +179,7 @@ describe('DshSessionReader', () => {
 
   it('usage: contextLength reflects only the last assistant/message (cumulative sums full session)', () => {
     const server = new FakeDshServer();
+    registerSession(server);
     server.register('session/page', () => ({
       ok: true,
       value: {
@@ -232,6 +245,26 @@ describe('DshSessionReader', () => {
     expect(reader.isSessionActive(SID_C, CWD)).toBe(false);
   });
 
+  it('test_anchor_dsh_session_cwd_mismatch_rejected', () => {
+    // session 属于另一个 cwd 时，readSessionContent 必须 fail-closed。
+    // 只按 sessionId 查 history 会让 /resume 跨 workspace 绑定会话。
+    const server = new FakeDshServer();
+    registerSession(server, OTHER);
+    server.register('session/page', () => ({
+      ok: true,
+      value: {
+        records: [{ type: 'event', event: userMsg(SID_A, 'belongs to other cwd') }],
+        hasMore: false,
+      },
+    }));
+
+    const reader = makeReader(server);
+    expect(reader.readSessionContent(SID_A, CWD)).toEqual({ events: [] });
+    // 用会话真实 cwd 读取则正常返回内容。
+    const ok = reader.readSessionContent(SID_A, OTHER);
+    expect(ok.events.map((e) => e.content)).toEqual(['belongs to other cwd']);
+  });
+
   it('returns empty results on DSH error (fail-soft)', () => {
     const server = new FakeDshServer();
     server.register('session/list', () => ({
@@ -281,6 +314,11 @@ describe('DshSessionReader', () => {
       },
       syncRequest: (_baseUrl, method, payload, cookie) => {
         cookies.push(cookie);
+        if (method === 'session/list') {
+          return {
+            items: [{ sessionId: SID_A, updatedAt: 1, running: false, blank: false, cwd: CWD }],
+          };
+        }
         if (method === 'session/projections') return { asOfSeq: 7, values: {} };
         if (method === 'session/page') {
           pagePayloads.push(payload);
@@ -355,6 +393,7 @@ describe('DshSessionReader', () => {
         event: assistantMsg(SID_A, `msg-${i}`, { inputTokens: 1, outputTokens: 1 }),
       });
     }
+    registerSession(server);
     server.register('session/page', (payload) => {
       const max = (payload as { maxMessages?: number }).maxMessages ?? 50;
       return {

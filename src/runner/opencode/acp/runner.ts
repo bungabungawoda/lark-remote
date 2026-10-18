@@ -231,9 +231,19 @@ export class OpencodeAcpRunner extends BaseAcpRunner<OpencodeAcpTranslator> {
     _opts: unknown,
     _baselineTotalCount: number,
   ): void {
+    // 与 setupTurn 相同，捕获发起压缩那一轮的代际 + client；
+    // 旧轮迟到的 prompt 结算不得写入新轮的共享队列。
+    const generation = this.turnGeneration;
+    const client = this.currentClient;
     promptPromise.then(
-      (result) => this.handlePromptResolved(result, translator, sessionId),
-      (err) => this.handlePromptRejected(err, translator, sessionId, 'compact'),
+      (result) => {
+        if (!this.isCurrentTurn(generation, client)) return;
+        this.handlePromptResolved(result, translator, sessionId);
+      },
+      (err) => {
+        if (!this.isCurrentTurn(generation, client)) return;
+        this.handlePromptRejected(err, translator, sessionId, 'compact');
+      },
     );
   }
 

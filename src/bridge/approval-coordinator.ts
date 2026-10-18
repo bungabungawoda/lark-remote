@@ -26,6 +26,8 @@ export interface TrackedApproval {
   view: ApprovalView;
   createdAt: number;
   timeoutTimer: ReturnType<typeof setTimeout> | null;
+  /** 本次审批的超时窗口（ms）：响应失败回滚 pending 时按同一窗口重新计时。 */
+  timeoutMs: number;
   /** AskUserQuestion 已答问题索引 → 答案 label[]（kind === 'question'）。 */
   answers?: Map<number, string[]>;
   /** AskUserQuestion 补充说明（Codex user_note）：问题索引 → 文本。 */
@@ -81,6 +83,7 @@ export class ApprovalCoordinator {
       // Already tracked — update state
       existing.state = 'pending';
       existing.view = event.view;
+      existing.timeoutMs = timeoutMs;
       // 重投必须重新计时：上一路的计时器在 resolved/expired 时已清掉，不重装
       // 这条审批就永不过期，server 只能无限等待（红线「审批超时自动 cancel」）。
       this.armTimeout(existing, timeoutMs);
@@ -94,6 +97,7 @@ export class ApprovalCoordinator {
       view: event.view,
       createdAt: Date.now(),
       timeoutTimer: null,
+      timeoutMs,
     };
 
     this.approvals.set(event.requestId, tracked);
@@ -180,17 +184,25 @@ export class ApprovalCoordinator {
     // Atomic state transition: pending → submitting（同步，无 await）
     tracked.state = 'submitting';
     this.clearTimer(tracked);
+    // 重新提交时清掉上一次的失败提示（视图会随本次结果重渲染）。
+    this.clearDeliveryError(tracked);
 
     // Send response via the responder
     try {
       await this.responder(ctx.requestId, effectiveAction);
       tracked.state = 'resolved';
+      // nonce 在 responder 成功后才消费：失败可原按钮重试，
+      // 不会被自己的 nonce 去重挡掉（失败后已回滚 pending 并重新计时）。
+      this.consumeNonce(ctx.requestId, ctx.nonce);
       // 提交成功后立即从卡片移除审批区（agent 无关）：claude 控制协议没有
       // resolved 回发，不推就会「已点允许按钮仍在」残留 UI；codex 的 server
       // 稍后也会发 approval_resolved，reducer 按 requestId 过滤幂等。
       this.pushResolved(ctx.requestId);
-    } catch {
-      tracked.state = 'failed';
+    } catch (err) {
+      // 响应失败必须向上抛（router 据此返回 error toast，而不是骗用户「已提交」），
+      // 并把失败原因写回卡片；状态回滚 pending + 重新装超时计时器，允许重试。
+      this.failSubmission(tracked, err);
+      throw err instanceof Error ? err : new Error(String(err));
     }
   }
 
@@ -252,7 +264,7 @@ export class ApprovalCoordinator {
       // 多选切换按钮同一 nonce 重复投递（双击/飞书重投递）只应
       // toggle 一次，否则勾选会被二次 toggle 抵消。单选用例的重复防护在
       // respondQuestionAnswers（提交即幂等，选中是 set 语义）。
-      this.assertFreshNonce(ctx.requestId, ctx.nonce);
+      this.assertAndConsumeNonce(ctx.requestId, ctx.nonce);
       if (selected.has(action.option)) {
         selected.delete(action.option);
       } else {
@@ -347,7 +359,7 @@ export class ApprovalCoordinator {
     if (!text) {
       throw new Error('请输入补充说明');
     }
-    this.assertFreshNonce(ctx.requestId, ctx.nonce);
+    this.assertAndConsumeNonce(ctx.requestId, ctx.nonce);
     tracked.notes ??= new Map();
     tracked.notes.set(action.questionIndex, text);
     q.note = text;
@@ -380,7 +392,7 @@ export class ApprovalCoordinator {
     if (!text) {
       throw new Error('请输入修改意见');
     }
-    this.assertFreshNonce(ctx.requestId, ctx.nonce);
+    this.assertAndConsumeNonce(ctx.requestId, ctx.nonce);
     tracked.feedback = text;
     tracked.view.planFeedback = text;
     this.pushApprovalViewUpdate(ctx.requestId, tracked);
@@ -427,15 +439,50 @@ export class ApprovalCoordinator {
     }, timeoutMs);
   }
 
-  /** nonce 去重：同一 nonce 只允许生效一次（防连点/飞书重投递）。 */
+  /**
+   * nonce 去重（只校验不消费）：同一 nonce 已生效过则拒绝。
+   * 提交类操作在 responder 成功后才 `consumeNonce`，失败可原样重试。
+   */
   private assertFreshNonce(requestId: number | string, nonce?: string): void {
     if (nonce === undefined) return;
-    const seen = this.submittedNonces.get(requestId) ?? new Set<string>();
-    if (seen.has(nonce)) {
+    const seen = this.submittedNonces.get(requestId);
+    if (seen?.has(nonce)) {
       throw new Error(`Approval request ${requestId} already submitted (duplicate nonce)`);
     }
+  }
+
+  /** 标记 nonce 已生效（同一按钮连点/飞书重投递只允许一次）。 */
+  private consumeNonce(requestId: number | string, nonce?: string): void {
+    if (nonce === undefined) return;
+    const seen = this.submittedNonces.get(requestId) ?? new Set<string>();
     seen.add(nonce);
     this.submittedNonces.set(requestId, seen);
+  }
+
+  /** 校验并立即消费 nonce（切换/回显类操作：本身幂等，重复投递只生效一次）。 */
+  private assertAndConsumeNonce(requestId: number | string, nonce?: string): void {
+    this.assertFreshNonce(requestId, nonce);
+    this.consumeNonce(requestId, nonce);
+  }
+
+  /** 清掉失败提示（重试或新视图到达时）。 */
+  private clearDeliveryError(tracked: TrackedApproval): void {
+    if (tracked.view.deliveryError === undefined) return;
+    const { deliveryError: _deliveryError, ...view } = tracked.view;
+    tracked.view = view;
+  }
+
+  /**
+   * 响应发送失败：状态回滚 pending、卡片写失败原因并重新计时，允许用户重试。
+   * 不回滚成 failed——failed 会让后续点击永远报 "no longer pending"，
+   * 用户看到失败却没有任何重试入口。
+   */
+  private failSubmission(tracked: TrackedApproval, err: unknown): void {
+    const message = err instanceof Error ? err.message : String(err);
+    tracked.state = 'pending';
+    tracked.view = { ...tracked.view, deliveryError: message };
+    this.armTimeout(tracked, tracked.timeoutMs);
+    this.pushApprovalViewUpdate(tracked.requestId, tracked);
   }
 
   /** 记录问题答案到 tracked.answers（懒初始化 Map）。 */
@@ -515,6 +562,7 @@ export class ApprovalCoordinator {
 
     tracked.state = 'submitting';
     this.clearTimer(tracked);
+    this.clearDeliveryError(tracked);
     try {
       await this.responder(ctx.requestId, {
         action: 'answer',
@@ -522,9 +570,12 @@ export class ApprovalCoordinator {
         ...(Object.keys(notes).length > 0 ? { notes } : {}),
       });
       tracked.state = 'resolved';
+      this.consumeNonce(ctx.requestId, ctx.nonce);
       this.pushResolved(ctx.requestId);
-    } catch {
-      tracked.state = 'failed';
+    } catch (err) {
+      // 与 submit 同口径：失败上抛（router error toast）+ 卡片失败视图 + 可重试。
+      this.failSubmission(tracked, err);
+      throw err instanceof Error ? err : new Error(String(err));
     }
   }
 

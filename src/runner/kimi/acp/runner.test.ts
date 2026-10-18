@@ -1081,6 +1081,49 @@ describe('KimiAcpRunner', () => {
     await runner.dispose();
   }, 15000);
 
+  it('test_anchor_acp_stop_late_prompt_does_not_contaminate_next_run', async () => {
+    // 第一轮被 /stop 后，旧 prompt 的迟到错误在第二轮进行中落地。
+    // 归属校验（generation + client）必须丢弃它；否则第二轮会被旧 session 的
+    // error 提前结束、卡片显示上一轮的错误。
+    const { wrapper, cwd } = writeScenario(tmpDir, serverScript, 'kimi', {
+      firstPromptErrorMs: 250,
+      delayMs: 1000,
+    });
+
+    const runner = new KimiAcpRunner({
+      kind: 'kimi',
+      sessionReader: createStubSessionReader(),
+      binary: wrapper,
+      acpArgs: [],
+      turnIdleTimeoutMs: 30_000,
+    });
+
+    const events1: AgentEvent[] = [];
+    const run1 = (async () => {
+      for await (const event of runner.run('first', { cwd })) events1.push(event);
+    })();
+    expect(await waitFor(() => events1.some((e) => e.type === 'system'), 5000)).toBe(true);
+
+    await runner.stop();
+    await run1;
+    expect(events1.find((e) => e.type === 'result')).toMatchObject({ subtype: 'interrupted' });
+
+    const events2: AgentEvent[] = [];
+    const run2 = (async () => {
+      for await (const event of runner.run('second', { cwd })) events2.push(event);
+    })();
+    expect(await waitFor(() => events2.some((e) => e.type === 'system'), 5000)).toBe(true);
+
+    // 第二轮自己的 prompt 约 1s 后成功；旧 prompt 的错误在 250ms 时落地。
+    expect(await waitFor(() => events2.some((e) => e.type === 'result'), 5000)).toBe(true);
+    await run2;
+
+    expect(events2.find((e) => e.type === 'result')).toMatchObject({ subtype: 'success' });
+    expect(JSON.stringify(events2)).not.toContain('late prompt failure');
+
+    await runner.dispose();
+  }, 20000);
+
   it('reports status info with mode and permission mode', () => {
     const runner = new KimiAcpRunner({
       kind: 'kimi',
