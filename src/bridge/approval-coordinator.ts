@@ -82,7 +82,7 @@ export class ApprovalCoordinator {
     if (existing) {
       // Already tracked — update state
       existing.state = 'pending';
-      existing.view = event.view;
+      existing.view = this.reapplyRecordedAnswers(existing, event.view);
       existing.timeoutMs = timeoutMs;
       // 重投必须重新计时：上一路的计时器在 resolved/expired 时已清掉，不重装
       // 这条审批就永不过期，server 只能无限等待（红线「审批超时自动 cancel」）。
@@ -483,6 +483,37 @@ export class ApprovalCoordinator {
     tracked.view = { ...tracked.view, deliveryError: message };
     this.armTimeout(tracked, tracked.timeoutMs);
     this.pushApprovalViewUpdate(tracked.requestId, tracked);
+  }
+
+  /**
+   * Re-apply the answers already recorded for a question batch onto a
+   * re-delivered view.
+   *
+   * A re-delivered waterfall (DSH replays pending waterfalls to a reconnected
+   * `$events` client) rebuilds the view from the agent payload, which carries no
+   * card-local state: a plain replace would drop the checkmarks of questions the
+   * user already answered while `answers` still counts them, so the card would
+   * contradict what a submit sends. Only recorded answers (`answers` / `notes`)
+   * are restored; unsubmitted multi-select toggles are card-local by design.
+   * Alignment is by index: the same requestId means the same batch.
+   */
+  private reapplyRecordedAnswers(tracked: TrackedApproval, view: ApprovalView): ApprovalView {
+    if (view.kind !== 'question' || tracked.kind !== 'question') return view;
+    const questions = view.questions ?? [];
+    if (questions.length === 0) return view;
+    return {
+      ...view,
+      questions: questions.map((question, index) => {
+        const selected = tracked.answers?.get(index);
+        const note = tracked.notes?.get(index);
+        if (selected === undefined && note === undefined) return question;
+        return {
+          ...question,
+          ...(selected === undefined ? {} : { selected }),
+          ...(note === undefined ? {} : { note }),
+        };
+      }),
+    };
   }
 
   /** 记录问题答案到 tracked.answers（懒初始化 Map）。 */

@@ -486,11 +486,18 @@ function renderQuestionApproval(
 
   if (expired) {
     // 提问不是权限审批：过期后 agent 侧要么已按跳过继续、要么转由 Web UI
-    // 回答，统一文案不能写成「审批已过期」。
+    // 回答，统一文案不能写成「审批已过期」。是否还能在别处回答由数据驱动
+    // （DSH 可继续在 Web UI 答，Claude/Codex 不能），渲染层不写死语义。
     elements.push({
       tag: 'div',
       text: { tag: 'lark_md', content: '⏰ **提问已超时**' },
     });
+    if (approval.expiredHint) {
+      elements.push({
+        tag: 'div',
+        text: { tag: 'lark_md', content: approval.expiredHint.replace(/`/g, '·') },
+      });
+    }
     return elements;
   }
 
@@ -507,6 +514,22 @@ function renderQuestionApproval(
         content: `**${header}**${q.multiSelect ? '（可多选）' : ''}\n${q.question}`,
       },
     });
+
+    if (q.detail) {
+      // 题面外的补充正文（DSH plan-review 提问把计划全文放这里）：必须随题
+      // 渲染，否则用户是在「看不见计划」的情况下批准。与 ExitPlanMode 的
+      // 计划面板同口径：反引号中和 + 表格限数 + 字节预算折叠展示。
+      const neutralized = q.detail.replace(/`/g, '·');
+      const content = truncateUtf8(truncateMarkdownTables(neutralized), PLAN_PANEL_BYTES);
+      elements.push(
+        collapsibleMarkdownPanel({
+          title: '📋 详情',
+          expanded: false,
+          border: 'blue',
+          content,
+        }),
+      );
+    }
 
     if (freeText) {
       // 自由文本题（Codex options:null / Pi extension input）：无选项行，

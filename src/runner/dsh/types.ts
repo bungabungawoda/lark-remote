@@ -229,6 +229,11 @@ export interface DshQuestionOption {
 export interface DshQuestion {
   id: string;
   question: string;
+  /**
+   * Supporting detail kept out of the question text. `intent.kind:'plan-review'`
+   * questions carry the plan markdown here, so it must reach the card.
+   */
+  detail?: string;
   header?: string;
   options?: DshQuestionOption[];
   multiSelect?: boolean;
