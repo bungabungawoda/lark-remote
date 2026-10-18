@@ -616,10 +616,18 @@ describe('ApprovalCoordinator', () => {
     it('test_anchor_submit_failure_does_not_push_resolved', async () => {
       responder.mockRejectedValue(new Error('connection closed'));
       coordinator.onRequested(makeCommandEvent());
-      await coordinator.submit({ action: 'accept' }, { requestId: 1001, nonce: 'n1' });
+      await expect(
+        coordinator.submit({ action: 'accept' }, { requestId: 1001, nonce: 'n1' }),
+      ).rejects.toThrow('connection closed');
 
-      const events = pushToCard.mock.calls.flat(2) as Array<{ type?: string }>;
+      const events = pushToCard.mock.calls.flat(2) as Array<{
+        type?: string;
+        view?: { deliveryError?: string };
+      }>;
       expect(events.some((e) => e.type === 'approval_resolved')).toBe(false);
+      // 失败必须可见：卡片收到带 deliveryError 的视图更新。
+      const failedView = events.find((e) => e.type === 'approval_view_updated');
+      expect(failedView?.view?.deliveryError).toBe('connection closed');
     });
 
     it('test_anchor_answer_path_pushes_resolved_after_respond', async () => {
@@ -858,21 +866,32 @@ describe('ApprovalCoordinator', () => {
       ).rejects.toThrow('no longer pending (state=submitting)');
     });
 
-    it('reports the failed state when the response could not be sent', async () => {
-      coordinator = new ApprovalCoordinator({
+    it('surfaces responder failure and keeps retry pending', async () => {
+      const failing = new ApprovalCoordinator({
         approvalTimeoutMs: 30_000,
         responder: vi.fn().mockRejectedValue(new Error('server down')),
         interruptTurn,
         pushToCard,
       });
-      coordinator.onRequested(makeCommandEvent());
+      failing.onRequested(makeCommandEvent());
 
+      // 失败必须向上抛（router 才能返回 error toast），不能假装已提交。
       await expect(
-        coordinator.submit({ action: 'accept' }, { requestId: 1001, nonce: 'n-fail-1' }),
-      ).resolves.toBeUndefined();
+        failing.submit({ action: 'accept' }, { requestId: 1001, nonce: 'n-fail-1' }),
+      ).rejects.toThrow('server down');
+      // 状态回滚 pending：同一 nonce 未被消费，用户可以再点一次重试。
       await expect(
-        coordinator.submit({ action: 'accept' }, { requestId: 1001, nonce: 'n-fail-2' }),
-      ).rejects.toThrow('no longer pending (state=failed)');
+        failing.submit({ action: 'accept' }, { requestId: 1001, nonce: 'n-fail-1' }),
+      ).rejects.toThrow('server down');
+
+      const events = pushToCard.mock.calls.flat(2) as Array<{
+        type?: string;
+        view?: { deliveryError?: string };
+      }>;
+      expect(events.filter((e) => e.type === 'approval_view_updated').length).toBe(2);
+      expect(events.find((e) => e.type === 'approval_view_updated')?.view?.deliveryError).toBe(
+        'server down',
+      );
     });
 
     it('prefers the feedback carried by the click over the stored one', async () => {

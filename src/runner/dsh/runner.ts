@@ -46,7 +46,12 @@ export interface DshRunnerOptions {
   fetchImpl?: typeof fetch;
   /** Injectable WebSocket factory (defaults to global WebSocket). */
   webSocketImpl?: WebSocketFactory;
+  /** Unary request timeout in ms (default 60s); 0 disables. */
+  requestTimeoutMs?: number;
 }
+
+/** Budget for the fire-and-forget session/cancel on stop (never block /stop). */
+const CANCEL_TIMEOUT_MS = 5_000;
 
 export class DshRunner implements AgentRunner {
   readonly kind = 'dsh' as const;
@@ -81,6 +86,7 @@ export class DshRunner implements AgentRunner {
       credentialsFile: opts.credentialsFile,
       fetchImpl: opts.fetchImpl,
       webSocketImpl: opts.webSocketImpl,
+      requestTimeoutMs: opts.requestTimeoutMs,
     });
   }
 
@@ -118,10 +124,31 @@ export class DshRunner implements AgentRunner {
       // session/create 必须包进同一 try/finally，否则创建失败（服务端不可达/报错）
       // 会在进入旧 try 之前抛异常，finally 不执行 → running 恒 true、activeAbort 残留。
       if (!sessionId) {
-        const created = await this.client.createSession({
+        const createPromise = this.client.createSession({
           cwd: opts.cwd,
           ...(this.agentPreset ? { agentPreset: this.agentPreset } : {}),
         });
+        // 不把 run 的 abort signal 直接交给 create：abort 掉请求会丢掉刚创建
+        // 的 sessionId，服务端若已完成创建就留下一个无法 cancel 的孤儿 session。
+        // 改为 abort 时立即放行 run（队列不被挂起），create 后台落定后再补 cancel。
+        const created = await this.awaitOrAbort(createPromise, abort.signal);
+        if (!created) {
+          void createPromise.then(
+            (c) => this.cancelSessionQuietly(c.sessionId),
+            () => {
+              /* create failed after stop — nothing to cancel */
+            },
+          );
+          getLogger().info('[dsh] run stopped during session/create; will cancel if it settles');
+          terminalEmitted = true;
+          yield {
+            type: 'result',
+            subtype: 'interrupted',
+            session_id: '',
+            errorMessage: 'run stopped',
+          };
+          return;
+        }
         sessionId = created.sessionId;
       }
       this.activeSessionId = sessionId;
@@ -132,11 +159,7 @@ export class DshRunner implements AgentRunner {
       // 必须 yield interrupted result（不能裸 return）：调用方依赖 result 收尾
       // run 卡，否则 for-await 自然结束后无终态、卡片停留「运行中」。
       if (abort.signal.aborted) {
-        try {
-          await this.client.unary('session/cancel', { sessionId });
-        } catch {
-          /* 取消失败仅告警，session 已 abort 无需继续 */
-        }
+        await this.cancelSessionQuietly(sessionId);
         getLogger().info(`[dsh] run aborted during startup, cancelled session ${sessionId}`);
         terminalEmitted = true;
         yield {
@@ -153,18 +176,44 @@ export class DshRunner implements AgentRunner {
       // 跳过。失败仅告警不阻断 run（模型校验由 DSH 负责）。
       if (this.configuredModel && !this.alignedSessions.has(sessionId)) {
         try {
-          await this.client.selectModel({
-            sessionId,
-            provider: DSH_MODEL_PROVIDER,
-            model: this.configuredModel,
-            ...(this.reasoningEffort ? { reasoningEffort: this.reasoningEffort } : {}),
-          });
+          await this.client.selectModel(
+            {
+              sessionId,
+              provider: DSH_MODEL_PROVIDER,
+              model: this.configuredModel,
+              ...(this.reasoningEffort ? { reasoningEffort: this.reasoningEffort } : {}),
+            },
+            { signal: abort.signal },
+          );
           this.alignedSessions.add(sessionId);
         } catch (err) {
+          if (abort.signal.aborted) {
+            getLogger().info(`[dsh] run stopped during selectModel session=${sessionId}`);
+            terminalEmitted = true;
+            yield {
+              type: 'result',
+              subtype: 'interrupted',
+              session_id: sessionId,
+              errorMessage: 'run stopped',
+            };
+            return;
+          }
           getLogger().warn(
             `[dsh] selectModel failed for session ${sessionId} (run continues): ${(err as Error).message}`,
           );
         }
+      }
+
+      // Abort 可能在上述 unary 完成与检查之间到达：不进入 prompt/turn。
+      if (abort.signal.aborted) {
+        terminalEmitted = true;
+        yield {
+          type: 'result',
+          subtype: 'interrupted',
+          session_id: sessionId,
+          errorMessage: 'run stopped',
+        };
+        return;
       }
 
       yield {
@@ -179,14 +228,33 @@ export class DshRunner implements AgentRunner {
         // Snapshot the pre-prompt high-water mark before mutating the session.
         // DSH session/page returns the whole session, so starting from seq 0
         // would replay the first completed turn on every follow-up prompt.
-        const prePromptSeq = await this.client.latestEventSeq(sessionId);
-
-        await this.client.unary('session/prompt', {
-          requestId: newPromptRequestId(),
-          sessionId,
-          mode: 'queue',
-          content: [{ type: 'text', text: message }],
+        const prePromptSeq = await this.client.latestEventSeq(sessionId, {
+          signal: abort.signal,
         });
+
+        await this.client.unary(
+          'session/prompt',
+          {
+            requestId: newPromptRequestId(),
+            sessionId,
+            mode: 'queue',
+            content: [{ type: 'text', text: message }],
+          },
+          { signal: abort.signal },
+        );
+
+        if (abort.signal.aborted) {
+          // stop() 在 prompt 已受理后到达：cancel 由 stop() 发出，这里直接收尾，
+          // 不再打开 mux（否则会看到 cancel 产生的 turn/end 事件）。
+          terminalEmitted = true;
+          yield {
+            type: 'result',
+            subtype: 'interrupted',
+            session_id: sessionId,
+            errorMessage: 'run stopped',
+          };
+          return;
+        }
 
         const translator = new DshTranslator();
         try {
@@ -283,17 +351,56 @@ export class DshRunner implements AgentRunner {
     }
   }
 
+  /**
+   * Resolve with the promise's value, or `undefined` as soon as `signal` aborts.
+   * The underlying promise keeps running (its own timeout still applies) — the
+   * caller decides what to do with a late settlement.
+   */
+  private async awaitOrAbort<T>(promise: Promise<T>, signal: AbortSignal): Promise<T | undefined> {
+    if (signal.aborted) return undefined;
+    return new Promise<T | undefined>((resolve, reject) => {
+      let done = false;
+      const onAbort = (): void => {
+        if (done) return;
+        done = true;
+        resolve(undefined);
+      };
+      signal.addEventListener('abort', onAbort, { once: true });
+      promise.then(
+        (value) => {
+          if (done) return;
+          done = true;
+          signal.removeEventListener('abort', onAbort);
+          resolve(value);
+        },
+        (err: unknown) => {
+          if (done) return;
+          done = true;
+          signal.removeEventListener('abort', onAbort);
+          reject(err);
+        },
+      );
+    });
+  }
+
+  /** Send session/cancel with a short bound; never throws (cleanup path). */
+  private async cancelSessionQuietly(sessionId: string): Promise<void> {
+    try {
+      await this.client.unary('session/cancel', { sessionId }, { timeoutMs: CANCEL_TIMEOUT_MS });
+    } catch (err) {
+      getLogger().warn(`[dsh] session/cancel failed for ${sessionId}: ${(err as Error).message}`);
+    }
+  }
+
   async stop(_opts?: { immediate?: boolean }): Promise<void> {
     const sessionId = this.activeSessionId;
     const abort = this.activeAbort;
     if (abort && !abort.signal.aborted) abort.abort();
     if (sessionId) {
-      try {
-        await this.client.unary('session/cancel', { sessionId });
-        getLogger().info(`[dsh] cancelled session ${sessionId}`);
-      } catch (err) {
-        getLogger().warn(`[dsh] session/cancel failed: ${(err as Error).message}`);
-      }
+      // Do NOT reuse the run's (already aborted) signal: cancel must be sent,
+      // but bounded — a hung server must not block /stop or the queue.
+      await this.cancelSessionQuietly(sessionId);
+      getLogger().info(`[dsh] cancelled session ${sessionId}`);
     }
   }
 
