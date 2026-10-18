@@ -10,7 +10,10 @@
  * registerExitHandlers are no-ops (no local process). DSH approvals are
  * two-channel: durable `approval/asked` / `approval/decided` drive the Feishu
  * card, while the answerable `$events` waterfall supplies eventId/clientId.
- * If `$events` is unavailable, the runner falls back to the Web UI prompt.
+ * `ask_user_question` prompts arrive only as a `user-questions/request`
+ * waterfall (no durable event); they are rendered as a `kind:'question'`
+ * approval on the same card. If `$events` is unavailable, the runner falls
+ * back to the Web UI prompt.
  */
 
 import type {
@@ -30,6 +33,9 @@ import type { DshDaemon } from './daemon.js';
 import type {
   DshApprovalStreamItem,
   DshModelSelection,
+  DshQuestion,
+  DshQuestionAnswer,
+  DshRemoteEventOutcome,
   DshSessionEvent,
   DshStreamItem,
 } from './types.js';
@@ -42,6 +48,44 @@ const DSH_MODEL_PROVIDER = 'deepseek-official';
 
 /** DSH 内建手动压缩命令（dsh-command-compact，无参数、仅空闲可执行）。 */
 const DSH_COMPACT_COMMAND = '/compact';
+
+/**
+ * 飞书提问卡的有效窗口。
+ *
+ * DSH 的 legacy `ask_user_question` 会无限等待（`timed:false`），Web UI 那侧
+ * 也一直在等。飞书卡超时后只把这一路的应答权交回（outcome `next`），不取消
+ * turn，所以窗口比审批默认的 5 分钟给得宽：用户通常要先读完上一条长回答。
+ * 超时后问题仍可在 DSH Web UI 回答；再看 idle 看门狗（默认 60 分钟）兜底。
+ */
+const DSH_QUESTION_TIMEOUT_MS = 30 * 60 * 1000;
+
+/**
+ * 把 coordinator 回传的「问题文本 → 答案」映射成 DSH 的 `{id, selected,
+ * custom}` 批次。
+ *
+ * 契约见 `UserQuestion`：答案按问题文本回传；本函数按 id 回编。单选且文本
+ * 不等于任何选项 label 时，按 DSH Web UI 的语义记为自由答案（`selected: []`
+ * + `custom`）。
+ */
+function buildQuestionAnswers(questions: DshQuestion[], response: unknown): DshQuestionAnswer[] {
+  const answers = (response as { answers?: Record<string, string | string[]> } | undefined)
+    ?.answers;
+  if (!answers) throw new Error('DSH 提问回答缺少 answers 载荷');
+  return questions.map((question) => {
+    const value = answers[question.question];
+    if (value === undefined) throw new Error(`DSH 提问缺少答案: ${question.question}`);
+    const values = (Array.isArray(value) ? value : [value]).filter(
+      (item): item is string => typeof item === 'string' && item.length > 0,
+    );
+    if (values.length === 0) throw new Error(`DSH 提问答案为空: ${question.question}`);
+    if (question.multiSelect) return { id: question.id, selected: values };
+    const selected = values[0]!;
+    const isOption = (question.options ?? []).some((option) => option.label === selected);
+    return isOption
+      ? { id: question.id, selected: [selected] }
+      : { id: question.id, selected: [], custom: selected };
+  });
+}
 
 export interface DshRunnerOptions {
   kind: 'dsh';
@@ -125,6 +169,16 @@ export class DshRunner implements AgentRunner {
   private readonly permissionAlignedSessions = new Set<string>();
   /** `$events` approval waterfall state for the current run. */
   private readonly approvalTracker = new DshApprovalTracker();
+  /**
+   * eventId → 待回答的 DSH `ask_user_question` waterfall。
+   *
+   * 提问没有 durable 审计事件，eventId 本身就是卡片 requestId；这里保存应答
+   * 所需的 clientId 与题面（DSH 回编按题目 id）。每轮 run 清空。
+   */
+  private readonly pendingQuestions = new Map<
+    string,
+    { clientId: string; questions: DshQuestion[] }
+  >();
   /** callId → tool call, used to render the command in the approval card. */
   private readonly toolCalls = new Map<
     string,
@@ -452,6 +506,7 @@ export class DshRunner implements AgentRunner {
     const translator = new DshTranslator();
     const emittedApprovals = new Set<string>();
     this.approvalTracker.clear();
+    this.pendingQuestions.clear();
     this.toolCalls.clear();
     this.approvalChannelAvailable = true;
 
@@ -482,7 +537,27 @@ export class DshRunner implements AgentRunner {
           });
           continue;
         }
+        if (item.kind === 'question') {
+          // 同一 waterfall 在重连后会带新的 clientId 重投：覆盖写回，卡片的
+          // requestId（eventId）不变，coordinator 按重投语义刷新视图。
+          this.pendingQuestions.set(item.eventId, {
+            clientId: item.clientId,
+            questions: item.questions,
+          });
+          getLogger().info(
+            `[dsh] user question surfaced eventId=${item.eventId} questions=${item.questions.length}`,
+          );
+          yield this.buildQuestionRequested(sessionId, item.eventId, item.questions);
+          continue;
+        }
         if (item.kind === 'cancelled') {
+          // 提问与审批共用 cancel 帧：提问在别处（DSH Web UI）被回答或超时后
+          // 也要清掉飞书卡片，否则上面还留着可点但已无 responder 的问题区。
+          if (this.pendingQuestions.delete(item.eventId)) {
+            getLogger().info(`[dsh] user question resolved elsewhere eventId=${item.eventId}`);
+            yield this.approvalResolved(item.eventId);
+            continue;
+          }
           const binding = this.approvalTracker.onCancelled(item.eventId);
           if (binding) yield this.approvalResolved(binding.audit.approvalId);
           continue;
@@ -551,6 +626,7 @@ export class DshRunner implements AgentRunner {
     } finally {
       streamAbort.abort();
       this.approvalTracker.clear();
+      this.pendingQuestions.clear();
       this.toolCalls.clear();
     }
   }
@@ -586,11 +662,23 @@ export class DshRunner implements AgentRunner {
   }
 
   /**
-   * Answer one DSH approval. `accept` / `decline` are the only user decisions
-   * exposed by the DSH Web UI; `cancel` stops the turn through session/cancel.
+   * Answer one DSH approval or `ask_user_question` prompt.
+   *
+   * Approvals: `accept` / `decline` are the only user decisions exposed by the
+   * DSH Web UI; `cancel` stops the turn through session/cancel.
+   *
+   * Questions: `answer` / `decline`（跳过回答）resolve the `user-questions/request`
+   * waterfall with an answer batch; `cancel`（飞书卡超时）只把这一路交回
+   * `next`，让 DSH Web UI 仍可回答，不取消 turn。
    */
   async respondApproval(requestId: number | string, response: unknown): Promise<void> {
     const approvalId = String(requestId);
+    const question = this.pendingQuestions.get(approvalId);
+    if (question) {
+      await this.respondQuestion(approvalId, question, response);
+      return;
+    }
+
     const binding =
       this.approvalTracker.getBinding(approvalId) ??
       (await this.approvalTracker.waitForBinding(approvalId, 2_000, this.activeAbort?.signal));
@@ -618,6 +706,44 @@ export class DshRunner implements AgentRunner {
     getLogger().info(
       `[dsh] approval responded approvalId=${approvalId} action=${String(action)} eventId=${binding.waterfall.eventId}`,
     );
+  }
+
+  /** Resolve one pending `ask_user_question` waterfall from a card action. */
+  private async respondQuestion(
+    eventId: string,
+    pending: { clientId: string; questions: DshQuestion[] },
+    response: unknown,
+  ): Promise<void> {
+    const action = (response as { action?: string } | undefined)?.action;
+    let outcome: DshRemoteEventOutcome;
+    if (action === 'answer') {
+      outcome = {
+        kind: 'result',
+        value: { answers: buildQuestionAnswers(pending.questions, response) },
+      };
+    } else if (action === 'decline') {
+      // 「跳过回答」：与 DSH Web UI 的 skip 同语义，逐题回空 selected，
+      // 工具把这次提问当作已跳过，agent 拿到结果后继续。
+      outcome = {
+        kind: 'result',
+        value: {
+          answers: pending.questions.map((question) => ({ id: question.id, selected: [] })),
+        },
+      };
+    } else if (action === 'cancel') {
+      // 飞书卡超时/放弃：只交回这一路的应答权（outcome next）。DSH Web UI
+      // 仍是 owner Client 且持有该 waterfall，可以继续回答；没有其他 Client
+      // 时才 settle 为 next（工具报 no user-questions answerer）。
+      outcome = { kind: 'next' };
+    } else {
+      throw new Error(`DSH 提问不支持审批决策: ${String(action)}`);
+    }
+
+    await this.client.answerRemoteEvent(pending.clientId, eventId, outcome, {
+      signal: this.activeAbort?.signal,
+    });
+    this.pendingQuestions.delete(eventId);
+    getLogger().info(`[dsh] user question responded eventId=${eventId} action=${String(action)}`);
   }
 
   private buildApprovalRequested(
@@ -652,6 +778,47 @@ export class DshRunner implements AgentRunner {
       turnId: call?.turn === undefined ? '' : String(call.turn),
       itemId: audit.callId ?? audit.approvalId,
       view,
+      timestamp: new Date().toISOString(),
+    };
+  }
+
+  /**
+   * Render one `user-questions/request` waterfall as a `kind:'question'`
+   * approval area. The card renderer is agent-agnostic: it draws options,
+   * the Other input, multi-select submit and skip from this view alone.
+   */
+  private buildQuestionRequested(
+    sessionId: string,
+    eventId: string,
+    questions: DshQuestion[],
+  ): AgentEvent {
+    const view: ApprovalView = {
+      requestId: eventId,
+      kind: 'question',
+      note: '仅影响本次回答；若飞书提交失败，请到 DSH Web UI 处理。',
+      questions: questions.map((question) => ({
+        id: question.id,
+        question: question.question,
+        ...(question.header ? { header: question.header } : {}),
+        ...(question.multiSelect ? { multiSelect: true } : {}),
+        options: (question.options ?? []).map((option) => ({
+          label: option.label,
+          ...(option.description ? { description: option.description } : {}),
+        })),
+      })),
+      availableDecisions: [],
+    };
+    return {
+      type: 'approval_requested',
+      requestId: eventId,
+      kind: 'question',
+      threadId: sessionId,
+      turnId: '',
+      itemId: eventId,
+      view,
+      // legacy ask_user_question 没有服务端期限；给飞书卡一个宽窗口，
+      // 超时只交回应答权、不取消 turn（见 respondQuestion）。
+      timeoutMs: DSH_QUESTION_TIMEOUT_MS,
       timestamp: new Date().toISOString(),
     };
   }

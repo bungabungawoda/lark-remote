@@ -377,6 +377,18 @@ DSH 的审批与其它 agent 不同：`session/follow` 只携带持久审计事�
 `next` 委托，否则会阻塞其他 workspace 的审批。权限预设通过 `commands/execute` 执行
 一次 `/permission <preset>`，失败时 fail closed（不发 prompt）。
 
+DSH 的 `ask_user_question` 走同一条 `$events` 通道，但事件名是
+`user-questions/request`，且没有 durable 审计事件：`eventId` 直接作为飞书卡片的
+requestId，题面渲染成 run 卡的提问区（选项 / Other / 多选提交 / 跳过）。回答按题目
+`id` 回编成 `{answers:[{id, selected, custom?}]}` 写回 `$events/result`；选项之外的
+自由文本按 DSH Web UI 的语义记为 `selected: []` + `custom`，跳过则回每题为空
+selected 的批次。飞书卡 30 分钟未答只把这一路交回 `next`（不 `session/cancel`），
+DSH Web UI 仍可回答；在 Web UI 先答/超时则 Host 推 `cancel` 帧移除飞书提问区。
+无法安全转写的批次（字段异常、问题文本重复——coordinator 按问题文本键答案）同样
+回 `next`，交回 Web UI。timed 版提问超时后进入 `continued`，只能经
+`userQuestions/answer` 续答；lark-remote 未接该路径，属已知限制（standard preset
+用 legacy blocking 版，不走这条路径）。
+
 DSH 的压缩走 `commands/execute` 发 `/compact`（`dsh-command-compact`，无参数、仅空闲可用），
 **不能**走 `session/prompt`——后者只把文本当普通 user message 交给模型。该 RPC 在压缩结束后
 才返回，所以 `DshRunner.runCompact` 关闭 unary 超时（由 `/stop` 与卡片空闲看门狗兜底）；
