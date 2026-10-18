@@ -13,7 +13,9 @@
  * lark-remote 内部事件流对 ACP 系 agent（kimi acp、后续 opencode acp）的约定：
  *
  * 1. `assistant/text` 与 `assistant/thinking` 是**增量通道**：run-state 收到后
- *    向对应 item **追加**文本。
+ *    向对应 item **逐字追加**文本，绝不插入分隔符。thinking 必须携带 `itemId`
+ *    （wire 的 `messageId` 等块身份）：同一 itemId = 同一思考块的下一段 delta，
+ *    itemId 变化才开新块。块生产者（pi）自己决定块内段落分隔。
  * 2. `turn_diff` 是**快照通道**：run-state 按 itemId **原地替换**全文（kimi ACP
  *    文本/思考固定 itemId `'text'`/`'thinking'`）。
  * 3. kimi wire 的 `content.text`（agent_message_chunk / agent_thought_chunk）
@@ -193,7 +195,13 @@ export interface AgentMessageChunkEvent {
 
 export interface AgentThoughtChunkEvent {
   sessionUpdate: 'agent_thought_chunk';
-  /** events-map.ts:280-288 — same content.text structure. */
+  /**
+   * 思考块身份。opencode acp/event.ts 用
+   * `${assistantMessageID}:reasoning:${ordinal}` 标识每个 reasoning part；
+   * 同 id 的连续 chunk 是同一块的 delta（loadSession 回放时该通道发整块全文）。
+   */
+  messageId?: string;
+  /** events-map.ts:280-288 — same content.text structure (delta, not snapshot). */
   content: { type: 'text'; text: string };
 }
 
