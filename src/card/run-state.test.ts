@@ -910,10 +910,55 @@ describe('RunState', () => {
     expect(content.startsWith('…（前 ')).toBe(true);
   });
 
+  it('test_anchor_token_level_thinking_deltas_concatenate_verbatim', () => {
+    // DSH/opencode 的 reasoning delta 是 token 粒度，共享一个 itemId：
+    // chunk 边界不得变成文档换行。
+    let state = createInitialRunState('run-delta');
+    for (const delta of ['The', ' file', ' isn', "'t", ' found']) {
+      state = reduceRunState(state, {
+        type: 'assistant',
+        message: { content: [{ type: 'thinking', thinking: delta, itemId: 'r:att-1:0' }] },
+      } as never);
+    }
+    expect(state.blocks).toHaveLength(1);
+    expect(state.blocks[0]).toMatchObject({
+      kind: 'thinking',
+      itemId: 'r:att-1:0',
+      content: "The file isn't found",
+      active: true,
+    });
+  });
+
+  it('test_anchor_new_thinking_itemId_starts_new_block', () => {
+    // 换思考块 = 换 itemId：新块，上一块收起。不是往内容里插 '\n'。
+    let state = createInitialRunState('run-two-thoughts');
+    for (const [itemId, text] of [
+      ['r:att-1:0', 'first thought'],
+      ['r:att-1:1', 'second thought'],
+    ] as const) {
+      state = reduceRunState(state, {
+        type: 'assistant',
+        message: { content: [{ type: 'thinking', thinking: text, itemId }] },
+      } as never);
+    }
+    const thinking = state.blocks.filter((b) => b.kind === 'thinking');
+    expect(thinking).toHaveLength(2);
+    expect(thinking[0]).toMatchObject({
+      itemId: 'r:att-1:0',
+      content: 'first thought',
+      active: false,
+    });
+    expect(thinking[1]).toMatchObject({
+      itemId: 'r:att-1:1',
+      content: 'second thought',
+      active: true,
+    });
+  });
+
   it('test_anchor_thinking_truncation_marker_counts_real_dropped_body_only', () => {
     // 增量流（opencode 逐 chunk）：跨过 4000 后每帧都截断。标记计数必须是
     // 「累计真实丢弃的正文」——不含 marker 自身开销，也不能把上一帧的 marker
-    // 文本当成被丢弃的正文重复计数。
+    // 文本当成被丢弃的正文重复计数。块内逐字拼接，不插入分隔换行。
     const markerOf = (c: string): number => Number(/^…（前 (\d+) 字符已省略）/.exec(c)?.[1]);
     const keptBodyOf = (c: string): string => c.replace(/^…（前 \d+ 字符已省略）\n/, '');
 
@@ -932,21 +977,21 @@ describe('RunState', () => {
     }
 
     const content = readContent();
-    // 累计进入该块的正文 = 500*10 + 499 个分隔换行。
-    const totalAppended = chunks * chunk.length + (chunks - 1);
+    // 累计进入该块的正文 = 500 * 10（逐字拼接，无分隔符）。
+    const totalAppended = chunks * chunk.length;
     const keptBody = keptBodyOf(content);
     expect(content.length).toBe(4000);
     expect(markerOf(content)).toBe(totalAppended - keptBody.length);
 
-    // 下一帧：计数只增长「本帧溢出的正文」（3 字符 + 1 个分隔换行），
-    // 不含 marker 开销（旧实现会在这里虚增约 14）。
+    // 下一帧：计数只增长「本帧溢出的正文」（3 字符），不含 marker 开销
+    // （旧实现每个 chunk 还会多算 1 个虚构的换行）。
     state = reduceRunState(state, {
       type: 'assistant',
       message: { content: [{ type: 'thinking', thinking: 'abc' }] },
     } as never);
     const content2 = readContent();
     expect(content2.length).toBe(4000);
-    expect(markerOf(content2)).toBe(markerOf(content) + 4);
+    expect(markerOf(content2)).toBe(markerOf(content) + 3);
   });
 
   it('test_anchor_plan_storage_over_cap_is_marked', () => {
