@@ -8,6 +8,7 @@
 import { describe, it, expect, afterEach } from 'vitest';
 import { currentPlatform, isWin32 } from '../../../src/platform/select.js';
 import { DshRunner } from './runner.js';
+import { dshQuestionsOf } from './client.js';
 import { DshApprovalTracker } from './approval.js';
 import { DshTranslator, mapUsage } from './translator.js';
 import { createInitialRunState, reduceRunState } from '../../../src/card/run-state.js';
@@ -96,6 +97,24 @@ function approvalAsked(
 function sessionEventFrame(sessionId: string, ev: DshSessionEvent): object {
   return { type: 'session/event', sessionId, event: ev };
 }
+
+/** One forwarded `ask_user_question` waterfall frame for the fake `$events` stream. */
+function questionWaterfall(
+  eventId: string,
+  questions: Array<Record<string, unknown>>,
+  agentId = SID,
+): object {
+  return {
+    type: 'waterfall',
+    event: 'user-questions/request',
+    eventId,
+    agentId,
+    request: { questions },
+  };
+}
+
+/** The question text used by the question-card fixtures (answers keyed by text). */
+const NEXT_STEP_QUESTION = '要我动手修吗？';
 
 async function collect(gen: AsyncGenerator<import('../types.js').AgentEvent>) {
   const out: import('../types.js').AgentEvent[] = [];
@@ -326,6 +345,50 @@ describe('DshApprovalTracker', () => {
     });
 
     expect(tracker.getBinding('appr-1')?.waterfall.clientId).toBe('client-2');
+  });
+});
+
+describe('dshQuestionsOf', () => {
+  it('parses a question batch and keeps ids, headers and options', () => {
+    expect(
+      dshQuestionsOf({
+        questions: [
+          {
+            id: 'next',
+            header: '下一步',
+            question: '要我动手修吗？',
+            multiSelect: true,
+            options: [{ label: '只修 P1', description: '修 1-7' }, { label: '先不改' }],
+          },
+        ],
+      }),
+    ).toEqual([
+      {
+        id: 'next',
+        header: '下一步',
+        question: '要我动手修吗？',
+        multiSelect: true,
+        options: [{ label: '只修 P1', description: '修 1-7' }, { label: '先不改' }],
+      },
+    ]);
+  });
+
+  it('rejects duplicate question texts (answers are keyed by text)', () => {
+    expect(
+      dshQuestionsOf({
+        questions: [
+          { id: 'a', question: '同名问题' },
+          { id: 'b', question: '同名问题' },
+        ],
+      }),
+    ).toBeUndefined();
+  });
+
+  it('rejects a batch missing an id or a question', () => {
+    expect(dshQuestionsOf({ questions: [{ question: '无 id' }] })).toBeUndefined();
+    expect(dshQuestionsOf({ questions: [{ id: 'a' }] })).toBeUndefined();
+    expect(dshQuestionsOf({ questions: [] })).toBeUndefined();
+    expect(dshQuestionsOf({})).toBeUndefined();
   });
 });
 
@@ -1139,6 +1202,277 @@ describe('DshClient / DshRunner integration', () => {
       true,
     );
     expect(events.find((e) => e.type === 'result')).toMatchObject({ subtype: 'success' });
+  });
+
+  it('surfaces a DSH ask_user_question prompt and answers it by option label', async () => {
+    server = new FakeDshServer();
+    let question: Extract<AgentEvent, { type: 'approval_requested' }> | undefined;
+    server.register('session/prompt', () => ({ ok: true, value: { accepted: true } }));
+    server.register('$events/result', () => {
+      server.pushMuxFrame(sessionEventFrame(SID, turnEnd('completed', 2)));
+      return { ok: true, value: undefined };
+    });
+    server.setEventFrames([
+      questionWaterfall('q-1', [
+        {
+          id: 'next',
+          header: '下一步',
+          question: NEXT_STEP_QUESTION,
+          multiSelect: false,
+          options: [{ label: '只修 P1', description: '修 1-7' }, { label: '先不改' }],
+        },
+      ]),
+    ]);
+    await server.start();
+
+    const runner = new DshRunner({ kind: 'dsh', sessionReader: stubReader, host: server.baseUrl });
+    const events: AgentEvent[] = [];
+    const runPromise = (async () => {
+      for await (const ev of runner.run('review', { cwd: CWD, sessionId: SID })) {
+        events.push(ev);
+        if (ev.type === 'approval_requested') question = ev;
+      }
+    })();
+
+    await waitFor(() => question !== undefined);
+    if (!question) throw new Error('question was not surfaced');
+    expect(question).toMatchObject({
+      type: 'approval_requested',
+      requestId: 'q-1',
+      kind: 'question',
+      timeoutMs: 30 * 60 * 1000,
+      view: {
+        requestId: 'q-1',
+        kind: 'question',
+        questions: [
+          {
+            id: 'next',
+            header: '下一步',
+            question: NEXT_STEP_QUESTION,
+            options: [{ label: '只修 P1', description: '修 1-7' }, { label: '先不改' }],
+          },
+        ],
+      },
+    });
+
+    await runner.respondApproval('q-1', {
+      action: 'answer',
+      answers: { [NEXT_STEP_QUESTION]: '只修 P1' },
+    });
+    await runPromise;
+
+    const answer = server.requests.find((r) => r.method === '$events/result');
+    expect(answer?.payload).toMatchObject({
+      clientId: expect.stringMatching(/^fake-client-/),
+      eventId: 'q-1',
+      outcome: {
+        kind: 'result',
+        value: { answers: [{ id: 'next', selected: ['只修 P1'] }] },
+      },
+    });
+    expect(events.find((e) => e.type === 'result')).toMatchObject({ subtype: 'success' });
+  });
+
+  it('maps a free-text question answer to custom instead of an option label', async () => {
+    server = new FakeDshServer();
+    let question: Extract<AgentEvent, { type: 'approval_requested' }> | undefined;
+    server.register('session/prompt', () => ({ ok: true, value: { accepted: true } }));
+    server.register('$events/result', () => {
+      server.pushMuxFrame(sessionEventFrame(SID, turnEnd('completed', 2)));
+      return { ok: true, value: undefined };
+    });
+    server.setEventFrames([
+      questionWaterfall('q-custom', [
+        {
+          id: 'next',
+          question: NEXT_STEP_QUESTION,
+          options: [{ label: '只修 P1' }],
+        },
+      ]),
+    ]);
+    await server.start();
+
+    const runner = new DshRunner({ kind: 'dsh', sessionReader: stubReader, host: server.baseUrl });
+    const runPromise = (async () => {
+      for await (const ev of runner.run('review', { cwd: CWD, sessionId: SID })) {
+        if (ev.type === 'approval_requested') question = ev;
+      }
+    })();
+
+    await waitFor(() => question !== undefined);
+    await runner.respondApproval('q-custom', {
+      action: 'answer',
+      answers: { [NEXT_STEP_QUESTION]: '我自己处理' },
+    });
+    await runPromise;
+
+    const answer = server.requests.find((r) => r.method === '$events/result');
+    expect(answer?.payload).toMatchObject({
+      eventId: 'q-custom',
+      outcome: {
+        kind: 'result',
+        value: { answers: [{ id: 'next', selected: [], custom: '我自己处理' }] },
+      },
+    });
+  });
+
+  it('treats the skip button as an empty answer batch', async () => {
+    server = new FakeDshServer();
+    let question: Extract<AgentEvent, { type: 'approval_requested' }> | undefined;
+    server.register('session/prompt', () => ({ ok: true, value: { accepted: true } }));
+    server.register('$events/result', () => {
+      server.pushMuxFrame(sessionEventFrame(SID, turnEnd('completed', 2)));
+      return { ok: true, value: undefined };
+    });
+    server.setEventFrames([
+      questionWaterfall('q-skip', [
+        { id: 'a', question: '问题一', options: [{ label: '选项一' }] },
+        { id: 'b', question: '问题二', multiSelect: true, options: [{ label: '选项二' }] },
+      ]),
+    ]);
+    await server.start();
+
+    const runner = new DshRunner({ kind: 'dsh', sessionReader: stubReader, host: server.baseUrl });
+    const runPromise = (async () => {
+      for await (const ev of runner.run('review', { cwd: CWD, sessionId: SID })) {
+        if (ev.type === 'approval_requested') question = ev;
+      }
+    })();
+
+    await waitFor(() => question !== undefined);
+    await runner.respondApproval('q-skip', { action: 'decline' });
+    await runPromise;
+
+    const answer = server.requests.find((r) => r.method === '$events/result');
+    expect(answer?.payload).toMatchObject({
+      eventId: 'q-skip',
+      outcome: {
+        kind: 'result',
+        value: {
+          answers: [
+            { id: 'a', selected: [] },
+            { id: 'b', selected: [] },
+          ],
+        },
+      },
+    });
+  });
+
+  it('delegates a timed-out question with next without cancelling the turn', async () => {
+    server = new FakeDshServer();
+    let question: Extract<AgentEvent, { type: 'approval_requested' }> | undefined;
+    server.register('session/prompt', () => ({ ok: true, value: { accepted: true } }));
+    server.register('$events/result', () => ({ ok: true, value: undefined }));
+    server.setEventFrames([
+      questionWaterfall('q-timeout', [
+        { id: 'next', question: NEXT_STEP_QUESTION, options: [{ label: '只修 P1' }] },
+      ]),
+    ]);
+    await server.start();
+
+    const runner = new DshRunner({ kind: 'dsh', sessionReader: stubReader, host: server.baseUrl });
+    const runPromise = (async () => {
+      for await (const ev of runner.run('review', { cwd: CWD, sessionId: SID })) {
+        if (ev.type === 'approval_requested') question = ev;
+      }
+    })();
+
+    await waitFor(() => question !== undefined);
+    await runner.respondApproval('q-timeout', { action: 'cancel' });
+    await waitFor(() => server.requests.some((r) => r.method === '$events/result'));
+
+    // 交回应答权：不中断 turn，也不发 session/cancel（Web UI 仍可回答）。
+    expect(server.requests.some((r) => r.method === 'session/cancel')).toBe(false);
+    expect(server.requests.find((r) => r.method === '$events/result')?.payload).toMatchObject({
+      eventId: 'q-timeout',
+      outcome: { kind: 'next' },
+    });
+
+    server.pushMuxFrame(sessionEventFrame(SID, turnEnd('completed', 2)));
+    await runPromise;
+  });
+
+  it('removes the Feishu question when the Host resolves it elsewhere', async () => {
+    server = new FakeDshServer();
+    let questionId: string | undefined;
+    server.register('session/prompt', () => ({ ok: true, value: { accepted: true } }));
+    server.setEventFrames([
+      questionWaterfall('q-answered-elsewhere', [
+        { id: 'next', question: NEXT_STEP_QUESTION, options: [{ label: '只修 P1' }] },
+      ]),
+    ]);
+    await server.start();
+
+    const runner = new DshRunner({ kind: 'dsh', sessionReader: stubReader, host: server.baseUrl });
+    const events: AgentEvent[] = [];
+    const runPromise = (async () => {
+      for await (const ev of runner.run('review', { cwd: CWD, sessionId: SID })) {
+        events.push(ev);
+        if (ev.type === 'approval_requested') questionId = ev.requestId;
+      }
+    })();
+
+    await waitFor(() => questionId !== undefined);
+    server.pushEventFrame({ type: 'cancel', eventId: 'q-answered-elsewhere' });
+    await waitFor(() =>
+      events.some((e) => e.type === 'approval_resolved' && e.requestId === 'q-answered-elsewhere'),
+    );
+    server.pushMuxFrame(sessionEventFrame(SID, turnEnd('completed', 2)));
+    await runPromise;
+
+    expect(
+      events.some((e) => e.type === 'approval_resolved' && e.requestId === 'q-answered-elsewhere'),
+    ).toBe(true);
+    expect(events.find((e) => e.type === 'result')).toMatchObject({ subtype: 'success' });
+  });
+
+  it('delegates a question batch with duplicate texts to the Web UI', async () => {
+    server = new FakeDshServer();
+    server.register('session/prompt', () => ({ ok: true, value: { accepted: true } }));
+    server.register('$events/result', () => {
+      server.pushMuxFrame(sessionEventFrame(SID, turnEnd('completed', 2)));
+      return { ok: true, value: undefined };
+    });
+    server.setEventFrames([
+      questionWaterfall('q-dup', [
+        { id: 'a', question: '同名问题' },
+        { id: 'b', question: '同名问题' },
+      ]),
+    ]);
+    await server.start();
+
+    const runner = new DshRunner({ kind: 'dsh', sessionReader: stubReader, host: server.baseUrl });
+    const events = await collect(runner.run('review', { cwd: CWD, sessionId: SID }));
+    await waitFor(() => server.requests.some((r) => r.method === '$events/result'));
+
+    expect(events.some((e) => e.type === 'approval_requested')).toBe(false);
+    expect(server.requests.find((r) => r.method === '$events/result')?.payload).toMatchObject({
+      eventId: 'q-dup',
+      outcome: { kind: 'next' },
+    });
+  });
+
+  it('delegates another session question with next', async () => {
+    server = new FakeDshServer();
+    server.register('session/prompt', () => ({ ok: true, value: { accepted: true } }));
+    server.register('$events/result', () => {
+      server.pushMuxFrame(sessionEventFrame(SID, turnEnd('completed', 2)));
+      return { ok: true, value: undefined };
+    });
+    server.setEventFrames([
+      questionWaterfall('q-other', [{ id: 'next', question: '别的会话的问题' }], 'other-session'),
+    ]);
+    await server.start();
+
+    const runner = new DshRunner({ kind: 'dsh', sessionReader: stubReader, host: server.baseUrl });
+    const events = await collect(runner.run('review', { cwd: CWD, sessionId: SID }));
+    await waitFor(() => server.requests.some((r) => r.method === '$events/result'));
+
+    expect(events.some((e) => e.type === 'approval_requested')).toBe(false);
+    expect(server.requests.find((r) => r.method === '$events/result')?.payload).toMatchObject({
+      eventId: 'q-other',
+      outcome: { kind: 'next' },
+    });
   });
 
   it('reconnects after remote mux drop and replays the snapshot (dedup by seq)', async () => {
