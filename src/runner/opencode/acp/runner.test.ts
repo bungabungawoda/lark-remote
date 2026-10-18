@@ -144,6 +144,24 @@ describe('OpencodeAcpRunner', () => {
     await runner.dispose();
   });
 
+  it('retries session/new once when the v2 daemon reports ServiceUnavailableError', async () => {
+    const capturePath = join(tmpDir, 'capture.jsonl');
+    const { wrapper, cwd } = writeScenario(tmpDir, serverScript, 'opencode', {
+      capturePath,
+      failNewTimes: 1,
+    });
+    const runner = makeRunner(wrapper);
+
+    const events = await collectEvents(runner, 'hello', { cwd });
+
+    const result = events.find((e) => e.type === 'result') as
+      (AgentEvent & { subtype?: string; errorMessage?: string }) | undefined;
+    expect(result?.subtype).toBe('success');
+    const newCalls = readCapture(capturePath).filter((m) => m.method === 'session/new');
+    expect(newCalls).toHaveLength(2);
+    await runner.dispose();
+  });
+
   it('resumes an existing session by sessionId (session/resume, no session/new)', async () => {
     const capturePath = join(tmpDir, 'capture.jsonl');
     const { wrapper, cwd } = writeScenario(tmpDir, serverScript, 'opencode', { capturePath });

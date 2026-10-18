@@ -91,6 +91,8 @@ export interface ConnectionManagerOptions<TClient extends ConnectionClient = Jso
   logTag?: string;
   /** 协议停止通道注册表注入（测试隔离）；默认进程级单例，透传给 transport。 */
   stoppers?: AgentStopperRegistry;
+  /** Called once after a fresh connection's initialize handshake resolves. */
+  onConnected?: (result: unknown, cwd: string) => void;
 }
 
 interface Slot<TClient extends ConnectionClient> {
@@ -118,6 +120,7 @@ export class ConnectionManager<TClient extends ConnectionClient = JsonRpcClient>
   }) => boolean;
   private readonly logTag: string;
   private readonly stoppers: AgentStopperRegistry;
+  private readonly onConnected?: (result: unknown, cwd: string) => void;
 
   /** Callback when a connection is lost — cleared from slot map. */
   onConnectionLost?: (cwd: string) => void;
@@ -156,6 +159,7 @@ export class ConnectionManager<TClient extends ConnectionClient = JsonRpcClient>
     this.shouldReuse = opts.shouldReuse ?? (({ client }) => client.ready && client.healthy);
     this.logTag = opts.logTag ?? 'jsonrpc-connection-manager';
     this.stoppers = opts.stoppers ?? agentStopperRegistry;
+    this.onConnected = opts.onConnected;
   }
 
   /**
@@ -309,7 +313,8 @@ export class ConnectionManager<TClient extends ConnectionClient = JsonRpcClient>
         }
       },
     });
-    await client.connect();
+    const initResult = await client.connect();
+    this.onConnected?.(initResult, cwd);
     return client;
   }
 
