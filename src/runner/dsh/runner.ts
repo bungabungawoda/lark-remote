@@ -27,9 +27,17 @@ import { DshApprovalTracker, type DshApprovalAudit, type DshApprovalBinding } fr
 import { mergeAsync } from './merge.js';
 import { getLogger } from '../../logger/index.js';
 import type { DshDaemon } from './daemon.js';
-import type { DshApprovalStreamItem, DshSessionEvent, DshStreamItem } from './types.js';
+import type {
+  DshApprovalStreamItem,
+  DshModelSelection,
+  DshSessionEvent,
+  DshStreamItem,
+} from './types.js';
 
-/** DSH selectModel provider（deepseek-official 是 rc.7 模型目录的 provider）。 */
+/**
+ * Legacy provider for configs written before `agents.dsh.provider` existed.
+ * New configs pin the provider explicitly; the card reads the live catalog.
+ */
 const DSH_MODEL_PROVIDER = 'deepseek-official';
 
 /** DSH 内建手动压缩命令（dsh-command-compact，无参数、仅空闲可执行）。 */
@@ -52,6 +60,8 @@ export interface DshRunnerOptions {
   agentPreset?: string;
   /** 权限预设（沙箱 + 审批策略）；undefined = 不干预。 */
   permissionPreset?: string;
+  /** Provider route id (e.g. deepseek-official / anthropic); undefined = legacy default. */
+  provider?: string;
   /** Display model name. */
   model?: string;
   /** 推理强度（off/low/high/max）；undefined = 服务端默认。 */
@@ -94,6 +104,8 @@ export class DshRunner implements AgentRunner {
   readonly client: DshClient;
   /** 用户配置的模型 ID（run 前 selectModel 对齐用）；undefined = 服务端默认。 */
   private readonly configuredModel: string | undefined;
+  /** 用户配置的 provider route；undefined = 兼容旧配置，按 deepseek-official 处理。 */
+  private readonly configuredProvider: string | undefined;
   private readonly agentPreset: string | undefined;
   private configuredPermissionPreset: string | undefined;
   private readonly reasoningEffort: string | undefined;
@@ -105,8 +117,8 @@ export class DshRunner implements AgentRunner {
   /**
    * 已对齐模型的 session 集合：同一 session 二次 run 不再重发 selectModel
    * （session/selectModel 会写服务端全局默认，每次 run 都写是写放大）。
-   * configuredModel 在实例生命周期内不变（/config 改模型会 clearRunners
-   * 重建实例 + 换新 sessionId），故「每 session 对齐一次」足以覆盖配置变化。
+   * configuredModel / configuredProvider 在实例生命周期内不变（/config 改动
+   * 会 clearRunners 重建实例），故「每 session 对齐一次」足以覆盖配置变化。
    */
   private readonly alignedSessions = new Set<string>();
   /** 已对齐权限预设的 session；同一 session 只执行一次 `/permission`。 */
@@ -125,6 +137,7 @@ export class DshRunner implements AgentRunner {
     this.sessionReader = opts.sessionReader;
     this.daemon = opts.daemon;
     this.configuredModel = opts.model;
+    this.configuredProvider = opts.provider;
     this.agentPreset = opts.agentPreset;
     this.configuredPermissionPreset = opts.permissionPreset;
     this.reasoningEffort = opts.reasoningEffort;
@@ -152,8 +165,54 @@ export class DshRunner implements AgentRunner {
     return {
       kind: this.kind,
       model: this.configuredModel ?? 'DSH',
+      provider: this.configuredProvider ?? DSH_MODEL_PROVIDER,
       extras,
     };
+  }
+
+  /**
+   * Resolve the configured provider/model pair.
+   *
+   * A model-only config keeps the legacy `deepseek-official` route, so
+   * existing configs behave exactly as before. A provider-only config asks
+   * the live catalog for that provider's default (or first) model.
+   */
+  private async resolveModelSelection(signal: AbortSignal): Promise<DshModelSelection> {
+    const provider = this.configuredProvider ?? DSH_MODEL_PROVIDER;
+    if (this.configuredModel) {
+      return {
+        provider,
+        model: this.configuredModel,
+        ...(this.reasoningEffort ? { reasoningEffort: this.reasoningEffort } : {}),
+      };
+    }
+
+    const catalog = await this.client.listModels({ signal });
+    const group = catalog.groups.find((entry) => entry.id === provider);
+    if (!group || group.models.length === 0) {
+      throw new Error(`Provider "${provider}" 在 DSH 模型目录中不可用（没有可用模型）`);
+    }
+
+    const defaultModel = catalog.default?.provider === provider ? catalog.default.model : undefined;
+    const model =
+      defaultModel && group.models.some((entry) => entry.id === defaultModel)
+        ? defaultModel
+        : group.models[0]!.id;
+    const entry = group.models.find((candidate) => candidate.id === model);
+    const efforts = entry?.reasoning?.efforts.map((effort) => effort.id) ?? [];
+
+    let reasoningEffort: string | undefined;
+    if (this.reasoningEffort) {
+      if (efforts.length === 0 || efforts.includes(this.reasoningEffort)) {
+        reasoningEffort = this.reasoningEffort;
+      } else {
+        getLogger().warn(
+          `[dsh] reasoningEffort "${this.reasoningEffort}" 不被 ${provider}/${model} 支持，改用模型默认档位`,
+        );
+      }
+    }
+
+    return { provider, model, ...(reasoningEffort ? { reasoningEffort } : {}) };
   }
 
   async *run(message: string, opts: SpawnOptions): AsyncGenerator<AgentEvent> {
@@ -222,20 +281,17 @@ export class DshRunner implements AgentRunner {
         return;
       }
 
-      // 模型/推理强度对齐：会话首次 run 时 selectModel 一次
+      // provider/模型/推理强度对齐：会话首次 run 时 selectModel 一次
       // （该调用同时写服务端全局默认，故不重复写）；同一 session 后续 run
-      // 跳过。失败仅告警不阻断 run（模型校验由 DSH 负责）。
-      if (this.configuredModel && !this.alignedSessions.has(sessionId)) {
+      // 跳过。显式配置 provider 时失败必须 fail closed：静默回退到其他
+      // provider 会让用户以为切换成功，实际模型与账单都错。
+      if (
+        (this.configuredModel || this.configuredProvider) &&
+        !this.alignedSessions.has(sessionId)
+      ) {
         try {
-          await this.client.selectModel(
-            {
-              sessionId,
-              provider: DSH_MODEL_PROVIDER,
-              model: this.configuredModel,
-              ...(this.reasoningEffort ? { reasoningEffort: this.reasoningEffort } : {}),
-            },
-            { signal: abort.signal },
-          );
+          const selection = await this.resolveModelSelection(abort.signal);
+          await this.client.selectModel({ sessionId, ...selection }, { signal: abort.signal });
           this.alignedSessions.add(sessionId);
         } catch (err) {
           if (abort.signal.aborted) {
@@ -248,6 +304,13 @@ export class DshRunner implements AgentRunner {
               errorMessage: 'run stopped',
             };
             return;
+          }
+          if (this.configuredProvider) {
+            throw new Error(
+              `Provider "${this.configuredProvider}" 的模型对齐失败：${(err as Error).message}。` +
+                '请在 DSH Web UI → 设置 → Models 检查该 Provider 的凭据与模型目录',
+              { cause: err },
+            );
           }
           getLogger().warn(
             `[dsh] selectModel failed for session ${sessionId} (run continues): ${(err as Error).message}`,

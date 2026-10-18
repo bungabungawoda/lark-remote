@@ -402,6 +402,7 @@ function initializeRunner(
       credentialsFile: dshConf?.credentialsFile,
       agentPreset: dshConf?.agentPreset,
       permissionPreset: dshConf?.permissionPreset,
+      provider: dshConf?.provider,
       model: dshConf?.model,
       reasoningEffort: dshConf?.reasoningEffort,
     });

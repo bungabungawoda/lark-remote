@@ -5,13 +5,14 @@
 import { describe, it, expect } from 'vitest';
 import { DshConfigBuilder, type DshCatalogClient } from './dsh.js';
 import { AppConfigSchema } from '../../config/index.js';
+import type { DshModelCatalogValue } from '../../runner/dsh/types.js';
 
 const config = AppConfigSchema.parse({
   feishu: { appId: 'a', appSecret: 'b' },
   defaultAgent: 'dsh',
 });
 
-/** 构造含 DSH 三个新配置字段的 AppConfig。 */
+/** 构造含 DSH 配置字段的 AppConfig。 */
 function dshConfig(
   overrides: Record<string, unknown> = {},
 ): ReturnType<typeof AppConfigSchema.parse> {
@@ -22,26 +23,94 @@ function dshConfig(
   });
 }
 
+function efforts(...ids: string[]) {
+  return { efforts: ids.map((id) => ({ id, name: id })) };
+}
+
+/** 两个 DeepSeek provider + 一个第三方 provider；flash 在两个 group 里重名。 */
+const MULTI_CATALOG: DshModelCatalogValue = {
+  default: {
+    provider: 'deepseek-official',
+    model: 'deepseek-flash',
+    reasoningEffort: 'high',
+  },
+  routableProviders: ['deepseek-official', 'deepseek-account', 'anthropic'],
+  groups: [
+    {
+      id: 'deepseek-official',
+      name: 'DeepSeek',
+      models: [
+        {
+          id: 'deepseek-flash',
+          name: 'DeepSeek-V4.1-Flash',
+          reasoning: efforts('off', 'low', 'high', 'max'),
+        },
+        {
+          id: 'deepseek-v4-pro',
+          name: 'DeepSeek-V4-Pro',
+          reasoning: efforts('off', 'low', 'high', 'max'),
+        },
+      ],
+    },
+    {
+      id: 'deepseek-account',
+      name: 'DeepSeek Account',
+      models: [
+        { id: 'deepseek-flash', name: 'DeepSeek-V4.1-Flash', reasoning: efforts('off', 'low') },
+        {
+          id: 'deepseek-v4-pro',
+          name: 'DeepSeek-V4-Pro',
+          reasoning: efforts('off', 'low', 'high', 'max'),
+        },
+      ],
+    },
+    {
+      id: 'anthropic',
+      name: 'anthropic',
+      models: [
+        {
+          id: 'claude-sonnet-4-5',
+          name: 'Claude Sonnet 4.5',
+          reasoning: efforts('low', 'high', 'max'),
+        },
+        {
+          id: 'claude-opus-4-1',
+          name: 'Claude Opus 4.1',
+          reasoning: efforts('low', 'high', 'max'),
+        },
+      ],
+    },
+  ],
+  failures: [],
+};
+
+function optionValues(
+  field: { options?: readonly (string | { value: string })[] } | undefined,
+): string[] {
+  return (field?.options ?? []).map((option) =>
+    typeof option === 'string' ? option : option.value,
+  );
+}
+
 describe('DshConfigBuilder', () => {
-  it('buildFields exposes host, preset, permission, model, custom-model and effort fields', () => {
+  it('buildFields exposes host, preset, permission, provider, model, custom-model and effort fields', () => {
     const builder = new DshConfigBuilder();
     const fields = builder.buildFields(config);
     expect(fields.map((f) => f.key)).toEqual([
       'agents.dsh.host',
       'agents.dsh.agentPreset',
       'agents.dsh.permissionPreset',
-      'agents.dsh.permissionPreset',
+      'agents.dsh.provider',
       'agents.dsh.model',
       'agents.dsh.model',
       'agents.dsh.reasoningEffort',
     ]);
-    // host 保留 input
     expect(fields[0]).toMatchObject({ key: 'agents.dsh.host', type: 'input' });
-    // preset/permission/model/effort 是 select；fields[3] 是权限说明；
-    // fields[5] 是自定义模型输入框（input）
+    // provider/model/effort 是 select；fields[5] 是自定义模型输入框（input）
     expect(fields[1].type).toBe('select');
     expect(fields[2].type).toBe('select');
-    expect(fields[3].type).toBe('note');
+    expect(fields[3].type).toBe('select');
+    expect(fields[4].type).toBe('select');
     expect(fields[5].type).toBe('input');
     expect(fields[6].type).toBe('select');
   });
@@ -61,8 +130,7 @@ describe('DshConfigBuilder', () => {
     const preset = fields[1];
     const options = preset.options as Array<{ text: string; value: string }>;
     expect(options[0]).toEqual({ text: '跟随服务端默认', value: '' });
-    const values = options.map((o) => o.value);
-    expect(values).toEqual(['', 'standard', 'minimal', 'ptc', 'cordis']);
+    expect(options.map((o) => o.value)).toEqual(['', 'standard', 'minimal', 'ptc', 'cordis']);
   });
 
   it('permission select offers fallback presets plus follow-default sentinel', () => {
@@ -78,7 +146,6 @@ describe('DshConfigBuilder', () => {
       'danger-full-access',
     ]);
     expect(options[3].text).toContain('danger-full-access');
-    expect(fields[3].type).toBe('note');
   });
 
   it('keeps a configured custom permission preset selectable when the catalog is offline', () => {
@@ -91,48 +158,105 @@ describe('DshConfigBuilder', () => {
     });
   });
 
-  it('model select offers fallback models plus follow-default sentinel', () => {
+  it('provider select offers every catalog group plus the current provider', () => {
     const builder = new DshConfigBuilder();
-    const fields = builder.buildFields(config);
-    const model = fields[4];
-    const options = model.options as Array<string | { text: string; value: string }>;
-    const values = options.map((o) => (typeof o === 'string' ? o : o.value));
-    expect(values).toContain('');
-    expect(values).toContain('deepseek-flash');
-    expect(values).toContain('deepseek-v4-pro');
+    builder.setCatalog(MULTI_CATALOG);
+    const fields = builder.buildFields(dshConfig({ provider: 'anthropic' }));
+    expect(optionValues(fields[3])).toEqual(['deepseek-official', 'deepseek-account', 'anthropic']);
+    expect(fields[3].currentValue).toBe('anthropic');
+    expect((fields[3].options as Array<{ text: string }>)[0].text).toBe(
+      'DeepSeek（deepseek-official）',
+    );
   });
 
-  it('effort select offers fallback efforts plus follow-default sentinel', () => {
+  it('keeps the configured provider selectable when the server does not list it', () => {
     const builder = new DshConfigBuilder();
-    const fields = builder.buildFields(config);
-    const effort = fields[6];
-    const options = effort.options as Array<string | { text: string; value: string }>;
-    expect(options[0]).toEqual({ text: '跟随服务端默认', value: '' });
-    const values = options.map((o) => (typeof o === 'string' ? o : o.value));
-    expect(values).toEqual(['', 'off', 'low', 'high', 'max']);
+    const fields = builder.buildFields(dshConfig({ provider: 'acme-gateway' }));
+    expect(optionValues(fields[3])).toEqual(['acme-gateway']);
+    expect((fields[3].options as Array<{ text: string }>)[0].text).toContain('离线未校验');
   });
 
-  it('reads configured preset/model/effort as currentValue', () => {
+  it('model select only lists models of the selected provider', () => {
     const builder = new DshConfigBuilder();
+    builder.setCatalog(MULTI_CATALOG);
+    const fields = builder.buildFields(
+      dshConfig({ provider: 'anthropic', model: 'claude-sonnet-4-5' }),
+    );
+    expect(optionValues(fields[4])).toEqual(['', 'claude-sonnet-4-5', 'claude-opus-4-1']);
+    expect(optionValues(fields[4])).not.toContain('deepseek-flash');
+    expect(fields[4].currentValue).toBe('claude-sonnet-4-5');
+  });
+
+  it('legacy model-only config renders the effective provider and its models', () => {
+    const builder = new DshConfigBuilder();
+    builder.setCatalog(MULTI_CATALOG);
+    const fields = builder.buildFields(dshConfig({ model: 'deepseek-v4-pro' }));
+    expect(fields[3].currentValue).toBe('deepseek-official');
+    expect(fields[4].currentValue).toBe('deepseek-v4-pro');
+    expect(optionValues(fields[3])).toContain('deepseek-account');
+  });
+
+  it('provider-only config shows that provider default model efforts', () => {
+    const builder = new DshConfigBuilder();
+    builder.setCatalog(MULTI_CATALOG);
+    const fields = builder.buildFields(
+      dshConfig({ provider: 'anthropic', reasoningEffort: 'max' }),
+    );
+    expect(fields[3].currentValue).toBe('anthropic');
+    expect(fields[4].currentValue).toBe('');
+    expect(optionValues(fields[6])).toEqual(['', 'low', 'high', 'max']);
+    expect(fields[6].currentValue).toBe('max');
+  });
+
+  it('effort select follows the model reasoning metadata and keeps an unsupported current value', () => {
+    const builder = new DshConfigBuilder();
+    builder.setCatalog(MULTI_CATALOG);
+    const fields = builder.buildFields(
+      dshConfig({ provider: 'anthropic', model: 'claude-sonnet-4-5', reasoningEffort: 'off' }),
+    );
+    expect(optionValues(fields[6])).toEqual(['', 'low', 'high', 'max', 'off']);
+    expect((fields[6].options as Array<{ text: string }>)[4].text).toContain('模型未列出');
+  });
+
+  it('model select offers fallback models plus follow-default sentinel when offline', () => {
+    const builder = new DshConfigBuilder();
+    const fields = builder.buildFields(config);
+    expect(optionValues(fields[4])).toEqual(['', 'deepseek-flash', 'deepseek-v4-pro']);
+  });
+
+  it('effort select offers fallback efforts plus follow-default sentinel when offline', () => {
+    const builder = new DshConfigBuilder();
+    const fields = builder.buildFields(config);
+    const options = fields[6].options as Array<{ text: string; value: string }>;
+    expect(options[0]).toEqual({ text: '跟随模型默认', value: '' });
+    expect(options.map((o) => o.value)).toEqual(['', 'off', 'low', 'high', 'max']);
+  });
+
+  it('reads configured preset/provider/model/effort as currentValue', () => {
+    const builder = new DshConfigBuilder();
+    builder.setCatalog(MULTI_CATALOG);
     const cfg = dshConfig({
       agentPreset: 'code',
       permissionPreset: 'read-only',
-      model: 'deepseek-v4-pro',
+      provider: 'anthropic',
+      model: 'claude-sonnet-4-5',
       reasoningEffort: 'low',
     });
     const fields = builder.buildFields(cfg);
     expect(fields[1].currentValue).toBe('code');
     expect(fields[2].currentValue).toBe('read-only');
-    expect(fields[4].currentValue).toBe('deepseek-v4-pro');
+    expect(fields[3].currentValue).toBe('anthropic');
+    expect(fields[4].currentValue).toBe('claude-sonnet-4-5');
     expect(fields[6].currentValue).toBe('low');
   });
 
-  it('custom model outside catalog renders the custom-model input', () => {
+  it('custom model outside the provider catalog renders the custom-model input', () => {
     const builder = new DshConfigBuilder();
-    const cfg = dshConfig({ model: 'my-custom-model' });
+    builder.setCatalog(MULTI_CATALOG);
+    const cfg = dshConfig({ provider: 'anthropic', model: 'my-custom-model' });
     const fields = builder.buildFields(cfg);
-    // select currentValue undefined（不在选项中），自定义输入框带当前值
-    expect(fields[4].currentValue).toBeUndefined();
+    // 下拉停在哨兵，模型名由自定义输入框承载
+    expect(fields[4].currentValue).toBe('');
     expect(fields[5]).toMatchObject({
       key: 'agents.dsh.model',
       type: 'input',
@@ -150,74 +274,30 @@ describe('DshConfigBuilder', () => {
     expect(sentinelPatches).toEqual([{ key: 'agents.dsh.agentPreset', value: undefined }]);
   });
 
-  it('model change to a model the current effort does not support resets effort to catalog middle', () => {
+  it('model change pins the provider for a legacy model-only config', () => {
     const builder = new DshConfigBuilder();
-    // 预置 catalog：pro 模型只有 off/low 两档
-    builder.setCatalog({
-      groups: [
-        {
-          id: 'deepseek-official',
-          name: 'DeepSeek Official',
-          models: [
-            {
-              id: 'deepseek-v4-flash',
-              name: 'Flash',
-              reasoning: {
-                efforts: [
-                  { id: 'off', name: 'off' },
-                  { id: 'low', name: 'low' },
-                ],
-              },
-            },
-            {
-              id: 'deepseek-v4-pro',
-              name: 'Pro',
-              reasoning: {
-                efforts: [
-                  { id: 'off', name: 'off' },
-                  { id: 'low', name: 'low' },
-                  { id: 'high', name: 'high' },
-                  { id: 'max', name: 'max' },
-                ],
-              },
-            },
-          ],
-        },
-      ],
-    });
-    const cfg = dshConfig({ model: 'deepseek-v4-flash', reasoningEffort: 'max' });
+    builder.setCatalog(MULTI_CATALOG);
+    const cfg = dshConfig({ model: 'deepseek-flash', reasoningEffort: 'high' });
     const patches = builder.handleFieldChange('agents.dsh.model', 'deepseek-v4-pro', cfg);
-    // max 仍被 pro 支持 → 无档位补丁
-    expect(patches).toEqual([{ key: 'agents.dsh.model', value: 'deepseek-v4-pro' }]);
+    expect(patches).toEqual([
+      { key: 'agents.dsh.model', value: 'deepseek-v4-pro' },
+      { key: 'agents.dsh.provider', value: 'deepseek-official' },
+    ]);
   });
 
   it('model change to a model missing the current effort resets effort to catalog middle', () => {
     const builder = new DshConfigBuilder();
-    builder.setCatalog({
-      groups: [
-        {
-          id: 'deepseek-official',
-          name: 'DeepSeek Official',
-          models: [
-            {
-              id: 'deepseek-v4-flash',
-              name: 'Flash',
-              reasoning: {
-                efforts: [
-                  { id: 'off', name: 'off' },
-                  { id: 'low', name: 'low' },
-                ],
-              },
-            },
-          ],
-        },
-      ],
+    builder.setCatalog(MULTI_CATALOG);
+    const cfg = dshConfig({
+      provider: 'deepseek-account',
+      model: 'deepseek-v4-pro',
+      reasoningEffort: 'max',
     });
-    const cfg = dshConfig({ model: 'deepseek-v4-flash', reasoningEffort: 'max' });
-    const patches = builder.handleFieldChange('agents.dsh.model', 'deepseek-v4-flash', cfg);
-    // max 不被 flash 支持 → 重置到中位 low
+    const patches = builder.handleFieldChange('agents.dsh.model', 'deepseek-flash', cfg);
+    // account 的 flash 只有 off/low → 中位 low
     expect(patches).toEqual([
-      { key: 'agents.dsh.model', value: 'deepseek-v4-flash' },
+      { key: 'agents.dsh.model', value: 'deepseek-flash' },
+      { key: 'agents.dsh.provider', value: 'deepseek-account' },
       { key: 'agents.dsh.reasoningEffort', value: 'low' },
     ]);
   });
@@ -232,19 +312,63 @@ describe('DshConfigBuilder', () => {
     ]);
   });
 
+  it('switching provider keeps a model that exists in both providers', () => {
+    const builder = new DshConfigBuilder();
+    builder.setCatalog(MULTI_CATALOG);
+    const cfg = dshConfig({
+      provider: 'deepseek-official',
+      model: 'deepseek-flash',
+      reasoningEffort: 'low',
+    });
+    const patches = builder.handleFieldChange('agents.dsh.provider', 'deepseek-account', cfg);
+    expect(patches).toEqual([{ key: 'agents.dsh.provider', value: 'deepseek-account' }]);
+  });
+
+  it('switching provider replaces an incompatible model and resets its effort', () => {
+    const builder = new DshConfigBuilder();
+    builder.setCatalog(MULTI_CATALOG);
+    const cfg = dshConfig({
+      provider: 'anthropic',
+      model: 'claude-sonnet-4-5',
+      reasoningEffort: 'max',
+    });
+    const patches = builder.handleFieldChange('agents.dsh.provider', 'deepseek-account', cfg);
+    // account/flash 只有 off/low → 中位 low
+    expect(patches).toEqual([
+      { key: 'agents.dsh.provider', value: 'deepseek-account' },
+      { key: 'agents.dsh.model', value: 'deepseek-flash' },
+      { key: 'agents.dsh.reasoningEffort', value: 'low' },
+    ]);
+  });
+
+  it('switching provider keeps model/effort when the catalog is offline', () => {
+    const builder = new DshConfigBuilder();
+    const cfg = dshConfig({
+      provider: 'deepseek-official',
+      model: 'deepseek-flash',
+      reasoningEffort: 'high',
+    });
+    const patches = builder.handleFieldChange('agents.dsh.provider', 'anthropic', cfg);
+    expect(patches).toEqual([{ key: 'agents.dsh.provider', value: 'anthropic' }]);
+  });
+
+  it('renders a note when the catalog reports provider failures', () => {
+    const builder = new DshConfigBuilder();
+    builder.setCatalog({
+      ...MULTI_CATALOG,
+      groups: [],
+      failures: [{ id: 'anthropic', name: 'anthropic', message: 'MISSING_CREDENTIAL' }],
+    });
+    const fields = builder.buildFields(config);
+    expect(fields.at(-1)).toMatchObject({
+      key: 'agents.dsh.providerFailures',
+      type: 'note',
+    });
+    expect(fields.at(-1)?.label).toContain('MISSING_CREDENTIAL');
+  });
+
   it('prefetch pulls catalog and presets into the card options', async () => {
-    const catalog = {
-      groups: [
-        {
-          id: 'deepseek-official',
-          name: 'DeepSeek Official',
-          models: [
-            { id: 'deepseek-v4-flash', name: 'Flash' },
-            { id: 'deepseek-v4-pro', name: 'Pro' },
-          ],
-        },
-      ],
-    };
+    const catalog = MULTI_CATALOG;
     const presets = {
       presets: [
         { id: 'standard', trust: 'system' as const, isDefault: false, name: '标准模式' },
@@ -296,12 +420,16 @@ describe('DshConfigBuilder', () => {
       text: '跟随服务端默认（当前 workspace-write）',
       value: '',
     });
-    expect(fields[4].options as string[]).toContain('deepseek-v4-pro');
+    expect(optionValues(fields[4])).toContain('deepseek-v4-pro');
     expect(calls).toBe(3);
 
     // host 相同 → 第二次 prefetch 短路（不重复请求）
     await builder.prefetch('http://127.0.0.1:3080');
     expect(calls).toBe(3);
+
+    // force → 强制刷新（DSH Web UI 新增 provider 后打开 /config 能立即看到）
+    await builder.prefetch('http://127.0.0.1:3080', undefined, undefined, { force: true });
+    expect(calls).toBe(6);
   });
 
   it('prefetch failure falls back to fixed catalog without throwing', async () => {
@@ -327,7 +455,8 @@ describe('DshConfigBuilder', () => {
       text: 'danger-full-access（完全访问，关闭审批）',
       value: 'danger-full-access',
     });
-    expect(fields[4].options as string[]).toContain('deepseek-flash');
+    expect(optionValues(fields[4])).toContain('deepseek-flash');
+    expect(fields[3].currentValue).toBe('deepseek-official');
   });
 
   it('passes credentialsFile through and keys the prefetch cache by it', async () => {

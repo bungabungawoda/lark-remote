@@ -250,6 +250,14 @@ const DshConfigSchema = z.object({
    * 对齐。留空 = 不干预，跟随 DSH 当前会话/服务端默认。
    */
   permissionPreset: z.string().optional(),
+  /**
+   * 模型服务商（DSH provider route）。取值来自 `session/modelCatalog` 的
+   * `groups[].id`，例如 deepseek-official / deepseek-account / anthropic。
+   * 留空 = 兼容旧配置：按 deepseek-official 处理（与 provider 硬编码时代的
+   * 行为一致）。枚举不在此硬编码：provider 清单随 DSH profile bundle 与
+   * 用户配置变化。
+   */
+  provider: z.string().optional(),
   /** 模型 ID。留空 = 跟随服务端默认。 */
   model: z.string().optional(),
   /**

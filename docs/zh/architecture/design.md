@@ -332,8 +332,9 @@ agents:
     credentialsFile: '' # 可选：DSH 凭据文件，默认 $DSH_HOME/.credentials.yaml
     agentPreset: '' # 留空 = 跟随服务端默认；session 创建后不可改
     permissionPreset: '' # 权限预设（沙箱 + 审批策略）；留空 = 不干预
-    model: '' # 留空 = 跟随服务端默认
-    reasoningEffort: '' # 留空 = 跟随服务端默认
+    provider: '' # DSH provider route；留空 = 兼容旧配置，按 deepseek-official
+    model: '' # 留空 = 该 provider 的默认模型
+    reasoningEffort: '' # 留空 = 模型默认档位
 
 logging:
   level: info # debug | info | warn | error
@@ -358,7 +359,7 @@ POSIX 在全块放不下时回退半块。两种渲染都带 QR 规范要求的 
 [`docs/zh/guides/codex-config.md`](../guides/codex-config.md)。
 `kimi` 的 permissionMode/acp 字段完整语义见
 [`docs/zh/usage.md`](../usage.md)（kimi 为纯 ACP 模式，已无 cli/acp 切换）。
-`dsh` 的 host/token/credentialsFile/preset/permissionPreset/model/reasoningEffort 字段语义与 DSH Web Host 直连 runner 设计见
+`dsh` 的 host/token/credentialsFile/preset/permissionPreset/provider/model/reasoningEffort 字段语义与 DSH Web Host 直连 runner 设计见
 `docs/zh/usage.md`。
 
 DSH 的 launch token 每个进程随机生成，重启即失效；它的浏览器签名密钥则持久化在
