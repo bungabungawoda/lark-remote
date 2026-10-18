@@ -80,7 +80,7 @@ Run/Bash 卡片的 CardKit 2.0 单卡流式架构说明，覆盖数据流、状�
 | 输入 | 状态变化 |
 |------|----------|
 | system.init | 记录 sessionId |
-| assistant.thinking | 追加 reasoning，footer=thinking |
+| assistant.thinking | 按 itemId 分块：同块逐字追加 reasoning（不插分隔符），换块开新面板，footer=thinking |
 | assistant.text | 合并相邻 text，footer=streaming |
 | assistant.tool_use | 首次见 id → 新增 running tool；同 id → 原地合并 input/summary（opencode 的 tool_call_update 回填命令），footer=tool_running |
 | user.tool_result | 匹配 tool id，置 ok/error 与 output |

@@ -37,6 +37,33 @@ describe('PiRpcTranslator', () => {
     ]);
   });
 
+  it('merges consecutive thinking blocks and stamps one itemId per block', () => {
+    const t = new PiRpcTranslator();
+    t.setSessionId('aaaaaaaa-1111-2222-3333-444444444444');
+
+    t.handleEvent({ type: 'message_start', message: { role: 'assistant', content: [] } });
+    t.handleEvent(update('thinking_start'));
+    t.handleEvent(update('thinking_delta', { delta: 'step 1' }));
+    t.handleEvent(update('thinking_end', { content: 'step 1' }));
+    t.handleEvent(update('thinking_start'));
+    t.handleEvent(update('thinking_delta', { delta: 'step 2' }));
+    t.handleEvent(update('thinking_end', { content: 'step 2' }));
+
+    const end = t.handleEvent({
+      type: 'message_end',
+      message: {
+        role: 'assistant',
+        content: [],
+        usage: { input: 10, output: 5 },
+      },
+    });
+    expect(end).toHaveLength(1);
+    const content = (end[0] as { message: { content: Array<Record<string, unknown>> } }).message
+      .content;
+    // 连续 thinking 块在生产者侧合并（'\n' 段落分隔），并带块身份。
+    expect(content).toEqual([{ type: 'thinking', thinking: 'step 1\nstep 2', itemId: 'pi:1' }]);
+  });
+
   it('test_anchor_agent_settled_produces_success_result_for_turn', () => {
     const t = new PiRpcTranslator();
     t.setSessionId('aaaaaaaa-1111-2222-3333-444444444444');

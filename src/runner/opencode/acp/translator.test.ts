@@ -62,20 +62,51 @@ describe('OpencodeAcpTranslator', () => {
     expect(c2).toEqual({ type: 'text', text: '好' });
   });
 
-  it('maps agent_thought_chunk delta to assistant/thinking (incremental channel)', () => {
+  it('maps agent_thought_chunk delta to assistant/thinking with the wire block id', () => {
+    // opencode event.ts: agent_thought_chunk.messageId = `<msg>:reasoning:<ordinal>`;
+    // deltas of the same reasoning part must share it.
+    const t = new OpencodeAcpTranslator();
+    const thought = (text: string) =>
+      t.handleNotification(
+        NotificationMethod.SESSION_UPDATE,
+        sessionUpdate(SESSION_ID, {
+          sessionUpdate: SessionEventType.AGENT_THOUGHT_CHUNK,
+          messageId: 'msg-aaaa:reasoning:0',
+          content: { type: 'text', text },
+        }),
+      );
+    const events1 = thought('思考');
+    const events2 = thought('中');
+    expect(events1).toHaveLength(1);
+    expect(events1[0].type).toBe('assistant');
+    const c1 = (events1[0] as { message: { content: Array<{ type: string; thinking: string }> } })
+      .message.content[0];
+    const c2 = (events2[0] as { message: { content: Array<{ type: string; thinking: string }> } })
+      .message.content[0];
+    // 同一 reasoning part：itemId 相同，内容只有自己的 delta。
+    expect(c1).toEqual({
+      type: 'thinking',
+      thinking: '思考',
+      itemId: 'msg-aaaa:reasoning:0',
+    });
+    expect(c2).toEqual({
+      type: 'thinking',
+      thinking: '中',
+      itemId: 'msg-aaaa:reasoning:0',
+    });
+  });
+
+  it('omits thinking itemId when the wire chunk carries no messageId', () => {
     const t = new OpencodeAcpTranslator();
     const events = t.handleNotification(
       NotificationMethod.SESSION_UPDATE,
       sessionUpdate(SESSION_ID, {
         sessionUpdate: SessionEventType.AGENT_THOUGHT_CHUNK,
-        messageId: 'msg-aaaa',
         content: { type: 'text', text: '思考中' },
       }),
     );
-    expect(events).toHaveLength(1);
-    expect(events[0].type).toBe('assistant');
-    const c = (events[0] as { message: { content: Array<{ type: string; thinking: string }> } })
-      .message.content[0];
+    const c = (events[0] as { message: { content: Array<Record<string, unknown>> } }).message
+      .content[0];
     expect(c).toEqual({ type: 'thinking', thinking: '思考中' });
   });
 
@@ -335,7 +366,7 @@ describe('OpencodeAcpTranslator → run-state reducer integration (seam contract
     expect((textBlocks[0] as { content: string }).content).toBe('你好，');
   });
 
-  it('streaming thinking chunks render exactly one thinking block (no duplication)', () => {
+  it('streaming thinking chunks render one block with verbatim text (no injected separators)', () => {
     const t = new OpencodeAcpTranslator();
     let state = createInitialRunState('run-2');
     for (const text of ['思考', '中', '。']) {
@@ -343,7 +374,7 @@ describe('OpencodeAcpTranslator → run-state reducer integration (seam contract
         NotificationMethod.SESSION_UPDATE,
         sessionUpdate(SESSION_ID, {
           sessionUpdate: SessionEventType.AGENT_THOUGHT_CHUNK,
-          messageId: 'msg-aaaa',
+          messageId: 'msg-aaaa:reasoning:0',
           content: { type: 'text', text },
         }),
       );
@@ -351,8 +382,11 @@ describe('OpencodeAcpTranslator → run-state reducer integration (seam contract
     }
     const thinkingBlocks = state.blocks.filter((b) => b.kind === 'thinking');
     expect(thinkingBlocks).toHaveLength(1);
-    // assistant thinking channel joins chunks with '\n' (reducer semantics).
-    expect((thinkingBlocks[0] as { content: string }).content).toBe('思考\n中\n。');
+    // 同一 itemId 的 delta 逐字拼接；chunk 边界不是文档换行。
+    expect(thinkingBlocks[0]).toMatchObject({
+      content: '思考中。',
+      itemId: 'msg-aaaa:reasoning:0',
+    });
   });
 
   it('tool_call without rawInput reaches the reducer without crashing', () => {

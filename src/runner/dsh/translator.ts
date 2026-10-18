@@ -28,14 +28,24 @@ import type {
 export class DshTranslator {
   private liveUsage?: DshTokenUsage;
   private hasUsage = false;
+  /** 当前 attempt 的 id（start 帧携带，chunk 帧也带；断开重连重放时不变）。 */
+  private attemptId = '0';
 
   /** Translate one live assistant-stream chunk into AgentEvents. */
   streamFrameToAgentEvents(frame: DshAssistantStreamFrame, _sessionId: string): AgentEvent[] {
+    if (frame.type === 'start') {
+      if (frame.attemptId) this.attemptId = frame.attemptId;
+      return [];
+    }
     if (frame.type !== 'chunk' || !frame.chunk) return [];
-    return this.chunkToAgentEvents(frame.chunk, frame.time ?? Date.now());
+    return this.chunkToAgentEvents(
+      frame.chunk,
+      frame.time ?? Date.now(),
+      frame.attemptId ?? this.attemptId,
+    );
   }
 
-  private chunkToAgentEvents(chunk: DshStreamChunk, time: number): AgentEvent[] {
+  private chunkToAgentEvents(chunk: DshStreamChunk, time: number, attemptId = '0'): AgentEvent[] {
     if (chunk.type === 'usage' && chunk.usage && typeof chunk.usage === 'object') {
       this.liveUsage = chunk.usage as DshTokenUsage;
       this.hasUsage = true;
@@ -55,7 +65,16 @@ export class DshTranslator {
       return [
         {
           type: 'assistant',
-          message: { content: [{ type: 'thinking', thinking: chunk.text }] },
+          message: {
+            content: [
+              {
+                type: 'thinking',
+                thinking: chunk.text,
+                // 同一 attempt 的同一 reasoning block：token delta 共享 itemId。
+                itemId: `r:${attemptId}:${chunk.index}`,
+              },
+            ],
+          },
           timestamp: ts,
         },
       ];
