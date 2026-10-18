@@ -46,9 +46,19 @@ export abstract class ConnectionBasedRunner<TClient, TEvent = AgentEvent> implem
   protected _isRunning = false;
   protected readonly turnIdleTimeoutMs: number;
 
+  /**
+   * 单调递增的轮次代际。每轮 executeTurn 开始
+   * 自增；该轮安装的所有回调（prompt settle / notification / server request）
+   * 捕获当轮代际 + client，事件落地前校验归属。`_isRunning` / `stopRequested`
+   * 是可变跨轮字段，重置于下一轮开始——旧轮迟到的回调会在新轮看到
+   * `stopRequested === false` 并通过唯一检查，把旧 session 的 result 灌进新轮。
+   */
+  protected turnGeneration = 0;
   /** Notification queue consumed by the active run generator. */
   protected notificationQueue: TEvent[] = [];
   protected waitResolve: (() => void) | null = null;
+  /** 当前 waitForEvents 的兜底定时器（唤醒时必须清掉）。 */
+  private waitTimer: ReturnType<typeof setTimeout> | null = null;
   protected forceFinish = false;
   /** stop() 在 turn/start 或 prompt 响应前到达时置位，完成后再补发 cancel/interrupt。 */
   protected stopRequested = false;
@@ -155,6 +165,8 @@ export abstract class ConnectionBasedRunner<TClient, TEvent = AgentEvent> implem
       throw new Error(`${this.constructor.name} is already running`);
     }
     this._isRunning = true;
+    // 代际先于 setup 自增：setupTurn 里安装的回调捕获到的就是本轮代际。
+    this.turnGeneration++;
     this.resetRunState();
 
     try {
@@ -347,16 +359,27 @@ export abstract class ConnectionBasedRunner<TClient, TEvent = AgentEvent> implem
       const remaining = deadline - Date.now();
       if (remaining <= 0) return true;
       await new Promise<void>((resolve) => {
-        this.waitResolve = resolve;
-        setTimeout(
+        // 唤醒与超时必须互斥清理：wakeWaiters() 提前 resolve 时要 clearTimeout，
+        // 否则高频事件会让 timer 在最长 30s 内持续堆积。
+        const waiter = (): void => {
+          if (this.waitTimer === timer) {
+            clearTimeout(timer);
+            this.waitTimer = null;
+          }
+          resolve();
+        };
+        const timer = setTimeout(
           () => {
-            if (this.waitResolve === resolve) {
+            if (this.waitResolve === waiter) {
               this.waitResolve = null;
+              this.waitTimer = null;
               resolve();
             }
           },
           Math.min(remaining, 30_000),
         );
+        this.waitResolve = waiter;
+        this.waitTimer = timer;
       });
     }
     return false;
@@ -369,11 +392,20 @@ export abstract class ConnectionBasedRunner<TClient, TEvent = AgentEvent> implem
     this.wakeWaiters();
   }
   protected wakeWaiters(): void {
-    if (this.waitResolve) {
-      const resolve = this.waitResolve;
+    const resolve = this.waitResolve;
+    if (resolve) {
+      // waiter 自己会 clearTimeout + 置空 waitTimer。
       this.waitResolve = null;
       resolve();
     }
+  }
+
+  /**
+   * 归属校验：事件/回调是否仍属于当前轮次。旧轮迟到的 prompt 结果、通知、
+   * server request 一律只记 debug，不得进入共享 notificationQueue。
+   */
+  protected isCurrentTurn(generation: number, client: TClient | null): boolean {
+    return this._isRunning && generation === this.turnGeneration && client === this.currentClient;
   }
 
   protected failTurn(message: string): void {
@@ -390,6 +422,10 @@ export abstract class ConnectionBasedRunner<TClient, TEvent = AgentEvent> implem
   protected resetRunState(): void {
     this.notificationQueue = [];
     this.waitResolve = null;
+    if (this.waitTimer !== null) {
+      clearTimeout(this.waitTimer);
+      this.waitTimer = null;
+    }
     this.lastEventAt = Date.now();
     this.forceFinish = false;
   }

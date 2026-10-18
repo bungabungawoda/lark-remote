@@ -287,14 +287,30 @@ export abstract class BaseAcpRunner<
    * session/resume (existing sessionId) → applyTurnSettings → session/prompt.
    */
   protected async setupTurn(message: string, opts: SpawnOptions): Promise<void> {
+    // 本轮回调归属锚点：代际 + client 都不可变。旧轮迟到的 prompt
+    // 结果/通知在新轮开始时 stopRequested 已被重置，只有这两个值能识别它。
+    const generation = this.turnGeneration;
     const client = await this.connectionManager.acquire(opts.cwd);
     this.connectionManager.notifyActivity(opts.cwd);
     this.currentClient = client;
     this.onConnectionAcquired(opts);
     client.setHooks({
-      onNotification: (method, params) => this.handleNotification(method, params),
-      onServerRequest: (id, method, params) => this.handleServerRequest(id, method, params),
+      onNotification: (method, params) => {
+        if (!this.isCurrentTurn(generation, client)) {
+          getLogger().debug(`[${this.logTag}] dropped notification from a finished turn`);
+          return;
+        }
+        this.handleNotification(method, params);
+      },
+      onServerRequest: (id, method, params) => {
+        if (!this.isCurrentTurn(generation, client)) {
+          getLogger().debug(`[${this.logTag}] dropped server request from a finished turn`);
+          return;
+        }
+        this.handleServerRequest(id, method, params);
+      },
       onClose: () => {
+        if (!this.isCurrentTurn(generation, client)) return;
         getLogger().warn(`[${this.logTag}] client connection closed`);
         this.onConnectionClosed();
         this.failTurn(this.connectionClosedMessage);
@@ -351,8 +367,20 @@ export abstract class BaseAcpRunner<
     this.promptSent = true;
 
     promptPromise.then(
-      (result) => this.handlePromptResolved(result, translator, sessionId),
-      (err) => this.handlePromptRejected(err, translator, sessionId, ''),
+      (result) => {
+        if (!this.isCurrentTurn(generation, client)) {
+          getLogger().debug(`[${this.logTag}] dropped late prompt result from a finished turn`);
+          return;
+        }
+        this.handlePromptResolved(result, translator, sessionId);
+      },
+      (err) => {
+        if (!this.isCurrentTurn(generation, client)) {
+          getLogger().debug(`[${this.logTag}] dropped late prompt rejection from a finished turn`);
+          return;
+        }
+        this.handlePromptRejected(err, translator, sessionId, '');
+      },
     );
   }
 
@@ -362,14 +390,22 @@ export abstract class BaseAcpRunner<
    */
   async *runCompact(_message: string, opts: SpawnOptions): AsyncGenerator<AgentEvent> {
     yield* this.executeTurn(opts, async () => {
+      const generation = this.turnGeneration;
       const client = await this.connectionManager.acquire(opts.cwd);
       this.connectionManager.notifyActivity(opts.cwd);
       this.currentClient = client;
       this.onConnectionAcquired(opts);
       client.setHooks({
-        onNotification: (method, params) => this.handleNotification(method, params),
-        onServerRequest: (id, method, params) => this.handleServerRequest(id, method, params),
+        onNotification: (method, params) => {
+          if (!this.isCurrentTurn(generation, client)) return;
+          this.handleNotification(method, params);
+        },
+        onServerRequest: (id, method, params) => {
+          if (!this.isCurrentTurn(generation, client)) return;
+          this.handleServerRequest(id, method, params);
+        },
         onClose: () => {
+          if (!this.isCurrentTurn(generation, client)) return;
           this.onConnectionClosed();
           this.failTurn(this.connectionClosedMessage);
         },

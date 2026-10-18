@@ -70,4 +70,26 @@ describe('anchor: approval expiry user feedback', () => {
       toast: { type: 'error', content: expect.stringContaining('过期') },
     });
   });
+
+  it('test_anchor_approval_responder_failure_returns_error_toast', async () => {
+    // responder 发送失败（连接断开/进程退出）必须返回 error toast，
+    // 不能显示「审批已提交」——coordinator 现在会向上抛，router 走 failureToast。
+    const handleApprovalRespond = vi.fn().mockRejectedValue(new Error('responder disconnected'));
+    const { router } = createRouter(createMockBridge({ handleApprovalRespond }));
+
+    const resp = await router.handleCardAction(
+      {
+        cmd: 'approval.respond',
+        runId: 'run-approval-2',
+        requestId: 2,
+        decision: 'accept',
+        nonce: 'nonce-2',
+      },
+      ctx,
+    );
+
+    expect(resp).toEqual({
+      toast: { type: 'error', content: expect.stringContaining('审批响应失败') },
+    });
+  });
 });

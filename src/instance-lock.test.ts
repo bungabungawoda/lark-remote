@@ -246,3 +246,32 @@ describe('InstanceLock readPidAndName edge cases', () => {
     expect(() => lock.release()).not.toThrow();
   });
 });
+
+describe('InstanceLock concurrent stale takeover', () => {
+  it('test_anchor_instance_lock_concurrent_stale_acquire_only_one_wins', async () => {
+    // 两个实例几乎同时接管同一个 stale lock。旧实现 read→unlink→create 不是
+    // 原子的：后到者会 unlink 掉先到者刚创建的锁，两个 acquire() 都 fulfilled。
+    // 新实现用原子 rename 夺取 + 复核，最多一个成功。
+    fs.writeFileSync(lockPath, '12345\nold-process', 'utf-8');
+    vi.spyOn(process, 'kill').mockImplementation(((pid: number) => {
+      if (pid === 12345) {
+        throw Object.assign(new Error('missing'), { code: 'ESRCH' });
+      }
+      return true;
+    }) as typeof process.kill);
+    const verifyIdentity: LockIdentityVerifier = async (pid) =>
+      pid === process.pid ? 'match' : 'mismatch';
+
+    const lockA = new InstanceLock(lockPath, { verifyIdentity });
+    const lockB = new InstanceLock(lockPath, { verifyIdentity });
+    const results = await Promise.allSettled([lockA.acquire(), lockB.acquire()]);
+
+    const fulfilled = results.filter((r) => r.status === 'fulfilled');
+    const rejected = results.filter((r): r is PromiseRejectedResult => r.status === 'rejected');
+    expect(fulfilled).toHaveLength(1);
+    expect(rejected).toHaveLength(1);
+    expect(rejected[0].reason).toBeInstanceOf(InstanceAlreadyRunningError);
+    // 最终锁文件属于当前进程（restore/接管没有把锁丢掉）。
+    expect(fs.readFileSync(lockPath, 'utf-8').split('\n')[0]).toBe(String(process.pid));
+  });
+});

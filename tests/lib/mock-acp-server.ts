@@ -43,6 +43,12 @@ export interface MockAcpScenarioOpts {
   holdPromptUntilResponse?: boolean;
   /** (opencode) Hold the prompt result until session/cancel arrives. */
   holdPromptUntilCancel?: boolean;
+  /**
+   * Reject the FIRST session/prompt with a JSON-RPC error after this many ms
+   * (later prompts settle normally). Used to drive the late-result test:
+   * the first run is stopped, the second run starts, then the old error lands.
+   */
+  firstPromptErrorMs?: number;
   /** (opencode) Resume result omits sessionId (real opencode behavior). */
   resumeOmitsSessionId?: boolean;
   /** Fail the first N session/new requests with a v2 ServiceUnavailableError. */
@@ -70,6 +76,7 @@ const rl = createInterface({ input: process.stdin });
 if (config.pidPath) { writeFileSync(config.pidPath, String(process.pid)); }
 
 let promptId = null;
+let promptCount = 0;
 let cancelSeen = false;
 let newAttempts = 0;
 const send = (obj) => process.stdout.write(JSON.stringify(obj) + '\\n');
@@ -170,6 +177,23 @@ rl.on('line', (line) => {
   }
   if (msg.method === 'session/prompt') {
     promptId = msg.id;
+    promptCount += 1;
+    // Fixture: the first prompt's response arrives LATE (after the client
+    // already stopped that turn and started the next one).
+    if (config.firstPromptErrorMs && promptCount === 1) {
+      const lateId = msg.id;
+      promptId = null;
+      setTimeout(
+        () =>
+          send({
+            jsonrpc: '2.0',
+            id: lateId,
+            error: { code: -32000, message: 'late prompt failure from previous turn' },
+          }),
+        config.firstPromptErrorMs,
+      );
+      return;
+    }
     let delay = 20;
     if (config.sendApproval) {
       setTimeout(() => {

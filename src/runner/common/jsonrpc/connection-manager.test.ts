@@ -286,3 +286,152 @@ describe('ConnectionManager hook layering', () => {
     expect(stoppers.has(binaryName(process.execPath), pid)).toBe(false);
   }, 10000);
 });
+
+/**
+ * 替换连接必须先等旧连接 dispose 完成。
+ * 用内存 fake client 控制 dispose 时序，不 spawn 任何进程。
+ */
+describe('ConnectionManager replacement serialization', () => {
+  interface FakeClient {
+    name: string;
+    ready: boolean;
+    healthy: boolean;
+    connect(): Promise<unknown>;
+    dispose(): Promise<void>;
+    disposed: boolean;
+  }
+
+  function makeManager(log: string[], opts?: { disposeDelayMs?: number; failDispose?: boolean }) {
+    let seq = 0;
+    const clients: FakeClient[] = [];
+    const manager = new ConnectionManager<FakeClient>({
+      binary: 'unused-in-fake-client-test',
+      args: [],
+      clientFactory: () => {
+        const name = `c${++seq}`;
+        const client: FakeClient = {
+          name,
+          ready: true,
+          healthy: true,
+          disposed: false,
+          connect: async () => {
+            log.push(`connect-${name}`);
+            return {};
+          },
+          dispose: async () => {
+            log.push(`dispose-${name}:start`);
+            if (opts?.disposeDelayMs) {
+              await new Promise((resolve) => setTimeout(resolve, opts.disposeDelayMs));
+            }
+            client.healthy = false;
+            client.disposed = true;
+            log.push(`dispose-${name}:end`);
+            if (opts?.failDispose) throw new Error('dispose failed');
+          },
+        };
+        clients.push(client);
+        return client;
+      },
+    });
+    return { manager, clients };
+  }
+
+  it('test_anchor_connection_manager_awaits_old_dispose', async () => {
+    const log: string[] = [];
+    const { manager } = makeManager(log, { disposeDelayMs: 25 });
+
+    const first = await manager.acquire('/workspace/a');
+    // Make the cached connection non-reusable (connection lost / stale config).
+    first.healthy = false;
+
+    const second = await manager.acquire('/workspace/a');
+    expect(second).not.toBe(first);
+
+    // dispose-end 必须早于下一个 connect：旧实现 fire-and-forget 会让
+    // connect-c2 落在 dispose-c1:start 与 dispose-c1:end 之间。
+    const disposeEnd = log.indexOf('dispose-c1:end');
+    const connect2 = log.indexOf('connect-c2');
+    expect(disposeEnd).toBeGreaterThan(-1);
+    expect(connect2).toBeGreaterThan(disposeEnd);
+
+    await manager.disposeAll();
+  });
+
+  it('concurrent replacement creates exactly one new connection', async () => {
+    const log: string[] = [];
+    const { manager, clients } = makeManager(log, { disposeDelayMs: 10 });
+
+    const first = await manager.acquire('/workspace/a');
+    first.healthy = false;
+
+    const [a, b] = await Promise.all([
+      manager.acquire('/workspace/a'),
+      manager.acquire('/workspace/a'),
+    ]);
+    expect(a).toBe(b);
+    // c1（旧）+ c2（唯一的新连接），不能因为两个 acquire 都判陈旧而各建一条。
+    expect(clients.map((c) => c.name)).toEqual(['c1', 'c2']);
+
+    await manager.disposeAll();
+  });
+
+  it('disposes a connection whose slot was released during create (no orphan)', async () => {
+    const log: string[] = [];
+    let releaseConnect: (() => void) | undefined;
+    let seq = 0;
+    const clients: FakeClient[] = [];
+    const manager = new ConnectionManager<FakeClient>({
+      binary: 'unused-in-fake-client-test',
+      args: [],
+      clientFactory: () => {
+        const name = `c${++seq}`;
+        const client: FakeClient = {
+          name,
+          ready: true,
+          healthy: true,
+          disposed: false,
+          connect: async () => {
+            log.push(`connect-${name}:start`);
+            if (name === 'c1') {
+              await new Promise<void>((resolve) => {
+                releaseConnect = resolve;
+              });
+            }
+            log.push(`connect-${name}:end`);
+            return {};
+          },
+          dispose: async () => {
+            log.push(`dispose-${name}`);
+            client.disposed = true;
+            client.healthy = false;
+          },
+        };
+        clients.push(client);
+        return client;
+      },
+    });
+
+    const pending = manager.acquire('/workspace/a');
+    // connect 在途 → release 把 slot 删掉；落定的新连接不能无人管理。
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await manager.release('/workspace/a');
+    releaseConnect?.();
+
+    const client = await pending;
+    expect(client.name).toBe('c2');
+    expect(clients[0]?.disposed).toBe(true);
+
+    await manager.disposeAll();
+  });
+
+  it('aborts replacement when the old connection cannot be disposed', async () => {
+    const log: string[] = [];
+    const { manager, clients } = makeManager(log, { failDispose: true });
+    const first = await manager.acquire('/workspace/a');
+    first.healthy = false;
+
+    await expect(manager.acquire('/workspace/a')).rejects.toThrow('failed to dispose');
+    // 旧连接 dispose 失败时不得再建新连接（否则两个 agent server 重叠）。
+    expect(clients).toHaveLength(1);
+  });
+});
