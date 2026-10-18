@@ -8,7 +8,7 @@
 import { describe, it, expect, afterEach } from 'vitest';
 import { currentPlatform, isWin32 } from '../../../src/platform/select.js';
 import { DshRunner } from './runner.js';
-import { dshQuestionsOf } from './client.js';
+import { dshQuestionsOf, isTimedQuestionRequest } from './client.js';
 import { DshApprovalTracker } from './approval.js';
 import { DshTranslator, mapUsage } from './translator.js';
 import { createInitialRunState, reduceRunState } from '../../../src/card/run-state.js';
@@ -98,18 +98,22 @@ function sessionEventFrame(sessionId: string, ev: DshSessionEvent): object {
   return { type: 'session/event', sessionId, event: ev };
 }
 
-/** One forwarded `ask_user_question` waterfall frame for the fake `$events` stream. */
+/**
+ * One forwarded `ask_user_question` waterfall frame for the fake `$events` stream.
+ * `extraRequest` carries protocol fields beside `questions` (e.g. `wait.timed`).
+ */
 function questionWaterfall(
   eventId: string,
   questions: Array<Record<string, unknown>>,
   agentId = SID,
+  extraRequest: Record<string, unknown> = {},
 ): object {
   return {
     type: 'waterfall',
     event: 'user-questions/request',
     eventId,
     agentId,
-    request: { questions },
+    request: { questions, ...extraRequest },
   };
 }
 
@@ -389,6 +393,19 @@ describe('dshQuestionsOf', () => {
     expect(dshQuestionsOf({ questions: [{ id: 'a' }] })).toBeUndefined();
     expect(dshQuestionsOf({ questions: [] })).toBeUndefined();
     expect(dshQuestionsOf({})).toBeUndefined();
+  });
+
+  it('keeps the question detail and detects a timed wait', () => {
+    // plan-review 提问的计划全文在 detail 里，必须随解析保留。
+    expect(dshQuestionsOf({ questions: [{ id: 'a', question: 'Q', detail: '# 计划' }] })).toEqual([
+      { id: 'a', question: 'Q', detail: '# 计划' },
+    ]);
+    expect(isTimedQuestionRequest({ questions: [], wait: { callId: 'c', timed: true } })).toBe(
+      true,
+    );
+    // legacy blocking 提问没有 wait 字段，卡片必须照常展示。
+    expect(isTimedQuestionRequest({ questions: [] })).toBe(false);
+    expect(isTimedQuestionRequest({ questions: [], wait: { callId: 'c' } })).toBe(false);
   });
 });
 
@@ -1472,6 +1489,207 @@ describe('DshClient / DshRunner integration', () => {
     expect(server.requests.find((r) => r.method === '$events/result')?.payload).toMatchObject({
       eventId: 'q-other',
       outcome: { kind: 'next' },
+    });
+  });
+
+  it('carries the question detail (plan review) into the card view', async () => {
+    server = new FakeDshServer();
+    let question: Extract<AgentEvent, { type: 'approval_requested' }> | undefined;
+    server.register('session/prompt', () => ({ ok: true, value: { accepted: true } }));
+    server.register('$events/result', () => {
+      server.pushMuxFrame(sessionEventFrame(SID, turnEnd('completed', 2)));
+      return { ok: true, value: undefined };
+    });
+    server.setEventFrames([
+      questionWaterfall('q-plan', [
+        {
+          id: 'plan-review',
+          header: 'Plan review',
+          question: 'Approve this plan and leave plan mode?',
+          detail: '# 计划\n\n1. 改 A\n2. 跑测试',
+          options: [{ label: 'Approve' }, { label: 'Keep planning' }],
+        },
+      ]),
+    ]);
+    await server.start();
+
+    const runner = new DshRunner({ kind: 'dsh', sessionReader: stubReader, host: server.baseUrl });
+    const runPromise = (async () => {
+      for await (const ev of runner.run('review', { cwd: CWD, sessionId: SID })) {
+        if (ev.type === 'approval_requested') question = ev;
+      }
+    })();
+
+    await waitFor(() => question !== undefined);
+    if (!question) throw new Error('question was not surfaced');
+    // plan-review 提问把计划全文放在 detail：丢在 runner 侧就成了「看不见计划就批准」。
+    expect(question.view.questions?.[0]?.detail).toContain('1. 改 A');
+
+    await runner.respondApproval('q-plan', { action: 'decline' });
+    await runPromise;
+  });
+
+  it('answers a multi-select question with every selected label', async () => {
+    server = new FakeDshServer();
+    let question: Extract<AgentEvent, { type: 'approval_requested' }> | undefined;
+    server.register('session/prompt', () => ({ ok: true, value: { accepted: true } }));
+    server.register('$events/result', () => {
+      server.pushMuxFrame(sessionEventFrame(SID, turnEnd('completed', 2)));
+      return { ok: true, value: undefined };
+    });
+    server.setEventFrames([
+      questionWaterfall('q-multi', [
+        {
+          id: 'pick',
+          question: '选哪些？',
+          multiSelect: true,
+          options: [{ label: 'A' }, { label: 'B' }, { label: 'C' }],
+        },
+      ]),
+    ]);
+    await server.start();
+
+    const runner = new DshRunner({ kind: 'dsh', sessionReader: stubReader, host: server.baseUrl });
+    const runPromise = (async () => {
+      for await (const ev of runner.run('review', { cwd: CWD, sessionId: SID })) {
+        if (ev.type === 'approval_requested') question = ev;
+      }
+    })();
+
+    await waitFor(() => question !== undefined);
+    if (!question) throw new Error('question was not surfaced');
+    expect(question.view.questions?.[0]?.multiSelect).toBe(true);
+
+    await runner.respondApproval('q-multi', {
+      action: 'answer',
+      answers: { '选哪些？': ['A', 'C'] },
+    });
+    await runPromise;
+
+    expect(server.requests.find((r) => r.method === '$events/result')?.payload).toMatchObject({
+      eventId: 'q-multi',
+      outcome: {
+        kind: 'result',
+        value: { answers: [{ id: 'pick', selected: ['A', 'C'] }] },
+      },
+    });
+  });
+
+  it('treats a multi-select question without options as a free-text answer', async () => {
+    server = new FakeDshServer();
+    let question: Extract<AgentEvent, { type: 'approval_requested' }> | undefined;
+    server.register('session/prompt', () => ({ ok: true, value: { accepted: true } }));
+    server.register('$events/result', () => {
+      server.pushMuxFrame(sessionEventFrame(SID, turnEnd('completed', 2)));
+      return { ok: true, value: undefined };
+    });
+    server.setEventFrames([
+      questionWaterfall('q-free', [{ id: 'note', question: '补充说明', multiSelect: true }]),
+    ]);
+    await server.start();
+
+    const runner = new DshRunner({ kind: 'dsh', sessionReader: stubReader, host: server.baseUrl });
+    const runPromise = (async () => {
+      for await (const ev of runner.run('review', { cwd: CWD, sessionId: SID })) {
+        if (ev.type === 'approval_requested') question = ev;
+      }
+    })();
+
+    await waitFor(() => question !== undefined);
+    if (!question) throw new Error('question was not surfaced');
+    // 无选项的多选在卡片上没有可勾内容：必须按自由文本题渲染，否则
+    // coordinator 的 answerCustom 会拒绝它（用户只剩「跳过」）。
+    expect(question.view.questions?.[0]?.multiSelect).toBeUndefined();
+
+    await runner.respondApproval('q-free', { action: 'answer', answers: { 补充说明: '我自己来' } });
+    await runPromise;
+
+    expect(server.requests.find((r) => r.method === '$events/result')?.payload).toMatchObject({
+      eventId: 'q-free',
+      outcome: {
+        kind: 'result',
+        value: { answers: [{ id: 'note', selected: [], custom: '我自己来' }] },
+      },
+    });
+  });
+
+  it('delegates a timed question to the Web UI instead of showing a card', async () => {
+    server = new FakeDshServer();
+    server.register('session/prompt', () => ({ ok: true, value: { accepted: true } }));
+    server.register('$events/result', () => {
+      server.pushMuxFrame(sessionEventFrame(SID, turnEnd('completed', 2)));
+      return { ok: true, value: undefined };
+    });
+    server.setEventFrames([
+      questionWaterfall(
+        'q-timed',
+        [{ id: 'next', question: NEXT_STEP_QUESTION, options: [{ label: '只修 P1' }] }],
+        SID,
+        // Timed asks settle at their own foreground deadline; a card answer
+        // outside that window can never land, so the Web UI keeps them.
+        { wait: { callId: 'call-timed-1', timed: true } },
+      ),
+    ]);
+    await server.start();
+
+    const runner = new DshRunner({ kind: 'dsh', sessionReader: stubReader, host: server.baseUrl });
+    const events = await collect(runner.run('review', { cwd: CWD, sessionId: SID }));
+    await waitFor(() => server.requests.some((r) => r.method === '$events/result'));
+
+    expect(events.some((e) => e.type === 'approval_requested')).toBe(false);
+    expect(server.requests.find((r) => r.method === '$events/result')?.payload).toMatchObject({
+      eventId: 'q-timed',
+      outcome: { kind: 'next' },
+    });
+  });
+
+  it('answers a re-delivered question on the current $events stream', async () => {
+    server = new FakeDshServer();
+    server.register('session/prompt', () => ({ ok: true, value: { accepted: true } }));
+    server.register('$events/result', () => {
+      server.pushMuxFrame(sessionEventFrame(SID, turnEnd('completed', 2)));
+      return { ok: true, value: undefined };
+    });
+    const waterfall = () =>
+      questionWaterfall('q-redeliver', [
+        { id: 'next', question: NEXT_STEP_QUESTION, options: [{ label: '只修 P1' }] },
+      ]);
+    server.setEventFrames([waterfall()]);
+    await server.start();
+
+    const runner = new DshRunner({ kind: 'dsh', sessionReader: stubReader, host: server.baseUrl });
+    const seen: string[] = [];
+    const runPromise = (async () => {
+      for await (const ev of runner.run('review', { cwd: CWD, sessionId: SID })) {
+        if (ev.type === 'approval_requested') seen.push(String(ev.requestId));
+      }
+    })();
+
+    await waitFor(() => seen.length === 1);
+    // Host drops `$events`; the reconnect replays the still-pending waterfall
+    // with a fresh clientId (api-gateway replays pending events to new clients).
+    server.pushEventFrame({ close: true });
+    server.pushEventFrame(waterfall());
+    // 重连有 200ms 退避 + 建连开销，默认 1s 轮询窗口太紧。
+    await waitFor(() => seen.length === 2, 3000);
+    expect(seen).toEqual(['q-redeliver', 'q-redeliver']);
+
+    const currentClientId = server.lastEventClientId;
+    expect(currentClientId).toBeDefined();
+    await runner.respondApproval('q-redeliver', {
+      action: 'answer',
+      answers: { [NEXT_STEP_QUESTION]: '只修 P1' },
+    });
+    await runPromise;
+
+    const answer = server.requests.find((r) => r.method === '$events/result');
+    expect(answer?.payload).toMatchObject({
+      clientId: currentClientId,
+      eventId: 'q-redeliver',
+      outcome: {
+        kind: 'result',
+        value: { answers: [{ id: 'next', selected: ['只修 P1'] }] },
+      },
     });
   });
 

@@ -382,10 +382,18 @@ DSH 的 `ask_user_question` 走同一条 `$events` 通道，但事件名是
 requestId，题面渲染成 run 卡的提问区（选项 / Other / 多选提交 / 跳过）。回答按题目
 `id` 回编成 `{answers:[{id, selected, custom?}]}` 写回 `$events/result`；选项之外的
 自由文本按 DSH Web UI 的语义记为 `selected: []` + `custom`，跳过则回每题为空
-selected 的批次。飞书卡 30 分钟未答只把这一路交回 `next`（不 `session/cancel`），
-DSH Web UI 仍可回答；在 Web UI 先答/超时则 Host 推 `cancel` 帧移除飞书提问区。
-无法安全转写的批次（字段异常、问题文本重复——coordinator 按问题文本键答案）同样
-回 `next`，交回 Web UI。timed 版提问超时后进入 `continued`，只能经
+selected 的批次。题目可带 `detail` 正文（plan-review 提问用它承载计划全文），提问区
+以折叠面板渲染并截断——否则用户会在看不见计划的情况下批准。无选项的 `multiSelect`
+按自由文本题渲染（卡片上没有可勾内容，coordinator 的 `answerCustom` 也拒绝多选）。
+飞书卡 30 分钟未答只把这一路交回 `next`（不 `session/cancel`），DSH Web UI 仍可回答
+（之后由 `idle.watchdogMinutes` 的静默窗口兜底）；超时后卡上保留「可在 DSH Web UI
+继续回答」的提示（`ApprovalView.expiredHint` 数据驱动，渲染层不写死 agent 语义）。
+在 Web UI 先答/超时则 Host 推 `cancel` 帧移除飞书提问区。同一 waterfall 在 `$events`
+重连后会被重投：runner 覆盖 `clientId`，coordinator 重新计时并把已记录的答案回填到
+新视图（`reapplyRecordedAnswers`），否则卡上的勾选会与将提交的答案不一致。无法安全
+转写的批次（字段异常、问题文本重复——coordinator 按问题文本键答案）回 `next`；
+带 `wait.timed` 标记的 timed 提问也回 `next`——它按自己的前台期限结算，卡片窗口对
+不上，交给 Web UI 的倒计时更可靠。timed 版提问超时后进入 `continued`，只能经
 `userQuestions/answer` 续答；lark-remote 未接该路径，属已知限制（standard preset
 用 legacy blocking 版，不走这条路径）。
 

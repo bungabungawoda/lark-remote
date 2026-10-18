@@ -776,6 +776,15 @@ export class DshClient {
               return;
             }
             if (frame.event === 'user-questions/request' && frame.agentId === sessionId) {
+              if (isTimedQuestionRequest(frame.request)) {
+                // The timed wait owns its own deadline (and the Web UI renders
+                // the countdown); a card answer outside that window is lost.
+                getLogger().info(
+                  `[dsh] timed user-questions/request delegated to the Web UI eventId=${frame.eventId}`,
+                );
+                this.delegateWaterfall(streamClientId, frame.eventId, signal);
+                continue;
+              }
               const questions = dshQuestionsOf(frame.request);
               if (questions) {
                 yield {
@@ -1012,10 +1021,26 @@ export function dshQuestionsOf(request: Record<string, unknown>): DshQuestion[] 
     questions.push({
       id,
       question: text,
+      ...(typeof record.detail === 'string' && record.detail ? { detail: record.detail } : {}),
       ...(typeof record.header === 'string' && record.header ? { header: record.header } : {}),
       ...(options.length > 0 ? { options } : {}),
       ...(record.multiSelect === true ? { multiSelect: true } : {}),
     });
   }
   return questions;
+}
+
+/**
+ * True for a timed (`askTimed`) request — `wait.timed` in the projected payload.
+ *
+ * Timed asks settle at their own foreground deadline and then close the
+ * waterfall, so an answer sent outside that window can never land. Such a
+ * request belongs to the client that claims the wait (`attachWait`) and renders
+ * its countdown, i.e. the DSH Web UI; the card must not offer answers that expire
+ * silently on the server side.
+ */
+export function isTimedQuestionRequest(request: Record<string, unknown>): boolean {
+  const wait = request.wait;
+  if (wait === null || typeof wait !== 'object' || Array.isArray(wait)) return false;
+  return (wait as Record<string, unknown>).timed === true;
 }

@@ -264,6 +264,8 @@ describe('renderRunCard', () => {
         requestId: 46,
         kind: 'question',
         questions: [{ question: 'Pick a color', options: [{ label: 'Red' }] }],
+        // 数据驱动：只有 DSH 提问超时后还能去 Web UI 答，渲染层不写死。
+        expiredHint: '仍可在 DSH Web UI 继续回答；本卡不再接收回答。',
         availableDecisions: [],
       },
     } as never);
@@ -271,8 +273,44 @@ describe('renderRunCard', () => {
 
     const serialized = JSON.stringify(renderRunCard(state));
     expect(serialized).toContain('提问已超时');
+    expect(serialized).toContain('仍可在 DSH Web UI 继续回答');
     expect(serialized).not.toContain('审批已过期');
     expect(serialized).not.toContain('approval.answer');
+    expectNoV1ActionContainer(serialized);
+  });
+
+  it('renders a question detail (plan review) so the plan is visible', () => {
+    // DSH plan-review 提问把计划全文放在 detail：卡片必须随题渲染，
+    // 否则用户是在看不见计划的情况下点「批准」。
+    let state = createInitialRunState('run-question-detail');
+    state = reduceRunState(state, {
+      type: 'approval_requested',
+      requestId: 47,
+      kind: 'question',
+      threadId: 'th-q-4',
+      turnId: 'tn-q-4',
+      itemId: 'item-q-4',
+      view: {
+        requestId: 47,
+        kind: 'question',
+        questions: [
+          {
+            id: 'plan-review',
+            header: 'Plan review',
+            question: 'Approve this plan and leave plan mode?',
+            detail: '# 计划\n\n1. 改 A\n2. 跑测试',
+            options: [{ label: 'Approve' }, { label: 'Keep planning' }],
+          },
+        ],
+        availableDecisions: [],
+      },
+    } as never);
+
+    const serialized = JSON.stringify(renderRunCard(state));
+    expect(serialized).toContain('1. 改 A');
+    expect(serialized).toContain('📋 详情');
+    expect(serialized).toContain('approval.answer');
+    expect(serialized).toContain('选择');
     expectNoV1ActionContainer(serialized);
   });
 

@@ -55,9 +55,19 @@ const DSH_COMPACT_COMMAND = '/compact';
  * DSH 的 legacy `ask_user_question` 会无限等待（`timed:false`），Web UI 那侧
  * 也一直在等。飞书卡超时后只把这一路的应答权交回（outcome `next`），不取消
  * turn，所以窗口比审批默认的 5 分钟给得宽：用户通常要先读完上一条长回答。
- * 超时后问题仍可在 DSH Web UI 回答；再看 idle 看门狗（默认 60 分钟）兜底。
+ * 超时后问题仍可在 DSH Web UI 回答；之后由 idle 看门狗兜底（默认 15 分钟
+ * 静默，见 `config.idle.watchdogMinutes`，等待提问期间暂停计时）。
  */
 const DSH_QUESTION_TIMEOUT_MS = 30 * 60 * 1000;
+
+/**
+ * 卡片上实际生效的多选语义：无选项的 multiSelect 没有可勾内容，共享渲染层把它
+ * 当自由文本题，coordinator 的 answerCustom 又拒绝 multiSelect——所以按单选处理，
+ * 视图与答案编码必须用同一个判定，否则会编码出错答案。
+ */
+function isCardMultiSelect(question: DshQuestion): boolean {
+  return question.multiSelect === true && (question.options?.length ?? 0) > 0;
+}
 
 /**
  * 把 coordinator 回传的「问题文本 → 答案」映射成 DSH 的 `{id, selected,
@@ -78,7 +88,7 @@ function buildQuestionAnswers(questions: DshQuestion[], response: unknown): DshQ
       (item): item is string => typeof item === 'string' && item.length > 0,
     );
     if (values.length === 0) throw new Error(`DSH 提问答案为空: ${question.question}`);
-    if (question.multiSelect) return { id: question.id, selected: values };
+    if (isCardMultiSelect(question)) return { id: question.id, selected: values };
     const selected = values[0]!;
     const isOption = (question.options ?? []).some((option) => option.label === selected);
     return isOption
@@ -796,16 +806,25 @@ export class DshRunner implements AgentRunner {
       requestId: eventId,
       kind: 'question',
       note: '仅影响本次回答；若飞书提交失败，请到 DSH Web UI 处理。',
-      questions: questions.map((question) => ({
-        id: question.id,
-        question: question.question,
-        ...(question.header ? { header: question.header } : {}),
-        ...(question.multiSelect ? { multiSelect: true } : {}),
-        options: (question.options ?? []).map((option) => ({
+      // 提问不是审批：超时只是把这一路交回 Web UI，卡上要如实说清还能去哪答。
+      expiredHint: '仍可在 DSH Web UI 继续回答；本卡不再接收回答。',
+      questions: questions.map((question) => {
+        const options = (question.options ?? []).map((option) => ({
           label: option.label,
           ...(option.description ? { description: option.description } : {}),
-        })),
-      })),
+        }));
+        return {
+          id: question.id,
+          question: question.question,
+          // plan-review 提问把计划全文放在 detail；丢了就成了「看不见计划就批准」。
+          ...(question.detail ? { detail: question.detail } : {}),
+          ...(question.header ? { header: question.header } : {}),
+          // 共享渲染层把「无选项」当自由文本题，而 coordinator 的 answerCustom
+          // 拒绝 multiSelect——无选项的多选在卡片上等于无解，按单选渲染。
+          ...(isCardMultiSelect(question) ? { multiSelect: true } : {}),
+          options,
+        };
+      }),
       availableDecisions: [],
     };
     return {

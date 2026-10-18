@@ -600,6 +600,42 @@ describe('ApprovalCoordinator', () => {
       expect(coordinator.pendingCount()).toBe(0);
     });
 
+    it('restores recorded answers when the same batch is re-delivered', async () => {
+      // $events 重连后 DSH 用同一个 eventId 重投 waterfall，新视图不带卡上
+      // 已选状态；若直接替换视图，卡上的勾选会与「提交时会发什么」不一致。
+      const view: ApprovalView = {
+        requestId: 2100,
+        kind: 'question',
+        questions: [
+          { question: 'Q1', options: [{ label: 'A1' }] },
+          { question: 'Q2', options: [{ label: 'A2' }] },
+          { question: 'Q3', options: [{ label: 'A3' }] },
+        ],
+        availableDecisions: [],
+      };
+
+      coordinator.onRequested(makeQuestionEvent({ requestId: 2100, view }));
+      await coordinator.toggleAnswer(
+        { questionIndex: 0, option: 'A1' },
+        { requestId: 2100, nonce: 'r1' },
+      );
+      pushToCard.mockClear();
+
+      // 重投同一批次：视图里没有任何 selected。
+      coordinator.onRequested(makeQuestionEvent({ requestId: 2100, view }));
+
+      await coordinator.toggleAnswer(
+        { questionIndex: 1, option: 'A2' },
+        { requestId: 2100, nonce: 'r2' },
+      );
+      const updates = pushToCard.mock.calls.flat(2) as Array<{
+        type?: string;
+        view?: { questions?: Array<{ question: string; selected?: string[] }> };
+      }>;
+      const update = updates.find((e) => e.type === 'approval_view_updated');
+      expect(update?.view?.questions?.map((q) => q.selected)).toEqual([['A1'], ['A2'], undefined]);
+    });
+
     it('test_anchor_submit_pushes_resolved_card_event_agent_agnostic', async () => {
       // 提交成功后的 approval_resolved 由 coordinator 统一推送
       // （claude 无 server 回发；codex 幂等），不再由 bridge responder 顺带做。
