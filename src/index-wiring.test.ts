@@ -8,10 +8,10 @@
  * 串行队列 enqueue 分支——否则审批响应排在等待审批的 run 之后：run 不结束不执行、
  * run 结束 coordinator 已删响应空转（线上复现：approval.respond 排队卡 + no
  * approval coordinator）。
- * 2026-08-17 review：approval.answer 家族（answer/answerSubmit/answerCustom）
- * 曾漏在直返列表外，错误 toast 被 enqueueImmediate 静默吞掉。
- * 2026-08-21 review：order.textInput 与 approval.planFeedback 再次漏在列表外
- * （编辑卡停留编辑界面 / 附意见 toast 被吞）——全部必须与 respond/toggle 同等守卫。
+ * approval.answer 家族（answer/answerSubmit/answerCustom）曾漏在直返列表外，
+ * 错误 toast 被 enqueueImmediate 静默吞掉；order.textInput 与
+ * approval.planFeedback 也再次漏在列表外（编辑卡停留编辑界面 / 附意见 toast 被吞）
+ * ——全部必须与 respond/toggle 同等守卫。
  */
 import { describe, it, expect } from 'vitest';
 import fs from 'node:fs';
