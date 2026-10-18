@@ -177,7 +177,7 @@ describe('DshSessionReader', () => {
     expect(content.events[1].content).toBe('three');
   });
 
-  it('usage: contextLength reflects only the last assistant/message (cumulative sums full session)', () => {
+  it('usage: 无 turn 标记（旧数据）时本 run 退回末条 assistant/message，累计仍是全会话', () => {
     const server = new FakeDshServer();
     registerSession(server);
     server.register('session/page', () => ({
@@ -209,7 +209,7 @@ describe('DshSessionReader', () => {
     const content = reader.readSessionContent(SID_A, CWD);
 
     expect(content.usage).toMatchObject({
-      // Per-turn "current window" = LAST assistant/message only (ccusage 口径).
+      // 无 turn/start 边界 → 退回末条 usage（旧数据语义，同 codex 无 task_started）。
       inputTokens: 200,
       outputTokens: 60,
       contextLength: 200 + 20 + 10, // last input + cacheRead + cacheWrite (excludes output)
@@ -222,6 +222,112 @@ describe('DshSessionReader', () => {
       cumulativeCacheReadTokens: 20,
       cumulativeCacheCreationTokens: 10,
       cumulativeTotalTokens: 130 + 290,
+    });
+  });
+
+  it('usage: 本 run = 末个 turn 内所有采样之和，context 仍是末次采样水位', () => {
+    const server = new FakeDshServer();
+    registerSession(server);
+    server.register('session/page', () => ({
+      ok: true,
+      value: {
+        hasMore: false,
+        records: [
+          { type: 'event', event: turnStart(0) },
+          {
+            type: 'event',
+            event: assistantMsg(SID_A, 'step 1', {
+              inputTokens: 100,
+              outputTokens: 30,
+              cacheReadTokens: 900,
+            }),
+          },
+          { type: 'event', event: toolCall(SID_A, 'bash', '{"cmd":"ls"}') },
+          { type: 'event', event: toolResult(SID_A, 'file list') },
+          {
+            type: 'event',
+            event: assistantMsg(SID_A, 'step 2', {
+              inputTokens: 20,
+              outputTokens: 70,
+              cacheReadTokens: 1000,
+            }),
+          },
+          { type: 'event', event: turnEnd(0) },
+        ],
+      },
+    }));
+
+    const reader = makeReader(server);
+    const content = reader.readSessionContent(SID_A, CWD);
+
+    expect(content.usage).toMatchObject({
+      // 两步工具往返 = 两条 usage，本 run 是两者之和（不是末条 20/70）。
+      inputTokens: 120,
+      outputTokens: 100,
+      cacheReadTokens: 1900,
+      cacheCreationTokens: 0,
+      totalTokens: 120 + 100 + 1900,
+      // Context 是末次采样的窗口占用（input + cacheRead + cacheWrite）。
+      contextLength: 20 + 1000,
+      cumulativeInputTokens: 120,
+      cumulativeOutputTokens: 100,
+      cumulativeTotalTokens: 120 + 100 + 1900,
+    });
+  });
+
+  it('usage: 本 run 只取末个 turn，累计覆盖所有 turn', () => {
+    const server = new FakeDshServer();
+    registerSession(server);
+    server.register('session/page', () => ({
+      ok: true,
+      value: {
+        hasMore: false,
+        records: [
+          { type: 'event', event: turnStart(0) },
+          {
+            type: 'event',
+            event: assistantMsg(SID_A, 'turn 0 step 0', {
+              inputTokens: 50,
+              outputTokens: 10,
+            }),
+          },
+          {
+            type: 'event',
+            event: assistantMsg(SID_A, 'turn 0 step 1', {
+              inputTokens: 5,
+              outputTokens: 20,
+            }),
+          },
+          { type: 'event', event: turnEnd(0) },
+          { type: 'event', event: turnStart(1) },
+          {
+            type: 'event',
+            event: assistantMsg(SID_A, 'turn 1 step 0', {
+              inputTokens: 7,
+              outputTokens: 3,
+              cacheReadTokens: 400,
+            }),
+          },
+          { type: 'event', event: turnEnd(1) },
+        ],
+      },
+    }));
+
+    const reader = makeReader(server);
+    const content = reader.readSessionContent(SID_A, CWD);
+
+    expect(content.usage).toMatchObject({
+      // 本 run = turn 1 的唯一一次采样。
+      inputTokens: 7,
+      outputTokens: 3,
+      cacheReadTokens: 400,
+      totalTokens: 410,
+      contextLength: 7 + 400,
+      // 累计 = turn 0 两次采样 + turn 1 一次采样。
+      cumulativeInputTokens: 50 + 5 + 7,
+      cumulativeOutputTokens: 10 + 20 + 3,
+      cumulativeCacheReadTokens: 400,
+      cumulativeTotalTokens: 50 + 5 + 7 + (10 + 20 + 3) + 400,
     });
   });
 
@@ -456,5 +562,18 @@ function toolResult(sessionId: string, output: string): DshSessionEvent {
     seq: 4,
     time: 1700000000000,
     data: { turn: 0, step: 0, message: { role: 'tool', content: output }, callId: 'call-1' },
+  };
+}
+
+function turnStart(turn: number): DshSessionEvent {
+  return { type: 'turn/start', seq: 0, time: 1700000000000, data: { turn } };
+}
+
+function turnEnd(turn: number): DshSessionEvent {
+  return {
+    type: 'turn/end',
+    seq: 9,
+    time: 1700000000000,
+    data: { turn, reason: { kind: 'completed' } },
   };
 }
