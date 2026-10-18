@@ -249,6 +249,33 @@ describe('renderRunCard', () => {
     expectNoV1ActionContainer(serialized);
   });
 
+  it('renders a timed-out question as 提问已超时 instead of 审批已过期', () => {
+    // 提问卡 30 分钟超时后 DSH 侧仍可在 Web UI 回答（不是权限审批被拒），
+    // 文案不能写成「审批已过期」，同时不能再渲染可点选项。
+    let state = createInitialRunState('run-question-expired');
+    state = reduceRunState(state, {
+      type: 'approval_requested',
+      requestId: 46,
+      kind: 'question',
+      threadId: 'th-q-3',
+      turnId: 'tn-q-3',
+      itemId: 'item-q-3',
+      view: {
+        requestId: 46,
+        kind: 'question',
+        questions: [{ question: 'Pick a color', options: [{ label: 'Red' }] }],
+        availableDecisions: [],
+      },
+    } as never);
+    state = reduceRunState(state, { type: 'approval_expired', requestId: 46 });
+
+    const serialized = JSON.stringify(renderRunCard(state));
+    expect(serialized).toContain('提问已超时');
+    expect(serialized).not.toContain('审批已过期');
+    expect(serialized).not.toContain('approval.answer');
+    expectNoV1ActionContainer(serialized);
+  });
+
   it('test_anchor_ask_user_question_option_row_left_button_right_description_with_distinct_icons', () => {
     // UI 整改：每个选项一行（column_set），左按钮右描述，按钮固定宽度保证
     // 列对齐；单选/多选图标区分（单选 ⚪/🔵，多选 ⬜/☑️）。

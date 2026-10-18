@@ -10,9 +10,9 @@
  *  3. Live session data is a logical stream over `/api/remote.mux`:
  *     `{type:'open',streamId,endpoint:'session/follow',payload}` →
  *     `{type:'item',streamId,value}` / `{type:'end',streamId}`.
- *     The Gateway-owned `$events` stream carries answerable
- *     `approval/request` waterfalls; answers go back through
- *     `$events/result`.
+ *     The Gateway-owned `$events` stream carries answerable waterfalls:
+ *     `approval/request` (tool permissions) and `user-questions/request`
+ *     (`ask_user_question`); answers go back through `$events/result`.
  *
  * The client is stateless apart from the base URL and auth cookie: each
  * `run()` opens its own remote mux subscription and closes it on terminal.
@@ -32,18 +32,20 @@ import {
 } from './auth.js';
 import type {
   DshApprovalStreamItem,
+  DshCommandResult,
   DshFollowFrame,
   DshModelCatalogValue,
   DshModelSelection,
   DshPermissionCatalogValue,
   DshPresetListValue,
+  DshQuestion,
+  DshQuestionOption,
   DshRemoteEventFrame,
   DshRemoteEventOutcome,
   DshSessionEvent,
   DshSessionPageValue,
   DshStreamItem,
   DshTokenUsage,
-  DshCommandResult,
 } from './types.js';
 
 interface WebSocketMessageEvent {
@@ -518,6 +520,19 @@ export class DshClient {
     await this.unary('$events/result', { clientId, eventId, outcome }, opts);
   }
 
+  /** Hand one waterfall delivery back with `next` (another answerer owns it). */
+  private delegateWaterfall(clientId: string, eventId: string, signal: AbortSignal): void {
+    void this.answerRemoteEvent(clientId, eventId, { kind: 'next' }, { signal }).catch(
+      (err: unknown) => {
+        if (!signal.aborted) {
+          getLogger().warn(
+            `[dsh] waterfall delegation failed eventId=${eventId}: ${(err as Error).message}`,
+          );
+        }
+      },
+    );
+  }
+
   /**
    * Return the highest event `seq` currently persisted for the session.
    *
@@ -760,23 +775,30 @@ export class DshClient {
               };
               return;
             }
+            if (frame.event === 'user-questions/request' && frame.agentId === sessionId) {
+              const questions = dshQuestionsOf(frame.request);
+              if (questions) {
+                yield {
+                  kind: 'question',
+                  eventId: frame.eventId,
+                  clientId: streamClientId,
+                  questions,
+                };
+              } else {
+                // The Feishu card cannot answer this batch safely (malformed,
+                // or duplicate texts — the coordinator keys answers by text).
+                // Hand the one-shot answer back so the DSH Web UI stays in charge.
+                getLogger().warn(
+                  `[dsh] user-questions/request not relayable; delegating eventId=${frame.eventId}`,
+                );
+                this.delegateWaterfall(streamClientId, frame.eventId, signal);
+              }
+              continue;
+            }
             if (frame.event !== 'approval/request' || frame.agentId !== sessionId) {
               // Every owner answerer receives the waterfall. A non-owner of
               // the session must explicitly delegate, otherwise DSH waits.
-              void this.answerRemoteEvent(
-                streamClientId,
-                frame.eventId,
-                { kind: 'next' },
-                { signal },
-              ).catch((err: unknown) => {
-                if (!signal.aborted) {
-                  getLogger().warn(
-                    `[dsh] approval waterfall delegation failed eventId=${frame.eventId}: ${
-                      (err as Error).message
-                    }`,
-                  );
-                }
-              });
+              this.delegateWaterfall(streamClientId, frame.eventId, signal);
               continue;
             }
             const data = frame.request;
@@ -946,4 +968,54 @@ export class DshClient {
 /** Stable client-side prompt identity persisted on the accepted user message. */
 export function newPromptRequestId(): string {
   return `lark-remote-${randomUUID()}`;
+}
+
+/**
+ * Read the questions of one `user-questions/request` waterfall.
+ *
+ * Returns undefined when the batch cannot be answered through the Feishu card:
+ * malformed fields, or duplicate question texts — the approval coordinator
+ * keys answers by question text, so duplicates would answer the wrong one.
+ * The caller delegates such a batch back to the DSH Web UI.
+ */
+export function dshQuestionsOf(request: Record<string, unknown>): DshQuestion[] | undefined {
+  const raw = request.questions;
+  if (!Array.isArray(raw) || raw.length === 0) return undefined;
+  const questions: DshQuestion[] = [];
+  const seen = new Set<string>();
+  for (const item of raw) {
+    if (item === null || typeof item !== 'object' || Array.isArray(item)) return undefined;
+    const record = item as Record<string, unknown>;
+    const id = typeof record.id === 'string' ? record.id : '';
+    const text = typeof record.question === 'string' ? record.question : '';
+    if (!id || !text) return undefined;
+    if (seen.has(text)) return undefined;
+    seen.add(text);
+    const options: DshQuestionOption[] = [];
+    if (record.options !== undefined) {
+      if (!Array.isArray(record.options)) return undefined;
+      for (const rawOption of record.options) {
+        if (rawOption === null || typeof rawOption !== 'object' || Array.isArray(rawOption)) {
+          return undefined;
+        }
+        const option = rawOption as Record<string, unknown>;
+        const label = typeof option.label === 'string' ? option.label : '';
+        if (!label) return undefined;
+        options.push({
+          label,
+          ...(typeof option.description === 'string' && option.description
+            ? { description: option.description }
+            : {}),
+        });
+      }
+    }
+    questions.push({
+      id,
+      question: text,
+      ...(typeof record.header === 'string' && record.header ? { header: record.header } : {}),
+      ...(options.length > 0 ? { options } : {}),
+      ...(record.multiSelect === true ? { multiSelect: true } : {}),
+    });
+  }
+  return questions;
 }
