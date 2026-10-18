@@ -113,6 +113,13 @@ export class OpencodeAcpRunner extends BaseAcpRunner<OpencodeAcpTranslator> {
           terminal: false,
         },
       },
+      onConnected: (result) => {
+        const version = (result as { agentInfo?: { version?: string } } | undefined)?.agentInfo
+          ?.version;
+        if (version) {
+          getLogger().info(`[opencode-acp-runner] connected to OpenCode ${version}`);
+        }
+      },
     };
     super(
       {
@@ -236,6 +243,34 @@ export class OpencodeAcpRunner extends BaseAcpRunner<OpencodeAcpTranslator> {
     _response: unknown,
   ): unknown {
     return buildAcpPermissionOutcome(action, pending.options, OPENCODE_APPROVAL_KINDS);
+  }
+
+  /**
+   * opencode 2 is ACP client → shared background daemon. The daemon can be
+   * starting or still activating location plugins when the first session is
+   * created; both surface as a JSON-RPC internal error. Retry a few times
+   * before failing the turn.
+   */
+  protected override sessionSetupRetryDelaysMs(): number[] {
+    return [500, 1500, 3000];
+  }
+
+  protected override isRetryableSessionSetupError(err: unknown): boolean {
+    const message = err instanceof Error ? err.message : String(err);
+    return /ServiceUnavailableError|Location plugins did not finish activating|Internal service failure|ECONNREFUSED|fetch failed/i.test(
+      message,
+    );
+  }
+
+  protected override enrichSessionSetupError(err: unknown): Error {
+    if (!this.isRetryableSessionSetupError(err)) {
+      return super.enrichSessionSetupError(err);
+    }
+    const message = err instanceof Error ? err.message : String(err);
+    return new Error(
+      `opencode 2.0 后台服务不可用（${message}）。请在终端执行 \`opencode service restart\` 后重试。`,
+      { cause: err },
+    );
   }
 
   getStatusInfo(): AgentStatusInfo {

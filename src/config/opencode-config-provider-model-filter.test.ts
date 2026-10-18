@@ -28,11 +28,12 @@ describe('opencode-config provider-model filtering', () => {
     // 模块级 TTL 缓存会在测试间串状态，每个用例前清空
     invalidateOpencodeConfigCache();
     vi.clearAllMocks();
+    mockResolveExecutable.mockReturnValue({ kind: 'direct', file: '/usr/local/bin/opencode' });
   });
 
   describe('provider-model isolation', () => {
     it('should return only models for the specified provider', () => {
-      // Mock opencode models --verbose output
+      // Mock `opencode models` output (v1 and v2 print provider/model lines)
       mockSpawnSync.mockReturnValue({
         status: 0,
         stdout: `opencode/big-pickle
