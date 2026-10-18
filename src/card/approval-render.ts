@@ -485,9 +485,11 @@ function renderQuestionApproval(
   }
 
   if (expired) {
+    // 提问不是权限审批：过期后 agent 侧要么已按跳过继续、要么转由 Web UI
+    // 回答，统一文案不能写成「审批已过期」。
     elements.push({
       tag: 'div',
-      text: { tag: 'lark_md', content: '⏰ **审批已过期**' },
+      text: { tag: 'lark_md', content: '⏰ **提问已超时**' },
     });
     return elements;
   }

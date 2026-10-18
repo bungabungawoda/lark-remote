@@ -219,7 +219,30 @@ export type DshRemoteEventOutcome =
       error: { name: string; message: string; code?: string; details?: unknown };
     };
 
-/** Approval-related items yielded while consuming `$events`. */
+/** One option of a DSH `ask_user_question` prompt. */
+export interface DshQuestionOption {
+  label: string;
+  description?: string;
+}
+
+/** One question of a DSH `ask_user_question` prompt (`user-questions/request`). */
+export interface DshQuestion {
+  id: string;
+  question: string;
+  header?: string;
+  options?: DshQuestionOption[];
+  multiSelect?: boolean;
+}
+
+/** One answer item of the `$events/result` payload for a question waterfall. */
+export interface DshQuestionAnswer {
+  id: string;
+  selected: string[];
+  /** Free-text answer when the user picked none of the offered labels. */
+  custom?: string;
+}
+
+/** Approval/question items yielded while consuming `$events`. */
 export type DshApprovalStreamItem =
   | { kind: 'ready'; clientId: string }
   | {
@@ -229,6 +252,12 @@ export type DshApprovalStreamItem =
       toolName: string;
       callId?: string;
       reason?: string;
+    }
+  | {
+      kind: 'question';
+      eventId: string;
+      clientId: string;
+      questions: DshQuestion[];
     }
   | { kind: 'cancelled'; eventId: string }
   | { kind: 'unavailable'; message: string };
