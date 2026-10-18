@@ -10,10 +10,11 @@ import { currentPlatform, isWin32 } from '../../../src/platform/select.js';
 import { DshRunner } from './runner.js';
 import { DshApprovalTracker } from './approval.js';
 import { DshTranslator, mapUsage } from './translator.js';
+import { createInitialRunState, reduceRunState } from '../../../src/card/run-state.js';
 import { FakeDshServer } from '../../../tests/lib/fake-dsh-server.js';
 import { sleep, waitFor } from '../../../tests/lib/wait-for.js';
 import type { DshDaemon } from './daemon.js';
-import type { DshSessionEvent } from './types.js';
+import type { DshAssistantStreamFrame, DshSessionEvent } from './types.js';
 import type { AgentEvent, AgentSessionReader } from '../types.js';
 
 const CWD = '/home/user/project';
@@ -118,8 +119,49 @@ describe('DshTranslator', () => {
     const events = t.eventToAgentEvents(reasoningChunk('thinking...', 1), SID);
     expect(events[0]).toMatchObject({
       type: 'assistant',
-      message: { content: [{ type: 'thinking', thinking: 'thinking...' }] },
+      message: {
+        content: [{ type: 'thinking', thinking: 'thinking...', itemId: 'r:0:0' }],
+      },
     });
+  });
+
+  it('stamps live reasoning deltas with attempt+block itemId and concatenates verbatim', () => {
+    const liveChunk = (
+      delta: string,
+      index: number,
+      attemptId = 'att-1',
+    ): DshAssistantStreamFrame => ({
+      type: 'chunk',
+      attemptId,
+      chunk: { type: 'reasoning-delta', index, text: delta },
+    });
+
+    const t = new DshTranslator();
+    t.streamFrameToAgentEvents({ type: 'start', attemptId: 'att-1' }, SID);
+    const [first] = t.streamFrameToAgentEvents(liveChunk('The', 0), SID);
+    const [second] = t.streamFrameToAgentEvents(liveChunk(' file', 0), SID);
+    const [nextBlock] = t.streamFrameToAgentEvents(liveChunk(' then', 1), SID);
+
+    expect(first).toMatchObject({
+      type: 'assistant',
+      message: { content: [{ type: 'thinking', itemId: 'r:att-1:0' }] },
+    });
+    // 同一 reasoning block 的 token delta 共享 itemId。
+    expect(second).toMatchObject({
+      type: 'assistant',
+      message: { content: [{ type: 'thinking', itemId: 'r:att-1:0' }] },
+    });
+    // 换 block index → 换 itemId。
+    expect(nextBlock).toMatchObject({
+      type: 'assistant',
+      message: { content: [{ type: 'thinking', itemId: 'r:att-1:1' }] },
+    });
+
+    // 端到端缝：translator 输出 → reducer，正文逐字拼接、无注入换行。
+    let state = createInitialRunState('run-dsh-seam');
+    for (const ev of [first, second]) state = reduceRunState(state, ev);
+    const block = state.blocks[0];
+    expect(block?.kind === 'thinking' ? block.content : '').toBe('The file');
   });
 
   it('maps turn/end completed → success result', () => {

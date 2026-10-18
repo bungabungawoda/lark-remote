@@ -50,6 +50,9 @@ export class PiRpcTranslator {
   /** toolcall_start bookkeeping：占位不发事件，end 时补发完整 tool_use。 */
   private pendingToolCall = false;
 
+  /** 思考块序号：每条消息的每个 thinking 块一个稳定 itemId。 */
+  private thinkingSeq = 0;
+
   /** Provider failure (stopReason="error") on the final assistant message. */
   private lastAssistantStopReason: string | undefined;
   private lastAssistantErrorMessage: string | undefined;
@@ -229,9 +232,15 @@ export class PiRpcTranslator {
       this.lastAssistantStopReason = m.stopReason;
       this.lastAssistantErrorMessage = m.stopReason === 'error' ? m.errorMessage : undefined;
       if (m.usage) this.addUsage(m.usage);
+      // 块生产者职责：连续 thinking 块在这里合并并写入 '\n' 段落分隔，
+      // 再给每个块一个 itemId。run-state 只按 itemId 逐字追加，不猜分隔符。
+      const content = mergeConsecutiveThinking(this.content);
+      for (const block of content) {
+        if (block.type === 'thinking') block.itemId = `pi:${++this.thinkingSeq}`;
+      }
       const event: AgentEvent = {
         type: 'assistant',
-        message: { content: this.content },
+        message: { content },
         timestamp: new Date().toISOString(),
       };
       this.content = [];
@@ -336,4 +345,21 @@ export class PiRpcTranslator {
         break;
     }
   }
+}
+
+/**
+ * 合并同一消息内连续的 thinking 块（块间用 '\n'），保留其余内容顺序。
+ * 与 c0e1fb7 的“避免碎片化思考面板”决定一致。
+ */
+function mergeConsecutiveThinking(content: AssistantContent[]): AssistantContent[] {
+  const out: AssistantContent[] = [];
+  for (const block of content) {
+    const last = out[out.length - 1];
+    if (block.type === 'thinking' && last?.type === 'thinking') {
+      out[out.length - 1] = { ...last, thinking: `${last.thinking}\n${block.thinking}` };
+    } else {
+      out.push(block.type === 'thinking' ? { ...block } : block);
+    }
+  }
+  return out;
 }

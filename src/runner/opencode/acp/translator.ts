@@ -9,8 +9,10 @@
  * `props.delta` verbatim), so text/thinking chunks go straight onto the
  * `assistant` incremental channel — NO accumulation, NO turn_diff snapshot.
  * (Contrast kimi: same field is also a delta but kimi's contract accumulates
- * into turn_diff snapshots; both end with exactly one concatenation in
- * run-state, enforced by each side's seam test.)
+ * into turn_diff snapshots. Both end as verbatim text in run-state: the
+ * assistant channel appends deltas sharing one `itemId`, the snapshot channel
+ * replaces by itemId. opencode's `agent_thought_chunk.messageId`
+ * (`<msg>:reasoning:<ordinal>`) IS that block identity — pass it through.)
  *
  * Event mapping (source: opencode acp/service.ts + event.ts + tool.ts,
  * dev@1c965451b5):
@@ -79,7 +81,14 @@ export class OpencodeAcpTranslator extends BaseAcpTranslator {
       {
         type: 'assistant',
         message: {
-          content: [{ type: 'thinking', thinking: event.content.text }],
+          content: [
+            {
+              type: 'thinking',
+              thinking: event.content.text,
+              // 同一 reasoning part 的续写 delta 共享 messageId；换 part 才开新块。
+              ...(event.messageId !== undefined ? { itemId: event.messageId } : {}),
+            },
+          ],
         },
         timestamp: new Date().toISOString(),
       },

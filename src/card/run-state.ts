@@ -550,30 +550,31 @@ function reduceAssistantEvent(state: RunState, event: AgentEvent): RunState {
   let next = state;
   for (const content of event.message.content) {
     if (content.type === 'thinking') {
+      // 增量通道语义：chunk 边界是传输事实，不是文档结构。同一 itemId 的连续
+      // 内容是同一块的增量，逐字拼接；itemId 变化才开新块。不能用 '\n' 表示
+      // “来了新 delta”——DSH/opencode 的 reasoning delta 是 token 粒度。
       const last = next.blocks[next.blocks.length - 1];
-      const newBlocks =
-        last?.kind === 'thinking'
-          ? [
-              ...next.blocks.slice(0, -1),
-              {
-                kind: 'thinking' as const,
-                content: keepTailMarked(
-                  last.content + '\n' + content.thinking,
-                  MAX_REASONING_CHARS,
-                ),
-                active: true,
-                timestamp: last.timestamp ?? event.timestamp,
-              },
-            ]
-          : [
-              ...next.blocks,
-              {
-                kind: 'thinking' as const,
-                content: keepTailMarked(content.thinking, MAX_REASONING_CHARS),
-                active: true,
-                timestamp: event.timestamp,
-              },
-            ];
+      const prev = last?.kind === 'thinking' ? last : undefined;
+      const sameItem = prev !== undefined && prev.itemId === content.itemId;
+      const newBlocks = sameItem
+        ? [
+            ...next.blocks.slice(0, -1),
+            {
+              ...prev,
+              content: keepTailMarked(prev.content + content.thinking, MAX_REASONING_CHARS),
+              active: true,
+            },
+          ]
+        : [
+            ...markThinkingInactive(next.blocks),
+            {
+              kind: 'thinking' as const,
+              ...(content.itemId !== undefined ? { itemId: content.itemId } : {}),
+              content: keepTailMarked(content.thinking, MAX_REASONING_CHARS),
+              active: true,
+              timestamp: event.timestamp,
+            },
+          ];
       next = {
         ...next,
         blocks: keepLatestBlocks(newBlocks),

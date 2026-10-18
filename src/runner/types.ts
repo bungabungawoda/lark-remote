@@ -208,6 +208,15 @@ export interface ApprovalView {
 interface ThinkingContent {
   type: 'thinking';
   thinking: string;
+  /**
+   * 思考块身份。同一 itemId 的连续 `thinking` 内容是**同一块的增量**，run-state
+   * 逐字拼接（不插入任何分隔符）；itemId 变化才开启新块。缺省表示"续写当前块"
+   * （块生产者必须显式给 id，避免与上一块粘连）。
+   *
+   * 来源：opencode `agent_thought_chunk.messageId`（`<msg>:reasoning:<ordinal>`）、
+   * DSH `reasoning-delta` 的 attemptId+index、pi 每条消息的块序号。
+   */
+  itemId?: string;
 }
 
 interface TextContent {
