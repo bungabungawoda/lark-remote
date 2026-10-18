@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.6] - 2026-10-18
+
+### 新增
+
+- **DSH 的提问（`ask_user_question`）转写到飞书运行卡片**：agent 运行中提出的问题现在渲染成卡片底部的提问区——选项按钮（单选 ⚪/🔵、多选 ⬜/☑️）、「自定义答案（Other）」输入、多选时的「✅ 提交答案（已选 N 项）」，以及底部统一的「⏭️ 跳过回答」。回答按题目编码回 DSH。plan-review 那类把计划全文放在正文里的提问，卡片用折叠面板承载（超出字节预算时截断），不会让你在看不到计划的情况下做选择。飞书卡 30 分钟没人回答时只把这一路交回 DSH Web UI，不取消回合，卡片保留「可在 DSH Web UI 继续回答」的提示
+
+### 修复
+
+- **断线重连后重投的提问不再让勾选与答案错位**：同一个提问在 `$events` 重连后会被重新投递，此前协调器沿用旧一路的计时、已记录的答案也不会落到新视图，卡片上勾着的选项与真正将要提交的可能不是同一份。现在重投会重新计时并回填已记录的答案
+- **带前台期限（timed）的提问不再走飞书卡片**：它按自己的期限结算，卡片的 30 分钟窗口与它对不上，在卡片上答了也可能已被丢弃。现在这类提问直接交给 DSH Web UI 的倒计时处理
+- **没有选项的多选题不再变成答不了的卡片**：卡片上没有任何可勾内容、而答案编码又不接受多选，等于无解。现在按可作答的自由文本题处理
+
+### 变更
+
+- **英文文档补齐 DSH 部分**：`docs/en/architecture/design.md` 补上直连与凭据签发、审批与提问转写、压缩能力声明；`docs/en/usage.md` 补 `manageProcess` / `dshHome` / `dshCommand` / `startTimeoutMs` / `permissionPreset` 五项配置说明，并纠正一处过期说法——原先写着 `token` 可以在 `/config` 卡片里编辑，实际该字段早已移出卡片
+- **注释与发布条目整理**。无行为变化
+
 ## [0.5.5] - 2026-10-18
 
 ### 新增
