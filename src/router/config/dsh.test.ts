@@ -41,6 +41,15 @@ describe('DshConfigBuilder', () => {
     expect(fields[4].type).toBe('select');
   });
 
+  it('never renders the configured launch token in card fields', () => {
+    const builder = new DshConfigBuilder();
+    const cfg = dshConfig({ token: 'http://127.0.0.1:3080/?token=secret-token' });
+    const fields = builder.buildFields(cfg);
+
+    expect(fields.some((field) => field.key === 'agents.dsh.token')).toBe(false);
+    expect(JSON.stringify(fields)).not.toContain('secret-token');
+  });
+
   it('preset select offers fallback presets plus follow-default sentinel', () => {
     const builder = new DshConfigBuilder();
     const fields = builder.buildFields(config);
@@ -48,7 +57,7 @@ describe('DshConfigBuilder', () => {
     const options = preset.options as Array<{ text: string; value: string }>;
     expect(options[0]).toEqual({ text: '跟随服务端默认', value: '' });
     const values = options.map((o) => o.value);
-    expect(values).toEqual(['', 'standard', 'minimal', 'code', 'cordis']);
+    expect(values).toEqual(['', 'standard', 'minimal', 'ptc', 'cordis']);
   });
 
   it('model select offers fallback models plus follow-default sentinel', () => {
@@ -58,7 +67,7 @@ describe('DshConfigBuilder', () => {
     const options = model.options as Array<string | { text: string; value: string }>;
     const values = options.map((o) => (typeof o === 'string' ? o : o.value));
     expect(values).toContain('');
-    expect(values).toContain('deepseek-v4-flash');
+    expect(values).toContain('deepseek-flash');
     expect(values).toContain('deepseek-v4-pro');
   });
 
@@ -255,6 +264,36 @@ describe('DshConfigBuilder', () => {
       text: 'standard（标准模式）',
       value: 'standard',
     });
-    expect(fields[2].options as string[]).toContain('deepseek-v4-flash');
+    expect(fields[2].options as string[]).toContain('deepseek-flash');
+  });
+
+  it('passes credentialsFile through and keys the prefetch cache by it', async () => {
+    const seen: Array<{ baseUrl: string; token?: string; credentialsFile?: string }> = [];
+    const clientFactory = (
+      baseUrl: string,
+      token?: string,
+      credentialsFile?: string,
+    ): DshCatalogClient => {
+      seen.push({ baseUrl, token, credentialsFile });
+      return {
+        listModels: async () => ({ groups: [] }),
+        listPresets: async () => ({ presets: [] }),
+      };
+    };
+    const builder = new DshConfigBuilder(clientFactory);
+    await builder.prefetch('http://127.0.0.1:3080', undefined, '/tmp/a/.credentials.yaml');
+    await builder.prefetch('http://127.0.0.1:3080', undefined, '/tmp/b/.credentials.yaml');
+    expect(seen).toEqual([
+      {
+        baseUrl: 'http://127.0.0.1:3080',
+        token: undefined,
+        credentialsFile: '/tmp/a/.credentials.yaml',
+      },
+      {
+        baseUrl: 'http://127.0.0.1:3080',
+        token: undefined,
+        credentialsFile: '/tmp/b/.credentials.yaml',
+      },
+    ]);
   });
 });

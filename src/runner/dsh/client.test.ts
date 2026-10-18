@@ -1,19 +1,53 @@
 /**
- * DshClient WebSocket transport tests.
+ * DshClient transport tests.
  *
- * The real DSH `/api/events.mux` is a WebSocket upgrade endpoint. These tests
- * use synthetic fetches and a scripted WebSocket factory — no real sessions or
- * real network addresses.
+ * DSH 0.2.x requires a token→cookie handshake and serves live session data as
+ * logical streams over `/api/remote.mux`. These tests use synthetic fetches and
+ * a scripted WebSocket factory — no real sessions or network addresses.
  */
 
-import { describe, expect, it } from 'vitest';
-import { DshClient, type WebSocketFactory } from './client.js';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import YAML from 'yaml';
+import { afterEach, describe, expect, it } from 'vitest';
+import { DshClient, extractDshToken, type WebSocketFactory, type WebSocketLike } from './client.js';
+import { DSH_BROWSER_CREDENTIAL_KEY } from './auth.js';
 import { DshRunner } from './runner.js';
 import type { AgentSessionReader, AgentEvent } from '../types.js';
-import type { DshServerRequest, DshSessionEvent } from './types.js';
+import type { DshFollowFrame, DshSessionEvent } from './types.js';
 
 const CWD = '/home/user/project';
 const SID = 'aaaaaaaa-1111-2222-3333-444444444444';
+const NO_CREDENTIALS_FILE = '/nonexistent/lark-remote-test/.credentials.yaml';
+const tempDirs: string[] = [];
+
+afterEach(() => {
+  for (const dir of tempDirs.splice(0)) {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+function credentialsFile(secret: Buffer): string {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'lark-remote-dsh-client-'));
+  tempDirs.push(dir);
+  const file = path.join(dir, '.credentials.yaml');
+  fs.writeFileSync(
+    file,
+    YAML.stringify({
+      version: 1,
+      records: {
+        [DSH_BROWSER_CREDENTIAL_KEY]: {
+          kind: 'grant',
+          payload: { version: 1, secret: secret.toString('base64url') },
+        },
+      },
+    }),
+    { mode: 0o600 },
+  );
+  if (process.platform !== 'win32') fs.chmodSync(file, 0o600);
+  return file;
+}
 
 const stubReader: AgentSessionReader = {
   listSessions: () => ({ sessions: [], total: 0 }),
@@ -21,15 +55,6 @@ const stubReader: AgentSessionReader = {
   readSessionContent: () => ({ events: [] }),
   isSessionActive: () => false,
 };
-
-function textChunk(delta: string, seq: number): DshSessionEvent {
-  return {
-    type: 'assistant/chunk',
-    seq,
-    time: 1700000000000,
-    data: { turn: 1, step: 1, chunk: { type: 'text-delta', index: 0, text: delta } },
-  };
-}
 
 function turnEnd(reason: string, seq: number): DshSessionEvent {
   return {
@@ -40,27 +65,60 @@ function turnEnd(reason: string, seq: number): DshSessionEvent {
   };
 }
 
-function frame(method: string, payload: unknown): DshServerRequest {
+function textDelta(delta: string): DshFollowFrame {
   return {
-    type: 'server-request',
-    rpcId: `mux-${Math.random().toString(36).slice(2)}`,
-    method,
-    payload,
+    type: 'assistant-stream',
+    frame: {
+      type: 'chunk',
+      time: 1700000000000,
+      chunk: { type: 'text-delta', index: 0, text: delta },
+    },
   };
 }
 
-class ScriptedWebSocket {
+/** A WebSocket that answers `open` with scripted follow frames. */
+class ScriptedWebSocket implements WebSocketLike {
+  onopen: ((event: unknown) => void) | null = null;
   onmessage: ((event: { data: unknown }) => void) | null = null;
   onerror: ((event: unknown) => void) | null = null;
   onclose: ((event: unknown) => void) | null = null;
+  onunexpectedresponse: ((event: { statusCode?: number }) => void) | null = null;
+  readonly sent: string[] = [];
 
   constructor(
     readonly url: string,
-    readonly messages: DshServerRequest[],
+    readonly frames: DshFollowFrame[],
+    readonly closeAfterSend = true,
+    readonly handshakeStatus?: number,
   ) {
     setTimeout(() => {
-      for (const message of messages) this.onmessage?.({ data: JSON.stringify(message) });
-      this.onclose?.({});
+      if (this.handshakeStatus !== undefined) {
+        this.onunexpectedresponse?.({ statusCode: this.handshakeStatus });
+      } else {
+        this.onopen?.({});
+      }
+    }, 0);
+  }
+
+  send(data: string): void {
+    this.sent.push(data);
+    const message = JSON.parse(data) as { type: string; streamId: string };
+    if (message.type !== 'open') return;
+    setTimeout(() => {
+      for (const frame of this.frames) {
+        this.onmessage?.({
+          data: JSON.stringify({
+            type: 'item',
+            streamId: message.streamId,
+            value: frame,
+          }),
+        });
+      }
+      if (this.closeAfterSend) {
+        this.onmessage?.({
+          data: JSON.stringify({ type: 'end', streamId: message.streamId }),
+        });
+      }
     }, 0);
   }
 
@@ -81,49 +139,222 @@ function jsonResponse(value: unknown): Response {
   } as unknown as Response;
 }
 
-describe('DshClient WebSocket mux fallback', () => {
-  it('switches from HTTP 426 to WebSocket and consumes live session events', async () => {
-    let muxGetCalls = 0;
-    let webSocketCreated = 0;
+describe('DshClient auth', () => {
+  it('extracts the token from a pasted dsh web URL', () => {
+    expect(extractDshToken('http://127.0.0.1:3080/?token=abc')).toBe('abc');
+    expect(extractDshToken('?token=abc')).toBe('abc');
+    expect(extractDshToken('abc')).toBe('abc');
+    expect(extractDshToken(undefined)).toBe('');
+  });
 
+  it('bootstraps a v1 cookie from the launch token and sends it on unary + WebSocket calls', async () => {
+    const calls: string[] = [];
+    const cookies: Array<string | undefined> = [];
     const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
-      if (init?.method === 'GET' && url.endsWith('/api/events.mux')) {
-        muxGetCalls++;
-        return {
-          ok: false,
-          status: 426,
-          body: null,
-        } as unknown as Response;
+      calls.push(url);
+      if (url.includes('/?token=')) {
+        expect(url).toContain('token=abc');
+        return new Response(null, {
+          status: 303,
+          headers: { 'set-cookie': 'dsh-auth-127.0.0.1:3080=v1.operator; Path=/; HttpOnly' },
+        });
       }
-
-      const method = url.split('/').pop() ?? '';
-      if (method === 'session.history') return jsonResponse({ events: [] });
-      if (method === 'session.prompt') return jsonResponse({ accepted: true });
-      if (method === 'session.cancel') return jsonResponse({ accepted: true });
-      throw new Error(`unexpected unary ${method}`);
+      const headers = (init?.headers ?? {}) as Record<string, string>;
+      cookies.push(headers.cookie);
+      if (url.endsWith('/api/session/create')) return jsonResponse({ sessionId: SID });
+      return jsonResponse({});
     }) as typeof fetch;
-
-    const webSocketImpl: WebSocketFactory = (url) => {
-      webSocketCreated++;
+    const wsCookies: Array<string | undefined> = [];
+    const webSocketImpl: WebSocketFactory = (url, options) => {
+      wsCookies.push(options?.headers?.cookie);
       return new ScriptedWebSocket(url, [
-        frame('session/subscribed', {
-          type: 'session/subscribed',
-          sessionId: SID,
-          lastSeq: 0,
-        }),
-        frame('session/event', {
-          type: 'session/event',
-          sessionId: SID,
-          event: textChunk('live websocket ', 1),
-        }),
-        frame('session/event', {
-          type: 'session/event',
-          sessionId: SID,
-          event: turnEnd('completed', 2),
-        }),
+        { type: 'snapshot', cursor: -1, records: [] },
+        textDelta('hi'),
+        { type: 'event', event: turnEnd('completed', 2) },
       ]);
     };
+    const client = new DshClient('http://127.0.0.1:3080', {
+      token: 'http://127.0.0.1:3080/?token=abc',
+      credentialsFile: NO_CREDENTIALS_FILE,
+      fetchImpl,
+      webSocketImpl,
+    });
+
+    await client.createSession({ cwd: CWD });
+    const items = [];
+    for await (const item of client.sessionEvents(SID, new AbortController().signal)) {
+      items.push(item);
+    }
+
+    expect(calls[0]).toContain('/?token=abc');
+    expect(cookies.every((c) => c?.includes('dsh-auth-127.0.0.1:3080=v1.operator'))).toBe(true);
+    expect(wsCookies[0]).toContain('dsh-auth-127.0.0.1:3080=v1.operator');
+    expect(items.map((i) => i.kind)).toEqual(['assistant-stream', 'event']);
+  });
+
+  it('surfaces an invalid token instead of retrying forever', async () => {
+    const fetchImpl = (async (input: RequestInfo | URL) => {
+      if (String(input).includes('/?token=')) {
+        return new Response('unauthorized', { status: 401 });
+      }
+      return new Response('unauthorized', { status: 401 });
+    }) as typeof fetch;
+    const client = new DshClient('http://127.0.0.1:3080', {
+      token: 'bad',
+      credentialsFile: NO_CREDENTIALS_FILE,
+      fetchImpl,
+    });
+    await expect(client.createSession({ cwd: CWD })).rejects.toThrow(/401/);
+  });
+
+  it('reports the missing-token 401 with configuration guidance', async () => {
+    const fetchImpl = (async () => new Response('unauthorized', { status: 401 })) as typeof fetch;
+    const client = new DshClient('http://127.0.0.1:3080', {
+      credentialsFile: NO_CREDENTIALS_FILE,
+      fetchImpl,
+    });
+    await expect(client.createSession({ cwd: CWD })).rejects.toThrow(/凭据文件|token/);
+  });
+
+  it('mints a fresh v1 cookie from the durable DSH credentials file', async () => {
+    const file = credentialsFile(Buffer.alloc(32, 1));
+    const cookies: Array<string | undefined> = [];
+    const urls: string[] = [];
+    const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      urls.push(String(input));
+      cookies.push(((init?.headers ?? {}) as Record<string, string>).cookie);
+      return jsonResponse({ sessionId: SID });
+    }) as typeof fetch;
+    const client = new DshClient('http://127.0.0.1:3080', {
+      credentialsFile: file,
+      now: () => 1_700_000_000_000,
+      fetchImpl,
+    });
+
+    await client.createSession({ cwd: CWD });
+    fs.writeFileSync(
+      file,
+      YAML.stringify({
+        version: 1,
+        records: {
+          [DSH_BROWSER_CREDENTIAL_KEY]: {
+            kind: 'grant',
+            payload: { version: 1, secret: Buffer.alloc(32, 2).toString('base64url') },
+          },
+        },
+      }),
+      { mode: 0o600 },
+    );
+    await client.createSession({ cwd: CWD });
+
+    expect(urls.every((url) => url.endsWith('/api/session/create'))).toBe(true);
+    expect(cookies[0]).toContain('=v1.');
+    expect(cookies[1]).toContain('=v1.');
+    expect(cookies[1]).not.toBe(cookies[0]);
+  });
+});
+
+describe('DshClient remote mux', () => {
+  it('refreshes auth and reconnects once when the WebSocket handshake returns 401', async () => {
+    const fetchImpl = (async (input: RequestInfo | URL) => {
+      expect(String(input)).toContain('/?token=abc');
+      return new Response(null, {
+        status: 303,
+        headers: { 'set-cookie': 'dsh-auth-127.0.0.1:3080=v1.operator; Path=/; HttpOnly' },
+      });
+    }) as typeof fetch;
+    let socketCount = 0;
+    const client = new DshClient('http://127.0.0.1:3080', {
+      token: 'abc',
+      credentialsFile: NO_CREDENTIALS_FILE,
+      fetchImpl,
+      webSocketImpl: (url) => {
+        socketCount++;
+        return new ScriptedWebSocket(
+          url,
+          [{ type: 'event', event: turnEnd('completed', 1) }],
+          true,
+          socketCount === 1 ? 401 : undefined,
+        );
+      },
+    });
+
+    const events = [];
+    for await (const item of client.sessionEvents(SID, new AbortController().signal)) {
+      events.push(item);
+    }
+
+    expect(socketCount).toBe(2);
+    expect(events).toHaveLength(1);
+  });
+
+  it('consumes follow snapshot events and assistant deltas, then stops on turn/end', async () => {
+    const fetchImpl = (async () => jsonResponse({})) as typeof fetch;
+    const client = new DshClient('http://127.0.0.1:3080', {
+      credentialsFile: NO_CREDENTIALS_FILE,
+      fetchImpl,
+      webSocketImpl: () =>
+        new ScriptedWebSocket('ws://127.0.0.1:3080/api/remote.mux', [
+          { type: 'snapshot', cursor: 0, records: [] },
+          textDelta('first '),
+          textDelta('second'),
+          { type: 'event', event: turnEnd('completed', 1) },
+        ]),
+    });
+    const text: string[] = [];
+    for await (const item of client.sessionEvents(SID, new AbortController().signal)) {
+      if (item.kind === 'assistant-stream') {
+        const chunk = item.frame.chunk as { type?: string; text?: string };
+        if (chunk?.type === 'text-delta' && chunk.text) text.push(chunk.text);
+      }
+    }
+    expect(text).toEqual(['first ', 'second']);
+  });
+
+  it('dedups replayed snapshot events by seq', async () => {
+    const fetchImpl = (async () => jsonResponse({})) as typeof fetch;
+    const client = new DshClient('http://127.0.0.1:3080', {
+      credentialsFile: NO_CREDENTIALS_FILE,
+      fetchImpl,
+      webSocketImpl: () =>
+        new ScriptedWebSocket('ws://127.0.0.1:3080/api/remote.mux', [
+          {
+            type: 'snapshot',
+            cursor: 1,
+            records: [{ type: 'event', event: turnEnd('completed', 1) }],
+          },
+          { type: 'event', event: turnEnd('completed', 2) },
+        ]),
+    });
+    const seen: number[] = [];
+    for await (const item of client.sessionEvents(SID, new AbortController().signal, 1)) {
+      if (item.kind === 'event') seen.push(item.event.seq);
+    }
+    expect(seen).toEqual([2]);
+  });
+});
+
+describe('DshRunner over remote mux', () => {
+  it('runs a full turn to success with init → deltas → result', async () => {
+    const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith('/api/session/projections')) return jsonResponse({ asOfSeq: 0 });
+      if (url.endsWith('/api/session/prompt')) {
+        const body = JSON.parse(String(init?.body)) as {
+          payload: { args: { request: { requestId: string } } };
+        };
+        expect(body.payload.args.request.requestId).toMatch(/^lark-remote-/);
+        return jsonResponse({ accepted: true });
+      }
+      return jsonResponse({ accepted: true });
+    }) as typeof fetch;
+    const webSocketImpl: WebSocketFactory = () =>
+      new ScriptedWebSocket('ws://127.0.0.1:3080/api/remote.mux', [
+        { type: 'snapshot', cursor: 0, records: [] },
+        textDelta('live websocket '),
+        { type: 'event', event: turnEnd('completed', 2) },
+      ]);
 
     const runner = new DshRunner({
       kind: 'dsh',
@@ -134,46 +365,18 @@ describe('DshClient WebSocket mux fallback', () => {
     });
 
     const events = await collect(runner.run('live question', { cwd: CWD, sessionId: SID }));
-    const texts = events
+    expect(events.find((e) => e.type === 'system' && e.subtype === 'init')).toMatchObject({
+      session_id: SID,
+      cwd: CWD,
+    });
+    const text = events
       .filter((e) => e.type === 'assistant')
       .map((e) => e.message.content.find((c) => c.type === 'text'))
       .filter((c): c is { type: 'text'; text: string } => !!c)
-      .map((c) => c.text);
-
-    expect(texts).toEqual(['live websocket ']);
+      .map((c) => c.text)
+      .join('');
+    expect(text).toBe('live websocket ');
     expect(events.find((e) => e.type === 'result')).toMatchObject({ subtype: 'success' });
-    expect(muxGetCalls).toBe(1);
-    expect(webSocketCreated).toBe(1);
-  });
-
-  it('parses only server-request envelopes from WebSocket messages', async () => {
-    const client = new DshClient('http://127.0.0.1:3080', fetch, (url) => {
-      return new ScriptedWebSocket(url, [
-        frame('session/subscribed', { type: 'session/subscribed', sessionId: SID }),
-        frame('session/event', {
-          type: 'session/event',
-          sessionId: SID,
-          event: textChunk('first ', 1),
-        }),
-        frame('session/event', {
-          type: 'session/event',
-          sessionId: SID,
-          event: textChunk('second', 2),
-        }),
-      ]);
-    });
-
-    const seen: DshServerRequest[] = [];
-    for await (const item of client.muxWebSocket(new AbortController().signal)) {
-      seen.push(item);
-    }
-
-    expect(seen.map((f) => f.method)).toEqual([
-      'session/subscribed',
-      'session/event',
-      'session/event',
-    ]);
-    expect(seen[1].payload).toMatchObject({ type: 'session/event', sessionId: SID });
   });
 });
 
@@ -191,7 +394,10 @@ describe('DshClient config-plane unary methods', () => {
       });
     }) as typeof fetch;
 
-    const client = new DshClient('http://127.0.0.1:3080', fetchImpl);
+    const client = new DshClient('http://127.0.0.1:3080', {
+      credentialsFile: NO_CREDENTIALS_FILE,
+      fetchImpl,
+    });
     const selected = await client.selectModel({
       sessionId: SID,
       provider: 'deepseek-official',
@@ -199,12 +405,16 @@ describe('DshClient config-plane unary methods', () => {
       reasoningEffort: 'max',
     });
     expect(posted).toMatchObject({
-      method: 'session.selectModel',
+      method: 'session/selectModel',
       payload: {
-        sessionId: SID,
-        provider: 'deepseek-official',
-        model: 'deepseek-v4-pro',
-        reasoningEffort: 'max',
+        args: {
+          request: {
+            sessionId: SID,
+            provider: 'deepseek-official',
+            model: 'deepseek-v4-pro',
+            reasoningEffort: 'max',
+          },
+        },
       },
     });
     expect(selected).toEqual({
@@ -214,7 +424,8 @@ describe('DshClient config-plane unary methods', () => {
     });
   });
 
-  it('listModels returns the model catalog groups', async () => {
+  it('listModels uses session/modelCatalog and returns groups', async () => {
+    let method = '';
     const catalog = {
       groups: [
         {
@@ -225,31 +436,49 @@ describe('DshClient config-plane unary methods', () => {
       ],
       failures: [],
     };
-    const fetchImpl = (async () => jsonResponse(catalog)) as typeof fetch;
-    const client = new DshClient('http://127.0.0.1:3080', fetchImpl);
+    const fetchImpl = (async (input: RequestInfo | URL) => {
+      method = String(input).split('/api/')[1] ?? '';
+      return jsonResponse(catalog);
+    }) as typeof fetch;
+    const client = new DshClient('http://127.0.0.1:3080', {
+      credentialsFile: NO_CREDENTIALS_FILE,
+      fetchImpl,
+    });
     const value = await client.listModels();
+    expect(method).toBe('session/modelCatalog');
     expect(value.groups[0].models[0].id).toBe('deepseek-v4-flash');
   });
 
-  it('listPresets returns preset entries', async () => {
+  it('listPresets uses agentPresets/list', async () => {
+    let method = '';
     const value = {
       presets: [{ id: 'code', trust: 'system', isDefault: false, name: 'PTC 模式' }],
-      authorable: false,
-      hasDocument: false,
     };
-    const fetchImpl = (async () => jsonResponse(value)) as typeof fetch;
-    const client = new DshClient('http://127.0.0.1:3080', fetchImpl);
+    const fetchImpl = (async (input: RequestInfo | URL) => {
+      method = String(input).split('/api/')[1] ?? '';
+      return jsonResponse(value);
+    }) as typeof fetch;
+    const client = new DshClient('http://127.0.0.1:3080', {
+      credentialsFile: NO_CREDENTIALS_FILE,
+      fetchImpl,
+    });
     const result = await client.listPresets();
+    expect(method).toBe('agentPresets/list');
     expect(result.presets[0].id).toBe('code');
   });
 
   it('createSession passes agentPreset through', async () => {
     const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
       const posted = JSON.parse(String(init?.body)) as { payload: unknown };
-      expect(posted.payload).toEqual({ cwd: CWD, agentPreset: 'code' });
+      expect(posted.payload).toEqual({
+        args: { request: { cwd: CWD, agentPreset: 'code' } },
+      });
       return jsonResponse({ sessionId: SID, agentPreset: 'code' });
     }) as typeof fetch;
-    const client = new DshClient('http://127.0.0.1:3080', fetchImpl);
+    const client = new DshClient('http://127.0.0.1:3080', {
+      credentialsFile: NO_CREDENTIALS_FILE,
+      fetchImpl,
+    });
     const created = await client.createSession({ cwd: CWD, agentPreset: 'code' });
     expect(created).toEqual({ sessionId: SID, agentPreset: 'code' });
   });

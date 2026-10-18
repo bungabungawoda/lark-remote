@@ -1,11 +1,12 @@
 /**
  * DshConfigBuilder — /config card fields for the DSH agent.
  *
- * DSH (DeepSeek Harness) is an HTTP-only agent. Beyond the Web Host base URL it
- * exposes three runtime-configurable knobs — preset, model, reasoning effort.
+ * DSH (DeepSeek Harness) is an HTTP-only agent. The card exposes the Web Host
+ * base URL plus preset/model/reasoning-effort knobs. The launch token is a
+ * YAML-only fallback and is never rendered or saved through the card.
  *
  * 清单来源分两期：
- * - 动态清单（当前实现）：打开 /config 前通过 `llm.models` / `agentPreset.list`
+ * - 动态清单（当前实现）：打开 /config 前通过 `session/modelCatalog` / `agentPresets/list`
  *   预取（Router 调 `prefetch()`），失败/离线回退下方固定兜底清单，卡不依赖
  *   DSH 服务在线。
  * - 三个可选字段用空字符串哨兵表示「跟随服务端默认」：select 的 value `''`
@@ -25,18 +26,18 @@ export interface DshCatalogClient {
   listPresets(): Promise<DshPresetListValue>;
 }
 
-/** 固定兜底 preset 清单（DSH rc.7 实测；动态拉取失败时使用）。 */
+/** 固定兜底 preset 清单（DSH 0.2.x 实测；动态拉取失败时使用）。 */
 const FALLBACK_PRESET_OPTIONS: SelectOption[] = [
   { text: 'standard（标准模式）', value: 'standard' },
   { text: 'minimal（极简模式）', value: 'minimal' },
-  { text: 'code（PTC 模式）', value: 'code' },
+  { text: 'ptc（PTC 模式）', value: 'ptc' },
   { text: 'cordis（创造模式）', value: 'cordis' },
 ];
 
-/** 固定兜底模型清单（DSH rc.7 实测；动态拉取失败时使用）。 */
-const FALLBACK_MODEL_OPTIONS = ['deepseek-v4-flash', 'deepseek-v4-pro'];
+/** 固定兜底模型清单（DSH 0.2.x 实测；动态拉取失败时使用）。 */
+const FALLBACK_MODEL_OPTIONS = ['deepseek-flash', 'deepseek-v4-pro'];
 
-/** 固定兜底推理档位（llm.models 实际档位；动态拉取失败时使用）。 */
+/** 固定兜底推理档位（session/modelCatalog 实际档位；动态拉取失败时使用）。 */
 const FALLBACK_EFFORT_OPTIONS = ['off', 'low', 'high', 'max'] as const;
 
 /** 「跟随服务端默认」哨兵值：select value 用空串，保存时转 undefined 删除键。 */
@@ -48,23 +49,32 @@ export class DshConfigBuilder implements AgentConfigCardBuilder {
   private modelCatalog: DshModelCatalogValue | undefined;
   private presets: DshPresetListValue | undefined;
   /** 可注入 client 工厂（测试用）；默认生产实现。 */
-  private readonly clientFactory: (baseUrl: string) => DshCatalogClient;
+  private readonly clientFactory: (
+    baseUrl: string,
+    token?: string,
+    credentialsFile?: string,
+  ) => DshCatalogClient;
 
-  constructor(clientFactory?: (baseUrl: string) => DshCatalogClient) {
-    this.clientFactory = clientFactory ?? ((base) => new DshClient(base));
+  constructor(
+    clientFactory?: (baseUrl: string, token?: string, credentialsFile?: string) => DshCatalogClient,
+  ) {
+    this.clientFactory =
+      clientFactory ??
+      ((base, token, credentialsFile) => new DshClient(base, { token, credentialsFile }));
   }
 
   /** 异步预取模型/预设目录（§4.2 二期动态清单）。失败/离线静默回退固定兜底清单，
    *  卡不依赖 DSH 服务在线；同一 host 只拉一次，避免每次刷卡重复请求。 */
-  async prefetch(host?: string): Promise<void> {
+  async prefetch(host?: string, token?: string, credentialsFile?: string): Promise<void> {
     const base = (host ?? DEFAULT_DSH_HOST).replace(/\/$/, '');
-    if (!base || base === this.prefetchHost) return;
-    const client = this.clientFactory(base);
+    const key = `${base}\u0000${token ?? ''}\u0000${credentialsFile ?? ''}`;
+    if (!base || key === this.prefetchHost) return;
+    const client = this.clientFactory(base, token, credentialsFile);
     try {
       this.modelCatalog = await client.listModels();
     } catch (err) {
       getLogger().warn(
-        `[dsh-config] llm.models prefetch failed (falling back to fixed catalog): ${(err as Error).message}`,
+        `[dsh-config] session/modelCatalog prefetch failed (falling back to fixed catalog): ${(err as Error).message}`,
       );
       this.modelCatalog = undefined;
     }
@@ -72,11 +82,11 @@ export class DshConfigBuilder implements AgentConfigCardBuilder {
       this.presets = await client.listPresets();
     } catch (err) {
       getLogger().warn(
-        `[dsh-config] agentPreset.list prefetch failed (falling back to fixed presets): ${(err as Error).message}`,
+        `[dsh-config] agentPresets/list prefetch failed (falling back to fixed presets): ${(err as Error).message}`,
       );
       this.presets = undefined;
     }
-    this.prefetchHost = base;
+    this.prefetchHost = key;
   }
 
   /** 同步注入 catalog/presets（测试用，替代异步 prefetch；标记 prefetchHost 使
@@ -87,7 +97,7 @@ export class DshConfigBuilder implements AgentConfigCardBuilder {
     this.prefetchHost = 'injected';
   }
 
-  /** 展平 llm.models 各 provider group 的模型 id；无 catalog 时回退固定清单。 */
+  /** 展平 session/modelCatalog 各 provider group 的模型 id；无 catalog 时回退固定清单。 */
   private modelOptions(): readonly string[] {
     if (this.modelCatalog) {
       const ids = this.modelCatalog.groups.flatMap((g) => g.models.map((m) => m.id));
