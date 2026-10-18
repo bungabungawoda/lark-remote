@@ -201,6 +201,17 @@ export type AgentKind = (typeof AGENT_KINDS)[number];
 仍只有 5 个，带 dsh 的卡片会静默退回 defaultAgent（用错 reader → 「未找到 session」）。
 不要在别处再抄一份 agent 名单；测试里的 stub registry 也一样走 `AGENT_KINDS`。
 
+同一文件里的 `COMPACT_CAPABILITY` 也必须填这一项（`Record<AgentKind, boolean>`，缺项直接
+编译失败）——这就是「本 agent 能不能压缩」的唯一声明点：
+
+- runner 实现了 `runCompact(message, opts)` → 填 `true`；
+- 协议没有压缩入口 → 填 `false`，并在此文件说明原因。
+
+声明与实现不一致会被 `src/runner/runner-structure.test.ts` 的矩阵用例打出，bridge 运行时会打
+`compact capability mismatch` error 日志。历史上 compact 能力只靠 `'runCompact' in runner`
+鸭子探测，dsh 接入时漏了实现 → run 卡片整个不渲染按钮，没有报错、没有置灰、没有测试失败
+（2026-10-17）。
+
 ### 步骤 10: 在配置函数添加分支
 
 在 `src/runner/resolve-agent-choices.ts` 的 `resolveAgentChoices` 函数的 switch 语句中添加：

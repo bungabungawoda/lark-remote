@@ -39,6 +39,8 @@ export class FakeDshServer {
   readonly server: Server;
   private readonly unaryHandlers = new Map<string, FakeUnaryHandler>();
   private muxFrames: Array<object | { close: true }> = [];
+  private eventFrames: Array<object | { close: true }> = [];
+  private eventStreamError: string | undefined;
   private historyValue: unknown = { records: [], hasMore: false };
   private historySequence: unknown[] = [];
   private projectionValue: unknown = { asOfSeq: 0, values: {} };
@@ -214,6 +216,20 @@ export class FakeDshServer {
     this.muxFrames.push(frame);
   }
 
+  setEventFrames(frames: Array<object | { close: true }>): void {
+    this.eventFrames = frames;
+  }
+
+  /** Append a `$events` frame at response time (waterfall/cancel/close). */
+  pushEventFrame(frame: object | { close: true }): void {
+    this.eventFrames.push(frame);
+  }
+
+  /** Reject the next `$events` open with a Gateway stream error. */
+  setEventStreamError(code: string): void {
+    this.eventStreamError = code;
+  }
+
   setHistoryValue(value: unknown): void {
     this.historyValue = value;
   }
@@ -292,6 +308,49 @@ export class FakeDshServer {
       }
       if (message.type !== 'open' || !message.streamId) return;
       streamId = message.streamId;
+      if (message.endpoint === '$events') {
+        if (this.eventStreamError) {
+          ws.send(
+            JSON.stringify({
+              type: 'error',
+              streamId,
+              error: {
+                code: this.eventStreamError,
+                message: 'approval event stream unavailable',
+                details: {},
+              },
+            }),
+          );
+          return;
+        }
+        ws.send(
+          JSON.stringify({
+            type: 'item',
+            streamId,
+            value: {
+              type: 'ready',
+              clientId: `fake-client-${this.closedConnections}`,
+              host: { home: '/home/user' },
+            },
+          }),
+        );
+        timer = setInterval(() => {
+          if (ws.readyState !== ws.OPEN) {
+            stopTimer();
+            return;
+          }
+          const item = this.eventFrames.shift();
+          if (item === undefined) return;
+          if ('close' in item && item.close === true) {
+            stopTimer();
+            ws.send(JSON.stringify({ type: 'end', streamId }));
+            ws.close();
+            return;
+          }
+          ws.send(JSON.stringify({ type: 'item', streamId, value: item }));
+        }, 5);
+        return;
+      }
       const sessionId = message.payload?.args?.address?.sessionId ?? '';
       const history =
         this.historySequence.length > 0
@@ -325,10 +384,7 @@ export class FakeDshServer {
           return;
         }
         const item = this.muxFrames.shift();
-        if (item === undefined) {
-          stopTimer();
-          return;
-        }
+        if (item === undefined) return;
         if ('close' in item && item.close === true) {
           stopTimer();
           ws.send(JSON.stringify({ type: 'end', streamId }));

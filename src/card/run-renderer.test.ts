@@ -75,6 +75,29 @@ describe('renderRunCard', () => {
     expectNoV1ActionContainer(serialized);
   });
 
+  it('renders an agent-agnostic approval scope note', () => {
+    let state = createInitialRunState('run-approval-note');
+    state = reduceRunState(state, {
+      type: 'approval_requested',
+      requestId: 'appr-1',
+      kind: 'command',
+      threadId: 'th-dsh-1',
+      turnId: 'tn-dsh-1',
+      itemId: 'call-1',
+      view: {
+        requestId: 'appr-1',
+        kind: 'command',
+        command: 'echo hi',
+        availableDecisions: ['accept', 'decline'],
+        note: '仅放行这一次调用；不会改变会话权限预设。',
+      },
+    } as never);
+
+    const serialized = JSON.stringify(renderRunCard(state));
+    expect(serialized).toContain('仅放行这一次调用');
+    expectNoV1ActionContainer(serialized);
+  });
+
   it('test_anchor_command_approval_neutralizes_backticks', () => {
     // 命令里的反引号会提前终止 lark_md 行内代码 span，奇数次
     // 反引号极易触发 11311 解析错误导致整卡失败——必须中和后再展示。

@@ -8,12 +8,13 @@
 import { describe, it, expect, afterEach } from 'vitest';
 import { currentPlatform, isWin32 } from '../../../src/platform/select.js';
 import { DshRunner } from './runner.js';
+import { DshApprovalTracker } from './approval.js';
 import { DshTranslator, mapUsage } from './translator.js';
 import { FakeDshServer } from '../../../tests/lib/fake-dsh-server.js';
-import { waitFor } from '../../../tests/lib/wait-for.js';
+import { sleep, waitFor } from '../../../tests/lib/wait-for.js';
 import type { DshDaemon } from './daemon.js';
 import type { DshSessionEvent } from './types.js';
-import type { AgentSessionReader } from '../types.js';
+import type { AgentEvent, AgentSessionReader } from '../types.js';
 
 const CWD = '/home/user/project';
 const SID = 'aaaaaaaa-1111-2222-3333-444444444444';
@@ -59,6 +60,35 @@ function turnEnd(reason: string, seq: number): DshSessionEvent {
     seq,
     time: 1700000000000,
     data: { turn: 0, reason: { kind: reason } },
+  };
+}
+
+function toolCall(
+  callId: string,
+  name: string,
+  args: Record<string, unknown>,
+  seq: number,
+): DshSessionEvent {
+  return {
+    type: 'tool/call',
+    seq,
+    time: 1700000000000,
+    data: { turn: 1, step: 1, callId, name, arguments: JSON.stringify(args) },
+  };
+}
+
+function approvalAsked(
+  approvalId: string,
+  callId: string,
+  toolName: string,
+  reason: string,
+  seq: number,
+): DshSessionEvent {
+  return {
+    type: 'approval/asked',
+    seq,
+    time: 1700000000000,
+    data: { id: approvalId, toolName, callId, reason },
   };
 }
 
@@ -166,6 +196,27 @@ describe('DshTranslator', () => {
       cache_creation_tokens: 7,
       total_tokens: 22,
     });
+  });
+});
+
+describe('DshApprovalTracker', () => {
+  it('refreshes the answer client when the Host re-delivers a pending waterfall', () => {
+    const tracker = new DshApprovalTracker();
+    tracker.onAuditAsked({ approvalId: 'appr-1', callId: 'call-1', toolName: 'bash' });
+    tracker.onWaterfall({
+      eventId: 'evt-1',
+      clientId: 'client-1',
+      callId: 'call-1',
+      toolName: 'bash',
+    });
+    tracker.onWaterfall({
+      eventId: 'evt-1',
+      clientId: 'client-2',
+      callId: 'call-1',
+      toolName: 'bash',
+    });
+
+    expect(tracker.getBinding('appr-1')?.waterfall.clientId).toBe('client-2');
   });
 });
 
@@ -375,6 +426,98 @@ describe('DshClient / DshRunner integration', () => {
     expect(events.find((e) => e.type === 'result')).toMatchObject({ subtype: 'success' });
   });
 
+  it('applies permissionPreset once before prompt via commands/execute', async () => {
+    server = new FakeDshServer();
+    let promptCount = 0;
+    server.register('session/create', () => ({ ok: true, value: { sessionId: SID } }));
+    server.register('commands/execute', () => ({
+      ok: true,
+      value: { commandId: 'cmd-1', result: { kind: 'success' } },
+    }));
+    server.register('session/prompt', () => {
+      promptCount += 1;
+      server.pushMuxFrame(sessionEventFrame(SID, turnEnd('completed', promptCount)));
+      return { ok: true, value: { accepted: true } };
+    });
+    await server.start();
+
+    const runner = new DshRunner({
+      kind: 'dsh',
+      sessionReader: stubReader,
+      host: server.baseUrl,
+      permissionPreset: 'workspace-write',
+    });
+    await collect(runner.run('first', { cwd: CWD }));
+    await collect(runner.run('second', { cwd: CWD, sessionId: SID }));
+
+    const permissionCalls = server.requests.filter((r) => r.method === 'commands/execute');
+    expect(permissionCalls).toHaveLength(1);
+    expect(permissionCalls[0].payload).toEqual({
+      agentId: SID,
+      line: '/permission workspace-write',
+      submittedAttachments: [],
+    });
+    const methods = server.requests.map((r) => r.method);
+    expect(methods.indexOf('commands/execute')).toBeLessThan(methods.indexOf('session/prompt'));
+  });
+
+  it('fails closed when the permission preset cannot be applied', async () => {
+    server = new FakeDshServer();
+    let prompted = false;
+    server.register('commands/execute', () => ({
+      ok: true,
+      value: { result: { kind: 'error', text: 'unknown preset' } },
+    }));
+    server.register('session/prompt', () => {
+      prompted = true;
+      return { ok: true, value: { accepted: true } };
+    });
+    await server.start();
+
+    const runner = new DshRunner({
+      kind: 'dsh',
+      sessionReader: stubReader,
+      host: server.baseUrl,
+      permissionPreset: 'not-a-preset',
+    });
+    const events = await collect(runner.run('hi', { cwd: CWD, sessionId: SID }));
+    const result = events.find((e) => e.type === 'result');
+    expect(result).toMatchObject({ subtype: 'error' });
+    expect(result?.type === 'result' ? result.errorMessage : '').toContain('unknown preset');
+    expect(prompted).toBe(false);
+  });
+
+  it('updateApprovalMode re-aligns the preset on the next run', async () => {
+    server = new FakeDshServer();
+    let promptCount = 0;
+    server.register('session/create', () => ({ ok: true, value: { sessionId: SID } }));
+    server.register('commands/execute', () => ({
+      ok: true,
+      value: { commandId: 'cmd-1', result: { kind: 'success' } },
+    }));
+    server.register('session/prompt', () => {
+      promptCount += 1;
+      server.pushMuxFrame(sessionEventFrame(SID, turnEnd('completed', promptCount)));
+      return { ok: true, value: { accepted: true } };
+    });
+    await server.start();
+
+    const runner = new DshRunner({
+      kind: 'dsh',
+      sessionReader: stubReader,
+      host: server.baseUrl,
+      permissionPreset: 'workspace-write',
+    });
+    await collect(runner.run('first', { cwd: CWD }));
+    await runner.updateApprovalMode({ permissionPreset: 'read-only' });
+    await collect(runner.run('second', { cwd: CWD, sessionId: SID }));
+
+    const lines = server.requests
+      .filter((r) => r.method === 'commands/execute')
+      .map((r) => (r.payload as { line?: string }).line);
+    expect(lines).toEqual(['/permission workspace-write', '/permission read-only']);
+  });
+
   it.skipIf(isWin32(currentPlatform))(
     'selectModel aligns once per session; repeat runs on the same session skip it',
     async () => {
@@ -439,8 +582,9 @@ describe('DshClient / DshRunner integration', () => {
     expect(selectCalled).toBe(false);
   });
 
-  it('surfaces approval/requested as an assistant prompt (not silently parked)', async () => {
+  it('falls back to an assistant prompt when the live approval channel is unavailable', async () => {
     server = new FakeDshServer();
+    server.setEventStreamError('gateway/interactions-forbidden');
     server.register('session/prompt', () => ({ ok: true, value: { accepted: true } }));
     server.setMuxFrames([
       {
@@ -464,6 +608,164 @@ describe('DshClient / DshRunner integration', () => {
     expect(prompts.length).toBeGreaterThan(0);
     const text = prompts[0].message.content.find((c) => c.type === 'text');
     expect(text && 'text' in text ? text.text : '').toContain('需要授权');
+    expect(events.find((e) => e.type === 'result')).toMatchObject({ subtype: 'success' });
+  });
+
+  it.each([
+    ['accept', 'allowed-once'],
+    ['decline', 'rejected'],
+  ] as const)(
+    'maps a DSH sandbox escalation to a Feishu approval and answers %s',
+    async (action, expected) => {
+      server = new FakeDshServer();
+      let approval: Extract<AgentEvent, { type: 'approval_requested' }> | undefined;
+      server.register('session/prompt', () => ({ ok: true, value: { accepted: true } }));
+      server.register('$events/result', () => {
+        server.pushMuxFrame(sessionEventFrame(SID, turnEnd('completed', 3)));
+        return { ok: true, value: undefined };
+      });
+      server.setEventFrames([
+        {
+          type: 'waterfall',
+          event: 'approval/request',
+          eventId: 'evt-1',
+          agentId: SID,
+          request: {
+            toolName: 'bash',
+            callId: 'call-1',
+            reason: 'escalate sandbox to danger-full-access',
+          },
+        },
+      ]);
+      server.setMuxFrames([
+        sessionEventFrame(SID, toolCall('call-1', 'bash', { command: 'echo hi' }, 1)),
+        sessionEventFrame(
+          SID,
+          approvalAsked('appr-1', 'call-1', 'bash', 'escalate sandbox to danger-full-access', 2),
+        ),
+      ]);
+      await server.start();
+
+      const runner = new DshRunner({
+        kind: 'dsh',
+        sessionReader: stubReader,
+        host: server.baseUrl,
+      });
+      const events: AgentEvent[] = [];
+      const runPromise = (async () => {
+        for await (const ev of runner.run('hi', { cwd: CWD, sessionId: SID })) {
+          events.push(ev);
+          if (ev.type === 'approval_requested') approval = ev;
+        }
+      })();
+
+      await waitFor(() => approval !== undefined);
+      await sleep(50);
+      if (!approval) throw new Error('approval was not surfaced');
+      await runner.respondApproval(approval.requestId, { action });
+      await runPromise;
+
+      expect(approval).toMatchObject({
+        type: 'approval_requested',
+        requestId: 'appr-1',
+        kind: 'command',
+        view: {
+          requestId: 'appr-1',
+          command: 'echo hi',
+          commandCwd: CWD,
+          reason: 'escalate sandbox to danger-full-access',
+          availableDecisions: ['accept', 'decline'],
+          note: expect.stringContaining('仅放行这一次调用'),
+        },
+      });
+      const answer = server.requests.find((r) => r.method === '$events/result');
+      expect(answer?.payload).toMatchObject({
+        clientId: expect.stringMatching(/^fake-client-/),
+        eventId: 'evt-1',
+        outcome: { kind: 'result', value: expected },
+      });
+      expect(events.find((e) => e.type === 'result')).toMatchObject({ subtype: 'success' });
+    },
+  );
+
+  it('delegates a waterfall for another session with next', async () => {
+    server = new FakeDshServer();
+    server.register('session/prompt', () => ({ ok: true, value: { accepted: true } }));
+    server.register('$events/result', () => {
+      server.pushMuxFrame(sessionEventFrame(SID, turnEnd('completed', 1)));
+      return { ok: true, value: undefined };
+    });
+    server.setEventFrames([
+      {
+        type: 'waterfall',
+        event: 'approval/request',
+        eventId: 'evt-other',
+        agentId: 'other-session',
+        request: { toolName: 'bash', reason: 'other workspace' },
+      },
+    ]);
+    await server.start();
+
+    const runner = new DshRunner({
+      kind: 'dsh',
+      sessionReader: stubReader,
+      host: server.baseUrl,
+    });
+    const events = await collect(runner.run('hi', { cwd: CWD, sessionId: SID }));
+    await waitFor(() => server.requests.some((r) => r.method === '$events/result'));
+
+    expect(events.some((e) => e.type === 'approval_requested')).toBe(false);
+    const answer = server.requests.find((r) => r.method === '$events/result');
+    expect(answer?.payload).toMatchObject({
+      clientId: expect.stringMatching(/^fake-client-/),
+      eventId: 'evt-other',
+      outcome: { kind: 'next' },
+    });
+    expect(events.find((e) => e.type === 'result')).toMatchObject({ subtype: 'success' });
+  });
+
+  it('removes the Feishu approval when the Host resolves it elsewhere', async () => {
+    server = new FakeDshServer();
+    let approvalId: string | undefined;
+    server.register('session/prompt', () => ({ ok: true, value: { accepted: true } }));
+    server.setEventFrames([
+      {
+        type: 'waterfall',
+        event: 'approval/request',
+        eventId: 'evt-1',
+        agentId: SID,
+        request: { toolName: 'bash', callId: 'call-1', reason: 'escalate' },
+      },
+    ]);
+    server.setMuxFrames([
+      sessionEventFrame(SID, toolCall('call-1', 'bash', { command: 'echo hi' }, 1)),
+      sessionEventFrame(SID, approvalAsked('appr-1', 'call-1', 'bash', 'escalate', 2)),
+    ]);
+    await server.start();
+
+    const runner = new DshRunner({
+      kind: 'dsh',
+      sessionReader: stubReader,
+      host: server.baseUrl,
+    });
+    const events: AgentEvent[] = [];
+    const runPromise = (async () => {
+      for await (const ev of runner.run('hi', { cwd: CWD, sessionId: SID })) {
+        events.push(ev);
+        if (ev.type === 'approval_requested') approvalId = ev.requestId;
+      }
+    })();
+
+    await waitFor(() => approvalId !== undefined);
+    await sleep(50);
+    server.pushEventFrame({ type: 'cancel', eventId: 'evt-1' });
+    await waitFor(() => events.some((e) => e.type === 'approval_resolved'));
+    server.pushMuxFrame(sessionEventFrame(SID, turnEnd('completed', 3)));
+    await runPromise;
+
+    expect(events.some((e) => e.type === 'approval_resolved' && e.requestId === 'appr-1')).toBe(
+      true,
+    );
     expect(events.find((e) => e.type === 'result')).toMatchObject({ subtype: 'success' });
   });
 
@@ -574,6 +876,106 @@ describe('DshClient / DshRunner integration', () => {
     expect(texts).toEqual(['second answer ']);
     expect(texts.join('')).not.toContain('first answer');
     expect(events.find((e) => e.type === 'result')).toMatchObject({ subtype: 'success' });
+  });
+
+  it('compact executes /compact through commands/execute and finishes success', async () => {
+    // 验证什么：DSH 的压缩走 commands/execute（不是 session/prompt）——后者会把
+    // 文本当普通 user message 交给模型，永远压不了上下文。
+    server = new FakeDshServer();
+    let commandPayload: unknown;
+    server.register('commands/execute', (p) => {
+      commandPayload = p;
+      return {
+        ok: true,
+        value: { kind: 'success', text: 'Compacted 12 history items (~34000 tokens).' },
+      };
+    });
+    await server.start();
+
+    const runner = new DshRunner({ kind: 'dsh', sessionReader: stubReader, host: server.baseUrl });
+    const events = await collect(runner.runCompact('', { cwd: CWD, sessionId: SID }));
+
+    expect(commandPayload).toEqual({
+      agentId: SID,
+      line: '/compact',
+      submittedAttachments: [],
+    });
+    expect(events.find((e) => e.type === 'system')).toMatchObject({
+      subtype: 'init',
+      session_id: SID,
+    });
+    const text = events
+      .filter((e) => e.type === 'assistant')
+      .flatMap((e) => (e.type === 'assistant' ? e.message.content : []))
+      .find((c) => c.type === 'text') as { text: string } | undefined;
+    expect(text?.text).toContain('Compacted 12 history items');
+    expect(events.find((e) => e.type === 'result')).toMatchObject({ subtype: 'success' });
+    // 压缩不得经过 prompt（DSH 侧只会把它当模型输入）。
+    expect(server.requests.some((r) => r.method === 'session/prompt')).toBe(false);
+  });
+
+  it("compact maps DSH command kind:'error' to an error result", async () => {
+    // 验证什么：busy / 无历史 / 摘要失败是 DSH 的「预期拒绝」，返回 value.kind='error'
+    // 而不是 RPC 错误；卡片终态必须跟着它变 error，不能显示成功。
+    server = new FakeDshServer();
+    server.register('commands/execute', () => ({
+      ok: true,
+      value: {
+        kind: 'error',
+        text: 'Compaction is unavailable because this process has an active compaction.',
+      },
+    }));
+    await server.start();
+
+    const runner = new DshRunner({ kind: 'dsh', sessionReader: stubReader, host: server.baseUrl });
+    const events = await collect(runner.runCompact('', { cwd: CWD, sessionId: SID }));
+
+    const result = events.find((e) => e.type === 'result');
+    expect(result).toMatchObject({ subtype: 'error' });
+    expect(result?.type === 'result' ? result.errorMessage : '').toContain(
+      'Compaction is unavailable',
+    );
+  });
+
+  it('compact reports an admission miss (no such command) as an error result', async () => {
+    // 验证什么：命令未注册时 commands/execute 返回 ok:true 无 value（admission
+    // miss，什么都没执行）；不能把「没压」当成「压完了」。
+    server = new FakeDshServer();
+    server.register('commands/execute', () => ({ ok: true, value: undefined }));
+    await server.start();
+
+    const runner = new DshRunner({ kind: 'dsh', sessionReader: stubReader, host: server.baseUrl });
+    const events = await collect(runner.runCompact('', { cwd: CWD, sessionId: SID }));
+
+    const result = events.find((e) => e.type === 'result');
+    expect(result).toMatchObject({ subtype: 'error' });
+    expect(result?.type === 'result' ? result.errorMessage : '').toContain('/compact');
+  });
+
+  it('compact requires a sessionId', async () => {
+    server = new FakeDshServer();
+    await server.start();
+    const runner = new DshRunner({ kind: 'dsh', sessionReader: stubReader, host: server.baseUrl });
+
+    await expect(collect(runner.runCompact('', { cwd: CWD }))).rejects.toThrow(
+      'compact requires a sessionId',
+    );
+  });
+
+  it('compact rejects when a turn already owns the runner', async () => {
+    server = new FakeDshServer();
+    server.register('session/prompt', () => ({ ok: true, value: { accepted: true } }));
+    server.setMuxFrames([sessionEventFrame(SID, textChunk('partial', 1))]);
+    await server.start();
+    const runner = new DshRunner({ kind: 'dsh', sessionReader: stubReader, host: server.baseUrl });
+
+    const iterator = runner.run('hi', { cwd: CWD, sessionId: SID })[Symbol.asyncIterator]();
+    await iterator.next();
+    await expect(collect(runner.runCompact('', { cwd: CWD, sessionId: SID }))).rejects.toThrow(
+      'already running',
+    );
+    await runner.stop({ immediate: true });
+    await iterator.return?.();
   });
 
   it('stop() sends session/cancel', async () => {
@@ -779,6 +1181,7 @@ describe('DshRunner stop state', () => {
       sessionReader: stubReader,
       host: 'http://127.0.0.1:3080',
       agentPreset: 'code',
+      permissionPreset: 'workspace-write',
       model: 'deepseek-v4-pro',
       reasoningEffort: 'max',
     });
@@ -787,6 +1190,7 @@ describe('DshRunner stop state', () => {
     expect(info.extras).toEqual({
       host: 'http://127.0.0.1:3080',
       preset: 'code',
+      permissionPreset: 'workspace-write',
       reasoning: 'max',
     });
   });
