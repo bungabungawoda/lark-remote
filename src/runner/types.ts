@@ -124,6 +124,11 @@ export interface UserQuestion {
   header?: string;
   multiSelect?: boolean;
   options: UserQuestionOption[];
+  /**
+   * 题面外的补充正文（DSH `AskUserQuestionItem.detail`）：plan-review 提问用它
+   * 承载计划全文。渲染层折叠展示并截断，不能与 header / question 混写。
+   */
+  detail?: string;
   /** 是否允许自定义答案（Codex isOther 预留；当前单选渲染层恒提供 Other 输入）。 */
   isOther?: boolean;
   /** 敏感输入（Codex isSecret 预留）。 */
@@ -160,6 +165,11 @@ export interface ApprovalView {
    * 概要行用于展示完整题干。
    */
   intro?: string;
+  /**
+   * 提问超时后是否还能在别处回答的提示（数据驱动，避免共享渲染层写死某个
+   * agent 的语义：DSH 提问超时后 Web UI 仍可回答，Claude/Codex 不能）。
+   */
+  expiredHint?: string;
   command?: string;
   commandCwd?: string;
   /**
