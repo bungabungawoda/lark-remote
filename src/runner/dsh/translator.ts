@@ -12,6 +12,13 @@
  *       completed → success; aborted/interrupted → interrupted;
  *       blocked/error/max-tokens → error (errorMessage carries the reason)
  *
+ * Token accounting (ccusage 口径): DSH emits ONE usage per model
+ * call (per step) — a tool-looping turn has several `assistant/message` events.
+ * The result event therefore carries **the sum of the turn's samplings**, not the
+ * last one (codex `token_count` has the same shape). `lastUsage` is kept only as
+ * the message/stream watermark and as a fallback when no durable message usage
+ * was persisted (e.g. an interrupted attempt).
+ *
  * DSH TokenUsage: {inputTokens, outputTokens, cacheReadTokens?, cacheWriteTokens?}
  *   → ResultEvent.usage: input_tokens/output_tokens/cache_read_tokens/
  *     cache_creation_tokens (cacheWrite = cache creation) + total_tokens sum.
@@ -25,9 +32,23 @@ import type {
   DshTokenUsage,
 } from './types.js';
 
+/** 本 turn 各采样用量之和（input 是非缓存输入，与 ccusage/ResultEvent 口径一致）。 */
+interface UsageTotals {
+  input: number;
+  output: number;
+  cacheRead: number;
+  cacheWrite: number;
+}
+
 export class DshTranslator {
-  private liveUsage?: DshTokenUsage;
-  private hasUsage = false;
+  /** 本 turn 累计用量：DSH 每次模型调用（step）一条 usage，工具往返 = 多条。 */
+  private turnUsage: UsageTotals = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
+  /** 末次采样的 usage：上下文水位，或只有 live chunk 时的兜底值。 */
+  private lastUsage?: DshTokenUsage;
+  /** 是否收到过 durable assistant/message.usage（唯一累加来源）。 */
+  private hasMessageUsage = false;
+  /** 是否只收到过 live usage chunk（无 durable message usage 时的兜底）。 */
+  private hasStreamUsage = false;
   /** 当前 attempt 的 id（start 帧携带，chunk 帧也带；断开重连重放时不变）。 */
   private attemptId = '0';
 
@@ -45,10 +66,33 @@ export class DshTranslator {
     );
   }
 
+  /**
+   * Record durable per-step usage — the accumulation source. assistant/message
+   * carries exactly one usage per model call and is seq-deduped by the client,
+   * so summing it gives the turn total without double counting.
+   */
+  private recordMessageUsage(usage: DshTokenUsage): void {
+    this.turnUsage.input += usage.inputTokens ?? 0;
+    this.turnUsage.output += usage.outputTokens ?? 0;
+    this.turnUsage.cacheRead += usage.cacheReadTokens ?? 0;
+    this.turnUsage.cacheWrite += usage.cacheWriteTokens ?? 0;
+    this.lastUsage = usage;
+    this.hasMessageUsage = true;
+  }
+
+  /**
+   * Record a live usage chunk. Never summed: the same step also arrives as a
+   * durable assistant/message.usage, so summing both would double count. It only
+   * refreshes the watermark and covers a turn whose messages never persisted.
+   */
+  private recordStreamUsage(usage: DshTokenUsage): void {
+    this.lastUsage = usage;
+    this.hasStreamUsage = true;
+  }
+
   private chunkToAgentEvents(chunk: DshStreamChunk, time: number, attemptId = '0'): AgentEvent[] {
     if (chunk.type === 'usage' && chunk.usage && typeof chunk.usage === 'object') {
-      this.liveUsage = chunk.usage as DshTokenUsage;
-      this.hasUsage = true;
+      this.recordStreamUsage(chunk.usage as DshTokenUsage);
       return [];
     }
     const ts = new Date(time).toISOString();
@@ -93,8 +137,7 @@ export class DshTranslator {
       case 'assistant/message': {
         const raw = ev.data.usage as DshTokenUsage | undefined;
         if (raw && typeof raw === 'object') {
-          this.liveUsage = raw;
-          this.hasUsage = true;
+          this.recordMessageUsage(raw);
         }
         return [];
       }
@@ -114,8 +157,12 @@ export class DshTranslator {
           session_id: sessionId,
           timestamp: new Date(ev.time).toISOString(),
         };
-        if (this.hasUsage && this.liveUsage) {
-          result.usage = mapUsage(this.liveUsage);
+        if (this.hasMessageUsage) {
+          // 本 turn 各采样之和（多步工具往返 = 多条 assistant/message）。
+          result.usage = mapAggregatedUsage(this.turnUsage);
+        } else if (this.hasStreamUsage && this.lastUsage) {
+          // 只有 live usage chunk（消息未落盘，如启动期中断）：退回末次采样。
+          result.usage = mapUsage(this.lastUsage);
         }
         if (subtype === 'error') {
           const detail = turnReason?.error?.message;
@@ -133,15 +180,21 @@ export class DshTranslator {
 
 /** Map DSH TokenUsage → ResultEvent.usage (cacheWrite = cache creation). */
 export function mapUsage(u: DshTokenUsage): NonNullable<ResultEvent['usage']> {
-  const input = u.inputTokens ?? 0;
-  const output = u.outputTokens ?? 0;
-  const cacheRead = u.cacheReadTokens ?? 0;
-  const cacheWrite = u.cacheWriteTokens ?? 0;
+  return mapAggregatedUsage({
+    input: u.inputTokens ?? 0,
+    output: u.outputTokens ?? 0,
+    cacheRead: u.cacheReadTokens ?? 0,
+    cacheWrite: u.cacheWriteTokens ?? 0,
+  });
+}
+
+/** Map a turn's summed usage → ResultEvent.usage (cacheWrite = cache creation). */
+export function mapAggregatedUsage(t: UsageTotals): NonNullable<ResultEvent['usage']> {
   return {
-    input_tokens: input,
-    output_tokens: output,
-    cache_read_tokens: cacheRead,
-    cache_creation_tokens: cacheWrite,
-    total_tokens: input + output + cacheRead + cacheWrite,
+    input_tokens: t.input,
+    output_tokens: t.output,
+    cache_read_tokens: t.cacheRead,
+    cache_creation_tokens: t.cacheWrite,
+    total_tokens: t.input + t.output + t.cacheRead + t.cacheWrite,
   };
 }

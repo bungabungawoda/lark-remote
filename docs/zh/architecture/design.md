@@ -832,6 +832,11 @@ run 卡片 done 统计与 `/resume` 末尾统计共用 `formatUsageStats`（src/
   最后一条 `total_token_usage`。**不能**用"最后一个 `token_count` 事件的
   `total_token_usage` 代表末 turn"——那是会话累计值，resume 长会话下会把整个会话
   的历史消耗当成单次 run（实测虚高约 240 倍）。
+- **DSH 同样按 turn 汇总**：`assistant/message.usage` 每次模型调用（step）一条，
+  带工具往返的 turn 有多条。live result 只累加 durable `assistant/message.usage`，
+  同一 step 的 live `usage` chunk 只更新水位/做无事件时的兜底（两通道相加会翻倍）；
+  jsonl reader 用 `turn/start`–`turn/end` 汇总末个 turn（无 turn 标记的旧数据退回末条）。
+  只取末条会把多步 run 低报（实测 done 卡 Input 231 / Output 689 只反映最后一次采样）。
 - **cache 百分比**：`cacheRead/(input+cacheRead)`（input 已是未缓存值，不再减一次）。
 - **Cache create 行**：`cacheCreationTokens`（pi 的 `cacheWrite`、opencode 的
   `tokens.cache.write`）；codex 永远 0。
