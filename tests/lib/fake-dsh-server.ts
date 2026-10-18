@@ -46,6 +46,7 @@ export class FakeDshServer {
   private projectionValue: unknown = { asOfSeq: 0, values: {} };
   private port = 0;
   private closedConnections = 0;
+  private lastEventClientIdValue: string | undefined;
   private requireAuth = false;
   private launchToken = 'test-token';
   private readonly wss = new WebSocketServer({ noServer: true });
@@ -177,6 +178,14 @@ export class FakeDshServer {
 
   get connectionCount(): number {
     return this.closedConnections;
+  }
+
+  /**
+   * Client id issued to the most recent `$events` stream. Reconnect tests use it
+   * to prove an answer went out on the *current* stream, not a dead one.
+   */
+  get lastEventClientId(): string | undefined {
+    return this.lastEventClientIdValue;
   }
 
   async start(): Promise<void> {
@@ -323,13 +332,15 @@ export class FakeDshServer {
           );
           return;
         }
+        const clientId = `fake-client-${this.closedConnections}`;
+        this.lastEventClientIdValue = clientId;
         ws.send(
           JSON.stringify({
             type: 'item',
             streamId,
             value: {
               type: 'ready',
-              clientId: `fake-client-${this.closedConnections}`,
+              clientId,
               host: { home: '/home/user' },
             },
           }),
