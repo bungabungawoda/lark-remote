@@ -74,11 +74,13 @@ The configuration file path can be overridden with the `--config-dir` CLI parame
 
 ### DSH agent (DeepSeek Harness, HTTP+WS direct connection)
 
-DSH differs from the other 5 agents: **it does not spawn a local subprocess** — instead it connects directly to a local DSH Web Host (default `http://127.0.0.1:3080`, HTTP+WebSocket, no auth). Prerequisite: a DSH Web Host (rc.7+) running locally on the port matching `agents.dsh.host`.
+DSH differs from the other 5 agents: **it does not spawn a local subprocess** — instead it connects directly to a local DSH Web Host (default `http://127.0.0.1:3080`, HTTP+WebSocket). DSH 0.2.x requires auth on `/api/*` and `/api/remote.mux`. By default lark-remote reads DSH's durable credentials file (`$DSH_HOME/.credentials.yaml`, or `~/.dsh/.credentials.yaml` when `DSH_HOME` is unset) and mints a short-lived v1 cookie from the `client-connection/browser-session` signing secret. That cookie survives a `dsh web` restart, so no manual token update is needed. Prerequisite: a DSH Web Host running locally on the port matching `agents.dsh.host`.
 
-Configurable fields (all editable via the `/config` card):
+Configurable fields (`token`, `agentPreset`, `model`, and `reasoningEffort` are editable via the `/config` card; `credentialsFile` is YAML-only):
 
 - `agents.dsh.host`: DSH Web Host base URL, default `http://127.0.0.1:3080`. **Changing this parks the current dsh session into the restore slot** (the next message starts a new session, since the session history belongs to a different host).
+- `agents.dsh.token`: optional fallback only. It accepts the `dsh web` launch token (or its full startup URL); use it when the default credentials file is unreadable (for example, DSH runs with a different `DSH_HOME` and `credentialsFile` is unset).
+- `agents.dsh.credentialsFile`: optional path to DSH's credentials file (YAML-only field). Empty resolves to `$DSH_HOME/.credentials.yaml`, then `~/.dsh/.credentials.yaml`. lark-remote reads only the `client-connection/browser-session` record, never writes or logs the secret, and requires POSIX mode `0600`.
 - `agents.dsh.agentPreset`: preset (standard / code / minimal / cordis, etc.; list varies with the server's profile bundle). **Fixed at session creation; switching mid-session returns `agent-preset-conflict`** from the server. Changing agentPreset clears the current dsh session (session history was produced under that preset — a different preset means a different semantic context).
 - `agents.dsh.model`: model ID (server default: `deepseek-v4-flash`); session preserved, aligned once per session (first run) via `session.selectModel` — not repeated for subsequent runs of the same session.
 - `agents.dsh.reasoningEffort`: off / low / high / max; session preserved, aligned once per session.

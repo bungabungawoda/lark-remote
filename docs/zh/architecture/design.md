@@ -314,8 +314,14 @@ agents:
       requestTimeoutMs: 60000
       idleTtlMs: 1800000
       turnIdleTimeoutMinutes: 10
-  dsh:                        # DSH（DeepSeek Harness）Web Host 直连（HTTP+WS，无本地子进程）
+  dsh:                        # DSH（DeepSeek Harness）Web Host 直连（HTTP+WS，全机共享进程）
     host: http://127.0.0.1:3080  # 本地 DSH Web Host 地址
+    manageProcess: true          # 未运行时由 lark-remote detached 拉起
+    dshHome: ''                  # 可选：DSH_HOME
+    dshCommand: dsh              # 可选：dsh 可执行文件
+    startTimeoutMs: 30000        # 启动等待上限
+    token: ''                    # YAML-only 兜底：dsh web 启动 URL 中的 token；不在 /config 卡片展示
+    credentialsFile: ''          # 可选：DSH 凭据文件，默认 $DSH_HOME/.credentials.yaml
     agentPreset: ''              # 留空 = 跟随服务端默认；session 创建后不可改
     model: ''                    # 留空 = 跟随服务端默认
     reasoningEffort: ''          # 留空 = 跟随服务端默认
@@ -343,8 +349,15 @@ POSIX 在全块放不下时回退半块。两种渲染都带 QR 规范要求的 
 [`docs/zh/guides/codex-config.md`](../guides/codex-config.md)。
 `kimi` 的 permissionMode/acp 字段完整语义见
 [`docs/zh/usage.md`](../usage.md)（kimi 为纯 ACP 模式，已无 cli/acp 切换）。
-`dsh` 的 host/preset/model/reasoningEffort 字段语义与 DSH Web Host 直连 runner 设计见
+`dsh` 的 host/token/credentialsFile/preset/model/reasoningEffort 字段语义与 DSH Web Host 直连 runner 设计见
 `docs/zh/usage.md`。
+
+DSH 的 launch token 每个进程随机生成，重启即失效；它的浏览器签名密钥则持久化在
+`$DSH_HOME/.credentials.yaml` 的 `client-connection/browser-session` 记录里。
+lark-remote 默认每次请求读取该文件并现签一个短时效 v1 cookie。DSH 的 `/api` admission
+接受 v1 cookie（共享 browser peer），因此外部重启 DSH 后旧请求即使失败，下一次请求也能
+用同一签名密钥自动恢复；token 只在凭据文件不可用时兜底。凭据文件按 DSH 约定要求
+`0600`，lark-remote 只读不写，且日志中不输出密钥或 cookie。
 
 ---
 
@@ -420,7 +433,7 @@ resolve 到新 cwd 的竞态——先到者占 `activeRuns`，后到者 busy-dro
   `maxEvents: 5`，发送走 `sendResult`（`enforceCardBudget` 兜底），不再直连
   connector——长会话卡片不会再超 28KB 被飞书静默拒绝。
 - bash `!` 进程：`BashProcessRunner` 在进程存活期注册到进程级 exit
-  分发器（与 6 个 agent runner 同源；DSH 无本地子进程故不注册），`/restart`/SIGTERM 时组杀 bash 及其子
+  分发器（与 6 个 agent runner 同源；DSH 的全局进程不归 runner 所有，故不注册），`/restart`/SIGTERM 时组杀 bash 及其子
   进程，run() 结束注销——`!sleep 3600` 不再孤儿化。
 - 缓存：session 读取缓存统一「TTL 用缓存写入时间 + 有界
   LRU/FIFO」。

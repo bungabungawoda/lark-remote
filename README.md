@@ -32,7 +32,7 @@
 - 操作系统：macOS / Linux / Windows 10+（原生 Windows 支持已完成真机验证，行为与 macOS/Linux 对齐）
 - Node.js 20+（开发时用 [Bun](https://bun.sh/)）
 - 飞书自建应用（二选一）：扫码创建（首次启动终端弹二维码，飞书 App 扫码即自动创建并写入凭据）；或手动在开放平台建应用——开启机器人能力，订阅 `im.message.receive_v1` 和 `card.action.trigger`，订阅方式选「长连接」（WebSocket，无需公网地址），权限至少 `im:message`。
-- Claude Code CLI：本地安装并在终端完成一次登录（`claude` → 浏览器 OAuth）。使用其他 agent（codex / opencode / pi / kimi）同理，先装好对应 CLI；DSH 需本地 DSH Web Host 在跑（默认 `http://127.0.0.1:3080`），lark-remote 通过 HTTP+WebSocket 直连、不 spawn 本地子进程。
+- Claude Code CLI：本地安装并在终端完成一次登录（`claude` → 浏览器 OAuth）。使用其他 agent（codex / opencode / pi / kimi）同理，先装好对应 CLI；DSH 需本地安装 `dsh` CLI，lark-remote 会在 DSH Web Host 未运行时后台拉起它（默认 `http://127.0.0.1:3080`，lark-remote 退出不影响 DSH）。lark-remote 会读取 DSH 的 `$DSH_HOME/.credentials.yaml`（默认 `~/.dsh/.credentials.yaml`）自动签发短期 cookie，`dsh web` 重启后无需重新复制 token；`agents.dsh.token` 仅作为凭据文件不可用时的 YAML 兜底，不在 `/config` 卡片展示。
 
 ## 安装
 

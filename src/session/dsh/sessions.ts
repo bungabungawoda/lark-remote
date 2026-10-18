@@ -3,13 +3,13 @@
  *
  * The AgentSessionReader contract is fully synchronous (file-style readers),
  * but DSH exposes only async HTTP. The reader therefore bridges with
- * `spawnSync('curl', ...)` for its unary calls (session.list / session.history)
+ * `spawnSync('curl', ...)` for its unary calls (session/list / session/page)
  * — a synchronous HTTP round-trip to the local DSH host. This keeps the
  * router/bridge interface contract intact without touching any upstream logic.
  *
- * listSessions: session.list → filter by cwd → sort by updatedAt desc → local
+ * listSessions: session/list → filter by cwd → sort by updatedAt desc → local
  *   pagination (DSH v1 has no cursor pagination).
- * readSessionContent: session.history → map SessionEvents to display events +
+ * readSessionContent: session/projections → session/page → map SessionEvents +
  *   session-wide usage accumulation (assistant/message.usage).
  */
 
@@ -19,6 +19,7 @@ import { sortByRecencyDesc } from '../common/recency.js';
 import { getLogger } from '../../logger/index.js';
 import { DEFAULT_DSH_HOST } from '../../config/index.js';
 import { samePath } from '../../platform/path.js';
+import { isWin32 } from '../../platform/select.js';
 import type {
   AgentSession,
   AgentSessionReader,
@@ -28,15 +29,23 @@ import type {
 } from '../../runner/index.js';
 import type {
   DshSessionEvent,
-  DshSessionHistoryValue,
   DshSessionListValue,
+  DshSessionPageValue,
   DshTokenUsage,
 } from '../../runner/dsh/types.js';
+import { dshArgs, extractDshToken } from '../../runner/dsh/client.js';
+import {
+  DSH_COOKIE_LIFETIME_MS,
+  isDshCredentialsNotFound,
+  mintDshBrowserCookie,
+  readDshBrowserSecretSync,
+  resolveDshCredentialsFile,
+} from '../../runner/dsh/auth.js';
 import { capEvents, paginate } from '../common/pagination.js';
 import { truncateUtf8, TOOL_RESULT_MAX_BYTES } from '../../common/truncate.js';
 
 /**
- * history 拉取上限。DSH session.history 的 maxMessages 同时限制返回条数，
+ * history 拉取上限。DSH session/page 的 maxMessages 同时限制返回条数，
  * 若用它同时充当展示截断，>50 事件的会话累计 usage 会少算。这里拉取一个足够大的
  * 上限保证 usage 累加覆盖整个会话；展示仍由 capEvents(opts?.maxEvents ?? 50) 截断。
  * （若 DSH 支持分页 cursor 可改成分页，当前用有界大拉取）
@@ -45,20 +54,43 @@ const DSH_HISTORY_FETCH_LIMIT = 10_000;
 
 interface DshSessionReaderOptions {
   host?: string;
+  /** Configured DSH home; selects `.credentials.yaml` when credentialsFile is unset. */
+  dshHomeProvider?: () => string | undefined;
+  /** `dsh web` launch token (or its startup URL). */
+  token?: string;
+  /** DSH credentials file with the durable browser-session signing secret. */
+  credentialsFile?: string;
+  /** Resolve the credentials file on every call (hot /config change). */
+  credentialsFileProvider?: () => string | undefined;
+  /** Injectable synchronous credentials reader (tests). */
+  readCredentials?: (file: string) => Buffer;
+  /** Injectable clock (tests). */
+  now?: () => number;
+  /** Lifetime of minted browser cookies. */
+  cookieLifetimeMs?: number;
+  /** Resolve the current token on every call (hot /config change). */
+  tokenProvider?: () => string | undefined;
   /** 每次调用时解析当前 host（/config 修改 host 后 runner 重建、reader 也跟随新 host）。
    *  优先于固定的 `host`。 */
   hostProvider?: () => string | undefined;
   /** Injectable synchronous unary transport. Defaults to spawnSync curl. */
-  syncRequest?: (baseUrl: string, method: string, payload: unknown) => unknown;
+  syncRequest?: (baseUrl: string, method: string, payload: unknown, cookie?: string) => unknown;
+  /** Injectable synchronous launch-token bootstrap (tests). */
+  syncConnect?: (baseUrl: string, token: string) => string;
 }
 
 /** Synchronous unary POST via curl (the reader interface is synchronous). */
-function defaultSyncRequest(baseUrl: string, method: string, payload: unknown): unknown {
+function defaultSyncRequest(
+  baseUrl: string,
+  method: string,
+  payload: unknown,
+  cookie?: string,
+): unknown {
   const body = JSON.stringify({
     type: 'client-request',
     rpcId: `rpc-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`,
     method,
-    payload,
+    payload: { args: dshArgs(method, payload) },
   });
   const res = spawnProcessSync(
     'curl',
@@ -69,6 +101,7 @@ function defaultSyncRequest(baseUrl: string, method: string, payload: unknown): 
       `${baseUrl}/api/${method}`,
       '-H',
       'content-type: application/json',
+      ...(cookie ? ['-H', `Cookie: ${cookie}`] : []),
       '--data',
       body,
     ],
@@ -91,14 +124,54 @@ function defaultSyncRequest(baseUrl: string, method: string, payload: unknown): 
   return parsed.result.value;
 }
 
+/** Synchronous index bootstrap; returns the v1 `name=value` cookie pair. */
+function defaultSyncConnect(baseUrl: string, token: string): string {
+  const url = `${baseUrl}/?token=${encodeURIComponent(token)}`;
+  const res = spawnProcessSync(
+    'curl',
+    ['-sS', '-D', '-', '-o', isWin32() ? 'NUL' : '/dev/null', '--max-time', '5', url],
+    { encoding: 'utf-8', timeout: 10_000, maxBuffer: 1024 * 1024 },
+  );
+  if (res.error || res.status !== 0) {
+    throw new Error(`DSH auth failed: ${(res.error?.message ?? res.stderr) || 'unknown'}`);
+  }
+  const header = String(res.stdout);
+  const match = header.match(/^set-cookie:\s*(.+)$/im);
+  const cookie = match?.[1]?.split(';')[0]?.trim();
+  if (!cookie) throw new Error('DSH auth failed: index handshake did not return a cookie');
+  return cookie;
+}
+
 export class DshSessionReader implements AgentSessionReader {
   private readonly hostProvider: () => string | undefined;
-  private readonly syncRequest: (baseUrl: string, method: string, payload: unknown) => unknown;
+  private readonly dshHomeProvider: () => string | undefined;
+  private readonly tokenProvider: () => string | undefined;
+  private readonly credentialsFileProvider: () => string | undefined;
+  private readonly readCredentials: (file: string) => Buffer;
+  private readonly now: () => number;
+  private readonly cookieLifetimeMs: number;
+  private readonly syncRequest: (
+    baseUrl: string,
+    method: string,
+    payload: unknown,
+    cookie?: string,
+  ) => unknown;
+  private readonly syncConnect: (baseUrl: string, token: string) => string;
+  private readonly cookieCache = new Map<string, string>();
 
   constructor(opts: DshSessionReaderOptions = {}) {
     const fixed = (opts.host ?? DEFAULT_DSH_HOST).replace(/\/$/, '');
     this.hostProvider = opts.hostProvider ?? (() => fixed);
+    this.dshHomeProvider = opts.dshHomeProvider ?? (() => undefined);
+    const fixedToken = opts.token;
+    this.tokenProvider = opts.tokenProvider ?? (() => fixedToken);
+    const fixedCredentialsFile = opts.credentialsFile;
+    this.credentialsFileProvider = opts.credentialsFileProvider ?? (() => fixedCredentialsFile);
+    this.readCredentials = opts.readCredentials ?? readDshBrowserSecretSync;
+    this.now = opts.now ?? Date.now;
+    this.cookieLifetimeMs = opts.cookieLifetimeMs ?? DSH_COOKIE_LIFETIME_MS;
     this.syncRequest = opts.syncRequest ?? defaultSyncRequest;
+    this.syncConnect = opts.syncConnect ?? defaultSyncConnect;
   }
 
   /** 解析当前 host（hostProvider 优先，允许 /config 热改 host）。 */
@@ -107,8 +180,58 @@ export class DshSessionReader implements AgentSessionReader {
     return (host && host.length > 0 ? host : DEFAULT_DSH_HOST).replace(/\/$/, '');
   }
 
+  private resolveCredentialsFile(): string {
+    return (
+      this.credentialsFileProvider()?.trim() ||
+      resolveDshCredentialsFile(process.env, this.dshHomeProvider())
+    );
+  }
+
   private unary(method: string, payload: unknown): unknown {
-    return this.syncRequest(this.resolveBaseUrl(), method, payload);
+    const baseUrl = this.resolveBaseUrl();
+    try {
+      return this.syncRequest(baseUrl, method, payload, this.resolveCookie());
+    } catch {
+      // DSH may have restarted while lark-remote cached a token-derived cookie.
+      // Re-read the credentials file and retry once with a fresh cookie.
+      this.cookieCache.clear();
+      return this.syncRequest(baseUrl, method, payload, this.resolveCookie());
+    }
+  }
+
+  /** Mint from the durable secret, or bootstrap and cache a token cookie. */
+  private resolveCookie(): string | undefined {
+    const baseUrl = this.resolveBaseUrl();
+    const fromCredentials = this.cookieFromCredentials(baseUrl);
+    if (fromCredentials) return fromCredentials;
+    const token = extractDshToken(this.tokenProvider());
+    if (!token) return undefined;
+    const key = `${baseUrl}\u0000${token}`;
+    const cached = this.cookieCache.get(key);
+    if (cached) return cached;
+    const cookie = this.syncConnect(baseUrl, token);
+    this.cookieCache.set(key, cookie);
+    return cookie;
+  }
+
+  private cookieFromCredentials(baseUrl: string): string | undefined {
+    const credentialsFile = this.resolveCredentialsFile();
+    try {
+      const secret = this.readCredentials(credentialsFile);
+      return mintDshBrowserCookie(baseUrl, secret, this.now(), this.cookieLifetimeMs);
+    } catch (err) {
+      if (isDshCredentialsNotFound(err)) return undefined;
+      if (extractDshToken(this.tokenProvider())) {
+        getLogger().warn(
+          `[dsh-session-reader] cannot use DSH credentials file ${credentialsFile}: ` +
+            `${(err as Error).message}; falling back to the launch token`,
+        );
+        return undefined;
+      }
+      throw new Error(`DSH auth credentials file ${credentialsFile}: ${(err as Error).message}`, {
+        cause: err,
+      });
+    }
   }
 
   listSessions(
@@ -116,7 +239,7 @@ export class DshSessionReader implements AgentSessionReader {
     opts?: { limit?: number; offset?: number },
   ): { sessions: AgentSession[]; total: number } {
     try {
-      const value = this.unary('session.list', {}) as DshSessionListValue;
+      const value = this.unary('session/list', {}) as DshSessionListValue;
       const items = value.items ?? [];
       const filtered = items
         .filter((i) => i.cwd !== undefined && samePath(i.cwd, cwd))
@@ -124,7 +247,7 @@ export class DshSessionReader implements AgentSessionReader {
           sessionId: String(i.sessionId),
           summary: '',
           mtime: i.updatedAt,
-          ...(i.agentPreset ? { agentPreset: i.agentPreset } : {}),
+          ...sessionPreset(i),
         }));
       sortByRecencyDesc(
         filtered,
@@ -149,10 +272,12 @@ export class DshSessionReader implements AgentSessionReader {
     opts?: { maxEvents?: number },
   ): SessionContent {
     try {
-      const value = this.unary('session.history', {
-        sessionId,
+      const throughSeq = this.resolveThroughSeq(sessionId);
+      const value = this.unary('session/page', {
+        address: { kind: 'session', sessionId },
+        throughSeq,
         maxMessages: DSH_HISTORY_FETCH_LIMIT,
-      }) as DshSessionHistoryValue;
+      }) as DshSessionPageValue;
       const events: AgentSessionContentEvent[] = [];
       let displayTitle: string | undefined;
       let cumInput = 0;
@@ -161,7 +286,7 @@ export class DshSessionReader implements AgentSessionReader {
       let cumCacheWrite = 0;
       let lastUsage: DshTokenUsage | undefined;
 
-      for (const entry of value.events ?? []) {
+      for (const entry of value.records ?? []) {
         const ev = entry.event;
         if (!ev) continue;
         const contentEvents = mapEvent(ev);
@@ -221,7 +346,7 @@ export class DshSessionReader implements AgentSessionReader {
 
   isSessionActive(sessionId: string, cwd: string): boolean {
     try {
-      const value = this.unary('session.list', {}) as DshSessionListValue;
+      const value = this.unary('session/list', {}) as DshSessionListValue;
       const found = (value.items ?? []).find(
         (i) => String(i.sessionId) === sessionId && i.cwd !== undefined && samePath(i.cwd, cwd),
       );
@@ -231,6 +356,28 @@ export class DshSessionReader implements AgentSessionReader {
       return false;
     }
   }
+
+  /** `session/page` needs an inclusive cursor; projections carry the watermark. */
+  private resolveThroughSeq(sessionId: string): number {
+    const projection = this.unary('session/projections', { sessionId }) as {
+      asOfSeq?: number;
+    } | null;
+    if (typeof projection?.asOfSeq === 'number') return projection.asOfSeq;
+    const list = this.unary('session/list', {}) as DshSessionListValue;
+    const row = (list.items ?? []).find((item) => String(item.sessionId) === sessionId);
+    return typeof row?.projections?.asOfSeq === 'number' ? row.projections.asOfSeq : -1;
+  }
+}
+
+/** Preset moved from the summary top level to projections in DSH 0.2.x. */
+function sessionPreset(item: {
+  agentPreset?: string;
+  projections?: { values?: { agentPreset?: string | null } };
+}): {
+  agentPreset?: string;
+} {
+  const preset = item.projections?.values?.agentPreset ?? item.agentPreset;
+  return preset ? { agentPreset: preset } : {};
 }
 
 interface MappedEvent {
