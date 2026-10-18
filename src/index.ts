@@ -41,6 +41,7 @@ import {
   SESSION_MUTATING_ACTION_CMDS,
   COMPACT_ACTION_CMDS,
 } from './router/index.js';
+import { DshDaemon } from './runner/dsh/daemon.js';
 import { dispatchOrderExecForQueue } from './router/order-exec-dispatch.js';
 import { buildCardActionFullValue } from './router/card-action-payload.js';
 import { actionFeedbackText } from './router/card-action-feedback.js';
@@ -226,6 +227,16 @@ function initializeRunner(
   const latest = (): AppConfig =>
     (agentRegistry.getConfigContainer()?.current as AppConfig) ?? config;
 
+  // One global DSH per machine/DSH_HOME. This resolver reuses a listening
+  // process or starts `dsh web` detached; it never owns the child's lifetime.
+  const dshDaemon = new DshDaemon({
+    host: () => getAgentConfig(latest(), 'dsh')?.host,
+    dshHome: () => getAgentConfig(latest(), 'dsh')?.dshHome,
+    dshCommand: () => getAgentConfig(latest(), 'dsh')?.dshCommand,
+    manageProcess: () => getAgentConfig(latest(), 'dsh')?.manageProcess ?? true,
+    startTimeoutMs: () => getAgentConfig(latest(), 'dsh')?.startTimeoutMs,
+  });
+
   // Claude factory reads from configContainer (not closure) so runtime
   // config changes (model, effort, stopGraceMs) take effect after
   // bridge.setConfig() + clearRunners(). Same pattern as codex/pi/kimi.
@@ -368,19 +379,38 @@ function initializeRunner(
     // hostProvider 每次调用读最新 config：/config 修改 host 后 runner 重建为
     // 新 host，reader（/resume、用量、完成卡）也跟随新 host。
     hostProvider: () => getAgentConfig(latest(), 'dsh')?.host,
+    dshHomeProvider: () => getAgentConfig(latest(), 'dsh')?.dshHome,
+    tokenProvider: () => getAgentConfig(latest(), 'dsh')?.token,
+    credentialsFileProvider: () => getAgentConfig(latest(), 'dsh')?.credentialsFile,
   });
   agentRegistry.register('dsh', (_ws: string) => {
     const dshConf = getAgentConfig(latest(), 'dsh');
+    // Warm the shared process in the background so the first message and
+    // `/resume` do not pay the full startup delay. Failures surface from
+    // DshRunner.run(), which awaits the same resolver.
+    void dshDaemon.ensure().catch((error: unknown) => {
+      getLogger().warn(`[dsh] background start failed: ${(error as Error).message}`);
+    });
     return new DshRunner({
       kind: 'dsh',
       sessionReader: dshSessionReader,
+      daemon: dshDaemon,
       host: dshConf?.host,
+      dshHome: dshConf?.dshHome,
+      token: dshConf?.token,
+      credentialsFile: dshConf?.credentialsFile,
       agentPreset: dshConf?.agentPreset,
       model: dshConf?.model,
       reasoningEffort: dshConf?.reasoningEffort,
     });
   });
   sessionReaderRegistry.register('dsh', dshSessionReader);
+
+  if (config.defaultAgent === 'dsh') {
+    void dshDaemon.ensure().catch((error: unknown) => {
+      getLogger().warn(`[dsh] startup probe failed: ${(error as Error).message}`);
+    });
+  }
 
   // 2026-07-17: 注册所有 agent 的显示名，实现单点真相
   agentRegistry.registerDisplayName('claude', 'Claude');

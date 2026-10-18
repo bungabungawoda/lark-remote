@@ -69,8 +69,14 @@ agents:
       requestTimeoutMs: 60000
       idleTtlMs: 1800000
       turnIdleTimeoutMinutes: 10
-  dsh:                      # DSH（DeepSeek Harness）Web Host 直连（HTTP+WS，无本地子进程）
+  dsh:                      # DSH（DeepSeek Harness）Web Host 直连（HTTP+WS，全机共享进程）
     host: http://127.0.0.1:3080   # 本地 DSH Web Host 地址，默认 3080 端口
+    manageProcess: true           # 未运行时由 lark-remote 后台拉起（detached，退出不停止 DSH）
+    dshHome: ''                   # 可选：DSH_HOME，默认 $DSH_HOME 或 ~/.dsh
+    dshCommand: dsh               # 可选：dsh 可执行文件
+    startTimeoutMs: 30000         # 后台启动后等待端口可用的上限
+    token: ''                     # 可选兜底：dsh web 启动 URL 里的 token（重启后会变）
+    credentialsFile: ''           # 可选：DSH 凭据文件；默认 $DSH_HOME/.credentials.yaml 或 ~/.dsh/.credentials.yaml
     agentPreset: ''               # preset（标准/极简/...）；留空 = 跟随服务端默认；session 创建后不可改
     model: ''                     # 模型名（如 deepseek-v4-flash / deepseek-v4-pro）；留空 = 跟随服务端默认
     reasoningEffort: ''           # off/low/high/max；留空 = 跟随服务端默认
@@ -88,11 +94,19 @@ idle:
 
 ### DSH agent（DeepSeek Harness，HTTP+WS 直连）
 
-DSH 与其他 5 个 agent 不同：**不 spawn 本地子进程**，而是直接连到本地 DSH Web Host（默认 `http://127.0.0.1:3080`，HTTP+WebSocket，无认证）。前置条件：本机已运行 DSH Web Host（rc.7 及以上），端口与 `agents.dsh.host` 对齐。
+DSH 与其他 5 个 agent 不同：agent runner 不持有本地子进程，而是连到**全机共享**的 DSH Web Host（默认 `http://127.0.0.1:3080`，HTTP+WebSocket）。DSH 未运行时，lark-remote 会在后台 detached 拉起 `dsh web`，lark-remote 退出不会停止它；已在运行则直接复用。DSH 0.2.x 的 `/api/*` 和 `/api/remote.mux` 要求认证。lark-remote 读取 DSH 的持久凭据文件（`$DSH_HOME/.credentials.yaml`，未设置 `DSH_HOME` 时为 `~/.dsh/.credentials.yaml`），用其中 `client-connection/browser-session` 的签名密钥现签一个短时效 v1 cookie；这个 cookie 在 `dsh web` 重启后仍然有效，所以不需要每次手动更新 token。
 
-可用配置项（均可在 `/config` 卡片改写保存）：
+后台拉起的 DSH 工作目录是 `DSH_HOME`，不会读取某个项目目录下的 `.env`。需要给 DSH 进程注入环境变量时，放在 `$DSH_HOME/.env` 或 lark-remote 的启动环境中。一个 `DSH_HOME` 约定只跑一个 DSH；端口用固定值（默认 3080），不要用 `--port 0`。
+
+可用配置项（`agentPreset`/`model`/`reasoningEffort` 可在 `/config` 卡片改写保存；`token`/`credentialsFile` 仅 YAML 配置，不在卡片展示或保存）：
 
 - `agents.dsh.host`：DSH Web Host base URL，默认 `http://127.0.0.1:3080`。**修改会触发停放当前 dsh session 到恢复槽**（下次消息新建会话，避免 host 不一致导致 session 历史归属错乱）。
+- `agents.dsh.manageProcess`：未探测到 DSH 时是否由 lark-remote 拉起，默认 `true`。子进程以 detached 方式运行，lark-remote 退出、重启都不会停止它；设为 `false` 时只连接已运行的 DSH。
+- `agents.dsh.dshHome`：启动 DSH 时使用的 `DSH_HOME`，同时决定启动锁和日志目录（`$DSH_HOME/lark-remote/`）。留空时按 `$DSH_HOME` → `~/.dsh` 解析。
+- `agents.dsh.dshCommand`：`dsh` 可执行文件，默认从 `PATH` 查找 `dsh`。
+- `agents.dsh.startTimeoutMs`：后台拉起后等待端口响应的上限，默认 `30000` 毫秒。
+- `agents.dsh.token`：可选的 YAML 兜底凭据，填 `dsh web` 启动 token 或整条启动 URL。**只在配置文件里使用，不在 `/config` 卡片展示或保存**，避免启动 token 出现在飞书卡片上。只有在默认凭据文件不可读（例如 DSH 使用了不同的 `DSH_HOME` 且未配置 `credentialsFile`）时才需要；正常自动模式下无需维护。
+- `agents.dsh.credentialsFile`：DSH 凭据文件路径（YAML 配置项）。留空时按 `$DSH_HOME/.credentials.yaml` → `~/.dsh/.credentials.yaml` 解析。lark-remote 只读取 `client-connection/browser-session` 记录，不修改文件、不打印密钥；文件权限必须是 `0600`。
 - `agents.dsh.agentPreset`：preset（standard / code / minimal / cordis 等，随服务端 profile bundle 变化）。**session 创建时固定，中途切换服务端返回 `agent-preset-conflict`**；切换 agentPreset 会清空当前 dsh session（session 历史是在该 preset 下产生的，换 preset 等于换语义上下文）。
 - `agents.dsh.model`：模型 ID（默认服务端 `deepseek-v4-flash`）；保留 session，会话首次 run 时对齐一次（`session.selectModel`，同一 session 不重复调用）。
 - `agents.dsh.reasoningEffort`：off / low / high / max；保留 session，会话首次 run 时对齐一次。

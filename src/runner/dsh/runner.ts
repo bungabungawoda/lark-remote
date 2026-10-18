@@ -2,11 +2,11 @@
  * DshRunner — workspace-lifetime runner bridging to the DSH Web Host
  * (DeepSeek Harness) over plain HTTP. No local subprocess is spawned.
  *
- * Flow per run: session.create(cwd) (when no sessionId) → synthetic system/init
- * (DSH has no init event) → open per-session mux subscription → session.prompt
+ * Flow per run: session/create(cwd) (when no sessionId) → synthetic system/init
+ * (DSH has no init event) → open per-session mux subscription → session/prompt
  * (mode:'queue') → consume subscription until turn/end → result event.
  *
- * stop() → session.cancel + abort the mux subscription. killOrphan /
+ * stop() → session/cancel + abort the mux subscription. killOrphan /
  * registerExitHandlers are no-ops (no local process). approval/requested is
  * surfaced as a WARN log + an assistant text prompt pointing to the DSH Web UI
  * (never silently parked — the turn stays live until the user resolves it in
@@ -15,9 +15,10 @@
 
 import type { AgentEvent, AgentSessionReader, AgentStatusInfo, SpawnOptions } from '../types.js';
 import type { AgentRunner } from '../types.js';
-import { DshClient, type WebSocketFactory } from './client.js';
+import { DshClient, newPromptRequestId, type WebSocketFactory } from './client.js';
 import { DshTranslator } from './translator.js';
 import { getLogger } from '../../logger/index.js';
+import type { DshDaemon } from './daemon.js';
 
 /** DSH selectModel provider（deepseek-official 是 rc.7 模型目录的 provider）。 */
 const DSH_MODEL_PROVIDER = 'deepseek-official';
@@ -25,8 +26,16 @@ const DSH_MODEL_PROVIDER = 'deepseek-official';
 export interface DshRunnerOptions {
   kind: 'dsh';
   sessionReader: AgentSessionReader;
+  /** Global DSH process manager; omitted in tests that drive a fake server. */
+  daemon?: DshDaemon;
   /** DSH Web Host base URL, e.g. http://127.0.0.1:3080. */
   host?: string;
+  /** Configured DSH home; selects `.credentials.yaml` when credentialsFile is unset. */
+  dshHome?: string;
+  /** Optional `dsh web` launch token (or its startup URL). */
+  token?: string;
+  /** DSH credentials file with the durable browser-session signing secret. */
+  credentialsFile?: string;
   /** Session preset（agentPreset）固定于 session 创建时；undefined = 服务端默认。 */
   agentPreset?: string;
   /** Display model name. */
@@ -51,9 +60,10 @@ export class DshRunner implements AgentRunner {
   private activeAbort: AbortController | null = null;
   private activeSessionId: string | null = null;
   private running = false;
+  private readonly daemon: DshDaemon | undefined;
   /**
    * 已对齐模型的 session 集合：同一 session 二次 run 不再重发 selectModel
-   * （session.selectModel 会写服务端全局默认，每次 run 都写是写放大）。
+   * （session/selectModel 会写服务端全局默认，每次 run 都写是写放大）。
    * configuredModel 在实例生命周期内不变（/config 改模型会 clearRunners
    * 重建实例 + 换新 sessionId），故「每 session 对齐一次」足以覆盖配置变化。
    */
@@ -61,14 +71,17 @@ export class DshRunner implements AgentRunner {
 
   constructor(opts: DshRunnerOptions) {
     this.sessionReader = opts.sessionReader;
+    this.daemon = opts.daemon;
     this.configuredModel = opts.model;
     this.agentPreset = opts.agentPreset;
     this.reasoningEffort = opts.reasoningEffort;
-    this.client = new DshClient(
-      opts.host ?? 'http://127.0.0.1:3080',
-      opts.fetchImpl,
-      opts.webSocketImpl,
-    );
+    this.client = new DshClient(opts.host ?? 'http://127.0.0.1:3080', {
+      dshHome: opts.dshHome,
+      token: opts.token,
+      credentialsFile: opts.credentialsFile,
+      fetchImpl: opts.fetchImpl,
+      webSocketImpl: opts.webSocketImpl,
+    });
   }
 
   get isRunning(): boolean {
@@ -97,7 +110,12 @@ export class DshRunner implements AgentRunner {
     let sessionId = opts.sessionId;
     let terminalEmitted = false;
     try {
-      // session.create 必须包进同一 try/finally，否则创建失败（服务端不可达/报错）
+      // DSH is a shared, machine-wide process. Reuse it when it is already
+      // listening; otherwise start it detached so lark-remote exiting does not
+      // stop it for every other instance.
+      if (this.daemon) await this.daemon.ensure();
+
+      // session/create 必须包进同一 try/finally，否则创建失败（服务端不可达/报错）
       // 会在进入旧 try 之前抛异常，finally 不执行 → running 恒 true、activeAbort 残留。
       if (!sessionId) {
         const created = await this.client.createSession({
@@ -115,7 +133,7 @@ export class DshRunner implements AgentRunner {
       // run 卡，否则 for-await 自然结束后无终态、卡片停留「运行中」。
       if (abort.signal.aborted) {
         try {
-          await this.client.unary('session.cancel', { sessionId });
+          await this.client.unary('session/cancel', { sessionId });
         } catch {
           /* 取消失败仅告警，session 已 abort 无需继续 */
         }
@@ -159,11 +177,12 @@ export class DshRunner implements AgentRunner {
 
       try {
         // Snapshot the pre-prompt high-water mark before mutating the session.
-        // DSH session.history returns the whole session, so starting from seq 0
+        // DSH session/page returns the whole session, so starting from seq 0
         // would replay the first completed turn on every follow-up prompt.
         const prePromptSeq = await this.client.latestEventSeq(sessionId);
 
-        await this.client.unary('session.prompt', {
+        await this.client.unary('session/prompt', {
+          requestId: newPromptRequestId(),
           sessionId,
           mode: 'queue',
           content: [{ type: 'text', text: message }],
@@ -193,6 +212,13 @@ export class DshRunner implements AgentRunner {
                   ],
                 },
               };
+              continue;
+            }
+
+            if (item.kind === 'assistant-stream') {
+              for (const ev of translator.streamFrameToAgentEvents(item.frame, sessionId)) {
+                yield ev;
+              }
               continue;
             }
 
@@ -230,6 +256,9 @@ export class DshRunner implements AgentRunner {
       // createSession 等启动期失败也产出 error result（而非抛异常），
       // 由本 catch 统一转 error result；state 清理在 finally。
       if (!abort.signal.aborted) {
+        getLogger().error(
+          `[dsh] run startup failed session=${sessionId ?? '(none)'}: ${(err as Error).message}`,
+        );
         yield {
           type: 'result',
           subtype: 'error',
@@ -260,10 +289,10 @@ export class DshRunner implements AgentRunner {
     if (abort && !abort.signal.aborted) abort.abort();
     if (sessionId) {
       try {
-        await this.client.unary('session.cancel', { sessionId });
+        await this.client.unary('session/cancel', { sessionId });
         getLogger().info(`[dsh] cancelled session ${sessionId}`);
       } catch (err) {
-        getLogger().warn(`[dsh] session.cancel failed: ${(err as Error).message}`);
+        getLogger().warn(`[dsh] session/cancel failed: ${(err as Error).message}`);
       }
     }
   }

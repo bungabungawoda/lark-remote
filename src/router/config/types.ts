@@ -63,5 +63,5 @@ export interface AgentConfigCardBuilder {
    * host 为该 agent 的当前连接地址；实现内部应缓存（同一 host 只拉一次），
    * 失败静默回退固定兜底，不阻断卡片渲染。非异步预取的 agent 可不实现。
    */
-  prefetch?(host?: string): Promise<void>;
+  prefetch?(host?: string, token?: string, credentialsFile?: string): Promise<void>;
 }

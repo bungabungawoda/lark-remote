@@ -9,20 +9,51 @@
  * without HTTP. Synthetic fixtures only.
  */
 
-import { describe, it, expect } from 'vitest';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import YAML from 'yaml';
+import { afterEach, describe, it, expect } from 'vitest';
 import { DshSessionReader } from './sessions.js';
 import { FakeDshServer } from '../../../tests/lib/fake-dsh-server.js';
 import type { DshSessionEvent } from '../../runner/dsh/types.js';
+import { DSH_BROWSER_CREDENTIAL_KEY } from '../../runner/dsh/auth.js';
 
 const CWD = '/home/user/project';
 const OTHER = '/home/user/other';
 const SID_A = 'aaaaaaaa-1111-2222-3333-444444444444';
 const SID_B = 'bbbbbbbb-1111-2222-3333-444444444444';
 const SID_C = 'cccccccc-1111-2222-3333-444444444444';
+const NO_CREDENTIALS_FILE = '/nonexistent/lark-remote-test/.credentials.yaml';
+const tempDirs: string[] = [];
+
+afterEach(() => {
+  for (const dir of tempDirs.splice(0)) {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+function writeCredentials(file: string, secret: Buffer): void {
+  fs.writeFileSync(
+    file,
+    YAML.stringify({
+      version: 1,
+      records: {
+        [DSH_BROWSER_CREDENTIAL_KEY]: {
+          kind: 'grant',
+          payload: { version: 1, secret: secret.toString('base64url') },
+        },
+      },
+    }),
+    { mode: 0o600 },
+  );
+  if (process.platform !== 'win32') fs.chmodSync(file, 0o600);
+}
 
 function makeReader(server: FakeDshServer): DshSessionReader {
   return new DshSessionReader({
     host: server.baseUrl,
+    credentialsFile: NO_CREDENTIALS_FILE,
     syncRequest: (_baseUrl, method, payload) => {
       const resp = server.dispatchSync(method, payload);
       if (resp.result.ok !== true) {
@@ -36,7 +67,7 @@ function makeReader(server: FakeDshServer): DshSessionReader {
 describe('DshSessionReader', () => {
   it('listSessions filters by cwd, sorts by updatedAt desc, and paginates locally', () => {
     const server = new FakeDshServer();
-    server.register('session.list', () => ({
+    server.register('session/list', () => ({
       ok: true,
       value: {
         items: [
@@ -60,7 +91,7 @@ describe('DshSessionReader', () => {
 
   it('getNewestSession returns the newest cwd-matched session or null', () => {
     const server = new FakeDshServer();
-    server.register('session.list', () => ({
+    server.register('session/list', () => ({
       ok: true,
       value: {
         items: [
@@ -78,18 +109,18 @@ describe('DshSessionReader', () => {
 
   it('readSessionContent maps history events and accumulates usage', () => {
     const server = new FakeDshServer();
-    server.register('session.history', () => ({
+    server.register('session/page', () => ({
       ok: true,
       value: {
         hasMore: false,
-        events: [
-          { event: userMsg(SID_A, 'hello dsh'), view: undefined },
+        records: [
+          { type: 'event', event: userMsg(SID_A, 'hello dsh') },
           {
+            type: 'event',
             event: assistantMsg(SID_A, 'hi there', { inputTokens: 100, outputTokens: 30 }),
-            view: undefined,
           },
-          { event: toolCall(SID_A, 'bash', '{"cmd":"ls"}'), view: undefined },
-          { event: toolResult(SID_A, 'file list output'), view: undefined },
+          { type: 'event', event: toolCall(SID_A, 'bash', '{"cmd":"ls"}') },
+          { type: 'event', event: toolResult(SID_A, 'file list output') },
         ],
       },
     }));
@@ -116,14 +147,14 @@ describe('DshSessionReader', () => {
 
   it('readSessionContent caps events with maxEvents (tail cap)', () => {
     const server = new FakeDshServer();
-    server.register('session.history', () => ({
+    server.register('session/page', () => ({
       ok: true,
       value: {
         hasMore: false,
-        events: [
-          { event: userMsg(SID_A, 'one'), view: undefined },
-          { event: assistantMsg(SID_A, 'two', undefined), view: undefined },
-          { event: assistantMsg(SID_A, 'three', undefined), view: undefined },
+        records: [
+          { type: 'event', event: userMsg(SID_A, 'one') },
+          { type: 'event', event: assistantMsg(SID_A, 'two', undefined) },
+          { type: 'event', event: assistantMsg(SID_A, 'three', undefined) },
         ],
       },
     }));
@@ -136,26 +167,26 @@ describe('DshSessionReader', () => {
 
   it('usage: contextLength reflects only the last assistant/message (cumulative sums full session)', () => {
     const server = new FakeDshServer();
-    server.register('session.history', () => ({
+    server.register('session/page', () => ({
       ok: true,
       value: {
         hasMore: false,
-        events: [
+        records: [
           {
+            type: 'event',
             event: assistantMsg(SID_A, 'first turn', {
               inputTokens: 100,
               outputTokens: 30,
             }),
-            view: undefined,
           },
           {
+            type: 'event',
             event: assistantMsg(SID_A, 'last turn', {
               inputTokens: 200,
               outputTokens: 60,
               cacheReadTokens: 20,
               cacheWriteTokens: 10,
             }),
-            view: undefined,
           },
         ],
       },
@@ -183,7 +214,7 @@ describe('DshSessionReader', () => {
 
   it('isSessionActive reflects the running flag for a cwd-matched session', () => {
     const server = new FakeDshServer();
-    server.register('session.list', () => ({
+    server.register('session/list', () => ({
       ok: true,
       value: {
         items: [
@@ -203,7 +234,7 @@ describe('DshSessionReader', () => {
 
   it('returns empty results on DSH error (fail-soft)', () => {
     const server = new FakeDshServer();
-    server.register('session.list', () => ({
+    server.register('session/list', () => ({
       ok: false,
       error: { code: 'internal', message: 'boom' },
     }));
@@ -221,9 +252,10 @@ describe('DshSessionReader', () => {
     const seenUrls: string[] = [];
     const reader = new DshSessionReader({
       hostProvider: () => currentHost,
+      credentialsFile: NO_CREDENTIALS_FILE,
       syncRequest: (baseUrl, method) => {
         seenUrls.push(baseUrl);
-        if (method === 'session.list') return { items: [] };
+        if (method === 'session/list') return { items: [] };
         return {};
       },
     });
@@ -235,6 +267,83 @@ describe('DshSessionReader', () => {
     expect(seenUrls).toEqual(['http://host-a:3080', 'http://host-b:3080']);
   });
 
+  it('exchanges the launch token for a cookie and pages from the projection watermark', () => {
+    const cookies: Array<string | undefined> = [];
+    const pagePayloads: unknown[] = [];
+    const reader = new DshSessionReader({
+      host: 'http://127.0.0.1:3080',
+      token: 'http://127.0.0.1:3080/?token=abc',
+      credentialsFile: NO_CREDENTIALS_FILE,
+      syncConnect: (baseUrl, token) => {
+        expect(baseUrl).toBe('http://127.0.0.1:3080');
+        expect(token).toBe('abc');
+        return 'dsh-auth-127.0.0.1:3080=operator';
+      },
+      syncRequest: (_baseUrl, method, payload, cookie) => {
+        cookies.push(cookie);
+        if (method === 'session/projections') return { asOfSeq: 7, values: {} };
+        if (method === 'session/page') {
+          pagePayloads.push(payload);
+          return { records: [], hasMore: false };
+        }
+        return {};
+      },
+    });
+
+    reader.readSessionContent(SID_A, CWD);
+
+    expect(cookies.every((cookie) => cookie === 'dsh-auth-127.0.0.1:3080=operator')).toBe(true);
+    expect(pagePayloads[0]).toMatchObject({
+      address: { kind: 'session', sessionId: SID_A },
+      throughSeq: 7,
+    });
+  });
+
+  it('mints a fresh v1 cookie from the DSH credentials file on every call', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'lark-remote-dsh-reader-'));
+    tempDirs.push(dir);
+    const file = path.join(dir, '.credentials.yaml');
+    writeCredentials(file, Buffer.alloc(32, 1));
+    const cookies: Array<string | undefined> = [];
+    const reader = new DshSessionReader({
+      host: 'http://127.0.0.1:3080',
+      credentialsFile: file,
+      now: () => 1_700_000_000_000,
+      syncRequest: (_baseUrl, _method, _payload, cookie) => {
+        cookies.push(cookie);
+        return { items: [] };
+      },
+    });
+
+    reader.listSessions(CWD);
+    writeCredentials(file, Buffer.alloc(32, 2));
+    reader.listSessions(CWD);
+
+    expect(cookies[0]).toContain('=v1.');
+    expect(cookies[1]).toContain('=v1.');
+    expect(cookies[1]).not.toBe(cookies[0]);
+  });
+
+  it('resolves credentials under the configured dshHome', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'lark-remote-dsh-reader-'));
+    tempDirs.push(dir);
+    const seen: string[] = [];
+    const reader = new DshSessionReader({
+      host: 'http://127.0.0.1:3080',
+      dshHomeProvider: () => dir,
+      readCredentials: (file) => {
+        seen.push(file);
+        return Buffer.alloc(32, 3);
+      },
+      now: () => 1_700_000_000_000,
+      syncRequest: () => ({ items: [] }),
+    });
+
+    reader.listSessions(CWD);
+
+    expect(seen).toEqual([path.join(dir, '.credentials.yaml')]);
+  });
+
   it('accumulates usage across the whole session, not just the first 50 events', () => {
     // reader 固定请求 maxMessages=50 却把结果当 session-wide cumulative；>50 事件的会话
     // 累计 token 会少算。必须读取完整 history（或分页）再累加 usage。
@@ -242,15 +351,15 @@ describe('DshSessionReader', () => {
     const events = [];
     for (let i = 0; i < 60; i++) {
       events.push({
+        type: 'event',
         event: assistantMsg(SID_A, `msg-${i}`, { inputTokens: 1, outputTokens: 1 }),
-        view: undefined,
       });
     }
-    server.register('session.history', (payload) => {
+    server.register('session/page', (payload) => {
       const max = (payload as { maxMessages?: number }).maxMessages ?? 50;
       return {
         ok: true,
-        value: { hasMore: events.length > max, events: events.slice(0, max) },
+        value: { hasMore: events.length > max, records: events.slice(0, max) },
       };
     });
 

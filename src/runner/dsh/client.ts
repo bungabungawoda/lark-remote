@@ -1,25 +1,39 @@
 /**
- * DshClient — HTTP client for the DSH Web Host proxy.
+ * DshClient — HTTP/WebSocket client for the DSH Web Host.
  *
- * Two transports:
- *  1. unary POST /api/<method> (client-request → server-response).
- *  2. SSE GET /api/events.mux (all-session aggregated stream). Frames are
- *     ServerRequest envelopes; `method` equals the MuxFrame's `type`.
+ * DSH 0.2.x guardrails:
+ *  1. `/api/*` and `/api/remote.mux` require a signed `dsh-auth-*` cookie.
+ *     We mint the v1 cookie from DSH's durable browser-session secret; the
+ *     launch token remains a fallback via `GET /?token=<launch token>`.
+ *  2. Unary calls are POST `/api/<namespace>/<method>` envelopes whose
+ *     `payload` is `{args:<request>}`.
+ *  3. Live session data is a logical stream over `/api/remote.mux`:
+ *     `{type:'open',streamId,endpoint:'session/follow',payload}` →
+ *     `{type:'item',streamId,value}` / `{type:'end',streamId}`.
  *
- * The client is stateless apart from the base URL: each `run()` opens its own
- * mux subscription and closes it on terminal. `sessionEvents()` wraps the raw
- * mux with per-session filtering plus reconnect + history-replay dedup
- * (DSH v1 has no `since` resume — reconnection = reopen stream + refetch
- * history, dedup by event seq).
+ * The client is stateless apart from the base URL and auth cookie: each
+ * `run()` opens its own remote mux subscription and closes it on terminal.
+ * `sessionEvents()` adds per-session filtering, reconnect + follow-snapshot
+ * replay, and seq-based dedup.
  */
 
+import { randomUUID } from 'node:crypto';
+import WebSocket from 'ws';
 import { getLogger } from '../../logger/index.js';
+import {
+  DSH_COOKIE_LIFETIME_MS,
+  isDshCredentialsNotFound,
+  mintDshBrowserCookie,
+  readDshBrowserSecret,
+  resolveDshCredentialsFile,
+} from './auth.js';
 import type {
+  DshFollowFrame,
   DshModelCatalogValue,
   DshModelSelection,
   DshPresetListValue,
-  DshServerRequest,
   DshSessionEvent,
+  DshSessionPageValue,
   DshStreamItem,
   DshTokenUsage,
 } from './types.js';
@@ -28,19 +42,37 @@ interface WebSocketMessageEvent {
   data: unknown;
 }
 
-interface WebSocketLike {
+export interface WebSocketOptions {
+  headers?: Record<string, string>;
+}
+
+export interface WebSocketLike {
+  onopen: ((event: unknown) => void) | null;
   onmessage: ((event: WebSocketMessageEvent) => void) | null;
   onerror: ((event: unknown) => void) | null;
   onclose: ((event: unknown) => void) | null;
+  /** Set by transports that expose an HTTP rejection before the handshake. */
+  onunexpectedresponse?: ((event: { statusCode?: number }) => void) | null;
+  send(data: string): void;
   close(): void;
 }
 
-export type WebSocketFactory = (url: string) => WebSocketLike;
+export type WebSocketFactory = (url: string, options?: WebSocketOptions) => WebSocketLike;
 
-function defaultWebSocketFactory(url: string): WebSocketLike {
-  const Ctor = (globalThis as { WebSocket?: new (url: string) => WebSocketLike }).WebSocket;
-  if (!Ctor) throw new Error('DSH WebSocket is unavailable');
-  return new Ctor(url);
+function defaultWebSocketFactory(url: string, options?: WebSocketOptions): WebSocketLike {
+  const socket = new WebSocket(url, {
+    ...(options?.headers ? { headers: options.headers } : {}),
+  }) as unknown as WebSocketLike;
+  const raw = socket as unknown as WebSocket & {
+    on(
+      event: 'unexpected-response',
+      listener: (request: unknown, response: { statusCode?: number }) => void,
+    ): void;
+  };
+  raw.on('unexpected-response', (_request, response) => {
+    socket.onunexpectedresponse?.({ statusCode: response.statusCode });
+  });
+  return socket;
 }
 
 export class DshError extends Error {
@@ -55,64 +87,261 @@ export class DshError extends Error {
   }
 }
 
+function isDshAuthError(error: unknown): error is DshError {
+  return (
+    error instanceof DshError &&
+    error.code === 'http' &&
+    (error.details.status === 401 || error.details.status === 403)
+  );
+}
+
 /** Backoff between mux reconnects to avoid a hot loop on a dropping server. */
 const RECONNECT_BACKOFF_MS = 200;
 
+/** Follow snapshot budget. `session/follow` also stays live after the snapshot. */
+const FOLLOW_MAX_MESSAGES = 200;
+
+export interface DshClientOptions {
+  /** Configured DSH home; selects `.credentials.yaml` when no explicit file is given. */
+  dshHome?: string;
+  /**
+   * Optional DSH Web launch token. Accepts either the bare token or the full
+   * URL printed by `dsh web` (the `token` query parameter is extracted).
+   */
+  token?: string;
+  /**
+   * DSH credentials file containing the durable browser-session signing
+   * secret. Defaults to `$DSH_HOME/.credentials.yaml` or
+   * `~/.dsh/.credentials.yaml`. When readable, this is preferred over the
+   * per-process launch token and survives `dsh web` restarts.
+   */
+  credentialsFile?: string;
+  /** Injectable credentials reader (tests). */
+  readCredentials?: (file: string) => Promise<Buffer>;
+  /** Injectable clock (tests). */
+  now?: () => number;
+  /** Lifetime of minted browser cookies. */
+  cookieLifetimeMs?: number;
+  fetchImpl?: typeof fetch;
+  webSocketImpl?: WebSocketFactory;
+}
+
+/** Extract the `token` query parameter from a pasted `dsh web` URL. */
+export function extractDshToken(raw: string | undefined): string {
+  const value = (raw ?? '').trim();
+  if (!value) return '';
+  if (!value.includes('token=') && !value.includes('://')) return value;
+  try {
+    const url = new URL(value.startsWith('?') ? `http://dsh.invalid/${value}` : value);
+    return url.searchParams.get('token') ?? value;
+  } catch {
+    return value;
+  }
+}
+
+/**
+ * Remote methods take named parameters. Most session methods call their single
+ * argument `request`; `session/list` reserves `_request`; catalog methods take
+ * no arguments. The gateway rejects any other `args` shape.
+ */
+const DSH_ARGS_KEY: Record<string, string | null> = {
+  'session/list': '_request',
+  'session/create': 'request',
+  'session/prompt': 'request',
+  'session/cancel': 'request',
+  'session/selectModel': 'request',
+  'session/projections': 'request',
+  'session/page': 'request',
+  'session/follow': 'request',
+  'session/modelCatalog': null,
+  'agentPresets/list': null,
+};
+
+export function dshArgs(method: string, payload: unknown): Record<string, unknown> {
+  const key = DSH_ARGS_KEY[method];
+  if (key === null) return {};
+  if (key === undefined) return payload as Record<string, unknown>;
+  return { [key]: payload };
+}
+
 export class DshClient {
   readonly baseUrl: string;
+  private readonly token: string;
+  private readonly credentialsFile: string;
+  private readonly readCredentials: (file: string) => Promise<Buffer>;
+  private readonly now: () => number;
+  private readonly cookieLifetimeMs: number;
   private readonly fetchImpl: typeof fetch;
   private readonly webSocketImpl: WebSocketFactory;
+  private cookiePromise?: Promise<string | undefined>;
 
-  constructor(
-    baseUrl: string,
-    fetchImpl: typeof fetch = fetch,
-    webSocketImpl: WebSocketFactory = defaultWebSocketFactory,
-  ) {
+  constructor(baseUrl: string, options: DshClientOptions = {}) {
     this.baseUrl = baseUrl.replace(/\/$/, '');
-    this.fetchImpl = fetchImpl;
-    this.webSocketImpl = webSocketImpl;
+    this.token = extractDshToken(options.token);
+    this.credentialsFile =
+      options.credentialsFile?.trim() || resolveDshCredentialsFile(process.env, options.dshHome);
+    this.readCredentials = options.readCredentials ?? readDshBrowserSecret;
+    this.now = options.now ?? Date.now;
+    this.cookieLifetimeMs = options.cookieLifetimeMs ?? DSH_COOKIE_LIFETIME_MS;
+    this.fetchImpl = options.fetchImpl ?? fetch;
+    this.webSocketImpl = options.webSocketImpl ?? defaultWebSocketFactory;
+  }
+
+  /**
+   * Resolve a DSH browser cookie. The durable credentials file is read on every
+   * call so a rotated signing secret is picked up without restarting
+   * lark-remote. Token bootstrap remains a fallback for hosts without that
+   * file; unlike `/connect`, the index handshake mints a v1 cookie that DSH
+   * accepts for API and WebSocket requests across its own restarts.
+   */
+  private async authCookie(force = false): Promise<string | undefined> {
+    const fromCredentials = await this.cookieFromCredentials();
+    if (fromCredentials) return fromCredentials;
+    if (!this.token) return undefined;
+    if (force) this.cookiePromise = undefined;
+    if (!this.cookiePromise) {
+      this.cookiePromise = (async (): Promise<string> => {
+        const url = `${this.baseUrl}/?token=${encodeURIComponent(this.token)}`;
+        let res: Response;
+        try {
+          res = await this.fetchImpl(url, { method: 'GET', redirect: 'manual' });
+        } catch (err) {
+          throw new DshError('transport', `DSH auth transport error: ${(err as Error).message}`);
+        }
+        if (res.status !== 303 && !res.ok) {
+          throw new DshError(
+            'http',
+            `DSH auth HTTP ${res.status}: 凭据文件不可用，且 dsh web 启动 token 无效`,
+            { status: res.status },
+          );
+        }
+        const setCookies =
+          typeof res.headers.getSetCookie === 'function'
+            ? res.headers.getSetCookie()
+            : [res.headers.get('set-cookie')].filter((v): v is string => !!v);
+        const cookie = setCookies
+          .map((value) => value.split(';')[0]?.trim())
+          .filter((value): value is string => !!value)
+          .join('; ');
+        if (!cookie) {
+          throw new DshError('auth', 'DSH index handshake did not return a session cookie');
+        }
+        return cookie;
+      })();
+      // A failed handshake must not poison later retries (e.g. after the user
+      // updates agents.dsh.token in config.yaml and the runner is rebuilt).
+      this.cookiePromise.catch(() => {
+        this.cookiePromise = undefined;
+      });
+    }
+    return this.cookiePromise;
+  }
+
+  /** Mint a v1 browser cookie from DSH's durable signing secret. */
+  private async cookieFromCredentials(): Promise<string | undefined> {
+    try {
+      const secret = await this.readCredentials(this.credentialsFile);
+      return mintDshBrowserCookie(this.baseUrl, secret, this.now(), this.cookieLifetimeMs);
+    } catch (err) {
+      if (isDshCredentialsNotFound(err)) return undefined;
+      if (this.token) {
+        getLogger().warn(
+          `[dsh] cannot use DSH credentials file ${this.credentialsFile}: ${(err as Error).message}; ` +
+            'falling back to the launch token',
+        );
+        return undefined;
+      }
+      throw new DshError(
+        'auth',
+        `DSH auth credentials file ${this.credentialsFile}: ${(err as Error).message}`,
+      );
+    }
   }
 
   /** Perform a unary POST and return the ok value; throws DshError on failure. */
   async unary(method: string, payload: unknown): Promise<unknown> {
     const rpcId = `rpc-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
-    let res: Response;
-    try {
-      res = await this.fetchImpl(`${this.baseUrl}/api/${method}`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ type: 'client-request', rpcId, method, payload }),
-      });
-    } catch (err) {
-      throw new DshError(
-        'transport',
-        `DSH unary ${method} transport error: ${(err as Error).message}`,
-      );
-    }
-    if (!res.ok) {
-      throw new DshError('http', `DSH HTTP ${res.status} for ${method}`);
-    }
-    let body: {
-      result?: {
-        ok?: boolean;
-        value?: unknown;
-        error?: { code?: string; message?: string; details?: Record<string, unknown> };
+    for (let attempt = 0; attempt < 2; attempt++) {
+      let cookie: string | undefined;
+      try {
+        cookie = await this.authCookie(attempt > 0);
+      } catch (err) {
+        // A token bootstrap can race a DSH restart; retry once with a fresh
+        // credentials read before surfacing the deterministic auth failure.
+        if (
+          attempt === 0 &&
+          err instanceof DshError &&
+          err.code === 'http' &&
+          err.details.status === 401
+        ) {
+          continue;
+        }
+        throw err;
+      }
+      const headers: Record<string, string> = { 'content-type': 'application/json' };
+      if (cookie) headers.cookie = cookie;
+      let res: Response;
+      try {
+        res = await this.fetchImpl(`${this.baseUrl}/api/${method}`, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({
+            type: 'client-request',
+            rpcId,
+            method,
+            payload: { args: dshArgs(method, payload) },
+          }),
+        });
+      } catch (err) {
+        throw new DshError(
+          'transport',
+          `DSH unary ${method} transport error: ${(err as Error).message}`,
+        );
+      }
+      if (res.status === 401 && attempt === 0) {
+        this.cookiePromise = undefined;
+        continue;
+      }
+      if (res.status === 401) {
+        throw new DshError(
+          'http',
+          `DSH HTTP 401 for ${method}: 认证失败；请确认 ${this.credentialsFile} 可读，` +
+            '或在 config.yaml 的 agents.dsh.token 填入当前 dsh web 启动 token。' +
+            '若凭据文件可读且格式正确，可能是 DSH 版本改变了 cookie 认证格式',
+          { status: 401 },
+        );
+      }
+      if (!res.ok) {
+        throw new DshError('http', `DSH HTTP ${res.status} for ${method}`, {
+          status: res.status,
+        });
+      }
+      let body: {
+        result?: {
+          ok?: boolean;
+          value?: unknown;
+          error?: { code?: string; message?: string; details?: Record<string, unknown> };
+        };
       };
-    };
-    try {
-      body = (await res.json()) as typeof body;
-    } catch (err) {
-      throw new DshError('protocol', `DSH ${method} returned non-JSON: ${(err as Error).message}`);
+      try {
+        body = (await res.json()) as typeof body;
+      } catch (err) {
+        throw new DshError(
+          'protocol',
+          `DSH ${method} returned non-JSON: ${(err as Error).message}`,
+        );
+      }
+      if (body.result?.ok !== true) {
+        const err = body.result?.error;
+        throw new DshError(
+          err?.code ?? 'error',
+          err?.message ?? `DSH ${method} failed`,
+          err?.details ?? {},
+        );
+      }
+      return body.result.value;
     }
-    if (body.result?.ok !== true) {
-      const err = body.result?.error;
-      throw new DshError(
-        err?.code ?? 'error',
-        err?.message ?? `DSH ${method} failed`,
-        err?.details ?? {},
-      );
-    }
-    return body.result.value;
+    throw new DshError('auth', `DSH ${method} authentication failed after refresh`);
   }
 
   /** Create a session. Pass `agentPreset` to pin the session's preset (fixed at
@@ -121,7 +350,7 @@ export class DshClient {
     cwd: string;
     agentPreset?: string;
   }): Promise<{ sessionId: string; agentPreset?: string }> {
-    return (await this.unary('session.create', payload)) as {
+    return (await this.unary('session/create', payload)) as {
       sessionId: string;
       agentPreset?: string;
     };
@@ -132,124 +361,71 @@ export class DshClient {
   async selectModel(
     payload: DshModelSelection & { sessionId: string },
   ): Promise<DshModelSelection> {
-    const value = (await this.unary('session.selectModel', payload)) as {
+    const value = (await this.unary('session/selectModel', payload)) as {
       selected: DshModelSelection;
     };
     return value.selected;
   }
 
-  /** Read the model catalog (session-independent, llm.models). */
+  /** Read the model catalog (session/modelCatalog). */
   async listModels(): Promise<DshModelCatalogValue> {
-    return (await this.unary('llm.models', {})) as DshModelCatalogValue;
+    return (await this.unary('session/modelCatalog', {})) as DshModelCatalogValue;
   }
 
-  /** Read the preset catalog (agentPreset.list). */
+  /** Read the preset catalog (agentPresets/list). */
   async listPresets(): Promise<DshPresetListValue> {
-    return (await this.unary('agentPreset.list', {})) as DshPresetListValue;
+    return (await this.unary('agentPresets/list', {})) as DshPresetListValue;
   }
 
   /**
-   * Return the highest event `seq` currently persisted in session.history.
+   * Return the highest event `seq` currently persisted for the session.
    *
-   * The caller snapshots this before `session.prompt`. `session.history` is a
-   * full-session replay rather than a delta, so this high-water mark is what
-   * lets a subsequent replay skip every already-completed turn.
+   * `session/projections` is the unary watermark (the old `session.history`
+   * high-water scan is gone in 0.2.x). The caller snapshots this before
+   * `session/prompt` so a follow snapshot can skip already-completed turns.
    */
   async latestEventSeq(sessionId: string): Promise<number> {
-    const value = (await this.unary('session.history', {
-      sessionId,
-      maxMessages: 1,
-    })) as { events?: { event?: DshSessionEvent }[] };
+    const value = (await this.unary('session/projections', { sessionId })) as {
+      asOfSeq?: number;
+    } | null;
+    return typeof value?.asOfSeq === 'number' ? value.asOfSeq : -1;
+  }
 
-    let max = -1;
-    for (const entry of value.events ?? []) {
-      const seq = entry.event?.seq;
-      if (typeof seq === 'number' && seq > max) max = seq;
-    }
-    return max;
+  /** Read one cold history page. `throughSeq` normally comes from
+   *  `latestEventSeq()`; `session/page` needs an inclusive cursor. */
+  async page(
+    sessionId: string,
+    throughSeq: number,
+    maxMessages: number,
+  ): Promise<DshSessionPageValue> {
+    return (await this.unary('session/page', {
+      address: { kind: 'session', sessionId },
+      throughSeq,
+      maxMessages,
+    })) as DshSessionPageValue;
   }
 
   /**
-   * Raw SSE mux stream: yields ServerRequest envelopes until the stream ends,
-   * errors, or `signal` aborts. Does NOT reconnect (the caller owns retry).
+   * One logical `session/follow` stream over `/api/remote.mux`. The WebSocket
+   * must carry the same auth cookie as unary calls. Ends on the server's
+   * `end` frame, socket close, error, or `signal` abort.
    */
-  async *mux(signal: AbortSignal): AsyncGenerator<DshServerRequest> {
-    let res: Response;
-    try {
-      res = await this.fetchImpl(`${this.baseUrl}/api/events.mux`, {
-        method: 'GET',
-        headers: { accept: 'text/event-stream' },
-        signal,
-      });
-    } catch (err) {
-      if (signal.aborted) return;
-      throw new DshError('transport', `DSH mux open error: ${(err as Error).message}`);
-    }
-    if (!res.ok || !res.body) {
-      throw new DshError('http', `DSH mux HTTP ${res.status}`, { status: res.status });
-    }
-    const reader = res.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = '';
-    try {
-      for (;;) {
-        if (signal.aborted) break;
-        let result: ReadableStreamReadResult<Uint8Array>;
-        try {
-          result = await reader.read();
-        } catch (err) {
-          if (signal.aborted) break;
-          throw new DshError('transport', `DSH mux read error: ${(err as Error).message}`);
-        }
-        if (result.done) break;
-        buffer += decoder.decode(result.value, { stream: true });
-        let idx: number;
-        while ((idx = buffer.indexOf('\n\n')) !== -1) {
-          const chunk = buffer.slice(0, idx);
-          buffer = buffer.slice(idx + 2);
-          const dataLine = chunk.split('\n').find((l) => l.startsWith('data:'));
-          if (!dataLine) continue;
-          const json = dataLine.slice(5).trim();
-          if (!json) continue;
-          try {
-            const frame = JSON.parse(json) as DshServerRequest;
-            if (frame?.type === 'server-request') yield frame;
-          } catch {
-            getLogger().warn('[dsh] dropped malformed mux frame');
-          }
-        }
-      }
-    } finally {
-      reader.releaseLock();
-      try {
-        await res.body.cancel();
-      } catch {
-        /* ignore cancel error */
-      }
-    }
-  }
-
-  /**
-   * WebSocket mux stream. The real DSH `/api/events.mux` endpoint is a
-   * WebSocket upgrade, not HTTP SSE: each text message is already a
-   * `DshServerRequest` JSON envelope. This yields those envelopes and ends on
-   * close/abort, letting `sessionEvents()` reconnect through the same
-   * history-replay loop.
-   */
-  async *muxWebSocket(signal: AbortSignal): AsyncGenerator<DshServerRequest> {
-    let socket: WebSocketLike;
-    try {
-      socket = this.webSocketImpl(`${this.baseUrl.replace(/^http/, 'ws')}/api/events.mux`);
-    } catch (err) {
-      throw new DshError('transport', `DSH mux WebSocket open error: ${(err as Error).message}`);
-    }
-
-    const queue: DshServerRequest[] = [];
-    let waiter: ((frame: DshServerRequest | undefined) => void) | null = null;
+  private async *followStream(
+    sessionId: string,
+    signal: AbortSignal,
+  ): AsyncGenerator<DshFollowFrame> {
+    const cookie = await this.authCookie();
+    const socket = this.webSocketImpl(
+      `${this.baseUrl.replace(/^http/, 'ws')}/api/remote.mux`,
+      cookie ? { headers: { cookie } } : undefined,
+    );
+    const streamId = `lr-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+    const queue: DshFollowFrame[] = [];
+    let waiter: ((frame: DshFollowFrame | undefined) => void) | null = null;
     let ended = false;
     let failure: DshError | undefined;
 
-    const settle = (frame?: DshServerRequest): void => {
+    const settle = (frame?: DshFollowFrame): void => {
       if (waiter) {
         const resolve = waiter;
         waiter = null;
@@ -260,19 +436,83 @@ export class DshClient {
       else ended = true;
     };
 
+    socket.onopen = () => {
+      if (ended) return;
+      try {
+        socket.send(
+          JSON.stringify({
+            type: 'open',
+            streamId,
+            endpoint: 'session/follow',
+            payload: {
+              args: dshArgs('session/follow', {
+                address: { kind: 'session', sessionId },
+                assistantStream: true,
+                maxMessages: FOLLOW_MAX_MESSAGES,
+              }),
+            },
+          }),
+        );
+      } catch (err) {
+        failure = new DshError('transport', `DSH remote mux send error: ${(err as Error).message}`);
+        ended = true;
+        settle(undefined);
+      }
+    };
     socket.onmessage = (event) => {
       if (ended) return;
-      if (typeof event.data !== 'string') return;
+      const text =
+        typeof event.data === 'string'
+          ? event.data
+          : Buffer.isBuffer(event.data)
+            ? event.data.toString('utf8')
+            : String(event.data);
+      let message: {
+        type?: string;
+        streamId?: string;
+        value?: DshFollowFrame;
+        error?: { code?: string; message?: string; details?: Record<string, unknown> };
+      };
       try {
-        const frame = JSON.parse(event.data) as DshServerRequest;
-        if (frame?.type === 'server-request') settle(frame);
+        message = JSON.parse(text) as typeof message;
       } catch {
-        getLogger().warn('[dsh] dropped malformed WebSocket mux frame');
+        getLogger().warn('[dsh] dropped malformed remote mux frame');
+        return;
+      }
+      if (message.streamId !== streamId) return;
+      if (message.type === 'item' && message.value) {
+        settle(message.value);
+        return;
+      }
+      if (message.type === 'end') {
+        ended = true;
+        settle(undefined);
+        return;
+      }
+      if (message.type === 'error') {
+        failure = new DshError(
+          message.error?.code ?? 'stream',
+          message.error?.message ?? 'DSH remote stream failed',
+          message.error?.details ?? {},
+        );
+        ended = true;
+        settle(undefined);
       }
     };
     socket.onerror = () => {
       if (ended) return;
-      failure = new DshError('transport', 'DSH mux WebSocket error');
+      failure = new DshError('transport', 'DSH remote mux WebSocket error');
+      ended = true;
+      settle(undefined);
+    };
+    socket.onunexpectedresponse = (event) => {
+      if (ended) return;
+      const status = event.statusCode;
+      failure = new DshError(
+        'http',
+        `DSH remote mux WebSocket HTTP ${status === undefined ? 'error' : status}`,
+        status === undefined ? {} : { status },
+      );
       ended = true;
       settle(undefined);
     };
@@ -294,7 +534,7 @@ export class DshClient {
     };
     signal.addEventListener('abort', onAbort, { once: true });
 
-    const next = (): Promise<DshServerRequest | undefined> =>
+    const next = (): Promise<DshFollowFrame | undefined> =>
       new Promise((resolve) => {
         if (queue.length > 0) {
           resolve(queue.shift());
@@ -326,44 +566,28 @@ export class DshClient {
     }
   }
 
-  /**
-   * Replay session.history events that are newer than `state.lastSeq`, updating
-   * `state.lastSeq` as it goes. Yields each non-duplicate SessionEvent. Used for
-   * both the initial baseline (first subscription) and reconnect gap-fill.
-   */
-  private async *replayHistory(
-    sessionId: string,
-    signal: AbortSignal,
-    state: { lastSeq: number },
-    logTag: string,
-  ): AsyncGenerator<DshSessionEvent> {
-    try {
-      const value = (await this.unary('session.history', {
+  /** Translate one durable event into a stream item (approvals are surfaced
+   *  separately; everything else is forwarded to the runner). */
+  private eventItem(sessionId: string, event: DshSessionEvent): DshStreamItem | undefined {
+    if (event.type === 'approval/asked') {
+      const data = event.data as { id?: string; toolName?: string; reason?: string };
+      if (!data.id) return undefined;
+      return {
+        kind: 'approval',
         sessionId,
-        maxMessages: 100,
-      })) as { events?: { event?: DshSessionEvent }[] };
-      for (const entry of value.events ?? []) {
-        if (signal.aborted) return;
-        const ev = entry.event;
-        if (!ev) continue;
-        const seq = ev.seq;
-        if (typeof seq === 'number' && seq <= state.lastSeq) continue;
-        if (typeof seq === 'number') state.lastSeq = seq;
-        yield ev;
-      }
-    } catch (err) {
-      if (signal.aborted) return;
-      getLogger().warn(
-        `[dsh] ${logTag} failed for session ${sessionId}: ${(err as Error).message}`,
-      );
+        approvalId: data.id,
+        toolName: data.toolName ?? '',
+        ...(data.reason ? { reason: data.reason } : {}),
+      };
     }
+    return { kind: 'event', sessionId, event };
   }
 
   /**
-   * Per-session subscription: yields session events (and approval notices) for
-   * `sessionId`, auto-reconnecting on stream drop/error and replaying
-   * `session.history` to fill the gap (dedup by seq). Terminates on turn/end
-   * or `signal` abort.
+   * Per-session subscription: yields session events, assistant stream chunks
+   * and approval notices for `sessionId`, auto-reconnecting on stream
+   * drop/error and replaying the follow snapshot (dedup by seq). Terminates on
+   * turn/end or `signal` abort.
    */
   async *sessionEvents(
     sessionId: string,
@@ -371,97 +595,57 @@ export class DshClient {
     initialSeq = -1,
   ): AsyncGenerator<DshStreamItem> {
     const state = { lastSeq: initialSeq };
-
-    // Initial baseline: before opening the first live mux subscription, replay
-    // history once so events produced between prompt-accept and the mux opening
-    // (e.g. a fast turn that already ended) are not lost. Dedup by seq keeps the
-    // replay and the live stream convergent.
-    for await (const ev of this.replayHistory(
-      sessionId,
-      signal,
-      state,
-      'initial history baseline',
-    )) {
-      if (signal.aborted) return;
-      yield { kind: 'event', sessionId, event: ev };
-      if (ev.type === 'turn/end') return;
-    }
-
-    let muxMode: 'fetch' | 'websocket' = 'fetch';
-
+    let authRefreshAttempted = false;
     while (!signal.aborted) {
-      let dropped = false;
       try {
-        const frames = muxMode === 'websocket' ? this.muxWebSocket(signal) : this.mux(signal);
-        for await (const frame of frames) {
+        for await (const frame of this.followStream(sessionId, signal)) {
           if (signal.aborted) return;
-          if (frame.method === 'stream/error') {
-            dropped = true;
-            break;
-          }
-          if (frame.method === 'approval/requested') {
-            const p = frame.payload as
-              | {
-                  sessionId?: string;
-                  approvalId?: string;
-                  toolName?: string;
-                  reason?: string;
-                }
-              | undefined;
-            if (p?.sessionId === sessionId && p.approvalId) {
-              yield {
-                kind: 'approval',
-                sessionId,
-                approvalId: p.approvalId,
-                toolName: p.toolName ?? '',
-                reason: p.reason,
-              };
+          authRefreshAttempted = false;
+          if (frame.type === 'snapshot') {
+            for (const record of frame.records ?? []) {
+              const ev = record.event;
+              if (!ev || ev.seq <= state.lastSeq) continue;
+              state.lastSeq = ev.seq;
+              const item = this.eventItem(sessionId, ev);
+              if (item) yield item;
+              if (ev.type === 'turn/end') return;
             }
             continue;
           }
-          if (frame.method !== 'session/event') continue;
-          const payload = frame.payload as
-            { sessionId?: string; event?: DshSessionEvent } | undefined;
-          if (!payload || payload.sessionId !== sessionId || !payload.event) continue;
-          const seq = payload.event.seq;
-          if (typeof seq === 'number' && seq <= state.lastSeq) continue; // dedup
-          if (typeof seq === 'number') state.lastSeq = seq;
-          yield { kind: 'event', sessionId, event: payload.event };
-          if (payload.event.type === 'turn/end') return;
+          if (frame.type === 'event') {
+            const ev = frame.event;
+            if (ev.seq <= state.lastSeq) continue;
+            state.lastSeq = ev.seq;
+            const item = this.eventItem(sessionId, ev);
+            if (item) yield item;
+            if (ev.type === 'turn/end') return;
+            continue;
+          }
+          if (frame.type === 'assistant-stream') {
+            yield { kind: 'assistant-stream', sessionId, frame: frame.frame };
+          }
         }
-        dropped = true; // stream closed normally → treat as drop, replay history
       } catch (err) {
         if (signal.aborted) return;
-        if (
-          muxMode === 'fetch' &&
-          err instanceof DshError &&
-          err.code === 'http' &&
-          err.details.status === 426
-        ) {
-          getLogger().info(
-            `[dsh] mux endpoint requires WebSocket upgrade; switching transports for session ${sessionId}`,
-          );
-          muxMode = 'websocket';
-          dropped = true;
-          continue;
+        // A DSH restart invalidates the process-local v2 operator cookie. A
+        // fresh credentials read mints a new v1 cookie, so retry once; a
+        // second auth failure is deterministic and belongs on the run card.
+        if (isDshAuthError(err)) {
+          if (!authRefreshAttempted) {
+            authRefreshAttempted = true;
+            this.cookiePromise = undefined;
+            getLogger().warn(
+              `[dsh] remote mux authentication expired for session ${sessionId}; refreshing credentials and reconnecting once`,
+            );
+            continue;
+          }
+          throw err;
         }
         getLogger().warn(
-          `[dsh] mux disconnected for session ${sessionId}: ${(err as Error).message}; replaying history`,
+          `[dsh] remote mux disconnected for session ${sessionId}: ${(err as Error).message}; reconnecting`,
         );
-        dropped = true;
       }
       if (signal.aborted) return;
-      if (!dropped) break;
-
-      // Reconnect baseline: replay history events after lastSeq (dedup keeps
-      // the live stream and the replay convergent).
-      for await (const ev of this.replayHistory(sessionId, signal, state, 'history replay')) {
-        if (signal.aborted) return;
-        yield { kind: 'event', sessionId, event: ev };
-        if (ev.type === 'turn/end') return;
-      }
-
-      // Bound reconnect frequency.
       await new Promise((resolve) => setTimeout(resolve, RECONNECT_BACKOFF_MS));
     }
   }
@@ -470,4 +654,9 @@ export class DshClient {
   static usageOf(data: Record<string, unknown>): DshTokenUsage | undefined {
     return (data.usage as DshTokenUsage | undefined) ?? undefined;
   }
+}
+
+/** Stable client-side prompt identity persisted on the accepted user message. */
+export function newPromptRequestId(): string {
+  return `lark-remote-${randomUUID()}`;
 }

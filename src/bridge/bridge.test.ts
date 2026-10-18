@@ -3738,6 +3738,38 @@ describe('app-server error result session write-back', () => {
     expect(lastCard).not.toContain('输出流已结束');
     expect(sessionStore.getSessionId('user1', 'codex')).toBe('th-live-1');
   });
+
+  it('surfaces a pre-init error result instead of the generic stream-lost fallback', async () => {
+    // DSH fails session.create before it can emit synthetic system.init. The
+    // pre-init guard must still protect Claude resume replay, but when the
+    // stream ends without ever seeing init this error is the only terminal
+    // signal — the card must show it instead of the generic fallback.
+    const cwd = fs.realpathSync(tmpDir);
+    const runner: Runner = {
+      isRunning: false,
+      stop: async () => {},
+      killOrphan: () => {},
+      registerExitHandlers: () => {},
+      run: async function* () {
+        yield {
+          type: 'result',
+          subtype: 'error',
+          session_id: '',
+          errorMessage: 'DSH run failed: DSH HTTP 401 for session.create',
+        } as AgentEvent;
+      },
+    };
+    const { bridge, connector, sessionStore } = makeBridge({ runner });
+    sessionStore.setCwd('user1', cwd);
+
+    await bridge.forwardToClaude('hello', ctx, {
+      binding: { agent: 'codex' as const, sessionId: 'th-old-999' },
+    });
+
+    const lastCard = JSON.stringify(connector._cards.at(-1));
+    expect(lastCard).toContain('DSH HTTP 401 for session.create');
+    expect(lastCard).not.toContain('输出流已结束');
+  });
 });
 
 // =============================================================================

@@ -210,8 +210,33 @@ export const DEFAULT_DSH_HOST = 'http://127.0.0.1:3080';
 
 /** DSH (DeepSeek Harness) Web Host connection config. */
 const DshConfigSchema = z.object({
-  /** DSH Web Host base URL (no auth, local). */
+  /** DSH Web Host base URL (local). */
   host: z.string().url().default(DEFAULT_DSH_HOST),
+  /**
+   * 全局 DSH 未运行时是否由 lark-remote 后台拉起（detached，lark-remote
+   * 退出后继续运行）。默认 true；设为 false 时只连接已运行的 DSH。
+   */
+  manageProcess: z.boolean().default(true),
+  /** DSH 的 $DSH_HOME；默认 $DSH_HOME 或 ~/.dsh。用于启动锁和 DSH 日志目录。 */
+  dshHome: z.string().optional(),
+  /** DSH 可执行文件；默认 dsh。 */
+  dshCommand: z.string().optional(),
+  /** 后台拉起 DSH 后等待端口可用的上限（毫秒）。 */
+  startTimeoutMs: z.number().int().min(1000).max(600000).default(30_000),
+  /**
+   * DSH Web launch token (0.2.x requires auth). Paste the token from the URL
+   * printed by `dsh web`, or the whole URL — the client extracts `token`.
+   * Optional fallback: normally lark-remote mints cookies from the durable
+   * DSH browser-session secret instead.
+   */
+  token: z.string().optional(),
+  /**
+   * DSH credentials file containing the durable browser-session signing
+   * secret. Defaults to `$DSH_HOME/.credentials.yaml` or
+   * `~/.dsh/.credentials.yaml`. Reading that secret lets lark-remote mint a
+   * fresh browser cookie after an external `dsh web` restart.
+   */
+  credentialsFile: z.string().optional(),
   /**
    * Session preset（agentPreset）。preset 在 session 创建时固定，中途切换会被
    * 服务端拒绝（agent-preset-conflict）。留空 = 跟随服务端默认（不传 agentPreset）。
@@ -222,7 +247,7 @@ const DshConfigSchema = z.object({
   /** 模型 ID。留空 = 跟随服务端默认。 */
   model: z.string().optional(),
   /**
-   * 推理强度（off / low / high / max，跟随 llm.models 实际档位）。留空 = 跟随
+   * 推理强度（off / low / high / max，跟随 session/modelCatalog 实际档位）。留空 = 跟随
    * 服务端默认。枚举不硬编码（理由同上 agentPreset）。
    */
   reasoningEffort: z.string().optional(),
