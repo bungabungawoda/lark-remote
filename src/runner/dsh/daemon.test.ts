@@ -105,7 +105,7 @@ describe('DSH daemon URL helpers', () => {
     expect(isLoopbackHttpUrl('http://localhost:3080')).toBe(true);
     expect(isLoopbackHttpUrl('http://[::1]:3080')).toBe(true);
     expect(isLoopbackHttpUrl('https://127.0.0.1:3080')).toBe(false);
-    expect(isLoopbackHttpUrl('http://10.0.0.8:3080')).toBe(false);
+    expect(isLoopbackHttpUrl('http://192.0.2.8:3080')).toBe(false);
     expect(isLoopbackHttpUrl('not a url')).toBe(false);
   });
 
