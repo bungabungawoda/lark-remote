@@ -15,6 +15,15 @@
 import { describe, it, expect } from 'vitest';
 import path from 'node:path';
 import fs from 'node:fs';
+import {
+  ClaudeRunner,
+  CodexAppServerRunner,
+  DshRunner,
+  KimiAcpRunner,
+  OpencodeAcpRunner,
+  PiRpcRunner,
+} from './index.js';
+import { AGENT_KINDS, COMPACT_CAPABILITY, type AgentKind } from './types.js';
 
 const runnerDir = path.resolve(__dirname, '../../src/runner');
 
@@ -77,5 +86,54 @@ describe('runner structure: architecture guards', () => {
     // claude（SpawningRunner 系）：stdio 型通道 = 关 stdin，在基类按 agent+pid 登记
     expect(read('common/spawning-runner.ts')).toContain('agentStopperRegistry.register');
     expect(read('claude/session.ts')).toContain("agent: 'claude'");
+  });
+});
+
+describe('compact capability matrix', () => {
+  /**
+   * 每个 kind 的 runner 类（原型链上取 runCompact，基类实现即可）。
+   * 这张表与 `COMPACT_CAPABILITY` 都是 `Record<AgentKind, …>`：新增 agent 时
+   * 两处都缺项会直接编译失败，必须显式回答「能不能压缩」。
+   */
+  const RUNNER_PROTOTYPES: Record<AgentKind, object> = {
+    claude: ClaudeRunner.prototype,
+    codex: CodexAppServerRunner.prototype,
+    opencode: OpencodeAcpRunner.prototype,
+    pi: PiRpcRunner.prototype,
+    kimi: KimiAcpRunner.prototype,
+    dsh: DshRunner.prototype,
+  };
+
+  it('声明的 compact 能力与 runner 实现一一对应（禁止再靠鸭子类型静默漏实现）', () => {
+    // 回归：dsh 接入时没有任何一处要求它实现 runCompact，于是 run 卡片按
+    // `'runCompact' in runner` 判定为「无能力」，按钮整个不渲染、无日志、无
+    // 测试失败（2026-10-17）。这条用例把「声明」和「实现」钉死在一起。
+    for (const kind of AGENT_KINDS) {
+      const proto = RUNNER_PROTOTYPES[kind] as Record<string, unknown>;
+      const implemented = typeof proto.runCompact === 'function';
+      expect(
+        implemented,
+        `${kind}: COMPACT_CAPABILITY=${COMPACT_CAPABILITY[kind]} but runCompact implemented=${implemented}`,
+      ).toBe(COMPACT_CAPABILITY[kind]);
+    }
+  });
+
+  it('compact-capable runners declare lifetime=workspace', () => {
+    // finalizeRun 只给 workspace-lifetime runner 记录 compactableRuns（终态卡
+    // 的 Compact 按钮靠 runId 反查 sessionId/cwd）。声明了能力却没有 lifetime
+    // 的 runner 会渲染出一个点了只回「该任务已结束」的死按钮——dsh 接入时正是
+    // 这样漏的（2026-10-17）。
+    const LIFETIME_SOURCE: Record<AgentKind, string> = {
+      claude: 'claude/runner.ts',
+      codex: 'common/connection-based-runner.ts',
+      opencode: 'common/connection-based-runner.ts',
+      pi: 'common/connection-based-runner.ts',
+      kimi: 'common/connection-based-runner.ts',
+      dsh: 'dsh/runner.ts',
+    };
+    for (const kind of AGENT_KINDS) {
+      if (!COMPACT_CAPABILITY[kind]) continue;
+      expect(read(LIFETIME_SOURCE[kind]), `${kind} lifetime`).toContain("lifetime = 'workspace'");
+    }
   });
 });

@@ -23,22 +23,27 @@ function dshConfig(
 }
 
 describe('DshConfigBuilder', () => {
-  it('buildFields exposes host, preset, model, custom-model and effort fields', () => {
+  it('buildFields exposes host, preset, permission, model, custom-model and effort fields', () => {
     const builder = new DshConfigBuilder();
     const fields = builder.buildFields(config);
     expect(fields.map((f) => f.key)).toEqual([
       'agents.dsh.host',
       'agents.dsh.agentPreset',
+      'agents.dsh.permissionPreset',
+      'agents.dsh.permissionPreset',
       'agents.dsh.model',
       'agents.dsh.model',
       'agents.dsh.reasoningEffort',
     ]);
     // host 保留 input
     expect(fields[0]).toMatchObject({ key: 'agents.dsh.host', type: 'input' });
-    // preset/model/effort 是 select；fields[3] 是自定义模型输入框（input）
+    // preset/permission/model/effort 是 select；fields[3] 是权限说明；
+    // fields[5] 是自定义模型输入框（input）
     expect(fields[1].type).toBe('select');
-    expect(fields[3].type).toBe('input');
-    expect(fields[4].type).toBe('select');
+    expect(fields[2].type).toBe('select');
+    expect(fields[3].type).toBe('note');
+    expect(fields[5].type).toBe('input');
+    expect(fields[6].type).toBe('select');
   });
 
   it('never renders the configured launch token in card fields', () => {
@@ -60,10 +65,36 @@ describe('DshConfigBuilder', () => {
     expect(values).toEqual(['', 'standard', 'minimal', 'ptc', 'cordis']);
   });
 
+  it('permission select offers fallback presets plus follow-default sentinel', () => {
+    const builder = new DshConfigBuilder();
+    const fields = builder.buildFields(config);
+    const permission = fields[2];
+    const options = permission.options as Array<{ text: string; value: string }>;
+    expect(options[0]).toEqual({ text: '跟随服务端默认', value: '' });
+    expect(options.map((o) => o.value)).toEqual([
+      '',
+      'read-only',
+      'workspace-write',
+      'danger-full-access',
+    ]);
+    expect(options[3].text).toContain('danger-full-access');
+    expect(fields[3].type).toBe('note');
+  });
+
+  it('keeps a configured custom permission preset selectable when the catalog is offline', () => {
+    const builder = new DshConfigBuilder();
+    const cfg = dshConfig({ permissionPreset: 'team-policy' });
+    const permission = builder.buildFields(cfg)[2];
+    expect(permission.options as Array<{ value: string }>).toContainEqual({
+      text: 'team-policy（当前配置，服务端未列出）',
+      value: 'team-policy',
+    });
+  });
+
   it('model select offers fallback models plus follow-default sentinel', () => {
     const builder = new DshConfigBuilder();
     const fields = builder.buildFields(config);
-    const model = fields[2];
+    const model = fields[4];
     const options = model.options as Array<string | { text: string; value: string }>;
     const values = options.map((o) => (typeof o === 'string' ? o : o.value));
     expect(values).toContain('');
@@ -74,7 +105,7 @@ describe('DshConfigBuilder', () => {
   it('effort select offers fallback efforts plus follow-default sentinel', () => {
     const builder = new DshConfigBuilder();
     const fields = builder.buildFields(config);
-    const effort = fields[4];
+    const effort = fields[6];
     const options = effort.options as Array<string | { text: string; value: string }>;
     expect(options[0]).toEqual({ text: '跟随服务端默认', value: '' });
     const values = options.map((o) => (typeof o === 'string' ? o : o.value));
@@ -85,13 +116,15 @@ describe('DshConfigBuilder', () => {
     const builder = new DshConfigBuilder();
     const cfg = dshConfig({
       agentPreset: 'code',
+      permissionPreset: 'read-only',
       model: 'deepseek-v4-pro',
       reasoningEffort: 'low',
     });
     const fields = builder.buildFields(cfg);
     expect(fields[1].currentValue).toBe('code');
-    expect(fields[2].currentValue).toBe('deepseek-v4-pro');
-    expect(fields[4].currentValue).toBe('low');
+    expect(fields[2].currentValue).toBe('read-only');
+    expect(fields[4].currentValue).toBe('deepseek-v4-pro');
+    expect(fields[6].currentValue).toBe('low');
   });
 
   it('custom model outside catalog renders the custom-model input', () => {
@@ -99,8 +132,8 @@ describe('DshConfigBuilder', () => {
     const cfg = dshConfig({ model: 'my-custom-model' });
     const fields = builder.buildFields(cfg);
     // select currentValue undefined（不在选项中），自定义输入框带当前值
-    expect(fields[2].currentValue).toBeUndefined();
-    expect(fields[3]).toMatchObject({
+    expect(fields[4].currentValue).toBeUndefined();
+    expect(fields[5]).toMatchObject({
       key: 'agents.dsh.model',
       type: 'input',
       currentValue: 'my-custom-model',
@@ -220,6 +253,17 @@ describe('DshConfigBuilder', () => {
       authorable: false,
       hasDocument: false,
     };
+    const permissionCatalog = {
+      options: [
+        { value: 'workspace-write', name: 'workspace-write' },
+        { value: 'danger-full-access', name: 'danger-full-access' },
+      ],
+      defaultOptions: [
+        { value: 'workspace-write', name: 'workspace-write' },
+        { value: 'danger-full-access', name: 'danger-full-access' },
+      ],
+      defaultPreset: 'workspace-write',
+    };
     let calls = 0;
     const clientFactory = (): DshCatalogClient => ({
       listModels: async () => {
@@ -229,6 +273,10 @@ describe('DshConfigBuilder', () => {
       listPresets: async () => {
         calls++;
         return presets;
+      },
+      listPermissionPresets: async () => {
+        calls++;
+        return permissionCatalog;
       },
     });
 
@@ -240,12 +288,20 @@ describe('DshConfigBuilder', () => {
       text: 'code（PTC 模式）',
       value: 'code',
     });
-    expect(fields[2].options as string[]).toContain('deepseek-v4-pro');
-    expect(calls).toBe(2);
+    expect(fields[2].options as Array<{ text: string; value: string }>).toContainEqual({
+      text: 'danger-full-access（完全访问，关闭审批）',
+      value: 'danger-full-access',
+    });
+    expect(fields[2].options as Array<{ text: string; value: string }>).toContainEqual({
+      text: '跟随服务端默认（当前 workspace-write）',
+      value: '',
+    });
+    expect(fields[4].options as string[]).toContain('deepseek-v4-pro');
+    expect(calls).toBe(3);
 
     // host 相同 → 第二次 prefetch 短路（不重复请求）
     await builder.prefetch('http://127.0.0.1:3080');
-    expect(calls).toBe(2);
+    expect(calls).toBe(3);
   });
 
   it('prefetch failure falls back to fixed catalog without throwing', async () => {
@@ -256,6 +312,9 @@ describe('DshConfigBuilder', () => {
       listPresets: async () => {
         throw new Error('offline');
       },
+      listPermissionPresets: async () => {
+        throw new Error('offline');
+      },
     });
     const builder = new DshConfigBuilder(clientFactory);
     await expect(builder.prefetch('http://127.0.0.1:3080')).resolves.toBeUndefined();
@@ -264,7 +323,11 @@ describe('DshConfigBuilder', () => {
       text: 'standard（标准模式）',
       value: 'standard',
     });
-    expect(fields[2].options as string[]).toContain('deepseek-flash');
+    expect(fields[2].options as Array<{ value: string }>).toContainEqual({
+      text: 'danger-full-access（完全访问，关闭审批）',
+      value: 'danger-full-access',
+    });
+    expect(fields[4].options as string[]).toContain('deepseek-flash');
   });
 
   it('passes credentialsFile through and keys the prefetch cache by it', async () => {
@@ -278,6 +341,11 @@ describe('DshConfigBuilder', () => {
       return {
         listModels: async () => ({ groups: [] }),
         listPresets: async () => ({ presets: [] }),
+        listPermissionPresets: async () => ({
+          options: [],
+          defaultOptions: [],
+          defaultPreset: 'workspace-write',
+        }),
       };
     };
     const builder = new DshConfigBuilder(clientFactory);

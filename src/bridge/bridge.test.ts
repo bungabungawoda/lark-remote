@@ -753,6 +753,116 @@ describe('Bridge.forwardToClaude', () => {
     expect(json).toContain('"cmd":"new-session"');
   });
 
+  it('dsh run card shows compact button once the runner implements runCompact', async () => {
+    // 回归：dsh 曾长期没有任何 runCompact 实现，能力又只靠鸭子探测——终态卡
+    // 直接不渲染按钮，用户侧只看到「少了一个按钮」。现在 dsh 走 commands/execute
+    // 实现压缩，能力表声明 + 实现都在，按钮必须出现。
+    const runner = createStubRunner({
+      mode: 'streaming',
+      events: [
+        { type: 'system', subtype: 'init', session_id: 's-dsh', cwd: tmpDir, model: 'DSH' },
+        { type: 'result', subtype: 'success', session_id: 's-dsh' },
+      ],
+    });
+    (runner as unknown as { runCompact: unknown }).runCompact = async function* () {};
+    const config = AppConfigSchema.parse({
+      feishu: { appId: 'test', appSecret: 'test' },
+      claude: { model: 'opus', stopGraceMs: 5000 },
+      cwd: { default: '' },
+      defaultAgent: 'dsh',
+    });
+    const { bridge, sessionStore, connector } = makeBridge({ runner, config });
+    sessionStore.setCwd(ctx.userId, tmpDir);
+
+    await bridge.forwardToClaude('hi', ctx);
+
+    expect(bridge.hasRunCompact(tmpDir, 'dsh')).toBe(true);
+    const json = JSON.stringify(connector._cards.at(-1));
+    expect(json).toContain('"cmd":"compact"');
+    expect(json).toContain('"cmd":"new-session"');
+  });
+
+  it('dsh run card hides compact button when the runner lacks runCompact (capability mismatch fails closed)', async () => {
+    // 对照组：声明表说 dsh 支持，runner 却没实现（回归/半成品接入）——按钮
+    // 仍然必须是隐藏的（fail closed），而不是渲染一个点不动的按钮。
+    const runner = createStubRunner({
+      mode: 'streaming',
+      events: [
+        { type: 'system', subtype: 'init', session_id: 's-dsh-nc', cwd: tmpDir, model: 'DSH' },
+        { type: 'result', subtype: 'success', session_id: 's-dsh-nc' },
+      ],
+    });
+    const config = AppConfigSchema.parse({
+      feishu: { appId: 'test', appSecret: 'test' },
+      claude: { model: 'opus', stopGraceMs: 5000 },
+      cwd: { default: '' },
+      defaultAgent: 'dsh',
+    });
+    const { bridge, sessionStore, connector } = makeBridge({ runner, config });
+    sessionStore.setCwd(ctx.userId, tmpDir);
+
+    await bridge.forwardToClaude('hi', ctx);
+
+    expect(bridge.hasRunCompact(tmpDir, 'dsh')).toBe(false);
+    const json = JSON.stringify(connector._cards.at(-1));
+    expect(json).not.toContain('"cmd":"compact"');
+  });
+
+  it('dsh compact button on a finished run reaches runCompact with that run sessionId', async () => {
+    // 验证什么：终态卡按钮 → compactableRuns（要求 lifetime='workspace'）→
+    // runner.runCompact。缺 lifetime 时按钮渲染出来但点击只回「该任务已结束」，
+    // 所以这条用例同时钉住 dsh 的 lifetime 声明。
+    const cwd = fs.realpathSync(tmpDir);
+    const runCompactSpy = vi.fn(async function* (): AsyncGenerator<AgentEvent> {
+      yield {
+        type: 'system',
+        subtype: 'init',
+        session_id: 's-dsh-c',
+        cwd,
+        model: 'DSH',
+      } as AgentEvent;
+      yield {
+        type: 'assistant',
+        message: { content: [{ type: 'text', text: 'Compacted 3 history items.' }] },
+      } as AgentEvent;
+      yield { type: 'result', subtype: 'success', session_id: 's-dsh-c' } as AgentEvent;
+    });
+    const runner = createStubRunner({
+      mode: 'streaming',
+      events: [
+        { type: 'system', subtype: 'init', session_id: 's-dsh-c', cwd, model: 'DSH' },
+        { type: 'result', subtype: 'success', session_id: 's-dsh-c' },
+      ],
+    });
+    (runner as unknown as { runCompact: unknown }).runCompact = runCompactSpy;
+    (runner as unknown as { lifetime: string }).lifetime = 'workspace';
+    const config = AppConfigSchema.parse({
+      feishu: { appId: 'test', appSecret: 'test' },
+      claude: { model: 'opus', stopGraceMs: 5000 },
+      cwd: { default: '' },
+      defaultAgent: 'dsh',
+    });
+    const { bridge, sessionStore, connector } = makeBridge({ runner, config });
+    sessionStore.setCwd(ctx.userId, cwd);
+
+    await bridge.forwardToClaude('hi', ctx);
+
+    const runId = JSON.stringify(connector._cards.at(-1) ?? '').match(
+      /"cmd":"compact","runId":"([^"]+)"/,
+    )?.[1];
+    expect(runId).toBeDefined();
+
+    await bridge.handleCompactAction({ runId: runId! }, ctx);
+
+    expect(runCompactSpy).toHaveBeenCalledWith('', { cwd, sessionId: 's-dsh-c' });
+    const sentJson = connector._sent.map((s) => JSON.stringify(s.input));
+    expect(sentJson.some((j) => j.includes('该任务已结束或不属于当前会话'))).toBe(false);
+    // 压缩卡终态 done，且不得再渲染 Compact 按钮（防递归压缩）。
+    const compactCard = JSON.stringify(connector._cards.at(-1));
+    expect(compactCard).toContain('Compacted 3 history items.');
+    expect(compactCard).not.toContain('"cmd":"compact"');
+  });
+
   it('unsent fallback run card hides compact button when runner lacks runCompact', async () => {
     // 回归：finalizeRun 的 unsent fallback 卡（streamCard 抛错走静态卡）若不传
     // compactSupported 会渲染出 DSH 等无 runCompact 能力 agent 的死按钮
