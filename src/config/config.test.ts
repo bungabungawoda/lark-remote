@@ -74,6 +74,14 @@ describe('loadConfig', () => {
     });
   });
 
+  it('accepts a DSH credentials file override', () => {
+    const config = AppConfigSchema.parse({
+      feishu: { appId: 'cli_test123', appSecret: 'secret_test123' },
+      agents: { dsh: { credentialsFile: '/tmp/dsh/.credentials.yaml' } },
+    });
+    expect(config.agents?.dsh?.credentialsFile).toBe('/tmp/dsh/.credentials.yaml');
+  });
+
   it('tolerates legacy output.show* keys in existing config files (stripped)', () => {
     const p = writeConfig(
       VALID_CONFIG +

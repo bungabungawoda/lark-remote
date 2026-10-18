@@ -10,11 +10,13 @@ import { currentPlatform, isWin32 } from '../../../src/platform/select.js';
 import { DshRunner } from './runner.js';
 import { DshTranslator, mapUsage } from './translator.js';
 import { FakeDshServer } from '../../../tests/lib/fake-dsh-server.js';
+import type { DshDaemon } from './daemon.js';
 import type { DshSessionEvent } from './types.js';
 import type { AgentSessionReader } from '../types.js';
 
 const CWD = '/home/user/project';
 const SID = 'aaaaaaaa-1111-2222-3333-444444444444';
+const NO_CREDENTIALS_FILE = '/nonexistent/lark-remote-test/.credentials.yaml';
 
 const stubReader: AgentSessionReader = {
   listSessions: () => ({ sessions: [], total: 0 }),
@@ -97,7 +99,7 @@ describe('DshTranslator', () => {
   });
 
   it('maps turn/end aborted and interrupted → interrupted result', () => {
-    for (const reason of ['aborted', 'interrupted']) {
+    for (const reason of ['aborted', 'interrupted', 'forked']) {
       const t = new DshTranslator();
       const events = t.eventToAgentEvents(turnEnd(reason, 1), SID);
       expect(events[0]).toMatchObject({ type: 'result', subtype: 'interrupted' });
@@ -114,6 +116,21 @@ describe('DshTranslator', () => {
         errorMessage: `turn ended with reason: ${reason}`,
       });
     }
+  });
+
+  it('includes the LLM failure detail in an error result', () => {
+    const t = new DshTranslator();
+    const event = turnEnd('error', 1);
+    event.data.reason = {
+      kind: 'error',
+      error: { name: 'LlmError', message: 'provider overloaded' },
+    };
+    const result = t.eventToAgentEvents(event, SID)[0];
+    expect(result).toMatchObject({
+      type: 'result',
+      subtype: 'error',
+      errorMessage: 'turn ended with reason: error: provider overloaded',
+    });
   });
 
   it('records usage from assistant/message and attaches it to the result', () => {
@@ -160,8 +177,8 @@ describe('DshClient / DshRunner integration', () => {
 
   it('runs a full turn to success: init → assistant deltas → result with usage', async () => {
     server = new FakeDshServer();
-    server.register('session.create', () => ({ ok: true, value: { sessionId: SID } }));
-    server.register('session.prompt', () => ({ ok: true, value: { accepted: true } }));
+    server.register('session/create', () => ({ ok: true, value: { sessionId: SID } }));
+    server.register('session/prompt', () => ({ ok: true, value: { accepted: true } }));
     server.setMuxFrames([
       sessionEventFrame(SID, textChunk('Hello ', 1)),
       sessionEventFrame(SID, textChunk('world', 2)),
@@ -199,7 +216,7 @@ describe('DshClient / DshRunner integration', () => {
   it('prompt is sent with queue mode and text content', async () => {
     server = new FakeDshServer();
     let promptPayload: unknown;
-    server.register('session.prompt', (p) => {
+    server.register('session/prompt', (p) => {
       promptPayload = p;
       return { ok: true, value: { accepted: true } };
     });
@@ -208,22 +225,23 @@ describe('DshClient / DshRunner integration', () => {
 
     const runner = new DshRunner({ kind: 'dsh', sessionReader: stubReader, host: server.baseUrl });
     await collect(runner.run('please help', { cwd: CWD, sessionId: SID }));
-    expect(promptPayload).toEqual({
+    expect(promptPayload).toMatchObject({
       sessionId: SID,
       mode: 'queue',
       content: [{ type: 'text', text: 'please help' }],
     });
+    expect((promptPayload as { requestId?: string }).requestId).toMatch(/^lark-remote-/);
   });
 
   it('creates a session when no sessionId is provided', async () => {
     server = new FakeDshServer();
     let created = false;
-    server.register('session.create', (p) => {
+    server.register('session/create', (p) => {
       created = true;
       expect(p).toEqual({ cwd: CWD });
       return { ok: true, value: { sessionId: SID } };
     });
-    server.register('session.prompt', () => ({ ok: true, value: { accepted: true } }));
+    server.register('session/prompt', () => ({ ok: true, value: { accepted: true } }));
     server.setMuxFrames([sessionEventFrame(SID, turnEnd('completed', 1))]);
     await server.start();
 
@@ -233,15 +251,70 @@ describe('DshClient / DshRunner integration', () => {
     expect(events.find((e) => e.type === 'result')).toMatchObject({ subtype: 'success' });
   });
 
-  it('passes agentPreset to session.create and selectModel to align model before run', async () => {
+  it('waits for the shared DSH daemon before creating a session', async () => {
+    server = new FakeDshServer();
+    let ensured = false;
+    server.register('session/create', () => {
+      expect(ensured).toBe(true);
+      return { ok: true, value: { sessionId: SID } };
+    });
+    server.register('session/prompt', () => ({ ok: true, value: { accepted: true } }));
+    server.setMuxFrames([sessionEventFrame(SID, turnEnd('completed', 1))]);
+    await server.start();
+
+    const daemon = {
+      ensure: async () => {
+        ensured = true;
+        return server.baseUrl;
+      },
+    } as unknown as DshDaemon;
+    const runner = new DshRunner({
+      kind: 'dsh',
+      sessionReader: stubReader,
+      daemon,
+      host: server.baseUrl,
+    });
+    await collect(runner.run('hi', { cwd: CWD }));
+    expect(ensured).toBe(true);
+  });
+
+  it('surfaces a daemon failure before any session call', async () => {
+    server = new FakeDshServer();
+    let created = false;
+    server.register('session/create', () => {
+      created = true;
+      return { ok: true, value: { sessionId: SID } };
+    });
+    await server.start();
+
+    const daemon = {
+      ensure: async () => {
+        throw new Error('DSH 未运行');
+      },
+    } as unknown as DshDaemon;
+    const runner = new DshRunner({
+      kind: 'dsh',
+      sessionReader: stubReader,
+      daemon,
+      host: server.baseUrl,
+    });
+
+    const events = await collect(runner.run('hi', { cwd: CWD }));
+    const result = events.find((event) => event.type === 'result');
+    expect(result).toMatchObject({ subtype: 'error' });
+    expect(result?.type === 'result' ? result.errorMessage : '').toContain('DSH 未运行');
+    expect(created).toBe(false);
+  });
+
+  it('passes agentPreset to session/create and selectModel to align model before run', async () => {
     server = new FakeDshServer();
     let createPayload: unknown;
     let selectPayload: unknown;
-    server.register('session.create', (p) => {
+    server.register('session/create', (p) => {
       createPayload = p;
       return { ok: true, value: { sessionId: SID } };
     });
-    server.register('session.selectModel', (p) => {
+    server.register('session/selectModel', (p) => {
       selectPayload = p;
       return {
         ok: true,
@@ -254,7 +327,7 @@ describe('DshClient / DshRunner integration', () => {
         },
       };
     });
-    server.register('session.prompt', () => ({ ok: true, value: { accepted: true } }));
+    server.register('session/prompt', () => ({ ok: true, value: { accepted: true } }));
     server.setMuxFrames([sessionEventFrame(SID, turnEnd('completed', 1))]);
     await server.start();
 
@@ -280,12 +353,12 @@ describe('DshClient / DshRunner integration', () => {
   it('selectModel failure only warns and does not block the run', async () => {
     server = new FakeDshServer();
     let selectCalled = false;
-    server.register('session.create', () => ({ ok: true, value: { sessionId: SID } }));
-    server.register('session.selectModel', () => {
+    server.register('session/create', () => ({ ok: true, value: { sessionId: SID } }));
+    server.register('session/selectModel', () => {
       selectCalled = true;
       return { ok: false, error: { code: 'model-not-found', message: 'no such model' } };
     });
-    server.register('session.prompt', () => ({ ok: true, value: { accepted: true } }));
+    server.register('session/prompt', () => ({ ok: true, value: { accepted: true } }));
     server.setMuxFrames([sessionEventFrame(SID, turnEnd('completed', 1))]);
     await server.start();
 
@@ -304,15 +377,15 @@ describe('DshClient / DshRunner integration', () => {
   it.skipIf(isWin32(currentPlatform))(
     'selectModel aligns once per session; repeat runs on the same session skip it',
     async () => {
-      // Regression: session.selectModel writes the server global default, so a
+      // Regression: session/selectModel writes the server global default, so a
       // repeat run on the same session must not re-send it (write amplification).
       // history always returns empty (fresh-session semantics); each run's turn/end
       // is pushed when that run's prompt is accepted (causal, no pre-queued frames).
       server = new FakeDshServer();
       let selectCount = 0;
       let promptCount = 0;
-      server.register('session.create', () => ({ ok: true, value: { sessionId: SID } }));
-      server.register('session.selectModel', () => {
+      server.register('session/create', () => ({ ok: true, value: { sessionId: SID } }));
+      server.register('session/selectModel', () => {
         selectCount += 1;
         return {
           ok: true,
@@ -321,7 +394,7 @@ describe('DshClient / DshRunner integration', () => {
           },
         };
       });
-      server.register('session.prompt', () => {
+      server.register('session/prompt', () => {
         promptCount += 1;
         // 与真实 DSH 一致：turn/end 只在该 prompt 被接受后产生。若两帧预先入队，
         // 固定间隔推送会让 run1 尚未关闭的订阅吞掉第二帧，run2 饿死等自己的
@@ -329,7 +402,10 @@ describe('DshClient / DshRunner integration', () => {
         server.pushMuxFrame(sessionEventFrame(SID, turnEnd('completed', promptCount)));
         return { ok: true, value: { accepted: true } };
       });
-      server.register('session.history', () => ({ ok: true, value: { events: [] } }));
+      server.register('session/projections', () => ({
+        ok: true,
+        value: { asOfSeq: -1, values: {} },
+      }));
       await server.start();
 
       const runner = new DshRunner({
@@ -348,12 +424,12 @@ describe('DshClient / DshRunner integration', () => {
   it('does not call selectModel when model is not configured', async () => {
     server = new FakeDshServer();
     let selectCalled = false;
-    server.register('session.create', () => ({ ok: true, value: { sessionId: SID } }));
-    server.register('session.selectModel', () => {
+    server.register('session/create', () => ({ ok: true, value: { sessionId: SID } }));
+    server.register('session/selectModel', () => {
       selectCalled = true;
       return { ok: true, value: {} };
     });
-    server.register('session.prompt', () => ({ ok: true, value: { accepted: true } }));
+    server.register('session/prompt', () => ({ ok: true, value: { accepted: true } }));
     server.setMuxFrames([sessionEventFrame(SID, turnEnd('completed', 1))]);
     await server.start();
 
@@ -364,16 +440,18 @@ describe('DshClient / DshRunner integration', () => {
 
   it('surfaces approval/requested as an assistant prompt (not silently parked)', async () => {
     server = new FakeDshServer();
-    server.register('session.prompt', () => ({ ok: true, value: { accepted: true } }));
+    server.register('session/prompt', () => ({ ok: true, value: { accepted: true } }));
     server.setMuxFrames([
       {
-        type: 'approval/requested',
-        sessionId: SID,
-        approvalId: 'appr-1',
-        toolName: 'bash',
-        reason: 'run command',
+        type: 'session/event',
+        event: {
+          type: 'approval/asked',
+          seq: 1,
+          time: 1700000000000,
+          data: { id: 'appr-1', toolName: 'bash', reason: 'run command' },
+        },
       },
-      sessionEventFrame(SID, turnEnd('completed', 1)),
+      sessionEventFrame(SID, turnEnd('completed', 2)),
     ]);
     await server.start();
 
@@ -388,25 +466,22 @@ describe('DshClient / DshRunner integration', () => {
     expect(events.find((e) => e.type === 'result')).toMatchObject({ subtype: 'success' });
   });
 
-  it('reconnects after SSE drop and replays history (dedup by seq)', async () => {
+  it('reconnects after remote mux drop and replays the snapshot (dedup by seq)', async () => {
     server = new FakeDshServer();
-    server.register('session.prompt', () => ({ ok: true, value: { accepted: true } }));
-    // History is call-count-aware: the first two reads are the pre-prompt
-    // snapshot and the initial baseline (both before/around the live mux), and
-    // are empty; the read after the drop fills the reconnect gap. Script:
-    // connection 1 emits live-a + live-b then the server drops mid-turn
-    // ({close:true}); reconnect history fills the replay-part gap; the
-    // reconnected stream (connection 2) delivers turn/end. Dedup skips
-    // already-seen seqs across the live/replay/reopen boundary.
-    let historyReads = 0;
-    server.register('session.history', () => {
-      historyReads++;
-      if (historyReads <= 2) return { ok: true, value: { events: [] } };
-      return {
-        ok: true,
-        value: { events: [{ event: textChunk('replay-part', 5), view: undefined }] },
-      };
-    });
+    server.register('session/prompt', () => ({ ok: true, value: { accepted: true } }));
+    // Connection 1 emits live-a + live-b then the server drops mid-turn
+    // ({close:true}); the reconnect snapshot fills the replay-part gap and the
+    // reconnected stream delivers turn/end. Dedup skips already-seen seqs.
+    server.setHistorySequence([
+      { records: [] },
+      {
+        records: [
+          { type: 'event', event: textChunk('live-a', 1) },
+          { type: 'event', event: textChunk('live-b', 2) },
+          { type: 'event', event: textChunk('replay-part', 5) },
+        ],
+      },
+    ]);
     server.setMuxFrames([
       sessionEventFrame(SID, textChunk('live-a', 1)),
       sessionEventFrame(SID, textChunk('live-b', 2)),
@@ -430,26 +505,17 @@ describe('DshClient / DshRunner integration', () => {
     expect(events.find((e) => e.type === 'result')).toMatchObject({ subtype: 'success' });
   });
 
-  it('recovers a turn that ends before the mux opens (initial history baseline)', async () => {
-    // regression: prompt is accepted and the turn completes before the SSE
-    // subscription opens (empty live mux). The initial history baseline must
-    // replay the already-recorded turn/end so the run reaches a success terminal
-    // instead of hanging until the idle watchdog.
+  it('recovers a turn that ends before the mux opens (follow snapshot)', async () => {
+    // Prompt is accepted and the turn completes before the subscription opens.
+    // The follow snapshot must replay the already-recorded turn/end so the run
+    // reaches a success terminal instead of hanging until the idle watchdog.
     server = new FakeDshServer();
-    server.register('session.prompt', () => ({ ok: true, value: { accepted: true } }));
-    let historyReads = 0;
-    server.register('session.history', () => {
-      historyReads++;
-      if (historyReads === 1) return { ok: true, value: { events: [] } };
-      return {
-        ok: true,
-        value: {
-          events: [
-            { event: textChunk('already-done ', 1), view: undefined },
-            { event: turnEnd('completed', 2), view: undefined },
-          ],
-        },
-      };
+    server.register('session/prompt', () => ({ ok: true, value: { accepted: true } }));
+    server.setHistoryValue({
+      records: [
+        { type: 'event', event: textChunk('already-done ', 1) },
+        { type: 'event', event: turnEnd('completed', 2) },
+      ],
     });
     server.setMuxFrames([]); // live stream carries nothing — the turn already ended
     await server.start();
@@ -467,43 +533,26 @@ describe('DshClient / DshRunner integration', () => {
   });
 
   it('second prompt in the same session consumes the current turn, not the first turn', async () => {
-    // Regression for repeated first-answer symptoms: session.history is the
-    // FULL session (multiple turns), so the initial baseline must start after
-    // the pre-prompt high-water mark instead of replaying turn 1 and stopping
-    // at its turn/end.
+    // The follow snapshot is the FULL session (multiple turns), so it must
+    // start after the pre-prompt high-water mark instead of replaying turn 1
+    // and stopping at its turn/end.
     server = new FakeDshServer();
-    server.register('session.prompt', () => ({ ok: true, value: { accepted: true } }));
+    server.register('session/prompt', () => ({ ok: true, value: { accepted: true } }));
 
     const firstText = textChunk('first answer ', 1);
     const firstEnd = turnEnd('completed', 2);
     const secondText = textChunk('second answer ', 3);
     const secondEnd = turnEnd('completed', 4);
 
-    let historyReads = 0;
-    server.register('session.history', () => {
-      historyReads++;
-      if (historyReads === 1) {
-        return {
-          ok: true,
-          value: {
-            events: [
-              { event: firstText, view: undefined },
-              { event: firstEnd, view: undefined },
-            ],
-          },
-        };
-      }
-      return {
-        ok: true,
-        value: {
-          events: [
-            { event: firstText, view: undefined },
-            { event: firstEnd, view: undefined },
-            { event: secondText, view: undefined },
-            { event: secondEnd, view: undefined },
-          ],
-        },
-      };
+    // The session already committed turn 1; the pre-prompt watermark is seq 2.
+    server.setProjectionValue({ asOfSeq: 2, values: {} });
+    server.setHistoryValue({
+      records: [
+        { type: 'event', event: firstText },
+        { type: 'event', event: firstEnd },
+        { type: 'event', event: secondText },
+        { type: 'event', event: secondEnd },
+      ],
     });
     server.setMuxFrames([]);
     await server.start();
@@ -526,11 +575,11 @@ describe('DshClient / DshRunner integration', () => {
     expect(events.find((e) => e.type === 'result')).toMatchObject({ subtype: 'success' });
   });
 
-  it('stop() sends session.cancel', async () => {
+  it('stop() sends session/cancel', async () => {
     server = new FakeDshServer();
     let cancelled = false;
-    server.register('session.prompt', () => ({ ok: true, value: { accepted: true } }));
-    server.register('session.cancel', (p) => {
+    server.register('session/prompt', () => ({ ok: true, value: { accepted: true } }));
+    server.register('session/cancel', (p) => {
       cancelled = true;
       expect(p).toEqual({ sessionId: SID });
       return { ok: true, value: { accepted: true } };
@@ -555,13 +604,13 @@ describe('DshClient / DshRunner integration', () => {
     server = new FakeDshServer();
     let cancelCalled = false;
     let promptCalled = false;
-    server.register('session.create', () => ({ ok: true, value: { sessionId: SID } }));
-    server.register('session.cancel', (p) => {
+    server.register('session/create', () => ({ ok: true, value: { sessionId: SID } }));
+    server.register('session/cancel', (p) => {
       cancelCalled = true;
       expect(p).toEqual({ sessionId: SID });
       return { ok: true, value: { accepted: true } };
     });
-    server.register('session.prompt', () => {
+    server.register('session/prompt', () => {
       promptCalled = true;
       return { ok: true, value: { accepted: true } };
     });
@@ -585,7 +634,7 @@ describe('DshClient / DshRunner integration', () => {
 describe('DshRunner stop state', () => {
   it('isRunning reflects an in-flight run', async () => {
     const server = new FakeDshServer();
-    server.register('session.prompt', () => ({ ok: true, value: { accepted: true } }));
+    server.register('session/prompt', () => ({ ok: true, value: { accepted: true } }));
     server.setMuxFrames([sessionEventFrame(SID, turnEnd('completed', 1))]);
     await server.start();
     const runner = new DshRunner({ kind: 'dsh', sessionReader: stubReader, host: server.baseUrl });
@@ -597,7 +646,7 @@ describe('DshRunner stop state', () => {
 
   it('createSession failure cleans up running state', async () => {
     const server = new FakeDshServer();
-    server.register('session.create', () => ({
+    server.register('session/create', () => ({
       ok: false,
       error: { code: 'internal', message: 'session create boom' },
     }));
@@ -611,12 +660,51 @@ describe('DshRunner stop state', () => {
     });
     expect(runner.isRunning).toBe(false);
     // 状态未污染：清理后再次 run（这次成功）可正常执行
-    server.register('session.create', () => ({ ok: true, value: { sessionId: SID } }));
-    server.register('session.prompt', () => ({ ok: true, value: { accepted: true } }));
+    server.register('session/create', () => ({ ok: true, value: { sessionId: SID } }));
+    server.register('session/prompt', () => ({ ok: true, value: { accepted: true } }));
     server.setMuxFrames([sessionEventFrame(SID, turnEnd('completed', 1))]);
     const events2 = await collect(runner.run('hi', { cwd: CWD }));
     expect(events2.find((e) => e.type === 'result')).toMatchObject({ subtype: 'success' });
     expect(runner.isRunning).toBe(false);
+    await server.stop();
+  });
+
+  it('authenticates against a protected host with the launch token', async () => {
+    const server = new FakeDshServer();
+    server.setRequireAuth(true, 'secret-token');
+    server.register('session/create', () => ({ ok: true, value: { sessionId: SID } }));
+    server.register('session/prompt', () => ({ ok: true, value: { accepted: true } }));
+    server.setMuxFrames([sessionEventFrame(SID, turnEnd('completed', 1))]);
+    await server.start();
+
+    const runner = new DshRunner({
+      kind: 'dsh',
+      sessionReader: stubReader,
+      host: server.baseUrl,
+      token: 'secret-token',
+      credentialsFile: NO_CREDENTIALS_FILE,
+    });
+    const events = await collect(runner.run('hi', { cwd: CWD }));
+    expect(events.find((e) => e.type === 'result')).toMatchObject({ subtype: 'success' });
+    await server.stop();
+  });
+
+  it('surfaces a 401 when the launch token is missing', async () => {
+    const server = new FakeDshServer();
+    server.setRequireAuth(true, 'secret-token');
+    await server.start();
+
+    const runner = new DshRunner({
+      kind: 'dsh',
+      sessionReader: stubReader,
+      host: server.baseUrl,
+      credentialsFile: NO_CREDENTIALS_FILE,
+    });
+    const events = await collect(runner.run('hi', { cwd: CWD }));
+    expect(events.find((e) => e.type === 'result')).toMatchObject({
+      subtype: 'error',
+      errorMessage: expect.stringContaining('DSH HTTP 401'),
+    });
     await server.stop();
   });
 

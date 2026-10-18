@@ -1241,6 +1241,13 @@ export class Bridge {
     // §9.12 空闲看门狗：判定口径见 startIdleWatchdog；武装点在 cardSession.start() 之后。
     let watchdog: IdleWatchdog | null = null;
     let sawResult = false;
+    // A runner can fail before emitting its synthetic system/init (e.g. DSH
+    // session/create -> 401). The pre-init guard below drops that result to
+    // protect Claude resume replay, but if the stream ends without ever seeing
+    // init the result was the only terminal signal we had. Keep it so the card
+    // shows the real error instead of the generic "no result" fallback.
+    let pendingPreInitTerminal:
+      { subtype: 'error' | 'interrupted'; errorMessage?: string } | undefined;
     // 记录 result 是否为 error: error 时跳过 jsonl usage 读取 (见 stream end 处说明)
     let resultNotSuccess = false;
     // Final usage read from jsonl after the run completes. live stream-json does
@@ -1440,12 +1447,24 @@ export class Bridge {
             getLogger().info(
               `[lark-remote] pre-init result ignored (resume replay) runId=${runId}`,
             );
+            if (event.subtype === 'error' || event.subtype === 'interrupted') {
+              pendingPreInitTerminal ??= {
+                subtype: event.subtype,
+                errorMessage: (event as { errorMessage?: string }).errorMessage,
+              };
+            }
             // Still reset idle timer — the CLI is alive and producing events.
             watchdog?.touch();
             // Do NOT push to cardSession: the run-state reducer would also
             // skip it (sessionId === undefined), but skipping at the bridge
             // layer avoids the push + render overhead for a no-op event.
             continue;
+          }
+          if (preInitResult && (event.subtype === 'error' || event.subtype === 'interrupted')) {
+            pendingPreInitTerminal ??= {
+              subtype: event.subtype,
+              errorMessage: (event as { errorMessage?: string }).errorMessage,
+            };
           }
           if (!preInitResult) {
             sawResult = true;
@@ -1647,10 +1666,24 @@ export class Bridge {
           ...usageMeta(),
         });
       } else if (finalState.terminal === 'running') {
-        await cardSession.finish('error', {
-          ...usageMeta(),
-          errorMsg: agentDisplayName(agentKind) + ' 输出流已结束，但未收到 result 事件',
-        });
+        if (pendingPreInitTerminal) {
+          const terminal =
+            pendingPreInitTerminal.subtype === 'interrupted' ? 'interrupted' : 'error';
+          getLogger().warn(
+            `[lark-remote] stream ended without init; using pre-init ${terminal} result runId=${runId} error=${pendingPreInitTerminal.errorMessage ?? '(none)'}`,
+          );
+          await cardSession.finish(terminal, {
+            ...usageMeta(),
+            errorMsg:
+              pendingPreInitTerminal.errorMessage ??
+              agentDisplayName(agentKind) + (terminal === 'interrupted' ? ' 已中断' : ' 启动失败'),
+          });
+        } else {
+          await cardSession.finish('error', {
+            ...usageMeta(),
+            errorMsg: agentDisplayName(agentKind) + ' 输出流已结束，但未收到 result 事件',
+          });
+        }
       } else if (sawResult) {
         // 已终态（interrupted/idle_timeout）+ result 已收到：首终态优先，
         // 仅补充 usage meta（finalizing 期间被 /stop 或 idle 超时也展示 token 统计）

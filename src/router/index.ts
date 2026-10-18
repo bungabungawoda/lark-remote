@@ -15,6 +15,7 @@ import {
   getAgentConfig,
 } from '../config/index.js';
 import { syncAgentChoices } from '../runner/index.js';
+import { resolveDshCredentialsFile } from '../runner/dsh/auth.js';
 import { WorkspaceStore } from '../workspace/index.js';
 import { OrderStore, type OrderEntry } from '../order/index.js';
 import { resolveAlias } from '../order/alias-resolve.js';
@@ -4632,7 +4633,12 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
     if (this.config.defaultAgent !== 'dsh') return;
     const builder = getConfigBuilder('dsh');
     const dshConf = getAgentConfig(this.config, 'dsh');
-    await builder.prefetch?.(dshConf?.host);
+    const credentialsFile =
+      dshConf?.credentialsFile?.trim() ||
+      (dshConf?.dshHome?.trim()
+        ? resolveDshCredentialsFile(process.env, dshConf.dshHome)
+        : undefined);
+    await builder.prefetch?.(dshConf?.host, dshConf?.token, credentialsFile);
   }
 
   /** Build an interactive config card with CardKit 2.0 tabs + batch save */

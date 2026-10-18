@@ -18,11 +18,50 @@
  */
 
 import type { AgentEvent, ResultEvent } from '../types.js';
-import type { DshSessionEvent, DshTokenUsage } from './types.js';
+import type {
+  DshAssistantStreamFrame,
+  DshSessionEvent,
+  DshStreamChunk,
+  DshTokenUsage,
+} from './types.js';
 
 export class DshTranslator {
   private liveUsage?: DshTokenUsage;
   private hasUsage = false;
+
+  /** Translate one live assistant-stream chunk into AgentEvents. */
+  streamFrameToAgentEvents(frame: DshAssistantStreamFrame, _sessionId: string): AgentEvent[] {
+    if (frame.type !== 'chunk' || !frame.chunk) return [];
+    return this.chunkToAgentEvents(frame.chunk, frame.time ?? Date.now());
+  }
+
+  private chunkToAgentEvents(chunk: DshStreamChunk, time: number): AgentEvent[] {
+    if (chunk.type === 'usage' && chunk.usage && typeof chunk.usage === 'object') {
+      this.liveUsage = chunk.usage as DshTokenUsage;
+      this.hasUsage = true;
+      return [];
+    }
+    const ts = new Date(time).toISOString();
+    if (chunk.type === 'text-delta' && typeof chunk.text === 'string' && chunk.text) {
+      return [
+        {
+          type: 'assistant',
+          message: { content: [{ type: 'text', text: chunk.text }] },
+          timestamp: ts,
+        },
+      ];
+    }
+    if (chunk.type === 'reasoning-delta' && typeof chunk.text === 'string' && chunk.text) {
+      return [
+        {
+          type: 'assistant',
+          message: { content: [{ type: 'thinking', thinking: chunk.text }] },
+          timestamp: ts,
+        },
+      ];
+    }
+    return [];
+  }
 
   /** Translate one session event into AgentEvents (may be empty). */
   eventToAgentEvents(ev: DshSessionEvent, sessionId: string): AgentEvent[] {
@@ -30,26 +69,7 @@ export class DshTranslator {
       case 'assistant/chunk': {
         const chunk = ev.data.chunk as { type?: string; text?: string } | undefined;
         if (!chunk) return [];
-        const ts = new Date(ev.time).toISOString();
-        if (chunk.type === 'text-delta' && chunk.text) {
-          return [
-            {
-              type: 'assistant',
-              message: { content: [{ type: 'text', text: chunk.text }] },
-              timestamp: ts,
-            },
-          ];
-        }
-        if (chunk.type === 'reasoning-delta' && chunk.text) {
-          return [
-            {
-              type: 'assistant',
-              message: { content: [{ type: 'thinking', thinking: chunk.text }] },
-              timestamp: ts,
-            },
-          ];
-        }
-        return [];
+        return this.chunkToAgentEvents(chunk as DshStreamChunk, ev.time);
       }
       case 'assistant/message': {
         const raw = ev.data.usage as DshTokenUsage | undefined;
@@ -60,11 +80,13 @@ export class DshTranslator {
         return [];
       }
       case 'turn/end': {
-        const reason = (ev.data.reason as { kind?: string } | undefined)?.kind;
+        const turnReason = ev.data.reason as
+          { kind?: string; error?: { message?: string; name?: string } } | undefined;
+        const reason = turnReason?.kind;
         const subtype =
           reason === 'completed'
             ? 'success'
-            : reason === 'aborted' || reason === 'interrupted'
+            : reason === 'aborted' || reason === 'interrupted' || reason === 'forked'
               ? 'interrupted'
               : 'error';
         const result: ResultEvent = {
@@ -77,7 +99,10 @@ export class DshTranslator {
           result.usage = mapUsage(this.liveUsage);
         }
         if (subtype === 'error') {
-          result.errorMessage = `turn ended with reason: ${reason}`;
+          const detail = turnReason?.error?.message;
+          result.errorMessage = detail
+            ? `turn ended with reason: ${reason}: ${detail}`
+            : `turn ended with reason: ${reason}`;
         }
         return [result];
       }
