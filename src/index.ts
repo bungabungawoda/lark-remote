@@ -787,8 +787,8 @@ function setupMessageHandlers(
     // queue.input / config.save / approval.respond / approval.toggle /
     // approval.answer 系列返回 CardActionResponse toast 给点击用户即时反馈。
     // 必须直接返回值 -- enqueueImmediate / enqueueConfigAction 是
-    // fire-and-forget，会吞掉返回值（2026-08-17 review：answer 家族曾漏在
-    // 直返列表外，过期/重复 nonce/非法选项等错误 toast 被静默吞掉）。
+    // fire-and-forget，会吞掉返回值（answer 家族曾漏在直返列表外，
+    // 过期/重复 nonce/非法选项等错误 toast 被静默吞掉）。
     // 审批响应尤其不能落串行队列：run 任务占用队列头直到 turn 结束，审批响应
     // 排在后面会形成死锁（run 不结束不执行、run 结束 coordinator 已删响应空转）。
     // order.aliasInput / order.aliasRemove / order.textInput 也返回 toast+card，

@@ -760,7 +760,7 @@ describePosix('CodexAppServerRunner integration', () => {
     expect(result).toBeDefined();
     expect(result?.subtype).toBe('success');
 
-    // 冷连接回归（2026-08-12 review）：真实 codex app-server 对未加载的线程
+    // 冷连接回归：真实 codex app-server 对未加载的线程
     // 直接 thread/compact/start 返回 -32600 "thread not found"。runner 必须先
     // thread/resume 把线程载入内存再压缩——断言请求顺序。
     const requests = readFileSync(requestLog, 'utf8')

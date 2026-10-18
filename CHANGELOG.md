@@ -317,7 +317,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - ExitPlanMode 计划审批：计划全文折叠展示 + 五决策对齐 TUI（自动放行 / 附意见 / 采纳修改）
 - 卡片别名管理重构：`alias-store` 并入 `alias-resolve`，`/order` 卡片新增「＋别名」交互（绑定/修改/删除，已绑定指令显示 `$name` 标签 + ✕）
-- DSH / connection-based runner 启动 / 配置热更 / 失败路径修复（~）
+- DSH / connection-based runner 启动 / 配置热更 / 失败路径修复
 
 ### 变更
 
