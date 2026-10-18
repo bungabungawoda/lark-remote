@@ -31,6 +31,7 @@ import type {
   DshSessionEvent,
   DshSessionListValue,
   DshSessionPageValue,
+  DshSessionSummary,
   DshTokenUsage,
 } from '../../runner/dsh/types.js';
 import { dshArgs, extractDshToken } from '../../runner/dsh/client.js';
@@ -268,11 +269,22 @@ export class DshSessionReader implements AgentSessionReader {
 
   readSessionContent(
     sessionId: string,
-    _cwd: string,
+    cwd: string,
     opts?: { maxEvents?: number },
   ): SessionContent {
     try {
-      const throughSeq = this.resolveThroughSeq(sessionId);
+      // cwd 守卫：sessionId 可能属于另一个 workspace。
+      // 只按 id 查 history 会让 /resume 把 cwd A 的卡片绑到 cwd B 的会话上，
+      // agent 实际在 B 操作文件、resume.compact 还会压缩别人的会话。与
+      // Claude/Kimi/Pi 的 cwd 守卫同口径：找不到同 cwd 的会话 → 空内容（fail-closed）。
+      const session = this.resolveSession(sessionId, cwd);
+      if (!session) {
+        getLogger().warn(
+          `[dsh-session-reader] readSessionContent: session ${sessionId} not found in cwd ${cwd}, refusing cross-workspace read`,
+        );
+        return { events: [] };
+      }
+      const throughSeq = this.resolveThroughSeq(sessionId, session);
       const value = this.unary('session/page', {
         address: { kind: 'session', sessionId },
         throughSeq,
@@ -346,25 +358,36 @@ export class DshSessionReader implements AgentSessionReader {
 
   isSessionActive(sessionId: string, cwd: string): boolean {
     try {
-      const value = this.unary('session/list', {}) as DshSessionListValue;
-      const found = (value.items ?? []).find(
-        (i) => String(i.sessionId) === sessionId && i.cwd !== undefined && samePath(i.cwd, cwd),
-      );
-      return found?.running === true;
+      return this.resolveSession(sessionId, cwd)?.running === true;
     } catch (error) {
       getLogger().error(`[dsh-session-reader] isSessionActive error: ${(error as Error).message}`);
       return false;
     }
   }
 
+  /**
+   * Find the session row in `session/list` that matches BOTH id and cwd.
+   * Returns undefined when the id belongs to another workspace (or is unknown) —
+   * every caller treats that as "not usable here".
+   */
+  private resolveSession(sessionId: string, cwd: string): DshSessionSummary | undefined {
+    const value = this.unary('session/list', {}) as DshSessionListValue;
+    return (value.items ?? []).find(
+      (i) => String(i.sessionId) === sessionId && i.cwd !== undefined && samePath(i.cwd, cwd),
+    );
+  }
+
   /** `session/page` needs an inclusive cursor; projections carry the watermark. */
-  private resolveThroughSeq(sessionId: string): number {
+  private resolveThroughSeq(sessionId: string, known?: DshSessionSummary): number {
     const projection = this.unary('session/projections', { sessionId }) as {
       asOfSeq?: number;
     } | null;
     if (typeof projection?.asOfSeq === 'number') return projection.asOfSeq;
-    const list = this.unary('session/list', {}) as DshSessionListValue;
-    const row = (list.items ?? []).find((item) => String(item.sessionId) === sessionId);
+    const row =
+      known ??
+      (this.unary('session/list', {}) as DshSessionListValue).items?.find(
+        (item) => String(item.sessionId) === sessionId,
+      );
     return typeof row?.projections?.asOfSeq === 'number' ? row.projections.asOfSeq : -1;
   }
 }

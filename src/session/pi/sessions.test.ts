@@ -846,3 +846,24 @@ describe('PiSessionReader', () => {
     expect(content.usage!.contextLength).toBe(10100); // 100+9000+1000
   });
 });
+
+describe('PiSessionReader session id matching', () => {
+  it('test_anchor_pi_session_exact_id_match', () => {
+    // 文件名匹配不能用 includes——完整 UUID 的前缀/相似 ID 会命中
+    // 错误的会话（readSessionContent 读到别人的 transcript）。
+    const full = 'aaaaaaaa-1111-2222-3333-444444444444';
+    const cwd = '/tmp/proj-exact';
+    writeSessionFile(full, cwd, [
+      { type: 'session', id: full, cwd, model: 'glm-5.2' },
+      {
+        type: 'message',
+        message: { role: 'user', content: [{ type: 'text', text: 'exact session' }] },
+      },
+    ]);
+    const reader = new PiSessionReader({ piDir: tmpDir });
+
+    expect(reader.readSessionContent(full, cwd).displayTitle).toBe('exact session');
+    expect(reader.readSessionContent('aaaaaaaa-1111', cwd)).toEqual({ events: [] });
+    expect(reader.isSessionActive('aaaaaaaa-1111', cwd)).toBe(false);
+  });
+});

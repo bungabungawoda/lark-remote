@@ -116,3 +116,62 @@ describe('ConnectionBasedRunner orphan self-disposal (2026-10-11)', () => {
     expect(runner.calls.notifyIdle).toBe(0);
   });
 });
+
+/**
+ * waitForEvents 的兜底定时器必须在唤醒时清理。
+ * 旧实现只 resolve、不 clearTimeout，高频事件下 timer 会持续堆积到 30s。
+ */
+class WaitingRunner extends TestRunner {
+  protected async setupTurn(): Promise<void> {}
+
+  /** Simulate an incoming non-terminal event (wakes the wait loop). */
+  poke(): void {
+    this.pushEvents([
+      {
+        type: 'assistant',
+        message: { content: [{ type: 'text', text: 'tick' }] },
+      } as unknown as AgentEvent,
+    ]);
+  }
+
+  /** Emit the terminal result so the run can finish. */
+  finish(): void {
+    this.pushEvents([
+      { type: 'result', subtype: 'success', session_id: 'test-session' } as unknown as AgentEvent,
+    ]);
+  }
+}
+
+describe('ConnectionBasedRunner wait timer cleanup', () => {
+  it('test_anchor_acp_wait_timer_cleared_on_wake', async () => {
+    vi.useFakeTimers();
+    try {
+      // @ts-expect-error 测试 stub 的 sessionReader 只需满足类型形参
+      const runner = new WaitingRunner({ kind: 'codex', sessionReader: {} });
+      const iter = runner.run('hi', { cwd: tmpDir });
+
+      await iter.next(); // synthetic init
+      let pending = iter.next(); // enters waitForEvents
+      await vi.advanceTimersByTimeAsync(0);
+      expect(vi.getTimerCount()).toBe(1);
+
+      for (let i = 0; i < 5; i++) {
+        runner.poke();
+        await pending; // yields the poked event
+        pending = iter.next(); // waits again
+        await vi.advanceTimersByTimeAsync(0);
+      }
+
+      // 每次唤醒都清掉旧 timer：只有当前这一轮等待的 1 个。
+      expect(vi.getTimerCount()).toBe(1);
+
+      runner.finish();
+      await pending; // yields result
+      const end = await iter.next();
+      expect(end.done).toBe(true);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});

@@ -6,7 +6,7 @@ import { Bridge } from '../../src/bridge/index.js';
 import { SessionStore } from '../../src/session/index.js';
 import { AppConfigSchema } from '../../src/config/index.js';
 import type { AppConfig } from '../../src/config/index.js';
-import type { AgentKind, AgentRunner, Runner } from '../../src/runner/index.js';
+import type { AgentEvent, AgentKind, AgentRunner, Runner } from '../../src/runner/index.js';
 
 import {
   createStubAgentRegistry,
@@ -391,5 +391,65 @@ describe('Bridge cumulative Total threading: done 卡必须显示累计 Total', 
     expect(finalCard).toContain('Output token - 50 · 累计 3K');
     // 关键断言：Total 行必须带累计（RED--bridge 成功路径漏传 cumulativeTotalTokens）
     expect(finalCard).toContain('Total token - 2K · 累计 50K');
+  });
+});
+
+describe('Bridge final usage uses the run session', () => {
+  it('test_anchor_final_usage_uses_run_session_after_pointer_move', async () => {
+    const { SessionReaderRegistry } = await import('../../src/session/registry.js');
+    const readSpy = vi.fn(() => ({
+      events: [],
+      usage: { contextLength: 111_000, compactCount: 2 },
+    }));
+    const stubReader = {
+      listSessions: vi.fn(() => ({ sessions: [], total: 0 })),
+      getNewestSession: vi.fn(() => null),
+      readSessionContent: readSpy,
+      isSessionActive: vi.fn(() => false),
+    };
+    const registry = new SessionReaderRegistry();
+    registry.register('claude', stubReader as never);
+
+    const connector = createStubConnector();
+    const sessionStore = new SessionStore();
+    const runSessionId = 'sess-before-new';
+    // 模拟 run 进行中执行 /new：session 指针在 result 之前被清空。
+    const movingRunner = asAgentRunner(
+      {
+        isRunning: false,
+        stop: async () => {},
+        killOrphan: () => {},
+        registerExitHandlers: () => {},
+        run: async function* () {
+          yield {
+            type: 'system',
+            subtype: 'init',
+            session_id: runSessionId,
+            cwd: tmpDir,
+            model: 'claude-sonnet-4-20250514',
+          } as AgentEvent;
+          sessionStore.clearSessionId(ctx.userId, 'claude');
+          yield { type: 'result', subtype: 'success', session_id: runSessionId } as AgentEvent;
+        },
+      } as unknown as Runner,
+      'claude',
+    );
+    const bridge = new Bridge({
+      runner: movingRunner,
+      agentRegistry: createStubAgentRegistry(movingRunner),
+      connector,
+      sessionStore,
+      config,
+      sessionReaderRegistry: registry,
+    });
+    sessionStore.setCwd(ctx.userId, tmpDir);
+
+    await bridge.forwardToClaude('hello', ctx);
+
+    // 旧实现：run 结束时读全局 store（已被 /new 清空）→ 不读 jsonl、卡片没有 usage。
+    expect(readSpy).toHaveBeenCalled();
+    expect(readSpy.mock.calls[0]?.[0]).toBe(runSessionId);
+    const finalCard = JSON.stringify(connector._cards.at(-1));
+    expect(finalCard).toContain('Context - 111K');
   });
 });

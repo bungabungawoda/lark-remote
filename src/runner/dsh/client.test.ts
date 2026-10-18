@@ -482,4 +482,35 @@ describe('DshClient config-plane unary methods', () => {
     const created = await client.createSession({ cwd: CWD, agentPreset: 'code' });
     expect(created).toEqual({ sessionId: SID, agentPreset: 'code' });
   });
+
+  it('test_anchor_dsh_unary_times_out_and_honors_abort', async () => {
+    // unary 请求必须有超时 + 可取消。fetchImpl 永不 resolve，只在
+    // AbortSignal 触发时 reject（模拟真实 fetch 行为）。
+    const hangingFetch = ((_url: string, init?: { signal?: AbortSignal }) =>
+      new Promise((_resolve, reject) => {
+        const onAbort = (): void => {
+          reject(Object.assign(new Error('aborted'), { name: 'AbortError' }));
+        };
+        if (init?.signal?.aborted) onAbort();
+        else init?.signal?.addEventListener('abort', onAbort, { once: true });
+      })) as unknown as typeof fetch;
+
+    const timingClient = new DshClient('http://127.0.0.1:3080', {
+      credentialsFile: NO_CREDENTIALS_FILE,
+      fetchImpl: hangingFetch,
+      requestTimeoutMs: 30,
+    });
+    await expect(timingClient.unary('session/prompt', {})).rejects.toMatchObject({
+      code: 'timeout',
+    });
+
+    const abortClient = new DshClient('http://127.0.0.1:3080', {
+      credentialsFile: NO_CREDENTIALS_FILE,
+      fetchImpl: hangingFetch,
+    });
+    const controller = new AbortController();
+    const pending = abortClient.unary('session/prompt', {}, { signal: controller.signal });
+    controller.abort();
+    await expect(pending).rejects.toMatchObject({ code: 'aborted' });
+  });
 });
