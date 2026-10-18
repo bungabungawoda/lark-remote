@@ -141,6 +141,29 @@ describe('DSH preset 变更 session 语义', () => {
     expect(sessionStore.getPreviousSessionId(ctx.userId, 'dsh')).toBeUndefined();
   });
 
+  it('provider 变更不清 sessionId（下一次 run 重新对齐）', async () => {
+    const { router, sessionStore } = makeRouter([], {
+      provider: 'deepseek-official',
+      model: 'deepseek-v4-flash',
+    });
+    sessionStore.set(ctx.userId, {
+      cwd: '/home/user/project',
+      sessions: new Map([['dsh', SID_OLD]]),
+      previousSessions: new Map(),
+      sessionCwds: new Map(),
+      arrivalSessions: new Map(),
+    });
+
+    await router.handleCardAction(
+      { cmd: 'config.set', key: 'agents.dsh.provider', option: 'deepseek-account' },
+      ctx,
+    );
+    await router.handleCardAction({ cmd: 'config.save' }, ctx);
+
+    expect(sessionStore.getSessionId(ctx.userId, 'dsh')).toBe(SID_OLD);
+    expect(sessionStore.getPreviousSessionId(ctx.userId, 'dsh')).toBeUndefined();
+  });
+
   it('permissionPreset 变更不清 sessionId（下一轮 run 前对齐）', async () => {
     const { router, sessionStore } = makeRouter([], { permissionPreset: 'workspace-write' });
     sessionStore.set(ctx.userId, {

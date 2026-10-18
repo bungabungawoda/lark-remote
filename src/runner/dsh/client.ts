@@ -449,8 +449,11 @@ export class DshClient {
   }
 
   /** Read the model catalog (session/modelCatalog). */
-  async listModels(): Promise<DshModelCatalogValue> {
-    return (await this.unary('session/modelCatalog', {})) as DshModelCatalogValue;
+  async listModels(opts?: {
+    signal?: AbortSignal;
+    timeoutMs?: number;
+  }): Promise<DshModelCatalogValue> {
+    return (await this.unary('session/modelCatalog', {}, opts)) as DshModelCatalogValue;
   }
 
   /**

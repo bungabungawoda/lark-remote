@@ -60,8 +60,14 @@ export interface AgentConfigCardBuilder {
 
   /**
    * 可选的异步预取钩子：卡片渲染前拉取动态选项（如 DSH 的模型/预设目录）。
-   * host 为该 agent 的当前连接地址；实现内部应缓存（同一 host 只拉一次），
-   * 失败静默回退固定兜底，不阻断卡片渲染。非异步预取的 agent 可不实现。
+   * host 为该 agent 的当前连接地址；实现内部默认按 host 缓存，`force` 用于
+   * 打开 /config 时强制刷新（外部新增 provider 后无需重启）。失败静默回退
+   * 固定兜底，不阻断卡片渲染。非异步预取的 agent 可不实现。
    */
-  prefetch?(host?: string, token?: string, credentialsFile?: string): Promise<void>;
+  prefetch?(
+    host?: string,
+    token?: string,
+    credentialsFile?: string,
+    options?: { force?: boolean },
+  ): Promise<void>;
 }

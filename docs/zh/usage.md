@@ -79,8 +79,9 @@ agents:
     credentialsFile: '' # 可选：DSH 凭据文件；默认 $DSH_HOME/.credentials.yaml 或 ~/.dsh/.credentials.yaml
     agentPreset: '' # preset（标准/极简/...）；留空 = 跟随服务端默认；session 创建后不可改
     permissionPreset: '' # 权限预设（沙箱 + 审批策略）；留空 = 不干预
-    model: '' # 模型名（如 deepseek-v4-flash / deepseek-v4-pro）；留空 = 跟随服务端默认
-    reasoningEffort: '' # off/low/high/max；留空 = 跟随服务端默认
+    provider: '' # provider route（deepseek-official / deepseek-account / anthropic/...）；留空 = 兼容旧配置，按 deepseek-official
+    model: '' # 模型名；留空 = 该 provider 的默认模型
+    reasoningEffort: '' # off/low/high/max；留空 = 模型默认档位
 
 logging:
   level: info # debug | info | warn | error
@@ -99,7 +100,7 @@ DSH 与其他 5 个 agent 不同：agent runner 不持有本地子进程，而�
 
 后台拉起的 DSH 工作目录是 `DSH_HOME`，不会读取某个项目目录下的 `.env`。需要给 DSH 进程注入环境变量时，放在 `$DSH_HOME/.env` 或 lark-remote 的启动环境中。一个 `DSH_HOME` 约定只跑一个 DSH；端口用固定值（默认 3080），不要用 `--port 0`。
 
-可用配置项（`agentPreset`/`permissionPreset`/`model`/`reasoningEffort` 可在 `/config` 卡片改写保存；`token`/`credentialsFile` 仅 YAML 配置，不在卡片展示或保存）：
+可用配置项（`agentPreset`/`permissionPreset`/`provider`/`model`/`reasoningEffort` 可在 `/config` 卡片改写保存；`token`/`credentialsFile` 仅 YAML 配置，不在卡片展示或保存）：
 
 - `agents.dsh.host`：DSH Web Host base URL，默认 `http://127.0.0.1:3080`。**修改会触发停放当前 dsh session 到恢复槽**（下次消息新建会话，避免 host 不一致导致 session 历史归属错乱）。
 - `agents.dsh.manageProcess`：未探测到 DSH 时是否由 lark-remote 拉起，默认 `true`。子进程以 detached 方式运行，lark-remote 退出、重启都不会停止它；设为 `false` 时只连接已运行的 DSH。
@@ -110,8 +111,30 @@ DSH 与其他 5 个 agent 不同：agent runner 不持有本地子进程，而�
 - `agents.dsh.credentialsFile`：DSH 凭据文件路径（YAML 配置项）。留空时按 `$DSH_HOME/.credentials.yaml` → `~/.dsh/.credentials.yaml` 解析。lark-remote 只读取 `client-connection/browser-session` 记录，不修改文件、不打印密钥；文件权限必须是 `0600`。
 - `agents.dsh.agentPreset`：preset（standard / code / minimal / cordis 等，随服务端 profile bundle 变化）。**session 创建时固定，中途切换服务端返回 `agent-preset-conflict`**；切换 agentPreset 会清空当前 dsh session（session 历史是在该 preset 下产生的，换 preset 等于换语义上下文）。
 - `agents.dsh.permissionPreset`：权限预设（沙箱模式 + 审批策略，如 `read-only` / `workspace-write` / `danger-full-access`）。与 `agentPreset` 不同，它**可以中途切换**；lark-remote 在会话首次 run 前执行一次 `/permission <preset>` 对齐，同一 session 不重复覆盖。留空 = 不干预，跟随 DSH 当前会话/服务端默认。保存配置时如果 turn 正在运行，新预设从下一轮开始生效，不会在当前审批下面突然改权限。执行 `/permission` 失败时 run 会 fail closed（不发 prompt）。
-- `agents.dsh.model`：模型 ID（默认服务端 `deepseek-v4-flash`）；保留 session，会话首次 run 时对齐一次（`session.selectModel`，同一 session 不重复调用）。
-- `agents.dsh.reasoningEffort`：off / low / high / max；保留 session，会话首次 run 时对齐一次。
+- `agents.dsh.provider`：DSH provider route（`deepseek-official`、`deepseek-account`、`anthropic` 等，随 DSH 目录变化）。留空 = 兼容旧配置，按 `deepseek-official` 处理。**切换 provider 不清 session**：下一次 run 用新 provider 重新对齐；显式配置的 provider 不可用时 run 直接失败，不会静默回退。飞书卡片的 provider 下拉来自 DSH 实时目录。
+- `agents.dsh.model`：模型 ID；保留 session，会话首次 run 时对齐一次（`session.selectModel`，同一 session 不重复调用）。留空 = 该 provider 的默认模型（provider 也未配置时跟随服务端默认）。
+- `agents.dsh.reasoningEffort`：off / low / high / max（随模型目录变化）；保留 session。模型不支持当前档位时，切换 provider/model 会重置到合法档位。
+
+#### 给 DSH 增加 Provider
+
+飞书卡片只切换 DSH 里已经存在的 provider，不接收 API key。新增 provider 在 DSH 侧完成：
+
+1. Web UI：打开 `http://127.0.0.1:3080` → 设置 → Models → 添加模型提供商。第三方 provider 从 pi-ai 目录选择；自定义网关选「自定义模型 API」，填 Provider ID、baseURL、协议、模型和 API Key。密钥由 DSH 的 credentials 服务保存，不写进 `cordis.patch.yml`。
+2. 或编辑 `~/.dsh/profiles/<profile>/cordis.patch.yml`，给 `llm-pi-ai` 增加 `providers`：
+
+```yaml
+- id: llm-pi-ai
+  name: '@deepseek-ai/dsh-llm-pi-ai'
+  config:
+    providers:
+      anthropic:
+        apiKeyEnv: ANTHROPIC_API_KEY
+        models:
+          - id: claude-sonnet-4-5
+            contextWindow: 200000
+```
+
+配置生效后，重新打开 `/config`，provider 下拉会出现新 provider；选择它和模型，保存后下一次消息生效。
 
 跑 dsh 期间如果服务端发出 `approval/requested`，lark-remote 会把它渲染成 run 卡底部的审批区，显示命令/工具、模型给出的 justification，并提供「允许一次 / 拒绝」。允许只对这一次调用生效，不会改变会话权限预设。如果 `$events` 审批通道不可用（旧版 DSH 或凭据没有 answer 能力），卡片回退为「请到 DSH Web UI 处理」并保留 turn 存活；在 Web UI 先处理时，飞书审批区也会自动撤掉。
 

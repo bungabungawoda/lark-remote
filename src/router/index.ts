@@ -4571,8 +4571,9 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
     // Ensure probe cache is populated before building the card.
     await probeAllAgents();
 
-    // 动态清单预取（DSH 模型/预设目录）：卡渲染前拉取，失败回退兜底清单
-    await this.prefetchConfigCardCatalogs();
+    // 动态清单预取（DSH 模型/预设目录）：卡渲染前强制刷新，DSH Web UI 刚新增
+    // 的 provider 立即可见；失败回退兜底清单。
+    await this.prefetchConfigCardCatalogs(true);
 
     // Check if this is a direct set command: /config <key> <value>
     // Command-style set: immediate write to disk, clear pendingConfig
@@ -4629,8 +4630,9 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
    * DSH /config 卡片构建前异步预取模型/预设目录（§4.2 动态清单）。
    * 只在 defaultAgent 为 dsh 时生效；其他 agent 无 prefetch 钩子直接跳过。
    * 预取失败不阻断——DshConfigBuilder 内部已回退固定兜底清单。
+   * `force` 在打开 /config 时使用：DSH Web UI 刚新增的 provider 立即出现。
    */
-  private async prefetchConfigCardCatalogs(): Promise<void> {
+  private async prefetchConfigCardCatalogs(force = false): Promise<void> {
     if (this.config.defaultAgent !== 'dsh') return;
     const builder = getConfigBuilder('dsh');
     const dshConf = getAgentConfig(this.config, 'dsh');
@@ -4639,7 +4641,7 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
       (dshConf?.dshHome?.trim()
         ? resolveDshCredentialsFile(process.env, dshConf.dshHome)
         : undefined);
-    await builder.prefetch?.(dshConf?.host, dshConf?.token, credentialsFile);
+    await builder.prefetch?.(dshConf?.host, dshConf?.token, credentialsFile, { force });
   }
 
   /** Build an interactive config card with CardKit 2.0 tabs + batch save */
