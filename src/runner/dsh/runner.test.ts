@@ -225,6 +225,73 @@ describe('DshTranslator', () => {
     });
   });
 
+  it('sums usage across every sampling of the turn (multi-step tool loop)', () => {
+    // DSH 每次模型调用（step）一条 usage；只取末条会把多步 run 低报
+    // （实测 done 卡 Input 231 / Output 689，而整轮真实消耗是各 step 之和）。
+    const t = new DshTranslator();
+    t.eventToAgentEvents(
+      usageMessage(
+        { inputTokens: 100, outputTokens: 50, cacheReadTokens: 10_000, cacheWriteTokens: 20 },
+        2,
+      ),
+      SID,
+    );
+    t.eventToAgentEvents(
+      usageMessage(
+        { inputTokens: 30, outputTokens: 80, cacheReadTokens: 10_200, cacheWriteTokens: 5 },
+        4,
+      ),
+      SID,
+    );
+    const result = t.eventToAgentEvents(turnEnd('completed', 5), SID)[0];
+    expect(result.type === 'result' && result.usage).toEqual({
+      input_tokens: 130,
+      output_tokens: 130,
+      cache_read_tokens: 20_200,
+      cache_creation_tokens: 25,
+      total_tokens: 130 + 130 + 20_200 + 25,
+    });
+  });
+
+  it('does not double count the live usage chunk of a step already in assistant/message', () => {
+    // 同一次采样既走 live `usage` chunk，又落 durable assistant/message.usage。
+    // 两条通道相加会把该 step 翻倍，所以只以 durable 事件为累加来源。
+    const t = new DshTranslator();
+    const usage = { inputTokens: 40, outputTokens: 9, cacheReadTokens: 700 };
+    t.streamFrameToAgentEvents(
+      { type: 'chunk', attemptId: 'attempt-1', chunk: { type: 'usage', usage } },
+      SID,
+    );
+    t.eventToAgentEvents(usageMessage(usage, 2), SID);
+    t.eventToAgentEvents(usageMessage({ inputTokens: 5, outputTokens: 3 }, 4), SID);
+    const result = t.eventToAgentEvents(turnEnd('completed', 5), SID)[0];
+    expect(result.type === 'result' && result.usage).toEqual({
+      input_tokens: 45,
+      output_tokens: 12,
+      cache_read_tokens: 700,
+      cache_creation_tokens: 0,
+      total_tokens: 45 + 12 + 700,
+    });
+  });
+
+  it('falls back to the last live usage chunk when no assistant/message usage persisted', () => {
+    const t = new DshTranslator();
+    t.streamFrameToAgentEvents(
+      {
+        type: 'chunk',
+        attemptId: 'attempt-1',
+        chunk: { type: 'usage', usage: { inputTokens: 7, outputTokens: 2 } },
+      },
+      SID,
+    );
+    const result = t.eventToAgentEvents(turnEnd('aborted', 2), SID)[0];
+    expect(result.type === 'result' && result.usage).toMatchObject({
+      input_tokens: 7,
+      output_tokens: 2,
+      total_tokens: 9,
+    });
+  });
+
   it('omits usage when no assistant/message usage was seen', () => {
     const t = new DshTranslator();
     const result = t.eventToAgentEvents(turnEnd('completed', 1), SID)[0];
@@ -304,6 +371,41 @@ describe('DshClient / DshRunner integration', () => {
       input_tokens: 10,
       output_tokens: 4,
       total_tokens: 14,
+    });
+  });
+
+  it('result usage sums a multi-step turn instead of reporting the last sampling', async () => {
+    server = new FakeDshServer();
+    server.register('session/create', () => ({ ok: true, value: { sessionId: SID } }));
+    server.register('session/prompt', () => ({ ok: true, value: { accepted: true } }));
+    const step2 = { inputTokens: 40, outputTokens: 30, cacheReadTokens: 5100 };
+    server.setMuxFrames([
+      sessionEventFrame(
+        SID,
+        usageMessage({ inputTokens: 100, outputTokens: 20, cacheReadTokens: 5000 }, 1),
+      ),
+      sessionEventFrame(SID, usageMessage(step2, 2)),
+      // 同一步的 live usage chunk：与 durable 事件同值，不得再加一次。
+      {
+        type: 'assistant-stream',
+        frame: { type: 'chunk', attemptId: 'attempt-2', chunk: { type: 'usage', usage: step2 } },
+      },
+      sessionEventFrame(
+        SID,
+        usageMessage({ inputTokens: 12, outputTokens: 60, cacheReadTokens: 5200 }, 3),
+      ),
+      sessionEventFrame(SID, turnEnd('completed', 4)),
+    ]);
+    await server.start();
+
+    const runner = new DshRunner({ kind: 'dsh', sessionReader: stubReader, host: server.baseUrl });
+    const events = await collect(runner.run('iterate', { cwd: CWD }));
+    const result = events.find((e) => e.type === 'result');
+    expect(result?.type === 'result' && result.usage).toMatchObject({
+      input_tokens: 152,
+      output_tokens: 110,
+      cache_read_tokens: 15_300,
+      total_tokens: 152 + 110 + 15_300,
     });
   });
 

@@ -10,7 +10,8 @@
  * listSessions: session/list → filter by cwd → sort by updatedAt desc → local
  *   pagination (DSH v1 has no cursor pagination).
  * readSessionContent: session/projections → session/page → map SessionEvents +
- *   session-wide usage accumulation (assistant/message.usage).
+ *   session-wide usage accumulation (assistant/message.usage)；本 run 的 flow
+ *   字段 = 末个 turn（turn/start–turn/end）内所有采样之和，与 codex 同口径。
  */
 
 import { spawnProcessSync } from '../../platform/spawn.js';
@@ -297,10 +298,23 @@ export class DshSessionReader implements AgentSessionReader {
       let cumCacheRead = 0;
       let cumCacheWrite = 0;
       let lastUsage: DshTokenUsage | undefined;
+      // 末个 turn 内各采样用量之和（"本 run / 末轮" scope）。DSH 每次模型调用
+      // 一条 usage，工具往返的 turn 会写多条 assistant/message；只取末条会把
+      // 多步 run 低报（实测 231/689 显示成整轮真实消耗）。turn 边界取
+      // turn/start–turn/end，与 codex `task_started` 汇总同一口径（§9.21）。
+      // null = 历史里没有 turn 标记（旧数据/截断）→ 退回末条 usage 语义。
+      let turnUsage: UsageTotals | null = null;
+      let lastTurnUsage: UsageTotals | null = null;
 
       for (const entry of value.records ?? []) {
         const ev = entry.event;
         if (!ev) continue;
+        if (ev.type === 'turn/start') {
+          turnUsage = emptyUsageTotals();
+        } else if (ev.type === 'turn/end') {
+          if (turnUsage) lastTurnUsage = turnUsage;
+          turnUsage = null;
+        }
         const contentEvents = mapEvent(ev);
         events.push(...contentEvents.events);
         if (contentEvents.title) displayTitle = contentEvents.title;
@@ -311,10 +325,14 @@ export class DshSessionReader implements AgentSessionReader {
           cumOutput += u.outputTokens ?? 0;
           cumCacheRead += u.cacheReadTokens ?? 0;
           cumCacheWrite += u.cacheWriteTokens ?? 0;
-          // Per-turn "current window" fields reflect the LAST assistant/message
-          // with usage (ccusage/`last_token_usage` 口径, 架构文档 §9.21) — a
-          // multi-turn session's current context water-mark is the last turn's,
-          // not the accumulated total.
+          // 本 run 的 flow 字段 = 末个 turn 的采样之和；contextLength 用末次采样
+          // 的窗口占用（input + cacheRead + cacheWrite，不含 output）。
+          if (turnUsage) {
+            turnUsage.input += u.inputTokens ?? 0;
+            turnUsage.output += u.outputTokens ?? 0;
+            turnUsage.cacheRead += u.cacheReadTokens ?? 0;
+            turnUsage.cacheWrite += u.cacheWriteTokens ?? 0;
+          }
           lastUsage = u;
         }
       }
@@ -322,16 +340,21 @@ export class DshSessionReader implements AgentSessionReader {
       let sessionUsage: AgentSessionUsage | undefined;
       if (lastUsage) {
         const input = lastUsage.inputTokens ?? 0;
-        const output = lastUsage.outputTokens ?? 0;
         const cacheRead = lastUsage.cacheReadTokens ?? 0;
         const cacheWrite = lastUsage.cacheWriteTokens ?? 0;
+        const flow: UsageTotals = lastTurnUsage ?? {
+          input,
+          output: lastUsage.outputTokens ?? 0,
+          cacheRead,
+          cacheWrite,
+        };
         sessionUsage = {
-          inputTokens: input,
-          outputTokens: output,
+          inputTokens: flow.input,
+          outputTokens: flow.output,
           contextLength: input + cacheRead + cacheWrite,
-          cacheReadTokens: cacheRead,
-          cacheCreationTokens: cacheWrite,
-          totalTokens: input + output + cacheRead + cacheWrite,
+          cacheReadTokens: flow.cacheRead,
+          cacheCreationTokens: flow.cacheWrite,
+          totalTokens: flow.input + flow.output + flow.cacheRead + flow.cacheWrite,
           ...cumulativeUsageFields({
             input: cumInput,
             output: cumOutput,
@@ -407,6 +430,18 @@ interface MappedEvent {
   events: AgentSessionContentEvent[];
   title?: string;
   usage?: DshTokenUsage;
+}
+
+/** 单个 turn 内各采样用量之和（input 为非缓存输入，与 ccusage 口径一致）。 */
+interface UsageTotals {
+  input: number;
+  output: number;
+  cacheRead: number;
+  cacheWrite: number;
+}
+
+function emptyUsageTotals(): UsageTotals {
+  return { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
 }
 
 /** Map one DSH SessionEvent to display content events (+ title/usage side effects). */
