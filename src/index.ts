@@ -277,8 +277,14 @@ function initializeRunner(
   sessionReaderRegistry.register('codex', codexSessionReader);
 
   // Register OpencodeSessionReader (CLI version)
-  // Using `opencode session list` and `opencode export` instead of HTTP API
-  const opencodeSessionReader = new OpencodeSessionReader();
+  // Using `opencode session list` and `session export` instead of HTTP API.
+  // Share the configured binary with the ACP runner so `opencode2` (v2) can
+  // be used without the reader silently falling back to a v1 `opencode`.
+  // The reader is registered once; changing acp.binary at runtime requires a
+  // lark-remote restart.
+  const opencodeSessionReader = new OpencodeSessionReader({
+    binary: getAgentConfig(config, 'opencode')?.acp?.binary,
+  });
 
   agentRegistry.register('opencode', (_ws: string) => {
     const ocConfig = getAgentConfig(latest(), 'opencode');

@@ -45,6 +45,8 @@ export interface MockAcpScenarioOpts {
   holdPromptUntilCancel?: boolean;
   /** (opencode) Resume result omits sessionId (real opencode behavior). */
   resumeOmitsSessionId?: boolean;
+  /** Fail the first N session/new requests with a v2 ServiceUnavailableError. */
+  failNewTimes?: number;
 }
 
 const DEFAULT_SESSION_ID = 'aaaaaaaa-1111-2222-3333-444444444444';
@@ -69,6 +71,7 @@ if (config.pidPath) { writeFileSync(config.pidPath, String(process.pid)); }
 
 let promptId = null;
 let cancelSeen = false;
+let newAttempts = 0;
 const send = (obj) => process.stdout.write(JSON.stringify(obj) + '\\n');
 const sendPromptResult = () => {
   if (promptId === null) return;
@@ -113,6 +116,19 @@ rl.on('line', (line) => {
     }
     if (config.crashAfterInit) {
       process.exit(1);
+    }
+    if (config.failNewTimes && newAttempts < config.failNewTimes) {
+      newAttempts += 1;
+      send({
+        jsonrpc: '2.0',
+        id: msg.id,
+        error: {
+          code: -32603,
+          message: 'Internal error: Internal service failure',
+          data: { errorName: 'ServiceUnavailableError' },
+        },
+      });
+      return;
     }
     const respondNew = () => send({ jsonrpc: '2.0', id: msg.id, result: { sessionId: config.sessionId, configOptions: config.configOptions ?? [] } });
     if (config.delayNewMs) setTimeout(respondNew, config.delayNewMs); else respondNew();
@@ -332,6 +348,7 @@ export function writeScenario(
       configOptions: opts.configOptions ?? null,
       holdPromptUntilResponse: opts.holdPromptUntilResponse ?? false,
       holdPromptUntilCancel: opts.holdPromptUntilCancel ?? false,
+      failNewTimes: opts.failNewTimes ?? 0,
       resumeOmitsSessionId: opts.resumeOmitsSessionId ?? false,
       kimiApprovalShape: protocol === 'kimi',
       agentName: protocol === 'kimi' ? 'kimi-acp' : 'OpenCode',

@@ -8,20 +8,29 @@ import { DEFAULT_TURN_IDLE_TIMEOUT_MINUTES, type AppConfig } from '../../config/
 import { resetModelPatch } from './common/model-patch.js';
 
 const MODE_OPTIONS = [
-  { text: 'build（默认，逐项审批）', value: 'build' },
+  { text: 'build（默认，按 opencode 权限配置）', value: 'build' },
   { text: 'plan（规划模式）', value: 'plan' },
 ];
+
+/** Keep the currently configured value selectable even when the CLI failed and
+ *  we are showing the static fallback catalog. */
+function withCurrent<T>(options: T[], current: T | undefined): T[] {
+  if (current === undefined || options.includes(current)) return options;
+  return [current, ...options];
+}
 
 export class OpencodeConfigBuilder implements AgentConfigCardBuilder {
   buildFields(displayConfig: AppConfig): ConfigField[] {
     const fields: ConfigField[] = [];
 
     // 从 opencode models 命令动态读取 provider 和 model
-    const opencodeCfg = loadOpencodeConfig();
-    const providerNames = opencodeCfg.providerNames;
-    // 根据 displayConfig 中已选的 provider 过滤 model 选项
+    const binary = displayConfig.agents?.opencode?.acp?.binary;
+    const opencodeCfg = loadOpencodeConfig(binary);
     const currentProvider = displayConfig.agents?.opencode?.providerID;
-    const modelOptions = opencodeCfg.modelOptions(currentProvider);
+    const currentModel = displayConfig.agents?.opencode?.modelID;
+    const providerNames = withCurrent(opencodeCfg.providerNames, currentProvider);
+    // 根据 displayConfig 中已选的 provider 过滤 model 选项
+    const modelOptions = withCurrent(opencodeCfg.modelOptions(currentProvider), currentModel);
 
     fields.push({
       key: 'agents.opencode.providerID',
@@ -74,7 +83,8 @@ export class OpencodeConfigBuilder implements AgentConfigCardBuilder {
 
     // provider 变更时，重置 model 为新 provider 的首个模型
     if (key === 'agents.opencode.providerID' && typeof value === 'string') {
-      const opencodeCfg = loadOpencodeConfig();
+      const binary = config.agents?.opencode?.acp?.binary;
+      const opencodeCfg = loadOpencodeConfig(binary);
       const currentModel = config.agents?.opencode?.modelID as string | undefined;
       const modelPatch = resetModelPatch(
         'agents.opencode.modelID',

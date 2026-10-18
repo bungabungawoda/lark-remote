@@ -2,7 +2,7 @@
  * OpencodeLogErrorMonitor: watches opencode's own log file for LLM stream
  * errors of the active ACP session and reports them immediately.
  *
- * Why this exists: opencode ACP (v1.18.x) does NOT forward retry/error state
+ * Why this exists: opencode ACP (v1.18.x and v2.0.x) does NOT forward retry/error state
  * to the client over the ACP protocol. Its session/update notifications are
  * limited to content deltas (agent_message_chunk / agent_thought_chunk /
  * tool_call / tool_call_update), usage and available-commands updates — there
@@ -48,7 +48,7 @@ const ERROR_MESSAGE_RE = /error\.error="((?:[^"\\]|\\.)*)"/;
  * Resolve opencode's log file path from the XDG data dir
  * (`$XDG_DATA_HOME/opencode/log/opencode.log`, default
  * `~/.local/share/opencode/log/opencode.log`). Matches opencode's own
- * data-dir layout (open source v1.18.x: `opencode/src/cli/global.ts`).
+ * data-dir layout (verified against v1.18.x and v2.0.32 `debug paths`).
  */
 export function resolveOpencodeLogPath(): string {
   const dataHome = process.env.XDG_DATA_HOME || join(homedir(), '.local', 'share');
