@@ -58,7 +58,7 @@ describe('protocol-types', () => {
       expect(UNSUPPORTED_SERVER_REQUEST_METHODS.has('mcpServer/elicitation/request')).toBe(true);
       expect(UNSUPPORTED_SERVER_REQUEST_METHODS.has('execCommandApproval')).toBe(true);
       // 真实协议（v2 schema）的 server-request 全集里的其余方法必须显式归类，
-      // 不能靠 default 兜底（2026-08-12 review：currentTime/read 曾缺失）。
+      // 不能靠 default 兜底（currentTime/read 曾缺失）。
       expect(UNSUPPORTED_SERVER_REQUEST_METHODS.has('currentTime/read')).toBe(true);
     });
 
