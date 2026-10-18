@@ -546,7 +546,235 @@ describe('DshClient / DshRunner integration', () => {
     });
   });
 
-  it('selectModel failure only warns and does not block the run', async () => {
+  it('passes the configured provider to selectModel', async () => {
+    server = new FakeDshServer();
+    let selectPayload: unknown;
+    server.register('session/create', () => ({ ok: true, value: { sessionId: SID } }));
+    server.register('session/selectModel', (p) => {
+      selectPayload = p;
+      return {
+        ok: true,
+        value: {
+          selected: { provider: 'anthropic', model: 'claude-sonnet-4-5' },
+        },
+      };
+    });
+    server.register('session/prompt', () => ({ ok: true, value: { accepted: true } }));
+    server.setMuxFrames([sessionEventFrame(SID, turnEnd('completed', 1))]);
+    await server.start();
+
+    const runner = new DshRunner({
+      kind: 'dsh',
+      sessionReader: stubReader,
+      host: server.baseUrl,
+      provider: 'anthropic',
+      model: 'claude-sonnet-4-5',
+    });
+    await collect(runner.run('hi', { cwd: CWD }));
+
+    expect(selectPayload).toEqual({
+      sessionId: SID,
+      provider: 'anthropic',
+      model: 'claude-sonnet-4-5',
+    });
+  });
+
+  it('resolves a provider-only config to that provider default model', async () => {
+    server = new FakeDshServer();
+    let selectPayload: unknown;
+    server.register('session/create', () => ({ ok: true, value: { sessionId: SID } }));
+    server.register('session/modelCatalog', () => ({
+      ok: true,
+      value: {
+        default: {
+          provider: 'deepseek-official',
+          model: 'deepseek-flash',
+          reasoningEffort: 'high',
+        },
+        groups: [
+          {
+            id: 'deepseek-official',
+            name: 'DeepSeek',
+            models: [{ id: 'deepseek-flash', name: 'Flash' }],
+          },
+          {
+            id: 'anthropic',
+            name: 'anthropic',
+            models: [
+              {
+                id: 'claude-sonnet-4-5',
+                name: 'Sonnet',
+                reasoning: {
+                  efforts: [
+                    { id: 'low', name: 'low' },
+                    { id: 'high', name: 'high' },
+                    { id: 'max', name: 'max' },
+                  ],
+                  defaultEffort: 'high',
+                },
+              },
+            ],
+          },
+        ],
+        failures: [],
+      },
+    }));
+    server.register('session/selectModel', (p) => {
+      selectPayload = p;
+      return {
+        ok: true,
+        value: { selected: { provider: 'anthropic', model: 'claude-sonnet-4-5' } },
+      };
+    });
+    server.register('session/prompt', () => ({ ok: true, value: { accepted: true } }));
+    server.setMuxFrames([sessionEventFrame(SID, turnEnd('completed', 1))]);
+    await server.start();
+
+    const runner = new DshRunner({
+      kind: 'dsh',
+      sessionReader: stubReader,
+      host: server.baseUrl,
+      provider: 'anthropic',
+      reasoningEffort: 'max',
+    });
+    await collect(runner.run('hi', { cwd: CWD }));
+
+    expect(selectPayload).toEqual({
+      sessionId: SID,
+      provider: 'anthropic',
+      model: 'claude-sonnet-4-5',
+      reasoningEffort: 'max',
+    });
+  });
+
+  it('drops an effort the provider default model does not support', async () => {
+    server = new FakeDshServer();
+    let selectPayload: Record<string, unknown> | undefined;
+    server.register('session/create', () => ({ ok: true, value: { sessionId: SID } }));
+    server.register('session/modelCatalog', () => ({
+      ok: true,
+      value: {
+        default: { provider: 'anthropic', model: 'claude-sonnet-4-5' },
+        groups: [
+          {
+            id: 'anthropic',
+            name: 'anthropic',
+            models: [
+              {
+                id: 'claude-sonnet-4-5',
+                name: 'Sonnet',
+                reasoning: {
+                  efforts: [
+                    { id: 'low', name: 'low' },
+                    { id: 'high', name: 'high' },
+                  ],
+                },
+              },
+            ],
+          },
+        ],
+        failures: [],
+      },
+    }));
+    server.register('session/selectModel', (p) => {
+      selectPayload = p as Record<string, unknown>;
+      return {
+        ok: true,
+        value: { selected: { provider: 'anthropic', model: 'claude-sonnet-4-5' } },
+      };
+    });
+    server.register('session/prompt', () => ({ ok: true, value: { accepted: true } }));
+    server.setMuxFrames([sessionEventFrame(SID, turnEnd('completed', 1))]);
+    await server.start();
+
+    const runner = new DshRunner({
+      kind: 'dsh',
+      sessionReader: stubReader,
+      host: server.baseUrl,
+      provider: 'anthropic',
+      reasoningEffort: 'off',
+    });
+    await collect(runner.run('hi', { cwd: CWD }));
+
+    expect(selectPayload).toEqual({
+      sessionId: SID,
+      provider: 'anthropic',
+      model: 'claude-sonnet-4-5',
+    });
+  });
+
+  it('fails closed when a provider-only config names an unavailable provider', async () => {
+    server = new FakeDshServer();
+    let prompted = false;
+    server.register('session/create', () => ({ ok: true, value: { sessionId: SID } }));
+    server.register('session/modelCatalog', () => ({
+      ok: true,
+      value: {
+        default: { provider: 'deepseek-official', model: 'deepseek-flash' },
+        groups: [
+          {
+            id: 'deepseek-official',
+            name: 'DeepSeek',
+            models: [{ id: 'deepseek-flash', name: 'Flash' }],
+          },
+        ],
+        failures: [],
+      },
+    }));
+    server.register('session/prompt', () => {
+      prompted = true;
+      return { ok: true, value: { accepted: true } };
+    });
+    server.setMuxFrames([sessionEventFrame(SID, turnEnd('completed', 1))]);
+    await server.start();
+
+    const runner = new DshRunner({
+      kind: 'dsh',
+      sessionReader: stubReader,
+      host: server.baseUrl,
+      provider: 'anthropic',
+    });
+    const events = await collect(runner.run('hi', { cwd: CWD }));
+    const result = events.find((event) => event.type === 'result');
+    expect(result).toMatchObject({ subtype: 'error' });
+    expect(result?.type === 'result' ? result.errorMessage : '').toContain(
+      '在 DSH 模型目录中不可用',
+    );
+    expect(prompted).toBe(false);
+  });
+
+  it('fails closed when an explicit provider cannot be aligned', async () => {
+    server = new FakeDshServer();
+    let prompted = false;
+    server.register('session/create', () => ({ ok: true, value: { sessionId: SID } }));
+    server.register('session/selectModel', () => ({
+      ok: false,
+      error: { code: 'session/model-unavailable', message: 'Select an available model' },
+    }));
+    server.register('session/prompt', () => {
+      prompted = true;
+      return { ok: true, value: { accepted: true } };
+    });
+    await server.start();
+
+    const runner = new DshRunner({
+      kind: 'dsh',
+      sessionReader: stubReader,
+      host: server.baseUrl,
+      provider: 'anthropic',
+      model: 'claude-sonnet-4-5',
+    });
+    const events = await collect(runner.run('hi', { cwd: CWD }));
+    const result = events.find((event) => event.type === 'result');
+    expect(result).toMatchObject({ subtype: 'error' });
+    expect(result?.type === 'result' ? result.errorMessage : '').toContain(
+      'Provider "anthropic" 的模型对齐失败',
+    );
+    expect(result?.type === 'result' ? result.errorMessage : '').toContain('DSH Web UI');
+    expect(prompted).toBe(false);
+  });
+
+  it('legacy model-only selectModel failure only warns and does not block the run', async () => {
     server = new FakeDshServer();
     let selectCalled = false;
     server.register('session/create', () => ({ ok: true, value: { sessionId: SID } }));
@@ -1316,6 +1544,7 @@ describe('DshRunner stop state', () => {
     const info = runner.getStatusInfo();
     expect(info.kind).toBe('dsh');
     expect(info.model).toBe('DSH');
+    expect(info.provider).toBe('deepseek-official');
     expect(info.extras?.host).toBe('http://127.0.0.1:3080');
   });
 
@@ -1326,11 +1555,13 @@ describe('DshRunner stop state', () => {
       host: 'http://127.0.0.1:3080',
       agentPreset: 'code',
       permissionPreset: 'workspace-write',
+      provider: 'anthropic',
       model: 'deepseek-v4-pro',
       reasoningEffort: 'max',
     });
     const info = runner.getStatusInfo();
     expect(info.model).toBe('deepseek-v4-pro');
+    expect(info.provider).toBe('anthropic');
     expect(info.extras).toEqual({
       host: 'http://127.0.0.1:3080',
       preset: 'code',
