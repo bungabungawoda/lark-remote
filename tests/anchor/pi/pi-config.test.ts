@@ -1,12 +1,7 @@
 import { createMockBridge, createMockSessionReaderRegistry } from '../../lib/bridge-stubs.js';
 /**
- * Merged anchor tests for pi config (path mapping / card / provider filter / fallback)
- *
- * Source files (merged 2026-08-04, Phase 4):
- *   - config-pi-path-mapping.test.ts
- *   - pi-config-card-model-filter.test.ts
- *   - pi-provider-model-filter.test.ts
- *   - pi-config-fallback-and-reset.test.ts
+ * Anchor tests for pi config: path mapping, card model filter, provider
+ * filter, fallback and reset.
  *
  * All pi-config file I/O tests use PI_CONFIG_DIR env var to redirect to a temp
  * directory, avoiding dependency on real ~/.pi/agent/ state (which may differ

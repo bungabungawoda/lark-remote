@@ -1,13 +1,7 @@
 /**
- * Merged anchor tests for RunCardSession + renderRunCard budget behavior
- *
- * Source files (merged 2026-08-04, Phase 4):
- *   - run-card-budget-estimate-cjk.test.ts
- *   - run-card-budget-estimate-degrades-large-state.test.ts
- *   - run-card-extreme-fallback-budget-invariant.test.ts
- *   - run-card-push-coalesce.test.ts
- *   - run-card-settle-start-skip-budget.test.ts
- *   - run-card-skip-budget.test.ts
+ * Anchor tests for RunCardSession + renderRunCard budget behavior: CJK-aware
+ * estimates, degradation on large state, extreme-fallback budget invariant,
+ * push coalescing, and skip-budget on start/settle.
  */
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import { RunCardSession } from '../../../src/card/run-card-session.js';
