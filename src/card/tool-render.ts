@@ -12,8 +12,27 @@
 
 import type { ToolEntry } from './run-state.js';
 import { truncate } from '../common/truncate.js';
+import { asRecord, summarizeToolInput } from '../common/tool-summary.js';
+import { truncateMiddleToDisplayWidth } from '../common/text-width.js';
+
+// 这两个宽度工具原本住在这里；resume 卡片也要用，已下沉到 common。
+export {
+  displayWidth,
+  truncateMiddleToDisplayWidth,
+  truncateToDisplayWidth,
+} from '../common/text-width.js';
 
 const HEADER_SUMMARY_MAX = 80;
+/**
+ * 面板标题的显示宽度上限（半角单位，CJK/emoji 记 2）。
+ *
+ * 手机（~390px 内容宽）上折叠面板的标题只有**一行**可用：减去图标与内边距约
+ * 320px，按 ~7.5px/半角算 ≈ 42 个半角宽度（iPhone SE 更窄，超出时按 `·`/空格
+ * 折行仍可读，但不能整段换行）。超过就折行，断点常常落在 URL 或命令
+ * 中间（2026-10-19 截图反馈）。完整参数在展开后的正文里，标题只负责"哪个工具、
+ * 动了什么"，并带上 `HH:mm` 时间戳（一起计入预算）。
+ */
+export const HEADER_DISPLAY_MAX = 42;
 const BODY_FIELD_MAX = 600;
 const OUTPUT_MAX = 1200;
 /**
@@ -31,11 +50,11 @@ const BODY_TOTAL_MAX = 2500;
  *   `✅ **Read** — /repo/a.ts`
  *   `❌ **Grep** — pattern in path`
  */
-export function toolHeaderText(tool: ToolEntry): string {
+export function toolHeaderText(tool: ToolEntry, suffix = ''): string {
   const icon = tool.status === 'ok' ? '✅' : tool.status === 'error' ? '❌' : '⏳';
   // use the cached parsed record when available (avoids per-render parse).
   const input = tool.parsedInput !== undefined ? tool.parsedInput : tool.input;
-  const summary = summarizeInput(tool.name, input);
+  const summary = summarizeToolInput(tool.name, input);
   // 信息保真 ACP kind 映射后 name 与原始 title 不同时，title 以
   // ` — {summary}` 追加在标题末尾（截断沿用 HEADER_SUMMARY_MAX）。
   // 用 truncate（suffix 为空）而非裸 slice：裸 slice 按 UTF-16 码元切，
@@ -48,9 +67,15 @@ export function toolHeaderText(tool: ToolEntry): string {
   // `✅ **Bash** — ls` instead of `✅ **Bash** — ls — ls`.
   const parts = [summary, blockSummary].filter(Boolean);
   const uniqueParts = parts.filter((part, i) => parts.indexOf(part) === i);
-  return uniqueParts.length > 0
-    ? `${icon} **${tool.name}** — ${uniqueParts.join(' — ')}`
-    : `${icon} **${tool.name}**`;
+  const title =
+    uniqueParts.length > 0
+      ? `${icon} **${tool.name}** — ${uniqueParts.join(' — ')}`
+      : `${icon} **${tool.name}**`;
+  // 折叠面板的标题必须能在一行内放下（手机窄屏）：超宽就按显示宽度截断，
+  // 完整值仍在展开后的正文里。`suffix`（时间戳）一起计入预算，否则"标题压到
+  // 60 宽 + 18 宽时间戳"在手机上照样折行。
+  // 中间省略：路径/URL 的结尾（文件名）比开头更有信息量。
+  return truncateMiddleToDisplayWidth(`${title}${suffix}`, HEADER_DISPLAY_MAX);
 }
 
 /**
@@ -61,13 +86,14 @@ export function toolHeaderText(tool: ToolEntry): string {
  * for unknown tools: `default` returns '' and unknown tools only surface their
  * args through the panel header's `summarizeInput` fallback.
  */
-export function toolBodyMd(tool: ToolEntry): string {
+export function toolBodyMd(tool: ToolEntry, opts: { outputMax?: number } = {}): string {
   const parts: string[] = [];
   const inputMd = renderInput(tool);
   if (inputMd) parts.push(inputMd);
 
   if (tool.output) {
-    const truncated = truncate(tool.output, OUTPUT_MAX);
+    const outputMax = Math.min(opts.outputMax ?? OUTPUT_MAX, OUTPUT_MAX);
+    const truncated = truncate(tool.output, outputMax);
     if (tool.status === 'error') {
       parts.push(`**Error**\n\`\`\`\n${truncated}\n\`\`\``);
     } else {
@@ -81,50 +107,6 @@ export function toolBodyMd(tool: ToolEntry): string {
   if (body.length <= BODY_TOTAL_MAX) return body;
   // 同上：走 truncate 保证切点不落在代理对中间（末尾 '…' 由 truncate 附加以对齐预算）。
   return `${truncate(body, BODY_TOTAL_MAX)}\n\n_（body 已截断，完整内容查日志）_`;
-}
-
-function summarizeInput(name: string, input: unknown): string {
-  const rec = asRecord(input);
-  if (!rec) return '';
-  const pick = (key: string, max = HEADER_SUMMARY_MAX): string => {
-    const v = rec[key];
-    if (typeof v !== 'string') return '';
-    const oneLine = v.replace(/\s+/g, ' ').trim();
-    return oneLine.length > max ? `${oneLine.slice(0, max)}…` : oneLine;
-  };
-  switch (name) {
-    case 'Bash':
-    case 'bash':
-      return pick('command');
-    case 'Read':
-    case 'Edit':
-    case 'Write':
-    case 'NotebookEdit':
-    case 'read':
-    case 'edit':
-    case 'write':
-      return pick('file_path') || pick('path');
-    case 'Grep':
-    case 'grep': {
-      const pat = pick('pattern', 40);
-      const p = pick('path', 30);
-      return p ? `${pat} in ${p}` : pat;
-    }
-    case 'Glob':
-    case 'find':
-      return pick('pattern');
-    case 'ls':
-      return pick('path');
-    case 'WebFetch':
-      return pick('url');
-    case 'WebSearch':
-      return pick('query', 60);
-    case 'Agent':
-    case 'Task':
-      return pick('description') || pick('subagent_type');
-    default:
-      return pick('command') || pick('file_path') || pick('path') || pick('query');
-  }
 }
 
 // --- Named render bodies (shared by tool-name cases and toolHint branches) ---
@@ -164,6 +146,14 @@ function renderWebSearchInput(str: (k: string) => string): string {
   return str('query') ? `**Query** \`${truncate(str('query'), BODY_FIELD_MAX)}\`` : '';
 }
 
+/** DSH `web_search` 的批量查询参数（`queries: string[]`）。 */
+function renderWebQueriesInput(queries: unknown): string {
+  if (!Array.isArray(queries)) return '';
+  const items = queries.filter((q): q is string => typeof q === 'string' && q.trim().length > 0);
+  if (items.length === 0) return '';
+  return `**Query** \`${truncate(items.join('` / `'), BODY_FIELD_MAX)}\``;
+}
+
 function renderInput(tool: ToolEntry): string {
   // use the cached parsed record when available (avoids per-render parse).
   const input = tool.parsedInput !== undefined ? tool.parsedInput : tool.input;
@@ -190,6 +180,7 @@ function renderInput(tool: ToolEntry): string {
   switch (tool.name) {
     case 'Bash':
     case 'bash':
+    case 'pwsh':
       return renderBashInput(str);
     case 'Read':
     case 'Edit':
@@ -198,34 +189,25 @@ function renderInput(tool: ToolEntry): string {
     case 'read':
     case 'edit':
     case 'write':
+    case 'read_image':
       return renderFileInput(str);
     case 'Grep':
     case 'grep':
       return renderGrepInput(str);
     case 'Glob':
+    case 'glob':
     case 'find':
       return renderGlobInput(str);
     case 'ls':
       return renderLsInput(str);
     case 'WebFetch':
+    case 'web_fetch':
       return renderWebFetchInput(str);
     case 'WebSearch':
       return renderWebSearchInput(str);
+    case 'web_search':
+      return renderWebQueriesInput(rec.queries) || renderWebSearchInput(str);
     default:
       return '';
   }
-}
-
-function asRecord(input: unknown): Record<string, unknown> | null {
-  if (!input) return null;
-  if (typeof input === 'object') return input as Record<string, unknown>;
-  if (typeof input === 'string') {
-    try {
-      const p = JSON.parse(input);
-      return p && typeof p === 'object' ? (p as Record<string, unknown>) : null;
-    } catch {
-      return null;
-    }
-  }
-  return null;
 }

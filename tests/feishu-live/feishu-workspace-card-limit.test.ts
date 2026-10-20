@@ -22,7 +22,13 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { FeishuConnector } from '../../src/connector/index.js';
 import { loadConfig } from '../../src/config/index.js';
-import { TEST_CONFIG_DIR, configPath, skipIfNoConfig, describeLive } from './live-helpers.js';
+import {
+  TEST_CONFIG_DIR,
+  configPath,
+  logCardMetrics,
+  skipIfNoConfig,
+  describeLive,
+} from './live-helpers.js';
 
 let connector: FeishuConnector;
 let testChatId: string;
@@ -187,6 +193,7 @@ describeLive('飞书 API 集成测试 - /ws 卡片元素上限（11310）', () =
     // 2(头部) + 20*3(行) - 1(末行 hr) = 61 个 body 元素，超过 60 上限
     expect((card.body.elements as object[]).length).toBe(61);
 
+    logCardMetrics('ws-old-20rows', card);
     await expect(connector.sendWithRetry(testChatId, { card })).rejects.toMatchObject({
       cause: expect.objectContaining({
         response: expect.objectContaining({
@@ -213,6 +220,8 @@ describeLive('飞书 API 集成测试 - /ws 卡片元素上限（11310）', () =
 
     // 第 2 页：5 条
     const page2 = buildWsCard(twentyEntries, 15, 15);
+    logCardMetrics('ws-paged-15rows-p1', page1);
+    logCardMetrics('ws-paged-15rows-p2', page2);
     const id2 = await connector.sendWithRetry(testChatId, { card: page2 });
     expect(typeof id2).toBe('string');
     expect(id2.length).toBeGreaterThan(0);

@@ -131,7 +131,7 @@ Run/Bash 卡片的 CardKit 2.0 单卡流式架构说明，覆盖数据流、状�
 - text 保留最新窗口；
 - tool input/output 截断；
 - block 总数有上限；
-- 连续工具超过阈值时折叠旧工具；
+- 工具块总数有上限（`MAX_BLOCKS`）；每个工具是原生折叠面板（默认一行标题），正文随卡下发并按工具数量截断；
 - 整卡目标小于 28KB，测试要求小于 30KB。
 
 预算使用 `Buffer.byteLength(..., 'utf8')`，不能使用 JavaScript 字符串 `.length` 代替。

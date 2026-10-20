@@ -91,6 +91,10 @@ export interface RunState {
   runId: string;
   terminal: RunTerminal;
   footer: RunFooter;
+  /** 本 run 开始时间（epoch ms）：状态行的「⏱ 12s」由它算出。 */
+  startedAt?: number;
+  /** 本 run 结束时间（epoch ms）：终态后耗时定格，不再随渲染时刻增长。 */
+  finishedAt?: number;
   blocks: RunBlock[];
   sessionId?: string;
   resultSubtype?: 'success' | 'error' | 'interrupted';
@@ -151,6 +155,23 @@ export interface RunState {
    * 终态渲染（2026-08-15 事故：标记被消费后卡片误报「已被用户终止」）。
    */
   approvalExpired?: boolean;
+  /**
+   * 运行期状态投影（DSH `session/control` 的 contextPressure / sessionStats）。
+   *
+   * 只在 running/finalizing 渲染成状态行的一条（终态卡有权威 summary，不再
+   * 重复）。字段缺省 = 该维度暂无数据。
+   */
+  liveStatus?: {
+    contextUsed?: number;
+    contextLimit?: number;
+    steps?: number;
+    toolMs?: number;
+  };
+  /**
+   * run 结束时仍在后台运行的任务。跨 turn 生命周期：卡片必须说清楚"这一轮
+   * 结束了，但还有东西在跑"，并给出逐个停止的入口。
+   */
+  backgroundJobs?: Array<{ id: string; label: string; status?: string; progress?: string }>;
 }
 
 export interface FinishMeta {
@@ -187,6 +208,8 @@ export function createInitialRunState(runId: string): RunState {
     runId,
     terminal: 'running',
     footer: 'thinking',
+    // 状态行的耗时口径：从 run 状态建立那一刻算起（卡片首帧即开始计时）。
+    startedAt: Date.now(),
     blocks: [],
   };
 }
@@ -205,6 +228,8 @@ export function reduceRunState(state: RunState, event: AgentEvent): RunState {
   }
 
   if (event.type === 'system') return reduceSystemEvent(state, event);
+  if (event.type === 'run_status') return reduceRunStatusEvent(state, event);
+  if (event.type === 'background_jobs') return reduceBackgroundJobsEvent(state, event);
   if (event.type === 'result') return reduceResultEvent(state, event);
   if (event.type === 'assistant') return reduceAssistantEvent(state, event);
   if (event.type === 'user') return reduceToolResultEvent(state, event);
@@ -544,6 +569,41 @@ function reduceResultEvent(state: RunState, event: AgentEvent): RunState {
   };
 }
 
+/**
+ * 后台任务名单 → RunState.backgroundJobs。
+ *
+ * 整份替换而非合并：事件本身就是"收尾那一刻仍在跑的完整名单"，合并会把上一
+ * 轮已结束的任务留下来。用户点「停止」成功后由 bridge 直接从 state 里摘掉，
+ * 不再走事件（那时已经没有 run 在消费流了）。
+ */
+function reduceBackgroundJobsEvent(state: RunState, event: AgentEvent): RunState {
+  if (event.type !== 'background_jobs') return state;
+  return { ...state, backgroundJobs: event.jobs };
+}
+
+/**
+ * 运行期状态投影 → 状态行。
+ *
+ * 每帧只带一个投影 key，所以只合并"有值"的字段：用 undefined 覆盖会把另一
+ * 维度（上一步算出的上下文水位）擦掉。
+ */
+function reduceRunStatusEvent(state: RunState, event: AgentEvent): RunState {
+  if (event.type !== 'run_status') return state;
+  const prev = state.liveStatus ?? {};
+  const live = {
+    ...prev,
+    ...(event.contextUsed === undefined ? {} : { contextUsed: event.contextUsed }),
+    ...(event.contextLimit === undefined ? {} : { contextLimit: event.contextLimit }),
+    ...(event.steps === undefined ? {} : { steps: event.steps }),
+    ...(event.toolMs === undefined ? {} : { toolMs: event.toolMs }),
+  };
+  // 窗口上限同时写进 state：终态 summary 的百分比与状态条同源，即使
+  // result.usage 没带上限（DSH 的会话读取端不产出）也算得出来。
+  const next: RunState = { ...state, liveStatus: live };
+  if (live.contextLimit !== undefined) next.contextLimit = live.contextLimit;
+  return next;
+}
+
 /** Handle assistant thinking/text/tool_use content blocks. */
 function reduceAssistantEvent(state: RunState, event: AgentEvent): RunState {
   if (event.type !== 'assistant') return state;
@@ -810,6 +870,9 @@ export function finishRun(
     ...state,
     terminal,
     footer: null,
+    // 耗时定格：终态之后再渲染（补 token 统计、点「详情」重渲染）都沿用同一
+    // 结束时刻，否则每次 patch 的数字都会变大。
+    finishedAt: state.finishedAt ?? Date.now(),
     blocks: markThinkingInactive(state.blocks),
     ...sanitizeMeta(meta),
     ...(derivedReason !== undefined ? { interruptedReason: derivedReason } : {}),

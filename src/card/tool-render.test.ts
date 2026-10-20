@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { toolHeaderText, toolBodyMd } from './tool-render.js';
+import { toolHeaderText, toolBodyMd, displayWidth, HEADER_DISPLAY_MAX } from './tool-render.js';
 import { createInitialRunState, reduceRunState } from './run-state.js';
 import type { ToolEntry } from './run-state.js';
 
@@ -185,25 +185,51 @@ describe('toolHeaderText', () => {
     expect(toolHeaderText(tool)).toBe('✅ **Grep** —  in src/');
   });
 
-  it('Grep with very long pattern truncates to 40 chars', () => {
+  it('Grep with very long pattern still fits one panel title line', () => {
     const longPattern = 'a'.repeat(60);
     const tool = makeTool({ name: 'Grep', input: { pattern: longPattern, path: 'src/' } });
     const header = toolHeaderText(tool);
-    // pattern truncated to 40 + ellipsis
-    expect(header).toContain('aaaa… in src/');
-    expect(header).toBe(`✅ **Grep** — ${'a'.repeat(40)}… in src/`);
+    // 标题按**显示宽度**收敛（面板标题在手机上必须一行），完整 pattern 在正文里。
+    // 截断是**中间省略**：保留开头（工具名）与结尾（路径/文件名）。
+    expect(displayWidth(header)).toBeLessThanOrEqual(HEADER_DISPLAY_MAX);
+    expect(header).toContain('…');
   });
 
-  it('WebSearch query truncated to 60 chars', () => {
+  it('WebSearch query keeps the title within the display budget', () => {
     const longQuery = 'q'.repeat(80);
     const tool = makeTool({ name: 'WebSearch', input: { query: longQuery } });
-    expect(toolHeaderText(tool)).toBe(`✅ **WebSearch** — ${'q'.repeat(60)}…`);
+    expect(displayWidth(toolHeaderText(tool))).toBeLessThanOrEqual(HEADER_DISPLAY_MAX);
   });
 
-  it('long header summary truncated to HEADER_SUMMARY_MAX (80)', () => {
+  it('long header summary is cut by display width, not char count', () => {
     const longCmd = 'x'.repeat(100);
     const tool = makeTool({ name: 'Bash', input: { command: longCmd } });
-    expect(toolHeaderText(tool)).toBe(`✅ **Bash** — ${'x'.repeat(80)}…`);
+    const header = toolHeaderText(tool);
+    expect(displayWidth(header)).toBeLessThanOrEqual(HEADER_DISPLAY_MAX);
+    expect(header).toContain('…');
+    // 半角字符按 1 计：前缀 `✅ **Bash** — ` 原样保留
+    expect(header.startsWith('✅ **Bash** — xxx')).toBe(true);
+  });
+
+  it('CJK titles are cut earlier (a CJK char is two half-widths)', () => {
+    const cjk = '中'.repeat(40);
+    const tool = makeTool({ name: 'Bash', input: { command: cjk } });
+    const header = toolHeaderText(tool);
+    expect(displayWidth(header)).toBeLessThanOrEqual(HEADER_DISPLAY_MAX);
+    expect(header).toContain('…');
+  });
+
+  it('keeps the tail of a long path so the filename survives', () => {
+    const tool = makeTool({
+      name: 'read',
+      input: {
+        file_path: '/home/user/notes-app/docs/notes/2026-10-19-vision-remaining.md',
+      },
+    });
+    const header = toolHeaderText(tool);
+    expect(displayWidth(header)).toBeLessThanOrEqual(HEADER_DISPLAY_MAX);
+    // 中间省略：结尾的文件名必须还在（头部截断会把文件名整个切掉）
+    expect(header.endsWith('remaining.md')).toBe(true);
   });
 
   // ── Lowercase tool names ──
@@ -632,7 +658,12 @@ describe('tool-render toolHint (信息保真)', () => {
       input: { path: '/home/user/project/a.ts' },
       parsedInput: { path: '/home/user/project/a.ts' },
     });
-    expect(toolHeaderText(tool)).toBe('✅ **Read** — /home/user/project/a.ts — placeholder');
+    // 标题总宽受显示预算约束（手机一行）：超宽时中间省略——开头（工具名）与
+    // 结尾（副标题）保留，路径中段被压缩，完整值在正文里。
+    const header = toolHeaderText(tool);
+    expect(displayWidth(header)).toBeLessThanOrEqual(HEADER_DISPLAY_MAX);
+    expect(header.startsWith('✅ **Read** — /home/u')).toBe(true);
+    expect(header).toContain('placeholder');
   });
 
   it('header without summary stays unchanged (回归)', () => {
@@ -654,5 +685,107 @@ describe('tool-render toolHint (信息保真)', () => {
       summary: 'ls',
     });
     expect(toolHeaderText(tool)).toBe('✅ **Bash** — ls');
+  });
+});
+
+/**
+ * DSH 工具名（snake_case）的摘要口径。
+ *
+ * 为什么单列一组：DSH 的工具名与 Claude/Codex 不同名（`glob`/`web_search`/
+ * `todo_write`/`subagent`/`job_*`），且参数名也不同（`queries[]` 而非
+ * `query`、`file_path` 而非 `path`）。缺这些映射时，摘要在 default 分支里
+ * 退化成空字符串——卡片上只剩 `✅ **glob**`，用户看不到跑了什么。
+ */
+describe('tool-render DSH tool summaries', () => {
+  function makeTool(overrides: Partial<ToolEntry> & Pick<ToolEntry, 'name'>): ToolEntry {
+    return {
+      id: 't1',
+      name: overrides.name,
+      status: overrides.status ?? 'ok',
+      input: overrides.input ?? {},
+      ...overrides,
+    };
+  }
+
+  it('glob shows the pattern (not the directory)', () => {
+    const tool = makeTool({ name: 'glob', input: { pattern: '**/*.ts', path: 'src' } });
+    expect(toolHeaderText(tool)).toBe('✅ **glob** — **/*.ts');
+  });
+
+  it('read_image shows file_path', () => {
+    const tool = makeTool({ name: 'read_image', input: { file_path: 'shot.png' } });
+    expect(toolHeaderText(tool)).toBe('✅ **read_image** — shot.png');
+  });
+
+  it('pwsh shows the command', () => {
+    const tool = makeTool({ name: 'pwsh', input: { command: 'Get-ChildItem' } });
+    expect(toolHeaderText(tool)).toBe('✅ **pwsh** — Get-ChildItem');
+  });
+
+  it('web_search reads the queries array', () => {
+    const tool = makeTool({ name: 'web_search', input: { queries: ['dsh 卡片', 'cardkit'] } });
+    expect(toolHeaderText(tool)).toBe('✅ **web_search** — dsh 卡片');
+  });
+
+  it('web_fetch shows the url', () => {
+    const tool = makeTool({ name: 'web_fetch', input: { url: 'https://example.com/a' } });
+    expect(toolHeaderText(tool)).toBe('✅ **web_fetch** — https://example.com/a');
+  });
+
+  it('todo_write shows progress plus the in-progress item', () => {
+    const tool = makeTool({
+      name: 'todo_write',
+      input: {
+        todos: [
+          { content: '读代码', status: 'completed' },
+          { content: '改渲染', status: 'in_progress' },
+          { content: '跑测试', status: 'pending' },
+        ],
+      },
+    });
+    expect(toolHeaderText(tool)).toBe('✅ **todo_write** — 已完成 1/3 · 改渲染');
+  });
+
+  it('todo_write without an in-progress item shows only progress', () => {
+    const tool = makeTool({
+      name: 'todo_write',
+      input: { todos: [{ content: 'a', status: 'completed' }] },
+    });
+    expect(toolHeaderText(tool)).toBe('✅ **todo_write** — 已完成 1/1');
+  });
+
+  it('subagent shows the delegated description', () => {
+    const tool = makeTool({ name: 'subagent', input: { description: '梳理卡片预算' } });
+    expect(toolHeaderText(tool)).toBe('✅ **subagent** — 梳理卡片预算');
+  });
+
+  it('job tools show the job id', () => {
+    expect(toolHeaderText(makeTool({ name: 'job_kill', input: { job_id: 'j-1' } }))).toBe(
+      '✅ **job_kill** — j-1',
+    );
+    expect(toolHeaderText(makeTool({ name: 'job_output', input: { job_id: 'j-2' } }))).toBe(
+      '✅ **job_output** — j-2',
+    );
+  });
+
+  it('present shows the first delivered file', () => {
+    const tool = makeTool({
+      name: 'present',
+      input: { files: [{ path: 'docs/a.md' }, { path: 'docs/b.md' }] },
+    });
+    expect(toolHeaderText(tool)).toBe('✅ **present** — docs/a.md');
+  });
+
+  it('ask_user_question shows the question count', () => {
+    const tool = makeTool({
+      name: 'ask_user_question',
+      input: { questions: [{ question: 'a' }, { question: 'b' }] },
+    });
+    expect(toolHeaderText(tool)).toBe('✅ **ask_user_question** — 2 个问题');
+  });
+
+  it('web_search body renders every query', () => {
+    const tool = makeTool({ name: 'web_search', input: { queries: ['a', 'b'] } });
+    expect(toolBodyMd(tool)).toContain('`a` / `b`');
   });
 });

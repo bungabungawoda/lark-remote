@@ -45,6 +45,7 @@ import {
 } from '../../runner/dsh/auth.js';
 import { capEvents, paginate } from '../common/pagination.js';
 import { truncateUtf8, TOOL_RESULT_MAX_BYTES } from '../../common/truncate.js';
+import { summarizeToolInput } from '../../common/tool-summary.js';
 
 /**
  * history 拉取上限。DSH session/page 的 maxMessages 同时限制返回条数，
@@ -305,6 +306,8 @@ export class DshSessionReader implements AgentSessionReader {
       // null = 历史里没有 turn 标记（旧数据/截断）→ 退回末条 usage 语义。
       let turnUsage: UsageTotals | null = null;
       let lastTurnUsage: UsageTotals | null = null;
+      /** 等结果的工具调用（见 MappedEvent.pendingTool）。 */
+      let pendingTool: AgentSessionContentEvent | undefined;
 
       for (const entry of value.records ?? []) {
         const ev = entry.event;
@@ -316,7 +319,27 @@ export class DshSessionReader implements AgentSessionReader {
           turnUsage = null;
         }
         const contentEvents = mapEvent(ev);
-        events.push(...contentEvents.events);
+        if (contentEvents.pendingTool) {
+          // 未完成的工具调用最多同时一个（DSH 按 step 串行执行；并行调用时按
+          // 到达顺序配对，最坏情况是两次调用共用一个面板，不会丢信息）。
+          if (pendingTool) events.push(pendingTool);
+          pendingTool = contentEvents.pendingTool;
+        } else if (ev.type === 'tool/result' && pendingTool && contentEvents.events[0]) {
+          const result = contentEvents.events[0];
+          // 标题沿用调用的 `🔧 name — summary`，失败改成 ❌（折叠态一眼看出结果）。
+          const failed = result.title?.startsWith('🔴') === true;
+          events.push({
+            type: 'tool_use',
+            title: failed
+              ? (pendingTool.title ?? '❌ 工具').replace('🔧', '❌')
+              : pendingTool.title,
+            content: result.content,
+            timestamp: pendingTool.timestamp,
+          });
+          pendingTool = undefined;
+        } else {
+          events.push(...contentEvents.events);
+        }
         if (contentEvents.title) displayTitle = contentEvents.title;
         const u = contentEvents.usage;
         if (u) {
@@ -363,6 +386,9 @@ export class DshSessionReader implements AgentSessionReader {
           }),
         };
       }
+
+      // 中断/仍在执行的调用没有结果：把它当独立事件留下，别让这一条消失。
+      if (pendingTool) events.push(pendingTool);
 
       return {
         // 展示仍按 maxEvents 尾截断（默认 50，保持原行为），usage 已在上面基于
@@ -430,6 +456,11 @@ interface MappedEvent {
   events: AgentSessionContentEvent[];
   title?: string;
   usage?: DshTokenUsage;
+  /**
+   * 尚未配对的工具调用（`tool/call` 先记下，等 `tool/result` 到了合成一个面板）。
+   * resume 卡里工具调用与结果是同一次交互，两个面板各占一屏没有意义。
+   */
+  pendingTool?: AgentSessionContentEvent;
 }
 
 /** 单个 turn 内各采样用量之和（input 为非缓存输入，与 ccusage 口径一致）。 */
@@ -443,6 +474,13 @@ interface UsageTotals {
 function emptyUsageTotals(): UsageTotals {
   return { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
 }
+
+/** 单条思考在 resume 卡里的上限：过程信息，留头几百字即可。 */
+const REASONING_MAX_BYTES = 800;
+/** 单条 assistant 正文上限（最终答复通常最重要，给足空间）。 */
+const TEXT_MAX_BYTES = 2_000;
+/** 工具原始参数上限（标题已有摘要，正文只用于看完整命令）。 */
+const TOOL_INPUT_MAX_BYTES = 600;
 
 /** Map one DSH SessionEvent to display content events (+ title/usage side effects). */
 function mapEvent(ev: DshSessionEvent): MappedEvent {
@@ -461,35 +499,54 @@ function mapEvent(ev: DshSessionEvent): MappedEvent {
       const content =
         (ev.data.message as { content?: { type?: string; text?: string }[] } | undefined)
           ?.content ?? [];
-      const text = content
-        .filter((c) => c.type === 'text')
-        .map((c) => c.text ?? '')
-        .join('');
-      if (text)
-        out.events.push({
-          type: 'assistant',
-          content: text,
-          timestamp: new Date(ev.time).toISOString(),
-        });
+      const timestamp = new Date(ev.time).toISOString();
+      // DSH 的块类型是 text / reasoning / tool-call（不是 Anthropic 的
+      // thinking）。只认 text 会让 resume 卡"只有工具调用、没有思考与输出"
+      // （2026-10-19 反馈：一个 31 turn 的会话里 reasoning 块 371 个、text 12 个，
+      // 全被丢掉）。tool-call 块不在这里取——独立的 `tool/call` 事件带完整参数。
+      for (const block of content) {
+        const text = typeof block.text === 'string' ? block.text.trim() : '';
+        if (!text) continue;
+        if (block.type === 'text') {
+          out.events.push({
+            type: 'assistant',
+            content: truncateUtf8(text, TEXT_MAX_BYTES),
+            timestamp,
+          });
+        } else if (block.type === 'reasoning') {
+          out.events.push({
+            type: 'thinking',
+            // 思考是过程信息：resume 卡里留头几百字足够判断"当时在想什么"。
+            content: truncateUtf8(text, REASONING_MAX_BYTES),
+            timestamp,
+          });
+        }
+      }
       const usage = ev.data.usage as DshTokenUsage | undefined;
       if (usage && typeof usage === 'object') out.usage = usage;
       break;
     }
     case 'tool/call': {
+      // 调用本身先不产出事件：DSH 的 tool/call 与 tool/result 是一对，resume 卡
+      // 里合成一个面板（`🔧 bash — cmd` + 输出），而不是两个各占一屏。
       const name = String(ev.data.name ?? '');
       const args = typeof ev.data.arguments === 'string' ? ev.data.arguments : '';
-      out.events.push({
+      const summary = summarizeToolInput(name, args);
+      out.pendingTool = {
         type: 'tool_use',
-        content: `${name}(${truncateUtf8(args, 200)})`,
+        title: summary ? `🔧 ${name} — ${summary}` : `🔧 ${name}`,
+        content: truncateUtf8(args, TOOL_INPUT_MAX_BYTES),
         timestamp: new Date(ev.time).toISOString(),
-      });
+      };
       break;
     }
     case 'tool/result': {
-      const msg = ev.data.message as { content?: unknown } | undefined;
+      const msg = ev.data.message as { content?: unknown; isError?: unknown } | undefined;
       const raw = stringifyContent(msg?.content);
+      const isError = msg?.isError === true;
       out.events.push({
         type: 'tool_result',
+        title: isError ? '🔴 结果（失败）' : '🟢 结果',
         content: truncateUtf8(raw, TOOL_RESULT_MAX_BYTES),
         timestamp: new Date(ev.time).toISOString(),
       });

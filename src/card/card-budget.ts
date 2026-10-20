@@ -15,6 +15,70 @@ import {
  * Docs: https://open.feishu.cn/document/uAjLw4CM/ukzMukzMukz/feishu-cards/card-components/containers/collapsible-panel
  */
 
+/**
+ * 飞书单卡「元素」总量上限（实测）。
+ *
+ * 2026-10-19 用真实 API 在测试会话探测（`tests/feishu-live/feishu-card-element-total-limit.test.ts`
+ * 与 `feishu-workspace-card-limit` / `feishu-order-active-card-limit`）：
+ *
+ * | 形状 | 结果 | elements 计数 |
+ * | --- | --- | --- |
+ * | 顶层平铺 99 个 div | ✅ | 99 |
+ * | 顶层平铺 100 个 div | ❌ 11310 | 100 |
+ * | 单列 column_set 内嵌 98 个 div | ✅ | 99 |
+ * | 单列 column_set 内嵌 99 个 div | ❌ | 100 |
+ * | `/order` 旧结构 20 行 | ❌ | 103 |
+ * | `/ws` 旧结构 20 行 | ❌ | 101 |
+ * | `/ws` 分页 15 行（整卡 227 个 JSON 对象） | ✅ | 80 |
+ *
+ * 判据是**递归统计 `elements` 数组成员**（不含 `columns`）**≤ 99**：所有实测的
+ * 成功/失败点都被它分开，而"整卡 JSON 对象数"分不开（`/ws` 分页卡 227 个对象
+ * 能发出去，平铺 100 个 div 只有 205 个对象却失败）。
+ *
+ * 另一个独立维度：单个 `column_set` 的列数（实测 66 列通过、67 列失败）。本仓库
+ * 所有卡片的列数都在 3 以内，用不到这个上限，仅在此记录以免再次误判。
+ *
+ * **旧结论勘误**：仓库曾把 `230025` 记为「elements 过多」。本次探测中它一次都
+ * 没有出现；元素超限统一是 `230099 / ErrCode: 11310 element exceeds the limit`。
+ *
+ * `MAX_CARD_ELEMENTS` 取 90（相对实测 99 留 10% 余量），用于渲染前的保守裁剪。
+ */
+export const MAX_CARD_ELEMENTS = 90;
+
+/**
+ * 卡片递归的 `elements` 数组成员数（`columns` 不计数）——与飞书实测边界对齐。
+ *
+ * 注意与"JSON 对象总数"不同：`column_set` 的 `column` 对象不计入，button 的
+ * `behaviors`/`value` 也不计入。用它做预算才既不误伤能发出去的卡片，也不放过
+ * 真正超限的卡片。
+ */
+export function countCardElements(card: unknown): number {
+  let total = 0;
+  const walk = (value: unknown): void => {
+    if (Array.isArray(value)) {
+      for (const item of value) walk(item);
+      return;
+    }
+    if (!value || typeof value !== 'object') return;
+    const rec = value as { elements?: unknown; columns?: unknown };
+    if (Array.isArray(rec.elements)) {
+      total += rec.elements.length;
+      walk(rec.elements);
+    }
+    if (Array.isArray(rec.columns)) {
+      walk(rec.columns);
+    }
+    // 继续下潜其余字段（`body`、`header` 等）：卡片根对象本身没有 elements，
+    // 不遍历字段就永远数到 0（曾因此让整条元素预算静默失效）。
+    for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
+      if (key === 'elements' || key === 'columns') continue;
+      walk(child);
+    }
+  };
+  walk(card);
+  return total;
+}
+
 interface CardBudgetOptions {
   /** 最大事件面板数量（保留最新的） */
   maxEventPanels?: number;
@@ -68,11 +132,12 @@ export function enforceCardBudget(
   const cardStr = JSON.stringify(card);
   const bytesBefore = Buffer.byteLength(cardStr, 'utf8');
   const parsed = JSON.parse(cardStr) as CardNode;
+  const elementsBefore = countCardElements(parsed);
   const droppedTables = capCardMarkdownTables(parsed, FEISHU_MAX_TABLES);
   if (droppedTables > 0) {
     const fixedStr = JSON.stringify(parsed);
-    // table 截断后可能仍超字节预算，继续走后续阶段
-    if (Buffer.byteLength(fixedStr, 'utf8') <= CARD_BUDGET_BYTES) {
+    // table 截断后可能仍超预算（字节或元素总数），继续走后续阶段
+    if (fitsBudget(Buffer.byteLength(fixedStr, 'utf8'), countCardElements(parsed))) {
       return {
         card: parsed,
         wasTruncated: true,
@@ -81,16 +146,73 @@ export function enforceCardBudget(
         bytesAfter: Buffer.byteLength(fixedStr, 'utf8'),
       };
     }
-    // table 修好了但字节仍超，用 fixed 作为后续处理的起点
-    return enforceByteBudget(parsed, opts, bytesBefore);
+    return enforceElementBudget(parsed, opts, bytesBefore);
   }
 
-  if (bytesBefore <= CARD_BUDGET_BYTES) {
+  if (fitsBudget(bytesBefore, elementsBefore)) {
     return { card, wasTruncated: false, bytesBefore, bytesAfter: bytesBefore };
+  }
+
+  // 元素总数超限：table 与字节可能都正常，必须先按元素数裁剪。
+  if (bytesBefore <= CARD_BUDGET_BYTES && elementsBefore > MAX_CARD_ELEMENTS) {
+    return enforceElementBudget(parsed, opts, bytesBefore);
   }
 
   // 字节超限但 table 不超限
   return enforceByteBudget(JSON.parse(cardStr) as CardNode, opts, bytesBefore);
+}
+
+/** 同时满足字节与元素总数两个预算。 */
+function fitsBudget(bytes: number, elements: number): boolean {
+  return bytes <= CARD_BUDGET_BYTES && elements <= MAX_CARD_ELEMENTS;
+}
+
+/**
+ * 元素总数超限时的裁剪：先丢最老的面板，再交给字节路径继续降级。
+ *
+ * 与字节路径分开是因为成因正交：字节超限来自内容长度（截断内容即可），元素
+ * 超限来自元素个数（只能删元素）。两条路径共用 `getPanelIndices`。
+ */
+function enforceElementBudget(
+  card: CardNode,
+  opts: CardBudgetOptions = {},
+  bytesBefore?: number,
+): BudgetResult {
+  const reasons: string[] = [];
+  const elements: CardElementNode[] = card.body?.elements ?? [];
+  const size = () => Buffer.byteLength(JSON.stringify(card), 'utf8');
+  const done = (wasTruncated: boolean): BudgetResult => ({
+    card,
+    wasTruncated,
+    reason: reasons.join('+') || undefined,
+    bytesBefore: bytesBefore ?? size(),
+    bytesAfter: size(),
+  });
+
+  const dropPanels = (count: number): number => {
+    const indices = getPanelIndices(elements)
+      .slice(0, count)
+      .sort((a, b) => b - a);
+    for (const idx of indices) elements.splice(idx, 1);
+    return indices.length;
+  };
+
+  // 阶段1：面板按数量砍（面板是节点大户：一个面板外壳 + 内容）
+  const panelCount = getPanelIndices(elements).length;
+  if (panelCount > 0) {
+    let dropped = 0;
+    while (countCardElements(card) > MAX_CARD_ELEMENTS && getPanelIndices(elements).length > 0) {
+      dropped += dropPanels(1);
+    }
+    if (dropped > 0) reasons.push('element_budget_panels_dropped');
+  }
+  if (countCardElements(card) <= MAX_CARD_ELEMENTS && size() <= CARD_BUDGET_BYTES) {
+    return done(true);
+  }
+
+  // 阶段2：仍超限（既不是面板、或字节同时超）→ 交给字节路径继续降级，
+  // 它最终会落到最小卡（节点数固定很小）。
+  return enforceByteBudget(card, opts, bytesBefore);
 }
 
 type BudgetResult = {

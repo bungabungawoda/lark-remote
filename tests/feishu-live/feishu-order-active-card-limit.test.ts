@@ -26,7 +26,13 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { FeishuConnector } from '../../src/connector/index.js';
 import { loadConfig } from '../../src/config/index.js';
-import { TEST_CONFIG_DIR, configPath, skipIfNoConfig, describeLive } from './live-helpers.js';
+import {
+  TEST_CONFIG_DIR,
+  configPath,
+  logCardMetrics,
+  skipIfNoConfig,
+  describeLive,
+} from './live-helpers.js';
 
 let connector: FeishuConnector;
 let testChatId: string;
@@ -272,6 +278,7 @@ describeLive('飞书 API 集成测试 - /order /active 卡片元素上限（1131
     const card = buildOrderCard(21, 0, 20);
     // 20 行 + 分页栏 = 61 个 body 元素
     expect((card.body.elements as object[]).length).toBe(61);
+    logCardMetrics('order-old-20rows', card);
     await expect(connector.sendWithRetry(testChatId, { card })).rejects.toMatchObject({
       cause: expect.objectContaining({
         response: expect.objectContaining({
@@ -296,6 +303,8 @@ describeLive('飞书 API 集成测试 - /order /active 卡片元素上限（1131
     expect(id1.length).toBeGreaterThan(0);
 
     const page2 = buildOrderCard(21, 15, 15);
+    logCardMetrics('order-paged-15rows-p1', page1);
+    logCardMetrics('order-paged-15rows-p2', page2);
     const id2 = await connector.sendWithRetry(testChatId, { card: page2 });
     expect(typeof id2).toBe('string');
     expect(id2.length).toBeGreaterThan(0);
@@ -309,6 +318,7 @@ describeLive('飞书 API 集成测试 - /order /active 卡片元素上限（1131
     const card = buildActiveCard(15, 20, 0, 20);
     // 页信息 1 + Agent 头 1 + 15*4 + Bash 头 1 + 5*4 + 分页栏 1 = 84 顶层元素
     expect((card.body.elements as object[]).length).toBe(84);
+    logCardMetrics('active-worst', card);
     const id = await connector.sendWithRetry(testChatId, { card });
     expect(typeof id).toBe('string');
     expect(id.length).toBeGreaterThan(0);
