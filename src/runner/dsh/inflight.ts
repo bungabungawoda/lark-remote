@@ -18,10 +18,16 @@
  * method swallows storage errors so a broken state file cannot block a run.
  */
 
+import path from 'node:path';
 import { getLogger } from '../../logger/index.js';
 import { atomicWriteJson } from '../../persistence/atomic-write.js';
 import { loadJsonFile } from '../../persistence/load-json-file.js';
 import type { DshClient } from './client.js';
+
+/** Single source for the marker file shared by the runner and startup reconcile. */
+export function dshInflightPath(configDir: string): string {
+  return path.join(configDir, 'dsh-inflight.json');
+}
 
 export interface DshInflightEntry {
   sessionId: string;
@@ -174,6 +180,6 @@ export function formatInflightWarning(entries: DshInflightEntry[]): string {
   return (
     `⚠️ 上次退出时可能留下了未结束的 DSH turn（${entries.length} 个）：\n` +
     `${lines.join('\n')}\n` +
-    '请到 DSH Web UI 检查；需要终止时在对应会话再发一次 /stop。'
+    '请到 DSH Web UI 检查并终止；本机的 /stop 只能停止当前由 lark-remote 发起的 run。'
   );
 }

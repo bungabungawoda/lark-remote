@@ -745,9 +745,14 @@ export class DshClient {
     opts?: { signal?: AbortSignal; timeoutMs?: number },
   ): Promise<DshOpenTurnState> {
     try {
-      const throughSeq = await this.latestEventSeq(sessionId, opts);
-      if (throughSeq < 0) return 'closed';
-      const value = await this.page(sessionId, throughSeq, 1, opts);
+      // A missing projection snapshot is not "idle": the host simply cannot
+      // tell us. Only a known watermark with no events (or a closed tail) is
+      // evidence that no turn is open.
+      const snapshot = await this.projectionSnapshot(sessionId, opts);
+      if (!snapshot || typeof snapshot.asOfSeq !== 'number' || snapshot.asOfSeq < 0) {
+        return 'unknown';
+      }
+      const value = await this.page(sessionId, snapshot.asOfSeq, 1, opts);
       const last = value.records.at(-1)?.event;
       if (last === undefined) return 'closed';
       return last.type === 'turn/start' || IN_TURN_EVENT_TYPES.has(last.type) ? 'open' : 'closed';
