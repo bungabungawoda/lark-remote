@@ -66,7 +66,7 @@ import { InboundTurnAssembler } from './inbound/turn-assembler.js';
 import { InboundAuthorizer } from './inbound/authorize.js';
 import { stripPlaceholders } from './inbound/placeholder.js';
 import type { MediaOutcome } from './inbound/turn.js';
-import { buildSessionHistoryCard } from './router/card-helpers.js';
+import { buildSessionHistoryCard, pickResumeCardEvents } from './router/card-helpers.js';
 import { newSessionButton, resumeCompactButton, agentDisplayName } from './card/card-shared.js';
 import path from 'node:path';
 import fs from 'node:fs';
@@ -107,10 +107,12 @@ async function sendAutoResumeCard(
   const recipient = contact.chatId ?? contact.userId;
   if (!recipient) return;
 
-  // Limit history events to prevent card size exceeded error (11310)
+  // Limit history events to prevent card size exceeded error (11310).
+  // 窗口按"最后 N 条"截，但强制保住最后一条用户消息与最后一条 assistant 正文，
+  // 否则工具往返会把它俩一起挤出卡（2026-10-19 恢复卡只剩 5 个 bash 面板）。
   const MAX_HISTORY_EVENTS = 5;
-  const eventsToShow = state.events.slice(-MAX_HISTORY_EVENTS);
-  const hiddenCount = state.events.length - MAX_HISTORY_EVENTS;
+  const eventsToShow = pickResumeCardEvents(state.events, MAX_HISTORY_EVENTS);
+  const hiddenCount = state.events.length - eventsToShow.length;
 
   // Action buttons: Compact (runCompact-capable runner) + new session.
   const agentKind = state.agentKind ?? 'claude';
