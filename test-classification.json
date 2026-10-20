@@ -58,6 +58,7 @@
     "src/router/router.test.ts",
     "src/router/router-format.test.ts",
     "src/router/session-event-panel.test.ts",
+    "src/router/card-helpers-resume-window.test.ts",
     "src/router/alias.test.ts",
     "src/router/config/config-builder.test.ts",
     "src/router/update-command.test.ts",

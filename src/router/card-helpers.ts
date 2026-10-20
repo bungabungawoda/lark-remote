@@ -315,6 +315,52 @@ export function searchBar(opts: {
 }
 
 /**
+ * 选出 resume/历史卡该展示的事件。
+ *
+ * 旧口径是 `events.slice(-max)`：按**原始事件条数**截尾。工具往返（bash 调用 →
+ * job 登记 → 结果）一段就能把窗口占满，于是重返会话的用户真正需要的两条信息
+ * ——最后一句我说了什么、最后一句它答了什么——被挤出窗口。2026-10-19 实测：
+ * 自动恢复卡 5 个面板全是 bash 调用，一条用户消息、一条 assistant 正文都没有。
+ *
+ * 契约：先取最新 `max` 条，再把最后一条 `user` 与最后一条 `assistant`（正文）
+ * 不在窗口内时补进来——补位时淘汰最早的**非锚点**事件。输出保持时间顺序，
+ * 长度不超过 `max`。
+ */
+export function pickResumeCardEvents(
+  events: AgentSessionContentEvent[],
+  max: number,
+): AgentSessionContentEvent[] {
+  if (max <= 0) return [];
+  if (events.length <= max) return events.slice();
+
+  const picked = new Set<number>();
+  for (let i = events.length - 1; i >= 0 && picked.size < max; i -= 1) picked.add(i);
+
+  const lastIndexOf = (predicate: (ev: AgentSessionContentEvent) => boolean): number => {
+    for (let i = events.length - 1; i >= 0; i -= 1) {
+      const ev = events[i];
+      if (ev && predicate(ev)) return i;
+    }
+    return -1;
+  };
+  const anchors = [
+    lastIndexOf((ev) => ev.type === 'user'),
+    lastIndexOf((ev) => ev.type === 'assistant'),
+  ].filter((i) => i >= 0);
+
+  for (const anchor of anchors) {
+    if (picked.has(anchor)) continue;
+    // 腾位置时只淘汰非锚点：两个锚点之间不互相挤掉。
+    const victim = [...picked].filter((i) => !anchors.includes(i)).sort((a, b) => a - b)[0];
+    if (victim === undefined) break;
+    picked.delete(victim);
+    picked.add(anchor);
+  }
+
+  return [...picked].sort((a, b) => a - b).map((i) => events[i] as AgentSessionContentEvent);
+}
+
+/**
  * Build a session-history resume card (shared by auto-restore, /resume <id>,
  * config-switch resume, and run-completion notification).
  *
