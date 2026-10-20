@@ -6,8 +6,6 @@
  */
 
 import { describe, it, expect, afterEach } from 'vitest';
-import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { currentPlatform, isWin32 } from '../../../src/platform/select.js';
 import { DshRunner } from './runner.js';
@@ -17,6 +15,7 @@ import { DshApprovalTracker } from './approval.js';
 import { DshTranslator, mapUsage } from './translator.js';
 import { createInitialRunState, reduceRunState } from '../../../src/card/run-state.js';
 import { FakeDshServer } from '../../../tests/lib/fake-dsh-server.js';
+import { makeTempDir } from '../../../tests/lib/temp-dir.js';
 import { sleep, waitFor } from '../../../tests/lib/wait-for.js';
 import type { DshDaemon } from './daemon.js';
 import type { DshAssistantStreamFrame, DshSessionEvent } from './types.js';
@@ -2111,7 +2110,6 @@ describe('DshClient / DshRunner integration', () => {
       .map((c) => c.text);
 
     expect(texts).toEqual(['queued answer ']);
-    expect(texts.join('')).not.toContain('previous turn tail');
     expect(events.find((e) => e.type === 'result')).toMatchObject({ subtype: 'success' });
   });
 
@@ -2384,6 +2382,35 @@ describe('DshClient / DshRunner integration', () => {
   });
 
   /**
+   * 验证什么：两个信号都拿不到时（session/list 无该会话 + projections 为空），
+   * stop 必须返回 unconfirmed，而不能把“无法判断”当成“已空闲”假报 cancelled。
+   */
+  it('stop reports unconfirmed when the turn state cannot be read', async () => {
+    server = new FakeDshServer();
+    let cancels = 0;
+    server.register('session/prompt', () => ({ ok: true, value: { accepted: true } }));
+    server.register('session/projections', () => ({ ok: true, value: null }));
+    server.register('session/cancel', () => {
+      cancels++;
+      return { ok: true, value: { accepted: true } };
+    });
+    server.setMuxFrames([]);
+    await server.start();
+
+    const runner = new DshRunner({ kind: 'dsh', sessionReader: stubReader, host: server.baseUrl });
+    const iterator = runner.run('running', { cwd: CWD, sessionId: SID })[Symbol.asyncIterator]();
+    expect((await iterator.next()).value).toMatchObject({ type: 'system', subtype: 'init' });
+    const pending = iterator.next();
+    await waitFor(() => server.requests.some((r) => r.method === 'session/prompt'), 2000);
+
+    const outcome = await runner.stop({ immediate: true });
+    expect(outcome).toMatchObject({ status: 'unconfirmed', sessionId: SID });
+    expect(cancels).toBe(1);
+    await pending.catch(() => undefined);
+    await iterator.return?.();
+  });
+
+  /**
    * 验证什么：prompt 被 Host 受理但还没被 turn 取走时点停止，必须把它从
    * inbox 撤掉，而不是 `session/cancel`（cancel 的 keepInbox 会留下它，之后
    * 自动开一个无人订阅的 turn）。缺失后果：用户看到"已停止"，消息稍后却
@@ -2405,14 +2432,24 @@ describe('DshClient / DshRunner integration', () => {
     server.setMuxFrames([]);
     await server.start();
 
-    const runner = new DshRunner({ kind: 'dsh', sessionReader: stubReader, host: server.baseUrl });
+    const inflightPath = path.join(makeTempDir('lark-remote-dsh-inflight-'), 'inflight.json');
+    const runner = new DshRunner({
+      kind: 'dsh',
+      sessionReader: stubReader,
+      host: server.baseUrl,
+      inflightPath,
+    });
     const iterator = runner.run('queued', { cwd: CWD, sessionId: SID })[Symbol.asyncIterator]();
     expect((await iterator.next()).value).toMatchObject({ type: 'system', subtype: 'init' });
     const pending = iterator.next();
     await waitFor(() => server.requests.some((r) => r.method === 'session/prompt'), 2000);
     const prompt = server.requests.find((r) => r.method === 'session/prompt');
     const requestId = (prompt?.payload as { requestId: string } | undefined)?.requestId;
-    expect(requestId).toBeTruthy();
+    expect(requestId).toMatch(/^lark-remote-/);
+    const store = new DshInflightStore(inflightPath);
+    expect(store.list()).toMatchObject([
+      { sessionId: SID, promptRequestId: requestId, baseUrl: server.baseUrl },
+    ]);
     server.setProjectionValue({
       asOfSeq: 2,
       values: {
@@ -2429,6 +2466,7 @@ describe('DshClient / DshRunner integration', () => {
       { sessionId: SID, itemId: 'queue-item-1', action: { kind: 'remove' } },
     ]);
     expect(cancelCalled).toBe(false);
+    expect(store.list()).toEqual([]);
     await pending.catch(() => undefined);
     await iterator.return?.();
   });
@@ -2462,7 +2500,7 @@ describe('DshClient / DshRunner integration', () => {
 
     const outcome = await runner.stop({ immediate: true });
     expect(outcome).toMatchObject({ status: 'cancelled', sessionId: SID });
-    expect(cancels).toBeGreaterThanOrEqual(1);
+    expect(cancels).toBe(1);
     await pending.catch(() => undefined);
     await iterator.return?.();
   });
@@ -2598,40 +2636,87 @@ describe('DshClient / DshRunner integration', () => {
     await second.return?.();
   });
 
-  it('inflight markers are recorded, cleared and reconciled on startup', async () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'lark-remote-dsh-inflight-'));
-    try {
-      const store = new DshInflightStore(path.join(dir, 'inflight.json'));
-      store.record({
-        sessionId: SID,
-        promptRequestId: 'lark-remote-p1',
-        baseUrl: 'http://dsh.invalid',
-        cwd: CWD,
-      });
-      expect(store.list()).toMatchObject([
-        { sessionId: SID, promptRequestId: 'lark-remote-p1', baseUrl: 'http://dsh.invalid' },
-      ]);
+  /**
+   * 验证什么：第一次 cancel 被接受但 host 仍报 running 时，stop 会补发第二次
+   * cancel；这次重试是 session 级的，必须仍被 stop gate 挡住，不能打到下一条
+   * prompt 新开的 turn 上。
+   */
+  it('stop retry cancel cannot hit the successor turn', async () => {
+    server = new FakeDshServer();
+    let running = true;
+    let cancels = 0;
+    const trace: string[] = [];
+    server.register('session/prompt', () => {
+      trace.push('prompt');
+      return { ok: true, value: { accepted: true } };
+    });
+    server.register('session/list', () => ({
+      ok: true,
+      value: { items: [{ sessionId: SID, running }] },
+    }));
+    server.register('session/cancel', () => {
+      cancels += 1;
+      trace.push(`cancel-${cancels}`);
+      if (cancels >= 2) running = false;
+      return { ok: true, value: { accepted: true } };
+    });
+    server.setMuxFrames([]);
+    await server.start();
 
-      const notices: string[] = [];
-      const result = await reconcileInflightDshRuns({
-        store,
-        client: {
-          baseUrl: 'http://dsh.invalid',
-          findPendingPrompt: async () => 'item-1',
-          removeQueuedPrompt: async () => true,
-          openTurnState: async () => 'open',
-        },
-        notify: async (text) => {
-          notices.push(text);
-        },
-      });
-      expect(result).toMatchObject({ removed: 1, open: 1, skipped: false });
-      expect(store.list()).toEqual([]);
-      expect(notices[0]).toContain('DSH turn');
-      expect(notices[0]).toContain(SID.slice(0, 8));
-    } finally {
-      fs.rmSync(dir, { recursive: true, force: true });
-    }
+    const runner = new DshRunner({ kind: 'dsh', sessionReader: stubReader, host: server.baseUrl });
+    const first = runner.run('first', { cwd: CWD, sessionId: SID })[Symbol.asyncIterator]();
+    expect((await first.next()).value).toMatchObject({ type: 'system', subtype: 'init' });
+    const firstTurn = first.next();
+    await waitFor(() => trace.length === 1, 2000);
+
+    const stopPromise = runner.stop({ immediate: true });
+    await firstTurn.catch(() => undefined);
+
+    const second = runner.run('second', { cwd: CWD, sessionId: SID })[Symbol.asyncIterator]();
+    expect((await second.next()).value).toMatchObject({ type: 'system', subtype: 'init' });
+    const secondTurn = second.next();
+    await waitFor(() => trace.filter((item) => item === 'prompt').length === 2, 3000);
+
+    expect(await stopPromise).toMatchObject({ status: 'cancelled' });
+    // The successor prompt must be submitted only after both cancel attempts.
+    expect(trace).toEqual(['prompt', 'cancel-1', 'cancel-2', 'prompt']);
+
+    await runner.stop({ immediate: true });
+    await secondTurn.catch(() => undefined);
+    await second.return?.();
+  });
+
+  it('inflight markers are recorded, cleared and reconciled on startup', async () => {
+    const store = new DshInflightStore(
+      path.join(makeTempDir('lark-remote-dsh-inflight-'), 'inflight.json'),
+    );
+    store.record({
+      sessionId: SID,
+      promptRequestId: 'lark-remote-p1',
+      baseUrl: 'http://dsh.invalid',
+      cwd: CWD,
+    });
+    expect(store.list()).toMatchObject([
+      { sessionId: SID, promptRequestId: 'lark-remote-p1', baseUrl: 'http://dsh.invalid' },
+    ]);
+
+    const notices: string[] = [];
+    const result = await reconcileInflightDshRuns({
+      store,
+      client: {
+        baseUrl: 'http://dsh.invalid',
+        findPendingPrompt: async () => 'item-1',
+        removeQueuedPrompt: async () => true,
+        openTurnState: async () => 'open',
+      },
+      notify: async (text) => {
+        notices.push(text);
+      },
+    });
+    expect(result).toMatchObject({ removed: 1, open: 1, skipped: false });
+    expect(store.list()).toEqual([]);
+    expect(notices[0]).toContain('DSH turn');
+    expect(notices[0]).toContain(SID.slice(0, 8));
   });
 
   it('test_anchor_dsh_stop_with_hung_unary_releases_run', async () => {

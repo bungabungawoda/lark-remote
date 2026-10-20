@@ -43,7 +43,11 @@ import {
 } from './router/index.js';
 import { DshDaemon } from './runner/dsh/daemon.js';
 import { DshClient } from './runner/dsh/client.js';
-import { DshInflightStore, reconcileInflightDshRuns } from './runner/dsh/inflight.js';
+import {
+  DshInflightStore,
+  dshInflightPath,
+  reconcileInflightDshRuns,
+} from './runner/dsh/inflight.js';
 import { dispatchOrderExecForQueue } from './router/order-exec-dispatch.js';
 import { buildCardActionFullValue } from './router/card-action-payload.js';
 import { actionFeedbackText } from './router/card-action-feedback.js';
@@ -413,7 +417,7 @@ function initializeRunner(
       reasoningEffort: dshConf?.reasoningEffort,
       // Durable markers for turns that outlive this process; reconciled on the
       // next startup (see reconcileInflightDshRuns).
-      inflightPath: path.join(configDir, 'dsh-inflight.json'),
+      inflightPath: dshInflightPath(configDir),
     });
   });
   sessionReaderRegistry.register('dsh', dshSessionReader);
@@ -1001,34 +1005,6 @@ async function main() {
     // 仅已绑定时发送启动通知；未绑定时不打扰（PIN 引导已在控制台输出）
     await sendStartupHello(connector, startupContactStore, { dev: cliArgs.dev });
 
-    // 上次进程可能死在 DSH turn 中途：清掉残留的待执行 prompt，并对仍在跑的
-    // turn 提示 owner（不自动 cancel——它可能是 Web UI 的 turn）。
-    const dshConf = getAgentConfig(config, 'dsh');
-    const inflightPath = path.join(configDir, 'dsh-inflight.json');
-    if (dshConf) {
-      const contact = startupContactStore.getContact();
-      const recipient = contact?.chatId ?? contact?.userId;
-      void reconcileInflightDshRuns({
-        store: new DshInflightStore(inflightPath),
-        client: new DshClient(dshConf.host ?? 'http://127.0.0.1:3080', {
-          dshHome: dshConf.dshHome,
-          token: dshConf.token,
-          credentialsFile: dshConf.credentialsFile,
-          // Host may be down: bound the probe instead of waiting the default 60s.
-          requestTimeoutMs: 3_000,
-        }),
-        ...(recipient
-          ? {
-              notify: async (text: string) => {
-                await connector.sendWithRetry(recipient, { text });
-              },
-            }
-          : {}),
-      }).catch((err: unknown) => {
-        logger.warn(`[startup] dsh inflight reconcile failed: ${(err as Error).message}`);
-      });
-    }
-
     // 启动时静默检查版本（由 checkUpdateOnStartup 控制，默认关闭）
     if (config.checkUpdateOnStartup) {
       void (async () => {
@@ -1049,6 +1025,34 @@ async function main() {
         }
       })();
     }
+  }
+
+  // 上次进程可能死在 DSH turn 中途：清掉残留的待执行 prompt，并对仍在跑的
+  // turn 提示 owner（不自动 cancel——它可能是 Web UI 的 turn）。清理不依赖是否
+  // 已绑定；没有收件人时只是不发提示。
+  const dshConf = getAgentConfig(config, 'dsh');
+  if (dshConf) {
+    const contact = startupContactStore.getContact();
+    const recipient = contact?.chatId ?? contact?.userId;
+    void reconcileInflightDshRuns({
+      store: new DshInflightStore(dshInflightPath(configDir)),
+      client: new DshClient(dshConf.host ?? 'http://127.0.0.1:3080', {
+        dshHome: dshConf.dshHome,
+        token: dshConf.token,
+        credentialsFile: dshConf.credentialsFile,
+        // Host may be down: bound the probe instead of waiting the default 60s.
+        requestTimeoutMs: 3_000,
+      }),
+      ...(recipient
+        ? {
+            notify: async (text: string) => {
+              await connector.sendWithRetry(recipient, { text });
+            },
+          }
+        : {}),
+    }).catch((err: unknown) => {
+      logger.warn(`[startup] dsh inflight reconcile failed: ${(err as Error).message}`);
+    });
   }
 
   // Auto-restore: resume the persisted sessionId if available
@@ -1075,14 +1079,21 @@ async function main() {
         const content = startupReader.readSessionContent(sessionIdToResume, restoredCwd);
         // 该会话可能仍有在途 turn（上一个实例退出/崩溃后留在常驻 host 里）。
         // 不取消、不接管，但必须在卡上说明，否则用户会把它当"卡住了"。
-        const stillRunning = (() => {
-          try {
-            return startupReader.isSessionActive(sessionIdToResume, restoredCwd);
-          } catch (err) {
-            getLogger().warn(`[startup] isSessionActive failed: ${(err as Error).message}`);
-            return false;
-          }
-        })();
+        //
+        // 只有 DSH reader 的 isSessionActive() 是服务端的 running 事实。其他
+        // reader 的同名方法只表示"最近一段时间有写入"，拿它当 turn 在跑会在
+        // 每次自动恢复时误报。
+        const stillRunning =
+          config.defaultAgent === 'dsh'
+            ? (() => {
+                try {
+                  return startupReader.isSessionActive(sessionIdToResume, restoredCwd);
+                } catch (err) {
+                  getLogger().warn(`[startup] isSessionActive failed: ${(err as Error).message}`);
+                  return false;
+                }
+              })()
+            : false;
         if (stillRunning) {
           getLogger().warn(
             `[startup] session ${sessionIdToResume} still has a running turn; auto-resume card is a snapshot`,

@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { Bridge } from '../../../src/bridge/index.js';
+import type { InterruptOutcome } from '../../../src/bridge/index.js';
 import { SessionStore } from '../../../src/session/index.js';
 import { CommandRouter } from '../../../src/router/index.js';
 import { AppConfigSchema } from '../../../src/config/index.js';
@@ -164,11 +165,11 @@ describe('queue.immediate must not promise execution in its final toast after th
 
     // --- 步骤 3：挂起 interruptCurrentRun（同款：模拟 stop 在途，队列链/其他
     // cardAction 可在这期间推进）---
-    let resolveStop: (v: boolean) => void = () => {};
-    const stopInFlight = new Promise<boolean>((resolve) => {
+    let resolveStop: (v: InterruptOutcome) => void = () => {};
+    const stopInFlight = new Promise<InterruptOutcome>((resolve) => {
       resolveStop = resolve;
     });
-    const stopSpy = vi.spyOn(bridge, 'interruptCurrentRun').mockReturnValue(stopInFlight);
+    const stopSpy = vi.spyOn(bridge, 'interruptCurrentRunDetailed').mockReturnValue(stopInFlight);
 
     // --- 步骤 4：触发「立即执行」（不 await，停在 interrupt 挂起点）---
     const immediateDone = router.handleCardAction(
@@ -184,7 +185,7 @@ describe('queue.immediate must not promise execution in its final toast after th
     expect(bridge.getQueuedTask(tmpDir, 'msg-A')).toBeDefined(); // T2 之前的 A 仍在排队
 
     // --- 步骤 6：stop 此刻完成，immediate 恢复执行后续步骤 ---
-    resolveStop(true);
+    resolveStop({ stopped: true });
     await immediateDone;
     await sleep(20);
 
