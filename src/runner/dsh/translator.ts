@@ -141,6 +141,49 @@ export class DshTranslator {
         }
         return [];
       }
+      case 'tool/call': {
+        // DSH 把「模型发起调用」落成独立事件（name/arguments 是模型原始输出）。
+        // 这是卡片工具行的唯一来源：assistant/message 里只有完成后的正文块，
+        // 不含调用轨迹。
+        const call = ev.data as { callId?: unknown; name?: unknown; arguments?: unknown };
+        const id = typeof call.callId === 'string' ? call.callId : '';
+        const name = typeof call.name === 'string' ? call.name : '';
+        if (!id || !name) return [];
+        return [
+          {
+            type: 'assistant',
+            message: {
+              content: [{ type: 'tool_use', id, name, input: parseToolArguments(call.arguments) }],
+            },
+            timestamp: new Date(ev.time).toISOString(),
+          },
+        ];
+      }
+      case 'tool/result': {
+        const data = ev.data as {
+          message?: { toolCallId?: unknown; content?: unknown; isError?: unknown };
+          error?: unknown;
+        };
+        const msg = data.message;
+        const toolCallId = typeof msg?.toolCallId === 'string' ? msg.toolCallId : '';
+        if (!toolCallId) return [];
+        return [
+          {
+            type: 'user',
+            message: {
+              content: [
+                {
+                  type: 'tool_result',
+                  tool_use_id: toolCallId,
+                  content: toolResultText(msg?.content, data.error),
+                  is_error: msg?.isError === true,
+                },
+              ],
+            },
+            timestamp: new Date(ev.time).toISOString(),
+          },
+        ];
+      }
       case 'turn/end': {
         const turnReason = ev.data.reason as
           { kind?: string; error?: { message?: string; name?: string } } | undefined;
@@ -175,6 +218,60 @@ export class DshTranslator {
       default:
         return [];
     }
+  }
+}
+
+/**
+ * Parse a `tool/call.arguments` payload (a JSON string on the wire) into the
+ * object shape the card renderer consumes. Non-JSON arguments (a truncated or
+ * provider-mangled payload) are kept verbatim so the header can still show
+ * something instead of silently rendering an empty summary.
+ */
+function parseToolArguments(raw: unknown): unknown {
+  if (typeof raw !== 'string') return raw ?? {};
+  const trimmed = raw.trim();
+  if (!trimmed) return {};
+  try {
+    return JSON.parse(trimmed) as unknown;
+  } catch {
+    return trimmed;
+  }
+}
+
+/**
+ * Flatten a `tool/result.message.content` block list into display text.
+ *
+ * DSH content is a block array (`{type:'text',text}` / `{type:'image',...}`),
+ * the same shape the LLM sees. Images collapse to a marker: the card cannot
+ * render them and the raw base64 would blow the byte budget.
+ */
+function toolResultText(content: unknown, error?: unknown): string {
+  const err = error as { message?: unknown } | undefined;
+  const errorHint = typeof err?.message === 'string' ? err.message : '';
+  if (content == null) return errorHint;
+  if (typeof content === 'string') return content;
+  if (Array.isArray(content)) {
+    const parts: string[] = [];
+    for (const block of content) {
+      if (typeof block === 'string') {
+        parts.push(block);
+        continue;
+      }
+      if (!block || typeof block !== 'object') continue;
+      const rec = block as Record<string, unknown>;
+      if (typeof rec.text === 'string') {
+        parts.push(rec.text);
+      } else if (rec.type === 'image') {
+        parts.push('[image]');
+      }
+    }
+    const text = parts.join('\n');
+    return text || errorHint;
+  }
+  try {
+    return JSON.stringify(content);
+  } catch {
+    return String(content);
   }
 }
 

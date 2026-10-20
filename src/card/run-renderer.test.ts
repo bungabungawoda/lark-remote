@@ -6,7 +6,9 @@ import {
   type RunBlock,
   type RunState,
 } from './run-state.js';
-import { renderRunCard } from './run-renderer.js';
+import { renderRunCard, statusLine } from './run-renderer.js';
+import { countCardElements, MAX_CARD_ELEMENTS } from './card-budget.js';
+import { displayWidth, HEADER_DISPLAY_MAX } from './tool-render.js';
 import { expectNoV1ActionContainer } from '../../tests/lib/card-view.js';
 
 describe('renderRunCard', () => {
@@ -872,7 +874,9 @@ describe('renderRunCard', () => {
     } as never);
 
     const json = JSON.stringify(renderRunCard(state));
-    expect(json).toContain('等待审批中');
+    // 文案从「等待审批中」缩成「等待审批」：状态行改成单行窄屏口径后，每个字都
+    // 是一次换行的成本；语义不变（且 header 同时显示 ✋ 等待审批）。
+    expect(json).toContain('✋ 等待审批');
     expect(json).not.toContain('工具调用中');
   });
 
@@ -1254,8 +1258,9 @@ describe('renderRunCard', () => {
       // All block timestamps must be in panel header right side (parentheses)
       // Thinking: `💭 **思考完成** (2026-07-19 18:00)`
       expect(serialized).toMatch(/💭 \*\*思考完成\*\* \(2026-07-19 18:00\)/);
-      // Tool: `✅ **Bash** — ls (2026-07-19 18:02)` - shows completion time (tool result timestamp)
-      expect(serialized).toMatch(/✅ \*\*Bash\*\* — ls \(2026-07-19 18:02\)/);
+      // Tool: `✅ **Bash** — ls (18:02)` — 工具面板标题用 HH:mm（完整日期会吃掉
+      // 手机上整条标题的宽度预算），与 thinking/text 面板的完整时间戳不同。
+      expect(serialized).toMatch(/✅ \*\*Bash\*\* — ls \(18:02\)/);
       // Text: `💬 **输出** (2026-07-19 18:03)`
       expect(serialized).toMatch(/💬 \*\*输出\*\* \(2026-07-19 18:03\)/);
     } finally {
@@ -1321,9 +1326,9 @@ describe('renderRunCard', () => {
       const serialized = JSON.stringify(renderRunCard(state));
       // Thinking timestamp in panel header (right side)
       expect(serialized).toContain('思考完成** (2026-06-20 18:00)');
-      // Tool timestamp in panel header
+      // 工具面板的时间戳用 HH:mm（完整日期会吃掉手机上整条标题的宽度预算）
       expect(serialized).toContain('Read');
-      expect(serialized).toContain('2026-06-20 18:02');
+      expect(serialized).toContain('(18:02)');
       // Text block timestamp is in panel header format (not `_ts_` in body)
       expect(serialized).toContain('💬 **输出** (2026-06-20 18:03)');
     } finally {
@@ -1779,8 +1784,8 @@ describe('renderRunCard', () => {
       // 问题一回归：所有内容组件都有时间标记
       expect(json).toContain('思考完成** (2026-08-12 18:02)');
       expect(json).toContain('💬 **输出** (2026-08-12 18:01)');
-      // 流式中的 command 块：标题取 startedAt（18:03）
-      expect(json).toContain('**command** (2026-08-12 18:03)');
+      // 流式中的 command 块：标题取 startedAt（18:03，工具面板用 HH:mm）
+      expect(json).toContain('**command** (18:03)');
     } finally {
       if (oldTz === undefined) delete process.env.TZ;
       else process.env.TZ = oldTz;
@@ -2600,7 +2605,8 @@ describe('renderRunCard (CardKit 2.0)', () => {
     // No omission hint (all thinking shown)
     expect(json).not.toMatch(/\d+ 个早期思考已省略/);
 
-    // Tool details are preserved (not just a one-line summary)
+    // 工具是原生折叠面板：正文随卡下发（折叠只是视觉），点标题即展开。
+    // 面板的正文由 `toolOutputBudget` 按工具数量截断，卡片放得下时不必截到看不见。
     expect(json).toContain('Read');
     expect(json).toContain('Bash');
     expect(json).toContain('const x = 1;');
@@ -3222,5 +3228,360 @@ describe('运行期通知作为普通消息', () => {
     expect(json).toContain('已省略全部内容');
     expect(json.split('notice-skeleton-marker').length - 1).toBe(1);
     expect(json).toContain('⚠️ notice-skeleton-marker');
+  });
+});
+
+/**
+ * 工具块 = 原生折叠面板 + 正文截断。
+ *
+ * 曾经的「一行 + 服务端详情按钮」方案（正文不入 payload、点击回服务端重出卡）
+ * 在手机上要多点一次、按钮还挤掉标题宽度（2026-10-19 截图反馈）。现在回到
+ * 折叠面板：点标题展开，零往返；体积问题由**按工具数量缩放的正文截断**解决。
+ *
+ * 这组 anchor 锁四件事：
+ * 1. 工具是 `collapsible_panel`，文字 + 按钮的列式行不再出现；
+ * 2. 运行中/失败的默认展开，其余折叠；
+ * 3. 正文始终在 payload 里（折叠不省字节，所以不靠"不发送"省）；
+ * 4. 输出按预算截断，工具越多单个越短。
+ */
+describe('renderRunCard tool panels (native fold + truncation)', () => {
+  function stateWithTools(
+    tools: Array<{ status: 'ok' | 'error' | 'running'; output: string }>,
+  ): RunState {
+    const state = createInitialRunState('run-tools');
+    return {
+      ...state,
+      blocks: tools.map((tool, i) => ({
+        kind: 'tool' as const,
+        tool: {
+          id: `call-${i}`,
+          name: 'bash',
+          input: { command: `cmd-${i}` },
+          parsedInput: { command: `cmd-${i}` },
+          output: tool.output,
+          status: tool.status,
+        },
+      })),
+    };
+  }
+
+  it('renders each tool as a collapsible panel (no per-tool button)', () => {
+    const card = renderRunCard(stateWithTools([{ status: 'ok', output: 'BODY-SENTINEL' }]));
+    const serialized = JSON.stringify(card);
+    expect(serialized).toContain('"tag":"collapsible_panel"');
+    expect(serialized).toContain('BODY-SENTINEL');
+    expect(serialized).not.toContain('tool.expand');
+    expect(serialized).not.toContain('"cmd":"tool.collapse"');
+  });
+
+  it('expands failed tools by default and collapses finished ones', () => {
+    const ok = JSON.stringify(renderRunCard(stateWithTools([{ status: 'ok', output: 'o' }])));
+    const running = JSON.stringify(
+      renderRunCard(stateWithTools([{ status: 'running', output: 'r' }])),
+    );
+    const failed = JSON.stringify(
+      renderRunCard(stateWithTools([{ status: 'error', output: 'boom' }])),
+    );
+    // 只有面板自身的 expanded 字段：失败/运行中为 true，完成为 false。
+    const expandedOf = (json: string): boolean[] =>
+      [...json.matchAll(/"expanded":(true|false)/g)].map((m) => m[1] === 'true');
+    expect(expandedOf(ok)[0]).toBe(false);
+    expect(expandedOf(running)[0]).toBe(true);
+    expect(expandedOf(failed)[0]).toBe(true);
+  });
+
+  it('truncates each output by the tool-count budget', () => {
+    const long = 'x'.repeat(3000);
+    const few = renderRunCard(stateWithTools([{ status: 'ok', output: long }]));
+    const many = renderRunCard(
+      stateWithTools(Array.from({ length: 24 }, () => ({ status: 'ok' as const, output: long }))),
+    );
+    /** 取第一个面板里的代码块内容（面板正文 = 输入 + 输出代码块）。 */
+    const firstOutputLen = (card: object): number => {
+      const elements =
+        (card as { body?: { elements?: Array<Record<string, unknown>> } }).body?.elements ?? [];
+      for (const el of elements) {
+        if ((el as { tag?: string }).tag !== 'collapsible_panel') continue;
+        const inner = (el as { elements?: Array<{ text?: { content?: string } }> }).elements?.[0];
+        const content = inner?.text?.content ?? '';
+        // 正文里的第一个代码块是输入（command），输出是第二个/最长的那个。
+        const fenced = content
+          .split('```')
+          .slice(1)
+          .map((f) => f.trim())
+          .sort((a, b) => b.length - a.length)[0];
+        if (fenced) return fenced.length;
+      }
+      return 0;
+    };
+    // 单个工具：正文放到 OUTPUT_MAX=1200；24 个工具：每个按 8000/24 压到 333 以内。
+    expect(firstOutputLen(few)).toBe(1200);
+    expect(firstOutputLen(many)).toBeLessThan(600);
+    expect(Buffer.byteLength(JSON.stringify(many), 'utf8')).toBeLessThanOrEqual(28_000);
+  });
+
+  it('keeps a tool title within one display line', () => {
+    const card = renderRunCard(stateWithTools([{ status: 'ok', output: 'x' }])) as {
+      body?: { elements?: Array<Record<string, unknown>> };
+    };
+    const panel = (card.body?.elements ?? []).find(
+      (el) => (el as { tag?: string }).tag === 'collapsible_panel',
+    ) as { header?: { title?: { content?: string } } } | undefined;
+    const title = panel?.header?.title?.content ?? '';
+    // 标题 = toolHeaderText（已按显示宽度收敛）+ 时间后缀。
+    expect(displayWidth(title)).toBeLessThanOrEqual(HEADER_DISPLAY_MAX + 20);
+  });
+});
+
+/**
+ * 运行期状态投影（DSH session/control）：状态行一行带出上下文水位与步数。
+ *
+ * 口径来自服务端自己算好的投影，bridge 不重算：百分比用 projectedTokens
+ * （没有才退回实际占用），`~` 表示这是投影值而非计费值。终态卡不渲染状态条
+ * ——summary 里的 token 统计才是权威，同一张卡上出现两遍只会互相矛盾。
+ */
+describe('renderRunCard live status strip', () => {
+  function stateWithStatus(): RunState {
+    let state = createInitialRunState('run-status');
+    state = reduceRunState(state, {
+      type: 'run_status',
+      contextUsed: 12_500,
+      contextLimit: 100_000,
+      steps: 7,
+      toolMs: 1_500,
+    });
+    return state;
+  }
+
+  it('renders context percentage and step count while running', () => {
+    const json = JSON.stringify(renderRunCard(stateWithStatus()));
+    // 窄屏口径：段间用 " · " 分隔的单行，标签能省则省（`上下文` 三个字在手机上
+    // 就是一次换行的代价），`~` 仍表示这是服务端投影值。
+    expect(json).toContain('📊 ~13%');
+    expect(json).toContain('🧰 7 步');
+  });
+
+  it('keeps the percentage after a later frame that only carries steps', () => {
+    // 每帧只带一个投影 key：后到的 sessionStats 帧不能把上下文水位擦掉。
+    let state = stateWithStatus();
+    state = reduceRunState(state, { type: 'run_status', steps: 9 });
+    const json = JSON.stringify(renderRunCard(state));
+    expect(json).toContain('📊 ~13%');
+    expect(json).toContain('🧰 9 步');
+  });
+
+  it('drops the strip on terminal cards (summary owns the numbers)', () => {
+    const json = JSON.stringify(renderRunCard(finishRun(stateWithStatus(), 'done', {})));
+    expect(json).not.toContain('📊');
+    expect(json).not.toContain('🧰');
+  });
+
+  it('shows the absolute value when the window is unknown', () => {
+    let state = createInitialRunState('run-status-2');
+    state = reduceRunState(state, { type: 'run_status', contextUsed: 4_200 });
+    const json = JSON.stringify(renderRunCard(state));
+    expect(json).toContain('📊 4K');
+  });
+});
+
+/**
+ * 后台任务小节（终态卡）。
+ *
+ * 后台任务的生命周期跨 turn：卡片收尾时如果不说，用户会以为机器上已经安静了。
+ * 每个任务必须带停止入口——否则用户只能回到 DSH 的 Web UI 去杀。
+ */
+describe('renderRunCard background jobs', () => {
+  function doneState(jobs: RunState['backgroundJobs']): RunState {
+    const state = reduceRunState(createInitialRunState('run-jobs'), {
+      type: 'background_jobs',
+      jobs: jobs ?? [],
+    });
+    return finishRun({ ...state, sessionId: 'sess-1' }, 'done', { resultSubtype: 'success' });
+  }
+
+  it('lists running jobs with a kill button carrying runId + jobId', () => {
+    const json = JSON.stringify(
+      renderRunCard(
+        doneState([
+          { id: 'bash-1', label: 'npm run dev', status: 'running' },
+          { id: 'bash-2', label: 'watch tests', status: 'running' },
+        ]),
+      ),
+    );
+    expect(json).toContain('🧵 **后台任务** 2 个仍在运行');
+    expect(json).toContain('npm run dev');
+    expect(json).toContain('"cmd":"job.kill"');
+    expect(json).toContain('"jobId":"bash-1"');
+    expect(json).toContain('"runId":"run-jobs"');
+    expectNoV1ActionContainer(json);
+  });
+
+  it('caps the list and reports the remaining count', () => {
+    const jobs = Array.from({ length: 5 }, (_, i) => ({
+      id: `bash-${i}`,
+      label: `job ${i}`,
+      status: 'running',
+    }));
+    const json = JSON.stringify(renderRunCard(doneState(jobs)));
+    expect(json).toContain('…另有 2 个任务');
+    expect(json).not.toContain('"jobId":"bash-3"');
+  });
+
+  it('renders nothing when no job outlives the turn', () => {
+    const json = JSON.stringify(renderRunCard(doneState([])));
+    expect(json).not.toContain('后台任务');
+  });
+
+  it('sanitizes a label containing backticks and newlines', () => {
+    const json = JSON.stringify(
+      renderRunCard(doneState([{ id: 'bash-1', label: 'a`b\nc', status: 'running' }])),
+    );
+    expect(json).toContain("a'b c");
+  });
+});
+
+/**
+ * 元素总数预算（飞书 11310：实测 203 个 JSON 节点通过、204 失败）。
+ *
+ * 工具行是节点大户：带按钮的行 ≈ 10 个节点，纯标题行 2 个。24 行全带按钮 +
+ * 面板 + 展开正文会到 179 节点，**在 28KB 字节预算之内**——只查字节的安全网
+ * 抓不到，真机上直接 11310（2026-10-19 测试会话实测）。
+ */
+describe('renderRunCard element budget (Feishu 11310)', () => {
+  function heavyState(opts: { tools: number; panels: number }): RunState {
+    let state = createInitialRunState('run-nodes');
+    state = { ...state, sessionId: 'sess-nodes' };
+    for (let i = 0; i < opts.panels; i++) {
+      state = reduceRunState(state, {
+        type: 'assistant',
+        message: { content: [{ type: 'thinking', thinking: `思考 ${i}`, itemId: `t${i}` }] },
+      });
+    }
+    for (let i = 0; i < opts.tools; i++) {
+      state = reduceRunState(state, {
+        type: 'assistant',
+        message: {
+          content: [
+            { type: 'tool_use', id: `call-${i}`, name: 'bash', input: { command: `cmd-${i}` } },
+          ],
+        },
+      });
+      state = reduceRunState(state, {
+        type: 'user',
+        message: {
+          content: [
+            { type: 'tool_result', tool_use_id: `call-${i}`, content: `out-${i}`, is_error: false },
+          ],
+        },
+      });
+    }
+    return state;
+  }
+
+  it('keeps a tool-heavy worst case under the element budget', () => {
+    // 24 个工具（含输出）+ 12 个思考面板：面板各占 2 个元素。
+    const card = renderRunCard(heavyState({ tools: 24, panels: 12 }));
+    expect(countCardElements(card)).toBeLessThanOrEqual(MAX_CARD_ELEMENTS);
+  });
+});
+
+/**
+ * 状态行的窄屏守卫（2026-10-19 手机端实测回归）。
+ *
+ * 旧实现把「状态标签」和「指标」放进 `column_set` 的 auto + grow 两列：手机上
+ * auto 列被挤到两个字宽，"运行中" 断成 "运行 / 中"（用户截图反馈）。列宽由对端
+ * 决定，服务端控制不了，所以状态行必须是**单 div**；换行只允许发生在 " · "
+ * 分隔符处，且每个分段短到不可能自身折行。
+ */
+describe('renderRunCard status row narrow-screen layout', () => {
+  /** 显示宽度：CJK/emoji 记 1，ASCII 记 0.5（手机的近似比例）。 */
+  function displayUnits(text: string): number {
+    let units = 0;
+    for (const ch of text) {
+      const code = ch.codePointAt(0) ?? 0;
+      units += code > 0x2e80 ? 1 : 0.5;
+    }
+    return units;
+  }
+
+  function runningState(overrides: Partial<RunState> = {}): RunState {
+    return {
+      ...createInitialRunState('run-narrow'),
+      startedAt: Date.now() - 2 * 60 * 60 * 1000 - 3 * 60 * 1000,
+      ...overrides,
+    };
+  }
+
+  it('renders as a single div (no column squeeze possible)', () => {
+    const card = renderRunCard(runningState()) as {
+      body?: { elements?: Array<Record<string, unknown>> };
+    };
+    const first = card.body?.elements?.[0] as
+      { tag?: string; text?: { text_size?: string } } | undefined;
+    expect(first?.tag).toBe('div');
+    expect(first?.text?.text_size).toBe('notation');
+    expect(JSON.stringify(card.body?.elements?.[0])).not.toContain('column_set');
+  });
+
+  it('keeps every segment short enough to never fold on its own', () => {
+    const states: Array<[string, RunState]> = [
+      [
+        'running/full',
+        runningState({
+          liveStatus: { contextUsed: 999_999, contextLimit: 1_000_000, steps: 1234 },
+        }),
+      ],
+      ['done', finishRun(runningState(), 'done', { resultSubtype: 'success' })],
+    ];
+    for (const [label, state] of states) {
+      const line = statusLine(state);
+      const segments = line.split(' · ');
+      for (const segment of segments) {
+        expect(
+          displayUnits(segment),
+          `${label}: 分段「${segment}」太宽，手机上会自身折行`,
+        ).toBeLessThanOrEqual(8);
+      }
+      expect(displayUnits(line), `${label}: 整行太宽`).toBeLessThanOrEqual(26);
+      expect(line).not.toContain('column_set');
+    }
+  });
+
+  it('shows 等待审批 first when an approval is pending', () => {
+    let state = runningState();
+    state = reduceRunState(state, {
+      type: 'approval_requested',
+      requestId: 7,
+      kind: 'command',
+      threadId: 'th',
+      turnId: 'tn',
+      itemId: 'item',
+      view: {
+        requestId: 7,
+        kind: 'command',
+        command: 'ls',
+        commandCwd: '/tmp',
+        availableDecisions: ['accept', 'decline', 'cancel'],
+      },
+    } as never);
+    expect(statusLine(state).startsWith('✋ 等待审批')).toBe(true);
+  });
+
+  it('formats elapsed time compactly', () => {
+    const at = (ms: number): RunState => ({ ...runningState(), startedAt: 0, finishedAt: ms });
+    expect(statusLine(at(12_000))).toBe('⏱ 12s');
+    expect(statusLine(at(133_000))).toBe('⏱ 2m13s');
+    expect(statusLine(at((3 * 3600 + 4 * 60) * 1000))).toBe('⏱ 3h04m');
+    expect(statusLine(at((2 * 24 * 3600 + 3 * 3600) * 1000))).toBe('⏱ 2d03h');
+  });
+
+  it('freezes elapsed time once the run is terminal', () => {
+    const done = finishRun(runningState(), 'done', { resultSubtype: 'success' });
+    const first = statusLine(done);
+    const later = statusLine({ ...done, finishedAt: done.finishedAt });
+    expect(later).toBe(first);
+    // 再补一次 meta 也不移动结束时刻（bridge 收尾会补 token 统计）
+    const patched = finishRun(done, 'done', { contextLength: 1000 });
+    expect(patched.finishedAt).toBe(done.finishedAt);
   });
 });

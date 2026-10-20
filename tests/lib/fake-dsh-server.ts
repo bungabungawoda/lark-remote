@@ -40,10 +40,14 @@ export class FakeDshServer {
   private readonly unaryHandlers = new Map<string, FakeUnaryHandler>();
   private muxFrames: Array<object | { close: true }> = [];
   private eventFrames: Array<object | { close: true }> = [];
+  /** `session/control` 脚本帧（baseline + projection，按序推送）。 */
+  private controlFrames: object[] = [];
   private eventStreamError: string | undefined;
   private historyValue: unknown = { records: [], hasMore: false };
   private historySequence: unknown[] = [];
   private projectionValue: unknown = { asOfSeq: 0, values: {} };
+  /** `job/list` 首帧（整份任务名单）。 */
+  private jobRowsValue: unknown[] = [];
   private port = 0;
   private closedConnections = 0;
   private lastEventClientIdValue: string | undefined;
@@ -229,6 +233,16 @@ export class FakeDshServer {
     this.eventFrames = frames;
   }
 
+  /** Script the Host-wide `session/control` stream (baseline + projection frames). */
+  setControlFrames(frames: object[]): void {
+    this.controlFrames = frames;
+  }
+
+  /** Script the `job/list` roster (whole-set first frame). */
+  setJobRows(jobs: unknown[]): void {
+    this.jobRowsValue = jobs;
+  }
+
   /** Append a `$events` frame at response time (waterfall/cancel/close). */
   pushEventFrame(frame: object | { close: true }): void {
     this.eventFrames.push(frame);
@@ -317,6 +331,53 @@ export class FakeDshServer {
       }
       if (message.type !== 'open' || !message.streamId) return;
       streamId = message.streamId;
+      // mux 的 payload 与 unary 同信封：必须是恰好带一个 plain-object `args` 的
+      // 对象。缺这层包装时真实网关会直接拒绝连接（客户端表现为 0 帧），而假
+      // 服务端若不校验就会让这类 bug 一路绿灯——所以这里照网关口径拒绝。
+      const payload = (message as { payload?: unknown }).payload;
+      if (
+        !payload ||
+        typeof payload !== 'object' ||
+        Array.isArray(payload) ||
+        typeof (payload as { args?: unknown }).args !== 'object' ||
+        (payload as { args?: unknown }).args === null
+      ) {
+        ws.send(
+          JSON.stringify({
+            type: 'error',
+            streamId,
+            error: {
+              code: 'gateway/bad-payload',
+              message: 'Remote payload must contain exactly one plain-object args field',
+              details: {},
+            },
+          }),
+        );
+        return;
+      }
+      if (message.endpoint === 'job/list') {
+        // 整份名单的第一帧就是当前真相；客户端取到即断开。
+        ws.send(
+          JSON.stringify({
+            type: 'item',
+            streamId,
+            value: { type: 'rows', jobs: this.jobRowsValue },
+          }),
+        );
+        return;
+      }
+      if (message.endpoint === 'session/control') {
+        timer = setInterval(() => {
+          if (ws.readyState !== ws.OPEN) {
+            stopTimer();
+            return;
+          }
+          const frame = this.controlFrames.shift();
+          if (frame === undefined) return;
+          ws.send(JSON.stringify({ type: 'item', streamId, value: frame }));
+        }, 5);
+        return;
+      }
       if (message.endpoint === '$events') {
         if (this.eventStreamError) {
           ws.send(

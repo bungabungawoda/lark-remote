@@ -330,6 +330,47 @@ export interface SessionInfoEvent {
   timestamp?: string;
 }
 
+/**
+ * 运行期状态投影（上下文水位 / 会话累计统计）。
+ *
+ * 不是内容块：卡片把它渲染在状态行（statusRow），不进内容流，因此不参与
+ * blocks 分组与 MAX_BLOCKS 裁剪。字段缺省表示该维度本次未变。
+ *
+ * 数据源是 agent 服务端自己算好的投影（DSH `session/control` 的
+ * contextPressure / sessionStats），bridge 不重算口径——百分比只在两端都
+ * 有值时才渲染。
+ */
+export interface RunStatusEvent {
+  type: 'run_status';
+  /** 已投影 token（官方口径 projectedTokens ?? pressureTokens）。 */
+  contextUsed?: number;
+  /** 上下文窗口上限（contextWindow）。 */
+  contextLimit?: number;
+  /** 会话累计步骤数（sessionStats.steps）。 */
+  steps?: number;
+  /** 会话累计工具耗时（毫秒，sessionStats.toolMs）。 */
+  toolMs?: number;
+  timestamp?: string;
+}
+
+/**
+ * 运行结束后仍在后台运行的任务（终态卡展示 + 逐个停止入口）。
+ *
+ * 为什么必须出现在 run 卡片上：后台任务的生命周期跨 turn（`bash
+ * run_in_background` 起的东西能活过 run 结束），卡片收尾时如果不说，用户就
+ * 以为这一轮真的结束了——机器上却还在跑。
+ */
+export interface BackgroundJobsEvent {
+  type: 'background_jobs';
+  jobs: Array<{
+    id: string;
+    label: string;
+    status?: string;
+    progress?: string;
+  }>;
+  timestamp?: string;
+}
+
 /** File change event — for agents that report file modifications (e.g. Codex). */
 export interface FileChangeEvent {
   type: 'file_change';
@@ -413,7 +454,9 @@ export type AgentEvent =
   | TurnStartedEvent
   | TurnDiffEvent
   | NoticeEvent
-  | SessionInfoEvent;
+  | SessionInfoEvent
+  | RunStatusEvent
+  | BackgroundJobsEvent;
 
 // =============================================================================
 // Runner Interface
@@ -511,7 +554,15 @@ export interface AgentSession {
 /** A single renderable event from session history. */
 export interface AgentSessionContentEvent {
   type: string;
+  /** 正文（展开后的面板内容）。 */
   content: string;
+  /**
+   * 面板标题（可选，覆盖 reader 的默认标签）。
+   *
+   * 折叠面板默认只显示标题：工具调用这种"标题即全部信息"的事件必须把
+   * `bash — npm test` 这类摘要放进标题，否则折叠态只剩 `🔧 工具调用`。
+   */
+  title?: string;
   timestamp?: string;
 }
 

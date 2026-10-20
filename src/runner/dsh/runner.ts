@@ -32,7 +32,10 @@ import { getLogger } from '../../logger/index.js';
 import type { DshDaemon } from './daemon.js';
 import type {
   DshApprovalStreamItem,
+  DshContextPressure,
   DshModelSelection,
+  DshProjectionItem,
+  DshSessionStats,
   DshQuestion,
   DshQuestionAnswer,
   DshRemoteEventOutcome,
@@ -130,6 +133,80 @@ export interface DshRunnerOptions {
 
 /** Budget for the fire-and-forget session/cancel on stop (never block /stop). */
 const CANCEL_TIMEOUT_MS = 5_000;
+
+/** 状态条累计值（跨投影帧合并后的当前快照）。 */
+interface LiveStatusAccumulator {
+  contextUsed?: number;
+  contextLimit?: number;
+  steps?: number;
+  toolMs?: number;
+}
+
+/**
+ * 把一帧 `session/control` 投影写进状态条累计值。
+ * @returns 本仓库消费的字段是否真的变了（未变不必刷新卡片）。
+ */
+function applyProjection(live: LiveStatusAccumulator, key: string, value: unknown): boolean {
+  if (!value || typeof value !== 'object') return false;
+  if (key === 'contextPressure') {
+    const pressure = value as DshContextPressure;
+    // 官方 UI 的口径：优先 projectedTokens（下一次请求的预估），退回实际占用。
+    const used = pressure.projectedTokens ?? pressure.pressureTokens;
+    let changed = false;
+    if (typeof used === 'number' && used !== live.contextUsed) {
+      live.contextUsed = used;
+      changed = true;
+    }
+    if (
+      typeof pressure.contextWindow === 'number' &&
+      pressure.contextWindow > 0 &&
+      pressure.contextWindow !== live.contextLimit
+    ) {
+      live.contextLimit = pressure.contextWindow;
+      changed = true;
+    }
+    return changed;
+  }
+  if (key === 'sessionStats') {
+    const stats = value as DshSessionStats;
+    let changed = false;
+    if (typeof stats.steps === 'number' && stats.steps !== live.steps) {
+      live.steps = stats.steps;
+      changed = true;
+    }
+    if (typeof stats.toolMs === 'number' && stats.toolMs !== live.toolMs) {
+      live.toolMs = stats.toolMs;
+      changed = true;
+    }
+    return changed;
+  }
+  return false;
+}
+
+/** Build the `run_status` event for the card's status strip. */
+function statusEventOf(live: LiveStatusAccumulator): AgentEvent {
+  return {
+    type: 'run_status',
+    ...(live.contextUsed === undefined ? {} : { contextUsed: live.contextUsed }),
+    ...(live.contextLimit === undefined ? {} : { contextLimit: live.contextLimit }),
+    ...(live.steps === undefined ? {} : { steps: live.steps }),
+    ...(live.toolMs === undefined ? {} : { toolMs: live.toolMs }),
+    timestamp: new Date().toISOString(),
+  };
+}
+
+/**
+ * Attach the context window to the result usage.
+ *
+ * DSH 的会话读取端只产出占用、不产出窗口上限，终态卡因此只能显示绝对量；
+ * 控制流拿到的 `contextWindow` 是唯一的百分比来源。已有上限（未来 DSH 自带）
+ * 时不覆盖。
+ */
+function attachContextLimit(ev: AgentEvent, limit: number | undefined): AgentEvent {
+  if (ev.type !== 'result' || limit === undefined || !ev.usage) return ev;
+  if (ev.usage.context_limit !== undefined) return ev;
+  return { ...ev, usage: { ...ev.usage, context_limit: limit } };
+}
 
 /** Parse tool-call arguments without letting malformed JSON crash the run. */
 function parseToolArguments(raw: string | undefined): Record<string, unknown> {
@@ -520,13 +597,33 @@ export class DshRunner implements AgentRunner {
     this.toolCalls.clear();
     this.approvalChannelAvailable = true;
 
+    // 状态条累计值（contextPressure / sessionStats 投影）。`contextWindow` 同时
+    // 用于给 result.usage.context_limit 兜底：DSH 的会话读取端不产出上限，
+    // 没有它终态卡只能显示绝对量、算不出百分比。
+    const live: LiveStatusAccumulator = {};
+
     try {
       const sources = [
         this.client.sessionEvents(sessionId, signal, prePromptSeq),
         this.client.approvalEvents(sessionId, signal),
+        this.client.controlFrames(signal),
       ];
-      for await (const item of mergeAsync<DshStreamItem | DshApprovalStreamItem>(sources)) {
+      for await (const item of mergeAsync<
+        DshStreamItem | DshApprovalStreamItem | DshProjectionItem
+      >(sources)) {
         if (abort.signal.aborted) return;
+
+        if (item.kind === 'projection') {
+          // 全 Host 流：只认本 session。未知 key 直接忽略（投影是能力发现式
+          // 扩展的，不能因为多了个 key 就报错）。
+          if (item.sessionId !== sessionId) continue;
+          // 只在消费字段真的变了时才产出事件：投影帧本身按 key 去重推送，
+          // 这里再挡掉"值没变"的重复帧。不需要时间节流——卡片更新本来就有
+          // 100ms 合批窗口，与正文 delta 共用同一条节流路径。
+          if (!applyProjection(live, item.key, item.value)) continue;
+          yield statusEventOf(live);
+          continue;
+        }
 
         if (item.kind === 'ready') {
           this.approvalChannelAvailable = true;
@@ -618,7 +715,9 @@ export class DshRunner implements AgentRunner {
               if (oldest !== undefined) this.toolCalls.delete(oldest);
             }
           }
-          continue;
+          // 记账后继续往下走：tool/call 同时是卡片工具行的来源（translator 翻
+          // 译成 assistant.tool_use）。早期版本在这里 `continue`，把调用轨迹整个
+          // 吞掉——卡片因此只有正文、没有任何工具行。
         }
         if (event.type === 'approval/decided') {
           const data = event.data as { id?: string; outcome?: string };
@@ -629,8 +728,16 @@ export class DshRunner implements AgentRunner {
         }
 
         for (const ev of translator.eventToAgentEvents(event, sessionId)) {
+          if (ev.type === 'result') {
+            if (!abort.signal.aborted) {
+              for (const jobsEvent of await this.collectBackgroundJobs(sessionId, abort.signal)) {
+                yield jobsEvent;
+              }
+            }
+            yield attachContextLimit(ev, live.contextLimit);
+            return;
+          }
           yield ev;
-          if (ev.type === 'result') return;
         }
       }
     } finally {
@@ -639,6 +746,40 @@ export class DshRunner implements AgentRunner {
       this.pendingQuestions.clear();
       this.toolCalls.clear();
     }
+  }
+
+  /**
+   * 收尾时仍在跑的后台任务。
+   *
+   * 只保留非终态（running/stopping）：已完成的任务由 agent 自己的 output 呈
+   * 现，卡片列出来只会误导"还没跑完"。`job/list` 拿不到时返回空数组——没有
+   * 任务列表不等于有任务在跑。
+   */
+  private async collectBackgroundJobs(
+    sessionId: string,
+    signal: AbortSignal,
+  ): Promise<AgentEvent[]> {
+    const rows = await this.client.jobRows(sessionId, { signal });
+    if (!rows) return [];
+    const live = rows.filter((job) => job.status === 'running' || job.status === 'stopping');
+    if (live.length === 0) return [];
+    return [
+      {
+        type: 'background_jobs',
+        jobs: live.map((job) => ({
+          id: job.id,
+          label: job.label ?? job.id,
+          ...(job.status === undefined ? {} : { status: job.status }),
+          ...(job.progress === undefined ? {} : { progress: job.progress }),
+        })),
+        timestamp: new Date().toISOString(),
+      },
+    ];
+  }
+
+  /** Kill one background job of this runner's session (card button path). */
+  async killJob(sessionId: string, jobId: string): Promise<boolean> {
+    return await this.client.jobKill(sessionId, jobId);
   }
 
   /** Apply the configured permission preset once per session, before prompt. */

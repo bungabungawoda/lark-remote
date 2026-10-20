@@ -9,7 +9,8 @@
 
 import { agentDisplayName } from '../card/card-shared.js';
 import { collapsibleMarkdownPanel, markdownDiv } from '../card/collapsible.js';
-import { formatTimestamp } from '../card/time.js';
+import { formatMonthDayClock } from '../card/time.js';
+import { displayWidth, truncateMiddleToDisplayWidth } from '../common/text-width.js';
 import type { AgentSessionContentEvent } from '../runner/index.js';
 import { formatUsageStats } from './usage-format.js';
 
@@ -31,6 +32,13 @@ type SessionUsageLike = Parameters<typeof formatUsageStats>[0];
  * @param tailExpandedCount - How many events from the end to keep expanded (default 2)
  * @param agentKind - Agent type for display name (e.g. 'claude', 'pi'). Defaults to 'claude'.
  */
+/**
+ * resume / 历史卡片的事件面板标题宽度上限（半角单位）。
+ *
+ * 与 run 卡的工具面板同口径：手机上一行约 42 个半角宽，标题超了会折行。
+ */
+const SESSION_PANEL_TITLE_MAX = 42;
+
 export function sessionEventPanel(
   ev: AgentSessionContentEvent,
   index: number,
@@ -38,9 +46,14 @@ export function sessionEventPanel(
   tailExpandedCount = 2,
   agentKind: string = 'claude',
 ): object {
-  const label = eventLabel(ev, agentKind);
-  const ts = formatTimestamp(ev.timestamp);
-  const title = ts ? `${label} (${ts})` : label;
+  // reader 可以给事件一个"标题即摘要"的名字（工具调用：`🔧 bash — npm test`）；
+  // 缺省用类型标签。标题连同时间戳一起收进一行显示宽度——手机上折叠面板只有
+  // 一行可用（2026-10-19 工具标题被长 URL 撑成两行那次）。
+  const label = ev.title ?? eventLabel(ev, agentKind);
+  const ts = formatMonthDayClock(ev.timestamp);
+  const suffix = ts ? ` (${ts})` : '';
+  const labelMax = Math.max(8, SESSION_PANEL_TITLE_MAX - displayWidth(suffix));
+  const title = `${truncateMiddleToDisplayWidth(label, labelMax)}${suffix}`;
   const expanded = index >= totalEvents - tailExpandedCount;
   return collapsibleMarkdownPanel({
     title,

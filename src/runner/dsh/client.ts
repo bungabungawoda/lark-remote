@@ -37,7 +37,9 @@ import type {
   DshModelCatalogValue,
   DshModelSelection,
   DshPermissionCatalogValue,
+  DshJobView,
   DshPresetListValue,
+  DshProjectionItem,
   DshQuestion,
   DshQuestionOption,
   DshRemoteEventFrame,
@@ -175,6 +177,8 @@ const DSH_ARGS_KEY: Record<string, string | null> = {
   'session/projections': 'request',
   'session/page': 'request',
   'session/follow': 'request',
+  'job/list': 'request',
+  'job/kill': 'request',
   'session/modelCatalog': null,
   'agentPresets/list': null,
   'permissionPresets/catalog': null,
@@ -965,6 +969,110 @@ export class DshClient {
       }
       if (signal.aborted) return;
       await new Promise((resolve) => setTimeout(resolve, RECONNECT_BACKOFF_MS));
+    }
+  }
+
+  /**
+   * Host-wide live projection stream (`session/control`).
+   *
+   * 一份 baseline（当前所有活跃 session 的完整投影值）+ 之后每个投影的变化帧。
+   * 调用方按 sessionId 过滤：这是 DSH 上唯一"服务端变一次推一次"的通道，
+   * 不需要轮询 `session/projections`。
+   *
+   * 失败必须降级为"没有状态条"，不能影响 run：控制流是增强通道，断了运行
+   * 照常（异常在此吞掉并记日志，不向 merge 抛）。
+   */
+  async *controlFrames(signal: AbortSignal): AsyncGenerator<DshProjectionItem> {
+    try {
+      // mux 的 payload 与 unary 同信封：`{args:{...}}`。control 无参数，故空 args；
+      // 少了这层包装网关直接拒绝（live 实测 0 帧，测试用假服务端不会发现）。
+      for await (const raw of this.muxStream('session/control', { args: {} }, signal)) {
+        const frame = raw as {
+          type?: string;
+          sessionId?: string;
+          key?: string;
+          value?: unknown;
+        };
+        if (!frame || typeof frame !== 'object') continue;
+        if (frame.type === 'baseline') {
+          const projections =
+            (frame.value as { projections?: Record<string, unknown> } | undefined)?.projections ??
+            {};
+          for (const [sessionId, snapshot] of Object.entries(projections)) {
+            const values =
+              (snapshot as { values?: Record<string, unknown> } | undefined)?.values ?? {};
+            for (const [key, value] of Object.entries(values)) {
+              yield { kind: 'projection', sessionId, key, value };
+            }
+          }
+          continue;
+        }
+        if (frame.type === 'projection' && frame.sessionId && frame.key) {
+          yield {
+            kind: 'projection',
+            sessionId: frame.sessionId,
+            key: frame.key,
+            value: frame.value,
+          };
+        }
+      }
+    } catch (err) {
+      if (signal.aborted) return;
+      getLogger().warn(
+        `[dsh] session/control stream unavailable (${(err as Error).message}); run continues without live status`,
+      );
+    }
+  }
+
+  /**
+   * One session's current background-job roster.
+   *
+   * `job/list` 是流（生命周期变化时推整份名单），但"此刻有哪些任务在跑"只需
+   * 要第一帧：文档明确首帧就是当前真相（whole-set replacement）。取到即断开，
+   * 不长期持有连接——任务列表只用于收尾时的一句话与停止按钮。
+   *
+   * 失败返回 undefined（与"没有任务"区分）：拿不到就别在卡片上写"0 个后台任务"。
+   */
+  async jobRows(
+    sessionId: string,
+    opts: { signal?: AbortSignal; timeoutMs?: number } = {},
+  ): Promise<DshJobView[] | undefined> {
+    const timer = new AbortController();
+    const timeout = setTimeout(() => timer.abort(), opts.timeoutMs ?? 2_000);
+    const signal = opts.signal ? AbortSignal.any([opts.signal, timer.signal]) : timer.signal;
+    try {
+      for await (const frame of this.muxStream(
+        'job/list',
+        { args: dshArgs('job/list', { sessionId }) },
+        signal,
+      )) {
+        const rows = frame as { type?: string; jobs?: unknown };
+        if (rows?.type === 'rows') {
+          return Array.isArray(rows.jobs) ? (rows.jobs as DshJobView[]) : [];
+        }
+      }
+      return undefined;
+    } catch (err) {
+      getLogger().debug(`[dsh] job/list unavailable: ${(err as Error).message}`);
+      return undefined;
+    } finally {
+      clearTimeout(timeout);
+      timer.abort();
+    }
+  }
+
+  /** Kill one background job on the user's behalf (`job/kill`). */
+  async jobKill(
+    sessionId: string,
+    jobId: string,
+    opts: { signal?: AbortSignal } = {},
+  ): Promise<boolean> {
+    try {
+      await this.unary('job/kill', { sessionId, jobId }, opts);
+      return true;
+    } catch (err) {
+      getLogger().warn(`[dsh] job/kill failed job=${jobId}: ${(err as Error).message}`);
+      return false;
     }
   }
 

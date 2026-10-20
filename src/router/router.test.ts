@@ -9,7 +9,7 @@ import {
   APPROVAL_ACTION_CMDS,
 } from './index.js';
 import { CloneSession } from '../clone.js';
-import { formatTimestamp } from '../card/time.js';
+import { formatMonthDayClock } from '../card/time.js';
 import { Bridge } from '../bridge/index.js';
 import { SessionStore } from '../session/index.js';
 import { SessionReaderRegistry } from '../session/registry.js';
@@ -1572,8 +1572,9 @@ describe('CommandRouter', () => {
     // Should NOT contain content before the last user input
     expect(cardContent).not.toContain('first prompt');
     expect(cardContent).not.toContain('first response');
-    // Should display timestamp in the card (format: YYYY-MM-DD HH:mm)
-    expect(cardContent).toContain(formatTimestamp('2026-06-20T15:30:01.000Z'));
+    // resume 面板标题里的时间戳是 `MM-DD HH:mm`（比完整日期省 7 个显示宽度，
+    // 手机上正好是文件名能否显示出来的差别）。
+    expect(cardContent).toContain(formatMonthDayClock('2026-06-20T15:30:01.000Z'));
     // Session id should be set
     expect(sessionStore.getSessionId('user1')).toBe(sid);
   });

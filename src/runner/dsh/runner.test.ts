@@ -79,6 +79,24 @@ function toolCall(
   };
 }
 
+function toolResult(callId: string, text: string, isError: boolean, seq: number): DshSessionEvent {
+  return {
+    type: 'tool/result',
+    seq,
+    time: 1700000000000,
+    data: {
+      turn: 1,
+      step: 1,
+      message: {
+        role: 'tool',
+        toolCallId: callId,
+        content: [{ type: 'text', text }],
+        isError,
+      },
+    },
+  };
+}
+
 function approvalAsked(
   approvalId: string,
   callId: string,
@@ -185,6 +203,100 @@ describe('DshTranslator', () => {
     for (const ev of [first, second]) state = reduceRunState(state, ev);
     const block = state.blocks[0];
     expect(block?.kind === 'thinking' ? block.content : '').toBe('The file');
+  });
+
+  it('maps tool/call to an assistant tool_use with parsed arguments', () => {
+    const t = new DshTranslator();
+    const events = t.eventToAgentEvents(
+      toolCall('call-1', 'bash', { command: 'npm test' }, 1),
+      SID,
+    );
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({
+      type: 'assistant',
+      message: {
+        content: [{ type: 'tool_use', id: 'call-1', name: 'bash', input: { command: 'npm test' } }],
+      },
+    });
+  });
+
+  it('keeps non-JSON tool arguments verbatim instead of dropping the call', () => {
+    const t = new DshTranslator();
+    const event = toolCall('call-1', 'bash', {}, 1);
+    event.data = { ...event.data, arguments: '{"command": "npm' };
+    const [mapped] = t.eventToAgentEvents(event, SID);
+    expect(mapped).toMatchObject({
+      type: 'assistant',
+      message: { content: [{ type: 'tool_use', input: '{"command": "npm' }] },
+    });
+  });
+
+  it('drops tool/call without callId or name (malformed frame)', () => {
+    const t = new DshTranslator();
+    const event = toolCall('call-1', 'bash', { command: 'ls' }, 1);
+    event.data = { turn: 1, callId: 'call-1' };
+    expect(t.eventToAgentEvents(event, SID)).toEqual([]);
+  });
+
+  it('maps tool/result to a user tool_result carrying is_error', () => {
+    const t = new DshTranslator();
+    const ok = t.eventToAgentEvents(toolResult('call-1', 'all good', false, 2), SID);
+    expect(ok[0]).toMatchObject({
+      type: 'user',
+      message: {
+        content: [
+          { type: 'tool_result', tool_use_id: 'call-1', content: 'all good', is_error: false },
+        ],
+      },
+    });
+
+    const failed = t.eventToAgentEvents(toolResult('call-1', 'boom', true, 3), SID);
+    expect(failed[0]).toMatchObject({
+      type: 'user',
+      message: { content: [{ tool_use_id: 'call-1', content: 'boom', is_error: true }] },
+    });
+  });
+
+  it('flattens block content and marks images in tool/result', () => {
+    const t = new DshTranslator();
+    const event = toolResult('call-1', '', false, 2);
+    event.data = {
+      turn: 1,
+      step: 1,
+      message: {
+        role: 'tool',
+        toolCallId: 'call-1',
+        isError: false,
+        content: [
+          { type: 'text', text: 'line-1' },
+          { type: 'image', data: 'base64...' },
+          { type: 'text', text: 'line-2' },
+        ],
+      },
+    };
+    const [mapped] = t.eventToAgentEvents(event, SID);
+    expect(mapped).toMatchObject({
+      type: 'user',
+      message: { content: [{ content: 'line-1\n[image]\nline-2' }] },
+    });
+  });
+
+  it('reduces tool/call + tool/result into one ok tool block (card tool row)', () => {
+    const t = new DshTranslator();
+    let state = createInitialRunState('run-1');
+    for (const ev of [
+      toolCall('call-1', 'bash', { command: 'npm test' }, 1),
+      toolResult('call-1', 'ok', false, 2),
+    ]) {
+      for (const mapped of t.eventToAgentEvents(ev, SID)) {
+        state = reduceRunState(state, mapped);
+      }
+    }
+    const tools = state.blocks.filter((b) => b.kind === 'tool');
+    expect(tools).toHaveLength(1);
+    expect(tools[0]).toMatchObject({
+      tool: { id: 'call-1', name: 'bash', status: 'ok', output: 'ok' },
+    });
   });
 
   it('maps turn/end completed → success result', () => {
@@ -452,6 +564,107 @@ describe('DshClient / DshRunner integration', () => {
       output_tokens: 4,
       total_tokens: 14,
     });
+  });
+
+  it('surfaces control projections as run_status and fills result.usage.context_limit', async () => {
+    server = new FakeDshServer();
+    server.register('session/create', () => ({ ok: true, value: { sessionId: SID } }));
+    server.register('session/prompt', () => ({ ok: true, value: { accepted: true } }));
+    server.setControlFrames([
+      {
+        type: 'baseline',
+        value: {
+          projections: {
+            [SID]: {
+              asOfSeq: 0,
+              values: {
+                contextPressure: {
+                  pressureTokens: 12_000,
+                  projectedTokens: 12_500,
+                  contextWindow: 100_000,
+                },
+                sessionStats: { turns: 1, steps: 7, toolMs: 1_500 },
+              },
+            },
+            // 别的会话的投影必须被过滤掉，不能串到本 run 的状态行。
+            'session-other': {
+              asOfSeq: 0,
+              values: { contextPressure: { projectedTokens: 99_000, contextWindow: 100_000 } },
+            },
+          },
+        },
+      },
+    ]);
+    server.setMuxFrames([
+      sessionEventFrame(SID, textChunk('working', 1)),
+      // context_limit 挂在 usage 上（DSH 的会话读取端不产出上限），
+      // 所以这一 turn 必须有采样记录。
+      sessionEventFrame(SID, usageMessage({ inputTokens: 20, outputTokens: 5 }, 2)),
+      sessionEventFrame(SID, turnEnd('completed', 3)),
+    ]);
+    await server.start();
+
+    const runner = new DshRunner({ kind: 'dsh', sessionReader: stubReader, host: server.baseUrl });
+    const events = await collect(runner.run('hi', { cwd: CWD }));
+
+    // baseline 里 contextPressure / sessionStats 是两帧，逐帧产出事件；
+    // 末帧携带合并后的完整状态（卡片侧 reducer 同样逐帧合并）。
+    const statuses = events.filter((e) => e.type === 'run_status');
+    expect(statuses).toHaveLength(2);
+    // 官方口径：projectedTokens 优先；steps 来自 sessionStats。
+    expect(statuses[1]).toMatchObject({
+      type: 'run_status',
+      contextUsed: 12_500,
+      contextLimit: 100_000,
+      steps: 7,
+    });
+
+    const result = events.find((e) => e.type === 'result');
+    expect(result?.type === 'result' && result.usage?.context_limit).toBe(100_000);
+  });
+
+  it('reports only still-running background jobs at turn end', async () => {
+    server = new FakeDshServer();
+    server.register('session/create', () => ({ ok: true, value: { sessionId: SID } }));
+    server.register('session/prompt', () => ({ ok: true, value: { accepted: true } }));
+    server.setJobRows([
+      { id: 'bash-1', kind: 'bash', label: 'npm run dev', status: 'running', startedAt: 1 },
+      { id: 'bash-2', kind: 'bash', label: 'old build', status: 'completed', startedAt: 1 },
+      { id: 'bash-3', kind: 'bash', label: 'stopping now', status: 'stopping', startedAt: 1 },
+    ]);
+    server.setMuxFrames([
+      sessionEventFrame(SID, textChunk('started', 1)),
+      sessionEventFrame(SID, turnEnd('completed', 2)),
+    ]);
+    await server.start();
+
+    const runner = new DshRunner({ kind: 'dsh', sessionReader: stubReader, host: server.baseUrl });
+    const events = await collect(runner.run('hi', { cwd: CWD }));
+    const jobs = events.find((e) => e.type === 'background_jobs');
+    // 已完成的任务不进卡片（列出来会被读成"还在跑"）。
+    expect(jobs).toMatchObject({
+      type: 'background_jobs',
+      jobs: [
+        { id: 'bash-1', label: 'npm run dev', status: 'running' },
+        { id: 'bash-3', label: 'stopping now', status: 'stopping' },
+      ],
+    });
+    expect(events.findIndex((e) => e.type === 'background_jobs')).toBeLessThan(
+      events.findIndex((e) => e.type === 'result'),
+    );
+  });
+
+  it('omits the background-jobs event when the roster is unavailable or empty', async () => {
+    server = new FakeDshServer();
+    server.register('session/create', () => ({ ok: true, value: { sessionId: SID } }));
+    server.register('session/prompt', () => ({ ok: true, value: { accepted: true } }));
+    server.setJobRows([]);
+    server.setMuxFrames([sessionEventFrame(SID, turnEnd('completed', 1))]);
+    await server.start();
+
+    const runner = new DshRunner({ kind: 'dsh', sessionReader: stubReader, host: server.baseUrl });
+    const events = await collect(runner.run('hi', { cwd: CWD }));
+    expect(events.find((e) => e.type === 'background_jobs')).toBeUndefined();
   });
 
   it('result usage sums a multi-step turn instead of reporting the last sampling', async () => {
