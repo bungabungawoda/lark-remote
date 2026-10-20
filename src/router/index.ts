@@ -4,7 +4,7 @@ import path from 'node:path';
 import YAML from 'yaml';
 import type { SessionStore, SessionReaderRegistry } from '../session/index.js';
 import type { AppConfig } from '../config/index.js';
-import type { Bridge, CommandContext, CommandResult } from '../bridge/index.js';
+import type { Bridge, CommandContext, CommandResult, InterruptOutcome } from '../bridge/index.js';
 import type { AgentBinding } from '../bridge/queue-manager.js';
 import {
   getConfigDir,
@@ -1096,12 +1096,24 @@ export class CommandRouter {
     // 2. Stop current running process
     // (Note: queue executing count is reset inside Bridge.interruptCurrentRun
     //  so all stop paths — /stop, /t, card stop, queue.immediate — are covered.)
-    const stopped = await this.bridge.interruptCurrentRun({
-      userId: ctx.userId,
-      chatId: ctx.chatId,
-      cwd,
-    });
-    getLogger().info(`[router] queue.immediate: stopped=${stopped}`);
+    let interrupt: InterruptOutcome | undefined;
+    const stopped = await this.bridge.interruptCurrentRun(
+      {
+        userId: ctx.userId,
+        chatId: ctx.chatId,
+        cwd,
+      },
+      {
+        onOutcome: (outcome) => {
+          interrupt = outcome;
+        },
+      },
+    );
+    // A remote (DSH) stop is only a request; when it cannot be confirmed the
+    // target must not be promised "immediate" execution — its prompt would sit
+    // behind the still-running turn with no visible progress.
+    const stopUnconfirmed = interrupt?.stop?.status === 'unconfirmed';
+    getLogger().info(`[router] queue.immediate: stopped=${stopped} unconfirmed=${stopUnconfirmed}`);
 
     // 3. Remove all tasks BEFORE this one (by position in the current queue).
     // The target may have begun while interruptCurrentRun was awaiting (the chain
@@ -1185,7 +1197,17 @@ export class CommandRouter {
       return;
     }
     const workspaceBusy = this.bridge.isBusyFor(cwd);
-    if (!workspaceBusy) {
+    if (stopUnconfirmed) {
+      const name = interrupt?.agentKind ? agentDisplayName(interrupt.agentKind) : 'agent';
+      await this.bridge.sendResult(
+        {
+          text:
+            `⚠️ 未能确认 ${name} 的 turn 已停止，它可能仍在后台运行。\n` +
+            `已清除 ${removedCount} 条排队消息；您的消息已提交，但可能要等该 turn 结束后才开始。`,
+        },
+        ctx,
+      );
+    } else if (!workspaceBusy) {
       // Normal path: nothing new began during the stop, the target is next.
       // Mark its own card as executing now so buttons grey out immediately.
       // Done BEFORE any removal so getQueuedTask still returns the task with
@@ -1679,15 +1701,37 @@ export class CommandRouter {
       await this.bridge.sendResult({ text: '⚠️ 无效的停止请求，缺少必要信息' }, ctx);
       return;
     }
-    const stopped = await this.bridge.interruptCurrentRun({
-      userId: ctx.userId,
-      chatId: ctx.chatId,
-      runId: value.runId,
-    });
+    let interrupt: InterruptOutcome | undefined;
+    const stopped = await this.bridge.interruptCurrentRun(
+      {
+        userId: ctx.userId,
+        chatId: ctx.chatId,
+        runId: value.runId,
+      },
+      {
+        onOutcome: (outcome) => {
+          interrupt = outcome;
+        },
+      },
+    );
     // Regression 2026-06-22: card stop button silently no-op'd when the
     // run had already exited. Give the user a visible result.
     if (!stopped) {
       await this.bridge.sendResult({ text: '该任务已结束，无需终止' }, ctx);
+      return;
+    }
+    // DSH: `session/cancel` is only a request. If the host still reports the
+    // turn open, say so instead of letting the card imply a clean stop.
+    if (interrupt?.stop?.status === 'unconfirmed') {
+      const name = interrupt.agentKind ? agentDisplayName(interrupt.agentKind) : 'agent';
+      await this.bridge.sendResult(
+        {
+          text:
+            `⚠️ 未能确认 ${name} 的 turn 已停止，它可能仍在后台运行。\n` +
+            '请在 DSH Web UI 检查；需要终止时再点一次停止。',
+        },
+        ctx,
+      );
     }
   }
 
@@ -2963,11 +3007,25 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
   }
 
   private async cmdStop(ctx: CommandContext): Promise<CommandResult | null> {
-    const stopped = await this.bridge.interruptCurrentRun({
-      userId: ctx.userId,
-      chatId: ctx.chatId,
-    });
-    return stopped ? null : { text: '当前没有运行中的进程' };
+    let interrupt: InterruptOutcome | undefined;
+    const stopped = await this.bridge.interruptCurrentRun(
+      { userId: ctx.userId, chatId: ctx.chatId },
+      {
+        onOutcome: (outcome) => {
+          interrupt = outcome;
+        },
+      },
+    );
+    if (!stopped) return { text: '当前没有运行中的进程' };
+    if (interrupt?.stop?.status === 'unconfirmed') {
+      const name = interrupt.agentKind ? agentDisplayName(interrupt.agentKind) : 'agent';
+      return {
+        text:
+          `⚠️ 未能确认 ${name} 的 turn 已停止，它可能仍在后台运行。\n` +
+          '请在 DSH Web UI 检查；需要终止时再发一次 /stop。',
+      };
+    }
+    return null;
   }
 
   private async cmdExit(): Promise<CommandResult> {

@@ -397,6 +397,34 @@ describe('executeBash / claude concurrency (! bypasses serial queue)', () => {
       new Promise((_, reject) => setTimeout(() => reject(new Error('bash was not stopped')), 5000)),
     ]);
   });
+
+  /**
+   * 验证什么：DSH 的 stop 返回 unconfirmed 时，bridge 必须把结果原样带出来
+   * （router 据此提示用户“可能仍在后台运行”），不能压成 boolean。
+   */
+  it('interruptCurrentRunDetailed surfaces an unconfirmed remote stop', async () => {
+    const runner = createHangingRunner();
+    const originalStop = runner.stop.bind(runner);
+    runner.stop = async () => {
+      await originalStop();
+      return { status: 'unconfirmed', sessionId: 'sess-dsh' };
+    };
+    const { bridge, sessionStore } = makeBridge({ runner });
+    const cwd = fs.realpathSync(tmpDir);
+    sessionStore.setCwd(ctx.userId, cwd);
+
+    const promise = bridge.forwardToClaude('hi', ctx);
+    await vi.waitFor(() => expect(bridge.isBusyFor(cwd)).toBe(true));
+
+    const result = await bridge.interruptCurrentRunDetailed({
+      userId: ctx.userId,
+      chatId: ctx.chatId,
+    });
+    expect(result.stopped).toBe(true);
+    expect(result.agentKind).toBe(config.defaultAgent);
+    expect(result.stop).toEqual({ status: 'unconfirmed', sessionId: 'sess-dsh' });
+    await promise.catch(() => {});
+  });
 });
 
 // --- Idle watchdog (§9.12) ---

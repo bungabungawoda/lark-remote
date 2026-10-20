@@ -42,6 +42,8 @@ import {
   COMPACT_ACTION_CMDS,
 } from './router/index.js';
 import { DshDaemon } from './runner/dsh/daemon.js';
+import { DshClient } from './runner/dsh/client.js';
+import { DshInflightStore, reconcileInflightDshRuns } from './runner/dsh/inflight.js';
 import { dispatchOrderExecForQueue } from './router/order-exec-dispatch.js';
 import { buildCardActionFullValue } from './router/card-action-payload.js';
 import { actionFeedbackText } from './router/card-action-feedback.js';
@@ -409,6 +411,9 @@ function initializeRunner(
       provider: dshConf?.provider,
       model: dshConf?.model,
       reasoningEffort: dshConf?.reasoningEffort,
+      // Durable markers for turns that outlive this process; reconciled on the
+      // next startup (see reconcileInflightDshRuns).
+      inflightPath: path.join(configDir, 'dsh-inflight.json'),
     });
   });
   sessionReaderRegistry.register('dsh', dshSessionReader);
@@ -995,6 +1000,34 @@ async function main() {
   if (binder.isBound()) {
     // 仅已绑定时发送启动通知；未绑定时不打扰（PIN 引导已在控制台输出）
     await sendStartupHello(connector, startupContactStore, { dev: cliArgs.dev });
+
+    // 上次进程可能死在 DSH turn 中途：清掉残留的待执行 prompt，并对仍在跑的
+    // turn 提示 owner（不自动 cancel——它可能是 Web UI 的 turn）。
+    const dshConf = getAgentConfig(config, 'dsh');
+    const inflightPath = path.join(configDir, 'dsh-inflight.json');
+    if (dshConf) {
+      const contact = startupContactStore.getContact();
+      const recipient = contact?.chatId ?? contact?.userId;
+      void reconcileInflightDshRuns({
+        store: new DshInflightStore(inflightPath),
+        client: new DshClient(dshConf.host ?? 'http://127.0.0.1:3080', {
+          dshHome: dshConf.dshHome,
+          token: dshConf.token,
+          credentialsFile: dshConf.credentialsFile,
+          // Host may be down: bound the probe instead of waiting the default 60s.
+          requestTimeoutMs: 3_000,
+        }),
+        ...(recipient
+          ? {
+              notify: async (text: string) => {
+                await connector.sendWithRetry(recipient, { text });
+              },
+            }
+          : {}),
+      }).catch((err: unknown) => {
+        logger.warn(`[startup] dsh inflight reconcile failed: ${(err as Error).message}`);
+      });
+    }
 
     // 启动时静默检查版本（由 checkUpdateOnStartup 控制，默认关闭）
     if (config.checkUpdateOnStartup) {

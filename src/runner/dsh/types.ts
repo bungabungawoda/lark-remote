@@ -66,6 +66,27 @@ export interface DshSessionListValue {
   items: DshSessionSummary[];
 }
 
+/**
+ * One pending inbox occurrence from the `inbox` projection.
+ *
+ * DSH 在 prompt 被受理但还没被 turn 取走时，把它记录成 `inbox.next-turn[]`
+ * 的一项；`source.rpcId` 回显 `session/prompt` 的 requestId，因此调用方可以
+ * 精确找到“我这条还没开始的消息”。`session/updateQueue` 用 `id` 删除它。
+ */
+export interface DshInboxItem {
+  id: string;
+  source?: { kind?: string; rpcId?: string };
+}
+
+/** `session/projections` → value（只声明本仓库用到的部分）。 */
+export interface DshProjectionSnapshot {
+  asOfSeq?: number;
+  values: Record<string, unknown>;
+}
+
+/** Whether the host currently has a turn open for a session. */
+export type DshOpenTurnState = 'open' | 'closed' | 'unknown';
+
 /** session/page → value.records[]. */
 export interface DshPageRecord {
   event: DshSessionEvent;
