@@ -16,7 +16,7 @@ import { agentDisplayName, resumeUseButton } from '../card/card-shared.js';
 import { enforceCardBudget } from '../card/card-budget.js';
 import { normalizeResultUsage } from '../runner/common/result-usage.js';
 import { BashProcessRunner, type BashRunner } from '../runner/index.js';
-import { AGENT_KINDS, supportsCompact, type AgentKind } from '../runner/types.js';
+import { AGENT_KINDS, supportsCompact, type AgentKind, type StopOutcome } from '../runner/types.js';
 import {
   QueueManager,
   type QueuedTask,
@@ -163,6 +163,14 @@ export interface CommandResult {
   text?: string;
   markdown?: string;
   card?: object;
+}
+
+/** Detailed result of one interrupt, for callers that must not over-promise. */
+export interface InterruptOutcome {
+  stopped: boolean;
+  agentKind?: AgentKind;
+  /** Present for DSH: what the remote stop actually achieved. */
+  stop?: StopOutcome;
 }
 
 export interface ActiveRunSnapshot {
@@ -837,14 +845,36 @@ export class Bridge {
     return result;
   }
 
-  async interruptCurrentRun(input: {
+  async interruptCurrentRun(
+    input: {
+      userId: string;
+      chatId: string;
+      runId?: string;
+      /** Restrict the match to a single cwd (queue.immediate). When
+       * omitted, all workspaces are candidates (used by /stop, /t, and card stop button which don't know which cwd to target). */
+      cwd?: string;
+    },
+    opts?: { onOutcome?: (outcome: InterruptOutcome) => void },
+  ): Promise<boolean> {
+    const result = await this.interruptCurrentRunDetailed(input);
+    opts?.onOutcome?.(result);
+    return result.stopped;
+  }
+
+  /**
+   * Same as {@link interruptCurrentRun}, plus what the runner's stop actually
+   * achieved. DSH returns a {@link StopOutcome} (withdrawn / cancelled /
+   * unconfirmed); process runners and bash return none.
+   *
+   * Callers use `stop.status === 'unconfirmed'` to avoid promising "stopped" or
+   * "executing immediately" when a turn may still be running in the host.
+   */
+  async interruptCurrentRunDetailed(input: {
     userId: string;
     chatId: string;
     runId?: string;
-    /** Restrict the match to a single cwd (queue.immediate). When
-     * omitted, all workspaces are candidates (used by /stop, /t, and card stop button which don't know which cwd to target). */
     cwd?: string;
-  }): Promise<boolean> {
+  }): Promise<InterruptOutcome> {
     // Find the active claude run matching this user/chat
     for (const [cwd, active] of this.activeRuns) {
       if (input.cwd !== undefined && cwd !== input.cwd) continue;
@@ -865,13 +895,19 @@ export class Bridge {
         // unconditional reset would then zero the successor's count and mark
         // its slot interrupted, hiding it from queue cards.
         const stoppedSlot = this.queueManager.getExecutingSlot(cwd);
-        await Promise.allSettled([
+        const [, stopResult] = await Promise.allSettled([
           // 用户主动中断（/stop、stop 卡按钮、queue.immediate）显式打标
           // interruptedReason，与审批超时自动取消（approval_timeout）、审批
           // 卡取消（approval_cancelled）在终态数据上可区分（方案 A）。
           active.session.finish('interrupted', { interruptedReason: 'user_stop' }),
           runner.stop({ immediate: true }),
         ]);
+        const stop =
+          stopResult.status === 'fulfilled' &&
+          stopResult.value !== null &&
+          typeof stopResult.value === 'object'
+            ? (stopResult.value as StopOutcome)
+            : undefined;
         // The chain may have advanced while the stop was in flight: a new run
         // (from a task that began during the stop window) may now occupy this
         // cwd. Only delete the entry we actually stopped.
@@ -910,7 +946,7 @@ export class Bridge {
           this.queueManager.resetExecutingCount(cwd, stoppedSlot);
         }
         getLogger().info(`[lark-remote] interrupt stop done runId=${active.runId}`);
-        return true;
+        return { stopped: true, agentKind: active.agentKind, ...(stop ? { stop } : {}) };
       }
     }
     // Then check active bash runs (! commands). These bypass the serial queue
@@ -927,11 +963,11 @@ export class Bridge {
         await b.cardSession.finish('interrupted', { exitCode: -1 });
         this.activeBashRuns.delete(runId);
         getLogger().info(`[lark-remote] interrupt bash stop done runId=${runId}`);
-        return true;
+        return { stopped: true };
       }
     }
     getLogger().debug(`[lark-remote] interrupt miss userId=${input.userId}`);
-    return false;
+    return { stopped: false };
   }
 
   /** Send a result message to the user (§7). Returns true on success, false on failure. */
@@ -1669,7 +1705,10 @@ export class Bridge {
                   await r.respondApproval(requestId, response);
                 }
               },
-              interruptTurn: () => runner.stop(),
+              interruptTurn: async () => {
+                // DSH may return a StopOutcome; the coordinator only awaits.
+                await runner.stop();
+              },
               pushToCard: async (events) => {
                 for (const ev of events) await cardSession.push(ev);
               },
