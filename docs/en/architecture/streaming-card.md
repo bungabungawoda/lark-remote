@@ -131,7 +131,7 @@ The state layer limits memory growth first, then the rendering layer truncates b
 - Text retains the latest window;
 - Tool input/output is truncated;
 - Total block count has an upper limit;
-- Consecutive tools beyond a threshold are collapsed;
+- Tool block count has its own upper limit (`MAX_BLOCKS`); each tool is a native collapsible panel (one title row by default) whose body ships with the card and is truncated by tool count;
 - Whole card target is under 28KB; tests require under 30KB.
 
 Budget uses `Buffer.byteLength(..., 'utf8')`; JavaScript string `.length` must not be used as a substitute.
