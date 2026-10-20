@@ -223,7 +223,7 @@ describe('toolHeaderText', () => {
     const tool = makeTool({
       name: 'read',
       input: {
-        file_path: '/home/user/notes-app/docs/notes/2026-10-19-vision-remaining.md',
+        file_path: '/home/user/projects/notes-app/docs/notes/2026-10-19-vision-remaining.md',
       },
     });
     const header = toolHeaderText(tool);
