@@ -34,17 +34,21 @@ import type {
   DshApprovalStreamItem,
   DshCommandResult,
   DshFollowFrame,
+  DshInboxItem,
   DshModelCatalogValue,
   DshModelSelection,
+  DshOpenTurnState,
   DshPermissionCatalogValue,
   DshJobView,
   DshPresetListValue,
   DshProjectionItem,
+  DshProjectionSnapshot,
   DshQuestion,
   DshQuestionOption,
   DshRemoteEventFrame,
   DshRemoteEventOutcome,
   DshSessionEvent,
+  DshSessionListValue,
   DshSessionPageValue,
   DshStreamItem,
   DshTokenUsage,
@@ -130,6 +134,41 @@ const IN_TURN_EVENT_TYPES = new Set([
   'request/header',
 ]);
 
+/**
+ * Parse the `inbox` projection into the pending items this repo consumes.
+ *
+ * The projection's items are wire data (typed `{}` by the server schema); keep
+ * this defensive: one malformed row must not hide the others.
+ */
+function inboxItemsOf(values: Record<string, unknown>): DshInboxItem[] {
+  const inbox = values.inbox;
+  if (!inbox || typeof inbox !== 'object' || Array.isArray(inbox)) return [];
+  const out: DshInboxItem[] = [];
+  for (const target of ['next-turn', 'next-step'] as const) {
+    const list = (inbox as Record<string, unknown>)[target];
+    if (!Array.isArray(list)) continue;
+    for (const raw of list) {
+      if (!raw || typeof raw !== 'object' || Array.isArray(raw)) continue;
+      const item = raw as { id?: unknown; source?: unknown };
+      if (typeof item.id !== 'string' || item.id.length === 0) continue;
+      const source = item.source;
+      const parsedSource =
+        source && typeof source === 'object' && !Array.isArray(source)
+          ? {
+              ...(typeof (source as { kind?: unknown }).kind === 'string'
+                ? { kind: (source as { kind: string }).kind }
+                : {}),
+              ...(typeof (source as { rpcId?: unknown }).rpcId === 'string'
+                ? { rpcId: (source as { rpcId: string }).rpcId }
+                : {}),
+            }
+          : undefined;
+      out.push({ id: item.id, ...(parsedSource ? { source: parsedSource } : {}) });
+    }
+  }
+  return out;
+}
+
 export interface DshClientOptions {
   /** Configured DSH home; selects `.credentials.yaml` when no explicit file is given. */
   dshHome?: string;
@@ -194,6 +233,7 @@ const DSH_ARGS_KEY: Record<string, string | null> = {
   'session/projections': 'request',
   'session/page': 'request',
   'session/follow': 'request',
+  'session/updateQueue': 'request',
   'job/list': 'request',
   'job/kill': 'request',
   'session/modelCatalog': null,
@@ -565,9 +605,7 @@ export class DshClient {
     sessionId: string,
     opts?: { signal?: AbortSignal; timeoutMs?: number },
   ): Promise<number> {
-    const value = (await this.unary('session/projections', { sessionId }, opts)) as {
-      asOfSeq?: number;
-    } | null;
+    const value = await this.projectionSnapshot(sessionId, opts);
     return typeof value?.asOfSeq === 'number' ? value.asOfSeq : -1;
   }
 
@@ -591,28 +629,133 @@ export class DshClient {
   }
 
   /**
-   * Whether the session's newest durable event proves a turn is still running.
+   * Read the session's exact projection values.
    *
-   * 只读探测（2 个 unary），供「必须空闲」的操作（手动压缩）在桥接重启后
-   * 用服务端事实兜底：最后一个事件是 turn 内才会出现的类型时，agent 一定
-   * 不空闲。判不出来就返回 false（fail open，仍然由 DSH 自己拒绝）。
+   * Returns `null` when the host has no projections for the session (e.g. it was
+   * deleted). A failed unary still throws — callers that only need a
+   * best-effort probe catch it themselves.
+   */
+  async projectionSnapshot(
+    sessionId: string,
+    opts?: { signal?: AbortSignal; timeoutMs?: number },
+  ): Promise<DshProjectionSnapshot | null> {
+    const value = (await this.unary('session/projections', { sessionId }, opts)) as {
+      asOfSeq?: unknown;
+      values?: unknown;
+    } | null;
+    if (!value || typeof value !== 'object') return null;
+    return {
+      ...(typeof value.asOfSeq === 'number' ? { asOfSeq: value.asOfSeq } : {}),
+      values:
+        value.values && typeof value.values === 'object' && !Array.isArray(value.values)
+          ? (value.values as Record<string, unknown>)
+          : {},
+    };
+  }
+
+  /**
+   * Find this run's prompt if it is still sitting in the host's inbox.
+   *
+   * DSH 的 prompt 受理后先进入 inbox，被 turn 取走（claim）就不再出现；停止
+   * 时用它区分“还没开始 → 可以从队列里撤掉”和“已经在跑 → 只能 cancel”。
+   * `source.rpcId` 是 `session/prompt` 的 requestId，归属不会认错。
+   */
+  async findPendingPrompt(
+    sessionId: string,
+    requestId: string,
+    opts?: { signal?: AbortSignal; timeoutMs?: number },
+  ): Promise<string | undefined> {
+    const snapshot = await this.projectionSnapshot(sessionId, opts);
+    if (!snapshot) return undefined;
+    return inboxItemsOf(snapshot.values).find(
+      (item) => item.source?.kind === 'user' && item.source.rpcId === requestId,
+    )?.id;
+  }
+
+  /**
+   * Remove one not-yet-claimed inbox occurrence (`session/updateQueue`).
+   *
+   * @returns true when the host removed it; false when it was claimed between
+   *   the projection read and this call (`session/queue-item-not-found`).
+   */
+  async removeQueuedPrompt(
+    sessionId: string,
+    itemId: string,
+    opts?: { signal?: AbortSignal; timeoutMs?: number },
+  ): Promise<boolean> {
+    try {
+      await this.unary(
+        'session/updateQueue',
+        { sessionId, itemId, action: { kind: 'remove' } },
+        opts,
+      );
+      return true;
+    } catch (err) {
+      if (err instanceof DshError && err.code === 'session/queue-item-not-found') return false;
+      throw err;
+    }
+  }
+
+  /**
+   * Whether the session still has a running turn.
+   *
+   * 主信号是 `session/list` 的 `running` 字段：服务端权威（会话列表页"运行中"
+   * 用的就是它），一次 unary，投票不受桥接进程内存影响。名单里没有该会话或
+   * 服务端不返回 `running` 时，回退到事件探测（{@link probeOpenTurnByEvents}），
+   * 两者都判不出来就返回 false（fail open，仍由 DSH 自己拒绝）。
    */
   async hasOpenTurn(
     sessionId: string,
     opts?: { signal?: AbortSignal; timeoutMs?: number },
   ): Promise<boolean> {
+    return (await this.openTurnState(sessionId, opts)) === 'open';
+  }
+
+  /**
+   * Tri-state version of {@link hasOpenTurn}.
+   *
+   * Stop verification must distinguish "the host says idle" from "the probe
+   * could not tell" — reporting `closed` on a failed probe would let a still
+   * running turn be reported as stopped. `unknown` is the honest answer there.
+   */
+  async openTurnState(
+    sessionId: string,
+    opts?: { signal?: AbortSignal; timeoutMs?: number },
+  ): Promise<DshOpenTurnState> {
+    try {
+      const list = (await this.unary('session/list', {}, opts)) as DshSessionListValue;
+      const row = list?.items?.find((item) => String(item.sessionId) === sessionId);
+      if (row && typeof row.running === 'boolean') return row.running ? 'open' : 'closed';
+    } catch (err) {
+      getLogger().warn(
+        `[dsh] open-turn probe: session/list failed for ${sessionId}: ${(err as Error).message}`,
+      );
+    }
+    return this.probeOpenTurnByEvents(sessionId, opts);
+  }
+
+  /**
+   * Fallback probe: the newest durable event's type tells whether a turn is open.
+   *
+   * 只在拿不到 `running` 时用。名单刻意保守——`job/*`（后台任务可在 turn 外
+   * 结算）、`user/message`、`turn/end` 都不算，判不出来就报告 `unknown`。
+   */
+  private async probeOpenTurnByEvents(
+    sessionId: string,
+    opts?: { signal?: AbortSignal; timeoutMs?: number },
+  ): Promise<DshOpenTurnState> {
     try {
       const throughSeq = await this.latestEventSeq(sessionId, opts);
-      if (throughSeq < 0) return false;
+      if (throughSeq < 0) return 'closed';
       const value = await this.page(sessionId, throughSeq, 1, opts);
       const last = value.records.at(-1)?.event;
-      if (last === undefined) return false;
-      return last.type === 'turn/start' || IN_TURN_EVENT_TYPES.has(last.type);
+      if (last === undefined) return 'closed';
+      return last.type === 'turn/start' || IN_TURN_EVENT_TYPES.has(last.type) ? 'open' : 'closed';
     } catch (err) {
       getLogger().warn(
         `[dsh] open-turn probe failed for session ${sessionId}: ${(err as Error).message}`,
       );
-      return false;
+      return 'unknown';
     }
   }
 

@@ -24,6 +24,7 @@ import type {
   AgentStatusInfo,
   ApprovalView,
   SpawnOptions,
+  StopOutcome,
 } from '../types.js';
 import type { AgentRunner } from '../types.js';
 import { DshClient, DshError, newPromptRequestId, type WebSocketFactory } from './client.js';
@@ -33,11 +34,13 @@ import { mergeAsync } from './merge.js';
 import { getLogger } from '../../logger/index.js';
 import { registerExitCleanup, unregisterExitCleanup } from '../common/spawning-runner.js';
 import { cancelSessionSync } from './exit-cancel.js';
+import { DshInflightStore } from './inflight.js';
 import type { DshDaemon } from './daemon.js';
 import type {
   DshApprovalStreamItem,
   DshContextPressure,
   DshModelSelection,
+  DshOpenTurnState,
   DshProjectionItem,
   DshSessionStats,
   DshQuestion,
@@ -138,10 +141,28 @@ export interface DshRunnerOptions {
    * 默认走同步 curl（`cancelSessionSync`）：`process.on('exit')` 里不能 await。
    */
   cancelOnExit?: (info: { baseUrl: string; sessionId: string }) => void;
+  /**
+   * 在途 prompt 的持久化记录文件（启动对账用）。省略 = 不记录（测试、临时实例）。
+   */
+  inflightPath?: string;
 }
 
-/** Budget for the fire-and-forget session/cancel on stop (never block /stop). */
+/** Budget for one session/cancel attempt on stop. */
 const CANCEL_TIMEOUT_MS = 5_000;
+/** Total stop budget: withdraw + cancel + verify must not hold the lane forever. */
+const STOP_BUDGET_MS = 5_000;
+/** A prompt request that was still in flight can land after stop's abort. */
+const STOP_ADMIT_ATTEMPTS = 5;
+const STOP_ADMIT_DELAY_MS = 250;
+/** Cancel is applied synchronously; give the turn a moment to unwind. */
+const STOP_VERIFY_ATTEMPTS = 4;
+const STOP_VERIFY_DELAY_MS = 350;
+/** Per-read budget for inbox/status probes on the stop path. */
+const STOP_PROBE_TIMEOUT_MS = 2_000;
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
 /** 状态条累计值（跨投影帧合并后的当前快照）。 */
 interface LiveStatusAccumulator {
@@ -253,6 +274,19 @@ export class DshRunner implements AgentRunner {
   private activeAbort: AbortController | null = null;
   private activeSessionId: string | null = null;
   private running = false;
+  /** This run's prompt identity (`source.rpcId`); null outside a submitted prompt. */
+  private activePromptRequestId: string | null = null;
+  /** Whether the current prompt request was accepted by the host. */
+  private promptAdmitted = false;
+  /**
+   * Releases the next run's prompt only after this stop's withdraw/cancel has
+   * been applied. Aborting the local mux lets the queue advance immediately;
+   * without the gate the successor's prompt can reach the host before the
+   * cancel, and a session-scoped cancel would then hit the *new* turn.
+   */
+  private pendingStopGate: Promise<void> | null = null;
+  private pendingStopSessionId: string | null = null;
+  private readonly inflight: DshInflightStore | null;
   private readonly daemon: DshDaemon | undefined;
   /**
    * 已对齐模型的 session 集合：同一 session 二次 run 不再重发 selectModel
@@ -293,6 +327,7 @@ export class DshRunner implements AgentRunner {
     this.agentPreset = opts.agentPreset;
     this.configuredPermissionPreset = opts.permissionPreset;
     this.reasoningEffort = opts.reasoningEffort;
+    this.inflight = opts.inflightPath ? new DshInflightStore(opts.inflightPath) : null;
     this.client = new DshClient(opts.host ?? 'http://127.0.0.1:3080', {
       dshHome: opts.dshHome,
       token: opts.token,
@@ -385,8 +420,14 @@ export class DshRunner implements AgentRunner {
     this.activeAbort = abort;
     this.running = true;
 
+    // A stop releases the local lane before its cancel has been applied; the
+    // next prompt must not race that cancel (see `pendingStopGate`). State is
+    // already published above so an immediate stop can abort this run too.
+    await this.awaitStopGate(opts.sessionId);
+
     let sessionId = opts.sessionId;
     let terminalEmitted = false;
+    let promptRequestId: string | null = null;
     try {
       // DSH is a shared, machine-wide process. Reuse it when it is already
       // listening; otherwise start it detached so lark-remote exiting does not
@@ -516,7 +557,18 @@ export class DshRunner implements AgentRunner {
         // Keep the prompt identity: DSH echoes it into the durable user/message
         // source.rpcId, which is how runTurn tells this run's turn from a turn
         // it is merely queued behind.
-        const promptRequestId = newPromptRequestId();
+        promptRequestId = newPromptRequestId();
+        // Publish the identity before the request leaves: a stop that arrives
+        // while `session/prompt` is in flight must still know which inbox item
+        // (if any) to withdraw once the host admits it.
+        this.activePromptRequestId = promptRequestId;
+        this.promptAdmitted = false;
+        this.inflight?.record({
+          sessionId,
+          promptRequestId,
+          baseUrl: this.client.baseUrl,
+          cwd: opts.cwd,
+        });
         await this.client.unary(
           'session/prompt',
           {
@@ -527,6 +579,7 @@ export class DshRunner implements AgentRunner {
           },
           { signal: abort.signal },
         );
+        this.promptAdmitted = true;
 
         if (abort.signal.aborted) {
           // stop() 在 prompt 已受理后到达：cancel 由 stop() 发出，这里直接收尾，
@@ -596,6 +649,14 @@ export class DshRunner implements AgentRunner {
       this.running = false;
       this.activeSessionId = null;
       this.activeAbort = null;
+      this.activePromptRequestId = null;
+      this.promptAdmitted = false;
+      // On abort the stop path decides whether the marker is settled (verified
+      // stop) or must survive for startup reconciliation (cancel failed). A
+      // naturally finished run owns its terminal result, so drop it here.
+      if (!abort.signal.aborted && sessionId && promptRequestId) {
+        this.inflight?.clear(sessionId, promptRequestId);
+      }
     }
 
     if (!terminalEmitted) {
@@ -1064,6 +1125,10 @@ export class DshRunner implements AgentRunner {
     this.activeSessionId = sessionId;
     let terminalEmitted = false;
 
+    // Same barrier as run(): a stop of this session must reach the host before
+    // the next compact is submitted.
+    await this.awaitStopGate(sessionId);
+
     try {
       if (this.daemon) await this.daemon.ensure();
 
@@ -1205,16 +1270,218 @@ export class DshRunner implements AgentRunner {
     }
   }
 
-  async stop(_opts?: { immediate?: boolean }): Promise<void> {
+  /**
+   * Stop this run's work in the shared host.
+   *
+   * Two distinct things can be running, and DSH needs a different call for each:
+   *
+   * 1. A prompt that was accepted but not claimed yet still sits in the host
+   *    inbox. `session/cancel` would NOT drop it (`keepInbox`), so the turn would
+   *    start later with no subscriber — an orphan. Withdraw it by `rpcId` via
+   *    `session/updateQueue` instead, and leave the (foreign) active turn alone.
+   * 2. An already-claimed turn (or a compact) can only be stopped with
+   *    `session/cancel`. Since that request is session-scoped and only an
+   *    acknowledgement, verify the session went idle before reporting success.
+   *
+   * The gate is released as soon as the withdraw/cancel has been applied: the
+   * next run may start right after, but never before this stop reached the host.
+   */
+  async stop(_opts?: { immediate?: boolean }): Promise<StopOutcome> {
     const sessionId = this.activeSessionId;
+    const promptRequestId = this.activePromptRequestId;
+    const promptAdmitted = this.promptAdmitted;
     const abort = this.activeAbort;
+    // Free the local mux/queue first; the host-side stop continues below.
     if (abort && !abort.signal.aborted) abort.abort();
-    if (sessionId) {
-      // Do NOT reuse the run's (already aborted) signal: cancel must be sent,
-      // but bounded — a hung server must not block /stop or the queue.
-      await this.cancelSessionQuietly(sessionId);
-      getLogger().info(`[dsh] cancelled session ${sessionId}`);
+    if (!sessionId) return { status: 'noop' };
+
+    let releaseGate = (): void => {};
+    const gate = new Promise<void>((resolve) => {
+      releaseGate = resolve;
+    });
+    this.pendingStopGate = gate;
+    this.pendingStopSessionId = sessionId;
+    let settled = false;
+    const release = (): void => {
+      if (settled) return;
+      settled = true;
+      releaseGate();
+    };
+
+    try {
+      return await this.performStop(sessionId, promptRequestId, promptAdmitted, release);
+    } finally {
+      // Safety net for early returns/throws; performStop normally releases first.
+      release();
+      if (this.pendingStopGate === gate) {
+        this.pendingStopGate = null;
+        this.pendingStopSessionId = null;
+      }
     }
+  }
+
+  /** Wait for a concurrent stop to reach the host before submitting a new prompt. */
+  private async awaitStopGate(sessionId?: string): Promise<void> {
+    const gate = this.pendingStopGate;
+    if (!gate) return;
+    if (
+      sessionId === undefined ||
+      this.pendingStopSessionId === null ||
+      sessionId !== this.pendingStopSessionId
+    ) {
+      return;
+    }
+    await gate;
+  }
+
+  private async performStop(
+    sessionId: string,
+    promptRequestId: string | null,
+    promptAdmitted: boolean,
+    releaseGate: () => void,
+  ): Promise<StopOutcome> {
+    const deadline = Date.now() + STOP_BUDGET_MS;
+    try {
+      if (promptRequestId) {
+        const itemId = await this.findPendingPromptWithin(
+          sessionId,
+          promptRequestId,
+          promptAdmitted,
+          deadline,
+        );
+        if (itemId && (await this.removePendingPrompt(sessionId, itemId, deadline))) {
+          releaseGate();
+          this.inflight?.clear(sessionId, promptRequestId);
+          getLogger().info(`[dsh] stop withdrew queued prompt session=${sessionId}`);
+          return { status: 'withdrawn', sessionId };
+        }
+      }
+
+      // Nothing (or nothing claimable) in the inbox: the turn/compact is live.
+      if (!(await this.cancelWithRetry(sessionId, deadline))) {
+        releaseGate();
+        getLogger().warn(`[dsh] stop unconfirmed session=${sessionId}: cancel not accepted`);
+        return { status: 'unconfirmed', sessionId, detail: 'session/cancel was not accepted' };
+      }
+      releaseGate();
+
+      const state = await this.waitForClosed(sessionId, deadline);
+      if (state === 'closed') {
+        if (promptRequestId) this.inflight?.clear(sessionId, promptRequestId);
+        getLogger().info(`[dsh] cancelled session ${sessionId}`);
+        return { status: 'cancelled', sessionId };
+      }
+      if (state === 'unknown') {
+        return { status: 'unconfirmed', sessionId, detail: 'turn state unavailable after cancel' };
+      }
+
+      // The host still reports an open turn (slow unwind or lost cancel): one
+      // more attempt, then report honestly instead of pretending it stopped.
+      await this.cancelWithRetry(sessionId, deadline);
+      const retryState = await this.waitForClosed(sessionId, deadline);
+      if (retryState === 'closed') {
+        if (promptRequestId) this.inflight?.clear(sessionId, promptRequestId);
+        return { status: 'cancelled', sessionId };
+      }
+      getLogger().warn(`[dsh] stop unconfirmed session=${sessionId}: turn still open`);
+      return { status: 'unconfirmed', sessionId, detail: 'turn still open after cancel' };
+    } catch (err) {
+      releaseGate();
+      getLogger().warn(`[dsh] stop failed session=${sessionId}: ${(err as Error).message}`);
+      return { status: 'unconfirmed', sessionId, detail: (err as Error).message };
+    }
+  }
+
+  /**
+   * Locate this run's unclaimed prompt.
+   *
+   * An already-admitted prompt is visible immediately. A request still in
+   * flight can be admitted after stop aborted it, so poll the inbox briefly —
+   * that is the only client-side protection against a late orphan turn.
+   */
+  private async findPendingPromptWithin(
+    sessionId: string,
+    requestId: string,
+    admitted: boolean,
+    deadline: number,
+  ): Promise<string | undefined> {
+    const attempts = admitted ? 1 : STOP_ADMIT_ATTEMPTS;
+    for (let attempt = 0; attempt < attempts; attempt++) {
+      if (attempt > 0 && !(await this.sleepWithin(deadline, STOP_ADMIT_DELAY_MS))) return undefined;
+      try {
+        const itemId = await this.client.findPendingPrompt(sessionId, requestId, {
+          timeoutMs: this.stopProbeTimeout(deadline),
+        });
+        if (itemId) return itemId;
+        if (admitted) return undefined;
+      } catch (err) {
+        getLogger().warn(
+          `[dsh] stop inbox probe failed session=${sessionId}: ${(err as Error).message}`,
+        );
+        return undefined;
+      }
+    }
+    return undefined;
+  }
+
+  private async removePendingPrompt(
+    sessionId: string,
+    itemId: string,
+    deadline: number,
+  ): Promise<boolean> {
+    try {
+      return await this.client.removeQueuedPrompt(sessionId, itemId, {
+        timeoutMs: this.stopProbeTimeout(deadline),
+      });
+    } catch (err) {
+      getLogger().warn(
+        `[dsh] stop withdraw failed session=${sessionId}: ${(err as Error).message}`,
+      );
+      return false;
+    }
+  }
+
+  /** One cancel attempt, then one retry (the request is idempotent when idle). */
+  private async cancelWithRetry(sessionId: string, deadline: number): Promise<boolean> {
+    if (await this.cancelOnce(sessionId, deadline)) return true;
+    if (!(await this.sleepWithin(deadline, 150))) return false;
+    return this.cancelOnce(sessionId, deadline);
+  }
+
+  private async cancelOnce(sessionId: string, deadline: number): Promise<boolean> {
+    const timeoutMs = Math.max(1, Math.min(CANCEL_TIMEOUT_MS, deadline - Date.now()));
+    try {
+      await this.client.unary('session/cancel', { sessionId }, { timeoutMs });
+      return true;
+    } catch (err) {
+      getLogger().warn(`[dsh] session/cancel failed for ${sessionId}: ${(err as Error).message}`);
+      return false;
+    }
+  }
+
+  /** Poll the host until the session reports idle, or the budget runs out. */
+  private async waitForClosed(sessionId: string, deadline: number): Promise<DshOpenTurnState> {
+    let state: DshOpenTurnState = 'unknown';
+    for (let attempt = 0; attempt < STOP_VERIFY_ATTEMPTS; attempt++) {
+      if (attempt > 0 && !(await this.sleepWithin(deadline, STOP_VERIFY_DELAY_MS))) break;
+      state = await this.client.openTurnState(sessionId, {
+        timeoutMs: this.stopProbeTimeout(deadline),
+      });
+      if (state === 'closed') return 'closed';
+    }
+    return state;
+  }
+
+  /** Sleep, but never past the stop deadline. Returns false when out of budget. */
+  private async sleepWithin(deadline: number, ms: number): Promise<boolean> {
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) return false;
+    await delay(Math.min(ms, remaining));
+    return Date.now() < deadline;
+  }
+
+  private stopProbeTimeout(deadline: number): number {
+    return Math.max(1, Math.min(STOP_PROBE_TIMEOUT_MS, deadline - Date.now()));
   }
 
   killOrphan(): void {

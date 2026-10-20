@@ -46,6 +46,8 @@ export class FakeDshServer {
   private historyValue: unknown = { records: [], hasMore: false };
   private historySequence: unknown[] = [];
   private projectionValue: unknown = { asOfSeq: 0, values: {} };
+  /** `session/list` 返回值；默认空名单（调用方据此回退到事件探测）。 */
+  private listValue: unknown = { items: [] };
   /** `job/list` 首帧（整份任务名单）。 */
   private jobRowsValue: unknown[] = [];
   /** 自动把 prompt 的 user/message 注入 follow 快照（真实 DSH 一定记录它）。 */
@@ -57,6 +59,8 @@ export class FakeDshServer {
   private lastEventClientIdValue: string | undefined;
   private requireAuth = false;
   private launchToken = 'test-token';
+  /** Per-method response delay; dispatch still runs first (prompt-race tests). */
+  private readonly responseDelays = new Map<string, number>();
   private readonly wss = new WebSocketServer({ noServer: true });
 
   readonly requests: DshServerRequestRecord[] = [];
@@ -158,8 +162,18 @@ export class FakeDshServer {
           args;
         this.requests.push({ method, rpcId, payload: request });
         const result = this.dispatch(method, request, rpcId);
-        res.writeHead(200, { 'content-type': 'application/json' });
-        res.end(JSON.stringify({ type: 'server-response', rpcId, result }));
+        const respond = (): void => {
+          res.writeHead(200, { 'content-type': 'application/json' });
+          res.end(JSON.stringify({ type: 'server-response', rpcId, result }));
+        };
+        const delay = this.responseDelays.get(method);
+        if (delay && delay > 0) {
+          // Dispatch already ran: the host has admitted the request even though
+          // the client may abort before the response arrives (prompt race).
+          setTimeout(respond, delay).unref?.();
+        } else {
+          respond();
+        }
       });
     });
 
@@ -214,6 +228,15 @@ export class FakeDshServer {
 
   register(method: string, handler: FakeUnaryHandler): void {
     this.unaryHandlers.set(method, handler);
+  }
+
+  /**
+   * Delay the HTTP response for one method (dispatch still runs immediately).
+   * Used to model a request the host accepted but whose response the client
+   * never waits for — e.g. stop racing an in-flight `session/prompt`.
+   */
+  setResponseDelayMs(method: string, ms: number): void {
+    this.responseDelays.set(method, ms);
   }
 
   /** Enable token auth; the client must complete /connect first. */
@@ -279,6 +302,11 @@ export class FakeDshServer {
     this.projectionValue = value;
   }
 
+  /** `session/list` 返回值（含各会话的 `running` 事实）。 */
+  setListValue(value: unknown): void {
+    this.listValue = value;
+  }
+
   /** Synchronous unary dispatch (no HTTP) — used by tests that inject the
    *  reader's sync transport to avoid the spawnSync-in-process deadlock. */
   dispatchSync(
@@ -313,7 +341,7 @@ export class FakeDshServer {
       case 'session/page':
         return { ok: true, value: this.historyValue };
       case 'session/list':
-        return { ok: true, value: { items: [] } };
+        return { ok: true, value: this.listValue };
       default:
         return { ok: true, value: {} };
     }

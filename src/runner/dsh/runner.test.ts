@@ -6,9 +6,13 @@
  */
 
 import { describe, it, expect, afterEach } from 'vitest';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { currentPlatform, isWin32 } from '../../../src/platform/select.js';
 import { DshRunner } from './runner.js';
 import { dshQuestionsOf, isTimedQuestionRequest } from './client.js';
+import { DshInflightStore, reconcileInflightDshRuns } from './inflight.js';
 import { DshApprovalTracker } from './approval.js';
 import { DshTranslator, mapUsage } from './translator.js';
 import { createInitialRunState, reduceRunState } from '../../../src/card/run-state.js';
@@ -2167,6 +2171,61 @@ describe('DshClient / DshRunner integration', () => {
     expect(events.find((e) => e.type === 'result')).toMatchObject({ subtype: 'success' });
   });
 
+  it('compact precheck trusts session/list running over the tail-event heuristic', async () => {
+    // 验证什么：`running` 是服务端权威事实，比"末条事件类型"可靠——工具往返时
+    // 末条常常是 job/registered/job/settled（不在 turn 内事件白名单里），只看
+    // 末条会误判空闲，把注定被拒的 /compact 发出去。
+    server = new FakeDshServer();
+    let commandCalled = false;
+    server.register('commands/execute', () => {
+      commandCalled = true;
+      return { ok: true, value: { kind: 'success', text: 'Compacted 1 history item.' } };
+    });
+    server.setListValue({ items: [{ sessionId: SID, running: true, cwd: CWD }] });
+    server.setProjectionValue({ asOfSeq: 6, values: {} });
+    // 末条是 turn/end（启发式会说"空闲"），但服务端说还在跑。
+    server.setHistoryValue({
+      records: [{ type: 'event', event: turnEnd('completed', 6) }],
+      hasMore: false,
+    });
+    await server.start();
+
+    const runner = new DshRunner({ kind: 'dsh', sessionReader: stubReader, host: server.baseUrl });
+    const events = await collect(runner.runCompact('', { cwd: CWD, sessionId: SID }));
+
+    const result = events.find((e) => e.type === 'result');
+    expect(result).toMatchObject({ subtype: 'error' });
+    expect(result?.type === 'result' ? result.errorMessage : '').toContain('还有一轮在跑');
+    expect(commandCalled).toBe(false);
+  });
+
+  it('compact precheck proceeds when session/list reports the session idle', async () => {
+    // 验证什么：`running:false` 时即使末条是 turn 内事件也放行——权威信号优先，
+    // 别让启发式的假阳性挡住一次合法压缩。
+    server = new FakeDshServer();
+    server.register('commands/execute', () => ({
+      ok: true,
+      value: { kind: 'success', text: 'Compacted 3 history items.' },
+    }));
+    server.setListValue({ items: [{ sessionId: SID, running: false, cwd: CWD }] });
+    server.setProjectionValue({ asOfSeq: 9, values: {} });
+    server.setHistoryValue({
+      records: [
+        {
+          type: 'event',
+          event: { type: 'step/start', seq: 9, time: 1700000000000, data: { turn: 2, step: 5 } },
+        },
+      ],
+      hasMore: false,
+    });
+    await server.start();
+
+    const runner = new DshRunner({ kind: 'dsh', sessionReader: stubReader, host: server.baseUrl });
+    const events = await collect(runner.runCompact('', { cwd: CWD, sessionId: SID }));
+
+    expect(events.find((e) => e.type === 'result')).toMatchObject({ subtype: 'success' });
+  });
+
   it('compact executes /compact through commands/execute and finishes success', async () => {
     // 验证什么：DSH 的压缩走 commands/execute（不是 session/prompt）——后者会把
     // 文本当普通 user message 交给模型，永远压不了上下文。
@@ -2322,6 +2381,257 @@ describe('DshClient / DshRunner integration', () => {
     // cancel：/stop 立即释放队列，孤儿 session 仍会被收起。
     expect(await waitFor(() => cancelCalled, 2000)).toBe(true);
     expect(promptCalled).toBe(false);
+  });
+
+  /**
+   * 验证什么：prompt 被 Host 受理但还没被 turn 取走时点停止，必须把它从
+   * inbox 撤掉，而不是 `session/cancel`（cancel 的 keepInbox 会留下它，之后
+   * 自动开一个无人订阅的 turn）。缺失后果：用户看到"已停止"，消息稍后却
+   * 在后台跑完。
+   */
+  it('stop withdraws a prompt that has not started yet (no orphan turn)', async () => {
+    server = new FakeDshServer();
+    const updates: unknown[] = [];
+    let cancelCalled = false;
+    server.register('session/prompt', () => ({ ok: true, value: { accepted: true } }));
+    server.register('session/updateQueue', (payload) => {
+      updates.push(payload);
+      return { ok: true, value: { accepted: true } };
+    });
+    server.register('session/cancel', () => {
+      cancelCalled = true;
+      return { ok: true, value: { accepted: true } };
+    });
+    server.setMuxFrames([]);
+    await server.start();
+
+    const runner = new DshRunner({ kind: 'dsh', sessionReader: stubReader, host: server.baseUrl });
+    const iterator = runner.run('queued', { cwd: CWD, sessionId: SID })[Symbol.asyncIterator]();
+    expect((await iterator.next()).value).toMatchObject({ type: 'system', subtype: 'init' });
+    const pending = iterator.next();
+    await waitFor(() => server.requests.some((r) => r.method === 'session/prompt'), 2000);
+    const prompt = server.requests.find((r) => r.method === 'session/prompt');
+    const requestId = (prompt?.payload as { requestId: string } | undefined)?.requestId;
+    expect(requestId).toBeTruthy();
+    server.setProjectionValue({
+      asOfSeq: 2,
+      values: {
+        inbox: {
+          'next-turn': [{ id: 'queue-item-1', source: { kind: 'user', rpcId: requestId } }],
+          'next-step': [],
+        },
+      },
+    });
+
+    const outcome = await runner.stop({ immediate: true });
+    expect(outcome).toMatchObject({ status: 'withdrawn', sessionId: SID });
+    expect(updates).toEqual([
+      { sessionId: SID, itemId: 'queue-item-1', action: { kind: 'remove' } },
+    ]);
+    expect(cancelCalled).toBe(false);
+    await pending.catch(() => undefined);
+    await iterator.return?.();
+  });
+
+  /**
+   * 验证什么：prompt 已被 turn claim 时，停止只能 cancel，并在 cancel 之后
+   * 确认 host 已空闲（`session/list.running === false`）才报 cancelled。
+   */
+  it('stop cancels a claimed turn and verifies the session is idle', async () => {
+    server = new FakeDshServer();
+    let running = true;
+    let cancels = 0;
+    server.register('session/prompt', () => ({ ok: true, value: { accepted: true } }));
+    server.register('session/list', () => ({
+      ok: true,
+      value: { items: [{ sessionId: SID, running }] },
+    }));
+    server.register('session/cancel', () => {
+      cancels++;
+      running = false;
+      return { ok: true, value: { accepted: true } };
+    });
+    server.setMuxFrames([]);
+    await server.start();
+
+    const runner = new DshRunner({ kind: 'dsh', sessionReader: stubReader, host: server.baseUrl });
+    const iterator = runner.run('running', { cwd: CWD, sessionId: SID })[Symbol.asyncIterator]();
+    expect((await iterator.next()).value).toMatchObject({ type: 'system', subtype: 'init' });
+    const pending = iterator.next();
+    await waitFor(() => server.requests.some((r) => r.method === 'session/prompt'), 2000);
+
+    const outcome = await runner.stop({ immediate: true });
+    expect(outcome).toMatchObject({ status: 'cancelled', sessionId: SID });
+    expect(cancels).toBeGreaterThanOrEqual(1);
+    await pending.catch(() => undefined);
+    await iterator.return?.();
+  });
+
+  /**
+   * 验证什么：cancel 被拒且 host 仍报 turn open 时，stop 必须返回
+   * unconfirmed（调用方据此提示用户），不能假报已停止。
+   */
+  it('stop reports unconfirmed when the host keeps the turn open', async () => {
+    server = new FakeDshServer();
+    let cancels = 0;
+    server.register('session/prompt', () => ({ ok: true, value: { accepted: true } }));
+    server.register('session/list', () => ({
+      ok: true,
+      value: { items: [{ sessionId: SID, running: true }] },
+    }));
+    server.register('session/cancel', () => {
+      cancels++;
+      return { ok: false, error: { code: 'transport', message: 'host down' } };
+    });
+    server.setMuxFrames([]);
+    await server.start();
+
+    const runner = new DshRunner({ kind: 'dsh', sessionReader: stubReader, host: server.baseUrl });
+    const iterator = runner.run('running', { cwd: CWD, sessionId: SID })[Symbol.asyncIterator]();
+    expect((await iterator.next()).value).toMatchObject({ type: 'system', subtype: 'init' });
+    const pending = iterator.next();
+    await waitFor(() => server.requests.some((r) => r.method === 'session/prompt'), 2000);
+
+    const outcome = await runner.stop({ immediate: true });
+    expect(outcome).toMatchObject({ status: 'unconfirmed', sessionId: SID });
+    expect(cancels).toBe(2);
+    await pending.catch(() => undefined);
+    await iterator.return?.();
+  });
+
+  /**
+   * 验证什么：stop 与 `session/prompt` 在途竞态——客户端 abort 了请求，但
+   * Host 仍可能受理；stop 必须在 abort 后补查 inbox，把迟到的那条撤掉，
+   * 否则它会开一个无人订阅的 turn。
+   */
+  it('stop withdraws a prompt admitted after the abort (in-flight prompt race)', async () => {
+    server = new FakeDshServer();
+    const updates: unknown[] = [];
+    let cancelCalled = false;
+    server.register('session/prompt', (payload) => {
+      const requestId = (payload as { requestId?: string } | undefined)?.requestId;
+      // 模拟 Host 已受理但响应晚到（客户端先 abort）。
+      server.setProjectionValue({
+        asOfSeq: 1,
+        values: {
+          inbox: {
+            'next-turn': [{ id: 'late-item', source: { kind: 'user', rpcId: requestId } }],
+            'next-step': [],
+          },
+        },
+      });
+      return { ok: true, value: { accepted: true } };
+    });
+    server.register('session/updateQueue', (payload) => {
+      updates.push(payload);
+      return { ok: true, value: { accepted: true } };
+    });
+    server.register('session/cancel', () => {
+      cancelCalled = true;
+      return { ok: true, value: { accepted: true } };
+    });
+    server.setResponseDelayMs('session/prompt', 400);
+    server.setMuxFrames([]);
+    await server.start();
+
+    const runner = new DshRunner({ kind: 'dsh', sessionReader: stubReader, host: server.baseUrl });
+    const iterator = runner.run('slow admit', { cwd: CWD, sessionId: SID })[Symbol.asyncIterator]();
+    expect((await iterator.next()).value).toMatchObject({ type: 'system', subtype: 'init' });
+    const pending = iterator.next();
+    await waitFor(() => server.requests.some((r) => r.method === 'session/prompt'), 2000);
+
+    const outcome = await runner.stop({ immediate: true });
+    expect(outcome).toMatchObject({ status: 'withdrawn', sessionId: SID });
+    expect(updates).toHaveLength(1);
+    expect(updates[0]).toMatchObject({ itemId: 'late-item', action: { kind: 'remove' } });
+    expect(cancelCalled).toBe(false);
+    await pending.catch(() => undefined);
+    await iterator.return?.();
+  });
+
+  /**
+   * 验证什么：停止后本地 lane 立刻放行，但下一条 prompt 必须等 cancel 真正
+   * 到达 Host 再发（否则 session 级 cancel 可能打在新 turn 上）。
+   */
+  it('the next prompt waits for the stop cancel to reach the host', async () => {
+    server = new FakeDshServer();
+    let running = true;
+    let cancelAppliedAt = 0;
+    const promptTimes: number[] = [];
+    server.register('session/prompt', () => {
+      promptTimes.push(Date.now());
+      return { ok: true, value: { accepted: true } };
+    });
+    server.register('session/list', () => ({
+      ok: true,
+      value: { items: [{ sessionId: SID, running }] },
+    }));
+    server.register('session/cancel', () => {
+      cancelAppliedAt = Date.now();
+      running = false;
+      return { ok: true, value: { accepted: true } };
+    });
+    server.setResponseDelayMs('session/cancel', 300);
+    server.setMuxFrames([]);
+    await server.start();
+
+    const runner = new DshRunner({ kind: 'dsh', sessionReader: stubReader, host: server.baseUrl });
+    const first = runner.run('first', { cwd: CWD, sessionId: SID })[Symbol.asyncIterator]();
+    expect((await first.next()).value).toMatchObject({ type: 'system', subtype: 'init' });
+    const firstTurn = first.next();
+    await waitFor(() => promptTimes.length === 1, 2000);
+
+    const stopPromise = runner.stop({ immediate: true });
+    await firstTurn.catch(() => undefined);
+
+    const second = runner.run('second', { cwd: CWD, sessionId: SID })[Symbol.asyncIterator]();
+    expect((await second.next()).value).toMatchObject({ type: 'system', subtype: 'init' });
+    const secondTurn = second.next();
+    await waitFor(() => promptTimes.length === 2, 3000);
+    expect(cancelAppliedAt).toBeGreaterThan(0);
+    // 没有 gate 时第二条 prompt 会在 cancel 发出后立刻到达（个位数 ms）。
+    expect(promptTimes[1]! - cancelAppliedAt).toBeGreaterThanOrEqual(250);
+
+    expect(await stopPromise).toMatchObject({ status: 'cancelled' });
+    await runner.stop({ immediate: true });
+    await secondTurn.catch(() => undefined);
+    await second.return?.();
+  });
+
+  it('inflight markers are recorded, cleared and reconciled on startup', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'lark-remote-dsh-inflight-'));
+    try {
+      const store = new DshInflightStore(path.join(dir, 'inflight.json'));
+      store.record({
+        sessionId: SID,
+        promptRequestId: 'lark-remote-p1',
+        baseUrl: 'http://dsh.invalid',
+        cwd: CWD,
+      });
+      expect(store.list()).toMatchObject([
+        { sessionId: SID, promptRequestId: 'lark-remote-p1', baseUrl: 'http://dsh.invalid' },
+      ]);
+
+      const notices: string[] = [];
+      const result = await reconcileInflightDshRuns({
+        store,
+        client: {
+          baseUrl: 'http://dsh.invalid',
+          findPendingPrompt: async () => 'item-1',
+          removeQueuedPrompt: async () => true,
+          openTurnState: async () => 'open',
+        },
+        notify: async (text) => {
+          notices.push(text);
+        },
+      });
+      expect(result).toMatchObject({ removed: 1, open: 1, skipped: false });
+      expect(store.list()).toEqual([]);
+      expect(notices[0]).toContain('DSH turn');
+      expect(notices[0]).toContain(SID.slice(0, 8));
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it('test_anchor_dsh_stop_with_hung_unary_releases_run', async () => {

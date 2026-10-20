@@ -408,6 +408,17 @@ DSH 的压缩走 `commands/execute` 发 `/compact`（`dsh-command-compact`，无
 由 `runner/types.ts` 的 `COMPACT_CAPABILITY` 单源声明（键集 = `AgentKind`，缺项编译失败），
 bridge 按「声明 && runner 实现」双重门控，声明与实现的一致性由 runner 结构测试的矩阵用例保证。
 
+DSH 的停止不是"杀本地子进程"：turn 跑在共享 `dsh web` host 里，进程退出不会带走它。
+`DshRunner.stop` 分两步——prompt 还没被 turn 取走时，按 `source.rpcId` 从 Host inbox
+撤回（`session/updateQueue`），避免 `session/cancel` 的 keepInbox 把它留到下一个无人
+订阅的 turn；已被 claim 时发 `session/cancel`，再用 `session/list.running` 轮询确认。
+cancel 是 session 级、只回 accepted 的请求，无法确认时 runner 返回 `unconfirmed`，
+卡片/命令明确提示"可能仍在后台运行"，而不是假报已停止。stop 的 withdraw/cancel 落地前，
+下一条 prompt 由 runner 内的 gate 拦住（否则 session 级 cancel 可能打到新 turn）。
+桥接退出路径用同步 curl 补一次 cancel；每次 prompt 的在途身份另写
+`<configDir>/dsh-inflight.json`，下次启动对账：清掉残留的待执行 prompt，对仍 open 的
+session 给 owner 一次提示（不自动 cancel——它可能是 Web UI 的 turn）。
+
 ---
 
 ## 9. 已知坑点
