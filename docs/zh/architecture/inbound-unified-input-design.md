@@ -1,6 +1,6 @@
 # 入站消息统一处理设计（Inbound Turn）
 
-> 状态：**已实施（2026-09-15 拍板；B1–B4 同日落地，B5/B6 待真机验证）**。
+> 状态：**已实施**（落地位置见 §9）。
 > 前置阅读：`inbound-message-matrix.md`（全类型实测矩阵 + 飞书接口硬限制 + 同类项目对比）。
 > 本文只回答一个问题：**怎么把"用户发的一串东西"统一变成 agent 能用的一个回合（turn）**。
 
@@ -9,47 +9,37 @@
 现在的问题不是"漏了某个消息类型"，而是**缺少一层"用户意图装配"**：
 
 - 飞书的事件模型是「**一条消息 = 一个事件**」，而用户的意图常常是「**多条消息 = 一个意图**」（先发图再说话，或先说再发图）。
-- 当前实现把"事件"直接映射成"动作"：资源事件 → 落盘 + 单独发提示卡；文本事件 → 立刻起一个 agent turn。
+- 旧实现把"事件"直接映射成"动作"：资源事件 → 落盘 + 单独发提示卡；文本事件 → 立刻起一个 agent turn。
   两者互不知情，于是 **agent 永远拿不到附件路径**。
-- 额外暴露一个 **P0 安全问题**：SDK 把富文本里的图片渲染成 `![image](key)`，行首的 `!` 命中了本项目
+- 还暴露一条**安全边界**：SDK 把富文本里的图片渲染成 `![image](key)`，行首的 `!` 命中了本项目
   的 bash 命令语法 → **用户消息被当 shell 命令执行**（详见 §1.3）。
 
 方案核心：新增 **InboundTurnAssembler**（§4）+ 判据改为「资源载体」而非「消息类型」（§5.1）+
 命令识别加前置条件（§5.6）+ 附件路径统一注入 prompt（§5.4）。
 
-## 1. 现场：两条消息为什么表现不同
+## 1. 问题模型：同一条图文消息，两种表现
 
-证据：现场实例日志 `logs/2026-09-15/`（22:09 两条消息）。
+### 1.1 两种书写顺序
 
-### 1.1 两条消息的真身
+一条同时含文字与图片的消息，SDK 渲染出来是这样（顺序由用户决定）：
 
-日志里 `message from …` 的原文：
-
-```
-22:09:34  ![image](img_v3_…) \n test     ← "图片在前，文字在后"
-22:09:42  test \n ![image](img_v3_…)     ← "文字在前，图片在后"
+```text
+![image](img_v3_…) \n test     ← 图在前，文字在后
+test \n ![image](img_v3_…)     ← 文字在前，图片在后
 ```
 
-一条消息里同时含文字与图片、且图片被渲染成 `![image](img_v3_…)` —— 这是 **富文本消息（`msg_type = post`）**
-（飞书把相邻的"图 + 文"合成一条 post；纯 `image` 消息的 content 只有 `image_key`，不会有文字）。
-SDK 的 `convertPost` 把 `img` 元素渲染为 `![image](${image_key})`，与本项目实测一致。
+图片被渲染成 `![image](img_v3_…)` 说明这是 **富文本消息（`msg_type = post`）**：飞书把相邻的
+"图 + 文"合成一条 post；纯 `image` 消息的 content 只有 `image_key`，不会带文字。
+SDK 的 `convertPost` 把 `img` 元素渲染为 `![image](${image_key})`。
 
 ### 1.2 关键事实：图**从未下载**
 
-对该日志 `grep -cE "\[media\]|inbound media|downloadResource"` = **0**。
-因为 `post` 不在判据白名单 `{image, file}` 里（修复前 `src/connector/index.ts` 的入站分派分支），
-消息整体走了文本通道，`resources` 里的 `image` 被直接丢弃。
+`post` 不在旧判据的白名单 `{image, file}` 里（`src/connector/index.ts` 的入站分派分支），
+于是整条消息走文本通道，`resources` 里的 `image` 被直接丢弃。
 
-### 1.3 表现差异的**真正原因**：`!` 被当成 bash 命令
+### 1.3 真正的原因：`!` 被当成 bash 命令
 
-```
-22:09:34.110  [router] handle … startsWithBang=true          ← 渲染串以 "!" 开头
-22:09:34.110  [lark-remote] executeBash start … command="[image](img_v3_…"
-22:09:34.792  [bash-runner] spawn pid=1234 command="[image](img_v3_…)…"
-22:09:34.796  [bash-runner] process exited with code=2
-```
-
-修复前 `src/router/index.ts` 的 `CommandRouter.handle` 判据是**裸文本前缀**：
+旧版 `src/router/index.ts` 的 `CommandRouter.handle` 判据是**裸文本前缀**：
 
 ```ts
 const trimmed = message.trim();
@@ -73,13 +63,13 @@ if (trimmed.startsWith('!')) {
 若富文本首段是图片、后续段落含可控文本，整段都会被拼成命令。
 命令识别的判据必须建立在"**这条消息到底是不是用户在打字**"之上，而不是首字符。
 
-## 2. 三条根因
+## 2. 三个设计约束的来源
 
-| # | 根因 | 位置 | 后果 |
+| # | 旧实现的做法 | 位置 | 造成的后果 |
 |---|---|---|---|
-| R1 | 判据是**消息类型白名单**，而 SDK 已给出"是否携带资源"（`resources`） | 修复前 `connector/index.ts` 白名单分支 | video/audio/sticker/post/merge_forward 全漏 |
-| R2 | 没有"用户意图装配"层：资源事件与文本事件各自触发动作、互不知情 | 修复前 `index.ts`（媒体闸门） vs `index.ts`+`router`（文本通道） | 附件路径永远进不了 agent prompt |
-| R3 | 命令识别只看**裸文本前缀**，且发生在任何语义清洗之前 | 修复前 `router/index.ts` 的 `handle` | 富文本/占位符被当命令执行（P0） |
+| R1 | 判据是**消息类型白名单**，而 SDK 已给出"是否携带资源"（`resources`） | `connector/index.ts` 的分派分支 | video/audio/sticker/post/merge_forward 全漏 |
+| R2 | 没有"用户意图装配"层：资源事件与文本事件各自触发动作、互不知情 | `index.ts`（媒体闸门） vs `index.ts`+`router`（文本通道） | 附件路径进不了 agent prompt |
+| R3 | 命令识别只看**裸文本前缀**，且发生在任何语义清洗之前 | `router/index.ts` 的 `handle` | 富文本/占位符被当命令执行 |
 
 ## 3. 设计原则
 
@@ -203,7 +193,7 @@ InboundTurnAssembler               ← 新增层（§7）
 「📎 已保存 1 个文件：`/abs/path`。说一句话我就开始处理。」
 理由：用户发文件常常只是"存一下"；自动起 turn 会烧 token 且行为不可预期。
 
-### 5.6 命令识别：加前置条件（P0 修复）
+### 5.6 命令识别：加前置条件
 
 新顺序（`router.handle` 之前）：
 
@@ -226,8 +216,8 @@ InboundTurnAssembler               ← 新增层（§7）
 |---|---|
 | 结构占位（`<vote>`、`<location>`、`<group_card>`、`[unsupported message]`、缺 key 的 `[image]`） | `rejected` → 回执「暂不支持 X 类型消息」；**不进 agent** |
 | 富文本中的图片 | 正常落盘进附件块（不再因为"整条是 post"而整体放弃） |
-| 合并转发 | 文本保留（SDK 已渲染）；附件下载见 `inbound-message-matrix.md` §5 的分阶段方案 |
-| 表情 sticker | 待实测 `type=image`；失败 → `rejected`（「表情暂不支持保存」） |
+| 合并转发 | 文本保留（SDK 已渲染）；附件尽力下载、失败回执 —— 凭据约束见 `inbound-message-matrix.md` §5 |
+| 表情 sticker | 按资源类尝试下载；失败 → `rejected`（「表情暂不支持保存」），占位符不进 prompt |
 | 超限/下载失败 | `rejected`，与同 turn 的回执合并成一条，不单独飘消息 |
 
 ### 5.8 与既有机制的衔接
@@ -249,10 +239,10 @@ InboundTurnAssembler               ← 新增层（§7）
 | `image` | ✅ | — | ✅ | — | |
 | `file` | ✅ | — | ✅ | — | 保留原名 |
 | `media` / `video` | ✅ | — | ✅（**本体**） | — | 附时长；封面可选 |
-| `audio` | ✅ | — | ✅（补扩展名） | — | 转写为可选增强 |
-| `sticker` | ✅ | — | ✅（待实测） | 失败时 | `type=image` 优先 |
+| `audio` | ✅ | — | ✅（补扩展名） | — | 只落盘，不转写（见 §10 决策 4） |
+| `sticker` | ✅ | — | ✅（尽力下载） | 失败时 | 下载 type 只有 `image`/`file`，sticker 归 `file` |
 | `post` | 可能 | ✅（剥占位符） | ✅（内嵌图） | — | **文本与图片并存**，不再二选一 |
-| `merge_forward` | 可能有 | ✅（SDK 渲染） | 分阶段（§5） | 失败时 | |
+| `merge_forward` | 可能有 | ✅（SDK 渲染） | 尽力下载，失败回执（§5） | 失败时 | |
 | `interactive` | — | — | — | ✅ | 「卡片消息暂不支持」 |
 | `folder` / `share_chat` / `share_user` / `location` / `vote` / `todo` / `video_chat` / `calendar` / `hongbao` / `system` | — | — | — | ✅ | 统一"暂不支持 X" |
 | 未知类型 | 视情况 | — | ✅（有资源就下） | warn + 提示 | **default-deny 而非 default-text** |
@@ -294,18 +284,14 @@ InboundTurnAssembler               ← 新增层（§7）
 4. 矩阵集成：22 类消息逐个走一遍 assembler，断言 `texts/attachments/rejected` 结构（表驱动，防回归）。
 5. `bun run typecheck` + `bun run test` 全量门禁；新测试文件必须登记进 `test-classification.json`。
 
-## 9. 分批实施建议
+## 9. 落地位置
 
-| 批次 | 内容 | 依赖 | 风险 |
-|---|---|---|---|
-| **B1（P0 安全）** | 命令识别加前置条件 + 占位符剥离 | 无 | 低；可独立发布，先止血 |
-| **B2（P0 资源）** | 判据改 `resources`；video/audio/post 落盘；路径注入 prompt（**暂不做窗口**） | 无 | 中；prompt 格式变化需回归 |
-| **B3（P1 时序）** | 引入 assembler 静默期窗口 | B2 | 中；延迟可感知，需拍板窗口值 |
-| **B4（P1 反馈）** | rejected 回执、无文本场景回执文案 | B3 | 低 |
-| **B5（P2）** | merge_forward 附件（自建遍历，先做真机验证） | 矩阵 §5 验证 | 中；受飞书接口限制 |
-| **B6（P2）** | sticker `type=image` 实测后决定 | 真机验证 | 低 |
+装配链路在 `src/inbound/`（`event` / `placeholder` / `prompt` / `receipt` / `turn` /
+`turn-assembler`）；类型行为的表驱动测试见 `src/inbound/matrix.test.ts`，命令守卫见
+`src/router/command-guard.test.ts`。各 `msg_type` 的实测渲染与归类口径见
+`inbound-message-matrix.md`。
 
-## 10. 决策记录（2026-09-15 已拍板）
+## 10. 决策要点
 
 | # | 决策项 | 结论 |
 |---|---|---|
@@ -313,12 +299,9 @@ InboundTurnAssembler               ← 新增层（§7）
 | 2 | 纯附件无文字 | **只回执**，不自动起 turn |
 | 3 | prompt 附件块格式 | **结构化标签**（`<attachments><file path kind/></attachments>`，见 §5.4） |
 | 4 | 语音转写 | **不做**，只落盘交给 agent |
-| 5 | 实施方式 | 按批次推进：B1 命令守卫 → B2 分派判据 → B3 装配器 → B4 回执 |
-
-**实施位置**：装配链路在 `src/inbound/`（event / placeholder / prompt / receipt / turn-assembler），
-行为矩阵测试见 `src/inbound/matrix.test.ts` 与 `src/router/command-guard.test.ts`。
+| 5 | 不支持类型 | 回明确提示，不把占位符塞进 agent prompt |
 
 ---
 
-_生成于 2026-09-15。现场证据来自维护者本地实例日志；类型行为来自 `@larksuite/channel@0.3.0` 实测，
-接口限制与同类项目做法见 `inbound-message-matrix.md` §4/§5/§6。_
+_类型行为来自 `@larksuite/channel` 实测；接口限制与同类项目做法见
+`inbound-message-matrix.md` §4/§5/§6。_
