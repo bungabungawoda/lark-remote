@@ -106,4 +106,38 @@ describe('resume card rendering with the new window', () => {
     expect(serialized).toContain('上一轮的最终答复');
     expect(serialized).toContain('还有 3 个更早的事件未显示');
   });
+
+  /**
+   * 验证什么：会话仍有在途 turn 时，恢复卡必须显式说明"这是快照"。
+   * 缺失后果：2026-10-19 用户把一张落后于实时进度的快照读成"会话卡住了"，
+   * 因为没有调 turn 而点了"新会话"，把上下文清零。
+   */
+  it('warns that a still-running session only shows a snapshot', () => {
+    const card = buildSessionHistoryCard(
+      { sessionId: 'session-y', cwd: '/tmp/project', events: toolHeavyTail().slice(-2) },
+      {
+        agentKind: 'dsh',
+        headerText: '📂 `/tmp/project`\n已恢复最近会话: **session-y**',
+        title: '🔁 自动恢复会话 · DSH',
+        stillRunning: true,
+      },
+    );
+    const serialized = JSON.stringify(card);
+
+    expect(serialized).toContain('仍有一个 turn 在运行');
+    expect(serialized).toContain('历史快照');
+  });
+
+  it('stays quiet when the session is idle', () => {
+    const card = buildSessionHistoryCard(
+      { sessionId: 'session-z', cwd: '/tmp/project', events: toolHeavyTail().slice(-2) },
+      {
+        agentKind: 'dsh',
+        headerText: '📂 `/tmp/project`\n已恢复最近会话: **session-z**',
+        title: '🔁 自动恢复会话 · DSH',
+      },
+    );
+
+    expect(JSON.stringify(card)).not.toContain('仍有一个 turn 在运行');
+  });
 });

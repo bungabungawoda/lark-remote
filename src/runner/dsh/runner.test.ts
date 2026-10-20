@@ -737,6 +737,54 @@ describe('DshClient / DshRunner integration', () => {
     expect((promptPayload as { requestId?: string }).requestId).toMatch(/^lark-remote-/);
   });
 
+  /**
+   * 验证什么：桥接进程退出时，dsh 的在途 turn 必须被 `session/cancel` 掉。
+   * turn 跑在常驻共享 host 里，退出清理如果只杀本地子进程，turn 会继续无人
+   * 接收地跑（2026-10-19：一个孤儿 turn 在桥接死后又跑了 2h21m / 345 个 step）。
+   * 缺失后果：token 继续烧、工作区被静默改写、恢复卡永远落后。
+   */
+  it('cancels the in-flight turn on process exit so no orphan turn is left', async () => {
+    server = new FakeDshServer();
+    server.register('session/prompt', () => ({ ok: true, value: { accepted: true } }));
+    // 不给 turn/end：run 会一直挂在 follow 上，正好模拟"退出时 turn 还没结束"。
+    server.setMuxFrames([]);
+    await server.start();
+
+    const cancels: Array<{ baseUrl: string; sessionId: string }> = [];
+    const runner = new DshRunner({
+      kind: 'dsh',
+      sessionReader: stubReader,
+      host: server.baseUrl,
+      cancelOnExit: (info) => cancels.push(info),
+    });
+
+    const gen = runner.run('hold the turn open', { cwd: CWD, sessionId: SID });
+    const first = await gen.next();
+    expect(first.done).toBe(false);
+    expect(cancels).toEqual([]);
+
+    runner.cleanupOnExit();
+
+    expect(cancels).toEqual([{ baseUrl: server.baseUrl, sessionId: SID }]);
+    await runner.stop();
+  });
+
+  /** 未在跑时退出不得误发 cancel。 */
+  it('does not cancel anything on exit when no run is active', async () => {
+    const cancels: Array<{ baseUrl: string; sessionId: string }> = [];
+    const runner = new DshRunner({
+      kind: 'dsh',
+      sessionReader: stubReader,
+      host: 'http://127.0.0.1:1',
+      cancelOnExit: (info) => cancels.push(info),
+      fetchImpl: (() => Promise.reject(new Error('unused'))) as unknown as typeof fetch,
+    });
+
+    runner.cleanupOnExit();
+
+    expect(cancels).toEqual([]);
+  });
+
   it('creates a session when no sessionId is provided', async () => {
     server = new FakeDshServer();
     let created = false;

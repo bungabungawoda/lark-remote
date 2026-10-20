@@ -101,6 +101,7 @@ async function sendAutoResumeCard(
   session: { sessionId: string; summary: string },
   state: SessionDisplayState,
   compactSupported = false,
+  stillRunning = false,
 ): Promise<void> {
   if (!contact.userId) return;
 
@@ -137,6 +138,7 @@ async function sendAutoResumeCard(
       headerText: `📂 \`${cwd}\`\n已恢复最近会话: **${session.sessionId}**`,
       title: `🔁 自动恢复会话 · ${agentDisplayName(agentKind)}`,
       hiddenCount,
+      stillRunning,
       actions: actionButtons,
     },
   );
@@ -1038,6 +1040,21 @@ async function main() {
           restoredCwd,
         );
         const content = startupReader.readSessionContent(sessionIdToResume, restoredCwd);
+        // 该会话可能仍有在途 turn（上一个实例退出/崩溃后留在常驻 host 里）。
+        // 不取消、不接管，但必须在卡上说明，否则用户会把它当"卡住了"。
+        const stillRunning = (() => {
+          try {
+            return startupReader.isSessionActive(sessionIdToResume, restoredCwd);
+          } catch (err) {
+            getLogger().warn(`[startup] isSessionActive failed: ${(err as Error).message}`);
+            return false;
+          }
+        })();
+        if (stillRunning) {
+          getLogger().warn(
+            `[startup] session ${sessionIdToResume} still has a running turn; auto-resume card is a snapshot`,
+          );
+        }
         // 完整透传 usage（含 inputTokens/outputTokens/totalTokens），
         // 让 formatUsageStats 走真实值路径，与终态卡片//resume 卡片口径一致。
         const usage = content.usage;
@@ -1061,6 +1078,7 @@ async function main() {
             },
             // Compact 能力探测与 bridge 侧一致（runner 有 runCompact 才渲染）。
             bridge.hasRunCompact(restoredCwd, config.defaultAgent),
+            stillRunning,
           );
         } catch (err) {
           getLogger().warn('[startup] sendAutoResumeCard failed:', err);
