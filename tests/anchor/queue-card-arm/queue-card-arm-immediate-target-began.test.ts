@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { Bridge } from '../../../src/bridge/index.js';
+import type { InterruptOutcome } from '../../../src/bridge/index.js';
 import { SessionStore } from '../../../src/session/index.js';
 import { CommandRouter } from '../../../src/router/index.js';
 import { AppConfigSchema } from '../../../src/config/index.js';
@@ -158,11 +159,11 @@ describe('queue.immediate must not remove tasks queued BEHIND the target when th
 
     // --- 步骤 3：挂起 interruptCurrentRun（模拟 runner.stop / 卡片 finish 在途，
     // 即同类生产竞态：外部停止操作尚未返回，队列链已可前进）---
-    let resolveStop: (v: boolean) => void = () => {};
-    const stopInFlight = new Promise<boolean>((resolve) => {
+    let resolveStop: (v: InterruptOutcome) => void = () => {};
+    const stopInFlight = new Promise<InterruptOutcome>((resolve) => {
       resolveStop = resolve;
     });
-    const stopSpy = vi.spyOn(bridge, 'interruptCurrentRun').mockReturnValue(stopInFlight);
+    const stopSpy = vi.spyOn(bridge, 'interruptCurrentRunDetailed').mockReturnValue(stopInFlight);
 
     // --- 步骤 4：触发「立即执行」（不 await，让它停在 interrupt 挂起点）---
     const immediateDone = router.handleCardAction(
@@ -178,7 +179,7 @@ describe('queue.immediate must not remove tasks queued BEHIND the target when th
     expect(bridge.getQueuedTask(tmpDir, 'msg-3')).toBeDefined(); // T3 仍在排队（T2 之后）
 
     // --- 步骤 6：stop 此刻完成，handler 恢复并执行步骤 3 的清除循环 ---
-    resolveStop(true);
+    resolveStop({ stopped: true });
     await immediateDone;
 
     // 修复前：快照 [msg-3] 中没有 msg-2 可 break → T3 被 removeFromQueue 误删。

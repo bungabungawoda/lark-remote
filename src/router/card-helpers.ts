@@ -393,8 +393,8 @@ export function buildSessionHistoryCard(
     /** Hidden earlier-events count (auto-restore only). */
     hiddenCount?: number;
     /**
-     * 该会话此刻仍有在途 turn（`isSessionActive`）。为 true 时卡上显式提示
-     * "这是历史快照、实时输出不会落在这张卡上"。
+     * 该会话此刻仍有在途 turn（仅 DSH 的 `isSessionActive` 是服务端 running
+     * 事实）。为 true 时卡上显式提示"这是历史快照、实时输出不会落在这张卡上"。
      */
     stillRunning?: boolean;
     /** Action buttons to render (already built, protocol-specific). */

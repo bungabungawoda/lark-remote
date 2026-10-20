@@ -845,20 +845,15 @@ export class Bridge {
     return result;
   }
 
-  async interruptCurrentRun(
-    input: {
-      userId: string;
-      chatId: string;
-      runId?: string;
-      /** Restrict the match to a single cwd (queue.immediate). When
-       * omitted, all workspaces are candidates (used by /stop, /t, and card stop button which don't know which cwd to target). */
-      cwd?: string;
-    },
-    opts?: { onOutcome?: (outcome: InterruptOutcome) => void },
-  ): Promise<boolean> {
-    const result = await this.interruptCurrentRunDetailed(input);
-    opts?.onOutcome?.(result);
-    return result.stopped;
+  async interruptCurrentRun(input: {
+    userId: string;
+    chatId: string;
+    runId?: string;
+    /** Restrict the match to a single cwd (queue.immediate). When
+     * omitted, all workspaces are candidates (used by /stop, /t, and card stop button which don't know which cwd to target). */
+    cwd?: string;
+  }): Promise<boolean> {
+    return (await this.interruptCurrentRunDetailed(input)).stopped;
   }
 
   /**
