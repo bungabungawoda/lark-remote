@@ -1283,8 +1283,9 @@ export class DshRunner implements AgentRunner {
    *    `session/cancel`. Since that request is session-scoped and only an
    *    acknowledgement, verify the session went idle before reporting success.
    *
-   * The gate is released as soon as the withdraw/cancel has been applied: the
-   * next run may start right after, but never before this stop reached the host.
+   * The gate is held until the host-side action has landed. For a cancel that
+   * includes the verification (and possible retry), because a retry cancel is
+   * session-scoped and would otherwise hit the successor's new turn.
    */
   async stop(_opts?: { immediate?: boolean }): Promise<StopOutcome> {
     const sessionId = this.activeSessionId;
@@ -1363,22 +1364,26 @@ export class DshRunner implements AgentRunner {
         getLogger().warn(`[dsh] stop unconfirmed session=${sessionId}: cancel not accepted`);
         return { status: 'unconfirmed', sessionId, detail: 'session/cancel was not accepted' };
       }
-      releaseGate();
 
       const state = await this.waitForClosed(sessionId, deadline);
       if (state === 'closed') {
+        releaseGate();
         if (promptRequestId) this.inflight?.clear(sessionId, promptRequestId);
         getLogger().info(`[dsh] cancelled session ${sessionId}`);
         return { status: 'cancelled', sessionId };
       }
       if (state === 'unknown') {
+        releaseGate();
         return { status: 'unconfirmed', sessionId, detail: 'turn state unavailable after cancel' };
       }
 
       // The host still reports an open turn (slow unwind or lost cancel): one
       // more attempt, then report honestly instead of pretending it stopped.
+      // Keep the gate closed through the retry: it is session-scoped, so the
+      // successor must not submit its prompt until this attempt has landed.
       await this.cancelWithRetry(sessionId, deadline);
       const retryState = await this.waitForClosed(sessionId, deadline);
+      releaseGate();
       if (retryState === 'closed') {
         if (promptRequestId) this.inflight?.clear(sessionId, promptRequestId);
         return { status: 'cancelled', sessionId };

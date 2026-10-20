@@ -84,6 +84,7 @@ export const OUR_TEMP_PREFIXES = [
   'lark-pi-rpc-test-',
   'lark-bash-test-',
   'lark-cm-',
+  'lark-remote-dsh-inflight-',
   // update 版本检查用例：cache 文件不再落到共享固定路径（win32 会解析成
   // 仓库外的 D:\tmp\，且兜底扫不到），改为 makeTempDir 独占目录
   'lark-remote-update-cache-',

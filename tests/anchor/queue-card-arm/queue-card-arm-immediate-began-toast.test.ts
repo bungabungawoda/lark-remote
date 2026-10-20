@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { Bridge } from '../../../src/bridge/index.js';
+import type { InterruptOutcome } from '../../../src/bridge/index.js';
 import { SessionStore } from '../../../src/session/index.js';
 import { CommandRouter } from '../../../src/router/index.js';
 import { AppConfigSchema } from '../../../src/config/index.js';
@@ -145,11 +146,11 @@ describe('queue.immediate final feedback must say the target STARTED when it beg
 
     // --- 步骤 3：挂起 interruptCurrentRun（同款：模拟 stop 在途，队列链
     // 可在这期间推进到目标任务的 begin）---
-    let resolveStop: (v: boolean) => void = () => {};
-    const stopInFlight = new Promise<boolean>((resolve) => {
+    let resolveStop: (v: InterruptOutcome) => void = () => {};
+    const stopInFlight = new Promise<InterruptOutcome>((resolve) => {
       resolveStop = resolve;
     });
-    const stopSpy = vi.spyOn(bridge, 'interruptCurrentRun').mockReturnValue(stopInFlight);
+    const stopSpy = vi.spyOn(bridge, 'interruptCurrentRunDetailed').mockReturnValue(stopInFlight);
 
     // --- 步骤 4：触发「立即执行」（不 await，停在 interrupt 挂起点）---
     const immediateDone = router.handleCardAction(
@@ -164,7 +165,7 @@ describe('queue.immediate final feedback must say the target STARTED when it beg
     expect(bridge.getQueuedTask(tmpDir, 'msg-2')).toBeUndefined(); // T2 已开始执行
 
     // --- 步骤 6：stop 此刻完成，handler 恢复并执行步骤 3/4.5/6 ---
-    resolveStop(true);
+    resolveStop({ stopped: true });
     await immediateDone;
     await sleep(20);
 

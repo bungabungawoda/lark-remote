@@ -14,6 +14,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import YAML from 'yaml';
+import { isWin32 } from '../../platform/select.js';
 
 /** Credential record that owns the browser-cookie signing secret. */
 export const DSH_BROWSER_CREDENTIAL_KEY = 'client-connection/browser-session';
@@ -54,7 +55,7 @@ function assertOwnerOnly(file: string, stats: fs.Stats): void {
     throw new Error(`DSH credentials file ${file} is not a regular file`);
   }
   // Windows has no POSIX mode bits; DSH itself skips the same check there.
-  if (process.platform === 'win32') return;
+  if (isWin32()) return;
   if ((stats.mode & 0o077) !== 0) {
     throw new Error(
       `DSH credentials file ${file} is readable beyond its owner ` +

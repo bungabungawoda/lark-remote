@@ -14,6 +14,7 @@
  */
 
 import { getLogger } from '../../logger/index.js';
+import { isWin32 } from '../../platform/select.js';
 import { spawnProcessSync } from '../../platform/spawn.js';
 import {
   DSH_COOKIE_LIFETIME_MS,
@@ -73,7 +74,7 @@ export function cancelSessionSync(opts: SyncCancelOptions): boolean {
     [
       '-s',
       '-o',
-      process.platform === 'win32' ? 'NUL' : '/dev/null',
+      isWin32() ? 'NUL' : '/dev/null',
       '-w',
       '%{http_code}',
       '-X',
