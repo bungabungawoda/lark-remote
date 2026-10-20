@@ -475,6 +475,21 @@ function emptyUsageTotals(): UsageTotals {
   return { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
 }
 
+/**
+ * `user/message.source.kind` 里属于**纯上下文注入**的种类：没有回顾价值，且
+ * 会挤掉真正的对话（5 条事件的窗口里被它们占满就什么都看不到了）。
+ */
+const CONTEXT_INJECTION_KINDS = new Set([
+  'time-context',
+  'agent-instructions',
+  'runtime-context',
+  'skill-catalog',
+  'compact-checkpoint',
+]);
+
+/** 系统通知（后台任务完成、目标变更）在回顾卡里的正文上限。 */
+const NOTICE_MAX_BYTES = 400;
+
 /** 单条思考在 resume 卡里的上限：过程信息，留头几百字即可。 */
 const REASONING_MAX_BYTES = 800;
 /** 单条 assistant 正文上限（最终答复通常最重要，给足空间）。 */
@@ -492,7 +507,21 @@ function mapEvent(ev: DshSessionEvent): MappedEvent {
         .filter((c) => c.type === 'text')
         .map((c) => c.text ?? '')
         .join('');
-      out.events.push({ type: 'user', content: text, timestamp: new Date(ev.time).toISOString() });
+      if (!text.trim()) break;
+      // DSH 把上下文注入也写成 user/message，靠 `source.kind` 区分。真实会话里
+      // 30 条 user/message 中只有 8 条是用户本人说的（其余是 time-context /
+      // agent-instructions / skill-catalog / goal / tool-jobs…）——照单全收会让
+      // 回顾卡里塞满"Time sampled while preparing turn…"，还把系统提示标成 👤 你。
+      const source = ev.data.source as { kind?: string } | undefined;
+      const kind = typeof source?.kind === 'string' ? source.kind : undefined;
+      if (kind && CONTEXT_INJECTION_KINDS.has(kind)) break;
+      const isNotice = kind !== undefined && kind !== 'user';
+      out.events.push({
+        type: isNotice ? 'notice' : 'user',
+        ...(isNotice ? { title: '🔔 通知' } : {}),
+        content: isNotice ? truncateUtf8(text.trim(), NOTICE_MAX_BYTES) : text,
+        timestamp: new Date(ev.time).toISOString(),
+      });
       break;
     }
     case 'assistant/message': {

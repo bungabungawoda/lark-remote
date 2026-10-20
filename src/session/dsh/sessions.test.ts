@@ -725,3 +725,59 @@ describe('DshSessionReader tool call/result pairing', () => {
     expect(events[0].title).toBe('🔧 bash — sleep 100');
   });
 });
+
+/**
+ * `user/message` 里的上下文注入必须过滤（2026-10-19 手机端回顾卡实测）。
+ *
+ * 真实会话 30 条 user/message 中只有 8 条是用户本人说的，其余是 time-context
+ * （"Time sampled while preparing…"）、agent-instructions、skill-catalog、
+ * runtime-context、compact-checkpoint。照单全收会把回顾卡灌满系统提示，还把
+ * 它们标成「👤 你」。
+ */
+describe('DshSessionReader user/message sources', () => {
+  function userMsgWithSource(kind: string | undefined, text: string): DshSessionEvent {
+    return {
+      type: 'user/message',
+      seq: 1,
+      time: 1_760_000_000_000,
+      data: {
+        content: [{ type: 'text', text }],
+        ...(kind === undefined ? {} : { source: { kind } }),
+      },
+    };
+  }
+
+  function readOne(ev: DshSessionEvent) {
+    const server = new FakeDshServer();
+    registerSession(server);
+    server.register('session/page', () => ({
+      ok: true,
+      value: { hasMore: false, records: [{ type: 'event', event: ev }] },
+    }));
+    return makeReader(server).readSessionContent(SID_A, CWD, { maxEvents: 10 }).events;
+  }
+
+  it('drops pure context injections (time-context / instructions / catalogs)', () => {
+    for (const kind of [
+      'time-context',
+      'agent-instructions',
+      'runtime-context',
+      'skill-catalog',
+      'compact-checkpoint',
+    ]) {
+      expect(readOne(userMsgWithSource(kind, 'Time sampled while preparing turn 20'))).toEqual([]);
+    }
+  });
+
+  it('keeps the real user message as 👤 你', () => {
+    const [ev] = readOne(userMsgWithSource('user', '帮我看下这个 bug'));
+    expect(ev).toMatchObject({ type: 'user', content: '帮我看下这个 bug' });
+    expect(ev.title).toBeUndefined();
+  });
+
+  it('renders tool-jobs / goal notices as 🔔 通知 instead of user text', () => {
+    const [job] = readOne(userMsgWithSource('tool-jobs', 'background job bash-1 finished'));
+    expect(job).toMatchObject({ type: 'notice', title: '🔔 通知' });
+    expect(job.content).toContain('finished');
+  });
+});
