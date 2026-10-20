@@ -473,6 +473,31 @@ export interface SpawnOptions {
 }
 
 /**
+ * What a stop request actually achieved.
+ *
+ * Local-process runners (`claude`/`codex`/…) can answer this from the kill
+ * itself and keep returning `void`. DSH turns live in the shared Web Host, so
+ * its stop is a session-scoped request: the outcome is the only way callers can
+ * tell "the turn is gone" apart from "we asked, but it is still running".
+ *
+ * - `withdrawn`   — the prompt had not started yet and was removed from the
+ *                   host's inbox; no turn was cancelled.
+ * - `cancelled`   — the active turn (or maintenance job) was cancelled and the
+ *                   host reported the session idle.
+ * - `unconfirmed` — the cancel was rejected/lost, or the session still reports
+ *                   an open turn afterwards. A turn may still be running.
+ * - `noop`        — there was no session to stop (e.g. stop during setup).
+ */
+export type StopStatus = 'withdrawn' | 'cancelled' | 'unconfirmed' | 'noop';
+
+export interface StopOutcome {
+  status: StopStatus;
+  sessionId?: string;
+  /** Human-readable reason for `unconfirmed` (logged, not shown verbatim). */
+  detail?: string;
+}
+
+/**
  * Seam (§3): the contract any agent runner (claude/codex/opencode/pi/kimi/dsh)
  * must satisfy for the router/bridge.
  * Declared here so callers depend on the interface, not the concrete
@@ -487,8 +512,12 @@ export interface Runner {
    * Stop the running process. SIGTERM → grace → SIGKILL on the per-workspace
    * proc. `immediate: true` skips the grace period and SIGKILLs directly
    * (used by user-initiated `/stop`).
+   *
+   * Runners whose work is remote (DSH) return a {@link StopOutcome} instead of
+   * `void` so callers can tell a confirmed stop from a best-effort request;
+   * process runners keep returning `void`.
    */
-  stop(opts?: { immediate?: boolean }): Promise<void>;
+  stop(opts?: { immediate?: boolean }): Promise<void | StopOutcome>;
   killOrphan(): void;
   registerExitHandlers(): void;
   /**
