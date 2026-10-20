@@ -330,7 +330,7 @@ $h /tmp/a.txt                 → 展开为 "请读取文件并分析 /tmp/a.txt
 - 展开结果以 `/` 开头会走命令路径（可触发 `/cd` 等）；别名展开成 `!` 命令是
   用户自定义行为，注意安全；
 - 别名随指令持久化在 `<configDir>/orders.json`，删除指令时别名一并删除；
-- 名称不能是保留子命令（`remove`、`save`、`list`、`alias` 等），不能数字开头。
+- 名称不超过 20 个字符（`MAX_ALIAS_NAME_LENGTH`），不能与已有别名重名。
 
 #### 编辑指令文本
 
@@ -362,8 +362,10 @@ Claude: [运行 npm test → 返回结果]
 ### 场景 2：多项目切换
 
 ```text
-你: /ws save backend ~/projects/api
-你: /ws save frontend ~/projects/web
+你: /cd ~/projects/api
+你: /ws save backend
+你: /cd ~/projects/web
+你: /ws save frontend
 你: /ws use backend
 你: 重启服务
 Claude: ...
@@ -395,7 +397,7 @@ tool_use / tool_result 恒常展示（不做配置开关）：
 - **tool_use / tool_result**：始终展示，旧工具自动折叠，工具标题显示本地时间戳
 - **运行状态**：正在思考、调用工具或输出
 - **终态**：完成、出错、中断、空闲超时；终态会移除停止按钮
-- **表情回应**：你的原消息上，处理中先打 `Typing`；结束时按终态补打 `Done`（完成）/ `ERROR`（出错）/ `Alarm`（空闲超时）/ `SHHH`（用户 `/stop`）。bash（`!`）命令始终打 `Done`。key 来自飞书官方表情清单，新增终态映射需同步 anchor 测试。
+- **表情回应**：你的原消息上，处理中先打 `Typing`；结束时按终态补打 `Done`（完成）/ `ERROR`（出错）/ `Alarm`（空闲超时）/ `SHHH`（用户 `/stop`）。bash（`!`）命令始终打 `Done`。key 来自飞书官方表情清单，新增终态映射要和上面的终态清单一并更新。
 
 卡片有严格 UTF-8 字节预算，是有损进度摘要，不是完整 transcript。
 

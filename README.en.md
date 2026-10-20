@@ -137,8 +137,8 @@ bun run lint          # eslint
 
 # Live Feishu API integration tests (skipped by default; need valid
 # credentials under ~/.lark-remote-test)
-FEISHU_LIVE_TEST=1 bun run test tests/feishu-card-form-error.test.ts
-FEISHU_LIVE_TEST=1 bun run test tests/feishu-reaction-emoji-live.test.ts
+FEISHU_LIVE_TEST=1 bun run test tests/feishu-live/feishu-card-form-error.test.ts
+FEISHU_LIVE_TEST=1 bun run test tests/feishu-live/feishu-reaction-emoji-live.test.ts
 ```
 
 ## Documentation

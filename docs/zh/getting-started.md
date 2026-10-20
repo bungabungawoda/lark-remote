@@ -195,7 +195,7 @@ lark-remote 启动后不在终端输出，日志写在文件里：
 
 ```bash
 bun run typecheck   # 检查类型错误，必须 0 error
-bun test            # 跑全部测试，必须全绿
+bun run test        # 跑全部测试，必须全绿
 ```
 
 两个都过了才算改完。有一个红了就先修，再改下一步。

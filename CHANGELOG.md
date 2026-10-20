@@ -68,7 +68,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### 变更
 
-- **注释里的运维数据与仓库外引用改为占位描述**：无行为变化
+- **注释里的运维数据与仓库外引用改为占位描述**。无行为变化
 
 ## [0.5.2] - 2026-10-11
 
