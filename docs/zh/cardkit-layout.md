@@ -40,6 +40,39 @@
 - **折叠是视觉隐藏，JSON payload 仍含全部内容**，28KB 卡片预算仍需遵守
 - 不要以为折叠后就可以塞更多内容
 
+## 窄屏优先（手机）与桌面双端
+
+卡片的实际渲染宽度由对端决定，服务端**拿不到**宽度，所以布局必须按最窄的形态
+设计：手机内容区约 320–360px（iPhone SE 更窄），同一张卡还要在桌面宽屏上不难看。
+
+硬规则：
+
+- **不要用 `column_set` 的 `auto` + `grow` 并排放"短标签 + 长文本"**。`auto` 列会
+  被长文本挤到只剩一两个字宽，CJK 会竖排：2026-10-19 手机反馈的
+  「运行
+中」就是这么来的。
+- **状态行/元信息 = 单个 `div` + ` · ` 分隔**。换行只会发生在分隔符处，可预期。
+- **每个分段要短到自身不会折行**（≈8 个显示宽度以内），例如 `📊 ~36%`、
+  `🧰 532 步`、`⏱ 2m13s`，不要写 `📊 上下文使用率 ~36%`。
+- **交互控件放行尾**（按钮列 `width:auto` 在右侧），正文列用 `grow`——这一形状
+  （文字 + 按钮）本身是安全的：按钮宽度固定，文字换行可接受。
+- 修改卡片后按手机宽度复核；状态行的回归守卫在
+  `src/card/run-renderer.test.ts` 的 `status row narrow-screen layout` 一节
+  （断言单 `div`、每个分段 ≤ 8 显示宽度、整行 ≤ 26）。
+
+反例 / 正例（run 卡状态行）：
+
+```jsonc
+// ❌ 手机上 "运行中" 竖排：auto 列被 grow 列挤压
+{ "tag": "column_set", "columns": [
+  { "tag": "column", "width": "auto", "elements": [{ "tag": "div", "text": { "content": "运行中" } }] },
+  { "tag": "column", "width": "grow", "elements": [{ "tag": "div", "text": { "content": "🧰 工具调用中 · 📊 上下文 ~36%" } }] }
+]}
+
+// ✅ 单行单 div，窄屏只在 " · " 处换行
+{ "tag": "div", "text": { "tag": "lark_md", "content": "⏱ 12s · 🧰 532 步 · 📊 ~36%", "text_size": "notation" } }
+```
+
 ## 常用布局模板
 
 ### 文字 + 按钮（行内）
@@ -84,5 +117,30 @@
 ## 调试技巧
 
 - 使用 `JSON.stringify(card)` 检查结构
-- 发送前用 `enforceCardBudget()` 检查是否超 28KB
-- 飞书 API 错误码：200621（标签/结构错误）、230025（elements 过多）、300123（form 缺少 submit）
+- 发送前用 `enforceCardBudget()` 检查是否超 28KB 与元素总数（`countCardNodes`）
+- 飞书 API 错误码：200621（标签/结构错误）、300123（form 缺少 submit）、
+  230099/11310（**元素总数或 markdown table 超限**——同一码两个成因，见下）
+
+### 卡片元素总数上限（2026-10-19 真实 API 实测）
+
+`tests/feishu-live/feishu-card-element-total-limit.test.ts` 在测试会话实测：
+
+| 形状 | 通过 | 失败 |
+| --- | --- | --- |
+| 顶层平铺 div | 99 个 | 100 个 |
+| 单列 column_set 内嵌 div | 98 个（+1 个 column_set = 99） | 99 个（= 100） |
+| 单 column_set 的列数 | 66 列 | 67 列 |
+
+判据是**递归统计 `elements` 数组成员（不含 `columns`）≤ 99**。整卡 JSON 对象数
+**不是**判据：`/ws` 分页卡有 227 个 JSON 对象仍能发出去，而平铺 100 个 div 只有
+205 个对象却失败。列数是另一个独立维度（66/67 的边界），本仓库的卡片列数都在 3
+以内，用不到。超限报 `230099`，内层 `ErrCode: 11310 element exceeds the limit`。
+
+**勘误**：仓库早期把 `230025` 记作「elements 过多」，本次探测中一次都没有出现，
+不要再用它做元素总数的判据。旧结论「`/ws` 61 个顶层元素就 11310」之所以成立，
+是因为 20 行 × (div + column_set + 2 button) 的元素计数到了 101。
+
+实现侧：`src/card/card-budget.ts` 的 `MAX_CARD_ELEMENTS = 90`（相对实测 99 留
+10% 余量）、`countCardElements()`，以及 `enforceCardBudget()` 的元素裁剪分支；
+run 卡片由 `run-renderer.ts` 的 `withinRunCardBudget()` 做双预算（28KB + 90 元素）
+检查，正常路径还会按元素预算从最新往回省略最旧的步骤（`selectVisibleGroups()`）。

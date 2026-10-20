@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { enforceCardBudget } from './card-budget.js';
+import { countCardElements, enforceCardBudget, MAX_CARD_ELEMENTS } from './card-budget.js';
 import { CARD_BUDGET_BYTES, FEISHU_MAX_TABLES } from './text-truncate.js';
 import { sessionEventPanel } from '../router/card-helpers.js';
 import { markdownDiv } from './collapsible.js';
@@ -701,5 +701,76 @@ describe('enforceCardBudget 边界值（恰好等于预算/上限）', () => {
     expect(result.reason).toBe('text_truncated');
     expect(result.bytesAfter).toBe(CARD_BUDGET_BYTES);
     expect(JSON.stringify(result.card)).toContain('恢复会话');
+  });
+});
+
+/**
+ * 元素总数预算（飞书 11310，实测元素计数 99 通过 / 100 失败）。
+ *
+ * 与字节预算是**正交**的两个维度：一张卡片可以远低于 28KB 却把元素总数撑爆
+ * （24 行工具 + 24 个展开正文 = 103 个元素，真机直接 11310）。这里锁三条：
+ * 1. 小卡片原样返回（不引入无谓裁剪）；
+ * 2. 面板过多时按节点数丢最旧的面板，直到落进预算；
+ * 3. 没有面板可丢时**不**降级成最小卡（宁可如实发出去，也不无谓丢内容）。
+ */
+describe('enforceCardBudget element-total budget', () => {
+  function panel(i: number): object {
+    return {
+      tag: 'collapsible_panel',
+      expanded: false,
+      header: { title: { tag: 'markdown', content: `💭 思考 ${i}` } },
+      border: { color: 'grey' },
+      elements: [{ tag: 'div', text: { tag: 'lark_md', content: `内容 ${i}` } }],
+    };
+  }
+
+  function card(elements: object[]): object {
+    return {
+      schema: '2.0',
+      config: { wide_screen_mode: true },
+      header: { title: { tag: 'plain_text', content: '节点预算' }, template: 'blue' },
+      body: { elements },
+    };
+  }
+
+  it('keeps a small card untouched', () => {
+    const input = card([{ tag: 'div', text: { tag: 'lark_md', content: 'hi' } }]);
+    const result = enforceCardBudget(input);
+    expect(result.wasTruncated).toBe(false);
+    expect(countCardElements(result.card)).toBeLessThanOrEqual(MAX_CARD_ELEMENTS);
+  });
+
+  it('drops the oldest panels until the element budget fits', () => {
+    // 80 个面板 × 2 元素 = 160：必须掉到预算内，且保留最新的那几个。
+    const panels = Array.from({ length: 80 }, (_, i) => panel(i));
+    const result = enforceCardBudget(card(panels));
+    expect(countCardElements(result.card)).toBeLessThanOrEqual(MAX_CARD_ELEMENTS);
+    expect(result.wasTruncated).toBe(true);
+    expect(result.reason).toContain('element_budget_panels_dropped');
+    const json = JSON.stringify(result.card);
+    expect(json).toContain('思考 79');
+    expect(json).not.toContain('思考 0');
+    // 字节预算没被触碰
+    expect(Buffer.byteLength(json, 'utf8')).toBeLessThanOrEqual(CARD_BUDGET_BYTES);
+  });
+
+  it('does not collapse a panel-free card into the minimal fallback', () => {
+    // 30 行 /active 风格的行（div+div+button+hr）：元素超预算但没有面板可丢，
+    // 此时必须原样返回，不能降级成一句话（这些行不受面板裁剪支配）。
+    const rows: object[] = [];
+    for (let i = 0; i < 30; i++) {
+      rows.push({ tag: 'div', text: { tag: 'lark_md', content: `行 ${i}` } });
+      rows.push({
+        tag: 'button',
+        text: { tag: 'plain_text', content: '停止' },
+        size: 'small',
+        behaviors: [{ type: 'callback', value: { cmd: 'stop', runId: `r-${i}` } }],
+      });
+    }
+    const input = card(rows);
+    const before = countCardElements(input);
+    const result = enforceCardBudget(input);
+    expect(countCardElements(result.card)).toBe(before);
+    expect(result.reason).toBeUndefined();
   });
 });

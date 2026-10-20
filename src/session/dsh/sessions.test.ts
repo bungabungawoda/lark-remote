@@ -139,15 +139,13 @@ describe('DshSessionReader', () => {
     const reader = makeReader(server);
     const content = reader.readSessionContent(SID_A, CWD, { maxEvents: 10 });
 
-    expect(content.events.map((e) => e.type)).toEqual([
-      'user',
-      'assistant',
-      'tool_use',
-      'tool_result',
-    ]);
+    // 工具调用与结果合成一个事件（resume 卡里一次交互=一个面板）：
+    // 标题是 `🔧 bash — …`，正文是结果输出。
+    expect(content.events.map((e) => e.type)).toEqual(['user', 'assistant', 'tool_use']);
     expect(content.events[0].content).toBe('hello dsh');
     expect(content.events[1].content).toBe('hi there');
-    expect(content.events[2].content).toContain('bash');
+    expect(content.events[2].title).toContain('bash');
+    expect(content.events[2].content).toBe('file list output');
     expect(content.usage).toMatchObject({
       inputTokens: 100,
       outputTokens: 30,
@@ -555,13 +553,18 @@ function toolCall(sessionId: string, name: string, args: string): DshSessionEven
   };
 }
 
-function toolResult(sessionId: string, output: string): DshSessionEvent {
+function toolResult(sessionId: string, output: string, isError = false): DshSessionEvent {
   void sessionId;
   return {
     type: 'tool/result',
     seq: 4,
     time: 1700000000000,
-    data: { turn: 0, step: 0, message: { role: 'tool', content: output }, callId: 'call-1' },
+    data: {
+      turn: 0,
+      step: 0,
+      message: { role: 'tool', content: output, isError },
+      callId: 'call-1',
+    },
   };
 }
 
@@ -577,3 +580,148 @@ function turnEnd(turn: number): DshSessionEvent {
     data: { turn, reason: { kind: 'completed' } },
   };
 }
+
+/**
+ * resume 卡的"思考 / 输出 / 工具"三件套（2026-10-19 反馈回归）。
+ *
+ * DSH 的 assistant 块类型是 `text` / `reasoning` / `tool-call`。旧映射只认
+ * `text`，而一个真实的 31-turn 会话里 reasoning 有 371 块、text 只有 12 块——
+ * resume 卡因此只剩 `🔧 工具调用` + `🟢 工具结果`，看着像"这轮什么都没想也没说"。
+ */
+describe('DshSessionReader resume transcript', () => {
+  it('maps reasoning blocks to thinking and text blocks to assistant output', () => {
+    const server = new FakeDshServer();
+    registerSession(server);
+    server.register('session/page', () => ({
+      ok: true,
+      value: {
+        hasMore: false,
+        records: [
+          {
+            type: 'event',
+            event: {
+              type: 'assistant/message',
+              seq: 1,
+              time: 1_760_000_000_000,
+              data: {
+                message: {
+                  role: 'assistant',
+                  content: [
+                    { type: 'reasoning', text: '先看代码结构' },
+                    { type: 'text', text: '结论：改渲染层' },
+                  ],
+                },
+              },
+            },
+          },
+        ],
+      },
+    }));
+
+    const content = makeReader(server).readSessionContent(SID_A, CWD, { maxEvents: 10 });
+    expect(content.events.map((e) => [e.type, e.title ?? ''])).toEqual([
+      ['thinking', ''],
+      ['assistant', ''],
+    ]);
+    expect(content.events[0].content).toBe('先看代码结构');
+    expect(content.events[1].content).toBe('结论：改渲染层');
+  });
+
+  it('puts a readable summary in the tool-call title and keeps raw args as body', () => {
+    const server = new FakeDshServer();
+    registerSession(server);
+    server.register('session/page', () => ({
+      ok: true,
+      value: {
+        hasMore: false,
+        records: [
+          {
+            type: 'event',
+            event: toolCall(
+              SID_A,
+              'bash',
+              JSON.stringify({ command: 'grep -n "play()" tests/e2e/site-e2e.mjs' }),
+            ),
+          },
+        ],
+      },
+    }));
+
+    const [event] = makeReader(server).readSessionContent(SID_A, CWD, { maxEvents: 10 }).events;
+    // 折叠态只看得到标题：必须是"哪个工具 + 跑了什么"，不是 `bash({"command":...})`。
+    expect(event.title).toBe('🔧 bash — grep -n "play()" tests/e2e/site-e2e.mjs');
+    expect(event.content).toBe('{"command":"grep -n \\"play()\\" tests/e2e/site-e2e.mjs"}');
+  });
+});
+
+describe('DshSessionReader tool call/result pairing', () => {
+  it('merges a call with its result into one panel and keeps the summary as title', () => {
+    const server = new FakeDshServer();
+    registerSession(server);
+    server.register('session/page', () => ({
+      ok: true,
+      value: {
+        hasMore: false,
+        records: [
+          {
+            type: 'event',
+            event: toolCall(SID_A, 'bash', JSON.stringify({ command: 'npm test' })),
+          },
+          { type: 'event', event: toolResult(SID_A, 'all green') },
+        ],
+      },
+    }));
+
+    const events = makeReader(server).readSessionContent(SID_A, CWD, { maxEvents: 10 }).events;
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({
+      type: 'tool_use',
+      title: '🔧 bash — npm test',
+      content: 'all green',
+    });
+  });
+
+  it('marks a failed call with ❌ instead of a separate result panel', () => {
+    const server = new FakeDshServer();
+    registerSession(server);
+    server.register('session/page', () => ({
+      ok: true,
+      value: {
+        hasMore: false,
+        records: [
+          {
+            type: 'event',
+            event: toolCall(SID_A, 'bash', JSON.stringify({ command: 'false' })),
+          },
+          { type: 'event', event: toolResult(SID_A, 'exit code 1', true) },
+        ],
+      },
+    }));
+
+    const events = makeReader(server).readSessionContent(SID_A, CWD, { maxEvents: 10 }).events;
+    expect(events).toHaveLength(1);
+    expect(events[0].title).toBe('❌ bash — false');
+    expect(events[0].content).toBe('exit code 1');
+  });
+
+  it('keeps an interrupted call (no result) as its own panel', () => {
+    const server = new FakeDshServer();
+    registerSession(server);
+    server.register('session/page', () => ({
+      ok: true,
+      value: {
+        hasMore: false,
+        records: [
+          {
+            type: 'event',
+            event: toolCall(SID_A, 'bash', JSON.stringify({ command: 'sleep 100' })),
+          },
+        ],
+      },
+    }));
+
+    const events = makeReader(server).readSessionContent(SID_A, CWD, { maxEvents: 10 }).events;
+    expect(events).toHaveLength(1);
+    expect(events[0].title).toBe('🔧 bash — sleep 100');
+  });
+});

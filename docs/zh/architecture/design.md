@@ -245,10 +245,10 @@ channel.on('cardAction', async (action) => {
 ### 6.4 `/ws` 卡片
 
 使用 CardKit 2.0，每个别名两个按钮；列表按 `WS_PAGE_SIZE`（15 条/页）分页，
-超过一页时底部显示分页栏（`ws.page` 原地刷新）。每行 3 个 body 元素
-（div + column_set + hr），15 行 + 头部 + 分页栏 = 48 个元素，低于飞书单卡
-`body.elements` 60 个上限（ErrCode 11310 "element exceeds the limit"）；
-删除按钮携带 `offset`，刷新后停留在原页。
+超过一页时底部显示分页栏（`ws.page` 原地刷新）。15 行 + 头部 + 分页栏的元素
+计数是 80，低于飞书实测上限 99（判据与实测数据见 `docs/zh/cardkit-layout.md`
+「卡片元素总数上限」；超限报 `230099/11310`）。删除按钮携带 `offset`，刷新后
+停留在原页。
 
 ```json
 { "cmd": "ws.use",    "name": "proj-a" }
@@ -260,7 +260,10 @@ channel.on('cardAction', async (action) => {
 
 每次 Claude run 正常路径只创建一张 CardKit 2.0 卡片。`channel.stream` 先发送 initial
 卡片，随后通过 `message_id` 全卡 patch。运行中显示 thinking、正文、工具摘要、状态行和
-停止按钮；终态切换 header，移除状态行和按钮。
+停止按钮；终态切换 header，移除状态行和按钮。状态行是**单行单 `div`**（`⏱ 12s ·
+🧰 532 步 · 📊 ~36%`，`notation` 字号）：手机窄屏下 `column_set` 的 auto 列会把
+"运行中" 挤成竖排（2026-10-19 反馈），列宽由对端决定、服务端控制不了，所以状态行
+不走列式布局；详见 `docs/zh/cardkit-layout.md` 的「窄屏优先」一节。
 
 停止按钮 payload 为 `{ "cmd": "stop", "runId": "<uuid>" }`。入口必须校验
 `runId + operator.openId + chatId`，并绕过普通 work queue，否则 stop 会排在当前 run
@@ -698,18 +701,30 @@ watchdog 覆盖**——watchdog 在 `for await (runner.run())` 循环里，要�
 | 内容                    | 折叠行为                                              | 理由                             |
 | ----------------------- | ----------------------------------------------------- | -------------------------------- |
 | Thinking                | 运行中 `expanded:true`，完成后 `expanded:false`       | 运行时关注进度，完成后是次要信息 |
-| 运行中工具              | `expanded:true`，border 跟随状态（grey→red if error） | 用户需要看到实时执行             |
-| 已完成工具（<3个）      | `expanded:false`                                      | 默认折叠，点击展开查看           |
-| 连续工具组（≥3个）      | 单个 collapsed panel，body 只含 header 列表           | 参考 `collapsedToolSummary`      |
+| 工具（任意状态）        | **原生折叠面板**（与 thinking 同款，点标题展开）；正文按工具数量截断 | 与既有交互一致，零往返；体积靠截断而不是"不发送" |
+| 运行中 / 失败的工具     | 默认展开                                              | 用户在等结果；错误必须立刻可见   |
 | 正文 text block         | 不折叠，直接 markdown                                 | Claude 的回复是主要信息          |
 | 终态 footer / Stop 按钮 | 不折叠                                                | 状态摘要必须可见                 |
+
+**工具 = 原生折叠面板**（2026-10-19 定型，中间试过一版"一行 + 服务端详情按钮"）：
+点标题展开，零往返、无按钮。中间那版之所以被否掉：折叠不省字节（见上文），所以
+正文只能"不发送"，展开就得回服务端重出卡；手机上多一次点击，按钮还挤掉标题宽度
+（长 URL 被压成两行，用户截图反馈）。现在正文**始终随卡下发**，体积由
+`toolOutputBudget()` 按工具数量缩放截断（合计约 8KB，单个 160–1200 字符），
+`MAX_BLOCKS=24` 下 24 个工具 + 12 个思考面板实测 54 个元素 / 21.7KB，双预算内。
+折叠/展开的客户端状态会随下一次 patch 复位（`expanded` 是发送时的默认值），
+工具面板与 thinking 面板同此限制。
 
 **工具渲染改进**（`src/card/tool-render.ts`）：折叠后的 header 显示智能摘要
 （`✅ **Bash** — pwd`、`✅ **Read** — /repo/a.ts`），并附加本地时间戳；而非无意义的 `Tool0`。
 `toolHeaderText` 按工具类型提取关键字段；`toolBodyMd` 按类型结构化渲染
-（Bash→command/output 代码块、Read→file_path、Grep→pattern/path）。
-截断常量：`HEADER_SUMMARY_MAX=80`、`BODY_FIELD_MAX=600`、`OUTPUT_MAX=1200`、
-`BODY_TOTAL_MAX=2500`。
+（Bash→command/output 代码块、Read→file_path、Grep→pattern/path）。除
+Claude/Codex 的工具名外，也认 DSH 的 snake_case 名字与参数（`glob`→pattern、
+`web_search`→queries[]、`read_image`/`write`/`edit`→file_path、`todo_write`→
+完成进度、`subagent`/`job_*`/`present`/`skill` 等），否则摘要会退化成空串。
+截断常量：`HEADER_SUMMARY_MAX=80`（单字段）、`HEADER_DISPLAY_MAX=60`（**整条标题的
+显示宽度**，CJK/emoji 记 2——面板标题必须一行，否则手机上会断在 URL 中间）、
+`BODY_FIELD_MAX=600`、`OUTPUT_MAX=1200`、`BODY_TOTAL_MAX=2500`。
 
 **工具身份回填**：opencode 的 ACP 在参数流式阶段先发 `tool_call`（part 创建时
 `input:{}`，title 回落到工具名 `bash`），命令/路径随后由 `tool_call_update` 携带
@@ -723,16 +738,34 @@ opencode 覆写 `extractToolCallArgsText` 返回 undefined，避免把输出当�
 **Session 内容卡片折叠**（auto-resume、`/resume <id>`）：每条 event 包在
 `collapsible_panel` 中，最后 2 条默认展开（用户刚恢复需看最新内容），历史事件折叠。
 
+事件口径（2026-10-19 修复，此前 resume 卡"只有工具调用、没有思考与输出"）：
+
+- DSH 的 assistant 块类型是 `text` / `reasoning` / `tool-call`；`reasoning` 必须映射成
+  `thinking`（一个真实 31-turn 会话里 reasoning 371 块、text 12 块，只认 text 就等于
+  把整轮思考丢掉）；
+- `tool/call` 与 `tool/result` **合成一个面板**（一次交互一个面板，不是两个）：
+  标题 `🔧 bash — npm test`（失败 `❌`），正文是输出；
+- 面板标题按显示宽度收敛（中间省略，保留工具名与文件名/副标题尾部），时间戳用
+  `MM-DD HH:mm`（完整日期只为省那 7 个显示宽度）；
+- reader 通过 `AgentSessionContentEvent.title` 直接给"标题即摘要"的事件命名，
+  卡片侧只做兜底标签。
+
 **Dashboard 卡片折叠**（`/active`）：每个 session 包在 collapsed panel
 中，切换目录按钮放 panel 外保持可操作。/active 已重写为内存 dashboard（`buildActiveCardFromMemory`），显示 lark-remote 进程内存中的活跃任务，单卡展示。
 
 **`/ls` 折叠**：同字母分组 >5 个 entry 时，整组按钮包在 collapsed panel 中。
 
-**流式更新限制**：Run card 通过全卡 patch 更新（`controller.update()`），每次
-更新会重置 collapsible_panel 的 `expanded` 状态到默认值。运行中工具默认展开
-（用户不需要手动操作），用户手动展开的已完成工具 panel 在下次事件到来时折叠
-回去——可接受，因为新事件通常意味着上下文变化。**不引入增量 patch 或状态追踪**
-来保持用户展开状态，复杂度不值得。
+**流式更新限制**：Run card 通过全卡 patch 更新（`controller.update()`）。
+`collapsible_panel.expanded` 是**发送时**的默认态，客户端点击产生的展开/收起
+不回到服务端——所以一次 patch 之后，用户手动展开的 thinking/plan 面板会回到
+render 时的 `expanded`。**这条是客户端行为，API 侧无法断言**（`send`/`update`
+都会成功，看不出区别），验证方式只能是人工：在测试会话里展开一个已完成的思考
+面板，等下一次 patch（例如工具跑完）看它是否复位。已接受的代价：新事件通常
+意味着上下文变化，且这两个面板默认就是折叠态。
+
+工具面板同受这条限制（它也是普通 `collapsible_panel`）；
+`tests/feishu-live/feishu-run-card-update.test.ts` 覆盖「发送 → 工具跑完 → 出现
+失败工具」的 patch 链路。
 
 ### 9.18 `!` bash 命令：绕过串行队列 + 单卡流式
 

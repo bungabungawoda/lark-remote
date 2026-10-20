@@ -1132,7 +1132,10 @@ describe('Bridge.forwardToClaude', () => {
 
     expect(connector._sent).toHaveLength(1);
     expect(JSON.stringify(connector._sent[0].input)).toContain('fallback body');
-    expect(JSON.stringify(connector._sent[0].input)).toContain('已完成');
+    // 终态卡的"发生了什么"由 header（+ summary）承担：状态行只放指标。这条用例
+    // 走的是流未结束时进程退出 → 出错终态，旧实现的状态行会把 `⏱ 已完成` 印在
+    // 一张 error 卡上（正是这次 redesign 要消掉的重复/错误文案）。
+    expect(JSON.stringify(connector._sent[0].input)).toContain('运行出错');
   });
 });
 
