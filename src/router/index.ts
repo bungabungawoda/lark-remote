@@ -224,6 +224,8 @@ export interface CardActionPayload {
   path?: string;
   name?: string;
   runId?: string;
+  /** 终态卡「停止」的目标后台任务 id（DSH job/list 的 jobId）。 */
+  jobId?: string;
   sessionId?: string;
   /** 目标工作目录（queue.* 卡片动作定位队列；stop 等卡片回传执行目录）。 */
   cwd?: string;
@@ -879,6 +881,9 @@ export class CommandRouter {
         return;
       case 'stop':
         await this.handleCardStop(value, ctx);
+        return;
+      case 'job.kill':
+        await this.handleJobKill(value, ctx);
         return;
       case 'queue.cancel':
         // 撤销：从队列中删除这个消息
@@ -1684,6 +1689,20 @@ export class CommandRouter {
     if (!stopped) {
       await this.bridge.sendResult({ text: '该任务已结束，无需终止' }, ctx);
     }
+  }
+
+  /**
+   * Handle a terminal card's 「停止」 on one background job.
+   *
+   * 任务跨 run 生命周期，所以卡片按钮是唯一入口；失败必须给出可读原因
+   * （任务已自行结束、服务重启后快照被回收），不能点了没反应。
+   */
+  private async handleJobKill(value: CardActionPayload, ctx: CommandContext): Promise<void> {
+    const runId = typeof value.runId === 'string' ? value.runId : '';
+    const jobId = typeof value.jobId === 'string' ? value.jobId : '';
+    if (!runId || !jobId) return;
+    if (await this.bridge.killBackgroundJob(runId, jobId, ctx)) return;
+    await this.bridge.sendResult({ text: '停止失败：任务可能已自行结束，或记录已回收' }, ctx);
   }
 
   /**

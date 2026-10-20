@@ -333,6 +333,59 @@ describe('DshClient remote mux', () => {
     }
     expect(seen).toEqual([2]);
   });
+
+  it('parses session/control baseline and projection frames into filtered items', async () => {
+    const fetchImpl = (async () => jsonResponse({})) as typeof fetch;
+    const client = new DshClient('http://127.0.0.1:3080', {
+      credentialsFile: NO_CREDENTIALS_FILE,
+      fetchImpl,
+      webSocketImpl: () =>
+        new ScriptedWebSocket('ws://127.0.0.1:3080/api/remote.mux', [
+          {
+            type: 'baseline',
+            value: {
+              projections: {
+                [SID]: { asOfSeq: 0, values: { contextPressure: { projectedTokens: 1 } } },
+                'session-other': { asOfSeq: 0, values: { sessionStats: { steps: 3 } } },
+              },
+            },
+          },
+          { type: 'projection', sessionId: SID, key: 'sessionStats', value: { steps: 3 }, seq: 9 },
+        ]),
+    });
+    const items = [];
+    for await (const item of client.controlFrames(new AbortController().signal)) {
+      items.push(item);
+    }
+    // baseline 展开成逐 key 的 item（调用方按 sessionId 过滤），
+    // 之后的增量帧原样透传；baseline 覆盖全 Host，不做 session 过滤。
+    expect(items).toEqual([
+      {
+        kind: 'projection',
+        sessionId: SID,
+        key: 'contextPressure',
+        value: { projectedTokens: 1 },
+      },
+      { kind: 'projection', sessionId: 'session-other', key: 'sessionStats', value: { steps: 3 } },
+      { kind: 'projection', sessionId: SID, key: 'sessionStats', value: { steps: 3 } },
+    ]);
+  });
+
+  it('degrades to no items when the control stream fails (never breaks the run)', async () => {
+    const fetchImpl = (async () => jsonResponse({})) as typeof fetch;
+    const client = new DshClient('http://127.0.0.1:3080', {
+      credentialsFile: NO_CREDENTIALS_FILE,
+      fetchImpl,
+      // 401 → muxStream 抛 DshError；控制流是增强通道，必须吞掉并结束。
+      webSocketImpl: () =>
+        new ScriptedWebSocket('ws://127.0.0.1:3080/api/remote.mux', [], true, 401),
+    });
+    const items = [];
+    for await (const item of client.controlFrames(new AbortController().signal)) {
+      items.push(item);
+    }
+    expect(items).toEqual([]);
+  });
 });
 
 describe('DshRunner over remote mux', () => {

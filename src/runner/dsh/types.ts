@@ -304,3 +304,46 @@ export type DshStreamItem =
       callId?: string;
       reason?: string;
     };
+
+/**
+ * One finished projection value from the Host-wide `session/control` stream.
+ *
+ * DSH 的 `session/control` 是唯一的"服务端变一次推一次"通道：连接先收到一份
+ * baseline（覆盖当前所有活跃 session 的全部投影值），之后每个投影变化推一帧
+ * `{type:'projection', sessionId, key, value, seq}`。调用方按 sessionId 过滤。
+ */
+export interface DshProjectionItem {
+  kind: 'projection';
+  sessionId: string;
+  key: string;
+  value: unknown;
+}
+
+/** `contextPressure` 投影（只声明本仓库消费的字段）。 */
+export interface DshContextPressure {
+  /** 上一次采样实际占用的 token。 */
+  pressureTokens?: number;
+  /** 下一次请求的预估占用（官方 UI 优先用它算百分比）。 */
+  projectedTokens?: number;
+  /** 当前模型上下文窗口。 */
+  contextWindow?: number;
+}
+
+/** `sessionStats` 投影（只声明本仓库消费的字段）。 */
+export interface DshSessionStats {
+  turns?: number;
+  steps?: number;
+  toolMs?: number;
+}
+
+/** One background job row from the `job/list` stream (fields lark-remote consumes). */
+export interface DshJobView {
+  id: string;
+  kind?: string;
+  label?: string;
+  status?: 'running' | 'stopping' | 'completed' | 'killed' | 'failed';
+  progress?: string;
+  detail?: string;
+  startedAt?: number;
+  finishedAt?: number;
+}

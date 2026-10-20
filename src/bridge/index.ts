@@ -7,10 +7,10 @@ import type { AppConfig } from '../config/index.js';
 import { resolveFinalUsage, errorMessage } from './final-usage.js';
 import { getLogger } from '../logger/index.js';
 import { RunCardSession, type RunCardChannel } from '../card/run-card-session.js';
-import { renderRunCard } from '../card/run-renderer.js';
+import { renderRunCard, type RunCardRenderOptions } from '../card/run-renderer.js';
 import { renderBashCard } from '../card/bash-renderer.js';
 import { BashCardSession, capBashOutput } from '../card/bash-card-session.js';
-import type { RunTerminal } from '../card/run-state.js';
+import type { RunState, RunTerminal } from '../card/run-state.js';
 import { buildSessionHistoryCard } from '../router/card-helpers.js';
 import { agentDisplayName, resumeUseButton } from '../card/card-shared.js';
 import { enforceCardBudget } from '../card/card-budget.js';
@@ -309,6 +309,20 @@ export class Bridge {
    * 与 session 是否还在、能否压缩无关（2026-10-08 线上缺陷）。
    */
   private compactableRuns = new Map<string, Map<string, CompactRunRecord>>();
+
+  /**
+   * 终态卡片的渲染快照（runId → state + options），供「详情」在 run 结束后
+   * 仍能二次渲染。
+   *
+   * run 结束时 activeRuns 被清空，而卡片上的「详情」按钮还活着；没有快照，
+   * 点终态卡上的「详情」只能得到一句「已失效」。只保留最近若干条：单条快照
+   * 受 MAX_BLOCKS 约束（几十 KB 以内），用户只会点刚收到的卡。
+   */
+  private runCardSnapshots = new Map<
+    string,
+    { state: RunState; options: RunCardRenderOptions; cwd: string; agentKind: AgentKind }
+  >();
+  private static readonly RUN_CARD_SNAPSHOT_MAX = 8;
 
   /**
    * Active `!` bash runs, keyed by runId (NOT cwd). Bash runs bypass the serial
@@ -1039,6 +1053,53 @@ export class Bridge {
       );
       return false;
     }
+  }
+
+  /**
+   * 终态快照的写入点：finalize 时把当前 state + 渲染选项留一份。
+   *
+   * 不放在 finish() 里：bridge 才知道 hasRunCompact 等渲染选项，且 eviction
+   * 与 activeRuns 生命周期在同一个地方收口。
+   */
+  private rememberRunCardSnapshot(
+    runId: string,
+    state: RunState,
+    options: RunCardRenderOptions,
+    cwd: string,
+    agentKind: AgentKind,
+  ): void {
+    this.runCardSnapshots.set(runId, { state, options, cwd, agentKind });
+    while (this.runCardSnapshots.size > Bridge.RUN_CARD_SNAPSHOT_MAX) {
+      const oldest = this.runCardSnapshots.keys().next().value;
+      if (oldest === undefined) break;
+      this.runCardSnapshots.delete(oldest);
+    }
+  }
+
+  /**
+   * 停止终态卡上的一个后台任务。
+   *
+   * 后台任务的生命周期跨 run（这就是它需要单独入口的原因），所以解析路径是
+   * 终态快照（runId → sessionId/cwd/agentKind）+ 该工作区的 runner 实例，
+   * 而不是 activeRuns。成功后同步摘掉 state 里的任务并就地重渲染，否则按钮
+   * 会留在卡片上而任务早已结束。
+   */
+  async killBackgroundJob(runId: string, jobId: string, ctx: CommandContext): Promise<boolean> {
+    const snapshot = this.runCardSnapshots.get(runId);
+    const sessionId = snapshot?.state.sessionId;
+    if (!snapshot || !sessionId) return false;
+    const runner = this.getRunner(snapshot.cwd, snapshot.agentKind) as Runner & {
+      killJob?: (sessionId: string, jobId: string) => Promise<boolean>;
+    };
+    if (typeof runner.killJob !== 'function') return false;
+    const killed = await runner.killJob(sessionId, jobId);
+    if (!killed) return false;
+    snapshot.state = {
+      ...snapshot.state,
+      backgroundJobs: (snapshot.state.backgroundJobs ?? []).filter((job) => job.id !== jobId),
+    };
+    await this.updateCardInPlace(renderRunCard(snapshot.state, snapshot.options), ctx);
+    return true;
   }
 
   /** Send a file to the user via Feishu. */
@@ -1814,18 +1875,26 @@ export class Bridge {
         `[lark-remote] finally settle runId=${runId} state.terminal=${cardSession.currentState.terminal}`,
       );
       const settleResult = await cardSession.settle();
+      // 卡片收尾后仍要能点「详情」：把终态 state 与当时的渲染选项留一份。
+      // 与 fallback 卡共用同一份 options（能力门控一致，展开后按钮语义不变）。
+      const finalRenderOptions: RunCardRenderOptions = {
+        agentKind: activeRun.agentKind,
+        // 与 createRunSession 的 renderOptions 一致：fallback 卡也要按
+        // runner 能力门控 Compact 按钮（缺省 undefined = 显示按钮，
+        // DSH 等无 runCompact 的 agent 会渲染出点了报错的死按钮）。
+        compactSupported: this.hasRunCompact(cwd, activeRun.agentKind),
+      };
+      this.rememberRunCardSnapshot(
+        runId,
+        cardSession.currentState,
+        finalRenderOptions,
+        cwd,
+        activeRun.agentKind,
+      );
       let runCardSent = false;
       if (settleResult === 'unsent') {
         const sent = await this.sendResult(
-          {
-            card: renderRunCard(cardSession.currentState, {
-              agentKind: activeRun.agentKind,
-              // 与 createRunSession 的 renderOptions 一致：fallback 卡也要按
-              // runner 能力门控 Compact 按钮（缺省 undefined = 显示按钮，
-              // DSH 等无 runCompact 的 agent 会渲染出点了报错的死按钮）。
-              compactSupported: this.hasRunCompact(cwd, activeRun.agentKind),
-            }),
-          },
+          { card: renderRunCard(cardSession.currentState, finalRenderOptions) },
           ctx,
         );
         runCardSent = sent;

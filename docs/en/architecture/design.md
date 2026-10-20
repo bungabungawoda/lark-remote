@@ -438,21 +438,31 @@ Secondary information for all card types is wrapped in CardKit `collapsible_pane
 | Content | Folding behavior | Rationale |
 |---------|-----------------|-----------|
 | Thinking | Running: `expanded:true`; completed: `expanded:false` | Focus on progress during run; secondary info after completion |
-| Running tools | `expanded:true`, border follows state (grey→red if error) | User needs to see real-time execution |
-| Completed tools (<3) | `expanded:false` | Default collapsed, click to expand |
-| Consecutive tool group (>=3) | Single collapsed panel, body only contains header list | See `collapsedToolSummary` |
+| Tool (any state) | **Native collapsible panel** (same interaction as thinking; tap the title); body truncated by tool count | Consistent with existing interaction, no round trip; size is controlled by truncation, not by withholding the body |
+| Failed tool | Body expanded by default; the button becomes "Collapse" | An error must be visible, not hidden behind a click |
 | Main text block | Not folded, direct markdown | Claude's reply is the primary information |
 | Terminal footer / Stop button | Not folded | Status summary must be visible |
 
-**Tool rendering improvements** (`src/card/tool-render.ts`): Collapsed header displays a smart summary (e.g., `✅ **Bash** — pwd`, `✅ **Read** — /repo/a.ts`) with a local timestamp appended; not the meaningless `Tool0`. `toolHeaderText` extracts key fields by tool type; `toolBodyMd` renders structurally by type (Bash→command/output code blocks, Read→file_path, Grep→pattern/path). Truncation constants: `HEADER_SUMMARY_MAX=80`, `BODY_FIELD_MAX=600`, `OUTPUT_MAX=1200`, `BODY_TOTAL_MAX=2500`.
+**Tools are native collapsible panels** (settled 2026-10-19; an intermediate version used "one row + a server-side Details button"): tap the title to expand, no round trip and no button. The intermediate version was rejected because folding saves no bytes (see above), so the body could only be withheld and expanding required the server to re-send the card; on a phone that is one extra tap, and the button ate the title width (long URLs wrapped onto two lines — user screenshot). The body is now **always in the payload**, with its size controlled by `toolOutputBudget()`, which scales truncation by tool count (about 8 KB total, 160–1200 chars per tool). With `MAX_BLOCKS=24`, 24 tools plus 12 thinking panels measured 54 elements / 21.7 KB — inside both budgets. Client-side expand state still resets on the next patch (`expanded` is the send-time default); tool panels share that limitation with thinking panels.
+
+**Tool rendering improvements** (`src/card/tool-render.ts`): Collapsed header displays a smart summary (e.g., `✅ **Bash** — pwd`, `✅ **Read** — /repo/a.ts`) with a local timestamp appended; not the meaningless `Tool0`. `toolHeaderText` extracts key fields by tool type; `toolBodyMd` renders structurally by type (Bash→command/output code blocks, Read→file_path, Grep→pattern/path). Besides Claude/Codex tool names it also recognizes DSH's snake_case names and arguments (`glob`→pattern, `web_search`→queries[], `read_image`/`write`/`edit`→file_path, `todo_write`→completion progress, `subagent`/`job_*`/`present`/`skill`, …); without them the summary degrades to an empty string. Truncation constants: `HEADER_SUMMARY_MAX=80` (single field), `HEADER_DISPLAY_MAX=60` (**whole-title display width**, CJK/emoji counted as 2 — a panel title must stay on one line, otherwise a phone breaks it mid-URL), `BODY_FIELD_MAX=600`, `OUTPUT_MAX=1200`, `BODY_TOTAL_MAX=2500`.
 
 **Session content card folding** (auto-resume, `/resume <id>`): Each event is wrapped in `collapsible_panel`, with the last 2 expanded by default (user just resumed and needs to see the latest content), historical events collapsed.
+
+Event semantics (fixed 2026-10-19; the resume card used to show "tool calls only, no reasoning and no answer"):
+
+- DSH assistant blocks are `text` / `reasoning` / `tool-call`; `reasoning` must map to `thinking` (one real 31-turn session had 371 reasoning blocks and only 12 text blocks — matching `text` alone throws the whole thought process away);
+- `tool/call` and `tool/result` **merge into one panel** (one interaction, one panel): title `🔧 bash — npm test` (`❌` on failure), body is the output;
+- panel titles are bounded by display width (middle ellipsis, keeping the tool name and the tail of a path/subtitle); timestamps use `MM-DD HH:mm` (the full date only buys 7 display cells);
+- the reader names "title-is-the-summary" events via `AgentSessionContentEvent.title`; the card only supplies a fallback label.
 
 **Dashboard card folding** (`/active`): Each session is wrapped in a collapsed panel, with the switch directory button placed outside the panel to remain operable. /active has been rewritten as an in-memory dashboard (`buildActiveCardFromMemory`), showing active tasks in lark-remote process's memory, single card display.
 
 **`/ls` folding**: When same-letter group has >5 entries, the entire group of buttons is wrapped in a collapsed panel.
 
-**Streaming update limitation**: Run card updates via full-card patch (`controller.update()`), and each update resets `collapsible_panel`'s `expanded` state to the default. Running tools default to expanded (no user action needed); user-manually-expanded completed tool panels will collapse back on the next event — acceptable because new events usually mean context change. **Do not introduce incremental patches or state tracking** to preserve user expand state; the complexity is not worth it.
+**Streaming update limitation**: Run card updates via full-card patch (`controller.update()`). `collapsible_panel.expanded` is the default state **at send time**; a client-side click never reaches the server, so after the next patch a manually expanded thinking/plan panel returns to the render-time `expanded`. **This is client behavior and cannot be asserted through the API** (`send`/`update` both succeed either way); the only check is manual: expand a finished thinking panel in the test chat and watch whether it collapses after the next patch (for example when a tool finishes). Accepted cost: new events usually mean a context change, and both panels are collapsed by default.
+
+Tool panels are subject to the same limitation (they are ordinary `collapsible_panel`s); `tests/feishu-live/feishu-run-card-update.test.ts` covers the send → tools-settled → failed-tools patch chain.
 
 ### 9.18 `!` Bash Command: Bypass Serial Queue + Single-Card Streaming
 

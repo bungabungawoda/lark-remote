@@ -1,16 +1,19 @@
-import type { RunBlock, RunFooter, RunNotice, RunState, ToolEntry } from './run-state.js';
+import type { RunBlock, RunNotice, RunState, ToolEntry } from './run-state.js';
 import {
   terminalToColor,
   terminalToLabel,
   newSessionButton,
   stopButton,
   compactButton,
+  cardButton,
   agentDisplayName,
 } from './card-shared.js';
 import { collapsibleMarkdownPanel, markdownDiv, type PanelBorder } from './collapsible.js';
 import { toolBodyMd, toolHeaderText } from './tool-render.js';
 import { truncateUtf8, truncateMarkdownTables, CARD_BUDGET_BYTES } from './text-truncate.js';
-import { formatTimestamp } from './time.js';
+import { countCardElements, MAX_CARD_ELEMENTS } from './card-budget.js';
+import { truncate } from '../common/truncate.js';
+import { formatClock, formatTimestamp } from './time.js';
 import { formatUsageStats } from '../router/usage-format.js';
 import { renderApprovalArea } from './approval-render.js';
 
@@ -19,6 +22,15 @@ const TEXT_BYTES = 10_000;
 const DEGRADED_THINKING_KEEP = 2;
 const DEGRADED_TEXT_BYTES = 5_000;
 const DEGRADED_THINKING_BYTES = 1_000;
+/**
+ * 带「详情」按钮的工具行数上限（从最新往回数）。
+ *
+ * 按钮行是节点大户：`column_set` + 2 个 `column` + 标题 div/text + button/text/
+ * behaviors/value ≈ 10 个 JSON 节点；纯标题行只有 2 个。24 行全带按钮 ≈ 240 节点，
+ * 直接撞飞书的元素总数上限（实测 203 通过 / 204 失败，见 card-budget.ts）。
+ * 最近 8 行保留按钮（用户最可能展开的就是刚跑完的），更早的行退化成一行标题。
+ */
+export const MAX_TOOL_ROWS_WITH_BUTTON = 8;
 const DEGRADED_TOOL_KEEP = 3; // Degraded: keep last 3 tool panels
 const EXTREME_TOOL_KEEP = 1; // Extreme: keep last 1 tool panel
 
@@ -293,26 +305,99 @@ function groupBlocks(blocks: RunBlock[]): BlockGroup[] {
 }
 
 /**
- * Render a single tool as a collapsible panel.
- * - Running tool: expanded (user can watch live)
- * - Completed tool: collapsed (click to inspect)
+ * 工具块 = **原生折叠面板**（与 thinking/plan 同一交互）。
+ *
+ * 早先试过"一行 + 服务端「详情」按钮"：折叠不省字节所以正文不入 payload，展开
+ * 只能回服务端重出卡。代价是手机上要多点一次、按钮还占掉标题宽度（长 URL 被挤
+ * 成两行，2026-10-19 反馈）。现在改成折叠面板 + **按工具数量缩放的正文截断**：
+ * 正文始终随卡下发（面板折叠时不显示），点标题即展开，无往返、无按钮。
+ *
+ * 展开态：运行中/失败的默认展开（用户在等结果、错误要立刻可见），其余折叠。
  */
-function renderTool(tool: ToolEntry, finalized: boolean): object {
-  const border: PanelBorder = tool.status === 'error' ? 'red' : 'grey';
-  const body = toolBodyMd(tool);
+function renderTool(tool: ToolEntry, outputMax: number): object {
+  const body = toolBodyMd(tool, { outputMax });
   return collapsibleMarkdownPanel({
     title: toolTitle(tool),
-    expanded: !finalized && tool.status === 'running',
-    border,
+    expanded: tool.status === 'running' || tool.status === 'error',
+    border: tool.status === 'error' ? 'red' : 'grey',
     content: body || '_无输出_',
     textSize: 'notation',
   });
 }
 
+/**
+ * 每个工具的正文输出预算：工具越多，单个工具留的字符越少。
+ *
+ * 24 个工具（`MAX_BLOCKS`，也是上限）× 1200 字符的正文会把卡片顶到 28KB 以上
+ * （实测 13 个 1200 字符的面板就开始走 skeleton 降级）。这里按总量反推：正文
+ * 合计约 8KB，单个工具 160–1200 字符——够看清前几行输出，又不会让整卡超预算。
+ */
+function toolOutputBudget(state: RunState): number {
+  let count = 0;
+  for (const block of state.blocks) if (block.kind === 'tool') count += 1;
+  return Math.max(160, Math.min(1200, Math.floor(8000 / Math.max(1, count))));
+}
+
+/**
+ * 工具面板标题：`✅ **bash** — npm test (21:23)`。
+ *
+ * 标题连同时间戳一起收进 `HEADER_DISPLAY_MAX`（见 tool-render）——手机上折叠
+ * 面板的标题只有一行可用，超了就会断在 URL/命令中间。时间戳用 `HH:mm` 而不是
+ * 完整日期：同一张卡里的时间戳只需要区分先后。
+ */
 function toolTitle(tool: ToolEntry): string {
-  const ts = formatTimestamp(tool.completedAt ?? tool.startedAt);
-  const title = toolHeaderText(tool);
-  return ts ? `${title} (${ts})` : title;
+  const clock = formatClock(tool.completedAt ?? tool.startedAt);
+  const title = toolHeaderText(tool, clock ? ` (${clock})` : '');
+  return title;
+}
+
+/**
+ * 内容组的元素成本（口径 = 递归 `elements` 数组成员，与飞书实测判据一致）。
+ *
+ * 工具是折叠面板：面板 1 + 内部 div 1 = 2 个元素，与展开态无关（折叠跟展开的
+ * payload 一样，这正是"折叠不省字节"的含义——所以靠截断控制大小，而不是靠
+ * 不发送正文）。
+ */
+const TOOL_PANEL_ELEMENTS = 2;
+const PANEL_ELEMENTS = 2;
+const TEXT_BLOCK_ELEMENTS = 1;
+/**
+ * 内容区（blocks）可用的元素预算 = 总预算 − 固定开销预留。
+ *
+ * 固定开销：状态行 1 + summary 1 + 操作行 4 + 省略提示/通知若干，实测约 10；
+ * 预留 20 留出通知与提示的波动空间。
+ */
+const CONTENT_ELEMENT_BUDGET = MAX_CARD_ELEMENTS - 20;
+
+/** 单个内容组的元素成本（保守：宁多不少）。 */
+function groupElementCost(group: BlockGroup): number {
+  if (group.kind === 'tool') return TOOL_PANEL_ELEMENTS;
+  if (group.kind === 'text') return TEXT_BLOCK_ELEMENTS;
+  return PANEL_ELEMENTS;
+}
+
+/**
+ * 元素预算内从最新往回选择可见的内容组。
+ *
+ * 为什么在正常路径里先裁剪而不是整卡降级：降级档（degraded）只保留最后 3 个
+ * 工具 + 2 个思考块，对一次跑了几十步的 run 是灾难性的信息损失；元素超限的
+ * 成因只是"元素多"，砍掉最旧的几步就能同时保住元素预算和最新内容的完整渲染。
+ * 被省略的数量由调用方渲染成 `_已省略 N 个早期步骤_`（与 omittedBlocks 同款提示）。
+ */
+function selectVisibleGroups(groups: BlockGroup[]): {
+  visible: BlockGroup[];
+  omitted: number;
+} {
+  if (groups.length === 0) return { visible: groups, omitted: 0 };
+  let used = 0;
+  let start = groups.length;
+  for (let i = groups.length - 1; i >= 0; i--) {
+    const cost = groupElementCost(groups[i]);
+    if (start < groups.length && used + cost > CONTENT_ELEMENT_BUDGET) break;
+    used += cost;
+    start = i;
+  }
+  return { visible: groups.slice(start), omitted: start };
 }
 
 /**
@@ -429,6 +514,7 @@ function buildFallbackElements(
   tier: BudgetTierConfig,
 ): object[] {
   const elements: object[] = [];
+  const outputMax = toolOutputBudget(state);
 
   elements.push(statusRow(state));
   elements.push(...omittedBlocksHint(state));
@@ -511,7 +597,7 @@ function buildFallbackElements(
       elements.push(...renderTextBlock(content, ts, true));
     } else if (group.kind === 'tool') {
       // Show tool individually (each tool is independent now)
-      elements.push(renderTool(group.tool, true)); // finalized=true
+      elements.push(renderTool(group.tool, outputMax));
     }
   }
 
@@ -543,25 +629,83 @@ function buildExtremeFallbackElements(state: RunState, options: RunCardRenderOpt
   return buildFallbackElements(state, options, EXTREME_TIER);
 }
 
-/** Build the status row element (shared across full/degraded/extreme). */
+/**
+ * 状态行内容：**一行、一个 div、窄屏不换行**。
+ *
+ * 设计约束（2026-10-19 手机端实测）：旧版把「状态标签」和「耗时/指标」放进
+ * `column_set` 的 auto + grow 两列，窄屏上 auto 列被挤到只剩两个字宽，
+ * "运行中" 被拆成 "运行 / 中"。列式布局的可用宽度取决于对端渲染，服务端无法
+ * 保证；所以这里改成单 div，段间用 " · " 分隔——换行只会发生在分隔符处，
+ * 而且整行控制在 ~26 个半角宽度内，320px 宽的手机也能放下。
+ *
+ * 状态标签（运行中/已完成…）不再重复：header 已经写了（`🔧 dsh · 调用工具`
+ * / `✅ dsh · 已完成`），终态 summary 还有一次。
+ *
+ * 导出供窄屏守卫测试断言分段宽度（与 `estimateCardBytes` 同一惯例）。
+ */
+export function statusLine(state: RunState): string {
+  const parts: string[] = [];
+  // 等待人工决策是「现在卡在哪儿」的唯一线索，值得在状态行重复一次 header
+  // （窄屏上用户往往只扫这一行）。其余活动词（思考中/输出中）不重复，header 有。
+  if (hasPendingApproval(state) && state.terminal === 'running') parts.push('✋ 等待审批');
+  const elapsed = elapsedLabel(state);
+  if (elapsed) parts.push(`⏱ ${elapsed}`);
+
+  // 运行期投影只在 running/finalizing 展示：终态 summary 有权威统计，同一张卡
+  // 上出现两次只会互相矛盾。
+  const live = state.liveStatus;
+  if (live && (state.terminal === 'running' || state.terminal === 'finalizing')) {
+    if (live.steps !== undefined) parts.push(`🧰 ${live.steps} 步`);
+    if (
+      live.contextUsed !== undefined &&
+      live.contextLimit !== undefined &&
+      live.contextLimit > 0
+    ) {
+      // 官方口径：projectedTokens ?? pressureTokens，取整封顶 100；`~` 表示投影值。
+      const pct = Math.min(100, Math.round((live.contextUsed / live.contextLimit) * 100));
+      parts.push(`📊 ~${pct}%`);
+    } else if (live.contextUsed !== undefined) {
+      parts.push(`📊 ${formatTokens(live.contextUsed)}`);
+    }
+  }
+
+  if (parts.length === 0) {
+    // 没有任何可用指标时退回状态词（骨架卡/测试构造的状态没有时间戳）。
+    return statusTagLabel(state.terminal);
+  }
+  return parts.join(' · ');
+}
+
+/** 耗时文案：`12s` / `2m13s` / `1h04m` / `2d3h`。空 = 无时间戳。 */
+function elapsedLabel(state: RunState): string {
+  if (state.startedAt === undefined) return '';
+  const end = state.finishedAt ?? Date.now();
+  const ms = end - state.startedAt;
+  if (!Number.isFinite(ms) || ms < 0) return '';
+  const totalSeconds = Math.floor(ms / 1000);
+  if (totalSeconds < 60) return `${totalSeconds}s`;
+  const minutes = Math.floor(totalSeconds / 60);
+  if (minutes < 60) return `${minutes}m${String(totalSeconds % 60).padStart(2, '0')}s`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h${String(minutes % 60).padStart(2, '0')}m`;
+  return `${Math.floor(hours / 24)}d${String(hours % 24).padStart(2, '0')}h`;
+}
+
+/** token 数量的紧凑写法：`950` / `12K` / `1.2M`。 */
+function formatTokens(tokens: number): string {
+  if (tokens < 1000) return String(tokens);
+  if (tokens < 1_000_000) return `${Math.round(tokens / 1000)}K`;
+  return `${(tokens / 1_000_000).toFixed(1)}M`;
+}
+
+/**
+ * 状态行元素（full/degraded/extreme/skeleton 共用）。
+ *
+ * 单 div + `notation` 字号：列式布局在窄屏会把短标签挤成竖排（手机端实测），
+ * 单行文本的换行点只在 " · " 处，可预期。
+ */
 function statusRow(state: RunState): object {
-  const statusLabel = statusTagLabel(state.terminal);
-  const durationInfo = buildDurationInfo(state);
-  return {
-    tag: 'column_set',
-    columns: [
-      {
-        tag: 'column',
-        width: 'auto',
-        elements: [{ tag: 'div', text: { content: statusLabel, tag: 'lark_md' } }],
-      },
-      {
-        tag: 'column',
-        width: 'grow',
-        elements: [{ tag: 'div', text: { content: durationInfo, tag: 'lark_md' } }],
-      },
-    ],
-  };
+  return markdownDiv(statusLine(state), 'notation');
 }
 
 /**
@@ -685,11 +829,14 @@ export function estimateCardBytes(
   options: RunCardRenderOptions = {},
   shared?: { groups?: BlockGroup[]; prepared?: GroupContentPrepared },
 ): number {
-  const finalized = state.terminal !== 'running';
   // renderRunCard 传入共享 groups/prepared 时直接复用（截断只做一次）；
   // 独立调用（测试/预算探针）时自建，行为与原先一致。
   const groups = shared?.groups ?? groupBlocks(state.blocks);
   const prepared = shared?.prepared ?? prepareGroupContent(groups);
+  // 与 buildChronologicalContent 同源：估算必须测量"将要渲染的内容"，而正常
+  // 路径会按节点预算省略最旧的组（不模拟这一步会系统性高估）。
+  const { visible, omitted } = selectVisibleGroups(groups);
+  const outputMax = toolOutputBudget(state);
 
   // 卡片外壳直接实测 assembleRunCard 空元素产物（schema/config/header/body 结构
   // 与正式渲染完全一致）；status/summary/操作行同样实测渲染结构。
@@ -703,11 +850,15 @@ export function estimateCardBytes(
 
   // 块内容：与 buildChronologicalContent 同源（describePanelGroup 单源）
   let renderedAny = false;
-  for (const group of groups) {
+  if (omitted > 0) {
+    renderedAny = true;
+    total += measureJson(markdownDiv(`_💡 已省略 ${omitted} 个早期步骤_`));
+  }
+  for (const group of visible) {
     if (group.kind === 'tool') {
       renderedAny = true;
       // tool 直接实测真实渲染元素（复用 renderTool，output ≤1200 字符，物化廉价）
-      total += measureJson(renderTool(group.tool, finalized));
+      total += measureJson(renderTool(group.tool, outputMax));
       continue;
     }
     if (group.kind === 'text') {
@@ -784,14 +935,15 @@ export function renderRunCard(state: RunState, options: RunCardRenderOptions = {
 
     const card = assembleRunCard(state, options, elements);
 
-    // Check budget — stringify 兜底（估算可能低估，仍保留安全网）
-    if (Buffer.byteLength(JSON.stringify(card), 'utf8') <= CARD_BUDGET_BYTES) return card;
+    // Check budget — stringify 兜底（估算可能低估，仍保留安全网）。
+    // 两个维度都必须过：字节（28KB）与元素总数（飞书 11310，实测 203 节点上限）。
+    if (withinRunCardBudget(card)) return card;
     // 超预算 → 继续走 degraded（不 return，fallthrough）
   }
 
-  // 估算 ≥ 阈值 或 完整卡 stringify 超预算 — 走 degraded 渲染
+  // 估算 ≥ 阈值 或 完整卡超预算 — 走 degraded 渲染
   const degradedCard = assembleRunCard(state, options, buildDegradedElements(state, options));
-  if (Buffer.byteLength(JSON.stringify(degradedCard), 'utf8') <= CARD_BUDGET_BYTES) {
+  if (withinRunCardBudget(degradedCard)) {
     return degradedCard;
   }
 
@@ -801,7 +953,7 @@ export function renderRunCard(state: RunState, options: RunCardRenderOptions = {
   // Final safety net: extreme fallback 是最后一层，但高转义内容（反斜杠 4× 膨胀）
   // 可能让 extreme 产物本身 >28KB。补上 stringify 兜底（与 normal/degraded 对称）：
   // 超预算则降级到结构性保证 ≤28KB 的 skeleton 卡，避免飞书 11310 整卡不可用。
-  if (Buffer.byteLength(JSON.stringify(extremeCard), 'utf8') <= CARD_BUDGET_BYTES) {
+  if (withinRunCardBudget(extremeCard)) {
     return extremeCard;
   }
 
@@ -828,6 +980,19 @@ export function renderRunCard(state: RunState, options: RunCardRenderOptions = {
   return truncatedSkeleton;
 }
 
+/**
+ * Run 卡片的双预算检查：UTF-8 字节 ≤ 28KB **且** 元素数 ≤ `MAX_CARD_ELEMENTS`。
+ *
+ * 为什么两个维度都要查：字节超限来自内容长（截断即可），元素超限来自元素多
+ * （必须删元素）。一张只有几十个短文本的卡片可以远低于 28KB 却把飞书的元素
+ * 总数撑爆（实测 24 行工具 + 24 个展开正文 = 103 个元素 → 11310），只查字节
+ * 的安全网抓不到它。
+ */
+function withinRunCardBudget(card: object): boolean {
+  if (countCardElements(card) > MAX_CARD_ELEMENTS) return false;
+  return Buffer.byteLength(JSON.stringify(card), 'utf8') <= CARD_BUDGET_BYTES;
+}
+
 /** Build content in chronological order using groupBlocks to interleave thinking/text/tools. */
 function buildChronologicalContent(
   state: RunState,
@@ -837,12 +1002,16 @@ function buildChronologicalContent(
   const elements: object[] = [];
   // finalized = 非 running（含 finalizing：主结果已出，thinking 折叠）
   const finalized = state.terminal !== 'running';
+  // 节点预算内从最新往回选择可见组：超限时只省略最旧的几步，不整卡降级。
+  const { visible, omitted } = selectVisibleGroups(groups);
+  const outputMax = toolOutputBudget(state);
+  if (omitted > 0) elements.push(markdownDiv(`_💡 已省略 ${omitted} 个早期步骤_`));
 
   // renderRunCard 传入同一 groups 数组时直接复用（prepared 的键是组对象
   // 引用，重建数组会让 prepared.get 永远 miss，退化为二次截断）。
   // 面板组描述经 describePanelGroup 与估算共享同一份模板。
   // notices 作为普通消息按到达时间插入内容流（有内容时不再沉到 summary）。
-  const contentItems = mergeNoticesIntoContent(groups, state.notices);
+  const contentItems = mergeNoticesIntoContent(visible, state.notices);
   for (const item of contentItems) {
     if (item.kind === 'notice') {
       elements.push(renderNoticeRow(item.notice));
@@ -850,7 +1019,7 @@ function buildChronologicalContent(
     }
     const group = item;
     if (group.kind === 'tool') {
-      elements.push(renderTool(group.tool, finalized));
+      elements.push(renderTool(group.tool, outputMax));
       continue;
     }
     if (group.kind === 'text') {
@@ -966,30 +1135,59 @@ function buildSummaryContent(
     );
 
     elements.push(markdownDiv(usageStatsStr + empty));
+
+    // 后台任务：跨 turn 生命周期，必须显式告知并可逐个停止。
+    elements.push(...buildBackgroundJobsSection(state));
   }
 
   return elements;
 }
 
-/** Build duration info string */
-function buildDurationInfo(state: RunState): string {
-  if (
-    state.terminal === 'done' ||
-    state.terminal === 'error' ||
-    state.terminal === 'interrupted' ||
-    state.terminal === 'idle_timeout'
-  ) {
-    return `⏱ ${state.footer || '已完成'}`;
-  }
-  // 与标题一致：审批等待期间状态行显示「等待审批中」，而不是「工具调用中」。
-  if (hasPendingApproval(state)) return '✋ 等待审批中';
-  return footerText(state.footer);
-}
+/** 终态卡最多列几个后台任务（多出来的只报数）。 */
+const MAX_BACKGROUND_JOB_LINES = 3;
 
-function footerText(footer: RunFooter | undefined): string {
-  if (footer === 'tool_running') return '🧰 工具调用中';
-  if (footer === 'streaming') return '✍️ 输出中';
-  return '🧠 思考中';
+/**
+ * 后台任务小节：一行标题 + 每个任务一行（标签 + 停止按钮）。
+ *
+ * 按钮 payload 只带 runId/jobId：sessionId 与 cwd 由 bridge 的快照解析，卡片
+ * 上少放一个可变字段就少一处不一致。
+ */
+function buildBackgroundJobsSection(state: RunState): object[] {
+  const jobs = state.backgroundJobs ?? [];
+  if (jobs.length === 0) return [];
+  const elements: object[] = [
+    markdownDiv(`🧵 **后台任务** ${jobs.length} 个仍在运行（本轮结束后继续）`),
+  ];
+  for (const job of jobs.slice(0, MAX_BACKGROUND_JOB_LINES)) {
+    // label 是任务自报的一行描述，可能含反引号/regex 反斜杠：按 markdown 安全
+    // 形态收敛（markdownDiv 只转义反斜杠，反引号会截断行内代码）。
+    const label = truncate(job.label.replace(/[\r\n]+/g, ' ').replace(/`/g, "'"), 60);
+    elements.push({
+      tag: 'column_set',
+      columns: [
+        {
+          tag: 'column',
+          width: 'grow',
+          elements: [markdownDiv(`· \`${label}\``, 'notation')],
+        },
+        {
+          tag: 'column',
+          width: 'auto',
+          elements: [
+            cardButton(
+              '⏹ 停止',
+              { cmd: 'job.kill', runId: state.runId, jobId: job.id },
+              { size: 'small', type: 'danger' },
+            ),
+          ],
+        },
+      ],
+    });
+  }
+  if (jobs.length > MAX_BACKGROUND_JOB_LINES) {
+    elements.push(markdownDiv(`_…另有 ${jobs.length - MAX_BACKGROUND_JOB_LINES} 个任务_`));
+  }
+  return elements;
 }
 
 /** Status tag label */
