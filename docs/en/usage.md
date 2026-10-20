@@ -159,8 +159,8 @@ Any message not starting with `/` is forwarded to Claude. Messages starting with
 | `/order save <text>` | `/o` | Save a frequently used instruction |
 | `/order` `/order list` | `/o` | List saved instructions (card; supports alias / edit / delete) |
 | `/order edit <orderId\|N> <new text>` | `/o` | Edit the saved text of an instruction (alias and usedAt are preserved) |
-| `/order alias <name> <text>` | `/o` | Register a quick alias (e.g. `/order alias fix 请修复报错`); typing `$fix` expands it |
-| `/order alias [remove <name>]` | `/o` | List all aliases (merged into the `/order` card) / remove an alias |
+| `/order alias add <orderId\|N> <name>` | `/o` | Bind an alias to a saved instruction (the `/order` card's 「＋别名」 button is the primary entry); typing `$name` triggers it |
+| `/order alias rm <orderId\|N>` | `/o` | Remove an instruction's alias (`/order alias list` folds into the same card) |
 | `/exit` | `/e` | Exit lark-remote |
 | `/restart` | - | Restart lark-remote in place: the new process takes over with the same config, startup notification arrives shortly |
 | `/clone <name>` | - | Clone lark-remote: copies the config into a new directory and walks you through creating a new Feishu app by QR scan; on completion it binds automatically and launches the new instance |
@@ -286,14 +286,15 @@ that the feature is off (never silent).
 
 ### Quick Aliases (`$name`)
 
-`/order alias` registers a "trigger → text" shortcut. Typing `$name` expands it,
-which suits high-frequency phrases:
+An alias is a short trigger bound to one saved instruction: typing `$name` expands
+to that instruction's text, which suits high-frequency phrases:
 
 ```text
-/order alias fix 请修复刚才提到的报错并解释原因
-$fix                       → expands to the full sentence above
-/order alias h 请读取文件并分析
-$h /tmp/a.txt              → expands to "请读取文件并分析 /tmp/a.txt"
+/order save 跑全量测试
+/order alias add 1 all      # bind `all` to instruction #1 (numbering follows the /order list)
+$all                        → expands to "跑全量测试" (equivalent to running that instruction)
+/order alias add 2 h
+$h /tmp/a.txt               → expands to "请读取文件并分析 /tmp/a.txt"
 ```
 
 - Only a message-starting `$name` (followed by a space or end of line) matches;
@@ -305,9 +306,14 @@ $h /tmp/a.txt              → expands to "请读取文件并分析 /tmp/a.txt"
 - Unknown `$xxx` passes through to the agent as-is;
 - If the expanded text starts with `/` it is routed as a command; expanding to a
   `!` command is a user-defined behavior — use with care;
-- Aliases persist in `<configDir>/aliases.json`, up to 50 entries;
-- `remove` is a reserved subcommand and cannot be used as an alias name
-  (`/order alias remove <name>` deletes an alias).
+- **The card is the primary entry**: every instruction on the `/order` card has a
+  「＋别名」 button to bind or change its alias, bound ones show a `$name` chip with
+  a ✕ to unbind; `/order alias add|rm` is the CLI fallback;
+- One instruction carries **at most one** alias, and a name must be globally unique
+  (a duplicate is rejected);
+- Names must match `^[A-Za-z_][A-Za-z0-9_]*$` and stay within 20 characters;
+- Aliases persist with their instruction in `<configDir>/orders.json` and are deleted
+  together with it.
 
 ---
 
@@ -326,8 +332,10 @@ Claude: [Runs npm test → returns results]
 ### Scenario 2: Multi-Project Switching
 
 ```text
-You: /ws save backend ~/projects/api
-You: /ws save frontend ~/projects/web
+You: /cd ~/projects/api
+You: /ws save backend
+You: /cd ~/projects/web
+You: /ws save frontend
 You: /ws use backend
 You: Restart the service
 Claude: ...
@@ -359,7 +367,7 @@ Thinking, tool_use and tool_result are always shown (there is no display toggle)
 - **tool_use / tool_result**: Always shown; older tools auto-collapse; tool title displays local timestamp
 - **Run state**: Thinking, calling tools, or producing output
 - **Terminal state**: Completed, error, interrupted, idle timeout; terminal state removes the stop button
-- **Emoji reaction**: On your original message, `Typing` is added during processing; at completion, the terminal state determines the final emoji: `Done` (completed) / `ERROR` (error) / `Alarm` (idle timeout) / `SHHH` (user `/stop`). Bash (`!`) commands always get `Done`. Keys come from the official Feishu emoji list; new terminal state mappings require同步 anchor tests.
+- **Emoji reaction**: On your original message, `Typing` is added during processing; at completion, the terminal state determines the final emoji: `Done` (completed) / `ERROR` (error) / `Alarm` (idle timeout) / `SHHH` (user `/stop`). Bash (`!`) commands always get `Done`. Keys come from the official Feishu emoji list; adding a terminal-state mapping means updating these emoji cases together with the terminal-state list above.
 
 Cards have a strict UTF-8 byte budget and are lossy progress summaries, not complete transcripts.
 
