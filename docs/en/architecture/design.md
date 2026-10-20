@@ -360,7 +360,7 @@ Feishu WebSocket provides at-least-once delivery; the same event may be pushed m
 
 Only one lark-remote main process can run simultaneously per `configDir`. On startup, `InstanceLock` reads `<configDir>/lark-remote.pid`: if the pid is still alive, it refuses to start; if the pid no longer exists, it overwrites the stale lock; on process exit, only the lock belonging to the current pid is cleaned up.
 
-When lark-remote crashes, agent child processes become orphans. On startup, read `<configDir>/<agent>-*.pid` (isolated by workspace), first verify process identity (`ps -o command=` matching binary to prevent pid reuse mistaken kills), then send SIGTERM to the entire process group; on lark-remote exit (`process.on('exit'|'SIGINT'|'SIGTERM')`), send SIGTERM+SIGKILL cleanup to the process group and delete pid files.
+When lark-remote crashes, agent child processes become orphans. On startup, read `<configDir>/<agent>-*.pid` (isolated by workspace), first verify process identity (`ps -o command=` matching binary to prevent pid-reuse mistaken kills), then send SIGTERM to the entire process group; on lark-remote exit (`process.on('exit'|'SIGINT'|'SIGTERM')`), send SIGTERM+SIGKILL cleanup to the process group and delete pid files.
 
 ### 9.10 workspace.json Write Atomicity
 
