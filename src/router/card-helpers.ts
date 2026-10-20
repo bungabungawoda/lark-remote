@@ -392,6 +392,11 @@ export function buildSessionHistoryCard(
     emptyPlaceholder?: string;
     /** Hidden earlier-events count (auto-restore only). */
     hiddenCount?: number;
+    /**
+     * 该会话此刻仍有在途 turn（`isSessionActive`）。为 true 时卡上显式提示
+     * "这是历史快照、实时输出不会落在这张卡上"。
+     */
+    stillRunning?: boolean;
     /** Action buttons to render (already built, protocol-specific). */
     actions?: object[];
     /** Optional card header template (e.g. 'green' for completion cards). */
@@ -416,6 +421,16 @@ export function buildSessionHistoryCard(
   }
 
   const elements: object[] = [markdownDiv(header), { tag: 'hr' }];
+
+  // 恢复时该会话仍有一个 turn 在跑（典型来源：上一个桥接实例退出/崩溃后，
+  // turn 留在常驻 host 里继续执行）。卡片只是快照，别让用户以为这就是全部。
+  if (opts.stillRunning) {
+    elements.push(
+      markdownDiv(
+        '⚠️ **该会话仍有一个 turn 在运行**（可能来自已退出的实例）：以下内容是历史快照，实时输出不会出现在这张卡上。',
+      ),
+    );
+  }
 
   if (opts.hiddenCount && opts.hiddenCount > 0) {
     elements.push(markdownDiv(`📜 还有 ${opts.hiddenCount} 个更早的事件未显示`));
