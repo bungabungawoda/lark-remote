@@ -113,6 +113,23 @@ const RECONNECT_BACKOFF_MS = 200;
 /** Follow snapshot budget. `session/follow` also stays live after the snapshot. */
 const FOLLOW_MAX_MESSAGES = 200;
 
+/**
+ * 只在 turn 内部落盘的会话事件类型：看到它们说明 turn 还没结束。
+ * 名单刻意保守——`user/message`（压缩 checkpoint 会以 turn:null 落盘）、
+ * `job/*`（后台任务可在 turn 外结算）、`turn/end`、`command/*` 等都不算，
+ * 判不出来时宁可放行，让 DSH 自己拒绝。
+ */
+const IN_TURN_EVENT_TYPES = new Set([
+  'step/start',
+  'step/end',
+  'assistant/chunk',
+  'assistant/message',
+  'assistant/attempt',
+  'tool/call',
+  'tool/result',
+  'request/header',
+]);
+
 export interface DshClientOptions {
   /** Configured DSH home; selects `.credentials.yaml` when no explicit file is given. */
   dshHome?: string;
@@ -574,6 +591,32 @@ export class DshClient {
   }
 
   /**
+   * Whether the session's newest durable event proves a turn is still running.
+   *
+   * 只读探测（2 个 unary），供「必须空闲」的操作（手动压缩）在桥接重启后
+   * 用服务端事实兜底：最后一个事件是 turn 内才会出现的类型时，agent 一定
+   * 不空闲。判不出来就返回 false（fail open，仍然由 DSH 自己拒绝）。
+   */
+  async hasOpenTurn(
+    sessionId: string,
+    opts?: { signal?: AbortSignal; timeoutMs?: number },
+  ): Promise<boolean> {
+    try {
+      const throughSeq = await this.latestEventSeq(sessionId, opts);
+      if (throughSeq < 0) return false;
+      const value = await this.page(sessionId, throughSeq, 1, opts);
+      const last = value.records.at(-1)?.event;
+      if (last === undefined) return false;
+      return last.type === 'turn/start' || IN_TURN_EVENT_TYPES.has(last.type);
+    } catch (err) {
+      getLogger().warn(
+        `[dsh] open-turn probe failed for session ${sessionId}: ${(err as Error).message}`,
+      );
+      return false;
+    }
+  }
+
+  /**
    * One logical stream over `/api/remote.mux`. The WebSocket must carry the
    * same auth cookie as unary calls. Ends on the server's `end` frame, socket
    * close, error, or `signal` abort.
@@ -909,14 +952,45 @@ export class DshClient {
    * Per-session subscription: yields session events, assistant stream chunks
    * and approval notices for `sessionId`, auto-reconnecting on stream
    * drop/error and replaying the follow snapshot (dedup by seq). Terminates on
-   * turn/end or `signal` abort.
+   * the run's own turn/end or `signal` abort.
+   *
+   * `promptRequestId` binds the stream to this run's prompt. `mode:'queue'`
+   * prompts are accepted while the agent is mid-turn and start a turn only
+   * later, so the first `turn/end` after `initialSeq` can belong to that OTHER
+   * turn. Everything recorded before the prompt's own durable `user/message`
+   * (whose source echoes the request id as `rpcId`) is foreign: dropping it
+   * keeps the card "running" until this run's turn actually finishes.
    */
   async *sessionEvents(
     sessionId: string,
     signal: AbortSignal,
     initialSeq = -1,
+    promptRequestId?: string,
   ): AsyncGenerator<DshStreamItem> {
-    const state = { lastSeq: initialSeq };
+    const state = { lastSeq: initialSeq, owns: promptRequestId === undefined };
+    let foreignTailReported = false;
+    /** Mark this run as the owner once its own prompt message is recorded. */
+    const ownsEvent = (ev: DshSessionEvent): boolean => {
+      if (state.owns) return true;
+      if (ev.type !== 'user/message') return false;
+      const source = (ev.data as { source?: { kind?: string; rpcId?: string } } | undefined)
+        ?.source;
+      if (source?.kind === 'user' && source.rpcId === promptRequestId) {
+        state.owns = true;
+        return true;
+      }
+      return false;
+    };
+    const admit = (ev: DshSessionEvent): boolean => {
+      if (ownsEvent(ev)) return true;
+      if (!foreignTailReported) {
+        foreignTailReported = true;
+        getLogger().info(
+          `[dsh] prompt ${promptRequestId ?? '(none)'} is queued behind a running turn for session ${sessionId}; holding the card open until its own turn starts`,
+        );
+      }
+      return false;
+    };
     let authRefreshAttempted = false;
     while (!signal.aborted) {
       try {
@@ -928,6 +1002,7 @@ export class DshClient {
               const ev = record.event;
               if (!ev || ev.seq <= state.lastSeq) continue;
               state.lastSeq = ev.seq;
+              if (!admit(ev)) continue;
               const item = this.eventItem(sessionId, ev);
               if (item) yield item;
               if (ev.type === 'turn/end') return;
@@ -938,12 +1013,15 @@ export class DshClient {
             const ev = frame.event;
             if (ev.seq <= state.lastSeq) continue;
             state.lastSeq = ev.seq;
+            if (!admit(ev)) continue;
             const item = this.eventItem(sessionId, ev);
             if (item) yield item;
             if (ev.type === 'turn/end') return;
             continue;
           }
           if (frame.type === 'assistant-stream') {
+            // Mid-turn deltas of the turn this prompt is queued behind.
+            if (!state.owns) continue;
             yield { kind: 'assistant-stream', sessionId, frame: frame.frame };
           }
         }
