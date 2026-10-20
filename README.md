@@ -141,8 +141,8 @@ bun run typecheck     # tsc --noEmit
 bun run lint          # eslint
 
 # 真实飞书 API 集成测试（默认跳过，需要 ~/.lark-remote-test 下的有效凭据）
-FEISHU_LIVE_TEST=1 bun run test tests/feishu-card-form-error.test.ts
-FEISHU_LIVE_TEST=1 bun run test tests/feishu-reaction-emoji-live.test.ts
+FEISHU_LIVE_TEST=1 bun run test tests/feishu-live/feishu-card-form-error.test.ts
+FEISHU_LIVE_TEST=1 bun run test tests/feishu-live/feishu-reaction-emoji-live.test.ts
 ```
 
 ## 文档

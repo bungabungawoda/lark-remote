@@ -190,7 +190,7 @@ If you modified TypeScript code in `src/`, **you must run these two commands to 
 
 ```bash
 bun run typecheck   # Check for type errors, must be 0 errors
-bun test            # Run all tests, must all pass
+bun run test        # Run all tests, must all pass
 ```
 
 Both must pass for the change to be considered done. If either one is red, fix it before moving on.
