@@ -1,9 +1,5 @@
 /**
- * Merged anchor tests for pi session (stale db + mtime ordering)
- *
- * Source files (merged 2026-08-04, Phase 4):
- *   - pi-runner-spawning-base.test.ts (PiRunner removed 2026-08-18, RPC-only)
- *   - pi-session-stale-db.test.ts
+ * Anchor tests for pi session: stale db recovery + mtime ordering.
  */
 import { describe, it, expect, beforeEach } from 'vitest';
 import path from 'node:path';

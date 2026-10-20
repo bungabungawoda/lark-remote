@@ -1,14 +1,7 @@
 /**
- * Merged anchor tests for createJSONLStream
- *
- * Source files (merged 2026-08-04, Phase 4):
- *   - jsonl-stream-backpressure.test.ts
- *   - jsonl-stream-error-under-pause.test.ts
- *   - jsonl-stream-hysteresis.test.ts
- *   - jsonl-stream-no-pause-when-disabled.test.ts
- *   - jsonl-stream-resume-on-drain.test.ts
- *   - jsonl-stream-partial-bound.test.ts
- *   - jsonl-stream-chunk-accumulation.test.ts
+ * Anchor tests for createJSONLStream: backpressure, hysteresis,
+ * pause/resume-on-drain, error-under-pause, partial-line bounds and chunk
+ * accumulation.
  */
 import { describe, expect, it, test, vi } from 'vitest';
 import { Readable } from 'node:stream';

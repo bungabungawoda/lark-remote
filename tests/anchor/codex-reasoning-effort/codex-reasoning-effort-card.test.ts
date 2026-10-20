@@ -1,9 +1,6 @@
 /**
  * Codex config card reasoning-effort rendering anchors
  * (card field presence, effort-follows-model on model switch).
- *
- * Split from codex-reasoning-effort.test.ts (merged 2026-08-04, Phase 4;
- * re-split 2026-08-29 cleanup).
  */
 import { createMockBridge, createMockSessionReaderRegistry } from '../../lib/bridge-stubs.js';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';

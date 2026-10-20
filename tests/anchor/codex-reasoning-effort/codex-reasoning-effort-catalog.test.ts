@@ -1,9 +1,6 @@
 /**
  * Codex bundled-catalog reasoning effort pure-function anchors
  * (getCodexBundledModels / getReasoningEffortOptions / getDefaultReasoningEffort).
- *
- * Split from codex-reasoning-effort.test.ts (merged 2026-08-04, Phase 4;
- * re-split 2026-08-29 cleanup).
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import {

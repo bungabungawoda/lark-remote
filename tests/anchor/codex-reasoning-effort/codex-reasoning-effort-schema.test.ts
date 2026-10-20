@@ -1,8 +1,6 @@
 /**
  * CodexConfigSchema reasoningEffort schema validation anchors.
- *
- * Split from codex-reasoning-effort.test.ts (merged 2026-08-04, Phase 4;
- * re-split 2026-08-29 cleanup): schema checks need no mocks.
+ * Schema checks need no mocks.
  */
 import { describe, it, expect } from 'vitest';
 import { CodexConfigSchema } from '../../../src/config/index.js';

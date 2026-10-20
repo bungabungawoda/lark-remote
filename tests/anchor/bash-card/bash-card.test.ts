@@ -1,13 +1,9 @@
 /**
- * Merged anchor tests for BashCardSession + renderBashCard
+ * Anchor tests for BashCardSession + renderBashCard (budget, render budget,
+ * settle budget).
  *
- * Source files (merged 2026-08-04, Phase 4):
- *   - bash-card-budget.test.ts
- *   - bash-card-render-budget.test.ts
- *   - bash-card-settle-budget.test.ts
- *
- * Note: bash-runner-event-driven.test.ts is NOT merged here because it uses
- * vi.hoisted + top-level import (incompatible mock pattern with these files).
+ * Note: bash-runner-event-driven.test.ts stays separate — it uses vi.hoisted +
+ * top-level import, a mock pattern incompatible with these files.
  */
 import { describe, expect, it, vi } from 'vitest';
 import type { CardStreamController } from '@larksuite/channel';
