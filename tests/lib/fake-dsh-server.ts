@@ -48,6 +48,10 @@ export class FakeDshServer {
   private projectionValue: unknown = { asOfSeq: 0, values: {} };
   /** `job/list` 首帧（整份任务名单）。 */
   private jobRowsValue: unknown[] = [];
+  /** 自动把 prompt 的 user/message 注入 follow 快照（真实 DSH 一定记录它）。 */
+  private autoPromptMessage = true;
+  /** 每个 session 最近一次受理的 prompt 身份（session/requestId）。 */
+  private readonly promptRequestIds = new Map<string, string>();
   private port = 0;
   private closedConnections = 0;
   private lastEventClientIdValue: string | undefined;
@@ -222,6 +226,15 @@ export class FakeDshServer {
     this.muxFrames = frames;
   }
 
+  /**
+   * 关掉「prompt 受理后自动注入 user/message」的模拟。默认开启：真实 DSH 在
+   * 每一轮开始时都会把 prompt 落成一条 durable `user/message`（source.rpcId
+   * 回显 requestId）。要手写「prompt 排在别人 turn 后面」的时序时关掉它。
+   */
+  setAutoPromptMessage(enabled: boolean): void {
+    this.autoPromptMessage = enabled;
+  }
+
   /** Append a single frame at response time (real DSH only produces a turn's
    *  events after accepting its prompt) — avoids pre-queued frames racing a
    *  previous run's still-closing mux subscription. */
@@ -286,6 +299,12 @@ export class FakeDshServer {
   }
 
   private dispatch(method: string, payload: unknown, rpcId: string): FakeRpcResult | FakeRpcError {
+    if (method === 'session/prompt') {
+      const prompt = payload as { requestId?: unknown; sessionId?: unknown } | undefined;
+      if (typeof prompt?.sessionId === 'string' && typeof prompt.requestId === 'string') {
+        this.promptRequestIds.set(prompt.sessionId, prompt.requestId);
+      }
+    }
     const handler = this.unaryHandlers.get(method);
     if (handler) return handler(payload, rpcId);
     switch (method) {
@@ -318,7 +337,12 @@ export class FakeDshServer {
         type?: string;
         streamId?: string;
         endpoint?: string;
-        payload?: { args?: { address?: { sessionId?: string } } };
+        payload?: {
+          args?: {
+            address?: { sessionId?: string };
+            request?: { address?: { sessionId?: string } };
+          };
+        };
       };
       try {
         message = JSON.parse(String(raw)) as typeof message;
@@ -423,18 +447,53 @@ export class FakeDshServer {
         }, 5);
         return;
       }
-      const sessionId = message.payload?.args?.address?.sessionId ?? '';
+      const sessionId =
+        message.payload?.args?.request?.address?.sessionId ??
+        message.payload?.args?.address?.sessionId ??
+        '';
       const history =
         this.historySequence.length > 0
           ? this.historySequence.length > 1
             ? this.historySequence.shift()
             : this.historySequence[0]
           : this.historyValue;
-      const records = this.historyRecords(history);
+      const records = [...this.historyRecords(history)];
       const cursor = records.reduce<number>(
         (max, record) => Math.max(max, (record as { event?: { seq?: number } }).event?.seq ?? -1),
         -1,
       );
+      // 模拟 DSH 的真实落盘：prompt 受理后，它自己的 user/message 一定进入
+      // 会话（排队时在后续 turn 开头）。位置取 prompt 受理时的水位之后、
+      // 快照事件之前，客户端才能把它认成「本次 run 的消息」。
+      const ownPrompt = this.autoPromptMessage ? this.promptRequestIds.get(sessionId) : undefined;
+      if (ownPrompt !== undefined) {
+        const asOfSeq = (this.projectionValue as { asOfSeq?: number } | undefined)?.asOfSeq;
+        const firstSeq = records.reduce<number>(
+          (min, record) =>
+            Math.min(min, (record as { event?: { seq?: number } }).event?.seq ?? Infinity),
+          Infinity,
+        );
+        const ownSeq =
+          typeof asOfSeq === 'number' && asOfSeq >= 0
+            ? asOfSeq + 0.5
+            : firstSeq === Infinity
+              ? 0
+              : firstSeq - 0.5;
+        records.unshift({
+          type: 'event',
+          event: {
+            type: 'user/message',
+            seq: ownSeq,
+            time: 1700000000000,
+            data: {
+              id: `fake-prompt-${ownPrompt}`,
+              role: 'user',
+              content: [{ type: 'text', text: 'fake prompt' }],
+              source: { kind: 'user', rpcId: ownPrompt },
+            },
+          },
+        });
+      }
       ws.send(
         JSON.stringify({
           type: 'item',

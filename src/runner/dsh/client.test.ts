@@ -65,6 +65,21 @@ function turnEnd(reason: string, seq: number): DshSessionEvent {
   };
 }
 
+/** DSH 把 prompt 的 requestId 回写进 durable user/message 的 source.rpcId。 */
+function promptMessage(rpcId: string, seq: number): DshSessionEvent {
+  return {
+    type: 'user/message',
+    seq,
+    time: 1700000000000,
+    data: {
+      id: `msg-${rpcId}`,
+      role: 'user',
+      content: [{ type: 'text', text: 'live question' }],
+      source: { kind: 'user', rpcId },
+    },
+  };
+}
+
 function textDelta(delta: string): DshFollowFrame {
   return {
     type: 'assistant-stream',
@@ -390,6 +405,7 @@ describe('DshClient remote mux', () => {
 
 describe('DshRunner over remote mux', () => {
   it('runs a full turn to success with init → deltas → result', async () => {
+    let promptRequestId = '';
     const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
       if (url.endsWith('/api/session/projections')) return jsonResponse({ asOfSeq: 0 });
@@ -397,14 +413,19 @@ describe('DshRunner over remote mux', () => {
         const body = JSON.parse(String(init?.body)) as {
           payload: { args: { request: { requestId: string } } };
         };
-        expect(body.payload.args.request.requestId).toMatch(/^lark-remote-/);
+        promptRequestId = body.payload.args.request.requestId;
+        expect(promptRequestId).toMatch(/^lark-remote-/);
         return jsonResponse({ accepted: true });
       }
       return jsonResponse({ accepted: true });
     }) as typeof fetch;
     const webSocketImpl: WebSocketFactory = () =>
       new ScriptedWebSocket('ws://127.0.0.1:3080/api/remote.mux', [
-        { type: 'snapshot', cursor: 0, records: [] },
+        {
+          type: 'snapshot',
+          cursor: 0,
+          records: [{ type: 'event', event: promptMessage(promptRequestId, 0.5) }],
+        },
         textDelta('live websocket '),
         { type: 'event', event: turnEnd('completed', 2) },
       ]);
