@@ -65,6 +65,21 @@ function turnEnd(reason: string, seq: number): DshSessionEvent {
   };
 }
 
+/** DSH 把 prompt 的 requestId 回写进 durable user/message 的 source.rpcId。 */
+function promptMessage(rpcId: string, seq: number, text = 'queued prompt'): DshSessionEvent {
+  return {
+    type: 'user/message',
+    seq,
+    time: 1700000000000,
+    data: {
+      id: `msg-${rpcId}`,
+      role: 'user',
+      content: [{ type: 'text', text }],
+      source: { kind: 'user', rpcId },
+    },
+  };
+}
+
 function toolCall(
   callId: string,
   name: string,
@@ -2012,6 +2027,95 @@ describe('DshClient / DshRunner integration', () => {
 
     expect(texts).toEqual(['second answer ']);
     expect(texts.join('')).not.toContain('first answer');
+    expect(events.find((e) => e.type === 'result')).toMatchObject({ subtype: 'success' });
+  });
+
+  it('queued prompt stays on its own turn instead of ending on the turn it queues behind', async () => {
+    // 验证什么：agent 忙时 DSH 会受理 prompt 并排队（mode:'queue'），follow
+    // 快照先送来的是「正在跑的 turn」的尾巴和它的 turn/end。run 若在这里收尾，
+    // 卡片会在自己的 turn 开始前显示「已完成」——用户据此点 Compact，DSH 以
+    // agent 不空闲拒绝。run 必须丢掉 foreign 尾巴，等自己 rpcId 的 user/message。
+    const srv = new FakeDshServer();
+    server = srv;
+    srv.setAutoPromptMessage(false);
+    srv.register('session/prompt', (payload) => {
+      const { requestId } = payload as { requestId: string };
+      srv.pushMuxFrame(sessionEventFrame(SID, textChunk('previous turn tail ', 1)));
+      srv.pushMuxFrame(sessionEventFrame(SID, turnEnd('completed', 2)));
+      srv.pushMuxFrame(sessionEventFrame(SID, promptMessage(requestId, 3)));
+      srv.pushMuxFrame(sessionEventFrame(SID, textChunk('queued answer ', 4)));
+      srv.pushMuxFrame(sessionEventFrame(SID, turnEnd('completed', 5)));
+      return { ok: true, value: { accepted: true } };
+    });
+    await srv.start();
+
+    const runner = new DshRunner({ kind: 'dsh', sessionReader: stubReader, host: srv.baseUrl });
+    const events = await collect(runner.run('queued', { cwd: CWD, sessionId: SID }));
+
+    const texts = events
+      .filter((e) => e.type === 'assistant')
+      .map((e) => e.message.content.find((c) => c.type === 'text'))
+      .filter((c): c is { type: 'text'; text: string } => !!c)
+      .map((c) => c.text);
+
+    expect(texts).toEqual(['queued answer ']);
+    expect(texts.join('')).not.toContain('previous turn tail');
+    expect(events.find((e) => e.type === 'result')).toMatchObject({ subtype: 'success' });
+  });
+
+  it('compact precheck refuses a session whose newest event is mid-turn', async () => {
+    // 验证什么：桥接重启后内存里没有在途 run，但 DSH 服务端可能还在跑上一轮。
+    // runCompact 用只读探测兜底（session/projections 水位 + session/page 末条），
+    // 末条是 turn 内事件就直接给明确原因，不把注定被拒的命令发出去。
+    server = new FakeDshServer();
+    let commandCalled = false;
+    server.register('commands/execute', () => {
+      commandCalled = true;
+      return { ok: true, value: { kind: 'success', text: 'Compacted 1 history item.' } };
+    });
+    server.setProjectionValue({ asOfSeq: 12, values: {} });
+    server.setHistoryValue({
+      records: [
+        {
+          type: 'event',
+          event: {
+            type: 'step/start',
+            seq: 12,
+            time: 1700000000000,
+            data: { turn: 3, step: 2 },
+          },
+        },
+      ],
+      hasMore: false,
+    });
+    await server.start();
+
+    const runner = new DshRunner({ kind: 'dsh', sessionReader: stubReader, host: server.baseUrl });
+    const events = await collect(runner.runCompact('', { cwd: CWD, sessionId: SID }));
+
+    const result = events.find((e) => e.type === 'result');
+    expect(result).toMatchObject({ subtype: 'error' });
+    expect(result?.type === 'result' ? result.errorMessage : '').toContain('还有一轮在跑');
+    expect(commandCalled).toBe(false);
+  });
+
+  it('compact precheck proceeds when the newest event is a turn end', async () => {
+    // 验证什么：末条是 turn/end 说明服务端空闲，探测必须放行而不是误拒。
+    server = new FakeDshServer();
+    server.register('commands/execute', () => ({
+      ok: true,
+      value: { kind: 'success', text: 'Compacted 2 history items.' },
+    }));
+    server.setProjectionValue({ asOfSeq: 4, values: {} });
+    server.setHistoryValue({
+      records: [{ type: 'event', event: turnEnd('completed', 4) }],
+      hasMore: false,
+    });
+    await server.start();
+
+    const runner = new DshRunner({ kind: 'dsh', sessionReader: stubReader, host: server.baseUrl });
+    const events = await collect(runner.runCompact('', { cwd: CWD, sessionId: SID }));
+
     expect(events.find((e) => e.type === 'result')).toMatchObject({ subtype: 'success' });
   });
 

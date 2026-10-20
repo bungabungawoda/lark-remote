@@ -492,10 +492,14 @@ export class DshRunner implements AgentRunner {
           signal: abort.signal,
         });
 
+        // Keep the prompt identity: DSH echoes it into the durable user/message
+        // source.rpcId, which is how runTurn tells this run's turn from a turn
+        // it is merely queued behind.
+        const promptRequestId = newPromptRequestId();
         await this.client.unary(
           'session/prompt',
           {
-            requestId: newPromptRequestId(),
+            requestId: promptRequestId,
             sessionId,
             mode: 'queue',
             content: [{ type: 'text', text: message }],
@@ -517,7 +521,13 @@ export class DshRunner implements AgentRunner {
         }
 
         try {
-          for await (const ev of this.runTurn(sessionId, opts.cwd, prePromptSeq, abort)) {
+          for await (const ev of this.runTurn(
+            sessionId,
+            opts.cwd,
+            prePromptSeq,
+            promptRequestId,
+            abort,
+          )) {
             yield ev;
             if (ev.type === 'result') {
               terminalEmitted = true;
@@ -586,6 +596,7 @@ export class DshRunner implements AgentRunner {
     sessionId: string,
     cwd: string,
     prePromptSeq: number,
+    promptRequestId: string,
     abort: AbortController,
   ): AsyncGenerator<AgentEvent> {
     const streamAbort = new AbortController();
@@ -604,7 +615,7 @@ export class DshRunner implements AgentRunner {
 
     try {
       const sources = [
-        this.client.sessionEvents(sessionId, signal, prePromptSeq),
+        this.client.sessionEvents(sessionId, signal, prePromptSeq, promptRequestId),
         this.client.approvalEvents(sessionId, signal),
         this.client.controlFrames(signal),
       ];
@@ -1042,6 +1053,20 @@ export class DshRunner implements AgentRunner {
         cwd: opts.cwd,
         model: this.configuredModel ?? 'DSH',
       };
+
+      // 桥接重启后内存里没有在途 run，但服务端可能还在跑上一轮：先用只读
+      // 探测兜底，别把注定被拒的 /compact 发出去（DSH 只回一句把「有压缩
+      // 在跑」和「agent 不空闲」合并在一起的文案，用户看不出真实原因）。
+      if (await this.client.hasOpenTurn(sessionId, { signal: abort.signal })) {
+        terminalEmitted = true;
+        yield {
+          type: 'result',
+          subtype: 'error',
+          session_id: sessionId,
+          errorMessage: '当前会话还有一轮在跑（DSH 服务端未空闲），等它结束后再压缩',
+        };
+        return;
+      }
 
       const outcome = await this.client.executeCommand(sessionId, DSH_COMPACT_COMMAND, {
         signal: abort.signal,
