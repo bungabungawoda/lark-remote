@@ -53,7 +53,7 @@ export class JsonlRpcTransport {
   /** JSON lines buffered while stdin is under backpressure (bounded by callers). */
   private writeQueue: Buffer[] = [];
   private flushing = false;
-  /** win32 的 command-not-found 嫌疑标记（双条件定性见下方 onExit）。 */
+  /** win32 嗅探嫌疑标记（双条件定性见下方 onExit）。 */
   private commandNotFoundSeen = false;
 
   constructor(opts: {

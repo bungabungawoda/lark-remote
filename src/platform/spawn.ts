@@ -10,7 +10,7 @@
  *   必须经它合并（先按不区分大小写删旧键再设新值）；
  * - isWindowsCommandNotFoundLine：win32 经 cmd 垫片启动失败不是 spawn 的
  *   error 事件 ENOENT，而是子进程往 stderr 打
- *   "'xxx' is not recognized as an internal or external command"。
+ *   "'xxx' is not recognized as an internal or external command"（见本文件 command-not-found 嗅探）。
  */
 import crossSpawn from 'cross-spawn';
 import type { ChildProcess, SpawnOptions, SpawnSyncOptions } from 'node:child_process';
