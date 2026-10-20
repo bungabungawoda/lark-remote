@@ -572,7 +572,8 @@ cardAction）。300ms 挡飞书瞬时重投递（<100ms 级），放过用户连
 同一 `configDir` 只能同时运行一个 lark-remote 主进程。启动时 `InstanceLock` 读取 `<configDir>/lark-remote.pid`：若 pid 仍存活则拒绝启动，若 pid 已不存在则覆盖陈旧锁；进程退出时只清理属于当前 pid 的锁。
 
 lark-remote 崩溃时 agent 子进程变孤儿。启动时读 `<configDir>/<agent>-*.pid`（按 workspace
-隔离），先做进程身份校验（`ps -o command=` 匹配 binary，防 pid 复用误杀）再对整个进程组发 SIGTERM；lark-remote 退出时（`process.on('exit'|'SIGINT'|'SIGTERM')`）
+隔离），先做进程身份校验（`ps -o command=` 匹配 binary，防 pid 复用误杀）
+再对整个进程组发 SIGTERM；lark-remote 退出时（`process.on('exit'|'SIGINT'|'SIGTERM')`）
 对进程组做 SIGTERM+SIGKILL 清理并删 pid 文件。
 
 ### 9.10 workspace.json 写入原子性
