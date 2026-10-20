@@ -6,8 +6,10 @@
  * alignment → synthetic system/init (DSH has no init event) → session/prompt
  * (mode:'queue') → consume `session/follow` + `$events` until turn/end.
  *
- * stop() → session/cancel + abort the mux subscription. killOrphan /
- * registerExitHandlers are no-ops (no local process). DSH approvals are
+ * stop() → session/cancel + abort the mux subscription. killOrphan is a no-op
+ * (no local process); registerExitHandlers cancels the in-flight turn
+ * synchronously on process exit, because the turn lives in the shared host and
+ * would otherwise keep running with no subscriber. DSH approvals are
  * two-channel: durable `approval/asked` / `approval/decided` drive the Feishu
  * card, while the answerable `$events` waterfall supplies eventId/clientId.
  * `ask_user_question` prompts arrive only as a `user-questions/request`
@@ -29,6 +31,8 @@ import { DshTranslator } from './translator.js';
 import { DshApprovalTracker, type DshApprovalAudit, type DshApprovalBinding } from './approval.js';
 import { mergeAsync } from './merge.js';
 import { getLogger } from '../../logger/index.js';
+import { registerExitCleanup, unregisterExitCleanup } from '../common/spawning-runner.js';
+import { cancelSessionSync } from './exit-cancel.js';
 import type { DshDaemon } from './daemon.js';
 import type {
   DshApprovalStreamItem,
@@ -129,6 +133,11 @@ export interface DshRunnerOptions {
   webSocketImpl?: WebSocketFactory;
   /** Unary request timeout in ms (default 60s); 0 disables. */
   requestTimeoutMs?: number;
+  /**
+   * 退出路径上取消在途 turn 的传输实现（测试注入）。
+   * 默认走同步 curl（`cancelSessionSync`）：`process.on('exit')` 里不能 await。
+   */
+  cancelOnExit?: (info: { baseUrl: string; sessionId: string }) => void;
 }
 
 /** Budget for the fire-and-forget session/cancel on stop (never block /stop). */
@@ -273,6 +282,8 @@ export class DshRunner implements AgentRunner {
   >();
   /** False after `$events` is unavailable; approval/asked then falls back to text. */
   private approvalChannelAvailable = true;
+  /** 退出路径的取消实现（默认同步 curl，见 `cancelSessionSync`）。 */
+  private readonly cancelOnExit: (info: { baseUrl: string; sessionId: string }) => void;
 
   constructor(opts: DshRunnerOptions) {
     this.sessionReader = opts.sessionReader;
@@ -290,6 +301,16 @@ export class DshRunner implements AgentRunner {
       webSocketImpl: opts.webSocketImpl,
       requestTimeoutMs: opts.requestTimeoutMs,
     });
+    this.cancelOnExit =
+      opts.cancelOnExit ??
+      (({ baseUrl, sessionId }) => {
+        cancelSessionSync({
+          baseUrl,
+          sessionId,
+          dshHome: opts.dshHome,
+          credentialsFile: opts.credentialsFile,
+        });
+      });
   }
 
   get isRunning(): boolean {
@@ -1200,11 +1221,31 @@ export class DshRunner implements AgentRunner {
     // No local subprocess for DSH — nothing to reap.
   }
 
+  /**
+   * 退出前取消在途 turn。
+   *
+   * turn 跑在常驻共享的 `dsh web` host 里，不在本进程的子进程树上；所以
+   * "杀自己的子进程"这套退出清理对它无效，桥接一退出，turn 继续无人接收地跑
+   * （2026-10-19 实测：一个孤儿 turn 在桥接死后又跑了 2h21m / 345 个 step）。
+   * 这里复用进程级退出分发器，用同步 curl 发一次 `session/cancel`。
+   */
   registerExitHandlers(): void {
-    // No local subprocess for DSH — nothing to register.
+    registerExitCleanup(this);
   }
 
   unregisterExitHandlers(): void {
-    // No-op (see registerExitHandlers).
+    unregisterExitCleanup(this);
+  }
+
+  /** Exit dispatcher hook: cancel the in-flight turn, bounded and never throwing. */
+  cleanupOnExit(): void {
+    if (!this.running || !this.activeSessionId) return;
+    const sessionId = this.activeSessionId;
+    try {
+      this.cancelOnExit({ baseUrl: this.client.baseUrl, sessionId });
+      getLogger().info(`[dsh] exit-cancel sent session=${sessionId}`);
+    } catch (err) {
+      getLogger().warn(`[dsh] exit-cancel failed session=${sessionId}: ${(err as Error).message}`);
+    }
   }
 }
