@@ -51,7 +51,7 @@ function charWidth(ch: string): number {
 /**
  * 中间省略截断：保留开头与结尾，只在中间打 `…`。
  *
- * 标题里的路径/URL 必须保留**结尾**才有信息量（`/mnt/data/.../handoff/
+ * 标题里的路径/URL 必须保留**结尾**才有信息量（`/mnt/data/.../notes/
  * 2026-10-19-vision-remaining.md` 里真正有用的是文件名），尾部省略会把文件名
  * 整个切掉；纯尾部截断只适合"开头即结论"的句子（命令）。
  */
