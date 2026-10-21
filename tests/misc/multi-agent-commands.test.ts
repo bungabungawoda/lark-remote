@@ -2,20 +2,15 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { CommandRouter } from '../../src/router/index.js';
-import { Bridge } from '../../src/bridge/index.js';
-import { SessionStore } from '../../src/session/index.js';
 import { AppConfigSchema } from '../../src/config/index.js';
-import type { AppConfig } from '../../src/config/index.js';
 import { SessionReaderRegistry } from '../../src/session/registry.js';
 
 import {
-  createStubAgentRegistry,
   createStubSessionReaderRegistry,
-  createStubConnector,
   createStubRunner,
   makeBridge,
 } from '../lib/bridge-stubs.js';
+import { createRouterFixture } from '../lib/router-fixture.js';
 
 let tmpDir: string;
 beforeEach(() => {
@@ -31,37 +26,19 @@ function createRouter(overrides?: {
   defaultAgent?: string;
   sessionReaderRegistry?: SessionReaderRegistry;
 }) {
-  const sessionStore = new SessionStore();
-  const connector = createStubConnector();
-  const runner = createStubRunner({ withStatusInfo: true });
-  const config: AppConfig = AppConfigSchema.parse({
-    feishu: { appId: 'test', appSecret: 'test' },
-    claude: {
-      model: 'claude-opus-4-8',
-      effort: 'medium',
-      stopGraceMs: 5000,
-    },
-    defaultAgent: overrides?.defaultAgent ?? 'claude',
-  });
-
-  const registry = overrides?.sessionReaderRegistry ?? createStubSessionReaderRegistry();
-
-  const router = new CommandRouter({
-    sessionStore,
-    bridge: new Bridge({
-      runner,
-      agentRegistry: createStubAgentRegistry(runner),
-      sessionReaderRegistry: createStubSessionReaderRegistry(),
-      connector,
-      sessionStore,
-      config,
+  return createRouterFixture({
+    tmpDir,
+    config: AppConfigSchema.parse({
+      feishu: { appId: 'test', appSecret: 'test' },
+      claude: {
+        model: 'claude-opus-4-8',
+        effort: 'medium',
+        stopGraceMs: 5000,
+      },
+      defaultAgent: overrides?.defaultAgent ?? 'claude',
     }),
-    config,
-    configPath: path.join(tmpDir, 'config.yaml'),
-    workspacePath: path.join(tmpDir, 'workspace.json'),
-    sessionReaderRegistry: registry,
+    sessionReaderRegistry: overrides?.sessionReaderRegistry ?? createStubSessionReaderRegistry(),
   });
-  return { router, sessionStore, connector, config };
 }
 
 // ── Issue 1 — /resume empty list hardcoded "Claude" ────────

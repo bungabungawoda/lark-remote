@@ -226,7 +226,7 @@ describe('SessionIndex build', () => {
 // ─── SessionIndex refresh ────────────────────────────────────
 
 describe('SessionIndex refresh', () => {
-  it('unchanged files are NOT re-parsed (parse count stays same)', async () => {
+  it('unchanged files keep the cached entry object (no re-parse)', async () => {
     writeJsonl('-home-user-project', FAKE_SESSION_ID_A, [
       initLine(FAKE_CWD_1),
       userMessageLine('placeholder'),
@@ -234,15 +234,14 @@ describe('SessionIndex refresh', () => {
 
     const idx = new SessionIndex(projectsDir, { refreshIntervalMs: 1 });
     idx.build();
-    const parseCountAfterBuild = idx.parseCount;
+    const entryAfterBuild = idx.listByCwd(FAKE_CWD_1)[0];
 
     await new Promise((r) => setTimeout(r, 5));
     idx.refresh();
-    const parseCountAfterRefresh = idx.parseCount;
-    expect(parseCountAfterRefresh).toBe(parseCountAfterBuild);
+    expect(idx.listByCwd(FAKE_CWD_1)[0]).toBe(entryAfterBuild);
   });
 
-  it('changed file is re-parsed', async () => {
+  it('changed file is re-parsed and the summary updates', async () => {
     const filePath = writeJsonl('-home-user-project', FAKE_SESSION_ID_A, [
       initLine(FAKE_CWD_1),
       userMessageLine('placeholder'),
@@ -250,7 +249,6 @@ describe('SessionIndex refresh', () => {
 
     const idx = new SessionIndex(projectsDir, { refreshIntervalMs: 1 });
     idx.build();
-    const parseCountAfterBuild = idx.parseCount;
 
     // Modify the file
     await tickMtime();
@@ -258,8 +256,7 @@ describe('SessionIndex refresh', () => {
 
     await new Promise((r) => setTimeout(r, 5));
     idx.refresh();
-    const parseCountAfterRefresh = idx.parseCount;
-    expect(parseCountAfterRefresh).toBe(parseCountAfterBuild + 1);
+    expect(idx.listByCwd(FAKE_CWD_1)[0].summary).toBe('updated');
   });
 
   it('deleted file is removed from index', async () => {
@@ -565,10 +562,14 @@ describe('SessionIndex throttled refresh', () => {
     const idx = new SessionIndex(projectsDir, { refreshIntervalMs: 5000 });
     idx.build();
 
-    // Immediate refresh should be a no-op (within throttle)
+    // Change the file, then refresh immediately: throttle must skip the scan,
+    // so the cached summary stays at the value captured by build().
+    writeJsonl('-home-user-project', FAKE_SESSION_ID_A, [
+      initLine(FAKE_CWD_1),
+      userMessageLine('updated'),
+    ]);
     idx.refresh();
-    // Should not have re-scanned directories
-    expect(idx.scanCount).toBe(1); // Only the initial build
+    expect(idx.listByCwd(FAKE_CWD_1)[0].summary).toBe('placeholder');
   });
 
   it('refresh after throttle interval actually scans', async () => {

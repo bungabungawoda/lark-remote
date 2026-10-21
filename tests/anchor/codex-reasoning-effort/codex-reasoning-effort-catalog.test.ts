@@ -18,18 +18,8 @@ import { mockLogger } from '../../lib/logger-mock.js';
 
 const { mockSpawnSync } = vi.hoisted(() => ({ mockSpawnSync: vi.fn() }));
 
-vi.mock('../../../src/platform/spawn.js', () => ({
-  // 兼容历史 mock 形态：返回 string/Buffer 视为成功 stdout，抛错/其余原样穿透
-  spawnProcessSync: (...args: any[]) => {
-    const v = mockSpawnSync(...args);
-    if (typeof v === 'string' || Buffer.isBuffer(v)) {
-      return { status: 0, stdout: v, stderr: '' };
-    }
-    return v;
-  },
-  spawnProcess: () => {
-    throw new Error('anchor test must not spawn async');
-  },
+vi.mock('../../../src/platform/spawn.js', async () => ({
+  ...(await import('../../lib/spawn-mock.js')).spawnModuleMock(mockSpawnSync),
 }));
 vi.mock('../../../src/logger/index.js', async () =>
   (await import('../../lib/logger-mock.js')).loggerModuleMock(),

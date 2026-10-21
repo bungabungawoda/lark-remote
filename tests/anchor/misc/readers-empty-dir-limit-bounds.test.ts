@@ -25,6 +25,7 @@ import { KimiSessionReader } from '../../../src/session/kimi/index.js';
 import type { AgentSessionReader } from '../../../src/runner/index.js';
 
 import { encodedProjectDir, piEncodeCwd } from '../../lib/session-fixtures.js';
+import { metaLine, writeRolloutLines } from '../../lib/codex-rollout-fixture.js';
 vi.mock('../../../src/logger/index.js', async () =>
   (await import('../../lib/logger-mock.js')).loggerModuleMock(),
 );
@@ -112,16 +113,13 @@ describe('reader anchors', () => {
     // codex fixture: sessions/YYYY/MM/DD/rollout-<id>.jsonl + session_meta。
     const codexHome = path.join(tmpDir, 'codex');
     const codexDay = path.join(codexHome, 'sessions', '2026', '07', '31');
-    fs.mkdirSync(codexDay, { recursive: true });
     ids.forEach((id, i) => {
-      const p = path.join(codexDay, `rollout-${id}.jsonl`);
-      fs.writeFileSync(
-        p,
-        `{"type":"session_meta","payload":{"session_id":"${id}","cwd":${JSON.stringify(cwd)},"originator":"x"}}\n`,
-        'utf-8',
+      writeRolloutLines(
+        codexDay,
+        `rollout-${id}.jsonl`,
+        [metaLine(id, cwd, { originator: 'x' })],
+        baseTime + i * 60_000,
       );
-      const t = new Date(baseTime + i * 60_000);
-      fs.utimesSync(p, t, t);
     });
 
     // pi fixture: sessions/<encoded>/<timestamp>_<uuid>.jsonl。

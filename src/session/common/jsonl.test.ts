@@ -520,3 +520,11 @@ describe('scanJsonlLines multi-byte cross-chunk boundary', () => {
     expect(result[0]).not.toContain('�');
   });
 });
+
+describe('readJsonlLines error contract', () => {
+  it('returns [] for a missing file (no ENOENT throw)', () => {
+    const missing = path.join(os.tmpdir(), `readjsonlines-missing-${process.pid}.jsonl`);
+    expect(() => readJsonlLines(missing)).not.toThrow();
+    expect(readJsonlLines(missing)).toEqual([]);
+  });
+});

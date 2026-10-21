@@ -14,11 +14,7 @@
     "tests/anchor/regression/completion-card.test.ts",
     "tests/anchor/misc/bridge-runner-opts.test.ts",
     "tests/anchor/misc/reaction-terminal-emoji.test.ts",
-    "tests/anchor/approval-expiry/approval-expiry-expire-decline.test.ts",
-    "tests/anchor/approval-expiry/approval-expiry-coordinator-idempotency.test.ts",
-    "tests/anchor/approval-expiry/approval-expiry-responder-failure.test.ts",
-    "tests/anchor/approval-expiry/approval-expiry-turn-end.test.ts",
-    "tests/anchor/approval-expiry/approval-expiry-multiple-pending.test.ts"
+    "tests/anchor/approval-expiry/approval-expiry-coordinator.test.ts"
   ],
   "infra-card": [
     "src/card/**/*.test.ts",
@@ -29,20 +25,15 @@
     "tests/card/run-card-budget-plan-filechange.test.ts",
     "tests/card/run-state-plan-filechange.test.ts",
     "tests/card/thinking-blocks.test.ts",
-    "tests/anchor/misc/truncate-surrogate.test.ts",
-    "tests/anchor/regression/estimate-reuse.test.ts",
     "tests/anchor/regression/bash-output.test.ts",
-    "tests/anchor/regression/fit-utf8.test.ts",
     "tests/anchor/misc/card-session-second-start-timeout.test.ts",
-    "tests/anchor/approval-expiry/approval-expiry-card-render.test.ts",
-    "tests/anchor/approval-expiry/approval-expiry-reducer-mismatch.test.ts"
+    "tests/anchor/approval-expiry/approval-expiry-reducer.test.ts"
   ],
   "infra-connector": [
     "src/connector/**/*.test.ts",
     "tests/anchor/regression/send-retry-feishu-code.test.ts",
     "tests/anchor/regression/send-with-retry-error.test.ts",
-    "tests/anchor/regression/send-file-stream-destroy.test.ts",
-    "tests/card/typing-reaction.test.ts"
+    "tests/anchor/regression/send-file-stream-destroy.test.ts"
   ],
   "infra-router": [
     "src/router/file-limit.test.ts",
@@ -62,6 +53,7 @@
     "src/router/card-helpers-resume-window.test.ts",
     "src/router/alias.test.ts",
     "src/router/config/config-builder.test.ts",
+    "src/router/config/common/model-patch.test.ts",
     "src/router/update-command.test.ts",
     "tests/router/**/*.test.ts",
     "tests/anchor/agent-switch/**/*.test.ts",
@@ -71,7 +63,6 @@
     "tests/anchor/regression/resume-use-validation.test.ts",
     "tests/anchor/regression/config-direct-write-propagation.test.ts",
     "tests/anchor/regression/list-failure-distinct.test.ts",
-    "tests/anchor/misc/active-stop-button-plain-text.test.ts",
     "tests/anchor/misc/cmd-status-session-cwd.test.ts",
     "tests/anchor/misc/ls-pagination.test.ts",
     "tests/anchor/misc/ws-remove-inplace.test.ts",
@@ -90,11 +81,9 @@
     "src/session/common/**/*.test.ts",
     "tests/session/**/*.test.ts",
     "tests/anchor/jsonl-stream/**/*.test.ts",
-    "tests/anchor/misc/readjsonlines-error-contract.test.ts",
     "tests/anchor/misc/set-session-id-and-session-cwd.test.ts",
     "tests/anchor/misc/session-cwds-semantics.test.ts",
     "tests/anchor/misc/reader-list-pagination.test.ts",
-    "tests/anchor/misc/summarize-early-stop.test.ts",
     "tests/anchor/misc/session-reader-max-events-forward.test.ts",
     "tests/anchor/regression/list-cache.test.ts",
     "tests/anchor/misc/readers-empty-dir-limit-bounds.test.ts"
@@ -131,7 +120,6 @@
     "tests/anchor/regression/config-save-atomic-write.test.ts",
     "tests/anchor/regression/config-direct-write-discards-pending.test.ts",
     "tests/anchor/regression/config-set-unknown-key-strips.test.ts",
-    "tests/anchor/misc/resolve-config-dir-expands-tilde.test.ts",
     "src/config/qr.test.ts"
   ],
   "infra-order": [
@@ -171,11 +159,7 @@
     "src/runner/claude/**/*.test.ts",
     "src/session/claude/**/*.test.ts",
     "src/router/config/claude.test.ts",
-    "tests/anchor/misc/claude-reader-offset-without-limit.test.ts",
-    "tests/anchor/misc/claude-runner-spawning-base.test.ts",
-    "tests/anchor/misc/read-session-content-single-pass.test.ts",
-    "tests/anchor/misc/cache-cumulative.test.ts",
-    "tests/anchor/codex-session/claude-read-session-content-tail.test.ts"
+    "tests/anchor/misc/claude-runner-spawning-base.test.ts"
   ],
   "agent-codex": [
     "src/runner/codex/app-server/**/*.test.ts",
@@ -187,20 +171,9 @@
     "tests/anchor/codex-catalog/**/*.test.ts",
     "tests/anchor/codex-reasoning-effort/**/*.test.ts",
     "tests/anchor/codex-app-server-idle-timeout/**/*.test.ts",
-    "tests/anchor/codex-session/codex-bridge-jsonl-flow-priority.test.ts",
-    "tests/anchor/codex-session/codex-bridge-jsonl-missing-fallback-live.test.ts",
-    "tests/anchor/codex-session/codex-getnewest-session.test.ts",
-    "tests/anchor/codex-session/codex-list-rollouts-excludes-subagent.test.ts",
-    "tests/anchor/codex-session/codex-main-thread-session.test.ts",
-    "tests/anchor/codex-session/codex-multi-main-thread-newest.test.ts",
-    "tests/anchor/codex-session/codex-reader-negative-offset.test.ts",
-    "tests/anchor/codex-session/codex-real-session-snapshot.test.ts",
-    "tests/anchor/codex-session/codex-rollout-list-order.test.ts",
-    "tests/anchor/codex-session/codex-rollout-redundant-walk.test.ts",
-    "tests/anchor/codex-session/codex-same-mtime-stable-order.test.ts",
-    "tests/anchor/codex-session/codex-session-active-excludes-subagent.test.ts",
-    "tests/anchor/codex-session/codex-session-reader-max-events.test.ts",
-    "tests/anchor/codex-session/codex-reader-offset-boundary.test.ts",
+    "tests/anchor/codex-session/codex-bridge-jsonl.test.ts",
+    "tests/anchor/codex-session/codex-session-list.test.ts",
+    "tests/anchor/codex-session/codex-session-read.test.ts",
     "tests/anchor/approval-expiry/approval-expiry-integration-cancel.test.ts"
   ],
   "agent-opencode": [

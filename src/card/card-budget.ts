@@ -1,10 +1,11 @@
 import {
-  truncateUtf8,
   dropOldestMarkdownTables,
   countMarkdownTables,
   FEISHU_MAX_TABLES,
   CARD_BUDGET_BYTES,
 } from './text-truncate.js';
+import { truncateUtf8 } from '../common/truncate.js';
+import { cardWithHeader } from './card-shared.js';
 
 /**
  * 静态卡片体积保护
@@ -340,25 +341,19 @@ function enforceByteBudget(
   }
 
   // ========== 阶段5：最终兜底（原 extreme_fallback） ==========
-  const minimalCard = {
-    schema: '2.0',
-    config: { wide_screen_mode: true },
-    header: {
-      template: 'orange',
-      title: { tag: 'plain_text', content: '⚠️ 内容已截断' },
-    },
-    body: {
-      elements: [
-        {
-          tag: 'div',
-          text: {
-            tag: 'lark_md',
-            content: '会话内容过大，已自动截断。\n\n请使用 `/active` 查看完整列表。',
-          },
+  const minimalCard = cardWithHeader({
+    template: 'orange',
+    title: '⚠️ 内容已截断',
+    elements: [
+      {
+        tag: 'div',
+        text: {
+          tag: 'lark_md',
+          content: '会话内容过大，已自动截断。\n\n请使用 `/active` 查看完整列表。',
         },
-      ],
-    },
-  };
+      },
+    ],
+  });
 
   return {
     card: minimalCard,

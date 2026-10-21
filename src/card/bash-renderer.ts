@@ -1,7 +1,8 @@
 import type { RunCardRenderOptions } from './run-renderer.js';
 import { terminalToColor, terminalToLabel, stopButton } from './card-shared.js';
 import { markdownDiv } from './collapsible.js';
-import { truncateUtf8, CARD_BUDGET_BYTES } from './text-truncate.js';
+import { CARD_BUDGET_BYTES } from './text-truncate.js';
+import { truncateUtf8 } from '../common/truncate.js';
 
 /**
  * 飞书卡片大小限制（安全阈值，与 run-renderer 一致）。

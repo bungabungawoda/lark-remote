@@ -6,6 +6,7 @@
  */
 
 import { getConfigValue, type AppConfig } from '../../../config/index.js';
+import { cardButton } from '../../../card/card-shared.js';
 import type { ConfigField } from '../types.js';
 
 /** A tab/section in the config card. */
@@ -39,8 +40,8 @@ function buildFieldElements(fields: ConfigField[], displayConfig: AppConfig): ob
   return elements;
 }
 
-function buildBooleanElement(field: ConfigField, isOn: boolean): object {
-  const displayVal = isOn ? '✅ 已开启' : '⚪ 已关闭';
+/** 配置项统一行：左 label（2 份宽）+ 右控件（3 份宽）。 */
+function fieldRow(label: string, control: object): object {
   return {
     tag: 'column_set',
     flex_mode: 'none',
@@ -50,24 +51,31 @@ function buildBooleanElement(field: ConfigField, isOn: boolean): object {
         width: 'weighted',
         weight: 2,
         vertical_align: 'center',
-        elements: [{ tag: 'div', text: { tag: 'lark_md', content: field.label } }],
+        elements: [{ tag: 'div', text: { tag: 'lark_md', content: label } }],
       },
       {
         tag: 'column',
         width: 'weighted',
         weight: 3,
         vertical_align: 'center',
-        elements: [
-          {
-            tag: 'button',
-            text: { tag: 'plain_text', content: displayVal },
-            type: isOn ? 'primary' : 'default',
-            behaviors: [{ type: 'callback', value: { cmd: 'config.toggle', key: field.key } }],
-          },
-        ],
+        elements: [control],
       },
     ],
   };
+}
+
+function buildBooleanElement(field: ConfigField, isOn: boolean): object {
+  const displayVal = isOn ? '✅ 已开启' : '⚪ 已关闭';
+  return fieldRow(
+    field.label,
+    cardButton(
+      displayVal,
+      { cmd: 'config.toggle', key: field.key },
+      {
+        type: isOn ? 'primary' : 'default',
+      },
+    ),
+  );
 }
 
 function buildSelectElement(field: ConfigField, currentValue: unknown): object {
@@ -78,38 +86,17 @@ function buildSelectElement(field: ConfigField, currentValue: unknown): object {
       : currentValue == null
         ? undefined
         : String(currentValue);
-  return {
-    tag: 'column_set',
-    flex_mode: 'none',
-    columns: [
-      {
-        tag: 'column',
-        width: 'weighted',
-        weight: 2,
-        vertical_align: 'center',
-        elements: [{ tag: 'div', text: { tag: 'lark_md', content: field.label } }],
-      },
-      {
-        tag: 'column',
-        width: 'weighted',
-        weight: 3,
-        vertical_align: 'center',
-        elements: [
-          {
-            tag: 'select_static',
-            placeholder: { tag: 'plain_text', content: '请选择' },
-            options: field.options!.map((opt) => {
-              const text = typeof opt === 'string' ? opt : opt.text;
-              const value = typeof opt === 'string' ? opt : opt.value;
-              return { text: { tag: 'plain_text', content: text }, value };
-            }),
-            initial_option: selectedValue,
-            behaviors: [{ type: 'callback', value: { cmd: 'config.set', key: field.key } }],
-          },
-        ],
-      },
-    ],
-  };
+  return fieldRow(field.label, {
+    tag: 'select_static',
+    placeholder: { tag: 'plain_text', content: '请选择' },
+    options: field.options!.map((opt) => {
+      const text = typeof opt === 'string' ? opt : opt.text;
+      const value = typeof opt === 'string' ? opt : opt.value;
+      return { text: { tag: 'plain_text', content: text }, value };
+    }),
+    initial_option: selectedValue,
+    behaviors: [{ type: 'callback', value: { cmd: 'config.set', key: field.key } }],
+  });
 }
 
 function buildInputElement(field: ConfigField, currentValue: unknown): object {
@@ -120,34 +107,13 @@ function buildInputElement(field: ConfigField, currentValue: unknown): object {
       : currentValue == null
         ? ''
         : String(currentValue);
-  return {
-    tag: 'column_set',
-    flex_mode: 'none',
-    columns: [
-      {
-        tag: 'column',
-        width: 'weighted',
-        weight: 2,
-        vertical_align: 'center',
-        elements: [{ tag: 'div', text: { tag: 'lark_md', content: field.label } }],
-      },
-      {
-        tag: 'column',
-        width: 'weighted',
-        weight: 3,
-        vertical_align: 'center',
-        elements: [
-          {
-            tag: 'input',
-            name: field.key,
-            placeholder: { tag: 'plain_text', content: '请输入值' },
-            default_value: currentStr,
-            behaviors: [{ type: 'callback', value: { cmd: 'config.input', key: field.key } }],
-          },
-        ],
-      },
-    ],
-  };
+  return fieldRow(field.label, {
+    tag: 'input',
+    name: field.key,
+    placeholder: { tag: 'plain_text', content: '请输入值' },
+    default_value: currentStr,
+    behaviors: [{ type: 'callback', value: { cmd: 'config.input', key: field.key } }],
+  });
 }
 
 /** Build the full CardKit 2.0 card from tabs. */
@@ -163,12 +129,7 @@ export function buildConfigCardFromTabs(tabs: ConfigTab[], displayConfig: AppCon
   }
 
   // 底部保存按钮
-  elements.push({
-    tag: 'button',
-    text: { tag: 'plain_text', content: '💾 保存所有修改' },
-    type: 'primary',
-    behaviors: [{ type: 'callback', value: { cmd: 'config.save' } }],
-  });
+  elements.push(cardButton('💾 保存所有修改', { cmd: 'config.save' }, { type: 'primary' }));
 
   return {
     schema: '2.0',

@@ -8,6 +8,7 @@ import { paginationBar } from './card-helpers.js';
 import { SessionStore } from '../session/index.js';
 import type { AppConfig } from '../config/index.js';
 import { createMockBridge, createStubSessionReaderRegistry } from '../../tests/lib/bridge-stubs.js';
+import { createRouterFixture } from '../../tests/lib/router-fixture.js';
 import { expectNoV1ActionContainer } from '../../tests/lib/card-view.js';
 import { makeTempDir } from '../../tests/lib/temp-dir.js';
 
@@ -48,15 +49,14 @@ beforeEach(() => {
   sessionStore = new SessionStore();
   sessionStore.set('user1', { sessions: new Map(), previousSessions: new Map(), cwd: tmpDir });
   mockBridge = createMockBridge();
-  router = new CommandRouter({
-    sessionStore,
-    bridge: mockBridge,
+  router = createRouterFixture({
+    tmpDir,
     config: makeConfig(),
-    configPath: path.join(tmpDir, 'config.yaml'),
-    workspacePath: path.join(tmpDir, 'workspace.json'),
-    ordersPath: path.join(tmpDir, 'orders.json'),
+    bridge: mockBridge,
+    sessionStore,
     sessionReaderRegistry: createStubSessionReaderRegistry(),
-  });
+    routerOpts: { ordersPath: path.join(tmpDir, 'orders.json') },
+  }).router;
 });
 
 /** 取最近一次 updateCardInPlace 的卡片 JSON。 */

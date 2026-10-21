@@ -5,8 +5,8 @@ import { CommandRouter } from '../../../src/router/index.js';
 import { AppConfigSchema } from '../../../src/config/index.js';
 import type { AppConfig } from '../../../src/config/index.js';
 import { createMockBridge } from '../../lib/bridge-stubs.js';
+import { createRouterFixture } from '../../lib/router-fixture.js';
 import { makeTempDir } from '../../lib/temp-dir.js';
-import path from 'node:path';
 
 describe('cmdStatus sessionCwd display', () => {
   const config: AppConfig = AppConfigSchema.parse({
@@ -38,15 +38,13 @@ describe('cmdStatus sessionCwd display', () => {
       forwardToClaude: async () => {},
       sendResult: async () => {},
     });
-    router = new CommandRouter({
-      sessionStore: store,
-      bridge,
+    router = createRouterFixture({
+      tmpDir,
       config,
-      configPath: path.join(tmpDir, 'config.yaml'),
-      workspacePath: path.join(tmpDir, 'workspace.json'),
-      ordersPath: path.join(tmpDir, 'orders.json'),
+      bridge,
+      sessionStore: store,
       sessionReaderRegistry: new SessionReaderRegistry(),
-    });
+    }).router;
   });
 
   it('anchor_cmdStatus_shows_sessionCwd_when_different', () => {

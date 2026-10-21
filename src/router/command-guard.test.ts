@@ -16,6 +16,7 @@ import { CommandRouter } from './index.js';
 import { SessionStore } from '../session/index.js';
 import { AppConfigSchema } from '../config/index.js';
 import { createMockBridge, createStubSessionReaderRegistry } from '../../tests/lib/bridge-stubs.js';
+import { createRouterFixture } from '../../tests/lib/router-fixture.js';
 
 interface Fixture {
   router: CommandRouter;
@@ -32,16 +33,14 @@ function makeFixture(): Fixture {
   const bridge = createMockBridge({
     executeBash: vi.fn().mockResolvedValue(undefined),
   } as never);
-  const router = new CommandRouter({
-    sessionStore,
-    bridge,
+  const router = createRouterFixture({
+    tmpDir,
     config,
-    configPath: path.join(tmpDir, 'config.yaml'),
-    workspacePath: path.join(tmpDir, 'workspace.json'),
-    ordersPath: path.join(tmpDir, 'orders.json'),
+    bridge,
+    sessionStore,
     sessionReaderRegistry: createStubSessionReaderRegistry(),
-    exitHandler: () => {},
-  });
+    routerOpts: { exitHandler: () => {} },
+  }).router;
   return { router, bridge, tmpDir };
 }
 

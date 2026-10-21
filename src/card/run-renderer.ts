@@ -10,7 +10,8 @@ import {
 } from './card-shared.js';
 import { collapsibleMarkdownPanel, markdownDiv, type PanelBorder } from './collapsible.js';
 import { toolBodyMd, toolHeaderText } from './tool-render.js';
-import { truncateUtf8, truncateMarkdownTables, CARD_BUDGET_BYTES } from './text-truncate.js';
+import { truncateMarkdownTables, CARD_BUDGET_BYTES } from './text-truncate.js';
+import { truncateUtf8 } from '../common/truncate.js';
 import { countCardElements, MAX_CARD_ELEMENTS } from './card-budget.js';
 import { displayWidth } from '../common/text-width.js';
 import { isContentFilterFailure } from '../common/turn-failure.js';
@@ -23,15 +24,6 @@ const TEXT_BYTES = 10_000;
 const DEGRADED_THINKING_KEEP = 2;
 const DEGRADED_TEXT_BYTES = 5_000;
 const DEGRADED_THINKING_BYTES = 1_000;
-/**
- * 带「详情」按钮的工具行数上限（从最新往回数）。
- *
- * 按钮行是节点大户：`column_set` + 2 个 `column` + 标题 div/text + button/text/
- * behaviors/value ≈ 10 个 JSON 节点；纯标题行只有 2 个。24 行全带按钮 ≈ 240 节点，
- * 直接撞飞书的元素总数上限（实测 203 通过 / 204 失败，见 card-budget.ts）。
- * 最近 8 行保留按钮（用户最可能展开的就是刚跑完的），更早的行退化成一行标题。
- */
-export const MAX_TOOL_ROWS_WITH_BUTTON = 8;
 const DEGRADED_TOOL_KEEP = 3; // Degraded: keep last 3 tool panels
 const EXTREME_TOOL_KEEP = 1; // Extreme: keep last 1 tool panel
 

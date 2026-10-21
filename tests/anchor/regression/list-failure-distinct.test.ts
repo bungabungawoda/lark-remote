@@ -11,12 +11,12 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { OpencodeSessionReader } from '../../../src/session/opencode/sessions.js';
-import { CommandRouter } from '../../../src/router/index.js';
 import { SessionStore, SessionReaderRegistry } from '../../../src/session/index.js';
 import { AppConfigSchema } from '../../../src/config/index.js';
 import type { AppConfig } from '../../../src/config/index.js';
 import type { AgentSessionReader } from '../../../src/runner/index.js';
 import { prependPath, restorePath, writeMockSource } from '../../lib/path-mock.js';
+import { createRouterFixture } from '../../lib/router-fixture.js';
 import { rmRf } from '../../../tests/lib/tmp-cleanup.js';
 
 vi.mock('../../../src/logger/index.js', async () =>
@@ -81,15 +81,13 @@ describe('list failure vs empty', () => {
     const registry = new SessionReaderRegistry();
     registry.register('claude', failingReader);
 
-    const router = new CommandRouter({
-      sessionStore,
-      bridge: bridge as never,
+    const router = createRouterFixture({
+      tmpDir,
       config: buildConfig(),
-      configPath: path.join(tmpDir, 'config.yaml'),
-      workspacePath: path.join(tmpDir, 'workspace.json'),
-      ordersPath: path.join(tmpDir, 'orders.json'),
+      bridge,
+      sessionStore,
       sessionReaderRegistry: registry,
-    });
+    }).router;
 
     const ctx = { userId: 'user1', chatId: 'chat1', messageId: 'msg1' };
     await router.handle('/resume', ctx);

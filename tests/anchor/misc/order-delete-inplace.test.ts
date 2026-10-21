@@ -3,20 +3,13 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { OrderStore } from '../../../src/order/index.js';
-import { CommandRouter } from '../../../src/router/index.js';
 import { SessionStore } from '../../../src/session/index.js';
-import { Bridge } from '../../../src/bridge/index.js';
 import { AppConfigSchema } from '../../../src/config/index.js';
-import type { AppConfig } from '../../../src/config/index.js';
 import type { Runner } from '../../../src/runner/index.js';
 import { SessionReaderRegistry } from '../../../src/session/registry.js';
 
-import {
-  createStubAgentRegistry,
-  createStubSessionReaderRegistry,
-  createStubConnector,
-  createStubRunner,
-} from '../../lib/bridge-stubs.js';
+import { createStubRunner } from '../../lib/bridge-stubs.js';
+import { createRouterFixture } from '../../lib/router-fixture.js';
 let tmpDir: string;
 let ordersFile: string;
 
@@ -35,40 +28,22 @@ function createRouter(overrides?: {
   sessionStore?: SessionStore;
   ordersPath?: string;
 }) {
-  const sessionStore = overrides?.sessionStore ?? new SessionStore();
-  const connector = createStubConnector();
-  const runner: Runner = overrides?.runner ?? createStubRunner({ mode: 'streaming' });
-  const config: AppConfig = AppConfigSchema.parse({
-    feishu: { appId: 'test', appSecret: 'test' },
-    claude: {
-      model: 'claude-opus-4-8',
-      effort: 'medium',
-      stopGraceMs: 5000,
-    },
-  });
-
   const ordersPath = overrides?.ordersPath ?? ordersFile;
-
-  const bridge = new Bridge({
-    runner,
-    agentRegistry: createStubAgentRegistry(runner),
-    sessionReaderRegistry: createStubSessionReaderRegistry(),
-    connector,
-    sessionStore,
-    config,
-  });
-
-  const router = new CommandRouter({
-    sessionStore,
-    bridge,
-    config,
-    configPath: path.join(tmpDir, 'config.yaml'),
-    workspacePath: path.join(tmpDir, 'workspace.json'),
-    ordersPath,
-    exitHandler: () => {},
+  const { router, sessionStore, connector, bridge } = createRouterFixture({
+    tmpDir,
+    runner: overrides?.runner ?? createStubRunner({ mode: 'streaming' }),
+    sessionStore: overrides?.sessionStore,
+    config: AppConfigSchema.parse({
+      feishu: { appId: 'test', appSecret: 'test' },
+      claude: {
+        model: 'claude-opus-4-8',
+        effort: 'medium',
+        stopGraceMs: 5000,
+      },
+    }),
     sessionReaderRegistry: new SessionReaderRegistry(),
+    routerOpts: { ordersPath, exitHandler: () => {} },
   });
-
   return { router, sessionStore, connector, bridge, ordersPath };
 }
 

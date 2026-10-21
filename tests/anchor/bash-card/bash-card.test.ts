@@ -34,42 +34,16 @@ function makeBashTestConnector(
 }
 
 // ---------------------------------------------------------------------------
-// BashCardSession explicit budget protection contract
+// BashCardSession skips the static card-budget clipping layer
 // ---------------------------------------------------------------------------
 
 /**
- * ANCHOR — explicit contract declaration for BashCardSession budget safety.
- *
- * 意图（必须完整保留）：
- * ① 验证 BashCardSession 显式覆写 hasOwnBudgetProtection（即在
- *    BashCardSession.prototype 上有 own property，而非从基类 CardSession
- *    继承默认值）。用 Object.getOwnPropertyDescriptor 反射访问已存在的
- *    类方法，合规（不 mock 内部实现、不替换实现）。
- * ② 契约翻转：现在 hasOwnBudgetProtection 返回 true 语义——renderBashCard
- *    自带 stringify 级 degraded/extreme fallback 预算保护（与 renderRunCard
- *    对称），保证返回卡 ≤28KB 且保留 command/exitCode。enforceCardBudget 是
- *    静态卡片（会话事件面板专用）的裁剪层，对 bash 卡的普通 markdownDiv
- *    output 是 misfit（不匹配 emoji panel → 极端降级丢全部信息），因此 bash
- *    卡应跳过它，靠自身 renderer 保护。
- * ③ 缺失后果：若有人误删 BashCardSession 的 hasOwnBudgetProtection 覆写或改回
- *    false，bash 卡将重新依赖 misfit 的 enforceCardBudget，超限时丢 command/
- *    exitCode 信息。若有人误删 renderBashCard 的 stringify 级保护而 hasOwnBudgetProtection
- *    仍 true，bash 卡将裸发 >28KB 卡触发飞书 400/11310。
+ * renderBashCard 自带 stringify 级 degraded/extreme fallback（保证 ≤28KB 且
+ * 保留 command/exitCode）；静态卡片的 enforceCardBudget 对 bash 的普通
+ * markdownDiv 是 misfit，不应被 CardSession 调用。
  */
-describe('BashCardSession explicit budget protection contract (anchor)', () => {
-  it('test_anchor_bash_card_explicitly_declares_own_budget_protection', async () => {
-    // 契约 1：BashCardSession 必须显式覆写 hasOwnBudgetProtection
-    // （own property on prototype，非继承基类默认值）
-    const desc = Object.getOwnPropertyDescriptor(
-      BashCardSession.prototype,
-      'hasOwnBudgetProtection',
-    );
-    expect(desc).toBeDefined();
-    expect(typeof desc?.value).toBe('function');
-
-    // 契约 2（翻转后 GREEN）：hasOwnBudgetProtection=true 语义——
-    // renderBashCard 自带 stringify 级保护，enforceCardBudget 不被调用
-    // （bash 卡跳过静态裁剪层，靠自身 degraded/extreme fallback）。
+describe('BashCardSession skips static card-budget clipping (anchor)', () => {
+  it('test_anchor_bash_card_skips_enforce_card_budget', async () => {
     const spy = vi.spyOn(cardBudget, 'enforceCardBudget');
     const capture = { updates: [] as object[] };
     const { connector } = makeBashTestConnector({ capture });
@@ -100,12 +74,10 @@ describe('BashCardSession explicit budget protection contract (anchor)', () => {
  *
  * 意图（必须完整保留）：
  * ① 验证 CardSession 的三条发出路径——start() producer 初始卡、updateCard()
- *    流式更新、settle() fallback——对 hasOwnBudgetProtection()=true 的子类
- *    （BashCardSession）统一跳过 enforceCardBudget，靠自身 renderer 的
- *    stringify 级保护。消除三条路径的不对称。
- * ② 契约翻转：BashCardSession 现在 hasOwnBudgetProtection=true（renderBashCard
- *    自带 degraded/extreme fallback），因此 start/settle/updateCard 三路径都
- *    不再调 enforceCardBudget。enforceCardBudget 是会话事件面板专用的静态
+ *    流式更新、settle() fallback——统一跳过 enforceCardBudget，靠自身
+ *    renderer 的 stringify 级保护。消除三条路径的不对称。
+ * ② CardSession.safeRenderCard 不再调用静态裁剪层；renderBashCard 自带
+ *    degraded/extreme fallback。enforceCardBudget 是会话事件面板专用的静态
  *    裁剪层，对 bash 卡的普通 markdownDiv output 是 misfit（超限时极端降级
  *    丢 command/exitCode），bash 卡应完全靠自身 renderer 保护。
  * ③ 守护：settle fallback 仍须产出卡片（result==='updated'），不能因跳过

@@ -74,15 +74,6 @@ export class BashCardSession extends CardSession<BashState, BashRenderOptions> {
     return renderBashCard(state, options);
   }
 
-  protected hasOwnBudgetProtection(): boolean {
-    // renderBashCard 自带 stringify 级 degraded/extreme fallback 预算保护
-    // （与 renderRunCard 对称），保证返回卡 ≤28KB 且保留 command/exitCode。
-    // enforceCardBudget 是会话事件面板专用的静态裁剪层，对 bash 卡的普通
-    // markdownDiv output 是 misfit（超限时极端降级丢 command/exitCode），bash
-    // 卡应跳过它，靠自身 renderer 保护。
-    return true;
-  }
-
   protected isFlushableState(): boolean {
     // finish() 已把 state 转终态后，in-flight/延迟 flush 不再用旧 state patch。
     return this.state.terminal === 'running';

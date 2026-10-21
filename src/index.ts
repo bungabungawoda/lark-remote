@@ -22,6 +22,7 @@ import {
   DshRunner,
 } from './runner/index.js';
 import { AgentRegistry } from './runner/registry.js';
+import { AGENT_DISPLAY_NAMES, AGENT_KINDS } from './runner/types.js';
 import { probeAllAgents } from './runner/probe.js';
 import { warmCodexCatalogCache } from './config/codex-config.js';
 import { SessionReaderRegistry, SessionStore } from './session/index.js';
@@ -428,13 +429,10 @@ function initializeRunner(
     });
   }
 
-  // 2026-07-17: 注册所有 agent 的显示名，实现单点真相
-  agentRegistry.registerDisplayName('claude', 'Claude');
-  agentRegistry.registerDisplayName('codex', 'Codex');
-  agentRegistry.registerDisplayName('opencode', 'Opencode');
-  agentRegistry.registerDisplayName('pi', 'Pi');
-  agentRegistry.registerDisplayName('kimi', 'Kimi');
-  agentRegistry.registerDisplayName('dsh', 'DSH');
+  // 显示名单源在 runner/types.ts 的 AGENT_DISPLAY_NAMES（启动注册与回退共用）
+  for (const kind of AGENT_KINDS) {
+    agentRegistry.registerDisplayName(kind, AGENT_DISPLAY_NAMES[kind]);
+  }
 
   // 设置全局 registry，供 agentDisplayName 等全局函数使用
   AgentRegistry.setGlobalInstance(agentRegistry);

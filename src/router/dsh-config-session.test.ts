@@ -12,10 +12,10 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import path from 'node:path';
 import os from 'node:os';
 import fs from 'node:fs';
-import { CommandRouter } from './index.js';
-import { SessionStore, SessionReaderRegistry } from '../session/index.js';
+import { SessionReaderRegistry } from '../session/index.js';
 import { AppConfigSchema, type AppConfig } from '../config/index.js';
 import { createMockBridge } from '../../tests/lib/bridge-stubs.js';
+import { createRouterFixture } from '../../tests/lib/router-fixture.js';
 import type { AgentSessionReader, AgentSession } from '../runner/index.js';
 
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-config-test-'));
@@ -59,17 +59,18 @@ function makeRouter(
   rows: Array<Partial<AgentSession> & { sessionId: string }>,
   dsh?: Record<string, unknown>,
 ) {
-  const sessionStore = new SessionStore();
   const config = makeConfig(dsh);
   const readerRegistry = new SessionReaderRegistry();
   readerRegistry.register('dsh', dshReader(rows));
-  const router = new CommandRouter({
-    sessionStore,
-    bridge: createMockBridge(),
+  const { router, sessionStore } = createRouterFixture({
+    tmpDir: TMP,
     config,
-    configPath: path.join(TMP, `config-${Math.random().toString(36).slice(2)}.yaml`),
-    workspacePath: path.join(TMP, `ws-${Math.random().toString(36).slice(2)}.json`),
+    bridge: createMockBridge(),
     sessionReaderRegistry: readerRegistry,
+    routerOpts: {
+      configPath: path.join(TMP, `config-${Math.random().toString(36).slice(2)}.yaml`),
+      workspacePath: path.join(TMP, `ws-${Math.random().toString(36).slice(2)}.json`),
+    },
   });
   return { router, sessionStore };
 }

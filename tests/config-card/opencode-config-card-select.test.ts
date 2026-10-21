@@ -1,4 +1,5 @@
 import { createMockBridge, createMockSessionReaderRegistry } from '../lib/bridge-stubs.js';
+import { createRouterFixture } from '../lib/router-fixture.js';
 /**
  * Opencode Config Card Field Type Test - ANCHOR
  *
@@ -12,8 +13,6 @@ import { createMockBridge, createMockSessionReaderRegistry } from '../lib/bridge
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { CommandRouter } from '../../src/router/index.js';
-import { SessionStore } from '../../src/session/index.js';
 import { AppConfigSchema } from '../../src/config/index.js';
 import type { AppConfig } from '../../src/config/index.js';
 import path from 'node:path';
@@ -63,17 +62,14 @@ describe('opencode config card ANCHOR: opencode fields must use select type', ()
    */
   it('opencode fields must NOT use input tag (should use select_static)', () => {
     const config = buildOpencodeConfig();
-    const router = new CommandRouter({
-      sessionStore: new SessionStore(),
-      bridge: createMockBridge(),
+    const router = createRouterFixture({
+      tmpDir,
       config,
-      configPath: path.join(tmpDir, 'config.yaml'),
-      workspacePath: path.join(tmpDir, 'workspace.json'),
-      ordersPath: path.join(tmpDir, 'orders.json'),
+      bridge: createMockBridge(),
       sessionReaderRegistry: createMockSessionReaderRegistry({
         agentKinds: ['claude', 'codex', 'pi', 'opencode'],
       }),
-    });
+    }).router;
 
     const result = router.buildConfigCard();
     const json = JSON.stringify(result.card);
@@ -111,17 +107,14 @@ describe('opencode config card ANCHOR: opencode fields must use select type', ()
    */
   it('opencode fields should use select_static', () => {
     const config = buildOpencodeConfig();
-    const router = new CommandRouter({
-      sessionStore: new SessionStore(),
-      bridge: createMockBridge(),
+    const router = createRouterFixture({
+      tmpDir,
       config,
-      configPath: path.join(tmpDir, 'config.yaml'),
-      workspacePath: path.join(tmpDir, 'workspace.json'),
-      ordersPath: path.join(tmpDir, 'orders.json'),
+      bridge: createMockBridge(),
       sessionReaderRegistry: createMockSessionReaderRegistry({
         agentKinds: ['claude', 'codex', 'pi', 'opencode'],
       }),
-    });
+    }).router;
 
     const result = router.buildConfigCard();
     const json = JSON.stringify(result.card);
@@ -142,17 +135,14 @@ describe('opencode config card ANCHOR: opencode fields must use select type', ()
       defaultAgent: 'pi',
       agents: { pi: { provider: 'Volcano', model: 'glm-5.2', thinking: 'medium' } },
     });
-    const router = new CommandRouter({
-      sessionStore: new SessionStore(),
-      bridge: createMockBridge(),
+    const router = createRouterFixture({
+      tmpDir,
       config,
-      configPath: path.join(tmpDir, 'config.yaml'),
-      workspacePath: path.join(tmpDir, 'workspace.json'),
-      ordersPath: path.join(tmpDir, 'orders.json'),
+      bridge: createMockBridge(),
       sessionReaderRegistry: createMockSessionReaderRegistry({
         agentKinds: ['claude', 'codex', 'pi', 'opencode'],
       }),
-    });
+    }).router;
 
     const result = router.buildConfigCard();
     const json = JSON.stringify(result.card);

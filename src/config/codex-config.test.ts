@@ -6,13 +6,10 @@ import { mockLogger } from '../../tests/lib/logger-mock.js';
 
 // 直接在模块顶层定义 mock（兼容 bun 的 vitest）。
 // 生产代码经 platform/spawn（cross-spawn）调用 codex，mock 该 seam。
-const mockSpawnSync = vi.fn();
+const { mockSpawnSync } = vi.hoisted(() => ({ mockSpawnSync: vi.fn() }));
 
-vi.mock('../platform/spawn.js', () => ({
-  spawnProcessSync: (...args: any[]) => mockSpawnSync(...args),
-  spawnProcess: () => {
-    throw new Error('sync test must not spawn async');
-  },
+vi.mock('../platform/spawn.js', async () => ({
+  ...(await import('../../tests/lib/spawn-mock.js')).spawnModuleMock(mockSpawnSync),
 }));
 vi.mock('../logger/index.js', async () =>
   (await import('../../tests/lib/logger-mock.js')).loggerModuleMock(),
