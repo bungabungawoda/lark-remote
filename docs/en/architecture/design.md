@@ -193,7 +193,7 @@ Uses CardKit 2.0, two buttons per alias:
 
 ### 6.5 Claude Run Card
 
-Each Claude run creates only one CardKit 2.0 card on the normal path. `channel.stream` sends the initial card first, then patches the entire card via `message_id`. During the run, thinking, main text, tool summaries, status line, and stop button are displayed; on terminal state, the header changes and the status line and buttons are removed.
+Each Claude run creates only one CardKit 2.0 card on the normal path. `channel.stream` sends the initial card first, then patches the entire card via `message_id`. During the run, thinking, main text, tool summaries, status line, and stop button are displayed; on terminal state, the header changes and the buttons are removed, while **the status line stays**: the elapsed time freezes and DSH's step/context projections show the final snapshot from that run (user request, 2026-10-21).
 
 The stop button payload is `{ "cmd": "stop", "runId": "<uuid>" }`. The entry point must validate `runId + operator.openId + chatId` and bypass the normal work queue, otherwise the stop would be queued behind the current run and unable to interrupt it.
 
@@ -559,6 +559,15 @@ listSessions(cwd: string, opts?: { limit?: number; offset?: number }): {
 - Offset clamping: `[0, page-aligned last page start]` (last page start = `(ceil(total/pageSize)-1)*pageSize`, not `max(0, total-pageSize)` — the latter would produce a sliding window inconsistent with the pagination bar, violating "page navigation doesn't misalign"). After clamping, **pagination button values must use the clamped pageOffset for calculation** (otherwise clicking the previous button from an out-of-bounds page would clamp back to the last page again, causing the button to appear dead).
 - `pageSize` is numerified and clamped to `[1, RESUME_PAGE_SIZE]` via handleResumePage; invalid values are not treated as sessionIds.
 - Budget: 5 items per page × ~3 elements ≈ 15 elements (max 200), bytes well below 28KB.
+- **DSH row content**: DSH 0.2.x `session/list` already returns
+  `projections.values.title` and `turnOutline` (prompt/response per turn); the
+  reader maps them to `AgentSession.title / lastUserMessage /
+  lastAssistantMessage`. The list card renders "title / last input / last output"
+  directly, so the first 5 rows no longer each fetch `session/page` (a list used
+  to take 15 curl calls, now 1). When the fields are absent or the title is a
+  placeholder, the old summary/prefetch behavior is used. The detail card header
+  likewise prefers the server's last-turn prompt for "last input" and shows it
+  in a separate section from the agent title.
 
 ### 9.23 Compact Button Resolves by runId, Not by "Newest Entry per cwd"
 

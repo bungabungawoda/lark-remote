@@ -781,3 +781,101 @@ describe('DshSessionReader user/message sources', () => {
     expect(job.content).toContain('finished');
   });
 });
+
+/**
+ * 列表卡预览数据。
+ *
+ * DSH 的 `session/list` 响应里已经带回 `projections.values.title` 与
+ * `turnOutline`（每轮的 prompt/response），reader 必须把它们搬到行级字段：
+ * 否则 /resume 列表卡只有一坨 session id（2026-10-21 反馈），而按会话逐个
+ * 拉 `session/page` 才能拿到同样的信息（一次列表要 15 次 curl）。
+ */
+describe('DshSessionReader 会话预览字段', () => {
+  function listWith(values: Record<string, unknown>): FakeDshServer {
+    const server = new FakeDshServer();
+    server.register('session/list', () => ({
+      ok: true,
+      value: {
+        items: [
+          {
+            sessionId: SID_A,
+            updatedAt: 1792541886753,
+            running: true,
+            blank: false,
+            cwd: CWD,
+            projections: { kind: 'sequenced', asOfSeq: 3784, values },
+          },
+        ],
+      },
+    }));
+    return server;
+  }
+
+  it('从 projections 取 title 与末轮输入/输出，且只发一次 session/list', () => {
+    const server = listWith({
+      title: '梳理待办与依赖',
+      turnOutline: [
+        { turn: 1, seq: 11, prompt: '旧问题', response: '旧答复' },
+        { turn: 2, seq: 20, prompt: '最后的问题', response: '最后的答复' },
+      ],
+    });
+
+    const reader = makeReader(server);
+    const { sessions } = reader.listSessions(CWD);
+    const row = sessions[0];
+
+    expect(row.summary).toBe('梳理待办与依赖');
+    expect(row.title).toBe('梳理待办与依赖');
+    expect(row.lastUserMessage).toBe('最后的问题');
+    expect(row.lastAssistantMessage).toBe('最后的答复');
+    // 投影随 session/list 一起返回：列表不得再拉 session/page。
+    expect(server.requests.map((r) => r.method)).toEqual(['session/list']);
+  });
+
+  it('末轮 response 为空（在途 turn）时回溯到最近一条非空输出', () => {
+    const server = listWith({
+      title: '修复主轮收尾',
+      turnOutline: [
+        { turn: 1, seq: 11, prompt: '第一问', response: '第一答' },
+        { turn: 2, seq: 20, prompt: '最新一问', response: '' },
+      ],
+    });
+
+    const row = makeReader(server).listSessions(CWD).sessions[0];
+    expect(row.lastUserMessage).toBe('最新一问');
+    expect(row.lastAssistantMessage).toBe('第一答');
+  });
+
+  it('无 projections / title 非字符串 / turnOutline 非数组时不抛，字段留空', () => {
+    const cases: Array<Record<string, unknown> | undefined> = [
+      undefined,
+      { title: null, turnOutline: 'oops' },
+      { title: 42, turnOutline: [{ turn: 1, prompt: 7, response: {} }] },
+    ];
+
+    for (const values of cases) {
+      const server = new FakeDshServer();
+      server.register('session/list', () => ({
+        ok: true,
+        value: {
+          items: [
+            {
+              sessionId: SID_A,
+              updatedAt: 1792541886753,
+              running: false,
+              blank: false,
+              cwd: CWD,
+              ...(values === undefined ? {} : { projections: { asOfSeq: 1, values } }),
+            },
+          ],
+        },
+      }));
+
+      const row = makeReader(server).listSessions(CWD).sessions[0];
+      expect(row.summary).toBe('');
+      expect(row.title).toBeUndefined();
+      expect(row.lastUserMessage).toBeUndefined();
+      expect(row.lastAssistantMessage).toBeUndefined();
+    }
+  });
+});

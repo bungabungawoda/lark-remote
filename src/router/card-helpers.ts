@@ -406,15 +406,27 @@ export function buildSessionHistoryCard(
   const { displayTitle, aiTitle, recap, events, usage } = state;
   let header = opts.headerText;
   const sections: string[] = [];
+  const preview = (text: string): string => (text.length > 200 ? text.slice(0, 197) + '...' : text);
   // Reader 层不再截断 displayTitle/summary；统一在消费侧这里截到 200 字符。
+  //
+  // `aiTitle` 与 `displayTitle` 是两种东西：前者是 agent 自己起的会话标题
+  // （DSH 的 projections.title / claude 的 ai-title），后者是最近一条用户输入。
+  // claude 的 displayTitle 本身就取 aiTitle，两者相等 → 保持旧的「AI 标题」
+  // 单段文案；DSH 两者都有（标题 + 末轮 prompt）→ 各占一段，别把用户那句话
+  // 挂在「AI 标题」下面（2026-10-21）。
   if (displayTitle) {
-    const label = aiTitle ? 'AI 标题' : '最近输入';
-    const preview = displayTitle.length > 200 ? displayTitle.slice(0, 197) + '...' : displayTitle;
-    sections.push(`🏷️ **${label}**\n${preview}`);
+    if (aiTitle && aiTitle !== displayTitle) {
+      sections.push(`🏷️ **标题**\n${preview(aiTitle)}`);
+      sections.push(`✏️ **最近输入**\n${preview(displayTitle)}`);
+    } else {
+      const label = aiTitle ? 'AI 标题' : '最近输入';
+      sections.push(`🏷️ **${label}**\n${preview(displayTitle)}`);
+    }
+  } else if (aiTitle) {
+    sections.push(`🏷️ **AI 标题**\n${preview(aiTitle)}`);
   }
   if (recap) {
-    const recapPreview = recap.length > 200 ? recap.slice(0, 197) + '...' : recap;
-    sections.push(`📝 **Recap**\n${recapPreview}`);
+    sections.push(`📝 **Recap**\n${preview(recap)}`);
   }
   if (sections.length > 0) {
     header += '\n\n' + sections.join('\n\n──\n\n');

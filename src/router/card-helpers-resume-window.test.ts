@@ -141,3 +141,80 @@ describe('resume card rendering with the new window', () => {
     expect(JSON.stringify(card)).not.toContain('仍有一个 turn 在运行');
   });
 });
+
+/**
+ * 详情卡头部：AI 标题 与 最近输入 是两个不同的东西。
+ *
+ * DSH 的服务端投影同时给出 `title`（会话标题）与末轮 prompt（最近输入）；
+ * 旧实现只有一个 `displayTitle`，出现「🏷️ **AI 标题**」下面却是用户那句
+ * 最近输入的情况（2026-10-21）。两者不同时必须各占一段，相同（claude 的
+ * aiTitle 就是 displayTitle 的来源）时保持旧文案「AI 标题」不变。
+ */
+describe('buildSessionHistoryCard 头部标题段', () => {
+  function headerText(card: object): string {
+    const body = (card as { body: { elements: Array<{ text?: { content?: string } }> } }).body;
+    return body.elements.map((el) => el.text?.content ?? '').join('\n');
+  }
+
+  it('aiTitle 与 displayTitle 不同时渲染两段（标题 + 最近输入）', () => {
+    const text = headerText(
+      buildSessionHistoryCard(
+        {
+          sessionId: 'session-1',
+          cwd: '/repo',
+          aiTitle: '梳理待办与依赖',
+          displayTitle: '修复，还有你的历史 run log 在哪看？',
+          events: [],
+        },
+        { agentKind: 'dsh', headerText: '📂 `/repo`\n会话: **session-1**', title: '🔁 恢复会话' },
+      ),
+    );
+
+    expect(text).toContain('**标题**');
+    expect(text).toContain('梳理待办与依赖');
+    expect(text).toContain('**最近输入**');
+    expect(text).toContain('修复，还有你的历史 run log 在哪看？');
+    // 同一个值不能既当标题又当最近输入。
+    expect(text.match(/梳理待办与依赖/g)).toHaveLength(1);
+  });
+
+  it('aiTitle 与 displayTitle 相同时保持「AI 标题」旧文案（claude 不回归）', () => {
+    const text = headerText(
+      buildSessionHistoryCard(
+        {
+          sessionId: 'session-2',
+          cwd: '/repo',
+          aiTitle: '会话标题',
+          displayTitle: '会话标题',
+          events: [],
+        },
+        {
+          agentKind: 'claude',
+          headerText: '📂 `/repo`\n会话: **session-2**',
+          title: '🔁 恢复会话',
+        },
+      ),
+    );
+
+    expect(text).toContain('**AI 标题**');
+    expect(text).not.toContain('**最近输入**');
+    expect(text.match(/会话标题/g)).toHaveLength(1);
+  });
+
+  it('只有 displayTitle 时仍是「最近输入」', () => {
+    const text = headerText(
+      buildSessionHistoryCard(
+        {
+          sessionId: 'session-3',
+          cwd: '/repo',
+          displayTitle: '首条用户消息',
+          events: [],
+        },
+        { agentKind: 'dsh', headerText: '📂 `/repo`\n会话: **session-3**', title: '🔁 恢复会话' },
+      ),
+    );
+
+    expect(text).toContain('**最近输入**');
+    expect(text).toContain('首条用户消息');
+  });
+});
