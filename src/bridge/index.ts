@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import type { Runner, AgentRunner, AgentEvent, AgentSessionReader } from '../runner/index.js';
 import { sleep } from '../common/sleep.js';
+import { isContentFilterFailure } from '../common/turn-failure.js';
 import type { AgentRegistry } from '../runner/registry.js';
 import type { SessionReaderRegistry, SessionStore } from '../session/index.js';
 import type { AppConfig } from '../config/index.js';
@@ -1183,7 +1184,7 @@ export class Bridge {
   async forwardToClaude(
     message: string,
     ctx: CommandContext,
-    opts?: { cwdOverride?: string; binding?: AgentBinding },
+    opts?: { cwdOverride?: string; binding?: AgentBinding; autoRetry?: boolean },
   ): Promise<void> {
     // agentKind 一律来自绑定。无 binding 时保持现状（live defaultAgent）。
     const agentKind = opts?.binding?.agent ?? this.config.defaultAgent;
@@ -1257,6 +1258,88 @@ export class Bridge {
     } finally {
       // Step 3: Finalize the run (error handling, fallback card, completion notification, cleanup)
       await this.finalizeRun(cardSession, activeRun, ctx, cwd);
+    }
+
+    // Step 4: 服务方内容审核截断（`finish_reason: content_filter`）后自动续跑一次。
+    // 放在 finalize 之后：activeRuns 槽位已释放，续跑能正常开新卡片。
+    await this.retryAfterContentFilter({
+      cardSession,
+      ctx,
+      cwd,
+      agentKind,
+      sessionId,
+      sessionEpochAtStart,
+      autoRetried: opts?.autoRetry === true,
+    });
+  }
+
+  /**
+   * 内容审核截断后的单次自动续跑。
+   *
+   * DSH 把上游 `finish_reason: content_filter` 归一成 PI_AI_ERROR：既不在默认
+   * 重试码里（EMPTY_RESPONSE/RATE_LIMIT/SERVER/TIMEOUT/TRANSPORT），也不会换模型，
+   * 于是一次（多数是误报的）判定就把整个 turn 判死。2026-10-21 现场：60 步、
+   * 10 分钟的 turn 在最后一步被截断，已写入的文件还在，用户只看到「运行出错」
+   * 加一句英文报文。
+   *
+   * 桥侧不改 dsh 的重试策略，改用「同一 session 补一条继续提示」：审核是概率
+   * 判定，重采样通常能过；模型从历史里接着做，不必重跑已完成的工作。
+   * 只续一次——续跑仍被截断就停在错误卡，不进入无限重试。
+   */
+  private async retryAfterContentFilter(params: {
+    cardSession: RunCardSession;
+    ctx: CommandContext;
+    cwd: string;
+    agentKind: AgentKind;
+    sessionId: string | undefined;
+    sessionEpochAtStart: number;
+    autoRetried: boolean;
+  }): Promise<void> {
+    const state = params.cardSession.currentState;
+    if (state.terminal !== 'error' || !isContentFilterFailure(state.errorMsg)) return;
+    if (params.autoRetried) {
+      getLogger().info(
+        `[lark-remote] content_filter auto-retry already used runId=${state.runId} cwd=${params.cwd}`,
+      );
+      return;
+    }
+    // 会话指针在 run 期间被 /new、/resume 等移动过：续跑会接到另一个会话上，
+    // 「从断点继续」的语义不再成立，宁可不做（错误卡已经把话说清楚）。
+    const epochNow = this.sessionStore.getSessionEpoch(params.ctx.userId, params.agentKind);
+    if (epochNow !== params.sessionEpochAtStart) {
+      getLogger().info(
+        `[lark-remote] content_filter auto-retry skipped: session epoch moved runId=${state.runId}`,
+      );
+      return;
+    }
+
+    getLogger().warn(
+      `[lark-remote] content_filter detected, auto-retrying once runId=${state.runId} cwd=${params.cwd}`,
+    );
+    await this.sendResult(
+      {
+        text: '🔁 上一回合被服务方内容审核截断（content_filter，通常是误报），已自动重试一次。',
+      },
+      params.ctx,
+    );
+    try {
+      await this.forwardToClaude(
+        '（自动继续）上一回合因服务方内容审核被截断（content_filter，通常是误报）。' +
+          '请从上次中断的位置继续，不要重复已经完成的步骤。',
+        params.ctx,
+        {
+          cwdOverride: params.cwd,
+          binding: {
+            agent: params.agentKind,
+            sessionId: params.sessionId,
+            sessionEpoch: params.sessionEpochAtStart,
+          },
+          autoRetry: true,
+        },
+      );
+    } catch (err) {
+      // 续跑自身失败不应冒泡成未捕获异常：用户已经收到错误卡与重试通知。
+      getLogger().error(`[lark-remote] content_filter auto-retry failed runId=${state.runId}`, err);
     }
   }
 
