@@ -464,7 +464,8 @@ function sessionPreset(item: {
  *
  * 全部取自 `session/list` 的 `projections.values`——DSH 0.2.x 已经随列表一起
  * 返回 title 与 turnOutline（每轮的 prompt/response），所以这里不需要再拉
- * `session/page`：那是一次上万条事件的大响应，一页 5 个会话就是 5 次。
+ * `session/page`：它按 `maxMessages=10000` 的上限拉整段历史，一页前 5 行就是
+ * 5 次这种大响应（把每行的 cwd 守卫与 projections 一起算，是 15 次同步请求）。
  *
  * `turnOutline` 的 prompt/response 由 DSH 侧按长度截断（结尾带 `…`），列表卡
  * 只做单行预览，直接复用即可。缺字段 / 类型不对时全部留空，不影响列表。
