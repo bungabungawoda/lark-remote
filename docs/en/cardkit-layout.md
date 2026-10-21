@@ -59,8 +59,16 @@ Hard rules:
   display cells): `📊 ~36%`, `🧰 532 步`, `⏱ 2m13s` — not
   `📊 上下文使用率 ~36%`.
 - **Put interactive controls at the end of the row** (a right `width:auto`
-  column). The "text + button" row shape is safe by itself: the button width is
-  fixed and text wrapping is acceptable there.
+  column) only for **short labels plus normally wrapping text**: the button
+  width is fixed and text wrapping is acceptable there.
+- **Never share a row between a button and long unbreakable text**
+  (commands/paths/URLs): the command's min-content width squeezes the `auto`
+  button into `🟥…` (phone screenshot, 2026-10-21) and truncates the command
+  itself. Give the full text its own `div`; when it is long, fold it into a
+  `collapsible_panel` (the body keeps the full text) and put the button in a
+  **single-column** `column_set` on the next line. A command is what the user
+  verifies and copies, so never truncate it. Regression guard:
+  `renderRunCard background jobs` in `src/card/run-renderer.test.ts`.
 - After changing a card, check it at phone width. The regression guard for the
   status row lives in `src/card/run-renderer.test.ts`, section
   `status row narrow-screen layout` (single `div`, every segment ≤ 8 display

@@ -578,6 +578,23 @@ export interface AgentSession {
   mtime: number;
   /** DSH：session 创建时固定的 preset；其他 agent 无此概念（undefined）。 */
   agentPreset?: string;
+  /**
+   * 服务端投影已有的会话标题（DSH `projections.values.title`）。
+   *
+   * 与 `summary` 的区别：`summary` 是「首条用户输入」的兜底口径（claude /
+   * codex / pi / kimi 无标题字段），`title` 是 agent 自己起的标题。列表卡
+   * 用它决定标签文案（标题 / 会话摘要），缺省时回退 `summary`。
+   */
+  title?: string;
+  /**
+   * 最后一轮用户输入（服务端投影，单行预览）。
+   *
+   * 只给「列表响应里已顺带返回」的 reader 用（DSH 的 `turnOutline` 末条），
+   * 目的是让列表卡不必为每行做一次全量内容读取。
+   */
+  lastUserMessage?: string;
+  /** 最后一轮助手输出（服务端投影已截断，单行预览）。 */
+  lastAssistantMessage?: string;
 }
 
 /** A single renderable event from session history. */

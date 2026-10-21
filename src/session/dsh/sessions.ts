@@ -248,9 +248,9 @@ export class DshSessionReader implements AgentSessionReader {
         .filter((i) => i.cwd !== undefined && samePath(i.cwd, cwd))
         .map((i) => ({
           sessionId: String(i.sessionId),
-          summary: '',
           mtime: i.updatedAt,
           ...sessionPreset(i),
+          ...sessionPreview(i),
         }));
       sortByRecencyDesc(
         filtered,
@@ -287,6 +287,8 @@ export class DshSessionReader implements AgentSessionReader {
         return { events: [] };
       }
       const throughSeq = this.resolveThroughSeq(sessionId, session);
+      // 服务端投影带来的标题与末轮输入：详情卡头部用它们，不必再从事件里猜。
+      const preview = sessionPreview(session);
       const value = this.unary('session/page', {
         address: { kind: 'session', sessionId },
         throughSeq,
@@ -390,12 +392,17 @@ export class DshSessionReader implements AgentSessionReader {
       // 中断/仍在执行的调用没有结果：把它当独立事件留下，别让这一条消失。
       if (pendingTool) events.push(pendingTool);
 
+      // 头部信息口径：最近输入优先用服务端末轮 prompt（事件里可能只是当前 turn
+      // 的一部分），标题用服务端 title；两者都缺时保持原行为。
+      const headerLastInput = preview.lastUserMessage ?? displayTitle;
+
       return {
         // 展示仍按 maxEvents 尾截断（默认 50，保持原行为），usage 已在上面基于
         // 完整 history 累加。
         events: capEvents(events, opts?.maxEvents ?? 50),
         ...(sessionUsage ? { usage: sessionUsage } : {}),
-        ...(displayTitle ? { displayTitle } : {}),
+        ...(headerLastInput ? { displayTitle: headerLastInput } : {}),
+        ...(preview.title ? { aiTitle: preview.title } : {}),
       };
     } catch (error) {
       getLogger().error(
@@ -450,6 +457,58 @@ function sessionPreset(item: {
 } {
   const preset = item.projections?.values?.agentPreset ?? item.agentPreset;
   return preset ? { agentPreset: preset } : {};
+}
+
+/**
+ * 会话预览（列表卡上的「标题 / 最近输入 / 最后输出」）。
+ *
+ * 全部取自 `session/list` 的 `projections.values`——DSH 0.2.x 已经随列表一起
+ * 返回 title 与 turnOutline（每轮的 prompt/response），所以这里不需要再拉
+ * `session/page`：那是一次上万条事件的大响应，一页 5 个会话就是 5 次。
+ *
+ * `turnOutline` 的 prompt/response 由 DSH 侧按长度截断（结尾带 `…`），列表卡
+ * 只做单行预览，直接复用即可。缺字段 / 类型不对时全部留空，不影响列表。
+ */
+function sessionPreview(item: DshSessionSummary): {
+  summary: string;
+  title?: string;
+  lastUserMessage?: string;
+  lastAssistantMessage?: string;
+} {
+  const values = item.projections?.values;
+  const rawTitle = values?.title;
+  const title = typeof rawTitle === 'string' ? rawTitle.trim() : '';
+  const outline = values?.turnOutline;
+  const lastUserMessage = lastOutlineText(outline, 'prompt');
+  const lastAssistantMessage = lastOutlineText(outline, 'response');
+  return {
+    // summary 同时填标题：只认 summary 的消费方（旧卡片路径、其他 agent 的
+    // 统一逻辑）也能拿到可读文本，不必区分 agent。
+    summary: title,
+    ...(title ? { title } : {}),
+    ...(lastUserMessage ? { lastUserMessage } : {}),
+    ...(lastAssistantMessage ? { lastAssistantMessage } : {}),
+  };
+}
+
+/**
+ * 从 turnOutline 末条往回找第一个非空文本。
+ *
+ * 在途 turn 已经写进 outline，但 `response` 还是空串（实测末条
+ * `{turn:6, prompt:"…", response:""}`）；直接取末条会让「最后输出」空掉，
+ * 所以回溯到最近一条有内容的结果。
+ */
+function lastOutlineText(outline: unknown, key: 'prompt' | 'response'): string | undefined {
+  if (!Array.isArray(outline)) return undefined;
+  for (let i = outline.length - 1; i >= 0; i -= 1) {
+    const entry = outline[i];
+    if (!entry || typeof entry !== 'object') continue;
+    const raw = (entry as Record<string, unknown>)[key];
+    if (typeof raw !== 'string') continue;
+    const text = raw.trim();
+    if (text) return text;
+  }
+  return undefined;
 }
 
 interface MappedEvent {

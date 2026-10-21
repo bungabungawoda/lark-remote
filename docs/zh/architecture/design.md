@@ -260,7 +260,8 @@ channel.on('cardAction', async (action) => {
 
 每次 Claude run 正常路径只创建一张 CardKit 2.0 卡片。`channel.stream` 先发送 initial
 卡片，随后通过 `message_id` 全卡 patch。运行中显示 thinking、正文、工具摘要、状态行和
-停止按钮；终态切换 header，移除状态行和按钮。状态行是**单行单 `div`**（`⏱ 12s ·
+停止按钮；终态切换 header、移除按钮，**状态行保留**：耗时定格，DSH 的步数/上下文
+投影展示这一跑的最后快照（2026-10-21 用户要求）。状态行是**单行单 `div`**（`⏱ 12s ·
 🧰 532 步 · 📊 ~36%`，`notation` 字号）：手机窄屏下 `column_set` 的 auto 列会把
 "运行中" 挤成竖排（2026-10-19 反馈），列宽由对端决定、服务端控制不了，所以状态行
 不走列式布局；详见 `docs/zh/cardkit-layout.md` 的「窄屏优先」一节。
@@ -983,6 +984,12 @@ listSessions(cwd: string, opts?: { limit?: number; offset?: number }): {
   从越界页点击会再次 clamp 回末页，按钮假死，）。
 - `pageSize` 经 handleResumePage 数值化 clamp `[1, RESUME_PAGE_SIZE]`，非法值不被当作 sessionId。
 - 预算：每页 5 条 × 约 3 elements ≈ 15 elements（上限 200），字节远低于 28KB。
+- **DSH 列表行内容**：DSH 0.2.x 的 `session/list` 自带 `projections.values.title` 与
+  `turnOutline`（每轮 prompt/response），reader 把它们搬到 `AgentSession.title /
+  lastUserMessage / lastAssistantMessage`。列表卡直接渲染「标题 / 最近输入 / 最后
+  输出」，前 5 行不再各拉一次 `session/page`（一次列表原本 15 次 curl，现在 1 次）。
+  字段缺失或标题是占位符时回退旧的 summary/预取口径。详情卡头部同样优先用服务端
+  末轮 prompt 作「最近输入」，与 agent 标题分成两段。
 
 ### 9.23 Compact 按钮按 runId 反查，不按「每 cwd 最新一条」
 
