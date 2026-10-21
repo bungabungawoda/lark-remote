@@ -189,6 +189,20 @@ const RESUME_CONTENT_PREFETCH = 5;
  */
 const RESUME_SUMMARY_PLACEHOLDERS = new Set(['', '(no user message)', '(无摘要)', 'New Session']);
 
+/** 列表卡「最近输入 / 最后输出」单行预览的长度上限（中文按字符，手机约两行）。 */
+const RESUME_PREVIEW_MAX = 60;
+
+/**
+ * 列表卡单行预览：压平空白、去掉反引号，再按字符截断。
+ *
+ * 为什么去反引号：agent 的输出里 `code` 很常见，截断点落在一对反引号中间时
+ * 后半张卡片的 markdown 会被当成代码块渲染（lark_md 不闭合就不回退）。
+ */
+function sessionPreviewLine(text: string, max: number): string {
+  const flat = text.replace(/`/g, '').replace(/\s+/g, ' ').trim();
+  return flat.length > max ? `${flat.slice(0, max - 1)}…` : flat;
+}
+
 /**
  * Card-action commands that must run with enqueue({ immediate: true }).
  * These bypass the serial queue and execute immediately.
@@ -4339,6 +4353,11 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
     >();
     const prefetchCount = Math.min(RESUME_CONTENT_PREFETCH, allSessions.length);
     for (const s of allSessions.slice(0, prefetchCount)) {
+      // 行上已经带了服务端投影预览（DSH：title + turnOutline 末条）→ 跳过预取。
+      // DSH 的 readSessionContent 是 3 个 curl 加一次 maxMessages=10000 的
+      // session/page；一页 5 个会话按行预取等于 15 次同步 HTTP，而这些信息
+      // session/list 已经给全了。
+      if (s.title || s.lastUserMessage || s.lastAssistantMessage) continue;
       // 优先走轻量摘要（只取标题/用量，不构造 events）——codex 实现了
       // readSessionSummary，避免对前 N 条各做一次全量 JSONL 解析来构造
       // 立即被丢弃的 events 数组。其他 agent 无此方法时回退全量读取再取字段。
@@ -4382,26 +4401,34 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
       const buttonText = isCurrent ? '✓ 当前会话' : '恢复此会话';
       const meta = sessionMeta.get(s.sessionId);
       // Title priority:
-      // 1. Prefetched displayTitle (aiTitle or last user message) keeps its
+      // 1. 行级 title（服务端投影，DSH）→ 「标题」。
+      // 2. Prefetched displayTitle (aiTitle or last user message) keeps its
       //    original label (AI 标题 / 最近输入).
-      // 2. Otherwise the lightweight summary renders under the neutral
+      // 3. Otherwise the lightweight summary renders under the neutral
       //    "会话摘要" label — summary is the first user message, not the
       //    last input, so "最近输入" would be semantically wrong.
-      // 3. Placeholder summaries (no user message) render no title section
+      // 4. Placeholder summaries (no user message) render no title section
       //    at all — never leak '(无摘要)'/'(no user message)'/'New Session'.
       const summaryIsPlaceholder = RESUME_SUMMARY_PLACEHOLDERS.has(s.summary.trim());
       const prefetchedTitle = meta?.displayTitle;
+      // 行级 title 也过占位符过滤：DSH 对空会话可能给 "New Session"，旧路径
+      // 的 summary 会被挡掉，新路径如果不过滤就会把它当真实标题渲染。
+      const rowTitleRaw = s.title?.trim() ?? '';
+      const rowTitle =
+        rowTitleRaw && !RESUME_SUMMARY_PLACEHOLDERS.has(rowTitleRaw) ? rowTitleRaw : undefined;
       // aiTitle 不能单独作为"预取标题"键：若 displayTitle 缺失（理论上 opencode
       // info.title 非空但 export 无 user text），标题兜底是 summary，label 必须
       // 是中性"会话摘要"而不是"最近输入"（Review 边缘分支）。
-      const titleText = prefetchedTitle ?? (summaryIsPlaceholder ? '' : s.summary);
+      const titleText = prefetchedTitle ?? rowTitle ?? (summaryIsPlaceholder ? '' : s.summary);
       const titleLabel = prefetchedTitle
         ? meta?.aiTitle
           ? 'AI 标题'
           : '最近输入'
-        : summaryIsPlaceholder
-          ? ''
-          : '会话摘要';
+        : rowTitle
+          ? '标题'
+          : summaryIsPlaceholder
+            ? ''
+            : '会话摘要';
       const sections: string[] = [];
       if (titleText) {
         sections.push(
@@ -4411,6 +4438,18 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
       if (meta?.recap) {
         sections.push(
           `📝 **Recap**\n${meta.recap.slice(0, 60)}${meta.recap.length > 60 ? '...' : ''}`,
+        );
+      }
+      // 行级预览（DSH 服务端投影）：最后一句我说了什么 / 最后一句它答了什么。
+      // 只对提供了字段的 reader 渲染，其他 agent 的卡片一个字都不变。
+      if (s.lastUserMessage) {
+        sections.push(
+          `✏️ **最近输入**\n${sessionPreviewLine(s.lastUserMessage, RESUME_PREVIEW_MAX)}`,
+        );
+      }
+      if (s.lastAssistantMessage) {
+        sections.push(
+          `📤 **最后输出**\n${sessionPreviewLine(s.lastAssistantMessage, RESUME_PREVIEW_MAX)}`,
         );
       }
       const infoStr = sections.length > 0 ? '\n' + sections.join('\n──\n') : '';
