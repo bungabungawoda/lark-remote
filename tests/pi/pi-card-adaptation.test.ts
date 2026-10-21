@@ -3,20 +3,13 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { AppConfigSchema } from '../../src/config/index.js';
-import { CommandRouter } from '../../src/router/index.js';
-import { Bridge } from '../../src/bridge/index.js';
-import { SessionStore } from '../../src/session/index.js';
 import { agentDisplayName } from '../../src/card/card-shared.js';
 import { toolHeaderText, toolBodyMd } from '../../src/card/tool-render.js';
 import type { ToolEntry } from '../../src/card/run-state.js';
 import { SessionReaderRegistry } from '../../src/session/registry.js';
 
-import {
-  createStubAgentRegistry,
-  createStubSessionReaderRegistry,
-  createStubRunner,
-  createStubConnector,
-} from '../lib/bridge-stubs.js';
+import { createStubRunner, createStubConnector } from '../lib/bridge-stubs.js';
+import { createRouterFixture } from '../lib/router-fixture.js';
 import { expectNoV1ActionContainer } from '../lib/card-view.js';
 let tmpDir: string;
 
@@ -152,9 +145,6 @@ describe('Pi card adaptation', () => {
 
   describe('/config card with defaultAgent=pi', () => {
     it('includes pi.thinking select and pi.provider/pi.model fields, no 200861 violation', async () => {
-      const sessionStore = new SessionStore();
-      const connector = createStubConnector();
-      const runner = createStubRunner();
       const config = AppConfigSchema.parse({
         feishu: { appId: 'test', appSecret: 'test' },
         claude: {
@@ -164,19 +154,11 @@ describe('Pi card adaptation', () => {
         agents: { pi: { provider: 'Volcano', model: 'glm-5.2', thinking: 'medium' } },
         defaultAgent: 'pi',
       });
-      const router = new CommandRouter({
-        sessionStore,
-        bridge: new Bridge({
-          runner,
-          agentRegistry: createStubAgentRegistry(runner),
-          sessionReaderRegistry: createStubSessionReaderRegistry(),
-          connector,
-          sessionStore,
-          config,
-        }),
+      const { router, connector } = createRouterFixture({
+        tmpDir,
         config,
-        configPath: path.join(tmpDir, 'config.yaml'),
-        workspacePath: path.join(tmpDir, 'workspace.json'),
+        connector: createStubConnector(),
+        runner: createStubRunner(),
         sessionReaderRegistry: new SessionReaderRegistry(),
       });
 

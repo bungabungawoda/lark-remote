@@ -5,10 +5,10 @@ import os from 'node:os';
 import { Bridge } from '../../src/bridge/index.js';
 import { SessionStore, SessionReaderRegistry } from '../../src/session/index.js';
 import { AppConfigSchema } from '../../src/config/index.js';
-import { CommandRouter } from '../../src/router/index.js';
 import type { AppConfig } from '../../src/config/index.js';
 import type { AgentEvent, Runner } from '../../src/runner/index.js';
 import type { SpawnOptions } from '../../src/runner/types.js';
+import { createRouterFixture } from '../lib/router-fixture.js';
 
 import {
   createStubAgentRegistry,
@@ -197,15 +197,13 @@ describe('Bridge.forwardToClaude session cwd sync', () => {
 
     // config.save codex→pi：system.init 改过 sessions[codex] → userChangedOld=true
     // → prev[pi]=P 的恢复被阻断，消息「session 已清空」，停车保留。
-    const router = new CommandRouter({
-      sessionStore,
-      bridge,
+    const router = createRouterFixture({
+      tmpDir: tmpRoot,
       config: codexConfig,
-      configPath: path.join(tmpRoot, 'config.yaml'),
-      workspacePath: path.join(tmpRoot, 'workspace.json'),
-      ordersPath: path.join(tmpRoot, 'orders.json'),
+      bridge,
+      sessionStore,
       sessionReaderRegistry: new SessionReaderRegistry(),
-    });
+    }).router;
     const ctx = { userId: 'user1', chatId: 'chat1', messageId: 'msg1' };
     await router.handleCardAction({ cmd: 'config.set', key: 'defaultAgent', option: 'pi' }, ctx);
     await router.handleCardAction({ cmd: 'config.save' }, ctx);

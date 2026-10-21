@@ -3,9 +3,9 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { CommandRouter } from './index.js';
-import { SessionStore } from '../session/index.js';
 import { AppConfigSchema, type AppConfig } from '../config/index.js';
 import { createMockBridge, createStubSessionReaderRegistry } from '../../tests/lib/bridge-stubs.js';
+import { createRouterFixture } from '../../tests/lib/router-fixture.js';
 import { expectNoV1ActionContainer } from '../../tests/lib/card-view.js';
 
 let tmpDir: string;
@@ -21,14 +21,13 @@ beforeEach(() => {
     claude: { model: 'opus', stopGraceMs: 5000 },
   });
   mockBridge = createMockBridge();
-  router = new CommandRouter({
-    sessionStore: new SessionStore(),
-    bridge: mockBridge,
+  router = createRouterFixture({
+    tmpDir,
     config,
-    configPath: path.join(tmpDir, 'config.yaml'),
-    ordersPath: path.join(tmpDir, 'orders.json'),
+    bridge: mockBridge,
     sessionReaderRegistry: createStubSessionReaderRegistry(),
-  });
+    routerOpts: { ordersPath: path.join(tmpDir, 'orders.json') },
+  }).router;
 });
 
 afterEach(() => {

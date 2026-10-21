@@ -13,6 +13,7 @@ import {
   createStubConnector,
   createStubRunner,
 } from '../lib/bridge-stubs.js';
+import { asAgentRunner as wrapAgentRunner } from '../lib/agent-runner.js';
 import { mockLogger } from '../lib/logger-mock.js';
 
 vi.mock('../../src/logger/index.js', async () =>
@@ -21,17 +22,7 @@ vi.mock('../../src/logger/index.js', async () =>
 
 // --- Stubs（同 tests/anchor/misc/bridge-kimi-usage-threading.test.ts 模式） ---
 function asAgentRunner(r: Runner, kind: AgentKind): AgentRunner {
-  return {
-    ...r,
-    kind,
-    sessionReader: {
-      listSessions: () => ({ sessions: [], total: 0 }),
-      getNewestSession: () => null,
-      readSessionContent: () => ({ events: [] }),
-      isSessionActive: () => false,
-    },
-    getStatusInfo: () => ({ kind, model: 'test' }),
-  };
+  return wrapAgentRunner(r, kind);
 }
 
 let tmpDir: string;

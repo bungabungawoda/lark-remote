@@ -9,7 +9,7 @@ import {
 } from '../../config/codex-config.js';
 import type { AgentConfigCardBuilder, ConfigField } from './types.js';
 import { DEFAULT_TURN_IDLE_TIMEOUT_MINUTES, type AppConfig } from '../../config/index.js';
-import { resetModelPatch } from './common/model-patch.js';
+import { pickMiddleValue, resetModelPatch } from './common/model-patch.js';
 
 export class CodexConfigBuilder implements AgentConfigCardBuilder {
   buildFields(displayConfig: AppConfig): ConfigField[] {
@@ -153,8 +153,8 @@ export class CodexConfigBuilder implements AgentConfigCardBuilder {
     const isCurrentEffortValid =
       currentReasoningEffort && newModelSupportedEfforts.includes(currentReasoningEffort);
     if (isCurrentEffortValid) return null;
-    const middle = newModelSupportedEfforts[Math.floor((newModelSupportedEfforts.length - 1) / 2)];
-    const newEffort = middle ?? getDefaultReasoningEffort(newModel);
+    const newEffort =
+      pickMiddleValue(newModelSupportedEfforts) ?? getDefaultReasoningEffort(newModel);
     return { key: 'agents.codex.reasoningEffort', value: newEffort };
   }
 }

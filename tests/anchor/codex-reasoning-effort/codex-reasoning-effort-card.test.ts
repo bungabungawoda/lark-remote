@@ -5,7 +5,6 @@
 import { createMockBridge, createMockSessionReaderRegistry } from '../../lib/bridge-stubs.js';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { CommandRouter } from '../../../src/router/index.js';
-import { SessionStore } from '../../../src/session/index.js';
 import { AppConfigSchema } from '../../../src/config/index.js';
 import type { AppConfig } from '../../../src/config/index.js';
 import { invalidateCodexBundledCache } from '../../../src/config/codex-config.js';
@@ -14,21 +13,18 @@ import path from 'node:path';
 import fs from 'node:fs';
 import { mockLogger } from '../../lib/logger-mock.js';
 import { makeTempDir } from '../../lib/temp-dir.js';
+import {
+  extractSelectOptions,
+  extractSelectCurrentValue,
+  extractConfigFieldKeys,
+} from '../../lib/card-tree.js';
+import { makeCodexConfig } from '../../lib/agent-config-fixture.js';
+import { createRouterFixture } from '../../lib/router-fixture.js';
 
 const { mockSpawnSync } = vi.hoisted(() => ({ mockSpawnSync: vi.fn() }));
 
-vi.mock('../../../src/platform/spawn.js', () => ({
-  // 兼容历史 mock 形态：返回 string/Buffer 视为成功 stdout，抛错/其余原样穿透
-  spawnProcessSync: (...args: any[]) => {
-    const v = mockSpawnSync(...args);
-    if (typeof v === 'string' || Buffer.isBuffer(v)) {
-      return { status: 0, stdout: v, stderr: '' };
-    }
-    return v;
-  },
-  spawnProcess: () => {
-    throw new Error('anchor test must not spawn async');
-  },
+vi.mock('../../../src/platform/spawn.js', async () => ({
+  ...(await import('../../lib/spawn-mock.js')).spawnModuleMock(mockSpawnSync),
 }));
 vi.mock('../../../src/logger/index.js', async () =>
   (await import('../../lib/logger-mock.js')).loggerModuleMock(),
@@ -54,39 +50,12 @@ const BUNDLED_FIXTURE = makeCatalog([
  *
  */
 
-function extractConfigFieldKeys(card: object): string[] {
-  const keys = new Set<string>();
-  const json = JSON.stringify(card);
-  const regex = /"cmd"\s*:\s*"config\.\w+"\s*,\s*"key"\s*:\s*"([^"]+)"/g;
-  let match: RegExpExecArray | null;
-  while ((match = regex.exec(json)) !== null) {
-    keys.add(match[1]);
-  }
-  const regex2 = /"key"\s*:\s*"([^"]+)"\s*,\s*"cmd"\s*:\s*"config\.\w+"/g;
-  while ((match = regex2.exec(json)) !== null) {
-    keys.add(match[1]);
-  }
-  return Array.from(keys);
-}
-
 function buildCodexConfig(): AppConfig {
-  return AppConfigSchema.parse({
-    feishu: { appId: 'test', appSecret: 'test' },
-    defaultAgent: 'codex',
-    claude: {
-      model: 'opus',
-      effort: 'medium',
-      stopGraceMs: 5000,
-    },
-    agents: {
-      codex: {
-        model: 'gpt-5.6-sol',
-        modelProvider: 'openai',
-        reasoningEffort: 'high',
-      },
-    },
-    idle: { watchdogMinutes: 15 },
-    logging: { level: 'info' },
+  return makeCodexConfig({
+    model: 'gpt-5.6-sol',
+    modelProvider: 'openai',
+    reasoningEffort: 'high',
+    claude: { model: 'opus', effort: 'medium', stopGraceMs: 5000 },
   });
 }
 
@@ -121,21 +90,14 @@ describe('Config card codex reasoningEffort - anchor', () => {
 
   it('test_anchor_config_card_codex_has_reasoning_effort_field', () => {
     const config = buildCodexConfig();
-    const sessionStore = new SessionStore();
-    const bridge = createMockBridge();
-    const sessionReaderRegistry = createMockSessionReaderRegistry({
-      agentKinds: ['claude', 'codex'],
-    });
-
-    const router = new CommandRouter({
-      sessionStore,
-      bridge,
+    const router = createRouterFixture({
+      tmpDir,
       config,
-      configPath: path.join(tmpDir, 'config.yaml'),
-      workspacePath: path.join(tmpDir, 'workspace.json'),
-      ordersPath: path.join(tmpDir, 'orders.json'),
-      sessionReaderRegistry,
-    });
+      bridge: createMockBridge(),
+      sessionReaderRegistry: createMockSessionReaderRegistry({
+        agentKinds: ['claude', 'codex'],
+      }),
+    }).router;
 
     const cardResult = router.buildConfigCard();
     const card = cardResult.card;
@@ -148,21 +110,14 @@ describe('Config card codex reasoningEffort - anchor', () => {
 
   it('test_anchor_config_card_codex_reasoning_effort_has_options', () => {
     const config = buildCodexConfig();
-    const sessionStore = new SessionStore();
-    const bridge = createMockBridge();
-    const sessionReaderRegistry = createMockSessionReaderRegistry({
-      agentKinds: ['claude', 'codex'],
-    });
-
-    const router = new CommandRouter({
-      sessionStore,
-      bridge,
+    const router = createRouterFixture({
+      tmpDir,
       config,
-      configPath: path.join(tmpDir, 'config.yaml'),
-      workspacePath: path.join(tmpDir, 'workspace.json'),
-      ordersPath: path.join(tmpDir, 'orders.json'),
-      sessionReaderRegistry,
-    });
+      bridge: createMockBridge(),
+      sessionReaderRegistry: createMockSessionReaderRegistry({
+        agentKinds: ['claude', 'codex'],
+      }),
+    }).router;
 
     const cardResult = router.buildConfigCard();
     const card = cardResult.card;
@@ -176,21 +131,14 @@ describe('Config card codex reasoningEffort - anchor', () => {
 
   it('test_anchor_config_card_codex_reasoning_effort_label', () => {
     const config = buildCodexConfig();
-    const sessionStore = new SessionStore();
-    const bridge = createMockBridge();
-    const sessionReaderRegistry = createMockSessionReaderRegistry({
-      agentKinds: ['claude', 'codex'],
-    });
-
-    const router = new CommandRouter({
-      sessionStore,
-      bridge,
+    const router = createRouterFixture({
+      tmpDir,
       config,
-      configPath: path.join(tmpDir, 'config.yaml'),
-      workspacePath: path.join(tmpDir, 'workspace.json'),
-      ordersPath: path.join(tmpDir, 'orders.json'),
-      sessionReaderRegistry,
-    });
+      bridge: createMockBridge(),
+      sessionReaderRegistry: createMockSessionReaderRegistry({
+        agentKinds: ['claude', 'codex'],
+      }),
+    }).router;
 
     const cardResult = router.buildConfigCard();
     const card = cardResult.card;
@@ -211,59 +159,6 @@ describe('Config card codex reasoningEffort - anchor', () => {
  *
  * Spec basis: 用户需求 + codex debug models 实测
  */
-
-function extractSelectOptions(card: object, key: string): string[] {
-  const values: string[] = [];
-  function traverse(obj: unknown) {
-    if (!obj || typeof obj !== 'object') return;
-    if (Array.isArray(obj)) {
-      obj.forEach((item) => traverse(item));
-      return;
-    }
-    const record = obj as Record<string, unknown>;
-    if (record.tag === 'select_static') {
-      const behaviors = record.behaviors as Array<{ value?: { key?: string } }> | undefined;
-      const behavior = behaviors?.find((b) => b.value?.key === key);
-      if (behavior) {
-        const options = record.options as Array<{ value?: string; selected?: boolean }> | undefined;
-        for (const opt of options ?? []) {
-          if (typeof opt.value === 'string') values.push(opt.value);
-        }
-        return;
-      }
-    }
-    for (const value of Object.values(record)) {
-      traverse(value);
-    }
-  }
-  traverse(card);
-  return values;
-}
-
-function extractSelectCurrentValue(card: object, key: string): string | undefined {
-  let current: string | undefined;
-  function traverse(obj: unknown) {
-    if (current !== undefined || !obj || typeof obj !== 'object') return;
-    if (Array.isArray(obj)) {
-      obj.forEach((item) => traverse(item));
-      return;
-    }
-    const record = obj as Record<string, unknown>;
-    if (record.tag === 'select_static') {
-      const behaviors = record.behaviors as Array<{ value?: { key?: string } }> | undefined;
-      const behavior = behaviors?.find((b) => b.value?.key === key);
-      if (behavior) {
-        current = record.initial_option as string | undefined;
-        return;
-      }
-    }
-    for (const value of Object.values(record)) {
-      traverse(value);
-    }
-  }
-  traverse(card);
-  return current;
-}
 
 function buildCodexConfigForModel(
   model: string,
@@ -346,18 +241,17 @@ describe('codex config card effort follows model - anchor', () => {
   });
 
   function makeRouter(config: AppConfig): CommandRouter {
-    return new CommandRouter({
-      sessionStore: new SessionStore(),
+    return createRouterFixture({
+      tmpDir,
+      config,
       bridge: createMockBridge({
         sendCard: vi.fn().mockResolvedValue(undefined),
         clearRunners: vi.fn(),
       }),
-      config,
-      configPath: path.join(tmpDir, 'config.yaml'),
-      workspacePath: path.join(tmpDir, 'workspace.json'),
-      ordersPath: path.join(tmpDir, 'orders.json'),
-      sessionReaderRegistry: createMockSessionReaderRegistry({ agentKinds: ['claude', 'codex'] }),
-    });
+      sessionReaderRegistry: createMockSessionReaderRegistry({
+        agentKinds: ['claude', 'codex'],
+      }),
+    }).router;
   }
 
   it('test_anchor_openai_model_shows_medium_and_switching_model_updates_effort_dropdown', async () => {

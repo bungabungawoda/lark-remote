@@ -4,16 +4,10 @@ import { loadKimiConfig, invalidateKimiConfigCache } from './kimi-config.js';
 // 生产代码经 platform/spawn（cross-spawn）调用 kimi，mock 该 seam；
 // mock 返回 string/Buffer 时自动包装成 spawnProcessSync 的成功结果形态，
 // mock 抛错则原样穿透（对齐 spawn error 语义）。
-const mockSpawnSync = vi.fn();
+const { mockSpawnSync } = vi.hoisted(() => ({ mockSpawnSync: vi.fn() }));
 
-vi.mock('../platform/spawn.js', () => ({
-  spawnProcessSync: (...args: any[]) => {
-    const v = mockSpawnSync(...args);
-    if (typeof v === 'string' || Buffer.isBuffer(v)) {
-      return { status: 0, stdout: v, stderr: '' };
-    }
-    return v;
-  },
+vi.mock('../platform/spawn.js', async () => ({
+  ...(await import('../../tests/lib/spawn-mock.js')).spawnModuleMock(mockSpawnSync),
 }));
 
 vi.mock('../logger/index.js', async () =>

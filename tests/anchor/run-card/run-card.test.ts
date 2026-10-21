@@ -100,11 +100,11 @@ describe('RunCardSession budget skip', () => {
  * 意图（必须完整保留）：
  * ① 补齐测试覆盖对称性：run-card-skip-budget 已验证 updateCard（push）
  *    路径跳过 enforceCardBudget，但 start() producer 初始卡和 settle() fallback
- *    路径无对应 anchor。RunCardSession.hasOwnBudgetProtection=true，三条路径
- *    都经 safeRenderCard 统一跳过 enforceCardBudget，应一并验证。
- * ② 缺失后果：若有人误改 safeRenderCard 或 start/settle 绕过它，run 卡将
- *    重新经冗余的 enforceCardBudget（静态裁剪层对 run 卡是 misfit），浪费
- *    CPU 且可能误裁剪 run 卡的 thinking/tool panels。
+ *    路径无对应 anchor。CardSession.safeRenderCard 不再调用静态裁剪层，
+ *    三条路径应一并验证。
+ * ② 缺失后果：若有人把 enforceCardBudget 重新塞回 safeRenderCard，run 卡会
+ *    经冗余的静态裁剪层（对 run 卡是 misfit），浪费 CPU 且可能误裁剪
+ *    thinking/tool panels。
  *
  * renderRunCard 3 层 degraded/extreme
  * fallback 自带预算保护。

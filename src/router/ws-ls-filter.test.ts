@@ -12,17 +12,16 @@ import path from 'node:path';
 import { CommandRouter } from './index.js';
 import type { CardActionPayload } from './index.js';
 import { searchBar, SEARCH_INPUT_NAME } from './card-helpers.js';
-import { Bridge } from '../bridge/index.js';
 import { SessionStore } from '../session/index.js';
 import { AppConfigSchema } from '../config/index.js';
 import type { AppConfig } from '../config/index.js';
 import {
-  createStubAgentRegistry,
   createStubConnector,
   createStubRunner,
   createStubSessionReaderRegistry,
 } from '../../tests/lib/bridge-stubs.js';
 import { expectNoV1ActionContainer } from '../../tests/lib/card-view.js';
+import { createRouterFixture } from '../../tests/lib/router-fixture.js';
 import { rmRf } from '../../tests/lib/tmp-cleanup.js';
 import { canLinkFiles, linkDangling, linkDir, linkFile } from '../../tests/lib/fs-links.js';
 
@@ -137,22 +136,16 @@ function makeFixture(opts: {
     feishu: { appId: 'test', appSecret: 'test' },
     claude: { model: 'claude-test-model', stopGraceMs: 5000 },
   }) as AppConfig;
-  const router = new CommandRouter({
-    sessionStore,
-    bridge: new Bridge({
-      agentRegistry: createStubAgentRegistry(runner),
-      sessionReaderRegistry: createStubSessionReaderRegistry(),
-      connector,
-      sessionStore,
-      config,
-    }),
+  const { router, connector: fixtureConnector } = createRouterFixture({
+    tmpDir: root,
     config,
-    configPath: path.join(root, 'config.yaml'),
-    workspacePath,
-    ordersPath: path.join(root, 'orders.json'),
+    connector,
+    runner,
+    sessionStore,
     sessionReaderRegistry: createStubSessionReaderRegistry(),
+    routerOpts: { workspacePath },
   });
-  return { router, connector, root };
+  return { router, connector: fixtureConnector, root };
 }
 
 function wsCardOf(router: CommandRouter, q?: string): Card {
@@ -253,7 +246,6 @@ describe('searchBar', () => {
       searchBar({ cmd: 'ws.filter', placeholder: '搜索名称或路径，输完回车' }),
     );
     expect(json).not.toContain('"tag":"form"');
-    expect(json).not.toContain('"tag":"action"');
     expectNoV1ActionContainer(json);
   });
 });

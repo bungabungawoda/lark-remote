@@ -18,6 +18,7 @@
 
 import type { AgentConfigCardBuilder, ConfigField, SelectOption } from './types.js';
 import { DEFAULT_DSH_HOST, type AppConfig, type DshConfig } from '../../config/index.js';
+import { pickMiddleValue } from './common/model-patch.js';
 import { DshClient } from '../../runner/dsh/client.js';
 import { getLogger } from '../../logger/index.js';
 import type {
@@ -435,7 +436,7 @@ export class DshConfigBuilder implements AgentConfigCardBuilder {
     const supported = this.effortOptionsFor(provider, newModel);
     if (currentEffort && supported.includes(currentEffort)) return null;
     // 新模型目录中位档位；偶数长度取偏高位（off/low → low，符合 DSH 默认 high 语义）
-    const middle = supported[Math.floor(supported.length / 2)];
+    const middle = pickMiddleValue(supported, 'upper');
     return { key: 'agents.dsh.reasoningEffort', value: middle };
   }
 }

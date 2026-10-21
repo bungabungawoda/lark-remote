@@ -12,7 +12,12 @@
 
 import type { ToolEntry } from './run-state.js';
 import { truncate } from '../common/truncate.js';
-import { asRecord, summarizeToolInput } from '../common/tool-summary.js';
+import {
+  asRecord,
+  HEADER_SUMMARY_MAX,
+  summarizeToolInput,
+  toolKindOf,
+} from '../common/tool-summary.js';
 import { truncateMiddleToDisplayWidth } from '../common/text-width.js';
 
 // 这两个宽度工具原本住在这里；resume 卡片也要用，已下沉到 common。
@@ -22,7 +27,6 @@ export {
   truncateToDisplayWidth,
 } from '../common/text-width.js';
 
-const HEADER_SUMMARY_MAX = 80;
 /**
  * 面板标题的显示宽度上限（半角单位，CJK/emoji 记 2）。
  *
@@ -177,35 +181,22 @@ function renderInput(tool: ToolEntry): string {
       break;
   }
 
-  switch (tool.name) {
-    case 'Bash':
-    case 'bash':
-    case 'pwsh':
+  switch (toolKindOf(tool.name)) {
+    case 'shell':
       return renderBashInput(str);
-    case 'Read':
-    case 'Edit':
-    case 'Write':
-    case 'NotebookEdit':
-    case 'read':
-    case 'edit':
-    case 'write':
-    case 'read_image':
+    case 'file':
       return renderFileInput(str);
-    case 'Grep':
     case 'grep':
       return renderGrepInput(str);
-    case 'Glob':
     case 'glob':
-    case 'find':
       return renderGlobInput(str);
     case 'ls':
       return renderLsInput(str);
-    case 'WebFetch':
-    case 'web_fetch':
+    case 'webfetch':
       return renderWebFetchInput(str);
-    case 'WebSearch':
+    case 'websearch':
       return renderWebSearchInput(str);
-    case 'web_search':
+    case 'websearch_queries':
       return renderWebQueriesInput(rec.queries) || renderWebSearchInput(str);
     default:
       return '';

@@ -6,6 +6,7 @@ import os from 'node:os';
 import { makeBridge } from '../lib/bridge-stubs.js';
 import { setupTwoTaskQueueScenario } from '../lib/queue-scenario.js';
 import { mockLogger } from '../lib/logger-mock.js';
+import { cardButtons, cardHeaderTitle, type Card } from '../lib/card-tree.js';
 
 vi.mock('../../src/logger/index.js', async () =>
   (await import('../lib/logger-mock.js')).loggerModuleMock(),
@@ -54,18 +55,14 @@ describe('Queue card update when task starts executing', () => {
     expect(updateCardCalls.length).toBeGreaterThan(0);
 
     // Verify the update has correct properties
-    const updatedCard = updateCardCalls[updateCardCalls.length - 1].card as Record<string, unknown>;
-    const header = updatedCard.header as Record<string, unknown>;
-    const title = header?.title as Record<string, unknown>;
-
-    expect(header?.template).toBe('green');
-    expect(String(title?.content)).toContain('已开始执行');
+    const updatedCard = updateCardCalls[updateCardCalls.length - 1].card;
+    expect((updatedCard as { header?: { template?: string } }).header?.template).toBe('green');
+    expect(cardHeaderTitle(updatedCard)).toContain('已开始执行');
 
     // Check buttons are disabled
-    const body = updatedCard.body as Record<string, unknown>;
-    const elements = body?.elements as Array<Record<string, unknown>>;
-    const buttons = elements?.filter((el: Record<string, unknown>) => el.tag === 'button');
-    for (const btn of buttons ?? []) {
+    const buttons = cardButtons(updatedCard as Card);
+    expect(buttons.length).toBeGreaterThan(0);
+    for (const btn of buttons) {
       expect(btn.disabled).toBe(true);
     }
 

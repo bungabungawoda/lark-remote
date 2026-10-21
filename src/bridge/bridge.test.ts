@@ -27,6 +27,7 @@ import {
 } from '../../tests/lib/bridge-stubs.js';
 import { prependPath, restorePath, writeMockBin } from '../../tests/lib/path-mock.js';
 import { rmRf } from '../../tests/lib/tmp-cleanup.js';
+import { asAgentRunner as wrapAgentRunner } from '../../tests/lib/agent-runner.js';
 import { mockLogger } from '../../tests/lib/logger-mock.js';
 
 vi.mock('../logger/index.js', async () =>
@@ -2411,17 +2412,7 @@ describe('Bridge agentRegistry / sessionReaderRegistry', () => {
  *  `AgentRegistry.register` requires. Bridge.getRunner only calls
  *  `Runner` methods; kind/sessionReader are never accessed. */
 function asAgentRunner(r: Runner): AgentRunner {
-  return {
-    ...r,
-    kind: 'claude',
-    sessionReader: {
-      listSessions: () => ({ sessions: [], total: 0 }),
-      getNewestSession: () => null,
-      readSessionContent: () => ({ events: [] }),
-      isSessionActive: () => false,
-    },
-    getStatusInfo: () => ({ kind: 'claude', model: 'test' }),
-  };
+  return wrapAgentRunner(r, 'claude');
 }
 
 // Helper: set cwd via Bridge's sessionStore (public seam).

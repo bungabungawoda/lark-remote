@@ -29,6 +29,7 @@ import {
 import { encodedProjectDir, writeSessionJsonl } from '../../tests/lib/session-fixtures.js';
 import { collectCallbackCmds, expectNoV1ActionContainer } from '../../tests/lib/card-view.js';
 import { rmRf } from '../../tests/lib/tmp-cleanup.js';
+import { createRouterFixture } from '../../tests/lib/router-fixture.js';
 import { currentPlatform, isWin32 } from '../platform/select.js';
 
 /**
@@ -196,8 +197,6 @@ function createRouter(overrides?: {
   codex?: Partial<AppConfig['codex']>; // codex config overrides
   cloneSession?: CloneSession;
 }) {
-  const sessionStore = new SessionStore();
-  const connector = createStubConnector();
   const runner: Runner = overrides?.runner ?? createStubRunner({ withStatusInfo: true });
   const config: AppConfig = AppConfigSchema.parse({
     feishu: { appId: 'test', appSecret: 'test' },
@@ -209,32 +208,23 @@ function createRouter(overrides?: {
     ...(overrides?.defaultAgent ? { defaultAgent: overrides.defaultAgent } : {}),
     ...(overrides?.codex ? { agents: { codex: overrides.codex } } : {}),
   });
-  const router = new CommandRouter({
-    sessionStore,
-    bridge:
-      overrides?.bridge ??
-      new Bridge({
-        runner,
-        agentRegistry: createStubAgentRegistry(runner),
-        sessionReaderRegistry: createStubSessionReaderRegistry(),
-        connector,
-        sessionStore,
-        config,
-      }),
+  return createRouterFixture({
+    tmpDir,
+    runner,
+    bridge: overrides?.bridge,
     config,
-    configPath: path.join(tmpDir, 'config.yaml'),
-    workspacePath: path.join(tmpDir, 'workspace.json'),
-    exitHandler: overrides?.exitHandler,
-    restartSpawner: overrides?.restartSpawner,
-    idleTimeoutMs: overrides?.idleTimeoutMs,
     sessionReaderRegistry:
       overrides?.sessionReaderRegistry ??
       createStubSessionReaderRegistry(
         overrides?.projectsDir ? { claudeProjectsDir: overrides.projectsDir } : undefined,
       ),
-    cloneSession: overrides?.cloneSession,
+    routerOpts: {
+      exitHandler: overrides?.exitHandler,
+      restartSpawner: overrides?.restartSpawner,
+      idleTimeoutMs: overrides?.idleTimeoutMs,
+      cloneSession: overrides?.cloneSession,
+    },
   });
-  return { router, sessionStore, connector };
 }
 
 const ctx = { userId: 'user1', chatId: 'chat1', messageId: 'msg1' };
@@ -4381,5 +4371,87 @@ describe('队列身份 key 铸造', () => {
     // 形状可读：kind 与 id 保留（order.exec 的下游断言/日志依赖 order-<id>- 前缀）
     expect(keys[0]).toMatch(/^card-compact-\d+$/);
     expect(keys[2]).toMatch(/^order-o-1-\d+$/);
+  });
+});
+
+describe('isImmediateAction — resume.page', () => {
+  it('test_anchor_resume_page_is_immediate_action', () => {
+    expect(isImmediateAction('resume.page')).toBe(true);
+  });
+});
+
+describe('/active card stop buttons must have tag:plain_text', () => {
+  it('test_anchor_active_card_stop_buttons_have_plain_text_tag', async () => {
+    const sessionStore = new SessionStore();
+    const connector = createStubConnector();
+    const runner = createStubRunner({ withStatusInfo: true });
+    const config: AppConfig = AppConfigSchema.parse({
+      feishu: { appId: 'test', appSecret: 'test' },
+      claude: { model: 'claude-opus-4-8', stopGraceMs: 5000 },
+    });
+    const bridge = new Bridge({
+      runner,
+      agentRegistry: createStubAgentRegistry(runner),
+      sessionReaderRegistry: createStubSessionReaderRegistry(),
+      connector,
+      sessionStore,
+      config,
+    });
+    bridge.getActiveRuns = () => [
+      {
+        runId: 'run-1',
+        sessionId: 'sess-1',
+        cwd: '/tmp/test-cwd',
+        userId: 'user1',
+        chatId: 'chat1',
+        terminal: 'running' as const,
+      },
+    ];
+    bridge.getActiveBashRuns = () => [
+      {
+        runId: 'bash-1',
+        cwd: '/tmp/test-cwd',
+        userId: 'user1',
+        chatId: 'chat1',
+        terminal: 'running' as const,
+        command: 'ls -la',
+      },
+    ];
+    const router = new CommandRouter({
+      sessionStore,
+      bridge,
+      config,
+      configPath: path.join(tmpDir, 'config.yaml'),
+      workspacePath: path.join(tmpDir, 'workspace.json'),
+      sessionReaderRegistry: createStubSessionReaderRegistry(),
+    });
+
+    await router.handle('/active', ctx);
+
+    type CardElement = {
+      tag?: string;
+      text?: { tag?: string; content?: string };
+      behaviors?: Array<{ value?: { cmd?: string } }>;
+      elements?: CardElement[];
+      columns?: Array<{ elements?: CardElement[] }>;
+    };
+    const collectStopButtons = (el: CardElement | undefined, out: CardElement[] = []) => {
+      if (!el) return out;
+      if (el.tag === 'button' && el.behaviors?.some((b) => b.value?.cmd === 'stop')) out.push(el);
+      for (const child of el.elements ?? []) collectStopButtons(child, out);
+      for (const col of el.columns ?? [])
+        for (const child of col.elements ?? []) collectStopButtons(child, out);
+      return out;
+    };
+
+    const response = connector._sent[0].input as {
+      card?: { body?: { elements?: CardElement[] } };
+    };
+    expect(response.card).toBeDefined();
+    const stopButtons = (response.card?.body?.elements ?? []).flatMap((el) =>
+      collectStopButtons(el),
+    );
+    expect(stopButtons.length).toBeGreaterThanOrEqual(2);
+    for (const btn of stopButtons) expect(btn.text?.tag).toBe('plain_text');
   });
 });
