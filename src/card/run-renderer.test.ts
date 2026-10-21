@@ -3337,8 +3337,9 @@ describe('renderRunCard tool panels (native fold + truncation)', () => {
  * 运行期状态投影（DSH session/control）：状态行一行带出上下文水位与步数。
  *
  * 口径来自服务端自己算好的投影，bridge 不重算：百分比用 projectedTokens
- * （没有才退回实际占用），`~` 表示这是投影值而非计费值。终态卡不渲染状态条
- * ——summary 里的 token 统计才是权威，同一张卡上出现两遍只会互相矛盾。
+ * （没有才退回实际占用），`~` 表示这是投影值而非计费值。终态卡也保留状态条
+ * （2026-10-21 用户要求）：耗时定格，步数/上下文展示这一跑的最后快照；
+ * summary 的最终 usage 与它并存，口径不同。
  */
 describe('renderRunCard live status strip', () => {
   function stateWithStatus(): RunState {
@@ -3370,10 +3371,16 @@ describe('renderRunCard live status strip', () => {
     expect(json).toContain('🧰 9 步');
   });
 
-  it('drops the strip on terminal cards (summary owns the numbers)', () => {
-    const json = JSON.stringify(renderRunCard(finishRun(stateWithStatus(), 'done', {})));
-    expect(json).not.toContain('📊');
-    expect(json).not.toContain('🧰');
+  it('keeps elapsed, steps and context on a finished card (2026-10-21)', () => {
+    const startedAt = Date.now() - (6 * 60 + 18) * 1000;
+    const done = finishRun({ ...stateWithStatus(), startedAt }, 'done', {
+      resultSubtype: 'success',
+    });
+    const line = statusLine(done);
+    expect(line).toContain('⏱ ');
+    expect(line).toContain('🧰 7 步');
+    expect(line).toContain('📊 ~13%');
+    expect(JSON.stringify(renderRunCard(done))).toContain(line);
   });
 
   it('shows the absolute value when the window is unknown', () => {
@@ -3389,8 +3396,27 @@ describe('renderRunCard live status strip', () => {
  *
  * 后台任务的生命周期跨 turn：卡片收尾时如果不说，用户会以为机器上已经安静了。
  * 每个任务必须带停止入口——否则用户只能回到 DSH 的 Web UI 去杀。
+ *
+ * 2026-10-21 手机端反馈：旧布局把命令（grow）和停止按钮（auto）放在同一
+ * `column_set`，窄屏下按钮被挤成「🟥…」，命令又被 truncate(60) 截断。以下
+ * 用例锁住新布局：命令全文保留、长命令折叠可展开、按钮独占一行。
  */
 describe('renderRunCard background jobs', () => {
+  type BackgroundCardElement = {
+    tag?: string;
+    expanded?: boolean;
+    columns?: Array<{
+      width?: string;
+      elements?: Array<{
+        tag?: string;
+        text?: { content?: string };
+        behaviors?: Array<{ value?: { cmd?: string } }>;
+      }>;
+    }>;
+    text?: { content?: string };
+    elements?: BackgroundCardElement[];
+  };
+
   function doneState(jobs: RunState['backgroundJobs']): RunState {
     const state = reduceRunState(createInitialRunState('run-jobs'), {
       type: 'background_jobs',
@@ -3399,17 +3425,31 @@ describe('renderRunCard background jobs', () => {
     return finishRun({ ...state, sessionId: 'sess-1' }, 'done', { resultSubtype: 'success' });
   }
 
-  it('lists running jobs with a kill button carrying runId + jobId', () => {
-    const json = JSON.stringify(
-      renderRunCard(
-        doneState([
-          { id: 'bash-1', label: 'npm run dev', status: 'running' },
-          { id: 'bash-2', label: 'watch tests', status: 'running' },
-        ]),
-      ),
+  function cardElements(card: object): BackgroundCardElement[] {
+    return (card as { body?: { elements?: BackgroundCardElement[] } }).body?.elements ?? [];
+  }
+
+  function jobKillColumnSets(elements: BackgroundCardElement[]): BackgroundCardElement[] {
+    return elements.filter(
+      (el) =>
+        el.tag === 'column_set' &&
+        (el.columns ?? []).some((col) =>
+          (col.elements ?? []).some((child) => child.behaviors?.[0]?.value?.cmd === 'job.kill'),
+        ),
     );
+  }
+
+  it('lists running jobs with a kill button carrying runId + jobId', () => {
+    const card = renderRunCard(
+      doneState([
+        { id: 'bash-1', label: 'npm run dev', status: 'running' },
+        { id: 'bash-2', label: 'watch tests', status: 'running' },
+      ]),
+    );
+    const json = JSON.stringify(card);
     expect(json).toContain('🧵 **后台任务** 2 个仍在运行');
-    expect(json).toContain('npm run dev');
+    expect(json).toContain('_本轮结束后继续，可逐个停止_');
+    expect(json).toContain('· `npm run dev`');
     expect(json).toContain('"cmd":"job.kill"');
     expect(json).toContain('"jobId":"bash-1"');
     expect(json).toContain('"runId":"run-jobs"');
@@ -3432,11 +3472,86 @@ describe('renderRunCard background jobs', () => {
     expect(json).not.toContain('后台任务');
   });
 
-  it('sanitizes a label containing backticks and newlines', () => {
-    const json = JSON.stringify(
-      renderRunCard(doneState([{ id: 'bash-1', label: 'a`b\nc', status: 'running' }])),
+  it('renders a short single-line command inline without a panel', () => {
+    const elements = cardElements(
+      renderRunCard(doneState([{ id: 'bash-1', label: 'npm run dev', status: 'running' }])),
     );
-    expect(json).toContain("a'b c");
+    expect(elements.some((el) => el.text?.content === '· `npm run dev`')).toBe(true);
+    expect(elements.filter((el) => el.tag === 'collapsible_panel')).toHaveLength(0);
+  });
+
+  it('keeps a medium-length command intact in a fenced code block', () => {
+    const command =
+      'cd /home/user/code/notes-app && ./target/release/collector --mode full --out /tmp/report.json';
+    const card = renderRunCard(doneState([{ id: 'bash-1', label: command, status: 'running' }]));
+    const json = JSON.stringify(card);
+    expect(json).toContain(command);
+    expect(json).not.toContain('…（已截断）');
+
+    // 中等长度直接展开，不要求用户再点一次。
+    const elements = cardElements(card);
+    expect(elements.filter((el) => el.tag === 'collapsible_panel')).toHaveLength(0);
+    const body = elements.find((el) => el.text?.content?.includes(command))?.text?.content;
+    expect(body).toBe(`\`\`\`\n${command}\n\`\`\``);
+  });
+
+  it('folds a genuinely long command into an expandable panel with the full text', () => {
+    const command = Array.from(
+      { length: 8 },
+      (_, i) =>
+        `echo phase-${i} && ./target/release/collector --phase ${i} --out /tmp/phase-${i}.json`,
+    ).join('\n');
+    const card = renderRunCard(doneState([{ id: 'bash-1', label: command, status: 'running' }]));
+    const elements = cardElements(card);
+    const panels = elements.filter((el) => el.tag === 'collapsible_panel');
+    expect(panels).toHaveLength(1);
+    expect(panels[0].expanded).toBe(false);
+    expect(JSON.stringify(panels[0])).toContain('点击展开完整命令');
+    const body = panels[0].elements?.[0]?.text?.content ?? '';
+    expect(body).toContain(command);
+  });
+
+  it('puts the kill button on its own row instead of squeezing it beside the command', () => {
+    const elements = cardElements(
+      renderRunCard(
+        doneState([
+          { id: 'bash-1', label: 'npm run dev', status: 'running' },
+          {
+            id: 'bash-2',
+            label: 'cd /home/user/code/notes-app && ./target/release/collector --mode full',
+            status: 'running',
+          },
+        ]),
+      ),
+    );
+
+    const killSets = jobKillColumnSets(elements);
+    expect(killSets).toHaveLength(2);
+    for (const set of killSets) {
+      expect(set.columns).toHaveLength(1);
+      expect(set.columns?.[0]?.width).toBe('auto');
+      expect(set.columns?.[0]?.elements?.[0]?.text?.content).toBe('⏹ 停止');
+    }
+
+    // 命令不再和按钮并排：任何 column_set 都不能同时有 grow 列与 job.kill。
+    for (const set of elements.filter((el) => el.tag === 'column_set')) {
+      const hasGrow = (set.columns ?? []).some((col) => col.width === 'grow');
+      const hasKill = (set.columns ?? []).some((col) =>
+        (col.elements ?? []).some((child) => child.behaviors?.[0]?.value?.cmd === 'job.kill'),
+      );
+      expect(hasGrow && hasKill).toBe(false);
+    }
+  });
+
+  it('preserves backticks and newlines in the fenced body instead of rewriting them', () => {
+    const command = 'a`b\nc';
+    const elements = cardElements(
+      renderRunCard(doneState([{ id: 'bash-1', label: command, status: 'running' }])),
+    );
+    expect(JSON.stringify(elements)).not.toContain("a'b c");
+
+    const body = elements.find((el) => el.text?.content?.includes(command))?.text?.content;
+    expect(body).toBe(`\`\`\`\n${command}\n\`\`\``);
   });
 });
 
@@ -3531,7 +3646,16 @@ describe('renderRunCard status row narrow-screen layout', () => {
           liveStatus: { contextUsed: 999_999, contextLimit: 1_000_000, steps: 1234 },
         }),
       ],
-      ['done', finishRun(runningState(), 'done', { resultSubtype: 'success' })],
+      [
+        'done',
+        finishRun(
+          runningState({
+            liveStatus: { contextUsed: 999_999, contextLimit: 1_000_000, steps: 1234 },
+          }),
+          'done',
+          { resultSubtype: 'success' },
+        ),
+      ],
     ];
     for (const [label, state] of states) {
       const line = statusLine(state);

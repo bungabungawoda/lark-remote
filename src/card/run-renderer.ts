@@ -12,7 +12,7 @@ import { collapsibleMarkdownPanel, markdownDiv, type PanelBorder } from './colla
 import { toolBodyMd, toolHeaderText } from './tool-render.js';
 import { truncateUtf8, truncateMarkdownTables, CARD_BUDGET_BYTES } from './text-truncate.js';
 import { countCardElements, MAX_CARD_ELEMENTS } from './card-budget.js';
-import { truncate } from '../common/truncate.js';
+import { displayWidth } from '../common/text-width.js';
 import { formatClock, formatTimestamp } from './time.js';
 import { formatUsageStats } from '../router/usage-format.js';
 import { renderApprovalArea } from './approval-render.js';
@@ -641,6 +641,9 @@ function buildExtremeFallbackElements(state: RunState, options: RunCardRenderOpt
  * 状态标签（运行中/已完成…）不再重复：header 已经写了（`🔧 dsh · 调用工具`
  * / `✅ dsh · 已完成`），终态 summary 还有一次。
  *
+ * 终态也保留状态行：耗时定格，DSH 的步数/上下文投影展示最后一次快照
+ * （2026-10-21 用户要求）。summary 的最终 usage 与状态行并存。
+ *
  * 导出供窄屏守卫测试断言分段宽度（与 `estimateCardBytes` 同一惯例）。
  */
 export function statusLine(state: RunState): string {
@@ -651,10 +654,11 @@ export function statusLine(state: RunState): string {
   const elapsed = elapsedLabel(state);
   if (elapsed) parts.push(`⏱ ${elapsed}`);
 
-  // 运行期投影只在 running/finalizing 展示：终态 summary 有权威统计，同一张卡
-  // 上出现两次只会互相矛盾。
+  // 运行期投影在终态也保留（2026-10-21 用户要求）：DSH 卡片完成时，耗时/步数/
+  // 上下文百分比是这一跑留下的最后快照，撤掉后用户只能从 summary 的累计口径
+  // 重新推算。summary 仍展示最终 usage，两者口径不同、并存不冲突。
   const live = state.liveStatus;
-  if (live && (state.terminal === 'running' || state.terminal === 'finalizing')) {
+  if (live) {
     if (live.steps !== undefined) parts.push(`🧰 ${live.steps} 步`);
     if (
       live.contextUsed !== undefined &&
@@ -1147,7 +1151,58 @@ function buildSummaryContent(
 const MAX_BACKGROUND_JOB_LINES = 3;
 
 /**
- * 后台任务小节：一行标题 + 每个任务一行（标签 + 停止按钮）。
+ * 命令在手机上可直接内联的显示宽度上限（半角单位，CJK/emoji 记 2）。
+ *
+ * 手机内容区约 320–360px，36 个半角单位约一行；再长会折成"每个词一行"。
+ * 超过这个宽度改用代码块整段展示（完整、可读），而不是截断。
+ */
+const BACKGROUND_JOB_INLINE_MAX = 36;
+
+/**
+ * 代码块再长到这个程度才折叠：约 180 个半角宽度或 6 行。
+ *
+ * 低于阈值直接展示完整命令（用户一眼能看到，不用点）；只有确实很长的
+ * 脚本/链式命令才收进折叠面板，避免一张卡被一条命令占满。
+ */
+const BACKGROUND_JOB_FOLD_DISPLAY_MAX = 180;
+const BACKGROUND_JOB_FOLD_LINES = 6;
+
+/**
+ * 任务状态标签：目前 DSH 只会给 running/stopping，其他值按运行中处理。
+ */
+function backgroundJobStatusLabel(status: string | undefined): string {
+  return status === 'stopping' ? '停止中' : '运行中';
+}
+
+/**
+ * 生成能包住任意反引号串的代码围栏。命令里的 shell 反引号不能替换成 `'`
+ * （那是改内容），只能选比内容里最长反引号串更长的围栏。
+ */
+function codeFenceFor(content: string): string {
+  let longest = 0;
+  let run = 0;
+  for (const ch of content) {
+    if (ch === '`') {
+      run += 1;
+      longest = Math.max(longest, run);
+    } else {
+      run = 0;
+    }
+  }
+  return '`'.repeat(Math.max(3, longest + 1));
+}
+
+/**
+ * 后台任务小节：命令独占一行，停止按钮单独一行。
+ *
+ * 布局约束（2026-10-21 手机端反馈）：
+ * - 命令 + 按钮不再并排（grow + auto）：窄屏下 auto 列会被挤成「🟥…」，
+ *   命令也被截断。按钮现在独占一个单列 column_set，宽度由按钮自身决定。
+ * - 命令不 truncate：短命令/单行直接内联；中等长度的多行命令用代码块
+ *   整段展示；只有超长命令（> 180 显示宽度或 > 6 行）才进折叠面板。
+ *   面板折叠只影响视觉，JSON 里始终带全文。
+ * - 含反引号的命令不走行内代码（无法安全包含反引号），改走代码块；
+ *   围栏长度按内容自动加长，命令原文不改写。
  *
  * 按钮 payload 只带 runId/jobId：sessionId 与 cwd 由 bridge 的快照解析，卡片
  * 上少放一个可变字段就少一处不一致。
@@ -1156,20 +1211,41 @@ function buildBackgroundJobsSection(state: RunState): object[] {
   const jobs = state.backgroundJobs ?? [];
   if (jobs.length === 0) return [];
   const elements: object[] = [
-    markdownDiv(`🧵 **后台任务** ${jobs.length} 个仍在运行（本轮结束后继续）`),
+    markdownDiv(`🧵 **后台任务** ${jobs.length} 个仍在运行`),
+    markdownDiv('_本轮结束后继续，可逐个停止_', 'notation'),
   ];
-  for (const job of jobs.slice(0, MAX_BACKGROUND_JOB_LINES)) {
-    // label 是任务自报的一行描述，可能含反引号/regex 反斜杠：按 markdown 安全
-    // 形态收敛（markdownDiv 只转义反斜杠，反引号会截断行内代码）。
-    const label = truncate(job.label.replace(/[\r\n]+/g, ' ').replace(/`/g, "'"), 60);
+  jobs.slice(0, MAX_BACKGROUND_JOB_LINES).forEach((job, index) => {
+    const label = job.label.trim();
+    const lineCount = label === '' ? 0 : label.split(/\r?\n/).length;
+    const inline =
+      label.length > 0 &&
+      lineCount === 1 &&
+      !label.includes('`') &&
+      displayWidth(label) <= BACKGROUND_JOB_INLINE_MAX;
+    if (inline) {
+      elements.push(markdownDiv(`· \`${label}\``));
+    } else {
+      // 多行/超宽/含反引号：代码块保留完整命令；只有超长才折叠。
+      const fence = codeFenceFor(label);
+      const content = `${fence}\n${label}\n${fence}`;
+      const fold =
+        lineCount > BACKGROUND_JOB_FOLD_LINES ||
+        displayWidth(label) > BACKGROUND_JOB_FOLD_DISPLAY_MAX;
+      elements.push(
+        fold
+          ? collapsibleMarkdownPanel({
+              title: `🧵 任务 ${index + 1} · ${backgroundJobStatusLabel(job.status)} · 点击展开完整命令`,
+              expanded: false,
+              border: 'grey',
+              content,
+              textSize: 'notation',
+            })
+          : markdownDiv(content),
+      );
+    }
     elements.push({
       tag: 'column_set',
       columns: [
-        {
-          tag: 'column',
-          width: 'grow',
-          elements: [markdownDiv(`· \`${label}\``, 'notation')],
-        },
         {
           tag: 'column',
           width: 'auto',
@@ -1183,7 +1259,7 @@ function buildBackgroundJobsSection(state: RunState): object[] {
         },
       ],
     });
-  }
+  });
   if (jobs.length > MAX_BACKGROUND_JOB_LINES) {
     elements.push(markdownDiv(`_…另有 ${jobs.length - MAX_BACKGROUND_JOB_LINES} 个任务_`));
   }
