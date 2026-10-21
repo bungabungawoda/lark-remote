@@ -13,6 +13,7 @@ import { toolBodyMd, toolHeaderText } from './tool-render.js';
 import { truncateUtf8, truncateMarkdownTables, CARD_BUDGET_BYTES } from './text-truncate.js';
 import { countCardElements, MAX_CARD_ELEMENTS } from './card-budget.js';
 import { displayWidth } from '../common/text-width.js';
+import { isContentFilterFailure } from '../common/turn-failure.js';
 import { formatClock, formatTimestamp } from './time.js';
 import { formatUsageStats } from '../router/usage-format.js';
 import { renderApprovalArea } from './approval-render.js';
@@ -1078,7 +1079,19 @@ function buildSummaryContent(
   }
 
   if (state.terminal === 'error') {
-    elements.push(markdownDiv(`⚠️ **运行出错**\n\n${state.errorMsg ?? '未知错误'}`));
+    // 服务方内容审核截断（多为误报）不是「程序出错」：照抄英文内部报文会让
+    // 用户以为代码或配置坏了。文案说清三件事——谁拦的、改动还在、下一步。
+    if (isContentFilterFailure(state.errorMsg)) {
+      elements.push(
+        markdownDiv(
+          '⚠️ **服务方内容审核拦截**\n\n' +
+            '模型输出被上游安全策略截断（`content_filter`），多数是误报，不是代码或配置问题。\n' +
+            '本回合已中止；已写入磁盘的改动都还在。重试仍被拦截时，可换模型或稍后再试。',
+        ),
+      );
+    } else {
+      elements.push(markdownDiv(`⚠️ **运行出错**\n\n${state.errorMsg ?? '未知错误'}`));
+    }
   } else if (state.terminal === 'interrupted') {
     // 审批超时（approval_expired 已标记）是「无人响应被自动取消」，不是用户
     // 主动终止；如实展示原因，避免用户误判为 Agent 出错或自己操作过。

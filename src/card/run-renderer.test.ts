@@ -3709,3 +3709,30 @@ describe('renderRunCard status row narrow-screen layout', () => {
     expect(patched.finishedAt).toBe(done.finishedAt);
   });
 });
+
+describe('error 卡文案：服务方内容审核截断', () => {
+  it('content_filter 渲染成「内容审核拦截」，不再说「运行出错」', () => {
+    const state = finishRun(createInitialRunState('run-cf'), 'error', {
+      resultSubtype: 'error',
+      errorMsg: 'turn ended with reason: error: Provider finish_reason: content_filter',
+    });
+    const card = renderRunCard(state);
+    const json = JSON.stringify(card);
+    expect(json).toContain('服务方内容审核拦截');
+    expect(json).toContain('content_filter');
+    expect(json).toContain('已写入磁盘的改动都还在');
+    expect(json).not.toContain('运行出错');
+    // 2026-10-21：改卡必须同时守住 2.0 卡片的 200861 铁律
+    expectNoV1ActionContainer(json);
+  });
+
+  it('其它错误仍走「运行出错」，不被误归类', () => {
+    const state = finishRun(createInitialRunState('run-other'), 'error', {
+      resultSubtype: 'error',
+      errorMsg: 'turn ended with reason: error: DSH HTTP 401 for session.create',
+    });
+    const json = JSON.stringify(renderRunCard(state));
+    expect(json).toContain('运行出错');
+    expect(json).not.toContain('服务方内容审核拦截');
+  });
+});
