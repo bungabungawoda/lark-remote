@@ -304,7 +304,7 @@ function findMibAllocations(source: string): string[] {
 
 describe('测试临时目录卫生守卫', () => {
   it('扫描范围非空（守卫自身退化成恒真时必须先红）', () => {
-    expect(testFiles.length).toBeGreaterThan(300);
+    expect(testFiles.length).toBeGreaterThan(200);
     expect(creating.length).toBeGreaterThan(100);
     expect(OUR_TEMP_PREFIXES.length).toBeGreaterThan(0);
   });

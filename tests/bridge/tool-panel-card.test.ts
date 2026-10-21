@@ -5,10 +5,10 @@ import os from 'node:os';
 import { Bridge } from '../../src/bridge/index.js';
 import { SessionStore, SessionReaderRegistry } from '../../src/session/index.js';
 import { AppConfigSchema } from '../../src/config/index.js';
-import { CommandRouter } from '../../src/router/index.js';
 import type { AppConfig } from '../../src/config/index.js';
 import type { AgentEvent, Runner } from '../../src/runner/index.js';
 import type { SpawnOptions } from '../../src/runner/types.js';
+import { createRouterFixture } from '../lib/router-fixture.js';
 import {
   createStubAgentRegistry,
   createStubSessionReaderRegistry,
@@ -93,14 +93,13 @@ describe('background job kill (terminal card)', () => {
       sessionStore,
       config,
     });
-    const router = new CommandRouter({
-      sessionStore,
-      bridge,
+    const router = createRouterFixture({
+      tmpDir: tmpRoot,
       config,
-      configPath: path.join(tmpRoot, 'config.yaml'),
-      workspacePath: path.join(tmpRoot, 'workspace.json'),
+      bridge,
+      sessionStore,
       sessionReaderRegistry: new SessionReaderRegistry(),
-    });
+    }).router;
     const ctx = { userId: 'user1', chatId: 'chat1', messageId: 'msg1' };
     await bridge.forwardToClaude('hello', ctx);
     return { connector, router, ctx, killed };

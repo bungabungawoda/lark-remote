@@ -47,13 +47,6 @@ export class RunCardSession extends CardSession<RunState, RunCardRenderOptions> 
     return renderRunCard(state, options);
   }
 
-  protected hasOwnBudgetProtection(): boolean {
-    // renderRunCard has 3-tier degraded/extreme fallback budget protection
-    // that guarantees the returned card is <= 28KB, so the base-class
-    // enforceCardBudget stringify pass is redundant for run cards.
-    return true;
-  }
-
   protected isFlushableState(): boolean {
     // finish() 已转终态（done/error/interrupted/idle_timeout）时不再 patch；
     // 'finalizing' 是非终态，in-flight/延迟 flush 仍可渲染累积事件。

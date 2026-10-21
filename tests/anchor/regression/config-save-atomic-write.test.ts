@@ -2,20 +2,12 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { CommandRouter } from '../../../src/router/index.js';
-import { Bridge } from '../../../src/bridge/index.js';
-import { SessionStore } from '../../../src/session/index.js';
-import { SessionReaderRegistry } from '../../../src/session/registry.js';
 import { AppConfigSchema } from '../../../src/config/index.js';
 import { atomicWrite } from '../../../src/persistence/atomic-write.js';
-import type { AppConfig } from '../../../src/config/index.js';
 import type { AgentSessionReader, Runner } from '../../../src/runner/index.js';
+import { SessionReaderRegistry } from '../../../src/session/registry.js';
 
-import {
-  createStubAgentRegistry,
-  createStubSessionReaderRegistry,
-  createStubConnector,
-} from '../../lib/bridge-stubs.js';
+import { createRouterFixture } from '../../lib/router-fixture.js';
 vi.mock('../../../src/logger/index.js', async () =>
   (await import('../../lib/logger-mock.js')).loggerModuleMock(),
 );
@@ -49,22 +41,7 @@ const stubRunner: Runner = {
 };
 
 function createRouter() {
-  const sessionStore = new SessionStore();
-  const connector = createStubConnector();
-  const config: AppConfig = AppConfigSchema.parse({
-    feishu: { appId: 'test', appSecret: 'test' },
-    claude: { model: 'claude-opus-4-8', stopGraceMs: 5000 },
-    defaultAgent: 'pi',
-  });
   const configPath = path.join(tmpDir, 'config.yaml');
-  const bridge = new Bridge({
-    runner: stubRunner,
-    agentRegistry: createStubAgentRegistry(stubRunner),
-    sessionReaderRegistry: createStubSessionReaderRegistry(),
-    connector,
-    sessionStore,
-    config,
-  });
   const registry = new SessionReaderRegistry();
   const reader: AgentSessionReader = {
     listSessions: () => ({ sessions: [], total: 0 }),
@@ -75,11 +52,14 @@ function createRouter() {
   for (const kind of ['claude', 'codex', 'opencode', 'pi', 'kimi'] as const) {
     registry.register(kind, reader);
   }
-  const router = new CommandRouter({
-    sessionStore,
-    bridge,
-    config,
-    configPath,
+  const { router, sessionStore, connector, bridge } = createRouterFixture({
+    tmpDir,
+    runner: stubRunner,
+    config: AppConfigSchema.parse({
+      feishu: { appId: 'test', appSecret: 'test' },
+      claude: { model: 'claude-opus-4-8', stopGraceMs: 5000 },
+      defaultAgent: 'pi',
+    }),
     sessionReaderRegistry: registry,
   });
   return { router, sessionStore, connector, bridge, configPath };

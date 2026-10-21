@@ -3,6 +3,7 @@ import { createRollout, metaLine } from '../../../tests/lib/codex-rollout-fixtur
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import * as jsonlModule from '../common/jsonl.js';
 import { CodexSessionReader } from './sessions.js';
 import {
   readCodexRollout,
@@ -819,5 +820,68 @@ describe('rollout-reader additional branches', () => {
       expect(entry!.events).toHaveLength(1);
       expect(entry!.events[0].content).toBe('fallback text');
     });
+  });
+});
+
+describe('codex session index freshness', () => {
+  function writeSession(sessionId: string): void {
+    createRollout(
+      tmpDir,
+      `rollout-${sessionId}.jsonl`,
+      [
+        metaLine(sessionId, '/tmp/proj'),
+        '{"type":"event_msg","payload":{"type":"user_message","message":"hi"}}',
+        '{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]}}',
+        '{"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"text","text":"hello"}]}}',
+      ].join('\n'),
+    );
+  }
+
+  function spyOnReadJsonlLines() {
+    let callCount = 0;
+    const original = jsonlModule.readJsonlLines;
+    const spy = vi.spyOn(jsonlModule, 'readJsonlLines').mockImplementation((...args: unknown[]) => {
+      callCount++;
+      return original.apply(jsonlModule, args as Parameters<typeof original>);
+    });
+    return {
+      get count() {
+        return callCount;
+      },
+      restore() {
+        spy.mockRestore();
+      },
+    };
+  }
+
+  it('finds a newly-created session despite a stale within-TTL cached index', () => {
+    writeSession('aaa');
+    readCodexSessionContent('aaa', { codexHome: tmpDir });
+
+    // New rollout created AFTER the index was cached.
+    writeSession('new-after-cache');
+    const content = readCodexSessionContent('new-after-cache', { codexHome: tmpDir });
+    expect(content.events.length).toBeGreaterThan(0);
+
+    const active = isCodexSessionActive('new-after-cache', {
+      codexHome: tmpDir,
+      activeThresholdMs: 60_000,
+    });
+    expect(active).toBe(true);
+  });
+
+  it('index cache TTL is respected (no refresh when a hit is found)', () => {
+    writeSession('aaa');
+    writeSession('bbb');
+    readCodexSessionContent('aaa', { codexHome: tmpDir });
+
+    const spy = spyOnReadJsonlLines();
+    try {
+      const content = readCodexSessionContent('bbb', { codexHome: tmpDir });
+      expect(content.events.length).toBeGreaterThan(0);
+      expect(spy.count).toBeLessThanOrEqual(1);
+    } finally {
+      spy.restore();
+    }
   });
 });

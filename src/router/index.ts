@@ -17,7 +17,7 @@ import {
 import { syncAgentChoices } from '../runner/index.js';
 import { resolveDshCredentialsFile } from '../runner/dsh/auth.js';
 import { WorkspaceStore } from '../workspace/index.js';
-import { OrderStore, type OrderEntry } from '../order/index.js';
+import { OrderStore, ORDER_NOT_FOUND_TEXT, type OrderEntry } from '../order/index.js';
 import { resolveAlias } from '../order/alias-resolve.js';
 import { diffConfig, setNestedValue } from './config-diff.js';
 import type {
@@ -42,7 +42,12 @@ import {
   PAGE_JUMP_INVALID_HINT,
 } from './card-helpers.js';
 import { MAX_FILE_UPLOAD_SIZE } from '../connector/file-limits.js';
-import { newSessionButton, resumeCompactButton, agentDisplayName } from '../card/card-shared.js';
+import {
+  cardButton,
+  newSessionButton,
+  resumeCompactButton,
+  agentDisplayName,
+} from '../card/card-shared.js';
 import { displayName } from '../platform/path.js';
 import { atomicWrite } from '../persistence/atomic-write.js';
 import {
@@ -58,6 +63,7 @@ import { getConfigBuilder, listRegisteredAgents, sortAgentsForDisplay } from './
 import { probeAllAgents, getCachedAvailability } from '../runner/probe.js';
 import { buildConfigCardFromTabs } from './config/common/render.js';
 import type { ConfigTab } from './config/common/render.js';
+import type { ConfigField } from './config/types.js';
 
 /** Max events to read for auto-resume and /resume cards.
  * Limits events at the read stage so enforceCardBudget rarely needs to truncate.
@@ -1869,7 +1875,7 @@ export class CommandRouter {
     }
 
     if (!this.orderStore.has(orderId)) {
-      return { toast: { type: 'error', content: '指令不存在或已被删除' } };
+      return { toast: { type: 'error', content: ORDER_NOT_FOUND_TEXT } };
     }
 
     // Delete the order
@@ -1927,7 +1933,7 @@ export class CommandRouter {
     this.orderStore.reload();
     const order = this.orderStore.get().find((o) => o.id === orderId);
     if (!order) {
-      return { toast: { type: 'error', content: '指令不存在或已被删除' } };
+      return { toast: { type: 'error', content: ORDER_NOT_FOUND_TEXT } };
     }
     // 列表卡显示的是截断版（≤100 字符 + ...），编辑卡预览保持一致
     const displayText = order.text.length > 100 ? order.text.slice(0, 97) + '...' : order.text;
@@ -2015,7 +2021,7 @@ export class CommandRouter {
     return this.mutateOrderAndRefreshCard(
       value,
       ctx,
-      { missingToast: '指令不存在或已被删除' },
+      { missingToast: ORDER_NOT_FOUND_TEXT },
       (order) => {
         const trimmed = name?.trim() ?? '';
         // 变更前快照旧别名：setAlias 会原地变异 order 对象（delete entry.alias），
@@ -2103,7 +2109,7 @@ export class CommandRouter {
     return this.mutateOrderAndRefreshCard(
       value,
       ctx,
-      { missingToast: '指令不存在或已被删除' },
+      { missingToast: ORDER_NOT_FOUND_TEXT },
       (order) => {
         let updated: OrderEntry | undefined;
         try {
@@ -2113,7 +2119,7 @@ export class CommandRouter {
         }
         if (!updated) {
           // reload + find 后 updateText 不应返回 undefined；防御性兜底（如并发删除）。
-          return { ok: false as const, error: '指令不存在或已被删除' };
+          return { ok: false as const, error: ORDER_NOT_FOUND_TEXT };
         }
         const preview = updated.text.length > 50 ? updated.text.slice(0, 50) + '...' : updated.text;
         return { ok: true as const, toast: `✅ 已更新指令: ${preview}` };
@@ -2840,13 +2846,7 @@ export class CommandRouter {
             width: 'weighted',
             weight: 2,
             elements: [
-              {
-                tag: 'button',
-                text: { tag: 'plain_text', content: c.label },
-                type: 'default',
-                size: 'small',
-                behaviors: [{ type: 'callback', value: { cmd: `help.${c.cmd}` } }],
-              },
+              cardButton(c.label, { cmd: `help.${c.cmd}` }, { type: 'default', size: 'small' }),
             ],
           },
           {
@@ -3433,17 +3433,13 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
   }): object[] {
     const actions: object[] = [];
     if (opts.isActive) {
-      actions.push({
-        tag: 'button',
-        text: { tag: 'plain_text', content: '⏹ 终止' },
-        type: 'danger',
-        behaviors: [
-          {
-            type: 'callback',
-            value: { cmd: 'stop', runId: opts.activeRunRunId, cwd: opts.cwd },
-          },
-        ],
-      } as { tag: string; text: object; type: string; behaviors: object[] });
+      actions.push(
+        cardButton(
+          '⏹ 终止',
+          { cmd: 'stop', runId: opts.activeRunRunId, cwd: opts.cwd },
+          { type: 'danger' },
+        ),
+      );
     }
     if (opts.compact && !opts.isActive) {
       actions.push(resumeCompactButton(opts.compact.sessionId, opts.compact.agentKind));
@@ -3575,90 +3571,66 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
       // Build header with parent button
       const headerElements: object[] = [];
       if (hasParent) {
-        headerElements.push({
-          tag: 'button',
-          text: { tag: 'plain_text', content: '上级' },
-          type: 'default',
-          size: 'small',
-          behaviors: [
-            { type: 'callback', value: { cmd: 'ls.browse', path: parentDir, root: browseRoot } },
-          ],
-        });
+        headerElements.push(
+          cardButton(
+            '上级',
+            { cmd: 'ls.browse', path: parentDir, root: browseRoot },
+            { type: 'default', size: 'small' },
+          ),
+        );
       }
       // Show "返回" button when browsing away from the /ls root (回到 /ls 指定的目录)
       if (canReturn) {
-        headerElements.push({
-          tag: 'button',
-          text: { tag: 'plain_text', content: '返回' },
-          type: 'default',
-          size: 'small',
-          behaviors: [
-            { type: 'callback', value: { cmd: 'ls.browse', path: browseRoot, root: browseRoot } },
-          ],
-        });
+        headerElements.push(
+          cardButton(
+            '返回',
+            { cmd: 'ls.browse', path: browseRoot, root: browseRoot },
+            { type: 'default', size: 'small' },
+          ),
+        );
       }
-      headerElements.push({
-        tag: 'button',
-        text: { tag: 'plain_text', content: '刷新' },
-        type: 'default',
-        size: 'small',
-        behaviors: [
+      headerElements.push(
+        cardButton(
+          '刷新',
           {
-            type: 'callback',
-            value: {
-              cmd: 'ls.refresh',
-              path: targetDir,
-              offset: safeOffset,
-              root: browseRoot,
-              ...(filter ? { q: filter } : {}),
-            },
+            cmd: 'ls.refresh',
+            path: targetDir,
+            offset: safeOffset,
+            root: browseRoot,
+            ...(filter ? { q: filter } : {}),
           },
-        ],
-      });
+          { type: 'default', size: 'small' },
+        ),
+      );
       // Show "切换" button when viewing a subdirectory (to switch cwd to this directory)
       if (isSubdir) {
-        headerElements.push({
-          tag: 'button',
-          text: { tag: 'plain_text', content: '切换' },
-          type: 'primary',
-          size: 'small',
+        headerElements.push(
           // 切换只改 cwd，**不重置浏览起点**：root 一路带到切换后的卡片，
           // 否则「返回」会退化成「回到刚切换到的目录」（用户反馈的缺陷）。
-          behaviors: [
-            { type: 'callback', value: { cmd: 'ls.switch', path: targetDir, root: browseRoot } },
-          ],
-        });
+          cardButton(
+            '切换',
+            { cmd: 'ls.switch', path: targetDir, root: browseRoot },
+            { type: 'primary', size: 'small' },
+          ),
+        );
       }
 
       // Helper to create directory button - use targetDir
-      const dirButton = (name: string): object => ({
-        tag: 'button',
-        text: { tag: 'plain_text', content: `📁 ${name}` },
-        type: 'default',
-        behaviors: [
-          {
-            type: 'callback',
-            value: {
-              cmd: 'ls.browse',
-              path: path.join(targetDir, name),
-              root: browseRoot,
-            },
-          },
-        ],
-      });
+      const dirButton = (name: string): object =>
+        cardButton(
+          `📁 ${name}`,
+          { cmd: 'ls.browse', path: path.join(targetDir, name), root: browseRoot },
+          { type: 'default' },
+        );
 
       // Helper to create file button with size - use targetDir
       const fileButton = (name: string, size?: number): object => {
         const sizeStr = size !== undefined ? ` (${formatBytes(size)})` : '';
-        return {
-          tag: 'button',
-          text: { tag: 'plain_text', content: `📄 ${name}${sizeStr}` },
-          type: 'default',
-          size: 'small',
-          behaviors: [
-            { type: 'callback', value: { cmd: 'ls.file', path: path.join(targetDir, name) } },
-          ],
-        };
+        return cardButton(
+          `📄 ${name}${sizeStr}`,
+          { cmd: 'ls.file', path: path.join(targetDir, name) },
+          { type: 'default', size: 'small' },
+        );
       };
 
       // Build each section's elements (no tabs - use section headers)
@@ -3829,25 +3801,17 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
 
     const parentDir = path.dirname(filePath);
     const buttons: object[] = [
-      {
-        tag: 'button',
-        text: { tag: 'plain_text', content: '📎 下载' },
-        type: 'primary',
-        size: 'small',
-        behaviors: [{ type: 'callback', value: { cmd: 'ls.file', path: filePath } }],
-      },
+      cardButton('📎 下载', { cmd: 'ls.file', path: filePath }, { type: 'primary', size: 'small' }),
     ];
     if (parentDir !== filePath) {
-      buttons.push({
-        tag: 'button',
-        text: { tag: 'plain_text', content: '上级' },
-        type: 'default',
-        size: 'small',
+      buttons.push(
         // 浏览起点 = 文件所在目录：进入后「返回」回到这里，不回 工作目录
-        behaviors: [
-          { type: 'callback', value: { cmd: 'ls.browse', path: parentDir, root: parentDir } },
-        ],
-      });
+        cardButton(
+          '上级',
+          { cmd: 'ls.browse', path: parentDir, root: parentDir },
+          { type: 'default', size: 'small' },
+        ),
+      );
     }
 
     return {
@@ -4035,18 +3999,11 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
                 tag: 'column',
                 width: 'auto',
                 elements: [
-                  {
-                    tag: 'button',
-                    text: { tag: 'plain_text', content: `切换为 ${switchLabel}` },
-                    type: 'default',
-                    size: 'small',
-                    behaviors: [
-                      {
-                        type: 'callback',
-                        value: { cmd: 'ws.sort', ...(filter ? { q: filter } : {}) },
-                      },
-                    ],
-                  },
+                  cardButton(
+                    `切换为 ${switchLabel}`,
+                    { cmd: 'ws.sort', ...(filter ? { q: filter } : {}) },
+                    { type: 'default', size: 'small' },
+                  ),
                 ],
               },
             ],
@@ -4066,46 +4023,32 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
                   tag: 'column',
                   width: 'auto',
                   elements: [
-                    {
-                      tag: 'button',
-                      text: { tag: 'plain_text', content: '切换' },
-                      type: 'primary',
-                      size: 'small',
-                      behaviors: [
-                        {
-                          type: 'callback',
-                          value: {
-                            cmd: 'ws.use',
-                            name: entry.name,
-                            offset: safeOffset,
-                            ...(filter ? { q: filter } : {}),
-                          },
-                        },
-                      ],
-                    },
+                    cardButton(
+                      '切换',
+                      {
+                        cmd: 'ws.use',
+                        name: entry.name,
+                        offset: safeOffset,
+                        ...(filter ? { q: filter } : {}),
+                      },
+                      { type: 'primary', size: 'small' },
+                    ),
                   ],
                 },
                 {
                   tag: 'column',
                   width: 'auto',
                   elements: [
-                    {
-                      tag: 'button',
-                      text: { tag: 'plain_text', content: '删除' },
-                      type: 'danger',
-                      size: 'small',
-                      behaviors: [
-                        {
-                          type: 'callback',
-                          value: {
-                            cmd: 'ws.remove',
-                            name: entry.name,
-                            offset: safeOffset,
-                            ...(filter ? { q: filter } : {}),
-                          },
-                        },
-                      ],
-                    },
+                    cardButton(
+                      '删除',
+                      {
+                        cmd: 'ws.remove',
+                        name: entry.name,
+                        offset: safeOffset,
+                        ...(filter ? { q: filter } : {}),
+                      },
+                      { type: 'danger', size: 'small' },
+                    ),
                   ],
                 },
               ],
@@ -4143,17 +4086,6 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
     }
   }
 
-  /**
-   * degraded card when a session's export is non-empty but unparseable
-   * (truncated by opencode's pipe cap on huge sessions, or otherwise corrupt).
-   * The session exists, so reuse listSessions metadata (title) instead of the
-   * misleading "未找到". Reuses the same card-builder helpers (markdownDiv) as
-   * the normal resume card; enforceCardBudget still applies at send time.
-   */
-  /**
-   * /resume 核心实现（public：handleResumePage / handle / resume.use 共用，
-   * 也是测试的直接 seam，避免测试用 @ts-expect-error 摸私有方法）。
-   */
   /**
    * DSH /resume preset 一致性校验：返回 mismatch 详情，或 undefined（一致/不可判定）。
    *
@@ -4471,18 +4403,11 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
             tag: 'column',
             width: 'auto',
             elements: [
-              {
-                tag: 'button',
-                text: { tag: 'plain_text', content: buttonText },
-                type: isCurrent ? 'default' : 'primary',
-                disabled: isCurrent,
-                behaviors: [
-                  {
-                    type: 'callback',
-                    value: { cmd: 'resume.use', sessionId: s.sessionId, agent: agentKind },
-                  },
-                ],
-              },
+              cardButton(
+                buttonText,
+                { cmd: 'resume.use', sessionId: s.sessionId, agent: agentKind },
+                { type: isCurrent ? 'default' : 'primary', disabled: isCurrent },
+              ),
             ],
           },
         ],
@@ -4590,14 +4515,13 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
             content: `> session: ${run.sessionId.slice(0, 12)}...  \n> 状态: ${statusLabel}`,
           },
         });
-        // Stop button - CardKit 2.0 with behaviors callback
-        elements.push({
-          tag: 'button',
-          text: { tag: 'plain_text', content: '⏹ 停止' },
-          type: 'danger',
-          size: 'small',
-          behaviors: [{ type: 'callback', value: { cmd: 'stop', runId: run.runId, cwd: run.cwd } }],
-        });
+        elements.push(
+          cardButton(
+            '⏹ 停止',
+            { cmd: 'stop', runId: run.runId, cwd: run.cwd },
+            { type: 'danger', size: 'small' },
+          ),
+        );
         elements.push({ tag: 'hr' });
       }
       remaining -= end - start;
@@ -4623,14 +4547,13 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
           tag: 'div',
           text: { tag: 'lark_md', content: `> 目录: ${run.cwd}  \n> 状态: ${statusLabel}` },
         });
-        // Stop button - CardKit 2.0 with behaviors callback
-        elements.push({
-          tag: 'button',
-          text: { tag: 'plain_text', content: '⏹ 停止' },
-          type: 'danger',
-          size: 'small',
-          behaviors: [{ type: 'callback', value: { cmd: 'stop', runId: run.runId, cwd: run.cwd } }],
-        });
+        elements.push(
+          cardButton(
+            '⏹ 停止',
+            { cmd: 'stop', runId: run.runId, cwd: run.cwd },
+            { type: 'danger', size: 'small' },
+          ),
+        );
         elements.push({ tag: 'hr' });
       }
     }
@@ -4754,58 +4677,31 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
     const defaultAgent = displayConfig.defaultAgent ?? 'claude';
     const configBuilder = getConfigBuilder(defaultAgent);
 
-    // Build defaultAgent selector with availability annotations.
-    // Direct inline construction (not via ConfigField) so that text (display label)
-    // and value (agentKind for config storage) can differ — uninstalled agents get
-    // a "⚠️ (未安装)" suffix in the label while the value stays clean.
-    // 固定展示顺序（Codex → Claude → OpenCode → Pi → Kimi），
+    // defaultAgent 选择器作为普通 select 字段交给共享渲染（SelectOption 支持
+    // text/value 分离：未安装 agent 的 label 带「⚠️ (未安装)」，value 保持干净）。
+    // 固定展示顺序（Codex → Claude → OpenCode → Pi → Kimi → DSH），
     // 明确未安装的 agent 排到后面（getCachedAvailability === false）。
     const allAgents = sortAgentsForDisplay(listRegisteredAgents(), getCachedAvailability);
     const agentOptions = allAgents.map((kind) => {
       const available = getCachedAvailability(kind);
       const label =
         available === false ? `${agentDisplayName(kind)} ⚠️ (未安装)` : agentDisplayName(kind);
-      return { text: { tag: 'plain_text' as const, content: label }, value: kind };
+      return { text: label, value: kind };
     });
     const selectedAgent = displayConfig.defaultAgent ?? 'claude';
-    const agentSelector = {
-      tag: 'column_set',
-      flex_mode: 'none',
-      columns: [
-        {
-          tag: 'column',
-          width: 'weighted',
-          weight: 2,
-          vertical_align: 'center',
-          elements: [{ tag: 'div', text: { tag: 'lark_md', content: '默认 Agent' } }],
-        },
-        {
-          tag: 'column',
-          width: 'weighted',
-          weight: 3,
-          vertical_align: 'center',
-          elements: [
-            {
-              tag: 'select_static',
-              placeholder: { tag: 'plain_text', content: '请选择' },
-              options: agentOptions,
-              initial_option: selectedAgent,
-              behaviors: [{ type: 'callback', value: { cmd: 'config.set', key: 'defaultAgent' } }],
-            },
-          ],
-        },
-      ],
+    const agentSelectorField: ConfigField = {
+      key: 'defaultAgent',
+      label: '默认 Agent',
+      type: 'select',
+      options: agentOptions,
+      currentValue: selectedAgent,
     };
-
-    // Agent config fields — no longer include defaultAgent as a ConfigField
-    // (it's rendered inline above with text/value separation).
-    const agentConfigFieldsNoSelector = configBuilder.buildFields(displayConfig);
 
     const tabs: ConfigTab[] = [
       {
         id: 'agent',
         label: `🤖 ${agentDisplayName(defaultAgent)}`,
-        fields: agentConfigFieldsNoSelector,
+        fields: [agentSelectorField, ...configBuilder.buildFields(displayConfig)],
       },
       {
         id: 'idle',
@@ -4826,34 +4722,8 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
       },
     ];
 
-    // 使用共享渲染模块构建卡片
-    const card = buildConfigCardFromTabs(tabs, displayConfig);
-
-    // Inject the agent selector as the first element in the agent tab section,
-    // right after the "**🤖 ..." header, so text/value can differ for uninstalled agents.
-    // NOTE: findIndex relies on the agent tab header starting with "**🤖" — if the
-    // tab label format changes, this fallback will fire and the selector moves to top.
-    const body = (card as { body?: { elements?: unknown[] } }).body;
-    if (body && Array.isArray(body.elements)) {
-      const headerIdx = body.elements.findIndex(
-        (el) =>
-          typeof el === 'object' &&
-          el !== null &&
-          (el as { tag?: string; text?: { tag?: string; content?: string } }).tag === 'div' &&
-          (el as { text?: { tag?: string; content?: string } }).text?.tag === 'lark_md' &&
-          ((el as { text?: { tag?: string; content?: string } }).text?.content ?? '').startsWith(
-            '**🤖',
-          ),
-      );
-      if (headerIdx >= 0) {
-        body.elements.splice(headerIdx + 1, 0, agentSelector);
-      } else {
-        getLogger().warn('[buildConfigCard] agent tab header not found, falling back to unshift');
-        body.elements.unshift(agentSelector);
-      }
-    }
-
-    return { card };
+    // 使用共享渲染模块构建卡片（Agent 选择器作为普通 select 字段参与渲染）
+    return { card: buildConfigCardFromTabs(tabs, displayConfig) };
   }
 
   /** /order 实现（public：测试直接调用，替代 as unknown as）。 */
@@ -4897,49 +4767,28 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
           // 右侧「删除指令」按钮。两列均 weighted 1:1，跨行对齐。
           const leftColumn: object[] = order.alias
             ? [
-                {
-                  tag: 'button',
-                  text: { tag: 'plain_text', content: `$${order.alias}` },
-                  type: 'default',
-                  size: 'small',
-                  behaviors: [
-                    {
-                      type: 'callback',
-                      value: { cmd: 'order.aliasEdit', orderId: order.id, offset: safeOffset },
-                    },
-                  ],
-                },
-                {
-                  tag: 'button',
-                  text: { tag: 'plain_text', content: '✕' },
-                  type: 'default',
-                  size: 'small',
-                  behaviors: [
-                    {
-                      type: 'callback',
-                      value: {
-                        cmd: 'order.aliasRemove',
-                        orderId: order.id,
-                        aliasName: order.alias,
-                        offset: safeOffset,
-                      },
-                    },
-                  ],
-                },
+                cardButton(
+                  `$${order.alias}`,
+                  { cmd: 'order.aliasEdit', orderId: order.id, offset: safeOffset },
+                  { type: 'default', size: 'small' },
+                ),
+                cardButton(
+                  '✕',
+                  {
+                    cmd: 'order.aliasRemove',
+                    orderId: order.id,
+                    aliasName: order.alias,
+                    offset: safeOffset,
+                  },
+                  { type: 'default', size: 'small' },
+                ),
               ]
             : [
-                {
-                  tag: 'button',
-                  text: { tag: 'plain_text', content: '＋别名' },
-                  type: 'default',
-                  size: 'small',
-                  behaviors: [
-                    {
-                      type: 'callback',
-                      value: { cmd: 'order.aliasEdit', orderId: order.id, offset: safeOffset },
-                    },
-                  ],
-                },
+                cardButton(
+                  '＋别名',
+                  { cmd: 'order.aliasEdit', orderId: order.id, offset: safeOffset },
+                  { type: 'default', size: 'small' },
+                ),
               ];
 
           elements.push({
@@ -4964,18 +4813,11 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
                         tag: 'column',
                         width: 'auto',
                         elements: [
-                          {
-                            tag: 'button',
-                            text: { tag: 'plain_text', content: '▶ 执行' },
-                            type: 'primary',
-                            size: 'small',
-                            behaviors: [
-                              {
-                                type: 'callback',
-                                value: { cmd: 'order.exec', orderId: order.id },
-                              },
-                            ],
-                          },
+                          cardButton(
+                            '▶ 执行',
+                            { cmd: 'order.exec', orderId: order.id },
+                            { type: 'primary', size: 'small' },
+                          ),
                         ],
                       },
                       {
@@ -4985,44 +4827,22 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
                         tag: 'column',
                         width: 'auto',
                         elements: [
-                          {
-                            tag: 'button',
-                            text: { tag: 'plain_text', content: '编辑' },
-                            type: 'default',
-                            size: 'small',
-                            behaviors: [
-                              {
-                                type: 'callback',
-                                value: {
-                                  cmd: 'order.textEdit',
-                                  orderId: order.id,
-                                  offset: safeOffset,
-                                },
-                              },
-                            ],
-                          },
+                          cardButton(
+                            '编辑',
+                            { cmd: 'order.textEdit', orderId: order.id, offset: safeOffset },
+                            { type: 'default', size: 'small' },
+                          ),
                         ],
                       },
                       {
                         tag: 'column',
                         width: 'auto',
                         elements: [
-                          {
-                            tag: 'button',
-                            text: { tag: 'plain_text', content: '删除' },
-                            type: 'danger',
-                            size: 'small',
-                            behaviors: [
-                              {
-                                type: 'callback',
-                                value: {
-                                  cmd: 'order.delete',
-                                  orderId: order.id,
-                                  offset: safeOffset,
-                                },
-                              },
-                            ],
-                          },
+                          cardButton(
+                            '删除',
+                            { cmd: 'order.delete', orderId: order.id, offset: safeOffset },
+                            { type: 'danger', size: 'small' },
+                          ),
                         ],
                       },
                     ],

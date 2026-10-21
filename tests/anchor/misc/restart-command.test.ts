@@ -11,17 +11,11 @@ import { describe, it, expect, vi } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { SessionStore } from '../../../src/session/index.js';
-import { CommandRouter } from '../../../src/router/index.js';
-import { Bridge } from '../../../src/bridge/index.js';
 import { AppConfigSchema } from '../../../src/config/index.js';
 import type { AppConfig } from '../../../src/config/index.js';
-import {
-  createStubAgentRegistry,
-  createStubSessionReaderRegistry,
-  createStubConnector,
-  createStubRunner,
-} from '../../lib/bridge-stubs.js';
+import { createStubConnector, createStubRunner } from '../../lib/bridge-stubs.js';
+import { createRouterFixture } from '../../lib/router-fixture.js';
+import { cardTexts, flattenElements, type Card } from '../../lib/card-tree.js';
 import {
   RESTART_WAIT_PID_ENV,
   spawnReplacementBridge,
@@ -53,37 +47,33 @@ function buildRouter(
     sendWithRetry?: (chatId: string, input: unknown, opts?: unknown) => Promise<string>;
   } = {},
 ) {
-  const sessionStore = new SessionStore();
   const connector = overrides.sendWithRetry
     ? {
         ...createStubConnector(),
         sendWithRetry: overrides.sendWithRetry,
       }
     : createStubConnector();
-  const runner = createStubRunner({ mode: 'empty', withStatusInfo: true });
   const config: AppConfig = AppConfigSchema.parse({
     feishu: { appId: 'test', appSecret: 'test' },
     claude: { model: 'opus', stopGraceMs: 5000 },
     defaultAgent: 'claude',
   });
-  const bridge = new Bridge({
-    runner,
-    agentRegistry: createStubAgentRegistry(runner),
-    sessionReaderRegistry: createStubSessionReaderRegistry(),
+  const {
+    router,
+    connector: routerConnector,
+    sessionStore,
+  } = createRouterFixture({
+    tmpDir: path.dirname(CONFIG_PATH),
+    config,
     connector,
-    sessionStore,
-    config,
+    runner: createStubRunner({ mode: 'empty', withStatusInfo: true }),
+    routerOpts: {
+      configPath: CONFIG_PATH,
+      exitHandler: overrides.exitHandler,
+      restartSpawner: overrides.restartSpawner,
+    },
   });
-  const router = new CommandRouter({
-    sessionStore,
-    bridge,
-    config,
-    configPath: CONFIG_PATH,
-    exitHandler: overrides.exitHandler,
-    restartSpawner: overrides.restartSpawner,
-    sessionReaderRegistry: createStubSessionReaderRegistry(),
-  });
-  return { router, connector, sessionStore };
+  return { router, connector: routerConnector, sessionStore };
 }
 
 const ctx = { userId: 'user1', chatId: 'chat1', messageId: 'msg1' };
@@ -258,31 +248,11 @@ describe('/restart 命令', () => {
     expect(card).toBeDefined();
 
     // 递归收集所有元素（column_set/column 嵌套）
-    const texts: string[] = [];
-    const behaviors: { cmd?: string }[] = [];
-    const walk = (node: unknown): void => {
-      if (Array.isArray(node)) {
-        for (const n of node) walk(n);
-        return;
-      }
-      if (node === null || typeof node !== 'object') return;
-      const obj = node as Record<string, unknown>;
-      if (typeof obj.text === 'object' && obj.text !== null) {
-        const content = (obj.text as Record<string, unknown>).content;
-        if (typeof content === 'string') texts.push(content);
-      }
-      if (Array.isArray(obj.behaviors)) {
-        for (const b of obj.behaviors) {
-          const value = (b as Record<string, unknown>).value as { cmd?: string } | undefined;
-          if (value) behaviors.push(value);
-        }
-      }
-      for (const key of ['elements', 'columns', 'body', 'header']) {
-        if (Array.isArray(obj[key])) walk(obj[key]);
-        else if (obj[key] !== null && typeof obj[key] === 'object') walk(obj[key]);
-      }
-    };
-    walk(card);
+    const elements = flattenElements(card as Card);
+    const texts = cardTexts(card as Card);
+    const behaviors = elements
+      .flatMap((el) => el.behaviors?.map((b) => b.value) ?? [])
+      .filter((value): value is NonNullable<typeof value> => value !== undefined);
 
     expect(texts).toContain('/restart');
     expect(texts.some((t) => t.includes('重启 lark-remote'))).toBe(true);

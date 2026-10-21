@@ -13,23 +13,14 @@ import {
   createStubConnector,
   createStubRunner,
 } from '../../lib/bridge-stubs.js';
+import { asAgentRunner as wrapAgentRunner } from '../../lib/agent-runner.js';
 
 vi.mock('../../../src/logger/index.js', async () =>
   (await import('../../lib/logger-mock.js')).loggerModuleMock(),
 );
 /** Wrap a stub Runner with AgentRunner fields（同 bridge.test.ts 的 asAgentRunner）。 */
 function asAgentRunner(r: Runner): AgentRunner {
-  return {
-    ...r,
-    kind: 'kimi',
-    sessionReader: {
-      listSessions: () => ({ sessions: [], total: 0 }),
-      getNewestSession: () => null,
-      readSessionContent: () => ({ events: [] }),
-      isSessionActive: () => false,
-    },
-    getStatusInfo: () => ({ kind: 'kimi', model: 'kimi-test' }),
-  };
+  return wrapAgentRunner(r, 'kimi', { model: 'kimi-test' });
 }
 
 let tmpDir: string;

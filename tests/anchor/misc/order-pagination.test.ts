@@ -4,18 +4,11 @@ import path from 'node:path';
 import os from 'node:os';
 import { OrderStore } from '../../../src/order/index.js';
 import { CommandRouter, isImmediateAction } from '../../../src/router/index.js';
-import { Bridge } from '../../../src/bridge/index.js';
-import type { AppConfig } from '../../../src/config/index.js';
 import { AppConfigSchema } from '../../../src/config/index.js';
-import { SessionStore } from '../../../src/session/index.js';
 import { SessionReaderRegistry } from '../../../src/session/registry.js';
 
-import {
-  createStubAgentRegistry,
-  createStubSessionReaderRegistry,
-  createStubRunner,
-  createStubConnector,
-} from '../../lib/bridge-stubs.js';
+import { createStubRunner } from '../../lib/bridge-stubs.js';
+import { createRouterFixture } from '../../lib/router-fixture.js';
 import { expectNoV1ActionContainer } from '../../lib/card-view.js';
 
 let tmpDir: string;
@@ -31,39 +24,19 @@ afterEach(() => {
 });
 
 function createRouter(overrides?: { ordersPath?: string }) {
-  const sessionStore = new SessionStore();
-  const connector = createStubConnector();
-  const runner = createStubRunner({ mode: 'empty' });
-  const config: AppConfig = AppConfigSchema.parse({
-    feishu: { appId: 'test', appSecret: 'test' },
-    claude: {
-      model: 'claude-opus-4-8',
-      stopGraceMs: 5000,
-    },
-  });
-
-  const ordersPath = overrides?.ordersPath ?? ordersFile;
-
-  const bridge = new Bridge({
-    runner,
-    agentRegistry: createStubAgentRegistry(runner),
-    sessionReaderRegistry: createStubSessionReaderRegistry(),
-    connector,
-    sessionStore,
-    config,
-  });
-
-  const router = new CommandRouter({
-    sessionStore,
-    bridge,
-    config,
-    configPath: path.join(tmpDir, 'config.yaml'),
-    workspacePath: path.join(tmpDir, 'workspace.json'),
-    ordersPath,
+  return createRouterFixture({
+    tmpDir,
+    runner: createStubRunner({ mode: 'empty' }),
+    config: AppConfigSchema.parse({
+      feishu: { appId: 'test', appSecret: 'test' },
+      claude: {
+        model: 'claude-opus-4-8',
+        stopGraceMs: 5000,
+      },
+    }),
     sessionReaderRegistry: new SessionReaderRegistry(),
+    routerOpts: { ordersPath: overrides?.ordersPath ?? ordersFile },
   });
-
-  return { router, connector, bridge };
 }
 
 /** Access cmdOrder (public) for unit testing pagination logic. */

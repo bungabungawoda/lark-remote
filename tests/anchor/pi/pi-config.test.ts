@@ -20,9 +20,8 @@ import {
   _getModelsFilePath,
   _getAuthFilePath,
 } from '../../../src/config/pi-config.js';
-import { CommandRouter } from '../../../src/router/index.js';
-import { SessionStore } from '../../../src/session/index.js';
 import { extractFieldOptions } from '../../lib/pi-card-fields.js';
+import { createRouterFixture } from '../../lib/router-fixture.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -250,18 +249,15 @@ describe('anchor: config card model options filtered by provider', () => {
       },
     });
 
-    const router = new CommandRouter({
-      sessionStore: new SessionStore(),
-      bridge: createMockBridge(),
+    const router = createRouterFixture({
+      tmpDir,
       config,
-      configPath: path.join(tmpDir, 'config.yaml'),
-      workspacePath: path.join(tmpDir, 'workspace.json'),
-      ordersPath: path.join(tmpDir, 'orders.json'),
+      bridge: createMockBridge(),
       sessionReaderRegistry: createMockSessionReaderRegistry({
         agentKinds: ['claude', 'pi'],
         withGet: true,
       }),
-    });
+    }).router;
 
     const result = router.buildConfigCard();
     const modelOptions = extractFieldOptions(result.card!, 'agents.pi.model');
@@ -378,18 +374,15 @@ describe('Bug 2: 切换 provider 后应自动重置 model', () => {
     });
 
     const bridge = createMockBridge();
-    const router = new CommandRouter({
-      sessionStore: new SessionStore(),
-      bridge,
+    const router = createRouterFixture({
+      tmpDir,
       config,
-      configPath: path.join(tmpDir, 'config.yaml'),
-      workspacePath: path.join(tmpDir, 'workspace.json'),
-      ordersPath: path.join(tmpDir, 'orders.json'),
+      bridge,
       sessionReaderRegistry: createMockSessionReaderRegistry({
         agentKinds: ['claude', 'pi'],
         withGet: true,
       }),
-    });
+    }).router;
 
     await router.dispatchConfigAction(
       { cmd: 'config.set', key: 'agents.pi.provider', option: 'lt' },
