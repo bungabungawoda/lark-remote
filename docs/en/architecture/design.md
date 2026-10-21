@@ -612,7 +612,7 @@ Approach: `configCardIds` remembers the config cards that were interacted with (
 5. **Disable "⚡ Run immediately" when the occupant is Compact**: that button goes through `interruptCurrentRun`, which would also kill the compaction in progress (compaction registers in `activeRuns` as well). Rendering-layer greying plus the execution-layer `handleQueueImmediate` guard give double insurance, because older cards still carry an enabled button. "❌ Cancel" stays usable — it only removes waiting messages and never touches the compaction.
 6. **Explicit kind**: `EnqueueOptions.taskMeta.kind` (`message` by default / `compact` / `command`) decides the card label; the compact action list is single-sourced in `COMPACT_ACTION_CMDS` (`src/router/index.ts`), and `src/index.ts` also uses it to decide `editable`.
 
-**Test anchors**: `tests/anchor/queue-card-arm/queue-card-arm-occupant-card.test.ts` (identity / position / buttons) and `queue-card-arm-occupant-immediate-guard.test.ts` (execution-layer guard).
+**Test anchors**: `tests/anchor/queue-card-arm/queue-card-arm.test.ts` (identity / position / buttons, section `排队卡按 lane 占用者渲染（anchor）`) and `queue-immediate-guards.test.ts` (execution-layer guard).
 
 ### 9.27 codex app-server: Notifications Must Be Filtered by Thread Ownership, Sub-agent Threads May Not Pollute the Session Pointer
 

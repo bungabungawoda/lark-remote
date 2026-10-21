@@ -1086,8 +1086,9 @@ fallback 发新卡，保证点击必有反馈）；兄弟卡走 `Bridge.patchCar
    `command`）决定卡片标签；压缩类动作清单单源在 `COMPACT_ACTION_CMDS`
    （`src/router/index.ts`），`src/index.ts` 同时用它决定 `editable`。
 
-**测试锚点**：`tests/anchor/queue-card-arm/queue-card-arm-occupant-card.test.ts`
-（身份 / 位置 / 按钮）、`queue-card-arm-occupant-immediate-guard.test.ts`（执行层守卫）。
+**测试锚点**：`tests/anchor/queue-card-arm/queue-card-arm.test.ts`
+（身份 / 位置 / 按钮，见其中「排队卡按 lane 占用者渲染」一节）、`queue-immediate-guards.test.ts`
+（执行层守卫）。
 
 ### 9.27 codex app-server：通知必须按线程归属过滤，子 agent 线程不得污染会话指针
 
