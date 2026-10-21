@@ -3,6 +3,9 @@ import os from 'node:os';
 import { atomicWriteJson } from '../persistence/atomic-write.js';
 import { loadJsonFile } from '../persistence/load-json-file.js';
 
+/** 指令已被删除/不存在时的统一用户提示。 */
+export const ORDER_NOT_FOUND_TEXT = '指令不存在或已被删除';
+
 export interface OrderEntry {
   id: string;
   text: string;

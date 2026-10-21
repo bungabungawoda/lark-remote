@@ -22,9 +22,9 @@ import {
   agentStopperRegistry,
   type AgentStopper,
 } from '../../../platform/agent-stopper.js';
+import { DEFAULT_REQUEST_TIMEOUT_MS } from '../defaults.js';
 
 const DEFAULT_IDLE_TTL_MS = 30 * 60 * 1000; // 30 minutes
-const DEFAULT_REQUEST_TIMEOUT_MS = 60_000; // 60 seconds
 /** acquire() 的轮次上限：防止 slot 被持续释放时无限重建连接。 */
 const MAX_ACQUIRE_ATTEMPTS = 5;
 

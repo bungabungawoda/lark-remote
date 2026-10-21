@@ -2,20 +2,13 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { CommandRouter } from './index.js';
 import { SessionStore } from '../session/index.js';
 import { OrderStore } from '../order/index.js';
-import { Bridge } from '../bridge/index.js';
 import { AppConfigSchema } from '../config/index.js';
-import type { AppConfig } from '../config/index.js';
 import type { Runner } from '../runner/index.js';
 
-import {
-  createStubAgentRegistry,
-  createStubConnector,
-  createStubRunner,
-  createStubSessionReaderRegistry,
-} from '../../tests/lib/bridge-stubs.js';
+import { createStubRunner } from '../../tests/lib/bridge-stubs.js';
+import { createRouterFixture } from '../../tests/lib/router-fixture.js';
 // Stub session reader for tests
 
 let tmpDir: string;
@@ -32,42 +25,20 @@ function createRouter(overrides?: {
   sessionStore?: SessionStore;
   ordersPath?: string;
 }) {
-  const sessionStore = overrides?.sessionStore ?? new SessionStore();
-  const connector = createStubConnector();
-  const runner: Runner = overrides?.runner ?? createStubRunner();
-  const config: AppConfig = AppConfigSchema.parse({
-    feishu: { appId: 'test', appSecret: 'test' },
-    claude: {
-      model: 'claude-opus-4-8',
-      stopGraceMs: 5000,
-    },
-  });
-
-  // Use ordersPath if provided, otherwise use default
   const ordersPath = overrides?.ordersPath ?? path.join(tmpDir, 'orders.json');
-
-  // Create bridge mock
-  const bridge = new Bridge({
-    runner,
-    agentRegistry: createStubAgentRegistry(runner),
-    sessionReaderRegistry: createStubSessionReaderRegistry(),
-    connector,
-    sessionStore,
-    config,
+  return createRouterFixture({
+    tmpDir,
+    runner: overrides?.runner ?? createStubRunner(),
+    sessionStore: overrides?.sessionStore,
+    config: AppConfigSchema.parse({
+      feishu: { appId: 'test', appSecret: 'test' },
+      claude: {
+        model: 'claude-opus-4-8',
+        stopGraceMs: 5000,
+      },
+    }),
+    routerOpts: { ordersPath, exitHandler: () => {} },
   });
-
-  const router = new CommandRouter({
-    sessionStore,
-    bridge,
-    config,
-    configPath: path.join(tmpDir, 'config.yaml'),
-    workspacePath: path.join(tmpDir, 'workspace.json'),
-    ordersPath,
-    exitHandler: () => {},
-    sessionReaderRegistry: createStubSessionReaderRegistry(),
-  });
-
-  return { router, sessionStore, connector, bridge, ordersPath };
 }
 
 // order.exec no longer has a router-level cardAction handler: index.ts

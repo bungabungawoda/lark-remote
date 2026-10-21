@@ -2,20 +2,13 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { CommandRouter } from './index.js';
-import { SessionStore } from '../session/index.js';
 import { OrderStore } from '../order/index.js';
-import { Bridge } from '../bridge/index.js';
 import { AppConfigSchema } from '../config/index.js';
-import type { AppConfig } from '../config/index.js';
 import type { Runner } from '../runner/index.js';
 import { dispatchOrderExecForQueue } from './order-exec-dispatch.js';
 
-import {
-  createStubAgentRegistry,
-  createStubRunner,
-  createStubSessionReaderRegistry,
-} from '../../tests/lib/bridge-stubs.js';
+import { createStubRunner } from '../../tests/lib/bridge-stubs.js';
+import { createRouterFixture } from '../../tests/lib/router-fixture.js';
 vi.mock('../logger/index.js', async () =>
   (await import('../../tests/lib/logger-mock.js')).loggerModuleMock(),
 );
@@ -39,7 +32,6 @@ afterEach(() => {
 });
 
 function createRouter(ordersPath: string) {
-  const sessionStore = new SessionStore();
   const sent: { chatId: string; input: unknown; opts?: { replyTo?: string } }[] = [];
   const connector = {
     sendWithRetry: async (chatId: string, input: unknown, opts?: { replyTo?: string }) => {
@@ -53,28 +45,16 @@ function createRouter(ordersPath: string) {
     connected: true,
     _sent: sent,
   };
-  const config: AppConfig = AppConfigSchema.parse({
-    feishu: { appId: 'test', appSecret: 'test' },
-    claude: { model: 'claude-opus-4-8', stopGraceMs: 5000 },
-  });
   const stubRunner = createStubRunner() as Runner;
-  const bridge = new Bridge({
+  const { router, bridge, sessionStore } = createRouterFixture({
+    tmpDir,
     runner: stubRunner,
-    agentRegistry: createStubAgentRegistry(stubRunner),
-    sessionReaderRegistry: createStubSessionReaderRegistry(),
     connector,
-    sessionStore,
-    config,
-  });
-  const router = new CommandRouter({
-    sessionStore,
-    bridge,
-    config,
-    configPath: path.join(tmpDir, 'config.yaml'),
-    workspacePath: path.join(tmpDir, 'workspace.json'),
-    ordersPath,
-    exitHandler: () => {},
-    sessionReaderRegistry: createStubSessionReaderRegistry(),
+    config: AppConfigSchema.parse({
+      feishu: { appId: 'test', appSecret: 'test' },
+      claude: { model: 'claude-opus-4-8', stopGraceMs: 5000 },
+    }),
+    routerOpts: { ordersPath, exitHandler: () => {} },
   });
   return { router, bridge, sessionStore, connector };
 }

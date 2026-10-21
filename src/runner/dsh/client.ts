@@ -30,6 +30,7 @@ import {
   readDshBrowserSecret,
   resolveDshCredentialsFile,
 } from './auth.js';
+import { DEFAULT_REQUEST_TIMEOUT_MS } from '../common/defaults.js';
 import type {
   DshApprovalStreamItem,
   DshCommandResult,
@@ -200,9 +201,6 @@ export interface DshClientOptions {
    */
   requestTimeoutMs?: number;
 }
-
-/** Default unary timeout: long prompts are unbounded on the server side. */
-const DEFAULT_REQUEST_TIMEOUT_MS = 60_000;
 
 /** Extract the `token` query parameter from a pasted `dsh web` URL. */
 export function extractDshToken(raw: string | undefined): string {

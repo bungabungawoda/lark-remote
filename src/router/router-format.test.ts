@@ -317,3 +317,97 @@ describe('formatUsageStats', () => {
     expect(out).not.toContain('Reasoning token -');
   });
 });
+
+describe('formatUsageStats - cumulative cache display', () => {
+  it('test_anchor_cached_token_cumulative_with_percentage', () => {
+    const out = formatUsageStats({
+      inputTokens: 1000,
+      outputTokens: 100,
+      cacheReadTokens: 2000,
+      cacheCreationTokens: 500,
+      totalTokens: 3600,
+      cumulativeInputTokens: 5000,
+      cumulativeOutputTokens: 800,
+      cumulativeCacheReadTokens: 10000,
+      cumulativeCacheCreationTokens: 2500,
+    });
+    expect(out).toContain('Cached token - 2K (67%)');
+    expect(out).toContain('累计 10K (67%)');
+  });
+
+  it('test_anchor_cache_create_cumulative_without_percentage', () => {
+    const out = formatUsageStats({
+      inputTokens: 1000,
+      outputTokens: 100,
+      cacheReadTokens: 2000,
+      cacheCreationTokens: 500,
+      totalTokens: 3600,
+      cumulativeInputTokens: 5000,
+      cumulativeOutputTokens: 800,
+      cumulativeCacheReadTokens: 10000,
+      cumulativeCacheCreationTokens: 2500,
+    });
+    expect(out).toContain('Cache create - 500 · 累计 3K');
+  });
+
+  it('test_anchor_cumulative_cache_read_tokens_optional', () => {
+    const out = formatUsageStats({
+      inputTokens: 1000,
+      outputTokens: 100,
+      cacheReadTokens: 2000,
+      cacheCreationTokens: 0,
+      totalTokens: 3100,
+      cumulativeCacheReadTokens: 5000,
+    });
+    expect(out).toContain('累计 5K');
+    expect(out).not.toMatch(/累计 \d+K \(\d+%\)/);
+  });
+
+  it('test_anchor_cumulative_cache_creation_tokens_optional', () => {
+    const out = formatUsageStats({
+      inputTokens: 1000,
+      outputTokens: 100,
+      cacheReadTokens: 0,
+      cacheCreationTokens: 500,
+      totalTokens: 1600,
+      cumulativeCacheCreationTokens: 3000,
+    });
+    expect(out).toContain('Cache create - 500 · 累计 3K');
+  });
+
+  it('test_anchor_cached_token_zero_cache_read_cumulative', () => {
+    const out = formatUsageStats({
+      inputTokens: 1000,
+      outputTokens: 100,
+      cacheReadTokens: 0,
+      cacheCreationTokens: 0,
+      totalTokens: 1100,
+      cumulativeInputTokens: 5000,
+      cumulativeOutputTokens: 800,
+      cumulativeCacheReadTokens: 0,
+    });
+    expect(out).toContain('Cached token - 0 (0%)');
+    expect(out).toContain('累计 0 (0%)');
+  });
+
+  it('test_anchor_total_cumulative_reconcilable', () => {
+    const out = formatUsageStats({
+      inputTokens: 171000,
+      outputTokens: 84,
+      cacheReadTokens: 0,
+      cacheCreationTokens: 100,
+      totalTokens: 171100,
+      cumulativeInputTokens: 7350000,
+      cumulativeOutputTokens: 44000,
+      cumulativeTotalTokens: 24218000,
+      cumulativeCacheReadTokens: 15000000,
+      cumulativeCacheCreationTokens: 1824000,
+    });
+    expect(out).toContain('Input token - 171K · 累计 7.4M');
+    expect(out).toContain('Output token - 84 · 累计 44K');
+    expect(out).toContain('Cached token - 0 (0%) · 累计 15M (67%)');
+    expect(out).toContain('Cache create - 100 · 累计 1.8M');
+    expect(out).toContain('Total token - 171K · 累计 24.2M');
+    expect(out).toContain('累计 24.2M');
+  });
+});

@@ -1,4 +1,5 @@
 import { getLogger } from '../logger/index.js';
+import { cardWithHeader } from '../card/card-shared.js';
 import { displayName } from '../platform/path.js';
 import type { AgentKind } from '../runner/types.js';
 
@@ -310,25 +311,19 @@ export class QueueManager {
         );
         void this.sendCard(
           taskMeta.chatId,
-          {
-            schema: '2.0',
-            config: { wide_screen_mode: true },
-            header: {
-              template: 'red',
-              title: { tag: 'plain_text', content: '🚫 队列已满' },
-            },
-            body: {
-              elements: [
-                {
-                  tag: 'div',
-                  text: {
-                    tag: 'lark_md',
-                    content: `当前工作目录已有 ${MAX_WAITING_QUEUE} 条消息排队等待，为防止积压已拒收本条消息。请等待队列消化后重发，或用 \`/stop\` 清空当前任务。`,
-                  },
+          cardWithHeader({
+            template: 'red',
+            title: '🚫 队列已满',
+            elements: [
+              {
+                tag: 'div',
+                text: {
+                  tag: 'lark_md',
+                  content: `当前工作目录已有 ${MAX_WAITING_QUEUE} 条消息排队等待，为防止积压已拒收本条消息。请等待队列消化后重发，或用 \`/stop\` 清空当前任务。`,
                 },
-              ],
-            },
-          },
+              },
+            ],
+          }),
           { replyTo: taskMeta.feishuReplyTo ?? taskMeta.messageId },
         ).catch((err) => {
           getLogger().error('[queue-manager] failed to send queue-full rejection card:', err);
@@ -780,26 +775,20 @@ export class QueueManager {
         return;
       }
       const previewForCard = liveTask?.messagePreview ?? messagePreview;
-      const card = {
-        schema: '2.0',
-        config: { wide_screen_mode: true },
-        header: {
-          template: 'green',
-          title: { tag: 'plain_text', content: '▶️ 已开始执行' },
-        },
-        body: {
-          elements: [
-            {
-              tag: 'div',
-              text: { tag: 'lark_md', content: `**当前 Workspace:** \`${workspaceName}\`` },
-            },
-            { tag: 'hr' },
-            { tag: 'div', text: { tag: 'lark_md', content: `📝 \`${previewForCard}\`` } },
-            { tag: 'hr' },
-            ...this.buildQueueActionButtons(cwd, messageId, true),
-          ],
-        },
-      };
+      const card = cardWithHeader({
+        template: 'green',
+        title: '▶️ 已开始执行',
+        elements: [
+          {
+            tag: 'div',
+            text: { tag: 'lark_md', content: `**当前 Workspace:** \`${workspaceName}\`` },
+          },
+          { tag: 'hr' },
+          { tag: 'div', text: { tag: 'lark_md', content: `📝 \`${previewForCard}\`` } },
+          { tag: 'hr' },
+          ...this.buildQueueActionButtons(cwd, messageId, true),
+        ],
+      });
       await this.updateCard(cardMessageId, card);
       getLogger().debug(`[queue-manager] queue card updated to executing messageId=${messageId}`);
     } catch (err) {
@@ -845,26 +834,20 @@ export class QueueManager {
     }
 
     const workspaceName = displayName(cwd);
-    const card = {
-      schema: '2.0',
-      config: { wide_screen_mode: true },
-      header: {
-        template: 'gray',
-        title: { tag: 'plain_text', content: '❌ 已撤销' },
-      },
-      body: {
-        elements: [
-          {
-            tag: 'div',
-            text: { tag: 'lark_md', content: `**当前 Workspace:** \`${workspaceName}\`` },
-          },
-          { tag: 'hr' },
-          { tag: 'div', text: { tag: 'lark_md', content: `📝 该消息已从队列中撤销` } },
-          { tag: 'hr' },
-          ...this.buildQueueActionButtons(cwd, messageId, true),
-        ],
-      },
-    };
+    const card = cardWithHeader({
+      template: 'gray',
+      title: '❌ 已撤销',
+      elements: [
+        {
+          tag: 'div',
+          text: { tag: 'lark_md', content: `**当前 Workspace:** \`${workspaceName}\`` },
+        },
+        { tag: 'hr' },
+        { tag: 'div', text: { tag: 'lark_md', content: `📝 该消息已从队列中撤销` } },
+        { tag: 'hr' },
+        ...this.buildQueueActionButtons(cwd, messageId, true),
+      ],
+    });
 
     try {
       await this.updateCard(cardMessageId, card);

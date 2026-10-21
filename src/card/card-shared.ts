@@ -1,4 +1,5 @@
 import { AgentRegistry, type AgentKind } from '../runner/index.js';
+import { AGENT_DISPLAY_NAMES } from '../runner/types.js';
 
 /**
  * Display name for an agent kind in the run card header.
@@ -12,14 +13,8 @@ export function agentDisplayName(kind: string): string {
   if (globalReg) {
     return globalReg.getDisplayName(kind as AgentKind);
   }
-  // Fallback: hardcoded default mapping for unit tests that exercise
-  // render helpers without booting the full AgentRegistry.
-  if (kind === 'claude') return 'Claude';
-  if (kind === 'codex') return 'Codex';
-  if (kind === 'opencode') return 'Opencode';
-  if (kind === 'pi') return 'Pi';
-  if (kind === 'kimi') return 'Kimi';
-  return kind;
+  // Fallback for render helpers that run without the global registry.
+  return AGENT_DISPLAY_NAMES[kind as AgentKind] ?? kind;
 }
 
 const TERMINAL_LABELS: Record<string, string> = {
@@ -46,6 +41,26 @@ export function terminalToColor(terminal: string): string {
 }
 
 /**
+ * CardKit 2.0 静态卡骨架：schema/config/header + 给定 body elements。
+ * 队列状态卡、预算兜底卡等"只有 header 文案 + 少量 div"的卡共用。
+ */
+export function cardWithHeader(opts: {
+  template: string;
+  title: string;
+  elements: object[];
+}): object {
+  return {
+    schema: '2.0',
+    config: { wide_screen_mode: true },
+    header: {
+      template: opts.template,
+      title: { tag: 'plain_text', content: opts.title },
+    },
+    body: { elements: opts.elements },
+  };
+}
+
+/**
  * Create a CardKit 2.0 button with a callback behavior. Shared constructor
  * for every callback button in the card module (stop/new-session/compact/
  * approval decisions/question options/…) — previously each render site
@@ -60,6 +75,8 @@ export function cardButton(
     size?: 'small' | 'medium' | 'large';
     /** Fixed width, e.g. '100px' (keeps option-row buttons left-aligned). */
     width?: string;
+    /** 置灰（当前项 / 不可执行），仍保留回调 payload。 */
+    disabled?: boolean;
   } = {},
 ): object {
   return {
@@ -68,6 +85,7 @@ export function cardButton(
     ...(opts.type ? { type: opts.type } : {}),
     ...(opts.size ? { size: opts.size } : {}),
     ...(opts.width ? { width: opts.width } : {}),
+    ...(opts.disabled !== undefined ? { disabled: opts.disabled } : {}),
     behaviors: [{ type: 'callback', value }],
   };
 }

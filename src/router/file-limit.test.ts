@@ -1,8 +1,8 @@
 import { describe, it, expect, vi } from 'vitest';
-import { CommandRouter } from './index.js';
 import { SessionStore } from '../session/index.js';
 import type { AppConfig } from '../config/index.js';
 import { createMockBridge, createStubSessionReaderRegistry } from '../../tests/lib/bridge-stubs.js';
+import { createRouterFixture } from '../../tests/lib/router-fixture.js';
 import { makeTempDir } from '../../tests/lib/temp-dir.js';
 import { writeSizedFile } from '../../tests/lib/sized-file.js';
 import path from 'node:path';
@@ -31,13 +31,13 @@ describe('file upload size limit: 30MB', () => {
       defaultAgent: 'claude',
     };
 
-    const router = new CommandRouter({
-      sessionStore,
-      bridge: mockBridge,
+    const router = createRouterFixture({
+      tmpDir: tempDir,
       config,
-      configPath: path.join(tempDir, 'config.yaml'),
+      bridge: mockBridge,
+      sessionStore,
       sessionReaderRegistry: createStubSessionReaderRegistry(),
-    });
+    }).router;
 
     await router.handleCardAction(
       { cmd: 'ls.file', path: bigFilePath },
@@ -84,13 +84,13 @@ describe('file upload size limit: 30MB', () => {
       defaultAgent: 'claude',
     };
 
-    const router = new CommandRouter({
-      sessionStore,
-      bridge: mockBridge,
+    const router = createRouterFixture({
+      tmpDir: tempDir,
       config,
-      configPath: path.join(tempDir, 'config.yaml'),
+      bridge: mockBridge,
+      sessionStore,
       sessionReaderRegistry: createStubSessionReaderRegistry(),
-    });
+    }).router;
 
     await router.handleCardAction(
       { cmd: 'ls.file', path: midFilePath },

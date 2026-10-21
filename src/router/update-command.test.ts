@@ -1,19 +1,9 @@
 import { describe, it, expect } from 'vitest';
-import path from 'node:path';
 import os from 'node:os';
 import fs from 'node:fs';
-import { CommandRouter } from './index.js';
-import { Bridge } from '../bridge/index.js';
-import { SessionStore } from '../session/index.js';
 import { AppConfigSchema } from '../config/index.js';
-import type { AppConfig } from '../config/index.js';
-import type { Runner } from '../runner/index.js';
-import {
-  createStubAgentRegistry,
-  createStubConnector,
-  createStubRunner,
-  createStubSessionReaderRegistry,
-} from '../../tests/lib/bridge-stubs.js';
+import { createStubRunner } from '../../tests/lib/bridge-stubs.js';
+import { createRouterFixture } from '../../tests/lib/router-fixture.js';
 
 const tmpDir = fs.realpathSync(os.tmpdir());
 
@@ -26,41 +16,28 @@ function createRouter(overrides?: {
   compareVersions?: (current: string, latest: string) => -1 | 0 | 1 | null;
   runInstallLatest?: () => Promise<{ success: boolean; error?: string }>;
 }) {
-  const sessionStore = new SessionStore();
-  const connector = createStubConnector();
-  const runner: Runner = createStubRunner({ withStatusInfo: true });
-  const config: AppConfig = AppConfigSchema.parse({
-    feishu: { appId: 'test', appSecret: 'test' },
-    claude: { model: 'claude-opus-4-8', stopGraceMs: 5000 },
-  });
-  const router = new CommandRouter({
-    sessionStore,
-    bridge: new Bridge({
-      runner,
-      agentRegistry: createStubAgentRegistry(runner),
-      sessionReaderRegistry: createStubSessionReaderRegistry(),
-      connector,
-      sessionStore,
-      config,
+  return createRouterFixture({
+    tmpDir,
+    runner: createStubRunner({ withStatusInfo: true }),
+    config: AppConfigSchema.parse({
+      feishu: { appId: 'test', appSecret: 'test' },
+      claude: { model: 'claude-opus-4-8', stopGraceMs: 5000 },
     }),
-    config,
-    configPath: path.join(tmpDir, 'config.yaml'),
-    workspacePath: path.join(tmpDir, 'workspace.json'),
-    exitHandler: overrides?.exitHandler ?? (() => {}),
-    restartSpawner: overrides?.restartSpawner,
-    sessionReaderRegistry: createStubSessionReaderRegistry(),
-    devMode: overrides?.devMode,
-    updateCachePath: overrides?.updateCachePath,
-    updateFns: overrides
-      ? {
-          checkLatestVersion:
-            overrides.checkLatestVersion ?? (async () => ({ current: '0.1.0', latest: '0.1.0' })),
-          compareVersions: overrides.compareVersions ?? (() => 0),
-          runInstallLatest: overrides.runInstallLatest ?? (async () => ({ success: true })),
-        }
-      : undefined,
+    routerOpts: {
+      devMode: overrides?.devMode,
+      updateCachePath: overrides?.updateCachePath,
+      exitHandler: overrides?.exitHandler ?? (() => {}),
+      restartSpawner: overrides?.restartSpawner,
+      updateFns: overrides
+        ? {
+            checkLatestVersion:
+              overrides.checkLatestVersion ?? (async () => ({ current: '0.1.0', latest: '0.1.0' })),
+            compareVersions: overrides.compareVersions ?? (() => 0),
+            runInstallLatest: overrides.runInstallLatest ?? (async () => ({ success: true })),
+          }
+        : undefined,
+    },
   });
-  return { router, sessionStore, connector };
 }
 
 const ctx = { userId: 'user1', chatId: 'chat1', messageId: 'msg1' };

@@ -7,7 +7,8 @@
 
 import type { ApprovalView } from '../runner/types.js';
 import { collapsibleMarkdownPanel } from './collapsible.js';
-import { truncateUtf8, truncateMarkdownTables } from './text-truncate.js';
+import { truncateMarkdownTables } from './text-truncate.js';
+import { truncateUtf8 } from '../common/truncate.js';
 import { cardButton } from './card-shared.js';
 
 /** Unique nonce for card button callbacks (SDK dedup + router validation). */

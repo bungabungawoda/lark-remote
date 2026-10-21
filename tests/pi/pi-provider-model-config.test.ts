@@ -14,8 +14,7 @@ import { createMockBridge, createMockSessionReaderRegistry } from '../lib/bridge
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { extractFieldOptions, isSelectField } from '../lib/pi-card-fields.js';
-import { CommandRouter } from '../../src/router/index.js';
-import { SessionStore } from '../../src/session/index.js';
+import { createRouterFixture } from '../lib/router-fixture.js';
 import { AppConfigSchema } from '../../src/config/index.js';
 import {
   getPiModelOptions,
@@ -156,22 +155,15 @@ describe('pi provider/model config from pi files', () => {
     });
 
     const config = buildPiConfig();
-    const sessionStore = new SessionStore();
-    const bridge = createMockBridge();
-    const sessionReaderRegistry = createMockSessionReaderRegistry({
-      agentKinds: ['claude', 'pi'],
-      withGet: true,
-    });
-
-    const router = new CommandRouter({
-      sessionStore,
-      bridge,
+    const router = createRouterFixture({
+      tmpDir,
       config,
-      configPath: path.join(tmpDir, 'config.yaml'),
-      workspacePath: path.join(tmpDir, 'workspace.json'),
-      ordersPath: path.join(tmpDir, 'orders.json'),
-      sessionReaderRegistry,
-    });
+      bridge: createMockBridge(),
+      sessionReaderRegistry: createMockSessionReaderRegistry({
+        agentKinds: ['claude', 'pi'],
+        withGet: true,
+      }),
+    }).router;
 
     const result = router.buildConfigCard();
     const card = result.card!;
@@ -201,22 +193,15 @@ describe('pi provider/model config from pi files', () => {
     });
 
     const config = buildPiConfig();
-    const sessionStore = new SessionStore();
-    const bridge = createMockBridge();
-    const sessionReaderRegistry = createMockSessionReaderRegistry({
-      agentKinds: ['claude', 'pi'],
-      withGet: true,
-    });
-
-    const router = new CommandRouter({
-      sessionStore,
-      bridge,
+    const router = createRouterFixture({
+      tmpDir,
       config,
-      configPath: path.join(tmpDir, 'config.yaml'),
-      workspacePath: path.join(tmpDir, 'workspace.json'),
-      ordersPath: path.join(tmpDir, 'orders.json'),
-      sessionReaderRegistry,
-    });
+      bridge: createMockBridge(),
+      sessionReaderRegistry: createMockSessionReaderRegistry({
+        agentKinds: ['claude', 'pi'],
+        withGet: true,
+      }),
+    }).router;
 
     const result = router.buildConfigCard();
     const card = result.card!;

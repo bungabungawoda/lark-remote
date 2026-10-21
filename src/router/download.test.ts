@@ -8,6 +8,7 @@ import { CommandRouter } from '../router/index.js';
 import { SessionStore } from '../session/index.js';
 import type { AppConfig } from '../config/index.js';
 import { createMockBridge, createStubSessionReaderRegistry } from '../../tests/lib/bridge-stubs.js';
+import { createRouterFixture } from '../../tests/lib/router-fixture.js';
 import { makeTempDir } from '../../tests/lib/temp-dir.js';
 import { writeSizedFile } from '../../tests/lib/sized-file.js';
 
@@ -35,13 +36,13 @@ beforeEach(() => {
     defaultAgent: 'claude',
   };
 
-  router = new CommandRouter({
-    sessionStore,
-    bridge: mockBridge,
+  router = createRouterFixture({
+    tmpDir,
     config,
-    configPath: path.join(tmpDir, 'config.yaml'),
+    bridge: mockBridge,
+    sessionStore,
     sessionReaderRegistry: createStubSessionReaderRegistry(),
-  });
+  }).router;
 });
 
 function sentTexts(): string[] {

@@ -2,19 +2,12 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { SessionStore } from '../../../src/session/index.js';
 import { CommandRouter } from '../../../src/router/index.js';
-import { Bridge } from '../../../src/bridge/index.js';
-import type { AppConfig } from '../../../src/config/index.js';
 import { AppConfigSchema } from '../../../src/config/index.js';
 import { SessionReaderRegistry } from '../../../src/session/registry.js';
 
-import {
-  createStubAgentRegistry,
-  createStubSessionReaderRegistry,
-  createStubRunner,
-  createStubConnector,
-} from '../../lib/bridge-stubs.js';
+import { createStubRunner } from '../../lib/bridge-stubs.js';
+import { createRouterFixture } from '../../lib/router-fixture.js';
 /**
  * Anchor: /ls 卡片分页功能
  *
@@ -33,40 +26,25 @@ import {
 
 // Create router with deps
 function createRouter(tmpDir: string) {
-  const sessionStore = new SessionStore();
-  const connector = createStubConnector();
-  const runner = createStubRunner({ mode: 'empty' });
-  const config: AppConfig = AppConfigSchema.parse({
-    feishu: { appId: 'test', appSecret: 'test' },
-    claude: {
-      model: 'claude-opus-4-8',
-      stopGraceMs: 5000,
-    },
-    agents: {
-      claude: { model: 'claude-opus-4-8' },
-      codex: {},
-      opencode: {},
-      pi: {},
-    },
-  });
-  const bridge = new Bridge({
-    runner,
-    agentRegistry: createStubAgentRegistry(runner),
-    sessionReaderRegistry: createStubSessionReaderRegistry(),
-    connector,
-    sessionStore,
-    config,
-  });
-  const router = new CommandRouter({
-    sessionStore,
-    bridge,
-    config,
-    configPath: path.join(tmpDir, 'config.yaml'),
-    workspacePath: path.join(tmpDir, 'workspace.json'),
-    ordersPath: path.join(tmpDir, 'orders.json'),
+  return createRouterFixture({
+    tmpDir,
+    runner: createStubRunner({ mode: 'empty' }),
+    config: AppConfigSchema.parse({
+      feishu: { appId: 'test', appSecret: 'test' },
+      claude: {
+        model: 'claude-opus-4-8',
+        stopGraceMs: 5000,
+      },
+      agents: {
+        claude: { model: 'claude-opus-4-8' },
+        codex: {},
+        opencode: {},
+        pi: {},
+      },
+    }),
     sessionReaderRegistry: new SessionReaderRegistry(),
+    routerOpts: { ordersPath: path.join(tmpDir, 'orders.json') },
   });
-  return { router, sessionStore, connector, config, bridge };
 }
 
 /** cmdLs 现已 public；测试直接调用验证分页边界。 */

@@ -4,12 +4,12 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { OrderStore } from '../../src/order/index.js';
-import { CommandRouter } from '../../src/router/index.js';
 import { SessionStore } from '../../src/session/index.js';
 import type { AppConfig } from '../../src/config/index.js';
 import type { Runner } from '../../src/runner/index.js';
 import { AppConfigSchema } from '../../src/config/index.js';
 import { SessionReaderRegistry } from '../../src/session/registry.js';
+import { createRouterFixture } from '../lib/router-fixture.js';
 import { expectNoV1ActionContainer } from '../lib/card-view.js';
 
 let tmpDir: string;
@@ -78,15 +78,13 @@ describe('cmdOrder 列表命令 (Anchor #2)', () => {
 
   it('无 cwd 时仍返回 CardKit 2.0 卡片（order 全局存储，不再依赖 cwd）', async () => {
     const sessionStore = new SessionStore();
-    const bridge = createMockBridge();
-    const router = new CommandRouter({
-      sessionStore,
-      bridge,
+    const router = createRouterFixture({
+      tmpDir,
       config,
-      configPath: path.join(tmpDir, 'config.yaml'),
-      workspacePath: path.join(tmpDir, 'workspace.json'),
+      bridge: createMockBridge(),
+      sessionStore,
       sessionReaderRegistry: new SessionReaderRegistry(),
-    });
+    }).router;
     // No cwd set for this user - order 现在全局存储，不需要 cwd
 
     const result = await router.handle('/order', {
@@ -105,16 +103,14 @@ describe('cmdOrder 列表命令 (Anchor #2)', () => {
 
   it('/order 卡片不混用 V1/V2 — 无 1.x action 容器 (regression: 200861)', async () => {
     const sessionStore = new SessionStore();
-    const bridge = createMockBridge();
-    const router = new CommandRouter({
-      sessionStore,
-      bridge,
+    const router = createRouterFixture({
+      tmpDir,
       config,
-      configPath: path.join(tmpDir, 'config.yaml'),
-      workspacePath: path.join(tmpDir, 'workspace.json'),
-      ordersPath: ordersFile,
+      bridge: createMockBridge(),
+      sessionStore,
       sessionReaderRegistry: new SessionReaderRegistry(),
-    });
+      routerOpts: { ordersPath: ordersFile },
+    }).router;
     // Save at least one order so list-tab has content
     new OrderStore(ordersFile).save('regression probe');
 
@@ -134,16 +130,14 @@ describe('cmdOrder 列表命令 (Anchor #2)', () => {
 
   it('空列表返回 CardKit 2.0 卡片（显示"暂无指令"）', async () => {
     const sessionStore = new SessionStore();
-    const bridge = createMockBridge();
-    const router = new CommandRouter({
-      sessionStore,
-      bridge,
+    const router = createRouterFixture({
+      tmpDir,
       config,
-      configPath: path.join(tmpDir, 'config.yaml'),
-      workspacePath: path.join(tmpDir, 'workspace.json'),
-      ordersPath: ordersFile,
+      bridge: createMockBridge(),
+      sessionStore,
       sessionReaderRegistry: new SessionReaderRegistry(),
-    });
+      routerOpts: { ordersPath: ordersFile },
+    }).router;
 
     // No orders saved - but still returns 2.0 card
     const result = await router.handle('/order', {
@@ -171,15 +165,14 @@ describe('cmdOrder 列表命令 (Anchor #2)', () => {
     orderStore.save('运行单元测试');
     orderStore.save('检查代码覆盖率');
 
-    const router = new CommandRouter({
-      sessionStore,
-      bridge,
+    const router = createRouterFixture({
+      tmpDir,
       config,
-      configPath: path.join(tmpDir, 'config.yaml'),
-      workspacePath: path.join(tmpDir, 'workspace.json'),
-      ordersPath: ordersFile,
+      bridge,
+      sessionStore,
       sessionReaderRegistry: new SessionReaderRegistry(),
-    });
+      routerOpts: { ordersPath: ordersFile },
+    }).router;
 
     const result = await router.handle('/order', {
       userId: 'user1',

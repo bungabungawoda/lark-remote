@@ -129,3 +129,25 @@ describe('ClaudeSessionReader', () => {
     expect(reader.getNewestSession('/tmp/nonexistent-cwd-xyz')).toBeNull();
   });
 });
+
+describe('ClaudeSessionReader listSessions offset without limit', () => {
+  it('respects offset even when limit is undefined', () => {
+    const cwd = '/tmp/anchor-offset-proj';
+    const base = Date.now() / 1000;
+    const ids = ['sess-a', 'sess-b', 'sess-c'];
+    ids.forEach((sid, index) => {
+      writeSession(
+        cwd,
+        [`{"type":"user","message":{"role":"user","content":[{"type":"text","text":"${sid}"}]}}`],
+        sid,
+      );
+      const filePath = path.join(tmpDir, encodeClaudeProjectDir(cwd), `${sid}.jsonl`);
+      fs.utimesSync(filePath, base + (index + 1) * 10, base + (index + 1) * 10);
+    });
+
+    const reader = new ClaudeSessionReader({ projectsDir: tmpDir });
+    const result = reader.listSessions(cwd, { offset: 1 });
+    expect(result.total).toBe(3);
+    expect(result.sessions).toHaveLength(2);
+  });
+});

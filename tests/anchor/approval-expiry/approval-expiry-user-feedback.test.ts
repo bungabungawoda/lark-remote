@@ -14,11 +14,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { CommandRouter } from '../../../src/router/index.js';
-import { SessionStore } from '../../../src/session/index.js';
 import { AppConfigSchema } from '../../../src/config/index.js';
 import type { AppConfig } from '../../../src/config/index.js';
 import { createMockBridge, createStubSessionReaderRegistry } from '../../lib/bridge-stubs.js';
+import { createRouterFixture } from '../../lib/router-fixture.js';
 
 describe('anchor: approval expiry user feedback', () => {
   let tmpDir: string;
@@ -33,20 +32,16 @@ describe('anchor: approval expiry user feedback', () => {
   });
 
   function createRouter(bridge: ReturnType<typeof createMockBridge>) {
-    const sessionStore = new SessionStore();
     const config: AppConfig = AppConfigSchema.parse({
       feishu: { appId: 'test', appSecret: 'test' },
       claude: { model: 'claude-opus-4-8', stopGraceMs: 5000 },
     });
-    const router = new CommandRouter({
-      sessionStore,
-      bridge,
+    return createRouterFixture({
+      tmpDir,
       config,
-      configPath: path.join(tmpDir, 'config.yaml'),
-      workspacePath: path.join(tmpDir, 'workspace.json'),
+      bridge,
       sessionReaderRegistry: createStubSessionReaderRegistry(),
     });
-    return { router };
   }
 
   it('test_anchor_approval_respond_expired_returns_error_toast', async () => {

@@ -191,11 +191,6 @@ export class SessionIndex {
   private lastRefreshAt = 0;
   private built = false;
 
-  /** Test-only: count of parseSessionJsonl calls since creation */
-  parseCount = 0;
-  /** Test-only: count of directory scan operations */
-  scanCount = 0;
-
   constructor(projectsDir: string, opts: SessionIndexOptions = {}) {
     this.projectsDir = projectsDir;
     this.refreshIntervalMs = opts.refreshIntervalMs ?? 5000;
@@ -210,7 +205,6 @@ export class SessionIndex {
   // ── Build (initial full scan) ───────────────────────────
 
   build(): void {
-    this.scanCount++;
     this.fullScan();
     this.lastRefreshAt = Date.now();
   }
@@ -222,7 +216,6 @@ export class SessionIndex {
     if (now - this.lastRefreshAt < this.refreshIntervalMs) {
       return; // throttled
     }
-    this.scanCount++;
     this.fullScan();
     this.lastRefreshAt = now;
   }
@@ -294,7 +287,6 @@ export class SessionIndex {
 
       // Fingerprint changed → re-parse this single file
       const parsed = parseSessionJsonl(p);
-      this.parseCount++;
       try {
         const st = fs.statSync(p, { bigint: true });
         const updated: SessionIndexEntry = {
@@ -367,7 +359,6 @@ export class SessionIndex {
         // Concurrent-write guard: stat before and after parse, compare fingerprints
         const fpBefore = fp;
         const parsed = parseSessionJsonl(fullPath);
-        this.parseCount++;
         const fpAfter = buildFingerprint(fullPath);
 
         if (fpBefore !== fpAfter) {

@@ -27,3 +27,20 @@ export function resetModelPatch(
   }
   return null;
 }
+
+/**
+ * 取档位列表的中位值（切换模型后当前档位不受支持时的兜底）。
+ *
+ * 偶数长度的中位口径由调用方显式选择，避免各 builder 各写一套公式后漂移：
+ * - `lower`：`(len-1)/2`，kimi/codex 既有口径；
+ * - `upper`：`len/2`，DSH 需要偏高的一档（off/low → low）。
+ */
+export function pickMiddleValue<T>(
+  values: readonly T[],
+  bias: 'lower' | 'upper' = 'lower',
+): T | undefined {
+  if (values.length === 0) return undefined;
+  const index =
+    bias === 'upper' ? Math.floor(values.length / 2) : Math.floor((values.length - 1) / 2);
+  return values[index];
+}

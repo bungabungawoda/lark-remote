@@ -1,6 +1,5 @@
 import type { CardStreamController, CardStreamProducer } from '@larksuite/channel';
 import { getLogger } from '../logger/index.js';
-import { enforceCardBudget } from './card-budget.js';
 
 /**
  * Unified channel interface for streaming card sessions.
@@ -272,26 +271,12 @@ export abstract class CardSession<S, RO = unknown> {
   }
 
   /**
-   * Whether renderCard() already enforces a size budget (so updateCard can
-   * skip enforceCardBudget). Subclasses whose renderer has its own
-   * stringify-level budget protection (e.g. RunCardSession via degraded/
-   * extreme fallback) should override this to return true.
-   */
-  protected hasOwnBudgetProtection(): boolean {
-    return false;
-  }
-
-  /**
-   * Render the current card and apply stringify-level budget enforcement unless
-   * the subclass renderer has its own budget protection. Centralizes the budget
-   * decision so start()/updateCard()/settle() stay symmetric — previously only
-   * updateCard() guarded, while start() producer and settle() fallback sent bare
-   * renderCard output (risking >28KB for BashCardSession, which has no own
-   * stringify-level safety net).
+   * 渲染当前卡片。所有生产子类的 renderer 都自带 stringify 级预算保护
+   * （run/bash 的 degraded/extreme 路径）；发送前 Bridge 还会再走一次
+   * enforceCardBudget，因此这里不再重复裁剪。
    */
   protected safeRenderCard(): object {
-    const card = this.renderCard(this.state, this.renderOptions);
-    return this.hasOwnBudgetProtection() ? card : enforceCardBudget(card).card;
+    return this.renderCard(this.state, this.renderOptions);
   }
 
   /**

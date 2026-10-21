@@ -13,6 +13,7 @@ import {
 } from '../../config/kimi-config.js';
 import type { AgentConfigCardBuilder, ConfigField, SelectOption } from './types.js';
 import { DEFAULT_TURN_IDLE_TIMEOUT_MINUTES, type AppConfig } from '../../config/index.js';
+import { pickMiddleValue } from './common/model-patch.js';
 
 const PERMISSION_MODE_OPTIONS: SelectOption[] = [
   // kimi 0.40.0（2026-09-02）起官方语义：manual=始终询问 / yolo=必要时询问 / auto=完全自动
@@ -104,10 +105,9 @@ export class KimiConfigBuilder implements AgentConfigCardBuilder {
     const currentEffort = config.agents?.kimi?.thinkingEffort as string | undefined;
     const supported = kimiCfg.modelEfforts[newModel] ?? [...FALLBACK_EFFORTS];
     if (currentEffort && supported.includes(currentEffort)) return null;
-    const middle = supported[Math.floor((supported.length - 1) / 2)];
-    let newEffort = middle;
+    let newEffort = pickMiddleValue(supported);
     if (!newEffort) newEffort = kimiCfg.modelDefaultEfforts?.[newModel];
-    if (!newEffort) newEffort = FALLBACK_EFFORTS[Math.floor((FALLBACK_EFFORTS.length - 1) / 2)];
+    if (!newEffort) newEffort = pickMiddleValue(FALLBACK_EFFORTS);
     return { key: 'agents.kimi.thinkingEffort', value: newEffort as string | undefined };
   }
 }

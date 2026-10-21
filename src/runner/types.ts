@@ -545,6 +545,16 @@ export const AGENT_KINDS = ['claude', 'codex', 'opencode', 'pi', 'kimi', 'dsh'] 
 
 export type AgentKind = (typeof AGENT_KINDS)[number];
 
+/** 用户可见 agent 显示名单源：启动注册与无 registry 的回退路径共用。 */
+export const AGENT_DISPLAY_NAMES: Record<AgentKind, string> = {
+  claude: 'Claude',
+  codex: 'Codex',
+  opencode: 'Opencode',
+  pi: 'Pi',
+  kimi: 'Kimi',
+  dsh: 'DSH',
+};
+
 /**
  * Compact 能力声明（运行时门控的能力清单，编译期强制完整）。
  *

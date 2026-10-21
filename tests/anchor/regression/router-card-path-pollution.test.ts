@@ -2,19 +2,11 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { CommandRouter } from '../../../src/router/index.js';
-import { Bridge } from '../../../src/bridge/index.js';
-import { SessionStore } from '../../../src/session/index.js';
 import { SessionReaderRegistry } from '../../../src/session/registry.js';
 import { AppConfigSchema } from '../../../src/config/index.js';
-import type { AppConfig } from '../../../src/config/index.js';
 import type { AgentSessionReader, Runner } from '../../../src/runner/index.js';
 
-import {
-  createStubAgentRegistry,
-  createStubSessionReaderRegistry,
-  createStubConnector,
-} from '../../lib/bridge-stubs.js';
+import { createRouterFixture } from '../../lib/router-fixture.js';
 vi.mock('../../../src/logger/index.js', async () =>
   (await import('../../lib/logger-mock.js')).loggerModuleMock(),
 );
@@ -52,31 +44,19 @@ function createStubReader(): AgentSessionReader {
 }
 
 function createRouter() {
-  const sessionStore = new SessionStore();
-  const connector = createStubConnector();
-  const config: AppConfig = AppConfigSchema.parse({
-    feishu: { appId: 'test', appSecret: 'test' },
-    claude: { model: 'claude-opus-4-8', stopGraceMs: 5000 },
-  });
-  const bridge = new Bridge({
-    runner: stubRunner,
-    agentRegistry: createStubAgentRegistry(stubRunner),
-    sessionReaderRegistry: createStubSessionReaderRegistry(),
-    connector,
-    sessionStore,
-    config,
-  });
   const registry = new SessionReaderRegistry();
   registry.register('claude', createStubReader());
   registry.register('codex', createStubReader());
   registry.register('opencode', createStubReader());
   registry.register('pi', createStubReader());
   registry.register('kimi', createStubReader());
-  const router = new CommandRouter({
-    sessionStore,
-    bridge,
-    config,
-    configPath: path.join(tmpDir, 'config.yaml'),
+  const { router, sessionStore } = createRouterFixture({
+    tmpDir,
+    runner: stubRunner,
+    config: AppConfigSchema.parse({
+      feishu: { appId: 'test', appSecret: 'test' },
+      claude: { model: 'claude-opus-4-8', stopGraceMs: 5000 },
+    }),
     sessionReaderRegistry: registry,
   });
   return { router, sessionStore };

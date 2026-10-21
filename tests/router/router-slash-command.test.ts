@@ -4,17 +4,11 @@ import path from 'node:path';
 import os from 'node:os';
 import { Bridge } from '../../src/bridge/index.js';
 import { CommandRouter } from '../../src/router/index.js';
-import { SessionStore } from '../../src/session/index.js';
 import { AppConfigSchema } from '../../src/config/index.js';
 import type { AppConfig } from '../../src/config/index.js';
 import type { Runner } from '../../src/runner/index.js';
 import { SessionReaderRegistry } from '../../src/session/registry.js';
-
-import {
-  createStubAgentRegistry,
-  createStubSessionReaderRegistry,
-  createStubConnector,
-} from '../lib/bridge-stubs.js';
+import { createRouterFixture } from '../lib/router-fixture.js';
 // --- Stubs ---
 
 /** A runner whose run() blocks indefinitely until external resolve. */
@@ -135,26 +129,14 @@ describe('Bug 2: / commands must not be blocked by the serial queue', () => {
   }
 
   it('/help should respond immediately even when the queue is busy with a long-running task', async () => {
-    const sessionStore = new SessionStore();
-    const connector = createStubConnector();
     const runner = createBlockingRunner();
-    const bridge = new Bridge({
+    const { bridge, router, connector, sessionStore } = createRouterFixture({
+      tmpDir,
+      config,
       runner,
-      agentRegistry: createStubAgentRegistry(runner),
-      sessionReaderRegistry: createStubSessionReaderRegistry(),
-      connector,
-      sessionStore,
-      config,
-    });
-    const enqueueSpy = vi.spyOn(bridge, 'enqueue');
-    const router = new CommandRouter({
-      sessionStore,
-      bridge,
-      config,
-      configPath: path.join(tmpDir, 'config.yaml'),
-      workspacePath: path.join(tmpDir, 'workspace.json'),
       sessionReaderRegistry: new SessionReaderRegistry(),
     });
+    const enqueueSpy = vi.spyOn(bridge, 'enqueue');
 
     sessionStore.setCwd(ctx.userId, tmpDir);
     const handler = createMessageHandler(bridge, router);
@@ -200,26 +182,14 @@ describe('Bug 2: / commands must not be blocked by the serial queue', () => {
   });
 
   it('/status should respond immediately even when the queue is busy', async () => {
-    const sessionStore = new SessionStore();
-    const connector = createStubConnector();
     const runner = createBlockingRunner();
-    const bridge = new Bridge({
+    const { bridge, router, connector, sessionStore } = createRouterFixture({
+      tmpDir,
+      config,
       runner,
-      agentRegistry: createStubAgentRegistry(runner),
-      sessionReaderRegistry: createStubSessionReaderRegistry(),
-      connector,
-      sessionStore,
-      config,
-    });
-    const enqueueSpy = vi.spyOn(bridge, 'enqueue');
-    const router = new CommandRouter({
-      sessionStore,
-      bridge,
-      config,
-      configPath: path.join(tmpDir, 'config.yaml'),
-      workspacePath: path.join(tmpDir, 'workspace.json'),
       sessionReaderRegistry: new SessionReaderRegistry(),
     });
+    const enqueueSpy = vi.spyOn(bridge, 'enqueue');
 
     sessionStore.setCwd(ctx.userId, tmpDir);
     const handler = createMessageHandler(bridge, router);
@@ -246,26 +216,14 @@ describe('Bug 2: / commands must not be blocked by the serial queue', () => {
   });
 
   it('/ps should respond immediately even when the queue is busy', async () => {
-    const sessionStore = new SessionStore();
-    const connector = createStubConnector();
     const runner = createBlockingRunner();
-    const bridge = new Bridge({
+    const { bridge, router, connector, sessionStore } = createRouterFixture({
+      tmpDir,
+      config,
       runner,
-      agentRegistry: createStubAgentRegistry(runner),
-      sessionReaderRegistry: createStubSessionReaderRegistry(),
-      connector,
-      sessionStore,
-      config,
-    });
-    const enqueueSpy = vi.spyOn(bridge, 'enqueue');
-    const router = new CommandRouter({
-      sessionStore,
-      bridge,
-      config,
-      configPath: path.join(tmpDir, 'config.yaml'),
-      workspacePath: path.join(tmpDir, 'workspace.json'),
       sessionReaderRegistry: new SessionReaderRegistry(),
     });
+    const enqueueSpy = vi.spyOn(bridge, 'enqueue');
 
     sessionStore.setCwd(ctx.userId, tmpDir);
     const handler = createMessageHandler(bridge, router);
@@ -292,26 +250,14 @@ describe('Bug 2: / commands must not be blocked by the serial queue', () => {
   });
 
   it('non-slash messages SHOULD wait in the queue (serial invariant is preserved)', async () => {
-    const sessionStore = new SessionStore();
-    const connector = createStubConnector();
     const runner = createBlockingRunner();
-    const bridge = new Bridge({
+    const { bridge, router, connector, sessionStore } = createRouterFixture({
+      tmpDir,
+      config,
       runner,
-      agentRegistry: createStubAgentRegistry(runner),
-      sessionReaderRegistry: createStubSessionReaderRegistry(),
-      connector,
-      sessionStore,
-      config,
-    });
-    const enqueueSpy = vi.spyOn(bridge, 'enqueue');
-    const router = new CommandRouter({
-      sessionStore,
-      bridge,
-      config,
-      configPath: path.join(tmpDir, 'config.yaml'),
-      workspacePath: path.join(tmpDir, 'workspace.json'),
       sessionReaderRegistry: new SessionReaderRegistry(),
     });
+    const enqueueSpy = vi.spyOn(bridge, 'enqueue');
 
     sessionStore.setCwd(ctx.userId, tmpDir);
     const handler = createMessageHandler(bridge, router);
@@ -343,26 +289,14 @@ describe('Bug 2: / commands must not be blocked by the serial queue', () => {
   });
 
   it('/stop correctly bypasses the queue (already implemented)', async () => {
-    const sessionStore = new SessionStore();
-    const connector = createStubConnector();
     const runner = createBlockingRunner();
-    const bridge = new Bridge({
+    const { bridge, router, sessionStore } = createRouterFixture({
+      tmpDir,
+      config,
       runner,
-      agentRegistry: createStubAgentRegistry(runner),
-      sessionReaderRegistry: createStubSessionReaderRegistry(),
-      connector,
-      sessionStore,
-      config,
-    });
-    const enqueueSpy = vi.spyOn(bridge, 'enqueue');
-    const router = new CommandRouter({
-      sessionStore,
-      bridge,
-      config,
-      configPath: path.join(tmpDir, 'config.yaml'),
-      workspacePath: path.join(tmpDir, 'workspace.json'),
       sessionReaderRegistry: new SessionReaderRegistry(),
     });
+    const enqueueSpy = vi.spyOn(bridge, 'enqueue');
 
     sessionStore.setCwd(ctx.userId, tmpDir);
     const handler = createMessageHandler(bridge, router);
@@ -386,26 +320,14 @@ describe('Bug 2: / commands must not be blocked by the serial queue', () => {
   });
 
   it('router.handle for / commands does NOT call bridge.enqueue', async () => {
-    const sessionStore = new SessionStore();
-    const connector = createStubConnector();
     const runner = createBlockingRunner();
-    const bridge = new Bridge({
+    const { bridge, router, connector, sessionStore } = createRouterFixture({
+      tmpDir,
+      config,
       runner,
-      agentRegistry: createStubAgentRegistry(runner),
-      sessionReaderRegistry: createStubSessionReaderRegistry(),
-      connector,
-      sessionStore,
-      config,
-    });
-    const enqueueSpy = vi.spyOn(bridge, 'enqueue');
-    const router = new CommandRouter({
-      sessionStore,
-      bridge,
-      config,
-      configPath: path.join(tmpDir, 'config.yaml'),
-      workspacePath: path.join(tmpDir, 'workspace.json'),
       sessionReaderRegistry: new SessionReaderRegistry(),
     });
+    const enqueueSpy = vi.spyOn(bridge, 'enqueue');
 
     sessionStore.setCwd(ctx.userId, tmpDir);
 

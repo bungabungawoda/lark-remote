@@ -2,19 +2,15 @@
  * UTF-8 byte-safe text truncation primitives.
  *
  * The core `fitUtf8` / `truncateUtf8` / `DEFAULT_TRUNCATE_SUFFIX` primitives
- * live in `src/common/truncate.ts` (shared with session readers to avoid a
- * card→session layer inversion); this module re-exports them and adds the
- * card-specific markdown-table helpers.
+ * live in `src/common/truncate.ts`; this module only adds the card-specific
+ * markdown-table helpers. Card callers import the truncation primitives
+ * directly from common (no re-export shim).
  *
  * Why byte-safe: Feishu card size limits are measured in UTF-8 bytes, and a
  * naive `str.slice(0, n)` can split a multi-byte CJK/emoji codepoint, yielding
  * invalid UTF-8. `fitUtf8` iterates by Unicode codepoint (via `Array.from` /
  * `for...of`) so it never breaks a surrogate pair or a multi-byte sequence.
  */
-
-import { DEFAULT_TRUNCATE_SUFFIX, truncateUtf8 } from '../common/truncate.js';
-
-export { DEFAULT_TRUNCATE_SUFFIX, truncateUtf8 };
 
 /** Feishu 11310 limit: max markdown tables per card. */
 export const FEISHU_MAX_TABLES = 5;

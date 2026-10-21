@@ -10,7 +10,43 @@
 
 import { truncate } from './truncate.js';
 
-const HEADER_SUMMARY_MAX = 80;
+/** 工具标题/摘要共用的单行宽度上限。 */
+export const HEADER_SUMMARY_MAX = 80;
+
+/**
+ * 工具别名 → 渲染类别。run 卡面板（`card/tool-render.ts`）与摘要
+ * （本文件）共用这一张表，新增别名只改这里，避免两处 switch 漂移。
+ */
+export type ToolKind =
+  'shell' | 'file' | 'grep' | 'glob' | 'ls' | 'webfetch' | 'websearch' | 'websearch_queries';
+
+const TOOL_KIND_BY_NAME: Record<string, ToolKind> = {
+  Bash: 'shell',
+  bash: 'shell',
+  pwsh: 'shell',
+  Read: 'file',
+  Edit: 'file',
+  Write: 'file',
+  NotebookEdit: 'file',
+  read: 'file',
+  edit: 'file',
+  write: 'file',
+  read_image: 'file',
+  Grep: 'grep',
+  grep: 'grep',
+  Glob: 'glob',
+  glob: 'glob',
+  find: 'glob',
+  ls: 'ls',
+  WebFetch: 'webfetch',
+  web_fetch: 'webfetch',
+  WebSearch: 'websearch',
+  web_search: 'websearch_queries',
+};
+
+export function toolKindOf(name: string): ToolKind | undefined {
+  return TOOL_KIND_BY_NAME[name];
+}
 
 export function asRecord(input: unknown): Record<string, unknown> | null {
   if (!input) return null;
@@ -60,38 +96,29 @@ export function summarizeToolInput(name: string, input: unknown): string {
     }
     return '';
   };
-  switch (name) {
-    case 'Bash':
-    case 'bash':
-    case 'pwsh':
+  switch (toolKindOf(name)) {
+    case 'shell':
       return pick('command');
-    case 'Read':
-    case 'Edit':
-    case 'Write':
-    case 'NotebookEdit':
-    case 'read':
-    case 'edit':
-    case 'write':
-    case 'read_image':
+    case 'file':
       return pick('file_path') || pick('path');
-    case 'Grep':
     case 'grep': {
       const pat = pick('pattern', 40);
       const p = pick('path', 30);
       return p ? `${pat} in ${p}` : pat;
     }
-    case 'Glob':
     case 'glob':
-    case 'find':
       return pick('pattern');
     case 'ls':
       return pick('path');
-    case 'WebFetch':
-    case 'web_fetch':
+    case 'webfetch':
       return pick('url');
-    case 'WebSearch':
-    case 'web_search':
+    case 'websearch':
+    case 'websearch_queries':
       return pickFirst('queries', 60) || pick('query', 60);
+    default:
+      break;
+  }
+  switch (name) {
     case 'Agent':
     case 'Task':
     case 'subagent':

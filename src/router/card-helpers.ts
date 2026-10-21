@@ -7,7 +7,7 @@
  * long session histories into collapsible panels without duplicating logic.
  */
 
-import { agentDisplayName } from '../card/card-shared.js';
+import { agentDisplayName, cardButton } from '../card/card-shared.js';
 import { collapsibleMarkdownPanel, markdownDiv } from '../card/collapsible.js';
 import { formatMonthDayClock } from '../card/time.js';
 import { displayWidth, truncateMiddleToDisplayWidth } from '../common/text-width.js';
@@ -167,18 +167,11 @@ export function paginationBar(opts: {
       width: 'auto',
       vertical_align: 'center',
       elements: [
-        {
-          tag: 'button',
-          text: { tag: 'plain_text', content: prevText },
-          type: 'default',
-          size: 'small',
-          behaviors: [
-            {
-              type: 'callback',
-              value: { cmd: opts.cmd, offset: opts.offset - opts.pageSize, ...opts.extra },
-            },
-          ],
-        },
+        cardButton(
+          prevText,
+          { cmd: opts.cmd, offset: opts.offset - opts.pageSize, ...opts.extra },
+          { type: 'default', size: 'small' },
+        ),
       ],
     });
   }
@@ -210,18 +203,11 @@ export function paginationBar(opts: {
       width: 'auto',
       vertical_align: 'center',
       elements: [
-        {
-          tag: 'button',
-          text: { tag: 'plain_text', content: nextText },
-          type: 'default',
-          size: 'small',
-          behaviors: [
-            {
-              type: 'callback',
-              value: { cmd: opts.cmd, offset: opts.offset + opts.pageSize, ...opts.extra },
-            },
-          ],
-        },
+        cardButton(
+          nextText,
+          { cmd: opts.cmd, offset: opts.offset + opts.pageSize, ...opts.extra },
+          { type: 'default', size: 'small' },
+        ),
       ],
     });
   }
@@ -296,18 +282,11 @@ export function searchBar(opts: {
       width: 'auto',
       vertical_align: 'center',
       elements: [
-        {
-          tag: 'button',
-          text: { tag: 'plain_text', content: '清除筛选' },
-          type: 'default',
-          size: 'small',
-          behaviors: [
-            {
-              type: 'callback',
-              value: { cmd: opts.cmd, clearQuery: true, ...opts.extra },
-            },
-          ],
-        },
+        cardButton(
+          '清除筛选',
+          { cmd: opts.cmd, clearQuery: true, ...opts.extra },
+          { type: 'default', size: 'small' },
+        ),
       ],
     });
   }

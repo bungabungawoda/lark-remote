@@ -2,20 +2,13 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { CommandRouter } from '../../src/router/index.js';
-import { Bridge } from '../../src/bridge/index.js';
-import { SessionStore } from '../../src/session/index.js';
 import { AppConfigSchema } from '../../src/config/index.js';
-import type { AppConfig } from '../../src/config/index.js';
 import type { Runner } from '../../src/runner/index.js';
+import { Bridge } from '../../src/bridge/index.js';
 
-import {
-  createStubAgentRegistry,
-  createStubRunner,
-  createStubSessionReaderRegistry,
-  createStubConnector,
-} from '../lib/bridge-stubs.js';
+import { createStubRunner } from '../lib/bridge-stubs.js';
 import { rmRf } from '../lib/tmp-cleanup.js';
+import { createRouterFixture } from '../lib/router-fixture.js';
 // Stub session reader for tests
 
 // Test utilities
@@ -30,42 +23,20 @@ afterEach(() => {
   rmRf(tmpDir);
 });
 
-function createRouter(overrides?: {
-  runner?: Runner;
-  exitHandler?: () => void;
-  projectsDir?: string;
-  bridge?: Bridge;
-  idleTimeoutMs?: number;
-}) {
-  const sessionStore = new SessionStore();
-  const connector = createStubConnector();
-  const runner: Runner = overrides?.runner ?? createStubRunner();
-  const config: AppConfig = AppConfigSchema.parse({
-    feishu: { appId: 'test', appSecret: 'test' },
-    claude: {
-      model: 'claude-opus-4-8',
-      stopGraceMs: 5000,
-    },
-    cwd: { default: '' },
+function createRouter(overrides?: { runner?: Runner; bridge?: Bridge }) {
+  return createRouterFixture({
+    tmpDir,
+    runner: overrides?.runner ?? createStubRunner(),
+    bridge: overrides?.bridge,
+    config: AppConfigSchema.parse({
+      feishu: { appId: 'test', appSecret: 'test' },
+      claude: {
+        model: 'claude-opus-4-8',
+        stopGraceMs: 5000,
+      },
+      cwd: { default: '' },
+    }),
   });
-  const router = new CommandRouter({
-    sessionStore,
-    bridge:
-      overrides?.bridge ??
-      new Bridge({
-        runner,
-        agentRegistry: createStubAgentRegistry(runner),
-        sessionReaderRegistry: createStubSessionReaderRegistry(),
-        connector,
-        sessionStore,
-        config,
-      }),
-    config,
-    configPath: path.join(tmpDir, 'config.yaml'),
-    workspacePath: path.join(tmpDir, 'workspace.json'),
-    sessionReaderRegistry: createStubSessionReaderRegistry(),
-  });
-  return { router, sessionStore, connector };
 }
 
 const ctx = { userId: 'user1', chatId: 'chat1', messageId: 'msg1' };

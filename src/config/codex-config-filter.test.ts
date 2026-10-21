@@ -17,16 +17,10 @@ import path from 'node:path';
 // 直接在模块顶层定义 mock（兼容 bun 的 vitest）。
 // 生产代码经 platform/spawn（cross-spawn）调用 codex，mock 该 seam；
 // mock 直接返回字符串时自动包装成 spawnProcessSync 的成功结果形态。
-const mockSpawnSync = vi.fn();
+const { mockSpawnSync } = vi.hoisted(() => ({ mockSpawnSync: vi.fn() }));
 
-vi.mock('../platform/spawn.js', () => ({
-  spawnProcessSync: (...args: any[]) => {
-    const v = mockSpawnSync(...args);
-    return typeof v === 'string' ? { status: 0, stdout: v, stderr: '' } : v;
-  },
-  spawnProcess: () => {
-    throw new Error('filter test must not spawn async');
-  },
+vi.mock('../platform/spawn.js', async () => ({
+  ...(await import('../../tests/lib/spawn-mock.js')).spawnModuleMock(mockSpawnSync),
 }));
 
 describe('codex-config model filtering', () => {

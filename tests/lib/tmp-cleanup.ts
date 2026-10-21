@@ -65,8 +65,9 @@ export const OUR_TEMP_PREFIXES = [
   'codex-card-test-',
   'codex-effort-',
   'codex-model-switch-test-',
-  'codex-custom-model-',
-  'codex-custom-home-',
+  'codex-catalog-config-',
+  'codex-catalog-card-',
+  'codex-catalog-card-home-',
   'codex-custom-catalog-home-',
   'pi-stale-db-anchor-',
   'bridge-clear-test-',
@@ -93,7 +94,6 @@ export const OUR_TEMP_PREFIXES = [
   // 原先写死 '/tmp/...' 在 win32 上落到仓库外的 D:\tmp\。守卫见
   // tests/misc/temp-dir-hygiene.test.ts 的「固定 POSIX 绝对路径」两条。
   'lark-spawning-runner-anchor-',
-  'lark-claude-runner-base-',
   'lark-cmd-status-cwd-',
   'lark-restart-cmd-',
   'lark-base-await-spawn-',
