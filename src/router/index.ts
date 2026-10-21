@@ -4286,9 +4286,10 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
     const prefetchCount = Math.min(RESUME_CONTENT_PREFETCH, allSessions.length);
     for (const s of allSessions.slice(0, prefetchCount)) {
       // 行上已经带了服务端投影预览（DSH：title + turnOutline 末条）→ 跳过预取。
-      // DSH 的 readSessionContent 是 3 个 curl 加一次 maxMessages=10000 的
-      // session/page；一页 5 个会话按行预取等于 15 次同步 HTTP，而这些信息
-      // session/list 已经给全了。
+      // DSH 的 readSessionContent 每行走 3 次 unary：`session/list`（cwd 守卫）、
+      // `session/projections`（取 throughSeq）、再 `session/page`（maxMessages=10000，
+      // 拉整段历史）。按前 5 行预取等于 15 次同步 HTTP，而这些信息一次
+      // `session/list` 就已经给全了。
       if (s.title || s.lastUserMessage || s.lastAssistantMessage) continue;
       // 优先走轻量摘要（只取标题/用量，不构造 events）——codex 实现了
       // readSessionSummary，避免对前 N 条各做一次全量 JSONL 解析来构造
