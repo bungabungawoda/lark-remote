@@ -69,7 +69,7 @@ Core modules:
 Key fields:
 
 - `runId`
-- `terminal`: running | finalizing | done | error | interrupted | idle_timeout
+- `terminal`: running | finalizing | done | error | interrupted | idle_timeout | goal_continuing
 - `footer`: thinking | tool_running | streaming | null
 - `reasoning`
 - Ordered `blocks`: text or tool
@@ -120,8 +120,23 @@ Terminal state cards:
 | interrupted | ⏹ Claude · Interrupted | Terminated by user |
 | idle_timeout | ⏱ Claude · Timed out | Idle minutes |
 | finalizing | ⏳ Claude · Finalizing | Non-terminal; **retains** ⏹ Stop button |
+| goal_continuing | ⏳ Claude · Turn ended (goal continues) | The turn ended but the session's goal is still active: the task is not finished, the host starts the next round on its own; Compact is not rendered |
 
 Terminal states do not render footer and stop button (except `finalizing`, see table above).
+
+### 5.1 Goal view (DSH)
+
+A DSH session can carry a long-running goal (the `goal` projection: objective / phase /
+roundsStarted / maxGoalRounds). A goal is the **cross-turn** auto-continuation unit: within
+milliseconds after `turn/end` the `goal-round-driver` may already have started the next round.
+Therefore:
+
+- A running card renders `🎯 **Goal in progress** · round r/N` plus the goal summary under the status line (a long goal goes into a collapsible panel);
+- if the goal is still `active` when the run finalizes, the terminal state is `goal_continuing` (header "Turn ended (goal continues)") and the summary's first line reads "turn ended · goal still continuing" — "Done" never appears;
+- no Compact button while the goal is `active`: DSH manual compaction requires an idle agent, so the click would always be rejected;
+- `complete` / `paused` / `blocked` all mean "nothing continues automatically", so the run finalizes as a normal terminal state (blocked shows the blocking reason).
+
+The data comes only from the host (the `goal` value in `session/projections`, `session/control` pushes and `goal/change` events). The bridge never infers "the task is finished" on its own.
 
 ## 6. Long Content Budget
 

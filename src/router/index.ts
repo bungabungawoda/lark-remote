@@ -1039,9 +1039,8 @@ export class CommandRouter {
 
     const removed = this.bridge.removeFromQueue(cwd, messageId);
     if (removed) {
-      // Update the queue card in-place to "cancelled" state
-      await this.bridge.updateQueueCardToCancelled(cwd, messageId);
-      // Send a brief confirmation (user can see the card has been updated)
+      // 队列卡的「已撤销」更新由 removeFromQueue 统一触发（单一收口）；
+      // 这里只负责给点击者一个即时反馈。
       await this.bridge.sendResult({ text: '✅ 已从队列中撤销' }, ctx);
     } else {
       await this.bridge.sendResult({ text: '⚠️ 该消息不在队列中（可能已开始执行）' }, ctx);
@@ -1136,7 +1135,6 @@ export class CommandRouter {
     const tasks = this.bridge.getQueuedTasks(cwd);
     const targetIdx = tasks.findIndex((t) => t.messageId === messageId);
     let removedCount = 0;
-    const removedIds: string[] = [];
     // Phase 1: remove synchronously. The queue chain advances on any await
     // (card PATCH round trips included), so every task before the target must
     // be removed before yielding to the event loop — otherwise a task the user
@@ -1144,21 +1142,16 @@ export class CommandRouter {
     // in flight.
     for (let i = 0; i < targetIdx; i++) {
       const task = tasks[i];
+      // 撤销卡片由 removeFromQueue 统一触发（fire-and-forget），保持本循环
+      // 同步推进的既有不变式。
       if (this.bridge.removeFromQueue(cwd, task.messageId)) {
         removedCount++;
-        removedIds.push(task.messageId);
       }
     }
     if (targetIdx < 0) {
       getLogger().debug(
         `[router] queue.immediate: target no longer queued (began/cancelled), not clearing tasks behind it`,
       );
-    }
-    // Phase 2: update cancelled cards after all removals. All tasks before the
-    // target are already gone, so any chain advance can only reach the target
-    // itself — the card updates may safely run in the background.
-    for (const removedId of removedIds) {
-      void this.bridge.updateQueueCardToCancelled(cwd, removedId);
     }
 
     // 4. DO NOT remove the target task - keep it in queue to execute immediately
@@ -3020,6 +3013,10 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
           '请在 DSH Web UI 检查；需要终止时再发一次 /stop。',
       };
     }
+    // 多个 workspace 并行时 /stop 会停掉全部；把这件事说出来，避免用户以为
+    // 只停了当前那个（旧实现只停一条且无提示）。
+    const count = interrupt.stoppedCount ?? 1;
+    if (count > 1) return { text: `✅ 已停止 ${count} 个运行中的任务` };
     return null;
   }
 
@@ -3194,6 +3191,7 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
       activeRun.terminal !== 'error' &&
       activeRun.terminal !== 'interrupted' &&
       activeRun.terminal !== 'idle_timeout' &&
+      activeRun.terminal !== 'goal_continuing' &&
       activeRun.sessionId === sessionId;
     const activeUsage = activeRunUsage(activeRun);
     return {

@@ -47,6 +47,8 @@ export type {
   ApprovalView,
   ApprovalRequestedEvent,
   ApprovalResolvedEvent,
+  GoalView,
+  GoalStateEvent,
 } from './types.js';
 
 // =============================================================================

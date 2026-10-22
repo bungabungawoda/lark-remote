@@ -1004,3 +1004,59 @@ describe('RunState', () => {
     expect(state.plan?.startsWith('…（前 ')).toBe(true);
   });
 });
+
+describe('RunState · goal_state', () => {
+  const goal = {
+    id: 'goal-1',
+    objective: '完成 notes-app MVP',
+    phase: 'active' as const,
+    roundsStarted: 2,
+    maxGoalRounds: 40,
+  };
+
+  it('goal_state 覆盖写 goal 与 known', () => {
+    let state = createInitialRunState('run-goal-state');
+    state = reduceRunState(state, { type: 'goal_state', goal, known: true } as never);
+    expect(state.goal).toMatchObject({ id: 'goal-1', roundsStarted: 2 });
+    expect(state.goalKnown).toBe(true);
+  });
+
+  it('clear（goal=null）把目标清掉，不保留旧目标', () => {
+    let state = createInitialRunState('run-goal-clear');
+    state = reduceRunState(state, { type: 'goal_state', goal, known: true } as never);
+    state = reduceRunState(state, { type: 'goal_state', goal: null, known: true } as never);
+    expect(state.goal).toBeUndefined();
+  });
+
+  it('goal_continuing 终态后不再接受事件（终态幂等）', () => {
+    let state = reduceRunState(createInitialRunState('run-goal-term'), {
+      type: 'goal_state',
+      goal,
+      known: true,
+    } as never);
+    state = finishRun(state, 'goal_continuing', { resultSubtype: 'success' });
+    const after = reduceRunState(state, { type: 'goal_state', goal: null, known: true } as never);
+    expect(after).toBe(state);
+  });
+
+  it('finalizing → goal_continuing 保留 goal（收尾复核写入的状态不被清掉）', () => {
+    let state = createInitialRunState('run-goal-fin');
+    state = reduceRunState(state, {
+      type: 'system',
+      subtype: 'init',
+      session_id: 'session-1',
+      cwd: '/tmp',
+      model: 'DSH',
+    } as never);
+    state = reduceRunState(state, { type: 'goal_state', goal, known: true } as never);
+    state = reduceRunState(state, {
+      type: 'result',
+      subtype: 'success',
+      session_id: 'session-1',
+    } as never);
+    expect(state.terminal).toBe('finalizing');
+    const done = finishRun(state, 'goal_continuing', { resultSubtype: 'success' });
+    expect(done.terminal).toBe('goal_continuing');
+    expect(done.goal?.phase).toBe('active');
+  });
+});

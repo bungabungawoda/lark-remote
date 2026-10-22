@@ -669,18 +669,18 @@ function setupMessageHandlers(
 
     if (isStopCommand(content)) {
       void (async () => {
-        const stopped = await bridge.interruptCurrentRun({
+        const interrupt = await bridge.interruptCurrentRunDetailed({
           userId: msg.userId,
           chatId: msg.chatId,
         });
-        if (!stopped) {
+        const ctx = { userId: msg.userId, chatId: msg.chatId, messageId: msg.messageId };
+        if (!interrupt.stopped) {
+          await bridge.sendResult({ text: '当前没有运行中的进程' }, ctx);
+        } else if ((interrupt.stoppedCount ?? 1) > 1) {
+          // 并行 workspace 时 /stop 停全部，必须让用户看到数量。
           await bridge.sendResult(
-            { text: '当前没有运行中的进程' },
-            {
-              userId: msg.userId,
-              chatId: msg.chatId,
-              messageId: msg.messageId,
-            },
+            { text: `✅ 已停止 ${interrupt.stoppedCount} 个运行中的任务` },
+            ctx,
           );
         }
       })().catch((err: unknown) => logger.error('[control] /stop failed:', err));

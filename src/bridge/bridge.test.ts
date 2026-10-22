@@ -837,6 +837,83 @@ describe('Bridge.forwardToClaude', () => {
     expect(json).not.toContain('"cmd":"compact"');
   });
 
+  it('dsh 一轮结束但 goal 仍 active：卡片收尾为「本轮结束（目标继续）」，不给 compact', async () => {
+    // turn/end 后宿主立刻起了 goal round 2，卡片却写「已完成」，用户点
+    // Compact 被 DSH 拒。终态与按钮都必须以 goal 为准。
+    const runner = createStubRunner({
+      mode: 'streaming',
+      events: [
+        { type: 'system', subtype: 'init', session_id: 's-goal', cwd: tmpDir, model: 'DSH' },
+        {
+          type: 'goal_state',
+          goal: {
+            id: 'goal-1',
+            objective: '完成 notes-app 实时链路 MVP',
+            phase: 'active',
+            roundsStarted: 2,
+            maxGoalRounds: 40,
+          },
+          known: true,
+        },
+        { type: 'result', subtype: 'success', session_id: 's-goal' },
+      ],
+    });
+    (runner as unknown as { runCompact: unknown }).runCompact = async function* () {};
+    const config = AppConfigSchema.parse({
+      feishu: { appId: 'test', appSecret: 'test' },
+      claude: { model: 'opus', stopGraceMs: 5000 },
+      cwd: { default: '' },
+      defaultAgent: 'dsh',
+    });
+    const { bridge, sessionStore, connector } = makeBridge({ runner, config });
+    sessionStore.setCwd(ctx.userId, tmpDir);
+
+    await bridge.forwardToClaude('继续', ctx);
+
+    const json = JSON.stringify(connector._cards.at(-1));
+    expect(json).toContain('本轮结束（目标继续）');
+    expect(json).toContain('第 2/40 轮');
+    expect(json).toContain('完成 notes-app 实时链路 MVP');
+    expect(json).not.toContain('已完成');
+    expect(json).not.toContain('"cmd":"compact"');
+  });
+
+  it('dsh goal 已 compete 时仍按普通 done 收尾，compact 保留', async () => {
+    const runner = createStubRunner({
+      mode: 'streaming',
+      events: [
+        { type: 'system', subtype: 'init', session_id: 's-goal2', cwd: tmpDir, model: 'DSH' },
+        {
+          type: 'goal_state',
+          goal: {
+            id: 'goal-2',
+            objective: '完成 notes-app 实时链路 MVP',
+            phase: 'complete',
+            roundsStarted: 3,
+            maxGoalRounds: 40,
+          },
+          known: true,
+        },
+        { type: 'result', subtype: 'success', session_id: 's-goal2' },
+      ],
+    });
+    (runner as unknown as { runCompact: unknown }).runCompact = async function* () {};
+    const config = AppConfigSchema.parse({
+      feishu: { appId: 'test', appSecret: 'test' },
+      claude: { model: 'opus', stopGraceMs: 5000 },
+      cwd: { default: '' },
+      defaultAgent: 'dsh',
+    });
+    const { bridge, sessionStore, connector } = makeBridge({ runner, config });
+    sessionStore.setCwd(ctx.userId, tmpDir);
+
+    await bridge.forwardToClaude('完成了吗', ctx);
+
+    const json = JSON.stringify(connector._cards.at(-1));
+    expect(json).toContain('目标已完成');
+    expect(json).toContain('"cmd":"compact"');
+  });
+
   it('dsh compact button on a finished run reaches runCompact with that run sessionId', async () => {
     // 验证什么：终态卡按钮 → compactableRuns（要求 lifetime='workspace'）→
     // runner.runCompact。缺 lifetime 时按钮渲染出来但点击只回「该任务已结束」，
@@ -1739,20 +1816,25 @@ describe('Bridge agentRegistry / sessionReaderRegistry', () => {
     expect(created[1].disposed).toBe(false);
   });
 
-  it('interruptCurrentRun defers workspace-lifetime runner eviction to the next finalizeRun (2026-10-11 orphaned-connection regression)', async () => {
-    // 事故（2026-10-11 线上）：queue.immediate 的 interrupt await 期间
+  it('interruptCurrentRun defers workspace-lifetime runner eviction to the next run start (orphaned-connection regression)', async () => {
+    // 事故：queue.immediate 的 interrupt await 期间
     // queue 链推进下一条消息，其 getRunner 在 evict 之前拿走同一
     // runner 实例；随后 interrupt 内的立即 evict+dispose 让那个 run 的长驻
     // 连接脱管——codex 进程残留至 idle TTL，期间持有 thread 写锁，下一条消息
     // resume 同 thread 报 "thread already has an active writer"。
     //
     // 守卫：interrupt 对 workspace-lifetime runner 只标 stale（不立即
-    // evict+dispose）；stale 标记由下一次 finalizeRun 消化（evict+dispose+
-    // markOrphaned），下一 run 拿到新实例。
+    // evict+dispose）。stale 由「下一次即将开跑」的 getRunner 在槽位空闲时
+    // 消费（evict+dispose+markOrphaned）并新建实例；活跃 run 期间不动，避免
+    // 把正在跑的那一轮手里的实例换掉。
+    //
+    // 为什么不是「下一次 finalizeRun 消费」：`/stop` 会先摘槽位，旧 run 的
+    // finalize 因此跳过清理块，stale 会拖到再下一轮——`/config` 改配置 + `/stop`
+    // 组合下旧配置多跑一轮。
     //
     // 变异检查：
     //   - interrupt 内改回无条件立即 evictRunnerSlot → 「interrupt 后未 dispose」断言红；
-    //   - 去掉 stale 标记 → 「run2 结束后旧实例已 dispose」断言红。
+    //   - 去掉 getRunner 的 replaceStale → 「run2 前旧实例已 dispose」断言红。
     const { AgentRegistry } = await import('../runner/registry.js');
     interface Entry {
       disposed: boolean;
@@ -1811,20 +1893,21 @@ describe('Bridge agentRegistry / sessionReaderRegistry', () => {
     expect(created[0].disposed).toBe(false);
     expect(created[0].orphaned).toBe(false);
 
-    // run1 收尾：finalizeRun 的 evict 判断因 activeRuns 已被 interruptCurrentRun
-    // 删除而跳过；stale 标记留给下一次 finalizeRun 消化。
+    // run1 收尾：finalizeRun 因 activeRuns 已被 interruptCurrentRun 删除而跳过
+    // 清理块；stale 标记留给下一次「即将开跑」的 getRunner 消费。
     releaseRun1!();
     await run1;
     expect(created[0].disposed).toBe(false);
 
-    // 下一条消息（等价 queue 推进）：getRunner 仍命中旧实例（stale 但在缓存），
-    // run 结束时 finalizeRun 消化 stale → evictRunnerSlot（dispose + markOrphaned）。
+    // 下一条消息：getRunner({replaceStale}) 在槽位空闲时先 evict 旧实例
+    // （dispose + markOrphaned）再新建，run2 用的是新实例——配置立即生效。
     await bridge.forwardToClaude('again', ctx);
     expect(created[0].disposed).toBe(true);
     expect(created[0].orphaned).toBe(true);
-    expect(created).toHaveLength(1); // run2 复用的是旧实例
+    expect(created).toHaveLength(2);
+    expect(created[1].disposed).toBe(false);
 
-    // 再下一条消息：旧实例已被 evict，getRunner 新建
+    // 再下一条消息：没有新 stale，复用 run2 的实例
     await bridge.forwardToClaude('third', ctx);
     expect(created).toHaveLength(2);
     expect(created[1].disposed).toBe(false);
@@ -3723,6 +3806,74 @@ describe('Bridge handleResumeCompact（resume 卡 Compact 按钮）', () => {
     expect(sentJsons.some((j) => j.includes('该任务已结束或不属于当前会话'))).toBe(false);
   });
 
+  it('被 /stop 中断的 run：终态卡 Compact 仍能反查到该 run 与会话', async () => {
+    // 验证什么：/stop（interruptCurrentRun）先在 interruptCurrentRunDetailed 里
+    // 删掉 activeRuns[cwd] 并把卡片置 interrupted，等 run 收尾走到 finalizeRun
+    // 时「槽位还归我」已为 false。记账若跟着那个所有权守卫走，记录永远不落，
+    // 中断卡片的 Compact 按钮必然回「⚠️ 该任务已结束或不属于当前会话」
+    // （线上缺陷：用户 /stop 后点 Compact 只得到这句话，压缩静默失效）。
+    // 缺失后果：任何一次中断都会让该 run 的 Compact 按钮变成死按钮，只能改用
+    // /resume 卡。
+    // 变异检查：把 recordCompactableRunForTerminal 挪回 finalizeRun 的
+    // `if (this.activeRuns.get(cwd) === activeRun)` 块内 → 本用例红。
+    const cwd = fs.realpathSync(tmpDir);
+    const runCompactSpy = vi.fn(compactTurnEvents);
+    let release: () => void = () => {};
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const runSpy = vi.fn(async function* (): AsyncGenerator<AgentEvent> {
+      yield {
+        type: 'system',
+        subtype: 'init',
+        session_id: 'sess-interrupted',
+        cwd,
+        model: 'gpt',
+      } as AgentEvent;
+      await gate;
+      yield { type: 'result', subtype: 'success', session_id: 'sess-interrupted' } as AgentEvent;
+    });
+    const runner: CompactRunner = {
+      ...createStubRunner(),
+      run: runSpy,
+      runCompact: runCompactSpy,
+      lifetime: 'workspace',
+      // /stop 释放挂起的 run（等价真实 runner 的 stop() 让 for-await 结束）。
+      stop: async () => {
+        release();
+      },
+    };
+    const { bridge, sessionStore, connector } = makeCompactBridge({
+      runner,
+      codexRead: tailRead({ compactCount: 1, contextLength: 100 }),
+    });
+    sessionStore.setCwd('user1', cwd);
+
+    const initCallsBefore = mockLogger.info.mock.calls.length;
+    const runPromise = bridge.forwardToClaude('hello', ctx, { binding: { agent: 'codex' } });
+    await vi.waitFor(() => {
+      expect(bridge.isBusy).toBe(true);
+    });
+    // 等本轮 init 被消费：本轮的 sessionId 是记账的取参来源（只数本用例新增的日志）。
+    await vi.waitFor(() => {
+      const calls = mockLogger.info.mock.calls.slice(initCallsBefore).map((c) => String(c[0]));
+      expect(calls.some((line) => line.includes('system.init received'))).toBe(true);
+    });
+    await bridge.interruptCurrentRun({ userId: ctx.userId, chatId: ctx.chatId });
+    await runPromise;
+    expect(bridge.isBusy).toBe(false);
+
+    const cardJson = connector._cards.map((c) => JSON.stringify(c)).join('\n');
+    const match = cardJson.match(/"cmd":"compact","runId":"([^"]+)"/);
+    expect(match).not.toBeNull();
+
+    await bridge.handleCompactAction({ runId: match![1] }, ctx);
+
+    expect(runCompactSpy).toHaveBeenCalledWith('', { cwd, sessionId: 'sess-interrupted' });
+    const sentJsons = connector._sent.map((s) => JSON.stringify(s.input));
+    expect(sentJsons.some((j) => j.includes('该任务已结束或不属于当前会话'))).toBe(false);
+  });
+
   it('test_anchor_compact_resolves_run_cwd_not_current_cwd', async () => {
     // 验证什么：runId 反查必须跨 cwd 命中，并用**那次 run 自己的 cwd** 压缩。
     // run 结束后用户 /cd 到别的工作区（或排队期间被 /cd 改写）再点旧卡片时，
@@ -4229,4 +4380,293 @@ describe('Bridge compact run 注册 / 看门狗 / 终态 reaction', () => {
     await runPromise;
     expect(bridge.isBusy).toBe(false);
   }, 10000);
+});
+
+// ---------------------------------------------------------------------------
+// 中断 / 记账 / 身份 / 队列卡片收口的回归
+// ---------------------------------------------------------------------------
+describe('Bridge 中断与队列收口回归', () => {
+  /** 最小 Compact 结果事件（与 compact describe 内同名 helper 独立，避免作用域耦合）。 */
+  async function* compactEvents(): AsyncGenerator<AgentEvent> {
+    yield { type: 'result', subtype: 'success', session_id: 'guard-sess' } as AgentEvent;
+  }
+
+  it('init 之前被 /stop 且从未有会话：卡片不渲染注定失败的 Compact 按钮', async () => {
+    // 验证什么：可压缩记录的条件是「本轮 sessionId 或 store 里的会话」；两者
+    // 都没有时，Compact 按钮点了必然反查不到记录。渲染侧与记账侧共用同一判据
+    // （sessionFallbackAvailable），不留死按钮。
+    let release: () => void = () => {};
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    const runCompactSpy = vi.fn(compactEvents);
+    const runner = {
+      ...createStubRunner(),
+      lifetime: 'workspace' as const,
+      stop: async () => {
+        release();
+      },
+      run: async function* () {
+        await gate;
+      },
+      runCompact: runCompactSpy,
+    } as unknown as Runner;
+    const { bridge, sessionStore, connector } = makeCompactBridge({
+      runner,
+      read: tailRead(undefined),
+    });
+    sessionStore.setCwd('user1', tmpDir);
+
+    const runP = bridge.forwardToClaude('hello', ctx, { binding: { agent: 'codex' } });
+    await vi.waitFor(() => {
+      expect(bridge.isBusy).toBe(true);
+    });
+    await bridge.interruptCurrentRun({ userId: ctx.userId, chatId: ctx.chatId });
+    await runP;
+
+    const all = connector._cards.map((c) => JSON.stringify(c)).join('\n');
+    expect(all).not.toContain('"cmd":"compact"');
+    // 反向确认：能力本身是有的（按钮缺失只可能来自会话判据）。
+    expect(bridge.hasRunCompact(tmpDir, 'codex')).toBe(true);
+    expect(runCompactSpy).not.toHaveBeenCalled();
+  });
+
+  it('配置变更 + /stop 后，下一条消息用新 runner（旧配置不拖一轮）', async () => {
+    // 验证什么：`/config` 在活跃 cwd 只标 stale；旧实现靠 finalizeRun 的守卫
+    // 消费，而 /stop 会先摘槽位让守卫失效 → 下一条消息仍用旧配置实例。
+    // 现由 re 开跑时的 getRunner({replaceStale}) 在槽位空闲时换新实例。
+    // 缺失后果：改模型/权限后 /stop，下一轮仍按旧配置跑。
+    const { AgentRegistry } = await import('../runner/registry.js');
+    interface Entry {
+      runs: number;
+      disposed: boolean;
+    }
+    const created: Entry[] = [];
+    let release: () => void = () => {};
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    const reg = new AgentRegistry();
+    reg.register('claude', () => {
+      const entry: Entry = { runs: 0, disposed: false };
+      created.push(entry);
+      return asAgentRunner({
+        lifetime: 'workspace',
+        isRunning: false,
+        run: async function* () {
+          entry.runs++;
+          yield { type: 'system', subtype: 'init', session_id: 'cfg-sess' } as AgentEvent;
+          await gate;
+          yield { type: 'result', subtype: 'success', session_id: 'cfg-sess' } as AgentEvent;
+        },
+        stop: async () => {
+          release();
+        },
+        dispose: async () => {
+          entry.disposed = true;
+        },
+        killOrphan: () => {},
+        registerExitHandlers: () => {},
+        unregisterExitHandlers: () => {},
+      });
+    });
+    const connector = createStubConnector();
+    const bridge = new Bridge({
+      runner: createStubRunner(),
+      connector,
+      sessionStore: new SessionStore(),
+      config,
+      agentRegistry: reg,
+      sessionReaderRegistry: createStubSessionReaderRegistry(),
+    });
+    sessionStore_setCwd(bridge, ctx.userId, tmpDir);
+
+    const run1 = bridge.forwardToClaude('hello', ctx);
+    await vi.waitFor(() => {
+      expect(created.length).toBe(1);
+      expect(bridge.isBusyFor(tmpDir)).toBe(true);
+    });
+    // 等价 /config 落在一个活跃 cwd：标记 stale，但不立刻 evict。
+    bridge.clearRunners();
+    await bridge.interruptCurrentRun({ userId: ctx.userId, chatId: ctx.chatId });
+    await run1;
+    expect(created[0].runs).toBe(1);
+
+    // 下一条消息必须拿新实例（旧配置不生效到这一轮）。
+    await bridge.forwardToClaude('again', ctx);
+    expect(created).toHaveLength(2);
+    expect(created[0].disposed).toBe(true);
+    expect(created[1].runs).toBe(1);
+  });
+
+  it('/stop（无 runId）停掉所有并行 workspace，并回报数量', async () => {
+    // 验证什么：activeRuns 以 cwd 为键、多个 workspace 可并行；旧实现停在
+    // 第一条命中就 return，`/stop` 只停一个却回「已停止」，另一个无声继续。
+    // 现在遍历全部并回报 stoppedCount。
+    const { AgentRegistry } = await import('../runner/registry.js');
+    const cwdA = fs.realpathSync(tmpDir);
+    const cwdB = fs.realpathSync(fs.mkdtempSync(path.join(tmpDir, 'ws-b-')));
+    const releases = new Map<string, () => void>();
+    const reg = new AgentRegistry();
+    reg.register('claude', (cwd) => {
+      let release: () => void = () => {};
+      const gate = new Promise<void>((r) => {
+        release = r;
+      });
+      releases.set(cwd, release);
+      return asAgentRunner({
+        lifetime: 'workspace',
+        isRunning: false,
+        run: async function* () {
+          await gate;
+        },
+        stop: async () => {
+          releases.get(cwd)?.();
+        },
+        dispose: async () => {},
+        killOrphan: () => {},
+        registerExitHandlers: () => {},
+        unregisterExitHandlers: () => {},
+      });
+    });
+    const bridge = new Bridge({
+      runner: createStubRunner(),
+      connector: createStubConnector(),
+      sessionStore: new SessionStore(),
+      config,
+      agentRegistry: reg,
+      sessionReaderRegistry: createStubSessionReaderRegistry(),
+    });
+
+    const runA = bridge.forwardToClaude('a', ctx, { cwdOverride: cwdA });
+    await vi.waitFor(() => {
+      expect(bridge.isBusyFor(cwdA)).toBe(true);
+    });
+    const runB = bridge.forwardToClaude('b', ctx, { cwdOverride: cwdB });
+    await vi.waitFor(() => {
+      expect(bridge.isBusyFor(cwdB)).toBe(true);
+    });
+    expect(bridge.getActiveRuns()).toHaveLength(2);
+
+    const outcome = await bridge.interruptCurrentRunDetailed({
+      userId: ctx.userId,
+      chatId: ctx.chatId,
+    });
+    expect(outcome.stopped).toBe(true);
+    expect(outcome.stoppedCount).toBe(2);
+    await Promise.all([runA, runB]);
+    expect(bridge.getActiveRuns()).toHaveLength(0);
+  });
+
+  it('停止卡带 runId 时只停目标 run（并行 workspace 不受影响）', async () => {
+    // 反向锁定：把「全停」做成无条件会误伤另一个 workspace 的并行任务。
+    const { AgentRegistry } = await import('../runner/registry.js');
+    const cwdA = fs.realpathSync(tmpDir);
+    const cwdB = fs.realpathSync(fs.mkdtempSync(path.join(tmpDir, 'ws-b-')));
+    const releases = new Map<string, () => void>();
+    const reg = new AgentRegistry();
+    reg.register('claude', (cwd) => {
+      let release: () => void = () => {};
+      const gate = new Promise<void>((r) => {
+        release = r;
+      });
+      releases.set(cwd, release);
+      return asAgentRunner({
+        lifetime: 'workspace',
+        isRunning: false,
+        run: async function* () {
+          await gate;
+        },
+        stop: async () => {
+          releases.get(cwd)?.();
+        },
+        dispose: async () => {},
+        killOrphan: () => {},
+        registerExitHandlers: () => {},
+        unregisterExitHandlers: () => {},
+      });
+    });
+    const bridge = new Bridge({
+      runner: createStubRunner(),
+      connector: createStubConnector(),
+      sessionStore: new SessionStore(),
+      config,
+      agentRegistry: reg,
+      sessionReaderRegistry: createStubSessionReaderRegistry(),
+    });
+
+    const runA = bridge.forwardToClaude('a', ctx, { cwdOverride: cwdA });
+    await vi.waitFor(() => {
+      expect(bridge.isBusyFor(cwdA)).toBe(true);
+    });
+    const runB = bridge.forwardToClaude('b', ctx, { cwdOverride: cwdB });
+    await vi.waitFor(() => {
+      expect(bridge.isBusyFor(cwdB)).toBe(true);
+    });
+
+    const target = bridge.getActiveRuns().find((r) => r.cwd === cwdA);
+    expect(target).toBeDefined();
+    const outcome = await bridge.interruptCurrentRunDetailed({
+      userId: ctx.userId,
+      chatId: ctx.chatId,
+      runId: target!.runId,
+    });
+    expect(outcome.stoppedCount).toBe(1);
+    expect(bridge.isBusyFor(cwdA)).toBe(false);
+    expect(bridge.isBusyFor(cwdB)).toBe(true);
+
+    // 清理：停掉另一个，避免挂起。
+    await bridge.interruptCurrentRun({ userId: ctx.userId, chatId: ctx.chatId });
+    await Promise.all([runA, runB]);
+  });
+
+  it('removeFromQueue 自动把排队卡更新为「已撤销」，调用方无需配对', async () => {
+    // 验证什么：QueueManager.removeFromQueue 故意不删卡片映射，旧实现要求
+    // 每个调用方自己记得调 updateQueueCardToCancelled；漏一处卡片就永久停在
+    // 「等待中」，而映射已被消费，之后再也修不回来。
+    // 现在由 Bridge.removeFromQueue 单一收口触发撤销卡更新。
+    const { bridge, connector } = makeBridge();
+    let release: () => void = () => {};
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    bridge.enqueue(
+      tmpDir,
+      async () => {
+        await gate;
+      },
+      {
+        taskMeta: {
+          userId: 'user1',
+          chatId: 'chat1',
+          messageId: 'm1',
+          messagePreview: 'running',
+        },
+      },
+    );
+    await new Promise((r) => setTimeout(r, 0));
+    bridge.enqueue(tmpDir, async () => {}, {
+      taskMeta: {
+        userId: 'user1',
+        chatId: 'chat1',
+        messageId: 'm2',
+        messagePreview: 'queued',
+      },
+    });
+    await vi.waitFor(() => {
+      expect(bridge.queueManager.queueCardMessages.has('m2')).toBe(true);
+    });
+
+    expect(bridge.removeFromQueue(tmpDir, 'm2')).toBe(true);
+    await vi.waitFor(() => {
+      const patched = connector._updates.map((u) => JSON.stringify(u.card)).join('\n');
+      expect(patched).toContain('已撤销');
+    });
+    await vi.waitFor(() => {
+      expect(bridge.queueManager.queueCardMessages.has('m2')).toBe(false);
+    });
+
+    release();
+    await new Promise((r) => setTimeout(r, 0));
+  });
 });
