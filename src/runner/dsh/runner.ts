@@ -23,12 +23,14 @@ import type {
   AgentSessionReader,
   AgentStatusInfo,
   ApprovalView,
+  GoalView,
   SpawnOptions,
   StopOutcome,
 } from '../types.js';
 import type { AgentRunner } from '../types.js';
 import { DshClient, DshError, newPromptRequestId, type WebSocketFactory } from './client.js';
 import { DshTranslator } from './translator.js';
+import { goalFromChange, goalFromProjection, goalStateEvent, sameGoal } from './goal-view.js';
 import { DshApprovalTracker, type DshApprovalAudit, type DshApprovalBinding } from './approval.js';
 import { mergeAsync } from './merge.js';
 import { getLogger } from '../../logger/index.js';
@@ -149,6 +151,12 @@ export interface DshRunnerOptions {
 
 /** Budget for one session/cancel attempt on stop. */
 const CANCEL_TIMEOUT_MS = 5_000;
+
+/**
+ * goal 探测的预算。goal 是"增强信息"：读不到就按没有（known:false）继续跑，
+ * 但绝不允许一次慢投影把整个 run 的启动/收尾拖住。
+ */
+const GOAL_PROBE_TIMEOUT_MS = 5_000;
 /** Total stop budget: withdraw + cancel + verify must not hold the lane forever. */
 const STOP_BUDGET_MS = 5_000;
 /** A prompt request that was still in flight can land after stop's abort. */
@@ -546,6 +554,18 @@ export class DshRunner implements AgentRunner {
         model: this.configuredModel ?? 'DSH',
       };
 
+      // Goal seed：卡片从第一帧就知道这个会话有没有长期目标。放在 init 之后、
+      // prompt 之前——用户发消息时若是 queued，卡片会长时间停在「运行中」，
+      // 这期间"目标是什么、第几轮"是唯一能解释"为什么还不停"的信息。
+      const seedGoal = await this.client.goalState(sessionId, {
+        signal: abort.signal,
+        timeoutMs: GOAL_PROBE_TIMEOUT_MS,
+      });
+      const lastGoal: GoalView | null | undefined = seedGoal.known ? seedGoal.goal : undefined;
+      // 只有确实存在 goal 才产事件：没有 goal 的会话保持事件序列不变（少一次
+      // 渲染，也不让"读不到"变成一张多出来的卡片事件）。
+      if (seedGoal.known && seedGoal.goal) yield goalStateEvent(seedGoal.goal, true);
+
       try {
         // Snapshot the pre-prompt high-water mark before mutating the session.
         // DSH session/page returns the whole session, so starting from seq 0
@@ -601,6 +621,7 @@ export class DshRunner implements AgentRunner {
             prePromptSeq,
             promptRequestId,
             abort,
+            { last: lastGoal },
           )) {
             yield ev;
             if (ev.type === 'result') {
@@ -680,6 +701,7 @@ export class DshRunner implements AgentRunner {
     prePromptSeq: number,
     promptRequestId: string,
     abort: AbortController,
+    goal: { last: GoalView | null | undefined },
   ): AsyncGenerator<AgentEvent> {
     const streamAbort = new AbortController();
     const signal = AbortSignal.any([abort.signal, streamAbort.signal]);
@@ -710,6 +732,16 @@ export class DshRunner implements AgentRunner {
           // 全 Host 流：只认本 session。未知 key 直接忽略（投影是能力发现式
           // 扩展的，不能因为多了个 key 就报错）。
           if (item.sessionId !== sessionId) continue;
+          // goal 是会话级长期目标，单独成事件：卡片要在 agent 创建目标的当下
+          // 就显示它（否则用户只会在一小时后看到「完成」才发现有个 40 轮任务）。
+          if (item.key === 'goal') {
+            const parsed = goalFromProjection(item.value);
+            if (parsed !== undefined && !sameGoal(parsed, goal.last)) {
+              goal.last = parsed;
+              yield goalStateEvent(parsed, true);
+            }
+            continue;
+          }
           // 只在消费字段真的变了时才产出事件：投影帧本身按 key 去重推送，
           // 这里再挡掉"值没变"的重复帧。不需要时间节流——卡片更新本来就有
           // 100ms 合批窗口，与正文 delta 共用同一条节流路径。
@@ -790,6 +822,16 @@ export class DshRunner implements AgentRunner {
         }
 
         const event: DshSessionEvent = item.event;
+        if (event.type === 'goal/change') {
+          // 权威变更（create/edit/pause/resume/complete/block/clear）：不等投影
+          // 推送，直接按事件更新——agent 刚 create 的那一刻卡片就该显示目标。
+          const parsed = goalFromChange(event.data);
+          if (parsed !== undefined && !sameGoal(parsed, goal.last)) {
+            goal.last = parsed;
+            yield goalStateEvent(parsed, true);
+          }
+          continue;
+        }
         if (event.type === 'tool/call') {
           const data = event.data as {
             callId?: string;
@@ -825,6 +867,17 @@ export class DshRunner implements AgentRunner {
             if (!abort.signal.aborted) {
               for (const jobsEvent of await this.collectBackgroundJobs(sessionId, abort.signal)) {
                 yield jobsEvent;
+              }
+              // 收尾复核：这一轮结束时 goal 是否仍 active，决定卡片能不能收尾。
+              // 必须现读宿主，不能沿用过程中的最后一次观测——goal 可能在本轮
+              // 最后一个 step 才被 complete，也可能刚被 driver 置为 blocked。
+              const finalGoal = await this.client.goalState(sessionId, {
+                signal,
+                timeoutMs: GOAL_PROBE_TIMEOUT_MS,
+              });
+              if (finalGoal.known && !sameGoal(finalGoal.goal, goal.last)) {
+                goal.last = finalGoal.goal;
+                yield goalStateEvent(finalGoal.goal, true);
               }
             }
             yield attachContextLimit(ev, live.contextLimit);

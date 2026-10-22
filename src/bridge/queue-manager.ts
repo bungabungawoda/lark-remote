@@ -789,7 +789,7 @@ export class QueueManager {
           ...this.buildQueueActionButtons(cwd, messageId, true),
         ],
       });
-      await this.updateCard(cardMessageId, card);
+      await this.updateCardWithRetry(cardMessageId, card);
       getLogger().debug(`[queue-manager] queue card updated to executing messageId=${messageId}`);
     } catch (err) {
       getLogger().warn('[queue-manager] failed to update queue card to executing:', err);
@@ -816,9 +816,9 @@ export class QueueManager {
       taskList.splice(index, 1);
     }
     this.indexRemove(cwd, messageId);
-    // Note: queueCardMessages mapping is NOT deleted here.
-    // The caller (handleQueueCancel) will call updateQueueCardToCancelled
-    // which will clean up the mapping after updating the card.
+    // queueCardMessages mapping 仍不在这里删：卡片更新由 Bridge.removeFromQueue
+    // 统一触发（单一收口），updateQueueCardToCancelled 成功/失败后都会清掉映射。
+    // 直接调 QueueManager.removeFromQueue 的测试/内部用途不会自动更新卡片。
     getLogger().info(`[queue-manager] removed from queue cwd=${cwd} messageId=${messageId}`);
     return true;
   }
@@ -850,13 +850,30 @@ export class QueueManager {
     });
 
     try {
-      await this.updateCard(cardMessageId, card);
+      await this.updateCardWithRetry(cardMessageId, card);
       getLogger().debug(`[queue-manager] queue card updated to cancelled, messageId=${messageId}`);
     } catch (err) {
       getLogger().warn('[queue-manager] failed to update queue card to cancelled:', err);
     } finally {
       this.queueCardMessages.delete(messageId);
     }
+  }
+
+  /**
+   * 卡片 PATCH 带一次重试：一次网络抖动不该让排队卡永久停在旧状态——映射
+   * 会在本次调用结束时被清理，之后没有任何自动修正机会。
+   * 第二次仍失败则向上抛，由调用方 catch 记日志（行为与改前一致）。
+   */
+  private async updateCardWithRetry(messageId: string, card: object): Promise<void> {
+    try {
+      await this.updateCard(messageId, card);
+      return;
+    } catch (err) {
+      getLogger().warn(
+        `[queue-manager] queue card update failed, retrying once messageId=${messageId}: ${(err as Error).message}`,
+      );
+    }
+    await this.updateCard(messageId, card);
   }
 
   /** Get task metadata from queue. */
