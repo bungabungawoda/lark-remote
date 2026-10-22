@@ -9,6 +9,7 @@ import type {
   NoticeEvent,
   SessionInfoEvent,
   ToolHint,
+  GoalView,
 } from '../runner/index.js';
 import { keepTail } from '../common/truncate.js';
 
@@ -18,7 +19,41 @@ const MAX_TOOL_DETAIL_CHARS = 3_000;
 const MAX_BLOCKS = 24;
 
 export type RunTerminal =
-  'running' | 'finalizing' | 'done' | 'error' | 'interrupted' | 'idle_timeout';
+  | 'running'
+  | 'finalizing'
+  | 'done'
+  | 'error'
+  | 'interrupted'
+  | 'idle_timeout'
+  /**
+   * 本轮 turn 已结束，但会话的 goal 仍 active：宿主会自动开始下一轮，任务没有
+   * 完成，卡片不得写"完成"。与 done 的差别只在语义与渲染，
+   * 卡片同样停止更新。
+   */
+  | 'goal_continuing';
+
+/**
+ * 已收尾的 run 终态集合（卡片不再更新）。
+ *
+ * 单一来源：事件消费守卫、可压缩记账白名单、Compact 按钮可见性三处共用，
+ * 禁止各自再抄一份字面量——三处漂移过一次（goal_continuing 只进白名单不进
+ * 按钮判据），新增终态时必漏一处的风险是结构性的。
+ */
+export const RUN_TERMINAL_STATES = [
+  'done',
+  'error',
+  'interrupted',
+  'idle_timeout',
+  'goal_continuing',
+] as const;
+
+export type RunFinalTerminal = (typeof RUN_TERMINAL_STATES)[number];
+
+/** 该状态是否已收尾（非 running/finalizing）。 */
+export function isRunTerminal(terminal: RunTerminal): terminal is RunFinalTerminal {
+  return (RUN_TERMINAL_STATES as readonly RunTerminal[]).includes(terminal);
+}
+
 export type RunFooter = 'thinking' | 'tool_running' | 'streaming' | null;
 /** 中断来源（interrupted 终态的原因），供卡片如实归因。 */
 export type InterruptedReason = 'approval_timeout' | 'user_stop' | 'approval_cancelled';
@@ -172,6 +207,16 @@ export interface RunState {
    * 结束了，但还有东西在跑"，并给出逐个停止的入口。
    */
   backgroundJobs?: Array<{ id: string; label: string; status?: string; progress?: string }>;
+  /**
+   * 会话级长期目标（DSH goal）。跨 turn 生命周期：goal 仍 active 时，本轮结束
+   * 只是"一轮结束"，宿主会自动续跑，卡片必须显示目标是什么、跑到第几轮。
+   */
+  goal?: GoalView;
+  /**
+   * goal 是否被成功观测过。`false` = 探测失败，渲染层不得据此断言"没有目标/
+   * 已完成"（把读不到当成没有，就退回了"任务在跑、卡片写完成"的旧缺陷）。
+   */
+  goalKnown?: boolean;
 }
 
 export interface FinishMeta {
@@ -218,17 +263,16 @@ export function reduceRunState(state: RunState, event: AgentEvent): RunState {
   // 只有终态才阻止事件处理。finalizing 是非终态，
   // 仍需累积 assistant 内容（thinking、text、tool_use、后台任务输出）。
   const terminal = state.terminal;
-  if (
-    terminal === 'done' ||
-    terminal === 'error' ||
-    terminal === 'interrupted' ||
-    terminal === 'idle_timeout'
-  ) {
+  if (isRunTerminal(terminal)) {
     return state;
   }
 
   if (event.type === 'system') return reduceSystemEvent(state, event);
   if (event.type === 'run_status') return reduceRunStatusEvent(state, event);
+  if (event.type === 'goal_state') {
+    // 覆盖写：每次观测都是宿主的整份快照（phase/轮次/目标全文），不做增量。
+    return { ...state, goal: event.goal ?? undefined, goalKnown: event.known };
+  }
   if (event.type === 'background_jobs') return reduceBackgroundJobsEvent(state, event);
   if (event.type === 'result') return reduceResultEvent(state, event);
   if (event.type === 'assistant') return reduceAssistantEvent(state, event);

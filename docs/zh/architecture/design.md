@@ -712,13 +712,13 @@ watchdog 覆盖**——watchdog 在 `for await (runner.run())` 循环里，要�
 
 **Run card 折叠策略**（`src/card/run-renderer.ts` + `src/card/tool-render.ts`）：
 
-| 内容                    | 折叠行为                                              | 理由                             |
-| ----------------------- | ----------------------------------------------------- | -------------------------------- |
-| Thinking                | 运行中 `expanded:true`，完成后 `expanded:false`       | 运行时关注进度，完成后是次要信息 |
+| 内容                    | 折叠行为                                                             | 理由                                             |
+| ----------------------- | -------------------------------------------------------------------- | ------------------------------------------------ |
+| Thinking                | 运行中 `expanded:true`，完成后 `expanded:false`                      | 运行时关注进度，完成后是次要信息                 |
 | 工具（任意状态）        | **原生折叠面板**（与 thinking 同款，点标题展开）；正文按工具数量截断 | 与既有交互一致，零往返；体积靠截断而不是"不发送" |
-| 运行中 / 失败的工具     | 默认展开                                              | 用户在等结果；错误必须立刻可见   |
-| 正文 text block         | 不折叠，直接 markdown                                 | Claude 的回复是主要信息          |
-| 终态 footer / Stop 按钮 | 不折叠                                                | 状态摘要必须可见                 |
+| 运行中 / 失败的工具     | 默认展开                                                             | 用户在等结果；错误必须立刻可见                   |
+| 正文 text block         | 不折叠，直接 markdown                                                | Claude 的回复是主要信息                          |
+| 终态 footer / Stop 按钮 | 不折叠                                                               | 状态摘要必须可见                                 |
 
 **工具 = 原生折叠面板**（2026-10-19 定型，中间试过一版"一行 + 服务端详情按钮"）：
 点标题展开，零往返、无按钮。中间那版之所以被否掉：折叠不省字节（见上文），所以
@@ -796,10 +796,21 @@ immediate（router 调 `bridge.executeBash`）；其余 → `bridge.enqueue`（c
 `isBusy`/`isBusyFor`/`getAllActiveRuns`/`getActiveRunFor` 只反映 `activeRuns`，
 bash 不出现在诊断卡 / `/ps` 视图（但 `/active` 会显示 bash runs）。
 
-**`/stop`**（`interruptCurrentRun`）：先遍历 `activeRuns`（claude，调
-`getRunner(cwd).stop` + `session.finish`），再遍历 `activeBashRuns`（bash，调
-`bashRunner.stop({ immediate: true })`）。bash 卡片是静态流式无 session.finish。
-卡片 stop 按钮带 `runId`，按 userId/chatId/runId 精确匹配。
+**`/stop`**（`interruptCurrentRun`）：遍历**所有**命中的 `activeRuns`（claude，调该 run
+自己的 runner 实例 `stop` + `session.finish`），再遍历**所有**命中的 `activeBashRuns`
+（bash，调 `bashRunner.stop({ immediate: true })`）。activeRuns 以 cwd 为键、多个
+workspace 可以并行，因此不能停在第一条命中就 return：旧实现只停一个却回「已停止」，
+另一个无声继续。返回值带 `stoppedCount`，`/stop` 在多条命中时如实
+回报数量。bash 卡片是静态流式无 session.finish。卡片 stop 按钮带 `runId`，按
+userId/chatId/runId 精确匹配（只停目标那一条）。
+
+**中断后的 workspace-lifetime runner**：`/stop` 不立即 evict+dispose：
+interrupt 的 await 窗口里 queue 链可能已推进下一条消息并拿走同一实例，立即 dispose 会
+让长驻连接脱管）。只标 `staleRunnerSlots`；下一次**即将开跑**的
+`getRunner(cwd, kind, { replaceStale: true })` 在槽位空闲（该 cwd 无 active run）时
+evict 旧实例再新建。不要在 `hasRunCompact` / `killBackgroundJob` 这类只借 runner 看一眼
+的调用上开 replaceStale，否则会平白换实例。不这么做的话，`/config` 改配置 + `/stop`
+会让旧配置多跑一轮（旧实现靠 finalizeRun 的守卫消费 stale，而 `/stop` 已先摘槽位）。
 
 **单卡流式**（`src/card/bash-card-session.ts`）：`BashCardSession` 仿 `RunCardSession`，
 通过 `connector.streamCard` 建一张卡，`update()` 推 stdout/stderr patch，`finish()`
@@ -986,7 +997,7 @@ listSessions(cwd: string, opts?: { limit?: number; offset?: number }): {
 - 预算：每页 5 条 × 约 3 elements ≈ 15 elements（上限 200），字节远低于 28KB。
 - **DSH 列表行内容**：DSH 0.2.x 的 `session/list` 自带 `projections.values.title` 与
   `turnOutline`（每轮 prompt/response），reader 把它们搬到 `AgentSession.title /
-  lastUserMessage / lastAssistantMessage`。列表卡直接渲染「标题 / 最近输入 / 最后
+lastUserMessage / lastAssistantMessage`。列表卡直接渲染「标题 / 最近输入 / 最后
   输出」，前 5 行不再各拉一次 `session/page`（一次列表原本 15 次 curl，现在 1 次）。
   字段缺失或标题是占位符时回退旧的 summary/预取口径。详情卡头部同样优先用服务端
   末轮 prompt 作「最近输入」，与 agent 标题分成两段。
@@ -1010,6 +1021,22 @@ runId 找、从不查当前 cwd，两条路径保持一致。用当前 cwd 收�
 工作区再点旧卡片、以及排队期间 `/cd`（compact 不在即时名单，`/cd` 完全可能插在点击与
 执行之间）。即使侥幸命中记录，用错 cwd 也会去错目录找 session 文件与 runner 实例。
 
+**记录写入与槽位所有权解耦**：`recordCompactableRun` 的唯一调用点
+（`recordCompactableRunForTerminal`）固定在 `finalizeRun` 的 `finally` 里、
+**`if (this.activeRuns.get(cwd) === activeRun)` 守卫之外**。外部中断（`/stop`、停止卡
+按钮、`queue.immediate`）会先在 `interruptCurrentRunDetailed` 里删掉 `activeRuns[cwd]`
+并把卡片置 `interrupted`，等 run 收尾时守卫已为 false；记账若跟着守卫走，中断后的终态卡
+按钮永远反查不到记录，点 Compact 一律回
+`⚠️ 该任务已结束或不属于当前会话`（与 session 是否还在无关）。
+守卫只回答「cwd 槽位还归不归本 run」（删槽位 / 消费 stale runner）；记账回答「本次 run
+结束了吗、用的哪个 sessionId」。**新增任何「终态副作用」（记账、快照、通知）时先问它属于
+哪个问题**，不要顺手塞进清理块。
+
+**按钮可见性 = 数据可得性**：渲染侧与记账侧用同一判据——本轮 `state.sessionId`
+存在，或开跑前 store 里已有会话（`sessionFallbackAvailable`）。两者都没有（`/stop` 落在
+`system.init` 之前、且此账号从未建立过会话）时**不渲染** Compact 按钮：这类卡没有可压缩
+的上下文，给按钮就是给一个注定回「该任务已结束」的死点击。
+
 ### 9.24 队列身份 key 每次入队铸造，不复用卡片 messageId
 
 排队条目的身份（`QueuedTask.messageId`，即 queuedTasks 定位、taskIndex 取消判据、
@@ -1029,6 +1056,11 @@ queueCardMessages 卡片更新的 key）必须与「一次入队动作」1:1。*
    「⏳ 消息排队中」。
 3. 卡片更新：`queueCardMessages` 也用同一 key，后注册的覆盖先注册的 → 「▶️ 已开始执行」
    打在最后一张卡上。
+
+**移除与撤销卡单一收口**：`Bridge.removeFromQueue()` 在移除成功后**自己**触发
+`updateQueueCardToCancelled`（fire-and-forget），router 不再手工配对。旧契约是「调用方
+记得调」，漏一处卡片就永久停在「等待中」，而映射已被消费后再也修不回来。`updateQueueCardToCancelled` / `updateQueueCardToExecuting` 的卡片 PATCH 失败会
+重试一次——一次网络抖动不该让卡片停在旧状态；两次都失败才放弃（映射清理后无自动修正）。
 
 实测症状：三次点击只压缩一次，另外两张卡永久等待。`QueueManager.enqueue` 现在对撞 key
 打 `duplicate queue key` warn 作为 tripwire（不改行为，只留证据）——出现该日志说明有人

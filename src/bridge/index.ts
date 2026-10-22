@@ -11,7 +11,7 @@ import { RunCardSession, type RunCardChannel } from '../card/run-card-session.js
 import { renderRunCard, type RunCardRenderOptions } from '../card/run-renderer.js';
 import { renderBashCard } from '../card/bash-renderer.js';
 import { BashCardSession, capBashOutput } from '../card/bash-card-session.js';
-import type { RunState, RunTerminal } from '../card/run-state.js';
+import { isRunTerminal, type RunState, type RunTerminal } from '../card/run-state.js';
 import { buildSessionHistoryCard } from '../router/card-helpers.js';
 import { agentDisplayName, resumeUseButton } from '../card/card-shared.js';
 import { enforceCardBudget } from '../card/card-budget.js';
@@ -169,6 +169,8 @@ export interface CommandResult {
 /** Detailed result of one interrupt, for callers that must not over-promise. */
 export interface InterruptOutcome {
   stopped: boolean;
+  /** 本次实际停掉的 run 数（activeRuns + bash）。多个 workspace 并行时可能 >1。 */
+  stoppedCount?: number;
   agentKind?: AgentKind;
   /** Present for DSH: what the remote stop actually achieved. */
   stop?: StopOutcome;
@@ -320,12 +322,11 @@ export class Bridge {
   private compactableRuns = new Map<string, Map<string, CompactRunRecord>>();
 
   /**
-   * 终态卡片的渲染快照（runId → state + options），供「详情」在 run 结束后
-   * 仍能二次渲染。
-   *
-   * run 结束时 activeRuns 被清空，而卡片上的「详情」按钮还活着；没有快照，
-   * 点终态卡上的「详情」只能得到一句「已失效」。只保留最近若干条：单条快照
-   * 受 MAX_BLOCKS 约束（几十 KB 以内），用户只会点刚收到的卡。
+   * 终态卡片的渲染快照（runId → state + options）：run 结束后 activeRuns 已
+   * 清空，而卡片上的「⏹ 停止」后台任务按钮（job.kill）还活着，需要按 runId
+   * 反查该 run 的 sessionId/cwd 才能停对任务。只保留最近若干条：单条快照受
+   * MAX_BLOCKS 约束（几十 KB 以内），用户只会点刚收到的卡；超出窗口的旧卡
+   * 会得到明确的「记录已回收」提示，不假装任务仍在。
    */
   private runCardSnapshots = new Map<
     string,
@@ -379,11 +380,39 @@ export class Bridge {
    * creates a NEW runner under a different key without evicting the old one.
    * This eliminates the need for clearRunners() on agent switch.
    */
-  private getRunner(cwd: string, kind: AgentKind = this.config.defaultAgent): Runner {
+  private getRunner(
+    cwd: string,
+    kind: AgentKind = this.config.defaultAgent,
+    opts?: {
+      /**
+       * 「这一轮即将开跑」：槽位被标 stale 且当前没有活跃 run 时，先 evict 旧
+       * 实例再新建。用于让 `/config` 变更（clearRunners 标 stale）不被中断路径
+       * 拖成「下一轮仍用旧配置」——旧实现只靠 finalizeRun 的守卫消费 stale，
+       * 而 `/stop` 会先摘槽位让守卫失效，stale 便留到再下一轮。
+       *
+       * 仅在开跑路径（forwardToClaude / streamCompact）传 true：hasRunCompact、
+       * killBackgroundJob 这类「借 runner 看一眼」的调用不能触发实例替换。
+       */
+      replaceStale?: boolean;
+    },
+  ): Runner {
     // Fix 4: Check for runner under (cwd, kind) key
     const workspaceMap = this.runners.get(cwd);
-    if (workspaceMap?.has(kind)) {
-      return workspaceMap.get(kind)!;
+    const slotKey = `${cwd}\u0000${kind}`;
+    const cached = workspaceMap?.get(kind);
+    // 活跃 run 期间不替换：queue 链可能在 interrupt 的 await 窗口里推进，把
+    // 正在跑的那一轮手里的实例换掉会脱管长驻连接。
+    const replaceStaleInstance =
+      cached !== undefined &&
+      opts?.replaceStale === true &&
+      this.staleRunnerSlots.has(slotKey) &&
+      !this.activeRuns.has(cwd);
+    if (cached && !replaceStaleInstance) {
+      return cached;
+    }
+    if (replaceStaleInstance) {
+      getLogger().info(`[lark-remote] replace stale runner before run cwd=${cwd} kind=${kind}`);
+      this.evictRunnerSlot(cwd, kind);
     }
 
     // 缓存超过上限且是新工作区时才回收死槽位——刚创建未 run
@@ -410,11 +439,15 @@ export class Bridge {
       runner.registerExitHandlers();
     }
 
-    // Store in nested map: Map<cwd, Map<kind, Runner>>
-    if (!workspaceMap) {
+    // Store in nested map: Map<cwd, Map<kind, Runner>>。必须重新取一次：
+    // replaceStale 刚把槽位 evict 掉，上面的局部 workspaceMap 可能已随空槽
+    // 从 this.runners 移除——继续写它会生成一个「缓存里查不到」的 runner，
+    // 下一次 getRunner 会再建一个（实例数翻倍）。
+    const currentWorkspaceMap = this.runners.get(cwd);
+    if (!currentWorkspaceMap) {
       this.runners.set(cwd, new Map([[kind, runner]]));
     } else {
-      workspaceMap.set(kind, runner);
+      currentWorkspaceMap.set(kind, runner);
     }
     return runner;
   }
@@ -552,7 +585,7 @@ export class Bridge {
     if (evicted && typeof evicted.unregisterExitHandlers === 'function') {
       evicted.unregisterExitHandlers();
     }
-    // 2026-10-11：先标记 orphan 再 dispose。evict 与「run 刚拿走本实例」竞态时
+    // 先标记 orphan 再 dispose：evict 与「run 刚拿走本实例」竞态时
     // （queue 链在 interruptCurrentRun await 期间推进），dispose 只能关掉当时
     // 已存在的连接，run 后续 acquire 的新连接会挂在无人托管的实例上——orphan
     // 标记让 executeTurn 在 run 结束时主动 dispose 这批连接，而不是挂 idle
@@ -659,7 +692,15 @@ export class Bridge {
 
   /** Remove a task from the queue by messageId. Returns true if found and removed. */
   removeFromQueue(cwd: string, messageId: string): boolean {
-    return this.queueManager.removeFromQueue(cwd, messageId);
+    const removed = this.queueManager.removeFromQueue(cwd, messageId);
+    // 单一收口：撤销卡片跟着移除动作一起发生，不再依赖调用方记得配对调
+    // updateQueueCardToCancelled（漏配对会让卡片永久停在「等待中」，而映射
+    // 已被消费，之后再也修不回来）。fire-and-forget 保持
+    // 「移除同步发生」的队列不变式——queue.immediate 依赖先清空再让出事件循环。
+    if (removed) {
+      void this.updateQueueCardToCancelled(cwd, messageId);
+    }
+    return removed;
   }
 
   /**
@@ -871,99 +912,151 @@ export class Bridge {
     runId?: string;
     cwd?: string;
   }): Promise<InterruptOutcome> {
-    // Find the active claude run matching this user/chat
+    // 先收集全部命中项再逐个停。activeRuns 以 cwd 为键、多个 workspace 可以
+    // 并行跑；旧实现停在「第一条命中」就 return —— 两个 workspace 并行时
+    // `/stop` 只停一个却回「已停止」，另一个无声继续。
+    // 限定 cwd（queue.immediate）或带 runId（停止卡按钮）时仍只有一条命中。
+    const activeTargets: Array<[string, ActiveRun]> = [];
     for (const [cwd, active] of this.activeRuns) {
       if (input.cwd !== undefined && cwd !== input.cwd) continue;
-      if (active.userId === input.userId && active.chatId === input.chatId) {
-        if (input.runId && active.runId !== input.runId) continue;
-        getLogger().info(
-          `[lark-remote] interrupt hit runId=${active.runId} cwd=${cwd} userId=${input.userId}`,
-        );
-        // Stop the EXACT runner instance that is running (carried by activeRun),
-        // not whatever getRunner(cwd) would return now. clearRunners() may have
-        // emptied the cache mid-run, in which case getRunner creates a fresh empty
-        // runner whose stop() is a no-op and the real subprocess is never killed
-        // (regression 2026-07-18: queue chain blocked forever).
-        const runner = active.runner;
-        // Bind the queue reset to THIS task's execution slot: the stop window
-        // below may outlive the task's settle, letting the serial chain advance
-        // to a successor that begins executing before we resume. An
-        // unconditional reset would then zero the successor's count and mark
-        // its slot interrupted, hiding it from queue cards.
-        const stoppedSlot = this.queueManager.getExecutingSlot(cwd);
-        const [, stopResult] = await Promise.allSettled([
-          // 用户主动中断（/stop、stop 卡按钮、queue.immediate）显式打标
-          // interruptedReason，与审批超时自动取消（approval_timeout）、审批
-          // 卡取消（approval_cancelled）在终态数据上可区分（方案 A）。
-          active.session.finish('interrupted', { interruptedReason: 'user_stop' }),
-          runner.stop({ immediate: true }),
-        ]);
-        const stop =
-          stopResult.status === 'fulfilled' &&
-          stopResult.value !== null &&
-          typeof stopResult.value === 'object'
-            ? (stopResult.value as StopOutcome)
-            : undefined;
-        // The chain may have advanced while the stop was in flight: a new run
-        // (from a task that began during the stop window) may now occupy this
-        // cwd. Only delete the entry we actually stopped.
-        if (this.activeRuns.get(cwd) === active) {
-          this.activeRuns.delete(cwd);
-        }
-        // Fix 4: Clean up this specific (cwd, agentKind) runner slot
-        // (eviction must also unregister the runner from the exit dispatcher)
-        // evict by the run's captured agentKind, not the live
-        // defaultAgent (may have changed mid-run via /config).
-        //
-        // 2026-10-11：workspace-lifetime runner 不能在这里立即 evict+dispose。
-        // interruptCurrentRun 的 await 窗口内 queue 链会推进下一条消息，其
-        // getRunner 可能刚拿走本实例（缓存命中先于本行执行）——立即 evict 会
-        // 让那个 run 的长驻连接脱管：进程残留至 idle TTL 才回收，期间持有
-        // agent 侧会话写锁（codex "thread already has an active writer"，
-        // 线上实测）。改为标 stale，由 finalizeRun 在下一次 run 结束时统一
-        // evict+dispose；「stop 后下一 run 换新实例」的语义
-        // 保留（stale 命中即最后一轮复用）。run-per-message runner 无长驻
-        // 连接，保持立即 evict 不变。
-        if (active.runner.lifetime === 'workspace') {
-          this.staleRunnerSlots.add(`${cwd}\u0000${active.agentKind}`);
-        } else {
-          this.evictRunnerSlot(cwd, active.agentKind);
-        }
-        // Reset queue executing count: the task was interrupted externally, so
-        // its promise-chain settle (.then/.catch) may lag behind the process
-        // kill. Without this reset, subsequent messages would incorrectly show
-        // as "排队中". resetExecutingCount also grants a skip-credit so the
-        // stale settle does not double-decrement the count. Centralized here so
-        // ALL interrupt paths (/stop, /t, card stop, queue.immediate) benefit.
-        // When stoppedSlot is undefined (no active run matched), skip the reset —
-        // there is no queue slot to reconcile. All production interrupt paths
-        // (/stop, /t, card stop, queue.immediate) provide a defined stoppedSlot.
-        if (stoppedSlot !== undefined) {
-          this.queueManager.resetExecutingCount(cwd, stoppedSlot);
-        }
-        getLogger().info(`[lark-remote] interrupt stop done runId=${active.runId}`);
-        return { stopped: true, agentKind: active.agentKind, ...(stop ? { stop } : {}) };
+      if (active.userId !== input.userId || active.chatId !== input.chatId) continue;
+      if (input.runId && active.runId !== input.runId) continue;
+      activeTargets.push([cwd, active]);
+    }
+    let stoppedCount = 0;
+    let agentKind: AgentKind | undefined;
+    let stop: StopOutcome | undefined;
+    for (const [cwd, active] of activeTargets) {
+      const stopResult = await this.interruptActiveRun(cwd, active);
+      stoppedCount++;
+      agentKind ??= active.agentKind;
+      // 聚合口径：只要有一次 remote stop 没能确认，就按「可能仍在跑」上报，
+      // 不让后面的已确认结果盖掉它（调用方据此决定是否承诺"已停止"）。
+      if (
+        stopResult &&
+        (stop === undefined ||
+          (stop.status !== 'unconfirmed' && stopResult.status === 'unconfirmed'))
+      ) {
+        stop = stopResult;
       }
     }
     // Then check active bash runs (! commands). These bypass the serial queue
     // and are tracked separately; stop the per-run BashRunner directly.
-    for (const [runId, b] of this.activeBashRuns) {
-      if (input.cwd !== undefined && b.cwd !== input.cwd) continue;
-      if (b.userId === input.userId && b.chatId === input.chatId) {
-        if (input.runId && runId !== input.runId) continue;
-        getLogger().info(
-          `[lark-remote] interrupt hit bash runId=${runId} cwd=${b.cwd} userId=${input.userId}`,
-        );
-        await b.bashRunner.stop({ immediate: true });
-        // Update card to show interrupted state
-        await b.cardSession.finish('interrupted', { exitCode: -1 });
-        this.activeBashRuns.delete(runId);
-        getLogger().info(`[lark-remote] interrupt bash stop done runId=${runId}`);
-        return { stopped: true };
-      }
+    // `/stop`（无 runId、无 cwd）语义是「停掉这个会话的一切」，所以并行跑的
+    // `!` 命令也要停——旧实现命中 claude run 就 return，这些 bash 会被漏掉。
+    // 带范围的中断（停止卡 runId、queue.immediate 的 cwd）保持旧语义：只有
+    // 没有 claude run 命中时才回退到 bash，避免误杀用户并行跑的 `!` 任务。
+    const includeBashRuns =
+      (input.runId === undefined && input.cwd === undefined) || activeTargets.length === 0;
+    const bashTargets = includeBashRuns
+      ? [...this.activeBashRuns.entries()].filter(([runId, b]) => {
+          if (input.cwd !== undefined && b.cwd !== input.cwd) return false;
+          if (b.userId !== input.userId || b.chatId !== input.chatId) return false;
+          if (input.runId && runId !== input.runId) return false;
+          return true;
+        })
+      : [];
+    for (const [runId, b] of bashTargets) {
+      getLogger().info(
+        `[lark-remote] interrupt hit bash runId=${runId} cwd=${b.cwd} userId=${input.userId}`,
+      );
+      await b.bashRunner.stop({ immediate: true });
+      // Update card to show interrupted state
+      await b.cardSession.finish('interrupted', { exitCode: -1 });
+      this.activeBashRuns.delete(runId);
+      getLogger().info(`[lark-remote] interrupt bash stop done runId=${runId}`);
+      stoppedCount++;
     }
-    getLogger().debug(`[lark-remote] interrupt miss userId=${input.userId}`);
-    return { stopped: false };
+    if (stoppedCount === 0) {
+      getLogger().debug(`[lark-remote] interrupt miss userId=${input.userId}`);
+      return { stopped: false };
+    }
+    return {
+      stopped: true,
+      stoppedCount,
+      ...(agentKind ? { agentKind } : {}),
+      ...(stop ? { stop } : {}),
+    };
+  }
+
+  /**
+   * 停掉一条已注册的 active run：置终态、停 runner、摘槽位、标 stale、
+   * 归零该 cwd 的队列执行计数。返回 runner 的停止结果（DSH 才有）。
+   *
+   * 只做「这一条 run」的事——跨多个 workspace 的遍历在调用方，避免再次
+   * 出现「停第一条就 return」的漏停。
+   */
+  private async interruptActiveRun(
+    cwd: string,
+    active: ActiveRun,
+  ): Promise<StopOutcome | undefined> {
+    getLogger().info(
+      `[lark-remote] interrupt hit runId=${active.runId} cwd=${cwd} userId=${active.userId}`,
+    );
+    // Stop the EXACT runner instance that is running (carried by activeRun),
+    // not whatever getRunner(cwd) would return now. clearRunners() may have
+    // emptied the cache mid-run, in which case getRunner creates a fresh empty
+    // runner whose stop() is a no-op and the real subprocess is never killed
+    // (regression 2026-07-18: queue chain blocked forever).
+    const runner = active.runner;
+    // Bind the queue reset to THIS task's execution slot: the stop window
+    // below may outlive the task's settle, letting the serial chain advance
+    // to a successor that begins executing before we resume. An
+    // unconditional reset would then zero the successor's count and mark
+    // its slot interrupted, hiding it from queue cards.
+    const stoppedSlot = this.queueManager.getExecutingSlot(cwd);
+    const [, stopResult] = await Promise.allSettled([
+      // 用户主动中断（/stop、stop 卡按钮、queue.immediate）显式打标
+      // interruptedReason，与审批超时自动取消（approval_timeout）、审批
+      // 卡取消（approval_cancelled）在终态数据上可区分（方案 A）。
+      active.session.finish('interrupted', { interruptedReason: 'user_stop' }),
+      runner.stop({ immediate: true }),
+    ]);
+    const stop =
+      stopResult.status === 'fulfilled' &&
+      stopResult.value !== null &&
+      typeof stopResult.value === 'object'
+        ? (stopResult.value as StopOutcome)
+        : undefined;
+    // The chain may have advanced while the stop was in flight: a new run
+    // (from a task that began during the stop window) may now occupy this
+    // cwd. Only delete the entry we actually stopped.
+    if (this.activeRuns.get(cwd) === active) {
+      this.activeRuns.delete(cwd);
+    }
+    // Fix 4: Clean up this specific (cwd, agentKind) runner slot
+    // (eviction must also unregister the runner from the exit dispatcher)
+    // evict by the run's captured agentKind, not the live
+    // defaultAgent (may have changed mid-run via /config).
+    //
+    // workspace-lifetime runner 不能在中断路径里立即 evict+dispose。
+    // interruptCurrentRun 的 await 窗口内 queue 链会推进下一条消息，其
+    // getRunner 可能刚拿走本实例（缓存命中先于本行执行）——立即 evict 会
+    // 让那个 run 的长驻连接脱管：进程残留至 idle TTL 才回收，期间持有
+    // agent 侧会话写锁（codex "thread already has an active writer"，
+    // 线上实测）。改为标 stale：下一次「即将开跑」的 getRunner 在槽位空闲时
+    // 换新实例（见 getRunner 的 replaceStale），本次 run 的 finalize 收尾时
+    // 也会消费该标记；两者都保证不会有活跃 run 使用被 dispose 的实例。
+    // run-per-message runner 无长驻连接，保持立即 evict 不变。
+    if (active.runner.lifetime === 'workspace') {
+      this.staleRunnerSlots.add(`${cwd}\u0000${active.agentKind}`);
+    } else {
+      this.evictRunnerSlot(cwd, active.agentKind);
+    }
+    // Reset queue executing count: the task was interrupted externally, so
+    // its promise-chain settle (.then/.catch) may lag behind the process
+    // kill. Without this reset, subsequent messages would incorrectly show
+    // as "排队中". resetExecutingCount also grants a skip-credit so the
+    // stale settle does not double-decrement the count. Centralized here so
+    // ALL interrupt paths (/stop, /t, card stop, queue.immediate) benefit.
+    // When stoppedSlot is undefined (no active run matched), skip the reset —
+    // there is no queue slot to reconcile. All production interrupt paths
+    // (/stop, /t, card stop, queue.immediate) provide a defined stoppedSlot.
+    if (stoppedSlot !== undefined) {
+      this.queueManager.resetExecutingCount(cwd, stoppedSlot);
+    }
+    getLogger().info(`[lark-remote] interrupt stop done runId=${active.runId}`);
+    return stop;
   }
 
   /** Send a result message to the user (§7). Returns true on success, false on failure. */
@@ -1234,7 +1327,7 @@ export class Bridge {
     // that will run is captured into activeRun. interruptCurrentRun stops THAT
     // instance directly -- never a fresh runner re-resolved from a cache that
     // clearRunners() may have emptied mid-run (regression 2026-07-18).
-    const runner = this.getRunner(cwd, agentKind);
+    const runner = this.getRunner(cwd, agentKind, { replaceStale: true });
 
     // Step 1: Create run session (runId, cardSession, activeRun tracking)
     const { runId, cardSession, activeRun } = this.createRunSession(ctx, cwd, runner, agentKind);
@@ -1368,6 +1461,10 @@ export class Bridge {
         // Compact 按钮能力门控与 resume 卡 / auto-resume 卡一致（hasRunCompact
         // 鸭子探测）：claude（stream-json，无 turn_started）也能拿到按钮。
         compactSupported: this.hasRunCompact(cwd, agentKind),
+        // 本轮 init 到达前，按钮是否仍有可压缩目标：开跑时 store 里已有会话
+        // 才置 true。false 时按钮只在 state.sessionId 出现后渲染——否则
+        // init 前被 /stop 的卡片会留下一个注定失败的按钮。
+        sessionFallbackAvailable: !!this.sessionStore.getSessionId(ctx.userId, agentKind),
       },
     });
     const activeRun: ActiveRun = {
@@ -1566,12 +1663,7 @@ export class Bridge {
         // 只有终态才阻止事件处理。finalizing 是非终态，应该继续处理
         // 这样在 result 事件后，后台任务输出仍能被正确处理
         const terminal = cardSession.currentState.terminal;
-        if (
-          terminal === 'done' ||
-          terminal === 'error' ||
-          terminal === 'interrupted' ||
-          terminal === 'idle_timeout'
-        ) {
+        if (isRunTerminal(terminal)) {
           continue;
         }
         if (event.type === 'system' && event.subtype === 'init') {
@@ -1889,7 +1981,17 @@ export class Bridge {
         // 终态，不再归因于 Agent 错误；error 保持「运行出错」；其余为 done。
         const subtype = finalState.resultSubtype;
         const isError = subtype === 'error' || !!finalState.errorMsg;
-        const terminal = isError ? 'error' : subtype === 'interrupted' ? 'interrupted' : 'done';
+        // goal 仍 active = 宿主会自动起下一轮：这不是"完成"，而是"本轮结束"。
+        // 用独立终态而不是 done，既不改 header 文案也不用谎报。
+        const goalContinues =
+          !isError && subtype !== 'interrupted' && finalState.goal?.phase === 'active';
+        const terminal = isError
+          ? 'error'
+          : subtype === 'interrupted'
+            ? 'interrupted'
+            : goalContinues
+              ? 'goal_continuing'
+              : 'done';
         await cardSession.finish(terminal, {
           resultSubtype: subtype,
           errorMsg: finalState.errorMsg,
@@ -2000,6 +2102,12 @@ export class Bridge {
         // runner 能力门控 Compact 按钮（缺省 undefined = 显示按钮，
         // DSH 等无 runCompact 的 agent 会渲染出点了报错的死按钮）。
         compactSupported: this.hasRunCompact(cwd, activeRun.agentKind),
+        // 终态卡按「此刻是否真的有可压缩会话」渲染按钮，与记账用的是同一
+        // 判据（本轮 sessionId 或 store 回退），避免按钮可见但记录不存在。
+        sessionFallbackAvailable: !!(
+          cardSession.currentState.sessionId ??
+          this.sessionStore.getSessionId(ctx.userId, activeRun.agentKind)
+        ),
       };
       this.rememberRunCardSnapshot(
         runId,
@@ -2035,6 +2143,16 @@ export class Bridge {
       // at the sendResult call site; if it throws, the run must still release
       // its activeRuns slot — otherwise the cwd is permanently busy
       // (every later message busy-dropped until a manual /stop).
+      //
+      // 记账与槽位所有权必须分开：/stop、停止卡按钮、
+      // queue.immediate 都会先在 interruptCurrentRunDetailed 里删掉
+      // activeRuns[cwd] 并把卡片置 interrupted，等收尾走到这里时下面的守卫
+      // 已为 false。记录若跟着守卫走，中断后的终态卡上 Compact 按钮必然查不到
+      // runId，只能回「该任务已结束或不属于当前会话」。守卫只回答「cwd 槽位还
+      // 归不归本 run」（决定能不能删槽位/evict runner），记账回答「这次 run
+      // 结束了吗、用的哪个 sessionId」——后者与所有权无关，放在守卫外。
+      this.recordCompactableRunForTerminal(cardSession, activeRun, ctx);
+
       if (this.activeRuns.get(cwd) === activeRun) {
         this.activeRuns.delete(cwd);
         // Workspace-lifetime runners (codex app-server) keep their persistent
@@ -2050,28 +2168,6 @@ export class Bridge {
           this.evictRunnerSlot(cwd, activeRun.agentKind);
         }
         this.staleRunnerSlots.delete(slotKey);
-        // Compact 卡片需要 runId + sessionId；record 供终态卡上的 Compact 按钮
-        // 校验与取参（activeRuns 已清空，无法再查到）。异常退出（error/
-        // interrupted/idle_timeout）同样记录——上下文往往更大，压缩后再续。
-        // 写入条件从「codex 终态」放宽为「runner 有 runCompact 的终态」
-        // （codex app-server + kimi acp 均满足）。
-        const runTerminal = cardSession.currentState.terminal;
-        const runnerHasCompact = runnerSupportsCompact(activeRun.runner, activeRun.agentKind);
-        if (
-          runnerHasCompact &&
-          activeRun.runner.lifetime === 'workspace' &&
-          (runTerminal === 'done' ||
-            runTerminal === 'error' ||
-            runTerminal === 'interrupted' ||
-            runTerminal === 'idle_timeout')
-        ) {
-          const compactSessionId =
-            cardSession.currentState.sessionId ??
-            this.sessionStore.getSessionId(ctx.userId, activeRun.agentKind);
-          if (compactSessionId) {
-            this.recordCompactableRun(cwd, activeRun.runId, compactSessionId, activeRun.agentKind);
-          }
-        }
         getLogger().info(`[lark-remote] activeRuns.delete cwd=${cwd} runId=${runId}`);
       }
     }
@@ -2338,6 +2434,52 @@ export class Bridge {
   }
 
   /**
+   * 终态 Compact 记账：把本次 run 实际使用的 sessionId 记进
+   * {@link compactableRuns}，供终态卡上的 Compact 按钮按 runId 反查。
+   *
+   * 调用点固定在 `finalizeRun` 的 `finally` 里、**槽位所有权守卫之外**。
+   * 所有权守卫只回答「cwd 槽位还归不归本 run」（决定能否删槽位 / evict
+   * runner）；记账回答「本次 run 结束了吗、用的哪个 sessionId」。两者在不同
+   * 维度上：外部中断（`/stop`、停止卡按钮、`queue.immediate`）会先摘槽位，
+   * 记账若跟着守卫走就永远不会落，中断卡片的按钮必然反查不到（中断
+   * 后点 Compact 一律回「该任务已结束或不属于当前会话」）。
+   *
+   * 覆盖所有终态入口（正常结束、error、interrupted、idle_timeout、
+   * goal_continuing）——这些卡片都渲染 Compact 按钮（`goal` 仍 active 时
+   * 除外）。记账失败不能影响清理，故内部兜错。
+   */
+  private recordCompactableRunForTerminal(
+    cardSession: RunCardSession,
+    activeRun: ActiveRun,
+    ctx: CommandContext,
+  ): void {
+    try {
+      if (!runnerSupportsCompact(activeRun.runner, activeRun.agentKind)) return;
+      if (activeRun.runner.lifetime !== 'workspace') return;
+      const terminal = cardSession.currentState.terminal;
+      // 与事件消费守卫、Compact 按钮共用同一份终态集合（run-state.ts）。
+      if (!isRunTerminal(terminal)) return;
+      // 卡片状态优先（本轮 init/turn_started 写入）；缺失时回退 store——
+      // 启动失败但已 /stop 的 run 没有自己的 init，压缩此前会话仍是有意义
+      // 的动作。
+      const compactSessionId =
+        cardSession.currentState.sessionId ??
+        this.sessionStore.getSessionId(ctx.userId, activeRun.agentKind);
+      if (!compactSessionId) return;
+      this.recordCompactableRun(
+        activeRun.cwd,
+        activeRun.runId,
+        compactSessionId,
+        activeRun.agentKind,
+      );
+    } catch (err) {
+      getLogger().warn(
+        `[lark-remote] compact record failed runId=${activeRun.runId}: ${errorMessage(err)}`,
+      );
+    }
+  }
+
+  /**
    * 按 runId 反查可压缩 run 记录（跨 cwd 扫描）。
    *
    * 为什么不带 cwd 过滤：按钮属于「那一次 run」，与用户此刻在哪个工作目录、
@@ -2389,7 +2531,7 @@ export class Bridge {
     }
 
     // Check that the runner has runCompact method（声明表 && runner 实现）
-    const runner = this.getRunner(cwd, target.agentKind);
+    const runner = this.getRunner(cwd, target.agentKind, { replaceStale: true });
     if (!runnerSupportsCompact(runner, target.agentKind)) {
       await this.sendResult({ text: '⚠️ 当前运行模式不支持 Compact' }, ctx);
       return;
@@ -2550,12 +2692,7 @@ export class Bridge {
         // 已终态（/stop、空闲看门狗）后不再消费事件：与 runAgentStreamToEnd 同口径，
         // 否则迟到的 result 会把终态卡改写成「已完成」。
         const cardTerminal = cardSession.currentState.terminal;
-        if (
-          cardTerminal === 'done' ||
-          cardTerminal === 'error' ||
-          cardTerminal === 'interrupted' ||
-          cardTerminal === 'idle_timeout'
-        ) {
+        if (isRunTerminal(cardTerminal)) {
           continue;
         }
         if (event.type === 'result') {
@@ -2620,7 +2757,7 @@ export class Bridge {
       // 终态守卫（与 runAgentStreamToEnd 同口径）：running/finalizing 才转 error，
       // 已终态（interrupted/idle_timeout）保留首终态，不被迟到的异常改写。
       const catchTerminal = cardSession.currentState.terminal;
-      if (catchTerminal === 'running' || catchTerminal === 'finalizing') {
+      if (!isRunTerminal(catchTerminal)) {
         await cardSession.finish('error', { errorMsg: errorMessage(err) });
       } else {
         log.info(

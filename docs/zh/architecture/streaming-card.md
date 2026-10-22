@@ -69,7 +69,7 @@ Run/Bash 卡片的 CardKit 2.0 单卡流式架构说明，覆盖数据流、状�
 主要字段：
 
 - `runId`
-- `terminal`: running | finalizing | done | error | interrupted | idle_timeout
+- `terminal`: running | finalizing | done | error | interrupted | idle_timeout | goal_continuing
 - `footer`: thinking | tool_running | streaming | null
 - `reasoning`
 - 有序 `blocks`: text 或 tool
@@ -120,8 +120,24 @@ Run/Bash 卡片的 CardKit 2.0 单卡流式架构说明，覆盖数据流、状�
 | interrupted | ⏹ Claude · 已中断 | 已被用户终止 |
 | idle_timeout | ⏱ Claude · 已超时 | 空闲分钟数 |
 | finalizing | ⏳ Claude · 完成中 | 非终态；**保留** ⏹ 终止按钮 |
+| goal_continuing | ⏳ Claude · 本轮结束（目标继续） | 本轮 turn 已结束，但会话 goal 仍 active：任务没完成，宿主会自动起下一轮；不渲染 Compact |
 
 终态不渲染 footer 和停止按钮（`finalizing` 除外，详见上表）。
+
+### 5.1 goal 视图（DSH）
+
+同一个 DSH 会话可以带一个长期目标（`goal` 投影：objective / phase / roundsStarted /
+maxGoalRounds）。goal 是**跨 turn** 的自动续跑单元：`turn/end` 之后 12 ms 内
+`goal-round-driver` 就可能起下一轮。因此：
+
+- 运行中卡片在状态行下方渲染 `🎯 **目标进行中** · 第 r/N 轮` + 目标摘要（长目标进折叠面板）；
+- 收尾时若 goal 仍 `active`，终态是 `goal_continuing`（标题「本轮结束（目标继续）」），
+  summary 首行写「本轮结束 · 目标仍在继续」，绝不出现「已完成」；
+- goal 仍 active 时不渲染 Compact 按钮（DSH 手动压缩要求 agent 空闲，点了必被拒）；
+- goal 的 `complete` / `paused` / `blocked` 都是"不会自动续跑"，按普通终态收尾（blocked 显示阻断原因）。
+
+数据来源只有宿主（`session/projections` 的 `goal` 值 + `session/control` 推送 +
+`goal/change` 事件），桥不自行推断"任务结束"。
 
 ## 6. 长内容预算
 

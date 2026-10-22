@@ -54,6 +54,8 @@ import type {
   DshStreamItem,
   DshTokenUsage,
 } from './types.js';
+import { goalFromProjection } from './goal-view.js';
+import type { GoalView } from '../types.js';
 
 interface WebSocketMessageEvent {
   data: unknown;
@@ -649,6 +651,32 @@ export class DshClient {
           ? (value.values as Record<string, unknown>)
           : {},
     };
+  }
+
+  /**
+   * Read the session's current goal (one unary, authoritative at call time).
+   *
+   * 收尾判定必须用宿主状态：本轮 turn 结束不代表任务结束——goal 仍 active 时
+   * driver 会在 quiescence 立刻起下一轮。`known:false` 表示读不到，调用方不得
+   * 据此断言"已完成"（探测失败降级为收尾，正是"任务还在跑却写完成"的来源）。
+   */
+  async goalState(
+    sessionId: string,
+    opts?: { signal?: AbortSignal; timeoutMs?: number },
+  ): Promise<{ known: boolean; goal: GoalView | null }> {
+    let snapshot: DshProjectionSnapshot | null;
+    try {
+      snapshot = await this.projectionSnapshot(sessionId, opts);
+    } catch (err) {
+      if (opts?.signal?.aborted) throw err;
+      getLogger().warn(`[dsh] goal probe failed session=${sessionId}: ${(err as Error).message}`);
+      return { known: false, goal: null };
+    }
+    // 拿不到投影 = 宿主没这个会话的投影，不等于"没有 goal"。
+    if (!snapshot) return { known: false, goal: null };
+    const parsed = goalFromProjection(snapshot.values.goal);
+    if (parsed === undefined) return { known: false, goal: null };
+    return { known: true, goal: parsed };
   }
 
   /**

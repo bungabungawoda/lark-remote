@@ -741,3 +741,31 @@ describe('QueueManager 队列身份（连点同一张卡）', () => {
     await new Promise((r) => setTimeout(r, 30));
   });
 });
+
+// ---------------------------------------------------------------------------
+// 卡片 PATCH 一次失败要重试，不能把卡片永久留在旧状态
+// ---------------------------------------------------------------------------
+describe('QueueManager card update retry', () => {
+  it('updateQueueCardToCancelled 重试一次后落到「已撤销」并清理映射', async () => {
+    const updated: object[] = [];
+    let attempts = 0;
+    const qm = new QueueManager(
+      () => false,
+      async () => 'queue-card-msg',
+      async (_messageId, card) => {
+        attempts++;
+        if (attempts === 1) throw new Error('transient patch failure');
+        updated.push(card);
+      },
+    );
+    qm.queueCardMessages.set('m1', Promise.resolve('queue-card-msg'));
+
+    await qm.updateQueueCardToCancelled('ws', 'm1');
+
+    expect(attempts).toBe(2);
+    expect(updated).toHaveLength(1);
+    expect(JSON.stringify(updated[0])).toContain('已撤销');
+    expect(qm.queueCardMessages.has('m1')).toBe(false);
+    expect(mockLogger.warn).toHaveBeenCalled();
+  });
+});

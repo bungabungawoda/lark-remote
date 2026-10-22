@@ -87,12 +87,20 @@ export function formatUsageStats(
     /** 推理 token（pi 提供）。> 0 才显示。 */
     reasoningTokens?: number;
   },
-  options?: { showResult?: boolean; result?: string },
+  options?: {
+    showResult?: boolean;
+    result?: string;
+    /**
+     * 首行状态文案。默认 `✅ 已完成`；goal 仍 active 的收尾卡必须换掉它——
+     * 本轮 turn 结束不等于任务结束。
+     */
+    completedLabel?: string;
+  },
 ): string {
   const lines: string[] = [];
 
   // 1. Success 状态（通用格式，无具体结果值）
-  lines.push('✅ 已完成');
+  lines.push(options?.completedLabel ?? '✅ 已完成');
 
   // 1.4. 实际生效模型（非空字符串才显示）
   if (usage?.model) {

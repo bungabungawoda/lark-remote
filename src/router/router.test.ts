@@ -3651,6 +3651,23 @@ describe('CommandRouter', () => {
     expect((connector._sent[0].input as { text: string }).text).toBe('当前没有运行中的进程');
   });
 
+  it('/stop 并行停多条时回报数量（stoppedCount>1）', async () => {
+    // 验证什么：多个 workspace 并行时 /stop 会停掉全部；静默成功会让用户
+    // 以为只停了「当前」那个。数量必须如实回报。
+    const sendResult = vi.fn().mockResolvedValue(true);
+    const { router } = createRouter({
+      bridge: createMockBridge({
+        sendResult,
+        interruptCurrentRunDetailed: vi.fn().mockResolvedValue({
+          stopped: true,
+          stoppedCount: 2,
+        }),
+      }),
+    });
+    await router.handle('/stop', ctx);
+    expect(sendResult).toHaveBeenCalledWith({ text: expect.stringContaining('已停止 2 个') }, ctx);
+  });
+
   it('/e is alias for /exit', async () => {
     let exited = false;
     const { router, connector } = createRouter({
