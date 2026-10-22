@@ -354,6 +354,44 @@ export interface RunStatusEvent {
 }
 
 /**
+ * 会话级长期目标（DSH `goal` 投影的渲染快照）。
+ *
+ * 为什么卡片需要它：goal 是**跨 turn** 的自动续跑单元。本轮 turn 结束不等于
+ * 任务结束——`goal-round-driver` 会在 quiescence 立刻起下一轮。缺这一维，
+ * 卡片只能在"这一轮结束了"时收尾，于是出现"任务还在跑、卡片却写完成"
+ * （turn/end 后宿主立刻起 goal round 2，用户点 Compact 被拒）。
+ */
+export interface GoalView {
+  id: string;
+  /** 人类写下的目标全文（可能很长，渲染层负责截断/折叠）。 */
+  objective: string;
+  phase: 'active' | 'paused' | 'blocked' | 'complete';
+  /** 已启动的轮次（最高 admitted round）。 */
+  roundsStarted: number;
+  /** 轮次上限；达到后 driver 把 goal 置为 blocked(round-limit)。 */
+  maxGoalRounds: number;
+  /** 仅在 phase='blocked' 时存在：阻断分类与人类可读原因。 */
+  blockedReason?: { code: string; message: string };
+  updatedAt?: number;
+}
+
+/**
+ * 一次 goal 状态观测（seed / 变更事件 / 收尾复核共用）。
+ *
+ * `known=false` 表示**读不到**，与"明确没有 goal"（`goal=null`）是两件事。
+ * 把探测失败降级成"没有 goal"会退回旧行为（goal 还在跑、卡片却收尾），
+ * 所以两者必须分开表达。
+ */
+export interface GoalStateEvent {
+  type: 'goal_state';
+  /** null = 宿主明确表示该会话没有 goal。 */
+  goal: GoalView | null;
+  /** false = 探测失败，`goal` 不具权威性，渲染层不得据此断言"已完成"。 */
+  known: boolean;
+  timestamp?: string;
+}
+
+/**
  * 运行结束后仍在后台运行的任务（终态卡展示 + 逐个停止入口）。
  *
  * 为什么必须出现在 run 卡片上：后台任务的生命周期跨 turn（`bash
@@ -456,7 +494,8 @@ export type AgentEvent =
   | NoticeEvent
   | SessionInfoEvent
   | RunStatusEvent
-  | BackgroundJobsEvent;
+  | BackgroundJobsEvent
+  | GoalStateEvent;
 
 // =============================================================================
 // Runner Interface

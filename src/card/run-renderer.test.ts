@@ -2172,6 +2172,47 @@ describe('renderRunCard (CardKit 2.0)', () => {
     expect(json).toContain('"cmd":"new-session"');
   });
 
+  it('终态卡没有本轮 session 也没有 store 回退时不渲染 Compact（死按钮守卫）', () => {
+    // 验证什么：`/stop` 落在 system.init 之前且此前从未建立过会话时，
+    // 卡片没有任何可压缩目标；按钮点了只会回「该任务已结束」，必须隐藏。
+    // bridge 通过 sessionFallbackAvailable=false 告知渲染层。
+    let state = createInitialRunState('run-no-session');
+    state = reduceRunState(state, {
+      type: 'turn_started',
+      threadId: 'th-aaa-1',
+      turnId: 'tn-1',
+      operationKind: 'turn',
+    } as never);
+    state = finishRun(state, 'interrupted', { resultSubtype: 'interrupted' });
+    expect(state.sessionId).toBeUndefined();
+
+    const hidden = JSON.stringify(
+      renderRunCard(state, { compactSupported: true, sessionFallbackAvailable: false }),
+    );
+    expect(hidden).not.toContain('"cmd":"compact"');
+
+    // 有 store 回退（开跑前已有会话）时按钮照常出现：压缩此前会话仍有效。
+    const shown = JSON.stringify(
+      renderRunCard(state, { compactSupported: true, sessionFallbackAvailable: true }),
+    );
+    expect(shown).toContain('"cmd":"compact"');
+  });
+
+  it('本轮 sessionId 到达后不看 fallback：按钮正常出现', () => {
+    let state = createInitialRunState('run-with-session');
+    state = reduceRunState(state, {
+      type: 'system',
+      subtype: 'init',
+      session_id: 'sess-init-1',
+      cwd: '/tmp/ws',
+    } as never);
+    state = finishRun(state, 'done', { resultSubtype: 'success' });
+    const json = JSON.stringify(
+      renderRunCard(state, { compactSupported: true, sessionFallbackAvailable: false }),
+    );
+    expect(json).toContain('"cmd":"compact"');
+  });
+
   it('running turn has no compact button yet', () => {
     let state = createInitialRunState('run-running');
     state = reduceRunState(state, {
@@ -3734,5 +3775,104 @@ describe('error 卡文案：服务方内容审核截断', () => {
     const json = JSON.stringify(renderRunCard(state));
     expect(json).toContain('运行出错');
     expect(json).not.toContain('服务方内容审核拦截');
+  });
+});
+
+describe('renderRunCard · goal 可见性', () => {
+  const goal = {
+    id: 'goal-1',
+    objective: '完成 notes-app 实时链路 MVP（工单 T-041）：在新 worktree 实现 capture→PCM→VAD',
+    phase: 'active' as const,
+    roundsStarted: 2,
+    maxGoalRounds: 40,
+  };
+
+  function goalState(overrides: Partial<RunState> = {}): RunState {
+    let state = createInitialRunState('run-goal');
+    state = reduceRunState(state, { type: 'goal_state', goal, known: true } as never);
+    return { ...state, ...overrides };
+  }
+
+  it('活跃 goal 的终态写「本轮结束（目标继续）」，不写完成、不给 compact', () => {
+    // turn/end 后宿主立刻起了 goal round 2，卡片却写「已完成」，用户随后
+    // 点 Compact 被 DSH 拒绝。终态文案与按钮都必须以 goal 为准。
+    const state = finishRun(goalState(), 'goal_continuing', { resultSubtype: 'success' });
+    const card = renderRunCard(state, { agentKind: 'dsh', compactSupported: true });
+    const json = JSON.stringify(card);
+
+    expect(json).toContain('本轮结束（目标继续）');
+    expect(json).toContain('🎯 **目标进行中** · 第 2/40 轮');
+    expect(json).toContain('目标：完成 notes-app');
+    expect(json).toContain('DSH 会自动开始第 3 轮');
+    expect(json).not.toContain('已完成');
+    expect(json).not.toContain('"cmd":"compact"');
+    expectNoV1ActionContainer(json);
+  });
+
+  it('goal 完成后的 done 卡写「目标已完成」，compact 恢复', () => {
+    let state = goalState();
+    state = reduceRunState(state, {
+      type: 'goal_state',
+      goal: { ...goal, phase: 'complete', roundsStarted: 3 },
+      known: true,
+    } as never);
+    state = finishRun(state, 'done', { resultSubtype: 'success' });
+    const card = renderRunCard(state, { agentKind: 'dsh', compactSupported: true });
+    const json = JSON.stringify(card);
+
+    expect(json).toContain('目标已完成');
+    expect(json).toContain('第 3/40 轮');
+    expect(json).toContain('"cmd":"compact"');
+  });
+
+  it('运行中就能看到目标（agent 建 goal 的当下，而不是收尾时）', () => {
+    const state = goalState({ terminal: 'running' });
+    const json = JSON.stringify(renderRunCard(state, { agentKind: 'dsh' }));
+    expect(json).toContain('🎯 **目标进行中** · 第 2/40 轮');
+    // 运行中的标题仍按活动态走（思考中/输出中/调用工具），goal 只补一块信息。
+    expect(json).toContain('DSH ·');
+    expect(json).not.toContain('本轮结束');
+  });
+
+  it('goal 行是单 div（窄屏不并排），长目标走折叠面板', () => {
+    let state = createInitialRunState('run-goal-long');
+    const longObjective = `完成 notes-app 实时链路 MVP：${'链路验证；'.repeat(40)}`;
+    state = reduceRunState(state, {
+      type: 'goal_state',
+      goal: { ...goal, objective: longObjective },
+      known: true,
+    } as never);
+    const card = renderRunCard(state, { agentKind: 'dsh' });
+    const json = JSON.stringify(card);
+    const elements = (
+      card as { body: { elements: Array<{ tag: string; text?: { content: string } }> } }
+    ).body.elements;
+    const roundLine = elements.find((e) => e.text?.content.includes('第 2/40 轮'));
+    expect(roundLine?.tag).toBe('div');
+    expect(json).toContain('目标全文');
+    expect(json).toContain('…');
+  });
+
+  it('blocked goal 渲染阻断原因，且不给 compact', () => {
+    let state = createInitialRunState('run-goal-blocked');
+    state = reduceRunState(state, {
+      type: 'goal_state',
+      goal: {
+        ...goal,
+        phase: 'blocked',
+        roundsStarted: 40,
+        blockedReason: {
+          code: 'round-limit',
+          message: 'Goal reached its configured limit of 40 rounds.',
+        },
+      },
+      known: true,
+    } as never);
+    state = finishRun(state, 'done', { resultSubtype: 'success' });
+    const json = JSON.stringify(renderRunCard(state, { agentKind: 'dsh', compactSupported: true }));
+    expect(json).toContain('目标被阻断');
+    expect(json).toContain('round-limit');
+    // 阻断不是 active：会话确实空闲，压缩应当可用。
+    expect(json).toContain('"cmd":"compact"');
   });
 });

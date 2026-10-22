@@ -1,4 +1,11 @@
-import type { RunBlock, RunNotice, RunState, ToolEntry } from './run-state.js';
+import {
+  isRunTerminal,
+  type RunBlock,
+  type RunNotice,
+  type RunState,
+  type ToolEntry,
+} from './run-state.js';
+import type { GoalView } from '../runner/index.js';
 import {
   terminalToColor,
   terminalToLabel,
@@ -13,7 +20,7 @@ import { toolBodyMd, toolHeaderText } from './tool-render.js';
 import { truncateMarkdownTables, CARD_BUDGET_BYTES } from './text-truncate.js';
 import { truncateUtf8 } from '../common/truncate.js';
 import { countCardElements, MAX_CARD_ELEMENTS } from './card-budget.js';
-import { displayWidth } from '../common/text-width.js';
+import { displayWidth, truncateToDisplayWidth } from '../common/text-width.js';
 import { isContentFilterFailure } from '../common/turn-failure.js';
 import { formatClock, formatTimestamp } from './time.js';
 import { formatUsageStats } from '../router/usage-format.js';
@@ -57,12 +64,84 @@ const EMPTY_MD_DIV_BYTES = measureJson(markdownDiv('', 'notation'));
 function shouldShowCompactButton(state: RunState, options: RunCardRenderOptions): boolean {
   if (state.operationKind === 'compaction') return false;
   if (options.compactSupported === false) return false;
-  return (
-    state.terminal === 'done' ||
-    state.terminal === 'error' ||
-    state.terminal === 'interrupted' ||
-    state.terminal === 'idle_timeout'
-  );
+  // 没有可反查的会话 = 点了必然失败：「/stop 落在 init 之前」的那类卡
+  // 上会留一个注定回「该任务已结束」的死按钮。本轮 sessionId 优先；没有时看
+  // bridge 在开跑前探到的 store 会话（`sessionFallbackAvailable`，缺省视为可用
+  // 以保持渲染层独立调用方的既有语义）。
+  if (!state.sessionId && options.sessionFallbackAvailable === false) return false;
+  // goal 仍 active = 宿主会自动起下一轮，会话永远不 idle，压缩必被拒（DSH 的
+  // 手动压缩要求 agent 空闲）。给按钮就是给一个注定失败的点击：用户点
+  // compact 只会拿到"还有一轮在跑"。
+  if (state.goal?.phase === 'active') return false;
+  return isRunTerminal(state.terminal);
+}
+
+/**
+ * goal 区块：目标是什么、跑到第几轮、当前什么状态。
+ *
+ * 为什么放在状态行下面（而不是摘要区）：手机上用户只会扫前两屏。goal 是解释
+ * "这轮为什么结束却没收尾/为什么不能压缩"的唯一线索，必须靠前。
+ *
+ * 窄屏约束：每行一个 div，段间用 ` · `，不做 auto+grow 并排。
+ */
+const GOAL_INLINE_WIDTH = 64;
+const GOAL_FULL_MAX_BYTES = 2_400;
+
+/** 目标阶段的短标签。 */
+function goalPhaseLabel(goal: GoalView): string {
+  if (goal.phase === 'active') return '目标进行中';
+  if (goal.phase === 'paused') return '目标已暂停';
+  if (goal.phase === 'blocked') return '目标被阻断';
+  return '目标已完成';
+}
+
+/**
+ * Build the goal block (empty when the session has no goal).
+ *
+ * 状态来源是宿主的 `goal` 投影/`goal/change`，不是桥的推断：把"我这一轮结束
+ * 了"当任务结束，就是"卡片写完成、任务还在跑"那类缺陷的来源。
+ */
+function buildGoalSection(state: RunState): object[] {
+  const goal = state.goal;
+  if (!goal) return [];
+  const elements: object[] = [];
+  const round = `第 ${goal.roundsStarted}/${goal.maxGoalRounds} 轮`;
+  elements.push(markdownDiv(`🎯 **${goalPhaseLabel(goal)}** · ${round}`));
+
+  // 目标全文可能有换行/超长：行内压成单行并截断，全文进折叠面板。
+  const singleLine = goal.objective.replace(/\s+/gu, ' ').trim();
+  const inline =
+    displayWidth(singleLine) <= GOAL_INLINE_WIDTH
+      ? singleLine
+      : truncateToDisplayWidth(singleLine, GOAL_INLINE_WIDTH);
+  elements.push(markdownDiv(`目标：${inline}`, 'notation'));
+  if (inline !== singleLine) {
+    elements.push(
+      collapsibleMarkdownPanel({
+        title: '🎯 目标全文',
+        expanded: false,
+        border: 'grey',
+        content: truncateUtf8(goal.objective, GOAL_FULL_MAX_BYTES),
+        textSize: 'notation',
+      }),
+    );
+  }
+
+  if (goal.phase === 'blocked' && goal.blockedReason) {
+    elements.push(
+      markdownDiv(
+        `⛔ 阻断：${goal.blockedReason.code} — ${goal.blockedReason.message}`,
+        'notation',
+      ),
+    );
+  }
+  if (goal.phase === 'active' && state.terminal === 'goal_continuing') {
+    // 这句话就是整张卡的核心信息：本轮结束 ≠ 任务结束。
+    elements.push(
+      markdownDiv(`_本轮已结束；DSH 会自动开始第 ${goal.roundsStarted + 1} 轮_`, 'notation'),
+    );
+  }
+  return elements;
 }
 
 /**
@@ -136,6 +215,13 @@ export interface RunCardRenderOptions {
    * 无 turn_started → operationKind undefined）同样能拿到按钮。
    */
   compactSupported?: boolean;
+  /**
+   * 卡片没有 `state.sessionId` 时，是否仍有可压缩的会话（bridge 在开跑前从
+   * sessionStore 探到的会话）。`false` 表示「本轮没有 init，之前也没有任何
+   * 会话」——此时 Compact 按钮点了必然反查不到记录，不渲染。缺省（undefined）
+   * 保持原有「按钮可见」语义，供渲染层独立调用方使用。
+   */
+  sessionFallbackAvailable?: boolean;
 }
 
 // =============================================================================
@@ -492,8 +578,20 @@ function assembleRunCard(
       template: headerTemplate(state),
       title: { content: headerTitle(state, options), tag: 'plain_text' },
     },
-    body: { elements },
+    // goal 区块紧随状态行（所有预算档位都以此为第一元素），让"目标是什么/
+    // 第几轮"出现在折叠面板之前；它只有 2–3 个元素，兜底档位也扛得住。
+    body: { elements: insertAfterStatusRow(elements, buildGoalSection(state)) },
   };
+}
+
+/**
+ * 把目标区块插到状态行之后。所有预算档位的 elements 都以 statusRow 开头；
+ * 空数组时原样返回，避免把 `undefined` 塞进飞书卡片数组。
+ */
+function insertAfterStatusRow(elements: object[], extra: object[]): object[] {
+  if (extra.length === 0) return elements;
+  if (elements.length === 0) return extra;
+  return [elements[0], ...extra, ...elements.slice(1)];
 }
 
 /**
@@ -1140,7 +1238,14 @@ function buildSummaryContent(
         costUsd: state.costUsd,
         reasoningTokens: state.reasoningTokens,
       },
-      { showResult: true, result },
+      {
+        showResult: true,
+        result,
+        // 本轮结束但目标继续：不能报"已完成"，也不能说"出错"。
+        ...(state.terminal === 'goal_continuing'
+          ? { completedLabel: '⏳ 本轮结束 · 目标仍在继续' }
+          : {}),
+      },
     );
 
     elements.push(markdownDiv(usageStatsStr + empty));
@@ -1279,7 +1384,12 @@ function statusTagLabel(terminal: RunState['terminal']): string {
 /** CardKit 2.0 header title — agent-aware via options.agentKind. */
 function headerTitle(state: RunState, options: RunCardRenderOptions = {}): string {
   const agent = agentDisplayName(options.agentKind ?? 'claude');
-  if (state.terminal === 'done') return `✅ ${agent} · 已完成`;
+  // 本轮 turn 结束但 goal 仍 active：这是"一轮结束"，不是"任务完成"。标题
+  // 必须说清楚，否则用户会以为活儿干完了。
+  if (state.terminal === 'goal_continuing') return `⏳ ${agent} · 本轮结束（目标继续）`;
+  if (state.terminal === 'done') {
+    return state.goal?.phase === 'complete' ? `✅ ${agent} · 目标已完成` : `✅ ${agent} · 已完成`;
+  }
   if (state.terminal === 'error') return `⚠️ ${agent} · 出错`;
   if (state.terminal === 'interrupted') return `⏹ ${agent} · 已中断`;
   if (state.terminal === 'idle_timeout') return `⏱ ${agent} · 已超时`;

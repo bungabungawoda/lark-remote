@@ -24,6 +24,8 @@ const TERMINAL_LABELS: Record<string, string> = {
   idle_timeout: '已超时',
   running: '运行中',
   finalizing: '完成中',
+  // 本轮结束、goal 仍 active：任务没结束，标签不能说"完成"。
+  goal_continuing: '目标继续',
 };
 
 export function terminalToLabel(terminal: string): string {
@@ -36,6 +38,7 @@ export function terminalToColor(terminal: string): string {
   if (terminal === 'interrupted') return 'grey';
   if (terminal === 'idle_timeout') return 'orange';
   if (terminal === 'finalizing') return 'orange';
+  if (terminal === 'goal_continuing') return 'orange';
   if (terminal === 'running') return 'blue';
   return 'red';
 }
