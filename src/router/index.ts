@@ -1090,148 +1090,165 @@ export class CommandRouter {
       return;
     }
 
-    // 1.5. If the user edited the message, the original closure (captured at
-    // enqueue time with stale content) must NOT run. Register a one-shot
-    // replacement closure on the task's EXISTING queue slot BEFORE any await:
-    // interruptCurrentRun / markQueueCardExecuting can let the chain advance to
-    // this task's begin, and begin consumes the replacement at that point — a
-    // registration after those awaits would arrive too late (the stale closure
-    // runs and the replacement leaks as a permanent dead closure). Registering
-    // on the existing slot (instead of removeFromQueue + re-enqueue) preserves
-    // the queue position: enqueue can only append to the promise chain tail,
-    // which would put the edited task behind tasks queued after it.
-    if (targetTask.editedMessage) {
-      const editedContent = targetTask.editedMessage;
-      ///Step3: 替换闭包复用原任务的 binding（不重新快照）+ 恢复丢失的
-      // cwdOverride（lane cwd 同源）。否则编辑后重新执行的 run 会丢 cwd 与绑定。
-      this.bridge.setTaskReplacement(cwd, messageId, async () => {
-        await this.handle(editedContent, ctx, {
-          cwdOverride: cwd,
-          binding: targetTask.binding,
+    // 1.4. Hold the target's run-card start until this handler has sent its
+    // final feedback. The queue chain can advance during the awaits below
+    // (interruptCurrentRun / the queue-card PATCH): the target may begin and
+    // call forwardToClaude before the toast is sent. Without this hold the
+    // run card would land first, leaving the toast as the newest message —
+    // the chat list then previews the toast instead of the run card's title
+    // (which is how the user follows a run without opening the conversation).
+    // Registered before any await, released in finally on every exit path;
+    // forwardToClaude waits for it before creating the run card.
+    const releaseRunStart = this.bridge.holdQueueTaskRun(cwd, messageId);
+
+    try {
+      // 1.5. If the user edited the message, the original closure (captured at
+      // enqueue time with stale content) must NOT run. Register a one-shot
+      // replacement closure on the task's EXISTING queue slot BEFORE any await:
+      // interruptCurrentRun / markQueueCardExecuting can let the chain advance to
+      // this task's begin, and begin consumes the replacement at that point — a
+      // registration after those awaits would arrive too late (the stale closure
+      // runs and the replacement leaks as a permanent dead closure). Registering
+      // on the existing slot (instead of removeFromQueue + re-enqueue) preserves
+      // the queue position: enqueue can only append to the promise chain tail,
+      // which would put the edited task behind tasks queued after it.
+      if (targetTask.editedMessage) {
+        const editedContent = targetTask.editedMessage;
+        ///Step3: 替换闭包复用原任务的 binding（不重新快照）+ 恢复丢失的
+        // cwdOverride（lane cwd 同源）。否则编辑后重新执行的 run 会丢 cwd 与绑定。
+        this.bridge.setTaskReplacement(cwd, messageId, async () => {
+          await this.handle(editedContent, ctx, {
+            cwdOverride: cwd,
+            binding: targetTask.binding,
+          });
         });
-      });
-    }
-
-    // 2. Stop current running process
-    // (Note: queue executing count is reset inside Bridge.interruptCurrentRun
-    //  so all stop paths — /stop, /t, card stop, queue.immediate — are covered.)
-    const interrupt = await this.bridge.interruptCurrentRunDetailed({
-      userId: ctx.userId,
-      chatId: ctx.chatId,
-      cwd,
-    });
-    const stopped = interrupt.stopped;
-    // A remote (DSH) stop is only a request; when it cannot be confirmed the
-    // target must not be promised "immediate" execution — its prompt would sit
-    // behind the still-running turn with no visible progress.
-    const stopUnconfirmed = interrupt.stop?.status === 'unconfirmed';
-    getLogger().info(`[router] queue.immediate: stopped=${stopped} unconfirmed=${stopUnconfirmed}`);
-
-    // 3. Remove all tasks BEFORE this one (by position in the current queue).
-    // The target may have begun while interruptCurrentRun was awaiting (the chain
-    // advances concurrently): then it is already out of the snapshot and every
-    // remaining queued task is BEHIND it — clearing must stop, not run off the
-    // end and delete tasks queued after the target.
-    const tasks = this.bridge.getQueuedTasks(cwd);
-    const targetIdx = tasks.findIndex((t) => t.messageId === messageId);
-    let removedCount = 0;
-    // Phase 1: remove synchronously. The queue chain advances on any await
-    // (card PATCH round trips included), so every task before the target must
-    // be removed before yielding to the event loop — otherwise a task the user
-    // asked to clear can begin executing while its cancellation card is still
-    // in flight.
-    for (let i = 0; i < targetIdx; i++) {
-      const task = tasks[i];
-      // 撤销卡片由 removeFromQueue 统一触发（fire-and-forget），保持本循环
-      // 同步推进的既有不变式。
-      if (this.bridge.removeFromQueue(cwd, task.messageId)) {
-        removedCount++;
       }
-    }
-    if (targetIdx < 0) {
-      getLogger().debug(
-        `[router] queue.immediate: target no longer queued (began/cancelled), not clearing tasks behind it`,
-      );
-    }
 
-    // 4. DO NOT remove the target task - keep it in queue to execute immediately
-    // The queue will naturally execute it after the current task (which we just stopped)
-
-    // 4.4. Refresh the replacement with the latest edited content (idempotent:
-    // re-registering over the same slot). Covers the user editing the message
-    // again while interruptCurrentRun was awaiting; skipped automatically once
-    // the task has begun, because getQueuedTask then returns undefined.
-    const latestTask = this.bridge.getQueuedTask(cwd, messageId);
-    if (latestTask?.editedMessage) {
-      const editedContent = latestTask.editedMessage;
-      ///Step3: 复用原任务 binding + 恢复 cwdOverride（同上）。
-      this.bridge.setTaskReplacement(cwd, messageId, async () => {
-        await this.handle(editedContent, ctx, {
-          cwdOverride: cwd,
-          binding: latestTask.binding,
-        });
+      // 2. Stop current running process
+      // (Note: queue executing count is reset inside Bridge.interruptCurrentRun
+      //  so all stop paths — /stop, /t, card stop, queue.immediate — are covered.)
+      const interrupt = await this.bridge.interruptCurrentRunDetailed({
+        userId: ctx.userId,
+        chatId: ctx.chatId,
+        cwd,
       });
-    }
+      const stopped = interrupt.stopped;
+      // A remote (DSH) stop is only a request; when it cannot be confirmed the
+      // target must not be promised "immediate" execution — its prompt would sit
+      // behind the still-running turn with no visible progress.
+      const stopUnconfirmed = interrupt.stop?.status === 'unconfirmed';
+      getLogger().info(
+        `[router] queue.immediate: stopped=${stopped} unconfirmed=${stopUnconfirmed}`,
+      );
 
-    // 4.5/6. The target must only be marked executing (and the toast may only
-    // promise immediate execution) when it is really the next task after the
-    // stop. While interruptCurrentRun was awaiting, a task ahead of the target
-    // may have begun and now occupy the cwd — the target is still queued
-    // but is NOT next, so its card must stay queued and the toast must say so.
-    const targetStillQueued = this.bridge.getQueuedTask(cwd, messageId) !== undefined;
-    if (!targetStillQueued) {
-      // The target began or was cancelled while earlier awaits were in flight —
-      // a success toast must never promise execution of a task that will not
-      // run. The two missing-reason states get distinct feedback: a target
-      // that began while the interrupt was in flight is already executing, so
-      // the toast must acknowledge that instead of telling the user nothing
-      // was scheduled; only a target that was actually cancelled (never began)
-      // gets the "未安排执行" wording.
-      if (this.bridge.hasTaskBegan(messageId)) {
+      // 3. Remove all tasks BEFORE this one (by position in the current queue).
+      // The target may have begun while interruptCurrentRun was awaiting (the chain
+      // advances concurrently): then it is already out of the snapshot and every
+      // remaining queued task is BEHIND it — clearing must stop, not run off the
+      // end and delete tasks queued after the target.
+      const tasks = this.bridge.getQueuedTasks(cwd);
+      const targetIdx = tasks.findIndex((t) => t.messageId === messageId);
+      let removedCount = 0;
+      // Phase 1: remove synchronously. The queue chain advances on any await
+      // (card PATCH round trips included), so every task before the target must
+      // be removed before yielding to the event loop — otherwise a task the user
+      // asked to clear can begin executing while its cancellation card is still
+      // in flight.
+      for (let i = 0; i < targetIdx; i++) {
+        const task = tasks[i];
+        // 撤销卡片由 removeFromQueue 统一触发（fire-and-forget），保持本循环
+        // 同步推进的既有不变式。
+        if (this.bridge.removeFromQueue(cwd, task.messageId)) {
+          removedCount++;
+        }
+      }
+      if (targetIdx < 0) {
+        getLogger().debug(
+          `[router] queue.immediate: target no longer queued (began/cancelled), not clearing tasks behind it`,
+        );
+      }
+
+      // 4. DO NOT remove the target task - keep it in queue to execute immediately
+      // The queue will naturally execute it after the current task (which we just stopped)
+
+      // 4.4. Refresh the replacement with the latest edited content (idempotent:
+      // re-registering over the same slot). Covers the user editing the message
+      // again while interruptCurrentRun was awaiting; skipped automatically once
+      // the task has begun, because getQueuedTask then returns undefined.
+      const latestTask = this.bridge.getQueuedTask(cwd, messageId);
+      if (latestTask?.editedMessage) {
+        const editedContent = latestTask.editedMessage;
+        ///Step3: 复用原任务 binding + 恢复 cwdOverride（同上）。
+        this.bridge.setTaskReplacement(cwd, messageId, async () => {
+          await this.handle(editedContent, ctx, {
+            cwdOverride: cwd,
+            binding: latestTask.binding,
+          });
+        });
+      }
+
+      // 4.5/6. The target must only be marked executing (and the toast may only
+      // promise immediate execution) when it is really the next task after the
+      // stop. While interruptCurrentRun was awaiting, a task ahead of the target
+      // may have begun and now occupy the cwd — the target is still queued
+      // but is NOT next, so its card must stay queued and the toast must say so.
+      const targetStillQueued = this.bridge.getQueuedTask(cwd, messageId) !== undefined;
+      if (!targetStillQueued) {
+        // The target began or was cancelled while earlier awaits were in flight —
+        // a success toast must never promise execution of a task that will not
+        // run. The two missing-reason states get distinct feedback: a target
+        // that began while the interrupt was in flight is already executing, so
+        // the toast must acknowledge that instead of telling the user nothing
+        // was scheduled; only a target that was actually cancelled (never began)
+        // gets the "未安排执行" wording.
+        if (this.bridge.hasTaskBegan(messageId)) {
+          await this.bridge.sendResult(
+            { text: `ℹ️ 目标消息已开始执行，无需重复操作。已清除 ${removedCount} 条排队消息。` },
+            ctx,
+          );
+        } else {
+          await this.bridge.sendResult(
+            {
+              text: `⚠️ 目标消息已不在队列中（可能已被撤销），未安排执行。已清除 ${removedCount} 条排队消息。`,
+            },
+            ctx,
+          );
+        }
+        return;
+      }
+      const workspaceBusy = this.bridge.isBusyFor(cwd);
+      if (stopUnconfirmed) {
+        const name = interrupt.agentKind ? agentDisplayName(interrupt.agentKind) : 'agent';
         await this.bridge.sendResult(
-          { text: `ℹ️ 目标消息已开始执行，无需重复操作。已清除 ${removedCount} 条排队消息。` },
+          {
+            text:
+              `⚠️ 未能确认 ${name} 的 turn 已停止，它可能仍在后台运行。\n` +
+              `已清除 ${removedCount} 条排队消息；您的消息已提交，但可能要等该 turn 结束后才开始。`,
+          },
+          ctx,
+        );
+      } else if (!workspaceBusy) {
+        // Normal path: nothing new began during the stop, the target is next.
+        // Mark its own card as executing now so buttons grey out immediately.
+        // Done BEFORE any removal so getQueuedTask still returns the task with
+        // its (possibly edited) messagePreview for the card. The queue callback's
+        // later updateQueueCardToExecuting call becomes a no-op (idempotent).
+        await this.bridge.markQueueCardExecuting(cwd, messageId);
+        const stopPrefix = stopped ? '⚡ 已停止当前任务，' : '';
+        await this.bridge.sendResult(
+          { text: `${stopPrefix}清除了 ${removedCount} 条排队消息。您的消息将立即执行。` },
           ctx,
         );
       } else {
         await this.bridge.sendResult(
           {
-            text: `⚠️ 目标消息已不在队列中（可能已被撤销），未安排执行。已清除 ${removedCount} 条排队消息。`,
+            text: `⚠️ 排在目标之前的任务已开始执行，目标消息保持排队。已清除 ${removedCount} 条排队消息。`,
           },
           ctx,
         );
       }
-      return;
-    }
-    const workspaceBusy = this.bridge.isBusyFor(cwd);
-    if (stopUnconfirmed) {
-      const name = interrupt.agentKind ? agentDisplayName(interrupt.agentKind) : 'agent';
-      await this.bridge.sendResult(
-        {
-          text:
-            `⚠️ 未能确认 ${name} 的 turn 已停止，它可能仍在后台运行。\n` +
-            `已清除 ${removedCount} 条排队消息；您的消息已提交，但可能要等该 turn 结束后才开始。`,
-        },
-        ctx,
-      );
-    } else if (!workspaceBusy) {
-      // Normal path: nothing new began during the stop, the target is next.
-      // Mark its own card as executing now so buttons grey out immediately.
-      // Done BEFORE any removal so getQueuedTask still returns the task with
-      // its (possibly edited) messagePreview for the card. The queue callback's
-      // later updateQueueCardToExecuting call becomes a no-op (idempotent).
-      await this.bridge.markQueueCardExecuting(cwd, messageId);
-      const stopPrefix = stopped ? '⚡ 已停止当前任务，' : '';
-      await this.bridge.sendResult(
-        { text: `${stopPrefix}清除了 ${removedCount} 条排队消息。您的消息将立即执行。` },
-        ctx,
-      );
-    } else {
-      await this.bridge.sendResult(
-        {
-          text: `⚠️ 排在目标之前的任务已开始执行，目标消息保持排队。已清除 ${removedCount} 条排队消息。`,
-        },
-        ctx,
-      );
+    } finally {
+      releaseRunStart();
     }
   }
 

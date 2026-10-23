@@ -712,6 +712,18 @@ export class Bridge {
     this.queueManager.setTaskReplacement(cwd, messageId, task);
   }
 
+  /**
+   * One-shot: hold the target's run-card start until the returned release is
+   * called. queue.immediate uses it so its final toast is sent before the run
+   * card — the toast would otherwise be the newest message and the chat list
+   * would stop previewing the run card's title changes. The queue slot itself
+   * still begins normally; only run-card creation waits (see
+   * QueueManager.holdTaskRunStart).
+   */
+  holdQueueTaskRun(cwd: string, messageId: string): () => void {
+    return this.queueManager.holdTaskRunStart(cwd, messageId);
+  }
+
   /** Update queue card to "cancelled" status when user clicks 撤销. */
   async updateQueueCardToCancelled(cwd: string, messageId: string): Promise<void> {
     await this.queueManager.updateQueueCardToCancelled(cwd, messageId);
@@ -1620,6 +1632,11 @@ export class Bridge {
 
     try {
       try {
+        // queue.immediate 的 run-start hold：目标槽位可能在 handler 发最终
+        // toast 之前就 begin（interrupt/PATCH 的 await 窗口）。activeRun 已
+        // 登记（队列语义照旧），只把建卡这一步挡到 toast 之后——run 卡片才是
+        // 点击后最后一条新消息，聊天列表预览跟随它的标题变化。
+        await this.queueManager.awaitTaskRunStart(cwd);
         getLogger().debug(`[lark-remote] cardSession.start() begin runId=${runId}`);
         await cardSession.start();
         getLogger().info(`[lark-remote] cardSession.start() ok runId=${runId}`);

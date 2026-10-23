@@ -88,6 +88,11 @@ export interface ExecutingInfo {
    * settle 清掉后继任务的占用者（身份不用外部 id，同 §9.24 口径）。
    */
   slotId: number;
+  /**
+   * 本次执行条目自己的队列 key（排队卡身份，见 §9.24）。run 起始闸门按它
+   * 找到「当前 lane 占用者」持有的 hold；无 taskMeta 的任务为 undefined。
+   */
+  messageId?: string;
   kind: LaneTaskKind;
   /** 展示标签，例如 '💬 消息' / '🗜 Compact' / '📋 config.save'。 */
   label: string;
@@ -95,6 +100,12 @@ export interface ExecutingInfo {
   preview?: string;
   /** 登记时刻（epoch ms）。当前只供诊断，卡片不渲染实时时长。 */
   startedAt: number;
+}
+
+/** 一个未释放的 run 起始 hold（queue.immediate 排序用）。 */
+interface TaskRunHold {
+  promise: Promise<void>;
+  release: () => void;
 }
 
 /** 排队卡「正在执行」一行用的展示标签。 */
@@ -207,6 +218,17 @@ export class QueueManager {
   private interruptedSlots = new Map<string, Set<number>>();
   /** Per-workspace messageId → replacement closure, set by queue.edit + immediate. */
   private taskReplacements = new Map<string, Map<string, () => Promise<void>>>();
+  /**
+   * Per-workspace messageId → run 起始 hold，单次消费。
+   *
+   * queue.immediate 在入口注册、finally 释放；目标任务的 begin 路径照常推进
+   * （槽位移除、排队卡翻执行态），但 `forwardToClaude` 在建 run 卡片前会等
+   * 当前 lane 占用者的 hold。这样「先 toast、后 run 卡片」与队列链推进速度
+   * 无关：run 卡片是点击后最后一条新消息，聊天列表预览才会跟随它的标题变化。
+   * hold 按队列 key 存（order.exec 的内部 key 也能命中），通过 executingInfo
+   * 找到当前占用者，不需要把队列 key 穿过 router/forwardToClaude 的参数。
+   */
+  private taskRunHolds = new Map<string, Map<string, TaskRunHold[]>>();
   /**
    * MessageIds of tasks that have actually begun executing (cancellation check
    * passed, task removed from the queue). Entries are sticky: they remain
@@ -467,6 +489,7 @@ export class QueueManager {
         // is waiting for instead of reporting "前面还有 0 条".
         this.executingInfo.set(cwd, {
           slotId,
+          messageId,
           kind: taskMeta?.kind ?? 'message',
           label: laneOccupantLabel(taskMeta?.kind ?? 'message', livePreview),
           preview: livePreview,
@@ -500,6 +523,68 @@ export class QueueManager {
     void task().catch((err: unknown) =>
       getLogger().error('[queue-manager] immediate task error:', err),
     );
+  }
+
+  /**
+   * 单次：hold 住某个排队任务的 run 起始，直到返回的 release 被调用。
+   *
+   * 与「hold 任务闭包」不同，这里只挡 `forwardToClaude` 建 run 卡片之前的
+   * 那一步：队列槽位照常 begin（排队卡翻执行态、began 记账都发生），所以
+   * queue.immediate 的成员资格判断不受影响，只是目标 run 卡片会等 toast。
+   * release 幂等；若任务在 begin 前被撤销，release 会清掉未消费的 hold。
+   */
+  holdTaskRunStart(cwd: string, messageId: string): () => void {
+    let resolve!: () => void;
+    const hold: TaskRunHold = {
+      promise: new Promise<void>((r) => {
+        resolve = r;
+      }),
+      release: () => resolve(),
+    };
+    let workspaceHolds = this.taskRunHolds.get(cwd);
+    if (!workspaceHolds) {
+      workspaceHolds = new Map();
+      this.taskRunHolds.set(cwd, workspaceHolds);
+    }
+    const holds = workspaceHolds.get(messageId);
+    if (holds) {
+      holds.push(hold);
+    } else {
+      workspaceHolds.set(messageId, [hold]);
+    }
+    getLogger().debug(`[queue-manager] hold task run start cwd=${cwd} messageId=${messageId}`);
+    return () => {
+      // Resolve before mutating the map: `awaitTaskRunStart` may already have
+      // captured (and deleted) this entry, and the captured promise still needs
+      // to settle.
+      hold.release();
+      const current = this.taskRunHolds.get(cwd)?.get(messageId);
+      if (!current) return;
+      const idx = current.indexOf(hold);
+      if (idx >= 0) current.splice(idx, 1);
+      if (current.length > 0) return;
+      this.taskRunHolds.get(cwd)?.delete(messageId);
+      if (this.taskRunHolds.get(cwd)?.size === 0) this.taskRunHolds.delete(cwd);
+    };
+  }
+
+  /**
+   * 等待当前 lane 占用者的 run 起始 hold。由 `forwardToClaude` 在建 run 卡片
+   * 前调用；hold 在当前调用里同步摘除，之后才注册的 hold 不会延长本次 run
+   * （release 仍会 settle 已捕获的 promise）。
+   */
+  async awaitTaskRunStart(cwd: string): Promise<void> {
+    const messageId = this.executingInfo.get(cwd)?.messageId;
+    if (!messageId) return;
+    const workspaceHolds = this.taskRunHolds.get(cwd);
+    const holds = workspaceHolds?.get(messageId);
+    if (!holds || holds.length === 0) return;
+    workspaceHolds?.delete(messageId);
+    if (workspaceHolds?.size === 0) this.taskRunHolds.delete(cwd);
+    getLogger().debug(
+      `[queue-manager] awaiting task run start cwd=${cwd} messageId=${messageId} holds=${holds.length}`,
+    );
+    await Promise.all(holds.map((h) => h.promise));
   }
 
   /**
