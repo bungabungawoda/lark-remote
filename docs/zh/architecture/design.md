@@ -1100,9 +1100,10 @@ fallback 发新卡，保证点击必有反馈）；兄弟卡走 `Bridge.patchCar
    `_isRunning` 守卫 + `streamCompact` 的 `activeRuns` 占用检查）。不得为了消除排队
    而让两者并发。
 2. **lane 占用者单源** = `QueueManager.executingInfo`（cwd →
-   `{ slotId, kind, label, preview, startedAt }`）：begin 登记、settle 清除，与
-   `executingSlot` 同寿命。清除必须校验 `slotId`，否则迟到的 settle 会清掉后继任务
-   的记录（身份不用外部 id，同 §9.24 口径）。
+   `{ slotId, messageId, kind, label, preview, startedAt }`）：begin 登记、settle
+   清除，与 `executingSlot` 同寿命。清除必须校验 `slotId`，否则迟到的 settle 会清掉
+   后继任务的记录（身份不用外部 id，同 §9.24 口径）。`messageId` 是该条目自己的
+   队列 key，run 起始 hold 靠它定位「当前占用者」。
 3. **头部两态**：`tasksAhead > 0` → 「⏳ 消息排队中」；否则「⏳ 等待当前任务结束」。
    `queueCardHeader` 是单源，`sendQueueStatusCard` 与 `buildQueueCardForEdit` 共用
    ——后者是点击回调响应的渲染路径，漏改会让编辑后的卡重现同一矛盾。
@@ -1117,6 +1118,14 @@ fallback 发新卡，保证点击必有反馈）；兄弟卡走 `Bridge.patchCar
 6. **kind 显式声明**：`EnqueueOptions.taskMeta.kind`（`message` 缺省 / `compact` /
    `command`）决定卡片标签；压缩类动作清单单源在 `COMPACT_ACTION_CMDS`
    （`src/router/index.ts`），`src/index.ts` 同时用它决定 `editable`。
+7. **queue.immediate 的 run 卡片排在最终 toast 之后**：handler 在入口用
+   `holdQueueTaskRun` 登记一次性 hold，finally 释放；目标槽位照常 begin（排队卡翻
+   执行态、begin 记账不变），但 `forwardToClaude` 在 `cardSession.start()` 前等
+   当前 lane 占用者的 hold。停止/PATCH 的 await 窗口内队列链推进时，run 卡片也
+   不会抢在 toast 前面。否则 toast 成为最后一条新消息，聊天列表预览停在 toast
+   文案上，run 卡片标题（思考中 / 工具 / 完成）的后续变化不点进会话就看不到。
+   锚点：`queue-immediate-feedback.test.ts` 的
+   `test_anchor_immediate_toast_precedes_target_run_card`。
 
 **测试锚点**：`tests/anchor/queue-card-arm/queue-card-arm.test.ts`
 （身份 / 位置 / 按钮，见其中「排队卡按 lane 占用者渲染」一节）、`queue-immediate-guards.test.ts`
