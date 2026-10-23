@@ -16,6 +16,7 @@ import {
   createGatedRunner,
   createStubRunner,
   createStubConnector,
+  createStubConnectorWithGatedCardUpdate,
   type GatedRunner,
 } from '../../lib/bridge-stubs.js';
 import { mockLogger } from '../../lib/logger-mock.js';
@@ -1436,5 +1437,126 @@ describe('queue executing count must not be reset onto the next task that began 
       releaseM();
       await sleep(50);
     }
+  });
+});
+
+describe('queue.immediate final toast must be sent BEFORE the target run card (anchor)', () => {
+  it('test_anchor_immediate_toast_precedes_target_run_card', async () => {
+    // 验证什么行为：队列 [T1 执行中, T(目标)] 上，用户对 T 点「⚡ 立即执行」。
+    // handler 在 `await markQueueCardExecuting`（排队卡 PATCH 往返）期间，T1
+    // 的队列链 settle、T 的槽位 begin，T 的 forwardToClaude 本应立刻发 run 卡片。
+    // 期望：最终 toast（"⚡ 已停止当前任务…您的消息将立即执行。"）必须先于 T 的
+    // run 卡片落地；run 卡片必须是点击后最后一条新消息。
+    //
+    // 缺失会导致什么问题：run 卡片先到、toast 后到，聊天列表最后一条是新 toast，
+    // 列表预览只显示 toast 文案；run 卡片标题（思考中 / 工具名 / 完成态）的后续
+    // 变化被压在下面，用户不点进会话就看不到。反过来把 run 卡片放在 toast 之后，
+    // 列表预览跟随 run 卡片标题变化，点「立即执行」后无需进入对话即可确认目标
+    // 真的开跑了。顺序由 `await` 窗口决定，靠调整两个 await 的先后不够——必须
+    // 让目标 run 在 toast 发出前无法建卡。
+    //
+    // 依据：queue.immediate 的用户可见反馈语义是「先确认动作，再呈现执行」；
+    // 目标 run 的卡片发送点是 runAgentStreamToEnd 里的 cardSession.start()，
+    // 因此在 queue manager 上登记一次性 run 起始闸门，handler 的 finally 释放，
+    // 即可保证 toast 的 sendResult 先落地。
+    const connector = createStubConnectorWithGatedCardUpdate();
+    const runner = createStubRunner({ mode: 'empty' });
+    const { bridge, router } = createRouterFixture({
+      tmpDir,
+      config,
+      connector,
+      runner,
+      sessionReaderRegistry: new SessionReaderRegistry(),
+    });
+
+    const ctx = { userId: 'u1', chatId: 'c1', messageId: 'msg-card-2' };
+
+    // --- 步骤 1：T1（挂起）占住 lane ---
+    let releaseT1: () => void = () => {};
+    const hangT1 = new Promise<void>((resolve) => {
+      releaseT1 = resolve;
+    });
+    let t1Started = false;
+    bridge.enqueue(
+      tmpDir,
+      async () => {
+        t1Started = true;
+        await hangT1;
+      },
+      {
+        taskMeta: {
+          userId: 'u1',
+          chatId: 'c1',
+          messageId: 'm1',
+          messagePreview: 'T1 running',
+        },
+      },
+    );
+    expect(await waitFor(() => t1Started)).toBe(true);
+
+    // --- 步骤 2：T（目标）排队；begin 后会真正调用 forwardToClaude 建 run 卡片 ---
+    bridge.enqueue(
+      tmpDir,
+      async () => {
+        await bridge.forwardToClaude('T immediate target', ctx, { cwdOverride: tmpDir });
+      },
+      {
+        taskMeta: {
+          userId: 'u1',
+          chatId: 'c1',
+          messageId: 'mT',
+          messagePreview: 'T immediate target',
+        },
+      },
+    );
+    expect(await waitFor(() => bridge.getQueuedTask(tmpDir, 'mT') !== undefined)).toBe(true);
+
+    // 本用例只钉顺序：中断直接回报已停止，不引入真实 runner 的 stop 时序。
+    vi.spyOn(bridge, 'interruptCurrentRunDetailed').mockResolvedValue({ stopped: true });
+
+    const sentBeforeClick = connector._sent.length;
+    const immediateDone = router.handleCardAction(
+      { cmd: 'queue.immediate', cwd: tmpDir, messageId: 'mT' },
+      ctx,
+    );
+
+    // --- 步骤 3：handler 停在 markQueueCardExecuting 的 PATCH 上 ---
+    expect(await waitFor(() => connector._updateCalls.includes('▶️ 已开始执行'))).toBe(true);
+
+    // --- 步骤 4：PATCH 在途时 T1 settle → 队列链前进 → T begin ---
+    releaseT1();
+    expect(await waitFor(() => bridge.getQueuedTask(tmpDir, 'mT') === undefined)).toBe(true);
+    expect(bridge.hasTaskBegan('mT')).toBe(true);
+
+    // --- 步骤 5：放行 PATCH，handler 发 toast 并释放 run 起始闸门 ---
+    connector.releaseCardGate();
+    await immediateDone;
+    expect(
+      await waitFor(() =>
+        connector._sent.slice(sentBeforeClick).some((s) => {
+          const input = s.input as { card?: unknown };
+          return input.card !== undefined;
+        }),
+      ),
+    ).toBe(true);
+
+    const afterClick = connector._sent.slice(sentBeforeClick);
+    const toastIdx = afterClick.findIndex((s) => {
+      const text = (s.input as { text?: string }).text;
+      return typeof text === 'string' && text.includes('您的消息将立即执行');
+    });
+    const runCardIdx = afterClick.findIndex((s) => {
+      const input = s.input as { card?: unknown };
+      return input.card !== undefined;
+    });
+
+    expect(toastIdx).toBeGreaterThanOrEqual(0);
+    // 修复前：T begin 后 forwardToClaude 立刻发 run 卡片，toast 仍在 PATCH 后，
+    // runCardIdx < toastIdx。修复后 run 卡片必须排在 toast 之后。
+    expect(runCardIdx).toBeGreaterThan(toastIdx);
+
+    // 清理：放行可能新挂起的卡片 PATCH / 队列链。
+    connector.releaseCardGate();
+    await sleep(50);
   });
 });
