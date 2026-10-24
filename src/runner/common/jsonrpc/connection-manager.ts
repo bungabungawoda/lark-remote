@@ -292,17 +292,24 @@ export class ConnectionManager<TClient extends ConnectionClient = JsonRpcClient>
    *
    * `idleTtlMs: 0` = 不回收（与 claude 会话层的 `armIdleTimer` 同口径；按 0
    * setTimeout 会秒删刚建好的连接，等于每条消息重起一次进程）。
+   *
+   * 定时器回调带 **slot 身份校验**：武装之后 slot 可能已被替换——进程自退走
+   * baseOnClose（删 slot 但不经过 disposeSlot）、或同 cwd 已 acquire 了新连接。
+   * 这两种情况下本定时器都已过期，不得回收「当时恰好挂在该 cwd 上」的连接：
+   * 2026-10-24 线上事故即一条泄漏的过期 TTL 杀掉继任连接的在途 turn，卡片
+   * 误报 "Codex app-server connection closed"。
    */
   notifyIdle(cwd: string): void {
     if (this.idleTtlMs <= 0) return;
     const slot = this.slots.get(cwd);
-    if (slot) {
-      this.clearIdleTimer(slot);
-      slot.idleTimer = setTimeout(() => {
-        getLogger().info(`[${this.logTag}] idle timeout for cwd=${cwd}, releasing connection`);
-        this.disposeSlot(cwd);
-      }, this.idleTtlMs);
-    }
+    if (!slot) return;
+    this.clearIdleTimer(slot);
+    slot.idleTimer = setTimeout(() => {
+      slot.idleTimer = null;
+      if (this.slots.get(cwd) !== slot) return;
+      getLogger().info(`[${this.logTag}] idle timeout for cwd=${cwd}, releasing connection`);
+      this.disposeSlot(cwd);
+    }, this.idleTtlMs);
   }
 
   // =========================================================================
@@ -333,7 +340,13 @@ export class ConnectionManager<TClient extends ConnectionClient = JsonRpcClient>
         getLogger().info(`[${this.logTag}] connection closed cwd=${cwd}`);
         // 只清理自己创建的 slot：并发 release + 重新 acquire 后 slot 可能已被
         // 新连接占据，误删会破坏新连接。
-        if (this.slots.get(cwd)?.client === client) {
+        const current = this.slots.get(cwd);
+        if (current?.client === client) {
+          // 进程自退（codex app-server 偶发 exit 0，非本程序发起，不经
+          // disposeSlot）也要撤掉挂在旧 slot 上的 idle TTL：定时器不随 slot
+          // 删除而取消，到期时会按 cwd 误杀继任连接的在途 turn（2026-10-24
+          // 线上事故，见 notifyIdle 的身份校验与对应回归测试）。
+          this.clearIdleTimer(current);
           this.slots.delete(cwd);
           this.onConnectionLost?.(cwd);
         }
