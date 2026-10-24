@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.12] - 2026-10-24
+
+### 修复
+
+- **Bash 工具结果不再偶发丢失**：kimi 的终端子进程退出后，runner 会等 stdout 尾部 flush（最多 200ms）再推 Bash 输出；但 `terminal/wait_for_exit` 此前在 flush 之前就返回，服务端拿到响应后立即 release 并结束回合，回合结果可能先于延迟推送的 tool_result 到达，卡片上的 Bash 面板变成空输出。现在 wait_for_exit 在 tool_result 入队后才返回，保证输出先于回合结束送达
+
+### 维护
+
+- **测试同步原语收紧**：pid 文件改为等完整内容再读（避免读到空串后把 0 当 PID 轮询进程组）；kimi 压缩完成用例改由 mock server 在收到 prompt 后延迟落记录，消除并行负载下的假红。无行为变化
+
 ## [0.5.11] - 2026-10-24
 
 ### 修复
