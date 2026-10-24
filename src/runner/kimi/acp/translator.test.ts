@@ -160,6 +160,37 @@ describe('KimiAcpTranslator', () => {
     expect(content[0].input).toEqual({});
   });
 
+  it('in-progress update（无 rawOutput）不发空 tool_result（面板保持 running）', () => {
+    // kimi 非 Bash 工具的 in-progress 只带流式 args（rawOutput 缺省）：
+    // 空 tool_result 会让 reducer 把运行中的工具提前置 ✅ + 空输出
+    // kimi 没有 buildToolUseUpdate 覆写（那是
+    // opencode 的身份回填通道），所以这类更新产出零事件——面板维持
+    // tool_call 创建时的 running 态，等终态 update 定型。
+    const t = new KimiAcpTranslator();
+    const created = t.handleNotification(
+      NotificationMethod.SESSION_UPDATE,
+      sessionUpdate(SESSION_ID, {
+        sessionUpdate: SessionEventType.TOOL_CALL,
+        toolCallId: 'tc-ip',
+        kind: 'execute',
+        title: 'grep -r foo',
+      }),
+    );
+    expect(created).toHaveLength(1);
+
+    const events = t.handleNotification(
+      NotificationMethod.SESSION_UPDATE,
+      sessionUpdate(SESSION_ID, {
+        sessionUpdate: SessionEventType.TOOL_CALL_UPDATE,
+        toolCallId: 'tc-ip',
+        status: 'in_progress',
+        title: 'grep -r foo',
+      }),
+    );
+
+    expect(events).toHaveLength(0);
+  });
+
   it('maps tool_call_update status:failed to user/tool_result with is_error:true', () => {
     const t = new KimiAcpTranslator();
     const events = t.handleNotification(

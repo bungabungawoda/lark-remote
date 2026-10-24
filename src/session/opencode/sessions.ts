@@ -401,15 +401,17 @@ export class OpencodeSessionReader implements AgentSessionReader {
             // all render 0). Skip zero-total steps so per-turn usage reflects
             // the last step that actually consumed tokens.
             // ccusage-aligned: cache.write -> cacheCreationTokens.
-            // contextLength = input + cacheRead + cacheCreation (excludes
-            // output/reasoning) — the unified context-window occupancy
-            // contract across all five readers.
+            // contextLength = input + output + cacheRead + cacheCreation —
+            // the unified context-window occupancy contract across all readers
+            // (§9.21：末轮 output 已进入历史、下一 prompt 全量携带，与 compact
+            // postTokens 水位同语义).
             if ((part.tokens.total ?? 0) !== 0) {
               usage = {
                 inputTokens: part.tokens.input,
                 outputTokens: part.tokens.output,
                 contextLength:
-                  part.tokens.input +
+                  (part.tokens.input ?? 0) +
+                  (part.tokens.output ?? 0) +
                   (part.tokens.cache?.read ?? 0) +
                   (part.tokens.cache?.write ?? 0),
                 cacheReadTokens: part.tokens.cache?.read,
@@ -634,7 +636,8 @@ export class OpencodeSessionReader implements AgentSessionReader {
         latest = {
           inputTokens: tokens.input,
           outputTokens: tokens.output,
-          contextLength: tokens.input + cacheRead + cacheWrite,
+          // §9.21 口径：含末轮 output（与 postTokens 水位同语义）。
+          contextLength: tokens.input + tokens.output + cacheRead + cacheWrite,
           cacheReadTokens: cacheRead,
           cacheCreationTokens: cacheWrite,
           totalTokens: total,
@@ -809,9 +812,13 @@ export class OpencodeSessionReader implements AgentSessionReader {
    * stdout when it is redirected to a file fd, so we read the file instead.
    */
   private captureExportViaFileFd(sessionId: string): string {
+    // sessionId 经 path.basename 净化：它来自用户 /resume <id> 输入或畸形 CLI
+    // 数据，含 / 或 .. 时 path.join 会归一化出 tmpdir 之外的路径（写入内容为
+    // CLI stdout，可能截断/覆盖目标文件）。
+    const safeId = path.basename(sessionId);
     const tmp = path.join(
       os.tmpdir(),
-      `opencode-export-${sessionId}-${process.pid}-${Date.now()}.json`,
+      `opencode-export-${safeId}-${process.pid}-${Date.now()}.json`,
     );
     let fd: number | undefined;
     try {

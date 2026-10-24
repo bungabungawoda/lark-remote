@@ -59,6 +59,17 @@ const THINKING_ITEM_ID = 'thinking';
 export class KimiAcpTranslator extends BaseAcpTranslator {
   protected readonly logTag = 'kimi-acp-translator';
 
+  /**
+   * 非终态 tool_call_update 不附带空 tool_result：kimi 非 Bash 工具的
+   * in-progress 只带流式 args（rawOutput 缺省 → content ''），空 tool_result
+   * 会让 reducer 把运行中的工具提前置 ✅ + 空输出（终态到达后自愈，但终态
+   * 丢失时面板停在错误的「已完成」）。opencode 走基类默认 true（其
+   * in-progress 带输出快照，seam 契约钉死要发）。
+   */
+  protected override emitToolResultForNonTerminalUpdate(content: unknown): boolean {
+    return !(content === undefined || content === null || content === '');
+  }
+
   /** Accumulated text per tool-call or message (keyed by a logical item id). */
   private textByItem = new Map<string, string>();
   /** Accumulated thinking per item. */

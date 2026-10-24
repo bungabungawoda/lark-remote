@@ -37,7 +37,11 @@ export function resolveAgentChoices(config: AppConfig): AppConfig {
 
   for (const { configKey, choicesKey } of fields) {
     const value = source[choicesKey];
-    if (!target[configKey] && value) {
+    // 只填「配置里根本没写」的字段（undefined）：显式清空（config.yaml 写了
+    // `model: ""`）是用户意志，旧真值判断 `!target[configKey]` 会把空串当
+    // 「未配置」，用残留 choices 把清空值填回去——重启后永远回不到默认。
+    // value 为空串同样不填（choices 里记录的「跟随默认」）。
+    if (target[configKey] === undefined && value) {
       target[configKey] = value;
     }
   }

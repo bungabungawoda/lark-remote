@@ -151,9 +151,22 @@ export class PiRpcRunner extends ConnectionBasedRunner<PiRpcClient, PiRpcTransla
     const client = await this.manager.acquire(opts.cwd, { sessionId: opts.sessionId });
     this.manager.notifyActivity(opts.cwd);
     this.currentClient = client;
+    // 轮次代际锚点（与 BaseAcpRunner 同口径）：pi 的 shouldReuse 要求
+    // sessionId 匹配，/new、/resume 切换后的首条消息会让 acquire **同步
+    // dispose** 旧连接；terminator 等到进程退出后，旧 client 上残留的上一轮
+    // onClose 闭包会把假错误推进新 turn 的共享队列（用户消息未发出即丢失）。
+    // 旧轮迟到的 agent_settled 同理（新 turn 空转立即"成功"）。所有 hook
+    // 落地前必须过 isCurrentTurn。
+    const generation = this.turnGeneration;
     client.setHooks({
-      onEvent: (evt) => this.handleEvent(evt),
-      onClose: () => this.failTurn('Pi RPC connection closed'),
+      onEvent: (evt) => {
+        if (!this.isCurrentTurn(generation, client)) return;
+        this.handleEvent(evt);
+      },
+      onClose: () => {
+        if (!this.isCurrentTurn(generation, client)) return;
+        this.failTurn('Pi RPC connection closed');
+      },
     });
 
     let sessionId = opts.sessionId;
@@ -201,9 +214,17 @@ export class PiRpcRunner extends ConnectionBasedRunner<PiRpcClient, PiRpcTransla
       const client = await this.manager.acquire(opts.cwd, { sessionId: opts.sessionId });
       this.manager.notifyActivity(opts.cwd);
       this.currentClient = client;
+      // 同 setupTurn：hook 带轮次代际锚点，旧连接的迟到回调不得进入本轮。
+      const generation = this.turnGeneration;
       client.setHooks({
-        onEvent: (evt) => this.handleEvent(evt),
-        onClose: () => this.failTurn('Pi RPC connection closed'),
+        onEvent: (evt) => {
+          if (!this.isCurrentTurn(generation, client)) return;
+          this.handleEvent(evt);
+        },
+        onClose: () => {
+          if (!this.isCurrentTurn(generation, client)) return;
+          this.failTurn('Pi RPC connection closed');
+        },
       });
 
       this.activeSessionId = opts.sessionId;
@@ -218,7 +239,10 @@ export class PiRpcRunner extends ConnectionBasedRunner<PiRpcClient, PiRpcTransla
       this.pushEvents([translator.produceTurnStarted(opts.sessionId, turnId)]);
 
       this.promptSettled = false;
-      const response = await client.request({ type: 'compact' });
+      // compact 是完整的 LLM 请求（同步跑完才回响应，协议文档自述），大上下文
+      // 压缩轻松超过默认 60s 请求超时——超时只会出假错误卡，压缩仍在后台完成。
+      // 活性交给 turn idle 看门狗与 /stop（与 ACP 侧 turn 级请求同口径）。
+      const response = await client.request({ type: 'compact' }, Number.POSITIVE_INFINITY);
       this.promptSettled = true;
       // Guard: a stop may have already ended this turn (deferred-stop during
       // compaction) — don't push a stale result into a (possibly reused) queue.

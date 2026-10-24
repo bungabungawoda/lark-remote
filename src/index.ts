@@ -75,9 +75,18 @@ import { stripPlaceholders } from './inbound/placeholder.js';
 import type { MediaOutcome } from './inbound/turn.js';
 import { buildSessionHistoryCard, pickResumeCardEvents } from './router/card-helpers.js';
 import { newSessionButton, resumeCompactButton, agentDisplayName } from './card/card-shared.js';
+import { sleep } from './common/sleep.js';
 import path from 'node:path';
 import fs from 'node:fs';
 import { bestEffortUnlink } from './common/fs.js';
+
+/**
+ * 会话变更类卡片动作执行前冲刷入站装配窗口的等待预算（ms）。flush 本身无下载
+ * 在途时瞬时完成（顺序保证完整）；预算只挡「in-flight 媒体下载卡住」的场景
+ * （下载超时 5 分钟/资源）——SDK 把卡片动作放进与消息共享的 per-chat 串行
+ * lane 并 await 到底，无界等待会让整个 chat 停摆到下载超时。
+ */
+const SESSION_MUTATING_FLUSH_BUDGET_MS = 2_000;
 
 /**
  * /stop 命令别名单源：普通消息的停止分支与 clone 活跃期拦截的排除条件
@@ -491,8 +500,11 @@ function setupMessageHandlers(
       };
       let cwd = sessionStore.getCwd(turn.userId) ?? '';
       if (!cwd && workspaceStore) {
-        const workspaces = workspaceStore.list();
-        if (workspaces.length > 0) cwd = workspaces[0].path;
+        // 兜底取「最近使用」而非插入序首位：WorkspaceStore.list() 按 Map 插入序
+        // 返回（touch 原地改时间戳不重排），[0] 恒为最早保存的别名——触发时会把
+        // 消息静默发到最旧工作区，与「最近使用」直觉相反。
+        const recent = [...workspaceStore.list()].sort((a, b) => b.lastUsedAt - a.lastUsedAt);
+        if (recent.length > 0) cwd = recent[0].path;
       }
       const binding = bridge.currentBinding(turn.userId);
       bridge.enqueue(
@@ -587,6 +599,14 @@ function setupMessageHandlers(
     const authorization = authorizer.authorize(msg.userId, msg.chatId);
     if (authorization === 'rejected') {
       logger.warn(`[media] rejected inbound media from non-owner ${msg.userId}`);
+      return;
+    }
+    // clone 状态机活跃期：一切输入归 clone 流程、不落盘附件
+    // （inbound-unified-input-design.md §5.8；文本入口有同款闸门）。静默丢弃
+    // 而非发回执——装配器的「📎 已保存」回执会与 clone 引导话术冲突，诱导
+    // 用户「说一句话」触发 clone 的婉拒回复。
+    if (cloneSession.isActive()) {
+      logger.info(`[media] dropped inbound media during clone session ${msg.messageId}`);
       return;
     }
     // 读 router.config（活引用）：/config 保存后 setConfigValues 返回新对象，
@@ -752,29 +772,14 @@ function setupMessageHandlers(
     void connector.addReaction(messageId, 'Typing');
 
     if (actionValue.cmd === 'stop') {
-      if (!actionValue.runId) {
-        logger.warn('[control] ignored stop card action without runId');
-        // Card button clicks must have visible feedback (design constraint: card button
-        // 点击必须有可见反馈，见 design.md §6.2)。
-        void bridge
-          .sendResult({ text: '⚠️ 无效的停止请求，缺少必要信息' }, { userId, chatId, messageId })
-          .catch((err: unknown) => logger.error('[control] card stop feedback failed:', err));
-        return;
-      }
-      void (async () => {
-        const stopped = await bridge.interruptCurrentRun({
-          userId,
-          chatId,
-          runId: actionValue.runId,
-        });
-        if (!stopped) {
-          // runId mismatch or run already exited — mirror /stop text miss path.
-          await bridge.sendResult(
-            { text: '该任务已结束，无需终止' },
-            { userId, chatId, messageId },
-          );
-        }
-      })().catch((err: unknown) => logger.error('[control] card stop failed:', err));
+      // 委托 router 的 handleCardStop（单一来源）：miss 反馈与 DSH unconfirmed
+      // 警告（「未能确认 turn 已停止，可能仍在后台运行」）都在那里。此前这里
+      // 内联只调 interruptCurrentRun——unconfirmed 反馈被丢，run 卡被翻成
+      // interrupted 却暗示干净停止；miss 文案也与 router 形成两份漂移拷贝。
+      // stop 绕串行队列的原则不变：本分支在队列分发之前直接 return。
+      void router
+        .handleCardAction({ ...actionValue, cmd: 'stop' }, { userId, chatId, messageId })
+        .catch((err: unknown) => logger.error('[control] card stop failed:', err));
       return;
     }
 
@@ -791,8 +796,19 @@ function setupMessageHandlers(
     // 保证窗口内先到的文本消息在本动作之前 commit（绑定旧 session/cwd/agent）。
     // 否则 700ms 静默窗内的消息会漂移到动作之后的新状态：例如输入「重新构建」
     // 后立即点「新会话」，消息会落到新会话。名单以 router 单源为准。
+    //
+    // 有界等待：flush 会等 in-flight 媒体下载落定（超时 5 分钟/
+    // 资源），而 SDK 的 chatQueue.cardActions 默认 'same'——卡片动作与消息共享
+    // 同一 per-chat 串行 lane 且被 await 到底。无界等待下，一个大视频在途 +
+    // 点「新会话」= 整个 chat 的所有消息与卡片动作停摆到下载超时。超预算后
+    // 放行本动作，flush 在后台继续：窗口内仍有未落定下载时，文本 commit 可能
+    // 落到本动作之后（漂移风险收窄到「卡住的下载 + 2s 内点击」的组合，可接受；
+    // 完整解法需要把 binding 快照进装配器，见 inbound-unified-input-design.md）。
     if (SESSION_MUTATING_ACTION_CMDS.has(actionValue.cmd)) {
-      await assembler.flush(userId, chatId, 'flush');
+      const flushP = assembler
+        .flush(userId, chatId, 'flush')
+        .catch((err: unknown) => logger.error('[control] inbound flush failed:', err));
+      await Promise.race([flushP, sleep(SESSION_MUTATING_FLUSH_BUDGET_MS)]);
     }
 
     // queue.input / config.save / approval.respond / approval.toggle /

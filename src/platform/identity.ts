@@ -12,9 +12,9 @@
  *   （killOrphan）应按需调用，真机矩阵需实测整体耗时；
  * - platform 显式注入，win32 语义可在任意宿主上单测。
  */
-import { execFileSync, spawn } from 'node:child_process';
 import path from 'node:path';
 import { currentPlatform, isWin32 } from './select.js';
+import { spawnProcess, spawnProcessSync } from './spawn.js';
 
 /** 进程身份快照。creationDate 仅 win32（CIM CreationDate，DMTF 时间串）。 */
 export interface ProcessIdentity {
@@ -82,12 +82,12 @@ interface CollectResult {
 /** 拉起一次性查询进程并收全 stdout；超时/拉起失败/进程报错一律 null。 */
 function collect(file: string, args: string[], timeoutMs: number): Promise<CollectResult | null> {
   return new Promise((resolve) => {
-    let proc: ReturnType<typeof spawn>;
+    let proc: ReturnType<typeof spawnProcess>;
     try {
       // stderr 用 ignore：查询进程的错误输出我们不需要，pipe 而不消费在极端
       // 情况下（管道缓冲满）会阻塞子进程，把一次性查询拖成挂起。
       // windowsHide：避免查询进程在桌面闪控制台窗口
-      proc = spawn(file, args, { stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true });
+      proc = spawnProcess(file, args, { stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true });
     } catch {
       resolve(null);
       return;
@@ -329,12 +329,13 @@ export function verifyPidIdentityVerdictSync(
 
   let stdout: string;
   try {
-    stdout = execFileSync('ps', ['-o', 'command=', '-p', String(pid)], {
+    const res = spawnProcessSync('ps', ['-o', 'command=', '-p', String(pid)], {
       encoding: 'utf-8',
       timeout: opts.timeoutMs ?? DEFAULT_TIMEOUT_MS,
       stdio: ['ignore', 'pipe', 'ignore'],
       windowsHide: true,
     });
+    stdout = String(res.stdout ?? '');
   } catch {
     // 进程不存在 / ps 不可用 / 超时：查不到身份 → unknown（不杀）
     return 'unknown';

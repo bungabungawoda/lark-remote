@@ -973,8 +973,10 @@ export class Bridge {
         `[lark-remote] interrupt hit bash runId=${runId} cwd=${b.cwd} userId=${input.userId}`,
       );
       await b.bashRunner.stop({ immediate: true });
-      // Update card to show interrupted state
-      await b.cardSession.finish('interrupted', { exitCode: -1 });
+      // Update card to show interrupted state. exitCode 不传（保持 null）：
+      // bash-renderer 的「已手动终止」文案要求 exitCode === null；传 -1 会让
+      // 该分支不可达，中断卡退化成「退出码: -1」的失败样式。
+      await b.cardSession.finish('interrupted');
       this.activeBashRuns.delete(runId);
       getLogger().info(`[lark-remote] interrupt bash stop done runId=${runId}`);
       stoppedCount++;
@@ -1369,6 +1371,7 @@ export class Bridge {
     // 放在 finalize 之后：activeRuns 槽位已释放，续跑能正常开新卡片。
     await this.retryAfterContentFilter({
       cardSession,
+      activeRun,
       ctx,
       cwd,
       agentKind,
@@ -1393,6 +1396,7 @@ export class Bridge {
    */
   private async retryAfterContentFilter(params: {
     cardSession: RunCardSession;
+    activeRun: ActiveRun;
     ctx: CommandContext;
     cwd: string;
     agentKind: AgentKind;
@@ -1418,6 +1422,13 @@ export class Bridge {
       return;
     }
 
+    // 续跑必须接「本轮实际使用的 session」而非入队时刻快照（与 finalize 路径
+    // 的三级优先同口径：卡片状态 → activeRun → 起点快照）。快照只在 run 未建立
+    // 任何新会话时兜底。可证场景：新会话第一条消息（快照 undefined）被截断——
+    // init 已建立 S1，epoch 未动，传快照会让续跑落到全新空会话，本轮上下文
+    // 全部丢失；claude --resume fork 场景同理（init 上报的 id 才是权威）。
+    const retrySessionId = state.sessionId ?? params.activeRun.sessionId ?? params.sessionId;
+
     getLogger().warn(
       `[lark-remote] content_filter detected, auto-retrying once runId=${state.runId} cwd=${params.cwd}`,
     );
@@ -1436,7 +1447,7 @@ export class Bridge {
           cwdOverride: params.cwd,
           binding: {
             agent: params.agentKind,
-            sessionId: params.sessionId,
+            sessionId: retrySessionId,
             sessionEpoch: params.sessionEpochAtStart,
           },
           autoRetry: true,

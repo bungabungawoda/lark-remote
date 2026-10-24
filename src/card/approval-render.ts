@@ -10,6 +10,7 @@ import { collapsibleMarkdownPanel } from './collapsible.js';
 import { truncateMarkdownTables } from './text-truncate.js';
 import { truncateUtf8 } from '../common/truncate.js';
 import { cardButton } from './card-shared.js';
+import { countCardElements } from './card-budget.js';
 
 /** Unique nonce for card button callbacks (SDK dedup + router validation). */
 function mkNonce(): string {
@@ -19,10 +20,47 @@ function mkNonce(): string {
 /** 计划面板正文字节预算（折叠展示 + 截断保护 28KB 卡片预算）。 */
 const PLAN_PANEL_BYTES = 6000;
 
-/** reason div（3 处共用）；反引号中和防 lark_md 解析错误。 */
+/**
+ * 审批区自由文本字段（reason/note/题面/描述/回执等 agent 产出的散文）的统一
+ * 字节预算。这些字段此前无上限：实测 reason 30,000 字符 → 整卡 31,450 字节被
+ * 飞书 11310 拒收，审批彻底不可见，run 只能挂到审批超时/看门狗。1KB 足以传达
+ * 语义并支撑决策。
+ */
+const APPROVAL_FIELD_BYTES = 1000;
+
+/** 短标签类字段（题头/工具名/路径）的字节预算。 */
+const APPROVAL_LABEL_BYTES = 300;
+
+/**
+ * 提问批次的渲染上限：题数 × 每题元素（选项行 + 输入框 + 按钮）撑爆的是元素
+ * 数预算（实测 8 题 × 5 选项 = 144 元素 > 90 上限 → 11310 整卡报废）。超出的
+ * 题折叠为计数提示；被折叠的题无法在卡上作答（整批「跳过」与 Web UI/终端
+ * 兜底），仍远好于整卡被拒、一题都答不了。
+ */
+const MAX_RENDERED_QUESTIONS = 5;
+/** 单题选项渲染上限（超过折叠为计数提示；选项 label 是回调 payload，不可截断）。 */
+const MAX_RENDERED_OPTIONS = 8;
+/** 文件变更 / 权限条目的渲染上限（每条 1–2 个元素，无上限时百条级直接爆元素预算）。 */
+const MAX_RENDERED_CHANGE_ITEMS = 20;
+
+/**
+ * 审批区自身的元素数预算：卡总预算（MAX_CARD_ELEMENTS=90）减去状态行 / goal /
+ * summary / 操作行等骨架（约 20 个，含极端情况的余量）后的安全份额。按已渲染
+ * 元素数**自适应**截断——固定题数 × 选项数的组合上限挡不住「少题多选项」与
+ * 「多题少选项」的两种组合（一行选项 = column_set + button + div 共 3 个
+ * 元素，5 题 × 5 选项就 ~92 个）。
+ */
+const APPROVAL_AREA_ELEMENT_BUDGET = 50;
+
+/** 审批区自由文本统一入口：反引号中和（防 11311）+ 字节预算截断（防 11310）。 */
+function capApprovalText(text: string, maxBytes: number = APPROVAL_FIELD_BYTES): string {
+  return truncateUtf8(text.replace(/`/g, '·'), maxBytes);
+}
+
+/** reason div（3 处共用）；反引号中和防 lark_md 解析错误 + 字节预算截断。 */
 function reasonDiv(approval: ApprovalView): object | null {
   if (!approval.reason) return null;
-  const neutralized = approval.reason.replace(/`/g, '·');
+  const neutralized = capApprovalText(approval.reason);
   return {
     tag: 'div',
     text: { tag: 'lark_md', content: `💡 ${neutralized}` },
@@ -48,14 +86,12 @@ export function renderApprovalArea(
   if (!approval) return [];
   // 终态（done/error/interrupted/idle_timeout）下 run 已结束：coordinator 已
   // 释放，按钮点击无处响应，隐藏整个审批区避免"点了没反应"。
-  if (opts?.terminal && opts.terminal !== 'running' && opts.terminal !== 'finalizing') {
-    return [];
-  }
+  if (isTerminalHidden(opts)) return [];
 
   const elements: object[] = [];
 
   if (approval.note) {
-    const neutralized = approval.note.replace(/`/g, '·');
+    const neutralized = capApprovalText(approval.note);
     elements.push({
       tag: 'div',
       text: { tag: 'lark_md', content: `ℹ️ ${neutralized}` },
@@ -76,7 +112,7 @@ export function renderApprovalArea(
 
   // 响应发送失败：明确告知原因 + 可重试，而不是静默停在可点状态。
   if (approval.deliveryError) {
-    const neutralized = approval.deliveryError.replace(/`/g, '·');
+    const neutralized = capApprovalText(approval.deliveryError);
     elements.push({
       tag: 'div',
       text: {
@@ -87,6 +123,62 @@ export function renderApprovalArea(
   }
 
   return elements;
+}
+
+/**
+ * 紧凑审批区（run 卡 skeleton/truncatedSkeleton 兜底档专用）：固定小体积的
+ * 「标题 + 摘要 reason + 决策按钮」，不渲染正文/选项/题面。
+ *
+ * 为什么需要：完整审批区是唯一不受估算器管辖、也不参与 degraded/extreme 分层
+ * 裁剪的区域； pathological 输入（超长 reason、题数×选项爆元素数）会让所有兜底
+ * 层一起超限，超限卡被飞书整卡拒收（11310）→ 审批不可见。兜底层换用本入口后
+ * 结构性保证 ≤ 几个元素 + ≤ 1KB 文本，审批入口（红线）在任何降级档都活着。
+ */
+export function renderApprovalAreaCompact(
+  approval: ApprovalView | undefined,
+  opts?: { expired?: boolean; runId?: string; terminal?: string },
+): object[] {
+  if (!approval) return [];
+  if (isTerminalHidden(opts)) return [];
+
+  const elements: object[] = [
+    {
+      tag: 'div',
+      text: {
+        tag: 'lark_md',
+        content: '✋ **等待审批**（内容过长已折叠，完整内容请查终端 / Web UI）',
+      },
+    },
+  ];
+  pushIf(elements, reasonDiv(approval));
+  if (approval.kind === 'question') {
+    if (opts?.expired) {
+      elements.push({ tag: 'div', text: { tag: 'lark_md', content: '⏰ **提问已超时**' } });
+    } else {
+      // 提问批次的紧凑形态只保留整批跳过（逐题作答 UI 被折叠）。
+      elements.push(
+        cardButton(
+          '⏭️ 跳过回答',
+          {
+            cmd: 'approval.respond',
+            decision: 'decline',
+            requestId: approval.requestId,
+            runId: opts?.runId,
+            nonce: mkNonce(),
+          },
+          { type: 'default' },
+        ),
+      );
+    }
+  } else {
+    elements.push(...renderDecisionButtons(approval, opts?.expired, opts?.runId));
+  }
+  return elements;
+}
+
+/** 终态隐藏判定（renderApprovalArea 与 compact 共用）。 */
+function isTerminalHidden(opts?: { terminal?: string }): boolean {
+  return !!opts?.terminal && opts.terminal !== 'running' && opts.terminal !== 'finalizing';
 }
 
 /**
@@ -176,7 +268,7 @@ function renderToolApproval(approval: ApprovalView, expired?: boolean, runId?: s
     },
   });
 
-  const toolLabel = approval.toolName ?? '(unknown tool)';
+  const toolLabel = capApprovalText(approval.toolName ?? '(unknown tool)', APPROVAL_LABEL_BYTES);
   elements.push({
     tag: 'div',
     text: { tag: 'lark_md', content: `🔧 \`${toolLabel}\`` },
@@ -186,10 +278,10 @@ function renderToolApproval(approval: ApprovalView, expired?: boolean, runId?: s
 
   // 原始 input（非空时展示，截断保护卡片预算；ExitPlanMode 的 `{}` 不展示）。
   if (approval.toolInput && approval.toolInput !== '{}') {
-    const neutralized = approval.toolInput.replace(/`/g, '·');
+    const neutralized = capApprovalText(approval.toolInput, 500);
     elements.push({
       tag: 'div',
-      text: { tag: 'lark_md', content: `\`${neutralized.slice(0, 500)}\`` },
+      text: { tag: 'lark_md', content: `\`${neutralized}\`` },
     });
   }
 
@@ -218,7 +310,7 @@ function renderPlanApproval(approval: ApprovalView, expired?: boolean, runId?: s
   pushIf(elements, reasonDiv(approval));
 
   if (approval.planFilePath) {
-    const neutralizedPath = approval.planFilePath.replace(/`/g, '·');
+    const neutralizedPath = capApprovalText(approval.planFilePath, APPROVAL_LABEL_BYTES);
     elements.push({
       tag: 'div',
       text: { tag: 'lark_md', content: `📄 ${neutralizedPath}` },
@@ -252,7 +344,7 @@ function renderPlanApproval(approval: ApprovalView, expired?: boolean, runId?: s
   if (!expired) {
     elements.push(renderPlanFeedbackInput(approval.requestId, runId));
     if (approval.planFeedback) {
-      const neutralized = approval.planFeedback.replace(/`/g, '·');
+      const neutralized = capApprovalText(approval.planFeedback);
       elements.push({
         tag: 'div',
         text: { tag: 'lark_md', content: `📝 ${neutralized}` },
@@ -306,19 +398,18 @@ function renderCommandApproval(
   // Command display
   // 命令里的反引号会提前终止 lark_md 行内代码 span，奇数次
   // 反引号极易触发 11311 解析错误导致整卡失败（同 renderFileDiff 的中和策略）。
-  const neutralizedCommand = (approval.command ?? '').replace(/`/g, '·');
-  const cmdContent = neutralizedCommand
-    ? `\`${neutralizedCommand.slice(0, 500)}\``
-    : '(no command)';
+  const neutralizedCommand = capApprovalText(approval.command ?? '', 500);
+  const cmdContent = neutralizedCommand ? `\`${neutralizedCommand}\`` : '(no command)';
   elements.push({
     tag: 'div',
     text: { tag: 'lark_md', content: `**⚡ 命令审批**\n${cmdContent}` },
   });
 
   if (approval.commandCwd) {
+    const neutralizedCwd = capApprovalText(approval.commandCwd, APPROVAL_LABEL_BYTES);
     elements.push({
       tag: 'div',
-      text: { tag: 'lark_md', content: `📂 \`${approval.commandCwd}\`` },
+      text: { tag: 'lark_md', content: `📂 \`${neutralizedCwd}\`` },
     });
   }
 
@@ -353,11 +444,16 @@ function renderFileApproval(approval: ApprovalView, expired?: boolean, runId?: s
     const TOTAL_DIFF_CHARS = 2400;
     let renderedDiffChars = 0;
     let omittedDiffs = 0;
-    for (const change of approval.fileChanges) {
+    // 条目数上限（元素预算）：每条 1 path div + 至多 1 diff div，无上限时
+    // 百条级变更直接撑爆元素数（>90 → 11310 整卡报废）。
+    const changes = approval.fileChanges.slice(0, MAX_RENDERED_CHANGE_ITEMS);
+    const omittedChanges = approval.fileChanges.length - changes.length;
+    for (const change of changes) {
       const icon = change.kind === 'add' ? '🆕' : change.kind === 'delete' ? '🗑️' : '✏️';
+      const path = capApprovalText(change.path, APPROVAL_LABEL_BYTES);
       elements.push({
         tag: 'div',
-        text: { tag: 'lark_md', content: `${icon} \`${change.path}\` (${change.kind})` },
+        text: { tag: 'lark_md', content: `${icon} \`${path}\` (${change.kind})` },
       });
       if (change.diff) {
         if (renderedDiffChars < TOTAL_DIFF_CHARS) {
@@ -370,6 +466,12 @@ function renderFileApproval(approval: ApprovalView, expired?: boolean, runId?: s
           omittedDiffs += 1;
         }
       }
+    }
+    if (omittedChanges > 0) {
+      elements.push({
+        tag: 'div',
+        text: { tag: 'lark_md', content: `_…另有 ${omittedChanges} 个文件变更未展示（卡片预算）_` },
+      });
     }
     if (omittedDiffs > 0) {
       elements.push({
@@ -423,11 +525,16 @@ function renderPermissionsApproval(
 
   // Permission items with toggle buttons
   if (approval.permissions?.items) {
-    for (const item of approval.permissions.items) {
+    // 条目数上限（元素预算）：每条 label div + toggle button 共 2 个元素。
+    const items = approval.permissions.items.slice(0, MAX_RENDERED_CHANGE_ITEMS);
+    const omittedItems = approval.permissions.items.length - items.length;
+    for (const item of items) {
       const icon = item.selected ? '✅' : '⬜';
+      // label 仅展示（payload 用 item.id），可安全截断。
+      const label = capApprovalText(item.label, APPROVAL_LABEL_BYTES);
       elements.push({
         tag: 'div',
-        text: { tag: 'lark_md', content: `${icon} ${item.label}` },
+        text: { tag: 'lark_md', content: `${icon} ${label}` },
       });
       elements.push(
         cardButton(
@@ -443,6 +550,12 @@ function renderPermissionsApproval(
           { type: item.selected ? 'default' : 'primary', size: 'small' },
         ),
       );
+    }
+    if (omittedItems > 0) {
+      elements.push({
+        tag: 'div',
+        text: { tag: 'lark_md', content: `_…另有 ${omittedItems} 项权限未展示（卡片预算）_` },
+      });
     }
   }
 
@@ -481,7 +594,7 @@ function renderQuestionApproval(
   if (approval.intro) {
     elements.push({
       tag: 'div',
-      text: { tag: 'lark_md', content: `📝 ${approval.intro}` },
+      text: { tag: 'lark_md', content: `📝 ${capApprovalText(approval.intro)}` },
     });
   }
 
@@ -496,23 +609,39 @@ function renderQuestionApproval(
     if (approval.expiredHint) {
       elements.push({
         tag: 'div',
-        text: { tag: 'lark_md', content: approval.expiredHint.replace(/`/g, '·') },
+        text: { tag: 'lark_md', content: capApprovalText(approval.expiredHint) },
       });
     }
     return elements;
   }
 
   const questions = approval.questions ?? [];
+  let renderedQuestions = 0;
   for (let i = 0; i < questions.length; i++) {
+    // 题数粗上限 + 审批区元素预算（自适应）：任一触发即折叠剩余题。
+    if (
+      i >= MAX_RENDERED_QUESTIONS ||
+      countCardElements({ elements }) > APPROVAL_AREA_ELEMENT_BUDGET
+    ) {
+      elements.push({
+        tag: 'div',
+        text: {
+          tag: 'lark_md',
+          content: `_…另有 ${questions.length - renderedQuestions} 题未展示（卡片元素预算）；可在终端 / Web UI 回答，或点下方「跳过回答」跳过整批_`,
+        },
+      });
+      break;
+    }
+    renderedQuestions++;
     const q = questions[i];
     const selected = q.selected ?? [];
-    const header = q.header || `问题 ${i + 1}`;
+    const header = capApprovalText(q.header || `问题 ${i + 1}`, APPROVAL_LABEL_BYTES);
     const freeText = (q.options?.length ?? 0) === 0;
     elements.push({
       tag: 'div',
       text: {
         tag: 'lark_md',
-        content: `**${header}**${q.multiSelect ? '（可多选）' : ''}\n${q.question}`,
+        content: `**${header}**${q.multiSelect ? '（可多选）' : ''}\n${capApprovalText(q.question)}`,
       },
     });
 
@@ -542,17 +671,28 @@ function renderQuestionApproval(
       if (answered) {
         elements.push({
           tag: 'div',
-          text: { tag: 'lark_md', content: `✍️ 已答：${answered}` },
+          text: { tag: 'lark_md', content: `✍️ 已答：${capApprovalText(answered)}` },
         });
       }
       continue;
     }
 
-    for (const option of q.options ?? []) {
+    // 选项渲染上限（label 是回调 payload 不可截断，只能按条数折叠）。
+    const options = q.options ?? [];
+    for (const option of options.slice(0, MAX_RENDERED_OPTIONS)) {
       const isSelected = selected.includes(option.label);
       // 单选/多选图标区分：单选 ⚪/🔵（radio 隐喻），多选 ⬜/☑️（checkbox 隐喻）。
       const icon = q.multiSelect ? (isSelected ? '☑️' : '⬜') : isSelected ? '🔵' : '⚪';
       elements.push(renderOptionRow(approval.requestId, i, option, isSelected, icon, runId));
+    }
+    if (options.length > MAX_RENDERED_OPTIONS) {
+      elements.push({
+        tag: 'div',
+        text: {
+          tag: 'lark_md',
+          content: `_…另有 ${options.length - MAX_RENDERED_OPTIONS} 个选项未展示（卡片元素预算）_`,
+        },
+      });
     }
 
     // 自定义答案（Other）的选中态展示：选项按钮无法表示自由文本，单独显示
@@ -561,7 +701,7 @@ function renderQuestionApproval(
     if (customSelected) {
       elements.push({
         tag: 'div',
-        text: { tag: 'lark_md', content: `✍️ 自定义答案：${customSelected}` },
+        text: { tag: 'lark_md', content: `✍️ 自定义答案：${capApprovalText(customSelected)}` },
       });
     }
 
@@ -591,7 +731,7 @@ function renderQuestionApproval(
       if (q.note) {
         elements.push({
           tag: 'div',
-          text: { tag: 'lark_md', content: `📝 ${q.note}` },
+          text: { tag: 'lark_md', content: `📝 ${capApprovalText(q.note)}` },
         });
       }
     }
@@ -683,7 +823,7 @@ function renderOptionRow(
             text: {
               tag: 'lark_md',
               content: `${icon} ${option.label}${
-                option.description ? `\n_${option.description}_` : ''
+                option.description ? `\n_${capApprovalText(option.description)}_` : ''
               }`,
             },
           },

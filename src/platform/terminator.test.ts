@@ -2,15 +2,16 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import type { ChildProcess } from 'node:child_process';
 import { createMockProc, emitExit } from '../../tests/lib/mock-process.js';
 
-// 不真起 taskkill：全部断言基于 spawn 入参与状态机分支
-vi.mock('node:child_process', () => ({ spawn: vi.fn() }));
+// 不真起 taskkill：全部断言基于 spawn 入参与状态机分支（mock platform/spawn.ts
+// 单点——win32 终止器默认经它拉起 taskkill）
+vi.mock('./spawn.js', () => ({ spawnProcess: vi.fn() }));
 
-import { spawn } from 'node:child_process';
+import { spawnProcess } from './spawn.js';
 import { AgentStopperRegistry, createTerminator } from './terminator.js';
 import { createWin32Terminator } from './terminator-win32.js';
 import { isWin32 } from './select.js';
 
-const mockSpawn = vi.mocked(spawn);
+const mockSpawn = vi.mocked(spawnProcess);
 
 /** taskkill 自身返回一个即启即退的假进程（实现不依赖其输出）。 */
 function fakeTaskkill(): ChildProcess {

@@ -385,7 +385,18 @@ export function loadConfig(configPath: string): AppConfig {
   }
 
   const raw = fs.readFileSync(configPath, 'utf-8');
-  const parsed = YAML.parse(raw);
+  // YAML 语法错误（tab 缩进等）必须与校验失败同路径（console.error + exit）：
+  // 直接上抛会冒到 main().catch——此时 logger 尚未 initLogger，getLogger()
+  // 写的是默认目录的自定义 --config-dir 对不上，且 logger 只写文件，终端
+  // 零输出，用户只看到进程无声退出。
+  let parsed: unknown;
+  try {
+    parsed = YAML.parse(raw);
+  } catch (err) {
+    console.error(`[lark-remote] config YAML parse failed at ${configPath}:`);
+    console.error(`  ${(err as Error).message}`);
+    process.exit(1);
+  }
 
   const result = AppConfigSchema.safeParse(parsed);
   if (!result.success) {

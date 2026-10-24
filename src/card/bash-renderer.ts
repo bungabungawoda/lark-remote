@@ -2,7 +2,7 @@ import type { RunCardRenderOptions } from './run-renderer.js';
 import { terminalToColor, terminalToLabel, stopButton } from './card-shared.js';
 import { markdownDiv } from './collapsible.js';
 import { CARD_BUDGET_BYTES } from './text-truncate.js';
-import { truncateUtf8 } from '../common/truncate.js';
+import { truncateUtf8, truncate } from '../common/truncate.js';
 
 /**
  * 飞书卡片大小限制（安全阈值，与 run-renderer 一致）。
@@ -25,11 +25,11 @@ const OUTPUT_MAX_BYTES = 12_000;
 const DEGRADED_OUTPUT_BYTES = 4_000;
 
 /**
- * Truncate long commands for display.
+ * Truncate long commands for display. 按码点截断（裸 slice 切在 emoji 中间会
+ * 留下孤立代理项进卡片），项目已有 truncate() 实现同语义。
  */
 function truncateCommand(cmd: string, maxLen = 40): string {
-  if (cmd.length <= maxLen) return cmd;
-  return cmd.slice(0, maxLen - 3) + '...';
+  return truncate(cmd, maxLen);
 }
 
 export interface BashRenderOptions extends RunCardRenderOptions {}
@@ -47,28 +47,17 @@ export interface BashState {
 }
 
 /**
- * Build the status row (status tag + command) element.
+ * Build the status row element.
+ *
+ * 单 div + ` · ` 分隔（窄屏硬闸，与 run-renderer 的 statusRow 同款）：旧版把
+ * 状态标签（2 字短文本）放 `column_set` 的 auto 列、命令放 grow 列——手机
+ * 窄屏下 auto 列会被挤成竖排（run 卡踩过同型坑，bash 卡漏改）。
+ * 单行文本的换行点只落在 " · " 处，各分段自身不折行。
  */
 function buildStatusRow(state: BashState): object {
   const { terminal, exitCode, command } = state;
   const statusLabel = bashStatusTagLabel(terminal, exitCode);
-  return {
-    tag: 'column_set',
-    columns: [
-      {
-        tag: 'column',
-        width: 'auto',
-        elements: [{ tag: 'div', text: { content: statusLabel, tag: 'lark_md' } }],
-      },
-      {
-        tag: 'column',
-        width: 'grow',
-        elements: [
-          { tag: 'div', text: { content: `⏱ ${truncateCommand(command, 40)}`, tag: 'lark_md' } },
-        ],
-      },
-    ],
-  };
+  return markdownDiv(`${statusLabel} · ⏱ ${truncateCommand(command, 40)}`, 'notation');
 }
 
 /**

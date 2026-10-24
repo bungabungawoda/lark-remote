@@ -3,10 +3,13 @@ import { PassThrough } from 'node:stream';
 import type { ChildProcess } from 'node:child_process';
 import { createMockProc, emitExit } from '../../tests/lib/mock-process.js';
 
-// 不真起进程：identity 的全部断言都基于 spawn/execFileSync 的入参与 stdout 解析
-vi.mock('node:child_process', () => ({ spawn: vi.fn(), execFileSync: vi.fn() }));
+// 不真起进程：identity 的全部断言都基于 spawnProcess/spawnProcessSync 的入参
+// 与 stdout 解析（子进程 spawn 单点收口在 platform/spawn.ts，
+// 这里 mock 该单点而不是 node:child_process）
+vi.mock('./spawn.js', () => ({ spawnProcess: vi.fn(), spawnProcessSync: vi.fn() }));
 
-import { execFileSync, spawn } from 'node:child_process';
+import { spawnProcess, spawnProcessSync } from './spawn.js';
+import type { SpawnSyncReturns } from 'node:child_process';
 import {
   queryProcessIdentity,
   tokenizeCommandLine,
@@ -14,8 +17,13 @@ import {
   verifyPidIdentityVerdictSync,
 } from './identity.js';
 
-const mockSpawn = vi.mocked(spawn);
-const mockExecFileSync = vi.mocked(execFileSync);
+const mockSpawn = vi.mocked(spawnProcess);
+const mockExecFileSync = vi.mocked(spawnProcessSync);
+
+/** spawnProcessSync 的成功返回形态（identity 只消费 res.stdout）。 */
+function syncStdout(stdout: string): SpawnSyncReturns<string | Buffer> {
+  return { status: 0, stdout, stderr: '' } as unknown as SpawnSyncReturns<string | Buffer>;
+}
 
 /** stdout 吐出给定文本后以 exitCode 退出（数据先于 exit 事件，贴合真实时序）。 */
 function procWithStdout(stdout: string, exitCode = 0): ChildProcess {
@@ -426,7 +434,7 @@ describe('verifyPidIdentityVerdictSync（killOrphan 的同步入口）', () => {
   // platform 必须显式钉死：同步档在 win32 上**恒** unknown（CIM 无同步形态，见下一条
   // 用例），不钉就会跟着宿主漂——在 macOS 上「默认档=posix」通过，在 Windows 上必红。
   it('posix：execFileSync 取 ps 命令行，按 matchMode 裁决', () => {
-    mockExecFileSync.mockReturnValue(`${PI_CMD}\n`);
+    mockExecFileSync.mockReturnValue(syncStdout(`${PI_CMD}\n`));
     expect(
       verifyPidIdentityVerdictSync(4242, {
         platform: 'linux',
@@ -435,7 +443,7 @@ describe('verifyPidIdentityVerdictSync（killOrphan 的同步入口）', () => {
       }),
     ).toBe('match');
 
-    mockExecFileSync.mockReturnValue(`${NODE_BIN} /home/user/pkg/cli.js\n`);
+    mockExecFileSync.mockReturnValue(syncStdout(`${NODE_BIN} /home/user/pkg/cli.js\n`));
     expect(
       verifyPidIdentityVerdictSync(4242, {
         platform: 'linux',
@@ -455,7 +463,7 @@ describe('verifyPidIdentityVerdictSync（killOrphan 的同步入口）', () => {
   });
 
   it('win32：同步档恒 unknown（CIM 无同步形态），且不发起任何查询', () => {
-    mockExecFileSync.mockReturnValue('anything\n');
+    mockExecFileSync.mockReturnValue(syncStdout('anything\n'));
     expect(
       verifyPidIdentityVerdictSync(4242, { platform: 'win32', expectedBinary: 'claude' }),
     ).toBe('unknown');

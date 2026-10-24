@@ -45,6 +45,10 @@ function charWidth(ch: string): number {
   if (code >= 0xffe0 && code <= 0xffe6) return 2;
   if (code >= 0x1f300 && code <= 0x1faff) return 2;
   if (code >= 0x2600 && code <= 0x27bf) return 2;
+  // Misc Technical 块（U+2300–U+23FF）：⏱⏹⏳⏸⏺ 等计时器/播放器符号在
+  // 状态行里实际使用，手机端按 emoji 宽度渲染——按 1 计会系统性低估行宽，
+  // 窄屏余量比设计值更小。
+  if (code >= 0x2300 && code <= 0x23ff) return 2;
   return 1;
 }
 

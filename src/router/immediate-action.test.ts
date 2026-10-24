@@ -43,6 +43,7 @@ describe('isImmediateAction (§9.19)', () => {
       ['queue.diagnose', '§9.6 queue management'],
       ['queue.edit', '§9.6 queue management'],
       ['queue.input', '§9.6 queue management'],
+      ['job.kill', '§9.19: 纯远程 job/kill 请求，不产生 agent 工作；排队会等当前 run 结束才杀任务'],
       ['order.delete', '§9.19: 只删除指令，不涉及 Claude 执行'],
       ['order.page', '分页（control operation）'],
       ['order.aliasEdit', '弹编辑卡（control operation）'],

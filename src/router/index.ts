@@ -494,6 +494,10 @@ const IMMEDIATE_ACTION_CMDS: ReadonlySet<string> = new Set([
   'queue.diagnose',
   'queue.edit',
   'queue.input',
+  // 终态卡「停止后台任务」：纯远程 job/kill 请求，不产生 agent 工作（§9.19
+  // 控制操作免排队）。排进串行队列会等当前 run 结束才杀任务——stop 类按钮
+  // 排队正是 §9.6 要防的形态，且排队期间还占 lane 多出一张排队卡。
+  'job.kill',
   'order.delete',
   'order.page',
   'order.aliasEdit',
@@ -542,6 +546,20 @@ export const COMPACT_ACTION_CMDS: ReadonlySet<string> = new Set(['compact', 'res
 /** 单源：payload.offset → 钳位 offset（原先 9 处逐字副本）。 */
 function payloadOffset(value: { offset?: number }): number {
   return Math.max(0, Math.trunc(Number(value.offset) || 0));
+}
+
+/**
+ * existsSync + statSync 的 TOCTOU 安全目录校验：路径在两次 syscalls 之间被删时
+ * statSync 会抛错——落进 enqueueImmediate / 队列任务的静默 catch，点击/命令
+ * 毫无反馈（违反「点击必有反馈」红线；同族 handleLsRefresh/Page/Filter 均已
+ * try/catch 防护）。统一返回 false 走「路径无效」回复。
+ */
+function isDirectorySafe(p: string): boolean {
+  try {
+    return fs.existsSync(p) && fs.statSync(p).isDirectory();
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -1267,6 +1285,11 @@ export class CommandRouter {
     const task = this.bridge.getQueuedTask(cwd, messageId);
     const queueInfo = this.bridge.getQueueInfo(cwd);
     const activeRuns = this.bridge.getAllActiveRuns();
+    // 「排在当前任务之前」按诊断目标自己的位置算（与 sendQueueStatusCard 同法）。
+    // getQueueInfo.tasksAhead 是队尾视角（len-1），诊断目标不是队尾时数字误导。
+    const queuedTasks = this.bridge.getQueuedTasks(cwd);
+    const targetIdx = queuedTasks.findIndex((t) => t.messageId === messageId);
+    const tasksAhead = targetIdx >= 0 ? targetIdx : queueInfo.tasksAhead;
 
     // Build diagnostic info
     const now = new Date().toLocaleString('zh-CN');
@@ -1309,7 +1332,7 @@ export class CommandRouter {
             tag: 'div',
             text: {
               tag: 'lark_md',
-              content: `**队列状态**\n- 排队的任务数: ${queueInfo.position}\n- 当前正在运行: ${queueInfo.isRunning ? '✅ 是' : '❌ 否'}\n- 排在当前任务之前的消息数: ${queueInfo.tasksAhead}`,
+              content: `**队列状态**\n- 排队的任务数: ${queueInfo.position}\n- 当前正在运行: ${queueInfo.isRunning ? '✅ 是' : '❌ 否'}\n- 排在当前任务之前的消息数: ${tasksAhead}`,
             },
           },
           { tag: 'hr' },
@@ -1522,7 +1545,7 @@ export class CommandRouter {
     const resolvedTarget = path.resolve(targetPath);
     // 与 ls.browse 对齐：目标只要存在且是目录即可切换（不再做子树/父级限制）。
     // 安全边界由 binder owner 认证兜底，见 docs/zh/architecture/design.md §9.7 更新说明。
-    if (!fs.existsSync(resolvedTarget) || !fs.statSync(resolvedTarget).isDirectory()) {
+    if (!isDirectorySafe(resolvedTarget)) {
       await this.bridge.sendResult({ text: `路径无效: ${resolvedTarget}` }, ctx);
       return;
     }
@@ -1707,7 +1730,7 @@ export class CommandRouter {
       return;
     }
     const resolvedTarget = path.resolve(targetPath);
-    if (!fs.existsSync(resolvedTarget) || !fs.statSync(resolvedTarget).isDirectory()) {
+    if (!isDirectorySafe(resolvedTarget)) {
       await this.bridge.sendResult({ text: `路径无效: ${resolvedTarget}` }, ctx);
       return;
     }
@@ -1760,7 +1783,12 @@ export class CommandRouter {
   private async handleJobKill(value: CardActionPayload, ctx: CommandContext): Promise<void> {
     const runId = typeof value.runId === 'string' ? value.runId : '';
     const jobId = typeof value.jobId === 'string' ? value.jobId : '';
-    if (!runId || !jobId) return;
+    // miss path 必回复（本文件的设计约束）：旧版/异常卡片 payload 缺参时
+    // 静默 return 会让点击毫无反应，用户无从判断。
+    if (!runId || !jobId) {
+      await this.bridge.sendResult({ text: CARD_PAYLOAD_MISSING }, ctx);
+      return;
+    }
     if (await this.bridge.killBackgroundJob(runId, jobId, ctx)) return;
     await this.bridge.sendResult({ text: '停止失败：任务可能已自行结束，或记录已回收' }, ctx);
   }
@@ -2175,12 +2203,14 @@ export class CommandRouter {
     // Refresh the /ws list card in place so "recent" sort is immediately visible
     await this.refreshListCard('ws', value, ctx);
 
-    // Toast feedback (suppress text when a persistent message was already sent)
+    // Toast feedback (suppress text when a persistent message was already sent).
+    // 兜底文案必须用 warning 型：ws.use 不在 DIRECT_RETURN_CMDS，toast 经
+    // enqueueImmediate fire-and-forget，而 forwardActionFeedback 只转发
+    // error/warning 型——success 型兜底会被双重吞掉，点击毫无反馈。
     return {
-      toast: {
-        type: 'success',
-        content: fallbackToast ?? '',
-      },
+      toast: fallbackToast
+        ? { type: 'warning', content: fallbackToast }
+        : { type: 'success', content: '' },
     };
   }
 
@@ -3147,7 +3177,14 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
       return { text: `路径不存在: ${resolved}` };
     }
 
-    const stat = fs.statSync(resolved);
+    // TOCTOU：existsSync 与 statSync 之间路径被删时 statSync 抛错，会落进队列
+    // 任务的静默 catch（用户无反馈）——按路径无效回复，与下方 realpath 守卫同口径。
+    let stat: fs.Stats;
+    try {
+      stat = fs.statSync(resolved);
+    } catch {
+      return { text: `路径无效: ${resolved}` };
+    }
     if (!stat.isDirectory()) {
       return { text: `不是目录: ${resolved}` };
     }
@@ -3886,6 +3923,10 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
         const wsPath = this.workspaceStore.get(name);
         if (!wsPath) return { text: `workspace "${name}" 不存在` };
         if (!fs.existsSync(wsPath)) return { text: `路径不存在: ${wsPath}` };
+        // 目录校验与 /cd、ls.switch 对齐：目录被删后同路径出现同名文件（或
+        // workspace.json 被手改）时 realpath 照样成功——放行会让下一次 run
+        // 以文件为 cwd spawn（ENOTDIR）。
+        if (!isDirectorySafe(wsPath)) return { text: `不是目录: ${wsPath}` };
         // Canonicalize via realpath so it matches Claude JSONL cwd (2026-06-21).
         // TOCTOU guard: mirror cmdCd — if the path vanishes
         // between existsSync and realpath, reply gracefully instead of
