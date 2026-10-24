@@ -9,6 +9,11 @@ import { createTerminator } from '../../../platform/terminator.js';
 import { rmRf } from '../../../../tests/lib/tmp-cleanup.js';
 
 function waitForProcessGone(pid: number, timeoutMs = 6000): Promise<void> {
+  // pid 0 会让 process.kill(0, 0) 去检查当前进程组（永远成功），
+  // 空等满超时才报错；读到无效 pid 就立即失败，别伪装成「进程还活着」。
+  if (!Number.isInteger(pid) || pid <= 0) {
+    return Promise.reject(new Error(`invalid pid: ${pid}`));
+  }
   const deadline = Date.now() + timeoutMs;
   return new Promise((resolve, reject) => {
     const tick = () => {
@@ -59,6 +64,31 @@ function waitForCondition(check: () => boolean, timeoutMs = 6000): Promise<void>
       }
       if (Date.now() >= deadline) {
         reject(new Error('condition not met in time'));
+        return;
+      }
+      setTimeout(tick, 20);
+    };
+    tick();
+  });
+}
+
+/**
+ * 等 pid 文件出现**完整内容**再读：`echo $$ > file` 是「先建文件再写内容」，
+ * 只等 existsSync 会读到空串（`Number('') === 0`），而 `process.kill(0, 0)`
+ * 检查的是当前进程组、永远成功，liveness 轮询会空等到超时才报「still alive」。
+ * 要求以换行结尾，顺带排除半截写入。
+ */
+function waitForPidFile(file: string, timeoutMs = 6000): Promise<number> {
+  const deadline = Date.now() + timeoutMs;
+  return new Promise((resolve, reject) => {
+    const tick = () => {
+      const raw = existsSync(file) ? readFileSync(file, 'utf8') : '';
+      if (/^\d+\n$/.test(raw)) {
+        resolve(Number(raw));
+        return;
+      }
+      if (Date.now() >= deadline) {
+        reject(new Error(`pid file ${file} did not contain a valid pid in time`));
         return;
       }
       setTimeout(tick, 20);
@@ -203,7 +233,7 @@ describe('JsonlRpcTransport safety and cleanup', () => {
       });
 
       expect(reason).toBe('parse_error');
-      const pid = Number(readFileSync(pidFile, 'utf8').trim());
+      const pid = await waitForPidFile(pidFile, 6000);
       await waitForProcessGone(pid, 10000);
     },
     15000,
@@ -244,7 +274,7 @@ describe('JsonlRpcTransport safety and cleanup', () => {
 
       const reason = await closed;
       expect(reason).toBe('epipe');
-      const pid = Number(readFileSync(pidFile, 'utf8').trim());
+      const pid = await waitForPidFile(pidFile, 6000);
       await waitForProcessGone(pid, 3000);
     },
     10000,
@@ -371,8 +401,7 @@ describe('JsonlRpcTransport safety and cleanup', () => {
       });
 
       await transport.start({ onMessage: () => {}, onClose: () => {} });
-      await waitForFile(pidFile, 6000);
-      const pid = Number(readFileSync(pidFile, 'utf8').trim());
+      const pid = await waitForPidFile(pidFile, 6000);
 
       await transport.close();
       expect(transport.closed).toBe(true);

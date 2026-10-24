@@ -1964,10 +1964,25 @@ describe('KimiAcpRunner', () => {
     }, 20000);
 
     it('runCompact 等待超过旧 30s 上限的 complete 记录 → 不误报完成（等记录落盘）', async () => {
+      // 记录由 mock server 在收到 session/prompt 后延迟写入，而不是测试进程
+      // 自己 setTimeout：compactBaseline 在 prompt 发出前采样，测试侧固定计时
+      // 在并行负载下可能落在 baseline 之前（被当「已有记录」吸收），也可能
+      // 因事件循环饥饿晚于沉默窗口，两种都会造成假红。
+      const wirePath = join(
+        tmpDir,
+        'kimi-dir',
+        'sessions',
+        SESSION_ID,
+        'agents',
+        'main',
+        'wire.jsonl',
+      );
       const { wrapper, cwd } = writeScenario(tmpDir, serverScript, 'kimi', {
         delayMs: 0,
+        wirePath,
+        compactionRecordDelayMs: 2500,
       });
-      const { kimiDir, wirePath } = makeKimiSessionDir(cwd);
+      const { kimiDir } = makeKimiSessionDir(cwd);
       const runner = new KimiAcpRunner({
         kind: 'kimi',
         sessionReader: new KimiSessionReader(kimiDir),
@@ -1981,16 +1996,9 @@ describe('KimiAcpRunner', () => {
       const { events, done } = startRunCompactCollect(runner, cwd);
 
       const startedAtMs = Date.now();
-      const appendTimer = setTimeout(() => {
-        appendFileSync(
-          wirePath,
-          JSON.stringify({ type: 'full_compaction.complete', time: Date.now() }) + '\n',
-        );
-      }, 2500);
       let resultAtMs = 0;
-      const result = await waitForResult(events, 8000);
+      const result = await waitForResult(events, 15000);
       if (result) resultAtMs = Date.now();
-      clearTimeout(appendTimer);
       if (!result) await runner.stop();
       await done;
 
