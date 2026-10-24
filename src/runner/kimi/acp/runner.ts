@@ -843,14 +843,18 @@ export class KimiAcpRunner extends BaseAcpRunner<KimiAcpTranslator> {
     proc.once('exit', (code, signal) => {
       handle.exitCode = code;
       handle.signal = signal;
-      resolveExit?.();
       // 'exit' 可先于 stdout 缓冲派发：立刻 emit 会按旧快照推送 tool_result，
       // 卡片面板丢尾部输出（terminal/output 反向 RPC 读到的是补齐后的全量，
       // 只影响卡片）。等流 end 或 200ms 宽限——不等 'close'：它要等所有共享
       // 管道的子孙进程退出，`nohup &` 类后台任务会把它拖到永远。
+      //
+      // wait_for_exit 必须在 tool_result 入队之后才 resolve：服务端拿到响应
+      // 后会立刻 release + end_turn，先 resolve 会让回合结果早于延迟推送的
+      // tool_result 到达，Bash 输出被丢弃（卡片面板空输出）。
       const flushThenEmit = () => {
         clearTimeout(emitTimer);
         emitResult();
+        resolveExit?.();
       };
       const emitTimer = setTimeout(flushThenEmit, 200);
       emitTimer.unref?.();
@@ -866,8 +870,9 @@ export class KimiAcpRunner extends BaseAcpRunner<KimiAcpTranslator> {
         handle.exitCode = 1;
         handle.signal = null;
       }
-      resolveExit?.();
+      // 同 exit：tool_result 先入队，再放行 wait_for_exit。
       emitResult();
+      resolveExit?.();
     });
 
     const terminalId = `term-${++this.terminalSeq}`;
