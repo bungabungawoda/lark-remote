@@ -185,8 +185,12 @@ describe('SpawningRunner.spawnChild() spawn orchestration', () => {
     await runner.callSpawnChild({ cwd: '/tmp/fake' });
     await runner.cleanupSpawnSideEffects();
 
-    expect(spawn).toHaveBeenCalledTimes(1);
-    const call = vi.mocked(spawn).mock.calls[0];
+    // 本锚点只验证 agent binary 本身的 spawn 编排。Windows 上 cleanup 的
+    // stop() 走真实 win32 Terminator：树杀的 taskkill 经同一个
+    // platform/spawn seam 拉起（spawn 单点收口后可见）——过滤掉它再计数。
+    const agentSpawnCalls = vi.mocked(spawn).mock.calls.filter((c) => c[0] !== 'taskkill');
+    expect(agentSpawnCalls).toHaveLength(1);
+    const call = agentSpawnCalls[0];
     const expectedBinary = runner.testBinary;
     expect(call[0]).toBe(expectedBinary);
     expect(call[1]).toEqual(['--fake-flag', 'marker']);
