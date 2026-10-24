@@ -1,6 +1,7 @@
 import { getLogger } from '../../logger/index.js';
 import type { AgentEvent } from '../types.js';
 import type { Readable } from 'node:stream';
+import { StringDecoder } from 'node:string_decoder';
 
 /** Options for {@link createJSONLStream}. */
 interface JSONLStreamOptions {
@@ -51,6 +52,8 @@ export function createJSONLStream(
   // and push complete lines; the residual tail stays as array fragments until
   // the next newline or stream end. Net allocation: O(n) instead of O(n²).
   const partialFragments: string[] = [];
+  // 跨 chunk 多字节字符的边界安全解码器（见 stdout 'data' 处理）。
+  const decoder = new StringDecoder('utf8');
   // accumulated byte length of partialFragments. Backpressure (above)
   // only counts COMPLETE lines in lineQueue; a never-newline stream (malformed
   // output, binary garbage) accumulates fragments without ever completing a
@@ -82,6 +85,10 @@ export function createJSONLStream(
   // Flush any trailing partial line and mark the stream finished. Shared by the
   // 'end'/'close'/'error' handlers so flush logic lives in one place (nit).
   function flushAndFinish() {
+    // decoder.end() 吐出被 chunk 边界切开的最后一个多字节字符的残余字节
+    //（无残尾时返回空串）：不加这句，末尾被切开的字符会凭空丢失。
+    const tail = decoder.end();
+    if (tail) partialFragments.push(tail);
     if (partialFragments.length > 0) {
       const trimmed = partialFragments.join('').trim();
       if (trimmed) lineQueue.push(trimmed);
@@ -131,7 +138,10 @@ export function createJSONLStream(
   }
 
   stdout.on('data', (chunk: Buffer) => {
-    const text = chunk.toString('utf-8');
+    // StringDecoder 按字节边界解码：多字节字符（中文/emoji）被 chunk 边界
+    // 切开时，裸 toString 会产出不可逆的 U+FFFD（同族修复见
+    // jsonrpc/transport.ts，claude 的中文输出走本流）。
+    const text = decoder.write(chunk);
     // split on newlines. The first segment continues the pending partial
     // line (joined with accumulated fragments — one join per chunk, not per
     // byte); subsequent segments are complete lines. The last segment is the

@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import YAML from 'yaml';
 import { afterEach, describe, expect, it } from 'vitest';
+import { isWin32 } from '../../platform/select.js';
 import {
   DSH_BROWSER_CREDENTIAL_KEY,
   dshCookieName,
@@ -37,7 +38,7 @@ function fixtureFile(secret = SECRET, mode = 0o600): string {
     }),
     { mode },
   );
-  if (process.platform !== 'win32') fs.chmodSync(file, mode);
+  if (!isWin32()) fs.chmodSync(file, mode);
   return file;
 }
 
@@ -74,13 +75,13 @@ describe('DSH browser auth', () => {
     tempDirs.push(dir);
     const file = path.join(dir, '.credentials.yaml');
     fs.writeFileSync(file, 'version: 1\nrecords: [secret-value]\n', { mode: 0o600 });
-    if (process.platform !== 'win32') fs.chmodSync(file, 0o600);
+    if (!isWin32()) fs.chmodSync(file, 0o600);
     expect(() => readDshBrowserSecretSync(file)).toThrow(/unsupported format/);
     expect(() => readDshBrowserSecretSync(file)).not.toThrow(/secret-value/);
   });
 
   it('rejects a credentials file readable beyond its owner on POSIX', () => {
-    if (process.platform === 'win32') return;
+    if (isWin32()) return;
     const file = fixtureFile(SECRET, 0o644);
     expect(() => readDshBrowserSecretSync(file)).toThrow(/readable beyond its owner/);
   });

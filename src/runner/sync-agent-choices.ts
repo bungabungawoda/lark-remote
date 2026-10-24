@@ -21,7 +21,10 @@ export function syncAgentChoices(config: AppConfig, agent: string): AppConfig {
 
   for (const { configKey, choicesKey } of fields) {
     const value = source[configKey];
-    if (value) agentChoices[choicesKey] = value;
+    // 显式空串也要同步（用户清空 = 回到默认）：旧真值判断不同步空串，
+    // agentChoices 里残留上一次的选择——/config 卡片显示的与实际生效的
+    // 配置从此分叉，重启后 resolve 还会把残留填回 config。
+    if (value !== undefined) agentChoices[choicesKey] = value;
   }
   return updated;
 }

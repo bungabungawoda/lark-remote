@@ -69,7 +69,9 @@ export function summarizeToolInput(name: string, input: unknown): string {
     const v = rec[key];
     if (typeof v !== 'string') return '';
     const oneLine = v.replace(/\s+/g, ' ').trim();
-    return oneLine.length > max ? `${oneLine.slice(0, max)}…` : oneLine;
+    // 码点安全截断：裸 slice 切在代理对中间会留下孤立代理项进卡片
+    // （同族修复见 tool-render.ts 的 toolHeaderText）。
+    return truncate(oneLine, max);
   };
   /** First non-empty of several keys（DSH 同名工具跨版本改过参数名）。 */
   const pickAny = (keys: string[], max = HEADER_SUMMARY_MAX): string => {
@@ -87,7 +89,7 @@ export function summarizeToolInput(name: string, input: unknown): string {
     for (const item of v) {
       if (typeof item === 'string' && item.trim()) {
         const oneLine = item.replace(/\s+/g, ' ').trim();
-        return oneLine.length > max ? `${oneLine.slice(0, max)}…` : oneLine;
+        return truncate(oneLine, max);
       }
       if (item && typeof item === 'object') {
         const path = (item as Record<string, unknown>).path;

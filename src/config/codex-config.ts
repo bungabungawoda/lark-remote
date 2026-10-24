@@ -630,9 +630,11 @@ export function loadCodexConfig(opts: LoadCodexConfigOpts = {}): CodexConfigResu
         buildModelOptions(currentModel, currentProvider, provider, providerModels),
     };
   } catch {
-    // config.toml 解析失败（readModelCatalogJsonPath 已把此场景标记为 catalog 声明退化 ''）：
-    // catalogMode 为 true 时绝不回退 bundled/FALLBACK，返回空 provider/模型列表；
-    // 非 catalog 才走 FALLBACK 兜底。
+    // config.toml 读取/解析失败：readModelCatalogJsonPath 对此返回
+    // TOML_PARSE_FAILED_SENTINEL（isCodexCatalogMode → false），进入本 catch
+    // 时 catalogMode 恒为 false——下面的 `if (catalogMode)` 分支实际不可达，
+    // 仅作防御保留。真正「catalog 声明退化」的场景（'' 哨兵）在 parse 之前
+    // 就已按 FALLBACK 兜底处理，不会走到这里。
     if (catalogMode) {
       return {
         currentModel: '',

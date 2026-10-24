@@ -149,7 +149,7 @@ const sessions = new Map<string, SessionEntry>();
 - `/new` 只清空 `sessionId` + `sessionCwds`，保留当前 `cwd`
 - `/cd` 和 `/ws use` 时**必须清空 sessionId**（见坑 §9.1）
 - `/config` 切 defaultAgent 时：旧 agent 的 sessionId 存入 `previousSessions`（停车位），新 agent 从 `arrivalSessions` 恢复上次到达基线；切回时可恢复停车位
-- 持久化 `<configDir>/last-session.json` 保存全部 5 个字段，任一缺失视为损坏跳过；lark-remote 重启恢复 cwd + 上次使用的 sessionId
+- 持久化 `<configDir>/last-session.json` 保存全部 5 个字段；四个 session 字段（sessions/previousSessions/arrivalSessions/sessionCwds）任一缺失视为损坏跳过，**cwd 允许缺失**（全新用户先切 agent 时停车位已落盘而 cwd 尚空，不能整条丢弃——r7 迁移语义）；lark-remote 重启恢复 cwd + 上次使用的 sessionId
 
 ---
 
@@ -401,6 +401,15 @@ selected 的批次。题目可带 `detail` 正文（plan-review 提问用它承�
 `userQuestions/answer` 续答；lark-remote 未接该路径，属已知限制（standard preset
 用 legacy blocking 版，不走这条路径）。
 
+`session/follow` 的重连快照按**消息**截取（host 的 paginate 只数 user/assistant
+message，工具事件随消息组搭车；经 deepseek-harness 源码验证）：断连
+期间积压超过快照预算（200 条消息）时快照首条会越过 `lastSeq`，缺口经
+`session/page` 的 `throughSeq` 游标向前翻页回填（`replaySnapshotGap`，best-effort，
+页数上限 20×200 条）。事件落盘顺序为 `agent/inbox/spliced`（提交）→
+`turn/start` → `user/message`（step 认领时 append）；事件探测把尾部
+`user/message` 判 `unknown` 而非 `closed`——它距下一条 durable 事件隔一个 LLM
+往返，且压缩 checkpoint 也以 turn:null 落 user/message，open/closed 都可能错。
+
 DSH 的压缩走 `commands/execute` 发 `/compact`（`dsh-command-compact`，无参数、仅空闲可用），
 **不能**走 `session/prompt`——后者只把文本当普通 user message 交给模型。该 RPC 在压缩结束后
 才返回，所以 `DshRunner.runCompact` 关闭 unary 超时（由 `/stop` 与卡片空闲看门狗兜底）；
@@ -590,9 +599,15 @@ lark-remote 崩溃时 agent 子进程变孤儿。启动时读 `<configDir>/<agen
 推导（`<configDir>/logs`），不可单独配置。级别由 `logging.level`
 控制。同步写（`fs.appendFileSync`），日志量小，无需缓冲刷新。
 
-`config/index.ts` 中 logger 初始化**之前**的致命错误（模板生成、校验失败）以及
-`config/wizard.ts` 的扫码向导交互仍走 `console.*`（stderr/stdout），因为此时 logger
-尚未就绪；其余模块一律用 `getLogger()`，不要新增 `console.*`。
+`config/index.ts` 中 logger 初始化**之前**的致命错误（模板生成、校验失败、
+YAML 语法错误）以及 `config/wizard.ts` 的扫码向导交互仍走 `console.*`
+（stderr/stdout），因为此时 logger 尚未就绪；其余模块一律用 `getLogger()`，
+不要新增 `console.*`。
+
+两处**有意**的终端 UX 豁免：`src/index.ts` 的双开提示
+（`InstanceAlreadyRunningError`——守护拉起时 stderr 重定向与否取决于拉起方，
+终端直跑时必须可见，故 console.error 与 logger 双写）与 `--update` 分支
+（类 `--help` 的 CLI 信息模式，输出面向终端而非日志）。
 
 ### 9.12 claude 空闲看门狗
 
@@ -736,7 +751,7 @@ watchdog 覆盖**——watchdog 在 `for await (runner.run())` 循环里，要�
 Claude/Codex 的工具名外，也认 DSH 的 snake_case 名字与参数（`glob`→pattern、
 `web_search`→queries[]、`read_image`/`write`/`edit`→file_path、`todo_write`→
 完成进度、`subagent`/`job_*`/`present`/`skill` 等），否则摘要会退化成空串。
-截断常量：`HEADER_SUMMARY_MAX=80`（单字段）、`HEADER_DISPLAY_MAX=60`（**整条标题的
+截断常量：`HEADER_SUMMARY_MAX=80`（单字段）、`HEADER_DISPLAY_MAX=42`（**整条标题的
 显示宽度**，CJK/emoji 记 2——面板标题必须一行，否则手机上会断在 URL 中间）、
 `BODY_FIELD_MAX=600`、`OUTPUT_MAX=1200`、`BODY_TOTAL_MAX=2500`。
 

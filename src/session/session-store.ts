@@ -282,9 +282,10 @@ export class SessionStore {
               sessionCwds: Record<string, string>;
               arrivalSessions: Record<string, string>;
             };
-            // All four session fields are required; a missing one indicates a
-            // corrupt record — skip it entirely. cwd is allowed to be absent
-            // (legitimately-empty cwd state, see round7 tests).
+            // 四个 session 字段缺失 = 损坏记录，整条跳过。cwd 允许缺失：
+            // 全新用户（未 /cd）先切 agent 时 previous/arrival 停车位已落盘，
+            // cwd 尚为空——不能因 cwd 缺失把停车位整条丢掉
+            // （anchor_r7_parked_previous_survives_rebuild_without_cwd）。
             if (
               !entry.sessions ||
               !entry.previousSessions ||

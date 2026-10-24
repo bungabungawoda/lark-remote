@@ -52,7 +52,14 @@ export class OwnerBinder {
    */
   authorize(userId: string, chatId: string): BindDecision {
     const bound = this.store.getContact();
-    if (bound) {
+    // 只有 chatId 没有 userId 的记录（老版本写入/手改文件）视同未绑定：
+    // bound.userId === undefined 时任何真实 openId 都判不等，一切消息被
+    // 静默 rejected 且永远无法重新认领——用户只能靠文档提示删文件。
+    if (bound && bound.userId === undefined) {
+      getLogger().warn(
+        '[binder] startup contact has chatId but no userId; treating as unbound (re-claimable)',
+      );
+    } else if (bound) {
       if (userId === bound.userId) return { kind: 'owner' };
       this.rejectedTotal++;
       getLogger().debug(

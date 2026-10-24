@@ -372,6 +372,10 @@ export abstract class BaseAcpTranslator {
 
   /**
    * tool_call_update → user/tool_result. status:'failed' → is_error:true.
+   *
+   * 终态（completed/failed）产出 tool_result；非终态的 tool_result 由
+   * {@link emitToolResultForNonTerminalUpdate} 裁定（reducer 见到 tool_result
+   * 即置 status:'ok'——无内容的非终态 tool_result 会把运行中的工具提前翻成 ✅）。
    */
   protected handleToolCallUpdate(
     event: ToolCallUpdateEvent,
@@ -398,6 +402,13 @@ export abstract class BaseAcpTranslator {
         this.trackToolCallArgs(event.toolCallId, argsText);
       } else if (event.rawInput !== undefined && event.rawInput !== null) {
         this.trackToolCallArgs(event.toolCallId, stringifyUnknown(event.rawInput));
+      }
+      // 非终态是否发 tool_result 由子类裁定（emitToolResultForNonTerminalUpdate）：
+      // opencode 的 in-progress 带输出快照，seam 契约钉死「patch + tool_result」
+      // 都要发（面板在工具运行时显示部分输出）；kimi 的 in-progress 只带流式
+      // args，空 tool_result 会让 reducer 把运行中的工具提前置 ✅ + 空输出。
+      if (!this.emitToolResultForNonTerminalUpdate(content)) {
+        return useUpdate ? [useUpdate] : [];
       }
     }
 
@@ -503,6 +514,18 @@ export abstract class BaseAcpTranslator {
    */
   protected extractToolResultContent(event: ToolCallUpdateEvent): unknown {
     return event.rawOutput ?? '';
+  }
+
+  /**
+   * 非终态 tool_call_update 是否附带 tool_result。默认 true（opencode seam
+   * 契约：in-progress 的输出快照随 tool_result 进面板）。kimi 覆写为
+   * 「有内容才发」——它的 in-progress 只带流式 args，空 tool_result 会让
+   * reducer 把运行中的工具提前置 ✅ + 空输出（终态丢失时面板停在错误的
+   * 「已完成」）。
+   */
+  protected emitToolResultForNonTerminalUpdate(content: unknown): boolean {
+    void content;
+    return true;
   }
 
   /**

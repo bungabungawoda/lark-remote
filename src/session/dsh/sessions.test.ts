@@ -210,7 +210,7 @@ describe('DshSessionReader', () => {
       // 无 turn/start 边界 → 退回末条 usage（旧数据语义，同 codex 无 task_started）。
       inputTokens: 200,
       outputTokens: 60,
-      contextLength: 200 + 20 + 10, // last input + cacheRead + cacheWrite (excludes output)
+      contextLength: 200 + 60 + 20 + 10, // §9.21: input + output + cacheRead + cacheWrite
       cacheReadTokens: 20,
       cacheCreationTokens: 10,
       totalTokens: 200 + 60 + 20 + 10,
@@ -266,7 +266,7 @@ describe('DshSessionReader', () => {
       cacheCreationTokens: 0,
       totalTokens: 120 + 100 + 1900,
       // Context 是末次采样的窗口占用（input + cacheRead + cacheWrite）。
-      contextLength: 20 + 1000,
+      contextLength: 20 + 100 + 1000,
       cumulativeInputTokens: 120,
       cumulativeOutputTokens: 100,
       cumulativeTotalTokens: 120 + 100 + 1900,
@@ -320,7 +320,7 @@ describe('DshSessionReader', () => {
       outputTokens: 3,
       cacheReadTokens: 400,
       totalTokens: 410,
-      contextLength: 7 + 400,
+      contextLength: 7 + 3 + 400,
       // 累计 = turn 0 两次采样 + turn 1 一次采样。
       cumulativeInputTokens: 50 + 5 + 7,
       cumulativeOutputTokens: 10 + 20 + 3,

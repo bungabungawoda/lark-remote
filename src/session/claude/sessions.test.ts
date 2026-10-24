@@ -180,9 +180,9 @@ describe('readSessionContent', () => {
 
     const result = readSessionContent(sessionId, '/tmp/proj', { projectsDir: tmpDir });
     expect(result.usage?.compactCount).toBe(1);
-    // contextLength 取 max(postTokens=5000, 末轮窗口占用=6000) = 6000
-    // (input+cacheRead+cacheCreation, excludes output)
-    expect(result.usage?.contextLength).toBe(6000);
+    // contextLength 取 max(postTokens=5000, 末轮窗口占用=6030) = 6030
+    // (input+output+cacheRead+cacheCreation，含末轮 output——文档 §9.13/§9.21 口径)
+    expect(result.usage?.contextLength).toBe(6030);
   });
 
   it('counts multiple compact_boundary events, contextLength uses max(last postTokens, last full prompt)', () => {
@@ -197,8 +197,8 @@ describe('readSessionContent', () => {
 
     const result = readSessionContent(sessionId, '/tmp/proj', { projectsDir: tmpDir });
     expect(result.usage?.compactCount).toBe(2);
-    // 多次 compact 取 max(末次 postTokens=40000, 末轮窗口占用=45000) = 45000
-    expect(result.usage?.contextLength).toBe(45000);
+    // 多次 compact 取 max(末次 postTokens=40000, 末轮窗口占用=45040) = 45040
+    expect(result.usage?.contextLength).toBe(45040);
   });
 
   it('exposes cumulative input/output as session-wide totals', () => {
@@ -285,7 +285,8 @@ describe('readSessionContent', () => {
     expect(result.usage!.inputTokens).toBe(46045);
     expect(result.usage!.outputTokens).toBe(433);
     expect(result.usage!.totalTokens).toBe(46045 + 433);
-    expect(result.usage!.contextLength).toBe(46045);
+    // contextLength = 末轮完整 prompt 占用（含末轮 output 433，文档 §9.21 口径）
+    expect(result.usage!.contextLength).toBe(46478);
   });
 
   it('returns compactCount=0 when no compact_boundary events', () => {
@@ -297,8 +298,8 @@ describe('readSessionContent', () => {
     const result = readSessionContent(sessionId, '/tmp/proj', { projectsDir: tmpDir });
     // 无 compact 时 compactCount=0（falsy，显示层不渲染 "compact 0 次"）
     expect(result.usage?.compactCount).toBe(0);
-    // 无 compact 单 turn：contextLength = 该 turn 窗口占用 = input（无 cache，excludes output）
-    expect(result.usage?.contextLength).toBe(100);
+    // 无 compact 单 turn：contextLength = 该 turn 窗口占用 = input+output（无 cache）
+    expect(result.usage?.contextLength).toBe(120);
   });
 
   it('uses last turn full prompt as contextLength when no compact (includes cache)', () => {
@@ -315,8 +316,8 @@ describe('readSessionContent', () => {
     ]);
     const result = readSessionContent(sessionId, '/tmp/proj', { projectsDir: tmpDir });
     expect(result.usage?.compactCount).toBe(0);
-    // contextLength = 最后一个 turn 的窗口占用（无 cache 时 = input，excludes output），不是所有 turn 累加
-    expect(result.usage?.contextLength).toBe(90000);
+    // contextLength = 最后一个 turn 的窗口占用（无 cache 时 = input+output），不是所有 turn 累加
+    expect(result.usage?.contextLength).toBe(90100);
     // 非累计字段 = 末轮 scope；累计字段 = session 总和（用于 cost 计算）
     expect(result.usage?.inputTokens).toBe(90000); // 末轮 m3
     expect(result.usage?.outputTokens).toBe(100); // 末轮 m3
@@ -334,9 +335,9 @@ describe('readSessionContent', () => {
       '{"type":"assistant","message":{"id":"m2","role":"assistant","content":[{"type":"text","text":"a2"}],"usage":{"input_tokens":50000,"output_tokens":50,"cache_read_input_tokens":8000,"cache_creation_input_tokens":2000}}}',
     ]);
     const result = readSessionContent(sessionId, '/tmp/proj', { projectsDir: tmpDir });
-    // contextLength = max(postTokens=5000, 末轮窗口占用=50000+8000+2000=60000) = 60000
-    // (input+cacheRead+cacheCreation, excludes output)
-    expect(result.usage?.contextLength).toBe(60000);
+    // contextLength = max(postTokens=5000, 末轮窗口占用=50000+8000+2000+50=60050) = 60050
+    // (input+output+cacheRead+cacheCreation，文档 §9.21 口径)
+    expect(result.usage?.contextLength).toBe(60050);
   });
 
   it('contextLength includes cache_read when no compact', () => {
@@ -346,8 +347,8 @@ describe('readSessionContent', () => {
       '{"type":"assistant","message":{"id":"m1","role":"assistant","content":[{"type":"text","text":"a"}],"usage":{"input_tokens":100,"output_tokens":50,"cache_read_input_tokens":9000,"cache_creation_input_tokens":0}}}',
     ]);
     const result = readSessionContent(sessionId, '/tmp/proj', { projectsDir: tmpDir });
-    // contextLength = input+cacheRead+cacheCreation = 100+9000+0 = 9100 (excludes output)
-    expect(result.usage?.contextLength).toBe(9100);
+    // contextLength = input+output+cacheRead+cacheCreation = 100+9000+0+50 = 9150
+    expect(result.usage?.contextLength).toBe(9150);
   });
 
   it('falls back to reading the whole file when no user message is found', () => {
