@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.10] - 2026-10-24
+
+### 修复
+
+- **点「立即执行」后，run 卡片不再抢在最终 toast 前面**：立即执行的 run 起始会等当前排队卡完成交接再建卡。否则 toast 会成为点击后最后一条新消息，聊天列表预览停在 toast 文案上，而 run 卡片后续的「思考中 / 工具 / 完成」变化不点进会话就看不到
+- **长时间运行不再被过期的空闲定时器误杀**：工作区连接自行退出（如 codex app-server 偶发 exit 0）后，挂在旧连接上的空闲回收定时器此前不会被取消，约 30 分钟后会按工作目录回收后来接替的新连接，正在跑的回合被杀、卡片误报「连接已关闭」。现在定时器只回收自己武装时那个连接，进程自退时同时撤掉定时器，继任连接自己的空闲回收仍然照常生效
+
+### 变更
+
+- **英文架构文档补齐排队卡叙述**：立即执行时的 run 起始闸门与 toast 排序，中英两侧一致
+
 ## [0.5.9] - 2026-10-22
 
 ### 新增
