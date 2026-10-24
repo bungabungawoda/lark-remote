@@ -435,3 +435,112 @@ describe('ConnectionManager replacement serialization', () => {
     expect(clients).toHaveLength(1);
   });
 });
+
+/**
+ * 2026-10-24 线上事故回归（本地实例，cwd=/home/user/code/notes-app）：
+ * codex app-server 偶发自发退出（exit 0、无 signal，非本程序发起）后，挂在旧
+ * slot 上的 idle TTL 定时器泄漏；到期时回调按 cwd 找到**继任连接**并误杀其
+ * 在途 turn，卡片误报 "Codex app-server connection closed"（25 分钟的 run 被
+ * 杀，真 result 64ms 后才到、被错误顶掉）。
+ *
+ * 不变式：TTL 到期只允许回收「定时器武装时看着的那个 slot」的连接； slot 因
+ * 任何原因被替换（进程自退 / 显式 release / 替换重建）后，旧定时器必须失效。
+ */
+describe('ConnectionManager stale idle timer cannot kill the successor connection', () => {
+  interface FakeClient {
+    name: string;
+    ready: boolean;
+    healthy: boolean;
+    disposed: boolean;
+    connect(): Promise<unknown>;
+    dispose(): Promise<void>;
+  }
+
+  function makeManager(opts: { idleTtlMs?: number } = {}) {
+    let seq = 0;
+    const clients: FakeClient[] = [];
+    /** clientFactory 收到的 baseOnClose —— 真实路径即 transport onExit。 */
+    const baseOnCloses: Array<() => void> = [];
+    const manager = new ConnectionManager<FakeClient>({
+      binary: 'unused-in-fake-client-test',
+      args: [],
+      idleTtlMs: opts.idleTtlMs ?? 1000,
+      clientFactory: (ctx) => {
+        const name = `c${++seq}`;
+        const client: FakeClient = {
+          name,
+          ready: true,
+          healthy: true,
+          disposed: false,
+          connect: async () => ({}),
+          dispose: async () => {
+            client.healthy = false;
+            client.disposed = true;
+          },
+        };
+        clients.push(client);
+        baseOnCloses.push(ctx.baseOnClose);
+        return client;
+      },
+    });
+    return { manager, clients, baseOnCloses };
+  }
+
+  it('test_anchor_stale_idle_timer_does_not_kill_new_connection', async () => {
+    vi.useFakeTimers();
+    const { manager, clients, baseOnCloses } = makeManager();
+    try {
+      const first = await manager.acquire('/workspace/a');
+      manager.notifyIdle('/workspace/a'); // TTL 武装在 slot1 上
+
+      // 进程自发退出（codex app-server exit 0）：transport onExit → baseOnClose，
+      // slot1 被删。真实代码里定时器不随 slot 删除而取消（本次修复点）。
+      const selfExit = baseOnCloses[0];
+      if (!selfExit) throw new Error('clientFactory did not receive baseOnClose');
+      selfExit();
+
+      // 同一 cwd 重新 acquire：新 slot2 + 新连接（下一秒就要跑 turn）。
+      const second = await manager.acquire('/workspace/a');
+      expect(second).not.toBe(first);
+
+      // 越过 slot1 的 TTL 到期点：过期定时器不得回收 slot2 的在途连接。
+      vi.advanceTimersByTime(1500);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(second.healthy).toBe(true);
+      expect(second.disposed).toBe(false);
+      expect(clients.filter((c) => c.disposed)).toEqual([]);
+
+      // 继任连接自己的 TTL 仍然有效——修复不能把回收整个废掉。
+      manager.notifyIdle('/workspace/a');
+      vi.advanceTimersByTime(1500);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(second.healthy).toBe(false);
+    } finally {
+      vi.useRealTimers();
+      await manager.disposeAll();
+    }
+  }, 10000);
+
+  it('explicit release disarms the idle timer (no stale firing on successor)', async () => {
+    // 刻画守卫：显式 release 走 disposeSlot（本就清定时器）。与上面的自退路径
+    // 互补——两条替换路径都不得给继任连接留过期定时器。
+    vi.useFakeTimers();
+    const { manager, clients } = makeManager();
+    try {
+      const first = await manager.acquire('/workspace/a');
+      manager.notifyIdle('/workspace/a');
+      await manager.release('/workspace/a');
+
+      const second = await manager.acquire('/workspace/a');
+      expect(second).not.toBe(first);
+
+      vi.advanceTimersByTime(5000);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(second.healthy).toBe(true);
+      expect(clients.filter((c) => c.disposed).map((c) => c.name)).toEqual(['c1']);
+    } finally {
+      vi.useRealTimers();
+      await manager.disposeAll();
+    }
+  }, 10000);
+});
