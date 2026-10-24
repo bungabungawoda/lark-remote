@@ -74,54 +74,67 @@ export function cancelSessionSync(opts: SyncCancelOptions): boolean {
 
   // Cookie 不走 argv（`-H "Cookie: …"` 会在 curl 运行期间对本机任何进程的
   // ps 可见——1 小时有效的 v1 凭据泄露面）：写 0600 临时文件用 `-H @file`
-  // 传入，用完即删。文件写失败时回退 argv——退出路径的 cancel 不能因此放弃。
-  let headerFile: string | undefined;
+  // 传入，用完即删。临时目录必须用 mkdtemp（0700、随机名）：Linux 的 /tmp
+  // 所有用户可写，固定名（如 `<pid>.hdr`）可被本地用户预建软链，而
+  // writeFileSync 会跟随软链把 cookie 写进攻击者可读的文件；后续 chmod
+  // 也救不回已被打开的 fd。文件写失败时回退 argv——退出路径的 cancel
+  // 不能因此放弃。
+  let headerDir: string | undefined;
+  let cookieHeaderArgs: string[];
   try {
-    headerFile = path.join(os.tmpdir(), `lark-remote-exit-cancel-${process.pid}.hdr`);
-    fs.writeFileSync(headerFile, `Cookie: ${cookie}\n`, { mode: 0o600 });
-    fs.chmodSync(headerFile, 0o600);
+    headerDir = fs.mkdtempSync(path.join(os.tmpdir(), 'lark-remote-exit-cancel-'));
+    const headerFile = path.join(headerDir, 'cookie.hdr');
+    fs.writeFileSync(headerFile, `Cookie: ${cookie}\n`, { mode: 0o600, flag: 'wx' });
+    cookieHeaderArgs = ['-H', `@${headerFile}`];
   } catch (err) {
     logger.warn(`[dsh] exit-cancel header file unavailable: ${(err as Error).message}`);
-    headerFile = undefined;
-  }
-  const cookieHeaderArgs = headerFile ? ['-H', `@${headerFile}`] : ['-H', `Cookie: ${cookie}`];
-
-  const res = spawnProcessSync(
-    'curl',
-    [
-      '-s',
-      '-o',
-      isWin32() ? 'NUL' : '/dev/null',
-      '-w',
-      '%{http_code}',
-      '-X',
-      'POST',
-      `${opts.baseUrl.replace(/\/$/, '')}/api/session/cancel`,
-      '-H',
-      'content-type: application/json',
-      ...cookieHeaderArgs,
-      '--max-time',
-      String(Math.max(1, Math.ceil(timeoutMs / 1000))),
-      '--data',
-      body,
-    ],
-    { encoding: 'utf-8', timeout: timeoutMs, maxBuffer: 1024 * 1024 },
-  );
-
-  if (headerFile) {
-    try {
-      fs.unlinkSync(headerFile);
-    } catch {
-      /* best-effort cleanup */
-    }
+    removeDir(headerDir);
+    headerDir = undefined;
+    cookieHeaderArgs = ['-H', `Cookie: ${cookie}`];
   }
 
-  const status = String(res.stdout ?? '').trim();
-  const ok = status === '200';
-  if (!ok) {
-    logger.warn(
-      `[dsh] exit-cancel failed for ${opts.sessionId}: ${res.error?.message ?? `http ${status || 'n/a'}`}`,
+  try {
+    const res = spawnProcessSync(
+      'curl',
+      [
+        '-s',
+        '-o',
+        isWin32() ? 'NUL' : '/dev/null',
+        '-w',
+        '%{http_code}',
+        '-X',
+        'POST',
+        `${opts.baseUrl.replace(/\/$/, '')}/api/session/cancel`,
+        '-H',
+        'content-type: application/json',
+        ...cookieHeaderArgs,
+        '--max-time',
+        String(Math.max(1, Math.ceil(timeoutMs / 1000))),
+        '--data',
+        body,
+      ],
+      { encoding: 'utf-8', timeout: timeoutMs, maxBuffer: 1024 * 1024 },
     );
+
+    const status = String(res.stdout ?? '').trim();
+    const ok = status === '200';
+    if (!ok) {
+      logger.warn(
+        `[dsh] exit-cancel failed for ${opts.sessionId}: ${res.error?.message ?? `http ${status || 'n/a'}`}`,
+      );
+    }
+    return ok;
+  } finally {
+    removeDir(headerDir);
   }
-  return ok;
+}
+
+/** 删除 cookie 临时目录（best-effort）；目录未创建时是空操作。 */
+function removeDir(dir: string | undefined): void {
+  if (!dir) return;
+  try {
+    fs.rmSync(dir, { recursive: true, force: true });
+  } catch {
+    /* best-effort cleanup */
+  }
 }
