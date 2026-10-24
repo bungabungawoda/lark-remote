@@ -253,6 +253,11 @@ export class KimiAcpRunner extends BaseAcpRunner<KimiAcpTranslator> {
   private compactBaselineRecords: CompactionRecordLike[] = [];
 
   /** 存活 terminal（kimi 把 Bash 执行下放客户端）：terminalId → 本地句柄。 */
+  // 已知限制（待验证 kimi 0.4x 契约）：句柄只在
+  // terminal/release 与连接关闭（cleanupTerminals）时删除。若服务端只 kill
+  // 不 release（中断 turn 的场景），已退出进程的句柄（含 ≤4MB output 缓冲）
+  // 会滞留到连接释放。kimi 契约上工具结束会发 release（mock 测试同驱动）；
+  // 若真机确认存在只 kill 不 release 的路径，再补 exit 后延迟回收。
   private terminals = new Map<string, TerminalHandle>();
   /** terminalId 自增序号（term-1, term-2, …）。 */
   private terminalSeq = 0;
@@ -579,6 +584,10 @@ export class KimiAcpRunner extends BaseAcpRunner<KimiAcpTranslator> {
     let lastTotalCount = reader.call(this.sessionReader, sessionId, opts.cwd).length;
     while (true) {
       if (this.forceFinish || this.stopRequested) return 'stopped';
+      // turn 已死亡（failTurn，如连接关闭）时不再轮询：forceFinish 与
+      // stopRequested 均为 false 的死亡路径会让循环空转到 10 分钟沉默超时，
+      // 结果还被 isCurrent() 丢弃——纯浪费的每秒文件读。
+      if (!this._isRunning) return 'unknown';
       const records = reader.call(this.sessionReader, sessionId, opts.cwd);
       if (records.length !== lastTotalCount) {
         lastTotalCount = records.length;
@@ -674,10 +683,16 @@ export class KimiAcpRunner extends BaseAcpRunner<KimiAcpTranslator> {
       // (error = "rejected"), otherwise the server hangs waiting for a
       // response. For question elicitation (§5.4), auto-respond cancelled.
       const rpParams = params as RequestPermissionParams;
-      if (
+      // elicitation/create 的表单属性全不可解析时（translator 返回 []）同样回
+      // cancelled 而不是 METHOD_NOT_FOUND：§5.4 的不变量是「识别到非工具审批
+      // 形态 → 自动回应 cancelled，防止服务端挂起」；错误响应虽也能解悬挂，
+      // 但 kimi 侧可能把 JSON-RPC error 当工具级失败让整个 turn 报错，而不是
+      // 跳过提问继续。
+      const isQuestionElicitation =
         method === ServerRequestMethod.REQUEST_PERMISSION &&
-        (rpParams.isQuestion || !rpParams.toolCall)
-      ) {
+        (rpParams.isQuestion || !rpParams.toolCall);
+      const isUnparseableElicitationForm = method === ServerRequestMethod.ELICITATION_CREATE;
+      if (isQuestionElicitation || isUnparseableElicitationForm) {
         this.currentClient?.respond(id, { outcome: { outcome: 'cancelled' } });
         getLogger().info(
           `[${this.logTag}] auto-responded cancelled to question elicitation requestId=${id}`,
@@ -829,7 +844,21 @@ export class KimiAcpRunner extends BaseAcpRunner<KimiAcpTranslator> {
       handle.exitCode = code;
       handle.signal = signal;
       resolveExit?.();
-      emitResult();
+      // 'exit' 可先于 stdout 缓冲派发：立刻 emit 会按旧快照推送 tool_result，
+      // 卡片面板丢尾部输出（terminal/output 反向 RPC 读到的是补齐后的全量，
+      // 只影响卡片）。等流 end 或 200ms 宽限——不等 'close'：它要等所有共享
+      // 管道的子孙进程退出，`nohup &` 类后台任务会把它拖到永远。
+      const flushThenEmit = () => {
+        clearTimeout(emitTimer);
+        emitResult();
+      };
+      const emitTimer = setTimeout(flushThenEmit, 200);
+      emitTimer.unref?.();
+      if (proc.stdout && !proc.stdout.destroyed) {
+        proc.stdout.once('end', flushThenEmit);
+      } else {
+        flushThenEmit();
+      }
     });
     proc.once('error', (err) => {
       getLogger().warn(`[${this.logTag}] terminal process error: ${err.message}`);

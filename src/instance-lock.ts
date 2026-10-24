@@ -208,19 +208,50 @@ export class InstanceLock {
     return `${pid}\n${binaryName(process.execPath)}`;
   }
 
-  /** 原子创建锁文件；已存在返回 false，其它 IO 错误向上抛。 */
+  /**
+   * 原子创建锁文件；已存在返回 false，其它 IO 错误向上抛。
+   *
+   * 先写完整临时文件再 `link()`：`open(wx)` 与 `write` 之间存在微秒级「空文件」
+   * 窗口，并发进程在该窗口读到的锁是「空 → 损坏 → 陈旧」，rename 夺走后双方
+   * 各持一份（A 的 fd 写进已被删掉的 inode、B 建了自己的锁 → 双实例）。
+   * link() 创建即含全部内容，窗口不存在；文件系统不支持 hardlink 时退回 wx
+   * 直建（该类 FS 上保留既有行为，竞态面收窄到该类文件系统）。
+   */
   private tryCreate(): boolean {
+    const tmp = `${this.lockPath}.new-${process.pid}-${randomBytes(6).toString('hex')}`;
     try {
-      const fd = fs.openSync(this.lockPath, 'wx');
+      const fd = fs.openSync(tmp, 'wx');
       try {
         fs.writeSync(fd, this.lockContents(process.pid));
       } finally {
         fs.closeSync(fd);
       }
-      return true;
-    } catch (err: unknown) {
-      if ((err as NodeJS.ErrnoException).code === 'EEXIST') return false;
-      throw err;
+      try {
+        fs.linkSync(tmp, this.lockPath);
+        return true;
+      } catch (err: unknown) {
+        const code = (err as NodeJS.ErrnoException).code;
+        if (code === 'EEXIST') return false;
+        if (code === 'EPERM' || code === 'EOPNOTSUPP' || code === 'ENOSYS' || code === 'EXDEV') {
+          // hardlink 不可用（网络/overlay FS）：退回 wx 直建。
+          try {
+            const direct = fs.openSync(this.lockPath, 'wx');
+            try {
+              fs.writeSync(direct, this.lockContents(process.pid));
+            } finally {
+              fs.closeSync(direct);
+            }
+            return true;
+          } catch (err2: unknown) {
+            if ((err2 as NodeJS.ErrnoException).code === 'EEXIST') return false;
+            throw err2;
+          }
+        }
+        throw err;
+      }
+    } finally {
+      // 成功 link 后 tmp 与 lockPath 同 inode：删 tmp 只去掉多余名字（nlink 2→1）。
+      bestEffortUnlink(tmp);
     }
   }
 

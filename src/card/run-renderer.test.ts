@@ -3876,3 +3876,110 @@ describe('renderRunCard · goal 可见性', () => {
     expect(json).toContain('"cmd":"compact"');
   });
 });
+
+/**
+ * 审批区预算回归。
+ *
+ * 审批区是唯一不受估算器管辖、也不参与 degraded/extreme 分层裁剪的区域：
+ * reason 等自由文本无上限（实测 30,000 字符 → 整卡 31,450 字节）、
+ * 题数×选项无上限（实测 8 题 × 5 选项 = 144 元素），两层都会让飞书 11310
+ * 整卡拒收——审批彻底不可见，run 只能挂到审批超时/看门狗。
+ * 修复：字段级截断 + 题数/选项渲染上限 + skeleton/truncatedSkeleton 兜底
+ * 换紧凑审批区。本组测试钉住「任何审批输入都不会让卡超双预算」。
+ */
+describe('approval area budget', () => {
+  const CARD_BUDGET_BYTES = 28_000;
+
+  it('超长 reason 的审批卡仍在字节与元素预算内', () => {
+    let state = createInitialRunState('run-approval-huge-reason');
+    state = reduceRunState(state, {
+      type: 'approval_requested',
+      requestId: 1,
+      kind: 'command',
+      threadId: 'th-1',
+      turnId: 'tn-1',
+      itemId: 'item-1',
+      view: {
+        requestId: 1,
+        kind: 'command',
+        command: 'ls',
+        // 审查实测复现值：30,000 字符的 reason 曾产出 31,450 字节整卡。
+        reason: 'r'.repeat(30_000),
+        availableDecisions: ['accept', 'decline'],
+      },
+    } as never);
+
+    const card = renderRunCard(state);
+    const json = JSON.stringify(card);
+    expect(Buffer.byteLength(json, 'utf8')).toBeLessThanOrEqual(CARD_BUDGET_BYTES);
+    expect(countCardElements(card)).toBeLessThanOrEqual(MAX_CARD_ELEMENTS);
+    // 截断后审批入口仍在（红线：任何降级档都不能丢审批按钮）。
+    expect(json).toContain('approval.respond');
+  });
+
+  it('8 题 × 5 选项的提问审批不撑爆元素数预算', () => {
+    let state = createInitialRunState('run-approval-many-questions');
+    state = reduceRunState(state, {
+      type: 'approval_requested',
+      requestId: 2,
+      kind: 'question',
+      threadId: 'th-2',
+      turnId: 'tn-2',
+      itemId: 'item-2',
+      view: {
+        requestId: 2,
+        kind: 'question',
+        questions: Array.from({ length: 8 }, (_, i) => ({
+          header: `问题 ${i + 1}`,
+          question: `第 ${i + 1} 题的题面`,
+          multiSelect: false,
+          options: Array.from({ length: 5 }, (_, j) => ({
+            label: `选项 ${i}-${j}`,
+            description: `描述 ${i}-${j}`,
+          })),
+        })),
+        availableDecisions: ['accept', 'decline'],
+      },
+    } as never);
+
+    const card = renderRunCard(state);
+    const json = JSON.stringify(card);
+    expect(countCardElements(card)).toBeLessThanOrEqual(MAX_CARD_ELEMENTS);
+    expect(Buffer.byteLength(json, 'utf8')).toBeLessThanOrEqual(CARD_BUDGET_BYTES);
+    // 预算内的问题照常渲染（元素预算自适应：每行选项 3 个元素，前几题装得下），
+    // 装不下的折叠为计数提示——远好于整卡被 11310 拒收、一题都答不了。
+    expect(json).toContain('第 1 题的题面');
+    expect(json).toContain('另有 5 题未展示');
+    // 审批入口保留（红线）。
+    expect(json).toContain('approval.respond');
+  });
+
+  it('超长题面的提问字段被截断而不是撑爆卡片', () => {
+    let state = createInitialRunState('run-approval-huge-question');
+    state = reduceRunState(state, {
+      type: 'approval_requested',
+      requestId: 3,
+      kind: 'question',
+      threadId: 'th-3',
+      turnId: 'tn-3',
+      itemId: 'item-3',
+      view: {
+        requestId: 3,
+        kind: 'question',
+        questions: [
+          {
+            header: '问题 1',
+            question: 'q'.repeat(30_000),
+            multiSelect: false,
+            options: [{ label: '是' }, { label: '否' }],
+          },
+        ],
+        availableDecisions: ['accept', 'decline'],
+      },
+    } as never);
+
+    const card = renderRunCard(state);
+    expect(Buffer.byteLength(JSON.stringify(card), 'utf8')).toBeLessThanOrEqual(CARD_BUDGET_BYTES);
+    expect(countCardElements(card)).toBeLessThanOrEqual(MAX_CARD_ELEMENTS);
+  });
+});

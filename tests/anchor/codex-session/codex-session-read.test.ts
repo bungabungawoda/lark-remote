@@ -411,7 +411,7 @@ describe('codex session content read', () => {
     expect(result.usage?.cacheReadTokens).toBe(800);
     expect(result.usage?.cacheCreationTokens).toBe(100);
     expect(result.usage?.compactCount).toBe(1);
-    expect(result.usage?.contextLength).toBe(5900);
+    expect(result.usage?.contextLength).toBe(5950); // §9.21: input+output+cacheRead+cacheCreation
     expect(result.usage?.totalTokens).toBe(5000 + 50 + 800 + 100);
     expect(result.usage?.cumulativeInputTokens).toBe(5100);
     expect(result.usage?.cumulativeOutputTokens).toBe(70);

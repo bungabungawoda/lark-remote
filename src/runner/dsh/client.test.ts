@@ -16,6 +16,7 @@ import { DSH_BROWSER_CREDENTIAL_KEY } from './auth.js';
 import { DshRunner } from './runner.js';
 import type { AgentSessionReader, AgentEvent } from '../types.js';
 import type { DshFollowFrame, DshSessionEvent } from './types.js';
+import { isWin32 } from '../../platform/select.js';
 
 const CWD = '/home/user/project';
 const SID = 'aaaaaaaa-1111-2222-3333-444444444444';
@@ -45,7 +46,7 @@ function credentialsFile(secret: Buffer): string {
     }),
     { mode: 0o600 },
   );
-  if (process.platform !== 'win32') fs.chmodSync(file, 0o600);
+  if (!isWin32()) fs.chmodSync(file, 0o600);
   return file;
 }
 
@@ -347,6 +348,144 @@ describe('DshClient remote mux', () => {
       if (item.kind === 'event') seen.push(item.event.seq);
     }
     expect(seen).toEqual([2]);
+  });
+
+  it('backfills the pre-snapshot gap via session/page when hasMore hides older events', async () => {
+    // 源码验证：follow 快照按消息截尾，hasMore=true 表示
+    // lastSeq 与快照起点之间有缺口。快照覆盖 401-402（turn/end 收尾），
+    // 缺口 0-400 由 session/page 回填——回放必须 seq 升序覆盖全部 403 条。
+    const pageCalls: Array<{ throughSeq: number; maxMessages: number }> = [];
+    const fetchImpl = (async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith('/api/session/page')) {
+        return jsonResponse({});
+      }
+      return jsonResponse({});
+    }) as typeof fetch;
+    // 页响应需要按 body 分派：unary 的 body 携带 method envelope。
+    const dispatchingFetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith('/api/session/page')) {
+        const body = JSON.parse(String(init?.body ?? '{}')) as {
+          payload?: { args?: { request?: { throughSeq?: number; maxMessages?: number } } };
+        };
+        const req = body.payload?.args?.request ?? {};
+        pageCalls.push({ throughSeq: req.throughSeq ?? -1, maxMessages: req.maxMessages ?? 0 });
+        const throughSeq = req.throughSeq ?? -1;
+        // 单页盖住整个缺口：返回 [0..throughSeq]，hasMore=false 终止翻页。
+        const records = [];
+        for (let seq = Math.max(0, throughSeq - 400); seq <= throughSeq; seq++) {
+          records.push({
+            type: 'event',
+            event: { type: 'assistant/message', seq, time: 1700000000000, data: {} },
+          });
+        }
+        return jsonResponse({ records, hasMore: false });
+      }
+      return fetchImpl(input, init);
+    }) as typeof fetch;
+
+    const client = new DshClient('http://127.0.0.1:3080', {
+      credentialsFile: NO_CREDENTIALS_FILE,
+      fetchImpl: dispatchingFetch,
+      webSocketImpl: () =>
+        new ScriptedWebSocket('ws://127.0.0.1:3080/api/remote.mux', [
+          {
+            type: 'snapshot',
+            cursor: 402,
+            hasMore: true,
+            records: [
+              {
+                type: 'event',
+                event: { type: 'assistant/message', seq: 401, time: 1700000000000, data: {} },
+              },
+              { type: 'event', event: turnEnd('completed', 402) },
+            ],
+          },
+        ]),
+    });
+    const seen: number[] = [];
+    for await (const item of client.sessionEvents(SID, new AbortController().signal)) {
+      if (item.kind === 'event') seen.push(item.event.seq);
+    }
+    expect(seen).toHaveLength(403);
+    expect(seen[0]).toBe(0);
+    expect(seen.at(-1)).toBe(402);
+    const ascending = seen.every((seq, i) => i === 0 || seq > seen[i - 1]!);
+    expect(ascending).toBe(true);
+    expect(pageCalls).toEqual([{ throughSeq: 400, maxMessages: 200 }]);
+  });
+
+  it('does not page backfill when the snapshot starts right above lastSeq', async () => {
+    // hasMore=true 但快照首条就是 lastSeq+1：无缺口，一个 session/page 都不发。
+    let pageCalls = 0;
+    const fetchImpl = (async (input: RequestInfo | URL) => {
+      if (String(input).endsWith('/api/session/page')) pageCalls++;
+      return jsonResponse({});
+    }) as typeof fetch;
+    const client = new DshClient('http://127.0.0.1:3080', {
+      credentialsFile: NO_CREDENTIALS_FILE,
+      fetchImpl,
+      webSocketImpl: () =>
+        new ScriptedWebSocket('ws://127.0.0.1:3080/api/remote.mux', [
+          {
+            type: 'snapshot',
+            cursor: 402,
+            hasMore: true,
+            records: [
+              {
+                type: 'event',
+                event: { type: 'assistant/message', seq: 401, time: 1700000000000, data: {} },
+              },
+              { type: 'event', event: turnEnd('completed', 402) },
+            ],
+          },
+        ]),
+    });
+    const seen: number[] = [];
+    for await (const item of client.sessionEvents(SID, new AbortController().signal, 400)) {
+      if (item.kind === 'event') seen.push(item.event.seq);
+    }
+    expect(seen).toEqual([401, 402]);
+    expect(pageCalls).toBe(0);
+  });
+
+  it('openTurnState reports unknown when the event probe tail is a user/message', async () => {
+    // 源码验证：user/message 在 turn 打开后 append，距下一条
+    // durable 事件隔一个 LLM 往返——尾部 user/message 时 open/closed 都可能是
+    // 错的（压缩 checkpoint 也以 turn:null 落 user/message），只能报 unknown。
+    const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith('/api/session/list')) {
+        return jsonResponse({ items: [{ sessionId: SID, running: undefined }] });
+      }
+      if (url.endsWith('/api/session/projections')) {
+        return jsonResponse({ asOfSeq: 5, values: {} });
+      }
+      if (url.endsWith('/api/session/page')) {
+        return jsonResponse({
+          records: [
+            {
+              type: 'event',
+              event: {
+                type: 'user/message',
+                seq: 5,
+                time: 1700000000000,
+                data: { id: 'm1', role: 'user', content: [] },
+              },
+            },
+          ],
+          hasMore: false,
+        });
+      }
+      throw new Error(`unexpected fetch: ${url} ${JSON.stringify(init?.body ?? null)}`);
+    }) as typeof fetch;
+    const client = new DshClient('http://127.0.0.1:3080', {
+      credentialsFile: NO_CREDENTIALS_FILE,
+      fetchImpl,
+    });
+    const state = await client.openTurnState(SID, { timeoutMs: 1000 });
+    expect(state).toBe('unknown');
   });
 
   it('parses session/control baseline and projection frames into filtered items', async () => {

@@ -249,6 +249,11 @@ export class CodexAppServerRunner extends ConnectionBasedRunner<
     this.currentTranslator = null;
     this.activeThreadId = null;
     this.foreignThreadIds.clear();
+    // pendingApprovals 必须随轮次清理（与 base-acp-runner 同口径）：连接长驻，
+    // 服务端请求 id 在 respawn 后会从小数字重新计数——留着旧条目等于让下一轮
+    // 迟到的卡片点击把载荷回给无关的新请求（coordinator 的超时 cancel 也可能
+    // 落在新一轮的连接上）。
+    this.pendingApprovals.clear();
   }
 
   protected async releaseConnection(cwd: string): Promise<void> {
@@ -501,6 +506,12 @@ export class CodexAppServerRunner extends ConnectionBasedRunner<
     if (!this.belongsToActiveThread(method, params)) {
       this.noteForeignThread(params);
       return;
+    }
+    if (method === NotificationMethod.SERVER_REQUEST_RESOLVED) {
+      // 审批被外部结算（Web UI 先答 / 服务端自动放行）时同步摘除 runner 侧
+      // 条目——否则迟到的卡片点击会向已结算的 requestId 回信（服务端报错）。
+      const requestId = (params as { requestId?: number | string } | null)?.requestId;
+      if (requestId !== undefined) this.pendingApprovals.delete(requestId);
     }
     const events = this.currentTranslator?.handleNotification(method, params) ?? [];
     this.pushEvents(events);

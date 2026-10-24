@@ -230,10 +230,17 @@ describe('index.ts clone flow wiring guard', () => {
  * 名单以 router 单源 SESSION_MUTATING_ACTION_CMDS 为准（防本地复制漂移）。
  */
 describe('index.ts session-mutating card action ordering guard (2026-10-07)', () => {
-  it('会话/cwd/agent 变更类卡片动作执行前先 flush 装配窗口', () => {
+  it('会话/cwd/agent 变更类卡片动作执行前先 flush 装配窗口（有界等待）', () => {
     const source = fs.readFileSync(path.resolve(__dirname, 'index.ts'), 'utf-8');
     expect(source).toContain('SESSION_MUTATING_ACTION_CMDS.has(actionValue.cmd)');
-    expect(source).toContain("await assembler.flush(userId, chatId, 'flush')");
+    // 有界等待：flush 会等 in-flight 媒体下载（5 分钟/资源），
+    // 而 SDK 把卡片动作放进与消息共享的 per-chat 串行 lane——无界等待会让
+    // 整个 chat 停摆。flush promise 不得 reject（后台续跑不许变 unhandledRejection）。
+    // 注：断言用 `.flush(userId, chatId, 'flush')` 片段——prettier 会把
+    // `assembler\n.flush(...)` 折行，整串匹配会在格式化后失效。
+    expect(source).toContain(".flush(userId, chatId, 'flush')");
+    expect(source).toContain('.catch((err: unknown) =>');
+    expect(source).toContain('Promise.race([flushP, sleep(SESSION_MUTATING_FLUSH_BUDGET_MS)])');
     // 单源：从 router 导入，不得本地复制名单
     expect(source).toContain('SESSION_MUTATING_ACTION_CMDS,');
     // 顺序：flush 必须在直返分支与即时/串行队列分发之前
@@ -245,6 +252,28 @@ describe('index.ts session-mutating card action ordering guard (2026-10-07)', ()
     expect(immediateIdx).toBeGreaterThan(-1);
     expect(flushIdx).toBeLessThan(directIdx);
     expect(flushIdx).toBeLessThan(immediateIdx);
+  });
+
+  it('媒体入口在 clone 活跃期不下载不落盘（§5.8 与文本入口同款闸门）', () => {
+    const source = fs.readFileSync(path.resolve(__dirname, 'index.ts'), 'utf-8');
+    const mediaStart = source.indexOf('connector.setInboundMediaDetectedHandler((msg) => {');
+    expect(mediaStart).toBeGreaterThan(-1);
+    // 到注册调用的 2 空格缩进 `});` 为止（handler 内部的 ingest/闭包以更深
+    // 缩进结束，不能用裸 '});' 截断——会把 downloadInboundMedia 截丢）。
+    const mediaEnd = source.indexOf('\n  });', mediaStart);
+    expect(mediaEnd).toBeGreaterThan(mediaStart);
+    const mediaBody = source.slice(mediaStart, mediaEnd);
+    // clone 闸门必须在 owner 认证之后、enabled 检查与 downloadInboundMedia 之前
+    const cloneGateIdx = mediaBody.indexOf('if (cloneSession.isActive()) {');
+    const enabledIdx = mediaBody.indexOf('if (!router.config.inboundMedia.enabled) {');
+    const downloadIdx = mediaBody.indexOf('connector.downloadInboundMedia');
+    expect(cloneGateIdx).toBeGreaterThan(-1);
+    expect(enabledIdx).toBeGreaterThan(cloneGateIdx);
+    expect(downloadIdx).toBeGreaterThan(cloneGateIdx);
+    // 静默丢弃：不 ingest rejected、不下载（clone 引导话术不被「已保存」回执干扰）
+    const gateBlock = mediaBody.slice(cloneGateIdx, enabledIdx);
+    expect(gateBlock).not.toContain('assembler.ingest');
+    expect(gateBlock).not.toContain('downloadInboundMedia');
   });
 });
 

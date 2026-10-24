@@ -10,10 +10,10 @@
  *
  * 依赖（spawn / 等待器 / 日志）全部构造注入，win32 语义可在任意宿主上单测。
  */
-import { spawn as nodeSpawn } from 'node:child_process';
 import type { ChildProcess, SpawnOptions } from 'node:child_process';
 import type { Terminator } from './terminator.js';
 import { AgentStopperRegistry, agentStopperRegistry } from './agent-stopper.js';
+import { spawnProcess } from './spawn.js';
 import type { TerminateResult } from './types.js';
 
 export type SpawnLike = (file: string, args: string[], opts?: SpawnOptions) => ChildProcess;
@@ -28,7 +28,7 @@ export interface Win32TerminatorDeps {
   agent?: string;
   /** 协议通道注册表注入（测试隔离）；默认进程级单例 */
   stoppers?: AgentStopperRegistry;
-  /** spawn 注入（测试用）；默认 node:child_process */
+  /** spawn 注入（测试用）；默认 platform/spawn.ts 的 spawnProcess */
   spawn?: SpawnLike;
   /** grace 等待器注入（测试用）；默认与 exit 事件竞速 */
   waitForExit?: WaitForExit;
@@ -60,7 +60,9 @@ async function defaultWaitForExit(proc: ChildProcess, ms: number): Promise<boole
 }
 
 export function createWin32Terminator(deps: Win32TerminatorDeps): Terminator {
-  const spawnFn = deps.spawn ?? nodeSpawn;
+  // 默认走 platform/spawn.ts 单点收口：taskkill 是系统二进制，
+  // cross-spawn 在 win32 之外直通、在 win32 垫片场景下受控执行。
+  const spawnFn = deps.spawn ?? spawnProcess;
   const stoppers = deps.stoppers ?? agentStopperRegistry;
   const waitForExit = deps.waitForExit ?? defaultWaitForExit;
   const log = deps.log;

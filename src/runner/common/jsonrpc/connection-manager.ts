@@ -183,7 +183,17 @@ export class ConnectionManager<TClient extends ConnectionClient = JsonRpcClient>
       if (existing) {
         // If a create is in flight, wait for it
         if (existing.createPromise) {
-          return existing.createPromise;
+          const client = await existing.createPromise;
+          // 快速路径复核（与下方建槽方的竞态复核对称）：await 期间槽位被
+          // release()/disposeAll() 删掉时，建槽方会 dispose 该连接并重试——
+          // 直接返回会把「已被建槽方 dispose 的连接」交给本调用方（表现为
+          // setupTurn 抛 ConnectionLostError 走 respawn-retry 自愈）。槽位
+          // 不再持有该 client 时与本轮创建同路：重试。
+          const current = this.slots.get(cwd);
+          if (current && current.client === client) {
+            return client;
+          }
+          continue;
         }
         // Reuse when the (session-aware) reuse predicate holds — e.g. the client
         // is ready and its transport is alive (default), or it is bound to the

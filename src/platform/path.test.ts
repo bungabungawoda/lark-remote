@@ -34,8 +34,14 @@ describe('pathKey', () => {
     expect(pathKey('C:\\weird', { platform: 'darwin' })).toBe('c:\\weird');
   });
 
-  it('linux: identity（与 samePath 的严格相等口径一致）', () => {
-    expect(pathKey('/Home/User/', { platform: 'linux' })).toBe('/Home/User/');
+  it('linux: 大小写敏感，但与 darwin/win32 同样剥尾部分隔符', () => {
+    // 尾部分隔符剥离与 darwin 同口径：否则 `/cd ~/repo/` 与 `/cd ~/repo`
+    // 会被 samePath 判成两个目录（linux 分支曾原样返回）。
+    expect(pathKey('/Home/User/', { platform: 'linux' })).toBe('/Home/User');
+    expect(pathKey('/Home/User//', { platform: 'linux' })).toBe('/Home/User');
+    // 大小写保持敏感（linux 语义）。
+    expect(pathKey('/Home/User', { platform: 'linux' })).toBe('/Home/User');
+    expect(pathKey('/home/user', { platform: 'linux' })).toBe('/home/user');
   });
 
   it('不变量：samePath(a,b) ⟺ pathKey(a)===pathKey(b)', () => {

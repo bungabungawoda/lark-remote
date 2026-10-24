@@ -24,7 +24,7 @@ import { displayWidth, truncateToDisplayWidth } from '../common/text-width.js';
 import { isContentFilterFailure } from '../common/turn-failure.js';
 import { formatClock, formatTimestamp } from './time.js';
 import { formatUsageStats } from '../router/usage-format.js';
-import { renderApprovalArea } from './approval-render.js';
+import { renderApprovalArea, renderApprovalAreaCompact } from './approval-render.js';
 
 const REASONING_BYTES = 4_500;
 const TEXT_BYTES = 10_000;
@@ -558,6 +558,27 @@ function approvalArea(state: RunState): object[] {
   return elements;
 }
 
+/**
+ * 紧凑审批区（skeleton/truncatedSkeleton 兜底专用）：完整审批区不受估算器
+ * 管辖、不参与 degraded/extreme 分层裁剪，pathological 输入（超长 reason、
+ * 题数×选项爆元素数）会让所有兜底层一起超限——超限卡被飞书整卡拒收（11310），
+ * 审批彻底不可见，run 挂到审批超时/看门狗。兜底层换用紧凑形态（固定小体积、
+ * 保留决策/跳过按钮），结构性保证审批入口在任何降级档都活着。
+ */
+function approvalAreaCompact(state: RunState): object[] {
+  const elements: object[] = [];
+  for (const slot of state.approvals ?? []) {
+    elements.push(
+      ...renderApprovalAreaCompact(slot.view, {
+        expired: slot.expired,
+        runId: state.runId,
+        terminal: state.terminal,
+      }),
+    );
+  }
+  return elements;
+}
+
 /** 底部操作行之前的内容区提示：被 MAX_BLOCKS 截掉的早期块计数（信息保真）。 */
 function omittedBlocksHint(state: RunState): object[] {
   return state.omittedBlocks !== undefined && state.omittedBlocks > 0
@@ -786,10 +807,11 @@ function elapsedLabel(state: RunState): string {
   return `${Math.floor(hours / 24)}d${String(hours % 24).padStart(2, '0')}h`;
 }
 
-/** token 数量的紧凑写法：`950` / `12K` / `1.2M`。 */
+/** token 数量的紧凑写法：`950` / `12K` / `1.0M`。 */
 function formatTokens(tokens: number): string {
   if (tokens < 1000) return String(tokens);
-  if (tokens < 1_000_000) return `${Math.round(tokens / 1000)}K`;
+  // 千位边界取 M 档：999_500 起四舍五入会得到 "1000K"，直接按 M 档展示。
+  if (tokens < 999_500) return `${Math.round(tokens / 1000)}K`;
   return `${(tokens / 1_000_000).toFixed(1)}M`;
 }
 
@@ -1053,21 +1075,24 @@ export function renderRunCard(state: RunState, options: RunCardRenderOptions = {
   }
 
   const skeletonCard = assembleRunCard(state, options, buildSkeletonElements(state, options));
-  // skeleton 卡是静态结构，理论上必 ≤28KB；保留兜底断言以防未来结构膨胀
-  if (Buffer.byteLength(JSON.stringify(skeletonCard), 'utf8') <= CARD_BUDGET_BYTES) {
+  // skeleton 卡是静态结构，理论上必 ≤28KB；但审批区/summary 携带 agent 产出
+  // 文本，仍可能把任一维度顶爆（此前只查字节——题数×选项的元素数超限会漏网）。
+  // 保留兜底断言以防未来结构膨胀；超限则降级到 truncatedSkeleton。
+  if (withinRunCardBudget(skeletonCard)) {
     return skeletonCard;
   }
 
-  // 理论上不可达：skeleton 已是静态最小结构。若仍超限（errorMsg 等无界文本
-  // 灌进 summary），硬截断只丢 summary——审批入口与 stop/新会话按钮是红线，
-  // 任何一级兜底都不能把它们截掉（丢了用户就再也停不下这个 run）。
+  // 理论上不可达：skeleton 已是静态最小结构。若仍超限（超长 reason、题数×
+  // 选项爆元素数等审批区输入），硬截断只丢 summary 与完整审批区——审批入口
+  // （紧凑形态：标题 + 摘要 + 决策/跳过按钮）与 stop/新会话按钮是红线，任何
+  // 一级兜底都不能把它们截掉（丢了用户就再也停不下这个 run / 答不了审批）。
   const truncatedSkeleton = {
     ...skeletonCard,
     body: {
       elements: [
         statusRow(state),
         markdownDiv('_⚠️ 输出过大_'),
-        ...approvalArea(state),
+        ...approvalAreaCompact(state),
         ...actionRow(state, options),
       ],
     },

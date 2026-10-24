@@ -101,7 +101,8 @@ export class JsonlRpcTransport {
 
   /**
    * Spawn the child process and start reading its stdout.
-   * Returns when the process closes (or immediately if spawn fails).
+   * Resolves once the process has spawned and listeners are wired — it does
+   * NOT wait for the process to close（关闭经 events.onClose 上报）。
    */
   async start(events: TransportEvents): Promise<void> {
     this.events = events;
@@ -167,6 +168,10 @@ export class JsonlRpcTransport {
     const decoder = new StringDecoder('utf8');
     let remainder = '';
     proc.stdout?.on('data', (chunk: Buffer) => {
+      // handleClose（超长行/EPIPE/进程 error）判死通道后不再分发：子进程被
+      // terminator 停止前还会吐几帧，把这些帧交给 onMessage 等于向已判死的
+      // run 注入事件。
+      if (this._closed) return;
       remainder += decoder.write(chunk);
       const lines = remainder.split('\n');
       // Lines except the last (incomplete) one

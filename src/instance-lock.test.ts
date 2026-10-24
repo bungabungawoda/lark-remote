@@ -137,8 +137,9 @@ describe('InstanceLock acquire edge cases', () => {
     fs.writeFileSync(lockPath, '12345\nold-process', 'utf-8');
     stubPidAlive();
 
-    // Mock openSync: first call throws EEXIST, after unlink the second call also throws EEXIST
-    vi.spyOn(fs, 'openSync').mockImplementation((..._args: unknown[]) => {
+    // tryCreate 走「写 tmp + link」：EEXIST 的来源是 linkSync（锁已被别人占住），
+    // 每次 link 都撞 EEXIST（首次与 stale 复试各一次）。
+    vi.spyOn(fs, 'linkSync').mockImplementation((..._args: unknown[]) => {
       const err = new Error('file exists') as NodeJS.ErrnoException;
       err.code = 'EEXIST';
       throw err;
@@ -153,12 +154,12 @@ describe('InstanceLock acquire edge cases', () => {
     fs.writeFileSync(lockPath, '12345\nold-process', 'utf-8');
     stubPidAlive();
 
-    // Mock openSync: first call EEXIST (enters stale path), second call also EEXIST (race)
-    let openCallCount = 0;
-    vi.spyOn(fs, 'openSync').mockImplementation((..._args: unknown[]) => {
-      openCallCount++;
-      // After the first EEXIST triggers unlink+retry, write malformed content before second read
-      if (openCallCount === 2) {
+    // linkSync: first EEXIST (enters stale path), second EEXIST (race) — at that
+    // moment the "winner" installs malformed content before our winner-read.
+    let linkCallCount = 0;
+    vi.spyOn(fs, 'linkSync').mockImplementation((..._args: unknown[]) => {
+      linkCallCount++;
+      if (linkCallCount === 2) {
         fs.writeFileSync(lockPath, 'not-a-number\n', 'utf-8');
       }
       const err = new Error('file exists') as NodeJS.ErrnoException;
@@ -179,21 +180,24 @@ describe('InstanceLock acquire edge cases', () => {
     }
   });
 
-  it('re-throws non-EEXIST errors from openSync', async () => {
+  it('re-throws non-EEXIST errors from linkSync (and its openSync fallback)', async () => {
     fs.writeFileSync(lockPath, '12345\nprocess', 'utf-8');
     stubPidAlive();
 
-    let openSyncCallCount = 0;
-    vi.spyOn(fs, 'openSync').mockImplementation((..._args) => {
-      openSyncCallCount++;
-      if (openSyncCallCount === 1) {
+    let linkCallCount = 0;
+    vi.spyOn(fs, 'linkSync').mockImplementation((..._args) => {
+      linkCallCount++;
+      if (linkCallCount === 1) {
         // First call: throw EEXIST to enter stale-lock path
         const err = new Error('file exists') as NodeJS.ErrnoException;
         err.code = 'EEXIST';
         throw err;
       }
-      // Second call: throw a non-EEXIST error
-      throw new Error('permission denied');
+      // Second call: throw a non-EEXIST, non-fallback error (EACCES ≠ hardlink
+      // 不可用的 EPERM/EOPNOTSUPP/ENOSYS/EXDEV，必须向上抛)
+      const err = new Error('permission denied') as NodeJS.ErrnoException;
+      err.code = 'EACCES';
+      throw err;
     });
 
     const lock = new InstanceLock(lockPath, { verifyIdentity: fixedVerdict('mismatch') });

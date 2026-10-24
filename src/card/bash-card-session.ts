@@ -94,6 +94,14 @@ export class BashCardSession extends CardSession<BashState, BashRenderOptions> {
     terminal: Exclude<BashState['terminal'], 'running'>,
     meta: { exitCode?: number | null; stderr?: string; output?: string } = {},
   ): Promise<void> {
+    // 终态守卫（与 run-state 的 finishRun 首终态优先同口径）：/stop 路径
+    // （bridge.interruptCurrentRun）与 executeBashInternal 的自然收尾路径会对
+    // 同一张卡并发 finish——SIGKILL 后 exitCode 为 -1，自然路径的
+    // finish('error', { exitCode: -1 }) 会把 interrupt 路径刚写的 'interrupted'
+    // 覆盖成「执行失败」，后落者胜出且取决于时序。首终态胜出后忽略后续 finish。
+    if (this.state.terminal !== 'running') {
+      return;
+    }
     this.cancelPendingFlush();
     // 若有 in-flight flush 正在 await updateCard，必须等它完成后再发终态 patch，
     // 保证顺序（pre-terminal 先落地 → terminal 后落地 → terminal 胜出）。

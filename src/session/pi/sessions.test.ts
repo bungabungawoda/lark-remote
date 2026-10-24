@@ -419,7 +419,8 @@ describe('PiSessionReader', () => {
     expect(content.usage).toBeDefined();
     expect(content.usage!.inputTokens).toBe(1000);
     expect(content.usage!.outputTokens).toBe(200);
-    expect(content.usage!.contextLength).toBe(1000);
+    // contextLength = input+output+cacheRead+cacheCreation（含末轮 output，§9.21 口径）
+    expect(content.usage!.contextLength).toBe(1200);
   });
 
   it('test_extracts_total_tokens_and_cache_from_assistant_usage', () => {
@@ -535,7 +536,7 @@ describe('PiSessionReader', () => {
 
     expect(content.usage).toBeDefined();
     expect(content.usage!.compactCount).toBe(2);
-    expect(content.usage!.contextLength).toBe(5000);
+    expect(content.usage!.contextLength).toBe(5200);
   });
 
   it('test_extracts_cache_tokens', () => {
@@ -610,7 +611,7 @@ describe('PiSessionReader', () => {
 
     expect(content.usage).toBeDefined();
     expect(content.usage!.compactCount).toBe(1);
-    expect(content.usage!.contextLength).toBe(2000);
+    expect(content.usage!.contextLength).toBe(2100);
   });
 
   it('test_no_compact_count_when_no_compaction_entries', () => {
@@ -665,7 +666,7 @@ describe('PiSessionReader', () => {
     const content = reader.readSessionContent(sessionId, cwd);
 
     expect(content.usage).toBeDefined();
-    expect(content.usage!.contextLength).toBe(2000);
+    expect(content.usage!.contextLength).toBe(2500);
     expect(content.usage!.inputTokens).toBe(2000);
     expect(content.usage!.outputTokens).toBe(500);
   });
@@ -759,7 +760,7 @@ describe('PiSessionReader', () => {
 
     expect(content.usage).toBeDefined();
     expect(content.usage!.cacheReadTokens).toBe(60000);
-    expect(content.usage!.contextLength).toBe(61000); // 1000 + 60000 + 0
+    expect(content.usage!.contextLength).toBe(61100); // 1000 + 1000(output) + 60000 + 0
   });
 
   it('test_zero_cache_read_returns_zero', () => {
@@ -820,7 +821,7 @@ describe('PiSessionReader', () => {
     const content = reader.readSessionContent(sessionId, cwd);
 
     expect(content.usage).toBeDefined();
-    expect(content.usage!.contextLength).toBe(5100); // 100+5000+0
+    expect(content.usage!.contextLength).toBe(5150); // 100+50(output)+5000+0
   });
 
   it('test_context_length_includes_cache_in_normal_turn', () => {
@@ -843,7 +844,7 @@ describe('PiSessionReader', () => {
     const content = reader.readSessionContent(sessionId, cwd);
 
     expect(content.usage).toBeDefined();
-    expect(content.usage!.contextLength).toBe(10100); // 100+9000+1000
+    expect(content.usage!.contextLength).toBe(10150); // 100+50(output)+9000+1000
   });
 });
 

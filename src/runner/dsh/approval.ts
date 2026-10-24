@@ -9,6 +9,8 @@
  * first.
  */
 
+import { getLogger } from '../../logger/index.js';
+
 export interface DshApprovalAudit {
   approvalId: string;
   callId?: string;
@@ -45,7 +47,19 @@ export class DshApprovalTracker {
     this.audits.set(audit.approvalId, audit);
     if (audit.callId) {
       const waterfall = this.waterfallByCallId.get(audit.callId);
-      if (waterfall) return this.bind(audit, waterfall);
+      if (waterfall) {
+        const boundTo = this.approvalIdByEventId.get(waterfall.eventId);
+        if (!boundTo || boundTo === audit.approvalId) {
+          return this.bind(audit, waterfall);
+        }
+        // 该 waterfall 已被兜底配对绑给另一张卡（「无 callId 的 audit 先到 +
+        // waterfall 先到」的乱序组合，见 onWaterfall 的 toolName 启发式）：
+        // 不再二次绑定——两张卡指向同一可答 waterfall 时，先答的生效、
+        // 后答的服务端报错；单卡可答严格好于双卡可答。
+        getLogger().debug(
+          `[dsh] waterfall already bound to ${boundTo}; skip rebind for ${audit.approvalId}`,
+        );
+      }
     }
     return undefined;
   }
@@ -112,8 +126,11 @@ export class DshApprovalTracker {
           this.waterfallByCallId.delete(binding.waterfall.callId);
         }
       }
-      this.resolveWaiters(approvalId, undefined);
     }
+    // 无论有无 binding 都要唤醒 waiter：approval/decided 落在「audit 已到、
+    // waterfall 未到」的窗口时，waitForBinding 的点击会白等满超时才收到
+    // 「审批通道尚未就绪」——而该审批实际上已被外部决策结束。
+    this.resolveWaiters(approvalId, undefined);
     return binding;
   }
 

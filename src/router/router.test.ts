@@ -2851,13 +2851,16 @@ describe('CommandRouter', () => {
       await router.handle('/ws save proj', ctx);
       connector._sent.length = 0;
       // Simulate send failure: sendResult resolves false → handler falls back
-      // to a success toast carrying the switch text (config.save pattern).
+      // to a toast carrying the switch text. 兜底 toast 用 warning 型
+      // ws.use 不在 DIRECT_RETURN_CMDS，toast 经
+      // enqueueImmediate fire-and-forget，forwardActionFeedback 只转发
+      // error/warning——success 型兜底会被双重吞掉，点击毫无反馈。
       connector.sendWithRetry = async () => {
         throw new Error('send failed');
       };
       const result = await router.handleCardAction({ cmd: 'ws.use', name: 'proj' }, ctx);
       expect(result).toEqual({
-        toast: { type: 'success', content: expect.stringContaining('已切换到') },
+        toast: { type: 'warning', content: expect.stringContaining('已切换到') },
       });
     });
 

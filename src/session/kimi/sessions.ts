@@ -362,7 +362,10 @@ export class KimiSessionReader implements AgentSessionReader {
           if (stateParsed && state) entryWorkDir = extractWorkDir(state);
           // Unreadable state — cannot determine cwd, entryWorkDir stays undefined
         }
-        if (entryWorkDir !== realCwd) {
+        // cwd 判定与守卫（checkCwdGuard 的 samePath）同口径：严格字符串比较会
+        // 把大小写（darwin）/尾分隔符形态不同的会话从列表里滤掉，而 /resume <id>
+        // 的守卫却判等通过——「列表没有、按 id 却能读」。
+        if (entryWorkDir === undefined || !samePath(entryWorkDir, realCwd)) {
           continue;
         }
 
@@ -487,9 +490,10 @@ export class KimiSessionReader implements AgentSessionReader {
           cacheCreation: inputCacheCreation,
         });
         if (updateContextLength) {
-          // unified contract: input + cacheRead + cacheCreation
-          // (excludes output — generated, not part of the input window).
-          mainContextLength = inputOther + inputCacheRead + inputCacheCreation;
+          // unified contract (§9.21): input + output + cacheRead + cacheCreation.
+          // 末轮 output 已进入历史、下一 prompt 全量携带——与 compact postTokens
+          // 水位同语义（此前漏加 output 会系统性低估长收尾 turn）。
+          mainContextLength = inputOther + output + inputCacheRead + inputCacheCreation;
         }
       };
 
@@ -763,7 +767,7 @@ export class KimiSessionReader implements AgentSessionReader {
     // different cwd when state.json is unavailable.
     if (!cwdGuardPassed) {
       const indexWorkDir = indexEntry?.workDir;
-      if (indexWorkDir && indexWorkDir !== realCwd) {
+      if (indexWorkDir && !samePath(indexWorkDir, realCwd)) {
         return null;
       }
       // v2 sessions have empty index workDir (v1-only field) and may lack

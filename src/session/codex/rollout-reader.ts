@@ -568,6 +568,14 @@ export function readCodexSessionContent(
   if (!entry) {
     return { events: [] };
   }
+  // subagent rollout 不得当父会话历史返回：子线程 rollout 的
+  // session_meta.session_id 是父 id（§9.27），索引冲突解决在主文件缺失时会让
+  // 子文件占据该 id 的槽位，threadId 检查因等于父 id 而天然通过——list/active
+  // 都已过滤（isSubagent），按 id 读取必须同口径，否则「列表没有、active 报
+  // false、读内容却成功」三处语义互相矛盾。
+  if (entry.isSubagent) {
+    return { events: [] };
+  }
 
   // Cwd guard: when a cwd is provided, the session's working directory must
   // match. Without this, /resume <id> finds sessions by global ID lookup and
@@ -615,6 +623,10 @@ export function readCodexSessionSummary(
 
   const entry = resolveRolloutEntry(sessionId, codexHome);
   if (!entry) {
+    return {};
+  }
+  // subagent rollout 同样不得当父会话摘要（与 readCodexSessionContent 同口径）。
+  if (entry.isSubagent) {
     return {};
   }
 
@@ -691,38 +703,54 @@ function walkRolloutFiles(sessionsDir: string): string[] {
   if (!fs.existsSync(sessionsDir)) return [];
 
   const result: string[] = [];
-  try {
-    const years = fs.readdirSync(sessionsDir);
-    for (const year of years) {
-      if (!/^\d{4}$/.test(year)) continue;
-      const yearPath = path.join(sessionsDir, year);
-      if (!fs.statSync(yearPath).isDirectory()) continue;
+  // per-entry try/catch：目录在 readdir 与 stat 之间被删（并发归档/清理）时，
+  // 旧实现整个 walk 提前终止并返回部分结果——索引漏掉后续文件，会话从
+  // /resume 列表与 total 消失直到 5s TTL 重建。单条目失败只跳过自己。
+  const years = safeReaddir(sessionsDir);
+  for (const year of years) {
+    if (!/^\d{4}$/.test(year)) continue;
+    const yearPath = path.join(sessionsDir, year);
+    if (!safeIsDir(yearPath)) continue;
 
-      const months = fs.readdirSync(yearPath);
-      for (const month of months) {
-        if (!/^\d{2}$/.test(month)) continue;
-        const monthPath = path.join(yearPath, month);
-        if (!fs.statSync(monthPath).isDirectory()) continue;
+    for (const month of safeReaddir(yearPath)) {
+      if (!/^\d{2}$/.test(month)) continue;
+      const monthPath = path.join(yearPath, month);
+      if (!safeIsDir(monthPath)) continue;
 
-        const days = fs.readdirSync(monthPath);
-        for (const day of days) {
-          if (!/^\d{2}$/.test(day)) continue;
-          const dayPath = path.join(monthPath, day);
-          if (!fs.statSync(dayPath).isDirectory()) continue;
+      for (const day of safeReaddir(monthPath)) {
+        if (!/^\d{2}$/.test(day)) continue;
+        const dayPath = path.join(monthPath, day);
+        if (!safeIsDir(dayPath)) continue;
 
-          const files = fs
-            .readdirSync(dayPath)
-            .filter((f) => f.startsWith('rollout-') && f.endsWith('.jsonl'));
-          for (const file of files) {
-            result.push(path.join(dayPath, file));
-          }
+        const files = safeReaddir(dayPath).filter(
+          (f) => f.startsWith('rollout-') && f.endsWith('.jsonl'),
+        );
+        for (const file of files) {
+          result.push(path.join(dayPath, file));
         }
       }
     }
-  } catch (err) {
-    getLogger().warn(`[codex-rollout-reader] failed to walk sessions dir: ${err}`);
   }
   return result;
+}
+
+/** readdir 的竞态安全版：目录消失/不可读返回空并记 debug（外层不再中断）。 */
+function safeReaddir(dir: string): string[] {
+  try {
+    return fs.readdirSync(dir);
+  } catch (err) {
+    getLogger().debug(`[codex-rollout-reader] readdir failed (raced delete?): ${err}`);
+    return [];
+  }
+}
+
+/** statSync 的竞态安全目录判定。 */
+function safeIsDir(p: string): boolean {
+  try {
+    return fs.statSync(p).isDirectory();
+  } catch {
+    return false;
+  }
 }
 
 /**

@@ -47,6 +47,8 @@ vi.mock('../../../src/logger/index.js', async () =>
 vi.mock('../../../src/platform/spawn.js', () => ({
   useDetachedProcessGroup: vi.fn(() => true),
   spawnProcess: vi.fn(),
+  // identity 的 pid 身份校验走 spawnProcessSync（单点收口）
+  spawnProcessSync: vi.fn(),
   mergeProcessEnv: vi.fn((base, overrides) => ({ ...base, ...overrides })),
   isWindowsCommandNotFoundLine: vi.fn(() => false),
 }));
@@ -60,8 +62,7 @@ vi.mock('node:child_process', () => ({
   spawn: vi.fn(),
 }));
 
-import { spawnProcess as spawn } from '../../../src/platform/spawn.js';
-import { execFileSync } from 'node:child_process';
+import { spawnProcess as spawn, spawnProcessSync } from '../../../src/platform/spawn.js';
 
 // ---------------------------------------------------------------------------
 // SpawnChild harness：最小子类，只实现 buildArgv，公开 spawnChild 供直调
@@ -491,7 +492,12 @@ describe('SpawningRunner stop / killOrphan / isRunning', () => {
 
       expect(fs.existsSync(pidFilePath)).toBe(true);
 
-      vi.mocked(execFileSync).mockReturnValue('fake-binary --some-flag');
+      // pid 身份校验（identity.ts）经 spawnProcessSync 读取 `ps -o command=`。
+      vi.mocked(spawnProcessSync).mockReturnValue({
+        status: 0,
+        stdout: 'fake-binary --some-flag',
+        stderr: '',
+      } as unknown as ReturnType<typeof spawnProcessSync>);
 
       try {
         runner.killOrphan();

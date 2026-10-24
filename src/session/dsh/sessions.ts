@@ -367,16 +367,21 @@ export class DshSessionReader implements AgentSessionReader {
         const input = lastUsage.inputTokens ?? 0;
         const cacheRead = lastUsage.cacheReadTokens ?? 0;
         const cacheWrite = lastUsage.cacheWriteTokens ?? 0;
-        const flow: UsageTotals = lastTurnUsage ?? {
-          input,
-          output: lastUsage.outputTokens ?? 0,
-          cacheRead,
-          cacheWrite,
-        };
+        // 在途 turn（turn/start 无 turn/end，run 进行中读历史）的采样优先于
+        // 上一轮：旧实现只认已结算的 lastTurnUsage，mid-run 读取会把当前 turn
+        // 已消耗的量显示成上一个完整 turn 的数字。
+        const flow: UsageTotals = lastTurnUsage ??
+          turnUsage ?? {
+            input,
+            output: lastUsage.outputTokens ?? 0,
+            cacheRead,
+            cacheWrite,
+          };
         sessionUsage = {
           inputTokens: flow.input,
           outputTokens: flow.output,
-          contextLength: input + cacheRead + cacheWrite,
+          // §9.21 口径：含末轮 output（下一 prompt 全量携带，与 postTokens 水位同语义）。
+          contextLength: input + flow.output + cacheRead + cacheWrite,
           cacheReadTokens: flow.cacheRead,
           cacheCreationTokens: flow.cacheWrite,
           totalTokens: flow.input + flow.output + flow.cacheRead + flow.cacheWrite,
@@ -558,11 +563,27 @@ const TEXT_MAX_BYTES = 2_000;
 const TOOL_INPUT_MAX_BYTES = 600;
 
 /** Map one DSH SessionEvent to display content events (+ title/usage side effects). */
+/**
+ * 单条畸形事件只跳过自己，不炸整张卡：DSH 服务端格式漂移时（time 非法、
+ * content 非数组），旧实现会让异常冒到外层 catch 把整个 resume 卡变成空卡
+ * （fail-whole）。时间戳缺失由卡片层兜底；content 非数组按无块处理。
+ */
+function safeEventTimestamp(time: unknown): string | undefined {
+  if (typeof time !== 'string' && typeof time !== 'number') return undefined;
+  const d = new Date(time);
+  return Number.isNaN(d.getTime()) ? undefined : d.toISOString();
+}
+
+function asBlocks(value: unknown): Array<{ type?: string; text?: string }> {
+  if (!Array.isArray(value)) return [];
+  return value.filter((b): b is { type?: string; text?: string } => !!b && typeof b === 'object');
+}
+
 function mapEvent(ev: DshSessionEvent): MappedEvent {
   const out: MappedEvent = { events: [] };
   switch (ev.type) {
     case 'user/message': {
-      const content = (ev.data.content as { type?: string; text?: string }[] | undefined) ?? [];
+      const content = asBlocks(ev.data.content);
       const text = content
         .filter((c) => c.type === 'text')
         .map((c) => c.text ?? '')
@@ -580,15 +601,13 @@ function mapEvent(ev: DshSessionEvent): MappedEvent {
         type: isNotice ? 'notice' : 'user',
         ...(isNotice ? { title: '🔔 通知' } : {}),
         content: isNotice ? truncateUtf8(text.trim(), NOTICE_MAX_BYTES) : text,
-        timestamp: new Date(ev.time).toISOString(),
+        timestamp: safeEventTimestamp(ev.time),
       });
       break;
     }
     case 'assistant/message': {
-      const content =
-        (ev.data.message as { content?: { type?: string; text?: string }[] } | undefined)
-          ?.content ?? [];
-      const timestamp = new Date(ev.time).toISOString();
+      const content = asBlocks((ev.data.message as { content?: unknown } | undefined)?.content);
+      const timestamp = safeEventTimestamp(ev.time);
       // DSH 的块类型是 text / reasoning / tool-call（不是 Anthropic 的
       // thinking）。只认 text 会让 resume 卡"只有工具调用、没有思考与输出"
       // （2026-10-19 反馈：一个 31 turn 的会话里 reasoning 块 371 个、text 12 个，
@@ -625,7 +644,7 @@ function mapEvent(ev: DshSessionEvent): MappedEvent {
         type: 'tool_use',
         title: summary ? `🔧 ${name} — ${summary}` : `🔧 ${name}`,
         content: truncateUtf8(args, TOOL_INPUT_MAX_BYTES),
-        timestamp: new Date(ev.time).toISOString(),
+        timestamp: safeEventTimestamp(ev.time),
       };
       break;
     }
@@ -637,7 +656,7 @@ function mapEvent(ev: DshSessionEvent): MappedEvent {
         type: 'tool_result',
         title: isError ? '🔴 结果（失败）' : '🟢 结果',
         content: truncateUtf8(raw, TOOL_RESULT_MAX_BYTES),
-        timestamp: new Date(ev.time).toISOString(),
+        timestamp: safeEventTimestamp(ev.time),
       });
       break;
     }

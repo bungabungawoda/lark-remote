@@ -102,8 +102,17 @@ export function parseSessionJsonl(filePath: string): ParsedSession {
       cwdSet.add(obj.cwd);
     }
 
-    // Find first real user message for summary (same logic as summarizeSession)
-    if (!foundSummary && obj.type === 'user' && !!obj.message) {
+    // Find first real user message for summary (same logic as summarizeSession).
+    // 过滤谓词与 scalarScan 的 lastUserMessage 同源：isMeta（/clear 等命令回显
+    // 与项目规则注入）和 isCompactSummary（压缩摘要）不是用户说的话，当列表
+    // 标题会误导（codex 修过同型缺陷：注入文本被当成「最近输入」）。
+    if (
+      !foundSummary &&
+      obj.type === 'user' &&
+      !obj.isCompactSummary &&
+      !obj.isMeta &&
+      !!obj.message
+    ) {
       const msg = obj.message as Record<string, unknown>;
       if (msg.content) {
         const text = extractText(msg.content);
