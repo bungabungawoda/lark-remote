@@ -301,7 +301,14 @@ function enforceByteBudget(
     reasons.push('event_count_limited');
   }
 
-  if (size() <= CARD_BUDGET_BYTES) {
+  // 元素数预算必须与字节预算同查（含 hint 预留位）：字节路径的返回条件此前
+  // 只看字节——元素超限但卡内无 collapsible_panel 时（如 95 个小 div），
+  // 阶段1-4 全是空操作，超限卡原样直通（实测 wasTruncated:false、95 元素
+  // > 90 → 飞书 11310 整卡报废，正是文件头注释记载的 /ws、/order 故障形态）。
+  const elementsWithinBudgetWithHint = (): boolean =>
+    countCardElements(truncated) + (omitted > 0 ? 1 : 0) <= MAX_CARD_ELEMENTS;
+
+  if (size() <= CARD_BUDGET_BYTES && elementsWithinBudgetWithHint()) {
     insertOmittedHint(elements, omitted, truncationHint);
     return done(modifications > 0 || omitted > 0);
   }
@@ -314,14 +321,13 @@ function enforceByteBudget(
     reasons.push('panels_dropped');
   }
 
-  if (size() <= CARD_BUDGET_BYTES) {
+  if (size() <= CARD_BUDGET_BYTES && elementsWithinBudgetWithHint()) {
     insertOmittedHint(elements, omitted, truncationHint);
     return done(true);
   }
 
   // ========== 阶段4：截断剩余顶层 div 文本 ==========
   // 骨架元素（header/usage 等）自身超限的情况（如超大 displayTitle）。
-  insertOmittedHint(elements, omitted, truncationHint);
   let textTruncations = 0;
   for (const el of elements) {
     if (el.tag === 'div' && el.text?.content) {
@@ -336,8 +342,25 @@ function enforceByteBudget(
     reasons.push('text_truncated');
   }
 
-  if (size() <= CARD_BUDGET_BYTES) {
+  if (size() <= CARD_BUDGET_BYTES && elementsWithinBudgetWithHint()) {
+    insertOmittedHint(elements, omitted, truncationHint);
     return done(true);
+  }
+
+  // ========== 阶段4.5：元素数兜底（无面板可删的元素超限） ==========
+  // 阶段1-4 只会裁内容/删面板；元素超限且无面板时在此按序丢弃最旧的顶层
+  // 元素直到达标（与 table/panel 的「删最旧、留最新」口径一致，尾部操作
+  // 按钮保留）。留 ≥3 个元素兜底，仍不达标则交给阶段5 的最小卡。
+  if (countCardElements(truncated) > MAX_CARD_ELEMENTS) {
+    while (countCardElements(truncated) > MAX_CARD_ELEMENTS && elements.length > 3) {
+      elements.shift();
+      omitted++;
+    }
+    reasons.push('element_budget_elements_dropped');
+    if (size() <= CARD_BUDGET_BYTES && elementsWithinBudgetWithHint()) {
+      insertOmittedHint(elements, omitted, truncationHint);
+      return done(true);
+    }
   }
 
   // ========== 阶段5：最终兜底（原 extreme_fallback） ==========

@@ -1421,7 +1421,14 @@ export class DshRunner implements AgentRunner {
       const state = await this.waitForClosed(sessionId, deadline);
       if (state === 'closed') {
         releaseGate();
-        if (promptRequestId) this.inflight?.clear(sessionId, promptRequestId);
+        // cancel 是 keepInbox：prompt 可能仍在 inbox 里，等下一个无人订阅的
+        // turn 认领（探测超时/迟到 admit 退到 cancel 分支时，
+        // 旧实现直接清 inflight 标记——被停的 prompt 会被后续 turn 隐形执行
+        //（耗 token、改工作区，卡片不可见），启动对账安全网也被解除）。
+        // closed 后补一次撤回：在 inbox 就撤走，确认不在才清标记。
+        if (promptRequestId) {
+          await this.withdrawPendingPromptAfterCancel(sessionId, promptRequestId, deadline);
+        }
         getLogger().info(`[dsh] cancelled session ${sessionId}`);
         return { status: 'cancelled', sessionId };
       }
@@ -1438,7 +1445,9 @@ export class DshRunner implements AgentRunner {
       const retryState = await this.waitForClosed(sessionId, deadline);
       releaseGate();
       if (retryState === 'closed') {
-        if (promptRequestId) this.inflight?.clear(sessionId, promptRequestId);
+        if (promptRequestId) {
+          await this.withdrawPendingPromptAfterCancel(sessionId, promptRequestId, deadline);
+        }
         return { status: 'cancelled', sessionId };
       }
       getLogger().warn(`[dsh] stop unconfirmed session=${sessionId}: turn still open`);
@@ -1473,13 +1482,51 @@ export class DshRunner implements AgentRunner {
         if (itemId) return itemId;
         if (admitted) return undefined;
       } catch (err) {
+        // 单次探测错误只消耗一次尝试（不提前放弃）：探测失败就 return 会把
+        // 仍在 inbox 的 prompt 交给 cancel 分支处理——cancel 是 keepInbox，
+        // prompt 会留到下一个无人订阅的 turn 被隐形执行。
         getLogger().warn(
           `[dsh] stop inbox probe failed session=${sessionId}: ${(err as Error).message}`,
         );
-        return undefined;
+        continue;
       }
     }
     return undefined;
+  }
+
+  /**
+   * cancel 确认 closed 后的收尾：cancel 是 keepInbox，prompt 可能仍在 inbox。
+   * 在则撤回（防被下一个 turn 隐形认领），确认不在（已被本 turn 消费）或
+   * 撤回成功才清 inflight 标记；探测/撤回失败保留标记，交给下次启动的
+   * reconcile（findPendingPrompt 落空即自然清除，无副作用）。
+   */
+  private async withdrawPendingPromptAfterCancel(
+    sessionId: string,
+    promptRequestId: string,
+    deadline: number,
+  ): Promise<void> {
+    try {
+      const itemId = await this.client.findPendingPrompt(sessionId, promptRequestId, {
+        timeoutMs: this.stopProbeTimeout(deadline),
+      });
+      if (itemId) {
+        const removed = await this.client.removeQueuedPrompt(sessionId, itemId, {
+          timeoutMs: this.stopProbeTimeout(deadline),
+        });
+        if (removed) {
+          getLogger().info(
+            `[dsh] stop withdrew inbox prompt left behind by cancel session=${sessionId}`,
+          );
+          this.inflight?.clear(sessionId, promptRequestId);
+        }
+        return;
+      }
+      this.inflight?.clear(sessionId, promptRequestId);
+    } catch (err) {
+      getLogger().warn(
+        `[dsh] post-cancel withdraw probe failed session=${sessionId}: ${(err as Error).message}`,
+      );
+    }
   }
 
   private async removePendingPrompt(

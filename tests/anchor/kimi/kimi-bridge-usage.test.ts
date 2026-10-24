@@ -151,7 +151,8 @@ describe('kimi bridge usage', () => {
     expect(finalCard).toContain('Cache create - 900');
     expect(finalCard).toContain('Cached token - 18K (75%)');
     expect(finalCard).toContain('Total token - 26K');
-    expect(finalCard).toContain('Context - 10K');
+    // §9.21 口径：contextLength 含末轮 output（3000+300+7000+400=10700 → 11K）。
+    expect(finalCard).toContain('Context - 11K');
 
     // 反估算断言：估算路径会产出 'Output token - 1K'。
     expect(finalCard).not.toContain('Output token - 1K');

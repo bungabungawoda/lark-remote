@@ -271,7 +271,7 @@ describe('KimiSessionReader', () => {
     expect(usage!.cacheReadTokens).toBe(18000);
     expect(usage!.cacheCreationTokens).toBe(900);
     expect(usage!.totalTokens).toBe(25500);
-    expect(usage!.contextLength).toBe(10400);
+    expect(usage!.contextLength).toBe(10700); // §9.21: input+output+cacheRead+cacheCreation
     expect(usage!.cumulativeInputTokens).toBe(6000);
     expect(usage!.cumulativeOutputTokens).toBe(600);
   });
@@ -308,7 +308,7 @@ describe('KimiSessionReader', () => {
     expect(usage!.cacheReadTokens).toBe(18000);
     expect(usage!.cacheCreationTokens).toBe(600); // 200+0(缺失)+400
     expect(usage!.totalTokens).toBe(25200);
-    expect(usage!.contextLength).toBe(10400);
+    expect(usage!.contextLength).toBe(10700); // §9.21: input+output+cacheRead+cacheCreation
   });
 
   it('test_anchor_kimi_usage_aggregation_is_independent_of_maxevents_slice', () => {
@@ -341,7 +341,7 @@ describe('KimiSessionReader', () => {
     expect(usage!.cacheReadTokens).toBe(18000);
     expect(usage!.cacheCreationTokens).toBe(900);
     expect(usage!.totalTokens).toBe(25500);
-    expect(usage!.contextLength).toBe(10400);
+    expect(usage!.contextLength).toBe(10700); // §9.21: input+output+cacheRead+cacheCreation
   });
 
   it('test_anchor_kimi_usage_aggregates_subagent_wire_files_session_wide', () => {
@@ -383,7 +383,7 @@ describe('KimiSessionReader', () => {
     expect(usage!.cacheReadTokens).toBe(62000);
     expect(usage!.cacheCreationTokens).toBe(5600);
     expect(usage!.totalTokens).toBe(105000);
-    expect(usage!.contextLength, 'contextLength 仍取 main 末条 record').toBe(10400);
+    expect(usage!.contextLength, 'contextLength 仍取 main 末条 record').toBe(10700); // §9.21: 含末轮 output
   });
 
   // ── isSessionActive tail-only ─────────────────────────────────────

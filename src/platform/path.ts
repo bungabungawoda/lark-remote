@@ -27,7 +27,9 @@ function resolveOptions(opts: PathOptions | undefined): { platform: NodeJS.Platf
  */
 export function pathKey(p: string, opts?: PathOptions): string {
   const { platform } = resolveOptions(opts);
-  if (platform === 'linux') return p;
+  // linux：剥尾部分隔符，与 darwin/win32 同口径（否则 `/cd ~/repo/` 与
+  // `/cd ~/repo` 会被判成两个目录——darwin 分支注释写明的不变量）。
+  if (platform === 'linux') return p.replace(/\/+$/, '');
   if (isWin32(platform)) {
     // win32：\ 与 / 都是分隔符，且路径大小写不敏感
     return p.replaceAll('\\', '/').replace(/\/+$/, '').toLowerCase();

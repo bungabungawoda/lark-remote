@@ -406,7 +406,8 @@ describe('OpencodeSessionReader - L1/L2/L3: large/corrupt export handling', () =
     expect(content.usage).toMatchObject({
       inputTokens: 20,
       outputTokens: 4,
-      contextLength: 28,
+      // §9.21: contextLength 含末轮 output（input 20 + output 4 + cacheRead 6 + cacheWrite 2）
+      contextLength: 32,
       cacheReadTokens: 6,
       cacheCreationTokens: 2,
       totalTokens: 32,
@@ -661,7 +662,7 @@ describe('OpencodeSessionReader - usage extraction (ccusage-aligned)', () => {
     expect(content.usage!.inputTokens).toBe(656);
     expect(content.usage!.outputTokens).toBe(97);
     expect(content.usage!.totalTokens).toBe(492529);
-    expect(content.usage!.contextLength).toBe(656 + 491776);
+    expect(content.usage!.contextLength).toBe(656 + 97 + 491776); // §9.21: 含末轮 output
     // cumulative still sums everything; the zero stub contributes nothing.
     expect(content.usage!.cumulativeInputTokens).toBe(656);
     expect(content.usage!.cumulativeTotalTokens).toBe(492529);

@@ -13,6 +13,9 @@
  * never throws.
  */
 
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { getLogger } from '../../logger/index.js';
 import { isWin32 } from '../../platform/select.js';
 import { spawnProcessSync } from '../../platform/spawn.js';
@@ -69,6 +72,20 @@ export function cancelSessionSync(opts: SyncCancelOptions): boolean {
     payload: { args: { request: { sessionId: opts.sessionId } } },
   });
 
+  // Cookie 不走 argv（`-H "Cookie: …"` 会在 curl 运行期间对本机任何进程的
+  // ps 可见——1 小时有效的 v1 凭据泄露面）：写 0600 临时文件用 `-H @file`
+  // 传入，用完即删。文件写失败时回退 argv——退出路径的 cancel 不能因此放弃。
+  let headerFile: string | undefined;
+  try {
+    headerFile = path.join(os.tmpdir(), `lark-remote-exit-cancel-${process.pid}.hdr`);
+    fs.writeFileSync(headerFile, `Cookie: ${cookie}\n`, { mode: 0o600 });
+    fs.chmodSync(headerFile, 0o600);
+  } catch (err) {
+    logger.warn(`[dsh] exit-cancel header file unavailable: ${(err as Error).message}`);
+    headerFile = undefined;
+  }
+  const cookieHeaderArgs = headerFile ? ['-H', `@${headerFile}`] : ['-H', `Cookie: ${cookie}`];
+
   const res = spawnProcessSync(
     'curl',
     [
@@ -82,8 +99,7 @@ export function cancelSessionSync(opts: SyncCancelOptions): boolean {
       `${opts.baseUrl.replace(/\/$/, '')}/api/session/cancel`,
       '-H',
       'content-type: application/json',
-      '-H',
-      `Cookie: ${cookie}`,
+      ...cookieHeaderArgs,
       '--max-time',
       String(Math.max(1, Math.ceil(timeoutMs / 1000))),
       '--data',
@@ -91,6 +107,14 @@ export function cancelSessionSync(opts: SyncCancelOptions): boolean {
     ],
     { encoding: 'utf-8', timeout: timeoutMs, maxBuffer: 1024 * 1024 },
   );
+
+  if (headerFile) {
+    try {
+      fs.unlinkSync(headerFile);
+    } catch {
+      /* best-effort cleanup */
+    }
+  }
 
   const status = String(res.stdout ?? '').trim();
   const ok = status === '200';

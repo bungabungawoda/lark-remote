@@ -134,13 +134,22 @@ export class UsageAccumulator {
   }
 }
 
-/** 统一契约：上下文窗口占用 = 末轮 input + cacheRead + cacheCreation（不含 output/reasoning）。 */
+/**
+ * 统一契约：上下文窗口占用 = 末轮 input + output + cacheRead + cacheCreation。
+ *
+ * 口径以 design.md §9.13/§9.21 为准（文档在 6 处钉死该公式）：上下文占用衡量
+ * 「本轮结束后窗口里有多少 token」，末轮 output 已进入历史、下一个 prompt 会
+ * 全量携带；与 max() 另一侧的 compact postTokens（含全部内容的压缩后水位）
+ * 语义对齐。此前实现漏加 output（长收尾 turn 可低估数千~3 万 token），且
+ * compact 会话与非 compact 会话两口径不可比。
+ */
 export function contextWindowOccupancy(l: {
   input: number;
+  output: number;
   cacheRead: number;
   cacheCreation: number;
 }): number {
-  return l.input + l.cacheRead + l.cacheCreation;
+  return l.input + l.output + l.cacheRead + l.cacheCreation;
 }
 
 /** 统一契约：session 全量累计字段组装（4 个 reader 共用：claude/dsh/kimi/pi；

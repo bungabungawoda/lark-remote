@@ -35,6 +35,7 @@ import type {
   DshApprovalStreamItem,
   DshCommandResult,
   DshFollowFrame,
+  DshFollowSnapshot,
   DshInboxItem,
   DshModelCatalogValue,
   DshModelSelection,
@@ -117,8 +118,20 @@ function isDshAuthError(error: unknown): error is DshError {
 /** Backoff between mux reconnects to avoid a hot loop on a dropping server. */
 const RECONNECT_BACKOFF_MS = 200;
 
-/** Follow snapshot budget. `session/follow` also stays live after the snapshot. */
+/**
+ * Follow snapshot budget. `session/follow` also stays live after the snapshot.
+ *
+ * 语义（经 DSH 源码验证，packages/api/session-controller/src/history.ts
+ * 的 paginate）：按**消息**计数——只有 user/assistant message 占预算，工具
+ * 事件随所在消息组搭进快照。断连期间积压超过该预算时快照首条会越过
+ * lastSeq，缺口经 {@link replaySnapshotGap} 用 session/page 回填。
+ */
 const FOLLOW_MAX_MESSAGES = 200;
+
+/** 快照缺口回填的单页消息数（session/page 的 maxMessages）。 */
+const FOLLOW_GAP_BACKFILL_PAGE_MESSAGES = 200;
+/** 快照缺口回填的页数上限（×PAGE_MESSAGES = 单次重连最多回补 4000 条消息）。 */
+const FOLLOW_GAP_BACKFILL_MAX_PAGES = 20;
 
 /**
  * 只在 turn 内部落盘的会话事件类型：看到它们说明 turn 还没结束。
@@ -211,7 +224,13 @@ export function extractDshToken(raw: string | undefined): string {
   if (!value.includes('token=') && !value.includes('://')) return value;
   try {
     const url = new URL(value.startsWith('?') ? `http://dsh.invalid/${value}` : value);
-    return url.searchParams.get('token') ?? value;
+    const token = url.searchParams.get('token');
+    if (token) return token;
+    // 带 scheme 却没有 token 参数的输入是误贴的 host URL（如
+    // `http://127.0.0.1:3080`）：整串不是合法 token，参与握手只会得到
+    // 指向性缺失的 401。返回空串让上游走「token 缺失」的诊断路径。
+    if (value.includes('://')) return '';
+    return value;
   } catch {
     return value;
   }
@@ -764,7 +783,20 @@ export class DshClient {
    * Fallback probe: the newest durable event's type tells whether a turn is open.
    *
    * 只在拿不到 `running` 时用。名单刻意保守——`job/*`（后台任务可在 turn 外
-   * 结算）、`user/message`、`turn/end` 都不算，判不出来就报告 `unknown`。
+   * 结算）、`turn/end` 都不算，判不出来就报告 `unknown`。
+   *
+   * 落盘顺序已从 DSH 源码验证（packages/core/agent-loop：agent.ts 的 turn()/
+   * step() + inbox.ts 的 mutate()）：prompt 提交只落 `agent/inbox/spliced`，
+   * `turn/start` 由 turn() 在认领前 append，`user/message` 在 step() 认领时才
+   * append——顺序是 spliced → turn/start → user/message。两个边界：
+   *
+   * - 尾部 `agent/inbox/spliced` → closed 是**对的**：turn 尚未打开，cancel
+   *   空闲 session 无害，随后 withdraw 探测会撤走排队 prompt；
+   * - 尾部 `user/message` → **unknown**：step() 里 user/message append 后要等
+   *   一整个 LLM 往返才有下一条 durable 事件（assistant 流帧是 process-local
+   *   的），这个秒级窗口内 turn 已打开；且压缩 checkpoint 也以 turn:null 落
+   *   user/message——两种解释并存时只能报 unknown（stop 按 unconfirmed 处理，
+   *   不假报已停止）。此前报 closed 会让一个 LLM 往返宽的窗口假报干净停止。
    */
   private async probeOpenTurnByEvents(
     sessionId: string,
@@ -781,6 +813,7 @@ export class DshClient {
       const value = await this.page(sessionId, snapshot.asOfSeq, 1, opts);
       const last = value.records.at(-1)?.event;
       if (last === undefined) return 'closed';
+      if (last.type === 'user/message') return 'unknown';
       return last.type === 'turn/start' || IN_TURN_EVENT_TYPES.has(last.type) ? 'open' : 'closed';
     } catch (err) {
       getLogger().warn(
@@ -810,6 +843,7 @@ export class DshClient {
     let waiter: ((frame: unknown | undefined) => void) | null = null;
     let ended = false;
     let failure: DshError | undefined;
+    let opened = false;
 
     const settle = (frame?: unknown): void => {
       if (waiter) {
@@ -822,7 +856,26 @@ export class DshClient {
       else ended = true;
     };
 
+    // 建连/首帧超时：服务器接受 TCP 但不完成 WS 握手时 onopen/onerror/onclose
+    // 都不触发，generator 会永远停在 await next()——unary 挂起有 60s 预算与
+    // 回归测试（test_anchor_dsh_stop_with_hung_unary_releases_run），mux 的
+    // 同型问题此前只能靠 idle 看门狗兜底。超时按传输错误走既有重连路径。
+    const connectTimer: ReturnType<typeof setTimeout> = setTimeout(() => {
+      if (opened || ended) return;
+      failure = new DshError('transport', 'DSH remote mux WebSocket connect timeout');
+      ended = true;
+      settle(undefined);
+      try {
+        socket.close();
+      } catch {
+        /* ignore close error */
+      }
+    }, this.requestTimeoutMs);
+    connectTimer.unref?.();
+
     socket.onopen = () => {
+      opened = true;
+      clearTimeout(connectTimer);
       if (ended) return;
       try {
         socket.send(
@@ -937,6 +990,7 @@ export class DshClient {
         yield frame;
       }
     } finally {
+      clearTimeout(connectTimer);
       signal.removeEventListener('abort', onAbort);
       try {
         socket.close();
@@ -983,6 +1037,12 @@ export class DshClient {
           const frame = raw as DshRemoteEventFrame;
           if (frame.type === 'ready') {
             authRefreshAttempted = false;
+            // 成功建连后补充重连预算：goal 驱动的 turn 可跑数小时，DSH 重启 +
+            // 网络抖动累计掉线超过 3 次后，旧实现会让 $events 永久 unavailable
+            // ——已渲染的提问卡持有过期 clientId（点答案必失败）、Host 的 cancel
+            // 帧也收不到，违反「同一 waterfall 在 $events 重连后会被重投」的
+            // 不变量。预算语义是「单次断连窗口内的连续失败上限」，不是终身配额。
+            reconnectAttempts = 0;
             sawReady = true;
             streamClientId = frame.clientId;
             yield { kind: 'ready', clientId: streamClientId };
@@ -1172,9 +1232,15 @@ export class DshClient {
           if (signal.aborted) return;
           authRefreshAttempted = false;
           if (frame.type === 'snapshot') {
-            for (const record of frame.records ?? []) {
-              const ev = record.event;
-              if (!ev || ev.seq <= state.lastSeq) continue;
+            // 快照可能只覆盖尾部窗口（见 replaySnapshotGap）：先补缺口再回放，
+            // 回放循环与原逻辑逐条相同（去重 / admit / turn/end 早退）。
+            for (const ev of await this.replaySnapshotGap(
+              sessionId,
+              signal,
+              state.lastSeq,
+              frame,
+            )) {
+              if (ev.seq <= state.lastSeq) continue;
               state.lastSeq = ev.seq;
               if (!admit(ev)) continue;
               const item = this.eventItem(sessionId, ev);
@@ -1222,6 +1288,68 @@ export class DshClient {
       if (signal.aborted) return;
       await new Promise((resolve) => setTimeout(resolve, RECONNECT_BACKOFF_MS));
     }
+  }
+
+  /**
+   * 快照缺口回填（经 DSH 源码验证后实现）。
+   *
+   * follow 开场快照按**消息**截取：host 的 paginate 只数 user/assistant
+   * message（工具事件随所在消息组搭车进快照，不占预算），`maxMessages` 内
+   * 装不下的更早前缀被截掉并以 `hasMore: true` 标记。断连期间积压超过
+   * FOLLOW_MAX_MESSAGES 条消息时，`lastSeq` 与快照起点之间的缺口若不补，
+   * 这些事件对本次 follow 永久缺失（卡片丢中段工具行；seq 去重只防重放
+   * 不补缺）。`session/page` 的 `throughSeq` 游标正是服务端为此设计的回填
+   * 通道——从缺口尾部向前翻页直到盖住 lastSeq、翻到日志头或达到页数上限。
+   *
+   * best-effort：翻页失败保留已取回的部分（缺口剩余与旧行为一致地丢失，
+   * 但只发生在超出 BACKFILL_MAX_PAGES×PAGE_MESSAGES 条消息的极端断连）。
+   * 返回 seq 升序的完整回放序列（回填 + 快照记录；与 lastSeq 重叠的条目
+   * 由回放循环的 seq 去重兜住）。
+   */
+  private async replaySnapshotGap(
+    sessionId: string,
+    signal: AbortSignal,
+    lastSeq: number,
+    frame: DshFollowSnapshot,
+  ): Promise<DshSessionEvent[]> {
+    const records = (frame.records ?? [])
+      .map((record) => record.event)
+      .filter((ev): ev is DshSessionEvent => !!ev);
+    if (frame.hasMore !== true || signal.aborted) return records;
+    const firstSeq = records[0]?.seq;
+    const gapEnd = firstSeq !== undefined ? firstSeq - 1 : frame.cursor;
+    if (gapEnd <= lastSeq) return records;
+
+    const pages: DshSessionEvent[][] = [];
+    try {
+      let throughSeq = gapEnd;
+      for (let page = 0; page < FOLLOW_GAP_BACKFILL_MAX_PAGES; page++) {
+        const value = await this.page(sessionId, throughSeq, FOLLOW_GAP_BACKFILL_PAGE_MESSAGES, {
+          signal,
+        });
+        const events = (value.records ?? [])
+          .map((record) => record.event)
+          .filter((ev): ev is DshSessionEvent => !!ev);
+        if (events.length > 0) pages.push(events);
+        const oldest = events[0]?.seq;
+        // hasMore=false（日志头）或本页已盖住 lastSeq：缺口补齐，停。
+        if (value.hasMore !== true || oldest === undefined || oldest <= lastSeq + 1) break;
+        throughSeq = oldest - 1;
+      }
+    } catch (err) {
+      getLogger().warn(
+        `[dsh] follow snapshot gap backfill incomplete sessionId=${sessionId}: ${(err as Error).message}`,
+      );
+    }
+    // pages 是「从新到旧」收集的；倒序拼接得到 seq 升序回放。
+    const backfill: DshSessionEvent[] = [];
+    for (let index = pages.length - 1; index >= 0; index--) backfill.push(...pages[index]!);
+    if (backfill.length > 0) {
+      getLogger().info(
+        `[dsh] backfilled ${backfill.length} events before follow snapshot sessionId=${sessionId} gapEnd=${gapEnd} lastSeq=${lastSeq}`,
+      );
+    }
+    return [...backfill, ...records];
   }
 
   /**
