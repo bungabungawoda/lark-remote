@@ -171,7 +171,7 @@ export async function reconcileInflightDshRuns(
 }
 
 /** One short owner-facing notice; session ids are truncated, not paths. */
-export function formatInflightWarning(entries: DshInflightEntry[]): string {
+function formatInflightWarning(entries: DshInflightEntry[]): string {
   const lines = entries.slice(0, 3).map((entry) => {
     const id = entry.sessionId.length > 8 ? entry.sessionId.slice(0, 8) : entry.sessionId;
     return `- session ${id}（${entry.cwd ?? '未知目录'}）`;

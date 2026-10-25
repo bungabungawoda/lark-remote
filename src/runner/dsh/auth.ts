@@ -11,10 +11,10 @@
 
 import { createHash, createHmac } from 'node:crypto';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import YAML from 'yaml';
 import { isWin32 } from '../../platform/select.js';
+import { resolveDshHome } from './home.js';
 
 /** Credential record that owns the browser-cookie signing secret. */
 export const DSH_BROWSER_CREDENTIAL_KEY = 'client-connection/browser-session';
@@ -38,11 +38,7 @@ export function resolveDshCredentialsFile(
   env: NodeJS.ProcessEnv = process.env,
   configuredHome?: string,
 ): string {
-  const home = configuredHome?.trim() || env.DSH_HOME?.trim();
-  return path.join(
-    home && home.length > 0 ? home : path.join(os.homedir(), '.dsh'),
-    '.credentials.yaml',
-  );
+  return path.join(resolveDshHome(configuredHome, env), '.credentials.yaml');
 }
 
 /** Whether a filesystem error means the credentials file is absent. */

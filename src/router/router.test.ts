@@ -680,9 +680,8 @@ describe('CommandRouter', () => {
     expect(cardStr).toContain('下一页');
   });
 
-  it('/ls uses section headers to organize different categories', async () => {
+  it('/ls separates directories and files with section headers and distinct icons', async () => {
     const { router, sessionStore, connector } = createRouter();
-    // Create directories and files
     fs.mkdirSync(path.join(tmpDir, 'aaa'));
     fs.mkdirSync(path.join(tmpDir, 'bbb'));
     fs.writeFileSync(path.join(tmpDir, 'file.txt'), 'content');
@@ -690,36 +689,11 @@ describe('CommandRouter', () => {
     await router.handle('/ls', ctx);
     const input = connector._sent[0].input as { card: object };
     const cardStr = JSON.stringify(input.card);
-    // Should have section headers with different categories (CardKit 2.0 doesn't support tabs)
+    // CardKit 2.0 has no tabs: categories are section headers.
     expect(cardStr).toContain('**📂 目录');
     expect(cardStr).toContain('**📄 文件');
-  });
-
-  it('/ls lists both files and directories in separate tabs', async () => {
-    const { router, sessionStore, connector } = createRouter();
-    fs.mkdirSync(path.join(tmpDir, 'subdir'));
-    fs.writeFileSync(path.join(tmpDir, 'file.txt'), 'content');
-    sessionStore.setCwd('user1', fs.realpathSync(tmpDir));
-    await router.handle('/ls', ctx);
-    const input = connector._sent[0].input as { card: object };
-    const cardStr = JSON.stringify(input.card);
-    // Should have subdir in dirs tab
-    expect(cardStr).toContain('subdir');
-    // Should have file.txt in files tab
-    expect(cardStr).toContain('file.txt');
-  });
-
-  it('/ls formats directories differently from files (different icons)', async () => {
-    const { router, sessionStore, connector } = createRouter();
-    fs.mkdirSync(path.join(tmpDir, 'mydir'));
-    fs.writeFileSync(path.join(tmpDir, 'myfile.txt'), 'content');
-    sessionStore.setCwd('user1', fs.realpathSync(tmpDir));
-    await router.handle('/ls', ctx);
-    const input = connector._sent[0].input as { card: object };
-    const cardStr = JSON.stringify(input.card);
-    // Directory should have folder icon (📁), file should have different format (📄)
-    expect(cardStr).toContain('📁 mydir');
-    expect(cardStr).toContain('📄 myfile.txt');
+    expect(cardStr).toContain('📁 aaa');
+    expect(cardStr).toContain('📄 file.txt');
   });
 
   it('/ls has parent directory button (..) in header', async () => {

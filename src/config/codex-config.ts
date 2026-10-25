@@ -631,10 +631,10 @@ export function loadCodexConfig(opts: LoadCodexConfigOpts = {}): CodexConfigResu
     };
   } catch {
     // config.toml 读取/解析失败：readModelCatalogJsonPath 对此返回
-    // TOML_PARSE_FAILED_SENTINEL（isCodexCatalogMode → false），进入本 catch
-    // 时 catalogMode 恒为 false——下面的 `if (catalogMode)` 分支实际不可达，
-    // 仅作防御保留。真正「catalog 声明退化」的场景（'' 哨兵）在 parse 之前
-    // 就已按 FALLBACK 兜底处理，不会走到这里。
+    // TOML_PARSE_FAILED_SENTINEL（isCodexCatalogMode → false），因此正常路径下
+    // catalogMode 恒为 false，下面的 `if (catalogMode)` 分支只在两次读取之间
+    // config.toml 被改写（TOCTOU）时可达；保留该防御，避免把“已声明 catalog、
+    // 随后配置损坏”误降级成 bundled 模型。
     if (catalogMode) {
       return {
         currentModel: '',

@@ -12,6 +12,18 @@ import { displayWidth, HEADER_DISPLAY_MAX } from './tool-render.js';
 import { expectNoV1ActionContainer } from '../../tests/lib/card-view.js';
 
 describe('renderRunCard', () => {
+  it('emits CardKit 2.0 config and a plain_text header title', () => {
+    const card = renderRunCard(createInitialRunState('run-card-shape')) as {
+      schema: string;
+      config: Record<string, unknown>;
+      header: { title: { tag: string } };
+    };
+
+    expect(card.schema).toBe('2.0');
+    expect(card.config).toEqual({ wide_screen_mode: true, update_multi: true });
+    expect(card.header.title.tag).toBe('plain_text');
+  });
+
   it('test_anchor_approval_area_renders_v2_buttons_without_v1_action_container', () => {
     let state = createInitialRunState('run-approval');
     state = reduceRunState(state, {
@@ -1287,6 +1299,11 @@ describe('renderRunCard', () => {
       expect(serialized).toContain('💬 **输出** (2026-07-19 18:03)');
       // Old format `_ts_` in body must NOT appear for text blocks
       expect(serialized).not.toContain('_2026-07-19 18:03_');
+
+      state = finishRun(state, 'done', { resultSubtype: 'success' });
+      const done = JSON.stringify(renderRunCard(state));
+      expect(done).toContain('💬 **输出** (2026-07-19 18:03)');
+      expect(done).not.toContain('_2026-07-19 18:03_');
     } finally {
       if (oldTz === undefined) delete process.env.TZ;
       else process.env.TZ = oldTz;
@@ -2763,30 +2780,6 @@ describe('renderRunCard (CardKit 2.0)', () => {
       const textDiv = panelElements?.find((el) => el.tag === 'div');
       const textObj = (textDiv as Record<string, unknown>)?.text as Record<string, unknown>;
       expect(textObj?.text_size).toBe('notation');
-    });
-
-    it('done state text block shows timestamp in panel header', () => {
-      const oldTz = process.env.TZ;
-      process.env.TZ = 'Asia/Shanghai';
-      try {
-        let state = createInitialRunState('run-text-ts-prefix');
-        state = reduceRunState(state, {
-          type: 'assistant',
-          timestamp: '2026-07-19T10:03:00.000Z',
-          message: { content: [{ type: 'text', text: '输出内容' }] },
-        });
-        state = finishRun(state, 'done', { resultSubtype: 'success' });
-
-        const json = JSON.stringify(renderRunCard(state));
-
-        // Timestamp should appear in panel header (not as content prefix)
-        expect(json).toContain('💬 **输出** (2026-07-19 18:03)');
-        // Old prefix format should NOT appear
-        expect(json).not.toContain('_2026-07-19 18:03_');
-      } finally {
-        if (oldTz === undefined) delete process.env.TZ;
-        else process.env.TZ = oldTz;
-      }
     });
 
     it('degraded path also uses collapsible_panel in terminal state', () => {

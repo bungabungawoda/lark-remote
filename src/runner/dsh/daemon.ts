@@ -13,10 +13,10 @@
 
 import fs from 'node:fs';
 import fsp from 'node:fs/promises';
-import os from 'node:os';
 import path from 'node:path';
 import { DEFAULT_DSH_HOST } from '../../config/index.js';
 import { mergeProcessEnv, spawnProcess } from '../../platform/spawn.js';
+import { resolveDshHome } from './home.js';
 
 const DEFAULT_START_TIMEOUT_MS = 30_000;
 const READY_POLL_MS = 100;
@@ -50,12 +50,6 @@ interface SpawnedDaemon {
 
 function stripTrailingSlash(value: string): string {
   return value.replace(/\/+$/, '');
-}
-
-/** Resolve the same Harness home DSH resolves: configured, env, then ~/.dsh. */
-export function resolveDshHome(configured?: string, env: NodeJS.ProcessEnv = process.env): string {
-  const value = configured?.trim() || env.DSH_HOME?.trim();
-  return path.resolve(value && value.length > 0 ? value : path.join(os.homedir(), '.dsh'));
 }
 
 /** True only for the loopback HTTP address this process may start and probe. */

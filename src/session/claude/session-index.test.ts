@@ -108,6 +108,17 @@ describe('parseSessionJsonl', () => {
     expect(result.cwdSet.size).toBe(3);
   });
 
+  it('keeps the first real user message as summary when later messages follow', () => {
+    const filePath = writeJsonl('-home-user-project', FAKE_SESSION_ID_A, [
+      initLine(FAKE_CWD_1),
+      userMessageLine('first placeholder'),
+      assistantLine(FAKE_CWD_1),
+      userMessageLine('second placeholder'),
+    ]);
+    const result = parseSessionJsonl(filePath);
+    expect(result.summary).toBe('first placeholder');
+  });
+
   it('skips task-notification user messages for summary', () => {
     const filePath = writeJsonl('-home-user-project', FAKE_SESSION_ID_A, [
       initLine(FAKE_CWD_1),
@@ -168,7 +179,9 @@ describe('SessionIndex build', () => {
     ]);
 
     const idx = new SessionIndex(projectsDir);
+    expect(idx.isBuilt).toBe(false);
     idx.build();
+    expect(idx.isBuilt).toBe(true);
 
     const byCwd1 = idx.listByCwd(FAKE_CWD_1);
     expect(byCwd1.length).toBe(1);

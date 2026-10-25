@@ -286,7 +286,7 @@ export function mapUsage(u: DshTokenUsage): NonNullable<ResultEvent['usage']> {
 }
 
 /** Map a turn's summed usage → ResultEvent.usage (cacheWrite = cache creation). */
-export function mapAggregatedUsage(t: UsageTotals): NonNullable<ResultEvent['usage']> {
+function mapAggregatedUsage(t: UsageTotals): NonNullable<ResultEvent['usage']> {
   return {
     input_tokens: t.input,
     output_tokens: t.output,
