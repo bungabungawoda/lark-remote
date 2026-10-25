@@ -7,7 +7,7 @@
  * 3. 修复后的代码应该能通过，飞书 API 返回 200 (messageId)
  *
  * 运行方式（真实飞书 API，默认不跑）：
- *   FEISHU_LIVE_TEST=1 bun run test tests/feishu-ls-pagination-card.test.ts
+ *   FEISHU_LIVE_TEST=1 bun run test tests/feishu-live/feishu-ls-pagination-card.test.ts
  *
  * 注意：使用 ~/.lark-remote-test 下的配置，避免干扰正常使用
  */

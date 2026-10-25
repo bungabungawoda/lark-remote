@@ -7,7 +7,7 @@
  * 3. 修复后的卡片（移除 form 标签）应该成功
  *
  * 运行方式（真实飞书 API，默认不跑）：
- *   FEISHU_LIVE_TEST=1 bun run test tests/feishu-card-form-error.test.ts
+ *   FEISHU_LIVE_TEST=1 bun run test tests/feishu-live/feishu-card-form-error.test.ts
  *
  * 注意：使用 ~/.lark-remote-test 下的配置，避免干扰正常使用
  */

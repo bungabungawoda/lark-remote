@@ -9,7 +9,7 @@
  * 经 markdownDiv（真实代码路径，escapeMarkdown 仅转义反斜杠）渲染。
  *
  * 运行方式（真实飞书 API，默认不跑）：
- *   FEISHU_LIVE_TEST=1 bun run test tests/escape-bracket-experiment.test.ts
+ *   FEISHU_LIVE_TEST=1 bun run test tests/feishu-live/escape-bracket-regression.test.ts
  */
 
 import { it, expect, beforeEach, afterEach } from 'vitest';

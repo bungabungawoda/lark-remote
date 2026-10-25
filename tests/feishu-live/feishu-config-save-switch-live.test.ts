@@ -11,7 +11,7 @@
  * 4. 测试后恢复测试配置目录的 config.yaml 原内容
  *
  * 运行方式（真实飞书 API，默认不跑）：
- *   FEISHU_LIVE_TEST=1 bun run test tests/feishu-config-save-switch-live.test.ts
+ *   FEISHU_LIVE_TEST=1 bun run test tests/feishu-live/feishu-config-save-switch-live.test.ts
  *
  * 注意：使用 ~/.lark-remote-test 下的配置，避免干扰正常使用
  */

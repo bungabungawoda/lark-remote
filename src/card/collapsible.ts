@@ -100,8 +100,9 @@ export function markdownDiv(content: string, textSize?: string): object {
  * to be interpreted as a literal. Escape it to preserve the raw backslash.
  *
  * Note: Square brackets [] and pipe | are NOT escaped -- they are valid markdown
- * (links, tables) and escaping them breaks link rendering. Verified safe via
- * tests/escape-bracket-experiment.test.ts: unescaped []| does not trigger 11311.
+ * (links, tables) and escaping them breaks link rendering. Verified by the live
+ * regression test tests/feishu-live/escape-bracket-regression.test.ts: unescaped
+ * []| does not trigger 11311.
  */
 function escapeMarkdown(content: string): string {
   if (!content) return content;
