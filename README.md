@@ -14,19 +14,6 @@
 
 > **第一次接触本项目？先看 [docs/zh/getting-started.md](docs/zh/getting-started.md)。**
 
-## ⚠️ 安全警告（必读）
-
-本工具会把飞书消息直接转为本地 agent 执行。**开箱默认是不弹审批的**：Claude 默认以 `bypassPermissions` 运行（无审批卡），但该权限模式**可配置**——把它改成 `bypassPermissions` 以外的值（`default` / `acceptEdits` / `auto` / `dontAsk` / `plan`）即启用交互式审批，高风险操作会在飞书卡片上等你确认；Codex 采用 **app-server 审批模式**（默认 `approvalPolicy=on-request`，执行命令需在飞书卡片上确认，沙箱默认 `workspace-write`）；Kimi 默认 `manual`（逐条审批；注意 kimi 0.40+ 起 `yolo` 已改为「必要时询问」而非全部放行，要完全不弹审批需选 `auto`）；其他 agent 以各自 CLI 的默认权限运行。**无论哪种模式**，agent 都能读写你指定的本地目录，请务必：
-
-- **仅限你自己的私聊（p2p）使用**。不要把机器人拉进任何群聊，不要让任何其他人能与它对话。
-- 在飞书开放平台把应用可见范围限制到**只有你自己**。
-- 运行本工具的机器上不要存放与损失承受力不符的数据；建议在独立用户/机器/容器里运行。
-- `appSecret` 等凭据只在本地 `config.yaml`，**不要提交到任何仓库**。
-
-审批模式下（Claude、Codex、Kimi），执行命令前会收到审批卡片，可直接在飞书里允许或拒绝：
-
-![命令审批卡片示例](docs/images/approval-card.png)
-
 ## 前置条件
 
 - 操作系统：macOS / Linux / Windows 10+（原生 Windows 支持已完成真机验证，行为与 macOS/Linux 对齐）
@@ -70,7 +57,7 @@ defaultAgent: claude
 claude:
   model: claude-opus-4-8
   effort: medium            # low | medium | high | xhigh | max
-  permissionMode: bypassPermissions  # Claude 官方 --permission-mode：default | acceptEdits | auto | bypassPermissions | manual | dontAsk | plan（`/config` 卡片可切换；非 bypassPermissions 会启用审批）
+  permissionMode: auto  # Claude 官方 --permission-mode：default | acceptEdits | auto | bypassPermissions | manual | dontAsk | plan（`/config` 卡片可切换；auto 为默认：低风险放行、高风险审批）
   stopGraceMs: 5000
 
 logging:

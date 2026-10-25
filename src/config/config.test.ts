@@ -55,8 +55,8 @@ describe('loadConfig', () => {
 
     expect(config.claude.model).toBe('claude-opus-4-8');
     expect(config.claude.stopGraceMs).toBe(5000);
-    // claude 审批配置默认：bypassPermissions（保持旧行为）+ 5 分钟超时 + 30 分钟空闲回收
-    expect(config.claude.permissionMode).toBe('bypassPermissions');
+    // claude 审批配置默认：auto（低风险放行、高风险审批）+ 5 分钟超时 + 30 分钟空闲回收
+    expect(config.claude.permissionMode).toBe('auto');
     expect(config.claude.approvalTimeoutMs).toBe(5 * 60 * 1000);
     expect(config.claude.idleTtlMinutes).toBe(30);
     // defaultAgent defaults to 'claude' when absent

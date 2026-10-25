@@ -14,19 +14,6 @@ Designed for a single-user, peer-to-peer private chat. The agent's system prompt
 
 > **New here? Start with [docs/en/getting-started.md](docs/en/getting-started.md).**
 
-## ⚠️ Security Warning (read first)
-
-This tool turns Feishu messages directly into local agent executions. **Out of the box, agents run without approval prompts**: Claude defaults to `bypassPermissions` (no approval card), but that permission mode is **configurable** — set it to anything other than `bypassPermissions` (`default` / `acceptEdits` / `auto` / `dontAsk` / `plan`) to enable interactive approval, where high-risk actions wait for your confirmation on the Feishu card. Codex uses the **app-server approval mode** (default `approvalPolicy=on-request` — command execution requires your confirmation on the Feishu card, sandbox defaults to `workspace-write`); Kimi defaults to `manual` (per-action approval; note that since kimi 0.40, `yolo` means Ask-When-Needed rather than allow-everything — use `auto` for fully unattended, no-approval execution); other agents run with their CLI defaults. **In any mode**, agents can read and write the local directories you specify. You MUST:
-
-- **Use it only in your own private (p2p) chat.** Never add the bot to any group chat; never let anyone else talk to it.
-- Restrict the app's visibility to **yourself only** in the Feishu Open Platform.
-- Don't run it on a machine holding data you can't afford to lose; prefer a dedicated user / machine / container.
-- Keep credentials such as `appSecret` in your local `config.yaml` only — **never commit them anywhere**.
-
-In approval mode (Claude, Codex, Kimi), an approval card arrives before a command runs — approve or reject it right in Feishu:
-
-![Command approval card example](docs/images/approval-card.png)
-
 ## Prerequisites
 
 - OS: macOS / Linux / Windows 10+ (native Windows support is verified on real hardware, with behavior matching macOS/Linux)
@@ -70,7 +57,7 @@ defaultAgent: claude
 claude:
   model: claude-opus-4-8
   effort: medium            # low | medium | high | xhigh | max
-  permissionMode: bypassPermissions  # Claude official --permission-mode: default | acceptEdits | auto | bypassPermissions | manual | dontAsk | plan (switchable via /config card; anything other than bypassPermissions enables approval)
+  permissionMode: auto  # Claude official --permission-mode: default | acceptEdits | auto | bypassPermissions | manual | dontAsk | plan (switchable via /config card; auto is the default: low-risk actions run, high-risk actions ask)
   stopGraceMs: 5000
 
 logging:

@@ -34,10 +34,9 @@ const COMPACT_COMMAND = '/compact';
  * Claude Agent Runner（长驻交互模式）。
  *
  * 权限模式（permissionMode）在 spawn 时经 --permission-mode 生效：
- * - 默认 bypassPermissions：claude 内部自动放行，无 control_request → 行为与
- *   旧版完全一致（无审批卡）；
- * - 配置为 default/acceptEdits/manual/plan 等：工具调用经 control_request
- *   上抛 → bridge ApprovalCoordinator → run 卡审批区。
+ * - 默认 auto：低风险操作自动放行，高风险操作的 control_request 上抛 →
+ *   bridge ApprovalCoordinator → run 卡审批区；
+ * - bypassPermissions：claude 内部全部放行，无 control_request（无审批卡）。
  */
 export class ClaudeRunner implements AgentRunner {
   readonly kind = 'claude' as const;
@@ -65,7 +64,7 @@ export class ClaudeRunner implements AgentRunner {
   }) {
     this.defaultModel = opts.model ?? 'claude-opus-4-8';
     this.defaultEffort = opts.effort ?? 'medium';
-    this.permissionMode = opts.permissionMode ?? 'bypassPermissions';
+    this.permissionMode = opts.permissionMode ?? 'auto';
     this.sessionReader = opts.sessionReader ?? new ClaudeSessionReader();
     this.session = new ClaudeSession({
       pidDir: opts.pidDir,
