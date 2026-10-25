@@ -24,7 +24,9 @@ import type {
   ApprovalRequestedEvent,
   ResultEvent,
   SessionInfoEvent,
+  TurnStartedEvent,
 } from '../../types.js';
+import { makeTurnStartedEvent } from '../turn-started.js';
 import {
   NotificationMethod,
   ServerRequestMethod,
@@ -88,13 +90,7 @@ function stringifyUnknown(value: unknown): string {
 // =============================================================================
 
 /** Self-produced turn_started event (no wire equivalent — produced on prompt start). */
-export interface AcpTurnStartedEvent {
-  type: 'turn_started';
-  threadId: string;
-  turnId: string;
-  operationKind: 'turn' | 'compaction';
-  timestamp?: string;
-}
+export type AcpTurnStartedEvent = TurnStartedEvent;
 
 /**
  * Live usage snapshot from usage_update. The ACP wire carries context
@@ -237,13 +233,7 @@ export abstract class BaseAcpTranslator {
    */
   produceTurnStarted(sessionId: string, turnId: string): AcpTurnStartedEvent {
     this.currentTurnId = turnId;
-    return {
-      type: 'turn_started',
-      threadId: sessionId,
-      turnId,
-      operationKind: this.operationKind === 'compact' ? 'compaction' : 'turn',
-      timestamp: new Date().toISOString(),
-    };
+    return makeTurnStartedEvent(sessionId, turnId, this.operationKind);
   }
 
   /**

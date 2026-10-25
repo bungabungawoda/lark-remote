@@ -11,7 +11,14 @@
  *   - `agent_settled` is ignored for compaction turns (no double result).
  */
 
-import type { AgentEvent, AssistantContent, NoticeEvent, ResultEvent } from '../../types.js';
+import type {
+  AgentEvent,
+  AssistantContent,
+  NoticeEvent,
+  ResultEvent,
+  TurnStartedEvent,
+} from '../../types.js';
+import { makeTurnStartedEvent } from '../../common/turn-started.js';
 import {
   type PiRpcEvent,
   type PiRpcCompactionEvent,
@@ -22,13 +29,7 @@ import {
   type PiRpcUsage,
 } from './protocol-types.js';
 
-export interface PiRpcTurnStartedEvent {
-  type: 'turn_started';
-  threadId: string;
-  turnId: string;
-  operationKind: 'turn' | 'compaction';
-  timestamp?: string;
-}
+export type PiRpcTurnStartedEvent = TurnStartedEvent;
 
 export type PiRpcTranslatorEvent = AgentEvent | PiRpcTurnStartedEvent;
 
@@ -169,13 +170,7 @@ export class PiRpcTranslator {
   /** Self-produced turn_started (no wire equivalent). */
   produceTurnStarted(sessionId: string, turnId: string): PiRpcTurnStartedEvent {
     this.sessionId = sessionId;
-    return {
-      type: 'turn_started',
-      threadId: sessionId,
-      turnId,
-      operationKind: this.operationKind === 'compact' ? 'compaction' : 'turn',
-      timestamp: new Date().toISOString(),
-    };
+    return makeTurnStartedEvent(sessionId, turnId, this.operationKind);
   }
 
   /** Result for a completed normal turn (agent_settled). */

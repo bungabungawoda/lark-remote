@@ -212,3 +212,36 @@ describe('renderRunCard budget invariants', () => {
     expect(/\d+ 个早期思考已省略/.test(json)).toBe(true);
   });
 });
+
+describe('run card 28KB budget - plan/file_change', () => {
+  it('fits within 28KB with 20 file changes', () => {
+    const state = baseState('run-budget-filechange');
+    for (let i = 0; i < 20; i++) {
+      state.blocks.push({
+        kind: 'file_change',
+        path: `/src/components/Component${i}.tsx`,
+        operation: 'edit',
+        diff: `--- a/src/components/Component${i}.tsx\n+++ b/src/components/Component${i}.tsx\n@@ -1,5 +1,7 @@\n+// Added import\n import { useState } from 'react';\n \n export function Component${i}() {\n-  return <div>Old</div>;\n+  return <div>New</div>;\n }\n`,
+      });
+    }
+
+    const json = JSON.stringify(renderRunCard(state, { agentKind: 'claude' }));
+    expect(Buffer.byteLength(json, 'utf8')).toBeLessThanOrEqual(28_000);
+  });
+
+  it('fits within 28KB with multiple plan events', () => {
+    const state = baseState('run-budget-plan');
+    for (let i = 0; i < 10; i++) {
+      const step = `Step ${i + 1}: Perform some analysis and make decisions about the codebase structure.\nThis is a detailed plan step that explains what the agent will do.`;
+      state.blocks.push({
+        kind: 'plan',
+        content: state.plan ? state.plan + step : step,
+        active: false,
+      });
+      state.plan = state.plan ? state.plan + step : step;
+    }
+
+    const json = JSON.stringify(renderRunCard(state, { agentKind: 'codex' }));
+    expect(Buffer.byteLength(json, 'utf8')).toBeLessThanOrEqual(28_000);
+  });
+});

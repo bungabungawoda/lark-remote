@@ -4,7 +4,7 @@ import { sleep } from '../common/sleep.js';
 import { isContentFilterFailure } from '../common/turn-failure.js';
 import type { AgentRegistry } from '../runner/registry.js';
 import type { SessionReaderRegistry, SessionStore } from '../session/index.js';
-import type { AppConfig } from '../config/index.js';
+import { DEFAULT_APPROVAL_TIMEOUT_MS, type AppConfig } from '../config/index.js';
 import { resolveFinalUsage, errorMessage } from './final-usage.js';
 import { getLogger } from '../logger/index.js';
 import { RunCardSession, type RunCardChannel } from '../card/run-card-session.js';
@@ -38,9 +38,6 @@ import type { MediaOutcome } from '../inbound/turn.js';
  * budget.
  */
 const COMPLETION_NOTIFICATION_MAX_EVENTS = 5;
-
-/** Approval request timeout (ms) — pending approval expires after this. */
-const APPROVAL_TIMEOUT_MS = 5 * 60 * 1000;
 
 /**
  * runner 缓存的工作区数量上限：超过后创建新工作区槽位时
@@ -1890,11 +1887,11 @@ export class Bridge {
           if (!coordinator) {
             coordinator = new ApprovalCoordinator({
               // claude 审批超时走 config（claude.approvalTimeoutMs，默认 5 分钟，
-              // 对齐 codex 红线勿改短）；codex 维持模块常量。
+              // 对齐 codex 红线勿改短）；其他 agent 使用 config 默认值。
               approvalTimeoutMs:
                 agentKind === 'claude'
-                  ? (this.config.claude?.approvalTimeoutMs ?? APPROVAL_TIMEOUT_MS)
-                  : APPROVAL_TIMEOUT_MS,
+                  ? (this.config.claude?.approvalTimeoutMs ?? DEFAULT_APPROVAL_TIMEOUT_MS)
+                  : DEFAULT_APPROVAL_TIMEOUT_MS,
               responder: async (requestId, response) => {
                 const r = runner as Runner & {
                   respondApproval?: (rid: number | string, res: unknown) => Promise<void>;

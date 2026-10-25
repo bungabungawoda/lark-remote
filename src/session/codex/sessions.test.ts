@@ -611,35 +611,6 @@ describe('rollout-reader additional branches', () => {
   });
 
   describe('getSessionIndex inner error paths', () => {
-    it('skips rollout file when fs.statSync fails during index build', () => {
-      const sessionsDir = path.join(tmpDir, 'sessions', '2026', '07', '13');
-      fs.mkdirSync(sessionsDir, { recursive: true });
-
-      // Create a valid session file
-      const validFile = path.join(sessionsDir, 'rollout-valid.jsonl');
-      fs.writeFileSync(validFile, metaLine('valid-id', '/tmp'), 'utf-8');
-
-      // Create a file that has valid session_meta but will fail statSync
-      const statFailFile = path.join(sessionsDir, 'rollout-stat-fail-index.jsonl');
-      fs.writeFileSync(statFailFile, metaLine('stat-fail-id', '/tmp'), 'utf-8');
-
-      // Mock statSync to fail for the specific file during index build
-      const origStatSync = fs.statSync;
-      const statSpy = vi.spyOn(fs, 'statSync').mockImplementation((...args: unknown[]) => {
-        const p = args[0] as string;
-        if (typeof p === 'string' && p.includes('rollout-stat-fail-index')) {
-          throw new Error('EACCES');
-        }
-        return origStatSync.apply(fs, args as [string]);
-      });
-
-      const result = listCodexRollouts({ codexHome: tmpDir });
-      // Only the valid session should appear
-      expect(result.entries).toHaveLength(1);
-      expect(result.entries[0].threadId).toBe('valid-id');
-      statSpy.mockRestore();
-    });
-
     it('skips rollout file when session_meta JSON.parse fails after findJsonlLine', () => {
       const sessionsDir = path.join(tmpDir, 'sessions', '2026', '07', '13');
       fs.mkdirSync(sessionsDir, { recursive: true });

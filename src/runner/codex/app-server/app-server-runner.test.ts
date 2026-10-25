@@ -4,7 +4,6 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { NotificationMethod, ServerRequestMethod } from './protocol-types.js';
 import { CodexAppServerTranslator } from './translator.js';
 import type { AgentEvent, ApprovalRequestedEvent, ApprovalView } from '../../types.js';
 
@@ -1101,30 +1100,6 @@ describe('Codex App Server Runner', () => {
         expect(event.view.questions?.[0]?.options).toEqual([]);
         expect(event.timeoutMs).toBeUndefined();
       });
-    });
-  });
-
-  describe('protocol-type constants', () => {
-    it('has the correct set of notification methods', () => {
-      const methods = Object.values(NotificationMethod);
-      expect(methods).toContain('turn/started');
-      expect(methods).toContain('turn/completed');
-      expect(methods).toContain('item/agentMessage/delta');
-      expect(methods).toContain('thread/tokenUsage/updated');
-      expect(methods).toContain('serverRequest/resolved');
-      expect(methods).toContain('error');
-      expect(methods).toContain('model/rerouted');
-      expect(methods).toContain('thread/settings/updated');
-      expect(methods.length).toBe(22);
-    });
-
-    it('has the correct set of server request methods', () => {
-      const methods = Object.values(ServerRequestMethod);
-      expect(methods).toContain('item/commandExecution/requestApproval');
-      expect(methods).toContain('item/fileChange/requestApproval');
-      expect(methods).toContain('item/permissions/requestApproval');
-      expect(methods).toContain('item/tool/requestUserInput');
-      expect(methods.length).toBe(4);
     });
   });
 });

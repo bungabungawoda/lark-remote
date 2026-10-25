@@ -182,12 +182,7 @@ describe('! bash command feature (Anchor Tests)', () => {
       // Should indicate failure (false returns exit code 1)
       const response = calls[calls.length - 1].input as { text?: string; card?: object };
       const responseStr = JSON.stringify(response);
-      // Either shows exit code or error indication
-      expect(
-        responseStr.includes('1') || // exit code
-          responseStr.toLowerCase().includes('error') ||
-          responseStr.toLowerCase().includes('failed'),
-      ).toBe(true);
+      expect(responseStr).toMatch(/退出码:\s*1\b/);
     });
   });
 
@@ -234,8 +229,8 @@ describe('! bash command feature (Anchor Tests)', () => {
       await router.handle('!', ctx);
 
       const calls = connector._sent;
-      // Should respond with error or help message
-      expect(calls.length).toBeGreaterThan(0);
+      const last = calls[calls.length - 1].input as { text?: string };
+      expect(last.text).toContain('请输入要执行的命令');
     });
 
     it('handles special characters in command', async () => {

@@ -335,6 +335,56 @@ describe('ApprovalCoordinator', () => {
       vi.advanceTimersByTime(20_001);
       expect(coordinator.pendingCount()).toBe(0);
     });
+
+    it('pushes approval_expired with the requestId when timeout fires', () => {
+      coordinator.onRequested(makeCommandEvent());
+
+      vi.advanceTimersByTime(30_000);
+
+      expect(pushToCard).toHaveBeenCalledTimes(1);
+      expect(pushToCard).toHaveBeenCalledWith([{ type: 'approval_expired', requestId: 1001 }]);
+    });
+
+    it('expires multiple pending approvals independently in request order', () => {
+      coordinator.onRequested(makeCommandEvent({ requestId: 1001 }));
+      coordinator.onRequested(makeFileEvent({ requestId: 1002 }));
+
+      vi.advanceTimersByTime(30_000);
+
+      expect(responder).toHaveBeenCalledTimes(2);
+      expect(responder).toHaveBeenCalledWith(1001, { action: 'cancel' });
+      expect(responder).toHaveBeenCalledWith(1002, { action: 'cancel' });
+      expect(pushToCard.mock.calls.map(([events]) => (events as Array<unknown>)[0])).toEqual([
+        { type: 'approval_expired', requestId: 1001 },
+        { type: 'approval_expired', requestId: 1002 },
+      ]);
+    });
+
+    it('does not expire a resolved approval alongside its pending sibling', () => {
+      coordinator.onRequested(makeCommandEvent({ requestId: 1001 }));
+      coordinator.onRequested(makeFileEvent({ requestId: 1002 }));
+      coordinator.onResolved(1001);
+
+      vi.advanceTimersByTime(30_000);
+
+      expect(responder).toHaveBeenCalledTimes(1);
+      expect(responder).toHaveBeenCalledWith(1002, { action: 'cancel' });
+      expect(pushToCard).toHaveBeenCalledWith([{ type: 'approval_expired', requestId: 1002 }]);
+    });
+
+    it('is idempotent after expiry: double timeout responder once, submit rejects', async () => {
+      coordinator.onRequested(makeCommandEvent());
+
+      vi.advanceTimersByTime(30_000);
+      vi.advanceTimersByTime(30_000);
+
+      expect(responder).toHaveBeenCalledTimes(1);
+      await expect(coordinator.submit({ action: 'accept' }, { requestId: 1001 })).rejects.toThrow(
+        /state=expired/,
+      );
+      vi.advanceTimersByTime(30_000);
+      expect(responder).toHaveBeenCalledTimes(1);
+    });
   });
 
   describe('protocol decision space (real availableDecisions)', () => {
@@ -613,6 +663,7 @@ describe('ApprovalCoordinator', () => {
         ],
         availableDecisions: [],
       };
+      const redeliveredView = structuredClone(view);
 
       coordinator.onRequested(makeQuestionEvent({ requestId: 2100, view }));
       await coordinator.toggleAnswer(
@@ -621,8 +672,9 @@ describe('ApprovalCoordinator', () => {
       );
       pushToCard.mockClear();
 
-      // 重投同一批次：视图里没有任何 selected。
-      coordinator.onRequested(makeQuestionEvent({ requestId: 2100, view }));
+      // 重投同一批次：视图里没有任何 selected。必须用投递前的快照，否则会
+      // 复用已被 toggleAnswer 原地修改的对象，reapplyRecordedAnswers 失效也测不出来。
+      coordinator.onRequested(makeQuestionEvent({ requestId: 2100, view: redeliveredView }));
 
       await coordinator.toggleAnswer(
         { questionIndex: 1, option: 'A2' },

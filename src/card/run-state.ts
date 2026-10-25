@@ -12,6 +12,7 @@ import type {
   GoalView,
 } from '../runner/index.js';
 import { keepTail } from '../common/truncate.js';
+import { asRecord } from '../common/tool-summary.js';
 
 const MAX_REASONING_CHARS = 4_000;
 const MAX_TEXT_CHARS = 12_000;
@@ -39,7 +40,7 @@ export type RunTerminal =
  * 禁止各自再抄一份字面量——三处漂移过一次（goal_continuing 只进白名单不进
  * 按钮判据），新增终态时必漏一处的风险是结构性的。
  */
-export const RUN_TERMINAL_STATES = [
+const RUN_TERMINAL_STATES = [
   'done',
   'error',
   'interrupted',
@@ -426,7 +427,7 @@ function reduceTurnDiffEvent(state: RunState, event: TurnDiffEvent): RunState {
             id: event.itemId,
             name: event.toolName ?? 'command',
             input: inputStr,
-            parsedInput: tryParseRecord(inputStr),
+            parsedInput: asRecord(inputStr),
             ...(event.toolHint !== undefined ? { toolHint: event.toolHint } : {}),
             output: keepTail(event.toolOutput!, MAX_TOOL_DETAIL_CHARS),
             status: complete ? (event.toolStatus ?? 'ok') : 'running',
@@ -723,7 +724,7 @@ function reduceAssistantEvent(state: RunState, event: AgentEvent): RunState {
         id: content.id,
         name: content.name,
         input: inputStr,
-        parsedInput: tryParseRecord(inputStr),
+        parsedInput: asRecord(inputStr),
         ...(content.summary !== undefined ? { summary: content.summary } : {}),
         status: 'running' as const,
         startedAt: event.timestamp,
@@ -947,23 +948,6 @@ function stringifyUnknown(value: unknown): string {
     return JSON.stringify(value) ?? '';
   } catch {
     return String(value);
-  }
-}
-
-/**
- * parse a (possibly truncated) string into a record, mirroring what
- * `tool-render.ts`'s `asRecord` did on every render. Returns `null` when the
- * string is empty, non-JSON, or parses to a non-object — so a truncation-broken
- * JSON yields `null` exactly as the old per-render parse did. Computed once at
- * store time and cached on `ToolEntry.parsedInput`.
- */
-function tryParseRecord(input: string): Record<string, unknown> | null {
-  if (!input) return null;
-  try {
-    const p = JSON.parse(input);
-    return p && typeof p === 'object' ? (p as Record<string, unknown>) : null;
-  } catch {
-    return null;
   }
 }
 
