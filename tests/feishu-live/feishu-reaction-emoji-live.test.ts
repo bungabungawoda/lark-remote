@@ -12,7 +12,7 @@
  * 所以本测试直连 raw channel 断言每个 key 都能成功。
  *
  * 运行方式（真实飞书 API，默认不跑）：
- *   FEISHU_LIVE_TEST=1 bun run test tests/feishu-reaction-emoji-live.test.ts
+ *   FEISHU_LIVE_TEST=1 bun run test tests/feishu-live/feishu-reaction-emoji-live.test.ts
  *
  * 注意：使用 ~/.lark-remote-test 下的配置，避免干扰正常使用
  */
