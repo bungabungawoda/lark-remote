@@ -50,14 +50,14 @@ afterEach(() => {
 
 describe('DSH browser auth', () => {
   it('resolves the default credentials file from DSH_HOME or the user home', () => {
-    // 期望值由 path.join 决定：win32 上分隔符是反斜杠，写死 posix 字面量在 Windows CI 永远不成立
+    // home 先经 path.resolve 绝对化（win32 上会补盘符），期望值必须跟着解析而不是只 join
     const envHome = '/tmp/dsh-home';
     const configuredHome = '/tmp/configured';
     expect(resolveDshCredentialsFile({ DSH_HOME: envHome })).toBe(
-      path.join(envHome, '.credentials.yaml'),
+      path.resolve(envHome, '.credentials.yaml'),
     );
     expect(resolveDshCredentialsFile({ DSH_HOME: envHome }, configuredHome)).toBe(
-      path.join(configuredHome, '.credentials.yaml'),
+      path.resolve(configuredHome, '.credentials.yaml'),
     );
     expect(resolveDshCredentialsFile({})).toBe(
       path.join(os.homedir(), '.dsh', '.credentials.yaml'),
