@@ -49,7 +49,7 @@ claude \
   -p "<user_message>" \
   --output-format stream-json \
   --verbose \
-  --permission-mode bypassPermissions \
+  --permission-mode auto \
   [--resume <session_id>] \
   [--model <model>] \
   [--settings <settings_json_path>]
@@ -231,7 +231,7 @@ defaultAgent: claude
 claude:
   model: claude-opus-4-8
   effort: medium           # low | medium | high | xhigh | max
-  permissionMode: bypassPermissions  # Claude official --permission-mode: default | acceptEdits | auto | bypassPermissions | manual | dontAsk | plan (switchable via /config card)
+  permissionMode: auto  # Claude official --permission-mode: default | acceptEdits | auto | bypassPermissions | manual | dontAsk | plan (switchable via /config card)
   stopGraceMs: 5000
 
 codex:

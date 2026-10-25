@@ -104,9 +104,9 @@ describe('ClaudeRunner (long-lived interactive session)', () => {
     expect(args).toContain('stdio');
     expect(args).toContain('--replay-user-messages');
     expect(args).toContain('--verbose');
-    // 默认 bypassPermissions 保持旧行为（claude -p 同款权限模式）
+    // 默认 auto（低风险自动放行，高风险走审批）
     expect(args).toContain('--permission-mode');
-    expect(args).toContain('bypassPermissions');
+    expect(args).toContain('auto');
     // 长驻交互模式不再使用 -p
     expect(args).not.toMatch(/(^| )-p( |$)/);
     // 未指定 model 时不得传 --model

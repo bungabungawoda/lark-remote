@@ -58,7 +58,7 @@ defaultAgent: claude
 claude:
   model: claude-opus-4-8    # Model
   effort: medium            # Reasoning effort: low | medium | high | xhigh | max
-  permissionMode: bypassPermissions  # Claude official --permission-mode: default | acceptEdits | auto | bypassPermissions | manual | dontAsk | plan (switchable via /config card)
+  permissionMode: auto  # Claude official --permission-mode: default | acceptEdits | auto | bypassPermissions | manual | dontAsk | plan (switchable via /config card; auto is the default: low-risk actions run, high-risk actions ask)
   stopGraceMs: 5000         # Grace period for idle-timeout auto-stop: SIGTERM→SIGKILL (milliseconds)
 
 logging:

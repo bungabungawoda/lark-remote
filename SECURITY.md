@@ -8,9 +8,9 @@
 
 ### ⚠️ Important: Agent Permissions
 
-lark-remote runs coding agents with their **configured** permission mode. The default Claude configuration is `bypassPermissions` — full permissions, no approval prompts. Approval modes are available and are the safer choice:
+lark-remote runs coding agents with their **configured** permission mode. The default Claude configuration is `auto` — low-risk actions run automatically, while high-risk actions wait for confirmation on the Feishu card. `bypassPermissions` remains available for fully unattended runs, but it is no longer the default:
 
-- **Claude**: setting `permissionMode` to anything other than `bypassPermissions` (`default` / `acceptEdits` / `auto` / `dontAsk` / `plan`) enables interactive approval — high-risk actions wait for confirmation on the Feishu card.
+- **Claude**: `auto` (the default), `default`, and `acceptEdits` prompt for high-risk actions; `plan` is read-only; `dontAsk` only uses pre-approved tools; `bypassPermissions` runs without approval.
 - **Codex**: defaults to app-server approval mode (`approvalPolicy=on-request`, `workspace-write` sandbox).
 - **Kimi**: defaults to `manual` (per-action approval).
 
@@ -31,13 +31,13 @@ Please **do not** file public issues for security vulnerabilities.
 |--------|--------|
 | Communication | p2p private chat only — no group chat support |
 | Authentication | Feishu app credentials stored locally in `config.yaml` (never committed) |
-| Agent permissions | Configurable per agent. Claude defaults to `bypassPermissions` (no approval card); switching it to any other mode adds interactive approval on the Feishu card. Codex defaults to approval mode; Kimi to `manual`. |
+| Agent permissions | Configurable per agent. Claude defaults to `auto` (low-risk actions run automatically; high-risk actions ask for approval on the Feishu card); `bypassPermissions` disables approval. Codex defaults to approval mode; Kimi to `manual`. |
 | Network | WebSocket long-poll to Feishu servers only |
 | Data | All data stays on the host machine; no external data forwarding |
 
 ### Known Risks
 
-1. **Host access**: In the default configuration (Claude `bypassPermissions`) agents execute with the same permissions as the user running lark-remote, so they can read, modify, or delete any file accessible to that user. Switching Claude to an approval mode adds a confirmation step, but the agent still executes on the host — approval is a human gate, not a sandbox.
+1. **Host access**: In the default configuration (Claude `auto`) high-risk actions wait for approval, but approved actions still execute with the same permissions as the user running lark-remote, so they can read, modify, or delete any file accessible to that user. `bypassPermissions` removes even that confirmation step — approval is a human gate, not a sandbox.
 2. **No sandboxing**: There is no sandbox or permission boundary between agents and the host system. An approval prompt controls *whether* a command runs, not what it can reach once approved.
 3. **Credential storage**: Feishu app credentials are stored in plaintext in `config.yaml`. Protect this file with appropriate filesystem permissions.
 
@@ -47,9 +47,9 @@ Please **do not** file public issues for security vulnerabilities.
 
 ### ⚠️ 重要：代理权限
 
-lark-remote 按各 agent 的**配置**权限模式运行。Claude 的默认配置是 `bypassPermissions`——全权限、不弹审批。审批模式可用，且是更安全的选择：
+lark-remote 按各 agent 的**配置**权限模式运行。Claude 的默认配置是 `auto`——低风险操作自动放行，高风险操作会在飞书卡片上等待确认。`bypassPermissions` 仍可用于完全无人值守的场景，但不再是默认值：
 
-- **Claude**：把 `permissionMode` 设为 `bypassPermissions` 以外的值（`default` / `acceptEdits` / `auto` / `dontAsk` / `plan`）即启用交互式审批——高风险操作会在飞书卡片上等你确认。
+- **Claude**：`auto`（默认）、`default`、`acceptEdits` 会为高风险操作弹审批；`plan` 只读；`dontAsk` 仅使用预先批准的工具；`bypassPermissions` 不弹审批。
 - **Codex**：默认即 app-server 审批模式（`approvalPolicy=on-request`，沙箱 `workspace-write`）。
 - **Kimi**：默认 `manual`（逐条审批）。
 
@@ -70,12 +70,12 @@ lark-remote 按各 agent 的**配置**权限模式运行。Claude 的默认配�
 |------|------|
 | 通信 | 仅 p2p 私聊 — 不支持群聊 |
 | 认证 | 飞书应用凭据存储在本地 `config.yaml`（不提交到仓库） |
-| 代理权限 | 按 agent 可配置。Claude 默认 `bypassPermissions`（无审批卡），改为其他模式会启用飞书卡片交互式审批；Codex 默认审批模式，Kimi 默认 `manual`。 |
+| 代理权限 | 按 agent 可配置。Claude 默认 `auto`（低风险自动放行，高风险在飞书卡片上审批）；`bypassPermissions` 不弹审批。Codex 默认审批模式，Kimi 默认 `manual`。 |
 | 网络 | 仅 WebSocket 长连接飞书服务器 |
 | 数据 | 所有数据留在宿主机；不转发到外部 |
 
 ### 已知风险
 
-1. **宿主访问**：默认配置下（Claude `bypassPermissions`）代理以运行 lark-remote 的用户相同权限执行，可读、改、删该用户可访问的任何文件。把 Claude 切到审批模式会增加一步确认，但代理仍在宿主上执行——审批是人工闸门，不是沙箱。
+1. **宿主访问**：默认配置（Claude `auto`）下高风险操作会先等审批，但批准后的操作仍以运行 lark-remote 的用户相同权限执行，可读、改、删该用户可访问的任何文件。`bypassPermissions` 连这一步确认也去掉——审批是人工闸门，不是沙箱。
 2. **无沙箱**：代理与宿主系统之间没有沙箱或权限边界。审批提示决定的是命令**是否执行**，而不是执行后能触及什么。
 3. **凭据存储**：飞书应用凭据以明文存储在 `config.yaml` 中。请用适当的文件系统权限保护此文件。

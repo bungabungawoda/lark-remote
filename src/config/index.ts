@@ -99,10 +99,10 @@ const ClaudeConfigSchema = z.object({
   effort: z.enum(CLAUDE_EFFORTS).default('medium'),
   /**
    * Claude 权限模式（官方 --permission-mode 枚举 + 'default'=省略该参数）。
-   * 默认 bypassPermissions 保持现有行为（无审批卡）；配置为其他值后激活
-   * 交互式审批（control_request → run 卡审批区）。
+   * 默认 auto：低风险操作自动放行，高风险操作走审批（control_request →
+   * run 卡审批区）；bypassPermissions 仍可选，但不再是默认值。
    */
-  permissionMode: z.enum(CLAUDE_PERMISSION_MODES).default('bypassPermissions'),
+  permissionMode: z.enum(CLAUDE_PERMISSION_MODES).default('auto'),
   /** 审批请求超时（ms），默认 5 分钟；超时自动发送 cancel 并中断 turn。
    *  0 = 立即过期（fail-fast，避免审批永久挂起），不推荐；勿随意改短。 */
   approvalTimeoutMs: z.number().int().min(0).default(DEFAULTS.APPROVAL_TIMEOUT_MS),
@@ -363,7 +363,7 @@ const TEMPLATE = `feishu:
 claude:
   model: ${DEFAULTS.CLAUDE_MODEL}
   effort: medium
-  permissionMode: bypassPermissions
+  permissionMode: auto
   approvalTimeoutMs: ${DEFAULTS.APPROVAL_TIMEOUT_MS}
   idleTtlMinutes: ${DEFAULTS.CLAUDE_IDLE_TTL_MINUTES}
   stopGraceMs: ${DEFAULTS.STOP_GRACE_MS}
