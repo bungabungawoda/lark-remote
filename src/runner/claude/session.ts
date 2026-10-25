@@ -141,7 +141,7 @@ export class ClaudeSession extends SpawningRunner {
       agent: 'claude',
     });
     this.binary = 'claude';
-    this.permissionMode = opts.permissionMode ?? 'bypassPermissions';
+    this.permissionMode = opts.permissionMode ?? 'auto';
     this.settings = opts.settings;
     this.defaultEffort = opts.effort;
     this.idleTtlMs = opts.idleTtlMs ?? DEFAULT_IDLE_TTL_MS;

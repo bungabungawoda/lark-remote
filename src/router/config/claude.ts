@@ -103,9 +103,9 @@ export class ClaudeConfigBuilder implements AgentConfigCardBuilder {
     });
 
     // 权限模式（取值见 CLAUDE_PERMISSION_MODES：除自造的 default 外都是 CLI 的
-    // --permission-mode 枚举；bypassPermissions 为 schema 默认，保持旧行为无审批卡，
-    // 配置为其他值后激活交互式审批）
-    const currentPermissionMode = displayConfig.claude?.permissionMode ?? 'bypassPermissions';
+    // --permission-mode 枚举；auto 为 schema 默认，低风险自动放行、高风险走审批，
+    // bypassPermissions 仍可在下拉中显式选择）
+    const currentPermissionMode = displayConfig.claude?.permissionMode ?? 'auto';
     // manual 不在下拉里：旧配置按 default 显示，避免打开卡片时该项空选
     const displayedPermissionMode =
       currentPermissionMode === 'manual' ? 'default' : currentPermissionMode;
