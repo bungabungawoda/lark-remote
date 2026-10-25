@@ -59,6 +59,9 @@ export const DEFAULT_STOP_GRACE_MS = DEFAULTS.STOP_GRACE_MS;
 /** Codex app-server turn idle timeout default (minutes). */
 export const DEFAULT_TURN_IDLE_TIMEOUT_MINUTES = DEFAULTS.TURN_IDLE_TIMEOUT_MINUTES;
 
+/** Approval timeout default (ms), shared by schema and bridge fallback. */
+export const DEFAULT_APPROVAL_TIMEOUT_MS = DEFAULTS.APPROVAL_TIMEOUT_MS;
+
 /**
  * 入站媒体默认配置（schema 默认与 connector 兜底共用，避免双源漂移）。
  *

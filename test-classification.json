@@ -13,8 +13,7 @@
     "tests/anchor/regression/queue-lane-cwd.test.ts",
     "tests/anchor/regression/completion-card.test.ts",
     "tests/anchor/misc/bridge-runner-opts.test.ts",
-    "tests/anchor/misc/reaction-terminal-emoji.test.ts",
-    "tests/anchor/approval-expiry/approval-expiry-coordinator.test.ts"
+    "tests/anchor/misc/reaction-terminal-emoji.test.ts"
   ],
   "infra-card": [
     "src/card/**/*.test.ts",
@@ -22,7 +21,6 @@
     "tests/anchor/card-budget/**/*.test.ts",
     "tests/anchor/bash-card/**/*.test.ts",
     "tests/card/table-over-limit-fix.test.ts",
-    "tests/card/run-card-budget-plan-filechange.test.ts",
     "tests/card/run-state-plan-filechange.test.ts",
     "tests/card/thinking-blocks.test.ts",
     "tests/anchor/regression/bash-output.test.ts",

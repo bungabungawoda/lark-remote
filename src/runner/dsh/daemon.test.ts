@@ -2,13 +2,8 @@ import { afterEach, describe, expect, it } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import {
-  DshDaemon,
-  DshDaemonError,
-  dshDaemonArgs,
-  isLoopbackHttpUrl,
-  resolveDshHome,
-} from './daemon.js';
+import { DshDaemon, DshDaemonError, dshDaemonArgs, isLoopbackHttpUrl } from './daemon.js';
+import { resolveDshHome } from './home.js';
 
 const homes: string[] = [];
 

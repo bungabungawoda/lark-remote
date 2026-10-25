@@ -71,6 +71,35 @@ describe('RunState', () => {
     expect(state.errorMsg).toBeUndefined();
   });
 
+  it('replaces a duplicate approval requestId in place without moving its slot', () => {
+    const approval = (requestId: number, command: string, itemId: string) =>
+      ({
+        type: 'approval_requested',
+        requestId,
+        kind: 'command',
+        threadId: 'th-dup',
+        turnId: 'tn-dup',
+        itemId,
+        view: {
+          requestId,
+          kind: 'command',
+          command,
+          commandCwd: '/home/user/project',
+          availableDecisions: ['accept', 'decline', 'cancel'],
+        },
+      }) as never;
+
+    let state = createInitialRunState('run-dup-approval');
+    state = reduceRunState(state, approval(31, 'first', 'item-1'));
+    state = reduceRunState(state, approval(32, 'second', 'item-2'));
+    state = reduceRunState(state, approval(31, 'updated', 'item-1'));
+
+    expect(state.approvals).toHaveLength(2);
+    expect(state.approvals![0].view.requestId).toBe(31);
+    expect(state.approvals![0].view.command).toBe('updated');
+    expect(state.approvals![1].view.requestId).toBe(32);
+  });
+
   it('test_anchor_expired_approval_derives_interrupted_reason_at_finish', () => {
     // 真实协议顺序 requested → expired → resolved → result：approval_resolved
     // 会移除审批条目，但 finish 时必须从顶层持久标记推导 interruptedReason。
@@ -705,6 +734,39 @@ describe('RunState', () => {
     }
     expect(state.blocks).toHaveLength(24);
     expect(state.omittedBlocks).toBe(6);
+  });
+
+  it('counts omittedBlocks when assistant thinking exceeds the block cap', () => {
+    let state = createInitialRunState('run-thinking-omit');
+    for (let i = 0; i < 30; i++) {
+      state = reduceRunState(state, {
+        type: 'assistant',
+        timestamp: `2026-07-30T12:${String(i).padStart(2, '0')}:00.000Z`,
+        message: {
+          content: [{ type: 'thinking', thinking: `thinking-${i}`, itemId: `th-${i}` }],
+        },
+      } as never);
+    }
+    expect(state.blocks).toHaveLength(24);
+    expect(state.omittedBlocks).toBe(6);
+  });
+
+  it('sets footer to tool_running when an existing tool_use is updated', () => {
+    let state = createInitialRunState('run-tool-footer');
+    state = reduceRunState(state, {
+      type: 'assistant',
+      message: {
+        content: [{ type: 'tool_use', id: 'tool-1', name: 'Bash', input: { command: 'ls' } }],
+      },
+    } as never);
+    state = reduceRunState(state, {
+      type: 'assistant',
+      message: {
+        content: [{ type: 'tool_use', id: 'tool-1', name: 'Bash', input: { command: 'ls -la' } }],
+      },
+    } as never);
+
+    expect(state.footer).toBe('tool_running');
   });
 
   it('test_anchor_finishRun_threads_reasoningTokens', () => {

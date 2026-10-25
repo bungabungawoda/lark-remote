@@ -160,6 +160,7 @@ not valid json
       const content = readCodexSessionContent('019f-target', { codexHome: tmpDir });
 
       expect(content.events).toHaveLength(2);
+      expect(content.events.map((event) => event.type)).toEqual(['user', 'assistant']);
       expect(content.displayTitle).toContain('What is 2+2?');
     });
 

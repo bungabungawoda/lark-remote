@@ -769,3 +769,42 @@ describe('QueueManager card update retry', () => {
     expect(mockLogger.warn).toHaveBeenCalled();
   });
 });
+
+describe('QueueManager waiting queue cap', () => {
+  it('rejects the 51st waiting task with a visible queue-full card', async () => {
+    const { qm, sentCards } = makeQueueManager(() => true);
+    let releaseRun: () => void = () => {};
+    const hang = new Promise<void>((resolve) => {
+      releaseRun = resolve;
+    });
+
+    qm.enqueue(tmpDir, async () => hang, {
+      taskMeta: { userId: 'u1', chatId: 'c1', messageId: 'run', messagePreview: 'running' },
+    });
+    for (let i = 0; i < 50; i++) {
+      qm.enqueue(tmpDir, async () => undefined, {
+        taskMeta: {
+          userId: 'u1',
+          chatId: 'c1',
+          messageId: `q-${i}`,
+          messagePreview: `queued ${i}`,
+        },
+      });
+    }
+    await new Promise((r) => setTimeout(r, 0));
+
+    qm.enqueue(tmpDir, async () => undefined, {
+      taskMeta: { userId: 'u1', chatId: 'c1', messageId: 'overflow', messagePreview: 'overflow' },
+    });
+    await new Promise((r) => setTimeout(r, 0));
+
+    const fullCard = sentCards
+      .map((entry) => entry.card)
+      .find((card) => extractHeaderTitle(card) === '🚫 队列已满');
+    expect(fullCard).toBeDefined();
+    expect(extractCardText(fullCard!)).toContain('50 条消息');
+
+    releaseRun();
+    await new Promise((r) => setTimeout(r, 30));
+  });
+});
