@@ -73,6 +73,7 @@ Key fields:
 - `footer`: thinking | tool_running | streaming | null
 - `reasoning`
 - Ordered `blocks`: text or tool
+- `finalAnswer`: the protocol-marked or terminal-inferred answer, stored outside `blocks`
 - `resultSubtype`, `errorMsg`, `idleTimeoutMinutes`
 
 Event transitions:
@@ -84,7 +85,9 @@ Event transitions:
 | assistant.text | Merge adjacent text, footer=streaming |
 | assistant.tool_use | Add running tool, footer=tool_running |
 | user.tool_result | Match tool id, set ok/error and output |
+| final_answer | Store `finalAnswer` and remove the streamed progress copy for the same item |
 | result.success / result.error | finalizing (cache subtype/errorMsg, not terminal) |
+| result without a final_answer marker | Promote the last non-empty assistant text to `finalAnswer` (source=inferred) |
 | CLI process exit (for-await ends) + still finalizing | done / error (lark-remote finally transition) |
 | Non-zero exit or run throws | error |
 | stdout exhausted without result | error |
@@ -140,16 +143,33 @@ The data comes only from the host (the `goal` value in `session/projections`, `s
 
 ## 6. Long Content Budget
 
-The state layer limits memory growth first, then the rendering layer truncates by UTF-8 byte size:
+The final answer outranks progress information. Terminal rendering:
+
+1. Places status, approvals, and action controls first;
+2. Places the complete `finalAnswer` next;
+3. Uses only the remaining space for tools, plans, reasoning, and notices, newest first;
+4. Omits the usage summary before declaring a physical overflow.
+
+Codex app-server consumes `agentMessage.phase = "final_answer"` directly. Agents
+without an explicit marker promote their last non-empty assistant text when the
+turn finishes. Claude, opencode, Kimi, Pi, and DSH therefore share the same
+protection.
+
+The state layer still limits memory growth for ordinary progress content, then the rendering layer truncates by UTF-8 byte size:
 
 - Reasoning retains a limited window;
-- Text retains the latest window;
+- Ordinary text retains the latest window; `finalAnswer` is not evicted by that window or `MAX_BLOCKS`;
 - Tool input/output is truncated;
 - Total block count has an upper limit;
 - Tool block count has its own upper limit (`MAX_BLOCKS`); each tool is a native collapsible panel (one title row by default) whose body ships with the card and is truncated by tool count;
 - Whole card target is under 28KB; tests require under 30KB.
 
 Budget uses `Buffer.byteLength(..., 'utf8')`; JavaScript string `.length` must not be used as a substitute.
+
+If one card cannot hold even the final answer plus required controls, the card
+shows `_最终回答较长，完整内容已随后发送_`. The bridge splits the complete
+answer into plain-text messages at UTF-8 byte and line boundaries. Concatenating
+those messages must reproduce the source exactly; silent truncation is not allowed.
 
 ## 7. Concurrency and Stop Control
 

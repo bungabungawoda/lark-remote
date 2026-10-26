@@ -10,6 +10,7 @@
 
 import type {
   AgentEvent,
+  FinalAnswerEvent,
   TokenUsage,
   ToolHint,
   TurnStartedEvent,
@@ -68,6 +69,8 @@ export class CodexAppServerTranslator {
   private turnStatus: string = 'pending';
   /** Full agentMessage text per item id (item-scoped snapshot). */
   private textByItem = new Map<string, string>();
+  /** agentMessage item ids whose protocol phase is `final_answer`. */
+  private finalTextItems = new Set<string>();
   /**
    * Reasoning content per item id: paragraphs keyed by `contentIndex`
    * (textDelta) plus the summary stream (summaryTextDelta). Each reasoning
@@ -219,15 +222,26 @@ export class CodexAppServerTranslator {
         const text = (item as { text?: string }).text ?? '';
         if (text && this.textByItem.get(item.id) !== text) {
           this.textByItem.set(item.id, text);
-          events.push({
-            type: 'turn_diff',
-            text,
-            itemId: item.id,
-            complete: true,
-            threadId: params?.threadId ?? this.threadId,
-            turnId: params?.turn?.id ?? this.turnId,
-            timestamp: this.now(),
-          } as TurnDiffEvent);
+          const final = (item as { phase?: string | null }).phase === 'final_answer';
+          events.push(
+            final
+              ? ({
+                  type: 'final_answer',
+                  text,
+                  itemId: item.id,
+                  complete: true,
+                  timestamp: this.now(),
+                } as FinalAnswerEvent)
+              : ({
+                  type: 'turn_diff',
+                  text,
+                  itemId: item.id,
+                  complete: true,
+                  threadId: params?.threadId ?? this.threadId,
+                  turnId: params?.turn?.id ?? this.turnId,
+                  timestamp: this.now(),
+                } as TurnDiffEvent),
+          );
         }
       } else if (item.type === 'plan') {
         // plan 是 EXPERIMENTAL 文本增量，不保证与最终 plan item 一致；
@@ -314,6 +328,7 @@ export class CodexAppServerTranslator {
     // 的 turnId 闸门挡掉。
     this.usage = { inputTokens: 0, outputTokens: 0 };
     this.textByItem.clear();
+    this.finalTextItems.clear();
     this.reasoningByItem.clear();
     this.toolOutputByItem.clear();
     this.toolItemMeta.clear();
@@ -339,6 +354,17 @@ export class CodexAppServerTranslator {
     const prev = this.textByItem.get(params.itemId) ?? '';
     const next = prev + params.delta;
     this.textByItem.set(params.itemId, next);
+    if (this.finalTextItems.has(params.itemId)) {
+      return [
+        {
+          type: 'final_answer',
+          text: next,
+          itemId: params.itemId,
+          complete: false,
+          timestamp: this.now(),
+        } as FinalAnswerEvent,
+      ];
+    }
     return [
       {
         type: 'turn_diff',
@@ -455,6 +481,21 @@ export class CodexAppServerTranslator {
       if (text || accumulated) {
         const finalText = text || accumulated;
         this.textByItem.set(item.id, finalText);
+        if (
+          (item as { phase?: string | null }).phase === 'final_answer' ||
+          this.finalTextItems.has(item.id)
+        ) {
+          this.finalTextItems.delete(item.id);
+          return [
+            {
+              type: 'final_answer',
+              text: finalText,
+              itemId: item.id,
+              complete: true,
+              timestamp: this.now(),
+            } as FinalAnswerEvent,
+          ];
+        }
         return [
           {
             type: 'turn_diff',
@@ -764,6 +805,26 @@ export class CodexAppServerTranslator {
 
   private handleItemStarted(params: ItemStartedNotification['params']): TranslatorEvent[] {
     const item = params.item;
+    if (item.type === 'agentMessage') {
+      const phase = (item as { phase?: string | null }).phase;
+      if (phase === 'final_answer') {
+        this.finalTextItems.add(item.id);
+        const text = (item as { text?: string }).text ?? '';
+        if (text) {
+          this.textByItem.set(item.id, text);
+          return [
+            {
+              type: 'final_answer',
+              text,
+              itemId: item.id,
+              complete: false,
+              timestamp: this.now(),
+            } as FinalAnswerEvent,
+          ];
+        }
+      }
+      return [];
+    }
     if (item.type === 'fileChange' && Array.isArray(item.changes)) {
       this.fileChangeItems.set(item.id, item.changes);
       const pending = this.pendingFileApprovalByItemId.get(item.id);

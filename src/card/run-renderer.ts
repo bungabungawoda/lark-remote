@@ -224,6 +224,13 @@ export interface RunCardRenderOptions {
   sessionFallbackAvailable?: boolean;
 }
 
+export interface RunCardRenderOutcome {
+  card: object;
+  finalAnswerStatus: 'none' | 'full' | 'overflow';
+  /** Full text to deliver outside the card when finalAnswerStatus is overflow. */
+  finalAnswerText?: string;
+}
+
 // =============================================================================
 // CardKit 2.0 renderer
 // =============================================================================
@@ -1032,6 +1039,25 @@ function measurePanelBytes(
  * CardKit 2.0 renderer - simplified for streaming (no tabs)
  */
 export function renderRunCard(state: RunState, options: RunCardRenderOptions = {}): object {
+  return renderRunCardDetailed(state, options).card;
+}
+
+/**
+ * Render a run card with metadata the bridge needs to deliver an answer that
+ * cannot fit in one Feishu card. `renderRunCard` remains the card-only API used
+ * by streaming sessions.
+ */
+export function renderRunCardDetailed(
+  state: RunState,
+  options: RunCardRenderOptions = {},
+): RunCardRenderOutcome {
+  if (state.finalAnswer?.content.trim()) {
+    return buildFinalAnswerPriorityCard(state, options);
+  }
+  return { card: renderLegacyRunCard(state, options), finalAnswerStatus: 'none' };
+}
+
+function renderLegacyRunCard(state: RunState, options: RunCardRenderOptions): object {
   // 先估后建：用廉价估算预测是否超 28KB 预算，明显超预算直接跳过完整卡构建走
   // degraded。groups/prepared 只算一次，测量与正式渲染共用同一份截断结果，
   // 避免影子测量 + 正式渲染对每个超限块双倍截断。
@@ -1098,6 +1124,125 @@ export function renderRunCard(state: RunState, options: RunCardRenderOptions = {
     },
   };
   return truncatedSkeleton;
+}
+
+/** Exact-match marker used in the card before the answer is sent separately. */
+export const FINAL_ANSWER_OVERFLOW_MARKER = '_最终回答较长，完整内容已随后发送_';
+
+/**
+ * Build a card around the authoritative final answer.
+ *
+ * The answer is measured first with the fixed controls. Progress groups are
+ * added newest-first only while the whole card still fits. If the answer
+ * cannot fit even without progress/summary, the card carries an explicit
+ * marker and the bridge sends the complete answer separately.
+ */
+function buildFinalAnswerPriorityCard(
+  state: RunState,
+  options: RunCardRenderOptions,
+): RunCardRenderOutcome {
+  const finalAnswer = state.finalAnswer!;
+  const groups = groupBlocks(state.blocks);
+  const prepared = prepareGroupContent(groups);
+  const safeAnswer = truncateMarkdownTables(finalAnswer.content);
+  const requiresOverflow = safeAnswer !== finalAnswer.content;
+  const ts = formatTimestamp(finalAnswer.timestamp);
+  const answerElements = renderTextBlock(safeAnswer, ts, state.terminal !== 'running');
+  const fixedStart = [statusRow(state), ...omittedBlocksHint(state)];
+  const summary = buildSummaryContent(state, { includeNotices: false });
+  const controls = [...actionRow(state, options), ...approvalArea(state)];
+
+  const buildWithProgress = (start: number, includeSummary: boolean): object => {
+    const renderedProgress = buildAnswerProgressContent(state, prepared, groups.slice(start));
+    const progress =
+      start < groups.length
+        ? [markdownDiv(`_💡 已省略 ${start} 个早期步骤_`), ...renderedProgress]
+        : renderedProgress;
+    return assembleRunCard(state, options, [
+      ...fixedStart,
+      ...progress,
+      ...(requiresOverflow ? [markdownDiv(FINAL_ANSWER_OVERFLOW_MARKER)] : []),
+      ...answerElements,
+      ...(includeSummary ? summary : []),
+      ...controls,
+    ]);
+  };
+
+  let best = buildWithProgress(groups.length, true);
+  if (withinRunCardBudget(best)) {
+    for (let start = groups.length - 1; start >= 0; start--) {
+      const candidate = buildWithProgress(start, true);
+      if (!withinRunCardBudget(candidate)) break;
+      best = candidate;
+    }
+    return {
+      card: best,
+      finalAnswerStatus: requiresOverflow ? 'overflow' : 'full',
+      ...(requiresOverflow ? { finalAnswerText: finalAnswer.content } : {}),
+    };
+  }
+
+  // The answer outranks the usage summary. Keep the answer and controls first,
+  // then retry without the summary before declaring a physical overflow.
+  const withoutSummary = buildWithProgress(groups.length, false);
+  if (withinRunCardBudget(withoutSummary)) {
+    return {
+      card: withoutSummary,
+      finalAnswerStatus: requiresOverflow ? 'overflow' : 'full',
+      ...(requiresOverflow ? { finalAnswerText: finalAnswer.content } : {}),
+    };
+  }
+
+  const overflowCard = assembleRunCard(state, options, [
+    ...fixedStart,
+    markdownDiv(FINAL_ANSWER_OVERFLOW_MARKER),
+    ...controls,
+  ]);
+  return {
+    card: overflowCard,
+    finalAnswerStatus: 'overflow',
+    finalAnswerText: finalAnswer.content,
+  };
+}
+
+/** Render a contiguous progress suffix for the answer-priority card. */
+function buildAnswerProgressContent(
+  state: RunState,
+  prepared: GroupContentPrepared,
+  visible: BlockGroup[],
+): object[] {
+  const elements: object[] = [];
+  const outputMax = toolOutputBudget(state);
+  const contentItems = mergeNoticesIntoContent(visible, state.notices);
+  for (const item of contentItems) {
+    if (item.kind === 'notice') {
+      elements.push(renderNoticeRow(item.notice));
+      continue;
+    }
+    const group = item;
+    if (group.kind === 'tool') {
+      elements.push(renderTool(group.tool, outputMax));
+      continue;
+    }
+    if (group.kind === 'text') {
+      const content = prepared.get(group) ?? '';
+      const ts = formatTimestamp(group.timestamp);
+      elements.push(...renderTextBlock(content, ts, state.terminal !== 'running'));
+      continue;
+    }
+    const spec = describePanelGroup(group, prepared);
+    if (!spec) continue;
+    elements.push(
+      collapsibleMarkdownPanel({
+        title: spec.title,
+        expanded: spec.expanded,
+        border: spec.border,
+        content: spec.content,
+        textSize: 'notation',
+      }),
+    );
+  }
+  return elements;
 }
 
 /**
@@ -1232,7 +1377,7 @@ function buildSummaryContent(
   } else {
     const result = state.resultSubtype ?? 'success';
 
-    const hasContent = state.blocks.length > 0;
+    const hasContent = state.blocks.length > 0 || !!state.finalAnswer?.content.trim();
     // 压缩（operationKind='compaction'）不会返回 agent 正文——引擎只压缩上下文
     // 窗口，空内容属正常，不能沿用普通 run 的「（未返回内容）」异常信号
     // （2026-09 用户反馈）。所有会压缩的 agent（codex/claude/kimi/opencode/pi）

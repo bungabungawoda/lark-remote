@@ -6,6 +6,7 @@ import type {
   ApprovalView,
   TurnStartedEvent,
   TurnDiffEvent,
+  FinalAnswerEvent,
   NoticeEvent,
   SessionInfoEvent,
   ToolHint,
@@ -123,6 +124,13 @@ export interface RunNotice {
   timestamp?: string;
 }
 
+export interface FinalAnswerState {
+  content: string;
+  timestamp?: string;
+  complete: boolean;
+  source: 'protocol' | 'inferred';
+}
+
 export interface RunState {
   runId: string;
   terminal: RunTerminal;
@@ -132,6 +140,11 @@ export interface RunState {
   /** 本 run 结束时间（epoch ms）：终态后耗时定格，不再随渲染时刻增长。 */
   finishedAt?: number;
   blocks: RunBlock[];
+  /**
+   * The answer the user is waiting for. Kept outside `blocks` so progress
+   * traffic cannot evict or consume its display budget.
+   */
+  finalAnswer?: FinalAnswerState;
   sessionId?: string;
   resultSubtype?: 'success' | 'error' | 'interrupted';
   /** interrupted 终态的中断来源；undefined = 未归类（渲染默认文案）。 */
@@ -276,6 +289,7 @@ export function reduceRunState(state: RunState, event: AgentEvent): RunState {
   }
   if (event.type === 'background_jobs') return reduceBackgroundJobsEvent(state, event);
   if (event.type === 'result') return reduceResultEvent(state, event);
+  if (event.type === 'final_answer') return reduceFinalAnswerEvent(state, event);
   if (event.type === 'assistant') return reduceAssistantEvent(state, event);
   if (event.type === 'user') return reduceToolResultEvent(state, event);
   if (event.type === 'plan') return reducePlanEvent(state, event);
@@ -584,6 +598,7 @@ function reduceResultEvent(state: RunState, event: AgentEvent): RunState {
   // freezing the card at "⏳ 等待进程退出" for the entire run duration.
   // sessionId is set by system.init; undefined means init hasn't arrived yet.
   if (state.sessionId === undefined) return state;
+  const withFinalAnswer = promoteFinalAnswer(state, 'inferred');
   const resultEvent = event as ResultEvent;
   const incomingSubtype = event.subtype;
   const incomingErrorMsg =
@@ -592,26 +607,76 @@ function reduceResultEvent(state: RunState, event: AgentEvent): RunState {
   // 合并 subtype：error 优先，其次 interrupted（任一为 error 即 error；
   // 否则任一为 interrupted 即 interrupted；interrupted 不得并入 success）。
   const mergedSubtype: 'success' | 'error' | 'interrupted' =
-    state.resultSubtype === 'error' || incomingSubtype === 'error'
+    withFinalAnswer.resultSubtype === 'error' || incomingSubtype === 'error'
       ? 'error'
-      : state.resultSubtype === 'interrupted' || incomingSubtype === 'interrupted'
+      : withFinalAnswer.resultSubtype === 'interrupted' || incomingSubtype === 'interrupted'
         ? 'interrupted'
         : 'success';
   // 合并 errorMsg：首个非 undefined 胜出（existing ?? incoming）
-  const mergedErrorMsg = state.errorMsg ?? incomingErrorMsg;
+  const mergedErrorMsg = withFinalAnswer.errorMsg ?? incomingErrorMsg;
 
   return {
-    ...state,
+    ...withFinalAnswer,
     terminal: 'finalizing',
     footer: null,
-    blocks: markThinkingInactive(state.blocks),
+    blocks: markThinkingInactive(withFinalAnswer.blocks),
     resultSubtype: mergedSubtype,
     errorMsg: mergedErrorMsg,
     // costUsd：首个非 undefined 胜出（与 errorMsg 合并语义一致）
-    ...(event.total_cost_usd !== undefined && state.costUsd === undefined
+    ...(event.total_cost_usd !== undefined && withFinalAnswer.costUsd === undefined
       ? { costUsd: event.total_cost_usd }
       : {}),
   };
+}
+
+/** Record an authoritative protocol final answer and remove its progress copy. */
+function reduceFinalAnswerEvent(state: RunState, event: FinalAnswerEvent): RunState {
+  if (event.type !== 'final_answer') return state;
+  if (!event.text.trim() && !state.finalAnswer) return state;
+
+  const blocks = event.itemId
+    ? state.blocks.filter((block) => block.kind !== 'text' || block.itemId !== event.itemId)
+    : state.blocks;
+  const content = event.text.trim() ? event.text : (state.finalAnswer?.content ?? '');
+  return {
+    ...state,
+    blocks,
+    finalAnswer: {
+      content,
+      timestamp: state.finalAnswer?.timestamp ?? event.timestamp,
+      complete: event.complete ?? state.finalAnswer?.complete ?? false,
+      source: 'protocol',
+    },
+    footer: 'streaming',
+  };
+}
+
+/**
+ * Agents without an explicit final-answer marker use their last non-empty
+ * assistant text block. Moving it out of `blocks` protects it from
+ * MAX_BLOCKS and lets the renderer assign it first claim on card space.
+ */
+function promoteFinalAnswer(state: RunState, source: 'protocol' | 'inferred'): RunState {
+  if (state.finalAnswer) {
+    return state.finalAnswer.complete
+      ? state
+      : { ...state, finalAnswer: { ...state.finalAnswer, complete: true } };
+  }
+  for (let i = state.blocks.length - 1; i >= 0; i--) {
+    const block = state.blocks[i];
+    if (block.kind !== 'text' || !block.content.trim()) continue;
+    return {
+      ...state,
+      blocks: state.blocks.filter((_, index) => index !== i),
+      finalAnswer: {
+        content: block.content,
+        timestamp: block.timestamp,
+        complete: true,
+        source,
+      },
+    };
+  }
+  return state;
 }
 
 /**
@@ -893,32 +958,35 @@ export function finishRun(
   terminal: Exclude<RunTerminal, 'running' | 'finalizing'>,
   meta: FinishMeta = {},
 ): RunState {
+  const withFinalAnswer = promoteFinalAnswer(state, 'inferred');
   // 允许从 running 或 finalizing finish（/stop、idle watchdog、进程退出 finally）。
   // finalizing 是非终态（result 已收到，进程未退出），可被 finish 转终态。
   // 如果已经是终态，仍然允许补充 meta 信息（如 usage 等，bridge finally 的
   // else-if-sawResult 分支用此路径补充 token 统计）。
-  if (state.terminal !== 'running' && state.terminal !== 'finalizing') {
+  if (withFinalAnswer.terminal !== 'running' && withFinalAnswer.terminal !== 'finalizing') {
     // Already terminal: apply meta fields if provided (e.g. usage from jsonl)
     const hasMeta = Object.keys(meta).some(
       (k) => (meta as Record<string, unknown>)[k] !== undefined,
     );
-    if (!hasMeta) return state;
-    return { ...state, ...sanitizeMeta(meta) };
+    if (!hasMeta) return withFinalAnswer;
+    return { ...withFinalAnswer, ...sanitizeMeta(meta) };
   }
   // interrupted 终态的中断来源：显式传入优先；否则从顶层持久标记推导
   // （approval_expired 已置位但调用方未传 reason 的路径，如协调器过期自动
   // cancel。原因必须在终态确定，不依赖调用方记得传参）。
   const derivedReason =
     meta.interruptedReason ??
-    (terminal === 'interrupted' && state.approvalExpired === true ? 'approval_timeout' : undefined);
+    (terminal === 'interrupted' && withFinalAnswer.approvalExpired === true
+      ? 'approval_timeout'
+      : undefined);
   return {
-    ...state,
+    ...withFinalAnswer,
     terminal,
     footer: null,
     // 耗时定格：终态之后再渲染（补 token 统计、点「详情」重渲染）都沿用同一
     // 结束时刻，否则每次 patch 的数字都会变大。
-    finishedAt: state.finishedAt ?? Date.now(),
-    blocks: markThinkingInactive(state.blocks),
+    finishedAt: withFinalAnswer.finishedAt ?? Date.now(),
+    blocks: markThinkingInactive(withFinalAnswer.blocks),
     ...sanitizeMeta(meta),
     ...(derivedReason !== undefined ? { interruptedReason: derivedReason } : {}),
   };

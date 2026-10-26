@@ -61,9 +61,9 @@ describePosix('CodexAppServerRunner integration', () => {
       events.push(event);
     }
 
-    const textEvents = events.filter((e) => e.type === 'turn_diff' && 'text' in e) as Array<{
-      text: string;
-    }>;
+    const textEvents = events.filter(
+      (e) => (e.type === 'turn_diff' && 'text' in e) || e.type === 'final_answer',
+    ) as Array<{ text: string }>;
     expect(textEvents.at(-1)?.text).toBe('Hello, world!');
 
     const result = events.find((e) => e.type === 'result') as
@@ -164,21 +164,23 @@ describePosix('CodexAppServerRunner integration', () => {
 
     // 真实时序：reasoning1 → text1 → reasoning2 → command → text2
     const firstSeen: string[] = [];
-    for (const d of diffs) {
+    for (const d of events.filter(
+      (e): e is TurnDiffEvent | Extract<AgentEvent, { type: 'final_answer' }> =>
+        e.type === 'turn_diff' || e.type === 'final_answer',
+    )) {
       if (!firstSeen.includes(d.itemId)) firstSeen.push(d.itemId);
     }
     expect(firstSeen).toEqual(['item-r1', 'item-1', 'item-r2', 'item-c1', 'item-2']);
 
-    // 归约到 RunState：块顺序与真实时序一致，第二个 thinking 在底部而非顶部
+    // 归约到 RunState：进度块保持真实时序，最终回答单独保存且不受进度裁剪。
     let state = createInitialRunState('run-interleave-e2e');
-    for (const d of diffs) state = reduceRunState(state, d);
-    expect(state.blocks.map((b) => b.kind)).toEqual([
-      'thinking',
-      'text',
-      'thinking',
-      'tool',
-      'text',
-    ]);
+    for (const event of events) {
+      if (event.type === 'turn_diff' || event.type === 'final_answer') {
+        state = reduceRunState(state, event);
+      }
+    }
+    expect(state.blocks.map((b) => b.kind)).toEqual(['thinking', 'thinking', 'tool']);
+    expect(state.finalAnswer?.content).toBe('Done.');
     const thinking = state.blocks.filter((b) => b.kind === 'thinking');
     expect(thinking[0].itemId).toBe('item-r1');
     expect(thinking[0].active).toBe(false);
@@ -293,9 +295,9 @@ describePosix('CodexAppServerRunner integration', () => {
       events.push(event);
     }
 
-    const textEvents = events.filter((e) => e.type === 'turn_diff' && 'text' in e) as Array<{
-      text: string;
-    }>;
+    const textEvents = events.filter(
+      (e) => (e.type === 'turn_diff' && 'text' in e) || e.type === 'final_answer',
+    ) as Array<{ text: string }>;
     expect(textEvents.at(-1)?.text).toBe('Hello, world!');
     const result = events.find((e) => e.type === 'result') as
       (AgentEvent & { subtype: string }) | undefined;
@@ -379,9 +381,9 @@ describePosix('CodexAppServerRunner integration', () => {
     expect(results[0].session_id).toBe('th-main-1');
 
     // 本轮正文完整：run 没有被子线程的 turn/completed 提前收场
-    const textEvents = events.filter((e) => e.type === 'turn_diff' && 'text' in e) as Array<{
-      text: string;
-    }>;
+    const textEvents = events.filter(
+      (e) => (e.type === 'turn_diff' && 'text' in e) || e.type === 'final_answer',
+    ) as Array<{ text: string }>;
     expect(textEvents.at(-1)?.text).toBe('main done');
 
     // 子 agent 的内容、线程 id、token 用量都不许出现在本轮事件里

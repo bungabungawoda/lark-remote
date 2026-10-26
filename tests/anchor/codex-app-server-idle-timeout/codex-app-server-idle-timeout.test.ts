@@ -103,8 +103,8 @@ describe('Codex app-server turn idle timeout', () => {
       expect(result?.subtype).toBe('success');
 
       const textEvents = events.filter(
-        (e): e is AgentEvent & { type: 'turn_diff'; text?: string } =>
-          e.type === 'turn_diff' && 'text' in e,
+        (e): e is AgentEvent & { type: 'turn_diff' | 'final_answer'; text?: string } =>
+          (e.type === 'turn_diff' && 'text' in e) || e.type === 'final_answer',
       );
       expect(textEvents.at(-1)?.text).toBe('done');
 
