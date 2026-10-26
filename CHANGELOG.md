@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.13] - 2026-10-26
+
+### 修复
+
+- **长回合的最终回答不再被进度内容挤掉**：工具输出、思考、通知此前与最终回答共用同一份卡片预算，回合越长越容易把回答截断甚至整段挤没。现在最终回答独立保存，不受进度文本窗口和工具块上限淘汰；终态渲染先排状态、审批与操作控件，再放完整回答，剩余空间才从新到旧回填进度内容。协议带 `final_answer` 标记的（Codex app-server）直接采用，没有标记的 agent 在收尾时把最后一条非空 assistant 文本提升为最终回答，Claude、opencode、Kimi、Pi、DSH 共用同一套保护
+- **回答放不下时随后补发完整文本**：单张卡片连「最终回答 + 必要控件」都装不下时，原卡提示「最终回答较长，完整内容已随后发送」，完整回答按 UTF-8 字节边界拆成多条纯文本消息补发（优先落在换行处，单条上限 20000 字节），拼接后与原文逐字一致，不再静默截断；补发失败会在原卡给出「完整回答补发失败」的可见回执
+
+### 维护
+
+- **入口与路由/桥接层拆分为独立模块**：消息入站装配、命令实现（`ls` / `order` / `resume` / `ws`）、分页与路径校验、审批转发、用量聚合、会话回写、DSH 多路复用流各自成模块，`src/index.ts`、`src/bridge/index.ts`、`src/router/index.ts` 只保留编排职责；同时为拆分中暴露的状态竞争（中断与自然结束并发写同一张卡的终态、审批重投递、bash 卡片收尾）补上回归用例。无行为变化
+
 ## [0.5.12] - 2026-10-24
 
 ### 修复
