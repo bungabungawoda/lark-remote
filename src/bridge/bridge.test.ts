@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { Bridge } from './index.js';
+import { FINAL_ANSWER_OVERFLOW_MARKER } from '../card/run-renderer.js';
 import { ClaudeRunner } from '../runner/claude/index.js';
 import { SessionStore } from '../session/index.js';
 import { SessionReaderRegistry } from '../session/registry.js';
@@ -1120,6 +1121,37 @@ describe('Bridge.forwardToClaude', () => {
     const cardJson = JSON.stringify(connector._cards.at(-1));
     expect(cardJson).toContain('hello');
     expect(cardJson).toContain('success');
+  });
+
+  it('delivers an overflow final answer in full without silently truncating it', async () => {
+    const finalAnswer = 'HEAD\n\n' + '完整回答内容。\n'.repeat(5_000) + 'TAIL';
+    const events: AgentEvent[] = [
+      {
+        type: 'system',
+        subtype: 'init',
+        session_id: 's-final-overflow',
+        cwd: tmpDir,
+        model: 'opus',
+      },
+      { type: 'final_answer', text: finalAnswer, itemId: 'final-1', complete: true },
+      { type: 'result', subtype: 'success', session_id: 's-final-overflow' },
+    ];
+    const { bridge, sessionStore, connector } = makeBridge({
+      runner: createStubRunner({ mode: 'streaming', events }),
+    });
+    sessionStore.setCwd(ctx.userId, tmpDir);
+
+    await bridge.forwardToClaude('hello', ctx);
+
+    const textMessages = connector._sent
+      .filter((entry) => typeof (entry.input as { text?: unknown }).text === 'string')
+      .map((entry) => (entry.input as { text: string }).text);
+    expect(textMessages.length).toBeGreaterThan(1);
+    const reconstructed = textMessages
+      .map((text) => text.replace(/^完整回答（\d+\/\d+）\n\n/, ''))
+      .join('');
+    expect(reconstructed).toBe(finalAnswer);
+    expect(JSON.stringify(connector._cards.at(-1))).toContain(FINAL_ANSWER_OVERFLOW_MARKER);
   });
 
   it('syncs session and renders assistant output plus result in one card', async () => {

@@ -9,6 +9,75 @@ import {
 } from './run-state.js';
 
 describe('RunState', () => {
+  it('stores protocol final answers without applying the progress-text window', () => {
+    let state = createInitialRunState('run-final-full');
+    state = reduceRunState(state, {
+      type: 'system',
+      subtype: 'init',
+      session_id: 'session-final-full',
+    });
+    const answer = 'HEAD:' + 'F'.repeat(20_000) + ':TAIL';
+    state = reduceRunState(state, {
+      type: 'final_answer',
+      text: answer,
+      itemId: 'final-item',
+      complete: true,
+    });
+
+    expect(state.finalAnswer?.content).toBe(answer);
+    expect(state.finalAnswer?.source).toBe('protocol');
+    expect(state.blocks).toEqual([]);
+  });
+
+  it('promotes the last assistant text to the final answer when the agent has no marker', () => {
+    let state = createInitialRunState('run-final-fallback');
+    state = reduceRunState(state, {
+      type: 'system',
+      subtype: 'init',
+      session_id: 'session-final-fallback',
+    });
+    state = reduceRunState(state, {
+      type: 'assistant',
+      message: { content: [{ type: 'text', text: 'progress text' }] },
+      timestamp: '2026-10-26T12:00:00.000Z',
+    });
+    state = reduceRunState(state, {
+      type: 'assistant',
+      message: {
+        content: [
+          { type: 'tool_use', id: 'tool-1', name: 'Bash', input: { command: 'test -f result' } },
+        ],
+      },
+      timestamp: '2026-10-26T12:00:01.000Z',
+    });
+    state = reduceRunState(state, {
+      type: 'user',
+      message: {
+        content: [{ type: 'tool_result', tool_use_id: 'tool-1', content: 'ok', is_error: false }],
+      },
+      timestamp: '2026-10-26T12:00:02.000Z',
+    });
+    state = reduceRunState(state, {
+      type: 'assistant',
+      message: { content: [{ type: 'text', text: 'final answer without protocol marker' }] },
+      timestamp: '2026-10-26T12:00:03.000Z',
+    });
+    state = reduceRunState(state, {
+      type: 'result',
+      subtype: 'success',
+      session_id: 'session-final-fallback',
+    });
+
+    expect(state.finalAnswer).toMatchObject({
+      content: 'final answer without protocol marker',
+      source: 'inferred',
+      complete: true,
+    });
+    expect(
+      state.blocks.filter((block) => block.kind === 'text').map((block) => block.content),
+    ).toEqual(['progress text']);
+  });
+
   it('test_anchor_result_event_transitions_to_finalizing_not_terminal', () => {
     // 进程退出作为唯一终态触发源：result 事件只进入非终态 finalizing，
     // 不直接置 done/error。停止按钮在 finalizing 仍显示。

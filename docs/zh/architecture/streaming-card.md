@@ -73,6 +73,7 @@ Run/Bash 卡片的 CardKit 2.0 单卡流式架构说明，覆盖数据流、状�
 - `footer`: thinking | tool_running | streaming | null
 - `reasoning`
 - 有序 `blocks`: text 或 tool
+- `finalAnswer`: 协议明确标记或终态推断出的最终回答，独立于 `blocks`
 - `resultSubtype`、`errorMsg`、`idleTimeoutMinutes`
 
 事件转移：
@@ -84,7 +85,9 @@ Run/Bash 卡片的 CardKit 2.0 单卡流式架构说明，覆盖数据流、状�
 | assistant.text | 合并相邻 text，footer=streaming |
 | assistant.tool_use | 首次见 id → 新增 running tool；同 id → 原地合并 input/summary（opencode 的 tool_call_update 回填命令），footer=tool_running |
 | user.tool_result | 匹配 tool id，置 ok/error 与 output |
+| final_answer | 写入 `finalAnswer`，并从进度 blocks 移除同一 item 的流式副本 |
 | result.success / result.error | finalizing（暂存 subtype/errorMsg，非终态） |
+| result 但 agent 无 final_answer 标记 | 将最后一条非空 assistant text 提升为 `finalAnswer`（source=inferred） |
 | CLI 进程退出（for-await 结束） + 仍 finalizing | done / error（lark-remote finally transition） |
 | 非零退出或 run 抛错 | error |
 | stdout 耗尽但无 result | error |
@@ -141,16 +144,31 @@ maxGoalRounds）。goal 是**跨 turn** 的自动续跑单元：`turn/end` 之�
 
 ## 6. 长内容预算
 
-状态层先限制内存增长，渲染层再按 UTF-8 字节截断：
+最终回答优先于进度信息。终态渲染时：
+
+1. 先放状态、审批和操作按钮；
+2. 再放完整 `finalAnswer`；
+3. 有剩余空间才从新到旧回填工具、计划、思考和通知；
+4. 放不下时先省略 summary，再进入溢出通道。
+
+Codex app-server 直接消费 `agentMessage.phase = "final_answer"`。没有协议标记的
+agent 在 `result` 或终态收尾时把最后一条非空 assistant text 提升为最终回答，
+因此 Claude、opencode、Kimi、Pi 和 DSH 共用同一套保护。
+
+状态层仍对普通进度内容限制内存增长，渲染层再按 UTF-8 字节截断：
 
 - reasoning 保留有限窗口；
-- text 保留最新窗口；
+- 普通 text 保留最新窗口；`finalAnswer` 不受该窗口和 `MAX_BLOCKS` 淘汰；
 - tool input/output 截断；
 - block 总数有上限；
 - 工具块总数有上限（`MAX_BLOCKS`）；每个工具是原生折叠面板（默认一行标题），正文随卡下发并按工具数量截断；
 - 整卡目标小于 28KB，测试要求小于 30KB。
 
 预算使用 `Buffer.byteLength(..., 'utf8')`，不能使用 JavaScript 字符串 `.length` 代替。
+
+单张卡片连“最终回答 + 必要控件”都放不下时，原卡显示
+`_最终回答较长，完整内容已随后发送_`。Bridge 将完整回答按 UTF-8 字节和换行
+边界拆成多条纯文本消息；拼接后必须与原文逐字一致，不能静默截断。
 
 ## 7. 并发与停止控制
 

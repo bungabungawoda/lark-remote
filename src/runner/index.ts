@@ -41,6 +41,7 @@ export type {
   AgentRunner,
   TurnStartedEvent,
   TurnDiffEvent,
+  FinalAnswerEvent,
   NoticeEvent,
   SessionInfoEvent,
   ToolHint,
