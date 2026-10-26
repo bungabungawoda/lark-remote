@@ -143,7 +143,7 @@
     "src/workspace/workspace.test.ts",
     "src/logger/logger.test.ts",
     "src/update/**/*.test.ts",
-    "src/index-wiring.test.ts",
+    "src/message-handlers.test.ts",
     "tests/anchor/regression/cli-args.test.ts",
     "tests/anchor/regression/instance-lock-eperm.test.ts",
     "tests/anchor/regression/instance-lock-pid-reuse.test.ts",

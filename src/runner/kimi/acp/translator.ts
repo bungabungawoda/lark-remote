@@ -26,7 +26,7 @@
  *   elicitation/create             → question approval event
  */
 
-import type { ApprovalRequestedEvent, ApprovalView, UserQuestion } from '../../types.js';
+import type { ApprovalView, UserQuestion } from '../../types.js';
 import { makeQuestionApprovalEvent } from '../../question-common.js';
 import {
   ServerRequestMethod,
@@ -201,18 +201,7 @@ export class KimiAcpTranslator extends BaseAcpTranslator {
       availableDecisions: deriveAcpAvailableDecisions(params.options ?? []),
     };
 
-    return [
-      {
-        type: 'approval_requested',
-        requestId,
-        kind: 'command',
-        threadId: params.sessionId,
-        turnId: '',
-        itemId: '',
-        view,
-        timestamp: new Date().toISOString(),
-      } as ApprovalRequestedEvent,
-    ];
+    return this.approvalRequestedEvents(requestId, params.sessionId, view);
   }
 
   protected override handleOtherServerRequest(

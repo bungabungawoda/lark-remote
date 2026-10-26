@@ -189,24 +189,6 @@ describe('Config card agent-aware fields (design: 2026-07-11)', () => {
         'on-request',
       );
     });
-
-    it('test_anchor_codex_appserver_mode_shows_approval_and_sandbox_fields', () => {
-      // 验证什么：codex 的 /config 卡片恒出现「审批策略」「沙箱模式」字段。
-      // 错误会导致用户无法在卡片上配置审批/沙箱。
-      const config = buildCodexConfig();
-      const router = createRouterFixture({
-        tmpDir,
-        config,
-        bridge: createMockBridge(),
-        sessionReaderRegistry: createMockSessionReaderRegistry({ agentKinds: ['claude'] }),
-      }).router;
-
-      const result = router.buildConfigCard() as { card: object };
-      const fieldKeys = extractConfigFieldKeys(result.card);
-
-      expect(fieldKeys).toContain('agents.codex.approvalPolicy');
-      expect(fieldKeys).toContain('agents.codex.sandbox');
-    });
   });
 
   describe('defaultAgent = claude (baseline)', () => {

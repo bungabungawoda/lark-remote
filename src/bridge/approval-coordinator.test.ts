@@ -1,8 +1,8 @@
 /**
  * Tests for ApprovalCoordinator.
  *
- * 17 tests covering: constructor, onRequested, submit valid/invalid, onResolved,
- * pendingCount, onTurnEnded, togglePerm, timeout.
+ * Covers the tracking lifecycle, submissions, question answers, expiry and
+ * permission toggles.
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
@@ -137,12 +137,6 @@ describe('ApprovalCoordinator', () => {
 
   afterEach(() => {
     vi.useRealTimers();
-  });
-
-  describe('constructor', () => {
-    it('creates an instance with zero pending approvals', () => {
-      expect(coordinator.pendingCount()).toBe(0);
-    });
   });
 
   describe('onRequested', () => {
@@ -621,6 +615,86 @@ describe('ApprovalCoordinator', () => {
   }
 
   describe('AskUserQuestion answers', () => {
+    function makeTwoSingleSelectQuestionEvent(): ApprovalRequestedEvent {
+      return makeQuestionEvent({
+        view: {
+          requestId: 2001,
+          kind: 'question',
+          questions: [
+            {
+              question: 'Pick a color',
+              header: 'Color',
+              options: [{ label: 'Red' }, { label: 'Blue' }],
+            },
+            {
+              question: 'Pick a size',
+              header: 'Size',
+              options: [{ label: 'Small' }, { label: 'Large' }],
+            },
+          ],
+          availableDecisions: [],
+        },
+      });
+    }
+
+    it('auto-submits after the final single-select answer', async () => {
+      coordinator.onRequested(makeTwoSingleSelectQuestionEvent());
+
+      await coordinator.toggleAnswer(
+        { questionIndex: 0, option: 'Red' },
+        { requestId: 2001, nonce: 'single-1' },
+      );
+      expect(responder).not.toHaveBeenCalled();
+
+      await coordinator.toggleAnswer(
+        { questionIndex: 1, option: 'Large' },
+        { requestId: 2001, nonce: 'single-2' },
+      );
+
+      expect(responder).toHaveBeenCalledTimes(1);
+      expect(responder).toHaveBeenCalledWith(2001, {
+        action: 'answer',
+        answers: { 'Pick a color': 'Red', 'Pick a size': 'Large' },
+      });
+      expect(coordinator.pendingCount()).toBe(0);
+    });
+
+    it('auto-submits when custom answers complete the final single-select question', async () => {
+      coordinator.onRequested(makeTwoSingleSelectQuestionEvent());
+
+      await coordinator.answerCustom(
+        { questionIndex: 0, text: 'Purple' },
+        { requestId: 2001, nonce: 'custom-1' },
+      );
+      expect(responder).not.toHaveBeenCalled();
+
+      await coordinator.answerCustom(
+        { questionIndex: 1, text: 'Extra large' },
+        { requestId: 2001, nonce: 'custom-2' },
+      );
+
+      expect(responder).toHaveBeenCalledTimes(1);
+      expect(responder).toHaveBeenCalledWith(2001, {
+        action: 'answer',
+        answers: { 'Pick a color': 'Purple', 'Pick a size': 'Extra large' },
+      });
+      expect(coordinator.pendingCount()).toBe(0);
+    });
+
+    it('rejects submitAnswers for a single-select question', async () => {
+      coordinator.onRequested(makeQuestionEvent());
+
+      await expect(
+        coordinator.submitAnswers(
+          { questionIndex: 0 },
+          { requestId: 2001, nonce: 'single-submit' },
+        ),
+      ).rejects.toThrow('该问题为单选，请直接点击选项');
+
+      expect(responder).not.toHaveBeenCalled();
+      expect(coordinator.pendingCount()).toBe(1);
+    });
+
     it('test_anchor_single_select_auto_submits_when_all_answered', async () => {
       coordinator.onRequested(makeQuestionEvent());
 
@@ -978,6 +1052,27 @@ describe('ApprovalCoordinator', () => {
       expect(events.find((e) => e.type === 'approval_view_updated')?.view?.deliveryError).toBe(
         'server down',
       );
+    });
+
+    it('clears a stale delivery error when the same approval is retried', async () => {
+      responder.mockRejectedValueOnce(new Error('server down'));
+      coordinator.onRequested(makeCommandEvent());
+
+      await expect(
+        coordinator.submit({ action: 'accept' }, { requestId: 1001, nonce: 'retry-1' }),
+      ).rejects.toThrow('server down');
+
+      const tracked = (
+        coordinator as unknown as {
+          approvals: Map<number | string, { view: ApprovalView }>;
+        }
+      ).approvals.get(1001);
+      expect(tracked?.view.deliveryError).toBe('server down');
+
+      await coordinator.submit({ action: 'accept' }, { requestId: 1001, nonce: 'retry-1' });
+
+      expect(tracked?.view.deliveryError).toBeUndefined();
+      expect(responder).toHaveBeenCalledTimes(2);
     });
 
     it('prefers the feedback carried by the click over the stored one', async () => {

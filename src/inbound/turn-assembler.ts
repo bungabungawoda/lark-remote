@@ -280,6 +280,17 @@ export class InboundTurnAssembler {
       }
     } catch (err) {
       getLogger().error('[inbound] turn commit failed:', (err as Error)?.message ?? String(err));
+      try {
+        await this.deps.onReceipt?.(
+          ctx,
+          '⚠️ 消息处理失败，请重试；若持续失败请查看 lark-remote 日志。',
+        );
+      } catch (receiptErr) {
+        getLogger().error(
+          '[inbound] failed to report turn commit failure:',
+          (receiptErr as Error)?.message ?? String(receiptErr),
+        );
+      }
     }
   }
 }

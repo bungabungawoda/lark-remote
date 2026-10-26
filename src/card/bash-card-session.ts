@@ -102,10 +102,8 @@ export class BashCardSession extends CardSession<BashState, BashRenderOptions> {
     if (this.state.terminal !== 'running') {
       return;
     }
-    this.cancelPendingFlush();
-    // 若有 in-flight flush 正在 await updateCard，必须等它完成后再发终态 patch，
-    // 保证顺序（pre-terminal 先落地 → terminal 后落地 → terminal 胜出）。
-    if (this.flushP) await this.flushP;
+    // 终态 patch 必须排在已开始的 pre-terminal flush 之后。
+    await this.prepareTerminalUpdate();
     this.state = {
       ...this.state,
       terminal,

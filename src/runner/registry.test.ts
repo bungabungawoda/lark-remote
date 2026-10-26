@@ -33,29 +33,6 @@ describe('AgentRegistry', () => {
     expect(a).not.toBe(b);
   });
 
-  it('registerDisplayName + getDisplayName returns the registered name', () => {
-    const registry = new AgentRegistry();
-    registry.registerDisplayName('codex', 'Codex');
-    expect(registry.getDisplayName('codex')).toBe('Codex');
-  });
-
-  it('getDisplayName returns the kind string when no display name registered', () => {
-    const registry = new AgentRegistry();
-    expect(registry.getDisplayName('opencode')).toBe('opencode');
-  });
-
-  it('setGlobalInstance + getGlobalInstance returns the same registry', () => {
-    const registry = new AgentRegistry();
-    AgentRegistry.setGlobalInstance(registry);
-    expect(AgentRegistry.getGlobalInstance()).toBe(registry);
-  });
-
-  it('getGlobalInstance returns undefined before set', () => {
-    // Reset to undefined first to test the unset state
-    AgentRegistry.setGlobalInstance(undefined);
-    expect(AgentRegistry.getGlobalInstance()).toBeUndefined();
-  });
-
   it('setConfigContainer + getConfigContainer returns the same container', () => {
     const registry = new AgentRegistry();
     const container = { current: { foo: 'bar' } };

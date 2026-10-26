@@ -4,7 +4,7 @@ import { sleep } from '../common/sleep.js';
 import { isContentFilterFailure } from '../common/turn-failure.js';
 import type { AgentRegistry } from '../runner/registry.js';
 import type { SessionReaderRegistry, SessionStore } from '../session/index.js';
-import { DEFAULT_APPROVAL_TIMEOUT_MS, type AppConfig } from '../config/index.js';
+import type { AppConfig } from '../config/index.js';
 import { resolveFinalUsage, errorMessage } from './final-usage.js';
 import { getLogger } from '../logger/index.js';
 import { RunCardSession, type RunCardChannel } from '../card/run-card-session.js';
@@ -15,7 +15,7 @@ import { isRunTerminal, type RunState, type RunTerminal } from '../card/run-stat
 import { buildSessionHistoryCard } from '../router/card-helpers.js';
 import { agentDisplayName, resumeUseButton } from '../card/card-shared.js';
 import { enforceCardBudget } from '../card/card-budget.js';
-import { normalizeResultUsage } from '../runner/common/result-usage.js';
+import { RunUsageCollector } from './run-usage.js';
 import { BashProcessRunner, type BashRunner } from '../runner/index.js';
 import { AGENT_KINDS, supportsCompact, type AgentKind, type StopOutcome } from '../runner/types.js';
 import {
@@ -27,6 +27,12 @@ import {
 } from './queue-manager.js';
 import { ApprovalCoordinator, decisionToApprovalAction } from './approval-coordinator.js';
 import type { ApprovalAction, ApprovalToggleAction } from './approval-coordinator.js';
+import { createRunApprovalCoordinator, remindPendingApproval } from './run-approval.js';
+import {
+  writeBackInitSession,
+  writeBackResultSession,
+  writeBackTurnStarted,
+} from './session-writeback.js';
 import { InboundMediaHandler } from './inbound-media.js';
 import type { InboundMediaPayload } from '../connector/index.js';
 import type { MediaOutcome } from '../inbound/turn.js';
@@ -1583,60 +1589,7 @@ export class Bridge {
     // shows the real error instead of the generic "no result" fallback.
     let pendingPreInitTerminal:
       { subtype: 'error' | 'interrupted'; errorMessage?: string } | undefined;
-    // 记录 result 是否为 error: error 时跳过 jsonl usage 读取 (见 stream end 处说明)
-    let resultNotSuccess = false;
-    // Final usage read from jsonl after the run completes. live stream-json does
-    // not emit compact_boundary, so the live contextLength is unreliable.
-    let finalContextLength: number | undefined;
-    let finalContextLimit: number | undefined;
-    let finalCompactCount: number | undefined;
-    let finalCacheReadTokens: number | undefined;
-    let finalCacheCreationTokens: number | undefined;
-    let finalTotalTokens: number | undefined;
-    // Real input/output tokens captured from the live result event (codex/
-    // opencode carry them in ResultEvent.usage). Threaded to the card so the
-    // done card shows real values instead of the 10% estimate.
-    let liveInputTokens: number | undefined;
-    let liveOutputTokens: number | undefined;
-    // Real context window limit from the live result event (codex app-server
-    // carries it in ResultEvent.usage.context_limit). jsonl wins when present;
-    // live is the fallback (app-server error runs / jsonl 未落盘时).
-    let liveContextLimit: number | undefined;
-    // Final input/output for the done card: live value wins (codex/opencode
-    // carry per-run usage in the result event); jsonl is the fallback for
-    // agents whose live stream has no usage (kimi).
-    let finalInputTokens: number | undefined;
-    let finalOutputTokens: number | undefined;
-    // Session-cumulative input/output (all runs) read from jsonl; threaded to
-    // the done card's "累计" display. Always from jsonl (live has no cumulative).
-    let finalCumulativeTotalTokens: number | undefined;
-    let finalCumulativeInputTokens: number | undefined;
-    let finalCumulativeOutputTokens: number | undefined;
-    let finalCumulativeCacheReadTokens: number | undefined;
-    let finalCumulativeCacheCreationTokens: number | undefined;
-    // Reasoning tokens (pi usage.reasoning) from the live result event.
-    let finalReasoningTokens: number | undefined;
-    // 统一的 usage meta 构造（finalize 各分支共享，本方法内原先 5 处手写 11-15
-    // 字段对象；第 6 处 streamCompact 形状不同未收敛）。
-    // catch 路径需覆盖 flow 字段时在展开后覆写即可。catch error 路径亦复用此
-    // 闭包，相比旧手写对象补齐了累计 cache 字段（cumulativeCacheReadTokens/
-    // cumulativeCacheCreationTokens），属有意的口径对齐（向 done 路径看齐）。
-    const usageMeta = () => ({
-      contextLength: finalContextLength,
-      contextLimit: finalContextLimit,
-      compactCount: finalCompactCount,
-      cacheReadTokens: finalCacheReadTokens,
-      cacheCreationTokens: finalCacheCreationTokens,
-      totalTokens: finalTotalTokens,
-      inputTokens: finalInputTokens,
-      outputTokens: finalOutputTokens,
-      cumulativeTotalTokens: finalCumulativeTotalTokens,
-      cumulativeInputTokens: finalCumulativeInputTokens,
-      cumulativeOutputTokens: finalCumulativeOutputTokens,
-      cumulativeCacheReadTokens: finalCumulativeCacheReadTokens,
-      cumulativeCacheCreationTokens: finalCumulativeCacheCreationTokens,
-      reasoningTokens: finalReasoningTokens,
-    });
+    const usage = new RunUsageCollector();
 
     try {
       try {
@@ -1669,7 +1622,6 @@ export class Bridge {
         pendingApprovals: () => this.approvalCoordinators.get(runId)?.pendingCount() ?? 0,
       });
 
-      let contextLength: number | undefined;
       getLogger().info(
         `[lark-remote] runner.run() begin runId=${runId} message=${message.slice(0, 100)}`,
       );
@@ -1683,6 +1635,14 @@ export class Bridge {
       // ending (sawResult, usage capture, or cardSession.push would all
       // be wrong for the historical event).
       let sawInit = false;
+      const writeback = {
+        sessionStore: this.sessionStore,
+        userId: ctx.userId,
+        agentKind,
+        cwd,
+        sessionEpochAtStart,
+        runId,
+      };
 
       for await (const event of runner.run(message, runOpts)) {
         // 只有终态才阻止事件处理。finalizing 是非终态，应该继续处理
@@ -1696,47 +1656,7 @@ export class Bridge {
           // 本轮真实使用的 session（不可变身份）：指针在 run 中被 /new 等移动时，
           // 结束后的 usage 读取仍以它为准。
           activeRun.sessionId = event.session_id;
-          // 代际守卫：run 在途时 /new（或 new-session 卡片、/cd、/resume、
-          // /config 切换）移动了 session 指针，此 init 的写回是 stale 的——
-          // 跳过，否则 /new 的清空会被在途 run 静默撤销（2026-08-09 事故：
-          // task-notification 注入触发 Claude 重发 init，已终止的 run 被复活）。
-          const pointerMoved =
-            this.sessionStore.getSessionEpoch(ctx.userId, agentKind) !== sessionEpochAtStart;
-          if (pointerMoved) {
-            getLogger().info(
-              `[lark-remote] system.init write-back skipped: session pointer moved since run start runId=${runId} sessionId=${event.session_id}`,
-            );
-          } else {
-            // Use session's real directory from event.cwd (not runner's cwd parameter)
-            // guard empty string too -- `??` only catches null/undefined, but a
-            // translator (or older build) may emit cwd="", which must NOT overwrite
-            // the good runner cwd.
-            const hasCwd = !!this.sessionStore.getCwd(ctx.userId);
-            const realCwd = event.cwd && event.cwd.length > 0 ? event.cwd : cwd;
-            if (hasCwd && event.cwd && event.cwd !== cwd) {
-              // Session has its own cwd (e.g. EnterWorktree relocate). Keep the
-              // cwd unchanged; record the session's actual cwd in sessionCwds.
-              getLogger().info(`[lark-remote] system.init: cwd=${cwd}, session cwd=${event.cwd}`);
-              this.sessionStore.setSessionIdAndSessionCwd(
-                ctx.userId,
-                agentKind,
-                event.session_id,
-                realCwd,
-              );
-            } else {
-              // First use (no cwd yet) or event.cwd matches runner cwd:
-              // set sessionId + cwd as before; on first use also bootstrap sessionCwds.
-              const bootstrapSessionCwd =
-                !hasCwd && event.cwd && event.cwd.length > 0 ? event.cwd : undefined;
-              this.sessionStore.setSessionIdAndCwd(
-                ctx.userId,
-                agentKind,
-                event.session_id,
-                realCwd,
-                bootstrapSessionCwd,
-              );
-            }
-          }
+          writeBackInitSession(writeback, event);
           getLogger().info(
             `[lark-remote] system.init received runId=${runId} sessionId=${event.session_id} cwd=${event.cwd}`,
           );
@@ -1748,18 +1668,7 @@ export class Bridge {
           // 都新建线程（thread/start 而非 thread/resume），会话无法延续。
           // init 缺失时以 threadId 作为本轮身份兜底。
           activeRun.sessionId ??= event.threadId;
-          const pointerMoved =
-            this.sessionStore.getSessionEpoch(ctx.userId, agentKind) !== sessionEpochAtStart;
-          if (!pointerMoved) {
-            this.sessionStore.setSessionIdAndCwd(ctx.userId, agentKind, event.threadId, cwd);
-            getLogger().info(
-              `[lark-remote] turn_started session write-back runId=${runId} sessionId=${event.threadId}`,
-            );
-          } else {
-            getLogger().info(
-              `[lark-remote] turn_started write-back skipped: session pointer moved since run start runId=${runId} sessionId=${event.threadId}`,
-            );
-          }
+          writeBackTurnStarted(writeback, event);
         }
         // Track context length from compaction events
         if (
@@ -1767,7 +1676,7 @@ export class Bridge {
           event.subtype === 'compact_boundary' &&
           event.compactMetadata
         ) {
-          contextLength = event.compactMetadata.postTokens;
+          usage.observeCompaction(event.compactMetadata.postTokens);
         }
         if (event.type === 'result') {
           // Pre-init result guard: Claude CLI --resume emits a stale result
@@ -1809,7 +1718,7 @@ export class Bridge {
           if (!preInitResult) {
             sawResult = true;
           }
-          resultNotSuccess = event.subtype !== 'success';
+          usage.observeResult(event);
           getLogger().info(
             preInitResult
               ? `[lark-remote] pre-init result from live runner (app-server setup failure) runId=${runId}`
@@ -1821,92 +1730,21 @@ export class Bridge {
           // 里兜底上报。此处仅当 runner 声明 live usage（app-server）
           // 且会话指针未动时写回，避免下条消息再开一个孤儿线程。其余 agent 不在
           // 此列（它们各自有 system.init / turn_started 写回）。
-          if (
-            usageAuthority === 'live' &&
-            event.session_id &&
-            this.sessionStore.getSessionEpoch(ctx.userId, agentKind) === sessionEpochAtStart
-          ) {
-            this.sessionStore.setSessionIdAndCwd(ctx.userId, agentKind, event.session_id, cwd);
-            getLogger().info(
-              `[lark-remote] result session write-back runId=${runId} sessionId=${event.session_id}`,
-            );
-          }
-
-          // result 后进入 finalizing 非终态（暂存 subtype/errorMsg），由 for-await
-          // 自然结束后在 finally 转 done/error。提取 usage 信息。
-          if (event.usage) {
-            const u = normalizeResultUsage(event.usage);
-            // input_tokens is non-cached (ccusage-aligned), so the context
-            // length fallback must include cached tokens. Prefer the agent's
-            // declared total; otherwise reconstruct from the parts.
-            if (!contextLength) {
-              contextLength = u.contextLength;
-            }
-            // Capture real input/output for the done card (avoiding the 10%
-            // estimate in formatUsageStats). live 值优先：有 live input/output 时
-            // 所有 flow 字段统一用 live scope（本 run），避免同一张卡片上
-            // Input/Output 是本 run、Cache/Total 是 session 累计的混 scope 问题。
-            liveInputTokens = u.inputTokens;
-            liveOutputTokens = u.outputTokens;
-            liveContextLimit = u.contextLimit;
-            if (u.cacheReadTokens !== undefined) {
-              finalCacheReadTokens = u.cacheReadTokens;
-            }
-            if (u.cacheCreationTokens !== undefined) {
-              finalCacheCreationTokens = u.cacheCreationTokens;
-            }
-            if (u.totalTokens !== undefined) {
-              finalTotalTokens = u.totalTokens;
-            }
-            if (u.reasoningTokens !== undefined) {
-              finalReasoningTokens = u.reasoningTokens;
-            }
-          }
+          if (usageAuthority === 'live') writeBackResultSession(writeback, event.session_id);
         }
         // Approval events (Codex app-server mode)
         if (event.type === 'approval_requested') {
           // 审批请求到达：撤回 Typing 表情再重发，让飞书重新触发提醒，把用户
           // 注意力拉回待审批的卡片（run 在等待人工决策，Typing 应重新闪烁）。
-          void (async () => {
-            try {
-              await this.connector.removeReactionByEmoji(ctx.messageId, 'Typing');
-            } catch (err) {
-              getLogger().warn(
-                `[lark-remote] remove Typing reaction failed runId=${runId}: ${errorMessage(err)}`,
-              );
-            }
-            try {
-              await this.connector.addReaction(ctx.messageId, 'Typing');
-            } catch (err) {
-              getLogger().warn(
-                `[lark-remote] re-add Typing reaction failed runId=${runId}: ${errorMessage(err)}`,
-              );
-            }
-          })();
+          remindPendingApproval(this.connector, ctx.messageId, runId);
           let coordinator = this.approvalCoordinators.get(runId);
           if (!coordinator) {
-            coordinator = new ApprovalCoordinator({
-              // claude 审批超时走 config（claude.approvalTimeoutMs，默认 5 分钟，
-              // 对齐 codex 红线勿改短）；其他 agent 使用 config 默认值。
-              approvalTimeoutMs:
-                agentKind === 'claude'
-                  ? (this.config.claude?.approvalTimeoutMs ?? DEFAULT_APPROVAL_TIMEOUT_MS)
-                  : DEFAULT_APPROVAL_TIMEOUT_MS,
-              responder: async (requestId, response) => {
-                const r = runner as Runner & {
-                  respondApproval?: (rid: number | string, res: unknown) => Promise<void>;
-                };
-                if (typeof r.respondApproval === 'function') {
-                  await r.respondApproval(requestId, response);
-                }
-              },
-              interruptTurn: async () => {
-                // DSH may return a StopOutcome; the coordinator only awaits.
-                await runner.stop();
-              },
-              pushToCard: async (events) => {
-                for (const ev of events) await cardSession.push(ev);
-              },
+            coordinator = createRunApprovalCoordinator({
+              runner,
+              cardSession,
+              config: this.config,
+              runId,
+              agentKind,
             });
             this.approvalCoordinators.set(runId, coordinator);
             getLogger().info(
@@ -1948,7 +1786,7 @@ export class Bridge {
       // 优先级：卡片状态（本轮 init 写入）→ activeRun（本轮 init/turn_started）
       // → 本轮开始时捕获的 sessionId。三者都没有就跳过 usage，绝不回读全局指针。
       const finalSessionId = cardSession.currentState.sessionId ?? activeRun.sessionId ?? sessionId;
-      const finalUsage = resultNotSuccess
+      const finalUsage = usage.resultNotSuccess
         ? undefined
         : resolveFinalUsage(
             this.sessionReaderRegistry,
@@ -1957,43 +1795,8 @@ export class Bridge {
             cwd,
             agentKind,
           );
-      finalContextLength = finalUsage?.contextLength ?? contextLength;
-      finalContextLimit = finalUsage?.contextLimit ?? liveContextLimit;
-      finalCompactCount = finalUsage?.compactCount;
-      finalCumulativeTotalTokens = finalUsage?.cumulativeTotalTokens;
-      finalCumulativeInputTokens = finalUsage?.cumulativeInputTokens;
-      finalCumulativeOutputTokens = finalUsage?.cumulativeOutputTokens;
-      finalCumulativeCacheReadTokens = finalUsage?.cumulativeCacheReadTokens;
-      finalCumulativeCacheCreationTokens = finalUsage?.cumulativeCacheCreationTokens;
-      // 统一 flow 字段 scope：live 优先，jsonl 兜底。
-      // 当 live result 事件带了 input/output（即 liveInputTokens/liveOutputTokens
-      // 非 undefined），所有 flow 字段统一用 live scope（本 run），不用 jsonl
-      // 的 session 累计值覆盖，避免 cache%/Total 分子分母不同源。
-      // 无 live usage 时（如 kimi），jsonl 值兜底。
-      // contextLength/compactCount 保持 jsonl 优先（它们是水位/历史计数）。
-      const codexJsonlFirst = usageAuthority === 'jsonl';
-      if (!codexJsonlFirst && liveInputTokens !== undefined && liveOutputTokens !== undefined) {
-        // 非 codex 且 live 有 input/output → 所有 flow 字段用 live scope
-        finalInputTokens = liveInputTokens;
-        finalOutputTokens = liveOutputTokens;
-        // cacheReadTokens/cacheCreationTokens/totalTokens
-        // 已在上面 result 事件处理中赋了 live 值；若 live 没有则为 undefined，
-        // 由 formatUsageStats 的 max/兜底公式处理。
-      } else {
-        // codex（jsonl 优先）或无 live usage → jsonl 兜底所有 flow 字段。
-        // jsonl 的非累计字段已是末轮（本 run）scope（claude reader 修复后对齐
-        // codex `last_token_usage` 语义，见 scalarScan），不再是 session 累计；
-        // session 累计只经 cumulative* 字段透传，卡片"本 run ≤ 累计"不变量成立。
-        finalInputTokens = finalUsage?.inputTokens ?? liveInputTokens;
-        finalOutputTokens = finalUsage?.outputTokens ?? liveOutputTokens;
-        finalCacheReadTokens = finalUsage?.cacheReadTokens ?? finalCacheReadTokens;
-        finalCacheCreationTokens = finalUsage?.cacheCreationTokens ?? finalCacheCreationTokens;
-        finalTotalTokens = finalUsage?.totalTokens ?? finalTotalTokens;
-      }
-
-      getLogger().info(
-        `[lark-remote] final usage runId=${runId} contextLength=${finalContextLength} contextLimit=${finalContextLimit ?? 'undefined'} compactCount=${finalCompactCount ?? 'undefined'} cacheRead=${finalCacheReadTokens ?? 'undefined'} cacheCreate=${finalCacheCreationTokens ?? 'undefined'}`,
-      );
+      usage.finalize(finalUsage, usageAuthority);
+      getLogger().info(usage.logSummary(runId));
 
       // for-await 自然结束 = stream 关闭 = CLI 进程退出。
       // 进程退出（for-await end）= 唯一终态触发源。
@@ -2020,7 +1823,7 @@ export class Bridge {
         await cardSession.finish(terminal, {
           resultSubtype: subtype,
           errorMsg: finalState.errorMsg,
-          ...usageMeta(),
+          ...usage.meta(),
         });
       } else if (finalState.terminal === 'running') {
         if (pendingPreInitTerminal) {
@@ -2030,21 +1833,21 @@ export class Bridge {
             `[lark-remote] stream ended without init; using pre-init ${terminal} result runId=${runId} error=${pendingPreInitTerminal.errorMessage ?? '(none)'}`,
           );
           await cardSession.finish(terminal, {
-            ...usageMeta(),
+            ...usage.meta(),
             errorMsg:
               pendingPreInitTerminal.errorMessage ??
               agentDisplayName(agentKind) + (terminal === 'interrupted' ? ' 已中断' : ' 启动失败'),
           });
         } else {
           await cardSession.finish('error', {
-            ...usageMeta(),
+            ...usage.meta(),
             errorMsg: agentDisplayName(agentKind) + ' 输出流已结束，但未收到 result 事件',
           });
         }
       } else if (sawResult) {
         // 已终态（interrupted/idle_timeout）+ result 已收到：首终态优先，
         // 仅补充 usage meta（finalizing 期间被 /stop 或 idle 超时也展示 token 统计）
-        await cardSession.finish(finalState.terminal, usageMeta());
+        await cardSession.finish(finalState.terminal, usage.meta());
       }
       // else: 已终态且未收到 result（如 spawn 失败后 interrupted）-> 无 usage 可补，跳过
     } catch (err) {
@@ -2061,9 +1864,9 @@ export class Bridge {
       const catchTerminal = cardSession.currentState.terminal;
       if (catchTerminal === 'running' || catchTerminal === 'finalizing') {
         await cardSession.finish('error', {
-          ...usageMeta(),
-          inputTokens: liveInputTokens,
-          outputTokens: liveOutputTokens,
+          ...usage.meta(),
+          inputTokens: usage.liveInputTokens,
+          outputTokens: usage.liveOutputTokens,
           errorMsg: errorMessage(err),
         });
       } else {
@@ -2071,7 +1874,7 @@ export class Bridge {
           `[lark-remote] skip error finish: state already terminal (${catchTerminal}) runId=${runId}`,
         );
         if (sawResult) {
-          await cardSession.finish(catchTerminal, usageMeta());
+          await cardSession.finish(catchTerminal, usage.meta());
         }
       }
     } finally {
@@ -2351,11 +2154,7 @@ export class Bridge {
     option: string;
     nonce: string;
   }): Promise<void> {
-    const log = getLogger();
-    log.info(
-      `[lark-remote] handleApprovalAnswer runId=${opts.runId.slice(0, 8)}... requestId=${opts.requestId} question=${opts.questionIndex}`,
-    );
-    return this.withCoordinator(opts.runId, (coordinator) =>
+    return this.dispatchQuestionAction(opts, 'handleApprovalAnswer', (coordinator) =>
       coordinator.toggleAnswer(
         { questionIndex: opts.questionIndex, option: opts.option },
         { requestId: opts.requestId, nonce: opts.nonce },
@@ -2373,11 +2172,7 @@ export class Bridge {
     questionIndex: number;
     nonce: string;
   }): Promise<void> {
-    const log = getLogger();
-    log.info(
-      `[lark-remote] handleApprovalAnswerSubmit runId=${opts.runId.slice(0, 8)}... requestId=${opts.requestId} question=${opts.questionIndex}`,
-    );
-    return this.withCoordinator(opts.runId, (coordinator) =>
+    return this.dispatchQuestionAction(opts, 'handleApprovalAnswerSubmit', (coordinator) =>
       coordinator.submitAnswers(
         { questionIndex: opts.questionIndex },
         { requestId: opts.requestId, nonce: opts.nonce },
@@ -2396,11 +2191,7 @@ export class Bridge {
     text: string;
     nonce: string;
   }): Promise<void> {
-    const log = getLogger();
-    log.info(
-      `[lark-remote] handleApprovalAnswerCustom runId=${opts.runId.slice(0, 8)}... requestId=${opts.requestId} question=${opts.questionIndex}`,
-    );
-    return this.withCoordinator(opts.runId, (coordinator) =>
+    return this.dispatchQuestionAction(opts, 'handleApprovalAnswerCustom', (coordinator) =>
       coordinator.answerCustom(
         { questionIndex: opts.questionIndex, text: opts.text },
         { requestId: opts.requestId, nonce: opts.nonce },
@@ -2420,16 +2211,23 @@ export class Bridge {
     text: string;
     nonce: string;
   }): Promise<void> {
-    const log = getLogger();
-    log.info(
-      `[lark-remote] handleApprovalAnswerNote runId=${opts.runId.slice(0, 8)}... requestId=${opts.requestId} question=${opts.questionIndex}`,
-    );
-    return this.withCoordinator(opts.runId, (coordinator) =>
+    return this.dispatchQuestionAction(opts, 'handleApprovalAnswerNote', (coordinator) =>
       coordinator.answerNote(
         { questionIndex: opts.questionIndex, text: opts.text },
         { requestId: opts.requestId, nonce: opts.nonce },
       ),
     );
+  }
+
+  private dispatchQuestionAction(
+    opts: { runId: string; requestId: number | string; questionIndex: number },
+    action: string,
+    invoke: (coordinator: ApprovalCoordinator) => Promise<void>,
+  ): Promise<void> {
+    getLogger().info(
+      `[lark-remote] ${action} runId=${opts.runId.slice(0, 8)}... requestId=${opts.requestId} question=${opts.questionIndex}`,
+    );
+    return this.withCoordinator(opts.runId, invoke);
   }
 
   /**
@@ -3027,8 +2825,11 @@ export class Bridge {
             { card: renderBashCard(cardSession.currentState, {}) },
             { replyTo: ctx.messageId },
           );
-        } catch {
-          /* ignore fallback errors */
+        } catch (fallbackErr) {
+          getLogger().error(
+            `[lark-remote] bash terminal fallback card failed runId=${runId} chatId=${ctx.chatId}:`,
+            fallbackErr,
+          );
         }
       }
       if (this.activeBashRuns.has(runId)) {

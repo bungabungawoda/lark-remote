@@ -28,7 +28,6 @@
  */
 
 import type { AgentEvent, ApprovalView } from '../../types.js';
-import type { ApprovalRequestedEvent } from '../../types.js';
 import type {
   RequestPermissionParams,
   AgentMessageChunkEvent,
@@ -226,18 +225,7 @@ export class OpencodeAcpTranslator extends BaseAcpTranslator {
       availableDecisions: deriveAcpAvailableDecisions(params.options ?? []),
     };
 
-    return [
-      {
-        type: 'approval_requested',
-        requestId,
-        kind: 'command',
-        threadId: params.sessionId,
-        turnId: '',
-        itemId: '',
-        view,
-        timestamp: new Date().toISOString(),
-      } as ApprovalRequestedEvent,
-    ];
+    return this.approvalRequestedEvents(requestId, params.sessionId, view);
   }
 }
 
