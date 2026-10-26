@@ -22,6 +22,7 @@
 import type {
   AgentEvent,
   ApprovalRequestedEvent,
+  ApprovalView,
   ResultEvent,
   SessionInfoEvent,
   TurnStartedEvent,
@@ -234,6 +235,25 @@ export abstract class BaseAcpTranslator {
   produceTurnStarted(sessionId: string, turnId: string): AcpTurnStartedEvent {
     this.currentTurnId = turnId;
     return makeTurnStartedEvent(sessionId, turnId, this.operationKind);
+  }
+
+  protected approvalRequestedEvents(
+    requestId: number | string,
+    sessionId: string,
+    view: ApprovalView,
+  ): ApprovalRequestedEvent[] {
+    return [
+      {
+        type: 'approval_requested',
+        requestId,
+        kind: 'command',
+        threadId: sessionId,
+        turnId: '',
+        itemId: '',
+        view,
+        timestamp: new Date().toISOString(),
+      },
+    ];
   }
 
   /**

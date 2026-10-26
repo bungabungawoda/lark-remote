@@ -350,8 +350,12 @@ export class KimiSessionReader implements AgentSessionReader {
           try {
             state = JSON.parse(fs.readFileSync(statePath, 'utf-8')) as KimiSessionState;
             stateParsed = true;
-          } catch {
-            // Corrupt state.json — cannot determine cwd → skip below
+          } catch (err) {
+            getLogger().debug(
+              `[kimi-session-reader] corrupt state.json skipped session=${entry.sessionId}: ${
+                (err as Error)?.message ?? String(err)
+              }`,
+            );
           }
         }
 

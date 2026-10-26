@@ -186,18 +186,7 @@ export abstract class CardSession<S, RO = unknown> {
       // 二次调用也套 timeout 保护：若 controllerReady 永不 settle（首次超时失败），
       // 不能永久挂起。复用同样的 startTimeoutMs 超时。streamOutcome 已存在，
       // 不重复创建 stream。
-      let timer: NodeJS.Timeout | undefined;
-      const timeout = new Promise<never>((_, reject) => {
-        timer = setTimeout(
-          () => reject(new Error(`${this.errorPrefix} stream start timeout`)),
-          this.startTimeoutMs,
-        );
-      });
-      try {
-        await Promise.race([this.controllerReady, timeout]);
-      } finally {
-        if (timer) clearTimeout(timer);
-      }
+      await this.waitForControllerReady();
       return;
     }
     // NOTE: the two renderCard calls below are NOT redundant. The streamCard
@@ -232,18 +221,7 @@ export abstract class CardSession<S, RO = unknown> {
         return { ok: false as const, error };
       },
     );
-    let timer: NodeJS.Timeout | undefined;
-    const timeout = new Promise<never>((_, reject) => {
-      timer = setTimeout(
-        () => reject(new Error(`${this.errorPrefix} stream start timeout`)),
-        this.startTimeoutMs,
-      );
-    });
-    try {
-      await Promise.race([this.controllerReady, timeout]);
-    } finally {
-      if (timer) clearTimeout(timer);
-    }
+    await this.waitForControllerReady();
   }
 
   async settle(): Promise<StreamSettleResult> {
@@ -305,6 +283,26 @@ export abstract class CardSession<S, RO = unknown> {
         getLogger().warn(`${this.logPrefix} updateCard fallback failed:`, error);
       }
     }
+  }
+
+  private async waitForControllerReady(): Promise<void> {
+    let timer: NodeJS.Timeout | undefined;
+    const timeout = new Promise<never>((_, reject) => {
+      timer = setTimeout(
+        () => reject(new Error(`${this.errorPrefix} stream start timeout`)),
+        this.startTimeoutMs,
+      );
+    });
+    try {
+      await Promise.race([this.controllerReady, timeout]);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  }
+
+  protected async prepareTerminalUpdate(): Promise<void> {
+    this.cancelPendingFlush();
+    if (this.flushP) await this.flushP;
   }
 
   protected release(): void {

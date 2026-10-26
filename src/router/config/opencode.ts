@@ -6,6 +6,7 @@ import { loadOpencodeConfig } from '../../config/opencode-config.js';
 import type { AgentConfigCardBuilder, ConfigField } from './types.js';
 import { DEFAULT_TURN_IDLE_TIMEOUT_MINUTES, type AppConfig } from '../../config/index.js';
 import { resetModelPatch } from './common/model-patch.js';
+import { turnIdleTimeoutField } from './common/turn-idle.js';
 
 const MODE_OPTIONS = [
   { text: 'build（默认，按 opencode 权限配置）', value: 'build' },
@@ -62,12 +63,12 @@ export class OpencodeConfigBuilder implements AgentConfigCardBuilder {
     const currentTurnIdleTimeoutMinutes =
       displayConfig.agents?.opencode?.acp?.turnIdleTimeoutMinutes ??
       DEFAULT_TURN_IDLE_TIMEOUT_MINUTES;
-    fields.push({
-      key: 'agents.opencode.acp.turnIdleTimeoutMinutes',
-      label: 'Turn 空闲超时(分钟, 0关闭)',
-      type: 'input',
-      currentValue: String(currentTurnIdleTimeoutMinutes),
-    });
+    fields.push(
+      turnIdleTimeoutField(
+        'agents.opencode.acp.turnIdleTimeoutMinutes',
+        currentTurnIdleTimeoutMinutes,
+      ),
+    );
 
     return fields;
   }

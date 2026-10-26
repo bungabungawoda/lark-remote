@@ -1,4 +1,3 @@
-import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import YAML from 'yaml';
@@ -36,7 +35,6 @@ import {
   markdownDiv,
   buildSessionHistoryCard,
   paginationBar,
-  searchBar,
   parseJumpOffset,
   SEARCH_INPUT_NAME,
   PAGE_JUMP_INVALID_HINT,
@@ -64,54 +62,17 @@ import { probeAllAgents, getCachedAvailability } from '../runner/probe.js';
 import { buildConfigCardFromTabs } from './config/common/render.js';
 import type { ConfigTab } from './config/common/render.js';
 import type { ConfigField } from './config/types.js';
+import { isDirectorySafe, resolveDirectory, statPath } from './path-validation.js';
+import { pageInfo } from './paging.js';
+import { buildLsCommand, LS_PAGE_SIZE } from './commands/ls.js';
+import { buildWsCommand, WS_PAGE_SIZE } from './commands/ws.js';
+import { buildOrderCommand, ORDER_PAGE_SIZE } from './commands/order.js';
+import { buildResumeCommand, AUTO_RESUME_MAX_EVENTS, RESUME_PAGE_SIZE } from './commands/resume.js';
 
 /** Max events to read for auto-resume and /resume cards.
  * Limits events at the read stage so enforceCardBudget rarely needs to truncate.
  * Chosen to be under the 28KB card budget for typical events (~2KB each). */
-const AUTO_RESUME_MAX_EVENTS = 5;
-/** /resume 列表页大小；`/resume [N]` 的 N clamp 到 [1, RESUME_PAGE_SIZE]。 */
-const RESUME_PAGE_SIZE = 5;
 /** /active 卡片每页显示的最大条目数（agent run + bash run 合计）。 */
-/**
- * 分页算术（原先 5 处内联且 clamp 语义漂移：/ls 不 clamp、/active clamp 到
- * totalCount-1 会把过期 offset 泄漏成残页）。统一 clamp 到最后一页边界。
- */
-function pageInfo(
-  totalCount: number,
-  offset: number,
-  pageSize: number,
-): { totalPages: number; safeOffset: number; currentPage: number } {
-  const totalPages = Math.max(1, Math.ceil(totalCount / pageSize));
-  const maxOffset = Math.max(0, (totalPages - 1) * pageSize);
-  const safeOffset = clampInt(offset, 0, maxOffset);
-  const currentPage = Math.floor(safeOffset / pageSize) + 1;
-  return { totalPages, safeOffset, currentPage };
-}
-
-/** 在 pageInfo 之上切出当前页条目。 */
-function pageSlice<T>(
-  items: readonly T[],
-  offset: number,
-  pageSize: number,
-): {
-  totalCount: number;
-  totalPages: number;
-  safeOffset: number;
-  currentPage: number;
-  pageItems: T[];
-  hasPagination: boolean;
-} {
-  const { totalPages, safeOffset, currentPage } = pageInfo(items.length, offset, pageSize);
-  return {
-    totalCount: items.length,
-    totalPages,
-    safeOffset,
-    currentPage,
-    pageItems: items.slice(safeOffset, safeOffset + pageSize),
-    hasPagination: items.length > pageSize,
-  };
-}
-
 const ACTIVE_PAGE_SIZE = 20;
 
 /**
@@ -133,12 +94,6 @@ function findMergedCommandTail(message: string): string | null {
 }
 
 /** 人类可读字节数（B/KB/MB/GB）；/ls 列表与单文件卡共用。 */
-function formatBytes(bytes: number): string {
-  if (bytes < 1024) return `${bytes}B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)}KB`;
-  if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)}MB`;
-  return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)}GB`;
-}
 
 /**
  * /order 列表页大小；指令超过此数量时显示分页导航栏。
@@ -149,14 +104,11 @@ function formatBytes(bytes: number): string {
  * 从 15 降为 8：3*8 - 1 + 2 = 25 个元素，仍在余量内，同时保证手机窄屏
  * 每条指令的操作控件（执行/别名/删除）不被挤压。
  */
-const ORDER_PAGE_SIZE = 8;
 /**
  * /ws 列表页大小。从 15 降为 5：头部 2 + 5 行 × 3（div + column_set + hr）+
  * 底栏排序 1 + 分页栏 2 ≈ 20 个 body 元素，远低于单卡 60 元素上限（ErrCode 11310），
  * 留足余量。
  */
-const WS_PAGE_SIZE = 5;
-
 /**
  * 归一化卡片分页参数：clamp pageSize 到 [1,maxPageSize]，offset 归整为
  * 非负整数并对齐到页边界。非数字 payload（如 'abc'）不得产生 NaN slice。
@@ -187,27 +139,17 @@ function normalizePageArgs(
 }
 
 /** /resume 列表页内全量预取（readSessionContent）的行数上限；其余行用轻量 summary 兜底。 */
-const RESUME_CONTENT_PREFETCH = 5;
 /**
  * Reader summary 占位符（trim 后匹配）。各 reader 在"无 user 消息"时返回的
  * 兜底文案不同（claude/pi `(无摘要)`、codex `(no user message)`、kimi
  * `New Session`、空串），都不是真实输入，不得渲染成行标题。
  */
-const RESUME_SUMMARY_PLACEHOLDERS = new Set(['', '(no user message)', '(无摘要)', 'New Session']);
-
-/** 列表卡「最近输入 / 最后输出」单行预览的长度上限（中文按字符，手机约两行）。 */
-const RESUME_PREVIEW_MAX = 60;
-
 /**
  * 列表卡单行预览：压平空白、去掉反引号，再按字符截断。
  *
  * 为什么去反引号：agent 的输出里 `code` 很常见，截断点落在一对反引号中间时
  * 后半张卡片的 markdown 会被当成代码块渲染（lark_md 不闭合就不回退）。
  */
-function sessionPreviewLine(text: string, max: number): string {
-  const flat = text.replace(/`/g, '').replace(/\s+/g, ' ').trim();
-  return flat.length > max ? `${flat.slice(0, max - 1)}…` : flat;
-}
 
 /**
  * Card-action commands that must run with enqueue({ immediate: true }).
@@ -546,20 +488,6 @@ export const COMPACT_ACTION_CMDS: ReadonlySet<string> = new Set(['compact', 'res
 /** 单源：payload.offset → 钳位 offset（原先 9 处逐字副本）。 */
 function payloadOffset(value: { offset?: number }): number {
   return Math.max(0, Math.trunc(Number(value.offset) || 0));
-}
-
-/**
- * existsSync + statSync 的 TOCTOU 安全目录校验：路径在两次 syscalls 之间被删时
- * statSync 会抛错——落进 enqueueImmediate / 队列任务的静默 catch，点击/命令
- * 毫无反馈（违反「点击必有反馈」红线；同族 handleLsRefresh/Page/Filter 均已
- * try/catch 防护）。统一返回 false 走「路径无效」回复。
- */
-function isDirectorySafe(p: string): boolean {
-  try {
-    return fs.existsSync(p) && fs.statSync(p).isDirectory();
-  } catch {
-    return false;
-  }
 }
 
 /**
@@ -1545,25 +1473,17 @@ export class CommandRouter {
     const resolvedTarget = path.resolve(targetPath);
     // 与 ls.browse 对齐：目标只要存在且是目录即可切换（不再做子树/父级限制）。
     // 安全边界由 binder owner 认证兜底，见 docs/zh/architecture/design.md §9.7 更新说明。
-    if (!isDirectorySafe(resolvedTarget)) {
-      await this.bridge.sendResult({ text: `路径无效: ${resolvedTarget}` }, ctx);
-      return;
-    }
-    // Canonicalize via realpath; if the target vanished between stat and
-    // realpath (TOCTOU), reject gracefully instead of throwing.
-    let canonical: string;
-    try {
-      canonical = fs.realpathSync(resolvedTarget);
-    } catch {
+    const resolution = resolveDirectory(resolvedTarget);
+    if (!resolution.ok) {
       await this.bridge.sendResult({ text: `路径无效: ${resolvedTarget}` }, ctx);
       return;
     }
     // Set cwd + auto-resume + user notification (shared with /cd and /ws use)
-    const notifyResult = this.switchCwdAndNotify(ctx.userId, canonical, ctx);
+    const notifyResult = this.switchCwdAndNotify(ctx.userId, resolution.canonical, ctx);
     // Card channel: refresh ls card in-place (existing behavior preserved)。
     // value.root 是本次 /ls 浏览的起点（绝对路径，不受 cwd 变更影响），透传后
     // 「返回」仍回到用户最初 /ls 的那个目录。
-    const card = this.cmdLs([canonical], ctx, 0, value.root);
+    const card = this.cmdLs([resolution.canonical], ctx, 0, value.root);
     await this.bridge.updateCardInPlace(card.card!, ctx);
     // Message channel: send switch confirmation / auto-resume card to chat
     await this.bridge.sendResult(notifyResult, ctx);
@@ -1575,20 +1495,12 @@ export class CommandRouter {
   private async handleLsRefresh(value: CardActionPayload, ctx: CommandContext): Promise<void> {
     const targetPath = value.path;
     const offset = value.offset ?? 0;
-    // TOCTOU guard: existsSync → statSync can race (target
-    // deleted in between), throwing into enqueueImmediate's catch which only
-    // logs — violating the "card button clicks must give visible feedback"
-    // red line. Treat a vanished/non-dir path as "use current cwd" instead of
-    // crashing the refresh.
-    let card: CommandResult | null;
-    try {
-      card =
-        targetPath && fs.existsSync(targetPath) && fs.statSync(targetPath).isDirectory()
-          ? this.cmdLs([targetPath], ctx, offset, value.root, value.q)
-          : this.cmdLs([], ctx, offset, value.root, value.q);
-    } catch {
-      card = this.cmdLs([], ctx, offset, value.root, value.q);
-    }
+    // Treat a vanished/non-dir path as "use current cwd" instead of crashing
+    // the refresh. inspectPath closes the former existsSync→statSync race.
+    const card =
+      targetPath && isDirectorySafe(targetPath)
+        ? this.cmdLs([targetPath], ctx, offset, value.root, value.q)
+        : this.cmdLs([], ctx, offset, value.root, value.q);
     await this.bridge.updateCardInPlace(card.card!, ctx);
   }
 
@@ -1603,21 +1515,12 @@ export class CommandRouter {
     if (!targetPath) {
       return { toast: { type: 'error', content: '卡片 payload 缺少 path' } };
     }
-    const paging = this.pagingOffset(value, CommandRouter.LS_PAGE_SIZE);
+    const paging = this.pagingOffset(value, LS_PAGE_SIZE);
     if ('error' in paging) {
       return { toast: { type: 'error', content: paging.error } };
     }
     const resolvedTarget = path.resolve(targetPath);
-    // TOCTOU guard: existsSync → statSync can race; without the
-    // try/catch the throw lands in enqueueImmediate's silent .catch and the
-    // paginated card never updates (no visible feedback for the click).
-    let isDir: boolean;
-    try {
-      isDir = fs.existsSync(resolvedTarget) && fs.statSync(resolvedTarget).isDirectory();
-    } catch {
-      isDir = false;
-    }
-    if (!isDir) {
+    if (!isDirectorySafe(resolvedTarget)) {
       return { toast: { type: 'error', content: `路径无效: ${resolvedTarget}` } };
     }
     const card = this.cmdLs([resolvedTarget], ctx, paging.offset, value.root, value.q);
@@ -1643,13 +1546,7 @@ export class CommandRouter {
     }
     const q = searchQueryFrom(value);
     const resolvedTarget = path.resolve(targetPath);
-    let isDir: boolean;
-    try {
-      isDir = fs.existsSync(resolvedTarget) && fs.statSync(resolvedTarget).isDirectory();
-    } catch {
-      isDir = false;
-    }
-    if (!isDir) {
+    if (!isDirectorySafe(resolvedTarget)) {
       return { toast: { type: 'error', content: `路径无效: ${resolvedTarget}` } };
     }
     const card = this.cmdLs([resolvedTarget], ctx, 0, value.root, q);
@@ -2312,15 +2209,12 @@ export class CommandRouter {
     resolved: string,
     ctx: CommandContext,
   ): Promise<CommandResult | null> {
-    if (!fs.existsSync(resolved)) {
-      return { text: `文件不存在: ${resolved}` };
-    }
-    let stat: fs.Stats;
-    try {
-      stat = fs.statSync(resolved);
-    } catch {
+    const resolution = statPath(resolved);
+    if (!resolution.ok) {
+      if (resolution.reason === 'missing') return { text: `文件不存在: ${resolved}` };
       return { text: `无法读取: ${resolved}` };
     }
+    const { stat } = resolution;
     if (stat.isDirectory()) {
       return { text: `这是一个目录，不能作为文件发送: ${resolved}\n用 /ls 查看目录内容` };
     }
@@ -3173,39 +3067,15 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
     const expanded = target.startsWith('~') ? path.join(os.homedir(), target.slice(1)) : target;
     const resolved = path.resolve(currentCwd, expanded);
 
-    if (!fs.existsSync(resolved)) {
-      return { text: `路径不存在: ${resolved}` };
-    }
-
-    // TOCTOU：existsSync 与 statSync 之间路径被删时 statSync 抛错，会落进队列
-    // 任务的静默 catch（用户无反馈）——按路径无效回复，与下方 realpath 守卫同口径。
-    let stat: fs.Stats;
-    try {
-      stat = fs.statSync(resolved);
-    } catch {
-      return { text: `路径无效: ${resolved}` };
-    }
-    if (!stat.isDirectory()) {
-      return { text: `不是目录: ${resolved}` };
-    }
-
-    // Canonicalize via realpath so it matches the symlink-resolved cwd that
-    // Claude writes into JSONL (e.g. `/tmp` → `/private/tmp` on macOS).
-    // Without this, a hand-typed unresolved path never matches any JSONL's
-    // cwd field and the user's `/cd /tmp/foo` never finds their sessions.
-    // TOCTOU: the directory may vanish between stat and realpath.
-    // Reject gracefully instead of letting realpathSync throw into the queue
-    // task's .catch (which only logs — the user gets no feedback). Mirrors
-    // handleLsSwitch's realpath guard so /cd and ls.switch behave identically.
-    let canonical: string;
-    try {
-      canonical = fs.realpathSync(resolved);
-    } catch {
+    const resolution = resolveDirectory(resolved);
+    if (!resolution.ok) {
+      if (resolution.reason === 'missing') return { text: `路径不存在: ${resolved}` };
+      if (resolution.reason === 'not_directory') return { text: `不是目录: ${resolved}` };
       return { text: `路径无效: ${resolved}` };
     }
 
     // Switch cwd with auto-resume and user feedback (shared with /ws use and ls.switch)
-    return this.switchCwdAndNotify(ctx.userId, canonical, ctx);
+    return this.switchCwdAndNotify(ctx.userId, resolution.canonical, ctx);
   }
 
   private readSessionDisplayState(
@@ -3504,8 +3374,6 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
     return actions;
   }
 
-  private static readonly LS_PAGE_SIZE = 30;
-
   /**
    * `/ls` 实现（public：测试直接调用，替代 as unknown as）。
    *
@@ -3524,291 +3392,12 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
     rootDir?: string,
     q?: string,
   ): CommandResult {
-    const cwd = this.sessionStore.getCwd(ctx.userId);
-    if (!cwd) {
-      return { text: '请先使用 /cd <path> 设置工作目录' };
-    }
-    const filter = q?.trim() || undefined;
-
-    // args can be:
-    // - [] : list current cwd
-    // - [dirName] : list subdirectory if it exists
-    let targetDir = cwd;
-
-    if (args[0]) {
-      // Expand tilde to home directory (path.resolve does not handle ~)
-      if (args[0].startsWith('~')) {
-        args[0] = path.join(os.homedir(), args[0].slice(1));
-      }
-      // path.resolve (not path.join) so absolute args[0] is honored as-is
-      // instead of being concatenated onto cwd (which broke /ls card nav).
-      const potentialDir = path.resolve(cwd, args[0]);
-      if (!fs.existsSync(potentialDir)) {
-        return { text: `ls: ${args[0]}: No such file or directory` };
-      }
-      let isDir: boolean;
-      try {
-        isDir = fs.statSync(potentialDir).isDirectory();
-      } catch {
-        // TOCTOU：existsSync 与 statSync 之间目标被删
-        return { text: `ls: ${args[0]}: No such file or directory` };
-      }
-      if (!isDir) {
-        // 命中文件：列出该文件本身（用户可能想下载它或确认是否存在），
-        // 不再回 `ls: xxx: Not a directory` 把文件路径当错误。
-        return this.buildFileCard(potentialDir);
-      }
-      targetDir = potentialDir;
-    }
-
-    // 浏览起点（「返回」按钮的目标）：`/ls <dir>` 的起点就是该目录本身，之后
-    // 进入子目录/翻页/刷新时由卡片 payload 的 root 一路带过来。省略时 = 本次
-    // 列出的目录，因此「返回」永远不会把用户丢回工作目录。
-    const browseRoot = rootDir ? path.resolve(cwd, rootDir) : targetDir;
-
-    try {
-      const entries = fs.readdirSync(targetDir, { withFileTypes: true });
-
-      // 逐条目分类。`Dirent.isFile()/isDirectory()` 对符号链接恒 false（旧实现
-      // 因此完全不列链接）；必须 stat 解析目标。单条目 stat 失败（悬空链接、
-      // readdir 与 stat 之间被删、无权限）只让该条目降级为「大小未知」，不能
-      // 让整次列目录失败——一个坏邻居毁掉整张卡是旧实现的第二宗罪。
-      const dirs: string[] = [];
-      const files: Array<{ name: string; size?: number }> = [];
-      for (const entry of entries) {
-        let isDir = entry.isDirectory();
-        let size: number | undefined;
-        if (!isDir) {
-          try {
-            const st = fs.statSync(path.join(targetDir, entry.name));
-            isDir = st.isDirectory();
-            if (!isDir) size = st.size;
-          } catch {
-            // 目标拿不到：按文件列出，size 留空
-          }
-        }
-        if (isDir) dirs.push(entry.name);
-        else files.push({ name: entry.name, size });
-      }
-      dirs.sort((a, b) => a.localeCompare(b));
-      files.sort((a, b) => a.name.localeCompare(b.name));
-
-      // Merge dirs and files for pagination, preserving type info
-      const allItems: Array<{ name: string; isDir: boolean; size?: number }> = [
-        ...dirs.map((name) => ({ name, isDir: true })),
-        ...files.map((f) => ({ name: f.name, isDir: false, size: f.size })),
-      ];
-
-      // 关键词筛选：只匹配当前层条目名（不递归子目录）。大小写不敏感的子串包含
-      // ——禁止 new RegExp(q)（用户搜 `foo(` 会直接抛）。插在排序之后、分页之前。
-      const ql = filter?.toLowerCase();
-      const visibleItems = ql
-        ? allItems.filter((i) => i.name.toLowerCase().includes(ql))
-        : allItems;
-      const visibleDirCount = visibleItems.reduce((n, i) => n + (i.isDir ? 1 : 0), 0);
-      const visibleFileCount = visibleItems.length - visibleDirCount;
-
-      // Pagination calculations（clamp 到最后一页边界，原先不 clamp 会显示空页）
-      const { totalCount, totalPages, safeOffset, currentPage, pageItems, hasPagination } =
-        pageSlice(visibleItems, offset, CommandRouter.LS_PAGE_SIZE);
-
-      // Check if we need to show parent directory button
-      const parentDir = path.dirname(targetDir);
-      const hasParent = parentDir !== targetDir;
-      // 「切换」相对 cwd（把工作目录切到当前浏览目录）
-      const isSubdir = targetDir !== cwd;
-      // 「返回」相对浏览起点：在 `/ls <dir>` 的起点上不显示（无路可返）
-      const canReturn = targetDir !== browseRoot;
-
-      // Build header with parent button
-      const headerElements: object[] = [];
-      if (hasParent) {
-        headerElements.push(
-          cardButton(
-            '上级',
-            { cmd: 'ls.browse', path: parentDir, root: browseRoot },
-            { type: 'default', size: 'small' },
-          ),
-        );
-      }
-      // Show "返回" button when browsing away from the /ls root (回到 /ls 指定的目录)
-      if (canReturn) {
-        headerElements.push(
-          cardButton(
-            '返回',
-            { cmd: 'ls.browse', path: browseRoot, root: browseRoot },
-            { type: 'default', size: 'small' },
-          ),
-        );
-      }
-      headerElements.push(
-        cardButton(
-          '刷新',
-          {
-            cmd: 'ls.refresh',
-            path: targetDir,
-            offset: safeOffset,
-            root: browseRoot,
-            ...(filter ? { q: filter } : {}),
-          },
-          { type: 'default', size: 'small' },
-        ),
-      );
-      // Show "切换" button when viewing a subdirectory (to switch cwd to this directory)
-      if (isSubdir) {
-        headerElements.push(
-          // 切换只改 cwd，**不重置浏览起点**：root 一路带到切换后的卡片，
-          // 否则「返回」会退化成「回到刚切换到的目录」（用户反馈的缺陷）。
-          cardButton(
-            '切换',
-            { cmd: 'ls.switch', path: targetDir, root: browseRoot },
-            { type: 'primary', size: 'small' },
-          ),
-        );
-      }
-
-      // Helper to create directory button - use targetDir
-      const dirButton = (name: string): object =>
-        cardButton(
-          `📁 ${name}`,
-          { cmd: 'ls.browse', path: path.join(targetDir, name), root: browseRoot },
-          { type: 'default' },
-        );
-
-      // Helper to create file button with size - use targetDir
-      const fileButton = (name: string, size?: number): object => {
-        const sizeStr = size !== undefined ? ` (${formatBytes(size)})` : '';
-        return cardButton(
-          `📄 ${name}${sizeStr}`,
-          { cmd: 'ls.file', path: path.join(targetDir, name) },
-          { type: 'default', size: 'small' },
-        );
-      };
-
-      // Build each section's elements (no tabs - use section headers)
-      // Note: div+elements is not supported in CardKit 2.0, use column_set instead
-      const elements: object[] = [];
-
-      // Status line：只报条目构成；页码/总数交给分页栏文案行（同一信息不重复
-      // 渲染两遍——2026-09-10 分页栏改成整行文案后重复会很明显）。筛选态一律用
-      // 过滤后的计数，否则标题说 12 项、列表只有 3 项，卡片自相矛盾。
-      const status = `\n共 ${visibleDirCount} 目录, ${visibleFileCount} 文件`;
-
-      // Header info + navigation buttons - show targetDir in header
-      elements.push({ tag: 'div', text: { tag: 'lark_md', content: `\`${targetDir}\`${status}` } });
-      elements.push({
-        tag: 'column_set',
-        columns: headerElements.map((e) => ({ tag: 'column', width: 'auto', elements: [e] })),
-      });
-      elements.push({ tag: 'hr' });
-
-      // 搜索行：头部导航按钮之下、内容区之上（主导航在上、过滤紧随其后、内容区
-      // 在下）。path/root 必须进 callback value，否则提交后 handler 不知道刷哪。
-      elements.push(
-        searchBar({
-          cmd: 'ls.filter',
-          placeholder: '搜索本层目录/文件名，输完回车',
-          currentQuery: filter,
-          extra: { path: targetDir, root: browseRoot },
-        }),
-      );
-      if (filter) {
-        elements.push({
-          tag: 'div',
-          text: {
-            tag: 'lark_md',
-            content: `🔍 筛选："${filter}" · 命中 ${totalCount} 项（点「清除筛选」取消）`,
-          },
-        });
-      }
-
-      // Section 1 + 2: Directories / Files (show only items on current page)
-      const pageDirs = pageItems.filter((i) => i.isDir);
-      const pageFiles = pageItems.filter((i) => !i.isDir);
-
-      if (filter && visibleItems.length === 0) {
-        // 筛选零命中：两个区标题都不渲染（两行空区标题只是噪音），搜索行仍在，
-        // 用户可直接改词再回车，或点「清除筛选」。
-        elements.push({
-          tag: 'div',
-          text: { tag: 'lark_md', content: `🔍 无匹配条目（关键词："${filter}"）` },
-        });
-      } else {
-        elements.push({
-          tag: 'div',
-          text: { tag: 'lark_md', content: `**📂 目录 (${visibleDirCount})**` },
-        });
-        if (pageDirs.length > 0) {
-          for (const d of pageDirs) {
-            elements.push({
-              tag: 'column_set',
-              flex_mode: 'none',
-              columns: [{ tag: 'column', width: 'auto', elements: [dirButton(d.name)] }],
-            });
-          }
-        } else if (visibleDirCount === 0) {
-          elements.push({ tag: 'div', text: { tag: 'lark_md', content: '无子目录' } });
-        } else {
-          elements.push({
-            tag: 'div',
-            text: { tag: 'lark_md', content: `（第 ${currentPage} 页无目录）` },
-          });
-        }
-        elements.push({ tag: 'hr' });
-
-        // Section 2: Files
-        elements.push({
-          tag: 'div',
-          text: { tag: 'lark_md', content: `**📄 文件 (${visibleFileCount})**` },
-        });
-        if (pageFiles.length > 0) {
-          for (const f of pageFiles) {
-            elements.push({
-              tag: 'column_set',
-              flex_mode: 'none',
-              columns: [{ tag: 'column', width: 'auto', elements: [fileButton(f.name, f.size)] }],
-            });
-          }
-        } else if (visibleFileCount === 0) {
-          elements.push({ tag: 'div', text: { tag: 'lark_md', content: '无文件' } });
-        } else {
-          elements.push({
-            tag: 'div',
-            text: { tag: 'lark_md', content: `（第 ${currentPage} 页无文件）` },
-          });
-        }
-      }
-
-      // Pagination bar (only shown when there are more items than PAGE_SIZE)
-      if (hasPagination) {
-        const bar = paginationBar({
-          cmd: 'ls.page',
-          offset: safeOffset,
-          pageSize: CommandRouter.LS_PAGE_SIZE,
-          total: totalCount,
-          extra: { path: targetDir, root: browseRoot, ...(filter ? { q: filter } : {}) },
-          label: `**第 ${currentPage}/${totalPages} 页**（共 ${totalCount} 项）`,
-        });
-        elements.push({ tag: 'hr' });
-        elements.push(...bar);
-      }
-
-      return {
-        card: {
-          schema: '2.0',
-          config: { wide_screen_mode: true, update_multi: true },
-          header: {
-            title: { tag: 'plain_text', content: `📁 ${path.basename(targetDir)}` },
-            template: 'blue',
-          },
-          body: {
-            elements,
-          },
-        },
-      };
-    } catch (err) {
-      return { text: `读取目录失败: ${(err as Error).message}` };
-    }
+    return buildLsCommand(args, ctx, {
+      cwd: this.sessionStore.getCwd(ctx.userId),
+      offset,
+      rootDir,
+      q,
+    });
   }
 
   /**
@@ -3835,311 +3424,18 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
     return this.deliverFileToFeishu(path.resolve(input), ctx);
   }
 
-  /**
-   * 单文件 ls 结果卡：路径 / 大小 / 修改时间 + 「下载」+「上级」。
-   *
-   * `/ls <file>` 命中普通文件时使用——用户可能想下载该文件或确认它是否存在，
-   * 此前直接回 `ls: xxx: Not a directory` 把文件路径当成错误处理。
-   */
-  private buildFileCard(filePath: string): CommandResult {
-    let stat: fs.Stats | undefined;
-    try {
-      stat = fs.statSync(filePath);
-    } catch {
-      stat = undefined;
-    }
-    const sizeText = stat ? formatBytes(stat.size) : '未知';
-    const mtimeText = stat ? stat.mtime.toLocaleString('zh-CN', { hour12: false }) : '未知';
-
-    const parentDir = path.dirname(filePath);
-    const buttons: object[] = [
-      cardButton('📎 下载', { cmd: 'ls.file', path: filePath }, { type: 'primary', size: 'small' }),
-    ];
-    if (parentDir !== filePath) {
-      buttons.push(
-        // 浏览起点 = 文件所在目录：进入后「返回」回到这里，不回 工作目录
-        cardButton(
-          '上级',
-          { cmd: 'ls.browse', path: parentDir, root: parentDir },
-          { type: 'default', size: 'small' },
-        ),
-      );
-    }
-
-    return {
-      card: {
-        schema: '2.0',
-        config: { wide_screen_mode: true, update_multi: true },
-        header: {
-          title: { tag: 'plain_text', content: `📄 ${path.basename(filePath)}` },
-          template: 'blue',
-        },
-        body: {
-          elements: [
-            {
-              tag: 'div',
-              text: {
-                tag: 'lark_md',
-                content: `\`${filePath}\`\n文件 · 大小 ${sizeText} · 修改时间 ${mtimeText}`,
-              },
-            },
-            {
-              tag: 'column_set',
-              columns: buttons.map((b) => ({ tag: 'column', width: 'auto', elements: [b] })),
-            },
-            { tag: 'hr' },
-            {
-              tag: 'div',
-              text: { tag: 'lark_md', content: '💡 也可用 `/download <path>` 直接下载该文件' },
-            },
-          ],
-        },
-      },
-    };
-  }
-
-  /**
-   * `/ws` 实现（public：测试直接调用，替代 as unknown as，与 cmdLs 同款）。
-   *
-   * @param offset list 分支的分页起点（条目数）
-   * @param q      list 分支的关键词筛选：name 或完整 path 命中即保留，大小写
-   *               不敏感。省略/空 = 无筛选。
-   */
   cmdWs(args: string[], ctx: CommandContext, offset = 0, q?: string): CommandResult {
-    const sub = args[0]?.toLowerCase();
-
-    switch (sub) {
-      case 'save': {
-        const name = args[1];
-        if (!name) return { text: '用法: /ws save <name>' };
-        const cwd = this.sessionStore.getCwd(ctx.userId);
-        if (!cwd) return { text: '请先 /cd 设置工作目录' };
-        this.workspaceStore.save(name, cwd);
-        return { text: `已保存 workspace "${name}" -> ${cwd}` };
-      }
-      case 'use': {
-        const name = args[1];
-        if (!name) return { text: '用法: /ws use <name>' };
-        const wsPath = this.workspaceStore.get(name);
-        if (!wsPath) return { text: `workspace "${name}" 不存在` };
-        if (!fs.existsSync(wsPath)) return { text: `路径不存在: ${wsPath}` };
-        // 目录校验与 /cd、ls.switch 对齐：目录被删后同路径出现同名文件（或
-        // workspace.json 被手改）时 realpath 照样成功——放行会让下一次 run
-        // 以文件为 cwd spawn（ENOTDIR）。
-        if (!isDirectorySafe(wsPath)) return { text: `不是目录: ${wsPath}` };
-        // Canonicalize via realpath so it matches Claude JSONL cwd (2026-06-21).
-        // TOCTOU guard: mirror cmdCd — if the path vanishes
-        // between existsSync and realpath, reply gracefully instead of
-        // throwing into the queue task's silent .catch.
-        let canonical: string;
-        try {
-          canonical = fs.realpathSync(wsPath);
-        } catch {
-          return { text: `路径无效: ${wsPath}` };
-        }
-        // Record usage timestamp AFTER successful path validation
-        this.workspaceStore.touch(name);
-        // Switch cwd with auto-resume and user feedback (shared with /cd and ls.switch)
-        return this.switchCwdAndNotify(ctx.userId, canonical, ctx);
-      }
-      case 'remove': {
-        const name = args[1];
-        if (!name) return { text: '用法: /ws remove <name>' };
-        if (!this.workspaceStore.has(name)) return { text: `workspace "${name}" 不存在` };
-        this.workspaceStore.remove(name);
-        return { text: `已删除 workspace "${name}"` };
-      }
-      case 'list':
-      default: {
-        const filter = q?.trim() || undefined;
-        const entries = this.workspaceStore.list();
-        const currentCwd = this.sessionStore.getCwd(ctx.userId);
-        const sortMode = this.wsSortPreference.get(ctx.userId) ?? 'recent';
-
-        // Sort entries by the current preference (view concern, not stored)
-        if (sortMode === 'recent') {
-          // Most recently used first; same lastUsedAt → alphabetical by name (deterministic)
-          entries.sort((a, b) => {
-            if (b.lastUsedAt !== a.lastUsedAt) return b.lastUsedAt - a.lastUsedAt;
-            return a.name.localeCompare(b.name);
-          });
-        } else {
-          // Alphabetical by alias name
-          entries.sort((a, b) => a.name.localeCompare(b.name));
-        }
-
-        // 关键词筛选：alias name 或完整 path 命中即保留，大小写不敏感的子串包含
-        // （禁止 new RegExp(q)——用户搜 `foo(` 会直接抛）。插在排序之后、分页
-        // 之前：先分页再过滤会出现某页只剩 1 条的残页，且翻页时筛选像是丢了。
-        const ql = filter?.toLowerCase();
-        const visible = ql
-          ? entries.filter(
-              (e) => e.name.toLowerCase().includes(ql) || e.path.toLowerCase().includes(ql),
-            )
-          : entries;
-
-        // Pagination calculations (mirror cmdOrder): clamp stale/out-of-range
-        // offsets so prev/next always step by WS_PAGE_SIZE.
-        const {
-          totalCount,
-          totalPages,
-          safeOffset,
-          currentPage,
-          pageItems: pageEntries,
-          hasPagination,
-        } = pageSlice(visible, offset, WS_PAGE_SIZE);
-
-        // Build body elements: current cwd + cwd list with dividers
-        const bodyElements: object[] = [];
-
-        // Current working directory section
-        bodyElements.push({
-          tag: 'div',
-          text: { tag: 'lark_md', content: `📂 当前工作目录：\`${currentCwd ?? '(未设置)'}\`` },
-        });
-        bodyElements.push({ tag: 'hr' });
-
-        // 搜索行：「当前工作目录」之下、排序行之上（与 /ls 同一视觉动线：主信息
-        // 在上、过滤紧随其后、列表在下）
-        bodyElements.push(
-          searchBar({
-            cmd: 'ws.filter',
-            placeholder: '搜索名称或路径，输完回车',
-            currentQuery: filter,
-          }),
-        );
-        if (filter) {
-          bodyElements.push({
-            tag: 'div',
-            text: {
-              tag: 'lark_md',
-              content: `🔍 筛选："${filter}" · 命中 ${totalCount} 个 workspace（点「清除筛选」取消）`,
-            },
-          });
-        }
-
-        if (entries.length === 0 && !filter) {
-          bodyElements.push({
-            tag: 'div',
-            text: { tag: 'lark_md', content: '没有保存的 workspace' },
-          });
-        } else if (filter && visible.length === 0) {
-          bodyElements.push({
-            tag: 'div',
-            text: { tag: 'lark_md', content: `🔍 无匹配条目（关键词："${filter}"）` },
-          });
-        } else {
-          // Sort mode indicator + toggle button: placed above the list so the user
-          // sees "current mode" and "switch to X" before scanning entries.
-          // On narrow (mobile) screens, the label and button must convey both
-          // what-is-active and what-clicking-does to avoid ambiguity.
-          const currentLabel = sortMode === 'recent' ? '🕐 最近使用' : '🔤 字母顺序';
-          const switchLabel = sortMode === 'recent' ? '🔤 字母顺序' : '🕐 最近使用';
-          bodyElements.push({ tag: 'hr' });
-          bodyElements.push({
-            tag: 'column_set',
-            columns: [
-              {
-                tag: 'column',
-                width: 'weighted',
-                weight: 1,
-                vertical_align: 'center',
-                elements: [
-                  {
-                    tag: 'div',
-                    text: { tag: 'lark_md', content: `排序：${currentLabel}` },
-                  },
-                ],
-              },
-              {
-                tag: 'column',
-                width: 'auto',
-                elements: [
-                  cardButton(
-                    `切换为 ${switchLabel}`,
-                    { cmd: 'ws.sort', ...(filter ? { q: filter } : {}) },
-                    { type: 'default', size: 'small' },
-                  ),
-                ],
-              },
-            ],
-          });
-          bodyElements.push({ tag: 'hr' });
-
-          for (const entry of pageEntries) {
-            bodyElements.push({
-              tag: 'div',
-              text: { tag: 'lark_md', content: `**${entry.name}** → \`${entry.path}\`` },
-            });
-            // Use column_set+column for 2.0 (action tag not supported in 2.0)
-            bodyElements.push({
-              tag: 'column_set',
-              columns: [
-                {
-                  tag: 'column',
-                  width: 'auto',
-                  elements: [
-                    cardButton(
-                      '切换',
-                      {
-                        cmd: 'ws.use',
-                        name: entry.name,
-                        offset: safeOffset,
-                        ...(filter ? { q: filter } : {}),
-                      },
-                      { type: 'primary', size: 'small' },
-                    ),
-                  ],
-                },
-                {
-                  tag: 'column',
-                  width: 'auto',
-                  elements: [
-                    cardButton(
-                      '删除',
-                      {
-                        cmd: 'ws.remove',
-                        name: entry.name,
-                        offset: safeOffset,
-                        ...(filter ? { q: filter } : {}),
-                      },
-                      { type: 'danger', size: 'small' },
-                    ),
-                  ],
-                },
-              ],
-            });
-            bodyElements.push({ tag: 'hr' });
-          }
-          bodyElements.pop();
-
-          // Pagination bar — separate row below the list (not crowded with sort
-          // toggle; mobile-friendly vertical layout).
-          if (hasPagination) {
-            const bar = paginationBar({
-              cmd: 'ws.page',
-              offset: safeOffset,
-              pageSize: WS_PAGE_SIZE,
-              total: totalCount,
-              extra: filter ? { q: filter } : {},
-              label: `**${currentPage}/${totalPages}**（${totalCount}）`,
-              prevText: '⬅',
-              nextText: '➡',
-            });
-            bodyElements.push({ tag: 'hr' });
-            bodyElements.push(...bar);
-          }
-        }
-
-        const card = {
-          schema: '2.0',
-          config: { wide_screen_mode: true, update_multi: true },
-          header: { title: { tag: 'plain_text', content: 'Workspaces' } },
-          body: { elements: bodyElements },
-        };
-        return { card };
-      }
-    }
+    return buildWsCommand(args, ctx, offset, q, {
+      getCwd: (userId) => this.sessionStore.getCwd(userId),
+      saveWorkspace: (name, cwd) => this.workspaceStore.save(name, cwd),
+      getWorkspace: (name) => this.workspaceStore.get(name),
+      hasWorkspace: (name) => this.workspaceStore.has(name),
+      removeWorkspace: (name) => this.workspaceStore.remove(name),
+      touchWorkspace: (name) => this.workspaceStore.touch(name),
+      listWorkspaces: () => this.workspaceStore.list(),
+      getSortMode: (userId) => this.wsSortPreference.get(userId) ?? 'recent',
+      switchCwd: (userId, cwd, actionCtx) => this.switchCwdAndNotify(userId, cwd, actionCtx),
+    });
   }
 
   /**
@@ -4172,333 +3468,19 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
   }
 
   cmdResume(args: string[], ctx: CommandContext, offset = 0): CommandResult {
-    const entry = this.sessionStore.get(ctx.userId);
-    const cwd = entry?.cwd;
-
-    // Valid agent kinds for the /resume [agent] [N] feature
-    const VALID_AGENTS = CommandRouter.VALID_AGENTS;
-    type ValidAgent = (typeof VALID_AGENTS)[number];
-
-    // Parse arguments: /resume [agent] [N] or /resume [sessionId] or /resume [agent] [sessionId]
-    let agentKind: ValidAgent = this.config.defaultAgent as ValidAgent;
-    let limit: number | undefined;
-    let sessionIdArg: string | undefined;
-
-    if (args[0]) {
-      if (VALID_AGENTS.includes(args[0] as ValidAgent)) {
-        agentKind = args[0] as ValidAgent;
-        if (args[1]) {
-          if (/^\d+$/.test(args[1])) {
-            limit = parseInt(args[1], 10);
-          } else {
-            sessionIdArg = args[1];
-          }
-        }
-      } else if (/^\d+$/.test(args[0])) {
-        limit = parseInt(args[0], 10);
-      } else {
-        sessionIdArg = args[0];
-      }
-    }
-
-    // `/resume <sessionId>` — manually set session id (needs an existing cwd to bind to)
-    if (sessionIdArg) {
-      if (!entry || !cwd) return { text: '请先 /cd 设置工作目录' };
-
-      const reader =
-        agentKind !== this.config.defaultAgent
-          ? this.sessionReaderRegistry.get(agentKind as AgentKind)
-          : this.sessionReader;
-
-      const verifyContent = reader.readSessionContent(sessionIdArg, cwd);
-
-      // If session doesn't exist, reject the write
-      if (
-        verifyContent.events.length === 0 &&
-        !verifyContent.usage &&
-        !verifyContent.aiTitle &&
-        !verifyContent.recap &&
-        !verifyContent.displayTitle
-      ) {
-        return {
-          text: `未找到 session ${sessionIdArg}（当前目录: ${cwd}）。请确认该 session 属于此目录，或先 /cd 到正确目录。`,
-        };
-      }
-
-      // DSH preset 一致性校验（§6 风险 1）：session 的 preset 在创建时固定，
-      // 若与当前配置不符，直接复用会让后续 run 报 agent-preset-conflict。
-      // 不静默复用——明确提示用户，由用户决定是否继续（配置里手动改/清 preset）。
-      if (agentKind === 'dsh' && this.config.defaultAgent === 'dsh') {
-        const presetMismatch = this.dshPresetMismatch(reader, sessionIdArg, cwd);
-        if (presetMismatch) {
-          return {
-            text:
-              `⚠️ 该 DSH session 的 preset 是「${presetMismatch.sessionPreset}」，与当前配置「${presetMismatch.currentPreset}」不一致。\n` +
-              `preset 在 session 创建时固定，无法中途切换（DSH 返回 agent-preset-conflict）。\n` +
-              `继续恢复将在下次 run 失败。请在 /config 中把预设模式改回「${presetMismatch.sessionPreset}」后重试，或保持当前配置并发新消息新建会话。`,
-          };
-        }
-      }
-
-      // 校验通过后才写入
-      this.sessionStore.setSessionId(ctx.userId, agentKind, sessionIdArg, cwd);
-
-      const {
-        events: content,
-        usage,
-        isActive,
-        aiTitle,
-        recap,
-        displayTitle,
-        activeRunRunId,
-      } = this.readSessionDisplayState(sessionIdArg, cwd, {
-        agentKind,
-        maxEvents: AUTO_RESUME_MAX_EVENTS,
-      });
-
-      // Action buttons: stop (active) + compact (capable runner, not running) + new session
-      const actions = this.buildResumeActionButtons({
-        isActive,
-        activeRunRunId,
-        cwd,
-        compact: this.canCompactSession(agentKind, cwd)
-          ? { sessionId: sessionIdArg, agentKind }
-          : undefined,
-        newSession: true,
-      });
-
-      const card = buildSessionHistoryCard(
-        {
-          sessionId: sessionIdArg,
-          cwd,
-          displayTitle,
-          aiTitle,
-          recap,
-          events: content,
-          usage,
-        },
-        {
-          agentKind,
-          headerText: `📂 \`${cwd}\`\n会话: **${sessionIdArg}**`,
-          title: `${isActive ? '⏳ 恢复会话（完成中）' : '🔁 恢复会话'} · ${agentDisplayName(agentKind)}`,
-          usageResult: 'success',
-          emptyPlaceholder: '_该会话暂无新消息可显示（最后一条为用户输入）_',
-          actions,
-        },
-      );
-
-      return { card };
-    }
-
-    // `/resume` or `/resume list` or `/resume <N>` — list sessions for the current cwd as a card
-    // Use agentKind to select the appropriate sessionReader
-    if (!cwd) return { text: '请先 /cd 设置工作目录' };
-    const pageSize = clampInt(limit ?? RESUME_PAGE_SIZE, 1, RESUME_PAGE_SIZE);
-    let reader: AgentSessionReader;
-    // Use this.sessionReader when agentKind matches default, otherwise get from registry
-    if (agentKind === this.config.defaultAgent) {
-      reader = this.sessionReader;
-    } else {
-      reader = this.sessionReaderRegistry.get(agentKind);
-    }
-
-    // Fetch the requested page. If the offset is stale (sessions added/removed
-    // since the page was rendered), clamp it to the last valid page start and
-    // re-fetch so the card never shows a misaligned/empty page.
-    let pageOffset = offset;
-    let pageResult: { sessions: AgentSession[]; total: number };
-    try {
-      pageResult = reader.listSessions(cwd, { limit: pageSize, offset: pageOffset });
-      // 末页起点对齐页边界（(总页数-1)*pageSize，如 25 条/页 20 → offset 20），
-      // 这样越界 offset clamp 后 prev/next 仍按 pageSize 步长移动，不会错位。
-      const maxOffset = Math.max(0, Math.ceil(pageResult.total / pageSize) - 1) * pageSize;
-      if (pageOffset < 0 || pageOffset > maxOffset) {
-        pageOffset = clampInt(pageOffset, 0, maxOffset);
-        pageResult = reader.listSessions(cwd, { limit: pageSize, offset: pageOffset });
-      }
-    } catch (err) {
-      // 读取失败必须给用户可见反馈，而不是误导性的「没有 session 记录」
-      const msg = err instanceof Error ? err.message : String(err);
-      return { text: `读取 ${agentDisplayName(agentKind)} session 列表失败: ${msg}` };
-    }
-    const { sessions: allSessions, total } = pageResult;
-
-    if (allSessions.length === 0) {
-      const agentName = agentDisplayName(agentKind);
-      const hint =
-        agentKind === this.config.defaultAgent
-          ? `\n提示：可使用 /resume <agent> 切换查看其他 Agent 的 session`
-          : '';
-      return { text: `当前目录没有 ${agentName} session 记录\n${cwd}${hint}` };
-    }
-
-    // Pre-fetch aiTitle/recap/displayTitle only for the first few rows —
-    // full reads are expensive (whole-file JSONL scan). Remaining rows fall
-    // back to the lightweight summary already returned by listSessions.
-    const sessionMeta = new Map<
-      string,
-      { aiTitle?: string; recap?: string; displayTitle?: string }
-    >();
-    const prefetchCount = Math.min(RESUME_CONTENT_PREFETCH, allSessions.length);
-    for (const s of allSessions.slice(0, prefetchCount)) {
-      // 行上已经带了服务端投影预览（DSH：title + turnOutline 末条）→ 跳过预取。
-      // DSH 的 readSessionContent 每行走 3 次 unary：`session/list`（cwd 守卫）、
-      // `session/projections`（取 throughSeq）、再 `session/page`（maxMessages=10000，
-      // 拉整段历史）。按前 5 行预取等于 15 次同步 HTTP，而这些信息一次
-      // `session/list` 就已经给全了。
-      if (s.title || s.lastUserMessage || s.lastAssistantMessage) continue;
-      // 优先走轻量摘要（只取标题/用量，不构造 events）——codex 实现了
-      // readSessionSummary，避免对前 N 条各做一次全量 JSONL 解析来构造
-      // 立即被丢弃的 events 数组。其他 agent 无此方法时回退全量读取再取字段。
-      const meta = reader.readSessionSummary
-        ? reader.readSessionSummary(s.sessionId, cwd)
-        : (() => {
-            const c = reader.readSessionContent(s.sessionId, cwd);
-            return { aiTitle: c.aiTitle, recap: c.recap, displayTitle: c.displayTitle };
-          })();
-      sessionMeta.set(s.sessionId, {
-        aiTitle: meta.aiTitle,
-        recap: meta.recap,
-        displayTitle: meta.displayTitle,
-      });
-    }
-
-    const now = Date.now();
-    function formatRelativeTime(mtimeMs: number): string {
-      const diffSec = Math.floor((now - mtimeMs) / 1000);
-      if (diffSec < 60) return '刚刚';
-      if (diffSec < 3600) return `${Math.floor(diffSec / 60)} 分钟前`;
-      if (diffSec < 86400) return `${Math.floor(diffSec / 3600)} 小时前`;
-      if (diffSec < 604800) return `${Math.floor(diffSec / 86400)} 天前`;
-      return new Date(mtimeMs).toLocaleDateString('zh-CN');
-    }
-
-    const elements: object[] = [
-      {
-        tag: 'div',
-        text: { tag: 'lark_md', content: `📂 当前工作目录：\`${cwd}\`` },
-      },
-    ];
-
-    // Get current sessionId for the agent being listed
-    const currentId = entry?.sessions?.get(agentKind) ?? '';
-
-    for (const s of allSessions) {
-      // Only mark as current if we're listing the defaultAgent's sessions
-      const isCurrent = agentKind === this.config.defaultAgent && s.sessionId === currentId;
-      const timeStr = formatRelativeTime(s.mtime);
-      const buttonText = isCurrent ? '✓ 当前会话' : '恢复此会话';
-      const meta = sessionMeta.get(s.sessionId);
-      // Title priority:
-      // 1. 行级 title（服务端投影，DSH）→ 「标题」。
-      // 2. Prefetched displayTitle (aiTitle or last user message) keeps its
-      //    original label (AI 标题 / 最近输入).
-      // 3. Otherwise the lightweight summary renders under the neutral
-      //    "会话摘要" label — summary is the first user message, not the
-      //    last input, so "最近输入" would be semantically wrong.
-      // 4. Placeholder summaries (no user message) render no title section
-      //    at all — never leak '(无摘要)'/'(no user message)'/'New Session'.
-      const summaryIsPlaceholder = RESUME_SUMMARY_PLACEHOLDERS.has(s.summary.trim());
-      const prefetchedTitle = meta?.displayTitle;
-      // 行级 title 也过占位符过滤：DSH 对空会话可能给 "New Session"，旧路径
-      // 的 summary 会被挡掉，新路径如果不过滤就会把它当真实标题渲染。
-      const rowTitleRaw = s.title?.trim() ?? '';
-      const rowTitle =
-        rowTitleRaw && !RESUME_SUMMARY_PLACEHOLDERS.has(rowTitleRaw) ? rowTitleRaw : undefined;
-      // aiTitle 不能单独作为"预取标题"键：若 displayTitle 缺失（理论上 opencode
-      // info.title 非空但 export 无 user text），标题兜底是 summary，label 必须
-      // 是中性"会话摘要"而不是"最近输入"（Review 边缘分支）。
-      const titleText = prefetchedTitle ?? rowTitle ?? (summaryIsPlaceholder ? '' : s.summary);
-      const titleLabel = prefetchedTitle
-        ? meta?.aiTitle
-          ? 'AI 标题'
-          : '最近输入'
-        : rowTitle
-          ? '标题'
-          : summaryIsPlaceholder
-            ? ''
-            : '会话摘要';
-      const sections: string[] = [];
-      if (titleText) {
-        sections.push(
-          `🏷️ **${titleLabel}**\n${titleText.slice(0, 80)}${titleText.length > 80 ? '...' : ''}`,
-        );
-      }
-      if (meta?.recap) {
-        sections.push(
-          `📝 **Recap**\n${meta.recap.slice(0, 60)}${meta.recap.length > 60 ? '...' : ''}`,
-        );
-      }
-      // 行级预览（DSH 服务端投影）：最后一句我说了什么 / 最后一句它答了什么。
-      // 只对提供了字段的 reader 渲染，其他 agent 的卡片一个字都不变。
-      if (s.lastUserMessage) {
-        sections.push(
-          `✏️ **最近输入**\n${sessionPreviewLine(s.lastUserMessage, RESUME_PREVIEW_MAX)}`,
-        );
-      }
-      if (s.lastAssistantMessage) {
-        sections.push(
-          `📤 **最后输出**\n${sessionPreviewLine(s.lastAssistantMessage, RESUME_PREVIEW_MAX)}`,
-        );
-      }
-      const infoStr = sections.length > 0 ? '\n' + sections.join('\n──\n') : '';
-
-      elements.push({ tag: 'hr' });
-
-      // Both current and non-current sessions get a button for visual consistency
-      elements.push({
-        tag: 'div',
-        text: {
-          tag: 'lark_md',
-          content: `**${s.sessionId}**${infoStr}\n⏱ ${timeStr}${isCurrent ? '  •' : ''}`,
-        },
-      });
-      elements.push({
-        tag: 'column_set',
-        columns: [
-          {
-            tag: 'column',
-            width: 'auto',
-            elements: [
-              cardButton(
-                buttonText,
-                { cmd: 'resume.use', sessionId: s.sessionId, agent: agentKind },
-                { type: isCurrent ? 'default' : 'primary', disabled: isCurrent },
-              ),
-            ],
-          },
-        ],
-      });
-    }
-
-    // Pagination bar (only shown when there are more sessions than pageSize)
-    if (total > pageSize) {
-      const { totalPages, currentPage } = pageInfo(total, pageOffset, pageSize);
-
-      const bar = paginationBar({
-        cmd: 'resume.page',
-        offset: pageOffset,
-        pageSize,
-        total,
-        extra: { agent: agentKind, pageSize },
-        label: `第 ${currentPage}/${totalPages} 页 · 共 ${total} 个会话`,
-      });
-      elements.push({ tag: 'hr' });
-      elements.push(...bar);
-    }
-
-    const card = {
-      schema: '2.0',
-      config: { wide_screen_mode: true },
-      header: {
-        title: {
-          tag: 'plain_text',
-          content: `🔁 恢复历史会话 · ${agentDisplayName(agentKind)}`,
-        },
-      },
-      body: { elements },
-    };
-    return { card };
+    return buildResumeCommand(args, ctx, offset, {
+      defaultAgent: this.config.defaultAgent,
+      validAgents: CommandRouter.VALID_AGENTS,
+      getSessionEntry: (userId) => this.sessionStore.get(userId),
+      setSessionId: (userId, agent, sessionId, cwd) =>
+        this.sessionStore.setSessionId(userId, agent, sessionId, cwd),
+      defaultReader: () => this.sessionReader,
+      readerFor: (agent) => this.sessionReaderRegistry.get(agent),
+      dshPresetMismatch: (reader, sessionId, cwd) => this.dshPresetMismatch(reader, sessionId, cwd),
+      readDisplay: (sessionId, cwd, opts) => this.readSessionDisplayState(sessionId, cwd, opts),
+      buildActions: (opts) => this.buildResumeActionButtons(opts),
+      canCompact: (agent, cwd) => this.canCompactSession(agent, cwd),
+    });
   }
 
   private cmdActive(_args: string[], _ctx: CommandContext, offset = 0): CommandResult {
@@ -4783,256 +3765,18 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
     return { card: buildConfigCardFromTabs(tabs, displayConfig) };
   }
 
-  /** /order 实现（public：测试直接调用，替代 as unknown as）。 */
-  cmdOrder(args: string[], _ctx: CommandContext, offset = 0): CommandResult {
-    const sub = args[0]?.toLowerCase();
-
-    // /order — list orders (CardKit 2.0 with pagination)
-    if (!sub || sub === 'list') {
-      this.orderStore.reload();
-      const allOrders = this.orderStore.get();
-
-      const elements: object[] = [];
-      if (allOrders.length === 0) {
-        elements.push({ tag: 'div', text: { tag: 'lark_md', content: '暂无指令' } });
-      } else {
-        // Pagination calculations
-        const {
-          totalCount,
-          totalPages,
-          safeOffset,
-          currentPage,
-          pageItems: pageOrders,
-          hasPagination,
-        } = pageSlice(allOrders, offset, ORDER_PAGE_SIZE);
-
-        for (let i = 0; i < pageOrders.length; i++) {
-          const order = pageOrders[i];
-          const displayText =
-            order.text.length > 100 ? order.text.slice(0, 97) + '...' : order.text;
-
-          // 文字在上方（有别名时用 `$name` 前缀标识触发词）
-          elements.push({
-            tag: 'div',
-            text: {
-              tag: 'lark_md',
-              content: order.alias ? `\`$${order.alias}\` ${displayText}` : displayText,
-            },
-          });
-
-          // 操作行：左侧别名按钮（无别名显示 ＋别名，有别名点击可改），
-          // 右侧「删除指令」按钮。两列均 weighted 1:1，跨行对齐。
-          const leftColumn: object[] = order.alias
-            ? [
-                cardButton(
-                  `$${order.alias}`,
-                  { cmd: 'order.aliasEdit', orderId: order.id, offset: safeOffset },
-                  { type: 'default', size: 'small' },
-                ),
-                cardButton(
-                  '✕',
-                  {
-                    cmd: 'order.aliasRemove',
-                    orderId: order.id,
-                    aliasName: order.alias,
-                    offset: safeOffset,
-                  },
-                  { type: 'default', size: 'small' },
-                ),
-              ]
-            : [
-                cardButton(
-                  '＋别名',
-                  { cmd: 'order.aliasEdit', orderId: order.id, offset: safeOffset },
-                  { type: 'default', size: 'small' },
-                ),
-              ];
-
-          elements.push({
-            tag: 'column_set',
-            columns: [
-              {
-                tag: 'column',
-                width: 'weighted',
-                weight: 1,
-                elements: leftColumn,
-              },
-              {
-                tag: 'column',
-                width: 'weighted',
-                weight: 1,
-                vertical_align: 'center',
-                elements: [
-                  {
-                    tag: 'column_set',
-                    columns: [
-                      {
-                        tag: 'column',
-                        width: 'auto',
-                        elements: [
-                          cardButton(
-                            '▶ 执行',
-                            { cmd: 'order.exec', orderId: order.id },
-                            { type: 'primary', size: 'small' },
-                          ),
-                        ],
-                      },
-                      {
-                        // 编辑：弹蓝色 header 输入卡（CardKit 2.0 input，回车提交），
-                        // 镜像 order.aliasEdit 流程。order.textEdit 是 control-only action
-                        // （isImmediateAction 注册），不 spawn agent。
-                        tag: 'column',
-                        width: 'auto',
-                        elements: [
-                          cardButton(
-                            '编辑',
-                            { cmd: 'order.textEdit', orderId: order.id, offset: safeOffset },
-                            { type: 'default', size: 'small' },
-                          ),
-                        ],
-                      },
-                      {
-                        tag: 'column',
-                        width: 'auto',
-                        elements: [
-                          cardButton(
-                            '删除',
-                            { cmd: 'order.delete', orderId: order.id, offset: safeOffset },
-                            { type: 'danger', size: 'small' },
-                          ),
-                        ],
-                      },
-                    ],
-                  },
-                ],
-              },
-            ],
-          });
-
-          // 非最后一项，添加分隔线
-          if (i < pageOrders.length - 1) {
-            elements.push({ tag: 'hr' });
-          }
-        }
-
-        // Pagination bar (only shown when there are more items than ORDER_PAGE_SIZE)
-        if (hasPagination) {
-          const bar = paginationBar({
-            cmd: 'order.page',
-            offset: safeOffset,
-            pageSize: ORDER_PAGE_SIZE,
-            total: totalCount,
-            label: `**第 ${currentPage}/${totalPages} 页**（共 ${totalCount} 条）`,
-          });
-          elements.push({ tag: 'hr' });
-          elements.push(...bar);
-        }
-      }
-
-      return {
-        card: {
-          schema: '2.0',
-          config: { wide_screen_mode: true, update_multi: true },
-          header: { title: { tag: 'plain_text', content: '📋 指令' }, template: 'turquoise' },
-          body: { elements },
-        },
-      };
-    }
-
-    // /order alias — CLI 别名管理（卡片是主入口，命令是备选）：
-    //   /order alias add <orderId|N> <name>   — 给某条指令绑定别名
-    //   /order alias rm <orderId|N>           — 移除某条指令的别名
-    //   /order alias list                     — 列出已绑定的别名（并入列表卡片）
-    if (sub === 'alias') {
-      const op = args[1];
-      if (op === 'add') {
-        const target = args[2];
-        const name = args[3];
-        if (!target || !name) {
-          return { text: '用法: /order alias add <orderId|序号> <别名名>' };
-        }
-        return this.cmdOrderAliasAdd(target, name);
-      }
-      if (op === 'rm') {
-        const target = args[2];
-        if (!target) {
-          return { text: '用法: /order alias rm <orderId|序号>' };
-        }
-        return this.cmdOrderAliasRemove(target);
-      }
-      if (!op || op === 'list') {
-        // 别名管理列表并入列表卡片
-        return this.cmdOrder([], _ctx, offset);
-      }
-      return {
-        text: '用法: /order alias [add <orderId|序号> <别名名> | rm <orderId|序号> | list]',
-      };
-    }
-
-    // /order save <text>
-    if (sub === 'save') {
-      const text = args.slice(1).join(' ');
-      if (!text) {
-        return { text: '用法: /order save <指令文本>' };
-      }
-      try {
-        this.orderStore.save(text);
-        return { text: `✅ 已保存指令: ${text.slice(0, 50)}${text.length > 50 ? '...' : ''}` };
-      } catch (err) {
-        return { text: `保存失败: ${(err as Error).message}` };
-      }
-    }
-
-    // /order edit <orderId|序号> <新文本> — CLI 备选路径（卡片是主入口）。
-    // 与 /order save / alias add|rm 对称；复用 resolveOrderTarget。
-    // 与卡片路径（handleOrderTextInput）对齐 trim 语义，避免「卡片 trim、CLI 不 trim」
-    // 两条入口对同一文本存出不同结果。
-    if (sub === 'edit') {
-      const target = args[1];
-      const newText = args.slice(2).join(' ').trim();
-      if (!target || !newText) {
-        return { text: '用法: /order edit <orderId|序号> <新文本>' };
-      }
-      const order = this.resolveOrderTarget(target);
-      if (!order) return { text: `指令不存在: ${target}` };
-      try {
-        this.orderStore.updateText(order.id, newText);
-        const preview = newText.length > 50 ? newText.slice(0, 50) + '...' : newText;
-        return { text: `✅ 已更新指令: ${preview}` };
-      } catch (err) {
-        return { text: `保存失败: ${(err as Error).message}` };
-      }
-    }
-
-    return {
-      text: '用法: /order [list|save <text>|edit <orderId|序号> <新文本>|alias add <orderId|序号> <别名名>|alias rm <orderId|序号>]',
-    };
+  /** /order 实现（public：测试直接调用）。 */
+  cmdOrder(args: string[], ctx: CommandContext, offset = 0): CommandResult {
+    return buildOrderCommand(args, ctx, offset, {
+      reload: () => this.orderStore.reload(),
+      list: () => this.orderStore.get(),
+      save: (text) => this.orderStore.save(text),
+      updateText: (id, text) => this.orderStore.updateText(id, text),
+      setAlias: (id, alias) => this.orderStore.setAlias(id, alias),
+      resolveTarget: (target) => this.resolveOrderTarget(target),
+    });
   }
 
-  /** /order alias add：按 orderId 或列表序号（1 基）解析目标指令并绑定别名。 */
-  private cmdOrderAliasAdd(target: string, name: string): CommandResult {
-    const order = this.resolveOrderTarget(target);
-    if (!order) return { text: `指令不存在: ${target}` };
-    try {
-      this.orderStore.setAlias(order.id, name);
-      return { text: `✅ 已给指令绑定别名 $${name}` };
-    } catch (err) {
-      return { text: `保存失败: ${(err as Error).message}` };
-    }
-  }
-
-  /** /order alias rm：按 orderId 或列表序号（1 基）移除指令的别名。 */
-  private cmdOrderAliasRemove(target: string): CommandResult {
-    const order = this.resolveOrderTarget(target);
-    if (!order) return { text: `指令不存在: ${target}` };
-    if (!order.alias) return { text: '该指令没有别名' };
-    // 先读别名名再解绑：setAlias(undefined) 会 delete 同一对象引用上的 alias 字段。
-    const aliasName = order.alias;
-    this.orderStore.setAlias(order.id, undefined);
-    return { text: `✅ 已移除别名 $${aliasName}` };
-  }
-
-  /** 将 `/order alias add|rm` 的目标解析为 order：优先 orderId 精确匹配，回退列表序号（1 基）。 */
   private resolveOrderTarget(target: string): OrderEntry | undefined {
     const all = this.orderStore.get();
     const byId = all.find((o) => o.id === target);

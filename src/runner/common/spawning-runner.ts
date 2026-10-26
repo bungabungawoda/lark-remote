@@ -463,12 +463,25 @@ export abstract class SpawningRunner {
       getLogger().info(`[${this.logTag}] killing orphan process group ${-pid}`);
       try {
         process.kill(-pid, 'SIGTERM');
-      } catch {
-        // process may have exited
+      } catch (err) {
+        const code = (err as NodeJS.ErrnoException).code;
+        if (code === 'ESRCH') {
+          getLogger().debug(`[${this.logTag}] orphan process group ${-pid} already exited`);
+        } else {
+          getLogger().warn(
+            `[${this.logTag}] killOrphan failed to signal process group ${-pid}: ${
+              (err as Error)?.message ?? String(err)
+            }`,
+          );
+        }
       }
       bestEffortUnlink(this.pidFilePath);
-    } catch {
-      // ignore
+    } catch (err) {
+      getLogger().warn(
+        `[${this.logTag}] killOrphan failed for ${this.pidFilePath}: ${
+          (err as Error)?.message ?? String(err)
+        }`,
+      );
     }
   }
 

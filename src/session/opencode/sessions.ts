@@ -686,7 +686,12 @@ export class OpencodeSessionReader implements AgentSessionReader {
 
       // Check if updated within STALE_MS
       return !isStale(entry.updated);
-    } catch {
+    } catch (err) {
+      getLogger().debug(
+        `[opencode-session-reader] isSessionActive failed session=${sessionId}: ${
+          (err as Error)?.message ?? String(err)
+        }`,
+      );
       return false;
     }
   }

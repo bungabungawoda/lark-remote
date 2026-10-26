@@ -9,7 +9,7 @@
  * out-of-band fields.
  *
  * Extracted from src/index.ts so the entry transform is behavior-testable
- * (the main() wiring itself cannot be injected, see index-wiring.test.ts).
+ * (see message-handlers.ts / message-handlers.test.ts).
  */
 
 import type { CardActionEvent } from '@larksuite/channel';

@@ -1,19 +1,13 @@
-import { AgentRegistry, type AgentKind } from '../runner/index.js';
-import { AGENT_DISPLAY_NAMES } from '../runner/types.js';
+import { AGENT_DISPLAY_NAMES, type AgentKind } from '../runner/types.js';
 
 /**
  * Display name for an agent kind in the run card header.
  *
- * Reads from the global `AgentRegistry` (set up in `index.ts` at startup)
- * when available. Falls back to a hardcoded map for callers that don't
- * wire up the registry (notably unit tests of pure render helpers).
+ * Display names are static UI labels, so the constant is the single source.
+ * Keeping a second mutable registry here made render helpers depend on startup
+ * order and forced tests to reset global state.
  */
 export function agentDisplayName(kind: string): string {
-  const globalReg = AgentRegistry.getGlobalInstance();
-  if (globalReg) {
-    return globalReg.getDisplayName(kind as AgentKind);
-  }
-  // Fallback for render helpers that run without the global registry.
   return AGENT_DISPLAY_NAMES[kind as AgentKind] ?? kind;
 }
 

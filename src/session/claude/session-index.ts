@@ -339,14 +339,24 @@ export class SessionIndex {
       try {
         st = fs.statSync(subdir);
         if (!st.isDirectory()) continue;
-      } catch {
+      } catch (err) {
+        getLogger().debug(
+          `[session-index] skipped unreadable project dir ${subdir}: ${
+            (err as Error)?.message ?? String(err)
+          }`,
+        );
         continue;
       }
 
       let files: string[];
       try {
         files = fs.readdirSync(subdir).filter((f) => f.endsWith('.jsonl'));
-      } catch {
+      } catch (err) {
+        getLogger().debug(
+          `[session-index] skipped unreadable project subdir ${subdir}: ${
+            (err as Error)?.message ?? String(err)
+          }`,
+        );
         continue;
       }
 

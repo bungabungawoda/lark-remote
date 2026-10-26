@@ -22,7 +22,6 @@ import {
   DshRunner,
 } from './runner/index.js';
 import { AgentRegistry } from './runner/registry.js';
-import { AGENT_DISPLAY_NAMES, AGENT_KINDS } from './runner/types.js';
 import { probeAllAgents } from './runner/probe.js';
 import { warmCodexCatalogCache } from './config/codex-config.js';
 import { SessionReaderRegistry, SessionStore } from './session/index.js';
@@ -34,14 +33,7 @@ import {
   KimiSessionReader,
   DshSessionReader,
 } from './session/index.js';
-import {
-  CommandRouter,
-  isImmediateAction,
-  DIRECT_RETURN_CMDS,
-  type CardActionPayload,
-  SESSION_MUTATING_ACTION_CMDS,
-  COMPACT_ACTION_CMDS,
-} from './router/index.js';
+import { CommandRouter } from './router/index.js';
 import { DshDaemon } from './runner/dsh/daemon.js';
 import { DshClient } from './runner/dsh/client.js';
 import {
@@ -49,9 +41,6 @@ import {
   dshInflightPath,
   reconcileInflightDshRuns,
 } from './runner/dsh/inflight.js';
-import { dispatchOrderExecForQueue } from './router/order-exec-dispatch.js';
-import { buildCardActionFullValue } from './router/card-action-payload.js';
-import { actionFeedbackText } from './router/card-action-feedback.js';
 import { Bridge } from './bridge/index.js';
 import { initLogger, getLogger } from './logger/index.js';
 import { StartupContactStore, sendStartupHello } from './startup-contact.js';
@@ -69,33 +58,10 @@ import {
 } from './update/index.js';
 import { classifyRejection } from './error-classification.js';
 import { WorkspaceStore } from './workspace/index.js';
-import { InboundTurnAssembler } from './inbound/turn-assembler.js';
-import { InboundAuthorizer } from './inbound/authorize.js';
-import { stripPlaceholders } from './inbound/placeholder.js';
-import type { MediaOutcome } from './inbound/turn.js';
 import { buildSessionHistoryCard, pickResumeCardEvents } from './router/card-helpers.js';
 import { newSessionButton, resumeCompactButton, agentDisplayName } from './card/card-shared.js';
-import { sleep } from './common/sleep.js';
 import path from 'node:path';
-import fs from 'node:fs';
-import { bestEffortUnlink } from './common/fs.js';
-
-/**
- * 会话变更类卡片动作执行前冲刷入站装配窗口的等待预算（ms）。flush 本身无下载
- * 在途时瞬时完成（顺序保证完整）；预算只挡「in-flight 媒体下载卡住」的场景
- * （下载超时 5 分钟/资源）——SDK 把卡片动作放进与消息共享的 per-chat 串行
- * lane 并 await 到底，无界等待会让整个 chat 停摆到下载超时。
- */
-const SESSION_MUTATING_FLUSH_BUDGET_MS = 2_000;
-
-/**
- * /stop 命令别名单源：普通消息的停止分支与 clone 活跃期拦截的排除条件
- * 共用同一判定，防止将来加别名时两处漂移。
- */
-function isStopCommand(text: string): boolean {
-  const t = text.trim().toLowerCase();
-  return t === '/stop' || t === '/t';
-}
+import { setupMessageHandlers } from './message-handlers.js';
 
 /** Session display state from readSessionContent */
 interface SessionDisplayState {
@@ -438,14 +404,6 @@ function initializeRunner(
     });
   }
 
-  // 显示名单源在 runner/types.ts 的 AGENT_DISPLAY_NAMES（启动注册与回退共用）
-  for (const kind of AGENT_KINDS) {
-    agentRegistry.registerDisplayName(kind, AGENT_DISPLAY_NAMES[kind]);
-  }
-
-  // 设置全局 registry，供 agentDisplayName 等全局函数使用
-  AgentRegistry.setGlobalInstance(agentRegistry);
-
   // Probe agent CLI availability (fire-and-forget, populates cache for /config card).
   // Don't block startup — log unavailable agents as warnings.
   probeAllAgents()
@@ -459,8 +417,8 @@ function initializeRunner(
         getLogger().info('[probe] all agent CLIs available');
       }
     })
-    .catch(() => {
-      // Probe failure is non-fatal; /config card will retry on open.
+    .catch((err: unknown) => {
+      getLogger().warn(`[probe] background probe failed: ${(err as Error).message}`);
     });
 
   // Warm the codex model catalog in the background so the first Codex /config
@@ -470,425 +428,6 @@ function initializeRunner(
   warmCodexCatalogCache();
 
   return { agentRegistry, sessionReaderRegistry };
-}
-
-/** Setup message and card action handlers. */
-function setupMessageHandlers(
-  connector: FeishuConnector,
-  router: CommandRouter,
-  bridge: Bridge,
-  sessionStore: SessionStore,
-  workspaceStore: WorkspaceStore,
-  binder: OwnerBinder,
-  logger: ReturnType<typeof getLogger>,
-  config: AppConfig,
-  cloneSession: CloneSession,
-): void {
-  // 入站统一装配器（2026-09-15）：图/文任意顺序 → 同一个 turn、同一个 prompt，
-  // 附件路径统一注入 prompt；无文本纯附件只回执（决策 2）。
-  const assembler = new InboundTurnAssembler({
-    onCommit: (turn, prompt) => {
-      // 入队时刻快照 cwd + agent/session 绑定，语义与旧路径一致
-      // （排队期间 /cd、/config 不再导致语义漂移）。
-      const messageId = turn.messageIds[turn.messageIds.length - 1] ?? '';
-      // turnMessageIds：终态收尾要覆盖本轮每一条消息（逐条挂的 Typing 得逐条撤）
-      const ctx = {
-        userId: turn.userId,
-        chatId: turn.chatId,
-        messageId,
-        turnMessageIds: turn.messageIds,
-      };
-      let cwd = sessionStore.getCwd(turn.userId) ?? '';
-      if (!cwd && workspaceStore) {
-        // 兜底取「最近使用」而非插入序首位：WorkspaceStore.list() 按 Map 插入序
-        // 返回（touch 原地改时间戳不重排），[0] 恒为最早保存的别名——触发时会把
-        // 消息静默发到最旧工作区，与「最近使用」直觉相反。
-        const recent = [...workspaceStore.list()].sort((a, b) => b.lastUsedAt - a.lastUsedAt);
-        if (recent.length > 0) cwd = recent[0].path;
-      }
-      const binding = bridge.currentBinding(turn.userId);
-      bridge.enqueue(
-        cwd,
-        async () => {
-          // allowCommandPrefix: false —— prompt 已剥离占位符，绝不再做命令分发。
-          await router.handle(prompt, ctx, {
-            cwdOverride: cwd,
-            binding,
-            allowCommandPrefix: false,
-          });
-        },
-        {
-          taskMeta: {
-            userId: turn.userId,
-            chatId: turn.chatId,
-            messageId,
-            messagePreview: prompt.slice(0, 3000),
-            binding,
-          },
-        },
-      );
-    },
-    onReceipt: async (ctx, text) => {
-      await bridge.sendResult({ text }, ctx);
-    },
-  });
-  router.setInboundFlusher(() => assembler.flushAll('flush'));
-
-  // 统一的入站授权入口（文本 + 媒体共用）：未绑定时，首条入站消息——无论
-  // 纯文本、纯媒体还是图文混合——都完成 owner 绑定并触发一次 onboarding。
-  // 媒体入口原先只做只读 isOwner 检查，新安装用户第一条消息是截图时既不绑定、
-  // 也不保存、也没有任何反馈。
-  const authorizer = new InboundAuthorizer({
-    binder,
-    onBind: (userId, chatId) => {
-      // First-run onboarding: set default cwd + send welcome + Help card.
-      // setCwd is synchronous (before returning the async send promise) so the
-      // user's next message — which will hit the `owner` branch now that
-      // startup-contact.json has been written — finds cwd already set.
-      // process.cwd() is the only sensible default: the user started
-      // lark-remote in the directory they want to work in.
-      // setCwd only when no cwd is set yet (e.g. fresh start after bind).
-      // Don't overwrite an existing cwd — the user may have already set one
-      // via /cd or a previous bind. Use realpath for canonical form (matching
-      // Claude JSONL cwd, e.g. /tmp → /private/tmp on macOS).
-      let resolvedCwd: string;
-      try {
-        resolvedCwd = fs.realpathSync(process.cwd());
-      } catch {
-        resolvedCwd = process.cwd();
-      }
-      if (!sessionStore.getCwd(userId)) {
-        sessionStore.setCwd(userId, resolvedCwd);
-      }
-
-      return (async () => {
-        try {
-          // Message 1: bind confirmation + status (combined to avoid
-          // Feishu out-of-order delivery across three separate messages).
-          await connector.sendWithRetry(chatId, {
-            text:
-              `✅ 已绑定到本账号，此后仅你可使用本应用\n` +
-              `📂 当前工作目录: \`${resolvedCwd}\`\n` +
-              `🤖 默认 Agent: ${agentDisplayName(config.defaultAgent)}\n` +
-              `💡 直接输入消息即可开始对话，或 /cd 切换目录`,
-          });
-          // Message 2: Help card.
-          // Use router.cmdHelp() + manual send (without replyTo) so the Help
-          // card appears as an independent message, not a reply to the PIN
-          // message. router.handle('/help') would set replyTo=msg.messageId
-          // (the PIN), causing the card to nest under the PIN in Feishu UI.
-          const helpResult = router.cmdHelp();
-          if (helpResult.card) {
-            await connector.sendWithRetry(chatId, { card: helpResult.card });
-          }
-        } catch (err) {
-          logger.error('[binder] onboarding send failed:', err);
-        }
-      })();
-    },
-  });
-
-  // 入站媒体（图片/文件/视频/语音/表情）：先认证后下载（修复）。
-  // connector 只上报"媒体到达"，这里先过 owner + enabled 闸门，通过后才
-  // 下载——未认证/关闭配置时不会发生任何网络下载或内存/磁盘占用。
-  // 下载是异步的：立刻把在途 promise 交给装配器（`kind: 'media'`），
-  // 保证「先图后文」不会先提交一个只含文本的 turn。
-  connector.setInboundMediaDetectedHandler((msg) => {
-    // 与文本入口共用授权：首条纯媒体也在这里完成 owner 绑定（bind_success
-    // 继续走下载 + 装配，纯媒体最终由装配器发 no-text 回执）。
-    const authorization = authorizer.authorize(msg.userId, msg.chatId);
-    if (authorization === 'rejected') {
-      logger.warn(`[media] rejected inbound media from non-owner ${msg.userId}`);
-      return;
-    }
-    // clone 状态机活跃期：一切输入归 clone 流程、不落盘附件
-    // （inbound-unified-input-design.md §5.8；文本入口有同款闸门）。静默丢弃
-    // 而非发回执——装配器的「📎 已保存」回执会与 clone 引导话术冲突，诱导
-    // 用户「说一句话」触发 clone 的婉拒回复。
-    if (cloneSession.isActive()) {
-      logger.info(`[media] dropped inbound media during clone session ${msg.messageId}`);
-      return;
-    }
-    // 读 router.config（活引用）：/config 保存后 setConfigValues 返回新对象，
-    // 启动时捕获的 config 参数会过期（修复）。
-    if (!router.config.inboundMedia.enabled) {
-      // 不静默：关闭时给 owner 明确反馈，避免发图后无任何反应。
-      // 不下载、不落盘，只进 rejected（随 turn 回执一起发出）。
-      assembler.ingest({
-        kind: 'rejected',
-        userId: msg.userId,
-        chatId: msg.chatId,
-        messageId: msg.messageId,
-        replyToMessageId: msg.replyToMessageId,
-        rawContentType: msg.rawContentType,
-        rejectedKind: 'file',
-        reason:
-          '入站媒体保存已关闭（inboundMedia.enabled: false），未保存文件。' +
-          '如需自动保存图片/文件，请开启后重试',
-      });
-      return;
-    }
-    const outcome = (async (): Promise<MediaOutcome> => {
-      const payload = await connector.downloadInboundMedia(msg, {
-        maxFileSizeMb: router.config.inboundMedia.maxFileSizeMb,
-      });
-      try {
-        return await bridge.saveInboundMedia(payload);
-      } catch (err) {
-        // save() 的正常路径会清理临时文件；这里兜底 save 进入 mkdir
-        // try 之前意外抛错的情况，避免 os.tmpdir 残留。
-        for (const item of payload.media) {
-          bestEffortUnlink(item.tempPath);
-        }
-        throw err;
-      }
-    })();
-    assembler.ingest({
-      kind: 'media',
-      userId: msg.userId,
-      chatId: msg.chatId,
-      messageId: msg.messageId,
-      replyToMessageId: msg.replyToMessageId,
-      rawContentType: msg.rawContentType,
-      outcome,
-    });
-  });
-
-  connector.setMessageHandler((msg) => {
-    // 绑定/授权闸门：仅 owner 放行；非 owner 静默丢弃；未绑定时首条消息认领。
-    // 与媒体入口共用 InboundAuthorizer：bind_success 的 onboarding 只跑一次
-    // （同一条 post 同时带图和文字时两个入口都会看到 bind_success）。
-    const decision = authorizer.authorize(msg.userId, msg.chatId);
-    if (decision === 'rejected') return;
-    // 首条消息只用于完成绑定，不转发给 agent（与旧行为一致）。
-    if (decision === 'bind_success') return;
-
-    // decision === 'owner'：正常处理（不再每条覆盖 startup-contact）
-    logger.info(`message from ${msg.userId} (${msg.rawContentType}): ${msg.content.slice(0, 100)}`);
-
-    // Add Typing reaction to indicate "still alive"
-    void connector.addReaction(msg.messageId, 'Typing');
-
-    // 复制分身流程活跃期：一切消息先经 clone 状态机（stop 命令除外，保留其
-    // 绕队列停止能力），不转发 coding agent、不进命令分发、不展开别名。
-    if (cloneSession.isActive() && !isStopCommand(msg.content)) {
-      void cloneSession
-        .handleMessage(msg.content, {
-          userId: msg.userId,
-          chatId: msg.chatId,
-          messageId: msg.messageId,
-        })
-        .catch((err: unknown) => logger.error('[clone] message handling failed:', err));
-      return;
-    }
-
-    // 别名展开：命令分发前对消息做一次 $name 展开（不递归）。
-    // `!` / `/` 开头的消息不会进入展开路径（$PATH、$HOME 等 shell 变量不受影响），
-    // 未知 $xxx 原样透传；展开结果若以 `/` 开头会自然落入命令路径。
-    const content = router.expandAliasMessage(msg.content);
-
-    if (isStopCommand(content)) {
-      void (async () => {
-        const interrupt = await bridge.interruptCurrentRunDetailed({
-          userId: msg.userId,
-          chatId: msg.chatId,
-        });
-        const ctx = { userId: msg.userId, chatId: msg.chatId, messageId: msg.messageId };
-        if (!interrupt.stopped) {
-          await bridge.sendResult({ text: '当前没有运行中的进程' }, ctx);
-        } else if ((interrupt.stoppedCount ?? 1) > 1) {
-          // 并行 workspace 时 /stop 停全部，必须让用户看到数量。
-          await bridge.sendResult(
-            { text: `✅ 已停止 ${interrupt.stoppedCount} 个运行中的任务` },
-            ctx,
-          );
-        }
-      })().catch((err: unknown) => logger.error('[control] /stop failed:', err));
-      return;
-    }
-    // 先清洗，后判语义（§5.6）：结构占位符永远不能触发命令分发。
-    // `![image](img_v3_…)` 的首字符恰好是 `!` —— 2026-09-15 事故就是这么进 shell 的。
-    const stripped = stripPlaceholders(content);
-    if (stripped.unknownTags.length > 0) {
-      logger.warn(
-        `[inbound] unknown placeholder tags stripped: ${stripped.unknownTags.join(', ')} ` +
-          `(msg_type=${msg.rawContentType})`,
-      );
-    }
-    const commandEligible =
-      msg.rawContentType === 'text' && stripped.kinds.length === 0 && stripped.clean !== '';
-
-    // 命令消息旁路装配窗口：/命令 立即执行，但必须先等窗口内已装配的内容
-    // （含在途媒体下载）提交完成。此前 `void flush()` 不等待，
-    // 有下载在途时命令会先于 commit 执行——发送在 /cd、/new 前的消息被绑定到
-    // 新 cwd/session，媒体也落到新目录。/stop 已在上面走快速路径，不受影响。
-    if (commandEligible && (stripped.clean.startsWith('/') || stripped.clean.startsWith('!'))) {
-      void (async () => {
-        await assembler.flush(msg.userId, msg.chatId, 'flush');
-        await router.handle(
-          stripped.clean,
-          {
-            userId: msg.userId,
-            chatId: msg.chatId,
-            messageId: msg.messageId,
-          },
-          { allowCommandPrefix: true },
-        );
-      })().catch((err: unknown) => logger.error('[control] command failed:', err));
-      return;
-    }
-
-    // 普通消息：进装配器，等静默期窗口到期（下载落定）后合并成一个 turn。
-    assembler.ingest({
-      kind: 'text',
-      userId: msg.userId,
-      chatId: msg.chatId,
-      messageId: msg.messageId,
-      replyToMessageId: msg.replyToMessageId,
-      rawContentType: msg.rawContentType,
-      text: stripped.clean,
-      placeholders: stripped.kinds,
-      unknownTags: stripped.unknownTags,
-    });
-  });
-
-  connector.setCardActionHandler(async (action) => {
-    // 仅已绑定的 owner 可触发卡片操作；其余静默丢弃（计数 + debug）
-    if (!binder.isOwner(action.operator.openId)) {
-      binder.recordRejectedCardAction(action.operator.openId);
-      return;
-    }
-
-    const actionValue = action.action.value as CardActionPayload | undefined;
-    if (!actionValue?.cmd) return;
-
-    logger.info(`card action: ${actionValue.cmd}`);
-
-    const userId = action.operator.openId;
-    const chatId = action.chatId;
-    const messageId = action.messageId;
-
-    // Add Typing reaction to indicate "still alive"
-    void connector.addReaction(messageId, 'Typing');
-
-    if (actionValue.cmd === 'stop') {
-      // 委托 router 的 handleCardStop（单一来源）：miss 反馈与 DSH unconfirmed
-      // 警告（「未能确认 turn 已停止，可能仍在后台运行」）都在那里。此前这里
-      // 内联只调 interruptCurrentRun——unconfirmed 反馈被丢，run 卡被翻成
-      // interrupted 却暗示干净停止；miss 文案也与 router 形成两份漂移拷贝。
-      // stop 绕串行队列的原则不变：本分支在队列分发之前直接 return。
-      void router
-        .handleCardAction({ ...actionValue, cmd: 'stop' }, { userId, chatId, messageId })
-        .catch((err: unknown) => logger.error('[control] card stop failed:', err));
-      return;
-    }
-
-    const isImmediate = isImmediateAction(actionValue.cmd);
-    const cwd = sessionStore.getCwd(userId) ?? '';
-
-    // Build full value object — spread all fields from actionValue, then merge
-    // component out-of-band fields (option/formValue/inputValue/options) where
-    // present. See card-action-payload.ts for the component-type contract.
-    const fullValue = buildCardActionFullValue(actionValue, action);
-
-    // 定序（2026-10-07）：会话 / cwd / agent 变更类卡片动作（new-session、
-    // resume.use、ls.switch、ws.use、config.save）执行前先冲刷入站装配窗口，
-    // 保证窗口内先到的文本消息在本动作之前 commit（绑定旧 session/cwd/agent）。
-    // 否则 700ms 静默窗内的消息会漂移到动作之后的新状态：例如输入「重新构建」
-    // 后立即点「新会话」，消息会落到新会话。名单以 router 单源为准。
-    //
-    // 有界等待：flush 会等 in-flight 媒体下载落定（超时 5 分钟/
-    // 资源），而 SDK 的 chatQueue.cardActions 默认 'same'——卡片动作与消息共享
-    // 同一 per-chat 串行 lane 且被 await 到底。无界等待下，一个大视频在途 +
-    // 点「新会话」= 整个 chat 的所有消息与卡片动作停摆到下载超时。超预算后
-    // 放行本动作，flush 在后台继续：窗口内仍有未落定下载时，文本 commit 可能
-    // 落到本动作之后（漂移风险收窄到「卡住的下载 + 2s 内点击」的组合，可接受；
-    // 完整解法需要把 binding 快照进装配器，见 inbound-unified-input-design.md）。
-    if (SESSION_MUTATING_ACTION_CMDS.has(actionValue.cmd)) {
-      const flushP = assembler
-        .flush(userId, chatId, 'flush')
-        .catch((err: unknown) => logger.error('[control] inbound flush failed:', err));
-      await Promise.race([flushP, sleep(SESSION_MUTATING_FLUSH_BUDGET_MS)]);
-    }
-
-    // queue.input / config.save / approval.respond / approval.toggle /
-    // approval.answer 系列返回 CardActionResponse toast 给点击用户即时反馈。
-    // 必须直接返回值 -- enqueueImmediate / enqueueConfigAction 是
-    // fire-and-forget，会吞掉返回值（answer 家族曾漏在直返列表外，
-    // 过期/重复 nonce/非法选项等错误 toast 被静默吞掉）。
-    // 审批响应尤其不能落串行队列：run 任务占用队列头直到 turn 结束，审批响应
-    // 排在后面会形成死锁（run 不结束不执行、run 结束 coordinator 已删响应空转）。
-    // order.aliasInput / order.aliasRemove / order.textInput 也返回 toast+card，
-    // 需直返避免被吞（order.textInput 曾漏在列表外，编辑卡停留在编辑界面）。
-    // approval.planFeedback 同 answer 系列：附意见的 toast 需直返 + 不落串行队列。
-    // 直返名单以 router 的 DIRECT_RETURN_CMDS 为单一来源（历史注释：
-    // order.textInput 曾漏在列表外、answer 家族曾漏在直返列表外——两份拷贝漂移）。
-    if (DIRECT_RETURN_CMDS.has(actionValue.cmd)) {
-      return router.handleCardAction(fullValue, { userId, chatId, messageId });
-    }
-
-    // order.exec → equivalent queued message (Plan A): resolve the order text
-    // at the enqueue boundary and route it through router.handle, exactly like
-    // a hand-typed message. See order-exec-dispatch.ts for the contract and
-    // why an internal key replaces the Feishu card messageId.
-    // （order.aliasEdit 是控制动作，走 enqueueImmediate 弹卡即可，不需直返。）
-    if (actionValue.cmd === 'order.exec') {
-      void dispatchOrderExecForQueue({
-        router,
-        bridge,
-        cwd,
-        orderId: actionValue.orderId,
-        ctx: { userId, chatId, messageId },
-      }).catch((err: unknown) => logger.error('[control] order.exec dispatch failed:', err));
-      return;
-    }
-
-    // 非直返命令到这里已经没有回调响应可回（enqueue* 是 fire-and-forget），
-    // handler 返回的 toast 必须显式转成持久文本，否则失败毫无反馈。
-    const forwardActionFeedback = (res: unknown) => {
-      const text = actionFeedbackText(res);
-      if (!text) return;
-      void bridge
-        .sendResult({ text }, { userId, chatId, messageId })
-        .catch((err: unknown) => logger.error('[control] card action feedback failed:', err));
-    };
-
-    if (isImmediate) {
-      bridge.enqueueImmediate(cwd, async () => {
-        const res = await router.handleCardAction(fullValue, { userId, chatId, messageId });
-        forwardActionFeedback(res);
-      });
-    } else {
-      bridge.enqueue(
-        cwd,
-        async () => {
-          const res = await router.handleCardAction(fullValue, { userId, chatId, messageId });
-          forwardActionFeedback(res);
-        },
-        {
-          taskMeta: {
-            userId,
-            chatId,
-            // 队列身份 key 必须与「这一次点击」1:1：同一张卡片可点 N 次
-            // （Compact 尤其明显），复用卡片 messageId 会让同 key 的多条排队
-            // 任务在 queuedTasks/taskIndex/queueCardMessages 三处 lookup 里互相
-            // 顶替（2026-10-08 线上：连点 Compact 三次 → 三张卡都显示「第 1 位」、
-            // 两张永久停在「等待中」，只压缩一次）。
-            messageId: router.mintQueueTaskKey('card', actionValue.cmd),
-            // 卡片 messageId 仍然要留着当回复目标：排队卡要回复到被点击的卡片，
-            // 内部 key 不是合法飞书 id（replyTo 用它会 400）。
-            feishuReplyTo: messageId,
-            messagePreview: `card action: ${actionValue.cmd}`,
-            // lane 占用者的展示类型：压缩类动作在排队卡上自报身份
-            // （「正在执行: 🗜 Compact」），并据此禁用「立即执行」。
-            kind: COMPACT_ACTION_CMDS.has(actionValue.cmd) ? 'compact' : 'command',
-            // Compact 是单向操作，排队卡不允许编辑（编辑预览无意义）。
-            editable: !COMPACT_ACTION_CMDS.has(actionValue.cmd),
-          },
-        },
-      );
-    }
-  });
 }
 
 async function main() {
@@ -996,7 +535,7 @@ async function main() {
     cloneSession,
   });
 
-  setupMessageHandlers(
+  setupMessageHandlers({
     connector,
     router,
     bridge,
@@ -1006,7 +545,7 @@ async function main() {
     logger,
     config,
     cloneSession,
-  );
+  });
 
   try {
     await connector.connect();
