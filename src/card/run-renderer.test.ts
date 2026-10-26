@@ -7,11 +7,79 @@ import {
   type RunState,
 } from './run-state.js';
 import { renderRunCard, statusLine } from './run-renderer.js';
+import { renderRunCardDetailed, FINAL_ANSWER_OVERFLOW_MARKER } from './run-renderer.js';
+import { splitFinalAnswer } from './final-answer-overflow.js';
 import { countCardElements, MAX_CARD_ELEMENTS } from './card-budget.js';
 import { displayWidth, HEADER_DISPLAY_MAX } from './tool-render.js';
 import { expectNoV1ActionContainer } from '../../tests/lib/card-view.js';
 
 describe('renderRunCard', () => {
+  it('uses an overflow channel when the final answer alone exceeds one card', () => {
+    const finalAnswer = 'A'.repeat(40_000);
+    const state = {
+      runId: 'run-final-overflow',
+      terminal: 'done' as const,
+      footer: null,
+      sessionId: 'session-final-overflow',
+      resultSubtype: 'success' as const,
+      finalAnswer: {
+        content: finalAnswer,
+        complete: true,
+        source: 'protocol' as const,
+      },
+      blocks: [],
+    } as RunState;
+
+    const outcome = renderRunCardDetailed(state);
+    expect(outcome.finalAnswerStatus).toBe('overflow');
+    expect(outcome.finalAnswerText).toBe(finalAnswer);
+    expect(JSON.stringify(outcome.card)).toContain(FINAL_ANSWER_OVERFLOW_MARKER);
+    expect(Buffer.byteLength(JSON.stringify(outcome.card), 'utf8')).toBeLessThanOrEqual(28_000);
+  });
+
+  it('splits overflow answers without losing a single character', () => {
+    const answer = '开头\n\n' + '段落内容。\n'.repeat(3_000) + '结尾';
+    const chunks = splitFinalAnswer(answer, 1_000);
+    expect(chunks.length).toBeGreaterThan(1);
+    expect(chunks.join('')).toBe(answer);
+    expect(chunks.every((chunk) => Buffer.byteLength(chunk, 'utf8') <= 1_000)).toBe(true);
+    expect(splitFinalAnswer('😀', 1)).toEqual(['😀']);
+  });
+
+  it('preserves the full final answer before cutting progress components', () => {
+    const headMarker = 'FINAL-ANSWER-HEAD:';
+    const tailMarker = ':FINAL-ANSWER-TAIL';
+    const finalAnswer = headMarker + '中'.repeat(4_000) + tailMarker;
+    const state = {
+      runId: 'run-final-priority',
+      terminal: 'done' as const,
+      footer: null,
+      sessionId: 'session-final-priority',
+      resultSubtype: 'success' as const,
+      finalAnswer: {
+        content: finalAnswer,
+        timestamp: '2026-10-26T12:00:00.000Z',
+        complete: true,
+        source: 'protocol' as const,
+      },
+      blocks: Array.from({ length: 16 }, (_, i) => ({
+        kind: 'thinking' as const,
+        content: `思考${i}:` + 'X'.repeat(4_000),
+        active: false,
+        timestamp: `2026-10-26T11:${String(i).padStart(2, '0')}:00.000Z`,
+      })),
+    } as RunState;
+
+    const card = renderRunCard(state);
+    const json = JSON.stringify(card);
+    expect(json).toContain(headMarker);
+    expect(json).toContain(tailMarker);
+    expect(Buffer.byteLength(json, 'utf8')).toBeLessThanOrEqual(28_000);
+    expect(countCardElements(card)).toBeLessThanOrEqual(MAX_CARD_ELEMENTS);
+    expect(json).toMatch(/个早期思考已省略|个早期步骤/);
+    expect(json).not.toContain('（未返回内容）');
+  });
+
   it('emits CardKit 2.0 config and a plain_text header title', () => {
     const card = renderRunCard(createInitialRunState('run-card-shape')) as {
       schema: string;

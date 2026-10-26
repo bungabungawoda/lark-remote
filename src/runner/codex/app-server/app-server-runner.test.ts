@@ -25,6 +25,50 @@ describe('Codex App Server Runner', () => {
     });
 
     describe('item/agentMessage/delta notification', () => {
+      it('marks protocol final_answer items as final-answer events', () => {
+        const translator = new CodexAppServerTranslator();
+
+        translator.handleNotification('turn/started', {
+          threadId: 'th-final',
+          turn: { id: 'tn-final', items: [], status: 'inProgress' },
+        });
+        translator.handleNotification('item/started', {
+          threadId: 'th-final',
+          turnId: 'tn-final',
+          item: { type: 'agentMessage', id: 'msg-final', text: '', phase: 'final_answer' },
+        });
+
+        const delta = translator.handleNotification('item/agentMessage/delta', {
+          threadId: 'th-final',
+          turnId: 'tn-final',
+          itemId: 'msg-final',
+          delta: 'final answer',
+        });
+        expect(delta[0]).toMatchObject({
+          type: 'final_answer',
+          itemId: 'msg-final',
+          text: 'final answer',
+        });
+
+        const completed = translator.handleNotification('item/completed', {
+          threadId: 'th-final',
+          turnId: 'tn-final',
+          item: {
+            type: 'agentMessage',
+            id: 'msg-final',
+            text: 'final answer',
+            phase: 'final_answer',
+          },
+          completedAtMs: 1,
+        });
+        expect(completed[0]).toMatchObject({
+          type: 'final_answer',
+          itemId: 'msg-final',
+          text: 'final answer',
+          complete: true,
+        });
+      });
+
       it('accumulates text and returns TurnDiffEvent', () => {
         const translator = new CodexAppServerTranslator();
 
@@ -751,10 +795,10 @@ describe('Codex App Server Runner', () => {
             ],
           },
         });
-        const diff = events.find((e) => e.type === 'turn_diff' && 'text' in e) as
+        const answer = events.find((e) => e.type === 'final_answer') as
           { text?: string } | undefined;
-        expect(diff).toBeDefined();
-        expect(diff?.text).toBe('final answer');
+        expect(answer).toBeDefined();
+        expect(answer?.text).toBe('final answer');
       });
 
       it('returns error subtype for failed status', () => {

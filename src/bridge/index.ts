@@ -8,7 +8,12 @@ import type { AppConfig } from '../config/index.js';
 import { resolveFinalUsage, errorMessage } from './final-usage.js';
 import { getLogger } from '../logger/index.js';
 import { RunCardSession, type RunCardChannel } from '../card/run-card-session.js';
-import { renderRunCard, type RunCardRenderOptions } from '../card/run-renderer.js';
+import {
+  renderRunCard,
+  renderRunCardDetailed,
+  type RunCardRenderOptions,
+} from '../card/run-renderer.js';
+import { splitFinalAnswer } from '../card/final-answer-overflow.js';
 import { renderBashCard } from '../card/bash-renderer.js';
 import { BashCardSession, capBashOutput } from '../card/bash-card-session.js';
 import { isRunTerminal, type RunState, type RunTerminal } from '../card/run-state.js';
@@ -1139,6 +1144,37 @@ export class Bridge {
   }
 
   /**
+   * Deliver a final answer that cannot fit in the run card. Plain text avoids
+   * markdown parser limits and preserves every character; sequence labels make
+   * multi-message delivery unambiguous.
+   */
+  private async sendFinalAnswerOverflow(text: string, ctx: CommandContext): Promise<void> {
+    const chunks = splitFinalAnswer(text);
+    try {
+      for (let i = 0; i < chunks.length; i++) {
+        const prefix =
+          chunks.length > 1 ? `完整回答（${i + 1}/${chunks.length}）\n\n` : '完整回答\n\n';
+        await this.connector.sendWithRetry(
+          ctx.chatId,
+          { text: prefix + chunks[i] },
+          { replyTo: ctx.messageId },
+        );
+      }
+    } catch (err) {
+      getLogger().error('[lark-remote] failed to deliver complete final answer:', err);
+      try {
+        await this.connector.sendWithRetry(
+          ctx.chatId,
+          { text: `⚠️ 完整回答补发失败：${errorMessage(err)}` },
+          { replyTo: ctx.messageId },
+        );
+      } catch (fallbackErr) {
+        getLogger().error('[lark-remote] final-answer failure notice also failed:', fallbackErr);
+      }
+    }
+  }
+
+  /**
    * Update an existing card in place (原地更新) instead of sending a new one.
    *
    * Used by /config cardAction handlers (config.toggle/set/input/save) so the
@@ -1937,6 +1973,7 @@ export class Bridge {
           this.sessionStore.getSessionId(ctx.userId, activeRun.agentKind)
         ),
       };
+      const finalRender = renderRunCardDetailed(cardSession.currentState, finalRenderOptions);
       this.rememberRunCardSnapshot(
         runId,
         cardSession.currentState,
@@ -1946,10 +1983,7 @@ export class Bridge {
       );
       let runCardSent = false;
       if (settleResult === 'unsent') {
-        const sent = await this.sendResult(
-          { card: renderRunCard(cardSession.currentState, finalRenderOptions) },
-          ctx,
-        );
+        const sent = await this.sendResult({ card: finalRender.card }, ctx);
         runCardSent = sent;
       } else {
         // streaming succeeded: run card is the last message in the chat
@@ -1961,6 +1995,10 @@ export class Bridge {
       const sessionId = cardSession.currentState.sessionId;
       if (sessionId && runCardSent) {
         await this.sendCompletionNotificationCard(sessionId, cwd, ctx, activeRun.agentKind);
+      }
+
+      if (finalRender.finalAnswerStatus === 'overflow' && finalRender.finalAnswerText) {
+        await this.sendFinalAnswerOverflow(finalRender.finalAnswerText, ctx);
       }
 
       // Add a terminal-state emoji reaction to the user's original message

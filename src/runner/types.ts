@@ -262,6 +262,23 @@ export interface AssistantEvent {
   };
 }
 
+/**
+ * Authoritative final answer from an agent protocol.
+ *
+ * This is deliberately separate from ordinary assistant text: progress
+ * narration and tool-loop messages have lower display priority than the answer
+ * the user actually asked for. Agents without an explicit protocol marker
+ * promote their last text block when the turn finishes.
+ */
+export interface FinalAnswerEvent {
+  type: 'final_answer';
+  text: string;
+  /** Source item id, used to remove the streamed progress copy of the answer. */
+  itemId?: string;
+  complete?: boolean;
+  timestamp?: string;
+}
+
 export interface UserEvent {
   type: 'user';
   timestamp?: string;
@@ -485,6 +502,7 @@ export type AgentEvent =
   | ApprovalViewUpdatedEvent
   | ApprovalExpiredEvent
   | AssistantEvent
+  | FinalAnswerEvent
   | UserEvent
   | ResultEvent
   | PlanEvent
