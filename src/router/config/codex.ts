@@ -10,6 +10,7 @@ import {
 import type { AgentConfigCardBuilder, ConfigField } from './types.js';
 import { DEFAULT_TURN_IDLE_TIMEOUT_MINUTES, type AppConfig } from '../../config/index.js';
 import { pickMiddleValue, resetModelPatch } from './common/model-patch.js';
+import { turnIdleTimeoutField } from './common/turn-idle.js';
 
 export class CodexConfigBuilder implements AgentConfigCardBuilder {
   buildFields(displayConfig: AppConfig): ConfigField[] {
@@ -87,12 +88,12 @@ export class CodexConfigBuilder implements AgentConfigCardBuilder {
     const currentTurnIdleTimeoutMinutes =
       displayConfig.agents?.codex?.appServer?.turnIdleTimeoutMinutes ??
       DEFAULT_TURN_IDLE_TIMEOUT_MINUTES;
-    fields.push({
-      key: 'agents.codex.appServer.turnIdleTimeoutMinutes',
-      label: 'Turn 空闲超时(分钟, 0关闭)',
-      type: 'input',
-      currentValue: String(currentTurnIdleTimeoutMinutes),
-    });
+    fields.push(
+      turnIdleTimeoutField(
+        'agents.codex.appServer.turnIdleTimeoutMinutes',
+        currentTurnIdleTimeoutMinutes,
+      ),
+    );
 
     return fields;
   }

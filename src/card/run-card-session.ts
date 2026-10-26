@@ -76,12 +76,8 @@ export class RunCardSession extends CardSession<RunState, RunCardRenderOptions> 
     meta: FinishMeta = {},
   ): Promise<void> {
     // 终态必须即时显示（spec）：取消合批窗口，不等延迟 flush 调度。
-    this.cancelPendingFlush();
-    // 若有 in-flight flush 正在 await updateCard，必须等它完成后再发终态 patch。
-    // 否则两条并发 controller.update 无 FIFO 保证，in-flight 的 pre-terminal
-    // patch 可能在终态 patch 之后 resolve → 用户看到"思考中"终帧。
-    // await 保证顺序：pre-terminal 先落地 → terminal 后落地 → terminal 胜出。
-    if (this.flushP) await this.flushP;
+    // 终态 patch 必须排在已开始的 pre-terminal flush 之后。
+    await this.prepareTerminalUpdate();
     this.state = finishRun(this.state, terminal, meta);
     await this.updateCard();
     this.release();

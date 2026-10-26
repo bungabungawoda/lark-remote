@@ -14,6 +14,7 @@ import {
 import type { AgentConfigCardBuilder, ConfigField, SelectOption } from './types.js';
 import { DEFAULT_TURN_IDLE_TIMEOUT_MINUTES, type AppConfig } from '../../config/index.js';
 import { pickMiddleValue } from './common/model-patch.js';
+import { turnIdleTimeoutField } from './common/turn-idle.js';
 
 const PERMISSION_MODE_OPTIONS: SelectOption[] = [
   // kimi 0.40.0（2026-09-02）起官方语义：manual=始终询问 / yolo=必要时询问 / auto=完全自动
@@ -65,12 +66,9 @@ export class KimiConfigBuilder implements AgentConfigCardBuilder {
 
     const currentTurnIdleTimeoutMinutes =
       displayConfig.agents?.kimi?.acp?.turnIdleTimeoutMinutes ?? DEFAULT_TURN_IDLE_TIMEOUT_MINUTES;
-    fields.push({
-      key: 'agents.kimi.acp.turnIdleTimeoutMinutes',
-      label: 'Turn 空闲超时(分钟, 0关闭)',
-      type: 'input',
-      currentValue: String(currentTurnIdleTimeoutMinutes),
-    });
+    fields.push(
+      turnIdleTimeoutField('agents.kimi.acp.turnIdleTimeoutMinutes', currentTurnIdleTimeoutMinutes),
+    );
 
     return fields;
   }

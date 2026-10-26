@@ -22,6 +22,7 @@ import { encodeProjectDirName, samePath } from '../../platform/path.js';
 import { paginate } from '../common/pagination.js';
 import { sortByRecencyDesc } from '../common/recency.js';
 import { TtlCache } from '../../common/ttl-cache.js';
+import { getLogger } from '../../logger/index.js';
 
 /** PI JSONL entry type definitions for usage extraction. */
 type PiJsonlEntry =
@@ -463,8 +464,10 @@ export class PiSessionReader implements AgentSessionReader {
           summary: summarizePiSession(full),
           mtime: st.mtimeMs,
         });
-      } catch {
-        // skip
+      } catch (err) {
+        getLogger().debug(
+          `[pi-session-reader] skipped ${full}: ${(err as Error)?.message ?? String(err)}`,
+        );
       }
     }
 

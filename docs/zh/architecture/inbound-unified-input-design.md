@@ -264,8 +264,8 @@ InboundTurnAssembler               ← 新增层（§7）
 | 位置 | 改动 |
 |---|---|
 | `src/connector/index.ts`（入站分派分支） | 去掉 `{image,file}` 白名单；统一上报事件（文本/资源/占位），只保留 owner 闸门的调用时机语义 |
-| `src/index.ts`（`setupMessageHandlers` 媒体闸门） | 媒体闸门 → 改为向 assembler 投递资源事件；owner/enabled 判定保留 |
-| `src/index.ts`（`setupMessageHandlers` 文本投递） | 文本投递 assembler；`flushMediaNotifications` 由窗口机制取代 |
+| `src/message-handlers.ts`（媒体闸门） | 媒体闸门 → 改为向 assembler 投递资源事件；owner/enabled 判定保留 |
+| `src/message-handlers.ts`（文本投递） | 文本投递 assembler；`flushMediaNotifications` 由窗口机制取代 |
 | `src/router/index.ts`（`CommandRouter.handle`） | 命令识别加前置条件（§5.6），`handle` 入参显式化 |
 | `src/bridge/inbound-media.ts` | 保留下载/落盘；`kind` 与命名规则扩展（§5.3）；提示卡降级为"回执来源之一" |
 | `src/bridge/index.ts`（`saveInboundMedia`） | `saveInboundMedia` 向 assembler 回传落盘结果；`forwardToClaude` 接受组装后的 prompt |

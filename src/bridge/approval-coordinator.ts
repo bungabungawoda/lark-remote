@@ -9,7 +9,12 @@
  * - onTurnEnded: mark all as expired
  */
 
-import type { ApprovalRequestedEvent, ApprovalView, AgentEvent } from '../runner/types.js';
+import type {
+  ApprovalRequestedEvent,
+  ApprovalView,
+  AgentEvent,
+  UserQuestion,
+} from '../runner/types.js';
 import type { ApprovalAction } from '../runner/types.js';
 import { getLogger } from '../logger/index.js';
 
@@ -248,12 +253,7 @@ export class ApprovalCoordinator {
     action: { questionIndex: number; option: string },
     ctx: { requestId: number | string; nonce?: string },
   ): Promise<void> {
-    const tracked = this.getPendingQuestion(ctx.requestId);
-    const questions = tracked.view.questions!;
-    const q = questions[action.questionIndex];
-    if (!q) {
-      throw new Error(`Question ${action.questionIndex} not found in request ${ctx.requestId}`);
-    }
+    const { tracked, question: q } = this.getPendingQuestionAt(ctx.requestId, action.questionIndex);
     const option = q.options.find((o) => o.label === action.option);
     if (!option) {
       throw new Error(`Option "${action.option}" not found in question ${action.questionIndex}`);
@@ -292,12 +292,7 @@ export class ApprovalCoordinator {
     action: { questionIndex: number },
     ctx: { requestId: number | string; nonce?: string },
   ): Promise<void> {
-    const tracked = this.getPendingQuestion(ctx.requestId);
-    const questions = tracked.view.questions!;
-    const q = questions[action.questionIndex];
-    if (!q) {
-      throw new Error(`Question ${action.questionIndex} not found in request ${ctx.requestId}`);
-    }
+    const { tracked, question: q } = this.getPendingQuestionAt(ctx.requestId, action.questionIndex);
     if (!q.multiSelect) {
       throw new Error('该问题为单选，请直接点击选项');
     }
@@ -319,12 +314,7 @@ export class ApprovalCoordinator {
     action: { questionIndex: number; text: string },
     ctx: { requestId: number | string; nonce?: string },
   ): Promise<void> {
-    const tracked = this.getPendingQuestion(ctx.requestId);
-    const questions = tracked.view.questions!;
-    const q = questions[action.questionIndex];
-    if (!q) {
-      throw new Error(`Question ${action.questionIndex} not found in request ${ctx.requestId}`);
-    }
+    const { tracked, question: q } = this.getPendingQuestionAt(ctx.requestId, action.questionIndex);
     if (q.multiSelect) {
       throw new Error('自定义答案仅支持单选');
     }
@@ -349,12 +339,7 @@ export class ApprovalCoordinator {
     action: { questionIndex: number; text: string },
     ctx: { requestId: number | string; nonce?: string },
   ): Promise<void> {
-    const tracked = this.getPendingQuestion(ctx.requestId);
-    const questions = tracked.view.questions!;
-    const q = questions[action.questionIndex];
-    if (!q) {
-      throw new Error(`Question ${action.questionIndex} not found in request ${ctx.requestId}`);
-    }
+    const { tracked, question: q } = this.getPendingQuestionAt(ctx.requestId, action.questionIndex);
     const text = action.text.trim();
     if (!text) {
       throw new Error('请输入补充说明');
@@ -534,6 +519,18 @@ export class ApprovalCoordinator {
       throw new Error(`Approval request ${requestId} is no longer pending`);
     }
     return tracked;
+  }
+
+  private getPendingQuestionAt(
+    requestId: number | string,
+    questionIndex: number,
+  ): { tracked: TrackedApproval; question: UserQuestion } {
+    const tracked = this.getPendingQuestion(requestId);
+    const question = tracked.view.questions?.[questionIndex];
+    if (!question) {
+      throw new Error(`Question ${questionIndex} not found in request ${requestId}`);
+    }
+    return { tracked, question };
   }
 
   private allQuestionsAnswered(tracked: TrackedApproval): boolean {

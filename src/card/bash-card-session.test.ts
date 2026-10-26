@@ -52,6 +52,34 @@ describe('BashCardSession', () => {
     expect(JSON.stringify(capture.updates[0])).toContain('bash-1');
   });
 
+  it('keeps the first terminal state when interrupt and natural completion race', async () => {
+    const capture = { updates: [] as object[] };
+    const { connector } = makeBashTestConnector({ capture });
+
+    const session = new BashCardSession({
+      connector,
+      chatId: 'chat-1',
+      runId: 'bash-terminal-race',
+      command: 'sleep 60',
+      coalesceMs: 0,
+    });
+
+    await session.start();
+    await session.finish('interrupted');
+    const updatesAfterInterrupt = capture.updates.length;
+
+    // The process can exit after /stop and report a natural execution failure.
+    // That late completion must not overwrite the user-triggered interruption.
+    await session.finish('error', { exitCode: -1, stderr: 'killed after stop' });
+
+    expect(session.currentState.terminal).toBe('interrupted');
+    expect(capture.updates).toHaveLength(updatesAfterInterrupt);
+    expect(JSON.stringify(capture.updates.at(-1))).toContain('已终止');
+    expect(JSON.stringify(capture.updates.at(-1))).not.toContain('命令执行失败');
+
+    await session.settle();
+  });
+
   it('falls back to updateCard when the stream fails to complete', async () => {
     const updated: Array<{ messageId: string; card: object }> = [];
     const { connector } = makeStreamCardConnector({

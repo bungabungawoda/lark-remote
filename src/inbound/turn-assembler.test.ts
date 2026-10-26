@@ -294,16 +294,21 @@ describe('InboundTurnAssembler：命令旁路与 flush', () => {
     expect(h.commits).toHaveLength(0);
   });
 
-  it('onCommit 抛错不炸进程（记 error 日志）', async () => {
+  it('onCommit 抛错时记日志并给用户可见回执', async () => {
+    const receipts: string[] = [];
     const assembler = new InboundTurnAssembler({
       onCommit: () => {
         throw new Error('boom');
+      },
+      onReceipt: (_ctx, text) => {
+        receipts.push(text);
       },
     });
     assembler.ingest(textEvent('m1', 'A'));
     await vi.advanceTimersByTimeAsync(700);
     await vi.runAllTimersAsync();
     expect(mockLogger.error).toHaveBeenCalled();
+    expect(receipts).toContain('⚠️ 消息处理失败，请重试；若持续失败请查看 lark-remote 日志。');
   });
 });
 

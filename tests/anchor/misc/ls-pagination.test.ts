@@ -52,6 +52,13 @@ function cmdLsOf(router: CommandRouter) {
   return router.cmdLs.bind(router);
 }
 
+function populateDirectory(dir: string, dirs: number, files: number): void {
+  for (let i = 0; i < dirs; i++) fs.mkdirSync(path.join(dir, `dir${i}`));
+  for (let i = 0; i < files; i++) {
+    fs.writeFileSync(path.join(dir, `file${i}.txt`), 'content');
+  }
+}
+
 describe('/ls pagination anchor tests', () => {
   const tmpDir = path.join(os.tmpdir(), `ls-pagination-anchor-${Date.now()}`);
   const ctx = { userId: 'user1', chatId: 'chat1', messageId: 'msg1' };
@@ -67,12 +74,7 @@ describe('/ls pagination anchor tests', () => {
   it('test_anchor_ls_no_pagination_bar_when_30_or_fewer_items', async () => {
     const { router, sessionStore, connector } = createRouter(tmpDir);
     // Create exactly 30 items (15 dirs + 15 files) - should NOT show pagination
-    for (let i = 0; i < 15; i++) {
-      fs.mkdirSync(path.join(tmpDir, `dir${i}`));
-    }
-    for (let i = 0; i < 15; i++) {
-      fs.writeFileSync(path.join(tmpDir, `file${i}.txt`), 'content');
-    }
+    populateDirectory(tmpDir, 15, 15);
     sessionStore.setCwd('user1', fs.realpathSync(tmpDir));
 
     await router.handle('/ls', ctx);
@@ -89,12 +91,7 @@ describe('/ls pagination anchor tests', () => {
   it('test_anchor_ls_pagination_bar_shown_when_more_than_30_items', async () => {
     const { router, sessionStore, connector } = createRouter(tmpDir);
     // Create 35 items (> 30) - should show pagination
-    for (let i = 0; i < 20; i++) {
-      fs.mkdirSync(path.join(tmpDir, `dir${i}`));
-    }
-    for (let i = 0; i < 15; i++) {
-      fs.writeFileSync(path.join(tmpDir, `file${i}.txt`), 'content');
-    }
+    populateDirectory(tmpDir, 20, 15);
     sessionStore.setCwd('user1', fs.realpathSync(tmpDir));
 
     await router.handle('/ls', ctx);
@@ -111,12 +108,7 @@ describe('/ls pagination anchor tests', () => {
   it('test_anchor_ls_pagination_shows_correct_page_info', async () => {
     const { router, sessionStore, connector } = createRouter(tmpDir);
     // Create 35 items - should show page 1/2
-    for (let i = 0; i < 20; i++) {
-      fs.mkdirSync(path.join(tmpDir, `dir${i}`));
-    }
-    for (let i = 0; i < 15; i++) {
-      fs.writeFileSync(path.join(tmpDir, `file${i}.txt`), 'content');
-    }
+    populateDirectory(tmpDir, 20, 15);
     sessionStore.setCwd('user1', fs.realpathSync(tmpDir));
 
     await router.handle('/ls', ctx);
@@ -131,12 +123,7 @@ describe('/ls pagination anchor tests', () => {
   it('test_anchor_ls_page_callback_command_is_ls_page', async () => {
     const { router, sessionStore, connector } = createRouter(tmpDir);
     // Create 35 items to trigger pagination
-    for (let i = 0; i < 20; i++) {
-      fs.mkdirSync(path.join(tmpDir, `dir${i}`));
-    }
-    for (let i = 0; i < 15; i++) {
-      fs.writeFileSync(path.join(tmpDir, `file${i}.txt`), 'content');
-    }
+    populateDirectory(tmpDir, 20, 15);
     sessionStore.setCwd('user1', fs.realpathSync(tmpDir));
 
     await router.handle('/ls', ctx);
@@ -152,12 +139,7 @@ describe('/ls pagination anchor tests', () => {
   it('test_anchor_ls_page_2_shows_previous_button', async () => {
     const { router, sessionStore } = createRouter(tmpDir);
     // Create 35 items (> 30) - should show pagination
-    for (let i = 0; i < 20; i++) {
-      fs.mkdirSync(path.join(tmpDir, `dir${i}`));
-    }
-    for (let i = 0; i < 15; i++) {
-      fs.writeFileSync(path.join(tmpDir, `file${i}.txt`), 'content');
-    }
+    populateDirectory(tmpDir, 20, 15);
     sessionStore.setCwd('user1', fs.realpathSync(tmpDir));
 
     // Simulate page 2 by calling cmdLs directly with offset=30
@@ -175,12 +157,7 @@ describe('/ls pagination anchor tests', () => {
   it('test_anchor_ls_browse_resets_to_page_0', async () => {
     const { router, sessionStore } = createRouter(tmpDir);
     // Create 35 items
-    for (let i = 0; i < 20; i++) {
-      fs.mkdirSync(path.join(tmpDir, `dir${i}`));
-    }
-    for (let i = 0; i < 15; i++) {
-      fs.writeFileSync(path.join(tmpDir, `file${i}.txt`), 'content');
-    }
+    populateDirectory(tmpDir, 20, 15);
     // Create a subdirectory for browsing test
     const subDir = path.join(tmpDir, 'subdir_for_test');
     fs.mkdirSync(subDir);
@@ -203,12 +180,7 @@ describe('/ls pagination anchor tests', () => {
     const { router, sessionStore } = createRouter(tmpDir);
     // 35 items → 2 pages；过期 offset（如旧卡片残留 offset=300）必须 clamp 到
     // 最后一页边界（30），而不是显示空页（统一前 /ls 不 clamp 会显示空页）
-    for (let i = 0; i < 20; i++) {
-      fs.mkdirSync(path.join(tmpDir, `dir${i}`));
-    }
-    for (let i = 0; i < 15; i++) {
-      fs.writeFileSync(path.join(tmpDir, `file${i}.txt`), 'content');
-    }
+    populateDirectory(tmpDir, 20, 15);
     sessionStore.setCwd('user1', fs.realpathSync(tmpDir));
 
     const staleCard = cmdLsOf(router)([fs.realpathSync(tmpDir)], ctx, 300);

@@ -57,6 +57,10 @@ import type {
 } from './types.js';
 import { goalFromProjection } from './goal-view.js';
 import type { GoalView } from '../types.js';
+import { DshError } from './errors.js';
+import { openMuxStream } from './mux-stream.js';
+
+export { DshError } from './errors.js';
 
 interface WebSocketMessageEvent {
   data: unknown;
@@ -93,18 +97,6 @@ function defaultWebSocketFactory(url: string, options?: WebSocketOptions): WebSo
     socket.onunexpectedresponse?.({ statusCode: response.statusCode });
   });
   return socket;
-}
-
-export class DshError extends Error {
-  readonly code: string;
-  readonly details: Record<string, unknown>;
-
-  constructor(code: string, message: string, details: Record<string, unknown> = {}) {
-    super(message);
-    this.name = 'DshError';
-    this.code = code;
-    this.details = details;
-  }
 }
 
 function isDshAuthError(error: unknown): error is DshError {
@@ -833,171 +825,15 @@ export class DshClient {
     payload: unknown,
     signal: AbortSignal,
   ): AsyncGenerator<unknown> {
-    const cookie = await this.authCookie();
-    const socket = this.webSocketImpl(
-      `${this.baseUrl.replace(/^http/, 'ws')}/api/remote.mux`,
-      cookie ? { headers: { cookie } } : undefined,
-    );
-    const streamId = `lr-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
-    const queue: unknown[] = [];
-    let waiter: ((frame: unknown | undefined) => void) | null = null;
-    let ended = false;
-    let failure: DshError | undefined;
-    let opened = false;
-
-    const settle = (frame?: unknown): void => {
-      if (waiter) {
-        const resolve = waiter;
-        waiter = null;
-        resolve(frame);
-        return;
-      }
-      if (frame) queue.push(frame);
-      else ended = true;
-    };
-
-    // 建连/首帧超时：服务器接受 TCP 但不完成 WS 握手时 onopen/onerror/onclose
-    // 都不触发，generator 会永远停在 await next()——unary 挂起有 60s 预算与
-    // 回归测试（test_anchor_dsh_stop_with_hung_unary_releases_run），mux 的
-    // 同型问题此前只能靠 idle 看门狗兜底。超时按传输错误走既有重连路径。
-    const connectTimer: ReturnType<typeof setTimeout> = setTimeout(() => {
-      if (opened || ended) return;
-      failure = new DshError('transport', 'DSH remote mux WebSocket connect timeout');
-      ended = true;
-      settle(undefined);
-      try {
-        socket.close();
-      } catch {
-        /* ignore close error */
-      }
-    }, this.requestTimeoutMs);
-    connectTimer.unref?.();
-
-    socket.onopen = () => {
-      opened = true;
-      clearTimeout(connectTimer);
-      if (ended) return;
-      try {
-        socket.send(
-          JSON.stringify({
-            type: 'open',
-            streamId,
-            endpoint,
-            payload,
-          }),
-        );
-      } catch (err) {
-        failure = new DshError('transport', `DSH remote mux send error: ${(err as Error).message}`);
-        ended = true;
-        settle(undefined);
-      }
-    };
-    socket.onmessage = (event) => {
-      if (ended) return;
-      const text =
-        typeof event.data === 'string'
-          ? event.data
-          : Buffer.isBuffer(event.data)
-            ? event.data.toString('utf8')
-            : String(event.data);
-      let message: {
-        type?: string;
-        streamId?: string;
-        value?: unknown;
-        error?: { code?: string; message?: string; details?: Record<string, unknown> };
-      };
-      try {
-        message = JSON.parse(text) as typeof message;
-      } catch {
-        getLogger().warn('[dsh] dropped malformed remote mux frame');
-        return;
-      }
-      if (message.streamId !== streamId) return;
-      if (message.type === 'item' && message.value) {
-        settle(message.value);
-        return;
-      }
-      if (message.type === 'end') {
-        ended = true;
-        settle(undefined);
-        return;
-      }
-      if (message.type === 'error') {
-        failure = new DshError(
-          message.error?.code ?? 'stream',
-          message.error?.message ?? 'DSH remote stream failed',
-          message.error?.details ?? {},
-        );
-        ended = true;
-        settle(undefined);
-      }
-    };
-    socket.onerror = () => {
-      if (ended) return;
-      failure = new DshError('transport', 'DSH remote mux WebSocket error');
-      ended = true;
-      settle(undefined);
-    };
-    socket.onunexpectedresponse = (event) => {
-      if (ended) return;
-      const status = event.statusCode;
-      failure = new DshError(
-        'http',
-        `DSH remote mux WebSocket HTTP ${status === undefined ? 'error' : status}`,
-        status === undefined ? {} : { status },
-      );
-      ended = true;
-      settle(undefined);
-    };
-    socket.onclose = () => {
-      if (ended) return;
-      ended = true;
-      settle(undefined);
-    };
-
-    const onAbort = (): void => {
-      if (ended) return;
-      ended = true;
-      settle(undefined);
-      try {
-        socket.close();
-      } catch {
-        /* ignore close error */
-      }
-    };
-    signal.addEventListener('abort', onAbort, { once: true });
-
-    const next = (): Promise<unknown | undefined> =>
-      new Promise((resolve) => {
-        if (queue.length > 0) {
-          resolve(queue.shift());
-          return;
-        }
-        if (ended) {
-          resolve(undefined);
-          return;
-        }
-        waiter = resolve;
-      });
-
-    try {
-      while (!signal.aborted) {
-        const frame = await next();
-        if (frame === undefined) {
-          if (failure && !signal.aborted) throw failure;
-          return;
-        }
-        yield frame;
-      }
-    } finally {
-      clearTimeout(connectTimer);
-      signal.removeEventListener('abort', onAbort);
-      try {
-        socket.close();
-      } catch {
-        /* ignore close error */
-      }
-    }
+    yield* openMuxStream({
+      baseUrl: this.baseUrl,
+      endpoint,
+      payload,
+      signal,
+      requestTimeoutMs: this.requestTimeoutMs,
+      authCookie: () => this.authCookie(),
+      webSocketFactory: this.webSocketImpl,
+    });
   }
 
   /** One logical `session/follow` stream. */

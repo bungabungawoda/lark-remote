@@ -1,12 +1,6 @@
 import type { AgentKind, Runner } from './index.js';
 
 /**
- * 单例 registry 实例，供 agentDisplayName 等全局查询使用。
- * 在 index.ts 初始化后设置。
- */
-let globalRegistry: AgentRegistry | undefined;
-
-/**
  * Registry of agent factories, keyed by `AgentKind`. `index.ts` registers one
  * factory per available agent at startup; `Bridge.getRunner(cwd)` looks
  * up `config.defaultAgent` here to pick the concrete runner.
@@ -21,42 +15,11 @@ let globalRegistry: AgentRegistry | undefined;
  */
 export class AgentRegistry {
   private readonly factories = new Map<AgentKind, (cwd: string) => Runner>();
-  private readonly displayNames = new Map<AgentKind, string>();
   /** Container for runtime config updates (pi provider dynamic reload). */
   private configContainer?: { current: unknown };
 
   register(kind: AgentKind, factory: (cwd: string) => Runner): void {
     this.factories.set(kind, factory);
-  }
-
-  /**
-   * 注册 agent 的显示名。应在 register(kind, factory) 后调用。
-   * 用于 agentDisplayName 等全局查询，实现单点真相。
-   */
-  registerDisplayName(kind: AgentKind, displayName: string): void {
-    this.displayNames.set(kind, displayName);
-  }
-
-  /**
-   * 获取 agent 显示名。未注册时返回原始 kind。
-   */
-  getDisplayName(kind: AgentKind): string {
-    return this.displayNames.get(kind) ?? kind;
-  }
-
-  /**
-   * 设置全局 registry 实例，供 agentDisplayName 等全局函数使用。
-   * 在 index.ts 初始化所有 agents 后调用。
-   */
-  static setGlobalInstance(reg: AgentRegistry | undefined): void {
-    globalRegistry = reg;
-  }
-
-  /**
-   * 获取全局 registry 实例。
-   */
-  static getGlobalInstance(): AgentRegistry | undefined {
-    return globalRegistry;
   }
 
   /**
