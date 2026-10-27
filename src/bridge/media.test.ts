@@ -70,7 +70,6 @@ function mediaPayload(overrides: Partial<InboundMediaPayload> = {}): InboundMedi
     userId: 'user-1',
     chatId: 'chat-1',
     messageId: 'msg-1',
-    rawContentType: 'image',
     media: [downloaded(pngBytes, { mimeType: 'image/png' })],
     failures: [],
     ...overrides,
@@ -161,7 +160,6 @@ describe('InboundMediaHandler 落盘', () => {
 
     const outcome = await bridge.saveInboundMedia(
       mediaPayload({
-        rawContentType: 'media',
         media: [
           downloaded(mp4Bytes, {
             kind: 'video',
@@ -187,7 +185,6 @@ describe('InboundMediaHandler 落盘', () => {
 
     await bridge.saveInboundMedia(
       mediaPayload({
-        rawContentType: 'file',
         media: [
           downloaded('x', {
             kind: 'file',
@@ -220,7 +217,6 @@ describe('InboundMediaHandler 落盘', () => {
 
     await bridge.saveInboundMedia(
       mediaPayload({
-        rawContentType: 'file',
         media: [
           downloaded('x', {
             kind: 'file',
@@ -243,14 +239,12 @@ describe('InboundMediaHandler 落盘', () => {
 
     await bridge.saveInboundMedia(
       mediaPayload({
-        rawContentType: 'file',
         media: [downloaded('first', { kind: 'file', fileName: 'a.txt', mimeType: 'text/plain' })],
       }),
     );
     await bridge.saveInboundMedia(
       mediaPayload({
         messageId: 'msg-2',
-        rawContentType: 'file',
         media: [downloaded('second', { kind: 'file', fileName: 'a.txt', mimeType: 'text/plain' })],
       }),
     );
@@ -320,14 +314,20 @@ describe('InboundMediaHandler 落盘', () => {
   });
 
   it('bridge.setConfig 后 dirName 活引用生效（非启动快照）', async () => {
-    const { bridge, sessionStore } = makeBridge();
+    // config 由测试自己持有（Bridge.config 是 private）：传入 makeBridge，
+    // 再基于同一份派生 nextConfig，避免访问私有字段。
+    const config = AppConfigSchema.parse({
+      feishu: { appId: 'test', appSecret: 'test' },
+      claude: { model: 'opus', stopGraceMs: 5000 },
+    });
+    const { bridge, sessionStore } = makeBridge({ config });
     sessionStore.setCwd('user-1', tmpDir);
 
     await bridge.saveInboundMedia(mediaPayload());
     expect(fs.existsSync(path.join(tmpDir, '.lark-remote-temp'))).toBe(true);
 
     const nextConfig = AppConfigSchema.parse({
-      ...bridge.config,
+      ...config,
       inboundMedia: { enabled: true, dirName: 'other-temp', maxFileSizeMb: 100 },
     });
     bridge.setConfig(nextConfig);

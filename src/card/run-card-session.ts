@@ -3,10 +3,11 @@ import type { AgentEvent } from '../runner/index.js';
 import {
   createInitialRunState,
   finishRun,
+  isRunActive,
   reduceRunState,
   type FinishMeta,
+  type RunFinalTerminal,
   type RunState,
-  type RunTerminal,
 } from './run-state.js';
 import { renderRunCard, type RunCardRenderOptions } from './run-renderer.js';
 
@@ -50,7 +51,7 @@ export class RunCardSession extends CardSession<RunState, RunCardRenderOptions> 
   protected isFlushableState(): boolean {
     // finish() 已转终态（done/error/interrupted/idle_timeout）时不再 patch；
     // 'finalizing' 是非终态，in-flight/延迟 flush 仍可渲染累积事件。
-    return this.state.terminal === 'running' || this.state.terminal === 'finalizing';
+    return isRunActive(this.state.terminal);
   }
 
   async push(event: AgentEvent): Promise<void> {
@@ -71,10 +72,7 @@ export class RunCardSession extends CardSession<RunState, RunCardRenderOptions> 
     this.scheduleFlush();
   }
 
-  async finish(
-    terminal: Exclude<RunTerminal, 'running' | 'finalizing'>,
-    meta: FinishMeta = {},
-  ): Promise<void> {
+  async finish(terminal: RunFinalTerminal, meta: FinishMeta = {}): Promise<void> {
     // 终态必须即时显示（spec）：取消合批窗口，不等延迟 flush 调度。
     // 终态 patch 必须排在已开始的 pre-terminal flush 之后。
     await this.prepareTerminalUpdate();

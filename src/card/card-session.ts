@@ -200,12 +200,12 @@ export abstract class CardSession<S, RO = unknown> {
     // does not hold).
     const stream = this.connector.streamCard(
       this.chatId,
-      this.safeRenderCard(),
+      this.renderCurrentCard(),
       async (controller) => {
         this.controller = controller;
         this.messageId = controller.messageId;
         try {
-          await controller.update(this.safeRenderCard());
+          await controller.update(this.renderCurrentCard());
         } catch (error) {
           getLogger().warn(`${this.logPrefix} initial controller update failed:`, error);
         }
@@ -240,20 +240,21 @@ export abstract class CardSession<S, RO = unknown> {
     getLogger().warn(`${this.logPrefix} stream did not complete cleanly:`, outcome.error);
     if (!this.messageId) return 'unsent';
     try {
-      await this.connector.updateCard(this.messageId, this.safeRenderCard());
+      await this.connector.updateCard(this.messageId, this.renderCurrentCard());
       return 'updated';
     } catch (error) {
       getLogger().error(`${this.logPrefix} failed to finalize original card:`, error);
       return 'unsent';
     }
   }
-
   /**
-   * 渲染当前卡片。所有生产子类的 renderer 都自带 stringify 级预算保护
+   * 渲染当前状态对应的卡片（单一渲染入口）。
+   *
+   * 所有生产子类的 renderer 都自带 stringify 级预算保护
    * （run/bash 的 degraded/extreme 路径）；发送前 Bridge 还会再走一次
    * enforceCardBudget，因此这里不再重复裁剪。
    */
-  protected safeRenderCard(): object {
+  protected renderCurrentCard(): object {
     return this.renderCard(this.state, this.renderOptions);
   }
 
@@ -262,7 +263,7 @@ export abstract class CardSession<S, RO = unknown> {
    * connector.updateCard if the controller is unavailable or fails.
    */
   protected async updateCard(): Promise<void> {
-    const safeCard = this.safeRenderCard();
+    const safeCard = this.renderCurrentCard();
 
     if (this.controller) {
       try {

@@ -90,7 +90,6 @@ describe('toolHeaderText', () => {
   function makeTool(overrides: Partial<ToolEntry> & Pick<ToolEntry, 'name'>): ToolEntry {
     return {
       id: 't1',
-      name: overrides.name,
       status: overrides.status ?? 'ok',
       input: overrides.input ?? {},
       ...overrides,
@@ -268,7 +267,6 @@ describe('toolBodyMd', () => {
   function makeTool(overrides: Partial<ToolEntry> & Pick<ToolEntry, 'name'>): ToolEntry {
     return {
       id: 't1',
-      name: overrides.name,
       status: overrides.status ?? 'ok',
       input: overrides.input ?? {},
       ...overrides,
@@ -475,7 +473,6 @@ describe('asRecord edge cases (via toolHeaderText / toolBodyMd)', () => {
   function makeTool(overrides: Partial<ToolEntry> & Pick<ToolEntry, 'name'>): ToolEntry {
     return {
       id: 't1',
-      name: overrides.name,
       status: overrides.status ?? 'ok',
       input: overrides.input ?? {},
       ...overrides,
@@ -570,7 +567,6 @@ describe('tool-render toolHint (信息保真)', () => {
   function makeTool(overrides: Partial<ToolEntry> & Pick<ToolEntry, 'name'>): ToolEntry {
     return {
       id: 't1',
-      name: overrides.name,
       status: overrides.status ?? 'ok',
       input: overrides.input ?? {},
       ...overrides,
@@ -700,7 +696,6 @@ describe('tool-render DSH tool summaries', () => {
   function makeTool(overrides: Partial<ToolEntry> & Pick<ToolEntry, 'name'>): ToolEntry {
     return {
       id: 't1',
-      name: overrides.name,
       status: overrides.status ?? 'ok',
       input: overrides.input ?? {},
       ...overrides,

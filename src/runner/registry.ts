@@ -1,4 +1,5 @@
-import type { AgentKind, Runner } from './index.js';
+import type { AgentKind } from '../agent-kinds.js';
+import type { Runner } from './index.js';
 
 /**
  * Registry of agent factories, keyed by `AgentKind`. `index.ts` registers one

@@ -105,8 +105,10 @@ describe('OpencodeAcpTranslator', () => {
         content: { type: 'text', text: '思考中' },
       }),
     );
-    const c = (events[0] as { message: { content: Array<Record<string, unknown>> } }).message
-      .content[0];
+    const ev = events[0];
+    if (ev.type !== 'assistant')
+      throw new Error(`expected assistant event, got ${String(ev.type)}`);
+    const c = ev.message.content[0];
     expect(c).toEqual({ type: 'thinking', thinking: '思考中' });
   });
 

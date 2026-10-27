@@ -25,7 +25,7 @@ import type {
   DshModelCatalogValue,
   DshPermissionCatalogValue,
   DshPresetListValue,
-} from '../../runner/dsh/types.js';
+} from '../../dsh/types.js';
 
 /** DshConfigBuilder 预取只依赖的 client 方法子集。 */
 export interface DshCatalogClient {

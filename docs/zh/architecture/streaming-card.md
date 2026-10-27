@@ -55,14 +55,14 @@ Run/Bash 卡片的 CardKit 2.0 单卡流式架构说明，覆盖数据流、状�
 
 核心模块：
 
-| 模块 | 职责 |
-|------|------|
-| `src/card/run-state.ts` | AgentEvent → 可渲染状态；终态幂等 |
-| `src/card/run-renderer.ts` | RunState → CardKit 2.0 JSON |
+| 模块                           | 职责                                                     |
+| ------------------------------ | -------------------------------------------------------- |
+| `src/card/run-state.ts`        | AgentEvent → 可渲染状态；终态幂等                        |
+| `src/card/run-renderer.ts`     | RunState → CardKit 2.0 JSON                              |
 | `src/card/run-card-session.ts` | controller-ready、producer-release、stream-done 生命周期 |
-| `src/bridge/index.ts` | active run、看门狗、session 同步、故障降级 |
-| `src/connector/index.ts` | `streamCard()` 与 `updateCard()` SDK 边界 |
-| `src/index.ts` | 消息入口与 stop control lane 分流 |
+| `src/bridge/index.ts`          | active run、看门狗、session 同步、故障降级               |
+| `src/connector/index.ts`       | `streamCard()` 与 `updateCard()` SDK 边界                |
+| `src/index.ts`                 | 消息入口与 stop control lane 分流                        |
 
 ## 4. RunState
 
@@ -78,21 +78,21 @@ Run/Bash 卡片的 CardKit 2.0 单卡流式架构说明，覆盖数据流、状�
 
 事件转移：
 
-| 输入 | 状态变化 |
-|------|----------|
-| system.init | 记录 sessionId |
-| assistant.thinking | 按 itemId 分块：同块逐字追加 reasoning（不插分隔符），换块开新面板，footer=thinking |
-| assistant.text | 合并相邻 text，footer=streaming |
-| assistant.tool_use | 首次见 id → 新增 running tool；同 id → 原地合并 input/summary（opencode 的 tool_call_update 回填命令），footer=tool_running |
-| user.tool_result | 匹配 tool id，置 ok/error 与 output |
-| final_answer | 写入 `finalAnswer`，并从进度 blocks 移除同一 item 的流式副本 |
-| result.success / result.error | finalizing（暂存 subtype/errorMsg，非终态） |
-| result 但 agent 无 final_answer 标记 | 将最后一条非空 assistant text 提升为 `finalAnswer`（source=inferred） |
-| CLI 进程退出（for-await 结束） + 仍 finalizing | done / error（lark-remote finally transition） |
-| 非零退出或 run 抛错 | error |
-| stdout 耗尽但无 result | error |
-| `/stop` 或停止按钮 | interrupted（可从 running 或 finalizing 转） |
-| 空闲看门狗 | idle_timeout |
+| 输入                                           | 状态变化                                                                                                                    |
+| ---------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
+| system.init                                    | 记录 sessionId                                                                                                              |
+| assistant.thinking                             | 按 itemId 分块：同块逐字追加 reasoning（不插分隔符），换块开新面板，footer=thinking                                         |
+| assistant.text                                 | 合并相邻 text，footer=streaming                                                                                             |
+| assistant.tool_use                             | 首次见 id → 新增 running tool；同 id → 原地合并 input/summary（opencode 的 tool_call_update 回填命令），footer=tool_running |
+| user.tool_result                               | 匹配 tool id，置 ok/error 与 output                                                                                         |
+| final_answer                                   | 写入 `finalAnswer`，并从进度 blocks 移除同一 item 的流式副本                                                                |
+| result.success / result.error                  | finalizing（暂存 subtype/errorMsg，非终态）                                                                                 |
+| result 但 agent 无 final_answer 标记           | 将最后一条非空 assistant text 提升为 `finalAnswer`（source=inferred）                                                       |
+| CLI 进程退出（for-await 结束） + 仍 finalizing | done / error（lark-remote finally transition）                                                                              |
+| 非零退出或 run 抛错                            | error                                                                                                                       |
+| stdout 耗尽但无 result                         | error                                                                                                                       |
+| `/stop` 或停止按钮                             | interrupted（可从 running 或 finalizing 转）                                                                                |
+| 空闲看门狗                                     | idle_timeout                                                                                                                |
 
 `finalizing` 是非终态：Claude Code CLI 2.x 在 main turn 结束写 `result` 事件后，若 turn 内启动了 `run_in_background` 任务，CLI 会等待后台任务退出才关闭 stream-json。所以 `result` 不再等于终态——只有 CLI 进程退出才算真正完成。卡片显示 `⏳ Claude · 完成中`（orange header），仍有 `⏹ 终止` 按钮（会杀掉主进程 + 后台子进程）。新消息依然按 workspace 串行队列排队等候，不打断后台等待。
 
@@ -116,13 +116,13 @@ Run/Bash 卡片的 CardKit 2.0 单卡流式架构说明，覆盖数据流、状�
 
 终态卡片：
 
-| terminal | Header | 注解 |
-|----------|--------|------|
-| done | ✅ Claude · 已完成 | subtype、无内容提示 |
-| error | ⚠️ Claude · 出错 | 错误摘要 |
-| interrupted | ⏹ Claude · 已中断 | 已被用户终止 |
-| idle_timeout | ⏱ Claude · 已超时 | 空闲分钟数 |
-| finalizing | ⏳ Claude · 完成中 | 非终态；**保留** ⏹ 终止按钮 |
+| terminal        | Header                           | 注解                                                                                    |
+| --------------- | -------------------------------- | --------------------------------------------------------------------------------------- |
+| done            | ✅ Claude · 已完成               | subtype、无内容提示                                                                     |
+| error           | ⚠️ Claude · 出错                 | 错误摘要                                                                                |
+| interrupted     | ⏹ Claude · 已中断                | 已被用户终止                                                                            |
+| idle_timeout    | ⏱ Claude · 已超时                | 空闲分钟数                                                                              |
+| finalizing      | ⏳ Claude · 完成中               | 非终态；**保留** ⏹ 终止按钮                                                             |
 | goal_continuing | ⏳ Claude · 本轮结束（目标继续） | 本轮 turn 已结束，但会话 goal 仍 active：任务没完成，宿主会自动起下一轮；不渲染 Compact |
 
 终态不渲染 footer 和停止按钮（`finalizing` 除外，详见上表）。

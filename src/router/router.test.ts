@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import type { Mock } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -16,7 +17,7 @@ import { SessionReaderRegistry } from '../session/registry.js';
 import { AppConfigSchema } from '../config/index.js';
 import type { AppConfig } from '../config/index.js';
 import type { AgentEvent, Runner } from '../runner/index.js';
-import type { AgentSessionReader } from '../runner/index.js';
+import type { AgentSessionReader } from '../session-contract.js';
 
 import {
   createStubAgentRegistry,
@@ -194,7 +195,7 @@ function createRouter(overrides?: {
   defaultAgent?: string;
   sessionReaderRegistry?: SessionReaderRegistry;
   projectsDir?: string; // For tests that need to read real session files
-  codex?: Partial<AppConfig['codex']>; // codex config overrides
+  codex?: Partial<AppConfig['agents']['codex']>; // codex config overrides
   cloneSession?: CloneSession;
 }) {
   const runner: Runner = overrides?.runner ?? createStubRunner({ withStatusInfo: true });
@@ -438,13 +439,7 @@ describe('CommandRouter', () => {
 
   it('/status shows current state', async () => {
     const { router, sessionStore, connector } = createRouter();
-    sessionStore.set('user1', {
-      sessions: new Map([['claude', 's1']]),
-      previousSessions: new Map(),
-      sessionCwds: new Map(),
-      arrivalSessions: new Map(),
-      cwd: '/tmp',
-    });
+    sessionStore.setSessionIdAndCwd('user1', 'claude', 's1', '/tmp');
     await router.handle('/status', ctx);
     const md = (connector._sent[0].input as { markdown: string }).markdown;
     expect(md).toContain('/tmp');
@@ -453,26 +448,14 @@ describe('CommandRouter', () => {
 
   it('/ps returns process status', async () => {
     const { router, sessionStore, connector } = createRouter();
-    sessionStore.set('user1', {
-      sessions: new Map([['claude', 's1']]),
-      previousSessions: new Map(),
-      sessionCwds: new Map(),
-      arrivalSessions: new Map(),
-      cwd: '/tmp',
-    });
+    sessionStore.setSessionIdAndCwd('user1', 'claude', 's1', '/tmp');
     await router.handle('/ps', ctx);
     expect((connector._sent[0].input as { text: string }).text).toContain('无进程');
   });
 
   it('/new clears sessionId', async () => {
     const { router, sessionStore } = createRouter();
-    sessionStore.set('user1', {
-      sessions: new Map([['claude', 's1']]),
-      previousSessions: new Map(),
-      sessionCwds: new Map(),
-      arrivalSessions: new Map(),
-      cwd: '/tmp',
-    });
+    sessionStore.setSessionIdAndCwd('user1', 'claude', 's1', '/tmp');
     await router.handle('/new', ctx);
     const entry = sessionStore.get('user1');
     expect(entry?.sessions?.get('claude') ?? '').toBe('');
@@ -483,13 +466,7 @@ describe('CommandRouter', () => {
     // /new 之后 /resume 提示"请先 /cd 设置工作目录"，但用户的 cwd
     // 还在 — 期望是只清 sessionId 保留 cwd。
     const { router, sessionStore } = createRouter();
-    sessionStore.set('user1', {
-      sessions: new Map([['claude', 's1']]),
-      previousSessions: new Map(),
-      sessionCwds: new Map(),
-      arrivalSessions: new Map(),
-      cwd: '/tmp',
-    });
+    sessionStore.setSessionIdAndCwd('user1', 'claude', 's1', '/tmp');
     await router.handle('/new', ctx);
     const entry = sessionStore.get('user1');
     expect(entry?.cwd).toBe('/tmp');
@@ -498,13 +475,7 @@ describe('CommandRouter', () => {
 
   it('/cd sets cwd and clears sessionId', async () => {
     const { router, sessionStore } = createRouter();
-    sessionStore.set('user1', {
-      sessions: new Map([['claude', 's1']]),
-      previousSessions: new Map(),
-      sessionCwds: new Map(),
-      arrivalSessions: new Map(),
-      cwd: '/tmp',
-    });
+    sessionStore.setSessionIdAndCwd('user1', 'claude', 's1', '/tmp');
     await router.handle(`/cd ${tmpDir}`, ctx);
     const entry = sessionStore.get('user1');
     // cmdCd canonicalizes via realpathSync, so cwd matches what Claude
@@ -537,13 +508,7 @@ describe('CommandRouter', () => {
 
   it('/cd nonexistent path returns error', async () => {
     const { router, sessionStore, connector } = createRouter();
-    sessionStore.set('user1', {
-      sessions: new Map([['claude', 's1']]),
-      previousSessions: new Map(),
-      sessionCwds: new Map(),
-      arrivalSessions: new Map(),
-      cwd: '/tmp',
-    });
+    sessionStore.setSessionIdAndCwd('user1', 'claude', 's1', '/tmp');
     await router.handle('/cd /nonexistent/path/xyz', ctx);
     expect(sessionStore.getCwd('user1')).toBe('/tmp');
     expect((connector._sent[0].input as { text: string }).text).toContain('不存在');
@@ -568,13 +533,7 @@ describe('CommandRouter', () => {
 
   it('/cd expands ~ to home directory, not relative to process.cwd()', async () => {
     const { router, sessionStore } = createRouter();
-    sessionStore.set('user1', {
-      sessions: new Map([['claude', 's1']]),
-      previousSessions: new Map(),
-      sessionCwds: new Map(),
-      arrivalSessions: new Map(),
-      cwd: tmpDir,
-    });
+    sessionStore.setSessionIdAndCwd('user1', 'claude', 's1', tmpDir);
     // Create a subdirectory under home to guarantee it exists on CI.
     const homeSubdir = path.join(os.homedir(), `.lark-router-test-${process.pid}`);
     fs.mkdirSync(homeSubdir, { recursive: true });
@@ -1024,13 +983,7 @@ describe('CommandRouter', () => {
     expect(cmds).toContain('ws.remove');
     expect(allButtons.find((a) => a.cmd === 'ws.use')?.name).toBe('proj');
 
-    sessionStore.set('user1', {
-      sessions: new Map([['claude', 's1']]),
-      previousSessions: new Map(),
-      sessionCwds: new Map(),
-      arrivalSessions: new Map(),
-      cwd: '/tmp',
-    });
+    sessionStore.setSessionIdAndCwd('user1', 'claude', 's1', '/tmp');
     await router.handle('/ws use proj', ctx);
     const entry = sessionStore.get('user1');
     // cmdWsUse canonicalizes via realpathSync to match Claude JSONL cwd.
@@ -1619,7 +1572,7 @@ describe('CommandRouter', () => {
   });
 
   /** Create a SessionReaderRegistry where only codex has content, others are empty stubs. */
-  function createCodexOnlyRegistry(codexReadSpy: ReturnType<typeof vi.fn>) {
+  function createCodexOnlyRegistry(codexReadSpy: Mock<AgentSessionReader['readSessionContent']>) {
     const codexReader: AgentSessionReader = {
       listSessions: () => ({ sessions: [], total: 0 }),
       getNewestSession: () => null,
@@ -1638,7 +1591,7 @@ describe('CommandRouter', () => {
   it('resume.use with agent field routes to correct agent reader', async () => {
     // Session exists in codex reader but NOT in claude reader.
     // If resume.use carries agent:'codex', it should find the session.
-    const codexReadSpy = vi.fn(() => ({
+    const codexReadSpy = vi.fn<AgentSessionReader['readSessionContent']>(() => ({
       events: [{ type: 'text', content: 'codex session tail' }],
       usage: undefined,
       aiTitle: undefined,
@@ -1664,7 +1617,7 @@ describe('CommandRouter', () => {
   it('resume.use WITHOUT agent falls back to defaultAgent and may miss session from another agent', async () => {
     // Session only exists in codex reader, not in claude (default).
     // Without agent field, resume.use falls back to claude reader → session not found.
-    const codexReadSpy = vi.fn(() => ({
+    const codexReadSpy = vi.fn<AgentSessionReader['readSessionContent']>(() => ({
       events: [{ type: 'text', content: 'codex session tail' }],
       usage: undefined,
       aiTitle: undefined,
@@ -1695,7 +1648,7 @@ describe('CommandRouter', () => {
     // 验证：/resume 卡片从 session content usage 透传 contextLimit，渲染
     // "Context - X (Y%)"（resume 是独立于 Run 卡片的用户可见路径）。
     // 缺失/错误会导致：恢复会话时看不到水位，只有完成卡能看到。
-    const codexReadSpy = vi.fn(() => ({
+    const codexReadSpy = vi.fn<AgentSessionReader['readSessionContent']>(() => ({
       events: [{ type: 'text', content: 'codex session tail' }],
       usage: {
         inputTokens: 100,
@@ -2363,13 +2316,7 @@ describe('CommandRouter', () => {
       const { runner, release } = createBackgroundRunningRunner(events);
       const { router, sessionStore, connector } = createRouter({ runner, projectsDir });
       const canonicalB = fs.realpathSync(dirB);
-      sessionStore.set(ctx.userId, {
-        sessions: new Map([['claude', sid]]),
-        previousSessions: new Map(),
-        sessionCwds: new Map(),
-        arrivalSessions: new Map(),
-        cwd: canonicalB,
-      });
+      sessionStore.setSessionIdAndCwd(ctx.userId, 'claude', sid, canonicalB);
 
       const runPromise = router.handle('continue', ctx);
       await new Promise((r) => setImmediate(r));
@@ -2454,13 +2401,7 @@ describe('CommandRouter', () => {
       const { runner, release } = createBackgroundRunningRunner(events);
       const { router, sessionStore, connector } = createRouter({ runner, projectsDir });
       const canonical = fs.realpathSync(dir);
-      sessionStore.set(ctx.userId, {
-        sessions: new Map([['claude', sid]]),
-        previousSessions: new Map(),
-        sessionCwds: new Map(),
-        arrivalSessions: new Map(),
-        cwd: canonical,
-      });
+      sessionStore.setSessionIdAndCwd(ctx.userId, 'claude', sid, canonical);
 
       const runPromise = router.handle('continue', ctx);
       await new Promise((r) => setImmediate(r));
@@ -2541,7 +2482,7 @@ describe('CommandRouter', () => {
       sessionStore.setCwd('user1', wsDir);
       await router.handle('/ws save ws1', ctx);
       // Clear session and switch to different directory first
-      sessionStore.set('user1', { sessions: new Map(), previousSessions: new Map(), cwd: tmpDir });
+      sessionStore.setCwd('user1', tmpDir);
 
       // Now use the cwd - should auto-resume
       await router.handle('/ws use ws1', ctx);
@@ -2723,6 +2664,7 @@ describe('CommandRouter', () => {
       const fakeSession = {
         sessionId: 'aaaaaaaa-1111-2222-3333-444444444444',
         summary: 'test session',
+        mtime: Date.now(),
       };
       const readerWithSession: AgentSessionReader = {
         listSessions: () => ({ sessions: [], total: 0 }),
@@ -2766,13 +2708,7 @@ describe('CommandRouter', () => {
       const { router, sessionStore, connector } = createRouter();
       sessionStore.setCwd('user1', fs.realpathSync(tmpDir));
       await router.handle('/ws save proj', ctx);
-      sessionStore.set('user1', {
-        sessions: new Map([['claude', 's1']]),
-        previousSessions: new Map(),
-        sessionCwds: new Map(),
-        arrivalSessions: new Map(),
-        cwd: '/tmp',
-      });
+      sessionStore.setSessionIdAndCwd('user1', 'claude', 's1', '/tmp');
       await router.handleCardAction({ cmd: 'ws.use', name: 'proj' }, ctx);
       const entry = sessionStore.get('user1');
       // cmdWsUse canonicalizes via realpathSync to match Claude JSONL cwd.
@@ -3249,14 +3185,17 @@ describe('CommandRouter', () => {
   });
 
   // Config CardKit 2.0 行为测试（2026-07-02）
-  // 注意：config.toggle/set/input 只改内存 pendingConfig，不写盘
+  // 注意：config.set/input 只改内存 pendingConfig，不写盘
   // save 才一次性写盘，cancel 清空 pendingConfig
 
-  it('config.toggle updates pendingConfig without writing disk', async () => {
+  it('config.set updates pendingConfig without writing disk', async () => {
     const { router, connector } = createRouter();
 
-    // 点击 toggle（inboundMedia.enabled 默认 true → false）
-    await router.handleCardAction({ cmd: 'config.toggle', key: 'inboundMedia.enabled' }, ctx);
+    // 点下拉（logging.level 默认 info → debug）
+    await router.handleCardAction(
+      { cmd: 'config.set', key: 'logging.level', option: 'debug' },
+      ctx,
+    );
 
     // 2026-07-04: 原地更新路径走 connector.updateCard，卡片进 _cards 而非 _sent
     expect(connector._sent.length).toBe(0);
@@ -3264,7 +3203,7 @@ describe('CommandRouter', () => {
 
     // pendingConfig 只改内存，不写盘
     expect(router.pendingConfig).not.toBeNull();
-    expect(router.pendingConfig!.inboundMedia.enabled).toBe(false);
+    expect(router.pendingConfig!.logging.level).toBe('debug');
     expect(fs.existsSync(path.join(tmpDir, 'config.yaml'))).toBe(false);
   });
 
@@ -3332,30 +3271,39 @@ describe('CommandRouter', () => {
   // CardKit 2.0 回调经 enqueueImmediate 不进 bridge 串行队列；多次快速点击
   // toggle 会让两个 patch 请求乱序到达飞书。router 内部用 configActionQueue
   // Promise chain 串行化所有 config.* 动作。此测试断言：
-  // 1) 两次连续 toggle 后 pendingConfig 反映两次翻转（true→false→true）
-  // 2) 两次 toggle 都各自触发了一次卡片更新（_cards 长度 +2）
-  it('config.toggle serializes concurrent actions through configActionQueue', async () => {
+  // 1) 并发两次赋值后 pendingConfig 是**后一次**的值（两次都进了链，没有丢更新）
+  // 2) 两次动作各触发一次卡片更新（_cards 长度 +2）
+  it('config.set serializes concurrent actions through configActionQueue', async () => {
     const { router, connector } = createRouter();
     const cardsBefore = connector._cards.length;
 
-    // 并发触发两次 toggle，不 await 第一个（模拟用户快速双击）
-    const p1 = router.handleCardAction({ cmd: 'config.toggle', key: 'inboundMedia.enabled' }, ctx);
-    const p2 = router.handleCardAction({ cmd: 'config.toggle', key: 'inboundMedia.enabled' }, ctx);
+    // 并发触发两次赋值，不 await 第一个（模拟用户快速连点下拉）
+    const p1 = router.handleCardAction(
+      { cmd: 'config.set', key: 'logging.level', option: 'debug' },
+      ctx,
+    );
+    const p2 = router.handleCardAction(
+      { cmd: 'config.set', key: 'logging.level', option: 'warn' },
+      ctx,
+    );
     await Promise.all([p1, p2]);
 
-    // 两次 toggle = 回到初始状态 (true → false → true)
-    expect(router.pendingConfig?.inboundMedia.enabled).toBe(true);
-    // 两次 toggle 各自触发一次卡片更新
+    // 两次都落进共享草稿，最终值是后到达的那次
+    expect(router.pendingConfig?.logging.level).toBe('warn');
+    // 两次动作各自触发一次卡片更新
     expect(connector._cards.length).toBe(cardsBefore + 2);
   });
 
   it('config.save writes all pending changes to disk', async () => {
-    // 用 inboundMedia.enabled（boolean）+ idle.watchdogMinutes（数值）测 save 路径
+    // 用 logging.level（下拉）+ idle.watchdogMinutes（数值）测 save 路径
     const { router, connector: _connector } = createRouter({ idle: { watchdogMinutes: 10 } });
     const configPath = router.configPath;
 
-    // 先 toggle boolean（默认 true → false）
-    await router.handleCardAction({ cmd: 'config.toggle', key: 'inboundMedia.enabled' }, ctx);
+    // 先改下拉（两项都断在磁盘内容里：level + watchdogMinutes）
+    await router.handleCardAction(
+      { cmd: 'config.set', key: 'logging.level', option: 'debug' },
+      ctx,
+    );
     // 再修改 input
     await router.handleCardAction(
       {
@@ -3374,7 +3322,7 @@ describe('CommandRouter', () => {
 
     // 磁盘文件应一次性写入所有改动（configPath 存在且包含更新后的值）
     const diskContent = fs.readFileSync(configPath, 'utf-8');
-    expect(diskContent).toContain('enabled: false');
+    expect(diskContent).toContain('level: debug');
     expect(diskContent).toContain('watchdogMinutes: 30');
 
     // pendingConfig 应清空
@@ -3443,7 +3391,10 @@ describe('CommandRouter', () => {
 
   it('/s shows the hot-updated approval mode after runner.updateApprovalMode', async () => {
     let extras: Record<string, string> = { mode: 'acp', permissionMode: 'manual' };
-    const runner: Runner = {
+    const runner: Runner & {
+      getStatusInfo: () => { kind: 'kimi'; model: string; extras: Record<string, string> };
+      updateApprovalMode: (settings: { permissionMode?: string }) => Promise<void>;
+    } = {
       isRunning: false,
       stop: async () => {},
       killOrphan: () => {},
@@ -3457,13 +3408,7 @@ describe('CommandRouter', () => {
       },
     };
     const { router, sessionStore, connector } = createRouter({ runner });
-    sessionStore.set('user1', {
-      sessions: new Map([['kimi', 's1']]),
-      previousSessions: new Map(),
-      sessionCwds: new Map(),
-      arrivalSessions: new Map(),
-      cwd: '/tmp',
-    });
+    sessionStore.setSessionIdAndCwd('user1', 'kimi', 's1', '/tmp');
 
     await router.handle('/s', ctx);
     const before = (connector._sent[0].input as { markdown: string }).markdown;
@@ -3503,13 +3448,22 @@ describe('CommandRouter', () => {
     const cardB = { ...ctx, messageId: 'om-config-B' };
 
     // 两张卡都先交互一次（登记为已知 config 卡）
-    await router.handleCardAction({ cmd: 'config.toggle', key: 'inboundMedia.enabled' }, cardA);
-    await router.handleCardAction({ cmd: 'config.toggle', key: 'inboundMedia.enabled' }, cardB);
-    expect(router.pendingConfig?.inboundMedia.enabled).toBe(true);
+    await router.handleCardAction(
+      { cmd: 'config.set', key: 'logging.level', option: 'debug' },
+      cardA,
+    );
+    await router.handleCardAction(
+      { cmd: 'config.set', key: 'logging.level', option: 'debug' },
+      cardB,
+    );
+    expect(router.pendingConfig?.logging.level).toBe('debug');
 
-    // 第三次交互只点 A：A 与 B 都必须被刷到「同一份草稿」（enabled=false）
+    // 第三次交互只点 A：A 与 B 都必须被刷到「同一份草稿」（level=warn）
     connector._updates.length = 0;
-    await router.handleCardAction({ cmd: 'config.toggle', key: 'inboundMedia.enabled' }, cardA);
+    await router.handleCardAction(
+      { cmd: 'config.set', key: 'logging.level', option: 'warn' },
+      cardA,
+    );
 
     const patchedIds = connector._updates.map((u) => u.messageId).sort();
     expect(patchedIds).toEqual(['om-config-A', 'om-config-B']);
@@ -3608,13 +3562,7 @@ describe('CommandRouter', () => {
 
   it('/s is alias for /status', async () => {
     const { router, sessionStore, connector } = createRouter();
-    sessionStore.set('user1', {
-      sessions: new Map([['claude', 's1']]),
-      previousSessions: new Map(),
-      sessionCwds: new Map(),
-      arrivalSessions: new Map(),
-      cwd: '/tmp',
-    });
+    sessionStore.setSessionIdAndCwd('user1', 'claude', 's1', '/tmp');
     await router.handle('/s', ctx);
     const md = (connector._sent[0].input as { markdown: string }).markdown;
     expect(md).toContain('/tmp');
@@ -3804,7 +3752,6 @@ describe('/active card pagination', () => {
       claude: { model: 'claude-opus-4-8', stopGraceMs: 5000 },
     });
     const bridge = new Bridge({
-      runner,
       agentRegistry: createStubAgentRegistry(runner),
       sessionReaderRegistry: createStubSessionReaderRegistry(),
       connector,
@@ -3983,7 +3930,6 @@ describe('/active card must use CardKit 2.0 (not 1.x action container)', () => {
       claude: { model: 'claude-opus-4-8', stopGraceMs: 5000 },
     });
     const bridge = new Bridge({
-      runner,
       agentRegistry: createStubAgentRegistry(runner),
       sessionReaderRegistry: createStubSessionReaderRegistry(),
       connector,
@@ -4053,7 +3999,6 @@ describe('/active card must use CardKit 2.0 (not 1.x action container)', () => {
 
     let clearRunnersCalled = false;
     const bridge = new Bridge({
-      runner,
       agentRegistry: createStubAgentRegistry(runner),
       sessionReaderRegistry: createStubSessionReaderRegistry(),
       connector,
@@ -4186,8 +4131,11 @@ describe('config switch agent sends Resume card', () => {
     const { router, sessionStore, connector } = createRouter();
     sessionStore.setCwd('user1', dir);
 
-    // Toggle a non-agent config and save
-    await router.handleCardAction({ cmd: 'config.toggle', key: 'inboundMedia.enabled' }, ctx);
+    // 改一项与 agent 无关的配置再保存
+    await router.handleCardAction(
+      { cmd: 'config.set', key: 'logging.level', option: 'debug' },
+      ctx,
+    );
     const sentBefore = connector._sent.length;
     await router.handleCardAction({ cmd: 'config.save' }, ctx);
 
@@ -4382,7 +4330,6 @@ describe('/active card stop buttons must have tag:plain_text', () => {
       claude: { model: 'claude-opus-4-8', stopGraceMs: 5000 },
     });
     const bridge = new Bridge({
-      runner,
       agentRegistry: createStubAgentRegistry(runner),
       sessionReaderRegistry: createStubSessionReaderRegistry(),
       connector,

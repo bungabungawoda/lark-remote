@@ -160,7 +160,7 @@ export function cumulativeUsageFields(t: {
   cacheRead: number;
   cacheCreation: number;
 }): Pick<
-  import('../../runner/types.js').AgentSessionUsage,
+  import('../../session-contract.js').AgentSessionUsage,
   | 'cumulativeTotalTokens'
   | 'cumulativeInputTokens'
   | 'cumulativeOutputTokens'

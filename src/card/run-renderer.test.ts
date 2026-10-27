@@ -2370,6 +2370,8 @@ describe('renderRunCard (CardKit 2.0)', () => {
       type: 'system',
       subtype: 'init',
       session_id: 'run-2',
+      cwd: '/home/user/project',
+      model: 'test-model',
     });
     state = reduceRunState(state, {
       type: 'result',

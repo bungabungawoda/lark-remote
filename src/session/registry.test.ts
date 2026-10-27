@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import { SessionReaderRegistry } from './registry.js';
-import type { AgentSessionReader } from '../runner/index.js';
+import type { AgentSessionReader } from '../session-contract.js';
 
 // Build a stub reader that returns canned data.
 function stubReader(): AgentSessionReader {

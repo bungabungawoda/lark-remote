@@ -18,6 +18,7 @@ import {
   createStubConnector,
   createStubRunner,
   createStubSessionReaderRegistry,
+  type StubConnector,
 } from './bridge-stubs.js';
 
 type RouterOpts = ConstructorParameters<typeof CommandRouter>[0];
@@ -27,7 +28,9 @@ export interface RouterFixtureOpts {
   tmpDir: string;
   runner?: Runner;
   sessionStore?: SessionStore;
-  connector?: ConstructorParameters<typeof Bridge>[0]['connector'];
+  /** 不传时用共享 createStubConnector()；connector 返回值保持 StubConnector
+   *  精确类型（而非 BridgeChannel 联合），`_sent` 等记录字段才可见。 */
+  connector?: StubConnector;
   bridge?: Bridge;
   /** 完整 config；与 configPatch 二选一（此优先级更高）。 */
   config?: AppConfig;

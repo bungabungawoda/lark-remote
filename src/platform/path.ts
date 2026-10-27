@@ -9,11 +9,29 @@
  * 全部函数接受显式 `platform` 参数（默认 currentPlatform），使 win32 语义
  * 可在任意宿主的单元测试中验证。
  */
+import fs from 'node:fs';
 import path from 'node:path';
 import { currentPlatform, isWin32 } from './select.js';
 
 export interface PathOptions {
   platform?: NodeJS.Platform;
+}
+
+/**
+ * realpath 归一（macOS `/tmp` → `/private/tmp`），失败回退原样输入。
+ *
+ * 各 session reader 此前有三种口径：静默回退（opencode）、回退 + warn（kimi
+ * 单会话读）、裸调让一次 ENOENT 把整张会话列表清掉（kimi list）。统一成
+ * 「回退优先于丢结果」，失败原因交给调用方记日志（`onFailure`），因为
+ * ENOENT（陈旧 cwd）是正常空态、EACCES/EBUSY 才需要留痕。
+ */
+export function safeRealpath(cwd: string, onFailure?: (err: unknown) => void): string {
+  try {
+    return fs.realpathSync(cwd);
+  } catch (err) {
+    onFailure?.(err);
+    return cwd;
+  }
 }
 
 function resolveOptions(opts: PathOptions | undefined): { platform: NodeJS.Platform } {

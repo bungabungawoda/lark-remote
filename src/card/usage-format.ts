@@ -1,32 +1,20 @@
 /**
  * Format session/run usage stats (context, compact count, tokens, cost) into
  * the display strings shown on cards. Pure — no Router state.
+ *
+ * 归属 card/：渲染层（run-renderer）与 router 都只消费它的展示字符串，此前
+ * 住在 router/ 让它成为 card→router 的唯一理由。
  */
 
-import type { ActiveRunSnapshot } from '../bridge/index.js';
+import type { UsageSnapshot } from '../session-contract.js';
 
 // --- Utility ---
 
-export interface SessionDisplayUsage {
-  contextLength?: number;
-  /** 当前模型 context window 上限（仅 codex 提供）；用于渲染 "Context - X (Y%)"。 */
-  contextLimit?: number;
-  compactCount?: number;
-  cacheReadTokens?: number;
-  cacheCreationTokens?: number;
-}
-
-export function activeRunUsage(
-  activeRun: ActiveRunSnapshot | undefined,
-): SessionDisplayUsage | undefined {
-  if (!activeRun || activeRun.contextLength === undefined) return undefined;
-  return {
-    contextLength: activeRun.contextLength,
-    compactCount: activeRun.compactCount,
-    cacheReadTokens: activeRun.cacheReadTokens,
-    cacheCreationTokens: activeRun.cacheCreationTokens,
-  };
-}
+/** `formatUsageStats` 只读这几项：会话/进度卡片上的紧凑用量行。 */
+export type SessionDisplayUsage = Pick<
+  UsageSnapshot,
+  'contextLength' | 'contextLimit' | 'compactCount' | 'cacheReadTokens' | 'cacheCreationTokens'
+>;
 
 /**
  * Format number to human-readable unit string.
@@ -55,37 +43,11 @@ function formatTokenK(n: number): string {
  * @param options - Optional display options (showResult adds result line)
  */
 export function formatUsageStats(
-  usage?: {
-    contextLength?: number;
-    contextLimit?: number;
-    compactCount?: number;
-    /** 压缩前上下文水位；与 contextLength（压缩后）成对出现在 Compact 卡上。 */
-    compactPreContextLength?: number;
-    cacheReadTokens?: number;
-    cacheCreationTokens?: number;
-    /** Agent-declared total; when present the display uses max(total, sum of parts). */
-    totalTokens?: number;
-    /** Real input tokens from the agent's result event. When present, used
-     *  directly for the "Input token" line instead of contextLength+cache. */
-    inputTokens?: number;
-    /** Real output tokens from the agent's result event. When present, used
-     *  directly instead of the 10% estimate. */
-    outputTokens?: number;
-    /** Session-cumulative total/input/output (all runs), from session jsonl. When
-     *  present, appended as "· 累计 X" on the Total/Input/Output lines. */
-    cumulativeTotalTokens?: number;
-    cumulativeInputTokens?: number;
-    cumulativeOutputTokens?: number;
-    /** Session-cumulative cache read tokens (all runs). */
-    cumulativeCacheReadTokens?: number;
-    /** Session-cumulative cache creation tokens (all runs). */
-    cumulativeCacheCreationTokens?: number;
+  usage?: UsageSnapshot & {
     /** 实际生效模型（system.init 携带）。非空字符串才显示。 */
     model?: string;
     /** 本次 run 花费（USD）。存在才显示。 */
     costUsd?: number;
-    /** 推理 token（pi 提供）。> 0 才显示。 */
-    reasoningTokens?: number;
   },
   options?: {
     showResult?: boolean;

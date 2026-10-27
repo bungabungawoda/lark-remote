@@ -18,8 +18,9 @@ import { FakeDshServer } from '../../../tests/lib/fake-dsh-server.js';
 import { makeTempDir } from '../../../tests/lib/temp-dir.js';
 import { sleep, waitFor } from '../../../tests/lib/wait-for.js';
 import type { DshDaemon } from './daemon.js';
-import type { DshAssistantStreamFrame, DshSessionEvent } from './types.js';
-import type { AgentEvent, AgentSessionReader } from '../types.js';
+import type { DshAssistantStreamFrame, DshSessionEvent } from '../../dsh/types.js';
+import type { AgentSessionReader } from '../../session-contract.js';
+import type { AgentEvent } from '../types.js';
 
 const CWD = '/home/user/project';
 const SID = 'aaaaaaaa-1111-2222-3333-444444444444';
@@ -1334,7 +1335,8 @@ describe('DshClient / DshRunner integration', () => {
     const runner = new DshRunner({ kind: 'dsh', sessionReader: stubReader, host: server.baseUrl });
     const events = await collect(runner.run('hi', { cwd: CWD, sessionId: SID }));
     const prompts = events.filter(
-      (e) => e.type === 'assistant' && e.message.content.some((c) => c.type === 'text'),
+      (e): e is Extract<AgentEvent, { type: 'assistant' }> =>
+        e.type === 'assistant' && e.message.content.some((c) => c.type === 'text'),
     );
     expect(prompts.length).toBeGreaterThan(0);
     const text = prompts[0].message.content.find((c) => c.type === 'text');
@@ -1457,7 +1459,7 @@ describe('DshClient / DshRunner integration', () => {
 
   it('removes the Feishu approval when the Host resolves it elsewhere', async () => {
     server = new FakeDshServer();
-    let approvalId: string | undefined;
+    let approvalId: string | number | undefined;
     server.register('session/prompt', () => ({ ok: true, value: { accepted: true } }));
     server.setEventFrames([
       {
@@ -1690,7 +1692,7 @@ describe('DshClient / DshRunner integration', () => {
 
   it('removes the Feishu question when the Host resolves it elsewhere', async () => {
     server = new FakeDshServer();
-    let questionId: string | undefined;
+    let questionId: string | number | undefined;
     server.register('session/prompt', () => ({ ok: true, value: { accepted: true } }));
     server.setEventFrames([
       questionWaterfall('q-answered-elsewhere', [
@@ -2321,7 +2323,7 @@ describe('DshClient / DshRunner integration', () => {
       'already running',
     );
     await runner.stop({ immediate: true });
-    await iterator.return?.();
+    await iterator.return?.(undefined);
   });
 
   it('stop() sends session/cancel', async () => {
@@ -2343,7 +2345,7 @@ describe('DshClient / DshRunner integration', () => {
     await iterator.next();
     await runner.stop({ immediate: true });
     expect(cancelled).toBe(true);
-    await iterator.return?.();
+    await iterator.return?.(undefined);
   });
 
   it('stop during startup cancels the created session and does not prompt', async () => {
@@ -2374,7 +2376,7 @@ describe('DshClient / DshRunner integration', () => {
     const firstResult = await first;
     // 必须产出 interrupted result（不能裸 return——调用方依赖 result 收尾 run 卡）
     expect(firstResult.value).toMatchObject({ type: 'result', subtype: 'interrupted' });
-    await iterator.return?.();
+    await iterator.return?.(undefined);
     // create 不跟随 run abort（abort 会丢掉刚建的 sessionId），而是落定后在后台补
     // cancel：/stop 立即释放队列，孤儿 session 仍会被收起。
     expect(await waitFor(() => cancelCalled, 2000)).toBe(true);
@@ -2407,7 +2409,7 @@ describe('DshClient / DshRunner integration', () => {
     expect(outcome).toMatchObject({ status: 'unconfirmed', sessionId: SID });
     expect(cancels).toBe(1);
     await pending.catch(() => undefined);
-    await iterator.return?.();
+    await iterator.return?.(undefined);
   });
 
   /**
@@ -2468,7 +2470,7 @@ describe('DshClient / DshRunner integration', () => {
     expect(cancelCalled).toBe(false);
     expect(store.list()).toEqual([]);
     await pending.catch(() => undefined);
-    await iterator.return?.();
+    await iterator.return?.(undefined);
   });
 
   /**
@@ -2502,7 +2504,7 @@ describe('DshClient / DshRunner integration', () => {
     expect(outcome).toMatchObject({ status: 'cancelled', sessionId: SID });
     expect(cancels).toBe(1);
     await pending.catch(() => undefined);
-    await iterator.return?.();
+    await iterator.return?.(undefined);
   });
 
   /**
@@ -2534,7 +2536,7 @@ describe('DshClient / DshRunner integration', () => {
     expect(outcome).toMatchObject({ status: 'unconfirmed', sessionId: SID });
     expect(cancels).toBe(2);
     await pending.catch(() => undefined);
-    await iterator.return?.();
+    await iterator.return?.(undefined);
   });
 
   /**
@@ -2584,7 +2586,7 @@ describe('DshClient / DshRunner integration', () => {
     expect(updates[0]).toMatchObject({ itemId: 'late-item', action: { kind: 'remove' } });
     expect(cancelCalled).toBe(false);
     await pending.catch(() => undefined);
-    await iterator.return?.();
+    await iterator.return?.(undefined);
   });
 
   /**
@@ -2633,7 +2635,7 @@ describe('DshClient / DshRunner integration', () => {
     expect(await stopPromise).toMatchObject({ status: 'cancelled' });
     await runner.stop({ immediate: true });
     await secondTurn.catch(() => undefined);
-    await second.return?.();
+    await second.return?.(undefined);
   });
 
   /**
@@ -2683,7 +2685,7 @@ describe('DshClient / DshRunner integration', () => {
 
     await runner.stop({ immediate: true });
     await secondTurn.catch(() => undefined);
-    await second.return?.();
+    await second.return?.(undefined);
   });
 
   it('inflight markers are recorded, cleared and reconciled on startup', async () => {

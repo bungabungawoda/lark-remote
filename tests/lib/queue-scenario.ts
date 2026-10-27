@@ -12,6 +12,7 @@ import {
   createStubRunner,
   createStubSessionReaderRegistry,
 } from './bridge-stubs.js';
+import { waitForOrThrow } from './wait-for.js';
 
 export interface TwoTaskQueueScenario {
   /** 拦截到的 updateCard 调用（task 状态卡 PATCH）。 */
@@ -58,6 +59,7 @@ export async function setupTwoTaskQueueScenario(
   });
 
   // Task 1: starts immediately, blocks
+  const firstMessageId = opts.firstMessageId ?? 'msg-1';
   bridge.enqueue(
     cwd,
     async () => {
@@ -67,14 +69,13 @@ export async function setupTwoTaskQueueScenario(
       taskMeta: {
         userId: 'u1',
         chatId: 'c1',
-        messageId: opts.firstMessageId ?? 'msg-1',
+        messageId: firstMessageId,
         messagePreview: opts.firstMessagePreview ?? 'long task',
       },
     },
   );
 
-  // Give task1 time to start
-  await new Promise((resolve) => setTimeout(resolve, 50));
+  await waitForOrThrow(() => bridge.hasTaskBegan(firstMessageId));
 
   // Task 2: queued behind task 1 (taskList.length > 1 triggers queue card)
   bridge.enqueue(cwd, async () => {}, {
@@ -86,14 +87,11 @@ export async function setupTwoTaskQueueScenario(
     },
   });
 
-  // Wait for queue card to be sent
-  await new Promise((resolve) => setTimeout(resolve, 100));
-
   // Verify initial queue card was sent (header: orange). 头部有两态：前面还有
   // 等待中的消息时是「⏳ 消息排队中」；前面为空、只等当前执行的任务时是
   // 「⏳ 等待当前任务结束」。本场景 task2 前面只有正在跑的 task1 → 后者。
   // FIXED: Use header.title?.content instead of String(header?.title)
-  const initialCards = connector._sent.filter((s: { input: unknown }) => {
+  const isQueueCard = (s: { input: unknown }): boolean => {
     const inp = s.input as Record<string, unknown>;
     const card = inp.card as Record<string, unknown> | undefined;
     if (!card) return false;
@@ -103,7 +101,10 @@ export async function setupTwoTaskQueueScenario(
       header?.template === 'orange' &&
       (titleContent.includes('排队') || titleContent.includes('等待当前任务结束'))
     );
-  });
+  };
+  // 排队卡的发送是异步的：等到它真的落地，别用固定 sleep 赌时序。
+  await waitForOrThrow(() => connector._sent.some(isQueueCard));
+  const initialCards = connector._sent.filter(isQueueCard);
 
   return {
     updateCardCalls,

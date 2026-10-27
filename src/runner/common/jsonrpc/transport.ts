@@ -24,6 +24,11 @@ import {
 } from '../../../platform/agent-stopper.js';
 import { getLogger } from '../../../logger/index.js';
 
+/** 日志用的错误摘要（onClose 的 reason 仍是稳定分类码）。 */
+function describeErr(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
 /** Max bytes for a single line before we disconnect (10MB). */
 const MAX_LINE_BYTES = 10 * 1024 * 1024;
 
@@ -259,8 +264,8 @@ export class JsonlRpcTransport {
       // 避免大消息/突发消息在 Node 内部无限缓冲。
       this.writeQueue.push(Buffer.from(JSON.stringify(msg) + '\n', 'utf8'));
       this.flush();
-    } catch {
-      this.handleClose('epipe');
+    } catch (err) {
+      this.handleClose('epipe', describeErr(err));
     }
   }
 
@@ -283,7 +288,7 @@ export class JsonlRpcTransport {
       try {
         const ok = stdin.write(chunk, (err) => {
           if (err) {
-            this.handleClose('epipe');
+            this.handleClose('epipe', describeErr(err));
           }
         });
         if (!ok) {
@@ -292,8 +297,8 @@ export class JsonlRpcTransport {
         } else {
           next();
         }
-      } catch {
-        this.handleClose('epipe');
+      } catch (err) {
+        this.handleClose('epipe', describeErr(err));
       }
     };
     next();
@@ -340,9 +345,10 @@ export class JsonlRpcTransport {
     this.stoppers.unregister(this.agent, reg.pid, reg.stopper);
   }
 
-  private handleClose(reason: string): void {
+  private handleClose(reason: string, detail?: string): void {
     if (this._closed) return;
     this._closed = true;
+    const dropped = this.writeQueue.length;
     this.writeQueue = [];
     // Remove the exit listener to avoid double-firing
     if (this.proc) {
@@ -374,6 +380,11 @@ export class JsonlRpcTransport {
     // 统一关闭出口：EPIPE/超长行/进程 error 都必须通知上层（connection-manager
     // 靠 onClose 删除 slot、client 靠它 failPending），否则 slot 悬挂死连接。
     this.events?.onClose(reason);
-    getLogger().info(`[jsonrpc-transport] closed: ${reason}`);
+    // reason 是给上层的稳定分类码；原始 err 与被丢弃的排队条数只进日志，
+    // 否则「stdin 写失败」到底写了什么、丢了什么都查不出来。
+    const suffix = [detail, dropped > 0 ? `${dropped} queued message(s) dropped` : undefined]
+      .filter(Boolean)
+      .join('; ');
+    getLogger().info(`[jsonrpc-transport] closed: ${reason}${suffix ? ` (${suffix})` : ''}`);
   }
 }

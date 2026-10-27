@@ -1,4 +1,5 @@
 import {
+  isRunActive,
   isRunTerminal,
   type RunBlock,
   type RunNotice,
@@ -23,7 +24,7 @@ import { countCardElements, MAX_CARD_ELEMENTS } from './card-budget.js';
 import { displayWidth, truncateToDisplayWidth } from '../common/text-width.js';
 import { isContentFilterFailure } from '../common/turn-failure.js';
 import { formatClock, formatTimestamp } from './time.js';
-import { formatUsageStats } from '../router/usage-format.js';
+import { formatUsageStats } from './usage-format.js';
 import { renderApprovalArea, renderApprovalAreaCompact } from './approval-render.js';
 
 const REASONING_BYTES = 4_500;
@@ -519,7 +520,7 @@ const EXTREME_TIER: BudgetTierConfig = {
 function actionButtonList(state: RunState, options: RunCardRenderOptions): object[] {
   const actionButtons: object[] = [];
   // finalizing 也显示停止按钮（进程未退出，用户可 /stop）
-  const showStop = state.terminal === 'running' || state.terminal === 'finalizing';
+  const showStop = isRunActive(state.terminal);
   if (showStop) {
     actionButtons.push(stopButton(state.runId));
   }
@@ -1388,35 +1389,17 @@ function buildSummaryContent(
         ? '\n\n🗜 Compact 完成'
         : '\n\n（未返回内容）';
 
-    const usageStatsStr = formatUsageStats(
-      {
-        contextLength: state.contextLength,
-        contextLimit: state.contextLimit,
-        compactCount: state.compactCount,
-        compactPreContextLength: state.compactPreContextLength,
-        cacheReadTokens: state.cacheReadTokens,
-        cacheCreationTokens: state.cacheCreationTokens,
-        totalTokens: state.totalTokens,
-        inputTokens: state.inputTokens,
-        outputTokens: state.outputTokens,
-        cumulativeTotalTokens: state.cumulativeTotalTokens,
-        cumulativeInputTokens: state.cumulativeInputTokens,
-        cumulativeOutputTokens: state.cumulativeOutputTokens,
-        cumulativeCacheReadTokens: state.cumulativeCacheReadTokens,
-        cumulativeCacheCreationTokens: state.cumulativeCacheCreationTokens,
-        model: state.model,
-        costUsd: state.costUsd,
-        reasoningTokens: state.reasoningTokens,
-      },
-      {
-        showResult: true,
-        result,
-        // 本轮结束但目标继续：不能报"已完成"，也不能说"出错"。
-        ...(state.terminal === 'goal_continuing'
-          ? { completedLabel: '⏳ 本轮结束 · 目标仍在继续' }
-          : {}),
-      },
-    );
+    // RunState 的用量字段就是 formatUsageStats 的入参形态（同为
+    // `UsageSnapshot`）——原先这里逐字段抄了 17 行，加一个字段要同时改
+    // RunState、FinishMeta 和这张清单（§9.21）。
+    const usageStatsStr = formatUsageStats(state, {
+      showResult: true,
+      result,
+      // 本轮结束但目标继续：不能报"已完成"，也不能说"出错"。
+      ...(state.terminal === 'goal_continuing'
+        ? { completedLabel: '⏳ 本轮结束 · 目标仍在继续' }
+        : {}),
+    });
 
     elements.push(markdownDiv(usageStatsStr + empty));
 

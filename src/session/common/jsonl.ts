@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import { getLogger } from '../../logger/index.js';
 
 /**
  * Stream a JSONL file line-by-line using chunked reads.
@@ -71,7 +72,14 @@ function forEachJsonlLineCore(
   let fd: number;
   try {
     fd = fs.openSync(filePath, 'r');
-  } catch {
+  } catch (err) {
+    // ENOENT 是正常空态（陈旧 cwd / 会话已被清理）；其余（EACCES/EBUSY…）
+    // 必须留痕：否则「文件打不开」在 /resume 上与「没有会话」不可区分。
+    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
+      getLogger().warn(
+        `[jsonl] cannot open ${filePath}: ${(err as Error)?.message ?? String(err)}`,
+      );
+    }
     return false;
   }
 

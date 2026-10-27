@@ -3,7 +3,7 @@
  * any content. Feishu cards have a hard size budget; a long answer must spill
  * rather than being silently truncated inside the progress card.
  */
-export const FINAL_ANSWER_CHUNK_BYTES = 20_000;
+const FINAL_ANSWER_CHUNK_BYTES = 20_000;
 
 export function splitFinalAnswer(
   text: string,

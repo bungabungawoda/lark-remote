@@ -22,6 +22,9 @@ export { AgentRegistry } from './registry.js';
 
 // =============================================================================
 // 类型 re-export（从 types.ts）
+//
+// 会话读取契约（AgentSessionReader / AgentSession / SessionContent …）不在这里：
+// 它住在中立模块 `src/session-contract.ts`，runner 与 session 同向依赖它。
 // =============================================================================
 
 export type {
@@ -31,13 +34,6 @@ export type {
   AgentEvent,
   Runner,
   RunnerLifetime,
-  AgentKind,
-  AgentSession,
-  AgentSessionContentEvent,
-  AgentSessionUsage,
-  SessionContent,
-  SessionSummary,
-  AgentSessionReader,
   AgentRunner,
   TurnStartedEvent,
   TurnDiffEvent,

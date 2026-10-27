@@ -6,7 +6,8 @@ import fs from 'node:fs';
 import { SessionStore } from '../../../src/session/index.js';
 import { SessionReaderRegistry } from '../../../src/session/registry.js';
 import { CommandRouter } from '../../../src/router/index.js';
-import type { AgentKind, AgentSessionReader } from '../../../src/runner/index.js';
+import type { AgentKind } from '../../../src/agent-kinds.js';
+import type { AgentSessionReader } from '../../../src/session-contract.js';
 import type { AppConfig } from '../../../src/config/index.js';
 import {
   lastNotice as extractLastNotice,

@@ -11,7 +11,7 @@ import type { AppConfig } from '../../../src/config/index.js';
 import type { Runner, AgentRunner } from '../../../src/runner/index.js';
 import { AgentRegistry } from '../../../src/runner/registry.js';
 import { SessionReaderRegistry } from '../../../src/session/registry.js';
-import { sleep, waitFor } from '../../lib/wait-for.js';
+import { sleep, waitFor, waitForOrThrow } from '../../lib/wait-for.js';
 import {
   createGatedRunner,
   createStubRunner,
@@ -1255,7 +1255,7 @@ describe('queue.immediate final toast must not claim a stop when no run was runn
         },
       },
     );
-    await new Promise((r) => setTimeout(r, 50));
+    await waitForOrThrow(() => bridge.getQueuedTask(tmpDir, 'mT') !== undefined);
 
     // --- 步骤 3：对 T 点「⚡ 立即执行」——cwd 无活跃 run，stopped=false ---
     await router.handleCardAction({ cmd: 'queue.immediate', cwd: tmpDir, messageId: 'mT' }, ctx);
@@ -1272,7 +1272,7 @@ describe('queue.immediate final toast must not claim a stop when no run was runn
     // --- 清理：A 是链头挂起闭包（步骤 3 只移除其元数据，闭包仍在阻塞链）；
     // 放行 A 后 T 才会接跑并执行目标消息 ---
     releaseA();
-    await new Promise((r) => setTimeout(r, 50));
+    await waitForOrThrow(() => fwdSpy.mock.calls.length === 1);
     expect(fwdSpy).toHaveBeenCalledTimes(1);
     expect(fwdSpy).toHaveBeenCalledWith('target message', ctx);
   });

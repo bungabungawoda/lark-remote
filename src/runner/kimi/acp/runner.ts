@@ -18,7 +18,9 @@
  *   question bridge (buildQuestionResponse)
  */
 
-import type { AgentKind, AgentSessionReader, AgentStatusInfo, SpawnOptions } from '../../types.js';
+import type { AgentKind } from '../../../agent-kinds.js';
+import type { AgentSessionReader } from '../../../session-contract.js';
+import type { AgentStatusInfo, SpawnOptions } from '../../types.js';
 import type { ChildProcess } from 'node:child_process';
 import { mergeProcessEnv, useDetachedProcessGroup } from '../../../platform/spawn.js';
 import { createShellBackend, type ShellBackend } from '../../../platform/shell.js';
@@ -776,46 +778,7 @@ export class KimiAcpRunner extends BaseAcpRunner<KimiAcpTranslator> {
     const cwd = params.cwd ?? this.activeCwd ?? undefined;
     const outputLimit = params.outputByteLimit ?? TERMINAL_DEFAULT_OUTPUT_LIMIT;
 
-    // 走 shell seam：argv 逐 token 保留，只把「可执行文件在哪」
-    // 收口——win32 上 Git Bash 缺失时在这里抛 ShellUnavailableError，由
-    // handleTerminalRequest 转成明确的 Terminal request failed 回执，而不是一个
-    // 语焉不详的 spawn ENOENT。
-    const proc = this.shell.spawnArgv(params.command, params.args ?? [], {
-      cwd,
-      options: {
-        // env 覆盖大小写不敏感合并（win32 PATH/Path 双键防护）
-        env: env ? mergeProcessEnv(process.env, env) : undefined,
-        stdio: ['ignore', 'pipe', 'pipe'],
-        // Terminator 用负 PID 杀进程组（kill(-pgid)）；子进程必须是组长
-        // 才能命中，否则 kill(-pid) 抛 ESRCH 被吞 → kill/release/清理全失效。
-        // 与 JsonlRpcTransport / spawning-runner 同模式；win32 不 detached
-        // （`.cmd` 垫片在 DETACHED_PROCESS 下丢 stdio），树杀由 taskkill /T 负责。
-        detached: useDetachedProcessGroup(),
-        windowsHide: true,
-      },
-    });
-
-    // 每个流独立 decoder：多字节字符跨 chunk 拆分时由 decoder 保留不完整
-    // 序列，避免按 chunk 单独 toString 产生 U+FFFD 替换符。
-    const stdoutDecoder = new StringDecoder('utf8');
-    const stderrDecoder = new StringDecoder('utf8');
-    const append = (chunk: Buffer, decoder: StringDecoder) => {
-      if (handle.truncated) return;
-      const remaining = handle.outputLimit - handle.outputBytes;
-      if (remaining > 0 && chunk.length <= remaining) {
-        handle.output += decoder.write(chunk);
-        handle.outputBytes += chunk.length;
-      } else if (remaining > 0) {
-        // 只喂 remaining 字节；decoder 内部保留末尾不完整序列，不会在字节
-        // 边界产生替换符。outputBytes 按「喂入字节」计，保证不超过上限。
-        handle.output += decoder.write(chunk.subarray(0, remaining));
-        handle.outputBytes += remaining;
-      }
-      // 契约（手册）：truncated = 缓冲 >= limit——恰好填满也标 true。
-      if (handle.outputBytes >= handle.outputLimit) handle.truncated = true;
-    };
-    proc.stdout?.on('data', (chunk) => append(chunk, stdoutDecoder));
-    proc.stderr?.on('data', (chunk) => append(chunk, stderrDecoder));
+    const proc = this.spawnTerminalProcess(params, cwd, env);
 
     // spawn 失败（如 ENOENT）只发 'error' 不发 'exit'——一并 resolve，防止
     // wait_for_exit 永久挂起（runner 层 ENOENT 兜底红线）。
@@ -840,6 +803,89 @@ export class KimiAcpRunner extends BaseAcpRunner<KimiAcpTranslator> {
       signal: null,
       exitPromise,
     };
+    this.attachTerminalOutputBuffer(proc, handle);
+    this.wireTerminalExit(proc, handle, emitResult, () => resolveExit?.());
+
+    const terminalId = `term-${++this.terminalSeq}`;
+    this.terminals.set(terminalId, handle);
+    // Bash 工具事件由本 runner 自产（kimi 通知已过滤）：create 即推 tool_use
+    // 带真实命令，让 run 卡立刻出现可识别的 Bash 面板。
+    const script =
+      Array.isArray(params.args) && params.args.length > 1 ? params.args[1] : params.command;
+    let resultEmitted = false;
+    emitTerminalResult = () => {
+      if (resultEmitted) return;
+      resultEmitted = true;
+      this.pushTerminalToolResult(terminalId, handle.output, handle.exitCode);
+    };
+    this.pushTerminalToolUse(terminalId, script, cwd);
+    getLogger().info(
+      `[${this.logTag}] terminal created id=${terminalId} command=${params.command} args=${JSON.stringify(params.args ?? [])}`,
+    );
+    this.currentClient?.respond(id, { terminalId });
+  }
+
+  /**
+   * 走 shell seam：argv 逐 token 保留，只把「可执行文件在哪」收口——win32 上
+   * Git Bash 缺失时在这里抛 ShellUnavailableError，由 handleTerminalRequest 转成
+   * 明确的 Terminal request failed 回执，而不是一个语焉不详的 spawn ENOENT。
+   */
+  private spawnTerminalProcess(
+    params: TerminalCreateParams,
+    cwd: string | undefined,
+    env: Record<string, string> | undefined,
+  ): ChildProcess {
+    return this.shell.spawnArgv(params.command, params.args ?? [], {
+      cwd,
+      options: {
+        // env 覆盖大小写不敏感合并（win32 PATH/Path 双键防护）
+        env: env ? mergeProcessEnv(process.env, env) : undefined,
+        stdio: ['ignore', 'pipe', 'pipe'],
+        // Terminator 用负 PID 杀进程组（kill(-pgid)）；子进程必须是组长
+        // 才能命中，否则 kill(-pid) 抛 ESRCH 被吞 → kill/release/清理全失效。
+        // 与 JsonlRpcTransport / spawning-runner 同模式；win32 不 detached
+        // （`.cmd` 垫片在 DETACHED_PROCESS 下丢 stdio），树杀由 taskkill /T 负责。
+        detached: useDetachedProcessGroup(),
+        windowsHide: true,
+      },
+    });
+  }
+
+  /**
+   * 有界输出缓冲：每个流独立 decoder（多字节字符跨 chunk 拆分时由 decoder 保留
+   * 不完整序列，避免按 chunk 单独 toString 产生 U+FFFD 替换符）。
+   */
+  private attachTerminalOutputBuffer(proc: ChildProcess, handle: TerminalHandle): void {
+    const stdoutDecoder = new StringDecoder('utf8');
+    const stderrDecoder = new StringDecoder('utf8');
+    const append = (chunk: Buffer, decoder: StringDecoder) => {
+      if (handle.truncated) return;
+      const remaining = handle.outputLimit - handle.outputBytes;
+      if (remaining > 0 && chunk.length <= remaining) {
+        handle.output += decoder.write(chunk);
+        handle.outputBytes += chunk.length;
+      } else if (remaining > 0) {
+        // 只喂 remaining 字节；decoder 内部保留末尾不完整序列，不会在字节
+        // 边界产生替换符。outputBytes 按「喂入字节」计，保证不超过上限。
+        handle.output += decoder.write(chunk.subarray(0, remaining));
+        handle.outputBytes += remaining;
+      }
+      // 契约（手册）：truncated = 缓冲 >= limit——恰好填满也标 true。
+      if (handle.outputBytes >= handle.outputLimit) handle.truncated = true;
+    };
+    proc.stdout?.on('data', (chunk) => append(chunk, stdoutDecoder));
+    proc.stderr?.on('data', (chunk) => append(chunk, stderrDecoder));
+  }
+
+  /**
+   * 退出/错误收尾管线：tool_result 必须先入队，再放行 `wait_for_exit`。
+   */
+  private wireTerminalExit(
+    proc: ChildProcess,
+    handle: TerminalHandle,
+    emitResult: () => void,
+    resolveExit: () => void,
+  ): void {
     proc.once('exit', (code, signal) => {
       handle.exitCode = code;
       handle.signal = signal;
@@ -854,7 +900,7 @@ export class KimiAcpRunner extends BaseAcpRunner<KimiAcpTranslator> {
       const flushThenEmit = () => {
         clearTimeout(emitTimer);
         emitResult();
-        resolveExit?.();
+        resolveExit();
       };
       const emitTimer = setTimeout(flushThenEmit, 200);
       emitTimer.unref?.();
@@ -872,36 +918,36 @@ export class KimiAcpRunner extends BaseAcpRunner<KimiAcpTranslator> {
       }
       // 同 exit：tool_result 先入队，再放行 wait_for_exit。
       emitResult();
-      resolveExit?.();
+      resolveExit();
     });
+  }
 
-    const terminalId = `term-${++this.terminalSeq}`;
-    this.terminals.set(terminalId, handle);
-    // Bash 工具事件由本 runner 自产（kimi 通知已过滤）：create 即推 tool_use
-    // 带真实命令，让 run 卡立刻出现可识别的 Bash 面板。
-    const script =
-      Array.isArray(params.args) && params.args.length > 1 ? params.args[1] : params.command;
-    let resultEmitted = false;
-    emitTerminalResult = () => {
-      if (resultEmitted) return;
-      resultEmitted = true;
-      this.pushEvents([
-        {
-          type: 'user',
-          message: {
-            content: [
-              {
-                type: 'tool_result',
-                tool_use_id: terminalId,
-                content: handle.output,
-                is_error: handle.exitCode !== 0,
-              },
-            ],
-          },
-          timestamp: new Date().toISOString(),
+  /** Bash 面板的 tool_result 帧（输出全量 + 是否失败）。 */
+  private pushTerminalToolResult(
+    terminalId: string,
+    output: string,
+    exitCode: number | null,
+  ): void {
+    this.pushEvents([
+      {
+        type: 'user',
+        message: {
+          content: [
+            {
+              type: 'tool_result',
+              tool_use_id: terminalId,
+              content: output,
+              is_error: exitCode !== 0,
+            },
+          ],
         },
-      ]);
-    };
+        timestamp: new Date().toISOString(),
+      },
+    ]);
+  }
+
+  /** Bash 面板的 tool_use 帧（真实命令 + cwd，create 时立刻可见）。 */
+  private pushTerminalToolUse(terminalId: string, script: string, cwd: string | undefined): void {
     this.pushEvents([
       {
         type: 'assistant',
@@ -918,10 +964,6 @@ export class KimiAcpRunner extends BaseAcpRunner<KimiAcpTranslator> {
         timestamp: new Date().toISOString(),
       },
     ]);
-    getLogger().info(
-      `[${this.logTag}] terminal created id=${terminalId} command=${params.command} args=${JSON.stringify(params.args ?? [])}`,
-    );
-    this.currentClient?.respond(id, { terminalId });
   }
 
   /** terminal/output: 回累计全量输出 + truncated + 当前退出状态（可未退出）。 */

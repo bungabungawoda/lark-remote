@@ -18,12 +18,13 @@
  * back to the Web UI prompt.
  */
 
+import type { AgentSessionReader } from '../../session-contract.js';
 import type {
   AgentEvent,
-  AgentSessionReader,
   AgentStatusInfo,
   ApprovalView,
   GoalView,
+  ResultEvent,
   SpawnOptions,
   StopOutcome,
 } from '../types.js';
@@ -50,7 +51,7 @@ import type {
   DshRemoteEventOutcome,
   DshSessionEvent,
   DshStreamItem,
-} from './types.js';
+} from '../../dsh/types.js';
 
 /**
  * Legacy provider for configs written before `agents.dsh.provider` existed.
@@ -259,6 +260,21 @@ function parseToolArguments(raw: string | undefined): Record<string, unknown> {
   }
 }
 
+/**
+ * 用户 stop 的终态结果（run() 的 5 个中止点各 yield 同一形状）。
+ *
+ * 必须 yield result 而不是裸 return：调用方靠 result 收尾 run 卡，否则卡片
+ * 停留在「运行中」（见 run() 内 startup abort 注释）。
+ */
+function interruptedResult(sessionId: string): ResultEvent {
+  return {
+    type: 'result',
+    subtype: 'interrupted',
+    session_id: sessionId,
+    errorMessage: 'run stopped',
+  };
+}
+
 export class DshRunner implements AgentRunner {
   readonly kind = 'dsh' as const;
   /**
@@ -420,6 +436,70 @@ export class DshRunner implements AgentRunner {
     return { provider, model, ...(reasoningEffort ? { reasoningEffort } : {}) };
   }
 
+  /**
+   * 新建 DSH session 并取回 sessionId；run 在挂起期间被 stop 时返回 undefined。
+   *
+   * 红线：不把 run 的 abort signal 直接交给 create —— abort 掉请求会丢掉刚创建的
+   * sessionId，服务端若已完成创建就留下一个无法 cancel 的孤儿 session。改为 abort
+   * 时立即放行 run（队列不被挂起），create 后台落定后再补 cancel。
+   */
+  private async acquireSessionId(cwd: string, signal: AbortSignal): Promise<string | undefined> {
+    const createPromise = this.client.createSession({
+      cwd,
+      ...(this.agentPreset ? { agentPreset: this.agentPreset } : {}),
+    });
+    const created = await this.awaitOrAbort(createPromise, signal);
+    if (created) return created.sessionId;
+    void createPromise.then(
+      (c) => this.cancelSessionQuietly(c.sessionId),
+      () => {
+        /* create failed after stop — nothing to cancel */
+      },
+    );
+    getLogger().info('[dsh] run stopped during session/create; will cancel if it settles');
+    return undefined;
+  }
+
+  /**
+   * 把本轮消息交给 DSH 的排队收件箱，返回本轮的身份与起始水位。
+   *
+   * 三条不变量（都关系到「迟到/抢先的 stop 能否被正确撤销」）：
+   * - 起始水位取 prompt **之前**的 latestEventSeq：session/page 返回整个会话，
+   *   从 0 开始会把首轮已完成 turn 在每次后续消息时重放一遍。
+   * - 身份（requestId）在请求发出**之前**就公布：stop 可能落在 session/prompt 的
+   *   在途窗口里，那时它必须知道宿主受理后该撤销哪个收件项。
+   * - `promptAdmitted` 只在宿主接受后置真：撤销路径据此区分「还没进去」与「已排队」。
+   */
+  private async submitPrompt(
+    sessionId: string,
+    cwd: string,
+    message: string,
+    signal: AbortSignal,
+  ): Promise<{ prePromptSeq: number; promptRequestId: string }> {
+    const prePromptSeq = await this.client.latestEventSeq(sessionId, { signal });
+    const promptRequestId = newPromptRequestId();
+    this.activePromptRequestId = promptRequestId;
+    this.promptAdmitted = false;
+    this.inflight?.record({
+      sessionId,
+      promptRequestId,
+      baseUrl: this.client.baseUrl,
+      cwd,
+    });
+    await this.client.unary(
+      'session/prompt',
+      {
+        requestId: promptRequestId,
+        sessionId,
+        mode: 'queue',
+        content: [{ type: 'text', text: message }],
+      },
+      { signal },
+    );
+    this.promptAdmitted = true;
+    return { prePromptSeq, promptRequestId };
+  }
+
   async *run(message: string, opts: SpawnOptions): AsyncGenerator<AgentEvent> {
     if (this.running) {
       throw new Error('DshRunner is already running');
@@ -445,32 +525,13 @@ export class DshRunner implements AgentRunner {
       // session/create 必须包进同一 try/finally，否则创建失败（服务端不可达/报错）
       // 会在进入旧 try 之前抛异常，finally 不执行 → running 恒 true、activeAbort 残留。
       if (!sessionId) {
-        const createPromise = this.client.createSession({
-          cwd: opts.cwd,
-          ...(this.agentPreset ? { agentPreset: this.agentPreset } : {}),
-        });
-        // 不把 run 的 abort signal 直接交给 create：abort 掉请求会丢掉刚创建
-        // 的 sessionId，服务端若已完成创建就留下一个无法 cancel 的孤儿 session。
-        // 改为 abort 时立即放行 run（队列不被挂起），create 后台落定后再补 cancel。
-        const created = await this.awaitOrAbort(createPromise, abort.signal);
-        if (!created) {
-          void createPromise.then(
-            (c) => this.cancelSessionQuietly(c.sessionId),
-            () => {
-              /* create failed after stop — nothing to cancel */
-            },
-          );
-          getLogger().info('[dsh] run stopped during session/create; will cancel if it settles');
+        const created = await this.acquireSessionId(opts.cwd, abort.signal);
+        if (created === undefined) {
           terminalEmitted = true;
-          yield {
-            type: 'result',
-            subtype: 'interrupted',
-            session_id: '',
-            errorMessage: 'run stopped',
-          };
+          yield interruptedResult('');
           return;
         }
-        sessionId = created.sessionId;
+        sessionId = created;
       }
       this.activeSessionId = sessionId;
 
@@ -483,12 +544,7 @@ export class DshRunner implements AgentRunner {
         await this.cancelSessionQuietly(sessionId);
         getLogger().info(`[dsh] run aborted during startup, cancelled session ${sessionId}`);
         terminalEmitted = true;
-        yield {
-          type: 'result',
-          subtype: 'interrupted',
-          session_id: sessionId,
-          errorMessage: 'run stopped',
-        };
+        yield interruptedResult(sessionId);
         return;
       }
 
@@ -508,12 +564,7 @@ export class DshRunner implements AgentRunner {
           if (abort.signal.aborted) {
             getLogger().info(`[dsh] run stopped during selectModel session=${sessionId}`);
             terminalEmitted = true;
-            yield {
-              type: 'result',
-              subtype: 'interrupted',
-              session_id: sessionId,
-              errorMessage: 'run stopped',
-            };
+            yield interruptedResult(sessionId);
             return;
           }
           if (this.configuredProvider) {
@@ -537,12 +588,7 @@ export class DshRunner implements AgentRunner {
       // Abort 可能在上述 unary 完成与检查之间到达：不进入 prompt/turn。
       if (abort.signal.aborted) {
         terminalEmitted = true;
-        yield {
-          type: 'result',
-          subtype: 'interrupted',
-          session_id: sessionId,
-          errorMessage: 'run stopped',
-        };
+        yield interruptedResult(sessionId);
         return;
       }
 
@@ -567,50 +613,14 @@ export class DshRunner implements AgentRunner {
       if (seedGoal.known && seedGoal.goal) yield goalStateEvent(seedGoal.goal, true);
 
       try {
-        // Snapshot the pre-prompt high-water mark before mutating the session.
-        // DSH session/page returns the whole session, so starting from seq 0
-        // would replay the first completed turn on every follow-up prompt.
-        const prePromptSeq = await this.client.latestEventSeq(sessionId, {
-          signal: abort.signal,
-        });
-
-        // Keep the prompt identity: DSH echoes it into the durable user/message
-        // source.rpcId, which is how runTurn tells this run's turn from a turn
-        // it is merely queued behind.
-        promptRequestId = newPromptRequestId();
-        // Publish the identity before the request leaves: a stop that arrives
-        // while `session/prompt` is in flight must still know which inbox item
-        // (if any) to withdraw once the host admits it.
-        this.activePromptRequestId = promptRequestId;
-        this.promptAdmitted = false;
-        this.inflight?.record({
-          sessionId,
-          promptRequestId,
-          baseUrl: this.client.baseUrl,
-          cwd: opts.cwd,
-        });
-        await this.client.unary(
-          'session/prompt',
-          {
-            requestId: promptRequestId,
-            sessionId,
-            mode: 'queue',
-            content: [{ type: 'text', text: message }],
-          },
-          { signal: abort.signal },
-        );
-        this.promptAdmitted = true;
+        const submitted = await this.submitPrompt(sessionId, opts.cwd, message, abort.signal);
+        promptRequestId = submitted.promptRequestId;
 
         if (abort.signal.aborted) {
           // stop() 在 prompt 已受理后到达：cancel 由 stop() 发出，这里直接收尾，
           // 不再打开 mux（否则会看到 cancel 产生的 turn/end 事件）。
           terminalEmitted = true;
-          yield {
-            type: 'result',
-            subtype: 'interrupted',
-            session_id: sessionId,
-            errorMessage: 'run stopped',
-          };
+          yield interruptedResult(sessionId);
           return;
         }
 
@@ -618,7 +628,7 @@ export class DshRunner implements AgentRunner {
           for await (const ev of this.runTurn(
             sessionId,
             opts.cwd,
-            prePromptSeq,
+            submitted.prePromptSeq,
             promptRequestId,
             abort,
             { last: lastGoal },

@@ -22,7 +22,7 @@ import { clearSessionIndexCache } from '../../../src/session/codex/rollout-reade
 import { OpencodeSessionReader } from '../../../src/session/opencode/index.js';
 import { PiSessionReader } from '../../../src/session/pi/index.js';
 import { KimiSessionReader } from '../../../src/session/kimi/index.js';
-import type { AgentSessionReader } from '../../../src/runner/index.js';
+import type { AgentSessionReader } from '../../../src/session-contract.js';
 
 import { encodedProjectDir, piEncodeCwd } from '../../lib/session-fixtures.js';
 import { metaLine, writeRolloutLines } from '../../lib/codex-rollout-fixture.js';

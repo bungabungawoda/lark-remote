@@ -43,9 +43,9 @@ const noKeepAliveAgent = new https.Agent({ keepAlive: false });
  * - SDK 的 cardAction dedup eventId = `card:{messageId}:{operator.openId}:{actionId}`
  * - actionId = `tag|name|option|JSON.stringify(value)`，不含时间戳/事件序号
  * - config 卡片原地更新（updateCardInPlace），用户在同一张卡上重复触发
- *   固定 value 的按钮（如 config.toggle）：
+ *   固定 value 的按钮（如 config.save）：
  *   messageId / operator / value 三段都相同 → eventId 完全相同 → 第二次点击被
- *   seenCache drop，toggle 不可逆（第二次点击静默失效）。
+ *   seenCache drop，按钮不可逆（第二次点击静默失效）。
  *
  * SDK 默认 12h 太长；60s 仍会误伤连击。300ms 挡飞书瞬时重投递（<100ms 级），
  * 放过用户连击（慢点两次通常 >500ms）。代价：削弱 message 秒级重投递防护——
@@ -709,7 +709,7 @@ export class FeishuConnector {
     } catch (err) {
       // 抛出去前先落一条格式化日志（调用方只看到包装后的 message）。
       // 抛普通 Error 而不是原 err：axios 错误对象跨层序列化会丢信息。
-      const errorInfo = this.formatError(err);
+      const errorInfo = formatErrorForLog(err);
       getLogger().error('[feishu] streamCard failed:', errorInfo);
       throw new Error(`streamCard failed: ${errorInfo}`, { cause: err });
     }
@@ -743,7 +743,7 @@ export class FeishuConnector {
     } catch (err) {
       // Log the error but don't swallow it - a plain error avoids axios
       // serialization issues in the logger.
-      const errorInfo = this.formatError(err);
+      const errorInfo = formatErrorForLog(err);
       getLogger().error('[feishu] updateCard failed:', errorInfo);
       throw new Error(`updateCard failed: ${errorInfo}`, { cause: err });
     }
@@ -756,16 +756,11 @@ export class FeishuConnector {
     }
   }
 
-  /** Format error for logging without causing circular serialization */
-  private formatError(err: unknown): string {
-    return formatErrorForLog(err);
-  }
-
   async addReaction(messageId: string, emoji: string): Promise<void> {
     try {
       await this.channel.addReaction(messageId, emoji);
     } catch (err) {
-      getLogger().error('[feishu] addReaction failed:', this.formatError(err));
+      getLogger().error('[feishu] addReaction failed:', formatErrorForLog(err));
     }
   }
 
@@ -777,7 +772,7 @@ export class FeishuConnector {
     try {
       await this.channel.removeReactionByEmoji(messageId, emoji);
     } catch (err) {
-      getLogger().error('[feishu] removeReactionByEmoji failed:', this.formatError(err));
+      getLogger().error('[feishu] removeReactionByEmoji failed:', formatErrorForLog(err));
     }
   }
 
@@ -846,7 +841,7 @@ export class FeishuConnector {
         }
       }
     } catch (err) {
-      const errorInfo = this.formatError(err);
+      const errorInfo = formatErrorForLog(err);
       getLogger().error(`[feishu] ${label} failed:`, errorInfo);
       throw new Error(`${label} failed: ${errorInfo}`, { cause: err });
     }

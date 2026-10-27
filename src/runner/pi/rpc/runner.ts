@@ -18,7 +18,8 @@
  *   - `prompt` ack ≠ turn completion; the turn ends on `agent_settled`.
  */
 
-import type { AgentSessionReader, AgentEvent, AgentStatusInfo, SpawnOptions } from '../../types.js';
+import type { AgentSessionReader } from '../../../session-contract.js';
+import type { AgentEvent, AgentStatusInfo, SpawnOptions } from '../../types.js';
 import { ConnectionBasedRunner } from '../../common/connection-based-runner.js';
 import { ConnectionManager } from '../../common/jsonrpc/connection-manager.js';
 import { getLogger } from '../../../logger/index.js';

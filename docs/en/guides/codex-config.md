@@ -8,13 +8,13 @@ This document explains the configuration fields for the Codex Agent on the `/con
 
 Codex Agent configuration is managed through the `/config` card's interactive interface. When `defaultAgent` is set to `codex`, the card displays the following fields:
 
-| Field Key | Display Label | Type | Description |
-|-----------|---------------|------|-------------|
-| `agents.codex.modelProvider` | Codex Provider | select | Model provider (built-in `openai` + config.toml `[model_providers.*]`, consistent with codex `merge_configured_model_providers`; `anthropic` is not a codex built-in provider and requires explicit configuration) |
-| `agents.codex.model` | Model | select | config.toml `model` + active catalog `visibility==='list'` slugs (when `model_catalog_json` is **declared** = `codex debug models` output; otherwise = `--bundled` built-in catalog) |
-| `agents.codex.reasoningEffort` | Reasoning Effort | select | Maps to `model_reasoning_effort`; options change dynamically based on the current model's `supported_reasoning_levels` |
-| `agents.codex.approvalPolicy` | Approval Policy | select | Official Codex `AskForApproval` values: `untrusted` / `on-request` / `never` (`on-request` is the codex default) |
-| `agents.codex.sandbox` | Sandbox Mode | select | Official Codex `SandboxMode` values: `read-only` / `workspace-write` / `danger-full-access` |
+| Field Key                      | Display Label    | Type   | Description                                                                                                                                                                                                        |
+| ------------------------------ | ---------------- | ------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `agents.codex.modelProvider`   | Codex Provider   | select | Model provider (built-in `openai` + config.toml `[model_providers.*]`, consistent with codex `merge_configured_model_providers`; `anthropic` is not a codex built-in provider and requires explicit configuration) |
+| `agents.codex.model`           | Model            | select | config.toml `model` + active catalog `visibility==='list'` slugs (when `model_catalog_json` is **declared** = `codex debug models` output; otherwise = `--bundled` built-in catalog)                               |
+| `agents.codex.reasoningEffort` | Reasoning Effort | select | Maps to `model_reasoning_effort`; options change dynamically based on the current model's `supported_reasoning_levels`                                                                                             |
+| `agents.codex.approvalPolicy`  | Approval Policy  | select | Official Codex `AskForApproval` values: `untrusted` / `on-request` / `never` (`on-request` is the codex default)                                                                                                   |
+| `agents.codex.sandbox`         | Sandbox Mode     | select | Official Codex `SandboxMode` values: `read-only` / `workspace-write` / `danger-full-access`                                                                                                                        |
 
 > Codex always runs in app-server mode (persistent connection + approvals). Approval policy and sandbox mode are configured on the card using the official Codex enum values directly, with no custom mapping.
 
@@ -37,10 +37,10 @@ The Codex model dropdown options are dynamically read from `~/.codex/config.toml
 import { loadCodexConfig } from '../config/codex-config.js';
 
 const codexCfg = loadCodexConfig();
-const providerNames = codexCfg.providerNames;  // built-in openai + config.toml [model_providers.*]
-                                               // (anthropic is not built-in, requires explicit config)
-const modelOptions = codexCfg.modelOptions();  // catalog mode: active catalog visibility==='list' slugs
-                                               // non-catalog mode: bundled visibility==='list' slugs
+const providerNames = codexCfg.providerNames; // built-in openai + config.toml [model_providers.*]
+// (anthropic is not built-in, requires explicit config)
+const modelOptions = codexCfg.modelOptions(); // catalog mode: active catalog visibility==='list' slugs
+// non-catalog mode: bundled visibility==='list' slugs
 ```
 
 ### Configuration Source Format
@@ -74,6 +74,7 @@ wire_api = "responses"
 ```
 
 `loadCodexConfig()` parses:
+
 - `model` → currently selected model
 - `model_provider` → currently selected provider
 - `[model_providers.*]` → provider list (extracted from section names)
@@ -96,6 +97,7 @@ and the model list comes from `codex debug models --bundled`.
 
 > **API-key mode assumption**: This project runs codex in API-key mode
 > (`forced_login_method = "api"`), therefore the card:
+>
 > - Filters models by `supported_in_api === true` — equivalent to codex's
 >   `chatgpt_mode || supported_in_api` (`openai_models.rs` `filter_by_auth`),
 >   where codex under ChatGPT login shows all models; this project does not support that mode;
@@ -130,7 +132,7 @@ if (key === 'agents.codex.modelProvider' && newValue) {
   const codexCfg = loadCodexConfig();
   const newModelOptions = codexCfg.modelOptions(newValue);
   const currentModel = this.pendingConfig?.agents?.codex?.model;
-  const currentModelIsValid = newModelOptions.some(m => m === currentModel);
+  const currentModelIsValid = newModelOptions.some((m) => m === currentModel);
   if (!currentModelIsValid && newModelOptions.length > 0) {
     this.setNestedValue(this.pendingConfig!, 'agents.codex.model', newModelOptions[0]);
   }
@@ -160,7 +162,7 @@ After saving configuration (clicking 💾 Save All Changes):
 2. If codex configuration changes are detected (any `agents.codex.*` key), the runner cache is automatically cleared:
    ```typescript
    const agentConfigKeys = Object.keys(updates).filter(
-     (k) => k.startsWith('agents.codex.') || k === 'agents.codex'
+     (k) => k.startsWith('agents.codex.') || k === 'agents.codex',
    );
    if (agentConfigKeys.length > 0) {
      this.bridge.clearRunners();

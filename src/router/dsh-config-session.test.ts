@@ -16,7 +16,7 @@ import { SessionReaderRegistry } from '../session/index.js';
 import { AppConfigSchema, type AppConfig } from '../config/index.js';
 import { createMockBridge } from '../../tests/lib/bridge-stubs.js';
 import { createRouterFixture } from '../../tests/lib/router-fixture.js';
-import type { AgentSessionReader, AgentSession } from '../runner/index.js';
+import type { AgentSession, AgentSessionReader } from '../session-contract.js';
 
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-config-test-'));
 afterEach(() => {
@@ -81,13 +81,7 @@ describe('DSH preset 变更 session 语义', () => {
   it('preset 变更时把旧 sessionId 停到 previousSessions 并清空当前 sessionId', async () => {
     const { router, sessionStore } = makeRouter([], { agentPreset: 'minimal' });
     // 先有当前 dsh session
-    sessionStore.set(ctx.userId, {
-      cwd: '/home/user/project',
-      sessions: new Map([['dsh', SID_OLD]]),
-      previousSessions: new Map(),
-      sessionCwds: new Map(),
-      arrivalSessions: new Map(),
-    });
+    sessionStore.setSessionIdAndCwd(ctx.userId, 'dsh', SID_OLD, '/home/user/project');
 
     // 改 preset（走 config.save 卡片路径）
     await router.handleCardAction(
@@ -103,13 +97,7 @@ describe('DSH preset 变更 session 语义', () => {
 
   it('preset 变更但没有旧 session 时只提示新建，不抛错', async () => {
     const { router, sessionStore } = makeRouter([], { agentPreset: 'minimal' });
-    sessionStore.set(ctx.userId, {
-      cwd: '/home/user/project',
-      sessions: new Map(),
-      previousSessions: new Map(),
-      sessionCwds: new Map(),
-      arrivalSessions: new Map(),
-    });
+    sessionStore.setCwd(ctx.userId, '/home/user/project');
 
     await router.handleCardAction(
       { cmd: 'config.set', key: 'agents.dsh.agentPreset', option: 'code' },
@@ -123,13 +111,7 @@ describe('DSH preset 变更 session 语义', () => {
 
   it('model 变更不清 sessionId（保留 session，模型 run 前对齐）', async () => {
     const { router, sessionStore } = makeRouter([], { model: 'deepseek-v4-flash' });
-    sessionStore.set(ctx.userId, {
-      cwd: '/home/user/project',
-      sessions: new Map([['dsh', SID_OLD]]),
-      previousSessions: new Map(),
-      sessionCwds: new Map(),
-      arrivalSessions: new Map(),
-    });
+    sessionStore.setSessionIdAndCwd(ctx.userId, 'dsh', SID_OLD, '/home/user/project');
 
     await router.handleCardAction(
       { cmd: 'config.set', key: 'agents.dsh.model', option: 'deepseek-v4-pro' },
@@ -147,13 +129,7 @@ describe('DSH preset 变更 session 语义', () => {
       provider: 'deepseek-official',
       model: 'deepseek-v4-flash',
     });
-    sessionStore.set(ctx.userId, {
-      cwd: '/home/user/project',
-      sessions: new Map([['dsh', SID_OLD]]),
-      previousSessions: new Map(),
-      sessionCwds: new Map(),
-      arrivalSessions: new Map(),
-    });
+    sessionStore.setSessionIdAndCwd(ctx.userId, 'dsh', SID_OLD, '/home/user/project');
 
     await router.handleCardAction(
       { cmd: 'config.set', key: 'agents.dsh.provider', option: 'deepseek-account' },
@@ -167,13 +143,7 @@ describe('DSH preset 变更 session 语义', () => {
 
   it('permissionPreset 变更不清 sessionId（下一轮 run 前对齐）', async () => {
     const { router, sessionStore } = makeRouter([], { permissionPreset: 'workspace-write' });
-    sessionStore.set(ctx.userId, {
-      cwd: '/home/user/project',
-      sessions: new Map([['dsh', SID_OLD]]),
-      previousSessions: new Map(),
-      sessionCwds: new Map(),
-      arrivalSessions: new Map(),
-    });
+    sessionStore.setSessionIdAndCwd(ctx.userId, 'dsh', SID_OLD, '/home/user/project');
 
     await router.handleCardAction(
       { cmd: 'config.set', key: 'agents.dsh.permissionPreset', option: 'read-only' },
@@ -189,13 +159,7 @@ describe('DSH preset 变更 session 语义', () => {
     // host 变更 = 换服务，旧 host 的 sessionId 发往新 host 是错的。须像 preset 变更一样
     // 停车 + 清空当前 sessionId，下次 run 新建会话。
     const { router, sessionStore } = makeRouter([], { host: 'http://host-a:3080' });
-    sessionStore.set(ctx.userId, {
-      cwd: '/home/user/project',
-      sessions: new Map([['dsh', SID_OLD]]),
-      previousSessions: new Map(),
-      sessionCwds: new Map(),
-      arrivalSessions: new Map(),
-    });
+    sessionStore.setSessionIdAndCwd(ctx.userId, 'dsh', SID_OLD, '/home/user/project');
 
     await router.handleCardAction(
       { cmd: 'config.set', key: 'agents.dsh.host', option: 'http://host-b:3080' },
@@ -214,13 +178,7 @@ describe('DSH /resume preset 一致性校验', () => {
     const { router, sessionStore } = makeRouter([{ sessionId: SID_OLD, agentPreset: 'minimal' }], {
       agentPreset: 'code',
     });
-    sessionStore.set(ctx.userId, {
-      cwd: '/home/user/project',
-      sessions: new Map(),
-      previousSessions: new Map(),
-      sessionCwds: new Map(),
-      arrivalSessions: new Map(),
-    });
+    sessionStore.setCwd(ctx.userId, '/home/user/project');
 
     const result = router.cmdResume(['dsh', SID_OLD], ctx);
     expect(typeof result).toBe('object');
@@ -236,13 +194,7 @@ describe('DSH /resume preset 一致性校验', () => {
     const { router, sessionStore } = makeRouter([{ sessionId: SID_OLD, agentPreset: 'code' }], {
       agentPreset: 'code',
     });
-    sessionStore.set(ctx.userId, {
-      cwd: '/home/user/project',
-      sessions: new Map(),
-      previousSessions: new Map(),
-      sessionCwds: new Map(),
-      arrivalSessions: new Map(),
-    });
+    sessionStore.setCwd(ctx.userId, '/home/user/project');
 
     const result = router.cmdResume(['dsh', SID_OLD], ctx);
     const text = (result as { text?: string }).text ?? '';
@@ -256,13 +208,7 @@ describe('DSH /resume preset 一致性校验', () => {
       [{ sessionId: SID_OLD, agentPreset: 'minimal' }],
       {}, // 无 preset 配置
     );
-    sessionStore.set(ctx.userId, {
-      cwd: '/home/user/project',
-      sessions: new Map(),
-      previousSessions: new Map(),
-      sessionCwds: new Map(),
-      arrivalSessions: new Map(),
-    });
+    sessionStore.setCwd(ctx.userId, '/home/user/project');
 
     router.cmdResume(['dsh', SID_OLD], ctx);
     expect(sessionStore.getSessionId(ctx.userId, 'dsh')).toBe(SID_OLD);

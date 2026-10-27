@@ -25,7 +25,7 @@ import { tmpdir } from 'node:os';
 import { rmRf } from '../../../../tests/lib/tmp-cleanup.js';
 import { waitFor } from '../../../../tests/lib/wait-for.js';
 import { join } from 'node:path';
-import type { AgentEvent } from '../../types.js';
+import type { AgentEvent, ResultEvent } from '../../types.js';
 import { KimiAcpRunner } from './runner.js';
 import {
   writeMockAcpServer,
@@ -640,7 +640,7 @@ describe('KimiAcpRunner', () => {
     });
 
     let sawApproval = false;
-    await collectEvents(runner, 'do something', { cwd: cwd }, (event) => {
+    await collectEvents(runner, 'do something', { cwd: cwd }, async (event) => {
       if (event.type === 'approval_requested') sawApproval = true;
     });
     // 本轮没答：条目必须随轮次一起作废
@@ -1705,7 +1705,7 @@ describe('KimiAcpRunner', () => {
           e.type === 'user' &&
           (e as { message?: { content?: unknown[] } }).message?.content?.some(
             (c) => (c as { type?: string }).type === 'tool_result',
-          ),
+          ) === true,
       );
       expect(toolResults.length).toBeGreaterThan(0);
       const outputs = toolResults.flatMap((e) =>
@@ -1901,10 +1901,10 @@ describe('KimiAcpRunner', () => {
     async function waitForResult(
       events: AgentEvent[],
       timeoutMs: number,
-    ): Promise<AgentEvent | undefined> {
+    ): Promise<ResultEvent | undefined> {
       const deadline = Date.now() + timeoutMs;
       while (Date.now() < deadline) {
-        const result = events.find((e) => e.type === 'result');
+        const result = events.find((e): e is ResultEvent => e.type === 'result');
         if (result) return result;
         await sleepReal(50);
       }

@@ -51,6 +51,7 @@
     "src/router/card-helpers-resume-window.test.ts",
     "src/router/alias.test.ts",
     "src/router/config/config-builder.test.ts",
+    "src/router/config/config-card-controls.test.ts",
     "src/router/config/common/model-patch.test.ts",
     "src/router/update-command.test.ts",
     "tests/router/**/*.test.ts",
@@ -101,7 +102,6 @@
     "tests/anchor/regression/run-early-close-orphan.test.ts",
     "tests/anchor/regression/cleanup-on-exit-group.test.ts",
     "tests/anchor/regression/bash-exit-cleanup.test.ts",
-    "tests/anchor/regression/index-factories-workspace.test.ts",
     "tests/anchor/regression/base-await-spawn-error-timeout.test.ts",
     "tests/anchor/regression/spawn-failure-cause.test.ts",
     "tests/anchor/regression/terminator-grace-timer.test.ts",
@@ -150,7 +150,8 @@
     "tests/anchor/regression/logger-write-safety.test.ts",
     "tests/anchor/misc/restart-command.test.ts",
     "tests/anchor/misc/restart-wait-live-pid.test.ts",
-    "tests/misc/global-exception-handler.test.ts",
+    "tests/misc/index-source-guards.test.ts",
+    "tests/misc/import-direction.test.ts",
     "tests/misc/temp-dir-hygiene.test.ts"
   ],
   "agent-claude": [
@@ -201,6 +202,7 @@
     "tests/anchor/misc/bridge-kimi-usage-threading.test.ts"
   ],
   "agent-dsh": [
+    "src/dsh/**/*.test.ts",
     "src/runner/dsh/**/*.test.ts",
     "src/session/dsh/**/*.test.ts",
     "src/router/config/dsh.test.ts",

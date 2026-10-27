@@ -6,7 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { CommandRouter } from '../router/index.js';
 import { SessionStore } from '../session/index.js';
-import type { AppConfig } from '../config/index.js';
+import { AppConfigSchema, type AppConfig } from '../config/index.js';
 import { createMockBridge, createStubSessionReaderRegistry } from '../../tests/lib/bridge-stubs.js';
 import { createRouterFixture } from '../../tests/lib/router-fixture.js';
 import { makeTempDir } from '../../tests/lib/temp-dir.js';
@@ -25,16 +25,16 @@ beforeEach(() => {
   fs.writeFileSync(filePath, 'pdf-bytes');
 
   const sessionStore = new SessionStore();
-  sessionStore.set('user1', { sessions: new Map(), previousSessions: new Map(), cwd: tmpDir });
+  sessionStore.setCwd('user1', tmpDir);
   mockBridge = createMockBridge();
 
-  const config: AppConfig = {
+  const config: AppConfig = AppConfigSchema.parse({
     feishu: { appId: 'test', appSecret: 'test' },
     claude: { model: 'claude-sonnet-4-20250514', effort: 'medium', stopGraceMs: 5000 },
     idle: { watchdogMinutes: 15 },
     logging: { level: 'info' },
     defaultAgent: 'claude',
-  };
+  });
 
   router = createRouterFixture({
     tmpDir,

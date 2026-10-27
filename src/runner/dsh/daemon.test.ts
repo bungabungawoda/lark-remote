@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { DshDaemon, DshDaemonError, dshDaemonArgs, isLoopbackHttpUrl } from './daemon.js';
-import { resolveDshHome } from './home.js';
+import { resolveDshHome } from '../../dsh/home.js';
 
 const homes: string[] = [];
 

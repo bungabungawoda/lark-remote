@@ -1,7 +1,7 @@
 import { getLogger } from '../logger/index.js';
 import { cardWithHeader } from '../card/card-shared.js';
 import { displayName } from '../platform/path.js';
-import type { AgentKind } from '../runner/types.js';
+import type { AgentKind } from '../agent-kinds.js';
 
 /**
  * 入队时刻快照：当前 defaultAgent + 该 agent 的 sessionId（无 session 则 undefined）。
@@ -286,6 +286,11 @@ export class QueueManager {
   /**
    * Enqueue a task into the workspace-level serial queue.
    * Each cwd has its own serial queue for parallel execution across workspaces.
+   *
+   * 三段各自的职责：`registerQueuedTask`（排队元数据 + 满队拒收）、
+   * `beginQueuedTask`（接跑时刻的撤销检查/替换闭包/占用登记）、本方法
+   * （promise 链拼接与 settle 记账）。红线：链的拼接必须同步完成，
+   * 中途不得 await（否则两条入队会乱序）。
    */
   enqueue(cwd: string, task: () => Promise<void>, opts?: EnqueueOptions): void {
     // Guard: reject non-function tasks that would poison the queue chain
@@ -300,97 +305,8 @@ export class QueueManager {
     // by the interrupted task's own settle.
     const slotId = ++this.slotCounter;
 
-    // Track this task in the queue for display card
     const taskMeta = opts?.taskMeta;
-    let messagePreview: string | undefined;
-    if (taskMeta) {
-      messagePreview = taskMeta.messagePreview;
-      const queuedTask: QueuedTask = {
-        userId: taskMeta.userId,
-        chatId: taskMeta.chatId,
-        messageId: taskMeta.messageId,
-        feishuReplyTo: taskMeta.feishuReplyTo,
-        cwd,
-        timestamp: Date.now(),
-        messagePreview,
-        editable: taskMeta.editable,
-        binding: taskMeta.binding,
-      };
-
-      // Check if there are tasks waiting BEFORE adding this one
-      const currentExecutingCount = this.pendingOrExecutingCount.get(cwd) ?? 0;
-      const currentQueueLength = this.queuedTasks.get(cwd)?.length ?? 0;
-      const hasWaitingTasks = currentExecutingCount > 0 || currentQueueLength > 0;
-
-      // bound the waiting backlog. When the queue is full, reject the
-      // task with a visible card instead of appending it (which would grow
-      // the promise chain + closures unboundedly under a message flood and
-      // fire another queue card). Do NOT increment pendingOrExecutingCount —
-      // a rejected task never executes, so it must not occupy a slot.
-      if (currentQueueLength >= MAX_WAITING_QUEUE) {
-        getLogger().warn(
-          `[queue-manager] queue full cwd=${cwd} depth=${currentQueueLength} rejecting task messageId=${taskMeta.messageId}`,
-        );
-        void this.sendCard(
-          taskMeta.chatId,
-          cardWithHeader({
-            template: 'red',
-            title: '🚫 队列已满',
-            elements: [
-              {
-                tag: 'div',
-                text: {
-                  tag: 'lark_md',
-                  content: `当前工作目录已有 ${MAX_WAITING_QUEUE} 条消息排队等待，为防止积压已拒收本条消息。请等待队列消化后重发，或用 \`/stop\` 清空当前任务。`,
-                },
-              },
-            ],
-          }),
-          { replyTo: taskMeta.feishuReplyTo ?? taskMeta.messageId },
-        ).catch((err) => {
-          getLogger().error('[queue-manager] failed to send queue-full rejection card:', err);
-        });
-        return;
-      }
-
-      // Add to cwd queue list
-      let taskList = this.queuedTasks.get(cwd);
-      if (!taskList) {
-        taskList = [];
-        this.queuedTasks.set(cwd, taskList);
-      }
-      // 身份不变量 tripwire：同一 cwd 内 queue key 必须唯一（一次入队动作一个
-      // key，铸造点 router.mintQueueTaskKey）。撞 key 时数组（追加）与 taskIndex
-      // （覆盖）必然漂移，位置显示/撤销/立即执行/卡片更新会串到别的条目上——
-      // 2026-10-08 线上缺陷就是这么长出来的。这里不改行为，只留证据。
-      if (this.indexGet(cwd, queuedTask.messageId)) {
-        getLogger().warn(
-          `[queue-manager] duplicate queue key cwd=${cwd} messageId=${queuedTask.messageId} — ` +
-            'queue identity must be minted per enqueue action (see router.mintQueueTaskKey)',
-        );
-      }
-      taskList.push(queuedTask);
-      this.indexAdd(cwd, queuedTask);
-
-      // Increment executing count SYNCHRONOUSLY so subsequent enqueues see it
-      this.pendingOrExecutingCount.set(cwd, currentExecutingCount + 1);
-
-      // Only send the queue card if the task actually has to wait.
-      if (hasWaitingTasks) {
-        void this.sendQueueStatusCard(
-          cwd,
-          taskMeta.chatId,
-          taskMeta.messageId,
-          messagePreview,
-          // Reply to the real Feishu message id when the queue key is an
-          // internal key (order.exec); otherwise messageId IS the Feishu id.
-          taskMeta.feishuReplyTo,
-        );
-      }
-      getLogger().debug(
-        `[queue-manager] enqueue task queued cwd=${cwd} queueCard=${hasWaitingTasks} executing=${currentExecutingCount + 1} queueLen=${currentQueueLength + 1}`,
-      );
-    }
+    if (taskMeta && !this.registerQueuedTask(cwd, taskMeta)) return;
 
     // Get or create the queue for this cwd
     let queue = this.queues.get(cwd);
@@ -402,101 +318,8 @@ export class QueueManager {
 
     // Capture messageId for cancellation guard
     const messageId = taskMeta?.messageId;
-    // messagePreview already captured above (outside taskMeta block)
     const newQueue = queue
-      .then(() => {
-        getLogger().debug(`[queue-manager] task begin cwd=${cwd} messageId=${messageId}`);
-
-        // Live preview for the executing card: read from the QueuedTask at
-        // begin time, not the enqueue-closure `taskMeta` (which is frozen).
-        // `updateQueuedTaskMessage` (queue.edit/queue.input) mutates the live
-        // task, so a task edited while queued must show the edited content
-        // when it naturally starts.
-        let livePreview = taskMeta?.messagePreview ?? '';
-        // Check if this task was cancelled before executing
-        if (messageId) {
-          // O(1) index lookup replaces the old `find` + `findIndex`
-          // double O(N) scan. The ordered array still drives removal (splice
-          // preserves queue order for position display); the index stays in
-          // sync via indexRemove.
-          const task = this.indexGet(cwd, messageId);
-          if (!task) {
-            getLogger().debug(
-              `[queue-manager] task skipped (cancelled) cwd=${cwd} messageId=${messageId}`,
-            );
-            return;
-          }
-          livePreview = task.messagePreview;
-          // Remove this task's metadata by messageId
-          const taskList = this.queuedTasks.get(cwd);
-          const idx = taskList?.findIndex((t) => t.messageId === messageId) ?? -1;
-          if (taskList && idx >= 0) {
-            taskList.splice(idx, 1);
-          }
-          this.indexRemove(cwd, messageId);
-          // Cancellation check passed and the task has been removed: it is
-          // about to run, so record it as began for queue.immediate feedback.
-          // Bounded: ids are only consulted for the current immediate target,
-          // so pruning the oldest entries is safe.
-          if (this.beganMessageIds.size >= 10_000) {
-            const oldest = this.beganMessageIds.values().next().value as string | undefined;
-            if (oldest !== undefined) this.beganMessageIds.delete(oldest);
-          }
-          this.beganMessageIds.add(messageId);
-        }
-        // Consume any one-shot replacement closure registered by
-        // `setTaskReplacement` (queue.edit + queue.immediate). The replacement
-        // swaps in the edited content at this task's original queue slot, so
-        // tasks queued behind it still run after it. Deleted here (one-shot)
-        // so a stale closure can never run on a later task.
-        let replacement: (() => Promise<void>) | undefined;
-        if (messageId) {
-          const workspaceReplacements = this.taskReplacements.get(cwd);
-          replacement = workspaceReplacements?.get(messageId);
-          if (replacement) {
-            workspaceReplacements?.delete(messageId);
-            if (workspaceReplacements && workspaceReplacements.size === 0) {
-              this.taskReplacements.delete(cwd);
-            }
-          }
-        }
-        // Update queue card to "executing" status BEFORE running the task.
-        // This must happen after the cancellation check: a skipped/cancelled
-        // task must keep its "❌ 已撤销" card, not be flipped to executing.
-        if (messageId) {
-          void this.updateQueueCardToExecuting(cwd, messageId, livePreview, true);
-        }
-        // Re-arm the pending/executing count for every task that is about to
-        // run. `resetExecutingCount` (external interrupt) zeroes the count,
-        // and the interrupted task's settle consumes the skip-credit — so a
-        // task enqueued BEFORE the interrupt can begin with count 0. Without
-        // this, a running task is invisible to later enqueues and they
-        // silently skip the "⏳ 消息排队中" card. This applies regardless of
-        // taskMeta: resetExecutingCount can clear the count for any cwd,
-        // and a task that resumes after an interrupt must re-arm even when it
-        // carries no metadata.
-        const currentCount = this.pendingOrExecutingCount.get(cwd) ?? 0;
-        if (currentCount < 1) {
-          this.pendingOrExecutingCount.set(cwd, 1);
-          getLogger().debug(
-            `[queue-manager] re-armed pendingOrExecutingCount cwd=${cwd} (interrupt resume)`,
-          );
-        }
-        // Mark this task as the lane occupant for its whole execution period
-        // before running it. `resetExecutingCount` reads the slot id to grant
-        // the interrupt credit to exactly this task; the settle removes the
-        // record. `kind`/`label` let a later message's queue card name what it
-        // is waiting for instead of reporting "前面还有 0 条".
-        this.executingInfo.set(cwd, {
-          slotId,
-          messageId,
-          kind: taskMeta?.kind ?? 'message',
-          label: laneOccupantLabel(taskMeta?.kind ?? 'message', livePreview),
-          preview: livePreview,
-          startedAt: Date.now(),
-        });
-        return replacement ? replacement() : task();
-      })
+      .then(() => this.beginQueuedTask(cwd, slotId, messageId, task, taskMeta))
       .then(() => {
         getLogger().debug(`[queue-manager] task end cwd=${cwd}`);
         // beganMessageIds entry intentionally retained: sticky by design
@@ -512,6 +335,216 @@ export class QueueManager {
         this.decrementExecutingCount(cwd, slotId);
       });
     this.queues.set(cwd, newQueue);
+  }
+
+  /**
+   * 登记排队元数据（展示卡数据源 + 计数 + 排队卡）。
+   *
+   * @returns false = 队列已满被拒收（不入队、不占执行槽位），调用方必须
+   *   直接把任务链跳过。背压红线：满队时拒收而不是继续 append，否则 promise
+   *   链与闭包在消息洪峰下无界增长，还会多打一张排队卡。
+   */
+  private registerQueuedTask(
+    cwd: string,
+    taskMeta: NonNullable<EnqueueOptions['taskMeta']>,
+  ): boolean {
+    // Check if there are tasks waiting BEFORE adding this one
+    const currentExecutingCount = this.pendingOrExecutingCount.get(cwd) ?? 0;
+    const currentQueueLength = this.queuedTasks.get(cwd)?.length ?? 0;
+    const hasWaitingTasks = currentExecutingCount > 0 || currentQueueLength > 0;
+
+    if (currentQueueLength >= MAX_WAITING_QUEUE) {
+      getLogger().warn(
+        `[queue-manager] queue full cwd=${cwd} depth=${currentQueueLength} rejecting task messageId=${taskMeta.messageId}`,
+      );
+      void this.sendQueueFullRejection(taskMeta);
+      return false;
+    }
+
+    const queuedTask: QueuedTask = {
+      userId: taskMeta.userId,
+      chatId: taskMeta.chatId,
+      messageId: taskMeta.messageId,
+      feishuReplyTo: taskMeta.feishuReplyTo,
+      cwd,
+      timestamp: Date.now(),
+      messagePreview: taskMeta.messagePreview,
+      editable: taskMeta.editable,
+      binding: taskMeta.binding,
+    };
+
+    // Add to cwd queue list
+    let taskList = this.queuedTasks.get(cwd);
+    if (!taskList) {
+      taskList = [];
+      this.queuedTasks.set(cwd, taskList);
+    }
+    // 身份不变量 tripwire：同一 cwd 内 queue key 必须唯一（一次入队动作一个
+    // key，铸造点 router.mintQueueTaskKey）。撞 key 时数组（追加）与 taskIndex
+    // （覆盖）必然漂移，位置显示/撤销/立即执行/卡片更新会串到别的条目上——
+    // 2026-10-08 线上缺陷就是这么长出来的。这里不改行为，只留证据。
+    if (this.indexGet(cwd, queuedTask.messageId)) {
+      getLogger().warn(
+        `[queue-manager] duplicate queue key cwd=${cwd} messageId=${queuedTask.messageId} — ` +
+          'queue identity must be minted per enqueue action (see router.mintQueueTaskKey)',
+      );
+    }
+    taskList.push(queuedTask);
+    this.indexAdd(cwd, queuedTask);
+
+    // Increment executing count SYNCHRONOUSLY so subsequent enqueues see it
+    this.pendingOrExecutingCount.set(cwd, currentExecutingCount + 1);
+
+    // Only send the queue card if the task actually has to wait.
+    if (hasWaitingTasks) {
+      void this.sendQueueStatusCard(
+        cwd,
+        taskMeta.chatId,
+        taskMeta.messageId,
+        taskMeta.messagePreview,
+        // Reply to the real Feishu message id when the queue key is an
+        // internal key (order.exec); otherwise messageId IS the Feishu id.
+        taskMeta.feishuReplyTo,
+      );
+    }
+    getLogger().debug(
+      `[queue-manager] enqueue task queued cwd=${cwd} queueCard=${hasWaitingTasks} executing=${currentExecutingCount + 1} queueLen=${currentQueueLength + 1}`,
+    );
+    return true;
+  }
+
+  /** 满队拒收卡（best-effort 送达，失败只记日志：任务已经被拒，不能再吞一次反馈）。 */
+  private async sendQueueFullRejection(
+    taskMeta: NonNullable<EnqueueOptions['taskMeta']>,
+  ): Promise<void> {
+    await this.sendCard(
+      taskMeta.chatId,
+      cardWithHeader({
+        template: 'red',
+        title: '🚫 队列已满',
+        elements: [
+          {
+            tag: 'div',
+            text: {
+              tag: 'lark_md',
+              content: `当前工作目录已有 ${MAX_WAITING_QUEUE} 条消息排队等待，为防止积压已拒收本条消息。请等待队列消化后重发，或用 \`/stop\` 清空当前任务。`,
+            },
+          },
+        ],
+      }),
+      { replyTo: taskMeta.feishuReplyTo ?? taskMeta.messageId },
+    ).catch((err) => {
+      getLogger().error('[queue-manager] failed to send queue-full rejection card:', err);
+    });
+  }
+
+  /**
+   * 轮到本任务执行：撤销检查 → 消费一次性替换闭包 → 排队卡转「执行中」→
+   * 重新武装计数与 lane 占用登记 → 跑任务闭包。
+   *
+   * @returns 任务闭包的 promise；被撤销时返回 undefined（本槽位什么都不跑）。
+   */
+  private beginQueuedTask(
+    cwd: string,
+    slotId: number,
+    messageId: string | undefined,
+    task: () => Promise<void>,
+    taskMeta: EnqueueOptions['taskMeta'],
+  ): Promise<void> | undefined {
+    getLogger().debug(`[queue-manager] task begin cwd=${cwd} messageId=${messageId}`);
+
+    // Live preview for the executing card: read from the QueuedTask at
+    // begin time, not the enqueue-closure `taskMeta` (which is frozen).
+    // `updateQueuedTaskMessage` (queue.edit/queue.input) mutates the live
+    // task, so a task edited while queued must show the edited content
+    // when it naturally starts.
+    let livePreview = taskMeta?.messagePreview ?? '';
+    // Check if this task was cancelled before executing
+    if (messageId) {
+      // O(1) index lookup replaces the old `find` + `findIndex`
+      // double O(N) scan. The ordered array still drives removal (splice
+      // preserves queue order for position display); the index stays in
+      // sync via indexRemove.
+      const queued = this.indexGet(cwd, messageId);
+      if (!queued) {
+        getLogger().debug(
+          `[queue-manager] task skipped (cancelled) cwd=${cwd} messageId=${messageId}`,
+        );
+        return undefined;
+      }
+      livePreview = queued.messagePreview;
+      // Remove this task's metadata by messageId
+      const taskList = this.queuedTasks.get(cwd);
+      const idx = taskList?.findIndex((t) => t.messageId === messageId) ?? -1;
+      if (taskList && idx >= 0) {
+        taskList.splice(idx, 1);
+      }
+      this.indexRemove(cwd, messageId);
+      // Cancellation check passed and the task has been removed: it is
+      // about to run, so record it as began for queue.immediate feedback.
+      // Bounded: ids are only consulted for the current immediate target,
+      // so pruning the oldest entries is safe.
+      if (this.beganMessageIds.size >= 10_000) {
+        const oldest = this.beganMessageIds.values().next().value as string | undefined;
+        if (oldest !== undefined) this.beganMessageIds.delete(oldest);
+      }
+      this.beganMessageIds.add(messageId);
+    }
+    // Consume any one-shot replacement closure registered by
+    // `setTaskReplacement` (queue.edit + queue.immediate). The replacement
+    // swaps in the edited content at this task's original queue slot, so
+    // tasks queued behind it still run after it. Deleted here (one-shot)
+    // so a stale closure can never run on a later task.
+    const replacement = messageId ? this.takeTaskReplacement(cwd, messageId) : undefined;
+    // Update queue card to "executing" status BEFORE running the task.
+    // This must happen after the cancellation check: a skipped/cancelled
+    // task must keep its "❌ 已撤销" card, not be flipped to executing.
+    if (messageId) {
+      void this.updateQueueCardToExecuting(cwd, messageId, livePreview, true);
+    }
+    // Re-arm the pending/executing count for every task that is about to
+    // run. `resetExecutingCount` (external interrupt) zeroes the count,
+    // and the interrupted task's settle consumes the skip-credit — so a
+    // task enqueued BEFORE the interrupt can begin with count 0. Without
+    // this, a running task is invisible to later enqueues and they
+    // silently skip the "⏳ 消息排队中" card. This applies regardless of
+    // taskMeta: resetExecutingCount can clear the count for any cwd,
+    // and a task that resumes after an interrupt must re-arm even when it
+    // carries no metadata.
+    const currentCount = this.pendingOrExecutingCount.get(cwd) ?? 0;
+    if (currentCount < 1) {
+      this.pendingOrExecutingCount.set(cwd, 1);
+      getLogger().debug(
+        `[queue-manager] re-armed pendingOrExecutingCount cwd=${cwd} (interrupt resume)`,
+      );
+    }
+    // Mark this task as the lane occupant for its whole execution period
+    // before running it. `resetExecutingCount` reads the slot id to grant
+    // the interrupt credit to exactly this task; the settle removes the
+    // record. `kind`/`label` let a later message's queue card name what it
+    // is waiting for instead of reporting "前面还有 0 条".
+    this.executingInfo.set(cwd, {
+      slotId,
+      messageId,
+      kind: taskMeta?.kind ?? 'message',
+      label: laneOccupantLabel(taskMeta?.kind ?? 'message', livePreview),
+      preview: livePreview,
+      startedAt: Date.now(),
+    });
+    return replacement ? replacement() : task();
+  }
+
+  /** 取走并清除该任务的一次性替换闭包（消费即销毁）。 */
+  private takeTaskReplacement(cwd: string, messageId: string): (() => Promise<void>) | undefined {
+    const workspaceReplacements = this.taskReplacements.get(cwd);
+    const replacement = workspaceReplacements?.get(messageId);
+    if (replacement) {
+      workspaceReplacements?.delete(messageId);
+      if (workspaceReplacements && workspaceReplacements.size === 0) {
+        this.taskReplacements.delete(cwd);
+      }
+    }
+    return replacement;
   }
 
   /**

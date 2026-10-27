@@ -1,4 +1,5 @@
 import { describe, expect, it, vi, afterEach } from 'vitest';
+import type { CardStreamController } from '@larksuite/channel';
 import { BashCardSession, BASH_OUTPUT_STORE_CAP } from './bash-card-session.js';
 import { makeStreamCardConnector } from '../../tests/lib/card-stubs.js';
 
@@ -9,10 +10,11 @@ import { makeStreamCardConnector } from '../../tests/lib/card-stubs.js';
 function makeBashTestConnector(
   opts: { capture?: { updates: object[] }; throwOnStream?: boolean } = {},
 ) {
+  const capture = opts.capture;
   return makeStreamCardConnector({
-    controllerUpdate: opts.capture
+    controllerUpdate: capture
       ? (card) => {
-          opts.capture.updates.push(typeof card === 'function' ? card({}) : card);
+          capture.updates.push(typeof card === 'function' ? card({}) : card);
         }
       : undefined,
     streamCardThrowsAfterProducer: opts.throwOnStream ? new Error('complete failed') : undefined,
@@ -82,12 +84,24 @@ describe('BashCardSession', () => {
 
   it('falls back to updateCard when the stream fails to complete', async () => {
     const updated: Array<{ messageId: string; card: object }> = [];
-    const { connector } = makeStreamCardConnector({
-      updateCard: async (messageId, card) => {
+    const controller: CardStreamController = {
+      messageId: 'card-1',
+      current: {},
+      update: async () => {},
+    };
+    const connector = {
+      streamCard: async (
+        _chatId: string,
+        _initial: object,
+        producer: (ctrl: CardStreamController) => Promise<void>,
+      ) => {
+        await producer(controller);
+        throw new Error('complete failed');
+      },
+      updateCard: async (messageId: string, card: object) => {
         updated.push({ messageId, card });
       },
-      streamCardThrowsAfterProducer: new Error('complete failed'),
-    });
+    };
 
     const session = new BashCardSession({
       connector,

@@ -710,13 +710,16 @@ describe('rollout-reader additional branches', () => {
       // On macOS, we can't easily make a dir unreadable for the current user.
       // Instead, mock fs.readdirSync to throw for the problematic path.
       const origReaddirSync = fs.readdirSync;
-      const readdirSpy = vi.spyOn(fs, 'readdirSync').mockImplementation((...args: unknown[]) => {
+      const readdirImpl = (...args: unknown[]) => {
         const p = args[0] as string;
         if (typeof p === 'string' && p.includes('2027')) {
           throw new Error('EACCES');
         }
-        return origReaddirSync.apply(fs, args as [string]);
-      });
+        return (origReaddirSync as (...a: unknown[]) => unknown).apply(fs, args);
+      };
+      const readdirSpy = vi
+        .spyOn(fs, 'readdirSync')
+        .mockImplementation(readdirImpl as unknown as typeof fs.readdirSync);
 
       // Also create a 2027 year dir (which will trigger the mock to throw)
       const badYearDir = path.join(sessionsDir, '2027', '01', '01');

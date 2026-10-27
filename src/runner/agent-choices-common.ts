@@ -1,4 +1,4 @@
-import type { AgentKind } from './types.js';
+import type { AgentKind } from '../agent-kinds.js';
 
 /** 一对需要同步的字段：agents.<agent> 上的配置键 ↔ agentChoices.<agent> 上的选择键。 */
 export interface ChoiceField {

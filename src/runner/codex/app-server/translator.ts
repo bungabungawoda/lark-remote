@@ -59,6 +59,13 @@ import {
 export type TranslatorEvent =
   AgentEvent | TurnStartedEvent | TurnDiffEvent | ApprovalRequestedEvent | ApprovalResolvedEvent;
 
+/** 工具型 item 的身份信息（随每帧 turn_diff 透传给 run-state）。 */
+type ToolItemMeta = {
+  toolName: string;
+  toolInput?: Record<string, unknown>;
+  toolHint?: ToolHint;
+};
+
 // =============================================================================
 // Translator
 // =============================================================================
@@ -83,10 +90,7 @@ export class CodexAppServerTranslator {
    * Tool identity per item id (信息保真): recorded at item/started, spread
    * into every toolOutput turn_diff, released at item/completed.
    */
-  private toolItemMeta = new Map<
-    string,
-    { toolName: string; toolInput?: Record<string, unknown>; toolHint?: ToolHint }
-  >();
+  private toolItemMeta = new Map<string, ToolItemMeta>();
   /** Full plan text per item id (item-scoped snapshot). */
   private planByItem = new Map<string, string>();
   /** commandExecution items that emitted item/started (tool block position anchor). */
@@ -232,15 +236,13 @@ export class CodexAppServerTranslator {
                   complete: true,
                   timestamp: this.now(),
                 } as FinalAnswerEvent)
-              : ({
-                  type: 'turn_diff',
-                  text,
-                  itemId: item.id,
-                  complete: true,
-                  threadId: params?.threadId ?? this.threadId,
-                  turnId: params?.turn?.id ?? this.turnId,
-                  timestamp: this.now(),
-                } as TurnDiffEvent),
+              : this.turnDiffEvent(
+                  {
+                    threadId: params?.threadId ?? this.threadId,
+                    turnId: params?.turn?.id ?? this.turnId,
+                  },
+                  { text, itemId: item.id, complete: true },
+                ),
           );
         }
       } else if (item.type === 'plan') {
@@ -249,15 +251,15 @@ export class CodexAppServerTranslator {
         const planText = (item as { text?: string }).text ?? '';
         if (planText && this.planByItem.get(item.id) !== planText) {
           this.planByItem.set(item.id, planText);
-          events.push({
-            type: 'turn_diff',
-            plan: planText,
-            itemId: item.id,
-            complete: true,
-            threadId: params?.threadId ?? this.threadId,
-            turnId: params?.turn?.id ?? this.turnId,
-            timestamp: this.now(),
-          } as TurnDiffEvent);
+          events.push(
+            this.turnDiffEvent(
+              {
+                threadId: params?.threadId ?? this.threadId,
+                turnId: params?.turn?.id ?? this.turnId,
+              },
+              { plan: planText, itemId: item.id, complete: true },
+            ),
+          );
         }
       }
     }
@@ -365,16 +367,7 @@ export class CodexAppServerTranslator {
         } as FinalAnswerEvent,
       ];
     }
-    return [
-      {
-        type: 'turn_diff',
-        text: next,
-        itemId: params.itemId,
-        threadId: params.threadId,
-        turnId: params.turnId,
-        timestamp: this.now(),
-      } as TurnDiffEvent,
-    ];
+    return [this.turnDiffEvent(params, { text: next, itemId: params.itemId })];
   }
 
   private handleReasoningDelta(
@@ -384,14 +377,10 @@ export class CodexAppServerTranslator {
     const entry = this.reasoningEntry(params.itemId);
     entry.summary += params.delta;
     return [
-      {
-        type: 'turn_diff',
+      this.turnDiffEvent(params, {
         reasoning: this.reasoningSnapshotFor(entry),
         itemId: params.itemId,
-        threadId: params.threadId,
-        turnId: params.turnId,
-        timestamp: this.now(),
-      } as TurnDiffEvent,
+      }),
     ];
   }
 
@@ -408,15 +397,11 @@ export class CodexAppServerTranslator {
       // 权威文件变更（含聚合后的 diff）；以快照语义替换本 item 的变更列表。
       this.fileChangeItems.set(item.id, item.changes);
       return [
-        {
-          type: 'turn_diff',
+        this.turnDiffEvent(params, {
           fileChanges: normalizeFileChanges(item.changes),
           itemId: item.id,
           complete: true,
-          threadId: params.threadId,
-          turnId: params.turnId,
-          timestamp: this.now(),
-        } as TurnDiffEvent,
+        }),
       ];
     }
     if (item.type === 'reasoning') {
@@ -428,15 +413,11 @@ export class CodexAppServerTranslator {
         entry.content = new Map(content.map((c, i) => [i, c]));
         entry.summary = summary.join('\n');
         return [
-          {
-            type: 'turn_diff',
+          this.turnDiffEvent(params, {
             reasoning: this.reasoningSnapshotFor(entry),
             itemId: item.id,
             complete: true,
-            threadId: params.threadId,
-            turnId: params.turnId,
-            timestamp: this.now(),
-          } as TurnDiffEvent,
+          }),
         ];
       }
     }
@@ -456,8 +437,7 @@ export class CodexAppServerTranslator {
       const meta = this.toolItemMeta.get(item.id);
       this.toolItemMeta.delete(item.id);
       return [
-        {
-          type: 'turn_diff',
+        this.turnDiffEvent(params, {
           toolOutput: authoritative,
           ...meta,
           itemId: item.id,
@@ -465,10 +445,7 @@ export class CodexAppServerTranslator {
           toolStatus: commandExecutionStatusToToolStatus(
             (item as { status?: string | null }).status,
           ),
-          threadId: params.threadId,
-          turnId: params.turnId,
-          timestamp: this.now(),
-        } as TurnDiffEvent,
+        }),
       ];
     }
     if (item.type === 'agentMessage') {
@@ -497,15 +474,11 @@ export class CodexAppServerTranslator {
           ];
         }
         return [
-          {
-            type: 'turn_diff',
+          this.turnDiffEvent(params, {
             text: finalText,
             itemId: item.id,
             complete: true,
-            threadId: params.threadId,
-            turnId: params.turnId,
-            timestamp: this.now(),
-          } as TurnDiffEvent,
+          }),
         ];
       }
     }
@@ -514,15 +487,11 @@ export class CodexAppServerTranslator {
       if (text) {
         this.planByItem.set(item.id, text);
         return [
-          {
-            type: 'turn_diff',
+          this.turnDiffEvent(params, {
             plan: text,
             itemId: item.id,
             complete: true,
-            threadId: params.threadId,
-            turnId: params.turnId,
-            timestamp: this.now(),
-          } as TurnDiffEvent,
+          }),
         ];
       }
     }
@@ -534,16 +503,12 @@ export class CodexAppServerTranslator {
       this.toolItemMeta.delete(item.id);
       this.startedToolItems.delete(item.id);
       return [
-        {
-          type: 'turn_diff',
+        this.turnDiffEvent(params, {
           toolOutput: this.toolOutputByItem.get(item.id) ?? '',
           ...meta,
           itemId: item.id,
           complete: true,
-          threadId: params.threadId,
-          turnId: params.turnId,
-          timestamp: this.now(),
-        } as TurnDiffEvent,
+        }),
       ];
     }
     return [];
@@ -557,14 +522,10 @@ export class CodexAppServerTranslator {
     const prev = entry.content.get(index) ?? '';
     entry.content.set(index, prev + params.delta);
     return [
-      {
-        type: 'turn_diff',
+      this.turnDiffEvent(params, {
         reasoning: this.reasoningSnapshotFor(entry),
         itemId: params.itemId,
-        threadId: params.threadId,
-        turnId: params.turnId,
-        timestamp: this.now(),
-      } as TurnDiffEvent,
+      }),
     ];
   }
 
@@ -575,15 +536,11 @@ export class CodexAppServerTranslator {
     const next = prev + params.delta;
     this.toolOutputByItem.set(params.itemId, next);
     return [
-      {
-        type: 'turn_diff',
+      this.turnDiffEvent(params, {
         toolOutput: next,
         ...this.toolItemMeta.get(params.itemId),
         itemId: params.itemId,
-        threadId: params.threadId,
-        turnId: params.turnId,
-        timestamp: this.now(),
-      } as TurnDiffEvent,
+      }),
     ];
   }
 
@@ -594,14 +551,10 @@ export class CodexAppServerTranslator {
     const next = prev + params.delta;
     this.planByItem.set(params.itemId, next);
     return [
-      {
-        type: 'turn_diff',
+      this.turnDiffEvent(params, {
         plan: next,
         itemId: params.itemId,
-        threadId: params.threadId,
-        turnId: params.turnId,
-        timestamp: this.now(),
-      } as TurnDiffEvent,
+      }),
     ];
   }
 
@@ -839,111 +792,86 @@ export class CodexAppServerTranslator {
               view: { ...pending.view, fileChanges },
               timestamp: new Date().toISOString(),
             } as ApprovalViewUpdatedEvent,
-            {
-              type: 'turn_diff',
+            this.turnDiffEvent(params, {
               fileChanges,
               itemId: item.id,
-              threadId: params.threadId,
-              turnId: params.turnId,
-              timestamp: this.now(),
-            } as TurnDiffEvent,
+            }),
           ];
         }
       }
       return [
-        {
-          type: 'turn_diff',
+        this.turnDiffEvent(params, {
           fileChanges: normalizeFileChanges(item.changes),
           itemId: item.id,
-          threadId: params.threadId,
-          turnId: params.turnId,
-          timestamp: this.now(),
-        } as TurnDiffEvent,
+        }),
       ];
     }
     if (item.type === 'commandExecution') {
       // item/started 锚定工具块位置（真实时序）：命令开始时即创建工具块，
       // 而不是等到首个输出 delta——否则后续 reasoning item 会插到 command 之前。
-      this.startedToolItems.add(item.id);
-      // 信息保真 记录工具身份，随 turn_diff 透传（run-state 首见时写入）。
-      this.toolItemMeta.set(item.id, {
+      return this.beginToolItem(item.id, params, {
         toolName: 'Bash',
         toolInput: { command: item.command, ...(item.cwd ? { cwd: item.cwd } : {}) },
         toolHint: 'shell',
       });
-      return [
-        {
-          type: 'turn_diff',
-          toolOutput: '',
-          ...this.toolItemMeta.get(item.id),
-          itemId: item.id,
-          threadId: params.threadId,
-          turnId: params.turnId,
-          timestamp: this.now(),
-        } as TurnDiffEvent,
-      ];
     }
     if (item.type === 'webSearch') {
-      this.startedToolItems.add(item.id);
-      this.toolItemMeta.set(item.id, {
+      return this.beginToolItem(item.id, params, {
         toolName: 'WebSearch',
         toolInput: { query: item.query },
         toolHint: 'web',
       });
-      return [
-        {
-          type: 'turn_diff',
-          toolOutput: '',
-          ...this.toolItemMeta.get(item.id),
-          itemId: item.id,
-          threadId: params.threadId,
-          turnId: params.turnId,
-          timestamp: this.now(),
-        } as TurnDiffEvent,
-      ];
     }
     if (item.type === 'mcpToolCall') {
       // ThreadItem union 含 catch-all 成员，判别收窄会与泛型成员并集；
       // 显式断言到具体 interface（字段名已经 v2 schema 确认）。
       const mcpItem = item as McpToolCallItem;
-      this.startedToolItems.add(item.id);
-      this.toolItemMeta.set(item.id, {
+      return this.beginToolItem(item.id, params, {
         toolName: `mcp__${mcpItem.server}__${mcpItem.tool}`,
         toolInput: mcpItem.arguments ?? {},
         toolHint: 'search',
       });
-      return [
-        {
-          type: 'turn_diff',
-          toolOutput: '',
-          ...this.toolItemMeta.get(item.id),
-          itemId: item.id,
-          threadId: params.threadId,
-          turnId: params.turnId,
-          timestamp: this.now(),
-        } as TurnDiffEvent,
-      ];
     }
     if (item.type === 'dynamicToolCall') {
       const dynItem = item as DynamicToolCallItem;
-      this.startedToolItems.add(item.id);
-      this.toolItemMeta.set(item.id, {
+      return this.beginToolItem(item.id, params, {
         toolName: dynItem.tool,
         toolInput: dynItem.arguments ?? {},
       });
-      return [
-        {
-          type: 'turn_diff',
-          toolOutput: '',
-          ...this.toolItemMeta.get(item.id),
-          itemId: item.id,
-          threadId: params.threadId,
-          turnId: params.turnId,
-          timestamp: this.now(),
-        } as TurnDiffEvent,
-      ];
     }
     return [];
+  }
+
+  /**
+   * turn_diff 的统一信封：`type` + threadId/turnId/timestamp 三个公共字段在此
+   * 一次装配（十余个构造点原本各抄一遍，还得挂 `as TurnDiffEvent`）。
+   */
+  private turnDiffEvent(
+    ids: { threadId: string; turnId: string },
+    fields: Partial<TurnDiffEvent> & { itemId: string },
+  ): TurnDiffEvent {
+    return {
+      type: 'turn_diff',
+      ...fields,
+      threadId: ids.threadId,
+      turnId: ids.turnId,
+      timestamp: this.now(),
+    };
+  }
+
+  /**
+   * 工具型 item 的 started 处理（commandExecution / webSearch / mcpToolCall /
+   * dynamicToolCall 四个分支同形）：登记「已开始」锚点 + 记录工具身份 meta，
+   * 再发一帧空的 turn_diff 把工具块按真实时序插进卡片。
+   */
+  private beginToolItem(
+    itemId: string,
+    params: ItemStartedNotification['params'],
+    meta: ToolItemMeta,
+  ): TranslatorEvent[] {
+    this.startedToolItems.add(itemId);
+    this.toolItemMeta.set(itemId, meta);
+    return [this.turnDiffEvent(params, { toolOutput: '', ...meta, itemId })];
   }
 
   private handlePermissionsApproval(

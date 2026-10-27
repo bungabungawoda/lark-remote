@@ -4,7 +4,8 @@ import path from 'node:path';
 import os from 'node:os';
 import { ClaudeRunner } from './index.js';
 import { PiRpcRunner } from './pi/index.js';
-import type { AgentSessionReader } from './types.js';
+import type { AgentSessionReader } from '../session-contract.js';
+import { ClaudeSessionReader } from '../session/claude/index.js';
 
 const emptyReader: AgentSessionReader = {
   listSessions: () => ({ sessions: [], total: 0 }),
@@ -30,6 +31,7 @@ afterEach(() => {
 describe('ClaudeRunner getStatusInfo', () => {
   it('returns status info with model and reasoning', () => {
     const runner = new ClaudeRunner({
+      sessionReader: new ClaudeSessionReader(),
       cwd: 'test',
       model: 'claude-opus-4-8',
       effort: 'high',
@@ -45,6 +47,7 @@ describe('ClaudeRunner getStatusInfo', () => {
 
   it('returns reasoning as off for haiku', () => {
     const runner = new ClaudeRunner({
+      sessionReader: new ClaudeSessionReader(),
       cwd: 'test',
       model: 'claude-haiku-4-5-20250501',
       pidDir: tmpDir,
@@ -59,6 +62,7 @@ describe('ClaudeRunner getStatusInfo', () => {
 
   it('returns reasoning from effort for sonnet', () => {
     const runner = new ClaudeRunner({
+      sessionReader: new ClaudeSessionReader(),
       cwd: 'test',
       model: 'claude-sonnet-4-6',
       effort: 'medium',
@@ -74,6 +78,7 @@ describe('ClaudeRunner getStatusInfo', () => {
 
   it('maps unknown model IDs to themselves', () => {
     const runner = new ClaudeRunner({
+      sessionReader: new ClaudeSessionReader(),
       cwd: 'test',
       model: 'unknown-model-xyz',
       effort: 'medium',

@@ -1,6 +1,9 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, type Mock } from 'vitest';
 import { FeishuConnector, PATCH_MAX_RETRIES } from './index.js';
-import type { AppConfig } from '../config/index.js';
+import { AppConfigSchema, type AppConfig } from '../config/index.js';
+
+/** Narrow patch signature (mirrors the production PatchableMessageService boundary). */
+type PatchStubFn = (...args: unknown[]) => Promise<{ code?: number; msg?: string }>;
 
 /**
  * 卡片 patch 的瞬态错误重试（2026-09-15 socket-close 事故）。
@@ -10,7 +13,7 @@ import type { AppConfig } from '../config/index.js';
  * patch —— 失败是一条脱离 await 链的 detached rejection，调用方 try/catch
  * 挡不住，只能冒泡到 process.unhandledRejection。所以重试必须做在 patch 出口本身。
  */
-let patchStub: ReturnType<typeof vi.fn>;
+let patchStub: Mock<PatchStubFn>;
 
 vi.mock('@larksuite/channel', () => ({
   createLarkChannel: () => ({
@@ -25,7 +28,7 @@ vi.mock('@larksuite/channel', () => ({
       im: {
         v1: {
           message: {
-            patch: (...args: unknown[]) => (patchStub ??= vi.fn())(...args),
+            patch: (...args: unknown[]) => (patchStub ??= vi.fn<PatchStubFn>())(...args),
           },
         },
       },
@@ -37,13 +40,20 @@ vi.mock('../logger/index.js', async () =>
   (await import('../../tests/lib/logger-mock.js')).loggerModuleMock(),
 );
 
-const config: AppConfig = {
+const config: AppConfig = AppConfigSchema.parse({
   feishu: { appId: 'app-id', appSecret: 'app-secret' },
-  claude: { model: 'claude-opus-4-8', effort: 'medium', stopGraceMs: 5000 },
+  claude: {
+    model: 'claude-opus-4-8',
+    effort: 'medium',
+    permissionMode: 'auto',
+    approvalTimeoutMs: 300000,
+    idleTtlMinutes: 30,
+    stopGraceMs: 5000,
+  },
   idle: { watchdogMinutes: 15 },
   defaultAgent: 'claude',
   logging: { level: 'info' },
-};
+});
 
 /** axios-style socket-close failure: no HTTP response, transient code. */
 function socketClosedError(): Error {
@@ -60,7 +70,7 @@ function getWrappedPatch(connector: FeishuConnector) {
 const request = { path: { message_id: 'om_retry' }, data: { content: '{}' } };
 
 beforeEach(() => {
-  patchStub = vi.fn();
+  patchStub = vi.fn<PatchStubFn>();
 });
 
 describe('message.patch retry on transient errors', () => {

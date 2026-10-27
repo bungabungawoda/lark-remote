@@ -23,19 +23,22 @@ vi.mock('../logger/index.js', async () =>
 );
 
 import { FeishuConnector, DEDUP_TTL_MS } from './index.js';
-import type { AppConfig } from '../config/index.js';
+import { AppConfigSchema, type AppConfig } from '../config/index.js';
 
-const config: AppConfig = {
+const config: AppConfig = AppConfigSchema.parse({
   feishu: { appId: 'app-id', appSecret: 'app-secret' },
   claude: {
     model: 'claude-opus-4-8',
     effort: 'medium',
+    permissionMode: 'auto',
+    approvalTimeoutMs: 300000,
+    idleTtlMinutes: 30,
     stopGraceMs: 5000,
   },
   idle: { watchdogMinutes: 15 },
   logging: { level: 'info' },
   defaultAgent: 'claude',
-};
+});
 
 // 2026-07-05 回归测试：dedup ttl 必须远小于用户连击间隔。
 //
@@ -72,7 +75,8 @@ describe('connector dedup TTL', () => {
     new FeishuConnector(config);
 
     // 单 owner 私聊机器人：requireMention 一旦被改回 true，所有不带 @ 的消息静默丢弃。
-    const arg = createLarkChannelMock.mock.calls[0]?.[0] as {
+    const callArgs = createLarkChannelMock.mock.calls[0] as unknown[];
+    const arg = callArgs[0] as {
       policy?: { dmMode?: string; requireMention?: boolean };
     };
     expect(arg.policy).toEqual({ dmMode: 'open', requireMention: false });

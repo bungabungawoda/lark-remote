@@ -26,6 +26,7 @@ import os from 'node:os';
 import { ClaudeRunner } from '../../../src/runner/claude/index.js';
 import { pidFileSuffix } from '../../../src/runner/common/spawning-runner.js';
 import { describePosix } from '../../lib/platform.js';
+import { ClaudeSessionReader } from '../../../src/session/claude/index.js';
 
 vi.mock('../../../src/logger/index.js', async () =>
   (await import('../../lib/logger-mock.js')).loggerModuleMock(),
@@ -51,6 +52,7 @@ describePosix('killOrphan process identity verification', () => {
     const pid = innocent.pid!;
     try {
       const runner = new ClaudeRunner({
+        sessionReader: new ClaudeSessionReader(),
         cwd: 'test',
         pidDir: tmpDir,
       });

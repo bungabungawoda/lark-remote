@@ -28,6 +28,7 @@
 import { closeSync, openSync, readSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
+import { getLogger } from '../../../logger/index.js';
 
 export interface OpencodeLogErrorMonitorOptions {
   /** Path to opencode's own log file (default: resolveOpencodeLogPath()). */
@@ -41,6 +42,8 @@ const LIMIT_ERROR_RE =
   /usage limit|quota|rate limit|rate_limit|too many requests|insufficient balance|free usage/i;
 
 const STREAM_ERROR_RE = /message="stream error"/;
+/** 同一条 IO 故障的日志节流窗口。 */
+const IO_ERROR_LOG_INTERVAL_MS = 60_000;
 const MAIN_TURN_RE = /small=false/;
 const ERROR_MESSAGE_RE = /error\.error="((?:[^"\\]|\\.)*)"/;
 
@@ -63,6 +66,12 @@ export class OpencodeLogErrorMonitor {
   private timer: ReturnType<typeof setInterval> | null = null;
   private sessionId: string | null = null;
   private onError: ((message: string) => void) | null = null;
+  /**
+   * IO 故障留痕的节流状态：poll 每 2s 一次，同一条 EACCES 不得刷满日志，
+   * 但也不能像以前那样完全静默（监视器自己坏了没人知道）。
+   */
+  private lastIoError = '';
+  private lastIoErrorAt = 0;
 
   constructor(opts: OpencodeLogErrorMonitorOptions) {
     this.logPath = opts.logPath;
@@ -97,9 +106,29 @@ export class OpencodeLogErrorMonitor {
   private currentSize(): number {
     try {
       return statSync(this.logPath).size;
-    } catch {
+    } catch (err) {
+      this.noteIoError(err);
       return 0;
     }
+  }
+
+  /**
+   * 监视器自身读不到日志时留痕（同一条最多每分钟一次）。ENOENT 通常是日志
+   * 还没生成，属正常空态，不记。
+   */
+  private noteIoError(err: unknown): void {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return;
+    const message = (err as Error)?.message ?? String(err);
+    const now = Date.now();
+    if (message === this.lastIoError && now - this.lastIoErrorAt < IO_ERROR_LOG_INTERVAL_MS) {
+      return;
+    }
+    this.lastIoError = message;
+    this.lastIoErrorAt = now;
+    getLogger().warn(
+      `[opencode-error-monitor] cannot read ${this.logPath}: ${message}; ` +
+        'limit errors will fall back to the idle watchdog',
+    );
   }
 
   private poll(): void {
@@ -122,9 +151,11 @@ export class OpencodeLogErrorMonitor {
         } finally {
           closeSync(fd);
         }
-      } catch {
+      } catch (err) {
+        this.noteIoError(err);
         return;
       }
+      this.lastIoError = '';
       this.offset = size;
       this.pendingTail += chunk;
     }

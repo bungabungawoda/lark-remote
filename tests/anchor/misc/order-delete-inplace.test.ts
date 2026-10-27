@@ -60,11 +60,7 @@ describe('Anchor: order.delete updates card in place', () => {
     fs.mkdirSync(projectDir);
 
     const { router, sessionStore, connector } = createRouter();
-    sessionStore.set('user1', {
-      sessions: new Map([['claude', 'session-1']]),
-      previousSessions: new Map(),
-      cwd: projectDir,
-    });
+    sessionStore.setSessionIdAndCwd('user1', 'claude', 'session-1', projectDir);
 
     // Act: delete order1 via card action
     const response = await router.handleCardAction(

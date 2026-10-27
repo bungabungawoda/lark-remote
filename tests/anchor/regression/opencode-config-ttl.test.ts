@@ -37,7 +37,7 @@ beforeEach(() => {
 describe('opencode execSync 必须带 TTL 缓存 (anchor)', () => {
   /**
    * 验证什么（target）:
-   *   defaultAgent=opencode 时每一次 config.toggle/set/input/save 都走
+   *   defaultAgent=opencode 时每一次 config.set/input/save 都走
    *   buildConfigCard → loadOpencodeConfig → 同步 execSync（无缓存），事件循环
    *   阻塞至命令返回（上限 30s），飞书 keepalive 都可能误判断连。修复后：
    *   TTL 内第二次调用必须命中缓存，execSync 只执行一次。

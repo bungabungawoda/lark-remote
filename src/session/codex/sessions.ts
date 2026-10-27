@@ -1,10 +1,12 @@
 import type {
   AgentSession,
+  AgentSessionReader,
   SessionContent,
   SessionSummary,
-  AgentSessionReader,
-} from '../../runner/index.js';
+} from '../../session-contract.js';
 import { resolveCodexHome } from '../../config/codex-config.js';
+import { DEFAULT_LIST_LIMIT } from '../common/pagination.js';
+import { newestOf } from '../common/recency.js';
 import {
   listCodexRollouts,
   readCodexSessionContent,
@@ -30,7 +32,7 @@ export class CodexSessionReader implements AgentSessionReader {
     const result = listCodexRollouts({
       codexHome: this.codexHome,
       cwd,
-      limit: opts?.limit ?? 20,
+      limit: opts?.limit ?? DEFAULT_LIST_LIMIT,
       offset: opts?.offset,
     });
     return {
@@ -47,7 +49,7 @@ export class CodexSessionReader implements AgentSessionReader {
   }
 
   getNewestSession(cwd: string): AgentSession | null {
-    return this.listSessions(cwd, { limit: 1 }).sessions[0] ?? null;
+    return newestOf(this, cwd);
   }
 
   readSessionContent(

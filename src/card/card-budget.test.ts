@@ -1,9 +1,9 @@
 import { describe, it, expect } from 'vitest';
 import { countCardElements, enforceCardBudget, MAX_CARD_ELEMENTS } from './card-budget.js';
 import { CARD_BUDGET_BYTES, FEISHU_MAX_TABLES } from './text-truncate.js';
-import { sessionEventPanel } from '../router/card-helpers.js';
+import { sessionEventPanel } from './card-helpers.js';
 import { markdownDiv } from './collapsible.js';
-import type { AgentSessionContentEvent } from '../runner/index.js';
+import type { AgentSessionContentEvent } from '../session-contract.js';
 import type { CardView } from '../../tests/lib/card-view.js';
 
 // ========== 测试辅助函数 ==========

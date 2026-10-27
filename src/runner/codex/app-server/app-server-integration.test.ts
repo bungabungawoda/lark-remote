@@ -168,7 +168,7 @@ describePosix('CodexAppServerRunner integration', () => {
       (e): e is TurnDiffEvent | Extract<AgentEvent, { type: 'final_answer' }> =>
         e.type === 'turn_diff' || e.type === 'final_answer',
     )) {
-      if (!firstSeen.includes(d.itemId)) firstSeen.push(d.itemId);
+      if (d.itemId !== undefined && !firstSeen.includes(d.itemId)) firstSeen.push(d.itemId);
     }
     expect(firstSeen).toEqual(['item-r1', 'item-1', 'item-r2', 'item-c1', 'item-2']);
 
@@ -697,7 +697,7 @@ describePosix('CodexAppServerRunner integration', () => {
     }
 
     const result = events.find((e) => e.type === 'result') as
-      (AgentEvent & { subtype: string; errorMessage?: string }) | undefined;
+      (AgentEvent & { subtype: string; errorMessage?: string; session_id?: string }) | undefined;
     expect(result).toBeDefined();
     expect(result?.subtype).toBe('error');
     expect(result?.errorMessage).toBe('Something went wrong');
@@ -809,8 +809,8 @@ describePosix('CodexAppServerRunner integration', () => {
       binary: wrapper,
       model: 'deepseek-v4-flash',
       modelProvider: 'deepseek',
-      sandbox: 'sandboxed',
-      approvalPolicy: 'always',
+      sandbox: 'workspace-write',
+      approvalPolicy: 'on-request',
     });
 
     const events: AgentEvent[] = [];
@@ -875,8 +875,8 @@ describePosix('CodexAppServerRunner integration', () => {
       binary: wrapper,
       model: 'deepseek-v4-flash',
       modelProvider: 'deepseek',
-      sandbox: 'sandboxed',
-      approvalPolicy: 'always',
+      sandbox: 'workspace-write',
+      approvalPolicy: 'on-request',
     });
 
     for await (const event of runner.run('do something', { cwd })) {

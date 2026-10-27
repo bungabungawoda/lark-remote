@@ -1,4 +1,5 @@
-import type { AgentKind, AgentSessionReader } from '../runner/index.js';
+import type { AgentKind } from '../agent-kinds.js';
+import type { AgentSessionReader } from '../session-contract.js';
 /**
  * Registry of `AgentSessionReader` instances, keyed by `AgentKind`. Mirrors
  * `AgentRegistry` but for session-history reads. `index.ts` registers one

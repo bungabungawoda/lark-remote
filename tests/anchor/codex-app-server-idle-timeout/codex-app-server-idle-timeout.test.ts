@@ -3,7 +3,8 @@ import { currentPlatform, isWin32 } from '../../../src/platform/select.js';
 import { mkdtempSync, mkdirSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { AgentSessionReader, AgentEvent } from '../../../src/runner/types.js';
+import type { AgentSessionReader } from '../../../src/session-contract.js';
+import type { AgentEvent } from '../../../src/runner/types.js';
 import { CodexAppServerRunner } from '../../../src/runner/codex/app-server/runner.js';
 import { rmRf } from '../../../tests/lib/tmp-cleanup.js';
 import {

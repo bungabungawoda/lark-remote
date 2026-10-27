@@ -4,7 +4,8 @@ import path from 'node:path';
 import os from 'node:os';
 import { AppConfigSchema } from '../../../src/config/index.js';
 import { atomicWrite } from '../../../src/persistence/atomic-write.js';
-import type { AgentSessionReader, Runner } from '../../../src/runner/index.js';
+import type { AgentSessionReader } from '../../../src/session-contract.js';
+import type { Runner } from '../../../src/runner/index.js';
 import { SessionReaderRegistry } from '../../../src/session/registry.js';
 
 import { createRouterFixture } from '../../lib/router-fixture.js';

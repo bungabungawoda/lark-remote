@@ -1,17 +1,17 @@
 /**
- * Shared CardKit helpers for router cards (session history, dashboard,
- * ls, ws, etc.).
+ * 卡片构造的共享工具（会话历史卡、分页条、搜索条、ls/ws 面板等）。
  *
- * Re-exports `markdownDiv` from `card/collapsible.ts` and adds session-content
- * specific builders (e.g. `sessionEventPanel`) so `router/index.ts` can fold
- * long session histories into collapsible panels without duplicating logic.
+ * 归属 card/：这些是纯建卡函数，此前住在 router/ 导致 card→router 与
+ * bridge→router 两条反向依赖。`markdownDiv` 从 `card/collapsible.ts` 复用，
+ * 会话内容相关的 builder（如 `sessionEventPanel`）在这里单源，router 与
+ * bridge 都只调用不复制。
  */
 
-import { agentDisplayName, cardButton } from '../card/card-shared.js';
-import { collapsibleMarkdownPanel, markdownDiv } from '../card/collapsible.js';
-import { formatMonthDayClock } from '../card/time.js';
+import { agentDisplayName, cardButton } from './card-shared.js';
+import { collapsibleMarkdownPanel, markdownDiv } from './collapsible.js';
+import { formatMonthDayClock } from './time.js';
 import { displayWidth, truncateMiddleToDisplayWidth } from '../common/text-width.js';
-import type { AgentSessionContentEvent } from '../runner/index.js';
+import type { AgentSessionContentEvent } from '../session-contract.js';
 import { formatUsageStats } from './usage-format.js';
 
 type SessionUsageLike = Parameters<typeof formatUsageStats>[0];

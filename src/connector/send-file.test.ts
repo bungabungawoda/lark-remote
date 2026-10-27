@@ -5,7 +5,7 @@ import os from 'node:os';
 import axios from 'axios';
 import FormData from 'form-data';
 import { FeishuConnector } from './index.js';
-import type { AppConfig } from '../config/index.js';
+import { AppConfigSchema, type AppConfig } from '../config/index.js';
 
 vi.mock('@larksuite/channel', () => ({
   createLarkChannel: () => ({
@@ -39,17 +39,20 @@ vi.mock('../logger/index.js', async () =>
   (await import('../../tests/lib/logger-mock.js')).loggerModuleMock(),
 );
 
-const config: AppConfig = {
+const config: AppConfig = AppConfigSchema.parse({
   feishu: { appId: 'app-id', appSecret: 'app-secret' },
   claude: {
     model: 'claude-opus-4-8',
     effort: 'medium',
+    permissionMode: 'auto',
+    approvalTimeoutMs: 300000,
+    idleTtlMinutes: 30,
     stopGraceMs: 5000,
   },
   idle: { watchdogMinutes: 15 },
   logging: { level: 'info' },
   defaultAgent: 'claude',
-};
+});
 
 let tmpDir: string;
 let filePath: string;
