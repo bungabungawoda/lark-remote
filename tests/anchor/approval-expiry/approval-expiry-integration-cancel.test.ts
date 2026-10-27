@@ -16,7 +16,7 @@ import { describePosix } from '../../../tests/lib/platform.js';
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { AgentSessionReader } from '../../../src/runner/types.js';
+import type { AgentSessionReader } from '../../../src/session-contract.js';
 import { ApprovalCoordinator } from '../../../src/bridge/approval-coordinator.js';
 import { CodexAppServerRunner } from '../../../src/runner/codex/app-server/runner.js';
 import { rmRf } from '../../../tests/lib/tmp-cleanup.js';

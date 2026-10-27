@@ -70,11 +70,7 @@ describe('Anchor: ws.remove updates card in place', () => {
     );
 
     const { router, sessionStore, connector } = createRouter();
-    sessionStore.set('user1', {
-      sessions: new Map([['claude', 'session-1']]),
-      previousSessions: new Map(),
-      cwd: projectDir,
-    });
+    sessionStore.setSessionIdAndCwd('user1', 'claude', 'session-1', projectDir);
 
     // Act: trigger the「删除」button card action for tmp-ws.
     await router.handleCardAction(
@@ -127,11 +123,7 @@ describe('Anchor: ws.remove updates card in place', () => {
     );
 
     const { router, sessionStore, connector } = createRouter();
-    sessionStore.set('user1', {
-      sessions: new Map([['claude', 'session-1']]),
-      previousSessions: new Map(),
-      cwd: projectDir,
-    });
+    sessionStore.setSessionIdAndCwd('user1', 'claude', 'session-1', projectDir);
 
     // 成功分支：toast 文案来自 cmdWs 本身，不另起一份字符串
     const ok = toastOf(await router.handleCardAction({ cmd: 'ws.remove', name: 'keep-ws' }, ctx));

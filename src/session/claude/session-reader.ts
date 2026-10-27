@@ -1,4 +1,4 @@
-import type { AgentSession, AgentSessionReader, SessionContent } from '../../runner/index.js';
+import type { AgentSession, AgentSessionReader, SessionContent } from '../../session-contract.js';
 import { paginate } from '../common/pagination.js';
 import {
   listClaudeSessions,

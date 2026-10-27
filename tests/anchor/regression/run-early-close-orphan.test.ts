@@ -27,6 +27,7 @@ import { ClaudeRunner } from '../../../src/runner/claude/index.js';
 import { prependPath, restorePath, writeMockSource } from '../../lib/path-mock.js';
 import { describePosix } from '../../lib/platform.js';
 import { waitForOrThrow } from '../../lib/wait-for.js';
+import { ClaudeSessionReader } from '../../../src/session/claude/index.js';
 
 vi.mock('../../../src/logger/index.js', async () =>
   (await import('../../lib/logger-mock.js')).loggerModuleMock(),
@@ -74,6 +75,7 @@ setInterval(() => {}, 1000);
     );
 
     const runner = new ClaudeRunner({
+      sessionReader: new ClaudeSessionReader(),
       cwd: 'test',
       pidDir: tmpDir,
       stopGraceMs: 500,

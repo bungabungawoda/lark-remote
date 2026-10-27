@@ -16,6 +16,7 @@ import {
   createStubConnector,
   createStubSessionReaderRegistry,
 } from '../tests/lib/bridge-stubs.js';
+import { ClaudeSessionReader } from './session/claude/index.js';
 // Stub session reader for tests
 
 // --- Stub helpers ---
@@ -85,7 +86,6 @@ function createRouter(opts: {
   const connector = createStubConnector();
   const config = buildConfig(opts.config);
   const bridge = new Bridge({
-    runner: opts.runner,
     agentRegistry: createStubAgentRegistry(opts.runner),
     sessionReaderRegistry: createStubSessionReaderRegistry(),
     connector,
@@ -369,7 +369,6 @@ describe('异常场景', () => {
     const workingRouter = new CommandRouter({
       sessionStore,
       bridge: new Bridge({
-        runner: createCapturingRunner(goodEvents, capture),
         agentRegistry: createStubAgentRegistry(createCapturingRunner(goodEvents, capture)),
         sessionReaderRegistry: createStubSessionReaderRegistry(),
         connector,
@@ -401,7 +400,11 @@ describe('异常场景', () => {
     // Simulate a stale pid pointing to a dead process
     fs.writeFileSync(pidFile, '999999999', 'utf-8');
 
-    const runner = new ClaudeRunner({ cwd: 'test', pidDir });
+    const runner = new ClaudeRunner({
+      sessionReader: new ClaudeSessionReader(),
+      cwd: 'test',
+      pidDir,
+    });
     runner.killOrphan();
 
     expect(fs.existsSync(pidFile)).toBe(false);

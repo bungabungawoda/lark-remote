@@ -82,11 +82,11 @@ describe('BashProcessRunner — 输出背压水位', () => {
   class FakeStream extends EventEmitter {
     pauseCalls = 0;
     resumeCalls = 0;
-    override pause(): this {
+    pause(): this {
       this.pauseCalls++;
       return this;
     }
-    override resume(): this {
+    resume(): this {
       this.resumeCalls++;
       return this;
     }
@@ -105,7 +105,11 @@ describe('BashProcessRunner — 输出背压水位', () => {
       exitCode: null,
       signalCode: null,
     });
-    const shell: ShellBackend = { kind: 'bash', spawn: () => proc as unknown as ChildProcess };
+    const shell: ShellBackend = {
+      kind: 'bash',
+      spawn: () => proc as unknown as ChildProcess,
+      spawnArgv: () => proc as unknown as ChildProcess,
+    };
     const terminator: Terminator = {
       stop: async () => ({ requested: false, via: 'already-exited' }),
       cleanupOnExit: () => {},
@@ -196,14 +200,16 @@ describe('BashProcessRunner — 输出背压水位', () => {
 
 describe('BashProcessRunner — shell 不可用（win32 Git Bash 缺失）', () => {
   it('同步抛 ShellUnavailableError → stderr 明确提示 + exit 1，不注册退出清理', async () => {
+    const unavailable = () => {
+      throw new ShellUnavailableError(
+        'bash',
+        'Windows 上执行 bash 命令需要 Git Bash（未在 PATH 中找到 bash.exe）；请安装 Git for Windows 后重试',
+      );
+    };
     const throwingShell: ShellBackend = {
       kind: 'bash',
-      spawn: () => {
-        throw new ShellUnavailableError(
-          'bash',
-          'Windows 上执行 bash 命令需要 Git Bash（未在 PATH 中找到 bash.exe）；请安装 Git for Windows 后重试',
-        );
-      },
+      spawn: unavailable,
+      spawnArgv: unavailable,
     };
     const terminator: Terminator = {
       stop: async () => ({ requested: false, via: 'already-exited' }),

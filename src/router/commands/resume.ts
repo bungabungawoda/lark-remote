@@ -1,13 +1,14 @@
 import type { CommandContext, CommandResult } from '../../bridge/index.js';
+import type { AgentKind } from '../../agent-kinds.js';
 import type {
-  AgentKind,
   AgentSession,
   AgentSessionContentEvent,
   AgentSessionReader,
-} from '../../runner/index.js';
-import type { SessionDisplayUsage } from '../usage-format.js';
+} from '../../session-contract.js';
+import { isAgentKind } from '../../agent-kinds.js';
+import type { SessionDisplayUsage } from '../../card/usage-format.js';
 import { agentDisplayName } from '../../card/card-shared.js';
-import { buildSessionHistoryCard, paginationBar } from '../card-helpers.js';
+import { buildSessionHistoryCard, paginationBar } from '../../card/card-helpers.js';
 import { pageInfo } from '../paging.js';
 import { clampInt } from '../../common/clamp.js';
 
@@ -19,7 +20,8 @@ const RESUME_PREVIEW_MAX = 60;
 
 interface ResumeSessionEntry {
   cwd?: string;
-  sessions?: Map<string, string>;
+  /** SessionStore 的 entry 恒有 sessions（`get()` 只会返回整条或缺席）。 */
+  sessions: Map<string, string>;
 }
 
 interface SessionDisplay {
@@ -34,7 +36,6 @@ interface SessionDisplay {
 
 export interface ResumeCommandDeps {
   defaultAgent: AgentKind;
-  validAgents: readonly AgentKind[];
   getSessionEntry(userId: string): ResumeSessionEntry | undefined;
   setSessionId(userId: string, agent: AgentKind, sessionId: string, cwd: string): void;
   defaultReader(): AgentSessionReader;
@@ -72,14 +73,13 @@ export function buildResumeCommand(
 ): CommandResult {
   const entry = deps.getSessionEntry(ctx.userId);
   const cwd = entry?.cwd;
-  const validAgents = deps.validAgents;
 
   let agentKind: AgentKind = deps.defaultAgent;
   let limit: number | undefined;
   let sessionIdArg: string | undefined;
   if (args[0]) {
-    if (validAgents.includes(args[0] as AgentKind)) {
-      agentKind = args[0] as AgentKind;
+    if (isAgentKind(args[0])) {
+      agentKind = args[0];
       if (args[1]) {
         if (/^\d+$/.test(args[1])) limit = parseInt(args[1], 10);
         else sessionIdArg = args[1];
@@ -214,7 +214,7 @@ export function buildResumeCommand(
   const elements: object[] = [
     { tag: 'div', text: { tag: 'lark_md', content: `📂 当前工作目录：\`${cwd}\`` } },
   ];
-  const currentId = entry?.sessions?.get(agentKind) ?? '';
+  const currentId = entry.sessions.get(agentKind) ?? '';
   for (const session of allSessions) {
     const isCurrent = agentKind === deps.defaultAgent && session.sessionId === currentId;
     const meta = sessionMeta.get(session.sessionId);

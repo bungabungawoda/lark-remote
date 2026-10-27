@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { PiRpcRunner } from './runner.js';
-import type { AgentSessionReader } from '../../types.js';
+import type { AgentSessionReader } from '../../../session-contract.js';
 import { prependPath, restorePath, writeMockSource } from '../../../../tests/lib/path-mock.js';
 import { rmRf } from '../../../../tests/lib/tmp-cleanup.js';
 

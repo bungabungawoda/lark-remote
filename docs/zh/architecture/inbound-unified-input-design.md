@@ -53,9 +53,9 @@ if (trimmed.startsWith('!')) {
 
 而 `![image](…)` 的第一个字符恰好是 `!`。于是：
 
-| 顺序 | 走到的分支 | 用户看到的结果 |
-|---|---|---|
-| **图在前** | `startsWithBang` → `executeBash` | 一条 bash 执行失败的卡片（exit 2），**文字 `test` 也没进 agent** |
+| 顺序       | 走到的分支                                 | 用户看到的结果                                                    |
+| ---------- | ------------------------------------------ | ----------------------------------------------------------------- |
+| **图在前** | `startsWithBang` → `executeBash`           | 一条 bash 执行失败的卡片（exit 2），**文字 `test` 也没进 agent**  |
 | **文在前** | `startsWithBang=false` → `forwardToClaude` | agent 收到 `test\n![image](img_v3_…)`，**图不存在**，agent 只能猜 |
 
 **这不是"两种时序"，是"一条消息被当成命令执行了"。** 且它同时构成一个安全问题：
@@ -65,11 +65,11 @@ if (trimmed.startsWith('!')) {
 
 ## 2. 三个设计约束的来源
 
-| # | 旧实现的做法 | 位置 | 造成的后果 |
-|---|---|---|---|
-| R1 | 判据是**消息类型白名单**，而 SDK 已给出"是否携带资源"（`resources`） | `connector/index.ts` 的分派分支 | video/audio/sticker/post/merge_forward 全漏 |
-| R2 | 没有"用户意图装配"层：资源事件与文本事件各自触发动作、互不知情 | `index.ts`（媒体闸门） vs `index.ts`+`router`（文本通道） | 附件路径进不了 agent prompt |
-| R3 | 命令识别只看**裸文本前缀**，且发生在任何语义清洗之前 | `router/index.ts` 的 `handle` | 富文本/占位符被当命令执行 |
+| #   | 旧实现的做法                                                         | 位置                                                      | 造成的后果                                  |
+| --- | -------------------------------------------------------------------- | --------------------------------------------------------- | ------------------------------------------- |
+| R1  | 判据是**消息类型白名单**，而 SDK 已给出"是否携带资源"（`resources`） | `connector/index.ts` 的分派分支                           | video/audio/sticker/post/merge_forward 全漏 |
+| R2  | 没有"用户意图装配"层：资源事件与文本事件各自触发动作、互不知情       | `index.ts`（媒体闸门） vs `index.ts`+`router`（文本通道） | 附件路径进不了 agent prompt                 |
+| R3  | 命令识别只看**裸文本前缀**，且发生在任何语义清洗之前                 | `router/index.ts` 的 `handle`                             | 富文本/占位符被当命令执行                   |
 
 ## 3. 设计原则
 
@@ -96,14 +96,14 @@ interface InboundTurn {
   attachments: Array<{
     path: string;
     kind: 'image' | 'file' | 'video' | 'audio' | 'sticker';
-    sourceMsgId: string;        // 下载凭据的一部分，也是排障锚点
+    sourceMsgId: string; // 下载凭据的一部分，也是排障锚点
     originalName?: string;
     durationMs?: number;
   }>;
   /** 拿不到、不支持、超限、失败的项 —— 需要回执给人（不进 agent） */
   rejected: Array<{
-    kind: string;               // 原 msg_type 或 'unknown-placeholder'
-    reason: string;             // 面向人的说明
+    kind: string; // 原 msg_type 或 'unknown-placeholder'
+    reason: string; // 面向人的说明
     sourceMsgId: string;
   }>;
 
@@ -182,6 +182,7 @@ InboundTurnAssembler               ← 新增层（§7）
 ```
 
 要点：
+
 - 附件块**只列路径 + 类型 + 可选时长/原名**，不列 `file_key`（对 agent 无意义）。
 - **富文本占位符从文本里剥离**：`![image](img_v3_…)`、`<file key="…"/>`、`<video …/>` 等
   在 `texts` 里替换为空并（若已落盘）转为附件块条目；避免 agent 把 key 当路径。
@@ -212,13 +213,13 @@ InboundTurnAssembler               ← 新增层（§7）
 
 ### 5.7 不支持类型与降级态：回执而非塞给 agent
 
-| 输入 | 处置 |
-|---|---|
-| 结构占位（`<vote>`、`<location>`、`<group_card>`、`[unsupported message]`、缺 key 的 `[image]`） | `rejected` → 回执「暂不支持 X 类型消息」；**不进 agent** |
-| 富文本中的图片 | 正常落盘进附件块（不再因为"整条是 post"而整体放弃） |
-| 合并转发 | 文本保留（SDK 已渲染）；附件尽力下载、失败回执 —— 凭据约束见 `inbound-message-matrix.md` §5 |
-| 表情 sticker | 按资源类尝试下载；失败 → `rejected`（「表情暂不支持保存」），占位符不进 prompt |
-| 超限/下载失败 | `rejected`，与同 turn 的回执合并成一条，不单独飘消息 |
+| 输入                                                                                             | 处置                                                                                        |
+| ------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------- |
+| 结构占位（`<vote>`、`<location>`、`<group_card>`、`[unsupported message]`、缺 key 的 `[image]`） | `rejected` → 回执「暂不支持 X 类型消息」；**不进 agent**                                    |
+| 富文本中的图片                                                                                   | 正常落盘进附件块（不再因为"整条是 post"而整体放弃）                                         |
+| 合并转发                                                                                         | 文本保留（SDK 已渲染）；附件尽力下载、失败回执 —— 凭据约束见 `inbound-message-matrix.md` §5 |
+| 表情 sticker                                                                                     | 按资源类尝试下载；失败 → `rejected`（「表情暂不支持保存」），占位符不进 prompt              |
+| 超限/下载失败                                                                                    | `rejected`，与同 turn 的回执合并成一条，不单独飘消息                                        |
 
 ### 5.8 与既有机制的衔接
 
@@ -233,42 +234,42 @@ InboundTurnAssembler               ← 新增层（§7）
 
 ## 6. 类型处置矩阵（设计态）
 
-| msg_type | 有资源 | texts | attachments | rejected | 备注 |
-|---|---|---|---|---|---|
-| `text` | — | ✅ 原文 | — | — | 命令前缀仅此类型可生效 |
-| `image` | ✅ | — | ✅ | — | |
-| `file` | ✅ | — | ✅ | — | 保留原名 |
-| `media` / `video` | ✅ | — | ✅（**本体**） | — | 附时长；封面可选 |
-| `audio` | ✅ | — | ✅（补扩展名） | — | 只落盘，不转写（见 §10 决策 4） |
-| `sticker` | ✅ | — | ✅（尽力下载） | 失败时 | 下载 type 只有 `image`/`file`，sticker 归 `file` |
-| `post` | 可能 | ✅（剥占位符） | ✅（内嵌图） | — | **文本与图片并存**，不再二选一 |
-| `merge_forward` | 可能有 | ✅（SDK 渲染） | 尽力下载，失败回执（§5） | 失败时 | |
-| `interactive` | — | — | — | ✅ | 「卡片消息暂不支持」 |
-| `folder` / `share_chat` / `share_user` / `location` / `vote` / `todo` / `video_chat` / `calendar` / `hongbao` / `system` | — | — | — | ✅ | 统一"暂不支持 X" |
-| 未知类型 | 视情况 | — | ✅（有资源就下） | warn + 提示 | **default-deny 而非 default-text** |
+| msg_type                                                                                                                 | 有资源 | texts          | attachments              | rejected    | 备注                                             |
+| ------------------------------------------------------------------------------------------------------------------------ | ------ | -------------- | ------------------------ | ----------- | ------------------------------------------------ |
+| `text`                                                                                                                   | —      | ✅ 原文        | —                        | —           | 命令前缀仅此类型可生效                           |
+| `image`                                                                                                                  | ✅     | —              | ✅                       | —           |                                                  |
+| `file`                                                                                                                   | ✅     | —              | ✅                       | —           | 保留原名                                         |
+| `media` / `video`                                                                                                        | ✅     | —              | ✅（**本体**）           | —           | 附时长；封面可选                                 |
+| `audio`                                                                                                                  | ✅     | —              | ✅（补扩展名）           | —           | 只落盘，不转写（见 §10 决策 4）                  |
+| `sticker`                                                                                                                | ✅     | —              | ✅（尽力下载）           | 失败时      | 下载 type 只有 `image`/`file`，sticker 归 `file` |
+| `post`                                                                                                                   | 可能   | ✅（剥占位符） | ✅（内嵌图）             | —           | **文本与图片并存**，不再二选一                   |
+| `merge_forward`                                                                                                          | 可能有 | ✅（SDK 渲染） | 尽力下载，失败回执（§5） | 失败时      |                                                  |
+| `interactive`                                                                                                            | —      | —              | —                        | ✅          | 「卡片消息暂不支持」                             |
+| `folder` / `share_chat` / `share_user` / `location` / `vote` / `todo` / `video_chat` / `calendar` / `hongbao` / `system` | —      | —              | —                        | ✅          | 统一"暂不支持 X"                                 |
+| 未知类型                                                                                                                 | 视情况 | —              | ✅（有资源就下）         | warn + 提示 | **default-deny 而非 default-text**               |
 
 ## 7. 模块与改动面
 
 **新增**（建议目录 `src/inbound/`）：
 
-| 文件 | 职责 |
-|---|---|
-| `src/inbound/event.ts` | `InboundEvent` 类型 + 从 connector 归一化数据构造事件 |
-| `src/inbound/placeholder.ts` | 结构占位符识别/剥离（纯函数，表驱动易测） |
-| `src/inbound/turn-assembler.ts` | 窗口、合并、下载等待、commit（可注入时钟，便于测试） |
-| `src/inbound/prompt.ts` | texts + attachments → prompt 字符串 |
-| `src/inbound/receipt.ts` | rejected / 无文本场景的回执文案 |
+| 文件                            | 职责                                                  |
+| ------------------------------- | ----------------------------------------------------- |
+| `src/inbound/event.ts`          | `InboundEvent` 类型 + 从 connector 归一化数据构造事件 |
+| `src/inbound/placeholder.ts`    | 结构占位符识别/剥离（纯函数，表驱动易测）             |
+| `src/inbound/turn-assembler.ts` | 窗口、合并、下载等待、commit（可注入时钟，便于测试）  |
+| `src/inbound/prompt.ts`         | texts + attachments → prompt 字符串                   |
+| `src/inbound/receipt.ts`        | rejected / 无文本场景的回执文案                       |
 
 **改动**：
 
-| 位置 | 改动 |
-|---|---|
-| `src/connector/index.ts`（入站分派分支） | 去掉 `{image,file}` 白名单；统一上报事件（文本/资源/占位），只保留 owner 闸门的调用时机语义 |
-| `src/message-handlers.ts`（媒体闸门） | 媒体闸门 → 改为向 assembler 投递资源事件；owner/enabled 判定保留 |
-| `src/message-handlers.ts`（文本投递） | 文本投递 assembler；`flushMediaNotifications` 由窗口机制取代 |
-| `src/router/index.ts`（`CommandRouter.handle`） | 命令识别加前置条件（§5.6），`handle` 入参显式化 |
-| `src/bridge/inbound-media.ts` | 保留下载/落盘；`kind` 与命名规则扩展（§5.3）；提示卡降级为"回执来源之一" |
-| `src/bridge/index.ts`（`saveInboundMedia`） | `saveInboundMedia` 向 assembler 回传落盘结果；`forwardToClaude` 接受组装后的 prompt |
+| 位置                                            | 改动                                                                                        |
+| ----------------------------------------------- | ------------------------------------------------------------------------------------------- |
+| `src/connector/index.ts`（入站分派分支）        | 去掉 `{image,file}` 白名单；统一上报事件（文本/资源/占位），只保留 owner 闸门的调用时机语义 |
+| `src/message-handlers.ts`（媒体闸门）           | 媒体闸门 → 改为向 assembler 投递资源事件；owner/enabled 判定保留                            |
+| `src/message-handlers.ts`（文本投递）           | 文本投递 assembler；`flushMediaNotifications` 由窗口机制取代                                |
+| `src/router/index.ts`（`CommandRouter.handle`） | 命令识别加前置条件（§5.6），`handle` 入参显式化                                             |
+| `src/bridge/inbound-media.ts`                   | 保留下载/落盘；`kind` 与命名规则扩展（§5.3）；提示卡降级为"回执来源之一"                    |
+| `src/bridge/index.ts`（`saveInboundMedia`）     | `saveInboundMedia` 向 assembler 回传落盘结果；`forwardToClaude` 接受组装后的 prompt         |
 
 **不改**：runner 契约、卡片渲染、命令实现、session 管理。
 
@@ -293,13 +294,13 @@ InboundTurnAssembler               ← 新增层（§7）
 
 ## 10. 决策要点
 
-| # | 决策项 | 结论 |
-|---|---|---|
-| 1 | 聚合窗口 | **统一静默期 700ms**，不做零延迟快路径；接受该延迟 |
-| 2 | 纯附件无文字 | **只回执**，不自动起 turn |
-| 3 | prompt 附件块格式 | **结构化标签**（`<attachments><file path kind/></attachments>`，见 §5.4） |
-| 4 | 语音转写 | **不做**，只落盘交给 agent |
-| 5 | 不支持类型 | 回明确提示，不把占位符塞进 agent prompt |
+| #   | 决策项            | 结论                                                                      |
+| --- | ----------------- | ------------------------------------------------------------------------- |
+| 1   | 聚合窗口          | **统一静默期 700ms**，不做零延迟快路径；接受该延迟                        |
+| 2   | 纯附件无文字      | **只回执**，不自动起 turn                                                 |
+| 3   | prompt 附件块格式 | **结构化标签**（`<attachments><file path kind/></attachments>`，见 §5.4） |
+| 4   | 语音转写          | **不做**，只落盘交给 agent                                                |
+| 5   | 不支持类型        | 回明确提示，不把占位符塞进 agent prompt                                   |
 
 ---
 

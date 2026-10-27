@@ -4,9 +4,10 @@ import { describe, it, expect, beforeAll, beforeEach } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import { CommandRouter } from '../router/index.js';
-import { paginationBar } from './card-helpers.js';
+import { paginationBar } from '../card/card-helpers.js';
 import { SessionStore } from '../session/index.js';
 import type { AppConfig } from '../config/index.js';
+import { AppConfigSchema } from '../config/index.js';
 import { createMockBridge, createStubSessionReaderRegistry } from '../../tests/lib/bridge-stubs.js';
 import { createRouterFixture } from '../../tests/lib/router-fixture.js';
 import { expectNoV1ActionContainer } from '../../tests/lib/card-view.js';
@@ -15,13 +16,13 @@ import { makeTempDir } from '../../tests/lib/temp-dir.js';
 const ctx = { userId: 'user1', chatId: 'chat1', messageId: 'msg1' };
 
 function makeConfig(): AppConfig {
-  return {
+  return AppConfigSchema.parse({
     feishu: { appId: 'test', appSecret: 'test' },
     claude: { model: 'claude-sonnet-4-20250514', effort: 'medium', stopGraceMs: 5000 },
     idle: { watchdogMinutes: 15 },
     logging: { level: 'info' },
     defaultAgent: 'claude',
-  };
+  });
 }
 
 let tmpDir: string;
@@ -47,7 +48,7 @@ beforeAll(() => {
 beforeEach(() => {
   tmpDir = makeTempDir('paging-jump-');
   sessionStore = new SessionStore();
-  sessionStore.set('user1', { sessions: new Map(), previousSessions: new Map(), cwd: tmpDir });
+  sessionStore.setCwd('user1', tmpDir);
   mockBridge = createMockBridge();
   router = createRouterFixture({
     tmpDir,
@@ -130,7 +131,7 @@ describe('paginationBar 内置页码跳转输入', () => {
 });
 
 describe('/ls 分页跳转', () => {
-  it('输入页码直接跳到该页', async () => {
+  it('/ls 输入页码直接跳到该页', async () => {
     await router.handleCardAction(
       { cmd: 'ls.page', path: lsDir, pageSize: 30, inputValue: '3' },
       ctx,
@@ -172,7 +173,7 @@ describe('/ls 分页跳转', () => {
 });
 
 describe('/ws 分页跳转', () => {
-  it('输入页码直接跳到该页', async () => {
+  it('/ws 输入页码直接跳到该页', async () => {
     for (let i = 1; i <= 12; i++) {
       router.cmdWs(['save', `w${String(i).padStart(2, '0')}`, tmpDir], ctx);
     }
@@ -188,7 +189,7 @@ describe('/ws 分页跳转', () => {
 });
 
 describe('/order 分页跳转', () => {
-  it('输入页码直接跳到该页', async () => {
+  it('/order 输入页码直接跳到该页', async () => {
     for (let i = 1; i <= 12; i++) {
       router.cmdOrder(['save', `指令 ${i}`], ctx);
     }

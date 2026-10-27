@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import { getLogger } from '../logger/index.js';
 import { atomicWriteJson } from '../persistence/atomic-write.js';
-import type { AgentKind } from '../runner/index.js';
+import type { AgentKind } from '../agent-kinds.js';
 
 interface SessionEntry {
   /** Session IDs per agent kind (Map for in-memory, plain object for persistence). */
@@ -111,11 +111,6 @@ export class SessionStore {
     return this.sessions.get(userId);
   }
 
-  set(userId: string, entry: SessionEntry): void {
-    this.sessions.set(userId, entry);
-    this.autoPersist();
-  }
-
   delete(userId: string): void {
     this.sessions.delete(userId);
     this.autoPersist();
@@ -206,7 +201,7 @@ export class SessionStore {
   /** Get sessionId for a specific agent, or undefined if no session or sessionId is empty */
   getSessionId(userId: string, agent: AgentKind = 'claude'): string | undefined {
     const entry = this.sessions.get(userId);
-    if (!entry || !entry.sessions) return undefined;
+    if (!entry) return undefined;
     const sessionId = entry.sessions.get(agent);
     if (!sessionId) return undefined;
     return sessionId;
@@ -339,8 +334,21 @@ export class SessionStore {
           }
         }
       }
-    } catch {
-      getLogger().warn('[session] persisted session store corrupted, ignoring');
+    } catch (err) {
+      getLogger().warn(
+        `[session] persisted session store corrupted (${this.persistPath ?? '(memory)'}), ignoring:`,
+        err,
+      );
+      // 改名保留现场：原文件继续原地躺着会让下次启动重复告警，也丢掉排障证据。
+      if (this.persistPath) {
+        const brokenPath = `${this.persistPath}.corrupt-${Date.now()}`;
+        try {
+          fs.renameSync(this.persistPath, brokenPath);
+          getLogger().warn(`[session] moved corrupt store to ${brokenPath}`);
+        } catch (renameErr) {
+          getLogger().warn('[session] failed to preserve corrupt store:', renameErr);
+        }
+      }
     }
   }
 

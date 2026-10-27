@@ -5,7 +5,8 @@
  * getStatusInfo）。bridge 应优先使用 registry 里的真实 reader；这里的
  * sessionReader 仅作兜底/负向哨兵，可用 opts.sessionReader 替换。
  */
-import type { AgentKind, AgentRunner, Runner } from '../../src/runner/index.js';
+import type { AgentKind } from '../../src/agent-kinds.js';
+import type { AgentRunner, Runner } from '../../src/runner/index.js';
 
 export interface AsAgentRunnerOpts {
   /** getStatusInfo 返回的 model 名（默认 'test'）。 */

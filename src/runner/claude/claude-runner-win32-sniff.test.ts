@@ -18,6 +18,7 @@ import { ClaudeRunner } from './index.js';
 import { prependPath, restorePath, writeMockBin } from '../../../tests/lib/path-mock.js';
 import type { AgentEvent } from '../types.js';
 import { mockLogger } from '../../../tests/lib/logger-mock.js';
+import { ClaudeSessionReader } from '../../session/claude/index.js';
 
 vi.mock('../../logger/index.js', async () =>
   (await import('../../../tests/lib/logger-mock.js')).loggerModuleMock(),
@@ -45,7 +46,11 @@ function createMockClaude(env: Record<string, string> = {}): void {
 }
 
 function makeRunner(): ClaudeRunner {
-  const runner = new ClaudeRunner({ cwd: 'test', pidDir: tmpDir });
+  const runner = new ClaudeRunner({
+    sessionReader: new ClaudeSessionReader(),
+    cwd: 'test',
+    pidDir: tmpDir,
+  });
   runners.push(runner);
   return runner;
 }

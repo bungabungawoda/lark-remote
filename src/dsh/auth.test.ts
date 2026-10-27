@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import YAML from 'yaml';
 import { afterEach, describe, expect, it } from 'vitest';
-import { isWin32 } from '../../platform/select.js';
+import { isWin32 } from '../platform/select.js';
 import {
   DSH_BROWSER_CREDENTIAL_KEY,
   dshCookieName,

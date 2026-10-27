@@ -226,7 +226,7 @@ describe('RunCardSession - 流式卡片错误处理探索', () => {
     const { connector, controller } = makeStreamCardConnector({
       messageId: 'card-9',
       controllerUpdate: () => {},
-      updateCard: vi.fn(),
+      updateCard: vi.fn(() => {}),
     });
 
     const session = new RunCardSession({

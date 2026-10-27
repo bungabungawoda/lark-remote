@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { sessionEventPanel } from './card-helpers.js';
+import { sessionEventPanel } from '../card/card-helpers.js';
 
 type PanelResult = {
   header?: { title?: { content?: string } };

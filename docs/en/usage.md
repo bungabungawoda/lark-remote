@@ -49,23 +49,23 @@ Complete configuration file fields:
 
 ```yaml
 feishu:
-  appId: cli_xxx            # Feishu app App ID
-  appSecret: xxx            # Feishu app App Secret
+  appId: cli_xxx # Feishu app App ID
+  appSecret: xxx # Feishu app App Secret
 
 # Default agent: claude | codex | opencode | pi | kimi | dsh, defaults to claude
 defaultAgent: claude
 
 claude:
-  model: claude-opus-4-8    # Model
-  effort: medium            # Reasoning effort: low | medium | high | xhigh | max
-  permissionMode: auto  # Claude official --permission-mode: default | acceptEdits | auto | bypassPermissions | manual | dontAsk | plan (switchable via /config card; auto is the default: low-risk actions run, high-risk actions ask)
-  stopGraceMs: 5000         # Grace period for idle-timeout auto-stop: SIGTERM→SIGKILL (milliseconds)
+  model: claude-opus-4-8 # Model
+  effort: medium # Reasoning effort: low | medium | high | xhigh | max
+  permissionMode: auto # Claude official --permission-mode: default | acceptEdits | auto | bypassPermissions | manual | dontAsk | plan (switchable via /config card; auto is the default: low-risk actions run, high-risk actions ask)
+  stopGraceMs: 5000 # Grace period for idle-timeout auto-stop: SIGTERM→SIGKILL (milliseconds)
 
 logging:
-  level: info               # debug | info | warn | error
+  level: info # debug | info | warn | error
 
 idle:
-  watchdogMinutes: 15       # Idle timeout auto-stop, 0 to disable
+  watchdogMinutes: 15 # Idle timeout auto-stop, 0 to disable
 ```
 
 The configuration file path can be overridden with the `--config-dir` CLI parameter (e.g., `lark-remote --config-dir /path/to/dir`).
@@ -137,33 +137,33 @@ Logs rotate daily and are stored at `~/.lark-remote/logs/YYYY-MM-DD/lark-remote-
 
 Any message not starting with `/` is forwarded to Claude. Messages starting with `/` are treated as built-in commands. **Some commands support single-letter aliases** (`/help /h`, `/status /s`, `/stop /t`, `/exit /e`, `/resume /r`, `/config /c`, `/order /o`, `/download /d`):
 
-| Command | Alias | Behavior |
-|---------|-------|----------|
-| `/help` | `/h` | Show command list |
-| `/cd <path>` | - | Switch Claude's working directory (supports `~`, absolute/relative paths; clears current session, next message starts a new conversation) |
-| `/cd` | - | Without arguments, shows the current directory |
-| `/ls [dir\|file]` | - | Pop up a directory/file card; click a directory to browse, click a file under 30MB to send it to Feishu; paginates beyond 30 entries (page-number jump supported) and entries on the current level can be filtered by keyword. Passing a file path lists that file itself |
-| `/download <path>` | `/d` | Send a local file straight to the chat, capped at 30MB |
-| `/ws save <name>` | - | Save the current directory as a named alias |
-| `/ws use <name>` | - | Switch to the alias directory (clears session) |
-| `/ws remove <name>` | - | Remove an alias |
-| `/ws` `/ws list` | - | List all aliases (card with "Use" and "Remove" buttons, filterable by alias name or path keyword) |
-| `/resume [agent] [N]` | `/r` | List/switch agent sessions in the current directory (card, paginated, default 5 per page) |
-| `/resume <id>` | - | Manually switch to a specific session id |
-| `/active` | - | List in-progress tasks in the current process memory (including agent tasks and bash commands) |
-| `/new` | - | Clear the current session (clears `sessionId` + `sessionCwds`, **working directory preserved**), next message starts a new conversation |
-| `/status` | `/s` | Show working directory, session directory (if different), session, model, process status |
-| `/stop` | `/t` | Terminate the current agent process (SIGTERM then immediate SIGKILL, no grace wait) |
-| `/ps` | - | Check whether a process is running |
-| `/config` | `/c` | View configuration (interactive card: dropdowns/inputs plus a save button) |
-| `/order save <text>` | `/o` | Save a frequently used instruction |
-| `/order` `/order list` | `/o` | List saved instructions (card; supports alias / edit / delete) |
-| `/order edit <orderId\|N> <new text>` | `/o` | Edit the saved text of an instruction (alias and usedAt are preserved) |
-| `/order alias add <orderId\|N> <name>` | `/o` | Bind an alias to a saved instruction (the `/order` card's 「＋别名」 button is the primary entry); typing `$name` triggers it |
-| `/order alias rm <orderId\|N>` | `/o` | Remove an instruction's alias (`/order alias list` folds into the same card) |
-| `/exit` | `/e` | Exit lark-remote |
-| `/restart` | - | Restart lark-remote in place: the new process takes over with the same config, startup notification arrives shortly |
-| `/clone <name>` | - | Clone lark-remote: copies the config into a new directory and walks you through creating a new Feishu app by QR scan; on completion it binds automatically and launches the new instance |
+| Command                                | Alias | Behavior                                                                                                                                                                                                                                                                  |
+| -------------------------------------- | ----- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `/help`                                | `/h`  | Show command list                                                                                                                                                                                                                                                         |
+| `/cd <path>`                           | -     | Switch Claude's working directory (supports `~`, absolute/relative paths; clears current session, next message starts a new conversation)                                                                                                                                 |
+| `/cd`                                  | -     | Without arguments, shows the current directory                                                                                                                                                                                                                            |
+| `/ls [dir\|file]`                      | -     | Pop up a directory/file card; click a directory to browse, click a file under 30MB to send it to Feishu; paginates beyond 30 entries (page-number jump supported) and entries on the current level can be filtered by keyword. Passing a file path lists that file itself |
+| `/download <path>`                     | `/d`  | Send a local file straight to the chat, capped at 30MB                                                                                                                                                                                                                    |
+| `/ws save <name>`                      | -     | Save the current directory as a named alias                                                                                                                                                                                                                               |
+| `/ws use <name>`                       | -     | Switch to the alias directory (clears session)                                                                                                                                                                                                                            |
+| `/ws remove <name>`                    | -     | Remove an alias                                                                                                                                                                                                                                                           |
+| `/ws` `/ws list`                       | -     | List all aliases (card with "Use" and "Remove" buttons, filterable by alias name or path keyword)                                                                                                                                                                         |
+| `/resume [agent] [N]`                  | `/r`  | List/switch agent sessions in the current directory (card, paginated, default 5 per page)                                                                                                                                                                                 |
+| `/resume <id>`                         | -     | Manually switch to a specific session id                                                                                                                                                                                                                                  |
+| `/active`                              | -     | List in-progress tasks in the current process memory (including agent tasks and bash commands)                                                                                                                                                                            |
+| `/new`                                 | -     | Clear the current session (clears `sessionId` + `sessionCwds`, **working directory preserved**), next message starts a new conversation                                                                                                                                   |
+| `/status`                              | `/s`  | Show working directory, session directory (if different), session, model, process status                                                                                                                                                                                  |
+| `/stop`                                | `/t`  | Terminate the current agent process (SIGTERM then immediate SIGKILL, no grace wait)                                                                                                                                                                                       |
+| `/ps`                                  | -     | Check whether a process is running                                                                                                                                                                                                                                        |
+| `/config`                              | `/c`  | View configuration (interactive card: dropdowns/inputs plus a save button)                                                                                                                                                                                                |
+| `/order save <text>`                   | `/o`  | Save a frequently used instruction                                                                                                                                                                                                                                        |
+| `/order` `/order list`                 | `/o`  | List saved instructions (card; supports alias / edit / delete)                                                                                                                                                                                                            |
+| `/order edit <orderId\|N> <new text>`  | `/o`  | Edit the saved text of an instruction (alias and usedAt are preserved)                                                                                                                                                                                                    |
+| `/order alias add <orderId\|N> <name>` | `/o`  | Bind an alias to a saved instruction (the `/order` card's 「＋别名」 button is the primary entry); typing `$name` triggers it                                                                                                                                             |
+| `/order alias rm <orderId\|N>`         | `/o`  | Remove an instruction's alias (`/order alias list` folds into the same card)                                                                                                                                                                                              |
+| `/exit`                                | `/e`  | Exit lark-remote                                                                                                                                                                                                                                                          |
+| `/restart`                             | -     | Restart lark-remote in place: the new process takes over with the same config, startup notification arrives shortly                                                                                                                                                       |
+| `/clone <name>`                        | -     | Clone lark-remote: copies the config into a new directory and walks you through creating a new Feishu app by QR scan; on completion it binds automatically and launches the new instance                                                                                  |
 
 ### Command Details
 
@@ -277,7 +277,7 @@ Optional config.yaml (defaults work out of the box):
 ```yaml
 inboundMedia:
   enabled: true
-  dirName: ".lark-remote-temp"
+  dirName: '.lark-remote-temp'
   maxFileSizeMb: 100
 ```
 
@@ -375,16 +375,16 @@ Cards have a strict UTF-8 byte budget and are lossy progress summaries, not comp
 
 ## 8. Error Handling
 
-| Situation | Behavior |
-|-----------|----------|
-| claude process killed externally | Bridge reports error but does not crash; next message is processed normally |
+| Situation                                        | Behavior                                                                                        |
+| ------------------------------------------------ | ----------------------------------------------------------------------------------------------- |
+| claude process killed externally                 | Bridge reports error but does not crash; next message is processed normally                     |
 | claude produces no output for a long time (hung) | 15-minute idle timeout auto-terminates the process; original card shows timeout; queue unblocks |
-| Bridge exits abnormally | Orphaned claude processes are cleaned up (on startup, pid file is read to kill orphans) |
-| Duplicate launch with same configDir | Second instance exits immediately and reports existing pid |
-| Feishu rate limiting (99991400) | Automatically sleeps 200ms and retries once |
-| `/ls` file send failure | Returns `Failed to send file: ...`; files over 30MB are rejected before upload |
-| Concurrent message arrival | Processed serially (Promise chain); will not start multiple claude processes |
-| Sending a message after `/cd` | Session is cleared; a new conversation starts (without `--resume`) |
+| Bridge exits abnormally                          | Orphaned claude processes are cleaned up (on startup, pid file is read to kill orphans)         |
+| Duplicate launch with same configDir             | Second instance exits immediately and reports existing pid                                      |
+| Feishu rate limiting (99991400)                  | Automatically sleeps 200ms and retries once                                                     |
+| `/ls` file send failure                          | Returns `Failed to send file: ...`; files over 30MB are rejected before upload                  |
+| Concurrent message arrival                       | Processed serially (Promise chain); will not start multiple claude processes                    |
+| Sending a message after `/cd`                    | Session is cleared; a new conversation starts (without `--resume`)                              |
 
 ---
 
@@ -401,11 +401,11 @@ Test coverage: config, session, workspace, runner (JSONL parsing + exit code), c
 
 ## 10. Further Documentation
 
-| Want to learn about | Where to look |
-|---------------------|---------------|
-| Overall design, JSONL events, pitfalls | [`architecture/design.md`](architecture/design.md) |
-| Single-card streaming architecture and Feishu validation | [`architecture/streaming-card.md`](architecture/streaming-card.md) |
-| New agent integration template | [`guides/add-new-agent.md`](guides/add-new-agent.md) |
-| Codex configuration card guide | [`guides/codex-config.md`](guides/codex-config.md) |
-| Feishu CardKit 2.0 component reference | [Official Feishu docs](https://open.feishu.cn/document/feishu-cards/card-json-v2-components/component-json-v2-overview) |
-| Getting started | [`getting-started.md`](getting-started.md) |
+| Want to learn about                                      | Where to look                                                                                                           |
+| -------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------- |
+| Overall design, JSONL events, pitfalls                   | [`architecture/design.md`](architecture/design.md)                                                                      |
+| Single-card streaming architecture and Feishu validation | [`architecture/streaming-card.md`](architecture/streaming-card.md)                                                      |
+| New agent integration template                           | [`guides/add-new-agent.md`](guides/add-new-agent.md)                                                                    |
+| Codex configuration card guide                           | [`guides/codex-config.md`](guides/codex-config.md)                                                                      |
+| Feishu CardKit 2.0 component reference                   | [Official Feishu docs](https://open.feishu.cn/document/feishu-cards/card-json-v2-components/component-json-v2-overview) |
+| Getting started                                          | [`getting-started.md`](getting-started.md)                                                                              |

@@ -11,14 +11,9 @@
  * watchdog, and ConnectionLostError respawn-and-retry-once.
  */
 
-import type {
-  AgentKind,
-  AgentSessionReader,
-  AgentEvent,
-  AgentStatusInfo,
-  ApprovalView,
-  SpawnOptions,
-} from '../../types.js';
+import type { AgentKind } from '../../../agent-kinds.js';
+import type { AgentSessionReader } from '../../../session-contract.js';
+import type { AgentEvent, AgentStatusInfo, ApprovalView, SpawnOptions } from '../../types.js';
 import {
   ConnectionManager,
   type ConnectionManagerOptions,

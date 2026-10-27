@@ -14,7 +14,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { KimiSessionReader } from '../../../src/session/kimi/sessions.js';
-import type { SessionContent } from '../../../src/runner/index.js';
+import type { SessionContent } from '../../../src/session-contract.js';
 
 const { jsonlSpy } = vi.hoisted(() => ({
   jsonlSpy: {

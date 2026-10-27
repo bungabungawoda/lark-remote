@@ -12,7 +12,10 @@ function createRouter(overrides?: {
   updateCachePath?: string;
   restartSpawner?: () => number;
   exitHandler?: () => void;
-  checkLatestVersion?: () => Promise<{ current: string; latest: string }>;
+  checkLatestVersion?: (opts?: {
+    cachePath?: string;
+    bypassCache?: boolean;
+  }) => Promise<{ current: string; latest: string }>;
   compareVersions?: (current: string, latest: string) => -1 | 0 | 1 | null;
   runInstallLatest?: () => Promise<{ success: boolean; error?: string }>;
 }) {

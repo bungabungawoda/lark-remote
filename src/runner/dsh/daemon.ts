@@ -16,7 +16,8 @@ import fsp from 'node:fs/promises';
 import path from 'node:path';
 import { DEFAULT_DSH_HOST } from '../../config/index.js';
 import { mergeProcessEnv, spawnProcess } from '../../platform/spawn.js';
-import { resolveDshHome } from './home.js';
+import { getLogger } from '../../logger/index.js';
+import { resolveDshHome } from '../../dsh/home.js';
 
 const DEFAULT_START_TIMEOUT_MS = 30_000;
 const READY_POLL_MS = 100;
@@ -215,7 +216,15 @@ export class DshDaemon {
     try {
       const stats = await fsp.stat(lockDir);
       return Date.now() - stats.mtimeMs > this.startTimeoutMs() * 2;
-    } catch {
+    } catch (err) {
+      // ENOENT = 锁目录刚被持有者清掉（正常，等下一轮重查）。
+      // 其余（EACCES/EPERM…）= 无法判断是否陈旧：保守判「不陈旧」继续等，
+      // 但必须留痕，否则超时文案会误报成「等待其他 lark-remote」。
+      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
+        getLogger().warn(
+          `[dsh] cannot stat start lock ${lockDir}: ${(err as Error)?.message ?? String(err)}`,
+        );
+      }
       return false;
     }
   }

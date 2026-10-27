@@ -51,8 +51,7 @@ describe('isImmediateAction (§9.19)', () => {
       ['order.aliasRemove', '删除别名（control operation）'],
       ['order.textEdit', '弹编辑卡（control operation）'],
       ['order.textInput', '提交文本编辑（control operation）'],
-      ['config.toggle', 'config 卡片操作（串行化见 config.save 注释）'],
-      ['config.set', 'config 卡片操作'],
+      ['config.set', 'config 卡片操作（串行化见 config.save 注释）'],
       ['config.input', 'config 卡片操作'],
       ['config.save', 'config 保存'],
       [

@@ -5,15 +5,15 @@
  * permission toggles.
  */
 
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach, type Mock } from 'vitest';
 import { ApprovalCoordinator, decisionToApprovalAction } from './approval-coordinator.js';
-import type { ApprovalRequestedEvent, ApprovalView } from '../runner/types.js';
+import type { AgentEvent, ApprovalRequestedEvent, ApprovalView } from '../runner/types.js';
 
 describe('ApprovalCoordinator', () => {
   let coordinator: ApprovalCoordinator;
-  let responder: ReturnType<typeof vi.fn>;
-  let interruptTurn: ReturnType<typeof vi.fn>;
-  let pushToCard: ReturnType<typeof vi.fn>;
+  let responder: Mock<(requestId: number | string, response: unknown) => Promise<void>>;
+  let interruptTurn: Mock<() => Promise<void>>;
+  let pushToCard: Mock<(events: AgentEvent[]) => Promise<void>>;
 
   function makeCommandEvent(
     overrides: Partial<ApprovalRequestedEvent> = {},
@@ -123,9 +123,11 @@ describe('ApprovalCoordinator', () => {
 
   beforeEach(() => {
     vi.useFakeTimers();
-    responder = vi.fn().mockResolvedValue(undefined);
-    interruptTurn = vi.fn().mockResolvedValue(undefined);
-    pushToCard = vi.fn().mockResolvedValue(undefined);
+    responder = vi
+      .fn<(requestId: number | string, response: unknown) => Promise<void>>()
+      .mockResolvedValue(undefined);
+    interruptTurn = vi.fn<() => Promise<void>>().mockResolvedValue(undefined);
+    pushToCard = vi.fn<(events: AgentEvent[]) => Promise<void>>().mockResolvedValue(undefined);
 
     coordinator = new ApprovalCoordinator({
       approvalTimeoutMs: 30000,

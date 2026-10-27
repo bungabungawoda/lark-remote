@@ -3,22 +3,31 @@ import { AgentRegistry } from './registry.js';
 import { ClaudeRunner } from './index.js';
 import { DEFAULT_STOP_GRACE_MS, type AppConfig } from '../config/index.js';
 import { makeTempDir } from '../../tests/lib/temp-dir.js';
+import { ClaudeSessionReader } from '../session/claude/index.js';
 
 const tmpDir = makeTempDir('lark-registry-test-');
 
 describe('AgentRegistry', () => {
   it('register + get returns the runner produced by the factory', () => {
     const registry = new AgentRegistry();
-    registry.register('claude', (ws) => new ClaudeRunner({ pidDir: tmpDir, cwd: ws }));
+    registry.register(
+      'claude',
+      (ws) =>
+        new ClaudeRunner({ sessionReader: new ClaudeSessionReader(), pidDir: tmpDir, cwd: ws }),
+    );
 
     const runner = registry.get('claude', '/tmp/ws-a');
     expect(runner).toBeInstanceOf(ClaudeRunner);
-    expect(runner.kind).toBe('claude');
+    expect((runner as ClaudeRunner).kind).toBe('claude');
   });
 
   it('get throws "agent not registered" for an unregistered kind', () => {
     const registry = new AgentRegistry();
-    registry.register('claude', () => new ClaudeRunner({ cwd: 'test', pidDir: tmpDir }));
+    registry.register(
+      'claude',
+      () =>
+        new ClaudeRunner({ sessionReader: new ClaudeSessionReader(), cwd: 'test', pidDir: tmpDir }),
+    );
 
     expect(() => registry.get('codex', '/tmp/ws-a')).toThrow(/agent not registered: codex/);
     expect(() => registry.get('opencode', '/tmp/ws-a')).toThrow(/agent not registered: opencode/);
@@ -26,7 +35,11 @@ describe('AgentRegistry', () => {
 
   it('factory can return a fresh instance per cwd (claude spawn-per-message)', () => {
     const registry = new AgentRegistry();
-    registry.register('claude', (ws) => new ClaudeRunner({ pidDir: tmpDir, cwd: ws }));
+    registry.register(
+      'claude',
+      (ws) =>
+        new ClaudeRunner({ sessionReader: new ClaudeSessionReader(), pidDir: tmpDir, cwd: ws }),
+    );
 
     const a = registry.get('claude', '/tmp/ws-a');
     const b = registry.get('claude', '/tmp/ws-b');
@@ -77,6 +90,7 @@ describe('AgentRegistry', () => {
         const latestConfig = (container?.current as AppConfig) ?? startupConfig;
         const claudeConfig = latestConfig.claude;
         return new ClaudeRunner({
+          sessionReader: new ClaudeSessionReader(),
           model: claudeConfig.model,
           effort: claudeConfig.effort,
           stopGraceMs: claudeConfig.stopGraceMs,
@@ -109,6 +123,7 @@ describe('AgentRegistry', () => {
         const latestConfig = (container?.current as AppConfig) ?? startupConfig;
         const claudeConfig = latestConfig.claude;
         return new ClaudeRunner({
+          sessionReader: new ClaudeSessionReader(),
           model: claudeConfig.model,
           effort: claudeConfig.effort,
           stopGraceMs: claudeConfig.stopGraceMs,

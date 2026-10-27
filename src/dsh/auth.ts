@@ -13,7 +13,7 @@ import { createHash, createHmac } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import YAML from 'yaml';
-import { isWin32 } from '../../platform/select.js';
+import { isWin32 } from '../platform/select.js';
 import { resolveDshHome } from './home.js';
 
 /** Credential record that owns the browser-cookie signing secret. */

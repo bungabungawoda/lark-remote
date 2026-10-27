@@ -20,6 +20,6 @@ describe('Codex app-server turn idle timeout config field', () => {
     expect(field).toBeDefined();
     expect(field?.type).toBe('input');
     expect(field?.label).toContain('分钟');
-    expect(field?.label).toContain('0');
+    expect(field?.label).toMatch(/0\s*(关闭|禁用)/);
   });
 });

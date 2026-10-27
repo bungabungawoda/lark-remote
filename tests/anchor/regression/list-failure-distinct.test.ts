@@ -14,7 +14,7 @@ import { OpencodeSessionReader } from '../../../src/session/opencode/sessions.js
 import { SessionStore, SessionReaderRegistry } from '../../../src/session/index.js';
 import { AppConfigSchema } from '../../../src/config/index.js';
 import type { AppConfig } from '../../../src/config/index.js';
-import type { AgentSessionReader } from '../../../src/runner/index.js';
+import type { AgentSessionReader } from '../../../src/session-contract.js';
 import { prependPath, restorePath, writeMockSource } from '../../lib/path-mock.js';
 import { createRouterFixture } from '../../lib/router-fixture.js';
 import { rmRf } from '../../../tests/lib/tmp-cleanup.js';

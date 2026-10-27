@@ -44,21 +44,6 @@ describe('readJsonlLines', () => {
       message: { role: 'assistant', content: 'hi' },
     });
   });
-
-  it('accepts a custom chunkSize parameter', () => {
-    const filePath = path.join(tmpDir, 'chunked.jsonl');
-    // Write a file with content that spans multiple small chunks
-    const line1 = JSON.stringify({ type: 'first', data: 'a'.repeat(200) });
-    const line2 = JSON.stringify({ type: 'second', data: 'b'.repeat(200) });
-    fs.writeFileSync(filePath, line1 + '\n' + line2 + '\n');
-
-    // Use a tiny chunk size to force multi-chunk reads
-    const result = readJsonlLines(filePath, 64);
-
-    expect(result).toHaveLength(2);
-    expect(JSON.parse(result[0]).type).toBe('first');
-    expect(JSON.parse(result[1]).type).toBe('second');
-  });
 });
 
 /**
@@ -505,7 +490,7 @@ describe('scanJsonlLines multi-byte cross-chunk boundary', () => {
   it('test_anchor_readJsonlLines_line_content_not_polluted', () => {
     // `readJsonlLines` (full-slurp) was converted to the same byte-buffer
     // pattern. A line straddling the default 64 KiB chunk boundary must be
-    // returned intact — independent of the custom chunkSize ASCII test above.
+    // returned intact.
     const filePath = path.join(tmpDir, 'full-cross.jsonl');
     const prefix = '{"type":"user","message":{"role":"user","content":"';
     const prefixBytes = Buffer.byteLength(prefix, 'utf-8');

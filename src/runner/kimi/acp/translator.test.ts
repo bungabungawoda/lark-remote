@@ -6,7 +6,7 @@ import {
   ServerRequestMethod,
 } from '../../common/acp/protocol-types.js';
 import { createInitialRunState, reduceRunState } from '../../../card/run-state.js';
-import type { AgentEvent, ApprovalRequestedEvent } from '../../types.js';
+import type { AgentEvent, ApprovalRequestedEvent, ResultEvent } from '../../types.js';
 
 /**
  * Build a session/update notification params object using the REAL wire shape:
@@ -22,6 +22,12 @@ function sessionUpdate(
     sessionId,
     update,
   };
+}
+
+/** AgentEvent 是可辨识联合：断言 result 成员字段前先按 type 收窄。 */
+function asResultEvent(e: AgentEvent): ResultEvent {
+  if (e.type !== 'result') throw new Error(`expected result event, got ${String(e.type)}`);
+  return e;
 }
 
 describe('KimiAcpTranslator', () => {
@@ -403,7 +409,7 @@ describe('KimiAcpTranslator', () => {
 
   it('prompt stopReason:end_turn → result success', () => {
     const t = new KimiAcpTranslator();
-    const event = t.handlePromptResponse(SESSION_ID, { stopReason: 'end_turn' });
+    const event = asResultEvent(t.handlePromptResponse(SESSION_ID, { stopReason: 'end_turn' }));
     expect(event.type).toBe('result');
     expect(event.subtype).toBe('success');
     expect(event.session_id).toBe(SESSION_ID);
@@ -411,7 +417,7 @@ describe('KimiAcpTranslator', () => {
 
   it('prompt stopReason:cancelled → result interrupted (independent terminal state)', () => {
     const t = new KimiAcpTranslator();
-    const event = t.handlePromptResponse(SESSION_ID, { stopReason: 'cancelled' });
+    const event = asResultEvent(t.handlePromptResponse(SESSION_ID, { stopReason: 'cancelled' }));
     expect(event.type).toBe('result');
     // §4.2: cancelled is independent terminal state, MUST NOT merge into error
     expect(event.subtype).toBe('interrupted');
@@ -419,7 +425,7 @@ describe('KimiAcpTranslator', () => {
 
   it('prompt other stopReason → result error', () => {
     const t = new KimiAcpTranslator();
-    const event = t.handlePromptResponse(SESSION_ID, { stopReason: 'tool_error' });
+    const event = asResultEvent(t.handlePromptResponse(SESSION_ID, { stopReason: 'tool_error' }));
     expect(event.type).toBe('result');
     expect(event.subtype).toBe('error');
     expect(event.errorMessage).toContain('tool_error');
@@ -444,7 +450,7 @@ describe('KimiAcpTranslator', () => {
 
   it('produceErrorResult creates error result event', () => {
     const t = new KimiAcpTranslator();
-    const event = t.produceErrorResult(SESSION_ID, 'Something went wrong');
+    const event = asResultEvent(t.produceErrorResult(SESSION_ID, 'Something went wrong'));
     expect(event.type).toBe('result');
     expect(event.subtype).toBe('error');
     expect(event.errorMessage).toBe('Something went wrong');
@@ -767,7 +773,7 @@ describe('KimiAcpTranslator', () => {
       }),
     );
 
-    const event = t.handlePromptResponse(SESSION_ID, { stopReason: 'end_turn' });
+    const event = asResultEvent(t.handlePromptResponse(SESSION_ID, { stopReason: 'end_turn' }));
     expect(event.usage).toBeDefined();
     expect(event.usage!.total_tokens).toBe(500);
     expect(event.usage!.context_limit).toBe(200000);
@@ -779,7 +785,7 @@ describe('KimiAcpTranslator', () => {
 
   it('prompt response without any usage_update has no usage attached', () => {
     const t = new KimiAcpTranslator();
-    const event = t.handlePromptResponse(SESSION_ID, { stopReason: 'end_turn' });
+    const event = asResultEvent(t.handlePromptResponse(SESSION_ID, { stopReason: 'end_turn' }));
     expect(event.usage).toBeUndefined();
   });
 });

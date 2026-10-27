@@ -4,7 +4,7 @@ import path from 'node:path';
 import type { SpawnSyncReturns } from 'node:child_process';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-vi.mock('./auth.js', () => ({
+vi.mock('../../dsh/auth.js', () => ({
   DSH_COOKIE_LIFETIME_MS: 60 * 60 * 1000,
   mintDshBrowserCookie: () => 'test-cookie',
   readDshBrowserSecretSync: () => 'test-secret',

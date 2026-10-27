@@ -11,28 +11,19 @@
  */
 import { getLogger } from '../logger/index.js';
 import type { SessionReaderRegistry } from '../session/index.js';
-import type { AgentKind } from '../runner/index.js';
+import type { AgentKind } from '../agent-kinds.js';
+import type { AgentSessionUsage } from '../session-contract.js';
 
 export function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-export type FinalUsageSnapshot = {
-  contextLength?: number;
-  contextLimit?: number;
-  compactCount?: number;
-  compactPreContextLength?: number;
-  cacheReadTokens?: number;
-  cacheCreationTokens?: number;
-  totalTokens?: number;
-  inputTokens?: number;
-  outputTokens?: number;
-  cumulativeTotalTokens?: number;
-  cumulativeInputTokens?: number;
-  cumulativeOutputTokens?: number;
-  cumulativeCacheReadTokens?: number;
-  cumulativeCacheCreationTokens?: number;
-};
+/**
+ * jsonl 侧的最终用量快照。就是 `AgentSessionUsage` 的可选形态：reader 保证
+ * input/output/contextLength 有值，这里允许「读不到」，字段清单不再手抄第二份
+ * （§9.21 的口径一致要求靠这个单源维持）。
+ */
+export type FinalUsageSnapshot = Partial<AgentSessionUsage>;
 
 /**
  * Read final usage (contextLength + compactCount + cache tokens) from the
@@ -56,24 +47,7 @@ export function resolveFinalUsage(
         `[lark-remote] resolveFinalUsage: no usage from jsonl sessionId=${sessionId} cwd=${cwd} agent=${agentKind}, card falls back to per-run live usage`,
       );
     }
-    return content.usage
-      ? {
-          contextLength: content.usage.contextLength,
-          contextLimit: content.usage.contextLimit,
-          compactCount: content.usage.compactCount,
-          compactPreContextLength: content.usage.compactPreContextLength,
-          cacheReadTokens: content.usage.cacheReadTokens,
-          cacheCreationTokens: content.usage.cacheCreationTokens,
-          totalTokens: content.usage.totalTokens,
-          inputTokens: content.usage.inputTokens,
-          outputTokens: content.usage.outputTokens,
-          cumulativeTotalTokens: content.usage.cumulativeTotalTokens,
-          cumulativeInputTokens: content.usage.cumulativeInputTokens,
-          cumulativeOutputTokens: content.usage.cumulativeOutputTokens,
-          cumulativeCacheReadTokens: content.usage.cumulativeCacheReadTokens,
-          cumulativeCacheCreationTokens: content.usage.cumulativeCacheCreationTokens,
-        }
-      : undefined;
+    return content.usage ? { ...content.usage } : undefined;
   } catch (err) {
     getLogger().warn(
       `[lark-remote] resolveFinalUsage failed sessionId=${sessionId}: ${errorMessage(err)}`,

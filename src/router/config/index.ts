@@ -5,7 +5,7 @@
  * Adding a new agent = add a file + register here (no upstream changes needed).
  */
 
-import type { AgentKind } from '../../runner/types.js';
+import type { AgentKind } from '../../agent-kinds.js';
 import type { AgentConfigCardBuilder } from './types.js';
 import { ClaudeConfigBuilder } from './claude.js';
 import { CodexConfigBuilder } from './codex.js';

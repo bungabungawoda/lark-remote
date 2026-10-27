@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import type { AppConfig } from '../config/index.js';
+import { AppConfigSchema } from '../config/index.js';
 import { choiceFieldsFor } from './agent-choices-common.js';
 import { syncAgentChoices } from './index.js';
 
@@ -9,14 +10,14 @@ import { syncAgentChoices } from './index.js';
  */
 const AGENTS = ['codex', 'pi', 'opencode', 'kimi'] as const;
 
-const baseConfig: AppConfig = {
+const baseConfig: AppConfig = AppConfigSchema.parse({
   feishu: { appId: 'test', appSecret: 'test' },
   claude: { model: 'claude-opus-4-8', effort: 'medium', stopGraceMs: 5000 },
   defaultAgent: 'codex',
   idle: { watchdogMinutes: 15 },
   logging: { level: 'info' },
   agents: { codex: {} },
-};
+});
 
 function agentCfg(agent: string, fields: Record<string, unknown>): AppConfig {
   return { ...baseConfig, agents: { [agent]: fields } } as unknown as AppConfig;
@@ -91,7 +92,7 @@ describe('syncAgentChoices', () => {
     const config = {
       ...baseConfig,
       agents: { claude: { model: 'must-not-be-synced' } },
-    } as AppConfig;
+    } as unknown as AppConfig;
     const updated = syncAgentChoices(config, 'claude');
 
     // 短路：原对象直接返回，既不克隆也不写出 agentChoices.claude。

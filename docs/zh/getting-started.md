@@ -10,7 +10,8 @@
 
 简单说：**用飞书聊天控制电脑里的 AI 写代码**。
 
- Imagine：
+Imagine：
+
 - 你在飞书私聊里发一句「帮我看下 src/index.ts，加个错误处理」；
 - 你电脑上的 Claude Code（一个 AI 程序员）就开始读文件、改代码、跑测试；
 - 整个过程的进度实时显示在飞书的一张卡片上；
@@ -24,12 +25,12 @@ lark-remote 就是飞书和 Claude Code 之间的「传话筒」。
 
 > 支持 macOS / Linux / Windows 10+。
 
-| 工具 | 是什么 | 怎么装 |
-|------|--------|--------|
-| **Node.js 20+** | 让 JavaScript 程序能在电脑上跑的环境 | 去 https://nodejs.org 下载 LTS 版，双击安装 |
-| **Bun** | 更快的 JavaScript 运行时，本项目用它 | 装好 Node 后，终端粘贴 `npm install -g bun` 回车 |
-| **飞书账号** | 用来聊天 | 手机应用商店下载「飞书」App，注册登录 |
-| **Claude Code CLI** | 那个 AI 程序员 | 终端运行 `npm install -g @anthropic-ai/claude-code`，然后输入 `claude` 按提示用浏览器登录一次 |
+| 工具                | 是什么                               | 怎么装                                                                                        |
+| ------------------- | ------------------------------------ | --------------------------------------------------------------------------------------------- |
+| **Node.js 20+**     | 让 JavaScript 程序能在电脑上跑的环境 | 去 https://nodejs.org 下载 LTS 版，双击安装                                                   |
+| **Bun**             | 更快的 JavaScript 运行时，本项目用它 | 装好 Node 后，终端粘贴 `npm install -g bun` 回车                                              |
+| **飞书账号**        | 用来聊天                             | 手机应用商店下载「飞书」App，注册登录                                                         |
+| **Claude Code CLI** | 那个 AI 程序员                       | 终端运行 `npm install -g @anthropic-ai/claude-code`，然后输入 `claude` 按提示用浏览器登录一次 |
 
 > **什么是「终端」？**
 > Mac 上叫「Terminal」（启动台搜索 Terminal），Windows 上叫「PowerShell」或「命令提示符」。就是那个黑底白字、能输入命令的窗口。
@@ -88,6 +89,7 @@ bun run dev
 > 并打印路径，用图片查看器打开照扫即可。扫码完成或退出后该文件会被自动清理。
 
 > **如果终端报「非交互环境」错误**：说明你的终端不支持弹二维码。改成手动建应用：
+>
 > 1. 浏览器打开 https://open.feishu.cn 登录飞书；
 > 2. 「开发者后台」→「创建企业自建应用」，填名字和描述；
 > 3. 应用详情页 →「添加应用能力」→ 启用「机器人」；
@@ -122,15 +124,15 @@ bun run dev
 
 在飞书私聊里发 `/` 开头的就是命令。**记住这 7 个就能日常用了**：
 
-| 命令 | 作用 | 例子 |
-|------|------|------|
-| `/help` | 看所有命令 | 直接发 `/help` |
-| `/cd <路径>` | 切换 Claude 工作的文件夹 | `/cd ~/projects/my-game` |
-| `/status` | 看当前状态（在哪个文件夹、模型、有没有在跑） | 直接发 `/status` |
-| `/stop` | Claude 跑飞了/卡住了，强制停 | 直接发 `/stop` |
-| `/new` | 清空当前对话，重新开始 | 直接发 `/new` |
-| `/resume` | 看历史会话，点按钮恢复 | 直接发 `/resume` |
-| `/exit` | 关掉 lark-remote | 直接发 `/exit` |
+| 命令         | 作用                                         | 例子                     |
+| ------------ | -------------------------------------------- | ------------------------ |
+| `/help`      | 看所有命令                                   | 直接发 `/help`           |
+| `/cd <路径>` | 切换 Claude 工作的文件夹                     | `/cd ~/projects/my-game` |
+| `/status`    | 看当前状态（在哪个文件夹、模型、有没有在跑） | 直接发 `/status`         |
+| `/stop`      | Claude 跑飞了/卡住了，强制停                 | 直接发 `/stop`           |
+| `/new`       | 清空当前对话，重新开始                       | 直接发 `/new`            |
+| `/resume`    | 看历史会话，点按钮恢复                       | 直接发 `/resume`         |
+| `/exit`      | 关掉 lark-remote                             | 直接发 `/exit`           |
 
 **直接发非 `/` 开头的话**就是和 Claude 聊天。比如：
 
@@ -240,12 +242,12 @@ lark-remote 现在支持 6 种 AI：Claude、Codex、OpenCode、Pi、Kimi、DSH�
 
 ## 13. 下一步看什么
 
-| 想了解 | 看哪份文档 |
-|--------|-----------|
-| 所有命令的详细用法 | [`usage.md`](usage.md) |
-| 整体设计、JSONL 事件、踩过的坑 | [`architecture/design.md`](architecture/design.md) |
-| 单卡流式输出怎么工作的 | [`architecture/streaming-card.md`](architecture/streaming-card.md) |
-| Codex 怎么配置 | [`guides/codex-config.md`](guides/codex-config.md) |
+| 想了解                         | 看哪份文档                                                         |
+| ------------------------------ | ------------------------------------------------------------------ |
+| 所有命令的详细用法             | [`usage.md`](usage.md)                                             |
+| 整体设计、JSONL 事件、踩过的坑 | [`architecture/design.md`](architecture/design.md)                 |
+| 单卡流式输出怎么工作的         | [`architecture/streaming-card.md`](architecture/streaming-card.md) |
+| Codex 怎么配置                 | [`guides/codex-config.md`](guides/codex-config.md)                 |
 
 ---
 

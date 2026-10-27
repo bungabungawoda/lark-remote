@@ -85,7 +85,7 @@ describe('ensureConfig', () => {
       return {
         client_id: 'cli_wizard',
         client_secret: 'secret_wizard',
-        user_info: { tenant_brand: 'Acme' },
+        user_info: { tenant_brand: 'feishu' },
       };
     });
 

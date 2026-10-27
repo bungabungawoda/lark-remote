@@ -30,8 +30,8 @@ export type CardElement = {
 export type Card = { body?: { elements?: CardElement[] } };
 
 /**
- * 提取 config.* 回调里出现的字段 key（config.set / config.toggle / config.input
- * 共用同一 key 字段）。JSON 正则避免依赖 behaviors 在树里的具体嵌套层级，
+ * 提取 config.* 回调里出现的字段 key（config.set / config.input 共用同一 key
+ * 字段）。JSON 正则避免依赖 behaviors 在树里的具体嵌套层级，
  * 同时兼容 cmd/key 两种键序。
  */
 export function extractConfigFieldKeys(card: object): string[] {

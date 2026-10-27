@@ -7,6 +7,19 @@ import { JsonlRpcTransport } from './transport.js';
 import { rmRf } from '../../../../tests/lib/tmp-cleanup.js';
 
 /**
+ * 本套件除「initialize 参数透传」专项用例外不关心 params 内容：fake server
+ * 对 initialize 的应答固定。其余用例构造 JsonRpcClient 时统一补上这份 ACP
+ * 握手字面量（与专项用例断言并要求透传的形状一致）。
+ */
+const ACP_INITIALIZE_PARAMS = {
+  protocolVersion: 1,
+  clientCapabilities: {
+    fs: { readTextFile: false, writeTextFile: false },
+    terminal: false,
+  },
+};
+
+/**
  * 启动一个 Node 假 ACP server。fixture 平台中立：直接以 `process.execPath`
  * 启动脚本，**不再包一层 POSIX `#!/bin/sh` wrapper**（Windows 既不能执行
  * 无扩展名脚本、也不认 shebang，wrapper 会让子进程起不来 →
@@ -55,11 +68,16 @@ describe('JsonRpcClient request/response id matching', () => {
   it('matches request/response by id', async () => {
     const { server } = makeFakeServer(tmpDir, {});
     const transport = new JsonlRpcTransport({ ...nodeLaunch(server), cwd: tmpDir });
-    const client = new JsonRpcClient(transport, {
-      onNotification: () => {},
-      onServerRequest: () => {},
-      onClose: () => {},
-    });
+    const client = new JsonRpcClient<{ protocolVersion: number }>(
+      transport,
+      {
+        onNotification: () => {},
+        onServerRequest: () => {},
+        onClose: () => {},
+      },
+      60_000,
+      ACP_INITIALIZE_PARAMS,
+    );
 
     const initResult = await client.connect();
     expect(initResult.protocolVersion).toBe(1);
@@ -79,16 +97,21 @@ describe('JsonRpcClient request/response id matching', () => {
     );
 
     const transport = new JsonlRpcTransport({ ...nodeLaunch(server), cwd: tmpDir });
-    const client = new JsonRpcClient(transport, {
-      onNotification: () => {},
-      onServerRequest: () => {},
-      onClose: () => {},
-    });
+    const client = new JsonRpcClient(
+      transport,
+      {
+        onNotification: () => {},
+        onServerRequest: () => {},
+        onClose: () => {},
+      },
+      60_000,
+      ACP_INITIALIZE_PARAMS,
+    );
 
     await client.connect();
 
     await expect(client.request('session/new', {})).rejects.toThrow(RpcError);
-    const err = await client.request('session/new', {}).catch((e) => e as RpcError);
+    const err = (await client.request('session/new', {}).catch((e) => e)) as RpcError;
     expect(err.code).toBe(-32600);
 
     await client.dispose();
@@ -111,6 +134,7 @@ describe('JsonRpcClient request/response id matching', () => {
         onClose: () => {},
       },
       2000, // 覆盖插桩/负载下子进程 boot 延迟不可控，500ms 过紧导致 flaky；语义仍为「缺响应→RpcTimeoutError」
+      ACP_INITIALIZE_PARAMS,
     );
 
     await client.connect();
@@ -146,6 +170,7 @@ describe('JsonRpcClient request/response id matching', () => {
         onClose: () => {},
       },
       0,
+      ACP_INITIALIZE_PARAMS,
     );
 
     await client.connect();
@@ -165,11 +190,16 @@ describe('JsonRpcClient request/response id matching', () => {
     const transport = new JsonlRpcTransport({ ...nodeLaunch(server), cwd: tmpDir });
 
     const notifications: Array<{ method: string; params: unknown }> = [];
-    const client = new JsonRpcClient(transport, {
-      onNotification: (method, params) => notifications.push({ method, params }),
-      onServerRequest: () => {},
-      onClose: () => {},
-    });
+    const client = new JsonRpcClient(
+      transport,
+      {
+        onNotification: (method, params) => notifications.push({ method, params }),
+        onServerRequest: () => {},
+        onClose: () => {},
+      },
+      60_000,
+      ACP_INITIALIZE_PARAMS,
+    );
 
     await client.connect();
 
@@ -202,11 +232,16 @@ describe('JsonRpcClient request/response id matching', () => {
     const transport = new JsonlRpcTransport({ ...nodeLaunch(server), cwd: tmpDir });
 
     const serverRequests: Array<{ id: number | string; method: string; params: unknown }> = [];
-    const client = new JsonRpcClient(transport, {
-      onNotification: () => {},
-      onServerRequest: (id, method, params) => serverRequests.push({ id, method, params }),
-      onClose: () => {},
-    });
+    const client = new JsonRpcClient(
+      transport,
+      {
+        onNotification: () => {},
+        onServerRequest: (id, method, params) => serverRequests.push({ id, method, params }),
+        onClose: () => {},
+      },
+      60_000,
+      ACP_INITIALIZE_PARAMS,
+    );
 
     await client.connect();
 
@@ -237,13 +272,18 @@ describe('JsonRpcClient request/response id matching', () => {
 
     const transport = new JsonlRpcTransport({ ...nodeLaunch(server), cwd: tmpDir });
     let onCloseFired = false;
-    const client = new JsonRpcClient(transport, {
-      onNotification: () => {},
-      onServerRequest: () => {},
-      onClose: () => {
-        onCloseFired = true;
+    const client = new JsonRpcClient(
+      transport,
+      {
+        onNotification: () => {},
+        onServerRequest: () => {},
+        onClose: () => {
+          onCloseFired = true;
+        },
       },
-    });
+      60_000,
+      ACP_INITIALIZE_PARAMS,
+    );
 
     await client.connect();
 
@@ -269,18 +309,23 @@ describe('JsonRpcClient request/response id matching', () => {
 
     const confirmations: Array<{ responseId: number; outcome: unknown }> = [];
     const transport = new JsonlRpcTransport({ ...nodeLaunch(server), cwd: tmpDir });
-    const client = new JsonRpcClient(transport, {
-      onNotification: (method, params) => {
-        if (method === 'approval_confirmed') {
-          confirmations.push(params as { responseId: number; outcome: unknown });
-        }
+    const client = new JsonRpcClient(
+      transport,
+      {
+        onNotification: (method, params) => {
+          if (method === 'approval_confirmed') {
+            confirmations.push(params as { responseId: number; outcome: unknown });
+          }
+        },
+        onServerRequest: (id, _method, _params) => {
+          // Auto-respond to approval requests
+          client.respond(id, { outcome: { outcome: 'selected', optionId: 'allow_once' } });
+        },
+        onClose: () => {},
       },
-      onServerRequest: (id, _method, _params) => {
-        // Auto-respond to approval requests
-        client.respond(id, { outcome: { outcome: 'selected', optionId: 'allow_once' } });
-      },
-      onClose: () => {},
-    });
+      60_000,
+      ACP_INITIALIZE_PARAMS,
+    );
 
     await client.connect();
 
@@ -300,11 +345,16 @@ describe('JsonRpcClient request/response id matching', () => {
   it('throws ConnectionLostError when client is disposed', async () => {
     const { server } = makeFakeServer(tmpDir, {});
     const transport = new JsonlRpcTransport({ ...nodeLaunch(server), cwd: tmpDir });
-    const client = new JsonRpcClient(transport, {
-      onNotification: () => {},
-      onServerRequest: () => {},
-      onClose: () => {},
-    });
+    const client = new JsonRpcClient(
+      transport,
+      {
+        onNotification: () => {},
+        onServerRequest: () => {},
+        onClose: () => {},
+      },
+      60_000,
+      ACP_INITIALIZE_PARAMS,
+    );
 
     await client.connect();
     await client.dispose();

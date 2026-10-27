@@ -10,7 +10,7 @@ import { dispatchOrderExecForQueue } from '../../../src/router/order-exec-dispat
 import { AppConfigSchema } from '../../../src/config/index.js';
 import type { AppConfig } from '../../../src/config/index.js';
 import { SessionReaderRegistry } from '../../../src/session/registry.js';
-import { sleep, waitFor } from '../../lib/wait-for.js';
+import { sleep, waitFor, waitForOrThrow } from '../../lib/wait-for.js';
 
 import {
   createStubAgentRegistry,
@@ -115,7 +115,7 @@ describe('a queue.input-edited task must run the edited content when its turn is
         },
       },
     );
-    await new Promise((r) => setTimeout(r, 50));
+    await waitForOrThrow(() => bridge.hasTaskBegan('msg-1'));
 
     // --- 步骤 2：T2（编辑目标）排队，闭包冻结原始内容 "original message" ---
     bridge.enqueue(
@@ -132,7 +132,7 @@ describe('a queue.input-edited task must run the edited content when its turn is
         },
       },
     );
-    await new Promise((r) => setTimeout(r, 50));
+    await waitForOrThrow(() => bridge.getQueuedTask(tmpDir, 'msg-2') !== undefined);
     expect(bridge.getQueuedTask(tmpDir, 'msg-2')?.messagePreview).toBe('original message');
 
     // --- 步骤 3：编辑 T2 → "edited message"（排队卡路径，不点立即执行）---
@@ -149,7 +149,7 @@ describe('a queue.input-edited task must run the edited content when its turn is
 
     // --- 步骤 4：T1 正常结束（非 interrupt），队列自然推进到 T2 ---
     release1();
-    await new Promise((r) => setTimeout(r, 300));
+    await waitForOrThrow(() => fwdSpy.mock.calls.length > 0);
 
     // 修复前：handleQueueInput 未注册 replacement，begin 路径执行原始闭包
     // → forwardToClaude('original message')。本用例钉住：期望 edited content。
@@ -228,7 +228,7 @@ describe('an edited order.exec queued task must keep the router.handle dispatch 
         },
       },
     );
-    await new Promise((r) => setTimeout(r, 50));
+    await waitForOrThrow(() => bridge.hasTaskBegan('blocker-1'));
 
     // --- 步骤 2：order.exec 入队一个命令型 order（production 路径，internal key）---
     const dispatchStatus = await dispatchOrderExecForQueue({
@@ -258,7 +258,7 @@ describe('an edited order.exec queued task must keep the router.handle dispatch 
 
     // --- 步骤 4：T1 正常结束，队列自然推进到 T2 ---
     release1();
-    await new Promise((r) => setTimeout(r, 300));
+    await waitForOrThrow(() => handleSpy.mock.calls.length > 0 || fwdSpy.mock.calls.length > 0);
 
     const handleCalls = handleSpy.mock.calls.map((c) => c[0] as string);
     const fwdCalls = fwdSpy.mock.calls.map((c) => c[0] as string);
@@ -450,7 +450,7 @@ describe('queue.immediate on an edited task must keep the target position ahead 
         },
       },
     );
-    await new Promise((r) => setTimeout(r, 50));
+    await waitForOrThrow(() => bridge.hasTaskBegan('msg-1'));
 
     // --- 步骤 2：T2（编辑目标）排队，闭包冻结原始内容 "original message" ---
     bridge.enqueue(
@@ -483,7 +483,7 @@ describe('queue.immediate on an edited task must keep the target position ahead 
         },
       },
     );
-    await new Promise((r) => setTimeout(r, 100));
+    await waitForOrThrow(() => bridge.getQueuedTasks(tmpDir).length >= 2);
 
     // --- 步骤 4：编辑 T2 → "edited message" ---
     await router.handleCardAction({ cmd: 'queue.edit', cwd: tmpDir, messageId: 'msg-2' }, ctx);
@@ -497,7 +497,7 @@ describe('queue.immediate on an edited task must keep the target position ahead 
 
     // --- 步骤 6：放行 T1，队列链前进 ---
     release1();
-    await new Promise((r) => setTimeout(r, 300));
+    await waitForOrThrow(() => fwdSpy.mock.calls.length >= 2);
 
     const calls = fwdSpy.mock.calls.map((c) => c[0] as string);
 

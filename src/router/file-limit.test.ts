@@ -1,6 +1,6 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect } from 'vitest';
 import { SessionStore } from '../session/index.js';
-import type { AppConfig } from '../config/index.js';
+import { AppConfigSchema, type AppConfig } from '../config/index.js';
 import { createMockBridge, createStubSessionReaderRegistry } from '../../tests/lib/bridge-stubs.js';
 import { createRouterFixture } from '../../tests/lib/router-fixture.js';
 import { makeTempDir } from '../../tests/lib/temp-dir.js';
@@ -15,11 +15,11 @@ describe('file upload size limit: 30MB', () => {
     writeSizedFile(bigFilePath, 31 * 1024 * 1024);
 
     const sessionStore = new SessionStore();
-    sessionStore.set('user1', { sessions: new Map(), previousSessions: new Map(), cwd: tempDir });
+    sessionStore.setCwd('user1', tempDir);
 
     const mockBridge = createMockBridge();
 
-    const config: AppConfig = {
+    const config: AppConfig = AppConfigSchema.parse({
       feishu: { appId: 'test', appSecret: 'test' },
       claude: {
         model: 'claude-sonnet-4-20250514',
@@ -29,7 +29,7 @@ describe('file upload size limit: 30MB', () => {
       idle: { watchdogMinutes: 15 },
       logging: { level: 'info' },
       defaultAgent: 'claude',
-    };
+    });
 
     const router = createRouterFixture({
       tmpDir: tempDir,
@@ -59,20 +59,11 @@ describe('file upload size limit: 30MB', () => {
     writeSizedFile(midFilePath, 20 * 1024 * 1024);
 
     const sessionStore = new SessionStore();
-    sessionStore.set('user1', { sessions: new Map(), previousSessions: new Map(), cwd: tempDir });
+    sessionStore.setCwd('user1', tempDir);
 
-    const mockBridge = {
-      sendResult: vi.fn().mockResolvedValue(undefined),
-      sendFile: vi.fn().mockResolvedValue(undefined),
-      forwardToClaude: vi.fn(),
-      isBusyFor: vi.fn().mockReturnValue(false),
-      setConfig: vi.fn(),
-      setIdleTimeout: vi.fn(),
-      enqueue: vi.fn().mockResolvedValue(undefined),
-      interruptCurrentRun: vi.fn().mockResolvedValue(true),
-    };
+    const mockBridge = createMockBridge();
 
-    const config: AppConfig = {
+    const config: AppConfig = AppConfigSchema.parse({
       feishu: { appId: 'test', appSecret: 'test' },
       claude: {
         model: 'claude-sonnet-4-20250514',
@@ -82,7 +73,7 @@ describe('file upload size limit: 30MB', () => {
       idle: { watchdogMinutes: 15 },
       logging: { level: 'info' },
       defaultAgent: 'claude',
-    };
+    });
 
     const router = createRouterFixture({
       tmpDir: tempDir,

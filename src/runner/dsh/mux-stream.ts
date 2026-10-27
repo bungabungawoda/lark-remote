@@ -21,6 +21,20 @@ export interface OpenMuxStreamOptions {
   webSocketFactory(url: string, options?: { headers?: Record<string, string> }): MuxSocket;
 }
 
+/**
+ * onerror 的事件对象在 ws 实现之间形态不一（{message} / {error} / {type}）。
+ * 尽力取出可读描述；取不到就不追加，别拿 '[object Object]' 充数。
+ */
+function describeSocketError(event: unknown): string | undefined {
+  if (!event || typeof event !== 'object') return undefined;
+  const e = event as { message?: unknown; error?: unknown; type?: unknown };
+  if (typeof e.message === 'string' && e.message) return e.message;
+  if (e.error instanceof Error && e.error.message) return e.error.message;
+  if (typeof e.error === 'string' && e.error) return e.error;
+  if (typeof e.type === 'string' && e.type) return e.type;
+  return undefined;
+}
+
 export async function* openMuxStream(opts: OpenMuxStreamOptions): AsyncGenerator<unknown> {
   const cookie = await opts.authCookie();
   const socket = opts.webSocketFactory(
@@ -117,9 +131,13 @@ export async function* openMuxStream(opts: OpenMuxStreamOptions): AsyncGenerator
       settle(undefined);
     }
   };
-  socket.onerror = () => {
+  socket.onerror = (event) => {
     if (ended) return;
-    failure = new DshError('transport', 'DSH remote mux WebSocket error');
+    const detail = describeSocketError(event);
+    failure = new DshError(
+      'transport',
+      `DSH remote mux WebSocket error${detail ? `: ${detail}` : ''}`,
+    );
     ended = true;
     settle(undefined);
   };

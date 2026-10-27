@@ -15,7 +15,7 @@
  */
 import { scanJsonlLines, readJsonlLinesFromOffset } from './jsonl.js';
 import { capEvents } from './pagination.js';
-import type { AgentSessionContentEvent } from '../../runner/types.js';
+import type { AgentSessionContentEvent } from '../../session-contract.js';
 
 /**
  * Byte offset where the tail begins: the start of the line AFTER `line`.

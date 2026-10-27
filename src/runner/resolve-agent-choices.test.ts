@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { resolveAgentChoices } from '../runner/index.js';
 import { choiceFieldsFor, AGENT_CHOICE_FIELDS } from './agent-choices-common.js';
 import type { AppConfig } from '../config/index.js';
+import { AppConfigSchema } from '../config/index.js';
 
 /**
  * 表驱动测试：用例由 choiceFieldsFor 映射表（agent-choices-common.ts）生成，
@@ -9,13 +10,13 @@ import type { AppConfig } from '../config/index.js';
  */
 const AGENTS = ['codex', 'pi', 'opencode', 'kimi'] as const;
 
-const baseConfig: AppConfig = {
+const baseConfig: AppConfig = AppConfigSchema.parse({
   feishu: { appId: 'test', appSecret: 'test' },
   claude: { model: 'claude-opus-4-8', effort: 'medium', stopGraceMs: 5000 },
   defaultAgent: 'codex',
   idle: { watchdogMinutes: 15 },
   logging: { level: 'info' },
-};
+});
 
 function configFor(
   agent: string,

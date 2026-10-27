@@ -8,16 +8,16 @@
 
 Codex Agent 配置通过 `/config` 卡片的交互界面进行管理。当 `defaultAgent` 选择为 `codex` 时，卡片会显示以下字段：
 
-| 字段键 | 显示标签 | 类型 | 说明 |
-|--------|----------|------|------|
-| `agents.codex.modelProvider` | Codex Provider | select | 模型服务商（内置 `openai` + config.toml `[model_providers.*]`，与 codex `merge_configured_model_providers` 一致；`anthropic` 非 codex 内置 provider，需显式配置） |
-| `agents.codex.model` | 使用模型 | select | config.toml `model` + 活动目录 `visibility==='list'` slug（`model_catalog_json` **声明**时 = `codex debug models` 输出；否则 = `--bundled` 内置目录） |
-| `agents.codex.reasoningEffort` | 推理强度 | select | 对应 `model_reasoning_effort`，选项随当前模型的 `supported_reasoning_levels` 动态变化 |
-| `agents.codex.approvalPolicy` | 审批策略 | select | Codex 官方 `AskForApproval` 标准值：`untrusted` / `on-request` / `never`（`on-request` 为 codex 默认） |
-| `agents.codex.sandbox` | 沙箱模式 | select | Codex 官方 `SandboxMode` 标准值：`read-only` / `workspace-write` / `danger-full-access`（默认 `workspace-write`） |
+| 字段键                         | 显示标签       | 类型   | 说明                                                                                                                                                              |
+| ------------------------------ | -------------- | ------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `agents.codex.modelProvider`   | Codex Provider | select | 模型服务商（内置 `openai` + config.toml `[model_providers.*]`，与 codex `merge_configured_model_providers` 一致；`anthropic` 非 codex 内置 provider，需显式配置） |
+| `agents.codex.model`           | 使用模型       | select | config.toml `model` + 活动目录 `visibility==='list'` slug（`model_catalog_json` **声明**时 = `codex debug models` 输出；否则 = `--bundled` 内置目录）             |
+| `agents.codex.reasoningEffort` | 推理强度       | select | 对应 `model_reasoning_effort`，选项随当前模型的 `supported_reasoning_levels` 动态变化                                                                             |
+| `agents.codex.approvalPolicy`  | 审批策略       | select | Codex 官方 `AskForApproval` 标准值：`untrusted` / `on-request` / `never`（`on-request` 为 codex 默认）                                                            |
+| `agents.codex.sandbox`         | 沙箱模式       | select | Codex 官方 `SandboxMode` 标准值：`read-only` / `workspace-write` / `danger-full-access`（默认 `workspace-write`）                                                 |
 
 > codex 恒为 app-server 模式（持久连接 + 审批），审批策略与沙箱模式通过卡片配置，
-取值直接使用 Codex 官方标准枚举，不再自定义映射。
+> 取值直接使用 Codex 官方标准枚举，不再自定义映射。
 
 ## 字段键映射原则
 
@@ -38,10 +38,10 @@ Codex 的模型下拉选项从 `~/.codex/config.toml` 动态读取：
 import { loadCodexConfig } from '../config/codex-config.js';
 
 const codexCfg = loadCodexConfig();
-const providerNames = codexCfg.providerNames;  // 内置 openai + config.toml [model_providers.*]
-                                               // （anthropic 非内置，需显式配置）
-const modelOptions = codexCfg.modelOptions();  // catalog 模式：活动目录 visibility==='list' 的 slug
-                                               // 非 catalog 模式：bundled 中 visibility==='list' 的 slug
+const providerNames = codexCfg.providerNames; // 内置 openai + config.toml [model_providers.*]
+// （anthropic 非内置，需显式配置）
+const modelOptions = codexCfg.modelOptions(); // catalog 模式：活动目录 visibility==='list' 的 slug
+// 非 catalog 模式：bundled 中 visibility==='list' 的 slug
 ```
 
 ### 配置源格式
@@ -74,6 +74,7 @@ wire_api = "responses"
 ```
 
 `loadCodexConfig()` 解析：
+
 - `model` → 当前选中的模型
 - `model_provider` → 当前选中的 provider
 - `[model_providers.*]` → provider 列表（从 section 名提取）
@@ -96,6 +97,7 @@ wire_api = "responses"
 
 > **API-key 模式假设**：本项目以 API-key 模式运行 codex
 > （`forced_login_method = "api"`），因此卡片：
+>
 > - 按 `supported_in_api === true` 过滤模型——等价于 codex 的
 >   `chatgpt_mode || supported_in_api`（`openai_models.rs` `filter_by_auth`），
 >   ChatGPT 登录模式下 codex 会显示全部模型，本项目不支持该模式；
@@ -128,7 +130,7 @@ if (key === 'agents.codex.modelProvider' && newValue) {
   const codexCfg = loadCodexConfig();
   const newModelOptions = codexCfg.modelOptions(newValue);
   const currentModel = this.pendingConfig?.agents?.codex?.model;
-  const currentModelIsValid = newModelOptions.some(m => m === currentModel);
+  const currentModelIsValid = newModelOptions.some((m) => m === currentModel);
   if (!currentModelIsValid && newModelOptions.length > 0) {
     this.setNestedValue(this.pendingConfig!, 'agents.codex.model', newModelOptions[0]);
   }
@@ -165,7 +167,7 @@ if (effortPatch) patches.push(effortPatch);
 2. 如果检测到 codex 配置变更（任何 `agents.codex.*` 键），自动清除 runner 缓存：
    ```typescript
    const agentConfigKeys = Object.keys(updates).filter(
-     (k) => k.startsWith('agents.codex.') || k === 'agents.codex'
+     (k) => k.startsWith('agents.codex.') || k === 'agents.codex',
    );
    if (agentConfigKeys.length > 0) {
      this.bridge.clearRunners();

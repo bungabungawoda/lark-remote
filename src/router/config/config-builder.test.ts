@@ -75,7 +75,7 @@ describe('router/config common/render', () => {
         id: 'test-tab',
         label: 'Test Section',
         fields: [
-          { key: 'test.toggle', label: 'Toggle', type: 'boolean' },
+          { key: 'test.note', label: 'Note', type: 'note' },
           { key: 'test.select', label: 'Select', type: 'select', options: ['a', 'b'] },
           { key: 'test.input', label: 'Input', type: 'input' },
         ],
@@ -96,7 +96,7 @@ describe('router/config common/render', () => {
       {
         id: 'tab1',
         label: 'Section',
-        fields: [{ key: 'test.toggle', label: 'Toggle', type: 'boolean' }],
+        fields: [{ key: 'test.input', label: 'Input', type: 'input' }],
       },
     ];
     const card = buildConfigCardFromTabs(tabs, config) as {
@@ -119,7 +119,7 @@ describe('router/config common/render', () => {
         id: 'tab1',
         label: 'Agent',
         fields: [
-          { key: 'test.toggle', label: 'Toggle', type: 'boolean' },
+          { key: 'test.note', label: 'Note', type: 'note' },
           { key: 'test.select', label: 'Select', type: 'select', options: ['a', 'b', 'c'] },
           { key: 'test.input', label: 'Input', type: 'input' },
         ],
@@ -129,40 +129,6 @@ describe('router/config common/render', () => {
     const json = JSON.stringify(card);
     // 200861: CardKit 2.0 cards must NOT contain V1 `tag:"action"` containers
     expectNoV1ActionContainer(json);
-  });
-
-  it('boolean field renders toggle button with callback behavior', () => {
-    const config = makeConfig();
-    const tabs: ConfigTab[] = [
-      {
-        id: 'tab1',
-        label: 'Section',
-        fields: [{ key: 'inboundMedia.enabled', label: 'Media Enabled', type: 'boolean' }],
-      },
-    ];
-    const card = buildConfigCardFromTabs(tabs, config) as {
-      body: { elements: unknown[] };
-    };
-    // Find the column_set element (boolean field)
-    const columnSet = card.body.elements.find(
-      (e) => (e as { tag?: string }).tag === 'column_set',
-    ) as {
-      columns: Array<{
-        elements: Array<{
-          tag?: string;
-          behaviors?: Array<{ type: string; value: { cmd: string; key: string } }>;
-        }>;
-      }>;
-    };
-    expect(columnSet).toBeDefined();
-    // Second column should contain a button
-    const button = columnSet.columns[1].elements[0] as {
-      tag: string;
-      behaviors: Array<{ type: string; value: { cmd: string; key: string } }>;
-    };
-    expect(button.tag).toBe('button');
-    expect(button.behaviors[0].value.cmd).toBe('config.toggle');
-    expect(button.behaviors[0].value.key).toBe('inboundMedia.enabled');
   });
 
   it('select field renders select_static with callback behavior', () => {

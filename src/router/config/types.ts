@@ -19,15 +19,21 @@ export interface SelectOption {
 export interface ConfigField {
   key: string;
   label: string;
-  // boolean 目前无真实 UI 字段（output.show* 开关已于 2026-09-04 移除），
-  // 保留作为扩展点：未来新增 boolean 配置项时可直接声明并在卡片渲染。
-  type: 'boolean' | 'select' | 'input' | 'note';
+  /**
+   * 卡片上真实存在的控件形态，每种都在 `common/render.ts` 有对应 builder：
+   * select=下拉、input=文本框、note=纯说明行（无回调）。
+   *
+   * 没有 boolean：卡片曾留着一套「开关」控件（`config.toggle`），但全仓没有
+   * 任何字段声明它，2026-10-27 成套删除。原则是**卡片只放配得了的控件**，
+   * 实现细节与未上卡的键走 YAML（见 `buildConfigCard` 的分 tab 注释）。
+   */
+  type: 'select' | 'input' | 'note';
   /** For select type: the list of options shown in the dropdown.
    *  Accepts plain strings (text=value) or {text, value} objects for
    *  display-value separation (e.g. 'manual（逐项审批）' → value 'manual'). */
   options?: readonly (string | SelectOption)[];
   /** Override the currentValue shown in the card (takes priority over getConfigValue). */
-  currentValue?: string | boolean;
+  currentValue?: string;
 }
 
 /**
@@ -47,7 +53,7 @@ export interface AgentConfigCardBuilder {
    * Handle a field change for this agent.
    *
    * @param key   - The field key (e.g. 'agents.codex.modelProvider')
-   * @param value - The new value (string for select/input, already toggled for boolean)
+   * @param value - The new value (string for select/input)
    * @param config - The current pendingConfig (read-only reference for deriving dependent values)
    * @returns An array of {key, value} patches to apply to pendingConfig.
    *          The caller (router) applies these via setNestedValue.

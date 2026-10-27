@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
-import type { Runner, AgentRunner, AgentEvent, AgentSessionReader } from '../runner/index.js';
+import type { AgentSessionReader } from '../session-contract.js';
+import type { Runner, AgentRunner, AgentEvent } from '../runner/index.js';
 import { sleep } from '../common/sleep.js';
 import { isContentFilterFailure } from '../common/turn-failure.js';
 import type { AgentRegistry } from '../runner/registry.js';
@@ -16,13 +17,21 @@ import {
 import { splitFinalAnswer } from '../card/final-answer-overflow.js';
 import { renderBashCard } from '../card/bash-renderer.js';
 import { BashCardSession, capBashOutput } from '../card/bash-card-session.js';
-import { isRunTerminal, type RunState, type RunTerminal } from '../card/run-state.js';
-import { buildSessionHistoryCard } from '../router/card-helpers.js';
+import {
+  isRunActive,
+  isRunTerminal,
+  removeBackgroundJob,
+  type RunState,
+  type RunTerminal,
+} from '../card/run-state.js';
+import { buildSessionHistoryCard } from '../card/card-helpers.js';
 import { agentDisplayName, resumeUseButton } from '../card/card-shared.js';
 import { enforceCardBudget } from '../card/card-budget.js';
 import { RunUsageCollector } from './run-usage.js';
 import { BashProcessRunner, type BashRunner } from '../runner/index.js';
-import { AGENT_KINDS, supportsCompact, type AgentKind, type StopOutcome } from '../runner/types.js';
+import { AGENT_KINDS } from '../agent-kinds.js';
+import type { AgentKind } from '../agent-kinds.js';
+import { supportsCompact, type StopOutcome } from '../runner/types.js';
 import {
   QueueManager,
   type QueuedTask,
@@ -30,13 +39,14 @@ import {
   type AgentBinding,
   type ExecutingInfo,
 } from './queue-manager.js';
-import { ApprovalCoordinator, decisionToApprovalAction } from './approval-coordinator.js';
-import type { ApprovalAction, ApprovalToggleAction } from './approval-coordinator.js';
+import { ApprovalCoordinator } from './approval-coordinator.js';
+import { ApprovalActions } from './approval-actions.js';
 import { createRunApprovalCoordinator, remindPendingApproval } from './run-approval.js';
 import {
   writeBackInitSession,
   writeBackResultSession,
   writeBackTurnStarted,
+  type WritebackContext,
 } from './session-writeback.js';
 import { InboundMediaHandler } from './inbound-media.js';
 import type { InboundMediaPayload } from '../connector/index.js';
@@ -86,7 +96,7 @@ function terminalReactionEmoji(terminal: RunTerminal): string {
  * through it. Declared here so tests can satisfy it structurally without
  * `as unknown as` casts.
  */
-interface BridgeChannel extends RunCardChannel {
+export interface BridgeChannel extends RunCardChannel {
   sendWithRetry(
     chatId: string,
     input: { text: string } | { markdown: string } | { card: object },
@@ -317,6 +327,10 @@ export class Bridge {
   private activeRuns = new Map<string, ActiveRun>();
   /** Approval coordinators keyed by runId. */
   private approvalCoordinators = new Map<string, ApprovalCoordinator>();
+  /** 审批卡动作的实现（只读上面那张表；见 approval-actions.ts）。 */
+  private approvalActions = new ApprovalActions({
+    coordinatorFor: (runId) => this.approvalCoordinators.get(runId),
+  });
   /**
    * 最近若干次已完成的、runner 有 runCompact 的 run（cwd → runId → 记录）。
    * run 结束后 activeRuns 已清空，而终态卡上的 Compact 按钮只带 runId，
@@ -439,13 +453,8 @@ export class Bridge {
 
     // Create new runner for this (cwd, kind) slot
     const runner = this.agentRegistry.get(kind, cwd);
-    // Call lifecycle methods for agent runners created via factory
-    if (runner && typeof runner.killOrphan === 'function') {
-      runner.killOrphan();
-    }
-    if (runner && typeof runner.registerExitHandlers === 'function') {
-      runner.registerExitHandlers();
-    }
+    runner.killOrphan();
+    runner.registerExitHandlers();
 
     // Store in nested map: Map<cwd, Map<kind, Runner>>。必须重新取一次：
     // replaceStale 刚把槽位 evict 掉，上面的局部 workspaceMap 可能已随空槽
@@ -480,9 +489,7 @@ export class Bridge {
    */
   syncActiveApprovalModes(): void {
     for (const [cwd, active] of this.activeRuns) {
-      const runner = active.runner as unknown as {
-        updateApprovalMode?(settings: Record<string, unknown>): Promise<void>;
-      };
+      const runner = active.runner as AgentRunner;
       if (typeof runner.updateApprovalMode !== 'function') continue;
       const settings = this.approvalModeSettingsFor(active.agentKind);
       if (!settings) continue;
@@ -856,7 +863,7 @@ export class Bridge {
     for (const [_cwd, active] of this.activeRuns) {
       const state = active.session.currentState;
       // Only include non-terminal runs
-      if (state.terminal === 'running' || state.terminal === 'finalizing') {
+      if (isRunActive(state.terminal)) {
         result.push({
           runId: active.runId,
           sessionId: state.sessionId ?? '',
@@ -1177,7 +1184,7 @@ export class Bridge {
   /**
    * Update an existing card in place (原地更新) instead of sending a new one.
    *
-   * Used by /config cardAction handlers (config.toggle/set/input/save) so the
+   * Used by /config cardAction handlers (config.set/input/save) so the
    * user sees the card refresh on the same message bubble rather than getting
    * a new card per click — same-message-bubble update pattern.
    *
@@ -1226,7 +1233,8 @@ export class Bridge {
       await this.connector.updateCard(messageId, card);
       return true;
     } catch (err) {
-      getLogger().debug(
+      // 调用方会据此把卡片从集合里永久剔除——这是用户可见的退化，warn 起步。
+      getLogger().warn(
         `[lark-remote] patchCard failed messageId=${messageId}: ${errorMessage(err)}`,
       );
       return false;
@@ -1266,16 +1274,11 @@ export class Bridge {
     const snapshot = this.runCardSnapshots.get(runId);
     const sessionId = snapshot?.state.sessionId;
     if (!snapshot || !sessionId) return false;
-    const runner = this.getRunner(snapshot.cwd, snapshot.agentKind) as Runner & {
-      killJob?: (sessionId: string, jobId: string) => Promise<boolean>;
-    };
+    const runner = this.getRunner(snapshot.cwd, snapshot.agentKind) as AgentRunner;
     if (typeof runner.killJob !== 'function') return false;
     const killed = await runner.killJob(sessionId, jobId);
     if (!killed) return false;
-    snapshot.state = {
-      ...snapshot.state,
-      backgroundJobs: (snapshot.state.backgroundJobs ?? []).filter((job) => job.id !== jobId),
-    };
+    snapshot.state = removeBackgroundJob(snapshot.state, jobId);
     await this.updateCardInPlace(renderRunCard(snapshot.state, snapshot.options), ctx);
     return true;
   }
@@ -1349,7 +1352,7 @@ export class Bridge {
     const entry = this.sessionStore.get(ctx.userId);
     getLogger().debug(
       `[lark-remote] forward entry userId=${ctx.userId} chatId=${ctx.chatId} cwd=${cwd} ` +
-        `agent=${agentKind} sessionId=${opts?.binding?.sessionId ?? entry?.sessions?.get(agentKind) ?? '(none)'} message=${message.slice(0, 100)}`,
+        `agent=${agentKind} sessionId=${opts?.binding?.sessionId ?? entry?.sessions.get(agentKind) ?? '(none)'} message=${message.slice(0, 100)}`,
     );
 
     // Check if current cwd already has a run in progress
@@ -1594,6 +1597,185 @@ export class Bridge {
   }
 
   /**
+   * result 事件的 pre-init 守卫（§9.22）。
+   *
+   * Claude CLI `--resume` 会在 system.init 之前先吐一条**上一轮**的陈旧 result。
+   * 认了它就会过早置 sawResult / 抓错 usage / 让 run-state reducer 提前进入
+   * finalizing（reducer 用 sessionId===undefined 守卫，同一条红线）。本轮真正的
+   * result 在 system.init 之后才到。
+   *
+   * 例外：app-server runner（usageAuthority==='live'）的 init 是 runner 自己补发
+   * 的 synthetic init（2026-08-13 修复）。此分支保留为防御性兜底：live runner 若
+   * 在无 init 时发出 result（旧构建等），session 写回照常执行，但 sawResult 不置
+   * 真——卡片不会把半初始化的 run 当作已收尾。
+   *
+   * @param dropFromCard 该 result 是陈旧重放，不得进卡片（调用方 continue 跳过 push）
+   */
+  private observeResultEvent(
+    event: Extract<AgentEvent, { type: 'result' }>,
+    opts: {
+      sawInit: boolean;
+      usageAuthority: 'live' | 'jsonl' | undefined;
+      usage: RunUsageCollector;
+      writeback: WritebackContext;
+      runId: string;
+    },
+  ): {
+    sawResult: boolean;
+    dropFromCard: boolean;
+    preInitTerminal?: { subtype: 'error' | 'interrupted'; errorMessage?: string };
+  } {
+    const { sawInit, usageAuthority, usage, writeback, runId } = opts;
+    const preInitResult = !sawInit;
+    const preInitTerminal =
+      preInitResult && (event.subtype === 'error' || event.subtype === 'interrupted')
+        ? {
+            subtype: event.subtype,
+            errorMessage: (event as { errorMessage?: string }).errorMessage,
+          }
+        : undefined;
+
+    if (preInitResult && usageAuthority !== 'live') {
+      getLogger().info(`[lark-remote] pre-init result ignored (resume replay) runId=${runId}`);
+      return { sawResult: false, dropFromCard: true, preInitTerminal };
+    }
+
+    usage.observeResult(event);
+    getLogger().info(
+      preInitResult
+        ? `[lark-remote] pre-init result from live runner (app-server setup failure) runId=${runId}`
+        : `[lark-remote] result event received runId=${runId}`,
+    );
+    // app-server 模式 setup 失败路径（thread/start 成功后 turn/start 失败）不会有
+    // turn_started 事件，store 不会写回新线程 id；runner 已在 result 里兜底上报。
+    // 仅当 runner 声明 live usage（app-server）且会话指针未动时写回，避免下条消息
+    // 再开一个孤儿线程。其余 agent 不在此列（各自有 system.init / turn_started 写回）。
+    if (usageAuthority === 'live') writeBackResultSession(writeback, event.session_id);
+    return { sawResult: !preInitResult, dropFromCard: false, preInitTerminal };
+  }
+
+  /**
+   * 审批三事件的派发（requested / resolved / view_updated）。
+   *
+   * coordinator 一 run 一个，首次 requested 时惰性建好并登记，`finally` 里统一
+   * onTurnEnded + 摘除。
+   */
+  private dispatchApprovalEvent(
+    event: Extract<
+      AgentEvent,
+      {
+        type: 'approval_requested' | 'approval_resolved' | 'approval_view_updated';
+      }
+    >,
+    opts: {
+      runId: string;
+      runner: Runner;
+      cardSession: RunCardSession;
+      ctx: CommandContext;
+      agentKind: AgentKind;
+    },
+  ): void {
+    const { runId, runner, cardSession, ctx, agentKind } = opts;
+    if (event.type === 'approval_requested') {
+      // 审批请求到达：撤回 Typing 表情再重发，让飞书重新触发提醒，把用户
+      // 注意力拉回待审批的卡片（run 在等待人工决策，Typing 应重新闪烁）。
+      remindPendingApproval(this.connector, ctx.messageId, runId);
+      let coordinator = this.approvalCoordinators.get(runId);
+      if (!coordinator) {
+        coordinator = createRunApprovalCoordinator({
+          runner,
+          cardSession,
+          config: this.config,
+          runId,
+          agentKind,
+        });
+        this.approvalCoordinators.set(runId, coordinator);
+        getLogger().info(
+          `[lark-remote] approval coordinator created runId=${runId.slice(0, 8)} requestId=${event.requestId}`,
+        );
+      }
+      coordinator.onRequested(event);
+      return;
+    }
+    const coordinator = this.approvalCoordinators.get(runId);
+    if (event.type === 'approval_resolved') {
+      coordinator?.onResolved(event.requestId);
+      return;
+    }
+    // 乱序流：审批先到、item/started 后到，补全审批卡内容。coordinator
+    // 仅在 pending 时更新（已响应/过期不复活）。
+    coordinator?.updateView(event.requestId, event.view);
+  }
+
+  /**
+   * 进程退出（for-await 自然结束）后的终态矩阵——它是本轮的唯一终态触发源。
+   *
+   * 1) finalizing（result 已收到）→ 三态映射 + usage meta
+   * 2) running（未收到 result）→ 错误路径；pre-init 终态优先当唯一线索
+   * 3) 已终态 + sawResult → 首终态不动，仅补 usage meta
+   * 4) 已终态且未收到 result（如 spawn 失败后 interrupted）→ 无 usage 可补，跳过
+   */
+  private async finishRunAfterStream(opts: {
+    cardSession: RunCardSession;
+    usage: RunUsageCollector;
+    sawResult: boolean;
+    pendingPreInitTerminal: { subtype: 'error' | 'interrupted'; errorMessage?: string } | undefined;
+    agentKind: AgentKind;
+    runId: string;
+  }): Promise<void> {
+    const { cardSession, usage, sawResult, pendingPreInitTerminal, agentKind, runId } = opts;
+    const finalState = cardSession.currentState;
+    if (finalState.terminal === 'finalizing') {
+      // 三态终态映射（2026-08-14）：interrupted（审批超时/取消、/stop）是独立
+      // 终态，不再归因于 Agent 错误；error 保持「运行出错」；其余为 done。
+      const subtype = finalState.resultSubtype;
+      const isError = subtype === 'error' || !!finalState.errorMsg;
+      // goal 仍 active = 宿主会自动起下一轮：这不是"完成"，而是"本轮结束"。
+      // 用独立终态而不是 done，既不改 header 文案也不用谎报。
+      const goalContinues =
+        !isError && subtype !== 'interrupted' && finalState.goal?.phase === 'active';
+      const terminal = isError
+        ? 'error'
+        : subtype === 'interrupted'
+          ? 'interrupted'
+          : goalContinues
+            ? 'goal_continuing'
+            : 'done';
+      await cardSession.finish(terminal, {
+        resultSubtype: subtype,
+        errorMsg: finalState.errorMsg,
+        ...usage.meta(),
+      });
+      return;
+    }
+    if (finalState.terminal === 'running') {
+      if (pendingPreInitTerminal) {
+        const terminal = pendingPreInitTerminal.subtype === 'interrupted' ? 'interrupted' : 'error';
+        getLogger().warn(
+          `[lark-remote] stream ended without init; using pre-init ${terminal} result runId=${runId} error=${pendingPreInitTerminal.errorMessage ?? '(none)'}`,
+        );
+        await cardSession.finish(terminal, {
+          ...usage.meta(),
+          errorMsg:
+            pendingPreInitTerminal.errorMessage ??
+            agentDisplayName(agentKind) + (terminal === 'interrupted' ? ' 已中断' : ' 启动失败'),
+        });
+      } else {
+        await cardSession.finish('error', {
+          ...usage.meta(),
+          errorMsg: agentDisplayName(agentKind) + ' 输出流已结束，但未收到 result 事件',
+        });
+      }
+      return;
+    }
+    if (sawResult) {
+      // 已终态（interrupted/idle_timeout）+ result 已收到：首终态优先，
+      // 仅补充 usage meta（finalizing 期间被 /stop 或 idle 超时也展示 token 统计）
+      await cardSession.finish(finalState.terminal, usage.meta());
+    }
+  }
+
+  /**
    * Step 2 of forwardToClaude: Run the agent and consume its event stream.
    * Handles idle watchdog, event processing, session sync, and state transitions.
    */
@@ -1611,9 +1793,7 @@ export class Bridge {
   ): Promise<void> {
     // Runner 声明的 usage 权威来源：codex app-server = 'live'
     // （turn/started 的 tokenUsage.last 是本 turn 增量）。其余 runner 未声明。
-    const usageAuthority = (
-      runner as Runner & { getUsageAuthority?: () => 'live' | 'jsonl' }
-    ).getUsageAuthority?.();
+    const usageAuthority = (runner as AgentRunner).getUsageAuthority?.();
 
     // §9.12 空闲看门狗：判定口径见 startIdleWatchdog；武装点在 cardSession.start() 之后。
     let watchdog: IdleWatchdog | null = null;
@@ -1715,87 +1895,30 @@ export class Bridge {
           usage.observeCompaction(event.compactMetadata.postTokens);
         }
         if (event.type === 'result') {
-          // Pre-init result guard: Claude CLI --resume emits a stale result
-          // (from the previous turn) before system.init. Ignoring it prevents
-          // premature sawResult/usage capture and the run-state reducer (which
-          // also guards on sessionId === undefined) from transitioning to
-          // finalizing too early. The real result for this run arrives after
-          // system.init.
-          //
-          // Exception: app-server runners (usageAuthority === 'live') 的 init
-          // 是 runner 补发的 synthetic init（2026-08-13 修复）。此分支保留为
-          // 防御性兜底：任何 live runner 若在无 init 时发出 result（如旧构建、
-          // 其它 live runner），session 写回仍执行，但 sawResult 保持 false，
-          // 卡片不会把半初始化的 run 当作已收尾。
-          const preInitResult = !sawInit;
-          if (preInitResult && usageAuthority !== 'live') {
-            getLogger().info(
-              `[lark-remote] pre-init result ignored (resume replay) runId=${runId}`,
-            );
-            if (event.subtype === 'error' || event.subtype === 'interrupted') {
-              pendingPreInitTerminal ??= {
-                subtype: event.subtype,
-                errorMessage: (event as { errorMessage?: string }).errorMessage,
-              };
-            }
-            // Still reset idle timer — the CLI is alive and producing events.
+          const outcome = this.observeResultEvent(event, {
+            sawInit,
+            usageAuthority,
+            usage,
+            writeback,
+            runId,
+          });
+          if (outcome.preInitTerminal) pendingPreInitTerminal ??= outcome.preInitTerminal;
+          if (outcome.sawResult) sawResult = true;
+          // 陈旧 result 不进卡片：run-state reducer 本来也会因 sessionId 未定而
+          // 跳过，在 bridge 层就拦掉可以省下一次无谓的 push + render。
+          if (outcome.dropFromCard) {
+            // 仍然重置 idle 计时——CLI 活着并且在产事件。
             watchdog?.touch();
-            // Do NOT push to cardSession: the run-state reducer would also
-            // skip it (sessionId === undefined), but skipping at the bridge
-            // layer avoids the push + render overhead for a no-op event.
             continue;
           }
-          if (preInitResult && (event.subtype === 'error' || event.subtype === 'interrupted')) {
-            pendingPreInitTerminal ??= {
-              subtype: event.subtype,
-              errorMessage: (event as { errorMessage?: string }).errorMessage,
-            };
-          }
-          if (!preInitResult) {
-            sawResult = true;
-          }
-          usage.observeResult(event);
-          getLogger().info(
-            preInitResult
-              ? `[lark-remote] pre-init result from live runner (app-server setup failure) runId=${runId}`
-              : `[lark-remote] result event received runId=${runId}`,
-          );
-
-          // app-server 模式 setup 失败路径（thread/start 成功后 turn/start 失败）
-          // 不会有 turn_started 事件，store 不会写回新线程 id；runner 已在 result
-          // 里兜底上报。此处仅当 runner 声明 live usage（app-server）
-          // 且会话指针未动时写回，避免下条消息再开一个孤儿线程。其余 agent 不在
-          // 此列（它们各自有 system.init / turn_started 写回）。
-          if (usageAuthority === 'live') writeBackResultSession(writeback, event.session_id);
         }
         // Approval events (Codex app-server mode)
-        if (event.type === 'approval_requested') {
-          // 审批请求到达：撤回 Typing 表情再重发，让飞书重新触发提醒，把用户
-          // 注意力拉回待审批的卡片（run 在等待人工决策，Typing 应重新闪烁）。
-          remindPendingApproval(this.connector, ctx.messageId, runId);
-          let coordinator = this.approvalCoordinators.get(runId);
-          if (!coordinator) {
-            coordinator = createRunApprovalCoordinator({
-              runner,
-              cardSession,
-              config: this.config,
-              runId,
-              agentKind,
-            });
-            this.approvalCoordinators.set(runId, coordinator);
-            getLogger().info(
-              `[lark-remote] approval coordinator created runId=${runId.slice(0, 8)} requestId=${event.requestId}`,
-            );
-          }
-          coordinator.onRequested(event);
-        } else if (event.type === 'approval_resolved') {
-          const coordinator = this.approvalCoordinators.get(runId);
-          coordinator?.onResolved(event.requestId);
-        } else if (event.type === 'approval_view_updated') {
-          // 乱序流：审批先到、item/started 后到，补全审批卡内容。coordinator
-          // 仅在 pending 时更新（已响应/过期不复活）。
-          const coordinator = this.approvalCoordinators.get(runId);
-          coordinator?.updateView(event.requestId, event.view);
+        if (
+          event.type === 'approval_requested' ||
+          event.type === 'approval_resolved' ||
+          event.type === 'approval_view_updated'
+        ) {
+          this.dispatchApprovalEvent(event, { runId, runner, cardSession, ctx, agentKind });
         }
         // §9.12 红线：每个事件（含 result）无条件刷新
         // lastEventTs 重新武装看门狗。result 后 CLI 进程做 jsonl flush/清理（finalizing
@@ -1834,58 +1957,15 @@ export class Bridge {
       usage.finalize(finalUsage, usageAuthority);
       getLogger().info(usage.logSummary(runId));
 
-      // for-await 自然结束 = stream 关闭 = CLI 进程退出。
-      // 进程退出（for-await end）= 唯一终态触发源。
-      // 1) finalizing（result 已收到）-> 转 done/error + usage meta
-      // 2) running（未收到 result）-> 错误路径
-      // 3) 已终态 + sawResult -> 补充 usage meta（不改 terminal）
-      const finalState = cardSession.currentState;
-      if (finalState.terminal === 'finalizing') {
-        // 三态终态映射（2026-08-14）：interrupted（审批超时/取消、/stop）是独立
-        // 终态，不再归因于 Agent 错误；error 保持「运行出错」；其余为 done。
-        const subtype = finalState.resultSubtype;
-        const isError = subtype === 'error' || !!finalState.errorMsg;
-        // goal 仍 active = 宿主会自动起下一轮：这不是"完成"，而是"本轮结束"。
-        // 用独立终态而不是 done，既不改 header 文案也不用谎报。
-        const goalContinues =
-          !isError && subtype !== 'interrupted' && finalState.goal?.phase === 'active';
-        const terminal = isError
-          ? 'error'
-          : subtype === 'interrupted'
-            ? 'interrupted'
-            : goalContinues
-              ? 'goal_continuing'
-              : 'done';
-        await cardSession.finish(terminal, {
-          resultSubtype: subtype,
-          errorMsg: finalState.errorMsg,
-          ...usage.meta(),
-        });
-      } else if (finalState.terminal === 'running') {
-        if (pendingPreInitTerminal) {
-          const terminal =
-            pendingPreInitTerminal.subtype === 'interrupted' ? 'interrupted' : 'error';
-          getLogger().warn(
-            `[lark-remote] stream ended without init; using pre-init ${terminal} result runId=${runId} error=${pendingPreInitTerminal.errorMessage ?? '(none)'}`,
-          );
-          await cardSession.finish(terminal, {
-            ...usage.meta(),
-            errorMsg:
-              pendingPreInitTerminal.errorMessage ??
-              agentDisplayName(agentKind) + (terminal === 'interrupted' ? ' 已中断' : ' 启动失败'),
-          });
-        } else {
-          await cardSession.finish('error', {
-            ...usage.meta(),
-            errorMsg: agentDisplayName(agentKind) + ' 输出流已结束，但未收到 result 事件',
-          });
-        }
-      } else if (sawResult) {
-        // 已终态（interrupted/idle_timeout）+ result 已收到：首终态优先，
-        // 仅补充 usage meta（finalizing 期间被 /stop 或 idle 超时也展示 token 统计）
-        await cardSession.finish(finalState.terminal, usage.meta());
-      }
-      // else: 已终态且未收到 result（如 spawn 失败后 interrupted）-> 无 usage 可补，跳过
+      // for-await 自然结束 = stream 关闭 = CLI 进程退出 → 终态矩阵
+      await this.finishRunAfterStream({
+        cardSession,
+        usage,
+        sawResult,
+        pendingPreInitTerminal,
+        agentKind,
+        runId,
+      });
     } catch (err) {
       getLogger().error(`[lark-remote] claude run error runId=${runId}:`, err);
       // 双保险：run() 的 finally 已负责杀子进程，但 catch 路径再补一次
@@ -1898,7 +1978,7 @@ export class Bridge {
       // 终态守卫：running 或 finalizing（非终态）-> 转 error；
       // 已终态（interrupted/idle_timeout/done/error）-> 保留首终态，仅补充 usage。
       const catchTerminal = cardSession.currentState.terminal;
-      if (catchTerminal === 'running' || catchTerminal === 'finalizing') {
+      if (isRunActive(catchTerminal)) {
         await cardSession.finish('error', {
           ...usage.meta(),
           inputTokens: usage.liveInputTokens,
@@ -2098,93 +2178,41 @@ export class Bridge {
   // =============================================================================
   // Approval action handlers
   // =============================================================================
+  // 实现住在 approval-actions.ts（审计 #32）：这 7 个入口只碰
+  // approvalCoordinators 一张表，不碰其余 Bridge 状态。方法名保持 Bridge 的
+  // 公开 API 不变——router 的 APPROVAL_ACTION_SPECS 按名字分发。
 
-  /**
-   * Resolve the ApprovalCoordinator for a run, or throw the standard
-   * "已结束" error. Shared preamble of all approval card-action handlers.
-   */
-  private withCoordinator<T>(
-    runId: string,
-    fn: (coordinator: ApprovalCoordinator) => Promise<T>,
-  ): Promise<T> {
-    const coordinator = this.approvalCoordinators.get(runId);
-    if (!coordinator) {
-      // run 已结束（coordinator 已释放）时点击审批按钮必须给用户明确反馈，
-      // 不能静默。router 会把该异常转成 error toast。
-      getLogger().warn(`[lark-remote] no approval coordinator for runId=${runId.slice(0, 8)}`);
-      throw new Error('任务已结束，审批无法响应');
-    }
-    return fn(coordinator);
-  }
-
-  /**
-   * Handle an approval response from a card button click.
-   * Routes to the ApprovalCoordinator for the given run.
-   */
+  /** 审批响应（卡片按钮）→ ApprovalCoordinator.submit。 */
   async handleApprovalRespond(opts: {
     runId: string;
     requestId: number | string;
     decision: string;
     nonce: string;
   }): Promise<void> {
-    const log = getLogger();
-    log.info(
-      `[lark-remote] handleApprovalRespond runId=${opts.runId.slice(0, 8)}... requestId=${opts.requestId} decision=${opts.decision}`,
-    );
-    return this.withCoordinator(opts.runId, async (coordinator) => {
-      // Build ApprovalAction from the decision string
-      const action: ApprovalAction = decisionToApprovalAction(opts.decision);
-      await coordinator.submit(action, { requestId: opts.requestId, nonce: opts.nonce });
-    });
+    return this.approvalActions.handleApprovalRespond(opts);
   }
 
-  /**
-   * 计划审批修改意见（ExitPlanMode 输入框）：记录到 coordinator 并回流卡片。
-   * 「拒绝并附意见」/「批准并采纳修改」按钮复用该文本。
-   */
+  /** 计划审批修改意见（ExitPlanMode 输入框）→ coordinator.planFeedback。 */
   async handleApprovalPlanFeedback(opts: {
     runId: string;
     requestId: number | string;
     text: string;
     nonce: string;
   }): Promise<void> {
-    return this.withCoordinator(opts.runId, async (coordinator) => {
-      await coordinator.planFeedback(
-        { text: opts.text },
-        { requestId: opts.requestId, nonce: opts.nonce },
-      );
-    });
+    return this.approvalActions.handleApprovalPlanFeedback(opts);
   }
 
-  /**
-   * Handle a permission toggle from a card button click.
-   * Routes to the ApprovalCoordinator for the given run.
-   */
+  /** 权限条目勾选（卡片按钮）→ coordinator.togglePerm。 */
   async handleApprovalToggle(opts: {
     runId: string;
     requestId: number | string;
     permId: string;
     selected?: boolean;
   }): Promise<void> {
-    const log = getLogger();
-    log.info(
-      `[lark-remote] handleApprovalToggle runId=${opts.runId.slice(0, 8)}... requestId=${opts.requestId} permId=${opts.permId}`,
-    );
-
-    return this.withCoordinator(opts.runId, async (coordinator) => {
-      // selected 由卡片根据当前渲染状态传回（取反），不再硬编码只授不撤。
-      const toggleAction: ApprovalToggleAction = {
-        permId: opts.permId,
-        selected: opts.selected ?? true,
-      };
-      await coordinator.togglePerm(toggleAction, { requestId: opts.requestId });
-    });
+    return this.approvalActions.handleApprovalToggle(opts);
   }
 
-  /**
-   * Claude AskUserQuestion 选项点击（单选即时提交 / 多选切换勾选）。
-   * 路由到 ApprovalCoordinator.toggleAnswer。
-   */
+  /** AskUserQuestion 选项点击 → coordinator.toggleAnswer。 */
   async handleApprovalAnswer(opts: {
     runId: string;
     requestId: number | string;
@@ -2192,36 +2220,20 @@ export class Bridge {
     option: string;
     nonce: string;
   }): Promise<void> {
-    return this.dispatchQuestionAction(opts, 'handleApprovalAnswer', (coordinator) =>
-      coordinator.toggleAnswer(
-        { questionIndex: opts.questionIndex, option: opts.option },
-        { requestId: opts.requestId, nonce: opts.nonce },
-      ),
-    );
+    return this.approvalActions.handleApprovalAnswer(opts);
   }
 
-  /**
-   * Claude AskUserQuestion 多选问题的「提交答案」按钮。
-   * 路由到 ApprovalCoordinator.submitAnswers。
-   */
+  /** AskUserQuestion 多选「提交答案」→ coordinator.submitAnswers。 */
   async handleApprovalAnswerSubmit(opts: {
     runId: string;
     requestId: number | string;
     questionIndex: number;
     nonce: string;
   }): Promise<void> {
-    return this.dispatchQuestionAction(opts, 'handleApprovalAnswerSubmit', (coordinator) =>
-      coordinator.submitAnswers(
-        { questionIndex: opts.questionIndex },
-        { requestId: opts.requestId, nonce: opts.nonce },
-      ),
-    );
+    return this.approvalActions.handleApprovalAnswerSubmit(opts);
   }
 
-  /**
-   * Claude AskUserQuestion 自定义答案（Other）：自由文本直接
-   * 作为该单选问题的答案提交。路由到 ApprovalCoordinator.answerCustom。
-   */
+  /** AskUserQuestion 自定义答案（Other）→ coordinator.answerCustom。 */
   async handleApprovalAnswerCustom(opts: {
     runId: string;
     requestId: number | string;
@@ -2229,19 +2241,10 @@ export class Bridge {
     text: string;
     nonce: string;
   }): Promise<void> {
-    return this.dispatchQuestionAction(opts, 'handleApprovalAnswerCustom', (coordinator) =>
-      coordinator.answerCustom(
-        { questionIndex: opts.questionIndex, text: opts.text },
-        { requestId: opts.requestId, nonce: opts.nonce },
-      ),
-    );
+    return this.approvalActions.handleApprovalAnswerCustom(opts);
   }
 
-  /**
-   * Codex AskUserQuestion 补充说明（user_note，2026-08-18 live 验证模型理解
-   * "user_note: <text>" 条目）：记录到 coordinator，随答案一起提交。
-   * 路由到 ApprovalCoordinator.answerNote。
-   */
+  /** AskUserQuestion 补充说明（user_note）→ coordinator.answerNote。 */
   async handleApprovalAnswerNote(opts: {
     runId: string;
     requestId: number | string;
@@ -2249,23 +2252,7 @@ export class Bridge {
     text: string;
     nonce: string;
   }): Promise<void> {
-    return this.dispatchQuestionAction(opts, 'handleApprovalAnswerNote', (coordinator) =>
-      coordinator.answerNote(
-        { questionIndex: opts.questionIndex, text: opts.text },
-        { requestId: opts.requestId, nonce: opts.nonce },
-      ),
-    );
-  }
-
-  private dispatchQuestionAction(
-    opts: { runId: string; requestId: number | string; questionIndex: number },
-    action: string,
-    invoke: (coordinator: ApprovalCoordinator) => Promise<void>,
-  ): Promise<void> {
-    getLogger().info(
-      `[lark-remote] ${action} runId=${opts.runId.slice(0, 8)}... requestId=${opts.requestId} question=${opts.questionIndex}`,
-    );
-    return this.withCoordinator(opts.runId, invoke);
+    return this.approvalActions.handleApprovalAnswerNote(opts);
   }
 
   /**
@@ -2411,7 +2398,7 @@ export class Bridge {
   }
 
   /**
-   * §5.3: kimi 压缩在途检测——reader 鸭子实现 `readCompactionState` 时，若
+   * §5.3: kimi 压缩在途检测——reader 实现契约的 `readCompactionState` 时，若
    * wire 状态机判定当前有未终结的压缩（最后一次 begin 无 terminal 记录），
    * 直接回文本「已有一次 Compact 正在进行」并返回 true（调用方不开卡、不发
    * session/prompt）。codex/claude 等 reader 无此方法 → 返回 false，行为不变。
@@ -2423,16 +2410,9 @@ export class Bridge {
     ctx: CommandContext,
   ): Promise<boolean> {
     const reader = this.sessionReaderRegistry.get(agentKind);
-    if (!reader || !('readCompactionState' in reader)) return false;
+    if (!reader?.readCompactionState) return false;
     try {
-      const state = (
-        reader as {
-          readCompactionState(
-            sessionId: string,
-            cwd: string,
-          ): { inFlight?: boolean; inFlightSince?: number };
-        }
-      ).readCompactionState(sessionId, cwd);
+      const state = reader.readCompactionState(sessionId, cwd);
       if (state?.inFlight) {
         const since = state.inFlightSince;
         let timeLabel = '未知时刻';
@@ -2595,20 +2575,9 @@ export class Bridge {
       await cardSession.finish(terminal, {
         resultSubtype: resultSubtype ?? 'error',
         errorMsg: terminal === 'error' ? (resultError ?? '未收到压缩结果') : undefined,
-        contextLength: finalUsage?.contextLength,
-        contextLimit: finalUsage?.contextLimit,
-        compactPreContextLength: finalUsage?.compactPreContextLength,
-        compactCount: finalUsage?.compactCount,
-        cacheReadTokens: finalUsage?.cacheReadTokens,
-        cacheCreationTokens: finalUsage?.cacheCreationTokens,
-        totalTokens: finalUsage?.totalTokens,
-        inputTokens: finalUsage?.inputTokens,
-        outputTokens: finalUsage?.outputTokens,
-        cumulativeTotalTokens: finalUsage?.cumulativeTotalTokens,
-        cumulativeInputTokens: finalUsage?.cumulativeInputTokens,
-        cumulativeOutputTokens: finalUsage?.cumulativeOutputTokens,
-        cumulativeCacheReadTokens: finalUsage?.cumulativeCacheReadTokens,
-        cumulativeCacheCreationTokens: finalUsage?.cumulativeCacheCreationTokens,
+        // finalUsage 的字段形态就是 FinishMeta 的用量部分（同为 UsageSnapshot），
+        // 逐字段抄的那 14 行随单源一起去掉。
+        ...(finalUsage ?? {}),
       });
       log.info(
         `[lark-remote] streamCompact finished sessionId=${sessionId} sawResult=${sawResult} subtype=${resultSubtype ?? 'none'}`,

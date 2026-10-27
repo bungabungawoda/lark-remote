@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { FeishuConnector } from './index.js';
-import type { AppConfig } from '../config/index.js';
+import { AppConfigSchema, type AppConfig } from '../config/index.js';
 
 vi.mock('@larksuite/channel', () => ({
   createLarkChannel: () => ({
@@ -27,17 +27,20 @@ vi.mock('../logger/index.js', async () =>
   (await import('../../tests/lib/logger-mock.js')).loggerModuleMock(),
 );
 
-const config: AppConfig = {
+const config: AppConfig = AppConfigSchema.parse({
   feishu: { appId: 'app-id', appSecret: 'app-secret' },
   claude: {
     model: 'claude-opus-4-8',
     effort: 'medium',
+    permissionMode: 'auto',
+    approvalTimeoutMs: 300000,
+    idleTtlMinutes: 30,
     stopGraceMs: 5000,
   },
   idle: { watchdogMinutes: 15 },
   defaultAgent: 'claude',
   logging: { level: 'info' },
-};
+});
 
 describe('FeishuConnector.sendWithRetry', () => {
   let connector: FeishuConnector;
@@ -231,9 +234,11 @@ describe('FeishuConnector.streamCard', () => {
     });
     mockChannel.mockRejectedValueOnce(axiosError);
 
-    await expect(connector.streamCard('chat-1', { config: {} }, async () => {})).rejects.toThrow(
-      /streamCard failed/,
-    );
+    await expect(
+      connector.streamCard('chat-1', { config: {} }, async () => {}),
+    ).rejects.toMatchObject({
+      message: expect.stringContaining('streamCard failed: Bad Gateway (HTTP 502)'),
+    });
   });
 
   it('should throw formatted error on network error', async () => {
@@ -241,9 +246,11 @@ describe('FeishuConnector.streamCard', () => {
     Object.assign(networkError, { code: 'ECONNRESET' });
     mockChannel.mockRejectedValueOnce(networkError);
 
-    await expect(connector.streamCard('chat-1', { config: {} }, async () => {})).rejects.toThrow(
-      /streamCard failed/,
-    );
+    await expect(
+      connector.streamCard('chat-1', { config: {} }, async () => {}),
+    ).rejects.toMatchObject({
+      message: expect.stringContaining('streamCard failed: ECONNRESET (code: ECONNRESET)'),
+    });
   });
 });
 

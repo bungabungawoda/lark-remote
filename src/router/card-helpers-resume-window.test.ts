@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import type { AgentSessionContentEvent } from '../runner/index.js';
-import { buildSessionHistoryCard, pickResumeCardEvents } from './card-helpers.js';
+import type { AgentSessionContentEvent } from '../session-contract.js';
+import { buildSessionHistoryCard, pickResumeCardEvents } from '../card/card-helpers.js';
 
 /**
  * resume 卡的取景口径。

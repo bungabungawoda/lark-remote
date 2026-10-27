@@ -1,4 +1,5 @@
-import type { AgentKind, TurnStartedEvent } from '../runner/index.js';
+import type { AgentKind } from '../agent-kinds.js';
+import type { TurnStartedEvent } from '../runner/index.js';
 import type { SessionStore } from '../session/index.js';
 import { getLogger } from '../logger/index.js';
 
@@ -7,7 +8,7 @@ interface InitEvent {
   cwd?: string;
 }
 
-interface WritebackContext {
+export interface WritebackContext {
   sessionStore: SessionStore;
   userId: string;
   agentKind: AgentKind;

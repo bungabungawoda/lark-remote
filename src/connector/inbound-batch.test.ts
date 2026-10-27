@@ -27,19 +27,22 @@ vi.mock('../logger/index.js', async () =>
 );
 
 import { FeishuConnector, type InboundMediaMessage } from './index.js';
-import type { AppConfig } from '../config/index.js';
+import { AppConfigSchema, type AppConfig } from '../config/index.js';
 
-const config: AppConfig = {
+const config: AppConfig = AppConfigSchema.parse({
   feishu: { appId: 'app-id', appSecret: 'app-secret' },
   claude: {
     model: 'claude-opus-4-8',
     effort: 'medium',
+    permissionMode: 'auto',
+    approvalTimeoutMs: 300000,
+    idleTtlMinutes: 30,
     stopGraceMs: 5000,
   },
   idle: { watchdogMinutes: 15 },
   logging: { level: 'info' },
   defaultAgent: 'claude',
-};
+});
 
 /** SDK safety 层的可访问面（`safety` 在类型上是 private，测试用最小接口取用）。 */
 interface SafetyHandle {

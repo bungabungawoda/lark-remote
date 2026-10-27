@@ -18,7 +18,7 @@ import fs from 'node:fs';
 import { AppConfigSchema, setConfigValues, getAgentConfig } from '../../src/config/index.js';
 import { AgentRegistry } from '../../src/runner/registry.js';
 import { PiRpcRunner } from '../../src/runner/pi/index.js';
-import type { AgentSessionReader } from '../../src/runner/types.js';
+import type { AgentSessionReader } from '../../src/session-contract.js';
 
 const emptyReader: AgentSessionReader = {
   listSessions: () => ({ sessions: [], total: 0 }),

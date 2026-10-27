@@ -16,8 +16,8 @@ import YAML from 'yaml';
 import { afterEach, describe, it, expect } from 'vitest';
 import { DshSessionReader } from './sessions.js';
 import { FakeDshServer } from '../../../tests/lib/fake-dsh-server.js';
-import type { DshSessionEvent } from '../../runner/dsh/types.js';
-import { DSH_BROWSER_CREDENTIAL_KEY } from '../../runner/dsh/auth.js';
+import type { DshSessionEvent } from '../../dsh/types.js';
+import { DSH_BROWSER_CREDENTIAL_KEY } from '../../dsh/auth.js';
 
 const CWD = '/home/user/project';
 const OTHER = '/home/user/other';
@@ -490,7 +490,7 @@ describe('DshSessionReader', () => {
     // reader 固定请求 maxMessages=50 却把结果当 session-wide cumulative；>50 事件的会话
     // 累计 token 会少算。必须读取完整 history（或分页）再累加 usage。
     const server = new FakeDshServer();
-    const events = [];
+    const events: Array<{ type: string; event: DshSessionEvent }> = [];
     for (let i = 0; i < 60; i++) {
       events.push({
         type: 'event',

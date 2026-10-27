@@ -10,14 +10,9 @@ import { SessionStore } from '../session/index.js';
 import { SessionReaderRegistry } from '../session/registry.js';
 import { AppConfigSchema } from '../config/index.js';
 import type { AppConfig } from '../config/index.js';
-import type {
-  AgentEvent,
-  AgentRunner,
-  AgentSessionReader,
-  AgentSessionUsage,
-  Runner,
-} from '../runner/index.js';
-import { AGENT_KINDS } from '../runner/types.js';
+import type { AgentSessionReader, AgentSessionUsage } from '../session-contract.js';
+import type { AgentEvent, AgentRunner, Runner } from '../runner/index.js';
+import { AGENT_KINDS } from '../agent-kinds.js';
 import {
   createStubSessionReaderRegistry,
   createStubConnector,
@@ -30,6 +25,7 @@ import { prependPath, restorePath, writeMockBin } from '../../tests/lib/path-moc
 import { rmRf } from '../../tests/lib/tmp-cleanup.js';
 import { asAgentRunner as wrapAgentRunner } from '../../tests/lib/agent-runner.js';
 import { mockLogger } from '../../tests/lib/logger-mock.js';
+import { ClaudeSessionReader } from '../session/claude/index.js';
 
 vi.mock('../logger/index.js', async () =>
   (await import('../../tests/lib/logger-mock.js')).loggerModuleMock(),
@@ -134,7 +130,6 @@ function makeCompactBridge(opts: {
     registry.register(agent, opts.readers?.[agent] ?? defaultReader);
   }
   const bridge = new Bridge({
-    runner,
     connector,
     sessionStore,
     config,
@@ -224,7 +219,6 @@ describe('executeBash after lark-remote restart (REGRESSION)', () => {
     const connector = createStubConnector();
     const runner = createStubRunner();
     const bridge = new Bridge({
-      runner,
       connector,
       sessionStore,
       config,
@@ -566,6 +560,7 @@ describe('Bridge + ClaudeRunner approval integration', () => {
       process.env.MOCK_SCENARIO = 'approval';
 
       const runner = new ClaudeRunner({
+        sessionReader: new ClaudeSessionReader(),
         pidDir: integrationTmpDir,
         cwd: integrationTmpDir,
         permissionMode: 'default',
@@ -1202,7 +1197,7 @@ describe('Bridge.forwardToClaude', () => {
       runner: createStubRunner({
         mode: 'streaming',
         events: [
-          { type: 'system', subtype: 'init', session_id: 's1' },
+          { type: 'system', subtype: 'init', session_id: 's1', cwd: tmpDir, model: 'opus' },
           { type: 'result', subtype: 'error', session_id: 's1' },
         ],
       }),
@@ -1229,7 +1224,7 @@ describe('Bridge.forwardToClaude', () => {
       runner: createStubRunner({
         mode: 'streaming',
         events: [
-          { type: 'system', subtype: 'init', session_id: 's1' },
+          { type: 'system', subtype: 'init', session_id: 's1', cwd: tmpDir, model: 'opus' },
           { type: 'result', subtype: 'interrupted', session_id: 's1' },
         ],
       }),
@@ -1699,7 +1694,6 @@ describe('Bridge agentRegistry / sessionReaderRegistry', () => {
     );
     const connector = createStubConnector();
     const bridge = new Bridge({
-      runner: createStubRunner(),
       connector,
       sessionStore: new SessionStore(),
       config,
@@ -1732,7 +1726,13 @@ describe('Bridge agentRegistry / sessionReaderRegistry', () => {
         lifetime: 'workspace',
         isRunning: false,
         run: async function* () {
-          yield { type: 'system', subtype: 'init', session_id: 'stub-session' };
+          yield {
+            type: 'system',
+            subtype: 'init',
+            session_id: 'stub-session',
+            cwd: tmpDir,
+            model: 'opus',
+          };
           yield { type: 'result', subtype: 'success', session_id: 'stub-session' };
         },
         stop: async () => {},
@@ -1748,7 +1748,6 @@ describe('Bridge agentRegistry / sessionReaderRegistry', () => {
     });
     const connector = createStubConnector();
     const bridge = new Bridge({
-      runner: createStubRunner(),
       connector,
       sessionStore: new SessionStore(),
       config,
@@ -1813,7 +1812,6 @@ describe('Bridge agentRegistry / sessionReaderRegistry', () => {
     });
     const connector = createStubConnector();
     const bridge = new Bridge({
-      runner: createStubRunner(),
       connector,
       sessionStore: new SessionStore(),
       config,
@@ -1881,7 +1879,9 @@ describe('Bridge agentRegistry / sessionReaderRegistry', () => {
     reg.register('claude', () => {
       const entry: Entry = { disposed: false, orphaned: false };
       created.push(entry);
-      return asAgentRunner({
+      // markOrphaned 不在 Runner 接口上：bridge 侧按鸭子类型调用（见
+      // evictRunnerSlot 的 cast），这里用交集类型让字面量合法携带它。
+      const orphanTrackingStub: Runner & { markOrphaned(): void } = {
         lifetime: 'workspace',
         isRunning: false,
         run: async function* () {
@@ -1899,11 +1899,11 @@ describe('Bridge agentRegistry / sessionReaderRegistry', () => {
         killOrphan: () => {},
         registerExitHandlers: () => {},
         unregisterExitHandlers: () => {},
-      });
+      };
+      return asAgentRunner(orphanTrackingStub);
     });
     const connector = createStubConnector();
     const bridge = new Bridge({
-      runner: createStubRunner(),
       connector,
       sessionStore: new SessionStore(),
       config,
@@ -1981,7 +1981,6 @@ describe('Bridge agentRegistry / sessionReaderRegistry', () => {
       ],
     });
     const bridge = new Bridge({
-      runner: asAgentRunner(streamingRunner),
       connector,
       sessionStore: new SessionStore(),
       config,
@@ -2052,7 +2051,6 @@ describe('Bridge agentRegistry / sessionReaderRegistry', () => {
       ],
     });
     const bridge = new Bridge({
-      runner: asAgentRunner(streamingRunner),
       connector,
       sessionStore: new SessionStore(),
       config,
@@ -2124,7 +2122,6 @@ describe('Bridge agentRegistry / sessionReaderRegistry', () => {
       ],
     });
     const bridge = new Bridge({
-      runner: asAgentRunner(streamingRunner),
       connector,
       sessionStore: new SessionStore(),
       config,
@@ -2214,7 +2211,6 @@ describe('Bridge agentRegistry / sessionReaderRegistry', () => {
       ],
     });
     const bridge = new Bridge({
-      runner: asAgentRunner(streamingRunner),
       connector,
       sessionStore: new SessionStore(),
       config,
@@ -2269,7 +2265,6 @@ describe('Bridge agentRegistry / sessionReaderRegistry', () => {
       ],
     });
     const bridge = new Bridge({
-      runner: asAgentRunner(streamingRunner),
       connector,
       sessionStore: new SessionStore(),
       config,
@@ -2328,7 +2323,6 @@ describe('Bridge agentRegistry / sessionReaderRegistry', () => {
       ],
     });
     const bridge = new Bridge({
-      runner: asAgentRunner(streamingRunner),
       connector,
       sessionStore: new SessionStore(),
       config,
@@ -2393,7 +2387,6 @@ describe('Bridge agentRegistry / sessionReaderRegistry', () => {
       ],
     });
     const bridge = new Bridge({
-      runner: asAgentRunner(streamingRunner),
       connector,
       sessionStore: new SessionStore(),
       config,
@@ -2441,7 +2434,6 @@ describe('Bridge agentRegistry / sessionReaderRegistry', () => {
       ],
     });
     const bridge = new Bridge({
-      runner: asAgentRunner(streamingRunner),
       connector,
       sessionStore: new SessionStore(),
       config,
@@ -2498,7 +2490,6 @@ describe('Bridge agentRegistry / sessionReaderRegistry', () => {
       ],
     });
     const bridge = new Bridge({
-      runner: asAgentRunner(streamingRunner),
       connector,
       sessionStore: new SessionStore(),
       config,
@@ -2798,7 +2789,7 @@ describe('Bridge finalizing integration tests', () => {
       runner: createStubRunner({
         mode: 'streaming',
         events: [
-          { type: 'system', subtype: 'init', session_id: 's11' },
+          { type: 'system', subtype: 'init', session_id: 's11', cwd: tmpDir, model: 'opus' },
           {
             type: 'result',
             subtype: 'error',
@@ -2838,6 +2829,8 @@ describe('Bridge finalizing integration tests', () => {
           type: 'system',
           subtype: 'init',
           session_id: 's12',
+          cwd: tmpDir,
+          model: 'opus',
         };
         // Simulate setupErrorEvent from spawning-runner.ts - yields result/error
         yield {
@@ -2876,7 +2869,13 @@ describe('Bridge finalizing integration tests', () => {
           // Stale result from previous turn (resume replay)
           { type: 'result', subtype: 'success', session_id: 'stale-session' },
           // Real init for the new run
-          { type: 'system', subtype: 'init', session_id: 'real-session', cwd: tmpDir },
+          {
+            type: 'system',
+            subtype: 'init',
+            session_id: 'real-session',
+            cwd: tmpDir,
+            model: 'opus',
+          },
           // Real result for the new run
           { type: 'result', subtype: 'success', session_id: 'real-session' },
         ],
@@ -3154,7 +3153,6 @@ describe('Bridge.forwardToClaude AgentBinding', () => {
     const connector = createStubConnector();
     const sessionStore = new SessionStore();
     const bridge = new Bridge({
-      runner: claudeRunner,
       connector,
       sessionStore,
       config, // live defaultAgent = claude
@@ -3218,7 +3216,6 @@ describe('Bridge session epoch guard (2026-08-09)', () => {
     // Override bridge runner
     const connector = createStubConnector();
     const bridgeWithRunner = new Bridge({
-      runner,
       connector,
       sessionStore,
       config,
@@ -3283,7 +3280,6 @@ describe('Bridge session epoch guard (2026-08-09)', () => {
 
     const connector = createStubConnector();
     const bridgeWithRunner = new Bridge({
-      runner,
       connector,
       sessionStore,
       config,
@@ -3476,7 +3472,6 @@ describe('Queue edit race: setTaskReplacement before await (Plan B fix)', () => 
     const connector = createStubConnector();
     const runner = createStubRunner();
     const bridge = new Bridge({
-      runner,
       agentRegistry: createStubAgentRegistry(runner),
       sessionReaderRegistry: createStubSessionReaderRegistry(),
       connector,
@@ -3566,7 +3561,9 @@ describe('sendResult fallback: card send failure sends text to user', () => {
     const bridge = new Bridge({
       connector,
       sessionStore,
-      runner: createStubRunner(),
+      config,
+      agentRegistry: createStubAgentRegistry(createStubRunner()),
+      sessionReaderRegistry: createStubSessionReaderRegistry(),
     });
     const ctx = { userId: 'user1', chatId: 'chat1', messageId: 'msg1' };
     const result = await bridge.sendResult(
@@ -3603,7 +3600,9 @@ describe('sendResult fallback: card send failure sends text to user', () => {
     const bridge = new Bridge({
       connector,
       sessionStore,
-      runner: createStubRunner(),
+      config,
+      agentRegistry: createStubAgentRegistry(createStubRunner()),
+      sessionReaderRegistry: createStubSessionReaderRegistry(),
     });
     const ctx = { userId: 'user1', chatId: 'chat1', messageId: 'msg1' };
     await bridge.updateCardInPlace({ schema: '2.0', body: { elements: [] } }, ctx);
@@ -3665,7 +3664,9 @@ describe('Bridge handleResumeCompact（resume 卡 Compact 按钮）', () => {
     // 用错 reader 查 session（报「未找到 session」或用错会话），压缩落到错的 agent。
     const cwd = fs.realpathSync(tmpDir);
     const runCompactSpy = vi.fn(compactTurnEvents);
-    const dshRead = vi.fn(tailRead({ compactCount: 1, contextLength: 100 }));
+    const dshRead = vi.fn(
+      tailRead({ inputTokens: 0, outputTokens: 0, compactCount: 1, contextLength: 100 }),
+    );
     const runner: CompactRunner = { ...createStubRunner(), runCompact: runCompactSpy };
     const { bridge, sessionStore, connector } = makeCompactBridge({
       runner,
@@ -3814,7 +3815,7 @@ describe('Bridge handleResumeCompact（resume 卡 Compact 按钮）', () => {
     };
     const { bridge, sessionStore, connector } = makeCompactBridge({
       runner,
-      codexRead: tailRead({ compactCount: 1, contextLength: 100 }),
+      codexRead: tailRead({ inputTokens: 0, outputTokens: 0, compactCount: 1, contextLength: 100 }),
     });
     sessionStore.setCwd('user1', cwd);
 
@@ -3877,7 +3878,7 @@ describe('Bridge handleResumeCompact（resume 卡 Compact 按钮）', () => {
     };
     const { bridge, sessionStore, connector } = makeCompactBridge({
       runner,
-      codexRead: tailRead({ compactCount: 1, contextLength: 100 }),
+      codexRead: tailRead({ inputTokens: 0, outputTokens: 0, compactCount: 1, contextLength: 100 }),
     });
     sessionStore.setCwd('user1', cwd);
 
@@ -3935,7 +3936,7 @@ describe('Bridge handleResumeCompact（resume 卡 Compact 按钮）', () => {
     };
     const { bridge, sessionStore, connector } = makeCompactBridge({
       runner,
-      codexRead: tailRead({ compactCount: 1, contextLength: 100 }),
+      codexRead: tailRead({ inputTokens: 0, outputTokens: 0, compactCount: 1, contextLength: 100 }),
     });
     sessionStore.setCwd('user1', cwdA);
 
@@ -3962,7 +3963,7 @@ describe('Bridge handleResumeCompact（resume 卡 Compact 按钮）', () => {
     const runner: CompactRunner = { ...createStubRunner(), runCompact: runCompactSpy };
     const { bridge, sessionStore, connector } = makeCompactBridge({
       runner,
-      codexRead: tailRead({ compactCount: 1, contextLength: 100 }),
+      codexRead: tailRead({ inputTokens: 0, outputTokens: 0, compactCount: 1, contextLength: 100 }),
     });
     sessionStore.setCwd('user1', cwd);
 
@@ -4130,7 +4131,7 @@ describe('Bridge compact 终态映射 + 在途检测（§5.3）', () => {
     const runner: CompactRunner = { ...createStubRunner(), runCompact: runCompactSpy };
     const { bridge, sessionStore, connector } = makeCompactBridge({
       runner,
-      read: tailRead({ compactCount: 0, contextLength: 100 }),
+      read: tailRead({ inputTokens: 0, outputTokens: 0, compactCount: 0, contextLength: 100 }),
     });
     sessionStore.setCwd('user1', cwd);
 
@@ -4504,7 +4505,6 @@ describe('Bridge 中断与队列收口回归', () => {
     });
     const connector = createStubConnector();
     const bridge = new Bridge({
-      runner: createStubRunner(),
       connector,
       sessionStore: new SessionStore(),
       config,
@@ -4562,7 +4562,6 @@ describe('Bridge 中断与队列收口回归', () => {
       });
     });
     const bridge = new Bridge({
-      runner: createStubRunner(),
       connector: createStubConnector(),
       sessionStore: new SessionStore(),
       config,
@@ -4619,7 +4618,6 @@ describe('Bridge 中断与队列收口回归', () => {
       });
     });
     const bridge = new Bridge({
-      runner: createStubRunner(),
       connector: createStubConnector(),
       sessionStore: new SessionStore(),
       config,

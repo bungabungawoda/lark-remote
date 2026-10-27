@@ -7,13 +7,7 @@ import { SessionStore } from './index.js';
 describe('SessionStore', () => {
   it('stores and retrieves session entries', () => {
     const store = new SessionStore();
-    store.set('user1', {
-      sessions: new Map([['claude', 's1']]),
-      previousSessions: new Map(),
-      sessionCwds: new Map(),
-      arrivalSessions: new Map(),
-      cwd: '/tmp',
-    });
+    store.setSessionIdAndCwd('user1', 'claude', 's1', '/tmp');
     const entry = store.get('user1');
     expect(entry?.cwd).toBe('/tmp');
     expect(entry?.sessions.get('claude')).toBe('s1');
@@ -26,26 +20,14 @@ describe('SessionStore', () => {
 
   it('deletes session entry', () => {
     const store = new SessionStore();
-    store.set('user1', {
-      sessions: new Map([['claude', 's1']]),
-      previousSessions: new Map(),
-      sessionCwds: new Map(),
-      arrivalSessions: new Map(),
-      cwd: '/tmp',
-    });
+    store.setSessionIdAndCwd('user1', 'claude', 's1', '/tmp');
     store.delete('user1');
     expect(store.get('user1')).toBeUndefined();
   });
 
   it('clears sessionId but keeps cwd', () => {
     const store = new SessionStore();
-    store.set('user1', {
-      sessions: new Map([['claude', 's1']]),
-      previousSessions: new Map(),
-      sessionCwds: new Map(),
-      arrivalSessions: new Map(),
-      cwd: '/tmp',
-    });
+    store.setSessionIdAndCwd('user1', 'claude', 's1', '/tmp');
     store.clearSessionId('user1', 'claude');
     const entry = store.get('user1');
     expect(entry?.sessions.get('claude')).toBe('');
@@ -54,13 +36,7 @@ describe('SessionStore', () => {
 
   it('setCwd clears sessionId (§9.1)', () => {
     const store = new SessionStore();
-    store.set('user1', {
-      sessions: new Map([['claude', 's1']]),
-      previousSessions: new Map(),
-      sessionCwds: new Map(),
-      arrivalSessions: new Map(),
-      cwd: '/tmp',
-    });
+    store.setSessionIdAndCwd('user1', 'claude', 's1', '/tmp');
     store.setCwd('user1', '/home');
     const entry = store.get('user1');
     expect(entry?.sessions.get('claude')).toBe('');
@@ -79,26 +55,14 @@ describe('SessionStore', () => {
   it('getCwd returns cwd or undefined', () => {
     const store = new SessionStore();
     expect(store.getCwd('user1')).toBeUndefined();
-    store.set('user1', {
-      sessions: new Map([['claude', 's1']]),
-      previousSessions: new Map(),
-      sessionCwds: new Map(),
-      arrivalSessions: new Map(),
-      cwd: '/tmp',
-    });
+    store.setSessionIdAndCwd('user1', 'claude', 's1', '/tmp');
     expect(store.getCwd('user1')).toBe('/tmp');
   });
 
   it('getSessionId returns sessionId or undefined', () => {
     const store = new SessionStore();
     expect(store.getSessionId('user1')).toBeUndefined();
-    store.set('user1', {
-      sessions: new Map([['claude', 's1']]),
-      previousSessions: new Map(),
-      sessionCwds: new Map(),
-      arrivalSessions: new Map(),
-      cwd: '/tmp',
-    });
+    store.setSessionIdAndCwd('user1', 'claude', 's1', '/tmp');
     expect(store.getSessionId('user1', 'claude')).toBe('s1');
     // Empty sessionId returns undefined
     store.clearSessionId('user1', 'claude');
@@ -107,20 +71,8 @@ describe('SessionStore', () => {
 
   it('different users have independent sessions', () => {
     const store = new SessionStore();
-    store.set('user1', {
-      sessions: new Map([['claude', 's1']]),
-      previousSessions: new Map(),
-      sessionCwds: new Map(),
-      arrivalSessions: new Map(),
-      cwd: '/tmp',
-    });
-    store.set('user2', {
-      sessions: new Map([['claude', 's2']]),
-      previousSessions: new Map(),
-      sessionCwds: new Map(),
-      arrivalSessions: new Map(),
-      cwd: '/home',
-    });
+    store.setSessionIdAndCwd('user1', 'claude', 's1', '/tmp');
+    store.setSessionIdAndCwd('user2', 'claude', 's2', '/home');
     expect(store.get('user1')?.cwd).toBe('/tmp');
     expect(store.get('user1')?.sessions.get('claude')).toBe('s1');
     expect(store.get('user2')?.cwd).toBe('/home');
@@ -231,13 +183,7 @@ describe('SessionStore persistence', () => {
   it('clearSessionId persists cwd', () => {
     const filePath = path.join(tmpDir, 'last-session.json');
     const store = new SessionStore(filePath);
-    store.set('user1', {
-      sessions: new Map([['claude', 's1']]),
-      previousSessions: new Map(),
-      sessionCwds: new Map(),
-      arrivalSessions: new Map(),
-      cwd: '/tmp',
-    });
+    store.setSessionIdAndCwd('user1', 'claude', 's1', '/tmp');
     store.clearSessionId('user1', 'claude');
 
     const restored = new SessionStore(filePath);

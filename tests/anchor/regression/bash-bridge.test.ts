@@ -101,7 +101,7 @@ describe('bridge 集成（10k chunk 洪峰）', () => {
     };
 
     const sessionStore = new SessionStore();
-    sessionStore.set('u1', { sessions: new Map(), cwd: '/tmp' });
+    sessionStore.setCwd('u1', '/tmp');
 
     const inlineRunner = {
       isRunning: false,
@@ -122,8 +122,9 @@ describe('bridge 集成（10k chunk 洪峰）', () => {
 
     await bridge.executeBash('yes', { userId: 'u1', chatId: 'c1', messageId: 'm1' });
 
-    // PATCH 风暴锁定：10_000 chunk 的 patch 数必须 < 100（现状 == chunk 数）
-    expect(updates.length).toBeLessThan(100);
+    // PATCH 风暴锁定：10_000 chunk 经 100ms 合批后实测 2 次 PATCH（initial + finish）。
+    // 退化到逐 chunk PATCH 时约为 10_000；上界 10 足够宽到容忍慢 CI 的窗口抖动。
+    expect(updates.length).toBeLessThanOrEqual(10);
 
     // 终态卡有界：最后一张卡是 finish 后的 done 卡，JSON 必须远小于 1M 字符
     const lastJson = JSON.stringify(updates.at(-1));

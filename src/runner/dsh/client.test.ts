@@ -11,11 +11,13 @@ import os from 'node:os';
 import path from 'node:path';
 import YAML from 'yaml';
 import { afterEach, describe, expect, it } from 'vitest';
-import { DshClient, extractDshToken, type WebSocketFactory, type WebSocketLike } from './client.js';
-import { DSH_BROWSER_CREDENTIAL_KEY } from './auth.js';
+import { DshClient, type WebSocketFactory, type WebSocketLike } from './client.js';
+import { extractDshToken } from '../../dsh/protocol.js';
+import { DSH_BROWSER_CREDENTIAL_KEY } from '../../dsh/auth.js';
 import { DshRunner } from './runner.js';
-import type { AgentSessionReader, AgentEvent } from '../types.js';
-import type { DshFollowFrame, DshSessionEvent } from './types.js';
+import type { AgentSessionReader } from '../../session-contract.js';
+import type { AgentEvent } from '../types.js';
+import type { DshFollowFrame, DshSessionEvent } from '../../dsh/types.js';
 import { isWin32 } from '../../platform/select.js';
 
 const CWD = '/home/user/project';
@@ -103,7 +105,8 @@ class ScriptedWebSocket implements WebSocketLike {
 
   constructor(
     readonly url: string,
-    readonly frames: DshFollowFrame[],
+    /** session/follow 帧，或 session/control 的 baseline/projection 帧。 */
+    readonly frames: Array<DshFollowFrame | Record<string, unknown>>,
     readonly closeAfterSend = true,
     readonly handshakeStatus?: number,
   ) {

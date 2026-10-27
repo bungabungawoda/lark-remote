@@ -16,33 +16,33 @@
 
 import { spawnProcessSync } from '../../platform/spawn.js';
 import { cumulativeUsageFields } from '../common/usage-accumulator.js';
-import { sortByRecencyDesc } from '../common/recency.js';
+import { newestOf, sortByRecencyDesc } from '../common/recency.js';
 import { getLogger } from '../../logger/index.js';
 import { DEFAULT_DSH_HOST } from '../../config/index.js';
 import { samePath } from '../../platform/path.js';
 import { isWin32 } from '../../platform/select.js';
 import type {
   AgentSession,
+  AgentSessionContentEvent,
   AgentSessionReader,
   AgentSessionUsage,
   SessionContent,
-  AgentSessionContentEvent,
-} from '../../runner/index.js';
+} from '../../session-contract.js';
 import type {
   DshSessionEvent,
   DshSessionListValue,
   DshSessionPageValue,
   DshSessionSummary,
   DshTokenUsage,
-} from '../../runner/dsh/types.js';
-import { dshArgs, extractDshToken } from '../../runner/dsh/client.js';
+} from '../../dsh/types.js';
+import { dshArgs, extractDshToken } from '../../dsh/protocol.js';
 import {
   DSH_COOKIE_LIFETIME_MS,
   isDshCredentialsNotFound,
   mintDshBrowserCookie,
   readDshBrowserSecretSync,
   resolveDshCredentialsFile,
-} from '../../runner/dsh/auth.js';
+} from '../../dsh/auth.js';
 import { capEvents, paginate } from '../common/pagination.js';
 import { truncateUtf8, TOOL_RESULT_MAX_BYTES } from '../../common/truncate.js';
 import { summarizeToolInput } from '../../common/tool-summary.js';
@@ -107,15 +107,25 @@ function defaultSyncRequest(
       ...(cookie ? ['-H', `Cookie: ${cookie}`] : []),
       '--data',
       body,
+      // 末尾追加 HTTP 状态码：401/403 要与「偶发失败」区分（cookie 失效才值得重试）。
+      '--write-out',
+      '\n%{http_code}',
     ],
     { encoding: 'utf-8', timeout: 15_000, maxBuffer: 64 * 1024 * 1024 },
   );
   if (res.error || res.status !== 0) {
     throw new Error(`DSH ${method} failed: ${(res.error?.message ?? res.stderr) || 'unknown'}`);
   }
+  const raw = String(res.stdout);
+  const statusMatch = /\n(\d{3})$/.exec(raw);
+  const httpStatus = statusMatch ? Number(statusMatch[1]) : undefined;
+  const bodyText = statusMatch ? raw.slice(0, statusMatch.index) : raw;
+  if (httpStatus === 401 || httpStatus === 403) {
+    throw new Error(`DSH ${method} unauthorized (HTTP ${httpStatus})`);
+  }
   let parsed: { result?: { ok?: boolean; value?: unknown; error?: { message?: string } } };
   try {
-    parsed = JSON.parse(String(res.stdout)) as typeof parsed;
+    parsed = JSON.parse(bodyText) as typeof parsed;
   } catch (err) {
     throw new Error(`DSH ${method} returned non-JSON: ${(err as Error).message}`, {
       cause: err,
@@ -143,6 +153,12 @@ function defaultSyncConnect(baseUrl: string, token: string): string {
   const cookie = match?.[1]?.split(';')[0]?.trim();
   if (!cookie) throw new Error('DSH auth failed: index handshake did not return a cookie');
   return cookie;
+}
+
+/** Cookie 失效的判定：HTTP 401/403 或服务端回报 unauthorized/forbidden。 */
+function isAuthFailure(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err);
+  return /\b401\b|\b403\b|unauthori[sz]ed|forbidden|invalid[ -]?cookie/i.test(msg);
 }
 
 export class DshSessionReader implements AgentSessionReader {
@@ -194,11 +210,28 @@ export class DshSessionReader implements AgentSessionReader {
     const baseUrl = this.resolveBaseUrl();
     try {
       return this.syncRequest(baseUrl, method, payload, this.resolveCookie());
-    } catch {
-      // DSH may have restarted while lark-remote cached a token-derived cookie.
-      // Re-read the credentials file and retry once with a fresh cookie.
+    } catch (first) {
+      // 只有 cookie 失效值得清缓存重试。404/500/timeout 重试会让 /resume 延迟
+      // 翻倍，且第二次错误会盖掉真正的根因。
+      if (!isAuthFailure(first)) throw first;
+      getLogger().warn(
+        `[dsh-session-reader] ${method} auth failed, refreshing cookie and retrying: ${
+          (first as Error)?.message ?? String(first)
+        }`,
+      );
       this.cookieCache.clear();
-      return this.syncRequest(baseUrl, method, payload, this.resolveCookie());
+      try {
+        return this.syncRequest(baseUrl, method, payload, this.resolveCookie());
+      } catch (second) {
+        // 重试仍失败：首错（cookie 失效）才是根因。`cause` 必须是本次捕获的 err
+        // （lint preserve-caught-error），所以根因写进 message 一并留痕。
+        const firstMsg = (first as Error)?.message ?? String(first);
+        const secondMsg = (second as Error)?.message ?? String(second);
+        throw new Error(
+          `DSH ${method} failed after cookie refresh: ${secondMsg} (root cause: ${firstMsg})`,
+          { cause: second },
+        );
+      }
     }
   }
 
@@ -266,7 +299,7 @@ export class DshSessionReader implements AgentSessionReader {
   }
 
   getNewestSession(cwd: string): AgentSession | null {
-    return this.listSessions(cwd, { limit: 1 }).sessions[0] ?? null;
+    return newestOf(this, cwd);
   }
 
   readSessionContent(
@@ -439,17 +472,12 @@ export class DshSessionReader implements AgentSessionReader {
   }
 
   /** `session/page` needs an inclusive cursor; projections carry the watermark. */
-  private resolveThroughSeq(sessionId: string, known?: DshSessionSummary): number {
+  private resolveThroughSeq(sessionId: string, known: DshSessionSummary): number {
     const projection = this.unary('session/projections', { sessionId }) as {
       asOfSeq?: number;
     } | null;
     if (typeof projection?.asOfSeq === 'number') return projection.asOfSeq;
-    const row =
-      known ??
-      (this.unary('session/list', {}) as DshSessionListValue).items?.find(
-        (item) => String(item.sessionId) === sessionId,
-      );
-    return typeof row?.projections?.asOfSeq === 'number' ? row.projections.asOfSeq : -1;
+    return typeof known.projections?.asOfSeq === 'number' ? known.projections.asOfSeq : -1;
   }
 }
 

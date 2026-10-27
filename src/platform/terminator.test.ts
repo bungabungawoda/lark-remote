@@ -82,7 +82,7 @@ describe('createWin32Terminator — 优雅停止', () => {
     // 原独立「grace 等待器」用例的计时断言（并入）：grace 200ms 内 5ms 退出
     expect(Date.now() - started).toBeLessThan(200);
     expect(stopper).toHaveBeenCalledTimes(1);
-    expect(stopper.mock.calls[0]![0]).toBe(proc);
+    expect(stopper).toHaveBeenCalledWith(proc);
     expect(result).toEqual({ requested: true, via: 'cooperative' });
     expect(mockSpawn).not.toHaveBeenCalled();
   });

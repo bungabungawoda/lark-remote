@@ -30,7 +30,7 @@ import type {
   DshSessionEvent,
   DshStreamChunk,
   DshTokenUsage,
-} from './types.js';
+} from '../../dsh/types.js';
 
 /** 本 turn 各采样用量之和（input 是非缓存输入，与 ccusage/ResultEvent 口径一致）。 */
 interface UsageTotals {

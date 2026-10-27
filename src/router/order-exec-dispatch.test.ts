@@ -7,7 +7,7 @@ import { AppConfigSchema } from '../config/index.js';
 import type { Runner } from '../runner/index.js';
 import { dispatchOrderExecForQueue } from './order-exec-dispatch.js';
 
-import { createStubRunner } from '../../tests/lib/bridge-stubs.js';
+import { createStubConnector, createStubRunner } from '../../tests/lib/bridge-stubs.js';
 import { createRouterFixture } from '../../tests/lib/router-fixture.js';
 vi.mock('../logger/index.js', async () =>
   (await import('../../tests/lib/logger-mock.js')).loggerModuleMock(),
@@ -32,19 +32,7 @@ afterEach(() => {
 });
 
 function createRouter(ordersPath: string) {
-  const sent: { chatId: string; input: unknown; opts?: { replyTo?: string } }[] = [];
-  const connector = {
-    sendWithRetry: async (chatId: string, input: unknown, opts?: { replyTo?: string }) => {
-      sent.push({ chatId, input, opts });
-      return 'msg-id';
-    },
-    sendFile: async () => 'file-msg-id',
-    addReaction: async () => {},
-    streamCard: async () => 'stream-msg-id',
-    updateCard: async () => {},
-    connected: true,
-    _sent: sent,
-  };
+  const connector = createStubConnector();
   const stubRunner = createStubRunner() as Runner;
   const { router, bridge, sessionStore } = createRouterFixture({
     tmpDir,
@@ -195,8 +183,9 @@ describe('dispatchOrderExecForQueue: order.exec → equivalent queued message', 
     // carry opts.replyTo === the Feishu card messageId, not the internal key.
     const cardSend = connector._sent.find((s) => typeof s.input === 'object' && s.input !== null);
     expect(cardSend).toBeDefined();
-    expect(cardSend?.opts?.replyTo).toBe(ctx.messageId);
-    expect(cardSend?.opts?.replyTo).not.toBe(ours?.messageId);
+    const cardSendOpts = cardSend?.opts as { replyTo?: string } | undefined;
+    expect(cardSendOpts?.replyTo).toBe(ctx.messageId);
+    expect(cardSendOpts?.replyTo).not.toBe(ours?.messageId);
 
     blocker.release();
   });

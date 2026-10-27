@@ -16,16 +16,18 @@
 ## Form Components
 
 ### Toggle in Right Column
+
 - A toggle button for a boolean field in the right column must use `width: 'weighted', weight: 3`
 - Do not use `width: 'auto'` — `auto` makes the button only as wide as its text, causing the right edge to be misaligned with select/input fields
 
 ### Input Component
+
 - CardKit 2.0 `input` has **no per-keystroke callback** — the callback fires only when the user submits (keyboard Enter/Done on mobile, the submit icon at the right end of the field on desktop); with no per-keystroke change event, "filter as you type" is not achievable
 - **Never write "tap ✓" in user-facing copy**: that icon does not exist on mobile, which only has keyboard Enter/Done (user-reported 2026-09-19). Standardize on "press Enter to submit"
-- **Do not rely on "clear the input and resubmit" as the cancel path**: the official docs never promise a callback for an empty string, and a user on mobile Feishu confirmed on 2026-09-19 that "clearing then pressing Enter does nothing" — treating it as the only cancel route dead-ends on some clients. When a clear/reset semantic is needed, carry it with an explicit `auto`-width button on the same row (a button callback carries no `input_value`; force the clear with a marker field in the payload instead of relying on the implicit "no input value received"). Reference implementation: `searchBar` in `src/router/card-helpers.ts` (renders a "Clear filter" button plus the `clearQuery` marker whenever `currentQuery` is set)
+- **Do not rely on "clear the input and resubmit" as the cancel path**: the official docs never promise a callback for an empty string, and a user on mobile Feishu confirmed on 2026-09-19 that "clearing then pressing Enter does nothing" — treating it as the only cancel route dead-ends on some clients. When a clear/reset semantic is needed, carry it with an explicit `auto`-width button on the same row (a button callback carries no `input_value`; force the clear with a marker field in the payload instead of relying on the implicit "no input value received"). Reference implementation: `searchBar` in `src/card/card-helpers.ts` (renders a "Clear filter" button plus the `clearQuery` marker whenever `currentQuery` is set)
 - However, `input_value` is dropped by the SDK normalizer; you must set `includeRawEvent: true` and read from `action.raw.action.input_value`
 - Do not wrap input + button in a `form`; use `column_set` + `input` + `button` directly
-- **Never squeeze a label and an input into one row**: when a row holds label + input + buttons, the `auto` buttons take their intrinsic width first and the rest is split by weight — on a narrow phone screen (roughly 330px usable) the label column shrinks to about a hundred pixels and the input to a few dozen, so the text wraps and the input is unusable (real pagination-bar defect, 2026-09-10). Split it into **two rows**: the informational label as a top-level `div` on its own full-width line, and the controls in their own `column_set` (previous `auto` + input `weighted weight:1` + next `auto`, the input filling the space left by the buttons). Reference implementation: `paginationBar` in `src/router/card-helpers.ts` (shared by `/ls` `/ws` `/resume` `/active` `/order`).
+- **Never squeeze a label and an input into one row**: when a row holds label + input + buttons, the `auto` buttons take their intrinsic width first and the rest is split by weight — on a narrow phone screen (roughly 330px usable) the label column shrinks to about a hundred pixels and the input to a few dozen, so the text wraps and the input is unusable (real pagination-bar defect, 2026-09-10). Split it into **two rows**: the informational label as a top-level `div` on its own full-width line, and the controls in their own `column_set` (previous `auto` + input `weighted weight:1` + next `auto`, the input filling the space left by the buttons). Reference implementation: `paginationBar` in `src/card/card-helpers.ts` (shared by `/ls` `/ws` `/resume` `/active` `/order`).
 - **Do not wrap input + buttons in a `form`** (see above), and do not put the input as the second element of the label's column (same-column elements stack). Column widths use only `weighted`/`auto`; don't introduce pixel widths (e.g. `'90px'`) without verification
 
 ## Button Components
@@ -53,7 +55,7 @@ Hard rules:
   `column_set` `auto` + `grow`.** The `auto` column gets squeezed to one or two
   characters and CJK text stacks vertically: the "运行\n中" seen on a phone
   (2026-10-19) came from exactly this.
-- **Status lines / metadata = one `div` with ` · ` separators.** Line breaks
+- **Status lines / metadata = one `div` with `·` separators.** Line breaks
   then only happen at separators, which is predictable.
 - **Keep each segment short enough that it never wraps on its own** (about 8
   display cells): `📊 ~36%`, `🧰 532 步`, `⏱ 2m13s` — not
@@ -90,6 +92,7 @@ Counter-example / correct example (run-card status row):
 ## Common Layout Templates
 
 ### Text + Button (Inline)
+
 ```json
 {
   "tag": "div",
@@ -108,6 +111,7 @@ Counter-example / correct example (run-card status row):
 ```
 
 ### Left Label + Right Input (Form Row)
+
 ```json
 {
   "tag": "column_set",
@@ -142,11 +146,11 @@ Counter-example / correct example (run-card status row):
 `tests/feishu-live/feishu-card-element-total-limit.test.ts` measured, in the test
 chat:
 
-| Shape | Passes | Fails |
-| --- | --- | --- |
-| Flat top-level divs | 99 | 100 |
+| Shape                                | Passes                     | Fails      |
+| ------------------------------------ | -------------------------- | ---------- |
+| Flat top-level divs                  | 99                         | 100        |
 | Divs nested in one column_set column | 98 (+ the column_set = 99) | 99 (= 100) |
-| Columns in one column_set | 66 | 67 |
+| Columns in one column_set            | 66                         | 67         |
 
 The rule is **recursively counted `elements` array members (excluding `columns`)
 ≤ 99**. The whole-card JSON object count is **not** the criterion: the `/ws`

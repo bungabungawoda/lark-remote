@@ -52,11 +52,7 @@ describe('Anchor: order.textEdit card structure (CardKit 2.0 / 200861)', () => {
     fs.mkdirSync(projectDir);
 
     const { router, sessionStore, connector } = createRouter();
-    sessionStore.set('user1', {
-      sessions: new Map([['claude', 'session-1']]),
-      previousSessions: new Map(),
-      cwd: projectDir,
-    });
+    sessionStore.setSessionIdAndCwd('user1', 'claude', 'session-1', projectDir);
 
     await router.handleCardAction(
       { cmd: 'order.textEdit', orderId: order.id, offset: 0 } as {
@@ -92,11 +88,7 @@ describe('Anchor: order.textInput validation paths', () => {
     fs.mkdirSync(projectDir);
 
     const { router, sessionStore, connector } = createRouter();
-    sessionStore.set('user1', {
-      sessions: new Map([['claude', 'session-1']]),
-      previousSessions: new Map(),
-      cwd: projectDir,
-    });
+    sessionStore.setSessionIdAndCwd('user1', 'claude', 'session-1', projectDir);
 
     const cardsBefore = connector._cards.length;
 
@@ -131,11 +123,7 @@ describe('Anchor: order.textInput validation paths', () => {
     fs.mkdirSync(projectDir);
 
     const { router, sessionStore, connector } = createRouter();
-    sessionStore.set('user1', {
-      sessions: new Map([['claude', 'session-1']]),
-      previousSessions: new Map(),
-      cwd: projectDir,
-    });
+    sessionStore.setSessionIdAndCwd('user1', 'claude', 'session-1', projectDir);
 
     const cardsBefore = connector._cards.length;
 
@@ -172,11 +160,7 @@ describe('Anchor: order.textInput validation paths', () => {
     const projectDir = path.join(tmpDir, 'project');
     fs.mkdirSync(projectDir);
     const { router, sessionStore } = createRouter();
-    sessionStore.set('user1', {
-      sessions: new Map([['claude', 'session-1']]),
-      previousSessions: new Map(),
-      cwd: projectDir,
-    });
+    sessionStore.setSessionIdAndCwd('user1', 'claude', 'session-1', projectDir);
 
     await router.handleCardAction(
       {
@@ -205,11 +189,7 @@ describe('Anchor: CLI /order edit subcommand', () => {
     fs.mkdirSync(projectDir);
 
     const { router, sessionStore } = createRouter();
-    sessionStore.set('user1', {
-      sessions: new Map([['claude', 'session-1']]),
-      previousSessions: new Map(),
-      cwd: projectDir,
-    });
+    sessionStore.setSessionIdAndCwd('user1', 'claude', 'session-1', projectDir);
 
     const result = await router.handle('/order edit 1 新文本', {
       userId: 'user1',
@@ -234,11 +214,7 @@ describe('Anchor: CLI /order edit subcommand', () => {
     fs.mkdirSync(projectDir);
 
     const { router, sessionStore } = createRouter();
-    sessionStore.set('user1', {
-      sessions: new Map([['claude', 'session-1']]),
-      previousSessions: new Map(),
-      cwd: projectDir,
-    });
+    sessionStore.setSessionIdAndCwd('user1', 'claude', 'session-1', projectDir);
 
     const result = await router.handle('/order edit 99 不存在', {
       userId: 'user1',
@@ -253,11 +229,7 @@ describe('Anchor: CLI /order edit subcommand', () => {
     const projectDir = path.join(tmpDir, 'project');
     fs.mkdirSync(projectDir);
     const { router, sessionStore } = createRouter();
-    sessionStore.set('user1', {
-      sessions: new Map([['claude', 'session-1']]),
-      previousSessions: new Map(),
-      cwd: projectDir,
-    });
+    sessionStore.setSessionIdAndCwd('user1', 'claude', 'session-1', projectDir);
 
     const result = await router.handle('/order edit', {
       userId: 'user1',

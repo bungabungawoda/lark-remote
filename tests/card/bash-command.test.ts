@@ -9,6 +9,7 @@ import { Bridge } from '../../src/bridge/index.js';
 import { createStubRunner } from '../lib/bridge-stubs.js';
 import { rmRf } from '../lib/tmp-cleanup.js';
 import { createRouterFixture } from '../lib/router-fixture.js';
+import { waitForOrThrow } from '../lib/wait-for.js';
 // Stub session reader for tests
 
 // Test utilities
@@ -204,7 +205,7 @@ describe('! bash command feature (Anchor Tests)', () => {
       bridge.enqueue(testDir, hangingTask);
 
       // Wait for the hanging task to start (queue is occupied)
-      await new Promise((r) => setTimeout(r, 50));
+      await waitForOrThrow(() => taskStarted);
       expect(taskStarted).toBe(true);
 
       // `!` must bypass the serial queue and run immediately, despite the

@@ -14,6 +14,7 @@ import type {
 } from '../runner/index.js';
 import { keepTail } from '../common/truncate.js';
 import { asRecord } from '../common/tool-summary.js';
+import type { UsageSnapshot } from '../session-contract.js';
 
 const MAX_REASONING_CHARS = 4_000;
 const MAX_TEXT_CHARS = 12_000;
@@ -54,6 +55,20 @@ export type RunFinalTerminal = (typeof RUN_TERMINAL_STATES)[number];
 /** 该状态是否已收尾（非 running/finalizing）。 */
 export function isRunTerminal(terminal: RunTerminal): terminal is RunFinalTerminal {
   return (RUN_TERMINAL_STATES as readonly RunTerminal[]).includes(terminal);
+}
+
+/** 仍在推进的两个状态（`RunTerminal` 的非终态部分）。 */
+export type RunActiveTerminal = 'running' | 'finalizing';
+
+/**
+ * 该状态是否仍在推进（running 或 finalizing）。
+ *
+ * `finalizing` 是「result 已到、进程还在收尾」的非终态：卡片仍要处理事件、
+ * 仍要显示停止按钮。这个判据此前在 card/bridge 里逐字抄了四处，与
+ * `isRunTerminal` 互为反义却各写各的——收在这儿与终态判据并排。
+ */
+export function isRunActive(terminal: RunTerminal): terminal is RunActiveTerminal {
+  return terminal === 'running' || terminal === 'finalizing';
 }
 
 export type RunFooter = 'thinking' | 'tool_running' | 'streaming' | null;
@@ -131,7 +146,12 @@ export interface FinalAnswerState {
   source: 'protocol' | 'inferred';
 }
 
-export interface RunState {
+/**
+ * 一张 run 卡的状态。用量字段（context/tokens/cache/累计/推理）一律来自
+ * `UsageSnapshot` 单源——原先在这里、`FinishMeta`、`usage-format` 和桥侧各抄
+ * 一份（§9.21「五处一致」靠人记），加一个字段要改四遍。
+ */
+export interface RunState extends UsageSnapshot {
   runId: string;
   terminal: RunTerminal;
   footer: RunFooter;
@@ -149,30 +169,8 @@ export interface RunState {
   resultSubtype?: 'success' | 'error' | 'interrupted';
   /** interrupted 终态的中断来源；undefined = 未归类（渲染默认文案）。 */
   interruptedReason?: InterruptedReason;
-  contextLength?: number;
-  /** 当前模型 context window 上限（codex jsonl 提供）；卡片据此渲染百分比。 */
-  contextLimit?: number;
   errorMsg?: string;
   idleTimeoutMinutes?: number;
-  compactCount?: number;
-  cacheReadTokens?: number;
-  cacheCreationTokens?: number;
-  /** Agent-declared total; the done card uses max(total, sum of parts). */
-  totalTokens?: number;
-  /** Real input tokens from the agent's result event (codex/opencode).
-   *  When present, the done card shows the real value instead of the
-   *  contextLength-based estimate. */
-  inputTokens?: number;
-  /** Real output tokens from the agent's result event. */
-  outputTokens?: number;
-  /** 会话累计 total/input/output（所有 run 之和），Run 卡片展示"累计"。 */
-  cumulativeTotalTokens?: number;
-  cumulativeInputTokens?: number;
-  cumulativeOutputTokens?: number;
-  /** 会话累计 cache read token（所有 run 之和）。 */
-  cumulativeCacheReadTokens?: number;
-  /** 会话累计 cache creation token（所有 run 之和）。 */
-  cumulativeCacheCreationTokens?: number;
   plan?: string; // accumulated from PlanEvent (Codex)
   /** 实际生效模型（system.init 携带；失败兜底 synthetic init 为 ''，渲染须容忍）。 */
   model?: string;
@@ -186,12 +184,8 @@ export interface RunState {
   sessionTitle?: string;
   /** 当前模式（ACP current_mode_update.currentModeId）。 */
   mode?: string;
-  /** 推理 token（pi usage.reasoning 累加，经 finish meta 写入）。 */
-  reasoningTokens?: number;
   /** Codex 操作类型：'turn' 表示普通 run，'compaction' 表示 compact 运行。 */
   operationKind?: 'turn' | 'compaction';
-  /** 压缩前上下文水位（codex compact 卡展示「压缩前 X → 压缩后 Y」）。 */
-  compactPreContextLength?: number;
   /**
    * 待审批请求列表（app-server 模式）。同一 turn 内并发多个审批
    * 时全部渲染，避免后到者顶掉先到者的按钮（单槽会丢 UI，只能等超时 cancel）。
@@ -233,33 +227,13 @@ export interface RunState {
   goalKnown?: boolean;
 }
 
-export interface FinishMeta {
+/** 终态卡片的一次性元信息；用量部分与 `RunState` 同源（`UsageSnapshot`）。 */
+export interface FinishMeta extends UsageSnapshot {
   resultSubtype?: 'success' | 'error' | 'interrupted';
   /** 中断来源：由桥侧在 finish 时显式传入（/stop → user_stop、审批卡取消 → approval_cancelled）。 */
   interruptedReason?: InterruptedReason;
-  contextLength?: number;
-  /** 当前模型 context window 上限；透传到 RunState 供 done 卡片显示百分比。 */
-  contextLimit?: number;
   errorMsg?: string;
   idleTimeoutMinutes?: number;
-  compactCount?: number;
-  compactPreContextLength?: number;
-  cacheReadTokens?: number;
-  cacheCreationTokens?: number;
-  /** Agent-declared total; threaded to RunState for the done card. */
-  totalTokens?: number;
-  /** Real input/output tokens from the agent's result event. Threaded through
-   *  to RunState so the done card can display real values instead of estimates. */
-  inputTokens?: number;
-  outputTokens?: number;
-  /** 会话累计 total/input/output（所有 run 之和），从 session jsonl 读取。 */
-  cumulativeTotalTokens?: number;
-  cumulativeInputTokens?: number;
-  cumulativeOutputTokens?: number;
-  cumulativeCacheReadTokens?: number;
-  cumulativeCacheCreationTokens?: number;
-  /** 推理 token（pi usage.reasoning 累加，经 usageMeta 透传）。 */
-  reasoningTokens?: number;
 }
 
 export function createInitialRunState(runId: string): RunState {
@@ -692,6 +666,20 @@ function reduceBackgroundJobsEvent(state: RunState, event: AgentEvent): RunState
 }
 
 /**
+ * 用户停止某个后台任务成功后，从卡片状态里摘掉它。
+ *
+ * run 此时已经收尾（没有流再消费事件），所以这条不走 reducer 的事件入口；但
+ * RunState 的形状只允许在本模块内拼装——bridge 直接展开 state 曾把「摘一条」
+ * 写成「整体重建」，字段一多就会漏带。
+ */
+export function removeBackgroundJob(state: RunState, jobId: string): RunState {
+  return {
+    ...state,
+    backgroundJobs: (state.backgroundJobs ?? []).filter((job) => job.id !== jobId),
+  };
+}
+
+/**
  * 运行期状态投影 → 状态行。
  *
  * 每帧只带一个投影 key，所以只合并"有值"的字段：用 undefined 覆盖会把另一
@@ -955,7 +943,7 @@ function reduceFileChangeEvent(state: RunState, event: FileChangeEvent): RunStat
 
 export function finishRun(
   state: RunState,
-  terminal: Exclude<RunTerminal, 'running' | 'finalizing'>,
+  terminal: RunFinalTerminal,
   meta: FinishMeta = {},
 ): RunState {
   const withFinalAnswer = promoteFinalAnswer(state, 'inferred');
