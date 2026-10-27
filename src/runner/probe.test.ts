@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import type { AgentKind } from './types.js';
+import type { AgentKind } from '../agent-kinds.js';
+import type { LaunchSpec } from '../platform/command.js';
 import {
   probeAgentAvailability,
   probeAllAgents,
@@ -17,6 +18,9 @@ import { resolveExecutable } from '../platform/command.js';
 
 const mockProbe = vi.mocked(resolveExecutable);
 
+/** resolveExecutable 命中时的产物形状（platform/types.ts LaunchSpec）。 */
+const FOUND: LaunchSpec = { kind: 'direct', file: '/usr/bin/mock-bin' };
+
 describe('probe', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -26,7 +30,7 @@ describe('probe', () => {
 
   describe('probeAgentAvailability', () => {
     it.each([
-      ['claude', '/usr/bin/mock-bin', true],
+      ['claude', FOUND, true],
       ['codex', null, false],
     ] as const)(
       '%s availability follows seam resolution (%s)',
@@ -45,7 +49,7 @@ describe('probe', () => {
     });
 
     it('caches result and does not re-probe within TTL', async () => {
-      mockProbe.mockReturnValue('/usr/bin/mock-bin');
+      mockProbe.mockReturnValue(FOUND);
       await probeAgentAvailability('opencode');
       expect(mockProbe).toHaveBeenCalledTimes(1);
 
@@ -58,7 +62,7 @@ describe('probe', () => {
 
   describe('probeAllAgents', () => {
     it('probes all 5 spawn-able agents concurrently', async () => {
-      mockProbe.mockReturnValue('/usr/bin/mock-bin');
+      mockProbe.mockReturnValue(FOUND);
       const result = await probeAllAgents();
       expect(result.size).toBe(5);
       expect(result.get('claude')).toBe(true);
@@ -71,7 +75,7 @@ describe('probe', () => {
     it('reports mixed availability correctly', async () => {
       // claude/opencode available, codex/pi/kimi unavailable
       mockProbe.mockImplementation((name: string) =>
-        name === 'claude' || name === 'opencode' ? '/usr/bin/mock-bin' : null,
+        name === 'claude' || name === 'opencode' ? FOUND : null,
       );
       const result = await probeAllAgents();
       expect(result.get('claude')).toBe(true);
@@ -88,7 +92,7 @@ describe('probe', () => {
     });
 
     it('returns cached boolean after probe; undefined after cache is cleared', async () => {
-      mockProbe.mockReturnValue('/usr/bin/mock-bin');
+      mockProbe.mockReturnValue(FOUND);
       await probeAgentAvailability('claude');
       expect(getCachedAvailability('claude')).toBe(true);
       _clearCacheForTest();
@@ -96,7 +100,7 @@ describe('probe', () => {
     });
 
     it('clears all cache entries', async () => {
-      mockProbe.mockReturnValue('/usr/bin/mock-bin');
+      mockProbe.mockReturnValue(FOUND);
       await probeAllAgents();
       for (const kind of ['claude', 'codex', 'opencode', 'pi', 'kimi']) {
         expect(getCachedAvailability(kind as AgentKind)).toBe(true);

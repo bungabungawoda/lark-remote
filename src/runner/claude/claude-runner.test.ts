@@ -9,6 +9,7 @@ import type { AgentEvent } from '../types.js';
 import { rmRf } from '../../../tests/lib/tmp-cleanup.js';
 import { currentPlatform, isWin32 } from '../../platform/select.js';
 import { mockLogger } from '../../../tests/lib/logger-mock.js';
+import { ClaudeSessionReader } from '../../session/claude/index.js';
 
 vi.mock('../../logger/index.js', async () =>
   (await import('../../../tests/lib/logger-mock.js')).loggerModuleMock(),
@@ -28,6 +29,7 @@ function createMockClaude(env: Record<string, string> = {}): void {
 
 function makeRunner(opts: Record<string, unknown> = {}): ClaudeRunner {
   const runner = new ClaudeRunner({
+    sessionReader: new ClaudeSessionReader(),
     cwd: 'test',
     pidDir: tmpDir,
     ...opts,

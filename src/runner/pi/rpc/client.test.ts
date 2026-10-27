@@ -7,7 +7,7 @@ class FakeTransport {
   closed = false;
   started = false;
   onMessage: ((msg: unknown) => void) | null = null;
-  onClose: (() => void) | null = null;
+  onClose: ((reason: string) => void) | null = null;
   written: unknown[] = [];
 
   async start(events: {
@@ -25,7 +25,7 @@ class FakeTransport {
 
   async close(): Promise<void> {
     this.closed = true;
-    this.onClose?.();
+    this.onClose?.('closed');
   }
 
   /** Simulate a server line arriving. */
@@ -35,9 +35,12 @@ class FakeTransport {
 }
 
 function makeClient(baseOnClose = () => {}): { client: PiRpcClient; transport: FakeTransport } {
-  const transport = new FakeTransport() as unknown as JsonlRpcTransport;
+  const fake = new FakeTransport();
+  // JsonlRpcTransport 带 private 成员（名义化类型），FakeTransport 只能实现其
+  // 公共面（start/write/close/closed），这里保留既有的双段断言。
+  const transport = fake as unknown as JsonlRpcTransport;
   const client = new PiRpcClient(transport, baseOnClose, 1000);
-  return { client, transport };
+  return { client, transport: fake };
 }
 
 describe('PiRpcClient', () => {

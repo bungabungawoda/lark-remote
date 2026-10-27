@@ -7,6 +7,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { getLogger } from '../logger/index.js';
 
 interface PiProviderInfo {
   /** Provider 名称 */
@@ -93,8 +94,9 @@ export function loadPiProviderConfig(): PiProviderInfo[] {
   if (fs.existsSync(modelsFile)) {
     try {
       modelsData = JSON.parse(fs.readFileSync(modelsFile, 'utf-8'));
-    } catch {
-      // 文件格式错误，跳过
+    } catch (err) {
+      // 解析失败 = pi 模型选项会静默消失，必须留痕（此前全文件零日志）。
+      getLogger().warn(`[pi-config] cannot parse ${modelsFile}: ${(err as Error).message}`);
     }
   }
 
@@ -103,8 +105,8 @@ export function loadPiProviderConfig(): PiProviderInfo[] {
   if (fs.existsSync(authFile)) {
     try {
       authData = JSON.parse(fs.readFileSync(authFile, 'utf-8')) ?? {};
-    } catch {
-      // 文件格式错误，跳过
+    } catch (err) {
+      getLogger().warn(`[pi-config] cannot parse ${authFile}: ${(err as Error).message}`);
     }
   }
 

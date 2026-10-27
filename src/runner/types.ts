@@ -3,7 +3,10 @@
  *
  * 本文件包含所有 Agent 相关的类型定义，从 runner/index.ts 提取。
  * 所有下游模块应从本文件 import 类型，而非直接依赖实现。
+ * （例外：`AgentKind` 住在 `src/agent-kinds.ts`，见文件底部说明。）
  */
+import type { AgentKind } from '../agent-kinds.js';
+import type { AgentSessionReader } from '../session-contract.js';
 
 // =============================================================================
 // Agent Event Types
@@ -590,27 +593,10 @@ export interface Runner {
 // Multi-Agent Adapter Types
 // =============================================================================
 
-/**
- * Agent 名单单源（运行时数组 + 类型同源，二者不可能漂移）。
- *
- * 历史上这份名单被手抄成多份（router 的 VALID_AGENTS、bridge 的 resume.compact
- * 校验、各 agent 的 config builder…），漂移过：dsh 加入后 bridge 的
- * resume.compact 仍只有 5 个，带 dsh 的 resume 卡片会静默退回 defaultAgent。
- * 新增 agent 只改这里。
- */
-export const AGENT_KINDS = ['claude', 'codex', 'opencode', 'pi', 'kimi', 'dsh'] as const;
-
-export type AgentKind = (typeof AGENT_KINDS)[number];
-
-/** 用户可见 agent 显示名单源：启动注册与无 registry 的回退路径共用。 */
-export const AGENT_DISPLAY_NAMES: Record<AgentKind, string> = {
-  claude: 'Claude',
-  codex: 'Codex',
-  opencode: 'Opencode',
-  pi: 'Pi',
-  kimi: 'Kimi',
-  dsh: 'DSH',
-};
+// Agent 名单与显示名住在 `src/agent-kinds.ts`（中立层，config/session/card 都
+// 要用）；本模块只 import `AgentKind` 类型来签名 runner 契约。保留旧路径的
+// re-export 兼容调用方，但值仍只由 agent-kinds.ts 定义。
+export { AGENT_DISPLAY_NAMES } from '../agent-kinds.js';
 
 /**
  * Compact 能力声明（运行时门控的能力清单，编译期强制完整）。
@@ -638,149 +624,6 @@ export function supportsCompact(kind: AgentKind): boolean {
   return COMPACT_CAPABILITY[kind];
 }
 
-/** Unified session descriptor returned by every AgentSessionReader. */
-export interface AgentSession {
-  sessionId: string;
-  summary: string;
-  mtime: number;
-  /** DSH：session 创建时固定的 preset；其他 agent 无此概念（undefined）。 */
-  agentPreset?: string;
-  /**
-   * 服务端投影已有的会话标题（DSH `projections.values.title`）。
-   *
-   * 与 `summary` 的区别：`summary` 是「首条用户输入」的兜底口径（claude /
-   * codex / pi / kimi 无标题字段），`title` 是 agent 自己起的标题。列表卡
-   * 用它决定标签文案（标题 / 会话摘要），缺省时回退 `summary`。
-   */
-  title?: string;
-  /**
-   * 最后一轮用户输入（服务端投影，单行预览）。
-   *
-   * 只给「列表响应里已顺带返回」的 reader 用（DSH 的 `turnOutline` 末条），
-   * 目的是让列表卡不必为每行做一次全量内容读取。
-   */
-  lastUserMessage?: string;
-  /** 最后一轮助手输出（服务端投影已截断，单行预览）。 */
-  lastAssistantMessage?: string;
-}
-
-/** A single renderable event from session history. */
-export interface AgentSessionContentEvent {
-  type: string;
-  /** 正文（展开后的面板内容）。 */
-  content: string;
-  /**
-   * 面板标题（可选，覆盖 reader 的默认标签）。
-   *
-   * 折叠面板默认只显示标题：工具调用这种"标题即全部信息"的事件必须把
-   * `bash — npm test` 这类摘要放进标题，否则折叠态只剩 `🔧 工具调用`。
-   */
-  title?: string;
-  timestamp?: string;
-}
-
-export interface AgentSessionUsage {
-  inputTokens: number;
-  outputTokens: number;
-  contextLength: number;
-  /** Agent 上报的当前模型 context window 上限（codex token_count.info.model_context_window）。
-   *  仅 codex 提供；缺省时卡片只显示绝对量、不显示百分比。 */
-  contextLimit?: number;
-  /** Claude auto-compact 次数（数 compact_boundary 事件）；codex/opencode 无此概念，留 undefined。 */
-  compactCount?: number;
-  /** 压缩前上下文水位（codex compact 后从会话 jsonl 读取，仅会话以压缩收尾时有值）。 */
-  compactPreContextLength?: number;
-  /** 从缓存读取的 token 数（节省的费用）。 */
-  cacheReadTokens?: number;
-  /** 新建缓存的 token 数。 */
-  cacheCreationTokens?: number;
-  /** Agent 声明的总量；展示用 max(total, 分项和)。 */
-  totalTokens?: number;
-
-  /** 会话累计 total token（所有 run 之和，含本次）。用于 Run 卡片"累计"展示。 */
-  cumulativeTotalTokens?: number;
-  /** 会话累计 input token（所有 run 之和，含本次）。用于 Run 卡片"累计"展示。 */
-  cumulativeInputTokens?: number;
-  /** 会话累计 output token（所有 run 之和，含本次）。 */
-  cumulativeOutputTokens?: number;
-  /** 会话累计 cache read token（所有 run 之和）。用于 Run 卡片展示累计缓存命中。 */
-  cumulativeCacheReadTokens?: number;
-  /** 会话累计 cache creation token（所有 run 之和）。 */
-  cumulativeCacheCreationTokens?: number;
-}
-
-/** Unified session content payload returned by every AgentSessionReader. */
-export interface SessionContent {
-  events: AgentSessionContentEvent[];
-  usage?: AgentSessionUsage;
-  aiTitle?: string;
-  recap?: string;
-  displayTitle?: string;
-}
-
-/**
- * Lightweight session summary used by `/resume` list prefetch.
- *
- * Carries only the display fields (title / recap / usage) — **no `events`
- * array**. Readers that can extract these without constructing the full event
- * list (e.g. codex, which would otherwise JSON.parse every response_item and
- * build an `events[]` that the prefetch immediately discards) implement the
- * optional `readSessionSummary` on `AgentSessionReader`.
- */
-export interface SessionSummary {
-  aiTitle?: string;
-  recap?: string;
-  displayTitle?: string;
-  usage?: AgentSessionUsage;
-}
-
-/**
- * Reads an agent's session history. Each agent implements its own (Claude reads
- * `~/.claude/projects/`, Codex calls `thread/list`, OpenCode calls `GET /session`).
- *
- * Q-C decision: `projectsDir` and other agent-specific path config live on the
- * concrete reader's constructor, NOT on these method opts. The router/bridge
- * depend only on this interface and never pass path config.
- */
-export interface AgentSessionReader {
-  /**
-   * List sessions for a cwd, newest first by mtime.
-   *
-   * `sessions` is the page `[offset, offset+limit)` of the full set ordered
-   * by mtime desc, with same-mtime ties broken by a deterministic secondary
-   * key (sessionId/file path) so ordering is stable across calls. When
-   * `limit` is omitted, codex/pi/kimi return their default-sized page
-   * (default 20); claude/opencode return the full remaining set from
-   * `offset`. `total` is ALWAYS the size of the full cwd-matched set before
-   * pagination — never the truncated page length. A negative `offset` is
-   * clamped to 0 (first page).
-   */
-  listSessions(
-    cwd: string,
-    opts?: { limit?: number; offset?: number },
-  ): { sessions: AgentSession[]; total: number };
-  getNewestSession(cwd: string): AgentSession | null;
-  readSessionContent(sessionId: string, cwd: string, opts?: { maxEvents?: number }): SessionContent;
-  /**
-   * Optional lightweight summary for list-prefetch.
-   *
-   * Returns only the display fields (aiTitle/recap/displayTitle/usage) without
-   * constructing the full `events` array. When absent, callers fall back to
-   * `readSessionContent` and take the needed fields.
-   */
-  readSessionSummary?(sessionId: string, cwd: string): SessionSummary;
-  /**
-   * Whether a session is still active (process may still be running).
-   *
-   * Dormant API: no production caller reads this today — the router decides
-   * "is an agent running" via the in-memory `bridge.isBusyFor(cwd)` (see
-   * `cmdPs`), not by probing session files. Retained on the reader contract
-   * because all 5 readers implement it and it is the natural hook if a
-   * file-based liveness check is ever needed; not wired into the bridge.
-   */
-  isSessionActive(sessionId: string, cwd: string): boolean;
-}
-
 /**
  * AgentRunner extends Runner with agent identity and a session reader.
  * Bridge/Router depend on this interface so adding a new agent is
@@ -793,6 +636,22 @@ export interface AgentRunner extends Runner {
   getStatusInfo(): AgentStatusInfo;
   /** Whether this runner provides live usage data (vs. file-based). */
   getUsageAuthority?(): 'live' | 'jsonl';
+  /**
+   * 回传审批决策（codex thread/permissions、ACP elicitation、DSH approval
+   * resolve）。未实现的 agent 由协调器按「无人应答」超时收尾。
+   */
+  respondApproval?(requestId: number | string, response: unknown): Promise<void>;
+  /**
+   * 停止 agent 侧的一个后台任务（DSH 的 background job）。只有支持后台任务的
+   * agent 实现；调用方按能力存在与否门控。
+   */
+  killJob?(sessionId: string, jobId: string): Promise<boolean>;
+  /**
+   * 热更审批模式/权限预设（config.save 后推给在跑的 runner，不必重启会话）。
+   * 各家 settings 词表不同（codex: approvalPolicy/sandbox；kimi: permissionMode；
+   * opencode: mode；dsh: permissionPreset），故为开放载荷。
+   */
+  updateApprovalMode?(settings: Record<string, unknown>): Promise<void>;
 }
 
 /** Agent self-describing status info for /status display. */

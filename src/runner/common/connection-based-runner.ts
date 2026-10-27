@@ -14,14 +14,9 @@
  * handleNotification/handleServerRequest, respondApproval, pendingApprovals,
  * updateApprovalMode, getStatusInfo) and provide the small abstract hooks below.
  */
-import type {
-  AgentKind,
-  AgentSessionReader,
-  AgentEvent,
-  AgentRunner,
-  AgentStatusInfo,
-  SpawnOptions,
-} from '../types.js';
+import type { AgentKind } from '../../agent-kinds.js';
+import type { AgentSessionReader } from '../../session-contract.js';
+import type { AgentEvent, AgentRunner, AgentStatusInfo, SpawnOptions } from '../types.js';
 import type { ChildProcess } from 'node:child_process';
 import { ConnectionLostError } from './jsonrpc/client.js';
 import { getLogger } from '../../logger/index.js';

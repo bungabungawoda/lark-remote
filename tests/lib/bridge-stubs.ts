@@ -19,16 +19,60 @@
  */
 
 import { vi } from 'vitest';
-import type { Runner, AgentRunner, AgentSessionReader } from '../../src/runner/index.js';
+import type { Mock } from 'vitest';
+import type { AgentSessionReader } from '../../src/session-contract.js';
+import type { Runner, AgentRunner } from '../../src/runner/index.js';
 import { AgentRegistry } from '../../src/runner/registry.js';
 import { SessionReaderRegistry } from '../../src/session/registry.js';
 import { ClaudeSessionReader } from '../../src/session/claude/index.js';
-import { Bridge } from '../../src/bridge/index.js';
+import { Bridge, type BridgeChannel } from '../../src/bridge/index.js';
 import { QueueManager } from '../../src/bridge/queue-manager.js';
 import { SessionStore } from '../../src/session/index.js';
 import { AppConfigSchema } from '../../src/config/index.js';
 import type { AppConfig } from '../../src/config/index.js';
-import { AGENT_KINDS } from '../../src/runner/types.js';
+import { AGENT_KINDS } from '../../src/agent-kinds.js';
+
+// ── Stub connector types ────────────────────────────────────────────
+
+/** 记录字段的单条形状：测试据此断言发送内容。 */
+export interface StubConnectorSentRecord {
+  chatId: string;
+  input: unknown;
+  opts?: unknown;
+}
+
+/**
+ * 具名桩类型：满足 `BridgeChannel` 全部必选成员 + 记录字段。
+ *
+ * 此前工厂返回推断类型，经 router-fixture 的 `opts.connector ?? stub` 推导成
+ * `BridgeChannel | Stub` 联合，`_sent`/`_cards`/`_updates` 在联合的
+ * BridgeChannel 一侧不可见——这是 src 测试 450 个隐藏类型错误里 ~160 处的
+ * 单一根因。接口加成员时桩在这里同步编译失败，杜绝「桩缺成员、测试静默测
+ * 不完整对象」的契约漂移。
+ */
+export interface StubConnector extends BridgeChannel {
+  sendImage(chatId: string, filePath: string): Promise<string>;
+  connected: boolean;
+  _sent: StubConnectorSentRecord[];
+  _cards: object[];
+  _updates: Array<{ messageId: string; card: object }>;
+  _updateCardCalls: Array<{ messageId: string; card: object }>;
+}
+
+export interface StubConnectorWithGatedCardUpdate extends BridgeChannel {
+  connected: boolean;
+  _sent: StubConnectorSentRecord[];
+  _cards: object[];
+  _updateCalls: string[];
+  releaseCardGate(): void;
+}
+
+export interface StubConnectorWithPendingQueueCard extends BridgeChannel {
+  connected: boolean;
+  _sent: StubConnectorSentRecord[];
+  _cards: object[];
+  resolveQueueCardSend(): void;
+}
 
 // ── Agent registry ──────────────────────────────────────────────────
 
@@ -124,7 +168,7 @@ export interface StubConnectorOpts {
  * - `removeReactionSpy`: useful for reaction-retract tests
  * - `recordUpdates`: useful for bash-command tests that need to track card updates
  */
-export function createStubConnector(opts?: StubConnectorOpts) {
+export function createStubConnector(opts?: StubConnectorOpts): StubConnector {
   const sent: { chatId: string; input: unknown; opts?: unknown }[] = [];
   const cards: object[] = [];
   const updates: { messageId: string; card: object }[] = [];
@@ -191,7 +235,7 @@ export function createStubConnector(opts?: StubConnectorOpts) {
  * 复现生产竞态：飞书 updateCard API 往返期间串行队列链继续推进。
  * 行为变体统一收敛到共享工厂（独立命名导出）。
  */
-export function createStubConnectorWithGatedCardUpdate() {
+export function createStubConnectorWithGatedCardUpdate(): StubConnectorWithGatedCardUpdate {
   const sent: Array<{ chatId: string; input: unknown; opts?: unknown }> = [];
   const cards: object[] = [];
   const updateCalls: string[] = [];
@@ -207,6 +251,7 @@ export function createStubConnectorWithGatedCardUpdate() {
       return 'file-msg-id';
     },
     addReaction: async () => {},
+    removeReactionByEmoji: async () => {},
     streamCard: async (
       chatId: string,
       initial: object,
@@ -260,7 +305,7 @@ export function createStubConnectorWithGatedCardUpdate() {
  * 复现生产竞态：飞书 API 延迟 / 99991400 限流重试使排队卡 send promise
  * pending，而运行中任务被 stop、settle 推进队列链。
  */
-export function createStubConnectorWithPendingQueueCard() {
+export function createStubConnectorWithPendingQueueCard(): StubConnectorWithPendingQueueCard {
   const sent: Array<{ chatId: string; input: unknown; opts?: unknown }> = [];
   const cards: object[] = [];
   let resolveQueueCardSend: (() => void) | undefined;
@@ -283,6 +328,7 @@ export function createStubConnectorWithPendingQueueCard() {
       return 'file-msg-id';
     },
     addReaction: async () => {},
+    removeReactionByEmoji: async () => {},
     streamCard: async (
       chatId: string,
       initial: object,
@@ -440,7 +486,7 @@ export function createStubRunner(opts?: StubRunnerOpts): Runner {
 export interface MakeBridgeOpts {
   runner?: Runner;
   idleTimeoutMs?: number;
-  connector?: ReturnType<typeof createStubConnector>;
+  connector?: StubConnector;
   /** 覆盖默认测试 config；不传时使用 defaultTestConfig()。 */
   config?: AppConfig;
 }
@@ -479,12 +525,23 @@ function defaultTestConfig(): AppConfig {
 // ── Mock bridge ─────────────────────────────────────────────────────
 
 /**
+ * `createMockBridge()` 的返回类型：Bridge 的方法桩把 `.mock` 记录面也暴露出来。
+ *
+ * 返回 `Bridge` 时调用方只能看到方法签名，`sendResult.mock.calls` 不可见。
+ */
+export type MockBridge = Bridge & {
+  sendResult: Mock;
+  sendFile: Mock;
+  updateCardInPlace: Mock;
+};
+
+/**
  * Create a mock Bridge with vi.fn() stubs for all methods.
  *
  * `sendResult` defaults to `vi.fn().mockResolvedValue(true)` (real success).
  * Override to `undefined` with `{ sendResult: vi.fn().mockResolvedValue(undefined) }`.
  */
-export function createMockBridge(overrides?: Partial<Bridge>): Bridge {
+export function createMockBridge(overrides?: Partial<Bridge>): MockBridge {
   return {
     sendResult: vi.fn().mockResolvedValue(true),
     forwardToClaude: vi.fn().mockResolvedValue(undefined),
@@ -506,7 +563,7 @@ export function createMockBridge(overrides?: Partial<Bridge>): Bridge {
     syncActiveApprovalModes: vi.fn(),
     saveInboundMedia: vi.fn().mockResolvedValue({ attachments: [], rejected: [] }),
     ...overrides,
-  } as Bridge;
+  } as unknown as MockBridge;
 }
 
 // ── QueueManager fixtures ─────────────────────────────────────────────

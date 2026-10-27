@@ -20,7 +20,7 @@ import { SessionStore, SessionReaderRegistry } from '../session/index.js';
 import { AppConfigSchema } from '../config/index.js';
 import { createMockBridge } from '../../tests/lib/bridge-stubs.js';
 import { expectNoV1ActionContainer } from '../../tests/lib/card-view.js';
-import type { AgentSession, AgentSessionReader } from '../runner/index.js';
+import type { AgentSession, AgentSessionReader } from '../session-contract.js';
 
 const CWD = '/home/user/project';
 const ctx = { userId: 'user1', chatId: 'chat1', messageId: 'msg1' };

@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import type { AgentSessionReader } from '../../../src/runner/index.js';
+import type { AgentSessionReader } from '../../../src/session-contract.js';
 import { ClaudeSessionReader } from '../../../src/session/claude/index.js';
 import { OpencodeSessionReader } from '../../../src/session/opencode/index.js';
 import { PiSessionReader } from '../../../src/session/pi/index.js';

@@ -11,7 +11,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { CommandRouter } from './index.js';
 import type { CardActionPayload } from './index.js';
-import { searchBar, SEARCH_INPUT_NAME } from './card-helpers.js';
+import { searchBar, SEARCH_INPUT_NAME } from '../card/card-helpers.js';
 import { SessionStore } from '../session/index.js';
 import { AppConfigSchema } from '../config/index.js';
 import type { AppConfig } from '../config/index.js';

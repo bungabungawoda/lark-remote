@@ -538,7 +538,16 @@ export class CloneSession {
         fs.readFileSync(path.join(this.configDir, 'startup-contact.json'), 'utf-8'),
       ) as { userId?: unknown };
       return typeof raw.userId === 'string' && raw.userId ? raw.userId : undefined;
-    } catch {
+    } catch (err) {
+      // ENOENT = 旧实例从未写过 startup-contact（正常）。其余（解析失败/权限）
+      // 留痕：否则下游会误归因成「旧 owner 无条目」。
+      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
+        getLogger().debug(
+          `[clone] cannot read startup-contact.json for previous owner: ${
+            (err as Error)?.message ?? String(err)
+          }`,
+        );
+      }
       return undefined;
     }
   }

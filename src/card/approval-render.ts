@@ -11,6 +11,7 @@ import { truncateMarkdownTables } from './text-truncate.js';
 import { truncateUtf8 } from '../common/truncate.js';
 import { cardButton } from './card-shared.js';
 import { countCardElements } from './card-budget.js';
+import { isRunActive, type RunTerminal } from './run-state.js';
 
 /** Unique nonce for card button callbacks (SDK dedup + router validation). */
 function mkNonce(): string {
@@ -81,7 +82,7 @@ function pushIf<T>(arr: T[], el: T | null): void {
  */
 export function renderApprovalArea(
   approval: ApprovalView | undefined,
-  opts?: { expired?: boolean; runId?: string; terminal?: string },
+  opts?: { expired?: boolean; runId?: string; terminal?: RunTerminal },
 ): object[] {
   if (!approval) return [];
   // 终态（done/error/interrupted/idle_timeout）下 run 已结束：coordinator 已
@@ -136,7 +137,7 @@ export function renderApprovalArea(
  */
 export function renderApprovalAreaCompact(
   approval: ApprovalView | undefined,
-  opts?: { expired?: boolean; runId?: string; terminal?: string },
+  opts?: { expired?: boolean; runId?: string; terminal?: RunTerminal },
 ): object[] {
   if (!approval) return [];
   if (isTerminalHidden(opts)) return [];
@@ -176,9 +177,9 @@ export function renderApprovalAreaCompact(
   return elements;
 }
 
-/** 终态隐藏判定（renderApprovalArea 与 compact 共用）。 */
-function isTerminalHidden(opts?: { terminal?: string }): boolean {
-  return !!opts?.terminal && opts.terminal !== 'running' && opts.terminal !== 'finalizing';
+/** 终态隐藏判定（renderApprovalArea 与 compact 共用）：仍在推进的 run 不隐藏按钮。 */
+function isTerminalHidden(opts?: { terminal?: RunTerminal }): boolean {
+  return !!opts?.terminal && !isRunActive(opts.terminal);
 }
 
 /**

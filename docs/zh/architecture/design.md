@@ -546,12 +546,12 @@ this.sessionStore.setCwd(ctx.userId, canonical);
 全相同 → 第二次点击被 seenCache 当重复丢弃，handler 不执行。
 
 **原地更新卡片的高危场景**：`updateCardInPlace` 不发新卡，用户始终在同一张卡上操作。
-固定 value 的回调按钮（如 config 卡片 toggle、run 卡操作按钮）callback value 不变，
+固定 value 的回调按钮（如 config 卡片保存、run 卡操作按钮）callback value 不变，
 用户连点两次同一按钮时：
 
 - 第一次：eventId 不在缓存 → 回调执行 → finally 把 eventId 加入 seenCache
 - 第二次（TTL 内）：eventId 已在缓存 → **drop duplicate action** → 回调没执行，
-  状态卡在第一次的结果（如 toggle 类按钮停留在"已关闭"）
+  状态停在第一次的结果（如保存后按钮退回旧值）
 
 `configActionQueue`（`src/router/index.ts`）的串行化救不了——被 drop 的事件根本没到 router。
 
@@ -564,13 +564,13 @@ cardAction）。300ms 挡飞书瞬时重投递（<100ms 级），放过用户连
 
 | callback value                                                                                                       | 风险     | 说明                                                                        |
 | -------------------------------------------------------------------------------------------------------------------- | -------- | --------------------------------------------------------------------------- |
-| 固定（`config.toggle`/`config.set`/`config.input`/`config.save`/`new-session`）                                      | **高危** | 连击第二次被 drop 会卡死状态且 TTL 内无法恢复；靠 `DEDUP_TTL_MS` 小窗口放过 |
+| 固定（`config.set`/`config.input`/`config.save`/`new-session`）                                      | **高危** | 连击第二次被 drop 会卡死状态且 TTL 内无法恢复；靠 `DEDUP_TTL_MS` 小窗口放过 |
 | 含动态字段（`stop`→runId、`queue.*`→messageId、`resume.use`→sessionId、`*.cd`→path、`ws.*`→name、`order.*`→orderId） | 低危     | 不同目标 actionId 不同天然安全；同目标连击第二次 drop 属幂等无害            |
 
 **新增原地更新按钮的准则**：
 
 1. callback value 尽量带动态字段（runId/path/sessionId 等），让不同操作的 actionId 天然不同；
-2. 固定 value 的 toggle 类按钮（必然存在），不要把 `DEDUP_TTL_MS` 调大（>500ms 即可能误伤慢点）；
+2. 固定 value 的按钮（必然存在），不要把 `DEDUP_TTL_MS` 调大（>500ms 即可能误伤慢点）；
 3. 连击需幂等的按钮（如 `order.exec`）即便方案 1 让连击通过，也由串行队列/runId 校验兜底，无破坏。
 
 **无法在 stub connector 测试中复现**：测试直接调 `router.handleCardAction`，绕过 SDK safety
@@ -719,8 +719,8 @@ watchdog 覆盖**——watchdog 在 `for await (runner.run())` 循环里，要�
 
 所有卡片类型的次要信息用 CardKit `collapsible_panel` 包裹，构造工具在
 `src/card/collapsible.ts`（`collapsiblePanel` / `collapsibleMarkdownPanel` /
-`markdownDiv`）。router 侧共享工具在 `src/router/card-helpers.ts`
-（`sessionEventPanel` / `formatTimestamp`）。
+`markdownDiv`）。卡片共享 builder 在 `src/card/card-helpers.ts`
+（`sessionEventPanel` / `formatTimestamp`）——纯建卡函数，router 与 bridge 都只调用它。
 
 **关键约束**：折叠是**视觉隐藏**，JSON payload 仍含全部内容，28KB 字节预算
 （`CARD_BUDGET_BYTES`）仍需遵守。折叠减少的是视觉高度，不是序列化大小。
@@ -904,7 +904,7 @@ fatal 退出。
 
 ### 9.21 Token 统计统一口径（ccusage 对齐）
 
-run 卡片 done 统计与 `/resume` 末尾统计共用 `formatUsageStats`（src/router/index.ts），
+run 卡片 done 统计与 `/resume` 末尾统计共用 `formatUsageStats`（src/card/usage-format.ts），
 统一对齐 [ccusage](https://github.com/sirmalloc/ccusage) 的 token 语义。**核心不变量**：
 
 - **`Total = max(totalTokens, input+output+cacheRead+cacheCreation)`**。不能退回
@@ -964,8 +964,10 @@ codex app-server 的 `turn.completed` 透传协议 `tokenUsage.last` 的 turn �
 = 分项和）、pi `extractUsage`（`totalTokens = usage.totalTokens`）、opencode reader
 （`cache.write`/`total`）、codex `readCodexRollout` 解析 `token_count`
 事件（`raw = last_token_usage ?? subtract(total, prev_total)`，跟踪 `previousTotals`
-做累计差；flow 字段按 `task_started` 汇总本 turn 的所有采样）。改 token 展示时，
-四个 reader + `formatUsageStats` + lark-remote 五处要保持一致。
+做累计差；flow 字段按 `task_started` 汇总本 turn 的所有采样）。改 token **展示口径**
+时仍需同时核对四个 reader + `formatUsageStats` + lark-remote；**字段清单**已单源为
+`UsageSnapshot`（`src/session-contract.ts`），原先手抄的 5 份可选字段清单改为
+`extends` 它，加一个字段只改这一处。
 
 **contextLength**：claude/pi reader 用 `max(末次 compact 的
 postTokens, 末轮完整 prompt input+output+cacheRead+cacheCreation)`——postTokens 随

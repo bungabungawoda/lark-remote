@@ -18,7 +18,9 @@
  *     Bash notifications and serves terminal/* reverse RPC; opencode is plain
  *   - getStatusInfo / updateApprovalMode: agent-specific extras & mode vocab
  */
-import type { AgentEvent, AgentKind, AgentSessionReader, SpawnOptions } from '../../types.js';
+import type { AgentKind } from '../../../agent-kinds.js';
+import type { AgentSessionReader } from '../../../session-contract.js';
+import type { AgentEvent, SpawnOptions } from '../../types.js';
 import { ConnectionManager } from '../jsonrpc/connection-manager.js';
 import { JsonRpcClient } from '../jsonrpc/client.js';
 import {

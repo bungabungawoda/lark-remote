@@ -1,7 +1,7 @@
 import type { CommandContext, CommandResult } from '../../bridge/index.js';
 import type { WorkspaceEntry } from '../../workspace/index.js';
 import { cardButton } from '../../card/card-shared.js';
-import { paginationBar, searchBar } from '../card-helpers.js';
+import { paginationBar, searchBar } from '../../card/card-helpers.js';
 import { pageSlice } from '../paging.js';
 import { resolveDirectory } from '../path-validation.js';
 

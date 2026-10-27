@@ -3,7 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import type { CommandContext, CommandResult } from '../../bridge/index.js';
 import { cardButton } from '../../card/card-shared.js';
-import { paginationBar, searchBar } from '../card-helpers.js';
+import { paginationBar, searchBar } from '../../card/card-helpers.js';
 import { inspectPath, statPath } from '../path-validation.js';
 import { pageSlice } from '../paging.js';
 

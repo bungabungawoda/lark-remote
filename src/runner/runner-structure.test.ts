@@ -7,7 +7,9 @@ import {
   OpencodeAcpRunner,
   PiRpcRunner,
 } from './index.js';
-import { AGENT_KINDS, COMPACT_CAPABILITY, type AgentKind } from './types.js';
+import { AGENT_KINDS } from '../agent-kinds.js';
+import type { AgentKind } from '../agent-kinds.js';
+import { COMPACT_CAPABILITY } from './types.js';
 
 describe('compact capability matrix', () => {
   /**

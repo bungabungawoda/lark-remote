@@ -4,7 +4,7 @@ import path from 'node:path';
 import YAML from 'yaml';
 import { getLogger } from '../logger/index.js';
 import { atomicWrite } from '../persistence/atomic-write.js';
-import type { AgentKind } from '../runner/index.js';
+import type { AgentKind } from '../agent-kinds.js';
 export { getConfigDir } from './dir.js';
 
 // Import constants from agent config files (SSOT: Layer 1 source)
@@ -72,22 +72,6 @@ export const DEFAULT_APPROVAL_TIMEOUT_MS = DEFAULTS.APPROVAL_TIMEOUT_MS;
  */
 export const DEFAULT_INBOUND_MEDIA_DIR_NAME = '.lark-remote-temp';
 export const DEFAULT_INBOUND_MEDIA_MAX_SIZE_MB = 100;
-
-/** 模型 ID → alias 映射。 */
-export const MODEL_ID_TO_ALIAS: Record<string, string> = {
-  'claude-opus-4-8': 'opus',
-  'claude-sonnet-4-6': 'sonnet',
-  'claude-haiku-4-5-20250501': 'haiku',
-  'claude-fable-5': 'fable',
-};
-
-/** alias → model ID 反向映射。 */
-export const MODEL_ALIAS_TO_ID: Record<string, string> = {
-  opus: 'claude-opus-4-8',
-  sonnet: 'claude-sonnet-4-6',
-  haiku: 'claude-haiku-4-5-20250501',
-  fable: 'claude-fable-5',
-};
 
 const FeishuConfigSchema = z.object({
   appId: z.string().min(1),
@@ -644,7 +628,6 @@ export function getAgentConfig(
  */
 export function getModelOptionsFromSettings(settingsPath: string): string[] {
   if (!settingsPath) return [];
-  if (!fs.existsSync(settingsPath)) return [];
 
   try {
     const content = fs.readFileSync(settingsPath, 'utf-8');

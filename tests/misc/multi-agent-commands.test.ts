@@ -89,13 +89,7 @@ describe('multi-agent legacy issues — /ps', () => {
     // When defaultAgent is 'pi', /ps should say "有 Pi 进程在运行",
     // NOT "有 claude 进程在运行"
     const { router, sessionStore, connector } = createRouter({ defaultAgent: 'pi' });
-    sessionStore.set('user1', {
-      sessions: new Map([['claude', 's1']]),
-      previousSessions: new Map(),
-      sessionCwds: new Map(),
-      arrivalSessions: new Map(),
-      cwd: '/tmp',
-    });
+    sessionStore.setSessionIdAndCwd('user1', 'claude', 's1', '/tmp');
 
     await router.handle('/ps', ctx);
     const text = (connector._sent[0].input as { text: string }).text;
@@ -129,13 +123,7 @@ describe('multi-agent legacy issues — /status', () => {
     // After that, /status directly calls runner.getStatusInfo() without runtime checks.
     // The stub runner returns {kind:'claude', model:'test-model'} - verify no hardcoded config.claude.model
     const { router, sessionStore, connector } = createRouter({ defaultAgent: 'opencode' });
-    sessionStore.set('user1', {
-      sessions: new Map([['claude', 's1']]),
-      previousSessions: new Map(),
-      sessionCwds: new Map(),
-      arrivalSessions: new Map(),
-      cwd: '/tmp',
-    });
+    sessionStore.setSessionIdAndCwd('user1', 'claude', 's1', '/tmp');
 
     await router.handle('/status', ctx);
     const md = (connector._sent[0].input as { markdown: string }).markdown;
@@ -205,13 +193,7 @@ describe('multi-agent legacy issues — bridge stream end', () => {
 describe('multi-agent legacy issues — /new', () => {
   it('test_anchor_new_shows_agent_name_in_clear_message', async () => {
     const { router, sessionStore, connector } = createRouter({ defaultAgent: 'opencode' });
-    sessionStore.set('user1', {
-      sessions: new Map([['claude', 's1']]),
-      previousSessions: new Map(),
-      sessionCwds: new Map(),
-      arrivalSessions: new Map(),
-      cwd: '/tmp',
-    });
+    sessionStore.setSessionIdAndCwd('user1', 'claude', 's1', '/tmp');
 
     await router.handle('/new', ctx);
     const text = (connector._sent[0].input as { text: string }).text;
@@ -226,13 +208,7 @@ describe('multi-agent legacy issues — /new', () => {
 describe('multi-agent legacy issues — new-session card action', () => {
   it('test_anchor_new_session_card_shows_agent_name', async () => {
     const { router, sessionStore, connector } = createRouter({ defaultAgent: 'pi' });
-    sessionStore.set('user1', {
-      sessions: new Map([['claude', 's1']]),
-      previousSessions: new Map(),
-      sessionCwds: new Map(),
-      arrivalSessions: new Map(),
-      cwd: '/tmp',
-    });
+    sessionStore.setSessionIdAndCwd('user1', 'claude', 's1', '/tmp');
 
     await router.handleCardAction({ cmd: 'new-session' }, ctx);
     const text = (connector._sent[0].input as { text: string }).text;

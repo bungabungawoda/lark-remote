@@ -24,6 +24,7 @@ import { AppConfigSchema } from '../../../src/config/index.js';
 import { SpawningRunner, pidFileSuffix } from '../../../src/runner/common/spawning-runner.js';
 import { ClaudeRunner } from '../../../src/runner/index.js';
 import { makeTempDir } from '../../lib/temp-dir.js';
+import { ClaudeSessionReader } from '../../../src/session/claude/index.js';
 
 const PID_DIR = makeTempDir('process-listener-leak-anchor-');
 
@@ -48,6 +49,7 @@ describe('registerExitHandlers 不累积 process 监听器', () => {
   it('test_anchor_claude_runner_register_exit_handlers_does_not_accumulate_listeners', () => {
     for (let i = 0; i < 5; i++) {
       const runner = new ClaudeRunner({
+        sessionReader: new ClaudeSessionReader(),
         binary: '/bin/true',
         pidDir: PID_DIR,
         cwd: `ws${i}`,
@@ -97,7 +99,12 @@ describe('registerExitHandlers 不累积 process 监听器', () => {
       // 生产路径：agentRegistry 工厂返回真实 runner（非 stub）
       const agentRegistry = {
         get: (_kind: string, cwd: string) =>
-          new ClaudeRunner({ binary: '/bin/true', pidDir: tmpDir, cwd }),
+          new ClaudeRunner({
+            sessionReader: new ClaudeSessionReader(),
+            binary: '/bin/true',
+            pidDir: tmpDir,
+            cwd,
+          }),
         isRegistered: () => true,
         listRegistered: () => ['claude'],
         setConfigContainer: () => {},
@@ -142,6 +149,7 @@ describe('registerExitHandlers 不累积 process 监听器', () => {
     const cwd = 'exitprobe';
     const pidFile = path.join(PID_DIR, `claude${pidFileSuffix(cwd)}.pid`);
     const runner = new ClaudeRunner({
+      sessionReader: new ClaudeSessionReader(),
       cwd: 'test',
       binary: '/bin/true',
       pidDir: PID_DIR,
@@ -163,6 +171,7 @@ describe('registerExitHandlers 不累积 process 监听器', () => {
     const beforeExit = process.listenerCount('exit');
     const beforeCount = SpawningRunner.getRegisteredExitHandlerCount();
     const runner = new ClaudeRunner({
+      sessionReader: new ClaudeSessionReader(),
       binary: '/bin/true',
       pidDir: PID_DIR,
       cwd: 'idempotent-probe',

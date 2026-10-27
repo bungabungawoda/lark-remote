@@ -136,7 +136,9 @@ describe('bash 高频输出合批', () => {
     }
     await session.finish('done', { exitCode: 0, output: 'done' });
     await session.settle();
-    expect(capture.updates.length).toBeLessThan(100); // 现状 == 100（+initial/finish）
+    // 100 次同步 update 全部落进同一个 100ms 合批窗口：实测 2 次 PATCH
+    // （initial + finish 各一次）。上界给到 5，退化到逐 chunk PATCH 时（约 100）必红。
+    expect(capture.updates.length).toBeLessThanOrEqual(5);
   });
 });
 

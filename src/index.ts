@@ -1,9 +1,6 @@
 import { loadConfig, getAgentConfig, type AppConfig } from './config/index.js';
-import {
-  resolveAgentChoices,
-  type AgentSessionContentEvent,
-  type AgentSessionUsage,
-} from './runner/index.js';
+import type { AgentSessionContentEvent, AgentSessionUsage } from './session-contract.js';
+import { resolveAgentChoices } from './runner/index.js';
 import { ensureConfig } from './config/wizard.js';
 import {
   parseCliArgs,
@@ -58,7 +55,7 @@ import {
 } from './update/index.js';
 import { classifyRejection } from './error-classification.js';
 import { WorkspaceStore } from './workspace/index.js';
-import { buildSessionHistoryCard, pickResumeCardEvents } from './router/card-helpers.js';
+import { buildSessionHistoryCard, pickResumeCardEvents } from './card/card-helpers.js';
 import { newSessionButton, resumeCompactButton, agentDisplayName } from './card/card-shared.js';
 import path from 'node:path';
 import { setupMessageHandlers } from './message-handlers.js';
@@ -224,6 +221,11 @@ function initializeRunner(
     startTimeoutMs: () => getAgentConfig(latest(), 'dsh')?.startTimeoutMs,
   });
 
+  // claude 的会话读取器与其余 agent 一样由组合根注入：runner 侧不 import session
+  // 层（否则 runner ↔ session 互相依赖），且 bridge 读 usage / router 列 session
+  // 用的是同一个实例（缓存共用）。
+  const claudeSessionReader = new ClaudeSessionReader();
+
   // Claude factory reads from configContainer (not closure) so runtime
   // config changes (model, effort, stopGraceMs) take effect after
   // bridge.setConfig() + clearRunners(). Same pattern as codex/pi/kimi.
@@ -236,6 +238,7 @@ function initializeRunner(
       settings: cliArgs.settings,
       pidDir: configDir,
       cwd: ws,
+      sessionReader: claudeSessionReader,
       permissionMode: claudeConfig.permissionMode,
       idleTtlMs:
         claudeConfig.idleTtlMinutes != null ? claudeConfig.idleTtlMinutes * 60_000 : undefined,
@@ -271,7 +274,7 @@ function initializeRunner(
 
   // Register session reader (same instance as used by runner)
   const sessionReaderRegistry = new SessionReaderRegistry();
-  sessionReaderRegistry.register('claude', new ClaudeSessionReader());
+  sessionReaderRegistry.register('claude', claudeSessionReader);
   sessionReaderRegistry.register('codex', codexSessionReader);
 
   // Register OpencodeSessionReader (CLI version)
@@ -549,8 +552,8 @@ async function main() {
 
   try {
     await connector.connect();
-  } catch {
-    logger.error('failed to connect to Feishu, check appId/appSecret');
+  } catch (err) {
+    logger.error('failed to connect to Feishu, check appId/appSecret:', err);
     process.exit(1);
   }
 

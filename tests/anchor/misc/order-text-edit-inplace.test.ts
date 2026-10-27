@@ -52,11 +52,7 @@ describe('Anchor: order.textEdit opens input card in place', () => {
     fs.mkdirSync(projectDir);
 
     const { router, sessionStore, connector } = createRouter();
-    sessionStore.set('user1', {
-      sessions: new Map([['claude', 'session-1']]),
-      previousSessions: new Map(),
-      cwd: projectDir,
-    });
+    sessionStore.setSessionIdAndCwd('user1', 'claude', 'session-1', projectDir);
 
     const response = await router.handleCardAction(
       { cmd: 'order.textEdit', orderId: order.id, offset: 0 } as {
@@ -101,11 +97,7 @@ describe('Anchor: order.textInput updates card in place', () => {
     fs.mkdirSync(projectDir);
 
     const { router, sessionStore } = createRouter();
-    sessionStore.set('user1', {
-      sessions: new Map([['claude', 'session-1']]),
-      previousSessions: new Map(),
-      cwd: projectDir,
-    });
+    sessionStore.setSessionIdAndCwd('user1', 'claude', 'session-1', projectDir);
 
     // simulate CardKit 2.0 input submit (input_value 经 raw 回传)
     const response = await router.handleCardAction(

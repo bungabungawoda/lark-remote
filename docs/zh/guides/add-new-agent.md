@@ -22,14 +22,10 @@ lark-remote 采用多 agent 架构设计，通过以下三个 registry 实现可
 创建 `src/runner/<agent>/runner.ts`，实现 `AgentRunner` 接口：
 
 ```typescript
-import type {
-  AgentEvent,
-  AgentRunner,
-  AgentSessionReader,
-  SpawnOptions,
-  AgentStatusInfo,
-  AgentKind,
-} from '../types.js';
+import type { AgentEvent, AgentRunner, SpawnOptions, AgentStatusInfo } from '../types.js';
+// 会话读取契约与 agent 名单都在中立层，不在 runner/types.ts（见 design.md 分层）
+import type { AgentSessionReader } from '../../session-contract.js';
+import type { AgentKind } from '../../agent-kinds.js';
 
 export class <Agent>Runner implements AgentRunner {
   readonly kind: AgentKind = '<agent>';
@@ -68,11 +64,7 @@ export { <Agent>Runner, type <Agent>RunnerConfig } from './runner.js';
 创建 `src/session/<agent>/sessions.ts`，实现 `AgentSessionReader` 接口：
 
 ```typescript
-import type {
-  AgentSession,
-  AgentSessionReader,
-  SessionContent,
-} from '../types.js';
+import type { AgentSession, AgentSessionReader, SessionContent } from '../../session-contract.js';
 
 export class <Agent>SessionReader implements AgentSessionReader {
   listSessions(
@@ -154,7 +146,7 @@ agentRegistry.register('<agent>', (_workspace: string) => {
   const container = agentRegistry.getConfigContainer();
   const latestConfig = container?.current as AppConfig;
   const agentConfig = getAgentConfig(latestConfig, '<agent>');
-  
+
   return new <Agent>Runner({
     model: agentConfig?.model,
     // ... 其他配置
@@ -188,7 +180,7 @@ const builders: Record<AgentKind, AgentConfigCardBuilder> = {
 
 ### 步骤 9: 在 AGENT_KINDS 名单添加新字面量
 
-在 `src/runner/types.ts` 的 `AGENT_KINDS` 数组里加一项（**只改这一处**）：
+在 `src/agent-kinds.ts` 的 `AGENT_KINDS` 数组里加一项（**只改这一处**）：
 
 ```typescript
 export const AGENT_KINDS = ['claude', 'codex', 'opencode', 'pi', 'kimi', 'dsh', '<agent>'] as const;
@@ -196,13 +188,14 @@ export const AGENT_KINDS = ['claude', 'codex', 'opencode', 'pi', 'kimi', 'dsh', 
 export type AgentKind = (typeof AGENT_KINDS)[number];
 ```
 
-`AgentKind` 类型、`VALID_AGENTS`（resume 卡片校验）、bridge 的 resume.compact 校验都从
-这份名单派生。历史上这份名单被手抄成多份并漂移过：dsh 加入后 bridge 的 resume.compact
-仍只有 5 个，带 dsh 的卡片会静默退回 defaultAgent（用错 reader → 「未找到 session」）。
-不要在别处再抄一份 agent 名单；测试里的 stub registry 也一样走 `AGENT_KINDS`。
+`AgentKind` 类型、显示名 `AGENT_DISPLAY_NAMES` 与 `isAgentKind` / `resolveAgentKind`
+（resume 卡片与命令行解析）都从这份名单派生。历史上这份名单被手抄成多份并漂移过：
+dsh 加入后 bridge 的 resume.compact 仍只有 5 个，带 dsh 的卡片会静默退回
+defaultAgent（用错 reader → 「未找到 session」）。不要在别处再抄一份 agent 名单；
+测试里的 stub registry 也一样走 `AGENT_KINDS`。
 
-同一文件里的 `COMPACT_CAPABILITY` 也必须填这一项（`Record<AgentKind, boolean>`，缺项直接
-编译失败）——这就是「本 agent 能不能压缩」的唯一声明点：
+`src/runner/types.ts` 里的 `COMPACT_CAPABILITY` 也必须填这一项（`Record<AgentKind, boolean>`，
+缺项直接编译失败）——这就是「本 agent 能不能压缩」的唯一声明点：
 
 - runner 实现了 `runCompact(message, opts)` → 填 `true`；
 - 协议没有压缩入口 → 填 `false`，并在此文件说明原因。
@@ -285,6 +278,7 @@ console.log('Config builder:', builder.constructor.name);
 ### Q: 如何确保新 agent 的配置不会导致保存失败？
 
 参考配置保存的三层防御设计：
+
 1. Schema 枚举常量（单一真相源）
 2. 外部 CLI 加载时 filter
 3. UI builder 双重防御 filter

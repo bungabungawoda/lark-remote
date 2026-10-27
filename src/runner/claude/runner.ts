@@ -10,17 +10,16 @@
  * pid 文件/killOrphan/Terminator/心跳/退出分发器机制）。每次 run() 委托
  * session：确保进程（可 --resume）→ 写 user 消息 → 消费事件直到本 turn result。
  */
-import { ClaudeSessionReader } from '../../session/claude/index.js';
+import type { AgentSessionReader } from '../../session-contract.js';
 import {
   type AgentEvent,
   type SpawnOptions,
-  type AgentSessionReader,
   type AgentRunner,
   type AgentStatusInfo,
   type ApprovalAction,
 } from '../types.js';
 import { ClaudeSession } from './session.js';
-import { MODEL_ID_TO_ALIAS } from '../../config/index.js';
+import { MODEL_ID_TO_ALIAS } from '../../model-catalog.js';
 
 /**
  * Claude 内建压缩命令。stream-json 输入模式下该文本会被 CLI 本地拦截为
@@ -56,7 +55,12 @@ export class ClaudeRunner implements AgentRunner {
     pidDir?: string;
     cwd: string;
     spawnHeartbeatMs?: number;
-    sessionReader?: AgentSessionReader;
+    /**
+     * 由组合根（`src/index.ts`）注入，与 sessionReaderRegistry 里的**同一个**实例。
+     * claude 不在此处自己 new：那会让 runner 反向依赖 session 层（runner ↔ session
+     * 循环的一半）；其余 agent 从一开始就是注入的。
+     */
+    sessionReader: AgentSessionReader;
     /** Claude 权限模式（官方 --permission-mode 枚举；'default'=省略参数）。 */
     permissionMode?: string;
     /** 会话级空闲回收 TTL（ms）；0=禁用。 */
@@ -65,7 +69,7 @@ export class ClaudeRunner implements AgentRunner {
     this.defaultModel = opts.model ?? 'claude-opus-4-8';
     this.defaultEffort = opts.effort ?? 'medium';
     this.permissionMode = opts.permissionMode ?? 'auto';
-    this.sessionReader = opts.sessionReader ?? new ClaudeSessionReader();
+    this.sessionReader = opts.sessionReader;
     this.session = new ClaudeSession({
       pidDir: opts.pidDir,
       cwd: opts.cwd,

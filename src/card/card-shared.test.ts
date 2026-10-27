@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { agentDisplayName } from './card-shared.js';
-import { AGENT_DISPLAY_NAMES, AGENT_KINDS } from '../runner/types.js';
+import { AGENT_DISPLAY_NAMES, AGENT_KINDS } from '../agent-kinds.js';
 
 /**
  * 用户可见 agent 显示名的单源验证（P0）：

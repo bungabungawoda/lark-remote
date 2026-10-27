@@ -19,7 +19,19 @@ vi.mock('../platform/command.js', () => ({
 import { spawnProcess, spawnProcessSync } from '../platform/spawn.js';
 import { resolveExecutable } from '../platform/command.js';
 
-type MockExecCallback = (err: Error | null, stdout: unknown, stderr: unknown) => void;
+// 与 install.ts 的 ExecFileCallback 精确对齐（回调参数逆变：unknown 会破坏
+// mock → ExecFileFn 的赋值方向，必须用生产同款 string | Buffer）。
+type MockExecCallback = (
+  err: Error | null,
+  stdout: string | Buffer,
+  stderr: string | Buffer,
+) => void;
+type MockExecFn = (
+  file: string,
+  args: readonly string[],
+  options: object,
+  callback: MockExecCallback,
+) => void;
 
 describe('inferPackageManagerFromPath', () => {
   it('detects bun global install layout', () => {
@@ -131,7 +143,9 @@ describe('detectPackageManager', () => {
     // 无 env：npm/bun 解析失败、pnpm 可用 → 必须按顺序落到 pnpm
     delete process.env.LARK_REMOTE_MANAGED_BY;
     mockResolve.mockReset();
-    mockResolve.mockImplementation((cmd: string) => (cmd === 'pnpm' ? '/usr/bin/pnpm' : null));
+    mockResolve.mockImplementation((cmd: string) =>
+      cmd === 'pnpm' ? { kind: 'direct', file: '/usr/bin/pnpm' } : null,
+    );
     expect(detectPackageManager('/home/user/code/lark-remote/dist/index.js')).toBe('pnpm');
 
     // PATH 全 miss → null（fail-closed）
@@ -141,7 +155,9 @@ describe('detectPackageManager', () => {
     // 非法 env 值 → 同样落 PATH 检测
     process.env.LARK_REMOTE_MANAGED_BY = 'yarn';
     mockResolve.mockReset();
-    mockResolve.mockImplementation((cmd: string) => (cmd === 'npm' ? '/usr/bin/npm' : null));
+    mockResolve.mockImplementation((cmd: string) =>
+      cmd === 'npm' ? { kind: 'direct', file: '/usr/bin/npm' } : null,
+    );
     expect(detectPackageManager()).toBe('npm');
   });
 });
@@ -154,8 +170,8 @@ describe('runInstallLatest', () => {
   });
 
   it('returns success on successful install', async () => {
-    const mockExec = (_cmd: string, _args: string[], _opts: object, cb: MockExecCallback) => {
-      cb(null, { stdout: 'added 1 package', stderr: '' });
+    const mockExec: MockExecFn = (_cmd, _args, _opts, cb) => {
+      cb(null, 'added 1 package', '');
     };
     const result = await runInstallLatest({
       packageManager: 'npm',
@@ -165,9 +181,9 @@ describe('runInstallLatest', () => {
   });
 
   it('returns success=false with EACCES hint on permission error', async () => {
-    const mockExec = (_cmd: string, _args: string[], _opts: object, cb: MockExecCallback) => {
+    const mockExec: MockExecFn = (_cmd, _args, _opts, cb) => {
       const err = new Error('EACCES: permission denied');
-      cb(err, { stdout: '', stderr: 'npm ERR!' });
+      cb(err, '', 'npm ERR!');
     };
     const result = await runInstallLatest({
       packageManager: 'npm',
@@ -178,8 +194,8 @@ describe('runInstallLatest', () => {
   });
 
   it('does not suggest sudo for bun/pnpm EACCES (they install into the user dir)', async () => {
-    const mockExec = (_cmd: string, _args: string[], _opts: object, cb: MockExecCallback) => {
-      cb(new Error('EACCES: permission denied'), { stdout: '', stderr: '' });
+    const mockExec: MockExecFn = (_cmd, _args, _opts, cb) => {
+      cb(new Error('EACCES: permission denied'), '', '');
     };
     for (const pm of ['bun', 'pnpm'] as const) {
       const result = await runInstallLatest({ packageManager: pm, execFn: mockExec });
@@ -190,9 +206,9 @@ describe('runInstallLatest', () => {
   });
 
   it('returns success=false with error message on generic failure', async () => {
-    const mockExec = (_cmd: string, _args: string[], _opts: object, cb: MockExecCallback) => {
+    const mockExec: MockExecFn = (_cmd, _args, _opts, cb) => {
       const err = new Error('network timeout');
-      cb(err, { stdout: '', stderr: '' });
+      cb(err, '', '');
     };
     const result = await runInstallLatest({
       packageManager: 'npm',
@@ -203,10 +219,10 @@ describe('runInstallLatest', () => {
   });
 
   it('uses correct command for each package manager', async () => {
-    const calls: Array<{ cmd: string; args: string[] }> = [];
-    const recordingExec = (cmd: string, args: string[], _opts: object, cb: MockExecCallback) => {
+    const calls: Array<{ cmd: string; args: readonly string[] }> = [];
+    const recordingExec: MockExecFn = (cmd, args, _opts, cb) => {
       calls.push({ cmd, args });
-      cb(null, { stdout: '', stderr: '' });
+      cb(null, '', '');
     };
 
     await runInstallLatest({ packageManager: 'npm', execFn: recordingExec });

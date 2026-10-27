@@ -33,13 +33,14 @@ import { paginate, capEvents } from '../common/pagination.js';
 import { sortByRecencyDesc } from '../common/recency.js';
 import { getLogger } from '../../logger/index.js';
 import { isRecord, stringValue } from '../../common/guards.js';
+import { TtlCache } from '../../common/ttl-cache.js';
 import { resolveCodexHome } from '../../config/codex-config.js';
 import type {
   AgentSessionContentEvent,
+  AgentSessionUsage,
   SessionContent,
   SessionSummary,
-  AgentSessionUsage,
-} from '../../runner/index.js';
+} from '../../session-contract.js';
 
 interface CodexRolloutEntry {
   threadId: string; // = session_meta.payload.session_id
@@ -780,13 +781,12 @@ interface SessionIndexEntry {
 
 const INDEX_TTL_MS = 5_000; // 5 seconds — covers a single /resume flow
 
-const sessionIndexCache = new Map<
-  string,
-  {
-    index: Map<string, SessionIndexEntry>;
-    builtAt: number;
-  }
->();
+/**
+ * codexHome → 会话索引。共享 `TtlCache`（TTL 由写入时间判定 + LRU 上限），
+ * 与 kimi/pi/opencode 三个 reader 同一套语义。生产侧 `CodexSessionReader`
+ * 构造时就把 codexHome 解析定死，实际只会用到 1 个键；上限是防漏的界。
+ */
+const sessionIndexCache = new TtlCache<string, Map<string, SessionIndexEntry>>(INDEX_TTL_MS, 4);
 
 /**
  * Build or return cached session index for a given resolved codexHome.
@@ -799,22 +799,16 @@ const sessionIndexCache = new Map<
  *                           AFTER the cache was built — but still within the
  *                           5s TTL — is found without waiting for expiry.
  *
- * Cache shape note: `sessionIndexCache` is module-level and keyed by the
- * resolved codexHome string. In production `CodexSessionReader` resolves
- * codexHome once in its constructor and reuses it for every call, so a single
- * bridge instance produces exactly one cache entry — the Map does NOT grow
- * unbounded. The TTL refreshes the value on each rebuild; entries are never
- * evicted, but there is effectively just one.
+ * Cache shape note: the cache is module-level and keyed by the resolved
+ * codexHome string; `TtlCache` caps entries (LRU) so a caller that injects
+ * many distinct codexHomes cannot grow memory without bound.
  */
 function getSessionIndex(
   resolvedCodexHome: string,
   forceRefresh = false,
 ): Map<string, SessionIndexEntry> {
-  const cacheKey = resolvedCodexHome;
-  const cached = sessionIndexCache.get(cacheKey);
-  if (!forceRefresh && cached && Date.now() - cached.builtAt < INDEX_TTL_MS) {
-    return cached.index;
-  }
+  const cached = forceRefresh ? undefined : sessionIndexCache.get(resolvedCodexHome);
+  if (cached) return cached;
 
   const sessionsDir = path.join(resolvedCodexHome, 'sessions');
   const files = walkRolloutFiles(sessionsDir);
@@ -883,7 +877,7 @@ function getSessionIndex(
     }
   }
 
-  sessionIndexCache.set(cacheKey, { index, builtAt: Date.now() });
+  sessionIndexCache.set(resolvedCodexHome, index);
   return index;
 }
 

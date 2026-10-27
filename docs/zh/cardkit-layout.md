@@ -15,17 +15,19 @@
 
 ## 表单组件
 
-### toggle 右列
-- boolean 字段的 toggle 按钮右列必须 `width: 'weighted', weight: 3`
+### 控件右列
+
+- select/input 控件右列必须 `width: 'weighted', weight: 3`
 - 不能用 `width: 'auto'`——`auto` 让按钮只占文字宽度，右边缘和 select/input 对不齐
 
 ### input 组件
+
 - CardKit 2.0 `input` 组件**没有逐键回调**，只有用户提交（移动端键盘回车/完成键，桌面端输入框右侧的提交图标）时才触发一次 callback；没有逐键 change 事件，所以「边输边过滤」做不到
 - **文案不要写「点 ✓」**：移动端没有那个图标，只有键盘回车/完成键（2026-09-19 用户反馈）。统一写「按回车提交」
-- **不要依赖「清空输入再提交」作为取消手段**：官方文档没有承诺空串会发回调，且 2026-09-19 用户在手机飞书实测「清空后回车没有反应」——把它当唯一取消路径会在部分客户端变成死路。需要「清除/重置」语义时，在同一行放一个显式 `auto` 宽按钮承载（按钮 callback 不带 `input_value`，用 payload 里的标记字段强制清除，别靠「读不到输入值」这一隐式条件）。参考实现：`src/router/card-helpers.ts` 的 `searchBar`（有 `currentQuery` 即渲染「清除筛选」按钮 + `clearQuery` 标记）
+- **不要依赖「清空输入再提交」作为取消手段**：官方文档没有承诺空串会发回调，且 2026-09-19 用户在手机飞书实测「清空后回车没有反应」——把它当唯一取消路径会在部分客户端变成死路。需要「清除/重置」语义时，在同一行放一个显式 `auto` 宽按钮承载（按钮 callback 不带 `input_value`，用 payload 里的标记字段强制清除，别靠「读不到输入值」这一隐式条件）。参考实现：`src/card/card-helpers.ts` 的 `searchBar`（有 `currentQuery` 即渲染「清除筛选」按钮 + `clearQuery` 标记）
 - 但 `input_value` 会被 SDK normalizer 丢弃，必须 `includeRawEvent: true`，从 `action.raw.action.input_value` 读取
 - 不要用 `form` 包裹 input + button，直接用 `column_set` + `input` + `button`
-- **input 不要和文案挤在同一行**：同一行里放「文案 + input + 按钮」时，`auto` 按钮先占走固有宽度，剩下的宽度再按 weight 切分——手机窄屏（可用宽约 330px）下文案列只剩百来像素、input 只有几十像素，文案折行且输入框没法点（2026-09-10 分页栏真实故障）。正确做法是**拆成两行**：信息文案用顶层 `div` 独占整行，控件放进自己的 `column_set`（上一页 `auto` + input `weighted weight:1` + 下一页 `auto`，input 吃满按钮之外的剩余宽度）。参考实现：`src/router/card-helpers.ts` 的 `paginationBar`（`/ls` `/ws` `/resume` `/active` `/order` 共用）。
+- **input 不要和文案挤在同一行**：同一行里放「文案 + input + 按钮」时，`auto` 按钮先占走固有宽度，剩下的宽度再按 weight 切分——手机窄屏（可用宽约 330px）下文案列只剩百来像素、input 只有几十像素，文案折行且输入框没法点（2026-09-10 分页栏真实故障）。正确做法是**拆成两行**：信息文案用顶层 `div` 独占整行，控件放进自己的 `column_set`（上一页 `auto` + input `weighted weight:1` + 下一页 `auto`，input 吃满按钮之外的剩余宽度）。参考实现：`src/card/card-helpers.ts` 的 `paginationBar`（`/ls` `/ws` `/resume` `/active` `/order` 共用）。
 - **不要用 form 包裹 input + 按钮**（见上）；也不要放进文案同一个 column 的第二个 element（同列会上下堆叠）。列宽只用 `weighted`/`auto`，未经验证不要引入像素宽度（如 `'90px'`）
 
 ## 按钮组件
@@ -50,8 +52,8 @@
 - **不要用 `column_set` 的 `auto` + `grow` 并排放"短标签 + 长文本"**。`auto` 列会
   被长文本挤到只剩一两个字宽，CJK 会竖排：2026-10-19 手机反馈的
   「运行
-中」就是这么来的。
-- **状态行/元信息 = 单个 `div` + ` · ` 分隔**。换行只会发生在分隔符处，可预期。
+  中」就是这么来的。
+- **状态行/元信息 = 单个 `div` + `·` 分隔**。换行只会发生在分隔符处，可预期。
 - **每个分段要短到自身不会折行**（≈8 个显示宽度以内），例如 `📊 ~36%`、
   `🧰 532 步`、`⏱ 2m13s`，不要写 `📊 上下文使用率 ~36%`。
 - **交互控件放行尾**（按钮列 `width:auto` 在右侧），正文列用 `grow`——只适用于
@@ -82,6 +84,7 @@
 ## 常用布局模板
 
 ### 文字 + 按钮（行内）
+
 ```json
 {
   "tag": "div",
@@ -100,6 +103,7 @@
 ```
 
 ### 左标签 + 右输入（表单行）
+
 ```json
 {
   "tag": "column_set",
@@ -111,7 +115,7 @@
       "elements": [{ "tag": "div", "text": { "tag": "plain_text", "content": "标签名" } }]
     },
     {
-      "tag": "column", 
+      "tag": "column",
       "width": "weighted",
       "weight": 3,
       "elements": [{ "tag": "input", ... }]
@@ -131,11 +135,11 @@
 
 `tests/feishu-live/feishu-card-element-total-limit.test.ts` 在测试会话实测：
 
-| 形状 | 通过 | 失败 |
-| --- | --- | --- |
-| 顶层平铺 div | 99 个 | 100 个 |
+| 形状                     | 通过                           | 失败           |
+| ------------------------ | ------------------------------ | -------------- |
+| 顶层平铺 div             | 99 个                          | 100 个         |
 | 单列 column_set 内嵌 div | 98 个（+1 个 column_set = 99） | 99 个（= 100） |
-| 单 column_set 的列数 | 66 列 | 67 列 |
+| 单 column_set 的列数     | 66 列                          | 67 列          |
 
 判据是**递归统计 `elements` 数组成员（不含 `columns`）≤ 99**。整卡 JSON 对象数
 **不是**判据：`/ws` 分页卡有 227 个 JSON 对象仍能发出去，而平铺 100 个 div 只有

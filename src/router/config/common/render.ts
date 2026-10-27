@@ -1,8 +1,12 @@
 /**
  * Shared config card rendering logic.
  *
- * Builds CardKit 2.0 elements for config fields (boolean toggle, select dropdown, input).
+ * Builds CardKit 2.0 elements for config fields (select dropdown, input, note).
  * Used by all agent config builders and the shared tabs (idle, logging).
+ *
+ * 控件形态只有 `ConfigField.type` 里那三种，且每种在本文件都有对应 builder：
+ * 渲染端与处理端（router 的 `config.set` / `config.input`）必须一一对应，
+ * 「渲染得出按钮、点了没人处理」是禁止状态（守卫见 config-card-controls.test.ts）。
  */
 
 import { getConfigValue, type AppConfig } from '../../../config/index.js';
@@ -23,12 +27,7 @@ function buildFieldElements(fields: ConfigField[], displayConfig: AppConfig): ob
     // Get current value from displayConfig for dynamic fields
     const currentValue = getConfigValue(displayConfig, field.key);
 
-    if (field.type === 'boolean') {
-      // For boolean, use field.currentValue if set, otherwise use config value
-      const isOn =
-        field.currentValue !== undefined ? field.currentValue === true : currentValue === true;
-      elements.push(buildBooleanElement(field, isOn));
-    } else if (field.type === 'select' && field.options) {
+    if (field.type === 'select' && field.options) {
       elements.push(buildSelectElement(field, currentValue));
     } else if (field.type === 'note') {
       // 纯说明行：无 config.* 回调，只渲染 label 为 markdown 文本。
@@ -62,20 +61,6 @@ function fieldRow(label: string, control: object): object {
       },
     ],
   };
-}
-
-function buildBooleanElement(field: ConfigField, isOn: boolean): object {
-  const displayVal = isOn ? '✅ 已开启' : '⚪ 已关闭';
-  return fieldRow(
-    field.label,
-    cardButton(
-      displayVal,
-      { cmd: 'config.toggle', key: field.key },
-      {
-        type: isOn ? 'primary' : 'default',
-      },
-    ),
-  );
 }
 
 function buildSelectElement(field: ConfigField, currentValue: unknown): object {

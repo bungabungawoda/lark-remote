@@ -85,11 +85,11 @@ In-memory Map, keyed by userId (open_id):
 
 ```typescript
 interface SessionEntry {
-  sessions: Map<AgentKind, string>;        // one sessionId per agent
+  sessions: Map<AgentKind, string>; // one sessionId per agent
   previousSessions: Map<AgentKind, string>; // parked session when switching away (restored after `/config` agent switch)
-  arrivalSessions: Map<AgentKind, string>;  // arrival baseline: the sessionId the user last received when switching to this agent
-  sessionCwds: Map<AgentKind, string>;      // session actual cwd (system.init event.cwd; only claude may differ from cwd)
-  cwd: string;                              // controlled working directory (realpath)
+  arrivalSessions: Map<AgentKind, string>; // arrival baseline: the sessionId the user last received when switching to this agent
+  sessionCwds: Map<AgentKind, string>; // session actual cwd (system.init event.cwd; only claude may differ from cwd)
+  cwd: string; // controlled working directory (realpath)
 }
 const sessions = new Map<string, SessionEntry>();
 ```
@@ -105,23 +105,23 @@ const sessions = new Map<string, SessionEntry>();
 
 ## 5. Command List
 
-| Command | Behavior |
-|---------|----------|
-| `/new` | Clear session (keep cwd) |
-| `/cd <path>` | Switch cwd, clear session |
-| `/ls [dir]` | Pop up directory/file card; click directory to switch, click file under 30MB to send to Feishu; >30 items paginated |
-| `/ws save/use/remove` | Named directory alias management (`/ws` defaults to list) |
-| `/resume [list\|id]` | List/switch current agent's sessions (`/resume [agent] [N]` two-argument form, N clamped to [1,5] as page size); list paginated (`resume.page` callback for page navigation) |
-| `/active` | List in-progress tasks (Agent + Bash) in this process's memory |
-| `/status` | Show cwd, session_id, model, process status |
-| `/stop` | SIGTERM then immediately SIGKILL (no grace wait) |
-| `/ps` | Whether a process is running |
-| `/help` | Command list |
-| `/exit` | Exit lark-remote |
-| `/restart` | In-place self-restart lark-remote: spawn detached successor → old process releases instance lock and exits |
-| `/config get\|set` | Query/modify runtime config (card interaction, agent-aware fields) |
-| `/order save\|list\|edit` | Save, list, or edit frequent prompts |
-| `!<cmd>` | Execute bash command with streaming output to card (bypasses serial queue) |
+| Command                   | Behavior                                                                                                                                                                     |
+| ------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `/new`                    | Clear session (keep cwd)                                                                                                                                                     |
+| `/cd <path>`              | Switch cwd, clear session                                                                                                                                                    |
+| `/ls [dir]`               | Pop up directory/file card; click directory to switch, click file under 30MB to send to Feishu; >30 items paginated                                                          |
+| `/ws save/use/remove`     | Named directory alias management (`/ws` defaults to list)                                                                                                                    |
+| `/resume [list\|id]`      | List/switch current agent's sessions (`/resume [agent] [N]` two-argument form, N clamped to [1,5] as page size); list paginated (`resume.page` callback for page navigation) |
+| `/active`                 | List in-progress tasks (Agent + Bash) in this process's memory                                                                                                               |
+| `/status`                 | Show cwd, session_id, model, process status                                                                                                                                  |
+| `/stop`                   | SIGTERM then immediately SIGKILL (no grace wait)                                                                                                                             |
+| `/ps`                     | Whether a process is running                                                                                                                                                 |
+| `/help`                   | Command list                                                                                                                                                                 |
+| `/exit`                   | Exit lark-remote                                                                                                                                                             |
+| `/restart`                | In-place self-restart lark-remote: spawn detached successor → old process releases instance lock and exits                                                                   |
+| `/config get\|set`        | Query/modify runtime config (card interaction, agent-aware fields)                                                                                                           |
+| `/order save\|list\|edit` | Save, list, or edit frequent prompts                                                                                                                                         |
+| `!<cmd>`                  | Execute bash command with streaming output to card (bypasses serial queue)                                                                                                   |
 
 ---
 
@@ -144,7 +144,9 @@ Uses **CardKit 2.0** format — interactive components are attached directly to 
         "tag": "button",
         "text": { "tag": "plain_text", "content": "apple" },
         "type": "default",
-        "behaviors": [{ "type": "callback", "value": { "cmd": "ls.switch", "path": "/absolute/path/to/apple" } }]
+        "behaviors": [
+          { "type": "callback", "value": { "cmd": "ls.switch", "path": "/absolute/path/to/apple" } }
+        ]
       }
     ]
   }
@@ -159,7 +161,12 @@ After receiving a card click, extract the payload from `action.action.value`:
 
 ```typescript
 channel.on('cardAction', async (action) => {
-  const value = action.action.value as { cmd: string; path?: string; name?: string; sessionId?: string };
+  const value = action.action.value as {
+    cmd: string;
+    path?: string;
+    name?: string;
+    sessionId?: string;
+  };
   if (value.cmd === 'ls.switch') {
     // Security check then switch cwd
   } else if (value.cmd === 'ls.browse') {
@@ -177,6 +184,7 @@ channel.on('cardAction', async (action) => {
 ### 6.3 CardKit 2.0 Is the Only Standard
 
 This project uses CardKit 2.0 exclusively (no 1.x code paths remain). 2.0 card constraints:
+
 - Interactive components (button/select_static/input) **attach directly to body.elements**, wrapping in `action` container is forbidden
 - Callbacks uniformly use `behaviors:[{type:"callback",value:{cmd,key}}]`
 - Streaming output doesn't need tabs; content is arranged inline
@@ -230,19 +238,19 @@ defaultAgent: claude
 
 claude:
   model: claude-opus-4-8
-  effort: medium           # low | medium | high | xhigh | max
-  permissionMode: auto  # Claude official --permission-mode: default | acceptEdits | auto | bypassPermissions | manual | dontAsk | plan (switchable via /config card)
+  effort: medium # low | medium | high | xhigh | max
+  permissionMode: auto # Claude official --permission-mode: default | acceptEdits | auto | bypassPermissions | manual | dontAsk | plan (switchable via /config card)
   stopGraceMs: 5000
 
 codex:
-  approvalPolicy: on-request  # Codex official AskForApproval: untrusted | on-request | never (default on-request)
-  sandbox: workspace-write  # Codex official SandboxMode: read-only | workspace-write | danger-full-access (default workspace-write)
+  approvalPolicy: on-request # Codex official AskForApproval: untrusted | on-request | never (default on-request)
+  sandbox: workspace-write # Codex official SandboxMode: read-only | workspace-write | danger-full-access (default workspace-write)
 
 logging:
-  level: info             # debug | info | warn | error
+  level: info # debug | info | warn | error
 
 idle:
-  watchdogMinutes: 15     # 0 disables the idle watchdog
+  watchdogMinutes: 15 # 0 disables the idle watchdog
 ```
 
 When `feishu.appId`/`appSecret` is not detected on first launch: interactive terminal (both stdin/stdout are TTY) goes through the scan-to-create wizard (`src/config/wizard.ts`, calling `@larksuite/channel`'s `registerApp`), which prints a QR code in the terminal; the user scans it with the Feishu App to create the app, and the returned `client_id`/`client_secret` is written back to the config file before continuing startup; non-interactive environments (no TTY) fall through to `loadConfig` which generates a template and exits.
@@ -259,7 +267,7 @@ DSH's `ask_user_question` rides the same `$events` channel but under the `user-q
 
 The `session/follow` reconnect snapshot is **message-aligned** (the host's paginate counts only user/assistant messages; tool events ride along inside their message group — verified against the deepseek-harness source): when the backlog accumulated during a disconnect exceeds the snapshot budget (200 messages), the snapshot's first record lands past `lastSeq`, and the gap is backfilled by paging backwards through `session/page`'s `throughSeq` cursor (`replaySnapshotGap`, best-effort, capped at 20 pages × 200 messages). The durable event order is `agent/inbox/spliced` (submission) → `turn/start` → `user/message` (appended when the step claims the batch); the event probe reports `unknown` — not `closed` — for a trailing `user/message`, because it sits one full LLM round-trip away from the next durable event and compaction checkpoints also append `user/message` outside turns, so both open and closed could be wrong.
 
-DSH compaction goes through `commands/execute` sending `/compact` (`dsh-command-compact`: no arguments, idle-only) and **must not** go through `session/prompt`, which would hand the text to the model as an ordinary user message. That RPC returns only after compaction finishes, so `DshRunner.runCompact` disables the unary timeout — `/stop` and the card's idle watchdog are the backstops. Compaction produces no turn events, so the runner synthesizes the card's terminal state; DSH also offers neither claude's `compact_boundary` nor codex's `compacted` event, so the compact card renders no before/after statistics. Each agent's compact capability is declared from a single source in `runner/types.ts` (`COMPACT_CAPABILITY`, whose key set is `AgentKind` — a missing entry fails the build); the bridge gates on "declared *and* the runner implements it", and that declaration-versus-implementation match is covered by the matrix case in the runner structure test.
+DSH compaction goes through `commands/execute` sending `/compact` (`dsh-command-compact`: no arguments, idle-only) and **must not** go through `session/prompt`, which would hand the text to the model as an ordinary user message. That RPC returns only after compaction finishes, so `DshRunner.runCompact` disables the unary timeout — `/stop` and the card's idle watchdog are the backstops. Compaction produces no turn events, so the runner synthesizes the card's terminal state; DSH also offers neither claude's `compact_boundary` nor codex's `compacted` event, so the compact card renders no before/after statistics. Each agent's compact capability is declared from a single source in `runner/types.ts` (`COMPACT_CAPABILITY`, whose key set is `AgentKind` — a missing entry fails the build); the bridge gates on "declared _and_ the runner implements it", and that declaration-versus-implementation match is covered by the matrix case in the runner structure test.
 
 DSH's stop is not "kill a local child process": the turn runs inside the shared `dsh web` host, so exiting the bridge never takes it along. `DshRunner.stop` has two legs — while the prompt has not yet been claimed by a turn, it is withdrawn from the Host inbox by its `source.rpcId` (`session/updateQueue`), because `session/cancel`'s `keepInbox` would otherwise leave it to start a turn nobody subscribes to; once claimed, `session/cancel` is sent and then confirmed by polling `session/list.running`. Cancel is session-scoped and only answers `accepted`, so when confirmation is impossible the runner returns `unconfirmed` and the card or command says the turn may still be running in the background instead of falsely reporting it stopped. Until that withdraw/cancel has landed and been confirmed (the cancel path also waits for the session to report idle, including a possible second cancel retry), the next prompt is held by a gate inside the runner (`pendingStopGate`) — otherwise a session-level cancel could strike the new turn. The process-exit path re-issues the cancel through the same bounded synchronous curl transport the session reader uses, and every prompt's in-flight identity is also written to `<configDir>/dsh-inflight.json`; the next startup reconciles what is left: a still-pending prompt is cleared from the host inbox, and a session that still reports an open turn is surfaced to its owner once without being cancelled — that turn may belong to the DSH Web UI.
 
@@ -307,6 +315,7 @@ enqueue(task: () => Promise<void>): void {
 **Lanes share the same source as execution cwd**: Lane keys are partitioned by the `sessionStore` cwd at enqueue time, while slash commands like `/cd`, `/ws use`, `ls.switch` bypass the queue and immediately modify cwd. If `forwardToClaude` re-resolves cwd at execution time, a race condition occurs where two parallel lanes both resolve to the new cwd — the first occupies `activeRuns`, the second gets busy-dropped, and the queued message is silently lost. Fix: the `index.ts` enqueue closure passes the `workspace` at enqueue time as `cwdOverride` explicitly to `router.handle` → `bridge.forwardToClaude`; at execution time, the lane takes precedence (empty string falls back to `resolveCwd`). `finalizeRun` cleanup (`activeRuns.delete` + runner slot reclaim) executes in the `try/finally`'s finally block (review): even if `renderRunCard` throws during finalization, it must not leave a permanently busy workspace.
 
 **Batch 6 P1 semantics**:
+
 - Completion notification card: `sendCompletionNotificationCard` reads session content with `maxEvents: 5`, sends via `sendResult` (with `enforceCardBudget` as fallback), no longer directly calls the connector — long session cards will no longer exceed 28KB and be silently rejected by Feishu.
 - Bash `!` process: `BashProcessRunner` registers to the process-level exit dispatcher during the process's lifetime (same source as the 5 agent runners); on `/restart`/SIGTERM, it group-kills bash and its child processes; on `run()` completion it unregisters — `!sleep 3600` will no longer become orphaned.
 - Caching: session read caching uniformly uses "TTL based on cache write time + bounded LRU/FIFO".
@@ -336,9 +345,10 @@ Feishu WebSocket provides at-least-once delivery; the same event may be pushed m
 
 **cardAction dedup design flaw**: `actionId = tag|name|option|JSON.stringify(value)`, which **does not include timestamp/event sequence/messageId**. When the same user clicks the same button on the same card, all three segments of the eventId are identical → the second click is treated as a duplicate by seenCache and dropped, and the handler is not executed.
 
-**High-risk scenario for in-place card updates**: `updateCardInPlace` does not send a new card; the user always operates on the same card. Fixed-value callback buttons (e.g. config toggles, run-card action buttons) keep the same callback value. When a user clicks the same button twice in succession:
+**High-risk scenario for in-place card updates**: `updateCardInPlace` does not send a new card; the user always operates on the same card. Fixed-value callback buttons (e.g. the config save button, run-card action buttons) keep the same callback value. When a user clicks the same button twice in succession:
+
 - First click: eventId not in cache → callback runs → finally adds eventId to seenCache
-- Second click (within TTL): eventId already in cache → **drop duplicate action** → callback does not run, and state stays at the first click's result (e.g. a toggle button stuck at "disabled")
+- Second click (within TTL): eventId already in cache → **drop duplicate action** → callback does not run, and state stays at the first click's result (e.g. the save button reverting to the old value)
 
 `configActionQueue` (`src/router/index.ts`) serialization cannot help — the dropped event never reaches the router.
 
@@ -346,14 +356,15 @@ Feishu WebSocket provides at-least-once delivery; the same event may be pushed m
 
 **Dedup risk classification for in-place update logic** (reference for adding new in-place update buttons; use solution 1 — small TTL window dedup — uniformly):
 
-| callback value | Risk | Notes |
-|----------------|------|-------|
-| Fixed (`config.toggle`/`config.set`/`config.input`/`config.save`/`new-session`) | **High** | Second click being dropped causes stuck state with no recovery within TTL; relies on `DEDUP_TTL_MS` small window to pass through |
-| Contains dynamic fields (`stop`→runId, `queue.*`→messageId, `resume.use`→sessionId, `*.cd`→path, `ws.*`→name, `order.*`→orderId) | Low | Different targets produce different actionIds naturally safe; same-target double-click drop is idempotent and harmless |
+| callback value                                                                                                                   | Risk     | Notes                                                                                                                            |
+| -------------------------------------------------------------------------------------------------------------------------------- | -------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| Fixed (`config.set`/`config.input`/`config.save`/`new-session`)                                                  | **High** | Second click being dropped causes stuck state with no recovery within TTL; relies on `DEDUP_TTL_MS` small window to pass through |
+| Contains dynamic fields (`stop`→runId, `queue.*`→messageId, `resume.use`→sessionId, `*.cd`→path, `ws.*`→name, `order.*`→orderId) | Low      | Different targets produce different actionIds naturally safe; same-target double-click drop is idempotent and harmless           |
 
 **Guidelines for adding new in-place update buttons**:
+
 1. callback values should include dynamic fields (runId/path/sessionId, etc.) whenever possible, so that different operations naturally have different actionIds;
-2. For toggle-type buttons with fixed values (which inevitably exist), do not increase `DEDUP_TTL_MS` (>500ms may incorrectly suppress slow double-clicks);
+2. For fixed-value buttons (which inevitably exist), do not increase `DEDUP_TTL_MS` (>500ms may incorrectly suppress slow double-clicks);
 3. Buttons requiring idempotent double-clicks (e.g., `order.exec`) — even if solution 1 lets the double-click through, the serial queue/runId validation provides fallback, causing no damage.
 
 **Cannot reproduce in stub connector tests**: Tests call `router.handleCardAction` directly, bypassing the SDK safety layer; stubs don't simulate dedup. Relies on `DEDUP_TTL_MS` constant range assertions (`src/connector/dedup-config.test.ts`) to prevent regression + the documentation constraints in this section.
@@ -391,8 +402,8 @@ If jsonl contains no user messages at all (very old/corrupted), fallback to read
 **Usage data source (contextLength / compactCount)**: Context length and compaction count for the run card on completion (done/error/interrupted) are read from jsonl, not from stream-json — Claude CLI's stream-json does not emit `compact_boundary` events (they are only persisted to jsonl: `{"type":"system","subtype":"compact_boundary","compactMetadata":{"postTokens":N}}`), and the `result` event has no context length field. `Bridge.forwardToClaude`'s finish path calls `resolveFinalUsage(sessionId, cwd)`, which goes through `sessionReaderRegistry` to call `readSessionContent` to aggregate all `compact_boundary` events, yielding `compactCount = event count`; `contextLength = max(last compact's postTokens, last turn's complete prompt input+output+cacheRead+cacheCreation)` — postTokens is only accurate right after compaction and becomes stale as the session continues to grow; cache_read is the bulk of the prompt, and omitting it would cause severe underestimation. **Do not accumulate across all turns** (N turns accumulated produces N×context falsely huge values, regression: 55 turns accumulated 3,328,386, actual 79,816). `totalInput/totalOutput` are still accumulated, kept for reference.
 The context length at the end of `/resume` uses the same source (`readSessionContent` shares `aggregateSessionUsage`).
 
-
 `ClaudeRunner.run()` path probes (`src/runner/index.ts`):
+
 - `spawn pid=... binary=... cwd=... sessionId=...` — spawn successful
 - `spawn failed: ...` — `proc.once('error')` rejection
 - `wrote pid file path=pid` — pid file written
@@ -404,6 +415,7 @@ The context length at the end of `/resume` uses the same source (`readSessionCon
 **No automatic stop**: spawn-stage stall typically requires user intervention (re-login OAuth or check cwd); automatic SIGTERM would confuse the user more. After detection, let the user decide `/stop` or `Ctrl+C` to re-login. This differs from §9.12 idle watchdog's automatic stop — the watchdog covers the window where the stream has already started emitting but stops advancing, which usually indicates an orphaned process.
 
 `Bridge.forwardToClaude` path probes (`src/bridge/index.ts`):
+
 - `forward entry userId=... cwd=... sessionId=... message=...`
 - `workspace busy, dropping message userId=... cwd=...` — 2nd+ message dropped before queuing
 - `activeRuns.set cwd=... runId=...` / `activeRuns.delete cwd=... runId=...` — add/delete pairing
@@ -435,19 +447,19 @@ Test coverage: `src/bridge/bridge.test.ts` `Bridge.forwardToClaude logging probe
 
 ### 9.17 Card Folding (`collapsible_panel`)
 
-Secondary information for all card types is wrapped in CardKit `collapsible_panel`; construction utilities are in `src/card/collapsible.ts` (`collapsiblePanel` / `collapsibleMarkdownPanel` / `markdownDiv`). Router-side shared utilities are in `src/router/card-helpers.ts` (`sessionEventPanel` / `formatTimestamp`).
+Secondary information for all card types is wrapped in CardKit `collapsible_panel`; construction utilities are in `src/card/collapsible.ts` (`collapsiblePanel` / `collapsibleMarkdownPanel` / `markdownDiv`). Shared card builders live in `src/card/card-helpers.ts` (`sessionEventPanel` / `formatTimestamp`) — pure construction, called by both router and bridge.
 
 **Key constraint**: Folding is **visual hiding**; the JSON payload still contains all content, and the 28KB byte budget (`CARD_BUDGET_BYTES`) still applies. Folding reduces visual height, not serialized size.
 
 **Run card folding strategy** (`src/card/run-renderer.ts` + `src/card/tool-render.ts`):
 
-| Content | Folding behavior | Rationale |
-|---------|-----------------|-----------|
-| Thinking | Running: `expanded:true`; completed: `expanded:false` | Focus on progress during run; secondary info after completion |
-| Tool (any state) | **Native collapsible panel** (same interaction as thinking; tap the title); body truncated by tool count | Consistent with existing interaction, no round trip; size is controlled by truncation, not by withholding the body |
-| Failed tool | Body expanded by default; the button becomes "Collapse" | An error must be visible, not hidden behind a click |
-| Main text block | Not folded, direct markdown | Claude's reply is the primary information |
-| Terminal footer / Stop button | Not folded | Status summary must be visible |
+| Content                       | Folding behavior                                                                                         | Rationale                                                                                                          |
+| ----------------------------- | -------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
+| Thinking                      | Running: `expanded:true`; completed: `expanded:false`                                                    | Focus on progress during run; secondary info after completion                                                      |
+| Tool (any state)              | **Native collapsible panel** (same interaction as thinking; tap the title); body truncated by tool count | Consistent with existing interaction, no round trip; size is controlled by truncation, not by withholding the body |
+| Failed tool                   | Body expanded by default; the button becomes "Collapse"                                                  | An error must be visible, not hidden behind a click                                                                |
+| Main text block               | Not folded, direct markdown                                                                              | Claude's reply is the primary information                                                                          |
+| Terminal footer / Stop button | Not folded                                                                                               | Status summary must be visible                                                                                     |
 
 **Tools are native collapsible panels** (settled 2026-10-19; an intermediate version used "one row + a server-side Details button"): tap the title to expand, no round trip and no button. The intermediate version was rejected because folding saves no bytes (see above), so the body could only be withheld and expanding required the server to re-send the card; on a phone that is one extra tap, and the button ate the title width (long URLs wrapped onto two lines — user screenshot). The body is now **always in the payload**, with its size controlled by `toolOutputBudget()`, which scales truncation by tool count (about 8 KB total, 160–1200 chars per tool). With `MAX_BLOCKS=24`, 24 tools plus 12 thinking panels measured 54 elements / 21.7 KB — inside both budgets. Client-side expand state still resets on the next patch (`expanded` is the send-time default); tool panels share that limitation with thinking panels.
 
@@ -496,10 +508,10 @@ The serial queue (`Bridge.enqueue`) exists to prevent concurrent spawning of mul
 
 Classification definitions:
 
-| Category | Meaning | Queue behavior |
-|----------|---------|----------------|
+| Category              | Meaning                                                          | Queue behavior                                      |
+| --------------------- | ---------------------------------------------------------------- | --------------------------------------------------- |
 | **Control operation** | Does not spawn claude, only reads/writes session/workspace state | Queue-free (`enqueueImmediate` or direct execution) |
-| **Work operation** | Spawns claude process or queues to wait for spawn | Serial queue (`enqueue`) |
+| **Work operation**    | Spawns claude process or queues to wait for spawn                | Serial queue (`enqueue`)                            |
 
 Current implementation: the `isImmediateAction` allowlist (`src/router/index.ts`) follows this classification — control operations run queue-free, work operations (`order.exec`, normal messages) go through the serial queue.
 
@@ -511,10 +523,10 @@ Run card streaming patches go through SDK `@larksuite/channel`'s throttle + FIFO
 
 **Fallback**: The unhandledRejection handler in `src/index.ts` calls `classifyRejection` (`src/error-classification.ts`, pure function for easy unit testing) to categorize:
 
-| Classification | Condition | Behavior |
-|----------------|-----------|----------|
+| Classification  | Condition                                                                                                                           | Behavior                    |
+| --------------- | ----------------------------------------------------------------------------------------------------------------------------------- | --------------------------- |
 | **recoverable** | 502/503/504/ETIMEDOUT/ECONNRESET; or Feishu 4xx business error (`status∈[400,500)` and `data.code` is numeric, e.g., 230027/230025) | Log only, process continues |
-| **fatal** | TypeError and other programming errors; HTTP 5xx; pure HTTP 400 without Feishu code (not SDK patch path, real error) | Release lock + `exit(1)` |
+| **fatal**       | TypeError and other programming errors; HTTP 5xx; pure HTTP 400 without Feishu code (not SDK patch path, real error)                | Release lock + `exit(1)`    |
 
 Feishu 4xx business errors are classified as recoverable because they only affect a single card's patch attempt and should not bring down the entire lark-remote; subsequent patches may still succeed. 230027 was previously treated as fatal by the old handler, causing process exit.
 
@@ -522,7 +534,7 @@ Feishu 4xx business errors are classified as recoverable because they only affec
 
 ### 9.21 Token Statistics Unified Caliber (ccusage Alignment)
 
-Run card done statistics and `/resume` tail statistics share `formatUsageStats` (src/router/index.ts), uniformly aligned with [ccusage](https://github.com/sirmalloc/ccusage) token semantics. **Core invariants**:
+Run card done statistics and `/resume` tail statistics share `formatUsageStats` (src/card/usage-format.ts), uniformly aligned with [ccusage](https://github.com/sirmalloc/ccusage) token semantics. **Core invariants**:
 
 - **`Total = max(totalTokens, input+output+cacheRead+cacheCreation)`**. Cannot revert to `input+output` — that would miss cache (codex/opencode's cache_read often accounts for 90%+ of input). When `totalTokens` is absent, total = sum of components (claude JSONL has no explicit total; the reader computes the component sum).
 - **`input_tokens` everywhere represents "uncached input"**: codex derives it from `input_tokens − cached_input_tokens` on **both ingestion paths** (the reader in `src/session/codex/rollout-reader.ts`, and `src/runner/codex/app-server/translator.ts`, which normalizes on `thread/tokenUsage/updated`); pi/opencode/claude's original values are already non-cached. The wire field includes cached tokens (`total = input + output`); skipping the subtraction makes the done card's Input equal Context, double-counts the cache% denominator, and inflates Total via `max(total, sum of components)`.
@@ -535,7 +547,7 @@ Run card done statistics and `/resume` tail statistics share `formatUsageStats` 
 **Passthrough chain and scope unification**: result event usage → `Bridge` extracts live values (claude native naming `cache_read_input_tokens`/`cache_creation_input_tokens` is compatible with unified naming); after process exit, `resolveFinalUsage` reads jsonl. **Flow fields (input/output/cache/total): when live has input/output, use live entirely (this-run scope); otherwise jsonl fallback.** The codex app-server `turn.completed` carries the protocol's `tokenUsage.last` summed over the turn (one line per sampling, aggregated on ingestion, live scope), so it follows the same live-first rule as opencode; `contextLength`/`compactCount` always prefer jsonl (watermark/history count). A single card must not mix scopes (previously Input was this-run while Cache/Total were session cumulative, with cache% numerator and denominator from different sources).
 → `FinishMeta` → `RunState` → `run-renderer` passes to `formatUsageStats`.
 
-**`/resume` populated by each session reader**: claude `aggregateSessionUsage` (`totalTokens` = component sum), pi `extractUsage` (`totalTokens = usage.totalTokens`), opencode reader (`cache.write`/`total`), codex `readCodexRollout` parses `token_count` events (`raw = last_token_usage ?? subtract(total, prev_total)`, tracking `previousTotals` for cumulative diff; flow fields sum every sampling of the last turn, bounded by `task_started`). When modifying token display, four readers + `formatUsageStats` + lark-remote must be kept consistent.
+**`/resume` populated by each session reader**: claude `aggregateSessionUsage` (`totalTokens` = component sum), pi `extractUsage` (`totalTokens = usage.totalTokens`), opencode reader (`cache.write`/`total`), codex `readCodexRollout` parses `token_count` events (`raw = last_token_usage ?? subtract(total, prev_total)`, tracking `previousTotals` for cumulative diff; flow fields sum every sampling of the last turn, bounded by `task_started`). When changing the token **display semantics**, the four readers + `formatUsageStats` + lark-remote still have to be reviewed together; the **field list** is now single-sourced as `UsageSnapshot` (`src/session-contract.ts`) — the five hand-copied optional-field lists were replaced by `extends` on it, so adding a field means editing that one place.
 
 **contextLength**: claude/pi reader uses `max(last compact's postTokens, last turn's complete prompt input+output+cacheRead+cacheCreation)` — postTokens becomes stale as session grows (measured 85-95% underestimation); pi no longer uses pre-compaction `tokensBefore`; codex reader uses last turn's raw `input_tokens` (full prompt size including cache); lark-remote live path fallback `totalTokens ?? (input+cacheRead+cacheCreation+output)` (input is already uncached, cannot use just `input+output`).
 
@@ -559,6 +571,7 @@ listSessions(cwd: string, opts?: { limit?: number; offset?: number }): {
 - kimi default limit 20, aligned with other agents.
 
 **Router `/resume` pagination**:
+
 - `RESUME_PAGE_SIZE = 5`; N in `/resume [agent] [N]` is clamped to `[1, 5]`, default 5.
 - Pagination bar follows `/ls` structure: `Page x/y · N sessions total` + `Previous`/`Next` buttons, shown only when `total > pageSize`; N is the real total returned by the reader. Old fake prompt `Enter /resume N to see all` has been deleted.
 - New callback `resume.page` (value `{ cmd, agent, offset, pageSize }`) → `handleResumePage` → `cmdResume(offset)` → `updateCardInPlace` refreshes in place; `resume.page` is an `isImmediateAction` whitelist member (control operation, queue-free). Missing agent field falls back to defaultAgent.
@@ -568,7 +581,7 @@ listSessions(cwd: string, opts?: { limit?: number; offset?: number }): {
 - **DSH row content**: DSH 0.2.x `session/list` already returns
   `projections.values.title` and `turnOutline` (prompt/response per turn); the
   reader maps them to `AgentSession.title / lastUserMessage /
-  lastAssistantMessage`. The list card renders "title / last input / last output"
+lastAssistantMessage`. The list card renders "title / last input / last output"
   directly, so the first 5 rows no longer each fetch `session/page` (a list used
   to take 15 curl calls, now 1). When the fields are absent or the title is a
   placeholder, the old summary/prefetch behavior is used. The detail card header
@@ -581,7 +594,7 @@ The Compact button on a terminal run card carries only runId (at render time the
 
 **Do not revert to "keep only the newest entry per cwd"**: the compact card action goes through the serial queue (§9.6). When the user clicks an older card, the queue head is still a running run; by the time the action executes, a newer run has finalized and overwritten the single slot — the older card's compaction then invariably returns `⚠️ That task has already finished or does not belong to this session`, regardless of whether the session still exists or is compactable (2026-10-08 production defect). Storing by runId lets the button attest its own identity and never goes stale however long it was queued; only an unrecognized runId (a card from before a process restart, or a card from another cwd) returns that text.
 
-**Resolution is not narrowed by "the current cwd"**: each record also stores the cwd that run itself used, and the lookup is a cross-cwd global scan (`findCompactableRun`), with compaction using `target.cwd`. The button belongs to *that one run*, independent of which workspace the user is in now or whether a `/cd` happened while it was queued — `/stop`'s `interruptCurrentRun` likewise looks up runId globally and never consults the current cwd, and the two paths stay consistent. Narrowing by current cwd would create two false-miss scenarios: switching workspace and then clicking an older card, and `/cd` during queueing (compact is not on the immediate-execution list, so `/cd` can easily land between the click and the execution). Even when a record is hit by luck, the wrong cwd sends the search to the wrong directory for the session file and the runner instance.
+**Resolution is not narrowed by "the current cwd"**: each record also stores the cwd that run itself used, and the lookup is a cross-cwd global scan (`findCompactableRun`), with compaction using `target.cwd`. The button belongs to _that one run_, independent of which workspace the user is in now or whether a `/cd` happened while it was queued — `/stop`'s `interruptCurrentRun` likewise looks up runId globally and never consults the current cwd, and the two paths stay consistent. Narrowing by current cwd would create two false-miss scenarios: switching workspace and then clicking an older card, and `/cd` during queueing (compact is not on the immediate-execution list, so `/cd` can easily land between the click and the execution). Even when a record is hit by luck, the wrong cwd sends the search to the wrong directory for the session file and the runner instance.
 
 **Record writing is decoupled from slot ownership**: the only call site of `recordCompactableRun` (`recordCompactableRunForTerminal`) is pinned in `finalizeRun`'s `finally`, **outside the `if (this.activeRuns.get(cwd) === activeRun)` guard**. An external interrupt (`/stop`, a card's stop button, `queue.immediate`) first deletes `activeRuns[cwd]` inside `interruptCurrentRunDetailed` and marks the card `interrupted`, so by the time the run finalizes the guard is already false. If the record followed the guard, the terminal card of an interrupted run could never resolve it and clicking Compact would invariably return `⚠️ That task has already finished or does not belong to this session` — regardless of whether the session still exists. The guard only answers "does this cwd slot still belong to this run" (delete the slot / consume a stale runner); the record answers "did this run finish, and with which sessionId". **When adding any terminal side effect (a record, a snapshot, a notification), first ask which of those two questions it answers** instead of dropping it into the cleanup block.
 

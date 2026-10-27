@@ -6,16 +6,16 @@ import { UsageAccumulator, cumulativeUsageFields } from '../common/usage-accumul
 import { getLogger } from '../../logger/index.js';
 import type {
   AgentSession,
+  AgentSessionContentEvent,
   AgentSessionReader,
   AgentSessionUsage,
   SessionContent,
-  AgentSessionContentEvent,
-} from '../../runner/index.js';
+} from '../../session-contract.js';
 
 import { isStale } from '../common/constants.js';
-import { samePath } from '../../platform/path.js';
+import { safeRealpath, samePath } from '../../platform/path.js';
 import { capEvents, paginate } from '../common/pagination.js';
-import { sortByRecencyDesc } from '../common/recency.js';
+import { newestOf, sortByRecencyDesc } from '../common/recency.js';
 import { TtlCache } from '../../common/ttl-cache.js';
 import { truncateUtf8, TOOL_RESULT_MAX_BYTES } from '../../common/truncate.js';
 import { truncateToolInput } from '../common/content-blocks.js';
@@ -218,7 +218,14 @@ function readJsonlLines(filePath: string): Iterable<string> {
     jsonlCache.set(filePath, { mtime, lines });
 
     return lines;
-  } catch {
+  } catch (err) {
+    // ENOENT = 会话文件在扫描间隙被清理（正常）；其余 errno 留痕，否则该会话
+    // 静默从 /resume 消失。
+    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
+      getLogger().warn(
+        `[kimi-session-reader] cannot read ${filePath}: ${(err as Error)?.message ?? String(err)}`,
+      );
+    }
     return [];
   }
 }
@@ -336,7 +343,16 @@ export class KimiSessionReader implements AgentSessionReader {
     opts?: { limit?: number; offset?: number },
   ): { sessions: AgentSession[]; total: number } {
     try {
-      const realCwd = fs.realpathSync(cwd);
+      // 归一失败（陈旧/无权限 cwd）回退原样输入，让逐条 samePath 比较去决定
+      // 空态——一次 realpathSync 抛错不得把整张列表清掉（与 opencode 同口径）。
+      const realCwd = safeRealpath(cwd, (err) => {
+        if ((err as NodeJS.ErrnoException).code === 'ENOENT') return;
+        getLogger().debug(
+          `[kimi-session-reader] realpath ${cwd} failed, using the path as given: ${
+            (err as Error)?.message ?? String(err)
+          }`,
+        );
+      });
       const sessions: AgentSession[] = [];
 
       for (const entry of this.scanSessionIndex()) {
@@ -399,7 +415,19 @@ export class KimiSessionReader implements AgentSessionReader {
         try {
           mtimeMs = fs.statSync(wirePath).mtimeMs;
         } catch {
-          mtimeMs = fs.statSync(entry.sessionDir).mtimeMs;
+          try {
+            mtimeMs = fs.statSync(entry.sessionDir).mtimeMs;
+          } catch (err) {
+            if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
+              getLogger().warn(
+                `[kimi-session-reader] cannot stat ${entry.sessionDir}: ${
+                  (err as Error)?.message ?? String(err)
+                }`,
+              );
+            }
+            // 会话目录已不存在（或被清理）：跳过该条，别让它拖垮整张列表。
+            continue;
+          }
         }
 
         sessions.push({
@@ -423,8 +451,15 @@ export class KimiSessionReader implements AgentSessionReader {
         total,
       };
     } catch (error) {
-      getLogger().error(`[kimi-session-reader] listSessions error: ${error}`);
-      return { sessions: [], total: 0 };
+      // ENOENT（cwd 已删除）：陈旧 cwd 保持优雅空态。
+      // 其余失败：error 日志 + 上抛，router 显示「列表失败」——静默 [] 会让
+      // 用户误以为没有 session，与真空不可区分（与 opencode 同口径）。
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+        return { sessions: [], total: 0 };
+      }
+      getLogger().error(`[kimi-session-reader] listSessions failed: ${error}`);
+      const msg = error instanceof Error ? error.message : String(error);
+      throw new Error(`kimi session list 读取失败: ${msg}`, { cause: error });
     }
   }
 
@@ -432,7 +467,7 @@ export class KimiSessionReader implements AgentSessionReader {
    * Get the newest session for a given working directory
    */
   getNewestSession(cwd: string): AgentSession | null {
-    return this.listSessions(cwd, { limit: 1 }).sessions[0] ?? null;
+    return newestOf(this, cwd);
   }
 
   /**

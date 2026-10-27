@@ -1,5 +1,6 @@
 import { DEFAULT_APPROVAL_TIMEOUT_MS, type AppConfig } from '../config/index.js';
-import type { AgentKind, Runner } from '../runner/index.js';
+import type { AgentKind } from '../agent-kinds.js';
+import type { AgentRunner, Runner } from '../runner/index.js';
 import type { RunCardSession } from '../card/run-card-session.js';
 import { ApprovalCoordinator } from './approval-coordinator.js';
 import { getLogger } from '../logger/index.js';
@@ -44,9 +45,7 @@ export function createRunApprovalCoordinator(opts: {
         ? (opts.config.claude?.approvalTimeoutMs ?? DEFAULT_APPROVAL_TIMEOUT_MS)
         : DEFAULT_APPROVAL_TIMEOUT_MS,
     responder: async (requestId, response) => {
-      const runner = opts.runner as Runner & {
-        respondApproval?: (id: number | string, value: unknown) => Promise<void>;
-      };
+      const runner = opts.runner as AgentRunner;
       if (typeof runner.respondApproval === 'function') {
         await runner.respondApproval(requestId, response);
       }

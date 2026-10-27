@@ -20,7 +20,9 @@
  *   the ACP protocol never forwards
  */
 
-import type { AgentKind, AgentSessionReader, AgentStatusInfo } from '../../types.js';
+import type { AgentKind } from '../../../agent-kinds.js';
+import type { AgentSessionReader } from '../../../session-contract.js';
+import type { AgentStatusInfo } from '../../types.js';
 import {
   ConnectionManager,
   type ConnectionManagerOptions,

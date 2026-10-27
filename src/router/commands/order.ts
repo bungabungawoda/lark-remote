@@ -1,7 +1,7 @@
 import type { CommandContext, CommandResult } from '../../bridge/index.js';
 import type { OrderEntry } from '../../order/index.js';
 import { cardButton } from '../../card/card-shared.js';
-import { paginationBar } from '../card-helpers.js';
+import { paginationBar } from '../../card/card-helpers.js';
 import { pageSlice } from '../paging.js';
 
 export const ORDER_PAGE_SIZE = 8;

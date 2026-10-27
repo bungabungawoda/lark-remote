@@ -1,10 +1,9 @@
 // Anchor test: file click should send file to Feishu
 // File buttons use ls.file (directory buttons use ls.browse/ls.switch)
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach } from 'vitest';
 import { CommandRouter } from '../router/index.js';
 import { SessionStore } from '../session/index.js';
-import type { Bridge } from '../bridge/index.js';
-import type { AppConfig } from '../config/index.js';
+import { AppConfigSchema, type AppConfig } from '../config/index.js';
 import { createMockBridge, createStubSessionReaderRegistry } from '../../tests/lib/bridge-stubs.js';
 import { expectNoV1ActionContainer } from '../../tests/lib/card-view.js';
 import { makeTempDir } from '../../tests/lib/temp-dir.js';
@@ -23,7 +22,7 @@ const norm = (p: string): string => JSON.stringify(p).slice(1, -1);
 describe('ls file action', () => {
   let router: CommandRouter;
   let sessionStore: SessionStore;
-  let mockBridge: Bridge;
+  let mockBridge: ReturnType<typeof createMockBridge>;
   let tempDir: string;
   let testFilePath: string;
 
@@ -33,11 +32,11 @@ describe('ls file action', () => {
     fs.writeFileSync(testFilePath, 'hello world');
 
     sessionStore = new SessionStore();
-    sessionStore.set('user1', { sessions: new Map(), previousSessions: new Map(), cwd: tempDir });
+    sessionStore.setCwd('user1', tempDir);
 
     mockBridge = createMockBridge();
 
-    const config: AppConfig = {
+    const config: AppConfig = AppConfigSchema.parse({
       feishu: { appId: 'test', appSecret: 'test' },
       claude: {
         model: 'claude-sonnet-4-20250514',
@@ -48,7 +47,7 @@ describe('ls file action', () => {
       idle: { watchdogMinutes: 15 },
       logging: { level: 'info' },
       defaultAgent: 'claude',
-    };
+    });
 
     router = new CommandRouter({
       sessionStore,
@@ -75,7 +74,7 @@ describe('ls file action', () => {
     const bigFilePath = path.join(tempDir, 'big.txt');
     writeSizedFile(bigFilePath, 31 * 1024 * 1024);
 
-    sessionStore.set('user1', { sessions: new Map(), previousSessions: new Map(), cwd: tempDir });
+    sessionStore.setCwd('user1', tempDir);
 
     await router.handleCardAction(
       { cmd: 'ls.file', path: bigFilePath },
@@ -92,36 +91,18 @@ describe('ls file action', () => {
 describe('ls tilde expansion', () => {
   let router: CommandRouter;
   let sessionStore: SessionStore;
-  let mockBridge: {
-    sendResult: MockFn;
-    sendFile: MockFn;
-    forwardToClaude: MockFn;
-    isBusyFor: MockFn;
-    setConfig: MockFn;
-    setIdleTimeout: MockFn;
-    enqueue: MockFn;
-    interruptCurrentRun: MockFn;
-  };
+  let mockBridge: ReturnType<typeof createMockBridge>;
   let tempDir: string;
 
   beforeEach(() => {
     tempDir = makeTempDir('ls-tilde-test-');
 
     sessionStore = new SessionStore();
-    sessionStore.set('user1', { sessions: new Map(), previousSessions: new Map(), cwd: tempDir });
+    sessionStore.setCwd('user1', tempDir);
 
-    mockBridge = {
-      sendResult: vi.fn().mockResolvedValue(undefined),
-      sendFile: vi.fn().mockResolvedValue(undefined),
-      forwardToClaude: vi.fn(),
-      isBusyFor: vi.fn().mockReturnValue(false),
-      setConfig: vi.fn(),
-      setIdleTimeout: vi.fn(),
-      enqueue: vi.fn().mockResolvedValue(undefined),
-      interruptCurrentRun: vi.fn().mockResolvedValue(true),
-    };
+    mockBridge = createMockBridge();
 
-    const config: AppConfig = {
+    const config: AppConfig = AppConfigSchema.parse({
       feishu: { appId: 'test', appSecret: 'test' },
       claude: {
         model: 'claude-sonnet-4-20250514',
@@ -131,7 +112,7 @@ describe('ls tilde expansion', () => {
       idle: { watchdogMinutes: 15 },
       logging: { level: 'info' },
       defaultAgent: 'claude',
-    };
+    });
 
     router = new CommandRouter({
       sessionStore,
@@ -230,16 +211,16 @@ describe('ls on a file path lists the file itself', () => {
     fs.writeFileSync(testFilePath, 'zip-content');
 
     sessionStore = new SessionStore();
-    sessionStore.set('user1', { sessions: new Map(), previousSessions: new Map(), cwd: tempDir });
+    sessionStore.setCwd('user1', tempDir);
     mockBridge = createMockBridge();
 
-    const config: AppConfig = {
+    const config: AppConfig = AppConfigSchema.parse({
       feishu: { appId: 'test', appSecret: 'test' },
       claude: { model: 'claude-sonnet-4-20250514', effort: 'medium', stopGraceMs: 5000 },
       idle: { watchdogMinutes: 15 },
       logging: { level: 'info' },
       defaultAgent: 'claude',
-    };
+    });
 
     router = new CommandRouter({
       sessionStore,

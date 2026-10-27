@@ -19,7 +19,7 @@ import os from 'node:os';
 import { FeishuConnector } from '../../src/connector/index.js';
 import { loadConfig } from '../../src/config/index.js';
 import { TEST_CONFIG_DIR, configPath, skipIfNoConfig, describeLive } from './live-helpers.js';
-import { paginationBar } from '../../src/router/card-helpers.js';
+import { paginationBar } from '../../src/card/card-helpers.js';
 
 // 使用独立的测试配置目录
 

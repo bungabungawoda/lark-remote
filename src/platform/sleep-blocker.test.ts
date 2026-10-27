@@ -80,8 +80,8 @@ describe('startSleepBlocker', () => {
     expect(blocker).not.toBeNull();
     const call = vi.mocked(spawnFn).mock.calls[0];
     expect(call[0]).toBe('powershell.exe');
-    expect(call[1].slice(0, 3)).toEqual(['-NoProfile', '-NonInteractive', '-Command']);
-    const script = call[1][3];
+    expect(call[1]!.slice(0, 3)).toEqual(['-NoProfile', '-NonInteractive', '-Command']);
+    const script = call[1]![3];
     expect(script).toContain(`SetThreadExecutionState(${ES_FLAGS_UINT32})`);
     expect(script).toContain('Get-Process -Id 4242');
     expect(mockInfo).toHaveBeenCalledWith('[sleep-blocker] active via powershell.exe pid=888');

@@ -13,7 +13,7 @@ import { CommandRouter } from '../../../src/router/index.js';
 import { AppConfigSchema } from '../../../src/config/index.js';
 import type { AppConfig } from '../../../src/config/index.js';
 import { SessionReaderRegistry } from '../../../src/session/registry.js';
-import { sleep, waitFor } from '../../lib/wait-for.js';
+import { sleep, waitFor, waitForOrThrow } from '../../lib/wait-for.js';
 import {
   createStubAgentRegistry,
   createStubSessionReaderRegistry,
@@ -74,14 +74,14 @@ describe('queue.immediate 在 Compact 占 lane 期间被拒绝（anchor）', () 
         },
       },
     );
-    await new Promise((r) => setTimeout(r, 50));
+    await waitForOrThrow(() => bridge.getQueueExecutingInfo(tmpDir)?.kind === 'compact');
     expect(bridge.getQueueExecutingInfo(tmpDir)?.kind).toBe('compact');
 
     // 用户消息排在压缩后面
     bridge.enqueue(tmpDir, async () => {}, {
       taskMeta: { userId: 'u1', chatId: 'c1', messageId: 'msg-2', messagePreview: '用户消息' },
     });
-    await new Promise((r) => setTimeout(r, 50));
+    await waitForOrThrow(() => bridge.getQueuedTask(tmpDir, 'msg-2') !== undefined);
 
     const interruptSpy = vi.spyOn(bridge, 'interruptCurrentRun');
     await router.handleCardAction(
@@ -100,8 +100,7 @@ describe('queue.immediate 在 Compact 占 lane 期间被拒绝（anchor）', () 
     expect(texts.some((t) => t.includes('正在压缩会话'))).toBe(true);
 
     releaseCompact();
-    await new Promise((r) => setTimeout(r, 100));
-    expect(compactFinished).toBe(true);
+    await waitForOrThrow(() => compactFinished);
   });
 });
 

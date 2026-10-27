@@ -91,7 +91,7 @@ describe('RunCardSession', () => {
     expect(await session.settle()).toBe('unsent');
   });
 
-  // (rejected): the two safeRenderCard() calls in start() look redundant
+  // (rejected): the two renderCurrentCard() calls in start() look redundant
   // (same state), but they are NOT — the streamCard `initial` payload renders
   // EAGERLY at start time, while the producer's first controller.update
   // renders LAZILY after the controller is ready. Events pushed in between

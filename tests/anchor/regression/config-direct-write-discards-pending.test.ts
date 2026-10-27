@@ -3,7 +3,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { AppConfigSchema } from '../../../src/config/index.js';
-import type { AgentSessionReader, Runner } from '../../../src/runner/index.js';
+import type { AgentSessionReader } from '../../../src/session-contract.js';
+import type { Runner } from '../../../src/runner/index.js';
 import { SessionReaderRegistry } from '../../../src/session/registry.js';
 
 import { createRouterFixture } from '../../lib/router-fixture.js';
@@ -62,7 +63,7 @@ function createRouter() {
 describe('/config 直写丢弃 pendingConfig 提示 (anchor)', () => {
   /**
    * 验证什么（target）:
-   *   用户在 /config 卡片上点 toggle 产生 pendingConfig 差异（未点保存），
+   *   用户在 /config 卡片上改下拉产生 pendingConfig 差异（未点保存），
    *   随后发 `/config <key> <value>` 直写。当前 cmdConfig 在 line ~2987
    *   `this.pendingConfig = null` 静默丢弃暂存修改，没有任何提示。
    *   期望行为：返回的反馈（卡片或文本）应提示「已丢弃 N 项未保存修改」。
@@ -70,15 +71,18 @@ describe('/config 直写丢弃 pendingConfig 提示 (anchor)', () => {
    * 依据:缺陷契约。
    */
   it('test_anchor_config_direct_write_warns_discarded_pending', async () => {
-    // inboundMedia.enabled 默认 true，toggle 后 pendingConfig 变 false（1 项差异）
+    // logging.level 默认 info，改成 debug 后 pendingConfig 有 1 项差异
     const { router, connector } = createRouter();
 
     // 1. 通过卡片交互产生 pendingConfig 差异（走公开 handleCardAction 路径）
-    await router.handleCardAction({ cmd: 'config.toggle', key: 'inboundMedia.enabled' }, ctx);
+    await router.handleCardAction(
+      { cmd: 'config.set', key: 'logging.level', option: 'debug' },
+      ctx,
+    );
     // 确认 pendingConfig 确实有差异（1 项）
     const pendingConfig = router.pendingConfig;
     expect(pendingConfig).not.toBeNull();
-    expect(pendingConfig!.inboundMedia.enabled).toBe(false);
+    expect(pendingConfig!.logging.level).toBe('debug');
 
     // 2. 发送 /config <key> <value> 直写命令（走公开 handle 路径）
     await router.handle('/config idle.watchdogMinutes 30', ctx);

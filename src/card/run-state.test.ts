@@ -15,6 +15,8 @@ describe('RunState', () => {
       type: 'system',
       subtype: 'init',
       session_id: 'session-final-full',
+      cwd: '/home/user/project',
+      model: 'test-model',
     });
     const answer = 'HEAD:' + 'F'.repeat(20_000) + ':TAIL';
     state = reduceRunState(state, {
@@ -35,6 +37,8 @@ describe('RunState', () => {
       type: 'system',
       subtype: 'init',
       session_id: 'session-final-fallback',
+      cwd: '/home/user/project',
+      model: 'test-model',
     });
     state = reduceRunState(state, {
       type: 'assistant',
@@ -88,6 +92,8 @@ describe('RunState', () => {
       type: 'system',
       subtype: 'init',
       session_id: 'session-1',
+      cwd: '/home/user/project',
+      model: 'test-model',
     });
     const state = reduceRunState(inited, {
       type: 'result',
@@ -107,6 +113,8 @@ describe('RunState', () => {
       type: 'system',
       subtype: 'init',
       session_id: 'session-1',
+      cwd: '/home/user/project',
+      model: 'test-model',
     });
     const state = reduceRunState(inited, {
       type: 'result',
@@ -128,6 +136,8 @@ describe('RunState', () => {
       type: 'system',
       subtype: 'init',
       session_id: 'session-1',
+      cwd: '/home/user/project',
+      model: 'test-model',
     });
     const state = reduceRunState(inited, {
       type: 'result',
@@ -240,6 +250,8 @@ describe('RunState', () => {
       type: 'system',
       subtype: 'init',
       session_id: 'session-1',
+      cwd: '/home/user/project',
+      model: 'test-model',
     });
     const finalizing = reduceRunState(inited, {
       type: 'result',
@@ -261,6 +273,8 @@ describe('RunState', () => {
       type: 'system',
       subtype: 'init',
       session_id: 'session-1',
+      cwd: '/home/user/project',
+      model: 'test-model',
     });
     const finalizing = reduceRunState(inited, {
       type: 'result',
@@ -279,6 +293,8 @@ describe('RunState', () => {
       type: 'system',
       subtype: 'init',
       session_id: 'session-1',
+      cwd: '/home/user/project',
+      model: 'test-model',
     });
     const finalizing = reduceRunState(inited, {
       type: 'result',
@@ -299,6 +315,8 @@ describe('RunState', () => {
       type: 'system',
       subtype: 'init',
       session_id: 'session-1',
+      cwd: '/home/user/project',
+      model: 'test-model',
     });
     const finalizing = reduceRunState(inited, {
       type: 'result',
@@ -330,6 +348,8 @@ describe('RunState', () => {
       type: 'system',
       subtype: 'init',
       session_id: 'session-1',
+      cwd: '/home/user/project',
+      model: 'test-model',
     });
     const finalizing = reduceRunState(inited, {
       type: 'result',
@@ -359,6 +379,8 @@ describe('RunState', () => {
       type: 'system',
       subtype: 'init',
       session_id: 'session-1',
+      cwd: '/home/user/project',
+      model: 'test-model',
     });
     // agent result(success)
     state = reduceRunState(state, {
@@ -388,6 +410,8 @@ describe('RunState', () => {
       type: 'system',
       subtype: 'init',
       session_id: 'session-1',
+      cwd: '/home/user/project',
+      model: 'test-model',
     });
     // agent result(error, "auth failed")
     state = reduceRunState(state, {
@@ -416,6 +440,8 @@ describe('RunState', () => {
       type: 'system',
       subtype: 'init',
       session_id: 'session-1',
+      cwd: '/home/user/project',
+      model: 'test-model',
     });
     // result -> finalizing
     const state1 = reduceRunState(inited, {
@@ -445,6 +471,8 @@ describe('RunState', () => {
       type: 'system',
       subtype: 'init',
       session_id: 'session-1',
+      cwd: '/home/user/project',
+      model: 'test-model',
     });
     const finalizing = reduceRunState(inited, {
       type: 'result',
@@ -665,6 +693,8 @@ describe('RunState', () => {
       type: 'system',
       subtype: 'init',
       session_id: 'real-session',
+      cwd: '/home/user/project',
+      model: 'test-model',
     });
     expect(inited.sessionId).toBe('real-session');
 

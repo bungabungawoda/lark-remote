@@ -1,4 +1,5 @@
-import { AGENT_DISPLAY_NAMES, type AgentKind } from '../runner/types.js';
+import { AGENT_DISPLAY_NAMES } from '../agent-kinds.js';
+import type { AgentKind } from '../agent-kinds.js';
 
 /**
  * Display name for an agent kind in the run card header.

@@ -5,7 +5,7 @@
 import { describe, it, expect } from 'vitest';
 import { DshConfigBuilder, type DshCatalogClient } from './dsh.js';
 import { AppConfigSchema } from '../../config/index.js';
-import type { DshModelCatalogValue } from '../../runner/dsh/types.js';
+import type { DshModelCatalogValue } from '../../dsh/types.js';
 
 const config = AppConfigSchema.parse({
   feishu: { appId: 'a', appSecret: 'b' },
@@ -152,7 +152,7 @@ describe('DshConfigBuilder', () => {
     const builder = new DshConfigBuilder();
     const cfg = dshConfig({ permissionPreset: 'team-policy' });
     const permission = builder.buildFields(cfg)[2];
-    expect(permission.options as Array<{ value: string }>).toContainEqual({
+    expect(permission.options).toContainEqual({
       text: 'team-policy（当前配置，服务端未列出）',
       value: 'team-policy',
     });
@@ -164,7 +164,7 @@ describe('DshConfigBuilder', () => {
     const fields = builder.buildFields(dshConfig({ provider: 'anthropic' }));
     expect(optionValues(fields[3])).toEqual(['deepseek-official', 'deepseek-account', 'anthropic']);
     expect(fields[3].currentValue).toBe('anthropic');
-    expect((fields[3].options as Array<{ text: string }>)[0].text).toBe(
+    expect((fields[3].options as unknown as Array<{ text: string }>)[0].text).toBe(
       'DeepSeek（deepseek-official）',
     );
   });
@@ -173,7 +173,9 @@ describe('DshConfigBuilder', () => {
     const builder = new DshConfigBuilder();
     const fields = builder.buildFields(dshConfig({ provider: 'acme-gateway' }));
     expect(optionValues(fields[3])).toEqual(['acme-gateway']);
-    expect((fields[3].options as Array<{ text: string }>)[0].text).toContain('离线未校验');
+    expect((fields[3].options as unknown as Array<{ text: string }>)[0].text).toContain(
+      '离线未校验',
+    );
   });
 
   it('model select only lists models of the selected provider', () => {
@@ -215,7 +217,9 @@ describe('DshConfigBuilder', () => {
       dshConfig({ provider: 'anthropic', model: 'claude-sonnet-4-5', reasoningEffort: 'off' }),
     );
     expect(optionValues(fields[6])).toEqual(['', 'low', 'high', 'max', 'off']);
-    expect((fields[6].options as Array<{ text: string }>)[4].text).toContain('模型未列出');
+    expect((fields[6].options as unknown as Array<{ text: string }>)[4].text).toContain(
+      '模型未列出',
+    );
   });
 
   it('model select offers fallback models plus follow-default sentinel when offline', () => {
@@ -447,11 +451,11 @@ describe('DshConfigBuilder', () => {
     const builder = new DshConfigBuilder(clientFactory);
     await expect(builder.prefetch('http://127.0.0.1:3080')).resolves.toBeUndefined();
     const fields = builder.buildFields(config);
-    expect(fields[1].options as Array<{ value: string }>).toContainEqual({
+    expect(fields[1].options).toContainEqual({
       text: 'standard（标准模式）',
       value: 'standard',
     });
-    expect(fields[2].options as Array<{ value: string }>).toContainEqual({
+    expect(fields[2].options).toContainEqual({
       text: 'danger-full-access（完全访问，关闭审批）',
       value: 'danger-full-access',
     });

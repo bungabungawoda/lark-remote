@@ -9,7 +9,6 @@ import { SessionIndex, buildFingerprint, parseSessionJsonl } from './session-ind
 
 const FAKE_SESSION_ID_A = 'aaaaaaaa-1111-2222-3333-444444444444';
 const FAKE_SESSION_ID_B = 'bbbbbbbb-1111-2222-3333-444444444444';
-const FAKE_SESSION_ID_C = 'cccccccc-1111-2222-3333-444444444444';
 const FAKE_CWD_1 = '/home/user/project';
 const FAKE_CWD_2 = '/home/user/other';
 const FAKE_CWD_3 = '/home/user/third';
@@ -373,19 +372,19 @@ describe('SessionIndex refresh', () => {
     const origStatSync = fs.statSync;
     let targetStats = 0;
     vi.spyOn(fs, 'statSync').mockImplementation((...args: unknown[]) => {
-      const result = origStatSync.apply(fs, args as [string, ...unknown[]]);
+      const result = (origStatSync as (...a: unknown[]) => unknown).apply(fs, args);
       const p = args[0];
       if (typeof p === 'string' && p.endsWith(`${FAKE_SESSION_ID_A}.jsonl`)) {
         targetStats++;
         if (targetStats === 2) {
           // bigint 模式下 size 是 bigint：+999n 保证 fpAfter 与 fpBefore 不同
-          const resultRecord = result as Record<string, unknown>;
-          const cloned = { ...resultRecord };
+          const resultRecord = result as unknown as Record<string, unknown>;
+          const cloned: Record<string, unknown> = { ...resultRecord };
           cloned.size = (resultRecord.size as bigint) + 999n;
-          return cloned as fs.Stats;
+          return cloned as unknown as fs.Stats;
         }
       }
-      return result;
+      return result as fs.Stats;
     });
 
     // 保证 1ms 节流已过，refresh 真正执行全量扫描。
@@ -448,36 +447,6 @@ describe('SessionIndex listByCwd', () => {
     // Same sessionId should only appear once (keep mtime newest)
     expect(list.length).toBe(1);
     expect(list[0].sessionId).toBe(FAKE_SESSION_ID_A);
-  });
-
-  it('supports pagination with offset and limit', async () => {
-    writeJsonl('-home-user-project', FAKE_SESSION_ID_A, [
-      initLine(FAKE_CWD_1),
-      userMessageLine('placeholder'),
-    ]);
-    await tickMtime();
-    writeJsonl('-home-user-project', FAKE_SESSION_ID_B, [
-      initLine(FAKE_CWD_1),
-      userMessageLine('second task'),
-    ]);
-    await tickMtime();
-    writeJsonl('-home-user-project', FAKE_SESSION_ID_C, [
-      initLine(FAKE_CWD_1),
-      userMessageLine('third task'),
-    ]);
-
-    const idx = new SessionIndex(projectsDir);
-    idx.build();
-
-    // Page 1: limit 2
-    const page1 = idx.listByCwd(FAKE_CWD_1, { limit: 2, offset: 0 });
-    expect(page1.length).toBe(2);
-    expect(page1[0].sessionId).toBe(FAKE_SESSION_ID_C); // newest first
-
-    // Page 2: offset 2
-    const page2 = idx.listByCwd(FAKE_CWD_1, { limit: 2, offset: 2 });
-    expect(page2.length).toBe(1);
-    expect(page2[0].sessionId).toBe(FAKE_SESSION_ID_A); // oldest
   });
 });
 

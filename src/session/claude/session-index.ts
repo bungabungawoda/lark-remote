@@ -126,6 +126,7 @@ export function parseSessionJsonl(filePath: string): ParsedSession {
 
   // If file couldn't be opened, return empty result
   if (!ok) {
+    getLogger().debug(`[session-index] unreadable session file ${filePath}, treating as empty`);
     return { cwdSet: new Set(), summary: '(无摘要)' };
   }
 
@@ -143,7 +144,14 @@ export function buildFingerprint(filePath: string): string {
   let st: fs.BigIntStats;
   try {
     st = fs.statSync(filePath, { bigint: true });
-  } catch {
+  } catch (err) {
+    // ENOENT = 文件在扫描间隙被删除（正常竞态）。其余（EACCES/EBUSY…）留痕，
+    // 否则该会话会静默从 /resume 列表里消失。
+    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
+      getLogger().warn(
+        `[session-index] cannot stat ${filePath}: ${(err as Error)?.message ?? String(err)}`,
+      );
+    }
     return '';
   }
   const parts: string[] = [String(st.size), String(st.mtimeNs)];
@@ -199,6 +207,7 @@ export class SessionIndex {
 
   private lastRefreshAt = 0;
   private built = false;
+  private scanError?: unknown;
 
   constructor(projectsDir: string, opts: SessionIndexOptions = {}) {
     this.projectsDir = projectsDir;
@@ -209,6 +218,14 @@ export class SessionIndex {
   /** Whether a full scan has ever completed successfully (readdir succeeded). */
   get isBuilt(): boolean {
     return this.built;
+  }
+
+  /**
+   * 最近一次全量扫描的非 ENOENT 失败（undefined = 上次扫描正常）。
+   * list 路径用它把「读不到」与「真的没有」区分开。
+   */
+  get lastScanError(): unknown {
+    return this.scanError;
   }
 
   // ── Build (initial full scan) ───────────────────────────
@@ -231,7 +248,11 @@ export class SessionIndex {
 
   // ── Query: listByCwd ────────────────────────────────────
 
-  listByCwd(cwd: string, opts: { limit?: number; offset?: number } = {}): SessionIndexEntry[] {
+  /**
+   * 该 cwd 的全部会话（newest first）。分页不在这里：`listSessions` 的
+   * offset/limit 契约由 reader 用共享 `paginate()` 完成，索引只负责有序全集。
+   */
+  listByCwd(cwd: string): SessionIndexEntry[] {
     const paths = this.byCwd.get(pathKey(cwd, { platform: this.platform }));
     if (!paths || paths.size === 0) return [];
 
@@ -252,12 +273,7 @@ export class SessionIndex {
       (s) => s.mtimeMs,
       (s) => s.sessionId,
     );
-
-    const offset = opts.offset ?? 0;
-    const limit = opts.limit;
-    const sliced =
-      limit === undefined ? sorted.slice(offset) : sorted.slice(offset, offset + limit);
-    return sliced;
+    return sorted;
   }
 
   // ── Query: findBySessionIdAndCwd ────────────────────────
@@ -323,11 +339,22 @@ export class SessionIndex {
     let entries: string[];
     try {
       entries = fs.readdirSync(this.projectsDir);
-    } catch {
+    } catch (err) {
       // readdir failure → preserve old index, degrade to fallback
-      getLogger().warn('[session-index] readdir failed, preserving old index');
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+        // projectsDir 不存在 = 全新环境（真空态），不是故障。
+        this.scanError = undefined;
+        return;
+      }
+      this.scanError = err;
+      getLogger().warn(
+        `[session-index] readdir ${this.projectsDir} failed, preserving old index: ${
+          (err as Error)?.message ?? String(err)
+        }`,
+      );
       return;
     }
+    this.scanError = undefined;
     // readdir succeeded → the snapshot is authoritative for what we could read.
     this.built = true;
 

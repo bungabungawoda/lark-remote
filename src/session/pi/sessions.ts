@@ -11,16 +11,16 @@ import {
 } from '../common/usage-accumulator.js';
 import type {
   AgentSession,
+  AgentSessionContentEvent,
   AgentSessionReader,
   AgentSessionUsage,
   SessionContent,
-  AgentSessionContentEvent,
-} from '../../runner/index.js';
+} from '../../session-contract.js';
 
 import { isStale } from '../common/constants.js';
 import { encodeProjectDirName, samePath } from '../../platform/path.js';
 import { paginate } from '../common/pagination.js';
-import { sortByRecencyDesc } from '../common/recency.js';
+import { newestOf, sortByRecencyDesc } from '../common/recency.js';
 import { TtlCache } from '../../common/ttl-cache.js';
 import { getLogger } from '../../logger/index.js';
 
@@ -184,8 +184,13 @@ function findSessionFile(sessionId: string, cwd: string, sessionsDir: string): s
         return path.join(dir, f);
       }
     }
-  } catch {
-    // dir doesn't exist
+  } catch (err) {
+    // dir 不存在（陈旧 cwd / 该 cwd 从没有会话）是正常空态；其余留痕。
+    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
+      getLogger().debug(
+        `[pi-session-reader] cannot read ${dir}: ${(err as Error)?.message ?? String(err)}`,
+      );
+    }
   }
   return null;
 }
@@ -381,7 +386,7 @@ export class PiSessionReader implements AgentSessionReader {
   }
 
   getNewestSession(cwd: string): AgentSession | null {
-    return this.listSessions(cwd, { limit: 1 }).sessions[0] ?? null;
+    return newestOf(this, cwd);
   }
 
   readSessionContent(
@@ -426,7 +431,12 @@ export class PiSessionReader implements AgentSessionReader {
     try {
       const st = fs.statSync(filePath);
       return !isStale(st.mtimeMs);
-    } catch {
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
+        getLogger().debug(
+          `[pi-session-reader] stat ${filePath} failed: ${(err as Error)?.message ?? String(err)}`,
+        );
+      }
       return false;
     }
   }
@@ -443,8 +453,15 @@ export class PiSessionReader implements AgentSessionReader {
     let files: string[];
     try {
       files = fs.readdirSync(dir).filter((f) => f.endsWith('.jsonl'));
-    } catch {
-      return [];
+    } catch (err) {
+      // ENOENT：该 cwd 还没有会话目录（正常空态）。其余失败上抛，由 router
+      // 显示「列表失败」——静默 [] 与真空不可区分（与 opencode 同口径）。
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+        return [];
+      }
+      getLogger().error(`[pi-session-reader] listSessions failed: ${err}`);
+      const msg = err instanceof Error ? err.message : String(err);
+      throw new Error(`pi session list 读取失败: ${msg}`, { cause: err });
     }
 
     const sessions: AgentSession[] = [];

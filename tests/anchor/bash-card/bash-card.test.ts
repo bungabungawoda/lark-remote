@@ -230,8 +230,7 @@ describe('BashCard renderBashCard stringify-level budget protection (anchor)', (
     expect(json).toContain('echo big');
 
     // 契约 ③：终态保留 exitCode 文本
-    expect(json).toContain('退出码');
-    expect(json).toContain('0');
+    expect(json).toContain('退出码: 0');
   });
 
   it('test_anchor_bash_card_high_escape_only_stderr_within_budget_keeps_info', () => {
@@ -253,8 +252,7 @@ describe('BashCard renderBashCard stringify-level budget protection (anchor)', (
     expect(size).toBeLessThanOrEqual(28_000);
     const json = JSON.stringify(card);
     expect(json).toContain('bad-cmd');
-    expect(json).toContain('退出码');
-    expect(json).toContain('1');
+    expect(json).toContain('退出码: 1');
   });
 
   it('test_anchor_bash_card_running_state_stays_within_budget', () => {

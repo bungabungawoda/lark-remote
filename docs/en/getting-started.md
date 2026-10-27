@@ -11,6 +11,7 @@ This document will help you get lark-remote up and running from scratch, and tea
 In short: **Use Feishu chat to control the AI on your computer to write code**.
 
 Imagine:
+
 - You send a message in a Feishu private chat: "Check src/index.ts and add error handling";
 - Claude Code (an AI programmer) on your computer starts reading files, modifying code, and running tests;
 - The entire progress is displayed in real time on a Feishu card;
@@ -24,12 +25,12 @@ lark-remote is the "messenger" between Feishu and Claude Code.
 
 > macOS / Linux / Windows 10+ are supported.
 
-| Tool | What It Is | How to Install |
-|------|-----------|----------------|
-| **Node.js 20+** | The environment that lets JavaScript programs run on your computer | Go to https://nodejs.org, download the LTS version, double-click to install |
-| **Bun** | A faster JavaScript runtime, used by this project | After installing Node, paste `npm install -g bun` in the terminal and press Enter |
-| **Feishu Account** | For chatting | Download the "Feishu" app from your phone's app store, register and log in |
-| **Claude Code CLI** | That AI programmer | Run `npm install -g @anthropic-ai/claude-code` in the terminal, then type `claude` and follow the prompts to log in once via the browser |
+| Tool                | What It Is                                                         | How to Install                                                                                                                           |
+| ------------------- | ------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| **Node.js 20+**     | The environment that lets JavaScript programs run on your computer | Go to https://nodejs.org, download the LTS version, double-click to install                                                              |
+| **Bun**             | A faster JavaScript runtime, used by this project                  | After installing Node, paste `npm install -g bun` in the terminal and press Enter                                                        |
+| **Feishu Account**  | For chatting                                                       | Download the "Feishu" app from your phone's app store, register and log in                                                               |
+| **Claude Code CLI** | That AI programmer                                                 | Run `npm install -g @anthropic-ai/claude-code` in the terminal, then type `claude` and follow the prompts to log in once via the browser |
 
 > **What is the "terminal"?**
 > On Mac it's called "Terminal" (search for Terminal in Launchpad), on Windows it's "PowerShell" or "Command Prompt". It's that window with a black background and white text where you can type commands.
@@ -83,6 +84,7 @@ The first time you run it, a **QR code** will appear in the terminal. Open the F
 **After that, the terminal will continue running and eventually sit there waiting** — this is normal, it means lark-remote is listening for Feishu messages.
 
 > **If the terminal shows a "non-interactive environment" error**: It means your terminal doesn't support displaying a QR code. Create the app manually instead:
+>
 > 1. Open https://open.feishu.cn in your browser and log in to Feishu;
 > 2. "Developer Console" → "Create Enterprise Custom App", fill in the name and description;
 > 3. App details page → "Add App Capability" → Enable "Bot";
@@ -117,15 +119,15 @@ The bot will reply with a card containing Claude's response. **Congratulations! 
 
 In a Feishu private chat, anything starting with `/` is a command. **Memorize these 7 and you're set for daily use**:
 
-| Command | What It Does | Example |
-|---------|-------------|---------|
-| `/help` | Show all commands | Just send `/help` |
-| `/cd <path>` | Switch the folder Claude works in | `/cd ~/projects/my-game` |
-| `/status` | Show current status (which folder, model, whether something is running) | Just send `/status` |
-| `/stop` | Force stop Claude if it's running away or stuck | Just send `/stop` |
-| `/new` | Clear the current conversation and start fresh | Just send `/new` |
-| `/resume` | View past sessions, click a button to restore one | Just send `/resume` |
-| `/exit` | Shut down lark-remote | Just send `/exit` |
+| Command      | What It Does                                                            | Example                  |
+| ------------ | ----------------------------------------------------------------------- | ------------------------ |
+| `/help`      | Show all commands                                                       | Just send `/help`        |
+| `/cd <path>` | Switch the folder Claude works in                                       | `/cd ~/projects/my-game` |
+| `/status`    | Show current status (which folder, model, whether something is running) | Just send `/status`      |
+| `/stop`      | Force stop Claude if it's running away or stuck                         | Just send `/stop`        |
+| `/new`       | Clear the current conversation and start fresh                          | Just send `/new`         |
+| `/resume`    | View past sessions, click a button to restore one                       | Just send `/resume`      |
+| `/exit`      | Shut down lark-remote                                                   | Just send `/exit`        |
 
 **Anything not starting with `/` is just chatting with Claude.** For example:
 
@@ -235,12 +237,12 @@ lark-remote currently supports 6 AIs: Claude, Codex, OpenCode, Pi, Kimi, and DSH
 
 ## 13. What to Read Next
 
-| Want to Learn About | Which Document |
-|---------------------|----------------|
-| Detailed usage of all commands | [`usage.md`](usage.md) |
-| Overall design, JSONL events, lessons learned | [`architecture/design.md`](architecture/design.md) |
-| How single-card streaming output works | [`architecture/streaming-card.md`](architecture/streaming-card.md) |
-| How to configure Codex | [`guides/codex-config.md`](guides/codex-config.md) |
+| Want to Learn About                           | Which Document                                                     |
+| --------------------------------------------- | ------------------------------------------------------------------ |
+| Detailed usage of all commands                | [`usage.md`](usage.md)                                             |
+| Overall design, JSONL events, lessons learned | [`architecture/design.md`](architecture/design.md)                 |
+| How single-card streaming output works        | [`architecture/streaming-card.md`](architecture/streaming-card.md) |
+| How to configure Codex                        | [`guides/codex-config.md`](guides/codex-config.md)                 |
 
 ---
 

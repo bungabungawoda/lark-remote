@@ -7,30 +7,30 @@ import type { Bridge, CommandContext, CommandResult } from '../bridge/index.js';
 import type { AgentBinding } from '../bridge/queue-manager.js';
 import {
   getConfigDir,
-  getConfigValue,
   setConfigValue,
   setConfigValues,
   mapAgentKey,
   getAgentConfig,
 } from '../config/index.js';
 import { syncAgentChoices } from '../runner/index.js';
-import { resolveDshCredentialsFile } from '../runner/dsh/auth.js';
+import { resolveDshCredentialsFile } from '../dsh/auth.js';
 import { WorkspaceStore } from '../workspace/index.js';
 import { OrderStore, ORDER_NOT_FOUND_TEXT, type OrderEntry } from '../order/index.js';
 import { resolveAlias } from '../order/alias-resolve.js';
 import { diffConfig, setNestedValue } from './config-diff.js';
+import type { AgentKind } from '../agent-kinds.js';
 import type {
-  AgentKind,
   AgentSession,
   AgentSessionContentEvent,
   AgentSessionReader,
-} from '../runner/index.js';
-import { AGENT_KINDS } from '../runner/types.js';
+} from '../session-contract.js';
+import { AGENT_KINDS, resolveAgentKind } from '../agent-kinds.js';
 import { getLogger } from '../logger/index.js';
 import type { CloneSession } from '../clone.js';
 import { stripPlaceholders } from '../inbound/placeholder.js';
 import { clampInt } from '../common/clamp.js';
-import { type SessionDisplayUsage, activeRunUsage } from './usage-format.js';
+import type { SessionDisplayUsage } from '../card/usage-format.js';
+import { activeRunUsage } from './active-run-usage.js';
 import {
   markdownDiv,
   buildSessionHistoryCard,
@@ -38,7 +38,7 @@ import {
   parseJumpOffset,
   SEARCH_INPUT_NAME,
   PAGE_JUMP_INVALID_HINT,
-} from './card-helpers.js';
+} from '../card/card-helpers.js';
 import { MAX_FILE_UPLOAD_SIZE } from '../connector/file-limits.js';
 import {
   cardButton,
@@ -447,7 +447,6 @@ const IMMEDIATE_ACTION_CMDS: ReadonlySet<string> = new Set([
   'order.aliasRemove',
   'order.textEdit',
   'order.textInput',
-  'config.toggle',
   'config.set',
   'config.input',
   'config.save',
@@ -512,13 +511,24 @@ const CARD_PAYLOAD_MISSING = '⚠️ 卡片 payload 缺少必要信息';
  */
 const MAX_CONFIG_CARDS = 5;
 
+/** 本次改动是否落进 `agents.<kind>` 子树。 */
+function touchesAgentsSubtree(keys: readonly string[], kind: string): boolean {
+  return keys.some((k) => k === `agents.${kind}` || k.startsWith(`agents.${kind}.`));
+}
+
+/**
+ * 本次改动是否触及某个 agent 的配置——两种键形态都要认：现行 `agents.<kind>[.*]`
+ * 与历史的顶层 `<kind>[.*]`（claude 至今是顶层键）。判定曾抄在三处（agent 变更检测 /
+ * agentChoices 同步 / approval 热推），每加一个 agent 都得记得改三遍，与
+ * AGENT_KINDS 名单漂移是同一种事故，这里收成一处。
+ */
+function touchesAgentConfig(keys: readonly string[], kind: string): boolean {
+  return (
+    touchesAgentsSubtree(keys, kind) || keys.some((k) => k === kind || k.startsWith(`${kind}.`))
+  );
+}
+
 export class CommandRouter {
-  /**
-   * Valid agent kinds — single source of truth for resume.use / resume.page /
-   * cmdResume. 名单本体在 `runner/types.ts` 的 AGENT_KINDS（与 AgentKind 类型
-   * 同源），这里只做别名，避免人手抄第二份。
-   */
-  static readonly VALID_AGENTS = AGENT_KINDS;
   private sessionStore: SessionStore;
   /** 飞书桥接实例（public：测试直接访问断言，替代 as unknown as）。 */
   bridge: Bridge;
@@ -599,8 +609,8 @@ export class CommandRouter {
   /**
    * 串行化 config.* 卡片回调（2026-07-04）。
    * CardKit 2.0 input/button 回调经 `enqueueImmediate` 分发，**不进串行队列**，
-   * 多次快速点击 toggle/input 会并发读写 `pendingConfig` 并同时调
-   * `updateCardInPlace` → Feishu API 乱序到达，导致 toggle 卡死在某个状态。
+   * 多次快速点击下拉/文本框会并发读写 `pendingConfig` 并同时调
+   * `updateCardInPlace` → Feishu API 乱序到达，控件卡死在某个状态。
    * 此 Promise chain 把所有 config.* 动作串成一个执行链，保证后到的动作
    * 等前一个动作的卡片 patch 完成后再读 `pendingConfig`。
    */
@@ -801,11 +811,7 @@ export class CommandRouter {
       case 'resume.use': {
         // resume.use carries an agent field from /resume [agent] list cards
         // (both active and completed cards include the agent field).
-        const resumeAgent = value.agent ?? this.config.defaultAgent;
-        const validAgents = CommandRouter.VALID_AGENTS;
-        const resolvedAgent = validAgents.includes(resumeAgent as (typeof validAgents)[number])
-          ? (resumeAgent as (typeof validAgents)[number])
-          : this.config.defaultAgent;
+        const resolvedAgent = resolveAgentKind(value.agent, this.config.defaultAgent);
 
         const entry = this.sessionStore.get(ctx.userId);
         const cwd = entry?.cwd;
@@ -884,13 +890,12 @@ export class CommandRouter {
         return await this.handleOrderTextEdit(value, ctx);
       case 'order.textInput':
         return await this.handleOrderTextInput(value, ctx);
-      case 'config.toggle':
       case 'config.set':
       case 'config.input':
       case 'config.save':
         // 2026-07-04: 串行化所有 config.* 动作。CardKit 2.0 回调经 enqueueImmediate
-        // 不进串行队列，多次快速点击 toggle/input 会并发读写 pendingConfig 并同时
-        // 调 updateCardInPlace → Feishu API 乱序到达导致 toggle 卡死。
+        // 不进串行队列，多次快速点击下拉/文本框会并发读写 pendingConfig 并同时
+        // 调 updateCardInPlace → Feishu API 乱序到达导致控件卡死。
         // 2026-07-18: 返回 enqueueConfigAction 的结果以支持 toast 响应
         return this.enqueueConfigAction(value, ctx);
       case 'compact':
@@ -997,6 +1002,27 @@ export class CommandRouter {
    * Handle queue.immediate: stop current run, clear queue before this message, execute this message immediately.
    * Instead of asking user to resend, we keep the target task in queue and let it execute.
    */
+  /**
+   * 把「执行编辑后的内容」注册成原队列槽位的一次性 replacement（复用入队时
+   * 捕获的 binding + 恢复 lane cwd，否则编辑后重跑的 run 会丢 cwd 与绑定）。
+   *
+   * 重新入队不行：`enqueue` 只能追加到 promise 链尾部，会把编辑任务甩到
+   * 后来者后面，违背「立即执行 = 下一个就跑」。三个调用点都必须在任何 await
+   * 之前注册——begin 路径消费 replacement 的时机不可预测（见
+   * handleQueueImmediate 步骤 1.5 的竞态说明）。
+   */
+  private registerEditedReplacement(
+    cwd: string,
+    messageId: string,
+    content: string,
+    binding: AgentBinding | undefined,
+    ctx: CommandContext,
+  ): void {
+    this.bridge.setTaskReplacement(cwd, messageId, async () => {
+      await this.handle(content, ctx, { cwdOverride: cwd, binding });
+    });
+  }
+
   private async handleQueueImmediate(
     value: { cwd?: string; messageId?: string },
     ctx: CommandContext,
@@ -1059,15 +1085,13 @@ export class CommandRouter {
       // the queue position: enqueue can only append to the promise chain tail,
       // which would put the edited task behind tasks queued after it.
       if (targetTask.editedMessage) {
-        const editedContent = targetTask.editedMessage;
-        ///Step3: 替换闭包复用原任务的 binding（不重新快照）+ 恢复丢失的
-        // cwdOverride（lane cwd 同源）。否则编辑后重新执行的 run 会丢 cwd 与绑定。
-        this.bridge.setTaskReplacement(cwd, messageId, async () => {
-          await this.handle(editedContent, ctx, {
-            cwdOverride: cwd,
-            binding: targetTask.binding,
-          });
-        });
+        this.registerEditedReplacement(
+          cwd,
+          messageId,
+          targetTask.editedMessage,
+          targetTask.binding,
+          ctx,
+        );
       }
 
       // 2. Stop current running process
@@ -1088,31 +1112,7 @@ export class CommandRouter {
       );
 
       // 3. Remove all tasks BEFORE this one (by position in the current queue).
-      // The target may have begun while interruptCurrentRun was awaiting (the chain
-      // advances concurrently): then it is already out of the snapshot and every
-      // remaining queued task is BEHIND it — clearing must stop, not run off the
-      // end and delete tasks queued after the target.
-      const tasks = this.bridge.getQueuedTasks(cwd);
-      const targetIdx = tasks.findIndex((t) => t.messageId === messageId);
-      let removedCount = 0;
-      // Phase 1: remove synchronously. The queue chain advances on any await
-      // (card PATCH round trips included), so every task before the target must
-      // be removed before yielding to the event loop — otherwise a task the user
-      // asked to clear can begin executing while its cancellation card is still
-      // in flight.
-      for (let i = 0; i < targetIdx; i++) {
-        const task = tasks[i];
-        // 撤销卡片由 removeFromQueue 统一触发（fire-and-forget），保持本循环
-        // 同步推进的既有不变式。
-        if (this.bridge.removeFromQueue(cwd, task.messageId)) {
-          removedCount++;
-        }
-      }
-      if (targetIdx < 0) {
-        getLogger().debug(
-          `[router] queue.immediate: target no longer queued (began/cancelled), not clearing tasks behind it`,
-        );
-      }
+      const removedCount = this.clearTasksAheadOfTarget(cwd, messageId);
 
       // 4. DO NOT remove the target task - keep it in queue to execute immediately
       // The queue will naturally execute it after the current task (which we just stopped)
@@ -1123,79 +1123,125 @@ export class CommandRouter {
       // the task has begun, because getQueuedTask then returns undefined.
       const latestTask = this.bridge.getQueuedTask(cwd, messageId);
       if (latestTask?.editedMessage) {
-        const editedContent = latestTask.editedMessage;
-        ///Step3: 复用原任务 binding + 恢复 cwdOverride（同上）。
-        this.bridge.setTaskReplacement(cwd, messageId, async () => {
-          await this.handle(editedContent, ctx, {
-            cwdOverride: cwd,
-            binding: latestTask.binding,
-          });
-        });
-      }
-
-      // 4.5/6. The target must only be marked executing (and the toast may only
-      // promise immediate execution) when it is really the next task after the
-      // stop. While interruptCurrentRun was awaiting, a task ahead of the target
-      // may have begun and now occupy the cwd — the target is still queued
-      // but is NOT next, so its card must stay queued and the toast must say so.
-      const targetStillQueued = this.bridge.getQueuedTask(cwd, messageId) !== undefined;
-      if (!targetStillQueued) {
-        // The target began or was cancelled while earlier awaits were in flight —
-        // a success toast must never promise execution of a task that will not
-        // run. The two missing-reason states get distinct feedback: a target
-        // that began while the interrupt was in flight is already executing, so
-        // the toast must acknowledge that instead of telling the user nothing
-        // was scheduled; only a target that was actually cancelled (never began)
-        // gets the "未安排执行" wording.
-        if (this.bridge.hasTaskBegan(messageId)) {
-          await this.bridge.sendResult(
-            { text: `ℹ️ 目标消息已开始执行，无需重复操作。已清除 ${removedCount} 条排队消息。` },
-            ctx,
-          );
-        } else {
-          await this.bridge.sendResult(
-            {
-              text: `⚠️ 目标消息已不在队列中（可能已被撤销），未安排执行。已清除 ${removedCount} 条排队消息。`,
-            },
-            ctx,
-          );
-        }
-        return;
-      }
-      const workspaceBusy = this.bridge.isBusyFor(cwd);
-      if (stopUnconfirmed) {
-        const name = interrupt.agentKind ? agentDisplayName(interrupt.agentKind) : 'agent';
-        await this.bridge.sendResult(
-          {
-            text:
-              `⚠️ 未能确认 ${name} 的 turn 已停止，它可能仍在后台运行。\n` +
-              `已清除 ${removedCount} 条排队消息；您的消息已提交，但可能要等该 turn 结束后才开始。`,
-          },
+        this.registerEditedReplacement(
+          cwd,
+          messageId,
+          latestTask.editedMessage,
+          latestTask.binding,
           ctx,
         );
-      } else if (!workspaceBusy) {
-        // Normal path: nothing new began during the stop, the target is next.
-        // Mark its own card as executing now so buttons grey out immediately.
-        // Done BEFORE any removal so getQueuedTask still returns the task with
-        // its (possibly edited) messagePreview for the card. The queue callback's
-        // later updateQueueCardToExecuting call becomes a no-op (idempotent).
-        await this.bridge.markQueueCardExecuting(cwd, messageId);
-        const stopPrefix = stopped ? '⚡ 已停止当前任务，' : '';
+      }
+
+      // 4.5/6. 按「目标此刻真的是下一个吗」给唯一一份用户可见反馈。
+      await this.reportImmediateOutcome({
+        cwd,
+        messageId,
+        ctx,
+        removedCount,
+        stopped,
+        stopUnconfirmed,
+        agentKind: interrupt.agentKind,
+      });
+    } finally {
+      releaseRunStart();
+    }
+  }
+
+  /**
+   * 清掉排在目标之前的所有排队任务，返回实际清除条数。
+   *
+   * 两条红线：
+   * - 目标可能在 interruptCurrentRun 等待期间已经接跑（链并发前进），那时它已不在
+   *   快照里，剩下的全部排在它**后面**——清除必须在目标位置之前停下，不得越界删掉
+   *   用户没要求清除的任务。
+   * - 移除循环必须整体同步：队列链在任何 await 处都会推进（卡片 PATCH 也算），
+   *   一旦让出事件循环，用户要求清除的任务可能趁撤销卡还在路上就跑起来了。
+   *   撤销卡片由 `removeFromQueue` 统一触发（fire-and-forget）。
+   */
+  private clearTasksAheadOfTarget(cwd: string, messageId: string): number {
+    const tasks = this.bridge.getQueuedTasks(cwd);
+    const targetIdx = tasks.findIndex((t) => t.messageId === messageId);
+    let removedCount = 0;
+    for (let i = 0; i < targetIdx; i++) {
+      if (this.bridge.removeFromQueue(cwd, tasks[i].messageId)) {
+        removedCount++;
+      }
+    }
+    if (targetIdx < 0) {
+      getLogger().debug(
+        `[router] queue.immediate: target no longer queued (began/cancelled), not clearing tasks behind it`,
+      );
+    }
+    return removedCount;
+  }
+
+  /**
+   * `queue.immediate` 的终态反馈（唯一出口）。
+   *
+   * 承诺必须与真实调度一致：目标只有确实是停止后的下一个，才可以把它的卡翻成
+   * 「执行中」并说「将立即执行」；在途接跑/被撤销/被抢先/远程停止未确认四种状态
+   * 各给各的文案（把没发生的事说成发生了，比沉默更糟——用户会据文案决定要不要重发）。
+   */
+  private async reportImmediateOutcome(opts: {
+    cwd: string;
+    messageId: string;
+    ctx: CommandContext;
+    removedCount: number;
+    stopped: boolean;
+    stopUnconfirmed: boolean;
+    agentKind?: AgentKind;
+  }): Promise<void> {
+    const { cwd, messageId, ctx, removedCount, stopped, stopUnconfirmed, agentKind } = opts;
+    const targetStillQueued = this.bridge.getQueuedTask(cwd, messageId) !== undefined;
+    if (!targetStillQueued) {
+      // 目标在途接跑：已经在执行，说「无需重复操作」；真的被撤销了才说「未安排执行」。
+      if (this.bridge.hasTaskBegan(messageId)) {
         await this.bridge.sendResult(
-          { text: `${stopPrefix}清除了 ${removedCount} 条排队消息。您的消息将立即执行。` },
+          { text: `ℹ️ 目标消息已开始执行，无需重复操作。已清除 ${removedCount} 条排队消息。` },
           ctx,
         );
       } else {
         await this.bridge.sendResult(
           {
-            text: `⚠️ 排在目标之前的任务已开始执行，目标消息保持排队。已清除 ${removedCount} 条排队消息。`,
+            text: `⚠️ 目标消息已不在队列中（可能已被撤销），未安排执行。已清除 ${removedCount} 条排队消息。`,
           },
           ctx,
         );
       }
-    } finally {
-      releaseRunStart();
+      return;
     }
+    if (stopUnconfirmed) {
+      const name = agentKind ? agentDisplayName(agentKind) : 'agent';
+      await this.bridge.sendResult(
+        {
+          text:
+            `⚠️ 未能确认 ${name} 的 turn 已停止，它可能仍在后台运行。\n` +
+            `已清除 ${removedCount} 条排队消息；您的消息已提交，但可能要等该 turn 结束后才开始。`,
+        },
+        ctx,
+      );
+      return;
+    }
+    if (!this.bridge.isBusyFor(cwd)) {
+      // Normal path: nothing new began during the stop, the target is next.
+      // Mark its own card as executing now so buttons grey out immediately.
+      // Done BEFORE any removal so getQueuedTask still returns the task with
+      // its (possibly edited) messagePreview for the card. The queue callback's
+      // later updateQueueCardToExecuting call becomes a no-op (idempotent).
+      await this.bridge.markQueueCardExecuting(cwd, messageId);
+      const stopPrefix = stopped ? '⚡ 已停止当前任务，' : '';
+      await this.bridge.sendResult(
+        { text: `${stopPrefix}清除了 ${removedCount} 条排队消息。您的消息将立即执行。` },
+        ctx,
+      );
+      return;
+    }
+    await this.bridge.sendResult(
+      {
+        text: `⚠️ 排在目标之前的任务已开始执行，目标消息保持排队。已清除 ${removedCount} 条排队消息。`,
+      },
+      ctx,
+    );
   }
 
   /**
@@ -1391,8 +1437,6 @@ export class CommandRouter {
     // replacement if the task starts during the subsequent await. Both
     // setTaskReplacement and the begin-path consumption are synchronous, so
     // there is no interleaving window.
-    //
-    ///Step3：复用原任务 binding（不重新快照）+ 恢复 cwdOverride。
     const inputTask = this.bridge.getQueuedTask(cwd, messageId);
     if (!inputTask) {
       // Task already left the queue (began or was cancelled) before we could
@@ -1402,9 +1446,7 @@ export class CommandRouter {
       // toast/card field).
       return { toast: { type: 'info', content: '任务已不在队列中（可能已开始执行或被撤销）' } };
     }
-    this.bridge.setTaskReplacement(cwd, messageId, async () => {
-      await this.handle(newMessage, ctx, { cwdOverride: cwd, binding: inputTask.binding });
-    });
+    this.registerEditedReplacement(cwd, messageId, newMessage, inputTask.binding, ctx);
 
     // Update the message preview (and editedMessage so handleQueueImmediate
     // re-enqueues the edited content instead of the stale original closure),
@@ -1562,11 +1604,7 @@ export class CommandRouter {
     value: CardActionPayload,
     ctx: CommandContext,
   ): Promise<CardActionResponse> {
-    const resumeAgent = value.agent ?? this.config.defaultAgent;
-    const validAgents = CommandRouter.VALID_AGENTS;
-    const resolvedAgent = validAgents.includes(resumeAgent as (typeof validAgents)[number])
-      ? (resumeAgent as (typeof validAgents)[number])
-      : this.config.defaultAgent;
+    const resolvedAgent = resolveAgentKind(value.agent, this.config.defaultAgent);
 
     const { pageSize, alignedOffset, error } = normalizePageArgs(value, RESUME_PAGE_SIZE);
     if (error) {
@@ -1711,7 +1749,6 @@ export class CommandRouter {
    * Returns null when the order no longer exists; index.ts surfaces the error.
    */
   resolveOrderExecForQueue(orderId: string): { orderText: string; internalKey: string } | null {
-    if (!this.orderStore.has(orderId)) return null;
     const order = this.orderStore.get().find((o) => o.id === orderId);
     if (!order) return null;
     this.orderStore.updateUsedAt(order.id);
@@ -2257,6 +2294,33 @@ export class CommandRouter {
   }
 
   /**
+   * 把一次字段变更交给当前 agent 的 config builder（处理 provider→model 这类
+   * 依赖关系），逐条写进草稿，再把草稿刷到所有配置卡。
+   * `config.set`（下拉）与 `config.input`（输入框提交）共用同一套应用逻辑。
+   */
+  private async applyConfigFieldChange(
+    key: string,
+    newValue: string,
+    ctx: CommandContext,
+  ): Promise<void> {
+    try {
+      this.ensurePendingConfig();
+
+      const defaultAgent = this.pendingConfig!.defaultAgent ?? 'claude';
+      const configBuilder = getConfigBuilder(defaultAgent);
+      const patches = configBuilder.handleFieldChange(key, newValue, this.pendingConfig!);
+
+      for (const patch of patches) {
+        this.setNestedValue(this.pendingConfig!, patch.key, patch.value);
+      }
+
+      await this.refreshConfigCards(ctx);
+    } catch (err) {
+      await this.bridge.sendResult({ text: `设置失败: ${(err as Error).message}` }, ctx);
+    }
+  }
+
+  /**
    * 把当前草稿刷到所有已知 config 卡片上（含本次点击的那张）。
    *
    * 被点击的那张走 `updateCardInPlace`（失败 fallback 发新卡，保证点击必有
@@ -2278,12 +2342,12 @@ export class CommandRouter {
   }
 
   /**
-   * 串行化 config.* 卡片回调（2026-07-04 修复 toggle 卡死 bug）。
+   * 串行化 config.* 卡片回调（2026-07-04 修复连击卡死 bug）。
    *
    * CardKit 2.0 input/button 回调经 `enqueueImmediate` 分发，不进 bridge 的
-   * 串行队列；多次快速点击 toggle 会并发读写 `pendingConfig` 并同时调
+   * 串行队列；多次快速点击下拉/文本框会并发读写 `pendingConfig` 并同时调
    * `updateCardInPlace` → 两个 patch 请求乱序到达飞书，后到达的 patch（点击 1
-   * 的旧卡片）覆盖先到达的 patch（点击 2 的新卡片），用户看到 toggle 卡死。
+   * 的旧卡片）覆盖先到达的 patch（点击 2 的新卡片），用户看到控件卡死。
    *
    * 此方法把所有 config.* 动作串成一个 Promise chain：每个动作等前一个动作
    * 的 `updateCardInPlace` 完全 settle 后再读 `pendingConfig`。
@@ -2315,27 +2379,6 @@ export class CommandRouter {
     ctx: CommandContext,
   ): Promise<CardActionResponse | void> {
     switch (value.cmd) {
-      case 'config.toggle': {
-        // 通用 boolean 翻转：目前无卡片字段使用（output.show* 已移除），
-        // 保留供未来 boolean 配置项复用；configActionQueue 串行化覆盖连击。
-        const key = value.key as string | undefined;
-        if (!key) {
-          await this.bridge.sendResult({ text: '缺少配置项 key' }, ctx);
-          return;
-        }
-        this.ensurePendingConfig();
-        const current = getConfigValue(this.pendingConfig!, key);
-        // 布尔字段未设置时视为 false，而非报错（如布尔配置项尚未写入 config）
-        const boolVal = typeof current === 'boolean' ? current : false;
-        try {
-          // 只改暂存区，不写盘；原地更新卡片而非发送新卡（2026-07-04）
-          this.setNestedValue(this.pendingConfig!, key, !boolVal);
-          await this.refreshConfigCards(ctx);
-        } catch (err) {
-          await this.bridge.sendResult({ text: `设置失败: ${(err as Error).message}` }, ctx);
-        }
-        return;
-      }
       case 'config.set': {
         // Set config value from select dropdown (option from CardKit 2.0)
         const key = value.key as string | undefined;
@@ -2344,22 +2387,7 @@ export class CommandRouter {
           await this.bridge.sendResult({ text: '缺少参数' }, ctx);
           return;
         }
-        try {
-          this.ensurePendingConfig();
-
-          // 使用 agent config builder 处理字段变更（处理依赖关系如 provider→model）
-          const defaultAgent = this.pendingConfig!.defaultAgent ?? 'claude';
-          const configBuilder = getConfigBuilder(defaultAgent);
-          const patches = configBuilder.handleFieldChange(key, newValue, this.pendingConfig!);
-
-          for (const patch of patches) {
-            this.setNestedValue(this.pendingConfig!, patch.key, patch.value);
-          }
-
-          await this.refreshConfigCards(ctx);
-        } catch (err) {
-          await this.bridge.sendResult({ text: `设置失败: ${(err as Error).message}` }, ctx);
-        }
+        await this.applyConfigFieldChange(key, newValue, ctx);
         return;
       }
       case 'config.input': {
@@ -2377,22 +2405,7 @@ export class CommandRouter {
           await this.bridge.sendResult({ text: '缺少输入值' }, ctx);
           return;
         }
-        try {
-          this.ensurePendingConfig();
-
-          // 使用 agent config builder 处理字段变更
-          const defaultAgent = this.pendingConfig!.defaultAgent ?? 'claude';
-          const configBuilder = getConfigBuilder(defaultAgent);
-          const patches = configBuilder.handleFieldChange(key, newValue, this.pendingConfig!);
-
-          for (const patch of patches) {
-            this.setNestedValue(this.pendingConfig!, patch.key, patch.value);
-          }
-
-          await this.refreshConfigCards(ctx);
-        } catch (err) {
-          await this.bridge.sendResult({ text: `设置失败: ${(err as Error).message}` }, ctx);
-        }
+        await this.applyConfigFieldChange(key, newValue, ctx);
         return;
       }
       case 'config.save': {
@@ -2489,21 +2502,10 @@ export class CommandRouter {
 
     // 2026-07-13: 检测是否有任何 agent 配置变更或 defaultAgent 切换
     const hasDefaultAgentChange = oldDefaultAgent !== this.config.defaultAgent;
-    const hasAgentConfigChange = Object.keys(updates).some(
-      (k) =>
-        k.startsWith('agents.') ||
-        k.startsWith('claude.') ||
-        k.startsWith('pi.') ||
-        k.startsWith('codex.') ||
-        k.startsWith('opencode.') ||
-        k.startsWith('kimi.') ||
-        k === 'defaultAgent' ||
-        k === 'claude' ||
-        k === 'pi' ||
-        k === 'codex' ||
-        k === 'opencode' ||
-        k === 'kimi',
-    );
+    const changedKeys = Object.keys(updates);
+    const hasAgentConfigChange =
+      changedKeys.includes('defaultAgent') ||
+      AGENT_KINDS.some((kind) => touchesAgentConfig(changedKeys, kind));
 
     // 当 defaultAgent 改变时，清除旧 agent 的 sessionId，
     // 同时清除新 agent 的 sessionId（等效于 /new 命令），
@@ -2562,45 +2564,29 @@ export class CommandRouter {
       }
     }
 
-    // DSH preset 变更 = 下次 run 新建 session：
-    // preset 在 session 创建时固定，中途切换会被服务端拒绝（agent-preset-conflict）。
-    // 旧 sessionId 存入 previousSessions 停车位（可手动 /resume，但 /resume 会做
-    // preset 一致性校验），当前 sessionId 清空——下次 run 走 session.create 新建。
-    const hasDshPresetChange = Object.keys(updates).some((k) => k === 'agents.dsh.agentPreset');
-    // 已发生 agent 切换时（switchNotice 已设置）preset 分支跳过，避免覆盖切换 notice；
-    // 切换分支对 dsh 的 session 已做恢复/清空处理。
-    if (hasDshPresetChange && this.config.defaultAgent === 'dsh' && !switchNotice) {
+    // DSH 的两个「会话边界」变更共用一套处理：preset 在 session 创建时固定，
+    // 中途切换会被服务端拒绝（agent-preset-conflict）；host 变更等于换服务，
+    // 旧 host 的 sessionId 发往新 host 是错的。两者都把旧 sessionId 停到
+    // previousSessions 恢复槽（可 /resume 校验后恢复）并清空当前值，下次 run
+    // 走 session.create 新建。已发生 agent 切换时（switchNotice 已设置）跳过，
+    // 避免覆盖切换 notice——切换分支对 dsh 的 session 已做恢复/清空处理。
+    const parkDshSessionBoundary = (changed: boolean, label: string): void => {
+      if (!changed || this.config.defaultAgent !== 'dsh' || switchNotice) return;
       const oldSessionId = this.sessionStore.getSessionId(ctx.userId, 'dsh');
       if (oldSessionId) {
         this.sessionStore.setPreviousSessionId(ctx.userId, 'dsh', oldSessionId);
         this.sessionStore.clearSessionId(ctx.userId, 'dsh');
-        switchNotice = `DSH preset 已变更，旧会话已停放到恢复槽（可 /resume 校验后恢复），下次消息将新建会话`;
+        switchNotice = `DSH ${label} 已变更，旧会话已停放到恢复槽（可 /resume 校验后恢复），下次消息将新建会话`;
       } else {
-        switchNotice = `DSH preset 已变更，下次消息将新建会话`;
+        switchNotice = `DSH ${label} 已变更，下次消息将新建会话`;
       }
-    }
-
-    // DSH host 变更 = 换服务：旧 host 的 sessionId 发往新 host 是错的。
-    // 视为 session 边界，仿 preset 分支停车 + 清空当前 sessionId，下次 run 新建会话。
-    const hasDshHostChange = Object.keys(updates).some((k) => k === 'agents.dsh.host');
-    if (hasDshHostChange && this.config.defaultAgent === 'dsh' && !switchNotice) {
-      const oldSessionId = this.sessionStore.getSessionId(ctx.userId, 'dsh');
-      if (oldSessionId) {
-        this.sessionStore.setPreviousSessionId(ctx.userId, 'dsh', oldSessionId);
-        this.sessionStore.clearSessionId(ctx.userId, 'dsh');
-        switchNotice = `DSH host 已变更，旧会话已停放到恢复槽（可 /resume 校验后恢复），下次消息将新建会话`;
-      } else {
-        switchNotice = `DSH host 已变更，下次消息将新建会话`;
-      }
-    }
+    };
+    parkDshSessionBoundary(changedKeys.includes('agents.dsh.agentPreset'), 'preset');
+    parkDshSessionBoundary(changedKeys.includes('agents.dsh.host'), 'host');
 
     // 2026-07-13: 同步 agent 配置到 agentChoices（用于切换 agent 时恢复配置）
     const currentAgent = this.config.defaultAgent;
-    const currentAgentConfigKey = `agents.${currentAgent}`;
-    const hasCurrentAgentUpdate = Object.keys(updates).some(
-      (k) => k === currentAgentConfigKey || k.startsWith(`${currentAgentConfigKey}.`),
-    );
-    if (hasCurrentAgentUpdate) {
+    if (touchesAgentsSubtree(changedKeys, currentAgent)) {
       this.config = syncAgentChoices(this.config, currentAgent);
       // agentChoices 同步写盘必须走原子写（tmp+rename），禁裸同步写盘
       atomicWrite(this.configPath, YAML.stringify(this.config));
@@ -2613,22 +2599,9 @@ export class CommandRouter {
     // duck method `updateApprovalMode` (codex thread/settings/update,
     // kimi/opencode session/set_mode) so they take effect for subsequent
     // turns without waiting for the runner to be recreated.
-    const hasApprovalConfigChange = Object.keys(updates).some(
-      (k) =>
-        k === 'agents.codex' ||
-        k.startsWith('agents.codex.') ||
-        k === 'codex' ||
-        k.startsWith('codex.') ||
-        k === 'agents.kimi' ||
-        k.startsWith('agents.kimi.') ||
-        k === 'kimi' ||
-        k.startsWith('kimi.') ||
-        k === 'agents.opencode' ||
-        k.startsWith('agents.opencode.') ||
-        k === 'opencode' ||
-        k.startsWith('opencode.') ||
-        k === 'agents.dsh.permissionPreset',
-    );
+    const hasApprovalConfigChange =
+      ['codex', 'kimi', 'opencode'].some((kind) => touchesAgentConfig(changedKeys, kind)) ||
+      changedKeys.includes('agents.dsh.permissionPreset');
     if (hasApprovalConfigChange) {
       this.bridge.syncActiveApprovalModes();
     }
@@ -2869,7 +2842,7 @@ export class CommandRouter {
   cmdStatus(ctx: CommandContext): CommandResult {
     const entry = this.sessionStore.get(ctx.userId);
     const cwd = entry?.cwd ?? '(未设置)';
-    const sessionId = entry?.sessions?.get(this.config.defaultAgent) ?? '(无)';
+    const sessionId = entry?.sessions.get(this.config.defaultAgent) ?? '(无)';
     // 查 bridge.activeRuns 而不是默认 runner.isRunning —— 因为 per-workspace
     // runner 启动的 run 不会反映到默认 runner 状态。
     const running = cwd !== '(未设置)' && this.bridge.isBusyFor(cwd);
@@ -2877,8 +2850,7 @@ export class CommandRouter {
     const logger = getLogger();
     const pid = process.pid;
     const configDir = getConfigDir();
-    const logFile =
-      typeof logger.getCurrentLogFile === 'function' ? logger.getCurrentLogFile() : '';
+    const logFile = logger.getCurrentLogFile();
 
     // 构建 agent 状态信息
     const agentLines: string[] = [];
@@ -3470,7 +3442,6 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
   cmdResume(args: string[], ctx: CommandContext, offset = 0): CommandResult {
     return buildResumeCommand(args, ctx, offset, {
       defaultAgent: this.config.defaultAgent,
-      validAgents: CommandRouter.VALID_AGENTS,
       getSessionEntry: (userId) => this.sessionStore.get(userId),
       setSessionId: (userId, agent, sessionId, cwd) =>
         this.sessionStore.setSessionId(userId, agent, sessionId, cwd),

@@ -55,14 +55,14 @@ Normal Feishu message
 
 Core modules:
 
-| Module | Responsibility |
-|--------|---------------|
-| `src/card/run-state.ts` | AgentEvent → renderable state; idempotent terminal states |
-| `src/card/run-renderer.ts` | RunState → CardKit 2.0 JSON |
+| Module                         | Responsibility                                            |
+| ------------------------------ | --------------------------------------------------------- |
+| `src/card/run-state.ts`        | AgentEvent → renderable state; idempotent terminal states |
+| `src/card/run-renderer.ts`     | RunState → CardKit 2.0 JSON                               |
 | `src/card/run-card-session.ts` | controller-ready, producer-release, stream-done lifecycle |
-| `src/bridge/index.ts` | Active run, watchdog, session sync, failure degradation |
-| `src/connector/index.ts` | `streamCard()` and `updateCard()` SDK boundary |
-| `src/index.ts` | Message entry point and stop control lane routing |
+| `src/bridge/index.ts`          | Active run, watchdog, session sync, failure degradation   |
+| `src/connector/index.ts`       | `streamCard()` and `updateCard()` SDK boundary            |
+| `src/index.ts`                 | Message entry point and stop control lane routing         |
 
 ## 4. RunState
 
@@ -78,21 +78,21 @@ Key fields:
 
 Event transitions:
 
-| Input | State change |
-|-------|-------------|
-| system.init | Record sessionId |
-| assistant.thinking | Append reasoning, footer=thinking |
-| assistant.text | Merge adjacent text, footer=streaming |
-| assistant.tool_use | Add running tool, footer=tool_running |
-| user.tool_result | Match tool id, set ok/error and output |
-| final_answer | Store `finalAnswer` and remove the streamed progress copy for the same item |
-| result.success / result.error | finalizing (cache subtype/errorMsg, not terminal) |
-| result without a final_answer marker | Promote the last non-empty assistant text to `finalAnswer` (source=inferred) |
-| CLI process exit (for-await ends) + still finalizing | done / error (lark-remote finally transition) |
-| Non-zero exit or run throws | error |
-| stdout exhausted without result | error |
-| `/stop` or stop button | interrupted (can transition from running or finalizing) |
-| Idle watchdog | idle_timeout |
+| Input                                                | State change                                                                 |
+| ---------------------------------------------------- | ---------------------------------------------------------------------------- |
+| system.init                                          | Record sessionId                                                             |
+| assistant.thinking                                   | Append reasoning, footer=thinking                                            |
+| assistant.text                                       | Merge adjacent text, footer=streaming                                        |
+| assistant.tool_use                                   | Add running tool, footer=tool_running                                        |
+| user.tool_result                                     | Match tool id, set ok/error and output                                       |
+| final_answer                                         | Store `finalAnswer` and remove the streamed progress copy for the same item  |
+| result.success / result.error                        | finalizing (cache subtype/errorMsg, not terminal)                            |
+| result without a final_answer marker                 | Promote the last non-empty assistant text to `finalAnswer` (source=inferred) |
+| CLI process exit (for-await ends) + still finalizing | done / error (lark-remote finally transition)                                |
+| Non-zero exit or run throws                          | error                                                                        |
+| stdout exhausted without result                      | error                                                                        |
+| `/stop` or stop button                               | interrupted (can transition from running or finalizing)                      |
+| Idle watchdog                                        | idle_timeout                                                                 |
 
 `finalizing` is a non-terminal state: Claude Code CLI 2.x writes a `result` event when the main turn ends, but if a `run_in_background` task was started within the turn, the CLI waits for the background task to exit before closing stream-json. So `result` no longer equals terminal state — only CLI process exit counts as truly complete. The card displays `⏳ Claude · Finalizing` (orange header), still showing a `⏹ Stop` button (which kills the main process + background child processes). New messages still queue in the workspace serial queue, not interrupting the background wait.
 
@@ -116,13 +116,13 @@ Stop button payload:
 
 Terminal state cards:
 
-| terminal | Header | Notes |
-|----------|--------|-------|
-| done | ✅ Claude · Done | subtype, empty content notice |
-| error | ⚠️ Claude · Error | Error summary |
-| interrupted | ⏹ Claude · Interrupted | Terminated by user |
-| idle_timeout | ⏱ Claude · Timed out | Idle minutes |
-| finalizing | ⏳ Claude · Finalizing | Non-terminal; **retains** ⏹ Stop button |
+| terminal        | Header                                  | Notes                                                                                                                                               |
+| --------------- | --------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
+| done            | ✅ Claude · Done                        | subtype, empty content notice                                                                                                                       |
+| error           | ⚠️ Claude · Error                       | Error summary                                                                                                                                       |
+| interrupted     | ⏹ Claude · Interrupted                  | Terminated by user                                                                                                                                  |
+| idle_timeout    | ⏱ Claude · Timed out                    | Idle minutes                                                                                                                                        |
+| finalizing      | ⏳ Claude · Finalizing                  | Non-terminal; **retains** ⏹ Stop button                                                                                                             |
 | goal_continuing | ⏳ Claude · Turn ended (goal continues) | The turn ended but the session's goal is still active: the task is not finished, the host starts the next round on its own; Compact is not rendered |
 
 Terminal states do not render footer and stop button (except `finalizing`, see table above).

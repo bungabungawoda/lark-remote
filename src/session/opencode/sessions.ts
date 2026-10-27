@@ -23,18 +23,18 @@ import os from 'node:os';
 import path from 'node:path';
 import { truncateUtf8, TOOL_RESULT_MAX_BYTES } from '../../common/truncate.js';
 import { isStale } from '../common/constants.js';
-import { samePath } from '../../platform/path.js';
+import { safeRealpath, samePath } from '../../platform/path.js';
 import { paginate, capEvents } from '../common/pagination.js';
-import { sortByRecencyDesc } from '../common/recency.js';
+import { newestOf, sortByRecencyDesc } from '../common/recency.js';
 import { TtlCache } from '../../common/ttl-cache.js';
 import { getLogger } from '../../logger/index.js';
 import type {
   AgentSession,
-  AgentSessionReader,
-  SessionContent,
   AgentSessionContentEvent,
+  AgentSessionReader,
   AgentSessionUsage,
-} from '../../runner/index.js';
+  SessionContent,
+} from '../../session-contract.js';
 
 interface OpencodeSessionReaderOptions {
   /** Path to the opencode binary. Defaults to `opencode`. */
@@ -214,6 +214,45 @@ interface OpencodeCliResult {
   error?: Error;
 }
 
+/**
+ * 把会话级累计 token 落到 usage 上（v1 export 与 v2 export 两条读取路径共用）。
+ *
+ * 已有 usage 就地补累计字段；没有 usage 但累计非零（例如只有 cache 计数）时，
+ * 构造一条只带累计的，避免"会话有消耗却显示无 usage"。
+ */
+function withCumulativeUsage(
+  usage: AgentSessionUsage | undefined,
+  cum: {
+    total: number;
+    input: number;
+    output: number;
+    cacheRead: number;
+    cacheWrite: number;
+  },
+): AgentSessionUsage | undefined {
+  if (usage) {
+    usage.cumulativeTotalTokens = cum.total;
+    usage.cumulativeInputTokens = cum.input;
+    usage.cumulativeOutputTokens = cum.output;
+    usage.cumulativeCacheReadTokens = cum.cacheRead;
+    usage.cumulativeCacheCreationTokens = cum.cacheWrite;
+    return usage;
+  }
+  if (!(cum.input || cum.output || cum.total || cum.cacheRead || cum.cacheWrite)) {
+    return undefined;
+  }
+  return {
+    inputTokens: 0,
+    outputTokens: 0,
+    contextLength: 0,
+    cumulativeTotalTokens: cum.total,
+    cumulativeInputTokens: cum.input,
+    cumulativeOutputTokens: cum.output,
+    cumulativeCacheReadTokens: cum.cacheRead,
+    cumulativeCacheCreationTokens: cum.cacheWrite,
+  };
+}
+
 export class OpencodeSessionReader implements AgentSessionReader {
   private readonly binary: string;
   private readonly cacheTtlMs: number;
@@ -271,7 +310,7 @@ export class OpencodeSessionReader implements AgentSessionReader {
    * Get the newest session in a given cwd.
    */
   getNewestSession(cwd: string): AgentSession | null {
-    return this.listSessions(cwd, { limit: 1 }).sessions[0] ?? null;
+    return newestOf(this, cwd);
   }
 
   /**
@@ -443,24 +482,13 @@ export class OpencodeSessionReader implements AgentSessionReader {
           }
         }
       }
-      if (usage) {
-        usage.cumulativeTotalTokens = cumTotal;
-        usage.cumulativeInputTokens = cumInput;
-        usage.cumulativeOutputTokens = cumOutput;
-        usage.cumulativeCacheReadTokens = cumCacheRead;
-        usage.cumulativeCacheCreationTokens = cumCacheWrite;
-      } else if (cumInput || cumOutput || cumTotal || cumCacheRead || cumCacheWrite) {
-        usage = {
-          inputTokens: 0,
-          outputTokens: 0,
-          contextLength: 0,
-          cumulativeTotalTokens: cumTotal,
-          cumulativeInputTokens: cumInput,
-          cumulativeOutputTokens: cumOutput,
-          cumulativeCacheReadTokens: cumCacheRead,
-          cumulativeCacheCreationTokens: cumCacheWrite,
-        };
-      }
+      usage = withCumulativeUsage(usage, {
+        total: cumTotal,
+        input: cumInput,
+        output: cumOutput,
+        cacheRead: cumCacheRead,
+        cacheWrite: cumCacheWrite,
+      });
 
       // Use info.title as aiTitle
       if (data.info.title) {
@@ -645,24 +673,13 @@ export class OpencodeSessionReader implements AgentSessionReader {
       }
     }
 
-    if (latest) {
-      latest.cumulativeTotalTokens = cumTotal;
-      latest.cumulativeInputTokens = cumInput;
-      latest.cumulativeOutputTokens = cumOutput;
-      latest.cumulativeCacheReadTokens = cumCacheRead;
-      latest.cumulativeCacheCreationTokens = cumCacheWrite;
-    } else if (cumInput || cumOutput || cumTotal || cumCacheRead || cumCacheWrite) {
-      latest = {
-        inputTokens: 0,
-        outputTokens: 0,
-        contextLength: 0,
-        cumulativeTotalTokens: cumTotal,
-        cumulativeInputTokens: cumInput,
-        cumulativeOutputTokens: cumOutput,
-        cumulativeCacheReadTokens: cumCacheRead,
-        cumulativeCacheCreationTokens: cumCacheWrite,
-      };
-    }
+    latest = withCumulativeUsage(latest, {
+      total: cumTotal,
+      input: cumInput,
+      output: cumOutput,
+      cacheRead: cumCacheRead,
+      cacheWrite: cumCacheWrite,
+    });
 
     return {
       events: capEvents(events, opts?.maxEvents),
@@ -699,11 +716,14 @@ export class OpencodeSessionReader implements AgentSessionReader {
 
   /** realpath 归一化（public：测试直接调用，替代 as unknown as）。 */
   realpath(cwd: string): string {
-    try {
-      return fs.realpathSync(cwd);
-    } catch {
-      return cwd;
-    }
+    return safeRealpath(cwd, (err) => {
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') return;
+      getLogger().debug(
+        `[opencode-session-reader] realpath ${cwd} failed, using the path as given: ${
+          (err as Error)?.message ?? String(err)
+        }`,
+      );
+    });
   }
 
   private fetchSessionList(cwd: string): OpencodeSessionListEntry[] {

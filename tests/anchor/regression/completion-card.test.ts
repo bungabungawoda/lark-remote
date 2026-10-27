@@ -25,14 +25,13 @@ import {
   createStubSessionReaderRegistry,
 } from '../../lib/bridge-stubs.js';
 import type {
-  AgentEvent,
   AgentSession,
   AgentSessionContentEvent,
   AgentSessionReader,
-  Runner,
-  SessionContent,
   AgentSessionUsage,
-} from '../../../src/runner/index.js';
+  SessionContent,
+} from '../../../src/session-contract.js';
+import type { AgentEvent, Runner } from '../../../src/runner/index.js';
 import { mockLogger } from '../../lib/logger-mock.js';
 
 vi.mock('../../../src/logger/index.js', async () =>

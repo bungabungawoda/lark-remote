@@ -6,6 +6,7 @@ import { isStale } from '../common/constants.js';
 import { samePath, encodeProjectDirName } from '../../platform/path.js';
 import { extractContentBlocks } from '../common/content-blocks.js';
 import { scanJsonlOnce, tailOffsetAfter, scanTailEvents } from '../common/two-pass.js';
+import { getLogger } from '../../logger/index.js';
 import {
   UsageAccumulator,
   contextWindowOccupancy,
@@ -15,7 +16,7 @@ import type {
   AgentSession,
   AgentSessionContentEvent,
   AgentSessionUsage,
-} from '../../runner/index.js';
+} from '../../session-contract.js';
 import {
   SessionIndex,
   extractText,
@@ -83,7 +84,14 @@ function findSessionFileInProjects(
   let entries: string[];
   try {
     entries = fs.readdirSync(projectsDir);
-  } catch {
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
+      getLogger().debug(
+        `[claude-session-reader] cannot read projects dir ${projectsDir}: ${
+          (err as Error)?.message ?? String(err)
+        }`,
+      );
+    }
     return undefined;
   }
   const name = `${sessionId}.jsonl`;
@@ -148,6 +156,13 @@ export function listClaudeSessions(
     summary: e.summary,
     mtime: e.mtimeMs,
   }));
+  // 空列表 + 上次扫描是非 ENOENT 失败 → 是「读不到」而非「真的没有」。
+  // 与 opencode/kimi/pi 同口径：router 显示「列表失败」，别假装空态。
+  if (sessions.length === 0 && index.lastScanError !== undefined) {
+    const err = index.lastScanError;
+    const msg = err instanceof Error ? err.message : String(err);
+    throw new Error(`claude session list 读取失败: ${msg}`, { cause: err });
+  }
   return limit === undefined ? sessions : sessions.slice(0, limit);
 }
 
@@ -176,7 +191,20 @@ export function getNewestSession(
  * Override `now` for tests.
  */
 
-function isSessionActive(filePath: string, mtimeMs: number, now: number = Date.now()): boolean {
+/** 末行是这些类型之一 = 会话已收尾（模块级：逐文件判定不必每次重建 Set）。 */
+const CLAUDE_TERMINAL_TYPES = new Set(['result', 'last-prompt', 'mode', 'permission-mode']);
+
+/**
+ * 文件侧的活跃判定：mtime 新鲜 + 末行没有终态标记。
+ *
+ * 刻意不叫 `isSessionActive`——那是 reader 契约上的方法名，语义各家自己定；
+ * 本函数只看这一个文件，两者同名不同义曾让人把「最近有写入」当成「turn 在跑」。
+ */
+function hasRecentFileActivity(
+  filePath: string,
+  mtimeMs: number,
+  now: number = Date.now(),
+): boolean {
   // Hard signal: file untouched for over an hour → can't be from a live process
   if (isStale(mtimeMs, now)) return false;
 
@@ -189,8 +217,7 @@ function isSessionActive(filePath: string, mtimeMs: number, now: number = Date.n
     // `last-prompt` / `mode` (no `result` event) to mark turn end, so a
     // 24-minute-old session with a last-prompt tail is already done
     // (regression 2026-06-21: previously falsely reported as active).
-    const TERMINAL_TYPES = new Set(['result', 'last-prompt', 'mode', 'permission-mode']);
-    if (typeof obj.type === 'string' && TERMINAL_TYPES.has(obj.type)) return false;
+    if (typeof obj.type === 'string' && CLAUDE_TERMINAL_TYPES.has(obj.type)) return false;
   } catch {
     // ignore parse errors
   }
@@ -198,8 +225,19 @@ function isSessionActive(filePath: string, mtimeMs: number, now: number = Date.n
 }
 
 /**
+ * stat 失败：ENOENT = 文件在两次查询之间消失（正常竞态）；其余 errno 必须留痕，
+ * 否则「文件不可读」会被当成「会话不活跃」。
+ */
+function logStatFailure(filePath: string, err: unknown): void {
+  if ((err as NodeJS.ErrnoException).code === 'ENOENT') return;
+  getLogger().debug(
+    `[claude-session-reader] stat ${filePath} failed: ${(err as Error)?.message ?? String(err)}`,
+  );
+}
+
+/**
  * Check if a Claude session (by sessionId + cwd) is still active.
- * Public wrapper around the internal `isSessionActive(filePath, mtimeMs, now)`
+ * Public wrapper around the internal `hasRecentFileActivity(filePath, mtimeMs, now)`
  * for use by `ClaudeSessionReader` and the multi-agent adapter layer.
  *
  * Resolves the jsonl path via `projectDirForCwd`, stats it for mtime, then
@@ -221,8 +259,9 @@ export function isClaudeSessionActive(
     if (entry) {
       try {
         const st = fs.statSync(entry.path);
-        return isSessionActive(entry.path, st.mtimeMs);
-      } catch {
+        return hasRecentFileActivity(entry.path, st.mtimeMs);
+      } catch (err) {
+        logStatFailure(entry.path, err);
         return false;
       }
     }
@@ -245,8 +284,9 @@ export function isClaudeSessionActive(
 
     try {
       const st = fs.statSync(filePath);
-      return isSessionActive(filePath, st.mtimeMs);
-    } catch {
+      return hasRecentFileActivity(filePath, st.mtimeMs);
+    } catch (err) {
+      logStatFailure(filePath, err);
       return false;
     }
   }
@@ -517,23 +557,9 @@ export function readSessionContent(
     }
   }
 
-  // First pass STREAMS the file once via
-  // `scanJsonlLines` (no `string[]` materialized), parsing each line once to
-  // collect scalars (usage, tailOffset, aiTitle, recap, lastUserMessage)
-  // while retaining NO parsed objects and NO whole-file line array. The
-  // tailOffset is the byte offset where the tail begins (start of the line
-  // after the last user message). A second pass re-reads ONLY the tail from
-  // that offset via `readJsonlLinesFromOffset` and re-parses it for events —
-  // O(tail) memory for both raw line strings and parsed objects, instead of
-  // O(whole file).
-  //
-  // Parse ratio: ≈1.0–1.5× line count when a user message exists (streaming
-  // full-file scan + tail re-parse of the usually-short post-user lines).
-  // When the session has NO user message, tailOffset stays -1 and the tail
-  // IS the whole file → scan(N) + tail(N) = 2.0× — the known asymptotic
-  // upper bound of the body's two-phase design (still better than pre-'s
-  // ~3×). Total parse count adds the index-miss fallback guard's fixed
-  // early-stop overhead (~2 parses, independent of line count).
+  // Two-pass 扫描（pass 1 流式收标量 + pass 2 只重读 tail）的口径与解析比
+  // 见 `src/session/common/two-pass.ts` 头注释；claude 侧只多一项：索引 miss
+  // 时的 fallback 守卫另有固定 ~2 次早停解析，与行数无关。
   const scan = scalarScan(filePath);
 
   // 有 usage 即返回：非累计字段已是末轮 scope，命中判定用 session 累计兜底

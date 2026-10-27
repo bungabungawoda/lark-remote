@@ -58,8 +58,10 @@ describe('PiRpcTranslator', () => {
       },
     });
     expect(end).toHaveLength(1);
-    const content = (end[0] as { message: { content: Array<Record<string, unknown>> } }).message
-      .content;
+    const ev = end[0];
+    if (ev.type !== 'assistant')
+      throw new Error(`expected assistant event, got ${String(ev.type)}`);
+    const content = ev.message.content;
     // 连续 thinking 块在生产者侧合并（'\n' 段落分隔），并带块身份。
     expect(content).toEqual([{ type: 'thinking', thinking: 'step 1\nstep 2', itemId: 'pi:1' }]);
   });

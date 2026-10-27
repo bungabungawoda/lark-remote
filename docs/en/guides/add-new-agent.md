@@ -22,14 +22,11 @@ Adding a new agent only requires registering with the corresponding registries �
 Create `src/runner/<agent>/runner.ts` implementing the `AgentRunner` interface:
 
 ```typescript
-import type {
-  AgentEvent,
-  AgentRunner,
-  AgentSessionReader,
-  SpawnOptions,
-  AgentStatusInfo,
-  AgentKind,
-} from '../types.js';
+import type { AgentEvent, AgentRunner, SpawnOptions, AgentStatusInfo } from '../types.js';
+// The session-reader contract and the agent-name list live in the neutral layer,
+// not in runner/types.ts (see design.md's layering).
+import type { AgentSessionReader } from '../../session-contract.js';
+import type { AgentKind } from '../../agent-kinds.js';
 
 export class <Agent>Runner implements AgentRunner {
   readonly kind: AgentKind = '<agent>';
@@ -68,11 +65,7 @@ export { <Agent>Runner, type <Agent>RunnerConfig } from './runner.js';
 Create `src/session/<agent>/sessions.ts` implementing the `AgentSessionReader` interface:
 
 ```typescript
-import type {
-  AgentSession,
-  AgentSessionReader,
-  SessionContent,
-} from '../types.js';
+import type { AgentSession, AgentSessionReader, SessionContent } from '../../session-contract.js';
 
 export class <Agent>SessionReader implements AgentSessionReader {
   listSessions(
@@ -188,7 +181,7 @@ const builders: Record<AgentKind, AgentConfigCardBuilder> = {
 
 ### Step 9: Add the New Literal to the AGENT_KINDS List
 
-Add one entry to `AGENT_KINDS` in `src/runner/types.ts` (**this is the only place to edit**):
+Add one entry to `AGENT_KINDS` in `src/agent-kinds.ts` (**this is the only place to edit**):
 
 ```typescript
 export const AGENT_KINDS = ['claude', 'codex', 'opencode', 'pi', 'kimi', 'dsh', '<agent>'] as const;
@@ -196,12 +189,12 @@ export const AGENT_KINDS = ['claude', 'codex', 'opencode', 'pi', 'kimi', 'dsh', 
 export type AgentKind = (typeof AGENT_KINDS)[number];
 ```
 
-The `AgentKind` type, `VALID_AGENTS` (resume card validation), and the bridge's
-resume.compact agent check all derive from this list. It used to be copied by hand in several
-places and drifted: after dsh was added, the bridge's resume.compact check still listed only
-five agents, so a card carrying dsh silently fell back to `defaultAgent` (wrong reader →
-"session not found"). Do not copy the agent list anywhere else; test stub registries use
-`AGENT_KINDS` too.
+The `AgentKind` type, the `AGENT_DISPLAY_NAMES` list and `isAgentKind` / `resolveAgentKind`
+(resume card validation and command-line parsing) all derive from this list. It used to be
+copied by hand in several places and drifted: after dsh was added, the bridge's resume.compact
+check still listed only five agents, so a card carrying dsh silently fell back to `defaultAgent`
+(wrong reader → "session not found"). Do not copy the agent list anywhere else; test stub
+registries use `AGENT_KINDS` too.
 
 ### Step 10: Add a Branch in the Config Functions
 
@@ -276,6 +269,7 @@ Unimplemented commands (such as `/steer`, `/compact`, `/fork`) have already been
 ### Q: How can I ensure the new agent's config won't cause save failures?
 
 Refer to the three-layer defense design used for config saving:
+
 1. Schema enum constants (single source of truth)
 2. External CLI load-time filter
 3. UI builder dual-defense filter

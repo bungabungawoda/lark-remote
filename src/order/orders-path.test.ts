@@ -64,23 +64,4 @@ describe('ordersPath respects configDir', () => {
     expect(fs.existsSync(pathA)).toBe(true);
     expect(fs.existsSync(pathB)).toBe(true);
   });
-
-  it('index.ts should pass configDir-based ordersPath to CommandRouter', () => {
-    // This test verifies the integration contract:
-    // When CommandRouter is constructed in index.ts, it MUST receive
-    // ordersPath: path.join(configDir, "orders.json") instead of
-    // leaving it undefined (which falls back to ~/.lark-remote/orders.json).
-    //
-    // We verify this by checking that the current index.ts source
-    // includes the ordersPath assignment.
-
-    const indexSource = fs.readFileSync(path.join(import.meta.dirname, '..', 'index.ts'), 'utf-8');
-
-    // The router construction block should contain an ordersPath
-    // that derives from configDir
-    expect(
-      indexSource,
-      'index.ts must pass ordersPath: path.join(configDir, "orders.json") to CommandRouter',
-    ).toMatch(/ordersPath\s*:\s*path\.join\s*\(\s*configDir\s*,\s*["']orders\.json["']\s*\)/);
-  });
 });

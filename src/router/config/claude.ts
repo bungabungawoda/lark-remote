@@ -6,12 +6,11 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {
-  MODEL_ID_TO_ALIAS,
-  MODEL_ALIAS_TO_ID,
-  getModelOptionsFromSettings,
   CLAUDE_EFFORTS,
   CLAUDE_PERMISSION_MODES,
+  getModelOptionsFromSettings,
 } from '../../config/index.js';
+import { MODEL_ALIAS_TO_ID, MODEL_ID_TO_ALIAS } from '../../model-catalog.js';
 import type { AgentConfigCardBuilder, ConfigField } from './types.js';
 import type { AppConfig } from '../../config/index.js';
 

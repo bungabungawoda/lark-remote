@@ -25,6 +25,7 @@ import { pidFileSuffix } from '../../../src/runner/common/spawning-runner.js';
 import { prependPath, restorePath, writeMockSource } from '../../lib/path-mock.js';
 import { describePosix } from '../../lib/platform.js';
 import { waitForOrThrow } from '../../lib/wait-for.js';
+import { ClaudeSessionReader } from '../../../src/session/claude/index.js';
 
 vi.mock('../../../src/logger/index.js', async () =>
   (await import('../../lib/logger-mock.js')).loggerModuleMock(),
@@ -106,6 +107,7 @@ setInterval(() => {}, 1000);
       );
 
       const r1 = new ClaudeRunner({
+        sessionReader: new ClaudeSessionReader(),
         cwd: 'test',
         pidDir: tmpDir,
         stopGraceMs: 500,
@@ -124,6 +126,7 @@ setInterval(() => {}, 1000);
 
       // lark-remote 重启：新 runner 实例做 killOrphan（身份匹配）
       const r2 = new ClaudeRunner({
+        sessionReader: new ClaudeSessionReader(),
         cwd: 'test',
         pidDir: tmpDir,
         stopGraceMs: 500,

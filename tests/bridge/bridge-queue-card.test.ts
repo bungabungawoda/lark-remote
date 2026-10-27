@@ -5,6 +5,7 @@ import os from 'node:os';
 
 import { makeBridge } from '../lib/bridge-stubs.js';
 import { setupTwoTaskQueueScenario } from '../lib/queue-scenario.js';
+import { waitForOrThrow } from '../lib/wait-for.js';
 import { mockLogger } from '../lib/logger-mock.js';
 import { cardButtons, cardHeaderTitle, type Card } from '../lib/card-tree.js';
 
@@ -41,10 +42,11 @@ describe('Queue card update when task starts executing', () => {
     expect(initialCards.length).toBeGreaterThan(0);
 
     // Now release task1 - task2 starts executing
+    const updatesBeforeRelease = updateCardCalls.length;
     release1();
 
     // Wait for task2 to actually start executing
-    await new Promise((r) => setTimeout(r, 100));
+    await waitForOrThrow(() => updateCardCalls.length > updatesBeforeRelease);
 
     // CRITICAL ASSERTION: When task2 starts, the queue card should be UPDATED
     // Expected behavior: connector.updateCard should be called with updated card
@@ -52,7 +54,7 @@ describe('Queue card update when task starts executing', () => {
     // - header.title contains "已开始执行"
     // - buttons have disabled: true
 
-    expect(updateCardCalls.length).toBeGreaterThan(0);
+    expect(updateCardCalls.length).toBeGreaterThan(updatesBeforeRelease);
 
     // Verify the update has correct properties
     const updatedCard = updateCardCalls[updateCardCalls.length - 1].card;

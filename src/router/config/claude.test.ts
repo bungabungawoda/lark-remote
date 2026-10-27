@@ -9,12 +9,15 @@ vi.mock('../../config/index.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../config/index.js')>();
   return {
     ...actual,
-    MODEL_ID_TO_ALIAS: { 'claude-opus-5': 'opus', 'claude-sonnet-5': 'sonnet' },
-    MODEL_ALIAS_TO_ID: { opus: 'claude-opus-5', sonnet: 'claude-sonnet-5' },
     getModelOptionsFromSettings: vi.fn(() => ['opus', 'sonnet']),
     CLAUDE_EFFORTS: ['low', 'medium', 'high'],
   };
 });
+
+vi.mock('../../model-catalog.js', () => ({
+  MODEL_ID_TO_ALIAS: { 'claude-opus-5': 'opus', 'claude-sonnet-5': 'sonnet' },
+  MODEL_ALIAS_TO_ID: { opus: 'claude-opus-5', sonnet: 'claude-sonnet-5' },
+}));
 
 function makeConfig(overrides?: Record<string, unknown>): AppConfig {
   return {

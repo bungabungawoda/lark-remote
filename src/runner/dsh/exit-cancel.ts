@@ -24,7 +24,7 @@ import {
   mintDshBrowserCookie,
   readDshBrowserSecretSync,
   resolveDshCredentialsFile,
-} from './auth.js';
+} from '../../dsh/auth.js';
 
 /** Upper bound on the exit-path cancel:退出不能被一个卡住的 host 拖住。 */
 const EXIT_CANCEL_TIMEOUT_MS = 2_000;

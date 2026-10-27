@@ -1,6 +1,19 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, type Mock } from 'vitest';
 import { FeishuConnector } from './index.js';
-import type { AppConfig } from '../config/index.js';
+import { AppConfigSchema, type AppConfig } from '../config/index.js';
+
+/**
+ * Narrow patch signature (mirrors the production PatchableMessageService
+ * boundary in FeishuConnector): every request/response field is optional so
+ * tests can exercise the "data.content absent" branch.
+ */
+type PatchStubFn = (...args: unknown[]) => Promise<{ code?: number; msg?: string }>;
+
+/** Narrow view of rawClient.im.v1.message.patch as wrapped by the observability probe. */
+type WrappedPatch = (
+  request?: { path?: { message_id?: string }; data?: { content?: string } },
+  options?: unknown,
+) => Promise<{ code?: number; msg?: string }>;
 
 /**
  * Mutable stub for rawClient.im.v1.message.patch.
@@ -11,7 +24,7 @@ import type { AppConfig } from '../config/index.js';
  * fallback prevents "patchStub is not a function" if a test is added without
  * a proper beforeEach reset.
  */
-let patchStub: ReturnType<typeof vi.fn>;
+let patchStub: Mock<PatchStubFn>;
 
 vi.mock('@larksuite/channel', () => ({
   createLarkChannel: () => ({
@@ -29,7 +42,7 @@ vi.mock('@larksuite/channel', () => ({
             // Must be a writable property so FeishuConnector can reassign patch
             // with the observability wrapper. The closure reads patchStub at call
             // time so beforeEach controls the stub per test.
-            patch: (...args: unknown[]) => (patchStub ??= vi.fn())(...args),
+            patch: (...args: unknown[]) => (patchStub ??= vi.fn<PatchStubFn>())(...args),
           },
         },
       },
@@ -37,7 +50,7 @@ vi.mock('@larksuite/channel', () => ({
   }),
 }));
 
-let warnFn: ReturnType<typeof vi.fn>;
+let warnFn: Mock<(...args: unknown[]) => void>;
 
 vi.mock('../logger/index.js', () => ({
   getLogger: () => ({
@@ -48,7 +61,7 @@ vi.mock('../logger/index.js', () => ({
   }),
 }));
 
-const config: AppConfig = {
+const config: AppConfig = AppConfigSchema.parse({
   feishu: { appId: 'app-id', appSecret: 'app-secret' },
   claude: {
     model: 'claude-opus-4-8',
@@ -58,16 +71,16 @@ const config: AppConfig = {
   idle: { watchdogMinutes: 15 },
   defaultAgent: 'claude',
   logging: { level: 'info' },
-};
+});
 
-function getWrappedPatch(connector: FeishuConnector) {
-  return connector.channel.rawClient.im.v1.message.patch;
+function getWrappedPatch(connector: FeishuConnector): WrappedPatch {
+  return connector.channel.rawClient.im.v1.message.patch as WrappedPatch;
 }
 
 describe('message.patch business-code observability', () => {
   beforeEach(() => {
-    warnFn = vi.fn();
-    patchStub = vi.fn();
+    warnFn = vi.fn<(...args: unknown[]) => void>();
+    patchStub = vi.fn<PatchStubFn>();
   });
 
   it('should log warn when patch returns code!=0', async () => {
@@ -202,8 +215,8 @@ describe('message.patch business-code observability', () => {
  */
 describe('updateCard 业务码失败传导', () => {
   beforeEach(() => {
-    warnFn = vi.fn();
-    patchStub = vi.fn();
+    warnFn = vi.fn<(...args: unknown[]) => void>();
+    patchStub = vi.fn<PatchStubFn>();
   });
 
   it('test_anchor_update_card_business_code_rejects', async () => {

@@ -35,33 +35,33 @@ this.onMessage?.({ ... content: msg.content }); // 文本通道：content 原样
 
 `处置` 列按当前代码判定，表驱动断言见 `src/inbound/matrix.test.ts`；三类处置的定义见 §2、判据见 §3。
 
-| message_type | content 渲染 | resources（实测） | 处置 | 备注 |
-|---|---|---|---|---|
-| `text` | `hello world` | — | 文本类 → 进 prompt | |
-| `image` | `![image](img_v2_a)` | `image` | 资源类 → 落盘 + 注入 prompt | |
-| `file` | `<file key="…" name="report.pdf"/>` | `file` + fileName | 资源类 | |
-| `post`（含图） | `**T**\n\n看这张图 ![image](…)` | `image`（可多个） | 资源类 **且** 文本并存 | 图文混排不丢文字 |
-| `post`（纯文字） | `纯文字富文本` | — | 文本类 | |
-| `post`（顶层附件区，0.6.0+） | 正文 + `<file key="…" name="report.pdf"/>`（folder 为 `<folder …/>`） | `file` + fileName（folder 不产资源） | 资源类 + 文本并存 | |
-| `media` | `<video key="…" name="1755000000.mp4" duration="80.9s"/>` | `video` + fileName + coverImageKey | 资源类（下载走 `type=file`） | 落视频本体，供 agent 抽帧 |
-| `video` | 同上（SDK 把 `video`/`media` 都注册到 `convertVideo`） | `video` | 资源类 | |
-| `media`（无 file_name） | `<video key="…" duration="80.9s"/>` | `video`，**无 fileName** | 资源类 | 命名按 MIME + 魔数补扩展名（§2.1） |
-| `audio`（语音） | `<audio key="…" duration="3s"/>` | `audio`，**无 fileName** | 资源类 | 只落盘不转写 |
-| `sticker`（表情） | `<sticker key="…"/>` | `sticker`，**无 fileName** | 资源类尝试下载 | 飞书称表情包不可下载（§4）→ 失败走 `rejected` 回执，`<sticker key=…>` 不进 prompt |
-| `merge_forward` | 有子消息能力时渲染成 `[时间] 发送人:` + 缩进内容的树；能力缺失时 `<forwarded_messages/>`；子消息抓取失败（0.4.1+，重试耗尽）时 `<forwarded_messages status="fetch_failed"/>` | 子消息内的资源**会被聚合进顶层 resources** | 文本保留 + 附件尽力而为 | 凭据问题与三种降级结局见 §5 |
-| `interactive` | `[interactive card]` | — | 不支持类 → 回执，不进 prompt | |
-| `folder` | `<folder key="…" name="myfolder"/>` | `[]` | 不支持类 | key 不能用 messageResource 下载 |
-| `share_chat` | `<group_card id="oc_…"/>` | — | 不支持类 | |
-| `share_user` | `<contact_card id="ou_…"/>` | — | 不支持类 | |
-| `location` | `<location name="公司" coords="…"/>` | — | 不支持类 | |
-| `system`（撤回等） | `撤回了一条消息` | — | 文本类 | 无资源且是纯文本，属判据的直接推论；飞书是否下发未由用例固定 |
-| `vote` | `<vote>\n午饭吃啥\n• 面\n• 饭\n</vote>` | — | 不支持类 | |
-| `todo` | `<todo>\n[todo]\n</todo>` | — | 不支持类 | |
-| `video_chat` | `<meeting>\n📹 周会\n…</meeting>` | — | 不支持类 | |
-| `calendar` | `<calendar_invite>\n📅 会议\n</calendar_invite>` | — | 不支持类 | |
-| `hongbao` | `<hongbao text="恭喜发财"/>` | — | 不支持类 | |
-| 未知类型 | `[unsupported message]` | — | 不支持类 + warn 日志 | 暴露而非静默 |
-| `image`/`sticker` 无 key | `[image]` / `[sticker]` | `[]` | 不支持类 | 兜底降级态 |
+| message_type                 | content 渲染                                                                                                                                                                 | resources（实测）                          | 处置                         | 备注                                                                              |
+| ---------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------ | ---------------------------- | --------------------------------------------------------------------------------- |
+| `text`                       | `hello world`                                                                                                                                                                | —                                          | 文本类 → 进 prompt           |                                                                                   |
+| `image`                      | `![image](img_v2_a)`                                                                                                                                                         | `image`                                    | 资源类 → 落盘 + 注入 prompt  |                                                                                   |
+| `file`                       | `<file key="…" name="report.pdf"/>`                                                                                                                                          | `file` + fileName                          | 资源类                       |                                                                                   |
+| `post`（含图）               | `**T**\n\n看这张图 ![image](…)`                                                                                                                                              | `image`（可多个）                          | 资源类 **且** 文本并存       | 图文混排不丢文字                                                                  |
+| `post`（纯文字）             | `纯文字富文本`                                                                                                                                                               | —                                          | 文本类                       |                                                                                   |
+| `post`（顶层附件区，0.6.0+） | 正文 + `<file key="…" name="report.pdf"/>`（folder 为 `<folder …/>`）                                                                                                        | `file` + fileName（folder 不产资源）       | 资源类 + 文本并存            |                                                                                   |
+| `media`                      | `<video key="…" name="1755000000.mp4" duration="80.9s"/>`                                                                                                                    | `video` + fileName + coverImageKey         | 资源类（下载走 `type=file`） | 落视频本体，供 agent 抽帧                                                         |
+| `video`                      | 同上（SDK 把 `video`/`media` 都注册到 `convertVideo`）                                                                                                                       | `video`                                    | 资源类                       |                                                                                   |
+| `media`（无 file_name）      | `<video key="…" duration="80.9s"/>`                                                                                                                                          | `video`，**无 fileName**                   | 资源类                       | 命名按 MIME + 魔数补扩展名（§2.1）                                                |
+| `audio`（语音）              | `<audio key="…" duration="3s"/>`                                                                                                                                             | `audio`，**无 fileName**                   | 资源类                       | 只落盘不转写                                                                      |
+| `sticker`（表情）            | `<sticker key="…"/>`                                                                                                                                                         | `sticker`，**无 fileName**                 | 资源类尝试下载               | 飞书称表情包不可下载（§4）→ 失败走 `rejected` 回执，`<sticker key=…>` 不进 prompt |
+| `merge_forward`              | 有子消息能力时渲染成 `[时间] 发送人:` + 缩进内容的树；能力缺失时 `<forwarded_messages/>`；子消息抓取失败（0.4.1+，重试耗尽）时 `<forwarded_messages status="fetch_failed"/>` | 子消息内的资源**会被聚合进顶层 resources** | 文本保留 + 附件尽力而为      | 凭据问题与三种降级结局见 §5                                                       |
+| `interactive`                | `[interactive card]`                                                                                                                                                         | —                                          | 不支持类 → 回执，不进 prompt |                                                                                   |
+| `folder`                     | `<folder key="…" name="myfolder"/>`                                                                                                                                          | `[]`                                       | 不支持类                     | key 不能用 messageResource 下载                                                   |
+| `share_chat`                 | `<group_card id="oc_…"/>`                                                                                                                                                    | —                                          | 不支持类                     |                                                                                   |
+| `share_user`                 | `<contact_card id="ou_…"/>`                                                                                                                                                  | —                                          | 不支持类                     |                                                                                   |
+| `location`                   | `<location name="公司" coords="…"/>`                                                                                                                                         | —                                          | 不支持类                     |                                                                                   |
+| `system`（撤回等）           | `撤回了一条消息`                                                                                                                                                             | —                                          | 文本类                       | 无资源且是纯文本，属判据的直接推论；飞书是否下发未由用例固定                      |
+| `vote`                       | `<vote>\n午饭吃啥\n• 面\n• 饭\n</vote>`                                                                                                                                      | —                                          | 不支持类                     |                                                                                   |
+| `todo`                       | `<todo>\n[todo]\n</todo>`                                                                                                                                                    | —                                          | 不支持类                     |                                                                                   |
+| `video_chat`                 | `<meeting>\n📹 周会\n…</meeting>`                                                                                                                                            | —                                          | 不支持类                     |                                                                                   |
+| `calendar`                   | `<calendar_invite>\n📅 会议\n</calendar_invite>`                                                                                                                             | —                                          | 不支持类                     |                                                                                   |
+| `hongbao`                    | `<hongbao text="恭喜发财"/>`                                                                                                                                                 | —                                          | 不支持类                     |                                                                                   |
+| 未知类型                     | `[unsupported message]`                                                                                                                                                      | —                                          | 不支持类 + warn 日志         | 暴露而非静默                                                                      |
+| `image`/`sticker` 无 key     | `[image]` / `[sticker]`                                                                                                                                                      | `[]`                                       | 不支持类                     | 兜底降级态                                                                        |
 
 ## 2. 处置分类（实现态）
 
@@ -78,7 +78,7 @@ this.onMessage?.({ ... content: msg.content }); // 文本通道：content 原样
 
 1. **不要**把 `handleInboundMediaDetected` 里的 `r.type === 'image' ? 'image' : 'file'` 改成按类型细分：
    飞书 `im.v1.messageResource.get` 的 `type` 只有 `image`/`file` 两个合法值（SDK 注释
-   *'file' for everything else*），传 `'video'` 会 400。
+   _'file' for everything else_），传 `'video'` 会 400。
 2. `sticker` 按资源类尝试下载（`type=file`），但飞书文档称"暂不支持获取表情包资源"（见 §4）；
    下不动时走回执，且 `<sticker key=…>` 占位符**永不进 prompt**。
 3. 无 `fileName` 的资源不能只靠文件名命名：要按 MIME + 魔数补扩展名（参考 `imageExtension`），
@@ -101,6 +101,7 @@ resources.length === 0 且 content 是结构化占位符  →  不支持类：�
 ```
 
 守护测试（表驱动，覆盖上表全部 `message_type`，见 `src/inbound/matrix.test.ts`）：
+
 - 断言「`resources` 非空的入站消息，一律不得进入文本转发路径」；
 - 断言「结构化占位符（`<xxx …/>`、`[unsupported message]`）不得成为 agent prompt」。
 
@@ -111,10 +112,10 @@ resources.length === 0 且 content 是结构化占位符  →  不支持类：�
 
 **`type` 参数只有两个合法值**，这决定了下载侧的类型映射不可扩展：
 
-| 值 | 覆盖的消息类型 |
-|---|---|
-| `image` | 消息中的图片、富文本消息中的图片 |
-| `file` | 消息中的文件、音频、视频（**表情包除外**） |
+| 值      | 覆盖的消息类型                             |
+| ------- | ------------------------------------------ |
+| `image` | 消息中的图片、富文本消息中的图片           |
+| `file`  | 消息中的文件、音频、视频（**表情包除外**） |
 
 由此确定的硬约束：
 
@@ -155,11 +156,11 @@ resources.length === 0 且 content 是结构化占位符  →  不支持类：�
 
 三种结局都有明确出口（表驱动断言见 `src/inbound/matrix.test.ts`）：
 
-| 情况 | 行为 |
-|---|---|
-| 子消息文本 + 附件都拿到 | 文本保留，附件落盘并注入 prompt |
+| 情况                                    | 行为                                     |
+| --------------------------------------- | ---------------------------------------- |
+| 子消息文本 + 附件都拿到                 | 文本保留，附件落盘并注入 prompt          |
 | SDK 能力缺失（`<forwarded_messages/>`） | 回执「暂不支持合并转发消息」，不进 agent |
-| 附件下载失败 | 文本照常保留，附件回执「下载失败」 |
+| 附件下载失败                            | 文本照常保留，附件回执「下载失败」       |
 
 任何情况下都**不得**把 `![image](img_v2_…)` / `<file key="…"/>` 占位符当 prompt 交给 agent；
 走"不支持"路线时，提示里要给出可行替代：**逐条转发**或直接发文件。
@@ -172,12 +173,12 @@ resources.length === 0 且 content 是结构化占位符  →  不支持类：�
 
 本项目要让**本地 agent 真正读得到内容**，因此有意区别于"只给元信息"的通用做法：
 
-| 维度 | 通用做法 | 本项目的选择与原因 |
-|---|---|---|
-| 视频 | 只给 `[video: name, 80s]` + 封面 | **落盘本体** —— agent 要拿 ffmpeg 抽帧做 OCR，封面不够 |
-| 语音 | 引擎转写成文字 | **只落盘不转写** —— 本项目 agent 能自行处理，转写不是必需路径 |
-| 附件告知 | 发一张提示卡，等用户再说明一句 | **路径自动注入 prompt** —— 少一步人工，"发完文件直接说要求"才顺 |
-| 不支持类型 | 静默丢弃或当文本 | **回明确提示**，且占位符不进 prompt（静默等于用户以为程序坏了） |
+| 维度       | 通用做法                         | 本项目的选择与原因                                              |
+| ---------- | -------------------------------- | --------------------------------------------------------------- |
+| 视频       | 只给 `[video: name, 80s]` + 封面 | **落盘本体** —— agent 要拿 ffmpeg 抽帧做 OCR，封面不够          |
+| 语音       | 引擎转写成文字                   | **只落盘不转写** —— 本项目 agent 能自行处理，转写不是必需路径   |
+| 附件告知   | 发一张提示卡，等用户再说明一句   | **路径自动注入 prompt** —— 少一步人工，"发完文件直接说要求"才顺 |
+| 不支持类型 | 静默丢弃或当文本                 | **回明确提示**，且占位符不进 prompt（静默等于用户以为程序坏了） |
 
 ### 6.1 两条通用做法（本项目已落在实现里）
 
