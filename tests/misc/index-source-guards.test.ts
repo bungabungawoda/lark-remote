@@ -2,10 +2,9 @@
  * src/index.ts 装配线的源码级守卫（单文件收口）。
  *
  * 这些契约都发生在 main() 的不可注入接线处（进程级异常处理器、ConfigDir 派生
- * 路径、agent 工厂闭包），无法用行为测试覆盖，只能钉源码形态。此前散落在
- * tests/misc/global-exception-handler.test.ts、src/order/orders-path.test.ts 与
- * tests/anchor/regression/index-factories-workspace.test.ts 三处；集中到这里，
- * 让「静态守卫一共守着哪几条契约」一眼可数。
+ * 路径、agent 工厂闭包），无法用行为测试覆盖，只能钉源码形态。此前这类静态断言
+ * 散落在三个守卫文件里，本轮集中到这里（`src/order/orders-path.test.ts` 仍从
+ * 行为侧守着 ordersPath 那一条），让「静态守卫一共守着哪几条契约」一眼可数。
  */
 import { describe, it, expect } from 'vitest';
 import fs from 'node:fs';
