@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.14] - 2026-10-28
+
+### 修复
+
+- **卡片停止刷新不再查不到原因**：飞书拒收一次卡片更新后，这张卡会被永久剔除、此后不再原地刷新（用户侧表现为「卡片卡在最后一步」）。这条失败此前只记 debug 级日志，在默认 `info` 级别下看不到；现在按 warn 记录，带上下原因
+- **自重启的前实例信息读取失败不再被误归因**：`/restart` 读旧实例的 startup-contact 时，只有「从未写过」（首次运行）算正常；解析失败或权限问题现在会留痕，否则排查时被当成「旧 owner 没有条目」而走错方向
+
+### 维护
+
+- **agent 名单、会话读取契约、用量字段与模型别名各自单源**：新增 `src/agent-kinds.ts`、`src/session-contract.ts`、`src/model-catalog.ts`。用量字段清单原先手抄了 5 份、加一个字段要同时改三处，现在统一从一处派生。无行为变化
+- **模块归位，依赖方向只剩单向**：`card-helpers` / `usage-format` 从 router 移入 card，DSH 的协议、类型与 home 解析从 runner 提到 `src/dsh/`；地基层（配置、会话、卡片）不再反向 import 上层，并加了依赖方向守卫用例守住这条边。无行为变化
+- **`/config` 卡片删掉从未被任何字段使用的开关控件形态**，同时加「控件 ↔ 处理端」一致性守卫：渲染得出的按钮必定有对应处理分支，也不会漏进即时动作名单——「按钮点下去没人处理」这类状态从此被测出来
+- **审批动作与排队管理从 bridge 拆成独立模块**，入口装配线（进程级异常处理器、ConfigDir 派生路径、agent 工厂闭包）收拢为单文件静态守卫；顺带清掉死代码、重复实现与静默吞错的分支。无行为变化
+- **单元测试纳入类型检查**：`tsconfig.test-infra.json` 不再排除 `src/**/*.test.ts`，`bun run typecheck` 现在会检查测试文件的类型，测试夹具里的陈旧键当场可见
+
 ## [0.5.13] - 2026-10-26
 
 ### 修复
