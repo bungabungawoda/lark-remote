@@ -960,12 +960,24 @@ codex app-server 的 `turn.completed` 透传协议 `tokenUsage.last` 的 turn �
 是 session 累计，cache% 分子分母不同源）。
 → `FinishMeta` → `RunState` → `run-renderer` 传给 `formatUsageStats`。
 
+**jsonl 兜底的 flow 也必须是「末个 turn 的采样之和」**：ACP 的 `usage_update` 只带
+context 占用（`used`/`size`）与 cost，没有 input/output 拆分，opencode/kimi 因此
+永远走 jsonl 兜底；reader 若只取末条采样，一次多请求 run 会按"末次请求"出数
+（实测 25 请求的 run：input 20,040 显示成 543、output 10,358 显示成 1,250，而相邻
+两张卡的"累计"差值才是真实消耗）。各自 turn 边界：opencode v2 = `idle` 消息
+（opencode 自带的 turn 结束标记，取"其后仍有采样的最后一个 idle"，文件以 idle 收尾
+时自动落到上一个 idle）；opencode v1 = 最后一条 user 消息（v1 无 idle）；
+kimi = `turn.prompt`（整份 wire 都没有该标记的旧数据沿用"整份文件 = 一个 turn"）。
+同一 turn 内多条 synthetic 消息（如 shell 完成事件触发的 synthetic）不构成新 turn，
+中间没有 idle/turn.prompt 就并入同一轮。`contextLength` 始终取末条采样，不求和。
+
 **`/resume` 由各 session reader 填充**：claude `aggregateSessionUsage`（`totalTokens`
-= 分项和）、pi `extractUsage`（`totalTokens = usage.totalTokens`）、opencode reader
-（`cache.write`/`total`）、codex `readCodexRollout` 解析 `token_count`
+= 分项和）、pi `extractUsage`（`totalTokens = usage.totalTokens`）、kimi 按
+`turn.prompt` 汇总末个 turn 作 flow、opencode reader（`cache.write`/`total`；v2 按
+`idle` 分段）、codex `readCodexRollout` 解析 `token_count`
 事件（`raw = last_token_usage ?? subtract(total, prev_total)`，跟踪 `previousTotals`
 做累计差；flow 字段按 `task_started` 汇总本 turn 的所有采样）。改 token **展示口径**
-时仍需同时核对四个 reader + `formatUsageStats` + lark-remote；**字段清单**已单源为
+时仍需同时核对五个 reader + `formatUsageStats` + lark-remote；**字段清单**已单源为
 `UsageSnapshot`（`src/session-contract.ts`），原先手抄的 5 份可选字段清单改为
 `extends` 它，加一个字段只改这一处。
 

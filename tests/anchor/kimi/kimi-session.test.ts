@@ -386,6 +386,52 @@ describe('KimiSessionReader', () => {
     expect(usage!.contextLength, 'contextLength 仍取 main 末条 record').toBe(10700); // §9.21: 含末轮 output
   });
 
+  // 有 turn.prompt 的真实 wire：本 run 只能是末个 turn 的记录之和。旧实现把
+  // 会话总量当本 run（卡片 Input/Output 随历史一起膨胀），而累计字段才是会话总量。
+  it('test_anchor_kimi_per_run_usage_is_the_last_turn_only', () => {
+    writeWire([
+      {
+        type: 'turn.prompt',
+        input: [{ type: 'text', text: 'first' }],
+        origin: { kind: 'user' },
+        time: 1784380436250,
+      },
+      usageRecordLine(
+        { inputOther: 1000, output: 100, inputCacheRead: 5000, inputCacheCreation: 200 },
+        1784380436251,
+      ),
+      {
+        type: 'turn.prompt',
+        input: [{ type: 'text', text: 'second' }],
+        origin: { kind: 'user' },
+        time: 1784380436252,
+      },
+      usageRecordLine(
+        { inputOther: 300, output: 30, inputCacheRead: 600, inputCacheCreation: 10 },
+        1784380436253,
+      ),
+      usageRecordLine(
+        { inputOther: 200, output: 20, inputCacheRead: 400, inputCacheCreation: 5 },
+        1784380436254,
+      ),
+    ]);
+
+    const usage = reader.readSessionContent('session_x', realCwd).usage;
+    expect(usage, 'readSessionContent 应返回 usage').toBeDefined();
+
+    // 本 run = 末个 turn 的两条 record。
+    expect(usage!.inputTokens).toBe(500);
+    expect(usage!.outputTokens).toBe(50);
+    expect(usage!.cacheReadTokens).toBe(1000);
+    expect(usage!.cacheCreationTokens).toBe(15);
+    expect(usage!.totalTokens).toBe(1565);
+    // 累计 = 两个 turn 的全部 record。
+    expect(usage!.cumulativeInputTokens).toBe(1500);
+    expect(usage!.cumulativeOutputTokens).toBe(150);
+    // 水位仍是主 wire 末条 record：200+20+400+5 = 625。
+    expect(usage!.contextLength).toBe(625);
+  });
+
   // ── isSessionActive tail-only ─────────────────────────────────────
   function writeBigWire(sessionIdSuffix: string): string {
     // 180 step.begin 噪音 + step.end + 尾随 usage.record（真实事件序）。
