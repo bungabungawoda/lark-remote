@@ -686,6 +686,48 @@ describe('DshClient / DshRunner integration', () => {
     expect(events.find((e) => e.type === 'background_jobs')).toBeUndefined();
   });
 
+  it('goal 探测失败时产 goal_state{known:false}，不静默当成没有目标', async () => {
+    // 验证什么：goalState 的 known=false 是"读不到"，与 goal=null（明确没有）
+    // 是两件事。旧实现两种都只是不产事件，卡片只能按"没有目标"收尾成已完成；
+    // 现在必须显式把 unknown 传给卡片。
+    server = new FakeDshServer();
+    server.register('session/create', () => ({ ok: true, value: { sessionId: SID } }));
+    server.register('session/prompt', () => ({ ok: true, value: { accepted: true } }));
+    // 读不懂的 goal 投影 → goalFromProjection 返回 undefined → known:false。
+    server.setProjectionValue({ asOfSeq: 0, values: { goal: { current: 42 } } });
+    server.setMuxFrames([
+      sessionEventFrame(SID, textChunk('working', 1)),
+      sessionEventFrame(SID, turnEnd('completed', 2)),
+    ]);
+    await server.start();
+
+    const runner = new DshRunner({ kind: 'dsh', sessionReader: stubReader, host: server.baseUrl });
+    const events = await collect(runner.run('hi', { cwd: CWD }));
+
+    const goalEvents = events.filter((e) => e.type === 'goal_state');
+    // seed 与收尾复核都读不到：只产一次 unknown（去重），且不得被当成 clear。
+    expect(goalEvents).toHaveLength(1);
+    expect(goalEvents[0]).toMatchObject({ type: 'goal_state', goal: null, known: false });
+  });
+
+  it('投影里没有 goal 域（未用过 goal 的会话）不产 goal_state，也不报 unknown', async () => {
+    // 验证什么：缺失 ≠ 读不懂。未用过 goal 的会话投影里没有 `goal` 键，必须按
+    // 「明确没有目标」处理；否则每次普通 DSH 会话都会多出一条 unknown 事件，
+    // 收尾卡被误标成「目标状态未确认」。
+    server = new FakeDshServer();
+    server.register('session/create', () => ({ ok: true, value: { sessionId: SID } }));
+    server.register('session/prompt', () => ({ ok: true, value: { accepted: true } }));
+    server.setMuxFrames([
+      sessionEventFrame(SID, textChunk('plain', 1)),
+      sessionEventFrame(SID, turnEnd('completed', 2)),
+    ]);
+    await server.start();
+
+    const runner = new DshRunner({ kind: 'dsh', sessionReader: stubReader, host: server.baseUrl });
+    const events = await collect(runner.run('hi', { cwd: CWD }));
+    expect(events.find((e) => e.type === 'goal_state')).toBeUndefined();
+  });
+
   it('result usage sums a multi-step turn instead of reporting the last sampling', async () => {
     server = new FakeDshServer();
     server.register('session/create', () => ({ ok: true, value: { sessionId: SID } }));

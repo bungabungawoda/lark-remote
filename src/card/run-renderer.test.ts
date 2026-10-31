@@ -892,6 +892,46 @@ describe('renderRunCard', () => {
     expect(json).not.toContain('审批超时未响应');
   });
 
+  it('显式 user_stop 优先于历史 approvalExpired 标记', () => {
+    // 审批过期是粘性标记，cancel 语义下 agent 可能继续跑；用户随后主动 /stop
+    // 时终态原因是 user_stop。若过期标记仍优先，卡片会把「我自己停的」误报成
+    // 「审批超时自动取消」。
+    let state = createInitialRunState('run-stop-after-expiry');
+    state = reduceRunState(state, {
+      type: 'approval_requested',
+      requestId: 14,
+      kind: 'command',
+      threadId: 'th-aaa-111',
+      turnId: 'tn-111',
+      itemId: 'item-14',
+      view: {
+        requestId: 14,
+        kind: 'command',
+        command: 'npm test',
+        commandCwd: '/home/user/project',
+        availableDecisions: ['accept', 'cancel'],
+      },
+    } as never);
+    state = reduceRunState(state, { type: 'approval_expired', requestId: 14 } as never);
+    const interrupted = finishRun(state, 'interrupted', { interruptedReason: 'user_stop' });
+
+    const json = JSON.stringify(renderRunCard(interrupted));
+    expect(json).toContain('已被用户终止');
+    expect(json).not.toContain('审批超时未响应');
+  });
+
+  it('goal 探测失败收尾：标题与摘要都不得断言目标已完成', () => {
+    // GoalStateEvent 契约：known=false 表示读不到，渲染层不得据此断言
+    // 「没有目标 / 已完成」。收尾卡仍要说明本轮结束，但必须标注目标状态未知。
+    let state = createInitialRunState('run-goal-unknown');
+    state = reduceRunState(state, { type: 'goal_state', goal: null, known: false } as never);
+    state = finishRun(state, 'done', { resultSubtype: 'success' });
+
+    const json = JSON.stringify(renderRunCard(state, { agentKind: 'dsh' }));
+    expect(json).toContain('完成（目标未确认）');
+    expect(json).toContain('目标状态未确认');
+  });
+
   it('test_anchor_pending_approval_title_shows_waiting_for_approval', () => {
     // 2026-08-14 UX：审批等待期间命令工具未 completed，footer 停在 tool_running，
     // 标题此前显示「调用工具」。必须改为「等待审批」，提示当前在等人工决策。
@@ -3934,9 +3974,27 @@ describe('renderRunCard · goal 可见性', () => {
     state = finishRun(state, 'done', { resultSubtype: 'success' });
     const json = JSON.stringify(renderRunCard(state, { agentKind: 'dsh', compactSupported: true }));
     expect(json).toContain('目标被阻断');
+    // header 不得写「已完成」：同一张卡 body 在报阻断、标题说完成，用户只会
+    // 记住标题。blocked/paused 都不是「任务做完了」。
+    expect(json).toContain('DSH · 目标被阻断');
+    expect(json).not.toContain('DSH · 已完成');
     expect(json).toContain('round-limit');
     // 阻断不是 active：会话确实空闲，压缩应当可用。
     expect(json).toContain('"cmd":"compact"');
+
+    // paused 同理：会话空闲、可压缩，但标题不能说完成。
+    const paused = finishRun(
+      reduceRunState(createInitialRunState('run-goal-paused'), {
+        type: 'goal_state',
+        goal: { ...goal, phase: 'paused' },
+        known: true,
+      } as never),
+      'done',
+      { resultSubtype: 'success' },
+    );
+    const pausedJson = JSON.stringify(renderRunCard(paused, { agentKind: 'dsh' }));
+    expect(pausedJson).toContain('DSH · 目标已暂停');
+    expect(pausedJson).not.toContain('DSH · 已完成');
   });
 });
 

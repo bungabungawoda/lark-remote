@@ -103,6 +103,8 @@ function tailRead(usage?: AgentSessionUsage): AgentSessionReader['readSessionCon
 
 function makeCompactBridge(opts: {
   runner?: Runner;
+  /** 覆盖 connector（如让 streamCard 抛错，验证降级兜底卡）。 */
+  connector?: ReturnType<typeof createStubConnector>;
   read?: AgentSessionReader['readSessionContent'];
   /** resume.compact 场景别名（与 read 等价，保留调用点语义可读）。 */
   codexRead?: AgentSessionReader['readSessionContent'];
@@ -114,7 +116,7 @@ function makeCompactBridge(opts: {
   addReactionSpy?: boolean;
 }) {
   const sessionStore = new SessionStore();
-  const connector = createStubConnector({ addReactionSpy: opts.addReactionSpy });
+  const connector = opts.connector ?? createStubConnector({ addReactionSpy: opts.addReactionSpy });
   const runner = opts.runner ?? createStubRunner();
   const read = opts.read ?? opts.codexRead ?? notFoundRead;
   const defaultReader: AgentSessionReader = {
@@ -861,7 +863,12 @@ describe('Bridge.forwardToClaude', () => {
       cwd: { default: '' },
       defaultAgent: 'dsh',
     });
-    const { bridge, sessionStore, connector } = makeBridge({ runner, config });
+    const spyConnector = createStubConnector({ addReactionSpy: true });
+    const { bridge, sessionStore, connector } = makeBridge({
+      runner,
+      config,
+      connector: spyConnector,
+    });
     sessionStore.setCwd(ctx.userId, tmpDir);
 
     await bridge.forwardToClaude('继续', ctx);
@@ -872,6 +879,8 @@ describe('Bridge.forwardToClaude', () => {
     expect(json).toContain('完成 notes-app 实时链路 MVP');
     expect(json).not.toContain('已完成');
     expect(json).not.toContain('"cmd":"compact"');
+    // 原消息上的 reaction 也是用户可见状态：goal 还在跑时不能打 ✓（Done）。
+    expect(vi.mocked(connector.addReaction)).toHaveBeenCalledWith(ctx.messageId, 'OnIt');
   });
 
   it('dsh goal 已 compete 时仍按普通 done 收尾，compact 保留', async () => {
@@ -1269,6 +1278,37 @@ describe('Bridge.forwardToClaude', () => {
     // 走的是流未结束时进程退出 → 出错终态，旧实现的状态行会把 `⏱ 已完成` 印在
     // 一张 error 卡上（正是这次 redesign 要消掉的重复/错误文案）。
     expect(JSON.stringify(connector._sent[0].input)).toContain('运行出错');
+  });
+
+  it('兜底路径的完成通知卡标题跟随终态（error 不再写「会话已完成」）', async () => {
+    // 验证什么：sendCompletionNotificationCard 是流式卡失败时的第二张卡，
+    // 标题写死「✅ 会话已完成」会把出错的 run 报成成功。
+    const connector = createStubConnector();
+    connector.streamCard = async () => {
+      throw new Error('stream unavailable');
+    };
+    const { bridge, sessionStore } = makeBridge({
+      connector,
+      runner: createStubRunner({
+        mode: 'streaming',
+        events: [
+          { type: 'system', subtype: 'init', session_id: 's-notify', cwd: tmpDir, model: 'opus' },
+          {
+            type: 'result',
+            subtype: 'error',
+            session_id: 's-notify',
+            errorMessage: 'boom',
+          },
+        ],
+      }),
+    });
+    sessionStore.setCwd(ctx.userId, tmpDir);
+
+    await bridge.forwardToClaude('notify', ctx);
+
+    const all = connector._sent.map((s) => JSON.stringify(s.input)).join('\n');
+    expect(all).toContain('会话出错');
+    expect(all).not.toContain('会话已完成');
   });
 });
 
@@ -3657,6 +3697,32 @@ describe('Bridge handleResumeCompact（resume 卡 Compact 按钮）', () => {
     expect(sentJsons.some((j) => j.includes('✅ 已完成'))).toBe(true);
   });
 
+  it('卡片流启动失败时补发静态终态卡，不留「已触发」后静默', async () => {
+    // 验证什么：run 路径靠 finalizeRun 的 settle==='unsent' 兜底补发静态卡；
+    // compact 共用同一个 RunCardSession 却没有这层兜底。start() 失败后用户
+    // 只看到「Compact 已触发」+ 一条 reaction，既不知道失败也不知道原因。
+    const cwd = fs.realpathSync(tmpDir);
+    const connector = createStubConnector();
+    connector.streamCard = async () => {
+      throw new Error('stream unavailable');
+    };
+    const runner: CompactRunner = { ...createStubRunner(), runCompact: compactTurnEvents };
+    const { bridge, sessionStore } = makeCompactBridge({
+      runner,
+      connector,
+      codexRead: tailRead(),
+    });
+    sessionStore.setCwd('user1', cwd);
+
+    await bridge.handleResumeCompact({ sessionId: 'codex-session-1', agent: 'codex' }, ctx);
+
+    const sentJsons = connector._sent.map((s) => JSON.stringify(s.input));
+    expect(sentJsons.some((j) => j.includes('Compact 已触发'))).toBe(true);
+    // 终态卡必须真的发出去，并说明失败原因（不是无声终止）。
+    expect(sentJsons.some((j) => j.includes('运行出错'))).toBe(true);
+    expect(sentJsons.some((j) => j.includes('stream unavailable'))).toBe(true);
+  });
+
   it('test_anchor_resume_compact_resolves_card_agent_not_default', async () => {
     // 验证什么：卡片 payload 里的 agent 是有效名单成员时一律按它解析 reader +
     // runner，只有不在名单里才退回 defaultAgent。
@@ -4006,6 +4072,38 @@ describe('app-server error result session write-back', () => {
     });
 
     expect(sessionStore.getSessionId('user1', 'codex')).toBe('th-new-1');
+  });
+
+  it('live runner 的 pre-init 成功 result 不再谎报「未收到 result 事件」', async () => {
+    // 验证什么：live-authority runner 在没有 init 时发出成功 result（桥收下、
+    // 但 reducer 的 sessionId 守卫挡下，卡片停在 running）。终态仍是 error，
+    // 但报文必须承认「result 收到了、只是没落到卡片上」，否则排障会被误导成
+    // 输出流丢事件。
+    const cwd = fs.realpathSync(tmpDir);
+    const runner: Runner & { getUsageAuthority?: () => 'live' | 'jsonl' } = {
+      isRunning: false,
+      stop: async () => {},
+      killOrphan: () => {},
+      registerExitHandlers: () => {},
+      run: async function* () {
+        yield {
+          type: 'result',
+          subtype: 'success',
+          session_id: 'th-live-nohdr',
+        } as AgentEvent;
+      },
+      getUsageAuthority: () => 'live',
+    };
+    const { bridge, connector, sessionStore } = makeBridge({ runner });
+    sessionStore.setCwd('user1', cwd);
+
+    await bridge.forwardToClaude('hello', ctx, {
+      binding: { agent: 'codex' as const, sessionId: 'th-old-999' },
+    });
+
+    const lastCard = JSON.stringify(connector._cards.at(-1));
+    expect(lastCard).toContain('未能落到卡片上');
+    expect(lastCard).not.toContain('未收到 result 事件');
   });
 
   it('test_anchor_app_server_success_result_with_init_ends_done_not_stream_lost', async () => {
@@ -4464,6 +4562,120 @@ describe('Bridge 中断与队列收口回归', () => {
     expect(runCompactSpy).not.toHaveBeenCalled();
   });
 
+  it('卡片启动窗口内被 /stop：不再启动 runner（停止不能被吞掉）', async () => {
+    // 验证什么：/stop 落在 createRunSession 之后、runner.run() 之前（建卡往返
+    // 最长 5s）。此时卡片已置 interrupted，但 runner 还没有进程可杀——
+    // spawn / 连接型 runner 的 stop() 在 run() 之前都是空操作。桥必须自己
+    // 收口，否则用户看到「已中断」，agent 仍把整轮跑完并改写工作区。
+    let runCalled = false;
+    let stopCalled = false;
+    const runner = {
+      isRunning: false,
+      stop: async () => {
+        stopCalled = true;
+      },
+      killOrphan: () => {},
+      registerExitHandlers: () => {},
+      run: async function* () {
+        runCalled = true;
+      },
+    } as unknown as Runner;
+
+    let releaseStart: () => void = () => {};
+    const startGate = new Promise<void>((resolve) => {
+      releaseStart = resolve;
+    });
+    const connector = createStubConnector();
+    const realStreamCard = connector.streamCard.bind(connector);
+    connector.streamCard = (async (chatId, initial, producer, opts) => {
+      await startGate;
+      return realStreamCard(chatId, initial, producer, opts);
+    }) as typeof connector.streamCard;
+
+    const { bridge, sessionStore } = makeBridge({ runner, connector });
+    sessionStore.setCwd(ctx.userId, tmpDir);
+
+    const runP = bridge.forwardToClaude('hello', ctx);
+    await vi.waitFor(() => {
+      expect(bridge.getActiveRuns()).toHaveLength(1);
+    });
+    const stopped = await bridge.interruptCurrentRun({ userId: ctx.userId, chatId: ctx.chatId });
+    expect(stopped).toBe(true);
+    expect(stopCalled).toBe(true);
+
+    releaseStart();
+    await runP;
+
+    expect(runCalled).toBe(false);
+  });
+
+  it('审批卡点「取消」→ 终态归因为 approval_cancelled，不是泛化的用户终止', async () => {
+    // 验证什么：InterruptedReason 里的 approval_cancelled 必须有生产端。用户在
+    // 审批卡上主动取消，与 /stop、审批超时是三种不同来源；缺了生产端，卡片
+    // 一律显示「已被用户终止」，那段专用文案和测试就成了不可达的死代码。
+    let release: () => void = () => {};
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const runner = {
+      isRunning: false,
+      respondApproval: async () => {},
+      stop: async () => {
+        release();
+      },
+      killOrphan: () => {},
+      registerExitHandlers: () => {},
+      run: async function* () {
+        yield {
+          type: 'system',
+          subtype: 'init',
+          session_id: 's-cancel',
+          cwd: tmpDir,
+          model: 'opus',
+        } as AgentEvent;
+        yield {
+          type: 'approval_requested',
+          requestId: 7,
+          kind: 'command',
+          threadId: 'th-cancel',
+          turnId: 'tn-cancel',
+          itemId: 'item-7',
+          view: {
+            requestId: 7,
+            kind: 'command',
+            command: 'rm -rf /tmp/cancel-me',
+            commandCwd: tmpDir,
+            availableDecisions: ['accept', 'cancel'],
+          },
+        } as AgentEvent;
+        await gate;
+        yield { type: 'result', subtype: 'interrupted', session_id: 's-cancel' } as AgentEvent;
+      },
+    } as unknown as Runner;
+    const { bridge, sessionStore, connector } = makeBridge({ runner });
+    sessionStore.setCwd(ctx.userId, tmpDir);
+
+    const runP = bridge.forwardToClaude('need approval', ctx);
+    await vi.waitFor(() => {
+      expect(JSON.stringify(connector._cards.at(-1))).toContain('rm -rf /tmp/cancel-me');
+    });
+    const runId = bridge.getActiveRuns()[0]?.runId;
+    expect(runId).toBeDefined();
+
+    await bridge.handleApprovalRespond({
+      runId: runId!,
+      requestId: 7,
+      decision: 'cancel',
+      nonce: 'cancel-nonce-1',
+    });
+    release();
+    await runP;
+
+    const json = JSON.stringify(connector._cards.at(-1));
+    expect(json).toContain('已取消审批');
+    expect(json).not.toContain('已被用户终止');
+  });
+
   it('配置变更 + /stop 后，下一条消息用新 runner（旧配置不拖一轮）', async () => {
     // 验证什么：`/config` 在活跃 cwd 只标 stale；旧实现靠 finalizeRun 的守卫
     // 消费，而 /stop 会先摘槽位让守卫失效 → 下一条消息仍用旧配置实例。
@@ -4516,6 +4728,10 @@ describe('Bridge 中断与队列收口回归', () => {
     const run1 = bridge.forwardToClaude('hello', ctx);
     await vi.waitFor(() => {
       expect(created.length).toBe(1);
+      // 必须等 run() 真的开始：/stop 落在建卡窗口内时桥会直接收口、不再启动
+      // runner（见「卡片启动窗口内被 /stop」用例）。这里要的是旧实例已被本轮
+      // 真正消费、再被标记 stale 的场景。
+      expect(created[0].runs).toBe(1);
       expect(bridge.isBusyFor(tmpDir)).toBe(true);
     });
     // 等价 /config 落在一个活跃 cwd：标记 stale，但不立刻 evict。
