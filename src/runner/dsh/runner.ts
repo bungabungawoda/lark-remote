@@ -608,9 +608,15 @@ export class DshRunner implements AgentRunner {
         timeoutMs: GOAL_PROBE_TIMEOUT_MS,
       });
       const lastGoal: GoalView | null | undefined = seedGoal.known ? seedGoal.goal : undefined;
-      // 只有确实存在 goal 才产事件：没有 goal 的会话保持事件序列不变（少一次
-      // 渲染，也不让"读不到"变成一张多出来的卡片事件）。
-      if (seedGoal.known && seedGoal.goal) yield goalStateEvent(seedGoal.goal, true);
+      if (seedGoal.known) {
+        // 只有确实存在 goal 才产事件：没有 goal 的会话保持事件序列不变（少一次
+        // 渲染，也不让"读不到"变成一张多出来的卡片事件）。
+        if (seedGoal.goal) yield goalStateEvent(seedGoal.goal, true);
+      } else {
+        // 读不到 ≠ 没有目标。必须显式把 unknown 交给卡片，否则收尾只能按
+        // 「没有 goal」写成「已完成」——正是 GoalStateEvent 契约禁止的推断。
+        yield goalStateEvent(null, false);
+      }
 
       try {
         const submitted = await this.submitPrompt(sessionId, opts.cwd, message, abort.signal);
@@ -631,7 +637,7 @@ export class DshRunner implements AgentRunner {
             submitted.prePromptSeq,
             promptRequestId,
             abort,
-            { last: lastGoal },
+            { last: lastGoal, known: seedGoal.known },
           )) {
             yield ev;
             if (ev.type === 'result') {
@@ -711,7 +717,7 @@ export class DshRunner implements AgentRunner {
     prePromptSeq: number,
     promptRequestId: string,
     abort: AbortController,
-    goal: { last: GoalView | null | undefined },
+    goal: { last: GoalView | null | undefined; known: boolean },
   ): AsyncGenerator<AgentEvent> {
     const streamAbort = new AbortController();
     const signal = AbortSignal.any([abort.signal, streamAbort.signal]);
@@ -885,7 +891,15 @@ export class DshRunner implements AgentRunner {
                 signal,
                 timeoutMs: GOAL_PROBE_TIMEOUT_MS,
               });
-              if (finalGoal.known && !sameGoal(finalGoal.goal, goal.last)) {
+              if (!finalGoal.known) {
+                // 收尾读不到：seed 已报过 unknown 就不重复发，否则把状态降级
+                // 交给卡片（卡片据此不再宣布完成）。
+                if (goal.known) {
+                  goal.known = false;
+                  yield goalStateEvent(null, false);
+                }
+              } else if (!goal.known || !sameGoal(finalGoal.goal, goal.last)) {
+                goal.known = true;
                 goal.last = finalGoal.goal;
                 yield goalStateEvent(finalGoal.goal, true);
               }

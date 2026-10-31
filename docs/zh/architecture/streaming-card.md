@@ -98,6 +98,16 @@ Run/Bash 卡片的 CardKit 2.0 单卡流式架构说明，覆盖数据流、状�
 
 终态只允许首次写入，后续 result、watchdog、stop 或异常不得覆盖。
 
+中断来源在终态数据上可区分（`interruptedReason`）：`user_stop`（`/stop`、停止按钮）、
+`approval_timeout`（审批超时自动取消）、`approval_cancelled`（用户在审批卡上点取消）。
+显式原因优先于推断标记：审批曾经过期、随后用户又主动停止的 run 显示「已被用户终止」，
+不再误报成审批超时。
+
+`/stop` 落在「建卡中、run 还没开始」的窗口内时，卡片先定格 interrupted，桥在
+`cardSession.start()` 之后直接收口，不再调用 `runner.run()`。这时 runner 还没有进程可杀
+（spawn / 连接型 runner 的 `stop()` 在 `run()` 之前都是空操作，`run()` 入口又会重置停止
+标记），不补这一道，agent 会在「已中断」卡片背后把整轮跑完。
+
 ## 5. CardKit 2.0 渲染
 
 运行中卡片：
@@ -127,6 +137,10 @@ Run/Bash 卡片的 CardKit 2.0 单卡流式架构说明，覆盖数据流、状�
 
 终态不渲染 footer 和停止按钮（`finalizing` 除外，详见上表）。
 
+`done` 的标题再按 goal 维度细分：goal `complete` → `✅ Claude · 目标已完成`；`blocked` →
+`⛔ Claude · 目标被阻断`；`paused` → `⏸ Claude · 目标已暂停`；goal 读取失败（`known=false`）→
+`✅ Claude · 完成（目标未确认）`，summary 首行同步写「本轮完成 · 目标状态未确认」。
+
 ### 5.1 goal 视图（DSH）
 
 同一个 DSH 会话可以带一个长期目标（`goal` 投影：objective / phase / roundsStarted /
@@ -137,7 +151,13 @@ maxGoalRounds）。goal 是**跨 turn** 的自动续跑单元：`turn/end` 之�
 - 收尾时若 goal 仍 `active`，终态是 `goal_continuing`（标题「本轮结束（目标继续）」），
   summary 首行写「本轮结束 · 目标仍在继续」，绝不出现「已完成」；
 - goal 仍 active 时不渲染 Compact 按钮（DSH 手动压缩要求 agent 空闲，点了必被拒）；
-- goal 的 `complete` / `paused` / `blocked` 都是"不会自动续跑"，按普通终态收尾（blocked 显示阻断原因）。
+- goal 的 `complete` / `paused` / `blocked` 都是"不会自动续跑"，按普通终态收尾（`done`），
+  但标题分别写「目标已完成」「目标已暂停」「目标被阻断」，blocked 另外展示阻断原因；
+- 收尾复核读不到 goal（`known=false`）时不得宣布完成：标题写「完成（目标未确认）」，
+  summary 首行写「本轮完成 · 目标状态未确认」；
+- 投影快照里**没有 `goal` 域**（从未用过 goal 的会话）按「明确没有目标」处理，不产生
+  `goal_state` 事件、也不进入 unknown 分支；只有投影存在但解析失败或读取超时才上报
+  `known=false`。
 
 数据来源只有宿主（`session/projections` 的 `goal` 值 + `session/control` 推送 +
 `goal/change` 事件），桥不自行推断"任务结束"。
@@ -195,6 +215,17 @@ run。
 
 优先调用 `updateCard(messageId, finalCard)` 定型原卡片。只有原消息也无法更新时，才允许
 发送第二张兜底卡片。
+
+### Compact 卡片流失败
+
+`/compact` 与 run 共用 `RunCardSession`，也共用「原地定型 + 静态兜底」：`settle()` 返回
+`unsent`（卡片流没建起来或未能收尾）时补发一张静态终态卡。否则用户只看到
+「Compact 已触发」和一条 reaction，既不知道失败也不知道原因。
+
+### 兜底完成通知卡
+
+流式卡失败后补发的完成通知卡同样按终态渲染标题与配色（done 绿 / error 红 /
+interrupted 灰 / idle_timeout 与 goal_continuing 橙），不会再给出错的 run 写「会话已完成」。
 
 ### 防止永久阻塞
 

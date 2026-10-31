@@ -636,6 +636,10 @@ export class DshClient {
     }
     // 拿不到投影 = 宿主没这个会话的投影，不等于"没有 goal"。
     if (!snapshot) return { known: false, goal: null };
+    // 投影快照存在但没有 goal 域 = 宿主明确没有目标（未用过 goal 的会话就是这样）。
+    // 不能把缺失当成"读不懂"：goalFromProjection(undefined) 也返回 undefined，
+    // 那会把每次普通会话都误报成「目标状态未确认」。
+    if (!('goal' in snapshot.values)) return { known: true, goal: null };
     const parsed = goalFromProjection(snapshot.values.goal);
     if (parsed === undefined) return { known: false, goal: null };
     return { known: true, goal: parsed };

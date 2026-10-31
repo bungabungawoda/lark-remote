@@ -1354,14 +1354,13 @@ function buildSummaryContent(
       elements.push(markdownDiv(`⚠️ **运行出错**\n\n${state.errorMsg ?? '未知错误'}`));
     }
   } else if (state.terminal === 'interrupted') {
-    // 审批超时（approval_expired 已标记）是「无人响应被自动取消」，不是用户
-    // 主动终止；如实展示原因，避免用户误判为 Agent 出错或自己操作过。
-    // 顶层 approvalExpired 优先：approval_resolved 会移除审批条目，但标记
-    // 必须活到终态渲染（2026-08-15 事故回归）。
+    // 中断来源三元：审批超时 / 用户取消审批 / 用户主动终止。
+    // 显式原因优先：approvalExpired 是粘性标记（cancel 语义下 agent 可能继续跑），
+    // 用户随后主动 /stop 时若仍按过期渲染，就把「我自己停的」误报成自动取消。
     const expiredApproval =
       state.interruptedReason === 'approval_timeout' ||
-      state.approvalExpired === true ||
-      (state.approvals ?? []).some((a) => a.expired);
+      (state.interruptedReason === undefined &&
+        (state.approvalExpired === true || (state.approvals ?? []).some((a) => a.expired)));
     elements.push(
       markdownDiv(
         expiredApproval
@@ -1389,6 +1388,10 @@ function buildSummaryContent(
         ? '\n\n🗜 Compact 完成'
         : '\n\n（未返回内容）';
 
+    // goal 本 run 读不到（known=false）时不能写「已完成」：这是 GoalStateEvent
+    // 契约里明令禁止的推断（读不到 ≠ 没有目标）。run 本身成功，只是目标维度未知。
+    const goalUnknown = state.terminal === 'done' && state.goalKnown === false;
+
     // RunState 的用量字段就是 formatUsageStats 的入参形态（同为
     // `UsageSnapshot`）——原先这里逐字段抄了 17 行，加一个字段要同时改
     // RunState、FinishMeta 和这张清单（§9.21）。
@@ -1398,7 +1401,9 @@ function buildSummaryContent(
       // 本轮结束但目标继续：不能报"已完成"，也不能说"出错"。
       ...(state.terminal === 'goal_continuing'
         ? { completedLabel: '⏳ 本轮结束 · 目标仍在继续' }
-        : {}),
+        : goalUnknown
+          ? { completedLabel: '✅ 本轮完成 · 目标状态未确认' }
+          : {}),
     });
 
     elements.push(markdownDiv(usageStatsStr + empty));
@@ -1541,7 +1546,13 @@ function headerTitle(state: RunState, options: RunCardRenderOptions = {}): strin
   // 必须说清楚，否则用户会以为活儿干完了。
   if (state.terminal === 'goal_continuing') return `⏳ ${agent} · 本轮结束（目标继续）`;
   if (state.terminal === 'done') {
-    return state.goal?.phase === 'complete' ? `✅ ${agent} · 目标已完成` : `✅ ${agent} · 已完成`;
+    // goal 维度优先于「完成」：blocked/paused 不是任务做完了，complete 才是；
+    // 读不到（goalKnown=false）时也不能替宿主宣布完成。
+    if (state.goal?.phase === 'complete') return `✅ ${agent} · 目标已完成`;
+    if (state.goal?.phase === 'blocked') return `⛔ ${agent} · 目标被阻断`;
+    if (state.goal?.phase === 'paused') return `⏸ ${agent} · 目标已暂停`;
+    if (state.goalKnown === false) return `✅ ${agent} · 完成（目标未确认）`;
+    return `✅ ${agent} · 已完成`;
   }
   if (state.terminal === 'error') return `⚠️ ${agent} · 出错`;
   if (state.terminal === 'interrupted') return `⏹ ${agent} · 已中断`;

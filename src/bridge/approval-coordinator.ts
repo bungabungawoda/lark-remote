@@ -58,6 +58,15 @@ export class ApprovalCoordinator {
   private approvals = new Map<number | string, TrackedApproval>();
   /** 已提交过的 nonce（按 requestId）：同一按钮连点/飞书重投递只生效一次。 */
   private submittedNonces = new Map<number | string, Set<string>>();
+  /**
+   * 用户是否在审批卡上主动点了「取消」。
+   *
+   * run 的终态归因需要它：cancel 在真实协议里是「停止等待」，agent 可能继续
+   * 跑，turn 结束时只剩一个泛化的 interrupted。桥据此把终态写成
+   * approval_cancelled，与 /stop（user_stop）、审批超时（approval_timeout）
+   * 区分开。仅在 responder 成功后置位——提交失败仍可重试。
+   */
+  private userCancelled = false;
   private readonly approvalTimeoutMs: number;
   private readonly responder: ApprovalResponder;
   private readonly interruptTurn: () => Promise<void>;
@@ -196,6 +205,8 @@ export class ApprovalCoordinator {
     try {
       await this.responder(ctx.requestId, effectiveAction);
       tracked.state = 'resolved';
+      // 终态归因：用户主动取消才置位（accept/decline 都是"继续本轮"）。
+      if (effectiveAction.action === 'cancel') this.userCancelled = true;
       // nonce 在 responder 成功后才消费：失败可原按钮重试，
       // 不会被自己的 nonce 去重挡掉（失败后已回滚 pending 并重新计时）。
       this.consumeNonce(ctx.requestId, ctx.nonce);
@@ -392,6 +403,13 @@ export class ApprovalCoordinator {
     const tracked = this.approvals.get(requestId);
     if (!tracked || tracked.state !== 'pending') return;
     tracked.view = view;
+  }
+
+  /**
+   * 用户是否在审批卡上主动点了「取消」（终态归因用；提交失败不置位）。
+   */
+  get cancelledByUser(): boolean {
+    return this.userCancelled;
   }
 
   /**

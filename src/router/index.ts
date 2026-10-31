@@ -30,6 +30,7 @@ import type { CloneSession } from '../clone.js';
 import { stripPlaceholders } from '../inbound/placeholder.js';
 import { clampInt } from '../common/clamp.js';
 import type { SessionDisplayUsage } from '../card/usage-format.js';
+import { isRunTerminal } from '../card/run-state.js';
 import { activeRunUsage } from './active-run-usage.js';
 import {
   markdownDiv,
@@ -3079,15 +3080,11 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
       { maxEvents: opts?.maxEvents },
     );
     const activeRun = this.bridge.getActiveRunFor(cwd);
-    // 只检查内存中的 activeRun 状态
-    // 只有当 activeRun 存在且不是终态时，才认为任务仍在进行中
+    // 只检查内存中的 activeRun 状态：存在且未收尾才算进行中。
+    // 终态集合取 run-state 的单源判据（新增终态时不会漏掉这一处）。
     const activeRunning =
       activeRun !== undefined &&
-      activeRun.terminal !== 'done' &&
-      activeRun.terminal !== 'error' &&
-      activeRun.terminal !== 'interrupted' &&
-      activeRun.terminal !== 'idle_timeout' &&
-      activeRun.terminal !== 'goal_continuing' &&
+      !isRunTerminal(activeRun.terminal) &&
       activeRun.sessionId === sessionId;
     const activeUsage = activeRunUsage(activeRun);
     return {

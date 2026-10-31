@@ -84,10 +84,41 @@ const TERMINAL_REACTION_EMOJI: Partial<Record<RunTerminal, string>> = {
   error: 'ERROR',
   idle_timeout: 'Alarm',
   interrupted: 'SHHH',
+  // 本轮结束但目标继续：任务还没完，不能打 ✓（Done）。
+  goal_continuing: 'OnIt',
 };
 
 function terminalReactionEmoji(terminal: RunTerminal): string {
   return TERMINAL_REACTION_EMOJI[terminal] ?? 'Done';
+}
+
+/**
+ * 完成通知卡的标题 / 配色 / 结果行。
+ *
+ * 这张卡只在流式卡失败（settle==='unsent'）时补发，但终态必须如实反映：
+ * 写死「✅ 会话已完成」会把出错/中断的 run 报成成功。
+ */
+function completionNotificationPresentation(terminal: RunTerminal): {
+  title: string;
+  template: string;
+  result?: string;
+} {
+  switch (terminal) {
+    case 'error':
+      return { title: '⚠️ 会话出错', template: 'red' };
+    case 'interrupted':
+      return { title: '⏹ 会话已中断', template: 'grey' };
+    case 'idle_timeout':
+      return { title: '⏱ 会话已超时', template: 'orange' };
+    case 'goal_continuing':
+      return { title: '⏳ 本轮结束，目标继续', template: 'orange' };
+    case 'finalizing':
+      return { title: '⏳ 会话仍在收尾', template: 'orange' };
+    case 'running':
+      return { title: '🔴 会话运行中', template: 'blue' };
+    case 'done':
+      return { title: '✅ 会话已完成', template: 'green', result: 'completed' };
+  }
 }
 
 /**
@@ -1719,11 +1750,21 @@ export class Bridge {
     cardSession: RunCardSession;
     usage: RunUsageCollector;
     sawResult: boolean;
+    /** 收到过任何 result（含被守卫丢弃的）——running 收尾时区分「没收到」与「没落到卡片」。 */
+    sawAnyResult: boolean;
     pendingPreInitTerminal: { subtype: 'error' | 'interrupted'; errorMessage?: string } | undefined;
     agentKind: AgentKind;
     runId: string;
   }): Promise<void> {
-    const { cardSession, usage, sawResult, pendingPreInitTerminal, agentKind, runId } = opts;
+    const {
+      cardSession,
+      usage,
+      sawResult,
+      sawAnyResult,
+      pendingPreInitTerminal,
+      agentKind,
+      runId,
+    } = opts;
     const finalState = cardSession.currentState;
     if (finalState.terminal === 'finalizing') {
       // 三态终态映射（2026-08-14）：interrupted（审批超时/取消、/stop）是独立
@@ -1741,9 +1782,15 @@ export class Bridge {
           : goalContinues
             ? 'goal_continuing'
             : 'done';
+      // 中断归因：用户主动取消审批（cancel）优先于"未归类"。用户 /stop 的
+      // 路径先置了终态（interrupted + user_stop），不会走到这里。
+      const approvalCancelled =
+        terminal === 'interrupted' &&
+        this.approvalCoordinators.get(runId)?.cancelledByUser === true;
       await cardSession.finish(terminal, {
         resultSubtype: subtype,
         errorMsg: finalState.errorMsg,
+        ...(approvalCancelled ? { interruptedReason: 'approval_cancelled' as const } : {}),
         ...usage.meta(),
       });
       return;
@@ -1763,7 +1810,14 @@ export class Bridge {
       } else {
         await cardSession.finish('error', {
           ...usage.meta(),
-          errorMsg: agentDisplayName(agentKind) + ' 输出流已结束，但未收到 result 事件',
+          // sawAnyResult=true 说明 result 收到了、只是没能落到卡片（reducer 的
+          // sessionId 守卫或 pre-init 守卫挡下）。报文不能再说"未收到 result
+          // 事件"，否则排障会去查输出流而不是查守卫。
+          errorMsg:
+            agentDisplayName(agentKind) +
+            (sawAnyResult
+              ? ' 输出流已结束，但本轮结果未能落到卡片上'
+              : ' 输出流已结束，但未收到 result 事件'),
         });
       }
       return;
@@ -1798,6 +1852,8 @@ export class Bridge {
     // §9.12 空闲看门狗：判定口径见 startIdleWatchdog；武装点在 cardSession.start() 之后。
     let watchdog: IdleWatchdog | null = null;
     let sawResult = false;
+    /** 收到过任何 result（含被守卫丢弃/未进卡片的）：收尾报文据此措辞。 */
+    let sawAnyResult = false;
     // A runner can fail before emitting its synthetic system/init (e.g. DSH
     // session/create -> 401). The pre-init guard below drops that result to
     // protect Claude resume replay, but if the stream ends without ever seeing
@@ -1823,9 +1879,16 @@ export class Bridge {
         // we don't silently fail if the fallback also fails (covered in catch below).
       }
 
-      if (cardSession.currentState.terminal !== 'running') {
-        // Card session did not enter running state - still try to send static fallback
-        getLogger().info(`[lark-remote] cardSession not running, using static fallback`);
+      // /stop（或队列「立即执行」的中断）可能落在建卡窗口内：卡片已定格为
+      // 终态，但 runner 还没开始跑，runner.stop() 也没有进程可杀——spawn 型
+      // 与连接型 runner 的 stop() 在 run() 之前都是空操作，且 run() 入口会
+      // 重置停止标记。必须在这里收口，否则用户看到「已中断」，agent 仍会把
+      // 这一轮跑完并改写工作区。finalizeRun 仍会照常收尾（settle / reaction）。
+      if (isRunTerminal(cardSession.currentState.terminal)) {
+        getLogger().info(
+          `[lark-remote] card terminal before run start, skip runner runId=${runId} terminal=${cardSession.currentState.terminal}`,
+        );
+        return;
       }
 
       // 单 interval 看门狗。事件到来时只刷新时间戳（无 timer 操作）；
@@ -1904,6 +1967,7 @@ export class Bridge {
           });
           if (outcome.preInitTerminal) pendingPreInitTerminal ??= outcome.preInitTerminal;
           if (outcome.sawResult) sawResult = true;
+          sawAnyResult = true;
           // 陈旧 result 不进卡片：run-state reducer 本来也会因 sessionId 未定而
           // 跳过，在 bridge 层就拦掉可以省下一次无谓的 push + render。
           if (outcome.dropFromCard) {
@@ -1962,6 +2026,7 @@ export class Bridge {
         cardSession,
         usage,
         sawResult,
+        sawAnyResult,
         pendingPreInitTerminal,
         agentKind,
         runId,
@@ -2074,7 +2139,13 @@ export class Bridge {
       // but NOT when streaming succeeded (card already shows completion).
       const sessionId = cardSession.currentState.sessionId;
       if (sessionId && runCardSent) {
-        await this.sendCompletionNotificationCard(sessionId, cwd, ctx, activeRun.agentKind);
+        await this.sendCompletionNotificationCard(
+          sessionId,
+          cwd,
+          ctx,
+          activeRun.agentKind,
+          cardSession.currentState.terminal,
+        );
       }
 
       if (finalRender.finalAnswerStatus === 'overflow' && finalRender.finalAnswerText) {
@@ -2130,7 +2201,9 @@ export class Bridge {
     cwd: string,
     ctx: CommandContext,
     agentKind: AgentKind = this.config.defaultAgent,
+    terminal: RunTerminal = 'done',
   ): Promise<void> {
+    const presentation = completionNotificationPresentation(terminal);
     try {
       // cap the events read for the notification card — without
       // maxEvents claude returns every event after the last user message and
@@ -2150,10 +2223,10 @@ export class Bridge {
         {
           agentKind,
           headerText: `📂 \`${cwd}\`\n会话: **${sessionId}**`,
-          title: '✅ 会话已完成',
-          usageResult: 'completed',
+          title: presentation.title,
+          ...(presentation.result ? { usageResult: presentation.result } : {}),
           actions: [resumeUseButton(sessionId, agentKind)],
-          headerTemplate: 'green',
+          headerTemplate: presentation.template,
         },
       );
 
@@ -2480,14 +2553,15 @@ export class Bridge {
     await this.sendResult({ text: '🗜 Compact 已触发，正在压缩会话…' }, ctx);
 
     const compactRunId = randomUUID();
+    // 渲染选项同时用于流式卡与「卡片流没建起来」时的静态兜底卡——两者必须
+    // 同门控，否则兜底卡会渲染出与本次 run 不一致的按钮。
+    const renderOptions = { agentKind };
     const cardSession = new RunCardSession({
       connector: this.connector,
       chatId: ctx.chatId,
       replyTo: ctx.messageId,
       runId: compactRunId,
-      renderOptions: {
-        agentKind,
-      },
+      renderOptions,
     });
     // 压缩与普通 run 共用同一套生命周期——注册进 activeRuns（/stop 有对象可停、
     // /active 看得见）、挂 §9.12 空闲看门狗、终态后补 reaction。缺任何一环，卡住的
@@ -2596,6 +2670,15 @@ export class Bridge {
       }
     } finally {
       watchdog?.stop();
+      // 与 run 路径同口径的降级：卡片流没建起来（start 失败 / stream 未收尾）时，
+      // 终态只存在于内存里。settle() 释放 producer 并等 stream 收尾；'unsent'
+      // 表示用户手里没有卡，必须补一张静态终态卡，否则只剩「Compact 已触发」
+      // 和一条 reaction，用户既不知道失败也不知道原因。
+      const settled = await cardSession.settle();
+      if (settled === 'unsent') {
+        const finalRender = renderRunCardDetailed(cardSession.currentState, renderOptions);
+        await this.sendResult({ card: finalRender.card }, ctx);
+      }
       // 只摘自己的槽位：/stop 可能已删掉本条并让排队的下一条占住同一 cwd。
       if (this.activeRuns.get(cwd) === activeRun) {
         this.activeRuns.delete(cwd);
