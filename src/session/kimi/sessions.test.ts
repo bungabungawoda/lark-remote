@@ -242,6 +242,59 @@ describe('KimiSessionReader', () => {
     expect(content.usage!.totalTokens).toBe(330);
   });
 
+  // 一次 run 内会有多次模型调用（工具往返），每次一条 usage.record。卡片
+  // 「本 run」必须是末个 turn.prompt 之后的记录之和——会话总量（旧实现）会把
+  // 历史所有 run 的消耗当成这一轮，末条记录又会漏掉前面的工具往返。
+  it('reports the last turn as per-run usage instead of the session total', () => {
+    const workDir = makeWorkDir('project');
+    createSession('sess-turns', workDir, {
+      title: 'Turns',
+      wireLines: [
+        '{"type":"turn.prompt","input":[{"type":"text","text":"first"}],"origin":{"kind":"user"},"time":1000}',
+        '{"type":"usage.record","model":"kimi-code/k3","usage":{"inputOther":1000,"output":500,"inputCacheRead":200,"inputCacheCreation":50},"time":1001}',
+        '{"type":"turn.prompt","input":[{"type":"text","text":"second"}],"origin":{"kind":"user"},"time":2000}',
+        '{"type":"usage.record","model":"kimi-code/k3","usage":{"inputOther":300,"output":100,"inputCacheRead":30},"time":2001}',
+        '{"type":"usage.record","model":"kimi-code/k3","usage":{"inputOther":200,"output":50,"inputCacheRead":20},"time":2002}',
+      ],
+    });
+
+    const content = new KimiSessionReader(kimiDir).readSessionContent('sess-turns', workDir);
+
+    expect(content.usage).toMatchObject({
+      inputTokens: 500, // 300 + 200（末个 turn 的两次模型调用）
+      outputTokens: 150, // 100 + 50
+      cacheReadTokens: 50, // 30 + 20
+      contextLength: 200 + 50 + 20, // 末条使用记录的窗口水位，不求和
+      cumulativeInputTokens: 1500, // 会话累计（含 first turn）
+      cumulativeOutputTokens: 650,
+    });
+  });
+
+  // 子 agent 的 wire 文件没有 turn 标记，无法归属到某一轮：只能进会话累计，
+  // 进"本 run"会把所有并发子 agent 的历史消耗算到当前这一轮。
+  it('keeps subagent usage in the session cumulative only', () => {
+    const workDir = makeWorkDir('project');
+    const sessionDir = createSession('sess-subagent', workDir, {
+      title: 'Sub',
+      wireLines: [
+        '{"type":"turn.prompt","input":[{"type":"text","text":"go"}],"origin":{"kind":"user"},"time":1000}',
+        '{"type":"usage.record","model":"kimi-code/k3","usage":{"inputOther":100,"output":50},"time":1001}',
+      ],
+    });
+    const subDir = path.join(sessionDir, 'agents', 'agent-0');
+    fs.mkdirSync(subDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(subDir, 'wire.jsonl'),
+      '{"type":"usage.record","model":"kimi-code/k3","usage":{"inputOther":1000,"output":500},"time":1002}\n',
+    );
+
+    const content = new KimiSessionReader(kimiDir).readSessionContent('sess-subagent', workDir);
+
+    expect(content.usage!.inputTokens).toBe(100); // 本 run = 主 wire 的末个 turn
+    expect(content.usage!.cumulativeInputTokens).toBe(1100); // 子 agent 计入会话累计
+    expect(content.usage!.cumulativeOutputTokens).toBe(550);
+  });
+
   it('readSessionContent returns empty events for unknown sessionId', () => {
     const workDir = makeWorkDir('project');
     const reader = new KimiSessionReader(kimiDir);

@@ -511,9 +511,18 @@ export class KimiSessionReader implements AgentSessionReader {
       // is an independent window). Aggregation covers the whole wire.jsonl
       // and is independent of the maxEvents display slice
       // (usage = the session's overall token cost).
+      //
+      // 本 run 的 flow 字段是**末个 turn**（最后一个 turn.prompt 之后）的记录之和：
+      // kimi 每次模型调用写一条 usage.record，带工具往返的 turn 会有多条。只取
+      // 末条会低报，取会话总量（旧实现）又会把历史所有 run 的消耗算进这一轮。
+      // 子 agent 的 wire 没有 turn 标记，只能进会话累计（无法归属到某一轮）；
+      // 整份 wire 都没有 turn.prompt（旧数据）时沿用「整份文件 = 一个 turn」。
+      let turnAcc: UsageAccumulator | null = null;
+      let lastMainUsage:
+        { input: number; output: number; cacheRead: number; cacheCreation: number } | undefined;
       const accumulateUsage = (
         u: KimiUsageRecordEvent['usage'],
-        updateContextLength: boolean,
+        scope: 'main' | 'subagent',
       ): void => {
         hasUsageRecord = true;
         // Malformed records (missing usage object or missing fields) must
@@ -522,18 +531,20 @@ export class KimiSessionReader implements AgentSessionReader {
         const output = u?.output ?? 0;
         const inputCacheRead = u?.inputCacheRead ?? 0;
         const inputCacheCreation = u?.inputCacheCreation ?? 0;
-        acc.add({
+        const record = {
           input: inputOther,
           output,
           cacheRead: inputCacheRead,
           cacheCreation: inputCacheCreation,
-        });
-        if (updateContextLength) {
-          // unified contract (§9.21): input + output + cacheRead + cacheCreation.
-          // 末轮 output 已进入历史、下一 prompt 全量携带——与 compact postTokens
-          // 水位同语义（此前漏加 output 会系统性低估长收尾 turn）。
-          mainContextLength = inputOther + output + inputCacheRead + inputCacheCreation;
-        }
+        };
+        acc.add(record);
+        if (scope !== 'main') return;
+        lastMainUsage = record;
+        turnAcc?.add(record);
+        // unified contract (§9.21): input + output + cacheRead + cacheCreation.
+        // 末轮 output 已进入历史、下一 prompt 全量携带——与 compact postTokens
+        // 水位同语义（此前漏加 output 会系统性低估长收尾 turn）。
+        mainContextLength = inputOther + output + inputCacheRead + inputCacheCreation;
       };
 
       for (let lineIndex = 0; lineIndex < lines.length; lineIndex++) {
@@ -543,7 +554,7 @@ export class KimiSessionReader implements AgentSessionReader {
 
           // Extract usage from usage.record.
           if (isUsageRecord(entry)) {
-            accumulateUsage(entry.usage, true);
+            accumulateUsage(entry.usage, 'main');
             continue;
           }
 
@@ -572,6 +583,8 @@ export class KimiSessionReader implements AgentSessionReader {
           // prompt), which is the correct catch-up title.
           // Extract display title from turn.prompt
           if (isTurnPrompt(entry)) {
+            // turn.prompt 是 turn 的起点：本 turn 的 flow 从这里重新累计。
+            turnAcc = new UsageAccumulator();
             if (entry.input && entry.input.length > 0) {
               displayTitle = entry.input[0].text;
             }
@@ -640,7 +653,7 @@ export class KimiSessionReader implements AgentSessionReader {
             try {
               const subEntry = JSON.parse(subLine) as KimiJsonlEntry;
               if (isUsageRecord(subEntry)) {
-                accumulateUsage(subEntry.usage, false);
+                accumulateUsage(subEntry.usage, 'subagent');
               }
             } catch {
               continue;
@@ -651,18 +664,23 @@ export class KimiSessionReader implements AgentSessionReader {
         // agents dir unreadable — fall back to main-only usage
       }
 
-      // Build the final AgentSessionUsage from accumulator totals + main contextLength.
+      // Build the final AgentSessionUsage from the last turn's flow + session
+      // cumulative + main contextLength.
       const t = acc.totals;
+      // 有 turn.prompt 时本 run = 末个 turn 的 flow（末 turn 还没有记录时退回
+      // 末条主 wire 记录）；整份 wire 都没有 turn.prompt（旧数据/截断）时无从
+      // 分段，沿用「整份文件 = 一个 turn」的旧口径（含子 agent wire）。
+      const flow = turnAcc ? (turnAcc.count > 0 ? turnAcc.totals : (lastMainUsage ?? t)) : t;
       // Kimi semantics: preserve 0 values (not undefined) for cache fields to match original
       const totalUsage: AgentSessionUsage = {
-        inputTokens: t.input,
-        outputTokens: t.output,
+        inputTokens: flow.input,
+        outputTokens: flow.output,
         contextLength: mainContextLength,
-        cacheReadTokens: t.cacheRead > 0 ? t.cacheRead : 0,
-        cacheCreationTokens: t.cacheCreation > 0 ? t.cacheCreation : 0,
-        totalTokens: t.input + t.output + t.cacheRead + t.cacheCreation,
-        // Cumulative (session-wide): kimi sums all usage.records; mirrors
-        // inputTokens/outputTokens which are already session totals.
+        cacheReadTokens: flow.cacheRead > 0 ? flow.cacheRead : 0,
+        cacheCreationTokens: flow.cacheCreation > 0 ? flow.cacheCreation : 0,
+        totalTokens: flow.input + flow.output + flow.cacheRead + flow.cacheCreation,
+        // Cumulative (session-wide): sums every usage.record across all turns
+        // (subagent wires included) — the "累计" line, never the per-run value.
         ...cumulativeUsageFields(t),
         // §6.3: compaction stats from wire.jsonl
         compactCount,

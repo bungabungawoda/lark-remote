@@ -207,6 +207,62 @@ function v2ToolOutput(state: OpencodeV2ContentPart['state']): string | undefined
   return undefined;
 }
 
+/** 一次模型请求的用量采样（v2：一条 assistant 消息 = 一次请求）。 */
+interface OpencodeUsageSample {
+  input: number;
+  output: number;
+  cacheRead: number;
+  cacheCreation: number;
+  /** 该次请求的声明总量：input+output+reasoning+cache（与 tokens.total 同语义）。 */
+  total: number;
+}
+
+/**
+ * v2 assistant 消息 → 用量采样。total 为 0 的退化消息（模型在 reasoning 中被
+ * 截断）不算采样：信任它会抹掉整轮真实用量。
+ */
+function usageSample(msg: OpencodeV2Message | undefined): OpencodeUsageSample | undefined {
+  if (msg?.type !== 'assistant' || !msg.tokens) return undefined;
+  const input = msg.tokens.input ?? 0;
+  const output = msg.tokens.output ?? 0;
+  const cacheRead = msg.tokens.cache?.read ?? 0;
+  const cacheCreation = msg.tokens.cache?.write ?? 0;
+  const total = input + output + (msg.tokens.reasoning ?? 0) + cacheRead + cacheCreation;
+  if (total === 0) return undefined;
+  return { input, output, cacheRead, cacheCreation, total };
+}
+
+/**
+ * 末个 turn 的起点（其后才是"本 run"的采样）。
+ *
+ * `idle` 是 opencode 自带的 turn 结束标记（真实 export 里每个 idle 前一条是
+ * assistant、后一条是 user/synthetic/system）。取「最后一个其后仍有采样的 idle」：
+ * - 文件以 idle 收尾（/resume 常态）时，末个 idle 之后没有采样，边界自动落到
+ *   再上一个 idle，即最后那个完整 turn；
+ * - 文件停在 turn 中间（run 收尾读盘）时，末个 idle 就是当前 turn 的起点。
+ *
+ * 老数据没有 idle：退回最后一个 turn 起跑标记（user/synthetic/system），与
+ * codex/dsh「无 turn 标记则退回末条采样」的既有兜底一致。
+ */
+function lastTurnStartIndex(messages: OpencodeV2Message[]): number {
+  let lastSample = -1;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (usageSample(messages[i]) !== undefined) {
+      lastSample = i;
+      break;
+    }
+  }
+  if (lastSample < 0) return -1;
+  for (let i = lastSample - 1; i >= 0; i--) {
+    if (messages[i]?.type === 'idle') return i;
+  }
+  for (let i = lastSample - 1; i >= 0; i--) {
+    const type = messages[i]?.type;
+    if (type === 'user' || type === 'synthetic' || type === 'system') return i;
+  }
+  return -1;
+}
+
 interface OpencodeCliResult {
   status: number | null;
   stdout?: string | Buffer;
@@ -362,6 +418,8 @@ export class OpencodeSessionReader implements AgentSessionReader {
 
       const events: AgentSessionContentEvent[] = [];
       let usage: AgentSessionUsage | undefined;
+      /** 本 turn 的 flow 累计：末条 user 消息之后的全部 step-finish。 */
+      let turn = { input: 0, output: 0, cacheRead: 0, cacheCreation: 0, total: 0 };
       let aiTitle: string | undefined;
       let displayTitle: string | undefined;
 
@@ -430,29 +488,34 @@ export class OpencodeSessionReader implements AgentSessionReader {
           }
         }
 
-        // Track usage from step-finish parts
+        // Track usage from step-finish parts. v1 没有 idle 标记，turn 边界就是
+        // 上面那段"最后一条 user 消息"；同一 turn 可能有多个 step-finish
+        // （每次模型请求一条），flow 要全加起来，只留末条会把多步 run 低报。
         for (const part of msg.parts) {
           if (part.type === 'step-finish' && part.tokens) {
-            // Use the last NON-EMPTY step-finish tokens. A long autonomous run
-            // can end on a degenerate step (model cut off mid-reasoning) whose
-            // step-finish reports all-zero tokens; trusting it would wipe out
-            // the run's real per-turn usage (contextLength/input/output/total
-            // all render 0). Skip zero-total steps so per-turn usage reflects
-            // the last step that actually consumed tokens.
+            // Skip zero-total steps（模型在 reasoning 中被截断）——它们没有消耗，
+            // 也不该把本次请求当成一条真实采样。
             // ccusage-aligned: cache.write -> cacheCreationTokens.
             // contextLength = input + output + cacheRead + cacheCreation —
             // the unified context-window occupancy contract across all readers
             // (§9.21：末轮 output 已进入历史、下一 prompt 全量携带，与 compact
             // postTokens 水位同语义).
             if ((part.tokens.total ?? 0) !== 0) {
+              const input = part.tokens.input ?? 0;
+              const output = part.tokens.output ?? 0;
+              const cacheRead = part.tokens.cache?.read ?? 0;
+              const cacheWrite = part.tokens.cache?.write ?? 0;
+              turn = {
+                input: turn.input + input,
+                output: turn.output + output,
+                cacheRead: turn.cacheRead + cacheRead,
+                cacheCreation: turn.cacheCreation + cacheWrite,
+                total: turn.total + part.tokens.total,
+              };
               usage = {
-                inputTokens: part.tokens.input,
-                outputTokens: part.tokens.output,
-                contextLength:
-                  (part.tokens.input ?? 0) +
-                  (part.tokens.output ?? 0) +
-                  (part.tokens.cache?.read ?? 0) +
-                  (part.tokens.cache?.write ?? 0),
+                inputTokens: input,
+                outputTokens: output,
+                contextLength: input + output + cacheRead + cacheWrite,
                 cacheReadTokens: part.tokens.cache?.read,
                 cacheCreationTokens: part.tokens.cache?.write,
                 totalTokens: part.tokens.total,
@@ -460,6 +523,15 @@ export class OpencodeSessionReader implements AgentSessionReader {
             }
           }
         }
+      }
+
+      // flow 覆盖末条采样值，contextLength 保留末条（水位不求和）。
+      if (usage) {
+        usage.inputTokens = turn.input;
+        usage.outputTokens = turn.output;
+        usage.cacheReadTokens = turn.cacheRead;
+        usage.cacheCreationTokens = turn.cacheCreation;
+        usage.totalTokens = turn.total;
       }
 
       // Cumulative (session-wide): sum input/output/total across ALL step-finish
@@ -644,33 +716,49 @@ export class OpencodeSessionReader implements AgentSessionReader {
     let cumTotal = 0;
     let cumCacheRead = 0;
     let cumCacheWrite = 0;
+    // 本 turn（= 本 run）的 flow：末个 turn 内每次模型请求之和。contextLength
+    // 仍取末次请求的窗口水位（水位不可求和）。只取末条会把多步 run 低报
+    // （实测一条 25 请求的 run：input 20,040 显示成 543、output 10,358 显示成 1,250）。
+    const turnStart = lastTurnStartIndex(messages);
+    const turn = { input: 0, output: 0, cacheRead: 0, cacheCreation: 0, total: 0 };
 
-    for (const msg of messages) {
-      if (msg?.type !== 'assistant' || !msg.tokens) continue;
-      const tokens = msg.tokens;
-      const cacheRead = tokens.cache?.read ?? 0;
-      const cacheWrite = tokens.cache?.write ?? 0;
-      const total = tokens.input + tokens.output + tokens.reasoning + cacheRead + cacheWrite;
+    for (let i = 0; i < messages.length; i++) {
+      const sample = usageSample(messages[i]);
+      if (!sample) continue;
 
-      cumInput += tokens.input;
-      cumOutput += tokens.output;
-      cumTotal += total;
-      cumCacheRead += cacheRead;
-      cumCacheWrite += cacheWrite;
+      cumInput += sample.input;
+      cumOutput += sample.output;
+      cumTotal += sample.total;
+      cumCacheRead += sample.cacheRead;
+      cumCacheWrite += sample.cacheCreation;
 
-      // A long autonomous run can end on a degenerate assistant message with
-      // zero tokens; skip it so the card reflects the last real step.
-      if (total !== 0) {
-        latest = {
-          inputTokens: tokens.input,
-          outputTokens: tokens.output,
-          // §9.21 口径：含末轮 output（与 postTokens 水位同语义）。
-          contextLength: tokens.input + tokens.output + cacheRead + cacheWrite,
-          cacheReadTokens: cacheRead,
-          cacheCreationTokens: cacheWrite,
-          totalTokens: total,
-        };
+      if (i > turnStart) {
+        turn.input += sample.input;
+        turn.output += sample.output;
+        turn.cacheRead += sample.cacheRead;
+        turn.cacheCreation += sample.cacheCreation;
+        turn.total += sample.total;
       }
+
+      latest = {
+        inputTokens: sample.input,
+        outputTokens: sample.output,
+        // §9.21 口径：含末轮 output（与 postTokens 水位同语义）。
+        contextLength: sample.input + sample.output + sample.cacheRead + sample.cacheCreation,
+        cacheReadTokens: sample.cacheRead,
+        cacheCreationTokens: sample.cacheCreation,
+        totalTokens: sample.total,
+      };
+    }
+
+    // turnStart 严格小于最后一个采样下标，所以 latest 存在时 turn 至少含一条
+    // 采样：flow 覆盖末条值，只有 contextLength 保留末条。
+    if (latest) {
+      latest.inputTokens = turn.input;
+      latest.outputTokens = turn.output;
+      latest.cacheReadTokens = turn.cacheRead;
+      latest.cacheCreationTokens = turn.cacheCreation;
+      latest.totalTokens = turn.total;
     }
 
     latest = withCumulativeUsage(latest, {

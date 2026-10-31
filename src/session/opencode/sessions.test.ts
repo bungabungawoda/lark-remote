@@ -696,6 +696,248 @@ describe('OpencodeSessionReader - usage extraction (ccusage-aligned)', () => {
     expect(content.usage!.inputTokens).toBe(0);
     expect(content.usage!.cumulativeInputTokens).toBe(5);
   });
+
+  // 一次 run = N 次模型请求（工具往返），卡片"本 run"必须是这 N 条之和。
+  // 只取末条会把多步 run 低报（实测一条 25 请求的 run：input 20,040 显示成 543、
+  // output 10,358 显示成 1,250）。
+  it('v2: sums every model request of the last turn (one assistant message = one request)', () => {
+    const json = buildV2ExportJson({
+      directory: cwd,
+      messages: [
+        { id: 'm1', type: 'user', time: { created: 1 }, text: 'do the refactor' },
+        {
+          id: 'm2',
+          type: 'assistant',
+          time: { created: 2 },
+          content: [{ type: 'text', text: 'step 1' }],
+          tokens: { input: 10, output: 5, reasoning: 2, cache: { read: 3, write: 1 } },
+        },
+        {
+          id: 'm3',
+          type: 'assistant',
+          time: { created: 3 },
+          content: [{ type: 'text', text: 'step 2' }],
+          tokens: { input: 20, output: 4, reasoning: 0, cache: { read: 6, write: 2 } },
+        },
+      ],
+    });
+    const r = new OpencodeSessionReader({ cacheTtlMs: 0, captureExport: () => json });
+
+    const content = r.readSessionContent('ses_v2_multi_step', cwd);
+
+    expect(content.usage).toMatchObject({
+      inputTokens: 30, // 10 + 20
+      outputTokens: 9, // 5 + 4
+      cacheReadTokens: 9, // 3 + 6
+      cacheCreationTokens: 3, // 1 + 2
+      totalTokens: 53, // (10+5+2+3+1) + (20+4+0+6+2)
+      // contextLength 仍是末次请求的窗口水位，不求和。
+      contextLength: 20 + 4 + 6 + 2,
+      cumulativeInputTokens: 30,
+      cumulativeOutputTokens: 9,
+    });
+  });
+
+  // idle 是 opencode 自带的 turn 结束标记（真实 export 里每个 idle 前一条是
+  // assistant、后一条是 user/synthetic/system）。上一个 turn 的消耗必须排除，
+  // 否则长会话里"本 run"会随历史不断膨胀。
+  it('v2: turn boundary is the last idle message, earlier turns excluded', () => {
+    const json = buildV2ExportJson({
+      directory: cwd,
+      messages: [
+        { id: 'm1', type: 'user', time: { created: 1 }, text: 'old turn' },
+        {
+          id: 'm2',
+          type: 'assistant',
+          time: { created: 2 },
+          content: [{ type: 'text', text: 'old answer' }],
+          tokens: { input: 1000, output: 100, reasoning: 0, cache: { read: 9000, write: 0 } },
+        },
+        { id: 'm3', type: 'idle', time: { created: 3 }, outcome: 'succeeded' },
+        { id: 'm4', type: 'user', time: { created: 4 }, text: 'new turn' },
+        {
+          id: 'm5',
+          type: 'assistant',
+          time: { created: 5 },
+          content: [{ type: 'text', text: 'part 1' }],
+          tokens: { input: 10, output: 5, reasoning: 0, cache: { read: 100, write: 0 } },
+        },
+        {
+          id: 'm6',
+          type: 'assistant',
+          time: { created: 6 },
+          content: [{ type: 'text', text: 'part 2' }],
+          tokens: { input: 20, output: 4, reasoning: 0, cache: { read: 200, write: 0 } },
+        },
+        { id: 'm7', type: 'idle', time: { created: 7 }, outcome: 'succeeded' },
+      ],
+    });
+    const r = new OpencodeSessionReader({ cacheTtlMs: 0, captureExport: () => json });
+
+    const content = r.readSessionContent('ses_v2_turns', cwd);
+
+    expect(content.usage).toMatchObject({
+      inputTokens: 30,
+      outputTokens: 9,
+      cacheReadTokens: 300,
+      totalTokens: 339, // (10+5+100) + (20+4+200)
+      contextLength: 20 + 4 + 200,
+      cumulativeInputTokens: 1030,
+      cumulativeCacheReadTokens: 9300,
+    });
+  });
+
+  // 自动续跑：shell 完成事件会写 synthetic 消息另起一个 turn，ACP prompt 的
+  // user 消息可能晚于该 turn 的第一条 assistant（实测 08:07:18 早于 08:07:24）。
+  // 中间没有 idle 就属于同一个 turn，必须一起计入。
+  it('v2: a synthetic turn start followed by the user prompt stays in one turn', () => {
+    const json = buildV2ExportJson({
+      directory: cwd,
+      messages: [
+        { id: 'm1', type: 'user', time: { created: 1 }, text: 'previous' },
+        {
+          id: 'm2',
+          type: 'assistant',
+          time: { created: 2 },
+          content: [{ type: 'text', text: 'previous answer' }],
+          tokens: { input: 5, output: 1, reasoning: 0, cache: { read: 5000, write: 0 } },
+        },
+        { id: 'm3', type: 'idle', time: { created: 3 }, outcome: 'succeeded' },
+        { id: 'm4', type: 'synthetic', time: { created: 4 }, text: 'shell finished' },
+        {
+          id: 'm5',
+          type: 'assistant',
+          time: { created: 5 },
+          content: [{ type: 'text', text: 'checking the run' }],
+          tokens: { input: 96, output: 201, reasoning: 164, cache: { read: 279040, write: 0 } },
+        },
+        { id: 'm6', type: 'user', time: { created: 6 }, text: 'also probe the network' },
+        {
+          id: 'm7',
+          type: 'assistant',
+          time: { created: 7 },
+          content: [{ type: 'text', text: 'done' }],
+          tokens: { input: 738, output: 158, reasoning: 2562, cache: { read: 279040, write: 0 } },
+        },
+        { id: 'm8', type: 'idle', time: { created: 8 }, outcome: 'succeeded' },
+      ],
+    });
+    const r = new OpencodeSessionReader({ cacheTtlMs: 0, captureExport: () => json });
+
+    const content = r.readSessionContent('ses_v2_synthetic', cwd);
+
+    expect(content.usage).toMatchObject({
+      inputTokens: 96 + 738,
+      outputTokens: 201 + 158,
+      cacheReadTokens: 279040 + 279040,
+      totalTokens: 96 + 201 + 164 + 279040 + (738 + 158 + 2562 + 279040),
+      contextLength: 738 + 158 + 279040,
+    });
+  });
+
+  it('v2: a zero-token trailing message does not wipe the turn sum', () => {
+    const json = buildV2ExportJson({
+      directory: cwd,
+      messages: [
+        { id: 'm1', type: 'user', time: { created: 1 }, text: 'run' },
+        {
+          id: 'm2',
+          type: 'assistant',
+          time: { created: 2 },
+          content: [{ type: 'text', text: 'real step' }],
+          tokens: { input: 10, output: 5, reasoning: 0, cache: { read: 100, write: 0 } },
+        },
+        {
+          id: 'm3',
+          type: 'assistant',
+          time: { created: 3 },
+          content: [{ type: 'reasoning', text: 'cut off mid-reasoning' }],
+          tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+        },
+      ],
+    });
+    const r = new OpencodeSessionReader({ cacheTtlMs: 0, captureExport: () => json });
+
+    const content = r.readSessionContent('ses_v2_degenerate', cwd);
+
+    expect(content.usage).toMatchObject({
+      inputTokens: 10,
+      outputTokens: 5,
+      contextLength: 10 + 5 + 100,
+    });
+  });
+
+  // v1 没有 idle 标记，turn 边界只有"最后一条 user 消息"；同一 turn 内多个
+  // step-finish（step 粒度）同样要相加。
+  it('v1: sums every step-finish part of the last turn', () => {
+    const json = buildExportJson({
+      directory: cwd,
+      messages: [
+        { role: 'user', parts: [{ type: 'text', text: 'old turn' }] },
+        {
+          role: 'assistant',
+          parts: [
+            {
+              type: 'step-finish',
+              reason: 'stop',
+              tokens: {
+                total: 9000,
+                input: 8000,
+                output: 500,
+                reasoning: 0,
+                cache: { read: 0, write: 500 },
+              },
+            },
+          ],
+        },
+        { role: 'user', parts: [{ type: 'text', text: 'new turn' }] },
+        {
+          role: 'assistant',
+          parts: [
+            {
+              type: 'step-finish',
+              reason: 'tool_calls',
+              tokens: {
+                total: 100,
+                input: 60,
+                output: 20,
+                reasoning: 0,
+                cache: { read: 0, write: 20 },
+              },
+            },
+          ],
+        },
+        {
+          role: 'assistant',
+          parts: [
+            {
+              type: 'step-finish',
+              reason: 'stop',
+              tokens: {
+                total: 300,
+                input: 200,
+                output: 50,
+                reasoning: 0,
+                cache: { read: 0, write: 50 },
+              },
+            },
+          ],
+        },
+      ],
+    });
+    const r = new OpencodeSessionReader({ cacheTtlMs: 0, captureExport: () => json });
+
+    const content = r.readSessionContent('ses_v1_multi_step', cwd);
+
+    expect(content.usage).toMatchObject({
+      inputTokens: 260, // 60 + 200
+      outputTokens: 70, // 20 + 50
+      cacheCreationTokens: 70, // 20 + 50
+      totalTokens: 400, // 100 + 300
+      contextLength: 200 + 50 + 0 + 50, // 末次请求水位，不求和
+      cumulativeInputTokens: 8260,
+    });
+  });
 });
 
 // isSessionActive 此前零直测：/active 与 auto-resume 每次都要问它「这条会话还在跑吗」，
