@@ -98,6 +98,10 @@ Event transitions:
 
 Terminal state is only written on first occurrence; subsequent result, watchdog, stop, or exception events must not overwrite it.
 
+The interruption source is distinguishable in terminal data (`interruptedReason`): `user_stop` (`/stop`, stop button), `approval_timeout` (the approval expired and the turn was cancelled automatically), and `approval_cancelled` (the user pressed cancel on the approval card). An explicit reason outranks inferred markers: if an approval expired earlier and the user stops the run later, the card says "terminated by user" instead of misreporting an approval timeout.
+
+If `/stop` lands while the card is still being created and the run has not started, the card is finalized as interrupted first, and the bridge returns right after `cardSession.start()` without calling `runner.run()`. At that point the runner has no process to kill (`stop()` is a no-op before `run()` for both spawn-based and connection-based runners, and `run()` resets the stop flag); without this guard the agent finishes the whole turn behind an "interrupted" card.
+
 ## 5. CardKit 2.0 Rendering
 
 Running card:
@@ -127,6 +131,8 @@ Terminal state cards:
 
 Terminal states do not render footer and stop button (except `finalizing`, see table above).
 
+The `done` header is further split by goal state: goal `complete` → `✅ Claude · Goal complete`; `blocked` → `⛔ Claude · Goal blocked`; `paused` → `⏸ Claude · Goal paused`; goal unreadable (`known=false`) → `✅ Claude · Done (goal unconfirmed)`, with the summary's first line reading "turn complete · goal state unconfirmed".
+
 ### 5.1 Goal view (DSH)
 
 A DSH session can carry a long-running goal (the `goal` projection: objective / phase /
@@ -137,7 +143,9 @@ Therefore:
 - A running card renders `🎯 **Goal in progress** · round r/N` plus the goal summary under the status line (a long goal goes into a collapsible panel);
 - if the goal is still `active` when the run finalizes, the terminal state is `goal_continuing` (header "Turn ended (goal continues)") and the summary's first line reads "turn ended · goal still continuing" — "Done" never appears;
 - no Compact button while the goal is `active`: DSH manual compaction requires an idle agent, so the click would always be rejected;
-- `complete` / `paused` / `blocked` all mean "nothing continues automatically", so the run finalizes as a normal terminal state (blocked shows the blocking reason).
+- `complete` / `paused` / `blocked` all mean "nothing continues automatically", so the run finalizes as a normal `done` terminal state, but the header reads "Goal complete", "Goal paused", or "Goal blocked" respectively; blocked also shows the blocking reason;
+- when the final goal probe cannot read the goal (`known=false`), the card must not claim completion: the header reads "Done (goal unconfirmed)" and the summary's first line reads "turn complete · goal state unconfirmed";
+- a projection snapshot **without a `goal` key** (a session that never used goals) counts as "explicitly no goal": no `goal_state` event is emitted and the unknown branch is not entered. Only a present-but-unparseable projection or a failed/timed-out read reports `known=false`.
 
 The data comes only from the host (the `goal` value in `session/projections`, `session/control` pushes and `goal/change` events). The bridge never infers "the task is finished" on its own.
 
@@ -194,6 +202,14 @@ Continue consuming Claude events; after the run ends, send a single static termi
 ### Failure after initial send
 
 Prefer calling `updateCard(messageId, finalCard)` to finalize the original card. Only when the original message also cannot be updated is a second fallback card allowed.
+
+### Compact card stream failure
+
+`/compact` shares `RunCardSession` with runs and the same "finalize in place, then fall back" rule: when `settle()` returns `unsent` (the card stream never started or never settled), a static terminal card is sent. Otherwise the user only sees "Compact triggered" and a reaction, with neither the failure nor its cause.
+
+### Fallback completion notification
+
+The completion notification sent after a failed stream card follows the terminal state for its title and template (done green / error red / interrupted grey / idle_timeout and goal_continuing orange). An errored run is never reported as a completed session.
 
 ### Preventing permanent blocking
 

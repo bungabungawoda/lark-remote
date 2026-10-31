@@ -203,6 +203,19 @@ describe('ApprovalCoordinator', () => {
         'no longer pending',
       );
     });
+
+    it('cancelledByUser 只在用户点取消时置位（终态归因用）', async () => {
+      coordinator.onRequested(makeCommandEvent({ requestId: 1001 }));
+      const cancelEvent = makeCommandEvent({ requestId: 1004 });
+      cancelEvent.view.requestId = 1004;
+      coordinator.onRequested(cancelEvent);
+
+      await coordinator.submit({ action: 'accept' }, { requestId: 1001 });
+      expect(coordinator.cancelledByUser).toBe(false);
+
+      await coordinator.submit({ action: 'cancel' }, { requestId: 1004 });
+      expect(coordinator.cancelledByUser).toBe(true);
+    });
   });
 
   describe('onResolved', () => {
