@@ -162,6 +162,87 @@ describe('OpencodeAcpRunner', () => {
     await runner.dispose();
   });
 
+  it('keeps retrying long enough to cover an opencode cold start (policy)', async () => {
+    const probe = new (class extends OpencodeAcpRunner {
+      delays(): number[] {
+        return this.sessionSetupRetryDelaysMs();
+      }
+      retryable(err: unknown): boolean {
+        return this.isRetryableSessionSetupError(err);
+      }
+      enrich(err: unknown): Error {
+        return this.enrichSessionSetupError(err);
+      }
+    })({
+      kind: 'opencode',
+      sessionReader: createStubSessionReader(),
+      binary: 'unused-in-policy-test',
+      acpArgs: [],
+      errorMonitorLogPath: join(tmpDir, 'opencode.log'),
+    });
+
+    // 2026-10-30 现场：模型目录 503 窗口约 7 分钟，旧退避只覆盖 ~45s。
+    const delays = probe.delays();
+    expect(delays.length).toBeGreaterThanOrEqual(4);
+    expect(delays.reduce((sum, d) => sum + d, 0)).toBeGreaterThanOrEqual(70_000);
+    // 退避必须递增：前紧后松，短故障快速恢复，长故障不刷屏。
+    expect(delays.every((d, i) => i === 0 || d > delays[i - 1]!)).toBe(true);
+
+    const daemonDown = new Error('Internal error: Internal service failure');
+    expect(probe.retryable(daemonDown)).toBe(true);
+
+    // 文案对用户：说清是临时状态、给等待时间；不再引导重启服务
+    // （重启只会清掉已热状态，重新进入同一个冷启动窗口）。
+    const message = probe.enrich(daemonDown).message;
+    expect(message).toContain('尚未就绪');
+    expect(message).toContain('Internal service failure');
+    expect(message).toContain('等 1–2 分钟');
+    expect(message).not.toContain('service restart');
+
+    // 非「服务端未就绪」类错误保持原样，不套用误导性文案。
+    const other = probe.enrich(new Error('boom'));
+    expect(other.message).toBe('boom');
+    await probe.dispose();
+  });
+
+  it('drops the cached connection so the next run respawns the agent server', async () => {
+    const capturePath = join(tmpDir, 'capture.jsonl');
+    const { wrapper, cwd } = writeScenario(tmpDir, serverScript, 'opencode', {
+      capturePath,
+      // 永远失败：模拟 location 卡在未激活的 opencode 子进程。
+      failNewTimes: 99,
+    });
+    // 退避压到 10ms：本用例验证「失败后丢连接」，不是验证时间表。
+    const runner = new (class extends OpencodeAcpRunner {
+      protected override sessionSetupRetryDelaysMs(): number[] {
+        return [10, 10];
+      }
+    })({
+      kind: 'opencode',
+      sessionReader: createStubSessionReader(),
+      binary: wrapper,
+      acpArgs: [],
+      turnIdleTimeoutMs: 30_000,
+      errorMonitorLogPath: join(tmpDir, 'opencode.log'),
+      errorMonitorPollIntervalMs: 20,
+    });
+
+    const first = await collectEvents(runner, 'hello', { cwd });
+    const firstResult = first.find((e) => e.type === 'result') as
+      (AgentEvent & { subtype?: string; errorMessage?: string }) | undefined;
+    expect(firstResult?.subtype).toBe('error');
+    expect(firstResult?.errorMessage).toContain('尚未就绪');
+
+    const second = await collectEvents(runner, 'hello', { cwd });
+    expect(second.some((e) => e.type === 'result')).toBe(true);
+
+    // 每次失败都丢掉缓存连接 → 第二轮重新 spawn 一个 server 进程，
+    // 捕获里会出现第二次 initialize。复用旧连接时这里只会是 1 次。
+    const inits = readCapture(capturePath).filter((m) => m.method === 'initialize');
+    expect(inits).toHaveLength(2);
+    await runner.dispose();
+  }, 20_000);
+
   it('resumes an existing session by sessionId (session/resume, no session/new)', async () => {
     const capturePath = join(tmpDir, 'capture.jsonl');
     const { wrapper, cwd } = writeScenario(tmpDir, serverScript, 'opencode', { capturePath });
