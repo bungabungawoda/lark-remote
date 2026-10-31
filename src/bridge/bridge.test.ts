@@ -2321,6 +2321,10 @@ describe('Bridge agentRegistry / sessionReaderRegistry', () => {
       .filter((m) => m.includes('[lark-remote] final usage'));
     expect(finalLogs.length).toBe(1);
     expect(finalLogs[0]).toContain('contextLimit=200000');
+    // input/output 必须出现在探针里：卡片本 run 的这两个数曾只能靠会话文件反推，
+    // 日志里看不到就无法判断卡片统计是不是只取了末次请求。
+    expect(finalLogs[0]).toContain('input=100');
+    expect(finalLogs[0]).toContain('output=20');
   });
 
   it('test_anchor_run_card_renders_context_percent_from_jsonl_limit', async () => {

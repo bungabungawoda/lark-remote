@@ -94,8 +94,13 @@ export class RunUsageCollector {
     return this.resolved;
   }
 
+  /**
+   * 收尾探针。input/output 必须在这里出现：卡片"本 run"的这两个数来自
+   * `resolveFinalUsage`（ACP 的 live 层只有 context 占用、没有 input/output），
+   * 不带它们时日志无法区分"本 run 合计"与"末次请求"。
+   */
   logSummary(runId: string): string {
     const meta = this.meta();
-    return `[lark-remote] final usage runId=${runId} contextLength=${meta.contextLength} contextLimit=${meta.contextLimit ?? 'undefined'} compactCount=${meta.compactCount ?? 'undefined'} cacheRead=${meta.cacheReadTokens ?? 'undefined'} cacheCreate=${meta.cacheCreationTokens ?? 'undefined'}`;
+    return `[lark-remote] final usage runId=${runId} contextLength=${meta.contextLength} contextLimit=${meta.contextLimit ?? 'undefined'} compactCount=${meta.compactCount ?? 'undefined'} input=${meta.inputTokens ?? 'undefined'} output=${meta.outputTokens ?? 'undefined'} cacheRead=${meta.cacheReadTokens ?? 'undefined'} cacheCreate=${meta.cacheCreationTokens ?? 'undefined'} total=${meta.totalTokens ?? 'undefined'}`;
   }
 }
