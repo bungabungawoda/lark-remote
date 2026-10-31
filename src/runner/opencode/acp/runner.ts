@@ -262,9 +262,15 @@ export class OpencodeAcpRunner extends BaseAcpRunner<OpencodeAcpTranslator> {
    * starting or still activating location plugins when the first session is
    * created; both surface as a JSON-RPC internal error. Retry a few times
    * before failing the turn.
+   *
+   * 单次 attempt 自身还要等 opencode 侧超时（~10s），所以真实窗口 ≈ Σdelay +
+   * 每次的等待。2026-10-30 现场：daemon 刚重启，`/api/model` 因模型目录拉取
+   * 超时连续 503 约 7 分钟，旧退避 0.5/1.5/3s（合计 ~45s）全落在这段里，4 次
+   * 重试无一成功。现在铺到 ~75s + 每次超时 ≈ 2 分钟，覆盖一次冷启动窗口，
+   * 又不至于让真故障的用户干等太久。
    */
   protected override sessionSetupRetryDelaysMs(): number[] {
-    return [500, 1500, 3000];
+    return [500, 2000, 8000, 20000, 45000];
   }
 
   protected override isRetryableSessionSetupError(err: unknown): boolean {
@@ -274,13 +280,18 @@ export class OpencodeAcpRunner extends BaseAcpRunner<OpencodeAcpTranslator> {
     );
   }
 
+  /**
+   * 用户可见文案。这里刻意**不**建议 `opencode service restart`：卡住的是
+   * opencode 的模型目录/位置服务冷启动，重启只会清掉刚热好的状态、重新回到
+   * 同一个窗口（2026-10-30 现场：照提示重启两次仍然失败，等几分钟自己好了）。
+   */
   protected override enrichSessionSetupError(err: unknown): Error {
     if (!this.isRetryableSessionSetupError(err)) {
       return super.enrichSessionSetupError(err);
     }
     const message = err instanceof Error ? err.message : String(err);
     return new Error(
-      `opencode 2.0 后台服务不可用（${message}）。请在终端执行 \`opencode service restart\` 后重试。`,
+      `opencode 后台服务尚未就绪（${message}）。这是 opencode 冷启动 / 模型目录加载期间的临时状态：等 1–2 分钟重发即可，重启服务只会重新进入同一窗口。`,
       { cause: err },
     );
   }

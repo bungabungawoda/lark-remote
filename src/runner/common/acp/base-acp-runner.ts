@@ -147,6 +147,44 @@ export abstract class BaseAcpRunner<
     }
   }
 
+  /**
+   * 建立会话（session/new|resume），重试耗尽后丢弃该 cwd 缓存的连接。
+   *
+   * 「服务端未就绪」类错误（isRetryableSessionSetupError）说明这个 agent server
+   * 自身半死：opencode v2 的 location 在每轮拉起的 `opencode acp` 子进程里 boot，
+   * boot 期间后台服务不可用会让它长期停在未激活，后续轮次复用同一连接只会重复
+   * 失败——用户重启 opencode service 也治不好，因为连接缓存在本进程里
+   * （2026-10-30 现场：4 次重试全失败，重启服务与 lark-remote 都无效）。丢掉连接
+   * 后下一轮重新 spawn，拿到的是新进程的新状态。
+   *
+   * 只对声明为可重试的错误生效：kimi 等沿用默认 `isRetryableSessionSetupError`
+   * = false，行为不变（session id 不存在之类的确定性失败不踢连接）。
+   */
+  private async setupSessionWithRetry<T>(cwd: string, fn: () => Promise<T>): Promise<T> {
+    try {
+      return await this.withSessionSetupRetry(fn);
+    } catch (err) {
+      if (this.isRetryableSessionSetupError(err)) {
+        await this.discardConnection(cwd);
+      }
+      throw err;
+    }
+  }
+
+  /** Dispose the cached connection for `cwd`; never mask the setup error. */
+  private async discardConnection(cwd: string): Promise<void> {
+    try {
+      await this.connectionManager.release(cwd);
+      getLogger().warn(
+        `[${this.logTag}] dropped cached connection after session setup failure cwd=${cwd}`,
+      );
+    } catch (err) {
+      getLogger().warn(
+        `[${this.logTag}] failed to drop cached connection cwd=${cwd}: ${(err as Error).message}`,
+      );
+    }
+  }
+
   protected currentSessionId(): string | null {
     return this.activeSessionId;
   }
@@ -325,14 +363,14 @@ export abstract class BaseAcpRunner<
         sessionId: opts.sessionId,
         cwd: opts.cwd,
       };
-      const resumeResult = await this.withSessionSetupRetry(() =>
+      const resumeResult = await this.setupSessionWithRetry(opts.cwd, () =>
         client.request<SessionResumeParams, SessionResumeResult>('session/resume', resumeParams),
       );
       this.onSessionEstablished(resumeResult);
       sessionId = opts.sessionId;
     } else {
       const newParams: SessionNewParams = { cwd: opts.cwd, mcpServers: [] };
-      const newResult = await this.withSessionSetupRetry(() =>
+      const newResult = await this.setupSessionWithRetry(opts.cwd, () =>
         client.request<SessionNewParams, SessionNewResult>('session/new', newParams),
       );
       this.onSessionEstablished(newResult);
@@ -424,7 +462,7 @@ export abstract class BaseAcpRunner<
       // memory. On a reused connection the session is already loaded —
       // resume is idempotent and harmless.
       const resumeParams: SessionResumeParams = { sessionId, cwd: opts.cwd };
-      const resumeResult = await this.withSessionSetupRetry(() =>
+      const resumeResult = await this.setupSessionWithRetry(opts.cwd, () =>
         client.request<SessionResumeParams, SessionResumeResult>('session/resume', resumeParams),
       );
       this.onSessionEstablished(resumeResult);
