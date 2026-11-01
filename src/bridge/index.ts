@@ -1646,7 +1646,7 @@ export class Bridge {
     event: Extract<AgentEvent, { type: 'result' }>,
     opts: {
       sawInit: boolean;
-      usageAuthority: 'live' | 'jsonl' | undefined;
+      liveResultEvents: boolean;
       usage: RunUsageCollector;
       writeback: WritebackContext;
       runId: string;
@@ -1656,7 +1656,7 @@ export class Bridge {
     dropFromCard: boolean;
     preInitTerminal?: { subtype: 'error' | 'interrupted'; errorMessage?: string };
   } {
-    const { sawInit, usageAuthority, usage, writeback, runId } = opts;
+    const { sawInit, liveResultEvents, usage, writeback, runId } = opts;
     const preInitResult = !sawInit;
     const preInitTerminal =
       preInitResult && (event.subtype === 'error' || event.subtype === 'interrupted')
@@ -1666,7 +1666,7 @@ export class Bridge {
           }
         : undefined;
 
-    if (preInitResult && usageAuthority !== 'live') {
+    if (preInitResult && !liveResultEvents) {
       getLogger().info(`[lark-remote] pre-init result ignored (resume replay) runId=${runId}`);
       return { sawResult: false, dropFromCard: true, preInitTerminal };
     }
@@ -1677,11 +1677,11 @@ export class Bridge {
         ? `[lark-remote] pre-init result from live runner (app-server setup failure) runId=${runId}`
         : `[lark-remote] result event received runId=${runId}`,
     );
-    // app-server 模式 setup 失败路径（thread/start 成功后 turn/start 失败）不会有
-    // turn_started 事件，store 不会写回新线程 id；runner 已在 result 里兜底上报。
-    // 仅当 runner 声明 live usage（app-server）且会话指针未动时写回，避免下条消息
-    // 再开一个孤儿线程。其余 agent 不在此列（各自有 system.init / turn_started 写回）。
-    if (usageAuthority === 'live') writeBackResultSession(writeback, event.session_id);
+    // 连接型 runner 的 setup 失败路径（thread/start 成功后 turn/start 失败）
+    // 不会有 turn_started 事件，store 不会写回新线程 id；runner 已在 result 里
+    // 兜底上报。仅当 runner 声明 live result 语义且会话指针未动时写回，避免
+    // 下条消息再开一个孤儿线程。其余 agent 不在此列（各自有 init/turn_started 写回）。
+    if (liveResultEvents) writeBackResultSession(writeback, event.session_id);
     return { sawResult: !preInitResult, dropFromCard: false, preInitTerminal };
   }
 
@@ -1845,9 +1845,13 @@ export class Bridge {
     message: string,
     agentKind: AgentKind = this.config.defaultAgent,
   ): Promise<void> {
-    // Runner 声明的 usage 权威来源：codex app-server = 'live'
-    // （turn/started 的 tokenUsage.last 是本 turn 增量）。其余 runner 未声明。
+    // Runner 声明的 usage 权威来源：codex app-server / pi RPC = 'live'
+    // （live 带 input/output）；opencode/kimi ACP live 只有 context，声明
+    // 'jsonl'。result 事件的 live 语义（pre-init/写回）单独声明，不能和
+    // 用量来源共用一个字段。
     const usageAuthority = (runner as AgentRunner).getUsageAuthority?.();
+    const liveResultEvents =
+      (runner as AgentRunner).usesLiveResultEvents?.() ?? usageAuthority === 'live';
 
     // §9.12 空闲看门狗：判定口径见 startIdleWatchdog；武装点在 cardSession.start() 之后。
     let watchdog: IdleWatchdog | null = null;
@@ -1960,7 +1964,7 @@ export class Bridge {
         if (event.type === 'result') {
           const outcome = this.observeResultEvent(event, {
             sawInit,
-            usageAuthority,
+            liveResultEvents,
             usage,
             writeback,
             runId,
@@ -2629,6 +2633,10 @@ export class Bridge {
       // 压缩结束后从会话 jsonl 读权威统计（压缩后上下文、压缩次数、本次压缩
       // token 消耗与会话累计）。thread/compacted 通知与 jsonl 落盘几乎同时
       // （实测差 ~9ms），compactCount 未读到则短重试，仍失败优雅降级（无统计）。
+      // 不支持 compactCount 的 reader（opencode/dsh）不重试——否则每次 compact
+      // 都会固定多跑两次完整 export/读取，且永远等不到该字段。
+      const compactCountSupported =
+        this.sessionReaderRegistry.tryGet(agentKind)?.supportsCompactCount !== false;
       let finalUsage = resolveFinalUsage(
         this.sessionReaderRegistry,
         this.config.defaultAgent,
@@ -2636,7 +2644,11 @@ export class Bridge {
         cwd,
         agentKind,
       );
-      for (let attempt = 0; !finalUsage?.compactCount && attempt < 2; attempt++) {
+      for (
+        let attempt = 0;
+        compactCountSupported && !finalUsage?.compactCount && attempt < 2;
+        attempt++
+      ) {
         await sleep(150);
         finalUsage = resolveFinalUsage(
           this.sessionReaderRegistry,

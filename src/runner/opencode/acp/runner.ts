@@ -88,6 +88,10 @@ interface SessionConfigOptionLike {
 // =============================================================================
 
 export class OpencodeAcpRunner extends BaseAcpRunner<OpencodeAcpTranslator> {
+  /** ACP usage_update 只有 context，没有 input/output：flow 走 jsonl。 */
+  getUsageAuthority(): 'jsonl' {
+    return 'jsonl';
+  }
   /** Configured session mode applied via session/set_mode. */
   private configuredMode: 'build' | 'plan';
   /** Current session mode id, parsed from session/new|resume configOptions. */

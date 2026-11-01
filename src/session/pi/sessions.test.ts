@@ -4,6 +4,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { PiSessionReader } from '../../session/pi/sessions.js';
 import { encodeProjectDirName } from '../../platform/path.js';
+import { expectRunUsageScope } from '../../../tests/lib/usage-scope-contract.js';
 
 vi.mock('../../logger/index.js', async () =>
   (await import('../../../tests/lib/logger-mock.js')).loggerModuleMock(),
@@ -421,6 +422,113 @@ describe('PiSessionReader', () => {
     expect(content.usage!.outputTokens).toBe(200);
     // contextLength = input+output+cacheRead+cacheCreation（含末轮 output，§9.21 口径）
     expect(content.usage!.contextLength).toBe(1200);
+  });
+
+  it('sums every assistant message of the last real-user turn (tool_result does not split it)', () => {
+    // 回归：一个带工具往返的 turn 有多个 assistant 消息（一次模型请求一条）。
+    // 旧实现取 acc.last，只显示最后一次请求；toolResult 不是真人 prompt，
+    // 不能开启新 turn。
+    const sessionId = 'sess-multi-request';
+    const cwd = '/tmp/multi-request';
+    writeSessionFile(sessionId, cwd, [
+      { type: 'session', id: sessionId, cwd, model: 'glm-5.2' },
+      { type: 'message', message: { role: 'user', content: [{ type: 'text', text: 'do it' }] } },
+      {
+        type: 'message',
+        message: {
+          role: 'assistant',
+          usage: { input: 100, output: 30 },
+          content: [{ type: 'text', text: 'step 1' }],
+        },
+      },
+      { type: 'message', message: { role: 'toolResult', content: [{ type: 'text', text: 'ok' }] } },
+      {
+        type: 'message',
+        message: {
+          role: 'assistant',
+          usage: { input: 20, output: 70 },
+          content: [{ type: 'text', text: 'step 2' }],
+        },
+      },
+    ]);
+
+    const reader = new PiSessionReader({ piDir: tmpDir });
+    const content = reader.readSessionContent(sessionId, cwd);
+
+    expectRunUsageScope(content.usage, {
+      flowInput: 120,
+      flowOutput: 100,
+      contextLength: 90,
+      cumulativeInput: 120,
+      cumulativeOutput: 100,
+    });
+    expect(content.usage!.totalTokens).toBeUndefined();
+  });
+
+  it('an empty last turn shows flow 0, not the previous turn usage', () => {
+    const sessionId = 'sess-empty-last-turn';
+    const cwd = '/tmp/empty-last-turn';
+    writeSessionFile(sessionId, cwd, [
+      { type: 'session', id: sessionId, cwd, model: 'glm-5.2' },
+      { type: 'message', message: { role: 'user', content: [{ type: 'text', text: 'old' }] } },
+      {
+        type: 'message',
+        message: {
+          role: 'assistant',
+          usage: { input: 100, output: 30 },
+          content: [{ type: 'text', text: 'old answer' }],
+        },
+      },
+      { type: 'message', message: { role: 'user', content: [{ type: 'text', text: 'new' }] } },
+    ]);
+
+    const reader = new PiSessionReader({ piDir: tmpDir });
+    const content = reader.readSessionContent(sessionId, cwd);
+
+    expectRunUsageScope(content.usage, {
+      flowInput: 0,
+      flowOutput: 0,
+      contextLength: 130,
+      cumulativeInput: 100,
+      cumulativeOutput: 30,
+    });
+  });
+
+  it('falls back to the last assistant message when there is no real user turn', () => {
+    // 旧数据/截断文件可能没有 user 消息：无法划分 turn，回退末条采样，
+    // 与 dsh/codex「无 turn 标记退回末条」一致；不能把整份文件当成一轮。
+    const sessionId = 'sess-no-user';
+    const cwd = '/tmp/no-user';
+    writeSessionFile(sessionId, cwd, [
+      { type: 'session', id: sessionId, cwd, model: 'glm-5.2' },
+      {
+        type: 'message',
+        message: {
+          role: 'assistant',
+          usage: { input: 100, output: 30 },
+          content: [{ type: 'text', text: 'old' }],
+        },
+      },
+      {
+        type: 'message',
+        message: {
+          role: 'assistant',
+          usage: { input: 20, output: 70 },
+          content: [{ type: 'text', text: 'last' }],
+        },
+      },
+    ]);
+
+    const reader = new PiSessionReader({ piDir: tmpDir });
+    const content = reader.readSessionContent(sessionId, cwd);
+
+    expectRunUsageScope(content.usage, {
+      flowInput: 20,
+      flowOutput: 70,
+      contextLength: 90,
+      cumulativeInput: 120,
+      cumulativeOutput: 100,
+    });
   });
 
   it('test_extracts_total_tokens_and_cache_from_assistant_usage', () => {

@@ -65,6 +65,14 @@ describe('OpencodeAcpRunner', () => {
     rmRf(tmpDir);
   });
 
+  it('pins split usage/result semantics: ACP flow is jsonl, result events are live', () => {
+    // ACP usage_update 只有 context，没有 input/output：flow 权威必须是 jsonl；
+    // 但 result 仍是 runner 自产的 live 语义（pre-init/写回不能跟着变）。
+    const runner = makeRunner(serverScript);
+    expect(runner.getUsageAuthority()).toBe('jsonl');
+    expect(runner.usesLiveResultEvents()).toBe(true);
+  });
+
   it('runs a full turn: streaming text deltas on the assistant channel + success result + usage folded', async () => {
     const { wrapper, cwd } = writeScenario(tmpDir, serverScript, 'opencode', {
       configOptions: MODE_CONFIG_OPTIONS,

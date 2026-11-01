@@ -6,6 +6,7 @@ import { OpencodeSessionReader } from '../../session/opencode/sessions.js';
 import { currentPlatform } from '../../platform/select.js';
 import { STALE_MS } from '../common/constants.js';
 import { rmRf } from '../../../tests/lib/tmp-cleanup.js';
+import { expectRunUsageScope } from '../../../tests/lib/usage-scope-contract.js';
 
 // Mock spawnProcessSync（生产代码用 cross-spawn 收口执行 opencode CLI，
 // win32 上 execFileSync 无法解析 npm .cmd 垫片）
@@ -832,6 +833,37 @@ describe('OpencodeSessionReader - usage extraction (ccusage-aligned)', () => {
       cacheReadTokens: 279040 + 279040,
       totalTokens: 96 + 201 + 164 + 279040 + (738 + 158 + 2562 + 279040),
       contextLength: 738 + 158 + 279040,
+    });
+  });
+
+  it('v2: a new user message after the last sample yields flow 0 (empty turn)', () => {
+    // 当前契约是「末个 turn」：新 turn 只有 user、还没有 assistant 采样时，
+    // 本 run = 0；不能把上一轮的采样当成当前轮。
+    const json = buildV2ExportJson({
+      directory: cwd,
+      messages: [
+        { id: 'm1', type: 'user', time: { created: 1 }, text: 'old turn' },
+        {
+          id: 'm2',
+          type: 'assistant',
+          time: { created: 2 },
+          content: [{ type: 'text', text: 'old answer' }],
+          tokens: { input: 100, output: 30, reasoning: 0, cache: { read: 0, write: 0 } },
+        },
+        { id: 'm3', type: 'idle', time: { created: 3 }, outcome: 'succeeded' },
+        { id: 'm4', type: 'user', time: { created: 4 }, text: 'new turn' },
+      ],
+    });
+    const r = new OpencodeSessionReader({ cacheTtlMs: 0, captureExport: () => json });
+
+    const content = r.readSessionContent('ses_v2_empty_turn', cwd);
+
+    expectRunUsageScope(content.usage, {
+      flowInput: 0,
+      flowOutput: 0,
+      contextLength: 130,
+      cumulativeInput: 100,
+      cumulativeOutput: 30,
     });
   });
 

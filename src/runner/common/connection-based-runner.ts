@@ -284,8 +284,13 @@ export abstract class ConnectionBasedRunner<TClient, TEvent = AgentEvent> implem
     this.orphaned = true;
   }
 
-  getUsageAuthority(): 'live' {
+  getUsageAuthority(): 'live' | 'jsonl' {
     return 'live';
+  }
+
+  /** 连接型 runner 的 result 事件都是 runner 自己产出的 live 语义。 */
+  usesLiveResultEvents(): boolean {
+    return true;
   }
 
   killOrphan(): void {

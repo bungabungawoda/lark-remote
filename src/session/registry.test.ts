@@ -24,4 +24,9 @@ describe('SessionReaderRegistry', () => {
     const registry = new SessionReaderRegistry();
     expect(() => registry.get('codex')).toThrow(/session reader not registered: codex/);
   });
+
+  it('tryGet returns undefined for unregistered kind (capability probe must not throw)', () => {
+    const registry = new SessionReaderRegistry();
+    expect(registry.tryGet('codex')).toBeUndefined();
+  });
 });
