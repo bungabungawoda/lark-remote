@@ -971,6 +971,15 @@ kimi = `turn.prompt`（整份 wire 都没有该标记的旧数据沿用"整份�
 同一 turn 内多条 synthetic 消息（如 shell 完成事件触发的 synthetic）不构成新 turn，
 中间没有 idle/turn.prompt 就并入同一轮。`contextLength` 始终取末条采样，不求和。
 
+**reader 责任矩阵与回归史**：六个 reader 的 turn 边界分别是 claude/pi = 末条真实
+user 消息（已按末个 turn 汇总所有 assistant 消息）、opencode v1 = 末条 user、
+opencode v2 = 末个 `idle`（末条采样后出现新 user 时 flow = 0）、kimi =
+`turn.prompt`（空 turn 显示 0，不退回上一轮）、codex = `task_started`、dsh =
+`turn/start`–`turn/end`。`usageAuthority` 已拆分：`getUsageAuthority()` 只表达
+flow 来源（ACP 为 `'jsonl'`），`usesLiveResultEvents()` 表达 result 事件语义
+（pre-init 丢弃 / session 写回）。完整契约、2026-07 → 2026-11 的复发链与残留缺口见
+[token-usage-scope.md](token-usage-scope.md)。
+
 **`/resume` 由各 session reader 填充**：claude `aggregateSessionUsage`（`totalTokens`
 = 分项和）、pi `extractUsage`（`totalTokens = usage.totalTokens`）、kimi 按
 `turn.prompt` 汇总末个 turn 作 flow、opencode reader（`cache.write`/`total`；v2 按
