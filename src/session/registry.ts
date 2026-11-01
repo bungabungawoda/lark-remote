@@ -20,4 +20,9 @@ export class SessionReaderRegistry {
     }
     return reader;
   }
+
+  /** 可选能力探测用：不抛错，交给调用方决定降级行为。 */
+  tryGet(kind: AgentKind): AgentSessionReader | undefined {
+    return this.readers.get(kind);
+  }
 }

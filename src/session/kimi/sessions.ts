@@ -517,9 +517,9 @@ export class KimiSessionReader implements AgentSessionReader {
       // 末条会低报，取会话总量（旧实现）又会把历史所有 run 的消耗算进这一轮。
       // 子 agent 的 wire 没有 turn 标记，只能进会话累计（无法归属到某一轮）；
       // 整份 wire 都没有 turn.prompt（旧数据）时沿用「整份文件 = 一个 turn」。
+      // 末个 turn 尚无 usage.record 时 flow = 0（当前契约是「末个 turn」，不是
+      // 「末个非空 turn」）——不能退回上一轮的记录。
       let turnAcc: UsageAccumulator | null = null;
-      let lastMainUsage:
-        { input: number; output: number; cacheRead: number; cacheCreation: number } | undefined;
       const accumulateUsage = (
         u: KimiUsageRecordEvent['usage'],
         scope: 'main' | 'subagent',
@@ -539,7 +539,6 @@ export class KimiSessionReader implements AgentSessionReader {
         };
         acc.add(record);
         if (scope !== 'main') return;
-        lastMainUsage = record;
         turnAcc?.add(record);
         // unified contract (§9.21): input + output + cacheRead + cacheCreation.
         // 末轮 output 已进入历史、下一 prompt 全量携带——与 compact postTokens
@@ -667,10 +666,10 @@ export class KimiSessionReader implements AgentSessionReader {
       // Build the final AgentSessionUsage from the last turn's flow + session
       // cumulative + main contextLength.
       const t = acc.totals;
-      // 有 turn.prompt 时本 run = 末个 turn 的 flow（末 turn 还没有记录时退回
-      // 末条主 wire 记录）；整份 wire 都没有 turn.prompt（旧数据/截断）时无从
-      // 分段，沿用「整份文件 = 一个 turn」的旧口径（含子 agent wire）。
-      const flow = turnAcc ? (turnAcc.count > 0 ? turnAcc.totals : (lastMainUsage ?? t)) : t;
+      // 有 turn.prompt 时本 run = 末个 turn 的 flow；末 turn 还没有记录时
+      // turnAcc.count = 0 → flow = 0。整份 wire 都没有 turn.prompt（旧数据/
+      // 截断）时无从分段，沿用「整份文件 = 一个 turn」的旧口径（含子 agent wire）。
+      const flow = turnAcc ? turnAcc.totals : t;
       // Kimi semantics: preserve 0 values (not undefined) for cache fields to match original
       const totalUsage: AgentSessionUsage = {
         inputTokens: flow.input,

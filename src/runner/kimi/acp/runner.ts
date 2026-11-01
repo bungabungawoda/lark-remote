@@ -244,6 +244,10 @@ function buildQuestionResponse(
 // =============================================================================
 
 export class KimiAcpRunner extends BaseAcpRunner<KimiAcpTranslator> {
+  /** ACP usage_update 只有 context，没有 input/output：flow 走 jsonl。 */
+  getUsageAuthority(): 'jsonl' {
+    return 'jsonl';
+  }
   private permissionMode: 'manual' | 'auto' | 'yolo';
   private thinkingEffort?: string;
   private readonly compactIdleTimeoutMs: number;

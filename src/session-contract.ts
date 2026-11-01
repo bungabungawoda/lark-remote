@@ -179,4 +179,10 @@ export interface AgentSessionReader {
    * 未实现 = 该 agent 没有这个概念，调用方按「不在途」处理。
    */
   readCompactionState?(sessionId: string, cwd: string): CompactionState;
+  /**
+   * `readSessionContent` 是否产出 `compactCount`。opencode 的 export 没有
+   * 压缩计数；compact 收尾的重试不能把「不支持」误判成「还没落盘」。
+   * 未声明 = 支持（保持既有 reader 行为）。
+   */
+  supportsCompactCount?: boolean;
 }

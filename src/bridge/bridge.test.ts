@@ -974,6 +974,56 @@ describe('Bridge.forwardToClaude', () => {
     expect(compactCard).not.toContain('"cmd":"compact"');
   });
 
+  it('does not retry jsonl reads for readers that do not produce compactCount', async () => {
+    // 回归：opencode reader 不产出 compactCount，旧重试循环每次 compact 都
+    // 固定多跑两次完整 export。supportsCompactCount=false 时应只读一次。
+    const cwd = fs.realpathSync(tmpDir);
+    const readSpy = vi.fn(() => ({
+      events: [],
+      usage: { inputTokens: 0, outputTokens: 0, contextLength: 100, totalTokens: 100 },
+    }));
+    const reader: AgentSessionReader = {
+      listSessions: () => ({ sessions: [], total: 0 }),
+      getNewestSession: () => null,
+      readSessionContent: readSpy,
+      isSessionActive: () => false,
+      supportsCompactCount: false,
+    };
+    const runner = createStubRunner({
+      mode: 'streaming',
+      events: [
+        { type: 'system', subtype: 'init', session_id: 's-no-compact-count', cwd, model: 'x' },
+        { type: 'result', subtype: 'success', session_id: 's-no-compact-count' },
+      ],
+    });
+    (runner as unknown as { runCompact: unknown }).runCompact = async function* () {
+      yield {
+        type: 'system',
+        subtype: 'init',
+        session_id: 's-no-compact-count',
+        cwd,
+        model: 'x',
+      } as AgentEvent;
+      yield { type: 'result', subtype: 'success', session_id: 's-no-compact-count' } as AgentEvent;
+    };
+    (runner as unknown as { lifetime: string }).lifetime = 'workspace';
+    const { bridge, sessionStore, connector } = makeCompactBridge({
+      runner,
+      readers: { claude: reader },
+    });
+    sessionStore.setCwd(ctx.userId, cwd);
+
+    await bridge.forwardToClaude('hi', ctx);
+    readSpy.mockClear();
+    const runId = JSON.stringify(connector._cards.at(-1) ?? '').match(
+      /"cmd":"compact","runId":"([^"]+)"/,
+    )?.[1];
+    expect(runId).toBeDefined();
+
+    await bridge.handleCompactAction({ runId: runId! }, ctx);
+    expect(readSpy).toHaveBeenCalledTimes(1);
+  });
+
   it('unsent fallback run card hides compact button when runner lacks runCompact', async () => {
     // 回归：finalizeRun 的 unsent fallback 卡（streamCard 抛错走静态卡）若不传
     // compactSupported 会渲染出 DSH 等无 runCompact 能力 agent 的死按钮
@@ -4103,6 +4153,41 @@ describe('app-server error result session write-back', () => {
 
     await bridge.forwardToClaude('hello', ctx, {
       binding: { agent: 'codex' as const, sessionId: 'th-old-999' },
+    });
+
+    const lastCard = JSON.stringify(connector._cards.at(-1));
+    expect(lastCard).toContain('未能落到卡片上');
+    expect(lastCard).not.toContain('未收到 result 事件');
+  });
+
+  it('jsonl usage authority does not downgrade live result semantics', async () => {
+    // usageAuthority 拆成两个职责后：ACP runner 的 flow 来源是 jsonl，但
+    // result 事件仍是 live 语义。没有 init 的成功 result 不能被当成 resume
+    // 重放静默丢弃（否则排障会误报「未收到 result 事件」）。
+    const cwd = fs.realpathSync(tmpDir);
+    const runner: Runner & {
+      getUsageAuthority?: () => 'live' | 'jsonl';
+      usesLiveResultEvents?: () => boolean;
+    } = {
+      isRunning: false,
+      stop: async () => {},
+      killOrphan: () => {},
+      registerExitHandlers: () => {},
+      run: async function* () {
+        yield {
+          type: 'result',
+          subtype: 'success',
+          session_id: 's-jsonl-live',
+        } as AgentEvent;
+      },
+      getUsageAuthority: () => 'jsonl',
+      usesLiveResultEvents: () => true,
+    };
+    const { bridge, connector, sessionStore } = makeBridge({ runner });
+    sessionStore.setCwd('user1', cwd);
+
+    await bridge.forwardToClaude('hello', ctx, {
+      binding: { agent: 'codex' as const, sessionId: 's-old-999' },
     });
 
     const lastCard = JSON.stringify(connector._cards.at(-1));

@@ -253,6 +253,11 @@ function lastTurnStartIndex(messages: OpencodeV2Message[]): number {
     }
   }
   if (lastSample < 0) return -1;
+  // 末条采样之后又出现 user：这是新 turn 的起点，但还没有采样（空 turn）。
+  // 返回该 user 下标，让 flow 汇总范围为空 → 本 run = 0，而不是上一轮。
+  for (let i = lastSample + 1; i < messages.length; i++) {
+    if (messages[i]?.type === 'user') return i;
+  }
   for (let i = lastSample - 1; i >= 0; i--) {
     if (messages[i]?.type === 'idle') return i;
   }
@@ -312,6 +317,8 @@ function withCumulativeUsage(
 export class OpencodeSessionReader implements AgentSessionReader {
   private readonly binary: string;
   private readonly cacheTtlMs: number;
+  /** opencode export 没有 compactCount；compact 收尾不应因此重试 export。 */
+  readonly supportsCompactCount = false;
   /** Optional raw-export capture override (testing / alt transport). */
   private readonly captureExportOverride?: (sessionId: string) => string;
   /** cwd → 列表缓存（TTL 由 cacheTtlMs 决定）。 */
@@ -751,8 +758,9 @@ export class OpencodeSessionReader implements AgentSessionReader {
       };
     }
 
-    // turnStart 严格小于最后一个采样下标，所以 latest 存在时 turn 至少含一条
-    // 采样：flow 覆盖末条值，只有 contextLength 保留末条。
+    // turnStart 可能落在末条采样之后（新 turn 尚无采样）→ turn 全 0；latest
+    // 仍是上一轮末条采样，contextLength 保留水位。turnStart 小于最后一个采样
+    // 下标时，flow 覆盖末条值，只有 contextLength 保留末条。
     if (latest) {
       latest.inputTokens = turn.input;
       latest.outputTokens = turn.output;

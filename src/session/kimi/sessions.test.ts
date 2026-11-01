@@ -2,8 +2,13 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { KimiSessionReader } from './sessions.js';
-import { detectSchemaVersion, extractWorkDir, checkCwdGuard } from './sessions.js';
+import { expectRunUsageScope } from '../../../tests/lib/usage-scope-contract.js';
+import {
+  KimiSessionReader,
+  detectSchemaVersion,
+  extractWorkDir,
+  checkCwdGuard,
+} from './sessions.js';
 import type { KimiSessionState } from './sessions.js';
 
 let tmpDir: string;
@@ -267,6 +272,29 @@ describe('KimiSessionReader', () => {
       contextLength: 200 + 50 + 20, // 末条使用记录的窗口水位，不求和
       cumulativeInputTokens: 1500, // 会话累计（含 first turn）
       cumulativeOutputTokens: 650,
+    });
+  });
+
+  it('an empty last turn shows flow 0, not the previous turn records', () => {
+    const workDir = makeWorkDir('project');
+    createSession('sess-empty-turn', workDir, {
+      title: 'Empty turn',
+      wireLines: [
+        '{"type":"turn.prompt","input":[{"type":"text","text":"first"}],"origin":{"kind":"user"},"time":1000}',
+        '{"type":"usage.record","model":"kimi-code/k3","usage":{"inputOther":100,"output":50},"time":1001}',
+        '{"type":"usage.record","model":"kimi-code/k3","usage":{"inputOther":20,"output":10},"time":1002}',
+        '{"type":"turn.prompt","input":[{"type":"text","text":"second"}],"origin":{"kind":"user"},"time":2000}',
+      ],
+    });
+
+    const content = new KimiSessionReader(kimiDir).readSessionContent('sess-empty-turn', workDir);
+
+    expectRunUsageScope(content.usage, {
+      flowInput: 0,
+      flowOutput: 0,
+      contextLength: 30,
+      cumulativeInput: 120,
+      cumulativeOutput: 60,
     });
   });
 

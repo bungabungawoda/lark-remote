@@ -634,8 +634,15 @@ export interface AgentRunner extends Runner {
   readonly sessionReader: AgentSessionReader;
   /** Return current status info for /status display. */
   getStatusInfo(): AgentStatusInfo;
-  /** Whether this runner provides live usage data (vs. file-based). */
+  /** flow 字段的权威来源：live 有 input/output 用 live，否则用 jsonl。 */
   getUsageAuthority?(): 'live' | 'jsonl';
+  /**
+   * 该 runner 的 result 事件是否具备 live 语义（pre-init result 处理与
+   * session 写回）。与用量来源分开：ACP live 只有 context，用量来源是
+   * jsonl，但 result 事件仍需按 live 语义处理。
+   * 未实现 = 按 getUsageAuthority() === 'live' 兼容旧行为。
+   */
+  usesLiveResultEvents?(): boolean;
   /**
    * 回传审批决策（codex thread/permissions、ACP elicitation、DSH approval
    * resolve）。未实现的 agent 由协调器按「无人应答」超时收尾。

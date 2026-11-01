@@ -10,6 +10,7 @@ import {
 } from '../../session/claude/sessions.js';
 import { parseSessionJsonl } from '../../session/claude/session-index.js';
 import { encodeClaudeProjectDir } from '../../../tests/lib/session-fixtures.js';
+import { expectRunUsageScope } from '../../../tests/lib/usage-scope-contract.js';
 
 let tmpDir: string;
 
@@ -240,6 +241,68 @@ describe('readSessionContent', () => {
     expect(result.usage?.cumulativeOutputTokens).toBe(100); // 20 + 80
     expect(result.usage?.cumulativeCacheReadTokens).toBe(1300); // 500 + 800
     expect(result.usage?.cumulativeCacheCreationTokens).toBe(50); // 50 + 0
+  });
+
+  it('sums every assistant message of the last real-user turn (tool_result does not split it)', () => {
+    // 回归：一个带工具往返的 turn 有多个 assistant 消息（一次模型请求一条）。
+    // 旧实现取 acc.last，只显示最后一次请求；tool_result 的 user 行不是真人
+    // prompt，不能开启新 turn。
+    const sessionId = writeSession('/tmp/proj', [
+      '{"type":"user","message":{"role":"user","content":[{"type":"text","text":"q1"}]}}',
+      '{"type":"assistant","message":{"id":"m1","role":"assistant","content":[{"type":"text","text":"step 1"}],"usage":{"input_tokens":100,"output_tokens":30}}}',
+      '{"type":"user","message":{"role":"user","content":[{"tool_use_id":"x","type":"tool_result","content":"ok"}]}}',
+      '{"type":"assistant","message":{"id":"m2","role":"assistant","content":[{"type":"text","text":"step 2"}],"usage":{"input_tokens":20,"output_tokens":70}}}',
+    ]);
+    const result = readSessionContent(sessionId, '/tmp/proj', { projectsDir: tmpDir });
+
+    expectRunUsageScope(result.usage, {
+      flowInput: 120,
+      flowOutput: 100,
+      contextLength: 90,
+      cumulativeInput: 120,
+      cumulativeOutput: 100,
+    });
+    expect(result.usage!.totalTokens).toBe(120 + 100);
+  });
+
+  it('sidechain / injected user lines do not split the real-user turn', () => {
+    // sidechain user 是子 agent prompt，isMeta 是注入；二者都不是真人 turn
+    // 边界。当前只修边界，不改变 sidechain usage 的聚合口径（待真实 fixture）。
+    const sessionId = writeSession('/tmp/proj', [
+      '{"type":"user","message":{"role":"user","content":[{"type":"text","text":"q1"}]}}',
+      '{"type":"assistant","message":{"id":"m1","role":"assistant","content":[{"type":"text","text":"step 1"}],"usage":{"input_tokens":100,"output_tokens":30}}}',
+      '{"type":"user","isSidechain":true,"message":{"role":"user","content":[{"type":"text","text":"subagent prompt"}]}}',
+      '{"type":"assistant","message":{"id":"m2","role":"assistant","content":[{"type":"text","text":"step 2"}],"usage":{"input_tokens":20,"output_tokens":70}}}',
+      '{"type":"user","isMeta":true,"message":{"role":"user","content":[{"type":"text","text":"injected rules"}]}}',
+      '{"type":"assistant","message":{"id":"m3","role":"assistant","content":[{"type":"text","text":"step 3"}],"usage":{"input_tokens":5,"output_tokens":10}}}',
+    ]);
+    const result = readSessionContent(sessionId, '/tmp/proj', { projectsDir: tmpDir });
+
+    expectRunUsageScope(result.usage, {
+      flowInput: 125,
+      flowOutput: 110,
+      contextLength: 15,
+      cumulativeInput: 125,
+      cumulativeOutput: 110,
+    });
+  });
+
+  it('falls back to the last assistant message when there is no real user turn', () => {
+    // 旧数据/截断文件可能没有真人 user prompt：无法划分 turn，回退末条采样，
+    // 与 dsh/codex「无 turn 标记退回末条」一致；不能把整份文件当成一轮。
+    const sessionId = writeSession('/tmp/proj', [
+      '{"type":"assistant","message":{"id":"m1","role":"assistant","content":[{"type":"text","text":"old"}],"usage":{"input_tokens":100,"output_tokens":30}}}',
+      '{"type":"assistant","message":{"id":"m2","role":"assistant","content":[{"type":"text","text":"last"}],"usage":{"input_tokens":20,"output_tokens":70}}}',
+    ]);
+    const result = readSessionContent(sessionId, '/tmp/proj', { projectsDir: tmpDir });
+
+    expectRunUsageScope(result.usage, {
+      flowInput: 20,
+      flowOutput: 70,
+      contextLength: 90,
+      cumulativeInput: 120,
+      cumulativeOutput: 100,
+    });
   });
 
   it('merges multi-line assistant usage by per-field max (zero placeholder lines before real usage)', () => {

@@ -329,9 +329,10 @@ describe('KimiAcpRunner', () => {
     return { kimiDir, wirePath };
   }
 
-  it('pins ConnectionBasedRunner contract: cwd lifetime and live usage authority', () => {
-    // 基类 ConnectionBasedRunner 的常量真值（lifetime='workspace' /
-    // getUsageAuthority()='live'）无独立测试文件，用真实 KimiAcpRunner 实例钉住。
+  it('pins ConnectionBasedRunner contract: cwd lifetime + split usage/result semantics', () => {
+    // 基类 ConnectionBasedRunner 的常量真值（lifetime='workspace'）无独立测试
+    // 文件，用真实 KimiAcpRunner 实例钉住。usage 来源与 result 事件语义已拆分：
+    // ACP live 只有 context，flow 走 jsonl；result 仍是 runner 自产的 live 语义。
     const runner = new KimiAcpRunner({
       kind: 'kimi',
       sessionReader: createStubSessionReader(),
@@ -341,7 +342,8 @@ describe('KimiAcpRunner', () => {
     });
 
     expect(runner.lifetime).toBe('workspace');
-    expect(runner.getUsageAuthority()).toBe('live');
+    expect(runner.getUsageAuthority()).toBe('jsonl');
+    expect(runner.usesLiveResultEvents()).toBe(true);
   });
 
   it('runs a full turn with text notifications and success result', async () => {

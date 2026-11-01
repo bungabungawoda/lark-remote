@@ -162,6 +162,8 @@ function isAuthFailure(err: unknown): boolean {
 }
 
 export class DshSessionReader implements AgentSessionReader {
+  /** DSH session/page 没有 compactCount；compact 收尾不应因此重试读取。 */
+  readonly supportsCompactCount = false;
   private readonly hostProvider: () => string | undefined;
   private readonly dshHomeProvider: () => string | undefined;
   private readonly tokenProvider: () => string | undefined;
@@ -403,8 +405,8 @@ export class DshSessionReader implements AgentSessionReader {
         // 在途 turn（turn/start 无 turn/end，run 进行中读历史）的采样优先于
         // 上一轮：旧实现只认已结算的 lastTurnUsage，mid-run 读取会把当前 turn
         // 已消耗的量显示成上一个完整 turn 的数字。
-        const flow: UsageTotals = lastTurnUsage ??
-          turnUsage ?? {
+        const flow: UsageTotals = turnUsage ??
+          lastTurnUsage ?? {
             input,
             output: lastUsage.outputTokens ?? 0,
             cacheRead,
@@ -413,8 +415,9 @@ export class DshSessionReader implements AgentSessionReader {
         sessionUsage = {
           inputTokens: flow.input,
           outputTokens: flow.output,
-          // §9.21 口径：含末轮 output（下一 prompt 全量携带，与 postTokens 水位同语义）。
-          contextLength: input + flow.output + cacheRead + cacheWrite,
+          // §9.21 口径：context 是末次采样的窗口水位（input + 末次 output +
+          // cache），不把整 turn 的 output 求和（前几步 output 已进入后续 input）。
+          contextLength: input + (lastUsage.outputTokens ?? 0) + cacheRead + cacheWrite,
           cacheReadTokens: flow.cacheRead,
           cacheCreationTokens: flow.cacheWrite,
           totalTokens: flow.input + flow.output + flow.cacheRead + flow.cacheWrite,

@@ -18,6 +18,7 @@ import { DshSessionReader } from './sessions.js';
 import { FakeDshServer } from '../../../tests/lib/fake-dsh-server.js';
 import type { DshSessionEvent } from '../../dsh/types.js';
 import { DSH_BROWSER_CREDENTIAL_KEY } from '../../dsh/auth.js';
+import { expectRunUsageScope } from '../../../tests/lib/usage-scope-contract.js';
 
 const CWD = '/home/user/project';
 const OTHER = '/home/user/other';
@@ -265,8 +266,9 @@ describe('DshSessionReader', () => {
       cacheReadTokens: 1900,
       cacheCreationTokens: 0,
       totalTokens: 120 + 100 + 1900,
-      // Context 是末次采样的窗口占用（input + cacheRead + cacheWrite）。
-      contextLength: 20 + 100 + 1000,
+      // Context 是末次采样的窗口占用：末条 input 20 + 末条 output 70 + cacheRead 1000。
+      // 不能加整轮 output 之和（100），前一步的 30 已进入后一步 input。
+      contextLength: 20 + 70 + 1000,
       cumulativeInputTokens: 120,
       cumulativeOutputTokens: 100,
       cumulativeTotalTokens: 120 + 100 + 1900,
@@ -327,6 +329,49 @@ describe('DshSessionReader', () => {
       cumulativeCacheReadTokens: 400,
       cumulativeTotalTokens: 50 + 5 + 7 + (10 + 20 + 3) + 400,
     });
+  });
+
+  it('usage: 在途 turn 优先于上一轮（mid-run 读取不能显示旧 turn）', () => {
+    const server = new FakeDshServer();
+    registerSession(server);
+    server.register('session/page', () => ({
+      ok: true,
+      value: {
+        hasMore: false,
+        records: [
+          { type: 'event', event: turnStart(0) },
+          {
+            type: 'event',
+            event: assistantMsg(SID_A, 'turn 0 step 0', {
+              inputTokens: 100,
+              outputTokens: 40,
+            }),
+          },
+          { type: 'event', event: turnEnd(0) },
+          // 当前 turn 已写入一条 usage，但还没有 turn/end（run 仍在跑）。
+          { type: 'event', event: turnStart(1) },
+          {
+            type: 'event',
+            event: assistantMsg(SID_A, 'turn 1 step 0', {
+              inputTokens: 7,
+              outputTokens: 3,
+            }),
+          },
+        ],
+      },
+    }));
+
+    const reader = makeReader(server);
+    const content = reader.readSessionContent(SID_A, CWD);
+
+    expectRunUsageScope(content.usage, {
+      flowInput: 7,
+      flowOutput: 3,
+      contextLength: 10,
+      cumulativeInput: 107,
+      cumulativeOutput: 43,
+    });
+    expect(content.usage!.totalTokens).toBe(10);
   });
 
   it('isSessionActive reflects the running flag for a cwd-matched session', () => {

@@ -325,6 +325,32 @@ interface ScanResult {
 }
 
 /**
+ * 是否是“真人发起新 turn”的 user 行。
+ *
+ * 只用于 turn 边界，不用于展示标题。排除：tool_result、compact summary、
+ * isMeta（skill/命令注入）、task notification、sidechain（子 agent prompt）。
+ * 不要求有可展示文本——attachment-only 的输入同样是一次真人 turn。
+ */
+function isRealUserPrompt(obj: Record<string, unknown>): boolean {
+  if (obj.type !== 'user' || obj.isCompactSummary === true || obj.isMeta === true) {
+    return false;
+  }
+  if (obj.isSidechain === true) return false;
+  const msg = obj.message as Record<string, unknown> | undefined;
+  if (msg?.role !== 'user' || msg.content === undefined) return false;
+  const content = msg.content;
+  if (
+    Array.isArray(content) &&
+    content.some((block) => (block as Record<string, unknown> | undefined)?.type === 'tool_result')
+  ) {
+    return false;
+  }
+  const text = extractText(content);
+  if (text && isTaskNotificationText(text)) return false;
+  return true;
+}
+
+/**
  * first-pass scan: stream the file once via `scanJsonlLines`
  * (no `string[]` materialized), parse each line exactly once, and collect
  * all metadata needed by readSessionContent (usage, tailOffset, aiTitle,
@@ -345,10 +371,19 @@ function scalarScan(filePath: string): ScanResult {
   // API every line repeats identical usage, so max is a no-op there.
   const usageByMessageId = new Map<
     string,
-    { input: number; output: number; cacheRead: number; cacheCreation: number }
+    {
+      input: number;
+      output: number;
+      cacheRead: number;
+      cacheCreation: number;
+      /** 该 message 属于第几个真人 turn（0 = 还没有真人 prompt）。 */
+      turn: number;
+    }
   >();
   let lastPostTokens = 0;
   let tailOffset = -1;
+  /** 真人 prompt 序号；末个 turn = 当前值。sidechain/注入/工具结果不递增。 */
+  let turnSeq = 0;
 
   let lastAiTitle: string | undefined;
   let lastRecap: string | undefined;
@@ -378,6 +413,7 @@ function scalarScan(filePath: string): ScanResult {
               prev?.cacheCreation ?? 0,
               usage.cache_creation_input_tokens ?? 0,
             ),
+            turn: prev?.turn ?? turnSeq,
           });
         }
       }
@@ -435,18 +471,41 @@ function scalarScan(filePath: string): ScanResult {
         }
       }
     }
+
+    // --- turn boundary for per-run usage ---
+    // 真人 prompt 开启新 turn；注入/工具结果/sidechain 不递增。usage 记录在
+    // 解析到 assistant 行时已经带上当前 turnSeq，末尾只汇总末个 turn。
+    if (isRealUserPrompt(obj)) turnSeq++;
   });
 
   // Feed one best record per message id, in first-appearance order (Map
   // preserves insertion order), so acc.last is the LAST message's full usage
-  // and totals sum each API response exactly once.
+  // and totals sum each API response exactly once. Per-run flow is only the
+  // records belonging to the last real-user turn — a tool-looping turn has
+  // several assistant messages (one per model request), so `last` alone
+  // under-reports it.
+  const turn = { input: 0, output: 0, cacheRead: 0, cacheCreation: 0 };
   for (const record of usageByMessageId.values()) {
     acc.add(record);
+    if (turnSeq > 0 && record.turn === turnSeq) {
+      turn.input += record.input;
+      turn.output += record.output;
+      turn.cacheRead += record.cacheRead;
+      turn.cacheCreation += record.cacheCreation;
+    }
   }
 
   // Build usage result (same logic as old aggregateSessionUsage)
   const t = acc.totals;
   const l = acc.last;
+  // 没有真人 user prompt（旧数据/截断文件）→ 无法划分 turn，回退末条采样，
+  // 与 dsh/codex「无 turn 标记退回末条」一致；不能把整份文件当成一轮。
+  if (turnSeq === 0 && l) {
+    turn.input = l.input;
+    turn.output = l.output;
+    turn.cacheRead = l.cacheRead;
+    turn.cacheCreation = l.cacheCreation;
+  }
   // contextLength = current context-window occupancy. Prefer compact_boundary
   // postTokens (the precise post-compact size); otherwise fall back to the
   // last turn's input + cacheRead + cacheCreation (unified
@@ -463,14 +522,14 @@ function scalarScan(filePath: string): ScanResult {
   // 对齐 codex reader 语义（§9.21：`last_token_usage`=单 turn 增量、
   // `total_token_usage`=session 累计）——否则 jsonl 兜底路径会把 session 累计
   // 当成"本 run"显示，与卡片"本 run ≤ 累计"不变量冲突（累计反而更小）。
-  const lastTotal = l ? l.input + l.output + l.cacheRead + l.cacheCreation : 0;
+  const lastTotal = turn.input + turn.output + turn.cacheRead + turn.cacheCreation;
   const usage: AgentSessionUsage = {
-    inputTokens: l ? l.input : 0,
-    outputTokens: l ? l.output : 0,
+    inputTokens: turn.input,
+    outputTokens: turn.output,
     contextLength,
     compactCount: acc.compactCount,
-    cacheReadTokens: l && l.cacheRead > 0 ? l.cacheRead : undefined,
-    cacheCreationTokens: l && l.cacheCreation > 0 ? l.cacheCreation : undefined,
+    cacheReadTokens: turn.cacheRead > 0 ? turn.cacheRead : undefined,
+    cacheCreationTokens: turn.cacheCreation > 0 ? turn.cacheCreation : undefined,
     totalTokens: lastTotal,
     ...cumulativeUsageFields(t),
   };

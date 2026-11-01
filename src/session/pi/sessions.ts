@@ -234,6 +234,11 @@ interface PiScanResult {
  */
 function piScalarScan(filePath: string): PiScanResult {
   const acc = new UsageAccumulator();
+  // 末个真人 turn 的 flow：user 消息开启新 turn，assistant 用量同时进两个
+  // accumulator。带工具往返的 turn 有多个 assistant 消息（一次模型请求一条），
+  // 只取末条会低报整轮消耗。
+  let turnAcc = new UsageAccumulator();
+  let sawUser = false;
   let tailOffset = -1;
   let lastUserText: string | undefined;
 
@@ -247,19 +252,23 @@ function piScalarScan(filePath: string): PiScanResult {
       // usage aggregation (assistant only)
       if (msg.role === 'assistant' && msg.usage) {
         const u = msg.usage;
-        acc.add({
+        const record = {
           input: u.input ?? 0,
           output: u.output ?? 0,
           cacheRead: u.cacheRead ?? 0,
           cacheCreation: u.cacheWrite ?? 0,
           total: u.totalTokens ?? 0,
-        });
+        };
+        acc.add(record);
+        turnAcc.add(record);
       }
 
       // last user message offset + displayTitle. Record the byte offset
       // where the tail should start: the beginning of the NEXT line after
       // this user message (see tailOffsetAfter).
       if (msg.role === 'user') {
+        sawUser = true;
+        turnAcc = new UsageAccumulator();
         tailOffset = tailOffsetAfter(line, offset);
         const text = extractPiText(msg.content);
         // Compress skill-injection bodies so the "最近输入" label shows what
@@ -274,7 +283,7 @@ function piScalarScan(filePath: string): PiScanResult {
 
   return {
     tailOffset,
-    usage: buildPiUsage(acc),
+    usage: buildPiUsage(acc, turnAcc, sawUser),
     // Whitespace-normalized single-line display title (no length truncation —
     // the consumer truncates). Normalization collapses the skill-injection
     // newlines so the title stays on one line.
@@ -283,27 +292,42 @@ function piScalarScan(filePath: string): PiScanResult {
 }
 
 /**
- * Build the AgentSessionUsage from an accumulator, preserving pi's
- * "last turn" semantics: inputTokens/outputTokens use the LAST turn's
- * values, contextLength = last turn's context-window occupancy
- * (input + cacheRead + cacheCreation, excludes output —unified
- * contract across all five readers), cumulative = session-wide sum.
+ * Build the AgentSessionUsage: flow (input/output/cache/total) is the sum of
+ * every assistant message in the LAST real-user turn; contextLength is the
+ * last assistant message's window occupancy; cumulative is the whole session.
+ * With no real-user turn (legacy/truncated file), flow falls back to the last
+ * assistant sample, matching dsh/codex's no-turn-marker fallback.
  * Returns undefined when no usage data was observed.
  */
-function buildPiUsage(acc: UsageAccumulator): AgentSessionUsage | undefined {
+function buildPiUsage(
+  acc: UsageAccumulator,
+  turnAcc: UsageAccumulator,
+  sawUser: boolean,
+): AgentSessionUsage | undefined {
   const t = acc.totals;
-  if (t.input + t.output === 0) {
+  if (t.input + t.output + t.cacheRead + t.cacheCreation === 0) {
     return undefined;
   }
   const l = acc.last!;
+  // 没有真人 user prompt（旧数据/截断文件）→ 无法划分 turn，回退末条采样，
+  // 与 dsh/codex「无 turn 标记退回末条」一致；不能把整份文件当成一轮。
+  const f = sawUser
+    ? turnAcc.totals
+    : {
+        input: l.input,
+        output: l.output,
+        cacheRead: l.cacheRead,
+        cacheCreation: l.cacheCreation,
+        total: l.total,
+      };
   return {
-    inputTokens: l.input,
-    outputTokens: l.output,
+    inputTokens: f.input,
+    outputTokens: f.output,
     contextLength: contextWindowOccupancy(l),
     compactCount: acc.compactCount > 0 ? acc.compactCount : undefined,
-    cacheReadTokens: l.cacheRead > 0 ? l.cacheRead : 0,
-    cacheCreationTokens: l.cacheCreation > 0 ? l.cacheCreation : 0,
-    totalTokens: l.total > 0 ? l.total : undefined,
+    cacheReadTokens: f.cacheRead > 0 ? f.cacheRead : 0,
+    cacheCreationTokens: f.cacheCreation > 0 ? f.cacheCreation : 0,
+    totalTokens: f.total > 0 ? f.total : undefined,
     // Cumulative (session-wide): sum of ALL runs in the jsonl file.
     ...cumulativeUsageFields(t),
   };
