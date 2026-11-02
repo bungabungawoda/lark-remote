@@ -8,7 +8,6 @@ import {
 } from './run-state.js';
 import { renderRunCard, statusLine } from './run-renderer.js';
 import { renderRunCardDetailed, FINAL_ANSWER_OVERFLOW_MARKER } from './run-renderer.js';
-import { splitFinalAnswer } from './final-answer-overflow.js';
 import { countCardElements, MAX_CARD_ELEMENTS } from './card-budget.js';
 import { displayWidth, HEADER_DISPLAY_MAX } from './tool-render.js';
 import { expectNoV1ActionContainer } from '../../tests/lib/card-view.js';
@@ -66,15 +65,6 @@ describe('renderRunCard', () => {
     // 最新表格保留，最旧的一张被删并在原位留省略提示（卡内可见，非静默）。
     expect(json).toContain('表 6');
     expect(json).toContain('前 1 个表格已省略');
-  });
-
-  it('splits overflow answers without losing a single character', () => {
-    const answer = '开头\n\n' + '段落内容。\n'.repeat(3_000) + '结尾';
-    const chunks = splitFinalAnswer(answer, 1_000);
-    expect(chunks.length).toBeGreaterThan(1);
-    expect(chunks.join('')).toBe(answer);
-    expect(chunks.every((chunk) => Buffer.byteLength(chunk, 'utf8') <= 1_000)).toBe(true);
-    expect(splitFinalAnswer('😀', 1)).toEqual(['😀']);
   });
 
   it('preserves the full final answer before cutting progress components', () => {

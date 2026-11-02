@@ -1177,7 +1177,7 @@ describe('Bridge.forwardToClaude', () => {
     expect(cardJson).toContain('success');
   });
 
-  it('delivers an overflow final answer in full without silently truncating it', async () => {
+  it('delivers an overflow final answer as a Markdown file, never as plain text', async () => {
     const finalAnswer = 'HEAD\n\n' + '完整回答内容。\n'.repeat(5_000) + 'TAIL';
     const events: AgentEvent[] = [
       {
@@ -1193,19 +1193,62 @@ describe('Bridge.forwardToClaude', () => {
     const { bridge, sessionStore, connector } = makeBridge({
       runner: createStubRunner({ mode: 'streaming', events }),
     });
+    // 桥发完就删临时文件，所以内容必须在 sendFile 那一刻读走。
+    const uploaded: Array<{ path: string; content: string }> = [];
+    const stubSendFile = connector.sendFile.bind(connector);
+    connector.sendFile = async (chatId: string, filePath: string) => {
+      uploaded.push({ path: filePath, content: fs.readFileSync(filePath, 'utf8') });
+      return stubSendFile(chatId, filePath);
+    };
     sessionStore.setCwd(ctx.userId, tmpDir);
 
     await bridge.forwardToClaude('hello', ctx);
 
-    const textMessages = connector._sent
-      .filter((entry) => typeof (entry.input as { text?: unknown }).text === 'string')
-      .map((entry) => (entry.input as { text: string }).text);
-    expect(textMessages.length).toBeGreaterThan(1);
-    const reconstructed = textMessages
-      .map((text) => text.replace(/^完整回答（\d+\/\d+）\n\n/, ''))
-      .join('');
-    expect(reconstructed).toBe(finalAnswer);
+    // 回答只走文件通道：一条文件消息，零条纯文本。
+    expect(uploaded).toHaveLength(1);
+    expect(uploaded[0].path.endsWith('.md')).toBe(true);
+    expect(uploaded[0].content).toBe(finalAnswer);
+    const textMessages = connector._sent.filter(
+      (entry) => typeof (entry.input as { text?: unknown }).text === 'string',
+    );
+    expect(textMessages).toHaveLength(0);
+    // 文件发出后清理临时文件，不留垃圾。
+    expect(fs.existsSync(uploaded[0].path)).toBe(false);
     expect(JSON.stringify(connector._cards.at(-1))).toContain(FINAL_ANSWER_OVERFLOW_MARKER);
+  });
+
+  it('reports a failed final-answer file send with a card, not plain text', async () => {
+    const finalAnswer = 'HEAD\n\n' + '完整回答内容。\n'.repeat(5_000) + 'TAIL';
+    const events: AgentEvent[] = [
+      {
+        type: 'system',
+        subtype: 'init',
+        session_id: 's-final-file-fail',
+        cwd: tmpDir,
+        model: 'opus',
+      },
+      { type: 'final_answer', text: finalAnswer, itemId: 'final-1', complete: true },
+      { type: 'result', subtype: 'success', session_id: 's-final-file-fail' },
+    ];
+    const { bridge, sessionStore, connector } = makeBridge({
+      runner: createStubRunner({ mode: 'streaming', events }),
+    });
+    connector.sendFile = async () => {
+      throw new Error('upload rejected');
+    };
+    sessionStore.setCwd(ctx.userId, tmpDir);
+
+    await bridge.forwardToClaude('hello', ctx);
+
+    const textMessages = connector._sent.filter(
+      (entry) => typeof (entry.input as { text?: unknown }).text === 'string',
+    );
+    expect(textMessages).toHaveLength(0);
+    const notice = connector._sent.find((entry) => {
+      const card = (entry.input as { card?: object }).card;
+      return card !== undefined && JSON.stringify(card).includes('完整回答文件发送失败');
+    });
+    expect(notice).toBeDefined();
   });
 
   it('does not duplicate a final answer that fits the run card, even with many tables', async () => {

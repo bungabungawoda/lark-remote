@@ -1127,8 +1127,8 @@ function renderLegacyRunCard(state: RunState, options: RunCardRenderOptions): ob
   return truncatedSkeleton;
 }
 
-/** Exact-match marker used in the card before the answer is sent separately. */
-export const FINAL_ANSWER_OVERFLOW_MARKER = '_最终回答较长，完整内容已随后发送_';
+/** Exact-match marker: the body is delivered as an attached Markdown file. */
+export const FINAL_ANSWER_OVERFLOW_MARKER = '_最终回答较长，完整内容见随附的 Markdown 文件_';
 
 /**
  * Build a card around the authoritative final answer.
@@ -1136,12 +1136,13 @@ export const FINAL_ANSWER_OVERFLOW_MARKER = '_最终回答较长，完整内容�
  * The answer is measured first with the fixed controls. Progress groups are
  * added newest-first only while the whole card still fits. If the answer
  * cannot fit even without progress/summary, the card carries an explicit
- * marker and the bridge sends the complete answer separately.
+ * marker and the bridge sends the complete answer as a Markdown file
+ * attachment (never as plain chat text).
  *
  * 「卡片装不下正文」与「表格数超上限」是两件事，只有前者才走补发通道：
  * 飞书单卡最多 5 张 markdown 表（11310），多出来的最旧表格会被删掉并在原位
- * 留 `_💡 前 N 个表格已省略_`——正文仍在卡片里，再补发一份「完整回答」纯文本
- * 只是把用户已经看到的整篇回答重复一遍（2026-11-02 实机反馈）。
+ * 留 `_💡 前 N 个表格已省略_`——正文仍在卡片里，再补发一遍就是把用户已经看到
+ * 的整篇回答重复（2026-11-02 实机反馈）。
  */
 function buildFinalAnswerPriorityCard(
   state: RunState,
