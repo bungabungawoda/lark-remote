@@ -55,6 +55,14 @@ export interface DshSessionSummary {
   running: boolean;
   blank: boolean;
   cwd?: string;
+  /**
+   * `'subagent'` for a session derived by delegation; absent for top-level
+   * sessions. Present since DSH 0.2.x, which lists subagent sessions next to
+   * their parent (same cwd, bare-uuid id, `updatedAt` = delegation end).
+   */
+  origin?: string;
+  /** Parent session of a subagent (absent on top-level sessions). */
+  parentSessionId?: string;
   /** Legacy top-level preset (pre-0.2 DSH). */
   agentPreset?: string;
   /** 0.2.x exposes preset/title through projections. */

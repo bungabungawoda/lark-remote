@@ -7,8 +7,8 @@
  * — a synchronous HTTP round-trip to the local DSH host. This keeps the
  * router/bridge interface contract intact without touching any upstream logic.
  *
- * listSessions: session/list → filter by cwd → sort by updatedAt desc → local
- *   pagination (DSH v1 has no cursor pagination).
+ * listSessions: session/list → 排除 subagent 派生会话 → filter by cwd → sort by
+ *   updatedAt desc → local pagination (DSH v1 has no cursor pagination).
  * readSessionContent: session/projections → session/page → map SessionEvents +
  *   session-wide usage accumulation (assistant/message.usage)；本 run 的 flow
  *   字段 = 末个 turn（turn/start–turn/end）内所有采样之和，与 codex 同口径。
@@ -280,6 +280,7 @@ export class DshSessionReader implements AgentSessionReader {
       const value = this.unary('session/list', {}) as DshSessionListValue;
       const items = value.items ?? [];
       const filtered = items
+        .filter((i) => !isSubagentSession(i))
         .filter((i) => i.cwd !== undefined && samePath(i.cwd, cwd))
         .map((i) => ({
           sessionId: String(i.sessionId),
@@ -466,11 +467,20 @@ export class DshSessionReader implements AgentSessionReader {
    * Find the session row in `session/list` that matches BOTH id and cwd.
    * Returns undefined when the id belongs to another workspace (or is unknown) —
    * every caller treats that as "not usable here".
+   *
+   * subagent 派生会话也排除：它的 id + cwd 都能命中，但只能按
+   * `{kind:'subagent', parentSessionId, childSessionId}` 寻址，按顶层会话读会被
+   * 服务端拒绝（session/agent-busy）。在这里统一 fail-closed，比让每个调用方
+   * 各自吃一次拒绝异常更省事（那异常会被 catch 成空事件列表 = 一张空卡）。
    */
   private resolveSession(sessionId: string, cwd: string): DshSessionSummary | undefined {
     const value = this.unary('session/list', {}) as DshSessionListValue;
     return (value.items ?? []).find(
-      (i) => String(i.sessionId) === sessionId && i.cwd !== undefined && samePath(i.cwd, cwd),
+      (i) =>
+        !isSubagentSession(i) &&
+        String(i.sessionId) === sessionId &&
+        i.cwd !== undefined &&
+        samePath(i.cwd, cwd),
     );
   }
 
@@ -482,6 +492,19 @@ export class DshSessionReader implements AgentSessionReader {
     if (typeof projection?.asOfSeq === 'number') return projection.asOfSeq;
     return typeof known.projections?.asOfSeq === 'number' ? known.projections.asOfSeq : -1;
   }
+}
+
+/**
+ * subagent 派生会话判定（DSH 0.2.x 起与顶层会话并列在 `session/list` 里）。
+ *
+ * 只认 `origin === 'subagent'`，别用更"顺手"的两个信号：
+ * - **id 前缀**：顶层是 `session-<uuid>`、subagent 是裸 `<uuid>`，但 v0 老会话
+ *   也是裸 uuid 且能正常读（`delegationDepth: 0`、无 `origin`）；
+ * - **`parentSessionId` 非空**：fork 与 `session-btw-*` 旁支同样带 parent，却是
+ *   可恢复的顶层会话。
+ */
+function isSubagentSession(item: { origin?: string }): boolean {
+  return item.origin === 'subagent';
 }
 
 /** Preset moved from the summary top level to projections in DSH 0.2.x. */

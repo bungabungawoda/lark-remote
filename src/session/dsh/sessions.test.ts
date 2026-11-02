@@ -118,6 +118,71 @@ describe('DshSessionReader', () => {
     expect(reader.getNewestSession('/nonexistent')).toBeNull();
   });
 
+  it('listSessions 排除 subagent 派生会话（不可作为本 workspace 的可恢复会话）', () => {
+    // DSH 0.2.x 把 subagent 会话也写进 session/list：同 cwd、裸 UUID id、
+    // updatedAt = 委托结束时刻，于是它常常比父会话还新。它只能用
+    // {kind:'subagent', parentSessionId, childSessionId} 寻址——按普通会话读
+    // 会被服务端拒绝（session/agent-busy），自动恢复出来就是一张空卡，还会把
+    // 当前 sessionId 绑到一个续跑不了的会话上。
+    const server = new FakeDshServer();
+    server.register('session/list', () => ({
+      ok: true,
+      value: {
+        items: [
+          { sessionId: SID_A, updatedAt: 1000, running: false, blank: false, cwd: CWD },
+          {
+            sessionId: SID_B,
+            updatedAt: 9000,
+            running: false,
+            blank: false,
+            cwd: CWD,
+            origin: 'subagent',
+            parentSessionId: SID_A,
+          },
+        ],
+      },
+    }));
+
+    const reader = makeReader(server);
+    const all = reader.listSessions(CWD);
+    expect(all.total).toBe(1);
+    expect(all.sessions.map((s) => s.sessionId)).toEqual([SID_A]);
+    // 自动恢复取的正是 getNewestSession：subagent 更新也不得中选。
+    expect(reader.getNewestSession(CWD)?.sessionId).toBe(SID_A);
+  });
+
+  it('subagent 会话 fail-closed：不读历史、不报活动（即便 running）', () => {
+    const server = new FakeDshServer();
+    let pageCalls = 0;
+    server.register('session/list', () => ({
+      ok: true,
+      value: {
+        items: [
+          {
+            sessionId: SID_B,
+            updatedAt: 9000,
+            running: true,
+            blank: false,
+            cwd: CWD,
+            origin: 'subagent',
+            parentSessionId: SID_A,
+          },
+        ],
+      },
+    }));
+    server.register('session/page', () => {
+      pageCalls += 1;
+      return { ok: true, value: { records: [], hasMore: false } };
+    });
+
+    const reader = makeReader(server);
+    expect(reader.readSessionContent(SID_B, CWD)).toEqual({ events: [] });
+    // 不该把 subagent 当普通会话去发 session/page：服务端必然拒绝，
+    // 拒绝后异常会被 catch 成空事件列表，又是一张空卡。
+    expect(pageCalls).toBe(0);
+    expect(reader.isSessionActive(SID_B, CWD)).toBe(false);
+  });
+
   it('readSessionContent maps history events and accumulates usage', () => {
     const server = new FakeDshServer();
     registerSession(server);
