@@ -1,7 +1,5 @@
 /**
  * Run 卡审批区契约：位置（内容之后、body 最底部）与窄屏纵向堆叠。
- *
- * 合并自 approval-area-order / approval-buttons-vertical。
  */
 import { describe, expect, it } from 'vitest';
 import { createInitialRunState, reduceRunState } from '../../../src/card/run-state.js';

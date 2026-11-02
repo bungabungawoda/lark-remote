@@ -2,12 +2,12 @@
  * posix 终止器。
  *
  * 语义：SIGTERM 打负 PID 进程组 → 等 graceMs → SIGKILL；immediate 则两个信号
- * 连发。相对原来的 `process-stopper` 类多两样东西：
+ * 连发。相对最初的进程终止器类多两样东西：
  *   - 返回 {@link TerminateResult} 让终止途经可观测（与 win32 同构）；
  *   - `cleanupOnExit`（Terminator 接口要求的进程级退出清理）。
  *
- * 原 `ProcessStopper` 兼容壳与 `runner/common/process-stopper.ts` 已随调用点
- * 迁移完成（transport / spawning-runner / kimi acp 三个模块）删除。
+ * 早期另有一个 ProcessStopper 兼容壳，已随 transport / spawning-runner /
+ * kimi acp 三个调用点迁完后删除。
  */
 import type { ChildProcess } from 'node:child_process';
 import { getLogger } from '../logger/index.js';

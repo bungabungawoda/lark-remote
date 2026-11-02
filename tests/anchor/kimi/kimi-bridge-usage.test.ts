@@ -2,8 +2,6 @@
  * kimi 终态卡片 usage 链路：真实 KimiSessionReader → 真实 registry → 真实
  * Bridge → 卡片渲染。覆盖「有 usage.record 时展示真实聚合」与「一条都没有时
  * 不伪造全零 token 块」。
- *
- * 合并自 kimi-usage-e2e-card / kimi-usage-no-record-no-fake-zero。
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs';

@@ -1,11 +1,6 @@
 /**
  * codex session 列表：offset/limit 边界、全局最新排序、同 mtime 稳定序、
  * subagent 排除（列表 + 活跃判定）。
- *
- * 合并自 codex-reader-offset-boundary / codex-reader-negative-offset /
- * codex-getnewest-session / codex-rollout-list-order /
- * codex-same-mtime-stable-order / codex-list-rollouts-excludes-subagent /
- * codex-session-active-excludes-subagent。
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs';

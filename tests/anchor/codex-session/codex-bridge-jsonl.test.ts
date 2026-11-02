@@ -1,8 +1,6 @@
 /**
  * Bridge codex done 卡 usage 口径：live 优先（jsonl per-turn 不覆盖 live），
  * jsonl 无 usage 时回退 live。
- *
- * 合并自 codex-bridge-jsonl-flow-priority / codex-bridge-jsonl-missing-fallback-live。
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs';

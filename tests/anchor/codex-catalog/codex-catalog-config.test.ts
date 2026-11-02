@@ -1,11 +1,6 @@
 /**
  * codex catalog 配置层契约：catalog 模式判定、模型/provider 列表来源、
  * 双命令失败回退、缓存新鲜度、相对路径、默认/自定义推理档位。
- *
- * 合并自 codex-catalog-fixes / empty-effort-filter / minimal-effort /
- * reasoning-effort / provider / both-commands-fail / cache-freshness /
- * relative-path / active-catalog-default-effort / active-catalog-empty-providers /
- * active-catalog-failure-fallback / fallback-align-codex。
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';

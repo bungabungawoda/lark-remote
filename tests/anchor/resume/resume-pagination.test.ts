@@ -2,9 +2,7 @@
  * `/resume` 列表分页：默认页大小、N 覆盖、offset 数值化/越界/负数、
  * 原地翻页与分页栏边界。
  *
- * 合并自 resume-pagination / resume-page-offset-normalize / resume-pagination-bar /
- * resume-page-turn / resume-pagination-boundary / resume-page-boundary 六个探针，
- * 共用 buildResumeHarness（真实 ClaudeSessionReader + 25 个 fixture session）。
+ * 共用 `buildResumeHarness`（真实 ClaudeSessionReader + 25 个 fixture session）。
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';

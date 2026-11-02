@@ -1,9 +1,6 @@
 /**
  * RunCardSession 合批/flush 契约：错误不产生 unhandled rejection、finish 立即
  * flush 且等 in-flight、残留窗口不丢事件、push 的 await 语义。
- *
- * 合并自 run-card-coalesced-flush-error / run-card-finish-flush /
- * run-card-inflight-push / run-card-push-await-semantics。
  */
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import type { CardStreamController } from '@larksuite/channel';

@@ -1,5 +1,5 @@
 /**
- * 审批过期后 run card 的 reducer 语义（合并自 card-render + reducer-mismatch）。
+ * 审批过期后 run card 的 reducer 语义。
  *
  * ① 过期事件（requestId 匹配）→ approval.expired=true，run-renderer 据此渲染
  *    「⏰ 审批已过期」并隐藏按钮。
