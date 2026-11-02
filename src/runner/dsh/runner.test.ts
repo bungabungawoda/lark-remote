@@ -325,6 +325,41 @@ describe('DshTranslator', () => {
     expect(events[0]).toMatchObject({ type: 'result', subtype: 'success', session_id: SID });
   });
 
+  it('carries the durable assistant text on the result as finalAnswerText', () => {
+    // live chunk 是逐 delta 拼接、会被状态层 12000 字符窗口截断；durable
+    // assistant/message 一次到齐全文。收 turn 时必须把它挂到 result 上，否则
+    // 长回答的头部在卡片里永久丢失（2026-11-01 缺陷）。
+    const full = 'ANSWER-HEAD:' + 'x'.repeat(20_000) + ':ANSWER-TAIL';
+    const t = new DshTranslator();
+    const message: DshSessionEvent = {
+      type: 'assistant/message',
+      seq: 1,
+      time: 1_700_000_000_000,
+      data: {
+        turn: 0,
+        step: 0,
+        message: {
+          role: 'assistant',
+          content: [
+            { type: 'reasoning', text: 'internal' },
+            { type: 'text', text: full },
+          ],
+        },
+        usage: { inputTokens: 10, outputTokens: 20 },
+      },
+    };
+    expect(t.eventToAgentEvents(message, SID)).toEqual([]);
+
+    const events = t.eventToAgentEvents(turnEnd('completed', 2), SID);
+    expect(events[0]).toMatchObject({ type: 'result', finalAnswerText: full });
+  });
+
+  it('omits finalAnswerText when the turn produced no assistant text', () => {
+    const t = new DshTranslator();
+    const events = t.eventToAgentEvents(turnEnd('completed', 1), SID);
+    expect((events[0] as { finalAnswerText?: string }).finalAnswerText).toBeUndefined();
+  });
+
   it('maps turn/end aborted and interrupted → interrupted result', () => {
     for (const reason of ['aborted', 'interrupted', 'forked']) {
       const t = new DshTranslator();

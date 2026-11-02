@@ -175,10 +175,26 @@ Codex app-server 直接消费 `agentMessage.phase = "final_answer"`。没有协�
 agent 在 `result` 或终态收尾时把最后一条非空 assistant text 提升为最终回答，
 因此 Claude、opencode、Kimi、Pi 和 DSH 共用同一套保护。
 
+最终回答的**全文**有两道保护：
+
+1. 状态层：**只有最新一条 text 块**免于 `MAX_TEXT_CHARS`（12000 字符）窗口。
+   它被更晚的正文顶替之后才退回窗口（`capStaleTextBlocks`，截断留
+   `…（前 N 字符已省略）` 标记）。存储因此只多保留「当前这一段」，其余进度块
+   照旧有界。所有 agent 的最终回答都落在「最新正文」上，所以这一条对所有 agent
+   生效。
+2. 协议层：runner 手里有完整正文时随 `result` 携带
+   （`ResultEvent.finalAnswerText`）。DSH 的 durable `assistant/message` 一次
+   到齐整段正文，translator 在 `turn/end` 时交给状态层；`promoteFinalAnswer`
+   优先用全文，副本只作兜底。这一条不依赖流式 delta 拼接，重连丢帧也完整。
+
+运行中（running / finalizing）的卡片仍是进度视图：正文按渲染预算（`TEXT_BYTES`）
+窗口展示，终态才换成完整 `finalAnswer`。
+
 状态层仍对普通进度内容限制内存增长，渲染层再按 UTF-8 字节截断：
 
 - reasoning 保留有限窗口；
-- 普通 text 保留最新窗口；`finalAnswer` 不受该窗口和 `MAX_BLOCKS` 淘汰；
+- 普通 text 只保留最新一段的全文，更早的退回窗口；`finalAnswer` 不受该窗口和
+  `MAX_BLOCKS` 淘汰；
 - tool input/output 截断；
 - block 总数有上限；
 - 工具块总数有上限（`MAX_BLOCKS`）；每个工具是原生折叠面板（默认一行标题），正文随卡下发并按工具数量截断；
