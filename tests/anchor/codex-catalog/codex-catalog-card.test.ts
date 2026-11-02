@@ -1,10 +1,6 @@
 /**
  * codex config 卡片的 catalog 渲染契约：推理强度/模型/provider 下拉来源、
  * 空档位模型切换、中位档位重置、保存清空档位、自定义模型输入。
- *
- * 合并自 codex-active-catalog-card-effort / codex-catalog-empty-effort-fixes /
- * codex-catalog-middle-vs-default / codex-catalog-save-clears-effort /
- * codex-custom-model-input。
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';

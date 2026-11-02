@@ -1,10 +1,6 @@
 /**
  * codex/claude session 内容读取：主线程优先、多主文件取最新、maxEvents、
  * 真实快照 token 口径、claude tail-only 读取。
- *
- * 合并自 codex-main-thread-session / codex-multi-main-thread-newest /
- * codex-session-reader-max-events / codex-real-session-snapshot /
- * claude-read-session-content-tail。
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs';

@@ -1,8 +1,7 @@
 /**
  * `/resume` 列表内容契约：预取上限、占位符 summary 不渲染、单会话路径不受分页影响。
  *
- * 合并自 resume-prefetch-limit / resume-placeholder-summary /
- * resume-single-session-unaffected，共用 buildResumeHarness。
+ * 共用 `buildResumeHarness`。
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs';

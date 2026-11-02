@@ -2,12 +2,6 @@
  * KimiSessionReader 契约：默认 limit、损坏 state.json 降级、工具事件展示、
  * usage 聚合（session 级 / 残缺行 / maxEvents 无关 / subagent）、
  * isSessionActive 的 tail-only 读取与 step.end 判定。
- *
- * 合并自 kimi-default-limit / kimi-reader-corrupt-state-json /
- * kimi-session-tool-events / kimi-session-usage-aggregation /
- * kimi-session-usage-malformed-record / kimi-session-usage-maxevents /
- * kimi-session-usage-subagent-aggregation / kimi-session-active-tail /
- * kimi-session-active-tail-ordering。
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';

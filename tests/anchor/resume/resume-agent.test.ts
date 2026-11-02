@@ -2,8 +2,7 @@
  * `/resume` 的 agent 维度：列表参数指定 agent、cmdResume 覆盖 agentKind、
  * defaultAgent 切换后使用新 reader、resume.use 恢复非默认 agent。
  *
- * 合并自 resume-agent-param / resume-cmdresume-agentkind-params /
- * resume-default-agent-switch / resume-switch-default-agent，复用 buildResumeRouter。
+ * 全部复用 `buildResumeRouter`。
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';

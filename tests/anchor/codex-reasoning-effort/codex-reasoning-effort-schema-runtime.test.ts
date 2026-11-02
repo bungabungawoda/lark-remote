@@ -1,7 +1,5 @@
 /**
  * CodexConfigSchema reasoningEffort 校验 + Bridge 运行时透传。
- *
- * 合并自 codex-reasoning-effort-schema / codex-reasoning-effort-runtime。
  */
 import { describe, it, expect, beforeEach } from 'vitest';
 import { Bridge } from '../../../src/bridge/index.js';

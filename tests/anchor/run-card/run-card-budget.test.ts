@@ -1,8 +1,6 @@
 /**
  * renderRunCard ≤28KB 预算不变量：病态转义输入、估算阈值附近行为、
  * 交错顺序下的降级保留契约。
- *
- * 合并自 run-card-budget-invariant-adversarial / run-card-estimate-threshold。
  */
 import { describe, expect, it } from 'vitest';
 import { renderRunCard } from '../../../src/card/run-renderer.js';
