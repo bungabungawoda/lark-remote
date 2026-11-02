@@ -198,6 +198,14 @@ shows `_最终回答较长，完整内容已随后发送_`. The bridge splits th
 answer into plain-text messages at UTF-8 byte and line boundaries. Concatenating
 those messages must reproduce the source exactly; silent truncation is not allowed.
 
+Exceeding the table limit does **not** count as "does not fit": a Feishu card
+holds at most 5 tables (11310), so the oldest extra tables are dropped with an
+in-place `_💡 前 N 个表格已省略_` hint while the answer body stays in the card.
+That case must not use the spill channel — the card already shows the answer, so
+an extra "full answer" text message makes the user read the same answer twice
+(field report 2026-11-02). The spill is only for the case where the marker
+replaces the body.
+
 ## 7. Concurrency and Stop Control
 
 Normal messages and normal cardActions continue entering the `Bridge.enqueue` Promise chain, ensuring at most one Claude run at a time.
