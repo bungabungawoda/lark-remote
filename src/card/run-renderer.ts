@@ -1137,6 +1137,11 @@ export const FINAL_ANSWER_OVERFLOW_MARKER = '_最终回答较长，完整内容�
  * added newest-first only while the whole card still fits. If the answer
  * cannot fit even without progress/summary, the card carries an explicit
  * marker and the bridge sends the complete answer separately.
+ *
+ * 「卡片装不下正文」与「表格数超上限」是两件事，只有前者才走补发通道：
+ * 飞书单卡最多 5 张 markdown 表（11310），多出来的最旧表格会被删掉并在原位
+ * 留 `_💡 前 N 个表格已省略_`——正文仍在卡片里，再补发一份「完整回答」纯文本
+ * 只是把用户已经看到的整篇回答重复一遍（2026-11-02 实机反馈）。
  */
 function buildFinalAnswerPriorityCard(
   state: RunState,
@@ -1146,7 +1151,6 @@ function buildFinalAnswerPriorityCard(
   const groups = groupBlocks(state.blocks);
   const prepared = prepareGroupContent(groups);
   const safeAnswer = truncateMarkdownTables(finalAnswer.content);
-  const requiresOverflow = safeAnswer !== finalAnswer.content;
   const ts = formatTimestamp(finalAnswer.timestamp);
   const answerElements = renderTextBlock(safeAnswer, ts, state.terminal !== 'running');
   const fixedStart = [statusRow(state), ...omittedBlocksHint(state)];
@@ -1162,7 +1166,6 @@ function buildFinalAnswerPriorityCard(
     return assembleRunCard(state, options, [
       ...fixedStart,
       ...progress,
-      ...(requiresOverflow ? [markdownDiv(FINAL_ANSWER_OVERFLOW_MARKER)] : []),
       ...answerElements,
       ...(includeSummary ? summary : []),
       ...controls,
@@ -1176,22 +1179,16 @@ function buildFinalAnswerPriorityCard(
       if (!withinRunCardBudget(candidate)) break;
       best = candidate;
     }
-    return {
-      card: best,
-      finalAnswerStatus: requiresOverflow ? 'overflow' : 'full',
-      ...(requiresOverflow ? { finalAnswerText: finalAnswer.content } : {}),
-    };
+    // 正文已经在卡里（表格超限只是少渲染最旧的几张，原位有省略提示），
+    // 不再走补发通道。
+    return { card: best, finalAnswerStatus: 'full' };
   }
 
   // The answer outranks the usage summary. Keep the answer and controls first,
   // then retry without the summary before declaring a physical overflow.
   const withoutSummary = buildWithProgress(groups.length, false);
   if (withinRunCardBudget(withoutSummary)) {
-    return {
-      card: withoutSummary,
-      finalAnswerStatus: requiresOverflow ? 'overflow' : 'full',
-      ...(requiresOverflow ? { finalAnswerText: finalAnswer.content } : {}),
-    };
+    return { card: withoutSummary, finalAnswerStatus: 'full' };
   }
 
   const overflowCard = assembleRunCard(state, options, [

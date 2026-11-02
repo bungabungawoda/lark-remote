@@ -1208,6 +1208,40 @@ describe('Bridge.forwardToClaude', () => {
     expect(JSON.stringify(connector._cards.at(-1))).toContain(FINAL_ANSWER_OVERFLOW_MARKER);
   });
 
+  it('does not duplicate a final answer that fits the run card, even with many tables', async () => {
+    // 回归（2026-11-02 实机）：卡片已经渲染了正文，桥却又补发「完整回答」
+    // 纯文本 —— 同一篇回答用户看到两遍。触发条件只是回答含 6 张表（> 飞书
+    // 单卡 5 张上限），与卡片体积无关。
+    const table = (n: number): string =>
+      [`**表 ${n}**`, '| 列 A | 列 B |', '|---|---|', `| a${n} | b${n} |`].join('\n');
+    const finalAnswer = Array.from({ length: 6 }, (_, i) => table(i + 1)).join('\n\n');
+    const events: AgentEvent[] = [
+      {
+        type: 'system',
+        subtype: 'init',
+        session_id: 's-final-tables',
+        cwd: tmpDir,
+        model: 'opus',
+      },
+      { type: 'final_answer', text: finalAnswer, itemId: 'final-1', complete: true },
+      { type: 'result', subtype: 'success', session_id: 's-final-tables' },
+    ];
+    const { bridge, sessionStore, connector } = makeBridge({
+      runner: createStubRunner({ mode: 'streaming', events }),
+    });
+    sessionStore.setCwd(ctx.userId, tmpDir);
+
+    await bridge.forwardToClaude('hello', ctx);
+
+    const textMessages = connector._sent.filter(
+      (entry) => typeof (entry.input as { text?: unknown }).text === 'string',
+    );
+    expect(textMessages).toHaveLength(0);
+    const cardJson = JSON.stringify(connector._cards.at(-1));
+    expect(cardJson).toContain('表 6');
+    expect(cardJson).not.toContain(FINAL_ANSWER_OVERFLOW_MARKER);
+  });
+
   it('syncs session and renders assistant output plus result in one card', async () => {
     const events: AgentEvent[] = [
       { type: 'system', subtype: 'init', session_id: 's1', cwd: tmpDir, model: 'opus' },

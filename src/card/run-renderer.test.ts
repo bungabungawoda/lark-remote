@@ -37,6 +37,37 @@ describe('renderRunCard', () => {
     expect(Buffer.byteLength(JSON.stringify(outcome.card), 'utf8')).toBeLessThanOrEqual(28_000);
   });
 
+  it('keeps a table-truncated final answer inside the card (no duplicate text spill)', () => {
+    // 回归（2026-11-02 实机）：回答含 6 张表 > 飞书单卡 5 张上限时，渲染器曾把
+    // 「表格被删」当成「卡片装不下」，卡片照样渲染了正文，桥却再补发一份
+    // 「完整回答」纯文本——用户看到整篇回答重复两遍。
+    const table = (n: number): string =>
+      [`**表 ${n}**`, '| 列 A | 列 B |', '|---|---|', `| a${n} | b${n} |`].join('\n');
+    const finalAnswer = Array.from({ length: 6 }, (_, i) => table(i + 1)).join('\n\n');
+    const state = {
+      runId: 'run-final-tables',
+      terminal: 'done' as const,
+      footer: null,
+      sessionId: 'session-final-tables',
+      resultSubtype: 'success' as const,
+      finalAnswer: {
+        content: finalAnswer,
+        complete: true,
+        source: 'protocol' as const,
+      },
+      blocks: [],
+    } as RunState;
+
+    const outcome = renderRunCardDetailed(state);
+    expect(outcome.finalAnswerStatus).toBe('full');
+    expect(outcome.finalAnswerText).toBeUndefined();
+    const json = JSON.stringify(outcome.card);
+    expect(json).not.toContain(FINAL_ANSWER_OVERFLOW_MARKER);
+    // 最新表格保留，最旧的一张被删并在原位留省略提示（卡内可见，非静默）。
+    expect(json).toContain('表 6');
+    expect(json).toContain('前 1 个表格已省略');
+  });
+
   it('splits overflow answers without losing a single character', () => {
     const answer = '开头\n\n' + '段落内容。\n'.repeat(3_000) + '结尾';
     const chunks = splitFinalAnswer(answer, 1_000);
