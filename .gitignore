@@ -42,6 +42,7 @@ package-lock.json
 # AI coding agent config (project-specific, not shared)
 AGENTS.md
 CLAUDE.md
+.workbuddy/
 
 # TypeScript incremental build info
 tsconfig.tsbuildinfo
