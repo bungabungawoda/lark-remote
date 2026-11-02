@@ -194,17 +194,23 @@ The state layer still limits memory growth for ordinary progress content, then t
 Budget uses `Buffer.byteLength(..., 'utf8')`; JavaScript string `.length` must not be used as a substitute.
 
 If one card cannot hold even the final answer plus required controls, the card
-shows `_最终回答较长，完整内容已随后发送_`. The bridge splits the complete
-answer into plain-text messages at UTF-8 byte and line boundaries. Concatenating
-those messages must reproduce the source exactly; silent truncation is not allowed.
+shows `_最终回答较长，完整内容见随附的 Markdown 文件_`. The bridge writes the
+complete answer verbatim to a temporary `.md` file, sends it as a **file
+message**, then deletes the temporary file. The file must match the source
+exactly; silent truncation is not allowed.
+
+A final answer is **never sent as plain chat text**: plain text loses tables and
+code blocks, and duplicates the card body. The file channel is the only overflow
+channel. When the upload fails, the bridge sends a notice card (also not plain
+text) and logs the on-disk path that still holds the answer.
 
 Exceeding the table limit does **not** count as "does not fit": a Feishu card
 holds at most 5 tables (11310), so the oldest extra tables are dropped with an
 in-place `_💡 前 N 个表格已省略_` hint while the answer body stays in the card.
-That case must not use the spill channel — the card already shows the answer, so
-an extra "full answer" text message makes the user read the same answer twice
-(field report 2026-11-02). The spill is only for the case where the marker
-replaces the body.
+That case must not use the overflow channel — the card already shows the answer,
+so an extra copy makes the user read the same answer twice (field report
+2026-11-02). The file channel is only for the case where the marker replaces the
+body.
 
 ## 7. Concurrency and Stop Control
 

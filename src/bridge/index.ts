@@ -14,7 +14,8 @@ import {
   renderRunCardDetailed,
   type RunCardRenderOptions,
 } from '../card/run-renderer.js';
-import { splitFinalAnswer } from '../card/final-answer-overflow.js';
+import { writeFinalAnswerFile, finalAnswerFileFailureCard } from '../card/final-answer-file.js';
+import { bestEffortUnlink } from '../common/fs.js';
 import { renderBashCard } from '../card/bash-renderer.js';
 import { BashCardSession, capBashOutput } from '../card/bash-card-session.js';
 import {
@@ -1182,33 +1183,26 @@ export class Bridge {
   }
 
   /**
-   * Deliver a final answer that cannot fit in the run card. Plain text avoids
-   * markdown parser limits and preserves every character; sequence labels make
-   * multi-message delivery unambiguous.
+   * Deliver a final answer that cannot fit in the run card as a Markdown file
+   * attachment. 卡片正文已被标记替代，文件是唯一的内容通道；此处绝不发纯文本
+   * （2026-11-02 定规：纯文本与卡片重复，也丢 Markdown 结构）。
+   *
+   * 失败时发一张提示卡（不是纯文本），并把完整回答留在临时文件里记日志，
+   * 便于事后找回。
    */
-  private async sendFinalAnswerOverflow(text: string, ctx: CommandContext): Promise<void> {
-    const chunks = splitFinalAnswer(text);
+  private async sendFinalAnswerFile(text: string, ctx: CommandContext): Promise<void> {
+    let filePath: string | undefined;
     try {
-      for (let i = 0; i < chunks.length; i++) {
-        const prefix =
-          chunks.length > 1 ? `完整回答（${i + 1}/${chunks.length}）\n\n` : '完整回答\n\n';
-        await this.connector.sendWithRetry(
-          ctx.chatId,
-          { text: prefix + chunks[i] },
-          { replyTo: ctx.messageId },
-        );
-      }
+      filePath = writeFinalAnswerFile(text);
+      await this.connector.sendFile(ctx.chatId, filePath);
     } catch (err) {
-      getLogger().error('[lark-remote] failed to deliver complete final answer:', err);
-      try {
-        await this.connector.sendWithRetry(
-          ctx.chatId,
-          { text: `⚠️ 完整回答补发失败：${errorMessage(err)}` },
-          { replyTo: ctx.messageId },
-        );
-      } catch (fallbackErr) {
-        getLogger().error('[lark-remote] final-answer failure notice also failed:', fallbackErr);
-      }
+      getLogger().error(
+        `[lark-remote] failed to deliver complete final answer as file (kept at ${filePath ?? 'not written'}):`,
+        err,
+      );
+      await this.sendResult({ card: finalAnswerFileFailureCard(errorMessage(err)) }, ctx);
+    } finally {
+      if (filePath) bestEffortUnlink(filePath);
     }
   }
 
@@ -2153,7 +2147,7 @@ export class Bridge {
       }
 
       if (finalRender.finalAnswerStatus === 'overflow' && finalRender.finalAnswerText) {
-        await this.sendFinalAnswerOverflow(finalRender.finalAnswerText, ctx);
+        await this.sendFinalAnswerFile(finalRender.finalAnswerText, ctx);
       }
 
       // Add a terminal-state emoji reaction to the user's original message
