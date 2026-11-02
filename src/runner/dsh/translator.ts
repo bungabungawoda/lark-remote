@@ -51,6 +51,14 @@ export class DshTranslator {
   private hasStreamUsage = false;
   /** 当前 attempt 的 id（start 帧携带，chunk 帧也带；断开重连重放时不变）。 */
   private attemptId = '0';
+  /**
+   * 本 turn 末条 durable assistant 消息的正文（**完整**、未截断）。
+   *
+   * live chunk 是逐 delta 拼接、会被状态层的 MAX_TEXT_CHARS 窗口截断；
+   * durable `assistant/message` 一次就到齐全文。收 turn 时把它挂在 result 上，
+   * 卡片才能渲染完整回答（2026-11-01 输出块被截断缺陷）。
+   */
+  private lastMessageText?: string;
 
   /** Translate one live assistant-stream chunk into AgentEvents. */
   streamFrameToAgentEvents(frame: DshAssistantStreamFrame, _sessionId: string): AgentEvent[] {
@@ -139,6 +147,9 @@ export class DshTranslator {
         if (raw && typeof raw === 'object') {
           this.recordMessageUsage(raw);
         }
+        // 每条 durable 消息都带完整正文；记最后一条非空的就是本轮回答。
+        const text = messageText(ev.data.message);
+        if (text.trim()) this.lastMessageText = text;
         return [];
       }
       case 'tool/call': {
@@ -213,6 +224,9 @@ export class DshTranslator {
             ? `turn ended with reason: ${reason}: ${detail}`
             : `turn ended with reason: ${reason}`;
         }
+        if (this.lastMessageText) {
+          result.finalAnswerText = this.lastMessageText;
+        }
         return [result];
       }
       default:
@@ -236,6 +250,25 @@ function parseToolArguments(raw: unknown): unknown {
   } catch {
     return trimmed;
   }
+}
+
+/**
+ * 取 `assistant/message.message.content` 里的正文（type==='text' 的块）。
+ *
+ * 只收 text 块：reasoning 走独立面板（且另有 4000 字符窗口），tool-call 由
+ * `tool/call` 事件承载。块之间直接拼接、不插分隔符——同一条消息里的多个 text
+ * 块本来就是一段连续回答。
+ */
+function messageText(message: unknown): string {
+  const content = (message as { content?: unknown } | undefined)?.content;
+  if (!Array.isArray(content)) return '';
+  const parts: string[] = [];
+  for (const block of content) {
+    if (!block || typeof block !== 'object') continue;
+    const rec = block as Record<string, unknown>;
+    if (rec.type === 'text' && typeof rec.text === 'string') parts.push(rec.text);
+  }
+  return parts.join('');
 }
 
 /**

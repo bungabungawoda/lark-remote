@@ -163,10 +163,29 @@ without an explicit marker promote their last non-empty assistant text when the
 turn finishes. Claude, opencode, Kimi, Pi, and DSH therefore share the same
 protection.
 
+The **complete** final answer has two guards:
+
+1. State layer: only the **newest text block** is exempt from the
+   `MAX_TEXT_CHARS` (12000 character) window. It falls back to the window only
+   once a newer text block appears (`capStaleTextBlocks`, which leaves a
+   `…（前 N 字符已省略）` marker). Storage therefore keeps one extra segment,
+   and every other progress block stays bounded. Every agent's final answer is
+   the newest text block, so this guard covers all of them.
+2. Protocol layer: when a runner holds the complete body, it carries it on the
+   `result` event (`ResultEvent.finalAnswerText`). DSH's durable
+   `assistant/message` delivers the whole body at once; the translator hands it
+   to the state layer at `turn/end`, and `promoteFinalAnswer` prefers it, using
+   the block copy only as a fallback. This guard does not depend on
+   concatenated stream deltas, so dropped frames on reconnect cannot lose it.
+
+While a run is live (running / finalizing) the card is still a progress view:
+text is shown through the rendering budget window (`TEXT_BYTES`), and the
+terminal card swaps in the complete `finalAnswer`.
+
 The state layer still limits memory growth for ordinary progress content, then the rendering layer truncates by UTF-8 byte size:
 
 - Reasoning retains a limited window;
-- Ordinary text retains the latest window; `finalAnswer` is not evicted by that window or `MAX_BLOCKS`;
+- Ordinary text keeps the newest segment in full and windows older ones; `finalAnswer` is not evicted by that window or `MAX_BLOCKS`;
 - Tool input/output is truncated;
 - Total block count has an upper limit;
 - Tool block count has its own upper limit (`MAX_BLOCKS`); each tool is a native collapsible panel (one title row by default) whose body ships with the card and is truncated by tool count;

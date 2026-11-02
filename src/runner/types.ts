@@ -295,6 +295,17 @@ export interface ResultEvent {
   subtype: 'success' | 'error' | 'interrupted';
   session_id: string;
   timestamp?: string;
+  /**
+   * 本 run 的权威最终回答全文（runner 手里有一份完整文本时才填）。
+   *
+   * 为什么必须由 runner 带过来：状态层对进度正文有 `MAX_TEXT_CHARS`（12000
+   * 字符）存储窗口，最终回答超过窗口时 blocks 里只剩尾部 + `…（前 N 字符已
+   * 省略）` 标记——渲染层再怎么「回答优先」也找不回被丢掉的头部。runner 在
+   * 收 turn 时拿到的是**完整** assistant 文本（一条消息，不是逐 delta 拼接），
+   * 把它挂在 result 上，`promoteFinalAnswer` 用它建立 finalAnswer，回答因此
+   * 不再被进度窗口截断（2026-11-01 卡片输出块被截断缺陷）。
+   */
+  finalAnswerText?: string;
   usage?: {
     /** Non-cached input tokens. For codex this is raw `input_tokens` minus
      *  `cached_input_tokens`; for pi/claude/opencode the raw value is already

@@ -80,6 +80,49 @@ describe('renderRunCard', () => {
     expect(json).not.toContain('（未返回内容）');
   });
 
+  it('renders an answer beyond the progress-text window in full', () => {
+    // 回归：回答超过状态层 MAX_TEXT_CHARS(12000) 时，卡片输出块不得带
+    // `…（前 N 字符已省略）`——输出是最后一个被压缩的东西，思考/工具先让位。
+    const head = 'ANSWER-HEAD:';
+    const tail = ':ANSWER-TAIL';
+    const answer = head + 'A'.repeat(16_000) + tail;
+    let state = createInitialRunState('run-answer-window');
+    state = reduceRunState(state, {
+      type: 'system',
+      subtype: 'init',
+      session_id: 'session-answer-window',
+      cwd: '/home/user/project',
+      model: 'test-model',
+    });
+    state = reduceRunState(state, {
+      type: 'assistant',
+      message: { content: [{ type: 'text', text: answer }] },
+      timestamp: '2026-11-01T14:20:00.000Z',
+    });
+    // 进度块先于回答到达：有它们时卡片放不下全文，必须整块让位。
+    state = reduceRunState(state, {
+      type: 'assistant',
+      message: {
+        content: [{ type: 'tool_use', id: 'tool-1', name: 'Bash', input: { command: 'ls' } }],
+      },
+      timestamp: '2026-11-01T14:19:00.000Z',
+    });
+    state = reduceRunState(state, {
+      type: 'result',
+      subtype: 'success',
+      session_id: 'session-answer-window',
+      finalAnswerText: answer,
+    });
+
+    const card = renderRunCard(state);
+    const json = JSON.stringify(card);
+    expect(json).toContain(head);
+    expect(json).toContain(tail);
+    expect(json).not.toContain('字符已省略');
+    expect(Buffer.byteLength(json, 'utf8')).toBeLessThanOrEqual(28_000);
+    expect(countCardElements(card)).toBeLessThanOrEqual(MAX_CARD_ELEMENTS);
+  });
+
   it('emits CardKit 2.0 config and a plain_text header title', () => {
     const card = renderRunCard(createInitialRunState('run-card-shape')) as {
       schema: string;

@@ -248,6 +248,16 @@ export function createInitialRunState(runId: string): RunState {
 }
 
 export function reduceRunState(state: RunState, event: AgentEvent): RunState {
+  const next = reduceRunStateInner(state, event);
+  if (next === state) return next;
+  // 每次迁移后归一：**只有最新一条 text 块**免于存储窗口——它是「输出」，
+  // 随时会被提升成最终回答；更早的正文退回进度窗口（内存与元素预算不变）。
+  const blocks = capStaleTextBlocks(next.blocks);
+  return blocks === next.blocks ? next : { ...next, blocks };
+}
+
+/** 单事件 → 单次状态迁移。窗口后置裁剪统一由 `reduceRunState` 做，这里不管。 */
+function reduceRunStateInner(state: RunState, event: AgentEvent): RunState {
   // 只有终态才阻止事件处理。finalizing 是非终态，
   // 仍需累积 assistant 内容（thinking、text、tool_use、后台任务输出）。
   const terminal = state.terminal;
@@ -343,7 +353,9 @@ function reduceTurnDiffEvent(state: RunState, event: TurnDiffEvent): RunState {
       () => ({
         kind: 'text' as const,
         itemId: event.itemId,
-        content: keepTailMarked(event.text!, MAX_TEXT_CHARS),
+        // 最新那条正文不设窗口（它是「输出」），capStaleTextBlocks 负责在它被
+        // 更新的正文顶替后补上进度窗口。
+        content: event.text!,
         timestamp: ts,
         ...(complete ? { completedAt: ts } : {}),
       }),
@@ -351,7 +363,7 @@ function reduceTurnDiffEvent(state: RunState, event: TurnDiffEvent): RunState {
         const textBlock = existing as Extract<RunBlock, { kind: 'text' }>;
         return {
           ...textBlock,
-          content: keepTailMarked(event.text!, MAX_TEXT_CHARS),
+          content: event.text!,
           // kimi：块锚点时间改为本次 diff 时间（整轮累积流不断续写，
           // 标题应反映“最后写入时刻”而非首见时刻；move-to-end 后位置
           // 与标题才一致）。codex app-server 不置 refreshTimestamp，
@@ -572,8 +584,10 @@ function reduceResultEvent(state: RunState, event: AgentEvent): RunState {
   // freezing the card at "⏳ 等待进程退出" for the entire run duration.
   // sessionId is set by system.init; undefined means init hasn't arrived yet.
   if (state.sessionId === undefined) return state;
-  const withFinalAnswer = promoteFinalAnswer(state, 'inferred');
   const resultEvent = event as ResultEvent;
+  // runner 带过来的完整回答优先于 blocks 里的副本：副本可能是被窗口截过的
+  // （同一 turn 里回答之后又出现过更晚的正文），只能当兜底。
+  const withFinalAnswer = promoteFinalAnswer(state, 'inferred', resultEvent.finalAnswerText);
   const incomingSubtype = event.subtype;
   const incomingErrorMsg =
     incomingSubtype === 'error' ? (resultEvent.errorMessage ?? 'Agent 返回错误结果') : undefined;
@@ -629,13 +643,24 @@ function reduceFinalAnswerEvent(state: RunState, event: FinalAnswerEvent): RunSt
  * Agents without an explicit final-answer marker use their last non-empty
  * assistant text block. Moving it out of `blocks` protects it from
  * MAX_BLOCKS and lets the renderer assign it first claim on card space.
+ *
+ * `authoritativeText` 是 runner 在 result 上带来的完整回答（见
+ * `ResultEvent.finalAnswerText`）。blocks 里那条**通常**是完整的最新正文
+ * （见 capStaleTextBlocks），但它可能已被更晚的正文顶替而降级成窗口副本，
+ * 也可能在重连丢帧时缺内容；runner 给的全文优先级更高，是「输出永不截断」
+ * 的主数据源。
  */
-function promoteFinalAnswer(state: RunState, source: 'protocol' | 'inferred'): RunState {
+function promoteFinalAnswer(
+  state: RunState,
+  source: 'protocol' | 'inferred',
+  authoritativeText?: string,
+): RunState {
   if (state.finalAnswer) {
     return state.finalAnswer.complete
       ? state
       : { ...state, finalAnswer: { ...state.finalAnswer, complete: true } };
   }
+  const fullText = authoritativeText?.trim() ? authoritativeText : undefined;
   for (let i = state.blocks.length - 1; i >= 0; i--) {
     const block = state.blocks[i];
     if (block.kind !== 'text' || !block.content.trim()) continue;
@@ -643,12 +668,17 @@ function promoteFinalAnswer(state: RunState, source: 'protocol' | 'inferred'): R
       ...state,
       blocks: state.blocks.filter((_, index) => index !== i),
       finalAnswer: {
-        content: block.content,
+        content: fullText ?? block.content,
         timestamp: block.timestamp,
         complete: true,
         source,
       },
     };
+  }
+  // 进度块全被 MAX_BLOCKS 淘汰、只有 runner 全文可用时也要建立 finalAnswer——
+  // 否则长回答的最后一段会连「输出」面板都不存在。
+  if (fullText) {
+    return { ...state, finalAnswer: { content: fullText, complete: true, source } };
   }
   return state;
 }
@@ -742,13 +772,15 @@ function reduceAssistantEvent(state: RunState, event: AgentEvent): RunState {
     } else if (content.type === 'text') {
       const blocks = markThinkingInactive(next.blocks);
       const last = blocks[blocks.length - 1];
+      // 最新正文原样保留（见 capStaleTextBlocks）：这里一旦按窗口截断，最终回答
+      // 就在进渲染层之前已经缺头，任何「回答优先」的排版都救不回来。
       const newBlocks =
         last?.kind === 'text'
           ? [
               ...blocks.slice(0, -1),
               {
                 kind: 'text' as const,
-                content: keepTailMarked(last.content + content.text, MAX_TEXT_CHARS),
+                content: last.content + content.text,
                 timestamp: last.timestamp ?? event.timestamp,
               },
             ]
@@ -756,7 +788,7 @@ function reduceAssistantEvent(state: RunState, event: AgentEvent): RunState {
               ...blocks,
               {
                 kind: 'text' as const,
-                content: keepTailMarked(content.text, MAX_TEXT_CHARS),
+                content: content.text,
                 timestamp: event.timestamp,
               },
             ];
@@ -1013,6 +1045,41 @@ function keepLatestBlocks(blocks: RunBlock[]): RunBlock[] {
 
 /** 截断标记前缀（`keepTailMarked` 产出，含已丢弃正文计数）。 */
 const TRUNCATION_MARKER_RE = /^…（前 (\d+) 字符已省略）\n/;
+
+/**
+ * 给「已经不再是最新」的 text 块补上 `MAX_TEXT_CHARS` 存储窗口。
+ *
+ * 为什么最新一条不截：它就是卡片上的**输出**，终态还会被 `promoteFinalAnswer`
+ * 提成最终回答。提前按窗口切掉头部，渲染层再怎么回答优先也补不回来（2026-11-01
+ * 输出块被截断缺陷：16074 字符的回答只进到渲染层 12000 字符，且是从中间开始的）。
+ *
+ * 为什么其余 text 块仍然截：它们只是进度信息，卡片本来就只会展示最新几步；
+ * 存储层必须保持有界（`MAX_BLOCKS` × 窗口），否则长 run 的内存随历史线性增长。
+ *
+ * 判定用「最后一次出现的 text 块」而不是「最后一个块」：工具/思考出现在正文之后
+ * 时（例如回答写完再补一次思考），回答仍然是那张卡要展示的输出，不能因此被切。
+ */
+function capStaleTextBlocks(blocks: RunBlock[]): RunBlock[] {
+  let newestText = -1;
+  for (let i = blocks.length - 1; i >= 0; i--) {
+    if (blocks[i].kind === 'text') {
+      newestText = i;
+      break;
+    }
+  }
+  if (newestText < 0) return blocks;
+
+  let changed = false;
+  const capped = blocks.map((block, index) => {
+    if (index === newestText || block.kind !== 'text') return block;
+    const content = block.content;
+    const windowed = keepTailMarked(content, MAX_TEXT_CHARS);
+    if (windowed === content) return block;
+    changed = true;
+    return { ...block, content: windowed };
+  });
+  return changed ? capped : blocks;
+}
 
 /**
  * keepTail + 截断标记：被去头的存储内容以前缀如实标注（信息保真红线：禁止静默丢弃）。

@@ -82,6 +82,120 @@ describe('RunState', () => {
     ).toEqual(['progress text']);
   });
 
+  it('keeps the newest text block whole and caps it only after a newer one appears', () => {
+    // 「最新正文 = 输出」：它在被更新的正文顶替之前不设窗口，否则最终回答在
+    // 进渲染层之前就已经缺头（2026-11-01 输出块被截断缺陷）。
+    const first = 'FIRST-HEAD:' + 'x'.repeat(20_000) + ':FIRST-TAIL';
+    let state = createInitialRunState('run-text-window');
+    state = reduceRunState(state, {
+      type: 'system',
+      subtype: 'init',
+      session_id: 'session-text-window',
+      cwd: '/home/user/project',
+      model: 'test-model',
+    });
+    state = reduceRunState(state, {
+      type: 'assistant',
+      message: { content: [{ type: 'text', text: first }] },
+      timestamp: '2026-11-01T14:20:00.000Z',
+    });
+    const newest = state.blocks.find((block) => block.kind === 'text');
+    expect(newest && newest.kind === 'text' ? newest.content : '').toBe(first);
+
+    // 第二段正文出现 → 第一段退回进度窗口（存储仍有界），最新那段保持完整。
+    const second = 'SECOND:' + 'y'.repeat(15_000);
+    state = reduceRunState(state, {
+      type: 'assistant',
+      message: {
+        content: [{ type: 'tool_use', id: 't1', name: 'Bash', input: { command: 'ls' } }],
+      },
+      timestamp: '2026-11-01T14:20:01.000Z',
+    });
+    state = reduceRunState(state, {
+      type: 'assistant',
+      message: { content: [{ type: 'text', text: second }] },
+      timestamp: '2026-11-01T14:20:02.000Z',
+    });
+    const texts = state.blocks.filter((block) => block.kind === 'text');
+    expect(texts).toHaveLength(2);
+    expect(texts[0].content.startsWith('…（前 ')).toBe(true);
+    expect(texts[0].content.length).toBe(12_000);
+    expect(texts[1].content).toBe(second);
+  });
+
+  it('prefers the runner-supplied full answer over the windowed text block', () => {
+    // 块内副本一旦被窗口截过（例如回答之后又来了新正文），只有 runner 在
+    // result 上带来的全文能当回答。
+    const full = 'ANSWER-HEAD:' + 'x'.repeat(20_000) + ':ANSWER-TAIL';
+    let state = createInitialRunState('run-final-authoritative');
+    state = reduceRunState(state, {
+      type: 'system',
+      subtype: 'init',
+      session_id: 'session-final-authoritative',
+      cwd: '/home/user/project',
+      model: 'test-model',
+    });
+    state = reduceRunState(state, {
+      type: 'turn_diff',
+      itemId: 'kimi-text',
+      text: full,
+      threadId: 'th-1',
+      turnId: 'tn-1',
+    } as never);
+    // 同一 turn 里又出现了更晚的正文 → 回答块退回窗口（模拟块内副本已受损）。
+    state = reduceRunState(state, {
+      type: 'turn_diff',
+      itemId: 'kimi-text-2',
+      text: '后来的一段进度正文',
+      threadId: 'th-1',
+      turnId: 'tn-1',
+    } as never);
+    const windowed = state.blocks.find(
+      (block) => block.kind === 'text' && block.itemId === 'kimi-text',
+    );
+    expect(windowed && windowed.kind === 'text' ? windowed.content.length : 0).toBe(12_000);
+
+    state = reduceRunState(state, {
+      type: 'result',
+      subtype: 'success',
+      session_id: 'session-final-authoritative',
+      finalAnswerText: full,
+    });
+
+    expect(state.finalAnswer).toMatchObject({
+      content: full,
+      source: 'inferred',
+      complete: true,
+    });
+    // 进度副本被移走：同一段回答不得在卡里出现两次（截断版 + 完整版）。
+    expect(state.blocks.filter((block) => block.kind === 'text' && block.content === full)).toEqual(
+      [],
+    );
+  });
+
+  it('builds the final answer from the runner text when no progress block survives', () => {
+    let state = createInitialRunState('run-final-no-block');
+    state = reduceRunState(state, {
+      type: 'system',
+      subtype: 'init',
+      session_id: 'session-final-no-block',
+      cwd: '/home/user/project',
+      model: 'test-model',
+    });
+    state = reduceRunState(state, {
+      type: 'result',
+      subtype: 'success',
+      session_id: 'session-final-no-block',
+      finalAnswerText: 'only the runner knows this answer',
+    });
+
+    expect(state.finalAnswer).toMatchObject({
+      content: 'only the runner knows this answer',
+      source: 'inferred',
+      complete: true,
+    });
+  });
+
   it('test_anchor_result_event_transitions_to_finalizing_not_terminal', () => {
     // 进程退出作为唯一终态触发源：result 事件只进入非终态 finalizing，
     // 不直接置 done/error。停止按钮在 finalizing 仍显示。
@@ -1045,7 +1159,8 @@ describe('RunState', () => {
   });
 
   it('test_anchor_text_storage_over_cap_is_marked', () => {
-    // 13000 字符 text（> MAX_TEXT_CHARS=12000）：存储内容以截断标记开头。
+    // 13000 字符 text（> MAX_TEXT_CHARS=12000）：**被更晚的正文顶替之后**才按
+    // 窗口截断并留标记；它作为最新正文时保持完整（那是卡片要展示的输出）。
     let state = createInitialRunState('run-c4-text');
     state = reduceRunState(state, {
       type: 'turn_diff',
@@ -1054,7 +1169,17 @@ describe('RunState', () => {
       threadId: 'th-1',
       turnId: 'tn-1',
     } as never);
-    const text = state.blocks.find((b) => b.kind === 'text');
+    const newest = state.blocks.find((b) => b.kind === 'text');
+    expect(newest && newest.kind === 'text' ? newest.content.length : 0).toBe(13000);
+
+    state = reduceRunState(state, {
+      type: 'turn_diff',
+      itemId: 'item-text-2',
+      text: '后续正文',
+      threadId: 'th-1',
+      turnId: 'tn-1',
+    } as never);
+    const text = state.blocks.find((b) => b.kind === 'text' && b.itemId === 'item-text');
     const content = text && text.kind === 'text' ? text.content : '';
     expect(content.startsWith('…（前 ')).toBe(true);
   });
