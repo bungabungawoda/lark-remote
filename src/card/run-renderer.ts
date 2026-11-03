@@ -1,4 +1,5 @@
 import {
+  isLiveBackgroundJob,
   isRunActive,
   isRunTerminal,
   type RunBlock,
@@ -1434,10 +1435,22 @@ const BACKGROUND_JOB_FOLD_DISPLAY_MAX = 180;
 const BACKGROUND_JOB_FOLD_LINES = 6;
 
 /**
- * 任务状态标签：目前 DSH 只会给 running/stopping，其他值按运行中处理。
+ * 任务状态标签：宿主的两态 + 桥侧观测出的「已结束 / 状态未知」。
+ *
+ * 「已结束」不是可有可无的修饰：卡片上曾经只有「运行中/停止中」，任务跑完之
+ * 后卡片仍然这么写，用户只能靠点一次停止按钮看它报错来判断任务是否还在。
  */
 function backgroundJobStatusLabel(status: string | undefined): string {
+  if (status === 'ended') return '已结束';
+  if (status === 'unknown') return '状态未知';
   return status === 'stopping' ? '停止中' : '运行中';
+}
+
+/** 行尾状态（live 任务返回空串：运行中本来就是默认状态）。 */
+function backgroundJobStatusTail(status: string | undefined): string {
+  if (status === 'ended') return '✅ 已结束';
+  if (status === 'unknown') return '⚠️ 状态未知';
+  return '';
 }
 
 /**
@@ -1476,12 +1489,28 @@ function codeFenceFor(content: string): string {
 function buildBackgroundJobsSection(state: RunState): object[] {
   const jobs = state.backgroundJobs ?? [];
   if (jobs.length === 0) return [];
-  const elements: object[] = [
-    markdownDiv(`🧵 **后台任务** ${jobs.length} 个仍在运行`),
-    markdownDiv('_本轮结束后继续，可逐个停止_', 'notation'),
-  ];
-  jobs.slice(0, MAX_BACKGROUND_JOB_LINES).forEach((job, index) => {
+
+  // 仍在跑的排前面：用户最先要知道的是"哪些还在占资源"。
+  const running = jobs.filter((job) => isLiveBackgroundJob(job));
+  const unknown = jobs.filter((job) => job.status === 'unknown');
+  const ended = jobs.filter((job) => !isLiveBackgroundJob(job) && job.status !== 'unknown');
+  const ordered = [...running, ...unknown, ...ended];
+
+  // 计数逐维列出：只说「N 个任务」会让"都还在跑"与"都结束了"读起来一样。
+  const counts: string[] = [];
+  if (running.length > 0) counts.push(`${running.length} 个仍在运行`);
+  if (unknown.length > 0) counts.push(`${unknown.length} 个状态未知`);
+  if (ended.length > 0) counts.push(`${ended.length} 个已结束`);
+  const headline = ended.length === jobs.length ? '已全部结束' : counts.join(' · ');
+
+  const elements: object[] = [markdownDiv(`🧵 **后台任务** ${headline}`)];
+  if (running.length + unknown.length > 0) {
+    elements.push(markdownDiv('_本轮结束后继续，可逐个停止_', 'notation'));
+  }
+
+  ordered.slice(0, MAX_BACKGROUND_JOB_LINES).forEach((job, index) => {
     const label = job.label.trim();
+    const tail = backgroundJobStatusTail(job.status);
     const lineCount = label === '' ? 0 : label.split(/\r?\n/).length;
     const inline =
       label.length > 0 &&
@@ -1489,11 +1518,12 @@ function buildBackgroundJobsSection(state: RunState): object[] {
       !label.includes('`') &&
       displayWidth(label) <= BACKGROUND_JOB_INLINE_MAX;
     if (inline) {
-      elements.push(markdownDiv(`· \`${label}\``));
+      elements.push(markdownDiv(`· \`${label}\`${tail ? ` · ${tail}` : ''}`));
     } else {
       // 多行/超宽/含反引号：代码块保留完整命令；只有超长才折叠。
+      // 命令原文一个字都不改，状态出现在围栏之后。
       const fence = codeFenceFor(label);
-      const content = `${fence}\n${label}\n${fence}`;
+      const content = `${fence}\n${label}\n${fence}${tail ? `\n\n${tail}` : ''}`;
       const fold =
         lineCount > BACKGROUND_JOB_FOLD_LINES ||
         displayWidth(label) > BACKGROUND_JOB_FOLD_DISPLAY_MAX;
@@ -1509,6 +1539,8 @@ function buildBackgroundJobsSection(state: RunState): object[] {
           : markdownDiv(content),
       );
     }
+    // 已结束的任务不再给停止入口——那个按钮点下去只会回「可能已自行结束」。
+    if (job.status === 'ended') return;
     elements.push({
       tag: 'column_set',
       columns: [

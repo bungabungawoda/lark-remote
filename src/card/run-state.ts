@@ -1,5 +1,6 @@
 import type {
   AgentEvent,
+  BackgroundJobRoster,
   PlanEvent,
   FileChangeEvent,
   ResultEvent,
@@ -213,8 +214,11 @@ export interface RunState extends UsageSnapshot {
   /**
    * run 结束时仍在后台运行的任务。跨 turn 生命周期：卡片必须说清楚"这一轮
    * 结束了，但还有东西在跑"，并给出逐个停止的入口。
+   *
+   * 收尾之后这份名单仍会被 `syncBackgroundJobs` 更新（宿主会继续推送任务
+   * 生命周期），所以它是"最后一次观测到的名单"，不是"收尾那一刻的名单"。
    */
-  backgroundJobs?: Array<{ id: string; label: string; status?: string; progress?: string }>;
+  backgroundJobs?: BackgroundJobRoster[];
   /**
    * 会话级长期目标（DSH goal）。跨 turn 生命周期：goal 仍 active 时，本轮结束
    * 只是"一轮结束"，宿主会自动续跑，卡片必须显示目标是什么、跑到第几轮。
@@ -707,6 +711,99 @@ export function removeBackgroundJob(state: RunState, jobId: string): RunState {
     ...state,
     backgroundJobs: (state.backgroundJobs ?? []).filter((job) => job.id !== jobId),
   };
+}
+
+/** 宿主仍在执行的任务状态词。状态缺失也算在跑——它还在名单上。 */
+const RUNNING_JOB_STATUSES = new Set(['running', 'stopping']);
+
+/**
+ * 该任务是否仍在跑（`ended` / `unknown` 都不算）。
+ *
+ * 卡片据此决定要不要渲染「⏹ 停止」：给已经结束的任务留一个点了必然失败的
+ * 按钮，等于逼用户拿「停止」当查询用。
+ */
+export function isLiveBackgroundJob(job: BackgroundJobRoster): boolean {
+  return job.status === undefined || RUNNING_JOB_STATUSES.has(job.status);
+}
+
+/** 宿主状态 → 桥侧状态：仍在跑的保留原词，其余已知终态归一成 `ended`。 */
+function bridgeJobStatus(status: string): string {
+  return RUNNING_JOB_STATUSES.has(status) ? status : 'ended';
+}
+
+/**
+ * 收尾后把宿主推来的整份任务名单同步进终态卡状态。
+ *
+ * 与 reducer 的分工：reducer 处理的是"收尾那一刻的名单"，只在 run 还在消费
+ * 事件时有效；终态之后 `reduceRunState` 直接早退（终态幂等），名单只能由
+ * 这里更新。
+ *
+ * 三条规则：
+ * - 名单里消失 = 宿主已结算（`job/list` 是整份替换，摘掉即结束）→ `ended`；
+ * - 名单里还在、宿主却给了终态词 → `ended`（有些宿主会把已结束的行留在名单里）；
+ * - `ended` 是终态，不回退成 running —— 同一个 job id 不会重新开始跑。
+ *
+ * 无变化时返回**同一个 state 引用**：bridge 靠它跳过无谓的卡片 patch。
+ */
+export function syncBackgroundJobs(
+  state: RunState,
+  roster: ReadonlyArray<BackgroundJobRoster>,
+): RunState {
+  const tracked = state.backgroundJobs ?? [];
+  const byId = new Map(roster.map((job) => [job.id, job]));
+
+  const next = tracked.map((job) => {
+    const row = byId.get(job.id);
+    if (!row) return job.status === 'ended' ? job : { ...job, status: 'ended' };
+    if (job.status === 'ended') return job;
+    const status = row.status === undefined ? job.status : bridgeJobStatus(row.status);
+    const label = row.label.trim() === '' ? job.label : row.label;
+    const progress = row.progress ?? job.progress;
+    if (status === job.status && label === job.label && progress === job.progress) return job;
+    return {
+      ...job,
+      label,
+      ...(status === undefined ? {} : { status }),
+      ...(progress === undefined ? {} : { progress }),
+    };
+  });
+
+  // 新出现的任务只收仍在跑的：与收尾采集同一口径（列出已结束的任务只会被
+  // 读成"还在跑"）。
+  const seen = new Set(tracked.map((job) => job.id));
+  for (const row of roster) {
+    if (seen.has(row.id)) continue;
+    if (row.status !== undefined && !RUNNING_JOB_STATUSES.has(row.status)) continue;
+    next.push({
+      id: row.id,
+      label: row.label,
+      ...(row.status === undefined ? {} : { status: row.status }),
+      ...(row.progress === undefined ? {} : { progress: row.progress }),
+    });
+  }
+
+  if (next.length === tracked.length && next.every((job, index) => job === tracked[index])) {
+    return state;
+  }
+  return { ...state, backgroundJobs: next };
+}
+
+/**
+ * 订阅断了但任务仍未结算：把在跑的任务标成「状态未知」。
+ *
+ * 监控中断不等于任务结束——不标出来，卡片又会退化成"最后一次观测当现状"，
+ * 正是这次要修的那个缺陷。未知态仍保留停止按钮（用户还能尝试停掉）。
+ */
+export function markBackgroundJobsUnknown(state: RunState): RunState {
+  const jobs = state.backgroundJobs;
+  if (!jobs || jobs.length === 0) return state;
+  let changed = false;
+  const next = jobs.map((job) => {
+    if (!isLiveBackgroundJob(job)) return job;
+    changed = true;
+    return { ...job, status: 'unknown' };
+  });
+  return changed ? { ...state, backgroundJobs: next } : state;
 }
 
 /**

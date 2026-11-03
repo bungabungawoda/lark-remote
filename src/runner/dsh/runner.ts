@@ -23,6 +23,7 @@ import type {
   AgentEvent,
   AgentStatusInfo,
   ApprovalView,
+  BackgroundJobRoster,
   GoalView,
   ResultEvent,
   SpawnOptions,
@@ -945,6 +946,26 @@ export class DshRunner implements AgentRunner {
         timestamp: new Date().toISOString(),
       },
     ];
+  }
+
+  /**
+   * 订阅本 session 的后台任务名单（跨 turn 生命周期）。
+   *
+   * 卡片收尾后仍要靠它把「任务结束了」推给用户：run 的事件流在 result 就关了，
+   * 而后台任务可能再跑半小时。名单是整份替换，消费方自己做 diff。
+   */
+  async *watchJobs(
+    sessionId: string,
+    signal: AbortSignal,
+  ): AsyncGenerator<ReadonlyArray<BackgroundJobRoster>> {
+    for await (const rows of this.client.watchJobs(sessionId, signal)) {
+      yield rows.map((job) => ({
+        id: job.id,
+        label: job.label ?? job.id,
+        ...(job.status === undefined ? {} : { status: job.status }),
+        ...(job.progress === undefined ? {} : { progress: job.progress }),
+      }));
+    }
   }
 
   /** Kill one background job of this runner's session (card button path). */

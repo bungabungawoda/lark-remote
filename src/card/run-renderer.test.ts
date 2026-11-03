@@ -3761,6 +3761,74 @@ describe('renderRunCard background jobs', () => {
     const body = elements.find((el) => el.text?.content?.includes(command))?.text?.content;
     expect(body).toBe(`\`\`\`\n${command}\n\`\`\``);
   });
+
+  /**
+   * 症状：run 卡早已是「✅ 完成」，后面的轮询脚本其实早就结束，卡片却一直写
+   * 「运行中」并留着停止按钮——用户只能靠点一下按钮看它报错才知道任务没了。
+   * 以下用例锁住「结束的任务必须显式标出来、且不再给停止入口」。
+   */
+  it('marks finished jobs and drops their kill button', () => {
+    const elements = cardElements(
+      renderRunCard(
+        doneState([
+          { id: 'bash-1', label: 'npm run dev', status: 'running' },
+          { id: 'bash-2', label: 'kaggle poll', status: 'ended' },
+        ]),
+      ),
+    );
+    const json = JSON.stringify(elements);
+    expect(json).toContain('🧵 **后台任务** 1 个仍在运行 · 1 个已结束');
+    expect(json).toContain('· `kaggle poll` · ✅ 已结束');
+    expect(json).toContain('"jobId":"bash-1"');
+    expect(json).not.toContain('"jobId":"bash-2"');
+    expect(jobKillColumnSets(elements)).toHaveLength(1);
+    expectNoV1ActionContainer(json);
+  });
+
+  it('says every job finished instead of still claiming they are running', () => {
+    const elements = cardElements(
+      renderRunCard(
+        doneState([
+          { id: 'bash-1', label: 'npm run dev', status: 'ended' },
+          { id: 'bash-2', label: 'kaggle poll', status: 'ended' },
+        ]),
+      ),
+    );
+    const json = JSON.stringify(elements);
+    expect(json).toContain('🧵 **后台任务** 已全部结束');
+    expect(json).not.toContain('仍在运行');
+    expect(json).not.toContain('可逐个停止');
+    expect(jobKillColumnSets(elements)).toHaveLength(0);
+  });
+
+  it('keeps the kill button when the state of a job is unknown', () => {
+    // 订阅断了（流断开/DSH 重启）：任务可能还在跑，不能装作已结束。
+    const elements = cardElements(
+      renderRunCard(doneState([{ id: 'bash-1', label: 'npm run dev', status: 'unknown' }])),
+    );
+    const json = JSON.stringify(elements);
+    expect(json).toContain('🧵 **后台任务** 1 个状态未知');
+    expect(json).not.toContain('仍在运行');
+    expect(json).toContain('· `npm run dev` · ⚠️ 状态未知');
+    expect(jobKillColumnSets(elements)).toHaveLength(1);
+  });
+
+  it('orders running jobs before finished ones regardless of roster order', () => {
+    const elements = cardElements(
+      renderRunCard(
+        doneState([
+          { id: 'bash-1', label: 'finished first', status: 'ended' },
+          { id: 'bash-2', label: 'still running', status: 'running' },
+        ]),
+      ),
+    );
+    const texts = elements
+      .map((el) => el.text?.content ?? '')
+      .filter((content) => content.startsWith('· `'));
+    // 仍占资源的排前面：用户最先要看到的是"还没停的那些"。
+    expect(texts[0]).toContain('still running');
+    expect(texts[1]).toContain('finished first');
+  });
 });
 
 /**

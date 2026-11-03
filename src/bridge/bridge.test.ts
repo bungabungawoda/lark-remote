@@ -11,7 +11,7 @@ import { SessionReaderRegistry } from '../session/registry.js';
 import { AppConfigSchema } from '../config/index.js';
 import type { AppConfig } from '../config/index.js';
 import type { AgentSessionReader, AgentSessionUsage } from '../session-contract.js';
-import type { AgentEvent, AgentRunner, Runner } from '../runner/index.js';
+import type { AgentEvent, AgentRunner, BackgroundJobRoster, Runner } from '../runner/index.js';
 import { AGENT_KINDS } from '../agent-kinds.js';
 import {
   createStubSessionReaderRegistry,
@@ -5148,5 +5148,152 @@ describe('Bridge 中断与队列收口回归', () => {
 
     release();
     await new Promise((r) => setTimeout(r, 0));
+  });
+});
+
+/**
+ * 终态卡的后台任务订阅（方案 B）。
+ *
+ * 症状：run 卡已经是 ✅ 完成，后台轮询脚本早已结束，卡片却一直写「运行中」
+ * 并留着停止按钮。根因是收尾时取一次 `job/list` 快照就断流——任务真正结束的
+ * 那一刻没有任何人还能通知到卡片。
+ *
+ * 这里锁住三条：结束必须显式可见、订阅中断不能假装结束、patch 失败立刻收手
+ * （绝不因此补发新卡刷屏）。
+ */
+describe('后台任务订阅（终态卡）', () => {
+  interface RosterChannel {
+    push(rows: BackgroundJobRoster[]): void;
+    close(): void;
+    isClosed(): boolean;
+    stream(signal: AbortSignal): AsyncGenerator<BackgroundJobRoster[]>;
+  }
+
+  /** 可控的任务名单流：测试推一帧，bridge 就该 patch 一次卡片。 */
+  function createRosterChannel(): RosterChannel {
+    const queue: BackgroundJobRoster[][] = [];
+    let wake: (() => void) | undefined;
+    let done = false;
+    let consumed = false;
+    const notify = (): void => {
+      const resume = wake;
+      wake = undefined;
+      resume?.();
+    };
+    return {
+      push(rows) {
+        queue.push(rows);
+        notify();
+      },
+      close() {
+        done = true;
+        notify();
+      },
+      isClosed: () => consumed,
+      async *stream(signal) {
+        try {
+          while (!signal.aborted) {
+            if (queue.length === 0) {
+              if (done) return;
+              await new Promise<void>((resolve) => {
+                wake = resolve;
+                signal.addEventListener('abort', () => resolve(), { once: true });
+              });
+              continue;
+            }
+            yield queue.shift()!;
+          }
+        } finally {
+          consumed = true;
+        }
+      },
+    };
+  }
+
+  function runnerWithJobs(
+    events: AgentEvent[],
+    watch: (sessionId: string, signal: AbortSignal) => AsyncGenerator<BackgroundJobRoster[]>,
+  ): Runner {
+    return {
+      ...createStubRunner({ mode: 'streaming', events }),
+      watchJobs: watch,
+    } as Runner;
+  }
+
+  function jobTurn(sessionId: string): AgentEvent[] {
+    return [
+      { type: 'system', subtype: 'init', session_id: sessionId, cwd: tmpDir, model: 'opus' },
+      {
+        type: 'background_jobs',
+        jobs: [{ id: 'bash-1', label: 'kaggle poll', status: 'running' }],
+      },
+      { type: 'result', subtype: 'success', session_id: sessionId },
+    ];
+  }
+
+  it('任务结束后把卡片改成「已全部结束」并撤掉停止按钮', async () => {
+    const channel = createRosterChannel();
+    const { bridge, sessionStore, connector } = makeBridge({
+      runner: runnerWithJobs(jobTurn('sj1'), (_sessionId, signal) => channel.stream(signal)),
+    });
+    sessionStore.setCwd(ctx.userId, tmpDir);
+
+    await bridge.forwardToClaude('run', ctx);
+
+    const before = JSON.stringify(connector._cards.at(-1));
+    expect(before).toContain('1 个仍在运行');
+    expect(before).toContain('"cmd":"job.kill"');
+
+    // 宿主推来一份空名单 = 任务已结算。
+    channel.push([]);
+
+    await vi.waitFor(() => {
+      expect(JSON.stringify(connector._cards.at(-1))).toContain('已全部结束');
+    });
+    const after = JSON.stringify(connector._cards.at(-1));
+    expect(after).not.toContain('"cmd":"job.kill"');
+  });
+
+  it('订阅中断时不假装结束：仍在跑的任务标成状态未知', async () => {
+    const channel = createRosterChannel();
+    const { bridge, sessionStore, connector } = makeBridge({
+      runner: runnerWithJobs(jobTurn('sj2'), (_sessionId, signal) => channel.stream(signal)),
+    });
+    sessionStore.setCwd(ctx.userId, tmpDir);
+
+    await bridge.forwardToClaude('run', ctx);
+
+    // 流断了（DSH 重启 / 网络），名单里任务仍是 running：不能当成结束。
+    channel.close();
+
+    await vi.waitFor(() => {
+      expect(JSON.stringify(connector._cards.at(-1))).toContain('1 个状态未知');
+    });
+    const after = JSON.stringify(connector._cards.at(-1));
+    expect(after).toContain('"cmd":"job.kill"');
+    expect(after).not.toContain('已全部结束');
+  });
+
+  it('patch 失败即退订，不反复打无效 PATCH', async () => {
+    const channel = createRosterChannel();
+    const { bridge, sessionStore, connector } = makeBridge({
+      runner: runnerWithJobs(jobTurn('sj3'), (_sessionId, signal) => channel.stream(signal)),
+    });
+    sessionStore.setCwd(ctx.userId, tmpDir);
+
+    await bridge.forwardToClaude('run', ctx);
+
+    let patches = 0;
+    connector.updateCard = async () => {
+      patches += 1;
+      throw new Error('message recalled');
+    };
+
+    channel.push([]);
+    await vi.waitFor(() => expect(patches).toBe(1));
+    await new Promise((r) => setTimeout(r, 60));
+
+    expect(patches).toBe(1);
+    expect(channel.isClosed()).toBe(true);
   });
 });

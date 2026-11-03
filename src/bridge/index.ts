@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import type { AgentSessionReader } from '../session-contract.js';
-import type { Runner, AgentRunner, AgentEvent } from '../runner/index.js';
+import type { Runner, AgentRunner, AgentEvent, BackgroundJobRoster } from '../runner/index.js';
 import { sleep } from '../common/sleep.js';
 import { isContentFilterFailure } from '../common/turn-failure.js';
 import type { AgentRegistry } from '../runner/registry.js';
@@ -19,9 +19,12 @@ import { bestEffortUnlink } from '../common/fs.js';
 import { renderBashCard } from '../card/bash-renderer.js';
 import { BashCardSession, capBashOutput } from '../card/bash-card-session.js';
 import {
+  isLiveBackgroundJob,
   isRunActive,
   isRunTerminal,
+  markBackgroundJobsUnknown,
   removeBackgroundJob,
+  syncBackgroundJobs,
   type RunState,
   type RunTerminal,
 } from '../card/run-state.js';
@@ -194,6 +197,24 @@ interface CompactRunRecord {
    * 「当前」cwd —— 点击时可能已经 /cd 到别处，或排队期间被 /cd 改写。
    */
   cwd: string;
+}
+
+/**
+ * 终态卡的渲染快照：run 结束后唯一还能改这张卡的地方。
+ *
+ * 后台任务的生命周期跨 turn，卡片收尾只是"这一轮的投影结束了"，任务本身还在
+ * 跑；订阅拿到新名单后必须按 runId 找回同一张卡（state + 渲染选项 + 消息 id）。
+ */
+interface RunCardSnapshot {
+  state: RunState;
+  options: RunCardRenderOptions;
+  cwd: string;
+  agentKind: AgentKind;
+  /**
+   * 这张终态卡的消息 id。缺失（流式卡没建起来、走了兜底纯发送）时后台任务
+   * 订阅无法落地——宁可退化成收尾快照，也不能凭空补发一张新卡。
+   */
+  messageId?: string;
 }
 
 /** Caller context shared by bridge operations and router command handling. */
@@ -382,11 +403,24 @@ export class Bridge {
    * MAX_BLOCKS 约束（几十 KB 以内），用户只会点刚收到的卡；超出窗口的旧卡
    * 会得到明确的「记录已回收」提示，不假装任务仍在。
    */
-  private runCardSnapshots = new Map<
-    string,
-    { state: RunState; options: RunCardRenderOptions; cwd: string; agentKind: AgentKind }
-  >();
+  private runCardSnapshots = new Map<string, RunCardSnapshot>();
   private static readonly RUN_CARD_SNAPSHOT_MAX = 8;
+
+  /**
+   * 终态卡后台任务订阅（runId → 中止句柄）。
+   *
+   * 与卡片快照同生命周期：快照被淘汰、任务全结束、patch 失败时退订。上限天然
+   * 受 RUN_CARD_SNAPSHOT_MAX 约束（一张卡最多一条流）。
+   */
+  private jobWatches = new Map<string, AbortController>();
+
+  /**
+   * 同一张卡的 patch 串行链（runId → 链尾）。
+   *
+   * 「停止按钮」和「订阅帧」都会改同一张终态卡：不串行化时两条 PATCH 并发，
+   * 后发先至的那条会把卡片写回旧内容（任务又变回「运行中」）。
+   */
+  private jobCardPatches = new Map<string, Promise<void>>();
 
   /**
    * Active `!` bash runs, keyed by runId (NOT cwd). Bash runs bypass the serial
@@ -1185,8 +1219,17 @@ export class Bridge {
     return stop;
   }
 
-  /** Send a result message to the user (§7). Returns true on success, false on failure. */
-  async sendResult(result: CommandResult, ctx: CommandContext): Promise<boolean> {
+  /**
+   * Send a result message to the user (§7). Returns true on success, false on failure.
+   *
+   * `opts.onCardSent` 回传卡片的 messageId：终态卡收尾后还要靠它接收后台任务
+   * 更新（流式卡从 `cardSession.cardMessageId` 取，兜底发送只能从这里拿）。
+   */
+  async sendResult(
+    result: CommandResult,
+    ctx: CommandContext,
+    opts?: { onCardSent?: (messageId: string) => void },
+  ): Promise<boolean> {
     try {
       if (result.card) {
         // 静态卡片体积保护：确保卡片不超过飞书大小限制
@@ -1205,11 +1248,12 @@ export class Bridge {
         }
 
         getLogger().debug(`[lark-remote] sendResult kind=card chatId=${ctx.chatId}`);
-        await this.connector.sendWithRetry(
+        const messageId = await this.connector.sendWithRetry(
           ctx.chatId,
           { card: safeCard },
           { replyTo: ctx.messageId },
         );
+        opts?.onCardSent?.(messageId);
         return true;
       } else if (result.markdown) {
         getLogger().debug(`[lark-remote] sendResult kind=markdown chatId=${ctx.chatId}`);
@@ -1343,13 +1387,31 @@ export class Bridge {
     options: RunCardRenderOptions,
     cwd: string,
     agentKind: AgentKind,
-  ): void {
-    this.runCardSnapshots.set(runId, { state, options, cwd, agentKind });
+    messageId?: string,
+  ): RunCardSnapshot {
+    const snapshot: RunCardSnapshot = {
+      state,
+      options,
+      cwd,
+      agentKind,
+      ...(messageId === undefined ? {} : { messageId }),
+    };
+    this.runCardSnapshots.set(runId, snapshot);
     while (this.runCardSnapshots.size > Bridge.RUN_CARD_SNAPSHOT_MAX) {
       const oldest = this.runCardSnapshots.keys().next().value;
       if (oldest === undefined) break;
       this.runCardSnapshots.delete(oldest);
+      // 卡片已经不在窗口里：继续订阅只是往一个没人看的 messageId 打 PATCH。
+      this.stopJobWatch(oldest);
     }
+    return snapshot;
+  }
+
+  /** 退订一张终态卡的后台任务名单（幂等）。 */
+  private stopJobWatch(runId: string): void {
+    this.jobWatches.get(runId)?.abort();
+    this.jobWatches.delete(runId);
+    this.jobCardPatches.delete(runId);
   }
 
   /**
@@ -1369,8 +1431,123 @@ export class Bridge {
     const killed = await runner.killJob(sessionId, jobId);
     if (!killed) return false;
     snapshot.state = removeBackgroundJob(snapshot.state, jobId);
-    await this.updateCardInPlace(renderRunCard(snapshot.state, snapshot.options), ctx);
+    // 与订阅帧共用一条串行链：两条 PATCH 并发时，后发先至的那条会把卡片写回
+    // 旧内容（刚停掉的任务又显示成「运行中」）。
+    await this.enqueueJobCardPatch(runId, async () => {
+      await this.updateCardInPlace(renderRunCard(snapshot.state, snapshot.options), ctx);
+      return true;
+    });
+    // 卡片上已经没有在跑的任务：不必再等宿主推下一帧，直接退订。
+    if (!(snapshot.state.backgroundJobs ?? []).some(isLiveBackgroundJob)) {
+      this.stopJobWatch(runId);
+    }
     return true;
+  }
+
+  /**
+   * 让终态卡的后台任务小节跟着宿主继续更新。
+   *
+   * run 的卡片在 `result` 那一帧就关闭了，但后台任务还能再跑很久：不订阅，
+   * 卡片会一直写「运行中」并留着停止按钮，点了必然失败。退订条件写
+   * 在 {@link consumeJobRoster} 里——名单清空、patch 失败、订阅中断、快照被
+   * 淘汰，任一命中即退出；**绝不因为 patch 失败补发新卡**。
+   */
+  private startBackgroundJobWatch(runId: string, snapshot: RunCardSnapshot, runner: Runner): void {
+    const live = (snapshot.state.backgroundJobs ?? []).some(isLiveBackgroundJob);
+    if (!live) return;
+    const sessionId = snapshot.state.sessionId;
+    const messageId = snapshot.messageId;
+    const watchJobs = (runner as AgentRunner).watchJobs;
+    if (!sessionId || !messageId || typeof watchJobs !== 'function') {
+      // 没有卡 id 就没有 patch 的落点：保留收尾快照，不另发一张卡。
+      getLogger().info(
+        `[lark-remote] background jobs stay on the turn snapshot runId=${runId} ` +
+          `(sessionId=${sessionId ?? '-'} messageId=${messageId ?? '-'} watchable=${typeof watchJobs === 'function'})`,
+      );
+      return;
+    }
+    const controller = new AbortController();
+    this.jobWatches.set(runId, controller);
+    void this.consumeJobRoster(runId, snapshot, controller, (signal) =>
+      watchJobs.call(runner, sessionId, signal),
+    );
+  }
+
+  /** 消费宿主推来的整份任务名单，直到全结束 / 流断 / patch 失败 / 外部退订。 */
+  private async consumeJobRoster(
+    runId: string,
+    snapshot: RunCardSnapshot,
+    controller: AbortController,
+    watch: (signal: AbortSignal) => AsyncIterable<ReadonlyArray<BackgroundJobRoster>>,
+  ): Promise<void> {
+    const messageId = snapshot.messageId;
+    if (!messageId) return;
+    let allEnded = false;
+    try {
+      for await (const roster of watch(controller.signal)) {
+        const next = syncBackgroundJobs(snapshot.state, roster);
+        // 名单没变化就不打 PATCH：宿主可能重复推同一份。
+        if (next === snapshot.state) continue;
+        snapshot.state = next;
+        const ok = await this.enqueueJobCardPatch(runId, () =>
+          this.patchCard(messageId, renderRunCard(snapshot.state, snapshot.options)),
+        );
+        if (!ok) {
+          getLogger().warn(
+            `[lark-remote] background job card update failed, stop watching runId=${runId}`,
+          );
+          return;
+        }
+        if (!(snapshot.state.backgroundJobs ?? []).some(isLiveBackgroundJob)) {
+          allEnded = true;
+          return;
+        }
+      }
+    } catch (err) {
+      if (!controller.signal.aborted) {
+        getLogger().warn(
+          `[lark-remote] background job watch failed runId=${runId}: ${errorMessage(err)}`,
+        );
+      }
+    } finally {
+      const externallyAborted = controller.signal.aborted;
+      controller.abort();
+      // 流断了而任务没结算：监控中断 ≠ 任务结束，标成未知而不是继续写「运行中」。
+      if (!allEnded && !externallyAborted) await this.markJobsUnknown(runId, snapshot);
+      this.jobWatches.delete(runId);
+      this.jobCardPatches.delete(runId);
+    }
+  }
+
+  /** 订阅断了但任务仍未结算：把在跑的任务标成「状态未知」并重渲染一次。 */
+  private async markJobsUnknown(runId: string, snapshot: RunCardSnapshot): Promise<void> {
+    const next = markBackgroundJobsUnknown(snapshot.state);
+    if (next === snapshot.state) return;
+    snapshot.state = next;
+    const messageId = snapshot.messageId;
+    if (!messageId) return;
+    await this.enqueueJobCardPatch(runId, () =>
+      this.patchCard(messageId, renderRunCard(snapshot.state, snapshot.options)),
+    );
+  }
+
+  /**
+   * 一张终态卡的 PATCH 串行链。
+   *
+   * 渲染放在链内执行（`task` 里读 `snapshot.state`），后入链的任务必然看到更新
+   * 后的状态；否则「停止」与「订阅帧」并发时卡片可能回退。
+   */
+  private enqueueJobCardPatch(runId: string, task: () => Promise<boolean>): Promise<boolean> {
+    const previous = this.jobCardPatches.get(runId) ?? Promise.resolve();
+    const next = previous.then(task, task);
+    this.jobCardPatches.set(
+      runId,
+      next.then(
+        () => undefined,
+        () => undefined,
+      ),
+    );
+    return next;
   }
 
   /** Send a file to the user via Feishu. */
@@ -2182,16 +2359,22 @@ export class Bridge {
         ),
       };
       const finalRender = renderRunCardDetailed(cardSession.currentState, finalRenderOptions);
-      this.rememberRunCardSnapshot(
+      const snapshot = this.rememberRunCardSnapshot(
         runId,
         cardSession.currentState,
         finalRenderOptions,
         cwd,
         activeRun.agentKind,
+        cardSession.cardMessageId,
       );
       let runCardSent = false;
       if (settleResult === 'unsent') {
-        const sent = await this.sendResult({ card: finalRender.card }, ctx);
+        const sent = await this.sendResult({ card: finalRender.card }, ctx, {
+          // 兜底发送的卡也要能接收后台任务更新 —— 流式卡没建起来时这是唯一来源。
+          onCardSent: (messageId) => {
+            snapshot.messageId = messageId;
+          },
+        });
         runCardSent = sent;
       } else {
         // streaming succeeded: run card is the last message in the chat
@@ -2217,6 +2400,10 @@ export class Bridge {
 
       // Add a terminal-state emoji reaction to the user's original message
       this.finishTurnReactions(ctx, terminalReactionEmoji(cardSession.currentState.terminal));
+
+      // 后台任务跨 turn：卡片收尾只是"这一轮的投影结束了"，任务本身可能还在跑。
+      // 订阅放在最后：卡片已落地，patch 才有落点。
+      this.startBackgroundJobWatch(runId, snapshot, activeRun.runner);
     } finally {
       // cleanup must survive mid-finalize errors. The only unguarded
       // expression in finalizeRun is the renderRunCard(...) argument evaluated

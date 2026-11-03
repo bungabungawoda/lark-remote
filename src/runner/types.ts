@@ -423,6 +423,21 @@ export interface GoalStateEvent {
 }
 
 /**
+ * 后台任务名单里的一行（宿主侧权威数据）。
+ *
+ * `status` 保留宿主原词（running / stopping / completed / failed …）——各
+ * agent 的终态词表不同，桥侧只按「是不是 running/stopping」二分，不在这里
+ * 维护一份会漂移的枚举。桥侧自己产出的 `ended` / `unknown` 见
+ * `BackgroundJobStatus`（card/run-state）。
+ */
+export interface BackgroundJobRoster {
+  id: string;
+  label: string;
+  status?: string;
+  progress?: string;
+}
+
+/**
  * 运行结束后仍在后台运行的任务（终态卡展示 + 逐个停止入口）。
  *
  * 为什么必须出现在 run 卡片上：后台任务的生命周期跨 turn（`bash
@@ -431,12 +446,7 @@ export interface GoalStateEvent {
  */
 export interface BackgroundJobsEvent {
   type: 'background_jobs';
-  jobs: Array<{
-    id: string;
-    label: string;
-    status?: string;
-    progress?: string;
-  }>;
+  jobs: BackgroundJobRoster[];
   timestamp?: string;
 }
 
@@ -664,6 +674,17 @@ export interface AgentRunner extends Runner {
    * agent 实现；调用方按能力存在与否门控。
    */
   killJob?(sessionId: string, jobId: string): Promise<boolean>;
+  /**
+   * 订阅一个 session 的后台任务名单（整份替换），直到 `signal` abort 或宿主
+   * 关闭流。只有支持后台任务的 agent 实现；调用方按能力存在与否门控。
+   *
+   * 必须在 run 结束之后仍然可用：后台任务的生命周期跨 turn，收尾那一刻的快照
+   * 只能画一张会过期的卡。
+   */
+  watchJobs?(
+    sessionId: string,
+    signal: AbortSignal,
+  ): AsyncIterable<ReadonlyArray<BackgroundJobRoster>>;
   /**
    * 热更审批模式/权限预设（config.save 后推给在跑的 runner，不必重启会话）。
    * 各家 settings 词表不同（codex: approvalPolicy/sandbox；kimi: permissionMode；
