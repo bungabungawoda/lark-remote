@@ -175,6 +175,9 @@ export abstract class CardSession<S, RO = unknown> {
    *  in-flight flush 完成后该事件无 follow-up render，停留为 stale 中间帧。
    *  finally 检查此标志后重新 scheduleFlush，保证 in-flight 期间累积的事件最终被渲染。 */
   private pendingReschedule = false;
+  /** 终态帧是否已由 confirmTerminalFrame 确认落到飞书。settle 的兜底 patch
+   *  据此去重：流异常结束时若终态帧已经确认过，再 patch 一次只是幂等重发。 */
+  private terminalFrameConfirmed = false;
   /** 当前 in-flight flush 的 promise（若 flush 正在 await updateCard）。
    *  finish() 在终态 patch 前 await 它，保证 in-flight 的 pre-terminal patch 先落地、
    *  terminal patch 后落地——否则两条 controller.update 并发无 FIFO，
@@ -239,6 +242,10 @@ export abstract class CardSession<S, RO = unknown> {
     if (outcome.ok) return 'streamed';
     getLogger().warn(`${this.logPrefix} stream did not complete cleanly:`, outcome.error);
     if (!this.messageId) return 'unsent';
+    // 终态帧已在 finish 里确认落地：兜底 patch 是幂等重发，跳过。
+    // 仍返回 'streamed' 而非 'unsent'——卡片确实已带终态内容，调用方不能
+    // 因此再发一张 fallback 卡（bridge 只对 'unsent' 兜底）。
+    if (this.terminalFrameConfirmed) return 'streamed';
     try {
       await this.connector.updateCard(this.messageId, this.renderCurrentCard());
       return 'updated';
@@ -304,6 +311,34 @@ export abstract class CardSession<S, RO = unknown> {
   protected async prepareTerminalUpdate(): Promise<void> {
     this.cancelPendingFlush();
     if (this.flushP) await this.flushP;
+  }
+
+  /**
+   * 把终态帧真正钉到飞书上。
+   *
+   * `controller.update()` 只把帧交给 @larksuite/channel 的 throttle/queue，
+   * resolve 时 `message.patch` 还没发出（见 `connector/index.ts` 的
+   * patchWithRetry 注释）。流若在下一次 throttle 到期前关闭，这一帧就可能
+   * 永远不出门——卡片停在运行态、底部「⏹ 停止」按钮还在：停止其实已经
+   * 生效，按钮仍可点，点了是空转。
+   *
+   * 终态后再走一次整卡 patch（幂等替换；一次 run 只多一次请求），成功打
+   * info 便于排障时区分「帧没发出去」与「发出去了飞书没刷」；失败只 warn，
+   * 不参与收尾决策——流本身已结束，不能让一次兜底 patch 把 finish 拖成异常。
+   */
+  protected async confirmTerminalFrame(label: string): Promise<void> {
+    const messageId = this.messageId;
+    // 没拿到 messageId（流未建立/已降级）时无从 patch，交回 settle() 的兜底。
+    if (!messageId) return;
+    try {
+      await this.connector.updateCard(messageId, this.renderCurrentCard());
+      this.terminalFrameConfirmed = true;
+      getLogger().info(
+        `${this.logPrefix} terminal frame confirmed ${label} messageId=${messageId}`,
+      );
+    } catch (error) {
+      getLogger().warn(`${this.logPrefix} terminal frame confirm failed ${label}:`, error);
+    }
   }
 
   protected release(): void {

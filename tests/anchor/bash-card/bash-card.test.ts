@@ -95,6 +95,7 @@ describe('BashCardSession settle/start budget protection symmetry (anchor)', () 
       update: async () => {},
     };
     const updated: Array<{ messageId: string; card: object }> = [];
+    let updateCalls = 0;
     const connector = {
       streamCard: async (
         _chatId: string,
@@ -106,6 +107,11 @@ describe('BashCardSession settle/start budget protection symmetry (anchor)', () 
         throw new Error('complete failed');
       },
       updateCard: async (messageId: string, card: object) => {
+        updateCalls += 1;
+        // 第一次 = finish() 的终态帧确认。故意让它失败，逼 settle 真走兜底
+        // patch —— 否则本用例守护的「兜底路径跳过 enforceCardBudget」失去
+        // 执行路径。
+        if (updateCalls === 1) throw new Error('confirm failed');
         updated.push({ messageId, card });
       },
     };

@@ -82,7 +82,7 @@ describe('BashCardSession', () => {
     await session.settle();
   });
 
-  it('falls back to updateCard when the stream fails to complete', async () => {
+  it('patches the terminal frame at finish instead of at settle', async () => {
     const updated: Array<{ messageId: string; card: object }> = [];
     const controller: CardStreamController = {
       messageId: 'card-1',
@@ -107,13 +107,16 @@ describe('BashCardSession', () => {
       connector,
       chatId: 'chat-1',
       replyTo: 'msg-1',
-      runId: 'bash-2',
+      runId: 'bash-2b',
       command: 'echo hi',
     });
 
     await session.start();
     await session.finish('error', { exitCode: 1, stderr: 'boom' });
-    expect(await session.settle()).toBe('updated');
+    // 终态帧在 finish 里已经整卡 patch 落地（controller 通道不保证发出），
+    // 所以流失败时 settle 无需重复兜底。
+    expect(updated).toHaveLength(1);
+    expect(await session.settle()).toBe('streamed');
     expect(updated[0]?.messageId).toBe('card-1');
   });
 });
@@ -404,5 +407,31 @@ describe('BashCardSession output capping', () => {
 
     expect(session.currentState.stderr!.length).toBeLessThanOrEqual(BASH_OUTPUT_STORE_CAP);
     await session.settle();
+  });
+
+  it('test_anchor_terminal_frame_is_patched_to_feishu_after_finish', async () => {
+    const patched: Array<{ messageId: string; card: object }> = [];
+    const { connector } = makeStreamCardConnector({ messageId: 'bash-card-2' });
+    connector.updateCard = async (messageId, card) => {
+      patched.push({ messageId, card });
+    };
+
+    const session = new BashCardSession({
+      connector,
+      chatId: 'chat-1',
+      runId: 'bash-2',
+      command: 'sleep 300',
+    });
+
+    await session.start();
+    await session.finish('interrupted');
+    await session.settle();
+
+    // 终态帧必须经 connector 真 patch 一次（throttle 通道不保证落地）。
+    expect(patched.length).toBe(1);
+    expect(patched[0]!.messageId).toBe('bash-card-2');
+    const json = JSON.stringify(patched[0]!.card);
+    expect(json).toContain('已终止');
+    expect(json).not.toContain('⏹ 停止');
   });
 });

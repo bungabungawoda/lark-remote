@@ -69,7 +69,10 @@ describe('RunCardSession', () => {
 
     await session.start();
     await session.finish('error', { errorMsg: 'boom' });
-    expect(await session.settle()).toBe('updated');
+    // 原卡已被 finish 的终态帧确认 patch 过（controller 通道不保证落地，
+    // 见 confirmTerminalFrame），settle 不再重复兜底 → 'streamed'。
+    expect(updated).toHaveLength(1);
+    expect(await session.settle()).toBe('streamed');
     expect(updated[0]?.messageId).toBe('card-2');
   });
 

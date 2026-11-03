@@ -78,6 +78,8 @@ export class RunCardSession extends CardSession<RunState, RunCardRenderOptions> 
     await this.prepareTerminalUpdate();
     this.state = finishRun(this.state, terminal, meta);
     await this.updateCard();
+    // 终态帧必须真的落地（throttle 通道 resolve 时 patch 还没发）。
+    await this.confirmTerminalFrame(`runId=${this.state.runId} terminal=${this.state.terminal}`);
     this.release();
   }
 }
