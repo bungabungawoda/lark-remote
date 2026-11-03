@@ -55,7 +55,7 @@ jobs:
 
       - run: bun run typecheck
 
-      - run: bun run test
+      - run: bun run test --coverage
 
       - run: npx tsx scripts/verify-test-classification.ts
 

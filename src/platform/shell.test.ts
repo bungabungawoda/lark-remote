@@ -68,6 +68,23 @@ describe('posix bash 后端', () => {
       detached: true,
     });
   });
+
+  it('spawnArgv 原样透传 argv、cwd 与 options，不拼 shell 字符串', () => {
+    const backend = createBashShellBackend();
+    backend.spawnArgv('node', ['script.js', '--message', 'hello world'], {
+      cwd: '/home/user/project',
+      options: { stdio: ['ignore', 'pipe', 'pipe'], detached: true },
+    });
+    expect(spawnCall()).toEqual({
+      file: 'node',
+      args: ['script.js', '--message', 'hello world'],
+      opts: {
+        cwd: '/home/user/project',
+        stdio: ['ignore', 'pipe', 'pipe'],
+        detached: true,
+      },
+    });
+  });
 });
 
 describe('win32 shell 后端', () => {
@@ -116,10 +133,61 @@ describe('win32 shell 后端', () => {
     expect(opts.detached).toBe(true);
     expect(opts.windowsHide).toBe(true);
   });
+
+  it('spawnArgv 的非 shell 命令原样交给 cross-spawn，并强制 windowsHide', () => {
+    const backend = createWin32ShellBackend();
+    backend.spawnArgv('C:\\Program Files\\nodejs\\node.exe', ['-e', 'console.log("ok")'], {
+      cwd: 'C:\\Users\\user\\project',
+      options: { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: false },
+    });
+    expect(spawnCall()).toEqual({
+      file: 'C:\\Program Files\\nodejs\\node.exe',
+      args: ['-e', 'console.log("ok")'],
+      opts: {
+        cwd: 'C:\\Users\\user\\project',
+        stdio: ['ignore', 'pipe', 'pipe'],
+        windowsHide: true,
+      },
+    });
+  });
+
+  it.each([
+    ['bash', ['-lc', 'echo hi']],
+    ['C:\\Program Files\\Git\\bin\\bash.exe', ['-lc', 'echo hi']],
+    ['SH.exe', ['-c', 'pwd']],
+    ['zsh', ['-c', 'pwd']],
+    ['dash', ['-c', 'pwd']],
+  ])('spawnArgv 将 shell 名 %s 解析到 Git Bash，且不改写 argv', (file, args) => {
+    const dir = mkdtemp();
+    const bashExe = path.join(dir, 'bash.exe');
+    fs.writeFileSync(bashExe, 'MZ');
+    const backend = createWin32ShellBackend({ pathEnv: dir });
+
+    backend.spawnArgv(file, args, { cwd: 'C:\\project' });
+
+    expect(spawnCall()).toEqual({
+      file: bashExe,
+      args,
+      opts: { cwd: 'C:\\project', windowsHide: true },
+    });
+  });
+
+  it('spawnArgv 找不到 Git Bash 时抛 ShellUnavailableError，不泛化执行原命令', () => {
+    const dir = mkdtemp();
+    const backend = createWin32ShellBackend({ pathEnv: dir });
+    expect(() => backend.spawnArgv('bash', ['-lc', 'pwd'], { cwd: 'C:\\project' })).toThrow(
+      ShellUnavailableError,
+    );
+    expect(mockSpawn).not.toHaveBeenCalled();
+  });
 });
 
 describe('createShellBackend — 平台分发', () => {
   // spawn 行为已在上方 posix/win32 后端 describe 覆盖，分发层只钉 kind。
+  it('未注入 platform 时取当前宿主并选择对应后端', () => {
+    expect(createShellBackend().kind).toBe('bash');
+  });
+
   it('posix → bash 后端', () => {
     expect(createShellBackend({ platform: 'linux' }).kind).toBe('bash');
   });
