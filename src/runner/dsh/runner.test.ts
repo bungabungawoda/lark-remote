@@ -721,6 +721,51 @@ describe('DshClient / DshRunner integration', () => {
     expect(events.find((e) => e.type === 'background_jobs')).toBeUndefined();
   });
 
+  /**
+   * 收尾后的卡片要能看出任务结束。`job/list` 本来就是"任务生命周期变化就推整
+   * 份名单"的流，旧实现取第一帧就断开，等于把唯一的更新来源丢掉——于是卡片
+   * 停在收尾那一刻，任务早就跑完了还写着「运行中」。
+   */
+  it('watchJobs 持续推送整份名单，直到订阅中止', async () => {
+    server = new FakeDshServer();
+    server.setJobFrames([
+      [{ id: 'bash-1', label: 'kaggle poll', status: 'running' }],
+      [
+        { id: 'bash-1', label: 'kaggle poll', status: 'running' },
+        { id: 'bash-2', label: 'npm run dev', status: 'running' },
+      ],
+      [{ id: 'bash-2', label: 'npm run dev', status: 'running' }],
+    ]);
+    await server.start();
+
+    const runner = new DshRunner({ kind: 'dsh', sessionReader: stubReader, host: server.baseUrl });
+    const ac = new AbortController();
+    const rosters: string[][] = [];
+    for await (const roster of runner.watchJobs(SID, ac.signal)) {
+      rosters.push(roster.map((job) => job.id));
+      if (rosters.length === 3) ac.abort();
+    }
+
+    expect(rosters).toEqual([['bash-1'], ['bash-1', 'bash-2'], ['bash-2']]);
+  });
+
+  it('watchJobs 在宿主关闭名单流时自然结束，不抛错', async () => {
+    server = new FakeDshServer();
+    server.setJobFrames([
+      [{ id: 'bash-1', label: 'kaggle poll', status: 'running' }],
+      { close: true },
+    ]);
+    await server.start();
+
+    const runner = new DshRunner({ kind: 'dsh', sessionReader: stubReader, host: server.baseUrl });
+    const rosters: string[][] = [];
+    for await (const roster of runner.watchJobs(SID, new AbortController().signal)) {
+      rosters.push(roster.map((job) => job.id));
+    }
+
+    expect(rosters).toEqual([['bash-1']]);
+  });
+
   it('goal 探测失败时产 goal_state{known:false}，不静默当成没有目标', async () => {
     // 验证什么：goalState 的 known=false 是"读不到"，与 goal=null（明确没有）
     // 是两件事。旧实现两种都只是不产事件，卡片只能按"没有目标"收尾成已完成；

@@ -2,7 +2,10 @@ import { describe, expect, it } from 'vitest';
 import {
   createInitialRunState,
   finishRun,
+  markBackgroundJobsUnknown,
   reduceRunState,
+  syncBackgroundJobs,
+  type RunState,
   type RunTerminal,
   type RunFooter,
   type ToolEntry,
@@ -1344,5 +1347,115 @@ describe('RunState · goal_state', () => {
     const done = finishRun(state, 'goal_continuing', { resultSubtype: 'success' });
     expect(done.terminal).toBe('goal_continuing');
     expect(done.goal?.phase).toBe('active');
+  });
+});
+
+/**
+ * 收尾后的后台任务同步（症状：run 卡已是 ✅ 完成，后台任务早已结束，
+ * 卡片却一直写「运行中」并留着停止按钮）。
+ *
+ * 根因是终态卡只拿到「result 那一刻的名单」。终态 state 不再接受事件
+ * （reduceRunState 对终态早退），所以同步必须走独立入口：roster 是宿主侧
+ * 的权威整份名单，run 结束之后仍会随任务生命周期变化。
+ */
+describe('syncBackgroundJobs', () => {
+  function terminalWithBackgroundJobs(
+    jobs: Array<{ id: string; label: string; status?: string; progress?: string }>,
+  ): RunState {
+    let state = createInitialRunState('run-bg-1');
+    state = reduceRunState(state, {
+      type: 'system',
+      subtype: 'init',
+      session_id: 'session-1',
+      cwd: '/tmp',
+      model: 'DSH',
+    } as never);
+    state = reduceRunState(state, { type: 'background_jobs', jobs } as never);
+    return finishRun(state, 'done', { resultSubtype: 'success' });
+  }
+
+  it('名单里消失的任务标为已结束，仍在名单里的保持原状态', () => {
+    const state = terminalWithBackgroundJobs([
+      { id: 'bash-1', label: 'npm run dev', status: 'running' },
+      { id: 'bash-2', label: 'kaggle poll', status: 'running' },
+    ]);
+
+    const next = syncBackgroundJobs(state, [
+      { id: 'bash-1', label: 'npm run dev', status: 'running' },
+    ]);
+
+    expect(next.backgroundJobs).toEqual([
+      { id: 'bash-1', label: 'npm run dev', status: 'running' },
+      { id: 'bash-2', label: 'kaggle poll', status: 'ended' },
+    ]);
+  });
+
+  it('名单无变化时返回同一个 state 引用（bridge 据此跳过无谓 patch）', () => {
+    const state = terminalWithBackgroundJobs([
+      { id: 'bash-1', label: 'npm run dev', status: 'running' },
+    ]);
+
+    const next = syncBackgroundJobs(state, [
+      { id: 'bash-1', label: 'npm run dev', status: 'running' },
+    ]);
+
+    expect(next).toBe(state);
+  });
+
+  it('名单里新出现的任务按宿主状态加入（排在已有任务之后）', () => {
+    const state = terminalWithBackgroundJobs([
+      { id: 'bash-1', label: 'npm run dev', status: 'running' },
+    ]);
+
+    const next = syncBackgroundJobs(state, [
+      { id: 'bash-1', label: 'npm run dev', status: 'running' },
+      { id: 'bash-2', label: 'kaggle poll', status: 'running' },
+    ]);
+
+    expect(next.backgroundJobs).toEqual([
+      { id: 'bash-1', label: 'npm run dev', status: 'running' },
+      { id: 'bash-2', label: 'kaggle poll', status: 'running' },
+    ]);
+  });
+
+  it('宿主已给终态的任务标成已结束，不再计入「仍在运行」', () => {
+    const state = terminalWithBackgroundJobs([
+      { id: 'bash-1', label: 'npm run dev', status: 'running' },
+    ]);
+
+    const next = syncBackgroundJobs(state, [
+      { id: 'bash-1', label: 'npm run dev', status: 'completed' },
+    ]);
+
+    expect(next.backgroundJobs).toEqual([{ id: 'bash-1', label: 'npm run dev', status: 'ended' }]);
+  });
+
+  it('已结束的任务不会因为后续帧里重新出现而复活', () => {
+    const state = terminalWithBackgroundJobs([
+      { id: 'bash-1', label: 'npm run dev', status: 'running' },
+    ]);
+    const ended = syncBackgroundJobs(state, []);
+
+    const next = syncBackgroundJobs(ended, [
+      { id: 'bash-1', label: 'npm run dev', status: 'running' },
+    ]);
+
+    expect(next.backgroundJobs).toEqual([{ id: 'bash-1', label: 'npm run dev', status: 'ended' }]);
+  });
+
+  it('markBackgroundJobsUnknown 只把仍在跑的任务标成状态未知', () => {
+    const state = terminalWithBackgroundJobs([
+      { id: 'bash-1', label: 'npm run dev', status: 'running' },
+      { id: 'bash-2', label: 'old build', status: 'ended' },
+    ]);
+
+    const next = markBackgroundJobsUnknown(state);
+
+    expect(next.backgroundJobs).toEqual([
+      { id: 'bash-1', label: 'npm run dev', status: 'unknown' },
+      { id: 'bash-2', label: 'old build', status: 'ended' },
+    ]);
+    // 没有活任务时无需改写（避免每帧都造新对象）。
+    expect(markBackgroundJobsUnknown(next)).toBe(next);
   });
 });

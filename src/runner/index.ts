@@ -44,6 +44,8 @@ export type {
   ApprovalView,
   ApprovalRequestedEvent,
   ApprovalResolvedEvent,
+  BackgroundJobRoster,
+  BackgroundJobsEvent,
   GoalView,
   GoalStateEvent,
 } from './types.js';

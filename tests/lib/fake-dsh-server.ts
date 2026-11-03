@@ -50,6 +50,8 @@ export class FakeDshServer {
   private listValue: unknown = { items: [] };
   /** `job/list` 首帧（整份任务名单）。 */
   private jobRowsValue: unknown[] = [];
+  /** `job/list` 逐帧脚本（整份替换）；空 = 用 jobRowsValue 发一帧。 */
+  private jobFrames: Array<unknown[] | { close: true }> = [];
   /** 自动把 prompt 的 user/message 注入 follow 快照（真实 DSH 一定记录它）。 */
   private autoPromptMessage = true;
   /** 每个 session 最近一次受理的 prompt 身份（session/requestId）。 */
@@ -277,6 +279,17 @@ export class FakeDshServer {
   /** Script the `job/list` roster (whole-set first frame). */
   setJobRows(jobs: unknown[]): void {
     this.jobRowsValue = jobs;
+    this.jobFrames = [];
+  }
+
+  /**
+   * Script `job/list` as a live stream: each entry is one whole-set roster
+   * frame, `{close:true}` ends the stream. Models a host that keeps pushing
+   * lifecycle changes after the turn ended (which is the whole point of
+   * watching the roster instead of snapshotting it).
+   */
+  setJobFrames(frames: Array<unknown[] | { close: true }>): void {
+    this.jobFrames = [...frames];
   }
 
   /** Append a `$events` frame at response time (waterfall/cancel/close). */
@@ -408,14 +421,33 @@ export class FakeDshServer {
         return;
       }
       if (message.endpoint === 'job/list') {
-        // 整份名单的第一帧就是当前真相；客户端取到即断开。
-        ws.send(
-          JSON.stringify({
-            type: 'item',
-            streamId,
-            value: { type: 'rows', jobs: this.jobRowsValue },
-          }),
-        );
+        // 整份名单的每一帧都是那一刻的真相（whole-set replacement）。脚本里没
+        // 给帧序列时只发一帧——旧客户端取到首帧即断开，行为不变。
+        if (this.jobFrames.length === 0) {
+          ws.send(
+            JSON.stringify({
+              type: 'item',
+              streamId,
+              value: { type: 'rows', jobs: this.jobRowsValue },
+            }),
+          );
+          return;
+        }
+        timer = setInterval(() => {
+          if (ws.readyState !== ws.OPEN) {
+            stopTimer();
+            return;
+          }
+          const next = this.jobFrames.shift();
+          if (next === undefined) return;
+          if ('close' in next && next.close === true) {
+            stopTimer();
+            ws.send(JSON.stringify({ type: 'end', streamId }));
+            ws.close();
+            return;
+          }
+          ws.send(JSON.stringify({ type: 'item', streamId, value: { type: 'rows', jobs: next } }));
+        }, 5);
         return;
       }
       if (message.endpoint === 'session/control') {

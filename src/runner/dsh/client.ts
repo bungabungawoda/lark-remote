@@ -1196,13 +1196,31 @@ export class DshClient {
   }
 
   /**
-   * One session's current background-job roster.
+   * Subscribe to one session's background-job roster as a live stream.
    *
-   * `job/list` 是流（生命周期变化时推整份名单），但"此刻有哪些任务在跑"只需
-   * 要第一帧：文档明确首帧就是当前真相（whole-set replacement）。取到即断开，
-   * 不长期持有连接——任务列表只用于收尾时的一句话与停止按钮。
+   * `job/list` 是整份替换流（whole-set replacement）：首帧就是当前真相，之后
+   * 任务生命周期一变就再推一整份。**run 结束之后**必须用这个长订阅——后台任务
+   * 跨 turn 存活，任务结束这件事只会在这条流上出现；收尾时取首帧即断开
+   * （{@link jobRows}）只够画那一瞬间的卡片。
+   */
+  async *watchJobs(sessionId: string, signal: AbortSignal): AsyncGenerator<DshJobView[]> {
+    for await (const frame of this.muxStream(
+      'job/list',
+      { args: dshArgs('job/list', { sessionId }) },
+      signal,
+    )) {
+      const rows = frame as { type?: string; jobs?: unknown };
+      if (rows?.type !== 'rows') continue;
+      yield Array.isArray(rows.jobs) ? (rows.jobs as DshJobView[]) : [];
+    }
+  }
+
+  /**
+   * One session's current background-job roster (snapshot).
    *
-   * 失败返回 undefined（与"没有任务"区分）：拿不到就别在卡片上写"0 个后台任务"。
+   * "此刻有哪些任务在跑"只需要第一帧：文档明确首帧就是当前真相，取到即断开，
+   * 不长期持有连接。失败返回 undefined（与"没有任务"区分）：拿不到就别在卡片
+   * 上写"0 个后台任务"。
    */
   async jobRows(
     sessionId: string,
@@ -1212,16 +1230,7 @@ export class DshClient {
     const timeout = setTimeout(() => timer.abort(), opts.timeoutMs ?? 2_000);
     const signal = opts.signal ? AbortSignal.any([opts.signal, timer.signal]) : timer.signal;
     try {
-      for await (const frame of this.muxStream(
-        'job/list',
-        { args: dshArgs('job/list', { sessionId }) },
-        signal,
-      )) {
-        const rows = frame as { type?: string; jobs?: unknown };
-        if (rows?.type === 'rows') {
-          return Array.isArray(rows.jobs) ? (rows.jobs as DshJobView[]) : [];
-        }
-      }
+      for await (const rows of this.watchJobs(sessionId, signal)) return rows;
       return undefined;
     } catch (err) {
       getLogger().debug(`[dsh] job/list unavailable: ${(err as Error).message}`);
