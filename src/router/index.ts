@@ -1679,14 +1679,15 @@ export class CommandRouter {
    * Handle stop card action: interrupt current run.
    */
   private async handleCardStop(value: CardActionPayload, ctx: CommandContext): Promise<void> {
-    if (!value.runId || !ctx.userId || !ctx.chatId) {
+    if (!ctx.userId || !ctx.chatId || (!value.runId && !ctx.messageId)) {
       await this.bridge.sendResult({ text: '⚠️ 无效的停止请求，缺少必要信息' }, ctx);
       return;
     }
     const interrupt = await this.bridge.interruptCurrentRunDetailed({
       userId: ctx.userId,
       chatId: ctx.chatId,
-      runId: value.runId,
+      ...(value.runId ? { runId: value.runId } : {}),
+      cardMessageId: ctx.messageId,
     });
     const stopped = interrupt.stopped;
     // Regression 2026-06-22: card stop button silently no-op'd when the

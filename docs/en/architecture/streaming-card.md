@@ -219,8 +219,10 @@ Normal messages and normal cardActions continue entering the `Bridge.enqueue` Pr
 Stop control must not enter that queue, otherwise it would wait until the current run completes. Entry rules:
 
 - Exact `/stop` calls `interruptCurrentRun()` directly;
-- Stop cardAction must carry runId;
-- Bridge validates userId, chatId, runId;
+- Stop cardAction uses the button runId first and also receives the callback card `messageId`;
+- Bridge validates userId and chatId. An exact runId match wins. If the runId is
+  missing or does not match, Bridge accepts the click only when the callback
+  messageId identifies the current active run card;
 - Stale cards, other users, or other chats cannot interrupt the current run;
 - Both finish and runner.stop allow repeated calls.
 

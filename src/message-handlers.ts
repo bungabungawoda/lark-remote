@@ -269,7 +269,11 @@ export function setupMessageHandlers(deps: MessageHandlerDeps): void {
     const actionValue = action.action.value as CardActionPayload | undefined;
     if (!actionValue?.cmd) return;
 
-    logger.info(`card action: ${actionValue.cmd}`);
+    logger.info(
+      actionValue.cmd === 'stop'
+        ? `card action: stop runId=${actionValue.runId ?? '(none)'} messageId=${action.messageId}`
+        : `card action: ${actionValue.cmd}`,
+    );
 
     const userId = action.operator.openId;
     const chatId = action.chatId;

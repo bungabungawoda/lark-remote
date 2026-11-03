@@ -423,6 +423,74 @@ describe('executeBash / claude concurrency (! bypasses serial queue)', () => {
     expect(result.stop).toEqual({ status: 'unconfirmed', sessionId: 'sess-dsh' });
     await promise.catch(() => {});
   });
+
+  it('stop card action falls back to the current run only when the clicked card is that run card', async () => {
+    const { bridge, connector, sessionStore } = makeBridge({ runner: createHangingRunner() });
+    const cwd = fs.realpathSync(tmpDir);
+    sessionStore.setCwd(ctx.userId, cwd);
+
+    const promise = bridge.forwardToClaude('hi', ctx);
+    await vi.waitFor(() => expect(bridge.isBusyFor(cwd)).toBe(true));
+    await vi.waitFor(() =>
+      expect(connector._sent.some((s) => JSON.stringify(s.input).includes('"cmd":"stop"'))).toBe(
+        true,
+      ),
+    );
+
+    // Covers card callbacks whose behavior value is stale while the server
+    // callback still identifies the live run card.
+    const result = await bridge.interruptCurrentRunDetailed({
+      userId: ctx.userId,
+      chatId: ctx.chatId,
+      runId: 'stale-run-id',
+      cardMessageId: 'stream-msg-id',
+    });
+    expect(result.stopped).toBe(true);
+    expect(result.stoppedCount).toBe(1);
+    await promise;
+  });
+
+  it('stop card action can resolve the current run without runId from its live card', async () => {
+    const { bridge, connector, sessionStore } = makeBridge({ runner: createHangingRunner() });
+    const cwd = fs.realpathSync(tmpDir);
+    sessionStore.setCwd(ctx.userId, cwd);
+
+    const promise = bridge.forwardToClaude('hi', ctx);
+    await vi.waitFor(() =>
+      expect(connector._sent.some((s) => JSON.stringify(s.input).includes('"cmd":"stop"'))).toBe(
+        true,
+      ),
+    );
+
+    const result = await bridge.interruptCurrentRunDetailed({
+      userId: ctx.userId,
+      chatId: ctx.chatId,
+      cardMessageId: 'stream-msg-id',
+    });
+    expect(result.stopped).toBe(true);
+    expect(result.stoppedCount).toBe(1);
+    await promise;
+  });
+
+  it('stop card action does not stop the current run for a different card', async () => {
+    const { bridge, sessionStore } = makeBridge({ runner: createHangingRunner() });
+    const cwd = fs.realpathSync(tmpDir);
+    sessionStore.setCwd(ctx.userId, cwd);
+
+    const promise = bridge.forwardToClaude('hi', ctx);
+    await vi.waitFor(() => expect(bridge.isBusyFor(cwd)).toBe(true));
+
+    const result = await bridge.interruptCurrentRunDetailed({
+      userId: ctx.userId,
+      chatId: ctx.chatId,
+      cardMessageId: 'old-card-message-id',
+    });
+    expect(result).toEqual({ stopped: false });
+    expect(bridge.isBusyFor(cwd)).toBe(true);
+
+    await bridge.interruptCurrentRun({ userId: ctx.userId, chatId: ctx.chatId });
+    await promise;
+  });
 });
 
 // --- Idle watchdog (§9.12) ---
