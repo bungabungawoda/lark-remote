@@ -134,10 +134,16 @@ describe('RunCardSession start/settle budget skip (anchor)', () => {
     const spy = vi.spyOn(cardBudget, 'enforceCardBudget');
 
     const updated: Array<{ messageId: string; card: object }> = [];
-    const { connector } = makeRunCardConnector({
-      updateCapture: updated,
-      throwAfterProducer: true,
-    });
+    const { connector } = makeRunCardConnector({ throwAfterProducer: true });
+    let updateCalls = 0;
+    connector.updateCard = async (messageId: string, card: object) => {
+      updateCalls += 1;
+      // 第一次 = finish() 的终态帧确认（throttle 通道不保证落地）。故意让它
+      // 失败，逼 settle 真走兜底 patch —— 否则本用例守护的「兜底路径跳过
+      // enforceCardBudget」就没有执行路径了。
+      if (updateCalls === 1) throw new Error('confirm failed');
+      updated.push({ messageId, card });
+    };
 
     const session = new RunCardSession({
       connector,
@@ -163,6 +169,32 @@ describe('RunCardSession start/settle budget skip (anchor)', () => {
     expect(spy).not.toHaveBeenCalled();
 
     spy.mockRestore();
+  });
+
+  it('test_anchor_run_card_settle_skips_duplicate_patch_when_terminal_frame_confirmed', async () => {
+    const updated: Array<{ messageId: string; card: object }> = [];
+    const { connector } = makeRunCardConnector({
+      updateCapture: updated,
+      throwAfterProducer: true,
+    });
+
+    const session = new RunCardSession({
+      connector,
+      chatId: 'chat-1',
+      runId: 'run-settle-2',
+    });
+
+    await session.start();
+    await session.finish('interrupted', { interruptedReason: 'user_stop' });
+
+    // finish 已经整卡 patch 过一次（终态帧确认）。
+    expect(updated).toHaveLength(1);
+    expect(JSON.stringify(updated[0]?.card)).not.toContain('⏹ 停止');
+
+    // 流异常结束时 settle 不再重复发同一张终态卡（幂等但纯浪费），
+    // 返回值仍是 'streamed'——bridge 只对 'unsent' 补发 fallback 卡。
+    expect(await session.settle()).toBe('streamed');
+    expect(updated).toHaveLength(1);
   });
 });
 

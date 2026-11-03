@@ -112,6 +112,8 @@ export class BashCardSession extends CardSession<BashState, BashRenderOptions> {
       ...(meta.output !== undefined ? { output: capBashOutput(meta.output) } : {}),
     };
     await this.updateCard();
+    // 同 run 卡：终态帧必须真的落地，否则停止后卡片仍显示停止按钮。
+    await this.confirmTerminalFrame(`runId=${this.state.runId} terminal=${terminal}`);
     this.release();
   }
 
