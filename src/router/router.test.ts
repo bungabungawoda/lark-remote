@@ -2899,6 +2899,49 @@ describe('CommandRouter', () => {
       expect((connector._sent[0].input as { text: string }).text).toContain('已结束');
     });
 
+    it('stop card action sends the clicked card messageId to the bridge', async () => {
+      const interruptCurrentRunDetailed = vi.fn().mockResolvedValue({
+        stopped: true,
+        stoppedCount: 1,
+      });
+      const { router } = createRouter({
+        bridge: createMockBridge({ interruptCurrentRunDetailed }),
+      });
+
+      await router.handleCardAction(
+        { cmd: 'stop', runId: 'stale-run-1' },
+        { userId: 'user1', chatId: 'chat1', messageId: 'live-card-message' },
+      );
+
+      expect(interruptCurrentRunDetailed).toHaveBeenCalledWith({
+        userId: 'user1',
+        chatId: 'chat1',
+        runId: 'stale-run-1',
+        cardMessageId: 'live-card-message',
+      });
+    });
+
+    it('stop card action accepts a card messageId when behavior runId is absent', async () => {
+      const interruptCurrentRunDetailed = vi.fn().mockResolvedValue({
+        stopped: true,
+        stoppedCount: 1,
+      });
+      const { router } = createRouter({
+        bridge: createMockBridge({ interruptCurrentRunDetailed }),
+      });
+
+      await router.handleCardAction(
+        { cmd: 'stop' },
+        { userId: 'user1', chatId: 'chat1', messageId: 'live-card-message' },
+      );
+
+      expect(interruptCurrentRunDetailed).toHaveBeenCalledWith({
+        userId: 'user1',
+        chatId: 'chat1',
+        cardMessageId: 'live-card-message',
+      });
+    });
+
     it('test_anchor_approval_respond_returns_toast_and_calls_bridge', async () => {
       // 验证行为：approval.respond 在 router 层直接调用 bridge.handleApprovalRespond
       // 并返回成功 toast（CardKit 回调即时反馈）。

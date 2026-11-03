@@ -224,8 +224,9 @@ run。
 停止控制不能进入该 queue，否则会等当前 run 完成后才执行。入口规则：
 
 - exact `/stop` 直接调用 `interruptCurrentRun()`；
-- stop cardAction 必须携带 runId；
-- Bridge 校验 userId、chatId、runId；
+- stop cardAction 优先使用按钮的 runId；回调里的卡片 `messageId` 也会传入；
+- Bridge 校验 userId、chatId；runId 精确匹配优先。若 runId 缺失或不匹配，
+  只有回调 messageId 正是当前 active run 的卡片时才按卡片身份命中；
 - 旧卡片、其他用户或其他 chat 不能中断当前 run；
 - finish 和 runner.stop 都允许重复调用。
 

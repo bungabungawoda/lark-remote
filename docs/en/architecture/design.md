@@ -203,7 +203,7 @@ Uses CardKit 2.0, two buttons per alias:
 
 Each Claude run creates only one CardKit 2.0 card on the normal path. `channel.stream` sends the initial card first, then patches the entire card via `message_id`. During the run, thinking, main text, tool summaries, status line, and stop button are displayed; on terminal state, the header changes and the buttons are removed, while **the status line stays**: the elapsed time freezes and DSH's step/context projections show the final snapshot from that run (user request, 2026-10-21).
 
-The stop button payload is `{ "cmd": "stop", "runId": "<uuid>" }`. The entry point must validate `runId + operator.openId + chatId` and bypass the normal work queue, otherwise the stop would be queued behind the current run and unable to interrupt it.
+The stop button payload is `{ "cmd": "stop", "runId": "<uuid>" }`. The entry point must validate `operator.openId + chatId` and bypass the normal work queue, otherwise the stop would be queued behind the current run and unable to interrupt it. Bridge matches the runId first. If that value is missing or stale, it accepts the card callback's `messageId` only when that message identifies the current active run card. Historical cards and other cards such as `/active` cannot use this fallback to stop a newer run.
 
 ---
 
@@ -358,7 +358,7 @@ Feishu WebSocket provides at-least-once delivery; the same event may be pushed m
 
 | callback value                                                                                                                   | Risk     | Notes                                                                                                                            |
 | -------------------------------------------------------------------------------------------------------------------------------- | -------- | -------------------------------------------------------------------------------------------------------------------------------- |
-| Fixed (`config.set`/`config.input`/`config.save`/`new-session`)                                                  | **High** | Second click being dropped causes stuck state with no recovery within TTL; relies on `DEDUP_TTL_MS` small window to pass through |
+| Fixed (`config.set`/`config.input`/`config.save`/`new-session`)                                                                  | **High** | Second click being dropped causes stuck state with no recovery within TTL; relies on `DEDUP_TTL_MS` small window to pass through |
 | Contains dynamic fields (`stop`→runId, `queue.*`→messageId, `resume.use`→sessionId, `*.cd`→path, `ws.*`→name, `order.*`→orderId) | Low      | Different targets produce different actionIds naturally safe; same-target double-click drop is idempotent and harmless           |
 
 **Guidelines for adding new in-place update buttons**:

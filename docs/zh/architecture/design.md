@@ -267,8 +267,10 @@ channel.on('cardAction', async (action) => {
 不走列式布局；详见 `docs/zh/cardkit-layout.md` 的「窄屏优先」一节。
 
 停止按钮 payload 为 `{ "cmd": "stop", "runId": "<uuid>" }`。入口必须校验
-`runId + operator.openId + chatId`，并绕过普通 work queue，否则 stop 会排在当前 run
-结束后而无法中断。
+`operator.openId + chatId`，并绕过普通 work queue，否则 stop 会排在当前 run
+结束后而无法中断。Bridge 先按 runId 精确匹配；若按钮值缺失或过期，只有飞书回调
+的 `messageId` 正是当前 active run 的卡片时才按卡片身份兜底。历史卡和 `/active`
+等其它卡片不能借此停止新 run。
 
 ---
 
@@ -564,7 +566,7 @@ cardAction）。300ms 挡飞书瞬时重投递（<100ms 级），放过用户连
 
 | callback value                                                                                                       | 风险     | 说明                                                                        |
 | -------------------------------------------------------------------------------------------------------------------- | -------- | --------------------------------------------------------------------------- |
-| 固定（`config.set`/`config.input`/`config.save`/`new-session`）                                      | **高危** | 连击第二次被 drop 会卡死状态且 TTL 内无法恢复；靠 `DEDUP_TTL_MS` 小窗口放过 |
+| 固定（`config.set`/`config.input`/`config.save`/`new-session`）                                                      | **高危** | 连击第二次被 drop 会卡死状态且 TTL 内无法恢复；靠 `DEDUP_TTL_MS` 小窗口放过 |
 | 含动态字段（`stop`→runId、`queue.*`→messageId、`resume.use`→sessionId、`*.cd`→path、`ws.*`→name、`order.*`→orderId） | 低危     | 不同目标 actionId 不同天然安全；同目标连击第二次 drop 属幂等无害            |
 
 **新增原地更新按钮的准则**：

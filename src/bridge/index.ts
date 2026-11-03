@@ -950,6 +950,8 @@ export class Bridge {
     userId: string;
     chatId: string;
     runId?: string;
+    /** Card callback's server-provided message id. */
+    cardMessageId?: string;
     /** Restrict the match to a single cwd (queue.immediate). When
      * omitted, all workspaces are candidates (used by /stop, /t, and card stop button which don't know which cwd to target). */
     cwd?: string;
@@ -969,18 +971,39 @@ export class Bridge {
     userId: string;
     chatId: string;
     runId?: string;
+    /**
+     * Card callback's server-provided message id. Used only as a narrow fallback
+     * when the behavior-value runId is missing or stale: the clicked card must
+     * be the one active run's card. A dashboard or historical card never matches.
+     */
+    cardMessageId?: string;
     cwd?: string;
   }): Promise<InterruptOutcome> {
     // 先收集全部命中项再逐个停。activeRuns 以 cwd 为键、多个 workspace 可以
     // 并行跑；旧实现停在「第一条命中」就 return —— 两个 workspace 并行时
     // `/stop` 只停一个却回「已停止」，另一个无声继续。
     // 限定 cwd（queue.immediate）或带 runId（停止卡按钮）时仍只有一条命中。
-    const activeTargets: Array<[string, ActiveRun]> = [];
+    const ownedActiveRuns: Array<[string, ActiveRun]> = [];
     for (const [cwd, active] of this.activeRuns) {
       if (input.cwd !== undefined && cwd !== input.cwd) continue;
       if (active.userId !== input.userId || active.chatId !== input.chatId) continue;
-      if (input.runId && active.runId !== input.runId) continue;
-      activeTargets.push([cwd, active]);
+      ownedActiveRuns.push([cwd, active]);
+    }
+    // Card stop prefers the authoritative runId. If the click is scoped to a
+    // run card but that value is stale/absent, accept only the active run whose
+    // server-provided card messageId is exactly the clicked card. This repairs
+    // callbacks that lose behavior-value without ever stopping a historical or
+    // dashboard card against a newer run.
+    let activeTargets: Array<[string, ActiveRun]>;
+    if (input.runId) {
+      activeTargets = ownedActiveRuns.filter(([, active]) => active.runId === input.runId);
+      if (activeTargets.length === 0) {
+        activeTargets = this.activeRunsForCard(ownedActiveRuns, input.cardMessageId);
+      }
+    } else if (input.cardMessageId) {
+      activeTargets = this.activeRunsForCard(ownedActiveRuns, input.cardMessageId);
+    } else {
+      activeTargets = ownedActiveRuns;
     }
     let stoppedCount = 0;
     let agentKind: AgentKind | undefined;
@@ -1005,13 +1028,22 @@ export class Bridge {
     // `!` 命令也要停——旧实现命中 claude run 就 return，这些 bash 会被漏掉。
     // 带范围的中断（停止卡 runId、queue.immediate 的 cwd）保持旧语义：只有
     // 没有 claude run 命中时才回退到 bash，避免误杀用户并行跑的 `!` 任务。
+    const cardScoped = input.runId !== undefined || input.cardMessageId !== undefined;
     const includeBashRuns =
-      (input.runId === undefined && input.cwd === undefined) || activeTargets.length === 0;
+      (input.runId === undefined && input.cardMessageId === undefined && input.cwd === undefined) ||
+      activeTargets.length === 0;
     const bashTargets = includeBashRuns
       ? [...this.activeBashRuns.entries()].filter(([runId, b]) => {
           if (input.cwd !== undefined && b.cwd !== input.cwd) return false;
           if (b.userId !== input.userId || b.chatId !== input.chatId) return false;
-          if (input.runId && runId !== input.runId) return false;
+          if (input.runId) {
+            if (runId === input.runId) return true;
+            // Scoped card clicks may fall back only through their own card id.
+            if (cardScoped) return false;
+          }
+          if (input.cardMessageId) {
+            return b.cardSession.cardMessageId === input.cardMessageId;
+          }
           return true;
         })
       : [];
@@ -1029,7 +1061,12 @@ export class Bridge {
       stoppedCount++;
     }
     if (stoppedCount === 0) {
-      getLogger().debug(`[lark-remote] interrupt miss userId=${input.userId}`);
+      getLogger().warn(
+        `[lark-remote] interrupt miss userId=${input.userId} ` +
+          `requestedRunId=${input.runId ?? '(none)'} ` +
+          `cardMessageId=${input.cardMessageId ?? '(none)'} ` +
+          `active=${ownedActiveRuns.map(([, active]) => active.runId).join(',') || '(none)'}`,
+      );
       return { stopped: false };
     }
     return {
@@ -1038,6 +1075,34 @@ export class Bridge {
       ...(agentKind ? { agentKind } : {}),
       ...(stop ? { stop } : {}),
     };
+  }
+
+  /**
+   * Resolve a scoped card click by card identity. Empty input or multiple
+   * matches fail closed; production message ids are unique, but refusing an
+   * ambiguous stop is safer than killing several workspaces.
+   */
+  private activeRunsForCard(
+    ownedActiveRuns: Array<[string, ActiveRun]>,
+    cardMessageId: string | undefined,
+  ): Array<[string, ActiveRun]> {
+    if (!cardMessageId) return [];
+    const matches = ownedActiveRuns.filter(
+      ([, active]) => active.session.cardMessageId === cardMessageId,
+    );
+    if (matches.length === 0) return [];
+    if (matches.length > 1) {
+      getLogger().warn(
+        `[lark-remote] interrupt ambiguous cardMessageId=${cardMessageId} ` +
+          `active=${matches.map(([, active]) => active.runId).join(',')}`,
+      );
+      return [];
+    }
+    getLogger().warn(
+      `[lark-remote] interrupt using active card fallback ` +
+        `runId=${matches[0][1].runId} cardMessageId=${cardMessageId}`,
+    );
+    return matches;
   }
 
   /**
