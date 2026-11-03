@@ -24,11 +24,30 @@ const ES_FLAGS_UINT32 = (0x80000000 | 0x00000001) >>> 0;
  */
 const NONEXISTENT_PID = 999_999_999;
 
-/** 真起一次 powershell.exe 跑给定脚本，收集退出码与 stderr。 */
+/**
+ * powershell.exe 冷启动 + `Add-Type` 现场编译的预算。
+ *
+ * 这条用例真起一次解释器，耗时随 runner 负载浮动（同一 job 里其余用例并行、
+ * 且带覆盖率插桩），几十秒是正常量级；预算不足时失败的是 runner 而不是脚本。
+ */
+const POWERSHELL_BUDGET_MS = 60_000;
+
+/**
+ * 真起一次 powershell.exe 跑给定脚本，收集退出码、stderr 与**结束方式**。
+ *
+ * 结束方式必须单独回报：`code === null` 有三种成因 —— 预算耗尽后本函数把它杀掉、
+ * spawn 自身失败（error 事件）、子进程被信号杀死。只看退出码会把「没跑完」
+ * 误读成「脚本跑失败了」，而这两种情况的修法完全相反。
+ */
 function runPowershell(
   script: string,
-  timeoutMs = 25_000,
-): Promise<{ code: number | null; stderr: string }> {
+  timeoutMs = POWERSHELL_BUDGET_MS,
+): Promise<{
+  code: number | null;
+  stderr: string;
+  timedOut: boolean;
+  spawnError: string;
+}> {
   return new Promise((resolve) => {
     const child = spawnProcess(
       'powershell.exe',
@@ -36,6 +55,8 @@ function runPowershell(
       { stdio: ['ignore', 'pipe', 'pipe'] },
     );
     let stderr = '';
+    let spawnError = '';
+    let timedOut = false;
     let settled = false;
     const finish = (code: number | null): void => {
       if (settled) return;
@@ -45,14 +66,20 @@ function runPowershell(
       } catch {
         // 已自行退出
       }
-      resolve({ code, stderr });
+      resolve({ code, stderr, timedOut, spawnError });
     };
     child.stderr?.on('data', (d: Buffer) => {
       stderr += d.toString();
     });
-    child.on('error', () => finish(null));
+    child.on('error', (err) => {
+      spawnError = String(err);
+      finish(null);
+    });
     child.on('exit', (code) => finish(code));
-    const timer = setTimeout(() => finish(null), timeoutMs);
+    const timer = setTimeout(() => {
+      timedOut = true;
+      finish(null);
+    }, timeoutMs);
     if (typeof timer.unref === 'function') timer.unref();
   });
 }
@@ -222,10 +249,21 @@ describeWin32('win32SleepBlockerScript 真实执行', () => {
   // 字符串断言看不见这个 bug：「脚本里写着 0x80000001」和「API 真的被调用成功」
   // 是两件事。凡是「生成一段脚本串交给另一个解释器执行」的模块，必须有真实执行
   // 用例，否则只能在真机上静默失效。
-  it('真实执行：stderr 为空且退出码 0', async () => {
-    const script = win32SleepBlockerScript(NONEXISTENT_PID);
-    const { code, stderr } = await runPowershell(script);
-    expect(stderr.trim()).toBe('');
-    expect(code).toBe(0);
-  }, 30_000);
+  it(
+    '真实执行：stderr 为空且退出码 0',
+    async () => {
+      const script = win32SleepBlockerScript(NONEXISTENT_PID);
+      const { code, stderr, timedOut, spawnError } = await runPowershell(script);
+      // 一次断言报全状态：失败时 diff 直接指认是超时、spawn 失败还是脚本自身报错，
+      // 不用再从「expected null to be 0」反推。
+      expect({ spawnError, timedOut, stderr: stderr.trim(), code }).toEqual({
+        spawnError: '',
+        timedOut: false,
+        stderr: '',
+        code: 0,
+      });
+    },
+    // 必须严格大于 helper 的预算：否则 vitest 先杀掉用例，又回到看不见原因的状态。
+    POWERSHELL_BUDGET_MS + 30_000,
+  );
 });
