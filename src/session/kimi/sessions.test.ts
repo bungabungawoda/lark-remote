@@ -8,6 +8,7 @@ import {
   detectSchemaVersion,
   extractWorkDir,
   checkCwdGuard,
+  scanKimiUsage,
 } from './sessions.js';
 import type { KimiSessionState } from './sessions.js';
 
@@ -122,6 +123,27 @@ describe('KimiSessionReader', () => {
     const result = reader.listSessions(makeWorkDir('nonexistent'));
     expect(result.sessions).toEqual([]);
     expect(result.total).toBe(0);
+  });
+
+  it('listSessions non-ENOENT failure keeps the exact contract message and the original error as cause', () => {
+    // 脏 index 条目（sessionDir 非字符串）→ path.join 抛 TypeError（非 ENOENT）
+    // → 必须上抛契约文案（router 靠它展示「列表失败」，静默 [] 与真空不可区分），
+    // cause 保留原始错误（throwSessionListError 契约）。
+    fs.appendFileSync(
+      path.join(kimiDir, 'session_index.jsonl'),
+      JSON.stringify({ sessionId: 'sess-bad', sessionDir: 123 }) + '\n',
+    );
+    const reader = new KimiSessionReader(kimiDir);
+
+    let thrown: unknown;
+    try {
+      reader.listSessions(makeWorkDir('project-a'));
+    } catch (e) {
+      thrown = e;
+    }
+    expect(thrown).toBeInstanceOf(Error);
+    expect((thrown as Error).message).toMatch(/^kimi session list 读取失败: /);
+    expect((thrown as Error).cause).toBeInstanceOf(TypeError);
   });
 
   it('listSessions returns sessions for matching workDir', () => {
@@ -1040,5 +1062,69 @@ describe('KimiSessionReader compaction state machine', () => {
         time: 4000,
       },
     ]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 扫描累积器单测（纯函数直测：scanKimiUsage）
+//
+// 拆分自 readSessionContent 的 usage 单遍闭包；事件/displayTitle 装配与端到
+// 端行为仍由上面的公共 API 测试覆盖。这里直测三条易漂移的内部口径：
+// - turn 边界 = 最后一个 turn.prompt（之后的 usage.record 才进 flow）；
+// - 末 turn 尚无记录 → flow 全 0（契约是「末个 turn」，不是「末个非空 turn」）；
+// - 畸形 usage.record（缺 usage 对象/字段）按 0 计但记为「有数据」。
+// ---------------------------------------------------------------------------
+describe('scanKimiUsage（扫描累积器）', () => {
+  it('turn 只累计最后一个 turn.prompt 之后的 usage.record；水位取主 wire 末条', () => {
+    const scan = scanKimiUsage([
+      JSON.stringify({
+        type: 'usage.record',
+        model: 'k2',
+        usage: { inputOther: 100, output: 10, inputCacheRead: 5, inputCacheCreation: 6 },
+        time: 1,
+      }),
+      JSON.stringify({
+        type: 'turn.prompt',
+        input: [{ type: 'text', text: 'q2' }],
+        origin: { kind: 'user' },
+        time: 2,
+      }),
+      JSON.stringify({
+        type: 'usage.record',
+        model: 'k2',
+        usage: { inputOther: 200, output: 20, inputCacheRead: 1, inputCacheCreation: 2 },
+        time: 3,
+      }),
+    ]);
+    expect(scan.turn).toEqual({ input: 200, output: 20, cacheRead: 1, cacheCreation: 2 });
+    expect(scan.totals).toEqual({ input: 300, output: 30, cacheRead: 6, cacheCreation: 8 });
+    // §9.21：水位 = 末条主 wire record 的 input+output+cacheRead+cacheCreation。
+    expect(scan.mainContextLength).toBe(200 + 20 + 1 + 2);
+    expect(scan.hasUsageRecord).toBe(true);
+  });
+
+  it('末 turn 尚无 usage.record → flow 全 0；畸形 record 记为有数据', () => {
+    const scan = scanKimiUsage([
+      '{"type":"usage.record","model":"k2","time":1}',
+      '{"type":"turn.prompt","input":[{"type":"text","text":"q3"}],"origin":{"kind":"user"},"time":2}',
+    ]);
+    expect(scan.turn).toEqual({ input: 0, output: 0, cacheRead: 0, cacheCreation: 0 });
+    // 畸形 record：字段按 0 计，但 hasUsageRecord = true（全零照实返回）。
+    expect(scan.hasUsageRecord).toBe(true);
+    expect(scan.totals).toEqual({ input: 0, output: 0, cacheRead: 0, cacheCreation: 0 });
+    expect(scan.mainContextLength).toBe(0);
+  });
+
+  it('整份 wire 无 turn.prompt → turn undefined（装配段回退全会话口径）', () => {
+    const scan = scanKimiUsage([
+      JSON.stringify({
+        type: 'usage.record',
+        model: 'k2',
+        usage: { inputOther: 7, output: 3, inputCacheRead: 0, inputCacheCreation: 0 },
+        time: 1,
+      }),
+    ]);
+    expect(scan.turn).toBeUndefined();
+    expect(scan.totals.input).toBe(7);
   });
 });

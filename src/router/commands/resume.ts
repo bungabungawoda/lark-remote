@@ -7,7 +7,7 @@ import type {
 } from '../../session-contract.js';
 import { isAgentKind } from '../../agent-kinds.js';
 import type { SessionDisplayUsage } from '../../card/usage-format.js';
-import { agentDisplayName } from '../../card/card-shared.js';
+import { agentDisplayName, cardButton } from '../../card/card-shared.js';
 import { buildSessionHistoryCard, paginationBar } from '../../card/card-helpers.js';
 import { pageInfo } from '../paging.js';
 import { clampInt } from '../../common/clamp.js';
@@ -271,25 +271,11 @@ export function buildResumeCommand(
             tag: 'column',
             width: 'auto',
             elements: [
-              {
-                tag: 'button',
-                text: {
-                  tag: 'plain_text',
-                  content: isCurrent ? '✓ 当前会话' : '恢复此会话',
-                },
-                type: isCurrent ? 'default' : 'primary',
-                disabled: isCurrent,
-                behaviors: [
-                  {
-                    type: 'callback',
-                    value: {
-                      cmd: 'resume.use',
-                      sessionId: session.sessionId,
-                      agent: agentKind,
-                    },
-                  },
-                ],
-              },
+              cardButton(
+                isCurrent ? '✓ 当前会话' : '恢复此会话',
+                { cmd: 'resume.use', sessionId: session.sessionId, agent: agentKind },
+                { type: isCurrent ? 'default' : 'primary', disabled: isCurrent },
+              ),
             ],
           },
         ],

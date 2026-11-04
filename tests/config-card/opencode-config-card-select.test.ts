@@ -66,9 +66,7 @@ describe('opencode config card ANCHOR: opencode fields must use select type', ()
       tmpDir,
       config,
       bridge: createMockBridge(),
-      sessionReaderRegistry: createMockSessionReaderRegistry({
-        agentKinds: ['claude', 'codex', 'pi', 'opencode'],
-      }),
+      sessionReaderRegistry: createMockSessionReaderRegistry(),
     }).router;
 
     const result = router.buildConfigCard();
@@ -111,9 +109,7 @@ describe('opencode config card ANCHOR: opencode fields must use select type', ()
       tmpDir,
       config,
       bridge: createMockBridge(),
-      sessionReaderRegistry: createMockSessionReaderRegistry({
-        agentKinds: ['claude', 'codex', 'pi', 'opencode'],
-      }),
+      sessionReaderRegistry: createMockSessionReaderRegistry(),
     }).router;
 
     const result = router.buildConfigCard();
@@ -139,9 +135,7 @@ describe('opencode config card ANCHOR: opencode fields must use select type', ()
       tmpDir,
       config,
       bridge: createMockBridge(),
-      sessionReaderRegistry: createMockSessionReaderRegistry({
-        agentKinds: ['claude', 'codex', 'pi', 'opencode'],
-      }),
+      sessionReaderRegistry: createMockSessionReaderRegistry(),
     }).router;
 
     const result = router.buildConfigCard();

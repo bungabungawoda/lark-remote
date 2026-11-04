@@ -2,7 +2,13 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { OpencodeSessionReader } from '../../session/opencode/sessions.js';
+import {
+  OpencodeSessionReader,
+  scanV1Messages,
+  scanV2Usage,
+  type OpencodeExportMessage,
+  type OpencodeV2Message,
+} from '../../session/opencode/sessions.js';
 import { currentPlatform } from '../../platform/select.js';
 import { STALE_MS } from '../common/constants.js';
 import { rmRf } from '../../../tests/lib/tmp-cleanup.js';
@@ -144,6 +150,22 @@ describe('OpencodeSessionReader - L1: empty output handling', () => {
     mockSpawnResult('not valid json{{{');
 
     expect(() => reader.listSessions('/tmp/test')).toThrow(/读取失败/);
+  });
+
+  it('list failure keeps the exact contract message and the original error as cause', () => {
+    // 契约红线（throwSessionListError）：文案 `<agent> session list 读取失败: <msg>`
+    // 逐字节稳定，router 靠它展示「列表失败」；cause 必须保留原始错误供诊断。
+    mockSpawnResult('not valid json{{{');
+
+    let thrown: unknown;
+    try {
+      reader.listSessions('/tmp/test');
+    } catch (e) {
+      thrown = e;
+    }
+    expect(thrown).toBeInstanceOf(Error);
+    expect((thrown as Error).message).toMatch(/^opencode session list 读取失败: /);
+    expect((thrown as Error).cause).toBeInstanceOf(SyntaxError);
   });
 
   it('passes cwd to opencode session list command', () => {
@@ -1114,4 +1136,142 @@ describe('readSessionContent cwd 判等（samePath 收口）', () => {
       }
     },
   );
+});
+
+// ---------------------------------------------------------------------------
+// 扫描累积器单测（纯函数直测：scanV1Messages / scanV2Usage）
+//
+// 拆分自 readSessionContent 的「全量扫描 + usage 累计」段；事件装配与端到端
+// 行为仍由上面的公共 API 测试覆盖。这里直测三条易漂移的内部口径：
+// - cumulative 对全会话所有 step-finish 逐字段求和（含 tail 之前的、含零
+//   total 退化 step 的非零字段——零 total 只豁免 turn/latest，不豁免累计）；
+// - turn/latest 只认 tail 内非零 total 的 step；
+// - v2 的 turn 边界取 lastTurnStartIndex（末个 idle 之后），cum 永远全会话。
+// ---------------------------------------------------------------------------
+describe('scanV1Messages / scanV2Usage（扫描累积器）', () => {
+  it('v1: turn/latest 只累计末条 user 之后的非零 step；cum 全会话求和（含零 total 字段）', () => {
+    const messages: OpencodeExportMessage[] = [
+      {
+        info: { role: 'assistant', id: 'm0', sessionID: 's' },
+        parts: [
+          {
+            type: 'step-finish',
+            tokens: {
+              total: 100,
+              input: 60,
+              output: 40,
+              reasoning: 0,
+              cache: { read: 0, write: 0 },
+            },
+          },
+        ],
+      },
+      { info: { role: 'user', id: 'm1', sessionID: 's' }, parts: [{ type: 'text', text: 'q2' }] },
+      {
+        info: { role: 'assistant', id: 'm2', sessionID: 's' },
+        parts: [
+          // 退化 step：total 0 但 input 非零——cum 照加，turn/latest 不认。
+          {
+            type: 'step-finish',
+            tokens: { total: 0, input: 7, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+          },
+          {
+            type: 'step-finish',
+            tokens: {
+              total: 30,
+              input: 20,
+              output: 10,
+              reasoning: 0,
+              cache: { read: 5, write: 6 },
+            },
+          },
+        ],
+      },
+    ];
+
+    const scan = scanV1Messages(messages);
+    expect(scan.lastUserIndex).toBe(1);
+    expect(scan.tailDisplayTitle).toBe('q2');
+    // 本 run = tail 内非零 step 之和；latest 是末条非零采样（含水位）。
+    expect(scan.turn).toEqual({ input: 20, output: 10, cacheRead: 5, cacheCreation: 6, total: 30 });
+    expect(scan.latest).toMatchObject({ inputTokens: 20, outputTokens: 10, totalTokens: 30 });
+    expect(scan.latest!.contextLength).toBe(20 + 10 + 5 + 6);
+    // cumulative：全会话逐字段求和，零 total 的 input=7 也计入。
+    expect(scan.cum).toEqual({ input: 87, output: 50, cacheRead: 5, cacheCreation: 6, total: 130 });
+  });
+
+  it('v1: 无 user 消息时整份 export 都算 tail（lastUserIndex=-1）', () => {
+    const messages: OpencodeExportMessage[] = [
+      {
+        info: { role: 'assistant', id: 'm0', sessionID: 's' },
+        parts: [
+          {
+            type: 'step-finish',
+            tokens: {
+              total: 50,
+              input: 30,
+              output: 20,
+              reasoning: 0,
+              cache: { read: 0, write: 0 },
+            },
+          },
+        ],
+      },
+    ];
+    const scan = scanV1Messages(messages);
+    expect(scan.lastUserIndex).toBe(-1);
+    expect(scan.tailDisplayTitle).toBeUndefined();
+    expect(scan.turn.total).toBe(50);
+    expect(scan.cum.total).toBe(50);
+  });
+
+  it('v2: turn 边界取末个 idle（新 turn 的采样不计入上一轮 flow）；cum 全会话', () => {
+    const messages: OpencodeV2Message[] = [
+      { type: 'user', text: 'q1' },
+      {
+        type: 'assistant',
+        tokens: { input: 100, output: 10, reasoning: 0, cache: { read: 5, write: 6 } },
+      },
+      { type: 'idle' },
+      { type: 'user', text: 'q2' },
+      {
+        type: 'assistant',
+        tokens: { input: 200, output: 20, reasoning: 0, cache: { read: 1, write: 2 } },
+      },
+    ];
+    const scan = scanV2Usage(messages);
+    expect(scan.turn).toEqual({
+      input: 200,
+      output: 20,
+      cacheRead: 1,
+      cacheCreation: 2,
+      total: 223,
+    });
+    expect(scan.latest).toMatchObject({ inputTokens: 200, totalTokens: 223 });
+    expect(scan.cum).toEqual({
+      input: 300,
+      output: 30,
+      cacheRead: 6,
+      cacheCreation: 8,
+      total: 344,
+    });
+  });
+
+  it('v2: 新 user 之后还没有采样 → turn 全 0，latest 保留上一轮末条采样', () => {
+    const messages: OpencodeV2Message[] = [
+      { type: 'user', text: 'q1' },
+      {
+        type: 'assistant',
+        tokens: { input: 100, output: 10, reasoning: 0, cache: { read: 5, write: 6 } },
+      },
+      { type: 'idle' },
+      { type: 'user', text: 'q2' },
+    ];
+    const scan = scanV2Usage(messages);
+    expect(scan.turn).toEqual({ input: 0, output: 0, cacheRead: 0, cacheCreation: 0, total: 0 });
+    // latest 仍是上一轮末条采样：contextLength 水位不丢（flow 覆盖由
+    // finalizeTurnUsage 做，水位保留）。
+    expect(scan.latest).toMatchObject({ inputTokens: 100, outputTokens: 10 });
+    expect(scan.latest!.contextLength).toBe(100 + 10 + 5 + 6);
+  });
 });

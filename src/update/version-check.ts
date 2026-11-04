@@ -108,7 +108,8 @@ function readCache(cachePath: string): UpdateCache | null {
     const cached = JSON.parse(raw) as UpdateCache;
     if (!cached.latestVersion || !cached.checkedAt) return null;
     return cached;
-  } catch {
+  } catch (err) {
+    getLogger().debug('[update] version cache unreadable, refetching:', err);
     return null;
   }
 }

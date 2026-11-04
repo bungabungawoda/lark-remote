@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { createStubConnector } from '../lib/bridge-stubs.js';
+import { createStubConnector, interruptCurrentRun } from '../lib/bridge-stubs.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -144,7 +144,7 @@ describe('Bridge clearRunners must not orphan an ACTIVE runner (regression 2026-
     bridge.clearRunners();
 
     // 3. User clicks stop -> interruptCurrentRun re-resolves the runner.
-    const stopped = await bridge.interruptCurrentRun({
+    const stopped = await interruptCurrentRun(bridge, {
       userId: 'user1',
       chatId: 'chat1',
     });
@@ -221,7 +221,7 @@ describe('Bridge clearRunners must not orphan an ACTIVE runner (regression 2026-
     expect(created.length).toBe(1); // no fresh runner created
 
     // Cleanup: stop the active run so its promise settles.
-    await bridge.interruptCurrentRun({ userId: 'user1', chatId: 'chat1' });
+    await interruptCurrentRun(bridge, { userId: 'user1', chatId: 'chat1' });
     await runPromise;
   });
 });

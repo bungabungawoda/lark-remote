@@ -1,4 +1,10 @@
-import { loadConfig, getAgentConfig, type AppConfig } from './config/index.js';
+import {
+  loadConfig,
+  getAgentConfig,
+  PI_DEFAULTS,
+  KIMI_DEFAULTS,
+  type AppConfig,
+} from './config/index.js';
 import type { AgentSessionContentEvent, AgentSessionUsage } from './session-contract.js';
 import { resolveAgentChoices } from './runner/index.js';
 import { ensureConfig } from './config/wizard.js';
@@ -59,6 +65,14 @@ import { buildSessionHistoryCard, pickResumeCardEvents } from './card/card-helpe
 import { newSessionButton, resumeCompactButton, agentDisplayName } from './card/card-shared.js';
 import path from 'node:path';
 import { setupMessageHandlers } from './message-handlers.js';
+
+/**
+ * 分钟 → 毫秒（turn idle timeout 等 config 字段共用）。
+ * 未配置（undefined/null）→ undefined = 不设该超时，与原三处内联三元逐字等价。
+ */
+function minutesToMs(minutes?: number): number | undefined {
+  return minutes != null ? minutes * 60_000 : undefined;
+}
 
 /** Session display state from readSessionContent */
 interface SessionDisplayState {
@@ -195,36 +209,71 @@ async function setupInstanceLockAndHandlers(
   });
 }
 
-/** Initialize per-workspace runner factory + agent registry. */
-function initializeRunner(
+/**
+ * 各 agent 的 session reader 集合。runner factory 与 SessionReaderRegistry
+ * 必须共享同一实例（bridge 读 usage / router 列 session 走同一份缓存）。
+ */
+interface AgentSessionReaders {
+  claude: ClaudeSessionReader;
+  codex: CodexSessionReader;
+  opencode: OpencodeSessionReader;
+  pi: PiSessionReader;
+  kimi: KimiSessionReader;
+  dsh: DshSessionReader;
+}
+
+/**
+ * 创建全部 session reader。runner 侧不 import session 层（否则 runner ↔ session
+ * 互相依赖），统一由组合根注入。
+ */
+function createSessionReaders(
   config: ReturnType<typeof loadConfig>,
-  configDir: string,
-  cliArgs: { settings?: string },
-): {
-  agentRegistry: AgentRegistry;
-  sessionReaderRegistry: SessionReaderRegistry;
-} {
-  const agentRegistry = new AgentRegistry();
-
-  // 单点化：runner factory 取最新 config 的唯一入口（语义保持，
-  // container 未接线时回退启动快照）。
-  const latest = (): AppConfig =>
-    (agentRegistry.getConfigContainer()?.current as AppConfig) ?? config;
-
-  // One global DSH per machine/DSH_HOME. This resolver reuses a listening
-  // process or starts `dsh web` detached; it never owns the child's lifetime.
-  const dshDaemon = new DshDaemon({
-    host: () => getAgentConfig(latest(), 'dsh')?.host,
-    dshHome: () => getAgentConfig(latest(), 'dsh')?.dshHome,
-    dshCommand: () => getAgentConfig(latest(), 'dsh')?.dshCommand,
-    manageProcess: () => getAgentConfig(latest(), 'dsh')?.manageProcess ?? true,
-    startTimeoutMs: () => getAgentConfig(latest(), 'dsh')?.startTimeoutMs,
-  });
-
+  latest: () => AppConfig,
+): AgentSessionReaders {
   // claude 的会话读取器与其余 agent 一样由组合根注入：runner 侧不 import session
   // 层（否则 runner ↔ session 互相依赖），且 bridge 读 usage / router 列 session
   // 用的是同一个实例（缓存共用）。
-  const claudeSessionReader = new ClaudeSessionReader();
+  const claude = new ClaudeSessionReader();
+  const codex = new CodexSessionReader({ codexHome: process.env.CODEX_HOME });
+  // Register OpencodeSessionReader (CLI version)
+  // Using `opencode session list` and `session export` instead of HTTP API.
+  // Share the configured binary with the ACP runner so `opencode2` (v2) can
+  // be used without the reader silently falling back to a v1 `opencode`.
+  // The reader is registered once; changing acp.binary at runtime requires a
+  // lark-remote restart.
+  const opencode = new OpencodeSessionReader({
+    binary: getAgentConfig(config, 'opencode')?.acp?.binary,
+  });
+  const pi = new PiSessionReader();
+  const kimi = new KimiSessionReader();
+  const dsh = new DshSessionReader({
+    // hostProvider 每次调用读最新 config：/config 修改 host 后 runner 重建为
+    // 新 host，reader（/resume、用量、完成卡）也跟随新 host。
+    hostProvider: () => getAgentConfig(latest(), 'dsh')?.host,
+    dshHomeProvider: () => getAgentConfig(latest(), 'dsh')?.dshHome,
+    tokenProvider: () => getAgentConfig(latest(), 'dsh')?.token,
+    credentialsFileProvider: () => getAgentConfig(latest(), 'dsh')?.credentialsFile,
+  });
+  return { claude, codex, opencode, pi, kimi, dsh };
+}
+
+/**
+ * 按 agent 家族注册 runner factory。
+ *
+ * factory 一律从 configContainer 读最新 config（bridge.setConfig() +
+ * clearRunners() 后运行时改动生效）；`latest()` 未接线时回退启动快照。
+ */
+function registerRunners(
+  agentRegistry: AgentRegistry,
+  deps: {
+    configDir: string;
+    cliArgs: { settings?: string };
+    latest: () => AppConfig;
+    dshDaemon: DshDaemon;
+    readers: AgentSessionReaders;
+  },
+): void {
+  const { configDir, cliArgs, latest, dshDaemon, readers } = deps;
 
   // Claude factory reads from configContainer (not closure) so runtime
   // config changes (model, effort, stopGraceMs) take effect after
@@ -238,7 +287,7 @@ function initializeRunner(
       settings: cliArgs.settings,
       pidDir: configDir,
       cwd: ws,
-      sessionReader: claudeSessionReader,
+      sessionReader: readers.claude,
       permissionMode: claudeConfig.permissionMode,
       idleTtlMs:
         claudeConfig.idleTtlMinutes != null ? claudeConfig.idleTtlMinutes * 60_000 : undefined,
@@ -249,7 +298,6 @@ function initializeRunner(
   // config from container.current so runtime config changes (model, sandbox,
   // approvalPolicy, reasoningEffort, etc.) take effect after bridge.setConfig()
   // + clearRunners().
-  const codexSessionReader = new CodexSessionReader({ codexHome: process.env.CODEX_HOME });
   agentRegistry.register('codex', (_ws: string) => {
     const codexConfig = getAgentConfig(latest(), 'codex');
     return new CodexAppServerRunner({
@@ -257,36 +305,17 @@ function initializeRunner(
       model: codexConfig?.model,
       modelProvider: codexConfig?.modelProvider,
       reasoningEffort: codexConfig?.reasoningEffort,
-      sessionReader: codexSessionReader,
+      sessionReader: readers.codex,
       sandbox: codexConfig?.sandbox,
       approvalPolicy: codexConfig?.approvalPolicy,
       binary: codexConfig?.appServer?.binary,
       requestTimeoutMs: codexConfig?.appServer?.requestTimeoutMs,
       idleTtlMs: codexConfig?.appServer?.idleTtlMs,
-      turnTimeoutMs:
-        codexConfig?.appServer?.turnIdleTimeoutMinutes != null
-          ? codexConfig.appServer.turnIdleTimeoutMinutes * 60_000
-          : undefined,
+      turnTimeoutMs: minutesToMs(codexConfig?.appServer?.turnIdleTimeoutMinutes),
     });
   });
 
   // Register OpencodeAcpRunner (pure ACP mode, `opencode acp` JSON-RPC over stdio)
-
-  // Register session reader (same instance as used by runner)
-  const sessionReaderRegistry = new SessionReaderRegistry();
-  sessionReaderRegistry.register('claude', claudeSessionReader);
-  sessionReaderRegistry.register('codex', codexSessionReader);
-
-  // Register OpencodeSessionReader (CLI version)
-  // Using `opencode session list` and `session export` instead of HTTP API.
-  // Share the configured binary with the ACP runner so `opencode2` (v2) can
-  // be used without the reader silently falling back to a v1 `opencode`.
-  // The reader is registered once; changing acp.binary at runtime requires a
-  // lark-remote restart.
-  const opencodeSessionReader = new OpencodeSessionReader({
-    binary: getAgentConfig(config, 'opencode')?.acp?.binary,
-  });
-
   agentRegistry.register('opencode', (_ws: string) => {
     const ocConfig = getAgentConfig(latest(), 'opencode');
 
@@ -305,74 +334,54 @@ function initializeRunner(
     return new OpencodeAcpRunner({
       kind: 'opencode',
       model,
-      sessionReader: opencodeSessionReader,
+      sessionReader: readers.opencode,
       mode: ocConfig?.mode ?? 'build',
       binary: ocConfig?.acp?.binary,
       requestTimeoutMs: ocConfig?.acp?.requestTimeoutMs,
       idleTtlMs: ocConfig?.acp?.idleTtlMs,
-      turnIdleTimeoutMs:
-        ocConfig?.acp?.turnIdleTimeoutMinutes != null
-          ? ocConfig.acp.turnIdleTimeoutMinutes * 60_000
-          : undefined,
+      turnIdleTimeoutMs: minutesToMs(ocConfig?.acp?.turnIdleTimeoutMinutes),
     });
   });
-  sessionReaderRegistry.register('opencode', opencodeSessionReader);
 
-  // Register PiRpcRunner and PiSessionReader.
+  // Register PiRpcRunner.
   // factory 闭包必须读最新 config 而不是启动时的快照，否则 /config 保存后
-  // provider 等字段对 pi 不生效：config 引用放在可变容器里，registry 持有容器，
-  // factory 每次从容器取最新值。
-  const configContainer = { current: config };
-  agentRegistry.setConfigContainer(configContainer);
-  const piSessionReader = new PiSessionReader();
+  // provider 等字段对 pi 不生效：config 引用放在可变容器里（见上文
+  // setConfigContainer），factory 每次从容器取最新值。
+  // PiSessionReader 的创建与注册见 registerSessionReaders。
   agentRegistry.register('pi', (ws: string) => {
     const piConf = getAgentConfig(latest(), 'pi');
     return new PiRpcRunner({
-      provider: piConf?.provider ?? 'Volcano',
-      model: piConf?.model ?? 'glm-5.2',
-      thinking: piConf?.thinking ?? 'medium',
-      tools: (piConf?.tools ?? 'read,bash,edit,write,grep,find,ls')
+      provider: piConf?.provider ?? PI_DEFAULTS.provider,
+      model: piConf?.model ?? PI_DEFAULTS.model,
+      thinking: piConf?.thinking ?? PI_DEFAULTS.thinking,
+      tools: (piConf?.tools ?? PI_DEFAULTS.tools)
         .split(',')
         .map((t) => t.trim())
         .filter(Boolean),
       cwd: ws,
-      sessionReader: piSessionReader,
+      sessionReader: readers.pi,
     });
   });
-  sessionReaderRegistry.register('pi', piSessionReader);
 
-  // Register KimiAcpRunner (pure ACP mode) and KimiSessionReader
-  const kimiSessionReader = new KimiSessionReader();
+  // Register KimiAcpRunner (pure ACP mode)
   agentRegistry.register('kimi', (_ws: string) => {
     const kimiConf = getAgentConfig(latest(), 'kimi');
 
     const acpConf = kimiConf?.acp;
     return new KimiAcpRunner({
       kind: 'kimi',
-      sessionReader: kimiSessionReader,
+      sessionReader: readers.kimi,
       binary: acpConf?.binary ?? 'kimi',
       requestTimeoutMs: acpConf?.requestTimeoutMs,
       idleTtlMs: acpConf?.idleTtlMs,
-      turnIdleTimeoutMs:
-        acpConf?.turnIdleTimeoutMinutes != null
-          ? acpConf.turnIdleTimeoutMinutes * 60_000
-          : undefined,
-      model: kimiConf?.model ?? 'kimi-code/k3',
+      turnIdleTimeoutMs: minutesToMs(acpConf?.turnIdleTimeoutMinutes),
+      model: kimiConf?.model ?? KIMI_DEFAULTS.model,
       thinkingEffort: kimiConf?.thinkingEffort,
       permissionMode: kimiConf?.permissionMode ?? 'manual',
     });
   });
-  sessionReaderRegistry.register('kimi', kimiSessionReader);
 
-  // Register DshRunner (HTTP-only DSH Web Host agent) and DshSessionReader.
-  const dshSessionReader = new DshSessionReader({
-    // hostProvider 每次调用读最新 config：/config 修改 host 后 runner 重建为
-    // 新 host，reader（/resume、用量、完成卡）也跟随新 host。
-    hostProvider: () => getAgentConfig(latest(), 'dsh')?.host,
-    dshHomeProvider: () => getAgentConfig(latest(), 'dsh')?.dshHome,
-    tokenProvider: () => getAgentConfig(latest(), 'dsh')?.token,
-    credentialsFileProvider: () => getAgentConfig(latest(), 'dsh')?.credentialsFile,
-  });
+  // Register DshRunner (HTTP-only DSH Web Host agent).
   agentRegistry.register('dsh', (_ws: string) => {
     const dshConf = getAgentConfig(latest(), 'dsh');
     // Warm the shared process in the background so the first message and
@@ -383,7 +392,7 @@ function initializeRunner(
     });
     return new DshRunner({
       kind: 'dsh',
-      sessionReader: dshSessionReader,
+      sessionReader: readers.dsh,
       daemon: dshDaemon,
       host: dshConf?.host,
       dshHome: dshConf?.dshHome,
@@ -399,7 +408,55 @@ function initializeRunner(
       inflightPath: dshInflightPath(configDir),
     });
   });
-  sessionReaderRegistry.register('dsh', dshSessionReader);
+}
+
+/** 按 agent 家族注册 session reader（与 runner factory 共享同一实例）。 */
+function registerSessionReaders(
+  registry: SessionReaderRegistry,
+  readers: AgentSessionReaders,
+): void {
+  registry.register('claude', readers.claude);
+  registry.register('codex', readers.codex);
+  registry.register('opencode', readers.opencode);
+  registry.register('pi', readers.pi);
+  registry.register('kimi', readers.kimi);
+  registry.register('dsh', readers.dsh);
+}
+
+/** Initialize per-workspace runner factory + agent registry. */
+function initializeRunner(
+  config: ReturnType<typeof loadConfig>,
+  configDir: string,
+  cliArgs: { settings?: string },
+): {
+  agentRegistry: AgentRegistry;
+  sessionReaderRegistry: SessionReaderRegistry;
+} {
+  const agentRegistry = new AgentRegistry();
+
+  // 单点化：runner factory 取最新 config 的唯一入口（语义保持，
+  // container 未接线时回退启动快照）。
+  const latest = (): AppConfig =>
+    (agentRegistry.getConfigContainer()?.current as AppConfig) ?? config;
+
+  // 用可变容器存储 config 引用，registry 持有容器引用，factory 从容器读取最新值。
+  agentRegistry.setConfigContainer({ current: config });
+
+  // One global DSH per machine/DSH_HOME. This resolver reuses a listening
+  // process or starts `dsh web` detached; it never owns the child's lifetime.
+  const dshDaemon = new DshDaemon({
+    host: () => getAgentConfig(latest(), 'dsh')?.host,
+    dshHome: () => getAgentConfig(latest(), 'dsh')?.dshHome,
+    dshCommand: () => getAgentConfig(latest(), 'dsh')?.dshCommand,
+    manageProcess: () => getAgentConfig(latest(), 'dsh')?.manageProcess ?? true,
+    startTimeoutMs: () => getAgentConfig(latest(), 'dsh')?.startTimeoutMs,
+  });
+
+  const readers = createSessionReaders(config, latest);
+  registerRunners(agentRegistry, { configDir, cliArgs, latest, dshDaemon, readers });
+
+  const sessionReaderRegistry = new SessionReaderRegistry();
+  registerSessionReaders(sessionReaderRegistry, readers);
 
   if (config.defaultAgent === 'dsh') {
     void dshDaemon.ensure().catch((error: unknown) => {
@@ -433,8 +490,14 @@ function initializeRunner(
   return { agentRegistry, sessionReaderRegistry };
 }
 
-async function main() {
-  const cliArgs = parseCliArgs();
+/**
+ * CLI 早期退出分支：--help / --version / --update。
+ *
+ * 红线：三者都必须在 config 加载与单例锁之前完成——--help/--version 是纯信息
+ * 查询，另一实例在跑、或还没有 config 时也必须能应答；--update 不是守护类命令，
+ * 等锁只会误报 "already running"。返回 true 表示进程应停止。
+ */
+async function handleCliEarlyExit(cliArgs: ReturnType<typeof parseCliArgs>): Promise<boolean> {
   // --help/--version must bypass config loading and singleton lock — it's a pure
   // informational query that must work even when another instance is running
   // or no config exists yet.
@@ -471,6 +534,23 @@ async function main() {
       process.exit(1);
     }
   }
+  return false;
+}
+
+/** bootstrap 阶段产物：config/logger/单例锁就绪后的上下文，wire 阶段消费。 */
+interface BootstrapContext {
+  cliArgs: ReturnType<typeof parseCliArgs>;
+  config: ReturnType<typeof loadConfig>;
+  configDir: string;
+  logger: ReturnType<typeof getLogger>;
+}
+
+/**
+ * Bootstrap：configDir → config → logger → 单例锁 → 防休眠 → 启动配置日志。
+ * 顺序红线：waitForPreviousInstance 必须先于 instanceLock.acquire()（/restart
+ * 替补进程要等旧实例释放锁才能拿到单例锁）；PID 存活校验在 acquire 内完成。
+ */
+async function bootstrap(cliArgs: ReturnType<typeof parseCliArgs>): Promise<BootstrapContext> {
   const { config, configDir, logger, instanceLock } = await initializeCliAndConfig();
 
   // Restart handoff: if spawned as a /restart replacement, wait for the old
@@ -495,7 +575,26 @@ async function main() {
   if (cliArgs.settings) {
     logger.info(`claude.settings = ${cliArgs.settings}`);
   }
+  return { cliArgs, config, configDir, logger };
+}
 
+/** wire() 装配产物：启动联络（连接/问候/对账/自动恢复）所需的全部引用。 */
+interface WiredApp {
+  cliArgs: ReturnType<typeof parseCliArgs>;
+  config: ReturnType<typeof loadConfig>;
+  configDir: string;
+  logger: ReturnType<typeof getLogger>;
+  connector: FeishuConnector;
+  startupContactStore: StartupContactStore;
+  binder: OwnerBinder;
+  sessionStore: SessionStore;
+  bridge: Bridge;
+  sessionReaderRegistry: SessionReaderRegistry;
+}
+
+/** Wiring：装配 connector / stores / bridge / router / 消息处理器（不连接）。 */
+function wire(boot: BootstrapContext): WiredApp {
+  const { cliArgs, config, configDir, logger } = boot;
   const { agentRegistry, sessionReaderRegistry } = initializeRunner(config, configDir, cliArgs);
 
   const connector = new FeishuConnector(config);
@@ -550,6 +649,110 @@ async function main() {
     cloneSession,
   });
 
+  return {
+    cliArgs,
+    config,
+    configDir,
+    logger,
+    connector,
+    startupContactStore,
+    binder,
+    sessionStore,
+    bridge,
+    sessionReaderRegistry,
+  };
+}
+
+/**
+ * Auto-restore: resume the persisted sessionId if available.
+ * 非关键启动优化：发送失败只告警（logger 已初始化），不允许经
+ * main().catch → process.exit(1) 拖垮整个桥接。
+ */
+async function restoreLastSession(app: WiredApp): Promise<void> {
+  const {
+    config,
+    logger,
+    sessionStore,
+    sessionReaderRegistry,
+    bridge,
+    connector,
+    startupContactStore,
+  } = app;
+  const restoredContact = startupContactStore.getContact();
+  if (!restoredContact?.userId) return;
+  const restoredCwd = sessionStore.getCwd(restoredContact.userId);
+  if (!restoredCwd) return;
+  const sessionIdToResume = sessionStore.getSessionId(restoredContact.userId, config.defaultAgent);
+  if (!sessionIdToResume) return;
+
+  logger.info(`[startup] auto-resuming persisted session ${sessionIdToResume} in ${restoredCwd}`);
+  const startupReader = sessionReaderRegistry.get(config.defaultAgent);
+  sessionStore.setSessionIdAndCwd(
+    restoredContact.userId,
+    config.defaultAgent,
+    sessionIdToResume,
+    restoredCwd,
+  );
+  const content = startupReader.readSessionContent(sessionIdToResume, restoredCwd);
+  // 该会话可能仍有在途 turn（上一个实例退出/崩溃后留在常驻 host 里）。
+  // 不取消、不接管，但必须在卡上说明，否则用户会把它当"卡住了"。
+  //
+  // 只有 DSH reader 的 isSessionActive() 是服务端的 running 事实。其他
+  // reader 的同名方法只表示"最近一段时间有写入"，拿它当 turn 在跑会在
+  // 每次自动恢复时误报。
+  const stillRunning =
+    config.defaultAgent === 'dsh'
+      ? (() => {
+          try {
+            return startupReader.isSessionActive(sessionIdToResume, restoredCwd);
+          } catch (err) {
+            getLogger().warn(`[startup] isSessionActive failed: ${(err as Error).message}`);
+            return false;
+          }
+        })()
+      : false;
+  if (stillRunning) {
+    getLogger().warn(
+      `[startup] session ${sessionIdToResume} still has a running turn; auto-resume card is a snapshot`,
+    );
+  }
+  // 完整透传 usage（含 inputTokens/outputTokens/totalTokens），
+  // 让 formatUsageStats 走真实值路径，与终态卡片//resume 卡片口径一致。
+  const usage = content.usage;
+  // Build auto-resume card and send to the user. Auto-resume is a
+  // non-critical startup nicety: a sendWithRetry failure here (e.g.
+  // transient feishu API error) must not crash the bridge via
+  // main().catch → process.exit(1). Logger is already initialized.
+  try {
+    await sendAutoResumeCard(
+      connector,
+      restoredContact,
+      restoredCwd,
+      { sessionId: sessionIdToResume, summary: '' },
+      {
+        events: content.events,
+        usage,
+        aiTitle: content.aiTitle,
+        recap: content.recap,
+        displayTitle: content.displayTitle,
+        agentKind: config.defaultAgent,
+      },
+      // Compact 能力探测与 bridge 侧一致（runner 有 runCompact 才渲染）。
+      bridge.hasRunCompact(restoredCwd, config.defaultAgent),
+      stillRunning,
+    );
+  } catch (err) {
+    getLogger().warn('[startup] sendAutoResumeCard failed:', err);
+  }
+}
+
+async function main() {
+  const cliArgs = parseCliArgs();
+  if (await handleCliEarlyExit(cliArgs)) return;
+  const boot = await bootstrap(cliArgs);
+  const app = wire(boot);
+  const { config, configDir, logger, connector, startupContactStore, binder } = app;
+
   try {
     await connector.connect();
   } catch (err) {
@@ -559,7 +762,7 @@ async function main() {
 
   if (binder.isBound()) {
     // 仅已绑定时发送启动通知；未绑定时不打扰（PIN 引导已在控制台输出）
-    await sendStartupHello(connector, startupContactStore, { dev: cliArgs.dev });
+    await sendStartupHello(connector, startupContactStore, { dev: app.cliArgs.dev });
 
     // 启动时静默检查版本（由 checkUpdateOnStartup 控制，默认关闭）
     if (config.checkUpdateOnStartup) {
@@ -611,81 +814,7 @@ async function main() {
     });
   }
 
-  // Auto-restore: resume the persisted sessionId if available
-  const restoredContact = startupContactStore.getContact();
-  if (restoredContact?.userId) {
-    const restoredCwd = sessionStore.getCwd(restoredContact.userId);
-    if (restoredCwd) {
-      const sessionIdToResume = sessionStore.getSessionId(
-        restoredContact.userId,
-        config.defaultAgent,
-      );
-
-      if (sessionIdToResume) {
-        logger.info(
-          `[startup] auto-resuming persisted session ${sessionIdToResume} in ${restoredCwd}`,
-        );
-        const startupReader = sessionReaderRegistry.get(config.defaultAgent);
-        sessionStore.setSessionIdAndCwd(
-          restoredContact.userId,
-          config.defaultAgent,
-          sessionIdToResume,
-          restoredCwd,
-        );
-        const content = startupReader.readSessionContent(sessionIdToResume, restoredCwd);
-        // 该会话可能仍有在途 turn（上一个实例退出/崩溃后留在常驻 host 里）。
-        // 不取消、不接管，但必须在卡上说明，否则用户会把它当"卡住了"。
-        //
-        // 只有 DSH reader 的 isSessionActive() 是服务端的 running 事实。其他
-        // reader 的同名方法只表示"最近一段时间有写入"，拿它当 turn 在跑会在
-        // 每次自动恢复时误报。
-        const stillRunning =
-          config.defaultAgent === 'dsh'
-            ? (() => {
-                try {
-                  return startupReader.isSessionActive(sessionIdToResume, restoredCwd);
-                } catch (err) {
-                  getLogger().warn(`[startup] isSessionActive failed: ${(err as Error).message}`);
-                  return false;
-                }
-              })()
-            : false;
-        if (stillRunning) {
-          getLogger().warn(
-            `[startup] session ${sessionIdToResume} still has a running turn; auto-resume card is a snapshot`,
-          );
-        }
-        // 完整透传 usage（含 inputTokens/outputTokens/totalTokens），
-        // 让 formatUsageStats 走真实值路径，与终态卡片//resume 卡片口径一致。
-        const usage = content.usage;
-        // Build auto-resume card and send to the user. Auto-resume is a
-        // non-critical startup nicety: a sendWithRetry failure here (e.g.
-        // transient feishu API error) must not crash the bridge via
-        // main().catch → process.exit(1). Logger is already initialized.
-        try {
-          await sendAutoResumeCard(
-            connector,
-            restoredContact,
-            restoredCwd,
-            { sessionId: sessionIdToResume, summary: '' },
-            {
-              events: content.events,
-              usage,
-              aiTitle: content.aiTitle,
-              recap: content.recap,
-              displayTitle: content.displayTitle,
-              agentKind: config.defaultAgent,
-            },
-            // Compact 能力探测与 bridge 侧一致（runner 有 runCompact 才渲染）。
-            bridge.hasRunCompact(restoredCwd, config.defaultAgent),
-            stillRunning,
-          );
-        } catch (err) {
-          getLogger().warn('[startup] sendAutoResumeCard failed:', err);
-        }
-      }
-    }
-  }
+  await restoreLastSession(app);
 
   logger.info('lark-remote is running, press Ctrl+C to exit');
 }

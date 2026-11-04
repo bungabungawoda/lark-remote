@@ -350,6 +350,116 @@ function isRealUserPrompt(obj: Record<string, unknown>): boolean {
   return true;
 }
 
+/** claude wire 一条 assistant 行携带的原始 usage 字段（可选，缺按 0 计）。 */
+interface ClaudeRawUsage {
+  input_tokens?: number;
+  output_tokens?: number;
+  cache_read_input_tokens?: number;
+  cache_creation_input_tokens?: number;
+}
+
+/** per-message-id 合并后的 usage 采样（四个分量 + 采集时的真人 turn 序号）。 */
+export interface ClaudePerMessageUsage {
+  input: number;
+  output: number;
+  cacheRead: number;
+  cacheCreation: number;
+  /** 该 message 属于第几个真人 turn（0 = 还没有真人 prompt）。 */
+  turn: number;
+}
+
+/**
+ * 两条采样逐字段取 max（纯函数；UsageAccumulator 的 per-field max 语义）。
+ *
+ * RED LINE（token 口径单源的一部分）：一条 streaming assistant 消息跨多行
+ * jsonl、共享同一 message id；部分后端（第三方网关，如 DeepSeek）在早期占位
+ * 行（空 thinking 块）写全零 usage，真实用量只在带 stop_reason 的末行。
+ * first-occurrence-wins 会把零记录钉死、丢掉真实用量（regression 2026-08-19：
+ * auto-resume 卡 per-run 统计全 0）。逐字段 max 与行序无关地重建完整用量；
+ * 官方 API 每行重复相同 usage，max 是 no-op。
+ *
+ * 产生：合并后的一条采样。依赖：入参。不改任何外部状态。
+ */
+export function maxUsageRecord(
+  prev: ClaudePerMessageUsage | undefined,
+  usage: ClaudeRawUsage,
+  turnSeq: number,
+): ClaudePerMessageUsage {
+  return {
+    input: Math.max(prev?.input ?? 0, usage.input_tokens ?? 0),
+    output: Math.max(prev?.output ?? 0, usage.output_tokens ?? 0),
+    cacheRead: Math.max(prev?.cacheRead ?? 0, usage.cache_read_input_tokens ?? 0),
+    cacheCreation: Math.max(prev?.cacheCreation ?? 0, usage.cache_creation_input_tokens ?? 0),
+    turn: prev?.turn ?? turnSeq,
+  };
+}
+
+/**
+ * usage 装配（纯函数）：每个 message id 一条最优记录、按首次出现顺序喂
+ * UsageAccumulator（Map 保序），acc.last = 末条 message 的完整用量，totals
+ * 让每条 API 响应恰好多计一次。per-run flow 只取末个真人 turn 的记录——
+ * 工具往返的 turn 有多条 assistant 消息（一次模型请求一条），只取 `last`
+ * 会低报。
+ *
+ * 产生：AgentSessionUsage。依赖：入参 records + 标量。不改任何外部状态
+ * （UsageAccumulator 在函数内新建）。
+ */
+export function buildClaudeUsage(
+  records: Iterable<ClaudePerMessageUsage>,
+  opts: { turnSeq: number; lastPostTokens: number; compactCount: number },
+): AgentSessionUsage {
+  const acc = new UsageAccumulator();
+  const turn = { input: 0, output: 0, cacheRead: 0, cacheCreation: 0 };
+  for (const record of records) {
+    acc.add(record);
+    if (opts.turnSeq > 0 && record.turn === opts.turnSeq) {
+      turn.input += record.input;
+      turn.output += record.output;
+      turn.cacheRead += record.cacheRead;
+      turn.cacheCreation += record.cacheCreation;
+    }
+  }
+
+  // Build usage result (same logic as old aggregateSessionUsage)
+  const t = acc.totals;
+  const l = acc.last;
+  // 没有真人 user prompt（旧数据/截断文件）→ 无法划分 turn，回退末条采样，
+  // 与 dsh/codex「无 turn 标记退回末条」一致；不能把整份文件当成一轮。
+  if (opts.turnSeq === 0 && l) {
+    turn.input = l.input;
+    turn.output = l.output;
+    turn.cacheRead = l.cacheRead;
+    turn.cacheCreation = l.cacheCreation;
+  }
+  // contextLength = current context-window occupancy. Prefer compact_boundary
+  // postTokens (the precise post-compact size); otherwise fall back to the
+  // last turn's input + cacheRead + cacheCreation (unified
+  // contract — excludes output/reasoning, which are generated, not part of
+  // the input window). Take the max so a pre-compact turn larger than the
+  // post-compact size is not under-reported.
+  const lastWindow = l ? contextWindowOccupancy(l) : 0;
+  let contextLength = opts.lastPostTokens;
+  if (contextLength === 0 || lastWindow > contextLength) {
+    contextLength = lastWindow;
+  }
+
+  // 非累计字段 = 末轮（本 run）scope，累计字段 = session 总和（所有 run）。
+  // 对齐 codex reader 语义（§9.21：`last_token_usage`=单 turn 增量、
+  // `total_token_usage`=session 累计）——否则 jsonl 兜底路径会把 session 累计
+  // 当成"本 run"显示，与卡片"本 run ≤ 累计"不变量冲突（累计反而更小）。
+  const lastTotal = turn.input + turn.output + turn.cacheRead + turn.cacheCreation;
+  return {
+    inputTokens: turn.input,
+    outputTokens: turn.output,
+    contextLength,
+    compactCount: opts.compactCount,
+    cacheReadTokens: turn.cacheRead > 0 ? turn.cacheRead : undefined,
+    cacheCreationTokens: turn.cacheCreation > 0 ? turn.cacheCreation : undefined,
+    totalTokens: lastTotal,
+    ...cumulativeUsageFields(t),
+  };
+}
+
 /**
  * first-pass scan: stream the file once via `scanJsonlLines`
  * (no `string[]` materialized), parse each line exactly once, and collect
@@ -357,9 +467,13 @@ function isRealUserPrompt(obj: Record<string, unknown>): boolean {
  * recap, lastUserMessage). Does NOT retain parsed objects — the events tail
  * is re-parsed separately by `extractEventsFromTail` so memory for both raw
  * line strings and parsed objects is O(tail), not O(whole file).
+ *
+ * 主体是分发表：每类行只收集自己的标量（assistant → usage 并表、
+ * compact_boundary → 计数 + postTokens、user → tail 定位/标题、ai-title）；
+ * usage 的逐字段 max 合并（maxUsageRecord）与装配（buildClaudeUsage）已
+ * 独立成纯函数。
  */
 function scalarScan(filePath: string): ScanResult {
-  const acc = new UsageAccumulator();
   // Per-message-id best usage record (per-field max). A streaming assistant
   // message spans multiple jsonl lines sharing the same message id; some
   // backends (third-party gateways, e.g. DeepSeek) write all-zero usage on
@@ -369,18 +483,9 @@ function scalarScan(filePath: string): ScanResult {
   // card per-run stats all 0). Per-field max
   // reconstructs the full usage regardless of line order — on the official
   // API every line repeats identical usage, so max is a no-op there.
-  const usageByMessageId = new Map<
-    string,
-    {
-      input: number;
-      output: number;
-      cacheRead: number;
-      cacheCreation: number;
-      /** 该 message 属于第几个真人 turn（0 = 还没有真人 prompt）。 */
-      turn: number;
-    }
-  >();
+  const usageByMessageId = new Map<string, ClaudePerMessageUsage>();
   let lastPostTokens = 0;
+  let compactCount = 0;
   let tailOffset = -1;
   /** 真人 prompt 序号；末个 turn = 当前值。sidechain/注入/工具结果不递增。 */
   let turnSeq = 0;
@@ -393,33 +498,16 @@ function scalarScan(filePath: string): ScanResult {
     // --- usage aggregation (was aggregateSessionUsage) ---
     if (obj.type === 'assistant') {
       const msg = obj.message as Record<string, unknown> | undefined;
-      const usage = msg?.usage as
-        | {
-            input_tokens?: number;
-            output_tokens?: number;
-            cache_read_input_tokens?: number;
-            cache_creation_input_tokens?: number;
-          }
-        | undefined;
+      const usage = msg?.usage as ClaudeRawUsage | undefined;
       if (usage) {
         const msgId = msg?.id as string | undefined;
         if (msgId) {
-          const prev = usageByMessageId.get(msgId);
-          usageByMessageId.set(msgId, {
-            input: Math.max(prev?.input ?? 0, usage.input_tokens ?? 0),
-            output: Math.max(prev?.output ?? 0, usage.output_tokens ?? 0),
-            cacheRead: Math.max(prev?.cacheRead ?? 0, usage.cache_read_input_tokens ?? 0),
-            cacheCreation: Math.max(
-              prev?.cacheCreation ?? 0,
-              usage.cache_creation_input_tokens ?? 0,
-            ),
-            turn: prev?.turn ?? turnSeq,
-          });
+          usageByMessageId.set(msgId, maxUsageRecord(usageByMessageId.get(msgId), usage, turnSeq));
         }
       }
     }
     if (obj.type === 'system' && obj.subtype === 'compact_boundary') {
-      acc.bumpCompact();
+      compactCount++;
       const cm = obj.compactMetadata as { postTokens?: number } | undefined;
       if (cm?.postTokens) {
         lastPostTokens = cm.postTokens;
@@ -478,65 +566,9 @@ function scalarScan(filePath: string): ScanResult {
     if (isRealUserPrompt(obj)) turnSeq++;
   });
 
-  // Feed one best record per message id, in first-appearance order (Map
-  // preserves insertion order), so acc.last is the LAST message's full usage
-  // and totals sum each API response exactly once. Per-run flow is only the
-  // records belonging to the last real-user turn — a tool-looping turn has
-  // several assistant messages (one per model request), so `last` alone
-  // under-reports it.
-  const turn = { input: 0, output: 0, cacheRead: 0, cacheCreation: 0 };
-  for (const record of usageByMessageId.values()) {
-    acc.add(record);
-    if (turnSeq > 0 && record.turn === turnSeq) {
-      turn.input += record.input;
-      turn.output += record.output;
-      turn.cacheRead += record.cacheRead;
-      turn.cacheCreation += record.cacheCreation;
-    }
-  }
-
-  // Build usage result (same logic as old aggregateSessionUsage)
-  const t = acc.totals;
-  const l = acc.last;
-  // 没有真人 user prompt（旧数据/截断文件）→ 无法划分 turn，回退末条采样，
-  // 与 dsh/codex「无 turn 标记退回末条」一致；不能把整份文件当成一轮。
-  if (turnSeq === 0 && l) {
-    turn.input = l.input;
-    turn.output = l.output;
-    turn.cacheRead = l.cacheRead;
-    turn.cacheCreation = l.cacheCreation;
-  }
-  // contextLength = current context-window occupancy. Prefer compact_boundary
-  // postTokens (the precise post-compact size); otherwise fall back to the
-  // last turn's input + cacheRead + cacheCreation (unified
-  // contract — excludes output/reasoning, which are generated, not part of
-  // the input window). Take the max so a pre-compact turn larger than the
-  // post-compact size is not under-reported.
-  const lastWindow = l ? contextWindowOccupancy(l) : 0;
-  let contextLength = lastPostTokens;
-  if (contextLength === 0 || lastWindow > contextLength) {
-    contextLength = lastWindow;
-  }
-
-  // 非累计字段 = 末轮（本 run）scope，累计字段 = session 总和（所有 run）。
-  // 对齐 codex reader 语义（§9.21：`last_token_usage`=单 turn 增量、
-  // `total_token_usage`=session 累计）——否则 jsonl 兜底路径会把 session 累计
-  // 当成"本 run"显示，与卡片"本 run ≤ 累计"不变量冲突（累计反而更小）。
-  const lastTotal = turn.input + turn.output + turn.cacheRead + turn.cacheCreation;
-  const usage: AgentSessionUsage = {
-    inputTokens: turn.input,
-    outputTokens: turn.output,
-    contextLength,
-    compactCount: acc.compactCount,
-    cacheReadTokens: turn.cacheRead > 0 ? turn.cacheRead : undefined,
-    cacheCreationTokens: turn.cacheCreation > 0 ? turn.cacheCreation : undefined,
-    totalTokens: lastTotal,
-    ...cumulativeUsageFields(t),
-  };
-
   return {
     tailOffset,
-    usage,
+    usage: buildClaudeUsage(usageByMessageId.values(), { turnSeq, lastPostTokens, compactCount }),
     aiTitle: lastAiTitle,
     recap: lastRecap,
     lastUserMessage,

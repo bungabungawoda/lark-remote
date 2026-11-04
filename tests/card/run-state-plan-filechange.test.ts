@@ -127,7 +127,11 @@ describe('reduceRunState - FileChangeEvent', () => {
       state = reduceRunState(state, fileEvent);
     }
 
-    // MAX_BLOCKS = 24
+    // MAX_BLOCKS = 24，keepLatestBlocks 保最新弃最旧：被淘汰的是 file0–file5，
+    // 窗口内最早的 file6 仍在首位，最新写入的 file29 留在末位。
     expect(state.blocks.length).toBe(24);
+    const paths = state.blocks.map((b) => (b as { path: string }).path);
+    expect(paths[0]).toBe('/src/file6.ts');
+    expect(paths[paths.length - 1]).toBe('/src/file29.ts');
   });
 });

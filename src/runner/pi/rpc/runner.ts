@@ -20,9 +20,10 @@
 
 import type { AgentSessionReader } from '../../../session-contract.js';
 import type { AgentEvent, AgentStatusInfo, SpawnOptions } from '../../types.js';
-import { ConnectionBasedRunner } from '../../common/connection-based-runner.js';
+import { ConnectionBasedRunner, type TurnAnchor } from '../../common/connection-based-runner.js';
 import { ConnectionManager } from '../../common/jsonrpc/connection-manager.js';
 import { getLogger } from '../../../logger/index.js';
+import { PI_DEFAULTS } from '../../../config/index.js';
 import { PiRpcClient } from './client.js';
 import { PiRpcTranslator, type PiRpcTranslatorEvent } from './translator.js';
 import type { PiRpcEvent } from './protocol-types.js';
@@ -62,10 +63,12 @@ export class PiRpcRunner extends ConnectionBasedRunner<PiRpcClient, PiRpcTransla
       sessionReader: opts.sessionReader,
       turnIdleTimeoutMs: opts.turnIdleTimeoutMs,
     });
-    this.defaultModel = opts.model ?? 'glm-5.2';
-    this.provider = opts.provider ?? 'Volcano';
-    this.thinking = opts.thinking ?? 'medium';
-    const tools = (opts.tools ?? ['read', 'bash', 'edit', 'write', 'grep', 'find', 'ls']).join(',');
+    this.defaultModel = opts.model ?? PI_DEFAULTS.model;
+    this.provider = opts.provider ?? PI_DEFAULTS.provider;
+    this.thinking = opts.thinking ?? PI_DEFAULTS.thinking;
+    // PI_DEFAULTS.tools 是逗号串（config schema 的 tools 同形态），与原数组兜底
+    // join(',') 结果逐字相等；opts.tools 自身的数组语义（含空数组 → 空串）不变。
+    const tools = opts.tools?.join(',') ?? PI_DEFAULTS.tools;
     this.manager = new ConnectionManager<PiRpcClient>({
       binary: opts.binary ?? 'pi',
       buildArgs: (req) =>
@@ -130,6 +133,10 @@ export class PiRpcRunner extends ConnectionBasedRunner<PiRpcClient, PiRpcTransla
     this.manager.notifyIdle(cwd);
   }
 
+  protected notifyConnectionActivity(cwd: string): void {
+    this.manager.notifyActivity(cwd);
+  }
+
   protected async disposeConnections(): Promise<void> {
     await this.manager.disposeAll();
   }
@@ -149,26 +156,15 @@ export class PiRpcRunner extends ConnectionBasedRunner<PiRpcClient, PiRpcTransla
    * `agent_settled` event produces the result.
    */
   protected async setupTurn(message: string, opts: SpawnOptions): Promise<void> {
-    const client = await this.manager.acquire(opts.cwd, { sessionId: opts.sessionId });
-    this.manager.notifyActivity(opts.cwd);
-    this.currentClient = client;
-    // 轮次代际锚点（与 BaseAcpRunner 同口径）：pi 的 shouldReuse 要求
-    // sessionId 匹配，/new、/resume 切换后的首条消息会让 acquire **同步
-    // dispose** 旧连接；terminator 等到进程退出后，旧 client 上残留的上一轮
-    // onClose 闭包会把假错误推进新 turn 的共享队列（用户消息未发出即丢失）。
-    // 旧轮迟到的 agent_settled 同理（新 turn 空转立即"成功"）。所有 hook
-    // 落地前必须过 isCurrentTurn。
-    const generation = this.turnGeneration;
-    client.setHooks({
-      onEvent: (evt) => {
-        if (!this.isCurrentTurn(generation, client)) return;
-        this.handleEvent(evt);
-      },
-      onClose: () => {
-        if (!this.isCurrentTurn(generation, client)) return;
-        this.failTurn('Pi RPC connection closed');
-      },
-    });
+    const anchor = await this.acquireForTurn(opts.cwd, () =>
+      this.manager.acquire(opts.cwd, { sessionId: opts.sessionId }),
+    );
+    // pi 的 shouldReuse 要求 sessionId 匹配：/new、/resume 切换后的首条消息会让
+    // acquire **同步 dispose** 旧连接。旧 client 残留的上一轮 onClose / 迟到的
+    // agent_settled 必须被 anchor 守卫挡掉，否则假错误会推进新 turn 的共享队列
+    // （语义见 acquireForTurn / TurnAnchor）。
+    this.installTurnHooks(anchor);
+    const { client } = anchor;
 
     let sessionId = opts.sessionId;
     if (!sessionId) {
@@ -212,23 +208,14 @@ export class PiRpcRunner extends ConnectionBasedRunner<PiRpcClient, PiRpcTransla
       if (!opts.sessionId) {
         throw new Error('compact requires a sessionId');
       }
-      const client = await this.manager.acquire(opts.cwd, { sessionId: opts.sessionId });
-      this.manager.notifyActivity(opts.cwd);
-      this.currentClient = client;
       // 同 setupTurn：hook 带轮次代际锚点，旧连接的迟到回调不得进入本轮。
-      const generation = this.turnGeneration;
-      client.setHooks({
-        onEvent: (evt) => {
-          if (!this.isCurrentTurn(generation, client)) return;
-          this.handleEvent(evt);
-        },
-        onClose: () => {
-          if (!this.isCurrentTurn(generation, client)) return;
-          this.failTurn('Pi RPC connection closed');
-        },
-      });
+      const anchor = await this.acquireForTurn(opts.cwd, () =>
+        this.manager.acquire(opts.cwd, { sessionId: opts.sessionId }),
+      );
+      this.installTurnHooks(anchor);
 
       this.activeSessionId = opts.sessionId;
+      const { client } = anchor;
 
       const translator = new PiRpcTranslator();
       translator.setSessionId(opts.sessionId);
@@ -254,6 +241,16 @@ export class PiRpcRunner extends ConnectionBasedRunner<PiRpcClient, PiRpcTransla
 
   private handleEvent(evt: PiRpcEvent): void {
     this.pushEvents(this.currentTranslator?.handleEvent(evt) ?? []);
+  }
+
+  /** Wire the acquired client's hooks into the turn dispatcher (anchor-guarded). */
+  private installTurnHooks(anchor: TurnAnchor<PiRpcClient>): void {
+    anchor.client.setHooks({
+      onEvent: this.forCurrentTurn(anchor, 'event', (evt) => this.handleEvent(evt)),
+      onClose: this.forCurrentTurn(anchor, 'connection close', () =>
+        this.failTurn('Pi RPC connection closed'),
+      ),
+    });
   }
 }
 

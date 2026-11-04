@@ -145,9 +145,7 @@ describeLive('飞书 API 集成测试 - config.save 切换 coding agent 持久�
       configPath,
       workspacePath: path.join(tmpDir, 'workspace.json'),
       ordersPath: path.join(tmpDir, 'orders.json'),
-      sessionReaderRegistry: createMockSessionReaderRegistry({
-        agentKinds: ['claude', 'codex', 'pi', 'opencode', 'kimi'],
-      }),
+      sessionReaderRegistry: createMockSessionReaderRegistry({}),
     });
 
     sessionStore.setCwd('live-user', tmpDir);

@@ -2,7 +2,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { readJsonlLines as readJsonlLinesShared, readLastNJsonlLines } from '../common/jsonl.js';
-import { UsageAccumulator, cumulativeUsageFields } from '../common/usage-accumulator.js';
+import { cumulativeUsageFields } from '../common/usage-accumulator.js';
+import { throwSessionListError } from '../common/throw-session-list-error.js';
 import { getLogger } from '../../logger/index.js';
 import type {
   AgentSession,
@@ -268,6 +269,286 @@ export function checkCwdGuard(state: KimiSessionState, realCwd: string): CwdGuar
   return 'failed';
 }
 
+// --- readSessionContent 装配函数（纯函数 / 只读：产生结果、依赖入参、不改外部状态） ---
+
+/** 逐字段 token 累计（usage.record 的四个分量；缺字段按 0 计）。 */
+interface KimiUsageTotals {
+  input: number;
+  output: number;
+  cacheRead: number;
+  cacheCreation: number;
+}
+
+function emptyKimiTotals(): KimiUsageTotals {
+  return { input: 0, output: 0, cacheRead: 0, cacheCreation: 0 };
+}
+
+/** kimi 主 wire usage 扫描累积器结果（纯数据）。 */
+export interface KimiWireUsageScan {
+  /** 会话累计：主 wire 全部 usage.record 逐字段求和（子 agent 由调用方并入）。 */
+  totals: KimiUsageTotals;
+  /**
+   * 末个 turn（最后一个 turn.prompt 之后）的主 wire 记录之和（本 run flow）；
+   * 整份 wire 无 turn.prompt（旧数据/截断）= undefined，由装配段回退全会话。
+   */
+  turn: KimiUsageTotals | undefined;
+  /** 主 wire 末条 usage.record 的上下文水位（§9.21；子 agent 独立窗口不进）。 */
+  mainContextLength: number;
+  /** §6.3 展示计数：只数 context.apply_compaction（一次手动 /compact 只写一条）。 */
+  compactCount: number;
+  /** 最近一次压缩的 tokensBefore 水位。 */
+  compactPreContextLength: number | undefined;
+  /** 主 wire 出现过 usage.record（畸形 record 也算有数据，全零照实返回）。 */
+  hasUsageRecord: boolean;
+}
+
+/**
+ * kimi 主 wire usage 扫描累积器（纯函数）：单遍解析，产出会话累计、末 turn
+ * flow、上下文水位与压缩统计。
+ *
+ * 产生：KimiWireUsageScan。依赖：入参 lines（已解析前的原始行）。不改任何
+ * 外部状态；畸形行跳过，畸形 usage.record 按字段 0 计但记为「有数据」。
+ */
+export function scanKimiUsage(lines: readonly string[]): KimiWireUsageScan {
+  const totals = emptyKimiTotals();
+  let turn: KimiUsageTotals | undefined;
+  // contextLength is only from the main wire's last usage.record
+  // (subagent context is an independent window).
+  let mainContextLength = 0;
+  // §6.3: Compaction stats — count compact events, track last pre-compact context.
+  let compactCount = 0;
+  let compactPreContextLength: number | undefined;
+  // Distinguish "no usage.record in any wire file" (no data → usage:
+  // undefined, downstream omits the token block) from "records exist but
+  // are all zero / malformed" (real data → aggregate with ?? 0 and return
+  // the zeros as-is). A malformed record (usage.record line with missing
+  // usage object/fields) still counts as data.
+  let hasUsageRecord = false;
+
+  for (const line of lines) {
+    let entry: KimiJsonlEntry;
+    try {
+      entry = JSON.parse(line) as KimiJsonlEntry;
+    } catch {
+      continue;
+    }
+
+    if (isUsageRecord(entry)) {
+      hasUsageRecord = true;
+      // Malformed records (missing usage object or missing fields) must
+      // not poison the accumulators with NaN: count missing fields as 0.
+      const inputOther = entry.usage?.inputOther ?? 0;
+      const output = entry.usage?.output ?? 0;
+      const inputCacheRead = entry.usage?.inputCacheRead ?? 0;
+      const inputCacheCreation = entry.usage?.inputCacheCreation ?? 0;
+      totals.input += inputOther;
+      totals.output += output;
+      totals.cacheRead += inputCacheRead;
+      totals.cacheCreation += inputCacheCreation;
+      if (turn) {
+        turn.input += inputOther;
+        turn.output += output;
+        turn.cacheRead += inputCacheRead;
+        turn.cacheCreation += inputCacheCreation;
+      }
+      // unified contract (§9.21): input + output + cacheRead + cacheCreation.
+      // 末轮 output 已进入历史、下一 prompt 全量携带——与 compact postTokens
+      // 水位同语义（此前漏加 output 会系统性低估长收尾 turn）。
+      mainContextLength = inputOther + output + inputCacheRead + inputCacheCreation;
+      continue;
+    }
+
+    // §6.3: Count compaction events and track pre-compact context length.
+    // 展示计数只计 context.apply_compaction：一次手动 /compact 会同时写
+    // full_compaction.complete + context.apply_compaction 两条（2026-08-16
+    // 实弹 wire.jsonl），双计会把一次压缩虚报成 2 次。full_compaction.complete
+    // 仅作 runCompact 轮询的完成信号（readCompactionRecords 仍返回两种）。
+    if (isCompactionComplete(entry) && entry.type === 'context.apply_compaction') {
+      compactCount++;
+      // Capture context length before this compaction as the pre-compact
+      // watermark (the most recent one is most relevant for display).
+      if (entry.tokensBefore !== undefined) {
+        compactPreContextLength = entry.tokensBefore;
+      }
+      continue;
+    }
+
+    // turn.prompt 是 turn 的起点：本 turn 的 flow 从这里重新累计。
+    if (isTurnPrompt(entry)) {
+      turn = emptyKimiTotals();
+      continue;
+    }
+  }
+
+  return { totals, turn, mainContextLength, compactCount, compactPreContextLength, hasUsageRecord };
+}
+
+/** kimi 子 agent wire usage 扫描结果（纯数据）。 */
+interface KimiSubagentUsageScan {
+  /** 兄弟 wire 的 usage.record 逐字段求和（只进会话累计）。 */
+  totals: KimiUsageTotals;
+  /** 子 agent wire 出现过 usage.record。 */
+  hasUsageRecord: boolean;
+}
+
+/**
+ * kimi 子 agent wire usage 扫描（只读 I/O）：agents/<name>/wire.jsonl（main
+ * 以外的兄弟目录）与主会话同属同一计费实体，token 消耗必须并入会话累计；
+ * contextLength/展示事件不取子 agent。目录不可读或文件缺失静默跳过。
+ *
+ * 产生：KimiSubagentUsageScan。依赖：文件系统（agentsDir 只读）。不改外部状态。
+ */
+function scanKimiSubagentUsage(agentsDir: string): KimiSubagentUsageScan {
+  const totals = emptyKimiTotals();
+  let hasUsageRecord = false;
+  try {
+    for (const dirent of fs.readdirSync(agentsDir, { withFileTypes: true })) {
+      if (!dirent.isDirectory() || dirent.name === 'main') {
+        continue;
+      }
+      const subWirePath = path.join(agentsDir, dirent.name, 'wire.jsonl');
+      if (!fs.existsSync(subWirePath)) {
+        continue;
+      }
+      for (const subLine of readJsonlLines(subWirePath)) {
+        try {
+          const subEntry = JSON.parse(subLine) as KimiJsonlEntry;
+          if (isUsageRecord(subEntry)) {
+            hasUsageRecord = true;
+            totals.input += subEntry.usage?.inputOther ?? 0;
+            totals.output += subEntry.usage?.output ?? 0;
+            totals.cacheRead += subEntry.usage?.inputCacheRead ?? 0;
+            totals.cacheCreation += subEntry.usage?.inputCacheCreation ?? 0;
+          }
+        } catch {
+          continue;
+        }
+      }
+    }
+  } catch {
+    // agents dir unreadable — fall back to main-only usage
+  }
+  return { totals, hasUsageRecord };
+}
+
+/**
+ * kimi usage 装配（tail 装配段，纯函数）：末 turn flow + 会话累计（主 wire +
+ * 子 agent）+ 主 wire 水位 + 压缩统计 → AgentSessionUsage。
+ *
+ * 有 turn.prompt 时本 run = 末个 turn 的 flow；末 turn 还没有记录时
+ * turn 为全 0。整份 wire 都没有 turn.prompt（旧数据/截断）时无从分段，
+ * 沿用「整份文件 = 一个 turn」的旧口径（含子 agent wire）。
+ */
+function assembleKimiUsage(main: KimiWireUsageScan, sub: KimiSubagentUsageScan): AgentSessionUsage {
+  const totals: KimiUsageTotals = {
+    input: main.totals.input + sub.totals.input,
+    output: main.totals.output + sub.totals.output,
+    cacheRead: main.totals.cacheRead + sub.totals.cacheRead,
+    cacheCreation: main.totals.cacheCreation + sub.totals.cacheCreation,
+  };
+  const flow = main.turn ?? totals;
+  // Kimi semantics: preserve 0 values (not undefined) for cache fields to match original
+  return {
+    inputTokens: flow.input,
+    outputTokens: flow.output,
+    contextLength: main.mainContextLength,
+    cacheReadTokens: flow.cacheRead > 0 ? flow.cacheRead : 0,
+    cacheCreationTokens: flow.cacheCreation > 0 ? flow.cacheCreation : 0,
+    totalTokens: flow.input + flow.output + flow.cacheRead + flow.cacheCreation,
+    // Cumulative (session-wide): sums every usage.record across all turns
+    // (subagent wires included) — the "累计" line, never the per-run value.
+    ...cumulativeUsageFields(totals),
+    // §6.3: compaction stats from wire.jsonl
+    compactCount: main.compactCount,
+    ...(main.compactPreContextLength !== undefined
+      ? { compactPreContextLength: main.compactPreContextLength }
+      : {}),
+  };
+}
+
+/** kimi 主 wire 展示扫描结果（纯数据）。 */
+interface KimiEventScan {
+  /** 展示事件（主 wire 全量；maxEvents 尾切由调用方 capEvents 做）。 */
+  events: AgentSessionContentEvent[];
+  /** displayTitle：最后一条 turn.prompt 的首段文本（最近的用户输入）。 */
+  displayTitle: string | undefined;
+}
+
+/**
+ * kimi 主 wire 展示装配（纯函数）：turn.prompt 提取 displayTitle，loop event
+ * 映射为展示事件。tool.call/tool.result 是**独立的 loop event**（对照真实
+ * wire.jsonl 验证过的结构，勿合并/改形）。
+ *
+ * 产生：KimiEventScan。依赖：入参 lines。不改任何外部状态。
+ */
+function scanKimiEvents(lines: readonly string[]): KimiEventScan {
+  const events: AgentSessionContentEvent[] = [];
+  let displayTitle: string | undefined;
+
+  for (const line of lines) {
+    let entry: KimiJsonlEntry;
+    try {
+      entry = JSON.parse(line) as KimiJsonlEntry;
+    } catch {
+      continue;
+    }
+
+    // displayTitle + display events now scan ALL lines (not a
+    // line-slice), then `events.slice(-maxEvents)` keeps the LAST N
+    // EVENTS. Previously `lines.slice(-maxEvents)` cut raw lines, but
+    // usage.record / step.begin / turn.prompt lines produce no display
+    // event, so "last 5 lines" could yield only 1~2 visible events —
+    // and `slice(-0)` returned the full array. displayTitle takes the
+    // last turn.prompt across the whole session (the most recent user
+    // prompt), which is the correct catch-up title.
+    // Extract display title from turn.prompt
+    if (isTurnPrompt(entry)) {
+      if (entry.input && entry.input.length > 0) {
+        displayTitle = entry.input[0].text;
+      }
+      continue;
+    }
+
+    // Convert loop events to content events
+    if (isAppendLoopEvent(entry)) {
+      const evt = entry.event;
+
+      if (evt.type === 'content.part' && evt.part) {
+        if (evt.part.type === 'think') {
+          // Skip thinking blocks for display
+          continue;
+        } else if (evt.part.type === 'text' && evt.part.text) {
+          events.push({
+            type: 'text',
+            content: evt.part.text,
+          });
+        }
+      } else if (evt.type === 'tool.call' && evt.name) {
+        // 复用 content-blocks 的 200 字符截断：大 args（整段文件内容
+        // 写入、长 prompt）原文进事件会把 resume 卡顶到 28KB 预算之外
+        // （2026-08-08 extreme_fallback 故障的推手之一）。
+        const inputStr = truncateToolInput(JSON.stringify(evt.args ?? {}));
+        events.push({
+          type: 'tool_use',
+          content: `${evt.name}(${inputStr})`,
+        });
+      } else if (evt.type === 'tool.result') {
+        // result is { output }, { output, note }, or { isError, output }
+        // 对齐 opencode reader 的预折叠：单条 tool_result 上限
+        // TOOL_RESULT_MAX_BYTES，病理级输出（如 51KB 文件读取）不会
+        // 撑爆 resume 卡，也约束 events[] 内存占用。
+        const rawOut = evt.result?.output ?? `[tool result for ${evt.toolCallId}]`;
+        events.push({
+          type: 'tool_result',
+          content: truncateUtf8(rawOut, TOOL_RESULT_MAX_BYTES),
+        });
+      }
+    }
+  }
+
+  return { events, displayTitle };
+}
+
 /**
  * Kimi Session Reader
  * Reads session history from ~/.kimi-code/
@@ -457,9 +738,7 @@ export class KimiSessionReader implements AgentSessionReader {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
         return { sessions: [], total: 0 };
       }
-      getLogger().error(`[kimi-session-reader] listSessions failed: ${error}`);
-      const msg = error instanceof Error ? error.message : String(error);
-      throw new Error(`kimi session list 读取失败: ${msg}`, { cause: error });
+      throwSessionListError('kimi', error);
     }
   }
 
@@ -472,6 +751,11 @@ export class KimiSessionReader implements AgentSessionReader {
 
   /**
    * Read session content (events + usage)
+   *
+   * 编排：cwd 守卫定位主 wire（resolveSessionWirePath，与 isSessionActive
+   * 共用 verifySessionCwd 单源）→ 主 wire 两遍只读扫描（scanKimiEvents 出
+   * 展示流 + displayTitle，scanKimiUsage 出累计/flow/水位/压缩统计）→ 子
+   * agent wire 只进 usage 累计 → assembleKimiUsage 组装。
    */
   readSessionContent(
     sessionId: string,
@@ -485,150 +769,9 @@ export class KimiSessionReader implements AgentSessionReader {
 
     try {
       const lines = Array.from(readJsonlLines(wirePath));
-      const maxEvents = opts?.maxEvents ?? Number.MAX_SAFE_INTEGER;
 
-      const events: AgentSessionContentEvent[] = [];
-      let displayTitle: string | undefined;
-      const acc = new UsageAccumulator();
-      // contextLength is only from the main wire's last usage.record
-      // (subagent context is an independent window). Tracked separately
-      // from the accumulator's `last` (which could be a subagent record).
-      let mainContextLength = 0;
-      // §6.3: Compaction stats — count compact events, track last pre-compact context.
-      let compactCount = 0;
-      let compactPreContextLength: number | undefined;
-      // Distinguish "no usage.record in any wire file" (no data → usage:
-      // undefined, downstream omits the token block) from "records exist but
-      // are all zero / malformed" (real data → aggregate with ?? 0 and return
-      // the zeros as-is). A malformed record (usage.record line with missing
-      // usage object/fields) still counts as data.
-      let hasUsageRecord = false;
-
-      // ccusage-style session-wide aggregation via UsageAccumulator: sum
-      // every usage.record's per-component tokens; contextLength is the
-      // current context window occupancy (not summable) — keep only the
-      // last record's value, and only from the main wire (subagent context
-      // is an independent window). Aggregation covers the whole wire.jsonl
-      // and is independent of the maxEvents display slice
-      // (usage = the session's overall token cost).
-      //
-      // 本 run 的 flow 字段是**末个 turn**（最后一个 turn.prompt 之后）的记录之和：
-      // kimi 每次模型调用写一条 usage.record，带工具往返的 turn 会有多条。只取
-      // 末条会低报，取会话总量（旧实现）又会把历史所有 run 的消耗算进这一轮。
-      // 子 agent 的 wire 没有 turn 标记，只能进会话累计（无法归属到某一轮）；
-      // 整份 wire 都没有 turn.prompt（旧数据）时沿用「整份文件 = 一个 turn」。
-      // 末个 turn 尚无 usage.record 时 flow = 0（当前契约是「末个 turn」，不是
-      // 「末个非空 turn」）——不能退回上一轮的记录。
-      let turnAcc: UsageAccumulator | null = null;
-      const accumulateUsage = (
-        u: KimiUsageRecordEvent['usage'],
-        scope: 'main' | 'subagent',
-      ): void => {
-        hasUsageRecord = true;
-        // Malformed records (missing usage object or missing fields) must
-        // not poison the accumulators with NaN: count missing fields as 0.
-        const inputOther = u?.inputOther ?? 0;
-        const output = u?.output ?? 0;
-        const inputCacheRead = u?.inputCacheRead ?? 0;
-        const inputCacheCreation = u?.inputCacheCreation ?? 0;
-        const record = {
-          input: inputOther,
-          output,
-          cacheRead: inputCacheRead,
-          cacheCreation: inputCacheCreation,
-        };
-        acc.add(record);
-        if (scope !== 'main') return;
-        turnAcc?.add(record);
-        // unified contract (§9.21): input + output + cacheRead + cacheCreation.
-        // 末轮 output 已进入历史、下一 prompt 全量携带——与 compact postTokens
-        // 水位同语义（此前漏加 output 会系统性低估长收尾 turn）。
-        mainContextLength = inputOther + output + inputCacheRead + inputCacheCreation;
-      };
-
-      for (let lineIndex = 0; lineIndex < lines.length; lineIndex++) {
-        const line = lines[lineIndex];
-        try {
-          const entry = JSON.parse(line) as KimiJsonlEntry;
-
-          // Extract usage from usage.record.
-          if (isUsageRecord(entry)) {
-            accumulateUsage(entry.usage, 'main');
-            continue;
-          }
-
-          // §6.3: Count compaction events and track pre-compact context length.
-          // 展示计数只计 context.apply_compaction：一次手动 /compact 会同时写
-          // full_compaction.complete + context.apply_compaction 两条，双计会把
-          // 一次压缩虚报成 2 次。full_compaction.complete
-          // 仅作 runCompact 轮询的完成信号（readCompactionRecords 仍返回两种）。
-          if (isCompactionComplete(entry) && entry.type === 'context.apply_compaction') {
-            compactCount++;
-            // Capture context length before this compaction as the pre-compact
-            // watermark (the most recent one is most relevant for display).
-            if (entry.tokensBefore !== undefined) {
-              compactPreContextLength = entry.tokensBefore;
-            }
-            continue;
-          }
-
-          // displayTitle + display events now scan ALL lines (not a
-          // line-slice), then `events.slice(-maxEvents)` keeps the LAST N
-          // EVENTS. Previously `lines.slice(-maxEvents)` cut raw lines, but
-          // usage.record / step.begin / turn.prompt lines produce no display
-          // event, so "last 5 lines" could yield only 1~2 visible events —
-          // and `slice(-0)` returned the full array. displayTitle takes the
-          // last turn.prompt across the whole session (the most recent user
-          // prompt), which is the correct catch-up title.
-          // Extract display title from turn.prompt
-          if (isTurnPrompt(entry)) {
-            // turn.prompt 是 turn 的起点：本 turn 的 flow 从这里重新累计。
-            turnAcc = new UsageAccumulator();
-            if (entry.input && entry.input.length > 0) {
-              displayTitle = entry.input[0].text;
-            }
-            continue;
-          }
-
-          // Convert loop events to content events
-          if (isAppendLoopEvent(entry)) {
-            const evt = entry.event;
-
-            if (evt.type === 'content.part' && evt.part) {
-              if (evt.part.type === 'think') {
-                // Skip thinking blocks for display
-                continue;
-              } else if (evt.part.type === 'text' && evt.part.text) {
-                events.push({
-                  type: 'text',
-                  content: evt.part.text,
-                });
-              }
-            } else if (evt.type === 'tool.call' && evt.name) {
-              // 复用 content-blocks 的 200 字符截断：大 args（整段文件内容
-              // 写入、长 prompt）原文进事件会把 resume 卡顶到 28KB 预算之外
-              // （extreme_fallback 故障的推手之一）。
-              const inputStr = truncateToolInput(JSON.stringify(evt.args ?? {}));
-              events.push({
-                type: 'tool_use',
-                content: `${evt.name}(${inputStr})`,
-              });
-            } else if (evt.type === 'tool.result') {
-              // result is { output }, { output, note }, or { isError, output }
-              // 对齐 opencode reader 的预折叠：单条 tool_result 上限
-              // TOOL_RESULT_MAX_BYTES，病理级输出（如 51KB 文件读取）不会
-              // 撑爆 resume 卡，也约束 events[] 内存占用。
-              const rawOut = evt.result?.output ?? `[tool result for ${evt.toolCallId}]`;
-              events.push({
-                type: 'tool_result',
-                content: truncateUtf8(rawOut, TOOL_RESULT_MAX_BYTES),
-              });
-            }
-          }
-        } catch {
-          continue;
-        }
-      }
+      const { events, displayTitle } = scanKimiEvents(lines);
+      const mainUsage = scanKimiUsage(lines);
 
       // Subagent wire files (agents/<name>/wire.jsonl, e.g. Task-derived
       // agent-0..N) belong to the same session and the same billing entity:
@@ -639,56 +782,14 @@ export class KimiSessionReader implements AgentSessionReader {
       // wirePath = <sessionDir>/agents/main/wire.jsonl → agents dir is two
       // levels up (siblings of main hold subagent wires).
       const agentsDir = path.dirname(path.dirname(wirePath));
-      try {
-        for (const dirent of fs.readdirSync(agentsDir, { withFileTypes: true })) {
-          if (!dirent.isDirectory() || dirent.name === 'main') {
-            continue;
-          }
-          const subWirePath = path.join(agentsDir, dirent.name, 'wire.jsonl');
-          if (!fs.existsSync(subWirePath)) {
-            continue;
-          }
-          for (const subLine of readJsonlLines(subWirePath)) {
-            try {
-              const subEntry = JSON.parse(subLine) as KimiJsonlEntry;
-              if (isUsageRecord(subEntry)) {
-                accumulateUsage(subEntry.usage, 'subagent');
-              }
-            } catch {
-              continue;
-            }
-          }
-        }
-      } catch {
-        // agents dir unreadable — fall back to main-only usage
-      }
-
-      // Build the final AgentSessionUsage from the last turn's flow + session
-      // cumulative + main contextLength.
-      const t = acc.totals;
-      // 有 turn.prompt 时本 run = 末个 turn 的 flow；末 turn 还没有记录时
-      // turnAcc.count = 0 → flow = 0。整份 wire 都没有 turn.prompt（旧数据/
-      // 截断）时无从分段，沿用「整份文件 = 一个 turn」的旧口径（含子 agent wire）。
-      const flow = turnAcc ? turnAcc.totals : t;
-      // Kimi semantics: preserve 0 values (not undefined) for cache fields to match original
-      const totalUsage: AgentSessionUsage = {
-        inputTokens: flow.input,
-        outputTokens: flow.output,
-        contextLength: mainContextLength,
-        cacheReadTokens: flow.cacheRead > 0 ? flow.cacheRead : 0,
-        cacheCreationTokens: flow.cacheCreation > 0 ? flow.cacheCreation : 0,
-        totalTokens: flow.input + flow.output + flow.cacheRead + flow.cacheCreation,
-        // Cumulative (session-wide): sums every usage.record across all turns
-        // (subagent wires included) — the "累计" line, never the per-run value.
-        ...cumulativeUsageFields(t),
-        // §6.3: compaction stats from wire.jsonl
-        compactCount,
-        ...(compactPreContextLength !== undefined ? { compactPreContextLength } : {}),
-      };
+      const subUsage = scanKimiSubagentUsage(agentsDir);
 
       return {
-        events: capEvents(events, maxEvents),
-        usage: hasUsageRecord ? totalUsage : undefined,
+        events: capEvents(events, opts?.maxEvents),
+        usage:
+          mainUsage.hasUsageRecord || subUsage.hasUsageRecord
+            ? assembleKimiUsage(mainUsage, subUsage)
+            : undefined,
         displayTitle,
       };
     } catch (error) {
@@ -893,7 +994,8 @@ export class KimiSessionReader implements AgentSessionReader {
 
       // Consider the session inactive when its last loop event is step.end
       return !lastLoopEventIsStepEnd(lines);
-    } catch {
+    } catch (err) {
+      getLogger().debug('[kimi-session-reader] isSessionActive failed:', err);
       return false;
     }
   }

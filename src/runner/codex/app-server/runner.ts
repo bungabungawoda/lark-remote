@@ -37,7 +37,7 @@ import {
 import { RpcErrorCode } from '../../common/acp/protocol-types.js';
 import { mapAnswersByIndex } from '../../question-common.js';
 import { getLogger } from '../../../logger/index.js';
-import { ConnectionBasedRunner } from '../../common/connection-based-runner.js';
+import { ConnectionBasedRunner, type TurnAnchor } from '../../common/connection-based-runner.js';
 
 export interface CodexAppServerRunnerOptions {
   kind: AgentKind;
@@ -255,8 +255,32 @@ export class CodexAppServerRunner extends ConnectionBasedRunner<
     await this.connectionManager.release(cwd);
   }
 
+  /**
+   * Wire the acquired client's hooks into the turn dispatcher (anchor-guarded).
+   * 代际锚点与 ACP/pi 同口径：连接按 workspace 缓存复用，旧 turn 迟到的通知 /
+   * server request / onClose 不得进入新轮（此前 codex 缺这层守卫，属补齐漂移）。
+   */
+  private installTurnHooks(anchor: TurnAnchor<JsonRpcClient<InitializeResult>>): void {
+    anchor.client.setHooks({
+      onNotification: this.forCurrentTurn(anchor, 'notification', (method, params) =>
+        this.handleNotification(method, params),
+      ),
+      onServerRequest: this.forCurrentTurn(anchor, 'server request', (id, method, params) =>
+        this.handleServerRequest(id, method, params),
+      ),
+      onClose: this.forCurrentTurn(anchor, 'connection close', () => {
+        getLogger().warn(`[${this.logTag}] client connection closed`);
+        this.failTurn('Codex app-server connection closed');
+      }),
+    });
+  }
+
   protected notifyIdle(cwd: string): void {
     this.connectionManager.notifyIdle(cwd);
+  }
+
+  protected notifyConnectionActivity(cwd: string): void {
+    this.connectionManager.notifyActivity(cwd);
   }
 
   protected async disposeConnections(): Promise<void> {
@@ -268,14 +292,11 @@ export class CodexAppServerRunner extends ConnectionBasedRunner<
    */
   async *runCompact(_message: string, opts: SpawnOptions): AsyncGenerator<AgentEvent> {
     yield* this.executeTurn(opts, async () => {
-      const client = await this.connectionManager.acquire(opts.cwd);
-      this.connectionManager.notifyActivity(opts.cwd);
-      this.currentClient = client;
-      client.setHooks({
-        onNotification: (method, params) => this.handleNotification(method, params),
-        onServerRequest: (id, method, params) => this.handleServerRequest(id, method, params),
-        onClose: () => this.failTurn('Codex app-server connection closed'),
-      });
+      const anchor = await this.acquireForTurn(opts.cwd, () =>
+        this.connectionManager.acquire(opts.cwd),
+      );
+      this.installTurnHooks(anchor);
+      const { client } = anchor;
 
       if (!opts.sessionId) {
         throw new Error('compact requires a sessionId');
@@ -438,17 +459,11 @@ export class CodexAppServerRunner extends ConnectionBasedRunner<
    * thread/resume（按 sessionId 恢复既有线程）→ turn/start。
    */
   protected async setupTurn(message: string, opts: SpawnOptions): Promise<void> {
-    const client = await this.connectionManager.acquire(opts.cwd);
-    this.connectionManager.notifyActivity(opts.cwd);
-    this.currentClient = client;
-    client.setHooks({
-      onNotification: (method, params) => this.handleNotification(method, params),
-      onServerRequest: (id, method, params) => this.handleServerRequest(id, method, params),
-      onClose: () => {
-        getLogger().warn(`[${this.logTag}] client connection closed`);
-        this.failTurn('Codex app-server connection closed');
-      },
-    });
+    const anchor = await this.acquireForTurn(opts.cwd, () =>
+      this.connectionManager.acquire(opts.cwd),
+    );
+    this.installTurnHooks(anchor);
+    const { client } = anchor;
 
     const threadParams: ThreadStartParams = this.buildThreadParams(opts.cwd);
     let threadId: string;

@@ -21,6 +21,7 @@ import {
   createStubAgentRegistry,
   createStubSessionReaderRegistry,
   createStubConnector,
+  interruptCurrentRun,
 } from '../../lib/bridge-stubs.js';
 import { rmRf } from '../../lib/tmp-cleanup.js';
 
@@ -167,7 +168,7 @@ describe('reaction emoji by run terminal (anchor)', () => {
     // Step 1 (createRunSession) is synchronous, so the active run is registered
     // before the first await; interrupting then releases the hanging generator.
     const promise = bridge.forwardToClaude('hello', ctx);
-    await bridge.interruptCurrentRun({ userId: ctx.userId, chatId: ctx.chatId });
+    await interruptCurrentRun(bridge, { userId: ctx.userId, chatId: ctx.chatId });
     await promise;
 
     expect(connector.addReaction).toHaveBeenCalledWith(ctx.messageId, 'SHHH');

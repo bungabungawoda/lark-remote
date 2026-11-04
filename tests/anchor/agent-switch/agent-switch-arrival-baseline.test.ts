@@ -424,9 +424,7 @@ describe('config.save switch notification edge paths', () => {
       config,
       bridge,
       sessionStore,
-      sessionReaderRegistry: createMockSessionReaderRegistry({
-        agentKinds: ['claude', 'codex', 'pi', 'opencode'],
-      }),
+      sessionReaderRegistry: createMockSessionReaderRegistry({}),
     }).router;
   }
 

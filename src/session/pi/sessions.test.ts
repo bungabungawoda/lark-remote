@@ -112,6 +112,25 @@ describe('PiSessionReader', () => {
     expect(sessions.sessions[1].sessionId).toBe('sess-b');
   });
 
+  it('listSessions non-ENOENT failure keeps the exact contract message and the original error as cause', () => {
+    // sessions 路径被文件占用 → readdirSync ENOTDIR（非 ENOENT）→ 上抛契约文案
+    // （router 靠它展示「列表失败」，静默 [] 与真空不可区分），cause 保留原始
+    // fs 错误（throwSessionListError 契约）。
+    fs.writeFileSync(path.join(tmpDir, 'sessions'), 'occupies the sessions path');
+    const reader = new PiSessionReader({ piDir: tmpDir });
+
+    let thrown: unknown;
+    try {
+      reader.listSessions('/tmp/proj1');
+    } catch (e) {
+      thrown = e;
+    }
+    expect(thrown).toBeInstanceOf(Error);
+    expect((thrown as Error).message).toMatch(/^pi session list 读取失败: /);
+    expect((thrown as Error).cause).toBeInstanceOf(Error);
+    expect((thrown as Error & { cause: Error }).cause.message).toContain('ENOTDIR');
+  });
+
   it('test_anchor_read_session_content_returns_catch_up_tail', () => {
     const sessionId = 'sess-content';
     const cwd = '/tmp/test';

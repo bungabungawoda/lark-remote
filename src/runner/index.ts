@@ -46,6 +46,9 @@ export type {
   ApprovalResolvedEvent,
   BackgroundJobRoster,
   BackgroundJobsEvent,
+  AssistantEvent,
+  RunStatusEvent,
+  UserEvent,
   GoalView,
   GoalStateEvent,
 } from './types.js';

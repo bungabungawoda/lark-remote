@@ -170,7 +170,7 @@ function makeRouter(config: AppConfig, dir = tmpDir): CommandRouter {
     tmpDir: dir,
     config,
     bridge: createMockBridge({ enqueueImmediate: vi.fn(), clearRunners: vi.fn() }),
-    sessionReaderRegistry: createMockSessionReaderRegistry({ agentKinds: ['claude', 'codex'] }),
+    sessionReaderRegistry: createMockSessionReaderRegistry(),
   }).router;
 }
 

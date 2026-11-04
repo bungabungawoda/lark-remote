@@ -480,6 +480,177 @@ function extractCustomProvider(providers: Record<string, unknown>): string | und
   return keys.find((k) => k !== 'openai' && k !== 'anthropic');
 }
 
+// ---------------------------------------------------------------------------
+// loadCodexConfig 三段管线：readCodexToml（IO）→ normalizeProviders（转换）
+// → applyProfiles（装配）。前两段之间的产物可独立单测；红线：resolveCodexHome
+// 的环境变量优先级（codexHome 参数 > $CODEX_HOME > ~/.codex）只在
+// loadCodexConfig 入口解析一次，各段不得自行再解析。
+// ---------------------------------------------------------------------------
+
+/** normalizeProviders / applyProfiles 的中间产物：与 modelOptions 解耦的 provider 事实。 */
+interface CodexProviderProfile {
+  currentModel: string;
+  currentProvider: string;
+  providerNames: string[];
+  /** provider -> env_key 映射（e.g. openai -> OPENAI_API_KEY），消费方据此取密钥。 */
+  providerEnvKeys: Record<string, string>;
+  providerModels: Record<string, string[]>;
+}
+
+/**
+ * 管线第 1 段（IO）：读 + 解析 config.toml，不做任何语义解释。
+ * - missing：文件不存在；
+ * - parsed：TOML 解析成功（内容后续由 normalizeProviders 解释）；
+ * - invalid：读取/解析抛错（含 TOCTOU 窗口内的文件损坏）——错误在此分类收口，
+ *   消费方（loadCodexConfig）据此走「解析失败」兜底，绝不向上抛异常。
+ */
+function readCodexToml(
+  codexHome: string,
+):
+  | { state: 'missing' }
+  | { state: 'parsed'; parsed: Record<string, unknown> }
+  | { state: 'invalid' } {
+  const configFile = path.join(codexHome, 'config.toml');
+  if (!fs.existsSync(configFile)) return { state: 'missing' };
+  try {
+    const raw = fs.readFileSync(configFile, 'utf-8');
+    return { state: 'parsed', parsed: TOML.parse(raw) as Record<string, unknown> };
+  } catch {
+    return { state: 'invalid' };
+  }
+}
+
+/** normalizeProviders 的目录上下文（loadCodexConfig 一次算好；纯转换不再读 IO）。 */
+interface ProviderNormalizeCtx {
+  catalogMode: boolean;
+  catalogSlugs: string[];
+  allModels: string[];
+  anthropicModels: string[];
+}
+
+/**
+ * 管线第 2 段（纯转换）：把已解析的 TOML + 目录上下文归一成 provider/model 事实。
+ * Model filtering strategy:
+ * - Custom provider: model from config.toml (single model)
+ * - openai: all bundled models
+ * - anthropic: bundled models with 'claude-*' prefix
+ */
+function normalizeProviders(
+  parsed: Record<string, unknown>,
+  ctx: ProviderNormalizeCtx,
+): CodexProviderProfile {
+  const { catalogMode, catalogSlugs, allModels, anthropicModels } = ctx;
+
+  const modelKeyRaw =
+    typeof parsed.model === 'string' && parsed.model.length > 0 ? parsed.model : undefined;
+  const currentProvider = String(parsed.model_provider ?? FALLBACK_PROVIDERS[0]);
+
+  // Extract model_providers section
+  const modelProviders = (parsed.model_providers ?? {}) as Record<string, Record<string, unknown>>;
+  const rawProviderNames = Object.keys(modelProviders);
+
+  if (catalogMode) {
+    // catalog 模式：provider 列表 = 内置 openai + [model_providers.*]（对齐 codex
+    // merge_configured_model_providers(built_in_model_providers, cfg.model_providers)，
+    // core/src/config/mod.rs:3655；model_provider 未声明时默认 "openai"，mod.rs:3659）。
+    // anthropic 不是 codex 内置 provider，未显式配置时不得出现。模型列表仍只来自
+    // 活动目录——openai+内置 gpt-5.x 的失效路径不因 provider 合并复活。
+    const providerNames = rawProviderNames.includes('openai')
+      ? rawProviderNames
+      : ['openai', ...rawProviderNames];
+    const providerEnvKeys: Record<string, string> = { openai: 'OPENAI_API_KEY' };
+    for (const [name, config] of Object.entries(modelProviders)) {
+      if (typeof config.env_key === 'string') {
+        providerEnvKeys[name] = config.env_key;
+      }
+    }
+    // 活动目录全局：codex 运行时 provider 与模型无绑定（StaticModelsManager），
+    // 每个 provider 下拉都展示目录全部 slug
+    // 活动目录不可用（命令失败/空）时回退 [currentModel]——无目录元数据时档位/能力
+    // 不可信；禁止泄漏 FALLBACK_MODELS/内置目录。model 键缺失时不得虚构 'o3'。
+    const catalogCurrentModel = modelKeyRaw ?? catalogSlugs[0] ?? '';
+    const providerModelList =
+      catalogSlugs.length > 0 ? catalogSlugs : modelKeyRaw ? [modelKeyRaw] : [];
+    const providerModels: Record<string, string[]> = {};
+    for (const name of providerNames) {
+      providerModels[name] = providerModelList;
+    }
+    const resolvedProvider =
+      typeof parsed.model_provider === 'string' && parsed.model_provider.length > 0
+        ? parsed.model_provider
+        : 'openai';
+
+    return {
+      currentModel: catalogCurrentModel,
+      currentProvider: resolvedProvider,
+      providerNames,
+      providerEnvKeys,
+      providerModels,
+    };
+  }
+
+  // fallback 模式：保持原行为（openai/anthropic 内置 + bundled 模型）
+  const currentModel = modelKeyRaw ?? catalogSlugs[0] ?? 'o3';
+  const providerNames = rawProviderNames;
+  if (!providerNames.includes('openai')) {
+    providerNames.unshift('openai');
+  }
+
+  const customProvider = extractCustomProvider(modelProviders);
+
+  const providerEnvKeys: Record<string, string> = {};
+  providerEnvKeys['openai'] = 'OPENAI_API_KEY';
+  for (const [name, config] of Object.entries(modelProviders)) {
+    if (typeof config.env_key === 'string') {
+      providerEnvKeys[name] = config.env_key;
+    }
+  }
+  // anthropic 显式配置但未写 env_key 时保留默认键（恢复旧版无条件映射的
+  // 配置场景行为；未配置时不再虚构）
+  if (
+    rawProviderNames.includes('anthropic') &&
+    !modelProviders['anthropic']?.env_key &&
+    providerEnvKeys['anthropic'] === undefined
+  ) {
+    providerEnvKeys['anthropic'] = 'ANTHROPIC_API_KEY';
+  }
+
+  const providerModels: Record<string, string[]> = { openai: allModels };
+  // anthropic 仅在用户显式配置时才存在（非 codex 内置 provider）
+  if (rawProviderNames.includes('anthropic')) {
+    providerModels['anthropic'] = anthropicModels;
+  }
+  if (customProvider) {
+    // Custom provider: use the model from config.toml
+    providerModels[customProvider] = [currentModel];
+  }
+
+  return {
+    currentModel,
+    currentProvider,
+    providerNames,
+    providerEnvKeys,
+    providerModels,
+  };
+}
+
+/**
+ * 管线第 3 段（纯装配）：给 provider 事实挂上 modelOptions 查询闭包，产出
+ * 对外的 CodexConfigResult。
+ */
+function applyProfiles(profile: CodexProviderProfile): CodexConfigResult {
+  return {
+    ...profile,
+    modelOptions: (provider?: string) =>
+      buildModelOptions(
+        profile.currentModel,
+        profile.currentProvider,
+        provider,
+        profile.providerModels,
+      ),
+  };
+}
+
 /**
  * Read codex config.toml, extract provider and model info
  *
@@ -489,8 +660,9 @@ function extractCustomProvider(providers: Record<string, unknown>): string | und
  * - anthropic: bundled models with 'claude-*' prefix
  */
 export function loadCodexConfig(opts: LoadCodexConfigOpts = {}): CodexConfigResult {
+  // 红线：resolveCodexHome 环境变量优先级（codexHome 参数 > $CODEX_HOME > ~/.codex）
+  // 只在此解析一次，下游各段共用同一 codexHome，不得重复解析。
   const codexHome = resolveCodexHome(opts.codexHome);
-  const configFile = path.join(codexHome, 'config.toml');
   const catalogMode = isCodexCatalogMode(codexHome);
 
   // 统一目录来源：catalog 模式 = 活动目录（model_catalog_json 整体替换内置目录）；
@@ -504,132 +676,23 @@ export function loadCodexConfig(opts: LoadCodexConfigOpts = {}): CodexConfigResu
       ? catalogSlugs.filter((m) => m.startsWith('claude-'))
       : ANTHROPIC_FALLBACK_MODELS;
 
-  if (!fs.existsSync(configFile)) {
+  const toml = readCodexToml(codexHome);
+
+  if (toml.state === 'missing') {
     // 无 config.toml：默认模型取目录首个可用模型（codex default_model_from_available），
     // 目录不可用时回退 'o3'（FALLBACK_MODELS 首项，非 catalog 默认）
     const currentModel = allModels[0] ?? 'o3';
     // No config file: only openai has bundled models
-    const providerModels: Record<string, string[]> = {
-      openai: allModels,
-    };
-    return {
+    return applyProfiles({
       currentModel,
       currentProvider: FALLBACK_PROVIDERS[0],
       providerNames: FALLBACK_PROVIDERS,
       providerEnvKeys: { openai: 'OPENAI_API_KEY' },
-      providerModels,
-      modelOptions: (provider?: string) =>
-        buildModelOptions(currentModel, FALLBACK_PROVIDERS[0], provider, providerModels),
-    };
+      providerModels: { openai: allModels },
+    });
   }
 
-  try {
-    const raw = fs.readFileSync(configFile, 'utf-8');
-    const parsed = TOML.parse(raw);
-
-    const modelKeyRaw =
-      typeof parsed.model === 'string' && parsed.model.length > 0 ? parsed.model : undefined;
-    const currentProvider = String(parsed.model_provider ?? FALLBACK_PROVIDERS[0]);
-
-    // Extract model_providers section
-    const modelProviders = (parsed.model_providers ?? {}) as Record<
-      string,
-      Record<string, unknown>
-    >;
-    const rawProviderNames = Object.keys(modelProviders);
-
-    let providerNames: string[];
-    let providerEnvKeys: Record<string, string>;
-    let providerModels: Record<string, string[]>;
-
-    if (catalogMode) {
-      // catalog 模式：provider 列表 = 内置 openai + [model_providers.*]（对齐 codex
-      // merge_configured_model_providers(built_in_model_providers, cfg.model_providers)，
-      // core/src/config/mod.rs:3655；model_provider 未声明时默认 "openai"，mod.rs:3659）。
-      // anthropic 不是 codex 内置 provider，未显式配置时不得出现。模型列表仍只来自
-      // 活动目录——openai+内置 gpt-5.x 的失效路径不因 provider 合并复活。
-      providerNames = rawProviderNames.includes('openai')
-        ? rawProviderNames
-        : ['openai', ...rawProviderNames];
-      providerEnvKeys = { openai: 'OPENAI_API_KEY' };
-      for (const [name, config] of Object.entries(modelProviders)) {
-        if (typeof config.env_key === 'string') {
-          providerEnvKeys[name] = config.env_key;
-        }
-      }
-      // 活动目录全局：codex 运行时 provider 与模型无绑定（StaticModelsManager），
-      // 每个 provider 下拉都展示目录全部 slug
-      // 活动目录不可用（命令失败/空）时回退 [currentModel]——无目录元数据时档位/能力
-      // 不可信；禁止泄漏 FALLBACK_MODELS/内置目录。model 键缺失时不得虚构 'o3'。
-      const catalogCurrentModel = modelKeyRaw ?? catalogSlugs[0] ?? '';
-      const providerModelList =
-        catalogSlugs.length > 0 ? catalogSlugs : modelKeyRaw ? [modelKeyRaw] : [];
-      providerModels = {};
-      for (const name of providerNames) {
-        providerModels[name] = providerModelList;
-      }
-      const resolvedProvider =
-        typeof parsed.model_provider === 'string' && parsed.model_provider.length > 0
-          ? parsed.model_provider
-          : 'openai';
-
-      return {
-        currentModel: catalogCurrentModel,
-        currentProvider: resolvedProvider,
-        providerNames,
-        providerEnvKeys,
-        providerModels,
-        modelOptions: (provider?: string) =>
-          buildModelOptions(catalogCurrentModel, resolvedProvider, provider, providerModels),
-      };
-    }
-
-    // fallback 模式：保持原行为（openai/anthropic 内置 + bundled 模型）
-    const currentModel = modelKeyRaw ?? catalogSlugs[0] ?? 'o3';
-    providerNames = rawProviderNames;
-    if (!providerNames.includes('openai')) {
-      providerNames.unshift('openai');
-    }
-
-    const customProvider = extractCustomProvider(modelProviders);
-
-    providerEnvKeys = {};
-    providerEnvKeys['openai'] = 'OPENAI_API_KEY';
-    for (const [name, config] of Object.entries(modelProviders)) {
-      if (typeof config.env_key === 'string') {
-        providerEnvKeys[name] = config.env_key;
-      }
-    }
-    // anthropic 显式配置但未写 env_key 时保留默认键（恢复旧版无条件映射的
-    // 配置场景行为；未配置时不再虚构）
-    if (
-      rawProviderNames.includes('anthropic') &&
-      !modelProviders['anthropic']?.env_key &&
-      providerEnvKeys['anthropic'] === undefined
-    ) {
-      providerEnvKeys['anthropic'] = 'ANTHROPIC_API_KEY';
-    }
-
-    providerModels = { openai: allModels };
-    // anthropic 仅在用户显式配置时才存在（非 codex 内置 provider）
-    if (rawProviderNames.includes('anthropic')) {
-      providerModels['anthropic'] = anthropicModels;
-    }
-    if (customProvider) {
-      // Custom provider: use the model from config.toml
-      providerModels[customProvider] = [currentModel];
-    }
-
-    return {
-      currentModel,
-      currentProvider,
-      providerNames,
-      providerEnvKeys,
-      providerModels,
-      modelOptions: (provider?: string) =>
-        buildModelOptions(currentModel, currentProvider, provider, providerModels),
-    };
-  } catch {
+  if (toml.state === 'invalid') {
     // config.toml 读取/解析失败：readModelCatalogJsonPath 对此返回
     // TOML_PARSE_FAILED_SENTINEL（isCodexCatalogMode → false），因此正常路径下
     // catalogMode 恒为 false，下面的 `if (catalogMode)` 分支只在两次读取之间
@@ -645,20 +708,18 @@ export function loadCodexConfig(opts: LoadCodexConfigOpts = {}): CodexConfigResu
         modelOptions: () => [],
       };
     }
-    const currentModel = catalogSlugs[0] ?? 'o3';
-    const providerModels: Record<string, string[]> = {
-      openai: allModels,
-    };
-    return {
-      currentModel,
+    return applyProfiles({
+      currentModel: catalogSlugs[0] ?? 'o3',
       currentProvider: FALLBACK_PROVIDERS[0],
       providerNames: FALLBACK_PROVIDERS,
       providerEnvKeys: { openai: 'OPENAI_API_KEY' },
-      providerModels,
-      modelOptions: (provider?: string) =>
-        buildModelOptions(currentModel, FALLBACK_PROVIDERS[0], provider, providerModels),
-    };
+      providerModels: { openai: allModels },
+    });
   }
+
+  return applyProfiles(
+    normalizeProviders(toml.parsed, { catalogMode, catalogSlugs, allModels, anthropicModels }),
+  );
 }
 
 /**

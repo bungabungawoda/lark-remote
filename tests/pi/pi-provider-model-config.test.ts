@@ -159,10 +159,7 @@ describe('pi provider/model config from pi files', () => {
       tmpDir,
       config,
       bridge: createMockBridge(),
-      sessionReaderRegistry: createMockSessionReaderRegistry({
-        agentKinds: ['claude', 'pi'],
-        withGet: true,
-      }),
+      sessionReaderRegistry: createMockSessionReaderRegistry({}),
     }).router;
 
     const result = router.buildConfigCard();
@@ -197,10 +194,7 @@ describe('pi provider/model config from pi files', () => {
       tmpDir,
       config,
       bridge: createMockBridge(),
-      sessionReaderRegistry: createMockSessionReaderRegistry({
-        agentKinds: ['claude', 'pi'],
-        withGet: true,
-      }),
+      sessionReaderRegistry: createMockSessionReaderRegistry({}),
     }).router;
 
     const result = router.buildConfigCard();

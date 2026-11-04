@@ -1,5 +1,5 @@
 import { getLogger } from '../logger/index.js';
-import { cardWithHeader } from '../card/card-shared.js';
+import { cardButton, cardWithHeader } from '../card/card-shared.js';
 import { displayName } from '../platform/path.js';
 import type { AgentKind } from '../agent-kinds.js';
 
@@ -485,8 +485,8 @@ export class QueueManager {
       // Bounded: ids are only consulted for the current immediate target,
       // so pruning the oldest entries is safe.
       if (this.beganMessageIds.size >= 10_000) {
-        const oldest = this.beganMessageIds.values().next().value as string | undefined;
-        if (oldest !== undefined) this.beganMessageIds.delete(oldest);
+        const oldest = this.beganMessageIds.values().next().value as string;
+        this.beganMessageIds.delete(oldest);
       }
       this.beganMessageIds.add(messageId);
     }
@@ -789,13 +789,13 @@ export class QueueManager {
         // Edit button: a pending (queued) task is editable by default. The
         // executing/cancelled states render via dedicated card builders that
         // hard-disable all buttons, so this builder only serves pending cards.
-        elements.push({
-          tag: 'button',
-          text: { tag: 'plain_text', content: '✏️ 编辑' },
-          type: 'default',
-          size: 'small',
-          behaviors: [{ type: 'callback', value: { cmd: 'queue.edit', cwd, messageId } }],
-        });
+        elements.push(
+          cardButton(
+            '✏️ 编辑',
+            { cmd: 'queue.edit', cwd, messageId },
+            { type: 'default', size: 'small' },
+          ),
+        );
       }
       elements.push({ tag: 'hr' });
     }
@@ -836,20 +836,12 @@ export class QueueManager {
     opts?: { immediateLabel?: string },
   ): object[] {
     return [
-      {
-        tag: 'button',
-        text: { tag: 'plain_text', content: '❌ 撤销' },
-        type: 'danger',
-        disabled,
-        behaviors: [{ type: 'callback', value: { cmd: 'queue.cancel', cwd, messageId } }],
-      },
-      {
-        tag: 'button',
-        text: { tag: 'plain_text', content: opts?.immediateLabel ?? '⚡ 立即执行' },
-        type: 'primary',
-        disabled: disabled || opts?.immediateLabel !== undefined,
-        behaviors: [{ type: 'callback', value: { cmd: 'queue.immediate', cwd, messageId } }],
-      },
+      cardButton('❌ 撤销', { cmd: 'queue.cancel', cwd, messageId }, { type: 'danger', disabled }),
+      cardButton(
+        opts?.immediateLabel ?? '⚡ 立即执行',
+        { cmd: 'queue.immediate', cwd, messageId },
+        { type: 'primary', disabled: disabled || opts?.immediateLabel !== undefined },
+      ),
     ];
   }
 

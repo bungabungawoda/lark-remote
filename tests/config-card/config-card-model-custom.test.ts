@@ -48,7 +48,7 @@ describe('Config card: Claude model custom input (feature: 2026-07-15)', () => {
           tmpDir,
           config: buildClaudeConfig(model),
           bridge: createMockBridge({ enqueueImmediate: vi.fn(), clearRunners: vi.fn() }),
-          sessionReaderRegistry: createMockSessionReaderRegistry({ agentKinds: ['claude'] }),
+          sessionReaderRegistry: createMockSessionReaderRegistry(),
         }).router,
       key: 'claude.model',
       presetModel: 'opus',
@@ -61,7 +61,7 @@ describe('Config card: Claude model custom input (feature: 2026-07-15)', () => {
         tmpDir,
         config,
         bridge: createMockBridge({ enqueueImmediate: vi.fn(), clearRunners: vi.fn() }),
-        sessionReaderRegistry: createMockSessionReaderRegistry({ agentKinds: ['claude'] }),
+        sessionReaderRegistry: createMockSessionReaderRegistry(),
       }).router;
 
       const result = router.buildConfigCard() as { card: object };
@@ -83,7 +83,7 @@ describe('Config card: Claude model custom input (feature: 2026-07-15)', () => {
         tmpDir,
         config,
         bridge: createMockBridge({ enqueueImmediate: vi.fn(), clearRunners: vi.fn() }),
-        sessionReaderRegistry: createMockSessionReaderRegistry({ agentKinds: ['claude'] }),
+        sessionReaderRegistry: createMockSessionReaderRegistry(),
       }).router;
 
       // Simulate user typing in custom model input and submitting

@@ -104,8 +104,7 @@ describe('QueueManager - queue card must be sent for a message enqueued after an
         },
       },
     );
-    await sleep(50);
-    expect(sentCards.length).toBe(1); // T2 的排队卡
+    expect(await waitFor(() => sentCards.length === 1)).toBe(true); // T2 的排队卡
 
     // --- 步骤 3：模拟 stop：reset 计数 + T1 进程被杀 settle ---
     qm.resetExecutingCount(WORKSPACE);
@@ -129,9 +128,8 @@ describe('QueueManager - queue card must be sent for a message enqueued after an
         },
       },
     );
-    await sleep(50);
     // 修复前（begin 路径不重新武装计数）只发 1 张。
-    expect(sentCards.length).toBe(2);
+    expect(await waitFor(() => sentCards.length === 2)).toBe(true);
 
     // --- 清理：放行 T2，让队列链自然收尾 ---
     resolveT2();
@@ -227,10 +225,9 @@ describe('QueueManager - queue card for a meta task enqueued while an interrupte
         },
       },
     );
-    await sleep(50);
     // 修复前：T2 无 messageId，begin 路径不重新武装计数（count 仍 0），
-    // 入队时 hasWaitingTasks=false → 不发卡。本用例钉住（期望 1 张，实得 0）。
-    expect(sentCards.length).toBe(1);
+    // 入队时 hasWaitingTasks=false → 不发排队卡。本用例钉住（期望 1 张，实得 0）。
+    expect(await waitFor(() => sentCards.length === 1)).toBe(true);
 
     // --- 清理：放行 T2、T3，让队列链自然收尾 ---
     rejectT2(new Error('cleanup'));
@@ -319,8 +316,7 @@ describe('QueueManager - a no-taskMeta task must not evict the next queued meta 
         },
       },
     );
-    await sleep(50);
-    expect(sentCards.length).toBe(1); // T3 的排队卡
+    expect(await waitFor(() => sentCards.length === 1)).toBe(true); // T3 的排队卡
     expect(qm.getQueuedTask(WORKSPACE, 'm3')).toBeDefined(); // T3 排队中
 
     // --- 步骤 4：T1 正常结束，T2（无 meta）接跑 ---
@@ -416,8 +412,7 @@ describe('QueueManager - late-arriving queue card must still transition to execu
         },
       },
     );
-    await sleep(50);
-    expect(sentCards.length).toBe(1); // T2 的排队卡已发出（send 挂起）
+    expect(await waitFor(() => sentCards.length === 1)).toBe(true); // T2 的排队卡已发出（send 挂起）
 
     // --- 步骤 3：模拟 stop：reset 计数 + T1 被杀 settle ---
     qm.resetExecutingCount(WORKSPACE);
@@ -428,7 +423,6 @@ describe('QueueManager - late-arriving queue card must still transition to execu
 
     // --- 步骤 5：卡片 send 此刻才完成，映射晚于 begin 写入 ---
     resolveSendCard();
-    await sleep(50);
 
     // 修复前：T2 begin 时映射不存在 → updateQueueCardToExecuting no-op；
     // send 完成后映射写入但无人 reconcile → updatedCards 永远没有执行态更新。
@@ -591,8 +585,7 @@ describe('QueueManager - no fake queue card when queue is idle after repeated in
         },
       },
     );
-    await sleep(50);
-    expect(sentCards.length).toBe(1); // T2 的排队卡
+    expect(await waitFor(() => sentCards.length === 1)).toBe(true); // T2 的排队卡
 
     // --- 步骤 3：第一次 stop：reset #1（计数 2→0，credit=1）---
     qm.resetExecutingCount(WORKSPACE);
@@ -613,8 +606,7 @@ describe('QueueManager - no fake queue card when queue is idle after repeated in
         },
       },
     );
-    await sleep(50);
-    expect(sentCards.length).toBe(2); // T3 的排队卡
+    expect(await waitFor(() => sentCards.length === 2)).toBe(true); // T3 的排队卡
 
     // --- 步骤 5：第二次 stop：reset #2（计数因 T3 入队回到 1 → 0，credit=2）---
     qm.resetExecutingCount(WORKSPACE);
@@ -729,8 +721,7 @@ describe('QueueManager - executing card for an edited task must show the edited 
         },
       },
     );
-    await sleep(50);
-    expect(sentCards.length).toBe(1); // T2 的排队卡
+    expect(await waitFor(() => sentCards.length === 1)).toBe(true); // T2 的排队卡
 
     // --- 步骤 3：queue.input 编辑 T2 → live 预览更新为 edited message ---
     expect(qm.updateQueuedTaskMessage(WORKSPACE, 'm2', 'edited message')).toBe(true);
@@ -738,7 +729,8 @@ describe('QueueManager - executing card for an edited task must show the edited 
     // --- 步骤 4：T1 正常结束（非 interrupt），T2 自然轮到并开始执行 ---
     releaseT1();
     expect(await waitFor(() => t2Started)).toBe(true);
-    await sleep(50);
+    // begin 路径的执行卡 PATCH 落到 updatedCards 后再断言内容。
+    expect(await waitFor(() => updatedCards.some(isExecutingUpdate))).toBe(true);
 
     // 修复前：begin 路径用 enqueue 时捕获的 taskMeta.messagePreview
     // （'original message'）构建执行卡，updatedCards 里只有旧预览。
@@ -834,7 +826,7 @@ describe('QueueManager - immediate executing card must re-read live preview afte
     // --- 步骤 5：卡片 send 此刻才完成，mark 恢复并按守卫确认任务仍在队列 ---
     resolveSendCard();
     await markPromise;
-    await sleep(20);
+    expect(await waitFor(() => updatedCards.some(isExecutingUpdate))).toBe(true);
 
     // 修复前：执行卡仍使用参数里的 'original message'（await 前快照）。
     // 本用例钉住：期望执行卡展示 edited message，且不得展示 original。
@@ -938,7 +930,7 @@ describe('QueueManager - cancelled task card must not be flipped back to executi
     // --- 步骤 5：send 此刻完成，两个更新都按注册顺序落卡 ---
     resolveSendCard();
     await Promise.all([cancelledUpdate, executingUpdate]);
-    await sleep(20);
+    expect(await waitFor(() => updatedCards.length > 0)).toBe(true);
 
     // 修复前：cancelled 先落卡、executing 后落卡 → 最终卡片是"▶️ 已开始执行"，
     // 且存在 executing 更新。本用例钉住（期望最终是"❌ 已撤销"且无 executing 更新）。
@@ -1017,7 +1009,7 @@ describe('QueueManager - 排队卡按 lane 占用者渲染（anchor）', () => {
     });
 
     enqueueMessage(qm, 'msg-2');
-    await sleep(50);
+    expect(await waitFor(() => sentCards.length === 1)).toBe(true);
 
     expect(sentCards).toHaveLength(1);
     const card = sentCards[0].card;
@@ -1039,8 +1031,8 @@ describe('QueueManager - 排队卡按 lane 占用者渲染（anchor）', () => {
     expect(buttons.find((b) => b.text?.content === '❌ 撤销')?.disabled ?? false).toBe(false);
 
     release();
-    await sleep(50);
     // 占用者结束后记录清除，不再影响后续卡片
+    expect(await waitFor(() => qm.getExecutingInfo(WORKSPACE) === undefined)).toBe(true);
     expect(qm.getExecutingInfo(WORKSPACE)).toBeUndefined();
   });
 
@@ -1056,7 +1048,7 @@ describe('QueueManager - 排队卡按 lane 占用者渲染（anchor）', () => {
 
     enqueueMessage(qm, 'msg-2', '第一条');
     enqueueMessage(qm, 'msg-3', '第二条');
-    await sleep(50);
+    expect(await waitFor(() => sentCards.length === 2)).toBe(true);
 
     expect(sentCards).toHaveLength(2);
     // 第一张：前面只有正在跑的 Compact
@@ -1081,7 +1073,7 @@ describe('QueueManager - 排队卡按 lane 占用者渲染（anchor）', () => {
     const { release } = await occupyLane(qm, { preview: '正在跑的消息', messageId: 'om-run-1' });
 
     enqueueMessage(qm, 'msg-2');
-    await sleep(50);
+    expect(await waitFor(() => sentCards.length === 1)).toBe(true);
 
     expect(sentCards).toHaveLength(1);
     const card = sentCards[0].card;
@@ -1106,7 +1098,7 @@ describe('QueueManager - 排队卡按 lane 占用者渲染（anchor）', () => {
     });
 
     enqueueMessage(qm, 'msg-2');
-    await sleep(50);
+    expect(await waitFor(() => sentCards.length >= 1)).toBe(true);
 
     expect(cardTexts(sentCards[0].card).join('\n')).toContain('**正在执行:** 📋 config.save');
 
@@ -1163,7 +1155,7 @@ describe('QueueManager - 排队卡按 lane 占用者渲染（anchor）', () => {
     expect(qm.getExecutingSlot(WORKSPACE)).toBe(successor?.slotId);
 
     releaseSecond();
-    await sleep(50);
+    expect(await waitFor(() => qm.getExecutingInfo(WORKSPACE) === undefined)).toBe(true);
     expect(qm.getExecutingInfo(WORKSPACE)).toBeUndefined();
   });
 });

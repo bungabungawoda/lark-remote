@@ -369,37 +369,15 @@ export function createStubConnectorWithPendingQueueCard(): StubConnectorWithPend
 /**
  * Create a mock SessionReaderRegistry.
  *
- * Builds a real registry so no `as unknown as` cast is needed. Two variants:
- * - Default: empty registry (no readers registered).
- * - `{ withGet: true }`: `get` returns a stub reader with empty results.
- * - `{ agentKinds: [...] }`: override the (mock-only) listRegistered probe.
+ * Builds a real registry so no `as unknown as` cast is needed. `get` always
+ * returns a stub reader with empty results — the real registry's contract is
+ * "registered reader or throw" (an unregistered miss throws), so a null-reader
+ * world cannot be expressed through it and tests must not encode one. Tests
+ * that need a genuinely missing reader should assert on the real throw instead.
  */
-export interface MockSessionReaderRegistryOpts {
-  /** Agent kinds returned by listRegistered. Default: all 5. */
-  agentKinds?: string[];
-  /** When true, get() returns a stub reader instead of undefined. */
-  withGet?: boolean;
-}
-
-export function createMockSessionReaderRegistry(
-  opts?: MockSessionReaderRegistryOpts,
-): SessionReaderRegistry {
+export function createMockSessionReaderRegistry(): SessionReaderRegistry {
   const registry = new SessionReaderRegistry();
-  const kinds = opts?.agentKinds ?? ['claude', 'codex', 'pi', 'opencode', 'kimi'];
-  if (opts?.withGet) {
-    vi.spyOn(registry, 'get').mockReturnValue(stubSessionReader);
-  } else {
-    // Legacy semantics: get() returns undefined (callers guard for it, e.g.
-    // the config.save restore fallback), NOT the real registry's throw.
-    //
-    // The real signature is `get(kind): AgentSessionReader` — it throws on a
-    // miss — so `undefined` cannot be expressed through it. The assertion
-    // states the deliberately looser stub contract in one place.
-    vi.spyOn(registry, 'get').mockReturnValue(undefined as never);
-  }
-  // Legacy mock-only member (not on the real class): keep for any consumer
-  // that still probes registered agent kinds.
-  Object.assign(registry, { listRegistered: vi.fn().mockReturnValue(kinds) });
+  vi.spyOn(registry, 'get').mockReturnValue(stubSessionReader);
   return registry;
 }
 
@@ -705,4 +683,16 @@ export function createGatedRunner(): GatedRunner & AgentRunner {
     releaseStop: () => releaseStop(),
   };
   return runner;
+}
+
+/**
+ * /stop 测试便捷入口：只要 `stopped` 布尔值。生产代码全部直调
+ * `interruptCurrentRunDetailed`（StopOutcome 聚合），这个 boolean 包装
+ * 只活在测试里。
+ */
+export async function interruptCurrentRun(
+  bridge: Bridge,
+  input: Parameters<Bridge['interruptCurrentRunDetailed']>[0],
+): Promise<boolean> {
+  return (await bridge.interruptCurrentRunDetailed(input)).stopped;
 }

@@ -34,8 +34,16 @@ describe('index.ts CommandRouter 的 ordersPath', () => {
 describe('index.ts agent 工厂的 cwd 透传', () => {
   it('claude / pi 两个 spawn 型工厂各传一次 cwd: ws；opencode / kimi 走 ACP 注册', () => {
     // pid 文件必须按 cwd 隔离，否则 cwd B 的 killOrphan 会误杀 cwd A 的 run。
-    const occurrences = indexSource.match(/cwd:\s*ws/g) ?? [];
-    expect(occurrences).toHaveLength(2);
+    // 结构化匹配：逐个 spawn 型 register 块内断言恰好一次 cwd: ws，不再对全文
+    // 出现总次数计数（新增 agent 工厂、注释提及等都不会松动既有块的守卫面）。
+    for (const agent of ['claude', 'pi'] as const) {
+      const block = indexSource.match(
+        new RegExp(`register\\('${agent}'[\\s\\S]*?\\n  \\}\\);`),
+      )?.[0];
+      expect(block, `register('${agent}') 块必须存在`).toBeDefined();
+      const cwdPasses = block!.match(/cwd:\s*ws/g) ?? [];
+      expect(cwdPasses, `${agent} 工厂必须恰好传一次 cwd: ws`).toHaveLength(1);
+    }
     expect(indexSource).toMatch(/register\('opencode'[\s\S]*?new OpencodeAcpRunner\(/);
     expect(indexSource).toMatch(/register\('kimi'[\s\S]*?new KimiAcpRunner\(/);
   });

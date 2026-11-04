@@ -276,6 +276,21 @@ function interruptedResult(sessionId: string): ResultEvent {
   };
 }
 
+/**
+ * prepareTurn 的产物。`ok:false` = 准备期间被 stop（abort）：调用方必须 yield
+ * interrupted result 收尾（不能裸 return——调用方靠 result 收尾 run 卡）。
+ */
+type PreparedTurn =
+  | {
+      ok: true;
+      /** goal seed 观测：turn 内投影/事件据此去重与更新（runTurn 的 goal 参数）。 */
+      lastGoal: GoalView | null | undefined;
+      goalKnown: boolean;
+      /** init 之后立即回放的 goal seed 事件（有 goal / unknown 各一条或空）。 */
+      goalEvents: AgentEvent[];
+    }
+  | { ok: false };
+
 export class DshRunner implements AgentRunner {
   readonly kind = 'dsh' as const;
   /**
@@ -549,50 +564,6 @@ export class DshRunner implements AgentRunner {
         return;
       }
 
-      // provider/模型/推理强度对齐：会话首次 run 时 selectModel 一次
-      // （该调用同时写服务端全局默认，故不重复写）；同一 session 后续 run
-      // 跳过。显式配置 provider 时失败必须 fail closed：静默回退到其他
-      // provider 会让用户以为切换成功，实际模型与账单都错。
-      if (
-        (this.configuredModel || this.configuredProvider) &&
-        !this.alignedSessions.has(sessionId)
-      ) {
-        try {
-          const selection = await this.resolveModelSelection(abort.signal);
-          await this.client.selectModel({ sessionId, ...selection }, { signal: abort.signal });
-          this.alignedSessions.add(sessionId);
-        } catch (err) {
-          if (abort.signal.aborted) {
-            getLogger().info(`[dsh] run stopped during selectModel session=${sessionId}`);
-            terminalEmitted = true;
-            yield interruptedResult(sessionId);
-            return;
-          }
-          if (this.configuredProvider) {
-            throw new Error(
-              `Provider "${this.configuredProvider}" 的模型对齐失败：${(err as Error).message}。` +
-                '请在 DSH Web UI → 设置 → Models 检查该 Provider 的凭据与模型目录',
-              { cause: err },
-            );
-          }
-          getLogger().warn(
-            `[dsh] selectModel failed for session ${sessionId} (run continues): ${(err as Error).message}`,
-          );
-        }
-      }
-
-      // 权限预设对齐：与模型对齐同语义，同一 session 只执行一次
-      // `/permission <preset>`。失败必须 fail closed——用户明确选了安全策略，
-      // 不能在错误的权限下继续跑 prompt。
-      await this.alignPermissionPreset(sessionId, abort.signal);
-
-      // Abort 可能在上述 unary 完成与检查之间到达：不进入 prompt/turn。
-      if (abort.signal.aborted) {
-        terminalEmitted = true;
-        yield interruptedResult(sessionId);
-        return;
-      }
-
       yield {
         type: 'system',
         subtype: 'init',
@@ -601,22 +572,18 @@ export class DshRunner implements AgentRunner {
         model: this.configuredModel ?? 'DSH',
       };
 
-      // Goal seed：卡片从第一帧就知道这个会话有没有长期目标。放在 init 之后、
-      // prompt 之前——用户发消息时若是 queued，卡片会长时间停在「运行中」，
-      // 这期间"目标是什么、第几轮"是唯一能解释"为什么还不停"的信息。
-      const seedGoal = await this.client.goalState(sessionId, {
-        signal: abort.signal,
-        timeoutMs: GOAL_PROBE_TIMEOUT_MS,
-      });
-      const lastGoal: GoalView | null | undefined = seedGoal.known ? seedGoal.goal : undefined;
-      if (seedGoal.known) {
-        // 只有确实存在 goal 才产事件：没有 goal 的会话保持事件序列不变（少一次
-        // 渲染，也不让"读不到"变成一张多出来的卡片事件）。
-        if (seedGoal.goal) yield goalStateEvent(seedGoal.goal, true);
-      } else {
-        // 读不到 ≠ 没有目标。必须显式把 unknown 交给卡片，否则收尾只能按
-        // 「没有 goal」写成「已完成」——正是 GoalStateEvent 契约禁止的推断。
-        yield goalStateEvent(null, false);
+      // 准备阶段（模型对齐 + 权限预设对齐 + goal seed + abort 检查）抽到
+      // prepareTurn：对齐失败 fail closed（显式 provider 时 throw，由外层 catch
+      // 转 error result）；被 stop 时返回 interrupted 形态，这里统一 yield
+      // interrupted result 收尾。
+      const prepared = await this.prepareTurn(sessionId, abort);
+      if (!prepared.ok) {
+        terminalEmitted = true;
+        yield interruptedResult(sessionId);
+        return;
+      }
+      for (const goalEvent of prepared.goalEvents) {
+        yield goalEvent;
       }
 
       try {
@@ -638,7 +605,7 @@ export class DshRunner implements AgentRunner {
             submitted.prePromptSeq,
             promptRequestId,
             abort,
-            { last: lastGoal, known: seedGoal.known },
+            { last: prepared.lastGoal, known: prepared.goalKnown },
           )) {
             yield ev;
             if (ev.type === 'result') {
@@ -708,9 +675,85 @@ export class DshRunner implements AgentRunner {
   }
 
   /**
+   * 准备一个 turn（run() 的准备阶段）：模型对齐 + 权限预设对齐 + goal seed 探测。
+   *
+   * 红线（逐条保留）：
+   * - 对齐失败 fail closed：显式配置 provider 时 selectModel 失败必须 throw
+   *   （静默回退到其他 provider 会让用户以为切换成功，实际模型与账单都错）；
+   *   权限预设失败由 alignPermissionPreset throw（用户明确选了安全策略，不能在
+   *   错误的权限下继续跑 prompt）。
+   * - 准备期间被 stop（abort）→ 返回 { ok:false }，由调用方 yield interrupted
+   *   result 收尾。
+   * - goal seed 只探测不推断：读不到按 unknown 上报，不冒充「没有 goal」。
+   */
+  private async prepareTurn(sessionId: string, abort: AbortController): Promise<PreparedTurn> {
+    // provider/模型/推理强度对齐：会话首次 run 时 selectModel 一次
+    // （该调用同时写服务端全局默认，故不重复写）；同一 session 后续 run
+    // 跳过。显式配置 provider 时失败必须 fail closed：静默回退到其他
+    // provider 会让用户以为切换成功，实际模型与账单都错。
+    if ((this.configuredModel || this.configuredProvider) && !this.alignedSessions.has(sessionId)) {
+      try {
+        const selection = await this.resolveModelSelection(abort.signal);
+        await this.client.selectModel({ sessionId, ...selection }, { signal: abort.signal });
+        this.alignedSessions.add(sessionId);
+      } catch (err) {
+        if (abort.signal.aborted) {
+          getLogger().info(`[dsh] run stopped during selectModel session=${sessionId}`);
+          return { ok: false };
+        }
+        if (this.configuredProvider) {
+          throw new Error(
+            `Provider "${this.configuredProvider}" 的模型对齐失败：${(err as Error).message}。` +
+              '请在 DSH Web UI → 设置 → Models 检查该 Provider 的凭据与模型目录',
+            { cause: err },
+          );
+        }
+        getLogger().warn(
+          `[dsh] selectModel failed for session ${sessionId} (run continues): ${(err as Error).message}`,
+        );
+      }
+    }
+
+    // 权限预设对齐：与模型对齐同语义，同一 session 只执行一次
+    // `/permission <preset>`。失败必须 fail closed——用户明确选了安全策略，
+    // 不能在错误的权限下继续跑 prompt。
+    await this.alignPermissionPreset(sessionId, abort.signal);
+
+    // Abort 可能在上述 unary 完成与检查之间到达：不进入 prompt/turn。
+    if (abort.signal.aborted) {
+      return { ok: false };
+    }
+
+    // Goal seed：卡片从第一帧就知道这个会话有没有长期目标。放在 init 之后、
+    // prompt 之前——用户发消息时若是 queued，卡片会长时间停在「运行中」，
+    // 这期间"目标是什么、第几轮"是唯一能解释"为什么还不停"的信息。
+    const seedGoal = await this.client.goalState(sessionId, {
+      signal: abort.signal,
+      timeoutMs: GOAL_PROBE_TIMEOUT_MS,
+    });
+    const lastGoal: GoalView | null | undefined = seedGoal.known ? seedGoal.goal : undefined;
+    const goalEvents: AgentEvent[] = [];
+    if (seedGoal.known) {
+      // 只有确实存在 goal 才产事件：没有 goal 的会话保持事件序列不变（少一次
+      // 渲染，也不让"读不到"变成一张多出来的卡片事件）。
+      if (seedGoal.goal) goalEvents.push(goalStateEvent(seedGoal.goal, true));
+    } else {
+      // 读不到 ≠ 没有目标。必须显式把 unknown 交给卡片，否则收尾只能按
+      // 「没有 goal」写成「已完成」——正是 GoalStateEvent 契约禁止的推断。
+      goalEvents.push(goalStateEvent(null, false));
+    }
+    return { ok: true, lastGoal, goalKnown: seedGoal.known, goalEvents };
+  }
+
+  /**
    * Consume one turn from both transports. `session/follow` owns transcript
    * events; `$events` owns the answerable approval waterfall. The merged
    * stream keeps either transport from starving the other.
+   *
+   * 事件源分派：projection（goal + 状态条）→ handleProjectionItem；
+   * $events waterfall（审批/提问）→ handleApprovalWaterfallItem；
+   * assistant-stream 直转发（translator 持有本 turn 的 usage 累计状态）；
+   * session/follow 事件 → handleSessionEvent（含 result 收尾的 jobs + goal 复核）。
    */
   private async *runTurn(
     sessionId: string,
@@ -745,92 +788,36 @@ export class DshRunner implements AgentRunner {
       >(sources)) {
         if (abort.signal.aborted) return;
 
+        // 事件源 1：Host-wide 投影（goal + 状态条）。
         if (item.kind === 'projection') {
-          // 全 Host 流：只认本 session。未知 key 直接忽略（投影是能力发现式
-          // 扩展的，不能因为多了个 key 就报错）。
-          if (item.sessionId !== sessionId) continue;
-          // goal 是会话级长期目标，单独成事件：卡片要在 agent 创建目标的当下
-          // 就显示它（否则用户只会在一小时后看到「完成」才发现有个 40 轮任务）。
-          if (item.key === 'goal') {
-            const parsed = goalFromProjection(item.value);
-            if (parsed !== undefined && !sameGoal(parsed, goal.last)) {
-              goal.last = parsed;
-              yield goalStateEvent(parsed, true);
-            }
-            continue;
+          for (const ev of this.handleProjectionItem(item, sessionId, goal, live)) {
+            yield ev;
           }
-          // 只在消费字段真的变了时才产出事件：投影帧本身按 key 去重推送，
-          // 这里再挡掉"值没变"的重复帧。不需要时间节流——卡片更新本来就有
-          // 100ms 合批窗口，与正文 delta 共用同一条节流路径。
-          if (!applyProjection(live, item.key, item.value)) continue;
-          yield statusEventOf(live);
           continue;
         }
 
-        if (item.kind === 'ready') {
-          this.approvalChannelAvailable = true;
-          continue;
-        }
-        if (item.kind === 'unavailable') {
-          this.approvalChannelAvailable = false;
-          getLogger().warn(`[dsh] approval channel unavailable: ${item.message}`);
-          continue;
-        }
-        if (item.kind === 'request') {
-          this.approvalTracker.onWaterfall({
-            eventId: item.eventId,
-            clientId: item.clientId,
-            ...(item.callId ? { callId: item.callId } : {}),
-            toolName: item.toolName,
-            ...(item.reason ? { reason: item.reason } : {}),
-          });
-          continue;
-        }
-        if (item.kind === 'question') {
-          // 同一 waterfall 在重连后会带新的 clientId 重投：覆盖写回，卡片的
-          // requestId（eventId）不变，coordinator 按重投语义刷新视图。
-          this.pendingQuestions.set(item.eventId, {
-            clientId: item.clientId,
-            questions: item.questions,
-          });
-          getLogger().info(
-            `[dsh] user question surfaced eventId=${item.eventId} questions=${item.questions.length}`,
-          );
-          yield this.buildQuestionRequested(sessionId, item.eventId, item.questions);
-          continue;
-        }
-        if (item.kind === 'cancelled') {
-          // 提问与审批共用 cancel 帧：提问在别处（DSH Web UI）被回答或超时后
-          // 也要清掉飞书卡片，否则上面还留着可点但已无 responder 的问题区。
-          if (this.pendingQuestions.delete(item.eventId)) {
-            getLogger().info(`[dsh] user question resolved elsewhere eventId=${item.eventId}`);
-            yield this.approvalResolved(item.eventId);
-            continue;
+        // 事件源 2：$events 审批/提问 waterfall。
+        if (
+          item.kind === 'ready' ||
+          item.kind === 'unavailable' ||
+          item.kind === 'request' ||
+          item.kind === 'question' ||
+          item.kind === 'cancelled' ||
+          item.kind === 'approval'
+        ) {
+          for (const ev of this.handleApprovalWaterfallItem(
+            item,
+            sessionId,
+            cwd,
+            emittedApprovals,
+          )) {
+            yield ev;
           }
-          const binding = this.approvalTracker.onCancelled(item.eventId);
-          if (binding) yield this.approvalResolved(binding.audit.approvalId);
           continue;
         }
-        if (item.kind === 'approval') {
-          const audit: DshApprovalAudit = {
-            approvalId: item.approvalId,
-            toolName: item.toolName,
-            ...(item.callId ? { callId: item.callId } : {}),
-            ...(item.reason ? { reason: item.reason } : {}),
-          };
-          const binding = this.approvalTracker.onAuditAsked(audit);
-          if (!this.approvalChannelAvailable) {
-            getLogger().warn(
-              `[dsh] approval requested approvalId=${item.approvalId} tool=${item.toolName}; live channel unavailable — falling back to Web UI`,
-            );
-            yield this.approvalFallbackText(item.toolName);
-            continue;
-          }
-          if (emittedApprovals.has(item.approvalId)) continue;
-          emittedApprovals.add(item.approvalId);
-          yield this.buildApprovalRequested(sessionId, audit, binding, cwd);
-          continue;
-        }
+
+        // 事件源 3a：assistant 流式帧（translator 持有本 turn 的 usage 累计状态，
+        // 必须与 3b 共用同一实例）。
         if (item.kind === 'assistant-stream') {
           for (const ev of translator.streamFrameToAgentEvents(item.frame, sessionId)) {
             yield ev;
@@ -838,77 +825,21 @@ export class DshRunner implements AgentRunner {
           continue;
         }
 
-        const event: DshSessionEvent = item.event;
-        if (event.type === 'goal/change') {
-          // 权威变更（create/edit/pause/resume/complete/block/clear）：不等投影
-          // 推送，直接按事件更新——agent 刚 create 的那一刻卡片就该显示目标。
-          const parsed = goalFromChange(event.data);
-          if (parsed !== undefined && !sameGoal(parsed, goal.last)) {
-            goal.last = parsed;
-            yield goalStateEvent(parsed, true);
-          }
-          continue;
-        }
-        if (event.type === 'tool/call') {
-          const data = event.data as {
-            callId?: string;
-            name?: string;
-            arguments?: string;
-            turn?: number;
-          };
-          if (data.callId && data.name) {
-            this.toolCalls.set(data.callId, {
-              name: data.name,
-              arguments: data.arguments ?? '',
-              ...(data.turn === undefined ? {} : { turn: data.turn }),
-            });
-            if (this.toolCalls.size > 100) {
-              const oldest = this.toolCalls.keys().next().value;
-              if (oldest !== undefined) this.toolCalls.delete(oldest);
-            }
-          }
-          // 记账后继续往下走：tool/call 同时是卡片工具行的来源（translator 翻
-          // 译成 assistant.tool_use）。早期版本在这里 `continue`，把调用轨迹整个
-          // 吞掉——卡片因此只有正文、没有任何工具行。
-        }
-        if (event.type === 'approval/decided') {
-          const data = event.data as { id?: string; outcome?: string };
-          if (!data.id) continue;
-          this.approvalTracker.onDecided(data.id);
-          yield this.approvalResolved(data.id);
-          continue;
-        }
-
-        for (const ev of translator.eventToAgentEvents(event, sessionId)) {
-          if (ev.type === 'result') {
-            if (!abort.signal.aborted) {
-              for (const jobsEvent of await this.collectBackgroundJobs(sessionId, abort.signal)) {
-                yield jobsEvent;
-              }
-              // 收尾复核：这一轮结束时 goal 是否仍 active，决定卡片能不能收尾。
-              // 必须现读宿主，不能沿用过程中的最后一次观测——goal 可能在本轮
-              // 最后一个 step 才被 complete，也可能刚被 driver 置为 blocked。
-              const finalGoal = await this.client.goalState(sessionId, {
-                signal,
-                timeoutMs: GOAL_PROBE_TIMEOUT_MS,
-              });
-              if (!finalGoal.known) {
-                // 收尾读不到：seed 已报过 unknown 就不重复发，否则把状态降级
-                // 交给卡片（卡片据此不再宣布完成）。
-                if (goal.known) {
-                  goal.known = false;
-                  yield goalStateEvent(null, false);
-                }
-              } else if (!goal.known || !sameGoal(finalGoal.goal, goal.last)) {
-                goal.known = true;
-                goal.last = finalGoal.goal;
-                yield goalStateEvent(finalGoal.goal, true);
-              }
-            }
-            yield attachContextLimit(ev, live.contextLimit);
-            return;
-          }
+        // 事件源 3b：session/follow 事件（正文/工具行/result 收尾，含 jobs +
+        // goal 复核）。result 之后的收尾事件由 handler 按序返回，见到 result
+        // 即结束本 turn（与原 yield-then-return 逐字等价）。
+        const eventEvents = await this.handleSessionEvent(
+          item.event,
+          sessionId,
+          translator,
+          goal,
+          live,
+          abort,
+          signal,
+        );
+        for (const ev of eventEvents) {
           yield ev;
+          if (ev.type === 'result') return;
         }
       }
     } finally {
@@ -917,6 +848,203 @@ export class DshRunner implements AgentRunner {
       this.pendingQuestions.clear();
       this.toolCalls.clear();
     }
+  }
+
+  /**
+   * 事件源 handler：Host-wide 投影（goal + 状态条）。
+   * 返回要回放的事件（可能为空——未变化/非本 session 的帧不产事件）。
+   */
+  private handleProjectionItem(
+    item: DshProjectionItem,
+    sessionId: string,
+    goal: { last: GoalView | null | undefined; known: boolean },
+    live: LiveStatusAccumulator,
+  ): AgentEvent[] {
+    // 全 Host 流：只认本 session。未知 key 直接忽略（投影是能力发现式
+    // 扩展的，不能因为多了个 key 就报错）。
+    if (item.sessionId !== sessionId) return [];
+    // goal 是会话级长期目标，单独成事件：卡片要在 agent 创建目标的当下
+    // 就显示它（否则用户只会在一小时后看到「完成」才发现有个 40 轮任务）。
+    if (item.key === 'goal') {
+      const parsed = goalFromProjection(item.value);
+      if (parsed !== undefined && !sameGoal(parsed, goal.last)) {
+        goal.last = parsed;
+        return [goalStateEvent(parsed, true)];
+      }
+      return [];
+    }
+    // 只在消费字段真的变了时才产出事件：投影帧本身按 key 去重推送，
+    // 这里再挡掉"值没变"的重复帧。不需要时间节流——卡片更新本来就有
+    // 100ms 合批窗口，与正文 delta 共用同一条节流路径。
+    if (!applyProjection(live, item.key, item.value)) return [];
+    return [statusEventOf(live)];
+  }
+
+  /**
+   * 事件源 handler：$events 审批/提问 waterfall（channel 状态、审批 waterfall
+   * 登记、提问卡、cancel 回流、审批卡）。
+   * 返回要回放的事件；channel 状态类帧（ready/unavailable/request）只改内部
+   * 状态、不产事件。
+   */
+  private handleApprovalWaterfallItem(
+    item:
+      | Extract<
+          DshApprovalStreamItem,
+          { kind: 'ready' | 'unavailable' | 'request' | 'question' | 'cancelled' }
+        >
+      | Extract<DshStreamItem, { kind: 'approval' }>,
+    sessionId: string,
+    cwd: string,
+    emittedApprovals: Set<string>,
+  ): AgentEvent[] {
+    switch (item.kind) {
+      case 'ready':
+        this.approvalChannelAvailable = true;
+        return [];
+      case 'unavailable':
+        this.approvalChannelAvailable = false;
+        getLogger().warn(`[dsh] approval channel unavailable: ${item.message}`);
+        return [];
+      case 'request':
+        this.approvalTracker.onWaterfall({
+          eventId: item.eventId,
+          clientId: item.clientId,
+          ...(item.callId ? { callId: item.callId } : {}),
+          toolName: item.toolName,
+          ...(item.reason ? { reason: item.reason } : {}),
+        });
+        return [];
+      case 'question': {
+        // 同一 waterfall 在重连后会带新的 clientId 重投：覆盖写回，卡片的
+        // requestId（eventId）不变，coordinator 按重投语义刷新视图。
+        this.pendingQuestions.set(item.eventId, {
+          clientId: item.clientId,
+          questions: item.questions,
+        });
+        getLogger().info(
+          `[dsh] user question surfaced eventId=${item.eventId} questions=${item.questions.length}`,
+        );
+        return [this.buildQuestionRequested(sessionId, item.eventId, item.questions)];
+      }
+      case 'cancelled': {
+        // 提问与审批共用 cancel 帧：提问在别处（DSH Web UI）被回答或超时后
+        // 也要清掉飞书卡片，否则上面还留着可点但已无 responder 的问题区。
+        if (this.pendingQuestions.delete(item.eventId)) {
+          getLogger().info(`[dsh] user question resolved elsewhere eventId=${item.eventId}`);
+          return [this.approvalResolved(item.eventId)];
+        }
+        const binding = this.approvalTracker.onCancelled(item.eventId);
+        return binding ? [this.approvalResolved(binding.audit.approvalId)] : [];
+      }
+      case 'approval': {
+        const audit: DshApprovalAudit = {
+          approvalId: item.approvalId,
+          toolName: item.toolName,
+          ...(item.callId ? { callId: item.callId } : {}),
+          ...(item.reason ? { reason: item.reason } : {}),
+        };
+        const binding = this.approvalTracker.onAuditAsked(audit);
+        if (!this.approvalChannelAvailable) {
+          getLogger().warn(
+            `[dsh] approval requested approvalId=${item.approvalId} tool=${item.toolName}; live channel unavailable — falling back to Web UI`,
+          );
+          return [this.approvalFallbackText(item.toolName)];
+        }
+        if (emittedApprovals.has(item.approvalId)) return [];
+        emittedApprovals.add(item.approvalId);
+        return [this.buildApprovalRequested(sessionId, audit, binding, cwd)];
+      }
+    }
+  }
+
+  /**
+   * 事件源 handler：`session/follow` 会话事件。
+   * - goal/change：权威变更，不等投影直接更新；
+   * - tool/call：先记账（审批卡命令展示用）再落入 translator（卡片工具行来源）；
+   * - approval/decided：审批回流，清审批卡；
+   * - 其余事件经 translator 翻译；result 事件先做收尾（后台任务名单 + goal
+   *   复核）再随 result 一起返回。
+   */
+  private async handleSessionEvent(
+    event: DshSessionEvent,
+    sessionId: string,
+    translator: DshTranslator,
+    goal: { last: GoalView | null | undefined; known: boolean },
+    live: LiveStatusAccumulator,
+    abort: AbortController,
+    signal: AbortSignal,
+  ): Promise<AgentEvent[]> {
+    if (event.type === 'goal/change') {
+      // 权威变更（create/edit/pause/resume/complete/block/clear）：不等投影
+      // 推送，直接按事件更新——agent 刚 create 的那一刻卡片就该显示目标。
+      const parsed = goalFromChange(event.data);
+      if (parsed !== undefined && !sameGoal(parsed, goal.last)) {
+        goal.last = parsed;
+        return [goalStateEvent(parsed, true)];
+      }
+      return [];
+    }
+    if (event.type === 'tool/call') {
+      const data = event.data as {
+        callId?: string;
+        name?: string;
+        arguments?: string;
+        turn?: number;
+      };
+      if (data.callId && data.name) {
+        this.toolCalls.set(data.callId, {
+          name: data.name,
+          arguments: data.arguments ?? '',
+          ...(data.turn === undefined ? {} : { turn: data.turn }),
+        });
+        if (this.toolCalls.size > 100) {
+          const oldest = this.toolCalls.keys().next().value;
+          if (oldest !== undefined) this.toolCalls.delete(oldest);
+        }
+      }
+      // 记账后继续往下走：tool/call 同时是卡片工具行的来源（translator 翻
+      // 译成 assistant.tool_use）。早期版本在这里 `continue`，把调用轨迹整个
+      // 吞掉——卡片因此只有正文、没有任何工具行。
+    } else if (event.type === 'approval/decided') {
+      const data = event.data as { id?: string; outcome?: string };
+      if (!data.id) return [];
+      this.approvalTracker.onDecided(data.id);
+      return [this.approvalResolved(data.id)];
+    }
+
+    const events: AgentEvent[] = [];
+    for (const ev of translator.eventToAgentEvents(event, sessionId)) {
+      if (ev.type === 'result') {
+        if (!abort.signal.aborted) {
+          for (const jobsEvent of await this.collectBackgroundJobs(sessionId, abort.signal)) {
+            events.push(jobsEvent);
+          }
+          // 收尾复核：这一轮结束时 goal 是否仍 active，决定卡片能不能收尾。
+          // 必须现读宿主，不能沿用过程中的最后一次观测——goal 可能在本轮
+          // 最后一个 step 才被 complete，也可能刚被 driver 置为 blocked。
+          const finalGoal = await this.client.goalState(sessionId, {
+            signal,
+            timeoutMs: GOAL_PROBE_TIMEOUT_MS,
+          });
+          if (!finalGoal.known) {
+            // 收尾读不到：seed 已报过 unknown 就不重复发，否则把状态降级
+            // 交给卡片（卡片据此不再宣布完成）。
+            if (goal.known) {
+              goal.known = false;
+              events.push(goalStateEvent(null, false));
+            }
+          } else if (!goal.known || !sameGoal(finalGoal.goal, goal.last)) {
+            goal.known = true;
+            goal.last = finalGoal.goal;
+            events.push(goalStateEvent(finalGoal.goal, true));
+          }
+        }
+        events.push(attachContextLimit(ev, live.contextLimit));
+        return events;
+      }
+      events.push(ev);
+    }
+    return events;
   }
 
   /**

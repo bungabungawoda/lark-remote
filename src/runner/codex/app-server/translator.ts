@@ -24,6 +24,7 @@ import type {
   UserQuestion,
 } from '../../types.js';
 import { makeQuestionApprovalEvent } from '../../question-common.js';
+import { renderPlanMarkdown } from '../../common/acp/base-translator.js';
 import {
   NotificationMethod,
   ServerRequestMethod,
@@ -73,7 +74,6 @@ type ToolItemMeta = {
 export class CodexAppServerTranslator {
   private turnId: string = '';
   private threadId: string = '';
-  private turnStatus: string = 'pending';
   /** Full agentMessage text per item id (item-scoped snapshot). */
   private textByItem = new Map<string, string>();
   /** agentMessage item ids whose protocol phase is `final_answer`. */
@@ -214,7 +214,6 @@ export class CodexAppServerTranslator {
    */
   handleTurnCompleted(params?: TurnCompletedNotification['params']): TranslatorEvent[] {
     const turn = params?.turn;
-    this.turnStatus = turn?.status ?? 'completed';
 
     const events: TranslatorEvent[] = [];
 
@@ -303,13 +302,6 @@ export class CodexAppServerTranslator {
   }
 
   /**
-   * Get the current turn status.
-   */
-  getTurnStatus(): string {
-    return this.turnStatus;
-  }
-
-  /**
    * Set the operation kind (exec vs compact).
    */
   setOperationKind(kind: 'exec' | 'compact'): void {
@@ -323,7 +315,6 @@ export class CodexAppServerTranslator {
   private handleTurnStarted(params: TurnStartedNotification['params']): TranslatorEvent[] {
     this.threadId = params.threadId;
     this.turnId = params.turn.id;
-    this.turnStatus = params.turn.status ?? 'inProgress';
     // 单 turn 用量从零开始累计：turn 内每次采样都会发一条
     // `thread/tokenUsage/updated`，本 run 的用量是这些增量之和（不是最后一条）。
     // resume 后服务端重放的上一 turn 用量若在此之后到达，由 handleTokenUsageUpdated
@@ -625,14 +616,9 @@ export class CodexAppServerTranslator {
    * status 缺省或未知一律按 pending 处理（防御 wire 枚举漂移）。
    */
   private handleTurnPlanUpdated(params: TurnPlanUpdatedNotification['params']): AgentEvent[] {
-    const ICON = { completed: '✅', in_progress: '🔄', pending: '⬜', error: '❌' } as const;
-    const markdown = params.plan
-      .map((s) => {
-        const status = s.status && s.status in ICON ? s.status : 'pending';
-        return `${ICON[status]} ${s.title}${s.subtitle ? ` — ${s.subtitle}` : ''}`;
-      })
-      .join('\n');
-    return [{ type: 'plan', plan: markdown, timestamp: this.now() }];
+    // 图标表 + status 归一与 ACP handlePlan 共用 renderPlanMarkdown
+    // （未知/缺省 status 一律按 pending，防 wire 枚举漂移）。
+    return [{ type: 'plan', plan: renderPlanMarkdown(params.plan), timestamp: this.now() }];
   }
 
   private handleError(params: ErrorNotification['params']): AgentEvent[] {

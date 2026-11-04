@@ -950,6 +950,12 @@ describe('RunState', () => {
     }
     expect(state.blocks).toHaveLength(24);
     expect(state.omittedBlocks).toBe(6);
+    // 保最新弃最旧：窗口内首块是最早被保留的 item-6，末块是最新写入的 item-29
+    // （淘汰方向钉死，防止改成「保最旧弃最新」仍能通过长度断言）。
+    const firstBlock = state.blocks[0] as { kind: string; content: string };
+    const lastBlock = state.blocks.at(-1) as { kind: string; content: string };
+    expect(firstBlock.content).toBe('placeholder-6');
+    expect(lastBlock.content).toBe('placeholder-29');
   });
 
   it('counts omittedBlocks when assistant thinking exceeds the block cap', () => {

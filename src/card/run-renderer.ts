@@ -25,7 +25,7 @@ import { countCardElements, MAX_CARD_ELEMENTS } from './card-budget.js';
 import { displayWidth, truncateToDisplayWidth } from '../common/text-width.js';
 import { isContentFilterFailure } from '../common/turn-failure.js';
 import { formatClock, formatTimestamp } from './time.js';
-import { formatUsageStats } from './usage-format.js';
+import { formatTokenK, formatUsageStats } from './usage-format.js';
 import { renderApprovalArea, renderApprovalAreaCompact } from './approval-render.js';
 
 const REASONING_BYTES = 4_500;
@@ -151,44 +151,23 @@ function buildGoalSection(state: RunState): object[] {
  * This unifies timestamp position across all block types (thinking/plan/file_change/tool/text).
  *
  * Panel title: `💬 **输出** (ts)` when timestamp present, `💬 **输出**` otherwise.
- * Running: expanded=true; completed: expanded=false (symmetric with thinking).
+ * The panel is always expanded — streaming and finalized states render identically.
  *
  * @param content - The text content to render
  * @param timestamp - Optional timestamp for the block
- * @param finalized - Whether the run is in a terminal state
  * @returns elements
  */
-function renderTextBlock(
-  content: string,
-  timestamp?: string,
-  finalized: boolean = false,
-): object[] {
+function renderTextBlock(content: string, timestamp?: string): object[] {
   if (!content.trim()) {
     return [];
   }
 
   const ts = formatTimestamp(timestamp);
 
-  // Terminal state: output is the card body, render in collapsible_panel with expanded=true.
+  // Render in collapsible_panel with expanded=true.
   // NOTE: collapsible_panel does NOT shield markdown tables from Feishu's 11310 table count
   // limit — tables inside lark_md text are still counted regardless of container.
   // We must explicitly truncate excess tables via truncateMarkdownTables before rendering.
-  if (finalized) {
-    const title = '💬 **输出**';
-    const header = ts ? `${title} (${ts})` : title;
-    const safeContent = truncateMarkdownTables(content);
-    return [
-      collapsibleMarkdownPanel({
-        title: header,
-        expanded: true, // Always expanded in finalized state for full visibility
-        border: 'grey',
-        content: safeContent,
-        textSize: 'notation',
-      }),
-    ];
-  }
-
-  // Running/finalizing: panel provides visual grouping with timestamp in header
   const title = '💬 **输出**';
   const header = ts ? `${title} (${ts})` : title;
   const safeContent = truncateMarkdownTables(content);
@@ -620,7 +599,6 @@ function assembleRunCard(
  */
 function insertAfterStatusRow(elements: object[], extra: object[]): object[] {
   if (extra.length === 0) return elements;
-  if (elements.length === 0) return extra;
   return [elements[0], ...extra, ...elements.slice(1)];
 }
 
@@ -715,15 +693,11 @@ function buildFallbackElements(
     } else if (group.kind === 'text') {
       const content = truncateUtf8(group.content, tier.textBytes, true, '…（已截断）\n');
       const ts = formatTimestamp(group.timestamp);
-      elements.push(...renderTextBlock(content, ts, true));
+      elements.push(...renderTextBlock(content, ts));
     } else if (group.kind === 'tool') {
       // Show tool individually (each tool is independent now)
       elements.push(renderTool(group.tool, outputMax));
     }
-  }
-
-  if (elements.length === 0 && tier === EXTREME_TIER) {
-    elements.push(markdownDiv('_暂无输出_'));
   }
 
   elements.push(...buildSummaryContent(state, { includeNotices: false }));
@@ -790,13 +764,13 @@ export function statusLine(state: RunState): string {
       const pct = Math.min(100, Math.round((live.contextUsed / live.contextLimit) * 100));
       parts.push(`📊 ~${pct}%`);
     } else if (live.contextUsed !== undefined) {
-      parts.push(`📊 ${formatTokens(live.contextUsed)}`);
+      parts.push(`📊 ${formatTokenK(live.contextUsed)}`);
     }
   }
 
   if (parts.length === 0) {
     // 没有任何可用指标时退回状态词（骨架卡/测试构造的状态没有时间戳）。
-    return statusTagLabel(state.terminal);
+    return terminalToLabel(state.terminal);
   }
   return parts.join(' · ');
 }
@@ -814,14 +788,6 @@ function elapsedLabel(state: RunState): string {
   const hours = Math.floor(minutes / 60);
   if (hours < 24) return `${hours}h${String(minutes % 60).padStart(2, '0')}m`;
   return `${Math.floor(hours / 24)}d${String(hours % 24).padStart(2, '0')}h`;
-}
-
-/** token 数量的紧凑写法：`950` / `12K` / `1.0M`。 */
-function formatTokens(tokens: number): string {
-  if (tokens < 1000) return String(tokens);
-  // 千位边界取 M 档：999_500 起四舍五入会得到 "1000K"，直接按 M 档展示。
-  if (tokens < 999_500) return `${Math.round(tokens / 1000)}K`;
-  return `${(tokens / 1_000_000).toFixed(1)}M`;
 }
 
 /**
@@ -1154,13 +1120,13 @@ function buildFinalAnswerPriorityCard(
   const prepared = prepareGroupContent(groups);
   const safeAnswer = truncateMarkdownTables(finalAnswer.content);
   const ts = formatTimestamp(finalAnswer.timestamp);
-  const answerElements = renderTextBlock(safeAnswer, ts, state.terminal !== 'running');
+  const answerElements = renderTextBlock(safeAnswer, ts);
   const fixedStart = [statusRow(state), ...omittedBlocksHint(state)];
   const summary = buildSummaryContent(state, { includeNotices: false });
   const controls = [...actionRow(state, options), ...approvalArea(state)];
 
   const buildWithProgress = (start: number, includeSummary: boolean): object => {
-    const renderedProgress = buildAnswerProgressContent(state, prepared, groups.slice(start));
+    const renderedProgress = renderContentGroups(state, prepared, groups.slice(start));
     const progress =
       start < groups.length
         ? [markdownDiv(`_💡 已省略 ${start} 个早期步骤_`), ...renderedProgress]
@@ -1205,8 +1171,17 @@ function buildFinalAnswerPriorityCard(
   };
 }
 
-/** Render a contiguous progress suffix for the answer-priority card. */
-function buildAnswerProgressContent(
+/**
+ * 正常路径内容循环，时间线卡（buildChronologicalContent）与答案优先卡的进度
+ * 后缀（buildFinalAnswerPriorityCard）共用：notices 作为普通消息按到达时间
+ * 插入内容流（有内容时不再沉到 summary），tool/text/panel 组逐个渲染。
+ *
+ * prepared 的键是组对象引用：传入的组数组必须保持元素引用（slice 可以，重建
+ * 数组会让 prepared.get 永远 miss，退化为二次截断）。面板组描述经
+ * describePanelGroup 与估算共享同一份模板。
+ * 「已省略 N 个早期步骤」提示与空态兜底 `_暂无输出_` 由调用方各自负责。
+ */
+function renderContentGroups(
   state: RunState,
   prepared: GroupContentPrepared,
   visible: BlockGroup[],
@@ -1227,7 +1202,7 @@ function buildAnswerProgressContent(
     if (group.kind === 'text') {
       const content = prepared.get(group) ?? '';
       const ts = formatTimestamp(group.timestamp);
-      elements.push(...renderTextBlock(content, ts, state.terminal !== 'running'));
+      elements.push(...renderTextBlock(content, ts));
       continue;
     }
     const spec = describePanelGroup(group, prepared);
@@ -1264,47 +1239,11 @@ function buildChronologicalContent(
   prepared: GroupContentPrepared,
   groups: BlockGroup[],
 ): object[] {
-  const elements: object[] = [];
-  // finalized = 非 running（含 finalizing：主结果已出，thinking 折叠）
-  const finalized = state.terminal !== 'running';
   // 节点预算内从最新往回选择可见组：超限时只省略最旧的几步，不整卡降级。
   const { visible, omitted } = selectVisibleGroups(groups);
-  const outputMax = toolOutputBudget(state);
+  const elements: object[] = [];
   if (omitted > 0) elements.push(markdownDiv(`_💡 已省略 ${omitted} 个早期步骤_`));
-
-  // renderRunCard 传入同一 groups 数组时直接复用（prepared 的键是组对象
-  // 引用，重建数组会让 prepared.get 永远 miss，退化为二次截断）。
-  // 面板组描述经 describePanelGroup 与估算共享同一份模板。
-  // notices 作为普通消息按到达时间插入内容流（有内容时不再沉到 summary）。
-  const contentItems = mergeNoticesIntoContent(visible, state.notices);
-  for (const item of contentItems) {
-    if (item.kind === 'notice') {
-      elements.push(renderNoticeRow(item.notice));
-      continue;
-    }
-    const group = item;
-    if (group.kind === 'tool') {
-      elements.push(renderTool(group.tool, outputMax));
-      continue;
-    }
-    if (group.kind === 'text') {
-      const content = prepared.get(group) ?? '';
-      const ts = formatTimestamp(group.timestamp);
-      elements.push(...renderTextBlock(content, ts, finalized));
-      continue;
-    }
-    const spec = describePanelGroup(group, prepared);
-    if (!spec) continue;
-    elements.push(
-      collapsibleMarkdownPanel({
-        title: spec.title,
-        expanded: spec.expanded,
-        border: spec.border,
-        content: spec.content,
-        textSize: 'notation',
-      }),
-    );
-  }
+  elements.push(...renderContentGroups(state, prepared, visible));
 
   if (elements.length === 0) {
     elements.push(markdownDiv('_暂无输出_'));
@@ -1562,11 +1501,6 @@ function buildBackgroundJobsSection(state: RunState): object[] {
     elements.push(markdownDiv(`_…另有 ${jobs.length - MAX_BACKGROUND_JOB_LINES} 个任务_`));
   }
   return elements;
-}
-
-/** Status tag label */
-function statusTagLabel(terminal: RunState['terminal']): string {
-  return terminalToLabel(terminal);
 }
 
 /** CardKit 2.0 header title — agent-aware via options.agentKind. */

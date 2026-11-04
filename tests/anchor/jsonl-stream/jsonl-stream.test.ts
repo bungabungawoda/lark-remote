@@ -24,9 +24,7 @@ describe('createJSONLStream backpressure', () => {
       readable.push(`{"type":"text","data":"chunk-${i}"}\n`);
     }
 
-    await new Promise((r) => setTimeout(r, 10));
-
-    expect(pauseSpy).toHaveBeenCalled();
+    await vi.waitFor(() => expect(pauseSpy).toHaveBeenCalled());
 
     let consumed = 0;
     for await (const _event of stream) {

@@ -79,8 +79,9 @@ export function createWin32Terminator(deps: Win32TerminatorDeps): Terminator {
         stdio: 'ignore',
         windowsHide: true,
       });
-      killer?.on?.('error', () => {
+      killer?.on?.('error', (err) => {
         // taskkill 拉起失败不致命：调用方仍可走 killOrphan / 陈旧锁自愈
+        log?.(`win32 树杀失败：taskkill error 事件 ${err?.message ?? err}`);
       });
     } catch (error) {
       log?.(`win32 树杀失败：taskkill 拉起异常 ${String(error)}`);

@@ -119,7 +119,7 @@ describe('Config card agent-aware fields (design: 2026-07-11)', () => {
         tmpDir,
         config,
         bridge: createMockBridge(),
-        sessionReaderRegistry: createMockSessionReaderRegistry({ agentKinds: ['claude'] }),
+        sessionReaderRegistry: createMockSessionReaderRegistry(),
       }).router;
 
       const result = router.buildConfigCard() as { card: object };
@@ -137,7 +137,7 @@ describe('Config card agent-aware fields (design: 2026-07-11)', () => {
         tmpDir,
         config,
         bridge: createMockBridge(),
-        sessionReaderRegistry: createMockSessionReaderRegistry({ agentKinds: ['claude'] }),
+        sessionReaderRegistry: createMockSessionReaderRegistry(),
       }).router;
 
       const result = router.buildConfigCard() as { card: object };
@@ -155,7 +155,7 @@ describe('Config card agent-aware fields (design: 2026-07-11)', () => {
         tmpDir,
         config,
         bridge: createMockBridge(),
-        sessionReaderRegistry: createMockSessionReaderRegistry({ agentKinds: ['claude'] }),
+        sessionReaderRegistry: createMockSessionReaderRegistry(),
       }).router;
 
       const result = router.buildConfigCard() as { card: object };
@@ -176,7 +176,7 @@ describe('Config card agent-aware fields (design: 2026-07-11)', () => {
         tmpDir,
         config,
         bridge: createMockBridge(),
-        sessionReaderRegistry: createMockSessionReaderRegistry({ agentKinds: ['claude'] }),
+        sessionReaderRegistry: createMockSessionReaderRegistry(),
       }).router;
 
       const result = router.buildConfigCard() as { card: object };
@@ -198,7 +198,7 @@ describe('Config card agent-aware fields (design: 2026-07-11)', () => {
         tmpDir,
         config,
         bridge: createMockBridge(),
-        sessionReaderRegistry: createMockSessionReaderRegistry({ agentKinds: ['claude'] }),
+        sessionReaderRegistry: createMockSessionReaderRegistry(),
       }).router;
 
       const result = router.buildConfigCard() as { card: object };
@@ -218,7 +218,7 @@ describe('Config card agent-aware fields (design: 2026-07-11)', () => {
         tmpDir,
         config,
         bridge: createMockBridge(),
-        sessionReaderRegistry: createMockSessionReaderRegistry({ agentKinds: ['claude'] }),
+        sessionReaderRegistry: createMockSessionReaderRegistry(),
       }).router;
 
       const result = router.buildConfigCard() as { card: object };
@@ -237,7 +237,7 @@ describe('Config card agent-aware fields (design: 2026-07-11)', () => {
         tmpDir,
         config,
         bridge: createMockBridge(),
-        sessionReaderRegistry: createMockSessionReaderRegistry({ agentKinds: ['claude'] }),
+        sessionReaderRegistry: createMockSessionReaderRegistry(),
       }).router;
 
       const result = router.buildConfigCard() as { card: object };
@@ -263,7 +263,7 @@ describe('Config card agent-aware fields (design: 2026-07-11)', () => {
         tmpDir,
         config,
         bridge: createMockBridge(),
-        sessionReaderRegistry: createMockSessionReaderRegistry({ agentKinds: ['claude'] }),
+        sessionReaderRegistry: createMockSessionReaderRegistry(),
       }).router;
       return { router, config };
     }
@@ -350,7 +350,7 @@ describe('Config card agent-aware fields (design: 2026-07-11)', () => {
         tmpDir,
         config,
         bridge: createMockBridge(),
-        sessionReaderRegistry: createMockSessionReaderRegistry({ agentKinds: ['claude'] }),
+        sessionReaderRegistry: createMockSessionReaderRegistry(),
       }).router;
 
       // Before switch: pi fields should be visible
@@ -381,7 +381,7 @@ describe('Config card agent-aware fields (design: 2026-07-11)', () => {
         tmpDir,
         config,
         bridge: createMockBridge(),
-        sessionReaderRegistry: createMockSessionReaderRegistry({ agentKinds: ['claude'] }),
+        sessionReaderRegistry: createMockSessionReaderRegistry(),
       }).router;
 
       // Before switch: codex fields should be visible (FIXED: uses agents.codex.xxx keys)
@@ -413,7 +413,7 @@ describe('Config card agent-aware fields (design: 2026-07-11)', () => {
         tmpDir,
         config,
         bridge: createMockBridge(),
-        sessionReaderRegistry: createMockSessionReaderRegistry({ agentKinds: ['claude'] }),
+        sessionReaderRegistry: createMockSessionReaderRegistry(),
       }).router;
 
       // Before switch
@@ -450,7 +450,7 @@ describe('Config card agent-aware fields (design: 2026-07-11)', () => {
         tmpDir,
         config,
         bridge: createMockBridge(),
-        sessionReaderRegistry: createMockSessionReaderRegistry({ agentKinds: ['claude'] }),
+        sessionReaderRegistry: createMockSessionReaderRegistry(),
       }).router;
     }
 

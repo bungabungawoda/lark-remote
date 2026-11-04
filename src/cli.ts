@@ -145,9 +145,16 @@ export async function bootstrap(deps: BootstrapDeps): Promise<void> {
     onSignal(sig, forwarder);
   }
 
-  child.on('error', () => {
+  child.on('error', (err) => {
+    // bun 拉起失败（ENOENT/EACCES）会静默切 node 兜底，但错误本身必须留痕，
+    // 否则「为什么跑在了 node 上」无从排查。logger 此时尚未初始化，console
+    // 是规则允许的启动期例外。
+    console.error('[lark-remote] bun spawn failed, falling back to node:', err);
     for (const [sig, forwarder] of forwarders) offSignal(sig, forwarder);
-    void importEntry().catch(() => exit(1));
+    void importEntry().catch((importErr) => {
+      console.error('[lark-remote] node fallback import failed:', importErr);
+      exit(1);
+    });
   });
   child.on('exit', (code, signal) => {
     if (signal) {
@@ -196,7 +203,12 @@ function main(): void {
     killSelf: (sig) => process.kill(process.pid, sig),
     exit: (code) => process.exit(code),
   };
-  void bootstrap(deps).catch(() => process.exit(1));
+  // bootstrap 是第一接触面：静默 exit(1) 会让安装损坏/依赖缺失表现为零输出
+  // 退出，必须把根因打到 stderr（logger 未初始化，console 为规则允许的例外）。
+  void bootstrap(deps).catch((err) => {
+    console.error('[lark-remote] bootstrap failed:', err);
+    process.exit(1);
+  });
 }
 
 if (isDirectEntry()) {

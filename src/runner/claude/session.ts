@@ -815,7 +815,11 @@ export class ClaudeSession extends SpawningRunner {
         void this.writeControlResponse(requestId, {
           behavior: 'deny',
           message: '无法解析 AskUserQuestion 选项',
-        }).catch(() => {});
+        }).catch((err: Error) => {
+          getLogger().warn(
+            `[${this.logTag}] AskUserQuestion deny write failed requestId=${requestId}: ${err.message}`,
+          );
+        });
         // 解析失败 deny 后同样释放条目（不经过 respondPermission）。
         this.pendingToolInputs.delete(requestId);
         return [];

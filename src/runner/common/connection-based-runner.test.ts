@@ -52,6 +52,7 @@ class TestRunner extends ConnectionBasedRunner<unknown> {
   protected notifyIdle(): void {
     this.calls.notifyIdle++;
   }
+  protected notifyConnectionActivity(): void {}
   protected async disposeConnections(): Promise<void> {
     this.calls.disposeConnections++;
   }

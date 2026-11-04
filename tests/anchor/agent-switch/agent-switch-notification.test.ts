@@ -48,9 +48,7 @@ describe('config.save sends persistent message notification on agent switch', ()
       config: buildDefaultConfig(),
       bridge,
       sessionStore,
-      sessionReaderRegistry: createMockSessionReaderRegistry({
-        agentKinds: ['claude', 'codex', 'pi', 'opencode'],
-      }),
+      sessionReaderRegistry: createMockSessionReaderRegistry({}),
     }).router;
   });
 
@@ -616,9 +614,7 @@ describe('config.save restores previous session when switching back', () => {
       config,
       bridge,
       sessionStore,
-      sessionReaderRegistry: createMockSessionReaderRegistry({
-        agentKinds: ['claude', 'codex', 'pi', 'opencode'],
-      }),
+      sessionReaderRegistry: createMockSessionReaderRegistry({}),
     }).router;
 
     const userId = 'user1';
@@ -663,9 +659,7 @@ describe('config.save restores previous session when switching back', () => {
       config,
       bridge,
       sessionStore,
-      sessionReaderRegistry: createMockSessionReaderRegistry({
-        agentKinds: ['claude', 'codex', 'pi', 'opencode'],
-      }),
+      sessionReaderRegistry: createMockSessionReaderRegistry({}),
     }).router;
 
     const userId = 'user1';
@@ -737,9 +731,7 @@ describe('config.save keeps explicitly selected new agent session on agent switc
       config: buildDefaultConfig(),
       bridge,
       sessionStore,
-      sessionReaderRegistry: createMockSessionReaderRegistry({
-        agentKinds: ['claude', 'codex', 'pi', 'opencode'],
-      }),
+      sessionReaderRegistry: createMockSessionReaderRegistry({}),
     }).router;
   });
 
