@@ -294,7 +294,7 @@ interface ActiveRun {
    * The exact runner instance that is running this run. interruptCurrentRun
    * stops THIS instance directly rather than re-resolving via getRunner(cwd),
    * so the runner is reachable even after clearRunners() empties the cache
-   * mid-run (regression 2026-07-18: a fresh empty runner's stop() was a no-op,
+   * mid-run (a fresh empty runner's stop() was a no-op,
    * leaving the real subprocess alive and the queue chain blocked forever).
    */
   runner: Runner;
@@ -359,7 +359,7 @@ export class Bridge {
   private readonly mediaHandler: InboundMediaHandler;
   /**
    * Per-workspace runner instances, keyed by (cwd, agentKind).
-   * Fix 4 (2026-07-18): Each agentKind has its own cache slot, so switching
+   * Each agentKind has its own cache slot, so switching
    * defaultAgent creates a NEW runner without evicting the old one. This
    * eliminates the need for clearRunners() on agent switch, preventing the
    * regression where clearRunners() orphaned a running subprocess and
@@ -392,7 +392,7 @@ export class Bridge {
    * 为什么按 runId 存而不是「每 cwd 只留最新一条」：compact 卡片动作走串行
    * 队列（会被正在跑的 run 挡住），点击到执行之间可能夹着别的 run 收尾。
    * 单槽会被覆盖 —— 旧卡片的压缩必然报「该任务已结束或不属于当前会话」，
-   * 与 session 是否还在、能否压缩无关（2026-10-08 线上缺陷）。
+   * 与 session 是否还在、能否压缩无关。
    */
   private compactableRuns = new Map<string, Map<string, CompactRunRecord>>();
 
@@ -464,7 +464,7 @@ export class Bridge {
   /**
    * Get or create a runner for the given cwd, keyed by current defaultAgent.
    *
-   * Fix 4 (2026-07-18): Cache key includes agentKind, so switching defaultAgent
+   * Cache key includes agentKind, so switching defaultAgent
    * creates a NEW runner under a different key without evicting the old one.
    * This eliminates the need for clearRunners() on agent switch.
    */
@@ -629,9 +629,9 @@ export class Bridge {
    */
   clearRunners(): void {
     // Skip workspaces with an active run: evicting their runner would orphan
-    // the instance that owns the live subprocess (regression 2026-07-18 -- the
-    // running runner became unreachable, stop() hit a fresh empty runner, the
-    // real subprocess was never killed and the queue chain blocked forever).
+    // the instance that owns the live subprocess — the running runner would
+    // become unreachable, stop() would hit a fresh empty runner, the real
+    // subprocess would never be killed and the queue chain would block forever.
     // The running run already started with its (possibly now-stale) config, so
     // keeping it is correct; finalizeRun deletes the cache entry when the run
     // ends, and the next run picks up the new config/agent via getRunner.
@@ -1156,8 +1156,8 @@ export class Bridge {
     // Stop the EXACT runner instance that is running (carried by activeRun),
     // not whatever getRunner(cwd) would return now. clearRunners() may have
     // emptied the cache mid-run, in which case getRunner creates a fresh empty
-    // runner whose stop() is a no-op and the real subprocess is never killed
-    // (regression 2026-07-18: queue chain blocked forever).
+    // runner whose stop() is a no-op and the real subprocess is never killed,
+    // blocking the queue chain forever.
     const runner = active.runner;
     // Bind the queue reset to THIS task's execution slot: the stop window
     // below may outlive the task's settle, letting the serial chain advance
@@ -1193,8 +1193,8 @@ export class Bridge {
     // interruptCurrentRun 的 await 窗口内 queue 链会推进下一条消息，其
     // getRunner 可能刚拿走本实例（缓存命中先于本行执行）——立即 evict 会
     // 让那个 run 的长驻连接脱管：进程残留至 idle TTL 才回收，期间持有
-    // agent 侧会话写锁（codex "thread already has an active writer"，
-    // 线上实测）。改为标 stale：下一次「即将开跑」的 getRunner 在槽位空闲时
+    // agent 侧会话写锁（codex "thread already has an active writer"）。
+    // 改为标 stale：下一次「即将开跑」的 getRunner 在槽位空闲时
     // 换新实例（见 getRunner 的 replaceStale），本次 run 的 finalize 收尾时
     // 也会消费该标记；两者都保证不会有活跃 run 使用被 dispose 的实例。
     // run-per-message runner 无长驻连接，保持立即 evict 不变。
@@ -1294,7 +1294,7 @@ export class Bridge {
   /**
    * Deliver a final answer that cannot fit in the run card as a Markdown file
    * attachment. 卡片正文已被标记替代，文件是唯一的内容通道；此处绝不发纯文本
-   * （2026-11-02 定规：纯文本与卡片重复，也丢 Markdown 结构）。
+   * （纯文本与卡片重复，也丢 Markdown 结构）。
    *
    * 失败时发一张提示卡（不是纯文本），并把完整回答留在临时文件里记日志，
    * 便于事后找回。
@@ -1637,7 +1637,7 @@ export class Bridge {
     const sessionId =
       opts?.binding?.sessionId ?? this.sessionStore.getSessionId(ctx.userId, agentKind);
 
-    // 会话代际快照（2026-08-09，2026-10-07 前移）：/new、/cd、/resume 会 bump
+    // 会话代际快照：/new、/cd、/resume 会 bump
     // epoch，该 run 后续 system.init 的 sessionId 写回即判 stale 跳过。
     // 快照点优先取 binding.sessionEpoch（入队/commit 时刻，与 sessionId 同刻）：
     // 排队消息在「commit 后、开跑前」被 reset 时，执行起点捕获会漏判（epoch 已是
@@ -1649,7 +1649,7 @@ export class Bridge {
     // Resolve the runner BEFORE creating the run session so the exact instance
     // that will run is captured into activeRun. interruptCurrentRun stops THAT
     // instance directly -- never a fresh runner re-resolved from a cache that
-    // clearRunners() may have emptied mid-run (regression 2026-07-18).
+    // clearRunners() may have emptied mid-run.
     const runner = this.getRunner(cwd, agentKind, { replaceStale: true });
 
     // Step 1: Create run session (runId, cardSession, activeRun tracking)
@@ -1695,7 +1695,7 @@ export class Bridge {
    *
    * DSH 把上游 `finish_reason: content_filter` 归一成 PI_AI_ERROR：既不在默认
    * 重试码里（EMPTY_RESPONSE/RATE_LIMIT/SERVER/TIMEOUT/TRANSPORT），也不会换模型，
-   * 于是一次（多数是误报的）判定就把整个 turn 判死。2026-10-21 现场：60 步、
+   * 于是一次（多数是误报的）判定就把整个 turn 判死。60 步、
    * 10 分钟的 turn 在最后一步被截断，已写入的文件还在，用户只看到「运行出错」
    * 加一句英文报文。
    *
@@ -1872,7 +1872,7 @@ export class Bridge {
    * result 在 system.init 之后才到。
    *
    * 例外：app-server runner（usageAuthority==='live'）的 init 是 runner 自己补发
-   * 的 synthetic init（2026-08-13 修复）。此分支保留为防御性兜底：live runner 若
+   * 的 synthetic init。此分支保留为防御性兜底：live runner 若
    * 在无 init 时发出 result（旧构建等），session 写回照常执行，但 sawResult 不置
    * 真——卡片不会把半初始化的 run 当作已收尾。
    *
@@ -2003,7 +2003,7 @@ export class Bridge {
     } = opts;
     const finalState = cardSession.currentState;
     if (finalState.terminal === 'finalizing') {
-      // 三态终态映射（2026-08-14）：interrupted（审批超时/取消、/stop）是独立
+      // 三态终态映射：interrupted（审批超时/取消、/stop）是独立
       // 终态，不再归因于 Agent 错误；error 保持「运行出错」；其余为 done。
       const subtype = finalState.resultSubtype;
       const isError = subtype === 'error' || !!finalState.errorMsg;
@@ -2869,7 +2869,7 @@ export class Bridge {
         await cardSession.push(event);
       }
       // §5.3: 卡片终态必须等于引擎真实终态。旧实现只看 sawResult 布尔——error
-      // subtype 的 result 也被 finish 'done'（放大器 bug，2026-08-31 事故）。
+      // subtype 的 result 也被 finish 'done'（放大器 bug）。
       const terminal: 'done' | 'error' | 'interrupted' =
         resultSubtype === 'success'
           ? 'done'

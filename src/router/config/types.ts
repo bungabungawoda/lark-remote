@@ -24,7 +24,7 @@ export interface ConfigField {
    * select=下拉、input=文本框、note=纯说明行（无回调）。
    *
    * 没有 boolean：卡片曾留着一套「开关」控件（`config.toggle`），但全仓没有
-   * 任何字段声明它，2026-10-27 成套删除。原则是**卡片只放配得了的控件**，
+   * 任何字段声明它，已成套删除。原则是**卡片只放配得了的控件**，
    * 实现细节与未上卡的键走 YAML（见 `buildConfigCard` 的分 tab 注释）。
    */
   type: 'select' | 'input' | 'note';

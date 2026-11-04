@@ -15,7 +15,7 @@ export interface AgentBinding {
    * 会话代际快照（与 sessionId 同刻捕获）。随 binding 带到执行时刻：若执行前
    * session 指针被移动（/new、/cd、/resume、/config 切换），该 run 的 init /
    * turn_started 写回判 stale 跳过，避免「先发消息 → 后点新会话」时旧 sessionId
-   * 被写回复活（2026-10-07 事故）。缺省时回退到执行起点捕获，保持旧行为。
+   * 被写回复活。缺省时回退到执行起点捕获，保持旧行为。
    */
   sessionEpoch?: number;
 }
@@ -202,7 +202,7 @@ export class QueueManager {
    * interrupt credit to exactly the interrupted task's slot) and the display
    * info the queue card needs to name what a waiting message waits for.
    *
-   * 2026-10-09 线上：一次 Compact 占着 lane，新消息的排队卡却写「位置: 第 1
+   * 一次 Compact 占着 lane，新消息的排队卡曾写「位置: 第 1
    * 位 / 前面还有: 0 条消息」——开卡判据看 lane（含正在执行者），位置文案只看
    * 等待队列，两个口径的差集正是这条记录。
    */
@@ -381,8 +381,8 @@ export class QueueManager {
     }
     // 身份不变量 tripwire：同一 cwd 内 queue key 必须唯一（一次入队动作一个
     // key，铸造点 router.mintQueueTaskKey）。撞 key 时数组（追加）与 taskIndex
-    // （覆盖）必然漂移，位置显示/撤销/立即执行/卡片更新会串到别的条目上——
-    // 2026-10-08 线上缺陷就是这么长出来的。这里不改行为，只留证据。
+    // （覆盖）必然漂移，位置显示/撤销/立即执行/卡片更新会串到别的条目上。
+    // 这里不改行为，只留证据。
     if (this.indexGet(cwd, queuedTask.messageId)) {
       getLogger().warn(
         `[queue-manager] duplicate queue key cwd=${cwd} messageId=${queuedTask.messageId} — ` +
@@ -638,7 +638,7 @@ export class QueueManager {
   /**
    * 排队卡头部。只有前面确实还有等待中的消息时才说「排队」；前面为空时
    * 用户等的是当前正在执行的任务（例如 Compact），用「等待当前任务结束」
-   * 表达才不会与「前面还有 0 条」自相矛盾（2026-10-09 线上实例）。
+   * 表达才不会与「前面还有 0 条」自相矛盾。
    */
   private queueCardHeader(tasksAhead: number): {
     template: string;
@@ -751,7 +751,7 @@ export class QueueManager {
     if (occupant) {
       // 只有可能挡住队列、需要用户归因的占用者才自报身份。「正在执行: 💬 消息」
       // 对普通消息占用者没有信息量——用户刚发的就是消息，「💡 消息将按顺序执行…」
-      // 也只是复述排队本身，一并省去（2026-10-11）。压缩额外说明何时轮到用户。
+      // 也只是复述排队本身，一并省去。压缩额外说明何时轮到用户。
       if (occupant.kind !== 'message') {
         elements.push({
           tag: 'div',

@@ -98,10 +98,10 @@ function findMergedCommandTail(message: string): string | null {
 
 /**
  * /order 列表页大小；指令超过此数量时显示分页导航栏。
- * 2026-08-13 实测：每行 2 个元素（div + column_set，行间 hr），20 行 + 分页栏
+ * 实测：每行 2 个元素（div + column_set，行间 hr），20 行 + 分页栏
  * = 61 个 body 元素，触发飞书 ErrCode 11310 "element exceeds the limit"
  * （21+ 条指令时第 1 页必炸）。改为 15 行：3*15 - 1 + 2 = 46 个元素，留足余量。
- * 2026-08-19 别名并卡后每行变 3 个元素（文本 div + 操作 column_set + hr），
+ * 别名并卡后每行变 3 个元素（文本 div + 操作 column_set + hr），
  * 从 15 降为 8：3*8 - 1 + 2 = 25 个元素，仍在余量内，同时保证手机窄屏
  * 每条指令的操作控件（执行/别名/删除）不被挤压。
  */
@@ -292,7 +292,7 @@ const APPROVAL_ACTION_SPECS: Record<string, ApprovalActionSpec> = {
       }),
     successToast: '审批已提交',
     failureToast: (msg) => {
-      // 审批已过期：给用户明确反馈，不静默不误导（2026-08-12 事故：点了允许无任何反馈）。
+      // 审批已过期：给用户明确反馈，不静默不误导（否则点了允许无任何反馈）。
       const content = /state=expired/.test(msg)
         ? '⏰ 审批已过期，无法响应'
         : `审批响应失败：${msg}`;
@@ -453,7 +453,7 @@ const IMMEDIATE_ACTION_CMDS: ReadonlySet<string> = new Set([
   'config.save',
   // 审批响应/权限切换必须即时触达在途 run（同 stop 类控制动作）。若走串行
   // 队列会排在等待审批的 run 之后形成死锁：run 不结束审批不执行，run 结束
-  // coordinator 已删响应空转（线上复现：approval.respond 排队卡、审批永不生效）。
+  // coordinator 已删响应空转（approval.respond 落进排队卡、审批永不生效）。
   ...APPROVAL_ACTION_CMDS,
 ]);
 
@@ -462,7 +462,7 @@ const IMMEDIATE_ACTION_CMDS: ReadonlySet<string> = new Set([
  * sessionId / cwd / defaultAgent，必须与入站装配器的 700ms 静默窗口定序：
  * 控制层（index.ts）在执行它们之前先 flush 该 user/chat 的装配窗口，保证窗口内
  * 先到的文本消息在本动作之前 commit（绑定动作前的旧状态）。否则窗口内消息会
- * 漂移到动作之后的新状态（2026-10-07 事故：输入「重新构建」后立即点「新会话」，
+ * 漂移到动作之后的新状态（输入「重新构建」后立即点「新会话」，
  * 消息落到新会话）。
  *
  * 文本命令（/new、/cd、/resume、/config）已由 index.ts 命令分支先 flush，
@@ -480,7 +480,7 @@ export const SESSION_MUTATING_ACTION_CMDS: ReadonlySet<string> = new Set([
  * 会产生压缩工作的卡片动作（单源）。这类条目占用 lane 时必须自报身份：
  * 排队卡写明「正在执行: 🗜 Compact」而不是「前面还有 0 条」，并且期间禁用
  * 「立即执行」——该按钮走 interruptCurrentRun，会连带中断正在跑的压缩
- * （2026-10-09 线上：Compact 占 lane 期间新消息的排队卡自相矛盾，且按钮
+ * （Compact 占 lane 期间新消息的排队卡自相矛盾，且按钮
  * 一点就会杀掉压缩）。同时它们也不允许编辑（预览不是用户文本）。
  */
 export const COMPACT_ACTION_CMDS: ReadonlySet<string> = new Set(['compact', 'resume.compact']);
@@ -575,8 +575,8 @@ export class CommandRouter {
    *
    * 草稿（pendingConfig）是全局一份：/config 文本命令重开卡片时沿用同一份草稿
    * （这是既有语义，不改）。但**视图**是每张卡一份 —— 只刷新被点击的那张，其余
-   * 卡片就停在旧视图上：用户在旧卡上看到的和点保存实际提交的是两套内容
-   * （2026-10-08 发现的缺陷）。这里记住所有交互过的 config 卡，任何一次编辑/保存
+   * 卡片就停在旧视图上：用户在旧卡上看到的和点保存实际提交的是两套内容。
+   * 这里记住所有交互过的 config 卡，任何一次编辑/保存
    * 后把草稿刷到每张卡，保证「看到的就是会保存的」。
    */
   private configCardIds = new Set<string>();
@@ -587,7 +587,7 @@ export class CommandRouter {
    * 条目的身份必须与「一次入队动作」1:1（queuedTasks 的定位、queueCardMessages
    * 的卡片更新、taskIndex 的取消判据全部按这个 key 做 lookup）。复用卡片 id
    * 会让同 key 的多条任务互相顶替：位置显示命中最早那条兄弟、第一条开始时删掉
-   * 索引导致其余兄弟被判「已撤销」静默丢弃（2026-10-08 线上：连点 Compact
+   * 索引导致其余兄弟被判「已撤销」静默丢弃（连点 Compact
    * 三次 → 三张排队卡都显示「第 1 位」、两张永久停在「等待中」，只压缩一次）。
    *
    * Date.now() 不够（两次同步调用可落在同一毫秒）；计数器与时间无关，恒唯一。
@@ -608,7 +608,7 @@ export class CommandRouter {
   /** Session reader 注册中心（public：测试注入/读取，替代 as unknown as）。 */
   sessionReaderRegistry: SessionReaderRegistry;
   /**
-   * 串行化 config.* 卡片回调（2026-07-04）。
+   * 串行化 config.* 卡片回调。
    * CardKit 2.0 input/button 回调经 `enqueueImmediate` 分发，**不进串行队列**，
    * 多次快速点击下拉/文本框会并发读写 `pendingConfig` 并同时调
    * `updateCardInPlace` → Feishu API 乱序到达，控件卡死在某个状态。
@@ -690,7 +690,7 @@ export class CommandRouter {
   /**
    * Route a message: if it starts with /, handle as command; if it starts with !, execute as bash; otherwise forward to Claude.
    *
-   * 命令识别前置条件（2026-09-15修复，`inbound-unified-input-design.md` §5.6）：
+   * 命令识别前置条件（`inbound-unified-input-design.md` §5.6）：
    * 裸前缀判定会被结构占位符命中 —— SDK 把富文本里的图片渲染成 `![image](img_v3_…)`，
    * 首字符恰好是 `!`，整段用户消息被当 shell 命令执行（`executeBash "[image](img_v3_…"`）。
    * 因此命令前缀只在「调用方声明纯文本 + 剥离占位符后非空且无占位符 + 首字符是 / 或 !」
@@ -894,10 +894,10 @@ export class CommandRouter {
       case 'config.set':
       case 'config.input':
       case 'config.save':
-        // 2026-07-04: 串行化所有 config.* 动作。CardKit 2.0 回调经 enqueueImmediate
+        // 串行化所有 config.* 动作。CardKit 2.0 回调经 enqueueImmediate
         // 不进串行队列，多次快速点击下拉/文本框会并发读写 pendingConfig 并同时
         // 调 updateCardInPlace → Feishu API 乱序到达导致控件卡死。
-        // 2026-07-18: 返回 enqueueConfigAction 的结果以支持 toast 响应
+        // 返回 enqueueConfigAction 的结果以支持 toast 响应。
         return this.enqueueConfigAction(value, ctx);
       case 'compact':
         await this.bridge.handleCompactAction(value, ctx);
@@ -916,7 +916,7 @@ export class CommandRouter {
           // /exit、/restart 等命令通过 pendingExit 表达"回复送达后退出"。
           // handle() 在 sendResult 后消费它；help.* 按钮点击走 handleCardAction，
           // 必须同样消费，否则点击 /restart 按钮 spawn 成功后旧进程不退出，
-          // 新进程撞单例锁退出 → 重启两头落空（2026-08-01 红绿 anchor 锁定）。
+          // 新进程撞单例锁退出 → 重启两头落空（红绿 anchor 锁定）。
           if (this.pendingExit) {
             await this.flushInbound?.();
             this.exitHandler();
@@ -1690,7 +1690,7 @@ export class CommandRouter {
       cardMessageId: ctx.messageId,
     });
     const stopped = interrupt.stopped;
-    // Regression 2026-06-22: card stop button silently no-op'd when the
+    // card stop button silently no-op'd when the
     // run had already exited. Give the user a visible result.
     if (!stopped) {
       await this.bridge.sendResult({ text: '该任务已结束，无需终止' }, ctx);
@@ -2344,7 +2344,7 @@ export class CommandRouter {
   }
 
   /**
-   * 串行化 config.* 卡片回调（2026-07-04 修复连击卡死 bug）。
+   * 串行化 config.* 卡片回调（修复连击卡死 bug）。
    *
    * CardKit 2.0 input/button 回调经 `enqueueImmediate` 分发，不进 bridge 的
    * 串行队列；多次快速点击下拉/文本框会并发读写 `pendingConfig` 并同时调
@@ -2394,7 +2394,7 @@ export class CommandRouter {
       }
       case 'config.input': {
         // Handle input field: value.key is the field key.
-        // 2026-07-04: CardKit 2.0 input 提交（回车/完成键）触发 callback，回传 input_value。
+        // CardKit 2.0 input 提交（回车/完成键）触发 callback，回传 input_value。
         // Fall back to formValue[key]: the SDK currently reports input values
         // via action.formValue for form-wrapped inputs.
         const key = value.key as string | undefined;
@@ -2431,8 +2431,8 @@ export class CommandRouter {
           const switchResult = this.propagateConfigSave(oldDefaultAgent, updates, ctx);
 
           this.pendingConfig = null;
-          // 原地更新卡片：保存后卡片刷新为已保存状态（2026-07-04）
-          // 2026-08-03: 卡片刷新失败不吞切换通知——保存已成功，仅记录日志，
+          // 原地更新卡片：保存后卡片刷新为已保存状态。
+          // 卡片刷新失败不吞切换通知——保存已成功，仅记录日志，
           // 后续切换消息照常发送；真正写盘/传播阶段的失败才走外层 catch 报「保存失败」。
           try {
             // host 可能已变更 → 重新预取 DSH 目录（内部按 host 缓存，未变不重复拉）
@@ -2444,7 +2444,7 @@ export class CommandRouter {
             );
           }
 
-          // 2026-08-13: agent 切换时发送 Resume 卡片（替代纯文本通知），
+          // agent 切换时发送 Resume 卡片（替代纯文本通知），
           // 让用户直观看到新 agent 的会话状态和历史。
           // 发送失败（resolve false）时兜底回退 toast 即时反馈。
           if (switchResult.notice) {
@@ -2502,7 +2502,7 @@ export class CommandRouter {
     this.idleTimeoutMs = this.config.idle.watchdogMinutes * 60_000;
     this.bridge.setIdleTimeout(this.idleTimeoutMs);
 
-    // 2026-07-13: 检测是否有任何 agent 配置变更或 defaultAgent 切换
+    // 检测是否有任何 agent 配置变更或 defaultAgent 切换
     const hasDefaultAgentChange = oldDefaultAgent !== this.config.defaultAgent;
     const changedKeys = Object.keys(updates);
     const hasAgentConfigChange =
@@ -2586,7 +2586,7 @@ export class CommandRouter {
     parkDshSessionBoundary(changedKeys.includes('agents.dsh.agentPreset'), 'preset');
     parkDshSessionBoundary(changedKeys.includes('agents.dsh.host'), 'host');
 
-    // 2026-07-13: 同步 agent 配置到 agentChoices（用于切换 agent 时恢复配置）
+    // 同步 agent 配置到 agentChoices（用于切换 agent 时恢复配置）
     const currentAgent = this.config.defaultAgent;
     if (touchesAgentsSubtree(changedKeys, currentAgent)) {
       this.config = syncAgentChoices(this.config, currentAgent);
@@ -2608,7 +2608,7 @@ export class CommandRouter {
       this.bridge.syncActiveApprovalModes();
     }
 
-    // 2026-07-13: 任何 agent 配置变更或 defaultAgent 切换，都清除 runner 缓存
+    // 任何 agent 配置变更或 defaultAgent 切换，都清除 runner 缓存
     if (hasDefaultAgentChange || hasAgentConfigChange) {
       this.bridge.clearRunners();
     }
@@ -2693,8 +2693,8 @@ export class CommandRouter {
 
   cmdHelp(): CommandResult {
     // 按钮组（可直接点击触发；按钮 label 只保留子命令，不含参数）
-    // 2026-07-04: /ws 子命令 (save|use|remove) 移到右侧文本说明，按钮只显示 /ws
-    // 2026-07-04: 按钮 label 按长度升序排列（短在上，长在下），视觉更整齐
+    // /ws 子命令 (save|use|remove) 移到右侧文本说明，按钮只显示 /ws
+    // 按钮 label 按长度升序排列（短在上，长在下），视觉更整齐
     const buttonCommands = [
       { cmd: 'help', label: '/help /h', desc: '显示此帮助' },
       { cmd: 'ps', label: '/ps', desc: '查看是否有 agent 进程在跑' },
@@ -2738,11 +2738,11 @@ export class CommandRouter {
     const bodyElements: object[] = [];
 
     // 按钮组 — CardKit 2.0: column_set + column + button with behaviors
-    // 2026-07-04 对齐修复（方案 A）：两列都用 width:'weighted' + 固定 weight。
+    // 对齐修复（方案 A）：两列都用 width:'weighted' + 固定 weight。
     // 根因：每行独立 column_set + width:'auto' → 列宽随按钮/文本内容变化 →
     // 跨行不对齐（按钮列右边界参差）。改用 weighted 后，每行 column_set
     // 总宽相同（同级 body.elements），weight 比例一致，列宽跨行恒等。
-    // 2026-07-05 手机排版修复：weight 1:3 → 2:3。1:3 时按钮列只占 25%，
+    // 手机排版修复：weight 1:3 → 2:3。1:3 时按钮列只占 25%，
     // 手机窄屏（~330px 可用）下约 82px，容不下 `/config /c`（10 字符 ≈ 100px），
     // 按钮文字被截断成 "..."。改 2:3 后按钮列占 40% ≈ 132px，足够显示
     // 最长的 /config /c，文本列仍占 60% 足以放下描述。
@@ -3020,8 +3020,8 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
 
   private cmdNew(ctx: CommandContext): CommandResult {
     // 只清 sessionId 保留 cwd — 否则 /new 之后 /resume 会提示"请先 /cd
-    // 设置工作目录"，但用户的 cwd 还在。2026-06-21 复盘：用户
-    // /new → /resume 后被误导以为需要重新 /cd。
+    // 设置工作目录"，但用户的 cwd 还在，用户 /new → /resume 后会被误导
+    // 以为需要重新 /cd。
     const agentName = agentDisplayName(this.config.defaultAgent);
     this.sessionStore.clearSessionId(ctx.userId, this.config.defaultAgent, {
       clearSessionCwd: true,
@@ -3351,7 +3351,7 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
    * @param offset  分页起点（条目数）
    * @param rootDir 浏览起点：卡片「返回」按钮回到这里。省略时默认 = 本次列出的
    *                目录（`/ls <dir>` 的起点即该目录），因此「返回」不会把用户
-   *                丢回 工作目录（用户明确反馈过）。
+   *                丢回 工作目录。
    * @param q       关键词筛选：只匹配**当前层**条目名（不递归），大小写不敏感。
    *                省略/空 = 无筛选。
    */
@@ -3454,7 +3454,7 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
 
   private cmdActive(_args: string[], _ctx: CommandContext, offset = 0): CommandResult {
     // List all active runs from lark-remote memory (not from file system scan)
-    // New semantics (2026-07-20): only shows runs started by THIS lark-remote process
+    // (only shows runs started by THIS lark-remote process)
 
     const activeRuns = this.bridge.getActiveRuns();
     const activeBashRuns = this.bridge.getActiveBashRuns();
@@ -3627,7 +3627,7 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
           ctx,
         );
         this.pendingConfig = null; // 命令式写盘后清空暂存，避免不一致
-        // 2026-08-13: agent 切换时额外发送 Resume 卡片
+        // agent 切换时额外发送 Resume 卡片
         if (switchResult.notice) {
           const switchCard = this.buildConfigSwitchCard(switchResult, ctx);
           // 文本路径返回 config card，Resume card 通过 bridge 异步发送

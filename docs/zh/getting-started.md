@@ -2,20 +2,20 @@
 
 # 入门指南
 
-这份文档会让你从零开始，把 lark-remote 跑起来，并且学会基本的维护。**只要会按步骤操作、会复制粘贴命令**，就能搞定。
+这份文档带你从零开始，把 lark-remote 跑起来，并学会基本的维护。只要会按步骤操作、会复制粘贴命令，就能完成。
 
 ---
 
 ## 0. 这个项目是干嘛的？
 
-简单说：**用飞书聊天控制电脑里的 AI 写代码**。
+一句话：在飞书里聊天，控制你电脑上的 AI 写代码。
 
-Imagine：
+举个例子：
 
 - 你在飞书私聊里发一句「帮我看下 src/index.ts，加个错误处理」；
-- 你电脑上的 Claude Code（一个 AI 程序员）就开始读文件、改代码、跑测试；
+- 你电脑上的 Claude Code（一个 AI 编程助手）开始读文件、改代码、跑测试；
 - 整个过程的进度实时显示在飞书的一张卡片上；
-- 完成后卡片显示「✅ 已完成」，你打开电脑一看——代码真的改好了！
+- 完成后卡片显示「✅ 已完成」。回到电脑前，改动已经在磁盘上了。
 
 lark-remote 就是飞书和 Claude Code 之间的「传话筒」。
 
@@ -30,10 +30,10 @@ lark-remote 就是飞书和 Claude Code 之间的「传话筒」。
 | **Node.js 20+**     | 让 JavaScript 程序能在电脑上跑的环境 | 去 https://nodejs.org 下载 LTS 版，双击安装                                                   |
 | **Bun**             | 更快的 JavaScript 运行时，本项目用它 | 装好 Node 后，终端粘贴 `npm install -g bun` 回车                                              |
 | **飞书账号**        | 用来聊天                             | 手机应用商店下载「飞书」App，注册登录                                                         |
-| **Claude Code CLI** | 那个 AI 程序员                       | 终端运行 `npm install -g @anthropic-ai/claude-code`，然后输入 `claude` 按提示用浏览器登录一次 |
+| **Claude Code CLI** | 那个 AI 编程助手                     | 终端运行 `npm install -g @anthropic-ai/claude-code`，然后输入 `claude` 按提示用浏览器登录一次 |
 
 > **什么是「终端」？**
-> Mac 上叫「Terminal」（启动台搜索 Terminal），Windows 上叫「PowerShell」或「命令提示符」。就是那个黑底白字、能输入命令的窗口。
+> Mac 上叫「Terminal」（启动台搜索 Terminal），Windows 上叫「PowerShell」或「命令提示符」。就是那个能输入命令的窗口。
 
 > **怎么用终端粘贴命令？**
 > 把命令复制到剪贴板，在终端窗口里按 `Ctrl+V`（Windows）或 `Cmd+V`（Mac）回车即可。
@@ -50,7 +50,7 @@ git clone <仓库地址> lark-remote
 cd lark-remote
 ```
 
-> `<仓库地址>` 替换成项目实际的 git 地址（例如 `git@github.com:你的名字/lark-remote.git`）。问大人要，或者从 GitHub 项目页右上角绿色「Code」按钮复制。
+> `<仓库地址>` 替换成项目实际的 git 地址（例如 `git@github.com:你的名字/lark-remote.git`），从 GitHub 项目页右上角「Code」按钮复制。
 
 ---
 
@@ -63,7 +63,7 @@ bun install
 bun run build
 ```
 
-`bun install` 会读 `package.json`，把项目用到的所有外部库下载到 `node_modules/` 文件夹。第一次会下载比较多东西，耐心等 1-2 分钟。
+`bun install` 会读 `package.json`，把项目用到的外部库下载到 `node_modules/` 文件夹。第一次会下载比较多东西，耐心等一两分钟。
 
 `bun run build` 把 TypeScript 代码编译成 JavaScript，放到 `dist/` 文件夹。
 
@@ -77,11 +77,11 @@ bun run build
 bun run dev
 ```
 
-`bun run dev` 直接用 Bun 跑 TypeScript 源码，**开发时用这个最方便**。
+`bun run dev` 直接用 Bun 跑 TypeScript 源码，开发时用这个最方便。
 
 第一次跑时，终端会出现一个**二维码**。打开飞书 App → 右上角扫一扫 → 扫这个二维码 → 飞书会自动帮你建一个「自建应用」（也就是机器人），把凭据写进 `~/.lark-remote/config.yaml`。
 
-**完事之后终端会继续往下跑，最后会等在那里不动**——这是正常的，说明 lark-remote 已经在监听飞书消息了。
+**之后终端会停在那里不动**——这是正常的，说明 lark-remote 已经在监听飞书消息了。
 
 > **Windows 或窄窗口扫不出来**：Windows 控制台字体常把二维码的半块字符渲染错位，向导在
 > Windows 上改用全块字符（每模块两个 `█`）并补上 QR 规范要求的静区；窗口太窄放不下完整
@@ -116,7 +116,7 @@ bun run dev
 你好
 ```
 
-机器人会回你一张卡片，里面是 Claude 的回复。**恭喜！lark-remote 跑起来了！** 🎉
+机器人会回你一张卡片，里面是 Claude 的回复。lark-remote 跑起来了。
 
 ---
 
@@ -145,7 +145,7 @@ bun run dev
 
 ## 7. 工作流示例：远程改代码
 
-假设你在学校，想改家里的项目：
+假设你在外面，想改家里的项目：
 
 ```
 你: /cd ~/projects/my-game
@@ -160,7 +160,7 @@ bot: [卡片实时更新：📖 读文件 → ✏️ 修改 → ✅ 完成]
 bot: [卡片：🔧 运行 pytest → 显示测试结果]
 ```
 
-回家打开电脑一看，代码真的改好了，测试也跑通了。
+回家打开电脑一看，代码改好了，测试也跑通了。
 
 ---
 
@@ -185,7 +185,7 @@ lark-remote 启动后不在终端输出，日志写在文件里：
 
 `YYYY-MM-DD` 是今天的日期（如 `2026-07-20`），`<pid>` 是进程号。
 
-**用 Mac 的 Preview 或 VSCode 打开这个文件**，往下翻找 `error` 或 `warn` 字样。看不懂没关系——把这一段复制给大人或 AI 看，问「这是什么错误」。
+用文本编辑器（VSCode、记事本都行）打开这个文件，往下翻找 `error` 或 `warn` 字样。看不懂没关系——把那一段复制给 AI 或有经验的开发者，问「这是什么错误」。
 
 > 如果 `/exit` 退出了但下次启动报「已有 pid」，说明进程没干净退出。删掉 `~/.lark-remote/lark-remote.pid` 这个文件再启动即可。
 
@@ -202,7 +202,7 @@ bun run test        # 跑全部测试，必须全绿
 
 两个都过了才算改完。有一个红了就先修，再改下一步。
 
-> 测试是什么？就是项目里写好的「自动检查小程序」，确保你的改动没把已有功能弄坏。本项目有 200+ 个测试文件，跑一遍大概 1 分钟。
+> 测试是什么？就是项目里写好的「自动检查程序」，确保你的改动没把已有功能弄坏。本项目有近 300 个测试文件，跑一遍通常一两分钟。
 
 ---
 
@@ -221,10 +221,11 @@ lark-remote/
 │   └── ...
 ├── tests/              ← 测试代码
 ├── docs/               ← 文档（你现在看的就是这里）
-│   ├── getting-started.md  ← 本文
-│   ├── usage.md            ← 详细使用指南
-│   ├── architecture/       ← 设计与坑点
-│   └── guides/             ← 操作手册
+│   └── zh/             ← 中文文档
+│       ├── getting-started.md  ← 本文
+│       ├── usage.md            ← 详细使用指南
+│       ├── architecture/       ← 设计与坑点
+│       └── guides/             ← 操作手册
 ├── scripts/            ← 运维脚本
 ├── README.md           ← 项目说明
 └── package.json        ← 项目依赖与脚本
@@ -254,9 +255,7 @@ lark-remote 现在支持 6 种 AI：Claude、Codex、OpenCode、Pi、Kimi、DSH�
 ## 14. 遇到问题怎么办
 
 1. **先看日志**：`~/.lark-remote/logs/YYYY-MM-DD/lark-remote-<pid>.log`（`YYYY-MM-DD` 是当天日期，如 `2026-07-20`），找 `error`；
-2. **跑测试**：`bun run typecheck && bun test`，看哪里坏了；
+2. **跑测试**：`bun run typecheck && bun run test`，看哪里坏了；
 3. **查已知的坑**：项目已有踩坑记录，大概率踩过同样的坑；
-4. **问 AI**：把日志错误段复制给 Claude/ChatGPT，问「这是什么错误，怎么修」；
-5. **实在搞不定**：记录下复现步骤，问大人或提 issue。
-
-加油！🚀
+4. **问 AI**：把日志错误段复制给 AI，问「这是什么错误，怎么修」；
+5. **实在搞不定**：记录下复现步骤，提 issue。

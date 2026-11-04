@@ -1,7 +1,7 @@
 /**
  * 入站媒体落盘测试。
  *
- * 2026-09-15 起 `InboundMediaHandler` 只做「落盘 + 报告结果」：返回值是
+ * `InboundMediaHandler` 只做「落盘 + 报告结果」：返回值是
  * `MediaOutcome{attachments, rejected}`，时间语义与回执由装配器统一负责
  * （旧 500ms 合批提示窗口由装配器 700ms 静默期窗口取代）。
  */

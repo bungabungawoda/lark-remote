@@ -110,8 +110,8 @@ function buildRequestUserInputResponse(
     if (!q.id || value === undefined) return;
     const values = Array.isArray(value) ? value : [value];
     const cleaned = values.filter((v): v is string => typeof v === 'string' && v.length > 0);
-    // Codex user_note：补充说明编码为 "user_note: <text>" 条目（2026-08-18
-    // live 验证 deepseek-v4-flash 明确理解并遵守该格式）。
+    // Codex user_note：补充说明编码为 "user_note: <text>" 条目（deepseek-v4-flash
+    // 明确理解并遵守该格式）。
     const note = notes?.[q.question]?.trim();
     if (note) cleaned.push(`user_note: ${note}`);
     if (cleaned.length === 0) return;
@@ -321,8 +321,8 @@ export class CodexAppServerRunner extends ConnectionBasedRunner<
     } else if (pending.kind === 'permissions') {
       // 权限审批的响应没有 decision 字段（真实协议只回 granted profile +
       // scope）：decline/cancel 必须返回空授权（拒绝全部），否则会把用户已
-      // 勾选的条目当作授予返回（2026-08-12 ：勾选后点「拒绝」实
-      // 际授予了所选权限）。accept/acceptForSession 才带用户勾选的条目。
+      // 勾选的条目当作授予返回（勾选后点「拒绝」实际授予了所选权限）。
+      // accept/acceptForSession 才带用户勾选的条目。
       const denied = action === 'decline' || action === 'cancel';
       client.respond(requestId, {
         permissions: denied
@@ -490,8 +490,8 @@ export class CodexAppServerRunner extends ConnectionBasedRunner<
    *
    * App-server 把已知线程的通知全部复用同一条 stdio 连接：agent 用
    * multi-agent v2 派生子 agent 后，子线程的 `turn/started`、`item/*`、
-   * `turn/completed`、`thread/tokenUsage/updated` 会与本轮通知交错到达
-   * （2026-10-09 实测）。一个 turn 只属于一个线程，因此外来线程的通知一律
+   * `turn/completed`、`thread/tokenUsage/updated` 会与本轮通知交错到达。
+   * 一个 turn 只属于一个线程，因此外来线程的通知一律
    * 丢弃——否则子线程的 `turn/started` 会覆盖本轮 threadId，会话写回把子
    * 线程 id 当成顶层会话指针存盘（冷连接 `thread/resume` 直接报
    * "cannot resume an unloaded multi-agent v2 sub-agent"），且子线程的

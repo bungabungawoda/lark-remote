@@ -220,7 +220,7 @@ export function binaryName(token: string, platform: NodeJS.Platform = currentPla
 }
 
 /**
- * 命令行与期望二进制是否属于同一程序（review 2026-09-05 收紧 + 2026-09-20 分档）。
+ * 命令行与期望二进制是否属于同一程序。
  *
  * 1. 可执行位匹配：首 token 的 basename 相等——`/usr/local/bin/claude --verbose`
  *    匹配 claude；native 单文件 CLI（claude 的 `bin/claude.exe`）也走这条；

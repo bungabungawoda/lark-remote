@@ -349,7 +349,7 @@ describe('RunCardSession push coalescing', () => {
  * 复刻 normal 路径的产物字节，而不是近似。
  *
  * 意图（必须完整保留）：
- * 第二轮（2026-07-31）把估算从「字符数/字节数 × 转义因子 + 拍脑袋常数」改为
+ * 第二轮把估算从「字符数/字节数 × 转义因子 + 拍脑袋常数」改为
  * **影子测量**：骨架（schema/header/statusRow/summary/按钮）小对象实测，块内容经
  * 与渲染完全相同的变换（truncateUtf8 截断 + markdownDiv 的 escapeMarkdown +
  * JSON.stringify）精确测量。CJK（3 字节/字符无转义）与 ASCII 高转义（\n/" 反斜杠
@@ -368,7 +368,7 @@ describe('RunCardSession push coalescing', () => {
  * - 估算失真 → CJK 长会话每次事件多付「建完整卡 + stringify + 丢弃」（低估），
  *   或本可完整展示的卡被误降级丢早期 thinking/tool（高估）。
  *
- * 依据：第一性原理分析（2026-07-31）——「不要为 CJK 特设逻辑，让估算与
+ * 依据：第一性原理分析——「不要为 CJK 特设逻辑，让估算与
  * 测量对齐，CJK 自然正确」。
  */
 type AnyBlock = Record<string, unknown>;

@@ -8,7 +8,7 @@ import { describe, it, expect } from 'vitest';
 import { pidFileSuffix } from '../../../src/runner/common/spawning-runner.js';
 
 // ---------------------------------------------------------------------------
-// pidFileSuffix 消毒碰撞消歧（review 2026-10-07 回归锚）
+// pidFileSuffix 消毒碰撞消歧（review 回归锚）
 //
 // 修复前后缀只有「非字母数字 → _」消毒段：`/w/a+b` 与 `/w/a_b` 消毒结果相同，
 // 两个 workspace 共用一个 pid 文件——killOrphan 的身份校验只比对二进制名，

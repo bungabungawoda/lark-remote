@@ -310,7 +310,7 @@ describe('PiSessionReader', () => {
   });
 
   // =============================================================================
-  // displayTitle: skill-injection compression (regression 2026-07-13)
+  // displayTitle: skill-injection compression (regression)
   // =============================================================================
 
   it('displayTitle compresses skill injection to skill:<name> + trailing input', () => {

@@ -11,7 +11,7 @@
  *   一个长寿 powershell.exe 子进程 P/Invoke 调一次
  *   `SetThreadExecutionState(ES_CONTINUOUS | ES_SYSTEM_REQUIRED)` **（flags 必须以
  *   十进制插入脚本：十六进制写法会被 PowerShell 按 Int32 解析成负数，抛的是**非终止
- *   错误**——脚本不中断、API 静默不被调用，2026-09-22 真机踩过；详见下方常量注释）**，
+ *   错误**——脚本不中断、API 静默不被调用；详见下方常量注释）**，
  *   随后每 30s
  *   轮询父进程 pid，父进程消失即自行退出（对应 `caffeinate -w` 的自清理机制，
  *   防止 lark-remote 崩溃后留下孤儿永久阻止睡眠；最坏 30s 孤儿窗口只多挡一会儿空闲
@@ -54,7 +54,7 @@ export interface SleepBlockerOptions {
  * **必须按无符号 32 位取值**：`0x80000001` = 2147483649 超出 Int32 正数上界
  * （2147483647），而 PowerShell 的数字字面量按 Int32 解析 —— 十六进制写法一旦
  * 进了脚本就会被解析成 **-2147483647**，传给 P/Invoke 声明的 `uint` 形参时抛
- * `MethodArgumentConversionInvalidCastArgument`（2026-09-22 真机复现）。
+ * `MethodArgumentConversionInvalidCastArgument`。
  */
 const ES_FLAGS_UINT32 = (0x80000000 | 0x00000001) >>> 0;
 

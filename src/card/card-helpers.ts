@@ -48,7 +48,7 @@ export function sessionEventPanel(
 ): object {
   // reader 可以给事件一个"标题即摘要"的名字（工具调用：`🔧 bash — npm test`）；
   // 缺省用类型标签。标题连同时间戳一起收进一行显示宽度——手机上折叠面板只有
-  // 一行可用（2026-10-19 工具标题被长 URL 撑成两行那次）。
+  // 一行可用，长 URL 把标题撑成两行会断在 URL 中间。
   const label = ev.title ?? eventLabel(ev, agentKind);
   const ts = formatMonthDayClock(ev.timestamp);
   const suffix = ts ? ` (${ts})` : '';
@@ -118,7 +118,7 @@ export function parseJumpOffset(inputValue: unknown, pageSize: number): number |
  * Build the CardKit 2.0 pagination block shared by /ls, /ws, /resume, /active,
  * /order.
  *
- * 第一性原理（2026-09-10 窄屏重设计）：分页栏要同时承载「页码信息」和「翻页
+ * 第一性原理（窄屏）：分页栏要同时承载「页码信息」和「翻页
  * 控件」两类需求。旧布局把两者塞进同一行 `column_set`（文案 weighted 4 : 输入
  * weighted 2），手机窄屏下 auto 按钮先占走固有宽度，剩余宽度按 4:2 切分后文案
  * 列只有百来像素、输入框只有几十像素——文案折行、输入框窄到没法点。
@@ -298,8 +298,8 @@ export function searchBar(opts: {
  *
  * 旧口径是 `events.slice(-max)`：按**原始事件条数**截尾。工具往返（bash 调用 →
  * job 登记 → 结果）一段就能把窗口占满，于是重返会话的用户真正需要的两条信息
- * ——最后一句我说了什么、最后一句它答了什么——被挤出窗口。2026-10-19 实测：
- * 自动恢复卡 5 个面板全是 bash 调用，一条用户消息、一条 assistant 正文都没有。
+ * ——最后一句我说了什么、最后一句它答了什么——被挤出窗口：自动恢复卡 5 个
+ * 面板全是 bash 调用，一条用户消息、一条 assistant 正文都没有。
  *
  * 契约：先取最新 `max` 条，再把最后一条 `user` 与最后一条 `assistant`（正文）
  * 不在窗口内时补进来——补位时淘汰最早的**非锚点**事件。输出保持时间顺序，
@@ -392,7 +392,7 @@ export function buildSessionHistoryCard(
   // （DSH 的 projections.title / claude 的 ai-title），后者是最近一条用户输入。
   // claude 的 displayTitle 本身就取 aiTitle，两者相等 → 保持旧的「AI 标题」
   // 单段文案；DSH 两者都有（标题 + 末轮 prompt）→ 各占一段，别把用户那句话
-  // 挂在「AI 标题」下面（2026-10-21）。
+  // 挂在「AI 标题」下面。
   if (displayTitle) {
     if (aiTitle && aiTitle !== displayTitle) {
       sections.push(`🏷️ **标题**\n${preview(aiTitle)}`);

@@ -196,7 +196,7 @@ export interface RunState extends UsageSnapshot {
    * 审批是否曾过期（桥侧 timer 触发，approval_expired 事件置位）。
    * 独立于 approvals 数组持久保存：cancel 送达后 server 会回
    * approval_resolved，把对应审批条目从数组移除，但过期原因必须活到
-   * 终态渲染（2026-08-15 事故：标记被消费后卡片误报「已被用户终止」）。
+   * 终态渲染（否则标记被消费后卡片误报「已被用户终止」）。
    */
   approvalExpired?: boolean;
   /**
@@ -1128,8 +1128,7 @@ function stringifyUnknown(value: unknown): string {
   try {
     // JSON.stringify(undefined) returns the value undefined, which would
     // violate this function's string contract and crash callers that take
-    // .length on the result (2026-08-17 kimi ACP tool_call without rawInput
-    // → truncateDetail TypeError). Normalize to ''.
+    // .length on the result. Normalize to ''.
     return JSON.stringify(value) ?? '';
   } catch {
     return String(value);
@@ -1147,8 +1146,8 @@ const TRUNCATION_MARKER_RE = /^…（前 (\d+) 字符已省略）\n/;
  * 给「已经不再是最新」的 text 块补上 `MAX_TEXT_CHARS` 存储窗口。
  *
  * 为什么最新一条不截：它就是卡片上的**输出**，终态还会被 `promoteFinalAnswer`
- * 提成最终回答。提前按窗口切掉头部，渲染层再怎么回答优先也补不回来（2026-11-01
- * 输出块被截断缺陷：16074 字符的回答只进到渲染层 12000 字符，且是从中间开始的）。
+ * 提成最终回答。提前按窗口切掉头部，渲染层再怎么回答优先也补不回来
+ * （16074 字符的回答只进到渲染层 12000 字符，且是从中间开始的）。
  *
  * 为什么其余 text 块仍然截：它们只是进度信息，卡片本来就只会展示最新几步；
  * 存储层必须保持有界（`MAX_BLOCKS` × 窗口），否则长 run 的内存随历史线性增长。
@@ -1182,7 +1181,7 @@ function capStaleTextBlocks(blocks: RunBlock[]): RunBlock[] {
  * keepTail + 截断标记：被去头的存储内容以前缀如实标注（信息保真红线：禁止静默丢弃）。
  * 标记计入 maxChars 预算（存储总量仍 ≤ maxChars，保持既有长度不变量）。
  *
- * 计数口径（2026-10 修正）：只统计**真实丢弃的正文**，不含标记自身开销。
+ * 计数口径：只统计**真实丢弃的正文**，不含标记自身开销。
  * 关键点是增量流下 `value` 往往已带上一次的标记（`marker + kept`）；若直接
  * 用 `value.length - kept.length` 计费，会把上一帧的标记文本也算进「已省略」，
  * 造成每帧显示十几字符的虚高。这里先剥离旧标记，把 N 定义为**从该块起始累计

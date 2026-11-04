@@ -40,7 +40,7 @@ const config: AppConfig = AppConfigSchema.parse({
   defaultAgent: 'claude',
 });
 
-// 2026-07-05 回归测试：dedup ttl 必须远小于用户连击间隔。
+// 回归测试：dedup ttl 必须远小于用户连击间隔。
 //
 // 根因：SDK 的 cardAction dedup eventId = card:{messageId}:{operator}:{actionId}，
 // actionId = tag|name|option|JSON.stringify(value)，不含时间戳。config 卡片原地更新，

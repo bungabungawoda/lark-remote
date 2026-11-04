@@ -576,7 +576,7 @@ describe('SessionIndex throttled refresh', () => {
   });
 });
 
-// ─── cwd 判等键（review 2026-10-07 回归锚）────────────────────
+// ─── cwd 判等键（回归锚）────────────────────
 // 修复前 byCwd 倒排与 cwdSet.has 都按 JSONL 原样字符串精确键控，查询 cwd 与
 // 记录 cwd 差一个大小写/分隔符/尾斜杠（win32 常态）时 /session list 静默漏会话。
 // platform 注入使 win32 语义在任意宿主可测（seam 纪律）。

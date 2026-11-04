@@ -1643,7 +1643,7 @@ export class DshRunner implements AgentRunner {
    *
    * turn 跑在常驻共享的 `dsh web` host 里，不在本进程的子进程树上；所以
    * "杀自己的子进程"这套退出清理对它无效，桥接一退出，turn 继续无人接收地跑
-   * （2026-10-19 实测：一个孤儿 turn 在桥接死后又跑了 2h21m / 345 个 step）。
+   * （孤儿 turn 在桥接死后可能再跑数小时）。
    * 这里复用进程级退出分发器，用同步 curl 发一次 `session/cancel`。
    */
   registerExitHandlers(): void {

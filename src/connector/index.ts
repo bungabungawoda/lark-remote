@@ -342,8 +342,8 @@ function isAccessTokenRejected(err: unknown): boolean {
  * CardStreamController 经 throttle 延迟触发 —— `controller.update()` 调完
  * `throttle.note()` 就 resolve，不等真正的 patch。失败时是一条脱离 await 链的
  * detached rejection，只能冒泡到 `process.unhandledRejection`，调用方的
- * try/catch 根本挡不住。2026-09-15 00:09 的事故正是如此：卡片 patch 时
- * socket 被关（AxiosError `ERR_SOCKET_CLOSED`），整进程退出，正在跑的 run 陪葬。
+ * try/catch 根本挡不住：卡片 patch 时 socket 被关（AxiosError `ERR_SOCKET_CLOSED`），
+ * 整进程退出，正在跑的 run 陪葬。
  *
  * 这里在唯一的底层 patch 出口上兜住：瞬态错误重试最多 PATCH_MAX_RETRIES 次，
  * 全部失败才把最后一个错误抛出去（此时上层 classifyRejection 也会判为
@@ -437,13 +437,13 @@ export class FeishuConnector {
     });
 
     // 卡片 patch 的统一出口（观测 + 重试）：
-    // 1) 观测（2026-08-11 run 卡定格事故）：飞书业务码错误以 HTTP 200 + {code!=0}
+    // 1) 观测：飞书业务码错误以 HTTP 200 + {code!=0}
     //    返回时，lark SDK 正常 resolve、@larksuite/channel 的 patchCard 丢弃返回值，
     //    导致终态卡 patch 被业务层拒绝时全链路无日志无兜底。这里把业务码记 warn。
     //    **不在这里抛**：流式卡片的 patch 由 throttle 触发、脱离 await 链
     //    （`Throttle.fireSoon` 丢掉 doFire 的 promise），抛出即成 detached rejection。
     //    恢复链路只覆盖有 await 的调用方：见 `updateCard()` 读业务码后抛。
-    // 2) 重试（2026-09-15 socket-close 事故）：瞬态传输失败就地重试，最多
+    // 2) 重试：瞬态传输失败就地重试，最多
     //    PATCH_MAX_RETRIES 次，不把失败直接落到 unhandledRejection 打死进程。
     //    业务码是确定性失败，不进重试循环。
     // Guard: unit-test mocks may omit rawClient; skip probe installation in that case.
@@ -470,7 +470,7 @@ export class FeishuConnector {
 
       // 判据是「是否携带可下载资源」（`msg.resources`），不是 `msg_type` 白名单：
       // SDK 只为 image/file/audio/video/media/sticker 五类产出非空 resources，
-      // 枚举 msg_type 必然漏（2026-09-15 事故：mp4 被当文本转发给 agent）。
+      // 枚举 msg_type 必然漏（mp4 被当文本转发给 agent）。
       // 一条消息可以**同时**产出资源事件与文本事件（post 既有文字又有图），
       // 由的装配器合并成同一个 turn。
       const hasResources = msg.resources.length > 0;

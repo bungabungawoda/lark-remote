@@ -189,7 +189,7 @@ describe('OpencodeAcpRunner', () => {
       errorMonitorLogPath: join(tmpDir, 'opencode.log'),
     });
 
-    // 2026-10-30 现场：模型目录 503 窗口约 7 分钟，旧退避只覆盖 ~45s。
+    // 模型目录 503 故障窗口可达约 7 分钟，旧退避只覆盖 ~45s。
     const delays = probe.delays();
     expect(delays.length).toBeGreaterThanOrEqual(4);
     expect(delays.reduce((sum, d) => sum + d, 0)).toBeGreaterThanOrEqual(70_000);
@@ -644,8 +644,8 @@ describe('OpencodeAcpRunner', () => {
     })();
 
     // Wait until session/prompt is in flight, then plant the stream error
-    // line exactly like opencode's logger writes it (real error text from the
-    // 2026-08-24 opencode-go weekly-limit incident, provider/message
+    // line exactly like opencode's logger writes it (real error text from an
+    // opencode-go weekly-limit incident, provider/message
     // placeholders aside).
     const promptSent = await waitFor(
       () =>

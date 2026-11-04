@@ -1,5 +1,5 @@
 /**
- * 共享的 logger mock —— 测试骨架收口（2026-09-21）。
+ * 共享的 logger mock —— 测试骨架收口。
  *
  * 背景：仓库里上百个测试文件各自抄了一份一模一样的 12 行骨架：
  *   const { mockLogger } = vi.hoisted(() => ({ mockLogger: { debug: vi.fn(), ... } }));

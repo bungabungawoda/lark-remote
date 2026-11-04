@@ -226,29 +226,18 @@ case '<agent>':
 After completing the 10 steps above, run the following verifications:
 
 ```bash
-# 1. Type check
+# 1. Type check: a missing entry in AGENT_KINDS or any Record<AgentKind, ...>
+#    table (e.g. COMPACT_CAPABILITY) fails the build right here
 bun run typecheck
 
-# 2. Run tests
+# 2. Full test suite
 bun run test
-
-# 3. Verify registry registration
-node -e "
-import { AgentRegistry } from './src/runner/registry.js';
-import { SessionReaderRegistry } from './src/session/registry.js';
-import { getConfigBuilder } from './src/router/config/index.js';
-
-const agentReg = new AgentRegistry();
-const sessionReg = new SessionReaderRegistry();
-
-console.log('AgentRegistry supported agents:', agentReg.listRegistered());
-console.log('SessionReaderRegistry supported agents:', sessionReg.listRegistered());
-
-// Verify config builder
-const builder = getConfigBuilder('<agent>');
-console.log('Config builder:', builder.constructor.name);
-"
 ```
+
+If types pass, the kind list, capability tables, and registry wiring are aligned (there is
+only one source for the list; a missing registration usually fails to compile). Once tests
+are green, verify once on a real machine: send a normal message, confirm the run card renders
+and the new agent shows up on the `/config` card.
 
 ## FAQ
 
@@ -263,8 +252,9 @@ console.log('Config builder:', builder.constructor.name);
 
 ### Q: Does a new agent need to support all commands?
 
-A new agent only needs to implement the core methods of the `AgentRunner` interface (`run`/`stop`/`getStatusInfo`, etc.).
-Unimplemented commands (such as `/steer`, `/compact`, `/fork`) have already been removed at the router layer and require no attention.
+No. A new agent only needs to implement the core methods of the `AgentRunner` interface (`run`/`stop`/`getStatusInfo`, etc.);
+there is no per-command checklist to adapt. The only optional capability is compaction: whether the run card shows
+the Compact button is declared by `COMPACT_CAPABILITY` (step 9); agents without it simply don't render the button.
 
 ### Q: How can I ensure the new agent's config won't cause save failures?
 

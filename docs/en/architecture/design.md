@@ -2,7 +2,7 @@
 
 # lark-remote Design Document
 
-Bridges Feishu private chat messages to the local Claude Code CLI. When a user sends a message or `/command`, the program passes the message to a `claude` process, reads the JSONL output, and updates thinking / text / tool summaries in real time on a single Feishu card. All Feishu I/O is handled by the program; it does not modify Claude's system prompt and only supports p2p private chat, single user.
+Bridges Feishu private chat messages to local coding agent CLIs (Claude Code / Codex / opencode / pi / Kimi / DSH). When a user sends a message or `/command`, the program passes the message to the agent process, reads the event stream, and updates thinking / text / tool summaries in real time on a single Feishu card. All Feishu I/O is handled by the program; it does not modify the agent's system prompt and only supports p2p private chat, single user. This document uses Claude Code as the primary example; the other agents share the same skeleton, differing only in each runner's protocol adapter.
 
 ---
 
@@ -295,7 +295,7 @@ When claude exits abnormally, the last chunk of stdout data may lack a trailing 
 
 ### 9.5 Feishu Rate Limiting (Error Code 99991400)
 
-New message sending is approximately 5 req/s. `sendWithRetry` retries once after sleeping 200ms for retryable errors: SDK's `rate_limited` (HTTP 429, SDK has built-in backoff retry, this is just a fallback), and Feishu business codes 99991400/99991401 (frequency control) — the latter are classified as `permission_denied` by `@larksuite/channel@0.7.1`'s `classifyError`, and the SDK fail-fasts on `permission_denied`. `shouldRetrySendError` must identify them from the `cause` chain (`cause.response.data.code`) to prevent the rate-limit retry path from dying. Regular `permission_denied` (e.g., missing scope) is not retried. Run card patches are controlled by the channel SDK's throttle + FIFO UpdateQueue; disabling tool use/result display by default further reduces card update volume.
+New message sending is approximately 5 req/s. `sendWithRetry` retries once after sleeping 200ms for retryable errors: SDK's `rate_limited` (HTTP 429, SDK has built-in backoff retry, this is just a fallback), and Feishu business codes 99991400/99991401 (frequency control) — the latter are classified as `permission_denied` by `@larksuite/channel@0.7.1`'s `classifyError`, and the SDK fail-fasts on `permission_denied`. `shouldRetrySendError` must identify them from the `cause` chain (`cause.response.data.code`) to prevent the rate-limit retry path from dying. Regular `permission_denied` (e.g., missing scope) is not retried. Run card patches are controlled by the channel SDK's throttle + FIFO UpdateQueue; thinking and tool use/result are always rendered; update volume is bounded by the throttle and the lossy window.
 
 ### 9.6 Serial Message Processing
 

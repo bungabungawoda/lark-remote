@@ -160,7 +160,7 @@ describe('Bridge approval reaction retract', () => {
     // 验证行为：审批请求到达时，bridge 必须先撤回原消息上的 Typing 表情，
     // 再重新发送一次——让飞书重新触发提醒，把用户注意力拉回待审批卡片。
     // 缺失后果：审批在等待人工决策时 Typing 一直停留在旧状态，用户不感知
-    // 有审批等待（2026-08-12 用户要求：需要审批时撤回 typing 表情再重新发）。
+    // 有审批等待（需要审批时撤回 typing 表情再重新发）。
     const events: AgentEvent[] = [
       {
         type: 'approval_requested',
@@ -650,7 +650,7 @@ describe('Bridge + ClaudeRunner approval integration', () => {
       // 超时必须显式给足：本用例等的是一个真实子进程（mock claude）走完
       // spawn → system.init → 首条 user 事件 → control_request 的整轮握手。
       // 单文件跑（无并发）约 300ms，全量并行跑（8 worker）实测到 1.6s，
-      // vi.waitFor 的默认 1000ms 预算会周期性判假失败（2026-09-11 全量复现）。
+      // vi.waitFor 的默认 1000ms 预算会周期性判假失败。
       await vi.waitFor(
         () => {
           const card = connector._cards.at(-1);
@@ -806,7 +806,7 @@ describe('Bridge.forwardToClaude', () => {
   });
 
   it('claude run card (stream-json, no turn_started) shows compact button when runner has runCompact', async () => {
-    // 回归：2026-08-19 缺陷——claude 走 stream-json 不发射 turn_started，
+    // 回归：claude 走 stream-json 不发射 turn_started，
     // operationKind 恒 undefined；若以 operationKind==='turn' 作按钮门控，
     // claude 终态 run 卡永远没有 Compact 按钮（只有 resume 卡有）。能力门控
     // 改为 bridge.hasRunCompact 鸭子探测（compactSupported）后应点亮。
@@ -1320,7 +1320,7 @@ describe('Bridge.forwardToClaude', () => {
   });
 
   it('does not duplicate a final answer that fits the run card, even with many tables', async () => {
-    // 回归（2026-11-02 实机）：卡片已经渲染了正文，桥却又补发「完整回答」
+    // 回归：卡片已经渲染了正文，桥却又补发「完整回答」
     // 纯文本 —— 同一篇回答用户看到两遍。触发条件只是回答含 6 张表（> 飞书
     // 单卡 5 张上限），与卡片体积无关。
     const table = (n: number): string =>
@@ -1423,7 +1423,7 @@ describe('Bridge.forwardToClaude', () => {
 
   it('test_anchor_interrupted_result_renders_interrupted_not_error', async () => {
     // 审批超时/取消导致 turn interrupted：结果卡必须呈现「已被用户终止」，
-    // 不得归因为「运行出错 / Agent 返回错误结果」（2026-08-14 线上事故）。
+    // 不得归因为「运行出错 / Agent 返回错误结果」。
     const { bridge, sessionStore, connector } = makeBridge({
       runner: createStubRunner({
         mode: 'streaming',
@@ -3538,7 +3538,7 @@ describe('Bridge session epoch guard (2026-08-09)', () => {
   });
 
   /**
-   * 2026-10-07 事故：消息在入队时刻 commit（binding 钉住旧 session + epoch），随后
+   * 消息在入队时刻 commit（binding 钉住旧 session + epoch），随后
    * 用户点「新会话」清空并 bump epoch，消息才开跑。若 epoch 仍在执行起点捕获
    * （此时已是 bump 后的值），代际守卫漏判 → 旧 sessionId 被写回复活 reset。
    * 断言：runner 收到旧 session（binding 钉死），且 run 结束后 store 仍为空。
@@ -4054,7 +4054,7 @@ describe('Bridge handleResumeCompact（resume 卡 Compact 按钮）', () => {
     // 验证什么：终态 run 卡片上的 Compact 按钮只带 runId，点击时按 runId 反查
     // 该次 run 实际使用的 sessionId。卡片动作走串行队列，从点击到执行之间可能
     // 夹着新 run 收尾——旧实现只有「每 cwd 一条」的记录，被新 run 覆盖后旧卡片
-    // 必然回「⚠️ 该任务已结束或不属于当前会话」（2026-10-08 线上缺陷）。
+    // 必然回「⚠️ 该任务已结束或不属于当前会话」。
     // 缺失后果：跑完新任务后，之前任何一张卡的 Compact 按钮全部失效。
     const cwd = fs.realpathSync(tmpDir);
     const runCompactSpy = vi.fn(compactTurnEvents);
@@ -4109,7 +4109,7 @@ describe('Bridge handleResumeCompact（resume 卡 Compact 按钮）', () => {
     // 删掉 activeRuns[cwd] 并把卡片置 interrupted，等 run 收尾走到 finalizeRun
     // 时「槽位还归我」已为 false。记账若跟着那个所有权守卫走，记录永远不落，
     // 中断卡片的 Compact 按钮必然回「⚠️ 该任务已结束或不属于当前会话」
-    // （线上缺陷：用户 /stop 后点 Compact 只得到这句话，压缩静默失效）。
+    // （用户 /stop 后点 Compact 只得到这句话，压缩静默失效）。
     // 缺失后果：任何一次中断都会让该 run 的 Compact 按钮变成死按钮，只能改用
     // /resume 卡。
     // 变异检查：把 recordCompactableRunForTerminal 挪回 finalizeRun 的
@@ -4176,7 +4176,7 @@ describe('Bridge handleResumeCompact（resume 卡 Compact 按钮）', () => {
     // 验证什么：runId 反查必须跨 cwd 命中，并用**那次 run 自己的 cwd** 压缩。
     // run 结束后用户 /cd 到别的工作区（或排队期间被 /cd 改写）再点旧卡片时，
     // 不能拿「当前 cwd」当执行目录/查找范围。
-    // 缺失后果（2026-10-08 线上）：查到记录前先用当前 cwd 收窄 → 误报
+    // 缺失后果：查到记录前先用当前 cwd 收窄 → 误报
     // 「⚠️ 该任务已结束或不属于当前会话」，压缩静默失效；即使找到记录，用错
     // cwd 也会去错目录找 session/runner。
     const cwdA = fs.realpathSync(tmpDir);
@@ -4341,7 +4341,7 @@ describe('app-server error result session write-back', () => {
   });
 
   it('test_anchor_app_server_success_result_with_init_ends_done_not_stream_lost', async () => {
-    // 回归锚点（2026-08-13）：app-server runner 此前从不发 system.init，桥的
+    // 回归锚点：app-server runner 此前从不发 system.init，桥的
     // pre-init result guard（sawInit）与 run-state reducer（state.sessionId）
     // 两层守卫都把成功 result 当 pre-init 丢弃，终态停在 running，兜底成
     // 「输出流已结束，但未收到 result 事件」。runner 补发 synthetic init 后，

@@ -70,7 +70,7 @@ export function samePath(a: string, b: string, opts?: PathOptions): boolean {
  * cwd → 会话项目目录名（Claude/pi 的 on-disk 编码，lossy N-to-N）。
  *
  * 只可用于**定位**目录，绝不可反解回 cwd——cwd 必须从 JSONL 内容读取
- * （回归 2026-06-21 /resume & /cd 路径错乱）。
+ * （否则 /resume & /cd 路径会错乱）。
  *
  * posix：`/` → `-`（`_` 同样归一，与 Claude Code 一致）。
  * win32：`\` 与 `/` **都是**分隔符、`:` 是非法文件名字符，三者都必须归一，

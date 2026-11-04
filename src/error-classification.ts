@@ -60,8 +60,9 @@ export function classifyRejection(reason: unknown): RejectionVerdict {
   const status = err.response?.status;
   if (status !== undefined && status >= 500 && status < 600) return 'recoverable';
   // 传输层瞬态失败：连接/socket 级别，与进程状态无关。
-  // 2026-09-15 00:09 的崩溃就是这条漏了 —— AxiosError `ERR_SOCKET_CLOSED`
-  // （卡片 patch 时 socket 被关）落到 fatal → process.exit(1)，正在跑的 agent run 陪葬。
+  // 这条必须先于业务码判定：AxiosError `ERR_SOCKET_CLOSED`（卡片 patch 时
+  // socket 被关）没有 HTTP status，漏判会落到 fatal → process.exit(1)，
+  // 正在跑的 agent run 陪葬。
   if (isTransientTransportError(reason)) return 'recoverable';
   // 飞书 API 业务错误（如 230027 外部会话无权限）—— 经 SDK throttle detach 路径逃逸的
   // patch rejection。流式卡片是尽力而为的展示层，飞书侧业务拒绝不应击穿进程。

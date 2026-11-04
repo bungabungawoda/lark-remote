@@ -289,7 +289,7 @@ describe('tokenizeCommandLine', () => {
 });
 
 /**
- * 匹配强度分档（2026-09-20）。fixture 取自本机实测的**真实安装形态**（脱敏，
+ * 匹配强度分档。fixture 取自本机实测的**真实安装形态**（脱敏，
  * 家目录用 /home/user 占位），对应 identity.ts 的 IdentityMatchMode 注释：
  *   - claude → `bin/claude.exe`（Mach-O 原生单文件，ps 首 token 就是它）
  *   - codex  → `@openai/codex/bin/codex.js`（`#!/usr/bin/env node`，basename 恰好同名）

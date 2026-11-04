@@ -1,7 +1,7 @@
 /**
  * 真实飞书 API 集成测试 - config.save 切换 coding agent 发持久化消息
  *
- * 验收标准（2026-08-03 功能；2026-08-13 通知形式由纯文本改为卡片）：
+ * 验收标准（切换通知为持久化卡片）：
  * 1. /config 卡片切换 defaultAgent 后点击保存：不再返回 toast，改为经
  *    bridge.sendResult 发送一条持久化的「切换通知卡片」（CardKit 2.0；新 agent
  *    有待恢复 session 时是 Resume 卡片，否则是含通知文案的提示卡）
@@ -39,10 +39,10 @@ let testChatId: string;
  * （card → {card}，markdown → {markdown}，text → {text}；成功 true / 失败 false），
  * 其余方法 stub。
  *
- * 必须支持 card：切换通知自 2026-08-13 起是卡片（不再是纯文本）。旧实现只认
+ * 必须支持 card：切换通知是卡片（不再是纯文本）。旧实现只认
  * `{text}`，拿到卡片会发出**空文本** → 真实 API 报错 → sendResult 返回 false →
- * config.save 按设计兜底 toast → 「成功路径不得返回 toast」断言假红（2026-09-11
- * 首次跑 live 套件时暴露；离线复现见 agent-switch anchor 的载荷断言）。
+ * config.save 按设计兜底 toast → 「成功路径不得返回 toast」断言假红
+ * （离线复现见 agent-switch anchor 的载荷断言）。
  */
 function createLiveBridge(conn: FeishuConnector): Bridge {
   return createMockBridge({
@@ -170,8 +170,8 @@ describeLive('飞书 API 集成测试 - config.save 切换 coding agent 持久�
     // 成功路径不得返回 toast
     expect(response?.toast).toBeFalsy();
 
-    // 真实投递：sendResult 必须被调用一次，载荷是切换通知**卡片**（2026-08-13 起
-    // 由纯文本改为卡片），卡片文本含切换文案 + 目标 agent 显示名
+    // 真实投递：sendResult 必须被调用一次，载荷是切换通知**卡片**，卡片文本
+    // 含切换文案 + 目标 agent 显示名
     const sendResultMock = liveBridge.sendResult as ReturnType<typeof vi.fn>;
     expect(sendResultMock).toHaveBeenCalledTimes(1);
     const sent = sendResultMock.mock.calls[0][0] as { text?: string; card?: unknown };

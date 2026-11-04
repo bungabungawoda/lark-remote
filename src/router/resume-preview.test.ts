@@ -1,7 +1,7 @@
 /**
  * /resume 列表卡的「会话预览」渲染。
  *
- * 背景（2026-10-21 反馈）：DSH 的列表卡过去只有 session id 和时间——reader 把
+ * 背景：DSH 的列表卡过去只有 session id 和时间——reader 把
  * `session/list` 里现成的 `title` / `turnOutline` 丢了。修复分两层：
  * 1. reader 把预览字段（title / lastUserMessage / lastAssistantMessage）搬到行上；
  * 2. 列表卡在同一个 div 里多渲染两行，且**不再**为这些行做全量内容预取

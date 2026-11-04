@@ -232,7 +232,7 @@ const ctx = { userId: 'user1', chatId: 'chat1', messageId: 'msg1' };
 
 // Write a fake Claude session jsonl under <projDir>/<sid>.jsonl. Injects an
 // init line with the cwd so the production code can locate the file via
-// projectDirForCwd + readCwdFromJsonl (regression 2026-06-21 /active).
+// projectDirForCwd + readCwdFromJsonl (regression: /active paths).
 
 describe('CommandRouter', () => {
   it('/help returns command card', async () => {
@@ -249,7 +249,7 @@ describe('CommandRouter', () => {
     expect(columnSets.length).toBeGreaterThan(0);
   });
 
-  // 2026-07-04: /help 卡片对齐修复（方案 A：weighted columns）
+  // /help 卡片对齐修复（方案 A：weighted columns）
   // 根因：每行独立 column_set + width:'auto' → 列宽随内容变化 → 跨行不对齐
   // 修复：两列都改为 width:'weighted' + 固定 weight 比例，保证跨行对齐
   it('/help columns use weighted width with consistent weights across rows (alignment fix)', async () => {
@@ -322,7 +322,7 @@ describe('CommandRouter', () => {
     const cardStr = JSON.stringify(card.card);
     expect(cardStr).toContain('系统休眠');
     expect(cardStr).toContain('lark-remote 运行期间会阻止系统自动休眠');
-    // 文案规范（2026-09-14）：/help 全卡不得出现 bridge 自称（小写精确匹配）。
+    // 文案规范：/help 全卡不得出现 bridge 自称（小写精确匹配）。
     expect(cardStr).not.toContain('bridge');
   });
 
@@ -336,7 +336,7 @@ describe('CommandRouter', () => {
     expect(cardStr).not.toContain('advancedhelp');
   });
 
-  // 2026-07-04: /help 卡片重构
+  // /help 卡片重构
   // - 按钮组在上、文本组在下，中间 hr 分隔
   // - /reset 别名删除、/doctor 命令删除
   // - 按钮只保留子命令不含参数（/active 只显示 /active）
@@ -389,7 +389,7 @@ describe('CommandRouter', () => {
     expect(lsContent).not.toMatch(/\[A-Z/);
   });
 
-  // 2026-07-04: /help 卡片 /ws 按钮简化 + 按钮 label 长度排序
+  // /help 卡片 /ws 按钮简化 + 按钮 label 长度排序
   it('/help /ws button label is "/ws" (subcommands moved to right text); buttons sorted by label length', async () => {
     const { router, connector } = createRouter();
     await router.handle('/help', ctx);
@@ -491,7 +491,7 @@ describe('CommandRouter', () => {
       // On macOS `/tmp` is a symlink to `/private/tmp`. Claude writes the
       // symlink-resolved cwd into JSONL. If `/cd /tmp/foo` stores `/tmp/foo`
       // (not resolved), session lookups never find
-      // matching sessions. Regression: 2026-06-21 /active paths.
+      // matching sessions. Regression: /active paths.
       const real = path.join(tmpDir, 'real-target');
       fs.mkdirSync(real);
       const link = path.join(tmpDir, 'alias-link');
@@ -776,7 +776,7 @@ describe('CommandRouter', () => {
   });
 
   it('test_anchor_ls_switch_keeps_browse_root：切换 cwd 后再「返回」仍回 /ls 起点（不回切换到的目录）', async () => {
-    // 2026-09-10 用户反馈：/ls 进入子目录 → 点「切换」（改 cwd）→ 再点「返回」，
+    // /ls 进入子目录 → 点「切换」（改 cwd）→ 再点「返回」，
     // 回到了刚切换到的目录，而不是 /ls 最初的起点。根因：ls.switch 按钮 value
     // 没带 root，handleLsSwitch 重新渲染时把浏览起点重置成了新 cwd。
     const { router, sessionStore, connector } = createRouter();
@@ -847,7 +847,7 @@ describe('CommandRouter', () => {
   });
 
   it('/ls pagination: every column in column_set has tag="column" (regression: ErrCode 200621)', async () => {
-    // Root cause (2026-07-14): pagination bar pageColumns.push() omitted `tag: 'column'`
+    // Root cause: pagination bar pageColumns.push() omitted `tag: 'column'`
     // on each column object. Feishu CardKit 2.0 requires every item in columns[] to have
     // tag: 'column', otherwise returns ErrCode 200621 "no tag specified".
     const { router, sessionStore, connector } = createRouter();
@@ -2888,7 +2888,7 @@ describe('CommandRouter', () => {
     });
 
     it('stop card action replies when the run has already exited', async () => {
-      // Regression 2026-06-22: auto-resume card rendered a stop button off
+      // Regression: auto-resume card rendered a stop button off
       // stale jsonl state, but the CLI had already exited — tapping it
       // silently no-op'd. The miss path must now send a visible reply so the
       // tap is not swallowed. No activeRun is registered here (stub runner),
@@ -2946,7 +2946,7 @@ describe('CommandRouter', () => {
       // 验证行为：approval.respond 在 router 层直接调用 bridge.handleApprovalRespond
       // 并返回成功 toast（CardKit 回调即时反馈）。
       // 缺失后果：若审批响应走串行队列，会排在等待审批的 run 之后形成死锁——
-      // 线上复现为「card action: approval.respond 排队」且审批永不生效。
+      // 复现形态为「card action: approval.respond 排队」且审批永不生效。
       // 依据：用户报告 + bridge 串行队列语义（run 任务占队列头）。
       const handleApprovalRespond = vi.fn().mockResolvedValue(undefined);
       const { router } = createRouter({
@@ -3181,22 +3181,22 @@ describe('CommandRouter', () => {
     const content = JSON.stringify(card.body?.elements);
     // CardKit 2.0 uses section headers instead of tabs (tabs not supported in 2.0)
     expect(content).toContain('**🤖 Claude**');
-    // 2026-07-04: cwd 分组已删除（无默认目录概念，必须用户 /cd 指定）
+    // cwd 分组已删除（无默认目录概念，必须用户 /cd 指定）
     expect(content).not.toContain('**📂 工作区**');
-    // 2026-09-04: thinking/tool 展示不再可配置（始终开启），输出分组已删除
+    // thinking/tool 展示不再可配置（始终开启），输出分组已删除
     expect(content).not.toContain('**📤 输出**');
     expect(content).toContain('**📝 日志**');
     // Check user-friendly field labels
-    // 2026-07-05: claude.binary（执行程序）已从卡片删除 — 有了 defaultAgent，binary 是 agent 实现细节
+    // claude.binary（执行程序）已从卡片删除 — 有了 defaultAgent，binary 是 agent 实现细节
     expect(content).not.toContain('执行程序');
     expect(content).toContain('默认 Agent');
     expect(content).toContain('使用模型');
-    // 2026-07-04: 只保留保存按钮，放弃修改按钮已删除
+    // 只保留保存按钮，放弃修改按钮已删除
     expect(content).toContain('config.save');
     expect(content).not.toContain('config.cancel');
-    // 2026-07-04: ask 权限模式已删除
+    // ask 权限模式已删除
     expect(content).not.toContain('"ask"');
-    // 2026-07-04: 未保存提示 / 放弃修改按钮已删除
+    // 未保存提示 / 放弃修改按钮已删除
     expect(content).not.toContain('未保存的修改');
     expect(content).not.toContain('放弃修改');
     // Check behaviors for callback
@@ -3227,7 +3227,7 @@ describe('CommandRouter', () => {
     expect(cardStr).not.toContain('claude.binary');
   });
 
-  // Config CardKit 2.0 行为测试（2026-07-02）
+  // Config CardKit 2.0 行为测试
   // 注意：config.set/input 只改内存 pendingConfig，不写盘
   // save 才一次性写盘，cancel 清空 pendingConfig
 
@@ -3240,7 +3240,7 @@ describe('CommandRouter', () => {
       ctx,
     );
 
-    // 2026-07-04: 原地更新路径走 connector.updateCard，卡片进 _cards 而非 _sent
+    // 原地更新路径走 connector.updateCard，卡片进 _cards 而非 _sent
     expect(connector._sent.length).toBe(0);
     expect(connector._cards.length).toBeGreaterThan(0);
 
@@ -3257,7 +3257,7 @@ describe('CommandRouter', () => {
     // 现在模型选项使用 alias (opus/sonnet/haiku)，不再是 model ID
     await router.handleCardAction({ cmd: 'config.set', key: 'claude.model', option: 'haiku' }, ctx);
 
-    // 2026-07-04: 原地更新路径走 connector.updateCard，卡片进 _cards 而非 _sent
+    // 原地更新路径走 connector.updateCard，卡片进 _cards 而非 _sent
     expect(connector._sent.length).toBe(0);
     expect(connector._cards.length).toBeGreaterThan(0);
     const card = connector._cards[connector._cards.length - 1] as {
@@ -3293,11 +3293,11 @@ describe('CommandRouter', () => {
     expect(router.pendingConfig?.idle.watchdogMinutes).toBe('30');
   });
 
-  // 2026-07-04 回归测试：CardKit 2.0 input 提交（回车/完成键）回传 input_value
+  // 回归测试：CardKit 2.0 input 提交（回车/完成键）回传 input_value
   // 这是新增路径：移除每个 input 旁的 💾 按钮后，提交触发 callback 时
   // 飞书回传 action.input_value，dispatcher 转成 fullValue.inputValue 传给 router
   it('config.input reads inputValue (CardKit 2.0 input submission) into pendingConfig', async () => {
-    // 2026-07-14: claude.settings 字段已从 schema 和卡片删除，改测 claude.model
+    // claude.settings 字段已从 schema 和卡片删除，改测 claude.model
     const { router } = createRouter();
 
     await router.handleCardAction(
@@ -3310,7 +3310,7 @@ describe('CommandRouter', () => {
     expect(pendingConfig!.claude.model).toBe('haiku');
   });
 
-  // 2026-07-04 回归测试：config.* 动作串行化（修复 toggle 卡死 bug）
+  // 回归测试：config.* 动作串行化（修复 toggle 卡死 bug）
   // CardKit 2.0 回调经 enqueueImmediate 不进 bridge 串行队列；多次快速点击
   // toggle 会让两个 patch 请求乱序到达飞书。router 内部用 configActionQueue
   // Promise chain 串行化所有 config.* 动作。此测试断言：
@@ -3484,7 +3484,7 @@ describe('CommandRouter', () => {
   it('test_anchor_two_config_cards_share_one_draft_view', async () => {
     // 验证什么：草稿（pendingConfig）是全局一份，但每张 config 卡是独立视图——
     // 一张卡上的修改必须把其余已交互过的卡片一起刷新。
-    // 缺失后果（2026-10-08 发现的缺陷）：旧卡片停在旧视图，用户在旧卡上看到的
+    // 缺失后果：旧卡片停在旧视图，用户在旧卡上看到的
     // 和点「保存」实际提交的是两套内容（保存提交共享草稿，视图却没跟上）。
     const { router, connector } = createRouter();
     const cardA = { ...ctx, messageId: 'om-config-A' };
@@ -3592,8 +3592,9 @@ describe('CommandRouter', () => {
 
   // Alias tests: single-letter shortcuts
   //
-  // 每条断言锁定**该命令独有的产物标识**（卡片回调 cmd / 命令专属文案）——
-  // 别名接错只能靠"这是哪张卡"抓住。
+  // 每条断言锁定**该命令独有的产物标识**（卡片回调 cmd / 命令专属文案）。写
+  // `expect(card).toBeDefined()` 不算断言：把 `/t` 改指 cmdHelp、`/o` 改指 cmdPs，
+  // 全量测试照样绿——别名接错只能靠"这是哪张卡"抓住。
   it('/h is alias for /help', async () => {
     const { router, connector } = createRouter();
     await router.handle('/h', ctx);
@@ -3658,7 +3659,8 @@ describe('CommandRouter', () => {
 
   it('/r is alias for /resume', async () => {
     const { router, sessionStore, connector } = createRouter();
-    // 必须带 cwd：无 cwd 时 /resume 与 /ps 都回「请先 /cd 设置工作目录」。
+    // 必须带 cwd：无 cwd 时 /resume 与 /ps 都回「请先 /cd 设置工作目录」，
+    // 别名接到 /ps 上测试也发现不了（这是别名断言必须锁独有产物的盲区）。
     sessionStore.setCwd('user1', '/tmp');
     await router.handle('/r', ctx);
     const input = connector._sent[0].input as { text?: string; markdown?: string };
@@ -3933,7 +3935,7 @@ describe('/active card pagination', () => {
   });
 
   it('max page stays under Feishu element budget (11310 guard)', async () => {
-    // 2026-08-13 排查：/active 每页最多 20 行 × 4 元素 + 页信息 + 两个分组头 +
+    // /active 每页最多 20 行 × 4 元素 + 页信息 + 两个分组头 +
     // 分页栏 = 84 个 body 元素，实测远低于飞书 ErrCode 11310 阈值（纯 div ~99，
     // 2 列分栏 ~86，/active 结构实测 86 总组件通过）。此守卫防止未来每行
     // 增加元素（如状态行拆分）导致满页超限。
@@ -3944,7 +3946,7 @@ describe('/active card pagination', () => {
     const card = (connector._sent[0].input as { card?: { body?: { elements?: unknown[] } } }).card!;
     const elements = card.body?.elements ?? [];
     // Agent 头 1 + 15*4 + Bash 头 1 + 5*4 + 分页栏 2 = 84
-    // （2026-09-10 窄屏重设计：分页栏拆成「文案整行 div + 控件 column_set」两元素）
+    // （窄屏重设计：分页栏拆成「文案整行 div + 控件 column_set」两元素）
     expect(elements.length).toBe(84);
     expect(elements.length).toBeLessThanOrEqual(90);
   });
@@ -4235,7 +4237,7 @@ describe('command list consistency (direct-return / immediate / approval specs)'
   });
 
   it('known drift victims are covered (order.textInput / approval.answer family)', () => {
-    // 2026-08-12 两次事故的具体命令，防止「重构后意外收窄名单」回归。
+    // 名单覆盖两次真实事故里出现过的具体命令，防止「重构后意外收窄名单」回归。
     expect(DIRECT_RETURN_CMDS.has('order.textInput')).toBe(true);
     expect(DIRECT_RETURN_CMDS.has('approval.answerSubmit')).toBe(true);
     expect(isImmediateAction('order.textInput')).toBe(true);
@@ -4335,7 +4337,7 @@ describe('CommandRouter /clone on help card', () => {
  * 入口层（index.ts 的非即时卡片动作分支 + order.exec 文本钩子）靠它给每次
  * 入队动作发一个 1:1 的 key；飞书卡片 messageId 是展示层 id（一张卡可点 N 次，
  * 1:N），只能当回复目标，不能当队列 key —— 复用会让 queuedTasks 定位、taskIndex
- * 取消判据、queueCardMessages 卡片更新三处同时串位（2026-10-08 线上：连点
+ * 取消判据、queueCardMessages 卡片更新三处同时串位（连点
  * Compact 三次 → 三张排队卡都显示「第 1 位」、两张永久停在「等待中」，只压缩
  * 一次）。铸造点必须保证「连续两次同步调用也拿不到同一个 key」。
  */

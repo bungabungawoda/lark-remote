@@ -165,7 +165,7 @@ not valid json
     });
 
     it('displayTitle excludes injected AGENTS.md / environment_context, uses last real user input (regression 2026-07-13)', () => {
-      // Regression 2026-07-13: codex writes AGENTS.md project rules and
+      // Regression: codex writes AGENTS.md project rules and
       // <environment_context> as `role:"user"` response_items. The reader
       // used the FIRST role:user message as displayTitle/recap, so the
       // auto-resume card showed "AGENTS.md instructions" as "最近输入".
@@ -523,7 +523,7 @@ not valid json
 
   // codex CLI ≥0.153.4 把顶层 `user_message` 事件换成了
   // `event_msg` → `item_completed`（item.type === 'UserMessage'），导致
-  // displayTitle 静默变空、/resume 卡片只剩 sessionId（2026-09 事故）。
+  // displayTitle 静默变空、/resume 卡片只剩 sessionId。
   // 这些用例锁定「两套词表都要认」的契约。
   describe('item_completed channel (codex CLI ≥0.153.4 vocabulary drift)', () => {
     /** Build a new-format rollout file; `text` is the human input. */
@@ -663,7 +663,7 @@ not valid json
 
     it('test_anchor_codex_drift_probe_warns_when_injected_user_items_have_no_human_message', () => {
       // 漂移探针：一旦出现「有 role:user 注入但识别不出真人输入」，说明 codex
-      // 又换了词表，必须留 WARN（displayTitle 静默变空正是 2026-09 的事故形态）。
+      // 又换了词表，必须留 WARN（displayTitle 静默变空正是这一缺陷形态）。
       mockLogger.warn.mockClear();
       const sessionsDir = path.join(tmpDir, 'sessions', '2026', '09', '10');
       fs.mkdirSync(sessionsDir, { recursive: true });

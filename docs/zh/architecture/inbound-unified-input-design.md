@@ -120,7 +120,7 @@ interface InboundTurn {
 connector 事件（文本 / 资源 / 结构占位）
         │  归一化为 InboundEvent
         ▼
-InboundTurnAssembler               ← 新增层（§7）
+InboundTurnAssembler               ← 装配层（§7）
    ├─ 文本事件        → 清洗占位符 → texts.push()
    ├─ 资源事件        → 触发下载（异步）→ attachments.push()
    ├─ 结构占位事件    → rejected.push()
@@ -170,7 +170,7 @@ InboundTurnAssembler               ← 新增层（§7）
 
 ### 5.4 prompt 组装：文字 + 附件块（决策 3：**结构化标签**）
 
-格式（XML 自闭合标签，agent 易解析；格式定稿见任务书 §6.3）：
+格式（XML 自闭合标签，agent 易解析）：
 
 ```
 <用户文本，按原顺序、原样>
@@ -250,7 +250,7 @@ InboundTurnAssembler               ← 新增层（§7）
 
 ## 7. 模块与改动面
 
-**新增**（建议目录 `src/inbound/`）：
+**新增**（`src/inbound/`）：
 
 | 文件                            | 职责                                                  |
 | ------------------------------- | ----------------------------------------------------- |
@@ -276,7 +276,7 @@ InboundTurnAssembler               ← 新增层（§7）
 ## 8. 测试策略（按项目 TDD 纪律）
 
 1. `placeholder.test.ts`：表驱动 22 种 `message_type` 的 SDK 渲染串 → 期望"剥离后残文 + 是否占位"。
-   （可直接复用我在 `inbound-message-matrix.md` §1 的实测样本。）
+   （直接复用 `inbound-message-matrix.md` §1 的实测样本。）
 2. `turn-assembler.test.ts`（注入假时钟）：
    - 图在前 / 文在前 / 图+文+图 → 三种顺序产出**同一个 turn**（断言 prompt 相等）；
    - 静默期重置、下载未完成不提交、超时进 rejected；

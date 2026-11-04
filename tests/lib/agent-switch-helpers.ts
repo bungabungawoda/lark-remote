@@ -1,7 +1,7 @@
 /**
  * Shared helpers for agent-switch anchor tests.
  *
- * After 2026-08-13, config.save agent switch sends a Resume card instead of
+ * config.save agent switch sends a Resume card instead of
  * plain text. These helpers extract notification text from either format.
  */
 

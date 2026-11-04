@@ -101,7 +101,7 @@ describe('isImmediateAction (§9.19)', () => {
 });
 
 /**
- * SESSION_MUTATING_ACTION_CMDS 单源（2026-10-07 定序修复）。
+ * SESSION_MUTATING_ACTION_CMDS 单源（定序修复）。
  *
  * 这些卡片动作会改写 sessionStore 的 sessionId / cwd / defaultAgent，控制层
  * （index.ts）执行它们之前必须先 flush 入站装配窗口，否则 700ms 窗口内先到的

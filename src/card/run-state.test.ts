@@ -87,7 +87,7 @@ describe('RunState', () => {
 
   it('keeps the newest text block whole and caps it only after a newer one appears', () => {
     // 「最新正文 = 输出」：它在被更新的正文顶替之前不设窗口，否则最终回答在
-    // 进渲染层之前就已经缺头（2026-11-01 输出块被截断缺陷）。
+    // 进渲染层之前就已经缺头。
     const first = 'FIRST-HEAD:' + 'x'.repeat(20_000) + ':FIRST-TAIL';
     let state = createInitialRunState('run-text-window');
     state = reduceRunState(state, {
@@ -299,7 +299,7 @@ describe('RunState', () => {
   it('test_anchor_expired_approval_derives_interrupted_reason_at_finish', () => {
     // 真实协议顺序 requested → expired → resolved → result：approval_resolved
     // 会移除审批条目，但 finish 时必须从顶层持久标记推导 interruptedReason。
-    // 中断原因在终态确定，不依赖调用方记得传参（2026-08-15 事故回归）。
+    // 中断原因在终态确定，不依赖调用方记得传参。
     let state = createInitialRunState('run-expiry-reason');
     state = reduceRunState(state, {
       type: 'approval_requested',
@@ -639,7 +639,7 @@ describe('RunState', () => {
     });
   });
 
-  // 2026-08-17 kimi ACP: acp-server 的 lazy-create tool_call 可能不带
+  // kimi ACP: acp-server 的 lazy-create tool_call 可能不带
   // rawInput（events-map.ts toolCallLazyCreateToSessionUpdate）。translator
   // 归一化为 {}，但 shared 层也必须守住 stringifyUnknown 的 string 契约
   // （JSON.stringify(undefined) 返回 undefined，穿透后 truncateDetail 会崩

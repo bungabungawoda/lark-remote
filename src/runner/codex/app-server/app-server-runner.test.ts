@@ -912,7 +912,7 @@ describe('Codex App Server Runner', () => {
         // 验证行为：translator 消费 item/started 的 fileChange item（真实协议中
         // 变更信息唯一来源），并按 itemId 关联到 fileChange 审批视图。
         // 缺失后果：真实协议下 grantRoot/reason 均为 null，卡片只剩「📄 文件变更审批」
-        // 标题，用户看不到文件路径与 diff（线上已复现）。
+        // 标题，用户看不到文件路径与 diff。
         // 依据：真实 codex app-server 抓包（item/started 先于
         // item/fileChange/requestApproval 到达，item.id === 审批 itemId）。
         const translator = new CodexAppServerTranslator();
@@ -1008,7 +1008,7 @@ describe('Codex App Server Runner', () => {
         // item 后到时必须补发 approval_view_updated（同 requestId）让卡片补全
         // 真实文件变更。
         // 缺失后果：grantRoot 为 null 时卡片永远空白，用户看不到文件和变更
-        // （线上复现场景的乱序变体）。
+        // （前述场景的乱序变体）。
         // 依据：真实协议 item/started 与审批都带 itemId，顺序不保证。
         const translator = new CodexAppServerTranslator();
 

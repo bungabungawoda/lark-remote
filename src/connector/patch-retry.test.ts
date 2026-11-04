@@ -6,7 +6,7 @@ import { AppConfigSchema, type AppConfig } from '../config/index.js';
 type PatchStubFn = (...args: unknown[]) => Promise<{ code?: number; msg?: string }>;
 
 /**
- * 卡片 patch 的瞬态错误重试（2026-09-15 socket-close 事故）。
+ * 卡片 patch 的瞬态错误重试（socket-close 断连）。
  *
  * 流式卡片的 patch 由 @larksuite/channel 的 CardStreamController 经 throttle
  * 延迟触发：controller.update() 调完 throttle.note() 就 resolve，不等真正的

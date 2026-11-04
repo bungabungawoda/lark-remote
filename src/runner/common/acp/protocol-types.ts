@@ -57,7 +57,7 @@ export const RpcErrorCode = {
 // Lifecycle: initialize
 // Shape source: kimi-code/packages/acp-server/src/server.ts:180-182
 //   + ACP SDK schema (protocolVersion required, number type)
-//   + 2026-08-15 live smoke test against kimi 0.36.0
+//   + verified against kimi 0.36.0
 // =============================================================================
 
 export interface InitializeParams {
@@ -104,7 +104,7 @@ export type AcpMode = 'default' | 'plan' | 'auto' | 'yolo' | 'build';
 //   session/resume: line 293
 //   session/set_mode: line 439 (params.modeId, NOT params.mode)
 //   session/cancel: ACP spec notification (no id, no response)
-//   + 2026-08-15 live smoke test against kimi 0.36.0
+//   + verified against kimi 0.36.0
 // =============================================================================
 
 export interface SessionNewParams {
@@ -151,7 +151,7 @@ export interface SessionSetModeParams {
 // =============================================================================
 // Notifications (server → client, via session/update)
 // Shape source: kimi-code/packages/acp-server/src/events-map.ts
-//   (each constructor below) + 2026-08-15 live smoke test against kimi 0.36.0
+//   (each constructor below) + verified against kimi 0.36.0
 //
 // REAL envelope: {sessionId, update: {sessionUpdate: '<kind>', ...}}.
 // The discriminator field is `update.sessionUpdate` — there is NO nested
@@ -296,7 +296,7 @@ export interface SessionUpdateNotification {
 // Server Requests (approval — reverse RPC)
 // Shape source: kimi-code/packages/acp-server/src/approval.ts:28-29
 //   options: [{optionId, name, kind}]; optionId is opaque, echo back as-is
-//   + 2026-08-15 live smoke test: approve_once / approve_always / reject
+//   + verified against kimi 0.36.0: approve_once / approve_always / reject
 // =============================================================================
 
 export const ServerRequestMethod = {
@@ -323,7 +323,7 @@ export interface PermissionOption {
 export interface RequestPermissionParams {
   sessionId: string;
   /**
-   * Approval target. Divergence by server (2026-09-13 live probes):
+   * Approval target. Divergence by server:
    *  - kimi 0.42: {toolCallId, title: toolName, content: [truncated summary
    *    text]} — NO rawInput; the approval gate fires BEFORE tool.call.started,
    *    so the full args only exist in the pre-approval tool_call/_update

@@ -692,7 +692,7 @@ function turnEnd(turn: number): DshSessionEvent {
 }
 
 /**
- * resume 卡的"思考 / 输出 / 工具"三件套（2026-10-19 反馈回归）。
+ * resume 卡的"思考 / 输出 / 工具"三件套。
  *
  * DSH 的 assistant 块类型是 `text` / `reasoning` / `tool-call`。旧映射只认
  * `text`，而一个真实的 31-turn 会话里 reasoning 有 371 块、text 只有 12 块——
@@ -837,7 +837,7 @@ describe('DshSessionReader tool call/result pairing', () => {
 });
 
 /**
- * `user/message` 里的上下文注入必须过滤（2026-10-19 手机端回顾卡实测）。
+ * `user/message` 里的上下文注入必须过滤。
  *
  * 真实会话 30 条 user/message 中只有 8 条是用户本人说的，其余是 time-context
  * （"Time sampled while preparing…"）、agent-instructions、skill-catalog、
@@ -897,7 +897,7 @@ describe('DshSessionReader user/message sources', () => {
  *
  * DSH 的 `session/list` 响应里已经带回 `projections.values.title` 与
  * `turnOutline`（每轮的 prompt/response），reader 必须把它们搬到行级字段：
- * 否则 /resume 列表卡只有一坨 session id（2026-10-21 反馈），而按会话逐个
+ * 否则 /resume 列表卡只有一坨 session id，而按会话逐个
  * 拉 `session/page` 才能拿到同样的信息（一次列表要 15 次 curl）。
  */
 describe('DshSessionReader 会话预览字段', () => {

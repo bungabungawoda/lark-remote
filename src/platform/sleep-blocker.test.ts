@@ -225,7 +225,7 @@ describe('win32SleepBlockerScript', () => {
   // 传给 P/Invoke 声明的 `uint` 形参时抛 MethodArgumentConversionInvalidCastArgument。
   // 该死的是它属于**非终止错误**：脚本不停，后面的 while 看门循环照跑 → helper
   // 进程活着、"helper 退出"这条唯一的失效告警通道不触发 → 防休眠静默失效
-  // （2026-09-22 真机复现，日志里只有 active，Kernel-Power 照记 System Idle 睡眠）。
+  // （日志里只有 active，Kernel-Power 照记 System Idle 睡眠）。
   it('ES flags 以十进制插入：避开 PowerShell 的 Int32 字面量陷阱', () => {
     const script = win32SleepBlockerScript(1234);
     expect(script).not.toContain('0x80000001');

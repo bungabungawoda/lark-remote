@@ -207,7 +207,7 @@ describe('message.patch business-code observability', () => {
 });
 
 /**
- * 业务码拒绝必须传导回 await 的调用方（2026-08-11 run 卡定格事故的恢复链路）。
+ * 业务码拒绝必须传导回 await 的调用方（run 卡定格的恢复链路）。
  *
  * 观测只解决了「日志里有」：`patchCard` 丢弃返回值 → `updateCard()` 正常 resolve
  * → `updateCardInPlace()` 用 try/catch 划成败，不抛就算成功 → 用户收到「已保存」

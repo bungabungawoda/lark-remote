@@ -34,7 +34,7 @@ interface KimiSessionIndexEntry {
 
 // --- Kimi session state ---
 export interface KimiSessionState {
-  version?: number; // schema version: undefined = v1, 2 = v2 (2026-08-08 kimi-code renamed workDir→cwd)
+  version?: number; // schema version: undefined = v1, 2 = v2 (kimi-code renamed workDir→cwd)
   createdAt: string | number; // v1: string (ISO), v2: number (epoch ms)
   updatedAt: string | number; // v1: string (ISO), v2: number (epoch ms)
   title?: string; // v2 omits this when no custom title set
@@ -54,7 +54,7 @@ interface KimiContextAppendLoopEvent {
       type: 'think' | 'text';
       text?: string;
     };
-    // tool.call fields (verified against real ~/.kimi-code wire.jsonl, 2026-07-25)
+    // tool.call fields (verified against real ~/.kimi-code wire.jsonl)
     name?: string;
     args?: Record<string, unknown>;
     toolCallId?: string;
@@ -99,7 +99,7 @@ interface KimiTurnPromptEvent {
 /**
  * Compaction completion record in wire.jsonl (§6.3 / kimi-code wire-manifest).
  *
- * REAL shape (2026-08-16 实弹 wire.jsonl + kimi-code 源码)：
+ * REAL shape（真实 wire.jsonl + kimi-code 源码）：
  * - `context.apply_compaction`：带 `compactedCount` / `tokensBefore` /
  *   `tokensAfter`（以及 summary 等）；
  * - `full_compaction.complete`：只有 `{type, time}`。
@@ -559,8 +559,8 @@ export class KimiSessionReader implements AgentSessionReader {
 
           // §6.3: Count compaction events and track pre-compact context length.
           // 展示计数只计 context.apply_compaction：一次手动 /compact 会同时写
-          // full_compaction.complete + context.apply_compaction 两条（2026-08-16
-          // 实弹 wire.jsonl），双计会把一次压缩虚报成 2 次。full_compaction.complete
+          // full_compaction.complete + context.apply_compaction 两条，双计会把
+          // 一次压缩虚报成 2 次。full_compaction.complete
           // 仅作 runCompact 轮询的完成信号（readCompactionRecords 仍返回两种）。
           if (isCompactionComplete(entry) && entry.type === 'context.apply_compaction') {
             compactCount++;
@@ -607,7 +607,7 @@ export class KimiSessionReader implements AgentSessionReader {
             } else if (evt.type === 'tool.call' && evt.name) {
               // 复用 content-blocks 的 200 字符截断：大 args（整段文件内容
               // 写入、长 prompt）原文进事件会把 resume 卡顶到 28KB 预算之外
-              // （2026-08-08 extreme_fallback 故障的推手之一）。
+              // （extreme_fallback 故障的推手之一）。
               const inputStr = truncateToolInput(JSON.stringify(evt.args ?? {}));
               events.push({
                 type: 'tool_use',

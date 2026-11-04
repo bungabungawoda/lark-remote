@@ -7,7 +7,7 @@
  *                     and events (session lifecycle / message / compaction) as bare
  *                     JSON objects (no envelope).
  *
- * Turn semantics (verified live against pi 0.84.1, 2026-08-18):
+ * Turn semantics (verified against pi 0.84.1):
  *   - `prompt` returns an ack (`success:true`) immediately; the turn then streams
  *     events and completes with an `agent_settled` event.
  *   - `compact` runs synchronously and returns its response at completion; it also

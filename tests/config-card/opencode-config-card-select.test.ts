@@ -94,7 +94,7 @@ describe('opencode config card ANCHOR: opencode fields must use select type', ()
     }
 
     // ANCHOR: opencode 的 model/provider/mode 字段不应该有 input 元素
-    // （2026-09-17 起 opencode 纯 ACP 对齐 kimi：acp.turnIdleTimeoutMinutes
+    // （opencode 纯 ACP 对齐 kimi：acp.turnIdleTimeoutMinutes
     //  有意使用 input 文本框（数值输入），不在此白名单内——若它换回 select
     //  或其它新 opencode 字段使用 input，本断言变红，需人工确认意图）
     expect(opencodeInputs.filter((n) => !n.includes('turnIdleTimeoutMinutes'))).toHaveLength(0);

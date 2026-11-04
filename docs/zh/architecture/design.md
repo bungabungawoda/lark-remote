@@ -2,10 +2,11 @@
 
 # lark-remote 设计文档
 
-把飞书私聊消息桥接到本地 Claude Code CLI。用户发消息或 `/命令`，程序把消息
-传给 `claude` 进程，读取 JSONL 输出，把 thinking / text / tool 摘要实时更新到同一张
-飞书卡片。所有飞书
-I/O 由程序完成，不修改 Claude 的 system prompt，只支持 p2p 私聊，单用户。
+把飞书私聊消息桥接到本地 coding agent CLI（Claude Code / Codex / opencode / pi / Kimi / DSH）。
+用户发消息或 `/命令`，程序把消息传给 agent 进程，读取事件流，把 thinking / text / tool
+摘要实时更新到同一张飞书卡片。所有飞书
+I/O 由程序完成，不修改 agent 的 system prompt，只支持 p2p 私聊，单用户。
+本文以 Claude Code 为主要例子展开；其余 agent 走同一套骨架，差异在各 runner 的协议适配层。
 
 ---
 
@@ -52,7 +53,7 @@ FeishuConnector.streamCard() / updateCard()
 
 ## 3. Claude 进程调用（长驻交互模式）
 
-ClaudeRunner 从「一次一跑」（`claude -p`）升级为**长驻交互会话**：一个 workspace
+ClaudeRunner 采用**长驻交互会话**：一个 workspace
 一个长驻进程，stdout 是 stream-json 事件流，stdin 是双向 JSON 控制通道
 （`--input-format stream-json`）。每次用户消息 = 写一条 `user` 事件 + 消费事件
 直到本 turn 的 `result`；进程在 turn 之间保持存活，被 `/stop`、`/new`、`/cd`、
@@ -170,7 +171,7 @@ const sessions = new Map<string, SessionEntry>();
 | `/exit`                   | 退出 lark-remote                                                                                                             |
 | `/restart`                | 原地自重启 lark-remote：spawn detached 继任者 → 旧进程释放单例锁退出                                                         |
 | `/config get\|set`        | 查改运行时配置（卡片交互，agent-aware 字段）                                                                                 |
-| `/order save\|list\|edit` | 保存、列出或编辑常用指令（保留别名/使用统计）；>8 条分页（`order.page` 原地翻页，受飞书单卡 60 个 body 元素上限约束）        |
+| `/order save\|list\|edit` | 保存、列出或编辑常用指令（保留别名/使用统计）；>8 条分页（`order.page` 原地翻页，元素预算见 `docs/zh/cardkit-layout.md`）  |
 | `!<cmd>`                  | 执行 bash 命令并流式输出到卡片（绕过串行队列）                                                                               |
 
 ---
@@ -470,8 +471,8 @@ claude 异常退出时 stdout 最后一块数据可能无尾部 `\n`，`readline
 归类为 `permission_denied` 且 SDK 对 `permission_denied` fail-fast，必须由
 `shouldRetrySendError` 从 `cause` 链（`cause.response.data.code`）识别才不至于让
 限流重试路径死掉。普通 `permission_denied`（如缺 scope）不重试。
-run 卡片 patch 由 channel SDK 的 throttle + FIFO UpdateQueue 控制；默认关闭
-tool use/result 展示可进一步减小卡片更新量。
+run 卡片 patch 由 channel SDK 的 throttle + FIFO UpdateQueue 控制；thinking 与
+tool use/result 恒常展示，更新量靠 throttle 和有损窗口控制。
 
 ### 9.6 消息串行处理
 
@@ -501,7 +502,7 @@ resolve 到新 cwd 的竞态——先到者占 `activeRuns`，后到者 busy-dro
 `try/finally` 的 finally 中执行（review）：finalize 期 `renderRunCard`
 抛错也不得留下永久 busy 的 workspace。
 
-**第六批 P1 语义**：
+**同批落地的三处加固**：
 
 - 完成通知卡：`sendCompletionNotificationCard` 读会话内容带
   `maxEvents: 5`，发送走 `sendResult`（`enforceCardBudget` 兜底），不再直连
@@ -628,7 +629,7 @@ SIGTERM 发完立刻 SIGKILL，不等 grace——用户主动停永远不等。`
 
 ### 9.13 `/active` 与 `/resume` 的 session 状态判定
 
-**新语义**：`/active` 不再扫描文件系统，只显示本 lark-remote 进程内存中的活跃任务。
+`/active` 不扫描文件系统，只显示本 lark-remote 进程内存中的活跃任务。
 通过 `Bridge.getActiveRuns()` 获取 Agent 任务，`Bridge.getActiveBashRuns()` 获取 Bash 命令。
 只显示 `terminal` 为 `running` 或 `finalizing` 的任务，已完成（done/error/interrupted）的任务不显示。
 `/resume` 和 `/cd` / `/ws use` 自动恢复卡片使用 `readSessionContent` 读取最后一个用户输入
@@ -637,10 +638,10 @@ SIGTERM 发完立刻 SIGKILL，不等 grace——用户主动停永远不等。`
 `finalizing` 时才复用内存状态。JSONL 作为 fallback：`result` 后尚无
 `permission-mode`，或尾部出现 `system.away_summary`，都显示为完成中——但必须叠加
 mtime 新鲜度校验（`STALE_MS = 1h`，与 `isSessionActive` 同源）：一个已停止写入 1 小时以上的
-文件不可能来自仍在运行的进程。（任何已完成的普通 turn 都以
-`result` 结束且没有 `permission-mode`，mtime gating 用来排除这类陈旧文件。卡片 `stop` 按钮在
+文件不可能来自仍在运行的进程（任何已完成的普通 turn 都以
+`result` 结束且没有 `permission-mode`，mtime gating 用来排除这类陈旧文件）。卡片 `stop` 按钮在
 `interruptCurrentRun` miss 时（runId 不匹配或已退出）经 `bridge.sendResult` 回复
-"该任务已结束，无需终止"，不静默 return。
+「该任务已结束，无需终止」，不静默 return。
 
 如果 jsonl 完全找不到 user 消息（极旧/损坏），fallback 到读整个文件而不是返回空卡片，
 避免 `/resume use` 拿到 sessionId 后只显示"已设置 session_id"纯文本而不出历史卡。
@@ -702,20 +703,16 @@ watchdog 覆盖**——watchdog 在 `for await (runner.run())` 循环里，要�
 
 ### 9.16 `/active` 内存实现
 
-> ⚠️ **新语义**：以下内容已废弃旧的 jsonl 扫描方式。`/active` 现在只显示本 lark-remote 进程内存中的活跃任务。
-
-**新实现**：`/active` 不再扫描 `~/.claude/projects/` 全部子目录。
+`/active` 不扫描 `~/.claude/projects/`，数据全部来自内存：
 
 - 数据来源：`Bridge.getActiveRuns()`（Agent 任务）+ `Bridge.getActiveBashRuns()`（Bash 命令）
 - 判定逻辑：只包含 `terminal` 为 `running` 或 `finalizing` 的任务
-- 优势：
-  1. 确定性高：不受文件系统状态影响
-  2. 语义清晰：用户只看"现在有什么在跑"
-  3. 与 `/stop` 一致：都基于内存 runId
-     **`Bridge.enqueue` 防御性检查**：生产日志反复出现
-     `[lark-remote] queue task error: TypeError: task is not a function`，根因是非函数 task
-     溜进 Promise 链污染整条 workspace 队列。`enqueue` 入口加 `typeof task === 'function'`
-     守卫，非函数时 warn + 早退，不破坏后续任务推进。
+- 好处：不受文件系统状态影响；用户只看「现在有什么在跑」；与 `/stop` 一致，都基于内存 runId。
+
+**`Bridge.enqueue` 防御性检查**：非函数 task 溜进 Promise 链会污染整条 workspace
+队列（表现为 `[lark-remote] queue task error: TypeError: task is not a function`
+反复出现）。`enqueue` 入口加 `typeof task === 'function'`
+守卫，非函数时 warn + 早退，不破坏后续任务推进。
 
 ### 9.17 卡片折叠（`collapsible_panel`）
 
@@ -863,13 +860,13 @@ spawn claude 进程），而不是它由 slash command 触发还是 cardAction �
 现行实现：`isImmediateAction` 白名单（`src/router/index.ts`）按上述语义分类，控制操作
 免排队，工作操作（`order.exec`、普通消息）走串行队列。
 
-**补充（2026-08-21）**：handler 返回 `{toast}`/`{card}`（`CardActionResponse`）时
+**直返白名单**：handler 返回 `{toast}`/`{card}`（`CardActionResponse`）时
 还必须进 `src/index.ts` 的**直返白名单**——`enqueueImmediate`/`enqueueConfigAction`
 是 fire-and-forget 会吞掉返回值。已三次漏项（answer 家族 / order.textInput /
 approval.planFeedback），新增这类 handler 必须同步加入直返分支 + 扩展 wiring 守卫
 测试。审批响应（approval.*）尤其不能落串行队列（run 占用队列头会死锁）。
 
-**补充（2026-08-23）**：进直返白名单只是必要条件——回调响应必须**显式携带
+**回调响应必须显式携带 `card` 字段**：进直返白名单只是必要条件——回调响应必须**显式携带
 `card` 字段**才能让飞书替换 pre-click 卡。只返回 toast + 单独调 `updateCardInPlace`
 会被飞书"保持点击前状态"覆盖（toast 正常、卡片却卡在编辑界面/未刷新）。参考
 排队编辑卡 `handleQueueInput` 的 `return { toast, card: { type:'raw', data } }`
@@ -1013,7 +1010,7 @@ listSessions(cwd: string, opts?: { limit?: number; offset?: number }): {
 };
 ```
 
-- 必须先对**全集**按 mtime desc 建立全序再切片；任何建立全序前的提前终止都错（第一性原理）。
+- 必须先对**全集**按 mtime desc 建立全序再切片；任何建立全序前的提前终止都错。
 - 负 offset 按 0 处理（6 reader 统一 `Math.max(0, offset)`，防静默空页）。
 - `getNewestSession(cwd)` 内部 = `listSessions(cwd, { limit: 1 }).sessions[0] ?? null`。
 - codex 的 `listCodexRollouts` 返回 `{ entries, total }`，基于 `getSessionIndex`

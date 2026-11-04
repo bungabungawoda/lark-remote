@@ -43,7 +43,7 @@ describe('ls file action', () => {
         effort: 'medium',
         stopGraceMs: 5000,
       },
-      // 2026-07-05: idle 已合并到 /config 卡片，router 构造时读取此字段
+      // idle 已合并到 /config 卡片，router 构造时读取此字段
       idle: { watchdogMinutes: 15 },
       logging: { level: 'info' },
       defaultAgent: 'claude',

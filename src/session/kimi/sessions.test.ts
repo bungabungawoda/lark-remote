@@ -823,7 +823,7 @@ describe('KimiSessionReader', () => {
     // §6.3: wire.jsonl 中 full_compaction.complete / context.apply_compaction 记录
     // 需解析出 compactCount 和 compactPreContextLength（tokensBefore）。
     // 展示计数只计 context.apply_compaction：一次手动 /compact 会同时写
-    // full_compaction.complete + apply 两条（2026-08-16 实弹），双计虚报 2 次。
+    // full_compaction.complete + apply 两条，双计虚报 2 次。
     const workDir = makeWorkDir('project');
     const sessionDir = path.join(kimiDir, 'sessions', 'sess-compact');
     const agentsDir = path.join(sessionDir, 'agents', 'main');

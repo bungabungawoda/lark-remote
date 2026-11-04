@@ -1,7 +1,7 @@
 /**
  * （安全）：命令识别前置条件 —— 用户消息里的结构占位符永远不能触发命令分发。
  *
- * 事故现场（2026-09-15）：
+ * 故障现场：
  *   `![image](img_v3_…) \n test`   ← 富文本把图片渲染在前
  *   [router] handle … startsWithBang=true          ← 首字符恰好是 "!"
  *   [lark-remote] executeBash start … command="[image](img_v3_…"

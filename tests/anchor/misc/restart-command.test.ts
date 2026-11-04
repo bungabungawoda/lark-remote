@@ -121,7 +121,7 @@ describe('/restart 命令', () => {
 
     expect(spawner).toHaveBeenCalledTimes(1);
     expect(result?.text).toContain('4242');
-    // 文案规范（2026-09-14）：用户可见文案禁止自称 bridge。**必须断言完整自称**——
+    // 文案规范：用户可见文案禁止自称 bridge。**必须断言完整自称**——
     // 只断言「重启」会连「bridge 重启中」一起放过（该漏改曾真的上线）。
     expect(result?.text).toContain('lark-remote 重启中');
     expect(result?.text).not.toContain('bridge');
@@ -257,7 +257,7 @@ describe('/restart 命令', () => {
     expect(texts).toContain('/restart');
     expect(texts.some((t) => t.includes('重启 lark-remote'))).toBe(true);
     expect(behaviors.some((b) => b.cmd === 'help.restart')).toBe(true);
-    // 文案规范（2026-09-14）：/help 全卡（按钮 desc + 说明段，含「系统休眠」）
+    // 文案规范：/help 全卡（按钮 desc + 说明段，含「系统休眠」）
     // 不得出现 bridge 自称；小写精确匹配，不会误伤 `Bridge` 类名这类标识符。
     expect(JSON.stringify(card)).not.toContain('bridge');
   });

@@ -34,7 +34,7 @@ export interface AcpApprovalKinds {
   decline: string[];
 }
 
-/** kimi 观测 kind（approval.ts:28-29 + 2026-08-15 live：approve_once/approve_always/reject）。 */
+/** kimi 观测 kind（approval.ts:28-29：approve_once/approve_always/reject）。 */
 export const KIMI_APPROVAL_KINDS: AcpApprovalKinds = {
   accept: ['approve_once', 'approve_always', 'allow_once'],
   acceptForSession: ['approve_always', 'allow_always'],

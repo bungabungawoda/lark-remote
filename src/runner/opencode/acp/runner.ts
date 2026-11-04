@@ -207,8 +207,8 @@ export class OpencodeAcpRunner extends BaseAcpRunner<OpencodeAcpTranslator> {
 
     // Apply the configured model (`provider/model`) via set_config_option.
     // Without this the session runs opencode's own default model (e.g.
-    // opencode/big-pickle), which may be unusable — 2026-08-17 live smoke:
-    // default zen model left session/prompt hanging with no response.
+    // opencode/big-pickle), which may be unusable: the default zen model can
+    // leave session/prompt hanging with no response.
     // Non-fatal on failure (unknown model → server InvalidModelError).
     if (this.model && this.currentModelValue !== this.model) {
       try {
@@ -268,7 +268,7 @@ export class OpencodeAcpRunner extends BaseAcpRunner<OpencodeAcpTranslator> {
    * before failing the turn.
    *
    * 单次 attempt 自身还要等 opencode 侧超时（~10s），所以真实窗口 ≈ Σdelay +
-   * 每次的等待。2026-10-30 现场：daemon 刚重启，`/api/model` 因模型目录拉取
+   * 每次的等待。daemon 刚重启时 `/api/model` 会因模型目录拉取
    * 超时连续 503 约 7 分钟，旧退避 0.5/1.5/3s（合计 ~45s）全落在这段里，4 次
    * 重试无一成功。现在铺到 ~75s + 每次超时 ≈ 2 分钟，覆盖一次冷启动窗口，
    * 又不至于让真故障的用户干等太久。
@@ -287,7 +287,7 @@ export class OpencodeAcpRunner extends BaseAcpRunner<OpencodeAcpTranslator> {
   /**
    * 用户可见文案。这里刻意**不**建议 `opencode service restart`：卡住的是
    * opencode 的模型目录/位置服务冷启动，重启只会清掉刚热好的状态、重新回到
-   * 同一个窗口（2026-10-30 现场：照提示重启两次仍然失败，等几分钟自己好了）。
+   * 同一个窗口（照提示重启两次仍然失败，等几分钟自己好了）。
    */
   protected override enrichSessionSetupError(err: unknown): Error {
     if (!this.isRetryableSessionSetupError(err)) {

@@ -91,7 +91,7 @@ describe('ConnectionBasedRunner orphan self-disposal (2026-10-11)', () => {
   });
 
   it('markOrphaned(): run end disposes connections eagerly instead of notifyIdle', async () => {
-    // 2026-10-11 事故：bridge 缓存层（interruptCurrentRun / clearRunners 竞态）
+    // 缺陷：bridge 缓存层（interruptCurrentRun / clearRunners 竞态）
     // evict runner 时，若一个 run 刚拿走该实例，其后续创建的长驻连接会脱管——
     // 不被任何 slot 托管、进程残留到 idle TTL 才回收，期间持有 agent 侧会话
     // 写锁（codex "thread already has an active writer"）。
