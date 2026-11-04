@@ -437,7 +437,7 @@ describe('ConnectionManager replacement serialization', () => {
 });
 
 /**
- * 2026-10-24 线上事故回归（本地实例，cwd=/home/user/code/notes-app）：
+ * 回归（本地实例，cwd=/home/user/code/notes-app）：
  * codex app-server 偶发自发退出（exit 0、无 signal，非本程序发起）后，挂在旧
  * slot 上的 idle TTL 定时器泄漏；到期时回调按 cwd 找到**继任连接**并误杀其
  * 在途 turn，卡片误报 "Codex app-server connection closed"（25 分钟的 run 被

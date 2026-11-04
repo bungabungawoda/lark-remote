@@ -1087,7 +1087,7 @@ describe('OpencodeSessionReader - displayTitle', () => {
 });
 
 // ---------------------------------------------------------------------------
-// readSessionContent cwd 判等（review 2026-10-07 samePath 收口回归锚）
+// readSessionContent cwd 判等（samePath 收口回归锚）
 //
 // 修复前用裸 `data.info.directory !== realCwd`，而 listSessions 走 samePath：
 // opencode 自行记录的 directory 形态（大小写/尾分隔符）与 realpath(cwd) 不

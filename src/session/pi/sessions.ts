@@ -109,7 +109,7 @@ function extractPiText(content: unknown): string | null {
  * dominates displayTitle and squeezes out the user's actual words.
  * Replace the whole `<skill>…</skill>` block with `skill:x`, preserving any
  * trailing real text. Falls back to the original text when no skill block
- * is present (or the block is malformed/unclosed). Regression 2026-07-13.
+ * is present (or the block is malformed/unclosed).
  */
 function compressSkillInjection(text: string): string {
   return text
@@ -273,7 +273,7 @@ function piScalarScan(filePath: string): PiScanResult {
         const text = extractPiText(msg.content);
         // Compress skill-injection bodies so the "最近输入" label shows what
         // the user invoked (skill:x) + any trailing real input, not a
-        // truncated SKILL.md head. Regression 2026-07-13.
+        // truncated SKILL.md head.
         if (text) lastUserText = compressSkillInjection(text);
       }
     } else if (obj.type === 'compaction') {

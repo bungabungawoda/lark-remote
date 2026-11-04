@@ -7,7 +7,7 @@ import { buildSessionHistoryCard, pickResumeCardEvents } from '../card/card-help
  *
  * 验证什么：卡片窗口按"最后 N 条"截，但必须保住最后一条用户消息与最后一条
  * assistant 正文——工具往返不能把它俩挤出卡。
- * 缺失后果：2026-10-19 自动恢复卡 5 个面板全是 bash 调用，用户看不到自己上一句、
+ * 缺失后果：自动恢复卡 5 个面板全是 bash 调用，用户看不到自己上一句、
  * 也看不到上一轮的最终答复，只能误判成"会话看不到我"，转而点"新会话"把上下文清零。
  */
 function ev(type: string, content: string, minute: number): AgentSessionContentEvent {
@@ -109,7 +109,7 @@ describe('resume card rendering with the new window', () => {
 
   /**
    * 验证什么：会话仍有在途 turn 时，恢复卡必须显式说明"这是快照"。
-   * 缺失后果：2026-10-19 用户把一张落后于实时进度的快照读成"会话卡住了"，
+   * 缺失后果：用户把一张落后于实时进度的快照读成"会话卡住了"，
    * 因为没有调 turn 而点了"新会话"，把上下文清零。
    */
   it('warns that a still-running session only shows a snapshot', () => {
@@ -147,7 +147,7 @@ describe('resume card rendering with the new window', () => {
  *
  * DSH 的服务端投影同时给出 `title`（会话标题）与末轮 prompt（最近输入）；
  * 旧实现只有一个 `displayTitle`，出现「🏷️ **AI 标题**」下面却是用户那句
- * 最近输入的情况（2026-10-21）。两者不同时必须各占一段，相同（claude 的
+ * 最近输入的情况。两者不同时必须各占一段，相同（claude 的
  * aiTitle 就是 displayTitle 的来源）时保持旧文案「AI 标题」不变。
  */
 describe('buildSessionHistoryCard 头部标题段', () => {

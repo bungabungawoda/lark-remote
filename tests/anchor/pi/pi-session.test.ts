@@ -210,7 +210,7 @@ describe('Anchor: PiSessionReader 必须基于文件系统返回真正最新的�
 });
 
 // ---------------------------------------------------------------------------
-// PiSessionReader cwd 判等（review 2026-10-07 samePath 收口回归锚）
+// PiSessionReader cwd 判等（review samePath 收口回归锚）
 //
 // 修复前 readSessionContent / listSessionsByScan 用裸 `fileCwd !== cwd`：pi
 // 写盘的 cwd 形态（大小写/分隔符）与查询 cwd 不逐字符一致时（win32 上 NTFS

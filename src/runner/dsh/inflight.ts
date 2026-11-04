@@ -3,7 +3,7 @@
  *
  * A DSH turn runs inside the shared `dsh web` host, not in a child process. If
  * the bridge dies (SIGKILL, crash) the turn keeps running with no subscriber —
- * the 2026-10-19 incident ran 2h21m / 345 steps after its bridge exited. The
+ * one orphaned turn kept going for hours after its bridge exited. The
  * runner writes one entry when it submits a prompt and removes it once the run
  * (or a verified stop) accounts for that prompt; the next startup reconciles
  * anything left behind:

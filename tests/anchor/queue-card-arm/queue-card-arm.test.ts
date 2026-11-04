@@ -52,12 +52,12 @@ describe('QueueManager - queue card must be sent for a message enqueued after an
     // pendingOrExecutingCount；resetExecutingCount 已把计数清零且 skip-credit
     // 被 T1 的 settle 消耗，T2 接跑后计数仍为 0 → T3 入队时
     // hasWaitingTasks = (count>0 || queueLen>0) = false → 排队卡不发，
-    // 静默排队无任何用户反馈（历史生产事故：
-    // 消息C 入队无排队卡，静默排队）。
+    // 静默排队无任何用户反馈（已知故障形态：
+    // 消息入队后无排队卡，静默排队）。
     //
     // 依据：只要 cwd 队列里还有任务在排队或执行，
-    // 新入队消息必须收到排队卡；生产时序为 T2 入队(12:52:25) →
-    // stop+reset(12:52:36) → T2 接跑(12:52:37) → T3 入队(12:53:57) 无卡。
+    // 新入队消息必须收到排队卡；触发时序为 T2 入队 →
+    // stop+reset → T2 接跑 → T3 入队无卡。
     const { qm, sentCards } = makeQueueManager();
 
     // --- 步骤 1：enqueue T1（挂起不 resolve），等它开始执行 ---
@@ -154,10 +154,10 @@ describe('QueueManager - queue card for a meta task enqueued while an interrupte
     // （queue-manager.ts begin 路径），无 taskMeta 任务接跑后
     // pendingOrExecutingCount 保持 0。T3 入队时 hasWaitingTasks = (count>0 ||
     // queueLen>0) = false → 不发排队卡，T3 静默排队、无卡片可编辑/撤销/立即执行
-    // ——与历史生产事故（消息C 入队无卡）相同的用户可见
+    // ——与已知故障「消息入队却无卡」相同的用户可见
     // 失败：实际有任务在执行，新消息却拿不到排队反馈。
     //
-    // 依据：编排者裁决（2026-08-01，round 2 分歧裁决）——按字面是
+    // 依据：编排者裁决（round 2 分歧裁决）——按字面是
     // 通用的（"有任务在排队或执行"，未按 taskMeta 区分）；EnqueueOptions.taskMeta
     // 是可选字段，无 meta 是合法 API 形态；队列卡片服务于用户消息的可见性，
     // 与占用队列的任务是否带 meta 无关。当前无生产无-meta 调用点
@@ -1004,7 +1004,7 @@ describe('QueueManager - 排队卡按 lane 占用者渲染（anchor）', () => {
     // 验证什么行为：Compact 占着 lane 时，排在它后面的消息收到的卡片必须
     // 指出"正在执行的是 Compact"，并且不再渲染「位置: 第 1 位 / 前面还有: 0
     // 条消息」——那段文案与"排队中"字面矛盾，用户据此得出"前面什么都没有，
-    // 为什么排队"的疑问（2026-10-09 线上实例）。
+    // 为什么排队"的疑问。
     //
     // 缺失会导致什么问题：卡片只能回答"要等"，不能回答"等谁"，用户无法把等待
     // 归因到自己去点的那次 Compact；同时「⚡ 立即执行」保持可点，一点就会走
@@ -1076,7 +1076,7 @@ describe('QueueManager - 排队卡按 lane 占用者渲染（anchor）', () => {
   it('test_anchor_queue_card_keeps_immediate_enabled_for_message_occupant', async () => {
     // 验证什么行为：占用者是普通消息时「⚡ 立即执行」仍可点，但不渲染
     // 「正在执行: 💬 消息」与「💡 消息将按顺序执行…」——这两行对消息占用者
-    // 没有信息量（用户刚发的就是消息），只复述排队本身（2026-10-11）。
+    // 没有信息量（用户刚发的就是消息），只复述排队本身。
     const { qm, sentCards } = makeQueueManager();
     const { release } = await occupyLane(qm, { preview: '正在跑的消息', messageId: 'om-run-1' });
 

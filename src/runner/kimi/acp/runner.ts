@@ -420,8 +420,7 @@ export class KimiAcpRunner extends BaseAcpRunner<KimiAcpTranslator> {
    * before producing the result. There is NO total timeout — silence beyond
    * compactIdleTimeoutMs yields 'unknown' (never a fake success). Keeps the
    * connection alive while the background compaction finishes — otherwise
-   * dispose/exit kills it and the record never lands (打回复现 /
-   * 2026-08-31 事故).
+   * dispose/exit kills it and the record never lands.
    */
   protected override compactBaseline(sessionId: string, opts: SpawnOptions): number {
     const compactionReader = (this.sessionReader as CompactionRecordReader).readCompactionRecords;

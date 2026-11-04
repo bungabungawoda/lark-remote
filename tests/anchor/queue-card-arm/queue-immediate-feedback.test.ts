@@ -1289,12 +1289,12 @@ describe('queue executing count must not be reset onto the next task that began 
     // resetExecutingCount(cwd)，会把正在运行的 T 的计数清零，并把 interrupted
     // 标记授给 T 的 slot —— T settle 时跳过 decrement，计数在整个运行期间为 0，
     // 后续入队的新消息 hasWaitingTasks=false → 不弹「⏳ 消息排队中」卡
-    // （原事故的另一个交错：只覆盖了"reset 发生在 T2 接跑之前"，
+    // （既有锚点只覆盖了"reset 发生在 T2 接跑之前"的交错，
     // 这里 reset 发生在 T 接跑之后）。
     //
     // 期望：此时 T 仍在运行，新入队消息 M 必须收到 1 张排队卡（sentCards 增加）。
     // 缺失会导致什么问题：M 静默排队无任何用户反馈——用户看不到排队卡、无法
-    // 撤销/立即执行/编辑，消息在后台空转（同款静默排队生产事故）。
+    // 撤销/立即执行/编辑，消息在后台空转（即已知的静默排队故障形态）。
     //
     // 依据：enqueue 的 hasWaitingTasks 语义（count>0 || queueLen>0 就必须发卡）
     // 是"只要队列里还有任务在排队或执行"；Bridge.interruptCurrentRun 的

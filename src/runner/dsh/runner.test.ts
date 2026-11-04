@@ -328,7 +328,7 @@ describe('DshTranslator', () => {
   it('carries the durable assistant text on the result as finalAnswerText', () => {
     // live chunk 是逐 delta 拼接、会被状态层 12000 字符窗口截断；durable
     // assistant/message 一次到齐全文。收 turn 时必须把它挂到 result 上，否则
-    // 长回答的头部在卡片里永久丢失（2026-11-01 缺陷）。
+    // 长回答的头部在卡片里永久丢失。
     const full = 'ANSWER-HEAD:' + 'x'.repeat(20_000) + ':ANSWER-TAIL';
     const t = new DshTranslator();
     const message: DshSessionEvent = {
@@ -866,7 +866,7 @@ describe('DshClient / DshRunner integration', () => {
   /**
    * 验证什么：桥接进程退出时，dsh 的在途 turn 必须被 `session/cancel` 掉。
    * turn 跑在常驻共享 host 里，退出清理如果只杀本地子进程，turn 会继续无人
-   * 接收地跑（2026-10-19：一个孤儿 turn 在桥接死后又跑了 2h21m / 345 个 step）。
+   * 接收地跑（实测过一个孤儿 turn 在桥接死后又跑了 2h21m / 345 个 step）。
    * 缺失后果：token 继续烧、工作区被静默改写、恢复卡永远落后。
    */
   it('cancels the in-flight turn on process exit so no orphan turn is left', async () => {

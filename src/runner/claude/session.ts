@@ -170,7 +170,7 @@ export class ClaudeSession extends SpawningRunner {
       // 或 --resume 目标会话）。比较进程当前 session（init 报告值）而非 spawn
       // 请求值：bridge 会把 init 的 session_id 写回 SessionStore，第二条消息
       // 带着它来；若拿 spawn 请求值（''）比较，每条消息都会误判切换、杀进程
-      // 重启，长驻设计失效（2026-08-16）。
+      // 重启，长驻设计失效。
       if (this.isRunning && this.sessionId !== (opts.sessionId ?? '')) {
         getLogger().info(
           `[${this.logTag}] session mismatch: process=${this.sessionId || '(fresh)'} ` +
@@ -195,7 +195,7 @@ export class ClaudeSession extends SpawningRunner {
         // review：stop()/进程死亡与写 stdin 竞态（EPIPE/ENOTCONN）。用户
         // stop 已置 stoppedByUser（或进程已死/流已结束）时，写入失败不抛给
         // 调用方，交由 consumeTurn 按 interrupted/error 产出终态——否则
-        // stop 在途的 run 会以裸 EPIPE 崩溃（2026-08-16 复现的 flaky）。
+        // stop 在途的 run 会以裸 EPIPE 崩溃（flaky）。
         if (this.stoppedByUser || !this.isRunning || this.streamEnded) {
           getLogger().warn(
             `[${this.logTag}] user message write failed, process stopping: ${
@@ -461,7 +461,7 @@ export class ClaudeSession extends SpawningRunner {
    * 消费事件队列直到本 turn 的 result 事件（非 compact/compaction）。
    * 消费者提前关闭生成器（bridge 循环体抛错）→ 杀进程防孤儿（语义）。
    *
-   * result = turn 终态（2026-08-16 真实 claude 实测：长驻模式下 result 之后
+   * result = turn 终态（长驻模式下 result 之后
    * 不再有 stdout 事件，后台任务完成是静默的；旧 -p 流程「等进程退出再收尾」
    * 的 post-result drain 在长驻模式下无对应物）。
    */

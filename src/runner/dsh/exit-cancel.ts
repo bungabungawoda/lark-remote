@@ -5,8 +5,8 @@
  * `dsh web` host (`DshDaemon`). So the usual "kill my spawned child" exit
  * cleanup does nothing for it, and a bridge that exits mid-turn leaves the
  * turn running with no subscriber — an orphan turn that keeps consuming tokens
- * and mutating the workspace invisibly (2026-10-19: one ran 2h21m / 345 steps
- * after its bridge died).
+ * and mutating the workspace invisibly, potentially for hours after the bridge
+ * died.
  *
  * `process.on('exit')` cannot await, so this path uses the same synchronous
  * curl transport the session reader already uses: bounded by `timeoutMs` and

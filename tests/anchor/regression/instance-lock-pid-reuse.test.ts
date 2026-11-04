@@ -7,7 +7,7 @@
  * 修复：锁文件记 `{pid}\n{进程名}`，校验时 pid 活着但身份不匹配 → 判陈旧锁，
  * 允许覆盖。
  *
- * 迁移说明（2026-09-20）：身份判定从「comm 子串比」换成 `platform/identity`
+ * 迁移说明：身份判定从「comm 子串比」换成 `platform/identity`
  * 的三态裁决（与 killOrphan 同一判定源），判定函数由构造参数注入。语义与
  * 目标不变：match → 拒绝，mismatch → 接管。
  *

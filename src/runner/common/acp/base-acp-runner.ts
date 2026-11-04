@@ -6,7 +6,7 @@
  * prompt orchestration, compact orchestration, approval response dispatch,
  * cancel/clear/release plumbing and the pendingApprovals registry were
  * line-for-line duplicated with only constants/field names differing
- * (2026-09 round-2 simplification). This base absorbs them; what stays in
+ * (round-2 simplification). This base absorbs them; what stays in
  * subclasses:
  *   - applyTurnSettings: mode/model下发 semantics differ (kimi unconditional,
  *     opencode conditional on cached values)
@@ -154,7 +154,7 @@ export abstract class BaseAcpRunner<
    * 自身半死：opencode v2 的 location 在每轮拉起的 `opencode acp` 子进程里 boot，
    * boot 期间后台服务不可用会让它长期停在未激活，后续轮次复用同一连接只会重复
    * 失败——用户重启 opencode service 也治不好，因为连接缓存在本进程里
-   * （2026-10-30 现场：4 次重试全失败，重启服务与 lark-remote 都无效）。丢掉连接
+   * （4 次重试全失败，重启服务与 lark-remote 都无效）。丢掉连接
    * 后下一轮重新 spawn，拿到的是新进程的新状态。
    *
    * 只对声明为可重试的错误生效：kimi 等沿用默认 `isRetryableSessionSetupError`

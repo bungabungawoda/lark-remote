@@ -1,14 +1,14 @@
 /**
  * 飞书 API 集成测试 - /ws 卡片 body.elements 上限（ErrCode 11310）
  *
- * 背景（2026-08-13 线上故障）：
+ * 背景（已知故障）：
  * /ws 卡片按 entries.length 全量渲染，每个 workspace 占 3 个 body 元素
  * （div + column_set + hr，末行 hr 被 pop），加上头部 2 个元素。20 个
  * workspace = 61 个元素，超过飞书单卡 body.elements 60 个上限，发送报
  * ErrCode 11310 "element exceeds the limit"。
  *
  * 验收标准：
- * 1. 20 个 workspace 的原始卡片（无分页）→ 飞书返回 11310（复现线上故障）
+ * 1. 20 个 workspace 的原始卡片（无分页）→ 飞书返回 11310（复现该故障）
  * 2. 15 条/页 + 分页栏（修复后结构，20 条共 2 页）→ 两页均发送成功
  *
  * 运行方式（真实飞书 API，默认不跑）：

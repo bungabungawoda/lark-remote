@@ -143,7 +143,7 @@ describe('Config card agent-aware fields (design: 2026-07-11)', () => {
       const result = router.buildConfigCard() as { card: object };
       const fieldKeys = extractConfigFieldKeys(result.card);
 
-      // FIXED 2026-07-12: now includes agents.codex.model (was codex.model before)
+      // FIXED: now includes agents.codex.model (was codex.model before)
       expect(fieldKeys).toContain('agents.codex.model');
     });
 
@@ -208,7 +208,7 @@ describe('Config card agent-aware fields (design: 2026-07-11)', () => {
       expect(fieldKeys).toContain('defaultAgent');
       expect(fieldKeys).toContain('claude.model');
       expect(fieldKeys).toContain('claude.effort');
-      // 2026-08-16: claude 交互式审批落地后，permissionMode 在卡片上可选
+      // claude 交互式审批落地后，permissionMode 在卡片上可选
       expect(fieldKeys).toContain('claude.permissionMode');
     });
 
@@ -249,7 +249,7 @@ describe('Config card agent-aware fields (design: 2026-07-11)', () => {
   });
 
   // ==========================================================================
-  // CRITICAL: pendingConfig agent switch tests (2026-07-11)
+  // CRITICAL: pendingConfig agent switch tests
   //
   // These test the core bug: when user selects a different agent in the
   // config card dropdown, buildConfigCard() must reflect the NEW agent's
@@ -313,15 +313,15 @@ describe('Config card agent-aware fields (design: 2026-07-11)', () => {
       const result = router.buildConfigCard() as { card: object };
       const fieldKeys = extractConfigFieldKeys(result.card);
 
-      // FIXED 2026-07-12: uses agents.codex.xxx keys
+      // FIXED: uses agents.codex.xxx keys
       expect(fieldKeys).toContain('agents.codex.model');
-      // 2026-08-14: codex 恒为 app-server 模式，审批/沙箱字段显示
+      // codex 恒为 app-server 模式，审批/沙箱字段显示
       expect(fieldKeys).toContain('agents.codex.approvalPolicy');
       expect(fieldKeys).toContain('agents.codex.sandbox');
 
       expect(fieldKeys).not.toContain('claude.model');
       expect(fieldKeys).not.toContain('claude.settings');
-      // 2026-08-16: 切到 codex 后不再显示 claude 字段（含 permissionMode）
+      // 切到 codex 后不再显示 claude 字段（含 permissionMode）
       expect(fieldKeys).not.toContain('claude.effort');
       expect(fieldKeys).not.toContain('claude.permissionMode');
     });
@@ -335,7 +335,7 @@ describe('Config card agent-aware fields (design: 2026-07-11)', () => {
       const result = router.buildConfigCard() as { card: object };
       const fieldKeys = extractConfigFieldKeys(result.card);
 
-      // FIXED 2026-07-13: now uses agents.opencode.xxx keys (was opencode.xxx before)
+      // FIXED: now uses agents.opencode.xxx keys (was opencode.xxx before)
       expect(fieldKeys).toContain('agents.opencode.modelID');
       expect(fieldKeys).toContain('agents.opencode.providerID');
 
@@ -366,9 +366,9 @@ describe('Config card agent-aware fields (design: 2026-07-11)', () => {
       result = router.buildConfigCard() as { card: object };
       fieldKeys = extractConfigFieldKeys(result.card);
 
-      // Now codex fields, not pi fields (FIXED 2026-07-12: uses agents.codex.xxx keys)
+      // Now codex fields, not pi fields (FIXED: uses agents.codex.xxx keys)
       expect(fieldKeys).toContain('agents.codex.model');
-      // 2026-08-14: codex 恒为 app-server 模式，审批/沙箱字段显示
+      // codex 恒为 app-server 模式，审批/沙箱字段显示
       expect(fieldKeys).toContain('agents.codex.approvalPolicy');
       expect(fieldKeys).toContain('agents.codex.sandbox');
       expect(fieldKeys).not.toContain('agents.pi.model');
@@ -384,11 +384,11 @@ describe('Config card agent-aware fields (design: 2026-07-11)', () => {
         sessionReaderRegistry: createMockSessionReaderRegistry({ agentKinds: ['claude'] }),
       }).router;
 
-      // Before switch: codex fields should be visible (FIXED 2026-07-12: uses agents.codex.xxx keys)
+      // Before switch: codex fields should be visible (FIXED: uses agents.codex.xxx keys)
       let result = router.buildConfigCard() as { card: object };
       let fieldKeys = extractConfigFieldKeys(result.card);
       expect(fieldKeys).toContain('agents.codex.model');
-      // 2026-08-14: codex 恒为 app-server 模式，审批/沙箱字段显示
+      // codex 恒为 app-server 模式，审批/沙箱字段显示
       expect(fieldKeys).toContain('agents.codex.approvalPolicy');
       expect(fieldKeys).toContain('agents.codex.sandbox');
 
@@ -437,7 +437,7 @@ describe('Config card agent-aware fields (design: 2026-07-11)', () => {
       const fieldKeys = extractConfigFieldKeys(result.card);
 
       expect(fieldKeys).toContain('claude.model');
-      // 2026-08-16: claude.permissionMode 由卡片 select 暴露
+      // claude.permissionMode 由卡片 select 暴露
       expect(fieldKeys).toContain('claude.permissionMode');
       expect(extractAgentTabLabel(result.card)).toContain('Claude');
     });

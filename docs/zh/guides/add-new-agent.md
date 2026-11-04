@@ -13,7 +13,7 @@ lark-remote 采用多 agent 架构设计，通过以下三个 registry 实现可
 2. **SessionReaderRegistry** (`src/session/registry.ts`) - session reader 注册中心
 3. **ConfigBuilderRegistry** (`src/router/config/index.ts`) - 配置卡片构建器注册中心
 
-添加新 agent 只需在对应 registry 注册，无需修改 router 或 lark-remote 的逻辑代码。
+添加新 agent 只需在对应 registry 注册，无需修改 router 与 bridge 的分发逻辑。
 
 ## 完整 10 步接入流程
 
@@ -232,32 +232,19 @@ case '<agent>':
 
 ## 验证方法
 
-完成上述 10 步后，运行以下验证：
+完成上述 10 步后：
 
 ```bash
-# 1. 类型检查
+# 1. 类型检查：AGENT_KINDS 与各 Record<AgentKind, …> 表（如 COMPACT_CAPABILITY）
+#    缺新 agent 这一项会在这里直接编译失败
 bun run typecheck
 
-# 2. 运行测试
+# 2. 全量测试
 bun run test
-
-# 3. 验证 registry 注册
-node -e "
-import { AgentRegistry } from './src/runner/registry.js';
-import { SessionReaderRegistry } from './src/session/registry.js';
-import { getConfigBuilder } from './src/router/config/index.js';
-
-const agentReg = new AgentRegistry();
-const sessionReg = new SessionReaderRegistry();
-
-console.log('AgentRegistry 支持的 agent:', agentReg.listRegistered());
-console.log('SessionReaderRegistry 支持的 agent:', sessionReg.listRegistered());
-
-// 验证 config builder
-const builder = getConfigBuilder('<agent>');
-console.log('Config builder:', builder.constructor.name);
-"
 ```
+
+类型通过说明名单、能力表、registry 注册三处已对齐（名单只此一份，漏注册通常编译不过）；
+测试全绿后再真机验证一次：发普通消息，确认 run 卡片正常渲染，`/config` 卡片出现新 agent。
 
 ## 常见问题
 
@@ -272,8 +259,9 @@ console.log('Config builder:', builder.constructor.name);
 
 ### Q: 新 agent 需要支持所有命令吗？
 
-新 agent 只需实现 `AgentRunner` 接口的核心方法（`run`/`stop`/`getStatusInfo` 等）。
-未实现的命令（如 `/steer` `/compact` `/fork`）已在 router 层移除，无需关心。
+不需要。新 agent 只需实现 `AgentRunner` 接口的核心方法（`run`/`stop`/`getStatusInfo` 等），
+没有需要逐个适配的命令清单。唯一的可选能力是压缩：run 卡片上的 Compact 按钮
+由 `COMPACT_CAPABILITY`（步骤 9）声明决定，未声明能力的 agent 不渲染该按钮。
 
 ### Q: 如何确保新 agent 的配置不会导致保存失败？
 

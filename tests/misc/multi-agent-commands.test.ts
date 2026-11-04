@@ -65,7 +65,7 @@ describe('multi-agent legacy issues — /resume', () => {
 
 describe('multi-agent legacy issues — /active', () => {
   it('test_anchor_active_empty_list_uses_agent_display_name_not_hardcoded_claude', async () => {
-    // New semantics (2026-07-20): /active shows memory-based active runs from THIS bridge process.
+    // New semantics: /active shows memory-based active runs from THIS bridge process.
     // Empty message changed from "当前没有正在进行中的 {agent} session" to "当前没有正在进行中的任务"
     // This is simpler and doesn't need agent-specific messaging since we're showing in-memory runs only.
     const { router, connector } = createRouter({ defaultAgent: 'codex' });

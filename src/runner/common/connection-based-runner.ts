@@ -214,7 +214,7 @@ export abstract class ConnectionBasedRunner<TClient, TEvent = AgentEvent> implem
         // 已被缓存层除名（evictRunnerSlot → markOrphaned）：本次 run 创建的
         // 连接挂在无人托管的实例上。主动收掉而不是挂 idle timer——否则 agent
         // server 进程残留至 idle TTL，期间持有 agent 侧会话写锁（codex
-        // "thread already has an active writer"，2026-10-11 线上实测）。
+        // "thread already has an active writer"）。
         // dispose() 内部自带 try/catch，这里 fire-and-forget 不阻塞事件流收尾。
         void this.disposeConnections().catch((err: Error) => {
           getLogger().warn(`[${this.logTag}] orphan dispose error: ${err.message}`);
@@ -274,7 +274,7 @@ export abstract class ConnectionBasedRunner<TClient, TEvent = AgentEvent> implem
   /**
    * Mark this runner as evicted from the bridge's runner cache while a run may
    * still be holding/creating connections on it (queue-advance race during
-   * interruptCurrentRun's await window, 2026-10-11). The active run's finally
+   * interruptCurrentRun's await window). The active run's finally
    * disposes connections eagerly instead of arming the idle TTL timer —
    * otherwise the agent server process lingers for up to 30 minutes holding
    * its session write lock (codex: "thread already has an active writer").

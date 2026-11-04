@@ -3,7 +3,7 @@
  * 请求之和，不是末次请求。
  *
  * 真实链路：OpencodeSessionReader（v2 export）→ registry → Bridge → 卡片渲染。
- * 回归背景（2026-10-30）：一条 25 次请求的 run，卡片显示 input=543 / output=1,250
+ * 回归背景：一条 25 次请求的 run，卡片显示 input=543 / output=1,250
  * （= 末次请求），真实消耗是 input=20,040 / output=10,358；相邻两张卡的"累计"
  * 差值反而与真实消耗一致，用户据此发现卡片统计不对。
  */

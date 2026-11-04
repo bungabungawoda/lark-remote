@@ -181,7 +181,7 @@ export class ApprovalActions {
   }
 
   /**
-   * Codex AskUserQuestion 补充说明（user_note，2026-08-18 live 验证模型理解
+   * Codex AskUserQuestion 补充说明（user_note，模型理解
    * "user_note: <text>" 条目）：记录到 coordinator，随答案一起提交。
    * 路由到 ApprovalCoordinator.answerNote。
    */

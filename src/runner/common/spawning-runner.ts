@@ -37,7 +37,7 @@ class SpawnChildError extends Error {}
 const SPAWN_ERROR_TIMEOUT_MS = 5000;
 
 /**
- * 进程级退出监听单例分发（修复，2026-08-02）。
+ * 进程级退出监听单例分发。
  *
  * 背景：各 agent runner 的 registerExitHandlers 曾是同构复制，每个实例
  * process.on('exit'|'SIGINT'|'SIGTERM') 注册 3 个永不移除的闭包（捕获整个
@@ -444,7 +444,7 @@ export abstract class SpawningRunner {
       // matchMode 'agent-invocation'（不是默认的 'executable'）：agent CLI 普遍是
       // `#!/usr/bin/env node` 脚本，ps 看到的是 `node <安装路径>/…/cli.js`，名字只在
       // 路径段里（pi → @earendil-works/pi-coding-agent/…）。用默认档会恒判 mismatch
-      // → 这些 agent 的孤儿永远回收不掉（2026-09-20 实测安装形态）。
+      // → 这些 agent 的孤儿永远回收不掉。
       const verdict = verifyPidIdentityVerdictSync(pid, {
         expectedBinary,
         matchMode: 'agent-invocation',

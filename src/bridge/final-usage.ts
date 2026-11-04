@@ -1,5 +1,5 @@
 /**
- * Final usage resolution extracted from Bridge (2026-09 round-2
+ * Final usage resolution extracted from Bridge (round-2
  * simplification): after a run finishes, re-read the session transcript via
  * the agent's session reader — live stream-json does not emit
  * compact_boundary, so the live contextLength (fallback to result.usage
@@ -40,9 +40,9 @@ export function resolveFinalUsage(
   try {
     const content = registry.get(agentKind).readSessionContent(sessionId, cwd);
     if (!content.usage) {
-      // EnterWorktree relocate (2026-08-04): jsonl read silently returned no
-      // usage (e.g. transcript moved mid-session). Surface it so token-stat
-      // fallback to per-run live usage is visible in logs, not silent.
+      // jsonl 可能读不到 usage（如 EnterWorktree relocate 后 transcript 换了
+      // 路径）。这里必须显式 warn：卡片会退回 per-run live 口径，静默的话
+      // 数字变化无从排查。
       getLogger().warn(
         `[lark-remote] resolveFinalUsage: no usage from jsonl sessionId=${sessionId} cwd=${cwd} agent=${agentKind}, card falls back to per-run live usage`,
       );

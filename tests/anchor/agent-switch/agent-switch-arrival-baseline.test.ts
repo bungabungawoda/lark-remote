@@ -396,7 +396,7 @@ describe('arrival baseline persistence round-trip boundaries', () => {
 });
 
 /**
- * （2026-08-03由 probe 升 anchor，断言未动；spec Round
+ * （由 probe 升 anchor，断言未动；spec Round
  * 5 设计下语义不变）：config.save
  * 连续 3 次切换（codex→pi→codex→pi）时，第三次切回 pi 的持久化消息必须是
  * 「将继续之前的 session」而非「session 已清空」。
@@ -482,7 +482,7 @@ describe('config.save switch notification edge paths', () => {
 /**
  * anchors + upgraded anchors（原 probes，断言未动）:
  * config.save agent-switch notification
- * (spec 2026-08-03 +设计).
+ * (spec +设计).
  *
  * 新恢复模型（设计，arrival 基线）：
  * - userChangedOld = (sessions[old] ?? '') !== (arrivalSessions[old] ?? '')，

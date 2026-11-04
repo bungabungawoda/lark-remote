@@ -4,7 +4,7 @@
  * Both agents' session/update notification envelopes, prompt-response
  * stopReason mapping, tool_call/tool_call_update normalization, usage_update
  * occupancy bookkeeping and self-produced turn_started events are
- * line-for-line identical — extracted here in the 2026-09 round-2
+ * line-for-line identical — extracted here in the round-2
  * simplification. What genuinely diverges is the content channel:
  * kimi accumulates wire deltas into turn_diff snapshots (snapshot semantics,
  * see KimiAcpTranslator header), opencode forwards `assistant` deltas
@@ -137,7 +137,7 @@ export abstract class BaseAcpTranslator {
   /**
    * Latest streaming-args text per tool call (keyed by wire toolCallId).
    * kimi ACP sends the permission request BEFORE tool.call.started (verified
-   * live against kimi 0.42.0, 2026-09-13): the request_permission toolCall
+   * against kimi 0.42.0): the request_permission toolCall
    * carries only title + a truncated summary in content, NO rawInput — the
    * full args only ever reach the client as accumulated text in the
    * tool_call/tool_call_update streaming deltas. Tracking them here lets the

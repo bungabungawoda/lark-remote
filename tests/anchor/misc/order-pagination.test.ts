@@ -46,7 +46,7 @@ function cmdOrderOf(router: CommandRouter) {
 
 const ctx = { userId: 'user1', chatId: 'chat1', messageId: 'msg1' };
 
-// ORDER_PAGE_SIZE = 8（2026-08-19 别名并卡后每行 3 个元素，15 → 8）
+// ORDER_PAGE_SIZE = 8（别名并卡后每行 3 个元素，15 → 8）
 const PAGE_SIZE = 8;
 
 describe('/order pagination anchor tests', () => {
@@ -245,10 +245,10 @@ describe('/order pagination anchor tests', () => {
   });
 
   it('test_anchor_order_page1_with_20_items_stays_under_feishu_element_budget', async () => {
-    // 2026-08-13 线上同类故障：ORDER_PAGE_SIZE=20 时，21+ 条指令第 1 页
+    // 同类故障形态：ORDER_PAGE_SIZE=20 时，21+ 条指令第 1 页
     // （20 行 + 分页栏 = 61 个 body 元素）触发飞书 ErrCode 11310。
-    // 2026-08-19 别名并卡后每行 3 个元素（文本 div + 操作 column_set + hr），
-    // 页大小 8：3*8 - 1 + 2 = 25；2026-09-10 分页栏拆成「文案行 + 控件行」
+    // 别名并卡后每行 3 个元素（文本 div + 操作 column_set + hr），
+    // 页大小 8：3*8 - 1 + 2 = 25；分页栏拆成「文案行 + 控件行」
     // 两个元素 → 26 个 body 元素，仍远低于 60 上限。
     const orderStore = new OrderStore(ordersFile);
     for (let i = 0; i < 20; i++) {

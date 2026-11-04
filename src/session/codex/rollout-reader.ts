@@ -218,7 +218,7 @@ function scanCodexRollout(filePath: string, includeEvents: boolean): CodexRollou
   // (see `extractRealUserText`). Injected scaffolding (project rules,
   // <environment_context>, permissions) is written as `role:"user"`
   // response_items but gets NEITHER event, so it stays excluded from
-  // displayTitle/recap/summary. Regression 2026-07-13: the first `role:user`
+  // displayTitle/recap/summary. Without this, the first `role:user`
   // message is the injected project rules, mistakenly shown as "最近输入".
   const realUserMessages: string[] = [];
   // Which channel produced the last pushed message — used only to collapse a
@@ -384,7 +384,7 @@ function scanCodexRollout(filePath: string, includeEvents: boolean): CodexRollou
 
   // 兼容性漂移探针：文件里有 `role:"user"` 注入，却识别不出任何真人输入 ——
   // 说明 codex 又换了 event_msg 词表，displayTitle 会静默变空（0.153 事故形态）。
-  // 只告警不兜底：误用注入文本当标题正是 2026-07-13 修掉的缺陷。
+  // 只告警不兜底：误用注入文本当标题是已修掉的缺陷。
   if (realUserMessages.length === 0 && userResponseItemCount > 0) {
     getLogger().warn(
       `[codex-rollout-reader] no human user message recognised in ${filePath} ` +
@@ -894,7 +894,7 @@ export function clearSessionIndexCache(): void {
  *   event. Codex emitted it ONLY for text the human actually typed; injected
  *   scaffolding (project rules, `<environment_context>`, permissions) is
  *   written as `role:"user"` response_items but gets NO such event, so it stays
- *   out of displayTitle/recap/summary. (Regression 2026-07-13: the first
+ *   out of displayTitle/recap/summary. (Without this, the first
  *   `role:user` message is the injected project rules, once shown as 最近输入.)
  * - Current (CLI ≥0.153.4, transitional from 0.147.0): the `user_message` /
  *   `agent_message` events were removed; the same authoritative text now rides
@@ -903,7 +903,7 @@ export function clearSessionIndexCache(): void {
  *   input, `skill` parts are injected skill files (e.g. a `$skill-name`
  *   invocation) that must not leak into the title.
  *
- * Real-data note (2026-09): no rollout file observed carries BOTH spellings;
+ * Real-data note: no rollout file observed carries BOTH spellings;
  * 0.147–0.149 are transitional (either spelling per file), 0.153.4+/0.154.0 are
  * item_completed-only. `source` reports which spelling matched so the scanner
  * can collapse a hypothetical double-write of the same turn.

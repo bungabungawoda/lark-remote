@@ -24,7 +24,7 @@ afterEach(() => {
 
 // Helper: write a fake jsonl session file under <tmpDir>/<encodedCwd>/
 // Injects a system init line with `cwd` so the production code can locate
-// the file via projectDirForCwd + readCwdFromJsonl (regression 2026-06-21).
+// the file via projectDirForCwd + readCwdFromJsonl (regression).
 function writeSession(cwd: string, lines: string[]): string {
   const encoded = encodeClaudeProjectDir(cwd);
   const dir = path.join(tmpDir, encoded);
@@ -306,7 +306,7 @@ describe('readSessionContent', () => {
   });
 
   it('merges multi-line assistant usage by per-field max (zero placeholder lines before real usage)', () => {
-    // Regression 2026-08-19: some backends (third-party gateways) stream an
+    // Regression: some backends (third-party gateways) stream an
     // assistant message as multiple jsonl lines sharing one message id, with
     // all-zero usage on the early placeholder lines (empty thinking block) and
     // the real usage only on the final line carrying stop_reason.
@@ -442,7 +442,7 @@ describe('listClaudeSessions', () => {
   });
 
   it('test_anchor_summary_skips_leading_task_notification', () => {
-    // Regression 2026-08-11: when the first user record is a task-notification
+    // Regression: when the first user record is a task-notification
     // (Claude CLI sub-agent completion), summarizeSession must skip it and find
     // the real first user input instead of returning the XML tag text.
     writeSession('/tmp/proj', [
@@ -505,7 +505,7 @@ describe('cwd decoded from JSONL (regression: 2026-06-21 /resume & /cd paths)', 
     // to `-srv-app-v2-cache`. Both jsonls live in that one directory;
     // listClaudeSessions must use the cwd field to pick the right one.
     //
-    // Regression 2026-06-21 cwd decoding.
+    // Regression: cwd decoding.
     const sharedDir = path.join(tmpDir, '-srv-app-v2-cache'); // what projectDirForCwd('/srv/app_v2/cache') and projectDirForCwd('/srv/app-v2/cache') both return
     fs.mkdirSync(sharedDir, { recursive: true });
 
@@ -584,7 +584,7 @@ describe('cwd decoded from JSONL (regression: 2026-06-21 /resume & /cd paths)', 
   it('readSessionContent returns empty when a sessionId is found but cwd does not match', () => {
     // 目录编码是有损的（`_` 与 `-` 都编成 `-`）：/real/cwd_A 和 /real/cwd-A 落到
     // 同一个项目目录，sid 又相同 → jsonl 里的 cwd 字段是唯一裁判。
-    // 用错 cwd 的 /resume <sid> 必须拿不到内容（regression 2026-06-21 cross-cwd leak）。
+    // 用错 cwd 的 /resume <sid> 必须拿不到内容（regression: cross-cwd leak）。
     const ownerCwd = '/real/cwd_A';
     const otherCwd = '/real/cwd-A';
     expect(encodeClaudeProjectDir(ownerCwd)).toBe(encodeClaudeProjectDir(otherCwd));
@@ -653,7 +653,7 @@ describe('readSessionContent - aiTitle and recap extraction', () => {
   });
 
   it('displayTitle skips isMeta user messages (skill injection etc.)', () => {
-    // Regression 2026-07-05: skill injection writes a `type:"user"` message
+    // Regression: skill injection writes a `type:"user"` message
     // with `isMeta:true` to carry the skill body through the user channel.
     // Without filtering, this meta message is mistaken for "last user input"
     // and shown as 🏷️ 最近输入 — but it is NOT something the user typed.
@@ -670,7 +670,7 @@ describe('readSessionContent - aiTitle and recap extraction', () => {
   });
 
   it('test_anchor_displayTitle_skips_task_notification_falls_back_to_real_input', () => {
-    // Regression 2026-08-11: Claude CLI injects a task-notification on sub-agent
+    // Regression: Claude CLI injects a task-notification on sub-agent
     // completion (type:"user", isMeta absent, content is string starting with
     // "<task-notification>"). Without filtering, this overwrites the real user
     // input in displayTitle when no aiTitle exists.
@@ -736,14 +736,14 @@ function writeRelocatedSessionFixture(
 }
 
 describe('readSessionContent - EnterWorktree relocated session', () => {
-  // Regression 2026-08-04: Claude Code's EnterWorktree MOVES the transcript
+  // Regression: Claude Code's EnterWorktree MOVES the transcript
   // file to the new cwd's project dir mid-session. The file then no longer
   // exists under the requested (pre-relocate) cwd's encoded dir, and a file
   // located by the new cwd is rejected by the first-cwd-only guard because
   // its first cwd field is the pre-relocate path. Both paths silently return
   // { events: [] }, so the run card's token stats fall back to per-run live
   // usage (inflated/missing cumulative fields). See
-  // See worktree relocate fix (2026-08-04).
+  // See worktree relocate fix.
   //
   // Fixture: a single jsonl with TWO cwd segments (A then B), written ONLY
   // into B's encoded dir (A's dir is left empty — simulates the file having
@@ -755,7 +755,7 @@ describe('readSessionContent - EnterWorktree relocated session', () => {
     //           只存在于新 cwd(B) 的项目目录时，readSessionContent 按 sessionId
     //           跨 projects 子目录兜底定位到文件并返回内容。
     // 缺失后果: 搬迁会话的完成卡片读不到 jsonl usage → token 统计回退到单 run
-    //           live 增量，出现"数字变少/累计消失"错觉（2026-08-04 实例）。
+    //           live 增量，出现"数字变少/累计消失"错觉。
     const localTmp = fs.mkdtempSync(path.join(os.tmpdir(), 'lark-relocate-r1-'));
     try {
       const sid = 'relocated-session-1';
@@ -780,7 +780,7 @@ describe('readSessionContent - EnterWorktree relocated session', () => {
     // 验证行为: 请求搬迁后的新 cwd(B)，文件存在于 B 的项目目录，但文件首条
     //           cwd 字段是搬迁前的 A。守卫应接受"任一 cwd 字段匹配"而非仅首条。
     // 缺失后果: run 在 worktree cwd 发起时，文件被找到却被首条-cwd 守卫拒绝，
-    //           同样静默返回空 → token 统计漂移（2026-08-04 实例 run 2）。
+    //           同样静默返回空 → token 统计漂移。
     const localTmp = fs.mkdtempSync(path.join(os.tmpdir(), 'lark-relocate-r2-'));
     try {
       const sid = 'relocated-session-2';
@@ -840,8 +840,8 @@ describe('readSessionContent - EnterWorktree relocated session', () => {
 
   it('test_anchor_rejects_foreign_cwd_after_relocate_guard_relaxation', () => {
     // 验证行为: 守卫放宽为"任一 cwd 匹配"后，对文件中完全不含的无关 cwd(C)
-    //           仍拒绝，返回空 events。守卫原始目的（防目录编码 lossy 误匹配，
-    //           regression 2026-06-21）不可被搬迁修复破坏。
+    //           仍拒绝，返回空 events。守卫原始目的（防目录编码 lossy 误匹配）
+    //           不可被搬迁修复破坏。
     // 缺失后果: 守卫形同虚设 → 跨目录兜底会把任意 sessionId 同名文件捞回，
     //           /resume <sid> 错 cwd 泄漏其他会话内容。
     const localTmp = fs.mkdtempSync(path.join(os.tmpdir(), 'lark-relocate-r3-'));
@@ -991,7 +991,7 @@ describe('listClaudeSessions - EnterWorktree relocated session', () => {
     //           项目目录，A 的目录下没有该文件。listClaudeSessions 通过跨目录兜底
     //           扫描 scanRelocatedSessions 找到 B 目录下的文件并验证 cwd 包含 A
     //           → 列出该 session。与 readSessionContent 行为一致。
-    // 依据:修复 2026-08-10，scanClaudeSessions 增加跨目录 fallback + cwd 守卫
+    // 依据:scanClaudeSessions 增加跨目录 fallback + cwd 守卫
     //       从 readCwdFromJsonl 改为 fileContainsCwd。
     const localTmp = fs.mkdtempSync(path.join(os.tmpdir(), 'lark-list-relocate-3-'));
     try {

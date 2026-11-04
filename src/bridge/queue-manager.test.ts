@@ -49,8 +49,8 @@ function makeQueueManager(isRunning: (ws: string) => boolean = () => false) {
  * Extract position/tasksAhead text from a queue card.
  *
  * 正文分成多块 div（Workspace / 队列位置 / 正在执行），所以要扫全部文本；
- * 且 tasksAhead === 0 时「队列位置 / 前面还有」两行整体不渲染（2026-10-09：
- * 「排队中 / 前面还有 0 条」自相矛盾），此时返回 -1 = 这张卡不说位置。
+ * 且 tasksAhead === 0 时「队列位置 / 前面还有」两行整体不渲染
+ * （「排队中 / 前面还有 0 条」自相矛盾），此时返回 -1 = 这张卡不说位置。
  */
 function extractPositionInfo(card: object): { position: number; tasksAhead: number } {
   const content = extractCardText(card);
@@ -615,7 +615,7 @@ describe('QueueManager', () => {
  * 其余兄弟被判「已撤销」）、queueCardMessages 的卡片更新（Map 覆盖，只留最后
  * 一张卡）三处会同时串位。
  *
- * 2026-10-08 线上：连点同一张卡的 🗜 Compact 三次 → 三张排队卡都显示
+ * 连点同一张卡的 🗜 Compact 三次 → 三张排队卡都显示
  * 「位置: 第 1 位 / 前面还有 0 条」，其中两张永久停在「⏳ 消息排队中」，
  * 实际只压缩了一次。
  */
@@ -648,7 +648,7 @@ describe('QueueManager 队列身份（连点同一张卡）', () => {
       },
     );
     // 让占队任务的 begin 跑完（begin 把它从 queuedTasks 摘掉）—— 之后入队的
-    // 点击才是「第 1 位」，与线上形态一致（run 已在跑，队列里只剩点击）。
+    // 点击才是「第 1 位」（run 已在跑，队列里只剩点击）。
     await new Promise((r) => setTimeout(r, 0));
 
     // 连点同一张卡 3 次：入口层每次铸造独立 key，卡片 id 只作回复目标。
@@ -703,7 +703,7 @@ describe('QueueManager 队列身份（连点同一张卡）', () => {
 
   it('同 key 入队触发 tripwire warn（身份不变量被破坏时必须留证据）', async () => {
     // 验证什么：queue key 撞车时日志必须留痕 —— 数组（追加）与 taskIndex（覆盖）
-    // 会漂移，位置/撤销/卡片更新会串到别的条目上，静默下去就是 2026-10-08 的
+    // 会漂移，位置/撤销/卡片更新会串到别的条目上，静默下去就是
     // 「卡片永久等待中」无法从日志复现。
     const { qm } = makeQueueManager();
     mockLogger.warn.mockClear();

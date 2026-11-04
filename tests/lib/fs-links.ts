@@ -1,7 +1,7 @@
 /**
  * 文件系统链接 fixture helper（跨平台）。
  *
- * 背景（2026-09-21）：`fs.symlinkSync` 在 Windows 上需要
+ * 背景：`fs.symlinkSync` 在 Windows 上需要
  * `SeCreateSymbolicLinkPrivilege`——未开开发者模式 / 非管理员的机器直接 `EPERM`；
  * 受限环境（实测 WorkBuddy 沙箱）更隐蔽：调用返回成功，但链接并没有落盘。
  * 这类「真·OS 原语缺失」不能靠 mock 绕开——被测对象就是链接本身。因此分两路：

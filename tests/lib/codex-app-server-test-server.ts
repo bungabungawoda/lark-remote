@@ -38,7 +38,7 @@ rl.on('line', (line) => {
     const write = (obj) => process.stdout.write(JSON.stringify(obj) + '\\n');
     // 时序设计（配合 turnTimeoutMs=400 的滚动重置用例）：
     // - idle 窗口从 run() 启动就开始计（覆盖子进程冷启动 + 建连），CI 慢环境
-    //   冷启动可达 ~50ms+，60/80ms 级裕度会被吃光导致假红（2026-09-06 修复）。
+    //   冷启动可达 ~50ms+，60/80ms 级裕度会被吃光导致假红。
     // - turn/completed 刻意放在 500ms > 400ms 初始 deadline：若滚动重置坏掉
     //   （定时器从不因通知重置），turn 必在 completed 前超时 → 用例确定性地
     //   变红，锚点才有区分能力。最后一次通知（delta @200）把 deadline 推到

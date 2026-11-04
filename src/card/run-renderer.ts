@@ -60,7 +60,7 @@ const EMPTY_MD_DIV_BYTES = measureJson(markdownDiv('', 'notation'));
  * 能力门控（compactSupported !== false）与执行侧 `'runCompact' in runner`
  * 鸭子探测对齐：claude 走 stream-json，不发射 turn_started，operationKind
  * 恒 undefined——若以 operationKind==='turn' 作门控，claude 终态卡永远拿
- * 不到按钮（2026-08-19 缺陷）。compaction 卡的「防递归」仍由 operationKind
+ * 不到按钮。compaction 卡的「防递归」仍由 operationKind
  * 保证，两者是不同质的判断。
  */
 function shouldShowCompactButton(state: RunState, options: RunCardRenderOptions): boolean {
@@ -397,7 +397,7 @@ function groupBlocks(blocks: RunBlock[]): BlockGroup[] {
  *
  * 早先试过"一行 + 服务端「详情」按钮"：折叠不省字节所以正文不入 payload，展开
  * 只能回服务端重出卡。代价是手机上要多点一次、按钮还占掉标题宽度（长 URL 被挤
- * 成两行，2026-10-19 反馈）。现在改成折叠面板 + **按工具数量缩放的正文截断**：
+ * 成两行）。现在改成折叠面板 + **按工具数量缩放的正文截断**：
  * 正文始终随卡下发（面板折叠时不显示），点标题即展开，无往返、无按钮。
  *
  * 展开态：运行中/失败的默认展开（用户在等结果、错误要立刻可见），其余折叠。
@@ -753,7 +753,7 @@ function buildExtremeFallbackElements(state: RunState, options: RunCardRenderOpt
 /**
  * 状态行内容：**一行、一个 div、窄屏不换行**。
  *
- * 设计约束（2026-10-19 手机端实测）：旧版把「状态标签」和「耗时/指标」放进
+ * 设计约束（手机端）：旧版把「状态标签」和「耗时/指标」放进
  * `column_set` 的 auto + grow 两列，窄屏上 auto 列被挤到只剩两个字宽，
  * "运行中" 被拆成 "运行 / 中"。列式布局的可用宽度取决于对端渲染，服务端无法
  * 保证；所以这里改成单 div，段间用 " · " 分隔——换行只会发生在分隔符处，
@@ -762,8 +762,8 @@ function buildExtremeFallbackElements(state: RunState, options: RunCardRenderOpt
  * 状态标签（运行中/已完成…）不再重复：header 已经写了（`🔧 dsh · 调用工具`
  * / `✅ dsh · 已完成`），终态 summary 还有一次。
  *
- * 终态也保留状态行：耗时定格，DSH 的步数/上下文投影展示最后一次快照
- * （2026-10-21 用户要求）。summary 的最终 usage 与状态行并存。
+ * 终态也保留状态行：耗时定格，DSH 的步数/上下文投影展示最后一次快照。
+ * summary 的最终 usage 与状态行并存。
  *
  * 导出供窄屏守卫测试断言分段宽度（与 `estimateCardBytes` 同一惯例）。
  */
@@ -775,7 +775,7 @@ export function statusLine(state: RunState): string {
   const elapsed = elapsedLabel(state);
   if (elapsed) parts.push(`⏱ ${elapsed}`);
 
-  // 运行期投影在终态也保留（2026-10-21 用户要求）：DSH 卡片完成时，耗时/步数/
+  // 运行期投影在终态也保留：DSH 卡片完成时，耗时/步数/
   // 上下文百分比是这一跑留下的最后快照，撤掉后用户只能从 summary 的累计口径
   // 重新推算。summary 仍展示最终 usage，两者口径不同、并存不冲突。
   const live = state.liveStatus;
@@ -1143,7 +1143,7 @@ export const FINAL_ANSWER_OVERFLOW_MARKER = '_最终回答较长，完整内容�
  * 「卡片装不下正文」与「表格数超上限」是两件事，只有前者才走补发通道：
  * 飞书单卡最多 5 张 markdown 表（11310），多出来的最旧表格会被删掉并在原位
  * 留 `_💡 前 N 个表格已省略_`——正文仍在卡片里，再补发一遍就是把用户已经看到
- * 的整篇回答重复（2026-11-02 实机反馈）。
+ * 的整篇回答重复。
  */
 function buildFinalAnswerPriorityCard(
   state: RunState,
@@ -1378,8 +1378,8 @@ function buildSummaryContent(
 
     const hasContent = state.blocks.length > 0 || !!state.finalAnswer?.content.trim();
     // 压缩（operationKind='compaction'）不会返回 agent 正文——引擎只压缩上下文
-    // 窗口，空内容属正常，不能沿用普通 run 的「（未返回内容）」异常信号
-    // （2026-09 用户反馈）。所有会压缩的 agent（codex/claude/kimi/opencode/pi）
+    // 窗口，空内容属正常，不能沿用普通 run 的「（未返回内容）」异常信号。
+    // 所有会压缩的 agent（codex/claude/kimi/opencode/pi）
     // 都经 streamCompact 走这条共享渲染路径，一处覆盖全部。
     const empty = hasContent
       ? ''
@@ -1474,7 +1474,7 @@ function codeFenceFor(content: string): string {
 /**
  * 后台任务小节：命令独占一行，停止按钮单独一行。
  *
- * 布局约束（2026-10-21 手机端反馈）：
+ * 布局约束（手机端）：
  * - 命令 + 按钮不再并排（grow + auto）：窄屏下 auto 列会被挤成「🟥…」，
  *   命令也被截断。按钮现在独占一个单列 column_set，宽度由按钮自身决定。
  * - 命令不 truncate：短命令/单行直接内联；中等长度的多行命令用代码块
@@ -1589,7 +1589,7 @@ function headerTitle(state: RunState, options: RunCardRenderOptions = {}): strin
   if (state.terminal === 'idle_timeout') return `⏱ ${agent} · 已超时`;
   if (state.terminal === 'finalizing') return `⏳ ${agent} · 完成中`;
   // 审批等待期间 server 暂停 turn，命令工具停在 tool_running——标题必须提示
-  // 正在等人工决策，而不是「调用工具」（2026-08-14 UX）。
+  // 正在等人工决策，而不是「调用工具」。
   if (hasPendingApproval(state)) return `✋ ${agent} · 等待审批`;
   if (state.footer === 'thinking') return `💭 ${agent} · 思考中`;
   if (state.footer === 'streaming') return `💬 ${agent} · 输出中`;

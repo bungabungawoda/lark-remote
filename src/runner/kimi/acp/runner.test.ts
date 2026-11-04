@@ -69,7 +69,7 @@ interface TerminalMockServerOptions {
    * Mirror the real kimi acp-server terminal correlation: emit a Bash
    * tool_call notification before create, an in_progress tool_call_update
    * with a terminal embed after create, and a completed terminal embed
-   * update after wait_for_exit (2026-08-23 regression coverage).
+   * update after wait_for_exit (regression coverage).
    */
   sendTerminalEmbedUpdates?: boolean;
 }
@@ -1023,7 +1023,7 @@ describe('KimiAcpRunner', () => {
       }
     });
 
-    // 「cancel」的语义在线上：cancelled outcome。只断言有 result 事件抓不住
+    // 「cancel」的真实语义是 cancelled outcome。只断言有 result 事件抓不住
     // 误接成 accept/decline（那三种都会让 prompt 正常结束）。
     expect(approvalResponded).toBe(true);
     const cancelResponse = readCapture(capturePath).find(

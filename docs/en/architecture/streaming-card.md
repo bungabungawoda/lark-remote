@@ -6,11 +6,11 @@ Run/Bash card CardKit 2.0 single-card streaming architecture overview, covering 
 
 ## 1. Goals
 
-A single `claude -p` run creates only one CardKit 2.0 card on the Feishu side under normal paths:
+A single agent run creates only one CardKit 2.0 card on the Feishu side under normal paths:
 
 - In-place updates for thinking, body text, and tool summaries during the run;
 - Explicit terminal state distinction: done, error, interrupted, idle_timeout;
-- The Claude process only outputs JSONL; it does not participate in card construction;
+- The agent process only outputs the event stream; it does not participate in card construction;
 - Normal messages remain serialized; `/stop` and the stop button can immediately interrupt the current run.
 
 A card is a lossy progress summary, not a complete transcript. Content beyond the sliding window is not persisted.
@@ -40,7 +40,7 @@ Therefore:
 ```text
 Normal Feishu message
   → Bridge work queue
-  → ClaudeRunner.run()
+  → runner.run() (registry resolves the agent instance)
   → AgentEvent
   → RunState reducer
   → renderRunCard()
@@ -50,7 +50,7 @@ Normal Feishu message
 /stop or stop cardAction
   → control lane (bypasses work queue)
   → Bridge.interruptCurrentRun()
-  → RunCardSession.finish(interrupted) + ClaudeRunner.stop()
+  → RunCardSession.finish(interrupted) + runner.stop()
 ```
 
 Core modules:
@@ -214,7 +214,7 @@ body.
 
 ## 7. Concurrency and Stop Control
 
-Normal messages and normal cardActions continue entering the `Bridge.enqueue` Promise chain, ensuring at most one Claude run at a time.
+Normal messages and normal cardActions continue entering the `Bridge.enqueue` Promise chain, ensuring at most one agent run at a time.
 
 Stop control must not enter that queue, otherwise it would wait until the current run completes. Entry rules:
 
@@ -232,7 +232,7 @@ Successful interruption does not send an additional confirmation text; the inter
 
 ### Failure before initial send
 
-Continue consuming Claude events; after the run ends, send a single static terminal card.
+Continue consuming agent events; after the run ends, send a single static terminal card.
 
 ### Failure after initial send
 
@@ -250,7 +250,7 @@ The completion notification sent after a failed stream card follows the terminal
 
 - Controller ready has a 5-second startup wait limit;
 - Stream completion has a 5-second settle wait limit;
-- Claude with no AgentEvent triggers the idle watchdog after 15 minutes by default (`IDLE_TIMEOUT_MS = 15 * 60 * 1000`);
+- The agent producing no AgentEvent triggers the idle watchdog after 15 minutes by default (`IDLE_TIMEOUT_MS = 15 * 60 * 1000`);
 - All Promise rejections are observed and logged.
 
 Strict single-card is only guaranteed on the normal stream path; failure paths follow "prefer in-place finalization."

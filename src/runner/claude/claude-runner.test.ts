@@ -785,7 +785,7 @@ describe('ClaudeRunner (long-lived interactive session)', () => {
   );
 });
 
-// --- Logging probes (regression: 2026-06-20 spawn logs missing) ---
+// --- Logging probes (regression: spawn logs missing) ---
 
 function callsAt(
   level: 'debug' | 'info' | 'warn' | 'error',

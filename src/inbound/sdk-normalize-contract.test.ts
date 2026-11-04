@@ -11,7 +11,7 @@
  *    `<forwarded_messages status="fetch_failed"/>`——`stripPlaceholders` 必须把它
  *    归到 `forwarded` 而非 `unknown`。
  *
- * 若有人降级 SDK 或 SDK 改动这两处形状，本文件先红，早于线上丢文件。
+ * 若有人降级 SDK 或 SDK 改动这两处形状，本文件先红，抢在真实丢文件之前报警。
  */
 import { describe, it, expect } from 'vitest';
 import { normalize, type RawMessageEvent } from '@larksuite/channel';

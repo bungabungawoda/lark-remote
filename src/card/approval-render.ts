@@ -848,7 +848,7 @@ function renderAnswerInput(
 ): object {
   // name 必须含 cmd，保证同一题同时渲染多个输入框（如单选选项题的
   // Other 输入 + Note 输入）时元素 name 唯一——飞书对同卡内重复 name
-  // 报 ErrCode 11310 拒绝整卡（2026-08-19 线上：name(answer-custom-0-0) duplicate）。
+  // 报 ErrCode 11310 拒绝整卡。
   const kind = cmd === 'approval.answerNote' ? 'note' : 'custom';
   return {
     tag: 'input',

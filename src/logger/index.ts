@@ -40,12 +40,12 @@ function todayStr(d: Date): string {
 }
 
 function timestampStr(d: Date): string {
-  // local ISO 8601 with milliseconds and explicit offset, e.g.
-  // 2026-08-03T01:30:00.000+08:00. Previously this used toISOString() (UTC)
-  // while the daily directory boundary (todayStr) used local time — after
-  // local midnight in a +08:00 zone the new day's directory held lines
-  // timestamped with the previous UTC day. Local offset keeps the timestamp's
-  // calendar date consistent with the directory date across all timezones.
+  // Local ISO 8601 with milliseconds and explicit offset, e.g.
+  // 2026-08-03T01:30:00.000+08:00. Must match the daily directory boundary
+  // (todayStr), which is local time: a UTC timestamp would put lines written
+  // after local midnight into the previous UTC day's file. Local offset keeps
+  // the timestamp's calendar date consistent with the directory date across
+  // all timezones.
   const pad = (n: number) => String(n).padStart(2, '0');
   const y = d.getFullYear();
   const mo = pad(d.getMonth() + 1);

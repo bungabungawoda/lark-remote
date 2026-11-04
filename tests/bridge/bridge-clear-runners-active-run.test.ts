@@ -95,9 +95,9 @@ describe('Bridge clearRunners must not orphan an ACTIVE runner (regression 2026-
    *
    * Importance: if the fresh runner's stop() is a no-op (no currentProcess), the
    * real subprocess is never killed, its run() promise never settles, and the
-   * serial queue chain blocks forever. This was the 2026-07-18 production
-   * deadlock: /ps showed "无进程在跑" (activeRuns cleared) yet every message
-   * queued indefinitely and "立即执行" returned stopped=false.
+   * serial queue chain blocks forever. The resulting failure: /ps shows
+   * "无进程在跑" (activeRuns cleared) yet every message queues indefinitely
+   * and "立即执行" returns stopped=false.
    *
    * Fix basis: activeRun must carry a direct reference to the runner instance
    * that is running; interruptCurrentRun stops THAT instance, independent of

@@ -283,7 +283,7 @@ describe('config.save sends persistent message notification on agent switch', ()
 
 /**
  * config.save 失败路径 / 双失败 / 同 agent 等价类 /
- * 连续 save 的守卫（spec 2026-08-03 +设计）。
+ * 连续 save 的守卫（spec +设计）。
  *
  * 攻击点：
  * - diffConfig/setConfigValues 阶段抛错（配置校验失败）→
@@ -573,7 +573,7 @@ describe('config.save failure/equivalence boundaries', () => {
  *
  * 如果在 B 上发送了消息（新 session），切回 A 时应清空 A 的 session。
  *
- * 通知形式：2026-08-13 起切换通知由纯文本改为 Resume 卡片
+ * 通知形式：切换通知由纯文本改为 Resume 卡片
  * （用户需求：切换 agent 后能看到会话状态和历史，而不仅是文本通知）。
  */
 function buildPiConfig(): AppConfig {
@@ -711,10 +711,10 @@ describe('config.save restores previous session when switching back', () => {
  * 消息含「已使用所选 session」与 sessionId、无 toast；claude 被清空并停车到
  * prev[claude]。
  *
- * 缺失影响：若切换仍按 2026-07-18 旧语义清空新 agent 的 sessionId（等效 /new），
+ * 缺失影响：若切换仍按旧语义清空新 agent 的 sessionId（等效 /new），
  * 用户经 /resume 显式选择的会话会被丢弃，切换后进入错误上下文并收到误导性文案。
  *
- * 依据：2026-08-03 用户裁决新语义——/resume 对非当前 agent 的显式选择在
+ * 依据：用户裁决的新语义——/resume 对非当前 agent 的显式选择在
  * config.save 切入时存活，优先级「显式选择 > 停车恢复 > 清空」，arrival 更新为
  * 所选 session（新基线）。本测试不经过 resume.use 卡片路径，直接播种与相同
  * 的 router 可见状态（sessions[new] ≠ arrival[new]），属「直接状态等价」变体；

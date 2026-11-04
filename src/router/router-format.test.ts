@@ -1,6 +1,6 @@
 /**
- * Pure-formatting unit tests extracted from router.test.ts (2026-08-29
- * cleanup): formatTimestamp / formatUsageStats have no router wiring.
+ * Pure-formatting unit tests extracted from router.test.ts
+ * (cleanup): formatTimestamp / formatUsageStats have no router wiring.
  */
 import { describe, it, expect } from 'vitest';
 import { formatUsageStats } from '../card/usage-format.js';

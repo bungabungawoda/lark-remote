@@ -11,7 +11,7 @@ vi.mock('../logger/index.js', async () =>
 );
 
 /**
- * 2026-10-21 现场：60 步、10 分钟的 turn 在最后一步被上游内容审核截断
+ * 60 步、10 分钟的长 turn 在最后一步被上游内容审核截断
  * （`finish_reason: content_filter`）。DSH 把它归一成 PI_AI_ERROR，既不在默认
  * 重试码里，也不会换模型；桥侧只把英文报文透传成「运行出错」。
  *

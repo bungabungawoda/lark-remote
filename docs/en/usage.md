@@ -2,9 +2,9 @@
 
 # Usage Guide
 
-lark-remote turns Feishu private chat into a remote entry point for Claude Code CLI: send a message in Feishu, and the local Claude reads and writes files and runs commands in your specified directory, with responses sent back to Feishu.
+lark-remote turns Feishu private chat into a remote entry point for local coding agents: send a message in Feishu, and the local Claude Code, Codex, opencode, pi, Kimi, or DSH reads and writes files and runs commands in your specified directory, with responses sent back to Feishu. The default agent is Claude Code; the other five are covered under "Configuration" below.
 
-Single-user, p2p private chat. Does not modify Claude's system prompt.
+Single-user, p2p private chat. Does not modify the agent's system prompt.
 
 ---
 

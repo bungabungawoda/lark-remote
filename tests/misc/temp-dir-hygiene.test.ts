@@ -4,7 +4,7 @@
  * 为什么值得写静态测试（对照 dev-workflow「结构型静态测试只保留架构守卫」）：
  * 这三条都是编译器拦不住的不变量，且违反时的症状是**静默**的 —— 泄漏要到
  * %TEMP% 攒到 2.5 GB 才被发现，多写 246 MiB 零字节只会让回归慢一点没人追问。
- * 2026-09-22 实测过这两笔账，这里把它钉成门禁。
+ * 这两笔账在这里钉成门禁。
  *
  * 分工（详见 tests/lib/temp-dir.ts 顶部说明）：
  *   主动线 makeTempDir() + afterAll —— 登记即清；
@@ -50,7 +50,7 @@ type FileFacts = {
 };
 
 /**
- * 固定 POSIX 绝对路径当落盘位置 —— 2026-09-22 实测出的 Windows 故障源。
+ * 固定 POSIX 绝对路径当落盘位置 —— 已知的 Windows 故障源。
  *
  * `/tmp` 这类**根绝对路径**在 win32 上没有盘符，`path.resolve('/tmp')` 会补成
  * 「当前盘符的 \tmp」，即仓库外的 `D:\tmp`。用它当落盘目录有三个叠加毛病：
@@ -59,8 +59,8 @@ type FileFacts = {
  *   2. 不在 `os.tmpdir()` 下 → `sweepProjectTempDirs()` 兜底扫不到，残留永久留盘；
  *   3. 机器上恰好没有 `D:\tmp` 时，直接 ENOENT（见下面的 cwd 守卫）。
  *
- * 2026-09-22 首次暴雷：`src/update/version-check.test.ts` 把缓存写在
- * `path.join('/tmp', ...)`，全量并行时 1 例 EBUSY。收口后 `D:\tmp` 仍留有
+ * 已知故障形态：`src/update/version-check.test.ts` 把缓存写在
+ * `path.join('/tmp', ...)`，全量并行时出现 EBUSY。收口后 `D:\tmp` 仍留有
  * `spawning-runner-*` 等一批同源残留。
  */
 const WRITE_LOCATION_KEYS = [

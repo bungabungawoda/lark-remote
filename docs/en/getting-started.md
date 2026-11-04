@@ -10,7 +10,7 @@ This document will help you get lark-remote up and running from scratch, and tea
 
 In short: **Use Feishu chat to control the AI on your computer to write code**.
 
-Imagine:
+For example:
 
 - You send a message in a Feishu private chat: "Check src/index.ts and add error handling";
 - Claude Code (an AI programmer) on your computer starts reading files, modifying code, and running tests;
@@ -50,7 +50,7 @@ git clone <repository-url> lark-remote
 cd lark-remote
 ```
 
-> Replace `<repository-url>` with the actual git address of the project (e.g., `git@github.com:yourname/lark-remote.git`). Ask an adult, or copy it from the green "Code" button in the top-right corner of the GitHub project page.
+> Replace `<repository-url>` with the actual git address of the project (e.g., `git@github.com:yourname/lark-remote.git`). Copy it from the green "Code" button in the top-right corner of the GitHub project page.
 
 ---
 
@@ -180,7 +180,7 @@ After lark-remote starts, it doesn't output to the terminal. Logs are written to
 
 `YYYY-MM-DD` is today's date (e.g., `2026-07-20`), and `<pid>` is the process ID.
 
-**Open this file with Mac's Preview or VSCode** and scroll through looking for `error` or `warn`. It's okay if you don't understand it — copy the relevant section and show it to an adult or an AI, asking "What is this error?"
+**Open this file with Mac's Preview or VSCode** and scroll through looking for `error` or `warn`. It's okay if you don't understand it — copy the relevant section and show it to an AI or an experienced developer, asking "What is this error?"
 
 > If `/exit` shut down but the next startup says "pid already exists", it means the process didn't exit cleanly. Just delete the file `~/.lark-remote/lark-remote.pid` and start again.
 
@@ -197,7 +197,7 @@ bun run test        # Run all tests, must all pass
 
 Both must pass for the change to be considered done. If either one is red, fix it before moving on.
 
-> What are tests? They're "automatic check programs" written in the project to make sure your changes didn't break existing functionality. This project has 200+ test files, and running them all takes about 1 minute.
+> What are tests? They're "automatic check programs" written in the project to make sure your changes didn't break existing functionality. This project has nearly 300 test files, and a full run usually takes a minute or two.
 
 ---
 
@@ -249,9 +249,9 @@ lark-remote currently supports 6 AIs: Claude, Codex, OpenCode, Pi, Kimi, and DSH
 ## 14. What to Do When You Run Into Problems
 
 1. **Check the logs first**: `~/.lark-remote/logs/YYYY-MM-DD/lark-remote-<pid>.log` (`YYYY-MM-DD` is today's date, e.g., `2026-07-20`), look for `error`;
-2. **Run tests**: `bun run typecheck && bun test`, see what's broken;
+2. **Run tests**: `bun run typecheck && bun run test`, see what's broken;
 3. **Check known pitfalls**: The project has a record of common pitfalls — chances are someone has fallen into the same pit before;
 4. **Ask an AI**: Copy the error section of the log to Claude/ChatGPT and ask "What is this error and how do I fix it?";
-5. **Really stuck**: Document the steps to reproduce, then ask an adult or file an issue.
+5. **Really stuck**: Document the steps to reproduce, then file an issue.
 
 You've got this!

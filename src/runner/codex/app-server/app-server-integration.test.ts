@@ -343,11 +343,11 @@ describePosix('CodexAppServerRunner integration', () => {
 
   it('keeps sub-agent thread notifications out of the top-level turn (session key, body, usage)', async () => {
     // 验证行为：codex app-server 把 multi-agent v2 子 agent 线程的通知复用同一条
-    // stdio 连接（实测 2026-10-09：一次 run 内收到 4 个不同 threadId 的
+    // stdio 连接（实测：一次 run 内收到 4 个不同 threadId 的
     // turn/started）。子线程通知必须被线程归属闸门挡在本轮之外，否则：
     //   1. 子线程 turn/started 覆盖本轮 threadId → turn_started 写回把子线程 id
     //      存成顶层会话指针，冷连接 thread/resume 报 "cannot resume an unloaded
-    //      multi-agent v2 sub-agent"（真实事故：会话无法恢复，/restart 也无效）；
+    //      multi-agent v2 sub-agent"（后果：会话无法恢复，/restart 也无效）；
     //   2. 子线程 turn/completed 提前结束本轮 run，本轮正文丢失；
     //   3. 子线程 tokenUsage 串进本轮 usage。
     // fixture 特意把子 agent 的 turn/completed 排在主线程收尾之前，复现当时的
@@ -505,7 +505,7 @@ describePosix('CodexAppServerRunner integration', () => {
             'Commit message': 'feat: ask-user-question',
           },
           // Codex user_note：选项之外补充说明，回编为 "user_note: <text>" 条目
-          // （2026-08-18 live：deepseek-v4-flash 明确理解并遵守该格式）。
+          // （live 验证：deepseek-v4-flash 明确理解并遵守该格式）。
           notes: { 'Which database?': '先验证 PostgreSQL 17 兼容性' },
         });
       }
@@ -637,7 +637,7 @@ describePosix('CodexAppServerRunner integration', () => {
     // changes[]，审批请求 grantRoot/reason 均为 null）经 fake server 全链路后，
     // approval_requested 事件的 view.fileChanges 必须包含真实 path/kind/diff。
     // 缺失后果：集成层退回旧 fixture（grantRoot 非空）会掩盖真实协议下卡片无
-    // 文件信息的缺陷（线上已复现：用户只看到「📄 文件变更审批」标题）。
+    // 文件信息的缺陷（用户只看到「📄 文件变更审批」标题）。
     // 依据：真实 codex app-server 抓包（item/started 先于审批，itemId 关联）。
     const cwd = join(tmpDir, 'workspace');
     mkdirSync(cwd, { recursive: true });
@@ -793,7 +793,7 @@ describePosix('CodexAppServerRunner integration', () => {
     // （fileSystem.entries=[] + network.enabled=false），而不是把用户已勾选的
     // 条目作为授予发回服务端。
     // 缺失后果：用户勾选若干权限后点「❌ 拒绝」，服务端实际收到的是「授予所选
-    // 权限」，拒绝形同虚设（2026-08-12 ）。
+    // 权限」，拒绝形同虚设。
     const cwd = join(tmpDir, 'workspace');
     mkdirSync(cwd, { recursive: true });
     const requestLog = join(tmpDir, 'perm-requests.jsonl');

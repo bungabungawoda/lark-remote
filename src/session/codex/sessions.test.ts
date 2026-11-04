@@ -67,7 +67,7 @@ describe('CodexSessionReader', () => {
       // 新词表：顶层 user_message 事件已被移除，真人输入改由
       // event_msg/item_completed(item.type === 'UserMessage') 承载。
       // 未适配时 summary 落到占位符 → router 判定 summaryIsPlaceholder
-      // → /resume 卡片整段标题不渲染（2026-09 事故）。
+      // → /resume 卡片整段标题不渲染。
       createRollout(
         tmpDir,
         'rollout-new-format.jsonl',

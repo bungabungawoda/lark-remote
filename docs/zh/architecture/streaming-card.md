@@ -6,11 +6,11 @@ Run/Bash 卡片的 CardKit 2.0 单卡流式架构说明，覆盖数据流、状�
 
 ## 1. 目标
 
-一次 `claude -p` 运行在飞书侧正常路径只创建一张 CardKit 2.0 卡片：
+一次 agent run 在飞书侧正常路径只创建一张 CardKit 2.0 卡片：
 
 - 运行期间原地更新 thinking、正文和工具摘要；
 - 结束时明确区分 done、error、interrupted、idle_timeout；
-- Claude 进程只负责输出 JSONL，不参与卡片构造；
+- agent 进程只负责输出事件流，不参与卡片构造；
 - 普通消息保持串行，`/stop` 和停止按钮可以立即中断当前 run。
 
 卡片是有损进度摘要，不是完整 transcript。超出滚动窗口的内容不会持久化。
@@ -40,7 +40,7 @@ Run/Bash 卡片的 CardKit 2.0 单卡流式架构说明，覆盖数据流、状�
 ```text
 普通飞书消息
   → Bridge work queue
-  → ClaudeRunner.run()
+  → runner.run()（registry 按 agent 取实例）
   → AgentEvent
   → RunState reducer
   → renderRunCard()
@@ -50,7 +50,7 @@ Run/Bash 卡片的 CardKit 2.0 单卡流式架构说明，覆盖数据流、状�
 /stop 或 stop cardAction
   → control lane（绕过 work queue）
   → Bridge.interruptCurrentRun()
-  → RunCardSession.finish(interrupted) + ClaudeRunner.stop()
+  → RunCardSession.finish(interrupted) + runner.stop()
 ```
 
 核心模块：
@@ -218,7 +218,7 @@ agent 在 `result` 或终态收尾时把最后一条非空 assistant text 提升
 
 ## 7. 并发与停止控制
 
-普通消息和普通 cardAction 继续进入 `Bridge.enqueue` 的 Promise 链，保证最多一个 Claude
+普通消息和普通 cardAction 继续进入 `Bridge.enqueue` 的 Promise 链，保证最多一个 agent
 run。
 
 停止控制不能进入该 queue，否则会等当前 run 完成后才执行。入口规则：
@@ -236,7 +236,7 @@ run。
 
 ### initial 发送前失败
 
-继续消费 Claude 事件，运行结束后发送一张静态终态卡片。
+继续消费 agent 事件，运行结束后发送一张静态终态卡片。
 
 ### initial 已发送后失败
 
@@ -258,7 +258,7 @@ interrupted 灰 / idle_timeout 与 goal_continuing 橙），不会再给出错�
 
 - controller ready 有 5 秒启动等待上限；
 - stream 完成有 5 秒 settle 等待上限；
-- Claude 无 AgentEvent 默认 15 分钟触发 idle watchdog（`IDLE_TIMEOUT_MS = 15 * 60 * 1000`）；
+- agent 无 AgentEvent 默认 15 分钟触发 idle watchdog（`IDLE_TIMEOUT_MS = 15 * 60 * 1000`）；
 - 所有 Promise rejection 都被观察并写日志。
 
 严格单卡只承诺正常 stream 路径；故障路径遵循“优先原地定型”。

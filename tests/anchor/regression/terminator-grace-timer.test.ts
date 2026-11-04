@@ -8,7 +8,7 @@
  *
  * 修复：`graceTimer = setTimeout(...)`，race 后 `clearTimeout(graceTimer)`。
  *
- * 迁移说明（2026-09-20）：原 `ProcessStopper` 兼容壳已删除，本 anchor 改为
+ * 迁移说明：原 `ProcessStopper` 兼容壳已删除，本 anchor 改为
  * 直接钉住 seam 实现 `createPosixTerminator`——该守卫必须跟着生产实现走，
  * 否则壳删了、守卫还绿着，等于没守。
  *

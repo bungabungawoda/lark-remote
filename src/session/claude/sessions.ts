@@ -34,7 +34,7 @@ import {
  * Note: this encoding is LOSSY (`my_data/foo` and `my-data/foo` both encode to
  * `my-data-foo`). It is only safe to use the result to **locate** files; never
  * to **decode** a directory name back to a cwd. The cwd must always be read
- * from the JSONL content (regression 2026-06-21 /resume & /cd 路径错乱).
+ * from the JSONL content (regression: /resume & /cd 路径错乱).
  */
 function projectDirForCwd(cwd: string, projectsDir: string): string {
   return path.join(projectsDir, encodeProjectDirName(cwd));
@@ -48,7 +48,7 @@ function projectDirForCwd(cwd: string, projectsDir: string): string {
  * MULTIPLE cwd values (pre- and post-relocate) — accept when ANY `cwd` field
  * matches. Early-stops on the first match (findJsonlLine), keeping the
  * single-pass parse-count anchors intact on the fallback path.
- * Regression 2026-08-04 EnterWorktree relocate.
+ * Needed for EnterWorktree relocate.
  */
 function fileContainsCwd(filePath: string, cwd: string): boolean {
   return (
@@ -69,7 +69,7 @@ function defaultProjectsDir(): string {
 }
 
 /**
- * EnterWorktree relocate support (2026-08-04): Claude Code MOVES the
+ * EnterWorktree relocate support: Claude Code MOVES the
  * transcript file to the new cwd's project dir mid-session, so the file may
  * not exist under the requested cwd's encoded dir. Fall back to locating
  * `<sessionId>.jsonl` across all project dirs. Deterministic: entries are
@@ -182,7 +182,7 @@ export function getNewestSession(
  *    JSONL output continuously. A file whose mtime is older than
  *    `STALE_MS` cannot be from a running process. This catches the
  *    common Claude CLI 2.x case where the tail is `last-prompt` / `mode`
- *    (no `type:"result"`) and the process exited long ago (regression 2026-06-21).
+ *    (no `type:"result"`) and the process exited long ago.
  *
  * 2. **last-line terminal marker**: if the last JSON line is `result`
  *    (older CLI) or any explicit terminal event, the session is done
@@ -216,7 +216,7 @@ function hasRecentFileActivity(
     // Explicit terminal markers — regardless of mtime. Claude CLI 2.x uses
     // `last-prompt` / `mode` (no `result` event) to mark turn end, so a
     // 24-minute-old session with a last-prompt tail is already done
-    // (regression 2026-06-21: previously falsely reported as active).
+    // (previously falsely reported as active).
     if (typeof obj.type === 'string' && CLAUDE_TERMINAL_TYPES.has(obj.type)) return false;
   } catch {
     // ignore parse errors
@@ -365,8 +365,8 @@ function scalarScan(filePath: string): ScanResult {
   // backends (third-party gateways, e.g. DeepSeek) write all-zero usage on
   // the early placeholder lines (empty thinking block) and the real usage
   // only on the final line carrying stop_reason. First-occurrence-wins dedup
-  // would pin the zero record and discard the real one (regression
-  // 2026-08-19: auto-resume card per-run stats all 0). Per-field max
+  // would pin the zero record and discard the real one (auto-resume
+  // card per-run stats all 0). Per-field max
   // reconstructs the full usage regardless of line order — on the official
   // API every line repeats identical usage, so max is a no-op there.
   const usageByMessageId = new Map<

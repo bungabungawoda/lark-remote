@@ -7,7 +7,7 @@
  * 2. 验证后清理：移除本次添加的 reaction，不留垃圾数据
  *
  * 背景：lark-remote 按 run 终态给用户原消息打 reaction（done→Done / error→ERROR /
- * idle_timeout→Alarm / interrupted→SHHH，2026-08-02 用户确认）。
+ * idle_timeout→Alarm / interrupted→SHHH）。
  * FeishuConnector.addReaction 吞错误只记日志，无法感知 key 拒绝，
  * 所以本测试直连 raw channel 断言每个 key 都能成功。
  *
@@ -79,6 +79,6 @@ describeLive('飞书 API 集成测试 - reaction 表情 key 合法性', () => {
       expect(removed).toBe(true);
     }
     // 真实 API 往返（发消息 + 4 组 add/remove reaction）默认 5s 超时过紧，
-    // 实测 ~6s（2026-08-03 live 验证）；显式放宽到 30s 防 flaky。
+    // 实测约 6s，显式放宽到 30s 防 flaky。
   }, 30000);
 });

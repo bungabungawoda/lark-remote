@@ -1,6 +1,6 @@
 /**
  * Config diff / nested-value helpers extracted from CommandRouter
- * (2026-09 round-2 simplification). Pure functions — no router state —
+ * (round-2 simplification). Pure functions — no router state —
  * previously inlined as methods (collectDiff recursed only into itself).
  */
 import { mapAgentKey, walkNestedContainer, assertSafeKeyPart } from '../config/index.js';

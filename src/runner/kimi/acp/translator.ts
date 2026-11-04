@@ -9,7 +9,7 @@
  * assistant deltas — see handleAgentMessageChunk), plus question elicitation.
  *
  * Wire envelope (source: kimi-code packages/acp-server/src/events-map.ts,
- * verified live 2026-08-15/16 against kimi 0.36.0):
+ * verified against kimi 0.36.0):
  *   session/update params = {sessionId, update: {sessionUpdate: '<kind>', ...}}
  *   — the discriminator is `update.sessionUpdate`, NOT a nested `event.type`.
  *
@@ -92,8 +92,7 @@ export class KimiAcpTranslator extends BaseAcpTranslator {
     // snapshot and emit it as turn_diff. The card reducer's turn_diff path
     // REPLACES the block in place (snapshot semantics). Emitting the full
     // text as assistant/text (delta semantics) made the reducer append the
-    // full text to itself on every chunk — duplicated card output
-    // (2026-08-17 live regression, reproduced with 3 chunks).
+    // full text to itself on every chunk — duplicated card output.
     const key = 'text';
     const prev = this.textByItem.get(key) ?? '';
     const next = prev + event.content.text;
@@ -168,7 +167,7 @@ export class KimiAcpTranslator extends BaseAcpTranslator {
       return [];
     }
 
-    // 命令恢复（2026-09-13 对 kimi 0.42.0 实测）：审批门在 tool.call.started
+    // 命令恢复（kimi 0.42.0）：审批门在 tool.call.started
     // 之前触发，request_permission 的 toolCall 只有 title（"Bash"）+ content
     // 里一句截断摘要（"Requesting approval to Running: <cmd>…"），无 rawInput；
     // 完整命令只从审批前的 tool_call/tool_call_update 流式 args 累积文本拿到

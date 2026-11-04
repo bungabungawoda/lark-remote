@@ -56,7 +56,7 @@ export class DshTranslator {
    *
    * live chunk 是逐 delta 拼接、会被状态层的 MAX_TEXT_CHARS 窗口截断；
    * durable `assistant/message` 一次就到齐全文。收 turn 时把它挂在 result 上，
-   * 卡片才能渲染完整回答（2026-11-01 输出块被截断缺陷）。
+   * 卡片才能渲染完整回答。
    */
   private lastMessageText?: string;
 

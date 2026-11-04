@@ -2,9 +2,9 @@
 
 # 使用指南
 
-lark-remote 把飞书私聊变成 Claude Code CLI 的远程入口：在飞书里发消息，本地 Claude 在你指定的目录里读写文件、跑命令，回复原路送回飞书。
+lark-remote 把飞书私聊变成本地 coding agent 的远程入口：在飞书里发消息，本地的 Claude Code、Codex、opencode、pi、Kimi 或 DSH 在你指定的目录里读写文件、跑命令，回复原路送回飞书。默认 agent 是 Claude Code，其余五个见下文「配置」。
 
-单用户、p2p 私聊，不修改 Claude 的 system prompt。
+单用户、p2p 私聊，不修改 agent 的 system prompt。
 
 ---
 
@@ -157,12 +157,12 @@ lark-remote 运行期间会**阻止系统自动休眠**，以免远程连接不�
 
 ## 五、命令
 
-直接发非 `/` 开头的消息即转发给 Claude。以 `/` 开头走内置命令，**部分命令支持单字母别名**（`/help /h`、`/status /s`、`/stop /t`、`/exit /e`、`/resume /r`、`/config /c`、`/order /o`、`/download /d`）：
+直接发非 `/` 开头的消息即转发给当前 agent。以 `/` 开头走内置命令，**部分命令支持单字母别名**（`/help /h`、`/status /s`、`/stop /t`、`/exit /e`、`/resume /r`、`/config /c`、`/order /o`、`/download /d`）：
 
 | 命令                                        | 别名 | 行为                                                                                                                                                         |
 | ------------------------------------------- | ---- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `/help`                                     | `/h` | 显示命令列表                                                                                                                                                 |
-| `/cd <path>`                                | -    | 切换 Claude 工作目录（支持 `~`、绝对/相对路径，会清空当前会话，下次消息开新对话）                                                                            |
+| `/cd <path>`                                | -    | 切换 agent 工作目录（支持 `~`、绝对/相对路径，会清空当前会话，下次消息开新对话）                                                                            |
 | `/cd`                                       | -    | 不带参数时显示当前目录                                                                                                                                       |
 | `/ls [dir\|file]`                           | -    | 弹出目录/文件卡片；点击目录切换，点击 30MB 内文件发送到飞书；条目 >30 时分页（可直接输入页码跳转），卡片内可按关键词筛选本层条目。传文件路径时列出该文件本身 |
 | `/download <path>`                          | `/d` | 直接下载（发送）指定文件到飞书，上限 30MB                                                                                                                    |
@@ -191,7 +191,7 @@ lark-remote 运行期间会**阻止系统自动休眠**，以免远程连接不�
 
 #### `/cd` 与 `/ls`：目录导航
 
-- **`/cd <path>`** 支持 `~`（展开为 home 目录）、绝对路径和相对路径（相对当前目录）。切换后会清空 session，因为 `--resume` 会恢复 Claude 记忆中的旧 cwd，不清则文件读写错乱。
+- **`/cd <path>`** 支持 `~`（展开为 home 目录）、绝对路径和相对路径（相对当前目录）。切换后会清空 session，因为 `--resume` 会恢复 agent 记忆中的旧 cwd，不清则文件读写错乱。
 - **`/ls [dir]`** 返回 CardKit 2.0 卡片，列出当前目录的**全部**子目录和文件；传 `[dir]` 可列出指定子目录（等价于 bash `ls <dir>`）。点击目录按钮即浏览该目录（`ls.browse`，不切换 cwd），"切换"按钮把工作目录切换到当前浏览的绝对路径（`ls.switch`，校验目标存在且是目录）。点击文件按钮会把 30MB 内的文件上传并发送到当前飞书私聊，超过限制会返回错误提示。
 - **「返回」按钮回到本次 `/ls` 的起点**：`/ls <dir>` 的起点是 `<dir>` 本身（所以起点卡片上没有「返回」，只有「切换」）；进入子目录后「返回」回到 `<dir>`，**不会把你丢回 workspace 工作目录**。不带参数的 `/ls` 起点即当前工作目录，行为与以前一致。翻页、刷新都不会丢掉这个起点。
 - **`/ls <file>`** 传文件路径时不再报 `Not a directory`，而是渲染一张单文件卡片（路径、大小、修改时间，附「下载」与「上级」按钮），方便先确认文件是否存在再决定是否下载。
@@ -234,7 +234,7 @@ lark-remote 运行期间会**阻止系统自动休眠**，以免远程连接不�
 /resume aaaa5678     # 手动切到另一个
 ```
 
-> `/cd`、`/ws use`、`/ls` 点击切换目录时都会清空 session（开新对话，§9.1），因为 `--resume` 会恢复 Claude 记忆中的旧 cwd，跨目录续 session 会导致文件读写错乱。要续旧 session 请先切回对应目录再 `/resume`。Claude 会话内 `EnterWorktree` 会 relocate 到 worktree，`/s` 显示「会话目录」告知实际位置，`/new` 可回工作目录。
+> `/cd`、`/ws use`、`/ls` 点击切换目录时都会清空 session（开新对话，§9.1），因为 `--resume` 会恢复 agent 记忆中的旧 cwd，跨目录续 session 会导致文件读写错乱。要续旧 session 请先切回对应目录再 `/resume`。Claude 会话内 `EnterWorktree` 会 relocate 到 worktree，`/s` 显示「会话目录」告知实际位置，`/new` 可回工作目录。
 
 #### `/stop`：终止进程
 
@@ -389,7 +389,7 @@ bot: 已切换到: /Users/you/code/my-app
 
 ## 七、输出格式
 
-每次 Claude run 正常路径只创建一张 CardKit 2.0 卡片，并持续原地更新。thinking、
+每次 agent run 正常路径只创建一张 CardKit 2.0 卡片，并持续原地更新。thinking、
 tool_use / tool_result 恒常展示（不做配置开关）：
 
 - **thinking**：始终展示，标题显示本地时间戳
@@ -407,13 +407,13 @@ tool_use / tool_result 恒常展示（不做配置开关）：
 
 | 情况                        | 行为                                                        |
 | --------------------------- | ----------------------------------------------------------- |
-| claude 进程被外部 kill      | lark-remote 报错但不崩溃，下一条消息正常处理                |
-| claude 长时间无输出（挂起） | 15 分钟空闲超时自动终止进程，原卡片显示超时，queue 解除阻塞 |
-| lark-remote 异常退出        | 残留 claude 进程被清理（启动时读 pid 文件 kill 孤儿）       |
+| agent 进程被外部 kill       | lark-remote 报错但不崩溃，下一条消息正常处理                |
+| agent 长时间无输出（挂起）  | 15 分钟空闲超时自动终止进程，原卡片显示超时，queue 解除阻塞 |
+| lark-remote 异常退出        | 残留 agent 进程被清理（启动时读 pid 文件 kill 孤儿）        |
 | 同一 configDir 重复启动     | 第二个实例直接退出并提示已有 pid                            |
 | 飞书限流（99991400）        | 自动 sleep 200ms 重试一次                                   |
 | `/ls` 点击文件发送失败      | 返回 `发送文件失败: ...`，30MB 以上文件在上传前拒绝         |
-| 消息并发到达                | 串行处理（Promise 链），不会启动多个 claude 进程            |
+| 消息并发到达                | 串行处理（Promise 链），不会启动多个 agent 进程             |
 | `/cd` 后发消息              | 清空 session，开新对话（不带 `--resume`）                   |
 
 ---
@@ -426,7 +426,7 @@ bun run typecheck   # tsc --noEmit 静态检查
 ```
 
 测试覆盖：config、session、workspace、runner（JSONL 解析 + exit code）、card（状态机、渲染、
-stream 生命周期）、lark-remote（work queue + control lane + 空闲超时自动停止 + 降级）、router 以及 integration。
+stream 生命周期）、bridge（work queue + control lane + 空闲超时自动停止 + 降级）、router 以及 integration。
 
 ---
 

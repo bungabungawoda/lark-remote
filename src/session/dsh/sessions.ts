@@ -664,7 +664,7 @@ function mapEvent(ev: DshSessionEvent): MappedEvent {
       const timestamp = safeEventTimestamp(ev.time);
       // DSH 的块类型是 text / reasoning / tool-call（不是 Anthropic 的
       // thinking）。只认 text 会让 resume 卡"只有工具调用、没有思考与输出"
-      // （2026-10-19 反馈：一个 31 turn 的会话里 reasoning 块 371 个、text 12 个，
+      // （一个 31 turn 的会话里 reasoning 块 371 个、text 12 个，
       // 全被丢掉）。tool-call 块不在这里取——独立的 `tool/call` 事件带完整参数。
       for (const block of content) {
         const text = typeof block.text === 'string' ? block.text.trim() : '';

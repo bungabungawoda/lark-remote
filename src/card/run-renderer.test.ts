@@ -37,7 +37,7 @@ describe('renderRunCard', () => {
   });
 
   it('keeps a table-truncated final answer inside the card (no duplicate text spill)', () => {
-    // 回归（2026-11-02 实机）：回答含 6 张表 > 飞书单卡 5 张上限时，渲染器曾把
+    // 回归：回答含 6 张表 > 飞书单卡 5 张上限时，渲染器曾把
     // 「表格被删」当成「卡片装不下」，卡片照样渲染了正文，桥却再补发一份
     // 「完整回答」纯文本——用户看到整篇回答重复两遍。
     const table = (n: number): string =>
@@ -672,8 +672,8 @@ describe('renderRunCard', () => {
   });
 
   it('test_anchor_ask_user_question_input_names_unique_when_other_and_note_coexist', () => {
-    // 2026-08-19 线上 单选选项题同时渲染 Other 输入 + Note 输入，二者 name
-    // 均为 answer-custom-0-0 → 飞书 ErrCode 11310 拒绝整卡，提问卡静默失败致
+    // 单选选项题同时渲染 Other 输入 + Note 输入时，二者 name 曾均为
+    // answer-custom-0-0 → 飞书 ErrCode 11310 拒绝整卡，提问卡静默失败致
     // run 挂起。回归：name 必须按 cmd 区分，同一题多个 input 互不重复。
     const cases = [
       {
@@ -859,7 +859,7 @@ describe('renderRunCard', () => {
   });
 
   it('test_anchor_interrupted_with_expired_approval_renders_timeout_reason', () => {
-    // 2026-08-14 事故回归：审批 5 分钟无人响应→自动 cancel→turn interrupted。
+    // 回归：审批 5 分钟无人响应→自动 cancel→turn interrupted。
     // 终态必须如实展示「审批超时未响应，已自动取消」，而不是归因于 Agent 出错，
     // 也不是泛化的「已被用户终止」（用户实际没有主动终止）。
     let state = createInitialRunState('run-approval-expired');
@@ -887,7 +887,7 @@ describe('renderRunCard', () => {
   });
 
   it('test_anchor_expired_then_resolved_still_renders_timeout_reason', () => {
-    // 2026-08-15 事故回归：真实协议顺序是 requested → expired（桥侧 timer）
+    // 回归：真实协议顺序是 requested → expired（桥侧 timer）
     // → resolved（cancel 送达后 server 回 serverRequest/resolved）→ result。
     // approval_resolved 会把审批条目从 approvals 移除，过期原因必须独立于
     // 该条目存活到终态渲染，否则卡片误报「已被用户终止」。
@@ -997,7 +997,7 @@ describe('renderRunCard', () => {
   });
 
   it('test_anchor_pending_approval_title_shows_waiting_for_approval', () => {
-    // 2026-08-14 UX：审批等待期间命令工具未 completed，footer 停在 tool_running，
+    // 审批等待期间命令工具未 completed，footer 停在 tool_running，
     // 标题此前显示「调用工具」。必须改为「等待审批」，提示当前在等人工决策。
     let state = createInitialRunState('run-approval-title');
     state = reduceRunState(state, {
@@ -1171,7 +1171,7 @@ describe('renderRunCard', () => {
   it('test_anchor_file_approval_renders_change_details_with_diff', () => {
     // 验证行为：文件变更审批区域必须渲染真实变更详情——路径 + diff 内容。
     // 缺失后果：用户只看到「📄 文件变更审批」标题，无法判断将改动什么文件、
-    // 改动什么内容（线上真实协议下 grantRoot/reason 为 null，diff 来自
+    // 改动什么内容（真实协议下 grantRoot/reason 为 null，diff 来自
     // item/started 的 changes[]）。
     // 依据：真实 codex app-server 抓包 + 用户报告。
     let state = createInitialRunState('run-approval-file');
@@ -2298,7 +2298,7 @@ describe('renderRunCard (CardKit 2.0)', () => {
   });
 
   it('compaction card with no content renders "Compact 完成", not the empty placeholder', () => {
-    // 压缩不会返回 agent 正文，空内容属正常（2026-09 用户反馈）。旧实现套用
+    // 压缩不会返回 agent 正文，空内容属正常。旧实现套用
     // 普通 run 的「（未返回内容）」，看起来像异常，实际只是一次成功压缩。
     let state = createInitialRunState('run-compact-empty');
     state = reduceRunState(state, {
@@ -2342,7 +2342,7 @@ describe('renderRunCard (CardKit 2.0)', () => {
 
   it('claude stream-json run (no turn_started) shows compact button on terminal state', () => {
     // claude 走 stream-json，从不发射 turn_started → operationKind 恒 undefined。
-    // 回归：2026-08-19 缺陷——shouldShowCompactButton 以 operationKind==='turn'
+    // 回归：shouldShowCompactButton 以 operationKind==='turn'
     // 作门控，claude 终态卡永远拿不到 Compact 按钮（只有 resume 卡有）。能力
     // 门控改为 compactSupported 后，bridge 传 runner 有 runCompact → 按钮出现。
     let state = createInitialRunState('run-claude-compact');
@@ -3443,7 +3443,7 @@ describe('运行期通知作为普通消息', () => {
  * 工具块 = 原生折叠面板 + 正文截断。
  *
  * 曾经的「一行 + 服务端详情按钮」方案（正文不入 payload、点击回服务端重出卡）
- * 在手机上要多点一次、按钮还挤掉标题宽度（2026-10-19 截图反馈）。现在回到
+ * 在手机上要多点一次、按钮还挤掉标题宽度。现在回到
  * 折叠面板：点标题展开，零往返；体积问题由**按工具数量缩放的正文截断**解决。
  *
  * 这组 anchor 锁四件事：
@@ -3545,8 +3545,8 @@ describe('renderRunCard tool panels (native fold + truncation)', () => {
  * 运行期状态投影（DSH session/control）：状态行一行带出上下文水位与步数。
  *
  * 口径来自服务端自己算好的投影，bridge 不重算：百分比用 projectedTokens
- * （没有才退回实际占用），`~` 表示这是投影值而非计费值。终态卡也保留状态条
- * （2026-10-21 用户要求）：耗时定格，步数/上下文展示这一跑的最后快照；
+ * （没有才退回实际占用），`~` 表示这是投影值而非计费值。终态卡也保留状态条：
+ * 耗时定格，步数/上下文展示这一跑的最后快照；
  * summary 的最终 usage 与它并存，口径不同。
  */
 describe('renderRunCard live status strip', () => {
@@ -3605,7 +3605,7 @@ describe('renderRunCard live status strip', () => {
  * 后台任务的生命周期跨 turn：卡片收尾时如果不说，用户会以为机器上已经安静了。
  * 每个任务必须带停止入口——否则用户只能回到 DSH 的 Web UI 去杀。
  *
- * 2026-10-21 手机端反馈：旧布局把命令（grow）和停止按钮（auto）放在同一
+ * 旧布局把命令（grow）和停止按钮（auto）放在同一
  * `column_set`，窄屏下按钮被挤成「🟥…」，命令又被 truncate(60) 截断。以下
  * 用例锁住新布局：命令全文保留、长命令折叠可展开、按钮独占一行。
  */
@@ -3836,7 +3836,7 @@ describe('renderRunCard background jobs', () => {
  *
  * 工具行是节点大户：带按钮的行 ≈ 10 个节点，纯标题行 2 个。24 行全带按钮 +
  * 面板 + 展开正文会到 179 节点，**在 28KB 字节预算之内**——只查字节的安全网
- * 抓不到，真机上直接 11310（2026-10-19 测试会话实测）。
+ * 抓不到，真机上直接 11310。
  */
 describe('renderRunCard element budget (Feishu 11310)', () => {
   function heavyState(opts: { tools: number; panels: number }): RunState {
@@ -3877,10 +3877,10 @@ describe('renderRunCard element budget (Feishu 11310)', () => {
 });
 
 /**
- * 状态行的窄屏守卫（2026-10-19 手机端实测回归）。
+ * 状态行的窄屏守卫。
  *
  * 旧实现把「状态标签」和「指标」放进 `column_set` 的 auto + grow 两列：手机上
- * auto 列被挤到两个字宽，"运行中" 断成 "运行 / 中"（用户截图反馈）。列宽由对端
+ * auto 列被挤到两个字宽，"运行中" 断成 "运行 / 中"。列宽由对端
  * 决定，服务端控制不了，所以状态行必须是**单 div**；换行只允许发生在 " · "
  * 分隔符处，且每个分段短到不可能自身折行。
  */
@@ -3998,7 +3998,7 @@ describe('error 卡文案：服务方内容审核截断', () => {
     expect(json).toContain('content_filter');
     expect(json).toContain('已写入磁盘的改动都还在');
     expect(json).not.toContain('运行出错');
-    // 2026-10-21：改卡必须同时守住 2.0 卡片的 200861 铁律
+    // 改卡必须同时守住 2.0 卡片的 200861 铁律
     expectNoV1ActionContainer(json);
   });
 

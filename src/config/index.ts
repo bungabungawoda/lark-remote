@@ -15,7 +15,7 @@ export const CLAUDE_EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'] as const
 
 /**
  * Claude 的权限模式取值：'default' 之外都是 CLI `--permission-mode` 的真实枚举
- * （2026-09-20 实测 claude --help：acceptEdits | auto | bypassPermissions | manual
+ * （claude --help：acceptEdits | auto | bypassPermissions | manual
  * | dontAsk | plan）。
  * 'default' 是本项目自造的值，不是 CLI 的取值 —— 它表示"不传 --permission-mode"，
  * 由 CLI 自己决定默认模式，转换在 runner/claude/session.ts 的 spawn 参数处。
@@ -65,7 +65,7 @@ export const DEFAULT_APPROVAL_TIMEOUT_MS = DEFAULTS.APPROVAL_TIMEOUT_MS;
 /**
  * 入站媒体默认配置（schema 默认与 connector 兜底共用，避免双源漂移）。
  *
- * 单文件上限默认 100MB：50MB 对视频偏小（2026-09-15 事故就是 mp4 被丢弃）。
+ * 单文件上限默认 100MB：50MB 对视频偏小（mp4 会被丢弃）。
  * 注意飞书侧 `type=file` 超过 100MB 必须用 Range 分片下载，而 SDK 的
  * `downloadResourceToFile` 不分片（必报 234037），所以 100 是实际可用上限
  * （inbound-message-matrix.md §4 第 4 条）。

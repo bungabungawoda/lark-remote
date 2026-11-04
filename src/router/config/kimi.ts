@@ -17,7 +17,7 @@ import { pickMiddleValue } from './common/model-patch.js';
 import { turnIdleTimeoutField } from './common/turn-idle.js';
 
 const PERMISSION_MODE_OPTIONS: SelectOption[] = [
-  // kimi 0.40.0（2026-09-02）起官方语义：manual=始终询问 / yolo=必要时询问 / auto=完全自动
+  // kimi 0.40.0 起官方语义：manual=始终询问 / yolo=必要时询问 / auto=完全自动
   { text: 'manual（始终询问）', value: 'manual' },
   { text: 'auto（完全自动）', value: 'auto' },
   { text: 'yolo（必要时询问）', value: 'yolo' },

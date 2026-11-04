@@ -89,7 +89,7 @@ async function sendAutoResumeCard(
 
   // Limit history events to prevent card size exceeded error (11310).
   // 窗口按"最后 N 条"截，但强制保住最后一条用户消息与最后一条 assistant 正文，
-  // 否则工具往返会把它俩一起挤出卡（2026-10-19 恢复卡只剩 5 个 bash 面板）。
+  // 否则工具往返多时（如连续 bash 面板占满窗口）会把这两条挤出卡。
   const MAX_HISTORY_EVENTS = 5;
   const eventsToShow = pickResumeCardEvents(state.events, MAX_HISTORY_EVENTS);
   const hiddenCount = state.events.length - eventsToShow.length;
@@ -318,10 +318,10 @@ function initializeRunner(
   });
   sessionReaderRegistry.register('opencode', opencodeSessionReader);
 
-  // Register PiRpcRunner and PiSessionReader
-  // 2026-07-12: 修复 config.save 后 pi provider 不生效的问题
-  // 关键：factory 闭包必须能访问到最新的 config，而不是启动时的快照
-  // 用可变容器存储 config 引用，registry 持有容器引用，factory 从容器读取最新值
+  // Register PiRpcRunner and PiSessionReader.
+  // factory 闭包必须读最新 config 而不是启动时的快照，否则 /config 保存后
+  // provider 等字段对 pi 不生效：config 引用放在可变容器里，registry 持有容器，
+  // factory 每次从容器取最新值。
   const configContainer = { current: config };
   agentRegistry.setConfigContainer(configContainer);
   const piSessionReader = new PiSessionReader();

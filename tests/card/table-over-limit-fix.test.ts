@@ -7,7 +7,7 @@ import { countMarkdownTables, FEISHU_MAX_TABLES } from '../../src/card/text-trun
  * Test anchor: markdown tables in text blocks are truncated to FEISHU_MAX_TABLES
  * to avoid triggering Feishu ErrCode 11310 (card table number over limit).
  *
- * Key insight (2026-08-07): collapsible_panel does NOT shield markdown tables
+ * Key insight: collapsible_panel does NOT shield markdown tables
  * from Feishu's 11310 table count limit. Tables inside lark_md text are still
  * counted regardless of container. The fix is to truncate excess tables
  * directly in the text content before rendering.

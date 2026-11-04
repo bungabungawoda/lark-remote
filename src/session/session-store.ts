@@ -36,7 +36,7 @@ export class SessionStore {
   private readonly persistPath?: string;
 
   /**
-   * 进程内会话代际（2026-08-09 /new 被在途 run init 写回撤销事故）：
+   * 进程内会话代际（防 /new 被在途 run init 写回撤销）：
    * 每次「用户意图移动 session 指针」+1。system.init 写回通道不 bump。
    * Bridge 在 run 启动时快照 epoch，init 写回前比较——不一致说明 /new、
    * /cd、/resume 等在 run 在途时移动了指针，该 run 的写回是 stale 的，丢弃。

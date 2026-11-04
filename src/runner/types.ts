@@ -303,7 +303,7 @@ export interface ResultEvent {
    * 省略）` 标记——渲染层再怎么「回答优先」也找不回被丢掉的头部。runner 在
    * 收 turn 时拿到的是**完整** assistant 文本（一条消息，不是逐 delta 拼接），
    * 把它挂在 result 上，`promoteFinalAnswer` 用它建立 finalAnswer，回答因此
-   * 不再被进度窗口截断（2026-11-01 卡片输出块被截断缺陷）。
+   * 不再被进度窗口截断。
    */
   finalAnswerText?: string;
   usage?: {
@@ -625,7 +625,7 @@ export { AGENT_DISPLAY_NAMES } from '../agent-kinds.js';
  * 键集就是 `AgentKind`：新增 agent 时缺一项 = TypeScript 报错，必须显式回答
  * 「这个 agent 能不能压缩」。历史教训：能力只由 runner 上有没有 `runCompact`
  * 这个鸭子方法隐式决定，dsh 接入时漏了实现，run 卡片直接不渲染按钮——没有
- * 报错、没有置灰、没有日志，用户只能看到一个缺失的按钮（2026-10-17）。
+ * 报错、没有置灰、没有日志，用户只能看到一个缺失的按钮。
  *
  * 声明与实现的唯一性由 `src/runner/runner-structure.test.ts` 的矩阵用例保证：
  * 每个 kind 的声明值必须等于对应 runner 类是否实现 `runCompact`。bridge 侧
