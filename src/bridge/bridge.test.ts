@@ -2132,7 +2132,7 @@ describe('Bridge agentRegistry / sessionReaderRegistry', () => {
     // finalize 因此跳过清理块，stale 会拖到再下一轮——`/config` 改配置 + `/stop`
     // 组合下旧配置多跑一轮。
     //
-    // 变异检查：
+    // 能抓到的错改：
     //   - interrupt 内改回无条件立即 evictRunnerSlot → 「interrupt 后未 dispose」断言红；
     //   - 去掉 getRunner 的 replaceStale → 「run2 前旧实例已 dispose」断言红。
     const { AgentRegistry } = await import('../runner/registry.js');
@@ -4147,7 +4147,7 @@ describe('Bridge handleResumeCompact（resume 卡 Compact 按钮）', () => {
     // （用户 /stop 后点 Compact 只得到这句话，压缩静默失效）。
     // 缺失后果：任何一次中断都会让该 run 的 Compact 按钮变成死按钮，只能改用
     // /resume 卡。
-    // 变异检查：把 recordCompactableRunForTerminal 挪回 finalizeRun 的
+    // 能抓到的错改：把 recordCompactableRunForTerminal 挪回 finalizeRun 的
     // `if (this.activeRuns.get(cwd) === activeRun)` 块内 → 本用例红。
     const cwd = fs.realpathSync(tmpDir);
     const runCompactSpy = vi.fn(compactTurnEvents);
