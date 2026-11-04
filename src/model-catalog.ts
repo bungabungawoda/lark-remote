@@ -6,7 +6,7 @@
  * 「地基层被 runner 反向 import」；挪到这里后三方共同引用同一份。
  *
  * 表内容来自 Claude CLI 的模型别名（alias 是 CLI 侧的稳定名字，model ID 会随
- * 版本变），新增一行只改这里。
+ * 版本变），新增一行只改 MODEL_ID_TO_ALIAS，反向表自动派生。
  */
 
 /** 模型 ID → alias 映射。 */
@@ -17,10 +17,7 @@ export const MODEL_ID_TO_ALIAS: Record<string, string> = {
   'claude-fable-5': 'fable',
 };
 
-/** alias → model ID 反向映射。 */
-export const MODEL_ALIAS_TO_ID: Record<string, string> = {
-  opus: 'claude-opus-4-8',
-  sonnet: 'claude-sonnet-4-6',
-  haiku: 'claude-haiku-4-5-20250501',
-  fable: 'claude-fable-5',
-};
+/** alias → model ID 反向映射（从正向表派生，新增别名只改上面一张表）。 */
+export const MODEL_ALIAS_TO_ID: Record<string, string> = Object.fromEntries(
+  Object.entries(MODEL_ID_TO_ALIAS).map(([id, alias]) => [alias, id]),
+);

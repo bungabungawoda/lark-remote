@@ -296,8 +296,12 @@ export class DshSessionReader implements AgentSessionReader {
       const { items: page, total } = paginate(filtered, opts ?? {});
       return { sessions: page, total };
     } catch (error) {
-      getLogger().error(`[dsh-session-reader] listSessions error: ${(error as Error).message}`);
-      return { sessions: [], total: 0 };
+      // 远端 RPC 没有真空态：daemon 未启动 / cookie 失效 / 超时全是故障态。
+      // error 日志 + 上抛，router 显示「列表失败」——静默 [] 会让用户误以为
+      // 没有 session，与真空不可区分（与 kimi/opencode 同口径）。
+      getLogger().error(`[dsh-session-reader] listSessions failed: ${error}`);
+      const msg = error instanceof Error ? error.message : String(error);
+      throw new Error(`dsh session list 读取失败: ${msg}`, { cause: error });
     }
   }
 
@@ -447,9 +451,9 @@ export class DshSessionReader implements AgentSessionReader {
         ...(preview.title ? { aiTitle: preview.title } : {}),
       };
     } catch (error) {
-      getLogger().error(
-        `[dsh-session-reader] readSessionContent error: ${(error as Error).message}`,
-      );
+      // 降级为空卡（与 claude/pi 同口径），但完整错误对象入日志保留 stack，
+      // 否则 wire 截断 / 权限问题只剩一句 message 无法定位。
+      getLogger().error(`[dsh-session-reader] readSessionContent failed: ${error}`);
       return { events: [] };
     }
   }
@@ -458,7 +462,7 @@ export class DshSessionReader implements AgentSessionReader {
     try {
       return this.resolveSession(sessionId, cwd)?.running === true;
     } catch (error) {
-      getLogger().error(`[dsh-session-reader] isSessionActive error: ${(error as Error).message}`);
+      getLogger().error(`[dsh-session-reader] isSessionActive failed: ${error}`);
       return false;
     }
   }

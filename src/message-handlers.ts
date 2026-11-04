@@ -31,7 +31,7 @@ const SESSION_MUTATING_FLUSH_BUDGET_MS = 2_000;
  * /stop 命令别名单源：普通消息的停止分支与 clone 活跃期拦截的排除条件
  * 共用同一判定，防止将来加别名时两处漂移。
  */
-export function isStopCommand(text: string): boolean {
+function isStopCommand(text: string): boolean {
   const t = text.trim().toLowerCase();
   return t === '/stop' || t === '/t';
 }

@@ -54,7 +54,6 @@ import type {
   DshSessionListValue,
   DshSessionPageValue,
   DshStreamItem,
-  DshTokenUsage,
 } from '../../dsh/types.js';
 import { goalFromProjection } from './goal-view.js';
 import type { GoalView } from '../types.js';
@@ -350,6 +349,7 @@ export class DshClient {
           err.code === 'http' &&
           err.details.status === 401
         ) {
+          getLogger().warn(`[dsh] 401 while authenticating ${method}, re-minting cookie once`);
           continue;
         }
         throw err;
@@ -383,6 +383,7 @@ export class DshClient {
       }
       if (res.status === 401 && attempt === 0) {
         this.cookiePromise = undefined;
+        getLogger().warn(`[dsh] 401 for ${method}, re-minting cookie once`);
         continue;
       }
       if (res.status === 401) {
@@ -1254,11 +1255,6 @@ export class DshClient {
       getLogger().warn(`[dsh] job/kill failed job=${jobId}: ${(err as Error).message}`);
       return false;
     }
-  }
-
-  /** Extract TokenUsage from an assistant/message data payload (absent → undefined). */
-  static usageOf(data: Record<string, unknown>): DshTokenUsage | undefined {
-    return (data.usage as DshTokenUsage | undefined) ?? undefined;
   }
 }
 

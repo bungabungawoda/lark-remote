@@ -20,6 +20,7 @@ import {
   createStubRunner,
   makeBridge,
   createStubSessionReader,
+  interruptCurrentRun,
 } from '../../tests/lib/bridge-stubs.js';
 import { prependPath, restorePath, writeMockBin } from '../../tests/lib/path-mock.js';
 import { rmRf } from '../../tests/lib/tmp-cleanup.js';
@@ -372,7 +373,7 @@ describe('executeBash / claude concurrency (! bypasses serial queue)', () => {
     await bashPromise;
 
     // cleanup: stop the hanging claude run
-    await bridge.interruptCurrentRun({ userId: ctx.userId, chatId: ctx.chatId });
+    await interruptCurrentRun(bridge, { userId: ctx.userId, chatId: ctx.chatId });
     await claudePromise.catch(() => {});
   });
 
@@ -386,7 +387,7 @@ describe('executeBash / claude concurrency (! bypasses serial queue)', () => {
     await new Promise((r) => setTimeout(r, 300)); // let it spawn
 
     // /stop without runId — matches by userId/chatId
-    const stopped = await bridge.interruptCurrentRun({ userId: ctx.userId, chatId: ctx.chatId });
+    const stopped = await interruptCurrentRun(bridge, { userId: ctx.userId, chatId: ctx.chatId });
     expect(stopped).toBe(true);
 
     // bash must exit within grace period (not wait 60s)
@@ -421,6 +422,33 @@ describe('executeBash / claude concurrency (! bypasses serial queue)', () => {
     expect(result.stopped).toBe(true);
     expect(result.agentKind).toBe(config.defaultAgent);
     expect(result.stop).toEqual({ status: 'unconfirmed', sessionId: 'sess-dsh' });
+    await promise.catch(() => {});
+  });
+
+  /**
+   * 验证什么：runner.stop 抛错（如 DSH cancel RPC 网络失败）时，bridge 不得
+   * 假装已停止——按 unconfirmed 上报且 detail 带根因；否则槽位已释放、队列
+   * 放行下一条，孤儿进程继续消耗额度而用户看到「已停止」。
+   */
+  it('interruptCurrentRunDetailed reports unconfirmed when runner.stop rejects', async () => {
+    const runner = createHangingRunner();
+    runner.stop = async () => {
+      throw new Error('cancel rpc unreachable');
+    };
+    const { bridge, sessionStore } = makeBridge({ runner });
+    const cwd = fs.realpathSync(tmpDir);
+    sessionStore.setCwd(ctx.userId, cwd);
+
+    const promise = bridge.forwardToClaude('hi', ctx);
+    await vi.waitFor(() => expect(bridge.isBusyFor(cwd)).toBe(true));
+
+    const result = await bridge.interruptCurrentRunDetailed({
+      userId: ctx.userId,
+      chatId: ctx.chatId,
+    });
+    expect(result.stopped).toBe(true);
+    expect(result.stop?.status).toBe('unconfirmed');
+    expect(result.stop?.detail).toContain('cancel rpc unreachable');
     await promise.catch(() => {});
   });
 
@@ -488,7 +516,7 @@ describe('executeBash / claude concurrency (! bypasses serial queue)', () => {
     expect(result).toEqual({ stopped: false });
     expect(bridge.isBusyFor(cwd)).toBe(true);
 
-    await bridge.interruptCurrentRun({ userId: ctx.userId, chatId: ctx.chatId });
+    await interruptCurrentRun(bridge, { userId: ctx.userId, chatId: ctx.chatId });
     await promise;
   });
 });
@@ -721,21 +749,21 @@ describe('Bridge.forwardToClaude', () => {
     const runId = extractRunId(initial);
 
     expect(
-      await bridge.interruptCurrentRun({
+      await interruptCurrentRun(bridge, {
         userId: ctx.userId,
         chatId: ctx.chatId,
         runId: 'stale-run',
       }),
     ).toBe(false);
     expect(
-      await bridge.interruptCurrentRun({
+      await interruptCurrentRun(bridge, {
         userId: 'other-user',
         chatId: ctx.chatId,
         runId,
       }),
     ).toBe(false);
     expect(
-      await bridge.interruptCurrentRun({
+      await interruptCurrentRun(bridge, {
         userId: ctx.userId,
         chatId: 'other-chat',
         runId,
@@ -743,7 +771,7 @@ describe('Bridge.forwardToClaude', () => {
     ).toBe(false);
     expect(runner.stopCalled).toBe(false);
     expect(
-      await bridge.interruptCurrentRun({
+      await interruptCurrentRun(bridge, {
         userId: ctx.userId,
         chatId: ctx.chatId,
         runId,
@@ -1301,7 +1329,11 @@ describe('Bridge.forwardToClaude', () => {
     const { bridge, sessionStore, connector } = makeBridge({
       runner: createStubRunner({ mode: 'streaming', events }),
     });
-    connector.sendFile = async () => {
+    // 记录落盘路径：失败时文件必须保留（卡片正文已被标记替代，文件是唯一
+    // 内容载体，错误日志里的路径必须可找回）。
+    let failedPath: string | undefined;
+    connector.sendFile = async (_chatId: string, filePath: string) => {
+      failedPath = filePath;
       throw new Error('upload rejected');
     };
     sessionStore.setCwd(ctx.userId, tmpDir);
@@ -1317,6 +1349,9 @@ describe('Bridge.forwardToClaude', () => {
       return card !== undefined && JSON.stringify(card).includes('完整回答文件发送失败');
     });
     expect(notice).toBeDefined();
+    // 失败路径保留临时文件（日志承诺 kept at），由 OS tmpdir 清理策略回收。
+    expect(failedPath).toBeDefined();
+    expect(fs.readFileSync(failedPath!, 'utf8')).toBe(finalAnswer);
   });
 
   it('does not duplicate a final answer that fits the run card, even with many tables', async () => {
@@ -2155,7 +2190,7 @@ describe('Bridge agentRegistry / sessionReaderRegistry', () => {
     });
 
     // interrupt：stop 立即 resolve（activeRuns 尚未被子 run 链收尾删除）
-    await bridge.interruptCurrentRun({ userId: ctx.userId, chatId: ctx.chatId });
+    await interruptCurrentRun(bridge, { userId: ctx.userId, chatId: ctx.chatId });
     // 修复后：不立即 evict+dispose（旧行为在此已 dispose → 脱管根源）
     expect(created[0].disposed).toBe(false);
     expect(created[0].orphaned).toBe(false);
@@ -2852,7 +2887,7 @@ describe('Bridge finalizing integration tests', () => {
     await new Promise((r) => setImmediate(r));
 
     // User clicks stop during finalizing
-    await bridge.interruptCurrentRun({ userId: ctx.userId, chatId: ctx.chatId });
+    await interruptCurrentRun(bridge, { userId: ctx.userId, chatId: ctx.chatId });
 
     // Release the runner (simulating process exit after interrupt)
     runner.release();
@@ -4157,7 +4192,7 @@ describe('Bridge handleResumeCompact（resume 卡 Compact 按钮）', () => {
       const calls = mockLogger.info.mock.calls.slice(initCallsBefore).map((c) => String(c[0]));
       expect(calls.some((line) => line.includes('system.init received'))).toBe(true);
     });
-    await bridge.interruptCurrentRun({ userId: ctx.userId, chatId: ctx.chatId });
+    await interruptCurrentRun(bridge, { userId: ctx.userId, chatId: ctx.chatId });
     await runPromise;
     expect(bridge.isBusy).toBe(false);
 
@@ -4665,7 +4700,7 @@ describe('Bridge compact run 注册 / 看门狗 / 终态 reaction', () => {
     // 注册：压缩在途期间工作区算活跃 run（/active、/stop 都看得到）
     expect(bridge.isBusy).toBe(true);
 
-    const stopped = await bridge.interruptCurrentRun({ userId: ctx.userId, chatId: ctx.chatId });
+    const stopped = await interruptCurrentRun(bridge, { userId: ctx.userId, chatId: ctx.chatId });
     await compactPromise;
 
     expect(stopped).toBe(true);
@@ -4741,7 +4776,7 @@ describe('Bridge compact run 注册 / 看门狗 / 终态 reaction', () => {
     expect(bridge.getActiveRuns()).toHaveLength(1);
 
     stopSpy.mock.calls.length = 0;
-    await bridge.interruptCurrentRun({ userId: ctx.userId, chatId: ctx.chatId });
+    await interruptCurrentRun(bridge, { userId: ctx.userId, chatId: ctx.chatId });
     await runPromise;
     expect(bridge.isBusy).toBe(false);
   }, 10000);
@@ -4786,7 +4821,7 @@ describe('Bridge 中断与队列收口回归', () => {
     await vi.waitFor(() => {
       expect(bridge.isBusy).toBe(true);
     });
-    await bridge.interruptCurrentRun({ userId: ctx.userId, chatId: ctx.chatId });
+    await interruptCurrentRun(bridge, { userId: ctx.userId, chatId: ctx.chatId });
     await runP;
 
     const all = connector._cards.map((c) => JSON.stringify(c)).join('\n');
@@ -4833,7 +4868,7 @@ describe('Bridge 中断与队列收口回归', () => {
     await vi.waitFor(() => {
       expect(bridge.getActiveRuns()).toHaveLength(1);
     });
-    const stopped = await bridge.interruptCurrentRun({ userId: ctx.userId, chatId: ctx.chatId });
+    const stopped = await interruptCurrentRun(bridge, { userId: ctx.userId, chatId: ctx.chatId });
     expect(stopped).toBe(true);
     expect(stopCalled).toBe(true);
 
@@ -4970,7 +5005,7 @@ describe('Bridge 中断与队列收口回归', () => {
     });
     // 等价 /config 落在一个活跃 cwd：标记 stale，但不立刻 evict。
     bridge.clearRunners();
-    await bridge.interruptCurrentRun({ userId: ctx.userId, chatId: ctx.chatId });
+    await interruptCurrentRun(bridge, { userId: ctx.userId, chatId: ctx.chatId });
     await run1;
     expect(created[0].runs).toBe(1);
 
@@ -5096,7 +5131,7 @@ describe('Bridge 中断与队列收口回归', () => {
     expect(bridge.isBusyFor(cwdB)).toBe(true);
 
     // 清理：停掉另一个，避免挂起。
-    await bridge.interruptCurrentRun({ userId: ctx.userId, chatId: ctx.chatId });
+    await interruptCurrentRun(bridge, { userId: ctx.userId, chatId: ctx.chatId });
     await Promise.all([runA, runB]);
   });
 

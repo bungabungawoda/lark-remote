@@ -443,7 +443,7 @@ export function buildSessionHistoryCard(
   }
 
   // Remove trailing hr
-  if (elements.length > 0 && (elements[elements.length - 1] as { tag: string }).tag === 'hr') {
+  if ((elements[elements.length - 1] as { tag: string }).tag === 'hr') {
     elements.pop();
   }
 

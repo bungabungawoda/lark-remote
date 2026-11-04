@@ -809,48 +809,15 @@ export class CommandRouter {
         return await this.handleWsSort(value, ctx);
       case 'ws.remove':
         return await this.handleWsRemove(value, ctx);
-      case 'resume.use': {
-        // resume.use carries an agent field from /resume [agent] list cards
-        // (both active and completed cards include the agent field).
-        const resolvedAgent = resolveAgentKind(value.agent, this.config.defaultAgent);
-
-        const entry = this.sessionStore.get(ctx.userId);
-        const cwd = entry?.cwd;
-        if (!cwd) {
-          await this.bridge.sendResult({ text: '请先 /cd 设置工作目录' }, ctx);
-          return;
-        }
-
-        // 校验前不得写入 sessionId。旧实现先无条件 setSessionId 再调
-        // cmdResume 校验，过期卡片（session 不在当前 cwd）校验失败时 store 已被
-        // 污染；value.sessionId 缺失时还会静默清空已有绑定。现在统一走 cmdResume
-        // 的已验证路径（:2352 校验通过才写入），sessionId 缺失直接报错。
-        if (!value.sessionId) {
-          await this.bridge.sendResult(
-            { text: '缺少 sessionId，请重新从 /resume 列表选择会话' },
-            ctx,
-          );
-          return;
-        }
-        await this.bridge.sendResult(this.cmdResume([resolvedAgent, value.sessionId], ctx), ctx);
+      case 'resume.use':
+        await this.handleResumeUse(value, ctx);
         return;
-      }
       case 'resume.page':
         return this.handleResumePage(value, ctx);
       case 'active.page':
         return this.handleActivePage(value, ctx);
       case 'new-session':
-        this.sessionStore.clearSessionId(ctx.userId, this.config.defaultAgent, {
-          clearSessionCwd: true,
-        });
-        {
-          const cwd = this.sessionStore.getCwd(ctx.userId) ?? '(未设置)';
-          const agentName = agentDisplayName(this.config.defaultAgent);
-          await this.bridge.sendResult(
-            { text: `已创建新 ${agentName} 会话，下一条消息将开始全新对话\n📁 ${cwd}` },
-            ctx,
-          );
-        }
+        await this.handleNewSession(ctx);
         return;
       case 'stop':
         await this.handleCardStop(value, ctx);
@@ -900,36 +867,100 @@ export class CommandRouter {
         // 返回 enqueueConfigAction 的结果以支持 toast 响应。
         return this.enqueueConfigAction(value, ctx);
       case 'compact':
-        await this.bridge.handleCompactAction(value, ctx);
+        await this.handleCompact(value, ctx);
         return;
       case 'resume.compact':
-        await this.bridge.handleResumeCompact(value, ctx);
+        await this.handleResumeCompact(value, ctx);
         return;
       default: {
-        // Help card buttons: help.<cmd> → execute /<cmd>
         if (value.cmd.startsWith('help.')) {
-          const subCmd = value.cmd.slice(5); // e.g. "status", "ps", "stop"
-          const result = await this.executeCommand(`/${subCmd}`, ctx);
-          if (result) {
-            await this.bridge.sendResult(result, ctx);
-          }
-          // /exit、/restart 等命令通过 pendingExit 表达"回复送达后退出"。
-          // handle() 在 sendResult 后消费它；help.* 按钮点击走 handleCardAction，
-          // 必须同样消费，否则点击 /restart 按钮 spawn 成功后旧进程不退出，
-          // 新进程撞单例锁退出 → 重启两头落空（红绿 anchor 锁定）。
-          if (this.pendingExit) {
-            await this.flushInbound?.();
-            this.exitHandler();
-          }
+          await this.handleHelpAction(value, ctx);
           return;
         }
-        // Design constraint: miss paths must reply via bridge.sendResult —
-        // don't silently swallow unknown card actions.
-        getLogger().warn(`[router] unknown card action: ${value.cmd}`);
-        await this.bridge.sendResult({ text: `⚠️ 未知的卡片操作: ${value.cmd}` }, ctx);
+        await this.handleUnknownCardAction(value, ctx);
         return;
       }
     }
+  }
+
+  /**
+   * resume.use: 从 /resume 列表卡切换到所选会话。
+   */
+  private async handleResumeUse(value: CardActionPayload, ctx: CommandContext): Promise<void> {
+    // resume.use carries an agent field from /resume [agent] list cards
+    // (both active and completed cards include the agent field).
+    const resolvedAgent = resolveAgentKind(value.agent, this.config.defaultAgent);
+
+    const entry = this.sessionStore.get(ctx.userId);
+    const cwd = entry?.cwd;
+    if (!cwd) {
+      await this.bridge.sendResult({ text: '请先 /cd 设置工作目录' }, ctx);
+      return;
+    }
+
+    // 校验前不得写入 sessionId。旧实现先无条件 setSessionId 再调
+    // cmdResume 校验，过期卡片（session 不在当前 cwd）校验失败时 store 已被
+    // 污染；value.sessionId 缺失时还会静默清空已有绑定。现在统一走 cmdResume
+    // 的已验证路径（:2352 校验通过才写入），sessionId 缺失直接报错。
+    if (!value.sessionId) {
+      await this.bridge.sendResult({ text: '缺少 sessionId，请重新从 /resume 列表选择会话' }, ctx);
+      return;
+    }
+    await this.bridge.sendResult(this.cmdResume([resolvedAgent, value.sessionId], ctx), ctx);
+  }
+
+  /** new-session: 清空当前会话绑定，下一条消息开始全新对话。 */
+  private async handleNewSession(ctx: CommandContext): Promise<void> {
+    this.sessionStore.clearSessionId(ctx.userId, this.config.defaultAgent, {
+      clearSessionCwd: true,
+    });
+    const cwd = this.sessionStore.getCwd(ctx.userId) ?? '(未设置)';
+    const agentName = agentDisplayName(this.config.defaultAgent);
+    await this.bridge.sendResult(
+      { text: `已创建新 ${agentName} 会话，下一条消息将开始全新对话\n📁 ${cwd}` },
+      ctx,
+    );
+  }
+
+  /** compact: 对当前会话发起压缩（bridge 收口）。 */
+  private async handleCompact(value: CardActionPayload, ctx: CommandContext): Promise<void> {
+    await this.bridge.handleCompactAction(value, ctx);
+  }
+
+  /** resume.compact: 对 /resume 选中的历史会话发起压缩（bridge 收口）。 */
+  private async handleResumeCompact(value: CardActionPayload, ctx: CommandContext): Promise<void> {
+    await this.bridge.handleResumeCompact(value, ctx);
+  }
+
+  /**
+   * Help card buttons: help.<cmd> → execute /<cmd>.
+   * /exit、/restart 等命令通过 pendingExit 表达"回复送达后退出"。
+   * handle() 在 sendResult 后消费它；help.* 按钮点击走 handleCardAction，
+   * 必须同样消费，否则点击 /restart 按钮 spawn 成功后旧进程不退出，
+   * 新进程撞单例锁退出 → 重启两头落空（2026-08-01 红绿 anchor 锁定）。
+   */
+  private async handleHelpAction(value: CardActionPayload, ctx: CommandContext): Promise<void> {
+    const subCmd = value.cmd.slice(5); // e.g. "status", "ps", "stop"
+    const result = await this.executeCommand(`/${subCmd}`, ctx);
+    if (result) {
+      await this.bridge.sendResult(result, ctx);
+    }
+    if (this.pendingExit) {
+      await this.flushInbound?.();
+      this.exitHandler();
+    }
+  }
+
+  /**
+   * Design constraint: miss paths must reply via bridge.sendResult —
+   * don't silently swallow unknown card actions.
+   */
+  private async handleUnknownCardAction(
+    value: CardActionPayload,
+    ctx: CommandContext,
+  ): Promise<void> {
+    getLogger().warn(`[router] unknown card action: ${value.cmd}`);
+    await this.bridge.sendResult({ text: `⚠️ 未知的卡片操作: ${value.cmd}` }, ctx);
   }
 
   /**
@@ -2289,8 +2320,7 @@ export class CommandRouter {
     this.configCardIds.delete(messageId);
     this.configCardIds.add(messageId);
     while (this.configCardIds.size > MAX_CONFIG_CARDS) {
-      const oldest = this.configCardIds.values().next().value as string | undefined;
-      if (oldest === undefined) break;
+      const oldest = this.configCardIds.values().next().value as string;
       this.configCardIds.delete(oldest);
     }
   }
@@ -3144,7 +3174,49 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
     session: { sessionId: string; summary: string },
     _ctx: CommandContext,
   ): CommandResult {
-    const agentName = agentDisplayName(this.config.defaultAgent);
+    const agentKind = this.config.defaultAgent;
+    return this.buildResumeLikeCard({
+      cwd,
+      sessionId: session.sessionId,
+      agentKind,
+      // 仅 auto-resume 入口带 Compact 按钮（runner 支持压缩时）；
+      // config-switch 卡不带。
+      compact: this.canCompactSession(agentKind, cwd)
+        ? { sessionId: session.sessionId, agentKind }
+        : undefined,
+      titleBase: '自动恢复会话',
+      idleIcon: '🔁',
+      resumedLine: `已恢复最近会话: **${session.sessionId}**`,
+    });
+  }
+
+  /**
+   * Shared body of the two "resume-like" cards（cwd 切换后的 auto-resume 与
+   * config.save 换 agent）：两者都是同一序列 readSessionDisplayState →
+   * buildResumeActionButtons → buildSessionHistoryCard，差异仅 4 处——
+   * Compact 按钮（仅 auto-resume，canCompactSession 门控）、标题文案、
+   * headerText 的「已恢复…会话」行与可选尾部行、空会话占位——全部参数化，
+   * 共享序列只留一份（Clean Code DRY）。
+   */
+  private buildResumeLikeCard(opts: {
+    cwd: string;
+    sessionId: string;
+    /** 卡片归属 agent：标题显示名、卡片 agentKind，也是 reader 的寻址键。 */
+    agentKind: AgentKind;
+    /** Compact 按钮载荷；仅 auto-resume 入口在 canCompactSession 成立时传入。 */
+    compact?: { sessionId: string; agentKind: string };
+    /** 标题主干，如 自动恢复会话 / 切换 Agent；进行中恒为 ⏳ …（完成中）。 */
+    titleBase: string;
+    /** 非进行中状态的标题图标（🔁 / 🔀）。 */
+    idleIcon: string;
+    /** headerText 第二行（含加粗 sessionId）。 */
+    resumedLine: string;
+    /** headerText 可选尾行——config-switch 的切换语义 notice 必须随卡可见。 */
+    headerTail?: string;
+    /** 空会话占位文案；仅 config-switch 卡覆盖。 */
+    emptyPlaceholder?: string;
+  }): CommandResult {
+    const agentName = agentDisplayName(opts.agentKind);
     const {
       events: content,
       usage,
@@ -3153,22 +3225,25 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
       recap,
       displayTitle,
       activeRunRunId,
-    } = this.readSessionDisplayState(session.sessionId, cwd, { maxEvents: AUTO_RESUME_MAX_EVENTS });
+    } = this.readSessionDisplayState(opts.sessionId, opts.cwd, {
+      // 默认 agent 时 readSessionDisplayState 内部仍走 this.sessionReader
+      //（agentKind === defaultAgent 不触发 registry 查找），与旧的不传等价。
+      agentKind: opts.agentKind,
+      maxEvents: AUTO_RESUME_MAX_EVENTS,
+    });
 
     const actions = this.buildResumeActionButtons({
       isActive,
       activeRunRunId,
-      cwd,
-      compact: this.canCompactSession(this.config.defaultAgent, cwd)
-        ? { sessionId: session.sessionId, agentKind: this.config.defaultAgent }
-        : undefined,
+      cwd: opts.cwd,
+      compact: opts.compact,
       newSession: true,
     });
 
     const card = buildSessionHistoryCard(
       {
-        sessionId: session.sessionId,
-        cwd,
+        sessionId: opts.sessionId,
+        cwd: opts.cwd,
         displayTitle,
         aiTitle,
         recap,
@@ -3176,10 +3251,11 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
         usage,
       },
       {
-        agentKind: this.config.defaultAgent,
-        headerText: `📂 \`${cwd}\`\n已恢复最近会话: **${session.sessionId}**`,
-        title: `${isActive ? '⏳ 自动恢复会话（完成中）' : '🔁 自动恢复会话'} · ${agentName}`,
+        agentKind: opts.agentKind,
+        headerText: `📂 \`${opts.cwd}\`\n${opts.resumedLine}${opts.headerTail ? `\n${opts.headerTail}` : ''}`,
+        title: `${isActive ? `⏳ ${opts.titleBase}（完成中）` : `${opts.idleIcon} ${opts.titleBase}`} · ${agentName}`,
         usageResult: 'success',
+        ...(opts.emptyPlaceholder !== undefined ? { emptyPlaceholder: opts.emptyPlaceholder } : {}),
         actions,
       },
     );
@@ -3189,8 +3265,8 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
 
   /**
    * Build card for config.save agent switch.
-   * When the new agent has a restored session, renders a Resume card (mirrors
-   * buildAutoResumeCard) with session history + stop/new buttons.
+   * When the new agent has a restored session, renders a Resume card (shared
+   * body via buildResumeLikeCard) with session history + stop/new buttons.
    * When the session was cleared, renders a compact notice card instead.
    */
   private buildConfigSwitchCard(
@@ -3219,78 +3295,25 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
       };
     }
 
-    // Has session → Resume card (mirrors buildAutoResumeCard)
-    // Guard: if the session reader for the new agent is not available (e.g. agent
-    // not registered), fall back to compact notice card to avoid NPE.
-    const readerForNewAgent =
-      newAgent === this.config.defaultAgent
-        ? this.sessionReader
-        : this.sessionReaderRegistry.get(newAgent);
-    if (!readerForNewAgent) {
-      // Fallback: compact notice card with the notice text
-      const elements: object[] = [markdownDiv(switchResult.notice!)];
-      elements.push({
-        tag: 'column_set',
-        columns: [
-          {
-            tag: 'column',
-            width: 'auto',
-            elements: [newSessionButton()],
-          },
-        ],
-      });
-      return {
-        card: {
-          schema: '2.0',
-          config: { wide_screen_mode: true },
-          header: { title: { tag: 'plain_text', content: `🔀 切换到 ${agentName}` } },
-          body: { elements },
-        },
-      };
-    }
-
-    const {
-      events: content,
-      usage,
-      isActive,
-      aiTitle,
-      recap,
-      displayTitle,
-      activeRunRunId,
-    } = this.readSessionDisplayState(sessionId, cwd, {
-      agentKind: newAgent,
-      maxEvents: AUTO_RESUME_MAX_EVENTS,
-    });
-
-    // Action buttons: stop (active) + new session
-    const actions = this.buildResumeActionButtons({
-      isActive,
-      activeRunRunId,
+    // Has session → Resume card (shared body with buildAutoResumeCard)
+    // SessionReaderRegistry.get() throws when the agent is not registered —
+    // a null-reader fallback branch here is unreachable either way.
+    return this.buildResumeLikeCard({
       cwd,
-      newSession: true,
+      sessionId,
+      agentKind: newAgent,
+      titleBase: '切换 Agent',
+      idleIcon: '🔀',
+      // 切换语义（已使用所选 / 将继续之前的 / 已清空）必须随卡可见：
+      // 2026-08-13 换 Resume 卡时这条信息一度只在「无 reader」回退分支
+      // 渲染，生产路径（registry 恒有 reader）上不可见——卡上只剩
+      // sessionId，用户无法区分显式选择、停车恢复与清空。notice 含
+      // sessionId，与「已恢复会话」行并存（agent-switch-entry-points 与
+      // arrival-baseline 两族 anchor 分别钉住两行）。
+      resumedLine: `已恢复会话: **${sessionId}**`,
+      headerTail: switchResult.notice,
+      emptyPlaceholder: '_该会话暂无新消息可显示（最后一条为用户输入）_',
     });
-
-    const card = buildSessionHistoryCard(
-      {
-        sessionId,
-        cwd,
-        displayTitle,
-        aiTitle,
-        recap,
-        events: content,
-        usage,
-      },
-      {
-        agentKind: newAgent,
-        headerText: `📂 \`${cwd}\`\n已恢复会话: **${sessionId}**`,
-        title: `${isActive ? '⏳ 切换 Agent（完成中）' : '🔀 切换 Agent'} · ${agentName}`,
-        usageResult: 'success',
-        emptyPlaceholder: '_该会话暂无新消息可显示（最后一条为用户输入）_',
-        actions,
-      },
-    );
-
-    return { card };
   }
 
   /**
@@ -3503,68 +3526,46 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
     let remaining = pageSize;
     let skipped = safeOffset;
 
-    // Agent runs section
-    if (activeRuns.length > 0 && skipped < activeRuns.length && remaining > 0) {
-      elements.push({ tag: 'div', text: { tag: 'lark_md', content: '## 🤖 Agent 任务' } });
-      const start = skipped;
-      const end = Math.min(start + remaining, activeRuns.length);
-      for (let i = start; i < end; i++) {
-        const run = activeRuns[i];
-        const statusLabel = run.terminal === 'running' ? '运行中' : '处理中';
-
-        elements.push({
+    // Agent runs section（跨段 offset 分配：agent 段吃满 remaining 才轮到 bash 段）
+    ({ remaining, skipped } = this.appendActiveCardSection(
+      elements,
+      activeRuns,
+      '## 🤖 Agent 任务',
+      (run, statusLabel) => [
+        {
           tag: 'div',
           text: { tag: 'lark_md', content: `**📂 ${displayName(run.cwd)}**` },
-        });
-        elements.push({
+        },
+        {
           tag: 'div',
           text: {
             tag: 'lark_md',
             content: `> session: ${run.sessionId.slice(0, 12)}...  \n> 状态: ${statusLabel}`,
           },
-        });
-        elements.push(
-          cardButton(
-            '⏹ 停止',
-            { cmd: 'stop', runId: run.runId, cwd: run.cwd },
-            { type: 'danger', size: 'small' },
-          ),
-        );
-        elements.push({ tag: 'hr' });
-      }
-      remaining -= end - start;
-      skipped = 0;
-    } else {
-      skipped -= activeRuns.length;
-    }
+        },
+      ],
+      remaining,
+      skipped,
+    ));
 
-    // Bash runs section
-    if (activeBashRuns.length > 0 && skipped < activeBashRuns.length && remaining > 0) {
-      elements.push({ tag: 'div', text: { tag: 'lark_md', content: '## 💻 Bash 命令' } });
-      const start = skipped;
-      const end = Math.min(start + remaining, activeBashRuns.length);
-      for (let i = start; i < end; i++) {
-        const run = activeBashRuns[i];
-        const statusLabel = run.terminal === 'running' ? '运行中' : '处理中';
-
-        elements.push({
+    // Bash runs section（末段：不再使用返回的记账值）
+    this.appendActiveCardSection(
+      elements,
+      activeBashRuns,
+      '## 💻 Bash 命令',
+      (run, statusLabel) => [
+        {
           tag: 'div',
           text: { tag: 'lark_md', content: `**\`${run.command}\`**` },
-        });
-        elements.push({
+        },
+        {
           tag: 'div',
           text: { tag: 'lark_md', content: `> 目录: ${run.cwd}  \n> 状态: ${statusLabel}` },
-        });
-        elements.push(
-          cardButton(
-            '⏹ 停止',
-            { cmd: 'stop', runId: run.runId, cwd: run.cwd },
-            { type: 'danger', size: 'small' },
-          ),
-        );
-        elements.push({ tag: 'hr' });
-      }
-    }
+        },
+      ],
+      remaining,
+      skipped,
+    );
 
     // Pagination bar（复用 paginationBar：safeOffset 已对齐页边界，
     // offset±pageSize 与原先 currentPage±1 的页码换算等价）
@@ -3593,6 +3594,48 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
     };
 
     return { card };
+  }
+
+  /**
+   * Render one section of the /active（/ps）card — the agent-runs and
+   * bash-runs sections are the same loop (title line → per-entry rows →
+   * stop button → trailing hr) and differ only in the title and the two
+   * per-entry content rows, which the caller supplies via `renderRows`.
+   *
+   * Cross-section offset accounting (caller threads `remaining`/`skipped`
+   * through the returned value): entries rendered decrement `remaining` and
+   * consume the offset (`skipped` → 0, so the next section renders from its
+   * own head); a section the offset/page has moved past deducts its full size
+   * from `skipped` instead, so agent runs eat the offset before bash runs do.
+   */
+  private appendActiveCardSection<T extends { runId: string; cwd: string; terminal: string }>(
+    elements: object[],
+    runs: T[],
+    title: string,
+    renderRows: (run: T, statusLabel: string) => object[],
+    remaining: number,
+    skipped: number,
+  ): { remaining: number; skipped: number } {
+    if (runs.length > 0 && skipped < runs.length && remaining > 0) {
+      elements.push({ tag: 'div', text: { tag: 'lark_md', content: title } });
+      const start = skipped;
+      const end = Math.min(start + remaining, runs.length);
+      for (let i = start; i < end; i++) {
+        const run = runs[i];
+        const statusLabel = run.terminal === 'running' ? '运行中' : '处理中';
+        elements.push(...renderRows(run, statusLabel));
+        elements.push(
+          cardButton(
+            '⏹ 停止',
+            { cmd: 'stop', runId: run.runId, cwd: run.cwd },
+            { type: 'danger', size: 'small' },
+          ),
+        );
+        elements.push({ tag: 'hr' });
+      }
+      return { remaining: remaining - (end - start), skipped: 0 };
+    }
+    return { remaining, skipped: skipped - runs.length };
   }
 
   private async cmdConfig(args: string[], ctx: CommandContext): Promise<CommandResult> {
@@ -3634,14 +3677,14 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
           void this.bridge.sendResult(switchCard, ctx);
         }
         const card = this.buildConfigCard();
-        if (discarded > 0 && card.card && typeof card.card === 'object') {
-          const body = (card.card as { body?: { elements?: unknown[] } }).body;
-          if (body && Array.isArray(body.elements)) {
-            body.elements.unshift({
-              tag: 'div',
-              text: { tag: 'lark_md', content: `⚠️ 已丢弃 ${discarded} 项未保存修改` },
-            });
-          }
+        if (discarded > 0) {
+          // buildConfigCardFromTabs 恒返回 body.elements（至少含保存按钮），
+          // 这里直接收窄插入提示条——同模块自己刚构建的值无需逐层探测。
+          const body = (card.card as { body: { elements: object[] } }).body;
+          body.elements.unshift({
+            tag: 'div',
+            text: { tag: 'lark_md', content: `⚠️ 已丢弃 ${discarded} 项未保存修改` },
+          });
         }
         return card;
       } catch (err) {

@@ -23,6 +23,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { truncateUtf8, TOOL_RESULT_MAX_BYTES } from '../../common/truncate.js';
 import { isStale } from '../common/constants.js';
+import { throwSessionListError } from '../common/throw-session-list-error.js';
 import { safeRealpath, samePath } from '../../platform/path.js';
 import { paginate, capEvents } from '../common/pagination.js';
 import { newestOf, sortByRecencyDesc } from '../common/recency.js';
@@ -58,7 +59,8 @@ interface OpencodeSessionListEntry {
   directory: string;
 }
 
-interface OpencodeExportMessage {
+/** v1 export 单条消息（外部 JSON 契约，导出供扫描累积器单测构造）。 */
+export interface OpencodeExportMessage {
   info: {
     role: 'user' | 'assistant';
     time?: { created: number };
@@ -113,7 +115,8 @@ interface OpencodeExportData {
  * than v1's `{info, parts}` envelope. Keep the v2 types local to this reader —
  * they are an external JSON contract, not an internal model.
  */
-interface OpencodeV2Message {
+/** v2 export 单条消息（外部 JSON 契约，导出供扫描累积器单测构造）。 */
+export interface OpencodeV2Message {
   id?: string;
   type: string;
   time?: { created?: number; completed?: number };
@@ -314,6 +317,393 @@ function withCumulativeUsage(
   };
 }
 
+// --- readSessionContent 装配函数（纯函数：产生结果、依赖入参、不改外部状态） ---
+
+/** flow 累计的五个字段（v1 step-finish tokens 与 v2 message tokens 同形）。 */
+interface OpencodeUsageFlow {
+  input: number;
+  output: number;
+  cacheRead: number;
+  cacheCreation: number;
+  total: number;
+}
+
+function emptyFlow(): OpencodeUsageFlow {
+  return { input: 0, output: 0, cacheRead: 0, cacheCreation: 0, total: 0 };
+}
+
+/** v1 扫描累积器结果（纯数据）。 */
+export interface OpencodeV1Scan {
+  /** 末条 user 消息下标（catch-up tail 起点）；整份 export 无 user 消息 = -1。 */
+  lastUserIndex: number;
+  /** tail 内首条 user 文本（displayTitle 首选）。 */
+  tailDisplayTitle: string | undefined;
+  /** tail 内最后一次非零 step-finish 采样（contextLength 水位来源）。 */
+  latest: AgentSessionUsage | undefined;
+  /** tail 内非零 step-finish 求和（本 run flow）。 */
+  turn: OpencodeUsageFlow;
+  /** 全会话 step-finish 求和（cumulative；零 total 的退化 step 字段照加）。 */
+  cum: OpencodeUsageFlow;
+}
+
+/**
+ * v1 扫描累积器（纯函数）：单遍扫过全部 export 消息，产出 catch-up tail 的
+ * 位置（末条 user 消息）、本 run flow（tail 内非零 step-finish 求和）、末条
+ * 非零采样（contextLength 水位）与全会话累计。
+ *
+ * 产生：OpencodeV1Scan。依赖：入参 messages。不改任何外部状态。
+ *
+ * 口径（勿改）：cumulative 对**所有** step-finish 逐字段求和、不设零 total
+ * 门槛；turn/latest 只认 tail 内非零 total 的 step（模型在 reasoning 中被
+ * 截断的退化 step 不算采样）。
+ */
+export function scanV1Messages(messages: OpencodeExportMessage[]): OpencodeV1Scan {
+  // Find the last user message position (for catch-up tail).
+  // messages are already parsed objects — scan directly.
+  let lastUserIndex = -1;
+  for (let i = 0; i < messages.length; i++) {
+    if (messages[i].info.role === 'user') {
+      lastUserIndex = i;
+    }
+  }
+
+  // Process messages from last user message onwards (catch-up tail)
+  const startIndex = lastUserIndex >= 0 ? lastUserIndex : 0;
+  const turn = emptyFlow();
+  const cum = emptyFlow();
+  let latest: AgentSessionUsage | undefined;
+  let tailDisplayTitle: string | undefined;
+
+  for (let i = 0; i < messages.length; i++) {
+    const inTail = i >= startIndex;
+    const msg = messages[i];
+
+    // Track usage from step-finish parts. v1 没有 idle 标记，turn 边界就是
+    // 末条 user 消息；同一 turn 可能有多个 step-finish（每次模型请求一条），
+    // flow 要全加起来，只留末条会把多步 run 低报。
+    for (const part of msg.parts) {
+      if (part.type === 'step-finish' && part.tokens) {
+        // cumulative：全会话求和，含零 total 的退化 step（字段为 0 时求和不
+        // 变，与拆分前行为一致）。
+        cum.input += part.tokens.input ?? 0;
+        cum.output += part.tokens.output ?? 0;
+        cum.total += part.tokens.total ?? 0;
+        cum.cacheRead += part.tokens.cache?.read ?? 0;
+        cum.cacheCreation += part.tokens.cache?.write ?? 0;
+        if (!inTail) continue;
+        // Skip zero-total steps（模型在 reasoning 中被截断）——它们没有消耗，
+        // 也不该把本次请求当成一条真实采样。
+        // ccusage-aligned: cache.write -> cacheCreationTokens.
+        // contextLength = input + output + cacheRead + cacheCreation —
+        // the unified context-window occupancy contract across all readers
+        // (§9.21：末轮 output 已进入历史、下一 prompt 全量携带，与 compact
+        // postTokens 水位同语义).
+        if ((part.tokens.total ?? 0) === 0) continue;
+        const input = part.tokens.input ?? 0;
+        const output = part.tokens.output ?? 0;
+        const cacheRead = part.tokens.cache?.read ?? 0;
+        const cacheWrite = part.tokens.cache?.write ?? 0;
+        turn.input += input;
+        turn.output += output;
+        turn.cacheRead += cacheRead;
+        turn.cacheCreation += cacheWrite;
+        turn.total += part.tokens.total;
+        latest = {
+          inputTokens: input,
+          outputTokens: output,
+          contextLength: input + output + cacheRead + cacheWrite,
+          cacheReadTokens: part.tokens.cache?.read,
+          cacheCreationTokens: part.tokens.cache?.write,
+          totalTokens: part.tokens.total,
+        };
+      }
+    }
+
+    // First user text after last user message is displayTitle
+    if (inTail && !tailDisplayTitle && msg.info.role === 'user') {
+      for (const part of msg.parts) {
+        if (part.type === 'text' && part.text) {
+          tailDisplayTitle = part.text;
+          break;
+        }
+      }
+    }
+  }
+
+  return { lastUserIndex, tailDisplayTitle, latest, turn, cum };
+}
+
+/**
+ * v1 catch-up tail 装配（纯函数）：把 [startIndex, 末尾) 的消息映射为展示
+ * 事件（text / thinking / tool_use / tool_result）。tool 在同一 part 上先发
+ * use（有 callID+input）再发 result（有 callID+output）。
+ */
+function assembleV1TailEvents(
+  messages: OpencodeExportMessage[],
+  startIndex: number,
+): AgentSessionContentEvent[] {
+  const events: AgentSessionContentEvent[] = [];
+  for (let i = startIndex; i < messages.length; i++) {
+    const msg = messages[i];
+    const timestamp = msg.info.time?.created
+      ? new Date(msg.info.time.created).toISOString()
+      : undefined;
+
+    for (const part of msg.parts) {
+      if (part.type === 'text') {
+        events.push({
+          type: 'text',
+          content: part.text ?? '',
+          timestamp,
+        });
+      } else if (part.type === 'reasoning') {
+        events.push({
+          type: 'thinking',
+          content: part.text ?? '',
+          timestamp,
+        });
+      } else if (part.type === 'tool') {
+        // Tool use
+        if (part.callID && part.state?.input) {
+          events.push({
+            type: 'tool_use',
+            content: JSON.stringify({
+              id: part.callID,
+              name: part.tool,
+              input: part.state.input,
+            }),
+            timestamp,
+          });
+        }
+        // Tool result (completed or error)
+        if (part.callID && part.state?.output) {
+          const isError = part.state.status === 'error';
+          const rawOut = isError
+            ? (part.state.error ?? part.state.output)
+            : (part.state.output ?? '');
+          // pre-fold pathological tool_results (e.g. a 500KB file
+          // listing) via the shared truncateUtf8 primitive, reusing the
+          // same …（已截断） suffix as the live renderer / card budget.
+          events.push({
+            type: 'tool_result',
+            content: truncateUtf8(rawOut, TOOL_RESULT_MAX_BYTES),
+            timestamp,
+          });
+        }
+      }
+    }
+  }
+  return events;
+}
+
+/** 全会话首条 user 文本（displayTitle 兜底；纯函数）。 */
+function firstV1UserText(messages: OpencodeExportMessage[]): string | undefined {
+  for (const msg of messages) {
+    if (msg.info.role === 'user') {
+      for (const part of msg.parts) {
+        if (part.type === 'text' && part.text) {
+          return part.text;
+        }
+      }
+    }
+  }
+  return undefined;
+}
+
+/**
+ * usage 装配（v1/v2 共用，同 readSessionContent 内的既有共享粒度）：
+ * flow 覆盖末条采样值（contextLength 保留末条——水位不求和），再落会话累计。
+ */
+function finalizeTurnUsage(
+  latest: AgentSessionUsage | undefined,
+  turn: OpencodeUsageFlow,
+  cum: OpencodeUsageFlow,
+): AgentSessionUsage | undefined {
+  if (latest) {
+    latest.inputTokens = turn.input;
+    latest.outputTokens = turn.output;
+    latest.cacheReadTokens = turn.cacheRead;
+    latest.cacheCreationTokens = turn.cacheCreation;
+    latest.totalTokens = turn.total;
+  }
+  return withCumulativeUsage(latest, {
+    total: cum.total,
+    input: cum.input,
+    output: cum.output,
+    cacheRead: cum.cacheRead,
+    cacheWrite: cum.cacheCreation,
+  });
+}
+
+/** v2 usage 扫描累积器结果（纯数据）。 */
+export interface OpencodeV2UsageScan {
+  /** 末条采样（contextLength 水位来源）。 */
+  latest: AgentSessionUsage | undefined;
+  /** 末个 turn（末个 turn 起点之后）的采样求和（本 run flow）。 */
+  turn: OpencodeUsageFlow;
+  /** 全会话采样求和（cumulative）。 */
+  cum: OpencodeUsageFlow;
+}
+
+/**
+ * v2 扫描累积器（纯函数）：usageSample 已滤掉零 total 的退化消息；turn 边界
+ * 由 lastTurnStartIndex 判定（idle / user / synthetic / system，见其注释）。
+ *
+ * 产生：OpencodeV2UsageScan。依赖：入参 messages。不改任何外部状态。
+ */
+export function scanV2Usage(messages: OpencodeV2Message[]): OpencodeV2UsageScan {
+  const turn = emptyFlow();
+  const cum = emptyFlow();
+  let latest: AgentSessionUsage | undefined;
+  // 本 turn（= 本 run）的 flow：末个 turn 内每次模型请求之和。contextLength
+  // 仍取末次请求的窗口水位（水位不可求和）。只取末条会把多步 run 低报
+  // （实测一条 25 请求的 run：input 20,040 显示成 543、output 10,358 显示成 1,250）。
+  const turnStart = lastTurnStartIndex(messages);
+
+  for (let i = 0; i < messages.length; i++) {
+    const sample = usageSample(messages[i]);
+    if (!sample) continue;
+
+    cum.input += sample.input;
+    cum.output += sample.output;
+    cum.total += sample.total;
+    cum.cacheRead += sample.cacheRead;
+    cum.cacheCreation += sample.cacheCreation;
+
+    if (i > turnStart) {
+      turn.input += sample.input;
+      turn.output += sample.output;
+      turn.cacheRead += sample.cacheRead;
+      turn.cacheCreation += sample.cacheCreation;
+      turn.total += sample.total;
+    }
+
+    latest = {
+      inputTokens: sample.input,
+      outputTokens: sample.output,
+      // §9.21 口径：含末轮 output（与 postTokens 水位同语义）。
+      contextLength: sample.input + sample.output + sample.cacheRead + sample.cacheCreation,
+      cacheReadTokens: sample.cacheRead,
+      cacheCreationTokens: sample.cacheCreation,
+      totalTokens: sample.total,
+    };
+  }
+
+  return { latest, turn, cum };
+}
+
+/** v2 catch-up tail 装配结果（纯数据）。 */
+interface OpencodeV2TailScan {
+  events: AgentSessionContentEvent[];
+  /** tail 内首条 user 文本；tail 无 user 文本时已回退全会话首条。 */
+  displayTitle: string | undefined;
+}
+
+/**
+ * v2 catch-up tail 装配（纯函数）：末条 user 消息起的消息映射为展示事件
+ * （user / assistant / shell / compaction）；displayTitle 取 tail 内首条
+ * user 文本，tail 无 user 文本（如附件-only）时回退全会话首条。
+ */
+function assembleV2TailEvents(messages: OpencodeV2Message[]): OpencodeV2TailScan {
+  const events: AgentSessionContentEvent[] = [];
+  let displayTitle: string | undefined;
+
+  let lastUserIndex = -1;
+  for (let i = 0; i < messages.length; i++) {
+    if (messages[i]?.type === 'user') lastUserIndex = i;
+  }
+  const startIndex = lastUserIndex >= 0 ? lastUserIndex : 0;
+
+  for (let i = startIndex; i < messages.length; i++) {
+    const msg = messages[i];
+    if (!msg || typeof msg.type !== 'string') continue;
+    const timestamp = msg.time?.created ? new Date(msg.time.created).toISOString() : undefined;
+
+    if (msg.type === 'user') {
+      if (typeof msg.text === 'string' && msg.text.length > 0) {
+        if (!displayTitle) displayTitle = msg.text;
+        events.push({ type: 'text', content: msg.text, timestamp });
+      }
+      continue;
+    }
+
+    if (msg.type === 'assistant') {
+      for (const part of Array.isArray(msg.content) ? msg.content : []) {
+        if (part?.type === 'text' && typeof part.text === 'string') {
+          events.push({ type: 'text', content: part.text, timestamp });
+          continue;
+        }
+        if (part?.type === 'reasoning' && typeof part.text === 'string') {
+          events.push({ type: 'thinking', content: part.text, timestamp });
+          continue;
+        }
+        if (part?.type === 'tool') {
+          const toolId = part.id;
+          const toolName = part.name ?? '';
+          const input = parseToolInput(part.state?.input);
+          if (toolId) {
+            events.push({
+              type: 'tool_use',
+              content: JSON.stringify({ id: toolId, name: toolName, input }),
+              timestamp,
+            });
+          }
+
+          const output = v2ToolOutput(part.state);
+          if (toolId && output !== undefined) {
+            events.push({
+              type: 'tool_result',
+              content: truncateUtf8(output, TOOL_RESULT_MAX_BYTES),
+              timestamp,
+            });
+          }
+        }
+      }
+      continue;
+    }
+
+    // User-invoked shell messages are a first-class message type in v2.
+    if (msg.type === 'shell' && typeof msg.command === 'string') {
+      events.push({
+        type: 'tool_use',
+        content: JSON.stringify({
+          id: msg.callID ?? msg.id ?? 'shell',
+          name: 'bash',
+          input: { command: msg.command },
+        }),
+        timestamp,
+      });
+      if (typeof msg.output === 'string') {
+        events.push({
+          type: 'tool_result',
+          content: truncateUtf8(msg.output, TOOL_RESULT_MAX_BYTES),
+          timestamp,
+        });
+      }
+      continue;
+    }
+
+    // Keep the compact summary visible in the catch-up tail; other control
+    // messages (system/synthetic/agent-switched/model-switched) are noise.
+    if (msg.type === 'compaction' && typeof msg.summary === 'string' && msg.summary) {
+      events.push({ type: 'text', content: msg.summary, timestamp });
+    }
+  }
+
+  // If the last user message had no text (e.g. attachment-only), fall back to
+  // the first human text anywhere in the session for the card title.
+  if (!displayTitle) {
+    for (const msg of messages) {
+      if (msg?.type === 'user' && typeof msg.text === 'string' && msg.text.length > 0) {
+        displayTitle = msg.text;
+        break;
+      }
+    }
+  }
+
+  return { events, displayTitle };
+}
+
 export class OpencodeSessionReader implements AgentSessionReader {
   private readonly binary: string;
   private readonly cacheTtlMs: number;
@@ -378,6 +768,9 @@ export class OpencodeSessionReader implements AgentSessionReader {
 
   /**
    * Read session content: extract catch-up tail (last user message + everything after).
+   *
+   * 编排：定位会话文件（captureExport + parse）→ directory 精确匹配（与
+   * cwd-scoped list 同口径）→ 按 export 版本分发到 v1/v2 装配。
    */
   readSessionContent(
     sessionId: string,
@@ -422,185 +815,7 @@ export class OpencodeSessionReader implements AgentSessionReader {
       if (isV2Export(data)) {
         return this.readV2SessionContent(data, opts);
       }
-
-      const events: AgentSessionContentEvent[] = [];
-      let usage: AgentSessionUsage | undefined;
-      /** 本 turn 的 flow 累计：末条 user 消息之后的全部 step-finish。 */
-      let turn = { input: 0, output: 0, cacheRead: 0, cacheCreation: 0, total: 0 };
-      let aiTitle: string | undefined;
-      let displayTitle: string | undefined;
-
-      // Find the last user message position (for catch-up tail).
-      // messages are already parsed objects — scan directly.
-      let lastUserIndex = -1;
-      for (let i = 0; i < data.messages.length; i++) {
-        if (data.messages[i].info.role === 'user') {
-          lastUserIndex = i;
-        }
-      }
-
-      // Process messages from last user message onwards (catch-up tail)
-      const startIndex = lastUserIndex >= 0 ? lastUserIndex : 0;
-      for (let i = startIndex; i < data.messages.length; i++) {
-        const msg = data.messages[i];
-        const timestamp = msg.info.time?.created
-          ? new Date(msg.info.time.created).toISOString()
-          : undefined;
-
-        for (const part of msg.parts) {
-          if (part.type === 'text') {
-            // First user text after last user message is displayTitle
-            if (msg.info.role === 'user' && part.text && !displayTitle) {
-              displayTitle = part.text;
-            }
-            events.push({
-              type: 'text',
-              content: part.text ?? '',
-              timestamp,
-            });
-          } else if (part.type === 'reasoning') {
-            events.push({
-              type: 'thinking',
-              content: part.text ?? '',
-              timestamp,
-            });
-          } else if (part.type === 'tool') {
-            // Tool use
-            if (part.callID && part.state?.input) {
-              events.push({
-                type: 'tool_use',
-                content: JSON.stringify({
-                  id: part.callID,
-                  name: part.tool,
-                  input: part.state.input,
-                }),
-                timestamp,
-              });
-            }
-            // Tool result (completed or error)
-            if (part.callID && part.state?.output) {
-              const isError = part.state.status === 'error';
-              const rawOut = isError
-                ? (part.state.error ?? part.state.output)
-                : (part.state.output ?? '');
-              // pre-fold pathological tool_results (e.g. a 500KB file
-              // listing) via the shared truncateUtf8 primitive, reusing the
-              // same …（已截断） suffix as the live renderer / card budget.
-              events.push({
-                type: 'tool_result',
-                content: truncateUtf8(rawOut, TOOL_RESULT_MAX_BYTES),
-                timestamp,
-              });
-            }
-          }
-        }
-
-        // Track usage from step-finish parts. v1 没有 idle 标记，turn 边界就是
-        // 上面那段"最后一条 user 消息"；同一 turn 可能有多个 step-finish
-        // （每次模型请求一条），flow 要全加起来，只留末条会把多步 run 低报。
-        for (const part of msg.parts) {
-          if (part.type === 'step-finish' && part.tokens) {
-            // Skip zero-total steps（模型在 reasoning 中被截断）——它们没有消耗，
-            // 也不该把本次请求当成一条真实采样。
-            // ccusage-aligned: cache.write -> cacheCreationTokens.
-            // contextLength = input + output + cacheRead + cacheCreation —
-            // the unified context-window occupancy contract across all readers
-            // (§9.21：末轮 output 已进入历史、下一 prompt 全量携带，与 compact
-            // postTokens 水位同语义).
-            if ((part.tokens.total ?? 0) !== 0) {
-              const input = part.tokens.input ?? 0;
-              const output = part.tokens.output ?? 0;
-              const cacheRead = part.tokens.cache?.read ?? 0;
-              const cacheWrite = part.tokens.cache?.write ?? 0;
-              turn = {
-                input: turn.input + input,
-                output: turn.output + output,
-                cacheRead: turn.cacheRead + cacheRead,
-                cacheCreation: turn.cacheCreation + cacheWrite,
-                total: turn.total + part.tokens.total,
-              };
-              usage = {
-                inputTokens: input,
-                outputTokens: output,
-                contextLength: input + output + cacheRead + cacheWrite,
-                cacheReadTokens: part.tokens.cache?.read,
-                cacheCreationTokens: part.tokens.cache?.write,
-                totalTokens: part.tokens.total,
-              };
-            }
-          }
-        }
-      }
-
-      // flow 覆盖末条采样值，contextLength 保留末条（水位不求和）。
-      if (usage) {
-        usage.inputTokens = turn.input;
-        usage.outputTokens = turn.output;
-        usage.cacheReadTokens = turn.cacheRead;
-        usage.cacheCreationTokens = turn.cacheCreation;
-        usage.totalTokens = turn.total;
-      }
-
-      // Cumulative (session-wide): sum input/output/total across ALL step-finish
-      // parts in the whole session. The catch-up loop above only scans from
-      // the last user message (= last run) for per-turn usage; cumulative
-      // needs a full scan so multi-run sessions report the true total.
-      let cumInput = 0;
-      let cumOutput = 0;
-      let cumTotal = 0;
-      let cumCacheRead = 0;
-      let cumCacheWrite = 0;
-      for (const msg of data.messages) {
-        for (const part of msg.parts) {
-          if (part.type === 'step-finish' && part.tokens) {
-            cumInput += part.tokens.input ?? 0;
-            cumOutput += part.tokens.output ?? 0;
-            cumTotal += part.tokens.total ?? 0;
-            cumCacheRead += part.tokens.cache?.read ?? 0;
-            cumCacheWrite += part.tokens.cache?.write ?? 0;
-          }
-        }
-      }
-      usage = withCumulativeUsage(usage, {
-        total: cumTotal,
-        input: cumInput,
-        output: cumOutput,
-        cacheRead: cumCacheRead,
-        cacheWrite: cumCacheWrite,
-      });
-
-      // Use info.title as aiTitle
-      if (data.info.title) {
-        aiTitle = data.info.title;
-      }
-
-      // If no displayTitle yet, use first user text as fallback
-      if (!displayTitle) {
-        for (const msg of data.messages) {
-          if (msg.info.role === 'user') {
-            for (const part of msg.parts) {
-              if (part.type === 'text' && part.text) {
-                displayTitle = part.text;
-                break;
-              }
-            }
-          }
-          if (displayTitle) break;
-        }
-      }
-
-      // Apply maxEvents cap: keep the LAST N events (most recent), matching
-      // CodexSessionReader's slice(-maxEvents). maxEvents limits the catch-up
-      // tail so auto-resume cards don't load the entire session.
-      const cappedEvents = capEvents(events, opts?.maxEvents);
-
-      return {
-        events: cappedEvents,
-        usage,
-        // opencode run doesn't have background tasks
-        aiTitle,
-        displayTitle,
-      };
+      return this.readV1SessionContent(data, opts);
     } catch (err) {
       getLogger().warn(`[opencode-session-reader] readSessionContent build failed: ${err}`);
       return { events: [] };
@@ -608,180 +823,56 @@ export class OpencodeSessionReader implements AgentSessionReader {
   }
 
   /**
+   * v1 export（`{info, parts}` 信封 + step-finish 用量 part）的 catch-up tail
+   * 装配：扫描累积器（scanV1Messages）出 tail 位置与本 run/累计 usage，事件
+   * 装配（assembleV1TailEvents）出展示流，这里只做组装。
+   */
+  private readV1SessionContent(
+    data: OpencodeExportData,
+    opts?: { maxEvents?: number },
+  ): SessionContent {
+    const scan = scanV1Messages(data.messages);
+    const startIndex = scan.lastUserIndex >= 0 ? scan.lastUserIndex : 0;
+
+    return {
+      // Apply maxEvents cap: keep the LAST N events (most recent), matching
+      // CodexSessionReader's slice(-maxEvents). maxEvents limits the catch-up
+      // tail so auto-resume cards don't load the entire session.
+      events: capEvents(assembleV1TailEvents(data.messages, startIndex), opts?.maxEvents),
+      usage: finalizeTurnUsage(scan.latest, scan.turn, scan.cum),
+      // opencode run doesn't have background tasks
+      aiTitle: data.info.title || undefined,
+      // tail 无 user 文本时回退全会话首条 user 文本
+      displayTitle: scan.tailDisplayTitle ?? firstV1UserText(data.messages),
+    };
+  }
+
+  /**
    * v2 export: messages are flat (`type` + `text`/`content`) and assistant
    * usage lives on the message instead of a `step-finish` part. Keep this
    * mapping isolated from the v1 parser so v1 behaviour stays unchanged.
+   *
+   * turnStart 可能落在末条采样之后（新 turn 尚无采样）→ turn 全 0；latest
+   * 仍是上一轮末条采样，contextLength 保留水位。turnStart 小于最后一个采样
+   * 下标时，flow 覆盖末条值，只有 contextLength 保留末条（finalizeTurnUsage）。
    */
   private readV2SessionContent(
     data: OpencodeV2ExportData,
     opts?: { maxEvents?: number },
   ): SessionContent {
     const messages = Array.isArray(data.messages) ? data.messages : [];
-    const events: AgentSessionContentEvent[] = [];
     const aiTitle =
       typeof data.info.title === 'string' && data.info.title.length > 0
         ? data.info.title
         : undefined;
-    let displayTitle: string | undefined;
-
-    let lastUserIndex = -1;
-    for (let i = 0; i < messages.length; i++) {
-      if (messages[i]?.type === 'user') lastUserIndex = i;
-    }
-    const startIndex = lastUserIndex >= 0 ? lastUserIndex : 0;
-
-    for (let i = startIndex; i < messages.length; i++) {
-      const msg = messages[i];
-      if (!msg || typeof msg.type !== 'string') continue;
-      const timestamp = msg.time?.created ? new Date(msg.time.created).toISOString() : undefined;
-
-      if (msg.type === 'user') {
-        if (typeof msg.text === 'string' && msg.text.length > 0) {
-          if (!displayTitle) displayTitle = msg.text;
-          events.push({ type: 'text', content: msg.text, timestamp });
-        }
-        continue;
-      }
-
-      if (msg.type === 'assistant') {
-        for (const part of Array.isArray(msg.content) ? msg.content : []) {
-          if (part?.type === 'text' && typeof part.text === 'string') {
-            events.push({ type: 'text', content: part.text, timestamp });
-            continue;
-          }
-          if (part?.type === 'reasoning' && typeof part.text === 'string') {
-            events.push({ type: 'thinking', content: part.text, timestamp });
-            continue;
-          }
-          if (part?.type === 'tool') {
-            const toolId = part.id;
-            const toolName = part.name ?? '';
-            const input = parseToolInput(part.state?.input);
-            if (toolId) {
-              events.push({
-                type: 'tool_use',
-                content: JSON.stringify({ id: toolId, name: toolName, input }),
-                timestamp,
-              });
-            }
-
-            const output = v2ToolOutput(part.state);
-            if (toolId && output !== undefined) {
-              events.push({
-                type: 'tool_result',
-                content: truncateUtf8(output, TOOL_RESULT_MAX_BYTES),
-                timestamp,
-              });
-            }
-          }
-        }
-        continue;
-      }
-
-      // User-invoked shell messages are a first-class message type in v2.
-      if (msg.type === 'shell' && typeof msg.command === 'string') {
-        events.push({
-          type: 'tool_use',
-          content: JSON.stringify({
-            id: msg.callID ?? msg.id ?? 'shell',
-            name: 'bash',
-            input: { command: msg.command },
-          }),
-          timestamp,
-        });
-        if (typeof msg.output === 'string') {
-          events.push({
-            type: 'tool_result',
-            content: truncateUtf8(msg.output, TOOL_RESULT_MAX_BYTES),
-            timestamp,
-          });
-        }
-        continue;
-      }
-
-      // Keep the compact summary visible in the catch-up tail; other control
-      // messages (system/synthetic/agent-switched/model-switched) are noise.
-      if (msg.type === 'compaction' && typeof msg.summary === 'string' && msg.summary) {
-        events.push({ type: 'text', content: msg.summary, timestamp });
-      }
-    }
-
-    // If the last user message had no text (e.g. attachment-only), fall back to
-    // the first human text anywhere in the session for the card title.
-    if (!displayTitle) {
-      for (const msg of messages) {
-        if (msg?.type === 'user' && typeof msg.text === 'string' && msg.text.length > 0) {
-          displayTitle = msg.text;
-          break;
-        }
-      }
-    }
-
-    let latest: AgentSessionUsage | undefined;
-    let cumInput = 0;
-    let cumOutput = 0;
-    let cumTotal = 0;
-    let cumCacheRead = 0;
-    let cumCacheWrite = 0;
-    // 本 turn（= 本 run）的 flow：末个 turn 内每次模型请求之和。contextLength
-    // 仍取末次请求的窗口水位（水位不可求和）。只取末条会把多步 run 低报
-    // （实测一条 25 请求的 run：input 20,040 显示成 543、output 10,358 显示成 1,250）。
-    const turnStart = lastTurnStartIndex(messages);
-    const turn = { input: 0, output: 0, cacheRead: 0, cacheCreation: 0, total: 0 };
-
-    for (let i = 0; i < messages.length; i++) {
-      const sample = usageSample(messages[i]);
-      if (!sample) continue;
-
-      cumInput += sample.input;
-      cumOutput += sample.output;
-      cumTotal += sample.total;
-      cumCacheRead += sample.cacheRead;
-      cumCacheWrite += sample.cacheCreation;
-
-      if (i > turnStart) {
-        turn.input += sample.input;
-        turn.output += sample.output;
-        turn.cacheRead += sample.cacheRead;
-        turn.cacheCreation += sample.cacheCreation;
-        turn.total += sample.total;
-      }
-
-      latest = {
-        inputTokens: sample.input,
-        outputTokens: sample.output,
-        // §9.21 口径：含末轮 output（与 postTokens 水位同语义）。
-        contextLength: sample.input + sample.output + sample.cacheRead + sample.cacheCreation,
-        cacheReadTokens: sample.cacheRead,
-        cacheCreationTokens: sample.cacheCreation,
-        totalTokens: sample.total,
-      };
-    }
-
-    // turnStart 可能落在末条采样之后（新 turn 尚无采样）→ turn 全 0；latest
-    // 仍是上一轮末条采样，contextLength 保留水位。turnStart 小于最后一个采样
-    // 下标时，flow 覆盖末条值，只有 contextLength 保留末条。
-    if (latest) {
-      latest.inputTokens = turn.input;
-      latest.outputTokens = turn.output;
-      latest.cacheReadTokens = turn.cacheRead;
-      latest.cacheCreationTokens = turn.cacheCreation;
-      latest.totalTokens = turn.total;
-    }
-
-    latest = withCumulativeUsage(latest, {
-      total: cumTotal,
-      input: cumInput,
-      output: cumOutput,
-      cacheRead: cumCacheRead,
-      cacheWrite: cumCacheWrite,
-    });
+    const tail = assembleV2TailEvents(messages);
+    const usage = scanV2Usage(messages);
 
     return {
-      events: capEvents(events, opts?.maxEvents),
-      usage: latest,
+      events: capEvents(tail.events, opts?.maxEvents),
+      usage: finalizeTurnUsage(usage.latest, usage.turn, usage.cum),
       aiTitle,
-      displayTitle,
+      displayTitle: tail.displayTitle,
     };
   }
 
@@ -907,9 +998,7 @@ export class OpencodeSessionReader implements AgentSessionReader {
       if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
         return [];
       }
-      getLogger().error(`[opencode-session-reader] session list failed: ${err}`);
-      const msg = err instanceof Error ? err.message : String(err);
-      throw new Error(`opencode session list 读取失败: ${msg}`, { cause: err });
+      throwSessionListError('opencode', err);
     }
   }
 

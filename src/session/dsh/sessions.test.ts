@@ -479,7 +479,11 @@ describe('DshSessionReader', () => {
     expect(ok.events.map((e) => e.content)).toEqual(['belongs to other cwd']);
   });
 
-  it('returns empty results on DSH error (fail-soft)', () => {
+  it('throws on DSH list failure (router shows 读取失败, not a fake empty list)', () => {
+    // 远端 RPC 无真空态：daemon 未启动 / cookie 失效 / 服务端错误全是故障态。
+    // listSessions 必须上抛（与 kimi/opencode 同口径），静默 [] 会让 /resume
+    // 显示「无会话」与真空不可区分；readSessionContent / isSessionActive
+    // 保留降级但留痕。
     const server = new FakeDshServer();
     server.register('session/list', () => ({
       ok: false,
@@ -487,8 +491,9 @@ describe('DshSessionReader', () => {
     }));
 
     const reader = makeReader(server);
-    expect(reader.listSessions(CWD)).toEqual({ sessions: [], total: 0 });
-    expect(reader.getNewestSession(CWD)).toBeNull();
+    expect(() => reader.listSessions(CWD)).toThrow(/^dsh session list 读取失败: /);
+    expect(() => reader.getNewestSession(CWD)).toThrow(/dsh session list 读取失败/);
+    // 详情读取与判活保留 fail-soft（消费方已有可见反馈路径）。
     expect(reader.isSessionActive(SID_A, CWD)).toBe(false);
   });
 

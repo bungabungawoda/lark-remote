@@ -4,6 +4,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { loadConfig, getConfigValue, setConfigValue, AppConfigSchema } from './index.js';
 import type { AppConfig } from './index.js';
+import { AGENT_KINDS } from '../agent-kinds.js';
 
 let tmpDir: string;
 
@@ -171,6 +172,18 @@ claude:
     const bad = VALID_CONFIG + '\ndefaultAgent: gemini\n';
     const p = writeConfig(bad);
     expect(() => loadConfig(p)).toThrow();
+  });
+
+  it('defaultAgent schema accepts every AGENT_KINDS member (SSOT 同源钉子)', () => {
+    // schema 枚举来自 agent-kinds.ts 的 AGENT_KINDS（z.enum(AGENT_KINDS)）：
+    // 名单加新 agent 时这里自动跟随，不再依赖手抄字面量的同步。
+    for (const kind of AGENT_KINDS) {
+      const config = AppConfigSchema.parse({
+        feishu: { appId: 'cli_test123', appSecret: 'secret_test123' },
+        defaultAgent: kind,
+      });
+      expect(config.defaultAgent).toBe(kind);
+    }
   });
 
   // Kimi ACP config schema

@@ -41,9 +41,9 @@ function createRouter(overrides?: {
   });
 }
 
-// ── Issue 1 — /resume empty list hardcoded "Claude" ────────
+describe('multi-agent legacy issues', () => {
+  // ── Issue 1 — /resume empty list hardcoded "Claude" ────────
 
-describe('multi-agent legacy issues — /resume', () => {
   it('test_anchor_resume_empty_list_uses_agent_display_name_not_hardcoded_claude', async () => {
     // When defaultAgent is 'opencode', /resume with no sessions should say
     // "当前没有 Opencode session 记录", NOT "当前没有 Claude session 记录"
@@ -59,11 +59,9 @@ describe('multi-agent legacy issues — /resume', () => {
     expect(text).toContain('Opencode');
     expect(text).toContain('session 记录');
   });
-});
 
-// ── Issue 2 — /active empty list hardcoded "Claude" ────────
+  // ── Issue 2 — /active empty list hardcoded "Claude" ────────
 
-describe('multi-agent legacy issues — /active', () => {
   it('test_anchor_active_empty_list_uses_agent_display_name_not_hardcoded_claude', async () => {
     // New semantics: /active shows memory-based active runs from THIS bridge process.
     // Empty message changed from "当前没有正在进行中的 {agent} session" to "当前没有正在进行中的任务"
@@ -80,11 +78,9 @@ describe('multi-agent legacy issues — /active', () => {
     // Should NOT contain hardcoded "Claude" (the old bug)
     expect(text).not.toContain('Claude');
   });
-});
 
-// ── Issue 3 — /ps hardcoded "claude 进程" ────────────────
+  // ── Issue 3 — /ps hardcoded "claude 进程" ────────────────
 
-describe('multi-agent legacy issues — /ps', () => {
   it('test_anchor_ps_uses_agent_display_name_not_hardcoded_claude', async () => {
     // When defaultAgent is 'pi', /ps should say "有 Pi 进程在运行",
     // NOT "有 claude 进程在运行"
@@ -99,11 +95,9 @@ describe('multi-agent legacy issues — /ps', () => {
     // is constructed from the same variable)
     expect(text).not.toContain('claude');
   });
-});
 
-// ── Issue 4 — /help /stop description hardcoded "claude 进程" ─
+  // ── Issue 4 — /help /stop description hardcoded "claude 进程" ─
 
-describe('multi-agent legacy issues — /help', () => {
   it('test_anchor_help_stop_desc_not_hardcoded_claude', async () => {
     const { router, connector } = createRouter();
     await router.handle('/help', ctx);
@@ -114,11 +108,9 @@ describe('multi-agent legacy issues — /help', () => {
     // Should contain a generic description like "终止当前 Agent 进程" or similar
     expect(cardStr).toMatch(/终止.*进程|Agent.*进程/);
   });
-});
 
-// ── Issue 5 — /status fallback reads config.claude.model ──
+  // ── Issue 5 — /status fallback reads config.claude.model ──
 
-describe('multi-agent legacy issues — /status', () => {
   it('test_anchor_status_fallback_reads_current_agent_model_not_claude', async () => {
     // After that, /status directly calls runner.getStatusInfo() without runtime checks.
     // The stub runner returns {kind:'claude', model:'test-model'} - verify no hardcoded config.claude.model
@@ -134,11 +126,9 @@ describe('multi-agent legacy issues — /status', () => {
     // Should NOT fall back to config.claude.model (claude-opus-4-8)
     expect(md).not.toContain('claude-opus-4-8');
   });
-});
 
-// ── Issue 7 — run-state error message hardcoded "Claude 返回错误结果" ─
+  // ── Issue 7 — run-state error message hardcoded "Claude 返回错误结果" ─
 
-describe('multi-agent legacy issues — run-state error message', () => {
   it('test_anchor_run_state_result_error_not_hardcoded_claude', async () => {
     // Import the reduceRunState function to test directly
     const { reduceRunState } = await import('../../src/card/run-state.js');
@@ -159,11 +149,9 @@ describe('multi-agent legacy issues — run-state error message', () => {
     // Should contain a generic message
     expect(result.errorMsg).toContain('错误');
   });
-});
 
-// ── Issue 8 — bridge stream end hardcoded "Claude 输出流已结束" ─
+  // ── Issue 8 — bridge stream end hardcoded "Claude 输出流已结束" ─
 
-describe('multi-agent legacy issues — bridge stream end', () => {
   it('test_anchor_bridge_stream_end_uses_agent_display_name_not_hardcoded_claude', async () => {
     // 非 claude agent（codex）的流提前结束（无 result 事件）时，错误卡必须显示
     // agent 展示名（agentDisplayName('codex') = 'Codex'），不得硬编码 'Claude'。
@@ -186,11 +174,9 @@ describe('multi-agent legacy issues — bridge stream end', () => {
     expect(cardJson).toContain('输出流已结束');
     expect(cardJson).toContain('Codex 输出流已结束');
   });
-});
 
-// ── Issue 9 — /new should indicate which agent's session was cleared ─
+  // ── Issue 9 — /new should indicate which agent's session was cleared ─
 
-describe('multi-agent legacy issues — /new', () => {
   it('test_anchor_new_shows_agent_name_in_clear_message', async () => {
     const { router, sessionStore, connector } = createRouter({ defaultAgent: 'opencode' });
     sessionStore.setSessionIdAndCwd('user1', 'claude', 's1', '/tmp');
@@ -201,11 +187,9 @@ describe('multi-agent legacy issues — /new', () => {
     // Should mention the agent name, not just "session"
     expect(text).toMatch(/Opencode.*session|session.*Opencode/);
   });
-});
 
-// ── Issue 10 — new-session card button should show agent name ─
+  // ── Issue 10 — new-session card button should show agent name ─
 
-describe('multi-agent legacy issues — new-session card action', () => {
   it('test_anchor_new_session_card_shows_agent_name', async () => {
     const { router, sessionStore, connector } = createRouter({ defaultAgent: 'pi' });
     sessionStore.setSessionIdAndCwd('user1', 'claude', 's1', '/tmp');
@@ -216,11 +200,9 @@ describe('multi-agent legacy issues — new-session card action', () => {
     // Should mention the agent name
     expect(text).toMatch(/Pi.*session|session.*Pi|Pi.*会话/);
   });
-});
 
-// ── Issue 11 — /resume empty list should suggest agent switching ──
+  // ── Issue 11 — /resume empty list should suggest agent switching ──
 
-describe('multi-agent legacy issues — /resume agent switching hint', () => {
   it('test_anchor_resume_empty_list_suggests_agent_switching', async () => {
     const { router, sessionStore, connector } = createRouter({ defaultAgent: 'claude' });
     sessionStore.setCwd('user1', fs.realpathSync(tmpDir));

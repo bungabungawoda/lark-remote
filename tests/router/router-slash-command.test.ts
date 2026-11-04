@@ -91,10 +91,12 @@ describe('Bug 2: / commands must not be blocked by the serial queue', () => {
       // /stop bypasses the queue (src/index.ts lines 55-68)
       if (trimmed.toLowerCase() === '/stop') {
         void (async () => {
-          const stopped = await bridge.interruptCurrentRun({
-            userId: msg.userId,
-            chatId: msg.chatId,
-          });
+          const stopped = await (
+            await bridge.interruptCurrentRunDetailed({
+              userId: msg.userId,
+              chatId: msg.chatId,
+            })
+          ).stopped;
           if (!stopped) {
             await bridge.sendResult(
               { text: '当前没有运行中的进程' },

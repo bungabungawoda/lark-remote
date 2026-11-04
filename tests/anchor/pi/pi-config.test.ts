@@ -253,10 +253,7 @@ describe('anchor: config card model options filtered by provider', () => {
       tmpDir,
       config,
       bridge: createMockBridge(),
-      sessionReaderRegistry: createMockSessionReaderRegistry({
-        agentKinds: ['claude', 'pi'],
-        withGet: true,
-      }),
+      sessionReaderRegistry: createMockSessionReaderRegistry(),
     }).router;
 
     const result = router.buildConfigCard();
@@ -378,10 +375,7 @@ describe('Bug 2: 切换 provider 后应自动重置 model', () => {
       tmpDir,
       config,
       bridge,
-      sessionReaderRegistry: createMockSessionReaderRegistry({
-        agentKinds: ['claude', 'pi'],
-        withGet: true,
-      }),
+      sessionReaderRegistry: createMockSessionReaderRegistry(),
     }).router;
 
     await router.dispatchConfigAction(

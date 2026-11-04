@@ -4,7 +4,7 @@ import path from 'node:path';
 import YAML from 'yaml';
 import { getLogger } from '../logger/index.js';
 import { atomicWrite } from '../persistence/atomic-write.js';
-import type { AgentKind } from '../agent-kinds.js';
+import { AGENT_KINDS, type AgentKind } from '../agent-kinds.js';
 export { getConfigDir } from './dir.js';
 
 // Import constants from agent config files (SSOT: Layer 1 source)
@@ -157,22 +157,38 @@ const OpencodeConfigSchema = z.object({
     .optional(),
 });
 
+/**
+ * pi 默认配置：schema default 与 src/index.ts 注册兜底共用，避免三抄漂移。
+ * （src/runner/pi/rpc/runner.ts 还有第三份兜底，待后续引用同一常量。）
+ */
+export const PI_DEFAULTS = {
+  provider: 'Volcano',
+  model: 'glm-5.2',
+  thinking: 'medium',
+  tools: 'read,bash,edit,write,grep,find,ls',
+} as const;
+
 /** Pi-specific configuration. pi is a spawn-per-message CLI like Claude. */
 const PiConfigSchema = z.object({
   /** LLM provider, e.g. 'Volcano', 'anthropic', 'openai'. */
-  provider: z.string().default('Volcano'),
+  provider: z.string().default(PI_DEFAULTS.provider),
   /** Model ID or alias, e.g. 'glm-5.2'. */
-  model: z.string().default('glm-5.2'),
+  model: z.string().default(PI_DEFAULTS.model),
   /** Thinking level: off/minimal/low/medium/high/xhigh. */
-  thinking: z.enum(PI_THINKING_LEVELS).default('medium'),
+  thinking: z.enum(PI_THINKING_LEVELS).default(PI_DEFAULTS.thinking),
   /** Comma-separated tool whitelist. */
-  tools: z.string().default('read,bash,edit,write,grep,find,ls'),
+  tools: z.string().default(PI_DEFAULTS.tools),
 });
+
+/** kimi 默认模型：schema default 与 src/index.ts 注册兜底共用，避免双抄漂移。 */
+export const KIMI_DEFAULTS = {
+  model: 'kimi-code/k3',
+} as const;
 
 /** Kimi-specific configuration. Pure ACP mode (persistent `kimi acp` connection). */
 const KimiConfigSchema = z.object({
   /** Model ID or alias, e.g. 'kimi-code/k3'. */
-  model: z.string().default('kimi-code/k3'),
+  model: z.string().default(KIMI_DEFAULTS.model),
   /** Thinking effort，取值见 KIMI_THINKING_EFFORTS（'low' | 'high' | 'max'）。 */
   thinkingEffort: z.enum(KIMI_THINKING_EFFORTS).default('max'),
   /** Permission mode: 'manual' (approve each), 'auto' (engine decides), 'yolo' (allow all). */
@@ -333,7 +349,7 @@ export const AppConfigSchema = z.object({
   /** 入站媒体（图片/文件）落盘配置。 */
   inboundMedia: InboundMediaConfigSchema.default(InboundMediaConfigSchema.parse({})),
   /** Default agent for new runs. */
-  defaultAgent: z.enum(['claude', 'codex', 'opencode', 'pi', 'kimi', 'dsh']).default('claude'),
+  defaultAgent: z.enum(AGENT_KINDS).default('claude'),
   /** Check for updates on lark-remote startup (default: false). */
   checkUpdateOnStartup: z.boolean().default(false),
 });

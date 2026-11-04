@@ -366,7 +366,7 @@ export class CloneSession {
           { text: `⚠️ 二维码图片发送失败，请在浏览器打开创建：${info.url}` },
           { replyTo: ctx.messageId },
         )
-        .catch(() => {});
+        .catch((err: unknown) => getLogger().warn('[clone] fallback notice send failed:', err));
       return;
     } finally {
       bestEffortUnlink(qrPath);
@@ -483,7 +483,9 @@ export class CloneSession {
           },
           { replyTo: ctx.messageId },
         )
-        .catch(() => {});
+        .catch((sendErr: unknown) =>
+          getLogger().warn('[clone] finalize failure notice send failed:', sendErr),
+        );
     } finally {
       this.state = 'idle';
       this.targetDir = undefined;

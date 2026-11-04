@@ -7,6 +7,8 @@ import {
   listClaudeSessions,
   getNewestSession,
   isClaudeSessionActive,
+  maxUsageRecord,
+  buildClaudeUsage,
 } from '../../session/claude/sessions.js';
 import { parseSessionJsonl } from '../../session/claude/session-index.js';
 import { encodeClaudeProjectDir } from '../../../tests/lib/session-fixtures.js';
@@ -1483,5 +1485,105 @@ describe('readSessionContent / isClaudeSessionActive - session-index guard integ
     } finally {
       fs.rmSync(localTmp, { recursive: true, force: true });
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// usage 逐字段 max merge / 装配单测（纯函数直测：maxUsageRecord / buildClaudeUsage）
+//
+// 拆分自 scalarScan；端到端行为仍由上面的公共 API 测试覆盖。这里直测的
+// RED LINE：streaming 部分帧的逐字段 max 语义（token 口径单源的一部分），
+// 与「末个真人 turn = per-run scope、累计 = session 总和」的 scope 分离。
+// ---------------------------------------------------------------------------
+describe('maxUsageRecord / buildClaudeUsage（usage merge + 装配）', () => {
+  it('maxUsageRecord: 零占位行 + 真实行按字段取 max，turn 归首次采集序号', () => {
+    // 同一 message id 两行：早期占位行全零，末行带真实 usage（DeepSeek 类网关）。
+    const merged = maxUsageRecord(
+      maxUsageRecord(
+        undefined,
+        {
+          input_tokens: 0,
+          output_tokens: 0,
+          cache_read_input_tokens: 0,
+          cache_creation_input_tokens: 0,
+        },
+        2,
+      ),
+      {
+        input_tokens: 120,
+        output_tokens: 30,
+        cache_read_input_tokens: 400,
+        cache_creation_input_tokens: 50,
+      },
+      2,
+    );
+    expect(merged).toEqual({ input: 120, output: 30, cacheRead: 400, cacheCreation: 50, turn: 2 });
+    // 行序无关：先真后零结果一致。
+    const reversed = maxUsageRecord(
+      maxUsageRecord(
+        undefined,
+        {
+          input_tokens: 120,
+          output_tokens: 30,
+          cache_read_input_tokens: 400,
+          cache_creation_input_tokens: 50,
+        },
+        2,
+      ),
+      {
+        input_tokens: 0,
+        output_tokens: 0,
+        cache_read_input_tokens: 0,
+        cache_creation_input_tokens: 0,
+      },
+      2,
+    );
+    expect(reversed).toEqual(merged);
+  });
+
+  it('maxUsageRecord: 部分帧互补字段合并（message_start 风格）', () => {
+    const merged = maxUsageRecord(
+      maxUsageRecord(undefined, { input_tokens: 100 }, 1),
+      { output_tokens: 25, cache_read_input_tokens: 7 },
+      1,
+    );
+    expect(merged).toEqual({ input: 100, output: 25, cacheRead: 7, cacheCreation: 0, turn: 1 });
+  });
+
+  it('buildClaudeUsage: flow 只取末个真人 turn，累计为全会话总和', () => {
+    const usage = buildClaudeUsage(
+      [
+        { input: 100, output: 10, cacheRead: 0, cacheCreation: 0, turn: 1 },
+        { input: 200, output: 20, cacheRead: 5, cacheCreation: 6, turn: 2 },
+        { input: 300, output: 30, cacheRead: 1, cacheCreation: 2, turn: 2 },
+      ],
+      { turnSeq: 2, lastPostTokens: 0, compactCount: 0 },
+    );
+    // flow = 末个 turn（turnSeq=2）两条记录之和；contextLength = 末次请求的
+    // 窗口水位（§9.21 含 output，水位不求和——取末条记录而非 turn 求和）。
+    expect(usage.inputTokens).toBe(500);
+    expect(usage.outputTokens).toBe(50);
+    expect(usage.totalTokens).toBe(500 + 50 + 6 + 8);
+    expect(usage.contextLength).toBe(300 + 30 + 1 + 2);
+    expect(usage.cumulativeInputTokens).toBe(600);
+    expect(usage.cumulativeOutputTokens).toBe(60);
+  });
+
+  it('buildClaudeUsage: 无真人 prompt（turnSeq=0）回退末条采样；compactCount 透传', () => {
+    const usage = buildClaudeUsage(
+      [
+        { input: 100, output: 10, cacheRead: 0, cacheCreation: 0, turn: 0 },
+        { input: 40, output: 4, cacheRead: 2, cacheCreation: 1, turn: 0 },
+      ],
+      { turnSeq: 0, lastPostTokens: 9999, compactCount: 3 },
+    );
+    // flow 回退末条采样（不是整份文件求和）。
+    expect(usage.inputTokens).toBe(40);
+    expect(usage.outputTokens).toBe(4);
+    expect(usage.totalTokens).toBe(47);
+    // contextLength = max(postTokens, 末轮窗口占用)。
+    expect(usage.contextLength).toBe(9999);
+    expect(usage.compactCount).toBe(3);
+    expect(usage.cumulativeInputTokens).toBe(140);
   });
 });

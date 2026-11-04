@@ -58,6 +58,38 @@ const KIND_TO_TOOL: Record<string, string> = {
 };
 
 /**
+ * Plan 条目 status → 渲染图标。未知/缺省 status 一律按 pending 渲染——
+ * 两处调用点（ACP handlePlan / codex handleTurnPlanUpdated）注释都点名防
+ * wire 枚举漂移，新增枚举值时只改这张表。
+ */
+const PLAN_STATUS_ICONS = {
+  completed: '✅',
+  in_progress: '🔄',
+  pending: '⬜',
+  error: '❌',
+} as const;
+type PlanIconStatus = keyof typeof PLAN_STATUS_ICONS;
+
+/**
+ * Plan entries → 「图标 + 标题」markdown 清单（每行一条，`\n` join）。
+ * ACP 与 codex 双抄收编（R5）；subtitle 拼接、trim、空清单语义等差异留在
+ * 各自调用点。
+ */
+export function renderPlanMarkdown(
+  entries: ReadonlyArray<{ title: string; subtitle?: string; status?: string }>,
+): string {
+  return entries
+    .map((entry) => {
+      const status: PlanIconStatus =
+        entry.status && entry.status in PLAN_STATUS_ICONS
+          ? (entry.status as PlanIconStatus)
+          : 'pending';
+      return `${PLAN_STATUS_ICONS[status]} ${entry.title}${entry.subtitle ? ` — ${entry.subtitle}` : ''}`;
+    })
+    .join('\n');
+}
+
+/**
  * Join the text payloads of a tool_call(/_update) content array
  * (`[{type:'content', content:{type:'text', text}}]` entries). Returns
  * undefined when no text entry exists (diff/terminal-only content).
@@ -313,18 +345,14 @@ export abstract class BaseAcpTranslator {
    * completed）。基类具体方法：kimi/opencode wire 结构相同，直接复用。
    */
   protected handlePlan(event: AcpPlanEvent): AcpTranslatorEvent[] {
-    const ICON = { completed: '✅', in_progress: '🔄', pending: '⬜', error: '❌' } as const;
-    type PlanIconStatus = keyof typeof ICON;
     const entries = Array.isArray(event.entries) ? event.entries : [];
-    const markdown = entries
-      .map((e) => {
+    const markdown = renderPlanMarkdown(
+      entries.map((e) => {
         const entry = e as { content?: string; status?: string };
-        const status: PlanIconStatus =
-          entry.status && entry.status in ICON ? (entry.status as PlanIconStatus) : 'pending';
-        return `${ICON[status]} ${entry.content ?? ''}`;
-      })
-      .join('\n')
-      .trim();
+        // ACP 条目的正文字段是 content（codex 是 title），无 subtitle。
+        return { title: entry.content ?? '', status: entry.status };
+      }),
+    ).trim();
     if (!markdown) return [];
     return [{ type: 'plan', plan: markdown, timestamp: new Date().toISOString() }];
   }

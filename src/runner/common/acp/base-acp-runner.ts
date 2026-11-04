@@ -40,7 +40,7 @@ import {
   type AcpPendingApproval,
 } from './acp-approval.js';
 import { getLogger } from '../../../logger/index.js';
-import { ConnectionBasedRunner } from '../connection-based-runner.js';
+import { ConnectionBasedRunner, type TurnAnchor } from '../connection-based-runner.js';
 import { BaseAcpTranslator, type AcpTranslatorEvent } from './base-translator.js';
 
 // Re-export for subclass convenience (kimi/opencode runners import from here).
@@ -219,6 +219,27 @@ export abstract class BaseAcpRunner<
     this.connectionManager.notifyIdle(cwd);
   }
 
+  protected notifyConnectionActivity(cwd: string): void {
+    this.connectionManager.notifyActivity(cwd);
+  }
+
+  /** Wire the acquired client's hooks into the turn dispatcher (anchor-guarded). */
+  private installTurnHooks(anchor: TurnAnchor<JsonRpcClient>): void {
+    anchor.client.setHooks({
+      onNotification: this.forCurrentTurn(anchor, 'notification', (method, params) =>
+        this.handleNotification(method, params),
+      ),
+      onServerRequest: this.forCurrentTurn(anchor, 'server request', (id, method, params) =>
+        this.handleServerRequest(id, method, params),
+      ),
+      onClose: this.forCurrentTurn(anchor, 'connection close', () => {
+        getLogger().warn(`[${this.logTag}] client connection closed`);
+        this.onConnectionClosed();
+        this.failTurn(this.connectionClosedMessage);
+      }),
+    });
+  }
+
   protected async disposeConnections(): Promise<void> {
     await this.beforeDisposeConnections();
     await this.connectionManager.disposeAll();
@@ -327,35 +348,14 @@ export abstract class BaseAcpRunner<
    * session/resume (existing sessionId) → applyTurnSettings → session/prompt.
    */
   protected async setupTurn(message: string, opts: SpawnOptions): Promise<void> {
-    // 本轮回调归属锚点：代际 + client 都不可变。旧轮迟到的 prompt
-    // 结果/通知在新轮开始时 stopRequested 已被重置，只有这两个值能识别它。
-    const generation = this.turnGeneration;
-    const client = await this.connectionManager.acquire(opts.cwd);
-    this.connectionManager.notifyActivity(opts.cwd);
-    this.currentClient = client;
+    // 本轮回调归属锚点（代际 + client）由 acquireForTurn 捕获：旧轮迟到的
+    // prompt 结果/通知在新轮开始时 stopRequested 已被重置，只有这对值能识别它。
+    const anchor = await this.acquireForTurn(opts.cwd, () =>
+      this.connectionManager.acquire(opts.cwd),
+    );
     this.onConnectionAcquired(opts);
-    client.setHooks({
-      onNotification: (method, params) => {
-        if (!this.isCurrentTurn(generation, client)) {
-          getLogger().debug(`[${this.logTag}] dropped notification from a finished turn`);
-          return;
-        }
-        this.handleNotification(method, params);
-      },
-      onServerRequest: (id, method, params) => {
-        if (!this.isCurrentTurn(generation, client)) {
-          getLogger().debug(`[${this.logTag}] dropped server request from a finished turn`);
-          return;
-        }
-        this.handleServerRequest(id, method, params);
-      },
-      onClose: () => {
-        if (!this.isCurrentTurn(generation, client)) return;
-        getLogger().warn(`[${this.logTag}] client connection closed`);
-        this.onConnectionClosed();
-        this.failTurn(this.connectionClosedMessage);
-      },
-    });
+    this.installTurnHooks(anchor);
+    const { client } = anchor;
 
     let sessionId: string;
     if (opts.sessionId) {
@@ -407,20 +407,12 @@ export abstract class BaseAcpRunner<
     this.promptSent = true;
 
     promptPromise.then(
-      (result) => {
-        if (!this.isCurrentTurn(generation, client)) {
-          getLogger().debug(`[${this.logTag}] dropped late prompt result from a finished turn`);
-          return;
-        }
-        this.handlePromptResolved(result, translator, sessionId);
-      },
-      (err) => {
-        if (!this.isCurrentTurn(generation, client)) {
-          getLogger().debug(`[${this.logTag}] dropped late prompt rejection from a finished turn`);
-          return;
-        }
-        this.handlePromptRejected(err, translator, sessionId, '');
-      },
+      this.forCurrentTurn(anchor, 'late prompt result', (result) =>
+        this.handlePromptResolved(result, translator, sessionId),
+      ),
+      this.forCurrentTurn(anchor, 'late prompt rejection', (err) =>
+        this.handlePromptRejected(err, translator, sessionId, ''),
+      ),
     );
   }
 
@@ -430,26 +422,13 @@ export abstract class BaseAcpRunner<
    */
   async *runCompact(_message: string, opts: SpawnOptions): AsyncGenerator<AgentEvent> {
     yield* this.executeTurn(opts, async () => {
-      const generation = this.turnGeneration;
-      const client = await this.connectionManager.acquire(opts.cwd);
-      this.connectionManager.notifyActivity(opts.cwd);
-      this.currentClient = client;
+      // 同 setupTurn：acquireForTurn 捕获代际锚点，installTurnHooks 守卫 dispatch。
+      const anchor = await this.acquireForTurn(opts.cwd, () =>
+        this.connectionManager.acquire(opts.cwd),
+      );
       this.onConnectionAcquired(opts);
-      client.setHooks({
-        onNotification: (method, params) => {
-          if (!this.isCurrentTurn(generation, client)) return;
-          this.handleNotification(method, params);
-        },
-        onServerRequest: (id, method, params) => {
-          if (!this.isCurrentTurn(generation, client)) return;
-          this.handleServerRequest(id, method, params);
-        },
-        onClose: () => {
-          if (!this.isCurrentTurn(generation, client)) return;
-          this.onConnectionClosed();
-          this.failTurn(this.connectionClosedMessage);
-        },
-      });
+      this.installTurnHooks(anchor);
+      const { client } = anchor;
 
       const sessionId = opts.sessionId;
       if (!sessionId) {

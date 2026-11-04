@@ -19,7 +19,7 @@ const typesSource = fs.readFileSync(path.join(SRC, 'types.ts'), 'utf-8');
 const routerSource = fs.readFileSync(path.join(SRC, '../index.ts'), 'utf-8');
 
 /** `ConfigField.type` 声明支持的控件形态。 */
-const declaredTypes = (typesSource.match(/type:\s*((?:'[a-z]+'\s*\|?\s*)+)/)![1] ?? '')
+const declaredTypes = (typesSource.match(/type:\s*((?:'[a-z_][a-z0-9_]*'\s*\|?\s*)+)/)![1] ?? '')
   .split('|')
   .map((s) => s.trim().replace(/'/g, ''))
   .filter(Boolean);

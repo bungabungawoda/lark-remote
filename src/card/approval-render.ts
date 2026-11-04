@@ -81,10 +81,9 @@ function pushIf<T>(arr: T[], el: T | null): void {
  * Returns an array of CardKit 2.0 elements to append to the card body.
  */
 export function renderApprovalArea(
-  approval: ApprovalView | undefined,
+  approval: ApprovalView,
   opts?: { expired?: boolean; runId?: string; terminal?: RunTerminal },
 ): object[] {
-  if (!approval) return [];
   // 终态（done/error/interrupted/idle_timeout）下 run 已结束：coordinator 已
   // 释放，按钮点击无处响应，隐藏整个审批区避免"点了没反应"。
   if (isTerminalHidden(opts)) return [];
@@ -136,10 +135,9 @@ export function renderApprovalArea(
  * 结构性保证 ≤ 几个元素 + ≤ 1KB 文本，审批入口（红线）在任何降级档都活着。
  */
 export function renderApprovalAreaCompact(
-  approval: ApprovalView | undefined,
+  approval: ApprovalView,
   opts?: { expired?: boolean; runId?: string; terminal?: RunTerminal },
 ): object[] {
-  if (!approval) return [];
   if (isTerminalHidden(opts)) return [];
 
   const elements: object[] = [
@@ -634,125 +632,7 @@ function renderQuestionApproval(
       break;
     }
     renderedQuestions++;
-    const q = questions[i];
-    const selected = q.selected ?? [];
-    const header = capApprovalText(q.header || `问题 ${i + 1}`, APPROVAL_LABEL_BYTES);
-    const freeText = (q.options?.length ?? 0) === 0;
-    elements.push({
-      tag: 'div',
-      text: {
-        tag: 'lark_md',
-        content: `**${header}**${q.multiSelect ? '（可多选）' : ''}\n${capApprovalText(q.question)}`,
-      },
-    });
-
-    if (q.detail) {
-      // 题面外的补充正文（DSH plan-review 提问把计划全文放这里）：必须随题
-      // 渲染，否则用户是在「看不见计划」的情况下批准。与 ExitPlanMode 的
-      // 计划面板同口径：反引号中和 + 表格限数 + 字节预算折叠展示。
-      const neutralized = q.detail.replace(/`/g, '·');
-      const content = truncateUtf8(truncateMarkdownTables(neutralized), PLAN_PANEL_BYTES);
-      elements.push(
-        collapsibleMarkdownPanel({
-          title: '📋 详情',
-          expanded: false,
-          border: 'blue',
-          content,
-        }),
-      );
-    }
-
-    if (freeText) {
-      // 自由文本题（Codex options:null / Pi extension input）：无选项行，
-      // 直接渲染题面 + 输入框，提交走 answerCustom（coordinator 不要求有选项）。
-      elements.push(renderAnswerInput(approval.requestId, i, q.placeholder ?? '输入回答…', runId));
-      // 已答回显：input_value 不跨卡片更新保留，多题场景下用户提交后若还有
-      // 其他问题未答，卡片必须展示已答文本（与自定义答案选中态同模式）。
-      const answered = q.selected?.find((s) => s.length > 0);
-      if (answered) {
-        elements.push({
-          tag: 'div',
-          text: { tag: 'lark_md', content: `✍️ 已答：${capApprovalText(answered)}` },
-        });
-      }
-      continue;
-    }
-
-    // 选项渲染上限（label 是回调 payload 不可截断，只能按条数折叠）。
-    const options = q.options ?? [];
-    for (const option of options.slice(0, MAX_RENDERED_OPTIONS)) {
-      const isSelected = selected.includes(option.label);
-      // 单选/多选图标区分：单选 ⚪/🔵（radio 隐喻），多选 ⬜/☑️（checkbox 隐喻）。
-      const icon = q.multiSelect ? (isSelected ? '☑️' : '⬜') : isSelected ? '🔵' : '⚪';
-      elements.push(renderOptionRow(approval.requestId, i, option, isSelected, icon, runId));
-    }
-    if (options.length > MAX_RENDERED_OPTIONS) {
-      elements.push({
-        tag: 'div',
-        text: {
-          tag: 'lark_md',
-          content: `_…另有 ${options.length - MAX_RENDERED_OPTIONS} 个选项未展示（卡片元素预算）_`,
-        },
-      });
-    }
-
-    // 自定义答案（Other）的选中态展示：选项按钮无法表示自由文本，单独显示
-    // 已选文本，避免「点了没反应」的困惑。
-    const customSelected = q.selected?.find((s) => !q.options.some((o) => o.label === s));
-    if (customSelected) {
-      elements.push({
-        tag: 'div',
-        text: { tag: 'lark_md', content: `✍️ 自定义答案：${capApprovalText(customSelected)}` },
-      });
-    }
-
-    // 单选问题提供自定义答案（Other）输入——输入文本后提交
-    // （移动端键盘回车/完成键，桌面端输入框右侧提交图标），input_value 经
-    // connector raw 事件回传。
-    // 显隐按 isOther !== false：Kimi form 会丢弃非声明选项值，翻译时置
-    // isOther=false 隐藏输入；Claude 未设置该字段默认显示（行为不变）。
-    if (!q.multiSelect && q.isOther !== false) {
-      elements.push(
-        renderAnswerInput(
-          approval.requestId,
-          i,
-          '自定义答案（Other）…',
-          runId,
-          'approval.answerCustom',
-        ),
-      );
-    }
-
-    // Codex user_note：选项之外的补充说明（allowNote 数据驱动门控）。
-    // 提交走 answerNote（coordinator 记录 note，随答案一起提交），已填回显。
-    if (q.allowNote === true) {
-      elements.push(
-        renderAnswerInput(approval.requestId, i, '补充说明（可选）…', runId, 'approval.answerNote'),
-      );
-      if (q.note) {
-        elements.push({
-          tag: 'div',
-          text: { tag: 'lark_md', content: `📝 ${capApprovalText(q.note)}` },
-        });
-      }
-    }
-
-    // 多选问题：有勾选才给提交按钮（单选在协调器内即时提交）。
-    if (q.multiSelect && selected.length > 0) {
-      elements.push(
-        cardButton(
-          `✅ 提交答案（已选 ${selected.length} 项）`,
-          {
-            cmd: 'approval.answerSubmit',
-            requestId: approval.requestId,
-            questionIndex: i,
-            runId,
-            nonce: mkNonce(),
-          },
-          { type: 'primary' },
-        ),
-      );
-    }
+    elements.push(...renderQuestionBlock(approval, i, runId));
   }
 
   // 提问卡底部统一「跳过回答」：走现有 approval.respond + decision=decline
@@ -770,6 +650,150 @@ function renderQuestionApproval(
           nonce: mkNonce(),
         },
         { type: 'default' },
+      ),
+    );
+  }
+
+  return elements;
+}
+
+/**
+ * 渲染单题区块：题面 + 详情面板 + 选项行/输入框 + （多选）提交按钮。
+ * 从 renderQuestionApproval 的循环体抽出；循环保留题数/元素预算裁剪与
+ * 卡片装配。交互组件（按钮/输入框）继续直挂 body elements——本函数输出
+ * 必须始终被 expectNoV1ActionContainer 断言覆盖（200861 红线，见
+ * run-renderer.test.ts 的 question 系列）；nonce 仍由各交互元素生成时
+ * 各自调用一次 mkNonce()，不在块外缓存复用。
+ */
+function renderQuestionBlock(approval: ApprovalView, qIndex: number, runId?: string): object[] {
+  const q = approval.questions?.[qIndex];
+  // 越界防御（正常调用由循环边界保证）；不虚构题面。
+  if (!q) return [];
+
+  const elements: object[] = [];
+  const selected = q.selected ?? [];
+  const header = capApprovalText(q.header || `问题 ${qIndex + 1}`, APPROVAL_LABEL_BYTES);
+  const freeText = (q.options?.length ?? 0) === 0;
+  elements.push({
+    tag: 'div',
+    text: {
+      tag: 'lark_md',
+      content: `**${header}**${q.multiSelect ? '（可多选）' : ''}\n${capApprovalText(q.question)}`,
+    },
+  });
+
+  if (q.detail) {
+    // 题面外的补充正文（DSH plan-review 提问把计划全文放这里）：必须随题
+    // 渲染，否则用户是在「看不见计划」的情况下批准。与 ExitPlanMode 的
+    // 计划面板同口径：反引号中和 + 表格限数 + 字节预算折叠展示。
+    const neutralized = q.detail.replace(/`/g, '·');
+    const content = truncateUtf8(truncateMarkdownTables(neutralized), PLAN_PANEL_BYTES);
+    elements.push(
+      collapsibleMarkdownPanel({
+        title: '📋 详情',
+        expanded: false,
+        border: 'blue',
+        content,
+      }),
+    );
+  }
+
+  if (freeText) {
+    // 自由文本题（Codex options:null / Pi extension input）：无选项行，
+    // 直接渲染题面 + 输入框，提交走 answerCustom（coordinator 不要求有选项）。
+    elements.push(
+      renderAnswerInput(approval.requestId, qIndex, q.placeholder ?? '输入回答…', runId),
+    );
+    // 已答回显：input_value 不跨卡片更新保留，多题场景下用户提交后若还有
+    // 其他问题未答，卡片必须展示已答文本（与自定义答案选中态同模式）。
+    const answered = q.selected?.find((s) => s.length > 0);
+    if (answered) {
+      elements.push({
+        tag: 'div',
+        text: { tag: 'lark_md', content: `✍️ 已答：${capApprovalText(answered)}` },
+      });
+    }
+    return elements;
+  }
+
+  // 选项渲染上限（label 是回调 payload 不可截断，只能按条数折叠）。
+  const options = q.options ?? [];
+  for (const option of options.slice(0, MAX_RENDERED_OPTIONS)) {
+    const isSelected = selected.includes(option.label);
+    // 单选/多选图标区分：单选 ⚪/🔵（radio 隐喻），多选 ⬜/☑️（checkbox 隐喻）。
+    const icon = q.multiSelect ? (isSelected ? '☑️' : '⬜') : isSelected ? '🔵' : '⚪';
+    elements.push(renderOptionRow(approval.requestId, qIndex, option, isSelected, icon, runId));
+  }
+  if (options.length > MAX_RENDERED_OPTIONS) {
+    elements.push({
+      tag: 'div',
+      text: {
+        tag: 'lark_md',
+        content: `_…另有 ${options.length - MAX_RENDERED_OPTIONS} 个选项未展示（卡片元素预算）_`,
+      },
+    });
+  }
+
+  // 自定义答案（Other）的选中态展示：选项按钮无法表示自由文本，单独显示
+  // 已选文本，避免「点了没反应」的困惑。
+  const customSelected = q.selected?.find((s) => !q.options.some((o) => o.label === s));
+  if (customSelected) {
+    elements.push({
+      tag: 'div',
+      text: { tag: 'lark_md', content: `✍️ 自定义答案：${capApprovalText(customSelected)}` },
+    });
+  }
+
+  // 单选问题提供自定义答案（Other）输入——输入文本后提交
+  // （移动端键盘回车/完成键，桌面端输入框右侧提交图标），input_value 经
+  // connector raw 事件回传。
+  // 显隐按 isOther !== false：Kimi form 会丢弃非声明选项值，翻译时置
+  // isOther=false 隐藏输入；Claude 未设置该字段默认显示（行为不变）。
+  if (!q.multiSelect && q.isOther !== false) {
+    elements.push(
+      renderAnswerInput(
+        approval.requestId,
+        qIndex,
+        '自定义答案（Other）…',
+        runId,
+        'approval.answerCustom',
+      ),
+    );
+  }
+
+  // Codex user_note：选项之外的补充说明（allowNote 数据驱动门控）。
+  // 提交走 answerNote（coordinator 记录 note，随答案一起提交），已填回显。
+  if (q.allowNote === true) {
+    elements.push(
+      renderAnswerInput(
+        approval.requestId,
+        qIndex,
+        '补充说明（可选）…',
+        runId,
+        'approval.answerNote',
+      ),
+    );
+    if (q.note) {
+      elements.push({
+        tag: 'div',
+        text: { tag: 'lark_md', content: `📝 ${capApprovalText(q.note)}` },
+      });
+    }
+  }
+
+  // 多选问题：有勾选才给提交按钮（单选在协调器内即时提交）。
+  if (q.multiSelect && selected.length > 0) {
+    elements.push(
+      cardButton(
+        `✅ 提交答案（已选 ${selected.length} 项）`,
+        {
+          cmd: 'approval.answerSubmit',
+          requestId: approval.requestId,
+          questionIndex: qIndex,
+          runId,
+          nonce: mkNonce(),
+        },
+        { type: 'primary' },
       ),
     );
   }

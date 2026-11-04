@@ -18,6 +18,7 @@ import {
   createStubConnector,
   createStubConnectorWithGatedCardUpdate,
   type GatedRunner,
+  interruptCurrentRun,
 } from '../../lib/bridge-stubs.js';
 import { mockLogger } from '../../lib/logger-mock.js';
 import { createRouterFixture } from '../../lib/router-fixture.js';
@@ -165,18 +166,19 @@ describe('queue.immediate final feedback must say the target STARTED when it beg
     // --- 步骤 6：stop 此刻完成，handler 恢复并执行步骤 3/4.5/6 ---
     resolveStop({ stopped: true });
     await immediateDone;
-    await sleep(20);
 
     const sentTexts = connector._sent
       .map((s) => (s.input as { text?: string } | undefined)?.text)
       .filter((t): t is string => typeof t === 'string');
 
+    // 正向契约：反馈必须承认目标已开始执行（与卡片 "▶️ 已开始执行" 一致）；
+    // waitFor 等终态 toast 落定，其后的负向断言才有意义。
+    expect(await waitFor(() => sentTexts.some((t) => t.includes('已开始执行')))).toBe(true);
+
     // 修复前：步骤 6 对"已开始执行"与"已撤销"共用
     // "…（可能已被撤销或已开始执行），未安排执行。…" 文案。本用例钉住：
     // 目标正在执行，最终反馈不得宣称"未安排执行"。
     expect(sentTexts.some((t) => t.includes('未安排执行'))).toBe(false);
-    // 正向契约：反馈必须承认目标已开始执行（与卡片 "▶️ 已开始执行" 一致）。
-    expect(sentTexts.some((t) => t.includes('已开始执行'))).toBe(true);
 
     // --- 清理：放行 T2，让队列链自然收尾 ---
     release2();
@@ -240,7 +242,10 @@ describe('queue.immediate must not remove tasks queued BEHIND the target when th
         },
       },
     );
-    await sleep(50);
+    // 等 T1 真正 begin（lane 占用者已登记）再排后续消息，保证队列顺序确定性。
+    expect(await waitFor(() => bridge.getQueueExecutingInfo(tmpDir)?.messageId === 'msg-1')).toBe(
+      true,
+    );
 
     // --- 步骤 2：T2（目标任务，挂起）与 T3（排在 T2 之后）依次排队 ---
     let release2: () => void = () => {};
@@ -277,7 +282,13 @@ describe('queue.immediate must not remove tasks queued BEHIND the target when th
         },
       },
     );
-    await sleep(100);
+    expect(
+      await waitFor(
+        () =>
+          bridge.getQueuedTask(tmpDir, 'msg-2') !== undefined &&
+          bridge.getQueuedTask(tmpDir, 'msg-3') !== undefined,
+      ),
+    ).toBe(true);
     expect(bridge.getQueuedTask(tmpDir, 'msg-2')).toBeDefined();
     expect(bridge.getQueuedTask(tmpDir, 'msg-3')).toBeDefined();
 
@@ -432,14 +443,14 @@ describe('queue.immediate entry-time missing target must not claim the queue was
     // --- 步骤 4：此时用户点 T2 的「⚡ 立即执行」→ 入口 getQueuedTask 已是
     // undefined，走 `!targetTask` 早退分支（不 await interrupt、不触碰队列）---
     await router.handleCardAction({ cmd: 'queue.immediate', cwd: tmpDir, messageId: 'm2' }, ctx);
-    await sleep(20);
 
     const sentTexts = connector._sent
       .map((s) => (s.input as { text?: string } | undefined)?.text)
       .filter((t): t is string => typeof t === 'string');
 
-    // 前置（非行为断言）：handler 确实发送了"无法立即执行"的反馈，不是静默吞掉。
-    expect(sentTexts.some((t) => t.includes('无法立即执行'))).toBe(true);
+    // 前置（非行为断言）：handler 确实发送了"无法立即执行"的反馈，不是静默吞掉；
+    // waitFor 等 toast 落定，其后的负向断言才有意义。
+    expect(await waitFor(() => sentTexts.some((t) => t.includes('无法立即执行')))).toBe(true);
     // 前置：T3 必须保持排队（目标已 begin 时不清除排在目标之后的任务）。
     expect(bridge.getQueuedTask(tmpDir, 'm3')).toBeDefined();
 
@@ -583,7 +594,13 @@ describe('queue.immediate must not promise execution in its final toast after th
     // --- 步骤 6：stop 此刻完成，immediate 恢复执行后续步骤 ---
     resolveStop({ stopped: true });
     await immediateDone;
-    await sleep(20);
+
+    const sentTexts = connector._sent
+      .map((s) => (s.input as { text?: string } | undefined)?.text)
+      .filter((t): t is string => typeof t === 'string');
+
+    // 终态 toast 落定（目标已撤销 → "未安排执行" 分支），再做下列断言。
+    expect(await waitFor(() => sentTexts.some((t) => t.includes('未安排执行')))).toBe(true);
 
     // 前置条件（非行为断言）：mark 路径的成员守卫生效，没有把已撤销卡翻回执行态。
     const executingCards = connector._cards.filter((c) => {
@@ -591,10 +608,6 @@ describe('queue.immediate must not promise execution in its final toast after th
       return header?.title?.content === '▶️ 已开始执行';
     });
     expect(executingCards.length).toBe(0);
-
-    const sentTexts = connector._sent
-      .map((s) => (s.input as { text?: string } | undefined)?.text)
-      .filter((t): t is string => typeof t === 'string');
     expect(sentTexts).toContain('✅ 已从队列中撤销');
 
     // 修复前：handler 不重新校验成员资格，最后 toast 仍发送
@@ -965,19 +978,22 @@ describe('queue.immediate final feedback must not claim "未安排执行" when t
       // --- 步骤 5：放行 stop，interruptCurrentRun 完成，handler 恢复并跑完 ---
       runner1.releaseStop();
       await immediateDone;
-      await sleep(20);
 
-      // 前置（非行为断言）：目标确实执行过——T 的卡片已被 begin 路径翻成执行态。
+      // 前置（非行为断言）：目标确实执行过——T 的卡片已被 begin 路径翻成执行态
+      // （begin 的卡片更新是 fire-and-forget，waitFor 等它落到 _updates）。
       const tCardId =
         connector._sent.find((s) => JSON.stringify(s.input).includes('T immediate target'))?.id ??
         '';
-      const executingUpdatesForT = connector._updates.filter(
-        (u) =>
-          u.messageId === tCardId &&
-          (u.card as { header?: { title?: { content?: string } } }).header?.title?.content ===
-            '▶️ 已开始执行',
-      );
-      expect(executingUpdatesForT.length).toBeGreaterThan(0);
+      expect(
+        await waitFor(() =>
+          connector._updates.some(
+            (u) =>
+              u.messageId === tCardId &&
+              (u.card as { header?: { title?: { content?: string } } }).header?.title?.content ===
+                '▶️ 已开始执行',
+          ),
+        ),
+      ).toBe(true);
 
       const sentTexts = connector._sent
         .map((s) => (s.input as { text?: string } | undefined)?.text)
@@ -1173,7 +1189,7 @@ describe('queue.immediate must stop the run blocking the SAME cwd, not a paralle
         { cmd: 'queue.immediate', cwd: ws2, messageId: 'm-target' },
         ctx,
       );
-      await sleep(50);
+      expect(await waitFor(() => runner2.stopCalls === 1)).toBe(true);
 
       // 修复前：interruptCurrentRun 先命中 activeRuns 里的 ws1 run（Map 插入序
       // ws1 在前），runner1.stopCalls=1、runner2.stopCalls=0；ws1 被误停、
@@ -1187,7 +1203,7 @@ describe('queue.immediate must stop the run blocking the SAME cwd, not a paralle
       expect(await waitFor(() => t2Ran)).toBe(true);
     } finally {
       // 清理：无论断言成败，停掉剩余活跃 run，让两条队列链 settle，避免悬空 promise。
-      await bridge.interruptCurrentRun({ userId: 'u1', chatId: 'c1' });
+      await interruptCurrentRun(bridge, { userId: 'u1', chatId: 'c1' });
       await Promise.allSettled([run1Done, run2Done]);
       await sleep(50);
     }
@@ -1418,7 +1434,12 @@ describe('queue executing count must not be reset onto the next task that began 
           },
         },
       );
-      await sleep(50);
+      // M 的排队卡落定后再断言张数（入队 → 发卡是异步链）。
+      expect(
+        await waitFor(() =>
+          connector._sent.some((s) => JSON.stringify(s.input).includes('M after stop')),
+        ),
+      ).toBe(true);
       const mQueueCards = connector._sent.filter((s) =>
         JSON.stringify(s.input).includes('M after stop'),
       );

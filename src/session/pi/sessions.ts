@@ -3,6 +3,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { findJsonlLine } from '../common/jsonl.js';
 import { scanJsonlOnce, tailOffsetAfter, scanTailEvents } from '../common/two-pass.js';
+import { throwSessionListError } from '../common/throw-session-list-error.js';
 import { extractContentBlocks, type ContentBlockMapping } from '../common/content-blocks.js';
 import {
   UsageAccumulator,
@@ -483,9 +484,7 @@ export class PiSessionReader implements AgentSessionReader {
       if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
         return [];
       }
-      getLogger().error(`[pi-session-reader] listSessions failed: ${err}`);
-      const msg = err instanceof Error ? err.message : String(err);
-      throw new Error(`pi session list 读取失败: ${msg}`, { cause: err });
+      throwSessionListError('pi', err);
     }
 
     const sessions: AgentSession[] = [];

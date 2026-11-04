@@ -25,8 +25,23 @@ describe('RunUsageCollector.finalize', () => {
       'jsonl',
     );
 
+    // 用例名承诺 every field：finalize 传入的 14 个字段必须逐一出现在 meta()
+    // 里（jsonl 权威路径 = 快照整体展开 + input/output/cache/total 覆盖写），
+    // 新增漏搬字段在此直接红。
     expect(usage.meta()).toMatchObject({
+      inputTokens: 10,
+      outputTokens: 20,
+      contextLength: 30,
+      contextLimit: 100,
+      compactCount: 2,
       compactPreContextLength: 90,
+      cacheReadTokens: 4,
+      cacheCreationTokens: 5,
+      totalTokens: 39,
+      cumulativeInputTokens: 100,
+      cumulativeOutputTokens: 200,
+      cumulativeCacheReadTokens: 40,
+      cumulativeCacheCreationTokens: 50,
       cumulativeTotalTokens: 390,
     });
   });

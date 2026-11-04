@@ -18,12 +18,17 @@ export type SessionDisplayUsage = Pick<
 
 /**
  * Format number to human-readable unit string.
- * - >= 1M: one decimal, M suffix (e.g., 1200000 → 1.2M, 25000000 → 25M)
+ * - >= 999_500: M with at most one decimal (e.g., 999_600 → 1M, 1200000 → 1.2M,
+ *   25000000 → 25M)
  * - >= 1K: rounded to nearest integer K (e.g., 1500 → 2K, 120000 → 120K)
  * - < 1K: as-is (e.g., 500 → "500")
+ *
+ * 千位边界取 M 档：999_500 起按 K 四舍五入会得到 "1000K"，直接按 M 档展示。
+ * 此前 run-renderer 另有一份 formatTokens 只在这边带此边界护栏，两处已收敛
+ * 到本函数（run-renderer 的状态行 `📊 N` 也走这里）。
  */
-function formatTokenK(n: number): string {
-  if (n >= 1_000_000) {
+export function formatTokenK(n: number): string {
+  if (n >= 999_500) {
     const m = n / 1_000_000;
     const rounded = Math.round(m * 10) / 10;
     // Drop unnecessary ".0" for whole numbers (2.0M → 2M)

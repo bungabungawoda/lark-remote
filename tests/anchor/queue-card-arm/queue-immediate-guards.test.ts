@@ -83,7 +83,7 @@ describe('queue.immediate 在 Compact 占 lane 期间被拒绝（anchor）', () 
     });
     await waitForOrThrow(() => bridge.getQueuedTask(tmpDir, 'msg-2') !== undefined);
 
-    const interruptSpy = vi.spyOn(bridge, 'interruptCurrentRun');
+    const interruptSpy = vi.spyOn(bridge, 'interruptCurrentRunDetailed');
     await router.handleCardAction(
       { cmd: 'queue.immediate', cwd: tmpDir, messageId: 'msg-2' },
       { userId: 'u1', chatId: 'c1', messageId: 'om-user-card' },
@@ -259,7 +259,14 @@ describe('queue.immediate must clear EVERY task before the target before yieldin
         },
       },
     );
-    await sleep(50);
+    expect(
+      await waitFor(
+        () =>
+          bridge.getQueuedTask(tmpDir, 'mA') !== undefined &&
+          bridge.getQueuedTask(tmpDir, 'mB') !== undefined &&
+          bridge.getQueuedTask(tmpDir, 'mT') !== undefined,
+      ),
+    ).toBe(true);
     expect(bridge.getQueuedTask(tmpDir, 'mA')).toBeDefined();
     expect(bridge.getQueuedTask(tmpDir, 'mB')).toBeDefined();
     expect(bridge.getQueuedTask(tmpDir, 'mT')).toBeDefined();

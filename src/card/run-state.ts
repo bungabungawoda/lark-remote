@@ -1,6 +1,10 @@
 import type {
   AgentEvent,
+  AssistantEvent,
   BackgroundJobRoster,
+  BackgroundJobsEvent,
+  RunStatusEvent,
+  UserEvent,
   PlanEvent,
   FileChangeEvent,
   ResultEvent,
@@ -327,7 +331,6 @@ function reduceRunStateInner(state: RunState, event: AgentEvent): RunState {
 
 /** Handle app-server turn_started — records the operation kind (turn vs compact). */
 function reduceTurnStartedEvent(state: RunState, event: TurnStartedEvent): RunState {
-  if (event.type !== 'turn_started') return state;
   return {
     ...state,
     operationKind: event.operationKind,
@@ -344,7 +347,6 @@ function reduceTurnStartedEvent(state: RunState, event: TurnStartedEvent): RunSt
  * the active streaming content sits at the bottom, like the exec path.
  */
 function reduceTurnDiffEvent(state: RunState, event: TurnDiffEvent): RunState {
-  if (event.type !== 'turn_diff') return state;
   let next = state;
   const ts = event.timestamp;
   const complete = event.complete === true;
@@ -378,12 +380,7 @@ function reduceTurnDiffEvent(state: RunState, event: TurnDiffEvent): RunState {
       },
       !complete,
     );
-    next = {
-      ...next,
-      blocks: keepLatestBlocks(capped),
-      omittedBlocks: (next.omittedBlocks ?? 0) + Math.max(0, capped.length - MAX_BLOCKS),
-      footer: 'streaming',
-    };
+    next = withCappedBlocks(next, capped, 'streaming');
   }
 
   if (event.reasoning !== undefined) {
@@ -410,12 +407,7 @@ function reduceTurnDiffEvent(state: RunState, event: TurnDiffEvent): RunState {
       },
       !complete,
     );
-    next = {
-      ...next,
-      blocks: keepLatestBlocks(capped),
-      omittedBlocks: (next.omittedBlocks ?? 0) + Math.max(0, capped.length - MAX_BLOCKS),
-      footer: 'thinking',
-    };
+    next = withCappedBlocks(next, capped, 'thinking');
   }
 
   if (event.toolOutput !== undefined) {
@@ -453,12 +445,7 @@ function reduceTurnDiffEvent(state: RunState, event: TurnDiffEvent): RunState {
       }),
       !complete,
     );
-    next = {
-      ...next,
-      blocks: keepLatestBlocks(capped),
-      omittedBlocks: (next.omittedBlocks ?? 0) + Math.max(0, capped.length - MAX_BLOCKS),
-      footer: 'tool_running',
-    };
+    next = withCappedBlocks(next, capped, 'tool_running');
   }
 
   if (event.plan !== undefined) {
@@ -485,12 +472,7 @@ function reduceTurnDiffEvent(state: RunState, event: TurnDiffEvent): RunState {
       },
       !complete,
     );
-    next = {
-      ...next,
-      plan: newPlan,
-      blocks: keepLatestBlocks(capped),
-      omittedBlocks: (next.omittedBlocks ?? 0) + Math.max(0, capped.length - MAX_BLOCKS),
-    };
+    next = withCappedBlocks({ ...next, plan: newPlan }, capped);
   }
 
   if (event.fileChanges !== undefined) {
@@ -514,12 +496,7 @@ function reduceTurnDiffEvent(state: RunState, event: TurnDiffEvent): RunState {
         !complete,
       );
     }
-    const capped = blocks;
-    next = {
-      ...next,
-      blocks: keepLatestBlocks(capped),
-      omittedBlocks: (next.omittedBlocks ?? 0) + Math.max(0, capped.length - MAX_BLOCKS),
-    };
+    next = withCappedBlocks(next, blocks);
   }
 
   return next;
@@ -557,8 +534,10 @@ function upsertSnapshotBlock(
 }
 
 /** Handle system init and compact_boundary events. */
-function reduceSystemEvent(state: RunState, event: AgentEvent): RunState {
-  if (event.type !== 'system') return state;
+function reduceSystemEvent(
+  state: RunState,
+  event: Extract<AgentEvent, { type: 'system' }>,
+): RunState {
   if (event.subtype === 'init') {
     return { ...state, sessionId: event.session_id, model: event.model, footer: 'thinking' };
   }
@@ -580,8 +559,7 @@ function reduceSystemEvent(state: RunState, event: AgentEvent): RunState {
  *  - resultSubtype: error 优先（任一为 error 即 error）
  *  - errorMsg: 首个非 undefined 胜出（agent 的更具体）
  */
-function reduceResultEvent(state: RunState, event: AgentEvent): RunState {
-  if (event.type !== 'result') return state;
+function reduceResultEvent(state: RunState, event: ResultEvent): RunState {
   // Pre-init result guard: Claude CLI --resume emits a historical result (from
   // the previous turn) before sending system.init for the new run. Without this
   // guard, that stale result would prematurely transition to 'finalizing',
@@ -623,7 +601,6 @@ function reduceResultEvent(state: RunState, event: AgentEvent): RunState {
 
 /** Record an authoritative protocol final answer and remove its progress copy. */
 function reduceFinalAnswerEvent(state: RunState, event: FinalAnswerEvent): RunState {
-  if (event.type !== 'final_answer') return state;
   if (!event.text.trim() && !state.finalAnswer) return state;
 
   const blocks = event.itemId
@@ -694,8 +671,7 @@ function promoteFinalAnswer(
  * 轮已结束的任务留下来。用户点「停止」成功后由 bridge 直接从 state 里摘掉，
  * 不再走事件（那时已经没有 run 在消费流了）。
  */
-function reduceBackgroundJobsEvent(state: RunState, event: AgentEvent): RunState {
-  if (event.type !== 'background_jobs') return state;
+function reduceBackgroundJobsEvent(state: RunState, event: BackgroundJobsEvent): RunState {
   return { ...state, backgroundJobs: event.jobs };
 }
 
@@ -812,8 +788,7 @@ export function markBackgroundJobsUnknown(state: RunState): RunState {
  * 每帧只带一个投影 key，所以只合并"有值"的字段：用 undefined 覆盖会把另一
  * 维度（上一步算出的上下文水位）擦掉。
  */
-function reduceRunStatusEvent(state: RunState, event: AgentEvent): RunState {
-  if (event.type !== 'run_status') return state;
+function reduceRunStatusEvent(state: RunState, event: RunStatusEvent): RunState {
   const prev = state.liveStatus ?? {};
   const live = {
     ...prev,
@@ -830,8 +805,7 @@ function reduceRunStatusEvent(state: RunState, event: AgentEvent): RunState {
 }
 
 /** Handle assistant thinking/text/tool_use content blocks. */
-function reduceAssistantEvent(state: RunState, event: AgentEvent): RunState {
-  if (event.type !== 'assistant') return state;
+function reduceAssistantEvent(state: RunState, event: AssistantEvent): RunState {
   let next = state;
   for (const content of event.message.content) {
     if (content.type === 'thinking') {
@@ -860,12 +834,7 @@ function reduceAssistantEvent(state: RunState, event: AgentEvent): RunState {
               timestamp: event.timestamp,
             },
           ];
-      next = {
-        ...next,
-        blocks: keepLatestBlocks(newBlocks),
-        omittedBlocks: (next.omittedBlocks ?? 0) + Math.max(0, newBlocks.length - MAX_BLOCKS),
-        footer: 'thinking',
-      };
+      next = withCappedBlocks(next, newBlocks, 'thinking');
     } else if (content.type === 'text') {
       const blocks = markThinkingInactive(next.blocks);
       const last = blocks[blocks.length - 1];
@@ -889,12 +858,7 @@ function reduceAssistantEvent(state: RunState, event: AgentEvent): RunState {
                 timestamp: event.timestamp,
               },
             ];
-      next = {
-        ...next,
-        blocks: keepLatestBlocks(newBlocks),
-        omittedBlocks: (next.omittedBlocks ?? 0) + Math.max(0, newBlocks.length - MAX_BLOCKS),
-        footer: 'streaming',
-      };
+      next = withCappedBlocks(next, newBlocks, 'streaming');
     } else {
       // parse the truncated stored string ONCE here (not on every render)
       // and cache the result on `parsedInput`. tool-render's asRecord then hits
@@ -929,12 +893,7 @@ function reduceAssistantEvent(state: RunState, event: AgentEvent): RunState {
         next = { ...next, blocks: keepLatestBlocks(merged), footer: 'tool_running' };
       } else {
         const capped = [...blocks, { kind: 'tool' as const, tool: incomingTool }];
-        next = {
-          ...next,
-          blocks: keepLatestBlocks(capped),
-          omittedBlocks: (next.omittedBlocks ?? 0) + Math.max(0, capped.length - MAX_BLOCKS),
-          footer: 'tool_running',
-        };
+        next = withCappedBlocks(next, capped, 'tool_running');
       }
     }
   }
@@ -973,8 +932,7 @@ function mergeToolUse(existing: ToolEntry, incoming: ToolEntry): ToolEntry {
  *  tool_result (O(N) allocations on the run-card hot path). Footer still
  *  advances to 'streaming' on every content block (parity with old behavior);
  *  only the blocks array is preserved by reference when nothing matches. */
-function reduceToolResultEvent(state: RunState, event: AgentEvent): RunState {
-  if (event.type !== 'user') return state;
+function reduceToolResultEvent(state: RunState, event: UserEvent): RunState {
   let next = state;
   for (const content of event.message.content) {
     const targetId = content.tool_use_id;
@@ -1004,7 +962,6 @@ function reduceToolResultEvent(state: RunState, event: AgentEvent): RunState {
 
 /** Handle notice event — append a runtime notice (warning / reroute / compaction). */
 function reduceNoticeEvent(state: RunState, event: NoticeEvent): RunState {
-  if (event.type !== 'notice') return state;
   return {
     ...state,
     notices: [
@@ -1021,7 +978,6 @@ function reduceNoticeEvent(state: RunState, event: NoticeEvent): RunState {
 
 /** Handle session_info event — update sessionTitle / mode only when present. */
 function reduceSessionInfoEvent(state: RunState, event: SessionInfoEvent): RunState {
-  if (event.type !== 'session_info') return state;
   return {
     ...state,
     ...(event.title !== undefined ? { sessionTitle: event.title } : {}),
@@ -1031,7 +987,6 @@ function reduceSessionInfoEvent(state: RunState, event: SessionInfoEvent): RunSt
 
 /** Handle plan event — accumulate plan text for Codex-style agents. */
 function reducePlanEvent(state: RunState, event: PlanEvent): RunState {
-  if (event.type !== 'plan') return state;
   const currentPlan = state.plan ?? '';
   const newPlan = keepTailMarked(currentPlan + '\n' + event.plan, MAX_REASONING_CHARS * 2);
   // Plan is a single evolving document — replace the existing plan block
@@ -1041,17 +996,11 @@ function reducePlanEvent(state: RunState, event: PlanEvent): RunState {
     ...withoutOldPlan,
     { kind: 'plan' as const, content: newPlan, active: true, timestamp: event.timestamp },
   ];
-  return {
-    ...state,
-    plan: newPlan,
-    blocks: keepLatestBlocks(newBlocks),
-    omittedBlocks: (state.omittedBlocks ?? 0) + Math.max(0, newBlocks.length - MAX_BLOCKS),
-  };
+  return withCappedBlocks({ ...state, plan: newPlan }, newBlocks);
 }
 
 /** Handle file_change event — emit a file_change block for rendering (Codex-style agents). */
 function reduceFileChangeEvent(state: RunState, event: FileChangeEvent): RunState {
-  if (event.type !== 'file_change') return state;
   // Add file_change block for rendering (collapsed by default)
   const newBlocks = [
     ...state.blocks,
@@ -1063,11 +1012,7 @@ function reduceFileChangeEvent(state: RunState, event: FileChangeEvent): RunStat
       timestamp: event.timestamp,
     },
   ];
-  return {
-    ...state,
-    blocks: keepLatestBlocks(newBlocks),
-    omittedBlocks: (state.omittedBlocks ?? 0) + Math.max(0, newBlocks.length - MAX_BLOCKS),
-  };
+  return withCappedBlocks(state, newBlocks);
 }
 
 export function finishRun(
@@ -1133,6 +1078,21 @@ function stringifyUnknown(value: unknown): string {
   } catch {
     return String(value);
   }
+}
+
+/**
+ * 尾块统一收口：keepLatestBlocks 截断 + omittedBlocks 计数 + footer 更新一步
+ * 完成。所有「追加/更新块后只保留最新 MAX_BLOCKS 块」的事件归约共用（此前
+ * 多处逐字重复）；`blocks` 必须传截断前的数组，被丢出的最旧块才会计入
+ * omittedBlocks。`footer` 不传时保持原值（plan/file_change 归约不改 footer）。
+ */
+function withCappedBlocks(next: RunState, blocks: RunBlock[], footer?: RunFooter): RunState {
+  return {
+    ...next,
+    blocks: keepLatestBlocks(blocks),
+    omittedBlocks: (next.omittedBlocks ?? 0) + Math.max(0, blocks.length - MAX_BLOCKS),
+    ...(footer === undefined ? {} : { footer }),
+  };
 }
 
 function keepLatestBlocks(blocks: RunBlock[]): RunBlock[] {

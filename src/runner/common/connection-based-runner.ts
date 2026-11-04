@@ -30,6 +30,19 @@ import type { AgentStopper } from '../../platform/agent-stopper.js';
  *  10 分钟会误杀正常进行中的 run。未接配置的 runner（如 opencode）直接吃此默认。 */
 const TURN_IDLE_TIMEOUT_MS = DEFAULT_TURN_IDLE_TIMEOUT_MINUTES * 60 * 1000;
 
+/**
+ * 本轮回调的归属锚点（generation + client），由 {@link ConnectionBasedRunner.acquireForTurn}
+ * 捕获。两个值在整轮内不可变：旧轮迟到的回调（prompt 结果 / 通知 / onClose）在
+ * 新轮开始时 `stopRequested` 已被重置，只有这对值能识别它们——pi 的教训是旧 client
+ * 上残留的上一轮 onClose 闭包会把假错误推进新 turn 的共享队列（用户消息未发出即
+ * 丢失），迟到的 agent_settled 同理（新 turn 空转立即「成功」）。所有 hook 的事件
+ * 落地前必须过 {@link ConnectionBasedRunner.isCurrentTurn} 守卫。
+ */
+export interface TurnAnchor<TClient> {
+  readonly client: TClient;
+  readonly generation: number;
+}
+
 export abstract class ConnectionBasedRunner<TClient, TEvent = AgentEvent> implements AgentRunner {
   readonly kind: AgentKind;
   readonly sessionReader: AgentSessionReader;
@@ -406,6 +419,48 @@ export abstract class ConnectionBasedRunner<TClient, TEvent = AgentEvent> implem
    */
   protected isCurrentTurn(generation: number, client: TClient | null): boolean {
     return this._isRunning && generation === this.turnGeneration && client === this.currentClient;
+  }
+
+  /**
+   * Acquire the per-turn connection and capture the callback anchor
+   * ({@link TurnAnchor}): acquire → activity ping → currentClient → anchor.
+   * Shared preamble of every setupTurn / runCompact; the acquired anchor is
+   * what the turn's hooks (and prompt-settle callbacks) validate against.
+   *
+   * `acquire` is a closure so subclasses keep their own acquire signatures
+   * (pi passes the spawn-bound `{ sessionId }`).
+   */
+  protected async acquireForTurn(
+    cwd: string,
+    acquire: () => Promise<TClient>,
+  ): Promise<TurnAnchor<TClient>> {
+    const client = await acquire();
+    this.notifyConnectionActivity(cwd);
+    this.currentClient = client;
+    return { client, generation: this.turnGeneration };
+  }
+
+  /** Per-cwd activity ping on the subclass connection manager (mirror of notifyIdle). */
+  protected abstract notifyConnectionActivity(cwd: string): void;
+
+  /**
+   * Wrap a per-turn callback with the isCurrentTurn guard: events from a
+   * finished turn are dropped with a debug log and never reach the turn
+   * dispatcher. 6 处守卫原有的日志粒度不一（ACP setupTurn 记 debug，其余静默），
+   * 统一为最详细版本：dropped 一律 debug，便于事后追溯。
+   */
+  protected forCurrentTurn<A extends unknown[]>(
+    anchor: TurnAnchor<TClient>,
+    label: string,
+    handler: (...args: A) => void,
+  ): (...args: A) => void {
+    return (...args: A) => {
+      if (!this.isCurrentTurn(anchor.generation, anchor.client)) {
+        getLogger().debug(`[${this.logTag}] dropped ${label} from a finished turn`);
+        return;
+      }
+      handler(...args);
+    };
   }
 
   protected failTurn(message: string): void {

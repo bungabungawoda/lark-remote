@@ -562,7 +562,7 @@ export class FeishuConnector {
         })),
       });
     } catch (err) {
-      getLogger().error('[feishu] inbound media detected handler failed:', (err as Error).message);
+      getLogger().error('[feishu] inbound media detected handler failed:', err);
     }
   }
 

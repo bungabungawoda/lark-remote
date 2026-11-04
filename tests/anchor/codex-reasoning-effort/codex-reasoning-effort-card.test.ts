@@ -94,9 +94,7 @@ describe('Config card codex reasoningEffort - anchor', () => {
       tmpDir,
       config,
       bridge: createMockBridge(),
-      sessionReaderRegistry: createMockSessionReaderRegistry({
-        agentKinds: ['claude', 'codex'],
-      }),
+      sessionReaderRegistry: createMockSessionReaderRegistry(),
     }).router;
 
     const cardResult = router.buildConfigCard();
@@ -114,9 +112,7 @@ describe('Config card codex reasoningEffort - anchor', () => {
       tmpDir,
       config,
       bridge: createMockBridge(),
-      sessionReaderRegistry: createMockSessionReaderRegistry({
-        agentKinds: ['claude', 'codex'],
-      }),
+      sessionReaderRegistry: createMockSessionReaderRegistry(),
     }).router;
 
     const cardResult = router.buildConfigCard();
@@ -135,9 +131,7 @@ describe('Config card codex reasoningEffort - anchor', () => {
       tmpDir,
       config,
       bridge: createMockBridge(),
-      sessionReaderRegistry: createMockSessionReaderRegistry({
-        agentKinds: ['claude', 'codex'],
-      }),
+      sessionReaderRegistry: createMockSessionReaderRegistry(),
     }).router;
 
     const cardResult = router.buildConfigCard();
@@ -248,9 +242,7 @@ describe('codex config card effort follows model - anchor', () => {
         sendCard: vi.fn().mockResolvedValue(undefined),
         clearRunners: vi.fn(),
       }),
-      sessionReaderRegistry: createMockSessionReaderRegistry({
-        agentKinds: ['claude', 'codex'],
-      }),
+      sessionReaderRegistry: createMockSessionReaderRegistry(),
     }).router;
   }
 

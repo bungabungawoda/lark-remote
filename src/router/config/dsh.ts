@@ -19,7 +19,10 @@
 import type { AgentConfigCardBuilder, ConfigField, SelectOption } from './types.js';
 import { DEFAULT_DSH_HOST, type AppConfig, type DshConfig } from '../../config/index.js';
 import { pickMiddleValue } from './common/model-patch.js';
-import { DshClient } from '../../runner/dsh/client.js';
+import {
+  createDshCatalogClient,
+  type DshCatalogClientFactory,
+} from '../../runner/dsh/catalog-probe.js';
 import { getLogger } from '../../logger/index.js';
 import type {
   DshModelCatalogValue,
@@ -27,12 +30,7 @@ import type {
   DshPresetListValue,
 } from '../../dsh/types.js';
 
-/** DshConfigBuilder 预取只依赖的 client 方法子集。 */
-export interface DshCatalogClient {
-  listModels(): Promise<DshModelCatalogValue>;
-  listPresets(): Promise<DshPresetListValue>;
-  listPermissionPresets(): Promise<DshPermissionCatalogValue>;
-}
+export type { DshCatalogClient } from '../../runner/dsh/catalog-probe.js';
 
 /** 旧配置没有 provider 时的生效值（与 DshRunner 的兼容规则一致）。 */
 const LEGACY_PROVIDER = 'deepseek-official';
@@ -67,25 +65,11 @@ export class DshConfigBuilder implements AgentConfigCardBuilder {
   private modelCatalog: DshModelCatalogValue | undefined;
   private presets: DshPresetListValue | undefined;
   private permissionCatalog: DshPermissionCatalogValue | undefined;
-  /** 可注入 client 工厂（测试用）；默认生产实现。 */
-  private readonly clientFactory: (
-    baseUrl: string,
-    token?: string,
-    credentialsFile?: string,
-  ) => DshCatalogClient;
+  /** 可注入 client 工厂（测试用）；默认生产实现在 runner/dsh/catalog-probe。 */
+  private readonly clientFactory: DshCatalogClientFactory;
 
-  constructor(
-    clientFactory?: (baseUrl: string, token?: string, credentialsFile?: string) => DshCatalogClient,
-  ) {
-    this.clientFactory =
-      clientFactory ??
-      ((base, token, credentialsFile) =>
-        new DshClient(base, {
-          token,
-          credentialsFile,
-          // 卡片预取是交互路径：DSH 卡死时最多等 5 秒后回退固定清单。
-          requestTimeoutMs: 5_000,
-        }));
+  constructor(clientFactory?: DshCatalogClientFactory) {
+    this.clientFactory = clientFactory ?? createDshCatalogClient;
   }
 
   /**
