@@ -158,8 +158,8 @@ const OpencodeConfigSchema = z.object({
 });
 
 /**
- * pi 默认配置：schema default 与 src/index.ts 注册兜底共用，避免三抄漂移。
- * （src/runner/pi/rpc/runner.ts 还有第三份兜底，待后续引用同一常量。）
+ * pi 默认配置：schema default、src/index.ts 注册兜底与 runner 构造器兜底
+ * 三处共用，避免三抄漂移。
  */
 export const PI_DEFAULTS = {
   provider: 'Volcano',
