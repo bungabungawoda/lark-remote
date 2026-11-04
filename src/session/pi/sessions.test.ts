@@ -4,6 +4,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { PiSessionReader } from '../../session/pi/sessions.js';
 import { encodeProjectDirName } from '../../platform/path.js';
+import { currentPlatform, isWin32 } from '../../platform/select.js';
 import { expectRunUsageScope } from '../../../tests/lib/usage-scope-contract.js';
 
 vi.mock('../../logger/index.js', async () =>
@@ -68,6 +69,14 @@ function writeSessionFileNoTrailingNewline(
   return filePath;
 }
 
+/**
+ * 造一个带 errno `code` 的 fs 错误。listSessions 的空态/故障分类只看 `code`，
+ * 注入它比依赖宿主真实报错更稳（POSIX 与 win32 对同一故障形态给的 code 不同）。
+ */
+function fsErrno(code: string, message: string): NodeJS.ErrnoException {
+  return Object.assign(new Error(`${code}: ${message}`), { code });
+}
+
 describe('PiSessionReader', () => {
   it('test_anchor_list_sessions_filters_by_cwd_via_scan', () => {
     const now = new Date();
@@ -113,11 +122,15 @@ describe('PiSessionReader', () => {
   });
 
   it('listSessions non-ENOENT failure keeps the exact contract message and the original error as cause', () => {
-    // sessions 路径被文件占用 → readdirSync ENOTDIR（非 ENOENT）→ 上抛契约文案
-    // （router 靠它展示「列表失败」，静默 [] 与真空不可区分），cause 保留原始
-    // fs 错误（throwSessionListError 契约）。
-    fs.writeFileSync(path.join(tmpDir, 'sessions'), 'occupies the sessions path');
+    // 注入 EPERM（非 ENOENT）→ 上抛契约文案（router 靠它展示「列表失败」，静默 []
+    // 与真空不可区分），cause 保留原始 fs 错误（throwSessionListError 契约）。
+    // errno 由注入给定，不靠真实文件系统报错造：同一个「sessions 名字被文件占用」
+    // 的形态，POSIX 报 ENOTDIR，win32 不报 ENOTDIR（Node 记录 readdir/rmdir 这类
+    // errno 存在 OS 分歧），依赖宿主 errno 的用例就只能在单一 OS 成立。
     const reader = new PiSessionReader({ piDir: tmpDir });
+    vi.spyOn(fs, 'readdirSync').mockImplementationOnce(() => {
+      throw fsErrno('EPERM', 'operation not permitted, scandir');
+    });
 
     let thrown: unknown;
     try {
@@ -128,8 +141,30 @@ describe('PiSessionReader', () => {
     expect(thrown).toBeInstanceOf(Error);
     expect((thrown as Error).message).toMatch(/^pi session list 读取失败: /);
     expect((thrown as Error).cause).toBeInstanceOf(Error);
-    expect((thrown as Error & { cause: Error }).cause.message).toContain('ENOTDIR');
+    expect((thrown as Error & { cause: NodeJS.ErrnoException }).cause.code).toBe('EPERM');
   });
+
+  it('listSessions ENOENT（该 cwd 还没有会话目录）是优雅空态，不上抛', () => {
+    // 缺目录 = 真的没有会话，必须与「读取失败」分得开。win32 上「sessions 名字被
+    // 文件占用」同样是既不抛错、也不报 ENOTDIR（按空态返回），故空态侧也需钉住。
+    const reader = new PiSessionReader({ piDir: tmpDir });
+    vi.spyOn(fs, 'readdirSync').mockImplementationOnce(() => {
+      throw fsErrno('ENOENT', 'no such file or directory, scandir');
+    });
+
+    const sessions = reader.listSessions('/tmp/proj1');
+    expect(sessions.sessions).toEqual([]);
+    expect(sessions.total).toBe(0);
+  });
+
+  it.skipIf(isWin32(currentPlatform))(
+    'POSIX：sessions 名字被文件占用 → ENOTDIR 走故障分支而非空态',
+    () => {
+      fs.writeFileSync(path.join(tmpDir, 'sessions'), 'occupies the sessions path');
+      const reader = new PiSessionReader({ piDir: tmpDir });
+      expect(() => reader.listSessions('/tmp/proj1')).toThrow(/^pi session list 读取失败: /);
+    },
+  );
 
   it('test_anchor_read_session_content_returns_catch_up_tail', () => {
     const sessionId = 'sess-content';
