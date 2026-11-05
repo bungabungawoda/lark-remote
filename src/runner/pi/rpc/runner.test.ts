@@ -5,6 +5,7 @@ import os from 'node:os';
 import { PiRpcRunner } from './runner.js';
 import type { AgentSessionReader } from '../../../session-contract.js';
 import { prependPath, restorePath, writeMockSource } from '../../../../tests/lib/path-mock.js';
+import { waitFor } from '../../../../tests/lib/wait-for.js';
 import { rmRf } from '../../../../tests/lib/tmp-cleanup.js';
 
 vi.mock('../../../logger/index.js', async () =>
@@ -16,10 +17,12 @@ const SESSION_ID = 'aaaaaaaa-1111-2222-3333-444444444444';
 const MOCK_SERVER = `#!/usr/bin/env node
 const config = JSON.parse(process.env.MOCK_PI_SCENARIO || '{}');
 const readline = require('node:readline');
+const fs = require('node:fs');
 const rl = readline.createInterface({ input: process.stdin });
 const send = (o) => process.stdout.write(JSON.stringify(o) + '\\n');
 const sendSettled = () => send({ type: 'agent_settled' });
 rl.on('line', (line) => {
+  if (process.env.MOCK_PI_LOG) fs.appendFileSync(process.env.MOCK_PI_LOG, line + '\\n');
   let msg; try { msg = JSON.parse(line); } catch { return; }
   if (msg.type === 'get_state') {
     send({ id: msg.id, type: 'response', command: 'get_state', success: true, data: { sessionId: config.sessionId || '${SESSION_ID}' } });
@@ -176,5 +179,38 @@ describe('PiRpcRunner', () => {
     };
     expect(result.subtype).toBe('error');
     expect(result.errorMessage).toContain('invalid model: glm-does-not-exist');
+  }, 15000);
+
+  it('stop 在 prompt 已响应后经协议 abort 通道中断 turn', async () => {
+    const logPath = path.join(tmpDir, 'pi-messages.log');
+    process.env.MOCK_PI_LOG = logPath;
+    try {
+      // emitEvents:false → prompt 回 success 后不再推 agent_settled，turn 挂起，
+      // 此时 stop() 必须走协议取消通道（{type:'abort'}）而不是干等 idle 超时。
+      const runner = makeRunner({ emitEvents: false });
+      const events: unknown[] = [];
+      const gen = runner.run('hello', { cwd: tmpDir });
+
+      // 首次 next() 走完 setupTurn（get_state + prompt 响应）并产出 synthetic init
+      const first = await gen.next();
+      expect(first.done).toBe(false);
+
+      await runner.stop();
+
+      // abort 是 fire-and-forget 通知：写进子进程 stdin 不等于它已经读到。必须赶在
+      // dispose() 杀掉 mock 之前等到它把这一行记进接收日志——宿主忙时子进程排不到
+      // 事件循环，日志只剩 get_state + prompt（CPU 争抢下本机可复现，同 CI 签名）。
+      await waitFor(() => fs.readFileSync(logPath, 'utf-8').includes('"type":"abort"'), 3000);
+
+      for (let next = await gen.next(); !next.done; next = await gen.next()) {
+        events.push(next.value);
+      }
+      await runner.dispose();
+
+      expect(events.at(-1)).toMatchObject({ type: 'result', subtype: 'interrupted' });
+      expect(fs.readFileSync(logPath, 'utf-8')).toContain('"type":"abort"');
+    } finally {
+      delete process.env.MOCK_PI_LOG;
+    }
   }, 15000);
 });
