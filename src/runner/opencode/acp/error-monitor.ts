@@ -25,7 +25,7 @@
  * retry loop (the idle watchdog remains the fallback for silent hangs).
  */
 
-import { closeSync, openSync, readSync, statSync } from 'node:fs';
+import fs from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { getLogger } from '../../../logger/index.js';
@@ -105,7 +105,7 @@ export class OpencodeLogErrorMonitor {
 
   private currentSize(): number {
     try {
-      return statSync(this.logPath).size;
+      return fs.statSync(this.logPath).size;
     } catch (err) {
       this.noteIoError(err);
       return 0;
@@ -143,13 +143,13 @@ export class OpencodeLogErrorMonitor {
     if (size > this.offset) {
       let chunk: string;
       try {
-        const fd = openSync(this.logPath, 'r');
+        const fd = fs.openSync(this.logPath, 'r');
         try {
           const buf = Buffer.alloc(size - this.offset);
-          readSync(fd, buf, 0, buf.length, this.offset);
+          fs.readSync(fd, buf, 0, buf.length, this.offset);
           chunk = buf.toString('utf8');
         } finally {
-          closeSync(fd);
+          fs.closeSync(fd);
         }
       } catch (err) {
         this.noteIoError(err);
