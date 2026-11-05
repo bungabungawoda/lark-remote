@@ -264,69 +264,106 @@ export function reduceRunState(state: RunState, event: AgentEvent): RunState {
   return blocks === next.blocks ? next : { ...next, blocks };
 }
 
+// ── 内联分支归约器（模块顶层命名函数）──────────────────────────────────────
+// 原来 goal_state / approval_* 五个分支直接写在 reduceRunStateInner 里，连同
+// 内部 .map/.filter 箭头闭包一起把 CC 顶到 29。抽成命名函数后外层只留查表。
+
+function reduceGoalStateEvent(state: RunState, event: AgentEvent): RunState {
+  const e = event as Extract<AgentEvent, { type: 'goal_state' }>;
+  // 覆盖写：每次观测都是宿主的整份快照（phase/轮次/目标全文），不做增量。
+  return { ...state, goal: e.goal ?? undefined, goalKnown: e.known };
+}
+
+function reduceApprovalRequestedEvent(state: RunState, event: AgentEvent): RunState {
+  const e = event as Extract<AgentEvent, { type: 'approval_requested' }>;
+  const approvals = state.approvals ?? [];
+  const next = { view: e.view, expired: false };
+  let idx = -1;
+  for (let i = 0; i < approvals.length; i++) {
+    if (approvals[i].view.requestId === e.requestId) {
+      idx = i;
+      break;
+    }
+  }
+  if (idx >= 0) {
+    // 同一 requestId 重复到达：原地替换，保持槽位顺序。
+    const replaced = approvals.slice();
+    replaced[idx] = next;
+    return { ...state, approvals: replaced };
+  }
+  return { ...state, approvals: [...approvals, next] };
+}
+
+function reduceApprovalResolvedEvent(state: RunState, event: AgentEvent): RunState {
+  const e = event as Extract<AgentEvent, { type: 'approval_resolved' }>;
+  const current = state.approvals ?? [];
+  const approvals: Array<{ view: ApprovalView; expired?: boolean }> = [];
+  for (const a of current) {
+    if (a.view.requestId !== e.requestId) approvals.push(a);
+  }
+  return { ...state, approvals };
+}
+
+function reduceApprovalViewUpdatedEvent(state: RunState, event: AgentEvent): RunState {
+  const e = event as Extract<AgentEvent, { type: 'approval_view_updated' }>;
+  const current = state.approvals ?? [];
+  const approvals: Array<{ view: ApprovalView; expired?: boolean }> = [];
+  for (const a of current) {
+    approvals.push(a.view.requestId === e.requestId ? { ...a, view: e.view } : a);
+  }
+  return { ...state, approvals };
+}
+
+function reduceApprovalExpiredEvent(state: RunState, event: AgentEvent): RunState {
+  const e = event as Extract<AgentEvent, { type: 'approval_expired' }>;
+  const current = state.approvals ?? [];
+  const approvals: Array<{ view: ApprovalView; expired?: boolean }> = [];
+  for (const a of current) {
+    approvals.push(a.view.requestId === e.requestId ? { ...a, expired: true } : a);
+  }
+  return { ...state, approvalExpired: true, approvals };
+}
+
+type RunStateReducer = (state: RunState, event: AgentEvent) => RunState;
+
+/**
+ * event.type → 归约器。用 Map 而非对象字面量：`constructor`/`toString` 这类
+ * 事件名会命中 Object.prototype。
+ *
+ * 表里的归约器各自持有窄事件参数（如 `ResultEvent`），而查表调用处按
+ * `event.type` 精确路由后传入的运行时值一定是该窄类型；这里用一次整体类型
+ * 断言把「窄参数函数」装进统一签名的表，运行时零影响（不改变任何行为）。
+ */
+const EVENT_REDUCERS = new Map<string, RunStateReducer>([
+  ['system', reduceSystemEvent],
+  ['run_status', reduceRunStatusEvent],
+  ['goal_state', reduceGoalStateEvent],
+  ['background_jobs', reduceBackgroundJobsEvent],
+  ['result', reduceResultEvent],
+  ['final_answer', reduceFinalAnswerEvent],
+  ['assistant', reduceAssistantEvent],
+  ['user', reduceToolResultEvent],
+  ['plan', reducePlanEvent],
+  ['file_change', reduceFileChangeEvent],
+  ['notice', reduceNoticeEvent],
+  ['session_info', reduceSessionInfoEvent],
+  ['turn_started', reduceTurnStartedEvent],
+  ['turn_diff', reduceTurnDiffEvent],
+  ['approval_requested', reduceApprovalRequestedEvent],
+  ['approval_resolved', reduceApprovalResolvedEvent],
+  ['approval_view_updated', reduceApprovalViewUpdatedEvent],
+  ['approval_expired', reduceApprovalExpiredEvent],
+] as unknown as ReadonlyArray<[string, RunStateReducer]>);
+
 /** 单事件 → 单次状态迁移。窗口后置裁剪统一由 `reduceRunState` 做，这里不管。 */
 function reduceRunStateInner(state: RunState, event: AgentEvent): RunState {
   // 只有终态才阻止事件处理。finalizing 是非终态，
   // 仍需累积 assistant 内容（thinking、text、tool_use、后台任务输出）。
-  const terminal = state.terminal;
-  if (isRunTerminal(terminal)) {
+  if (isRunTerminal(state.terminal)) {
     return state;
   }
-
-  if (event.type === 'system') return reduceSystemEvent(state, event);
-  if (event.type === 'run_status') return reduceRunStatusEvent(state, event);
-  if (event.type === 'goal_state') {
-    // 覆盖写：每次观测都是宿主的整份快照（phase/轮次/目标全文），不做增量。
-    return { ...state, goal: event.goal ?? undefined, goalKnown: event.known };
-  }
-  if (event.type === 'background_jobs') return reduceBackgroundJobsEvent(state, event);
-  if (event.type === 'result') return reduceResultEvent(state, event);
-  if (event.type === 'final_answer') return reduceFinalAnswerEvent(state, event);
-  if (event.type === 'assistant') return reduceAssistantEvent(state, event);
-  if (event.type === 'user') return reduceToolResultEvent(state, event);
-  if (event.type === 'plan') return reducePlanEvent(state, event);
-  if (event.type === 'file_change') return reduceFileChangeEvent(state, event);
-  if (event.type === 'notice') return reduceNoticeEvent(state, event);
-  if (event.type === 'session_info') return reduceSessionInfoEvent(state, event);
-  if (event.type === 'turn_started') return reduceTurnStartedEvent(state, event);
-  if (event.type === 'turn_diff') return reduceTurnDiffEvent(state, event);
-  if (event.type === 'approval_requested') {
-    const approvals = state.approvals ?? [];
-    const next = { view: event.view, expired: false };
-    const idx = approvals.findIndex((a) => a.view.requestId === event.requestId);
-    if (idx >= 0) {
-      // 同一 requestId 重复到达：原地替换，保持槽位顺序。
-      return {
-        ...state,
-        approvals: approvals.map((a, i) => (i === idx ? next : a)),
-      };
-    }
-    return { ...state, approvals: [...approvals, next] };
-  }
-  if (event.type === 'approval_resolved') {
-    return {
-      ...state,
-      approvals: (state.approvals ?? []).filter((a) => a.view.requestId !== event.requestId),
-    };
-  }
-  if (event.type === 'approval_view_updated') {
-    return {
-      ...state,
-      approvals: (state.approvals ?? []).map((a) =>
-        a.view.requestId === event.requestId ? { ...a, view: event.view } : a,
-      ),
-    };
-  }
-  if (event.type === 'approval_expired') {
-    return {
-      ...state,
-      approvalExpired: true,
-      approvals: (state.approvals ?? []).map((a) =>
-        a.view.requestId === event.requestId ? { ...a, expired: true } : a,
-      ),
-    };
-  }
-  return state;
+  const reduce = EVENT_REDUCERS.get(event.type);
+  return reduce ? reduce(state, event) : state;
 }
 
 /** Handle app-server turn_started — records the operation kind (turn vs compact). */
@@ -346,159 +383,322 @@ function reduceTurnStartedEvent(state: RunState, event: TurnStartedEvent): RunSt
  * item's first sight — so interleaved items keep their real chronology and
  * the active streaming content sits at the bottom, like the exec path.
  */
-function reduceTurnDiffEvent(state: RunState, event: TurnDiffEvent): RunState {
-  let next = state;
+// ── turn_diff 字段归约器（模块顶层命名函数）────────────────────────────────
+// 原来五个 `if (event.X !== undefined)` 分支连同传给 upsertSnapshotBlock 的
+// predicate/fallback/update 箭头闭包一起把 CC 顶到 33。现在每个字段一个命名
+// applier，闭包全部抽成模块顶层命名函数，用 Function.prototype.bind 显式携带
+// event/ts/complete（不再在函数内部定义新闭包）。
+
+type FileChangeDiff = NonNullable<TurnDiffEvent['fileChanges']>[number];
+
+/** 恒等返回：file_change 的 fallback 与 update 都返回同一个已构造块。 */
+function constantBlock(block: RunBlock): RunBlock {
+  return block;
+}
+
+// -- text --
+function textDiffMatches(event: TurnDiffEvent, b: RunBlock): boolean {
+  return b.kind === 'text' && b.itemId === event.itemId;
+}
+
+function makeTextDiffBlock(
+  event: TurnDiffEvent,
+  ts: string | undefined,
+  complete: boolean,
+): RunBlock {
+  return {
+    kind: 'text' as const,
+    itemId: event.itemId,
+    // 最新那条正文不设窗口（它是「输出」），capStaleTextBlocks 负责在它被
+    // 更新的正文顶替后补上进度窗口。
+    content: event.text!,
+    timestamp: ts,
+    ...(complete ? { completedAt: ts } : {}),
+  };
+}
+
+function updateTextDiffBlock(
+  event: TurnDiffEvent,
+  ts: string | undefined,
+  complete: boolean,
+  existing: RunBlock,
+): RunBlock {
+  const textBlock = existing as Extract<RunBlock, { kind: 'text' }>;
+  return {
+    ...textBlock,
+    content: event.text!,
+    // kimi：块锚点时间改为本次 diff 时间（整轮累积流不断续写，
+    // 标题应反映“最后写入时刻”而非首见时刻；move-to-end 后位置
+    // 与标题才一致）。codex app-server 不置 refreshTimestamp，
+    // 保持“首见时间戳不刷新”的既有契约。
+    ...(event.refreshTimestamp ? { timestamp: ts } : {}),
+    ...(complete ? { completedAt: ts } : {}),
+  };
+}
+
+function applyTextDiff(next: RunState, event: TurnDiffEvent): RunState {
+  if (event.text === undefined) return next;
   const ts = event.timestamp;
   const complete = event.complete === true;
+  const blocks = markThinkingInactive(next.blocks);
+  const capped = upsertSnapshotBlock(
+    blocks,
+    textDiffMatches.bind(null, event),
+    makeTextDiffBlock.bind(null, event, ts, complete),
+    updateTextDiffBlock.bind(null, event, ts, complete),
+    !complete,
+  );
+  return withCappedBlocks(next, capped, 'streaming');
+}
 
-  if (event.text !== undefined) {
-    const blocks = markThinkingInactive(next.blocks);
-    const capped = upsertSnapshotBlock(
+// -- reasoning --
+function reasoningDiffMatches(event: TurnDiffEvent, b: RunBlock): boolean {
+  return b.kind === 'thinking' && b.itemId === event.itemId;
+}
+
+function makeReasoningDiffBlock(
+  event: TurnDiffEvent,
+  ts: string | undefined,
+  complete: boolean,
+): RunBlock {
+  return {
+    kind: 'thinking' as const,
+    itemId: event.itemId,
+    content: keepTailMarked(event.reasoning!, MAX_REASONING_CHARS),
+    active: !complete,
+    timestamp: ts,
+    ...(complete ? { completedAt: ts } : {}),
+  };
+}
+
+function updateReasoningDiffBlock(
+  event: TurnDiffEvent,
+  ts: string | undefined,
+  complete: boolean,
+  existing: RunBlock,
+): RunBlock {
+  const thinkingBlock = existing as Extract<RunBlock, { kind: 'thinking' }>;
+  return {
+    ...thinkingBlock,
+    content: keepTailMarked(event.reasoning!, MAX_REASONING_CHARS),
+    active: !complete,
+    ...(event.refreshTimestamp ? { timestamp: ts } : {}),
+    ...(complete ? { completedAt: ts } : {}),
+  };
+}
+
+// reasoning 的 applier 由下方 applySnapshotDiff + REASONING_DIFF_SPEC 提供：
+// 原本与 applyToolOutputDiff 逐字重复（仅 guard 字段 / 三个 handler / footer
+// 不同），现合并为单一实现，差异提到数据表。字段顺序、事件顺序逐项保持。
+
+// -- toolOutput --
+function toolDiffMatches(event: TurnDiffEvent, b: RunBlock): boolean {
+  return b.kind === 'tool' && b.tool.id === event.itemId;
+}
+
+function makeToolDiffBlock(
+  event: TurnDiffEvent,
+  ts: string | undefined,
+  complete: boolean,
+): RunBlock {
+  // 身份只在首见时写入（existing 分支不动）：toolName/toolInput/toolHint。
+  const inputStr = truncateDetail(stringifyUnknown(event.toolInput ?? {}));
+  return {
+    kind: 'tool' as const,
+    tool: {
+      id: event.itemId,
+      name: event.toolName ?? 'command',
+      input: inputStr,
+      parsedInput: asRecord(inputStr),
+      ...(event.toolHint !== undefined ? { toolHint: event.toolHint } : {}),
+      output: keepTail(event.toolOutput!, MAX_TOOL_DETAIL_CHARS),
+      status: complete ? (event.toolStatus ?? 'ok') : 'running',
+      startedAt: ts,
+      ...(complete ? { completedAt: ts } : {}),
+    },
+  };
+}
+
+function updateToolDiffBlock(
+  event: TurnDiffEvent,
+  ts: string | undefined,
+  complete: boolean,
+  existing: RunBlock,
+): RunBlock {
+  const tool = (existing as Extract<RunBlock, { kind: 'tool' }>).tool;
+  return {
+    kind: 'tool' as const,
+    tool: {
+      ...tool,
+      output: keepTail(event.toolOutput!, MAX_TOOL_DETAIL_CHARS),
+      status: complete ? (event.toolStatus ?? 'ok') : tool.status,
+      ...(complete ? { completedAt: ts } : {}),
+    },
+  };
+}
+
+// toolOutput 的 applier 同样由 applySnapshotDiff + TOOL_DIFF_SPEC 驱动（见下）。
+
+// -- plan --
+function planDiffMatches(event: TurnDiffEvent, b: RunBlock): boolean {
+  return b.kind === 'plan' && b.itemId === event.itemId;
+}
+
+function makePlanDiffBlock(
+  newPlan: string,
+  event: TurnDiffEvent,
+  ts: string | undefined,
+  complete: boolean,
+): RunBlock {
+  return {
+    kind: 'plan' as const,
+    itemId: event.itemId,
+    content: newPlan,
+    active: !complete,
+    timestamp: ts,
+    ...(complete ? { completedAt: ts } : {}),
+  };
+}
+
+function updatePlanDiffBlock(
+  newPlan: string,
+  complete: boolean,
+  ts: string | undefined,
+  existing: RunBlock,
+): RunBlock {
+  const planBlock = existing as Extract<RunBlock, { kind: 'plan' }>;
+  return {
+    ...planBlock,
+    content: newPlan,
+    active: !complete,
+    ...(complete ? { completedAt: ts } : {}),
+  };
+}
+
+function applyPlanDiff(next: RunState, event: TurnDiffEvent): RunState {
+  if (event.plan === undefined) return next;
+  const ts = event.timestamp;
+  const complete = event.complete === true;
+  const newPlan = keepTailMarked(event.plan, MAX_REASONING_CHARS * 2);
+  const capped = upsertSnapshotBlock(
+    next.blocks,
+    planDiffMatches.bind(null, event),
+    makePlanDiffBlock.bind(null, newPlan, event, ts, complete),
+    updatePlanDiffBlock.bind(null, newPlan, complete, ts),
+    !complete,
+  );
+  return withCappedBlocks({ ...next, plan: newPlan }, capped);
+}
+
+// -- fileChanges --
+function makeFileChangeBlock(
+  fc: FileChangeDiff,
+  event: TurnDiffEvent,
+  ts: string | undefined,
+  complete: boolean,
+): RunBlock {
+  return {
+    kind: 'file_change' as const,
+    itemId: event.itemId,
+    path: fc.path,
+    operation: fc.kind === 'add' ? 'create' : fc.kind === 'delete' ? 'delete' : 'edit',
+    diff: fc.diff,
+    timestamp: ts,
+    ...(complete ? { completedAt: ts } : {}),
+  };
+}
+
+function fileChangeMatches(fc: FileChangeDiff, event: TurnDiffEvent, b: RunBlock): boolean {
+  return b.kind === 'file_change' && b.itemId === event.itemId && b.path === fc.path;
+}
+
+function applyFileChangesDiff(next: RunState, event: TurnDiffEvent): RunState {
+  if (event.fileChanges === undefined) return next;
+  const ts = event.timestamp;
+  const complete = event.complete === true;
+  let blocks = next.blocks;
+  for (const fc of event.fileChanges) {
+    const fileBlock = makeFileChangeBlock(fc, event, ts, complete);
+    // 同一 item 的同一路径原地替换（权威 diff 校正），新路径/新 item 追加。
+    blocks = upsertSnapshotBlock(
       blocks,
-      (b) => b.kind === 'text' && b.itemId === event.itemId,
-      () => ({
-        kind: 'text' as const,
-        itemId: event.itemId,
-        // 最新那条正文不设窗口（它是「输出」），capStaleTextBlocks 负责在它被
-        // 更新的正文顶替后补上进度窗口。
-        content: event.text!,
-        timestamp: ts,
-        ...(complete ? { completedAt: ts } : {}),
-      }),
-      (existing) => {
-        const textBlock = existing as Extract<RunBlock, { kind: 'text' }>;
-        return {
-          ...textBlock,
-          content: event.text!,
-          // kimi：块锚点时间改为本次 diff 时间（整轮累积流不断续写，
-          // 标题应反映“最后写入时刻”而非首见时刻；move-to-end 后位置
-          // 与标题才一致）。codex app-server 不置 refreshTimestamp，
-          // 保持“首见时间戳不刷新”的既有契约。
-          ...(event.refreshTimestamp ? { timestamp: ts } : {}),
-          ...(complete ? { completedAt: ts } : {}),
-        };
-      },
+      fileChangeMatches.bind(null, fc, event),
+      constantBlock.bind(null, fileBlock),
+      constantBlock.bind(null, fileBlock),
       !complete,
     );
-    next = withCappedBlocks(next, capped, 'streaming');
   }
+  return withCappedBlocks(next, blocks);
+}
 
-  if (event.reasoning !== undefined) {
-    const capped = upsertSnapshotBlock(
-      next.blocks,
-      (b) => b.kind === 'thinking' && b.itemId === event.itemId,
-      () => ({
-        kind: 'thinking' as const,
-        itemId: event.itemId,
-        content: keepTailMarked(event.reasoning!, MAX_REASONING_CHARS),
-        active: !complete,
-        timestamp: ts,
-        ...(complete ? { completedAt: ts } : {}),
-      }),
-      (existing) => {
-        const thinkingBlock = existing as Extract<RunBlock, { kind: 'thinking' }>;
-        return {
-          ...thinkingBlock,
-          content: keepTailMarked(event.reasoning!, MAX_REASONING_CHARS),
-          active: !complete,
-          ...(event.refreshTimestamp ? { timestamp: ts } : {}),
-          ...(complete ? { completedAt: ts } : {}),
-        };
-      },
-      !complete,
-    );
-    next = withCappedBlocks(next, capped, 'thinking');
+type TurnDiffApplier = (state: RunState, event: TurnDiffEvent) => RunState;
+
+// reasoning / toolOutput 两个同形 applier 的单一实现：差异全在 spec 数据表，
+// 调用点（TURN_DIFF_APPLIERS）通过 bind 共用，行为 / 字段顺序 / 事件顺序不变。
+interface SnapshotDiffSpec {
+  hasPayload: (event: TurnDiffEvent) => boolean;
+  matches: (event: TurnDiffEvent, b: RunBlock) => boolean;
+  make: (event: TurnDiffEvent, ts: string | undefined, complete: boolean) => RunBlock;
+  update: (
+    event: TurnDiffEvent,
+    ts: string | undefined,
+    complete: boolean,
+    existing: RunBlock,
+  ) => RunBlock;
+  footer: RunFooter;
+}
+
+const REASONING_DIFF_SPEC: SnapshotDiffSpec = {
+  hasPayload: (e) => e.reasoning !== undefined,
+  matches: reasoningDiffMatches,
+  make: makeReasoningDiffBlock,
+  update: updateReasoningDiffBlock,
+  footer: 'thinking',
+};
+const TOOL_DIFF_SPEC: SnapshotDiffSpec = {
+  hasPayload: (e) => e.toolOutput !== undefined,
+  matches: toolDiffMatches,
+  make: makeToolDiffBlock,
+  update: updateToolDiffBlock,
+  footer: 'tool_running',
+};
+
+function applySnapshotDiff(spec: SnapshotDiffSpec, next: RunState, event: TurnDiffEvent): RunState {
+  if (!spec.hasPayload(event)) return next;
+  const ts = event.timestamp;
+  const complete = event.complete === true;
+  const capped = upsertSnapshotBlock(
+    next.blocks,
+    spec.matches.bind(null, event),
+    spec.make.bind(null, event, ts, complete),
+    spec.update.bind(null, event, ts, complete),
+    !complete,
+  );
+  return withCappedBlocks(next, capped, spec.footer);
+}
+
+/** 五个字段按固定顺序依次应用（与原实现的 5 个 if 分支顺序一致）。 */
+const TURN_DIFF_APPLIERS: ReadonlyArray<TurnDiffApplier> = [
+  applyTextDiff,
+  applySnapshotDiff.bind(null, REASONING_DIFF_SPEC),
+  applySnapshotDiff.bind(null, TOOL_DIFF_SPEC),
+  applyPlanDiff,
+  applyFileChangesDiff,
+];
+
+/**
+ * Handle app-server turn_diff events. The translator emits FULL per-item
+ * snapshots (accumulated text/reasoning/tool output/plan, current file-change
+ * set). Each snapshot is scoped to a thread item (event.itemId); the block is
+ * replaced in place to avoid duplication, and a NEW block is appended on the
+ * item's first sight — so interleaved items keep their real chronology and the
+ * active streaming content sits at the bottom, like the exec path.
+ */
+function reduceTurnDiffEvent(state: RunState, event: TurnDiffEvent): RunState {
+  let next = state;
+  for (const applier of TURN_DIFF_APPLIERS) {
+    next = applier(next, event);
   }
-
-  if (event.toolOutput !== undefined) {
-    const capped = upsertSnapshotBlock(
-      next.blocks,
-      (b) => b.kind === 'tool' && b.tool.id === event.itemId,
-      () => {
-        // 身份只在首见时写入（existing 分支不动）：toolName/toolInput/toolHint。
-        const inputStr = truncateDetail(stringifyUnknown(event.toolInput ?? {}));
-        return {
-          kind: 'tool' as const,
-          tool: {
-            id: event.itemId,
-            name: event.toolName ?? 'command',
-            input: inputStr,
-            parsedInput: asRecord(inputStr),
-            ...(event.toolHint !== undefined ? { toolHint: event.toolHint } : {}),
-            output: keepTail(event.toolOutput!, MAX_TOOL_DETAIL_CHARS),
-            status: complete ? (event.toolStatus ?? 'ok') : 'running',
-            startedAt: ts,
-            ...(complete ? { completedAt: ts } : {}),
-          },
-        };
-      },
-      (existing) => ({
-        kind: 'tool' as const,
-        tool: {
-          ...(existing as Extract<RunBlock, { kind: 'tool' }>).tool,
-          output: keepTail(event.toolOutput!, MAX_TOOL_DETAIL_CHARS),
-          status: complete
-            ? (event.toolStatus ?? 'ok')
-            : (existing as Extract<RunBlock, { kind: 'tool' }>).tool.status,
-          ...(complete ? { completedAt: ts } : {}),
-        },
-      }),
-      !complete,
-    );
-    next = withCappedBlocks(next, capped, 'tool_running');
-  }
-
-  if (event.plan !== undefined) {
-    const newPlan = keepTailMarked(event.plan, MAX_REASONING_CHARS * 2);
-    const capped = upsertSnapshotBlock(
-      next.blocks,
-      (b) => b.kind === 'plan' && b.itemId === event.itemId,
-      () => ({
-        kind: 'plan' as const,
-        itemId: event.itemId,
-        content: newPlan,
-        active: !complete,
-        timestamp: ts,
-        ...(complete ? { completedAt: ts } : {}),
-      }),
-      (existing) => {
-        const planBlock = existing as Extract<RunBlock, { kind: 'plan' }>;
-        return {
-          ...planBlock,
-          content: newPlan,
-          active: !complete,
-          ...(complete ? { completedAt: ts } : {}),
-        };
-      },
-      !complete,
-    );
-    next = withCappedBlocks({ ...next, plan: newPlan }, capped);
-  }
-
-  if (event.fileChanges !== undefined) {
-    let blocks = next.blocks;
-    for (const fc of event.fileChanges) {
-      const fileBlock: RunBlock = {
-        kind: 'file_change' as const,
-        itemId: event.itemId,
-        path: fc.path,
-        operation: fc.kind === 'add' ? 'create' : fc.kind === 'delete' ? 'delete' : 'edit',
-        diff: fc.diff,
-        timestamp: ts,
-        ...(complete ? { completedAt: ts } : {}),
-      };
-      // 同一 item 的同一路径原地替换（权威 diff 校正），新路径/新 item 追加。
-      blocks = upsertSnapshotBlock(
-        blocks,
-        (b) => b.kind === 'file_change' && b.itemId === event.itemId && b.path === fc.path,
-        () => fileBlock,
-        () => fileBlock,
-        !complete,
-      );
-    }
-    next = withCappedBlocks(next, blocks);
-  }
-
   return next;
 }
 
@@ -721,44 +921,76 @@ function bridgeJobStatus(status: string): string {
  *
  * 无变化时返回**同一个 state 引用**：bridge 靠它跳过无谓的卡片 patch。
  */
-export function syncBackgroundJobs(
-  state: RunState,
+/** 单个已跟踪 job 与 roster 行的对账（原 tracked.map 回调）。 */
+function syncTrackedJob(
+  job: BackgroundJobRoster,
+  row: BackgroundJobRoster | undefined,
+): BackgroundJobRoster {
+  if (!row) return job.status === 'ended' ? job : { ...job, status: 'ended' };
+  if (job.status === 'ended') return job;
+  const status = row.status === undefined ? job.status : bridgeJobStatus(row.status);
+  const label = row.label.trim() === '' ? job.label : row.label;
+  const progress = row.progress ?? job.progress;
+  if (status === job.status && label === job.label && progress === job.progress) return job;
+  return {
+    ...job,
+    label,
+    ...(status === undefined ? {} : { status }),
+    ...(progress === undefined ? {} : { progress }),
+  };
+}
+
+/** roster 里新出现且仍在跑的 job（原新增循环）。 */
+function collectNewJobs(
+  tracked: BackgroundJobRoster[],
   roster: ReadonlyArray<BackgroundJobRoster>,
-): RunState {
-  const tracked = state.backgroundJobs ?? [];
-  const byId = new Map(roster.map((job) => [job.id, job]));
-
-  const next = tracked.map((job) => {
-    const row = byId.get(job.id);
-    if (!row) return job.status === 'ended' ? job : { ...job, status: 'ended' };
-    if (job.status === 'ended') return job;
-    const status = row.status === undefined ? job.status : bridgeJobStatus(row.status);
-    const label = row.label.trim() === '' ? job.label : row.label;
-    const progress = row.progress ?? job.progress;
-    if (status === job.status && label === job.label && progress === job.progress) return job;
-    return {
-      ...job,
-      label,
-      ...(status === undefined ? {} : { status }),
-      ...(progress === undefined ? {} : { progress }),
-    };
-  });
-
-  // 新出现的任务只收仍在跑的：与收尾采集同一口径（列出已结束的任务只会被
-  // 读成"还在跑"）。
-  const seen = new Set(tracked.map((job) => job.id));
+): BackgroundJobRoster[] {
+  const seen = new Set<string>();
+  for (const job of tracked) seen.add(job.id);
+  const added: BackgroundJobRoster[] = [];
   for (const row of roster) {
     if (seen.has(row.id)) continue;
     if (row.status !== undefined && !RUNNING_JOB_STATUSES.has(row.status)) continue;
-    next.push({
+    added.push({
       id: row.id,
       label: row.label,
       ...(row.status === undefined ? {} : { status: row.status }),
       ...(row.progress === undefined ? {} : { progress: row.progress }),
     });
   }
+  return added;
+}
 
-  if (next.length === tracked.length && next.every((job, index) => job === tracked[index])) {
+/** next 与 tracked 是否逐项同一引用（原 length + every 判定）。 */
+function jobsUnchanged(next: BackgroundJobRoster[], tracked: BackgroundJobRoster[]): boolean {
+  if (next.length !== tracked.length) return false;
+  for (let i = 0; i < next.length; i++) {
+    if (next[i] !== tracked[i]) return false;
+  }
+  return true;
+}
+
+export function syncBackgroundJobs(
+  state: RunState,
+  roster: ReadonlyArray<BackgroundJobRoster>,
+): RunState {
+  const tracked = state.backgroundJobs ?? [];
+
+  const byId = new Map<string, BackgroundJobRoster>();
+  for (const job of roster) byId.set(job.id, job);
+
+  const next: BackgroundJobRoster[] = [];
+  for (const job of tracked) {
+    next.push(syncTrackedJob(job, byId.get(job.id)));
+  }
+
+  // 新出现的任务只收仍在跑的：与收尾采集同一口径（列出已结束的任务只会被
+  // 读成"还在跑"）。
+  for (const added of collectNewJobs(tracked, roster)) {
+    next.push(added);
+  }
+
+  if (jobsUnchanged(next, tracked)) {
     return state;
   }
   return { ...state, backgroundJobs: next };

@@ -7,7 +7,12 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach, type Mock } from 'vitest';
 import { ApprovalCoordinator, decisionToApprovalAction } from './approval-coordinator.js';
+import { mockLogger } from '../../tests/lib/logger-mock.js';
 import type { AgentEvent, ApprovalRequestedEvent, ApprovalView } from '../runner/types.js';
+
+vi.mock('../logger/index.js', async () =>
+  (await import('../../tests/lib/logger-mock.js')).loggerModuleMock(),
+);
 
 describe('ApprovalCoordinator', () => {
   let coordinator: ApprovalCoordinator;
@@ -123,6 +128,7 @@ describe('ApprovalCoordinator', () => {
 
   beforeEach(() => {
     vi.useFakeTimers();
+    mockLogger.warn.mockClear();
     responder = vi
       .fn<(requestId: number | string, response: unknown) => Promise<void>>()
       .mockResolvedValue(undefined);
@@ -393,6 +399,41 @@ describe('ApprovalCoordinator', () => {
       );
       vi.advanceTimersByTime(30_000);
       expect(responder).toHaveBeenCalledTimes(1);
+    });
+
+    it('expiry cancel/card 失败：状态降级为 failed、触发中断兜底并逐条留痕', async () => {
+      responder.mockRejectedValue(new Error('cancel transport down'));
+      interruptTurn.mockRejectedValue('interrupt string failure');
+      pushToCard.mockRejectedValue(new Error('card patch down'));
+
+      coordinator.onRequested(makeCommandEvent());
+      await vi.advanceTimersByTimeAsync(30_000);
+
+      // cancel 没送达不能算「正常过期」：后续提交必须拒绝并报 state=failed。
+      await expect(coordinator.submit({ action: 'accept' }, { requestId: 1001 })).rejects.toThrow(
+        /state=failed/,
+      );
+      expect(interruptTurn).toHaveBeenCalled();
+      const warns = mockLogger.warn.mock.calls.map((c) => String(c[0])).join('\n');
+      expect(warns).toContain('expiry cancel failed');
+      expect(warns).toContain('expiry interrupt failed');
+      expect(warns).toContain('expiry card event failed');
+    });
+
+    it('expiry 抛非 Error 值时用 String(err) 留痕，仍不吞掉状态降级', async () => {
+      responder.mockRejectedValue('plain string cancel failure');
+      interruptTurn.mockRejectedValue(new Error('interrupt down'));
+      pushToCard.mockRejectedValue('plain string card failure');
+
+      coordinator.onRequested(makeCommandEvent());
+      await vi.advanceTimersByTimeAsync(30_000);
+
+      await expect(coordinator.submit({ action: 'accept' }, { requestId: 1001 })).rejects.toThrow(
+        /state=failed/,
+      );
+      const warns = mockLogger.warn.mock.calls.map((c) => String(c[0])).join('\n');
+      expect(warns).toContain('plain string cancel failure');
+      expect(warns).toContain('plain string card failure');
     });
   });
 
@@ -1105,6 +1146,54 @@ describe('ApprovalCoordinator', () => {
         action: 'decline_with_feedback',
         message: '这次点按钮带的意见',
       });
+    });
+  });
+
+  describe('createRunApprovalCoordinator (run-approval factory)', () => {
+    it('非 claude agent 使用默认审批超时，超时后向 server 发 cancel', async () => {
+      const { createRunApprovalCoordinator } = await import('./run-approval.js');
+      const { DEFAULT_APPROVAL_TIMEOUT_MS } = await import('../config/index.js');
+      const respondApproval = vi.fn(async () => undefined);
+      const pushed: AgentEvent[] = [];
+      const factoryCoordinator = createRunApprovalCoordinator({
+        runner: { stop: vi.fn(async () => undefined), respondApproval } as never,
+        cardSession: {
+          push: vi.fn(async (event: AgentEvent) => {
+            pushed.push(event);
+          }),
+        } as never,
+        config: {} as never,
+        runId: 'run-codex',
+        agentKind: 'codex',
+      });
+
+      factoryCoordinator.onRequested(makeCommandEvent());
+      await vi.advanceTimersByTimeAsync(DEFAULT_APPROVAL_TIMEOUT_MS);
+
+      expect(respondApproval).toHaveBeenCalledWith(1001, { action: 'cancel' });
+      expect(pushed).toContainEqual({ type: 'approval_expired', requestId: 1001 });
+    });
+
+    it('runner 无 respondApproval 时超时安全兜底，仍推过期卡片事件', async () => {
+      const { createRunApprovalCoordinator } = await import('./run-approval.js');
+      const { DEFAULT_APPROVAL_TIMEOUT_MS } = await import('../config/index.js');
+      const pushed: AgentEvent[] = [];
+      const factoryCoordinator = createRunApprovalCoordinator({
+        runner: { stop: vi.fn(async () => undefined) } as never,
+        cardSession: {
+          push: vi.fn(async (event: AgentEvent) => {
+            pushed.push(event);
+          }),
+        } as never,
+        config: {} as never,
+        runId: 'run-dsh',
+        agentKind: 'dsh',
+      });
+
+      factoryCoordinator.onRequested(makeCommandEvent());
+      await vi.advanceTimersByTimeAsync(DEFAULT_APPROVAL_TIMEOUT_MS);
+
+      expect(pushed).toContainEqual({ type: 'approval_expired', requestId: 1001 });
     });
   });
 });

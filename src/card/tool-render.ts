@@ -115,10 +115,35 @@ export function toolBodyMd(tool: ToolEntry, opts: { outputMax?: number } = {}): 
 
 // --- Named render bodies (shared by tool-name cases and toolHint branches) ---
 
-function renderBashInput(str: (k: string) => string): string {
-  const cmd = str('command');
-  return cmd ? `**Command**\n\`\`\`bash\n${truncate(cmd, BODY_FIELD_MAX)}\n\`\`\`` : '';
+/**
+ * 单字段输入渲染（Bash / Glob / ls 共用）：三块归一化结构完全相同的实现合并为
+ * 一处，差异（取值 key、标签、是否按 BODY_FIELD_MAX 截断、是否用代码块围栏）
+ * 由 FieldInputSpec 数据表达，逐字保持原有文案与 truncate 口径。
+ */
+interface FieldInputSpec {
+  key: string;
+  label: string;
+  truncate: boolean;
+  fence?: string;
 }
+
+function renderFieldInput(str: (k: string) => string, spec: FieldInputSpec): string {
+  const value = str(spec.key);
+  if (!value) return '';
+  const shown = spec.truncate ? truncate(value, BODY_FIELD_MAX) : value;
+  return spec.fence
+    ? `**${spec.label}**\n\`\`\`${spec.fence}\n${shown}\n\`\`\``
+    : `**${spec.label}** \`${shown}\``;
+}
+
+const BASH_FIELD: FieldInputSpec = {
+  key: 'command',
+  label: 'Command',
+  truncate: true,
+  fence: 'bash',
+};
+const GLOB_FIELD: FieldInputSpec = { key: 'pattern', label: 'Pattern', truncate: true };
+const LS_FIELD: FieldInputSpec = { key: 'path', label: 'Path', truncate: false };
 
 function renderFileInput(str: (k: string) => string): string {
   const fp = str('file_path') || str('path');
@@ -130,16 +155,6 @@ function renderGrepInput(str: (k: string) => string): string {
   if (str('pattern')) lines.push(`**Pattern** \`${str('pattern')}\``);
   if (str('path')) lines.push(`**Path** \`${str('path')}\``);
   return lines.join('\n');
-}
-
-function renderGlobInput(str: (k: string) => string): string {
-  const p = str('pattern');
-  return p ? `**Pattern** \`${truncate(p, BODY_FIELD_MAX)}\`` : '';
-}
-
-function renderLsInput(str: (k: string) => string): string {
-  const p = str('path');
-  return p ? `**Path** \`${p}\`` : '';
 }
 
 function renderWebFetchInput(str: (k: string) => string): string {
@@ -169,7 +184,7 @@ function renderInput(tool: ToolEntry): string {
   // 完全一致。hint 分支与 name case 共用同一渲染函数，无复制粘贴。
   switch (tool.toolHint) {
     case 'shell':
-      return renderBashInput(str);
+      return renderFieldInput(str, BASH_FIELD);
     case 'file':
     case 'patch':
       return renderFileInput(str);
@@ -183,15 +198,15 @@ function renderInput(tool: ToolEntry): string {
 
   switch (toolKindOf(tool.name)) {
     case 'shell':
-      return renderBashInput(str);
+      return renderFieldInput(str, BASH_FIELD);
     case 'file':
       return renderFileInput(str);
     case 'grep':
       return renderGrepInput(str);
     case 'glob':
-      return renderGlobInput(str);
+      return renderFieldInput(str, GLOB_FIELD);
     case 'ls':
-      return renderLsInput(str);
+      return renderFieldInput(str, LS_FIELD);
     case 'webfetch':
       return renderWebFetchInput(str);
     case 'websearch':

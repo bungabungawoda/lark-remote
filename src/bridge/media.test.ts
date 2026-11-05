@@ -338,4 +338,151 @@ describe('InboundMediaHandler 落盘', () => {
     const stamp = fs.readdirSync(path.join(tmpDir, 'other-temp'))[0];
     expect(fs.readdirSync(path.join(tmpDir, 'other-temp', stamp))).toHaveLength(1);
   });
+
+  it('缺省 kind/fileName 的失败与落盘失败的媒体都如实进 rejected（原名/序号标签）', async () => {
+    const { bridge, sessionStore } = makeBridge();
+    sessionStore.setCwd('user-1', tmpDir);
+
+    const named = downloaded('x', {
+      kind: 'file',
+      fileName: 'broken.txt',
+      mimeType: 'text/plain',
+    });
+    const unsanitizable = downloaded('y', {
+      kind: 'file',
+      fileName: '..',
+      mimeType: 'text/plain',
+    });
+    const anonymous = downloaded('z', { kind: 'file', mimeType: 'text/plain' });
+    // 让 atomicMoveFile 真的抛 ENOENT（模拟下载产物丢失），逐个进 catch。
+    fs.rmSync(named.tempPath);
+    fs.rmSync(unsanitizable.tempPath);
+    fs.rmSync(anonymous.tempPath);
+
+    const outcome = await bridge.saveInboundMedia(
+      mediaPayload({
+        messageId: 'msg-1',
+        media: [named, unsanitizable, anonymous],
+        failures: [{ reason: '超过 100MB 大小限制' }],
+      }),
+    );
+
+    expect(outcome.attachments).toEqual([]);
+    expect(savedFiles()).toHaveLength(0);
+    expect(outcome.rejected).toHaveLength(4);
+    // 失败项没带 kind / fileName：默认 file，原因原样透出、不加文件名前缀。
+    expect(outcome.rejected[0]).toEqual({
+      kind: 'file',
+      reason: '超过 100MB 大小限制',
+      sourceMsgId: 'msg-1',
+    });
+    // 落盘失败项：有原名用原名、原名被 sanitize 抹掉就回退原名、没原名用序号。
+    expect(outcome.rejected[1].reason).toMatch(/^broken\.txt: /);
+    expect(outcome.rejected[2].reason).toMatch(/^\.\.: /);
+    expect(outcome.rejected[3].reason).toMatch(/^第 3 个: /);
+    expect(outcome.rejected.every((r) => r.sourceMsgId === 'msg-1')).toBe(true);
+  });
+});
+
+/**
+ * extensionFor 的魔数 / MIME 判定口径（ub 结构等价 characterization）。
+ * extensionFor 是模块私有函数，通过「无原名的 image 落盘文件名后缀」间接钉住：
+ * 拆分后每一支的返回值必须逐字不变。
+ */
+describe('extensionFor 魔数 / MIME 口径（ub characterization）', () => {
+  /** 每次清空默认落盘目录，保证 savedFiles()[0] 就是本次用例的唯一产物。 */
+  async function extOf(
+    opts: { mimeType?: string; bytes?: Buffer } = {},
+  ): Promise<string | undefined> {
+    fs.rmSync(path.join(tmpDir, '.lark-remote-temp'), { recursive: true, force: true });
+    const { bridge, sessionStore } = makeBridge();
+    sessionStore.setCwd('user-1', tmpDir);
+    await bridge.saveInboundMedia(
+      mediaPayload({
+        media: [downloaded(opts.bytes ?? Buffer.alloc(12), { mimeType: opts.mimeType })],
+      }),
+    );
+    const name = path.basename(savedFiles()[0]);
+    const m = name.match(/\.([a-z0-9]+)$/);
+    return m ? m[1] : undefined;
+  }
+
+  /** 12 字节头：先铺满，再把签名写到指定偏移。 */
+  function withSignature(offset: number, sig: number[] | string): Buffer {
+    const b = Buffer.alloc(12);
+    if (typeof sig === 'string') b.write(sig, offset, 'latin1');
+    else Buffer.from(sig).copy(b, offset);
+    return b;
+  }
+
+  it('MIME → 扩展名映射逐字钉住', async () => {
+    const cases: Array<[string, string]> = [
+      ['image/png', 'png'],
+      ['image/jpeg', 'jpg'],
+      ['image/jpg', 'jpg'],
+      ['image/gif', 'gif'],
+      ['image/webp', 'webp'],
+      ['image/bmp', 'bmp'],
+      ['video/mp4', 'mp4'],
+      ['video/quicktime', 'mov'],
+      ['video/webm', 'webm'],
+      ['video/x-matroska', 'mkv'],
+      ['audio/opus', 'opus'],
+      ['audio/ogg', 'ogg'],
+      ['audio/mpeg', 'mp3'],
+      ['audio/mp3', 'mp3'],
+      ['audio/wav', 'wav'],
+      ['audio/x-wav', 'wav'],
+      ['audio/aac', 'aac'],
+      ['audio/amr', 'amr'],
+      ['audio/mp4', 'm4a'],
+    ];
+    for (const [mime, ext] of cases) {
+      expect(await extOf({ mimeType: mime }), mime).toBe(ext);
+    }
+  });
+
+  it('MIME 归一化：剥参数 / 转小写 / trim', async () => {
+    expect(await extOf({ mimeType: 'IMAGE/PNG; charset=binary' })).toBe('png');
+    expect(await extOf({ mimeType: '  image/webp  ' })).toBe('webp');
+    expect(await extOf({ mimeType: 'audio/mpeg; codecs=mp3' })).toBe('mp3');
+  });
+
+  it('MIME 命中时优先于魔数', async () => {
+    const png = withSignature(0, [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+    expect(await extOf({ mimeType: 'image/gif', bytes: png })).toBe('gif');
+  });
+
+  it('魔数签名逐字钉住（无 MIME）', async () => {
+    const riffWebp = withSignature(0, 'RIFF');
+    riffWebp.write('WEBP', 8, 'latin1');
+    expect(await extOf({ bytes: riffWebp }), 'RIFF/WEBP').toBe('webp');
+
+    const riffWave = withSignature(0, 'RIFF');
+    riffWave.write('WAVE', 8, 'latin1');
+    expect(await extOf({ bytes: riffWave }), 'RIFF/WAVE').toBe('wav');
+
+    expect(
+      await extOf({ bytes: withSignature(0, [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]) }),
+      'PNG',
+    ).toBe('png');
+    expect(await extOf({ bytes: withSignature(0, [0xff, 0xd8, 0xff]) }), 'JPEG').toBe('jpg');
+    expect(await extOf({ bytes: withSignature(0, 'GIF8') }), 'GIF8').toBe('gif');
+    expect(await extOf({ bytes: withSignature(0, 'OggS') }), 'OggS').toBe('opus');
+    expect(await extOf({ bytes: withSignature(4, 'ftyp') }), 'ftyp').toBe('mp4');
+    expect(await extOf({ bytes: withSignature(0, 'BM') }), 'BM').toBe('bmp');
+    expect(await extOf({ bytes: withSignature(0, 'ID3') }), 'ID3').toBe('mp3');
+    expect(await extOf({ bytes: withSignature(0, [0xff, 0xfb]) }), 'frame sync').toBe('mp3');
+    expect(await extOf({ bytes: withSignature(0, '#!AMR') }), '#!AMR').toBe('amr');
+    expect(await extOf({ bytes: withSignature(0, [0x1a, 0x45, 0xdf, 0xa3]) }), 'EBML').toBe('mkv');
+  });
+
+  it('无法识别（未知 MIME / 空魔数）→ 省略扩展名', async () => {
+    expect(await extOf({ mimeType: 'application/octet-stream' })).toBeUndefined();
+    expect(await extOf({ bytes: Buffer.alloc(12) })).toBeUndefined();
+  });
+
+  it('头部不足签名所需长度时不误判', async () => {
+    expect(await extOf({ bytes: Buffer.from('GIF') })).toBeUndefined();
+  });
 });

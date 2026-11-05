@@ -529,6 +529,272 @@ function touchesAgentConfig(keys: readonly string[], kind: string): boolean {
   );
 }
 
+// ===========================================================================
+// cardAction 分发单源
+// 大 switch 的决策点全部收敛到模块顶层 Map：value 是私有 handler 方法名 +
+// 参数风格。方法名以字面量联合约束（拼错编译期即红），调用发生在类体内，
+// private 方法因此仍可访问；外层函数里不再堆几十个 case / 内部闭包。
+// 用 Map 而非对象字面量：constructor/toString 这类 cmd 会命中 Object.prototype。
+// ===========================================================================
+
+type CardActionMethod =
+  | 'cardLsFile'
+  | 'handleLsRefresh'
+  | 'handleLsBrowse'
+  | 'handleLsSwitch'
+  | 'handleLsPage'
+  | 'handleLsFilter'
+  | 'handleWsPage'
+  | 'handleWsFilter'
+  | 'handleWsUse'
+  | 'handleWsSort'
+  | 'handleWsRemove'
+  | 'handleResumeUse'
+  | 'handleResumePage'
+  | 'handleActivePage'
+  | 'handleNewSession'
+  | 'handleCardStop'
+  | 'handleJobKill'
+  | 'handleQueueCancel'
+  | 'handleQueueImmediate'
+  | 'handleQueueDiagnose'
+  | 'handleQueueEdit'
+  | 'handleQueueInput'
+  | 'handleOrderDelete'
+  | 'handleOrderPage'
+  | 'handleOrderAliasEdit'
+  | 'handleOrderAliasInput'
+  | 'handleOrderAliasRemove'
+  | 'handleOrderTextEdit'
+  | 'handleOrderTextInput'
+  | 'enqueueConfigAction'
+  | 'handleCompact'
+  | 'handleResumeCompact';
+
+type CardActionArgStyle = 'path' | 'ctxOnly' | 'voidCall' | 'returnCall';
+
+type CardActionInvoker = (
+  ...args: unknown[]
+) => Promise<CardActionResponse | void> | CardActionResponse | void;
+
+const CARD_ACTION_SPECS = new Map<string, { method: CardActionMethod; args: CardActionArgStyle }>([
+  ['ls.file', { method: 'cardLsFile', args: 'path' }],
+  ['ls.refresh', { method: 'handleLsRefresh', args: 'voidCall' }],
+  ['ls.browse', { method: 'handleLsBrowse', args: 'voidCall' }],
+  ['ls.switch', { method: 'handleLsSwitch', args: 'voidCall' }],
+  ['ls.page', { method: 'handleLsPage', args: 'returnCall' }],
+  ['ls.filter', { method: 'handleLsFilter', args: 'returnCall' }],
+  ['ws.page', { method: 'handleWsPage', args: 'returnCall' }],
+  ['ws.filter', { method: 'handleWsFilter', args: 'returnCall' }],
+  ['ws.use', { method: 'handleWsUse', args: 'returnCall' }],
+  ['ws.sort', { method: 'handleWsSort', args: 'returnCall' }],
+  ['ws.remove', { method: 'handleWsRemove', args: 'returnCall' }],
+  ['resume.use', { method: 'handleResumeUse', args: 'voidCall' }],
+  ['resume.page', { method: 'handleResumePage', args: 'returnCall' }],
+  ['active.page', { method: 'handleActivePage', args: 'returnCall' }],
+  ['new-session', { method: 'handleNewSession', args: 'ctxOnly' }],
+  ['stop', { method: 'handleCardStop', args: 'voidCall' }],
+  ['job.kill', { method: 'handleJobKill', args: 'voidCall' }],
+  ['queue.cancel', { method: 'handleQueueCancel', args: 'voidCall' }],
+  ['queue.immediate', { method: 'handleQueueImmediate', args: 'voidCall' }],
+  ['queue.diagnose', { method: 'handleQueueDiagnose', args: 'voidCall' }],
+  ['queue.edit', { method: 'handleQueueEdit', args: 'voidCall' }],
+  ['queue.input', { method: 'handleQueueInput', args: 'returnCall' }],
+  ['order.delete', { method: 'handleOrderDelete', args: 'returnCall' }],
+  ['order.page', { method: 'handleOrderPage', args: 'returnCall' }],
+  ['order.aliasEdit', { method: 'handleOrderAliasEdit', args: 'returnCall' }],
+  ['order.aliasInput', { method: 'handleOrderAliasInput', args: 'returnCall' }],
+  ['order.aliasRemove', { method: 'handleOrderAliasRemove', args: 'returnCall' }],
+  ['order.textEdit', { method: 'handleOrderTextEdit', args: 'returnCall' }],
+  ['order.textInput', { method: 'handleOrderTextInput', args: 'returnCall' }],
+  ['config.set', { method: 'enqueueConfigAction', args: 'returnCall' }],
+  ['config.input', { method: 'enqueueConfigAction', args: 'returnCall' }],
+  ['config.save', { method: 'enqueueConfigAction', args: 'returnCall' }],
+  ['compact', { method: 'handleCompact', args: 'voidCall' }],
+  ['resume.compact', { method: 'handleResumeCompact', args: 'voidCall' }],
+]);
+
+type CommandMethod =
+  | 'cmdHelp'
+  | 'cmdStatus'
+  | 'cmdPs'
+  | 'cmdStop'
+  | 'cmdExit'
+  | 'cmdRestart'
+  | 'cmdNew'
+  | 'cmdCd'
+  | 'cmdLs'
+  | 'cmdDownload'
+  | 'cmdWs'
+  | 'cmdResume'
+  | 'cmdActive'
+  | 'cmdConfig'
+  | 'cmdOrder'
+  | 'cmdUpdate'
+  | 'cmdClone';
+
+type CommandArgStyle = 'none' | 'ctxOnly' | 'argsCtx';
+
+type CommandInvoker = (...args: unknown[]) => Promise<CommandResult | null> | CommandResult | null;
+
+const COMMAND_SPECS = new Map<string, { method: CommandMethod; args: CommandArgStyle }>([
+  ['help', { method: 'cmdHelp', args: 'none' }],
+  ['h', { method: 'cmdHelp', args: 'none' }],
+  ['status', { method: 'cmdStatus', args: 'ctxOnly' }],
+  ['s', { method: 'cmdStatus', args: 'ctxOnly' }],
+  ['ps', { method: 'cmdPs', args: 'ctxOnly' }],
+  ['stop', { method: 'cmdStop', args: 'ctxOnly' }],
+  ['t', { method: 'cmdStop', args: 'ctxOnly' }],
+  ['exit', { method: 'cmdExit', args: 'none' }],
+  ['quit', { method: 'cmdExit', args: 'none' }],
+  ['e', { method: 'cmdExit', args: 'none' }],
+  ['restart', { method: 'cmdRestart', args: 'none' }],
+  ['new', { method: 'cmdNew', args: 'ctxOnly' }],
+  ['cd', { method: 'cmdCd', args: 'argsCtx' }],
+  ['ls', { method: 'cmdLs', args: 'argsCtx' }],
+  ['download', { method: 'cmdDownload', args: 'argsCtx' }],
+  ['d', { method: 'cmdDownload', args: 'argsCtx' }],
+  ['ws', { method: 'cmdWs', args: 'argsCtx' }],
+  ['resume', { method: 'cmdResume', args: 'argsCtx' }],
+  ['r', { method: 'cmdResume', args: 'argsCtx' }],
+  ['active', { method: 'cmdActive', args: 'argsCtx' }],
+  ['config', { method: 'cmdConfig', args: 'argsCtx' }],
+  ['c', { method: 'cmdConfig', args: 'argsCtx' }],
+  ['order', { method: 'cmdOrder', args: 'argsCtx' }],
+  ['o', { method: 'cmdOrder', args: 'argsCtx' }],
+  ['update', { method: 'cmdUpdate', args: 'argsCtx' }],
+  ['u', { method: 'cmdUpdate', args: 'argsCtx' }],
+  ['clone', { method: 'cmdClone', args: 'argsCtx' }],
+]);
+
+/** 命令名 → 命令方法查表分发；无匹配时返回与旧 default 分支一致的文案。 */
+function dispatchCommand(
+  router: CommandRouter,
+  cmd: string | undefined,
+  args: string[],
+  ctx: CommandContext,
+): Promise<CommandResult | null> | CommandResult | null {
+  const spec = COMMAND_SPECS.get(cmd ?? '');
+  if (!spec) {
+    return { text: `未知命令 /${cmd}，输入 /help 查看可用命令` };
+  }
+  const handler = (router as unknown as Record<CommandMethod, CommandInvoker>)[spec.method];
+  if (spec.args === 'none') {
+    return handler.call(router);
+  }
+  if (spec.args === 'ctxOnly') {
+    return handler.call(router, ctx);
+  }
+  return handler.call(router, args, ctx);
+}
+
+interface DefaultAgentSwitchOutcome {
+  notice: string | undefined;
+  newAgent: AgentKind | undefined;
+  sessionId: string | undefined;
+}
+
+/**
+ * defaultAgent 切换时的 session 迁移（Step 0-3）。抽为模块级命名函数，
+ * 避免其内部分支与判定闭包计入外层 propagateConfigSave 的 CC。
+ */
+function applyDefaultAgentSwitch(
+  sessionStore: SessionStore,
+  userId: string,
+  oldDefaultAgent: AgentKind,
+  newAgent: AgentKind,
+): DefaultAgentSwitchOutcome {
+  // Step 0: 在清空 old 之前计算「用户活动」基线差（arrival 基线）：
+  const oldSessionId = sessionStore.getSessionId(userId, oldDefaultAgent);
+  const oldArrivalSessionId = sessionStore.getArrivalSessionId(userId, oldDefaultAgent);
+  const userChangedOld = (oldSessionId ?? '') !== (oldArrivalSessionId ?? '');
+
+  // Step 1: 保存旧 agent 的 session 到 previousSessions（如果有）
+  if (oldSessionId) {
+    sessionStore.setPreviousSessionId(userId, oldDefaultAgent, oldSessionId);
+  }
+
+  // Step 2: 清除旧 agent 的 session（保存后清除，为新会话腾出空间）
+  sessionStore.clearSessionId(userId, oldDefaultAgent);
+
+  // Step 2.5: 显式选择判定
+  const newSessionId = sessionStore.getSessionId(userId, newAgent);
+  const newArrivalSessionId = sessionStore.getArrivalSessionId(userId, newAgent);
+  const userSelectedNew = !!newSessionId && (newSessionId ?? '') !== (newArrivalSessionId ?? '');
+
+  // Step 3: 恢复判定
+  const previousSessionId = sessionStore.getPreviousSessionId(userId, newAgent);
+  const canRestore = !!previousSessionId && !userChangedOld;
+
+  if (userSelectedNew) {
+    sessionStore.setArrivalSessionId(userId, newAgent, newSessionId);
+    const newAgentName = agentDisplayName(newAgent);
+    return {
+      notice: `已切换到 ${newAgentName}，已使用所选 session，sessionId: ${newSessionId}`,
+      newAgent,
+      sessionId: newSessionId!,
+    };
+  }
+  if (canRestore) {
+    sessionStore.setSessionId(userId, newAgent, previousSessionId);
+    sessionStore.clearPreviousSessionId(userId, newAgent);
+    sessionStore.setArrivalSessionId(userId, newAgent, previousSessionId);
+    const newAgentName = agentDisplayName(newAgent);
+    return {
+      notice: `已切换到 ${newAgentName}，将继续之前的 session，sessionId: ${previousSessionId}`,
+      newAgent,
+      sessionId: previousSessionId,
+    };
+  }
+  sessionStore.clearSessionId(userId, newAgent, { clearSessionCwd: true });
+  sessionStore.setArrivalSessionId(userId, newAgent, '');
+  const newAgentName = agentDisplayName(newAgent);
+  return {
+    notice: `已切换到 ${newAgentName}，session 已清空，下次消息将启动新对话`,
+    newAgent,
+    sessionId: '',
+  };
+}
+
+/**
+ * DSH 会话边界变更（preset/host）共用的 notice 计算。返回更新后的 notice；
+ * 条件不满足时原样返回 currentNotice，等价于原闭包「不修改」的语义。
+ */
+function parkDshSessionBoundaryNotice(
+  sessionStore: SessionStore,
+  userId: string,
+  defaultAgent: AgentKind,
+  changed: boolean,
+  label: string,
+  currentNotice: string | undefined,
+): string | undefined {
+  if (!changed || defaultAgent !== 'dsh' || currentNotice) return currentNotice;
+  const oldSessionId = sessionStore.getSessionId(userId, 'dsh');
+  if (oldSessionId) {
+    sessionStore.setPreviousSessionId(userId, 'dsh', oldSessionId);
+    sessionStore.clearSessionId(userId, 'dsh');
+    return `DSH ${label} 已变更，旧会话已停放到恢复槽（可 /resume 校验后恢复），下次消息将新建会话`;
+  }
+  return `DSH ${label} 已变更，下次消息将新建会话`;
+}
+
+function computeHasAgentConfigChange(changedKeys: string[]): boolean {
+  if (changedKeys.includes('defaultAgent')) return true;
+  for (const kind of AGENT_KINDS) {
+    if (touchesAgentConfig(changedKeys, kind)) return true;
+  }
+  return false;
+}
+
+const APPROVAL_AGENT_KINDS: string[] = ['codex', 'kimi', 'opencode'];
+
+function computeHasApprovalConfigChange(changedKeys: string[]): boolean {
+  for (const kind of APPROVAL_AGENT_KINDS) {
+    if (touchesAgentConfig(changedKeys, kind)) return true;
+  }
+  return changedKeys.includes('agents.dsh.permissionPreset');
+}
+
 export class CommandRouter {
   private sessionStore: SessionStore;
   /** 飞书桥接实例（public：测试直接访问断言，替代 as unknown as）。 */
@@ -782,105 +1048,31 @@ export class CommandRouter {
     if (APPROVAL_ACTION_CMDS.includes(value.cmd)) {
       return this.handleApprovalAction(value, ctx);
     }
-    switch (value.cmd) {
-      case 'ls.file':
-        await this.cardLsFile(value.path, ctx);
-        return;
-      case 'ls.refresh':
-        await this.handleLsRefresh(value, ctx);
-        return;
-      case 'ls.browse':
-        await this.handleLsBrowse(value, ctx);
-        return;
-      case 'ls.switch':
-        await this.handleLsSwitch(value, ctx);
-        return;
-      case 'ls.page':
-        return this.handleLsPage(value, ctx);
-      case 'ls.filter':
-        return this.handleLsFilter(value, ctx);
-      case 'ws.page':
-        return this.handleWsPage(value, ctx);
-      case 'ws.filter':
-        return this.handleWsFilter(value, ctx);
-      case 'ws.use':
-        return await this.handleWsUse(value, ctx);
-      case 'ws.sort':
-        return await this.handleWsSort(value, ctx);
-      case 'ws.remove':
-        return await this.handleWsRemove(value, ctx);
-      case 'resume.use':
-        await this.handleResumeUse(value, ctx);
-        return;
-      case 'resume.page':
-        return this.handleResumePage(value, ctx);
-      case 'active.page':
-        return this.handleActivePage(value, ctx);
-      case 'new-session':
-        await this.handleNewSession(ctx);
-        return;
-      case 'stop':
-        await this.handleCardStop(value, ctx);
-        return;
-      case 'job.kill':
-        await this.handleJobKill(value, ctx);
-        return;
-      case 'queue.cancel':
-        // 撤销：从队列中删除这个消息
-        await this.handleQueueCancel(value, ctx);
-        return;
-      case 'queue.immediate':
-        // 立即执行：停止当前进程，删除队列中这个消息之前的全部消息，立即执行这一条
-        await this.handleQueueImmediate(value, ctx);
-        return;
-      case 'queue.diagnose':
-        // 诊断：切换到项目目录，启动 Claude -p 定位问题
-        await this.handleQueueDiagnose(value, ctx);
-        return;
-      case 'queue.edit':
-        // 编辑：显示输入框让用户修改消息内容
-        await this.handleQueueEdit(value, ctx);
-        return;
-      case 'queue.input':
-        // 输入：提交新消息内容。返回 toast（SDK 作为飞书回调响应给点击用户即时反馈）。
-        return await this.handleQueueInput(value, ctx);
-      case 'order.delete':
-        return await this.handleOrderDelete(value, ctx);
-      case 'order.page':
-        return await this.handleOrderPage(value, ctx);
-      case 'order.aliasEdit':
-        return await this.handleOrderAliasEdit(value, ctx);
-      case 'order.aliasInput':
-        return await this.handleOrderAliasInput(value, ctx);
-      case 'order.aliasRemove':
-        return await this.handleOrderAliasRemove(value, ctx);
-      case 'order.textEdit':
-        return await this.handleOrderTextEdit(value, ctx);
-      case 'order.textInput':
-        return await this.handleOrderTextInput(value, ctx);
-      case 'config.set':
-      case 'config.input':
-      case 'config.save':
-        // 串行化所有 config.* 动作。CardKit 2.0 回调经 enqueueImmediate
-        // 不进串行队列，多次快速点击下拉/文本框会并发读写 pendingConfig 并同时
-        // 调 updateCardInPlace → Feishu API 乱序到达导致控件卡死。
-        // 返回 enqueueConfigAction 的结果以支持 toast 响应。
-        return this.enqueueConfigAction(value, ctx);
-      case 'compact':
-        await this.handleCompact(value, ctx);
-        return;
-      case 'resume.compact':
-        await this.handleResumeCompact(value, ctx);
-        return;
-      default: {
-        if (value.cmd.startsWith('help.')) {
-          await this.handleHelpAction(value, ctx);
-          return;
-        }
-        await this.handleUnknownCardAction(value, ctx);
+    const spec = CARD_ACTION_SPECS.get(value.cmd);
+    if (spec) {
+      // Map 查表取出的是未绑定方法，必须显式 .call(this, ...) 保留类实例上下文。
+      const handler = this[spec.method] as unknown as CardActionInvoker;
+      if (spec.args === 'path') {
+        await handler.call(this, value.path, ctx);
         return;
       }
+      if (spec.args === 'ctxOnly') {
+        await handler.call(this, ctx);
+        return;
+      }
+      // voidCall 对应原 switch 的 `await this.xxx(...); return;`，丢弃返回值。
+      if (spec.args === 'voidCall') {
+        await handler.call(this, value, ctx);
+        return;
+      }
+      return handler.call(this, value, ctx);
     }
+    if (value.cmd.startsWith('help.')) {
+      await this.handleHelpAction(value, ctx);
+      return;
+    }
+    await this.handleUnknownCardAction(value, ctx);
+    return;
   }
 
   /**
@@ -2535,9 +2727,7 @@ export class CommandRouter {
     // 检测是否有任何 agent 配置变更或 defaultAgent 切换
     const hasDefaultAgentChange = oldDefaultAgent !== this.config.defaultAgent;
     const changedKeys = Object.keys(updates);
-    const hasAgentConfigChange =
-      changedKeys.includes('defaultAgent') ||
-      AGENT_KINDS.some((kind) => touchesAgentConfig(changedKeys, kind));
+    const hasAgentConfigChange = computeHasAgentConfigChange(changedKeys);
 
     // 当 defaultAgent 改变时，清除旧 agent 的 sessionId，
     // 同时清除新 agent 的 sessionId（等效于 /new 命令），
@@ -2546,54 +2736,15 @@ export class CommandRouter {
     let switchNewAgent: AgentKind | undefined;
     let switchSessionId: string | undefined;
     if (hasDefaultAgentChange) {
-      const newAgent = this.config.defaultAgent;
-      switchNewAgent = newAgent;
-
-      // Step 0: 在清空 old 之前计算「用户活动」基线差（arrival 基线）：
-      const oldSessionId = this.sessionStore.getSessionId(ctx.userId, oldDefaultAgent);
-      const oldArrivalSessionId = this.sessionStore.getArrivalSessionId(
+      const outcome = applyDefaultAgentSwitch(
+        this.sessionStore,
         ctx.userId,
         oldDefaultAgent,
+        this.config.defaultAgent,
       );
-      const userChangedOld = (oldSessionId ?? '') !== (oldArrivalSessionId ?? '');
-
-      // Step 1: 保存旧 agent 的 session 到 previousSessions（如果有）
-      if (oldSessionId) {
-        this.sessionStore.setPreviousSessionId(ctx.userId, oldDefaultAgent, oldSessionId);
-      }
-
-      // Step 2: 清除旧 agent 的 session（保存后清除，为新会话腾出空间）
-      this.sessionStore.clearSessionId(ctx.userId, oldDefaultAgent);
-
-      // Step 2.5: 显式选择判定
-      const newSessionId = this.sessionStore.getSessionId(ctx.userId, newAgent);
-      const newArrivalSessionId = this.sessionStore.getArrivalSessionId(ctx.userId, newAgent);
-      const userSelectedNew =
-        !!newSessionId && (newSessionId ?? '') !== (newArrivalSessionId ?? '');
-
-      // Step 3: 恢复判定
-      const previousSessionId = this.sessionStore.getPreviousSessionId(ctx.userId, newAgent);
-      const canRestore = !!previousSessionId && !userChangedOld;
-
-      if (userSelectedNew) {
-        this.sessionStore.setArrivalSessionId(ctx.userId, newAgent, newSessionId);
-        const newAgentName = agentDisplayName(newAgent);
-        switchNotice = `已切换到 ${newAgentName}，已使用所选 session，sessionId: ${newSessionId}`;
-        switchSessionId = newSessionId!;
-      } else if (canRestore) {
-        this.sessionStore.setSessionId(ctx.userId, newAgent, previousSessionId);
-        this.sessionStore.clearPreviousSessionId(ctx.userId, newAgent);
-        this.sessionStore.setArrivalSessionId(ctx.userId, newAgent, previousSessionId);
-        const newAgentName = agentDisplayName(newAgent);
-        switchNotice = `已切换到 ${newAgentName}，将继续之前的 session，sessionId: ${previousSessionId}`;
-        switchSessionId = previousSessionId;
-      } else {
-        this.sessionStore.clearSessionId(ctx.userId, newAgent, { clearSessionCwd: true });
-        this.sessionStore.setArrivalSessionId(ctx.userId, newAgent, '');
-        const newAgentName = agentDisplayName(newAgent);
-        switchNotice = `已切换到 ${newAgentName}，session 已清空，下次消息将启动新对话`;
-        switchSessionId = '';
-      }
+      switchNotice = outcome.notice;
+      switchNewAgent = outcome.newAgent;
+      switchSessionId = outcome.sessionId;
     }
 
     // DSH 的两个「会话边界」变更共用一套处理：preset 在 session 创建时固定，
@@ -2602,19 +2753,22 @@ export class CommandRouter {
     // previousSessions 恢复槽（可 /resume 校验后恢复）并清空当前值，下次 run
     // 走 session.create 新建。已发生 agent 切换时（switchNotice 已设置）跳过，
     // 避免覆盖切换 notice——切换分支对 dsh 的 session 已做恢复/清空处理。
-    const parkDshSessionBoundary = (changed: boolean, label: string): void => {
-      if (!changed || this.config.defaultAgent !== 'dsh' || switchNotice) return;
-      const oldSessionId = this.sessionStore.getSessionId(ctx.userId, 'dsh');
-      if (oldSessionId) {
-        this.sessionStore.setPreviousSessionId(ctx.userId, 'dsh', oldSessionId);
-        this.sessionStore.clearSessionId(ctx.userId, 'dsh');
-        switchNotice = `DSH ${label} 已变更，旧会话已停放到恢复槽（可 /resume 校验后恢复），下次消息将新建会话`;
-      } else {
-        switchNotice = `DSH ${label} 已变更，下次消息将新建会话`;
-      }
-    };
-    parkDshSessionBoundary(changedKeys.includes('agents.dsh.agentPreset'), 'preset');
-    parkDshSessionBoundary(changedKeys.includes('agents.dsh.host'), 'host');
+    switchNotice = parkDshSessionBoundaryNotice(
+      this.sessionStore,
+      ctx.userId,
+      this.config.defaultAgent,
+      changedKeys.includes('agents.dsh.agentPreset'),
+      'preset',
+      switchNotice,
+    );
+    switchNotice = parkDshSessionBoundaryNotice(
+      this.sessionStore,
+      ctx.userId,
+      this.config.defaultAgent,
+      changedKeys.includes('agents.dsh.host'),
+      'host',
+      switchNotice,
+    );
 
     // 同步 agent 配置到 agentChoices（用于切换 agent 时恢复配置）
     const currentAgent = this.config.defaultAgent;
@@ -2631,9 +2785,7 @@ export class CommandRouter {
     // duck method `updateApprovalMode` (codex thread/settings/update,
     // kimi/opencode session/set_mode) so they take effect for subsequent
     // turns without waiting for the runner to be recreated.
-    const hasApprovalConfigChange =
-      ['codex', 'kimi', 'opencode'].some((kind) => touchesAgentConfig(changedKeys, kind)) ||
-      changedKeys.includes('agents.dsh.permissionPreset');
+    const hasApprovalConfigChange = computeHasApprovalConfigChange(changedKeys);
     if (hasApprovalConfigChange) {
       this.bridge.syncActiveApprovalModes();
     }
@@ -2669,54 +2821,7 @@ export class CommandRouter {
       );
     }
 
-    switch (cmd) {
-      case 'help':
-      case 'h':
-        return this.cmdHelp();
-      case 'status':
-      case 's':
-        return this.cmdStatus(ctx);
-      case 'ps':
-        return this.cmdPs(ctx);
-      case 'stop':
-      case 't':
-        return await this.cmdStop(ctx);
-      case 'exit':
-      case 'quit':
-      case 'e':
-        return await this.cmdExit();
-      case 'restart':
-        return this.cmdRestart();
-      case 'new':
-        return this.cmdNew(ctx);
-      case 'cd':
-        return this.cmdCd(args, ctx);
-      case 'ls':
-        return this.cmdLs(args, ctx);
-      case 'download':
-      case 'd':
-        return await this.cmdDownload(args, ctx);
-      case 'ws':
-        return this.cmdWs(args, ctx);
-      case 'resume':
-      case 'r':
-        return this.cmdResume(args, ctx);
-      case 'active':
-        return this.cmdActive(args, ctx);
-      case 'config':
-      case 'c':
-        return await this.cmdConfig(args, ctx);
-      case 'order':
-      case 'o':
-        return this.cmdOrder(args, ctx);
-      case 'update':
-      case 'u':
-        return await this.cmdUpdate(args, ctx);
-      case 'clone':
-        return await this.cmdClone(args, ctx);
-      default:
-        return { text: `未知命令 /${cmd}，输入 /help 查看可用命令` };
-    }
+    return dispatchCommand(this, cmd, args, ctx);
   }
 
   // --- Command implementations ---

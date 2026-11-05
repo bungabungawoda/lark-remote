@@ -5332,3 +5332,283 @@ describe('后台任务订阅（终态卡）', () => {
     expect(channel.isClosed()).toBe(true);
   });
 });
+
+/**
+ * approvalModeSettingsFor 的逐 agent 输出口径（ub 结构等价 characterization）。
+ * 用白盒类型断言直接调用私有方法（this 仍绑定 bridge），只钉住返回值；
+ * 集成路径由上面的 syncActiveApprovalModes 用例继续守着。
+ */
+describe('approvalModeSettingsFor 逐 agent 口径（ub characterization）', () => {
+  function settingsFor(config: AppConfig, kind: string): Record<string, unknown> | undefined {
+    const { bridge } = makeBridge({ config });
+    const accessor = bridge as unknown as {
+      approvalModeSettingsFor: (k: string) => Record<string, unknown> | undefined;
+    };
+    return accessor.approvalModeSettingsFor(kind);
+  }
+
+  const configWith = (agents: Record<string, unknown>): AppConfig =>
+    AppConfigSchema.parse({
+      feishu: { appId: 'test', appSecret: 'test' },
+      claude: { model: 'opus', stopGraceMs: 5000 },
+      agents,
+    });
+
+  it('codex → { approvalPolicy, sandbox }', () => {
+    expect(
+      settingsFor(
+        configWith({ codex: { approvalPolicy: 'never', sandbox: 'danger-full-access' } }),
+        'codex',
+      ),
+    ).toEqual({ approvalPolicy: 'never', sandbox: 'danger-full-access' });
+  });
+
+  it('kimi → { permissionMode }', () => {
+    expect(settingsFor(configWith({ kimi: { permissionMode: 'yolo' } }), 'kimi')).toEqual({
+      permissionMode: 'yolo',
+    });
+  });
+
+  it('opencode → { mode }', () => {
+    expect(settingsFor(configWith({ opencode: { mode: 'plan' } }), 'opencode')).toEqual({
+      mode: 'plan',
+    });
+  });
+
+  it('dsh → { permissionPreset }', () => {
+    expect(settingsFor(configWith({ dsh: { permissionPreset: 'full-access' } }), 'dsh')).toEqual({
+      permissionPreset: 'full-access',
+    });
+  });
+
+  it('无 case 的 agent（claude / 未知）→ undefined（default 分支）', () => {
+    expect(settingsFor(configWith({}), 'claude')).toBeUndefined();
+    expect(settingsFor(configWith({}), 'unknown-kind')).toBeUndefined();
+  });
+
+  it('schema 默认 codex 配置仍返回默认审批设置（agents 被填了默认值）', () => {
+    expect(settingsFor(configWith({}), 'codex')).toEqual({
+      approvalPolicy: 'on-request',
+      sandbox: 'workspace-write',
+    });
+  });
+});
+
+/**
+ * 覆盖缺口：完成通知卡终态 / 审批事件乱序分派 / 流失败收尾。
+ * 全部经公开入口 forwardToClaude 触发，断言真正发给用户的卡片内容与文案。
+ */
+describe('完成通知卡终态 / 审批乱序事件 / 流失败收尾（行为）', () => {
+  const initEvent = (sessionId: string): AgentEvent =>
+    ({
+      type: 'system',
+      subtype: 'init',
+      session_id: sessionId,
+      cwd: tmpDir,
+      model: 'opus',
+    }) as AgentEvent;
+
+  const resultEvent = (subtype: string, sessionId = 's-notify'): AgentEvent =>
+    ({ type: 'result', subtype, session_id: sessionId }) as AgentEvent;
+
+  /** 强制走「流式卡建立失败」兜底路径，才会补发完成通知卡。 */
+  function fallbackHarness(events: AgentEvent[]) {
+    const connector = createStubConnector();
+    connector.streamCard = async () => {
+      throw new Error('stream unavailable');
+    };
+    const { bridge, sessionStore } = makeBridge({
+      connector,
+      runner: createStubRunner({ mode: 'streaming', events }),
+    });
+    sessionStore.setCwd(ctx.userId, tmpDir);
+    return { bridge, connector };
+  }
+
+  const sentText = (connector: ReturnType<typeof createStubConnector>) =>
+    connector._sent.map((s) => JSON.stringify(s.input)).join('\n');
+
+  it.each([
+    ['success → 会话已完成', [resultEvent('success')], '✅ 会话已完成'],
+    ['interrupted → 会话已中断', [resultEvent('interrupted')], '⏹ 会话已中断'],
+    ['error → 会话出错', [resultEvent('error')], '⚠️ 会话出错'],
+    [
+      'goal 仍 active → 本轮结束，目标继续',
+      [
+        {
+          type: 'goal_state',
+          goal: {
+            id: 'goal-1',
+            objective: '把发布流程补齐',
+            phase: 'active',
+            roundsStarted: 1,
+            maxGoalRounds: 3,
+          },
+          known: true,
+          timestamp: new Date().toISOString(),
+        } as AgentEvent,
+        resultEvent('success'),
+      ],
+      '⏳ 本轮结束，目标继续',
+    ],
+  ] as const)('兜底完成通知卡标题跟随终态：%s', async (_label, tail, expectedTitle) => {
+    const { bridge, connector } = fallbackHarness([initEvent('s-notify'), ...tail]);
+    await bridge.forwardToClaude('notify', ctx);
+
+    const all = sentText(connector);
+    expect(all).toContain(expectedTitle);
+    if (expectedTitle !== '✅ 会话已完成') {
+      expect(all).not.toContain('✅ 会话已完成');
+    }
+  });
+
+  it('idle 超时后 runner 又抛错：保留 idle_timeout 首终态，通知卡如实显示「会话已超时」', async () => {
+    vi.useFakeTimers();
+    try {
+      const connector = createStubConnector();
+      connector.streamCard = async () => {
+        throw new Error('stream unavailable');
+      };
+      let releaseRun: () => void = () => {};
+      const waitForRelease = new Promise<void>((r) => {
+        releaseRun = r;
+      });
+      const runner: Runner = {
+        isRunning: false,
+        stop: async () => {
+          releaseRun();
+        },
+        killOrphan: () => {},
+        registerExitHandlers: () => {},
+        run: async function* () {
+          yield initEvent('s-notify');
+          await waitForRelease;
+          throw new Error('stream exploded after idle timeout');
+        },
+      };
+      const { bridge, sessionStore } = makeBridge({ connector, runner, idleTimeoutMs: 1000 });
+      sessionStore.setCwd(ctx.userId, tmpDir);
+
+      const runPromise = bridge.forwardToClaude('idle notify', ctx);
+      await vi.advanceTimersByTimeAsync(1500);
+      await runPromise;
+
+      const all = sentText(connector);
+      // 首终态优先：超时终止 + 之后的流异常都不能把卡片改写成 error。
+      expect(all).toContain('⏱ 会话已超时');
+      expect(all).toContain('已自动终止');
+      expect(all).not.toContain('stream exploded after idle timeout');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  const approvalRequested = (command: string): AgentEvent =>
+    ({
+      type: 'approval_requested',
+      requestId: 1,
+      kind: 'command',
+      threadId: 'th-aaa-222',
+      turnId: 'tn-222',
+      itemId: 'item-2',
+      view: {
+        requestId: 1,
+        kind: 'command',
+        command,
+        availableDecisions: ['accept', 'decline', 'cancel'],
+      },
+    }) as AgentEvent;
+
+  const viewUpdated = (command: string): AgentEvent =>
+    ({
+      type: 'approval_view_updated',
+      requestId: 1,
+      view: {
+        requestId: 1,
+        kind: 'command',
+        command,
+        availableDecisions: ['accept', 'decline', 'cancel'],
+      },
+    }) as AgentEvent;
+
+  const approvalResolved = (): AgentEvent =>
+    ({ type: 'approval_resolved', requestId: 1, outcome: 'resolved' }) as AgentEvent;
+
+  /** 事件之间留出 >100ms 合批窗口，让流式中间卡真正落地（终态卡会收起审批区）。 */
+  function spacedRunner(events: AgentEvent[]): Runner {
+    return {
+      ...createStubRunner(),
+      run: async function* () {
+        for (const e of events) {
+          yield e;
+          await new Promise((r) => setTimeout(r, 140));
+        }
+      },
+    };
+  }
+
+  it('乱序的 approval_view_updated 在审批仍 pending 时补全卡片命令内容', async () => {
+    const { bridge, connector, sessionStore } = makeBridge({
+      runner: spacedRunner([
+        initEvent('s1'),
+        approvalRequested('旧命令占位'),
+        viewUpdated('真正要执行的命令 rm -rf /tmp/data'),
+        resultEvent('success', 's1'),
+      ]),
+    });
+    sessionStore.setCwd(ctx.userId, tmpDir);
+    await bridge.forwardToClaude('hello', ctx);
+
+    const cards = connector._cards.map((c) => JSON.stringify(c));
+    expect(cards.some((c) => c.includes('旧命令占位'))).toBe(true);
+    const updated = cards.find((c) => c.includes('真正要执行的命令 rm -rf /tmp/data'));
+    expect(updated).toBeDefined();
+    // 原地替换而非追加两张审批卡：同一张卡里不该还留着旧命令。
+    expect(updated).not.toContain('旧命令占位');
+  });
+
+  it('approval_resolved 之后的迟到 approval_view_updated 不复活审批卡内容', async () => {
+    const { bridge, connector, sessionStore } = makeBridge({
+      runner: spacedRunner([
+        initEvent('s1'),
+        approvalRequested('已批准的旧命令'),
+        approvalResolved(),
+        viewUpdated('迟到的命令 rm -rf /tmp/late'),
+        resultEvent('success', 's1'),
+      ]),
+    });
+    sessionStore.setCwd(ctx.userId, tmpDir);
+    await bridge.forwardToClaude('hello', ctx);
+
+    const cards = connector._cards.map((c) => JSON.stringify(c));
+    // 审批卡确实出现过（否则「不复活」断言毫无意义）。
+    expect(cards.some((c) => c.includes('已批准的旧命令'))).toBe(true);
+    // 已 resolved 的审批不能被迟到的 view 更新重新塞回卡片。
+    expect(cards.every((c) => !c.includes('迟到的命令 rm -rf /tmp/late'))).toBe(true);
+  });
+
+  it('runner 中途抛错且 stop() 同时抛错：仍以 error 终态收尾并保留已产出正文', async () => {
+    const runner: Runner = {
+      ...createStubRunner(),
+      stop: async () => {
+        throw new Error('stop also failed');
+      },
+      run: async function* () {
+        yield initEvent('s1');
+        yield {
+          type: 'assistant',
+          message: { content: [{ type: 'text', text: '已经产出的正文' }] },
+        } as AgentEvent;
+        throw new Error('stream exploded');
+      },
+    };
+    const { bridge, sessionStore, connector } = makeBridge({ runner });
+    sessionStore.setCwd(ctx.userId, tmpDir);
+
+    await bridge.forwardToClaude('hello', ctx);
+
+    const card = JSON.stringify(connector._cards.at(-1));
+    expect(card).toContain('stream exploded');
+    expect(card).toContain('已经产出的正文');
+  });
+});

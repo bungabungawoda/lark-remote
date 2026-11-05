@@ -3,6 +3,16 @@ import { getLogger } from '../logger/index.js';
 import { atomicWriteJson } from '../persistence/atomic-write.js';
 import type { AgentKind } from '../agent-kinds.js';
 
+/**
+ * session reader 共用的失败留痕（claude stat / kimi realpath）：ENOENT 是两次
+ * 查询之间的正常竞态，静默；其余 errno 必须 debug 留痕，否则「文件不可读」
+ * 会被误判成「会话不活跃」。文案由调用方按场景给出，逐字保持。
+ */
+export function logNonEnoentDebug(err: unknown, message: (errText: string) => string): void {
+  if ((err as NodeJS.ErrnoException).code === 'ENOENT') return;
+  getLogger().debug(message((err as Error)?.message ?? String(err)));
+}
+
 interface SessionEntry {
   /** Session IDs per agent kind (Map for in-memory, plain object for persistence). */
   sessions: Map<AgentKind, string>;
@@ -14,6 +24,106 @@ interface SessionEntry {
   /** Session actual cwd per agent (from system.init event.cwd; only claude may differ from cwd). */
   sessionCwds: Map<AgentKind, string>;
   cwd: string;
+}
+
+/**
+ * per-agent 字符串 Map 的字段名：sessions / sessionCwds / previousSessions /
+ * arrivalSessions。四类 getter 的方法体原本完全重复，唯一差异就是读/写
+ * 哪一个 Map；合并成单一实现后用这个键显式选择，行为（空串归一、agent
+ * 隔离、落盘）逐项保持。
+ */
+type SessionIdMapKey = 'sessions' | 'sessionCwds' | 'previousSessions' | 'arrivalSessions';
+
+/** 四类 getter 共用的单一实现：entry 缺失 / 空串 → undefined。 */
+function readSessionId(
+  entry: SessionEntry | undefined,
+  key: SessionIdMapKey,
+  agent: AgentKind,
+): string | undefined {
+  if (!entry) return undefined;
+  const value = entry[key].get(agent);
+  if (!value) return undefined;
+  return value;
+}
+
+/** 持久化记录（load 的输入契约，模块级纯数据形状）。 */
+interface PersistedEntry {
+  cwd?: string;
+  sessions: Record<string, string>;
+  previousSessions: Record<string, string>;
+  sessionCwds: Record<string, string>;
+  arrivalSessions: Record<string, string>;
+}
+
+/** 四个 session 字段缺一即损坏记录（整条跳过，cwd 允许缺失）。 */
+function hasRequiredSessionFields(entry: PersistedEntry): boolean {
+  return (
+    !!entry.sessions && !!entry.previousSessions && !!entry.arrivalSessions && !!entry.sessionCwds
+  );
+}
+
+/** 只保留 truthy 值（sessions / previousSessions / sessionCwds 的口径）。 */
+function truthySessionMap(record: Record<string, string>): Map<AgentKind, string> {
+  const map = new Map<AgentKind, string>();
+  for (const [agent, sid] of Object.entries(record)) {
+    if (sid) map.set(agent as AgentKind, sid);
+  }
+  return map;
+}
+
+/** 全保留（arrivalSessions 的 '' 是显式清空基线，必须跨重启存活）。 */
+function fullSessionMap(record: Record<string, string>): Map<AgentKind, string> {
+  const map = new Map<AgentKind, string>();
+  for (const [agent, sid] of Object.entries(record)) {
+    map.set(agent as AgentKind, sid);
+  }
+  return map;
+}
+
+/** 单条持久化记录 → 内存 entry；损坏 / 完全空记录返回 undefined。 */
+function parsePersistedEntry(data: unknown): SessionEntry | undefined {
+  if (typeof data !== 'object' || data === null) return undefined;
+  const entry = data as PersistedEntry;
+  // 四个 session 字段缺失 = 损坏记录，整条跳过。cwd 允许缺失：
+  // 全新用户（未 /cd）先切 agent 时 previous/arrival 停车位已落盘，
+  // cwd 尚为空——不能因 cwd 缺失把停车位整条丢掉
+  // （anchor_r7_parked_previous_survives_rebuild_without_cwd）。
+  if (!hasRequiredSessionFields(entry)) return undefined;
+  const sessions = truthySessionMap(entry.sessions);
+  const previousSessions = truthySessionMap(entry.previousSessions);
+  const arrivalSessions = fullSessionMap(entry.arrivalSessions);
+  const sessionCwds = truthySessionMap(entry.sessionCwds);
+  // Persist any user that has state: cwd set, or any meaningful
+  // sessions/previousSessions value, or any arrival baseline entry
+  // ('' arrivals are meaningful). Fully empty records are skipped.
+  const hasCwd = !!entry.cwd && entry.cwd.length > 0;
+  if (hasCwd || sessions.size > 0 || previousSessions.size > 0 || arrivalSessions.size > 0) {
+    return {
+      sessions,
+      previousSessions,
+      sessionCwds,
+      arrivalSessions,
+      cwd: entry.cwd ?? '',
+    };
+  }
+  return undefined;
+}
+
+/** 损坏现场留痕：日志 + 改名保留（原文件继续躺着会重复告警、丢排障证据）。 */
+function preserveCorruptStore(persistPath: string | undefined, err: unknown): void {
+  getLogger().warn(
+    `[session] persisted session store corrupted (${persistPath ?? '(memory)'}), ignoring:`,
+    err,
+  );
+  if (persistPath) {
+    const brokenPath = `${persistPath}.corrupt-${Date.now()}`;
+    try {
+      fs.renameSync(persistPath, brokenPath);
+      getLogger().warn(`[session] moved corrupt store to ${brokenPath}`);
+    } catch (renameErr) {
+      getLogger().warn('[session] failed to preserve corrupt store:', renameErr);
+    }
+  }
 }
 
 /**
@@ -136,19 +246,12 @@ export class SessionStore {
 
   /** Get previous sessionId for a specific agent (stored when switching away) */
   getPreviousSessionId(userId: string, agent: AgentKind): string | undefined {
-    const entry = this.sessions.get(userId);
-    if (!entry) return undefined;
-    const sessionId = entry.previousSessions.get(agent);
-    if (!sessionId) return undefined;
-    return sessionId;
+    return readSessionId(this.sessions.get(userId), 'previousSessions', agent);
   }
 
   /** Set previous sessionId for a specific agent (for potential restore when switching back) */
   setPreviousSessionId(userId: string, agent: AgentKind, sessionId: string): void {
-    this.mutateEntry(userId, (entry) => {
-      entry.previousSessions.set(agent, sessionId);
-      return entry;
-    });
+    this.writeSessionId(userId, 'previousSessions', agent, sessionId);
   }
 
   /** Clear previous sessionId for a specific agent */
@@ -161,17 +264,23 @@ export class SessionStore {
 
   /** Get the arrival baseline sessionId for a specific agent ('' and missing → undefined) */
   getArrivalSessionId(userId: string, agent: AgentKind): string | undefined {
-    const entry = this.sessions.get(userId);
-    if (!entry) return undefined;
-    const sessionId = entry.arrivalSessions.get(agent);
-    if (!sessionId) return undefined;
-    return sessionId;
+    return readSessionId(this.sessions.get(userId), 'arrivalSessions', agent);
   }
 
   /** Set the arrival baseline for a specific agent ('' explicitly clears the arrival baseline) */
   setArrivalSessionId(userId: string, agent: AgentKind, sessionId: string): void {
+    this.writeSessionId(userId, 'arrivalSessions', agent, sessionId);
+  }
+
+  /** previous/arrival 两类 setter 共用的单一实现（合并完全重复块）。 */
+  private writeSessionId(
+    userId: string,
+    key: SessionIdMapKey,
+    agent: AgentKind,
+    sessionId: string,
+  ): void {
     this.mutateEntry(userId, (entry) => {
-      entry.arrivalSessions.set(agent, sessionId);
+      entry[key].set(agent, sessionId);
       return entry;
     });
   }
@@ -200,11 +309,7 @@ export class SessionStore {
 
   /** Get sessionId for a specific agent, or undefined if no session or sessionId is empty */
   getSessionId(userId: string, agent: AgentKind = 'claude'): string | undefined {
-    const entry = this.sessions.get(userId);
-    if (!entry) return undefined;
-    const sessionId = entry.sessions.get(agent);
-    if (!sessionId) return undefined;
-    return sessionId;
+    return readSessionId(this.sessions.get(userId), 'sessions', agent);
   }
 
   /** Set sessionId for a specific agent, optionally with cwd */
@@ -237,11 +342,7 @@ export class SessionStore {
 
   /** Get sessionCwd for a specific agent, or undefined if not set */
   getSessionCwd(userId: string, agent: AgentKind = 'claude'): string | undefined {
-    const entry = this.sessions.get(userId);
-    if (!entry) return undefined;
-    const sessionCwd = entry.sessionCwds.get(agent);
-    if (!sessionCwd) return undefined;
-    return sessionCwd;
+    return readSessionId(this.sessions.get(userId), 'sessionCwds', agent);
   }
 
   /** Set sessionId and sessionCwd for a specific agent, without touching cwd */
@@ -269,86 +370,12 @@ export class SessionStore {
       const parsed = JSON.parse(raw);
       if (typeof parsed === 'object' && parsed !== null) {
         for (const [userId, data] of Object.entries(parsed)) {
-          if (typeof data === 'object' && data !== null) {
-            const entry = data as {
-              cwd?: string;
-              sessions: Record<string, string>;
-              previousSessions: Record<string, string>;
-              sessionCwds: Record<string, string>;
-              arrivalSessions: Record<string, string>;
-            };
-            // 四个 session 字段缺失 = 损坏记录，整条跳过。cwd 允许缺失：
-            // 全新用户（未 /cd）先切 agent 时 previous/arrival 停车位已落盘，
-            // cwd 尚为空——不能因 cwd 缺失把停车位整条丢掉
-            // （anchor_r7_parked_previous_survives_rebuild_without_cwd）。
-            if (
-              !entry.sessions ||
-              !entry.previousSessions ||
-              !entry.arrivalSessions ||
-              !entry.sessionCwds
-            ) {
-              continue;
-            }
-            const sessions = new Map<AgentKind, string>();
-            for (const [agent, sid] of Object.entries(entry.sessions)) {
-              if (sid) {
-                sessions.set(agent as AgentKind, sid);
-              }
-            }
-            const previousSessions = new Map<AgentKind, string>();
-            for (const [agent, sid] of Object.entries(entry.previousSessions)) {
-              if (sid) {
-                previousSessions.set(agent as AgentKind, sid);
-              }
-            }
-            const arrivalSessions = new Map<AgentKind, string>();
-            for (const [agent, sid] of Object.entries(entry.arrivalSessions)) {
-              // '' entries are meaningful: explicit "cleared arrival" must
-              // survive a restart instead of being re-defaulted.
-              arrivalSessions.set(agent as AgentKind, sid);
-            }
-            const sessionCwds = new Map<AgentKind, string>();
-            for (const [agent, scwd] of Object.entries(entry.sessionCwds)) {
-              if (scwd) {
-                sessionCwds.set(agent as AgentKind, scwd);
-              }
-            }
-            // Persist any user that has state: cwd set, or any meaningful
-            // sessions/previousSessions value, or any arrival baseline entry
-            // ('' arrivals are meaningful). Fully empty records are skipped.
-            const hasCwd = !!entry.cwd && entry.cwd.length > 0;
-            if (
-              hasCwd ||
-              sessions.size > 0 ||
-              previousSessions.size > 0 ||
-              arrivalSessions.size > 0
-            ) {
-              this.sessions.set(userId, {
-                sessions,
-                previousSessions,
-                sessionCwds,
-                arrivalSessions,
-                cwd: entry.cwd ?? '',
-              });
-            }
-          }
+          const entry = parsePersistedEntry(data);
+          if (entry) this.sessions.set(userId, entry);
         }
       }
     } catch (err) {
-      getLogger().warn(
-        `[session] persisted session store corrupted (${this.persistPath ?? '(memory)'}), ignoring:`,
-        err,
-      );
-      // 改名保留现场：原文件继续原地躺着会让下次启动重复告警，也丢掉排障证据。
-      if (this.persistPath) {
-        const brokenPath = `${this.persistPath}.corrupt-${Date.now()}`;
-        try {
-          fs.renameSync(this.persistPath, brokenPath);
-          getLogger().warn(`[session] moved corrupt store to ${brokenPath}`);
-        } catch (renameErr) {
-          getLogger().warn('[session] failed to preserve corrupt store:', renameErr);
-        }
-      }
+      preserveCorruptStore(this.persistPath, err);
     }
   }
 

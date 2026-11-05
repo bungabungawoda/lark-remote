@@ -3359,6 +3359,60 @@ describe('运行期通知作为普通消息', () => {
     expect(lastIndex).toBeGreaterThan(noticeIndex);
   });
 
+  it('tool 组用 completedAt/startedAt 作时间锚点，无时间锚点的组留在 notice 之后', () => {
+    const state: RunState = {
+      runId: 'run-notice-tool',
+      terminal: 'done',
+      footer: null,
+      blocks: [],
+      sessionId: 's-notice-tool',
+      resultSubtype: 'success',
+      notices: [
+        {
+          level: 'info',
+          code: 'step',
+          text: 'notice-tool-marker',
+          timestamp: '2026-07-04T10:01:00.000Z',
+        },
+      ],
+    };
+    // completedAt 优先；只有 startedAt 时回退；两者都没有 → undefined 锚点。
+    state.blocks.push({
+      kind: 'tool',
+      tool: {
+        id: 't1',
+        name: 'Bash',
+        input: {},
+        status: 'ok',
+        startedAt: '2026-07-04T10:00:00.000Z',
+        completedAt: '2026-07-04T10:00:30.000Z',
+      },
+    });
+    state.blocks.push({
+      kind: 'tool',
+      tool: {
+        id: 't2',
+        name: 'Read',
+        input: {},
+        status: 'ok',
+        startedAt: '2026-07-04T10:00:40.000Z',
+      },
+    });
+    state.blocks.push({
+      kind: 'tool',
+      tool: { id: 't3', name: 'Grep', input: {}, status: 'ok' },
+    });
+    state.blocks.push({ kind: 'text', content: 'tail-output-marker' });
+
+    const json = JSON.stringify(renderRunCard(state));
+    const noticeIndex = json.indexOf('notice-tool-marker');
+    const tailIndex = json.indexOf('tail-output-marker');
+    expect(noticeIndex).toBeGreaterThan(-1);
+    expect(json.split('notice-tool-marker').length - 1).toBe(1);
+    // 无时间锚点的 tool/文本组无法定位，按兜底留在 notice 之后。
+    expect(tailIndex).toBeGreaterThan(noticeIndex);
+  });
+
   it('degraded 路径：notice 内联在保留内容的时间位置，不重复渲染', () => {
     const state: RunState = {
       runId: 'run-notice-degraded',
@@ -4234,5 +4288,66 @@ describe('approval area budget', () => {
     const card = renderRunCard(state);
     expect(Buffer.byteLength(JSON.stringify(card), 'utf8')).toBeLessThanOrEqual(CARD_BUDGET_BYTES);
     expect(countCardElements(card)).toBeLessThanOrEqual(MAX_CARD_ELEMENTS);
+  });
+});
+
+/**
+ * buildSummaryContent 各终态文案（ub 结构等价 characterization）。
+ * 该函数按 terminal 分支，拆分（改成模块级命名 handler + 查表）后每一支的
+ * 文案、字段顺序、元素数量必须逐字不变。
+ */
+describe('buildSummaryContent 终态文案（ub characterization）', () => {
+  const mk = (overrides: Partial<RunState> = {}): RunState =>
+    ({ ...createInitialRunState('run-ub-summary'), ...overrides }) as RunState;
+  const jsonOf = (s: RunState): string => JSON.stringify(renderRunCard(s));
+
+  it('finalizing → ⏳ **等待进程退出…**', () => {
+    expect(jsonOf(mk({ terminal: 'finalizing' }))).toContain('⏳ **等待进程退出…**');
+  });
+
+  it('error 普通 → ⚠️ **运行出错** + 错误原文', () => {
+    const json = jsonOf(mk({ terminal: 'error', errorMsg: 'DSH HTTP 401' }));
+    expect(json).toContain('⚠️ **运行出错**');
+    expect(json).toContain('DSH HTTP 401');
+  });
+
+  it('error content_filter → 服务方内容审核拦截（不说运行出错）', () => {
+    const json = jsonOf(
+      mk({ terminal: 'error', errorMsg: 'Provider finish_reason: content_filter' }),
+    );
+    expect(json).toContain('服务方内容审核拦截');
+    expect(json).not.toContain('运行出错');
+  });
+
+  it('interrupted approval_timeout → ⏰ **审批超时未响应，已自动取消**', () => {
+    expect(
+      jsonOf(mk({ terminal: 'interrupted', interruptedReason: 'approval_timeout' })),
+    ).toContain('⏰ **审批超时未响应，已自动取消**');
+  });
+
+  it('interrupted approval_cancelled → ⏹ **已取消审批，任务终止**', () => {
+    expect(
+      jsonOf(mk({ terminal: 'interrupted', interruptedReason: 'approval_cancelled' })),
+    ).toContain('⏹ **已取消审批，任务终止**');
+  });
+
+  it('interrupted 其它 → ⏹ **已被用户终止**', () => {
+    expect(jsonOf(mk({ terminal: 'interrupted' }))).toContain('⏹ **已被用户终止**');
+  });
+
+  it('idle_timeout → ⏱ **已超时** + 分钟数', () => {
+    const json = jsonOf(mk({ terminal: 'idle_timeout', idleTimeoutMinutes: 30 }));
+    expect(json).toContain('⏱ **已超时**');
+    expect(json).toContain('30 分钟无响应，已自动终止');
+  });
+
+  it('done 空内容 → （未返回内容）', () => {
+    expect(jsonOf(mk({ terminal: 'done' }))).toContain('（未返回内容）');
+  });
+
+  it('done compaction → 🗜 Compact 完成（不是未返回内容）', () => {
+    const json = jsonOf(mk({ terminal: 'done', operationKind: 'compaction' }));
+    expect(json).toContain('🗜 Compact 完成');
+    expect(json).not.toContain('未返回内容');
   });
 });

@@ -1,9 +1,29 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import fs from 'node:fs';
+import fsp from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { DshDaemon, DshDaemonError, dshDaemonArgs, isLoopbackHttpUrl } from './daemon.js';
+import {
+  DshDaemon,
+  DshDaemonError,
+  dshDaemonArgs,
+  isLoopbackHttpUrl,
+  type DshDaemonOptions,
+} from './daemon.js';
 import { resolveDshHome } from '../../dsh/home.js';
+import { mockLogger } from '../../../tests/lib/logger-mock.js';
+
+vi.mock('../../logger/index.js', async () =>
+  (await import('../../../tests/lib/logger-mock.js')).loggerModuleMock(),
+);
+
+// 阻断真实 `dsh web` 进程：只观察 spawnDaemon 交给平台的参数与落盘副作用。
+const { spawnProcessMock } = vi.hoisted(() => ({ spawnProcessMock: vi.fn() }));
+
+vi.mock('../../platform/spawn.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../platform/spawn.js')>();
+  return { ...actual, spawnProcess: spawnProcessMock };
+});
 
 const homes: string[] = [];
 
@@ -205,5 +225,186 @@ describe('DshDaemon.ensure', () => {
 
     await expect(daemon.ensure()).resolves.toBe('http://127.0.0.1:3099');
     expect(daemon.spawns).toBe(1);
+  });
+});
+
+interface FakeChild {
+  once: ReturnType<typeof vi.fn>;
+  unref: ReturnType<typeof vi.fn>;
+  handlers: Record<string, (arg?: unknown) => void>;
+}
+
+/** fake 子进程：可让 spawnDaemon 注册的 error/exit 钩子立即落地。 */
+function makeFakeChild(opts: { error?: Error; exit?: boolean } = {}): FakeChild {
+  const handlers: Record<string, (arg?: unknown) => void> = {};
+  return {
+    once: vi.fn((event: string, cb: (arg?: unknown) => void) => {
+      handlers[event] = cb;
+      if (event === 'error' && opts.error) cb(opts.error);
+      if (event === 'exit' && opts.exit) cb();
+    }),
+    unref: vi.fn(),
+    handlers,
+  };
+}
+
+/**
+ * 不覆盖 startTimeoutMs / manageProcess / spawnDaemon 的子类：让真实实现
+ * 在公开入口 ensure() 下跑，spawnProcess 已被 mock 阻断真实进程。
+ */
+class RealHooksDaemon extends DshDaemon {
+  private readonly probes: boolean[];
+
+  constructor(home: string, opts: { probes: boolean[] } & Partial<DshDaemonOptions>) {
+    const { probes, ...daemonOpts } = opts;
+    super({
+      host: () => 'http://127.0.0.1:3099',
+      dshHome: () => home,
+      ...daemonOpts,
+    });
+    this.probes = probes;
+  }
+
+  protected override async probe(): Promise<boolean> {
+    return this.probes.shift() ?? false;
+  }
+
+  protected override async sleep(ms: number): Promise<void> {
+    await new Promise((resolve) => setTimeout(resolve, Math.min(ms, 2)));
+  }
+}
+
+beforeEach(() => {
+  spawnProcessMock.mockReset();
+  spawnProcessMock.mockImplementation(() => makeFakeChild());
+  mockLogger.warn.mockReset();
+});
+
+describe('DshDaemon 真实启动钩子（spawnProcess 已 mock）', () => {
+  it('spawns a detached dsh web, writes a 0600 log, and unrefs the child', async () => {
+    const home = temporaryHome();
+    const daemon = new RealHooksDaemon(home, { probes: [false, false, false, true] });
+
+    await expect(daemon.ensure()).resolves.toBe('http://127.0.0.1:3099');
+
+    expect(spawnProcessMock).toHaveBeenCalledWith(
+      'dsh',
+      dshDaemonArgs('http://127.0.0.1:3099'),
+      expect.objectContaining({
+        detached: true,
+        cwd: home,
+        env: expect.objectContaining({ DSH_HOME: home }),
+        stdio: ['ignore', 'ignore', expect.any(Number)],
+      }),
+    );
+    const log = path.join(home, 'lark-remote', 'dsh-web.log');
+    expect(fs.existsSync(log)).toBe(true);
+    if (process.platform !== 'win32') {
+      expect(fs.statSync(log).mode & 0o777).toBe(0o600);
+    }
+    const child = spawnProcessMock.mock.results[0].value as unknown as FakeChild;
+    expect(child.unref).toHaveBeenCalled();
+    // 启动锁在成功启动后释放，不残留。
+    expect(fs.existsSync(path.join(home, 'lark-remote', 'start.lock'))).toBe(false);
+  });
+
+  it('surfaces a child spawn error in the user-facing message', async () => {
+    const home = temporaryHome();
+    const failure = new Error('dsh binary missing');
+    spawnProcessMock.mockImplementation(() => makeFakeChild({ error: failure }));
+    const daemon = new RealHooksDaemon(home, { probes: [false, false, false] });
+
+    const error = await caught(daemon.ensure());
+
+    expect((error as DshDaemonError).code).toBe('spawn');
+    expect((error as Error).message).toContain('dsh binary missing');
+    expect((error as Error).message).toContain('日志：');
+  });
+
+  it('reports a child that exited before the listener became reachable', async () => {
+    const home = temporaryHome();
+    spawnProcessMock.mockImplementation(() => makeFakeChild({ exit: true }));
+    const daemon = new RealHooksDaemon(home, { probes: [false, false, false] });
+
+    const error = await caught(daemon.ensure());
+
+    expect((error as DshDaemonError).code).toBe('spawn');
+    expect((error as Error).message).toContain('提前退出');
+  });
+
+  it('uses a configured start timeout in the timeout message', async () => {
+    const home = temporaryHome();
+    const daemon = new RealHooksDaemon(home, {
+      probes: [false, false, false],
+      startTimeoutMs: () => 15,
+    });
+
+    const error = await caught(daemon.ensure());
+
+    expect((error as DshDaemonError).code).toBe('start-timeout');
+    expect((error as Error).message).toContain('15ms');
+  });
+
+  it('falls back to the 30s default when the configured timeout is not positive', async () => {
+    const home = temporaryHome();
+    let now = Date.now();
+    const dateSpy = vi.spyOn(Date, 'now').mockImplementation(() => now);
+    class ClockedDaemon extends RealHooksDaemon {
+      protected override async sleep(ms: number): Promise<void> {
+        now += ms;
+      }
+    }
+    const daemon = new ClockedDaemon(home, {
+      probes: [false, false, false],
+      startTimeoutMs: () => 0,
+    });
+    try {
+      const error = await caught(daemon.ensure());
+      expect((error as DshDaemonError).code).toBe('start-timeout');
+      expect((error as Error).message).toContain('30000ms');
+    } finally {
+      dateSpy.mockRestore();
+    }
+  });
+
+  it('does not spawn when manageProcess() is configured false', async () => {
+    const home = temporaryHome();
+    const daemon = new RealHooksDaemon(home, {
+      probes: [false],
+      manageProcess: () => false,
+    });
+
+    const error = await caught(daemon.ensure());
+
+    expect((error as DshDaemonError).code).toBe('stopped');
+    expect((error as Error).message).toContain('请先启动');
+    expect(spawnProcessMock).not.toHaveBeenCalled();
+  });
+
+  it('warns and waits when the start lock cannot be stat-ed', async () => {
+    const home = temporaryHome();
+    const lock = path.join(home, 'lark-remote', 'start.lock');
+    fs.mkdirSync(lock, { recursive: true });
+    const realStat = fsp.stat;
+    const statSpy = vi.spyOn(fsp, 'stat').mockImplementation(((p: unknown, ...rest: unknown[]) => {
+      if (p === lock) {
+        return Promise.reject(Object.assign(new Error('EACCES'), { code: 'EACCES' }));
+      }
+      return (realStat as unknown as (...a: unknown[]) => unknown)(p, ...rest);
+    }) as typeof fsp.stat);
+    const daemon = new RealHooksDaemon(home, {
+      probes: [false, false, false],
+      startTimeoutMs: () => 1,
+    });
+    try {
+      const error = await caught(daemon.ensure());
+      expect((error as DshDaemonError).code).toBe('start-lock');
+      expect((error as Error).message).toContain('等待其他 lark-remote 启动 DSH 超时');
+      expect(mockLogger.warn).toHaveBeenCalledWith(
+        expect.stringContaining('cannot stat start lock'),
+      );
+    } finally {
+      statSpy.mockRestore();
+    }
   });
 });

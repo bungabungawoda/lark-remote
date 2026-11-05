@@ -281,3 +281,139 @@ describe('SessionStore persistence', () => {
     expect(restored.getArrivalSessionId('user1', 'codex')).toBeUndefined();
   });
 });
+
+/**
+ * load() 的字段完整性 / 空值语义（characterization）。
+ *
+ * 后续把逐字段解析抽成模块级纯函数后，这些分支必须原样保留：四字段缺一
+ * 即整条跳过；'' arrival 是有意义的记录（不能当空态丢掉）；sessions /
+ * previous / sessionCwds 的空串值被丢弃而 arrival 的空串值保留。
+ */
+describe('SessionStore load — 字段完整性与空值语义 (characterization)', () => {
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'session-store-load-'));
+  });
+
+  afterEach(() => {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  function storeWith(data: unknown): SessionStore {
+    const filePath = path.join(tmpDir, 'last-session.json');
+    fs.writeFileSync(filePath, JSON.stringify(data), 'utf-8');
+    return new SessionStore(filePath);
+  }
+
+  const full = {
+    cwd: '/tmp',
+    sessions: {},
+    previousSessions: {},
+    arrivalSessions: {},
+    sessionCwds: {},
+  };
+
+  it('四个 session 字段任一缺失 → 整条记录跳过', () => {
+    for (const key of ['sessions', 'previousSessions', 'arrivalSessions', 'sessionCwds']) {
+      const row: Record<string, unknown> = { ...full };
+      delete row[key];
+      expect(storeWith({ u1: row }).get('u1')).toBeUndefined();
+    }
+  });
+
+  it("'' arrival 条目让记录保留（cwd 空、其它 map 空）", () => {
+    const store = storeWith({
+      u1: { sessions: {}, previousSessions: {}, arrivalSessions: { codex: '' }, sessionCwds: {} },
+    });
+    const entry = store.get('u1');
+    expect(entry).toBeDefined();
+    expect(entry?.cwd).toBe('');
+    expect(entry?.arrivalSessions.get('codex')).toBe('');
+    // getter 仍把 '' 归一为 undefined
+    expect(store.getArrivalSessionId('u1', 'codex')).toBeUndefined();
+  });
+
+  it('完全空记录（无 cwd / 无任何 map 内容）→ 跳过', () => {
+    expect(
+      storeWith({
+        u1: { sessions: {}, previousSessions: {}, arrivalSessions: {}, sessionCwds: {} },
+      }).get('u1'),
+    ).toBeUndefined();
+  });
+
+  it('sessions/previous/sessionCwds 的空串值被丢弃，truthy 值保留', () => {
+    const store = storeWith({
+      u1: {
+        cwd: '/tmp',
+        sessions: { claude: '', codex: 's-C' },
+        previousSessions: { claude: '', pi: 's-P' },
+        arrivalSessions: { kimi: '' },
+        sessionCwds: { claude: '', codex: '/tmp/session' },
+      },
+    });
+    const entry = store.get('u1');
+    expect(entry?.sessions.get('claude')).toBeUndefined();
+    expect(entry?.sessions.get('codex')).toBe('s-C');
+    expect(entry?.previousSessions.get('claude')).toBeUndefined();
+    expect(entry?.previousSessions.get('pi')).toBe('s-P');
+    expect(entry?.sessionCwds.get('claude')).toBeUndefined();
+    expect(entry?.sessionCwds.get('codex')).toBe('/tmp/session');
+    expect(entry?.arrivalSessions.get('kimi')).toBe('');
+  });
+
+  it('顶层非对象 / user data 非对象 → 安全跳过', () => {
+    expect(storeWith(null).get('u1')).toBeUndefined();
+    expect(storeWith([1, 2, 3]).get('u1')).toBeUndefined();
+    expect(storeWith({ u1: 'nope', u2: 42, u3: null }).get('u3')).toBeUndefined();
+    expect(
+      storeWith({
+        u1: {
+          cwd: '/ok',
+          sessions: {},
+          previousSessions: {},
+          arrivalSessions: {},
+          sessionCwds: {},
+        },
+      }).get('u1')?.cwd,
+    ).toBe('/ok');
+  });
+
+  it('corrupt 文件被改名保留现场（.corrupt-*）', () => {
+    const filePath = path.join(tmpDir, 'last-session.json');
+    fs.writeFileSync(filePath, '{broken', 'utf-8');
+    new SessionStore(filePath);
+    expect(fs.readdirSync(tmpDir).some((f) => f.includes('.corrupt-'))).toBe(true);
+  });
+});
+
+/**
+ * previous / arrival 的 getter+setter 对称性（characterization）。
+ *
+ * 这两对方法体是完全重复块，合并成单一实现后，空串归一、agent 隔离、
+ * 持久化行为必须逐项保持。
+ */
+describe('SessionStore previous/arrival getter+setter (characterization)', () => {
+  it('getter：缺失 / 空串 → undefined；truthy → 原值；不同 agent 隔离', () => {
+    const store = new SessionStore();
+    expect(store.getPreviousSessionId('u1', 'claude')).toBeUndefined();
+    expect(store.getArrivalSessionId('u1', 'claude')).toBeUndefined();
+
+    store.setPreviousSessionId('u1', 'claude', 'prev-1');
+    store.setArrivalSessionId('u1', 'claude', 'arr-1');
+    expect(store.getPreviousSessionId('u1', 'claude')).toBe('prev-1');
+    expect(store.getArrivalSessionId('u1', 'claude')).toBe('arr-1');
+
+    store.setPreviousSessionId('u1', 'claude', '');
+    store.setArrivalSessionId('u1', 'claude', '');
+    expect(store.getPreviousSessionId('u1', 'claude')).toBeUndefined();
+    expect(store.getArrivalSessionId('u1', 'claude')).toBeUndefined();
+
+    store.setPreviousSessionId('u1', 'codex', 'prev-C');
+    store.setArrivalSessionId('u1', 'codex', 'arr-C');
+    expect(store.getPreviousSessionId('u1', 'claude')).toBeUndefined();
+    expect(store.getArrivalSessionId('u1', 'claude')).toBeUndefined();
+    expect(store.getPreviousSessionId('u1', 'codex')).toBe('prev-C');
+    expect(store.getArrivalSessionId('u1', 'codex')).toBe('arr-C');
+  });
+});

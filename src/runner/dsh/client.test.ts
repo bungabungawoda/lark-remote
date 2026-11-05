@@ -816,3 +816,92 @@ describe('DshClient config-plane unary methods', () => {
     await expect(pending).rejects.toMatchObject({ code: 'aborted' });
   });
 });
+
+describe('DshClient.removeQueuedPrompt', () => {
+  const makeClient = (fetchImpl: typeof fetch): DshClient =>
+    new DshClient('http://127.0.0.1:3080', {
+      credentialsFile: NO_CREDENTIALS_FILE,
+      fetchImpl,
+    });
+
+  const errorResponse = (code: string, message: string): Response =>
+    ({
+      ok: true,
+      status: 200,
+      json: async () => ({ result: { ok: false, error: { code, message } } }),
+    }) as unknown as Response;
+
+  it('host 成功撤掉未受理的排队消息时返回 true，请求带 itemId 与 remove 动作', async () => {
+    const bodies: Array<Record<string, unknown>> = [];
+    const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input).endsWith('/api/session/updateQueue')) {
+        bodies.push(JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>);
+      }
+      return jsonResponse({});
+    }) as typeof fetch;
+
+    const removed = await makeClient(fetchImpl).removeQueuedPrompt(SID, 'inbox-1');
+
+    expect(removed).toBe(true);
+    expect(bodies).toHaveLength(1);
+    expect(bodies[0]).toMatchObject({ method: 'session/updateQueue' });
+    expect(JSON.stringify(bodies[0])).toContain('inbox-1');
+    expect(JSON.stringify(bodies[0])).toContain('remove');
+  });
+
+  it('消息已被 turn 取走（session/queue-item-not-found）时返回 false 而非抛错', async () => {
+    const fetchImpl = (async () =>
+      errorResponse('session/queue-item-not-found', 'already claimed')) as typeof fetch;
+
+    await expect(makeClient(fetchImpl).removeQueuedPrompt(SID, 'inbox-1')).resolves.toBe(false);
+  });
+
+  it('其它错误原样抛出，交由上层决定重试或告警', async () => {
+    const fetchImpl = (async () => errorResponse('internal', 'host exploded')) as typeof fetch;
+
+    await expect(makeClient(fetchImpl).removeQueuedPrompt(SID, 'inbox-1')).rejects.toThrow(
+      'host exploded',
+    );
+  });
+});
+
+describe('DshClient.cookieFromCredentials 损坏凭据回退', () => {
+  const broken = async (): Promise<Buffer> => {
+    throw new Error('corrupt yaml');
+  };
+
+  it('有启动 token 时回退 token 握手，unary 仍成功', async () => {
+    const urls: string[] = [];
+    const fetchImpl = (async (input: RequestInfo | URL) => {
+      const url = String(input);
+      urls.push(url);
+      if (url.includes('/?token=')) {
+        return new Response(null, {
+          status: 303,
+          headers: { 'set-cookie': 'dsh-auth-127.0.0.1:3080=v1.operator' },
+        });
+      }
+      return jsonResponse({});
+    }) as typeof fetch;
+    const client = new DshClient('http://127.0.0.1:3080', {
+      token: 'abc',
+      credentialsFile: NO_CREDENTIALS_FILE,
+      readCredentials: broken,
+      fetchImpl,
+    });
+
+    await client.unary('session/prompt', {});
+    expect(urls.some((u) => u.includes('/?token=abc'))).toBe(true);
+  });
+
+  it('无启动 token 时抛出带凭据文件信息的可见错误', async () => {
+    const fetchImpl = (async () => jsonResponse({})) as typeof fetch;
+    const client = new DshClient('http://127.0.0.1:3080', {
+      credentialsFile: NO_CREDENTIALS_FILE,
+      readCredentials: broken,
+      fetchImpl,
+    });
+
+    await expect(client.unary('session/prompt', {})).rejects.toThrow(/corrupt yaml/);
+  });
+});

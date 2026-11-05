@@ -20,7 +20,7 @@
 
 import type { AgentKind } from '../../../agent-kinds.js';
 import type { AgentSessionReader } from '../../../session-contract.js';
-import type { AgentStatusInfo, SpawnOptions } from '../../types.js';
+import type { AgentStatusInfo, SpawnOptions, UserQuestion } from '../../types.js';
 import type { ChildProcess } from 'node:child_process';
 import { mergeProcessEnv, useDetachedProcessGroup } from '../../../platform/spawn.js';
 import { createShellBackend, type ShellBackend } from '../../../platform/shell.js';
@@ -38,6 +38,7 @@ import {
   type SessionSetModeParams,
   type RequestPermissionParams,
   type RequestPermissionResponse,
+  type PermissionOption,
   type ElicitationCreateResponse,
   type TerminalCreateParams,
   type TerminalOutputParams,
@@ -181,6 +182,107 @@ function toAcpMode(mode: 'manual' | 'auto' | 'yolo'): AcpMode {
   }
 }
 
+// =============================================================================
+// buildQuestionResponse 的模块级命名 handler（闭包搬出，显式传状态）
+// =============================================================================
+
+function nonEmptyString(v: unknown): v is string {
+  return typeof v === 'string' && v.length > 0;
+}
+
+/** 单题答案 → content[qN]（多选清洗空串、单选取首个）。 */
+function collectOneAnswer(
+  q: UserQuestion,
+  i: number,
+  byIndex: Array<string | string[] | undefined>,
+  content: Record<string, string | string[]>,
+): void {
+  const value = byIndex[i];
+  if (value === undefined) return;
+  if (q.multiSelect) {
+    const values = Array.isArray(value) ? value : [value];
+    const cleaned = values.filter(nonEmptyString);
+    if (cleaned.length > 0) content[`q${i}`] = cleaned;
+  } else {
+    const single = Array.isArray(value) ? value[0] : value;
+    if (typeof single === 'string' && single.length > 0) content[`q${i}`] = single;
+  }
+}
+
+/** elicitation form：{问题文本: 值} → 按问题顺序展开的 q0..qn content。 */
+function elicitationContent(
+  questions: UserQuestion[],
+  answers: Record<string, string | string[]>,
+): Record<string, string | string[]> {
+  const byIndex = mapAnswersByIndex(questions, answers);
+  const content: Record<string, string | string[]> = {};
+  for (let i = 0; i < questions.length; i++) {
+    collectOneAnswer(questions[i]!, i, byIndex, content);
+  }
+  return content;
+}
+
+function elicitationResponse(
+  action: string,
+  pending: AcpPendingApproval,
+  response: unknown,
+): ElicitationCreateResponse {
+  if (action === 'answer') {
+    const answers = (response as { answers?: Record<string, string | string[]> }).answers;
+    const questions = pending.view.questions ?? [];
+    return { action: 'accept', content: elicitationContent(questions, answers ?? {}) };
+  }
+  if (action === 'decline') return { action: 'decline' };
+  return { action: 'cancel' };
+}
+
+/** request_permission 兜底桥：按 label 回显 qN_opt_M optionId。 */
+function selectedOptionId(
+  options: PermissionOption[],
+  label: string | string[] | undefined,
+): string | undefined {
+  for (const opt of options) {
+    if (/^q\d+_opt_\d+$/.test(opt.optionId) && opt.name === label) return opt.optionId;
+  }
+  return undefined;
+}
+
+/** request_permission 兜底桥：找 qN_skip optionId。 */
+function skipOptionId(options: PermissionOption[]): string | undefined {
+  for (const opt of options) {
+    if (/^q\d+_skip$/.test(opt.optionId)) return opt.optionId;
+  }
+  return undefined;
+}
+
+function cancelledOutcome(): RequestPermissionResponse {
+  return { outcome: { outcome: 'cancelled' } };
+}
+
+function selectedOutcome(optionId: string): RequestPermissionResponse {
+  return { outcome: { outcome: 'selected', optionId } };
+}
+
+function permissionResponse(
+  action: string,
+  pending: AcpPendingApproval,
+  response: unknown,
+): RequestPermissionResponse {
+  if (action === 'answer') {
+    const answers = (response as { answers?: Record<string, string | string[]> }).answers;
+    const first = pending.view.questions?.[0];
+    const value = first ? answers?.[first.question] : undefined;
+    const label = Array.isArray(value) ? value[0] : value;
+    const optionId = selectedOptionId(pending.options ?? [], label);
+    return optionId ? selectedOutcome(optionId) : cancelledOutcome();
+  }
+  if (action === 'decline') {
+    const skipId = skipOptionId(pending.options ?? []);
+    return skipId ? selectedOutcome(skipId) : cancelledOutcome();
+  }
+  return cancelledOutcome();
+}
+
 /**
  * AskUserQuestion 回编（kind === 'question'）：
  * - elicitation form：answer → {action:'accept', content:{q0..qn}}（多选数组/
@@ -196,47 +298,9 @@ function buildQuestionResponse(
   response: unknown,
 ): RequestPermissionResponse | ElicitationCreateResponse {
   if (pending.proto === 'elicitation') {
-    if (action === 'answer') {
-      const answers = (response as { answers?: Record<string, string | string[]> }).answers;
-      const questions = pending.view.questions ?? [];
-      const byIndex = mapAnswersByIndex(questions, answers ?? {});
-      const content: Record<string, string | string[]> = {};
-      questions.forEach((q, i) => {
-        const value = byIndex[i];
-        if (value === undefined) return;
-        if (q.multiSelect) {
-          const values = Array.isArray(value) ? value : [value];
-          const cleaned = values.filter((v) => typeof v === 'string' && v.length > 0);
-          if (cleaned.length > 0) content[`q${i}`] = cleaned;
-        } else {
-          const single = Array.isArray(value) ? value[0] : value;
-          if (typeof single === 'string' && single.length > 0) content[`q${i}`] = single;
-        }
-      });
-      return { action: 'accept', content };
-    }
-    if (action === 'decline') return { action: 'decline' };
-    return { action: 'cancel' };
+    return elicitationResponse(action, pending, response);
   }
-
-  // request_permission 兜底桥（单题单选）
-  if (action === 'answer') {
-    const answers = (response as { answers?: Record<string, string | string[]> }).answers;
-    const first = pending.view.questions?.[0];
-    const value = first ? answers?.[first.question] : undefined;
-    const label = Array.isArray(value) ? value[0] : value;
-    const option = (pending.options ?? []).find(
-      (opt) => /^q\d+_opt_\d+$/.test(opt.optionId) && opt.name === label,
-    );
-    if (option) return { outcome: { outcome: 'selected', optionId: option.optionId } };
-    return { outcome: { outcome: 'cancelled' } };
-  }
-  if (action === 'decline') {
-    const skip = (pending.options ?? []).find((opt) => /^q\d+_skip$/.test(opt.optionId));
-    if (skip) return { outcome: { outcome: 'selected', optionId: skip.optionId } };
-    return { outcome: { outcome: 'cancelled' } };
-  }
-  return { outcome: { outcome: 'cancelled' } };
+  return permissionResponse(action, pending, response);
 }
 
 // =============================================================================

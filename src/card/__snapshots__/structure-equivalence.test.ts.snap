@@ -1,0 +1,1743 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`structure equivalence: card budget degrade stages > A: 达标卡片原样返回 1`] = `
+{
+  "bytesAfter": 184,
+  "bytesBefore": 184,
+  "elementCount": 1,
+  "panelInners": [],
+  "reason": null,
+  "topTags": [
+    "div",
+  ],
+  "topTexts": [
+    {
+      "head": "small",
+      "len": 5,
+    },
+  ],
+  "wasTruncated": false,
+}
+`;
+
+exports[`structure equivalence: card budget degrade stages > B: 单个超大 div 字节超限 → 阶段4 顶层文本截断 1`] = `
+{
+  "bytesAfter": 2179,
+  "bytesBefore": 32179,
+  "elementCount": 1,
+  "panelInners": [],
+  "reason": "text_truncated",
+  "topTags": [
+    "div",
+  ],
+  "topTexts": [
+    {
+      "head": "XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX",
+      "len": 1988,
+    },
+  ],
+  "wasTruncated": true,
+}
+`;
+
+exports[`structure equivalence: card budget degrade stages > C: 多个超限面板 → 阶段1 面板内容截断 + 阶段2 面板数量限制 1`] = `
+{
+  "bytesAfter": 10936,
+  "bytesBefore": 37905,
+  "elementCount": 11,
+  "panelInners": [
+    [
+      {
+        "head": "P7:yyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
+        "len": 1988,
+      },
+    ],
+    [
+      {
+        "head": "P8:yyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
+        "len": 1988,
+      },
+    ],
+    [
+      {
+        "head": "P9:yyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
+        "len": 1988,
+      },
+    ],
+    [
+      {
+        "head": "P10:yyyyyyyyyyyyyyyyyyyyyyyyyyyy",
+        "len": 1988,
+      },
+    ],
+    [
+      {
+        "head": "P11:yyyyyyyyyyyyyyyyyyyyyyyyyyyy",
+        "len": 1988,
+      },
+    ],
+  ],
+  "reason": "panel_content_truncated+event_count_limited",
+  "topTags": [
+    "div",
+    "collapsible_panel",
+    "collapsible_panel",
+    "collapsible_panel",
+    "collapsible_panel",
+    "collapsible_panel",
+  ],
+  "topTexts": [
+    {
+      "head": "📜 还有 7 个事件未显示",
+      "len": 14,
+    },
+    null,
+    null,
+    null,
+    null,
+    null,
+  ],
+  "wasTruncated": true,
+}
+`;
+
+exports[`structure equivalence: card budget degrade stages > D: 元素总数超限但字节达标 → 阶段4.5 丢弃最旧元素 1`] = `
+{
+  "bytesAfter": 304,
+  "bytesBefore": 5342,
+  "elementCount": 1,
+  "panelInners": [],
+  "reason": "extreme_fallback",
+  "topTags": [
+    "div",
+  ],
+  "topTexts": [
+    {
+      "head": "会话内容过大，已自动截断。
+
+请使用 \`/active\` 查看完",
+      "len": 36,
+    },
+  ],
+  "wasTruncated": true,
+}
+`;
+
+exports[`structure equivalence: card budget degrade stages > E: 骨架自身超限 → 阶段5 extreme_fallback 最小卡 1`] = `
+{
+  "bytesAfter": 304,
+  "bytesBefore": 90292,
+  "elementCount": 1,
+  "panelInners": [],
+  "reason": "extreme_fallback",
+  "topTags": [
+    "div",
+  ],
+  "topTexts": [
+    {
+      "head": "会话内容过大，已自动截断。
+
+请使用 \`/active\` 查看完",
+      "len": 36,
+    },
+  ],
+  "wasTruncated": true,
+}
+`;
+
+exports[`structure equivalence: card budget degrade stages > F: table 数量超限但卡整体达标 → table_count_limited 1`] = `
+{
+  "bytesAfter": 681,
+  "bytesBefore": 685,
+  "elementCount": 6,
+  "panelInners": [],
+  "reason": "table_count_limited",
+  "topTags": [
+    "div",
+    "div",
+    "div",
+    "div",
+    "div",
+    "div",
+  ],
+  "topTexts": [
+    {
+      "head": "t0
+_💡 前 1 个表格已省略_
+",
+      "len": 19,
+    },
+    {
+      "head": "t1
+| a | b |
+| --- | --- |
+| 1 |",
+      "len": 37,
+    },
+    {
+      "head": "t2
+| a | b |
+| --- | --- |
+| 1 |",
+      "len": 37,
+    },
+    {
+      "head": "t3
+| a | b |
+| --- | --- |
+| 1 |",
+      "len": 37,
+    },
+    {
+      "head": "t4
+| a | b |
+| --- | --- |
+| 1 |",
+      "len": 37,
+    },
+    {
+      "head": "t5
+| a | b |
+| --- | --- |
+| 1 |",
+      "len": 37,
+    },
+  ],
+  "wasTruncated": true,
+}
+`;
+
+exports[`structure equivalence: card budget degrade stages > G: table 超限且字节超限 → cap 后继续走字节降级 1`] = `
+{
+  "bytesAfter": 12461,
+  "bytesBefore": 36685,
+  "elementCount": 6,
+  "panelInners": [],
+  "reason": "text_truncated",
+  "topTags": [
+    "div",
+    "div",
+    "div",
+    "div",
+    "div",
+    "div",
+  ],
+  "topTexts": [
+    {
+      "head": "t0
+_💡 前 1 个表格已省略_
+qqqqqqqqqqqqq",
+      "len": 1972,
+    },
+    {
+      "head": "t1
+| a | b |
+| --- | --- |
+| 1 |",
+      "len": 1988,
+    },
+    {
+      "head": "t2
+| a | b |
+| --- | --- |
+| 1 |",
+      "len": 1988,
+    },
+    {
+      "head": "t3
+| a | b |
+| --- | --- |
+| 1 |",
+      "len": 1988,
+    },
+    {
+      "head": "t4
+| a | b |
+| --- | --- |
+| 1 |",
+      "len": 1988,
+    },
+    {
+      "head": "t5
+| a | b |
+| --- | --- |
+| 1 |",
+      "len": 1988,
+    },
+  ],
+  "wasTruncated": true,
+}
+`;
+
+exports[`structure equivalence: run state reducers > 钉住 reduceRunStateInner 全事件分发 + reduceTurnDiffEvent 全字段分支 > approval_expired 1`] = `
+{
+  "approvalExpired": true,
+  "approvals": [
+    {
+      "expired": true,
+      "view": {
+        "availableDecisions": [
+          "accept",
+          "decline",
+          "cancel",
+        ],
+        "command": "y",
+        "commandCwd": "/w",
+        "kind": "command",
+        "requestId": 1,
+      },
+    },
+  ],
+  "backgroundJobs": [
+    {
+      "id": "j1",
+      "label": "L",
+      "status": "running",
+    },
+  ],
+  "blocks": [
+    {
+      "completedAt": "T2",
+      "content": "hello world",
+      "itemId": "i-text",
+      "kind": "text",
+      "timestamp": "T2",
+    },
+    {
+      "active": false,
+      "content": "thinking hard",
+      "itemId": "i-reason",
+      "kind": "thinking",
+      "timestamp": "T3",
+    },
+    {
+      "kind": "tool",
+      "tool": {
+        "completedAt": "T5",
+        "id": "i-tool",
+        "input": "{"command":"ls"}",
+        "name": "Bash",
+        "output": "done",
+        "parsedInput": {
+          "command": "ls",
+        },
+        "startedAt": "T4",
+        "status": "ok",
+        "toolHint": "shell",
+      },
+    },
+    {
+      "active": true,
+      "content": "PLAN",
+      "itemId": "i-plan",
+      "kind": "plan",
+      "timestamp": "T6",
+    },
+    {
+      "diff": "D",
+      "itemId": "i-fc",
+      "kind": "file_change",
+      "operation": "create",
+      "path": "a.ts",
+      "timestamp": "T7",
+    },
+    {
+      "diff": undefined,
+      "itemId": "i-fc",
+      "kind": "file_change",
+      "operation": "delete",
+      "path": "b.ts",
+      "timestamp": "T7",
+    },
+    {
+      "content": "T",
+      "itemId": "i-combo",
+      "kind": "text",
+      "timestamp": "T8",
+    },
+    {
+      "active": true,
+      "content": "R",
+      "itemId": "i-combo",
+      "kind": "thinking",
+      "timestamp": "T8",
+    },
+    {
+      "active": true,
+      "content": "P",
+      "itemId": "i-combo",
+      "kind": "plan",
+      "timestamp": "T8",
+    },
+  ],
+  "contextLimit": 1000,
+  "footer": "thinking",
+  "goal": {
+    "currentTurn": 1,
+    "phase": "active",
+    "text": "ship it",
+    "totalTurns": 2,
+  },
+  "goalKnown": true,
+  "liveStatus": {
+    "contextLimit": 1000,
+    "contextUsed": 100,
+    "steps": 3,
+    "toolMs": 50,
+  },
+  "mode": "plan",
+  "model": "m",
+  "notices": [
+    {
+      "code": "c",
+      "level": "warn",
+      "text": "n",
+      "timestamp": "T0",
+    },
+  ],
+  "omittedBlocks": 0,
+  "operationKind": "turn",
+  "plan": "P",
+  "runId": "run-ub",
+  "sessionId": "s1",
+  "sessionTitle": "T",
+  "terminal": "running",
+}
+`;
+
+exports[`structure equivalence: run state reducers > 钉住 reduceRunStateInner 全事件分发 + reduceTurnDiffEvent 全字段分支 > approval_requested 1`] = `
+{
+  "approvals": [
+    {
+      "expired": false,
+      "view": {
+        "availableDecisions": [
+          "accept",
+          "decline",
+          "cancel",
+        ],
+        "command": "x",
+        "commandCwd": "/w",
+        "kind": "command",
+        "requestId": 1,
+      },
+    },
+  ],
+  "backgroundJobs": [
+    {
+      "id": "j1",
+      "label": "L",
+      "status": "running",
+    },
+  ],
+  "blocks": [
+    {
+      "completedAt": "T2",
+      "content": "hello world",
+      "itemId": "i-text",
+      "kind": "text",
+      "timestamp": "T2",
+    },
+    {
+      "active": false,
+      "content": "thinking hard",
+      "itemId": "i-reason",
+      "kind": "thinking",
+      "timestamp": "T3",
+    },
+    {
+      "kind": "tool",
+      "tool": {
+        "completedAt": "T5",
+        "id": "i-tool",
+        "input": "{"command":"ls"}",
+        "name": "Bash",
+        "output": "done",
+        "parsedInput": {
+          "command": "ls",
+        },
+        "startedAt": "T4",
+        "status": "ok",
+        "toolHint": "shell",
+      },
+    },
+    {
+      "active": true,
+      "content": "PLAN",
+      "itemId": "i-plan",
+      "kind": "plan",
+      "timestamp": "T6",
+    },
+    {
+      "diff": "D",
+      "itemId": "i-fc",
+      "kind": "file_change",
+      "operation": "create",
+      "path": "a.ts",
+      "timestamp": "T7",
+    },
+    {
+      "diff": undefined,
+      "itemId": "i-fc",
+      "kind": "file_change",
+      "operation": "delete",
+      "path": "b.ts",
+      "timestamp": "T7",
+    },
+    {
+      "content": "T",
+      "itemId": "i-combo",
+      "kind": "text",
+      "timestamp": "T8",
+    },
+    {
+      "active": true,
+      "content": "R",
+      "itemId": "i-combo",
+      "kind": "thinking",
+      "timestamp": "T8",
+    },
+    {
+      "active": true,
+      "content": "P",
+      "itemId": "i-combo",
+      "kind": "plan",
+      "timestamp": "T8",
+    },
+  ],
+  "contextLimit": 1000,
+  "footer": "thinking",
+  "goal": {
+    "currentTurn": 1,
+    "phase": "active",
+    "text": "ship it",
+    "totalTurns": 2,
+  },
+  "goalKnown": true,
+  "liveStatus": {
+    "contextLimit": 1000,
+    "contextUsed": 100,
+    "steps": 3,
+    "toolMs": 50,
+  },
+  "mode": "plan",
+  "model": "m",
+  "notices": [
+    {
+      "code": "c",
+      "level": "warn",
+      "text": "n",
+      "timestamp": "T0",
+    },
+  ],
+  "omittedBlocks": 0,
+  "operationKind": "turn",
+  "plan": "P",
+  "runId": "run-ub",
+  "sessionId": "s1",
+  "sessionTitle": "T",
+  "terminal": "running",
+}
+`;
+
+exports[`structure equivalence: run state reducers > 钉住 reduceRunStateInner 全事件分发 + reduceTurnDiffEvent 全字段分支 > approval_resolved 1`] = `
+{
+  "approvalExpired": true,
+  "approvals": [],
+  "backgroundJobs": [
+    {
+      "id": "j1",
+      "label": "L",
+      "status": "running",
+    },
+  ],
+  "blocks": [
+    {
+      "completedAt": "T2",
+      "content": "hello world",
+      "itemId": "i-text",
+      "kind": "text",
+      "timestamp": "T2",
+    },
+    {
+      "active": false,
+      "content": "thinking hard",
+      "itemId": "i-reason",
+      "kind": "thinking",
+      "timestamp": "T3",
+    },
+    {
+      "kind": "tool",
+      "tool": {
+        "completedAt": "T5",
+        "id": "i-tool",
+        "input": "{"command":"ls"}",
+        "name": "Bash",
+        "output": "done",
+        "parsedInput": {
+          "command": "ls",
+        },
+        "startedAt": "T4",
+        "status": "ok",
+        "toolHint": "shell",
+      },
+    },
+    {
+      "active": true,
+      "content": "PLAN",
+      "itemId": "i-plan",
+      "kind": "plan",
+      "timestamp": "T6",
+    },
+    {
+      "diff": "D",
+      "itemId": "i-fc",
+      "kind": "file_change",
+      "operation": "create",
+      "path": "a.ts",
+      "timestamp": "T7",
+    },
+    {
+      "diff": undefined,
+      "itemId": "i-fc",
+      "kind": "file_change",
+      "operation": "delete",
+      "path": "b.ts",
+      "timestamp": "T7",
+    },
+    {
+      "content": "T",
+      "itemId": "i-combo",
+      "kind": "text",
+      "timestamp": "T8",
+    },
+    {
+      "active": true,
+      "content": "R",
+      "itemId": "i-combo",
+      "kind": "thinking",
+      "timestamp": "T8",
+    },
+    {
+      "active": true,
+      "content": "P",
+      "itemId": "i-combo",
+      "kind": "plan",
+      "timestamp": "T8",
+    },
+  ],
+  "contextLimit": 1000,
+  "footer": "thinking",
+  "goal": {
+    "currentTurn": 1,
+    "phase": "active",
+    "text": "ship it",
+    "totalTurns": 2,
+  },
+  "goalKnown": true,
+  "liveStatus": {
+    "contextLimit": 1000,
+    "contextUsed": 100,
+    "steps": 3,
+    "toolMs": 50,
+  },
+  "mode": "plan",
+  "model": "m",
+  "notices": [
+    {
+      "code": "c",
+      "level": "warn",
+      "text": "n",
+      "timestamp": "T0",
+    },
+  ],
+  "omittedBlocks": 0,
+  "operationKind": "turn",
+  "plan": "P",
+  "runId": "run-ub",
+  "sessionId": "s1",
+  "sessionTitle": "T",
+  "terminal": "running",
+}
+`;
+
+exports[`structure equivalence: run state reducers > 钉住 reduceRunStateInner 全事件分发 + reduceTurnDiffEvent 全字段分支 > approval_view_updated 1`] = `
+{
+  "approvals": [
+    {
+      "expired": false,
+      "view": {
+        "availableDecisions": [
+          "accept",
+          "decline",
+          "cancel",
+        ],
+        "command": "y",
+        "commandCwd": "/w",
+        "kind": "command",
+        "requestId": 1,
+      },
+    },
+  ],
+  "backgroundJobs": [
+    {
+      "id": "j1",
+      "label": "L",
+      "status": "running",
+    },
+  ],
+  "blocks": [
+    {
+      "completedAt": "T2",
+      "content": "hello world",
+      "itemId": "i-text",
+      "kind": "text",
+      "timestamp": "T2",
+    },
+    {
+      "active": false,
+      "content": "thinking hard",
+      "itemId": "i-reason",
+      "kind": "thinking",
+      "timestamp": "T3",
+    },
+    {
+      "kind": "tool",
+      "tool": {
+        "completedAt": "T5",
+        "id": "i-tool",
+        "input": "{"command":"ls"}",
+        "name": "Bash",
+        "output": "done",
+        "parsedInput": {
+          "command": "ls",
+        },
+        "startedAt": "T4",
+        "status": "ok",
+        "toolHint": "shell",
+      },
+    },
+    {
+      "active": true,
+      "content": "PLAN",
+      "itemId": "i-plan",
+      "kind": "plan",
+      "timestamp": "T6",
+    },
+    {
+      "diff": "D",
+      "itemId": "i-fc",
+      "kind": "file_change",
+      "operation": "create",
+      "path": "a.ts",
+      "timestamp": "T7",
+    },
+    {
+      "diff": undefined,
+      "itemId": "i-fc",
+      "kind": "file_change",
+      "operation": "delete",
+      "path": "b.ts",
+      "timestamp": "T7",
+    },
+    {
+      "content": "T",
+      "itemId": "i-combo",
+      "kind": "text",
+      "timestamp": "T8",
+    },
+    {
+      "active": true,
+      "content": "R",
+      "itemId": "i-combo",
+      "kind": "thinking",
+      "timestamp": "T8",
+    },
+    {
+      "active": true,
+      "content": "P",
+      "itemId": "i-combo",
+      "kind": "plan",
+      "timestamp": "T8",
+    },
+  ],
+  "contextLimit": 1000,
+  "footer": "thinking",
+  "goal": {
+    "currentTurn": 1,
+    "phase": "active",
+    "text": "ship it",
+    "totalTurns": 2,
+  },
+  "goalKnown": true,
+  "liveStatus": {
+    "contextLimit": 1000,
+    "contextUsed": 100,
+    "steps": 3,
+    "toolMs": 50,
+  },
+  "mode": "plan",
+  "model": "m",
+  "notices": [
+    {
+      "code": "c",
+      "level": "warn",
+      "text": "n",
+      "timestamp": "T0",
+    },
+  ],
+  "omittedBlocks": 0,
+  "operationKind": "turn",
+  "plan": "P",
+  "runId": "run-ub",
+  "sessionId": "s1",
+  "sessionTitle": "T",
+  "terminal": "running",
+}
+`;
+
+exports[`structure equivalence: run state reducers > 钉住 reduceRunStateInner 全事件分发 + reduceTurnDiffEvent 全字段分支 > background_jobs 1`] = `
+{
+  "backgroundJobs": [
+    {
+      "id": "j1",
+      "label": "L",
+      "status": "running",
+    },
+  ],
+  "blocks": [],
+  "footer": "thinking",
+  "goal": {
+    "currentTurn": 1,
+    "phase": "active",
+    "text": "ship it",
+    "totalTurns": 2,
+  },
+  "goalKnown": true,
+  "model": "m",
+  "runId": "run-ub",
+  "sessionId": "s1",
+  "terminal": "running",
+}
+`;
+
+exports[`structure equivalence: run state reducers > 钉住 reduceRunStateInner 全事件分发 + reduceTurnDiffEvent 全字段分支 > goal_state 1`] = `
+{
+  "blocks": [],
+  "footer": "thinking",
+  "goal": {
+    "currentTurn": 1,
+    "phase": "active",
+    "text": "ship it",
+    "totalTurns": 2,
+  },
+  "goalKnown": true,
+  "model": "m",
+  "runId": "run-ub",
+  "sessionId": "s1",
+  "terminal": "running",
+}
+`;
+
+exports[`structure equivalence: run state reducers > 钉住 reduceRunStateInner 全事件分发 + reduceTurnDiffEvent 全字段分支 > init 1`] = `
+{
+  "blocks": [],
+  "footer": "thinking",
+  "model": "m",
+  "runId": "run-ub",
+  "sessionId": "s1",
+  "terminal": "running",
+}
+`;
+
+exports[`structure equivalence: run state reducers > 钉住 reduceRunStateInner 全事件分发 + reduceTurnDiffEvent 全字段分支 > notice 1`] = `
+{
+  "backgroundJobs": [
+    {
+      "id": "j1",
+      "label": "L",
+      "status": "running",
+    },
+  ],
+  "blocks": [],
+  "contextLimit": 1000,
+  "footer": "thinking",
+  "goal": {
+    "currentTurn": 1,
+    "phase": "active",
+    "text": "ship it",
+    "totalTurns": 2,
+  },
+  "goalKnown": true,
+  "liveStatus": {
+    "contextLimit": 1000,
+    "contextUsed": 100,
+    "steps": 3,
+    "toolMs": 50,
+  },
+  "model": "m",
+  "notices": [
+    {
+      "code": "c",
+      "level": "warn",
+      "text": "n",
+      "timestamp": "T0",
+    },
+  ],
+  "runId": "run-ub",
+  "sessionId": "s1",
+  "terminal": "running",
+}
+`;
+
+exports[`structure equivalence: run state reducers > 钉住 reduceRunStateInner 全事件分发 + reduceTurnDiffEvent 全字段分支 > result 1`] = `
+{
+  "approvalExpired": true,
+  "approvals": [],
+  "backgroundJobs": [
+    {
+      "id": "j1",
+      "label": "L",
+      "status": "running",
+    },
+  ],
+  "blocks": [
+    {
+      "completedAt": "T2",
+      "content": "hello world",
+      "itemId": "i-text",
+      "kind": "text",
+      "timestamp": "T2",
+    },
+    {
+      "active": false,
+      "content": "thinking hard",
+      "itemId": "i-reason",
+      "kind": "thinking",
+      "timestamp": "T3",
+    },
+    {
+      "kind": "tool",
+      "tool": {
+        "completedAt": "T5",
+        "id": "i-tool",
+        "input": "{"command":"ls"}",
+        "name": "Bash",
+        "output": "done",
+        "parsedInput": {
+          "command": "ls",
+        },
+        "startedAt": "T4",
+        "status": "ok",
+        "toolHint": "shell",
+      },
+    },
+    {
+      "active": true,
+      "content": "PLAN",
+      "itemId": "i-plan",
+      "kind": "plan",
+      "timestamp": "T6",
+    },
+    {
+      "diff": "D",
+      "itemId": "i-fc",
+      "kind": "file_change",
+      "operation": "create",
+      "path": "a.ts",
+      "timestamp": "T7",
+    },
+    {
+      "diff": undefined,
+      "itemId": "i-fc",
+      "kind": "file_change",
+      "operation": "delete",
+      "path": "b.ts",
+      "timestamp": "T7",
+    },
+    {
+      "active": false,
+      "content": "R",
+      "itemId": "i-combo",
+      "kind": "thinking",
+      "timestamp": "T8",
+    },
+    {
+      "active": true,
+      "content": "P",
+      "itemId": "i-combo",
+      "kind": "plan",
+      "timestamp": "T8",
+    },
+  ],
+  "contextLimit": 1000,
+  "errorMsg": undefined,
+  "finalAnswer": {
+    "complete": true,
+    "content": "T",
+    "source": "inferred",
+    "timestamp": "T8",
+  },
+  "footer": null,
+  "goal": {
+    "currentTurn": 1,
+    "phase": "active",
+    "text": "ship it",
+    "totalTurns": 2,
+  },
+  "goalKnown": true,
+  "liveStatus": {
+    "contextLimit": 1000,
+    "contextUsed": 100,
+    "steps": 3,
+    "toolMs": 50,
+  },
+  "mode": "plan",
+  "model": "m",
+  "notices": [
+    {
+      "code": "c",
+      "level": "warn",
+      "text": "n",
+      "timestamp": "T0",
+    },
+  ],
+  "omittedBlocks": 0,
+  "operationKind": "turn",
+  "plan": "P",
+  "resultSubtype": "success",
+  "runId": "run-ub",
+  "sessionId": "s1",
+  "sessionTitle": "T",
+  "terminal": "finalizing",
+}
+`;
+
+exports[`structure equivalence: run state reducers > 钉住 reduceRunStateInner 全事件分发 + reduceTurnDiffEvent 全字段分支 > run_status 1`] = `
+{
+  "backgroundJobs": [
+    {
+      "id": "j1",
+      "label": "L",
+      "status": "running",
+    },
+  ],
+  "blocks": [],
+  "contextLimit": 1000,
+  "footer": "thinking",
+  "goal": {
+    "currentTurn": 1,
+    "phase": "active",
+    "text": "ship it",
+    "totalTurns": 2,
+  },
+  "goalKnown": true,
+  "liveStatus": {
+    "contextLimit": 1000,
+    "contextUsed": 100,
+    "steps": 3,
+    "toolMs": 50,
+  },
+  "model": "m",
+  "runId": "run-ub",
+  "sessionId": "s1",
+  "terminal": "running",
+}
+`;
+
+exports[`structure equivalence: run state reducers > 钉住 reduceRunStateInner 全事件分发 + reduceTurnDiffEvent 全字段分支 > session_info 1`] = `
+{
+  "backgroundJobs": [
+    {
+      "id": "j1",
+      "label": "L",
+      "status": "running",
+    },
+  ],
+  "blocks": [],
+  "contextLimit": 1000,
+  "footer": "thinking",
+  "goal": {
+    "currentTurn": 1,
+    "phase": "active",
+    "text": "ship it",
+    "totalTurns": 2,
+  },
+  "goalKnown": true,
+  "liveStatus": {
+    "contextLimit": 1000,
+    "contextUsed": 100,
+    "steps": 3,
+    "toolMs": 50,
+  },
+  "mode": "plan",
+  "model": "m",
+  "notices": [
+    {
+      "code": "c",
+      "level": "warn",
+      "text": "n",
+      "timestamp": "T0",
+    },
+  ],
+  "runId": "run-ub",
+  "sessionId": "s1",
+  "sessionTitle": "T",
+  "terminal": "running",
+}
+`;
+
+exports[`structure equivalence: run state reducers > 钉住 reduceRunStateInner 全事件分发 + reduceTurnDiffEvent 全字段分支 > turn_diff fileChanges 1`] = `
+{
+  "backgroundJobs": [
+    {
+      "id": "j1",
+      "label": "L",
+      "status": "running",
+    },
+  ],
+  "blocks": [
+    {
+      "completedAt": "T2",
+      "content": "hello world",
+      "itemId": "i-text",
+      "kind": "text",
+      "timestamp": "T2",
+    },
+    {
+      "active": true,
+      "content": "thinking hard",
+      "itemId": "i-reason",
+      "kind": "thinking",
+      "timestamp": "T3",
+    },
+    {
+      "kind": "tool",
+      "tool": {
+        "completedAt": "T5",
+        "id": "i-tool",
+        "input": "{"command":"ls"}",
+        "name": "Bash",
+        "output": "done",
+        "parsedInput": {
+          "command": "ls",
+        },
+        "startedAt": "T4",
+        "status": "ok",
+        "toolHint": "shell",
+      },
+    },
+    {
+      "active": true,
+      "content": "PLAN",
+      "itemId": "i-plan",
+      "kind": "plan",
+      "timestamp": "T6",
+    },
+    {
+      "diff": "D",
+      "itemId": "i-fc",
+      "kind": "file_change",
+      "operation": "create",
+      "path": "a.ts",
+      "timestamp": "T7",
+    },
+    {
+      "diff": undefined,
+      "itemId": "i-fc",
+      "kind": "file_change",
+      "operation": "delete",
+      "path": "b.ts",
+      "timestamp": "T7",
+    },
+  ],
+  "contextLimit": 1000,
+  "footer": "tool_running",
+  "goal": {
+    "currentTurn": 1,
+    "phase": "active",
+    "text": "ship it",
+    "totalTurns": 2,
+  },
+  "goalKnown": true,
+  "liveStatus": {
+    "contextLimit": 1000,
+    "contextUsed": 100,
+    "steps": 3,
+    "toolMs": 50,
+  },
+  "mode": "plan",
+  "model": "m",
+  "notices": [
+    {
+      "code": "c",
+      "level": "warn",
+      "text": "n",
+      "timestamp": "T0",
+    },
+  ],
+  "omittedBlocks": 0,
+  "operationKind": "turn",
+  "plan": "PLAN",
+  "runId": "run-ub",
+  "sessionId": "s1",
+  "sessionTitle": "T",
+  "terminal": "running",
+}
+`;
+
+exports[`structure equivalence: run state reducers > 钉住 reduceRunStateInner 全事件分发 + reduceTurnDiffEvent 全字段分支 > turn_diff plan 1`] = `
+{
+  "backgroundJobs": [
+    {
+      "id": "j1",
+      "label": "L",
+      "status": "running",
+    },
+  ],
+  "blocks": [
+    {
+      "completedAt": "T2",
+      "content": "hello world",
+      "itemId": "i-text",
+      "kind": "text",
+      "timestamp": "T2",
+    },
+    {
+      "active": true,
+      "content": "thinking hard",
+      "itemId": "i-reason",
+      "kind": "thinking",
+      "timestamp": "T3",
+    },
+    {
+      "kind": "tool",
+      "tool": {
+        "completedAt": "T5",
+        "id": "i-tool",
+        "input": "{"command":"ls"}",
+        "name": "Bash",
+        "output": "done",
+        "parsedInput": {
+          "command": "ls",
+        },
+        "startedAt": "T4",
+        "status": "ok",
+        "toolHint": "shell",
+      },
+    },
+    {
+      "active": true,
+      "content": "PLAN",
+      "itemId": "i-plan",
+      "kind": "plan",
+      "timestamp": "T6",
+    },
+  ],
+  "contextLimit": 1000,
+  "footer": "tool_running",
+  "goal": {
+    "currentTurn": 1,
+    "phase": "active",
+    "text": "ship it",
+    "totalTurns": 2,
+  },
+  "goalKnown": true,
+  "liveStatus": {
+    "contextLimit": 1000,
+    "contextUsed": 100,
+    "steps": 3,
+    "toolMs": 50,
+  },
+  "mode": "plan",
+  "model": "m",
+  "notices": [
+    {
+      "code": "c",
+      "level": "warn",
+      "text": "n",
+      "timestamp": "T0",
+    },
+  ],
+  "omittedBlocks": 0,
+  "operationKind": "turn",
+  "plan": "PLAN",
+  "runId": "run-ub",
+  "sessionId": "s1",
+  "sessionTitle": "T",
+  "terminal": "running",
+}
+`;
+
+exports[`structure equivalence: run state reducers > 钉住 reduceRunStateInner 全事件分发 + reduceTurnDiffEvent 全字段分支 > turn_diff reasoning 1`] = `
+{
+  "backgroundJobs": [
+    {
+      "id": "j1",
+      "label": "L",
+      "status": "running",
+    },
+  ],
+  "blocks": [
+    {
+      "completedAt": "T2",
+      "content": "hello world",
+      "itemId": "i-text",
+      "kind": "text",
+      "timestamp": "T2",
+    },
+    {
+      "active": true,
+      "content": "thinking hard",
+      "itemId": "i-reason",
+      "kind": "thinking",
+      "timestamp": "T3",
+    },
+  ],
+  "contextLimit": 1000,
+  "footer": "thinking",
+  "goal": {
+    "currentTurn": 1,
+    "phase": "active",
+    "text": "ship it",
+    "totalTurns": 2,
+  },
+  "goalKnown": true,
+  "liveStatus": {
+    "contextLimit": 1000,
+    "contextUsed": 100,
+    "steps": 3,
+    "toolMs": 50,
+  },
+  "mode": "plan",
+  "model": "m",
+  "notices": [
+    {
+      "code": "c",
+      "level": "warn",
+      "text": "n",
+      "timestamp": "T0",
+    },
+  ],
+  "omittedBlocks": 0,
+  "operationKind": "turn",
+  "runId": "run-ub",
+  "sessionId": "s1",
+  "sessionTitle": "T",
+  "terminal": "running",
+}
+`;
+
+exports[`structure equivalence: run state reducers > 钉住 reduceRunStateInner 全事件分发 + reduceTurnDiffEvent 全字段分支 > turn_diff text 更新+complete+refreshTimestamp 1`] = `
+{
+  "backgroundJobs": [
+    {
+      "id": "j1",
+      "label": "L",
+      "status": "running",
+    },
+  ],
+  "blocks": [
+    {
+      "completedAt": "T2",
+      "content": "hello world",
+      "itemId": "i-text",
+      "kind": "text",
+      "timestamp": "T2",
+    },
+  ],
+  "contextLimit": 1000,
+  "footer": "streaming",
+  "goal": {
+    "currentTurn": 1,
+    "phase": "active",
+    "text": "ship it",
+    "totalTurns": 2,
+  },
+  "goalKnown": true,
+  "liveStatus": {
+    "contextLimit": 1000,
+    "contextUsed": 100,
+    "steps": 3,
+    "toolMs": 50,
+  },
+  "mode": "plan",
+  "model": "m",
+  "notices": [
+    {
+      "code": "c",
+      "level": "warn",
+      "text": "n",
+      "timestamp": "T0",
+    },
+  ],
+  "omittedBlocks": 0,
+  "operationKind": "turn",
+  "runId": "run-ub",
+  "sessionId": "s1",
+  "sessionTitle": "T",
+  "terminal": "running",
+}
+`;
+
+exports[`structure equivalence: run state reducers > 钉住 reduceRunStateInner 全事件分发 + reduceTurnDiffEvent 全字段分支 > turn_diff text 首见 1`] = `
+{
+  "backgroundJobs": [
+    {
+      "id": "j1",
+      "label": "L",
+      "status": "running",
+    },
+  ],
+  "blocks": [
+    {
+      "content": "hello",
+      "itemId": "i-text",
+      "kind": "text",
+      "timestamp": "T1",
+    },
+  ],
+  "contextLimit": 1000,
+  "footer": "streaming",
+  "goal": {
+    "currentTurn": 1,
+    "phase": "active",
+    "text": "ship it",
+    "totalTurns": 2,
+  },
+  "goalKnown": true,
+  "liveStatus": {
+    "contextLimit": 1000,
+    "contextUsed": 100,
+    "steps": 3,
+    "toolMs": 50,
+  },
+  "mode": "plan",
+  "model": "m",
+  "notices": [
+    {
+      "code": "c",
+      "level": "warn",
+      "text": "n",
+      "timestamp": "T0",
+    },
+  ],
+  "omittedBlocks": 0,
+  "operationKind": "turn",
+  "runId": "run-ub",
+  "sessionId": "s1",
+  "sessionTitle": "T",
+  "terminal": "running",
+}
+`;
+
+exports[`structure equivalence: run state reducers > 钉住 reduceRunStateInner 全事件分发 + reduceTurnDiffEvent 全字段分支 > turn_diff toolOutput complete 1`] = `
+{
+  "backgroundJobs": [
+    {
+      "id": "j1",
+      "label": "L",
+      "status": "running",
+    },
+  ],
+  "blocks": [
+    {
+      "completedAt": "T2",
+      "content": "hello world",
+      "itemId": "i-text",
+      "kind": "text",
+      "timestamp": "T2",
+    },
+    {
+      "active": true,
+      "content": "thinking hard",
+      "itemId": "i-reason",
+      "kind": "thinking",
+      "timestamp": "T3",
+    },
+    {
+      "kind": "tool",
+      "tool": {
+        "completedAt": "T5",
+        "id": "i-tool",
+        "input": "{"command":"ls"}",
+        "name": "Bash",
+        "output": "done",
+        "parsedInput": {
+          "command": "ls",
+        },
+        "startedAt": "T4",
+        "status": "ok",
+        "toolHint": "shell",
+      },
+    },
+  ],
+  "contextLimit": 1000,
+  "footer": "tool_running",
+  "goal": {
+    "currentTurn": 1,
+    "phase": "active",
+    "text": "ship it",
+    "totalTurns": 2,
+  },
+  "goalKnown": true,
+  "liveStatus": {
+    "contextLimit": 1000,
+    "contextUsed": 100,
+    "steps": 3,
+    "toolMs": 50,
+  },
+  "mode": "plan",
+  "model": "m",
+  "notices": [
+    {
+      "code": "c",
+      "level": "warn",
+      "text": "n",
+      "timestamp": "T0",
+    },
+  ],
+  "omittedBlocks": 0,
+  "operationKind": "turn",
+  "runId": "run-ub",
+  "sessionId": "s1",
+  "sessionTitle": "T",
+  "terminal": "running",
+}
+`;
+
+exports[`structure equivalence: run state reducers > 钉住 reduceRunStateInner 全事件分发 + reduceTurnDiffEvent 全字段分支 > turn_diff toolOutput 首见 1`] = `
+{
+  "backgroundJobs": [
+    {
+      "id": "j1",
+      "label": "L",
+      "status": "running",
+    },
+  ],
+  "blocks": [
+    {
+      "completedAt": "T2",
+      "content": "hello world",
+      "itemId": "i-text",
+      "kind": "text",
+      "timestamp": "T2",
+    },
+    {
+      "active": true,
+      "content": "thinking hard",
+      "itemId": "i-reason",
+      "kind": "thinking",
+      "timestamp": "T3",
+    },
+    {
+      "kind": "tool",
+      "tool": {
+        "id": "i-tool",
+        "input": "{"command":"ls"}",
+        "name": "Bash",
+        "output": "out",
+        "parsedInput": {
+          "command": "ls",
+        },
+        "startedAt": "T4",
+        "status": "running",
+        "toolHint": "shell",
+      },
+    },
+  ],
+  "contextLimit": 1000,
+  "footer": "tool_running",
+  "goal": {
+    "currentTurn": 1,
+    "phase": "active",
+    "text": "ship it",
+    "totalTurns": 2,
+  },
+  "goalKnown": true,
+  "liveStatus": {
+    "contextLimit": 1000,
+    "contextUsed": 100,
+    "steps": 3,
+    "toolMs": 50,
+  },
+  "mode": "plan",
+  "model": "m",
+  "notices": [
+    {
+      "code": "c",
+      "level": "warn",
+      "text": "n",
+      "timestamp": "T0",
+    },
+  ],
+  "omittedBlocks": 0,
+  "operationKind": "turn",
+  "runId": "run-ub",
+  "sessionId": "s1",
+  "sessionTitle": "T",
+  "terminal": "running",
+}
+`;
+
+exports[`structure equivalence: run state reducers > 钉住 reduceRunStateInner 全事件分发 + reduceTurnDiffEvent 全字段分支 > turn_diff 多字段组合 1`] = `
+{
+  "backgroundJobs": [
+    {
+      "id": "j1",
+      "label": "L",
+      "status": "running",
+    },
+  ],
+  "blocks": [
+    {
+      "completedAt": "T2",
+      "content": "hello world",
+      "itemId": "i-text",
+      "kind": "text",
+      "timestamp": "T2",
+    },
+    {
+      "active": false,
+      "content": "thinking hard",
+      "itemId": "i-reason",
+      "kind": "thinking",
+      "timestamp": "T3",
+    },
+    {
+      "kind": "tool",
+      "tool": {
+        "completedAt": "T5",
+        "id": "i-tool",
+        "input": "{"command":"ls"}",
+        "name": "Bash",
+        "output": "done",
+        "parsedInput": {
+          "command": "ls",
+        },
+        "startedAt": "T4",
+        "status": "ok",
+        "toolHint": "shell",
+      },
+    },
+    {
+      "active": true,
+      "content": "PLAN",
+      "itemId": "i-plan",
+      "kind": "plan",
+      "timestamp": "T6",
+    },
+    {
+      "diff": "D",
+      "itemId": "i-fc",
+      "kind": "file_change",
+      "operation": "create",
+      "path": "a.ts",
+      "timestamp": "T7",
+    },
+    {
+      "diff": undefined,
+      "itemId": "i-fc",
+      "kind": "file_change",
+      "operation": "delete",
+      "path": "b.ts",
+      "timestamp": "T7",
+    },
+    {
+      "content": "T",
+      "itemId": "i-combo",
+      "kind": "text",
+      "timestamp": "T8",
+    },
+    {
+      "active": true,
+      "content": "R",
+      "itemId": "i-combo",
+      "kind": "thinking",
+      "timestamp": "T8",
+    },
+    {
+      "active": true,
+      "content": "P",
+      "itemId": "i-combo",
+      "kind": "plan",
+      "timestamp": "T8",
+    },
+  ],
+  "contextLimit": 1000,
+  "footer": "thinking",
+  "goal": {
+    "currentTurn": 1,
+    "phase": "active",
+    "text": "ship it",
+    "totalTurns": 2,
+  },
+  "goalKnown": true,
+  "liveStatus": {
+    "contextLimit": 1000,
+    "contextUsed": 100,
+    "steps": 3,
+    "toolMs": 50,
+  },
+  "mode": "plan",
+  "model": "m",
+  "notices": [
+    {
+      "code": "c",
+      "level": "warn",
+      "text": "n",
+      "timestamp": "T0",
+    },
+  ],
+  "omittedBlocks": 0,
+  "operationKind": "turn",
+  "plan": "P",
+  "runId": "run-ub",
+  "sessionId": "s1",
+  "sessionTitle": "T",
+  "terminal": "running",
+}
+`;
+
+exports[`structure equivalence: run state reducers > 钉住 reduceRunStateInner 全事件分发 + reduceTurnDiffEvent 全字段分支 > turn_started 1`] = `
+{
+  "backgroundJobs": [
+    {
+      "id": "j1",
+      "label": "L",
+      "status": "running",
+    },
+  ],
+  "blocks": [],
+  "contextLimit": 1000,
+  "footer": "thinking",
+  "goal": {
+    "currentTurn": 1,
+    "phase": "active",
+    "text": "ship it",
+    "totalTurns": 2,
+  },
+  "goalKnown": true,
+  "liveStatus": {
+    "contextLimit": 1000,
+    "contextUsed": 100,
+    "steps": 3,
+    "toolMs": 50,
+  },
+  "mode": "plan",
+  "model": "m",
+  "notices": [
+    {
+      "code": "c",
+      "level": "warn",
+      "text": "n",
+      "timestamp": "T0",
+    },
+  ],
+  "operationKind": "turn",
+  "runId": "run-ub",
+  "sessionId": "s1",
+  "sessionTitle": "T",
+  "terminal": "running",
+}
+`;

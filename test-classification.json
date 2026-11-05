@@ -140,6 +140,7 @@
     "src/common/guards.test.ts",
     "src/common/ttl-cache.test.ts",
     "src/common/turn-failure.test.ts",
+    "src/common/tool-summary.test.ts",
     "src/workspace/workspace.test.ts",
     "src/logger/logger.test.ts",
     "src/update/**/*.test.ts",

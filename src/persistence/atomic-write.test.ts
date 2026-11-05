@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { atomicWrite, atomicWriteJson } from './atomic-write.js';
+import { atomicMoveFile, atomicWrite, atomicWriteJson } from './atomic-write.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -139,6 +139,66 @@ describe('atomicWrite EXDEV fallback', () => {
       expect(tmpLeftovers(dir)).toEqual([]);
     } finally {
       renameSpy.mockRestore();
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('atomicMoveFile', () => {
+  let renameSpy: ReturnType<typeof vi.spyOn>;
+  let copyFileSpy: ReturnType<typeof vi.spyOn>;
+
+  afterEach(() => {
+    renameSpy?.mockRestore();
+    copyFileSpy?.mockRestore();
+  });
+
+  it('moves an already-written download into place via rename', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'atomic-move-'));
+    const src = path.join(dir, 'download.tmp');
+    const dest = path.join(dir, 'image.png');
+    fs.writeFileSync(src, 'PNG bytes');
+    try {
+      atomicMoveFile(src, dest);
+      expect(fs.readFileSync(dest, 'utf-8')).toBe('PNG bytes');
+      expect(fs.existsSync(src)).toBe(false);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('falls back to copy + unlink when rename throws EXDEV', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'atomic-move-exdev-'));
+    const src = path.join(dir, 'download.tmp');
+    const dest = path.join(dir, 'image.png');
+    fs.writeFileSync(src, 'PNG bytes');
+    renameSpy = vi.spyOn(fs, 'renameSync').mockImplementation(() => {
+      const err = new Error('cross-device link') as NodeJS.ErrnoException;
+      err.code = 'EXDEV';
+      throw err;
+    });
+    copyFileSpy = vi.spyOn(fs, 'copyFileSync');
+    try {
+      atomicMoveFile(src, dest);
+      expect(fs.readFileSync(dest, 'utf-8')).toBe('PNG bytes');
+      expect(fs.existsSync(src)).toBe(false);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('propagates non-EXDEV rename errors without creating the destination', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'atomic-move-err-'));
+    const src = path.join(dir, 'download.tmp');
+    const dest = path.join(dir, 'image.png');
+    fs.writeFileSync(src, 'PNG bytes');
+    renameSpy = vi.spyOn(fs, 'renameSync').mockImplementation(() => {
+      throw new Error('permission denied');
+    });
+    try {
+      expect(() => atomicMoveFile(src, dest)).toThrow('permission denied');
+      expect(fs.existsSync(dest)).toBe(false);
+    } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
   });

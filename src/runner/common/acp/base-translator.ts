@@ -27,7 +27,7 @@ import type {
   SessionInfoEvent,
   TurnStartedEvent,
 } from '../../types.js';
-import { makeTurnStartedEvent } from '../turn-started.js';
+import { produceTurnStartedEvent } from '../turn-started.js';
 import {
   NotificationMethod,
   ServerRequestMethod,
@@ -115,6 +115,19 @@ function stringifyUnknown(value: unknown): string {
     return JSON.stringify(value) ?? String(value);
   } catch {
     return String(value);
+  }
+}
+
+/**
+ * 记录最新值并给 map 封顶（删最老 key，近似 LRU）。
+ * `trackToolCallArgs` 与 `trackToolCallName` 曾是逐字相同的两段，合并到这里。
+ */
+function trackBounded(map: Map<string, string>, key: string, value: string): void {
+  map.delete(key);
+  map.set(key, value);
+  if (map.size > 100) {
+    const oldest = map.keys().next().value;
+    if (oldest !== undefined) map.delete(oldest);
   }
 }
 
@@ -265,8 +278,9 @@ export abstract class BaseAcpTranslator {
    * is sent (no wire notification for this — self-produced).
    */
   produceTurnStarted(sessionId: string, turnId: string): AcpTurnStartedEvent {
-    this.currentTurnId = turnId;
-    return makeTurnStartedEvent(sessionId, turnId, this.operationKind);
+    return produceTurnStartedEvent(sessionId, turnId, this.operationKind, (_sessionId, t) => {
+      this.currentTurnId = t;
+    });
   }
 
   protected approvalRequestedEvents(
@@ -527,22 +541,12 @@ export abstract class BaseAcpTranslator {
 
   /** Record latest args text, bounded so a long session cannot grow it forever. */
   private trackToolCallArgs(toolCallId: string, argsText: string): void {
-    this.toolCallArgsByCallId.delete(toolCallId);
-    this.toolCallArgsByCallId.set(toolCallId, argsText);
-    if (this.toolCallArgsByCallId.size > 100) {
-      const oldest = this.toolCallArgsByCallId.keys().next().value;
-      if (oldest !== undefined) this.toolCallArgsByCallId.delete(oldest);
-    }
+    trackBounded(this.toolCallArgsByCallId, toolCallId, argsText);
   }
 
   /** Record tool_use name, bounded to keep a long session from growing it. */
   private trackToolCallName(toolCallId: string, name: string): void {
-    this.toolCallNameByCallId.delete(toolCallId);
-    this.toolCallNameByCallId.set(toolCallId, name);
-    if (this.toolCallNameByCallId.size > 100) {
-      const oldest = this.toolCallNameByCallId.keys().next().value;
-      if (oldest !== undefined) this.toolCallNameByCallId.delete(oldest);
-    }
+    trackBounded(this.toolCallNameByCallId, toolCallId, name);
   }
 
   /**

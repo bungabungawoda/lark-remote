@@ -6,6 +6,7 @@ import { PiSessionReader } from '../../session/pi/sessions.js';
 import { encodeProjectDirName } from '../../platform/path.js';
 import { currentPlatform, isWin32 } from '../../platform/select.js';
 import { expectRunUsageScope } from '../../../tests/lib/usage-scope-contract.js';
+import { mockLogger } from '../../../tests/lib/logger-mock.js';
 
 vi.mock('../../logger/index.js', async () =>
   (await import('../../../tests/lib/logger-mock.js')).loggerModuleMock(),
@@ -1028,5 +1029,49 @@ describe('PiSessionReader session id matching', () => {
     expect(reader.readSessionContent(full, cwd).displayTitle).toBe('exact session');
     expect(reader.readSessionContent('aaaaaaaa-1111', cwd)).toEqual({ events: [] });
     expect(reader.isSessionActive('aaaaaaaa-1111', cwd)).toBe(false);
+  });
+
+  it('readSessionContent 遇到非 ENOENT 目录读取故障：留痕后优雅返回空事件', () => {
+    const reader = new PiSessionReader({ piDir: tmpDir });
+    mockLogger.debug.mockClear();
+    const spy = vi.spyOn(fs, 'readdirSync').mockImplementationOnce(() => {
+      throw fsErrno('EPERM', 'operation not permitted, scandir');
+    });
+
+    try {
+      expect(reader.readSessionContent('sess-epm', '/tmp/epm-proj').events).toEqual([]);
+      expect(
+        mockLogger.debug.mock.calls.some((call) =>
+          String(call[0]).includes('[pi-session-reader] cannot read'),
+        ),
+      ).toBe(true);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('isSessionActive 遇到非 ENOENT stat 故障：留痕后判为 inactive', () => {
+    const sessionId = 'sess-stat-fail';
+    const cwd = '/tmp/stat-fail';
+    writeSessionFile(sessionId, cwd, [
+      { type: 'session', id: sessionId, cwd, model: 'glm-5.2' },
+      { type: 'message', message: { role: 'user', content: [{ type: 'text', text: 'hi' }] } },
+    ]);
+    const reader = new PiSessionReader({ piDir: tmpDir });
+    mockLogger.debug.mockClear();
+    const spy = vi.spyOn(fs, 'statSync').mockImplementationOnce(() => {
+      throw fsErrno('EACCES', 'permission denied, stat');
+    });
+
+    try {
+      expect(reader.isSessionActive(sessionId, cwd)).toBe(false);
+      expect(
+        mockLogger.debug.mock.calls.some((call) =>
+          String(call[0]).includes('[pi-session-reader] stat'),
+        ),
+      ).toBe(true);
+    } finally {
+      spy.mockRestore();
+    }
   });
 });

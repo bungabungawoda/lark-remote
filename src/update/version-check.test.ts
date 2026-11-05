@@ -76,19 +76,42 @@ describe('compareVersions', () => {
 describe('checkLatestVersion', () => {
   let server: http.Server;
   let registryUrl: string;
+  let port = 0;
   let requestCount = 0;
 
   beforeAll(async () => {
     // Local registry stub: keeps these tests offline and deterministic
     // instead of hitting the real npm registry (live tests must not run
-    // by default in the suite).
-    server = http.createServer((_req, res) => {
+    // by default in the suite). Path-based scenarios exercise the GET
+    // callback's error/redirect branches without a second server.
+    server = http.createServer((req, res) => {
       requestCount += 1;
+      const url = req.url ?? '';
+      if (url.startsWith('/status500')) {
+        res.writeHead(500);
+        res.end('oops');
+        return;
+      }
+      if (url.startsWith('/no-version')) {
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ name: 'lark-remote' }));
+        return;
+      }
+      if (url.startsWith('/bad-json')) {
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end('not json');
+        return;
+      }
+      if (url.startsWith('/redirect')) {
+        res.writeHead(302, { location: `http://${req.headers.host}/latest` });
+        res.end();
+        return;
+      }
       res.writeHead(200, { 'content-type': 'application/json' });
       res.end(JSON.stringify({ version: '9.9.9' }));
     });
     await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
-    const { port } = server.address() as AddressInfo;
+    port = (server.address() as AddressInfo).port;
     registryUrl = `http://127.0.0.1:${port}/latest`;
   });
 
@@ -165,5 +188,32 @@ describe('checkLatestVersion', () => {
     await expect(
       checkLatestVersion({ registryUrl: 'http://127.0.0.1:1/nonexistent' }),
     ).rejects.toThrow();
+  });
+
+  it('registry 返回非 200 → 抛出带状态码的错误文案', async () => {
+    await expect(
+      checkLatestVersion({ cachePath, registryUrl: `http://127.0.0.1:${port}/status500` }),
+    ).rejects.toThrow('npm registry returned status 500');
+  });
+
+  it('registry 响应缺 version 字段 → 抛出明确错误', async () => {
+    await expect(
+      checkLatestVersion({ cachePath, registryUrl: `http://127.0.0.1:${port}/no-version` }),
+    ).rejects.toThrow('npm registry response missing version field');
+  });
+
+  it('registry 响应不是 JSON → 抛出解析错误', async () => {
+    await expect(
+      checkLatestVersion({ cachePath, registryUrl: `http://127.0.0.1:${port}/bad-json` }),
+    ).rejects.toThrow('npm registry response parse error');
+  });
+
+  it('registry 3xx 重定向 → 跟随一次拿到 latest 版本', async () => {
+    const result = await checkLatestVersion({
+      cachePath,
+      registryUrl: `http://127.0.0.1:${port}/redirect`,
+    });
+    expect(result.latest).toBe('9.9.9');
+    expect(requestCount).toBe(2);
   });
 });

@@ -994,3 +994,245 @@ describe('DshSessionReader 会话预览字段', () => {
     }
   });
 });
+
+/**
+ * unary 的 cookie 失效重试（characterization）。
+ *
+ * 这三个分支此前 0% 覆盖：非 auth 失败不重试、auth 失败清缓存重试、
+ * 重试仍失败把首错作为根因留痕。后续只做等价结构拆分，调用次数、
+ * 错误文案与 cause 链必须原样保留。
+ */
+describe('DshSessionReader unary cookie-refresh (characterization)', () => {
+  const HOST = 'http://127.0.0.1:3080';
+
+  function readerWithAttempts(attempts: Array<() => unknown>): {
+    reader: DshSessionReader;
+    calls: () => number;
+    connects: () => number;
+  } {
+    let calls = 0;
+    let connects = 0;
+    const reader = new DshSessionReader({
+      host: HOST,
+      token: `${HOST}/?token=abc`,
+      credentialsFile: NO_CREDENTIALS_FILE,
+      syncConnect: () => {
+        connects += 1;
+        return 'dsh-auth=cookie';
+      },
+      syncRequest: () => {
+        const fn = attempts[calls];
+        calls += 1;
+        return fn();
+      },
+    });
+    return { reader, calls: () => calls, connects: () => connects };
+  }
+
+  it('非 auth 失败（500/超时）不重试，原样上抛', () => {
+    const { reader, calls } = readerWithAttempts([
+      () => {
+        throw new Error('DSH session/list failed: HTTP 500');
+      },
+    ]);
+    expect(() => reader.listSessions(CWD)).toThrow(/HTTP 500/);
+    expect(calls()).toBe(1);
+  });
+
+  it('auth 失败清 cookie 缓存后重试一次并成功', () => {
+    const { reader, calls, connects } = readerWithAttempts([
+      () => {
+        throw new Error('DSH session/list unauthorized (HTTP 401)');
+      },
+      () => ({ items: [] }),
+    ]);
+    expect(reader.listSessions(CWD)).toEqual({ sessions: [], total: 0 });
+    expect(calls()).toBe(2);
+    // 重试前 cookieCache.clear()：两次 resolveCookie 都要重新握手。
+    expect(connects()).toBe(2);
+  });
+
+  it('重试仍失败：消息含二次错 + 首错根因，cause 链指向二次错误', () => {
+    const { reader, calls } = readerWithAttempts([
+      () => {
+        throw new Error('DSH session/list unauthorized (HTTP 403)');
+      },
+      () => {
+        throw new Error('second boom');
+      },
+    ]);
+    let thrown: unknown;
+    try {
+      reader.listSessions(CWD);
+    } catch (err) {
+      thrown = err;
+    }
+    expect(thrown).toBeInstanceOf(Error);
+    const wrapped = thrown as Error & { cause?: Error };
+    expect(wrapped.message).toContain('DSH session/list failed after cookie refresh: second boom');
+    expect(wrapped.message).toContain('root cause: DSH session/list unauthorized (HTTP 403)');
+    const unaryError = wrapped.cause as Error & { cause?: Error };
+    expect(unaryError.message).toBe(
+      'DSH session/list failed after cookie refresh: second boom (root cause: DSH session/list unauthorized (HTTP 403))',
+    );
+    expect(unaryError.cause?.message).toBe('second boom');
+    expect(calls()).toBe(2);
+  });
+});
+
+/**
+ * mapEvent 的边缘分支（characterization）。
+ *
+ * 后续把 switch 改成 Map 查表 + 模块级命名 handler 后，未命中分支、
+ * 空文本早退、tool/result 未配对的独立面板、content stringify 口径必须保持。
+ */
+describe('DshSessionReader mapEvent 边缘分支 (characterization)', () => {
+  function readOne(ev: DshSessionEvent) {
+    const server = new FakeDshServer();
+    registerSession(server);
+    server.register('session/page', () => ({
+      ok: true,
+      value: { hasMore: false, records: [{ type: 'event', event: ev }] },
+    }));
+    return makeReader(server).readSessionContent(SID_A, CWD, { maxEvents: 10 });
+  }
+
+  function toolResultRaw(content: unknown, isError = false): DshSessionEvent {
+    return {
+      type: 'tool/result',
+      seq: 4,
+      time: 1700000000000,
+      data: { turn: 0, step: 0, message: { role: 'tool', content, isError }, callId: 'call-1' },
+    } as unknown as DshSessionEvent;
+  }
+
+  it('tool/result 无 pendingTool → 独立 tool_result 面板（🟢 / 🔴 失败）', () => {
+    const ok = readOne(toolResult(SID_A, 'standalone output'));
+    expect(ok.events).toHaveLength(1);
+    expect(ok.events[0]).toMatchObject({
+      type: 'tool_result',
+      title: '🟢 结果',
+      content: 'standalone output',
+    });
+    const bad = readOne(toolResult(SID_A, 'err output', true));
+    expect(bad.events).toHaveLength(1);
+    expect(bad.events[0]).toMatchObject({ type: 'tool_result', title: '🔴 结果（失败）' });
+  });
+
+  it('空文本 user / 未知 type / 无块 assistant → 无事件', () => {
+    expect(readOne(userMsg(SID_A, '   ')).events).toEqual([]);
+    expect(
+      readOne({ type: 'mystery/event', seq: 1, time: 1, data: {} } as unknown as DshSessionEvent)
+        .events,
+    ).toEqual([]);
+    expect(
+      readOne({
+        type: 'assistant/message',
+        seq: 1,
+        time: 1,
+        data: { message: { role: 'assistant', content: [] } },
+      } as unknown as DshSessionEvent).events,
+    ).toEqual([]);
+  });
+
+  it('tool/call 空 name / 空 args → 🔧 面板标题不带摘要、正文空', () => {
+    const [ev] = readOne(toolCall(SID_A, '', '')).events;
+    expect(ev).toMatchObject({ type: 'tool_use', title: '🔧 ', content: '' });
+  });
+
+  it('tool/result content 的 null / 数组 / 对象 stringify 口径', () => {
+    expect(readOne(toolResultRaw(null)).events[0]!.content).toBe('[tool result]');
+    expect(readOne(toolResultRaw([{ text: 'A' }, { text: 'B' }, 3])).events[0]!.content).toBe(
+      'AB3',
+    );
+    expect(readOne(toolResultRaw({ a: 1 })).events[0]!.content).toBe('{"a":1}');
+  });
+
+  it('assistant/message 的 reasoning / 空文本 / 非字符串 text 块映射', () => {
+    const assistant = {
+      type: 'assistant/message',
+      seq: 1,
+      time: 1700000000000,
+      data: {
+        message: {
+          role: 'assistant',
+          content: [
+            { type: 'text', text: '   ' },
+            { type: 'text', text: 123 },
+            { type: 'reasoning', text: '  想一下  ' },
+            { type: 'text', text: '  答案  ' },
+            { type: 'image', text: '忽略' },
+          ],
+        },
+      },
+    } as unknown as DshSessionEvent;
+    const content = readOne(assistant);
+    expect(content.events.map((e) => (e as { type: string }).type)).toEqual([
+      'thinking',
+      'assistant',
+    ]);
+    expect(content.events[0]).toMatchObject({ type: 'thinking', content: '想一下' });
+    expect(content.events[1]).toMatchObject({ type: 'assistant', content: '答案' });
+  });
+});
+
+describe('DshSessionReader session/page throughSeq 水印', () => {
+  it('投影带 asOfSeq 用投影值；投影缺失回退会话自带 seq；都没有则 -1', () => {
+    const cursors: number[] = [];
+    function readerWith(projection: unknown, listProjection?: unknown) {
+      const server = new FakeDshServer();
+      server.register('session/list', () => ({
+        ok: true,
+        value: {
+          items: [
+            {
+              sessionId: SID_A,
+              updatedAt: 1,
+              running: false,
+              blank: false,
+              cwd: CWD,
+              ...(listProjection === undefined ? {} : { projections: listProjection }),
+            },
+          ],
+        },
+      }));
+      server.register('session/projections', () => ({ ok: true, value: projection }));
+      server.register('session/page', (payload) => {
+        cursors.push((payload as { throughSeq?: number }).throughSeq ?? -999);
+        return { ok: true, value: { hasMore: false, records: [] } };
+      });
+      return makeReader(server);
+    }
+
+    readerWith({ asOfSeq: 42 }).readSessionContent(SID_A, CWD);
+    readerWith(null, { asOfSeq: 7 }).readSessionContent(SID_A, CWD);
+    readerWith(null).readSessionContent(SID_A, CWD);
+    expect(cursors).toEqual([42, 7, -1]);
+  });
+});
+
+describe('DshSessionReader 凭据文件损坏时的回退', () => {
+  const broken = (): Buffer => {
+    throw new Error('corrupt yaml');
+  };
+
+  it('有启动 token 时回退 token 连接，listSessions 仍可用', () => {
+    const reader = new DshSessionReader({
+      host: 'http://dsh.invalid',
+      token: 'http://dsh.invalid/?token=abc',
+      readCredentials: broken,
+      syncConnect: () => 'cookie-from-token',
+      syncRequest: () => ({ items: [] }),
+    });
+    expect(reader.listSessions(CWD)).toEqual({ sessions: [], total: 0 });
+  });
+
+  it('无启动 token 时抛出带凭据文件信息的可见错误', () => {
+    const reader = new DshSessionReader({
+      host: 'http://dsh.invalid',
+      readCredentials: broken,
+      syncRequest: () => ({ items: [] }),
+    });
+    expect(() => reader.listSessions(CWD)).toThrow(/corrupt yaml/);
+  });
+});

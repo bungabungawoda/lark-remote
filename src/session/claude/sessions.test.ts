@@ -1587,3 +1587,45 @@ describe('maxUsageRecord / buildClaudeUsage（usage merge + 装配）', () => {
     expect(usage.cumulativeInputTokens).toBe(140);
   });
 });
+
+/**
+ * scalarScan 单行多分支（characterization）。
+ *
+ * 后续把 scanJsonlOnce 的回调抽成模块级命名函数 + 状态对象后，
+ * 一行同时命中 usage / compact_boundary / ai-title / tail 定位 / recap /
+ * turn 边界多个收集器时的累积结果必须保持；ai-title、recap 取「最后一条」，
+ * tail 起点取「最后一条 role=user 的行」。
+ */
+describe('scalarScan 单行多分支 (characterization)', () => {
+  it('多类行混合：ai-title/recap 取末条，usage 按 message id 逐字段 max，tail 从末个 user 起', () => {
+    const cwd = '/tmp/scalar-scan-combo';
+    const sessionId = writeSession(cwd, [
+      '{"type":"ai-title","aiTitle":"FIRST"}',
+      // 唯一真人 prompt：tail 起点、lastUserMessage、turnSeq=1
+      '{"type":"user","message":{"role":"user","content":[{"type":"text","text":"Q1"}]}}',
+      // 同一 message id 两行 usage → per-field max（30 / 5）
+      '{"type":"assistant","message":{"id":"m1","role":"assistant","usage":{"input_tokens":10,"output_tokens":2},"content":[]}}',
+      '{"type":"assistant","message":{"id":"m1","role":"assistant","usage":{"input_tokens":30,"output_tokens":5},"content":[]}}',
+      '{"type":"system","subtype":"compact_boundary","compactMetadata":{"postTokens":999}}',
+      // recap：isCompactSummary user 同时命中 recap 与 tail 定位（role=user）
+      '{"type":"user","isCompactSummary":true,"message":{"role":"user","content":[{"type":"text","text":"RECAP1"}]}}',
+      '{"type":"ai-title","aiTitle":"LAST"}',
+      // tail 内的 assistant 输出
+      '{"type":"assistant","message":{"id":"m2","role":"assistant","content":[{"type":"text","text":"A2"}]}}',
+    ]);
+
+    const r = readSessionContent(sessionId, cwd, { projectsDir: tmpDir });
+    expect(r.aiTitle).toBe('LAST');
+    expect(r.recap).toBe('RECAP1');
+    expect(r.displayTitle).toBe('LAST'); // aiTitle 优先于 lastUserMessage
+    expect(r.usage).toMatchObject({
+      compactCount: 1,
+      inputTokens: 30,
+      outputTokens: 5,
+      cumulativeInputTokens: 30,
+      cumulativeOutputTokens: 5,
+    });
+    // tailOffset 指向末个 role=user 行（recap）之后：ai-title 行不产出，只有 A2。
+    expect(r.events.map((e) => e.content)).toEqual(['A2']);
+  });
+});

@@ -207,4 +207,41 @@ describe('QueueManager - task interruption state sync', () => {
     expect(() => qm.resetExecutingCount(tmpDir, -1)).not.toThrow();
     expect(qm.getQueueInfo(tmpDir).position).toBe(0);
   });
+
+  it('resetExecutingCount 在计数已归零时是显式 no-op（留痕且不重复动状态）', async () => {
+    const { qm } = makeQueueManager(() => false);
+
+    let hangReject: (err: Error) => void = () => {};
+    const hangPromise = new Promise<void>((_resolve, reject) => {
+      hangReject = reject;
+    });
+    qm.enqueue(
+      tmpDir,
+      async () => {
+        await hangPromise;
+      },
+      {
+        taskMeta: {
+          userId: 'u1',
+          chatId: 'c1',
+          messageId: 'msg-1',
+          messagePreview: 'task running',
+        },
+      },
+    );
+    await new Promise((r) => setTimeout(r, 50));
+
+    const slot = qm.getExecutingSlot(tmpDir)!;
+    qm.resetExecutingCount(tmpDir, slot); // 第一次：清零并授予中断信用
+    mockLogger.debug.mockClear();
+    qm.resetExecutingCount(tmpDir, slot); // 第二次：count 已 0 → no-op 分支
+
+    expect(mockLogger.debug.mock.calls.some((c) => String(c[0]).includes('count already 0'))).toBe(
+      true,
+    );
+    expect(qm.getQueueInfo(tmpDir).position).toBe(0);
+
+    hangReject(new Error('stopped'));
+    await new Promise((r) => setTimeout(r, 50));
+  });
 });

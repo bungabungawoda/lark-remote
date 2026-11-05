@@ -331,3 +331,34 @@ describe('InboundTurnAssembler：可注入时钟', () => {
     expect(tasks).toHaveLength(1);
   });
 });
+
+describe('InboundTurnAssembler：dispose 清理活跃窗口', () => {
+  it('丢弃待提交 turn 与定时器：窗口到期、flush 都不再 commit', async () => {
+    const h = makeAssembler();
+    h.assembler.ingest(textEvent('m1', '还没来得及提交的话'));
+    expect(h.commits).toHaveLength(0);
+
+    // 进程收尾：活跃 bucket 的定时器必须被清掉，内容一并丢弃
+    h.assembler.dispose();
+
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(h.commits).toHaveLength(0);
+    expect(h.receipts).toHaveLength(0);
+
+    await h.assembler.flushAll('flush');
+    expect(h.commits).toHaveLength(0);
+  });
+
+  it('dispose 后吞掉在途媒体下载，不产生未处理的 rejection 或 commit', async () => {
+    const h = makeAssembler();
+    const d = deferred<MediaOutcome>();
+    h.assembler.ingest(textEvent('m1', '看这张图'));
+    h.assembler.ingest(mediaEvent('m-img', d.promise));
+    h.assembler.dispose();
+
+    d.reject(new Error('download cancelled'));
+    await vi.advanceTimersByTimeAsync(1000);
+    await vi.runAllTimersAsync();
+    expect(h.commits).toHaveLength(0);
+  });
+});

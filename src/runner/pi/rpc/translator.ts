@@ -18,7 +18,7 @@ import type {
   ResultEvent,
   TurnStartedEvent,
 } from '../../types.js';
-import { makeTurnStartedEvent } from '../../common/turn-started.js';
+import { produceTurnStartedEvent } from '../../common/turn-started.js';
 import {
   type PiRpcEvent,
   type PiRpcCompactionEvent,
@@ -32,6 +32,81 @@ import {
 export type PiRpcTurnStartedEvent = TurnStartedEvent;
 
 export type PiRpcTranslatorEvent = AgentEvent | PiRpcTurnStartedEvent;
+
+// =============================================================================
+// applyUpdate 的模块级命名 handler（显式传可变状态，避免方法内 switch）
+// =============================================================================
+
+type PiUpdateEvent = PiRpcMessageUpdateEvent['assistantMessageEvent'];
+
+interface PiUpdateState {
+  content: AssistantContent[];
+  currentContentIndex: number;
+  pendingToolCall: boolean;
+}
+
+type PiUpdateHandler = (state: PiUpdateState, evt: PiUpdateEvent) => void;
+
+// text / thinking 两组 handler 原本逐字重复，唯一差异是类型标签（同时也是
+// 内容字段名）：`text` ↔ `thinking`。合并为单一实现，差异提到 kind 参数。
+type PiTextLikeKind = 'text' | 'thinking';
+
+/** 首见：push 一个空 text/thinking 块并把游标移到它。 */
+function textLikeStart(kind: PiTextLikeKind, state: PiUpdateState, _evt: PiUpdateEvent): void {
+  state.content.push(
+    kind === 'text' ? { type: 'text', text: '' } : { type: 'thinking', thinking: '' },
+  );
+  state.currentContentIndex++;
+}
+
+/** 增量：把 delta 追加到当前 text/thinking 块（类型不匹配则忽略）。 */
+function textLikeDelta(kind: PiTextLikeKind, state: PiUpdateState, evt: PiUpdateEvent): void {
+  const idx = state.currentContentIndex;
+  const block = state.content[idx];
+  if (idx >= 0 && block?.type === kind) {
+    (block as unknown as Record<PiTextLikeKind, string>)[kind] += evt.delta ?? '';
+  }
+}
+
+/** 收尾：以全量 content 覆盖当前 text/thinking 块（无 content 则忽略）。 */
+function textLikeEnd(kind: PiTextLikeKind, state: PiUpdateState, evt: PiUpdateEvent): void {
+  const idx = state.currentContentIndex;
+  const block = state.content[idx];
+  if (idx >= 0 && block?.type === kind && evt.content) {
+    (block as unknown as Record<PiTextLikeKind, string>)[kind] = evt.content;
+  }
+}
+
+function toolCallStart(state: PiUpdateState, _evt: PiUpdateEvent): void {
+  // 信息保真 不再 push 空壳 tool_use（空 id/name 会被渲染成
+  // 无意义工具块）。只保留 bookkeeping，toolcall_end 补发完整事件。
+  state.pendingToolCall = true;
+}
+
+function toolCallEnd(state: PiUpdateState, evt: PiUpdateEvent): void {
+  if (state.pendingToolCall && evt.toolCall) {
+    state.content.push({
+      type: 'tool_use',
+      id: evt.toolCall.id,
+      name: evt.toolCall.name,
+      input: evt.toolCall.arguments,
+    });
+    state.currentContentIndex = state.content.length - 1;
+    state.pendingToolCall = false;
+  }
+}
+
+/** 查表分派 message_update；toolcall_delta 等无专属 handler 的类型为 no-op。 */
+const PI_UPDATE_HANDLERS: ReadonlyMap<string, PiUpdateHandler> = new Map([
+  ['text_start', textLikeStart.bind(null, 'text')],
+  ['text_delta', textLikeDelta.bind(null, 'text')],
+  ['text_end', textLikeEnd.bind(null, 'text')],
+  ['thinking_start', textLikeStart.bind(null, 'thinking')],
+  ['thinking_delta', textLikeDelta.bind(null, 'thinking')],
+  ['thinking_end', textLikeEnd.bind(null, 'thinking')],
+  ['toolcall_start', toolCallStart],
+  ['toolcall_end', toolCallEnd],
+]);
 
 export class PiRpcTranslator {
   private content: AssistantContent[] = [];
@@ -169,8 +244,9 @@ export class PiRpcTranslator {
 
   /** Self-produced turn_started (no wire equivalent). */
   produceTurnStarted(sessionId: string, turnId: string): PiRpcTurnStartedEvent {
-    this.sessionId = sessionId;
-    return makeTurnStartedEvent(sessionId, turnId, this.operationKind);
+    return produceTurnStartedEvent(sessionId, turnId, this.operationKind, (s) => {
+      this.sessionId = s;
+    });
   }
 
   /** Result for a completed normal turn (agent_settled). */
@@ -274,71 +350,14 @@ export class PiRpcTranslator {
   }
 
   private applyUpdate(evt: PiRpcMessageUpdateEvent['assistantMessageEvent']): void {
-    switch (evt.type) {
-      case 'text_start':
-        this.content.push({ type: 'text', text: '' });
-        this.currentContentIndex++;
-        break;
-      case 'text_delta':
-        if (
-          this.currentContentIndex >= 0 &&
-          this.content[this.currentContentIndex]?.type === 'text'
-        ) {
-          (this.content[this.currentContentIndex] as { text: string }).text += evt.delta ?? '';
-        }
-        break;
-      case 'text_end':
-        if (
-          this.currentContentIndex >= 0 &&
-          this.content[this.currentContentIndex]?.type === 'text' &&
-          evt.content
-        ) {
-          (this.content[this.currentContentIndex] as { text: string }).text = evt.content;
-        }
-        break;
-      case 'thinking_start':
-        this.content.push({ type: 'thinking', thinking: '' });
-        this.currentContentIndex++;
-        break;
-      case 'thinking_delta':
-        if (
-          this.currentContentIndex >= 0 &&
-          this.content[this.currentContentIndex]?.type === 'thinking'
-        ) {
-          (this.content[this.currentContentIndex] as { thinking: string }).thinking +=
-            evt.delta ?? '';
-        }
-        break;
-      case 'thinking_end':
-        if (
-          this.currentContentIndex >= 0 &&
-          this.content[this.currentContentIndex]?.type === 'thinking' &&
-          evt.content
-        ) {
-          (this.content[this.currentContentIndex] as { thinking: string }).thinking = evt.content;
-        }
-        break;
-      case 'toolcall_start':
-        // 信息保真 不再 push 空壳 tool_use（空 id/name 会被渲染成
-        // 无意义工具块）。只保留 bookkeeping，toolcall_end 补发完整事件。
-        this.pendingToolCall = true;
-        break;
-      case 'toolcall_end':
-        if (this.pendingToolCall && evt.toolCall) {
-          this.content.push({
-            type: 'tool_use',
-            id: evt.toolCall.id,
-            name: evt.toolCall.name,
-            input: evt.toolCall.arguments,
-          });
-          this.currentContentIndex = this.content.length - 1;
-          this.pendingToolCall = false;
-        }
-        break;
-      default:
-        // toolcall_delta: pi provides complete arguments at toolcall_end, ignore.
-        break;
-    }
+    const state: PiUpdateState = {
+      content: this.content,
+      currentContentIndex: this.currentContentIndex,
+      pendingToolCall: this.pendingToolCall,
+    };
+    PI_UPDATE_HANDLERS.get(evt.type)?.(state, evt);
+    this.currentContentIndex = state.currentContentIndex;
+    this.pendingToolCall = state.pendingToolCall;
   }
 }
 

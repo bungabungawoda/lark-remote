@@ -197,6 +197,7 @@ function createRouter(overrides?: {
   projectsDir?: string; // For tests that need to read real session files
   codex?: Partial<AppConfig['agents']['codex']>; // codex config overrides
   cloneSession?: CloneSession;
+  ordersPath?: string;
 }) {
   const runner: Runner = overrides?.runner ?? createStubRunner({ withStatusInfo: true });
   const config: AppConfig = AppConfigSchema.parse({
@@ -224,6 +225,7 @@ function createRouter(overrides?: {
       restartSpawner: overrides?.restartSpawner,
       idleTimeoutMs: overrides?.idleTimeoutMs,
       cloneSession: overrides?.cloneSession,
+      ordersPath: overrides?.ordersPath,
     },
   });
 }
@@ -4437,5 +4439,366 @@ describe('/active card stop buttons must have tag:plain_text', () => {
     );
     expect(stopButtons.length).toBeGreaterThanOrEqual(2);
     for (const btn of stopButtons) expect(btn.text?.tag).toBe('plain_text');
+  });
+});
+
+/**
+ * 覆盖缺口：全部通过公开入口 handleCardAction / handle 触发，断言用户实际
+ * 看到的卡片内容与回复文案。
+ */
+describe('CommandRouter 覆盖缺口（行为）', () => {
+  it('ls.refresh 用 payload 的有效目录重渲染并原地更新卡片', async () => {
+    const { router, connector, sessionStore } = createRouter();
+    const dir = path.join(tmpDir, 'refresh-dir');
+    fs.mkdirSync(dir);
+    fs.writeFileSync(path.join(dir, 'refresh-marker.txt'), 'x');
+    sessionStore.setCwd('user1', fs.realpathSync(tmpDir));
+
+    await router.handleCardAction({ cmd: 'ls.refresh', path: fs.realpathSync(dir) } as never, ctx);
+
+    expect(connector._cards.length).toBeGreaterThan(0);
+    expect(JSON.stringify(connector._cards.at(-1))).toContain('refresh-marker.txt');
+  });
+
+  it('ls.refresh 的路径已消失时回落到当前 cwd，不崩溃', async () => {
+    const { router, connector, sessionStore } = createRouter();
+    const cwd = fs.realpathSync(tmpDir);
+    sessionStore.setCwd('user1', cwd);
+    fs.writeFileSync(path.join(tmpDir, 'cwd-marker.txt'), 'x');
+
+    await router.handleCardAction(
+      { cmd: 'ls.refresh', path: path.join(tmpDir, 'vanished-dir') } as never,
+      ctx,
+    );
+
+    expect(JSON.stringify(connector._cards.at(-1))).toContain('cwd-marker.txt');
+  });
+
+  it('/stop 遇到 unconfirmed 停止状态时警告后台可能仍在运行', async () => {
+    const sendResult = vi.fn().mockResolvedValue(true);
+    const { router } = createRouter({
+      bridge: createMockBridge({
+        sendResult,
+        interruptCurrentRunDetailed: vi.fn().mockResolvedValue({
+          stopped: true,
+          stop: { status: 'unconfirmed' },
+          agentKind: 'claude',
+        }),
+      }),
+    });
+
+    await router.handle('/stop', ctx);
+
+    expect(sendResult).toHaveBeenCalledWith({ text: expect.stringContaining('未能确认') }, ctx);
+    expect(sendResult).toHaveBeenCalledWith({ text: expect.stringContaining('后台运行') }, ctx);
+  });
+
+  it('/cd 不带参数时回报当前目录，不改 cwd', async () => {
+    const { router, sessionStore, connector } = createRouter();
+    sessionStore.setSessionIdAndCwd('user1', 'claude', 's1', '/tmp');
+
+    await router.handle('/cd', ctx);
+
+    expect(sessionStore.getCwd('user1')).toBe('/tmp');
+    expect((connector._sent[0].input as { text: string }).text).toBe('当前目录: /tmp');
+  });
+
+  it('/cd 指向普通文件时回报「不是目录」且保持 cwd', async () => {
+    const { router, sessionStore, connector } = createRouter();
+    const file = path.join(tmpDir, 'a-file.txt');
+    fs.writeFileSync(file, 'x');
+    const cwd = fs.realpathSync(tmpDir);
+    sessionStore.setSessionIdAndCwd('user1', 'claude', 's1', cwd);
+
+    await router.handle(`/cd ${file}`, ctx);
+
+    expect(sessionStore.getCwd('user1')).toBe(cwd);
+    expect((connector._sent[0].input as { text: string }).text).toContain('不是目录');
+  });
+});
+
+/**
+ * 覆盖缺口：queue.input / order.textInput / order.aliasInput 三个输入型卡片动作。
+ * 全部经公开入口 handleCardAction 触发，断言回调返回的 toast / 原地重渲染卡片
+ * （用户实际看到的结果）以及编辑真正落到持久化列表里。
+ */
+describe('queue.input / order.*Input 输入型卡片动作（行为）', () => {
+  type CardResp = { toast?: { type: string; content: string }; card?: unknown };
+
+  const ordersPath = () => path.join(tmpDir, 'orders.json');
+  const seedOrders = (entries: object[]) => fs.writeFileSync(ordersPath(), JSON.stringify(entries));
+  const oneOrder = [
+    { id: 'ord-1', text: '旧指令文本', createdAt: '2026-01-01T00:00:00.000Z', alias: 'daily' },
+  ];
+
+  it('queue.input 未填新消息 → 回报「缺少新消息内容」，不注册替换', async () => {
+    const sendResult = vi.fn().mockResolvedValue(true);
+    const setTaskReplacement = vi.fn();
+    const { router } = createRouter({
+      bridge: createMockBridge({ sendResult, setTaskReplacement }),
+    });
+
+    await router.handleCardAction(
+      { cmd: 'queue.input', cwd: '/tmp/ws', messageId: 'q-1' } as never,
+      ctx,
+    );
+
+    expect(sendResult).toHaveBeenCalledWith({ text: '⚠️ 缺少新消息内容' }, ctx);
+    expect(setTaskReplacement).not.toHaveBeenCalled();
+  });
+
+  it('queue.input 缺 cwd/messageId → 回报 payload 缺失，不注册替换', async () => {
+    const sendResult = vi.fn().mockResolvedValue(true);
+    const setTaskReplacement = vi.fn();
+    const { router } = createRouter({
+      bridge: createMockBridge({ sendResult, setTaskReplacement }),
+    });
+
+    await router.handleCardAction({ cmd: 'queue.input', inputValue: '新内容' } as never, ctx);
+
+    expect(sendResult).toHaveBeenCalledWith({ text: '⚠️ 卡片 payload 缺少必要信息' }, ctx);
+    expect(setTaskReplacement).not.toHaveBeenCalled();
+  });
+
+  it('queue.input 目标已离开队列 → info toast「任务已不在队列中」', async () => {
+    const getQueuedTask = vi.fn().mockReturnValue(undefined);
+    const { router } = createRouter({ bridge: createMockBridge({ getQueuedTask }) });
+
+    const resp = (await router.handleCardAction(
+      {
+        cmd: 'queue.input',
+        cwd: '/tmp/ws',
+        messageId: 'q-1',
+        inputValue: '编辑后的消息',
+      } as never,
+      ctx,
+    )) as CardResp;
+
+    expect(resp.toast).toEqual({
+      type: 'info',
+      content: '任务已不在队列中（可能已开始执行或被撤销）',
+    });
+    expect(resp.card).toBeUndefined();
+  });
+
+  it('queue.input 命中排队任务 → 注册替换 + 更新预览，返回成功 toast 与新卡片', async () => {
+    const setTaskReplacement = vi.fn();
+    const getQueuedTask = vi.fn().mockReturnValue({
+      binding: undefined,
+      messagePreview: '旧消息',
+    });
+    // 生产返回的卡片里必须带上编辑后的内容（飞书原地重渲染用户所见）。
+    const updateMessagePreview = vi
+      .fn()
+      .mockImplementation(async (_cwd: string, _id: string, text: string) => ({
+        elements: [{ tag: 'div', text: `预览: ${text}` }],
+      }));
+    const { router } = createRouter({
+      bridge: createMockBridge({
+        setTaskReplacement,
+        getQueuedTask,
+        updateMessagePreview,
+      }),
+    });
+
+    const resp = (await router.handleCardAction(
+      {
+        cmd: 'queue.input',
+        cwd: '/tmp/ws',
+        messageId: 'q-1',
+        inputValue: '编辑后的消息',
+      } as never,
+      ctx,
+    )) as CardResp;
+
+    expect(updateMessagePreview).toHaveBeenCalledWith('/tmp/ws', 'q-1', '编辑后的消息');
+    expect(setTaskReplacement).toHaveBeenCalledWith('/tmp/ws', 'q-1', expect.any(Function));
+    expect(resp.toast).toEqual({ type: 'success', content: '消息已更新' });
+    expect(JSON.stringify(resp.card)).toContain('编辑后的消息');
+  });
+
+  it('queue.input 预览更新时任务已开始 → success toast「消息已更新（任务已开始执行）」', async () => {
+    const { router } = createRouter({
+      bridge: createMockBridge({
+        getQueuedTask: vi.fn().mockReturnValue({ binding: undefined, messagePreview: 'old' }),
+        setTaskReplacement: vi.fn(),
+        updateMessagePreview: vi.fn().mockResolvedValue(null),
+        hasTaskBegan: vi.fn().mockReturnValue(true),
+      }),
+    });
+
+    const resp = (await router.handleCardAction(
+      {
+        cmd: 'queue.input',
+        cwd: '/tmp/ws',
+        messageId: 'q-1',
+        inputValue: '编辑后的消息',
+      } as never,
+      ctx,
+    )) as CardResp;
+
+    expect(resp.toast).toEqual({
+      type: 'success',
+      content: '消息已更新（任务已开始执行）',
+    });
+  });
+
+  it('order.textInput 提交新文本 → trim 后成功 toast + 卡片含新文本、不含旧文本', async () => {
+    seedOrders(oneOrder);
+    const { router } = createRouter({ ordersPath: ordersPath() });
+
+    const resp = (await router.handleCardAction(
+      { cmd: 'order.textInput', orderId: 'ord-1', inputValue: '  新的部署指令  ' } as never,
+      ctx,
+    )) as CardResp;
+
+    expect(resp.toast).toEqual({
+      type: 'success',
+      content: '✅ 已更新指令: 新的部署指令',
+    });
+    const rendered = JSON.stringify(resp.card);
+    expect(rendered).toContain('新的部署指令');
+    expect(rendered).not.toContain('旧指令文本');
+    // 真正落盘：重新加载后列表里是编辑后的文本，且保留别名。
+    expect(JSON.parse(fs.readFileSync(ordersPath(), 'utf-8'))).toEqual([
+      expect.objectContaining({ id: 'ord-1', text: '新的部署指令', alias: 'daily' }),
+    ]);
+  });
+
+  it('order.textInput 纯空白 → error toast「指令文本不能为空」，列表不变', async () => {
+    seedOrders(oneOrder);
+    const { router } = createRouter({ ordersPath: ordersPath() });
+
+    const resp = (await router.handleCardAction(
+      { cmd: 'order.textInput', orderId: 'ord-1', inputValue: '   ' } as never,
+      ctx,
+    )) as CardResp;
+
+    expect(resp.toast).toEqual({ type: 'error', content: '指令文本不能为空' });
+    expect(resp.card).toBeUndefined();
+    expect(JSON.parse(fs.readFileSync(ordersPath(), 'utf-8'))[0].text).toBe('旧指令文本');
+  });
+
+  it('order.textInput 不存在的 orderId → ORDER_NOT_FOUND error toast', async () => {
+    seedOrders(oneOrder);
+    const { router } = createRouter({ ordersPath: ordersPath() });
+
+    const resp = (await router.handleCardAction(
+      { cmd: 'order.textInput', orderId: 'nope', inputValue: 'x' } as never,
+      ctx,
+    )) as CardResp;
+
+    expect(resp.toast?.type).toBe('error');
+    expect(JSON.stringify(fs.readFileSync(ordersPath(), 'utf-8'))).toContain('旧指令文本');
+  });
+
+  it('order.aliasInput 绑定别名 → 成功 toast + 卡片含新别名', async () => {
+    seedOrders(oneOrder);
+    const { router } = createRouter({ ordersPath: ordersPath() });
+
+    const resp = (await router.handleCardAction(
+      { cmd: 'order.aliasInput', orderId: 'ord-1', inputValue: 'deploy' } as never,
+      ctx,
+    )) as CardResp;
+
+    expect(resp.toast).toEqual({ type: 'success', content: '✅ 已绑定别名 $deploy' });
+    expect(JSON.stringify(resp.card)).toContain('deploy');
+    expect(JSON.parse(fs.readFileSync(ordersPath(), 'utf-8'))[0].alias).toBe('deploy');
+  });
+
+  it('order.aliasInput 空输入移除别名 → toast 带旧别名，落盘删除 alias', async () => {
+    seedOrders(oneOrder);
+    const { router } = createRouter({ ordersPath: ordersPath() });
+
+    const resp = (await router.handleCardAction(
+      { cmd: 'order.aliasInput', orderId: 'ord-1', inputValue: '' } as never,
+      ctx,
+    )) as CardResp;
+
+    expect(resp.toast).toEqual({ type: 'success', content: '✅ 已移除别名 $daily' });
+    expect(JSON.parse(fs.readFileSync(ordersPath(), 'utf-8'))[0].alias).toBeUndefined();
+  });
+
+  it('order.aliasInput 非法别名 → error toast 且不改动已有别名', async () => {
+    seedOrders(oneOrder);
+    const { router } = createRouter({ ordersPath: ordersPath() });
+
+    const resp = (await router.handleCardAction(
+      { cmd: 'order.aliasInput', orderId: 'ord-1', inputValue: 'bad alias!' } as never,
+      ctx,
+    )) as CardResp;
+
+    expect(resp.toast?.type).toBe('error');
+    expect(resp.card).toBeUndefined();
+    expect(JSON.parse(fs.readFileSync(ordersPath(), 'utf-8'))[0].alias).toBe('daily');
+  });
+
+  it('order.aliasInput 用 formValue.aliasName 也能绑定别名', async () => {
+    seedOrders(oneOrder);
+    const { router } = createRouter({ ordersPath: ordersPath() });
+
+    const resp = (await router.handleCardAction(
+      { cmd: 'order.aliasInput', orderId: 'ord-1', formValue: { aliasName: 'from_form' } } as never,
+      ctx,
+    )) as CardResp;
+
+    expect(resp.toast).toEqual({ type: 'success', content: '✅ 已绑定别名 $from_form' });
+    expect(JSON.parse(fs.readFileSync(ordersPath(), 'utf-8'))[0].alias).toBe('from_form');
+  });
+
+  it('order.aliasInput 既无 inputValue 也无 formValue → 按空输入移除别名', async () => {
+    seedOrders(oneOrder);
+    const { router } = createRouter({ ordersPath: ordersPath() });
+
+    const resp = (await router.handleCardAction(
+      { cmd: 'order.aliasInput', orderId: 'ord-1' } as never,
+      ctx,
+    )) as CardResp;
+
+    expect(resp.toast).toEqual({ type: 'success', content: '✅ 已移除别名 $daily' });
+    expect(JSON.parse(fs.readFileSync(ordersPath(), 'utf-8'))[0].alias).toBeUndefined();
+  });
+
+  it('order.aliasInput 原本无别名时空输入 → toast 不带 $undefined', async () => {
+    seedOrders([{ id: 'ord-noalias', text: 'x', createdAt: '2026-01-01T00:00:00.000Z' }]);
+    const { router } = createRouter({ ordersPath: ordersPath() });
+
+    const resp = (await router.handleCardAction(
+      { cmd: 'order.aliasInput', orderId: 'ord-noalias', inputValue: '' } as never,
+      ctx,
+    )) as CardResp;
+
+    expect(resp.toast).toEqual({ type: 'success', content: '✅ 已移除别名 $' });
+    expect(JSON.stringify(resp.toast)).not.toContain('undefined');
+  });
+
+  it('order.textInput 超长文本 → 成功 toast 的预览截断到 50 字加省略号', async () => {
+    seedOrders(oneOrder);
+    const { router } = createRouter({ ordersPath: ordersPath() });
+    const long = 'A'.repeat(80);
+
+    const resp = (await router.handleCardAction(
+      { cmd: 'order.textInput', orderId: 'ord-1', inputValue: long } as never,
+      ctx,
+    )) as CardResp;
+
+    expect(resp.toast).toEqual({
+      type: 'success',
+      content: `✅ 已更新指令: ${'A'.repeat(50)}...`,
+    });
+    expect(JSON.parse(fs.readFileSync(ordersPath(), 'utf-8'))[0].text).toBe(long);
+  });
+
+  it('order.textInput 用 formValue.text 也能更新指令', async () => {
+    seedOrders(oneOrder);
+    const { router } = createRouter({ ordersPath: ordersPath() });
+
+    const resp = (await router.handleCardAction(
+      { cmd: 'order.textInput', orderId: 'ord-1', formValue: { text: '来自表单' } } as never,
+      ctx,
+    )) as CardResp;
+
+    expect(resp.toast).toEqual({ type: 'success', content: '✅ 已更新指令: 来自表单' });
+    expect(JSON.parse(fs.readFileSync(ordersPath(), 'utf-8'))[0].text).toBe('来自表单');
   });
 });

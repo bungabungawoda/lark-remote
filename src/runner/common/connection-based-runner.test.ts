@@ -176,3 +176,111 @@ describe('ConnectionBasedRunner wait timer cleanup', () => {
     }
   });
 });
+
+/**
+ * buildCooperativeStop 返回的是登记到 ConnectionManager 的 AgentStopper 契约：
+ * 优雅停止时先经协议通道取消「本连接」的在途 turn，再关闭 stdin 让 stdio agent
+ * 自行退出。真实接线要拉起子进程（禁止），故用最小子类的公开包装拿到该回调，
+ * 断言它对外的可观察效果，而不是钩子的调用次数。
+ */
+class StopperRunner extends TestRunner {
+  readonly cancelled: string[] = [];
+  cancelFailure: Error | undefined;
+
+  protected async cancelCurrentTurn(): Promise<void> {
+    this.cancelled.push('cancel');
+    if (this.cancelFailure) throw this.cancelFailure;
+  }
+
+  stopperFor(client: unknown) {
+    return this.buildCooperativeStop(client);
+  }
+
+  useClient(client: unknown): void {
+    this.currentClient = client;
+  }
+}
+
+/** 不传 = 可写 stdin；传 null = 无 stdin 流；传 {destroyed:true} = 已销毁。 */
+function fakeProc(stdin?: { destroyed: boolean } | null) {
+  const state = { stdinEnded: false };
+  const proc = {
+    stdin:
+      stdin === null
+        ? undefined
+        : {
+            destroyed: stdin?.destroyed ?? false,
+            end: () => {
+              state.stdinEnded = true;
+            },
+          },
+  };
+  return { proc: proc as never, state };
+}
+
+function makeStopperRunner(): StopperRunner {
+  // @ts-expect-error 测试 stub 的 sessionReader 只需满足类型形参
+  return new StopperRunner({ kind: 'codex', sessionReader: {} });
+}
+
+describe('ConnectionBasedRunner buildCooperativeStop (AgentStopper 契约)', () => {
+  it('cancels the owning turn and closes stdin so the stdio agent exits', async () => {
+    const runner = makeStopperRunner();
+    const client = { name: 'in-flight-client' };
+    runner.useClient(client);
+    const { proc, state } = fakeProc();
+
+    await runner.stopperFor(client)(proc);
+
+    expect(runner.cancelled).toEqual(['cancel']);
+    expect(state.stdinEnded).toBe(true);
+  });
+
+  it('does not cancel a turn owned by a different cwd connection', async () => {
+    const runner = makeStopperRunner();
+    runner.useClient({ name: 'other-cwd-client' });
+    const { proc, state } = fakeProc();
+
+    await runner.stopperFor({ name: 'this-connection' })(proc);
+
+    expect(runner.cancelled).toEqual([]);
+    expect(state.stdinEnded).toBe(true);
+  });
+
+  it('still closes stdin when the protocol cancel fails', async () => {
+    const runner = makeStopperRunner();
+    const client = { name: 'in-flight-client' };
+    runner.useClient(client);
+    runner.cancelFailure = new Error('interrupt rejected');
+    const { proc, state } = fakeProc();
+
+    await expect(runner.stopperFor(client)(proc)).resolves.toBeUndefined();
+
+    expect(runner.cancelled).toEqual(['cancel']);
+    expect(state.stdinEnded).toBe(true);
+  });
+
+  it('skips an already destroyed stdin', async () => {
+    const runner = makeStopperRunner();
+    const client = { name: 'in-flight-client' };
+    runner.useClient(client);
+    const { proc, state } = fakeProc({ destroyed: true });
+
+    await runner.stopperFor(client)(proc);
+
+    expect(runner.cancelled).toEqual(['cancel']);
+    expect(state.stdinEnded).toBe(false);
+  });
+
+  it('survives a process without a stdin stream', async () => {
+    const runner = makeStopperRunner();
+    const client = { name: 'in-flight-client' };
+    runner.useClient(client);
+    const { proc, state } = fakeProc(null);
+
+    await expect(runner.stopperFor(client)(proc)).resolves.toBeUndefined();
+
+    expect(runner.cancelled).toEqual(['cancel']);
+    expect(state.stdinEnded).toBe(false);
+  });
+});

@@ -73,17 +73,21 @@ describe('background job kill (terminal card)', () => {
     { type: 'result', subtype: 'success', session_id: 'session-jobs' },
   ];
 
-  async function runOnce() {
+  async function runOnce(killJobMode: 'ok' | 'reject' | 'none' = 'ok') {
     const connector = createStubConnector();
     const sessionStore = new SessionStore();
     sessionStore.setCwd('user1', tmpRoot);
     const killed: Array<{ sessionId: string; jobId: string }> = [];
     const runner = {
       ...createStreamingRunner(JOB_EVENTS),
-      killJob: async (sessionId: string, jobId: string) => {
-        killed.push({ sessionId, jobId });
-        return true;
-      },
+      ...(killJobMode === 'none'
+        ? {}
+        : {
+            killJob: async (sessionId: string, jobId: string) => {
+              if (killJobMode === 'ok') killed.push({ sessionId, jobId });
+              return killJobMode === 'ok';
+            },
+          }),
     } as Runner;
     const bridge = new Bridge({
       runner,
@@ -140,5 +144,42 @@ describe('background job kill (terminal card)', () => {
       .map((s) => JSON.stringify(s.input))
       .join('\n');
     expect(texts).toContain('停止失败');
+  });
+
+  it('runner 不支持 killJob 时明确提示停止失败，且不 PATCH 卡片', async () => {
+    const { connector, router, ctx } = await runOnce('none');
+    const terminalJson = JSON.stringify(connector._cards[connector._cards.length - 1]);
+    const runId = /"runId":"([^"]+)"/.exec(terminalJson)?.[1];
+    expect(runId).toBeTruthy();
+
+    const before = connector._sent.length;
+    const updates = connector._updates.length;
+    await router.handleCardAction({ cmd: 'job.kill', runId, jobId: 'bash-1' }, ctx);
+
+    const texts = connector._sent
+      .slice(before)
+      .map((s) => JSON.stringify(s.input))
+      .join('\n');
+    expect(texts).toContain('停止失败');
+    expect(connector._updates.length).toBe(updates);
+  });
+
+  it('killJob 返回 false（任务已自行结束）时明确提示停止失败，且不 PATCH 卡片', async () => {
+    const { connector, router, ctx, killed } = await runOnce('reject');
+    const terminalJson = JSON.stringify(connector._cards[connector._cards.length - 1]);
+    const runId = /"runId":"([^"]+)"/.exec(terminalJson)?.[1];
+    expect(runId).toBeTruthy();
+
+    const before = connector._sent.length;
+    const updates = connector._updates.length;
+    await router.handleCardAction({ cmd: 'job.kill', runId, jobId: 'bash-1' }, ctx);
+
+    const texts = connector._sent
+      .slice(before)
+      .map((s) => JSON.stringify(s.input))
+      .join('\n');
+    expect(texts).toContain('停止失败');
+    expect(killed).toEqual([]);
+    expect(connector._updates.length).toBe(updates);
   });
 });

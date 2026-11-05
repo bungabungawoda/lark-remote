@@ -7,7 +7,11 @@ import {
 } from '../../platform/shell.js';
 import { createTerminator, type Terminator } from '../../platform/terminator.js';
 import { useDetachedProcessGroup } from '../../platform/spawn.js';
-import { registerExitCleanup, unregisterExitCleanup } from '../common/spawning-runner.js';
+import {
+  isChildProcessRunning,
+  registerExitCleanup,
+  unregisterExitCleanup,
+} from '../common/spawning-runner.js';
 
 interface BashOutputEvent {
   type: 'stdout' | 'stderr' | 'exit';
@@ -66,11 +70,7 @@ export class BashProcessRunner implements BashRunner {
   }
 
   get isRunning(): boolean {
-    return (
-      this.currentProcess !== null &&
-      this.currentProcess.exitCode === null &&
-      this.currentProcess.signalCode === null
-    );
+    return isChildProcessRunning(this.currentProcess);
   }
 
   async *run(command: string, opts: { cwd: string }): AsyncGenerator<BashOutputEvent> {

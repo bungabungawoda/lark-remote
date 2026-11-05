@@ -671,4 +671,15 @@ describe('OpencodeAcpRunner', () => {
 
     await runner.dispose();
   }, 15000);
+
+  it('constructs with only required options, keeping public behavior contracts', () => {
+    const runner = new OpencodeAcpRunner({
+      kind: 'opencode',
+      sessionReader: createStubSessionReader(),
+    });
+    // 全部走默认值（binary / acpArgs / mode / errorMonitorLogPath）时，
+    // 对外契约不变；构造本身不 spawn、不轮询日志。
+    expect(runner.getUsageAuthority()).toBe('jsonl');
+    expect(runner.usesLiveResultEvents()).toBe(true);
+  });
 });

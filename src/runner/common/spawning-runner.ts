@@ -89,6 +89,14 @@ export function registerExitCleanup(handler: ExitCleanupHandler): void {
 }
 
 /**
+ * 子进程存活性判定（SpawningRunner 与 BashProcessRunner 的 `isRunning` 共用）。
+ * 两边曾是逐字相同的一段表达式，抽到共同依赖模块避免漂移。
+ */
+export function isChildProcessRunning(proc: ChildProcess | null): boolean {
+  return proc !== null && proc.exitCode === null && proc.signalCode === null;
+}
+
+/**
  * FNV-1a 32 位哈希（hex，平台无关确定性）：pid 文件后缀的消歧段。
  */
 function fnv1aHex(text: string): string {
@@ -219,11 +227,7 @@ export abstract class SpawningRunner {
   }
 
   get isRunning(): boolean {
-    return (
-      this.currentProcess !== null &&
-      this.currentProcess.exitCode === null &&
-      this.currentProcess.signalCode === null
-    );
+    return isChildProcessRunning(this.currentProcess);
   }
 
   // --- Hooks (subclasses override as needed) ---

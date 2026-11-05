@@ -49,6 +49,7 @@ import {
   type FileUpdateChange,
   type FileUpdateChangeKind,
   type CommandExecutionApprovalDecision,
+  type ThreadItem,
   type WarningNotification,
   type ModelReroutedNotification,
   type TurnPlanUpdatedNotification,
@@ -70,6 +71,382 @@ type ToolItemMeta = {
 // =============================================================================
 // Translator
 // =============================================================================
+
+// =============================================================================
+// 高 CC 翻译函数的模块级命名 handler（显式传状态快照，避免 this 绑定丢失）
+// =============================================================================
+
+type PermissionItem = {
+  id: string;
+  label: string;
+  target: { kind: 'network' } | { kind: 'fsRead' | 'fsWrite'; path: string };
+  selected: boolean;
+};
+
+/** 权限 profile → 去重后的权限项列表（entries 优先，legacy read/write 兜底）。 */
+function pushFsEntries(items: PermissionItem[], profile: RequestPermissionProfile): void {
+  // entries 是结构化形式（[{ path, access }]），read/write 是 legacy 字符串数组。
+  for (const entry of profile.fileSystem?.entries ?? []) {
+    if (entry.access === 'read' || entry.access === 'write') {
+      items.push({
+        id: `fs-${entry.access}:${entry.path}`,
+        label: `${entry.access === 'read' ? 'Read' : 'Write'}: ${entry.path}`,
+        target: { kind: entry.access === 'read' ? 'fsRead' : 'fsWrite', path: entry.path },
+        selected: false,
+      });
+    }
+  }
+}
+
+/** legacy read/write 字符串数组 → 权限项（按 id 去重，entries 优先）。 */
+function pushLegacyPaths(
+  items: PermissionItem[],
+  profile: RequestPermissionProfile,
+  access: 'read' | 'write',
+): void {
+  const paths = access === 'read' ? profile.fileSystem?.read : profile.fileSystem?.write;
+  for (const path of paths ?? []) {
+    const id = `fs-${access}:${path}`;
+    if (!items.some((i) => i.id === id)) {
+      items.push({
+        id,
+        label: `${access === 'read' ? 'Read' : 'Write'}: ${path}`,
+        target: { kind: access === 'read' ? 'fsRead' : 'fsWrite', path },
+        selected: false,
+      });
+    }
+  }
+}
+
+/** network.enabled 整体开关 → 单条权限项。 */
+function pushNetworkItem(items: PermissionItem[], profile: RequestPermissionProfile): void {
+  if (profile.network?.enabled) {
+    // 真实 AdditionalNetworkPermissions 只有 enabled 布尔开关（整体网络访问）。
+    items.push({
+      id: 'net:all',
+      label: '网络访问',
+      target: { kind: 'network' },
+      selected: false,
+    });
+  }
+}
+
+/** 权限 profile → 去重后的权限项列表（entries 优先，legacy read/write 兜底）。 */
+function permissionItemsOf(profile: RequestPermissionProfile): PermissionItem[] {
+  const items: PermissionItem[] = [];
+  pushFsEntries(items, profile);
+  pushLegacyPaths(items, profile, 'read');
+  pushLegacyPaths(items, profile, 'write');
+  pushNetworkItem(items, profile);
+  return items;
+}
+
+/** 把实例状态打包成模块级 handler 可用的显式快照（.bind 保留 this）。 */
+interface TranslatorState {
+  readonly fileChangeItems: Map<string, FileUpdateChange[]>;
+  readonly reasoningByItem: Map<string, { content: Map<number, string>; summary: string }>;
+  readonly toolOutputByItem: Map<string, string>;
+  readonly toolItemMeta: Map<string, ToolItemMeta>;
+  readonly startedToolItems: Set<string>;
+  readonly textByItem: Map<string, string>;
+  readonly finalTextItems: Set<string>;
+  readonly planByItem: Map<string, string>;
+  readonly usage: {
+    inputTokens: number;
+    outputTokens: number;
+    cachedInputTokens?: number;
+    totalTokens?: number;
+    contextLimit?: number;
+  };
+  readonly threadId: string;
+  readonly turnId: string;
+  readonly turnDiff: (
+    ids: { threadId: string; turnId: string },
+    fields: Partial<TurnDiffEvent> & { itemId: string },
+  ) => TurnDiffEvent;
+  readonly now: () => string;
+  readonly reasoningEntry: (itemId: string) => { content: Map<number, string>; summary: string };
+  readonly reasoningSnapshotFor: (entry: {
+    content: Map<number, string>;
+    summary: string;
+  }) => string;
+}
+
+/** turn.completed 的权威 items 与已流式内容不一致时补发 item 级快照。 */
+type FallbackHandler = (
+  state: TranslatorState,
+  item: ThreadItem,
+  ids: { threadId: string; turnId: string },
+  events: TranslatorEvent[],
+) => void;
+
+/** agentMessage 权威全文与已流式内容不一致 → 补发快照。 */
+function agentMessageFallback(
+  state: TranslatorState,
+  item: ThreadItem,
+  ids: { threadId: string; turnId: string },
+  events: TranslatorEvent[],
+): void {
+  const text = (item as { text?: string }).text ?? '';
+  if (text && state.textByItem.get(item.id) !== text) {
+    state.textByItem.set(item.id, text);
+    const final = (item as { phase?: string | null }).phase === 'final_answer';
+    events.push(
+      final
+        ? ({
+            type: 'final_answer',
+            text,
+            itemId: item.id,
+            complete: true,
+            timestamp: state.now(),
+          } as FinalAnswerEvent)
+        : state.turnDiff(ids, { text, itemId: item.id, complete: true }),
+    );
+  }
+}
+
+/** plan 权威文本与已流式内容不一致 → 补发快照。 */
+function planFallback(
+  state: TranslatorState,
+  item: ThreadItem,
+  ids: { threadId: string; turnId: string },
+  events: TranslatorEvent[],
+): void {
+  const planText = (item as { text?: string }).text ?? '';
+  if (planText && state.planByItem.get(item.id) !== planText) {
+    state.planByItem.set(item.id, planText);
+    events.push(state.turnDiff(ids, { plan: planText, itemId: item.id, complete: true }));
+  }
+}
+
+const TURN_COMPLETED_FALLBACK_HANDLERS: ReadonlyMap<string, FallbackHandler> = new Map([
+  ['agentMessage', agentMessageFallback],
+  ['plan', planFallback],
+]);
+
+/** turn.completed 的权威 items 与已流式内容不一致时补发 item 级快照。 */
+function turnCompletedFallbackEvents(
+  state: TranslatorState,
+  params?: TurnCompletedNotification['params'],
+): TranslatorEvent[] {
+  const events: TranslatorEvent[] = [];
+  const turn = params?.turn;
+  const ids = {
+    threadId: params?.threadId ?? state.threadId,
+    turnId: params?.turn?.id ?? state.turnId,
+  };
+  for (const item of turn?.items ?? []) {
+    TURN_COMPLETED_FALLBACK_HANDLERS.get(item.type)?.(state, item, ids, events);
+  }
+  return events;
+}
+
+/** 终态 ResultEvent：interrupted / failed / success 保持各自 subtype。 */
+function resultEventOf(
+  state: TranslatorState,
+  params?: TurnCompletedNotification['params'],
+): TranslatorEvent {
+  const turn = params?.turn;
+  const usage: TokenUsage = {
+    input_tokens: state.usage.inputTokens,
+    output_tokens: state.usage.outputTokens,
+    cache_read_tokens: state.usage.cachedInputTokens,
+    total_tokens: state.usage.totalTokens,
+    context_limit: state.usage.contextLimit,
+  };
+  const subtype =
+    turn?.status === 'failed'
+      ? 'error'
+      : turn?.status === 'interrupted'
+        ? 'interrupted'
+        : 'success';
+  return {
+    type: 'result',
+    subtype,
+    session_id: state.threadId,
+    usage,
+    errorMessage: turn?.error?.message,
+  } as AgentEvent;
+}
+
+interface ItemCompletedResult {
+  events: TranslatorEvent[];
+  /** true = 该分支已定案（含「定案但不发事件」）；false = 继续走兜底。 */
+  stop: boolean;
+}
+
+type ItemCompletedHandler = (
+  state: TranslatorState,
+  params: ItemCompletedNotification['params'],
+) => ItemCompletedResult;
+
+function fileChangeCompleted(
+  state: TranslatorState,
+  params: ItemCompletedNotification['params'],
+): ItemCompletedResult {
+  // 查表已按 type 分派；此处显式断言还原原分支内的类型收窄。
+  const item = params.item as { id: string; changes: FileUpdateChange[] };
+  if (!Array.isArray(item.changes)) return { events: [], stop: false };
+  // 权威文件变更（含聚合后的 diff）；以快照语义替换本 item 的变更列表。
+  state.fileChangeItems.set(item.id, item.changes);
+  return {
+    events: [
+      state.turnDiff(params, {
+        fileChanges: normalizeFileChanges(item.changes),
+        itemId: item.id,
+        complete: true,
+      }),
+    ],
+    stop: true,
+  };
+}
+
+function reasoningCompleted(
+  state: TranslatorState,
+  params: ItemCompletedNotification['params'],
+): ItemCompletedResult {
+  // 查表已按 type 分派；此处显式断言还原原分支内的类型收窄。
+  const item = params.item as { id: string; content?: string[]; summary?: string[] };
+  const content = Array.isArray(item.content) ? (item.content as string[]) : [];
+  const summary = Array.isArray(item.summary) ? (item.summary as string[]) : [];
+  if (content.length > 0 || summary.length > 0) {
+    // 权威内容：summary 优先展示，content 段落保留（per-item 替换）。
+    const entry = state.reasoningEntry(item.id);
+    entry.content = new Map(content.map((c, i) => [i, c]));
+    entry.summary = summary.join('\n');
+    return {
+      events: [
+        state.turnDiff(params, {
+          reasoning: state.reasoningSnapshotFor(entry),
+          itemId: item.id,
+          complete: true,
+        }),
+      ],
+      stop: true,
+    };
+  }
+  return { events: [], stop: false };
+}
+
+function commandExecutionCompleted(
+  state: TranslatorState,
+  params: ItemCompletedNotification['params'],
+): ItemCompletedResult {
+  const item = params.item;
+  // 无 outputDelta 流时（短命令），用 item/completed 的聚合输出兜底；
+  // 已流式输出则以累积快照收尾（complete 语义标记工具完成）。
+  const accumulated = state.toolOutputByItem.get(item.id) ?? '';
+  const aggregated = (item as { aggregatedOutput?: string | null }).aggregatedOutput;
+  const authoritative = aggregated != null ? String(aggregated) : accumulated;
+  // 从未 item/started 且无任何输出（如审批被拒的空命令）→ 不产生工具块，
+  // 避免完成时刻凭空冒出一个空命令块。
+  if (!authoritative && !state.startedToolItems.has(item.id)) {
+    return { events: [], stop: true };
+  }
+  state.toolOutputByItem.set(item.id, authoritative);
+  // 信息保真 完成事件同样携带身份，并在发出后释放 meta。
+  const meta = state.toolItemMeta.get(item.id);
+  state.toolItemMeta.delete(item.id);
+  return {
+    events: [
+      state.turnDiff(params, {
+        toolOutput: authoritative,
+        ...meta,
+        itemId: item.id,
+        complete: true,
+        toolStatus: commandExecutionStatusToToolStatus((item as { status?: string | null }).status),
+      }),
+    ],
+    stop: true,
+  };
+}
+
+function agentMessageCompleted(
+  state: TranslatorState,
+  params: ItemCompletedNotification['params'],
+): ItemCompletedResult {
+  const item = params.item;
+  // item/completed 的 agentMessage 带权威全文（text 字段）；以 item 级
+  // 快照收尾，run-state 按 itemId 原地替换，保证内容收敛到权威值。
+  const text = (item as { text?: string }).text ?? '';
+  const accumulated = state.textByItem.get(item.id) ?? '';
+  // 空最终文本但已有流式内容（异常边界）→ 用累积内容收尾，补齐 completedAt；
+  // 完全无内容则没有块可完成，不发事件。
+  if (text || accumulated) {
+    const finalText = text || accumulated;
+    state.textByItem.set(item.id, finalText);
+    if (
+      (item as { phase?: string | null }).phase === 'final_answer' ||
+      state.finalTextItems.has(item.id)
+    ) {
+      state.finalTextItems.delete(item.id);
+      return {
+        events: [
+          {
+            type: 'final_answer',
+            text: finalText,
+            itemId: item.id,
+            complete: true,
+            timestamp: state.now(),
+          } as FinalAnswerEvent,
+        ],
+        stop: true,
+      };
+    }
+    return {
+      events: [state.turnDiff(params, { text: finalText, itemId: item.id, complete: true })],
+      stop: true,
+    };
+  }
+  return { events: [], stop: false };
+}
+
+function planCompleted(
+  state: TranslatorState,
+  params: ItemCompletedNotification['params'],
+): ItemCompletedResult {
+  const item = params.item;
+  const text = (item as { text?: string }).text ?? '';
+  if (text) {
+    state.planByItem.set(item.id, text);
+    return {
+      events: [state.turnDiff(params, { plan: text, itemId: item.id, complete: true })],
+      stop: true,
+    };
+  }
+  return { events: [], stop: false };
+}
+
+/** 终态分支查表：命中且定案则直接返回，否则落到通用工具收尾。 */
+const ITEM_COMPLETED_HANDLERS: ReadonlyMap<string, ItemCompletedHandler> = new Map([
+  ['fileChange', fileChangeCompleted],
+  ['reasoning', reasoningCompleted],
+  ['commandExecution', commandExecutionCompleted],
+  ['agentMessage', agentMessageCompleted],
+  ['plan', planCompleted],
+]);
+
+/** 无专属 completed 分支的工具 item 也必须收尾（避免工具块永挂 running）。 */
+function finalizeUnhandledToolItem(
+  state: TranslatorState,
+  params: ItemCompletedNotification['params'],
+): TranslatorEvent[] {
+  const item = params.item;
+  if (state.startedToolItems.has(item.id)) {
+    const meta = state.toolItemMeta.get(item.id);
+    state.toolItemMeta.delete(item.id);
+    state.startedToolItems.delete(item.id);
+    return [
+      state.turnDiff(params, {
+        toolOutput: state.toolOutputByItem.get(item.id) ?? '',
+        ...meta,
+        itemId: item.id,
+        complete: true,
+      }),
+    ];
+  }
+  return [];
+}
 
 export class CodexAppServerTranslator {
   private turnId: string = '';
@@ -213,81 +590,9 @@ export class CodexAppServerTranslator {
    * Called when the turn completes.
    */
   handleTurnCompleted(params?: TurnCompletedNotification['params']): TranslatorEvent[] {
-    const turn = params?.turn;
-
-    const events: TranslatorEvent[] = [];
-
-    // 兜底：turn.items 里权威 agentMessage / plan item 与已流式内容不一致或
-    // 未发过（如 itemsView 摘要只含部分 item）时，补发 item 级快照。已一致则
-    // 跳过，避免冗余事件（run-state 按 itemId 原地替换、幂等）。
-    for (const item of turn?.items ?? []) {
-      if (item.type === 'agentMessage') {
-        const text = (item as { text?: string }).text ?? '';
-        if (text && this.textByItem.get(item.id) !== text) {
-          this.textByItem.set(item.id, text);
-          const final = (item as { phase?: string | null }).phase === 'final_answer';
-          events.push(
-            final
-              ? ({
-                  type: 'final_answer',
-                  text,
-                  itemId: item.id,
-                  complete: true,
-                  timestamp: this.now(),
-                } as FinalAnswerEvent)
-              : this.turnDiffEvent(
-                  {
-                    threadId: params?.threadId ?? this.threadId,
-                    turnId: params?.turn?.id ?? this.turnId,
-                  },
-                  { text, itemId: item.id, complete: true },
-                ),
-          );
-        }
-      } else if (item.type === 'plan') {
-        // plan 是 EXPERIMENTAL 文本增量，不保证与最终 plan item 一致；
-        // turn/completed 的权威 plan item 以此兜底校正。
-        const planText = (item as { text?: string }).text ?? '';
-        if (planText && this.planByItem.get(item.id) !== planText) {
-          this.planByItem.set(item.id, planText);
-          events.push(
-            this.turnDiffEvent(
-              {
-                threadId: params?.threadId ?? this.threadId,
-                turnId: params?.turn?.id ?? this.turnId,
-              },
-              { plan: planText, itemId: item.id, complete: true },
-            ),
-          );
-        }
-      }
-    }
-
-    const usage: TokenUsage = {
-      input_tokens: this.usage.inputTokens,
-      output_tokens: this.usage.outputTokens,
-      cache_read_tokens: this.usage.cachedInputTokens,
-      total_tokens: this.usage.totalTokens,
-      context_limit: this.usage.contextLimit,
-    };
-
-    // 语义保真：interrupted（审批超时/取消、/stop）与 failed（Agent 真失败）
-    // 是性质不同的终态。interrupted 走独立 subtype，卡片不再误报「Agent 返回
-    // 错误结果」；failed 保持 error。
-    const subtype =
-      turn?.status === 'failed'
-        ? 'error'
-        : turn?.status === 'interrupted'
-          ? 'interrupted'
-          : 'success';
-    events.push({
-      type: 'result',
-      subtype,
-      session_id: this.threadId,
-      usage,
-      errorMessage: turn?.error?.message,
-    } as AgentEvent);
-
+    const state = this.translatorState();
+    const events = turnCompletedFallbackEvents(state, params);
+    events.push(resultEventOf(state, params));
     return events;
   }
 
@@ -383,126 +688,11 @@ export class CodexAppServerTranslator {
   }
 
   private handleItemCompleted(params: ItemCompletedNotification['params']): TranslatorEvent[] {
-    const item = params.item;
-    if (item.type === 'fileChange' && Array.isArray(item.changes)) {
-      // 权威文件变更（含聚合后的 diff）；以快照语义替换本 item 的变更列表。
-      this.fileChangeItems.set(item.id, item.changes);
-      return [
-        this.turnDiffEvent(params, {
-          fileChanges: normalizeFileChanges(item.changes),
-          itemId: item.id,
-          complete: true,
-        }),
-      ];
-    }
-    if (item.type === 'reasoning') {
-      const content = Array.isArray(item.content) ? (item.content as string[]) : [];
-      const summary = Array.isArray(item.summary) ? (item.summary as string[]) : [];
-      if (content.length > 0 || summary.length > 0) {
-        // 权威内容：summary 优先展示，content 段落保留（per-item 替换）。
-        const entry = this.reasoningEntry(item.id);
-        entry.content = new Map(content.map((c, i) => [i, c]));
-        entry.summary = summary.join('\n');
-        return [
-          this.turnDiffEvent(params, {
-            reasoning: this.reasoningSnapshotFor(entry),
-            itemId: item.id,
-            complete: true,
-          }),
-        ];
-      }
-    }
-    if (item.type === 'commandExecution') {
-      // 无 outputDelta 流时（短命令），用 item/completed 的聚合输出兜底；
-      // 已流式输出则以累积快照收尾（complete 语义标记工具完成）。
-      const accumulated = this.toolOutputByItem.get(item.id) ?? '';
-      const aggregated = (item as { aggregatedOutput?: string | null }).aggregatedOutput;
-      const authoritative = aggregated != null ? String(aggregated) : accumulated;
-      // 从未 item/started 且无任何输出（如审批被拒的空命令）→ 不产生工具块，
-      // 避免完成时刻凭空冒出一个空命令块。
-      if (!authoritative && !this.startedToolItems.has(item.id)) {
-        return [];
-      }
-      this.toolOutputByItem.set(item.id, authoritative);
-      // 信息保真 完成事件同样携带身份，并在发出后释放 meta。
-      const meta = this.toolItemMeta.get(item.id);
-      this.toolItemMeta.delete(item.id);
-      return [
-        this.turnDiffEvent(params, {
-          toolOutput: authoritative,
-          ...meta,
-          itemId: item.id,
-          complete: true,
-          toolStatus: commandExecutionStatusToToolStatus(
-            (item as { status?: string | null }).status,
-          ),
-        }),
-      ];
-    }
-    if (item.type === 'agentMessage') {
-      // item/completed 的 agentMessage 带权威全文（text 字段）；以 item 级
-      // 快照收尾，run-state 按 itemId 原地替换，保证内容收敛到权威值。
-      const text = (item as { text?: string }).text ?? '';
-      const accumulated = this.textByItem.get(item.id) ?? '';
-      // 空最终文本但已有流式内容（异常边界）→ 用累积内容收尾，补齐 completedAt；
-      // 完全无内容则没有块可完成，不发事件。
-      if (text || accumulated) {
-        const finalText = text || accumulated;
-        this.textByItem.set(item.id, finalText);
-        if (
-          (item as { phase?: string | null }).phase === 'final_answer' ||
-          this.finalTextItems.has(item.id)
-        ) {
-          this.finalTextItems.delete(item.id);
-          return [
-            {
-              type: 'final_answer',
-              text: finalText,
-              itemId: item.id,
-              complete: true,
-              timestamp: this.now(),
-            } as FinalAnswerEvent,
-          ];
-        }
-        return [
-          this.turnDiffEvent(params, {
-            text: finalText,
-            itemId: item.id,
-            complete: true,
-          }),
-        ];
-      }
-    }
-    if (item.type === 'plan') {
-      const text = (item as { text?: string }).text ?? '';
-      if (text) {
-        this.planByItem.set(item.id, text);
-        return [
-          this.turnDiffEvent(params, {
-            plan: text,
-            itemId: item.id,
-            complete: true,
-          }),
-        ];
-      }
-    }
-    // 信息保真 webSearch/mcpToolCall/dynamicToolCall 等无专属 completed 分支的
-    // 工具 item 也必须收尾——否则 run-state 侧工具块永挂 running（无 completedAt/终态），
-    // toolItemMeta 泄漏到下个 turn 的 clear() 才被释放。
-    if (this.startedToolItems.has(item.id)) {
-      const meta = this.toolItemMeta.get(item.id);
-      this.toolItemMeta.delete(item.id);
-      this.startedToolItems.delete(item.id);
-      return [
-        this.turnDiffEvent(params, {
-          toolOutput: this.toolOutputByItem.get(item.id) ?? '',
-          ...meta,
-          itemId: item.id,
-          complete: true,
-        }),
-      ];
-    }
-    return [];
+    const state = this.translatorState();
+    const handler = ITEM_COMPLETED_HANDLERS.get(params.item.type);
+    const result = handler?.(state, params);
+    if (result?.stop) return result.events;
+    return finalizeUnhandledToolItem(state, params);
   }
 
   private handleReasoningTextDelta(
@@ -895,58 +1085,7 @@ export class CodexAppServerTranslator {
     target: { kind: 'network' } | { kind: 'fsRead' | 'fsWrite'; path: string };
     selected: boolean;
   }> {
-    const items: Array<{
-      id: string;
-      label: string;
-      target: { kind: 'network' } | { kind: 'fsRead' | 'fsWrite'; path: string };
-      selected: boolean;
-    }> = [];
-
-    // entries 是结构化形式（[{ path, access }]），read/write 是 legacy 字符串数组。
-    for (const entry of profile.fileSystem?.entries ?? []) {
-      if (entry.access === 'read' || entry.access === 'write') {
-        items.push({
-          id: `fs-${entry.access}:${entry.path}`,
-          label: `${entry.access === 'read' ? 'Read' : 'Write'}: ${entry.path}`,
-          target: { kind: entry.access === 'read' ? 'fsRead' : 'fsWrite', path: entry.path },
-          selected: false,
-        });
-      }
-    }
-
-    for (const path of profile.fileSystem?.read ?? []) {
-      if (!items.some((i) => i.id === `fs-read:${path}`)) {
-        items.push({
-          id: `fs-read:${path}`,
-          label: `Read: ${path}`,
-          target: { kind: 'fsRead', path },
-          selected: false,
-        });
-      }
-    }
-
-    for (const path of profile.fileSystem?.write ?? []) {
-      if (!items.some((i) => i.id === `fs-write:${path}`)) {
-        items.push({
-          id: `fs-write:${path}`,
-          label: `Write: ${path}`,
-          target: { kind: 'fsWrite', path },
-          selected: false,
-        });
-      }
-    }
-
-    if (profile.network?.enabled) {
-      // 真实 AdditionalNetworkPermissions 只有 enabled 布尔开关（整体网络访问）。
-      items.push({
-        id: 'net:all',
-        label: '网络访问',
-        target: { kind: 'network' },
-        selected: false,
-      });
-    }
-
-    return items;
+    return permissionItemsOf(profile);
   }
 
   /** Get (or lazily create) the reasoning accumulator for one item. */
@@ -971,6 +1110,27 @@ export class CodexAppServerTranslator {
   /** Receive-time stamp, aligned with the exec JSONL parse path. */
   private now(): string {
     return new Date().toISOString();
+  }
+
+  /** 把实例状态打包成模块级 handler 可用的显式快照（.bind 保留 this 绑定）。 */
+  private translatorState(): TranslatorState {
+    return {
+      fileChangeItems: this.fileChangeItems,
+      reasoningByItem: this.reasoningByItem,
+      toolOutputByItem: this.toolOutputByItem,
+      toolItemMeta: this.toolItemMeta,
+      startedToolItems: this.startedToolItems,
+      textByItem: this.textByItem,
+      finalTextItems: this.finalTextItems,
+      planByItem: this.planByItem,
+      usage: this.usage,
+      threadId: this.threadId,
+      turnId: this.turnId,
+      turnDiff: this.turnDiffEvent.bind(this),
+      now: this.now.bind(this),
+      reasoningEntry: this.reasoningEntry.bind(this),
+      reasoningSnapshotFor: this.reasoningSnapshotFor.bind(this),
+    };
   }
 }
 

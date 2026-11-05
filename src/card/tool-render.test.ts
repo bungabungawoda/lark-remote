@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import { toolHeaderText, toolBodyMd, displayWidth, HEADER_DISPLAY_MAX } from './tool-render.js';
+import {
+  displayWidth as twDisplayWidth,
+  truncateToDisplayWidth,
+  truncateMiddleToDisplayWidth,
+} from '../common/text-width.js';
 import { createInitialRunState, reduceRunState } from './run-state.js';
 import type { ToolEntry } from './run-state.js';
 
@@ -782,5 +787,69 @@ describe('tool-render DSH tool summaries', () => {
   it('web_search body renders every query', () => {
     const tool = makeTool({ name: 'web_search', input: { queries: ['a', 'b'] } });
     expect(toolBodyMd(tool)).toContain('`a` / `b`');
+  });
+});
+
+/**
+ * text-width.ts / charWidth 的区间口径（ub 结构等价 characterization）。
+ * charWidth 是私有函数，通过导出的 displayWidth / 截断函数逐区间钉住：
+ * 半角 1；Hangul Jamo / CJK / 假名 / 全角 / emoji / Misc Symbols / Misc
+ * Technical 等 2；落在区间之外的（半角片假名、拉丁扩展、€）仍为 1。
+ */
+describe('text-width charWidth 口径（ub characterization）', () => {
+  it('半角与空串', () => {
+    expect(twDisplayWidth('')).toBe(0);
+    expect(twDisplayWidth('abc')).toBe(3);
+    expect(twDisplayWidth('a b')).toBe(3);
+    expect(twDisplayWidth('é')).toBe(1); // U+00E9 拉丁扩展，区间外
+    expect(twDisplayWidth('€')).toBe(1); // U+20AC
+    expect(twDisplayWidth('ｦ')).toBe(1); // U+FF66 半角片假名，在 0xff00–0xff60 之外
+  });
+
+  it('Hangul Jamo / U+2329 / U+232A', () => {
+    expect(twDisplayWidth('ᄀ')).toBe(2); // U+1100
+    expect(twDisplayWidth('ᅟ')).toBe(2); // U+115F，区间上界
+    expect(twDisplayWidth('\u2329')).toBe(2); // U+2329（〈，非数学括号 U+27E8）
+    expect(twDisplayWidth('\u232A')).toBe(2); // U+232A
+    expect(twDisplayWidth('⟨')).toBe(1); // U+27E8 数学尖括号，落在所有区间之外
+  });
+
+  it('CJK / 假名 / CJK 部首（0x2e80–0xa4cf）', () => {
+    expect(twDisplayWidth('中')).toBe(2); // U+4E2D
+    expect(twDisplayWidth('あ')).toBe(2); // U+3042
+    expect(twDisplayWidth('⼀')).toBe(2); // U+2F00
+    expect(twDisplayWidth('中a')).toBe(3);
+  });
+
+  it('Hangul 音节 / 兼容表意 / 全角标点 / 全角 / 半角符号', () => {
+    expect(twDisplayWidth('가')).toBe(2); // U+AC00 下界
+    expect(twDisplayWidth('힣')).toBe(2); // U+D7A3 上界
+    expect(twDisplayWidth('\uF900')).toBe(2); // CJK 兼容表意
+    expect(twDisplayWidth('\uFE30')).toBe(2); // 全角标点
+    expect(twDisplayWidth('Ａ')).toBe(2); // U+FF21 全角
+    expect(twDisplayWidth('\uFF60')).toBe(2); // 0xff00–0xff60 上界
+    expect(twDisplayWidth('\uFFE0')).toBe(2); // 0xffe0–0xffe6
+  });
+
+  it('emoji / Misc Symbols / Misc Technical', () => {
+    expect(twDisplayWidth('🌀')).toBe(2); // U+1F300 下界
+    expect(twDisplayWidth('😀')).toBe(2); // U+1F600 代理对，按单个码点算
+    expect(twDisplayWidth('😀😀')).toBe(4);
+    expect(twDisplayWidth('☀')).toBe(2); // U+2600 下界
+    expect(twDisplayWidth('✏')).toBe(2); // U+270F
+    expect(twDisplayWidth('⏱')).toBe(2); // U+23F1 Misc Technical
+    expect(twDisplayWidth('⏹')).toBe(2); // U+23F9
+    expect(twDisplayWidth('⌚')).toBe(2); // U+231A
+  });
+
+  it('truncateToDisplayWidth：预留 1 单位给省略号', () => {
+    expect(truncateToDisplayWidth('abcdef', 10)).toBe('abcdef'); // 未超预算原样
+    expect(truncateToDisplayWidth('abcdef', 4)).toBe('abc…');
+    expect(truncateToDisplayWidth('中中中', 4)).toBe('中…');
+  });
+
+  it('truncateMiddleToDisplayWidth：保留开头与结尾', () => {
+    expect(truncateMiddleToDisplayWidth('abcdefgh', 6)).toBe('abc…gh');
+    expect(truncateMiddleToDisplayWidth('abc', 10)).toBe('abc'); // 未超预算原样
   });
 });
