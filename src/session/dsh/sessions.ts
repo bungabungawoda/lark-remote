@@ -82,6 +82,59 @@ interface DshSessionReaderOptions {
   syncConnect?: (baseUrl: string, token: string) => string;
 }
 
+/** spawnProcessSync 的返回形态（两个默认传输共用）。 */
+type DshSpawnResult = ReturnType<typeof spawnProcessSync>;
+
+/** curl 传输层失败（spawn error / 非零退出）→ 统一错误；成功返回 undefined。 */
+function dshSpawnFailure(prefix: string, res: DshSpawnResult): Error | undefined {
+  if (res.error || res.status !== 0) {
+    return new Error(`${prefix}: ${(res.error?.message ?? res.stderr) || 'unknown'}`);
+  }
+  return undefined;
+}
+
+/** 从 curl stdout 拆出末尾 HTTP 状态码与 body（`--write-out \n%{http_code}`）。 */
+function splitDshHttpResponse(raw: string): { httpStatus?: number; bodyText: string } {
+  const statusMatch = /\n(\d{3})$/.exec(raw);
+  const httpStatus = statusMatch ? Number(statusMatch[1]) : undefined;
+  const bodyText = statusMatch ? raw.slice(0, statusMatch.index) : raw;
+  return { httpStatus, bodyText };
+}
+
+/** 解析 result 信封；非 JSON / ok!==true 按原文案抛错。 */
+function parseDshResult(method: string, bodyText: string): unknown {
+  let parsed: { result?: { ok?: boolean; value?: unknown; error?: { message?: string } } };
+  try {
+    parsed = JSON.parse(bodyText) as typeof parsed;
+  } catch (err) {
+    throw new Error(`DSH ${method} returned non-JSON: ${(err as Error).message}`, {
+      cause: err,
+    });
+  }
+  if (parsed.result?.ok !== true) {
+    throw new Error(parsed.result?.error?.message ?? `DSH ${method} failed`);
+  }
+  return parsed.result.value;
+}
+
+/** 从 `-D -` 响应头里取第一条 set-cookie 的 name=value 段。 */
+function firstSetCookie(header: string): string | undefined {
+  const match = header.match(/^set-cookie:\s*(.+)$/im);
+  return match?.[1]?.split(';')[0]?.trim();
+}
+
+/** 重试仍失败：二次错为 cause，首错（cookie 失效）作为根因写进 message。 */
+function cookieRefreshFailure(method: string, first: unknown, second: unknown): Error {
+  const firstMsg = (first as Error)?.message ?? String(first);
+  const secondMsg = (second as Error)?.message ?? String(second);
+  // 重试仍失败：首错（cookie 失效）才是根因。`cause` 必须是本次捕获的 err
+  // （lint preserve-caught-error），所以根因写进 message 一并留痕。
+  return new Error(
+    `DSH ${method} failed after cookie refresh: ${secondMsg} (root cause: ${firstMsg})`,
+    { cause: second },
+  );
+}
+
 /** Synchronous unary POST via curl (the reader interface is synchronous). */
 function defaultSyncRequest(
   baseUrl: string,
@@ -113,28 +166,13 @@ function defaultSyncRequest(
     ],
     { encoding: 'utf-8', timeout: 15_000, maxBuffer: 64 * 1024 * 1024 },
   );
-  if (res.error || res.status !== 0) {
-    throw new Error(`DSH ${method} failed: ${(res.error?.message ?? res.stderr) || 'unknown'}`);
-  }
-  const raw = String(res.stdout);
-  const statusMatch = /\n(\d{3})$/.exec(raw);
-  const httpStatus = statusMatch ? Number(statusMatch[1]) : undefined;
-  const bodyText = statusMatch ? raw.slice(0, statusMatch.index) : raw;
+  const failure = dshSpawnFailure(`DSH ${method} failed`, res);
+  if (failure) throw failure;
+  const { httpStatus, bodyText } = splitDshHttpResponse(String(res.stdout));
   if (httpStatus === 401 || httpStatus === 403) {
     throw new Error(`DSH ${method} unauthorized (HTTP ${httpStatus})`);
   }
-  let parsed: { result?: { ok?: boolean; value?: unknown; error?: { message?: string } } };
-  try {
-    parsed = JSON.parse(bodyText) as typeof parsed;
-  } catch (err) {
-    throw new Error(`DSH ${method} returned non-JSON: ${(err as Error).message}`, {
-      cause: err,
-    });
-  }
-  if (parsed.result?.ok !== true) {
-    throw new Error(parsed.result?.error?.message ?? `DSH ${method} failed`);
-  }
-  return parsed.result.value;
+  return parseDshResult(method, bodyText);
 }
 
 /** Synchronous index bootstrap; returns the v1 `name=value` cookie pair. */
@@ -145,12 +183,9 @@ function defaultSyncConnect(baseUrl: string, token: string): string {
     ['-sS', '-D', '-', '-o', isWin32() ? 'NUL' : '/dev/null', '--max-time', '5', url],
     { encoding: 'utf-8', timeout: 10_000, maxBuffer: 1024 * 1024 },
   );
-  if (res.error || res.status !== 0) {
-    throw new Error(`DSH auth failed: ${(res.error?.message ?? res.stderr) || 'unknown'}`);
-  }
-  const header = String(res.stdout);
-  const match = header.match(/^set-cookie:\s*(.+)$/im);
-  const cookie = match?.[1]?.split(';')[0]?.trim();
+  const failure = dshSpawnFailure('DSH auth failed', res);
+  if (failure) throw failure;
+  const cookie = firstSetCookie(String(res.stdout));
   if (!cookie) throw new Error('DSH auth failed: index handshake did not return a cookie');
   return cookie;
 }
@@ -225,14 +260,7 @@ export class DshSessionReader implements AgentSessionReader {
       try {
         return this.syncRequest(baseUrl, method, payload, this.resolveCookie());
       } catch (second) {
-        // 重试仍失败：首错（cookie 失效）才是根因。`cause` 必须是本次捕获的 err
-        // （lint preserve-caught-error），所以根因写进 message 一并留痕。
-        const firstMsg = (first as Error)?.message ?? String(first);
-        const secondMsg = (second as Error)?.message ?? String(second);
-        throw new Error(
-          `DSH ${method} failed after cookie refresh: ${secondMsg} (root cause: ${firstMsg})`,
-          { cause: second },
-        );
+        throw cookieRefreshFailure(method, first, second);
       }
     }
   }
@@ -334,122 +362,7 @@ export class DshSessionReader implements AgentSessionReader {
         throughSeq,
         maxMessages: DSH_HISTORY_FETCH_LIMIT,
       }) as DshSessionPageValue;
-      const events: AgentSessionContentEvent[] = [];
-      let displayTitle: string | undefined;
-      let cumInput = 0;
-      let cumOutput = 0;
-      let cumCacheRead = 0;
-      let cumCacheWrite = 0;
-      let lastUsage: DshTokenUsage | undefined;
-      // 末个 turn 内各采样用量之和（"本 run / 末轮" scope）。DSH 每次模型调用
-      // 一条 usage，工具往返的 turn 会写多条 assistant/message；只取末条会把
-      // 多步 run 低报（实测 231/689 显示成整轮真实消耗）。turn 边界取
-      // turn/start–turn/end，与 codex `task_started` 汇总同一口径（§9.21）。
-      // null = 历史里没有 turn 标记（旧数据/截断）→ 退回末条 usage 语义。
-      let turnUsage: UsageTotals | null = null;
-      let lastTurnUsage: UsageTotals | null = null;
-      /** 等结果的工具调用（见 MappedEvent.pendingTool）。 */
-      let pendingTool: AgentSessionContentEvent | undefined;
-
-      for (const entry of value.records ?? []) {
-        const ev = entry.event;
-        if (!ev) continue;
-        if (ev.type === 'turn/start') {
-          turnUsage = emptyUsageTotals();
-        } else if (ev.type === 'turn/end') {
-          if (turnUsage) lastTurnUsage = turnUsage;
-          turnUsage = null;
-        }
-        const contentEvents = mapEvent(ev);
-        if (contentEvents.pendingTool) {
-          // 未完成的工具调用最多同时一个（DSH 按 step 串行执行；并行调用时按
-          // 到达顺序配对，最坏情况是两次调用共用一个面板，不会丢信息）。
-          if (pendingTool) events.push(pendingTool);
-          pendingTool = contentEvents.pendingTool;
-        } else if (ev.type === 'tool/result' && pendingTool && contentEvents.events[0]) {
-          const result = contentEvents.events[0];
-          // 标题沿用调用的 `🔧 name — summary`，失败改成 ❌（折叠态一眼看出结果）。
-          const failed = result.title?.startsWith('🔴') === true;
-          events.push({
-            type: 'tool_use',
-            title: failed
-              ? (pendingTool.title ?? '❌ 工具').replace('🔧', '❌')
-              : pendingTool.title,
-            content: result.content,
-            timestamp: pendingTool.timestamp,
-          });
-          pendingTool = undefined;
-        } else {
-          events.push(...contentEvents.events);
-        }
-        if (contentEvents.title) displayTitle = contentEvents.title;
-        const u = contentEvents.usage;
-        if (u) {
-          // Cumulative (session-wide): sum across ALL assistant/message usage.
-          cumInput += u.inputTokens ?? 0;
-          cumOutput += u.outputTokens ?? 0;
-          cumCacheRead += u.cacheReadTokens ?? 0;
-          cumCacheWrite += u.cacheWriteTokens ?? 0;
-          // 本 run 的 flow 字段 = 末个 turn 的采样之和；contextLength 用末次采样
-          // 的窗口占用（input + cacheRead + cacheWrite，不含 output）。
-          if (turnUsage) {
-            turnUsage.input += u.inputTokens ?? 0;
-            turnUsage.output += u.outputTokens ?? 0;
-            turnUsage.cacheRead += u.cacheReadTokens ?? 0;
-            turnUsage.cacheWrite += u.cacheWriteTokens ?? 0;
-          }
-          lastUsage = u;
-        }
-      }
-
-      let sessionUsage: AgentSessionUsage | undefined;
-      if (lastUsage) {
-        const input = lastUsage.inputTokens ?? 0;
-        const cacheRead = lastUsage.cacheReadTokens ?? 0;
-        const cacheWrite = lastUsage.cacheWriteTokens ?? 0;
-        // 在途 turn（turn/start 无 turn/end，run 进行中读历史）的采样优先于
-        // 上一轮：旧实现只认已结算的 lastTurnUsage，mid-run 读取会把当前 turn
-        // 已消耗的量显示成上一个完整 turn 的数字。
-        const flow: UsageTotals = turnUsage ??
-          lastTurnUsage ?? {
-            input,
-            output: lastUsage.outputTokens ?? 0,
-            cacheRead,
-            cacheWrite,
-          };
-        sessionUsage = {
-          inputTokens: flow.input,
-          outputTokens: flow.output,
-          // §9.21 口径：context 是末次采样的窗口水位（input + 末次 output +
-          // cache），不把整 turn 的 output 求和（前几步 output 已进入后续 input）。
-          contextLength: input + (lastUsage.outputTokens ?? 0) + cacheRead + cacheWrite,
-          cacheReadTokens: flow.cacheRead,
-          cacheCreationTokens: flow.cacheWrite,
-          totalTokens: flow.input + flow.output + flow.cacheRead + flow.cacheWrite,
-          ...cumulativeUsageFields({
-            input: cumInput,
-            output: cumOutput,
-            cacheRead: cumCacheRead,
-            cacheCreation: cumCacheWrite,
-          }),
-        };
-      }
-
-      // 中断/仍在执行的调用没有结果：把它当独立事件留下，别让这一条消失。
-      if (pendingTool) events.push(pendingTool);
-
-      // 头部信息口径：最近输入优先用服务端末轮 prompt（事件里可能只是当前 turn
-      // 的一部分），标题用服务端 title；两者都缺时保持原行为。
-      const headerLastInput = preview.lastUserMessage ?? displayTitle;
-
-      return {
-        // 展示仍按 maxEvents 尾截断（默认 50，保持原行为），usage 已在上面基于
-        // 完整 history 累加。
-        events: capEvents(events, opts?.maxEvents ?? 50),
-        ...(sessionUsage ? { usage: sessionUsage } : {}),
-        ...(headerLastInput ? { displayTitle: headerLastInput } : {}),
-        ...(preview.title ? { aiTitle: preview.title } : {}),
-      };
+      return buildDshSessionContent(value, preview, opts);
     } catch (error) {
       // 降级为空卡（与 claude/pi 同口径），但完整错误对象入日志保留 stack，
       // 否则 wire 截断 / 权限问题只剩一句 message 无法定位。
@@ -637,91 +550,108 @@ function asBlocks(value: unknown): Array<{ type?: string; text?: string }> {
   return value.filter((b): b is { type?: string; text?: string } => !!b && typeof b === 'object');
 }
 
-function mapEvent(ev: DshSessionEvent): MappedEvent {
+type EventMapper = (ev: DshSessionEvent) => MappedEvent;
+
+function mapUserMessage(ev: DshSessionEvent): MappedEvent {
   const out: MappedEvent = { events: [] };
-  switch (ev.type) {
-    case 'user/message': {
-      const content = asBlocks(ev.data.content);
-      const text = content
-        .filter((c) => c.type === 'text')
-        .map((c) => c.text ?? '')
-        .join('');
-      if (!text.trim()) break;
-      // DSH 把上下文注入也写成 user/message，靠 `source.kind` 区分。真实会话里
-      // 30 条 user/message 中只有 8 条是用户本人说的（其余是 time-context /
-      // agent-instructions / skill-catalog / goal / tool-jobs…）——照单全收会让
-      // 回顾卡里塞满"Time sampled while preparing turn…"，还把系统提示标成 👤 你。
-      const source = ev.data.source as { kind?: string } | undefined;
-      const kind = typeof source?.kind === 'string' ? source.kind : undefined;
-      if (kind && CONTEXT_INJECTION_KINDS.has(kind)) break;
-      const isNotice = kind !== undefined && kind !== 'user';
-      out.events.push({
-        type: isNotice ? 'notice' : 'user',
-        ...(isNotice ? { title: '🔔 通知' } : {}),
-        content: isNotice ? truncateUtf8(text.trim(), NOTICE_MAX_BYTES) : text,
-        timestamp: safeEventTimestamp(ev.time),
-      });
-      break;
-    }
-    case 'assistant/message': {
-      const content = asBlocks((ev.data.message as { content?: unknown } | undefined)?.content);
-      const timestamp = safeEventTimestamp(ev.time);
-      // DSH 的块类型是 text / reasoning / tool-call（不是 Anthropic 的
-      // thinking）。只认 text 会让 resume 卡"只有工具调用、没有思考与输出"
-      // （一个 31 turn 的会话里 reasoning 块 371 个、text 12 个，
-      // 全被丢掉）。tool-call 块不在这里取——独立的 `tool/call` 事件带完整参数。
-      for (const block of content) {
-        const text = typeof block.text === 'string' ? block.text.trim() : '';
-        if (!text) continue;
-        if (block.type === 'text') {
-          out.events.push({
-            type: 'assistant',
-            content: truncateUtf8(text, TEXT_MAX_BYTES),
-            timestamp,
-          });
-        } else if (block.type === 'reasoning') {
-          out.events.push({
-            type: 'thinking',
-            // 思考是过程信息：resume 卡里留头几百字足够判断"当时在想什么"。
-            content: truncateUtf8(text, REASONING_MAX_BYTES),
-            timestamp,
-          });
-        }
-      }
-      const usage = ev.data.usage as DshTokenUsage | undefined;
-      if (usage && typeof usage === 'object') out.usage = usage;
-      break;
-    }
-    case 'tool/call': {
-      // 调用本身先不产出事件：DSH 的 tool/call 与 tool/result 是一对，resume 卡
-      // 里合成一个面板（`🔧 bash — cmd` + 输出），而不是两个各占一屏。
-      const name = String(ev.data.name ?? '');
-      const args = typeof ev.data.arguments === 'string' ? ev.data.arguments : '';
-      const summary = summarizeToolInput(name, args);
-      out.pendingTool = {
-        type: 'tool_use',
-        title: summary ? `🔧 ${name} — ${summary}` : `🔧 ${name}`,
-        content: truncateUtf8(args, TOOL_INPUT_MAX_BYTES),
-        timestamp: safeEventTimestamp(ev.time),
-      };
-      break;
-    }
-    case 'tool/result': {
-      const msg = ev.data.message as { content?: unknown; isError?: unknown } | undefined;
-      const raw = stringifyContent(msg?.content);
-      const isError = msg?.isError === true;
-      out.events.push({
-        type: 'tool_result',
-        title: isError ? '🔴 结果（失败）' : '🟢 结果',
-        content: truncateUtf8(raw, TOOL_RESULT_MAX_BYTES),
-        timestamp: safeEventTimestamp(ev.time),
-      });
-      break;
-    }
-    default:
-      break;
-  }
+  const content = asBlocks(ev.data.content);
+  const text = content
+    .filter((c) => c.type === 'text')
+    .map((c) => c.text ?? '')
+    .join('');
+  if (!text.trim()) return out;
+  // DSH 把上下文注入也写成 user/message，靠 `source.kind` 区分。真实会话里
+  // 30 条 user/message 中只有 8 条是用户本人说的（其余是 time-context /
+  // agent-instructions / skill-catalog / goal / tool-jobs…）——照单全收会让
+  // 回顾卡里塞满"Time sampled while preparing turn…"，还把系统提示标成 👤 你。
+  const source = ev.data.source as { kind?: string } | undefined;
+  const kind = typeof source?.kind === 'string' ? source.kind : undefined;
+  if (kind && CONTEXT_INJECTION_KINDS.has(kind)) return out;
+  const isNotice = kind !== undefined && kind !== 'user';
+  out.events.push({
+    type: isNotice ? 'notice' : 'user',
+    ...(isNotice ? { title: '🔔 通知' } : {}),
+    content: isNotice ? truncateUtf8(text.trim(), NOTICE_MAX_BYTES) : text,
+    timestamp: safeEventTimestamp(ev.time),
+  });
   return out;
+}
+
+function mapAssistantMessage(ev: DshSessionEvent): MappedEvent {
+  const out: MappedEvent = { events: [] };
+  const content = asBlocks((ev.data.message as { content?: unknown } | undefined)?.content);
+  const timestamp = safeEventTimestamp(ev.time);
+  // DSH 的块类型是 text / reasoning / tool-call（不是 Anthropic 的
+  // thinking）。只认 text 会让 resume 卡"只有工具调用、没有思考与输出"
+  // （一个 31 turn 的会话里 reasoning 块 371 个、text 12 个，
+  // 全被丢掉）。tool-call 块不在这里取——独立的 `tool/call` 事件带完整参数。
+  for (const block of content) {
+    const text = typeof block.text === 'string' ? block.text.trim() : '';
+    if (!text) continue;
+    if (block.type === 'text') {
+      out.events.push({
+        type: 'assistant',
+        content: truncateUtf8(text, TEXT_MAX_BYTES),
+        timestamp,
+      });
+    } else if (block.type === 'reasoning') {
+      out.events.push({
+        type: 'thinking',
+        // 思考是过程信息：resume 卡里留头几百字足够判断"当时在想什么"。
+        content: truncateUtf8(text, REASONING_MAX_BYTES),
+        timestamp,
+      });
+    }
+  }
+  const usage = ev.data.usage as DshTokenUsage | undefined;
+  if (usage && typeof usage === 'object') out.usage = usage;
+  return out;
+}
+
+function mapToolCall(ev: DshSessionEvent): MappedEvent {
+  const out: MappedEvent = { events: [] };
+  // 调用本身先不产出事件：DSH 的 tool/call 与 tool/result 是一对，resume 卡
+  // 里合成一个面板（`🔧 bash — cmd` + 输出），而不是两个各占一屏。
+  const name = String(ev.data.name ?? '');
+  const args = typeof ev.data.arguments === 'string' ? ev.data.arguments : '';
+  const summary = summarizeToolInput(name, args);
+  out.pendingTool = {
+    type: 'tool_use',
+    title: summary ? `🔧 ${name} — ${summary}` : `🔧 ${name}`,
+    content: truncateUtf8(args, TOOL_INPUT_MAX_BYTES),
+    timestamp: safeEventTimestamp(ev.time),
+  };
+  return out;
+}
+
+function mapToolResult(ev: DshSessionEvent): MappedEvent {
+  const out: MappedEvent = { events: [] };
+  const msg = ev.data.message as { content?: unknown; isError?: unknown } | undefined;
+  const raw = stringifyContent(msg?.content);
+  const isError = msg?.isError === true;
+  out.events.push({
+    type: 'tool_result',
+    title: isError ? '🔴 结果（失败）' : '🟢 结果',
+    content: truncateUtf8(raw, TOOL_RESULT_MAX_BYTES),
+    timestamp: safeEventTimestamp(ev.time),
+  });
+  return out;
+}
+
+/**
+ * 事件类型 → 命名 handler。用 Map 而非对象字面量 / switch：`constructor` /
+ * `toString` 这类外来 type 会命中 Object.prototype，查表会拿到非函数值。
+ */
+const EVENT_MAPPERS = new Map<string, EventMapper>([
+  ['user/message', mapUserMessage],
+  ['assistant/message', mapAssistantMessage],
+  ['tool/call', mapToolCall],
+  ['tool/result', mapToolResult],
+]);
+
+function mapEvent(ev: DshSessionEvent): MappedEvent {
+  const mapper = EVENT_MAPPERS.get(ev.type);
+  return mapper ? mapper(ev) : { events: [] };
 }
 
 function stringifyContent(content: unknown): string {
@@ -737,4 +667,166 @@ function stringifyContent(content: unknown): string {
       .join('');
   }
   return JSON.stringify(content);
+}
+
+// --- readSessionContent 装配原语（模块级命名函数 + 显式状态对象） ---
+// 纯结构拆分：外层 readSessionContent 只做「解析会话 / unary / 错误降级」，
+// 事件映射、用量累积、返回装配全部下沉到这些模块级命名函数，避免内部闭包
+// 把决策点计回外层。字段顺序、截断长度、turn 口径、事件配对、
+// displayTitle/aiTitle 来源逐项保持，不改任何行为。
+
+interface DshContentAccumulator {
+  events: AgentSessionContentEvent[];
+  displayTitle?: string;
+  cumInput: number;
+  cumOutput: number;
+  cumCacheRead: number;
+  cumCacheWrite: number;
+  lastUsage?: DshTokenUsage;
+  /** 在途 turn 的采样累加；null = 历史里没有 turn 标记（旧数据/截断）。 */
+  turnUsage: UsageTotals | null;
+  lastTurnUsage: UsageTotals | null;
+  /** 等结果的工具调用（见 MappedEvent.pendingTool）。 */
+  pendingTool?: AgentSessionContentEvent;
+}
+
+function newDshContentAccumulator(): DshContentAccumulator {
+  return {
+    events: [],
+    cumInput: 0,
+    cumOutput: 0,
+    cumCacheRead: 0,
+    cumCacheWrite: 0,
+    turnUsage: null,
+    lastTurnUsage: null,
+  };
+}
+
+/** turn 边界标记推进：turn/start 开新账本，turn/end 结算为「上一轮」。 */
+function advanceTurnMarker(acc: DshContentAccumulator, ev: DshSessionEvent): void {
+  if (ev.type === 'turn/start') {
+    acc.turnUsage = emptyUsageTotals();
+  } else if (ev.type === 'turn/end') {
+    if (acc.turnUsage) acc.lastTurnUsage = acc.turnUsage;
+    acc.turnUsage = null;
+  }
+}
+
+/** 工具调用/结果配对：一对合成一个面板；未配对的分支按原顺序推入。 */
+function pushMappedContentEvents(
+  acc: DshContentAccumulator,
+  ev: DshSessionEvent,
+  contentEvents: MappedEvent,
+): void {
+  if (contentEvents.pendingTool) {
+    // 未完成的工具调用最多同时一个（DSH 按 step 串行执行；并行调用时按
+    // 到达顺序配对，最坏情况是两次调用共用一个面板，不会丢信息）。
+    if (acc.pendingTool) acc.events.push(acc.pendingTool);
+    acc.pendingTool = contentEvents.pendingTool;
+  } else if (ev.type === 'tool/result' && acc.pendingTool && contentEvents.events[0]) {
+    const result = contentEvents.events[0];
+    // 标题沿用调用的 `🔧 name — summary`，失败改成 ❌（折叠态一眼看出结果）。
+    const failed = result.title?.startsWith('🔴') === true;
+    acc.events.push({
+      type: 'tool_use',
+      title: failed
+        ? (acc.pendingTool.title ?? '❌ 工具').replace('🔧', '❌')
+        : acc.pendingTool.title,
+      content: result.content,
+      timestamp: acc.pendingTool.timestamp,
+    });
+    acc.pendingTool = undefined;
+  } else {
+    acc.events.push(...contentEvents.events);
+  }
+}
+
+/** 单条 usage：会话累计 + 在途 turn 累计 + 末次采样水位。 */
+function accumulateUsage(acc: DshContentAccumulator, u: DshTokenUsage): void {
+  // Cumulative (session-wide): sum across ALL assistant/message usage.
+  acc.cumInput += u.inputTokens ?? 0;
+  acc.cumOutput += u.outputTokens ?? 0;
+  acc.cumCacheRead += u.cacheReadTokens ?? 0;
+  acc.cumCacheWrite += u.cacheWriteTokens ?? 0;
+  // 本 run 的 flow 字段 = 末个 turn 的采样之和；contextLength 用末次采样
+  // 的窗口占用（input + cacheRead + cacheWrite，不含 output）。
+  if (acc.turnUsage) {
+    acc.turnUsage.input += u.inputTokens ?? 0;
+    acc.turnUsage.output += u.outputTokens ?? 0;
+    acc.turnUsage.cacheRead += u.cacheReadTokens ?? 0;
+    acc.turnUsage.cacheWrite += u.cacheWriteTokens ?? 0;
+  }
+  acc.lastUsage = u;
+}
+
+/** 单条 record → 更新累积状态（无闭包留在 readSessionContent 内）。 */
+function accumulateDshEvent(acc: DshContentAccumulator, ev: DshSessionEvent): void {
+  advanceTurnMarker(acc, ev);
+  const contentEvents = mapEvent(ev);
+  pushMappedContentEvents(acc, ev, contentEvents);
+  if (contentEvents.title) acc.displayTitle = contentEvents.title;
+  if (contentEvents.usage) accumulateUsage(acc, contentEvents.usage);
+}
+
+/** 末轮 flow + 会话累计 → AgentSessionUsage（§9.21 口径）。 */
+function finalizeDshSessionUsage(acc: DshContentAccumulator): AgentSessionUsage | undefined {
+  const lastUsage = acc.lastUsage;
+  if (!lastUsage) return undefined;
+  const input = lastUsage.inputTokens ?? 0;
+  const cacheRead = lastUsage.cacheReadTokens ?? 0;
+  const cacheWrite = lastUsage.cacheWriteTokens ?? 0;
+  // 在途 turn（turn/start 无 turn/end，run 进行中读历史）的采样优先于
+  // 上一轮：旧实现只认已结算的 lastTurnUsage，mid-run 读取会把当前 turn
+  // 已消耗的量显示成上一个完整 turn 的数字。
+  const flow: UsageTotals = acc.turnUsage ??
+    acc.lastTurnUsage ?? {
+      input,
+      output: lastUsage.outputTokens ?? 0,
+      cacheRead,
+      cacheWrite,
+    };
+  return {
+    inputTokens: flow.input,
+    outputTokens: flow.output,
+    // §9.21 口径：context 是末次采样的窗口水位（input + 末次 output +
+    // cache），不把整 turn 的 output 求和（前几步 output 已进入后续 input）。
+    contextLength: input + (lastUsage.outputTokens ?? 0) + cacheRead + cacheWrite,
+    cacheReadTokens: flow.cacheRead,
+    cacheCreationTokens: flow.cacheWrite,
+    totalTokens: flow.input + flow.output + flow.cacheRead + flow.cacheWrite,
+    ...cumulativeUsageFields({
+      input: acc.cumInput,
+      output: acc.cumOutput,
+      cacheRead: acc.cumCacheRead,
+      cacheCreation: acc.cumCacheWrite,
+    }),
+  };
+}
+
+/** session/page 响应 + 服务端预览 → 详情卡内容（纯结构装配）。 */
+function buildDshSessionContent(
+  value: DshSessionPageValue,
+  preview: ReturnType<typeof sessionPreview>,
+  opts?: { maxEvents?: number },
+): SessionContent {
+  const acc = newDshContentAccumulator();
+  for (const entry of value.records ?? []) {
+    const ev = entry.event;
+    if (!ev) continue;
+    accumulateDshEvent(acc, ev);
+  }
+  const sessionUsage = finalizeDshSessionUsage(acc);
+  // 中断/仍在执行的调用没有结果：把它当独立事件留下，别让这一条消失。
+  if (acc.pendingTool) acc.events.push(acc.pendingTool);
+  // 头部信息口径：最近输入优先用服务端末轮 prompt（事件里可能只是当前 turn
+  // 的一部分），标题用服务端 title；两者都缺时保持原行为。
+  const headerLastInput = preview.lastUserMessage ?? acc.displayTitle;
+  return {
+    // 展示仍按 maxEvents 尾截断（默认 50，保持原行为），usage 已在上面基于
+    // 完整 history 累加。
+    events: capEvents(acc.events, opts?.maxEvents ?? 50),
+    ...(sessionUsage ? { usage: sessionUsage } : {}),
+    ...(headerLastInput ? { displayTitle: headerLastInput } : {}),
+    ...(preview.title ? { aiTitle: preview.title } : {}),
+  };
 }

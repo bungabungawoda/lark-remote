@@ -262,151 +262,180 @@ function createSessionReaders(
  *
  * factory 一律从 configContainer 读最新 config（bridge.setConfig() +
  * clearRunners() 后运行时改动生效）；`latest()` 未接线时回退启动快照。
+ *
+ * 每个 factory 的构造逻辑抽到模块级命名函数（显式传 RunnerFactoryDeps 状态），
+ * register 块内只保留转发，闭包决策点不再计入本函数圈复杂度。
  */
-function registerRunners(
-  agentRegistry: AgentRegistry,
-  deps: {
-    configDir: string;
-    cliArgs: { settings?: string };
-    latest: () => AppConfig;
-    dshDaemon: DshDaemon;
-    readers: AgentSessionReaders;
-  },
-): void {
-  const { configDir, cliArgs, latest, dshDaemon, readers } = deps;
+interface RunnerFactoryDeps {
+  configDir: string;
+  cliArgs: { settings?: string };
+  latest: () => AppConfig;
+  dshDaemon: DshDaemon;
+  readers: AgentSessionReaders;
+}
 
-  // Claude factory reads from configContainer (not closure) so runtime
-  // config changes (model, effort, stopGraceMs) take effect after
-  // bridge.setConfig() + clearRunners(). Same pattern as codex/pi/kimi.
-  agentRegistry.register('claude', (ws) => {
-    const claudeConfig = latest().claude;
-    return new ClaudeRunner({
-      model: claudeConfig.model,
-      effort: claudeConfig.effort,
-      stopGraceMs: claudeConfig.stopGraceMs,
-      settings: cliArgs.settings,
-      pidDir: configDir,
-      cwd: ws,
-      sessionReader: readers.claude,
-      permissionMode: claudeConfig.permissionMode,
-      idleTtlMs:
-        claudeConfig.idleTtlMinutes != null ? claudeConfig.idleTtlMinutes * 60_000 : undefined,
-    });
-  });
+// Claude factory reads from configContainer (not closure) so runtime
+// config changes (model, effort, stopGraceMs) take effect after
+// bridge.setConfig() + clearRunners(). Same pattern as codex/pi/kimi.
+function claudeRunnerOptions(deps: RunnerFactoryDeps, cwdOpt: { cwd: string }) {
+  const { cliArgs, configDir, latest, readers } = deps;
+  const claudeConfig = latest().claude;
+  return {
+    model: claudeConfig.model,
+    effort: claudeConfig.effort,
+    stopGraceMs: claudeConfig.stopGraceMs,
+    settings: cliArgs.settings,
+    pidDir: configDir,
+    cwd: cwdOpt.cwd,
+    sessionReader: readers.claude,
+    permissionMode: claudeConfig.permissionMode,
+    idleTtlMs:
+      claudeConfig.idleTtlMinutes != null ? claudeConfig.idleTtlMinutes * 60_000 : undefined,
+  };
+}
 
-  // Register Codex runner (app-server only). The registry factory reads latest
-  // config from container.current so runtime config changes (model, sandbox,
-  // approvalPolicy, reasoningEffort, etc.) take effect after bridge.setConfig()
-  // + clearRunners().
-  agentRegistry.register('codex', (_ws: string) => {
-    const codexConfig = getAgentConfig(latest(), 'codex');
-    return new CodexAppServerRunner({
-      kind: 'codex',
-      model: codexConfig?.model,
-      modelProvider: codexConfig?.modelProvider,
-      reasoningEffort: codexConfig?.reasoningEffort,
-      sessionReader: readers.codex,
-      sandbox: codexConfig?.sandbox,
-      approvalPolicy: codexConfig?.approvalPolicy,
-      binary: codexConfig?.appServer?.binary,
-      requestTimeoutMs: codexConfig?.appServer?.requestTimeoutMs,
-      idleTtlMs: codexConfig?.appServer?.idleTtlMs,
-      turnTimeoutMs: minutesToMs(codexConfig?.appServer?.turnIdleTimeoutMinutes),
-    });
-  });
+// Register Codex runner (app-server only). The registry factory reads latest
+// config from container.current so runtime config changes (model, sandbox,
+// approvalPolicy, reasoningEffort, etc.) take effect after bridge.setConfig()
+// + clearRunners().
+function codexRunnerOptions(deps: RunnerFactoryDeps) {
+  const codexConfig = getAgentConfig(deps.latest(), 'codex');
+  return {
+    kind: 'codex' as const,
+    model: codexConfig?.model,
+    modelProvider: codexConfig?.modelProvider,
+    reasoningEffort: codexConfig?.reasoningEffort,
+    sessionReader: deps.readers.codex,
+    sandbox: codexConfig?.sandbox,
+    approvalPolicy: codexConfig?.approvalPolicy,
+    binary: codexConfig?.appServer?.binary,
+    requestTimeoutMs: codexConfig?.appServer?.requestTimeoutMs,
+    idleTtlMs: codexConfig?.appServer?.idleTtlMs,
+    turnTimeoutMs: minutesToMs(codexConfig?.appServer?.turnIdleTimeoutMinutes),
+  };
+}
 
-  // Register OpencodeAcpRunner (pure ACP mode, `opencode acp` JSON-RPC over stdio)
-  agentRegistry.register('opencode', (_ws: string) => {
-    const ocConfig = getAgentConfig(latest(), 'opencode');
+// Register OpencodeAcpRunner (pure ACP mode, `opencode acp` JSON-RPC over stdio)
+function opencodeRunnerOptions(deps: RunnerFactoryDeps) {
+  const ocConfig = getAgentConfig(deps.latest(), 'opencode');
 
-    // Build model string with validation: provider/model format
-    let model: string | undefined;
-    if (ocConfig?.modelID) {
-      const provider = ocConfig.providerID ?? 'anthropic';
-      // Validate: if modelID contains '/', it's already in provider/model format
-      if (ocConfig.modelID.includes('/')) {
-        model = ocConfig.modelID;
-      } else {
-        model = `${provider}/${ocConfig.modelID}`;
-      }
+  // Build model string with validation: provider/model format
+  let model: string | undefined;
+  if (ocConfig?.modelID) {
+    const provider = ocConfig.providerID ?? 'anthropic';
+    // Validate: if modelID contains '/', it's already in provider/model format
+    if (ocConfig.modelID.includes('/')) {
+      model = ocConfig.modelID;
+    } else {
+      model = `${provider}/${ocConfig.modelID}`;
     }
+  }
 
-    return new OpencodeAcpRunner({
-      kind: 'opencode',
-      model,
-      sessionReader: readers.opencode,
-      mode: ocConfig?.mode ?? 'build',
-      binary: ocConfig?.acp?.binary,
-      requestTimeoutMs: ocConfig?.acp?.requestTimeoutMs,
-      idleTtlMs: ocConfig?.acp?.idleTtlMs,
-      turnIdleTimeoutMs: minutesToMs(ocConfig?.acp?.turnIdleTimeoutMinutes),
-    });
+  return {
+    kind: 'opencode' as const,
+    model,
+    sessionReader: deps.readers.opencode,
+    mode: ocConfig?.mode ?? 'build',
+    binary: ocConfig?.acp?.binary,
+    requestTimeoutMs: ocConfig?.acp?.requestTimeoutMs,
+    idleTtlMs: ocConfig?.acp?.idleTtlMs,
+    turnIdleTimeoutMs: minutesToMs(ocConfig?.acp?.turnIdleTimeoutMinutes),
+  };
+}
+
+// Register PiRpcRunner.
+// factory 闭包必须读最新 config 而不是启动时的快照，否则 /config 保存后
+// provider 等字段对 pi 不生效：config 引用放在可变容器里（见上文
+// setConfigContainer），factory 每次从容器取最新值。
+// PiSessionReader 的创建与注册见 registerSessionReaders。
+function piRunnerOptions(deps: RunnerFactoryDeps, cwdOpt: { cwd: string }) {
+  const piConf = getAgentConfig(deps.latest(), 'pi');
+  return {
+    provider: piConf?.provider ?? PI_DEFAULTS.provider,
+    model: piConf?.model ?? PI_DEFAULTS.model,
+    thinking: piConf?.thinking ?? PI_DEFAULTS.thinking,
+    tools: (piConf?.tools ?? PI_DEFAULTS.tools)
+      .split(',')
+      .map((t) => t.trim())
+      .filter(Boolean),
+    cwd: cwdOpt.cwd,
+    sessionReader: deps.readers.pi,
+  };
+}
+
+// Register KimiAcpRunner (pure ACP mode)
+function kimiRunnerOptions(deps: RunnerFactoryDeps) {
+  const kimiConf = getAgentConfig(deps.latest(), 'kimi');
+
+  const acpConf = kimiConf?.acp;
+  return {
+    kind: 'kimi' as const,
+    sessionReader: deps.readers.kimi,
+    binary: acpConf?.binary ?? 'kimi',
+    requestTimeoutMs: acpConf?.requestTimeoutMs,
+    idleTtlMs: acpConf?.idleTtlMs,
+    turnIdleTimeoutMs: minutesToMs(acpConf?.turnIdleTimeoutMinutes),
+    model: kimiConf?.model ?? KIMI_DEFAULTS.model,
+    thinkingEffort: kimiConf?.thinkingEffort,
+    permissionMode: kimiConf?.permissionMode ?? 'manual',
+  };
+}
+
+// Warm the shared process in the background so the first message and
+// `/resume` do not pay the full startup delay. Failures surface from
+// DshRunner.run(), which awaits the same resolver.
+function warmDshDaemon(dshDaemon: DshDaemon, failureLabel: string): void {
+  void dshDaemon.ensure().catch((error: unknown) => {
+    getLogger().warn(`[dsh] ${failureLabel}: ${(error as Error).message}`);
+  });
+}
+
+// Register DshRunner (HTTP-only DSH Web Host agent).
+function dshRunnerOptions(deps: RunnerFactoryDeps) {
+  const dshConf = getAgentConfig(deps.latest(), 'dsh');
+  return {
+    kind: 'dsh' as const,
+    sessionReader: deps.readers.dsh,
+    daemon: deps.dshDaemon,
+    host: dshConf?.host,
+    dshHome: dshConf?.dshHome,
+    token: dshConf?.token,
+    credentialsFile: dshConf?.credentialsFile,
+    agentPreset: dshConf?.agentPreset,
+    permissionPreset: dshConf?.permissionPreset,
+    provider: dshConf?.provider,
+    model: dshConf?.model,
+    reasoningEffort: dshConf?.reasoningEffort,
+    // Durable markers for turns that outlive this process; reconciled on the
+    // next startup (see reconcileInflightDshRuns).
+    inflightPath: dshInflightPath(deps.configDir),
+  };
+}
+
+function registerRunners(agentRegistry: AgentRegistry, deps: RunnerFactoryDeps): void {
+  agentRegistry.register('claude', (ws) => {
+    return new ClaudeRunner(claudeRunnerOptions(deps, { cwd: ws }));
   });
 
-  // Register PiRpcRunner.
-  // factory 闭包必须读最新 config 而不是启动时的快照，否则 /config 保存后
-  // provider 等字段对 pi 不生效：config 引用放在可变容器里（见上文
-  // setConfigContainer），factory 每次从容器取最新值。
-  // PiSessionReader 的创建与注册见 registerSessionReaders。
+  agentRegistry.register('codex', (_ws: string) => {
+    return new CodexAppServerRunner(codexRunnerOptions(deps));
+  });
+
+  agentRegistry.register('opencode', (_ws: string) => {
+    return new OpencodeAcpRunner(opencodeRunnerOptions(deps));
+  });
+
   agentRegistry.register('pi', (ws: string) => {
-    const piConf = getAgentConfig(latest(), 'pi');
-    return new PiRpcRunner({
-      provider: piConf?.provider ?? PI_DEFAULTS.provider,
-      model: piConf?.model ?? PI_DEFAULTS.model,
-      thinking: piConf?.thinking ?? PI_DEFAULTS.thinking,
-      tools: (piConf?.tools ?? PI_DEFAULTS.tools)
-        .split(',')
-        .map((t) => t.trim())
-        .filter(Boolean),
-      cwd: ws,
-      sessionReader: readers.pi,
-    });
+    return new PiRpcRunner(piRunnerOptions(deps, { cwd: ws }));
   });
 
-  // Register KimiAcpRunner (pure ACP mode)
   agentRegistry.register('kimi', (_ws: string) => {
-    const kimiConf = getAgentConfig(latest(), 'kimi');
-
-    const acpConf = kimiConf?.acp;
-    return new KimiAcpRunner({
-      kind: 'kimi',
-      sessionReader: readers.kimi,
-      binary: acpConf?.binary ?? 'kimi',
-      requestTimeoutMs: acpConf?.requestTimeoutMs,
-      idleTtlMs: acpConf?.idleTtlMs,
-      turnIdleTimeoutMs: minutesToMs(acpConf?.turnIdleTimeoutMinutes),
-      model: kimiConf?.model ?? KIMI_DEFAULTS.model,
-      thinkingEffort: kimiConf?.thinkingEffort,
-      permissionMode: kimiConf?.permissionMode ?? 'manual',
-    });
+    return new KimiAcpRunner(kimiRunnerOptions(deps));
   });
 
-  // Register DshRunner (HTTP-only DSH Web Host agent).
   agentRegistry.register('dsh', (_ws: string) => {
-    const dshConf = getAgentConfig(latest(), 'dsh');
-    // Warm the shared process in the background so the first message and
-    // `/resume` do not pay the full startup delay. Failures surface from
-    // DshRunner.run(), which awaits the same resolver.
-    void dshDaemon.ensure().catch((error: unknown) => {
-      getLogger().warn(`[dsh] background start failed: ${(error as Error).message}`);
-    });
-    return new DshRunner({
-      kind: 'dsh',
-      sessionReader: readers.dsh,
-      daemon: dshDaemon,
-      host: dshConf?.host,
-      dshHome: dshConf?.dshHome,
-      token: dshConf?.token,
-      credentialsFile: dshConf?.credentialsFile,
-      agentPreset: dshConf?.agentPreset,
-      permissionPreset: dshConf?.permissionPreset,
-      provider: dshConf?.provider,
-      model: dshConf?.model,
-      reasoningEffort: dshConf?.reasoningEffort,
-      // Durable markers for turns that outlive this process; reconciled on the
-      // next startup (see reconcileInflightDshRuns).
-      inflightPath: dshInflightPath(configDir),
-    });
+    warmDshDaemon(deps.dshDaemon, 'background start failed');
+    return new DshRunner(dshRunnerOptions(deps));
   });
 }
 
@@ -423,6 +452,43 @@ function registerSessionReaders(
   registry.register('dsh', readers.dsh);
 }
 
+/** 探测 agent CLI 可用性（fire-and-forget，填充 /config 卡片缓存）。 */
+function probeAgentsInBackground(): void {
+  probeAllAgents().then(logAgentProbeResults).catch(logAgentProbeFailure);
+}
+
+function logAgentProbeResults(availability: Awaited<ReturnType<typeof probeAllAgents>>): void {
+  const unavailable = [...availability.entries()].filter(([, ok]) => !ok).map(([kind]) => kind);
+  if (unavailable.length > 0) {
+    getLogger().warn(`[probe] agent CLI not found or not functional: ${unavailable.join(', ')}`);
+  } else {
+    getLogger().info('[probe] all agent CLIs available');
+  }
+}
+
+function logAgentProbeFailure(err: unknown): void {
+  getLogger().warn(`[probe] background probe failed: ${(err as Error).message}`);
+}
+
+/** runner factory 取最新 config 的唯一入口（container 未接线时回退启动快照）。 */
+function createConfigLatest(
+  agentRegistry: AgentRegistry,
+  config: ReturnType<typeof loadConfig>,
+): () => AppConfig {
+  return () => (agentRegistry.getConfigContainer()?.current as AppConfig) ?? config;
+}
+
+/** One global DSH per machine/DSH_HOME：provider 箭头在模块级函数内定义。 */
+function createDshDaemon(latest: () => AppConfig): DshDaemon {
+  return new DshDaemon({
+    host: () => getAgentConfig(latest(), 'dsh')?.host,
+    dshHome: () => getAgentConfig(latest(), 'dsh')?.dshHome,
+    dshCommand: () => getAgentConfig(latest(), 'dsh')?.dshCommand,
+    manageProcess: () => getAgentConfig(latest(), 'dsh')?.manageProcess ?? true,
+    startTimeoutMs: () => getAgentConfig(latest(), 'dsh')?.startTimeoutMs,
+  });
+}
+
 /** Initialize per-workspace runner factory + agent registry. */
 function initializeRunner(
   config: ReturnType<typeof loadConfig>,
@@ -436,21 +502,14 @@ function initializeRunner(
 
   // 单点化：runner factory 取最新 config 的唯一入口（语义保持，
   // container 未接线时回退启动快照）。
-  const latest = (): AppConfig =>
-    (agentRegistry.getConfigContainer()?.current as AppConfig) ?? config;
+  const latest = createConfigLatest(agentRegistry, config);
 
   // 用可变容器存储 config 引用，registry 持有容器引用，factory 从容器读取最新值。
   agentRegistry.setConfigContainer({ current: config });
 
   // One global DSH per machine/DSH_HOME. This resolver reuses a listening
   // process or starts `dsh web` detached; it never owns the child's lifetime.
-  const dshDaemon = new DshDaemon({
-    host: () => getAgentConfig(latest(), 'dsh')?.host,
-    dshHome: () => getAgentConfig(latest(), 'dsh')?.dshHome,
-    dshCommand: () => getAgentConfig(latest(), 'dsh')?.dshCommand,
-    manageProcess: () => getAgentConfig(latest(), 'dsh')?.manageProcess ?? true,
-    startTimeoutMs: () => getAgentConfig(latest(), 'dsh')?.startTimeoutMs,
-  });
+  const dshDaemon = createDshDaemon(latest);
 
   const readers = createSessionReaders(config, latest);
   registerRunners(agentRegistry, { configDir, cliArgs, latest, dshDaemon, readers });
@@ -459,27 +518,12 @@ function initializeRunner(
   registerSessionReaders(sessionReaderRegistry, readers);
 
   if (config.defaultAgent === 'dsh') {
-    void dshDaemon.ensure().catch((error: unknown) => {
-      getLogger().warn(`[dsh] startup probe failed: ${(error as Error).message}`);
-    });
+    warmDshDaemon(dshDaemon, 'startup probe failed');
   }
 
   // Probe agent CLI availability (fire-and-forget, populates cache for /config card).
   // Don't block startup — log unavailable agents as warnings.
-  probeAllAgents()
-    .then((availability) => {
-      const unavailable = [...availability.entries()].filter(([, ok]) => !ok).map(([kind]) => kind);
-      if (unavailable.length > 0) {
-        getLogger().warn(
-          `[probe] agent CLI not found or not functional: ${unavailable.join(', ')}`,
-        );
-      } else {
-        getLogger().info('[probe] all agent CLIs available');
-      }
-    })
-    .catch((err: unknown) => {
-      getLogger().warn(`[probe] background probe failed: ${(err as Error).message}`);
-    });
+  probeAgentsInBackground();
 
   // Warm the codex model catalog in the background so the first Codex /config
   // card open reads a warm cache instead of blocking the event loop for up to
@@ -746,12 +790,66 @@ async function restoreLastSession(app: WiredApp): Promise<void> {
   }
 }
 
+/**
+ * 启动时静默检查版本（由 checkUpdateOnStartup 控制，默认关闭）。
+ * 抽成模块级 async 函数（原为 main 内的 fire-and-forget IIFE）；失败只告警，
+ * 不允许经 main().catch → process.exit(1) 拖垮整个桥接。
+ */
+async function checkUpdateOnStartupNotify(app: WiredApp): Promise<void> {
+  try {
+    const cachePath = path.join(app.configDir, 'update-cache.json');
+    const { current, latest } = await checkLatestVersion({ cachePath });
+    const hint = formatUpdateHint(current, latest);
+    if (hint) {
+      const contact = app.startupContactStore.getContact();
+      const recipient = contact?.chatId ?? contact?.userId;
+      if (recipient) {
+        await app.connector.sendWithRetry(recipient, { text: hint });
+      }
+    }
+  } catch (err) {
+    // Non-fatal: startup check failure must not crash the bridge
+    app.logger.warn(`[startup] update check failed: ${(err as Error).message}`);
+  }
+}
+
+/**
+ * 上次进程可能死在 DSH turn 中途：清掉残留的待执行 prompt，并对仍在跑的
+ * turn 提示 owner（不自动 cancel——它可能是 Web UI 的 turn）。清理不依赖是否
+ * 已绑定；没有收件人时只是不发提示。
+ */
+function reconcileDshInflightOnStartup(app: WiredApp): void {
+  const dshConf = getAgentConfig(app.config, 'dsh');
+  if (!dshConf) return;
+  const contact = app.startupContactStore.getContact();
+  const recipient = contact?.chatId ?? contact?.userId;
+  void reconcileInflightDshRuns({
+    store: new DshInflightStore(dshInflightPath(app.configDir)),
+    client: new DshClient(dshConf.host ?? 'http://127.0.0.1:3080', {
+      dshHome: dshConf.dshHome,
+      token: dshConf.token,
+      credentialsFile: dshConf.credentialsFile,
+      // Host may be down: bound the probe instead of waiting the default 60s.
+      requestTimeoutMs: 3_000,
+    }),
+    ...(recipient
+      ? {
+          notify: async (text: string) => {
+            await app.connector.sendWithRetry(recipient, { text });
+          },
+        }
+      : {}),
+  }).catch((err: unknown) => {
+    app.logger.warn(`[startup] dsh inflight reconcile failed: ${(err as Error).message}`);
+  });
+}
+
 async function main() {
   const cliArgs = parseCliArgs();
   if (await handleCliEarlyExit(cliArgs)) return;
   const boot = await bootstrap(cliArgs);
   const app = wire(boot);
-  const { config, configDir, logger, connector, startupContactStore, binder } = app;
+  const { config, logger, connector, startupContactStore, binder } = app;
 
   try {
     await connector.connect();
@@ -766,53 +864,11 @@ async function main() {
 
     // 启动时静默检查版本（由 checkUpdateOnStartup 控制，默认关闭）
     if (config.checkUpdateOnStartup) {
-      void (async () => {
-        try {
-          const cachePath = path.join(configDir, 'update-cache.json');
-          const { current, latest } = await checkLatestVersion({ cachePath });
-          const hint = formatUpdateHint(current, latest);
-          if (hint) {
-            const contact = startupContactStore.getContact();
-            const recipient = contact?.chatId ?? contact?.userId;
-            if (recipient) {
-              await connector.sendWithRetry(recipient, { text: hint });
-            }
-          }
-        } catch (err) {
-          // Non-fatal: startup check failure must not crash the bridge
-          logger.warn(`[startup] update check failed: ${(err as Error).message}`);
-        }
-      })();
+      void checkUpdateOnStartupNotify(app);
     }
   }
 
-  // 上次进程可能死在 DSH turn 中途：清掉残留的待执行 prompt，并对仍在跑的
-  // turn 提示 owner（不自动 cancel——它可能是 Web UI 的 turn）。清理不依赖是否
-  // 已绑定；没有收件人时只是不发提示。
-  const dshConf = getAgentConfig(config, 'dsh');
-  if (dshConf) {
-    const contact = startupContactStore.getContact();
-    const recipient = contact?.chatId ?? contact?.userId;
-    void reconcileInflightDshRuns({
-      store: new DshInflightStore(dshInflightPath(configDir)),
-      client: new DshClient(dshConf.host ?? 'http://127.0.0.1:3080', {
-        dshHome: dshConf.dshHome,
-        token: dshConf.token,
-        credentialsFile: dshConf.credentialsFile,
-        // Host may be down: bound the probe instead of waiting the default 60s.
-        requestTimeoutMs: 3_000,
-      }),
-      ...(recipient
-        ? {
-            notify: async (text: string) => {
-              await connector.sendWithRetry(recipient, { text });
-            },
-          }
-        : {}),
-    }).catch((err: unknown) => {
-      logger.warn(`[startup] dsh inflight reconcile failed: ${(err as Error).message}`);
-    });
-  }
+  reconcileDshInflightOnStartup(app);
 
   await restoreLastSession(app);
 

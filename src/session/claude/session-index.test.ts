@@ -162,6 +162,44 @@ describe('buildFingerprint', () => {
     const fp = buildFingerprint(path.join(tmpDir, 'nope.jsonl'));
     expect(fp).toBe('');
   });
+
+  it('fingerprint is size|mtimeNs|ctimeNs|dev|ino of the real bigint stat', () => {
+    const filePath = writeJsonl('-home-user-project', FAKE_SESSION_ID_A, [initLine(FAKE_CWD_1)]);
+    const st = fs.statSync(filePath, { bigint: true });
+
+    expect(buildFingerprint(filePath)).toBe(
+      [st.size, st.mtimeNs, st.ctimeNs, st.dev, st.ino].map(String).join('|'),
+    );
+  });
+
+  it('fingerprint changes after the file is rewritten', async () => {
+    const filePath = writeJsonl('-home-user-project', FAKE_SESSION_ID_A, [initLine(FAKE_CWD_1)]);
+    const before = buildFingerprint(filePath);
+
+    await tickMtime();
+    fs.writeFileSync(
+      filePath,
+      toJsonl([initLine(FAKE_CWD_1), userMessageLine('a longer body than before')]),
+    );
+
+    expect(buildFingerprint(filePath)).not.toBe(before);
+  });
+
+  it('returns an empty fingerprint and warns when stat fails with a non-ENOENT error', () => {
+    const filePath = writeJsonl('-home-user-project', FAKE_SESSION_ID_A, [initLine(FAKE_CWD_1)]);
+    const origStatSync = fs.statSync;
+    const spy = vi.spyOn(fs, 'statSync').mockImplementation(((p: unknown, ...rest: unknown[]) => {
+      if (p === filePath) {
+        throw Object.assign(new Error('EACCES: permission denied'), { code: 'EACCES' });
+      }
+      return (origStatSync as unknown as (...a: unknown[]) => unknown)(p, ...rest);
+    }) as typeof fs.statSync);
+    try {
+      expect(buildFingerprint(filePath)).toBe('');
+    } finally {
+      spy.mockRestore();
+    }
+  });
 });
 
 // ─── SessionIndex build ──────────────────────────────────────

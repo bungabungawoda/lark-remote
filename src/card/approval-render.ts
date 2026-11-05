@@ -76,6 +76,17 @@ function pushIf<T>(arr: T[], el: T | null): void {
   if (el !== null) arr.push(el);
 }
 
+/** kind → 审批区渲染器。用 Map 而非对象字面量：constructor/toString 等键会命中 Object.prototype。 */
+type ApprovalAreaRenderer = (approval: ApprovalView, expired?: boolean, runId?: string) => object[];
+
+const APPROVAL_AREA_RENDERERS = new Map<ApprovalView['kind'], ApprovalAreaRenderer>([
+  ['command', renderCommandApproval],
+  ['tool', renderToolApproval],
+  ['file', renderFileApproval],
+  ['permissions', renderPermissionsApproval],
+  ['question', renderQuestionApproval],
+]);
+
 /**
  * Render the approval area for a run card.
  * Returns an array of CardKit 2.0 elements to append to the card body.
@@ -98,17 +109,9 @@ export function renderApprovalArea(
     });
   }
 
-  if (approval.kind === 'command') {
-    elements.push(...renderCommandApproval(approval, opts?.expired, opts?.runId));
-  } else if (approval.kind === 'tool') {
-    elements.push(...renderToolApproval(approval, opts?.expired, opts?.runId));
-  } else if (approval.kind === 'file') {
-    elements.push(...renderFileApproval(approval, opts?.expired, opts?.runId));
-  } else if (approval.kind === 'permissions') {
-    elements.push(...renderPermissionsApproval(approval, opts?.expired, opts?.runId));
-  } else if (approval.kind === 'question') {
-    elements.push(...renderQuestionApproval(approval, opts?.expired, opts?.runId));
-  }
+  // kind → 渲染器查表（Map 保持插入顺序，未知 kind 与原先无 else 分支一致：不追加）。
+  const render = APPROVAL_AREA_RENDERERS.get(approval.kind);
+  if (render) elements.push(...render(approval, opts?.expired, opts?.runId));
 
   // 响应发送失败：明确告知原因 + 可重试，而不是静默停在可点状态。
   if (approval.deliveryError) {
@@ -508,6 +511,37 @@ const MAX_DIFF_CHARS = 1200;
 // Permissions Approval
 // =============================================================================
 
+type PermissionItem = NonNullable<ApprovalView['permissions']>['items'][number];
+
+/** 单个权限条目：label div + toggle 按钮（模块级命名函数，供循环逐个调用）。 */
+function renderPermissionItem(
+  item: PermissionItem,
+  requestId: number | string,
+  runId?: string,
+): object[] {
+  const icon = item.selected ? '✅' : '⬜';
+  // label 仅展示（payload 用 item.id），可安全截断。
+  const label = capApprovalText(item.label, APPROVAL_LABEL_BYTES);
+  return [
+    {
+      tag: 'div',
+      text: { tag: 'lark_md', content: `${icon} ${label}` },
+    },
+    cardButton(
+      item.selected ? '取消授予' : '授予',
+      {
+        cmd: 'approval.toggle',
+        requestId,
+        permId: item.id,
+        selected: !item.selected,
+        runId,
+        nonce: mkNonce(),
+      },
+      { type: item.selected ? 'default' : 'primary', size: 'small' },
+    ),
+  ];
+}
+
 function renderPermissionsApproval(
   approval: ApprovalView,
   expired?: boolean,
@@ -528,27 +562,7 @@ function renderPermissionsApproval(
     const items = approval.permissions.items.slice(0, MAX_RENDERED_CHANGE_ITEMS);
     const omittedItems = approval.permissions.items.length - items.length;
     for (const item of items) {
-      const icon = item.selected ? '✅' : '⬜';
-      // label 仅展示（payload 用 item.id），可安全截断。
-      const label = capApprovalText(item.label, APPROVAL_LABEL_BYTES);
-      elements.push({
-        tag: 'div',
-        text: { tag: 'lark_md', content: `${icon} ${label}` },
-      });
-      elements.push(
-        cardButton(
-          item.selected ? '取消授予' : '授予',
-          {
-            cmd: 'approval.toggle',
-            requestId: approval.requestId,
-            permId: item.id,
-            selected: !item.selected,
-            runId,
-            nonce: mkNonce(),
-          },
-          { type: item.selected ? 'default' : 'primary', size: 'small' },
-        ),
-      );
+      elements.push(...renderPermissionItem(item, approval.requestId, runId));
     }
     if (omittedItems > 0) {
       elements.push({

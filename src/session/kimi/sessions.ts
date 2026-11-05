@@ -5,6 +5,7 @@ import { readJsonlLines as readJsonlLinesShared, readLastNJsonlLines } from '../
 import { cumulativeUsageFields } from '../common/usage-accumulator.js';
 import { throwSessionListError } from '../common/throw-session-list-error.js';
 import { getLogger } from '../../logger/index.js';
+import { logNonEnoentDebug } from '../session-store.js';
 import type {
   AgentSession,
   AgentSessionContentEvent,
@@ -586,37 +587,6 @@ export class KimiSessionReader implements AgentSessionReader {
   }
 
   /**
-   * Extract the last turn.prompt text from a wire.jsonl file.
-   * Used as a fallback summary source when state.json has no title/lastPrompt
-   * (v2 sessions). Scans the tail of the file for efficiency.
-   * Returns undefined if no turn.prompt is found.
-   */
-  private extractLastPromptFromWire(wirePath: string): string | undefined {
-    try {
-      if (!fs.existsSync(wirePath)) return undefined;
-      // Scan backwards from the tail — turn.prompt is typically near the end
-      // of a completed turn (before content.part / step.end / usage.record).
-      const lines = readLastNJsonlLines(wirePath, 50);
-      let lastPrompt: string | undefined;
-      for (const line of lines) {
-        try {
-          const entry = JSON.parse(line) as KimiJsonlEntry;
-          if (isTurnPrompt(entry)) {
-            if (entry.input && entry.input.length > 0) {
-              lastPrompt = entry.input[0].text;
-            }
-          }
-        } catch {
-          continue;
-        }
-      }
-      return lastPrompt?.substring(0, 200);
-    } catch {
-      return undefined;
-    }
-  }
-
-  /**
    * List all sessions for a given working directory
    */
   listSessions(
@@ -626,105 +596,16 @@ export class KimiSessionReader implements AgentSessionReader {
     try {
       // 归一失败（陈旧/无权限 cwd）回退原样输入，让逐条 samePath 比较去决定
       // 空态——一次 realpathSync 抛错不得把整张列表清掉（与 opencode 同口径）。
-      const realCwd = safeRealpath(cwd, (err) => {
-        if ((err as NodeJS.ErrnoException).code === 'ENOENT') return;
-        getLogger().debug(
-          `[kimi-session-reader] realpath ${cwd} failed, using the path as given: ${
-            (err as Error)?.message ?? String(err)
-          }`,
-        );
-      });
+      const realCwd = safeRealpath(cwd, logKimiRealpathFailure.bind(null, cwd));
       const sessions: AgentSession[] = [];
-
       for (const entry of this.scanSessionIndex()) {
-        // state.json 一次读取共用（cwd 兜底 + summary），I/O 减半。
-        // 两次 catch 语义保留：解析失败 = 无法判 cwd → 跳过（continue）；
-        // 解析成功但字段缺失 = summary 落 wire.jsonl 提取。
-        const statePath = path.join(entry.sessionDir, 'state.json');
-        let state: KimiSessionState | null = null;
-        let stateParsed = false;
-        if (fs.existsSync(statePath)) {
-          try {
-            state = JSON.parse(fs.readFileSync(statePath, 'utf-8')) as KimiSessionState;
-            stateParsed = true;
-          } catch (err) {
-            getLogger().debug(
-              `[kimi-session-reader] corrupt state.json skipped session=${entry.sessionId}: ${
-                (err as Error)?.message ?? String(err)
-              }`,
-            );
-          }
-        }
-
-        // Index workDir is v1-only; v2 sessions may have empty/missing workDir.
-        // When index workDir is absent, fall back to state.json's cwd field.
-        let entryWorkDir: string | undefined = entry.workDir;
-        if (!entryWorkDir) {
-          if (stateParsed && state) entryWorkDir = extractWorkDir(state);
-          // Unreadable state — cannot determine cwd, entryWorkDir stays undefined
-        }
-        // cwd 判定与守卫（checkCwdGuard 的 samePath）同口径：严格字符串比较会
-        // 把大小写（darwin）/尾分隔符形态不同的会话从列表里滤掉，而 /resume <id>
-        // 的守卫却判等通过——「列表没有、按 id 却能读」。
-        if (entryWorkDir === undefined || !samePath(entryWorkDir, realCwd)) {
-          continue;
-        }
-
-        let summary = 'New Session';
-        if (stateParsed && state) {
-          // v1: state.title / state.lastPrompt; v2: these fields may be absent
-          summary = state.title || state.lastPrompt || '';
-        }
-
-        // v2 state.json omits title/lastPrompt: extract from wire.jsonl's last
-        // turn.prompt instead. Only scan a small tail to find it — the summary
-        // only needs the most recent user prompt.
-        if (!summary) {
-          const wirePath = path.join(entry.sessionDir, 'agents', 'main', 'wire.jsonl');
-          summary = this.extractLastPromptFromWire(wirePath) || 'New Session';
-        }
-
-        // Get mtime. the session DIRECTORY mtime only changes when
-        // entries are created/deleted/renamed inside it — kimi appending to
-        // agents/main/wire.jsonl during a run does NOT touch it, so dir-mtime
-        // sorting lags real activity by minutes. Use the wire.jsonl mtime
-        // (the file kimi keeps writing while the session is active) and fall
-        // back to the dir mtime when the wire file is missing (e.g. a session
-        // that never produced output).
-        const wirePath = path.join(entry.sessionDir, 'agents', 'main', 'wire.jsonl');
-        let mtimeMs: number;
-        try {
-          mtimeMs = fs.statSync(wirePath).mtimeMs;
-        } catch {
-          try {
-            mtimeMs = fs.statSync(entry.sessionDir).mtimeMs;
-          } catch (err) {
-            if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
-              getLogger().warn(
-                `[kimi-session-reader] cannot stat ${entry.sessionDir}: ${
-                  (err as Error)?.message ?? String(err)
-                }`,
-              );
-            }
-            // 会话目录已不存在（或被清理）：跳过该条，别让它拖垮整张列表。
-            continue;
-          }
-        }
-
-        sessions.push({
-          sessionId: entry.sessionId,
-          summary,
-          mtime: mtimeMs,
-        });
+        const row = collectKimiSession(entry, realCwd);
+        if (row) sessions.push(row);
       }
 
       // Sort by mtime descending; same-mtime ties use a deterministic
       // secondary key so ordering is stable across scans.
-      sortByRecencyDesc(
-        sessions,
-        (s) => s.mtime,
-        (s) => s.sessionId,
-      );
+      sortByRecencyDesc(sessions, kimiRowMtime, kimiRowId);
 
       const { items, total } = paginate(sessions, opts ?? {});
       return {
@@ -999,4 +880,148 @@ export class KimiSessionReader implements AgentSessionReader {
       return false;
     }
   }
+}
+
+// --- listSessions 装配原语（模块级命名函数 + 显式传参） ---
+// 纯结构拆分：listSessions 只做 realpath / 遍历 / 排序分页 / 错误降级，
+// 单条会话的 state 读取、cwd 守卫、summary 三级回退、mtime 回退全部下沉到
+// 这些模块级函数。文案、跳过条件、排序键、分页口径逐项保持。
+
+/** realpath 归一化失败（非 ENOENT）留痕；ENOENT 静默沿用原 cwd。 */
+function logKimiRealpathFailure(cwd: string, err: unknown): void {
+  logNonEnoentDebug(
+    err,
+    (m) => `[kimi-session-reader] realpath ${cwd} failed, using the path as given: ${m}`,
+  );
+}
+
+interface KimiStateRead {
+  state: KimiSessionState | null;
+  stateParsed: boolean;
+}
+
+/** state.json 一次读取共用（cwd 兜底 + summary），I/O 减半。 */
+function readKimiState(sessionDir: string, sessionId: string): KimiStateRead {
+  const statePath = path.join(sessionDir, 'state.json');
+  if (!fs.existsSync(statePath)) return { state: null, stateParsed: false };
+  try {
+    return {
+      state: JSON.parse(fs.readFileSync(statePath, 'utf-8')) as KimiSessionState,
+      stateParsed: true,
+    };
+  } catch (err) {
+    // 解析失败 = 无法判 cwd → 不 continue，留给 index workDir 兜底。
+    getLogger().debug(
+      `[kimi-session-reader] corrupt state.json skipped session=${sessionId}: ${
+        (err as Error)?.message ?? String(err)
+      }`,
+    );
+    return { state: null, stateParsed: false };
+  }
+}
+
+/** index workDir 优先，缺失时回退 state.json 的 workDir/cwd。 */
+function resolveKimiEntryWorkDir(
+  entry: KimiSessionIndexEntry,
+  read: KimiStateRead,
+): string | undefined {
+  let entryWorkDir: string | undefined = entry.workDir;
+  if (!entryWorkDir && read.stateParsed && read.state) {
+    entryWorkDir = extractWorkDir(read.state);
+  }
+  return entryWorkDir;
+}
+
+/**
+ * 从 wire.jsonl 末段提取最后一条 turn.prompt。
+ * v2 state.json 省略 title/lastPrompt 时作为 summary 兜底；只扫尾部 50 行。
+ */
+function extractLastPromptFromWire(wirePath: string): string | undefined {
+  try {
+    if (!fs.existsSync(wirePath)) return undefined;
+    // Scan backwards from the tail — turn.prompt is typically near the end
+    // of a completed turn (before content.part / step.end / usage.record).
+    const lines = readLastNJsonlLines(wirePath, 50);
+    let lastPrompt: string | undefined;
+    for (const line of lines) {
+      try {
+        const entry = JSON.parse(line) as KimiJsonlEntry;
+        if (isTurnPrompt(entry)) {
+          if (entry.input && entry.input.length > 0) {
+            lastPrompt = entry.input[0].text;
+          }
+        }
+      } catch {
+        continue;
+      }
+    }
+    return lastPrompt?.substring(0, 200);
+  } catch {
+    return undefined;
+  }
+}
+
+/** summary：state.title / lastPrompt → wire turn.prompt → 'New Session'。 */
+function kimiSessionSummary(sessionDir: string, read: KimiStateRead): string {
+  let summary = 'New Session';
+  if (read.stateParsed && read.state) {
+    // v1: state.title / state.lastPrompt; v2: these fields may be absent
+    summary = read.state.title || read.state.lastPrompt || '';
+  }
+  if (!summary) {
+    const wirePath = path.join(sessionDir, 'agents', 'main', 'wire.jsonl');
+    summary = extractLastPromptFromWire(wirePath) || 'New Session';
+  }
+  return summary;
+}
+
+/**
+ * 排序用 mtime：wire.jsonl 优先（run 期间持续写入），缺失回退会话目录
+ * mtime；目录也不可读（非 ENOENT 留痕）返回 null，由调用方跳过该条。
+ */
+function kimiSessionMtime(sessionDir: string): number | null {
+  const wirePath = path.join(sessionDir, 'agents', 'main', 'wire.jsonl');
+  try {
+    return fs.statSync(wirePath).mtimeMs;
+  } catch {
+    try {
+      return fs.statSync(sessionDir).mtimeMs;
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
+        getLogger().warn(
+          `[kimi-session-reader] cannot stat ${sessionDir}: ${
+            (err as Error)?.message ?? String(err)
+          }`,
+        );
+      }
+      // 会话目录已不存在（或被清理）：跳过该条，别让它拖垮整张列表。
+      return null;
+    }
+  }
+}
+
+/** 单条 index entry → 列表行；cwd 不匹配 / 目录不可读时返回 null（跳过）。 */
+function collectKimiSession(entry: KimiSessionIndexEntry, realCwd: string): AgentSession | null {
+  const read = readKimiState(entry.sessionDir, entry.sessionId);
+  const entryWorkDir = resolveKimiEntryWorkDir(entry, read);
+  if (entryWorkDir === undefined || !samePath(entryWorkDir, realCwd)) {
+    return null;
+  }
+  const summary = kimiSessionSummary(entry.sessionDir, read);
+  const mtimeMs = kimiSessionMtime(entry.sessionDir);
+  if (mtimeMs === null) return null;
+  return {
+    sessionId: entry.sessionId,
+    summary,
+    mtime: mtimeMs,
+  };
+}
+
+/** 排序键（模块级：不把回调决策点算回 listSessions）。 */
+function kimiRowMtime(s: AgentSession): number {
+  return s.mtime;
+}
+
+function kimiRowId(s: AgentSession): string {
+  return s.sessionId;
 }

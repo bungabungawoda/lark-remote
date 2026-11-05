@@ -710,6 +710,40 @@ describe('KimiAcpRunner', () => {
     await runner.dispose();
   });
 
+  it('elicitation 只答一题：未答的那题不进 content，turn 仍正常收尾', async () => {
+    const capturePath = join(tmpDir, 'received-partial.jsonl');
+    const { wrapper, cwd } = writeScenario(tmpDir, serverScript, 'kimi', {
+      sendElicitation: true,
+      holdPromptUntilResponse: true,
+      capturePath,
+    });
+    const runner = new KimiAcpRunner({
+      kind: 'kimi',
+      sessionReader: createStubSessionReader(),
+      binary: wrapper,
+      acpArgs: [],
+      turnIdleTimeoutMs: 30_000,
+    });
+
+    let questionSeen = false;
+    for await (const event of runner.run('ask me', { cwd })) {
+      if (event.type === 'approval_requested' && event.kind === 'question') {
+        questionSeen = true;
+        // 只答 Setup，Frameworks 留空 → 未答题目在 content 里必须缺席，
+        // 不能补成空串/空数组（服务端会把 form 值写回会话）。
+        await runner.respondApproval(event.requestId, {
+          action: 'answer',
+          answers: { Setup: 'PostgreSQL' },
+        });
+      }
+    }
+    expect(questionSeen).toBe(true);
+
+    const frame = readCapture(capturePath).find((m) => m.id === 44 && m.result !== undefined);
+    expect(frame?.result).toEqual({ action: 'accept', content: { q0: 'PostgreSQL' } });
+    await runner.dispose();
+  });
+
   it('declines elicitation form with action decline', async () => {
     const capturePath = join(tmpDir, 'received.jsonl');
     const { wrapper, cwd } = writeScenario(tmpDir, serverScript, 'kimi', {
@@ -2097,4 +2131,152 @@ describe('KimiAcpRunner', () => {
       await runner.dispose();
     }, 20000);
   });
+
+  /**
+   * request_permission 提问兜底桥（q{n}_opt_{i} / q{n}_skip 命名空间）。
+   * 全部经公开入口 run() + respondApproval() 触发，断言回给 ACP 服务端的
+   * 真实协议响应（selected 的 optionId / cancelled），而不是内部函数存在性。
+   */
+  describe('request_permission 提问兜底桥（行为）', () => {
+    const bridgeOptions = [
+      { optionId: 'q0_opt_0', name: 'PostgreSQL', kind: 'allow_once' },
+      { optionId: 'q0_opt_1', name: 'SQLite', kind: 'allow_once' },
+      { optionId: 'q0_skip', name: 'Skip', kind: 'reject_once' },
+    ];
+
+    async function respondToQuestion(opts: {
+      action: string;
+      answerValue?: string | string[];
+      /** 用非题面文本的 key 提交，模拟答案与选项/题面不匹配。 */
+      wrongKey?: boolean;
+      questionOptions?: Array<{ optionId: string; name: string; kind: string }>;
+    }) {
+      const capturePath = join(tmpDir, 'received.jsonl');
+      const { wrapper, cwd } = writeScenario(tmpDir, serverScript, 'kimi', {
+        sendQuestion: true,
+        questionOptions: opts.questionOptions ?? bridgeOptions,
+        holdPromptUntilResponse: true,
+        capturePath,
+      });
+      const runner = new KimiAcpRunner({
+        kind: 'kimi',
+        sessionReader: createStubSessionReader(),
+        binary: wrapper,
+        acpArgs: [],
+        turnIdleTimeoutMs: 30_000,
+      });
+
+      const events: AgentEvent[] = [];
+      let questionSeen = false;
+      for await (const event of runner.run('ask me', { cwd })) {
+        events.push(event);
+        if (event.type === 'approval_requested' && event.kind === 'question') {
+          questionSeen = true;
+          const questionText = event.view.questions?.[0]?.question ?? '';
+          const answers = opts.wrongKey
+            ? { 不相关的题面: opts.answerValue }
+            : { [questionText]: opts.answerValue };
+          await runner.respondApproval(event.requestId, { action: opts.action, answers });
+        }
+      }
+      await runner.dispose();
+
+      const received = readCapture(capturePath);
+      const frame = received.find((m) => m.id === 43 && m.result !== undefined);
+      return {
+        questionSeen,
+        result: frame?.result,
+        hasResultEvent: events.some((e) => e.type === 'result'),
+      };
+    }
+
+    it('answer 选中已声明选项 → 回显该 label 对应的 q0_opt_M optionId', async () => {
+      const { questionSeen, result, hasResultEvent } = await respondToQuestion({
+        action: 'answer',
+        answerValue: 'SQLite',
+      });
+
+      expect(questionSeen).toBe(true);
+      expect(hasResultEvent).toBe(true);
+      expect(result).toEqual({ outcome: { outcome: 'selected', optionId: 'q0_opt_1' } });
+    });
+
+    it('answer 选中第一个选项 → 回显 q0_opt_0，不串到别的 optionId', async () => {
+      const { result } = await respondToQuestion({
+        action: 'answer',
+        answerValue: 'PostgreSQL',
+      });
+
+      expect(result).toEqual({ outcome: { outcome: 'selected', optionId: 'q0_opt_0' } });
+    });
+
+    it('answer 提交未声明的 label → cancelled，不误授未知 optionId', async () => {
+      const { result } = await respondToQuestion({
+        action: 'answer',
+        answerValue: 'MySQL',
+      });
+
+      expect(result).toEqual({ outcome: { outcome: 'cancelled' } });
+    });
+
+    it('answer 的 key 与题面不匹配 → 取不到答案，回 cancelled', async () => {
+      const { result } = await respondToQuestion({
+        action: 'answer',
+        answerValue: 'SQLite',
+        wrongKey: true,
+      });
+
+      expect(result).toEqual({ outcome: { outcome: 'cancelled' } });
+    });
+
+    it('decline 存在 q0_skip → 回显 skip optionId（跳过语义而非 cancel）', async () => {
+      const { questionSeen, result } = await respondToQuestion({ action: 'decline' });
+
+      expect(questionSeen).toBe(true);
+      expect(result).toEqual({ outcome: { outcome: 'selected', optionId: 'q0_skip' } });
+    });
+
+    it('decline 没有 qN_skip 选项 → 回落 cancelled，不悬挂服务端', async () => {
+      const { result, hasResultEvent } = await respondToQuestion({
+        action: 'decline',
+        questionOptions: bridgeOptions.filter((o) => o.optionId !== 'q0_skip'),
+      });
+
+      expect(result).toEqual({ outcome: { outcome: 'cancelled' } });
+      expect(hasResultEvent).toBe(true);
+    });
+  });
+
+  it.skipIf(isWin32(currentPlatform))(
+    'terminal spawn 失败（cwd 不存在）：wait_for_exit 报 exitCode=1 且不悬挂 turn',
+    async () => {
+      const capturePath = join(tmpDir, 'terminal-spawn-fail.jsonl');
+      // 故意不创建这个目录：spawn('bash', …, {cwd}) 会发 'error' 而非 'exit'。
+      const missingCwd = join(tmpDir, 'no-such-workspace');
+      const { wrapper } = writeTerminalMockServer(tmpDir, {
+        capturePath,
+        cwd: missingCwd,
+        script: 'echo should-not-run',
+        pollForOutput: '', // 无输出直接进 wait_for_exit，避免 5 次轮询等待
+        pollIntervalMs: 20,
+      });
+      const runner = new KimiAcpRunner({
+        kind: 'kimi',
+        sessionReader: createStubSessionReader(),
+        binary: wrapper,
+        acpArgs: [],
+        turnIdleTimeoutMs: 30_000,
+      });
+
+      const events = await collectEvents(runner, 'run bash', { cwd: tmpDir });
+
+      // spawn 失败也要收尾：turn 不悬挂，wait_for_exit 如实回报失败退出码。
+      expect(events.find((e) => e.type === 'result')).toMatchObject({ subtype: 'success' });
+      const captured = readCapture(capturePath);
+      const waitResp = captured.find((m) => m.id === 102);
+      expect(waitResp?.error).toBeUndefined();
+      expect(waitResp?.result).toEqual({ exitCode: 1, signal: null });
+      await runner.dispose();
+    },
+  );
 });

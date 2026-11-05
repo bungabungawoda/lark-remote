@@ -203,209 +203,237 @@ interface CodexRolloutScan {
   compactPostContextLength: number | undefined;
 }
 
+interface ParsedRolloutLine {
+  type: string;
+  payload?: Record<string, unknown>;
+  timestamp?: string;
+}
+
+/** 扫描过程中的可变状态；`CodexRolloutScan` 是它对外暴露的子集。 */
+interface ScanState extends CodexRolloutScan {
+  lastUserMessageSource: 'legacy' | 'item' | null;
+  userResponseItemCount: number;
+  previousRawUsage: RawTokenUsage | undefined;
+}
+
+function newScanState(): ScanState {
+  return {
+    sessionMeta: null,
+    events: [],
+    realUserMessages: [],
+    lastRawUsage: undefined,
+    lastContextLimit: undefined,
+    lastTotalUsage: undefined,
+    previousTotals: undefined,
+    turnUsage: null,
+    compactCount: 0,
+    compactPreContextLength: undefined,
+    compactPostContextLength: undefined,
+    lastUserMessageSource: null,
+    userResponseItemCount: 0,
+    previousRawUsage: undefined,
+  };
+}
+
+function scanResult(state: ScanState): CodexRolloutScan {
+  return {
+    sessionMeta: state.sessionMeta,
+    events: state.events,
+    realUserMessages: state.realUserMessages,
+    lastRawUsage: state.lastRawUsage,
+    lastContextLimit: state.lastContextLimit,
+    lastTotalUsage: state.lastTotalUsage,
+    previousTotals: state.previousTotals,
+    turnUsage: state.turnUsage,
+    compactCount: state.compactCount,
+    compactPreContextLength: state.compactPreContextLength,
+    compactPostContextLength: state.compactPostContextLength,
+  };
+}
+
+function warnIfVocabularyDrift(state: ScanState, filePath: string): void {
+  // 兼容性漂移探针：文件里有 `role:"user"` 注入，却识别不出任何真人输入 ——
+  // 说明 codex 又换了 event_msg 词表，displayTitle 会静默变空（0.153 事故形态）。
+  // 只告警不兜底：误用注入文本当标题是已修掉的缺陷。
+  if (state.realUserMessages.length === 0 && state.userResponseItemCount > 0) {
+    getLogger().warn(
+      `[codex-rollout-reader] no human user message recognised in ${filePath} ` +
+        `(${state.userResponseItemCount} role:"user" response_items seen) — codex rollout ` +
+        `event vocabulary may have changed; session title will be empty`,
+    );
+  }
+}
+
+function recordHumanMessage(
+  state: ScanState,
+  human: { text: string; source: 'legacy' | 'item' },
+): void {
+  const text = human.text.slice(0, 200);
+  const prev = state.realUserMessages[state.realUserMessages.length - 1];
+  // 过渡期防御：同一 turn 若被旧版 user_message 与新版 item_completed
+  // 各写一次，会得到相邻重复。仅在「通道切换且文本与上一条完全相同」
+  // 时跳过——同通道连续相同输入（真人连发两条一样的话）不受影响。
+  const duplicateAcrossChannels =
+    state.lastUserMessageSource !== null &&
+    state.lastUserMessageSource !== human.source &&
+    prev === text;
+  if (!duplicateAcrossChannels) {
+    state.realUserMessages.push(text);
+  }
+  state.lastUserMessageSource = human.source;
+}
+
+function resolveRawUsage(
+  info: Record<string, unknown> | undefined,
+  previousTotals: RawTokenUsage | undefined,
+): { raw: RawTokenUsage | undefined; total: RawTokenUsage | undefined } {
+  const last = info?.last_token_usage as RawTokenUsage | undefined;
+  const total = info?.total_token_usage as RawTokenUsage | undefined;
+  let raw: RawTokenUsage | undefined;
+  if (last) {
+    raw = last;
+  } else if (total && previousTotals) {
+    raw = subtractRawUsage(total, previousTotals);
+  } else {
+    raw = total;
+  }
+  return { raw, total };
+}
+
+function accumulateTurnUsage(state: ScanState, raw: RawTokenUsage): void {
+  if (!state.turnUsage) return;
+  // token_count 每次采样一条，末 turn 的所有采样求和（见 buildUsageFromScan）。
+  const cached = Math.min(raw.cached_input_tokens, raw.input_tokens);
+  state.turnUsage.input += raw.input_tokens - cached;
+  state.turnUsage.cached += cached;
+  state.turnUsage.output += raw.output_tokens;
+  state.turnUsage.total += raw.total_tokens;
+}
+
+function updateCompactPostContext(state: ScanState, raw: RawTokenUsage | undefined): void {
+  // 压缩后的水位：压缩收尾 token_count 全 0（不满足 zero-filter），
+  // 但 total_tokens 表达真实窗口；之后若出现普通 turn（input>0），
+  // 水位回归该 turn，post-compact 值失效。
+  if (state.compactCount <= 0 || !raw) return;
+  if (raw.total_tokens && !raw.input_tokens && !raw.cached_input_tokens && !raw.output_tokens) {
+    state.compactPostContextLength = raw.total_tokens;
+  } else if (raw.input_tokens > 0) {
+    state.compactPostContextLength = undefined;
+  }
+}
+
+function handleTokenCount(state: ScanState, payload: Record<string, unknown>): void {
+  const info = payload.info as Record<string, unknown> | undefined;
+  const { raw, total } = resolveRawUsage(info, state.previousTotals);
+  if (total) {
+    state.previousTotals = total;
+    state.lastTotalUsage = total;
+  }
+  if (raw && (raw.input_tokens || raw.cached_input_tokens || raw.output_tokens)) {
+    state.previousRawUsage = state.lastRawUsage;
+    state.lastRawUsage = raw;
+    const ctxWindow = info?.model_context_window;
+    state.lastContextLimit = typeof ctxWindow === 'number' ? ctxWindow : undefined;
+    accumulateTurnUsage(state, raw);
+  }
+  updateCompactPostContext(state, raw);
+}
+
+function handleEventMsg(state: ScanState, payload: Record<string, unknown>): void {
+  const human = extractRealUserText(payload);
+  if (human) {
+    recordHumanMessage(state, human);
+    return;
+  }
+  if (payload.type === 'task_started') {
+    // turn 边界：一个 turn 一条 task_started，从这里开始重新累计本 turn 的用量。
+    state.turnUsage = emptyTurnUsage();
+    return;
+  }
+  if (payload.type === 'token_count') handleTokenCount(state, payload);
+}
+
+function handleCompacted(state: ScanState, payload: Record<string, unknown> | undefined): void {
+  // 顶层 compacted 事件：压缩次数 +1，压缩前水位取「压缩调用之前」那条非零
+  // token_count 的 total_tokens。真实 rollout 落盘顺序是
+  // 末轮 → 摘要调用 → compacted → 压缩后水位：摘要调用自身的 token_count 紧贴
+  // 在 compacted 之前，直接取 lastRawUsage 会把摘要调用的消耗当成压缩前窗口。
+  // compacted 自带的摘要调用 usage 用于判定并回退一条；旧数据无该字段时保持原语义。
+  state.compactCount++;
+  const compactCallTotal = readCompactedCallTotal(payload);
+  const preCompactUsage =
+    compactCallTotal !== undefined && state.lastRawUsage?.total_tokens === compactCallTotal
+      ? state.previousRawUsage
+      : state.lastRawUsage;
+  if (preCompactUsage?.total_tokens !== undefined) {
+    state.compactPreContextLength = preCompactUsage.total_tokens;
+  }
+}
+
+function handleResponseItem(
+  state: ScanState,
+  payload: Record<string, unknown>,
+  timestamp: string | undefined,
+): void {
+  if (payload.type !== 'message' || !Array.isArray(payload.content)) return;
+  if (payload.role === 'user') state.userResponseItemCount++;
+  const messages = extractMessageContent(payload);
+  for (const msg of messages) {
+    state.events.push({
+      type: msg.role === 'user' ? 'user' : 'assistant',
+      content: msg.text,
+      timestamp,
+    });
+  }
+}
+
+function dispatchRolloutLine(
+  state: ScanState,
+  parsed: ParsedRolloutLine,
+  includeEvents: boolean,
+): void {
+  if (parsed.type === 'session_meta' && parsed.payload) {
+    state.sessionMeta = parsed.payload;
+    return;
+  }
+  if (parsed.type === 'event_msg' && parsed.payload) {
+    handleEventMsg(state, parsed.payload);
+    return;
+  }
+  if (parsed.type === 'compacted') {
+    handleCompacted(state, parsed.payload);
+    return;
+  }
+  if (includeEvents && parsed.type === 'response_item' && parsed.payload) {
+    handleResponseItem(state, parsed.payload, parsed.timestamp);
+  }
+}
+
 /**
  * Scan a rollout file once, tracking user messages, usage and compaction state.
  * When `includeEvents` is true, response_item content is also extracted into
  * `events`; when false, response_item lines are skipped entirely (the summary
  * fast path).
+ *
+ * 真人输入只认 `user_message` / `item_completed.UserMessage`；`role:"user"`
+ * response_item 是注入 scaffolding，只用于漂移探针，不进 displayTitle。
  */
 function scanCodexRollout(filePath: string, includeEvents: boolean): CodexRolloutScan {
-  const lines = readJsonlLines(filePath);
-  const events: AgentSessionContentEvent[] = [];
-  let sessionMeta: Record<string, unknown> | null = null;
-  // Real user input comes from the authoritative "human typed this" event —
-  // `user_message` on old codex, `item_completed`/UserMessage on new codex
-  // (see `extractRealUserText`). Injected scaffolding (project rules,
-  // <environment_context>, permissions) is written as `role:"user"`
-  // response_items but gets NEITHER event, so it stays excluded from
-  // displayTitle/recap/summary. Without this, the first `role:user`
-  // message is the injected project rules, mistakenly shown as "最近输入".
-  const realUserMessages: string[] = [];
-  // Which channel produced the last pushed message — used only to collapse a
-  // hypothetical double-write (same turn logged by both the legacy and the
-  // item channel), never to drop real consecutive input.
-  let lastUserMessageSource: 'legacy' | 'item' | null = null;
-  // Drift probe: count of `role:"user"` response_items (injected scaffolding
-  // included). If a file has those but yields zero real user messages, the
-  // event vocabulary changed again and displayTitle silently went empty —
-  // exactly the 0.153 compatibility incident shape.
-  let userResponseItemCount = 0;
-  // token_count tracking: codex emits cumulative `total_token_usage` and an
-  // incremental `last_token_usage` **per sampling call** — one turn with tool
-  // round-trips logs several `token_count` lines. We want the LAST turn's usage
-  // = the sum of that turn's samplings (matches pi/opencode /resume "last turn"
-  // display semantics). Turn boundaries come from `task_started`. When
-  // last_token_usage is absent we derive it as total - previous_total.
-  let lastRawUsage: RawTokenUsage | undefined;
-  /** 上一条被接受的 raw usage；compacted 分支回退一条时用（见下方注释）。 */
-  let previousRawUsage: RawTokenUsage | undefined;
-  /**
-   * 末个 turn 的累计用量；`null` = 文件里没有 `task_started`（旧数据），
-   * 此时 flow 字段退回「末条 token_count」语义（见 buildUsageFromScan）。
-   */
-  let turnUsage: TurnUsageTotals | null = null;
-  // Context window limit from the same token_count event as lastRawUsage
-  // (codex reports info.model_context_window per turn; absent on old data).
-  let lastContextLimit: number | undefined;
-  // Final total_token_usage (cumulative across the whole session) for the
-  // Run card's "累计" display. Codex emits this alongside last_token_usage.
-  let lastTotalUsage: RawTokenUsage | undefined;
-  let previousTotals: RawTokenUsage | undefined;
-  // Compaction 统计：codex 的 compact turn 在会话文件里写顶层 `compacted`
-  // 事件（含摘要），压缩前后的上下文水位由相邻 token_count 表达。压缩收尾的
-  // token_count 增量是 input/cached/output 全 0、只有 total_tokens 有值
-  // （窗口被摘要+replacement history 占据），现有 zero-filter 会跳过它，
-  // 因此这里必须单独捕获，不能复用 lastRawUsage。
-  // 单位口径：前后两侧统一用 total_tokens —— 压缩前取最近一次
-  // 非零 token_count 的 total_tokens（input+output，即该 turn 在窗口内的全部
-  // token），压缩后取收尾事件的 total_tokens（压缩后窗口）。不得一边 input
-  // 一边 total，否则「压缩前 X → 压缩后 Y」两边单位不一致。
-  let compactCount = 0;
-  let compactPreContextLength: number | undefined;
-  let compactPostContextLength: number | undefined;
-
-  for (const line of lines) {
+  const state = newScanState();
+  for (const line of readJsonlLines(filePath)) {
     const trimmed = line.trim();
     if (!trimmed) continue;
-
     try {
-      const parsed = JSON.parse(trimmed) as {
-        type: string;
-        payload?: Record<string, unknown>;
-        timestamp?: string;
-      };
+      const parsed = JSON.parse(trimmed) as ParsedRolloutLine;
       if (!parsed || typeof parsed.type !== 'string') continue;
-
-      if (parsed.type === 'session_meta' && parsed.payload) {
-        sessionMeta = parsed.payload as Record<string, unknown>;
-      } else if (parsed.type === 'event_msg' && parsed.payload) {
-        const payload = parsed.payload as Record<string, unknown>;
-        const human = extractRealUserText(payload);
-        if (human) {
-          const text = human.text.slice(0, 200);
-          const prev = realUserMessages[realUserMessages.length - 1];
-          // 过渡期防御：同一 turn 若被旧版 user_message 与新版 item_completed
-          // 各写一次，会得到相邻重复。仅在「通道切换且文本与上一条完全相同」
-          // 时跳过——同通道连续相同输入（真人连发两条一样的话）不受影响。
-          const duplicateAcrossChannels =
-            lastUserMessageSource !== null &&
-            lastUserMessageSource !== human.source &&
-            prev === text;
-          if (!duplicateAcrossChannels) {
-            realUserMessages.push(text);
-          }
-          lastUserMessageSource = human.source;
-        } else if (payload.type === 'task_started') {
-          // turn 边界：一个 turn 一条 task_started（与 task_complete 成对，
-          // turn_id 见 session_meta 之后的 `turn_context`）。从这里开始重新
-          // 累计本 turn 的用量。
-          turnUsage = emptyTurnUsage();
-        } else if (payload.type === 'token_count') {
-          const info = payload.info as Record<string, unknown> | undefined;
-          const last = info?.last_token_usage as RawTokenUsage | undefined;
-          const total = info?.total_token_usage as RawTokenUsage | undefined;
-          let raw: RawTokenUsage | undefined;
-          if (last) {
-            raw = last;
-          } else if (total && previousTotals) {
-            raw = subtractRawUsage(total, previousTotals);
-          } else {
-            raw = total;
-          }
-          if (total) {
-            previousTotals = total;
-            lastTotalUsage = total;
-          }
-          if (raw && (raw.input_tokens || raw.cached_input_tokens || raw.output_tokens)) {
-            previousRawUsage = lastRawUsage;
-            lastRawUsage = raw;
-            const ctxWindow = info?.model_context_window;
-            lastContextLimit = typeof ctxWindow === 'number' ? ctxWindow : undefined;
-            if (turnUsage) {
-              const cached = Math.min(raw.cached_input_tokens, raw.input_tokens);
-              turnUsage.input += raw.input_tokens - cached;
-              turnUsage.cached += cached;
-              turnUsage.output += raw.output_tokens;
-              turnUsage.total += raw.total_tokens;
-            }
-          }
-          // 压缩后的水位：压缩收尾 token_count 全 0（raw 不满足上面 zero-filter），
-          // 但 total_tokens 表达真实窗口；之后若出现普通 turn（input>0），
-          // 水位回归该 turn，post-compact 值失效。
-          if (compactCount > 0 && raw) {
-            if (
-              raw.total_tokens &&
-              !raw.input_tokens &&
-              !raw.cached_input_tokens &&
-              !raw.output_tokens
-            ) {
-              compactPostContextLength = raw.total_tokens;
-            } else if (raw.input_tokens > 0) {
-              compactPostContextLength = undefined;
-            }
-          }
-        }
-      } else if (parsed.type === 'compacted') {
-        // 顶层 compacted 事件：压缩次数 +1，压缩前水位取「压缩调用之前」那条非零
-        // token_count 的 total_tokens。真实 rollout 落盘顺序是
-        // 末轮 → 摘要调用 → compacted → 压缩后水位：摘要调用自身的 token_count 紧贴
-        // 在 compacted 之前，直接取 lastRawUsage 会把摘要调用的消耗当成压缩前窗口
-        // （实测把 363K 的窗口显示成 207K）。compacted 自带的摘要调用 usage 用于判定
-        // 并回退一条；旧数据没有 latest_token_usage_record 时保持原语义。
-        compactCount++;
-        const compactCallTotal = readCompactedCallTotal(parsed.payload);
-        const preCompactUsage =
-          compactCallTotal !== undefined && lastRawUsage?.total_tokens === compactCallTotal
-            ? previousRawUsage
-            : lastRawUsage;
-        if (preCompactUsage?.total_tokens !== undefined) {
-          compactPreContextLength = preCompactUsage.total_tokens;
-        }
-      } else if (includeEvents && parsed.type === 'response_item' && parsed.payload) {
-        const payload = parsed.payload as Record<string, unknown>;
-        if (payload.type === 'message' && Array.isArray(payload.content)) {
-          if (payload.role === 'user') userResponseItemCount++;
-          // Extract text content for display
-          const messages = extractMessageContent(payload);
-          for (const msg of messages) {
-            events.push({
-              type: msg.role === 'user' ? 'user' : 'assistant',
-              content: msg.text,
-              timestamp: parsed.timestamp,
-            });
-          }
-        }
-      }
+      dispatchRolloutLine(state, parsed, includeEvents);
     } catch {
       // Skip malformed lines
       continue;
     }
   }
-
-  // 兼容性漂移探针：文件里有 `role:"user"` 注入，却识别不出任何真人输入 ——
-  // 说明 codex 又换了 event_msg 词表，displayTitle 会静默变空（0.153 事故形态）。
-  // 只告警不兜底：误用注入文本当标题是已修掉的缺陷。
-  if (realUserMessages.length === 0 && userResponseItemCount > 0) {
-    getLogger().warn(
-      `[codex-rollout-reader] no human user message recognised in ${filePath} ` +
-        `(${userResponseItemCount} role:"user" response_items seen) — codex rollout ` +
-        `event vocabulary may have changed; session title will be empty`,
-    );
-  }
-
-  return {
-    sessionMeta,
-    events,
-    realUserMessages,
-    lastRawUsage,
-    lastContextLimit,
-    lastTotalUsage,
-    previousTotals,
-    turnUsage,
-    compactCount,
-    compactPreContextLength,
-    compactPostContextLength,
-  };
+  warnIfVocabularyDrift(state, filePath);
+  return scanResult(state);
 }
 
 /**

@@ -148,6 +148,36 @@ describe('DshConfigBuilder', () => {
     expect(options[3].text).toContain('danger-full-access');
   });
 
+  it('服务端权限目录的各类 value 渲染成对应中文文案', () => {
+    const builder = new DshConfigBuilder();
+    builder.setCatalog(MULTI_CATALOG, undefined, {
+      options: [],
+      defaultOptions: [
+        { value: 'read-only', name: 'read-only' },
+        { value: 'workspace-write', name: 'workspace-write' },
+        { value: 'danger-full-access', name: 'danger-full-access' },
+        { value: 'team-policy', name: '团队策略' },
+        { value: 'plain', name: 'plain' },
+      ],
+      defaultPreset: 'read-only',
+    });
+    const options = builder.buildFields(config)[2].options as Array<{
+      text: string;
+      value: string;
+    }>;
+    expect(options).toContainEqual({ text: 'read-only（只读）', value: 'read-only' });
+    expect(options).toContainEqual({
+      text: 'workspace-write（工作区可写）',
+      value: 'workspace-write',
+    });
+    expect(options).toContainEqual({
+      text: 'danger-full-access（完全访问，关闭审批）',
+      value: 'danger-full-access',
+    });
+    expect(options).toContainEqual({ text: 'team-policy（团队策略）', value: 'team-policy' });
+    expect(options).toContainEqual({ text: 'plain', value: 'plain' });
+  });
+
   it('keeps a configured custom permission preset selectable when the catalog is offline', () => {
     const builder = new DshConfigBuilder();
     const cfg = dshConfig({ permissionPreset: 'team-policy' });

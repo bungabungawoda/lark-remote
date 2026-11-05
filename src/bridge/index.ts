@@ -92,6 +92,79 @@ function completionNotificationPresentation(terminal: RunTerminal): {
   }
 }
 
+// --- approvalModeSettingsFor 的逐 agent 快照（字段口径单表 + 单函数） ---
+// Map 查表避免 constructor/toString 之类键命中 Object.prototype；字段顺序
+// 与原 switch 分支逐字一致。不碰 Bridge 实例状态，避免 this 绑定问题。
+
+/** 各 agent 审批设置快照的字段口径（顺序 = 原分支逐字）。 */
+const APPROVAL_SETTINGS_FIELDS = new Map<AgentKind, readonly string[]>([
+  ['codex', ['approvalPolicy', 'sandbox']],
+  ['kimi', ['permissionMode']],
+  ['opencode', ['mode']],
+  ['dsh', ['permissionPreset']],
+]);
+
+function approvalSettingsFor(
+  agents: AppConfig['agents'],
+  kind: AgentKind,
+): Record<string, unknown> | undefined {
+  const fields = APPROVAL_SETTINGS_FIELDS.get(kind);
+  if (!fields) return undefined;
+  const cfg = agents?.[kind as 'codex' | 'kimi' | 'opencode' | 'dsh'] as
+    Record<string, unknown> | undefined;
+  if (!cfg) return undefined;
+  const out: Record<string, unknown> = {};
+  for (const field of fields) out[field] = cfg[field];
+  return out;
+}
+
+// --- runAgentStreamToEnd 的模块级原语与状态容器 ---
+// 闭包/纯计算抽到模块顶层（显式传状态），不碰 Bridge 私有成员、无 this 绑定问题。
+
+type UsageAuthority = 'live' | 'jsonl';
+
+/** runner 是否使用 live result 事件（显式传 runner + usageAuthority 状态）。 */
+function computeLiveResultEvents(
+  runner: Runner,
+  usageAuthority: UsageAuthority | undefined,
+): boolean {
+  return (runner as AgentRunner).usesLiveResultEvents?.() ?? usageAuthority === 'live';
+}
+
+/** 待审批计数（startIdleWatchdog 的 pendingApprovals 回调，显式传 coordinators 表）。 */
+function pendingApprovalCount(
+  coordinators: Map<string, ApprovalCoordinator>,
+  runId: string,
+): number {
+  return coordinators.get(runId)?.pendingCount() ?? 0;
+}
+
+/** 事件循环的可变状态（跨 executeStream / handleStreamFailure / cleanupStream 共享）。 */
+interface StreamRunState {
+  watchdog: IdleWatchdog | null;
+  sawResult: boolean;
+  sawAnyResult: boolean;
+  pendingPreInitTerminal: { subtype: 'error' | 'interrupted'; errorMessage?: string } | undefined;
+}
+
+/** 一次 agent stream run 的全部入参 + 运行期状态（显式打包传状态）。 */
+interface AgentStreamRun {
+  runner: Runner;
+  cardSession: RunCardSession;
+  activeRun: ActiveRun;
+  sessionId: string | undefined;
+  sessionEpochAtStart: number;
+  ctx: CommandContext;
+  cwd: string;
+  runId: string;
+  message: string;
+  agentKind: AgentKind;
+  usage: RunUsageCollector;
+  usageAuthority: UsageAuthority | undefined;
+  liveResultEvents: boolean;
+  state: StreamRunState;
+}
+
 /**
  * Seam (§7): the channel capabilities the bridge needs. `sendWithRetry` is
  * the minimum a Feishu channel must offer for the bridge to push messages
@@ -477,34 +550,7 @@ export class Bridge {
 
   /** Per-agent approval-mode settings snapshot from the current config. */
   private approvalModeSettingsFor(kind: AgentKind): Record<string, unknown> | undefined {
-    const agents = this.config.agents;
-    switch (kind) {
-      case 'codex': {
-        const codexConfig = agents?.codex;
-        if (!codexConfig) return undefined;
-        return {
-          approvalPolicy: codexConfig.approvalPolicy,
-          sandbox: codexConfig.sandbox,
-        };
-      }
-      case 'kimi': {
-        const kimiConfig = agents?.kimi;
-        if (!kimiConfig) return undefined;
-        return { permissionMode: kimiConfig.permissionMode };
-      }
-      case 'opencode': {
-        const opencodeConfig = agents?.opencode;
-        if (!opencodeConfig) return undefined;
-        return { mode: opencodeConfig.mode };
-      }
-      case 'dsh': {
-        const dshConfig = agents?.dsh;
-        if (!dshConfig) return undefined;
-        return { permissionPreset: dshConfig.permissionPreset };
-      }
-      default:
-        return undefined;
-    }
+    return approvalSettingsFor(this.config.agents, kind);
   }
 
   /** Get the current runner for a cwd. Used by router for agent-specific commands (.2). */
@@ -1828,207 +1874,252 @@ export class Bridge {
     // 'jsonl'。result 事件的 live 语义（pre-init/写回）单独声明，不能和
     // 用量来源共用一个字段。
     const usageAuthority = (runner as AgentRunner).getUsageAuthority?.();
-    const liveResultEvents =
-      (runner as AgentRunner).usesLiveResultEvents?.() ?? usageAuthority === 'live';
+    const liveResultEvents = computeLiveResultEvents(runner, usageAuthority);
 
-    // §9.12 空闲看门狗：判定口径见 startIdleWatchdog；武装点在 cardSession.start() 之后。
-    let watchdog: IdleWatchdog | null = null;
-    let sawResult = false;
-    /** 收到过任何 result（含被守卫丢弃/未进卡片的）：收尾报文据此措辞。 */
-    let sawAnyResult = false;
-    // A runner can fail before emitting its synthetic system/init (e.g. DSH
-    // session/create -> 401). The pre-init guard below drops that result to
-    // protect Claude resume replay, but if the stream ends without ever seeing
-    // init the result was the only terminal signal we had. Keep it so the card
-    // shows the real error instead of the generic "no result" fallback.
-    let pendingPreInitTerminal:
-      { subtype: 'error' | 'interrupted'; errorMessage?: string } | undefined;
-    const usage = new RunUsageCollector();
+    // 运行期状态打包成显式状态对象传给各抽出方法（等价替换原闭包捕获的局部变量）。
+    const run: AgentStreamRun = {
+      runner,
+      cardSession,
+      activeRun,
+      sessionId,
+      sessionEpochAtStart,
+      ctx,
+      cwd,
+      runId,
+      message,
+      agentKind,
+      usage: new RunUsageCollector(),
+      usageAuthority,
+      liveResultEvents,
+      state: {
+        watchdog: null,
+        sawResult: false,
+        sawAnyResult: false,
+        pendingPreInitTerminal: undefined,
+      },
+    };
 
     try {
-      try {
-        // queue.immediate 的 run-start hold：目标槽位可能在 handler 发最终
-        // toast 之前就 begin（interrupt/PATCH 的 await 窗口）。activeRun 已
-        // 登记（队列语义照旧），只把建卡这一步挡到 toast 之后——run 卡片才是
-        // 点击后最后一条新消息，聊天列表预览跟随它的标题变化。
-        await this.queueManager.awaitTaskRunStart(cwd);
-        getLogger().debug(`[lark-remote] cardSession.start() begin runId=${runId}`);
-        await cardSession.start();
-        getLogger().info(`[lark-remote] cardSession.start() ok runId=${runId}`);
-      } catch (err) {
-        getLogger().warn('[lark-remote] card stream unavailable, will use static fallback:', err);
-        // Card stream failed - continue with static fallback below, but ensure
-        // we don't silently fail if the fallback also fails (covered in catch below).
-      }
+      await this.executeStream(run);
+    } catch (err) {
+      await this.handleStreamFailure(err, run);
+    } finally {
+      this.cleanupStream(run);
+    }
+  }
 
-      // /stop（或队列「立即执行」的中断）可能落在建卡窗口内：卡片已定格为
-      // 终态，但 runner 还没开始跑，runner.stop() 也没有进程可杀——spawn 型
-      // 与连接型 runner 的 stop() 在 run() 之前都是空操作，且 run() 入口会
-      // 重置停止标记。必须在这里收口，否则用户看到「已中断」，agent 仍会把
-      // 这一轮跑完并改写工作区。finalizeRun 仍会照常收尾（settle / reaction）。
-      if (isRunTerminal(cardSession.currentState.terminal)) {
-        getLogger().info(
-          `[lark-remote] card terminal before run start, skip runner runId=${runId} terminal=${cardSession.currentState.terminal}`,
-        );
-        return;
-      }
+  /**
+   * runAgentStreamToEnd 的 try 主体（建卡 → 事件循环 → 收尾），抽成独立方法
+   * 降低外层圈复杂度；state 为跨方法共享的可变状态。逻辑与文案逐字保留。
+   */
+  private async executeStream(run: AgentStreamRun): Promise<void> {
+    const {
+      runner,
+      cardSession,
+      activeRun,
+      sessionId,
+      sessionEpochAtStart,
+      ctx,
+      cwd,
+      runId,
+      message,
+      agentKind,
+      usage,
+      usageAuthority,
+      liveResultEvents,
+      state,
+    } = run;
 
-      // 单 interval 看门狗。事件到来时只刷新时间戳（无 timer 操作）；
-      // interval 周期检查静默时长，超时才 finish('idle_timeout') + stop()。
-      // 武装点在建卡之后，与原实现一致（宽限期不含 cardSession.start() 耗时）。
-      watchdog = this.startIdleWatchdog({
-        runId,
-        session: cardSession,
-        runner,
-        pendingApprovals: () => this.approvalCoordinators.get(runId)?.pendingCount() ?? 0,
-      });
+    try {
+      // queue.immediate 的 run-start hold：目标槽位可能在 handler 发最终
+      // toast 之前就 begin（interrupt/PATCH 的 await 窗口）。activeRun 已
+      // 登记（队列语义照旧），只把建卡这一步挡到 toast 之后——run 卡片才是
+      // 点击后最后一条新消息，聊天列表预览跟随它的标题变化。
+      await this.queueManager.awaitTaskRunStart(cwd);
+      getLogger().debug(`[lark-remote] cardSession.start() begin runId=${runId}`);
+      await cardSession.start();
+      getLogger().info(`[lark-remote] cardSession.start() ok runId=${runId}`);
+    } catch (err) {
+      getLogger().warn('[lark-remote] card stream unavailable, will use static fallback:', err);
+      // Card stream failed - continue with static fallback below, but ensure
+      // we don't silently fail if the fallback also fails (covered in catch below).
+    }
 
+    // /stop（或队列「立即执行」的中断）可能落在建卡窗口内：卡片已定格为
+    // 终态，但 runner 还没开始跑，runner.stop() 也没有进程可杀——spawn 型
+    // 与连接型 runner 的 stop() 在 run() 之前都是空操作，且 run() 入口会
+    // 重置停止标记。必须在这里收口，否则用户看到「已中断」，agent 仍会把
+    // 这一轮跑完并改写工作区。finalizeRun 仍会照常收尾（settle / reaction）。
+    if (isRunTerminal(cardSession.currentState.terminal)) {
       getLogger().info(
-        `[lark-remote] runner.run() begin runId=${runId} message=${message.slice(0, 100)}`,
+        `[lark-remote] card terminal before run start, skip runner runId=${runId} terminal=${cardSession.currentState.terminal}`,
       );
+      return;
+    }
 
-      // Extract agent-specific options from config
-      const agentOpts = this.getAgentRunOptions(agentKind);
-      const runOpts = { cwd, sessionId, ...agentOpts };
-      // Track whether system.init has been received for this run.
-      // Claude CLI --resume emits a stale result (from the previous turn)
-      // before sending system.init; bridge must not treat that as the run
-      // ending (sawResult, usage capture, or cardSession.push would all
-      // be wrong for the historical event).
-      let sawInit = false;
-      const writeback = {
-        sessionStore: this.sessionStore,
-        userId: ctx.userId,
-        agentKind,
-        cwd,
-        sessionEpochAtStart,
-        runId,
-      };
+    // 单 interval 看门狗。事件到来时只刷新时间戳（无 timer 操作）；
+    // interval 周期检查静默时长，超时才 finish('idle_timeout') + stop()。
+    // 武装点在建卡之后，与原实现一致（宽限期不含 cardSession.start() 耗时）。
+    state.watchdog = this.startIdleWatchdog({
+      runId,
+      session: cardSession,
+      runner,
+      pendingApprovals: pendingApprovalCount.bind(null, this.approvalCoordinators, runId),
+    });
 
-      for await (const event of runner.run(message, runOpts)) {
-        // 只有终态才阻止事件处理。finalizing 是非终态，应该继续处理
-        // 这样在 result 事件后，后台任务输出仍能被正确处理
-        const terminal = cardSession.currentState.terminal;
-        if (isRunTerminal(terminal)) {
+    getLogger().info(
+      `[lark-remote] runner.run() begin runId=${runId} message=${message.slice(0, 100)}`,
+    );
+
+    // Extract agent-specific options from config
+    const agentOpts = this.getAgentRunOptions(agentKind);
+    const runOpts = { cwd, sessionId, ...agentOpts };
+    // Track whether system.init has been received for this run.
+    // Claude CLI --resume emits a stale result (from the previous turn)
+    // before sending system.init; bridge must not treat that as the run
+    // ending (sawResult, usage capture, or cardSession.push would all
+    // be wrong for the historical event).
+    let sawInit = false;
+    const writeback = {
+      sessionStore: this.sessionStore,
+      userId: ctx.userId,
+      agentKind,
+      cwd,
+      sessionEpochAtStart,
+      runId,
+    };
+
+    for await (const event of runner.run(message, runOpts)) {
+      // 只有终态才阻止事件处理。finalizing 是非终态，应该继续处理
+      // 这样在 result 事件后，后台任务输出仍能被正确处理
+      const terminal = cardSession.currentState.terminal;
+      if (isRunTerminal(terminal)) {
+        continue;
+      }
+      // 归一化：init/turn_started 的 session 写回 + compact_boundary 用量观察。
+      // 返回 true = 本轮 system.init 已到（调用方置 sawInit，供 pre-init 守卫用）。
+      if (this.maybeSyncSession(event, { activeRun, writeback, usage, runId })) {
+        sawInit = true;
+      }
+      // pre-init result 守卫（§9.22，observeResultEvent）：resume 重放的陈旧
+      // result 不置 sawResult、不进卡片。
+      if (event.type === 'result') {
+        const outcome = this.observeResultEvent(event, {
+          sawInit,
+          liveResultEvents,
+          usage,
+          writeback,
+          runId,
+        });
+        if (outcome.preInitTerminal) state.pendingPreInitTerminal ??= outcome.preInitTerminal;
+        if (outcome.sawResult) state.sawResult = true;
+        state.sawAnyResult = true;
+        // 陈旧 result 不进卡片：run-state reducer 本来也会因 sessionId 未定而
+        // 跳过，在 bridge 层就拦掉可以省下一次无谓的 push + render。
+        if (outcome.dropFromCard) {
+          // 仍然重置 idle 计时——CLI 活着并且在产事件。
+          this.handleEventForWatchdog(state.watchdog);
           continue;
         }
-        // 归一化：init/turn_started 的 session 写回 + compact_boundary 用量观察。
-        // 返回 true = 本轮 system.init 已到（调用方置 sawInit，供 pre-init 守卫用）。
-        if (this.maybeSyncSession(event, { activeRun, writeback, usage, runId })) {
-          sawInit = true;
-        }
-        // pre-init result 守卫（§9.22，observeResultEvent）：resume 重放的陈旧
-        // result 不置 sawResult、不进卡片。
-        if (event.type === 'result') {
-          const outcome = this.observeResultEvent(event, {
-            sawInit,
-            liveResultEvents,
-            usage,
-            writeback,
-            runId,
-          });
-          if (outcome.preInitTerminal) pendingPreInitTerminal ??= outcome.preInitTerminal;
-          if (outcome.sawResult) sawResult = true;
-          sawAnyResult = true;
-          // 陈旧 result 不进卡片：run-state reducer 本来也会因 sessionId 未定而
-          // 跳过，在 bridge 层就拦掉可以省下一次无谓的 push + render。
-          if (outcome.dropFromCard) {
-            // 仍然重置 idle 计时——CLI 活着并且在产事件。
-            this.handleEventForWatchdog(watchdog);
-            continue;
-          }
-        }
-        // Approval events (Codex app-server mode)。审批先到、item/started 后到的
-        // 乱序流也在此补全（dispatchApprovalEvent 内 updateView）。
-        if (
-          event.type === 'approval_requested' ||
-          event.type === 'approval_resolved' ||
-          event.type === 'approval_view_updated'
-        ) {
-          this.dispatchApprovalEvent(event, { runId, runner, cardSession, ctx, agentKind });
-        }
-        // §9.12 红线：每个事件（含 result）无条件刷新
-        // lastEventTs 重新武装看门狗。result 后 CLI 进程做 jsonl flush/清理（finalizing
-        // 过渡）期间，宽限期恢复为完整的 idleTimeoutMs，避免已产出结果的 turn 被误标
-        // idle_timeout。旧实现 `else { resetIdle(); }` 漏掉 result 分支。
-        this.handleEventForWatchdog(watchdog);
-
-        // 渲染：reducer（run-state）在 cardSession.push 内部。
-        await cardSession.push(event);
       }
-      getLogger().info(`[lark-remote] runner stream end runId=${runId} sawResult=${sawResult}`);
-
-      // §9.12 红线：for-await 自然结束 = CLI 已退出，
-      // 看门狗使命结束，立即摘除 interval（不再等 finally），堵掉「stream 已结束、
-      // 收尾处理跨过死线被误标 idle_timeout」的同源小窗口（随本修复一并关闭）。
-      watchdog?.stop();
-
-      // stream 结束 = CLI 退出 = jsonl 已落盘。读 jsonl 拿准确的 contextLength + compactCount：
-      // live stream-json 不发 compact_boundary，live contextLength 会被 result 的 input+output 兜底失真。
-      // 但 result=error 时跳过: 进程可能立即退出未写新 usage (如 kimi 0.26+ 拒绝 -p+--auto
-      // 立即 exit=1), 此时 jsonl 里是上一次成功 turn 的历史 usage, 会被误当作本次 usage 显示,
-      // 误导用户以为本次出错的请求也消耗了 token。error 时只用 live 捕获的 usage (若有)。
-      // 本轮使用的 session：run 期间 /new //resume //cd 会移动全局
-      // 指针，结束时再读 store 会把别条会话的 token/context 显示到这张卡上。
-      // 优先级：卡片状态（本轮 init 写入）→ activeRun（本轮 init/turn_started）
-      // → 本轮开始时捕获的 sessionId。三者都没有就跳过 usage，绝不回读全局指针。
-      const finalSessionId = cardSession.currentState.sessionId ?? activeRun.sessionId ?? sessionId;
-      const finalUsage = usage.resultNotSuccess
-        ? undefined
-        : resolveFinalUsage(
-            this.sessionReaderRegistry,
-            this.config.defaultAgent,
-            finalSessionId,
-            cwd,
-            agentKind,
-          );
-      usage.finalize(finalUsage, usageAuthority);
-      getLogger().info(usage.logSummary(runId));
-
-      // for-await 自然结束 = stream 关闭 = CLI 进程退出 → 终态矩阵
-      await this.finishRunAfterStream({
-        cardSession,
-        usage,
-        sawResult,
-        sawAnyResult,
-        pendingPreInitTerminal,
-        agentKind,
-        runId,
-      });
-    } catch (err) {
-      getLogger().error(`[lark-remote] claude run error runId=${runId}:`, err);
-      // 双保险：run() 的 finally 已负责杀子进程，但 catch 路径再补一次
-      // runner.stop()（与 bash 路径对齐），覆盖任何 finally 之外的残留窗口。
-      try {
-        await runner.stop();
-      } catch (stopErr) {
-        getLogger().warn(`[lark-remote] runner stop failed:`, stopErr);
+      // Approval events (Codex app-server mode)。审批先到、item/started 后到的
+      // 乱序流也在此补全（dispatchApprovalEvent 内 updateView）。
+      if (
+        event.type === 'approval_requested' ||
+        event.type === 'approval_resolved' ||
+        event.type === 'approval_view_updated'
+      ) {
+        this.dispatchApprovalEvent(event, { runId, runner, cardSession, ctx, agentKind });
       }
-      // 终态守卫：running 或 finalizing（非终态）-> 转 error；
-      // 已终态（interrupted/idle_timeout/done/error）-> 保留首终态，仅补充 usage。
-      const catchTerminal = cardSession.currentState.terminal;
-      if (isRunActive(catchTerminal)) {
-        await cardSession.finish('error', {
-          ...usage.meta(),
-          inputTokens: usage.liveInputTokens,
-          outputTokens: usage.liveOutputTokens,
-          errorMsg: errorMessage(err),
-        });
-      } else {
-        getLogger().info(
-          `[lark-remote] skip error finish: state already terminal (${catchTerminal}) runId=${runId}`,
+      // §9.12 红线：每个事件（含 result）无条件刷新
+      // lastEventTs 重新武装看门狗。result 后 CLI 进程做 jsonl flush/清理（finalizing
+      // 过渡）期间，宽限期恢复为完整的 idleTimeoutMs，避免已产出结果的 turn 被误标
+      // idle_timeout。旧实现 `else { resetIdle(); }` 漏掉 result 分支。
+      this.handleEventForWatchdog(state.watchdog);
+
+      // 渲染：reducer（run-state）在 cardSession.push 内部。
+      await cardSession.push(event);
+    }
+    getLogger().info(`[lark-remote] runner stream end runId=${runId} sawResult=${state.sawResult}`);
+
+    // §9.12 红线：for-await 自然结束 = CLI 已退出，
+    // 看门狗使命结束，立即摘除 interval（不再等 finally），堵掉「stream 已结束、
+    // 收尾处理跨过死线被误标 idle_timeout」的同源小窗口（随本修复一并关闭）。
+    state.watchdog?.stop();
+
+    // stream 结束 = CLI 退出 = jsonl 已落盘。读 jsonl 拿准确的 contextLength + compactCount：
+    // live stream-json 不发 compact_boundary，live contextLength 会被 result 的 input+output 兜底失真。
+    // 但 result=error 时跳过: 进程可能立即退出未写新 usage (如 kimi 0.26+ 拒绝 -p+--auto
+    // 立即 exit=1), 此时 jsonl 里是上一次成功 turn 的历史 usage, 会被误当作本次 usage 显示,
+    // 误导用户以为本次出错的请求也消耗了 token。error 时只用 live 捕获的 usage (若有)。
+    // 本轮使用的 session：run 期间 /new //resume //cd 会移动全局
+    // 指针，结束时再读 store 会把别条会话的 token/context 显示到这张卡上。
+    // 优先级：卡片状态（本轮 init 写入）→ activeRun（本轮 init/turn_started）
+    // → 本轮开始时捕获的 sessionId。三者都没有就跳过 usage，绝不回读全局指针。
+    const finalSessionId = cardSession.currentState.sessionId ?? activeRun.sessionId ?? sessionId;
+    const finalUsage = usage.resultNotSuccess
+      ? undefined
+      : resolveFinalUsage(
+          this.sessionReaderRegistry,
+          this.config.defaultAgent,
+          finalSessionId,
+          cwd,
+          agentKind,
         );
-        if (sawResult) {
-          await cardSession.finish(catchTerminal, usage.meta());
-        }
+    usage.finalize(finalUsage, usageAuthority);
+    getLogger().info(usage.logSummary(runId));
+
+    // for-await 自然结束 = stream 关闭 = CLI 进程退出 → 终态矩阵
+    await this.finishRunAfterStream({
+      cardSession,
+      usage,
+      sawResult: state.sawResult,
+      sawAnyResult: state.sawAnyResult,
+      pendingPreInitTerminal: state.pendingPreInitTerminal,
+      agentKind,
+      runId,
+    });
+  }
+
+  /** runAgentStreamToEnd 的 catch 主体（抽成独立方法，state.sawResult 沿用循环累计值）。 */
+  private async handleStreamFailure(err: unknown, run: AgentStreamRun): Promise<void> {
+    const { runner, cardSession, runId, usage, state } = run;
+    getLogger().error(`[lark-remote] claude run error runId=${runId}:`, err);
+    // 双保险：run() 的 finally 已负责杀子进程，但 catch 路径再补一次
+    // runner.stop()（与 bash 路径对齐），覆盖任何 finally 之外的残留窗口。
+    try {
+      await runner.stop();
+    } catch (stopErr) {
+      getLogger().warn(`[lark-remote] runner stop failed:`, stopErr);
+    }
+    // 终态守卫：running 或 finalizing（非终态）-> 转 error；
+    // 已终态（interrupted/idle_timeout/done/error）-> 保留首终态，仅补充 usage。
+    const catchTerminal = cardSession.currentState.terminal;
+    if (isRunActive(catchTerminal)) {
+      await cardSession.finish('error', {
+        ...usage.meta(),
+        inputTokens: usage.liveInputTokens,
+        outputTokens: usage.liveOutputTokens,
+        errorMsg: errorMessage(err),
+      });
+    } else {
+      getLogger().info(
+        `[lark-remote] skip error finish: state already terminal (${catchTerminal}) runId=${runId}`,
+      );
+      if (state.sawResult) {
+        await cardSession.finish(catchTerminal, usage.meta());
       }
-    } finally {
-      watchdog?.stop();
-      const coordinator = this.approvalCoordinators.get(runId);
-      if (coordinator) {
-        coordinator.onTurnEnded();
-        this.approvalCoordinators.delete(runId);
-      }
+    }
+  }
+
+  /** runAgentStreamToEnd 的 finally 主体（抽成独立方法）。 */
+  private cleanupStream(run: AgentStreamRun): void {
+    const { runId, state } = run;
+    state.watchdog?.stop();
+    const coordinator = this.approvalCoordinators.get(runId);
+    if (coordinator) {
+      coordinator.onTurnEnded();
+      this.approvalCoordinators.delete(runId);
     }
   }
 

@@ -324,4 +324,77 @@ describe('PiRpcTranslator', () => {
     const content = (end[0] as { message: { content: Array<{ type: string }> } }).message.content;
     expect(content.filter((c) => c.type === 'tool_use')).toHaveLength(0);
   });
+
+  // =========================================================================
+  // applyUpdate 边界（拆分前钉住 currentContentIndex 守卫 / *_end 覆盖语义）
+  // =========================================================================
+
+  it('text_end with content overwrites the accumulated delta text', () => {
+    const t = new PiRpcTranslator();
+    t.setSessionId('sid');
+    t.handleEvent({ type: 'message_start', message: { role: 'assistant', content: [] } });
+    t.handleEvent(update('text_start'));
+    t.handleEvent(update('text_delta', { delta: 'Hel' }));
+    t.handleEvent(update('text_end', { content: 'Hello world' }));
+    const end = t.handleEvent({ type: 'message_end', message: { role: 'assistant', content: [] } });
+    const content = (end[0] as { message: { content: Array<{ text: string }> } }).message.content;
+    expect(content).toEqual([{ type: 'text', text: 'Hello world' }]);
+  });
+
+  it('text_end without content keeps the accumulated delta text', () => {
+    const t = new PiRpcTranslator();
+    t.setSessionId('sid');
+    t.handleEvent({ type: 'message_start', message: { role: 'assistant', content: [] } });
+    t.handleEvent(update('text_start'));
+    t.handleEvent(update('text_delta', { delta: 'kept' }));
+    t.handleEvent(update('text_end'));
+    const end = t.handleEvent({ type: 'message_end', message: { role: 'assistant', content: [] } });
+    const content = (end[0] as { message: { content: Array<{ text: string }> } }).message.content;
+    expect(content).toEqual([{ type: 'text', text: 'kept' }]);
+  });
+
+  it('deltas without a preceding *_start are ignored', () => {
+    const t = new PiRpcTranslator();
+    t.setSessionId('sid');
+    t.handleEvent({ type: 'message_start', message: { role: 'assistant', content: [] } });
+    t.handleEvent(update('text_delta', { delta: 'orphan' }));
+    t.handleEvent(update('thinking_delta', { delta: 'orphan think' }));
+    t.handleEvent(update('thinking_end', { content: 'ignored' }));
+    t.handleEvent(update('text_end', { content: 'ignored' }));
+    const end = t.handleEvent({ type: 'message_end', message: { role: 'assistant', content: [] } });
+    const content = (end[0] as { message: { content: unknown[] } }).message.content;
+    expect(content).toEqual([]);
+  });
+
+  it('thinking_end overwrites the accumulated thinking text', () => {
+    const t = new PiRpcTranslator();
+    t.setSessionId('sid');
+    t.handleEvent({ type: 'message_start', message: { role: 'assistant', content: [] } });
+    t.handleEvent(update('thinking_start'));
+    t.handleEvent(update('thinking_delta', { delta: 'draft' }));
+    t.handleEvent(update('thinking_end', { content: 'final reasoning' }));
+    const end = t.handleEvent({ type: 'message_end', message: { role: 'assistant', content: [] } });
+    const content = (end[0] as { message: { content: Array<{ thinking: string }> } }).message
+      .content;
+    expect(content).toEqual([{ type: 'thinking', thinking: 'final reasoning', itemId: 'pi:1' }]);
+  });
+
+  it('toolcall_delta is ignored (complete args arrive at toolcall_end)', () => {
+    const t = new PiRpcTranslator();
+    t.setSessionId('sid');
+    t.handleEvent({ type: 'message_start', message: { role: 'assistant', content: [] } });
+    t.handleEvent(update('toolcall_start'));
+    t.handleEvent(update('toolcall_delta', { delta: '{"partial":' }));
+    t.handleEvent(
+      update('toolcall_end', {
+        toolCall: { id: 't1', name: 'Bash', arguments: { command: 'ls' } },
+      }),
+    );
+    const end = t.handleEvent({ type: 'message_end', message: { role: 'assistant', content: [] } });
+    const content = (end[0] as { message: { content: Array<{ type: string; input: unknown }> } })
+      .message.content;
+    expect(content).toEqual([
+      { type: 'tool_use', id: 't1', name: 'Bash', input: { command: 'ls' } },
+    ]);
+  });
 });

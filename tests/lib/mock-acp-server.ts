@@ -26,6 +26,12 @@ export interface MockAcpScenarioOpts {
   sendApproval?: boolean;
   /** (kimi) Send a question elicitation permission request (no toolCall). */
   sendQuestion?: boolean;
+  /**
+   * (kimi) Options for the `sendQuestion` request_permission frame. Defaults to
+   * a bare `skip` option; pass the q{n}_opt_{i} / q{n}_skip namespace to drive
+   * the legacy request_permission question bridge.
+   */
+  questionOptions?: Array<{ optionId: string; name: string; kind: string }>;
   /** (kimi) Send an elicitation/create form request during the prompt. */
   sendElicitation?: boolean;
   /** (opencode) Send an fs/write_text_file server request (client must reject). */
@@ -228,7 +234,7 @@ rl.on('line', (line) => {
       setTimeout(() => {
         send({
           jsonrpc: '2.0', id: 43, method: 'session/request_permission',
-          params: { sessionId: config.sessionId, isQuestion: true, options: [{ optionId: 'skip', name: 'Skip', kind: 'skip' }] },
+          params: { sessionId: config.sessionId, isQuestion: true, options: config.questionOptions ?? [{ optionId: 'skip', name: 'Skip', kind: 'skip' }] },
         });
       }, delay);
       delay += 40;
@@ -361,6 +367,7 @@ export function writeScenario(
       delayMs: opts.delayMs ?? 0,
       sendApproval: opts.sendApproval ?? false,
       sendQuestion: opts.sendQuestion ?? false,
+      questionOptions: opts.questionOptions ?? null,
       sendElicitation: opts.sendElicitation ?? false,
       sendFsWrite: opts.sendFsWrite ?? false,
       crashAfterInit: opts.crashAfterInit ?? false,

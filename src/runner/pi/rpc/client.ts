@@ -12,7 +12,11 @@
  */
 
 import type { JsonlRpcTransport } from '../../common/jsonrpc/transport.js';
-import { ConnectionLostError } from '../../common/jsonrpc/client.js';
+import {
+  ConnectionLostError,
+  disposeRpcClientInstance,
+  rejectAllPending,
+} from '../../common/jsonrpc/client.js';
 import type { PiRpcCommand, PiRpcEvent, PiRpcResponse } from './protocol-types.js';
 
 /** Per-run hooks set by the runner. Accepts a superset so the base class's
@@ -109,12 +113,13 @@ export class PiRpcClient {
     this.transport.write({ ...command, id: `req_${this.nextId++}` });
   }
 
-  async dispose(): Promise<void> {
-    if (this._disposed) return;
-    this._disposed = true;
-    this._ready = false;
-    this.failPending(new ConnectionLostError('pi rpc client disposed'));
-    await this.transport.close();
+  dispose(): Promise<void> {
+    return disposeRpcClientInstance(
+      this,
+      this.pending,
+      () => this.transport.close(),
+      'pi rpc client disposed',
+    );
   }
 
   // =========================================================================
@@ -137,10 +142,6 @@ export class PiRpcClient {
   }
 
   private failPending(err: Error): void {
-    for (const [_id, pending] of this.pending) {
-      clearTimeout(pending.timer);
-      pending.reject(err);
-    }
-    this.pending.clear();
+    rejectAllPending(this.pending, err);
   }
 }

@@ -7,6 +7,7 @@ import { samePath, encodeProjectDirName } from '../../platform/path.js';
 import { extractContentBlocks } from '../common/content-blocks.js';
 import { scanJsonlOnce, tailOffsetAfter, scanTailEvents } from '../common/two-pass.js';
 import { getLogger } from '../../logger/index.js';
+import { logNonEnoentDebug } from '../session-store.js';
 import {
   UsageAccumulator,
   contextWindowOccupancy,
@@ -229,10 +230,7 @@ function hasRecentFileActivity(
  * 否则「文件不可读」会被当成「会话不活跃」。
  */
 function logStatFailure(filePath: string, err: unknown): void {
-  if ((err as NodeJS.ErrnoException).code === 'ENOENT') return;
-  getLogger().debug(
-    `[claude-session-reader] stat ${filePath} failed: ${(err as Error)?.message ?? String(err)}`,
-  );
+  logNonEnoentDebug(err, (m) => `[claude-session-reader] stat ${filePath} failed: ${m}`);
 }
 
 /**
@@ -473,105 +471,149 @@ export function buildClaudeUsage(
  * usage 的逐字段 max 合并（maxUsageRecord）与装配（buildClaudeUsage）已
  * 独立成纯函数。
  */
-function scalarScan(filePath: string): ScanResult {
+/** first-pass 累积状态（显式传给各模块级收集器，替代外层闭包变量）。 */
+interface ScalarScanState {
+  /** Per-message-id best usage record (per-field max). */
+  usageByMessageId: Map<string, ClaudePerMessageUsage>;
+  lastPostTokens: number;
+  compactCount: number;
+  tailOffset: number;
+  /** 真人 prompt 序号；末个 turn = 当前值。sidechain/注入/工具结果不递增。 */
+  turnSeq: number;
+  lastAiTitle?: string;
+  lastRecap?: string;
+  lastUserMessage?: string;
+}
+
+function newScalarScanState(): ScalarScanState {
   // Per-message-id best usage record (per-field max). A streaming assistant
   // message spans multiple jsonl lines sharing the same message id; some
   // backends (third-party gateways, e.g. DeepSeek) write all-zero usage on
   // the early placeholder lines (empty thinking block) and the real usage
   // only on the final line carrying stop_reason. First-occurrence-wins dedup
-  // would pin the zero record and discard the real one (auto-resume
-  // card per-run stats all 0). Per-field max
-  // reconstructs the full usage regardless of line order — on the official
-  // API every line repeats identical usage, so max is a no-op there.
-  const usageByMessageId = new Map<string, ClaudePerMessageUsage>();
-  let lastPostTokens = 0;
-  let compactCount = 0;
-  let tailOffset = -1;
-  /** 真人 prompt 序号；末个 turn = 当前值。sidechain/注入/工具结果不递增。 */
-  let turnSeq = 0;
-
-  let lastAiTitle: string | undefined;
-  let lastRecap: string | undefined;
-  let lastUserMessage: string | undefined;
-
-  scanJsonlOnce(filePath, (obj, line, offset) => {
-    // --- usage aggregation (was aggregateSessionUsage) ---
-    if (obj.type === 'assistant') {
-      const msg = obj.message as Record<string, unknown> | undefined;
-      const usage = msg?.usage as ClaudeRawUsage | undefined;
-      if (usage) {
-        const msgId = msg?.id as string | undefined;
-        if (msgId) {
-          usageByMessageId.set(msgId, maxUsageRecord(usageByMessageId.get(msgId), usage, turnSeq));
-        }
-      }
-    }
-    if (obj.type === 'system' && obj.subtype === 'compact_boundary') {
-      compactCount++;
-      const cm = obj.compactMetadata as { postTokens?: number } | undefined;
-      if (cm?.postTokens) {
-        lastPostTokens = cm.postTokens;
-      }
-    }
-
-    // --- last user message offset ---
-    // Record the byte offset where the tail should start: the beginning of
-    // the NEXT line after this user message (see tailOffsetAfter).
-    if (obj.type === 'user') {
-      const msg = obj.message as Record<string, unknown> | undefined;
-      if (msg?.role === 'user') {
-        tailOffset = tailOffsetAfter(line, offset);
-      }
-    }
-
-    // --- ai-title extraction ---
-    if (obj.type === 'ai-title' && typeof obj.aiTitle === 'string') {
-      lastAiTitle = obj.aiTitle as string;
-    }
-
-    // --- recap extraction (last isCompactSummary wins) ---
-    if (obj.type === 'user' && obj.isCompactSummary === true) {
-      const msg = obj.message as Record<string, unknown> | undefined;
-      if (msg?.content) {
-        const recapContent = extractText(msg.content);
-        if (recapContent) {
-          lastRecap = recapContent;
-        }
-      }
-    }
-
-    // --- last user message for displayTitle ---
-    // Skip: 1) tool_result content, 2) isCompactSummary (recap),
-    //       3) isMeta (skill injection / command echo / project rules)
-    if (obj.type === 'user' && !obj.isCompactSummary && !obj.isMeta) {
-      const msg = obj.message as Record<string, unknown> | undefined;
-      if (msg?.role === 'user' && msg.content) {
-        const content = msg.content;
-        const isToolResult =
-          Array.isArray(content) &&
-          content.length > 0 &&
-          (content[0] as Record<string, unknown>)?.type === 'tool_result';
-        if (!isToolResult) {
-          const userContent = extractText(content);
-          if (userContent && !isTaskNotificationText(userContent)) {
-            lastUserMessage = userContent;
-          }
-        }
-      }
-    }
-
-    // --- turn boundary for per-run usage ---
-    // 真人 prompt 开启新 turn；注入/工具结果/sidechain 不递增。usage 记录在
-    // 解析到 assistant 行时已经带上当前 turnSeq，末尾只汇总末个 turn。
-    if (isRealUserPrompt(obj)) turnSeq++;
-  });
-
+  // would pin the zero record and discard the real one (auto-resume card
+  // per-run stats all 0). Per-field max reconstructs the full usage
+  // regardless of line order — on the official API every line repeats
+  // identical usage, so max is a no-op there.
   return {
-    tailOffset,
-    usage: buildClaudeUsage(usageByMessageId.values(), { turnSeq, lastPostTokens, compactCount }),
-    aiTitle: lastAiTitle,
-    recap: lastRecap,
-    lastUserMessage,
+    usageByMessageId: new Map<string, ClaudePerMessageUsage>(),
+    lastPostTokens: 0,
+    compactCount: 0,
+    tailOffset: -1,
+    turnSeq: 0,
+  };
+}
+
+/** assistant 行 → 按 message id 逐字段 max 合并 usage（was aggregateSessionUsage）。 */
+function collectAssistantUsage(state: ScalarScanState, obj: Record<string, unknown>): void {
+  if (obj.type !== 'assistant') return;
+  const msg = obj.message as Record<string, unknown> | undefined;
+  const usage = msg?.usage as ClaudeRawUsage | undefined;
+  if (!usage) return;
+  const msgId = msg?.id as string | undefined;
+  if (!msgId) return;
+  state.usageByMessageId.set(
+    msgId,
+    maxUsageRecord(state.usageByMessageId.get(msgId), usage, state.turnSeq),
+  );
+}
+
+/** compact_boundary → 计数 + 压缩后 token 水位。 */
+function collectCompactBoundary(state: ScalarScanState, obj: Record<string, unknown>): void {
+  if (obj.type !== 'system' || obj.subtype !== 'compact_boundary') return;
+  state.compactCount++;
+  const cm = obj.compactMetadata as { postTokens?: number } | undefined;
+  if (cm?.postTokens) {
+    state.lastPostTokens = cm.postTokens;
+  }
+}
+
+/** 记录 tail 起点：本 user 行之后的下一行字节偏移（见 tailOffsetAfter）。 */
+function collectTailOffset(
+  state: ScalarScanState,
+  obj: Record<string, unknown>,
+  line: string,
+  offset: number,
+): void {
+  if (obj.type !== 'user') return;
+  const msg = obj.message as Record<string, unknown> | undefined;
+  if (msg?.role === 'user') {
+    state.tailOffset = tailOffsetAfter(line, offset);
+  }
+}
+
+/** ai-title：最后一条生效。 */
+function collectAiTitle(state: ScalarScanState, obj: Record<string, unknown>): void {
+  if (obj.type === 'ai-title' && typeof obj.aiTitle === 'string') {
+    state.lastAiTitle = obj.aiTitle as string;
+  }
+}
+
+/** recap：最后一条 isCompactSummary 生效。 */
+function collectRecap(state: ScalarScanState, obj: Record<string, unknown>): void {
+  if (obj.type !== 'user' || obj.isCompactSummary !== true) return;
+  const msg = obj.message as Record<string, unknown> | undefined;
+  if (!msg?.content) return;
+  const recapContent = extractText(msg.content);
+  if (recapContent) {
+    state.lastRecap = recapContent;
+  }
+}
+
+/** displayTitle 用的最近真人输入：跳过 tool_result / recap / isMeta / 任务通知。 */
+function collectLastUserMessage(state: ScalarScanState, obj: Record<string, unknown>): void {
+  if (obj.type !== 'user' || obj.isCompactSummary || obj.isMeta) return;
+  const msg = obj.message as Record<string, unknown> | undefined;
+  if (msg?.role !== 'user' || !msg.content) return;
+  const content = msg.content;
+  const isToolResult =
+    Array.isArray(content) &&
+    content.length > 0 &&
+    (content[0] as Record<string, unknown>)?.type === 'tool_result';
+  if (isToolResult) return;
+  const userContent = extractText(content);
+  if (userContent && !isTaskNotificationText(userContent)) {
+    state.lastUserMessage = userContent;
+  }
+}
+
+/** 真人 prompt 开启新 turn；注入/工具结果/sidechain 不递增。 */
+function countRealUserPrompt(state: ScalarScanState, obj: Record<string, unknown>): void {
+  if (isRealUserPrompt(obj)) state.turnSeq++;
+}
+
+/**
+ * 单行分派：收集器调用顺序与原回调逐字一致（尤其 turnSeq 在最后递增，
+ * 保证 assistant usage 记录归属的是「本行之前」的 turn）。
+ */
+function scanScalarLine(
+  state: ScalarScanState,
+  obj: Record<string, unknown>,
+  line: string,
+  offset: number,
+): void {
+  collectAssistantUsage(state, obj);
+  collectCompactBoundary(state, obj);
+  collectTailOffset(state, obj, line, offset);
+  collectAiTitle(state, obj);
+  collectRecap(state, obj);
+  collectLastUserMessage(state, obj);
+  countRealUserPrompt(state, obj);
+}
+
+function scalarScan(filePath: string): ScanResult {
+  const state = newScalarScanState();
+  scanJsonlOnce(filePath, scanScalarLine.bind(null, state));
+  return {
+    tailOffset: state.tailOffset,
+    usage: buildClaudeUsage(state.usageByMessageId.values(), {
+      turnSeq: state.turnSeq,
+      lastPostTokens: state.lastPostTokens,
+      compactCount: state.compactCount,
+    }),
+    aiTitle: state.lastAiTitle,
+    recap: state.lastRecap,
+    lastUserMessage: state.lastUserMessage,
   };
 }
 

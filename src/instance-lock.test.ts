@@ -279,3 +279,122 @@ describe('InstanceLock concurrent stale takeover', () => {
     expect(fs.readFileSync(lockPath, 'utf-8').split('\n')[0]).toBe(String(process.pid));
   });
 });
+
+/**
+ * 陈旧锁接管的「复核」竞态：rename 夺到的 quarantine 已不是刚读到的陈旧锁，
+ * 而是一把仍然活着的更新锁。此时必须把锁放回原位并拒绝取锁，不能 clobber。
+ */
+describe('InstanceLock quarantine restore (live lock discovered on re-check)', () => {
+  /** 让 rename 夺到的 quarantine 变成一把活锁（模拟并发窗口内的锁替换）。 */
+  function injectLiveLockIntoQuarantine(opts: { installNewerLock?: boolean } = {}): void {
+    const realRename = fs.renameSync;
+    vi.spyOn(fs, 'renameSync').mockImplementation(((src: unknown, dst: unknown) => {
+      (realRename as unknown as (s: unknown, d: unknown) => void)(src, dst);
+      if (typeof dst === 'string' && dst.includes('.stale-')) {
+        fs.writeFileSync(dst, '67890\nnode', 'utf-8');
+        if (opts.installNewerLock) {
+          fs.writeFileSync(lockPath, '99999\nnode', 'utf-8');
+        }
+      }
+    }) as typeof fs.renameSync);
+  }
+
+  function liveLockVerifier(): LockIdentityVerifier {
+    return async (pid) => (pid === 67890 ? 'match' : 'mismatch');
+  }
+
+  it('restores the stolen live lock via hardlink and refuses to acquire', async () => {
+    fs.writeFileSync(lockPath, '12345\nold-process', 'utf-8');
+    stubPidAlive();
+    injectLiveLockIntoQuarantine();
+
+    const lock = new InstanceLock(lockPath, { verifyIdentity: liveLockVerifier() });
+
+    await expect(lock.acquire()).rejects.toMatchObject({ pid: 67890 });
+    // 夺走的活锁被完整放回原位，没有丢失也没有被当前进程覆盖。
+    expect(fs.readFileSync(lockPath, 'utf-8')).toBe('67890\nnode');
+    expect(fs.readdirSync(tmpDir).filter((f) => f.includes('.stale-'))).toHaveLength(0);
+  });
+
+  it('falls back to rename when hardlink restore is unavailable', async () => {
+    fs.writeFileSync(lockPath, '12345\nold-process', 'utf-8');
+    stubPidAlive();
+    injectLiveLockIntoQuarantine();
+    const realLink = fs.linkSync;
+    vi.spyOn(fs, 'linkSync').mockImplementation(((src: unknown, ...rest: unknown[]) => {
+      if (typeof src === 'string' && src.includes('.stale-')) {
+        throw Object.assign(new Error('EPERM'), { code: 'EPERM' });
+      }
+      return (realLink as unknown as (...a: unknown[]) => unknown)(src, ...rest);
+    }) as typeof fs.linkSync);
+
+    const lock = new InstanceLock(lockPath, { verifyIdentity: liveLockVerifier() });
+
+    await expect(lock.acquire()).rejects.toThrow(InstanceAlreadyRunningError);
+    expect(fs.readFileSync(lockPath, 'utf-8')).toBe('67890\nnode');
+  });
+
+  it('keeps a newer lock instead of restoring the quarantine over it', async () => {
+    fs.writeFileSync(lockPath, '12345\nold-process', 'utf-8');
+    stubPidAlive();
+    injectLiveLockIntoQuarantine({ installNewerLock: true });
+
+    const lock = new InstanceLock(lockPath, { verifyIdentity: liveLockVerifier() });
+
+    await expect(lock.acquire()).rejects.toThrow(InstanceAlreadyRunningError);
+    expect(fs.readFileSync(lockPath, 'utf-8')).toBe('99999\nnode');
+    expect(fs.readdirSync(tmpDir).filter((f) => f.includes('.stale-'))).toHaveLength(0);
+  });
+});
+
+/** tryCreate 的 hardlink 不可用 / 竞态分支。 */
+describe('InstanceLock tryCreate fallback', () => {
+  it('acquires via direct wx create when hardlinks are unsupported', async () => {
+    vi.spyOn(fs, 'linkSync').mockImplementation((() => {
+      throw Object.assign(new Error('EOPNOTSUPP'), { code: 'EOPNOTSUPP' });
+    }) as typeof fs.linkSync);
+
+    await new InstanceLock(lockPath).acquire();
+
+    expect(fs.readFileSync(lockPath, 'utf-8')).toBe(
+      `${process.pid}\n${binaryName(process.execPath)}`,
+    );
+  });
+
+  it('takes over a stale lock when the direct wx create first hits EEXIST', async () => {
+    fs.writeFileSync(lockPath, '12345\nold-process', 'utf-8');
+    stubPidDead();
+    vi.spyOn(fs, 'linkSync').mockImplementation((() => {
+      throw Object.assign(new Error('EOPNOTSUPP'), { code: 'EOPNOTSUPP' });
+    }) as typeof fs.linkSync);
+
+    await new InstanceLock(lockPath).acquire();
+
+    expect(fs.readFileSync(lockPath, 'utf-8')).toBe(
+      `${process.pid}\n${binaryName(process.execPath)}`,
+    );
+  });
+
+  it('propagates non-EEXIST errors from the direct wx fallback', async () => {
+    vi.spyOn(fs, 'linkSync').mockImplementation((() => {
+      throw Object.assign(new Error('EOPNOTSUPP'), { code: 'EOPNOTSUPP' });
+    }) as typeof fs.linkSync);
+    const realOpen = fs.openSync;
+    vi.spyOn(fs, 'openSync').mockImplementation(((file: unknown, ...rest: unknown[]) => {
+      if (file === lockPath) {
+        throw Object.assign(new Error('EACCES'), { code: 'EACCES' });
+      }
+      return (realOpen as unknown as (...a: unknown[]) => unknown)(file, ...rest);
+    }) as typeof fs.openSync);
+
+    await expect(new InstanceLock(lockPath).acquire()).rejects.toThrow('EACCES');
+  });
+
+  it('propagates unexpected link errors instead of treating the lock as taken', async () => {
+    vi.spyOn(fs, 'linkSync').mockImplementation((() => {
+      throw Object.assign(new Error('EIO'), { code: 'EIO' });
+    }) as typeof fs.linkSync);
+
+    await expect(new InstanceLock(lockPath).acquire()).rejects.toThrow('EIO');
+  });
+});

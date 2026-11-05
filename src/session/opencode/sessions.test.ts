@@ -1275,3 +1275,186 @@ describe('scanV1Messages / scanV2Usage（扫描累积器）', () => {
     expect(scan.latest!.contextLength).toBe(100 + 10 + 5 + 6);
   });
 });
+
+/**
+ * assembleV2TailEvents 的分支（characterization）。
+ *
+ * 该函数是 CC 最高点；后续把 user/assistant/shell/compaction 分支改成
+ * 模块级命名 handler + Map 查表后，事件顺序、字段、截断口径、
+ * displayTitle 回退与「从末条 user 起扫描」的起点语义必须逐项保持。
+ */
+describe('assembleV2TailEvents 分支 (characterization)', () => {
+  const cwd = '/synth/v2-tail-branches';
+
+  function read(messages: Array<Record<string, unknown>>) {
+    const raw = buildV2ExportJson({ title: 'T', directory: cwd, messages });
+    const r = new OpencodeSessionReader({ cacheTtlMs: 0, captureExport: () => raw });
+    return r.readSessionContent('ses_v2', cwd);
+  }
+
+  it('shell → bash tool_use(+tool_result)；compaction summary → text', () => {
+    const content = read([
+      { id: 'u1', type: 'user', time: { created: 1 }, text: 'go' },
+      {
+        id: 's1',
+        type: 'shell',
+        time: { created: 2 },
+        callID: 'c1',
+        command: 'ls -la',
+        output: 'total 0',
+      },
+      { id: 'c1', type: 'compaction', time: { created: 3 }, summary: 'compressed context' },
+    ]);
+    expect(content.events.map((e) => e.type)).toEqual(['text', 'tool_use', 'tool_result', 'text']);
+    expect(content.events[0]!.content).toBe('go');
+    expect(JSON.parse(content.events[1]!.content)).toEqual({
+      id: 'c1',
+      name: 'bash',
+      input: { command: 'ls -la' },
+    });
+    expect(content.events[2]!.content).toBe('total 0');
+    expect(content.events[3]!.content).toBe('compressed context');
+    expect(content.displayTitle).toBe('go');
+  });
+
+  it('shell 无 output 只发 tool_use；id 回退 shell；空 summary 的 compaction 不产出', () => {
+    const content = read([
+      { id: 'u1', type: 'user', text: 'q' },
+      { type: 'shell', command: 'pwd' },
+      { type: 'compaction', summary: '' },
+    ]);
+    expect(content.events.map((e) => e.type)).toEqual(['text', 'tool_use']);
+    expect(JSON.parse(content.events[1]!.content)).toEqual({
+      id: 'shell',
+      name: 'bash',
+      input: { command: 'pwd' },
+    });
+  });
+
+  it('assistant 的 reasoning/text 顺序保留；system/synthetic/切换类控制消息不产出', () => {
+    const content = read([
+      { id: 'u1', type: 'user', text: 'q' },
+      { type: 'system', text: 'SYS' },
+      { type: 'synthetic', text: 'SYN' },
+      { type: 'agent-switched' },
+      { type: 'model-switched' },
+      {
+        type: 'assistant',
+        content: [
+          { type: 'reasoning', text: 'r1' },
+          { type: 'text', text: 'a1' },
+          { type: 'text', text: 'a2' },
+        ],
+      },
+    ]);
+    expect(content.events.map((e) => e.type)).toEqual(['text', 'thinking', 'text', 'text']);
+    expect(content.events.map((e) => e.content)).toEqual(['q', 'r1', 'a1', 'a2']);
+  });
+
+  it('末条 user 无 text（attachment-only）→ displayTitle 回退全会话首条 user 文本', () => {
+    const content = read([
+      { id: 'u1', type: 'user', text: 'first question' },
+      { id: 'a1', type: 'assistant', content: [{ type: 'text', text: 'answer' }] },
+      { id: 'u2', type: 'user' },
+    ]);
+    // 起点是末条 user（index 2），它无 text → tail 内无事件。
+    expect(content.events).toEqual([]);
+    expect(content.displayTitle).toBe('first question');
+  });
+
+  it('无 user 消息 → 从 0 全会话扫描，displayTitle 取不到时 undefined', () => {
+    const content = read([
+      { type: 'assistant', content: [{ type: 'text', text: 'only assistant' }] },
+      { type: 'compaction', summary: 'sum' },
+    ]);
+    expect(content.events.map((e) => e.type)).toEqual(['text', 'text']);
+    expect(content.events.map((e) => e.content)).toEqual(['only assistant', 'sum']);
+    expect(content.displayTitle).toBeUndefined();
+  });
+
+  it('空 user text / 未知 type / 未知 part 被跳过', () => {
+    const content = read([
+      { type: 'user', text: '' },
+      { type: 'user', text: 'real' },
+      { type: 'mystery', text: 'x' },
+      { type: 'assistant', content: [{ type: 'mystery-part', text: 'x' }] },
+    ]);
+    expect(content.events.map((e) => e.content)).toEqual(['real']);
+    expect(content.displayTitle).toBe('real');
+  });
+});
+
+/**
+ * 扫描累积器与 realpath 的边界分支：字段缺失是旧版 opencode export 的真实形态
+ * （代码用 ?? 0 兜底）；realpath 失败回退是 macOS /tmp→/private/tmp 之外的
+ * 另一类真实输入，全部通过公开入口/公开方法断言可见返回值。
+ */
+describe('scanV1Messages 字段缺失 / OpencodeSessionReader.realpath 回退', () => {
+  it('v1: 缺 input/output/cache 字段时按 0 累计，total 与 latest 仍正确', () => {
+    const messages = [
+      {
+        info: { role: 'assistant', id: 'm0', sessionID: 's' },
+        parts: [{ type: 'step-finish', tokens: { total: 25 } }],
+      },
+    ] as unknown as OpencodeExportMessage[];
+
+    const scan = scanV1Messages(messages);
+
+    expect(scan.cum).toEqual({ input: 0, output: 0, cacheRead: 0, cacheCreation: 0, total: 25 });
+    expect(scan.turn).toEqual({ input: 0, output: 0, cacheRead: 0, cacheCreation: 0, total: 25 });
+    expect(scan.latest).toMatchObject({
+      inputTokens: 0,
+      outputTokens: 0,
+      contextLength: 0,
+      totalTokens: 25,
+    });
+    expect(scan.latest!.cacheReadTokens).toBeUndefined();
+    expect(scan.latest!.cacheCreationTokens).toBeUndefined();
+  });
+
+  it('v1: 只有 cache 有值、input/output 缺失时上下文水位仍含 cache', () => {
+    const messages = [
+      {
+        info: { role: 'assistant', id: 'm0', sessionID: 's' },
+        parts: [{ type: 'step-finish', tokens: { total: 40, cache: { read: 12, write: 3 } } }],
+      },
+    ] as unknown as OpencodeExportMessage[];
+
+    const scan = scanV1Messages(messages);
+
+    expect(scan.latest!.contextLength).toBe(12 + 3);
+    expect(scan.cum.cacheRead).toBe(12);
+    expect(scan.cum.cacheCreation).toBe(3);
+    expect(scan.turn.cacheRead).toBe(12);
+    expect(scan.turn.cacheCreation).toBe(3);
+  });
+
+  it('realpath returns the resolved path for an existing directory', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'lark-opencode-realpath-'));
+    try {
+      const reader = new OpencodeSessionReader();
+      expect(reader.realpath(dir)).toBe(fs.realpathSync(dir));
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('realpath falls back to the given path when it does not exist (ENOENT)', () => {
+    const reader = new OpencodeSessionReader();
+    const missing = path.join(os.tmpdir(), 'lark-opencode-realpath-missing-xyz');
+    expect(reader.realpath(missing)).toBe(missing);
+  });
+
+  it('realpath falls back to the given path on a real ENOTDIR error', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'lark-opencode-realpath-'));
+    try {
+      const blocker = path.join(dir, 'not-a-dir');
+      fs.writeFileSync(blocker, 'x');
+      const blocked = path.join(blocker, 'sub');
+      const reader = new OpencodeSessionReader();
+      expect(reader.realpath(blocked)).toBe(blocked);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});

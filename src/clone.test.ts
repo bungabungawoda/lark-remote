@@ -8,6 +8,16 @@ vi.mock('./logger/index.js', async () =>
   (await import('../tests/lib/logger-mock.js')).loggerModuleMock(),
 );
 
+// 阻断真实 detached 进程启动：默认 spawn 路径只观察启动参数与用户回执。
+const { spawnDetachedBridgeMock } = vi.hoisted(() => ({
+  spawnDetachedBridgeMock: vi.fn((_args: string[], _logFilePath: string): number | null => 7777),
+}));
+
+vi.mock('./restart.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./restart.js')>();
+  return { ...actual, spawnDetachedBridge: spawnDetachedBridgeMock };
+});
+
 const SOURCE_CONFIG = [
   'feishu:',
   '  appId: cli_old_app',
@@ -614,6 +624,173 @@ describe('CloneSession state sync', () => {
     const targetDir = `${configDir}-99zz`;
     expect(fs.existsSync(path.join(targetDir, 'workspace.json'))).toBe(true);
     expect(fs.existsSync(path.join(targetDir, 'last-session.json'))).toBe(false);
+    expect(connector.texts.at(-1)).toContain('workspace / 常用指令状态已同步');
+  });
+});
+
+/**
+ * 默认 detached 拉起（spawnDetachedCloneBridge）：restart.js 的 spawn 已被 mock
+ * 阻断，绝不会启动真实进程；测试只观察新实例拿到的启动参数与用户收到的回执。
+ */
+describe('CloneSession default detached spawn', () => {
+  const originalArgv = process.argv;
+
+  beforeEach(() => {
+    spawnDetachedBridgeMock.mockReset();
+    spawnDetachedBridgeMock.mockReturnValue(7777);
+  });
+
+  afterEach(() => {
+    process.argv = originalArgv;
+  });
+
+  function makeDefaultSpawnFixture() {
+    const connector = stubConnector();
+    const reg = makeDeferredRegisterApp();
+    // 故意不注入 spawnNewInstance：走默认的 spawnDetachedCloneBridge。
+    const session = new CloneSession({
+      connector,
+      configPath,
+      configDir,
+      registerAppFn: reg.fn,
+      generateSuffix: () => '99zz',
+    });
+    return { connector, reg, session };
+  }
+
+  async function finalizeWithSpawn(
+    session: CloneSession,
+    reg: ReturnType<typeof makeDeferredRegisterApp>,
+  ): Promise<void> {
+    await session.start(undefined, CTX);
+    reg.calls[0].resolve({
+      client_id: 'cli_new_app',
+      client_secret: 'new_secret',
+      user_info: { open_id: 'ou_new_scope' },
+    });
+    await flush();
+    await waitIdle(session);
+  }
+
+  it('replaces the old --config-dir with the cloned dir and reports the new pid', async () => {
+    process.argv = [
+      '/usr/bin/node',
+      '/app/dist/cli.js',
+      '--config-dir',
+      '/old/config',
+      '--verbose',
+    ];
+    spawnDetachedBridgeMock.mockReturnValue(2468);
+    const { connector, reg, session } = makeDefaultSpawnFixture();
+
+    await finalizeWithSpawn(session, reg);
+
+    const targetDir = `${configDir}-99zz`;
+    const notice = connector.texts.at(-1)!;
+    expect(notice).toContain('分身创建完成');
+    expect(notice).toContain('pid=2468');
+    expect(notice).toContain('启动通知');
+    const [command, logPath] = spawnDetachedBridgeMock.mock.calls[0];
+    expect(command).toEqual(['/app/dist/cli.js', '--verbose', '--config-dir', targetDir]);
+    expect(logPath).toBe(path.join(targetDir, 'logs', 'spawn-child.log'));
+  });
+
+  it('keeps a following flag when --config-dir has no value', async () => {
+    process.argv = ['/usr/bin/node', '/app/dist/cli.js', '--config-dir', '--verbose'];
+    const { connector, reg, session } = makeDefaultSpawnFixture();
+
+    await finalizeWithSpawn(session, reg);
+
+    const [command] = spawnDetachedBridgeMock.mock.calls[0];
+    expect(command).toEqual(['/app/dist/cli.js', '--verbose', '--config-dir', `${configDir}-99zz`]);
+    expect(connector.texts.at(-1)).toContain('pid=7777');
+  });
+
+  it('offers the manual start command when the detached spawn fails', async () => {
+    process.argv = ['/usr/bin/node', '/app/dist/cli.js'];
+    spawnDetachedBridgeMock.mockReturnValue(null);
+    const { connector, reg, session } = makeDefaultSpawnFixture();
+
+    await finalizeWithSpawn(session, reg);
+
+    const notice = connector.texts.at(-1)!;
+    expect(notice).toContain('新实例自动启动失败');
+    expect(notice).toContain(`lark-remote --config-dir ${configDir}-99zz`);
+    expect(notice).not.toContain('pid=');
+  });
+
+  it('does not spawn when the entry path is unavailable', async () => {
+    process.argv = ['/usr/bin/node'];
+    const { connector, reg, session } = makeDefaultSpawnFixture();
+
+    await finalizeWithSpawn(session, reg);
+
+    expect(spawnDetachedBridgeMock).not.toHaveBeenCalled();
+    expect(connector.texts.at(-1)).toContain('新实例自动启动失败');
+  });
+});
+
+/** readOldOwnerId 的坏输入分支：都通过 finalize 的会话迁移结果向用户可见。 */
+describe('CloneSession previous-owner lookup', () => {
+  async function finalizeClone() {
+    const { connector, reg, session } = makeFixture();
+    await session.start(undefined, CTX);
+    reg.calls[0].resolve({
+      client_id: 'cli_new_app',
+      client_secret: 'new_secret',
+      user_info: { open_id: 'ou_new_app_scope' },
+    });
+    await flush();
+    await waitIdle(session);
+    return connector;
+  }
+
+  it('unparsable startup-contact: no session migration and a downgraded notice', async () => {
+    fs.writeFileSync(path.join(configDir, 'startup-contact.json'), '{ not json');
+    fs.writeFileSync(path.join(configDir, 'workspace.json'), JSON.stringify([]));
+    fs.writeFileSync(
+      path.join(configDir, 'last-session.json'),
+      JSON.stringify({ ou_user: { cwd: '/x', sessions: {} } }),
+    );
+
+    const connector = await finalizeClone();
+
+    expect(fs.existsSync(path.join(`${configDir}-99zz`, 'last-session.json'))).toBe(false);
+    expect(connector.texts.at(-1)).toContain('workspace / 常用指令状态已同步');
+  });
+
+  it('non-string userId ignores the previous owner and skips session migration', async () => {
+    fs.writeFileSync(
+      path.join(configDir, 'startup-contact.json'),
+      JSON.stringify({ userId: 12345 }),
+    );
+    fs.writeFileSync(path.join(configDir, 'workspace.json'), JSON.stringify([]));
+    fs.writeFileSync(
+      path.join(configDir, 'last-session.json'),
+      JSON.stringify({ '12345': { cwd: '/x' } }),
+    );
+
+    const connector = await finalizeClone();
+
+    expect(fs.existsSync(path.join(`${configDir}-99zz`, 'last-session.json'))).toBe(false);
+    expect(connector.texts.at(-1)).toContain('workspace / 常用指令状态已同步');
+  });
+
+  it('previous owner has no session entry: global state still copies, no last-session', async () => {
+    fs.writeFileSync(
+      path.join(configDir, 'startup-contact.json'),
+      JSON.stringify({ userId: 'ou_user' }),
+    );
+    fs.writeFileSync(path.join(configDir, 'workspace.json'), JSON.stringify([]));
+    fs.writeFileSync(
+      path.join(configDir, 'last-session.json'),
+      JSON.stringify({ ou_other: { cwd: '/x' } }),
+    );
+
+    const connector = await finalizeClone();
+
+    expect(fs.existsSync(path.join(`${configDir}-99zz`, 'workspace.json'))).toBe(true);
+    expect(fs.existsSync(path.join(`${configDir}-99zz`, 'last-session.json'))).toBe(false);
     expect(connector.texts.at(-1)).toContain('workspace / 常用指令状态已同步');
   });
 });

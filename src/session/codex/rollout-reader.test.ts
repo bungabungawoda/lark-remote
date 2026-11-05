@@ -693,4 +693,16 @@ not valid json
       expect(warned).toBe(true);
     });
   });
+
+  it('response_item message 无 role / content 含非记录项与无文本项时只保留有效 assistant 文本', () => {
+    const content = `{"type":"session_meta","payload":{"session_id":"019f-emc","cwd":"/tmp/project","originator":"lark-remote"},"timestamp":"2026-07-13T10:00:00.000Z"}
+{"type":"response_item","payload":{"type":"message","content":["raw string",{"type":"image"},{"type":"text","text":"Visible"}]},"timestamp":"2026-07-13T10:00:01.000Z"}
+`;
+    const filePath = createRolloutFile('rollout-2026-07-13T10-00-00-019f-emc.jsonl', content);
+    const entry = readCodexRollout(filePath);
+
+    expect(entry).not.toBeNull();
+    expect(entry!.events).toHaveLength(1);
+    expect(entry!.events[0]).toMatchObject({ type: 'assistant', content: 'Visible' });
+  });
 });

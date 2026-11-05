@@ -7,7 +7,7 @@
  * flows thread/start → turn/start → notifications → turn/completed.
  */
 
-import { it, expect, beforeEach, afterEach } from 'vitest';
+import { it, describe, expect, beforeEach, afterEach } from 'vitest';
 import { describePosix } from '../../../../tests/lib/platform.js';
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, chmodSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -134,6 +134,26 @@ describePosix('CodexAppServerRunner integration', () => {
     const info = runner.getStatusInfo();
     expect(info.extras?.sandbox).toBe('danger-full-access');
     expect(info.extras?.approvalPolicy).toBe('never');
+
+    await runner.dispose();
+  });
+
+  it('partial updateApprovalMode settings compose into the local status snapshot', async () => {
+    const runner = new CodexAppServerRunner({
+      kind: 'codex',
+      sessionReader: createStubSessionReader(),
+      sandbox: 'workspace-write',
+      approvalPolicy: 'untrusted',
+    });
+
+    // 每次只传一个字段时，另一个字段不能被重置；两次部分更新最终应同时生效。
+    await runner.updateApprovalMode({ sandbox: 'read-only' });
+    await runner.updateApprovalMode({ approvalPolicy: 'on-request' });
+
+    expect(runner.getStatusInfo().extras).toMatchObject({
+      sandbox: 'read-only',
+      approvalPolicy: 'on-request',
+    });
 
     await runner.dispose();
   });
@@ -950,5 +970,338 @@ describePosix('CodexAppServerRunner integration', () => {
     expect(result?.errorMessage).toBe('Codex app-server turn interrupted');
 
     await runner.dispose();
+  });
+
+  /**
+   * 覆盖缺口：live thread 上的 config 热更新 / 不支持的 server request。
+   * 全部经公开入口 run() + updateApprovalMode() / respondApproval() 触发，
+   * 断言 fake app server 实际收到的协议帧（用户可见的 wire 结果）与 /status 快照。
+   */
+  describe('live thread 上的策略热更新与未知 server request（行为）', () => {
+    const INIT_RESULT = {
+      userAgent: 'codex-cli/0.147.0',
+      codexHome: '/home/user/.codex',
+      platformFamily: 'unix',
+      platformOs: 'macos',
+    };
+    const THREAD_ID = 'th-aaa-333';
+
+    function writeFixture(name: string, steps: unknown[]): string {
+      const fixturePath = join(tmpDir, name);
+      writeFileSync(fixturePath, steps.map((s) => JSON.stringify(s)).join('\n') + '\n');
+      return fixturePath;
+    }
+
+    function wrapperFor(name: string, fixturePath: string, requestLog: string): string {
+      const wrapper = join(tmpDir, name);
+      writeFileSync(
+        wrapper,
+        `#!/bin/sh\nexport FAKE_SERVER_LOG="${requestLog}"\nexec "${process.execPath}" "${FAKE_SERVER}" "${fixturePath}"\n`,
+      );
+      chmodSync(wrapper, 0o755);
+      return wrapper;
+    }
+
+    /** thread/start → turn/start → 审批暂停 → thread/settings/update → 收尾。 */
+    function settingsUpdateFixture(): unknown[] {
+      return [
+        { request: { method: 'initialize' }, response: { result: INIT_RESULT } },
+        { notification: { method: 'initialized', params: {} } },
+        {
+          request: { method: 'thread/start' },
+          response: {
+            result: {
+              thread: {
+                id: THREAD_ID,
+                sessionId: 'sess-333',
+                status: { type: 'idle' },
+                cwd: '/home/user/project',
+                preview: '',
+                turns: [],
+                createdAt: 1,
+                updatedAt: 1,
+                modelProvider: 'deepseek',
+                cliVersion: '0.147.0',
+                ephemeral: false,
+              },
+              cwd: '/home/user/project',
+              model: 'deepseek-v4-flash',
+              modelProvider: 'deepseek',
+              approvalPolicy: 'untrusted',
+            },
+          },
+        },
+        {
+          request: { method: 'turn/start' },
+          response: {
+            result: {
+              turn: { id: 'tn-333', items: [], itemsView: 'notLoaded', status: 'inProgress' },
+            },
+          },
+        },
+        {
+          notification: {
+            method: 'turn/started',
+            params: {
+              threadId: THREAD_ID,
+              turn: { id: 'tn-333', items: [], status: 'inProgress' },
+            },
+          },
+        },
+        {
+          notification: {
+            id: 1,
+            method: 'item/commandExecution/requestApproval',
+            params: {
+              threadId: THREAD_ID,
+              turnId: 'tn-333',
+              itemId: 'item-2',
+              startedAtMs: 1,
+              command: 'rm -rf /tmp/test',
+              cwd: '/home/user/project',
+              reason: 'Delete temporary test directory',
+              availableDecisions: ['accept', 'cancel'],
+            },
+          },
+        },
+        { request: { method: 'thread/settings/update' }, response: { result: {} } },
+        {
+          notification: {
+            method: 'serverRequest/resolved',
+            params: { threadId: THREAD_ID, requestId: 1 },
+          },
+        },
+        {
+          notification: {
+            method: 'turn/completed',
+            params: {
+              threadId: THREAD_ID,
+              turn: {
+                id: 'tn-333',
+                items: [
+                  { type: 'agentMessage', id: 'item-3', text: 'done', phase: 'final_answer' },
+                ],
+                itemsView: 'summary',
+                status: 'completed',
+              },
+            },
+          },
+        },
+      ];
+    }
+
+    // SandboxMode → thread/settings/update.sandboxPolicy 的完整映射。
+    it.each([
+      ['read-only', { type: 'readOnly', networkAccess: false }],
+      [
+        'workspace-write',
+        {
+          type: 'workspaceWrite',
+          writableRoots: [],
+          networkAccess: false,
+          excludeTmpdirEnvVar: false,
+          excludeSlashTmp: false,
+        },
+      ],
+      ['danger-full-access', { type: 'dangerFullAccess' }],
+    ] as const)(
+      'updateApprovalMode(%s) 在 live thread 上下发对应的 sandboxPolicy',
+      async (mode, sandboxPolicy) => {
+        const cwd = join(tmpDir, 'workspace');
+        mkdirSync(cwd, { recursive: true });
+        const requestLog = join(tmpDir, 'settings-requests.jsonl');
+        const fixturePath = writeFixture('settings-update.json', settingsUpdateFixture());
+        const wrapper = wrapperFor('settings-fake-server.sh', fixturePath, requestLog);
+
+        const runner = new CodexAppServerRunner({
+          kind: 'codex',
+          sessionReader: createStubSessionReader(),
+          binary: wrapper,
+          sandbox: 'workspace-write',
+          approvalPolicy: 'untrusted',
+        });
+
+        const events: AgentEvent[] = [];
+        let updated = false;
+        for await (const event of runner.run('hello', { cwd })) {
+          events.push(event);
+          if (event.type === 'approval_requested' && !updated) {
+            updated = true;
+            await runner.updateApprovalMode({ sandbox: mode, approvalPolicy: 'never' });
+            await runner.respondApproval(event.requestId, { action: 'accept' });
+          }
+        }
+
+        expect(updated).toBe(true);
+        expect(events.some((e) => e.type === 'result')).toBe(true);
+        // /status 立刻反映本地快照。
+        expect(runner.getStatusInfo().extras).toMatchObject({
+          sandbox: mode,
+          approvalPolicy: 'never',
+        });
+        // 协议帧：thread/settings/update 必须带正确的 sandboxPolicy。
+        const requests = readFileSync(requestLog, 'utf8')
+          .split('\n')
+          .filter(Boolean)
+          .map((l) => JSON.parse(l));
+        const settings = requests.find((r) => r.method === 'thread/settings/update');
+        expect(settings).toBeDefined();
+        expect(settings.params).toEqual({
+          threadId: THREAD_ID,
+          approvalPolicy: 'never',
+          sandboxPolicy,
+        });
+
+        await runner.dispose();
+      },
+    );
+
+    it('accept 权限审批时按勾选条目授予 fsRead / fsWrite / network 三类权限', async () => {
+      const cwd = join(tmpDir, 'workspace');
+      mkdirSync(cwd, { recursive: true });
+      const requestLog = join(tmpDir, 'perm-all-requests.jsonl');
+      const wrapper = wrapperFor(
+        'perm-all-fake-server.sh',
+        join(FIXTURES, 'permissions-approval.json'),
+        requestLog,
+      );
+      const runner = new CodexAppServerRunner({
+        kind: 'codex',
+        sessionReader: createStubSessionReader(),
+        binary: wrapper,
+        approvalPolicy: 'on-request',
+      });
+
+      let responded = false;
+      for await (const event of runner.run('do something', { cwd })) {
+        if (event.type === 'approval_requested' && event.kind === 'permissions') {
+          // 全选：驱动 fsRead / fsWrite / network 三条分支（真实用户勾选行为）。
+          for (const item of event.view.permissions?.items ?? []) item.selected = true;
+          await runner.respondApproval(event.requestId, { action: 'accept' });
+          responded = true;
+        }
+      }
+      expect(responded).toBe(true);
+
+      const responses = readFileSync(requestLog, 'utf8')
+        .split('\n')
+        .filter(Boolean)
+        .map((l) => JSON.parse(l))
+        .filter((l) => l.response);
+      const approvalResponse = responses.find((l) => l.response?.id === 1 && l.response.result);
+      expect(approvalResponse).toBeDefined();
+      expect(approvalResponse.response.result).toEqual({
+        permissions: {
+          fileSystem: {
+            entries: [
+              { path: '/home/user/project', access: 'read' },
+              { path: '/home/user/project/src', access: 'write' },
+            ],
+          },
+          network: { enabled: true },
+        },
+        scope: 'turn',
+      });
+
+      await runner.dispose();
+    });
+
+    it('未知 server request 被显式 METHOD_NOT_FOUND 拒绝，turn 不悬挂', async () => {
+      const cwd = join(tmpDir, 'workspace');
+      mkdirSync(cwd, { recursive: true });
+      const requestLog = join(tmpDir, 'unknown-request.jsonl');
+      const fixturePath = writeFixture('unknown-server-request.json', [
+        { request: { method: 'initialize' }, response: { result: INIT_RESULT } },
+        { notification: { method: 'initialized', params: {} } },
+        {
+          request: { method: 'thread/start' },
+          response: {
+            result: {
+              thread: {
+                id: 'th-aaa-555',
+                sessionId: 'sess-555',
+                status: { type: 'idle' },
+                cwd: '/home/user/project',
+                preview: '',
+                turns: [],
+                createdAt: 1,
+                updatedAt: 1,
+                modelProvider: 'deepseek',
+                cliVersion: '0.147.0',
+                ephemeral: false,
+              },
+              cwd: '/home/user/project',
+              approvalPolicy: 'on-request',
+            },
+          },
+        },
+        {
+          request: { method: 'turn/start' },
+          response: {
+            result: {
+              turn: { id: 'tn-555', items: [], itemsView: 'notLoaded', status: 'inProgress' },
+            },
+          },
+        },
+        {
+          notification: {
+            method: 'turn/started',
+            params: {
+              threadId: 'th-aaa-555',
+              turn: { id: 'tn-555', items: [], status: 'inProgress' },
+            },
+          },
+        },
+        {
+          notification: {
+            id: 7,
+            method: 'applyPatchApproval',
+            params: { threadId: 'th-aaa-555', turnId: 'tn-555', itemId: 'item-9', reason: 'patch' },
+          },
+        },
+        {
+          notification: {
+            method: 'turn/completed',
+            params: {
+              threadId: 'th-aaa-555',
+              turn: {
+                id: 'tn-555',
+                items: [
+                  { type: 'agentMessage', id: 'item-9', text: 'done', phase: 'final_answer' },
+                ],
+                itemsView: 'summary',
+                status: 'completed',
+              },
+            },
+          },
+        },
+      ]);
+      const wrapper = wrapperFor('unknown-request-server.sh', fixturePath, requestLog);
+      const runner = new CodexAppServerRunner({
+        kind: 'codex',
+        sessionReader: createStubSessionReader(),
+        binary: wrapper,
+      });
+
+      const events: AgentEvent[] = [];
+      for await (const event of runner.run('hello', { cwd })) events.push(event);
+
+      const result = events.find((e) => e.type === 'result') as
+        (AgentEvent & { subtype: string }) | undefined;
+      expect(result?.subtype).toBe('success');
+      const responses = readFileSync(requestLog, 'utf8')
+        .split('\n')
+        .filter(Boolean)
+        .map((l) => JSON.parse(l))
+        .filter((l) => l.response);
+      const rejection = responses.find((l) => l.response?.id === 7);
+      expect(rejection).toBeDefined();
+      expect(rejection.response.error).toMatchObject({ code: -32601 });
+      expect(rejection.response.error.message).toContain(
+        'Unsupported server request: applyPatchApproval',
+      );
+
+      await runner.dispose();
+    });
   });
 });

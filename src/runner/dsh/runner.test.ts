@@ -808,6 +808,88 @@ describe('DshClient / DshRunner integration', () => {
     expect(events.find((e) => e.type === 'goal_state')).toBeUndefined();
   });
 
+  /** goal/change 是权威变更：不等投影，直接按事件更新卡片目标状态。 */
+  function goalChange(data: Record<string, unknown>, seq: number): DshSessionEvent {
+    return { type: 'goal/change', seq, time: 1700000000000, data };
+  }
+
+  const GOAL_SNAPSHOT = {
+    id: 'goal-1',
+    objective: '把发布流程补齐',
+    phase: 'active',
+    maxGoalRounds: 3,
+  };
+
+  async function runWithGoalFrames(
+    projectionValues: Record<string, unknown>,
+    frames: DshSessionEvent[],
+  ) {
+    server = new FakeDshServer();
+    server.register('session/create', () => ({ ok: true, value: { sessionId: SID } }));
+    server.register('session/prompt', () => ({ ok: true, value: { accepted: true } }));
+    server.setProjectionValue({ asOfSeq: 0, values: projectionValues });
+    server.setMuxFrames(frames.map((ev) => sessionEventFrame(SID, ev)));
+    await server.start();
+
+    const runner = new DshRunner({ kind: 'dsh', sessionReader: stubReader, host: server.baseUrl });
+    return collect(runner.run('hi', { cwd: CWD }));
+  }
+
+  it('goal/change create 立即产 goal_state，重复的等价变更帧被去重', async () => {
+    const events = await runWithGoalFrames({}, [
+      textChunk('working', 1),
+      goalChange({ operation: 'create', goal: GOAL_SNAPSHOT, roundsStarted: 1 }, 2),
+      goalChange({ operation: 'create', goal: GOAL_SNAPSHOT, roundsStarted: 1 }, 3),
+      turnEnd('completed', 4),
+    ]);
+
+    const created = events.filter(
+      (e) => e.type === 'goal_state' && (e as { goal?: { id?: string } }).goal?.id === 'goal-1',
+    );
+    // 权威变更只发一次：第二帧与当前目标等价，不重复触发重渲染。
+    expect(created).toHaveLength(1);
+    expect(created[0]).toMatchObject({
+      type: 'goal_state',
+      known: true,
+      goal: {
+        id: 'goal-1',
+        objective: '把发布流程补齐',
+        phase: 'active',
+        roundsStarted: 1,
+        maxGoalRounds: 3,
+      },
+    });
+    expect(events.some((e) => e.type === 'result')).toBe(true);
+  });
+
+  it('goal/change clear 把目标清成 null（known:true），不是「读不到」', async () => {
+    const events = await runWithGoalFrames(
+      { goal: { current: { goal: GOAL_SNAPSHOT, roundsStarted: 1 } } },
+      [
+        goalChange({ operation: 'create', goal: GOAL_SNAPSHOT, roundsStarted: 1 }, 1),
+        goalChange({ operation: 'clear' }, 2),
+        turnEnd('completed', 3),
+      ],
+    );
+
+    const cleared = events.filter(
+      (e) => e.type === 'goal_state' && (e as { goal: unknown }).goal === null,
+    );
+    expect(cleared).toHaveLength(1);
+    expect(cleared[0]).toMatchObject({ type: 'goal_state', goal: null, known: true });
+  });
+
+  it('goal/change payload 读不懂时不产 goal_state，也不误报 unknown', async () => {
+    const events = await runWithGoalFrames({}, [
+      textChunk('working', 1),
+      goalChange({ operation: 'create', goal: 42 }, 2),
+      turnEnd('completed', 3),
+    ]);
+
+    expect(events.filter((e) => e.type === 'goal_state')).toHaveLength(0);
+    expect(events.some((e) => e.type === 'result')).toBe(true);
+  });
+
   it('result usage sums a multi-step turn instead of reporting the last sampling', async () => {
     server = new FakeDshServer();
     server.register('session/create', () => ({ ok: true, value: { sessionId: SID } }));
@@ -2891,6 +2973,183 @@ describe('DshClient / DshRunner integration', () => {
     expect(events.find((e) => e.type === 'result')).toMatchObject({
       subtype: 'interrupted',
     });
+  });
+
+  it('approval for a tool/call frame without arguments/turn shows tool name and an empty turnId', async () => {
+    server = new FakeDshServer();
+    let approval: Extract<AgentEvent, { type: 'approval_requested' }> | undefined;
+    server.register('session/prompt', () => ({ ok: true, value: { accepted: true } }));
+    server.register('$events/result', () => {
+      server.pushMuxFrame(sessionEventFrame(SID, turnEnd('completed', 3)));
+      return { ok: true, value: undefined };
+    });
+    server.setEventFrames([
+      {
+        type: 'waterfall',
+        event: 'approval/request',
+        eventId: 'evt-1',
+        agentId: SID,
+        request: { toolName: 'bash', callId: 'call-1', reason: 'needs sandbox' },
+      },
+    ]);
+    server.setMuxFrames([
+      // 省略可选的 arguments / turn：审批卡不能凭空捏出命令或工具入参，
+      // turnId 也必须为空（而不是把 undefined 拼成 "undefined"）。
+      sessionEventFrame(SID, {
+        type: 'tool/call',
+        seq: 1,
+        time: 1700000000000,
+        data: { callId: 'call-1', name: 'bash' },
+      } as DshSessionEvent),
+      sessionEventFrame(SID, approvalAsked('appr-1', 'call-1', 'bash', 'needs sandbox', 2)),
+    ]);
+    await server.start();
+
+    const runner = new DshRunner({
+      kind: 'dsh',
+      sessionReader: stubReader,
+      host: server.baseUrl,
+    });
+    const events: AgentEvent[] = [];
+    const runPromise = (async () => {
+      for await (const ev of runner.run('hi', { cwd: CWD, sessionId: SID })) {
+        events.push(ev);
+        if (ev.type === 'approval_requested') approval = ev;
+      }
+    })();
+
+    await waitFor(() => approval !== undefined);
+    if (!approval) throw new Error('approval was not surfaced');
+    await runner.respondApproval(approval.requestId, { action: 'accept' });
+    await runPromise;
+
+    expect(approval).toMatchObject({
+      type: 'approval_requested',
+      requestId: 'appr-1',
+      kind: 'tool',
+      turnId: '',
+      view: {
+        requestId: 'appr-1',
+        toolName: 'bash',
+        reason: 'needs sandbox',
+        availableDecisions: ['accept', 'decline'],
+      },
+    });
+    expect(approval.view).not.toHaveProperty('command');
+    expect(approval.view).not.toHaveProperty('toolInput');
+  });
+
+  it('a live goal projection emits goal_state for this session only', async () => {
+    server = new FakeDshServer();
+    server.register('session/create', () => ({ ok: true, value: { sessionId: SID } }));
+    server.register('session/prompt', () => ({ ok: true, value: { accepted: true } }));
+    server.setControlFrames([
+      {
+        type: 'baseline',
+        value: {
+          projections: {
+            [SID]: {
+              asOfSeq: 0,
+              values: { goal: { current: { goal: GOAL_SNAPSHOT, roundsStarted: 1 } } },
+            },
+            // 别的会话的 goal 帧必须被过滤，不能串到本 run。
+            'session-other': {
+              asOfSeq: 0,
+              values: {
+                goal: {
+                  current: {
+                    goal: { ...GOAL_SNAPSHOT, id: 'goal-other' },
+                    roundsStarted: 9,
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+    ]);
+    server.setMuxFrames([
+      sessionEventFrame(SID, textChunk('working', 1)),
+      sessionEventFrame(SID, turnEnd('completed', 2)),
+    ]);
+    await server.start();
+
+    const runner = new DshRunner({ kind: 'dsh', sessionReader: stubReader, host: server.baseUrl });
+    const events = await collect(runner.run('hi', { cwd: CWD }));
+
+    const created = events.filter(
+      (e) => e.type === 'goal_state' && (e as { goal?: { id?: string } }).goal?.id === 'goal-1',
+    );
+    expect(created).toHaveLength(1);
+    expect(created[0]).toMatchObject({
+      type: 'goal_state',
+      known: true,
+      goal: { id: 'goal-1', objective: '把发布流程补齐', phase: 'active', roundsStarted: 1 },
+    });
+    expect(
+      events.some(
+        (e) =>
+          e.type === 'goal_state' && (e as { goal?: { id?: string } }).goal?.id === 'goal-other',
+      ),
+    ).toBe(false);
+  });
+
+  it('post-cancel withdraw removes an inbox prompt left behind by keepInbox cancel', async () => {
+    server = new FakeDshServer();
+    const updates: unknown[] = [];
+    let running = true;
+    let requestId = '';
+    server.register('session/prompt', (payload) => {
+      requestId = (payload as { requestId?: string } | undefined)?.requestId ?? '';
+      return { ok: true, value: { accepted: true } };
+    });
+    server.register('session/list', () => ({
+      ok: true,
+      value: { items: [{ sessionId: SID, running }] },
+    }));
+    server.register('session/cancel', () => {
+      running = false;
+      // cancel 是 keepInbox：模拟 cancel 之后 inbox 里仍留着这条 prompt。
+      // 它必须在 cancel 时才出现，否则会先走「未开始 → 直接撤回」分支。
+      server.setProjectionValue({
+        asOfSeq: 1,
+        values: {
+          inbox: {
+            'next-turn': [{ id: 'leftover-item', source: { kind: 'user', rpcId: requestId } }],
+            'next-step': [],
+          },
+        },
+      });
+      return { ok: true, value: { accepted: true } };
+    });
+    server.register('session/updateQueue', (payload) => {
+      updates.push(payload);
+      return { ok: true, value: { accepted: true } };
+    });
+    server.setMuxFrames([]);
+    await server.start();
+
+    const inflightPath = path.join(makeTempDir('lark-remote-dsh-inflight-'), 'inflight.json');
+    const runner = new DshRunner({
+      kind: 'dsh',
+      sessionReader: stubReader,
+      host: server.baseUrl,
+      inflightPath,
+    });
+    const iterator = runner.run('running', { cwd: CWD, sessionId: SID })[Symbol.asyncIterator]();
+    expect((await iterator.next()).value).toMatchObject({ type: 'system', subtype: 'init' });
+    const pending = iterator.next();
+    await waitFor(() => server.requests.some((r) => r.method === 'session/prompt'), 2000);
+
+    const outcome = await runner.stop({ immediate: true });
+    expect(outcome).toMatchObject({ status: 'cancelled', sessionId: SID });
+    // cancel 之后补撤回：inbox 里的迟到 prompt 被撤掉，inflight 标记才清除。
+    expect(updates).toMatchObject([
+      { sessionId: SID, itemId: 'leftover-item', action: { kind: 'remove' } },
+    ]);
+    expect(new DshInflightStore(inflightPath).list()).toEqual([]);
+    await pending.catch(() => undefined);
+    await iterator.return?.(undefined);
   });
 });
 

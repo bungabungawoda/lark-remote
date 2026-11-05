@@ -48,6 +48,77 @@ export class ConnectionLostError extends Error {
 }
 
 // =============================================================================
+// Shared dispose primitives (also reused by the pi RPC client)
+// =============================================================================
+
+/** Minimal shape of a pending request entry shared by JSON-line RPC clients. */
+export interface RpcPendingEntry {
+  timer: ReturnType<typeof setTimeout>;
+  reject: (err: Error) => void;
+}
+
+/** Reject + clear all in-flight requests (dispose / transport-close path). */
+export function rejectAllPending<K, V extends RpcPendingEntry>(
+  pending: Map<K, V>,
+  err: Error,
+): void {
+  for (const entry of pending.values()) {
+    clearTimeout(entry.timer);
+    entry.reject(err);
+  }
+  pending.clear();
+}
+
+/** Per-client inputs for the shared dispose sequence. */
+export interface RpcDisposeContext<K, V extends RpcPendingEntry> {
+  alreadyDisposed: boolean;
+  markDisposed(): void;
+  pending: Map<K, V>;
+  close(): Promise<void>;
+  disposedMessage: string;
+}
+
+/**
+ * Shared dispose sequence: no-op when already disposed, else mark
+ * disposed + not-ready, reject pending, and close the transport. The pi RPC
+ * client reuses this; only the disposed error message differs per client.
+ */
+export async function disposeRpcClient<K, V extends RpcPendingEntry>(
+  ctx: RpcDisposeContext<K, V>,
+): Promise<void> {
+  if (ctx.alreadyDisposed) return;
+  ctx.markDisposed();
+  rejectAllPending(ctx.pending, new ConnectionLostError(ctx.disposedMessage));
+  await ctx.close();
+}
+
+/**
+ * Dispose a client instance from its shared lifecycle shape. JsonRpcClient and
+ * PiRpcClient both delegate here so the dispose sequence has a single
+ * implementation; only the pending map and the disposed message differ.
+ * `client` is typed as object because the two classes keep `_disposed` /
+ * `_ready` private — the shape is asserted locally.
+ */
+export function disposeRpcClientInstance<K, V extends RpcPendingEntry>(
+  client: object,
+  pending: Map<K, V>,
+  close: () => Promise<void>,
+  disposedMessage: string = 'client disposed',
+): Promise<void> {
+  const state = client as { _disposed: boolean; _ready: boolean };
+  return disposeRpcClient({
+    alreadyDisposed: state._disposed,
+    markDisposed: () => {
+      state._disposed = true;
+      state._ready = false;
+    },
+    pending,
+    close,
+    disposedMessage,
+  });
+}
+
+// =============================================================================
 // Client Hooks
 // =============================================================================
 
@@ -243,12 +314,8 @@ export class JsonRpcClient<InitializeResult = unknown> {
   /**
    * Dispose the client: cancel pending requests and close transport.
    */
-  async dispose(): Promise<void> {
-    if (this._disposed) return;
-    this._disposed = true;
-    this._ready = false;
-    this.failPending(new ConnectionLostError('client disposed'));
-    await this.transport.close();
+  dispose(): Promise<void> {
+    return disposeRpcClientInstance(this, this.pendingRequests, () => this.transport.close());
   }
 
   // =========================================================================
@@ -306,10 +373,6 @@ export class JsonRpcClient<InitializeResult = unknown> {
   }
 
   private failPending(err: Error): void {
-    for (const [_id, pending] of this.pendingRequests) {
-      clearTimeout(pending.timer);
-      pending.reject(err);
-    }
-    this.pendingRequests.clear();
+    rejectAllPending(this.pendingRequests, err);
   }
 }

@@ -304,4 +304,45 @@ describe('createJSONLStream', () => {
       expect(dropped).toEqual([CAP + 1]);
     });
   });
+
+  // =========================================================================
+  // characterization：拆分 createJSONLStream 前的流边界口径
+  // =========================================================================
+
+  it('decodes multi-byte characters split across chunk boundaries', async () => {
+    const line = JSON.stringify({
+      type: 'assistant',
+      message: { content: [{ type: 'text', text: '中文🇨🇳' }] },
+    });
+    const buf = Buffer.from(`${line}\n`, 'utf8');
+    // 切在 '中'（3 字节）的中间，验证 StringDecoder 的边界安全
+    const cut = buf.indexOf(Buffer.from('中', 'utf8')) + 1;
+    const stream = Readable.from([buf.subarray(0, cut), buf.subarray(cut)], { objectMode: false });
+    const events = await collect(createJSONLStream(stream));
+    expect(events).toHaveLength(1);
+    expect(
+      (events[0] as unknown as { message: { content: Array<{ text: string }> } }).message.content[0]
+        .text,
+    ).toBe('中文🇨🇳');
+  });
+
+  it('flushes the trailing partial line on stdout error and terminates', async () => {
+    const { stdout } = makeStdout();
+    const gen = createJSONLStream(stdout);
+    const collecting = collect(gen);
+    stdout.push('{"a":1}');
+    await settle();
+    stdout.emit('error', new Error('broken pipe'));
+    await expect(collecting).resolves.toEqual([{ a: 1 }]);
+  });
+
+  it('ends the generator on close with a trailing partial line', async () => {
+    const { stdout } = makeStdout();
+    const gen = createJSONLStream(stdout);
+    const collecting = collect(gen);
+    stdout.push('{"b":2}');
+    await settle();
+    stdout.emit('close');
+    await expect(collecting).resolves.toEqual([{ b: 2 }]);
+  });
 });

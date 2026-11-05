@@ -242,128 +242,173 @@ type BudgetResult = {
  *   阶段4 截断剩余顶层 div 文本
  *   阶段5 最终兜底 minimal card（骨架本身已超限的病理场景）
  */
-function enforceByteBudget(
+/**
+ * 字节预算降级各阶段共享的可变状态。
+ *
+ * 原实现把这些状态（reasons / omitted / modifications / ...）连同 size /
+ * done / dropOldestPanels / elementsWithinBudgetWithHint 四个箭头闭包一起塞在
+ * `enforceByteBudget` 内部——crapper 把闭包里的决策点也算进外层函数（CC 37）。
+ * 现在状态显式装进 ctx，闭包全部抽成模块顶层命名函数，外层只做线性编排。
+ */
+interface ByteBudgetContext {
+  truncated: CardNode;
+  elements: CardElementNode[];
+  reasons: string[];
+  omitted: number;
+  modifications: number;
+  textTruncations: number;
+  maxEventPanels: number;
+  maxPanelContentBytes: number;
+  truncationHint: string;
+  bytesBefore?: number;
+}
+
+function makeByteBudgetContext(
   truncated: CardNode,
-  opts: CardBudgetOptions = {},
-  bytesBefore?: number,
-): BudgetResult {
+  opts: CardBudgetOptions,
+  bytesBefore: number | undefined,
+): ByteBudgetContext {
   const {
     maxEventPanels = 5,
     maxPanelContentBytes = 2000,
     truncationHint = '📜 还有 {count} 个事件未显示',
   } = opts;
+  return {
+    truncated,
+    elements: truncated.body?.elements ?? [],
+    reasons: [],
+    omitted: 0,
+    modifications: 0,
+    textTruncations: 0,
+    maxEventPanels,
+    maxPanelContentBytes,
+    truncationHint,
+    bytesBefore,
+  };
+}
 
-  const reasons: string[] = [];
+/** 原 size 闭包：当前卡片序列化字节数。 */
+function byteBudgetSize(ctx: ByteBudgetContext): number {
+  return Buffer.byteLength(JSON.stringify(ctx.truncated), 'utf8');
+}
 
-  const elements: CardElementNode[] = truncated.body?.elements ?? [];
-  const size = () => Buffer.byteLength(JSON.stringify(truncated), 'utf8');
-  const done = (wasTruncated: boolean): BudgetResult => ({
-    card: truncated,
+/** 原 done 闭包：构造结果对象（reason 由各阶段累积）。 */
+function byteBudgetDone(ctx: ByteBudgetContext, wasTruncated: boolean): BudgetResult {
+  return {
+    card: ctx.truncated,
     wasTruncated,
-    reason: reasons.join('+') || undefined,
-    bytesBefore: bytesBefore ?? size(),
-    bytesAfter: size(),
-  });
+    reason: ctx.reasons.join('+') || undefined,
+    bytesBefore: ctx.bytesBefore ?? byteBudgetSize(ctx),
+    bytesAfter: byteBudgetSize(ctx),
+  };
+}
 
-  // ========== 阶段1：裁剪所有面板的内容 ==========
-  let modifications = 0;
-  for (const el of elements) {
+/** 原 elementsWithinBudgetWithHint 闭包（含 hint 预留位）。 */
+function byteBudgetElementsWithin(ctx: ByteBudgetContext): boolean {
+  return countCardElements(ctx.truncated) + (ctx.omitted > 0 ? 1 : 0) <= MAX_CARD_ELEMENTS;
+}
+
+/** 原 `size() <= ... && elementsWithinBudgetWithHint()` 达标判定。 */
+function byteBudgetFits(ctx: ByteBudgetContext): boolean {
+  return byteBudgetSize(ctx) <= CARD_BUDGET_BYTES && byteBudgetElementsWithin(ctx);
+}
+
+function comparePanelIndexDesc(a: number, b: number): number {
+  return b - a;
+}
+
+/** 原 dropOldestPanels 闭包：按文档顺序删最旧的 count 个面板。 */
+function dropOldestPanels(ctx: ByteBudgetContext, count: number): void {
+  const indices = getPanelIndices(ctx.elements).slice(0, count).sort(comparePanelIndexDesc);
+  for (const idx of indices) {
+    ctx.elements.splice(idx, 1);
+    ctx.omitted++;
+  }
+}
+
+/** 达标则插入 hint 并返回结果；未达标返回 undefined，交给下一阶段继续降级。 */
+function byteBudgetTryFinish(
+  ctx: ByteBudgetContext,
+  wasTruncated: boolean,
+): BudgetResult | undefined {
+  if (!byteBudgetFits(ctx)) return undefined;
+  insertOmittedHint(ctx.elements, ctx.omitted, ctx.truncationHint);
+  return byteBudgetDone(ctx, wasTruncated);
+}
+
+// ========== 阶段1：裁剪所有面板的内容 ==========
+function truncatePanelContents(ctx: ByteBudgetContext): void {
+  for (const el of ctx.elements) {
     if (el.tag !== 'collapsible_panel') continue;
     for (const inner of el.elements ?? []) {
       if (inner.tag === 'div' && inner.text?.content) {
         const content = inner.text.content;
-        if (Buffer.byteLength(content, 'utf8') > maxPanelContentBytes) {
-          inner.text.content = truncateUtf8(content, maxPanelContentBytes);
-          modifications++;
+        if (Buffer.byteLength(content, 'utf8') > ctx.maxPanelContentBytes) {
+          inner.text.content = truncateUtf8(content, ctx.maxPanelContentBytes);
+          ctx.modifications++;
         }
       }
     }
   }
-  if (modifications > 0) {
-    reasons.push('panel_content_truncated');
+  if (ctx.modifications > 0) {
+    ctx.reasons.push('panel_content_truncated');
   }
+}
 
-  // ========== 阶段2：限制面板数量（删除最老） ==========
-  let omitted = 0;
-  const dropOldestPanels = (count: number): void => {
-    const indices = getPanelIndices(elements)
-      .slice(0, count)
-      .sort((a, b) => b - a);
-    for (const idx of indices) {
-      elements.splice(idx, 1);
-      omitted++;
-    }
-  };
-
-  const panelCount = getPanelIndices(elements).length;
-  if (panelCount > maxEventPanels) {
-    dropOldestPanels(panelCount - maxEventPanels);
-    reasons.push('event_count_limited');
+// ========== 阶段2：限制面板数量（删除最老） ==========
+function limitPanelCount(ctx: ByteBudgetContext): void {
+  const panelCount = getPanelIndices(ctx.elements).length;
+  if (panelCount > ctx.maxEventPanels) {
+    dropOldestPanels(ctx, panelCount - ctx.maxEventPanels);
+    ctx.reasons.push('event_count_limited');
   }
+}
 
-  // 元素数预算必须与字节预算同查（含 hint 预留位）：字节路径的返回条件此前
-  // 只看字节——元素超限但卡内无 collapsible_panel 时（如 95 个小 div），
-  // 阶段1-4 全是空操作，超限卡原样直通（实测 wasTruncated:false、95 元素
-  // > 90 → 飞书 11310 整卡报废，正是文件头注释记载的 /ws、/order 故障形态）。
-  const elementsWithinBudgetWithHint = (): boolean =>
-    countCardElements(truncated) + (omitted > 0 ? 1 : 0) <= MAX_CARD_ELEMENTS;
-
-  if (size() <= CARD_BUDGET_BYTES && elementsWithinBudgetWithHint()) {
-    insertOmittedHint(elements, omitted, truncationHint);
-    return done(modifications > 0 || omitted > 0);
+// ========== 阶段3：丢弃全部面板，保留卡片骨架 ==========
+// header（cwd/sessionId/标题）、usage、操作按钮等信息量高、体积小的元素
+// 必须保留——整卡替换为一句话是信息损失最大的降级方式。
+function dropAllPanels(ctx: ByteBudgetContext): void {
+  dropOldestPanels(ctx, getPanelIndices(ctx.elements).length);
+  if (ctx.omitted > 0) {
+    ctx.reasons.push('panels_dropped');
   }
+}
 
-  // ========== 阶段3：丢弃全部面板，保留卡片骨架 ==========
-  // header（cwd/sessionId/标题）、usage、操作按钮等信息量高、体积小的元素
-  // 必须保留——整卡替换为一句话是信息损失最大的降级方式。
-  dropOldestPanels(getPanelIndices(elements).length);
-  if (omitted > 0) {
-    reasons.push('panels_dropped');
-  }
-
-  if (size() <= CARD_BUDGET_BYTES && elementsWithinBudgetWithHint()) {
-    insertOmittedHint(elements, omitted, truncationHint);
-    return done(true);
-  }
-
-  // ========== 阶段4：截断剩余顶层 div 文本 ==========
-  // 骨架元素（header/usage 等）自身超限的情况（如超大 displayTitle）。
-  let textTruncations = 0;
-  for (const el of elements) {
+// ========== 阶段4：截断剩余顶层 div 文本 ==========
+// 骨架元素（header/usage 等）自身超限的情况（如超大 displayTitle）。
+function truncateTopLevelDivs(ctx: ByteBudgetContext): void {
+  for (const el of ctx.elements) {
     if (el.tag === 'div' && el.text?.content) {
       const content = el.text.content;
-      if (Buffer.byteLength(content, 'utf8') > maxPanelContentBytes) {
-        el.text.content = truncateUtf8(content, maxPanelContentBytes);
-        textTruncations++;
+      if (Buffer.byteLength(content, 'utf8') > ctx.maxPanelContentBytes) {
+        el.text.content = truncateUtf8(content, ctx.maxPanelContentBytes);
+        ctx.textTruncations++;
       }
     }
   }
-  if (textTruncations > 0) {
-    reasons.push('text_truncated');
+  if (ctx.textTruncations > 0) {
+    ctx.reasons.push('text_truncated');
   }
+}
 
-  if (size() <= CARD_BUDGET_BYTES && elementsWithinBudgetWithHint()) {
-    insertOmittedHint(elements, omitted, truncationHint);
-    return done(true);
-  }
-
-  // ========== 阶段4.5：元素数兜底（无面板可删的元素超限） ==========
-  // 阶段1-4 只会裁内容/删面板；元素超限且无面板时在此按序丢弃最旧的顶层
-  // 元素直到达标（与 table/panel 的「删最旧、留最新」口径一致，尾部操作
-  // 按钮保留）。留 ≥3 个元素兜底，仍不达标则交给阶段5 的最小卡。
-  if (countCardElements(truncated) > MAX_CARD_ELEMENTS) {
-    while (countCardElements(truncated) > MAX_CARD_ELEMENTS && elements.length > 3) {
-      elements.shift();
-      omitted++;
+// ========== 阶段4.5：元素数兜底（无面板可删的元素超限） ==========
+// 阶段1-4 只会裁内容/删面板；元素超限且无面板时在此按序丢弃最旧的顶层
+// 元素直到达标（与 table/panel 的「删最旧、留最新」口径一致，尾部操作
+// 按钮保留）。留 ≥3 个元素兜底，仍不达标则交给阶段5 的最小卡。
+function dropExcessElements(ctx: ByteBudgetContext): BudgetResult | undefined {
+  if (countCardElements(ctx.truncated) > MAX_CARD_ELEMENTS) {
+    while (countCardElements(ctx.truncated) > MAX_CARD_ELEMENTS && ctx.elements.length > 3) {
+      ctx.elements.shift();
+      ctx.omitted++;
     }
-    reasons.push('element_budget_elements_dropped');
-    if (size() <= CARD_BUDGET_BYTES && elementsWithinBudgetWithHint()) {
-      insertOmittedHint(elements, omitted, truncationHint);
-      return done(true);
-    }
+    ctx.reasons.push('element_budget_elements_dropped');
+    return byteBudgetTryFinish(ctx, true);
   }
+  return undefined;
+}
 
-  // ========== 阶段5：最终兜底（原 extreme_fallback） ==========
+// ========== 阶段5：最终兜底（原 extreme_fallback） ==========
+function byteBudgetMinimalCard(ctx: ByteBudgetContext): BudgetResult {
   const minimalCard = cardWithHeader({
     template: 'orange',
     title: '⚠️ 内容已截断',
@@ -382,9 +427,35 @@ function enforceByteBudget(
     card: minimalCard,
     wasTruncated: true,
     reason: 'extreme_fallback',
-    bytesBefore: bytesBefore ?? size(),
+    bytesBefore: ctx.bytesBefore ?? byteBudgetSize(ctx),
     bytesAfter: Buffer.byteLength(JSON.stringify(minimalCard), 'utf8'),
   };
+}
+
+function enforceByteBudget(
+  truncated: CardNode,
+  opts: CardBudgetOptions = {},
+  bytesBefore?: number,
+): BudgetResult {
+  const ctx = makeByteBudgetContext(truncated, opts, bytesBefore);
+
+  truncatePanelContents(ctx);
+  limitPanelCount(ctx);
+  let result = byteBudgetTryFinish(ctx, ctx.modifications > 0 || ctx.omitted > 0);
+  if (result) return result;
+
+  dropAllPanels(ctx);
+  result = byteBudgetTryFinish(ctx, true);
+  if (result) return result;
+
+  truncateTopLevelDivs(ctx);
+  result = byteBudgetTryFinish(ctx, true);
+  if (result) return result;
+
+  result = dropExcessElements(ctx);
+  if (result) return result;
+
+  return byteBudgetMinimalCard(ctx);
 }
 
 /**

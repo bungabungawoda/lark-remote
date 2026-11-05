@@ -357,15 +357,87 @@ export interface OpencodeV1Scan {
  * 门槛；turn/latest 只认 tail 内非零 total 的 step（模型在 reasoning 中被
  * 截断的退化 step 不算采样）。
  */
-export function scanV1Messages(messages: OpencodeExportMessage[]): OpencodeV1Scan {
-  // Find the last user message position (for catch-up tail).
-  // messages are already parsed objects — scan directly.
+type OpencodeV1Part = OpencodeExportMessage['parts'][number];
+
+/** 末条 user 消息下标（catch-up tail 起点）；无 user 消息 = -1。 */
+function lastV1UserIndex(messages: OpencodeExportMessage[]): number {
   let lastUserIndex = -1;
   for (let i = 0; i < messages.length; i++) {
     if (messages[i].info.role === 'user') {
       lastUserIndex = i;
     }
   }
+  return lastUserIndex;
+}
+
+type OpencodeV1Tokens = NonNullable<OpencodeV1Part['tokens']>;
+
+/** cumulative：全会话逐字段求和，含零 total 的退化 step（字段 0 不改变和）。 */
+function addV1Cumulative(tokens: OpencodeV1Tokens, cum: OpencodeUsageFlow): void {
+  cum.input += tokens.input ?? 0;
+  cum.output += tokens.output ?? 0;
+  cum.total += tokens.total ?? 0;
+  cum.cacheRead += tokens.cache?.read ?? 0;
+  cum.cacheCreation += tokens.cache?.write ?? 0;
+}
+
+/** 单次非零采样：累加本 run flow 并返回 latest 快照。 */
+function addV1TurnSample(tokens: OpencodeV1Tokens, turn: OpencodeUsageFlow): AgentSessionUsage {
+  // ccusage-aligned: cache.write -> cacheCreationTokens.
+  // contextLength = input + output + cacheRead + cacheCreation —
+  // the unified context-window occupancy contract across all readers
+  // (§9.21：末轮 output 已进入历史、下一 prompt 全量携带，与 compact
+  // postTokens 水位同语义).
+  const input = tokens.input ?? 0;
+  const output = tokens.output ?? 0;
+  const cacheRead = tokens.cache?.read ?? 0;
+  const cacheWrite = tokens.cache?.write ?? 0;
+  turn.input += input;
+  turn.output += output;
+  turn.cacheRead += cacheRead;
+  turn.cacheCreation += cacheWrite;
+  turn.total += tokens.total;
+  return {
+    inputTokens: input,
+    outputTokens: output,
+    contextLength: input + output + cacheRead + cacheWrite,
+    cacheReadTokens: tokens.cache?.read,
+    cacheCreationTokens: tokens.cache?.write,
+    totalTokens: tokens.total,
+  };
+}
+
+/**
+ * 单条 step-finish part：cum 对全会话逐字段求和（含零 total 退化 step），
+ * inTail 且非零 total 时把本 run flow 累加到 turn 并返回新的 latest 采样。
+ */
+function accumulateV1StepPart(
+  part: OpencodeV1Part,
+  inTail: boolean,
+  turn: OpencodeUsageFlow,
+  cum: OpencodeUsageFlow,
+): AgentSessionUsage | undefined {
+  if (part.type !== 'step-finish' || !part.tokens) return undefined;
+  addV1Cumulative(part.tokens, cum);
+  if (!inTail) return undefined;
+  // Skip zero-total steps（模型在 reasoning 中被截断）——它们没有消耗，
+  // 也不该把本次请求当成一条真实采样。
+  if ((part.tokens.total ?? 0) === 0) return undefined;
+  return addV1TurnSample(part.tokens, turn);
+}
+
+/** 一条 user 消息里的首个 text part（tail displayTitle 首选）。 */
+function firstV1TextPart(parts: OpencodeV1Part[]): string | undefined {
+  for (const part of parts) {
+    if (part.type === 'text' && part.text) return part.text;
+  }
+  return undefined;
+}
+
+export function scanV1Messages(messages: OpencodeExportMessage[]): OpencodeV1Scan {
+  // Find the last user message position (for catch-up tail).
+  // messages are already parsed objects — scan directly.
+  const lastUserIndex = lastV1UserIndex(messages);
 
   // Process messages from last user message onwards (catch-up tail)
   const startIndex = lastUserIndex >= 0 ? lastUserIndex : 0;
@@ -382,51 +454,13 @@ export function scanV1Messages(messages: OpencodeExportMessage[]): OpencodeV1Sca
     // 末条 user 消息；同一 turn 可能有多个 step-finish（每次模型请求一条），
     // flow 要全加起来，只留末条会把多步 run 低报。
     for (const part of msg.parts) {
-      if (part.type === 'step-finish' && part.tokens) {
-        // cumulative：全会话求和，含零 total 的退化 step（字段为 0 时求和不
-        // 变，与拆分前行为一致）。
-        cum.input += part.tokens.input ?? 0;
-        cum.output += part.tokens.output ?? 0;
-        cum.total += part.tokens.total ?? 0;
-        cum.cacheRead += part.tokens.cache?.read ?? 0;
-        cum.cacheCreation += part.tokens.cache?.write ?? 0;
-        if (!inTail) continue;
-        // Skip zero-total steps（模型在 reasoning 中被截断）——它们没有消耗，
-        // 也不该把本次请求当成一条真实采样。
-        // ccusage-aligned: cache.write -> cacheCreationTokens.
-        // contextLength = input + output + cacheRead + cacheCreation —
-        // the unified context-window occupancy contract across all readers
-        // (§9.21：末轮 output 已进入历史、下一 prompt 全量携带，与 compact
-        // postTokens 水位同语义).
-        if ((part.tokens.total ?? 0) === 0) continue;
-        const input = part.tokens.input ?? 0;
-        const output = part.tokens.output ?? 0;
-        const cacheRead = part.tokens.cache?.read ?? 0;
-        const cacheWrite = part.tokens.cache?.write ?? 0;
-        turn.input += input;
-        turn.output += output;
-        turn.cacheRead += cacheRead;
-        turn.cacheCreation += cacheWrite;
-        turn.total += part.tokens.total;
-        latest = {
-          inputTokens: input,
-          outputTokens: output,
-          contextLength: input + output + cacheRead + cacheWrite,
-          cacheReadTokens: part.tokens.cache?.read,
-          cacheCreationTokens: part.tokens.cache?.write,
-          totalTokens: part.tokens.total,
-        };
-      }
+      const stepLatest = accumulateV1StepPart(part, inTail, turn, cum);
+      if (stepLatest) latest = stepLatest;
     }
 
     // First user text after last user message is displayTitle
     if (inTail && !tailDisplayTitle && msg.info.role === 'user') {
-      for (const part of msg.parts) {
-        if (part.type === 'text' && part.text) {
-          tailDisplayTitle = part.text;
-          break;
-        }
-      }
+      tailDisplayTitle = firstV1TextPart(msg.parts);
     }
   }
 
@@ -604,9 +638,132 @@ interface OpencodeV2TailScan {
  * （user / assistant / shell / compaction）；displayTitle 取 tail 内首条
  * user 文本，tail 无 user 文本（如附件-only）时回退全会话首条。
  */
+/** v2 catch-up tail 装配的可变状态（显式传参给各命名 handler）。 */
+interface V2TailState {
+  events: AgentSessionContentEvent[];
+  displayTitle?: string;
+}
+
+type V2TailHandler = (
+  msg: OpencodeV2Message,
+  timestamp: string | undefined,
+  state: V2TailState,
+) => void;
+
+function v2UserHandler(
+  msg: OpencodeV2Message,
+  timestamp: string | undefined,
+  state: V2TailState,
+): void {
+  if (typeof msg.text === 'string' && msg.text.length > 0) {
+    if (!state.displayTitle) state.displayTitle = msg.text;
+    state.events.push({ type: 'text', content: msg.text, timestamp });
+  }
+}
+
+function pushV2ToolPart(
+  part: OpencodeV2ContentPart,
+  timestamp: string | undefined,
+  state: V2TailState,
+): void {
+  const toolId = part.id;
+  const toolName = part.name ?? '';
+  const input = parseToolInput(part.state?.input);
+  if (toolId) {
+    state.events.push({
+      type: 'tool_use',
+      content: JSON.stringify({ id: toolId, name: toolName, input }),
+      timestamp,
+    });
+  }
+
+  const output = v2ToolOutput(part.state);
+  if (toolId && output !== undefined) {
+    state.events.push({
+      type: 'tool_result',
+      content: truncateUtf8(output, TOOL_RESULT_MAX_BYTES),
+      timestamp,
+    });
+  }
+}
+
+function v2AssistantHandler(
+  msg: OpencodeV2Message,
+  timestamp: string | undefined,
+  state: V2TailState,
+): void {
+  for (const part of Array.isArray(msg.content) ? msg.content : []) {
+    if (part?.type === 'text' && typeof part.text === 'string') {
+      state.events.push({ type: 'text', content: part.text, timestamp });
+      continue;
+    }
+    if (part?.type === 'reasoning' && typeof part.text === 'string') {
+      state.events.push({ type: 'thinking', content: part.text, timestamp });
+      continue;
+    }
+    if (part?.type === 'tool') pushV2ToolPart(part, timestamp, state);
+  }
+}
+
+/** User-invoked shell messages are a first-class message type in v2. */
+function v2ShellHandler(
+  msg: OpencodeV2Message,
+  timestamp: string | undefined,
+  state: V2TailState,
+): void {
+  if (typeof msg.command !== 'string') return;
+  state.events.push({
+    type: 'tool_use',
+    content: JSON.stringify({
+      id: msg.callID ?? msg.id ?? 'shell',
+      name: 'bash',
+      input: { command: msg.command },
+    }),
+    timestamp,
+  });
+  if (typeof msg.output === 'string') {
+    state.events.push({
+      type: 'tool_result',
+      content: truncateUtf8(msg.output, TOOL_RESULT_MAX_BYTES),
+      timestamp,
+    });
+  }
+}
+
+/** 只保留 compact summary；system/synthetic/切换类控制消息是噪声。 */
+function v2CompactionHandler(
+  msg: OpencodeV2Message,
+  timestamp: string | undefined,
+  state: V2TailState,
+): void {
+  if (typeof msg.summary === 'string' && msg.summary) {
+    state.events.push({ type: 'text', content: msg.summary, timestamp });
+  }
+}
+
+/**
+ * 消息类型 → 命名 handler。用 Map 而非对象字面量 / 长串 if：
+ * `constructor` / `toString` 这类外来 type 会命中 Object.prototype。
+ */
+const V2_TAIL_HANDLERS = new Map<string, V2TailHandler>([
+  ['user', v2UserHandler],
+  ['assistant', v2AssistantHandler],
+  ['shell', v2ShellHandler],
+  ['compaction', v2CompactionHandler],
+]);
+
+/** 全会话首条 user 文本（tail 无 user 文本时的 displayTitle 兜底）。 */
+function firstV2UserText(messages: OpencodeV2Message[]): string | undefined {
+  for (const msg of messages) {
+    if (msg?.type === 'user' && typeof msg.text === 'string' && msg.text.length > 0) {
+      return msg.text;
+    }
+  }
+  return undefined;
+}
+
 function assembleV2TailEvents(messages: OpencodeV2Message[]): OpencodeV2TailScan {
-  const events: AgentSessionContentEvent[] = [];
-  let displayTitle: string | undefined;
+  const state: V2TailState = { events: [] };
 
   let lastUserIndex = -1;
   for (let i = 0; i < messages.length; i++) {
@@ -618,90 +775,15 @@ function assembleV2TailEvents(messages: OpencodeV2Message[]): OpencodeV2TailScan
     const msg = messages[i];
     if (!msg || typeof msg.type !== 'string') continue;
     const timestamp = msg.time?.created ? new Date(msg.time.created).toISOString() : undefined;
-
-    if (msg.type === 'user') {
-      if (typeof msg.text === 'string' && msg.text.length > 0) {
-        if (!displayTitle) displayTitle = msg.text;
-        events.push({ type: 'text', content: msg.text, timestamp });
-      }
-      continue;
-    }
-
-    if (msg.type === 'assistant') {
-      for (const part of Array.isArray(msg.content) ? msg.content : []) {
-        if (part?.type === 'text' && typeof part.text === 'string') {
-          events.push({ type: 'text', content: part.text, timestamp });
-          continue;
-        }
-        if (part?.type === 'reasoning' && typeof part.text === 'string') {
-          events.push({ type: 'thinking', content: part.text, timestamp });
-          continue;
-        }
-        if (part?.type === 'tool') {
-          const toolId = part.id;
-          const toolName = part.name ?? '';
-          const input = parseToolInput(part.state?.input);
-          if (toolId) {
-            events.push({
-              type: 'tool_use',
-              content: JSON.stringify({ id: toolId, name: toolName, input }),
-              timestamp,
-            });
-          }
-
-          const output = v2ToolOutput(part.state);
-          if (toolId && output !== undefined) {
-            events.push({
-              type: 'tool_result',
-              content: truncateUtf8(output, TOOL_RESULT_MAX_BYTES),
-              timestamp,
-            });
-          }
-        }
-      }
-      continue;
-    }
-
-    // User-invoked shell messages are a first-class message type in v2.
-    if (msg.type === 'shell' && typeof msg.command === 'string') {
-      events.push({
-        type: 'tool_use',
-        content: JSON.stringify({
-          id: msg.callID ?? msg.id ?? 'shell',
-          name: 'bash',
-          input: { command: msg.command },
-        }),
-        timestamp,
-      });
-      if (typeof msg.output === 'string') {
-        events.push({
-          type: 'tool_result',
-          content: truncateUtf8(msg.output, TOOL_RESULT_MAX_BYTES),
-          timestamp,
-        });
-      }
-      continue;
-    }
-
-    // Keep the compact summary visible in the catch-up tail; other control
-    // messages (system/synthetic/agent-switched/model-switched) are noise.
-    if (msg.type === 'compaction' && typeof msg.summary === 'string' && msg.summary) {
-      events.push({ type: 'text', content: msg.summary, timestamp });
-    }
+    const handler = V2_TAIL_HANDLERS.get(msg.type);
+    if (handler) handler(msg, timestamp, state);
   }
 
   // If the last user message had no text (e.g. attachment-only), fall back to
   // the first human text anywhere in the session for the card title.
-  if (!displayTitle) {
-    for (const msg of messages) {
-      if (msg?.type === 'user' && typeof msg.text === 'string' && msg.text.length > 0) {
-        displayTitle = msg.text;
-        break;
-      }
-    }
-  }
+  if (!state.displayTitle) state.displayTitle = firstV2UserText(messages);
 
-  return { events, displayTitle };
+  return { events: state.events, displayTitle: state.displayTitle };
 }
 
 export class OpencodeSessionReader implements AgentSessionReader {

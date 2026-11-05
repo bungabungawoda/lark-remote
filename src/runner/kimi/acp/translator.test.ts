@@ -726,6 +726,39 @@ describe('KimiAcpTranslator', () => {
     expect(approval.timeoutMs).toBeUndefined();
   });
 
+  it('elicitation 属性缺标题/选项时跳过，不产出畸形提问卡', () => {
+    const t = new KimiAcpTranslator();
+    const events = t.handleServerRequest(48, ServerRequestMethod.ELICITATION_CREATE, {
+      sessionId: SESSION_ID,
+      toolCallId: 'call_q',
+      mode: 'form',
+      message: 'Pick one',
+      requestedSchema: {
+        type: 'object',
+        required: ['q0', 'q1', 'q2'],
+        properties: {
+          // 无 title → 直接 null，不能渲染成空白题目。
+          q0: { type: 'string', description: '', oneOf: [{ const: 'A' }] },
+          // 有 title 但没有 oneOf → 选项为空，同样不能渲染成无选项题目。
+          q1: { type: 'string', title: '无选项', description: '' },
+          q2: { type: 'string', title: '有效', oneOf: [{ const: 'OK' }] },
+        },
+      },
+    });
+
+    expect(events).toHaveLength(1);
+    const approval = events[0] as ApprovalRequestedEvent;
+    expect(approval.view.questions).toEqual([
+      {
+        question: '有效',
+        header: '有效',
+        multiSelect: false,
+        isOther: false,
+        options: [{ label: 'OK' }],
+      },
+    ]);
+  });
+
   it('session/request_permission AskUserQuestion fallback → question approval', () => {
     // elicitation/create 失败时 kimi 回退 request_permission 桥：toolCall 标题
     // AskUserQuestion + q0_opt_* 选项命名空间。必须渲染为提问卡而不是畸形命令卡。

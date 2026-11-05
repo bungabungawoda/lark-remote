@@ -1146,4 +1146,153 @@ describe('Codex App Server Runner', () => {
       });
     });
   });
+
+  // =========================================================================
+  // characterization：拆分目标函数的边界口径
+  // =========================================================================
+  describe('buildPermissionItems 边界', () => {
+    it('结构化 entries 优先，legacy read/write 按 id 去重，未知 access 忽略', () => {
+      const translator = new CodexAppServerTranslator();
+      const events = translator.handleServerRequest(1, 'item/permissions/requestApproval', {
+        threadId: 'th',
+        turnId: 'tn',
+        itemId: 'it',
+        cwd: '/w',
+        permissions: {
+          fileSystem: {
+            entries: [
+              { path: '/a', access: 'read' },
+              { path: '/b', access: 'write' },
+              { path: '/c', access: 'other' },
+            ],
+            read: ['/a', '/d'],
+            write: ['/b', '/e'],
+          },
+          network: { enabled: false },
+        },
+      });
+      const items = (events[0] as unknown as { view: ApprovalView }).view.permissions?.items;
+      expect(items?.map((i) => i.id)).toEqual([
+        'fs-read:/a',
+        'fs-write:/b',
+        'fs-read:/d',
+        'fs-write:/e',
+      ]);
+      expect(items?.map((i) => i.label)).toEqual([
+        'Read: /a',
+        'Write: /b',
+        'Read: /d',
+        'Write: /e',
+      ]);
+      expect(items?.every((i) => i.selected === false)).toBe(true);
+    });
+
+    it('空 profile 只产出空 items', () => {
+      const translator = new CodexAppServerTranslator();
+      const events = translator.handleServerRequest(2, 'item/permissions/requestApproval', {
+        threadId: 'th',
+        turnId: 'tn',
+        itemId: 'it',
+        cwd: '/w',
+        permissions: {},
+      });
+      const items = (events[0] as unknown as { view: ApprovalView }).view.permissions?.items;
+      expect(items).toEqual([]);
+    });
+  });
+
+  describe('handleTurnCompleted 兜底 items', () => {
+    it('item/completed 的 plan item 产出权威计划快照（planCompleted）', () => {
+      const translator = new CodexAppServerTranslator();
+      translator.handleNotification('turn/started', {
+        threadId: 'th',
+        turn: { id: 'tn', items: [], status: 'inProgress' },
+      });
+
+      const events = translator.handleNotification('item/completed', {
+        threadId: 'th',
+        turnId: 'tn',
+        item: { type: 'plan', id: 'p1', text: '1. 读实现\n2. 补行为测试' },
+      });
+
+      const plan = events.find((e) => e.type === 'turn_diff') as unknown as {
+        plan: string;
+        itemId: string;
+        complete: boolean;
+      };
+      expect(plan).toMatchObject({
+        plan: '1. 读实现\n2. 补行为测试',
+        itemId: 'p1',
+        complete: true,
+      });
+    });
+
+    it('空文本的 plan item 不补发计划快照', () => {
+      const translator = new CodexAppServerTranslator();
+      translator.handleNotification('turn/started', {
+        threadId: 'th',
+        turn: { id: 'tn', items: [], status: 'inProgress' },
+      });
+
+      const events = translator.handleNotification('item/completed', {
+        threadId: 'th',
+        turnId: 'tn',
+        item: { type: 'plan', id: 'p-empty', text: '' },
+      });
+
+      expect(events.some((e) => (e as { plan?: string }).plan !== undefined)).toBe(false);
+    });
+
+    it('权威 agentMessage(final_answer)/plan item 补发快照后再追加 result', () => {
+      const translator = new CodexAppServerTranslator();
+      translator.handleNotification('turn/started', {
+        threadId: 'th',
+        turn: { id: 'tn', items: [], status: 'inProgress' },
+      });
+      const events = translator.handleTurnCompleted({
+        threadId: 'th',
+        turn: {
+          id: 'tn',
+          status: 'completed',
+          items: [
+            { type: 'agentMessage', id: 'm1', text: 'answer', phase: 'final_answer' },
+            { type: 'plan', id: 'p1', text: 'step list' },
+          ],
+        },
+      } as never);
+      expect(events.map((e) => e.type)).toEqual(['final_answer', 'turn_diff', 'result']);
+      const finalAnswer = events[0] as unknown as {
+        text: string;
+        itemId: string;
+        complete: boolean;
+      };
+      expect(finalAnswer).toMatchObject({ text: 'answer', itemId: 'm1', complete: true });
+      const plan = events[1] as unknown as { plan: string; itemId: string; complete: boolean };
+      expect(plan).toMatchObject({ plan: 'step list', itemId: 'p1', complete: true });
+      expect(events[2]).toMatchObject({ subtype: 'success' });
+    });
+
+    it('与已流式内容一致的 item 不重复补发', () => {
+      const translator = new CodexAppServerTranslator();
+      translator.handleNotification('turn/started', {
+        threadId: 'th',
+        turn: { id: 'tn', items: [], status: 'inProgress' },
+      });
+      translator.handleNotification('item/agentMessage/delta', {
+        threadId: 'th',
+        turnId: 'tn',
+        itemId: 'm1',
+        delta: 'answer',
+      });
+      const events = translator.handleTurnCompleted({
+        threadId: 'th',
+        turn: {
+          id: 'tn',
+          status: 'completed',
+          items: [{ type: 'agentMessage', id: 'm1', text: 'answer' }],
+        },
+      } as never);
+      expect(events.map((e) => e.type)).toEqual(['result']);
+    });
+  });
 });

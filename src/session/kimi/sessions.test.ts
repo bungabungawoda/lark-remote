@@ -1128,3 +1128,64 @@ describe('scanKimiUsage（扫描累积器）', () => {
     expect(scan.totals.input).toBe(7);
   });
 });
+
+/**
+ * listSessions 循环内各分支组合（characterization）。
+ *
+ * 后续把循环体抽成模块级命名函数后，state 解析失败、cwd 过滤、
+ * summary 三级回退（title → wire → New Session）、mtime 回退目录、
+ * 以及排序/分页的组合行为必须逐项保持。
+ */
+describe('listSessions 循环分支组合 (characterization)', () => {
+  it('state 损坏 / cwd 不匹配 / 标题 / wire 回退 / mtime 回退目录 同时出现', () => {
+    const workDir = makeWorkDir('combo');
+    const otherDir = makeWorkDir('combo-other');
+    const reader = new KimiSessionReader(kimiDir);
+    const promptLine = JSON.stringify({
+      type: 'turn.prompt',
+      input: [{ type: 'text', text: 'from wire' }],
+      origin: { kind: 'user' },
+      time: 1,
+    });
+
+    // 1) state.json 损坏但 index workDir 匹配：summary 保持默认 'New Session'
+    //    （stateParsed=false → 不做 wire 回退，这是需钉住的原行为）
+    const s1 = path.join(kimiDir, 'sessions', 's-broken');
+    fs.mkdirSync(path.join(s1, 'agents', 'main'), { recursive: true });
+    fs.writeFileSync(path.join(s1, 'state.json'), '{not json');
+    fs.writeFileSync(path.join(s1, 'agents', 'main', 'wire.jsonl'), promptLine + '\n');
+    addIndexEntry('s-broken', s1, workDir);
+
+    // 2) cwd 不匹配的会话 → 排除
+    createSession('s-foreign', otherDir, { title: 'foreign', mtimeMs: 9000 });
+
+    // 3) state 有 title → summary 取 title
+    createSession('s-titled', workDir, { title: 'has title', mtimeMs: 5000 });
+
+    // 4) state 解析成功但无 title → 从 wire 的 turn.prompt 取 summary
+    createSession('s-wire', workDir, { omitTitle: true, wireLines: [promptLine] });
+
+    // 5) state 无 title、无 wire 文件 → summary 'New Session'，mtime 回退目录
+    const s5 = path.join(kimiDir, 'sessions', 's-empty');
+    fs.mkdirSync(s5, { recursive: true });
+    fs.writeFileSync(
+      path.join(s5, 'state.json'),
+      JSON.stringify({ workDir, createdAt: '', updatedAt: '' }),
+    );
+    addIndexEntry('s-empty', s5, workDir);
+
+    const { sessions, total } = reader.listSessions(workDir);
+    expect(total).toBe(4);
+    const byId = new Map(sessions.map((s) => [s.sessionId, s]));
+    expect(byId.get('s-broken')?.summary).toBe('New Session');
+    expect(byId.get('s-titled')?.summary).toBe('has title');
+    expect(byId.get('s-wire')?.summary).toBe('from wire');
+    expect(byId.get('s-empty')?.summary).toBe('New Session');
+    expect(byId.has('s-foreign')).toBe(false);
+    // mtime 全序降序（不依赖具体时间戳）
+    const mtimes = sessions.map((s) => s.mtime);
+    expect([...mtimes].sort((a, b) => b - a)).toEqual(mtimes);
+    // 分页仍基于完整有序集合
+    expect(reader.listSessions(workDir, { limit: 2, offset: 1 }).total).toBe(4);
+  });
+});

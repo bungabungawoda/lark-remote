@@ -5,6 +5,7 @@ import {
   type RunBlock,
   type RunNotice,
   type RunState,
+  type RunTerminal,
   type ToolEntry,
 } from './run-state.js';
 import type { GoalView } from '../runner/index.js';
@@ -1252,6 +1253,113 @@ function buildChronologicalContent(
   return elements;
 }
 
+// --- 终态 summary 分支（模块级命名 handler，供 Map 查表分发） ---
+// 每个 handler 只往 elements 追加自己那一段，文案/字段顺序/元素数量逐字保留。
+
+type SummaryHandler = (state: RunState, elements: object[]) => void;
+
+/** running 时不显示统计（仍在生成）；原分支直接 return，不追加元素。 */
+function summaryRunning(_state: RunState, _elements: object[]): void {}
+
+function summaryFinalizing(_state: RunState, elements: object[]): void {
+  elements.push(markdownDiv('⏳ **等待进程退出…**'));
+}
+
+function summaryError(state: RunState, elements: object[]): void {
+  // 服务方内容审核截断（多为误报）不是「程序出错」：照抄英文内部报文会让
+  // 用户以为代码或配置坏了。文案说清三件事——谁拦的、改动还在、下一步。
+  if (isContentFilterFailure(state.errorMsg)) {
+    elements.push(
+      markdownDiv(
+        '⚠️ **服务方内容审核拦截**\n\n' +
+          '模型输出被上游安全策略截断（`content_filter`），多数是误报，不是代码或配置问题。\n' +
+          '本回合已中止；已写入磁盘的改动都还在。重试仍被拦截时，可换模型或稍后再试。',
+      ),
+    );
+  } else {
+    elements.push(markdownDiv(`⚠️ **运行出错**\n\n${state.errorMsg ?? '未知错误'}`));
+  }
+}
+
+function summaryInterrupted(state: RunState, elements: object[]): void {
+  // 中断来源三元：审批超时 / 用户取消审批 / 用户主动终止。
+  // 显式原因优先：approvalExpired 是粘性标记（cancel 语义下 agent 可能继续跑），
+  // 用户随后主动 /stop 时若仍按过期渲染，就把「我自己停的」误报成自动取消。
+  const expiredApproval =
+    state.interruptedReason === 'approval_timeout' ||
+    (state.interruptedReason === undefined &&
+      (state.approvalExpired === true || (state.approvals ?? []).some((a) => a.expired)));
+  elements.push(
+    markdownDiv(
+      expiredApproval
+        ? '⏰ **审批超时未响应，已自动取消**'
+        : state.interruptedReason === 'approval_cancelled'
+          ? '⏹ **已取消审批，任务终止**'
+          : '⏹ **已被用户终止**',
+    ),
+  );
+}
+
+function summaryIdleTimeout(state: RunState, elements: object[]): void {
+  elements.push(
+    markdownDiv(`⏱ **已超时**\n\n${state.idleTimeoutMinutes ?? 0} 分钟无响应，已自动终止`),
+  );
+}
+
+/** 成功/目标继续/其它终态：usage 统计 + 后台任务（原 else 兜底分支）。 */
+function summaryResult(state: RunState, elements: object[]): void {
+  const result = state.resultSubtype ?? 'success';
+
+  const hasContent = state.blocks.length > 0 || !!state.finalAnswer?.content.trim();
+  // 压缩（operationKind='compaction'）不会返回 agent 正文——引擎只压缩上下文
+  // 窗口，空内容属正常，不能沿用普通 run 的「（未返回内容）」异常信号。
+  // 所有会压缩的 agent（codex/claude/kimi/opencode/pi）
+  // 都经 streamCompact 走这条共享渲染路径，一处覆盖全部。
+  const empty = hasContent
+    ? ''
+    : state.operationKind === 'compaction'
+      ? '\n\n🗜 Compact 完成'
+      : '\n\n（未返回内容）';
+
+  // goal 本 run 读不到（known=false）时不能写「已完成」：这是 GoalStateEvent
+  // 契约里明令禁止的推断（读不到 ≠ 没有目标）。run 本身成功，只是目标维度未知。
+  const goalUnknown = state.terminal === 'done' && state.goalKnown === false;
+
+  // RunState 的用量字段就是 formatUsageStats 的入参形态（同为
+  // `UsageSnapshot`）——原先这里逐字段抄了 17 行，加一个字段要同时改
+  // RunState、FinishMeta 和这张清单（§9.21）。
+  const usageStatsStr = formatUsageStats(state, {
+    showResult: true,
+    result,
+    // 本轮结束但目标继续：不能报"已完成"，也不能说"出错"。
+    ...(state.terminal === 'goal_continuing'
+      ? { completedLabel: '⏳ 本轮结束 · 目标仍在继续' }
+      : goalUnknown
+        ? { completedLabel: '✅ 本轮完成 · 目标状态未确认' }
+        : {}),
+  });
+
+  elements.push(markdownDiv(usageStatsStr + empty));
+
+  // 后台任务：跨 turn 生命周期，必须显式告知并可逐个停止。
+  elements.push(...buildBackgroundJobsSection(state));
+}
+
+/**
+ * terminal → summary handler。用 Map 而非对象字面量（constructor/toString 等
+ * 键会命中 Object.prototype）；未登记的 terminal 走 summaryResult，与原 else
+ * 兜底分支一致。
+ */
+const SUMMARY_HANDLERS = new Map<RunTerminal, SummaryHandler>([
+  ['running', summaryRunning],
+  ['finalizing', summaryFinalizing],
+  ['error', summaryError],
+  ['interrupted', summaryInterrupted],
+  ['idle_timeout', summaryIdleTimeout],
+  ['done', summaryResult],
+  ['goal_continuing', summaryResult],
+]);
+
 /** Build summary tab content */
 function buildSummaryContent(
   state: RunState,
@@ -1268,88 +1376,8 @@ function buildSummaryContent(
     }
   }
 
-  // running 时不显示统计（仍在生成）；finalizing 显示等待提示
-  if (state.terminal === 'running') {
-    return elements;
-  }
-  if (state.terminal === 'finalizing') {
-    elements.push(markdownDiv('⏳ **等待进程退出…**'));
-    return elements;
-  }
-
-  if (state.terminal === 'error') {
-    // 服务方内容审核截断（多为误报）不是「程序出错」：照抄英文内部报文会让
-    // 用户以为代码或配置坏了。文案说清三件事——谁拦的、改动还在、下一步。
-    if (isContentFilterFailure(state.errorMsg)) {
-      elements.push(
-        markdownDiv(
-          '⚠️ **服务方内容审核拦截**\n\n' +
-            '模型输出被上游安全策略截断（`content_filter`），多数是误报，不是代码或配置问题。\n' +
-            '本回合已中止；已写入磁盘的改动都还在。重试仍被拦截时，可换模型或稍后再试。',
-        ),
-      );
-    } else {
-      elements.push(markdownDiv(`⚠️ **运行出错**\n\n${state.errorMsg ?? '未知错误'}`));
-    }
-  } else if (state.terminal === 'interrupted') {
-    // 中断来源三元：审批超时 / 用户取消审批 / 用户主动终止。
-    // 显式原因优先：approvalExpired 是粘性标记（cancel 语义下 agent 可能继续跑），
-    // 用户随后主动 /stop 时若仍按过期渲染，就把「我自己停的」误报成自动取消。
-    const expiredApproval =
-      state.interruptedReason === 'approval_timeout' ||
-      (state.interruptedReason === undefined &&
-        (state.approvalExpired === true || (state.approvals ?? []).some((a) => a.expired)));
-    elements.push(
-      markdownDiv(
-        expiredApproval
-          ? '⏰ **审批超时未响应，已自动取消**'
-          : state.interruptedReason === 'approval_cancelled'
-            ? '⏹ **已取消审批，任务终止**'
-            : '⏹ **已被用户终止**',
-      ),
-    );
-  } else if (state.terminal === 'idle_timeout') {
-    elements.push(
-      markdownDiv(`⏱ **已超时**\n\n${state.idleTimeoutMinutes ?? 0} 分钟无响应，已自动终止`),
-    );
-  } else {
-    const result = state.resultSubtype ?? 'success';
-
-    const hasContent = state.blocks.length > 0 || !!state.finalAnswer?.content.trim();
-    // 压缩（operationKind='compaction'）不会返回 agent 正文——引擎只压缩上下文
-    // 窗口，空内容属正常，不能沿用普通 run 的「（未返回内容）」异常信号。
-    // 所有会压缩的 agent（codex/claude/kimi/opencode/pi）
-    // 都经 streamCompact 走这条共享渲染路径，一处覆盖全部。
-    const empty = hasContent
-      ? ''
-      : state.operationKind === 'compaction'
-        ? '\n\n🗜 Compact 完成'
-        : '\n\n（未返回内容）';
-
-    // goal 本 run 读不到（known=false）时不能写「已完成」：这是 GoalStateEvent
-    // 契约里明令禁止的推断（读不到 ≠ 没有目标）。run 本身成功，只是目标维度未知。
-    const goalUnknown = state.terminal === 'done' && state.goalKnown === false;
-
-    // RunState 的用量字段就是 formatUsageStats 的入参形态（同为
-    // `UsageSnapshot`）——原先这里逐字段抄了 17 行，加一个字段要同时改
-    // RunState、FinishMeta 和这张清单（§9.21）。
-    const usageStatsStr = formatUsageStats(state, {
-      showResult: true,
-      result,
-      // 本轮结束但目标继续：不能报"已完成"，也不能说"出错"。
-      ...(state.terminal === 'goal_continuing'
-        ? { completedLabel: '⏳ 本轮结束 · 目标仍在继续' }
-        : goalUnknown
-          ? { completedLabel: '✅ 本轮完成 · 目标状态未确认' }
-          : {}),
-    });
-
-    elements.push(markdownDiv(usageStatsStr + empty));
-
-    // 后台任务：跨 turn 生命周期，必须显式告知并可逐个停止。
-    elements.push(...buildBackgroundJobsSection(state));
-  }
-
+  const handler = SUMMARY_HANDLERS.get(state.terminal) ?? summaryResult;
+  handler(state, elements);
   return elements;
 }
 

@@ -18,6 +18,152 @@ interface JSONLStreamOptions {
   resumeThreshold?: number;
 }
 
+// =============================================================================
+// createJSONLStream 的模块级命名 handler（闭包搬出，状态显式打包进 state）
+// =============================================================================
+
+interface JSONLStreamState {
+  lineQueue: string[];
+  partialFragments: string[];
+  decoder: StringDecoder;
+  completeLines: string[];
+  done: boolean;
+  resolveNext: (() => void) | null;
+  partialBytes: number;
+  pauseThreshold: number;
+  resumeThreshold: number;
+  paused: boolean;
+  partialByteLimit: number;
+  stdout: Readable;
+  options: JSONLStreamOptions | undefined;
+}
+
+function notify(state: JSONLStreamState): void {
+  if (state.resolveNext) {
+    state.resolveNext();
+    state.resolveNext = null;
+  }
+}
+
+/** Flush trailing partial line and mark the stream finished (end/close/error 共用). */
+function flushAndFinish(state: JSONLStreamState): void {
+  // decoder.end() 吐出被 chunk 边界切开的最后一个多字节字符的残余字节
+  //（无残尾时返回空串）：不加这句，末尾被切开的字符会凭空丢失。
+  const tail = state.decoder.end();
+  if (tail) state.partialFragments.push(tail);
+  if (state.partialFragments.length > 0) {
+    const trimmed = state.partialFragments.join('').trim();
+    if (trimmed) state.lineQueue.push(trimmed);
+    state.partialFragments.length = 0;
+    state.partialBytes = 0;
+  }
+  state.done = true;
+  notify(state);
+}
+
+/** 超长 partial line 当坏行经 onParseError 上报并清空，避免无换行流吃满内存。 */
+function flushOversizePartial(state: JSONLStreamState): void {
+  if (state.partialFragments.length === 0) return;
+  const line = state.partialFragments.join('');
+  state.partialFragments.length = 0;
+  state.partialBytes = 0;
+  const trimmed = line.trim();
+  if (!trimmed) return;
+  if (state.options?.onParseError) {
+    state.options.onParseError(trimmed);
+  } else {
+    getLogger().warn(`[jsonl-stream] dropped oversize partial line (${line.length} bytes)`);
+  }
+}
+
+function maybePause(state: JSONLStreamState): void {
+  if (state.pauseThreshold > 0 && !state.paused && state.lineQueue.length > state.pauseThreshold) {
+    state.paused = true;
+    state.stdout.pause();
+  }
+}
+
+function maybeResume(state: JSONLStreamState): void {
+  if (state.paused && state.lineQueue.length <= state.resumeThreshold) {
+    state.paused = false;
+    state.stdout.resume();
+  }
+}
+
+/** 把本 chunk 产出的完整行移入 lineQueue（跳过空白行）。 */
+function enqueueCompleteLines(state: JSONLStreamState): void {
+  for (const line of state.completeLines) {
+    const trimmed = line.trim();
+    if (trimmed) state.lineQueue.push(trimmed);
+  }
+  state.completeLines.length = 0;
+}
+
+/** 无换行 chunk：整块作为 partial fragment，超限则按坏行冲掉。 */
+function handleChunkWithoutNewline(state: JSONLStreamState, text: string): void {
+  state.partialFragments.push(text);
+  state.partialBytes += text.length;
+  if (state.partialBytes > state.partialByteLimit) flushOversizePartial(state);
+}
+
+/** 有换行 chunk：首段补完 pending 行、中段为完整行、末段为新的 partial tail。 */
+function handleChunkWithNewline(state: JSONLStreamState, segments: string[]): void {
+  state.partialFragments.push(segments[0]);
+  state.partialBytes += segments[0].length;
+  state.completeLines.push(state.partialFragments.join(''));
+  state.partialFragments.length = 0;
+  state.partialBytes = 0;
+  for (let i = 1; i < segments.length - 1; i++) {
+    state.completeLines.push(segments[i]);
+  }
+  state.partialFragments.push(segments[segments.length - 1]);
+  state.partialBytes = segments[segments.length - 1].length;
+  // 单个 >10MB 且内部无换行的 chunk，其尾部 partial 自身也可能超限。
+  if (state.partialBytes > state.partialByteLimit) flushOversizePartial(state);
+}
+
+function onDataChunk(state: JSONLStreamState, chunk: Buffer): void {
+  // StringDecoder 按字节边界解码：多字节字符被 chunk 边界切开时裸 toString
+  // 会产出不可逆的 U+FFFD（同族修复见 jsonrpc/transport.ts）。
+  const text = state.decoder.write(chunk);
+  const segments = text.split('\n');
+  if (segments.length === 1) {
+    handleChunkWithoutNewline(state, segments[0]);
+  } else {
+    handleChunkWithNewline(state, segments);
+  }
+  enqueueCompleteLines(state);
+  notify(state);
+  maybePause(state);
+}
+
+function onStdoutError(state: JSONLStreamState, err: Error): void {
+  getLogger().warn(`[jsonl-stream] stdout error: ${err.message}`);
+  flushAndFinish(state);
+}
+
+async function* jsonlGenerator(state: JSONLStreamState): AsyncGenerator<AgentEvent> {
+  while (true) {
+    while (state.lineQueue.length > 0) {
+      const line = state.lineQueue.shift()!;
+      try {
+        yield JSON.parse(line) as AgentEvent;
+      } catch {
+        if (state.options?.onParseError) {
+          state.options.onParseError(line);
+        } else {
+          getLogger().warn(`[jsonl-stream] failed to parse JSONL: ${line.slice(0, 100)}`);
+        }
+      }
+      maybeResume(state);
+    }
+    if (state.done) return;
+    await new Promise<void>((r) => {
+      state.resolveNext = r;
+    });
+  }
+}
+
 /**
  * Parse JSONL (newline-delimited JSON) from a readable stream.
  *
@@ -43,192 +189,33 @@ export function createJSONLStream(
   stdout: Readable,
   options?: JSONLStreamOptions,
 ): AsyncGenerator<AgentEvent> {
-  const lineQueue: string[] = [];
-  // accumulate partial-line fragments in an array instead of repeatedly
-  // string-concatenating a growing `partialLine`. A huge single JSON line
-  // (large tool_result / text_end) spanning many chunks caused O(n²) copies:
-  // each chunk rebuilt `partialLine + text` over the whole accumulated prefix.
-  // With a fragment array, we join only once per chunk (at the line boundary)
-  // and push complete lines; the residual tail stays as array fragments until
-  // the next newline or stream end. Net allocation: O(n) instead of O(n²).
-  const partialFragments: string[] = [];
-  // 跨 chunk 多字节字符的边界安全解码器（见 stdout 'data' 处理）。
-  const decoder = new StringDecoder('utf8');
-  // accumulated byte length of partialFragments. Backpressure (above)
-  // only counts COMPLETE lines in lineQueue; a never-newline stream (malformed
-  // output, binary garbage) accumulates fragments without ever completing a
-  // line, so pause never fires and memory grows unbounded. Cap the partial
-  // line at 10MB: once exceeded, flush it as a bad line via onParseError and
-  // reset the buffer, bounding peak memory for a single pathological line.
-  const PARTIAL_BYTE_LIMIT = 10 * 1024 * 1024;
-  let partialBytes = 0;
-  const completeLines: string[] = [];
-  let done = false;
-  let resolveNext: (() => void) | null = null;
-  // backpressure thresholds. Default matches production (100).
   const pauseThreshold = options?.pauseThreshold ?? 100;
-  // Default low-water mark is half the high-water mark for meaningful hysteresis
-  // (avoids per-line pause/resume thrashing when callers don't set it explicitly).
-  let resumeThreshold = options?.resumeThreshold ?? Math.max(0, Math.floor(pauseThreshold / 2));
-  // Clamp misconfiguration: resumeThreshold > pauseThreshold would resume at queue
-  // high water then immediately re-pause on the next line → thrash (nit).
-  if (resumeThreshold > pauseThreshold) resumeThreshold = pauseThreshold;
-  let paused = false;
+  const state: JSONLStreamState = {
+    lineQueue: [],
+    partialFragments: [],
+    decoder: new StringDecoder('utf8'),
+    completeLines: [],
+    done: false,
+    resolveNext: null,
+    partialBytes: 0,
+    pauseThreshold,
+    // 默认低水位为高水位一半，避免逐行 pause/resume 抖动（调用方未显式设置时）。
+    resumeThreshold: options?.resumeThreshold ?? Math.max(0, Math.floor(pauseThreshold / 2)),
+    paused: false,
+    // 单条 never-newline 流的 fragment 上限（10MB），防内存无界增长。
+    partialByteLimit: 10 * 1024 * 1024,
+    stdout,
+    options,
+  };
+  // 误配（resumeThreshold > pauseThreshold）会在高水位立刻 re-pause，钳到高水位。
+  if (state.resumeThreshold > state.pauseThreshold) state.resumeThreshold = state.pauseThreshold;
 
-  function notify() {
-    if (resolveNext) {
-      resolveNext();
-      resolveNext = null;
-    }
-  }
+  stdout.on('data', (chunk: Buffer) => onDataChunk(state, chunk));
+  stdout.on('end', () => flushAndFinish(state));
+  stdout.on('close', () => flushAndFinish(state));
+  // stdout error 只保证 generator 结束并记日志，不向 generator 重抛（runner
+  // 的 try/catch 与 proc close 路径已统一上报失败）；否则 consumer 会永久挂住。
+  stdout.on('error', (err: Error) => onStdoutError(state, err));
 
-  // Flush any trailing partial line and mark the stream finished. Shared by the
-  // 'end'/'close'/'error' handlers so flush logic lives in one place (nit).
-  function flushAndFinish() {
-    // decoder.end() 吐出被 chunk 边界切开的最后一个多字节字符的残余字节
-    //（无残尾时返回空串）：不加这句，末尾被切开的字符会凭空丢失。
-    const tail = decoder.end();
-    if (tail) partialFragments.push(tail);
-    if (partialFragments.length > 0) {
-      const trimmed = partialFragments.join('').trim();
-      if (trimmed) lineQueue.push(trimmed);
-      partialFragments.length = 0;
-      partialBytes = 0;
-    }
-    done = true;
-    notify();
-  }
-
-  // flush an oversize partial line as a bad line. When partialFragments
-  // exceeds the byte cap, the partial line is treated as malformed (a single
-  // JSON line should never reach 10MB) and reported via onParseError rather
-  // than accumulated indefinitely. Resets the buffer so a pathological stream
-  // cannot leak memory line after line.
-  function flushOversizePartial() {
-    if (partialFragments.length === 0) return;
-    const line = partialFragments.join('');
-    partialFragments.length = 0;
-    partialBytes = 0;
-    const trimmed = line.trim();
-    if (!trimmed) return;
-    if (options?.onParseError) {
-      options.onParseError(trimmed);
-    } else {
-      getLogger().warn(`[jsonl-stream] dropped oversize partial line (${line.length} bytes)`);
-    }
-  }
-
-  // Apply backpressure after pushing new lines: pause stdout when the queue
-  // exceeds the high-water mark so the producer stops feeding until the
-  // consumer drains it.bounds memory in long runs.
-  function maybePause() {
-    if (pauseThreshold > 0 && !paused && lineQueue.length > pauseThreshold) {
-      paused = true;
-      stdout.pause();
-    }
-  }
-
-  // Release backpressure after consuming a line: resume stdout once the queue
-  // drains to the low-water mark so the producer can feed again.
-  function maybeResume() {
-    if (paused && lineQueue.length <= resumeThreshold) {
-      paused = false;
-      stdout.resume();
-    }
-  }
-
-  stdout.on('data', (chunk: Buffer) => {
-    // StringDecoder 按字节边界解码：多字节字符（中文/emoji）被 chunk 边界
-    // 切开时，裸 toString 会产出不可逆的 U+FFFD（同族修复见
-    // jsonrpc/transport.ts，claude 的中文输出走本流）。
-    const text = decoder.write(chunk);
-    // split on newlines. The first segment continues the pending partial
-    // line (joined with accumulated fragments — one join per chunk, not per
-    // byte); subsequent segments are complete lines. The last segment is the
-    // new partial tail (kept as a single fragment).
-    const segments = text.split('\n');
-    if (segments.length === 1) {
-      // No newline in this chunk: the whole chunk is a partial fragment.
-      partialFragments.push(segments[0]);
-      partialBytes += segments[0].length;
-      // cap the partial line. A never-newline stream would otherwise
-      // accumulate fragments without bound (backpressure only counts complete
-      // lines). Flush as a bad line once the byte cap is exceeded.
-      if (partialBytes > PARTIAL_BYTE_LIMIT) {
-        flushOversizePartial();
-      }
-    } else {
-      // First segment completes the pending line.
-      partialFragments.push(segments[0]);
-      partialBytes += segments[0].length;
-      completeLines.push(partialFragments.join(''));
-      partialFragments.length = 0;
-      partialBytes = 0;
-      // Middle segments are each complete lines.
-      for (let i = 1; i < segments.length - 1; i++) {
-        completeLines.push(segments[i]);
-      }
-      // Last segment is the new partial tail.
-      partialFragments.push(segments[segments.length - 1]);
-      partialBytes = segments[segments.length - 1].length;
-      // the trailing partial tail can itself exceed the cap if a single
-      // chunk is larger than 10MB with no internal newline.
-      if (partialBytes > PARTIAL_BYTE_LIMIT) {
-        flushOversizePartial();
-      }
-    }
-    // Push complete lines into the queue (skipping blank/whitespace-only).
-    for (const line of completeLines) {
-      const trimmed = line.trim();
-      if (trimmed) lineQueue.push(trimmed);
-    }
-    completeLines.length = 0;
-    notify();
-    maybePause();
-  });
-
-  stdout.on('end', () => {
-    flushAndFinish();
-  });
-
-  stdout.on('close', () => {
-    flushAndFinish();
-  });
-
-  // handle stdout 'error' so the generator terminates instead of
-  // hanging forever on the `await new Promise` below. Without this, a stdout
-  // error (e.g. broken pipe, runner crash) leaves the consumer awaiting a
-  // notify that never comes → bridge serial queue blocks permanently. We do
-  // not re-throw the error through the generator (the runner's `try/catch`
-  // around `for await` and the proc 'close' path already surface failures via
-  // the unified result event); we only guarantee the generator ends. The error
-  // is logged for diagnosis.
-  stdout.on('error', (err: Error) => {
-    getLogger().warn(`[jsonl-stream] stdout error: ${err.message}`);
-    flushAndFinish();
-  });
-
-  async function* generator(): AsyncGenerator<AgentEvent> {
-    while (true) {
-      while (lineQueue.length > 0) {
-        const line = lineQueue.shift()!;
-        try {
-          yield JSON.parse(line) as AgentEvent;
-        } catch {
-          if (options?.onParseError) {
-            options.onParseError(line);
-          } else {
-            getLogger().warn(`[jsonl-stream] failed to parse JSONL: ${line.slice(0, 100)}`);
-          }
-        }
-        maybeResume();
-      }
-      if (done) return;
-      await new Promise<void>((r) => {
-        resolveNext = r;
-      });
-    }
-  }
-
-  return generator();
+  return jsonlGenerator(state);
 }

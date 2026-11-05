@@ -114,63 +114,103 @@ function sanitizeFileName(name: string): string {
  * 资源扩展名（图片/视频/语音）：优先 MIME 映射，未知时按魔数兜底；
  * 两者都无法识别时返回 undefined（调用方省略扩展名，避免错误标注格式）。
  */
+function normalizeMimeType(mimeType: string | undefined): string | undefined {
+  return mimeType?.split(';')[0]?.trim().toLowerCase();
+}
+
+// --- 魔数判定原语（模块级命名函数，供查表顺序调用） ---
+// 每个 matcher 逐字保留原 extensionFor 内联 if 的长度门槛与比较条件。
+
+function isRiffFormat(format: 'WEBP' | 'WAVE', head: Buffer): boolean {
+  return (
+    head.length >= 12 &&
+    head.subarray(0, 4).toString('latin1') === 'RIFF' &&
+    head.subarray(8, 12).toString('latin1') === format
+  );
+}
+
+function isPng(head: Buffer): boolean {
+  return (
+    head.length >= 8 &&
+    head.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))
+  );
+}
+
+function isJpeg(head: Buffer): boolean {
+  return head.length >= 3 && head[0] === 0xff && head[1] === 0xd8 && head[2] === 0xff;
+}
+
+function isGif(head: Buffer): boolean {
+  return head.length >= 4 && head.subarray(0, 4).toString('latin1') === 'GIF8';
+}
+
+function isOgg(head: Buffer): boolean {
+  return head.length >= 4 && head.subarray(0, 4).toString('latin1') === 'OggS';
+}
+
+/** MP4/MOV 家族：ISO BMFF 在偏移 4 处写 'ftyp'。 */
+function isIsoBmff(head: Buffer): boolean {
+  return head.length >= 8 && head.subarray(4, 8).toString('latin1') === 'ftyp';
+}
+
+function isBmp(head: Buffer): boolean {
+  return head.length >= 2 && head[0] === 0x42 && head[1] === 0x4d;
+}
+
+function isId3(head: Buffer): boolean {
+  return head.length >= 3 && head.subarray(0, 3).toString('latin1') === 'ID3';
+}
+
+/** MPEG audio frame sync（0xFFE0 掩码）+ 常见 layer/bitrate 组合。 */
+function isMpegFrameSync(head: Buffer): boolean {
+  return head.length >= 2 && head[0] === 0xff && (head[1] & 0xfe) === 0xfa;
+}
+
+function isAmr(head: Buffer): boolean {
+  return head.length >= 5 && head.subarray(0, 5).toString('latin1') === '#!AMR';
+}
+
+function isMatroska(head: Buffer): boolean {
+  return head.length >= 4 && head.readUInt32BE(0) === 0x1a45dfa3;
+}
+
+type MagicMatcher = (head: Buffer) => boolean;
+
+/**
+ * 魔数规则表：键为唯一规则标识，值携带输出扩展名与判定函数。用 Map 而非对象
+ * 字面量（避免 `constructor` / `toString` 等键命中 Object.prototype），且 Map
+ * 迭代顺序 = 插入顺序，与原 if 链的短路优先级逐字一致（mp3 的两个签名占两条）。
+ */
+const MAGIC_EXTENSION_RULES = new Map<string, { ext: string; matches: MagicMatcher }>([
+  ['riff-webp', { ext: 'webp', matches: isRiffFormat.bind(null, 'WEBP') }],
+  ['riff-wave', { ext: 'wav', matches: isRiffFormat.bind(null, 'WAVE') }],
+  ['png', { ext: 'png', matches: isPng }],
+  ['jpeg', { ext: 'jpg', matches: isJpeg }],
+  ['gif', { ext: 'gif', matches: isGif }],
+  ['ogg', { ext: 'opus', matches: isOgg }],
+  ['iso-bmff', { ext: 'mp4', matches: isIsoBmff }],
+  ['bmp', { ext: 'bmp', matches: isBmp }],
+  ['id3', { ext: 'mp3', matches: isId3 }],
+  ['mpeg-frame-sync', { ext: 'mp3', matches: isMpegFrameSync }],
+  ['amr', { ext: 'amr', matches: isAmr }],
+  ['matroska', { ext: 'mkv', matches: isMatroska }],
+]);
+
+function magicExtensionFor(head: Buffer): string | undefined {
+  for (const { ext, matches } of MAGIC_EXTENSION_RULES.values()) {
+    if (matches(head)) return ext;
+  }
+  return undefined;
+}
+
 function extensionFor(
   _kind: InboundResourceKind,
   mimeType: string | undefined,
   head: Buffer,
 ): string | undefined {
-  const normalized = mimeType?.split(';')[0]?.trim().toLowerCase();
+  const normalized = normalizeMimeType(mimeType);
   if (normalized && MIME_TO_EXT[normalized]) return MIME_TO_EXT[normalized];
-  if (
-    head.length >= 12 &&
-    head.subarray(0, 4).toString('latin1') === 'RIFF' &&
-    head.subarray(8, 12).toString('latin1') === 'WEBP'
-  ) {
-    return 'webp';
-  }
-  if (
-    head.length >= 12 &&
-    head.subarray(0, 4).toString('latin1') === 'RIFF' &&
-    head.subarray(8, 12).toString('latin1') === 'WAVE'
-  ) {
-    return 'wav';
-  }
-  if (
-    head.length >= 8 &&
-    head.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))
-  ) {
-    return 'png';
-  }
-  if (head.length >= 3 && head[0] === 0xff && head[1] === 0xd8 && head[2] === 0xff) {
-    return 'jpg';
-  }
-  if (head.length >= 4 && head.subarray(0, 4).toString('latin1') === 'GIF8') {
-    return 'gif';
-  }
-  if (head.length >= 4 && head.subarray(0, 4).toString('latin1') === 'OggS') {
-    return 'opus';
-  }
-  // MP4/MOV 家族：ISO BMFF 在偏移 4 处写 'ftyp'。
-  if (head.length >= 8 && head.subarray(4, 8).toString('latin1') === 'ftyp') {
-    return 'mp4';
-  }
-  if (head.length >= 2 && head[0] === 0x42 && head[1] === 0x4d) {
-    return 'bmp';
-  }
-  if (head.length >= 3 && head.subarray(0, 3).toString('latin1') === 'ID3') {
-    return 'mp3';
-  }
-  // MPEG audio frame sync（0xFFE0 掩码）+ 常见 layer/bitrate 组合。
-  if (head.length >= 2 && head[0] === 0xff && (head[1] & 0xfe) === 0xfa) {
-    return 'mp3';
-  }
-  if (head.length >= 5 && head.subarray(0, 5).toString('latin1') === '#!AMR') {
-    return 'amr';
-  }
-  if (head.length >= 4 && head.readUInt32BE(0) === 0x1a45dfa3) {
-    return 'mkv';
-  }
-  return undefined;
+  return magicExtensionFor(head);
 }
 
 /**

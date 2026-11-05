@@ -291,6 +291,130 @@ type PreparedTurn =
     }
   | { ok: false };
 
+// =============================================================================
+// handleSessionEvent 的模块级命名 handler（显式传 runner / state，避免方法内闭包）
+// =============================================================================
+
+type GoalState = { last: GoalView | null | undefined; known: boolean };
+
+interface SessionEventContext {
+  sessionId: string;
+  translator: DshTranslator;
+  goal: GoalState;
+  live: LiveStatusAccumulator;
+  abort: AbortController;
+  signal: AbortSignal;
+}
+
+type TerminalEventHandler = (
+  runner: DshRunner,
+  event: DshSessionEvent,
+  ctx: SessionEventContext,
+) => AgentEvent[];
+
+/** goal/change：权威变更，不等投影直接按事件更新（create/edit/pause/...）。 */
+function goalChangeEvents(
+  _runner: DshRunner,
+  event: DshSessionEvent,
+  ctx: SessionEventContext,
+): AgentEvent[] {
+  const parsed = goalFromChange(event.data);
+  if (parsed !== undefined && !sameGoal(parsed, ctx.goal.last)) {
+    ctx.goal.last = parsed;
+    return [goalStateEvent(parsed, true)];
+  }
+  return [];
+}
+
+/** approval/decided：审批回流，清审批卡。 */
+function approvalDecidedEvents(runner: DshRunner, event: DshSessionEvent): AgentEvent[] {
+  const data = event.data as { id?: string; outcome?: string };
+  if (!data.id) return [];
+  runner.approvalTracker.onDecided(data.id);
+  return [runner.approvalResolved(data.id)];
+}
+
+/** 终态分支查表：命中即返回（不再落到 translator）。 */
+const SESSION_EVENT_TERMINAL_HANDLERS: ReadonlyMap<string, TerminalEventHandler> = new Map([
+  ['goal/change', goalChangeEvents],
+  ['approval/decided', approvalDecidedEvents],
+]);
+
+/** tool/call：先记账（审批卡命令展示用），随后仍落到 translator 出工具行。 */
+function recordToolCall(
+  toolCalls: Map<string, { name: string; arguments: string; turn?: number }>,
+  event: DshSessionEvent,
+): void {
+  const data = event.data as {
+    callId?: string;
+    name?: string;
+    arguments?: string;
+    turn?: number;
+  };
+  if (data.callId && data.name) {
+    toolCalls.set(data.callId, {
+      name: data.name,
+      arguments: data.arguments ?? '',
+      ...(data.turn === undefined ? {} : { turn: data.turn }),
+    });
+    if (toolCalls.size > 100) {
+      const oldest = toolCalls.keys().next().value;
+      if (oldest !== undefined) toolCalls.delete(oldest);
+    }
+  }
+}
+
+/** result 收尾：后台任务名单 + goal 收尾复核；返回要插到 result 前的事件。 */
+async function resultFinalizeEvents(
+  runner: DshRunner,
+  ctx: SessionEventContext,
+): Promise<AgentEvent[]> {
+  const events: AgentEvent[] = [];
+  for (const jobsEvent of await runner.collectBackgroundJobs(ctx.sessionId, ctx.abort.signal)) {
+    events.push(jobsEvent);
+  }
+  // 收尾复核：这一轮结束时 goal 是否仍 active，决定卡片能不能收尾。
+  // 必须现读宿主，不能沿用过程中的最后一次观测——goal 可能在本轮
+  // 最后一个 step 才被 complete，也可能刚被 driver 置为 blocked。
+  const finalGoal = await runner.client.goalState(ctx.sessionId, {
+    signal: ctx.signal,
+    timeoutMs: GOAL_PROBE_TIMEOUT_MS,
+  });
+  if (!finalGoal.known) {
+    // 收尾读不到：seed 已报过 unknown 就不重复发，否则把状态降级
+    // 交给卡片（卡片据此不再宣布完成）。
+    if (ctx.goal.known) {
+      ctx.goal.known = false;
+      events.push(goalStateEvent(null, false));
+    }
+  } else if (!ctx.goal.known || !sameGoal(finalGoal.goal, ctx.goal.last)) {
+    ctx.goal.known = true;
+    ctx.goal.last = finalGoal.goal;
+    events.push(goalStateEvent(finalGoal.goal, true));
+  }
+  return events;
+}
+
+/** translator 循环：result 事件插入收尾事件并提前返回。 */
+async function collectAgentEvents(
+  runner: DshRunner,
+  event: DshSessionEvent,
+  ctx: SessionEventContext,
+): Promise<AgentEvent[]> {
+  const events: AgentEvent[] = [];
+  for (const ev of ctx.translator.eventToAgentEvents(event, ctx.sessionId)) {
+    if (ev.type === 'result') {
+      if (!ctx.abort.signal.aborted) {
+        for (const finalized of await resultFinalizeEvents(runner, ctx)) events.push(finalized);
+      }
+      events.push(attachContextLimit(ev, ctx.live.contextLimit));
+      return events;
+    }
+    events.push(ev);
+  }
+  return events;
+}
+
 export class DshRunner implements AgentRunner {
   readonly kind = 'dsh' as const;
   /**
@@ -338,7 +462,7 @@ export class DshRunner implements AgentRunner {
   /** 已对齐权限预设的 session；同一 session 只执行一次 `/permission`。 */
   private readonly permissionAlignedSessions = new Set<string>();
   /** `$events` approval waterfall state for the current run. */
-  private readonly approvalTracker = new DshApprovalTracker();
+  readonly approvalTracker = new DshApprovalTracker();
   /**
    * eventId → 待回答的 DSH `ask_user_question` waterfall。
    *
@@ -969,82 +1093,21 @@ export class DshRunner implements AgentRunner {
     event: DshSessionEvent,
     sessionId: string,
     translator: DshTranslator,
-    goal: { last: GoalView | null | undefined; known: boolean },
+    goal: GoalState,
     live: LiveStatusAccumulator,
     abort: AbortController,
     signal: AbortSignal,
   ): Promise<AgentEvent[]> {
-    if (event.type === 'goal/change') {
-      // 权威变更（create/edit/pause/resume/complete/block/clear）：不等投影
-      // 推送，直接按事件更新——agent 刚 create 的那一刻卡片就该显示目标。
-      const parsed = goalFromChange(event.data);
-      if (parsed !== undefined && !sameGoal(parsed, goal.last)) {
-        goal.last = parsed;
-        return [goalStateEvent(parsed, true)];
-      }
-      return [];
-    }
+    const ctx: SessionEventContext = { sessionId, translator, goal, live, abort, signal };
+    const terminal = SESSION_EVENT_TERMINAL_HANDLERS.get(event.type);
+    if (terminal) return terminal(this, event, ctx);
     if (event.type === 'tool/call') {
-      const data = event.data as {
-        callId?: string;
-        name?: string;
-        arguments?: string;
-        turn?: number;
-      };
-      if (data.callId && data.name) {
-        this.toolCalls.set(data.callId, {
-          name: data.name,
-          arguments: data.arguments ?? '',
-          ...(data.turn === undefined ? {} : { turn: data.turn }),
-        });
-        if (this.toolCalls.size > 100) {
-          const oldest = this.toolCalls.keys().next().value;
-          if (oldest !== undefined) this.toolCalls.delete(oldest);
-        }
-      }
       // 记账后继续往下走：tool/call 同时是卡片工具行的来源（translator 翻
       // 译成 assistant.tool_use）。早期版本在这里 `continue`，把调用轨迹整个
       // 吞掉——卡片因此只有正文、没有任何工具行。
-    } else if (event.type === 'approval/decided') {
-      const data = event.data as { id?: string; outcome?: string };
-      if (!data.id) return [];
-      this.approvalTracker.onDecided(data.id);
-      return [this.approvalResolved(data.id)];
+      recordToolCall(this.toolCalls, event);
     }
-
-    const events: AgentEvent[] = [];
-    for (const ev of translator.eventToAgentEvents(event, sessionId)) {
-      if (ev.type === 'result') {
-        if (!abort.signal.aborted) {
-          for (const jobsEvent of await this.collectBackgroundJobs(sessionId, abort.signal)) {
-            events.push(jobsEvent);
-          }
-          // 收尾复核：这一轮结束时 goal 是否仍 active，决定卡片能不能收尾。
-          // 必须现读宿主，不能沿用过程中的最后一次观测——goal 可能在本轮
-          // 最后一个 step 才被 complete，也可能刚被 driver 置为 blocked。
-          const finalGoal = await this.client.goalState(sessionId, {
-            signal,
-            timeoutMs: GOAL_PROBE_TIMEOUT_MS,
-          });
-          if (!finalGoal.known) {
-            // 收尾读不到：seed 已报过 unknown 就不重复发，否则把状态降级
-            // 交给卡片（卡片据此不再宣布完成）。
-            if (goal.known) {
-              goal.known = false;
-              events.push(goalStateEvent(null, false));
-            }
-          } else if (!goal.known || !sameGoal(finalGoal.goal, goal.last)) {
-            goal.known = true;
-            goal.last = finalGoal.goal;
-            events.push(goalStateEvent(finalGoal.goal, true));
-          }
-        }
-        events.push(attachContextLimit(ev, live.contextLimit));
-        return events;
-      }
-      events.push(ev);
-    }
-    return events;
+    return collectAgentEvents(this, event, ctx);
   }
 
   /**
@@ -1054,10 +1117,7 @@ export class DshRunner implements AgentRunner {
    * 现，卡片列出来只会误导"还没跑完"。`job/list` 拿不到时返回空数组——没有
    * 任务列表不等于有任务在跑。
    */
-  private async collectBackgroundJobs(
-    sessionId: string,
-    signal: AbortSignal,
-  ): Promise<AgentEvent[]> {
+  async collectBackgroundJobs(sessionId: string, signal: AbortSignal): Promise<AgentEvent[]> {
     const rows = await this.client.jobRows(sessionId, { signal });
     if (!rows) return [];
     const live = rows.filter((job) => job.status === 'running' || job.status === 'stopping');
@@ -1302,7 +1362,7 @@ export class DshRunner implements AgentRunner {
     };
   }
 
-  private approvalResolved(requestId: string): AgentEvent {
+  approvalResolved(requestId: string): AgentEvent {
     return {
       type: 'approval_resolved',
       requestId,

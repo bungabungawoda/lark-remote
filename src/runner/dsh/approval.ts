@@ -33,6 +33,104 @@ export interface DshApprovalBinding {
 
 type BindingWaiter = (binding: DshApprovalBinding | undefined) => void;
 
+// --- 模块级命名函数：把状态显式传入，避免在方法内定义带决策点的闭包 ---
+// crapper 会把方法内部闭包的决策点计入外层方法；抽到模块顶层后
+// onWaterfall / waitForBinding 只剩选路。
+
+/** 重连重投：刷新已绑定 waterfall 的应答通道，不产新 binding。 */
+function refreshRedeliveredWaterfall(
+  bindings: Map<string, DshApprovalBinding>,
+  waterfallByCallId: Map<string, DshApprovalWaterfall>,
+  approvalId: string,
+  waterfall: DshApprovalWaterfall,
+): void {
+  const binding = bindings.get(approvalId);
+  if (!binding) return;
+  binding.waterfall.clientId = waterfall.clientId;
+  if (waterfall.reason) binding.waterfall.reason = waterfall.reason;
+  if (waterfall.callId) waterfallByCallId.set(waterfall.callId, binding.waterfall);
+}
+
+/** 第一段：按 callId 精确匹配未绑定 audit。 */
+function auditWithCallId(
+  audits: Iterable<DshApprovalAudit>,
+  bindings: Map<string, DshApprovalBinding>,
+  callId: string,
+): DshApprovalAudit | undefined {
+  for (const audit of audits) {
+    if (audit.callId === callId && !bindings.has(audit.approvalId)) return audit;
+  }
+  return undefined;
+}
+
+/** 第二段：无 callId 的 audit，按 toolName 兜底配对。 */
+function unboundAuditWithoutCallId(
+  audits: Iterable<DshApprovalAudit>,
+  bindings: Map<string, DshApprovalBinding>,
+  toolName: string,
+): DshApprovalAudit | undefined {
+  for (const audit of audits) {
+    if (!audit.callId && !bindings.has(audit.approvalId) && audit.toolName === toolName) {
+      return audit;
+    }
+  }
+  return undefined;
+}
+
+/** 第三段：waterfall 无 callId 时，按 toolName 找最老未绑定 audit。 */
+function unboundAuditByToolName(
+  audits: Iterable<DshApprovalAudit>,
+  bindings: Map<string, DshApprovalBinding>,
+  toolName: string,
+): DshApprovalAudit | undefined {
+  for (const audit of audits) {
+    if (!bindings.has(audit.approvalId) && audit.toolName === toolName) return audit;
+  }
+  return undefined;
+}
+
+/** 按 waterfall 是否有 callId 选路，顺序与原实现三段 for 循环一致。 */
+function findPairableAudit(
+  audits: Map<string, DshApprovalAudit>,
+  bindings: Map<string, DshApprovalBinding>,
+  waterfall: DshApprovalWaterfall,
+): DshApprovalAudit | undefined {
+  if (waterfall.callId) {
+    return (
+      auditWithCallId(audits.values(), bindings, waterfall.callId) ??
+      unboundAuditWithoutCallId(audits.values(), bindings, waterfall.toolName)
+    );
+  }
+  return unboundAuditByToolName(audits.values(), bindings, waterfall.toolName);
+}
+
+interface BindingWaitState {
+  settled: boolean;
+  timer?: ReturnType<typeof setTimeout>;
+  onAbort: () => void;
+  approvalId: string;
+  waiters: Map<string, Set<BindingWaiter>>;
+  resolve: (binding: DshApprovalBinding | undefined) => void;
+  signal?: AbortSignal;
+  finish: BindingWaiter;
+}
+
+/** 结束一次等待（幂等）：清 timer、摘监听、从 waiters 移除、resolve。 */
+function finishBindingWait(state: BindingWaitState, binding: DshApprovalBinding | undefined): void {
+  if (state.settled) return;
+  state.settled = true;
+  if (state.timer !== undefined) clearTimeout(state.timer);
+  state.signal?.removeEventListener('abort', state.onAbort);
+  const set = state.waiters.get(state.approvalId);
+  set?.delete(state.finish);
+  if (set && set.size === 0) state.waiters.delete(state.approvalId);
+  state.resolve(binding);
+}
+
+function abortBindingWait(state: BindingWaitState): void {
+  finishBindingWait(state, undefined);
+}
+
 export class DshApprovalTracker {
   private readonly audits = new Map<string, DshApprovalAudit>();
   private readonly waterfallByCallId = new Map<string, DshApprovalWaterfall>();
@@ -70,47 +168,20 @@ export class DshApprovalTracker {
     if (existingApprovalId) {
       // A reconnect re-delivers the same pending event with a new Client
       // identity. Keep the card binding but refresh the answer channel.
-      const binding = this.bindings.get(existingApprovalId);
-      if (binding) {
-        binding.waterfall.clientId = waterfall.clientId;
-        if (waterfall.reason) binding.waterfall.reason = waterfall.reason;
-        if (waterfall.callId) {
-          this.waterfallByCallId.set(waterfall.callId, binding.waterfall);
-        }
-      }
+      refreshRedeliveredWaterfall(
+        this.bindings,
+        this.waterfallByCallId,
+        existingApprovalId,
+        waterfall,
+      );
       return undefined;
     }
     if (waterfall.callId) this.waterfallByCallId.set(waterfall.callId, waterfall);
 
-    if (waterfall.callId) {
-      for (const audit of this.audits.values()) {
-        if (audit.callId === waterfall.callId && !this.bindings.has(audit.approvalId)) {
-          return this.bind(audit, waterfall);
-        }
-      }
-      // Some approval types omit callId on the durable audit. Pair with the
-      // oldest unbound audit for the same tool before falling back to Web UI.
-      for (const audit of this.audits.values()) {
-        if (
-          !audit.callId &&
-          !this.bindings.has(audit.approvalId) &&
-          audit.toolName === waterfall.toolName
-        ) {
-          return this.bind(audit, waterfall);
-        }
-      }
-    }
-
-    // A missing callId is unusual but not fatal: pair with the oldest unbound
-    // audit for the same tool, preserving the audit id on the card.
-    if (!waterfall.callId) {
-      for (const audit of this.audits.values()) {
-        if (!this.bindings.has(audit.approvalId) && audit.toolName === waterfall.toolName) {
-          return this.bind(audit, waterfall);
-        }
-      }
-    }
-    return undefined;
+    // Some approval types omit callId on the durable audit: pair with the
+    // oldest unbound audit for the same tool before falling back to Web UI.
+    const audit = findPairableAudit(this.audits, this.bindings, waterfall);
+    return audit ? this.bind(audit, waterfall) : undefined;
   }
 
   /** Mark an audit resolved (local response or an external decision). */
@@ -160,22 +231,23 @@ export class DshApprovalTracker {
     if (signal?.aborted) return undefined;
 
     return new Promise<DshApprovalBinding | undefined>((resolve) => {
-      let settled = false;
-      const finish = (binding: DshApprovalBinding | undefined): void => {
-        if (settled) return;
-        settled = true;
-        clearTimeout(timer);
-        signal?.removeEventListener('abort', onAbort);
-        const set = this.waiters.get(approvalId);
-        set?.delete(finish);
-        if (set && set.size === 0) this.waiters.delete(approvalId);
-        resolve(binding);
+      // 状态显式打包；finish/onAbort 用模块级函数 + bind 绑定状态，
+      // 不在方法内定义带决策点的闭包。
+      const state: BindingWaitState = {
+        settled: false,
+        onAbort: () => {},
+        approvalId,
+        waiters: this.waiters,
+        resolve,
+        signal,
+        finish: () => {},
       };
-      const onAbort = (): void => finish(undefined);
-      const timer = setTimeout(() => finish(undefined), timeoutMs);
-      signal?.addEventListener('abort', onAbort, { once: true });
+      state.finish = finishBindingWait.bind(null, state);
+      state.onAbort = abortBindingWait.bind(null, state);
+      state.timer = setTimeout(abortBindingWait.bind(null, state), timeoutMs);
+      signal?.addEventListener('abort', state.onAbort, { once: true });
       const set = this.waiters.get(approvalId) ?? new Set<BindingWaiter>();
-      set.add(finish);
+      set.add(state.finish);
       this.waiters.set(approvalId, set);
     });
   }
