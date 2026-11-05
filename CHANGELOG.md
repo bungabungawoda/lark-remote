@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.21] - 2026-11-05
+
+### 维护
+
+- **高复杂度函数按职责拆分**：router 的 `/ws` `/ls` `/order` 命令装配、会话存储与各 agent 的会话目录读取、卡片渲染与预算降级等函数拆成可单独测试的小函数，调用关系与输出不变；拆分风险由下面那条结构等价快照兜住。无行为变化
+- **新增结构等价快照**：`structure-equivalence` 用例直接调用命令层与卡片层的公共出口，把卡片元素形状、文案、callback 的字段与顺序、分页栏、副作用调用记录整份录进外部快照，实现拆分后不带 `-u` 重跑必须逐字不变。快照里的动态值（临时目录及其父目录、路径分隔符、随机目录名、文件 mtime）在比较前统一归一，并加了漏归一守卫——宿主专属路径有残留直接抛错，同一份快照在 macOS / Linux / Windows 上逐字一致。无行为变化
+- **补齐此前无用例的模块**：审批协调与审批事件、DSH 多路复用流与 translator、工具入参摘要、后台命令生命周期、各家 agent 的会话目录读取分支新增独立用例文件。无行为变化
+- **用例不再向宿主操作系统要事实**：opencode 的日志错误监视原先靠「日志父路径被普通文件占住」制造 `ENOTDIR`，而 Windows 的 stat 对同一形态报 `ENOENT`——那正是「日志还没生成」的正常空态出口，故障分支只在单一系统走得到，现在改成按目标路径注入给定错误码；DSH 同步连接的断言不再硬编码 `/dev/null`（实现按平台传 `-o NUL`），只钉住 `-o` 后面必须是宿主空设备。无行为变化
+- **pi 的中断用例消掉收尾竞态**：`abort` 是发了就不管的通知，写进子进程 stdin 不等于它已被读到。原先用例在 `stop()` 之后立刻收尾，清理时可能先杀掉模拟进程，接收日志里只剩 `get_state` 与 `prompt` 两条；现在等到 `abort` 真落进接收日志再走完事件循环，末事件仍断言为已中断。无行为变化
+
 ## [0.5.20] - 2026-11-04
 
 ### 修复
