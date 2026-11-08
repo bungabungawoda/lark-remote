@@ -3,63 +3,75 @@ import { reduceRunState, createInitialRunState } from '../../src/card/run-state.
 import type { PlanEvent, FileChangeEvent } from '../../src/runner/index.js';
 
 describe('reduceRunState - PlanEvent', () => {
-  it('should accumulate plan text', () => {
+  it('should store a single plan snapshot verbatim', () => {
     const state = createInitialRunState('run-1');
     const planEvent: PlanEvent = {
       type: 'plan',
-      plan: 'Step 1: Analyze the codebase',
+      plan: '✅ #1 Analyze\n⬜ #2 Implement',
       timestamp: '2026-07-05T10:00:00Z',
     };
 
     const result = reduceRunState(state, planEvent);
 
-    expect(result.plan).toContain('Step 1: Analyze the codebase');
+    expect(result.plan).toBe('✅ #1 Analyze\n⬜ #2 Implement');
     expect(result.blocks).toHaveLength(1);
     expect(result.blocks[0]).toEqual({
       kind: 'plan',
-      content: expect.stringContaining('Step 1'),
+      content: '✅ #1 Analyze\n⬜ #2 Implement',
       active: true,
       timestamp: '2026-07-05T10:00:00Z',
     });
   });
 
-  it('should accumulate multiple plan deltas', () => {
+  it('should keep only the latest full snapshot after status changes', () => {
     let state = createInitialRunState('run-1');
-    const planEvent1: PlanEvent = {
-      type: 'plan',
-      plan: 'Step 1: Analyze',
-    };
-    const planEvent2: PlanEvent = {
-      type: 'plan',
-      plan: '\nStep 2: Implement',
-    };
-    const planEvent3: PlanEvent = {
-      type: 'plan',
-      plan: '\nStep 3: Test',
-    };
+    const snapshots = [
+      ['✅ #1 A', '✅ #2 B', '⬜ #3 C', '⬜ #4 D', '⬜ #5 E'].join('\n'),
+      ['✅ #1 A', '✅ #2 B', '🔄 #3 C', '⬜ #4 D', '⬜ #5 E'].join('\n'),
+      ['✅ #1 A', '✅ #2 B', '✅ #3 C', '🔄 #4 D', '⬜ #5 E'].join('\n'),
+    ];
 
-    state = reduceRunState(state, planEvent1);
-    state = reduceRunState(state, planEvent2);
-    state = reduceRunState(state, planEvent3);
+    for (const plan of snapshots) {
+      state = reduceRunState(state, { type: 'plan', plan });
+    }
 
-    expect(state.plan).toContain('Step 1: Analyze');
-    expect(state.plan).toContain('Step 2: Implement');
-    expect(state.plan).toContain('Step 3: Test');
-    // Plan is a single evolving document - one block, not one per delta.
+    expect(state.plan).toBe(snapshots[2]);
     expect(state.blocks).toHaveLength(1);
-    expect(state.blocks[0].kind).toBe('plan');
     const planBlock = state.blocks[0] as { kind: 'plan'; content: string };
-    expect(planBlock.content).toContain('Step 1: Analyze');
-    expect(planBlock.content).toContain('Step 2: Implement');
-    expect(planBlock.content).toContain('Step 3: Test');
+    expect(planBlock.content).toBe(snapshots[2]);
+    // Whole-list snapshots must not stack up in the plan panel.
+    expect(planBlock.content.match(/#1 A/g)).toHaveLength(1);
+    expect(planBlock.content).not.toContain('🔄 #3 C');
+  });
+
+  it('should not duplicate repeated identical snapshots', () => {
+    let state = createInitialRunState('run-1');
+    const snapshot = [
+      '✅ #1 A',
+      '✅ #2 B',
+      '🔄 #3 C',
+      '⬜ #4 D',
+      '⬜ #5 E',
+      '⬜ #6 F',
+      '⬜ #7 G',
+      '⬜ #8 H',
+      '⬜ #9 I',
+    ].join('\n');
+
+    for (let i = 0; i < 5; i++) {
+      state = reduceRunState(state, { type: 'plan', plan: snapshot });
+    }
+
+    expect(state.plan).toBe(snapshot);
+    expect(state.blocks).toHaveLength(1);
+    expect((state.plan ?? '').match(/#1 A/g)).toHaveLength(1);
   });
 
   it('should truncate long plan text', () => {
     const state = createInitialRunState('run-1');
-    const longPlan = 'A'.repeat(10000);
     const planEvent: PlanEvent = {
       type: 'plan',
-      plan: longPlan,
+      plan: 'A'.repeat(10000),
     };
 
     const result = reduceRunState(state, planEvent);

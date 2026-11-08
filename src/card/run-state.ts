@@ -1265,12 +1265,15 @@ function reduceSessionInfoEvent(state: RunState, event: SessionInfoEvent): RunSt
   };
 }
 
-/** Handle plan event — accumulate plan text for Codex-style agents. */
+/**
+ * Handle plan event — replace the plan document with the latest snapshot.
+ * Every producer (ACP entries[] / Codex PlanStep[]) sends the whole current
+ * plan, not an incremental delta. Appending snapshots reproduces the entire
+ * list once per status change; a plan is a single stateful document, so the
+ * reducer upserts one block with the newest content.
+ */
 function reducePlanEvent(state: RunState, event: PlanEvent): RunState {
-  const currentPlan = state.plan ?? '';
-  const newPlan = keepTailMarked(currentPlan + '\n' + event.plan, MAX_REASONING_CHARS * 2);
-  // Plan is a single evolving document — replace the existing plan block
-  // instead of appending a new one (avoids N overlapping blocks after N events).
+  const newPlan = keepTailMarked(event.plan, MAX_REASONING_CHARS * 2);
   const withoutOldPlan = state.blocks.filter((b) => b.kind !== 'plan');
   const newBlocks = [
     ...withoutOldPlan,
