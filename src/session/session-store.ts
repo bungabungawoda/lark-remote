@@ -26,6 +26,9 @@ interface SessionEntry {
   cwd: string;
 }
 
+/** 落盘时机：'now' 即时原子写（默认，用户命令路径）；'soon' 走 run 写回去抖窗口。 */
+type PersistTiming = 'now' | 'soon';
+
 /**
  * per-agent 字符串 Map 的字段名：sessions / sessionCwds / previousSessions /
  * arrivalSessions。四类 getter 的方法体原本完全重复，唯一差异就是读/写
@@ -184,6 +187,39 @@ export class SessionStore {
     if (persistPath) this.load();
   }
 
+  /**
+   * run 生命周期写回（system.init / turn_started / result）的落盘去抖窗口。
+   * 一次 run 至少 3 次写回，每次都是带 fsync 的全量原子写（mkdir+write+fsync+
+   * rename+unlink 六个同步 syscall）；窗口内合并为一次。用户命令（/new、/cd、
+   * /resume、/config 切换）不经过此路径，仍即时落盘。
+   */
+  private static readonly PERSIST_DEBOUNCE_MS = 1_500;
+  private persistTimer: NodeJS.Timeout | undefined;
+
+  private autoPersistSoon(): void {
+    if (!this.persistPath) return;
+    if (this.persistTimer) return;
+    this.persistTimer = setTimeout(() => {
+      this.persistTimer = undefined;
+      this.autoPersist();
+    }, SessionStore.PERSIST_DEBOUNCE_MS);
+    // unref：不阻止进程自然退出；退出路径由 flushPendingPersist 收口。
+    this.persistTimer.unref?.();
+  }
+
+  /**
+   * 立即落盘尚在去抖窗口内的写回（幂等；无 pending 时是 no-op）。
+   * 进程退出路径（index.ts 的 'exit' 钩子）调用，防止最近一次指针更新丢失；
+   * SIGKILL/断电场景丢失最近 ≤1.5s 的指针更新是已接受的损耗——指针只是
+   * 恢复便利，agent 会话本身已持久化。
+   */
+  flushPendingPersist(): void {
+    if (!this.persistTimer) return;
+    clearTimeout(this.persistTimer);
+    this.persistTimer = undefined;
+    this.autoPersist();
+  }
+
   /** A fresh, empty session entry (default factory). */
   private static emptyEntry(cwd = ''): SessionEntry {
     return {
@@ -202,7 +238,11 @@ export class SessionStore {
    * setCwd / setSessionId / setSessionIdAndCwd / setSessionIdAndSessionCwd)
    * use this to avoid each re-spelling the "clone entry, tweak one Map" dance.
    */
-  private mutateEntry(userId: string, mutate: (entry: SessionEntry) => SessionEntry): void {
+  private mutateEntry(
+    userId: string,
+    mutate: (entry: SessionEntry) => SessionEntry,
+    persist: PersistTiming = 'now',
+  ): void {
     const current = this.sessions.get(userId);
     const base = current
       ? {
@@ -214,7 +254,8 @@ export class SessionStore {
         }
       : SessionStore.emptyEntry();
     this.sessions.set(userId, mutate(base));
-    this.autoPersist();
+    if (persist === 'soon') this.autoPersistSoon();
+    else this.autoPersist();
   }
 
   get(userId: string): SessionEntry | undefined {
@@ -329,15 +370,20 @@ export class SessionStore {
     sessionId: string,
     cwd: string,
     sessionCwd?: string,
+    opts?: { persist?: PersistTiming },
   ): void {
-    this.mutateEntry(userId, (entry) => {
-      entry.sessions.set(agent, sessionId);
-      if (sessionCwd !== undefined) {
-        entry.sessionCwds.set(agent, sessionCwd);
-      }
-      entry.cwd = cwd;
-      return entry;
-    });
+    this.mutateEntry(
+      userId,
+      (entry) => {
+        entry.sessions.set(agent, sessionId);
+        if (sessionCwd !== undefined) {
+          entry.sessionCwds.set(agent, sessionCwd);
+        }
+        entry.cwd = cwd;
+        return entry;
+      },
+      opts?.persist,
+    );
   }
 
   /** Get sessionCwd for a specific agent, or undefined if not set */
@@ -351,12 +397,17 @@ export class SessionStore {
     agent: AgentKind,
     sessionId: string,
     sessionCwd: string,
+    opts?: { persist?: PersistTiming },
   ): void {
-    this.mutateEntry(userId, (entry) => {
-      entry.sessions.set(agent, sessionId);
-      entry.sessionCwds.set(agent, sessionCwd);
-      return entry;
-    });
+    this.mutateEntry(
+      userId,
+      (entry) => {
+        entry.sessions.set(agent, sessionId);
+        entry.sessionCwds.set(agent, sessionCwd);
+        return entry;
+      },
+      opts?.persist,
+    );
   }
 
   // -- Persistence helpers --

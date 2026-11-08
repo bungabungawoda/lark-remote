@@ -14,6 +14,9 @@ export function bestEffortUnlink(path: string): void {
   try {
     withBusyRetry(() => fs.unlinkSync(path));
   } catch (err) {
+    // 目标本就不存在 = 清理已达成（原子写成功后 tmp 已被 rename 走的常态路径）：
+    // 不告警——否则每次成功的原子写都会多一次同步日志写盘。
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return;
     // 占用放弃（win32 重试耗尽 / posix 首次占用即失败）：按设计「告警，
     // 不静默吞」，但清理路径不向调用方抛错（保持本函数契约）
     getLogger().warn(`[fs] bestEffortUnlink gave up on busy file ${path}: ${String(err)}`);

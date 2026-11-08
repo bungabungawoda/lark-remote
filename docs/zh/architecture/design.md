@@ -371,7 +371,9 @@ POSIX 在全块放不下时回退半块。两种渲染都带 QR 规范要求的 
 
 DSH 的 launch token 每个进程随机生成，重启即失效；它的浏览器签名密钥则持久化在
 `$DSH_HOME/.credentials.yaml` 的 `client-connection/browser-session` 记录里。
-lark-remote 默认每次请求读取该文件并现签一个短时效 v1 cookie。DSH 的 `/api` admission
+lark-remote 每次请求都现签一个短时效 v1 cookie；签名密钥按文件 (mtime, size) 指纹
+缓存——文件未被改写时请求只付一次 `stat`，轮换（重写文件）后下一次请求自动重读，
+无需重启 lark-remote。DSH 的 `/api` admission
 接受 v1 cookie（共享 browser peer），因此外部重启 DSH 后旧请求即使失败，下一次请求也能
 用同一签名密钥自动恢复；token 只在凭据文件不可用时兜底。凭据文件按 DSH 约定要求
 `0600`，lark-remote 只读不写，且日志中不输出密钥或 cookie。

@@ -238,6 +238,90 @@ describe('FeishuConnector inbound media 两阶段流程（先认证后下载）'
     expect(payload.failures).toEqual([]);
   });
 
+  it('downloadInboundMedia 并行下载（限 3 路）且结果顺序不变', async () => {
+    const { connector } = makeConnector();
+    let inFlight = 0;
+    let maxInFlight = 0;
+    downloadResourceToFile.mockImplementation(
+      async (_messageId: string, fileKey: string, _type: string, destPath: string) => {
+        inFlight += 1;
+        maxInFlight = Math.max(maxInFlight, inFlight);
+        // 异步让 worker 池真正叠起来（8 个资源 / 3 路 = 至少 3 轮并发）。
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        inFlight -= 1;
+        fs.writeFileSync(destPath, `content-${fileKey}`);
+        return { contentType: 'application/octet-stream', bytesWritten: destPath.length };
+      },
+    );
+    const resources = Array.from({ length: 8 }, (_, i) => ({
+      type: 'file' as const,
+      kind: 'file' as const,
+      fileKey: `key-${i}`,
+      fileName: `f-${i}.bin`,
+    }));
+
+    const payload = await connector.downloadInboundMedia({
+      userId: 'user-1',
+      chatId: 'chat-1',
+      messageId: 'msg-parallel',
+      rawContentType: 'file',
+      resources,
+    });
+
+    // 并发上限生效：8 个资源不会 8 路齐发。
+    expect(maxInFlight).toBeLessThanOrEqual(3);
+    expect(maxInFlight).toBeGreaterThanOrEqual(2);
+    // 全部成功且 media 顺序 = 资源顺序（摊平语义与串行版一致）。
+    expect(payload.failures).toEqual([]);
+    expect(payload.media.map((m) => m.fileName)).toEqual([
+      'f-0.bin',
+      'f-1.bin',
+      'f-2.bin',
+      'f-3.bin',
+      'f-4.bin',
+      'f-5.bin',
+      'f-6.bin',
+      'f-7.bin',
+    ]);
+  });
+
+  it('downloadInboundMedia 并行下载时单个失败不影响其他资源', async () => {
+    const { connector } = makeConnector();
+    downloadResourceToFile.mockImplementation(
+      async (_messageId: string, fileKey: string, _type: string, destPath: string) => {
+        if (fileKey === 'key-2') throw new Error('boom');
+        fs.writeFileSync(destPath, 'ok');
+        return { contentType: 'text/plain', bytesWritten: 2 };
+      },
+    );
+    const resources = Array.from({ length: 5 }, (_, i) => ({
+      type: 'file' as const,
+      kind: 'file' as const,
+      fileKey: `key-${i}`,
+      fileName: `f-${i}.txt`,
+    }));
+
+    const payload = await connector.downloadInboundMedia({
+      userId: 'user-1',
+      chatId: 'chat-1',
+      messageId: 'msg-partial-fail',
+      rawContentType: 'file',
+      resources,
+    });
+
+    expect(payload.media).toHaveLength(4);
+    expect(payload.failures).toHaveLength(1);
+    expect(payload.failures[0].fileName).toBe('f-2.txt');
+    expect(payload.failures[0].reason).toContain('boom');
+    // 成功的 media 保持资源相对顺序（key-2 缺席）。
+    expect(payload.media.map((m) => m.fileName)).toEqual([
+      'f-0.txt',
+      'f-1.txt',
+      'f-3.txt',
+      'f-4.txt',
+    ]);
+  });
+
   it('超过大小限制的资源不进入 media，临时文件被清理', async () => {
     const { connector } = makeConnector();
     let writtenTo: string | undefined;

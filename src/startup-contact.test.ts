@@ -38,6 +38,57 @@ describe('StartupContactStore', () => {
 
     expect(new StartupContactStore(storePath).getContact()).toBeUndefined();
   });
+
+  it('reuses the parsed contact while (mtime, size) fingerprint is unchanged', () => {
+    const store = new StartupContactStore(storePath);
+    store.save({ chatId: 'chat-1', userId: 'user-1' });
+
+    const readSpy = vi.spyOn(fs, 'readFileSync');
+    try {
+      const first = store.getContact();
+      const second = store.getContact();
+      expect(first).toEqual({ chatId: 'chat-1', userId: 'user-1' });
+      expect(second).toEqual(first);
+      // 同一实例指纹未变：第二次调用不再读文件（每消息 owner 判定的核心收益）。
+      expect(readSpy).toHaveBeenCalledTimes(1);
+    } finally {
+      readSpy.mockRestore();
+    }
+  });
+
+  it('re-reads when the file is rewritten externally (mtime changes)', () => {
+    const store = new StartupContactStore(storePath);
+    store.save({ chatId: 'chat-1', userId: 'user-1' });
+    expect(store.getContact()).toEqual({ chatId: 'chat-1', userId: 'user-1' });
+
+    // 外部改写（模拟手工修复/测试直接写文件），等待可分辨的 mtime 变化。
+    fs.writeFileSync(storePath, JSON.stringify({ chatId: 'chat-2', userId: 'user-2' }), 'utf-8');
+    try {
+      const st = fs.statSync(storePath);
+      fs.utimesSync(storePath, st.atime, new Date(st.mtimeMs + 5));
+    } catch {
+      /* utimes 不可用时依赖写入本身的 mtime 推进 */
+    }
+
+    expect(store.getContact()).toEqual({ chatId: 'chat-2', userId: 'user-2' });
+  });
+
+  it('save invalidates the cache immediately', () => {
+    const store = new StartupContactStore(storePath);
+    store.save({ chatId: 'chat-1', userId: 'user-1' });
+    expect(store.getContact()).toEqual({ chatId: 'chat-1', userId: 'user-1' });
+
+    store.save({ chatId: 'chat-9', userId: 'user-9' });
+    expect(store.getContact()).toEqual({ chatId: 'chat-9', userId: 'user-9' });
+  });
+
+  it('returns undefined for a missing file and recovers when it appears', () => {
+    const store = new StartupContactStore(storePath);
+    expect(store.getContact()).toBeUndefined();
+
+    store.save({ chatId: 'chat-1', userId: 'user-1' });
+    expect(store.getContact()).toEqual({ chatId: 'chat-1', userId: 'user-1' });
+  });
 });
 
 describe('formatStartupHello', () => {

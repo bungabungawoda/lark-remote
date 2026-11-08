@@ -53,6 +53,7 @@
     "src/router/config/config-card-controls.test.ts",
     "src/router/config/common/model-patch.test.ts",
     "src/router/update-command.test.ts",
+    "src/router/commands/ls.test.ts",
     "tests/router/**/*.test.ts",
     "tests/anchor/agent-switch/**/*.test.ts",
     "tests/anchor/resume/**/*.test.ts",

@@ -162,6 +162,77 @@ function isCompactionTerminal(entry: KimiJsonlEntry): entry is KimiCompactionRec
   );
 }
 
+/** 单行 wire 记录 → 压缩记录（只保留契约字段）；非压缩行返回 undefined。 */
+function parseCompactionLine(line: string): KimiCompactionRecord | undefined {
+  let entry: KimiJsonlEntry;
+  try {
+    entry = JSON.parse(line) as KimiJsonlEntry;
+  } catch {
+    return undefined;
+  }
+  if (!isCompactionBegin(entry) && !isCompactionTerminal(entry)) return undefined;
+  return {
+    type: entry.type,
+    ...(entry.source !== undefined ? { source: entry.source } : {}),
+    ...(entry.compactedCount !== undefined ? { compactedCount: entry.compactedCount } : {}),
+    ...(entry.tokensBefore !== undefined ? { tokensBefore: entry.tokensBefore } : {}),
+    ...(entry.tokensAfter !== undefined ? { tokensAfter: entry.tokensAfter } : {}),
+    time: entry.time,
+  };
+}
+
+/** runCompact 轮询用的增量压缩记录追踪器（见 createCompactionRecordTracker）。 */
+export interface KimiCompactionRecordTracker {
+  /** 首调返回全量历史，之后返回「历史 + 增量」的累积列表（同一数组引用）。 */
+  records(): KimiCompactionRecord[];
+}
+
+/**
+ * 从 `startOffset` 字节起流式读 wire.jsonl，把新增的压缩记录追加进 `sink`，
+ * 返回下次读取的字节偏移。只消费**完整行**（以 `\n` 结尾）；无换行符的尾部
+ * 字节不计入偏移，留待下次读到完整后再解析——部分写入的行不会被丢弃。
+ * 逐行解析失败跳过（与全量扫描口径一致）；open 失败返回原 offset。
+ */
+function appendCompactionRecordsFrom(
+  wirePath: string,
+  startOffset: number,
+  sink: KimiCompactionRecord[],
+): number {
+  let fd: number;
+  try {
+    fd = fs.openSync(wirePath, 'r');
+  } catch {
+    return startOffset;
+  }
+  const CHUNK_SIZE = 65536;
+  const chunk = Buffer.alloc(CHUNK_SIZE);
+  let buf = Buffer.alloc(0);
+  let position = startOffset;
+  let consumed = 0;
+  try {
+    for (;;) {
+      const nread = fs.readSync(fd, chunk, 0, CHUNK_SIZE, position);
+      if (nread === 0) break;
+      buf = Buffer.concat([buf, chunk.subarray(0, nread)]);
+      position += nread;
+      const nl = buf.lastIndexOf(0x0a);
+      if (nl === -1) continue;
+      const complete = buf.subarray(0, nl);
+      consumed += nl + 1;
+      buf = buf.subarray(nl + 1);
+      for (const line of complete.toString('utf-8').split('\n')) {
+        const trimmed = line.trim();
+        if (!trimmed) continue;
+        const record = parseCompactionLine(trimmed);
+        if (record) sink.push(record);
+      }
+    }
+  } finally {
+    fs.closeSync(fd);
+  }
+  return startOffset + consumed;
+}
+
 /**
  * Max lines scanned backwards when looking for the last loop event.
  * Bounds the tail scan so huge wire files are not fully parsed.
@@ -695,29 +766,57 @@ export class KimiSessionReader implements AgentSessionReader {
     const records: KimiCompactionRecord[] = [];
     try {
       for (const line of readJsonlLines(wirePath)) {
-        try {
-          const entry = JSON.parse(line) as KimiJsonlEntry;
-          if (isCompactionBegin(entry) || isCompactionTerminal(entry)) {
-            records.push({
-              type: entry.type,
-              ...(entry.source !== undefined ? { source: entry.source } : {}),
-              ...(entry.compactedCount !== undefined
-                ? { compactedCount: entry.compactedCount }
-                : {}),
-              ...(entry.tokensBefore !== undefined ? { tokensBefore: entry.tokensBefore } : {}),
-              ...(entry.tokensAfter !== undefined ? { tokensAfter: entry.tokensAfter } : {}),
-              time: entry.time,
-            });
-          }
-        } catch {
-          continue;
-        }
+        const record = parseCompactionLine(line);
+        if (record) records.push(record);
       }
     } catch (error) {
       getLogger().error(`[kimi-session-reader] readCompactionRecords error: ${error}`);
       return [];
     }
     return records;
+  }
+
+  /**
+   * 压缩记录增量追踪器：runCompact 轮询专用。
+   *
+   * `records()` 首调全量扫描（语义与 readCompactionRecords 一致，覆盖 baseline
+   * 捕获与 prompt fire 之间落地的记录），之后每次只从上次消费的字节偏移读增量，
+   * 只对新增行 JSON.parse。压缩期间 wire.jsonl 每秒都在追加（mtime 不断变化，
+   * readJsonlLines 的 mtime 缓存必然失效），旧路径每秒全量读 + 全量 parse 整个
+   * 文件；增量后每秒成本 = O(新增字节)。
+   *
+   * 文件被截断/重写（size < offset）时自动从头重建，语义不漂移。
+   * 返回 null = 会话 wire 定位失败，调用方回退一次性读取。
+   */
+  createCompactionRecordTracker(
+    sessionId: string,
+    cwd: string,
+  ): KimiCompactionRecordTracker | null {
+    const wirePath = this.resolveSessionWirePath(sessionId, cwd);
+    if (wirePath === null) {
+      return null;
+    }
+    let offset = 0;
+    let primed = false;
+    const records: KimiCompactionRecord[] = [];
+    return {
+      records(): KimiCompactionRecord[] {
+        try {
+          const size = fs.statSync(wirePath).size;
+          if (!primed || size < offset) {
+            // 首调全量；文件被截断/重写也从头重建（append-only 之外的形态不猜）。
+            records.length = 0;
+            offset = 0;
+            primed = true;
+          }
+          offset = appendCompactionRecordsFrom(wirePath, offset, records);
+        } catch (error) {
+          getLogger().error(`[kimi-session-reader] compaction tracker error: ${error}`);
+          // 保留已积累记录；下一轮从原 offset 重试。
+        }
+        return records;
+      },
+    };
   }
 
   /**

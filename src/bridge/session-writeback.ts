@@ -32,6 +32,8 @@ export function writeBackInitSession(ctx: WritebackContext, event: InitEvent): v
   const eventCwd = typeof event.cwd === 'string' ? event.cwd : '';
   const hasCwd = !!ctx.sessionStore.getCwd(ctx.userId);
   const realCwd = eventCwd.length > 0 ? eventCwd : ctx.cwd;
+  // run 生命周期写回落盘走去抖（persist:'soon'）：一次 run 3 次写回合并为一次
+  // 带 fsync 的全量原子写；进程退出由 SessionStore.flushPendingPersist 收口。
   if (hasCwd && eventCwd && eventCwd !== ctx.cwd) {
     getLogger().info(`[lark-remote] system.init: cwd=${ctx.cwd}, session cwd=${eventCwd}`);
     ctx.sessionStore.setSessionIdAndSessionCwd(
@@ -39,6 +41,7 @@ export function writeBackInitSession(ctx: WritebackContext, event: InitEvent): v
       ctx.agentKind,
       event.session_id,
       realCwd,
+      { persist: 'soon' },
     );
     return;
   }
@@ -50,6 +53,7 @@ export function writeBackInitSession(ctx: WritebackContext, event: InitEvent): v
     event.session_id,
     realCwd,
     bootstrapSessionCwd,
+    { persist: 'soon' },
   );
 }
 
@@ -60,7 +64,16 @@ export function writeBackTurnStarted(ctx: WritebackContext, event: TurnStartedEv
     );
     return false;
   }
-  ctx.sessionStore.setSessionIdAndCwd(ctx.userId, ctx.agentKind, event.threadId, ctx.cwd);
+  ctx.sessionStore.setSessionIdAndCwd(
+    ctx.userId,
+    ctx.agentKind,
+    event.threadId,
+    ctx.cwd,
+    undefined,
+    {
+      persist: 'soon',
+    },
+  );
   getLogger().info(
     `[lark-remote] turn_started session write-back runId=${ctx.runId} sessionId=${event.threadId}`,
   );
@@ -69,7 +82,9 @@ export function writeBackTurnStarted(ctx: WritebackContext, event: TurnStartedEv
 
 export function writeBackResultSession(ctx: WritebackContext, sessionId: string | undefined): void {
   if (!sessionId || pointerMoved(ctx)) return;
-  ctx.sessionStore.setSessionIdAndCwd(ctx.userId, ctx.agentKind, sessionId, ctx.cwd);
+  ctx.sessionStore.setSessionIdAndCwd(ctx.userId, ctx.agentKind, sessionId, ctx.cwd, undefined, {
+    persist: 'soon',
+  });
   getLogger().info(
     `[lark-remote] result session write-back runId=${ctx.runId} sessionId=${sessionId}`,
   );

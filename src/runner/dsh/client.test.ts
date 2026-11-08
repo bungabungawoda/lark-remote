@@ -10,8 +10,13 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import YAML from 'yaml';
-import { afterEach, describe, expect, it } from 'vitest';
-import { DshClient, type WebSocketFactory, type WebSocketLike } from './client.js';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import {
+  DshClient,
+  reconnectBackoffMs,
+  type WebSocketFactory,
+  type WebSocketLike,
+} from './client.js';
 import { extractDshToken } from '../../dsh/protocol.js';
 import { DSH_BROWSER_CREDENTIAL_KEY } from '../../dsh/auth.js';
 import { DshRunner } from './runner.js';
@@ -991,5 +996,124 @@ describe('DshClient.cookieFromCredentials 损坏凭据回退', () => {
     });
 
     await expect(client.unary('session/prompt', {})).rejects.toThrow(/corrupt yaml/);
+  });
+});
+
+describe('DshClient 凭据 (mtime, size) 指纹缓存', () => {
+  it('指纹未变时复用缓存的 secret，重写文件后自动重读', async () => {
+    const file = credentialsFile(Buffer.alloc(32, 9));
+    let readCount = 0;
+    const readCredentials = vi.fn(async (_file: string) => {
+      readCount += 1;
+      return Buffer.alloc(32, 9);
+    });
+    const fetchImpl = (async () => jsonResponse({ sessionId: SID })) as typeof fetch;
+    const client = new DshClient('http://127.0.0.1:3080', {
+      credentialsFile: file,
+      readCredentials,
+      fetchImpl,
+    });
+
+    await client.createSession({ cwd: CWD });
+    await client.createSession({ cwd: CWD });
+    expect(readCount).toBe(1);
+
+    // 轮换 = 重写凭据文件：mtime 变化 → 下次调用重读（免重启生效语义保留）。
+    fs.writeFileSync(
+      file,
+      YAML.stringify({
+        version: 1,
+        records: {
+          [DSH_BROWSER_CREDENTIAL_KEY]: {
+            kind: 'grant',
+            payload: { version: 1, secret: Buffer.alloc(32, 10).toString('base64url') },
+          },
+        },
+      }),
+      { mode: 0o600 },
+    );
+    await client.createSession({ cwd: CWD });
+    expect(readCount).toBe(2);
+    expect(vi.mocked(readCredentials).mock.calls.every(([f]) => f === file)).toBe(true);
+  });
+
+  it('stat 失败（文件消失）时不缓存，reader 错误契约不变', async () => {
+    let readCount = 0;
+    const broken = async (): Promise<Buffer> => {
+      readCount += 1;
+      throw new Error('corrupt yaml');
+    };
+    const fetchImpl = (async () => jsonResponse({})) as typeof fetch;
+    const client = new DshClient('http://127.0.0.1:3080', {
+      credentialsFile: NO_CREDENTIALS_FILE,
+      readCredentials: broken,
+      fetchImpl,
+    });
+
+    await expect(client.unary('session/prompt', {})).rejects.toThrow(/corrupt yaml/);
+    expect(readCount).toBe(1);
+  });
+});
+
+describe('DshClient sessionEvents 重连退避', () => {
+  /** 从 setTimeout 调用里提取退避 sleep（排除 0ms 脚本 timer 与 60s 连接超时）。 */
+  function backoffDelays(spy: { mock: { calls: unknown[][] } }): number[] {
+    return spy.mock.calls
+      .map((call: unknown[]) => (typeof call[1] === 'number' ? call[1] : 0))
+      .filter((ms: number) => ms > 0 && ms < 60_000);
+  }
+
+  it('退避调度：200ms 起指数翻倍，封顶 5s', () => {
+    expect(reconnectBackoffMs(0)).toBe(200);
+    expect(reconnectBackoffMs(1)).toBe(400);
+    expect(reconnectBackoffMs(2)).toBe(800);
+    expect(reconnectBackoffMs(3)).toBe(1_600);
+    expect(reconnectBackoffMs(4)).toBe(3_200);
+    expect(reconnectBackoffMs(5)).toBe(5_000);
+    expect(reconnectBackoffMs(20)).toBe(5_000);
+  });
+
+  it('宿主持续宕机时重连按指数退避（真实 setTimeout 序列 200→400→…→封顶）', async () => {
+    let socketCount = 0;
+    const client = new DshClient('http://127.0.0.1:3080', {
+      token: 'abc',
+      credentialsFile: NO_CREDENTIALS_FILE,
+      fetchImpl: (async () =>
+        new Response(null, {
+          status: 303,
+          headers: { 'set-cookie': 'dsh-auth-127.0.0.1:3080=v1.operator' },
+        })) as typeof fetch,
+      webSocketImpl: (url) => {
+        socketCount += 1;
+        // 每次握手都 503：宿主宕机形态（ScriptedWebSocket 的 0ms timer 立即回包）。
+        return new ScriptedWebSocket(url, [], true, 503);
+      },
+    });
+
+    const sleepSpy = vi.spyOn(globalThis, 'setTimeout');
+    try {
+      const controller = new AbortController();
+      const consumed = (async () => {
+        for await (const _item of client.sessionEvents(SID, controller.signal)) {
+          // 永远等不到帧。
+        }
+      })();
+      // 5 档退避累计 200+400+800+1600+3200 = 6.2s，等前 4 档出现即可。
+      await vi.waitFor(
+        () => {
+          const delays = backoffDelays(sleepSpy);
+          expect(delays.length).toBeGreaterThanOrEqual(4);
+        },
+        { timeout: 8_000, interval: 50 },
+      );
+      controller.abort();
+      await consumed;
+      const delays = backoffDelays(sleepSpy).slice(0, 4);
+      expect(delays).toEqual([200, 400, 800, 1_600]);
+      // 第 N 个 socket 失败后才排第 N 个 sleep；4 个 sleep = 至少 4 次尝试。
+      expect(socketCount).toBeGreaterThanOrEqual(4);
+    } finally {
+      sleepSpy.mockRestore();
+    }
   });
 });
