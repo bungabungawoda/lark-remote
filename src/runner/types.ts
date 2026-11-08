@@ -339,10 +339,10 @@ export interface ResultEvent {
  */
 export type TokenUsage = NonNullable<ResultEvent['usage']>;
 
-/** Plan event — for agents that report execution plans (e.g. Codex). */
+/** Plan event — full plan snapshot from agents that report execution plans. */
 export interface PlanEvent {
   type: 'plan';
-  plan: string; // delta-accumulated plan text
+  plan: string; // whole current plan; replaces the previous snapshot
   timestamp?: string;
 }
 
