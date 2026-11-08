@@ -29,6 +29,12 @@ const SANDBOX_OPTIONS: SelectOption[] = [
   { value: 'true', text: 'true（sandbox-cli 隔离）' },
 ];
 
+/**
+ * 「跟随 CodeBuddy 默认」哨兵值。不能用空串：飞书 select 把空 initial_option
+ * 当作「未选择」（显示 placeholder），空串选项的选中态永远无法回显。
+ */
+const DEFAULT_SENTINEL = 'default';
+
 /** 模型：目录可用 → 下拉（展示名 + 积分费率），否则文本输入。 */
 function modelField(cbCfg: CodebuddyConfigResult, configured: string): ConfigField {
   if (cbCfg.modelOptions.length === 0) {
@@ -54,7 +60,7 @@ function modelField(cbCfg: CodebuddyConfigResult, configured: string): ConfigFie
   };
 }
 
-/** 空串 = 不下发（跟随 CodeBuddy 默认 enabled）。 */
+/** default 哨兵 = 不下发（跟随 CodeBuddy 默认 enabled）。 */
 function thinkingLevelField(
   levels: ReadonlyArray<{ value: string; name: string }>,
   current: string,
@@ -64,10 +70,10 @@ function thinkingLevelField(
     label: '思考档位',
     type: 'select',
     options: [
-      { value: '', text: 'default（跟随 CodeBuddy 默认）' },
+      { value: DEFAULT_SENTINEL, text: 'default（跟随 CodeBuddy 默认）' },
       ...levels.map((t) => ({ value: t.value, text: t.name })),
     ],
-    currentValue: current,
+    currentValue: current || DEFAULT_SENTINEL,
   };
 }
 
@@ -77,8 +83,11 @@ function sandboxField(current: boolean | undefined): ConfigField {
     key: 'agents.codebuddy.sandbox',
     label: '命令沙箱',
     type: 'select',
-    options: [{ value: '', text: 'default（跟随 CodeBuddy 默认）' }, ...SANDBOX_OPTIONS],
-    currentValue: current === undefined ? '' : String(current),
+    options: [
+      { value: DEFAULT_SENTINEL, text: 'default（跟随 CodeBuddy 默认）' },
+      ...SANDBOX_OPTIONS,
+    ],
+    currentValue: current === undefined ? DEFAULT_SENTINEL : String(current),
   };
 }
 
@@ -114,16 +123,21 @@ export class CodebuddyConfigBuilder implements AgentConfigCardBuilder {
     value: unknown,
     _config: AppConfig,
   ): Array<{ key: string; value: unknown }> {
-    // 空串 = 清除配置（跟随 CodeBuddy 默认）。
+    // default 哨兵 / 空串（旧卡片）= 清除配置（跟随 CodeBuddy 默认）。
+    if (key === 'agents.codebuddy.model' && typeof value === 'string' && !value.trim()) {
+      return [{ key, value: undefined }];
+    }
     if (
-      (key === 'agents.codebuddy.model' || key === 'agents.codebuddy.thinkingLevel') &&
+      key === 'agents.codebuddy.thinkingLevel' &&
       typeof value === 'string' &&
-      !value.trim()
+      (!value.trim() || value.trim() === DEFAULT_SENTINEL)
     ) {
       return [{ key, value: undefined }];
     }
     if (key === 'agents.codebuddy.sandbox') {
-      if (value === '' || value === undefined) return [{ key, value: undefined }];
+      if (value === '' || value === undefined || value === DEFAULT_SENTINEL) {
+        return [{ key, value: undefined }];
+      }
       if (typeof value === 'string') return [{ key, value: value === 'true' }];
       // string/boolean 双口径合法收敛（zod schema 收 boolean）。
       return [{ key, value: Boolean(value) }];

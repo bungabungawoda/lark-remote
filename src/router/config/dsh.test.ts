@@ -129,8 +129,14 @@ describe('DshConfigBuilder', () => {
     const fields = builder.buildFields(config);
     const preset = fields[1];
     const options = preset.options as Array<{ text: string; value: string }>;
-    expect(options[0]).toEqual({ text: '跟随服务端默认', value: '' });
-    expect(options.map((o) => o.value)).toEqual(['', 'standard', 'minimal', 'ptc', 'cordis']);
+    expect(options[0]).toEqual({ text: '跟随服务端默认', value: 'default' });
+    expect(options.map((o) => o.value)).toEqual([
+      'default',
+      'standard',
+      'minimal',
+      'ptc',
+      'cordis',
+    ]);
   });
 
   it('permission select offers fallback presets plus follow-default sentinel', () => {
@@ -138,9 +144,9 @@ describe('DshConfigBuilder', () => {
     const fields = builder.buildFields(config);
     const permission = fields[2];
     const options = permission.options as Array<{ text: string; value: string }>;
-    expect(options[0]).toEqual({ text: '跟随服务端默认', value: '' });
+    expect(options[0]).toEqual({ text: '跟随服务端默认', value: 'default' });
     expect(options.map((o) => o.value)).toEqual([
-      '',
+      'default',
       'read-only',
       'workspace-write',
       'danger-full-access',
@@ -214,7 +220,7 @@ describe('DshConfigBuilder', () => {
     const fields = builder.buildFields(
       dshConfig({ provider: 'anthropic', model: 'claude-sonnet-4-5' }),
     );
-    expect(optionValues(fields[4])).toEqual(['', 'claude-sonnet-4-5', 'claude-opus-4-1']);
+    expect(optionValues(fields[4])).toEqual(['default', 'claude-sonnet-4-5', 'claude-opus-4-1']);
     expect(optionValues(fields[4])).not.toContain('deepseek-flash');
     expect(fields[4].currentValue).toBe('claude-sonnet-4-5');
   });
@@ -235,8 +241,8 @@ describe('DshConfigBuilder', () => {
       dshConfig({ provider: 'anthropic', reasoningEffort: 'max' }),
     );
     expect(fields[3].currentValue).toBe('anthropic');
-    expect(fields[4].currentValue).toBe('');
-    expect(optionValues(fields[6])).toEqual(['', 'low', 'high', 'max']);
+    expect(fields[4].currentValue).toBe('default');
+    expect(optionValues(fields[6])).toEqual(['default', 'low', 'high', 'max']);
     expect(fields[6].currentValue).toBe('max');
   });
 
@@ -246,7 +252,7 @@ describe('DshConfigBuilder', () => {
     const fields = builder.buildFields(
       dshConfig({ provider: 'anthropic', model: 'claude-sonnet-4-5', reasoningEffort: 'off' }),
     );
-    expect(optionValues(fields[6])).toEqual(['', 'low', 'high', 'max', 'off']);
+    expect(optionValues(fields[6])).toEqual(['default', 'low', 'high', 'max', 'off']);
     expect((fields[6].options as unknown as Array<{ text: string }>)[4].text).toContain(
       '模型未列出',
     );
@@ -255,15 +261,15 @@ describe('DshConfigBuilder', () => {
   it('model select offers fallback models plus follow-default sentinel when offline', () => {
     const builder = new DshConfigBuilder();
     const fields = builder.buildFields(config);
-    expect(optionValues(fields[4])).toEqual(['', 'deepseek-flash', 'deepseek-v4-pro']);
+    expect(optionValues(fields[4])).toEqual(['default', 'deepseek-flash', 'deepseek-v4-pro']);
   });
 
   it('effort select offers fallback efforts plus follow-default sentinel when offline', () => {
     const builder = new DshConfigBuilder();
     const fields = builder.buildFields(config);
     const options = fields[6].options as Array<{ text: string; value: string }>;
-    expect(options[0]).toEqual({ text: '跟随模型默认', value: '' });
-    expect(options.map((o) => o.value)).toEqual(['', 'off', 'low', 'high', 'max']);
+    expect(options[0]).toEqual({ text: '跟随模型默认', value: 'default' });
+    expect(options.map((o) => o.value)).toEqual(['default', 'off', 'low', 'high', 'max']);
   });
 
   it('reads configured preset/provider/model/effort as currentValue', () => {
@@ -290,7 +296,7 @@ describe('DshConfigBuilder', () => {
     const cfg = dshConfig({ provider: 'anthropic', model: 'my-custom-model' });
     const fields = builder.buildFields(cfg);
     // 下拉停在哨兵，模型名由自定义输入框承载
-    expect(fields[4].currentValue).toBe('');
+    expect(fields[4].currentValue).toBe('default');
     expect(fields[5]).toMatchObject({
       key: 'agents.dsh.model',
       type: 'input',
@@ -303,9 +309,12 @@ describe('DshConfigBuilder', () => {
     const patches = builder.handleFieldChange('agents.dsh.host', 'http://127.0.0.1:3080', config);
     expect(patches).toEqual([{ key: 'agents.dsh.host', value: 'http://127.0.0.1:3080' }]);
 
-    // 空串哨兵 → undefined（router 删除键 = 跟随服务端默认）
-    const sentinelPatches = builder.handleFieldChange('agents.dsh.agentPreset', '', config);
+    // default 哨兵 → undefined（router 删除键 = 跟随服务端默认）；旧卡片空串同义
+    const sentinelPatches = builder.handleFieldChange('agents.dsh.agentPreset', 'default', config);
     expect(sentinelPatches).toEqual([{ key: 'agents.dsh.agentPreset', value: undefined }]);
+    expect(builder.handleFieldChange('agents.dsh.agentPreset', '', config)).toEqual([
+      { key: 'agents.dsh.agentPreset', value: undefined },
+    ]);
   });
 
   it('model change pins the provider for a legacy model-only config', () => {
@@ -452,7 +461,7 @@ describe('DshConfigBuilder', () => {
     });
     expect(fields[2].options as Array<{ text: string; value: string }>).toContainEqual({
       text: '跟随服务端默认（当前 workspace-write）',
-      value: '',
+      value: 'default',
     });
     expect(optionValues(fields[4])).toContain('deepseek-v4-pro');
     expect(calls).toBe(3);

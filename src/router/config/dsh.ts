@@ -9,9 +9,10 @@
  * - 动态清单：打开 /config 前通过 `session/modelCatalog` / `agentPresets/list`
  *   预取（Router 调 `prefetch()`），失败/离线回退固定兜底清单，卡不依赖
  *   DSH 服务在线。
- * - provider / model / reasoningEffort 用空字符串哨兵表示「跟随默认」：select
- *   的 value `''` 在 handleFieldChange 中被转成 undefined patch（router 删除
- *   键），config.yaml 不写该键 = 服务端默认。
+ * - preset / permission / model / reasoningEffort 用 `default` 哨兵表示「跟随
+ *   默认」：select 的 value `'default'` 在 handleFieldChange 中被转成 undefined
+ *   patch（router 删除键），config.yaml 不写该键 = 服务端默认。不能用空串做
+ *   哨兵——飞书 select 把空 initial_option 当作「未选择」，选中态无法回显。
  * - provider 没有哨兵：旧配置没有 provider 时按 `deepseek-official` 生效，
  *   与 runner 的兼容规则一致。provider 清单不硬编码，来自服务端目录。
  */
@@ -56,8 +57,8 @@ const FALLBACK_PERMISSION_OPTIONS: SelectOption[] = [
   { text: 'danger-full-access（完全访问，关闭审批）', value: 'danger-full-access' },
 ];
 
-/** 「跟随默认」哨兵值：select value 用空串，保存时转 undefined 删除键。 */
-const DEFAULT_SENTINEL = '';
+/** 「跟随默认」哨兵值：save 时转 undefined 删除键（空串在飞书 select 里显示成 placeholder）。 */
+const DEFAULT_SENTINEL = 'default';
 
 export class DshConfigBuilder implements AgentConfigCardBuilder {
   /** 最近一次预取用的 host；host 变更时缓存失效。 */
@@ -266,7 +267,7 @@ export class DshConfigBuilder implements AgentConfigCardBuilder {
     }
     const effortOptions: SelectOption[] = this.effortOptionsFor(
       currentProvider,
-      currentModel || undefined,
+      currentModel !== DEFAULT_SENTINEL ? currentModel : undefined,
     ).map((value) => ({ text: value, value }));
     if (
       currentEffort !== DEFAULT_SENTINEL &&
@@ -359,8 +360,9 @@ export class DshConfigBuilder implements AgentConfigCardBuilder {
     }
 
     const patches: Array<{ key: string; value: unknown }> = [];
-    // 空串哨兵「跟随默认」→ undefined patch（router 删除键）
-    const effective = value === DEFAULT_SENTINEL ? undefined : value;
+    // default 哨兵「跟随默认」→ undefined patch（router 删除键）；空串是旧卡片
+    // 残留的同类哨兵，一并收敛。
+    const effective = value === DEFAULT_SENTINEL || value === '' ? undefined : value;
     patches.push({ key, value: effective });
 
     // 模型变更时，把 provider 固定到当前 provider（旧配置只有 model 时，
