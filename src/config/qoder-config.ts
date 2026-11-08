@@ -6,6 +6,11 @@
  * the command fails — the config card then renders the model as a free-text
  * input instead of a dropdown (官方不承诺该输出的结构，解析宽松：JSON 优先、
  * 逐行兜底，两端都失败才回退）。
+ *
+ * 推理强度档位同样动态探测：CLI 的 `--help` 不列 choices，但传非法值会在启动
+ * 校验时报出全表（1.1.84 实测：`Valid values are: auto, none, low, medium,
+ * high, xhigh, max, ultracode.`），据此解析出与安装版本一致的档位下拉；探测
+ * 不成立时该字段同样回退文本输入。
  */
 
 import fs from 'node:fs';
@@ -26,6 +31,8 @@ export interface QoderConfigResult {
   currentModel: string | undefined;
   /** --list-models 解析出的模型清单；解析失败为空列表。 */
   modelOptions: string[];
+  /** 探测出的推理强度档位；探测不成立为空列表（卡片回退文本输入）。 */
+  effortOptions: string[];
 }
 
 /** 清空缓存（仅供测试使用，生产代码无调用点）。 */
@@ -153,8 +160,101 @@ function fetchModelOptions(binary: string): string[] {
 }
 
 /**
+ * 探测用哨兵档位：任何版本都不会把它当合法值。若未来真被接受（无报错输出），
+ * 解析为空清单 → 卡片回退文本输入，不会给出错误下拉。
+ */
+const QODER_EFFORT_PROBE_SENTINEL = '__lark_remote_effort_probe__';
+
+/**
+ * 校验报错漏列、但 CLI 实际接受的档位（TUI /effort 有 off，报错全表没有，
+ * 传 off 实测静默通过）。逐个探测后才并入：被拒（报 Invalid reasoning
+ * effort）则不进下拉，清单始终与安装的 CLI 对齐。
+ */
+const QODER_EFFORT_SUPPLEMENT = ['off'] as const;
+
+/**
+ * 从 CLI 校验报错里解析合法档位（1.1.84 实测形态）：
+ * `Invalid reasoning effort: x. Valid values are: auto, none, low, medium, high, xhigh, max, ultracode.`
+ * 只认这行冒号后的逗号分隔词（去尾部句点），其余 token 丢弃 —— 宽松口径与
+ * parseQoderModelList 一致，文案变了就解析为空、回退文本输入。
+ */
+export function parseQoderEffortList(output: string): string[] {
+  const match = output.match(/valid values are:\s*([^\r\n]+)/i);
+  if (!match) return [];
+  const levels = match[1]
+    .split(',')
+    .map((part) => part.trim().replace(/\.$/, ''))
+    .filter((part) => /^[a-z][a-z0-9_-]*$/i.test(part));
+  return [...new Set(levels)];
+}
+
+/**
+ * 捕获式 spawn：进程起不来/超时抛 res.error，返回退出码与 stdout+stderr 合并
+ * 输出（探测判定只看报错文案，不盯退出码 —— 合法值静默 exit 42、非法值
+ * exit 1 都是版本细节）。
+ */
+function spawnCaptured(binary: string, args: string[]): { status: number | null; output: string } {
+  // spawnProcessSync（cross-spawn）而非 execFileSync：win32 垫片解析口径与
+  // runner spawn 一致（同 kimi-config 的理由）。
+  const res = spawnProcessSync(binary, args, {
+    stdio: ['ignore', 'pipe', 'pipe'],
+    timeout: 10000,
+    maxBuffer: 2 * 1024 * 1024,
+    encoding: 'utf-8',
+    windowsHide: true,
+  });
+  if (res.error) throw res.error;
+  return {
+    status: res.status,
+    output: `${String(res.stdout ?? '')}\n${String(res.stderr ?? '')}`,
+  };
+}
+
+/**
+ * 单档位探测：`--reasoning-effort <level> -p ""`。空 prompt 走不到模型调用，
+ * 探测零 token 成本；合法值静默退出，非法值在 stderr 报 Invalid + 全表。
+ */
+function runEffortProbe(binary: string, level: string): { status: number | null; output: string } {
+  return spawnCaptured(binary, ['--reasoning-effort', level, '-p', '']);
+}
+
+/** 探测单个档位是否被当前 CLI 接受：输出里没有 Invalid reasoning effort 即接受。 */
+function probeAcceptsEffort(binary: string, level: string): boolean {
+  try {
+    return !/invalid reasoning effort/i.test(runEffortProbe(binary, level).output);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * 探测推理强度档位：哨兵值触发 CLI 校验报错 → 解析全表；报错漏列的补充档位
+ * （off）逐个探测后并入。哨兵探不出全表（CLI 缺失/未登录/未来版本改文案）
+ * 一律空数组，卡片回退文本输入 —— 与 --list-models 的回退口径一致。
+ */
+function fetchEffortOptions(binary: string): string[] {
+  try {
+    const parsed = parseQoderEffortList(runEffortProbe(binary, QODER_EFFORT_PROBE_SENTINEL).output);
+    if (parsed.length === 0) {
+      getLogger().warn('[qoder-config] effort probe produced no levels, card falls back to input');
+      return [];
+    }
+    const extra = QODER_EFFORT_SUPPLEMENT.filter(
+      (level) => !parsed.includes(level) && probeAcceptsEffort(binary, level),
+    );
+    return [...parsed, ...extra];
+  } catch (err) {
+    getLogger().warn(
+      `[qoder-config] effort probe failed: ${(err as Error).message}, using empty list`,
+    );
+    return [];
+  }
+}
+
+/**
  * Load Qoder models from `<binary> --list-models` + current model from
- * settings.json. Uses caching to avoid repeated sync calls.
+ * settings.json, effort levels from a validation-error probe. Uses caching to
+ * avoid repeated sync calls.
  */
 export function loadQoderConfig(binary = 'qodercn', configDir?: string): QoderConfigResult {
   const now = Date.now();
@@ -169,8 +269,9 @@ export function loadQoderConfig(binary = 'qodercn', configDir?: string): QoderCo
   const resolvedDir = resolveQoderConfigDir(configDir);
   const currentModel = readCurrentModel(resolvedDir);
   const modelOptions = fetchModelOptions(binary);
+  const effortOptions = fetchEffortOptions(binary);
 
-  const result: QoderConfigResult = { currentModel, modelOptions };
+  const result: QoderConfigResult = { currentModel, modelOptions, effortOptions };
   qoderConfigCache = { binary, result, timestamp: Date.now() };
   return result;
 }

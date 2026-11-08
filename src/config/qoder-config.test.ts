@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import {
   parseQoderModelList,
+  parseQoderEffortList,
   resolveQoderConfigDir,
   loadQoderConfig,
   invalidateQoderConfigCache,
@@ -15,6 +16,34 @@ import { mockLogger } from '../../tests/lib/logger-mock.js';
 vi.mock('../logger/index.js', async () =>
   (await import('../../tests/lib/logger-mock.js')).loggerModuleMock(),
 );
+
+describe('parseQoderEffortList', () => {
+  it('parses the real 1.1.84 validation-error shape (trailing period stripped)', () => {
+    const stderr =
+      'An unexpected critical error occurred:Error: Invalid reasoning effort: __probe__. ' +
+      'Valid values are: auto, none, low, medium, high, xhigh, max, ultracode.';
+    expect(parseQoderEffortList(stderr)).toEqual([
+      'auto',
+      'none',
+      'low',
+      'medium',
+      'high',
+      'xhigh',
+      'max',
+      'ultracode',
+    ]);
+  });
+
+  it('returns empty without the valid-values line', () => {
+    expect(parseQoderEffortList('')).toEqual([]);
+    expect(parseQoderEffortList('error: not logged in')).toEqual([]);
+  });
+
+  it('drops tokens that are not effort-looking words and dedupes', () => {
+    const stderr = 'Valid values are: auto, 不是档位!, low, low, off.';
+    expect(parseQoderEffortList(stderr)).toEqual(['auto', 'low', 'off']);
+  });
+});
 
 describe('parseQoderModelList', () => {
   it('parses a plain JSON string array', () => {
@@ -65,14 +94,25 @@ describe('loadQoderConfig', () => {
   let savedPath: string | undefined;
 
   /**
-   * 造一个打印模型清单的假 CLI：每次 spawn 给计数文件 +1（缓存命中/穿透证据）。
-   * 绝不 spawn 真 CLI —— 假 bin 经 path-mock 的 prependPath 挂到 PATH 首位。
+   * 造一个假 CLI：每次 spawn 给计数文件 +1（缓存命中/穿透证据，含 effort 探测
+   * 的 spawn）。绝不 spawn 真 CLI —— 假 bin 经 path-mock 的 prependPath 挂到
+   * PATH 首位。
+   *
+   * effort 探测行为（按 argv 分流，1.1.84 真机口径：合法值静默、非法值报
+   * Invalid + 全表）：
+   * - effortList 给出 → 哨兵探测返回该校验报错；不给 → 哨兵静默（解析为空）。
+   * - effortRejected 里的档位 → 补充探测时报 Invalid；其余静默（接受）。
    */
   function writeListModelsBin(
     name: string,
     models: string,
     counterFile: string,
-    opts?: { exitCode?: number; stderr?: string },
+    opts?: {
+      exitCode?: number;
+      stderr?: string;
+      effortList?: string;
+      effortRejected?: string[];
+    },
   ): void {
     const entry = path.join(tmpDir, `${name}.mock.js`);
     const source = [
@@ -81,6 +121,24 @@ describe('loadQoderConfig', () => {
       'let n = 0;',
       "try { n = Number(fs.readFileSync(counter, 'utf-8')); } catch {}",
       'fs.writeFileSync(counter, String(n + 1));',
+      `const effortList = ${JSON.stringify(opts?.effortList ?? '')};`,
+      `const effortRejected = ${JSON.stringify(opts?.effortRejected ?? [])};`,
+      'const argv = process.argv;',
+      "if (argv.includes('--reasoning-effort')) {",
+      "  const level = argv[argv.indexOf('--reasoning-effort') + 1] ?? '';",
+      "  if (level.includes('__lark_remote_effort_probe__')) {",
+      '    if (effortList) {',
+      '      process.stderr.write(`Invalid reasoning effort: ${level}. Valid values are: ${effortList}`);',
+      '      process.exitCode = 1;',
+      '    }',
+      '    process.exit();',
+      '  }',
+      '  if (effortRejected.includes(level)) {',
+      '    process.stderr.write(`Invalid reasoning effort: ${level}.`);',
+      '    process.exit(1);',
+      '  }',
+      '  process.exit(42);',
+      '}',
       `process.stdout.write(${JSON.stringify(models)});`,
       ...(opts?.exitCode === undefined
         ? []
@@ -111,10 +169,11 @@ describe('loadQoderConfig', () => {
       JSON.stringify({ model: { name: 'qfmodel', preferences: {} } }),
       'utf-8',
     );
-    // 不存在的 binary：spawn 失败 → modelOptions 为空、currentModel 保留
+    // 不存在的 binary：spawn 失败 → modelOptions/effortOptions 为空、currentModel 保留
     const result = loadQoderConfig('definitely-not-a-real-binary-xyz', tmpDir);
     expect(result.currentModel).toBe('qfmodel');
     expect(result.modelOptions).toEqual([]);
+    expect(result.effortOptions).toEqual([]);
   });
 
   it('missing settings.json yields undefined current model', () => {
@@ -147,7 +206,9 @@ describe('loadQoderConfig', () => {
     );
     const result = loadQoderConfig('qodercn', tmpDir);
     expect(result.modelOptions).toEqual(['qfmodel', 'lite', 'performance']);
-    expect(fs.readFileSync(counterFile, 'utf-8')).toBe('1');
+    // 哨兵静默（无 effortList）→ effort 探测只 1 次、解析为空；合计 2 次 spawn
+    expect(result.effortOptions).toEqual([]);
+    expect(fs.readFileSync(counterFile, 'utf-8')).toBe('2');
   });
 
   it('caches within TTL: a second identical call does not spawn again (E6)', () => {
@@ -156,7 +217,8 @@ describe('loadQoderConfig', () => {
     const first = loadQoderConfig('qodercn', tmpDir);
     const second = loadQoderConfig('qodercn', tmpDir);
     expect(second.modelOptions).toEqual(first.modelOptions);
-    expect(fs.readFileSync(counterFile, 'utf-8')).toBe('1');
+    expect(second.effortOptions).toEqual(first.effortOptions);
+    expect(fs.readFileSync(counterFile, 'utf-8')).toBe('2');
   });
 
   it('cache is keyed by binary: switching binary re-spawns (E6)', () => {
@@ -166,11 +228,11 @@ describe('loadQoderConfig', () => {
 
     const cn = loadQoderConfig('qodercn', tmpDir);
     expect(cn.modelOptions).toEqual(['qfmodel-cn']);
-    expect(fs.readFileSync(counterFile, 'utf-8')).toBe('1');
+    expect(fs.readFileSync(counterFile, 'utf-8')).toBe('2');
 
     const intl = loadQoderConfig('qoder', tmpDir);
     expect(intl.modelOptions).toEqual(['qfmodel-intl']);
-    expect(fs.readFileSync(counterFile, 'utf-8')).toBe('2');
+    expect(fs.readFileSync(counterFile, 'utf-8')).toBe('4');
   });
 
   it('warns and falls back to an empty list on a non-zero --list-models exit (E6)', () => {
@@ -199,5 +261,63 @@ describe('loadQoderConfig', () => {
     expect(mockLogger.warn).toHaveBeenCalledWith(
       '[qoder-config] --list-models produced no model names, card falls back to input',
     );
+  });
+
+  it('probes effort levels from the validation error and appends accepted supplements', () => {
+    const counterFile = path.join(tmpDir, 'spawn-count');
+    writeListModelsBin('qodercn', '["qfmodel"]', counterFile, {
+      // 1.1.84 真机报错全表：8 档，漏列 off
+      effortList: 'auto, none, low, medium, high, xhigh, max, ultracode',
+    });
+    const result = loadQoderConfig('qodercn', tmpDir);
+    // 全表 8 档 + 补充探测接受的 off
+    expect(result.effortOptions).toEqual([
+      'auto',
+      'none',
+      'low',
+      'medium',
+      'high',
+      'xhigh',
+      'max',
+      'ultracode',
+      'off',
+    ]);
+    // 3 次 spawn：--list-models + 哨兵探测 + off 补充探测
+    expect(fs.readFileSync(counterFile, 'utf-8')).toBe('3');
+  });
+
+  it('skips the supplement probe when the error list already contains the level', () => {
+    const counterFile = path.join(tmpDir, 'spawn-count');
+    writeListModelsBin('qodercn', '["qfmodel"]', counterFile, {
+      effortList: 'auto, low, off',
+    });
+    const result = loadQoderConfig('qodercn', tmpDir);
+    expect(result.effortOptions).toEqual(['auto', 'low', 'off']);
+    // 2 次 spawn：--list-models + 哨兵探测（off 已在全表，不再补探）
+    expect(fs.readFileSync(counterFile, 'utf-8')).toBe('2');
+  });
+
+  it('drops a supplement level the CLI rejects', () => {
+    const counterFile = path.join(tmpDir, 'spawn-count');
+    writeListModelsBin('qodercn', '["qfmodel"]', counterFile, {
+      effortList: 'auto, low, high',
+      effortRejected: ['off'],
+    });
+    const result = loadQoderConfig('qodercn', tmpDir);
+    expect(result.effortOptions).toEqual(['auto', 'low', 'high']);
+    expect(fs.readFileSync(counterFile, 'utf-8')).toBe('3');
+  });
+
+  it('falls back to an empty effort list when the probe reports no levels', () => {
+    mockLogger.warn.mockClear();
+    const counterFile = path.join(tmpDir, 'spawn-count');
+    writeListModelsBin('qodercn', '["qfmodel"]', counterFile); // 哨兵静默 → 无全表
+    const result = loadQoderConfig('qodercn', tmpDir);
+    expect(result.effortOptions).toEqual([]);
+    expect(mockLogger.warn).toHaveBeenCalledWith(
+      expect.stringContaining('[qoder-config] effort probe produced no levels'),
+    );
+    // 解析为空 → 早退，不再做补充探测
+    expect(fs.readFileSync(counterFile, 'utf-8')).toBe('2');
   });
 });

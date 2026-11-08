@@ -363,8 +363,9 @@ const QoderConfigSchema = z.object({
   /** Model ID（如 'qfmodel'）。Undefined → Qoder 读自己的 settings.json。 */
   model: z.string().optional(),
   /**
-   * 推理强度。取值随模型变化（官方不枚举），故用字符串而非枚举
-   * （同 codex reasoningEffort 口径）。Undefined → 跟随 Qoder 默认。
+   * 推理强度。档位集随 CLI 版本变化（卡片下拉动态探测，见
+   * qoder-config.ts），schema 保持宽松字符串（同 codex reasoningEffort
+   * 口径）。Undefined → 跟随 Qoder 默认（不传 --reasoning-effort）。
    */
   reasoningEffort: z.string().min(1).optional(),
   /** Permission mode（官方 snake_case 枚举；'default' = 省略该参数）。 */

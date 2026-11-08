@@ -90,7 +90,7 @@ agents:
       turnIdleTimeoutMinutes: 30
   qoder: # Qoder CLI（通用 CLI 模式，长驻 stream-json 双向会话）
     model: '' # 留空 = 跟随 Qoder 自己的 settings.json
-    reasoningEffort: '' # 留空 = Qoder 默认档位（取值随模型变化，官方不枚举）
+    reasoningEffort: '' # 留空（或卡片选 default）= Qoder 默认档位；档位下拉动态探测
     permissionMode: default # default（=不传 --permission-mode）| accept_edits | plan | auto | bypass_permissions | dont_ask（注意是 snake_case）
     cli:
       binary: qodercn # CN 版安装名；国际版装的是 qoder
@@ -126,7 +126,7 @@ token 用量：CodeBuddy 的 ACP `usage_update` 把每模型请求的全量明�
 
 Qoder 的 headless 面与 Claude Code 高度同构（真机实测：`--resume` 同 sessionId 恢复上下文、`/compact` 本地拦截、usage 字段与 claude 一致），按通用 CLI 模式接入：每个工作区一个长驻 `qodercn` 进程，stdin/stdout 双向 stream-json，`/compact` 作为 slash 命令写入 stdin。**注意：Qoder 不提供动态审批通道**（`--permission-prompt-tool stdio` 与 `--input-format stream-json` 互斥，CLI 直接拒绝），工具审批由 `--permissionMode` 静态策略治理——需要无人值守放行时把权限模式设为 `bypass_permissions` 或 `auto`。配置项：
 
-- `agents.qoder.model` / `agents.qoder.reasoningEffort`：留空 = 跟随 Qoder 自己的 `settings.json`。模型下拉来自 `qodercn --list-models`（命令失败时卡片回退文本输入）。
+- `agents.qoder.model` / `agents.qoder.reasoningEffort`：留空（卡片选 default）= 跟随 Qoder 自己的 `settings.json`。模型下拉来自 `qodercn --list-models`；推理强度下拉来自对 CLI 校验报错的动态探测（传非法值让 CLI 自己报出全表，档位集随安装版本走），任一清单探不到时该字段回退文本输入。
 - `agents.qoder.permissionMode`：注意 Qoder 的取值是 **snake_case**（`accept_edits` / `bypass_permissions` 等），与 claude/CodeBuddy 的 camelCase 不同。
 - `agents.qoder.contextWindow`：显式上下文窗口提示值（`--context-window`，正整数 tokens），影响 CLI 侧的压缩阈值判断；留空或 0 = 跟随 CLI/模型默认。不会让 run 卡片显示水位（Qoder 的用量回包没有 token 数据，见下）。
 - `agents.qoder.cli.binary`：CN 版安装名是 `qodercn`，国际版是 `qoder`，默认按 CN 版。

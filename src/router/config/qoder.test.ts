@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { QoderConfigBuilder } from './qoder.js';
 import { buildConfigCardFromTabs } from './common/render.js';
 import type { AppConfig } from '../../config/index.js';
@@ -6,11 +6,15 @@ import { expectNoV1ActionContainer } from '../../../tests/lib/card-view.js';
 import { loadQoderConfig } from '../../config/qoder-config.js';
 
 vi.mock('../../config/qoder-config.js', () => ({
-  loadQoderConfig: vi.fn(() => ({
-    currentModel: 'qfmodel',
-    modelOptions: ['qfmodel', 'lite'],
-  })),
+  loadQoderConfig: vi.fn(),
 }));
+
+/** loadQoderConfig 的默认桩：探测清单为空（对应字段回退文本输入的旧口径）。 */
+const baseQoderCfg = {
+  currentModel: 'qfmodel',
+  modelOptions: ['qfmodel', 'lite'],
+  effortOptions: [] as string[],
+};
 
 function makeConfig(overrides?: Record<string, unknown>): AppConfig {
   return { feishu: { appId: 'test', appSecret: 'test' }, ...overrides } as AppConfig;
@@ -18,6 +22,10 @@ function makeConfig(overrides?: Record<string, unknown>): AppConfig {
 
 describe('QoderConfigBuilder', () => {
   const builder = new QoderConfigBuilder();
+
+  beforeEach(() => {
+    vi.mocked(loadQoderConfig).mockReset().mockReturnValue(baseQoderCfg);
+  });
 
   describe('buildFields', () => {
     it('probes --list-models with the configured cli.binary (CN/国际版安装名不同)', () => {
@@ -34,13 +42,61 @@ describe('QoderConfigBuilder', () => {
       expect(modelField!.currentValue).toBe('qfmodel');
     });
 
-    it('reasoning effort renders as a text input (no stable official enum)', () => {
+    it('reasoning effort falls back to a text input when the probe yields no levels', () => {
       const fields = builder.buildFields(
         makeConfig({ agents: { qoder: { reasoningEffort: 'xhigh' } } }),
       );
       const effortField = fields.find((f) => f.key === 'agents.qoder.reasoningEffort');
       expect(effortField!.type).toBe('input');
       expect(effortField!.currentValue).toBe('xhigh');
+    });
+
+    it('reasoning effort is a select over probed levels with a follow-default entry', () => {
+      vi.mocked(loadQoderConfig).mockReturnValue({
+        ...baseQoderCfg,
+        effortOptions: [
+          'auto',
+          'none',
+          'low',
+          'medium',
+          'high',
+          'xhigh',
+          'max',
+          'ultracode',
+          'off',
+        ],
+      });
+      // 未配置 → 当前值落在 default（跟随 Qoder 默认）
+      const empty = builder
+        .buildFields(makeConfig())
+        .find((f) => f.key === 'agents.qoder.reasoningEffort');
+      expect(empty!.type).toBe('select');
+      expect(empty!.currentValue).toBe('default');
+      expect(empty!.options).toEqual([
+        { value: 'default', text: 'default（跟随 Qoder 默认）' },
+        ...['auto', 'none', 'low', 'medium', 'high', 'xhigh', 'max', 'ultracode', 'off'].map(
+          (value) => ({ value, text: value }),
+        ),
+      ]);
+      // 已配置且在清单里 → 直接选中
+      const configured = builder
+        .buildFields(makeConfig({ agents: { qoder: { reasoningEffort: 'xhigh' } } }))
+        .find((f) => f.key === 'agents.qoder.reasoningEffort');
+      expect(configured!.currentValue).toBe('xhigh');
+    });
+
+    it('appends a legacy free-text effort to the probed options instead of blank-selecting', () => {
+      vi.mocked(loadQoderConfig).mockReturnValue({
+        ...baseQoderCfg,
+        effortOptions: ['auto', 'low', 'high'],
+      });
+      const field = builder
+        .buildFields(makeConfig({ agents: { qoder: { reasoningEffort: 'ultra' } } }))
+        .find((f) => f.key === 'agents.qoder.reasoningEffort');
+      expect(field!.type).toBe('select');
+      expect(field!.currentValue).toBe('ultra');
+      const values = field!.options!.map((o) => (typeof o === 'string' ? o : o.value));
+      expect(values).toEqual(['default', 'auto', 'low', 'high', 'ultra']);
     });
 
     it('permissionMode select uses snake_case official values', () => {
@@ -91,6 +147,10 @@ describe('QoderConfigBuilder', () => {
       expect(builder.handleFieldChange('agents.qoder.reasoningEffort', ' ', makeConfig())).toEqual([
         { key: 'agents.qoder.reasoningEffort', value: undefined },
       ]);
+      // 下拉的 default（自造值）= 不传 --reasoning-effort
+      expect(
+        builder.handleFieldChange('agents.qoder.reasoningEffort', 'default', makeConfig()),
+      ).toEqual([{ key: 'agents.qoder.reasoningEffort', value: undefined }]);
     });
 
     it('non-empty values pass through', () => {
