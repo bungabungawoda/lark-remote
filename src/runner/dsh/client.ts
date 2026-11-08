@@ -56,7 +56,7 @@ import type {
   DshSessionPageValue,
   DshStreamItem,
 } from '../../dsh/types.js';
-import { goalFromProjection } from './goal-view.js';
+import { goalFromLiveView, goalFromProjection } from './goal-view.js';
 import type { GoalView } from '../types.js';
 import { DshError } from './errors.js';
 import { openMuxStream } from './mux-stream.js';
@@ -185,6 +185,14 @@ async function readUnaryBody(method: string, res: Response): Promise<unknown> {
 
 /** Backoff between mux reconnects to avoid a hot loop on a dropping server. */
 const RECONNECT_BACKOFF_MS = 200;
+
+/**
+ * `goals/get` 的探测预算。
+ *
+ * 它只是给 goal 状态补一维进程内 activation：宿主侧是一次内存读，正常毫秒级；
+ * 慢或不可用时留空（渲染层按"可能续跑"保守处理），不能拖住 run 的启动/收尾。
+ */
+const GOAL_ACTIVATION_PROBE_TIMEOUT_MS = 1_500;
 
 /**
  * Follow snapshot budget. `session/follow` also stays live after the snapshot.
@@ -942,11 +950,17 @@ export class DshClient {
   }
 
   /**
-   * Read the session's current goal (one unary, authoritative at call time).
+   * Read the session's current goal (authoritative at call time).
    *
-   * 收尾判定必须用宿主状态：本轮 turn 结束不代表任务结束——goal 仍 active 时
-   * driver 会在 quiescence 立刻起下一轮。`known:false` 表示读不到，调用方不得
-   * 据此断言"已完成"（探测失败降级为收尾，正是"任务还在跑却写完成"的来源）。
+   * 收尾判定必须用宿主状态：本轮 turn 结束不代表任务结束——goal 仍 active 且
+   * armed 时 driver 会在 quiescence 立刻起下一轮。`known:false` 表示读不到，
+   * 调用方不得据此断言"已完成"（探测失败降级为收尾，正是"任务还在跑却写完成"
+   * 的来源）。
+   *
+   * `phase` 来自 durable 投影，`activation` 来自 `goals/get`（进程内状态，投影
+   * 故意不持久化）：宿主重启、`/stop`、agent error 之后 goal 仍是 active 但
+   * disarmed，driver 不再起轮——这种卡片的会话是空闲的，Compact 必须可用。
+   * activation 读不到时留空（调用方按"可能续跑"保守处理），不影响 known。
    */
   async goalState(
     sessionId: string,
@@ -968,7 +982,45 @@ export class DshClient {
     if (!('goal' in snapshot.values)) return { known: true, goal: null };
     const parsed = goalFromProjection(snapshot.values.goal);
     if (parsed === undefined) return { known: false, goal: null };
-    return { known: true, goal: parsed };
+    // activation 只对 active goal 有意义（其它 phase 本来就不会续跑），
+    // 也就没必要为普通收尾多打一次 unary。
+    if (parsed === null || parsed.phase !== 'active') return { known: true, goal: parsed };
+    const activation = await this.goalActivation(sessionId, parsed.id, opts?.signal);
+    return { known: true, goal: activation ? { ...parsed, activation } : parsed };
+  }
+
+  /**
+   * Best-effort read of the process-local goal activation.
+   *
+   * `goals/get` 是 agent 维度的实时视图；agent 不在线（run 已收尾、宿主刚
+   * 重启）时会失败。这里返回 undefined 表示"读不到"，绝不让它把整个 goal
+   * 探测降级成 unknown——phase 仍是权威的。
+   */
+  private async goalActivation(
+    sessionId: string,
+    goalId: string,
+    signal?: AbortSignal,
+  ): Promise<GoalView['activation']> {
+    try {
+      const live = goalFromLiveView(
+        await this.unary(
+          'goals/get',
+          { agentId: sessionId },
+          {
+            ...(signal ? { signal } : {}),
+            timeoutMs: GOAL_ACTIVATION_PROBE_TIMEOUT_MS,
+          },
+        ),
+      );
+      // id 不一致 = 两次读之间 goal 被换掉：activation 不能安到旧 goal 上。
+      return live?.id === goalId ? live.activation : undefined;
+    } catch (err) {
+      if (signal?.aborted) return undefined;
+      getLogger().warn(
+        `[dsh] goal activation probe failed session=${sessionId}: ${(err as Error).message}`,
+      );
+      return undefined;
+    }
   }
 
   /**

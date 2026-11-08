@@ -133,7 +133,7 @@ Run/Bash 卡片的 CardKit 2.0 单卡流式架构说明，覆盖数据流、状�
 | interrupted     | ⏹ Claude · 已中断                | 已被用户终止                                                                            |
 | idle_timeout    | ⏱ Claude · 已超时                | 空闲分钟数                                                                              |
 | finalizing      | ⏳ Claude · 完成中               | 非终态；**保留** ⏹ 终止按钮                                                             |
-| goal_continuing | ⏳ Claude · 本轮结束（目标继续） | 本轮 turn 已结束，但会话 goal 仍 active：任务没完成，宿主会自动起下一轮；不渲染 Compact |
+| goal_continuing | ⏳ Claude · 本轮结束（目标继续） | 本轮 turn 已结束，但会话 goal 仍 active；会不会自动起下一轮看 activation（armed 才有，disarmed 写「目标未自动续跑」） |
 
 终态不渲染 footer 和停止按钮（`finalizing` 除外，详见上表）。
 
@@ -150,7 +150,12 @@ maxGoalRounds）。goal 是**跨 turn** 的自动续跑单元：`turn/end` 之�
 - 运行中卡片在状态行下方渲染 `🎯 **目标进行中** · 第 r/N 轮` + 目标摘要（长目标进折叠面板）；
 - 收尾时若 goal 仍 `active`，终态是 `goal_continuing`（标题「本轮结束（目标继续）」），
   summary 首行写「本轮结束 · 目标仍在继续」，绝不出现「已完成」；
-- goal 仍 active 时不渲染 Compact 按钮（DSH 手动压缩要求 agent 空闲，点了必被拒）；
+- `phase='active'` 只说明 goal 在 durable 状态上还活着，**会不会自动起下一轮**取决于
+  宿主进程内的 `activation`（`goals/get`，投影里没有）：宿主重启、`/stop`、agent error
+  之后 goal 仍是 active 但已 `disarmed`，driver 不再起轮。disarmed 时标题/summary 写
+  「目标未自动续跑」，goal 区块写「不会自动开始下一轮（发消息继续）」；
+- Compact 按钮只在「宿主马上会起下一轮」时隐藏（armed 或读不到 activation）：disarmed
+  的 active goal 会话是空闲的，压缩可用，这类"最后一张卡"必须照常给按钮；
 - goal 的 `complete` / `paused` / `blocked` 都是"不会自动续跑"，按普通终态收尾（`done`），
   但标题分别写「目标已完成」「目标已暂停」「目标被阻断」，blocked 另外展示阻断原因；
 - 收尾复核读不到 goal（`known=false`）时不得宣布完成：标题写「完成（目标未确认）」，
@@ -160,7 +165,7 @@ maxGoalRounds）。goal 是**跨 turn** 的自动续跑单元：`turn/end` 之�
   `known=false`。
 
 数据来源只有宿主（`session/projections` 的 `goal` 值 + `session/control` 推送 +
-`goal/change` 事件），桥不自行推断"任务结束"。
+`goal/change` 事件 + `goals/get` 的 activation），桥不自行推断"任务结束"。
 
 ## 6. 长内容预算
 

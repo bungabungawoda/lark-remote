@@ -1,12 +1,13 @@
 /**
  * DSH `goal` 域 → 卡片用的 {@link GoalView} 解析。
  *
- * 两个来源、同一个目标类型：
+ * 三个来源、同一个目标类型：
  * 1. 投影值：`session/projections` 的 `values.goal` 与 `session/control` 的
  *    `{key:'goal'}` 帧，宿主状态包一层 `current`（`{current:{goal,roundsStarted
  *    ,createdAt,updatedAt},seenGoalIds,failure}`）；
  * 2. 会话事件 `goal/change`：create/edit/pause/resume/complete/block 携带完整
- *    snapshot + roundsStarted；clear 是墓碑，表示"现在没有 goal"。
+ *    snapshot + roundsStarted；clear 是墓碑，表示"现在没有 goal"；
+ * 3. 实时视图 `goals/get`：durable 快照 + 进程内 `activation`（投影里没有）。
  *
  * 解析失败返回 `undefined`，表示**读不懂**——它与"没有 goal"（`null`）必须区分：
  * 把读不懂当成没有 goal，就会在 goal 还在自动续跑时收尾卡片。
@@ -24,6 +25,11 @@ function nonNegativeInt(value: unknown): number | undefined {
   return typeof value === 'number' && Number.isInteger(value) && value >= 0 ? value : undefined;
 }
 
+/** 进程内 activation：只有 `goals/get` 带，投影故意不持久化它。 */
+function parseActivation(value: unknown): GoalView['activation'] {
+  return value === 'armed' || value === 'disarmed' ? value : undefined;
+}
+
 function parseSnapshot(value: unknown, roundsStarted: unknown): GoalView | undefined {
   if (!isRecord(value)) return undefined;
   const phase = value.phase;
@@ -38,6 +44,7 @@ function parseSnapshot(value: unknown, roundsStarted: unknown): GoalView | undef
     isRecord(reason) && typeof reason.code === 'string' && typeof reason.message === 'string'
       ? { code: reason.code, message: reason.message }
       : undefined;
+  const activation = parseActivation(value.activation);
 
   return {
     id: value.id,
@@ -47,6 +54,7 @@ function parseSnapshot(value: unknown, roundsStarted: unknown): GoalView | undef
     roundsStarted: nonNegativeInt(roundsStarted) ?? 0,
     maxGoalRounds: max,
     ...(blockedReason ? { blockedReason } : {}),
+    ...(activation ? { activation } : {}),
   };
 }
 
@@ -86,6 +94,19 @@ export function goalFromChange(data: unknown): GoalView | null | undefined {
   return parseSnapshot(data.goal, data.roundsStarted);
 }
 
+/**
+ * 解析 `goals/get` 的实时视图（durable 快照 + 进程内 activation）。
+ *
+ * 这是 activation 的唯一来源：投影只反映 durable phase，宿主重启、`/stop`、
+ * agent error 之后的 `disarmed` 只存在于进程内，`goals/get` 才看得到。
+ *
+ * @returns `GoalView` = 当前 goal；`undefined` = 没有 goal 或读不懂。
+ */
+export function goalFromLiveView(value: unknown): GoalView | undefined {
+  if (!isRecord(value)) return undefined;
+  return parseSnapshot(value, value.roundsStarted);
+}
+
 /** 便利构造：把解析结果包成 runner 事件。 */
 export function goalStateEvent(
   goal: GoalView | null,
@@ -109,6 +130,7 @@ export function sameGoal(a: GoalView | null | undefined, b: GoalView | null | un
     a.roundsStarted === b.roundsStarted &&
     a.maxGoalRounds === b.maxGoalRounds &&
     a.objective === b.objective &&
-    a.blockedReason?.code === b.blockedReason?.code
+    a.blockedReason?.code === b.blockedReason?.code &&
+    a.activation === b.activation
   );
 }

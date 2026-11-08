@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { goalFromChange, goalFromProjection, sameGoal } from './goal-view.js';
+import { goalFromChange, goalFromLiveView, goalFromProjection, sameGoal } from './goal-view.js';
 
 const snapshot = {
   id: 'goal-1',
@@ -95,5 +95,45 @@ describe('sameGoal', () => {
       hostState({ current: { goal: snapshot, roundsStarted: 3, createdAt: 1, updatedAt: 3 } }),
     );
     expect(sameGoal(a, b)).toBe(false);
+  });
+
+  it('detects an activation change (armed ↔ disarmed)', () => {
+    // 卡片靠这一维决定「会不会自动续跑」：只改 activation 也必须重渲染。
+    const armed = goalFromLiveView({ ...snapshot, roundsStarted: 2, activation: 'armed' });
+    const disarmed = goalFromLiveView({ ...snapshot, roundsStarted: 2, activation: 'disarmed' });
+    expect(sameGoal(armed, disarmed)).toBe(false);
+  });
+});
+
+describe('goalFromLiveView', () => {
+  it('reads the live view including the process-local activation', () => {
+    expect(
+      goalFromLiveView({
+        id: 'goal-1',
+        revision: 1,
+        objective: '完成 notes-app 实时链路 MVP',
+        phase: 'active',
+        maxGoalRounds: 40,
+        roundsStarted: 0,
+        createdAt: 1,
+        updatedAt: 2,
+        activation: 'disarmed',
+      }),
+    ).toEqual({
+      id: 'goal-1',
+      objective: '完成 notes-app 实时链路 MVP',
+      phase: 'active',
+      roundsStarted: 0,
+      maxGoalRounds: 40,
+      activation: 'disarmed',
+    });
+  });
+
+  it('returns undefined for "no goal" and for unreadable values', () => {
+    // undefined = 读不到（调用方保持缺省，按"可能续跑"保守处理）；
+    // 不能返回一个没有 activation 的 GoalView——那会被误当成「明确 disarmed」。
+    expect(goalFromLiveView(undefined)).toBeUndefined();
+    expect(goalFromLiveView({})).toBeUndefined();
+    expect(goalFromLiveView({ ...snapshot, activation: 'weird' })).not.toHaveProperty('activation');
   });
 });

@@ -9,6 +9,7 @@ import {
   type ToolEntry,
 } from './run-state.js';
 import type { GoalView } from '../runner/index.js';
+import { goalWillAutoContinue } from '../runner/types.js';
 import {
   terminalToColor,
   terminalToLabel,
@@ -72,10 +73,11 @@ function shouldShowCompactButton(state: RunState, options: RunCardRenderOptions)
   // bridge 在开跑前探到的 store 会话（`sessionFallbackAvailable`，缺省视为可用
   // 以保持渲染层独立调用方的既有语义）。
   if (!state.sessionId && options.sessionFallbackAvailable === false) return false;
-  // goal 仍 active = 宿主会自动起下一轮，会话永远不 idle，压缩必被拒（DSH 的
-  // 手动压缩要求 agent 空闲）。给按钮就是给一个注定失败的点击：用户点
-  // compact 只会拿到"还有一轮在跑"。
-  if (state.goal?.phase === 'active') return false;
+  // goal 仍会自动续跑 = 会话永远不 idle，压缩必被拒（DSH 的手动压缩要求 agent
+  // 空闲）。给按钮就是给一个注定失败的点击：用户点 compact 只会拿到"还有一轮
+  // 在跑"。disarmed 的 active goal 不会续跑（宿主重启 / /stop 之后），会话是
+  // 空闲的——这类"最后一张卡"必须照常给按钮，否则用户没有压缩入口。
+  if (goalWillAutoContinue(state.goal)) return false;
   return isRunTerminal(state.terminal);
 }
 
@@ -139,9 +141,16 @@ function buildGoalSection(state: RunState): object[] {
     );
   }
   if (goal.phase === 'active' && state.terminal === 'goal_continuing') {
-    // 这句话就是整张卡的核心信息：本轮结束 ≠ 任务结束。
+    // 这句话就是整张卡的核心信息：本轮结束 ≠ 任务结束。但"会不会自动起下一轮"
+    // 取决于宿主进程内的 activation——disarmed 时 driver 不会再起轮，卡里
+    // 承诺"自动开始第 N 轮"就是在撒谎（用户会等一个永远不来的轮次）。
     elements.push(
-      markdownDiv(`_本轮已结束；DSH 会自动开始第 ${goal.roundsStarted + 1} 轮_`, 'notation'),
+      markdownDiv(
+        goalWillAutoContinue(goal)
+          ? `_本轮已结束；DSH 会自动开始第 ${goal.roundsStarted + 1} 轮_`
+          : '_本轮已结束；目标仍在进行中，但 DSH 不会自动开始下一轮（发消息继续）_',
+        'notation',
+      ),
     );
   }
   return elements;
@@ -1331,9 +1340,14 @@ function summaryResult(state: RunState, elements: object[]): void {
   const usageStatsStr = formatUsageStats(state, {
     showResult: true,
     result,
-    // 本轮结束但目标继续：不能报"已完成"，也不能说"出错"。
+    // 本轮结束但目标继续：不能报"已完成"，也不能说"出错"。disarmed 时
+    // 不会再自动起轮，首行照实写"未自动续跑"。
     ...(state.terminal === 'goal_continuing'
-      ? { completedLabel: '⏳ 本轮结束 · 目标仍在继续' }
+      ? {
+          completedLabel: goalWillAutoContinue(state.goal)
+            ? '⏳ 本轮结束 · 目标仍在继续'
+            : '⏳ 本轮结束 · 目标未自动续跑',
+        }
       : goalUnknown
         ? { completedLabel: '✅ 本轮完成 · 目标状态未确认' }
         : {}),
@@ -1535,8 +1549,13 @@ function buildBackgroundJobsSection(state: RunState): object[] {
 function headerTitle(state: RunState, options: RunCardRenderOptions = {}): string {
   const agent = agentDisplayName(options.agentKind ?? 'claude');
   // 本轮 turn 结束但 goal 仍 active：这是"一轮结束"，不是"任务完成"。标题
-  // 必须说清楚，否则用户会以为活儿干完了。
-  if (state.terminal === 'goal_continuing') return `⏳ ${agent} · 本轮结束（目标继续）`;
+  // 必须说清楚，否则用户会以为活儿干完了。会不会自动续跑（armed）决定后半句
+  // ——disarmed 时写"目标继续"同样是错的。
+  if (state.terminal === 'goal_continuing') {
+    return goalWillAutoContinue(state.goal)
+      ? `⏳ ${agent} · 本轮结束（目标继续）`
+      : `⏳ ${agent} · 本轮结束（目标未自动续跑）`;
+  }
   if (state.terminal === 'done') {
     // goal 维度优先于「完成」：blocked/paused 不是任务做完了，complete 才是；
     // 读不到（goalKnown=false）时也不能替宿主宣布完成。

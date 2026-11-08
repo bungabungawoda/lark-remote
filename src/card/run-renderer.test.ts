@@ -4098,6 +4098,26 @@ describe('renderRunCard · goal 可见性', () => {
     expectNoV1ActionContainer(json);
   });
 
+  it('goal 仍 active 但 disarmed：不承诺自动续跑，compact 必须可见', () => {
+    // 宿主重启 / /stop 之后 goal 的 durable phase 仍是 active，但 driver 已经
+    // disarmed，不会再有下一轮。这张"最后一张卡"的会话是空闲的：压缩能用，
+    // 按钮就不能藏；卡片也不能再承诺"会自动开始第 3 轮"。
+    let state = createInitialRunState('run-goal-disarmed');
+    state = reduceRunState(state, {
+      type: 'goal_state',
+      goal: { ...goal, activation: 'disarmed' },
+      known: true,
+    } as never);
+    state = finishRun(state, 'goal_continuing', { resultSubtype: 'success' });
+    const json = JSON.stringify(renderRunCard(state, { agentKind: 'dsh', compactSupported: true }));
+
+    expect(json).toContain('本轮结束（目标未自动续跑）');
+    expect(json).toContain('不会自动开始下一轮');
+    expect(json).not.toContain('会自动开始第 3 轮');
+    expect(json).toContain('"cmd":"compact"');
+    expectNoV1ActionContainer(json);
+  });
+
   it('goal 完成后的 done 卡写「目标已完成」，compact 恢复', () => {
     let state = goalState();
     state = reduceRunState(state, {
