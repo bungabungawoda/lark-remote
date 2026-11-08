@@ -8,8 +8,8 @@
  * 于是反向边归零——但归零这件事以前只记在文档里，下一趟改动随时能悄悄加回来。
  *
  * 口径：只查 `src/<层>/**` 里的非测试文件，只看相对 import 的**目标层目录**；
- * `src/*.ts` 根上的中立模块（agent-kinds / session-contract / model-catalog）
- * 任何人都能 import，它们不在禁行表里。
+ * `src/*.ts` 根上的中立模块（agent-kinds / session-contract / model-catalog /
+ * acp-protocol）任何人都能 import，它们不在禁行表里。
  */
 import { describe, expect, it } from 'vitest';
 import fs from 'node:fs';
@@ -84,7 +84,7 @@ describe('src 层间依赖方向', () => {
   }
 
   it('中立模块确实住在 src/ 根（反向边的替代方案，别搬回层里）', () => {
-    for (const neutral of ['agent-kinds', 'session-contract', 'model-catalog']) {
+    for (const neutral of ['agent-kinds', 'session-contract', 'model-catalog', 'acp-protocol']) {
       expect(fs.existsSync(path.join(SRC_ROOT, `${neutral}.ts`)), `${neutral}.ts`).toBe(true);
     }
   });

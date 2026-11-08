@@ -59,6 +59,17 @@ describe('resolveAgentChoices', () => {
         { configKey: 'thinkingEffort', choicesKey: 'thinkingEffort' },
       ],
       dsh: [],
+      codebuddy: [
+        { configKey: 'model', choicesKey: 'model' },
+        { configKey: 'permissionMode', choicesKey: 'permissionMode' },
+        { configKey: 'thinkingLevel', choicesKey: 'thinkingLevel' },
+        { configKey: 'sandbox', choicesKey: 'sandbox' },
+      ],
+      qoder: [
+        { configKey: 'model', choicesKey: 'model' },
+        { configKey: 'reasoningEffort', choicesKey: 'reasoningEffort' },
+        { configKey: 'permissionMode', choicesKey: 'permissionMode' },
+      ],
     });
   });
 

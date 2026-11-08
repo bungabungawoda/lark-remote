@@ -7,12 +7,15 @@
  * line-for-line identical — extracted here in the round-2
  * simplification. What genuinely diverges is the content channel:
  * kimi accumulates wire deltas into turn_diff snapshots (snapshot semantics,
- * see KimiAcpTranslator header), opencode forwards `assistant` deltas
- * directly (delta semantics) — those chunk handlers stay abstract.
+ * see KimiAcpTranslator header), opencode / codebuddy forward `assistant`
+ * deltas directly — that is the DEFAULT handleAgentMessageChunk here; kimi
+ * overrides it. thought chunks stay abstract (codebuddy reads the block id
+ * from `_meta['codebuddy.ai/messageId']`).
  *
  * Extension points (all no-op or passthrough by default):
- *   handleAgentMessageChunk / handleAgentThoughtChunk — content channel (abstract)
- *   handleRequestPermission                           — approval rendering (abstract)
+ *   handleAgentMessageChunk  — assistant text delta (default; kimi overrides)
+ *   handleAgentThoughtChunk  — thinking delta (abstract)
+ *   handleRequestPermission  — approval rendering (abstract)
  *   handleOtherServerRequest                          — extra reverse RPC (kimi: elicitation)
  *   extractToolResultContent                          — tool_result content (default: rawOutput)
  *   extractToolCallArgsText                           — streaming-args source (opencode: none)
@@ -108,8 +111,12 @@ function extractToolCallContentText(content: unknown[] | undefined): string | un
   return found ? text : undefined;
 }
 
-/** Best-effort stringify for tracked rawInput objects (never throws). */
-function stringifyUnknown(value: unknown): string {
+/**
+ * Best-effort stringify for tracked rawInput objects (never throws).
+ * 导出供各 translator 的审批 reason 复用（opencode / codebuddy 原各有一份
+ * 逐字相同的本地 stringify）。
+ */
+export function acpStringify(value: unknown): string {
   if (typeof value === 'string') return value;
   try {
     return JSON.stringify(value) ?? String(value);
@@ -395,7 +402,7 @@ export abstract class BaseAcpTranslator {
     if (argsText !== undefined) {
       this.trackToolCallArgs(event.toolCallId, argsText);
     } else if (event.rawInput !== undefined && event.rawInput !== null) {
-      this.trackToolCallArgs(event.toolCallId, stringifyUnknown(event.rawInput));
+      this.trackToolCallArgs(event.toolCallId, acpStringify(event.rawInput));
     }
 
     const mapped = this.toolNameFromKind(event.kind);
@@ -453,7 +460,7 @@ export abstract class BaseAcpTranslator {
       if (argsText !== undefined) {
         this.trackToolCallArgs(event.toolCallId, argsText);
       } else if (event.rawInput !== undefined && event.rawInput !== null) {
-        this.trackToolCallArgs(event.toolCallId, stringifyUnknown(event.rawInput));
+        this.trackToolCallArgs(event.toolCallId, acpStringify(event.rawInput));
       }
       // 非终态是否发 tool_result 由子类裁定（emitToolResultForNonTerminalUpdate）：
       // opencode 的 in-progress 带输出快照，seam 契约钉死「patch + tool_result」
@@ -601,10 +608,22 @@ export abstract class BaseAcpTranslator {
   // Abstract content/approval handlers
   // =========================================================================
 
-  protected abstract handleAgentMessageChunk(
+  /**
+   * wire `content.text` → assistant 增量通道。opencode / codebuddy 语义相同
+   * （delta 直通，无累积、无 turn_diff）；kimi 有自己的累积语义，覆写本方法。
+   */
+  protected handleAgentMessageChunk(
     event: AgentMessageChunkEvent,
-    sessionId: string,
-  ): AcpTranslatorEvent[];
+    _sessionId: string,
+  ): AcpTranslatorEvent[] {
+    return [
+      {
+        type: 'assistant',
+        message: { content: [{ type: 'text', text: event.content.text }] },
+        timestamp: new Date().toISOString(),
+      },
+    ];
+  }
 
   protected abstract handleAgentThoughtChunk(
     event: AgentThoughtChunkEvent,

@@ -15,7 +15,7 @@ import { join } from 'node:path';
 import type { Runner, AgentEvent } from '../../src/runner/index.js';
 
 /** Protocol-specific agent name echoed in the initialize result. */
-export type AcpProtocol = 'kimi' | 'opencode';
+export type AcpProtocol = 'kimi' | 'opencode' | 'codebuddy';
 
 export interface MockAcpScenarioOpts {
   sessionId?: string;
@@ -41,6 +41,8 @@ export interface MockAcpScenarioOpts {
   /** Delay session/new and session/resume responses (setup-phase stop test). */
   delayNewMs?: number;
   capturePath?: string;
+  /** 启动时把子进程实际收到的环境变量 / cwd 写盘（env 透传断言用）。 */
+  envSnapshotPath?: string;
   wirePath?: string;
   compactionRecordDelayMs?: number;
   pidPath?: string;
@@ -80,6 +82,14 @@ if (!configPath) { process.exit(1); }
 const config = JSON.parse(readFileSync(configPath, 'utf8'));
 const rl = createInterface({ input: process.stdin });
 if (config.pidPath) { writeFileSync(config.pidPath, String(process.pid)); }
+if (config.envSnapshotPath) {
+  writeFileSync(config.envSnapshotPath, JSON.stringify({
+    env: {
+      CODEBUDDY_INTERNET_ENVIRONMENT: process.env.CODEBUDDY_INTERNET_ENVIRONMENT ?? null,
+    },
+    cwd: process.cwd(),
+  }));
+}
 
 let promptId = null;
 let promptCount = 0;
@@ -373,6 +383,7 @@ export function writeScenario(
       crashAfterInit: opts.crashAfterInit ?? false,
       delayNewMs: opts.delayNewMs ?? 0,
       capturePath: opts.capturePath ?? null,
+      envSnapshotPath: opts.envSnapshotPath ?? null,
       wirePath: opts.wirePath ?? null,
       compactionRecordDelayMs: opts.compactionRecordDelayMs ?? null,
       pidPath: opts.pidPath ?? null,
@@ -382,7 +393,8 @@ export function writeScenario(
       failNewTimes: opts.failNewTimes ?? 0,
       resumeOmitsSessionId: opts.resumeOmitsSessionId ?? false,
       kimiApprovalShape: protocol === 'kimi',
-      agentName: protocol === 'kimi' ? 'kimi-acp' : 'OpenCode',
+      agentName:
+        protocol === 'kimi' ? 'kimi-acp' : protocol === 'codebuddy' ? 'CodeBuddy' : 'OpenCode',
       doneMarker: opts.capturePath ? `${opts.capturePath}.done` : null,
     }),
   );

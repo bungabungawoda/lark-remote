@@ -663,6 +663,8 @@ export const COMPACT_CAPABILITY: Readonly<Record<AgentKind, boolean>> = {
   pi: true,
   kimi: true,
   dsh: true,
+  codebuddy: true,
+  qoder: true,
 };
 
 /** 该 agent 是否声明支持 compact（渲染门控与执行门控共用的唯一判据）。 */

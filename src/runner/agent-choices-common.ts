@@ -34,6 +34,17 @@ export const AGENT_CHOICE_FIELDS: Record<Exclude<AgentKind, 'claude'>, readonly 
   // DSH has no model/provider choice fields (host endpoint is connection
   // config, not a per-run choice) — empty to satisfy the Record type.
   dsh: [],
+  codebuddy: [
+    { configKey: 'model', choicesKey: 'model' },
+    { configKey: 'permissionMode', choicesKey: 'permissionMode' },
+    { configKey: 'thinkingLevel', choicesKey: 'thinkingLevel' },
+    { configKey: 'sandbox', choicesKey: 'sandbox' },
+  ],
+  qoder: [
+    { configKey: 'model', choicesKey: 'model' },
+    { configKey: 'reasoningEffort', choicesKey: 'reasoningEffort' },
+    { configKey: 'permissionMode', choicesKey: 'permissionMode' },
+  ],
 };
 
 /** 返回指定 agent 的字段映射；claude 或未知 agent 返回 undefined。 */

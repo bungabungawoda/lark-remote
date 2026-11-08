@@ -30,7 +30,6 @@
 import type { AgentEvent, ApprovalView } from '../../types.js';
 import type {
   RequestPermissionParams,
-  AgentMessageChunkEvent,
   AgentThoughtChunkEvent,
   ToolCallEvent,
   ToolCallUpdateEvent,
@@ -41,7 +40,11 @@ import {
   truncateWithEllipsis,
 } from '../../common/acp/acp-approval.js';
 import { getLogger } from '../../../logger/index.js';
-import { BaseAcpTranslator, type AcpTranslatorEvent } from '../../common/acp/base-translator.js';
+import {
+  acpStringify,
+  BaseAcpTranslator,
+  type AcpTranslatorEvent,
+} from '../../common/acp/base-translator.js';
 
 // =============================================================================
 // Translator
@@ -53,24 +56,6 @@ export class OpencodeAcpTranslator extends BaseAcpTranslator {
   // =========================================================================
   // Content channel: wire deltas → assistant incremental channel
   // =========================================================================
-
-  protected override handleAgentMessageChunk(
-    event: AgentMessageChunkEvent,
-    _sessionId: string,
-  ): AcpTranslatorEvent[] {
-    // opencode wire delta → assistant incremental channel directly
-    // (event.ts handlePartDelta: content.text = props.delta). The reducer
-    // appends assistant text — no accumulation here, no turn_diff.
-    return [
-      {
-        type: 'assistant',
-        message: {
-          content: [{ type: 'text', text: event.content.text }],
-        },
-        timestamp: new Date().toISOString(),
-      },
-    ];
-  }
 
   protected override handleAgentThoughtChunk(
     event: AgentThoughtChunkEvent,
@@ -219,25 +204,12 @@ export class OpencodeAcpTranslator extends BaseAcpTranslator {
       requestId,
       kind: 'command',
       command: params.toolCall.title ?? undefined,
-      reason: rawInput ? truncateWithEllipsis(stringify(rawInput), 200) : undefined,
+      reason: rawInput ? truncateWithEllipsis(acpStringify(rawInput), 200) : undefined,
       // 从服务端 options kind 派生——带 allow_always（或 approve_always）
       // 才提供「本会话总是允许」（acceptForSession）。
       availableDecisions: deriveAcpAvailableDecisions(params.options ?? []),
     };
 
     return this.approvalRequestedEvents(requestId, params.sessionId, view);
-  }
-}
-
-// =============================================================================
-// Helpers
-// =============================================================================
-
-function stringify(value: unknown): string {
-  if (typeof value === 'string') return value;
-  try {
-    return JSON.stringify(value);
-  } catch {
-    return String(value);
   }
 }

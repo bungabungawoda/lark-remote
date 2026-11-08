@@ -51,6 +51,7 @@ import {
 } from '../../common/acp/protocol-types.js';
 import {
   KIMI_APPROVAL_KINDS,
+  type AcpApprovalKinds,
   type AcpPendingApproval,
   buildAcpPermissionOutcome,
 } from '../../common/acp/acp-approval.js';
@@ -494,7 +495,7 @@ export class KimiAcpRunner extends BaseAcpRunner<KimiAcpTranslator> {
     return this.compactBaselineRecords.length;
   }
 
-  protected onCompactPromptFired(
+  protected override onCompactPromptFired(
     promptPromise: Promise<SessionPromptResult>,
     translator: KimiAcpTranslator,
     sessionId: string,
@@ -586,7 +587,15 @@ export class KimiAcpRunner extends BaseAcpRunner<KimiAcpTranslator> {
     );
   }
 
-  protected buildApprovalOutcome(
+  /**
+   * kimi 的 question 桥形态不同，覆写默认的 permission 映射。getter 仅用于
+   * 满足 BaseAcpRunner 的抽象契约（本类实际走 override，不会消费它）。
+   */
+  protected override get approvalKinds(): AcpApprovalKinds {
+    return KIMI_APPROVAL_KINDS;
+  }
+
+  protected override buildApprovalOutcome(
     action: string,
     pending: AcpPendingApproval,
     response: unknown,

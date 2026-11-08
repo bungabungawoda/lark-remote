@@ -213,5 +213,18 @@
   ],
   "live": [
     "tests/feishu-live/**/*.test.ts"
+  ],
+  "agent-codebuddy": [
+    "src/runner/codebuddy/**/*.test.ts",
+    "src/session/codebuddy/**/*.test.ts",
+    "src/config/codebuddy-catalog.test.ts",
+    "src/config/codebuddy-config.test.ts",
+    "src/router/config/codebuddy.test.ts"
+  ],
+  "agent-qoder": [
+    "src/runner/qoder/**/*.test.ts",
+    "src/session/qoder/**/*.test.ts",
+    "src/config/qoder-config.test.ts",
+    "src/router/config/qoder.test.ts"
   ]
 }

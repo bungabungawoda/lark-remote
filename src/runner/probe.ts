@@ -32,6 +32,11 @@ const BINARY_MAP: Record<AgentKind, string> = {
   // DSH is an HTTP-only agent (no CLI) → reported unavailable, which is
   // semantically correct for the /config availability display.
   dsh: '',
+  // qoder 探测用 CN 版安装名 `qodercn`（国际版装的是 `qoder`）：探测只是
+  // 可用性提示，国际版用户在 /config 会看到「未安装」排序靠后，可执行性
+  // 仍由 runner 运行时的 ENOENT 友好文案兜底。
+  codebuddy: 'codebuddy',
+  qoder: 'qodercn',
 };
 
 const CACHE_TTL_MS = 5 * 60_000;

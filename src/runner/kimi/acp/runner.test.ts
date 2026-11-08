@@ -66,6 +66,19 @@ interface TerminalMockServerOptions {
   /** Delay between output polls (real server polls every 250ms). */
   pollIntervalMs?: number;
   /**
+   * Delay before the FIRST terminal/output poll when outputReadyPath is unset.
+   * Defaults to pollIntervalMs so all other fixtures keep their old timing.
+   */
+  firstOutputDelayMs?: number;
+  /**
+   * File the spawned script writes once its stdout exists. The mock server
+   * waits for this file before the first terminal/output poll instead of
+   * guessing a delay: under a loaded full-suite run `bash -c 'echo | tee'` can
+   * take seconds, and a fixed delay still lets all five retries read an empty
+   * buffer. A 10s fallback keeps the fixture from hanging.
+   */
+  outputReadyPath?: string;
+  /**
    * Mirror the real kimi acp-server terminal correlation: emit a Bash
    * tool_call notification before create, an in_progress tool_call_update
    * with a terminal embed after create, and a completed terminal embed
@@ -92,6 +105,8 @@ function writeTerminalMockServer(
       pollForTruncated: opts.pollForTruncated ?? false,
       killAfterCreate: opts.killAfterCreate ?? false,
       pollIntervalMs: opts.pollIntervalMs ?? 250,
+      firstOutputDelayMs: opts.firstOutputDelayMs ?? opts.pollIntervalMs ?? 250,
+      outputReadyPath: opts.outputReadyPath ?? null,
       sendTerminalEmbedUpdates: opts.sendTerminalEmbedUpdates ?? false,
     }),
   );
@@ -105,6 +120,8 @@ const config = JSON.parse(readFileSync(process.argv[2], 'utf8'));
 const rl = createInterface({ input: process.stdin });
 const capturePath = config.capturePath;
 const pollIntervalMs = config.pollIntervalMs;
+const firstOutputDelayMs = config.firstOutputDelayMs;
+const outputReadyPath = config.outputReadyPath;
 let promptId = null;
 let terminalId = null;
 let outputPolls = 0;
@@ -113,6 +130,21 @@ const sendPromptResult = () => {
   if (promptId === null) return;
   send({ jsonrpc: '2.0', id: promptId, result: { stopReason: 'end_turn' } });
   promptId = null;
+};
+const sendFirstOutput = () => send({ jsonrpc: '2.0', id: 101, method: 'terminal/output', params: { sessionId: config.sessionId, terminalId } });
+const scheduleFirstOutput = () => {
+  if (!outputReadyPath) { setTimeout(sendFirstOutput, firstOutputDelayMs); return; }
+  let waited = 0;
+  const poll = () => {
+    if (existsSync(outputReadyPath) || waited >= 10000) {
+      // marker 落盘后 stdout 的 data 事件还需一个 tick 才会进 client 缓冲。
+      setTimeout(sendFirstOutput, 100);
+      return;
+    }
+    waited += 100;
+    setTimeout(poll, 100);
+  };
+  poll();
 };
 
 rl.on('line', (line) => {
@@ -166,8 +198,9 @@ rl.on('line', (line) => {
         });
       }
       // 真实服务端每 250ms 轮询一次 output；零延迟连打会在 bash 启动前
-      // 耗尽轮询次数。这里保留同样的轮询节奏。
-      setTimeout(() => send({ jsonrpc: '2.0', id: 101, method: 'terminal/output', params: { sessionId: config.sessionId, terminalId } }), pollIntervalMs);
+      // 耗尽轮询次数。首次轮询等脚本的 marker 落盘（见 outputReadyPath），
+      // 后续仍保持 250ms 节奏。
+      scheduleFirstOutput();
       return;
     }
     if (msg.id === 104) {
@@ -1623,6 +1656,9 @@ describe('KimiAcpRunner', () => {
         capturePath,
         cwd,
         script: `echo hello | tee ${JSON.stringify(markerPath)}`,
+        // 全量测试高负载时 tee 可能数秒后才写出 marker / stdout；等它落盘
+        // 再发首次 output 轮询，避免 5 次重试全部读到空缓冲。
+        outputReadyPath: markerPath,
       });
 
       const runner = new KimiAcpRunner({
@@ -1690,6 +1726,9 @@ describe('KimiAcpRunner', () => {
         capturePath,
         cwd,
         script: `echo hello | tee ${JSON.stringify(markerPath)}`,
+        // 同 terminal protocol 用例：tool_result 的本地输出也依赖首次
+        // output 轮询时 bash 已经写出内容。
+        outputReadyPath: markerPath,
         // 模拟真实 kimi acp-server：tool_call 通知 + terminal embed 更新。
         sendTerminalEmbedUpdates: true,
       });

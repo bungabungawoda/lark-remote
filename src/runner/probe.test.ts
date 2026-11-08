@@ -61,15 +61,17 @@ describe('probe', () => {
   });
 
   describe('probeAllAgents', () => {
-    it('probes all 5 spawn-able agents concurrently', async () => {
+    it('probes all 7 spawn-able agents concurrently', async () => {
       mockProbe.mockReturnValue(FOUND);
       const result = await probeAllAgents();
-      expect(result.size).toBe(5);
+      expect(result.size).toBe(7);
       expect(result.get('claude')).toBe(true);
       expect(result.get('codex')).toBe(true);
       expect(result.get('opencode')).toBe(true);
       expect(result.get('pi')).toBe(true);
       expect(result.get('kimi')).toBe(true);
+      expect(result.get('codebuddy')).toBe(true);
+      expect(result.get('qoder')).toBe(true);
     });
 
     it('reports mixed availability correctly', async () => {

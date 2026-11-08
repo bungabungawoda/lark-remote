@@ -2,7 +2,7 @@
 
 # 使用指南
 
-lark-remote 把飞书私聊变成本地 coding agent 的远程入口：在飞书里发消息，本地的 Claude Code、Codex、opencode、pi、Kimi 或 DSH 在你指定的目录里读写文件、跑命令，回复原路送回飞书。默认 agent 是 Claude Code，其余五个见下文「配置」。
+lark-remote 把飞书私聊变成本地 coding agent 的远程入口：在飞书里发消息，本地的 Claude Code、Codex、opencode、pi、Kimi、DSH、CodeBuddy 或 Qoder 在你指定的目录里读写文件、跑命令，回复原路送回飞书。默认 agent 是 Claude Code，其余七个见下文「配置」。
 
 单用户、p2p 私聊，不修改 agent 的 system prompt。
 
@@ -52,7 +52,7 @@ feishu:
   appId: cli_xxx # 飞书应用 App ID
   appSecret: xxx # 飞书应用 App Secret
 
-# 默认 agent：claude | codex | opencode | pi | kimi | dsh，默认 claude
+# 默认 agent：claude | codex | opencode | pi | kimi | dsh | codebuddy | qoder，默认 claude
 defaultAgent: claude
 
 claude:
@@ -82,6 +82,18 @@ agents:
     provider: '' # provider route（deepseek-official / deepseek-account / anthropic/...）；留空 = 兼容旧配置，按 deepseek-official
     model: '' # 模型名；留空 = 该 provider 的默认模型
     reasoningEffort: '' # off/low/high/max；留空 = 模型默认档位
+  codebuddy: # 腾讯 CodeBuddy Code（纯 ACP 模式，codebuddy --acp 持久连接）
+    model: '' # 留空 = 跟随 CodeBuddy 自己的 settings.json
+    permissionMode: default # default（=不干预）| acceptEdits | bypassPermissions | plan | dontAsk | auto
+    acp:
+      binary: codebuddy
+      turnIdleTimeoutMinutes: 30
+  qoder: # Qoder CLI（通用 CLI 模式，长驻 stream-json 双向会话）
+    model: '' # 留空 = 跟随 Qoder 自己的 settings.json
+    reasoningEffort: '' # 留空 = Qoder 默认档位（取值随模型变化，官方不枚举）
+    permissionMode: default # default（=不传 --permission-mode）| accept_edits | plan | auto | bypass_permissions | dont_ask（注意是 snake_case）
+    cli:
+      binary: qodercn # CN 版安装名；国际版装的是 qoder
 
 logging:
   level: info # debug | info | warn | error
@@ -93,6 +105,41 @@ idle:
 配置文件路径可用 `--config-dir` CLI 参数覆盖（如 `lark-remote --config-dir /path/to/dir`）。
 
 > **不要把真实 config.yaml 提交进仓库。**
+
+### CodeBuddy agent（腾讯 CodeBuddy Code，ACP 直连）
+
+CodeBuddy 以官方 ACP 模式接入（`codebuddy --acp`，stdio 上的 JSON-RPC 长连接）：每个工作区一条常驻连接，审批走标准 `session/request_permission`（选项：允许一次 / 总是允许 / 拒绝），`/compact` 作为文本 prompt 下发，中断走 `session/cancel`。配置项：
+
+- `agents.codebuddy.model`：模型 id。`/config` 卡片的模型下拉来自 ACP 会话目录（`codebuddy --acp` 一次性探针，启动时后台预热），每个选项附带该模型的积分费率（目录 `_meta.credits`，如 `x0.29 credits`）；探针失败回退 `~/.codebuddy/settings.json` 的当前模型并降级为文本输入。审批 kind、可用模式（`default` / `acceptEdits` / `plan` / `auto` / `dontAsk` / `bypassPermissions` / `fullAccess`）随会话目录校验。
+- 每次模型请求实际消耗的积分在 ACP `usage_update` 的 `cost.amount`（单位是 CodeBuddy 积分，非美元，不上 `total_cost_usd`）；费率以目录 `credits` 字段为准（随版本/活动变化）。给 lark-remote 做真机测试时选目录里 `x0.00 credits` 的免费档（如 hy3/hy4free）不消耗积分。
+- `agents.codebuddy.permissionMode`：`default`（不干预，跟随 CodeBuddy 默认）或官方 modes 枚举。
+- `agents.codebuddy.thinkingLevel`：思考档位（ACP `thought_level`），可选 `enabled`（默认）/ `disabled` / `minimal` / `low` / `medium` / `high` / `xhigh` / `max`；留空 = 不下发。
+- `agents.codebuddy.sandbox`：命令沙箱（ACP `sandbox`），`true` = Bash 跑在 sandbox-cli 隔离层；留空 = 不下发（跟随 CodeBuddy 默认 false）。
+- `agents.codebuddy.acp.binary` / `requestTimeoutMs` / `idleTtlMs` / `turnIdleTimeoutMinutes`：连接参数，同 kimi/opencode 的 acp 子配置口径。
+- `agents.codebuddy.env`：透传给 ACP 子进程的环境变量。腾讯云文档要求**中国版**设置 `CODEBUDDY_INTERNET_ENVIRONMENT: internal`（海外版不设）——首次接入若 ACP 连接/鉴权失败，先补这个变量。
+
+token 用量：CodeBuddy 的 ACP `usage_update` 把每模型请求的全量明细放在 `_meta.usage`（含缓存命中/未命中拆分），lark-remote 按 turn 累加后随 result 事件折叠，jsonl 会话文件（`providerData.usage`，`inputTokens` 含缓存）作兜底口径。
+
+首次使用前先用交互式终端跑一次 `codebuddy` 完成登录与目录信任；headless/ACP 通道不会触发浏览器登录。
+
+### Qoder agent（Qoder CLI，stream-json 长驻会话）
+
+Qoder 的 headless 面与 Claude Code 高度同构（真机实测：`--resume` 同 sessionId 恢复上下文、`/compact` 本地拦截、usage 字段与 claude 一致），按通用 CLI 模式接入：每个工作区一个长驻 `qodercn` 进程，stdin/stdout 双向 stream-json，`/compact` 作为 slash 命令写入 stdin。**注意：Qoder 不提供动态审批通道**（`--permission-prompt-tool stdio` 与 `--input-format stream-json` 互斥，CLI 直接拒绝），工具审批由 `--permissionMode` 静态策略治理——需要无人值守放行时把权限模式设为 `bypass_permissions` 或 `auto`。配置项：
+
+- `agents.qoder.model` / `agents.qoder.reasoningEffort`：留空 = 跟随 Qoder 自己的 `settings.json`。模型下拉来自 `qodercn --list-models`（命令失败时卡片回退文本输入）。
+- `agents.qoder.permissionMode`：注意 Qoder 的取值是 **snake_case**（`accept_edits` / `bypass_permissions` 等），与 claude/CodeBuddy 的 camelCase 不同。
+- `agents.qoder.contextWindow`：显式上下文窗口提示值（`--context-window`，正整数 tokens），影响 CLI 侧的压缩阈值判断；留空或 0 = 跟随 CLI/模型默认。不会让 run 卡片显示水位（Qoder 的用量回包没有 token 数据，见下）。
+- `agents.qoder.cli.binary`：CN 版安装名是 `qodercn`，国际版是 `qoder`，默认按 CN 版。
+- `agents.qoder.configDir`：Qoder 配置根目录（会话记录在 `<configDir>/projects/` 下）；留空时按 `~/.qoder-cn` → `~/.qoder` 自动探测。
+
+首次使用前先用交互式终端跑一次 `qodercn` 完成登录（浏览器 OAuth）与目录信任；headless 通道不会触发登录。已实测的 headless 行为差异（2026-11-05，qoder-cli 1.1.72/1.1.83）：
+
+- **未登录**：非交互启动直接失败（exit 1，stderr 含 `Not logged in · Please run /login`），lark-remote 以错误卡呈现；不是挂起。
+- **权限只治不管问**：headless 下不产生审批请求（三种模式 × 写文件/删除文件实测均为 0 条）——`default` 对写文件、删除文件**静默拒绝**；`accept_edits` 只自动放行文件编辑，危险命令同样静默拒绝。
+- **没有 token 统计**：usage 回包只有积分（credits），token 字段为 0；lark-remote 不渲染伪 0 行。`/compact` 可用，压缩边界落盘（含压缩前后水位）但因 token 口径缺席，卡片不显示压缩统计。
+- **`/stop` 是进程组终止**：CLI 的 interrupt 控制请求被静默忽略（实测），无法优雅中断在途 turn。
+- **CLI 自动升级**（实测一天内 1.1.72 → 1.1.83），flag 校验会收紧（`--permission-prompt-tool` 互斥即 1.1.83 引入）；升级后若启动即失败，查日志里的 CLI 报错并反馈。
+- **`-n` 会话命名**：`qodercn -n <名字>` 落盘 custom-title 行，`/resume` 列表与详情卡显示该命名。
 
 ### DSH agent（DeepSeek Harness，HTTP+WS 直连）
 

@@ -10,12 +10,17 @@
  * subclasses:
  *   - applyTurnSettings: mode/model下发 semantics differ (kimi unconditional,
  *     opencode conditional on cached values)
- *   - onCompactPromptFired: kimi polls wire.jsonl compaction records (§5.2,
- *     background compaction), opencode settles synchronously
+ *   - onCompactPromptFired: default is synchronous settlement (opencode /
+ *     codebuddy); kimi overrides to poll wire.jsonl compaction records (§5.2,
+ *     background compaction)
  *   - shouldDeferStop: kimi defers while prompt unsettled, opencode defers
  *     until the prompt has been SENT (deliberately narrower window)
- *   - handleNotification/handleServerRequest: kimi filters terminal-backed
- *     Bash notifications and serves terminal/* reverse RPC; opencode is plain
+ *   - handleNotification: agent-specific filtering (kimi: terminal-backed Bash)
+ *   - handleServerRequest: default is translator dispatch + METHOD_NOT_FOUND
+ *     fallback; kimi overrides to serve terminal/* reverse RPC and question
+ *     elicitation
+ *   - buildApprovalOutcome: default parameterised by `approvalKinds`; kimi
+ *     overrides for its question bridge
  *   - getStatusInfo / updateApprovalMode: agent-specific extras & mode vocab
  */
 import type { AgentKind } from '../../../agent-kinds.js';
@@ -32,11 +37,14 @@ import {
   type SessionPromptResult,
   type SessionCancelParams,
   type RequestPermissionParams,
+  RpcErrorCode,
 } from './protocol-types.js';
 import {
+  buildAcpPermissionOutcome,
   respondAcpApproval,
   sendAcpSetMode,
   truncateWithEllipsis,
+  type AcpApprovalKinds,
   type AcpPendingApproval,
 } from './acp-approval.js';
 import { getLogger } from '../../../logger/index.js';
@@ -109,17 +117,33 @@ export abstract class BaseAcpRunner<
   }
 
   /**
-   * Dispatch the compact prompt result once fired. kimi: background
-   * compaction — poll wire.jsonl for a NEW terminal record before translating
-   * (§5.2). opencode: synchronous — standard prompt-settle translation.
+   * Dispatch the compact prompt result once fired. Default = 同步结算
+   * （opencode / codebuddy 的 /compact 都在 prompt 结算前完成，无后台观察通道）：
+   * 标准 prompt-settle 翻译 + 代际捕获。kimi 的压缩是后台任务，覆写本方法
+   * 轮询 wire.jsonl 的新终态记录（§5.2）。
    */
-  protected abstract onCompactPromptFired(
+  protected onCompactPromptFired(
     promptPromise: Promise<SessionPromptResult>,
     translator: TTranslator,
     sessionId: string,
-    opts: SpawnOptions,
-    baselineTotalCount: number,
-  ): void;
+    _opts: SpawnOptions,
+    _baselineTotalCount: number,
+  ): void {
+    // 与 setupTurn 相同，捕获发起压缩那一轮的代际 + client；
+    // 旧轮迟到的 prompt 结算不得写入新轮的共享队列。
+    const generation = this.turnGeneration;
+    const client = this.currentClient;
+    promptPromise.then(
+      (result) => {
+        if (!this.isCurrentTurn(generation, client)) return;
+        this.handlePromptResolved(result, translator, sessionId);
+      },
+      (err) => {
+        if (!this.isCurrentTurn(generation, client)) return;
+        this.handlePromptRejected(err, translator, sessionId, 'compact');
+      },
+    );
+  }
 
   // =========================================================================
   // Shared plumbing
@@ -260,12 +284,20 @@ export abstract class BaseAcpRunner<
     });
   }
 
-  /** Agent-specific outcome encoding (kimi: question bridge; opencode: permission). */
-  protected abstract buildApprovalOutcome(
+  /** 各 ACP 服务端的 option kind 候选表；默认 buildApprovalOutcome 用它映射。 */
+  protected abstract get approvalKinds(): AcpApprovalKinds;
+
+  /**
+   * Agent-specific outcome encoding. 默认实现按 approvalKinds 把 bridge 动作
+   * 映射为 permission optionId；kimi 的 question 桥另有形态，覆写本方法。
+   */
+  protected buildApprovalOutcome(
     action: string,
     pending: AcpPendingApproval,
-    response: unknown,
-  ): unknown;
+    _response: unknown,
+  ): unknown {
+    return buildAcpPermissionOutcome(action, pending.options, this.approvalKinds);
+  }
 
   /** Shared tail of updateApprovalMode: re-send session/set_mode to the live session. */
   protected async sendApprovalModeUpdate(modeId: string): Promise<void> {
@@ -503,11 +535,34 @@ export abstract class BaseAcpRunner<
 
   /** Wire the active client's JSON-RPC hooks into the subclass dispatcher. */
   protected abstract handleNotification(method: string, params: unknown): void;
-  protected abstract handleServerRequest(
-    id: number | string,
-    method: string,
-    params: unknown,
-  ): void;
+
+  /**
+   * 默认 server-request 编排：translator 产出事件 → 登记审批 + 推流；
+   * 无事件 → respondError(METHOD_NOT_FOUND)，否则服务端会一直挂着等回信。
+   * kimi 覆写（terminal/* 反向 RPC + question elicitation 特判）。
+   */
+  protected handleServerRequest(id: number | string, method: string, params: unknown): void {
+    const events: AcpTranslatorEvent[] =
+      this.currentTranslator?.handleServerRequest(id, method, params) ?? [];
+
+    if (events.length === 0) {
+      // Unhandled/unsupported server requests must be explicitly responded to
+      // (error = "rejected"), otherwise the server hangs waiting for a
+      // response（opencode / codebuddy 同口径；未声明的能力服务端不应发送）。
+      this.currentClient?.respondError(
+        id,
+        RpcErrorCode.METHOD_NOT_FOUND,
+        `Unsupported server request: ${method}`,
+      );
+      getLogger().info(
+        `[${this.logTag}] rejected unsupported server request method=${method} id=${id}`,
+      );
+      return;
+    }
+
+    this.registerApprovalEvents(events, (params as RequestPermissionParams).options);
+    this.pushEvents(events);
+  }
 
   /** Extra per-turn state cleanup (kimi: active cwd; opencode: error monitor). */
   protected onClearTurnState(): void {}

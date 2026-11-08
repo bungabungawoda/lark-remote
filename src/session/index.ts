@@ -10,3 +10,5 @@ export { OpencodeSessionReader } from './opencode/index.js';
 export { PiSessionReader } from './pi/index.js';
 export { KimiSessionReader } from './kimi/index.js';
 export { DshSessionReader } from './dsh/index.js';
+export { CodebuddySessionReader } from './codebuddy/index.js';
+export { QoderSessionReader } from './qoder/index.js';

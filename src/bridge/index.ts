@@ -693,6 +693,13 @@ export class Bridge {
         // opencode model is set as provider/model in the constructor (defaultModel);
         // returning bare modelID here would override it with a provider-less string.
         break;
+      case 'qoder':
+        // qoder 与 codex 同字段：reasoningEffort 走 SpawnOptions.reasoningEffort，
+        // session buildArgv 落到 --reasoning-effort；没有这个 case 时配置卡选的
+        // 模型只进 /status 展示、永远到不了 CLI（2026-11-05 实测缺口）。
+        if (agents?.qoder?.model) result.model = agents.qoder.model;
+        if (agents?.qoder?.reasoningEffort) result.reasoningEffort = agents.qoder.reasoningEffort;
+        break;
     }
 
     return result;

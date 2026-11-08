@@ -15,6 +15,8 @@ export interface SessionIndexEntry {
   fingerprint: string;
   mtimeMs: number;
   summary: string;
+  /** 用户可见会话命名（qoder `custom-title`，见 ParsedSession.title）；claude 文件无此行 → undefined。 */
+  title?: string;
   /**
    * cwd 判等键集合（PathKit.pathKey 归一形态，win32/darwin 大小写+分隔符
    * 不敏感）：索引的 byCwd 倒排与 cwdSet.has 查询都按这个形态比对。注意与
@@ -72,11 +74,33 @@ export function extractText(content: unknown): string | null {
   return null;
 }
 
+/**
+ * 用户可见标题行 → 标题文本。qoder 的 `custom-title`（-n / rename 落盘）复用
+ * claude 内核，claude 自身只有 `ai-title`；行类型与字段名只在这里定义，两个
+ * 消费点（`parseSessionJsonl` / `sessions.collectAiTitle`）都走本函数。
+ * 显式命名会 trim；自动摘要（`ai-title`）保留原值。
+ */
+export function titleFromRow(obj: Record<string, unknown>): string | undefined {
+  if (obj.type === 'ai-title' && typeof obj.aiTitle === 'string' && obj.aiTitle) {
+    return obj.aiTitle as string;
+  }
+  if (obj.type === 'custom-title' && typeof obj.customTitle === 'string') {
+    const t = (obj.customTitle as string).trim();
+    if (t) return t;
+  }
+  return undefined;
+}
+
 // ─── parseSessionJsonl ──────────────────────────────────────
 
 export interface ParsedSession {
   cwdSet: Set<string>;
   summary: string;
+  /**
+   * 用户可见的会话命名行（qoder 的 `custom-title`，`-n` / rename 落盘；
+   * claude 文件没有此行 → undefined）。取最后一次命名（可重命名）。
+   */
+  title?: string;
 }
 
 /**
@@ -88,6 +112,7 @@ export function parseSessionJsonl(filePath: string): ParsedSession {
   const cwdSet = new Set<string>();
   let summary = '(无摘要)';
   let foundSummary = false;
+  let title: string | undefined;
 
   const ok = scanJsonlLines(filePath, (line) => {
     let obj: Record<string, unknown>;
@@ -100,6 +125,13 @@ export function parseSessionJsonl(filePath: string): ParsedSession {
     // Collect cwd values
     if (typeof obj.cwd === 'string' && obj.cwd) {
       cwdSet.add(obj.cwd);
+    }
+
+    // 索引只收用户显式命名（custom-title，last wins）；claude 的 ai-title 是
+    // 自动摘要，由 readSessionContent.aiTitle 消费，不进 /resume 列表标题。
+    if (obj.type === 'custom-title') {
+      const t = titleFromRow(obj);
+      if (t) title = t;
     }
 
     // Find first real user message for summary (same logic as summarizeSession).
@@ -130,7 +162,7 @@ export function parseSessionJsonl(filePath: string): ParsedSession {
     return { cwdSet: new Set(), summary: '(无摘要)' };
   }
 
-  return { cwdSet, summary };
+  return { cwdSet, summary, title };
 }
 
 // ─── buildFingerprint ───────────────────────────────────────
@@ -320,6 +352,7 @@ export class SessionIndex {
           fingerprint: currentFp,
           mtimeMs: Number(st.mtimeMs),
           summary: parsed.summary.replace(/\s+/g, ' ').trim(),
+          ...(parsed.title ? { title: parsed.title } : {}),
           cwdSet: normalizeCwdSet(parsed.cwdSet, this.platform),
         };
         this.updateEntry(p, updated);
@@ -422,6 +455,7 @@ export class SessionIndex {
             fingerprint: fpAfter,
             mtimeMs: Number(fileStat.mtimeMs),
             summary: parsed.summary.replace(/\s+/g, ' ').trim(),
+            ...(parsed.title ? { title: parsed.title } : {}),
             cwdSet: normalizeCwdSet(parsed.cwdSet, this.platform),
           };
           this.updateEntry(fullPath, newEntry);

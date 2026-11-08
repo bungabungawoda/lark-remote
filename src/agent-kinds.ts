@@ -11,7 +11,16 @@
  * resume.compact 仍只有 5 个，带 dsh 的 resume 卡片会静默退回 defaultAgent。
  * 新增 agent 只改这里。
  */
-export const AGENT_KINDS = ['claude', 'codex', 'opencode', 'pi', 'kimi', 'dsh'] as const;
+export const AGENT_KINDS = [
+  'claude',
+  'codex',
+  'opencode',
+  'pi',
+  'kimi',
+  'dsh',
+  'codebuddy',
+  'qoder',
+] as const;
 
 export type AgentKind = (typeof AGENT_KINDS)[number];
 
@@ -23,6 +32,8 @@ export const AGENT_DISPLAY_NAMES: Record<AgentKind, string> = {
   pi: 'Pi',
   kimi: 'Kimi',
   dsh: 'DSH',
+  codebuddy: 'CodeBuddy',
+  qoder: 'Qoder',
 };
 
 /** 任意输入（卡片 payload / 命令行参数）是否是一个已知 agent 名。 */

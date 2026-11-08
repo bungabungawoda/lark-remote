@@ -3,6 +3,8 @@ import {
   getAgentConfig,
   PI_DEFAULTS,
   KIMI_DEFAULTS,
+  CODEBUDDY_DEFAULTS,
+  QODER_DEFAULTS,
   type AppConfig,
 } from './config/index.js';
 import type { AgentSessionContentEvent, AgentSessionUsage } from './session-contract.js';
@@ -23,10 +25,13 @@ import {
   PiRpcRunner,
   KimiAcpRunner,
   DshRunner,
+  CodebuddyAcpRunner,
+  QoderRunner,
 } from './runner/index.js';
 import { AgentRegistry } from './runner/registry.js';
 import { probeAllAgents } from './runner/probe.js';
 import { warmCodexCatalogCache } from './config/codex-config.js';
+import { warmCodebuddyCatalogCache } from './config/codebuddy-catalog.js';
 import { SessionReaderRegistry, SessionStore } from './session/index.js';
 import {
   ClaudeSessionReader,
@@ -35,6 +40,8 @@ import {
   PiSessionReader,
   KimiSessionReader,
   DshSessionReader,
+  CodebuddySessionReader,
+  QoderSessionReader,
 } from './session/index.js';
 import { CommandRouter } from './router/index.js';
 import { DshDaemon } from './runner/dsh/daemon.js';
@@ -220,6 +227,8 @@ interface AgentSessionReaders {
   pi: PiSessionReader;
   kimi: KimiSessionReader;
   dsh: DshSessionReader;
+  codebuddy: CodebuddySessionReader;
+  qoder: QoderSessionReader;
 }
 
 /**
@@ -246,6 +255,12 @@ function createSessionReaders(
   });
   const pi = new PiSessionReader();
   const kimi = new KimiSessionReader();
+  // Qoder 会话目录随配置（configDir 缺省自动探测 ~/.qoder-cn → ~/.qoder）。
+  const qoder = new QoderSessionReader({
+    configDir: getAgentConfig(config, 'qoder')?.configDir,
+  });
+  // CodeBuddy 会话目录固定 ~/.codebuddy（无多形态安装），reader 免配置。
+  const codebuddy = new CodebuddySessionReader();
   const dsh = new DshSessionReader({
     // hostProvider 每次调用读最新 config：/config 修改 host 后 runner 重建为
     // 新 host，reader（/resume、用量、完成卡）也跟随新 host。
@@ -254,7 +269,7 @@ function createSessionReaders(
     tokenProvider: () => getAgentConfig(latest(), 'dsh')?.token,
     credentialsFileProvider: () => getAgentConfig(latest(), 'dsh')?.credentialsFile,
   });
-  return { claude, codex, opencode, pi, kimi, dsh };
+  return { claude, codex, opencode, pi, kimi, dsh, codebuddy, qoder };
 }
 
 /**
@@ -381,6 +396,45 @@ function kimiRunnerOptions(deps: RunnerFactoryDeps) {
   };
 }
 
+// Register CodebuddyAcpRunner (pure ACP mode, `codebuddy --acp`)
+function codebuddyRunnerOptions(deps: RunnerFactoryDeps) {
+  const conf = getAgentConfig(deps.latest(), 'codebuddy');
+  const acpConf = conf?.acp;
+  return {
+    kind: 'codebuddy' as const,
+    sessionReader: deps.readers.codebuddy,
+    binary: acpConf?.binary,
+    // env 透传（如 CN 版 CODEBUDDY_INTERNET_ENVIRONMENT），undefined 不覆盖。
+    env: conf?.env,
+    requestTimeoutMs: acpConf?.requestTimeoutMs,
+    idleTtlMs: acpConf?.idleTtlMs,
+    turnIdleTimeoutMs: minutesToMs(acpConf?.turnIdleTimeoutMinutes),
+    model: conf?.model,
+    permissionMode: conf?.permissionMode ?? CODEBUDDY_DEFAULTS.permissionMode,
+    thinkingLevel: conf?.thinkingLevel,
+    sandbox: conf?.sandbox,
+  };
+}
+
+// Register QoderRunner (generic CLI mode, long-lived stream-json session).
+// factory 闭包读最新 config（同 pi/kimi 的 container 语义）。
+function qoderRunnerOptions(deps: RunnerFactoryDeps, cwdOpt: { cwd: string }) {
+  const conf = getAgentConfig(deps.latest(), 'qoder');
+  return {
+    model: conf?.model,
+    reasoningEffort: conf?.reasoningEffort,
+    settings: deps.cliArgs.settings,
+    stopGraceMs: conf?.stopGraceMs,
+    pidDir: deps.configDir,
+    cwd: cwdOpt.cwd,
+    sessionReader: deps.readers.qoder,
+    binary: conf?.cli?.binary,
+    permissionMode: conf?.permissionMode ?? QODER_DEFAULTS.permissionMode,
+    contextWindow: conf?.contextWindow,
+    idleTtlMs: conf?.idleTtlMinutes != null ? conf.idleTtlMinutes * 60_000 : undefined,
+  };
+}
+
 // Warm the shared process in the background so the first message and
 // `/resume` do not pay the full startup delay. Failures surface from
 // DshRunner.run(), which awaits the same resolver.
@@ -437,6 +491,14 @@ function registerRunners(agentRegistry: AgentRegistry, deps: RunnerFactoryDeps):
     warmDshDaemon(deps.dshDaemon, 'background start failed');
     return new DshRunner(dshRunnerOptions(deps));
   });
+
+  agentRegistry.register('codebuddy', (_ws: string) => {
+    return new CodebuddyAcpRunner(codebuddyRunnerOptions(deps));
+  });
+
+  agentRegistry.register('qoder', (ws: string) => {
+    return new QoderRunner(qoderRunnerOptions(deps, { cwd: ws }));
+  });
 }
 
 /** 按 agent 家族注册 session reader（与 runner factory 共享同一实例）。 */
@@ -450,6 +512,8 @@ function registerSessionReaders(
   registry.register('pi', readers.pi);
   registry.register('kimi', readers.kimi);
   registry.register('dsh', readers.dsh);
+  registry.register('codebuddy', readers.codebuddy);
+  registry.register('qoder', readers.qoder);
 }
 
 /** 探测 agent CLI 可用性（fire-and-forget，填充 /config 卡片缓存）。 */
@@ -524,6 +588,10 @@ function initializeRunner(
   // Probe agent CLI availability (fire-and-forget, populates cache for /config card).
   // Don't block startup — log unavailable agents as warnings.
   probeAgentsInBackground();
+
+  // Warm the codebuddy ACP catalog in the background（模型/思考档位下拉的
+  // 数据源；失败落 negative cache，卡片回退文本输入 + 静态档位清单）。
+  warmCodebuddyCatalogCache();
 
   // Warm the codex model catalog in the background so the first Codex /config
   // card open reads a warm cache instead of blocking the event loop for up to
