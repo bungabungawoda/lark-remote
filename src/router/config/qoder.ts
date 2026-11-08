@@ -3,8 +3,8 @@
  * agent (generic CLI mode).
  *
  * 模型清单来自 `qodercn --list-models`（宽松解析）；清单为空（命令失败/未
- * 登录）时回退文本输入。推理强度与模型一样无稳定枚举（官方不承诺档位集），
- * 渲染为文本输入。
+ * 登录）时回退文本输入。推理强度档位动态探测（CLI 校验报错解析，见
+ * qoder-config.ts）；探测不成立时同样回退文本输入。
  */
 
 import { loadQoderConfig } from '../../config/qoder-config.js';
@@ -38,13 +38,31 @@ function modelField(modelOptions: string[], configured: string): ConfigField {
   };
 }
 
-/** 推理强度无稳定枚举（官方不承诺档位集），渲染为文本输入。 */
-function effortField(current: string): ConfigField {
+/**
+ * 推理强度：有探测档位 → 下拉（首项 'default' = 不传 --reasoning-effort，
+ * 跟随 Qoder 自己的 settings.json）；探测不成立 → 文本输入（旧口径）。
+ * 现配置值不在探测清单里时追加为可选项（input 时代存下的自由文本，避免空选）。
+ */
+function effortField(effortOptions: string[], current: string): ConfigField {
+  if (effortOptions.length === 0) {
+    return {
+      key: 'agents.qoder.reasoningEffort',
+      label: '推理强度',
+      type: 'input',
+      currentValue: current,
+    };
+  }
+  const levels: SelectOption[] = effortOptions.map((value) => ({ value, text: value }));
+  const extras: SelectOption[] =
+    current && !effortOptions.includes(current)
+      ? [{ value: current, text: `${current}（现配置，不在探测清单）` }]
+      : [];
   return {
     key: 'agents.qoder.reasoningEffort',
     label: '推理强度',
-    type: 'input',
-    currentValue: current,
+    type: 'select',
+    options: [{ value: 'default', text: 'default（跟随 Qoder 默认）' }, ...levels, ...extras],
+    currentValue: current || 'default',
   };
 }
 
@@ -67,7 +85,7 @@ export class QoderConfigBuilder implements AgentConfigCardBuilder {
 
     return [
       modelField(qCfg.modelOptions, q?.model ?? qCfg.currentModel ?? ''),
-      effortField(q?.reasoningEffort ?? ''),
+      effortField(qCfg.effortOptions, q?.reasoningEffort ?? ''),
       permissionModeField(
         'agents.qoder.permissionMode',
         PERMISSION_MODE_OPTIONS,
@@ -82,11 +100,13 @@ export class QoderConfigBuilder implements AgentConfigCardBuilder {
     value: unknown,
     _config: AppConfig,
   ): Array<{ key: string; value: unknown }> {
-    // 文本输入的空串 = 清除配置（跟随 Qoder 自己的 settings.json）。
+    // 文本输入的空串 = 清除配置（跟随 Qoder 自己的 settings.json）；推理强度
+    // 下拉的 'default'（自造值，非官方档位）同义：runner 对 undefined 不传
+    // --reasoning-effort。
     if (
       (key === 'agents.qoder.model' || key === 'agents.qoder.reasoningEffort') &&
       typeof value === 'string' &&
-      !value.trim()
+      (!value.trim() || (key === 'agents.qoder.reasoningEffort' && value.trim() === 'default'))
     ) {
       return [{ key, value: undefined }];
     }
