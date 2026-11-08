@@ -102,7 +102,7 @@ idle:
   watchdogMinutes: 15 # 空闲超时自动停止，0 关闭
 ```
 
-配置文件路径可用 `--config-dir` CLI 参数覆盖（如 `lark-remote --config-dir /path/to/dir`）。
+配置文件路径可用 `-c` / `--config-dir` CLI 参数覆盖（如 `lark-remote -c /path/to/dir`）。记不住目录时直接运行 `lark-remote -c`：列出 `~/.lark-remote` 与 `$HOME` 下所有含 `config.yaml` 的 `.lark-remote*` 目录，并显示目录关联的飞书应用名；↑/↓ 选择（首尾循环）、Enter 确认、Esc 取消。应用名通过飞书 `bot/v3/info` 获取，按目录缓存在 `bot-info.json`（7 天）；离线或取不到时显示 App ID 尾号。选中后以显式 `--config-dir` 继续启动，`/restart`、`/clone` 拉起的进程继承该目录。非交互终端下不带值的 `-c` 不会挂起：打印候选表后以退出码 2 结束。
 
 > **不要把真实 config.yaml 提交进仓库。**
 

@@ -17,6 +17,7 @@ import {
   printHelp,
   printVersion,
 } from './config/dir.js';
+import { applyConfigDirPick } from './config/pick-dir.js';
 import { FeishuConnector } from './connector/index.js';
 import {
   ClaudeRunner,
@@ -168,13 +169,12 @@ async function sendAutoResumeCard(
 }
 
 /** Initialize CLI args, config, and logger. Returns { config, configDir, logger, instanceLock }. */
-async function initializeCliAndConfig(): Promise<{
+async function initializeCliAndConfig(cliArgs: ReturnType<typeof parseCliArgs>): Promise<{
   config: ReturnType<typeof loadConfig>;
   configDir: string;
   logger: ReturnType<typeof getLogger>;
   instanceLock: InstanceLock;
 }> {
-  const cliArgs = parseCliArgs();
   const configDir = resolveConfigDir(cliArgs.configDir);
   setConfigDir(configDir);
 
@@ -681,7 +681,7 @@ interface BootstrapContext {
  * 替补进程要等旧实例释放锁才能拿到单例锁）；PID 存活校验在 acquire 内完成。
  */
 async function bootstrap(cliArgs: ReturnType<typeof parseCliArgs>): Promise<BootstrapContext> {
-  const { config, configDir, logger, instanceLock } = await initializeCliAndConfig();
+  const { config, configDir, logger, instanceLock } = await initializeCliAndConfig(cliArgs);
 
   // Restart handoff: if spawned as a /restart replacement, wait for the old
   // lark-remote to die (and release the instance lock) before acquiring it.
@@ -933,6 +933,9 @@ function reconcileDshInflightOnStartup(app: WiredApp): void {
 async function main() {
   const cliArgs = parseCliArgs();
   if (await handleCliEarlyExit(cliArgs)) return;
+  // `-c` 不带值：先交互选目录（必须在 resolveConfigDir / ensureConfig 之前，
+  // 否则会在默认目录上生成模板或进入扫码向导）。
+  await applyConfigDirPick(cliArgs);
   const boot = await bootstrap(cliArgs);
   const app = wire(boot);
   const { config, logger, connector, startupContactStore, binder } = app;

@@ -118,7 +118,9 @@
     "tests/anchor/regression/config-save-atomic-write.test.ts",
     "tests/anchor/regression/config-direct-write-discards-pending.test.ts",
     "tests/anchor/regression/config-set-unknown-key-strips.test.ts",
-    "src/config/qr.test.ts"
+    "src/config/qr.test.ts",
+    "src/config/bot-info.test.ts",
+    "src/config/pick-dir.test.ts"
   ],
   "infra-order": [
     "src/order/**/*.test.ts",

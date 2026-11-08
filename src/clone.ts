@@ -107,11 +107,14 @@ function spawnDetachedCloneBridge(targetDir: string): number | undefined {
   const args: string[] = [];
   const argv = process.argv.slice(2);
   for (let i = 0; i < argv.length; i++) {
-    if (argv[i] === '--config-dir') {
-      if (i + 1 < argv.length && !argv[i + 1].startsWith('--')) i++;
+    const arg = argv[i];
+    if (arg === '--config-dir' || arg === '-c') {
+      const next = argv[i + 1];
+      if (next !== undefined && next.trim().length > 0 && !next.startsWith('-')) i++;
       continue;
     }
-    args.push(argv[i]);
+    if (arg.startsWith('--config-dir=') || arg.startsWith('-c=')) continue;
+    args.push(arg);
   }
   args.push('--config-dir', targetDir);
 

@@ -68,7 +68,7 @@ idle:
   watchdogMinutes: 15 # Idle timeout auto-stop, 0 to disable
 ```
 
-The configuration file path can be overridden with the `--config-dir` CLI parameter (e.g., `lark-remote --config-dir /path/to/dir`).
+The configuration file path can be overridden with `-c` / `--config-dir` (e.g., `lark-remote -c /path/to/dir`). If you cannot remember the path, run `lark-remote -c` without a value: it lists `~/.lark-remote` plus every `$HOME/.lark-remote*` directory that contains a `config.yaml`, together with the Feishu app name bound to each directory. Use ↑/↓ to move (wraps at both ends), Enter to confirm, Esc to cancel. App names come from Feishu `bot/v3/info` and are cached per directory in `bot-info.json` (7 days); when offline or on failure the App ID tail is shown. The chosen directory is passed on as an explicit `--config-dir`, so processes spawned by `/restart` and `/clone` inherit it. Outside a TTY, a bare `-c` never hangs: it prints the candidate table and exits with code 2.
 
 > **Do not commit the real config.yaml to the repository.**
 
