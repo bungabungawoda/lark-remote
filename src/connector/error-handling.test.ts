@@ -256,11 +256,14 @@ describe('FeishuConnector.streamCard', () => {
 
 describe('FeishuConnector.sendFile', () => {
   let axiosMock: ReturnType<typeof vi.fn>;
+  let fetchMock: ReturnType<typeof vi.fn>;
   let tmpDir: string;
   let filePath: string;
 
   beforeEach(() => {
     axiosMock = vi.mocked(axios.post);
+    fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
     // Create a real temp file for the test
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'lark-test-'));
     filePath = path.join(tmpDir, 'test.txt');
@@ -268,6 +271,7 @@ describe('FeishuConnector.sendFile', () => {
   });
 
   afterEach(() => {
+    vi.unstubAllGlobals();
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
@@ -281,9 +285,8 @@ describe('FeishuConnector.sendFile', () => {
   });
 
   it('should throw formatted error when upload fails', async () => {
-    axiosMock
-      .mockResolvedValueOnce({ data: { tenant_access_token: 'token' } })
-      .mockRejectedValueOnce(new Error('upload failed'));
+    axiosMock.mockResolvedValueOnce({ data: { tenant_access_token: 'token' } });
+    fetchMock.mockRejectedValueOnce(new Error('upload failed'));
 
     const connector = new FeishuConnector(config);
     await expect(connector.sendFile('chat-1', filePath)).rejects.toThrow(/sendFile failed/);
@@ -292,8 +295,12 @@ describe('FeishuConnector.sendFile', () => {
   it('should throw formatted error when message send fails', async () => {
     axiosMock
       .mockResolvedValueOnce({ data: { tenant_access_token: 'token' } })
-      .mockResolvedValueOnce({ data: { code: 0, data: { file_key: 'key' } } })
       .mockRejectedValueOnce(new Error('message failed'));
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: async () => ({ code: 0, data: { file_key: 'key' } }),
+    });
 
     const connector = new FeishuConnector(config);
     await expect(connector.sendFile('chat-1', filePath)).rejects.toThrow(/sendFile failed/);
