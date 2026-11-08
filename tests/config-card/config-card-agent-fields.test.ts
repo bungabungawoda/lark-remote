@@ -454,8 +454,8 @@ describe('Config card agent-aware fields (design: 2026-07-11)', () => {
       }).router;
     }
 
-    it('lists agents in canonical order Codex → Claude → OpenCode → Pi → Kimi → DSH', () => {
-      // 验证什么：首次启动默认 Agent 下拉按 Codex → Claude → OpenCode → Pi → Kimi → DSH 排列。
+    it('lists agents in canonical order Codex → Claude → OpenCode → Pi → Kimi → DSH → CodeBuddy → Qoder', () => {
+      // 验证什么：首次启动默认 Agent 下拉按 Codex → Claude → OpenCode → Pi → Kimi → DSH → CodeBuddy → Qoder 排列。
       // 错误会导致首次启动用户看到的 agent 顺序不符合产品默认。
       const router = createRouter();
       const result = router.buildConfigCard() as {
@@ -463,7 +463,16 @@ describe('Config card agent-aware fields (design: 2026-07-11)', () => {
       };
       const options =
         extractSelectFields(result.card).find((s) => s.key === 'defaultAgent')?.options ?? [];
-      expect(options).toEqual(['codex', 'claude', 'opencode', 'pi', 'kimi', 'dsh']);
+      expect(options).toEqual([
+        'codex',
+        'claude',
+        'opencode',
+        'pi',
+        'kimi',
+        'dsh',
+        'codebuddy',
+        'qoder',
+      ]);
     });
 
     it('moves uninstalled agents to the back, preserving canonical order within groups', () => {
@@ -480,7 +489,16 @@ describe('Config card agent-aware fields (design: 2026-07-11)', () => {
         };
         const options =
           extractSelectFields(result.card).find((s) => s.key === 'defaultAgent')?.options ?? [];
-        expect(options).toEqual(['codex', 'claude', 'pi', 'dsh', 'opencode', 'kimi']);
+        expect(options).toEqual([
+          'codex',
+          'claude',
+          'pi',
+          'dsh',
+          'codebuddy',
+          'qoder',
+          'opencode',
+          'kimi',
+        ]);
       } finally {
         vi.mocked(getCachedAvailability).mockImplementation(() => undefined);
       }

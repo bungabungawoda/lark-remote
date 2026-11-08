@@ -16,7 +16,6 @@ import {
   type SpawnOptions,
   type AgentRunner,
   type AgentStatusInfo,
-  type ApprovalAction,
 } from '../types.js';
 import { ClaudeSession } from './session.js';
 import { MODEL_ID_TO_ALIAS } from '../../model-catalog.js';
@@ -122,65 +121,11 @@ export class ClaudeRunner implements AgentRunner {
   }
 
   /**
-   * 审批响应（bridge ApprovalCoordinator → runner）：映射 ApprovalAction 到
-   * Claude 控制协议的 allow/deny（accept_all = allow + 本会话自动放行）。
+   * 审批响应：委托 ClaudeSession（stream-json 通道的 owner，claude / qoder
+   * 共用同一份 ApprovalAction → control 协议映射）。
    */
   async respondApproval(requestId: number | string, response: unknown): Promise<void> {
-    const action = (response as ApprovalAction | { action?: string })?.action ?? 'decline';
-    switch (action) {
-      case 'accept':
-        await this.session.respondPermission(requestId, { behavior: 'allow' });
-        return;
-      case 'accept_all':
-        this.session.setAutoApprove(true);
-        await this.session.respondPermission(requestId, { behavior: 'allow' });
-        return;
-      case 'accept_with_feedback': {
-        // 计划审批「批准并采纳修改」：allow + updatedInput.plan（改写过的新计划），
-        // 触发 Claude 侧 planWasEdited → tool_result 回显 edited plan 并写回文件。
-        const plan = (response as { plan?: string }).plan;
-        if (!plan || !plan.trim()) {
-          throw new Error('approval accept_with_feedback missing plan payload');
-        }
-        await this.session.respondPermission(requestId, {
-          behavior: 'allow',
-          updatedInput: { plan },
-        });
-        return;
-      }
-      case 'decline_with_feedback': {
-        // 计划审批「拒绝并附意见」：deny + message，Claude 留在 plan 模式修订。
-        const message = (response as { message?: string }).message?.trim();
-        if (!message) {
-          throw new Error('approval decline_with_feedback missing message payload');
-        }
-        await this.session.respondPermission(requestId, { behavior: 'deny', message });
-        return;
-      }
-      case 'decline':
-        await this.session.respondPermission(requestId, { behavior: 'deny' });
-        return;
-      case 'cancel': {
-        // 审批超时/取消：deny 送达后中断 turn（对齐「审批超时未响应，
-        // 已自动取消」终态；仅 deny 会让 claude 继续回合导致卡片 done）。
-        await this.session.respondPermission(requestId, {
-          behavior: 'deny',
-          message: '审批超时未响应，已自动取消。',
-        });
-        await this.session.stop({ immediate: true });
-        return;
-      }
-      case 'answer': {
-        const answers = (response as { answers?: Record<string, string | string[]> }).answers;
-        if (!answers) {
-          throw new Error('approval answer missing answers payload');
-        }
-        await this.session.respondAskUserQuestion(requestId, answers);
-        return;
-      }
-      default:
-        await this.session.respondPermission(requestId, { behavior: 'deny' });
-    }
+    await this.session.respondApproval(requestId, response);
   }
 
   async stop(opts?: { immediate?: boolean }): Promise<void> {

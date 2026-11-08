@@ -212,4 +212,48 @@ describe('Bridge passes model/effort to runner', () => {
     // to avoid overriding the provider-prefixed model.
     expect(agentOpts.model).toBeUndefined();
   });
+
+  it('should pass model and reasoningEffort from config to runner.run() for qoder', async () => {
+    // 回归锚点：bridge 缺 qoder case 时，配置卡的模型/档位只进 /status 展示、
+    // 永远到不了 spawn（2026-11-05 实测缺口）。字段与 codex 对称走
+    // reasoningEffort（session buildArgv 落到 --reasoning-effort）。
+    const qoderConfig = AppConfigSchema.parse({
+      ...config,
+      defaultAgent: 'qoder',
+      agents: {
+        ...config.agents,
+        qoder: { model: 'qfmodel', reasoningEffort: 'xhigh' },
+      },
+    });
+
+    const sessionStore = new SessionStore();
+
+    const mockRunner = {
+      isRunning: false,
+      stop: async () => {},
+      killOrphan: () => {},
+      registerExitHandlers: () => {},
+      run: async function* () {},
+    };
+
+    const bridge = new Bridge({
+      runner: {
+        isRunning: false,
+        run: async function* () {},
+        stop: async () => {},
+        killOrphan: () => {},
+        registerExitHandlers: () => {},
+      },
+      config: qoderConfig,
+      connector: createStubConnector(),
+      sessionStore,
+      agentRegistry: createStubAgentRegistry(mockRunner),
+      sessionReaderRegistry: createStubSessionReaderRegistry(),
+    });
+
+    const agentOpts = bridge.getAgentRunOptions();
+
+    expect(agentOpts.model).toBe('qfmodel');
+    expect(agentOpts.reasoningEffort).toBe('xhigh');
+  });
 });

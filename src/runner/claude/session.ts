@@ -65,6 +65,21 @@ export interface ClaudeSessionOptions {
   effort?: string;
   /** 会话级空闲回收 TTL（ms）：turn 之间无活动超过该窗口则停止进程。0=禁用。 */
   idleTtlMs?: number;
+  /**
+   * CLI 二进制名。默认 'claude'；stream-json 双向会话机制与 claude 同构的
+   * agent（qoder）复用本类时传自己的名字，spawn、错误文案与 win32 垫片
+   * command-not-found 嗅探都随它走。
+   */
+  binary?: string;
+  /**
+   * 身份三元组覆盖（pid 文件前缀 / 日志 tag / win32 协议停止通道 key）。
+   * 缺省全部随 claude；qoder 复用时传各自名字，避免 pid 文件跨 agent 碰撞
+   * （killOrphan 身份校验按 `<configDir>/<前缀>-*.pid` 匹配）。
+   */
+  pidFilePrefix?: string;
+  logTag?: string;
+  /** win32 协议停止通道 key（channel = 关 stdin，对所有 stream-json CLI 同语义）。 */
+  agent?: string;
 }
 
 /** 审批响应结果（behavior allow/deny）。 */
@@ -85,9 +100,11 @@ export interface PermissionResult {
  * stream-json result 事件（非 compact）为界，而不是进程退出。
  */
 export class ClaudeSession extends SpawningRunner {
-  private readonly permissionMode: string;
-  private readonly settings?: string;
-  private readonly defaultEffort?: string;
+  // permissionMode/settings/defaultEffort 用 protected：qoder 复用本会话机制，
+  // 子类 buildArgv 需要读这三个 spawn 输入（其余字段保持 private）。
+  protected readonly permissionMode: string;
+  protected readonly settings?: string;
+  protected readonly defaultEffort?: string;
   private readonly idleTtlMs: number;
 
   /** 当前 turn 是否在途（防止并发 run 写乱 stdin）。 */
@@ -135,12 +152,13 @@ export class ClaudeSession extends SpawningRunner {
       cwd: opts.cwd,
       stopGraceMs: opts.stopGraceMs,
       spawnHeartbeatMs: opts.spawnHeartbeatMs,
-      pidFilePrefix: 'claude',
-      logTag: 'claude-runner',
-      // win32 查协议停止通道用的 agent key（claude 的 channel = 控制通道/关 stdin）
-      agent: 'claude',
+      pidFilePrefix: opts.pidFilePrefix ?? 'claude',
+      logTag: opts.logTag ?? 'claude-runner',
+      // win32 查协议停止通道用的 agent key（channel = 控制通道/关 stdin，
+      // 对所有 stream-json 双向 CLI 同语义；qoder 复用时传自己的 key）
+      agent: opts.agent ?? 'claude',
     });
-    this.binary = 'claude';
+    this.binary = opts.binary ?? 'claude';
     this.permissionMode = opts.permissionMode ?? 'auto';
     this.settings = opts.settings;
     this.defaultEffort = opts.effort;
@@ -158,7 +176,7 @@ export class ClaudeSession extends SpawningRunner {
   async *run(message: string, opts: SpawnOptions): AsyncGenerator<AgentEvent> {
     if (this.turnActive) {
       getLogger().warn(`[${this.logTag}] run() called while a turn is active, refusing`);
-      throw new Error('claude process already running');
+      throw new Error(`${this.binary} process already running`);
     }
     // turnActive 必须在 startProcess 之前置位：进程 spawn 后 isRunning 即可见，
     // 若等 startProcess 完成才置位，第二个 run() 会在竞态窗口误入（线上由
@@ -276,6 +294,70 @@ export class ClaudeSession extends SpawningRunner {
     getLogger().info(
       `[${this.logTag}] AskUserQuestion response requestId=${requestId} questions=${Object.keys(answers).length}`,
     );
+  }
+
+  /**
+   * 审批动作映射（bridge ApprovalAction → control 协议 allow/deny）。
+   * stream-json 通道由本类拥有，映射逻辑放这里：claude / qoder 两个 runner
+   * 的 respondApproval 只做委托（accept_all = allow + 本会话自动放行）。
+   */
+  async respondApproval(requestId: number | string, response: unknown): Promise<void> {
+    const action = (response as { action?: string })?.action ?? 'decline';
+    switch (action) {
+      case 'accept':
+        await this.respondPermission(requestId, { behavior: 'allow' });
+        return;
+      case 'accept_all':
+        this.setAutoApprove(true);
+        await this.respondPermission(requestId, { behavior: 'allow' });
+        return;
+      case 'accept_with_feedback': {
+        // 计划审批「批准并采纳修改」：allow + updatedInput.plan（改写过的新计划），
+        // 触发 CLI 侧 planWasEdited → tool_result 回显 edited plan 并写回文件。
+        const plan = (response as { plan?: string }).plan;
+        if (!plan || !plan.trim()) {
+          throw new Error('approval accept_with_feedback missing plan payload');
+        }
+        await this.respondPermission(requestId, {
+          behavior: 'allow',
+          updatedInput: { plan },
+        });
+        return;
+      }
+      case 'decline_with_feedback': {
+        // 计划审批「拒绝并附意见」：deny + message，CLI 留在 plan 模式修订。
+        const message = (response as { message?: string }).message?.trim();
+        if (!message) {
+          throw new Error('approval decline_with_feedback missing message payload');
+        }
+        await this.respondPermission(requestId, { behavior: 'deny', message });
+        return;
+      }
+      case 'decline':
+        await this.respondPermission(requestId, { behavior: 'deny' });
+        return;
+      case 'cancel': {
+        // 审批超时/取消：deny 送达后中断 turn（对齐「审批超时未响应，
+        // 已自动取消」终态；仅 deny 会让 CLI 继续回合导致卡片 done）。
+        await this.respondPermission(requestId, {
+          behavior: 'deny',
+          message: '审批超时未响应，已自动取消。',
+        });
+        await this.stop({ immediate: true });
+        return;
+      }
+      case 'answer': {
+        const answers = (response as { answers?: Record<string, string | string[]> }).answers;
+        if (!answers) {
+          throw new Error('approval answer missing answers payload');
+        }
+        await this.respondAskUserQuestion(requestId, answers);
+        return;
+      }
+      default:
+        getLogger().warn(`[${this.logTag}] unknown approval action ${action}, denying`);
+        await this.respondPermission(requestId, { behavior: 'deny' });
+    }
   }
 
   /** 允许所有：后续 control_request 自动 allow（本会话进程生命周期内有效）。 */
@@ -600,7 +682,7 @@ export class ClaudeSession extends SpawningRunner {
     const p = this.stdinQueue.then(async () => {
       const proc = this.currentProcess;
       if (!proc || proc.stdin === null || proc.stdin.destroyed) {
-        throw new Error('claude process is not running');
+        throw new Error(`${this.binary} process is not running`);
       }
       const stdin = proc.stdin;
       const data = JSON.stringify(obj) + '\n';

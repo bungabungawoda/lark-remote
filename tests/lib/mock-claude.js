@@ -66,17 +66,27 @@ function init() {
 }
 
 function result(subtype, extra) {
+  // MOCK_SESSION_USAGE=qoder-zero / qoder-real：复刻 qoder 的 usage 形态
+  // （token 字段恒 0、真实数字只有 credits / compact 回包带真实 token 数），
+  // 供 qoder runner 的全零剥离用例使用；未设置时维持 claude 默认用量。
+  const usageMode = process.env.MOCK_SESSION_USAGE;
+  const usage =
+    usageMode === 'qoder-zero'
+      ? { input_tokens: 0, output_tokens: 0, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 }
+      : usageMode === 'qoder-real'
+        ? { input_tokens: 159633, output_tokens: 750, cache_creation_input_tokens: 0, cache_read_input_tokens: 150000 }
+        : {
+            input_tokens: 10,
+            output_tokens: 5,
+            cache_creation_input_tokens: 0,
+            cache_read_input_tokens: 0,
+          };
   emit({
     type: 'result',
     subtype,
     session_id: sessionId,
     result: 'ok',
-    usage: {
-      input_tokens: 10,
-      output_tokens: 5,
-      cache_creation_input_tokens: 0,
-      cache_read_input_tokens: 0,
-    },
+    usage,
     ...extra,
   });
 }

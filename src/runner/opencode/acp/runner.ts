@@ -32,18 +32,11 @@ import { OpencodeAcpTranslator } from './translator.js';
 import {
   type SessionNewResult,
   type SessionResumeResult,
-  type SessionPromptResult,
   type SessionSetModeParams,
-  type RequestPermissionParams,
-  RpcErrorCode,
 } from '../../common/acp/protocol-types.js';
-import {
-  OPENCODE_APPROVAL_KINDS,
-  type AcpPendingApproval,
-  buildAcpPermissionOutcome,
-} from '../../common/acp/acp-approval.js';
+import { OPENCODE_APPROVAL_KINDS, type AcpApprovalKinds } from '../../common/acp/acp-approval.js';
 import { getLogger } from '../../../logger/index.js';
-import { BaseAcpRunner, type AcpTranslatorEvent } from '../../common/acp/base-acp-runner.js';
+import { BaseAcpRunner } from '../../common/acp/base-acp-runner.js';
 import { OpencodeLogErrorMonitor, resolveOpencodeLogPath } from './error-monitor.js';
 
 // =============================================================================
@@ -226,39 +219,9 @@ export class OpencodeAcpRunner extends BaseAcpRunner<OpencodeAcpTranslator> {
     }
   }
 
-  /**
-   * opencode /compact is synchronous server-side — standard prompt-settle
-   * translation (no wire.jsonl polling, unlike kimi).
-   */
-  protected onCompactPromptFired(
-    promptPromise: Promise<SessionPromptResult>,
-    translator: OpencodeAcpTranslator,
-    sessionId: string,
-    _opts: unknown,
-    _baselineTotalCount: number,
-  ): void {
-    // 与 setupTurn 相同，捕获发起压缩那一轮的代际 + client；
-    // 旧轮迟到的 prompt 结算不得写入新轮的共享队列。
-    const generation = this.turnGeneration;
-    const client = this.currentClient;
-    promptPromise.then(
-      (result) => {
-        if (!this.isCurrentTurn(generation, client)) return;
-        this.handlePromptResolved(result, translator, sessionId);
-      },
-      (err) => {
-        if (!this.isCurrentTurn(generation, client)) return;
-        this.handlePromptRejected(err, translator, sessionId, 'compact');
-      },
-    );
-  }
-
-  protected buildApprovalOutcome(
-    action: string,
-    pending: AcpPendingApproval,
-    _response: unknown,
-  ): unknown {
-    return buildAcpPermissionOutcome(action, pending.options, OPENCODE_APPROVAL_KINDS);
+  /** opencode 的 option kind 候选表；默认 buildApprovalOutcome 消费它。 */
+  protected override get approvalKinds(): AcpApprovalKinds {
+    return OPENCODE_APPROVAL_KINDS;
   }
 
   /**
@@ -371,36 +334,6 @@ export class OpencodeAcpRunner extends BaseAcpRunner<OpencodeAcpTranslator> {
 
   protected override handleNotification(method: string, params: unknown): void {
     const events = this.currentTranslator?.handleNotification(method, params) ?? [];
-    this.pushEvents(events);
-  }
-
-  protected override handleServerRequest(
-    id: number | string,
-    method: string,
-    params: unknown,
-  ): void {
-    const events: AcpTranslatorEvent[] =
-      this.currentTranslator?.handleServerRequest(id, method, params) ?? [];
-
-    if (events.length === 0) {
-      // Unhandled/unsupported server requests must be explicitly responded
-      // to (error = "rejected"), otherwise the server hangs waiting.
-      // This includes fs/write_text_file: we do NOT declare the fs
-      // capability, and if opencode still calls it (edit approved →
-      // writeProposedEdit), we refuse with method-not-found — the server
-      // side tolerates the error (permission.ts writeProposedEdit catches).
-      this.currentClient?.respondError(
-        id,
-        RpcErrorCode.METHOD_NOT_FOUND,
-        `Unsupported server request: ${method}`,
-      );
-      getLogger().info(
-        `[${this.logTag}] rejected unsupported server request method=${method} id=${id}`,
-      );
-      return;
-    }
-
-    this.registerApprovalEvents(events, (params as RequestPermissionParams).options);
     this.pushEvents(events);
   }
 }

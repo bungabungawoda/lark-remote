@@ -270,6 +270,124 @@ const DshConfigSchema = z.object({
   reasoningEffort: z.string().optional(),
 });
 
+/**
+ * CodeBuddy 的权限模式取值：CLI `--permission-mode` 的官方枚举
+ * （acceptEdits | bypassPermissions | default | plan | dontAsk | auto）。
+ * 'default' 表示「不传 --permission-mode」（与 claude 的同名词义一致），
+ * 转换在 runner/codebuddy/acp/runner.ts 的会话设置处。
+ */
+export const CODEBUDDY_PERMISSION_MODES = [
+  'default',
+  'acceptEdits',
+  'bypassPermissions',
+  'plan',
+  'dontAsk',
+  'auto',
+  'fullAccess',
+] as const;
+
+/**
+ * CodeBuddy 默认配置：schema default、src/index.ts 注册兜底与 runner 构造器兜底
+ * 三处共用（同 PI_DEFAULTS / KIMI_DEFAULTS 口径）。model 不设默认：缺省时跟随
+ * CodeBuddy 自己的 settings.json。
+ */
+export const CODEBUDDY_DEFAULTS = {
+  permissionMode: 'default',
+} as const;
+
+/** CodeBuddy-specific configuration. Pure ACP mode (persistent `codebuddy --acp` connection). */
+const CodebuddyConfigSchema = z.object({
+  /** Model ID (e.g. 'hy4-preview'). Undefined → CodeBuddy reads its own settings.json. */
+  model: z.string().optional(),
+  /** Permission mode（官方 --permission-mode 枚举；'default' = 省略该参数）。 */
+  permissionMode: z.enum(CODEBUDDY_PERMISSION_MODES).default(CODEBUDDY_DEFAULTS.permissionMode),
+  /** ACP sub-configuration. Structurally mirrors kimi/opencode. */
+  acp: z
+    .object({
+      /** Path to codebuddy binary for ACP mode. */
+      binary: z.string().default('codebuddy'),
+      /** Request timeout in milliseconds. 0 = 不设超时（不是「0ms 即超时」）。 */
+      requestTimeoutMs: z.number().int().min(0).default(60000),
+      /** Idle TTL in milliseconds. 0 = 不回收常驻连接（对齐 claude.idleTtlMinutes）。 */
+      idleTtlMs: z.number().int().min(0).default(1800000),
+      /** Turn idle timeout in minutes (0 disables). */
+      turnIdleTimeoutMinutes: z.number().int().min(0).default(DEFAULT_TURN_IDLE_TIMEOUT_MINUTES),
+    })
+    .optional(),
+  /**
+   * 思考档位（ACP configId `thought_level`）。取值随模型/版本目录变化
+   * （真机 2.142.0 观测 8 档：enabled/disabled/minimal..max），故用字符串
+   * 而非枚举（同 codex reasoningEffort 口径）。Undefined = 不下发。
+   */
+  thinkingLevel: z.string().min(1).optional(),
+  /**
+   * 沙箱（ACP configId `sandbox`）：true = Bash 跑在 sandbox-cli 隔离层。
+   * Undefined = 不下发，跟随 CodeBuddy 默认（false）。
+   */
+  sandbox: z.boolean().optional(),
+  /**
+   * 透传给 ACP 子进程的环境变量（如 CodeBuddy CN 版需要的
+   * CODEBUDDY_INTERNET_ENVIRONMENT=internal）。键值原样传递，不校验语义。
+   */
+  env: z.record(z.string(), z.string()).optional(),
+});
+
+/**
+ * Qoder 的权限模式取值：CLI `--permission-mode` 的官方枚举是 snake_case
+ * （default | plan | auto | bypass_permissions | accept_edits | dont_ask），
+ * 注意与 CodeBuddy/claude 的 camelCase 不同。
+ * 'default' 表示「不传 --permission-mode」。
+ */
+export const QODER_PERMISSION_MODES = [
+  'default',
+  'accept_edits',
+  'plan',
+  'auto',
+  'bypass_permissions',
+  'dont_ask',
+] as const;
+
+/**
+ * Qoder 默认配置：schema default、src/index.ts 注册兜底与 runner 构造器兜底
+ * 三处共用。model / reasoningEffort 不设默认：缺省时跟随 Qoder 自己的
+ * settings.json。
+ */
+export const QODER_DEFAULTS = {
+  permissionMode: 'default',
+  /** 会话级空闲回收默认 30 分钟（对齐 claude.idleTtlMinutes）。 */
+  idleTtlMinutes: 30,
+} as const;
+
+/** Qoder-specific configuration. Generic CLI mode (long-lived stream-json session). */
+const QoderConfigSchema = z.object({
+  /** Model ID（如 'qfmodel'）。Undefined → Qoder 读自己的 settings.json。 */
+  model: z.string().optional(),
+  /**
+   * 推理强度。取值随模型变化（官方不枚举），故用字符串而非枚举
+   * （同 codex reasoningEffort 口径）。Undefined → 跟随 Qoder 默认。
+   */
+  reasoningEffort: z.string().min(1).optional(),
+  /** Permission mode（官方 snake_case 枚举；'default' = 省略该参数）。 */
+  permissionMode: z.enum(QODER_PERMISSION_MODES).default(QODER_DEFAULTS.permissionMode),
+  /** 显式上下文窗口（--context-window，正整数 tokens）。缺省 = 跟随 CLI/模型默认。 */
+  contextWindow: z.number().int().min(1).optional(),
+  /** CLI 子配置。 */
+  cli: z
+    .object({
+      /** Path to qoder binary. CN 版默认 `qodercn`，国际版可改 `qoder`。 */
+      binary: z.string().default('qodercn'),
+    })
+    .optional(),
+  /**
+   * Qoder 配置根目录（会话 jsonl 在 `<configDir>/projects/` 下）。CN 版默认
+   * `~/.qoder-cn`、国际版 `~/.qoder`；缺省时按该顺序自动探测。
+   */
+  configDir: z.string().optional(),
+  /** 会话级空闲回收（分钟）：turn 之间无新消息超过该窗口则停止长驻进程。 */
+  idleTtlMinutes: z.number().int().min(0).default(QODER_DEFAULTS.idleTtlMinutes),
+  stopGraceMs: z.number().int().min(0).default(DEFAULTS.STOP_GRACE_MS),
+});
+
 /** 首次启动的默认 agents 配置：codex 默认 app-server / on-request / workspace-write。 */
 const DEFAULT_AGENTS_CONFIG = {
   codex: CodexConfigSchema.parse({}),
@@ -282,6 +400,8 @@ const AgentsConfigSchema = z.object({
   pi: PiConfigSchema.optional(),
   kimi: KimiConfigSchema.optional(),
   dsh: DshConfigSchema.optional(),
+  codebuddy: CodebuddyConfigSchema.optional(),
+  qoder: QoderConfigSchema.optional(),
 });
 
 const IdleConfigSchema = z.object({
@@ -332,6 +452,21 @@ const AgentChoicesSchema = z.object({
     .object({
       model: z.string().optional(),
       thinkingEffort: z.string().optional(),
+    })
+    .optional(),
+  codebuddy: z
+    .object({
+      model: z.string().optional(),
+      permissionMode: z.string().optional(),
+      thinkingLevel: z.string().optional(),
+      sandbox: z.boolean().optional(),
+    })
+    .optional(),
+  qoder: z
+    .object({
+      model: z.string().optional(),
+      reasoningEffort: z.string().optional(),
+      permissionMode: z.string().optional(),
     })
     .optional(),
 });
@@ -416,7 +551,7 @@ export function loadConfig(configPath: string): AppConfig {
  * Agent key 前缀，这些前缀的 key 会映射到 `agents.<key>` 路径下。
  * `claude.` 保持顶层（不映射到 agents.claude）。
  */
-const AGENT_PREFIXES = ['pi', 'codex', 'opencode', 'kimi', 'dsh'] as const;
+const AGENT_PREFIXES = ['pi', 'codex', 'opencode', 'kimi', 'dsh', 'codebuddy', 'qoder'] as const;
 
 /**
  * 将卡片短 key 映射到 schema 期望的路径：
@@ -615,6 +750,8 @@ type OpencodeConfig = z.infer<typeof OpencodeConfigSchema>;
 type PiConfig = z.infer<typeof PiConfigSchema>;
 type KimiConfig = z.infer<typeof KimiConfigSchema>;
 export type DshConfig = z.infer<typeof DshConfigSchema>;
+export type CodebuddyConfig = z.infer<typeof CodebuddyConfigSchema>;
+export type QoderConfig = z.infer<typeof QoderConfigSchema>;
 
 /** Get configuration for a specific agent. Falls back to defaults if not configured. */
 export function getAgentConfig(config: AppConfig, kind: 'claude'): ClaudeConfig;
@@ -623,10 +760,21 @@ export function getAgentConfig(config: AppConfig, kind: 'opencode'): OpencodeCon
 export function getAgentConfig(config: AppConfig, kind: 'pi'): PiConfig | undefined;
 export function getAgentConfig(config: AppConfig, kind: 'kimi'): KimiConfig | undefined;
 export function getAgentConfig(config: AppConfig, kind: 'dsh'): DshConfig | undefined;
+export function getAgentConfig(config: AppConfig, kind: 'codebuddy'): CodebuddyConfig | undefined;
+export function getAgentConfig(config: AppConfig, kind: 'qoder'): QoderConfig | undefined;
 export function getAgentConfig(
   config: AppConfig,
   kind: AgentKind,
-): ClaudeConfig | CodexConfig | OpencodeConfig | PiConfig | KimiConfig | DshConfig | undefined {
+):
+  | ClaudeConfig
+  | CodexConfig
+  | OpencodeConfig
+  | PiConfig
+  | KimiConfig
+  | DshConfig
+  | CodebuddyConfig
+  | QoderConfig
+  | undefined {
   if (kind === 'claude') {
     return config.claude;
   }

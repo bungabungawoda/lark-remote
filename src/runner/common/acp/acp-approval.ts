@@ -49,6 +49,16 @@ export const OPENCODE_APPROVAL_KINDS: AcpApprovalKinds = {
 };
 
 /**
+ * CodeBuddy kind（真机 2.142.0 实测，session/request_permission options）：
+ * allow_always（Always Allow）/ allow_once（Allow）/ reject_once（Reject）。
+ */
+export const CODEBUDDY_APPROVAL_KINDS: AcpApprovalKinds = {
+  accept: ['allow_once', 'allow_always'],
+  acceptForSession: ['allow_always'],
+  decline: ['reject_once', 'reject'],
+};
+
+/**
  * 把 bridge 审批动作（accept/accept_for_session/decline/cancel）映射为 ACP
  * request_permission 响应：按 kind 候选表查 optionId 回显；找不到一律
  * cancelled（安全兜底——服务端视为拒绝，不会悬挂）。

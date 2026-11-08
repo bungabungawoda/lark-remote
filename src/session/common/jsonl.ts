@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import { getLogger } from '../../logger/index.js';
+import { samePath } from '../../platform/path.js';
 
 /**
  * Stream a JSONL file line-by-line using chunked reads.
@@ -245,4 +246,23 @@ export function readJsonlLines(filePath: string): string[] {
     lines.push(line);
   });
   return lines;
+}
+
+/**
+ * cwd guard：按目录编码定位到的会话文件必须真的属于请求的 cwd（编码有损，
+ * N-to-N）。搬迁会话含多个 cwd 值，任一行匹配即通过；早停扫描保持单遍解析
+ * 计数锚点。claude / codebuddy 两种项目目录编码都走这里。
+ */
+export function fileContainsCwd(filePath: string, cwd: string): boolean {
+  return (
+    findJsonlLine(filePath, (l) => {
+      try {
+        const obj = JSON.parse(l) as { cwd?: unknown };
+        // PathKit.samePath：darwin/win32 大小写不敏感 + 尾分隔符不敏感，linux 严格
+        return typeof obj.cwd === 'string' && samePath(obj.cwd, cwd);
+      } catch {
+        return false; // 跳过坏行
+      }
+    }) !== null
+  );
 }

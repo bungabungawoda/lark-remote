@@ -13,11 +13,13 @@ import { PiConfigBuilder } from './pi.js';
 import { OpencodeConfigBuilder } from './opencode.js';
 import { KimiConfigBuilder } from './kimi.js';
 import { DshConfigBuilder } from './dsh.js';
+import { CodebuddyConfigBuilder } from './codebuddy.js';
+import { QoderConfigBuilder } from './qoder.js';
 
 /**
- * 首次启动默认展示的 Coding Agent 顺序：Codex → Claude → OpenCode → Pi → Kimi → DSH。
- * 未安装（availability === false）的 agent 在展示时排到后面
- * （见 sortAgentsForDisplay），同组内保持本顺序。
+ * 首次启动默认展示的 Coding Agent 顺序：Codex → Claude → OpenCode → Pi → Kimi
+ * → DSH → CodeBuddy → Qoder。未安装（availability === false）的 agent 在展示时
+ * 排到后面（见 sortAgentsForDisplay），同组内保持本顺序。
  */
 export const DEFAULT_AGENT_ORDER: readonly AgentKind[] = [
   'codex',
@@ -26,6 +28,8 @@ export const DEFAULT_AGENT_ORDER: readonly AgentKind[] = [
   'pi',
   'kimi',
   'dsh',
+  'codebuddy',
+  'qoder',
 ];
 
 /** Registry of config builders, keyed by agent kind. */
@@ -36,6 +40,8 @@ const builders: Record<AgentKind, AgentConfigCardBuilder> = {
   opencode: new OpencodeConfigBuilder(),
   kimi: new KimiConfigBuilder(),
   dsh: new DshConfigBuilder(),
+  codebuddy: new CodebuddyConfigBuilder(),
+  qoder: new QoderConfigBuilder(),
 };
 
 /**

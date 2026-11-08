@@ -1,9 +1,9 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { findJsonlLine, readLastJsonlLine } from '../common/jsonl.js';
+import { fileContainsCwd, readLastJsonlLine } from '../common/jsonl.js';
 import { isStale } from '../common/constants.js';
-import { samePath, encodeProjectDirName } from '../../platform/path.js';
+import { encodeProjectDirName } from '../../platform/path.js';
 import { extractContentBlocks } from '../common/content-blocks.js';
 import { scanJsonlOnce, tailOffsetAfter, scanTailEvents } from '../common/two-pass.js';
 import { getLogger } from '../../logger/index.js';
@@ -22,6 +22,7 @@ import {
   SessionIndex,
   extractText,
   isTaskNotificationText,
+  titleFromRow,
   CLAUDE_MAPPING,
 } from './session-index.js';
 
@@ -39,30 +40,6 @@ import {
  */
 function projectDirForCwd(cwd: string, projectsDir: string): string {
   return path.join(projectsDir, encodeProjectDirName(cwd));
-}
-
-/**
- * cwd guard for the index-miss fallback (readSessionContent /
- * isClaudeSessionActive / findSessionFileInProjects): the project-dir
- * encoding is lossy (N-to-N), so a file located by directory must be verified
- * to actually belong to the requested cwd. A relocated session contains
- * MULTIPLE cwd values (pre- and post-relocate) — accept when ANY `cwd` field
- * matches. Early-stops on the first match (findJsonlLine), keeping the
- * single-pass parse-count anchors intact on the fallback path.
- * Needed for EnterWorktree relocate.
- */
-function fileContainsCwd(filePath: string, cwd: string): boolean {
-  return (
-    findJsonlLine(filePath, (l) => {
-      try {
-        const obj = JSON.parse(l) as { cwd?: unknown };
-        // PathKit.samePath：darwin/win32 大小写不敏感 + 尾分隔符不敏感，linux 严格
-        return typeof obj.cwd === 'string' && samePath(obj.cwd, cwd);
-      } catch {
-        return false; // skip malformed line
-      }
-    }) !== null
-  );
 }
 
 function defaultProjectsDir(): string {
@@ -155,6 +132,9 @@ export function listClaudeSessions(
   const sessions = index.listByCwd(cwd).map((e) => ({
     sessionId: e.sessionId,
     summary: e.summary,
+    // qoder 的 `-n`/rename 命名行（custom-title）→ AgentSession.title，
+    // /resume 列表卡按「标题」标签渲染（DSH 投影同语义）
+    ...(e.title ? { title: e.title } : {}),
     mtime: e.mtimeMs,
   }));
   // 空列表 + 上次扫描是非 ENOENT 失败 → 是「读不到」而非「真的没有」。
@@ -542,11 +522,10 @@ function collectTailOffset(
   }
 }
 
-/** ai-title：最后一条生效。 */
+/** 标题行：最后一条生效；行类型/字段名统一由 session-index.titleFromRow 判定。 */
 function collectAiTitle(state: ScalarScanState, obj: Record<string, unknown>): void {
-  if (obj.type === 'ai-title' && typeof obj.aiTitle === 'string') {
-    state.lastAiTitle = obj.aiTitle as string;
-  }
+  const rowTitle = titleFromRow(obj);
+  if (rowTitle) state.lastAiTitle = rowTitle;
 }
 
 /** recap：最后一条 isCompactSummary 生效。 */
