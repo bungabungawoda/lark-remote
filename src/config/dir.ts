@@ -9,6 +9,8 @@ let cachedConfigDir: string | null = null;
 
 interface CliArgs {
   configDir?: string;
+  /** `-c` / `--config-dir` 未带值：启动前交互选择配置目录。 */
+  configDirPick?: boolean;
   settings?: string;
   dev?: boolean;
   help?: boolean;
@@ -49,14 +51,21 @@ export function parseCliArgs(args: string[] = process.argv.slice(2)): CliArgs {
       result.help = true;
     } else if (arg === '-v' || arg === '--version' || arg === 'version') {
       result.version = true;
-    } else if (arg === '--config-dir' && i + 1 < args.length) {
-      // peek, don't consume — when the next arg is itself a flag,
-      // roll back so it continues parsing (previously --settings/--help
-      // right after --config-dir were silently swallowed).
+    } else if (arg === '-c' || arg === '--config-dir') {
+      // 不带值 = 交互选择（用户记不住目录时用它）；带值时保持原语义。
+      // 只有「非空且不以 - 开头」的下一项才算路径：`-c --dev` / `-c -v`
+      // 必须把 flag 留给后续分支（旧实现把 `-v` 当成了目录名）。
       const nextArg = args[i + 1];
-      if (nextArg && !nextArg.startsWith('--')) {
-        result.configDir = args[++i];
+      if (nextArg !== undefined && nextArg.trim().length > 0 && !nextArg.startsWith('-')) {
+        result.configDir = nextArg;
+        i++;
+      } else {
+        result.configDirPick = true;
       }
+    } else if (arg.startsWith('--config-dir=') || arg.startsWith('-c=')) {
+      const value = arg.slice(arg.indexOf('=') + 1).trim();
+      if (value.length > 0) result.configDir = value;
+      else result.configDirPick = true;
     } else if (arg === '--settings' && i + 1 < args.length) {
       const nextArg = args[i + 1];
       if (nextArg && !nextArg.startsWith('--')) {
@@ -110,7 +119,9 @@ export function printHelp(): void {
     '  help                   等同 --help',
     '',
     'Options:',
-    '  --config-dir <path>   自定义配置目录（默认 ~/.lark-remote，可用于同机多实例）',
+    '  -c, --config-dir [path]',
+    '                        自定义配置目录（默认 ~/.lark-remote）；省略 path 时',
+    '                        列出 ~/.lark-remote* 交互选择（显示对应飞书应用名）',
     '  --settings <path>     指定 Claude 配置文件路径',
     '  --dev                 开发模式：标记从源码 bun src/index.ts 启动（看门狗据此选择拉起方式）',
     '  --update              升级到最新版本后退出（用于 cron/脚本自动化升级）',

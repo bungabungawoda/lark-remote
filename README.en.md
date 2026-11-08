@@ -67,7 +67,7 @@ idle:
   watchdogMinutes: 15       # 0 disables the idle timeout auto-stop
 ```
 
-Override the config directory with `--config-dir <path>`; override the Claude settings path with `--settings <path>` or the `CLAUDE_SETTINGS_PATH` environment variable.
+Override the config directory with `-c` / `--config-dir <path>`; a bare `-c` lets you pick an existing local config dir interactively (each row shows its Feishu app name). Override the Claude settings path with `--settings <path>` or the `CLAUDE_SETTINGS_PATH` environment variable.
 
 ## Running
 
@@ -77,6 +77,7 @@ bun run dev                                     # development (run TS directly w
 bun run build && node dist/index.js             # run the compiled output
 
 # CLI flags
+lark-remote -c                                  # pick an existing config dir (shows Feishu app names)
 lark-remote --config-dir ~/.lark-remote-test    # custom config dir (multiple instances on one machine)
 lark-remote --settings ~/.claude/settings.json  # specify Claude settings file
 ```

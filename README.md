@@ -67,7 +67,7 @@ idle:
   watchdogMinutes: 15       # 0 关闭空闲超时自动停止
 ```
 
-配置目录可用 `--config-dir <path>` 覆盖；Claude settings 路径可用 `--settings <path>` 或 `CLAUDE_SETTINGS_PATH` 环境变量覆盖。
+配置目录可用 `-c` / `--config-dir <path>` 覆盖；不带值的 `-c` 会交互选择本机已有配置目录（列出对应飞书应用名）。Claude settings 路径可用 `--settings <path>` 或 `CLAUDE_SETTINGS_PATH` 环境变量覆盖。
 
 ## 运行
 
@@ -77,6 +77,7 @@ bun run dev                                     # 开发（bun 直跑 TS）
 bun run build && node dist/index.js             # 编译后运行
 
 # CLI 参数
+lark-remote -c                                  # 交互选择本机已有配置目录（显示飞书应用名）
 lark-remote --config-dir ~/.lark-remote-test    # 自定义配置目录（同机多实例）
 lark-remote --settings ~/.claude/settings.json  # 指定 Claude 配置文件
 ```

@@ -21,10 +21,16 @@ describe('parseCliArgs flag consumption', () => {
     //    不生效），--help 被吞则进程正常启动 bridge 而非打印帮助——用户参数被
     //    静默忽略且排查困难。
     // ③ 依据：失败用例原文（已实测：当前返回 {}）。
+    // ④ 后续语义：不带值的 --config-dir 现在表示「启动前交互选择目录」
+    //    （configDirPick），但后续 flag 仍必须继续参与解析。
     expect(parseCliArgs(['--config-dir', '--settings', '/tmp/s.json'])).toEqual({
+      configDirPick: true,
       settings: '/tmp/s.json',
     });
-    expect(parseCliArgs(['--config-dir', '--help'])).toEqual({ help: true });
+    expect(parseCliArgs(['--config-dir', '--help'])).toEqual({
+      configDirPick: true,
+      help: true,
+    });
     // 正常值路径不受影响
     expect(parseCliArgs(['--config-dir', '/tmp/cfg'])).toEqual({ configDir: '/tmp/cfg' });
   });

@@ -88,6 +88,40 @@ describe('parseCliArgs 裸子命令', () => {
   });
 });
 
+/**
+ * `-c` / `--config-dir` 不带值时进入交互选择；带值时保持原有「直接使用」语义。
+ * 关键回归：不吞掉紧随其后的 flag（旧实现会把 `-v` 当成目录名）。
+ */
+describe('parseCliArgs -c 配置目录选择', () => {
+  it('-c 是 --config-dir 的短别名', () => {
+    expect(parseCliArgs(['-c', '/tmp/foo'])).toEqual({ configDir: '/tmp/foo' });
+  });
+
+  it('-c 不带值 → 请求选择器', () => {
+    expect(parseCliArgs(['-c'])).toEqual({ configDirPick: true });
+    expect(parseCliArgs(['--config-dir'])).toEqual({ configDirPick: true });
+  });
+
+  it('-c 后跟 flag 时不吞掉 flag', () => {
+    expect(parseCliArgs(['-c', '--dev'])).toEqual({ configDirPick: true, dev: true });
+    expect(parseCliArgs(['-c', '-v'])).toEqual({ configDirPick: true, version: true });
+  });
+
+  it('空值等同于未提供', () => {
+    expect(parseCliArgs(['-c', ''])).toEqual({ configDirPick: true });
+    expect(parseCliArgs(['--config-dir='])).toEqual({ configDirPick: true });
+  });
+
+  it('支持 -c=<path> 与 --config-dir=<path>', () => {
+    expect(parseCliArgs(['-c=/tmp/foo'])).toEqual({ configDir: '/tmp/foo' });
+    expect(parseCliArgs(['--config-dir=/tmp/bar'])).toEqual({ configDir: '/tmp/bar' });
+  });
+
+  it('斜杠目录名照旧当普通值（不被误判成 flag）', () => {
+    expect(parseCliArgs(['--config-dir', './rel/dir'])).toEqual({ configDir: './rel/dir' });
+  });
+});
+
 describe('printVersion', () => {
   afterEach(() => {
     vi.restoreAllMocks();

@@ -706,6 +706,24 @@ describe('CloneSession default detached spawn', () => {
     expect(connector.texts.at(-1)).toContain('pid=7777');
   });
 
+  it('strips the -c alias and -c= form as well', async () => {
+    process.argv = [
+      '/usr/bin/node',
+      '/app/dist/cli.js',
+      '-c',
+      '/old/config',
+      '-c=/older/config',
+      '--verbose',
+    ];
+    const { connector, reg, session } = makeDefaultSpawnFixture();
+
+    await finalizeWithSpawn(session, reg);
+
+    const [command] = spawnDetachedBridgeMock.mock.calls[0];
+    expect(command).toEqual(['/app/dist/cli.js', '--verbose', '--config-dir', `${configDir}-99zz`]);
+    expect(connector.texts.at(-1)).toContain('pid=7777');
+  });
+
   it('offers the manual start command when the detached spawn fails', async () => {
     process.argv = ['/usr/bin/node', '/app/dist/cli.js'];
     spawnDetachedBridgeMock.mockReturnValue(null);
