@@ -17,8 +17,9 @@
  *   事件流（§9.27 codex 子线程污染的同源教训）。
  * - /compact 按 opencode 的同步口径处理（prompt 结算即结果；CodeBuddy 的
  *   压缩后台态无类似 kimi wire.jsonl 的观察通道，待真机验证后再加）。
- * - 用量：ACP usage_update 只有 context（无 input/output 拆分），flow 走
- *   jsonl 兜底（getUsageAuthority()='jsonl'，kimi 同款）。
+ * - 用量：ACP `usage_update` 的 `_meta.usage` 带每次模型请求的 input/output，
+ *   translator 按 turn 累加（`used/size` 恒为 0，只作上下文水位兜底）；flow
+ *   走 live（getUsageAuthority()='live'），context/cumulative 走 reader。
  */
 
 import type { AgentKind } from '../../../agent-kinds.js';
@@ -109,9 +110,9 @@ export function sessionCurrentFrom(result: unknown): SessionCurrent {
 }
 
 export class CodebuddyAcpRunner extends BaseAcpRunner<CodebuddyAcpTranslator> {
-  /** ACP usage_update 只有 context，没有 input/output：flow 走 jsonl。 */
-  getUsageAuthority(): 'jsonl' {
-    return 'jsonl';
+  /** ACP `_meta.usage` 带逐请求 input/output：flow 用 live 的本 turn 累加。 */
+  getUsageAuthority(): 'live' {
+    return 'live';
   }
 
   private permissionMode: string;

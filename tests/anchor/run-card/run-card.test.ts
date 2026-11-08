@@ -555,8 +555,8 @@ describe('renderRunCard budget estimate = shadow measurement', () => {
  * 优化前后都必须成立的行为契约：
  *
  * ① 卡片产物 ≤28KB（不触发飞书 11310 单卡 5 table / 28KB 上限错误）—— 正确性底线
- * ② 走了 degraded 路径：含 omission hint（`已省略 5 个早期思考` 或
- *    `已省略 2 个工具调用`），且不含早期 thinking（`思考1`）—— 证明超预算被识别并降级
+ * ② 走了 degraded 路径：含合并后的 omission hint（`已省略 7 个早期步骤`，
+ *    5 个早期思考 + 2 个早期工具），且不含早期 thinking（`思考1`）—— 证明超预算被识别并降级
  *
  * 缺失会导致什么：
  * - 若估算逻辑误判"不超预算"走正常路径，完整卡 ~100KB+ 会超 28KB → 飞书 11310
@@ -621,10 +621,10 @@ describe('renderRunCard budget estimate', () => {
     // ① 正确性底线：产物 ≤28KB，不触发飞书 11310
     expect(cardBytes).toBeLessThanOrEqual(28_000);
 
-    // ② 走了 degraded 路径：含 omission hint
-    const hasThinkingOmission = /已省略 5 个早期思考/.test(json);
-    const hasToolOmission = /已省略 2 个工具调用/.test(json);
-    expect(hasThinkingOmission || hasToolOmission).toBe(true);
+    // ② 走了 degraded 路径：所有省略来源合并成一条「早期步骤」提示
+    // （5 个早期思考 + 2 个早期工具 = 7），不再按类型分行。
+    expect(json).toContain('已省略 7 个早期步骤');
+    expect(json).not.toMatch(/早期思考|个工具调用|计划\/文件变更/);
 
     // ② 不含早期 thinking（证明降级裁剪生效，而非完整渲染塞进 28KB）
     expect(json).not.toContain('思考1');

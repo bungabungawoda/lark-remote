@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { createHash } from 'node:crypto';
 import { CodebuddySessionReader } from './session-reader.js';
 import { encodeCodebuddyProjectDirName, findFirstUserText, findSummaryText } from './sessions.js';
 import { rmRf } from '../../../tests/lib/tmp-cleanup.js';
@@ -41,6 +42,48 @@ function row(text: string, role: 'user' | 'assistant', sessionId: string, extra?
     cwd,
     ...extra,
   };
+}
+
+/** 与 CodeBuddy 真机命名一致：`<basename>__<md5(cwd)>.log`。 */
+function writeUsageLog(lines: string[], date = '2026-01-01'): void {
+  const dir = path.join(configDir, 'logs', date);
+  fs.mkdirSync(dir, { recursive: true });
+  const hash = createHash('md5').update(cwd).digest('hex');
+  fs.writeFileSync(
+    path.join(dir, `${path.basename(cwd)}__${hash}.log`),
+    `${lines.join('\n')}\n`,
+    'utf-8',
+  );
+}
+
+interface CallLogArgs {
+  sessionId: string;
+  turnId: string;
+  step: number;
+  input: number;
+  output: number;
+  cached: number;
+  cacheWrite?: number;
+}
+
+/** 合成 `agent.model_call.completed` 日志行（真机字段形状）。 */
+function callLogLine(args: CallLogArgs): string {
+  const payload = {
+    model: 'test-model',
+    step: args.step,
+    attempt_no: 1,
+    input_tokens: args.input,
+    output_tokens: args.output,
+    total_tokens: args.input + args.output,
+    cached_read_tokens: args.cached,
+    cached_write_tokens: args.cacheWrite ?? 0,
+    finish_reason: 'stop',
+    event_name: 'agent.model_call.completed',
+    conversation_id: args.sessionId,
+    conversation_request_id: args.turnId,
+    conversation_message_id: `msg-${args.step}`,
+  };
+  return `[2026/1/1 10:00:00.000] [Info] [pid=100] [ModelProvider]  ${JSON.stringify(payload)}`;
 }
 
 beforeEach(() => {
@@ -199,6 +242,122 @@ describe('CodebuddySessionReader', () => {
     expect(content.usage?.totalTokens).toBe(93 + 7 + 20);
     expect(content.usage?.cumulativeTotalTokens).toBe(15 + 120);
     expect(content.displayTitle).toBe('第二轮问题');
+  });
+
+  it('逐请求日志优先：flow/cumulative 按日志求和，不再被 jsonl 末次采样限制', () => {
+    writeSession('bbbbbbbb-0004', [
+      row('第一轮问题', 'user', 'bbbbbbbb-0004'),
+      row('第一轮回答', 'assistant', 'bbbbbbbb-0004', {
+        providerData: {
+          usage: {
+            requests: 1,
+            inputTokens: 100,
+            outputTokens: 20,
+            inputTokensDetails: [{ cached_tokens: 80 }],
+          },
+        },
+      }),
+    ]);
+    // 两个 turn 各两次模型请求；jsonl 的 100/20 只是末次请求。
+    // 故意拆到两个日期目录：日志按日期分文件，reader 必须跨文件合并。
+    writeUsageLog(
+      [
+        callLogLine({
+          sessionId: 'bbbbbbbb-0004',
+          turnId: 'turn-a',
+          step: 1,
+          input: 1000,
+          output: 100,
+          cached: 800,
+        }),
+        callLogLine({
+          sessionId: 'bbbbbbbb-0004',
+          turnId: 'turn-a',
+          step: 2,
+          input: 1200,
+          output: 200,
+          cached: 1000,
+        }),
+      ],
+      '2026-01-01',
+    );
+    writeUsageLog(
+      [
+        callLogLine({
+          sessionId: 'bbbbbbbb-0004',
+          turnId: 'turn-b',
+          step: 3,
+          input: 2000,
+          output: 300,
+          cached: 1500,
+        }),
+        callLogLine({
+          sessionId: 'bbbbbbbb-0004',
+          turnId: 'turn-b',
+          step: 4,
+          input: 2500,
+          output: 400,
+          cached: 2000,
+        }),
+      ],
+      '2026-01-02',
+    );
+
+    const reader = new CodebuddySessionReader({ configDir });
+    const content = reader.readSessionContent('bbbbbbbb-0004', cwd);
+
+    // turn-b 两次请求：非缓存 input (500+500)、output (300+400)；
+    // context = 末次请求 2500 输入 + 400 输出（输入含缓存）。
+    expectRunUsageScope(content.usage, {
+      flowInput: 1000,
+      flowOutput: 700,
+      contextLength: 2900,
+      cumulativeInput: 200 + 200 + 500 + 500,
+      cumulativeOutput: 100 + 200 + 300 + 400,
+    });
+    expect(content.usage?.cacheReadTokens).toBe(1500 + 2000);
+    expect(content.usage?.totalTokens).toBe(2000 + 300 + 2500 + 400);
+    expect(content.usage?.cumulativeTotalTokens).toBe(
+      1000 + 100 + 1200 + 200 + 2000 + 300 + 2500 + 400,
+    );
+  });
+
+  it('日志里只有其他 session / 坏行时回退 jsonl 末次请求口径', () => {
+    writeSession('bbbbbbbb-0005', [
+      row('问题', 'user', 'bbbbbbbb-0005'),
+      row('回答', 'assistant', 'bbbbbbbb-0005', {
+        providerData: {
+          usage: {
+            inputTokens: 100,
+            outputTokens: 20,
+            inputTokensDetails: [{ cached_tokens: 80 }],
+          },
+        },
+      }),
+    ]);
+    writeUsageLog([
+      callLogLine({
+        sessionId: 'other-session',
+        turnId: 'turn-x',
+        step: 1,
+        input: 999999,
+        output: 999999,
+        cached: 0,
+      }),
+      'broken line {"model":',
+    ]);
+
+    const reader = new CodebuddySessionReader({ configDir });
+    const content = reader.readSessionContent('bbbbbbbb-0005', cwd);
+
+    expectRunUsageScope(content.usage, {
+      flowInput: 20,
+      flowOutput: 20,
+      contextLength: 20 + 80 + 20,
+      cumulativeInput: 20,
+      cumulativeOutput: 20,
+    });
+    expect(content.usage?.totalTokens).toBe(20 + 80 + 20);
   });
 
   it('autocompact 注入行（providerData.agent=compact）不切开 turn 边界（真机形状回归）', () => {

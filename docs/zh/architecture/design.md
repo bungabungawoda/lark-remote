@@ -968,9 +968,10 @@ codex app-server 的 `turn.completed` 透传协议 `tokenUsage.last` 的 turn �
 是 session 累计，cache% 分子分母不同源）。
 → `FinishMeta` → `RunState` → `run-renderer` 传给 `formatUsageStats`。
 
-**jsonl 兜底的 flow 也必须是「末个 turn 的采样之和」**：ACP 的 `usage_update` 只带
-context 占用（`used`/`size`）与 cost，没有 input/output 拆分，opencode/kimi 因此
-永远走 jsonl 兜底；reader 若只取末条采样，一次多请求 run 会按"末次请求"出数
+**jsonl 兜底的 flow 也必须是「末个 turn 的采样之和」**：opencode/kimi 的 ACP
+`usage_update` 只带 context 占用（`used`/`size`）与 cost，没有 input/output
+拆分，因此这两个 agent 的 flow 永远走 reader 兜底；reader 若只取末条采样，
+一次多请求 run 会按"末次请求"出数
 （实测 25 请求的 run：input 20,040 显示成 543、output 10,358 显示成 1,250，而相邻
 两张卡的"累计"差值才是真实消耗）。各自 turn 边界：opencode v2 = `idle` 消息
 （opencode 自带的 turn 结束标记，取"其后仍有采样的最后一个 idle"，文件以 idle 收尾
@@ -979,12 +980,15 @@ kimi = `turn.prompt`（整份 wire 都没有该标记的旧数据沿用"整份�
 同一 turn 内多条 synthetic 消息（如 shell 完成事件触发的 synthetic）不构成新 turn，
 中间没有 idle/turn.prompt 就并入同一轮。`contextLength` 始终取末条采样，不求和。
 
-**reader 责任矩阵与回归史**：六个 reader 的 turn 边界分别是 claude/pi = 末条真实
+**reader 责任矩阵与回归史**：七个 reader 的 turn 边界分别是 claude/pi = 末条真实
 user 消息（已按末个 turn 汇总所有 assistant 消息）、opencode v1 = 末条 user、
 opencode v2 = 末个 `idle`（末条采样后出现新 user 时 flow = 0）、kimi =
 `turn.prompt`（空 turn 显示 0，不退回上一轮）、codex = `task_started`、dsh =
-`turn/start`–`turn/end`。`usageAuthority` 已拆分：`getUsageAuthority()` 只表达
-flow 来源（ACP 为 `'jsonl'`），`usesLiveResultEvents()` 表达 result 事件语义
+`turn/start`–`turn/end`、codebuddy = 逐请求日志的 `conversation_request_id`
+（它的 jsonl 每个 turn 只落末次请求，reader 用 CodeBuddy 的逐请求日志汇总，
+日志不可用才回退 jsonl）。`usageAuthority` 已拆分：`getUsageAuthority()` 只表达
+flow 来源（opencode/kimi 为 `'jsonl'`；codebuddy 为 `'live'`，`_meta.usage` 带
+逐请求 input/output），`usesLiveResultEvents()` 表达 result 事件语义
 （pre-init 丢弃 / session 写回）。完整契约、2026-07 → 2026-11 的复发链与残留缺口见
 [token-usage-scope.md](token-usage-scope.md)。
 
@@ -993,8 +997,9 @@ flow 来源（ACP 为 `'jsonl'`），`usesLiveResultEvents()` 表达 result 事�
 `turn.prompt` 汇总末个 turn 作 flow、opencode reader（`cache.write`/`total`；v2 按
 `idle` 分段）、codex `readCodexRollout` 解析 `token_count`
 事件（`raw = last_token_usage ?? subtract(total, prev_total)`，跟踪 `previousTotals`
-做累计差；flow 字段按 `task_started` 汇总本 turn 的所有采样）。改 token **展示口径**
-时仍需同时核对五个 reader + `formatUsageStats` + lark-remote；**字段清单**已单源为
+做累计差；flow 字段按 `task_started` 汇总本 turn 的所有采样）、codebuddy 逐请求日志
+（jsonl 只有末次请求，见 §9.21 与 token-usage-scope.md）。改 token **展示口径**
+时仍需同时核对各 reader + `formatUsageStats` + lark-remote；**字段清单**已单源为
 `UsageSnapshot`（`src/session-contract.ts`），原先手抄的 5 份可选字段清单改为
 `extends` 它，加一个字段只改这一处。
 
@@ -1010,7 +1015,7 @@ codex reader 用末 turn raw `input_tokens`（含 cache 的完整 prompt 大小�
 **起因**：codex `/resume` 列表曾显示任意 walk 子集（`listCodexRollouts` 收集到
 `limit*2` 条就 break 再排序，APFS 哈希序下最新目录常被跳过），且总数显示截断后长度。
 
-**reader 契约**（`AgentSessionReader.listSessions`，6 个 agent 统一）：
+**reader 契约**（`AgentSessionReader.listSessions`，各 agent 统一）：
 
 ```ts
 listSessions(cwd: string, opts?: { limit?: number; offset?: number }): {

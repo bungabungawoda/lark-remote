@@ -13,8 +13,12 @@
  * `/`→`-`。编码有损（`/`→`-` 是 N-to-1），因此定位到的文件必须用行内 `cwd`
  * 字段校验归属（同 claude 的回归教训：/resume & /cd 路径错乱）。
  *
+ * 用量：jsonl 只在每个 turn 的最后一条 assistant 消息上落 usage（`requests: 1`），
+ * 中间模型请求没有采样；reader 优先用 CodeBuddy 的逐请求日志（`usage-log.ts`）
+ * 重建 flow/cumulative，日志缺失时才回退 jsonl（末次请求，口径是下界）。
+ *
  * 待真机验证（fixture 固化后收敛）：
- * - assistant 行 usage 的字段名（读取按多候选 key 归一化，双 casing 都接受）；
+ * - jsonl 兜底路径的 assistant 行 usage 字段名（读取按多候选 key 归一化，双 casing 都接受）；
  * - turn-metrics 行的窗口水位字段（v1 不依赖，contextLength 用统一占用口径）；
  * - 工具调用行形状（样本未含工具行；tail 装配对未知行类型一律跳过）。
  */
@@ -32,6 +36,13 @@ import type {
   AgentSessionUsage,
 } from '../../session-contract.js';
 import { resolveCodebuddyConfigDir } from '../../config/codebuddy-config.js';
+import {
+  addCodebuddyUsageSample,
+  emptyCodebuddyUsageSample,
+  readCodebuddyLogUsage,
+  type CodebuddyLogUsage,
+  type CodebuddyUsageSample,
+} from './usage-log.js';
 
 export interface CodebuddyReaderOptions {
   /** CodeBuddy 配置根目录；缺省 `~/.codebuddy`。 */
@@ -195,13 +206,7 @@ export function getNewestCodebuddySession(
 // readSessionContent：单遍扫描（usage + turn 边界 + tail 装配）
 // =============================================================================
 
-/** 一条 assistant 行的 usage 采样（多候选 key 归一化后）。 */
-export interface CodebuddyUsageSample {
-  input: number;
-  output: number;
-  cacheRead: number;
-  cacheCreation: number;
-}
+export type { CodebuddyUsageSample } from './usage-log.js';
 
 /** usage 字段多候选 key（wire 未验证，casing/命名双口径都接）。 */
 function pickNumber(row: Record<string, unknown>, keys: string[]): number {
@@ -316,17 +321,6 @@ export interface CodebuddyTitleState {
   aiTitle: string | undefined;
 }
 
-function emptySample(): CodebuddyUsageSample {
-  return { input: 0, output: 0, cacheRead: 0, cacheCreation: 0 };
-}
-
-function addSample(target: CodebuddyUsageSample, sample: CodebuddyUsageSample): void {
-  target.input += sample.input;
-  target.output += sample.output;
-  target.cacheRead += sample.cacheRead;
-  target.cacheCreation += sample.cacheCreation;
-}
-
 /**
  * 单行标题采集：真人 user 行覆盖 tailTitle 并记首条 firstTitle；非真人
  * user 行在尚无 firstTitle 时兜底；ai-title 行取最后一条。turn 边界
@@ -358,10 +352,10 @@ export function summarizeTurnFlow(
   tailStart: number,
   latest: CodebuddyUsageSample | undefined,
 ): CodebuddyUsageSample {
-  const turn = emptySample();
+  const turn = emptyCodebuddyUsageSample();
   if (tailStart >= 0) {
     for (const { turn: turnOf, sample } of samples) {
-      if (turnOf === tailStart) addSample(turn, sample);
+      if (turnOf === tailStart) addCodebuddyUsageSample(turn, sample);
     }
   } else if (latest) {
     Object.assign(turn, latest);
@@ -377,7 +371,7 @@ export function summarizeTurnFlow(
  * §9.21；cumulative = 全部采样之和，子 agent 文件不读，天然不混入）。
  */
 function scanRows(rows: Record<string, unknown>[]): CodebuddyScan {
-  const cum = emptySample();
+  const cum = emptyCodebuddyUsageSample();
   let latest: CodebuddyUsageSample | undefined;
   let tailStart = -1;
   const titleState: CodebuddyTitleState = {
@@ -394,7 +388,7 @@ function scanRows(rows: Record<string, unknown>[]): CodebuddyScan {
     if (row.type === 'message' && row.role === 'assistant') {
       const sample = usageOfRow(row);
       if (sample) {
-        addSample(cum, sample);
+        addCodebuddyUsageSample(cum, sample);
         samples.push({ turn: tailStart, sample });
         latest = sample;
       }
@@ -421,24 +415,42 @@ function scanRows(rows: Record<string, unknown>[]): CodebuddyScan {
   };
 }
 
-function usageToSessionUsage(scan: CodebuddyScan): AgentSessionUsage | undefined {
-  const cumTotal = scan.cum.input + scan.cum.output + scan.cum.cacheRead + scan.cum.cacheCreation;
+/**
+ * 组装 `AgentSessionUsage`。调用方决定 flow/cumulative/latest 的数据源：
+ * 逐请求日志可用时用日志，否则回退 jsonl 的末次请求采样。
+ */
+function usageToSessionUsage(
+  turn: CodebuddyUsageSample,
+  cum: CodebuddyUsageSample,
+  latest: CodebuddyUsageSample | undefined,
+): AgentSessionUsage | undefined {
+  const cumTotal = cum.input + cum.output + cum.cacheRead + cum.cacheCreation;
   if (cumTotal === 0) return undefined;
-  const last = scan.latest;
   return {
-    inputTokens: scan.turn.input,
-    outputTokens: scan.turn.output,
+    inputTokens: turn.input,
+    outputTokens: turn.output,
     // 统一占用口径：末条采样的 input+output+cache（水位不求和，含末轮 output）。
-    contextLength: last ? last.input + last.output + last.cacheRead + last.cacheCreation : 0,
-    cacheReadTokens: scan.turn.cacheRead > 0 ? scan.turn.cacheRead : undefined,
-    cacheCreationTokens: scan.turn.cacheCreation > 0 ? scan.turn.cacheCreation : undefined,
-    totalTokens: scan.turn.input + scan.turn.output + scan.turn.cacheRead + scan.turn.cacheCreation,
+    contextLength: latest
+      ? latest.input + latest.output + latest.cacheRead + latest.cacheCreation
+      : 0,
+    cacheReadTokens: turn.cacheRead > 0 ? turn.cacheRead : undefined,
+    cacheCreationTokens: turn.cacheCreation > 0 ? turn.cacheCreation : undefined,
+    totalTokens: turn.input + turn.output + turn.cacheRead + turn.cacheCreation,
     cumulativeTotalTokens: cumTotal,
-    cumulativeInputTokens: scan.cum.input,
-    cumulativeOutputTokens: scan.cum.output,
-    cumulativeCacheReadTokens: scan.cum.cacheRead,
-    cumulativeCacheCreationTokens: scan.cum.cacheCreation,
+    cumulativeInputTokens: cum.input,
+    cumulativeOutputTokens: cum.output,
+    cumulativeCacheReadTokens: cum.cacheRead,
+    cumulativeCacheCreationTokens: cum.cacheCreation,
   };
+}
+
+/** 日志缺失时的兜底：jsonl 每个 turn 只有末次请求一条采样。 */
+function usageFromJsonl(scan: CodebuddyScan): AgentSessionUsage | undefined {
+  return usageToSessionUsage(scan.turn, scan.cum, scan.latest);
+}
+
+function usageFromLog(logUsage: CodebuddyLogUsage): AgentSessionUsage | undefined {
+  return usageToSessionUsage(logUsage.turn, logUsage.cum, logUsage.latest);
 }
 
 /** tail 行 → 展示事件（user/assistant 文本同 text 通道；未知行类型跳过）。 */
@@ -496,12 +508,15 @@ export function readCodebuddySessionContent(
   }
 
   const scan = scanRows(rows);
+  // 逐请求日志优先：jsonl 每 turn 只落最后一条 assistant 的 usage，
+  // 求和仍等于末次请求；日志缺失/清理时才回退（数字是下界）。
+  const logUsage = readCodebuddyLogUsage(sessionId, cwd, { configDir: opts.configDir });
   // tail = 末条真人 user 之后的行（不含该行，claude 的 tailOffset 同语义）；
   // 无真人 user 行时退回整个文件（空态兜底）。
   const startIndex = scan.tailStart >= 0 ? scan.tailStart + 1 : 0;
   return {
     events: capEvents(assembleTailEvents(rows, startIndex), opts.maxEvents),
-    usage: usageToSessionUsage(scan),
+    usage: logUsage ? usageFromLog(logUsage) : usageFromJsonl(scan),
     aiTitle: scan.aiTitle,
     displayTitle: scan.aiTitle ?? scan.tailTitle ?? scan.firstTitle,
   };
