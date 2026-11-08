@@ -18,7 +18,7 @@
 import type { ChildProcess } from 'node:child_process';
 import readline from 'node:readline';
 import os from 'node:os';
-import { spawnProcess } from '../platform/spawn.js';
+import { spawnProcess, useDetachedProcessGroup } from '../platform/spawn.js';
 import { createTerminator, type Terminator } from '../platform/terminator.js';
 import { getLogger } from '../logger/index.js';
 import { CODEBUDDY_CLIENT_CAPABILITIES } from '../acp-protocol.js';
@@ -61,6 +61,8 @@ const CATALOG_CACHE_TTL_MS = 5 * 60_000;
 const PROBE_TIMEOUT_MS = 30_000;
 
 let catalogCache: { result: CodebuddyCatalog | null; timestamp: number } | null = null;
+/** 正在跑的目录探针（并发点火复用，见 refreshCodebuddyCatalog）。 */
+let catalogRefreshInFlight: Promise<CodebuddyCatalog | null> | null = null;
 
 /** 清空缓存（仅供测试使用，生产代码无调用点）。 */
 export function invalidateCodebuddyCatalogCache(): void {
@@ -184,10 +186,14 @@ function spawnProbeProcess(binary: string, cwd: string): ProbeProcess | null {
   try {
     // 探针进程收尾走 Terminator（组杀/taskkill）：win32 上 codebuddy 是 .cmd
     // 垫片，裸 kill() 只杀 cmd.exe，node 子进程会带着 ACP server 变孤儿。
+    // posix 侧 Terminator 用 kill(-pid) 组杀，子进程必须是进程组组长，否则
+    // ESRCH 会被误判为成功、探针静默残留。用统一 seam：posix 建组，win32
+    // 不建组（detached 会让 .cmd 丢 stdio）。
     proc = spawnProcess(binary, ['--acp'], {
       cwd,
       stdio: ['pipe', 'pipe', 'pipe'],
       windowsHide: true,
+      detached: useDetachedProcessGroup(),
     });
   } catch (err) {
     getLogger().warn(`[codebuddy-catalog] spawn failed: ${(err as Error).message}`);
@@ -305,18 +311,32 @@ async function probeOnce(
  * （negative cache 让失败的探针在 TTL 内不再反复 spawn）。返回本次结果。
  * timeoutMs 是测试 seam，生产调用不传。
  */
-export async function refreshCodebuddyCatalog(
+export function refreshCodebuddyCatalog(
   binary = 'codebuddy',
   timeoutMs = PROBE_TIMEOUT_MS,
 ): Promise<CodebuddyCatalog | null> {
-  const result = await probeOnce(binary, os.tmpdir(), timeoutMs);
-  catalogCache = { result, timestamp: Date.now() };
-  if (!result) {
-    getLogger().warn(
-      '[codebuddy-catalog] probe unavailable, config card falls back to static lists',
-    );
+  // 卡片每次重绘都会点火。TTL 内直接吃缓存（含 negative cache），并发点火
+  // 复用同一个 in-flight probe；约束：TTL 窗口内重复重绘不得重复 spawn。
+  const cached = catalogCache;
+  if (cached && Date.now() - cached.timestamp < CATALOG_CACHE_TTL_MS) {
+    return Promise.resolve(cached.result);
   }
-  return result;
+  if (catalogRefreshInFlight) return catalogRefreshInFlight;
+
+  catalogRefreshInFlight = probeOnce(binary, os.tmpdir(), timeoutMs)
+    .then((result) => {
+      catalogCache = { result, timestamp: Date.now() };
+      if (!result) {
+        getLogger().warn(
+          '[codebuddy-catalog] probe unavailable, config card falls back to static lists',
+        );
+      }
+      return result;
+    })
+    .finally(() => {
+      catalogRefreshInFlight = null;
+    });
+  return catalogRefreshInFlight;
 }
 
 /** 后台预热（fire-and-forget；失败落 negative cache，卡片路径优雅回退）。 */

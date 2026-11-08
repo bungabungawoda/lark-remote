@@ -141,4 +141,39 @@ describe('createPosixTerminator', () => {
     terminator.cleanupOnExit(createMockProc({ exitCode: 0 }));
     expect(killSpy).not.toHaveBeenCalled();
   });
+
+  /**
+   * 故障形态：子进程未 detached 时不具备独立进程组，kill(-pid) 必抛 ESRCH。
+   * 后果：把 ESRCH 一律当「进程组已消失」会返回假成功，进程原封不动残留。
+   * 约束：必须 fallback 到单 pid 信号。
+   */
+  it('组信号 ESRCH（子进程非组长）→ fallback 单 pid 信号，不报假成功', async () => {
+    const terminator = createPosixTerminator({ graceMs: 5000 });
+    killSpy.mockImplementation((target: number) => {
+      if (target < 0) {
+        throw Object.assign(new Error('ESRCH'), { code: 'ESRCH' });
+      }
+      return true;
+    });
+
+    const result = await terminator.stop(createMockProc(), { immediate: true });
+
+    expect(result).toEqual({ requested: true, via: 'taskkill' });
+    expect(killSpy).toHaveBeenCalledWith(12345, 'SIGTERM');
+    expect(killSpy).toHaveBeenCalledWith(12345, 'SIGKILL');
+  });
+
+  it('cleanupOnExit：组不存在时同样 fallback 单 pid SIGKILL', () => {
+    const terminator = createPosixTerminator({ graceMs: 5000 });
+    killSpy.mockImplementation((target: number) => {
+      if (target < 0) {
+        throw Object.assign(new Error('ESRCH'), { code: 'ESRCH' });
+      }
+      return true;
+    });
+
+    terminator.cleanupOnExit(createMockProc({ pid: 4242 }));
+
+    expect(killSpy).toHaveBeenCalledWith(4242, 'SIGKILL');
+  });
 });

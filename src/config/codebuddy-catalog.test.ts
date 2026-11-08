@@ -16,6 +16,26 @@ vi.mock('../logger/index.js', async () =>
   (await import('../../tests/lib/logger-mock.js')).loggerModuleMock(),
 );
 
+/** 进程是否仍存在（kill(pid, 0) 只探测不发送信号）。 */
+function isProcessAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** 等待子进程真正退出；返回是否在超时前退出。 */
+async function waitForProcessExit(pid: number, timeoutMs = 3_000): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (!isProcessAlive(pid)) return true;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  return false;
+}
+
 /** 真机 2.142.0 session/new 响应形状（脱敏：合成 id/数值）。 */
 const REAL_SHAPED = {
   sessionId: 'aaaaaaaa-1111-2222-3333-444444444444',
@@ -130,6 +150,19 @@ describe('refreshCodebuddyCatalog 探针 fixture', () => {
   });
 
   afterEach(() => {
+    // 不自带退出定时器的探针进程若没被收尾杀掉，这里兜底回收，
+    // 保证单个用例失败也不会残留进程污染后续用例。
+    const pidFile = path.join(tmpDir, 'probe.pid');
+    if (fs.existsSync(pidFile)) {
+      const pid = Number(fs.readFileSync(pidFile, 'utf8'));
+      if (Number.isFinite(pid) && pid > 0 && isProcessAlive(pid)) {
+        try {
+          process.kill(pid, 'SIGKILL');
+        } catch {
+          /* already gone */
+        }
+      }
+    }
     restorePath(savedPath);
     rmRf(tmpDir);
   });
@@ -201,5 +234,76 @@ describe('refreshCodebuddyCatalog 探针 fixture', () => {
     const warnings = mockLogger.warn.mock.calls.flat().join(' ');
     expect(warnings).toContain('stream closed');
     expect(warnings).toContain('probe backend exploded');
+  }, 20_000);
+
+  /**
+   * 故障形态：ACP server 完成握手后不会自行退出；子进程未建独立进程组时
+   * kill(-pid) 抛 ESRCH，若把 ESRCH 当成功，探针会静默残留并随每次卡片
+   * 重绘累积。后果：常驻进程堆积。约束：fake agent 不写退出定时器，断言
+   * 收尾后进程必须退出。
+   */
+  it('探针收尾必须杀掉不自行退出的 ACP server（不留孤儿进程）', async () => {
+    const pidFile = path.join(tmpDir, 'probe.pid');
+    const source = [
+      "import fs from 'node:fs';",
+      "import { createInterface } from 'node:readline';",
+      `fs.writeFileSync(${JSON.stringify(pidFile)}, String(process.pid));`,
+      'const rl = createInterface({ input: process.stdin });',
+      "const send = (o) => process.stdout.write(JSON.stringify(o) + '\\n');",
+      "rl.on('line', (line) => {",
+      '  let msg; try { msg = JSON.parse(line); } catch { return; }',
+      "  if (msg.id === 1) send({ jsonrpc: '2.0', id: 1, result: { agentInfo: { version: '2.142.0' } } });",
+      '  if (msg.id === 2) {',
+      "    send({ jsonrpc: '2.0', id: 2, result: " + JSON.stringify(REAL_SHAPED) + ' });',
+      '  }',
+      '});',
+      // 不 process.exit、不关闭 readline：模拟真 ACP server 常驻
+    ].join('\n');
+    mockProbe(source);
+
+    const catalog = await refreshCodebuddyCatalog(BINARY, 5_000);
+    expect(catalog).not.toBeNull();
+
+    const pid = Number(fs.readFileSync(pidFile, 'utf8'));
+    expect(pid).toBeGreaterThan(0);
+    expect(await waitForProcessExit(pid)).toBe(true);
+  }, 20_000);
+
+  /**
+   * 故障形态：卡片每次重绘都会触发目录刷新；缺少 TTL 缓存与并发去重时，
+   * 每次重绘都会 spawn 一个 ACP server 并残留。约束：连续多次刷新
+   * （并发 + TTL 窗口内重复点火）只允许 spawn 一次。
+   */
+  it('TTL 缓存与并发去重：连续多次刷新只 spawn 一个探针', async () => {
+    const countFile = path.join(tmpDir, 'probe.count');
+    const source = [
+      "import fs from 'node:fs';",
+      "import { createInterface } from 'node:readline';",
+      `const f = ${JSON.stringify(countFile)};`,
+      'const n = fs.existsSync(f) ? Number(fs.readFileSync(f, "utf8")) : 0;',
+      'fs.writeFileSync(f, String(n + 1));',
+      'const rl = createInterface({ input: process.stdin });',
+      "const send = (o) => process.stdout.write(JSON.stringify(o) + '\\n');",
+      "rl.on('line', (line) => {",
+      '  let msg; try { msg = JSON.parse(line); } catch { return; }',
+      "  if (msg.id === 1) send({ jsonrpc: '2.0', id: 1, result: { agentInfo: { version: '2.142.0' } } });",
+      '  if (msg.id === 2) {',
+      "    send({ jsonrpc: '2.0', id: 2, result: " + JSON.stringify(REAL_SHAPED) + ' });',
+      '    setTimeout(() => process.exit(0), 50);',
+      '  }',
+      '});',
+    ].join('\n');
+    mockProbe(source);
+
+    // 两次并发点火 + 一次 TTL 内重复点火
+    const [first, second] = await Promise.all([
+      refreshCodebuddyCatalog(BINARY, 5_000),
+      refreshCodebuddyCatalog(BINARY, 5_000),
+    ]);
+    expect(first).not.toBeNull();
+    expect(second).not.toBeNull();
+    await refreshCodebuddyCatalog(BINARY, 5_000);
+
+    expect(Number(fs.readFileSync(countFile, 'utf8'))).toBe(1);
   }, 20_000);
 });
