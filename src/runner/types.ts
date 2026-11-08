@@ -384,6 +384,9 @@ export interface RunStatusEvent {
   timestamp?: string;
 }
 
+/** 宿主是否还会自动起下一轮（进程内状态，见 {@link GoalView.activation}）。 */
+export type GoalActivation = 'armed' | 'disarmed';
+
 /**
  * 会话级长期目标（DSH `goal` 投影的渲染快照）。
  *
@@ -404,6 +407,28 @@ export interface GoalView {
   /** 仅在 phase='blocked' 时存在：阻断分类与人类可读原因。 */
   blockedReason?: { code: string; message: string };
   updatedAt?: number;
+  /**
+   * 进程内续跑资格（宿主 `goals/get` 的 `activation`，投影里没有）。
+   *
+   * `phase='active'` 只说明目标在 durable 状态上还活着：宿主重启、`/stop`
+   * 或 agent error 会把 activation 置 `disarmed`，此后 driver 不再自动起轮，
+   * 会话就是空闲的。缺省 = 读不到，渲染层按「可能自动续跑」保守处理。
+   */
+  activation?: GoalActivation;
+}
+
+/**
+ * goal 是否会自动续跑下一轮。
+ *
+ * Compact 按钮与 goal 区块的文案共用这一条判据：只有"宿主马上会起下一轮"时
+ * 会话才不空闲、压缩才会被拒，按钮才不能给；disarmed 的 active goal 不续跑，
+ * 会话是空闲的，卡片照常给 Compact。
+ *
+ * 读不到（缺省）按会续跑处理：宁可少给一个按钮，也不在任务还会继续时
+ * 说「不会自动续跑」。
+ */
+export function goalWillAutoContinue(goal: GoalView | null | undefined): boolean {
+  return goal?.phase === 'active' && goal.activation !== 'disarmed';
 }
 
 /**

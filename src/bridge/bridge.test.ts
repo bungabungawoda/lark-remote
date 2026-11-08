@@ -979,6 +979,55 @@ describe('Bridge.forwardToClaude', () => {
     expect(vi.mocked(connector.addReaction)).toHaveBeenCalledWith(ctx.messageId, 'OnIt');
   });
 
+  it('dsh goal 仍 active 但 disarmed：卡片给 compact，不承诺自动续跑', async () => {
+    // 宿主重启 / /stop 之后 goal 的 durable phase 仍是 active，driver 却已
+    // disarmed：不会再有下一轮，会话是空闲的。这张"最后一张卡"没有 Compact
+    // 按钮，用户就没有任何压缩入口（2026-11-06 实机反馈）。
+    const runner = createStubRunner({
+      mode: 'streaming',
+      events: [
+        { type: 'system', subtype: 'init', session_id: 's-goal-off', cwd: tmpDir, model: 'DSH' },
+        {
+          type: 'goal_state',
+          goal: {
+            id: 'goal-off',
+            objective: '完成 notes-app 实时链路 MVP',
+            phase: 'active',
+            roundsStarted: 2,
+            maxGoalRounds: 40,
+            activation: 'disarmed',
+          },
+          known: true,
+        },
+        { type: 'result', subtype: 'success', session_id: 's-goal-off' },
+      ],
+    });
+    (runner as unknown as { runCompact: unknown }).runCompact = async function* () {};
+    const config = AppConfigSchema.parse({
+      feishu: { appId: 'test', appSecret: 'test' },
+      claude: { model: 'opus', stopGraceMs: 5000 },
+      cwd: { default: '' },
+      defaultAgent: 'dsh',
+    });
+    const spyConnector = createStubConnector({ addReactionSpy: true });
+    const { bridge, sessionStore, connector } = makeBridge({
+      runner,
+      config,
+      connector: spyConnector,
+    });
+    sessionStore.setCwd(ctx.userId, tmpDir);
+
+    await bridge.forwardToClaude('继续', ctx);
+
+    const json = JSON.stringify(connector._cards.at(-1));
+    expect(json).toContain('本轮结束（目标未自动续跑）');
+    expect(json).not.toContain('会自动开始第 3 轮');
+    expect(json).not.toContain('已完成');
+    expect(json).toContain('"cmd":"compact"');
+    // goal 在 durable 上仍然 active：reaction 依旧不是 ✓（Done）。
+    expect(vi.mocked(connector.addReaction)).toHaveBeenCalledWith(ctx.messageId, 'OnIt');
+  });
+
   it('dsh goal 已 compete 时仍按普通 done 收尾，compact 保留', async () => {
     const runner = createStubRunner({
       mode: 'streaming',

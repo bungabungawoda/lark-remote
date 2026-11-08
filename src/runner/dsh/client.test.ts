@@ -865,6 +865,94 @@ describe('DshClient.removeQueuedPrompt', () => {
   });
 });
 
+describe('DshClient.goalState', () => {
+  const goalSnapshot = {
+    id: 'goal-1',
+    revision: 1,
+    objective: '完成 notes-app 实时链路 MVP',
+    phase: 'active',
+    maxGoalRounds: 40,
+  };
+  /** 宿主投影信封：durable phase + 轮次，没有 activation（进程内状态）。 */
+  const projection = (phase = 'active'): Response =>
+    jsonResponse({
+      asOfSeq: 3,
+      values: {
+        goal: {
+          current: {
+            goal: { ...goalSnapshot, phase },
+            roundsStarted: 2,
+            createdAt: 1,
+            updatedAt: 2,
+          },
+          seenGoalIds: ['goal-1'],
+          failure: null,
+        },
+      },
+    });
+  const liveView = (activation: string): Response =>
+    jsonResponse({
+      ...goalSnapshot,
+      roundsStarted: 2,
+      createdAt: 1,
+      updatedAt: 2,
+      activation,
+    });
+  const makeClient = (fetchImpl: typeof fetch): DshClient =>
+    new DshClient('http://127.0.0.1:3080', {
+      credentialsFile: NO_CREDENTIALS_FILE,
+      fetchImpl,
+    });
+
+  it('把 goals/get 的进程内 activation 补进 goal（投影里没有这一维）', async () => {
+    const methods: string[] = [];
+    const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body ?? '{}')) as { method?: string };
+      methods.push(body.method ?? String(input));
+      if (body.method === 'session/projections') return projection();
+      if (body.method === 'goals/get') return liveView('disarmed');
+      throw new Error(`unexpected method: ${String(body.method)}`);
+    }) as typeof fetch;
+
+    const state = await makeClient(fetchImpl).goalState(SID);
+
+    expect(state).toEqual({
+      known: true,
+      goal: expect.objectContaining({ id: 'goal-1', phase: 'active', activation: 'disarmed' }),
+    });
+    expect(methods).toContain('goals/get');
+  });
+
+  it('goals/get 读不到时保留 durable goal，activation 缺省（不降级成 unknown）', async () => {
+    const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body ?? '{}')) as { method?: string };
+      if (body.method === 'session/projections') return projection();
+      if (body.method === 'goals/get') return new Response('boom', { status: 500 });
+      throw new Error(`unexpected method: ${String(body.method)}`);
+    }) as typeof fetch;
+
+    const state = await makeClient(fetchImpl).goalState(SID);
+
+    expect(state.known).toBe(true);
+    expect(state.goal).toMatchObject({ id: 'goal-1', phase: 'active' });
+    expect(state.goal).not.toHaveProperty('activation');
+  });
+
+  it('非 active 的 goal 不额外打 goals/get（那些 phase 本来就不会续跑）', async () => {
+    const methods: string[] = [];
+    const fetchImpl = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body ?? '{}')) as { method?: string };
+      methods.push(body.method ?? '');
+      return projection('complete');
+    }) as typeof fetch;
+
+    const state = await makeClient(fetchImpl).goalState(SID);
+
+    expect(state).toEqual({ known: true, goal: expect.objectContaining({ phase: 'complete' }) });
+    expect(methods).not.toContain('goals/get');
+  });
+});
+
 describe('DshClient.cookieFromCredentials 损坏凭据回退', () => {
   const broken = async (): Promise<Buffer> => {
     throw new Error('corrupt yaml');

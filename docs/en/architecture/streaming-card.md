@@ -127,7 +127,7 @@ Terminal state cards:
 | interrupted     | ⏹ Claude · Interrupted                  | Terminated by user                                                                                                                                  |
 | idle_timeout    | ⏱ Claude · Timed out                    | Idle minutes                                                                                                                                        |
 | finalizing      | ⏳ Claude · Finalizing                  | Non-terminal; **retains** ⏹ Stop button                                                                                                             |
-| goal_continuing | ⏳ Claude · Turn ended (goal continues) | The turn ended but the session's goal is still active: the task is not finished, the host starts the next round on its own; Compact is not rendered |
+| goal_continuing | ⏳ Claude · Turn ended (goal continues) | The turn ended but the session's goal is still active; whether the host starts the next round depends on activation (armed only; disarmed renders "goal not auto-continued") |
 
 Terminal states do not render footer and stop button (except `finalizing`, see table above).
 
@@ -142,12 +142,13 @@ Therefore:
 
 - A running card renders `🎯 **Goal in progress** · round r/N` plus the goal summary under the status line (a long goal goes into a collapsible panel);
 - if the goal is still `active` when the run finalizes, the terminal state is `goal_continuing` (header "Turn ended (goal continues)") and the summary's first line reads "turn ended · goal still continuing" — "Done" never appears;
-- no Compact button while the goal is `active`: DSH manual compaction requires an idle agent, so the click would always be rejected;
+- `phase='active'` only means the goal is still alive in durable state. Whether the host starts the next round depends on the process-local `activation` (`goals/get`; the projection does not carry it): after a host restart, `/stop`, or an agent error the goal stays active but is `disarmed` and the driver no longer starts rounds. When disarmed, the header/summary read "goal not auto-continued" and the goal block reads "the next round will not start automatically (send a message to continue)";
+- the Compact button is hidden only while the host is about to start another round (armed, or activation unreadable): a disarmed active goal leaves the session idle, so compaction works and that "last card" must offer the button;
 - `complete` / `paused` / `blocked` all mean "nothing continues automatically", so the run finalizes as a normal `done` terminal state, but the header reads "Goal complete", "Goal paused", or "Goal blocked" respectively; blocked also shows the blocking reason;
 - when the final goal probe cannot read the goal (`known=false`), the card must not claim completion: the header reads "Done (goal unconfirmed)" and the summary's first line reads "turn complete · goal state unconfirmed";
 - a projection snapshot **without a `goal` key** (a session that never used goals) counts as "explicitly no goal": no `goal_state` event is emitted and the unknown branch is not entered. Only a present-but-unparseable projection or a failed/timed-out read reports `known=false`.
 
-The data comes only from the host (the `goal` value in `session/projections`, `session/control` pushes and `goal/change` events). The bridge never infers "the task is finished" on its own.
+The data comes only from the host (the `goal` value in `session/projections`, `session/control` pushes, `goal/change` events, and the activation from `goals/get`). The bridge never infers "the task is finished" on its own.
 
 ## 6. Long Content Budget
 
