@@ -56,25 +56,31 @@ describe('CodebuddyConfigBuilder', () => {
       expect(fields.find((f) => f.key === 'agents.codebuddy.model')!.currentValue).toBe('my-model');
     });
 
-    it('thinking level select: empty = follow CodeBuddy default, options from catalog', () => {
+    it('thinking level select: default sentinel = follow CodeBuddy default', () => {
       const fields = builder.buildFields(
         makeConfig({ agents: { codebuddy: { thinkingLevel: 'high' } } }),
       );
       const field = fields.find((f) => f.key === 'agents.codebuddy.thinkingLevel');
       expect(field!.type).toBe('select');
       expect(field!.options).toEqual([
-        { value: '', text: 'default（跟随 CodeBuddy 默认）' },
+        { value: 'default', text: 'default（跟随 CodeBuddy 默认）' },
         { value: 'enabled', text: 'On（默认）' },
         { value: 'disabled', text: 'Off' },
       ]);
       expect(field!.currentValue).toBe('high');
+      // 未配置时下拉必须显示 default 哨兵（空串会被飞书渲染成 placeholder）
+      const unset = builder
+        .buildFields(makeConfig())
+        .find((f) => f.key === 'agents.codebuddy.thinkingLevel');
+      expect(unset!.currentValue).toBe('default');
     });
 
-    it('sandbox select with empty-follow-default and string→boolean coercion', () => {
+    it('sandbox select with default sentinel and string→boolean coercion', () => {
       const fields = builder.buildFields(makeConfig());
       const field = fields.find((f) => f.key === 'agents.codebuddy.sandbox');
       expect(field!.type).toBe('select');
-      expect(field!.currentValue).toBe('');
+      expect(field!.currentValue).toBe('default');
+      expect((field!.options as ReadonlyArray<{ value: string }>)[0].value).toBe('default');
       const patches = builder.handleFieldChange('agents.codebuddy.sandbox', 'true', makeConfig());
       expect(patches).toEqual([{ key: 'agents.codebuddy.sandbox', value: true }]);
       // 非字符串输入（boolean 口径）走 Boolean(value) 收敛，不静默清配置。
@@ -84,8 +90,16 @@ describe('CodebuddyConfigBuilder', () => {
       expect(builder.handleFieldChange('agents.codebuddy.sandbox', false, makeConfig())).toEqual([
         { key: 'agents.codebuddy.sandbox', value: false },
       ]);
-      const cleared = builder.handleFieldChange('agents.codebuddy.sandbox', '', makeConfig());
+      const cleared = builder.handleFieldChange(
+        'agents.codebuddy.sandbox',
+        'default',
+        makeConfig(),
+      );
       expect(cleared).toEqual([{ key: 'agents.codebuddy.sandbox', value: undefined }]);
+      // 旧卡片残留的空串哨兵同义
+      expect(builder.handleFieldChange('agents.codebuddy.sandbox', '', makeConfig())).toEqual([
+        { key: 'agents.codebuddy.sandbox', value: undefined },
+      ]);
     });
 
     it('permissionMode is a select over the official modes enum (incl. fullAccess)', () => {
@@ -130,9 +144,16 @@ describe('CodebuddyConfigBuilder', () => {
   });
 
   describe('handleFieldChange', () => {
-    it('empty model/thinkingLevel string clears the config (follow CodeBuddy default)', () => {
+    it('empty model/thinkingLevel and thinking default sentinel clear the config', () => {
       const patches = builder.handleFieldChange('agents.codebuddy.model', '   ', makeConfig());
       expect(patches).toEqual([{ key: 'agents.codebuddy.model', value: undefined }]);
+      const sentinel = builder.handleFieldChange(
+        'agents.codebuddy.thinkingLevel',
+        'default',
+        makeConfig(),
+      );
+      expect(sentinel).toEqual([{ key: 'agents.codebuddy.thinkingLevel', value: undefined }]);
+      // 旧卡片残留的空串哨兵同义
       const cleared = builder.handleFieldChange('agents.codebuddy.thinkingLevel', '', makeConfig());
       expect(cleared).toEqual([{ key: 'agents.codebuddy.thinkingLevel', value: undefined }]);
     });
