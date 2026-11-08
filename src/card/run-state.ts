@@ -115,7 +115,14 @@ export type RunBlock =
       timestamp?: string;
       completedAt?: string;
     }
-  | { kind: 'text'; itemId?: string; content: string; timestamp?: string; completedAt?: string }
+  | {
+      kind: 'text';
+      itemId?: string;
+      content: string;
+      timestamp?: string;
+      completedAt?: string;
+      archivedAnswer?: true;
+    }
   | { kind: 'tool'; tool: ToolEntry }
   | {
       kind: 'plan';
@@ -374,6 +381,36 @@ function reduceRunStateInner(state: RunState, event: AgentEvent): RunState {
 
 /** Handle app-server turn_started — records the operation kind (turn vs compact). */
 function reduceTurnStartedEvent(state: RunState, event: TurnStartedEvent): RunState {
+  // DSH goal 轮次：上一轮 result 已把卡片置为 finalizing，但宿主又起了下一轮。
+  // 同一张卡必须回到运行中，并把上一轮回答从 finalAnswer 挪回 blocks——下一轮
+  // 的回答要重新走 promoteFinalAnswer，否则会被上一轮的 finalAnswer 挤掉。
+  if (state.terminal === 'finalizing') {
+    const previous = state.finalAnswer;
+    const blocks =
+      previous && previous.content.trim()
+        ? [
+            ...state.blocks,
+            {
+              kind: 'text' as const,
+              content: previous.content,
+              ...(previous.timestamp ? { timestamp: previous.timestamp } : {}),
+              archivedAnswer: true as const,
+            },
+          ]
+        : state.blocks;
+    return withCappedBlocks(
+      {
+        ...state,
+        terminal: 'running',
+        operationKind: event.operationKind,
+        resultSubtype: undefined,
+        errorMsg: undefined,
+        finalAnswer: undefined,
+      },
+      blocks,
+      'thinking',
+    );
+  }
   return {
     ...state,
     operationKind: event.operationKind,
@@ -854,7 +891,8 @@ function promoteFinalAnswer(
   const fullText = authoritativeText?.trim() ? authoritativeText : undefined;
   for (let i = state.blocks.length - 1; i >= 0; i--) {
     const block = state.blocks[i];
-    if (block.kind !== 'text' || !block.content.trim()) continue;
+    // 已归档的上一轮回答只是历史展示，不能再被下一轮 result 认成"本轮正文"抽走。
+    if (block.kind !== 'text' || block.archivedAnswer || !block.content.trim()) continue;
     return {
       ...state,
       blocks: state.blocks.filter((_, index) => index !== i),

@@ -224,6 +224,55 @@ describe('RunState', () => {
     expect(state.footer).toBeNull();
   });
 
+  it('test_anchor_turn_started_after_result_returns_to_running_and_rotates_final_answer', () => {
+    // DSH goal 轮次：宿主在一轮 result 之后直接起下一轮。卡片必须先回到
+    // running（否则 finalizing 渲染吞掉后续正文），并把上一轮回答挪回
+    // blocks，让第二轮的 promoteFinalAnswer 能落到新的 finalAnswer。
+    const initial = createInitialRunState('run-goal-rounds');
+    const inited = reduceRunState(initial, {
+      type: 'system',
+      subtype: 'init',
+      session_id: 'session-1',
+      cwd: '/home/user/project',
+      model: 'test-model',
+    });
+    const round1 = reduceRunState(inited, {
+      type: 'result',
+      subtype: 'success',
+      session_id: 'session-1',
+      finalAnswerText: 'first answer',
+    });
+    expect(round1.terminal).toBe('finalizing');
+    expect(round1.finalAnswer).toMatchObject({ content: 'first answer' });
+
+    const resumed = reduceRunState(round1, {
+      type: 'turn_started',
+      threadId: 'session-1',
+      turnId: '',
+      operationKind: 'turn',
+    });
+
+    expect(resumed.terminal).toBe('running');
+    expect(resumed.resultSubtype).toBeUndefined();
+    expect(resumed.errorMsg).toBeUndefined();
+    expect(resumed.finalAnswer).toBeUndefined();
+    expect(resumed.footer).toBe('thinking');
+    expect(resumed.blocks).toEqual([
+      expect.objectContaining({ kind: 'text', content: 'first answer' }),
+    ]);
+
+    const round2 = reduceRunState(resumed, {
+      type: 'result',
+      subtype: 'success',
+      session_id: 'session-1',
+      finalAnswerText: 'second answer',
+    });
+    expect(round2.finalAnswer).toMatchObject({ content: 'second answer' });
+    expect(round2.blocks).toEqual([
+      expect.objectContaining({ kind: 'text', content: 'first answer' }),
+    ]);
+  });
+
   it('test_anchor_result_error_event_transitions_to_finalizing_with_error', () => {
     const initial = createInitialRunState('run-1');
     const inited = reduceRunState(initial, {

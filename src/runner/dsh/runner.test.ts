@@ -781,7 +781,12 @@ describe('DshClient / DshRunner integration', () => {
     ]);
     await server.start();
 
-    const runner = new DshRunner({ kind: 'dsh', sessionReader: stubReader, host: server.baseUrl });
+    const runner = new DshRunner({
+      kind: 'dsh',
+      sessionReader: stubReader,
+      host: server.baseUrl,
+      goalQuiescenceMs: 20,
+    });
     const events = await collect(runner.run('hi', { cwd: CWD }));
 
     const goalEvents = events.filter((e) => e.type === 'goal_state');
@@ -831,7 +836,12 @@ describe('DshClient / DshRunner integration', () => {
     server.setMuxFrames(frames.map((ev) => sessionEventFrame(SID, ev)));
     await server.start();
 
-    const runner = new DshRunner({ kind: 'dsh', sessionReader: stubReader, host: server.baseUrl });
+    const runner = new DshRunner({
+      kind: 'dsh',
+      sessionReader: stubReader,
+      host: server.baseUrl,
+      goalQuiescenceMs: 20,
+    });
     return collect(runner.run('hi', { cwd: CWD }));
   }
 
@@ -888,6 +898,234 @@ describe('DshClient / DshRunner integration', () => {
 
     expect(events.filter((e) => e.type === 'goal_state')).toHaveLength(0);
     expect(events.some((e) => e.type === 'result')).toBe(true);
+  });
+
+  /** `turn/start` is the durable boundary that ends the quiescence wait. */
+  function turnStart(turn: number, seq: number): DshSessionEvent {
+    return { type: 'turn/start', seq, time: 1700000000000, data: { turn } };
+  }
+
+  /** A host-driven goal round's injected user message (source.kind='goal'). */
+  function goalRoundMessage(goalId: string, round: number, seq: number): DshSessionEvent {
+    return {
+      type: 'user/message',
+      seq,
+      time: 1700000000000,
+      data: {
+        role: 'user',
+        content: [{ type: 'text', text: `goal round ${round}` }],
+        source: { kind: 'goal', goalId, round },
+      },
+    };
+  }
+
+  function answerMessage(text: string, seq: number): DshSessionEvent {
+    return {
+      type: 'assistant/message',
+      seq,
+      time: 1700000000000,
+      data: {
+        turn: 0,
+        step: 0,
+        message: { role: 'assistant', content: [{ type: 'text', text }] },
+      },
+    };
+  }
+
+  function goalProjectionValue(phase: string, roundsStarted: number): Record<string, unknown> {
+    return {
+      asOfSeq: 0,
+      values: {
+        goal: { current: { goal: { ...GOAL_SNAPSHOT, phase }, roundsStarted } },
+      },
+    };
+  }
+
+  function goalLiveView(activation: string): Record<string, unknown> {
+    return { ...GOAL_SNAPSHOT, phase: 'active', roundsStarted: 1, activation };
+  }
+
+  it('goal 继续时同一条 run 跟到下一轮，goal complete 才收尾', async () => {
+    // 验证什么：turn/end 不是 run 的终点。armed goal 的下一轮是宿主起的，
+    // 桥必须从最后一个 seq 重开 follow，把第二轮继续渲进同一张卡；只有
+    // goal complete（或 disarmed/无下一轮）才发终态 result。
+    server = new FakeDshServer();
+    server.register('session/create', () => ({ ok: true, value: { sessionId: SID } }));
+    server.register('session/prompt', () => ({ ok: true, value: { accepted: true } }));
+    // 调用顺序：1=goal seed，2=latestEventSeq，3=round1 收尾复核，4=round2 收尾复核。
+    let projectionCalls = 0;
+    server.register('session/projections', () => {
+      projectionCalls++;
+      const finished = projectionCalls >= 4;
+      return {
+        ok: true,
+        value: goalProjectionValue(finished ? 'complete' : 'active', finished ? 2 : 1),
+      };
+    });
+    server.register('goals/get', () => ({ ok: true, value: goalLiveView('armed') }));
+
+    const round1: object[] = [
+      { type: 'event', event: textChunk('first round', 1) },
+      { type: 'event', event: answerMessage('first answer', 2) },
+      { type: 'event', event: turnEnd('completed', 3) },
+    ];
+    const round2: object[] = [
+      { type: 'event', event: turnStart(2, 4) },
+      { type: 'event', event: goalRoundMessage('goal-1', 1, 5) },
+      { type: 'event', event: textChunk('second round', 6) },
+      { type: 'event', event: answerMessage('second answer', 7) },
+      { type: 'event', event: turnEnd('completed', 8) },
+    ];
+    // 每次 follow 打开一份快照：第二轮的快照包含全量历史，客户端按 seq 去重，
+    // 正好模拟真实 DSH 在重连/重开 follow 时的 durable 回放。
+    server.setHistorySequence([
+      { records: round1, hasMore: false },
+      { records: [...round1, ...round2], hasMore: false },
+    ]);
+    await server.start();
+
+    const runner = new DshRunner({ kind: 'dsh', sessionReader: stubReader, host: server.baseUrl });
+    const events = await collect(runner.run('hi', { cwd: CWD }));
+
+    const results = events.filter((e) => e.type === 'result');
+    expect(results).toHaveLength(2);
+    expect(results[0]).toMatchObject({ subtype: 'success', finalAnswerText: 'first answer' });
+    expect(results[1]).toMatchObject({ subtype: 'success', finalAnswerText: 'second answer' });
+    // 第二轮开始前必须把卡片从 finalizing 拉回 running（否则后续事件不渲染）。
+    const resumed = events.filter((e) => e.type === 'turn_started');
+    expect(resumed).toHaveLength(1);
+    expect(resumed[0]).toMatchObject({ threadId: SID, operationKind: 'turn' });
+    const secondRoundText = events.find(
+      (e) => e.type === 'assistant' && JSON.stringify(e).includes('second round'),
+    );
+    expect(secondRoundText).toBeDefined();
+    expect(events.indexOf(secondRoundText!)).toBeGreaterThan(events.indexOf(resumed[0]!));
+    // 最后一轮收尾复核看到 complete，卡片才允许写「目标已完成」。
+    const lastGoal = events.filter((e) => e.type === 'goal_state').at(-1);
+    expect(lastGoal).toMatchObject({ known: true, goal: { phase: 'complete', roundsStarted: 2 } });
+  });
+
+  it('goal armed→disarmed：本轮结束后收尾，不再等下一轮', async () => {
+    // 验证什么：/stop、宿主重启、agent error 之后 durable phase 仍是 active，
+    // 但 goals/get 的 activation 已 disarmed——driver 不会再起轮，run 必须
+    // 在本轮结束后收尾，不能空等 quiescence 窗口。
+    server = new FakeDshServer();
+    server.register('session/create', () => ({ ok: true, value: { sessionId: SID } }));
+    server.register('session/prompt', () => ({ ok: true, value: { accepted: true } }));
+    server.register('session/projections', () => ({
+      ok: true,
+      value: goalProjectionValue('active', 1),
+    }));
+    let activationCalls = 0;
+    server.register('goals/get', () => {
+      activationCalls++;
+      return { ok: true, value: goalLiveView(activationCalls === 1 ? 'armed' : 'disarmed') };
+    });
+    server.setHistorySequence([
+      {
+        records: [
+          { type: 'event', event: textChunk('working', 1) },
+          { type: 'event', event: turnEnd('completed', 2) },
+        ],
+        hasMore: false,
+      },
+    ]);
+    await server.start();
+
+    const runner = new DshRunner({
+      kind: 'dsh',
+      sessionReader: stubReader,
+      host: server.baseUrl,
+      goalQuiescenceMs: 20,
+    });
+    const events = await collect(runner.run('hi', { cwd: CWD }));
+
+    expect(events.filter((e) => e.type === 'result')).toHaveLength(1);
+    expect(events.filter((e) => e.type === 'turn_started')).toHaveLength(0);
+    const lastGoal = events.filter((e) => e.type === 'goal_state').at(-1);
+    expect(lastGoal).toMatchObject({
+      known: true,
+      goal: { phase: 'active', activation: 'disarmed' },
+    });
+  });
+
+  it('goal armed 但宿主没起下一轮：quiescence 窗口后收尾', async () => {
+    // 验证什么：activation 读不到或 driver 异常时，不能把 run 永久挂在
+    // follow 上。窗口内没有 turn/start 就按普通终态收尾（桥侧按 goal_continuing
+    // 渲染），用户至少能拿到停止按钮。
+    server = new FakeDshServer();
+    server.register('session/create', () => ({ ok: true, value: { sessionId: SID } }));
+    server.register('session/prompt', () => ({ ok: true, value: { accepted: true } }));
+    server.register('session/projections', () => ({
+      ok: true,
+      value: goalProjectionValue('active', 1),
+    }));
+    server.register('goals/get', () => ({ ok: true, value: goalLiveView('armed') }));
+    server.setHistorySequence([
+      {
+        records: [
+          { type: 'event', event: textChunk('working', 1) },
+          { type: 'event', event: turnEnd('completed', 2) },
+        ],
+        hasMore: false,
+      },
+    ]);
+    await server.start();
+
+    const runner = new DshRunner({
+      kind: 'dsh',
+      sessionReader: stubReader,
+      host: server.baseUrl,
+      goalQuiescenceMs: 30,
+    });
+    const events = await collect(runner.run('hi', { cwd: CWD }));
+
+    expect(events.filter((e) => e.type === 'result')).toHaveLength(1);
+    // 没等到下一轮就收尾：不得提前发 turn_started 把卡片伪造成运行中。
+    expect(events.filter((e) => e.type === 'turn_started')).toHaveLength(0);
+  });
+
+  it('cross-round follow can be stopped while waiting for the next goal turn', async () => {
+    // 验证什么：跟随 goal 的 run 仍由主 abort 控制。/stop 落在"等下一轮"的
+    // 窗口里也必须立刻结束，不能被 quiescence 定时器或 follow 流挂住。
+    server = new FakeDshServer();
+    server.register('session/create', () => ({ ok: true, value: { sessionId: SID } }));
+    server.register('session/prompt', () => ({ ok: true, value: { accepted: true } }));
+    server.register('session/projections', () => ({
+      ok: true,
+      value: goalProjectionValue('active', 1),
+    }));
+    server.register('goals/get', () => ({ ok: true, value: goalLiveView('armed') }));
+    server.setHistorySequence([
+      {
+        records: [
+          { type: 'event', event: textChunk('working', 1) },
+          { type: 'event', event: turnEnd('completed', 2) },
+          { type: 'event', event: turnStart(2, 3) },
+        ],
+        hasMore: false,
+      },
+    ]);
+    await server.start();
+
+    const runner = new DshRunner({
+      kind: 'dsh',
+      sessionReader: stubReader,
+      host: server.baseUrl,
+      goalQuiescenceMs: 5_000,
+    });
+    const events: AgentEvent[] = [];
+    const running = (async () => {
+      for await (const ev of runner.run('hi', { cwd: CWD })) events.push(ev);
+    })();
+
+    await waitFor(() => events.some((e) => e.type === 'turn_started'));
+    await runner.stop({ immediate: true });
+    await running;
+
+    const results = events.filter((e) => e.type === 'result');
+    expect(results.at(-1)).toMatchObject({ subtype: 'interrupted' });
+    expect(runner.isRunning).toBe(false);
   });
 
   it('result usage sums a multi-step turn instead of reporting the last sampling', async () => {
