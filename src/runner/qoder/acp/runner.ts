@@ -70,6 +70,19 @@ export const QODER_APPROVAL_KINDS: AcpApprovalKinds = {
 };
 
 /**
+ * /status 里上下文窗口的人话格式：1000000 → '1M'、500000 → '500K'
+ * （十进制口径，与 Qoder TUI 的 1M 标注一致）；百万以下带一位小数。
+ */
+export function formatContextWindow(n: number): string {
+  if (n >= 1_000_000) {
+    const m = Math.round((n / 1_000_000) * 10) / 10;
+    return `${m}M`;
+  }
+  if (n >= 1000) return `${Math.round(n / 1000)}K`;
+  return String(n);
+}
+
+/**
  * ACP 连接的 spawn 参数：`--acp` + 模型/推理强度/上下文窗口旗标（stream-json
  * 时代验证过的下发通道），未配置不下发。纯函数（测试钉住 wire 形状）。
  */
@@ -182,7 +195,9 @@ export class QoderAcpRunner extends BaseAcpRunner<QoderAcpTranslator> {
       extras: {
         mode: 'acp',
         permissionMode: this.permissionMode,
-        ...(this.contextWindow !== undefined ? { contextWindow: String(this.contextWindow) } : {}),
+        ...(this.contextWindow !== undefined
+          ? { contextWindow: formatContextWindow(this.contextWindow) }
+          : {}),
       },
     };
   }
