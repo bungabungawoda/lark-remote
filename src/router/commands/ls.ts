@@ -92,41 +92,53 @@ function lsCompareNames(a: string, b: string): number {
   return a.localeCompare(b);
 }
 
-function lsCompareItemNames(a: { name: string }, b: { name: string }): number {
-  return a.name.localeCompare(b.name);
-}
-
-/** readdirSync + statPath 分类，返回已排序的 dirs / files。 */
-function lsReadEntries(targetDir: string): {
-  dirs: string[];
-  files: Array<{ name: string; size?: number }>;
-} {
+/**
+ * readdirSync 分类，返回已排序的 dirs / 文件名。
+ *
+ * 分类只信 Dirent（isDirectory/isFile），仅对两者都为 false 的条目（符号链接、
+ * d_type 未知的文件系统）statPath 兜底——主流文件系统零 stat。文件大小不在这里
+ * 取：分页只展示 30 条，size 由 lsCard 在分页后只对当前页文件补 stat，万级
+ * 目录不再每次交互付出全量 statSync。
+ */
+function lsScanEntries(targetDir: string): { dirs: string[]; files: string[] } {
   const entries = fs.readdirSync(targetDir, { withFileTypes: true });
   const dirs: string[] = [];
-  const files: Array<{ name: string; size?: number }> = [];
+  const files: string[] = [];
   for (const entry of entries) {
     let isDir = entry.isDirectory();
-    let size: number | undefined;
-    if (!isDir) {
+    let isFile = entry.isFile();
+    if (!isDir && !isFile) {
+      // Dirent 类型未知（符号链接 / DT_UNKNOWN）：stat 定 real kind，与旧口径一致。
       const resolution = statPath(path.join(targetDir, entry.name));
       if (resolution.ok) {
         isDir = resolution.stat.isDirectory();
-        if (!isDir) size = resolution.stat.size;
+        isFile = !isDir;
       }
+      // stat 失败（竞态删除等）：按旧行为归入 files（渲染时 size 缺省）。
     }
     if (isDir) dirs.push(entry.name);
-    else files.push({ name: entry.name, size });
+    else files.push(entry.name);
   }
   dirs.sort(lsCompareNames);
-  files.sort(lsCompareItemNames);
+  files.sort(lsCompareNames);
   return { dirs, files };
 }
 
-function lsBuildItems(dirs: string[], files: Array<{ name: string; size?: number }>): LsItem[] {
+function lsBuildItems(dirs: string[], fileNames: string[]): LsItem[] {
   const allItems: LsItem[] = [];
   for (const name of dirs) allItems.push({ name, isDir: true });
-  for (const file of files) allItems.push({ name: file.name, isDir: false, size: file.size });
+  for (const name of fileNames) allItems.push({ name, isDir: false });
   return allItems;
+}
+
+/** 只对当前页的文件补 stat 拿 size（按钮标签展示用）；失败保持 undefined。 */
+function lsFillPageFileSizes(pageFiles: LsItem[], targetDir: string): void {
+  for (const item of pageFiles) {
+    const resolution = statPath(path.join(targetDir, item.name));
+    if (resolution.ok && !resolution.stat.isDirectory()) {
+      item.size = resolution.stat.size;
+    }
+  }
 }
 
 function lsFilterItems(allItems: LsItem[], ql: string | undefined): LsItem[] {
@@ -329,7 +341,7 @@ function lsCard(opts: {
   filter: string | undefined;
 }): CommandResult {
   const { targetDir, cwd, browseRoot, offset, filter } = opts;
-  const { dirs, files } = lsReadEntries(targetDir);
+  const { dirs, files } = lsScanEntries(targetDir);
   const allItems = lsBuildItems(dirs, files);
   const ql = filter?.toLowerCase();
   const visibleItems = lsFilterItems(allItems, ql);
@@ -341,6 +353,7 @@ function lsCard(opts: {
     LS_PAGE_SIZE,
   );
   const { pageDirs, pageFiles } = lsPartitionPage(pageItems);
+  lsFillPageFileSizes(pageFiles, targetDir);
 
   const headerElements = lsHeaderButtons(targetDir, cwd, browseRoot, safeOffset, filter);
   const elements: object[] = [

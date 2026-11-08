@@ -15,11 +15,54 @@ import { sleep } from '../common/sleep.js';
 import { isTransientTransportError } from '../error-classification.js';
 import axios from 'axios';
 import fs from 'node:fs';
+import http from 'node:http';
+import https from 'node:https';
 import { bestEffortUnlink } from '../common/fs.js';
 import { displayName } from '../platform/path.js';
 import os from 'node:os';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
+
+/**
+ * 直连 open.feishu.cn REST（上传后的媒体消息发送、tenant_access_token）共用
+ * axios 实例：默认实例 keepAlive=false，每个文件都要重新付 TCP+TLS 握手
+ * （100–300ms/次）；批量发送多文件时逐文件握手。keepAlive agent 复用连接。
+ * 卡片/消息主链路走 @larksuite/channel SDK 内部客户端，不在本仓范围。
+ */
+const keepAliveHttpAgent = new http.Agent({ keepAlive: true });
+const keepAliveHttpsAgent = new https.Agent({ keepAlive: true });
+const directFeishuApi = axios.create({
+  httpAgent: keepAliveHttpAgent,
+  httpsAgent: keepAliveHttpsAgent,
+});
+
+/**
+ * 入站媒体并行下载的并发上限。资源间无依赖，串行会让多图消息的总等待时间
+ * 线性叠加（单资源超时 5 分钟）；限 3 路兼顾延迟与对端带宽/限流，逐资源的
+ * 失败归属与结果顺序保持不变。
+ */
+const INBOUND_DOWNLOAD_CONCURRENCY = 3;
+
+/** 有界并发 map：结果按输入顺序排列（worker 池固定大小，不整批 fan-out）。 */
+async function mapWithConcurrency<T, R>(
+  items: readonly T[],
+  limit: number,
+  fn: (item: T) => Promise<R>,
+): Promise<R[]> {
+  const results = new Array<R>(items.length);
+  let next = 0;
+  const workerCount = Math.max(1, Math.min(limit, items.length));
+  const workers = Array.from({ length: workerCount }, async () => {
+    for (;;) {
+      const index = next;
+      next += 1;
+      if (index >= items.length) return;
+      results[index] = await fn(items[index]);
+    }
+  });
+  await Promise.all(workers);
+  return results;
+}
 
 /**
  * dedup 缓存 TTL（毫秒）。控制飞书事件去重窗口，全局作用于 message + cardAction。
@@ -593,10 +636,12 @@ export class FeishuConnector {
   ): Promise<InboundMediaPayload> {
     const maxBytes = (opts?.maxFileSizeMb ?? DEFAULT_INBOUND_MEDIA_MAX_SIZE_MB) * 1024 * 1024;
     const timeoutMs = opts?.downloadTimeoutMs ?? RESOURCE_DOWNLOAD_TIMEOUT_MS;
-    const media: InboundMediaItem[] = [];
-    const failures: InboundMediaFailure[] = [];
 
-    for (const res of msg.resources) {
+    // 单资源下载：成功返回 media 项，失败/超限返回 failure 项（互斥）。
+    // 逐资源 try/catch 语义与旧串行版一致：单个失败不影响其他资源。
+    const downloadOne = async (
+      res: InboundMediaMessage['resources'][number],
+    ): Promise<{ media?: InboundMediaItem; failure?: InboundMediaFailure }> => {
       const tmpPath = path.join(os.tmpdir(), `lark-remote-inbound-${randomUUID()}`);
       try {
         const { contentType, bytesWritten } = await withTimeout(
@@ -608,25 +653,28 @@ export class FeishuConnector {
         if (bytesWritten > maxBytes) {
           bestEffortUnlink(tmpPath);
           const limitMb = maxBytes / (1024 * 1024);
-          failures.push({
+          return {
+            failure: {
+              kind: res.kind,
+              fileName: res.fileName,
+              // 飞书侧 >100MB 必须 Range 分片（SDK 不分片），到上限就是下不动：
+              // 提示写清楚，避免用户以为"再放大上限就能存"（inbound-message-matrix.md §4 第 4 条）。
+              reason:
+                `超过 ${limitMb}MB 大小限制` +
+                (limitMb >= 100 ? '（飞书 >100MB 的文件需分片下载，暂不支持）' : ''),
+            },
+          };
+        }
+        return {
+          media: {
+            type: res.type,
             kind: res.kind,
             fileName: res.fileName,
-            // 飞书侧 >100MB 必须 Range 分片（SDK 不分片），到上限就是下不动：
-            // 提示写清楚，避免用户以为"再放大上限就能存"（inbound-message-matrix.md §4 第 4 条）。
-            reason:
-              `超过 ${limitMb}MB 大小限制` +
-              (limitMb >= 100 ? '（飞书 >100MB 的文件需分片下载，暂不支持）' : ''),
-          });
-          continue;
-        }
-        media.push({
-          type: res.type,
-          kind: res.kind,
-          fileName: res.fileName,
-          mimeType: contentType,
-          durationMs: res.durationMs,
-          tempPath: tmpPath,
-        });
+            mimeType: contentType,
+            durationMs: res.durationMs,
+            tempPath: tmpPath,
+          },
+        };
       } catch (err) {
         // 超时不在这里删文件：上面已把清理挂到底层传输的 settle 上。
         if (!(err instanceof ResourceTimeoutError)) bestEffortUnlink(tmpPath);
@@ -634,12 +682,27 @@ export class FeishuConnector {
           `[feishu] downloadResource failed fileKey=${res.fileKey} type=${res.type}:`,
           (err as Error).message,
         );
-        failures.push({
-          kind: res.kind,
-          fileName: res.fileName,
-          reason: `下载失败: ${(err as Error).message}${MERGE_FORWARD_HINT[msg.rawContentType] ?? ''}`,
-        });
+        return {
+          failure: {
+            kind: res.kind,
+            fileName: res.fileName,
+            reason: `下载失败: ${(err as Error).message}${MERGE_FORWARD_HINT[msg.rawContentType] ?? ''}`,
+          },
+        };
       }
+    };
+
+    // 并行下载（限流）：结果按资源顺序摊平，media/failures 的相对顺序与串行版一致。
+    const outcomes = await mapWithConcurrency(
+      msg.resources,
+      INBOUND_DOWNLOAD_CONCURRENCY,
+      downloadOne,
+    );
+    const media: InboundMediaItem[] = [];
+    const failures: InboundMediaFailure[] = [];
+    for (const outcome of outcomes) {
+      if (outcome.media) media.push(outcome.media);
+      else if (outcome.failure) failures.push(outcome.failure);
     }
 
     return {
@@ -879,7 +942,7 @@ export class FeishuConnector {
     );
 
     // timeout 30s。
-    const sendResp = await axios.post(
+    const sendResp = await directFeishuApi.post(
       'https://open.feishu.cn/open-apis/im/v1/messages',
       {
         receive_id: chatId,
@@ -1010,7 +1073,7 @@ export class FeishuConnector {
 
   private async fetchTenantAccessToken(): Promise<string> {
     // timeout 30s on the token request.
-    const tokenResp = await axios.post(
+    const tokenResp = await directFeishuApi.post(
       'https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal',
       {
         app_id: this.appId,

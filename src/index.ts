@@ -919,6 +919,11 @@ async function main() {
   const app = wire(boot);
   const { config, logger, connector, startupContactStore, binder } = app;
 
+  // run 写回（init/turn_started/result）落盘走 1.5s 去抖；退出时同步收口，
+  // 防止最近一次指针更新滞留窗口内（'exit' 钩子只能跑同步代码，
+  // atomicWriteJson 是同步写，覆盖 SIGINT/SIGTERM/正常退出/uncaughtException）。
+  process.on('exit', () => app.sessionStore.flushPendingPersist());
+
   try {
     await connector.connect();
   } catch (err) {

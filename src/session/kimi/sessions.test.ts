@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -955,6 +955,109 @@ describe('KimiSessionReader', () => {
       makeWorkDir('other-project'),
     );
     expect(records).toEqual([]);
+  });
+
+  it('createCompactionRecordTracker: 首调全量，之后增量只读新增字节', () => {
+    const workDir = makeWorkDir('project');
+    const sessionId = 'sess-tracker';
+    const sessionDir = path.join(kimiDir, 'sessions', sessionId);
+    const agentsDir = path.join(sessionDir, 'agents', 'main');
+    fs.mkdirSync(agentsDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(sessionDir, 'state.json'),
+      JSON.stringify({ version: 2, cwd: workDir }),
+    );
+    const wirePath = path.join(agentsDir, 'wire.jsonl');
+    fs.writeFileSync(
+      wirePath,
+      '{"type":"full_compaction.begin","source":"manual","time":1000}\n' +
+        '{"type":"usage.record","model":"m","usage":{"inputOther":1,"output":2},"time":1100}\n',
+    );
+    addIndexEntry(sessionId, sessionDir, workDir);
+    const reader = new KimiSessionReader(kimiDir);
+    const tracker = reader.createCompactionRecordTracker(sessionId, workDir);
+    expect(tracker).not.toBeNull();
+
+    const readSpy = vi.spyOn(fs, 'readSync');
+    try {
+      // 首调 = 全量历史（覆盖 baseline 捕获后、tracker 创建前落地的记录）。
+      const first = tracker!.records();
+      expect(first).toHaveLength(1);
+      expect(first[0]).toEqual({ type: 'full_compaction.begin', source: 'manual', time: 1000 });
+      const firstEnd = fs.statSync(wirePath).size;
+
+      // 模拟压缩进行中：追加进度行（mtime 变化，旧路径的 mtime 缓存必然失效）。
+      fs.appendFileSync(
+        wirePath,
+        '{"type":"full_compaction.complete","time":2000}\n' +
+          '{"type":"usage.record","model":"m","usage":{"inputOther":3,"output":4},"time":2100}\n',
+      );
+      const second = tracker!.records();
+      expect(second).toHaveLength(2);
+      expect(second[1]).toEqual({ type: 'full_compaction.complete', time: 2000 });
+
+      // 增量证明：第二次读从上次 EOF 的字节偏移开始，而不是从 0 重扫。
+      // readSync 有 (fd, buffer, opts?) 重载在前，位置参数取索引 4 需绕过元组推断。
+      const positions = readSpy.mock.calls.map(
+        (call) => (call as unknown as unknown[])[4] as number,
+      );
+      const afterFirst = positions.filter((p) => p === 0).length;
+      expect(positions.some((p) => p === firstEnd)).toBe(true);
+      expect(afterFirst).toBeLessThan(positions.length);
+
+      // 无新增数据：记录列表稳定，不产生重复。
+      const third = tracker!.records();
+      expect(third).toHaveLength(2);
+    } finally {
+      readSpy.mockRestore();
+    }
+  });
+
+  it('createCompactionRecordTracker: 文件被截断重写时从头重建', () => {
+    const workDir = makeWorkDir('project');
+    const sessionId = 'sess-tracker-reset';
+    const sessionDir = path.join(kimiDir, 'sessions', sessionId);
+    const agentsDir = path.join(sessionDir, 'agents', 'main');
+    fs.mkdirSync(agentsDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(sessionDir, 'state.json'),
+      JSON.stringify({ version: 2, cwd: workDir }),
+    );
+    const wirePath = path.join(agentsDir, 'wire.jsonl');
+    fs.writeFileSync(wirePath, '{"type":"full_compaction.begin","source":"auto","time":1}\n');
+    addIndexEntry(sessionId, sessionDir, workDir);
+
+    const tracker = new KimiSessionReader(kimiDir).createCompactionRecordTracker(
+      sessionId,
+      workDir,
+    )!;
+    expect(tracker.records()).toHaveLength(1);
+
+    // 截断重写（比原文件短）：tracker 必须放弃旧 offset，重建而不是漏读/错读。
+    fs.writeFileSync(wirePath, '{"type":"full_compaction.complete","time":9}\n');
+    const records = tracker.records();
+    expect(records).toHaveLength(1);
+    expect(records[0]).toEqual({ type: 'full_compaction.complete', time: 9 });
+  });
+
+  it('createCompactionRecordTracker: cwd 守卫不匹配返回 null', () => {
+    const workDir = makeWorkDir('project');
+    const sessionId = 'sess-tracker-guard';
+    const sessionDir = path.join(kimiDir, 'sessions', sessionId);
+    const agentsDir = path.join(sessionDir, 'agents', 'main');
+    fs.mkdirSync(agentsDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(sessionDir, 'state.json'),
+      JSON.stringify({ version: 2, cwd: workDir }),
+    );
+    fs.writeFileSync(path.join(agentsDir, 'wire.jsonl'), '{}\n');
+    addIndexEntry(sessionId, sessionDir, workDir);
+
+    const tracker = new KimiSessionReader(kimiDir).createCompactionRecordTracker(
+      sessionId,
+      makeWorkDir('other-project'),
+    );
+    expect(tracker).toBeNull();
   });
 });
 

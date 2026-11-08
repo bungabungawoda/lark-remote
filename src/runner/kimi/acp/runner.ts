@@ -158,6 +158,14 @@ function formatIdleWindow(ms: number): string {
 /** Duck-typed capability on the session reader for the completion-record polling. */
 interface CompactionRecordReader {
   readCompactionRecords?(sessionId: string, cwd: string): CompactionRecordLike[];
+  /**
+   * 增量追踪器（kimi reader 实现）：轮询期间免全量重读。可选——未实现时
+   * 回退一次性 readCompactionRecords（每秒全量读 + 全量 parse 的旧口径）。
+   */
+  createCompactionRecordTracker?(
+    sessionId: string,
+    cwd: string,
+  ): { records(): CompactionRecordLike[] } | null;
 }
 
 /**
@@ -508,6 +516,21 @@ export class KimiAcpRunner extends BaseAcpRunner<KimiAcpTranslator> {
     const client = this.currentClient;
     const isCurrent = (): boolean => this.isCurrentTurn(generation, client);
     const compactionReader = (this.sessionReader as CompactionRecordReader).readCompactionRecords;
+    const readAllRecords: (sessionId: string, cwd: string) => CompactionRecordLike[] =
+      compactionReader ? compactionReader.bind(this.sessionReader) : () => [];
+    // 轮询快照：优先增量 tracker（首调全量、之后只读新增字节，见
+    // KimiSessionReader.createCompactionRecordTracker），reader 未实现 tracker 时
+    // 回退一次性全量 readCompactionRecords。首调全量保证 baseline 捕获与 prompt
+    // fire 之间落地的记录不被漏计。
+    const tracker =
+      (this.sessionReader as CompactionRecordReader).createCompactionRecordTracker?.call(
+        this.sessionReader,
+        sessionId,
+        opts.cwd,
+      ) ?? null;
+    const snapshot: () => CompactionRecordLike[] = tracker
+      ? () => tracker.records()
+      : () => readAllRecords(sessionId, opts.cwd);
     // Derived from the pre-fire snapshot captured by compactBaseline() —
     // re-reading here would race the prompt fire and misclassify new records.
     const baselineTerminalCount =
@@ -524,7 +547,7 @@ export class KimiAcpRunner extends BaseAcpRunner<KimiAcpTranslator> {
           // §5.4 可选防线（日志探针）：prompt settle 后既无新 begin 也无新
           // terminal → compact 未被引擎接受（可能已在跑或被拒绝）。不解析
           // "already running" 文本、不影响卡片。
-          const totalNow = compactionReader.call(this.sessionReader, sessionId, opts.cwd).length;
+          const totalNow = snapshot().length;
           if (totalNow === baselineTotalCount) {
             getLogger().warn(
               `[${this.logTag}] compact 未被引擎接受（无新 begin/terminal 记录，可能已在跑或被拒绝）`,
@@ -554,7 +577,7 @@ export class KimiAcpRunner extends BaseAcpRunner<KimiAcpTranslator> {
     // 就给出 compact 语义终态，不等 session/prompt 结算——否则挂住的 prompt 会把
     // 用户拖到通用 turnIdleTimeout（默认 30min），拿到的还是一个语义泛化的 turn
     // 超时，而不是「压缩状态未知 / 可重试」。
-    void this.waitForCompactionTerminal(compactionReader, opts, baselineTerminalCount).then(
+    void this.waitForCompactionTerminal(snapshot, opts, baselineTerminalCount).then(
       async (outcome) => {
         if (!isCurrent()) return;
         // outcome === 'stopped'：不推 result，由 consumeTurn 的 interrupted 兜底。
@@ -653,20 +676,19 @@ export class KimiAcpRunner extends BaseAcpRunner<KimiAcpTranslator> {
    * wakeWaiters），避免数分钟的压缩被 consumeTurn 滚动空闲看门狗误杀。
    */
   private async waitForCompactionTerminal(
-    reader: (sessionId: string, cwd: string) => CompactionRecordLike[],
+    snapshot: () => CompactionRecordLike[],
     opts: SpawnOptions,
     baselineTerminalCount: number,
   ): Promise<'completed' | 'cancelled' | 'stopped' | 'unknown'> {
-    const sessionId = this.activeSessionId ?? opts.sessionId ?? '';
     let lastActivityAt = Date.now();
-    let lastTotalCount = reader.call(this.sessionReader, sessionId, opts.cwd).length;
+    let lastTotalCount = snapshot().length;
     while (true) {
       if (this.forceFinish || this.stopRequested) return 'stopped';
       // turn 已死亡（failTurn，如连接关闭）时不再轮询：forceFinish 与
       // stopRequested 均为 false 的死亡路径会让循环空转到 10 分钟沉默超时，
       // 结果还被 isCurrent() 丢弃——纯浪费的每秒文件读。
       if (!this._isRunning) return 'unknown';
-      const records = reader.call(this.sessionReader, sessionId, opts.cwd);
+      const records = snapshot();
       if (records.length !== lastTotalCount) {
         lastTotalCount = records.length;
         lastActivityAt = Date.now();

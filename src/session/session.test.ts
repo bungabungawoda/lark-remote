@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -110,6 +110,48 @@ describe('SessionStore persistence', () => {
       sessionCwds: {},
       arrivalSessions: {},
     });
+  });
+
+  it("persist:'soon' 去抖窗口内的多次 run 写回合并为一次落盘", () => {
+    vi.useFakeTimers();
+    try {
+      const filePath = path.join(tmpDir, 'last-session.json');
+      const store = new SessionStore(filePath);
+      const writeSpy = vi.spyOn(fs, 'writeFileSync');
+
+      // 一次 run 生命周期内的 3 次写回（init → turn_started → result）。
+      store.setSessionIdAndCwd('u1', 'claude', 's1', '/tmp/a', undefined, { persist: 'soon' });
+      store.setSessionIdAndCwd('u1', 'claude', 's2', '/tmp/a', undefined, { persist: 'soon' });
+      store.setSessionIdAndCwd('u1', 'claude', 's3', '/tmp/a', undefined, { persist: 'soon' });
+      // 窗口内不落盘。
+      expect(writeSpy).not.toHaveBeenCalled();
+      expect(fs.existsSync(filePath)).toBe(false);
+
+      vi.advanceTimersByTime(1_500);
+      // 合并为一次（最后一次写回的状态）。
+      expect(writeSpy).toHaveBeenCalledTimes(1);
+      const parsed = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
+      expect(parsed.u1.sessions.claude).toBe('s3');
+      writeSpy.mockRestore();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('flushPendingPersist 立即收口去抖中的写回；用户命令路径不受去抖影响', () => {
+    const filePath = path.join(tmpDir, 'last-session.json');
+    const store = new SessionStore(filePath);
+
+    store.setSessionIdAndCwd('u1', 'claude', 's1', '/tmp/a', undefined, { persist: 'soon' });
+    expect(fs.existsSync(filePath)).toBe(false);
+    store.flushPendingPersist();
+    expect(JSON.parse(fs.readFileSync(filePath, 'utf-8')).u1.sessions.claude).toBe('s1');
+    // 幂等：无 pending 时 no-op。
+    expect(() => store.flushPendingPersist()).not.toThrow();
+
+    // 用户命令路径（默认 'now'）仍然即时落盘，不经去抖。
+    store.setCwd('u1', '/tmp/b');
+    expect(JSON.parse(fs.readFileSync(filePath, 'utf-8')).u1.cwd).toBe('/tmp/b');
   });
 
   it('restores cwd from disk on construction', () => {

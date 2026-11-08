@@ -21,6 +21,7 @@
  */
 
 import { randomUUID } from 'node:crypto';
+import fs from 'node:fs';
 import WebSocket from 'ws';
 import { dshArgs, extractDshToken } from '../../dsh/protocol.js';
 import { getLogger } from '../../logger/index.js';
@@ -185,6 +186,21 @@ async function readUnaryBody(method: string, res: Response): Promise<unknown> {
 
 /** Backoff between mux reconnects to avoid a hot loop on a dropping server. */
 const RECONNECT_BACKOFF_MS = 200;
+/**
+ * 重连退避上限。指数退避到该值后保持不变：宿主宕机/端口失效而 run 在途时，
+ * 重连从固定 200ms 的 ~5 次/秒降到封顶后的 ~12 次/分钟——每次重连都是一次
+ * WS 握手 + follow 快照重放（+ 凭据 stat），不能按秒级风暴打满。
+ */
+const RECONNECT_BACKOFF_MAX_MS = 5_000;
+
+/**
+ * 第 `attempt` 次重连（0 起）前的等待时长：200ms 起指数翻倍，封顶 5s。
+ * attempt 在收到任何一帧数据后归零（连接恢复即恢复正常节奏）。
+ */
+export function reconnectBackoffMs(attempt: number): number {
+  const backoff = RECONNECT_BACKOFF_MS * 2 ** Math.max(0, attempt);
+  return Math.min(RECONNECT_BACKOFF_MAX_MS, backoff);
+}
 
 /**
  * `goals/get` 的探测预算。
@@ -587,6 +603,8 @@ export class DshClient {
   private readonly webSocketImpl: WebSocketFactory;
   private readonly requestTimeoutMs: number;
   private cookiePromise?: Promise<string | undefined>;
+  /** (mtime, size) 指纹命中时复用的 signing secret，见 resolveCredentialsSecret。 */
+  private secretCache?: { mtimeMs: number; size: number; secret: Buffer };
 
   constructor(baseUrl: string, options: DshClientOptions = {}) {
     this.baseUrl = baseUrl.replace(/\/$/, '');
@@ -602,11 +620,14 @@ export class DshClient {
   }
 
   /**
-   * Resolve a DSH browser cookie. The durable credentials file is read on every
-   * call so a rotated signing secret is picked up without restarting
-   * lark-remote. Token bootstrap remains a fallback for hosts without that
-   * file; unlike `/connect`, the index handshake mints a v1 cookie that DSH
-   * accepts for API and WebSocket requests across its own restarts.
+   * Resolve a DSH browser cookie. The durable credentials file is re-read only
+   * when its (mtime, size) fingerprint changes — an unchanged file reuses the
+   * cached secret, so a rotated signing secret is still picked up without
+   * restarting lark-remote while steady-state requests cost a single `stat`
+   * instead of stat+read+YAML.parse. Token bootstrap remains a fallback for
+   * hosts without that file; unlike `/connect`, the index handshake mints a v1
+   * cookie that DSH accepts for API and WebSocket requests across its own
+   * restarts.
    */
   private async authCookie(force = false, signal?: AbortSignal): Promise<string | undefined> {
     const fromCredentials = await this.cookieFromCredentials();
@@ -656,10 +677,16 @@ export class DshClient {
     return this.cookiePromise;
   }
 
-  /** Mint a v1 browser cookie from DSH's durable signing secret. */
+  /**
+   * Mint a v1 browser cookie from DSH's durable signing secret.
+   *
+   * secret 走 (mtime, size) 指纹缓存：凭据文件由 DSH 独占写入（轮换 = 重写文件
+   * → mtime 必变 → 下次调用自动重读），命中时省掉 read + YAML.parse。一次 run
+   * 的几十上百个 unary + mux（重）连原本每次都要完整读盘解析，现在各付一次 stat。
+   */
   private async cookieFromCredentials(): Promise<string | undefined> {
     try {
-      const secret = await this.readCredentials(this.credentialsFile);
+      const secret = await this.resolveCredentialsSecret();
       return mintDshBrowserCookie(this.baseUrl, secret, this.now(), this.cookieLifetimeMs);
     } catch (err) {
       if (isDshCredentialsNotFound(err)) return undefined;
@@ -675,6 +702,24 @@ export class DshClient {
         `DSH auth credentials file ${this.credentialsFile}: ${(err as Error).message}`,
       );
     }
+  }
+
+  /** 指纹未变时复用缓存的 signing secret；变化（或首读）时重新读盘解析。 */
+  private async resolveCredentialsSecret(): Promise<Buffer> {
+    // stat 只作缓存闸门：stat 失败（含 ENOENT）不自行抛——照旧调用 readCredentials，
+    // 由它产出真实错误（注入的测试 reader 不 stat，错误契约必须保持不变）。
+    const stat = await fs.promises.stat(this.credentialsFile).catch(() => undefined);
+    if (
+      stat &&
+      this.secretCache &&
+      this.secretCache.mtimeMs === stat.mtimeMs &&
+      this.secretCache.size === stat.size
+    ) {
+      return this.secretCache.secret;
+    }
+    const secret = await this.readCredentials(this.credentialsFile);
+    this.secretCache = stat ? { mtimeMs: stat.mtimeMs, size: stat.size, secret } : undefined;
+    return secret;
   }
 
   /**
@@ -1283,10 +1328,16 @@ export class DshClient {
       promptRequestId,
       authRefreshAttempted: false,
     };
+    // 指数退避：连续无进展的重连轮数（收到任何一帧即归零）。宿主宕机而 run
+    // 在途时，固定 200ms 会造成每秒 ~5 次「握手+快照重放」风暴；指数退避把
+    // 稳态压到 5s/次，瞬断仍按第一档快速恢复。
+    let failedReconnects = 0;
     while (!signal.aborted) {
+      let receivedFrame = false;
       try {
         for await (const frame of this.followStream(sessionId, signal)) {
           if (signal.aborted) return;
+          receivedFrame = true;
           state.authRefreshAttempted = false;
           for (const ev of await sessionFrameEvents(this, state, frame, signal)) {
             const step = advanceSessionEvent(state, ev);
@@ -1316,7 +1367,10 @@ export class DshClient {
         );
       }
       if (signal.aborted) return;
-      await new Promise((resolve) => setTimeout(resolve, RECONNECT_BACKOFF_MS));
+      // 本轮拿到过帧 = 连接曾恢复：退避归零后按首轮节奏重连（干净断开同理）。
+      const backoff = reconnectBackoffMs(receivedFrame ? 0 : failedReconnects);
+      failedReconnects = receivedFrame ? 0 : failedReconnects + 1;
+      await new Promise((resolve) => setTimeout(resolve, backoff));
     }
   }
 

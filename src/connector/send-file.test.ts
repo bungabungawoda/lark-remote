@@ -17,11 +17,16 @@ vi.mock('@larksuite/channel', () => ({
   }),
 }));
 
-vi.mock('axios', () => ({
-  default: {
+vi.mock('axios', () => {
+  // 生产代码走 axios.create({ keepAlive agents }) 共享实例；mock 让 create()
+  // 返回自身，directFeishuApi.post 与 axios.post 断言同一份 mock。
+  const axiosMock: { post: ReturnType<typeof vi.fn>; create: ReturnType<typeof vi.fn> } = {
     post: vi.fn(),
-  },
-}));
+    create: vi.fn(),
+  };
+  axiosMock.create.mockReturnValue(axiosMock);
+  return { default: axiosMock };
+});
 
 vi.mock('../logger/index.js', async () =>
   (await import('../../tests/lib/logger-mock.js')).loggerModuleMock(),
