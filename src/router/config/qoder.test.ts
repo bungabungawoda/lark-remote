@@ -99,19 +99,20 @@ describe('QoderConfigBuilder', () => {
       expect(values).toEqual(['default', 'auto', 'low', 'high', 'ultra']);
     });
 
-    it('permissionMode select uses snake_case official values', () => {
+    it('permissionMode select uses ACP-native mode ids (1.1.84 availableModes)', () => {
       const fields = builder.buildFields(makeConfig());
       const permField = fields.find((f) => f.key === 'agents.qoder.permissionMode');
       const values = permField!.options!.map((o) => (typeof o === 'string' ? o : o.value));
-      expect(values).toEqual([
-        'default',
-        'accept_edits',
-        'plan',
-        'auto',
-        'bypass_permissions',
-        'dont_ask',
-      ]);
+      expect(values).toEqual(['default', 'acceptEdits', 'auto', 'dontAsk', 'yolo']);
       expect(permField!.currentValue).toBe('default');
+    });
+
+    it('legacy snake_case permissionMode normalizes for display (no blank select)', () => {
+      const legacy = builder.buildFields(
+        makeConfig({ agents: { qoder: { permissionMode: 'bypass_permissions' } } }),
+      );
+      const permField = legacy.find((f) => f.key === 'agents.qoder.permissionMode');
+      expect(permField!.currentValue).toBe('yolo');
     });
 
     it('contextWindow renders preset select + custom input sharing one key', () => {

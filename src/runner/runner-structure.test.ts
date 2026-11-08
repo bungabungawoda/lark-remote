@@ -7,7 +7,7 @@ import {
   OpencodeAcpRunner,
   PiRpcRunner,
   CodebuddyAcpRunner,
-  QoderRunner,
+  QoderAcpRunner,
 } from './index.js';
 import { AGENT_KINDS } from '../agent-kinds.js';
 import type { AgentKind } from '../agent-kinds.js';
@@ -27,7 +27,7 @@ describe('compact capability matrix', () => {
     kimi: KimiAcpRunner.prototype,
     dsh: DshRunner.prototype,
     codebuddy: CodebuddyAcpRunner.prototype,
-    qoder: QoderRunner.prototype,
+    qoder: QoderAcpRunner.prototype,
   };
 
   it('声明的 compact 能力与 runner 实现一一对应（禁止再靠鸭子类型静默漏实现）', () => {

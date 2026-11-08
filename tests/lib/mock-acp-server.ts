@@ -15,7 +15,7 @@ import { join } from 'node:path';
 import type { Runner, AgentEvent } from '../../src/runner/index.js';
 
 /** Protocol-specific agent name echoed in the initialize result. */
-export type AcpProtocol = 'kimi' | 'opencode' | 'codebuddy';
+export type AcpProtocol = 'kimi' | 'opencode' | 'codebuddy' | 'qoder';
 
 export interface MockAcpScenarioOpts {
   sessionId?: string;
@@ -394,7 +394,13 @@ export function writeScenario(
       resumeOmitsSessionId: opts.resumeOmitsSessionId ?? false,
       kimiApprovalShape: protocol === 'kimi',
       agentName:
-        protocol === 'kimi' ? 'kimi-acp' : protocol === 'codebuddy' ? 'CodeBuddy' : 'OpenCode',
+        protocol === 'kimi'
+          ? 'kimi-acp'
+          : protocol === 'codebuddy'
+            ? 'CodeBuddy'
+            : protocol === 'qoder'
+              ? 'qoder-cli-cn'
+              : 'OpenCode',
       doneMarker: opts.capturePath ? `${opts.capturePath}.done` : null,
     }),
   );

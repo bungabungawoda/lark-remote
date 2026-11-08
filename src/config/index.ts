@@ -335,17 +335,38 @@ const CodebuddyConfigSchema = z.object({
 /**
  * Qoder 的权限模式取值：CLI `--permission-mode` 的官方枚举是 snake_case
  * （default | plan | auto | bypass_permissions | accept_edits | dont_ask），
- * 注意与 CodeBuddy/claude 的 camelCase 不同。
- * 'default' 表示「不传 --permission-mode」。
+ * Qoder 已切 ACP 传输（`qodercn --acp`）：卡片与 session/set_mode 用 ACP 原生
+ * camelCase 词汇（1.1.84 session/new 实测 availableModes）。stream-json 时代的
+ * snake_case 旧值经 normalizeQoderPermissionMode 归一（schema 仍接受旧值）；
+ * 'plan' 无 ACP 对应模式，归一为 'default'。
  */
 export const QODER_PERMISSION_MODES = [
   'default',
-  'accept_edits',
-  'plan',
+  'acceptEdits',
   'auto',
-  'bypass_permissions',
-  'dont_ask',
+  'dontAsk',
+  'yolo',
 ] as const;
+
+/** stream-json 时代的旧词汇 → ACP modeId（schema 兼容旧配置，runner 统一归一）。 */
+const QODER_PERMISSION_MODE_LEGACY: Record<string, QoderPermissionMode> = {
+  accept_edits: 'acceptEdits',
+  bypass_permissions: 'yolo',
+  dont_ask: 'dontAsk',
+  // 旧 'plan' 在 ACP 模式表里不存在（1.1.84 实测五档），落到 default 最接近
+  // 「不越权」的原语义。
+  plan: 'default',
+};
+
+export type QoderPermissionMode = (typeof QODER_PERMISSION_MODES)[number];
+
+/** 旧 snake_case 值 → ACP modeId；已是 ACP 词汇原样返回（未知值兜底 default）。 */
+export function normalizeQoderPermissionMode(value: string): QoderPermissionMode {
+  if ((QODER_PERMISSION_MODES as readonly string[]).includes(value)) {
+    return value as QoderPermissionMode;
+  }
+  return QODER_PERMISSION_MODE_LEGACY[value] ?? 'default';
+}
 
 /**
  * Qoder 默认配置：schema default、src/index.ts 注册兜底与 runner 构造器兜底
@@ -368,8 +389,13 @@ const QoderConfigSchema = z.object({
    * 口径）。Undefined → 跟随 Qoder 默认（不传 --reasoning-effort）。
    */
   reasoningEffort: z.string().min(1).optional(),
-  /** Permission mode（官方 snake_case 枚举；'default' = 省略该参数）。 */
-  permissionMode: z.enum(QODER_PERMISSION_MODES).default(QODER_DEFAULTS.permissionMode),
+  /**
+   * Permission mode（ACP modeId 词汇；stream-json 时代的 snake_case 旧值仍
+   * 接受，读取侧经 normalizeQoderPermissionMode 归一）。
+   */
+  permissionMode: z
+    .enum([...QODER_PERMISSION_MODES, 'accept_edits', 'bypass_permissions', 'dont_ask', 'plan'])
+    .default(QODER_DEFAULTS.permissionMode),
   /** 显式上下文窗口（--context-window，正整数 tokens）。缺省 = 跟随 CLI/模型默认。 */
   contextWindow: z.number().int().min(1).optional(),
   /** CLI 子配置。 */

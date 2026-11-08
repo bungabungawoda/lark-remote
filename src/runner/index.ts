@@ -16,7 +16,7 @@ export { PiRpcRunner } from './pi/index.js';
 export { KimiAcpRunner } from './kimi/index.js';
 export { DshRunner } from './dsh/index.js';
 export { CodebuddyAcpRunner } from './codebuddy/index.js';
-export { QoderRunner } from './qoder/index.js';
+export { QoderAcpRunner } from './qoder/index.js';
 export { BashProcessRunner, type BashRunner } from './bash/index.js';
 
 // Re-export registry

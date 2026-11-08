@@ -19,3 +19,13 @@ export const CODEBUDDY_CLIENT_CAPABILITIES = {
   fs: { readTextFile: false, writeTextFile: false },
   terminal: false,
 } as const;
+
+/**
+ * Qoder 的 clientCapabilities：与 CodeBuddy 同口径——fs/terminal 均不声明，
+ * 工具由 CLI 本地自执行（客户端未实现 fs/*、terminal/* reverse RPC 面）。
+ * 1.1.84 `qodercn --acp` initialize 握手实测通过。
+ */
+export const QODER_CLIENT_CAPABILITIES = {
+  fs: { readTextFile: false, writeTextFile: false },
+  terminal: false,
+} as const;

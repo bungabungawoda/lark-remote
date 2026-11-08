@@ -1,22 +1,31 @@
 /**
  * Qoder config builder — builds fields and handles field changes for Qoder
- * agent (generic CLI mode).
+ * agent (ACP mode, `qodercn --acp`).
  *
  * 模型清单来自 `qodercn --list-models`（宽松解析）；清单为空（命令失败/未
  * 登录）时回退文本输入。推理强度档位动态探测（CLI 校验报错解析，见
- * qoder-config.ts）；探测不成立时同样回退文本输入。
+ * qoder-config.ts）；探测不成立时同样回退文本输入。权限模式是 ACP 原生
+ * 词汇（1.1.84 session/new availableModes 实测），旧 snake_case 值显示前归一。
  */
 
 import { loadQoderConfig } from '../../config/qoder-config.js';
-import { QODER_PERMISSION_MODES } from '../../config/index.js';
+import { QODER_PERMISSION_MODES, normalizeQoderPermissionMode } from '../../config/index.js';
 import type { AgentConfigCardBuilder, ConfigField, SelectOption } from './types.js';
 import type { AppConfig } from '../../config/index.js';
 import { permissionModeField } from './common/permission-mode.js';
 
+/** ACP modeId → 卡片说明（描述取自 1.1.84 session/new 的 availableModes）。 */
+const PERMISSION_MODE_TEXT: Record<string, string> = {
+  default: 'default（逐项审批）',
+  acceptEdits: 'acceptEdits（自动放行文件编辑）',
+  auto: 'auto（安全分类器自动放行）',
+  dontAsk: 'dontAsk（不询问，直接拒绝）',
+  yolo: 'yolo（全部自动放行）',
+};
+
 const PERMISSION_MODE_OPTIONS: SelectOption[] = QODER_PERMISSION_MODES.map((mode) => ({
   value: mode,
-  // 'default' 是本项目自造的「不干预」值；其余是 CLI 官方枚举（snake_case）。
-  text: mode === 'default' ? 'default（跟随 Qoder 默认）' : mode,
+  text: PERMISSION_MODE_TEXT[mode] ?? mode,
 }));
 
 /** 模型：目录可用（--list-models 有输出）→ 下拉，否则文本输入。 */
@@ -116,7 +125,8 @@ export class QoderConfigBuilder implements AgentConfigCardBuilder {
       permissionModeField(
         'agents.qoder.permissionMode',
         PERMISSION_MODE_OPTIONS,
-        q?.permissionMode ?? 'default',
+        // 旧 snake_case 配置值归一为 ACP modeId 后回显（否则下拉空选）。
+        normalizeQoderPermissionMode(q?.permissionMode ?? 'default'),
       ),
       ...contextWindowFields(q?.contextWindow),
     ];

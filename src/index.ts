@@ -26,7 +26,7 @@ import {
   KimiAcpRunner,
   DshRunner,
   CodebuddyAcpRunner,
-  QoderRunner,
+  QoderAcpRunner,
 } from './runner/index.js';
 import { AgentRegistry } from './runner/registry.js';
 import { probeAllAgents } from './runner/probe.js';
@@ -416,22 +416,19 @@ function codebuddyRunnerOptions(deps: RunnerFactoryDeps) {
   };
 }
 
-// Register QoderRunner (generic CLI mode, long-lived stream-json session).
-// factory 闭包读最新 config（同 pi/kimi 的 container 语义）。
-function qoderRunnerOptions(deps: RunnerFactoryDeps, cwdOpt: { cwd: string }) {
+// Register QoderAcpRunner (pure ACP mode, `qodercn --acp`).
+// factory 闭包读最新 config（同 codebuddy/kimi 的 container 语义）。
+function qoderRunnerOptions(deps: RunnerFactoryDeps) {
   const conf = getAgentConfig(deps.latest(), 'qoder');
   return {
-    model: conf?.model,
-    reasoningEffort: conf?.reasoningEffort,
-    settings: deps.cliArgs.settings,
-    stopGraceMs: conf?.stopGraceMs,
-    pidDir: deps.configDir,
-    cwd: cwdOpt.cwd,
+    kind: 'qoder' as const,
     sessionReader: deps.readers.qoder,
     binary: conf?.cli?.binary,
-    permissionMode: conf?.permissionMode ?? QODER_DEFAULTS.permissionMode,
+    model: conf?.model,
+    reasoningEffort: conf?.reasoningEffort,
     contextWindow: conf?.contextWindow,
-    idleTtlMs: conf?.idleTtlMinutes != null ? conf.idleTtlMinutes * 60_000 : undefined,
+    permissionMode: conf?.permissionMode ?? QODER_DEFAULTS.permissionMode,
+    turnIdleTimeoutMs: minutesToMs(conf?.idleTtlMinutes),
   };
 }
 
@@ -496,8 +493,8 @@ function registerRunners(agentRegistry: AgentRegistry, deps: RunnerFactoryDeps):
     return new CodebuddyAcpRunner(codebuddyRunnerOptions(deps));
   });
 
-  agentRegistry.register('qoder', (ws: string) => {
-    return new QoderRunner(qoderRunnerOptions(deps, { cwd: ws }));
+  agentRegistry.register('qoder', (_ws: string) => {
+    return new QoderAcpRunner(qoderRunnerOptions(deps));
   });
 }
 

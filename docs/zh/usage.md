@@ -88,7 +88,7 @@ agents:
     acp:
       binary: codebuddy
       turnIdleTimeoutMinutes: 30
-  qoder: # Qoder CLI（通用 CLI 模式，长驻 stream-json 双向会话）
+  qoder: # Qoder CLI（ACP 模式，`qodercn --acp` 长驻连接）
     model: '' # 留空 = 跟随 Qoder 自己的 settings.json
     reasoningEffort: '' # 留空（或卡片选 default）= Qoder 默认档位；档位下拉动态探测
     permissionMode: default # default（=不传 --permission-mode）| accept_edits | plan | auto | bypass_permissions | dont_ask（注意是 snake_case）
@@ -122,25 +122,22 @@ token 用量：CodeBuddy 的 ACP `usage_update` 把每模型请求的全量明�
 
 首次使用前先用交互式终端跑一次 `codebuddy` 完成登录与目录信任；headless/ACP 通道不会触发浏览器登录。
 
-### Qoder agent（Qoder CLI，stream-json 长驻会话）
+### Qoder agent（Qoder CLI，ACP 长驻连接）
 
-Qoder 的 headless 面与 Claude Code 高度同构（真机实测：`--resume` 同 sessionId 恢复上下文、`/compact` 本地拦截、usage 字段与 claude 一致），按通用 CLI 模式接入：每个工作区一个长驻 `qodercn` 进程，stdin/stdout 双向 stream-json，`/compact` 作为 slash 命令写入 stdin。**注意：Qoder 不提供动态审批通道**（`--permission-prompt-tool stdio` 与 `--input-format stream-json` 互斥，CLI 直接拒绝），工具审批由 `--permissionMode` 静态策略治理——需要无人值守放行时把权限模式设为 `bypass_permissions` 或 `auto`。配置项：
+Qoder 走 ACP 模式接入（`qodercn --acp`，stdio 上的 JSON-RPC 长连接，1.1.84 initialize 握手实测）：与 CodeBuddy 同一套 ACP 底座——每个工作区一条常驻连接，turn 内 `session/new`（或 `session/resume` 恢复会话）→ `session/set_mode` 下发权限模式 → `session/prompt`。**动态审批经 `session/request_permission` 走飞书审批卡**（stream-json 时代的「静默拒绝」问题由此解决）。配置项：
 
-- `agents.qoder.model` / `agents.qoder.reasoningEffort`：留空（卡片选 default）= 跟随 Qoder 自己的 `settings.json`。模型下拉来自 `qodercn --list-models`；推理强度下拉来自对 CLI 校验报错的动态探测（传非法值让 CLI 自己报出全表，档位集随安装版本走），任一清单探不到时该字段回退文本输入。
-- `agents.qoder.permissionMode`：注意 Qoder 的取值是 **snake_case**（`accept_edits` / `bypass_permissions` 等），与 claude/CodeBuddy 的 camelCase 不同。
-- `agents.qoder.contextWindow`：显式上下文窗口提示值（`--context-window`，正整数 tokens），影响 CLI 侧的压缩阈值判断；留空、0 或卡片选 default = 跟随 CLI/模型默认。卡片上是预设下拉（1M / 500K）+ 自定义输入双字段（写同一个 key）；CLI 侧校验只有「正整数」，预设只是快捷方式。不会让 run 卡片显示水位（Qoder 的用量回包没有 token 数据，见下）。
+- `agents.qoder.model` / `agents.qoder.reasoningEffort` / `agents.qoder.contextWindow`：三者无 ACP 协议内通道，随 ACP 连接以 spawn 旗标下发（`--model` / `--reasoning-effort` / `--context-window`）；留空 = 跟随 Qoder 自己的 `settings.json`。模型下拉来自 `qodercn --list-models`；推理强度下拉来自对 CLI 校验报错的动态探测（传非法值让 CLI 自己报出全表，档位集随安装版本走），任一清单探不到时该字段回退文本输入。上下文窗口卡片是预设下拉（1M / 500K）+ 自定义输入双字段。
+- `agents.qoder.permissionMode`：ACP 原生 camelCase 词汇（1.1.84 `session/new` availableModes 实测）：`default`（逐项审批）/ `acceptEdits` / `auto`（安全分类器）/ `dontAsk` / `yolo`（全部放行）。stream-json 时代的 snake_case 旧值（`accept_edits` / `bypass_permissions` 等）配置里仍接受，读取时自动归一；旧 `plan` 无 ACP 对应，归一为 `default`。
 - `agents.qoder.cli.binary`：CN 版安装名是 `qodercn`，国际版是 `qoder`，默认按 CN 版。
 - `agents.qoder.configDir`：Qoder 配置根目录（会话记录在 `<configDir>/projects/` 下）；留空时按 `~/.qoder-cn` → `~/.qoder` 自动探测。
 
-首次使用前先用交互式终端跑一次 `qodercn` 完成登录（浏览器 OAuth）与目录信任；headless 通道不会触发登录。已实测的 headless 行为差异（2026-11-05，qoder-cli 1.1.72/1.1.83）：
+首次使用前先用交互式终端跑一次 `qodercn` 完成登录（浏览器 OAuth）与目录信任；ACP 通道不会触发登录（authMethods 复用现有登录）。已实测/待验证的行为差异（2026-11-07，qoder-cli 1.1.84）：
 
-- **未登录**：非交互启动直接失败（exit 1，stderr 含 `Not logged in · Please run /login`），lark-remote 以错误卡呈现；不是挂起。
-- **权限只治不管问**：headless 下不产生审批请求（三种模式 × 写文件/删除文件实测均为 0 条）——`default` 对写文件、删除文件**静默拒绝**；`accept_edits` 只自动放行文件编辑，危险命令同样静默拒绝。
-- **没有 token 统计**：usage 回包只有积分（result 顶层 `total_credits`），token 字段为 0。done 卡用量区是极简形态：只显示积分行（如 `Cost - 12 credits`），Model / 结果 / USD 行都不渲染（credits 为 0 的失败 run 连积分行也缺席）；其余 agent 卡片不受影响。`/compact` 可用，压缩边界落盘（含压缩前后水位）但因 token 口径缺席，卡片不显示压缩统计。
-- **无动态交互工具**：`AskUserQuestion` 这类需要 TUI 交互的工具在 headless（stream-json）下被 CLI 直接拒绝（工具报错返回，agent 只能口头描述选项），与审批无动态通道同源。
-- **`/stop` 是进程组终止**：CLI 的 interrupt 控制请求被静默忽略（实测），无法优雅中断在途 turn。
-- **CLI 自动升级**（实测一天内 1.1.72 → 1.1.83），flag 校验会收紧（`--permission-prompt-tool` 互斥即 1.1.83 引入）；升级后若启动即失败，查日志里的 CLI 报错并反馈。
-- **`-n` 会话命名**：`qodercn -n <名字>` 落盘 custom-title 行，`/resume` 列表与详情卡显示该命名。
+- **未登录**：非交互启动直接失败（exit 1），lark-remote 以错误卡呈现；不是挂起。
+- **done 卡用量区极简**：不渲染 Model / 结果 / USD 行；积分（`total_credits`）经 ACP 可得时显示积分行（如 `Cost - 12 credits`），拿不到时整行缺席。qoder 的 result 回包没有 token 明细（字段恒 0，2026-11-05 实测），卡片不显示 token 统计。
+- **待真机验证**（2026-11-07 qoder CN 后端对新会话故障，以下验证被阻塞，恢复后需人工跑一次）：① 审批卡是否真经 `session/request_permission` 发起（二进制方法集已确认，触发未验证）；② `AskUserQuestion` 在 ACP 下走什么通道（stream-json 下被 CLI 直接拒绝）；③ usage_update 是否携带积分/token 明细；④ ACP 会话是否照常落盘 jsonl（影响 `/resume` 列表）。
+- **`/compact`**：按 codebuddy 同口径把 `/compact` 作为 prompt 文本下发；qoder ACP 是否本地拦截 slash 命令待真机验证。
+- **`/stop`**：走 ACP `session/cancel` 协议通道（stream-json 时代的「interrupt 被静默忽略」不再适用，待真机验证）。
 
 ### DSH agent（DeepSeek Harness，HTTP+WS 直连）
 
