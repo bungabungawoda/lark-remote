@@ -137,7 +137,9 @@ Qoder 走 ACP 模式接入（`qodercn --acp`，stdio 上的 JSON-RPC 长连接�
 - **done 卡用量区极简**：不渲染 Model / 结果 / USD 行；积分可得时显示积分行（如 `Cost - 12 credits`）。qoder 的 result 回包没有 token 明细（字段恒 0，2026-11-05 实测），且 ACP `usage_update` 实测不随 turn 下发（2026-11-07 真机），done 卡通常无任何用量行。
 - **`AskUserQuestion` 不可用**（2026-11-07 真机验证）：stream-json 下工具存在但调用被 CLI 拒绝；ACP 下工具干脆不在会话工具列表——两条传输都没有交互提问通道，纯 CLI 侧限制。
 - **会话落盘正常**（2026-11-07 真机验证）：ACP 会话照常写 `<configDir>/projects/` 下的 jsonl，`/resume` 列表可用；jsonl 内无 usage 行（与 stream-json 时代一致）。
-- **待真机验证**：① 审批卡是否真经 `session/request_permission` 发起（需在 `default` 模式下跑一次写文件任务；二进制方法集已确认）；② `/compact` 是否被 ACP 模式本地拦截（当前按 prompt 文本下发）；③ `/stop` 的 `session/cancel` 优雅中断效果。
+- **动态审批已验证**（2026-11-07 真机）：`default` 模式下写文件触发 `session/request_permission`，飞书审批卡正常弹出并生效。
+- **同连接会话复用**（2026-11-07 真机）：turn 结束后会话在长驻连接上保持 active，对其再发 `session/resume` 会被拒（"already open (state=active)"）；runner 跟踪连接上的 open 会话，同会话下一轮跳过 resume 直接 prompt（跨会话 resume——如 `/resume` 切到连接上未加载的旧会话——未验证）。
+- **待真机验证**：① `/compact` 是否被 ACP 模式本地拦截（当前按 prompt 文本下发）；② `/stop` 的 `session/cancel` 优雅中断效果。
 - **`/s` 状态行**：`contextWindow` 按人话显示（1000000 → `1M`、500000 → `500K`）。
 
 ### DSH agent（DeepSeek Harness，HTTP+WS 直连）

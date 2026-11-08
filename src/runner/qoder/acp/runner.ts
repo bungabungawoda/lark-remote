@@ -23,7 +23,7 @@
  */
 
 import type { AgentSessionReader } from '../../../session-contract.js';
-import type { AgentStatusInfo } from '../../types.js';
+import type { AgentStatusInfo, SpawnOptions } from '../../types.js';
 import {
   ConnectionManager,
   type ConnectionManagerOptions,
@@ -102,6 +102,12 @@ export class QoderAcpRunner extends BaseAcpRunner<QoderAcpTranslator> {
   private readonly effort?: string;
   private readonly contextWindow?: number;
   private permissionMode: string;
+  /**
+   * 当前连接上已 open 的会话（1.1.84 真机：turn 结束后会话保持 active，对其
+   * 再发 session/resume 会被拒 "already open (state=active)"）。连接重建
+   * （onConnected）或断开（onConnectionClosed）时清零。
+   */
+  private connectionSessionId: string | null = null;
 
   constructor(opts: QoderAcpRunnerOptions) {
     const managerOpts: ConnectionManagerOptions = {
@@ -114,6 +120,8 @@ export class QoderAcpRunner extends BaseAcpRunner<QoderAcpTranslator> {
         clientCapabilities: QODER_CLIENT_CAPABILITIES,
       },
       onConnected: (result) => {
+        // 连接重建 = 全新进程，open 会话记录作废
+        this.connectionSessionId = null;
         const version = (result as { agentInfo?: { version?: string } } | undefined)?.agentInfo
           ?.version;
         if (version) {
@@ -180,6 +188,30 @@ export class QoderAcpRunner extends BaseAcpRunner<QoderAcpTranslator> {
   /** qoder ACP 的审批 option kind 未真机验证，按 ACP 标准词汇。 */
   protected override get approvalKinds(): AcpApprovalKinds {
     return QODER_APPROVAL_KINDS;
+  }
+
+  /**
+   * 同连接同会话直接复用（跳过 session/resume）：qoder 对已 open 的会话再
+   * resume 会报 "already open (state=active)"（2026-11-07 真机）。连接重建/
+   * 断开时记录已清零，冷连接照常 resume。
+   */
+  protected override turnSessionPlan(
+    opts: SpawnOptions,
+  ):
+    { mode: 'new' } | { mode: 'resume'; sessionId: string } | { mode: 'reuse'; sessionId: string } {
+    if (opts.sessionId && opts.sessionId === this.connectionSessionId) {
+      return { mode: 'reuse', sessionId: opts.sessionId };
+    }
+    return super.turnSessionPlan(opts);
+  }
+
+  /** 会话就绪（setupTurn / runCompact 共用）：登记为本连接的 open 会话。 */
+  protected override onTurnSessionReady(sessionId: string, _opts: SpawnOptions): void {
+    this.connectionSessionId = sessionId;
+  }
+
+  protected override onConnectionClosed(): void {
+    this.connectionSessionId = null;
   }
 
   protected override onSessionEstablished(_result: SessionResumeResult | SessionNewResult): void {
