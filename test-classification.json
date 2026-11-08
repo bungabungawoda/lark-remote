@@ -30,8 +30,7 @@
   "infra-connector": [
     "src/connector/**/*.test.ts",
     "tests/anchor/regression/send-retry-feishu-code.test.ts",
-    "tests/anchor/regression/send-with-retry-error.test.ts",
-    "tests/anchor/regression/send-file-stream-destroy.test.ts"
+    "tests/anchor/regression/send-with-retry-error.test.ts"
   ],
   "infra-router": [
     "src/router/file-limit.test.ts",

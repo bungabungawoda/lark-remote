@@ -17,24 +17,9 @@ import axios from 'axios';
 import fs from 'node:fs';
 import { bestEffortUnlink } from '../common/fs.js';
 import { displayName } from '../platform/path.js';
-import https from 'node:https';
 import os from 'node:os';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
-import FormData from 'form-data';
-
-/**
- * Dedicated https.Agent with keepAlive disabled for sendFile's three axios
- * calls (token, upload, send). Bun's Node.js http compat layer has a bug
- * where it reuses keep-alive sockets that the server has already RST'd —
- * the write goes into a dead socket and the caller gets ECONNRESET after
- * ~30s. Node.js proper does not exhibit this because it checks socket
- * health before reuse. Disabling keep-alive forces a fresh TCP+TLS
- * handshake per request, eliminating the stale-socket path at the cost of
- * one extra round-trip per file send (acceptable for an infrequent
- * operation).
- */
-const noKeepAliveAgent = new https.Agent({ keepAlive: false });
 
 /**
  * dedup 缓存 TTL（毫秒）。控制飞书事件去重窗口，全局作用于 message + cardAction。
@@ -282,6 +267,9 @@ export const PATCH_MAX_RETRIES = 3;
 /** 重试退避基数（ms）；第 n 次重试前等待 n × 基数，给对端恢复的时间。 */
 const PATCH_RETRY_BASE_DELAY_MS = 150;
 
+/** 媒体上传单次超时（ms）。大文件走慢链路，比普通 API 调用宽得多。 */
+const MEDIA_UPLOAD_TIMEOUT_MS = 120_000;
+
 /** 记日志用的错误摘要（不打印 axios 巨型循环对象）。 */
 function formatErrorForLog(err: unknown): string {
   if (err instanceof Error) {
@@ -325,12 +313,38 @@ class FeishuBusinessError extends Error {
   }
 }
 
+/** 上传接口的非 2xx 响应（无业务码可读时）；status 供 token 失效判定。 */
+class FeishuHttpError extends Error {
+  readonly status: number;
+  constructor(status: number) {
+    super(`Upload failed: HTTP ${status}`);
+    this.name = 'FeishuHttpError';
+    this.status = status;
+  }
+}
+
+/**
+ * 读取上传接口响应：业务码优先（HTTP 4xx 也可能带 code），
+ * 无业务码的非 2xx 抛 FeishuHttpError。
+ */
+async function readUploadPayload(resp: Response): Promise<Record<string, string>> {
+  const body = (await resp.json().catch(() => undefined)) as
+    { code?: number; msg?: string; data?: Record<string, string> } | undefined;
+  if (typeof body?.code === 'number' && body.code !== 0) {
+    throw new FeishuBusinessError(`Upload failed: ${body.msg ?? 'unknown error'}`, body.code);
+  }
+  if (!resp.ok) throw new FeishuHttpError(resp.status);
+  if (!body?.data) throw new Error(`Upload failed: unexpected response (HTTP ${resp.status})`);
+  return body.data;
+}
+
 /**
  * 这次失败是否等于「缓存里的 token 已失效」：body code 99991663 或 HTTP 401。
  * 判定发生在内层 try 抓到的原始错误上，外层 `${label} failed: …` 包装在其之后。
  */
 function isAccessTokenRejected(err: unknown): boolean {
   if (err instanceof FeishuBusinessError) return err.code === FEISHU_TOKEN_INVALID_CODE;
+  if (err instanceof FeishuHttpError) return err.status === 401;
   const resp = (err as { response?: { status?: number } } | null)?.response;
   return resp?.status === 401;
 }
@@ -800,18 +814,17 @@ export class FeishuConnector {
   }
 
   /**
-   * sendFile/sendImage 共用骨架：token → 上传（流在任何失败路径销毁）
-   * → 发送媒体消息。上传端点 / form 字段 / 响应 key / msg_type 的差异由调用方
-   * 以 uploadUrl + buildForm + keyField + msgType 表达；timeout、noKeepAliveAgent
-   * （Bun keep-alive 修复）与错误包装在此单源。label 是对外错误前缀与日志
-   * 标签（'sendFile' | 'sendImage'）。
+   * sendFile/sendImage 共用骨架：token → 上传 → 发送媒体消息。上传端点 / form
+   * 字段 / 响应 key / msg_type 的差异由调用方以 uploadUrl + buildForm + keyField +
+   * msgType 表达；超时与错误包装在此单源。label 是对外错误前缀与日志标签
+   * （'sendFile' | 'sendImage'）。
    */
   private async uploadAndSendMedia(
     chatId: string,
     filePath: string,
     label: string,
     uploadUrl: string,
-    buildForm: (stream: fs.ReadStream) => FormData,
+    buildForm: (file: Blob) => FormData,
     keyField: 'file_key' | 'image_key',
     msgType: 'file' | 'image',
   ): Promise<string> {
@@ -847,75 +860,75 @@ export class FeishuConnector {
     }
   }
 
-  /** 单次「上传 + 发媒体消息」；文件流在此拥有，任何失败路径都销毁。 */
+  /** 单次「上传 + 发媒体消息」。 */
   private async uploadWithToken(
     accessToken: string,
     chatId: string,
     filePath: string,
     uploadUrl: string,
-    buildForm: (stream: fs.ReadStream) => FormData,
+    buildForm: (file: Blob) => FormData,
     keyField: 'file_key' | 'image_key',
     msgType: 'file' | 'image',
   ): Promise<string> {
-    let fileStream: fs.ReadStream | null = null;
-    try {
-      fileStream = fs.createReadStream(filePath);
-      const form = buildForm(fileStream);
+    const fileBytes = await fs.promises.readFile(filePath);
+    const mediaKey = await this.uploadMedia(
+      uploadUrl,
+      accessToken,
+      buildForm(new Blob([fileBytes])),
+      keyField,
+    );
 
-      // timeout 120s（大文件慢链路）；httpsAgent: noKeepAliveAgent 防止
-      // Bun 复用已被服务端 RST 的 keep-alive socket（ECONNRESET after ~30s）。
-      const uploadResp = await axios.post(uploadUrl, form, {
+    // timeout 30s。
+    const sendResp = await axios.post(
+      'https://open.feishu.cn/open-apis/im/v1/messages',
+      {
+        receive_id: chatId,
+        msg_type: msgType,
+        content: JSON.stringify({ [keyField]: mediaKey }),
+      },
+      {
         headers: {
-          ...form.getHeaders(),
+          'Content-Type': 'application/json; charset=utf-8',
           Authorization: `Bearer ${accessToken}`,
         },
-        timeout: 120000,
-        httpsAgent: noKeepAliveAgent,
-      });
-      if (uploadResp.data.code !== 0) {
-        throw new FeishuBusinessError(
-          `Upload failed: ${uploadResp.data.msg}`,
-          uploadResp.data.code,
-        );
-      }
-      const mediaKey = uploadResp.data.data[keyField];
-
-      // timeout 30s；noKeepAlive 同上。
-      const sendResp = await axios.post(
-        'https://open.feishu.cn/open-apis/im/v1/messages',
-        {
-          receive_id: chatId,
-          msg_type: msgType,
-          content: JSON.stringify({ [keyField]: mediaKey }),
-        },
-        {
-          headers: {
-            'Content-Type': 'application/json; charset=utf-8',
-            Authorization: `Bearer ${accessToken}`,
-          },
-          params: { receive_id_type: 'chat_id' },
-          timeout: 30000,
-          httpsAgent: noKeepAliveAgent,
-        },
+        params: { receive_id_type: 'chat_id' },
+        timeout: 30000,
+      },
+    );
+    if (sendResp.data.code !== 0) {
+      throw new FeishuBusinessError(
+        `Media message failed: ${sendResp.data.msg}`,
+        sendResp.data.code,
       );
-      if (sendResp.data.code !== 0) {
-        throw new FeishuBusinessError(
-          `Media message failed: ${sendResp.data.msg}`,
-          sendResp.data.code,
-        );
-      }
-      return sendResp.data.data.message_id;
-    } catch (err) {
-      // destroy the read stream on failure so the fd is released.
-      if (fileStream) {
-        try {
-          fileStream.destroy();
-        } catch {
-          /* already destroyed */
-        }
-      }
-      throw err;
     }
+    return sendResp.data.data.message_id;
+  }
+
+  /**
+   * 上传媒体（multipart），返回 file_key / image_key。
+   *
+   * 刻意走 fetch 而不是 axios + form-data 流：Bun 的 node:http 兼容层在经
+   * CONNECT 代理隧道发送 multipart 流时会漏发请求体尾部，对端按 Content-Length
+   * 等满 ~30s 后关闭连接，调用方只拿到 ECONNRESET（直连、curl、Bun fetch 均正常）。
+   * 文件上限 30MB，整体读入内存的代价可接受。
+   */
+  private async uploadMedia(
+    uploadUrl: string,
+    accessToken: string,
+    form: FormData,
+    keyField: 'file_key' | 'image_key',
+  ): Promise<string> {
+    const resp = await fetch(uploadUrl, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${accessToken}` },
+      body: form,
+      // 大文件慢链路。不手动设 Content-Type：boundary 必须由 fetch 生成。
+      signal: AbortSignal.timeout(MEDIA_UPLOAD_TIMEOUT_MS),
+    });
+    const payload = await readUploadPayload(resp);
+    const mediaKey = payload[keyField];
+    if (!mediaKey) throw new Error(`Upload failed: response is missing ${keyField}`);
+    return mediaKey;
   }
 
   /**
@@ -929,9 +942,9 @@ export class FeishuConnector {
       filePath,
       'sendFile',
       'https://open.feishu.cn/open-apis/im/v1/files',
-      (stream) => {
+      (file) => {
         const form = new FormData();
-        form.append('file', stream);
+        form.append('file', file, displayName(filePath));
         form.append('file_name', displayName(filePath));
         form.append('file_type', 'stream');
         return form;
@@ -953,10 +966,10 @@ export class FeishuConnector {
       filePath,
       'sendImage',
       'https://open.feishu.cn/open-apis/im/v1/images',
-      (stream) => {
+      (file) => {
         const form = new FormData();
         form.append('image_type', 'message');
-        form.append('image', stream);
+        form.append('image', file, displayName(filePath));
         return form;
       },
       'image_key',
@@ -997,7 +1010,6 @@ export class FeishuConnector {
 
   private async fetchTenantAccessToken(): Promise<string> {
     // timeout 30s on the token request.
-    // httpsAgent: noKeepAlive — same Bun keep-alive fix as upload above.
     const tokenResp = await axios.post(
       'https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal',
       {
@@ -1007,7 +1019,6 @@ export class FeishuConnector {
       {
         headers: { 'Content-Type': 'application/json; charset=utf-8' },
         timeout: 30000,
-        httpsAgent: noKeepAliveAgent,
       },
     );
     if (tokenResp.data.code !== 0) {
