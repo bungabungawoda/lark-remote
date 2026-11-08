@@ -1871,8 +1871,10 @@ describe('CommandRouter', () => {
 
       const cardStr = lastSendResultJson(sendResult);
       expect(cardStr).not.toContain('"cmd":"resume.compact"');
+      expect(cardStr).toContain('"cmd":"stop.session"');
       expect(cardStr).toContain('该会话仍有一个 turn 在运行');
       expect(cardStr).toContain('恢复会话（完成中）');
+      expectNoV1ActionContainer(cardStr);
     });
 
     it('test_anchor_auto_resume_card_dsh_host_running_has_no_compact_button', async () => {
@@ -1895,8 +1897,10 @@ describe('CommandRouter', () => {
 
       const cardStr = lastSendResultJson(sendResult);
       expect(cardStr).not.toContain('"cmd":"resume.compact"');
+      expect(cardStr).toContain('"cmd":"stop.session"');
       expect(cardStr).toContain('该会话仍有一个 turn 在运行');
       expect(cardStr).toContain('自动恢复会话（完成中）');
+      expectNoV1ActionContainer(cardStr);
     });
 
     it('test_anchor_resume_detail_card_dsh_idle_has_compact_button', async () => {
@@ -1916,6 +1920,7 @@ describe('CommandRouter', () => {
 
       const cardStr = lastSendResultJson(sendResult);
       expect(cardStr).toContain('"cmd":"resume.compact"');
+      expect(cardStr).not.toContain('"cmd":"stop.session"');
       expect(cardStr).not.toContain('该会话仍有一个 turn 在运行');
     });
 
@@ -1946,6 +1951,21 @@ describe('CommandRouter', () => {
       const value = { cmd: 'resume.compact', sessionId: 'codex-session-1', agent: 'codex' };
       await router.handleCardAction(value, ctx);
       expect(handleResumeCompact).toHaveBeenCalledWith(value, ctx);
+    });
+
+    it('test_anchor_stop_session_card_action_dispatches_to_bridge', async () => {
+      // 验证什么：恢复卡的「终止」回调必须分发到 bridge.handleStopSession；
+      // 缺失会让宿主侧仍 running 的会话卡按钮点了无反应。
+      const handleStopSession = vi.fn().mockResolvedValue(undefined);
+      const { router } = createRouter({ bridge: createMockBridge({ handleStopSession }) });
+      const value = {
+        cmd: 'stop.session',
+        sessionId: 'dsh-session-1',
+        agent: 'dsh',
+        cwd: '/home/user/project',
+      };
+      await router.handleCardAction(value, ctx);
+      expect(handleStopSession).toHaveBeenCalledWith(value, ctx);
     });
 
     it('test_anchor_auto_resume_card_kimi_acp_has_compact_button', async () => {
@@ -3734,6 +3754,34 @@ describe('CommandRouter', () => {
     });
     await router.handle('/stop', ctx);
     expect(sendResult).toHaveBeenCalledWith({ text: expect.stringContaining('已停止 2 个') }, ctx);
+  });
+
+  it('/stop 本地 activeRuns miss 时 fallback 到宿主轮次取消', async () => {
+    // 验证什么：恢复会话的 turn 跑在 DSH host 里，本地 activeRuns 为空；
+    // /stop 必须按当前 sessionId 走 session/cancel，而不是回「没有进程」。
+    const stopCurrentHostTurn = vi.fn().mockResolvedValue({
+      status: 'cancelled',
+      sessionId: 'dsh-session-1',
+      agentKind: 'dsh',
+      goalPhase: 'paused',
+    });
+    const sendResult = vi.fn().mockResolvedValue(true);
+    const { router } = createRouter({
+      defaultAgent: 'dsh',
+      bridge: createMockBridge({
+        sendResult,
+        interruptCurrentRunDetailed: vi.fn().mockResolvedValue({ stopped: false }),
+        stopCurrentHostTurn,
+      }),
+    });
+
+    await router.handle('/stop', ctx);
+
+    expect(stopCurrentHostTurn).toHaveBeenCalledWith(ctx.userId);
+    expect(sendResult).toHaveBeenCalledWith(
+      { text: expect.stringContaining('已终止 DSH 会话') },
+      ctx,
+    );
   });
 
   it('/e is alias for /exit', async () => {

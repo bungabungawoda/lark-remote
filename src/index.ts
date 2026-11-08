@@ -69,7 +69,12 @@ import {
 import { classifyRejection } from './error-classification.js';
 import { WorkspaceStore } from './workspace/index.js';
 import { buildSessionHistoryCard, pickResumeCardEvents } from './card/card-helpers.js';
-import { newSessionButton, resumeCompactButton, agentDisplayName } from './card/card-shared.js';
+import {
+  cardButton,
+  newSessionButton,
+  resumeCompactButton,
+  agentDisplayName,
+} from './card/card-shared.js';
 import path from 'node:path';
 import { setupMessageHandlers } from './message-handlers.js';
 
@@ -115,11 +120,25 @@ async function sendAutoResumeCard(
   const eventsToShow = pickResumeCardEvents(state.events, MAX_HISTORY_EVENTS);
   const hiddenCount = state.events.length - eventsToShow.length;
 
-  // Action buttons: Compact (runCompact-capable runner) + new session.
+  // Action buttons: Compact (idle only) / host stop (running only) + new session.
   const agentKind = state.agentKind ?? 'claude';
   const actionButtons: object[] = [];
   if (compactSupported && !stillRunning) {
     actionButtons.push(resumeCompactButton(session.sessionId, state.agentKind ?? 'codex'));
+  }
+  if (stillRunning) {
+    actionButtons.push(
+      cardButton(
+        '⏹ 终止',
+        {
+          cmd: 'stop.session',
+          sessionId: session.sessionId,
+          agent: agentKind,
+          cwd,
+        },
+        { type: 'danger' },
+      ),
+    );
   }
   actionButtons.push(newSessionButton());
 

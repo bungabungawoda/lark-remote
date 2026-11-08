@@ -28,6 +28,7 @@ import type {
   ApprovalView,
   BackgroundJobRoster,
   GoalView,
+  HostStopOutcome,
   ResultEvent,
   SpawnOptions,
   StopOutcome,
@@ -1812,6 +1813,111 @@ export class DshRunner implements AgentRunner {
       getLogger().warn(`[dsh] stop failed session=${sessionId}: ${(err as Error).message}`);
       return { status: 'unconfirmed', sessionId, detail: (err as Error).message };
     }
+  }
+
+  /**
+   * Cancel a turn that runs in the shared DSH host but was not started by this
+   * runner instance (resumed session, previous bridge instance, DSH Web UI).
+   *
+   * 本地 run 仍走 stop()（要撤回未认领 prompt、持有 activeAbort）；这里只拿
+   * sessionId：
+   * 1. openTurnState 预检：closed 直接 noop，不把空闲会话报成"已停止"；
+   * 2. cancelWithRetry + waitForClosed，closed 才算 cancelled；
+   * 3. 期间持 per-session stop gate，重试 cancel 不会打到继任 turn；
+   * 4. 取消成功后 best-effort 读 goal：goal-round-driver 在 goal turn 被
+   *    aborted 后会 pause goal（非 goal turn 则 disarm），结果交给调用方展示。
+   */
+  async cancelHostTurn(sessionId: string): Promise<HostStopOutcome> {
+    if (!sessionId) return { status: 'noop' };
+    if (this.activeSessionId === sessionId && this.activeAbort) {
+      return await this.withHostStopGoal(sessionId, await this.stop({ immediate: true }));
+    }
+
+    let releaseGate = (): void => {};
+    const gate = new Promise<void>((resolve) => {
+      releaseGate = resolve;
+    });
+    this.pendingStopGate = gate;
+    this.pendingStopSessionId = sessionId;
+    let settled = false;
+    const release = (): void => {
+      if (settled) return;
+      settled = true;
+      releaseGate();
+    };
+
+    try {
+      const deadline = Date.now() + STOP_BUDGET_MS;
+      const open = await this.client.openTurnState(sessionId, {
+        timeoutMs: this.stopProbeTimeout(deadline),
+      });
+      if (open === 'closed') {
+        release();
+        return { status: 'noop', sessionId };
+      }
+      if (!(await this.cancelWithRetry(sessionId, deadline))) {
+        release();
+        getLogger().warn(`[dsh] host stop unconfirmed session=${sessionId}: cancel not accepted`);
+        return { status: 'unconfirmed', sessionId, detail: 'session/cancel was not accepted' };
+      }
+      const state = await this.waitForClosed(sessionId, deadline);
+      if (state !== 'closed') {
+        // Slow unwind or a lost cancel: one more session-scoped attempt while
+        // the successor prompt is still gated, then report honestly.
+        await this.cancelWithRetry(sessionId, deadline);
+      }
+      const finalState = state === 'closed' ? state : await this.waitForClosed(sessionId, deadline);
+      release();
+      if (finalState === 'closed') {
+        getLogger().info(`[dsh] host turn cancelled session=${sessionId}`);
+        return await this.withHostStopGoal(sessionId, { status: 'cancelled', sessionId });
+      }
+      getLogger().warn(`[dsh] host stop unconfirmed session=${sessionId}: state=${finalState}`);
+      return {
+        status: 'unconfirmed',
+        sessionId,
+        detail:
+          finalState === 'unknown'
+            ? 'turn state unavailable after cancel'
+            : 'turn still open after cancel',
+      };
+    } catch (err) {
+      release();
+      getLogger().warn(`[dsh] host stop failed session=${sessionId}: ${(err as Error).message}`);
+      return { status: 'unconfirmed', sessionId, detail: (err as Error).message };
+    } finally {
+      release();
+      if (this.pendingStopGate === gate) {
+        this.pendingStopGate = null;
+        this.pendingStopSessionId = null;
+      }
+    }
+  }
+
+  /** Attach the post-cancel goal observation to a successful host stop. */
+  private async withHostStopGoal(
+    sessionId: string,
+    outcome: StopOutcome,
+  ): Promise<HostStopOutcome> {
+    if (outcome.status !== 'cancelled') return outcome;
+    // goal pause/disarm is driven by the host's idle transition; give it a
+    // moment so the card can say "目标已暂停" instead of the pre-cancel snapshot.
+    await delay(150);
+    try {
+      const state = await this.client.goalState(sessionId, {
+        timeoutMs: GOAL_PROBE_TIMEOUT_MS,
+      });
+      if (state.known && state.goal) {
+        return {
+          ...outcome,
+          goalPhase: state.goal.phase,
+          ...(state.goal.activation ? { goalActivation: state.goal.activation } : {}),
+        };
+      }
+    } catch {
+      /* best effort: the turn is already confirmed cancelled */
+    }
+    return outcome;
   }
 
   /**

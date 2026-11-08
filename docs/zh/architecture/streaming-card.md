@@ -49,8 +49,9 @@ Run/Bash 卡片的 CardKit 2.0 单卡流式架构说明，覆盖数据流、状�
 
 /stop 或 stop cardAction
   → control lane（绕过 work queue）
-  → Bridge.interruptCurrentRun()
-  → RunCardSession.finish(interrupted) + runner.stop()
+  → 本地 activeRun？Bridge.interruptCurrentRun()
+  → 否则 HostTurnStop(sessionId) → DshRunner.cancelHostTurn()
+  → RunCardSession.finish(interrupted) + runner.stop() / session/cancel
 ```
 
 核心模块：
@@ -238,7 +239,10 @@ run。
 
 停止控制不能进入该 queue，否则会等当前 run 完成后才执行。入口规则：
 
-- exact `/stop` 直接调用 `interruptCurrentRun()`；
+- exact `/stop` 先调 `interruptCurrentRun()`；本地 activeRuns/bash 全部 miss 时，
+  按当前 cwd/session 走 `HostTurnStop`（DSH `session/cancel` + idle 校验）；
+- 恢复卡 / 自动恢复卡的「终止」按钮携带 sessionId/agent/cwd，直接走 `HostTurnStop`；
+  宿主 goal turn 被取消后 goal-round-driver 会把 goal 置 paused；
 - stop cardAction 优先使用按钮的 runId；回调里的卡片 `messageId` 也会传入；
 - Bridge 校验 userId、chatId；runId 精确匹配优先。若 runId 缺失或不匹配，
   只有回调 messageId 正是当前 active run 的卡片时才按卡片身份命中；

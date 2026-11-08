@@ -57,6 +57,8 @@ export interface ResumeCommandDeps {
     activeRunRunId?: string;
     cwd: string;
     compact?: { sessionId: string; agentKind: string };
+    /** 宿主侧仍有 turn：绑定 sessionId/cwd/agent，走 session/cancel。 */
+    hostStop?: { sessionId: string; agentKind: string; cwd: string };
     newSession: boolean;
   }): object[];
   canCompact(agent: string, cwd?: string): boolean;
@@ -173,6 +175,12 @@ function resumeSessionCard(
     compact:
       !display.hostRunning && deps.canCompact(agentKind, cwd)
         ? { sessionId: sessionIdArg, agentKind }
+        : undefined,
+    // 宿主 turn 没有本地 runId，按钮携带 sessionId 走 session/cancel；
+    // 本地 activeRun 存在时由 isActive 的 stop 覆盖。
+    hostStop:
+      !display.isActive && display.hostRunning
+        ? { sessionId: sessionIdArg, agentKind, cwd }
         : undefined,
     newSession: true,
   });

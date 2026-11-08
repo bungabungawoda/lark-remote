@@ -18,6 +18,7 @@ import { RunUsageCollector } from './run-usage.js';
 import type { AgentKind } from '../agent-kinds.js';
 import type { StopOutcome } from '../runner/types.js';
 import { CompactLifecycle, runnerSupportsCompact, terminalReactionEmoji } from './compact.js';
+import { HostTurnStop, type HostTurnStopResult } from './host-stop.js';
 import { JobWatchLifecycle } from './job-watch.js';
 import { BashRunLifecycle } from './bash-run.js';
 import {
@@ -398,6 +399,13 @@ export class Bridge {
    */
   private readonly bashRuns: BashRunLifecycle;
 
+  /**
+   * 宿主轮次的 stop（见 host-stop.ts）：恢复会话 / 上一个实例留下的 turn
+   * 没有本地 activeRun，但 DSH 仍认 sessionId。`/stop` 的 fallback 与恢复卡
+   * 「终止」按钮共用这一条路径。
+   */
+  private readonly hostStop: HostTurnStop;
+
   constructor(deps: BridgeDeps) {
     this.connector = deps.connector;
     this.sessionStore = deps.sessionStore;
@@ -442,6 +450,13 @@ export class Bridge {
       sendResult: (result, ctx) => this.sendResult(result, ctx),
       finishTurnReactions: (ctx, emoji) => this.finishTurnReactions(ctx, emoji),
     });
+    this.hostStop = new HostTurnStop({
+      sessionStore: this.sessionStore,
+      sessionReaderRegistry: this.sessionReaderRegistry,
+      getConfig: () => this.config,
+      getRunner: (cwd, kind, opts) => this.getRunner(cwd, kind, opts),
+      sendResult: (result, ctx) => this.sendResult(result, ctx),
+    });
   }
 
   /**
@@ -461,8 +476,9 @@ export class Bridge {
        * 拖成「下一轮仍用旧配置」——旧实现只靠 finalizeRun 的守卫消费 stale，
        * 而 `/stop` 会先摘槽位让守卫失效，stale 便留到再下一轮。
        *
-       * 仅在开跑路径（forwardToClaude / streamCompact）传 true：hasRunCompact、
-       * killBackgroundJob 这类「借 runner 看一眼」的调用不能触发实例替换。
+       * 仅在开跑路径（forwardToClaude / streamCompact）与宿主轮次的 stop
+       * 传 true：hasRunCompact、killBackgroundJob 这类「借 runner 看一眼」
+       * 的调用不能触发实例替换。
        */
       replaceStale?: boolean;
     },
@@ -2473,6 +2489,29 @@ export class Bridge {
     ctx: CommandContext,
   ): Promise<void> {
     await this.compact.handleResumeCompact(value, ctx);
+  }
+
+  // =============================================================================
+  // 宿主轮次 stop 入口（DSH）
+  // =============================================================================
+  // 实现住在 host-stop.ts：恢复卡「终止」按钮与 /stop 的 fallback 共用同一
+  // 条 session/cancel 路径；本地 activeRuns/bash 的停止语义不变。
+
+  /** 恢复卡「终止」按钮：取消卡上指定 session 的宿主 turn。 */
+  async handleStopSession(
+    value: { sessionId?: string; agent?: string; cwd?: string },
+    ctx: CommandContext,
+  ): Promise<void> {
+    await this.hostStop.handleCardAction(value, ctx);
+  }
+
+  /**
+   * `/stop` 在本地 activeRuns/bash 全部 miss 后的 fallback：只停当前用户、
+   * 当前 cwd、默认 agent 的当前 session；非 DSH / 没有 session 时返回 undefined，
+   * 调用方维持「当前没有运行中的进程」。
+   */
+  async stopCurrentHostTurn(userId: string): Promise<HostTurnStopResult | undefined> {
+    return await this.hostStop.stopCurrent(userId);
   }
 
   // =============================================================================

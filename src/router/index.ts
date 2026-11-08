@@ -4,6 +4,7 @@ import YAML from 'yaml';
 import type { SessionStore, SessionReaderRegistry } from '../session/index.js';
 import type { AppConfig } from '../config/index.js';
 import type { Bridge, CommandContext, CommandResult } from '../bridge/index.js';
+import { formatHostStopResult } from '../bridge/host-stop.js';
 import type { AgentBinding } from '../bridge/queue-manager.js';
 import {
   getConfigDir,
@@ -569,7 +570,8 @@ type CardActionMethod =
   | 'handleOrderTextInput'
   | 'enqueueConfigAction'
   | 'handleCompact'
-  | 'handleResumeCompact';
+  | 'handleResumeCompact'
+  | 'handleStopSession';
 
 type CardActionArgStyle = 'path' | 'ctxOnly' | 'voidCall' | 'returnCall';
 
@@ -612,6 +614,7 @@ const CARD_ACTION_SPECS = new Map<string, { method: CardActionMethod; args: Card
   ['config.save', { method: 'enqueueConfigAction', args: 'returnCall' }],
   ['compact', { method: 'handleCompact', args: 'voidCall' }],
   ['resume.compact', { method: 'handleResumeCompact', args: 'voidCall' }],
+  ['stop.session', { method: 'handleStopSession', args: 'voidCall' }],
 ]);
 
 type CommandMethod =
@@ -1122,6 +1125,11 @@ export class CommandRouter {
   /** resume.compact: 对 /resume 选中的历史会话发起压缩（bridge 收口）。 */
   private async handleResumeCompact(value: CardActionPayload, ctx: CommandContext): Promise<void> {
     await this.bridge.handleResumeCompact(value, ctx);
+  }
+
+  /** stop.session: 恢复卡上的「终止」——取消指定 session 的宿主 turn。 */
+  private async handleStopSession(value: CardActionPayload, ctx: CommandContext): Promise<void> {
+    await this.bridge.handleStopSession(value, ctx);
   }
 
   /**
@@ -3054,7 +3062,15 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
       userId: ctx.userId,
       chatId: ctx.chatId,
     });
-    if (!interrupt.stopped) return { text: '当前没有运行中的进程' };
+    if (!interrupt.stopped) {
+      // 本地没有 activeRun/bash：恢复会话的 turn 可能仍在 DSH 宿主里跑。
+      // 只按当前用户/cwd/默认 agent 的当前 session 取消，不扫别的会话。
+      const hostStop = await this.bridge.stopCurrentHostTurn(ctx.userId);
+      if (hostStop && hostStop.status !== 'noop') {
+        return { text: formatHostStopResult(hostStop) };
+      }
+      return { text: '当前没有运行中的进程' };
+    }
     if (interrupt.stop?.status === 'unconfirmed') {
       const name = interrupt.agentKind ? agentDisplayName(interrupt.agentKind) : 'agent';
       return {
@@ -3363,6 +3379,12 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
       // 宿主侧仍有 turn 在跑时压缩必然被拒（DSH commands/execute 仅空闲可执行），
       // 不能给一个注定失败的按钮。
       compact: hostRunning ? undefined : opts.compact,
+      // 宿主 turn 无法用本地 runId 停止；按钮携带 sessionId，走 session/cancel。
+      // isActive 时本地 stop 优先，不重复渲染。
+      hostStop:
+        !isActive && hostRunning
+          ? { sessionId: opts.sessionId, agentKind: opts.agentKind, cwd: opts.cwd }
+          : undefined,
       newSession: true,
     });
 
@@ -3471,6 +3493,8 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
     activeRunRunId?: string;
     cwd: string;
     compact?: { sessionId: string; agentKind: string };
+    /** 宿主侧仍有 turn：绑定 sessionId/cwd/agent，走 session/cancel。 */
+    hostStop?: { sessionId: string; agentKind: string; cwd: string };
     newSession?: boolean;
   }): object[] {
     const actions: object[] = [];
@@ -3483,7 +3507,21 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
         ),
       );
     }
-    if (opts.compact && !opts.isActive) {
+    if (opts.hostStop && !opts.isActive) {
+      actions.push(
+        cardButton(
+          '⏹ 终止',
+          {
+            cmd: 'stop.session',
+            sessionId: opts.hostStop.sessionId,
+            agent: opts.hostStop.agentKind,
+            cwd: opts.hostStop.cwd,
+          },
+          { type: 'danger' },
+        ),
+      );
+    }
+    if (opts.compact && !opts.isActive && !opts.hostStop) {
       actions.push(resumeCompactButton(opts.compact.sessionId, opts.compact.agentKind));
     }
     if (opts.newSession) {
