@@ -5,6 +5,9 @@
  * Flow per run: session/create(cwd) (when no sessionId) → model/permission
  * alignment → synthetic system/init (DSH has no init event) → session/prompt
  * (mode:'queue') → consume `session/follow` + `$events` until turn/end.
+ * While the session goal is armed the run keeps following the host-driven
+ * next rounds (same card); the terminal result is emitted only when the goal
+ * stops or stops advancing.
  *
  * stop() → session/cancel + abort the mux subscription. killOrphan is a no-op
  * (no local process); registerExitHandlers cancels the in-flight turn
@@ -37,6 +40,7 @@ import { DshApprovalTracker, type DshApprovalAudit, type DshApprovalBinding } fr
 import { mergeAsync } from './merge.js';
 import { getLogger } from '../../logger/index.js';
 import { registerExitCleanup, unregisterExitCleanup } from '../common/spawning-runner.js';
+import { makeTurnStartedEvent } from '../common/turn-started.js';
 import { cancelSessionSync } from './exit-cancel.js';
 import { DshInflightStore } from './inflight.js';
 import type { DshDaemon } from './daemon.js';
@@ -149,6 +153,11 @@ export interface DshRunnerOptions {
    * 在途 prompt 的持久化记录文件（启动对账用）。省略 = 不记录（测试、临时实例）。
    */
   inflightPath?: string;
+  /**
+   * goal 轮次之间的静默窗口（ms）。turn/end 后 driver 正常在毫秒级起下一轮；
+   * 窗口内没有新的 turn/start 就收尾，避免 armed goal 卡住整个 run。
+   */
+  goalQuiescenceMs?: number;
 }
 
 /** Budget for one session/cancel attempt on stop. */
@@ -159,6 +168,13 @@ const CANCEL_TIMEOUT_MS = 5_000;
  * 但绝不允许一次慢投影把整个 run 的启动/收尾拖住。
  */
 const GOAL_PROBE_TIMEOUT_MS = 5_000;
+/**
+ * 一轮结束后等待 goal 下一轮启动的静默窗口。
+ *
+ * DSH 的 goal-round-driver 在 turn/end 后毫秒级起下一轮；等不到就说明 driver
+ * 没在续跑（disarmed 但读不到 activation、或宿主异常），必须收尾。
+ */
+const DEFAULT_GOAL_QUIESCENCE_MS = 10_000;
 /** Total stop budget: withdraw + cancel + verify must not hold the lane forever. */
 const STOP_BUDGET_MS = 5_000;
 /** A prompt request that was still in flight can land after stop's abort. */
@@ -297,6 +313,21 @@ type PreparedTurn =
 
 type GoalState = { last: GoalView | null | undefined; known: boolean };
 
+/**
+ * 一轮结束后是否继续跟随 goal 的下一轮。
+ *
+ * `known=false`（读不到）不能当成"没有目标"，但也不能让所有普通 run 都多等
+ * 一个静默窗口：只有已经观测到 active 目标时才继续等下一轮；从未观测到目标
+ * 时按既有行为收尾（卡片写「目标未确认」，不冻结整个桥）。
+ */
+function goalCanContinue(goal: GoalState): boolean {
+  if (!goal.known) return goal.last?.phase === 'active';
+  const current = goal.last;
+  if (!current || current.phase !== 'active') return false;
+  if (current.activation === 'disarmed') return false;
+  return current.roundsStarted < current.maxGoalRounds;
+}
+
 interface SessionEventContext {
   sessionId: string;
   translator: DshTranslator;
@@ -434,6 +465,7 @@ export class DshRunner implements AgentRunner {
   private readonly agentPreset: string | undefined;
   private configuredPermissionPreset: string | undefined;
   private readonly reasoningEffort: string | undefined;
+  private readonly goalQuiescenceMs: number;
 
   private activeAbort: AbortController | null = null;
   private activeSessionId: string | null = null;
@@ -491,6 +523,7 @@ export class DshRunner implements AgentRunner {
     this.agentPreset = opts.agentPreset;
     this.configuredPermissionPreset = opts.permissionPreset;
     this.reasoningEffort = opts.reasoningEffort;
+    this.goalQuiescenceMs = opts.goalQuiescenceMs ?? DEFAULT_GOAL_QUIESCENCE_MS;
     this.inflight = opts.inflightPath ? new DshInflightStore(opts.inflightPath) : null;
     this.client = new DshClient(opts.host ?? 'http://127.0.0.1:3080', {
       dshHome: opts.dshHome,
@@ -722,31 +755,104 @@ export class DshRunner implements AgentRunner {
           return;
         }
 
-        try {
-          for await (const ev of this.runTurn(
-            sessionId,
-            opts.cwd,
-            submitted.prePromptSeq,
-            promptRequestId,
-            abort,
-            { last: prepared.lastGoal, known: prepared.goalKnown },
-          )) {
-            yield ev;
-            if (ev.type === 'result') {
+        const goal: GoalState = { last: prepared.lastGoal, known: prepared.goalKnown };
+        // 状态条累计值跨 goal 轮次复用：`contextWindow` 同时给每轮 result 的
+        // usage.context_limit 兜底（DSH 读取端不产出上限），重置会让后续轮的
+        // 卡片丢失百分比。
+        const live: LiveStatusAccumulator = {};
+        let initialSeq = submitted.prePromptSeq;
+        let turnPromptRequestId: string | undefined = promptRequestId;
+        let continuation = false;
+
+        while (!abort.signal.aborted) {
+          // 本轮自己的 abort 控制器：主 stop 与 quiescence 超时都能打断它，
+          // 但只有 quiescence 超时会走「正常收尾」，主 stop 仍走 interrupted。
+          const roundAbort = new AbortController();
+          const onRunAbort = (): void => roundAbort.abort();
+          abort.signal.addEventListener('abort', onRunAbort, { once: true });
+          let lastSeq = initialSeq;
+          let sawTurnStart = false;
+          let quiescenceTimedOut = false;
+          let quiescenceTimer: ReturnType<typeof setTimeout> | undefined;
+          if (continuation) {
+            quiescenceTimer = setTimeout(() => {
+              if (sawTurnStart) return;
+              quiescenceTimedOut = true;
+              roundAbort.abort();
+            }, this.goalQuiescenceMs);
+          }
+
+          let roundSawResult = false;
+          try {
+            for await (const ev of this.runTurn(
+              sessionId,
+              opts.cwd,
+              initialSeq,
+              turnPromptRequestId,
+              roundAbort,
+              goal,
+              live,
+              (event) => {
+                if (event.seq > lastSeq) lastSeq = event.seq;
+                if (!sawTurnStart && event.type === 'turn/start') {
+                  sawTurnStart = true;
+                  if (quiescenceTimer) clearTimeout(quiescenceTimer);
+                }
+              },
+              continuation,
+            )) {
+              yield ev;
+              if (ev.type === 'result') roundSawResult = true;
+            }
+          } catch (err) {
+            if (abort.signal.aborted) throw err;
+            if (quiescenceTimedOut) {
+              getLogger().info(
+                `[dsh] no goal turn started within ${this.goalQuiescenceMs}ms; ending run session=${sessionId}`,
+              );
               terminalEmitted = true;
               return;
             }
+            getLogger().error(`[dsh] run consume error: ${(err as Error).message}`);
+            yield {
+              type: 'result',
+              subtype: 'error',
+              session_id: sessionId,
+              errorMessage: `DSH stream error: ${(err as Error).message}`,
+            };
+            terminalEmitted = true;
+            return;
+          } finally {
+            if (quiescenceTimer) clearTimeout(quiescenceTimer);
+            abort.signal.removeEventListener('abort', onRunAbort);
           }
-        } catch (err) {
-          if (abort.signal.aborted) throw err;
-          getLogger().error(`[dsh] run consume error: ${(err as Error).message}`);
-          yield {
-            type: 'result',
-            subtype: 'error',
-            session_id: sessionId,
-            errorMessage: `DSH stream error: ${(err as Error).message}`,
-          };
-          terminalEmitted = true;
+
+          if (abort.signal.aborted) break;
+          if (quiescenceTimedOut) {
+            getLogger().info(
+              `[dsh] goal did not start another round within ${this.goalQuiescenceMs}ms; ending run session=${sessionId}`,
+            );
+            terminalEmitted = true;
+            return;
+          }
+          // 流自然结束但没见到 result：交给外层兜底输出 error result。
+          if (!roundSawResult) break;
+          if (!goalCanContinue(goal)) {
+            const current = goal.last;
+            getLogger().info(
+              `[dsh] goal follow ended session=${sessionId} known=${goal.known} phase=${current?.phase ?? 'none'} activation=${current?.activation ?? 'unknown'} rounds=${current?.roundsStarted ?? '?'}/${current?.maxGoalRounds ?? '?'}`,
+            );
+            terminalEmitted = true;
+            return;
+          }
+
+          const current = goal.last;
+          getLogger().info(
+            `[dsh] goal continues; following next round session=${sessionId} rounds=${current?.roundsStarted ?? '?'}/${current?.maxGoalRounds ?? '?'} activation=${current?.activation ?? 'unknown'}`,
+          );
+          initialSeq = lastSeq;
+          turnPromptRequestId = undefined;
+          continuation = true;
         }
       } catch (err) {
         if (!abort.signal.aborted) {
@@ -874,6 +980,11 @@ export class DshRunner implements AgentRunner {
    * events; `$events` owns the answerable approval waterfall. The merged
    * stream keeps either transport from starving the other.
    *
+   * `initialSeq` is the watermark to resume from. The first call passes the
+   * prompt's water mark; goal-continuation rounds pass the previous turn's
+   * last durable seq and no promptRequestId (the host, not a prompt, started
+   * that turn).
+   *
    * 事件源分派：projection（goal + 状态条）→ handleProjectionItem；
    * $events waterfall（审批/提问）→ handleApprovalWaterfallItem；
    * assistant-stream 直转发（translator 持有本 turn 的 usage 累计状态）；
@@ -882,10 +993,13 @@ export class DshRunner implements AgentRunner {
   private async *runTurn(
     sessionId: string,
     cwd: string,
-    prePromptSeq: number,
-    promptRequestId: string,
+    initialSeq: number,
+    promptRequestId: string | undefined,
     abort: AbortController,
-    goal: { last: GoalView | null | undefined; known: boolean },
+    goal: GoalState,
+    live: LiveStatusAccumulator,
+    onDurableEvent?: (event: DshSessionEvent) => void,
+    continuation = false,
   ): AsyncGenerator<AgentEvent> {
     const streamAbort = new AbortController();
     const signal = AbortSignal.any([abort.signal, streamAbort.signal]);
@@ -896,14 +1010,9 @@ export class DshRunner implements AgentRunner {
     this.toolCalls.clear();
     this.approvalChannelAvailable = true;
 
-    // 状态条累计值（contextPressure / sessionStats 投影）。`contextWindow` 同时
-    // 用于给 result.usage.context_limit 兜底：DSH 的会话读取端不产出上限，
-    // 没有它终态卡只能显示绝对量、算不出百分比。
-    const live: LiveStatusAccumulator = {};
-
     try {
       const sources = [
-        this.client.sessionEvents(sessionId, signal, prePromptSeq, promptRequestId),
+        this.client.sessionEvents(sessionId, signal, initialSeq, promptRequestId),
         this.client.approvalEvents(sessionId, signal),
         this.client.controlFrames(signal),
       ];
@@ -952,6 +1061,19 @@ export class DshRunner implements AgentRunner {
         // 事件源 3b：session/follow 事件（正文/工具行/result 收尾，含 jobs +
         // goal 复核）。result 之后的收尾事件由 handler 按序返回，见到 result
         // 即结束本 turn（与原 yield-then-return 逐字等价）。
+        onDurableEvent?.(item.event);
+        if (continuation && item.event.type === 'turn/start') {
+          // goal 的下一轮真的开始了：先把卡片从 finalizing 拉回 running。
+          // 只在见到 durable turn/start 时发——静默窗口里没等到下一轮就不该
+          // 把卡片伪造成"运行中"。
+          continuation = false;
+          const turn = (item.event.data as { turn?: unknown }).turn;
+          yield makeTurnStartedEvent(
+            sessionId,
+            typeof turn === 'number' ? String(turn) : '',
+            'turn',
+          );
+        }
         const eventEvents = await this.handleSessionEvent(
           item.event,
           sessionId,

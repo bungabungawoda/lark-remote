@@ -147,9 +147,19 @@ Run/Bash 卡片的 CardKit 2.0 单卡流式架构说明，覆盖数据流、状�
 maxGoalRounds）。goal 是**跨 turn** 的自动续跑单元：`turn/end` 之后 12 ms 内
 `goal-round-driver` 就可能起下一轮。因此：
 
+- armed（或 activation 读不到）的 goal 在 `turn/end` 后**不收尾**：runner 现读
+  `goals/get`，还有轮次余量就从最后一个 seq 重开 `session/follow`，把下一轮继续
+  渲进同一张卡。每轮 `result` 先把卡片置为 finalizing；下一轮开始前补发 synthetic
+  `turn_started` 把卡片拉回 running，并把上一轮回答归档进 blocks（标记
+  `archivedAnswer`，不再参与下一轮的 finalAnswer 提升）。只有 complete / paused /
+  blocked / disarmed / 轮次耗尽，或静默窗口（默认 10s）内没有新的 `turn/start`，
+  才发终态 result；
+- `goal_continuing` 因此只表示「流结束时 goal 仍 active」：disarmed（/stop、宿主
+  重启、agent error）或静默窗口超时。armed 且正常续跑时卡片不会停在这个终态；
 - 运行中卡片在状态行下方渲染 `🎯 **目标进行中** · 第 r/N 轮` + 目标摘要（长目标进折叠面板）；
-- 收尾时若 goal 仍 `active`，终态是 `goal_continuing`（标题「本轮结束（目标继续）」），
-  summary 首行写「本轮结束 · 目标仍在继续」，绝不出现「已完成」；
+- 收尾时若 goal 仍 `active`（disarmed 或静默窗口超时），终态是 `goal_continuing`
+  （标题「本轮结束（目标继续）」），summary 首行写「本轮结束 · 目标仍在继续」，
+  绝不出现「已完成」；
 - `phase='active'` 只说明 goal 在 durable 状态上还活着，**会不会自动起下一轮**取决于
   宿主进程内的 `activation`（`goals/get`，投影里没有）：宿主重启、`/stop`、agent error
   之后 goal 仍是 active 但已 `disarmed`，driver 不再起轮。disarmed 时标题/summary 写

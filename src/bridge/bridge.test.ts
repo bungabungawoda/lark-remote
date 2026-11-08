@@ -1028,6 +1028,84 @@ describe('Bridge.forwardToClaude', () => {
     expect(vi.mocked(connector.addReaction)).toHaveBeenCalledWith(ctx.messageId, 'OnIt');
   });
 
+  it('dsh goal 跨轮次继续时同一张卡保持运行，上一轮回答归档、最后一轮成为最终回答', async () => {
+    // runner 在 goal armed 时不会在 turn/end 返回；它补发 turn_started 把卡
+    // 从 finalizing 拉回 running，并继续推送下一轮。bridge 侧不能把第一条
+    // result 当成 run 结束，否则卡片会停在「完成中」。
+    const runner = createStubRunner({
+      mode: 'streaming',
+      events: [
+        { type: 'system', subtype: 'init', session_id: 's-goal-live', cwd: tmpDir, model: 'DSH' },
+        {
+          type: 'goal_state',
+          goal: {
+            id: 'goal-live',
+            objective: '完成 notes-app 实时链路 MVP',
+            phase: 'active',
+            roundsStarted: 1,
+            maxGoalRounds: 40,
+            activation: 'armed',
+          },
+          known: true,
+        },
+        {
+          type: 'assistant',
+          message: { content: [{ type: 'text', text: 'first answer' }] },
+        },
+        {
+          type: 'result',
+          subtype: 'success',
+          session_id: 's-goal-live',
+          finalAnswerText: 'first answer',
+        },
+        {
+          type: 'turn_started',
+          threadId: 's-goal-live',
+          turnId: '',
+          operationKind: 'turn',
+        },
+        {
+          type: 'assistant',
+          message: { content: [{ type: 'text', text: 'second answer' }] },
+        },
+        {
+          type: 'result',
+          subtype: 'success',
+          session_id: 's-goal-live',
+          finalAnswerText: 'second answer',
+        },
+        {
+          type: 'goal_state',
+          goal: {
+            id: 'goal-live',
+            objective: '完成 notes-app 实时链路 MVP',
+            phase: 'complete',
+            roundsStarted: 2,
+            maxGoalRounds: 40,
+          },
+          known: true,
+        },
+      ],
+    });
+    (runner as unknown as { runCompact: unknown }).runCompact = async function* () {};
+    const config = AppConfigSchema.parse({
+      feishu: { appId: 'test', appSecret: 'test' },
+      claude: { model: 'opus', stopGraceMs: 5000 },
+      cwd: { default: '' },
+      defaultAgent: 'dsh',
+    });
+    const { bridge, sessionStore, connector } = makeBridge({ runner, config });
+    sessionStore.setCwd(ctx.userId, tmpDir);
+
+    await bridge.forwardToClaude('继续', ctx);
+
+    const json = JSON.stringify(connector._cards.at(-1));
+    expect(json).toContain('目标已完成');
+    // 第二轮的 result 才是终态来源，不能被第一条 result 的 finalizing 卡死。
+    expect(json).toContain('second answer');
+    expect(json).toContain('"cmd":"compact"');
+  });
+
   it('dsh goal 已 compete 时仍按普通 done 收尾，compact 保留', async () => {
     const runner = createStubRunner({
       mode: 'streaming',
