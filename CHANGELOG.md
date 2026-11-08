@@ -5,6 +5,37 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.0] - 2026-11-08
+
+### 新增
+
+- **新增 CodeBuddy 与 Qoder 两个 agent**：两者都通过 ACP 长驻连接接入（`codebuddy --acp`、`qodercn --acp`），补齐配置读写、`/config` 卡片字段、会话列表与 JSONL 读取、审批映射。Qoder 的传输层同时从 stream-json 子进程整体切到 ACP：审批走标准 `session/request_permission` 弹出飞书审批卡，中断走 `session/cancel`，模型、推理强度与上下文窗口随 spawn 旗标下发；用量与积分经 `usage_update` 折叠进结果卡
+- **Qoder 推理强度改为动态探测档位**：档位集合不再写死，改为对 CLI 传非法值触发报错、从报错文本解析全表，随安装版本变化；探测失败时回退文本输入
+- **Qoder 上下文窗口支持预设下拉与自定义输入**：卡片提供 1M / 500K 预设与自定义输入，留空或选默认时不下发 `--context-window`，跟随 Qoder 自身配置
+- **Qoder 用量区改为积分行**：结果不含 token 明细，done 卡不再渲染 Model / USD 等空行，积分可得时显示 Cost 原值；`/s` 状态行的上下文窗口按 1M / 500K 显示，不再出现长串数字
+- **DSH run 卡跨 goal 轮次持续更新**：armed goal 在 turn/end 后不立即收尾，还有轮次余量就从最后 seq 重开 follow，把下一轮续渲进同一张卡；上一轮回答归档进 blocks，不参与下一轮 finalAnswer 提升
+- **DSH 支持按 session 终止宿主轮次**：本地没有 activeRun 时，`/stop` 与恢复卡终止按钮按 sessionId 走 `HostTurnStop`（`session/cancel` + idle 校验），覆盖恢复会话与宿主侧发起的 turn；取消 goal turn 会让 goal 暂停
+
+### 修复
+
+- **run 卡进度省略提示与实际保留内容一致**：进度块达到存储窗口时统一按尾部截断并留痕，不再误判为「卡片装不下」
+- **plan 面板不再重复整份快照**：plan 变更只记录最新快照，不再把整份计划重复写进历史 blocks，控制卡片体积
+- **下拉「跟随默认」改用 default 哨兵**：空串在飞书下拉里无法回显选中态，改用哨兵值表示跟随默认，读写两侧分别归一
+- **CodeBuddy 目录缓存改为 stale-while-revalidate**：缓存过期时继续渲染上次成功快照并在后台刷新，模型下拉不再退化成文本输入；刷新失败保留上次目录，只有从未探测成功才回退 settings.json
+- **CodeBuddy 目录探针进程收尾与缓存去重**：posix 组杀 `ESRCH` 时回退单 `pid` 信号，避免非组长子进程残留；目录刷新加 TTL 缓存与 in-flight 去重，连续重绘只 spawn 一次
+- **Qoder 同连接同会话跳过 `session/resume`**：会话在长驻连接上保持 active，重复 resume 会被拒；runner 跟踪连接上已打开的会话，下一轮直接 prompt
+- **宿主仍有在途 turn 时隐藏 Compact 按钮**：恢复卡渲染前读取宿主 turn 状态，存在在途轮次时压缩必然被拒，直接不渲染按钮
+- **goal 仍 active 但 disarmed 时提供 Compact**：收尾复核读取宿主 activation，disarmed 的 active goal 不再渲染「目标继续」，改为「目标未自动续跑」，并恢复 Compact 按钮
+- **发文件上传改走 fetch**：替代 axios 流式上传与专用的 no-keep-alive Agent；上传响应统一按业务码 / HTTP 状态判定，token 失效仍触发重取
+
+### 变更
+
+- **I/O 与网络热路径优化**：会话扫描与媒体上传等热路径减少重复读盘与整文件解析；DSH 凭据密钥按文件指纹缓存；ls 与启动联系人等路径补齐单测
+
+### 维护
+
+- **补充分类忽略规则**：忽略 AI 会话草稿目录、本地个人数据台账与临时工作清单，避免全量 `add` 时误入库
+
 ## [0.5.21] - 2026-11-05
 
 ### 维护
