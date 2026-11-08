@@ -118,7 +118,7 @@ async function sendAutoResumeCard(
   // Action buttons: Compact (runCompact-capable runner) + new session.
   const agentKind = state.agentKind ?? 'claude';
   const actionButtons: object[] = [];
-  if (compactSupported) {
+  if (compactSupported && !stillRunning) {
     actionButtons.push(resumeCompactButton(session.sessionId, state.agentKind ?? 'codex'));
   }
   actionButtons.push(newSessionButton());
@@ -136,7 +136,9 @@ async function sendAutoResumeCard(
     {
       agentKind,
       headerText: `📂 \`${cwd}\`\n已恢复最近会话: **${session.sessionId}**`,
-      title: `🔁 自动恢复会话 · ${agentDisplayName(agentKind)}`,
+      title: stillRunning
+        ? `⏳ 自动恢复会话（完成中） · ${agentDisplayName(agentKind)}`
+        : `🔁 自动恢复会话 · ${agentDisplayName(agentKind)}`,
       hiddenCount,
       stillRunning,
       actions: actionButtons,
