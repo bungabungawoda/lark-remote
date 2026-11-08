@@ -117,6 +117,22 @@ export abstract class BaseAcpRunner<
   }
 
   /**
+   * 本轮会话决策（setupTurn / runCompact 共用）。默认沿用既有语义：带
+   * sessionId → session/resume，否则 session/new。
+   *
+   * 'reuse' = 会话已在当前连接上 open（如 qoder 长驻连接上一轮的会话保持
+   * active，再发 session/resume 会被 CLI 拒绝 "already open (state=active)"
+   * ，2026-11-07 真机实测），跳过建会话 RPC 直接 prompt。子类按各自 CLI 的
+   * 语义覆写；默认恒不 reuse，kimi/opencode/codebuddy 行为不变。
+   */
+  protected turnSessionPlan(
+    opts: SpawnOptions,
+  ):
+    { mode: 'new' } | { mode: 'resume'; sessionId: string } | { mode: 'reuse'; sessionId: string } {
+    return opts.sessionId ? { mode: 'resume', sessionId: opts.sessionId } : { mode: 'new' };
+  }
+
+  /**
    * Dispatch the compact prompt result once fired. Default = 同步结算
    * （opencode / codebuddy 的 /compact 都在 prompt 结算前完成，无后台观察通道）：
    * 标准 prompt-settle 翻译 + 代际捕获。kimi 的压缩是后台任务，覆写本方法
@@ -390,16 +406,21 @@ export abstract class BaseAcpRunner<
     const { client } = anchor;
 
     let sessionId: string;
-    if (opts.sessionId) {
+    const plan = this.turnSessionPlan(opts);
+    if (plan.mode === 'resume') {
       const resumeParams: SessionResumeParams = {
-        sessionId: opts.sessionId,
+        sessionId: plan.sessionId,
         cwd: opts.cwd,
       };
       const resumeResult = await this.setupSessionWithRetry(opts.cwd, () =>
         client.request<SessionResumeParams, SessionResumeResult>('session/resume', resumeParams),
       );
       this.onSessionEstablished(resumeResult);
-      sessionId = opts.sessionId;
+      sessionId = plan.sessionId;
+    } else if (plan.mode === 'reuse') {
+      // 会话已在本连接 open：跳过建会话 RPC，直接沿用（qoder 的 already-open
+      // 语义，见 turnSessionPlan 注释）。
+      sessionId = plan.sessionId;
     } else {
       const newParams: SessionNewParams = { cwd: opts.cwd, mcpServers: [] };
       const newResult = await this.setupSessionWithRetry(opts.cwd, () =>
@@ -470,13 +491,21 @@ export abstract class BaseAcpRunner<
       this.onTurnSessionReady(sessionId, opts);
 
       // Cold-connection fallback: session/resume loads the session into
-      // memory. On a reused connection the session is already loaded —
-      // resume is idempotent and harmless.
-      const resumeParams: SessionResumeParams = { sessionId, cwd: opts.cwd };
-      const resumeResult = await this.setupSessionWithRetry(opts.cwd, () =>
-        client.request<SessionResumeParams, SessionResumeResult>('session/resume', resumeParams),
-      );
-      this.onSessionEstablished(resumeResult);
+      // memory. On a reused connection the session may already be open —
+      // whether re-resume is harmless is per-CLI semantics (qoder rejects
+      // with "already open"), so the resume decision goes through the same
+      // plan hook as setupTurn.
+      const compactPlan = this.turnSessionPlan({ ...opts, sessionId });
+      if (compactPlan.mode === 'resume') {
+        const resumeParams: SessionResumeParams = {
+          sessionId: compactPlan.sessionId,
+          cwd: opts.cwd,
+        };
+        const resumeResult = await this.setupSessionWithRetry(opts.cwd, () =>
+          client.request<SessionResumeParams, SessionResumeResult>('session/resume', resumeParams),
+        );
+        this.onSessionEstablished(resumeResult);
+      }
 
       const translator = this.createTranslator();
       translator.setOperationKind('compact');

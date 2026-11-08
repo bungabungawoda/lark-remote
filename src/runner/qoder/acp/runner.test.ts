@@ -246,6 +246,64 @@ describe('QoderAcpRunner', () => {
     await runner.dispose();
   });
 
+  it('reuses the connection-open session on the next turn instead of re-resuming (already-open regression)', async () => {
+    // 1.1.84 真机：turn 结束后会话在长驻连接上保持 active，再发
+    // session/resume 被拒 "already open (state=active)"。同一 runner（同
+    // cwd 缓存连接）的第二轮必须跳过 resume 直接 prompt。
+    const capturePath = join(tmpDir, 'capture.jsonl');
+    const { wrapper, cwd } = writeScenario(tmpDir, serverScript, 'qoder', {
+      capturePath,
+    });
+    const runner = makeRunner(wrapper);
+
+    // 第一轮：无 sessionId → session/new 建会话并登记为本连接的 open 会话
+    const first = await collectEvents(runner, '第一轮', { cwd });
+    expect((first.find((e) => e.type === 'result') as { subtype?: string }).subtype).toBe(
+      'success',
+    );
+
+    // 第二轮：桥写回的 sessionId 与连接上的 open 会话相同 → reuse，不发 resume
+    const second = await collectEvents(runner, '第二轮', { cwd, sessionId: SESSION_ID });
+    expect((second.find((e) => e.type === 'result') as { subtype?: string }).subtype).toBe(
+      'success',
+    );
+
+    const calls = readCapture(capturePath);
+    expect(calls.filter((m) => m.method === 'session/resume')).toEqual([]);
+    const prompts = calls.filter((m) => m.method === 'session/prompt');
+    expect(prompts).toHaveLength(2);
+    const news = calls.filter((m) => m.method === 'session/new');
+    expect(news).toHaveLength(1);
+
+    await runner.dispose();
+  });
+
+  it('runCompact reuses the connection-open session (no resume) but cold-resumes otherwise', async () => {
+    const capturePath = join(tmpDir, 'capture.jsonl');
+    const { wrapper, cwd } = writeScenario(tmpDir, serverScript, 'qoder', {
+      capturePath,
+    });
+    const runner = makeRunner(wrapper);
+
+    // 先建会话（登记 open），随后 compact 同一会话：不 resume，直接 /compact
+    await collectEvents(runner, '先说句话', { cwd });
+    const events = [];
+    for await (const event of runner.runCompact('compact', { cwd, sessionId: SESSION_ID })) {
+      events.push(event);
+    }
+    expect((events.find((e) => e.type === 'result') as { subtype?: string }).subtype).toBe(
+      'success',
+    );
+
+    const calls = readCapture(capturePath);
+    expect(calls.filter((m) => m.method === 'session/resume')).toEqual([]);
+    const compactPrompt = calls.filter((m) => m.method === 'session/prompt').pop() as
+      { params?: { prompt?: Array<{ text?: string }> } } | undefined;
+    expect(compactPrompt?.params?.prompt?.[0]?.text).toBe('/compact');
+
+    await runner.dispose();
+  });
+
   it('runCompact sends /compact as prompt text on the resumed session', async () => {
     const capturePath = join(tmpDir, 'capture.jsonl');
     const { wrapper, cwd } = writeScenario(tmpDir, serverScript, 'qoder', {
