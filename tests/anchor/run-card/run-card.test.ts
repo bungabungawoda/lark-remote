@@ -555,8 +555,8 @@ describe('renderRunCard budget estimate = shadow measurement', () => {
  * 优化前后都必须成立的行为契约：
  *
  * ① 卡片产物 ≤28KB（不触发飞书 11310 单卡 5 table / 28KB 上限错误）—— 正确性底线
- * ② 走了 degraded 路径：含 omission hint（`5 个早期思考已省略` 或
- *    `另外 2 个工具调用已省略`），且不含早期 thinking（`思考1`）—— 证明超预算被识别并降级
+ * ② 走了 degraded 路径：含 omission hint（`已省略 5 个早期思考` 或
+ *    `已省略 2 个工具调用`），且不含早期 thinking（`思考1`）—— 证明超预算被识别并降级
  *
  * 缺失会导致什么：
  * - 若估算逻辑误判"不超预算"走正常路径，完整卡 ~100KB+ 会超 28KB → 飞书 11310
@@ -622,8 +622,8 @@ describe('renderRunCard budget estimate', () => {
     expect(cardBytes).toBeLessThanOrEqual(28_000);
 
     // ② 走了 degraded 路径：含 omission hint
-    const hasThinkingOmission = /5 个早期思考已省略/.test(json);
-    const hasToolOmission = /另外 2 个工具调用已省略/.test(json);
+    const hasThinkingOmission = /已省略 5 个早期思考/.test(json);
+    const hasToolOmission = /已省略 2 个工具调用/.test(json);
     expect(hasThinkingOmission || hasToolOmission).toBe(true);
 
     // ② 不含早期 thinking（证明降级裁剪生效，而非完整渲染塞进 28KB）

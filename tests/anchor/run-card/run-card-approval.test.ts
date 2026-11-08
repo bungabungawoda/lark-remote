@@ -151,7 +151,7 @@ describe('run card approval area', () => {
     const card = renderRunCard(state) as { body: { elements: unknown[] } };
     const json = JSON.stringify(card);
 
-    expect(json).toMatch(/个早期思考已省略/);
+    expect(json).toMatch(/已省略 \d+ 个早期思考/);
 
     const texts = collectTexts(card.body.elements);
     const contentIdx = texts.findIndex((t) => t.includes(CONTENT_MARKER));
@@ -228,7 +228,7 @@ describe('run card approval area', () => {
     pushDegradedBlocks(state, 'DEGRADED-CONTENT-MARKER');
 
     const card = renderRunCard(state) as { body: { elements: unknown[] } };
-    expect(JSON.stringify(card)).toMatch(/个早期思考已省略/);
+    expect(JSON.stringify(card)).toMatch(/已省略 \d+ 个早期思考/);
     expect(JSON.stringify(card)).toContain('✅ 允许');
     expect(JSON.stringify(card)).toContain('❌ 拒绝');
 

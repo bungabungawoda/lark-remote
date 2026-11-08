@@ -97,7 +97,7 @@ describe('renderRunCard', () => {
     expect(json).toContain(tailMarker);
     expect(Buffer.byteLength(json, 'utf8')).toBeLessThanOrEqual(28_000);
     expect(countCardElements(card)).toBeLessThanOrEqual(MAX_CARD_ELEMENTS);
-    expect(json).toMatch(/个早期思考已省略|个早期步骤/);
+    expect(json).toMatch(/已省略 \d+ 个(早期思考|早期步骤)/);
     expect(json).not.toContain('（未返回内容）');
   });
 
@@ -2725,7 +2725,7 @@ describe('renderRunCard (CardKit 2.0)', () => {
     expect(json).not.toContain('思考5');
 
     // 3. Should contain omission hint for early thinking
-    expect(json).toMatch(/5 个早期思考已省略/);
+    expect(json).toMatch(/已省略 5 个早期思考/);
 
     // 4. Text content must be preserved intact
     expect(json).toContain('这是重要的文本输出，必须完整保留。');
@@ -2737,7 +2737,7 @@ describe('renderRunCard (CardKit 2.0)', () => {
     expect(json).toContain('**Bash** — cmd3');
     expect(json).toContain('**Bash** — cmd4');
     // Should have omit hint for earlier tools (2 omitted: cmd0, cmd1)
-    expect(json).toMatch(/另外 2 个工具调用已省略/);
+    expect(json).toMatch(/已省略 2 个工具调用/);
     // Old one-line summary format should NOT appear
     expect(json).not.toMatch(/\d+ 次工具调用$/);
 
@@ -2833,7 +2833,7 @@ describe('renderRunCard (CardKit 2.0)', () => {
     // Extreme fallback keeps only the last 1 thinking block
     expect(json).toContain('思考20');
     // Earlier thinking blocks are omitted (20 - 1 = 19 earlier blocks)
-    expect(json).toMatch(/19 个早期思考已省略/);
+    expect(json).toMatch(/已省略 19 个早期思考/);
 
     // Text is truncated to 5KB tail in extreme fallback, but the critical
     // tail content must survive in at least the last text block
@@ -2842,7 +2842,7 @@ describe('renderRunCard (CardKit 2.0)', () => {
     // Extreme fallback: keeps last 1 tool panel chronologically
     // Since Write tools were added after Bash tools, Write is the last tool
     expect(json).toContain('Write');
-    expect(json).toMatch(/另外 \d+ 个工具调用已省略/);
+    expect(json).toMatch(/已省略 \d+ 个工具调用/);
     // Old one-line summary should NOT appear
     expect(json).not.toMatch(/\d+ 次工具调用$/);
 
@@ -2920,7 +2920,7 @@ describe('renderRunCard (CardKit 2.0)', () => {
     expect(json).toContain('设计解决方案');
 
     // No omission hint (all thinking shown)
-    expect(json).not.toMatch(/\d+ 个早期思考已省略/);
+    expect(json).not.toMatch(/已省略 \d+ 个早期思考/);
 
     // 工具是原生折叠面板：正文随卡下发（折叠只是视觉），点标题即展开。
     // 面板的正文由 `toolOutputBudget` 按工具数量截断，卡片放得下时不必截到看不见。
@@ -2955,7 +2955,7 @@ describe('renderRunCard (CardKit 2.0)', () => {
     expect(json).toContain('Hello from Claude!');
 
     // No degradation artifacts
-    expect(json).not.toMatch(/\d+ 个早期思考已省略/);
+    expect(json).not.toMatch(/已省略 \d+ 个早期思考/);
     expect(json).not.toMatch(/\d+ 次工具调用$/);
 
     // Running state has stop button
@@ -3176,7 +3176,7 @@ describe('信息保真 丢弃留痕', () => {
       timestamp: '2026-07-04T11:03:00.000Z',
     });
     const json = JSON.stringify(renderRunCard(state));
-    expect(json).toContain('另外 4 个计划/文件变更已省略');
+    expect(json).toContain('已省略 4 个计划/文件变更');
   });
 
   it('degraded 路径：plan/file_change 省略提示置于顶部，输出仍在内容流末尾收尾', () => {
@@ -3214,11 +3214,11 @@ describe('信息保真 丢弃留痕', () => {
     const card = renderRunCard(state);
     const json = JSON.stringify(card);
     // degraded 已触发且留痕提示存在
-    expect(json).toContain('另外 1 个计划/文件变更已省略');
+    expect(json).toContain('已省略 1 个计划/文件变更');
     expect(json).toContain('最后一条输出必须保留在内容流末尾');
     // 省略提示与 thinking/tool 省略提示同在顶部，先于内容流出现；
     // 输出仍在内容流末尾，不在省略提示之后。
-    const hintIndex = json.indexOf('另外 1 个计划/文件变更已省略');
+    const hintIndex = json.indexOf('已省略 1 个计划/文件变更');
     const outputIndex = json.indexOf('最后一条输出必须保留在内容流末尾');
     expect(hintIndex).toBeGreaterThan(-1);
     expect(outputIndex).toBeGreaterThan(hintIndex);
@@ -3530,7 +3530,7 @@ describe('运行期通知作为普通消息', () => {
     });
 
     const json = JSON.stringify(renderRunCard(state));
-    expect(json).toMatch(/\d+ 个早期思考已省略/);
+    expect(json).toMatch(/已省略 \d+ 个早期思考/);
     expect(json.split('notice-degraded-marker').length - 1).toBe(1);
     const noticeIndex = json.indexOf('notice-degraded-marker');
     const tailIndex = json.indexOf('degraded-tail-output-marker');
