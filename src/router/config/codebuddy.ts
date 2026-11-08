@@ -2,9 +2,10 @@
  * CodeBuddy config builder — builds fields and handles field changes for
  * CodeBuddy agent (pure ACP mode).
  *
- * 模型/思考档位来自 ACP session/new 目录探针（catalog-probe，后台预热 +
- * TTL 缓存）；目录不可用时模型回退文本输入、思考档位回退真机观测的静态
- * 清单。沙箱是官方固定两态（true/false）。
+ * 模型/思考档位来自 ACP session/new 目录探针（`codebuddy-catalog.ts`，后台
+ * 预热 + TTL 缓存；过期按上次成功快照渲染并在后台刷新，stale-while-
+ * revalidate）。从未探测成功时模型回退文本输入、思考档位回退真机观测的
+ * 静态清单。沙箱是官方固定两态（true/false）。
  */
 
 import { loadCodebuddyConfig, type CodebuddyConfigResult } from '../../config/codebuddy-config.js';
@@ -94,10 +95,11 @@ function sandboxField(current: boolean | undefined): ConfigField {
 export class CodebuddyConfigBuilder implements AgentConfigCardBuilder {
   buildFields(displayConfig: AppConfig): ConfigField[] {
     // 目录冷路径在这里点火：buildFields 是同步契约（kimi 的 buildFields 同样
-    // 在内联 spawn 探测），本次渲染用缓存/兜底，探针完成后下一次渲染出下拉。
-    // 启动时 initializeRunner 已预热，常态下这里是纯缓存读。fire-and-forget：
-    // 不阻塞卡片，失败落 negative cache。router 层的 catalog 预取编排只对
-    // DSH 生效，CodeBuddy 必须在这里自行点火。
+    // 在内联 spawn 探测），本次渲染用缓存/兜底：缓存过期也先用上次成功快照
+    // （stale-while-revalidate），探针完成后下一次渲染换新；只有从未成功
+    // 探测过才回退文本输入。启动时 initializeRunner 已预热，常态下这里是
+    // 纯缓存读。fire-and-forget：不阻塞卡片，失败保留上次目录。router 层的
+    // catalog 预取编排只对 DSH 生效，CodeBuddy 必须在这里自行点火。
     void refreshCodebuddyCatalog().catch(() => {});
     const cbCfg = loadCodebuddyConfig();
     const cb = displayConfig.agents?.codebuddy;

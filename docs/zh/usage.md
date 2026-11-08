@@ -110,7 +110,7 @@ idle:
 
 CodeBuddy 以官方 ACP 模式接入（`codebuddy --acp`，stdio 上的 JSON-RPC 长连接）：每个工作区一条常驻连接，审批走标准 `session/request_permission`（选项：允许一次 / 总是允许 / 拒绝），`/compact` 作为文本 prompt 下发，中断走 `session/cancel`。配置项：
 
-- `agents.codebuddy.model`：模型 id。`/config` 卡片的模型下拉来自 ACP 会话目录（`codebuddy --acp` 一次性探针，启动时后台预热），每个选项附带该模型的积分费率（目录 `_meta.credits`，如 `x0.29 credits`）；探针失败回退 `~/.codebuddy/settings.json` 的当前模型并降级为文本输入。审批 kind、可用模式（`default` / `acceptEdits` / `plan` / `auto` / `dontAsk` / `bypassPermissions` / `fullAccess`）随会话目录校验。
+- `agents.codebuddy.model`：模型 id。`/config` 卡片的模型下拉来自 ACP 会话目录（`codebuddy --acp` 一次性探针，启动时后台预热），每个选项附带该模型的积分费率（目录 `_meta.credits`，如 `x0.29 credits`）；目录缓存过期时按上次成功快照继续渲染下拉并在后台刷新（stale-while-revalidate），只有从未探测成功才回退 `~/.codebuddy/settings.json` 的当前模型并降级为文本输入。审批 kind、可用模式（`default` / `acceptEdits` / `plan` / `auto` / `dontAsk` / `bypassPermissions` / `fullAccess`）随会话目录校验。
 - 每次模型请求实际消耗的积分在 ACP `usage_update` 的 `cost.amount`（单位是 CodeBuddy 积分，非美元，不上 `total_cost_usd`）；费率以目录 `credits` 字段为准（随版本/活动变化）。给 lark-remote 做真机测试时选目录里 `x0.00 credits` 的免费档（如 hy3/hy4free）不消耗积分。
 - `agents.codebuddy.permissionMode`：`default`（不干预，跟随 CodeBuddy 默认）或官方 modes 枚举。
 - `agents.codebuddy.thinkingLevel`：思考档位（ACP `thought_level`），可选 `enabled`（默认）/ `disabled` / `minimal` / `low` / `medium` / `high` / `xhigh` / `max`；留空 = 不下发。

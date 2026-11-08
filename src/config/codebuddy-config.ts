@@ -1,9 +1,10 @@
 /**
  * CodeBuddy config loader
  *
- * 模型/思考档位目录来自 ACP session/new（`catalog-probe.ts` 一次性探针，
- * TTL 缓存 + 后台预热）；探针失败回退 `~/.codebuddy/settings.json`（当前
- * 模型）+ 静态兜底清单。目录为空时 /config 卡把「使用模型」渲染成文本输入。
+ * 模型/思考档位目录来自 ACP session/new（`codebuddy-catalog.ts` 一次性探针，
+ * TTL 缓存 + 后台预热）；缓存过期先按上次成功快照渲染并在后台刷新
+ * （stale-while-revalidate）。从未成功探测时才回退 `~/.codebuddy/settings.json`
+ * （当前模型）+ 静态兜底清单，/config 卡的「使用模型」随之渲染成文本输入。
  */
 
 import fs from 'node:fs';
@@ -44,8 +45,8 @@ function readSettingsModel(configDir: string): string | undefined {
 }
 
 /**
- * Load CodeBuddy config：ACP 目录优先（含模型展示名 + thought_level 选项），
- * 失败回退 settings.json + THOUGHT_LEVEL_FALLBACK。
+ * Load CodeBuddy config：ACP 目录优先（含模型展示名 + thought_level 选项）；
+ * 目录缺失（从未成功探测）时回退 settings.json + THOUGHT_LEVEL_FALLBACK。
  */
 export function loadCodebuddyConfig(configDir?: string): CodebuddyConfigResult {
   const settingsModel = readSettingsModel(resolveCodebuddyConfigDir(configDir));
