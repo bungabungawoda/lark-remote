@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.1] - 2026-11-08
+
+### 新增
+
+- **`-c` 交互选择配置目录**：不带值的 `-c` 列出本机已有配置目录并显示绑定的飞书应用名，↑/↓ 选择后以显式 `--config-dir` 启动，`/restart` 与 `/clone` 拉起的进程继承该目录；非交互终端打印候选表后以退出码 2 结束，不挂起。应用名按目录缓存，离线时回退显示 App ID 尾号
+
+### 修复
+
+- **CodeBuddy token 统计不再低报**：会话 jsonl 每个轮次只落末次请求的用量，runner 的本 run 用量改以实时用量为准，reader 优先从逐请求日志重建 flow 与累计，日志不可用时才回退会话记录作为下界
+- **run 卡省略提示口径统一**：降级路径的省略提示按来源合并为一条，与正常路径一致；已有「前 N 字符已省略」标记的长内容只从头部继续省略并累加省略数，不再在结尾叠加「已截断」标记
+
+### 文档
+
+- **中英 README 与英文使用文档补齐 CodeBuddy / Qoder**：agent 支持列表统一为 8 种，英文 `usage.md` 补上两个 agent 的 ACP 接入与配置说明、英文 `getting-started.md` 的支持数量同步；与已完整的中文文档对齐
+
 ## [0.6.0] - 2026-11-08
 
 ### 新增

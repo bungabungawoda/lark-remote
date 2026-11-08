@@ -2,7 +2,7 @@
 
 # Usage Guide
 
-lark-remote turns Feishu private chat into a remote entry point for local coding agents: send a message in Feishu, and the local Claude Code, Codex, opencode, pi, Kimi, or DSH reads and writes files and runs commands in your specified directory, with responses sent back to Feishu. The default agent is Claude Code; the other five are covered under "Configuration" below.
+lark-remote turns Feishu private chat into a remote entry point for local coding agents: send a message in Feishu, and the local Claude Code, Codex, opencode, pi, Kimi, DSH, CodeBuddy, or Qoder reads and writes files and runs commands in your specified directory, with responses sent back to Feishu. The default agent is Claude Code; the other seven are covered under "Configuration" below.
 
 Single-user, p2p private chat. Does not modify the agent's system prompt.
 
@@ -52,7 +52,7 @@ feishu:
   appId: cli_xxx # Feishu app App ID
   appSecret: xxx # Feishu app App Secret
 
-# Default agent: claude | codex | opencode | pi | kimi | dsh, defaults to claude
+# Default agent: claude | codex | opencode | pi | kimi | dsh | codebuddy | qoder, defaults to claude
 defaultAgent: claude
 
 claude:
@@ -72,9 +72,37 @@ The configuration file path can be overridden with `-c` / `--config-dir` (e.g., 
 
 > **Do not commit the real config.yaml to the repository.**
 
+### CodeBuddy agent (Tencent CodeBuddy Code, ACP direct connection)
+
+CodeBuddy connects in its official ACP mode (`codebuddy --acp`, a JSON-RPC long-lived connection over stdio): one persistent connection per workspace, approvals via the standard `session/request_permission`, `/compact` delivered as a text prompt, and interruption via `session/cancel`. Configuration:
+
+- `agents.codebuddy.model`: model id. The `/config` card's model dropdown comes from the ACP session catalog (a one-shot `codebuddy --acp` probe, warmed up in the background at startup), with each option annotated by its credit rate. When the catalog cache expires the last successful snapshot keeps rendering while a refresh runs in the background; only if no probe ever succeeds does it fall back to the current model in `~/.codebuddy/settings.json` and degrade to a text input.
+- `agents.codebuddy.permissionMode`: `default` (no intervention, follows CodeBuddy's default) or the official modes.
+- `agents.codebuddy.thinkingLevel`: `enabled` (default) / `disabled` / `minimal` / `low` / `medium` / `high` / `xhigh` / `max`; empty means the field is not sent.
+- `agents.codebuddy.sandbox`: `true` runs Bash in the sandbox-cli isolation layer; empty means not sent (follows CodeBuddy's default).
+- `agents.codebuddy.acp.binary` / `requestTimeoutMs` / `idleTtlMs` / `turnIdleTimeoutMinutes`: connection parameters, same as the `acp` sub-config of kimi/opencode.
+- `agents.codebuddy.env`: environment variables passed to the ACP child process. The China edition requires `CODEBUDDY_INTERNET_ENVIRONMENT: internal` (the international edition does not) — set it first if the ACP connection or authentication fails.
+
+Per-request credit consumption arrives in the ACP `usage_update`'s `cost.amount` (CodeBuddy credits, not USD). Token usage is accumulated per turn from `usage_update._meta.usage` and folded into the result card; the session jsonl is a fallback source.
+
+Log in once with `codebuddy` in an interactive terminal before first use; the headless/ACP channel does not trigger browser login.
+
+### Qoder agent (Qoder CLI, ACP long-lived connection)
+
+Qoder connects in ACP mode (`qodercn --acp`, a JSON-RPC long-lived connection over stdio) on the same ACP base as CodeBuddy: one persistent connection per workspace, `session/new` (or `session/resume`) → `session/set_mode` → `session/prompt` within a turn. Dynamic approvals go through `session/request_permission` and surface as a Feishu approval card. Configuration:
+
+- `agents.qoder.model` / `agents.qoder.reasoningEffort` / `agents.qoder.contextWindow`: no in-protocol ACP channel, so these are sent as spawn flags (`--model` / `--reasoning-effort` / `--context-window`); empty follows Qoder's own `settings.json`. The model dropdown comes from `qodercn --list-models`; reasoning-effort options are probed dynamically from the CLI's validation error, so the set follows the installed version. The context-window card offers 1M / 500K presets plus a custom input.
+- `agents.qoder.permissionMode`: ACP-native camelCase values — `default` (per-action approval) / `acceptEdits` / `auto` / `dontAsk` / `yolo`. Legacy snake_case values from the earlier stream-json transport are still accepted and normalized on read; the old `plan` normalizes to `default`.
+- `agents.qoder.cli.binary`: the CN edition installs as `qodercn`, the international edition as `qoder`; defaults to CN.
+- `agents.qoder.configDir`: Qoder config root (session records live under `<configDir>/projects/`); when empty it auto-detects `~/.qoder-cn` → `~/.qoder`.
+
+The done card keeps the usage area minimal: Qoder's result carries no token breakdown, so Model / USD rows are omitted and a credit line is shown only when available.
+
+Log in once with `qodercn` in an interactive terminal before first use; the ACP channel does not trigger login.
+
 ### DSH agent (DeepSeek Harness, HTTP+WS direct connection)
 
-DSH differs from the other 5 agents: **it does not spawn a local subprocess per run** — instead it connects to a machine-wide shared DSH Web Host (default `http://127.0.0.1:3080`, HTTP+WebSocket). When no DSH is detected, lark-remote starts `dsh web` detached in the background and does not stop it when lark-remote exits or restarts; one that is already running is reused. DSH 0.2.x requires auth on `/api/*` and `/api/remote.mux`. lark-remote reads DSH's durable credentials file (`$DSH_HOME/.credentials.yaml`, or `~/.dsh/.credentials.yaml` when `DSH_HOME` is unset) and mints a short-lived v1 cookie from the `client-connection/browser-session` signing secret, so that cookie survives a `dsh web` restart and no manual token update is needed.
+DSH differs from the other 7 agents: **it does not spawn a local subprocess per run** — instead it connects to a machine-wide shared DSH Web Host (default `http://127.0.0.1:3080`, HTTP+WebSocket). When no DSH is detected, lark-remote starts `dsh web` detached in the background and does not stop it when lark-remote exits or restarts; one that is already running is reused. DSH 0.2.x requires auth on `/api/*` and `/api/remote.mux`. lark-remote reads DSH's durable credentials file (`$DSH_HOME/.credentials.yaml`, or `~/.dsh/.credentials.yaml` when `DSH_HOME` is unset) and mints a short-lived v1 cookie from the `client-connection/browser-session` signing secret, so that cookie survives a `dsh web` restart and no manual token update is needed.
 
 The DSH that lark-remote launches uses `DSH_HOME` as its working directory and never reads a `.env` from some project directory. To inject environment variables into the DSH process, put them in `$DSH_HOME/.env` or in lark-remote's own launch environment. One `DSH_HOME` is meant to run one DSH; use a fixed port (default 3080) rather than `--port 0`.
 

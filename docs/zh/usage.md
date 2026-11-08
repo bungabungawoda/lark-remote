@@ -144,7 +144,7 @@ Qoder 走 ACP 模式接入（`qodercn --acp`，stdio 上的 JSON-RPC 长连接�
 
 ### DSH agent（DeepSeek Harness，HTTP+WS 直连）
 
-DSH 与其他 5 个 agent 不同：agent runner 不持有本地子进程，而是连到**全机共享**的 DSH Web Host（默认 `http://127.0.0.1:3080`，HTTP+WebSocket）。DSH 未运行时，lark-remote 会在后台 detached 拉起 `dsh web`，lark-remote 退出不会停止它；已在运行则直接复用。DSH 0.2.x 的 `/api/*` 和 `/api/remote.mux` 要求认证。lark-remote 读取 DSH 的持久凭据文件（`$DSH_HOME/.credentials.yaml`，未设置 `DSH_HOME` 时为 `~/.dsh/.credentials.yaml`），用其中 `client-connection/browser-session` 的签名密钥现签一个短时效 v1 cookie；这个 cookie 在 `dsh web` 重启后仍然有效，所以不需要每次手动更新 token。
+DSH 与其他 7 个 agent 不同：agent runner 不持有本地子进程，而是连到**全机共享**的 DSH Web Host（默认 `http://127.0.0.1:3080`，HTTP+WebSocket）。DSH 未运行时，lark-remote 会在后台 detached 拉起 `dsh web`，lark-remote 退出不会停止它；已在运行则直接复用。DSH 0.2.x 的 `/api/*` 和 `/api/remote.mux` 要求认证。lark-remote 读取 DSH 的持久凭据文件（`$DSH_HOME/.credentials.yaml`，未设置 `DSH_HOME` 时为 `~/.dsh/.credentials.yaml`），用其中 `client-connection/browser-session` 的签名密钥现签一个短时效 v1 cookie；这个 cookie 在 `dsh web` 重启后仍然有效，所以不需要每次手动更新 token。
 
 后台拉起的 DSH 工作目录是 `DSH_HOME`，不会读取某个项目目录下的 `.env`。需要给 DSH 进程注入环境变量时，放在 `$DSH_HOME/.env` 或 lark-remote 的启动环境中。一个 `DSH_HOME` 约定只跑一个 DSH；端口用固定值（默认 3080），不要用 `--port 0`。
 
