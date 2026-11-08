@@ -136,7 +136,8 @@ Qoder 的 headless 面与 Claude Code 高度同构（真机实测：`--resume` �
 
 - **未登录**：非交互启动直接失败（exit 1，stderr 含 `Not logged in · Please run /login`），lark-remote 以错误卡呈现；不是挂起。
 - **权限只治不管问**：headless 下不产生审批请求（三种模式 × 写文件/删除文件实测均为 0 条）——`default` 对写文件、删除文件**静默拒绝**；`accept_edits` 只自动放行文件编辑，危险命令同样静默拒绝。
-- **没有 token 统计**：usage 回包只有积分（credits），token 字段为 0；lark-remote 不渲染伪 0 行。`/compact` 可用，压缩边界落盘（含压缩前后水位）但因 token 口径缺席，卡片不显示压缩统计。
+- **没有 token 统计**：usage 回包只有积分（result 顶层 `total_credits`），token 字段为 0。done 卡用量区是极简形态：只显示积分行（如 `Cost - 12 credits`），Model / 结果 / USD 行都不渲染（credits 为 0 的失败 run 连积分行也缺席）；其余 agent 卡片不受影响。`/compact` 可用，压缩边界落盘（含压缩前后水位）但因 token 口径缺席，卡片不显示压缩统计。
+- **无动态交互工具**：`AskUserQuestion` 这类需要 TUI 交互的工具在 headless（stream-json）下被 CLI 直接拒绝（工具报错返回，agent 只能口头描述选项），与审批无动态通道同源。
 - **`/stop` 是进程组终止**：CLI 的 interrupt 控制请求被静默忽略（实测），无法优雅中断在途 turn。
 - **CLI 自动升级**（实测一天内 1.1.72 → 1.1.83），flag 校验会收紧（`--permission-prompt-tool` 互斥即 1.1.83 引入）；升级后若启动即失败，查日志里的 CLI 报错并反馈。
 - **`-n` 会话命名**：`qodercn -n <名字>` 落盘 custom-title 行，`/resume` 列表与详情卡显示该命名。

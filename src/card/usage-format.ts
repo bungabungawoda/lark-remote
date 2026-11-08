@@ -46,6 +46,8 @@ interface UsageStatsInput extends UsageSnapshot {
   model?: string;
   /** 本次 run 花费（USD）。存在才显示。 */
   costUsd?: number;
+  /** 本次 run 积分（result 事件 total_credits，qoder 提供）。>0 时替代 USD 行。 */
+  credits?: number;
 }
 
 interface UsageDisplayOptions {
@@ -124,8 +126,14 @@ function headerLines(
 ): string[] {
   const lines: string[] = [];
   lines.push(options?.completedLabel ?? '✅ 已完成');
-  if (usage?.model) lines.push(`Model - ${usage.model}`);
-  if (options?.showResult && options?.result) lines.push(`结果 - ${options.result}`);
+  // qoder 极简卡：credits 字段存在 = qoder 回包（total_credits 是 qoder 专属
+  // wire 字段），Model/结果行按口径不显示，用量区只留积分行。其余 agent 不受
+  // 影响照旧显示。
+  const qoderMinimal = usage?.credits !== undefined;
+  if (usage?.model && !qoderMinimal) lines.push(`Model - ${usage.model}`);
+  if (options?.showResult && options?.result && !qoderMinimal) {
+    lines.push(`结果 - ${options.result}`);
+  }
   if (usage?.contextLength !== undefined) lines.push(contextLine(usage.contextLength, usage));
   if (usage?.compactCount) lines.push(`Compact - ${usage.compactCount}次`);
   return lines;
@@ -219,7 +227,11 @@ function tokenLines(usage: UsageStatsInput | undefined, parts: CumulativeParts):
 
 function trailingLines(usage: UsageStatsInput | undefined): string[] {
   const lines: string[] = [];
-  if (usage?.costUsd !== undefined) {
+  // qoder（credits 存在）只显示积分行：>0 显示原值，=0（失败 run）整行缺席；
+  // USD 行仅 credits 缺席（其余 agent）时显示。
+  if (usage?.credits !== undefined) {
+    if (usage.credits > 0) lines.push(`Cost - ${usage.credits} credits`);
+  } else if (usage?.costUsd !== undefined) {
     lines.push(`Cost - $${usage.costUsd.toFixed(4)}`);
   }
   if (usage?.reasoningTokens !== undefined && usage.reasoningTokens > 0) {
