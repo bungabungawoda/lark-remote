@@ -1711,6 +1711,37 @@ describe('CommandRouter', () => {
       return JSON.stringify(calls[calls.length - 1]?.[0] ?? '');
     }
 
+    /**
+     * DSH reader fixture: `isSessionActive` is the authoritative server-side
+     * running fact (unlike other readers' write-recency heuristic).
+     */
+    function createDshResumeRegistry(opts: {
+      running: boolean;
+      newest?: { sessionId: string; summary: string; mtime: number };
+    }): SessionReaderRegistry {
+      const dshReader: AgentSessionReader = {
+        listSessions: () => ({ sessions: [], total: 0 }),
+        getNewestSession: () => opts.newest ?? null,
+        readSessionContent: () => ({
+          events: [{ type: 'text', content: 'dsh session tail' }],
+          usage: undefined,
+          aiTitle: undefined,
+          recap: undefined,
+          displayTitle: 'placeholder',
+          reason: 'ok',
+        }),
+        isSessionActive: () => opts.running,
+      };
+      const registry = new SessionReaderRegistry();
+      registry.register('claude', createStubSessionReader());
+      registry.register('codex', createStubSessionReader());
+      registry.register('opencode', createStubSessionReader());
+      registry.register('pi', createStubSessionReader());
+      registry.register('kimi', createStubSessionReader());
+      registry.register('dsh', dshReader);
+      return registry;
+    }
+
     it('test_anchor_auto_resume_card_codex_appserver_has_compact_button', async () => {
       // 验证什么：/cd 自动恢复会话卡（codex）渲染 resume.compact 按钮并携带
       // sessionId + agent。缺失/错误会导致用户在恢复卡上无法直接压缩长会话，
@@ -1820,6 +1851,72 @@ describe('CommandRouter', () => {
       const cardStr = lastSendResultJson(sendResult);
       expect(cardStr).not.toContain('"cmd":"resume.compact"');
       expect(cardStr).toContain('"cmd":"stop"');
+    });
+
+    it('test_anchor_resume_detail_card_dsh_host_running_has_no_compact_button', async () => {
+      // 验证什么：DSH 宿主里还有在途 turn 时，/resume 卡不能给 Compact：
+      // commands/execute 仅空闲可执行，点了只会得到「还有一轮在跑」的出错卡。
+      const registry = createDshResumeRegistry({ running: true });
+      const sendResult = vi.fn().mockResolvedValue(undefined);
+      const { router, sessionStore } = createRouter({
+        sessionReaderRegistry: registry,
+        defaultAgent: 'dsh',
+        bridge: createMockBridge({ sendResult, hasRunCompact: vi.fn().mockReturnValue(true) }),
+      });
+      sessionStore.setCwd('user1', fs.realpathSync(tmpDir));
+      await router.handleCardAction(
+        { cmd: 'resume.use', sessionId: 'dsh-session-1', agent: 'dsh' },
+        ctx,
+      );
+
+      const cardStr = lastSendResultJson(sendResult);
+      expect(cardStr).not.toContain('"cmd":"resume.compact"');
+      expect(cardStr).toContain('该会话仍有一个 turn 在运行');
+      expect(cardStr).toContain('恢复会话（完成中）');
+    });
+
+    it('test_anchor_auto_resume_card_dsh_host_running_has_no_compact_button', async () => {
+      // 验证什么：/cd 自动恢复卡同样要按宿主 running 事实隐藏 Compact。
+      // 不能只信内存 activeRun：桥接重启后宿主 turn 仍在跑，内存里却没有 run。
+      const dir = path.join(tmpDir, 'dir-dsh-running');
+      fs.mkdirSync(dir);
+      const registry = createDshResumeRegistry({
+        running: true,
+        newest: { sessionId: 'dsh-session-latest', summary: 'placeholder', mtime: Date.now() },
+      });
+      const sendResult = vi.fn().mockResolvedValue(undefined);
+      const { router, sessionStore } = createRouter({
+        sessionReaderRegistry: registry,
+        defaultAgent: 'dsh',
+        bridge: createMockBridge({ sendResult, hasRunCompact: vi.fn().mockReturnValue(true) }),
+      });
+      sessionStore.setCwd('user1', fs.realpathSync(tmpDir));
+      await router.handle(`/cd ${dir}`, ctx);
+
+      const cardStr = lastSendResultJson(sendResult);
+      expect(cardStr).not.toContain('"cmd":"resume.compact"');
+      expect(cardStr).toContain('该会话仍有一个 turn 在运行');
+      expect(cardStr).toContain('自动恢复会话（完成中）');
+    });
+
+    it('test_anchor_resume_detail_card_dsh_idle_has_compact_button', async () => {
+      // 控制组：宿主空闲时 Compact 必须回来（修复 busy 不能把正常入口一起关掉）。
+      const registry = createDshResumeRegistry({ running: false });
+      const sendResult = vi.fn().mockResolvedValue(undefined);
+      const { router, sessionStore } = createRouter({
+        sessionReaderRegistry: registry,
+        defaultAgent: 'dsh',
+        bridge: createMockBridge({ sendResult, hasRunCompact: vi.fn().mockReturnValue(true) }),
+      });
+      sessionStore.setCwd('user1', fs.realpathSync(tmpDir));
+      await router.handleCardAction(
+        { cmd: 'resume.use', sessionId: 'dsh-session-1', agent: 'dsh' },
+        ctx,
+      );
+
+      const cardStr = lastSendResultJson(sendResult);
+      expect(cardStr).toContain('"cmd":"resume.compact"');
+      expect(cardStr).not.toContain('该会话仍有一个 turn 在运行');
     });
 
     it('test_anchor_resume_detail_card_no_v1_action_container', async () => {

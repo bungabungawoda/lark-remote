@@ -28,6 +28,8 @@ interface SessionDisplay {
   events: AgentSessionContentEvent[];
   usage?: SessionDisplayUsage;
   isActive: boolean;
+  /** 宿主侧仍有在途 turn（仅 DSH 的 isSessionActive 是服务端事实）。 */
+  hostRunning?: boolean;
   aiTitle?: string;
   recap?: string;
   displayTitle?: string;
@@ -167,7 +169,11 @@ function resumeSessionCard(
     isActive: display.isActive,
     activeRunRunId: display.activeRunRunId,
     cwd,
-    compact: deps.canCompact(agentKind, cwd) ? { sessionId: sessionIdArg, agentKind } : undefined,
+    // 宿主侧仍有 turn 在跑时压缩必然被拒（DSH commands/execute 仅空闲可执行）。
+    compact:
+      !display.hostRunning && deps.canCompact(agentKind, cwd)
+        ? { sessionId: sessionIdArg, agentKind }
+        : undefined,
     newSession: true,
   });
   return {
@@ -184,9 +190,10 @@ function resumeSessionCard(
       {
         agentKind,
         headerText: `📂 \`${cwd}\`\n会话: **${sessionIdArg}**`,
-        title: `${display.isActive ? '⏳ 恢复会话（完成中）' : '🔁 恢复会话'} · ${agentDisplayName(agentKind)}`,
+        title: `${display.isActive || display.hostRunning ? '⏳ 恢复会话（完成中）' : '🔁 恢复会话'} · ${agentDisplayName(agentKind)}`,
         usageResult: 'success',
         emptyPlaceholder: '_该会话暂无新消息可显示（最后一条为用户输入）_',
+        stillRunning: display.hostRunning,
         actions,
       },
     ),

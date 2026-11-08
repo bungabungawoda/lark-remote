@@ -3195,6 +3195,12 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
     events: AgentSessionContentEvent[];
     usage?: SessionDisplayUsage;
     isActive: boolean;
+    /**
+     * 会话在宿主侧仍有在途 turn（仅 DSH 的 isSessionActive 是服务端 running
+     * 事实）。与 isActive（本进程 activeRun）分开：宿主 turn 没有本地 runId，
+     * 不能渲染 stop，但压缩同样会被拒，必须据此隐藏 Compact。
+     */
+    hostRunning: boolean;
     aiTitle?: string;
     recap?: string;
     displayTitle?: string;
@@ -3223,11 +3229,23 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
       !isRunTerminal(activeRun.terminal) &&
       activeRun.sessionId === sessionId;
     const activeUsage = activeRunUsage(activeRun);
+    // 只有 DSH reader 的 isSessionActive() 是服务端 running 事实；其他 reader
+    // 的同名方法只是"最近有写入"的启发式，拿它当 turn 在跑会误报。
+    const effectiveAgent = agentKind ?? this.config.defaultAgent;
+    let hostRunning = false;
+    if (effectiveAgent === 'dsh') {
+      try {
+        hostRunning = reader.isSessionActive(sessionId, cwd);
+      } catch {
+        hostRunning = false;
+      }
+    }
     return {
       events,
       usage: activeRunning ? (activeUsage ?? usage) : usage,
       // 只使用内存中 activeRun 的状态
       isActive: activeRunning,
+      hostRunning,
       aiTitle,
       recap,
       displayTitle,
@@ -3326,6 +3344,7 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
       events: content,
       usage,
       isActive,
+      hostRunning,
       aiTitle,
       recap,
       displayTitle,
@@ -3341,7 +3360,9 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
       isActive,
       activeRunRunId,
       cwd: opts.cwd,
-      compact: opts.compact,
+      // 宿主侧仍有 turn 在跑时压缩必然被拒（DSH commands/execute 仅空闲可执行），
+      // 不能给一个注定失败的按钮。
+      compact: hostRunning ? undefined : opts.compact,
       newSession: true,
     });
 
@@ -3358,8 +3379,9 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
       {
         agentKind: opts.agentKind,
         headerText: `📂 \`${opts.cwd}\`\n${opts.resumedLine}${opts.headerTail ? `\n${opts.headerTail}` : ''}`,
-        title: `${isActive ? `⏳ ${opts.titleBase}（完成中）` : `${opts.idleIcon} ${opts.titleBase}`} · ${agentName}`,
+        title: `${isActive || hostRunning ? `⏳ ${opts.titleBase}（完成中）` : `${opts.idleIcon} ${opts.titleBase}`} · ${agentName}`,
         usageResult: 'success',
+        stillRunning: hostRunning,
         ...(opts.emptyPlaceholder !== undefined ? { emptyPlaceholder: opts.emptyPlaceholder } : {}),
         actions,
       },
