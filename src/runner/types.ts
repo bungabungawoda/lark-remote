@@ -606,6 +606,17 @@ export interface StopOutcome {
 }
 
 /**
+ * DSH-only: a host-side turn can be cancelled by session id even when this
+ * bridge instance did not start it. The goal dimensions are best-effort —
+ * the goal-round-driver pauses/disarms the goal when its turn is aborted,
+ * but the pause event may land just after the session reports idle.
+ */
+export interface HostStopOutcome extends StopOutcome {
+  goalPhase?: GoalView['phase'];
+  goalActivation?: GoalView['activation'];
+}
+
+/**
  * Seam (§3): the contract any agent runner (claude/codex/opencode/pi/kimi/dsh)
  * must satisfy for the router/bridge.
  * Declared here so callers depend on the interface, not the concrete

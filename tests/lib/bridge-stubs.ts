@@ -538,6 +538,8 @@ export function createMockBridge(overrides?: Partial<Bridge>): MockBridge {
     getActiveRunFor: vi.fn().mockReturnValue(undefined),
     updateCardInPlace: vi.fn().mockResolvedValue(undefined),
     hasRunCompact: vi.fn().mockReturnValue(false),
+    handleStopSession: vi.fn().mockResolvedValue(undefined),
+    stopCurrentHostTurn: vi.fn().mockResolvedValue(undefined),
     syncActiveApprovalModes: vi.fn(),
     saveInboundMedia: vi.fn().mockResolvedValue({ attachments: [], rejected: [] }),
     ...overrides,

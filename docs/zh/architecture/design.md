@@ -494,6 +494,13 @@ enqueue(task: () => Promise<void>): void {
 `Bridge.interruptCurrentRun()`。active run 保存 runId/userId/chatId，防止旧卡片或其他
 会话终止当前 run。
 
+本地没有 activeRun 时（恢复会话、上一个 bridge 实例或 DSH Web UI 起的 turn），
+`/stop` 与恢复卡「终止」按钮改按 sessionId 走 `HostTurnStop`：只取当前
+cwd/session 或卡片显式指向的 session，调 `DshRunner.cancelHostTurn()`
+（`session/cancel` + `openTurnState` idle 校验），不扫描 activeRuns。取消 goal
+turn 后，DSH goal-round-driver 会把 goal 置 `paused`（非 goal turn 则 disarm），
+因此 stop 不会被下一轮立刻续上。
+
 **lane 与执行 cwd 同源**：lane 键按入队时
 `sessionStore` cwd 划分，而 `/cd`、`/ws use`、`ls.switch` 等斜杠命令绕过队列立即
 改写 cwd。若执行时 `forwardToClaude` 重新 `resolveCwd`，会出现两条并行 lane 都

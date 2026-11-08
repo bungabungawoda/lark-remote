@@ -49,8 +49,9 @@ Normal Feishu message
 
 /stop or stop cardAction
   → control lane (bypasses work queue)
-  → Bridge.interruptCurrentRun()
-  → RunCardSession.finish(interrupted) + runner.stop()
+  → local activeRun? Bridge.interruptCurrentRun()
+  → otherwise HostTurnStop(sessionId) → DshRunner.cancelHostTurn()
+  → RunCardSession.finish(interrupted) + runner.stop() / session/cancel
 ```
 
 Core modules:
@@ -221,7 +222,8 @@ Normal messages and normal cardActions continue entering the `Bridge.enqueue` Pr
 
 Stop control must not enter that queue, otherwise it would wait until the current run completes. Entry rules:
 
-- Exact `/stop` calls `interruptCurrentRun()` directly;
+- Exact `/stop` first calls `interruptCurrentRun()`; if no local activeRuns/bash run matches, it falls back to `HostTurnStop` for the current cwd/session (DSH `session/cancel` + idle verification);
+- The resume / auto-resume card's stop button carries sessionId/agent/cwd and goes straight to `HostTurnStop`; cancelling a goal turn makes the goal-round-driver pause the goal;
 - Stop cardAction uses the button runId first and also receives the callback card `messageId`;
 - Bridge validates userId and chatId. An exact runId match wins. If the runId is
   missing or does not match, Bridge accepts the click only when the callback

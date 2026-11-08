@@ -3503,3 +3503,101 @@ describe('DshRunner stop state', () => {
     });
   });
 });
+
+describe('DshRunner host turn stop', () => {
+  let server: FakeDshServer;
+
+  afterEach(async () => {
+    await server?.stop();
+  });
+
+  const HOST_GOAL = {
+    id: 'goal-host',
+    objective: '把宿主轮次停掉',
+    phase: 'paused',
+    maxGoalRounds: 3,
+  };
+
+  function makeRunner(): DshRunner {
+    return new DshRunner({ kind: 'dsh', sessionReader: stubReader, host: server.baseUrl });
+  }
+
+  it('cancels a host-side turn by session id and reports the paused goal', async () => {
+    // 验证什么：没有本地 activeRun 时，也能按 sessionId 取消宿主 turn；
+    // goal-round-driver 在 goal turn aborted 后会把目标置 paused，卡片据此
+    // 告诉用户「目标已暂停」。缺失时 stop 对恢复会话完全无效。
+    server = new FakeDshServer();
+    let running = true;
+    let cancelCalls = 0;
+    server.register('session/list', () => ({
+      ok: true,
+      value: { items: [{ sessionId: SID, running, cwd: CWD }] },
+    }));
+    server.register('session/cancel', () => {
+      cancelCalls++;
+      running = false;
+      return { ok: true, value: {} };
+    });
+    server.register('session/projections', () => ({
+      ok: true,
+      value: {
+        asOfSeq: 0,
+        values: {
+          goal: { current: { goal: HOST_GOAL, roundsStarted: 1 } },
+        },
+      },
+    }));
+    await server.start();
+
+    const result = await makeRunner().cancelHostTurn(SID);
+
+    expect(cancelCalls).toBe(1);
+    expect(result).toMatchObject({
+      status: 'cancelled',
+      sessionId: SID,
+      goalPhase: 'paused',
+    });
+  });
+
+  it('does not send a cancel when the host already reports the session idle', async () => {
+    // 验证什么：空闲会话不能被报成「已停止」。openTurnState=closed → noop，
+    // 且不调用 session/cancel。
+    server = new FakeDshServer();
+    let cancelCalls = 0;
+    server.register('session/list', () => ({
+      ok: true,
+      value: { items: [{ sessionId: SID, running: false, cwd: CWD }] },
+    }));
+    server.register('session/cancel', () => {
+      cancelCalls++;
+      return { ok: true, value: {} };
+    });
+    await server.start();
+
+    const result = await makeRunner().cancelHostTurn(SID);
+
+    expect(result).toMatchObject({ status: 'noop', sessionId: SID });
+    expect(cancelCalls).toBe(0);
+  });
+
+  it('reports unconfirmed when the host keeps the turn open after cancel', async () => {
+    // 验证什么：cancel 被接受但宿主仍报 running 时，不能承诺已停止；
+    // 重试后仍 open → unconfirmed，让调用方去 DSH Web UI 确认。
+    server = new FakeDshServer();
+    let cancelCalls = 0;
+    server.register('session/list', () => ({
+      ok: true,
+      value: { items: [{ sessionId: SID, running: true, cwd: CWD }] },
+    }));
+    server.register('session/cancel', () => {
+      cancelCalls++;
+      return { ok: true, value: {} };
+    });
+    await server.start();
+
+    const result = await makeRunner().cancelHostTurn(SID);
+
+    expect(result).toMatchObject({ status: 'unconfirmed', sessionId: SID });
+    expect(cancelCalls).toBeGreaterThanOrEqual(2);
+  });
+});
