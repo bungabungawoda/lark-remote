@@ -40,8 +40,10 @@ function isAlive(proc: ChildProcess): boolean {
 /**
  * 向进程组发一个信号；返回失败原因，null 表示已送达或无需送达。
  *
- * ESRCH（进程组已经没了）与杀成功同等处置——这正是「停止」想要的结果；
- * 其余失败（EPERM 等）必须报出去，否则调用方拿到假成功，事后既不知也没得查。
+ * ESRCH 有两种完全不同的语义：① 进程组随子进程退出而消失（真成功）；
+ * ② 子进程压根没建独立进程组（未 detached，pgid ≠ pid），组信号从没命中过。
+ * 把两者都当成功会让「非组长」的子进程静默残留，因此 ESRCH 时退回单 pid
+ * 信号：能送达就杀掉，仍 ESRCH 才说明进程确实没了。正常路径零额外 kill 调用。
  */
 function signalGroup(pgid: number, signal: NodeJS.Signals): string | null {
   try {
@@ -49,8 +51,18 @@ function signalGroup(pgid: number, signal: NodeJS.Signals): string | null {
     return null;
   } catch (err) {
     const code = (err as NodeJS.ErrnoException).code;
-    if (code === 'ESRCH') return null;
-    return `${signal} 未送达 pgid=${pgid}: ${code ?? (err as Error).message}`;
+    if (code !== 'ESRCH') {
+      return `${signal} 未送达 pgid=${pgid}: ${code ?? (err as Error).message}`;
+    }
+    const pid = -pgid;
+    try {
+      process.kill(pid, signal);
+      return null;
+    } catch (fallbackErr) {
+      const fallbackCode = (fallbackErr as NodeJS.ErrnoException).code;
+      if (fallbackCode === 'ESRCH') return null; // 进程确实已退出
+      return `${signal} 未送达 pid=${pid}: ${fallbackCode ?? (fallbackErr as Error).message}`;
+    }
   }
 }
 
@@ -128,7 +140,12 @@ export function createPosixTerminator(deps: PosixTerminatorDeps): Terminator {
       try {
         process.kill(-pid, 'SIGKILL');
       } catch {
-        /* process already gone */
+        // 组不存在（子进程未 detached）时退回单 pid，别把活进程留下来
+        try {
+          process.kill(pid, 'SIGKILL');
+        } catch {
+          /* process already gone */
+        }
       }
     },
   };
