@@ -579,9 +579,12 @@ function approvalAreaCompact(state: RunState): object[] {
 }
 
 /**
- * 「早期步骤」省略提示。两个来源共用同一句话，必须合并成一个计数：
- * 状态层 MAX_BLOCKS 丢弃的块（omittedBlocks）与渲染预算裁掉的早期组。
- * 分开渲染时同一个时间线会出现「已省略 24 个」+「已省略 4 个」两行。
+ * 「早期步骤」省略提示：同一时间线的所有省略来源共用一个计数、只出一行。
+ *
+ * 来源：状态层 MAX_BLOCKS 丢弃的块（omittedBlocks）、渲染预算裁掉的早期组、
+ * 降级档裁掉的早期思考/工具、以及降级路径不渲染内容的计划/文件变更。按类型
+ * 各出一行（「早期思考」「工具调用」「计划/文件变更」）只会让同一时间线出现
+ * 三四个同类提示；用户只需要知道「前面一共省了多少步」。
  */
 function omittedStepsHint(total: number): object[] {
   return total > 0 ? [markdownDiv(`_💡 已省略 ${total} 个早期步骤_`)] : [];
@@ -624,34 +627,20 @@ function insertAfterStatusRow(elements: object[], extra: object[]): object[] {
  * Build a budget-fallback tier (degraded or extreme): keep the last N thinking
  * blocks and last N tools, truncate text/thinking per tier, then render in
  * chronological order. Shared by buildDegradedElements / buildExtremeFallback.
+ *
+ * 所有省略来源合并成一条「早期步骤」提示（见 omittedStepsHint），不按类型分行。
  */
 function buildFallbackElements(
   state: RunState,
   options: RunCardRenderOptions,
   tier: BudgetTierConfig,
 ): object[] {
-  const elements: object[] = [];
   const outputMax = toolOutputBudget(state);
-
-  elements.push(statusRow(state));
-  elements.push(...omittedBlocksHint(state));
 
   // 单遍分桶：thinking / tool（保持原相对顺序）
   const { thinking: allThinkingBlocks, tool: allToolBlocks } = bucketThinkingAndTool(state.blocks);
-
-  if (allThinkingBlocks.length > tier.thinkingKeep) {
-    const omitted = allThinkingBlocks.length - tier.thinkingKeep;
-    elements.push(markdownDiv(`_💡 已省略 ${omitted} 个早期思考_`));
-  }
   const thinkingBlocksToShow = allThinkingBlocks.slice(-tier.thinkingKeep);
-
   const toolsToShow = allToolBlocks.slice(-tier.toolKeep);
-  const toolsOmitted = allToolBlocks.length - tier.toolKeep;
-
-  // Add omit hint for tools if any were omitted
-  if (toolsOmitted > 0) {
-    elements.push(markdownDiv(`_💡 已省略 ${toolsOmitted} 个工具调用_`));
-  }
 
   // use object references (like the extreme path) instead of timestamps.
   // RunBlock.timestamp has millisecond precision; ≥2 thinking blocks sharing a
@@ -672,17 +661,23 @@ function buildFallbackElements(
     return true; // keep all non-thinking, non-tool blocks
   });
 
-  // 信息保真 plan/file_change 块在降级路径不渲染内容（正常路径已可见，
-  // 降级预算紧张），但必须计数留痕，禁止静默丢弃。
-  // 计数在渲染前完成，提示与 thinking/tool 省略提示一并置于卡片顶部——不能等
-  // 内容循环结束再追加，否则提示会落在最后一条输出之后，打乱「输出收尾」观感。
+  // 降级路径只渲染 thinking/text/tool/notice；plan/file_change 块不渲染内容
+  // （正常路径已可见，降级预算紧张），但必须计数留痕，禁止静默丢弃。
   const groupsToRender = groupBlocks(filteredBlocks);
   const omittedPlanOrFileChange = groupsToRender.filter(
     (g) => g.kind === 'plan' || g.kind === 'file_change',
   ).length;
-  if (omittedPlanOrFileChange > 0) {
-    elements.push(markdownDiv(`_💡 已省略 ${omittedPlanOrFileChange} 个计划/文件变更_`));
-  }
+
+  // 状态层丢弃 + 降级裁掉的早期思考/工具 + 不渲染内容的计划/文件变更合并成
+  // 一条提示，置于卡片顶部——不能等内容循环结束再追加，否则会落在最后一条
+  // 输出之后，打乱「输出收尾」观感。
+  const totalOmitted =
+    (state.omittedBlocks ?? 0) +
+    Math.max(0, allThinkingBlocks.length - tier.thinkingKeep) +
+    Math.max(0, allToolBlocks.length - tier.toolKeep) +
+    omittedPlanOrFileChange;
+
+  const elements: object[] = [statusRow(state), ...omittedStepsHint(totalOmitted)];
 
   // notices 作为普通消息按时间插入内容流（与正常路径同语义）；降级只裁剪
   // 内容块，不裁剪运行期通知。

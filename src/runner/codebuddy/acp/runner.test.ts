@@ -58,9 +58,9 @@ describe('CodebuddyAcpRunner', () => {
     rmRf(tmpDir);
   });
 
-  it('pins split usage/result semantics: ACP flow is jsonl, result events are live', () => {
+  it('pins split usage/result semantics: ACP flow is live, result events are live', () => {
     const runner = makeRunner(serverScript);
-    expect(runner.getUsageAuthority()).toBe('jsonl');
+    expect(runner.getUsageAuthority()).toBe('live');
     expect(runner.usesLiveResultEvents()).toBe(true);
   });
 

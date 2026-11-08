@@ -96,8 +96,9 @@ export class RunUsageCollector {
 
   /**
    * 收尾探针。input/output 必须在这里出现：卡片"本 run"的这两个数来自
-   * `resolveFinalUsage`（ACP 的 live 层只有 context 占用、没有 input/output），
-   * 不带它们时日志无法区分"本 run 合计"与"末次请求"。
+   * live result 事件或 `resolveFinalUsage`（ACP 的部分 agent 只有 context
+   * 占用、没有 input/output，此时走 reader 的 jsonl/逐请求日志），不带它们时
+   * 日志无法区分"本 run 合计"与"末次请求"。
    */
   logSummary(runId: string): string {
     const meta = this.meta();

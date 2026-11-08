@@ -97,7 +97,7 @@ describe('renderRunCard', () => {
     expect(json).toContain(tailMarker);
     expect(Buffer.byteLength(json, 'utf8')).toBeLessThanOrEqual(28_000);
     expect(countCardElements(card)).toBeLessThanOrEqual(MAX_CARD_ELEMENTS);
-    expect(json).toMatch(/已省略 \d+ 个(早期思考|早期步骤)/);
+    expect(json).toMatch(/已省略 \d+ 个早期步骤/);
     expect(json).not.toContain('（未返回内容）');
   });
 
@@ -2724,8 +2724,11 @@ describe('renderRunCard (CardKit 2.0)', () => {
     expect(json).not.toContain('思考4');
     expect(json).not.toContain('思考5');
 
-    // 3. Should contain omission hint for early thinking
-    expect(json).toMatch(/已省略 5 个早期思考/);
+    // 3. 所有省略来源合并成一条「早期步骤」提示：5 个早期思考 + 2 个早期工具 = 7。
+    // 不再按类型分行（早期思考 / 工具调用 / 计划·文件变更）。
+    expect(json).toContain('已省略 7 个早期步骤');
+    expect((json.match(/已省略 \d+ 个早期步骤/g) ?? []).length).toBe(1);
+    expect(json).not.toMatch(/早期思考|个工具调用|计划\/文件变更/);
 
     // 4. Text content must be preserved intact
     expect(json).toContain('这是重要的文本输出，必须完整保留。');
@@ -2736,8 +2739,7 @@ describe('renderRunCard (CardKit 2.0)', () => {
     expect(json).toContain('**Bash** — cmd2');
     expect(json).toContain('**Bash** — cmd3');
     expect(json).toContain('**Bash** — cmd4');
-    // Should have omit hint for earlier tools (2 omitted: cmd0, cmd1)
-    expect(json).toMatch(/已省略 2 个工具调用/);
+    // 早期工具（cmd0/cmd1）并入同一条提示，不再单列「工具调用」行。
     // Old one-line summary format should NOT appear
     expect(json).not.toMatch(/\d+ 次工具调用$/);
 
@@ -2832,8 +2834,9 @@ describe('renderRunCard (CardKit 2.0)', () => {
 
     // Extreme fallback keeps only the last 1 thinking block
     expect(json).toContain('思考20');
-    // Earlier thinking blocks are omitted (20 - 1 = 19 earlier blocks)
-    expect(json).toMatch(/已省略 19 个早期思考/);
+    // 19 个早期思考 + 22 个早期工具合并成一条提示（不再按类型分行）。
+    expect(json).toContain('已省略 41 个早期步骤');
+    expect(json).not.toMatch(/早期思考|个工具调用|计划\/文件变更/);
 
     // Text is truncated to 5KB tail in extreme fallback, but the critical
     // tail content must survive in at least the last text block
@@ -2842,7 +2845,6 @@ describe('renderRunCard (CardKit 2.0)', () => {
     // Extreme fallback: keeps last 1 tool panel chronologically
     // Since Write tools were added after Bash tools, Write is the last tool
     expect(json).toContain('Write');
-    expect(json).toMatch(/已省略 \d+ 个工具调用/);
     // Old one-line summary should NOT appear
     expect(json).not.toMatch(/\d+ 次工具调用$/);
 
@@ -2920,7 +2922,7 @@ describe('renderRunCard (CardKit 2.0)', () => {
     expect(json).toContain('设计解决方案');
 
     // No omission hint (all thinking shown)
-    expect(json).not.toMatch(/已省略 \d+ 个早期思考/);
+    expect(json).not.toMatch(/已省略 \d+ 个早期步骤/);
 
     // 工具是原生折叠面板：正文随卡下发（折叠只是视觉），点标题即展开。
     // 面板的正文由 `toolOutputBudget` 按工具数量截断，卡片放得下时不必截到看不见。
@@ -2955,7 +2957,7 @@ describe('renderRunCard (CardKit 2.0)', () => {
     expect(json).toContain('Hello from Claude!');
 
     // No degradation artifacts
-    expect(json).not.toMatch(/已省略 \d+ 个早期思考/);
+    expect(json).not.toMatch(/已省略 \d+ 个早期步骤/);
     expect(json).not.toMatch(/\d+ 次工具调用$/);
 
     // Running state has stop button
@@ -3132,7 +3134,7 @@ describe('信息保真 丢弃留痕', () => {
     expect(json).toContain('已省略 6 个早期步骤');
   });
 
-  it('degraded 路径：plan/file_change 块不再静默丢弃，出现计数提示', () => {
+  it('degraded 路径：plan/file_change 块并入「早期步骤」计数，不再静默丢弃', () => {
     const state: RunState = {
       runId: 'run-c4-degraded',
       terminal: 'done',
@@ -3176,7 +3178,9 @@ describe('信息保真 丢弃留痕', () => {
       timestamp: '2026-07-04T11:03:00.000Z',
     });
     const json = JSON.stringify(renderRunCard(state));
-    expect(json).toContain('已省略 4 个计划/文件变更');
+    // 10 个早期思考 + 4 个计划/文件变更 = 14，合并成一条提示。
+    expect(json).toContain('已省略 14 个早期步骤');
+    expect(json).not.toContain('计划/文件变更');
   });
 
   it('degraded 路径：plan/file_change 省略提示置于顶部，输出仍在内容流末尾收尾', () => {
@@ -3213,12 +3217,12 @@ describe('信息保真 丢弃留痕', () => {
 
     const card = renderRunCard(state);
     const json = JSON.stringify(card);
-    // degraded 已触发且留痕提示存在
-    expect(json).toContain('已省略 1 个计划/文件变更');
+    // degraded 已触发，10 个早期思考 + 1 个计划/文件变更 = 11，合并成一条提示。
+    expect(json).toContain('已省略 11 个早期步骤');
+    expect(json).not.toContain('计划/文件变更');
     expect(json).toContain('最后一条输出必须保留在内容流末尾');
-    // 省略提示与 thinking/tool 省略提示同在顶部，先于内容流出现；
-    // 输出仍在内容流末尾，不在省略提示之后。
-    const hintIndex = json.indexOf('已省略 1 个计划/文件变更');
+    // 省略提示置于顶部，先于内容流出现；输出仍在内容流末尾，不在省略提示之后。
+    const hintIndex = json.indexOf('已省略 11 个早期步骤');
     const outputIndex = json.indexOf('最后一条输出必须保留在内容流末尾');
     expect(hintIndex).toBeGreaterThan(-1);
     expect(outputIndex).toBeGreaterThan(hintIndex);
@@ -3308,7 +3312,7 @@ describe('信息保真 丢弃留痕', () => {
     expectNoV1ActionContainer(card);
   });
 
-  it('degraded 路径同样渲染 omittedBlocks 计数提示（专项：与正常路径共用 hint 函数）', () => {
+  it('degraded 路径把 omittedBlocks 与降级裁剪合并成一条计数提示（与正常路径共用 hint 函数）', () => {
     const state: RunState = {
       runId: 'run-c4-degraded-omit',
       terminal: 'done',
@@ -3328,10 +3332,11 @@ describe('信息保真 丢弃留痕', () => {
       });
     }
     const json = JSON.stringify(renderRunCard(state));
-    expect(json).toContain('已省略 6 个早期步骤');
+    // 6 个状态层丢弃 + 10 个降级裁掉的早期思考 = 16。
+    expect(json).toContain('已省略 16 个早期步骤');
   });
 
-  it('extreme 路径同样渲染 omittedBlocks 计数提示', () => {
+  it('extreme 路径把 omittedBlocks 与计划/文件变更合并成一条计数提示', () => {
     const state: RunState = {
       runId: 'run-c4-extreme-omit',
       terminal: 'done',
@@ -3357,7 +3362,71 @@ describe('信息保真 丢弃留痕', () => {
       });
     }
     const json = JSON.stringify(renderRunCard(state));
-    expect(json).toContain('已省略 9 个早期步骤');
+    // 9 个状态层丢弃 + 4 个降级路径不渲染内容的计划块 = 13。
+    expect(json).toContain('已省略 13 个早期步骤');
+  });
+
+  it('降级路径：状态层丢弃、早期思考、早期工具、计划/文件变更合并成一条提示', () => {
+    const state: RunState = {
+      runId: 'run-c4-merged-hint',
+      terminal: 'done',
+      footer: null,
+      blocks: [],
+      sessionId: 's-c4-merged',
+      resultSubtype: 'success',
+      omittedBlocks: 3,
+    };
+    // 6 个 5KB thinking 块 → 估算超阈值 → degraded（保留最后 2 个，省略 4 个）。
+    for (let i = 0; i < 6; i++) {
+      state.blocks.push({
+        kind: 'thinking',
+        content: '思考' + i + ':' + 'X'.repeat(5000),
+        active: false,
+        timestamp: `2026-07-04T10:${String(i).padStart(2, '0')}:00.000Z`,
+      });
+    }
+    // 4 个 tool → degraded 保留最后 3 个，省略 1 个。
+    for (let i = 0; i < 4; i++) {
+      state.blocks.push({
+        kind: 'tool',
+        tool: {
+          id: 'tool-merged-' + i,
+          name: 'Bash',
+          input: { command: 'cmd' + i },
+          output: 'o'.repeat(3500),
+          status: 'ok',
+          startedAt: '2026-07-04T10:10:00.000Z',
+          completedAt: '2026-07-04T10:11:00.000Z',
+        },
+      });
+    }
+    // 2 个 plan + 1 个 file_change → 降级路径不渲染内容，留痕 3 个。
+    state.blocks.push({
+      kind: 'plan',
+      content: '计划占位一',
+      active: false,
+      timestamp: '2026-07-04T10:20:00.000Z',
+    });
+    state.blocks.push({
+      kind: 'plan',
+      content: '计划占位二',
+      active: false,
+      timestamp: '2026-07-04T10:21:00.000Z',
+    });
+    state.blocks.push({
+      kind: 'file_change',
+      path: '/home/user/project/a.ts',
+      operation: 'edit',
+      diff: 'placeholder diff',
+      timestamp: '2026-07-04T10:22:00.000Z',
+    });
+
+    const card = renderRunCard(state);
+    const json = JSON.stringify(card);
+    // 3 + 4 + 1 + 3 = 11：只出一行，不按类型拆成三四个同类提示。
+    expect(json.match(/已省略 \d+ 个早期步骤/g)).toEqual(['已省略 11 个早期步骤']);
+    expect(json).not.toMatch(/早期思考|个工具调用|计划\/文件变更/);
+    expectNoV1ActionContainer(card);
   });
 });
 
@@ -3530,7 +3599,7 @@ describe('运行期通知作为普通消息', () => {
     });
 
     const json = JSON.stringify(renderRunCard(state));
-    expect(json).toMatch(/已省略 \d+ 个早期思考/);
+    expect(json).toMatch(/已省略 \d+ 个早期步骤/);
     expect(json.split('notice-degraded-marker').length - 1).toBe(1);
     const noticeIndex = json.indexOf('notice-degraded-marker');
     const tailIndex = json.indexOf('degraded-tail-output-marker');
