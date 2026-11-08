@@ -114,18 +114,39 @@ describe('QoderConfigBuilder', () => {
       expect(permField!.currentValue).toBe('default');
     });
 
-    it('contextWindow renders as an input with the configured value', () => {
-      const fields = builder.buildFields(
-        makeConfig({ agents: { qoder: { contextWindow: 262144 } } }),
-      );
-      const ctxField = fields.find((f) => f.key === 'agents.qoder.contextWindow');
-      expect(ctxField!.type).toBe('input');
-      expect(ctxField!.currentValue).toBe('262144');
-      // 未配置时显示空串（跟随 CLI/模型默认）
-      const empty = builder
-        .buildFields(makeConfig())
-        .find((f) => f.key === 'agents.qoder.contextWindow');
-      expect(empty!.currentValue).toBe('');
+    it('contextWindow renders preset select + custom input sharing one key', () => {
+      const fieldsOf = (cw: number | undefined) =>
+        builder
+          .buildFields(
+            makeConfig({
+              agents: { qoder: { ...(cw !== undefined ? { contextWindow: cw } : {}) } },
+            }),
+          )
+          .filter((f) => f.key === 'agents.qoder.contextWindow');
+
+      // 未配置：下拉选中 default（跟随 CLI/模型），输入框空串
+      const [emptySelect, emptyInput] = fieldsOf(undefined);
+      expect(emptySelect!.type).toBe('select');
+      expect(emptySelect!.currentValue).toBe('default');
+      expect(emptySelect!.options).toEqual([
+        { value: 'default', text: 'default（跟随 CLI/模型）' },
+        { value: '1000000', text: '1M' },
+        { value: '500000', text: '500K' },
+      ]);
+      expect(emptyInput!.type).toBe('input');
+      expect(emptyInput!.currentValue).toBe('');
+
+      // 预设值：下拉直接选中，自定义输入留空
+      const [presetSelect, presetInput] = fieldsOf(1000000);
+      expect(presetSelect!.currentValue).toBe('1000000');
+      expect(presetInput!.currentValue).toBe('');
+
+      // 非预设值（input 时代存下）：追加进下拉防空选，双字段都回显
+      const [customSelect, customInput] = fieldsOf(262144);
+      const values = customSelect!.options!.map((o) => (typeof o === 'string' ? o : o.value));
+      expect(values).toEqual(['default', '1000000', '500000', '262144']);
+      expect(customSelect!.currentValue).toBe('262144');
+      expect(customInput!.currentValue).toBe('262144');
     });
 
     it('renders as a v1-safe card container (no tag:action)', () => {
@@ -159,8 +180,8 @@ describe('QoderConfigBuilder', () => {
       ]);
     });
 
-    it('contextWindow: empty or 0 clears, numbers pass through for save-time coercion', () => {
-      for (const input of ['', ' ', '0']) {
+    it('contextWindow: empty/0/default clears, numbers pass through for save-time coercion', () => {
+      for (const input of ['', ' ', '0', 'default']) {
         expect(
           builder.handleFieldChange('agents.qoder.contextWindow', input, makeConfig()),
         ).toEqual([{ key: 'agents.qoder.contextWindow', value: undefined }]);
@@ -168,6 +189,9 @@ describe('QoderConfigBuilder', () => {
       expect(
         builder.handleFieldChange('agents.qoder.contextWindow', '262144', makeConfig()),
       ).toEqual([{ key: 'agents.qoder.contextWindow', value: '262144' }]);
+      expect(
+        builder.handleFieldChange('agents.qoder.contextWindow', '1000000', makeConfig()),
+      ).toEqual([{ key: 'agents.qoder.contextWindow', value: '1000000' }]);
     });
   });
 });

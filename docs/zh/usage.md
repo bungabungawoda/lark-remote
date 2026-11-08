@@ -128,7 +128,7 @@ Qoder 的 headless 面与 Claude Code 高度同构（真机实测：`--resume` �
 
 - `agents.qoder.model` / `agents.qoder.reasoningEffort`：留空（卡片选 default）= 跟随 Qoder 自己的 `settings.json`。模型下拉来自 `qodercn --list-models`；推理强度下拉来自对 CLI 校验报错的动态探测（传非法值让 CLI 自己报出全表，档位集随安装版本走），任一清单探不到时该字段回退文本输入。
 - `agents.qoder.permissionMode`：注意 Qoder 的取值是 **snake_case**（`accept_edits` / `bypass_permissions` 等），与 claude/CodeBuddy 的 camelCase 不同。
-- `agents.qoder.contextWindow`：显式上下文窗口提示值（`--context-window`，正整数 tokens），影响 CLI 侧的压缩阈值判断；留空或 0 = 跟随 CLI/模型默认。不会让 run 卡片显示水位（Qoder 的用量回包没有 token 数据，见下）。
+- `agents.qoder.contextWindow`：显式上下文窗口提示值（`--context-window`，正整数 tokens），影响 CLI 侧的压缩阈值判断；留空、0 或卡片选 default = 跟随 CLI/模型默认。卡片上是预设下拉（1M / 500K）+ 自定义输入双字段（写同一个 key）；CLI 侧校验只有「正整数」，预设只是快捷方式。不会让 run 卡片显示水位（Qoder 的用量回包没有 token 数据，见下）。
 - `agents.qoder.cli.binary`：CN 版安装名是 `qodercn`，国际版是 `qoder`，默认按 CN 版。
 - `agents.qoder.configDir`：Qoder 配置根目录（会话记录在 `<configDir>/projects/` 下）；留空时按 `~/.qoder-cn` → `~/.qoder` 自动探测。
 

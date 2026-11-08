@@ -66,14 +66,41 @@ function effortField(effortOptions: string[], current: string): ConfigField {
   };
 }
 
-/** 上下文窗口：未配置显示空串（留空/0 = 跟随 CLI/模型默认）。 */
-function contextWindowField(contextWindow: number | undefined): ConfigField {
-  return {
-    key: 'agents.qoder.contextWindow',
-    label: '上下文窗口(tokens, 留空或0=CLI默认)',
-    type: 'input',
-    currentValue: contextWindow != null ? String(contextWindow) : '',
-  };
+/** 上下文窗口预设档（value = tokens，随 --context-window 下发）。 */
+const CONTEXT_WINDOW_PRESETS: SelectOption[] = [
+  { value: '1000000', text: '1M' },
+  { value: '500000', text: '500K' },
+];
+
+/**
+ * 上下文窗口：预设下拉（1M/500K）+ 自定义输入，双字段写同一个 key（同 codex
+ * 模型字段的「下拉 + 自定义」口径）。'default'（自造值）= 不传
+ * --context-window 跟随 CLI/模型（实测默认即 1M，但不钉死，CLI 改默认不漂移）；
+ * 自定义值追加进下拉，避免空选。CLI 侧校验只有「正整数」（实测任意正整数
+ * 静默通过），预设档只是快捷方式，不是枚举。
+ */
+function contextWindowFields(contextWindow: number | undefined): ConfigField[] {
+  const raw = contextWindow != null ? String(contextWindow) : '';
+  const preset = CONTEXT_WINDOW_PRESETS.find((p) => p.value === raw);
+  const custom = raw && !preset ? raw : '';
+  const presetOptions: SelectOption[] = custom
+    ? [...CONTEXT_WINDOW_PRESETS, { value: custom, text: custom }]
+    : CONTEXT_WINDOW_PRESETS;
+  return [
+    {
+      key: 'agents.qoder.contextWindow',
+      label: '上下文窗口',
+      type: 'select',
+      options: [{ value: 'default', text: 'default（跟随 CLI/模型）' }, ...presetOptions],
+      currentValue: preset?.value || custom || 'default',
+    },
+    {
+      key: 'agents.qoder.contextWindow',
+      label: '自定义上下文窗口(tokens)',
+      type: 'input',
+      currentValue: custom,
+    },
+  ];
 }
 
 export class QoderConfigBuilder implements AgentConfigCardBuilder {
@@ -91,7 +118,7 @@ export class QoderConfigBuilder implements AgentConfigCardBuilder {
         PERMISSION_MODE_OPTIONS,
         q?.permissionMode ?? 'default',
       ),
-      contextWindowField(q?.contextWindow),
+      ...contextWindowFields(q?.contextWindow),
     ];
   }
 
@@ -110,11 +137,12 @@ export class QoderConfigBuilder implements AgentConfigCardBuilder {
     ) {
       return [{ key, value: undefined }];
     }
-    // 上下文窗口：留空或 0 = 删除键（跟随 CLI/模型默认，router 对 undefined
-    // 做键删除）；其余交由保存链路的 coerceValue 转数字，非法值由 zod 校验报错。
+    // 上下文窗口：留空/0/下拉的 'default'（自造值）= 删除键（跟随 CLI/模型
+    // 默认，router 对 undefined 做键删除）；其余交由保存链路的 coerceValue
+    // 转数字，非法值由 zod 校验报错。
     if (key === 'agents.qoder.contextWindow') {
       const raw = String(value ?? '').trim();
-      if (raw === '' || raw === '0') {
+      if (raw === '' || raw === '0' || raw === 'default') {
         return [{ key, value: undefined }];
       }
     }
