@@ -15,7 +15,12 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { AgentEvent } from '../../types.js';
-import { QoderAcpRunner, qoderAcpSpawnArgs, type QoderAcpRunnerOptions } from './runner.js';
+import {
+  QoderAcpRunner,
+  formatContextWindow,
+  qoderAcpSpawnArgs,
+  type QoderAcpRunnerOptions,
+} from './runner.js';
 import {
   writeMockAcpServer,
   writeScenario,
@@ -273,5 +278,25 @@ describe('QoderAcpRunner', () => {
     expect(status.model).toBe('dfmodel');
     expect(status.reasoning).toBe('max');
     expect(status.extras).toEqual({ mode: 'acp', permissionMode: 'dontAsk' });
+  });
+
+  it('getStatusInfo formats contextWindow human-readable (/s 可读性)', () => {
+    const runner = makeRunner('unused-wrapper', { contextWindow: 1000000 });
+    expect(runner.getStatusInfo().extras).toEqual({
+      mode: 'acp',
+      permissionMode: 'default',
+      contextWindow: '1M',
+    });
+  });
+});
+
+describe('formatContextWindow', () => {
+  it('million-range → M, thousand-range → K, small → as-is', () => {
+    expect(formatContextWindow(1000000)).toBe('1M');
+    expect(formatContextWindow(1_500_000)).toBe('1.5M');
+    expect(formatContextWindow(2000000)).toBe('2M');
+    expect(formatContextWindow(500000)).toBe('500K');
+    expect(formatContextWindow(262144)).toBe('262K');
+    expect(formatContextWindow(999)).toBe('999');
   });
 });

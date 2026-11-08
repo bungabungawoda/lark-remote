@@ -134,10 +134,11 @@ Qoder 走 ACP 模式接入（`qodercn --acp`，stdio 上的 JSON-RPC 长连接�
 首次使用前先用交互式终端跑一次 `qodercn` 完成登录（浏览器 OAuth）与目录信任；ACP 通道不会触发登录（authMethods 复用现有登录）。已实测/待验证的行为差异（2026-11-07，qoder-cli 1.1.84）：
 
 - **未登录**：非交互启动直接失败（exit 1），lark-remote 以错误卡呈现；不是挂起。
-- **done 卡用量区极简**：不渲染 Model / 结果 / USD 行；积分（`total_credits`）经 ACP 可得时显示积分行（如 `Cost - 12 credits`），拿不到时整行缺席。qoder 的 result 回包没有 token 明细（字段恒 0，2026-11-05 实测），卡片不显示 token 统计。
-- **待真机验证**（2026-11-07 qoder CN 后端对新会话故障，以下验证被阻塞，恢复后需人工跑一次）：① 审批卡是否真经 `session/request_permission` 发起（二进制方法集已确认，触发未验证）；② `AskUserQuestion` 在 ACP 下走什么通道（stream-json 下被 CLI 直接拒绝）；③ usage_update 是否携带积分/token 明细；④ ACP 会话是否照常落盘 jsonl（影响 `/resume` 列表）。
-- **`/compact`**：按 codebuddy 同口径把 `/compact` 作为 prompt 文本下发；qoder ACP 是否本地拦截 slash 命令待真机验证。
-- **`/stop`**：走 ACP `session/cancel` 协议通道（stream-json 时代的「interrupt 被静默忽略」不再适用，待真机验证）。
+- **done 卡用量区极简**：不渲染 Model / 结果 / USD 行；积分可得时显示积分行（如 `Cost - 12 credits`）。qoder 的 result 回包没有 token 明细（字段恒 0，2026-11-05 实测），且 ACP `usage_update` 实测不随 turn 下发（2026-11-07 真机），done 卡通常无任何用量行。
+- **`AskUserQuestion` 不可用**（2026-11-07 真机验证）：stream-json 下工具存在但调用被 CLI 拒绝；ACP 下工具干脆不在会话工具列表——两条传输都没有交互提问通道，纯 CLI 侧限制。
+- **会话落盘正常**（2026-11-07 真机验证）：ACP 会话照常写 `<configDir>/projects/` 下的 jsonl，`/resume` 列表可用；jsonl 内无 usage 行（与 stream-json 时代一致）。
+- **待真机验证**：① 审批卡是否真经 `session/request_permission` 发起（需在 `default` 模式下跑一次写文件任务；二进制方法集已确认）；② `/compact` 是否被 ACP 模式本地拦截（当前按 prompt 文本下发）；③ `/stop` 的 `session/cancel` 优雅中断效果。
+- **`/s` 状态行**：`contextWindow` 按人话显示（1000000 → `1M`、500000 → `500K`）。
 
 ### DSH agent（DeepSeek Harness，HTTP+WS 直连）
 
