@@ -12,6 +12,18 @@
 export const DEFAULT_TRUNCATE_SUFFIX = '…（已截断）';
 
 /**
+ * Front-omission marker emitted by the store-time tail window (`keepTailMarked`).
+ * Single source of truth: the card store builds it, the card renderer parses it,
+ * so the wording cannot drift between the two layers.
+ */
+export const FRONT_OMISSION_MARKER_RE = /^…（前 (\d+) 字符已省略）\n/;
+
+/** Build the front-omission marker reporting how many leading chars were dropped. */
+export function frontOmissionMarker(dropped: number): string {
+  return `…（前 ${dropped} 字符已省略）\n`;
+}
+
+/**
  * Max byte budget for a single session `tool_result` event's content when
  * replaying an opencode session (pre-fold). Pre-folding here bounds the
  * in-memory `events[]` array and the intermediate card JSON so a single
@@ -66,6 +78,40 @@ export function truncateUtf8(
   if (budget <= 0) return suffix;
   const truncated = fitUtf8(value, budget, fromEnd);
   return fromEnd ? `${suffix}\n${truncated}` : `${truncated}${suffix}`;
+}
+
+/**
+ * Render-time truncation that respects an existing front-omission marker.
+ *
+ * The storage layer keeps the TAIL of long blocks and prefixes them with a
+ * front-omission marker. Head-truncating such content again would keep the
+ * marker plus the OLDEST kept text and append a contradictory trailing
+ * `…（已截断）`. Instead, when a marker is present and the content still
+ * exceeds `maxBytes`, drop more from the FRONT (increase the omitted count)
+ * and never add a tail marker. Content without a marker falls back to plain
+ * head truncation (`truncateUtf8`), preserving existing behavior.
+ */
+export function truncateUtf8WithOmissionMarker(value: string, maxBytes: number): string {
+  if (Buffer.byteLength(value, 'utf8') <= maxBytes) return value;
+  const prior = FRONT_OMISSION_MARKER_RE.exec(value);
+  if (!prior) return truncateUtf8(value, maxBytes);
+
+  const priorDropped = Number(prior[1]);
+  const body = value.slice(prior[0].length);
+  // Marker byte length depends on the digit count of the cumulative omitted
+  // number N: find the smallest N (monotonically non-decreasing) such that
+  // marker(N) + the kept tail fits `maxBytes`. `kept` is a tail slice that
+  // never splits a code point, so `body.length - kept.length` is exactly the
+  // number of UTF-16 units dropped this pass — the same unit keepTailMarked
+  // counts by.
+  let dropped = priorDropped;
+  for (;;) {
+    const budget = maxBytes - Buffer.byteLength(frontOmissionMarker(dropped), 'utf8');
+    const kept = budget > 0 ? fitUtf8(body, budget, true) : '';
+    const next = priorDropped + (body.length - kept.length);
+    if (next === dropped) return frontOmissionMarker(dropped) + kept;
+    dropped = next;
+  }
 }
 
 interface TruncateOptions {

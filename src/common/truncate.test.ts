@@ -1,5 +1,10 @@
 import { describe, it, expect } from 'vitest';
-import { truncate, truncateUtf8 } from './truncate.js';
+import {
+  truncate,
+  truncateUtf8,
+  truncateUtf8WithOmissionMarker,
+  frontOmissionMarker,
+} from './truncate.js';
 
 describe('truncate', () => {
   it('returns string unchanged if within limit', () => {
@@ -62,5 +67,41 @@ describe('truncateUtf8', () => {
 
   it('returns the suffix when the byte budget cannot fit it', () => {
     expect(truncateUtf8('abc', 1)).toBe('…（已截断）');
+  });
+});
+
+describe('truncateUtf8WithOmissionMarker', () => {
+  it('keeps omitting from the front and never appends a tail marker', () => {
+    const body = '思考'.repeat(2000); // 4000 CJK chars ~= 12000 bytes, far over 4500
+    const out = truncateUtf8WithOmissionMarker(frontOmissionMarker(1016) + body, 4500);
+
+    expect(out).toMatch(/^…（前 \d+ 字符已省略）\n/);
+    expect(out).not.toContain('已截断');
+    expect(Buffer.byteLength(out, 'utf8')).toBeLessThanOrEqual(4500);
+    expect(Buffer.from(out, 'utf8').toString('utf8')).toBe(out);
+
+    const dropped = Number(/^…（前 (\d+) 字符已省略）/.exec(out)?.[1]);
+    const kept = out.slice(frontOmissionMarker(dropped).length);
+    // 累计省略数 = 原省略数 + 本次从头部删掉的正文字符数；保留的是尾部。
+    expect(dropped).toBe(1016 + body.length - kept.length);
+    expect(body.endsWith(kept)).toBe(true);
+    expect(dropped).toBeGreaterThan(1016);
+  });
+
+  it('does not split a code point when the kept tail contains emoji', () => {
+    const out = truncateUtf8WithOmissionMarker(frontOmissionMarker(7) + '😀'.repeat(1000), 4500);
+    expect(Buffer.from(out, 'utf8').toString('utf8')).toBe(out);
+    expect(out).not.toContain('已截断');
+    expect(Buffer.byteLength(out, 'utf8')).toBeLessThanOrEqual(4500);
+  });
+
+  it('returns marked content unchanged when it already fits the budget', () => {
+    const small = frontOmissionMarker(12) + 'abc';
+    expect(truncateUtf8WithOmissionMarker(small, 4500)).toBe(small);
+  });
+
+  it('falls back to plain head truncation for content without a marker', () => {
+    const plain = 'x'.repeat(6000);
+    expect(truncateUtf8WithOmissionMarker(plain, 4500)).toBe(truncateUtf8(plain, 4500));
   });
 });

@@ -17,7 +17,7 @@ import type {
   ToolHint,
   GoalView,
 } from '../runner/index.js';
-import { keepTail } from '../common/truncate.js';
+import { keepTail, frontOmissionMarker, FRONT_OMISSION_MARKER_RE } from '../common/truncate.js';
 import { asRecord } from '../common/tool-summary.js';
 import type { UsageSnapshot } from '../session-contract.js';
 
@@ -1382,9 +1382,6 @@ function keepLatestBlocks(blocks: RunBlock[]): RunBlock[] {
   return blocks.length <= MAX_BLOCKS ? blocks : blocks.slice(-MAX_BLOCKS);
 }
 
-/** 截断标记前缀（`keepTailMarked` 产出，含已丢弃正文计数）。 */
-const TRUNCATION_MARKER_RE = /^…（前 (\d+) 字符已省略）\n/;
-
 /**
  * 给「已经不再是最新」的 text 块补上 `MAX_TEXT_CHARS` 存储窗口。
  *
@@ -1431,7 +1428,7 @@ function capStaleTextBlocks(blocks: RunBlock[]): RunBlock[] {
  * 丢弃的正文数**（单调不减），再按「marker 计入预算」的不动点求最小 N。
  */
 function keepTailMarked(value: string, maxChars: number): string {
-  const prior = TRUNCATION_MARKER_RE.exec(value);
+  const prior = FRONT_OMISSION_MARKER_RE.exec(value);
   const priorDropped = prior ? Number(prior[1]) : 0;
   const body = prior ? value.slice(prior[0].length) : value;
 
@@ -1452,7 +1449,7 @@ function keepTailMarked(value: string, maxChars: number): string {
 
   const newlyDropped = totalDropped - priorDropped;
   const kept = body.slice(newlyDropped);
-  return `…（前 ${totalDropped} 字符已省略）\n${kept}`;
+  return frontOmissionMarker(totalDropped) + kept;
 }
 
 function truncateDetail(value: string): string {
