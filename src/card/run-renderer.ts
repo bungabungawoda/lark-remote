@@ -459,7 +459,8 @@ function groupElementCost(group: BlockGroup): number {
  * 为什么在正常路径里先裁剪而不是整卡降级：降级档（degraded）只保留最后 3 个
  * 工具 + 2 个思考块，对一次跑了几十步的 run 是灾难性的信息损失；元素超限的
  * 成因只是"元素多"，砍掉最旧的几步就能同时保住元素预算和最新内容的完整渲染。
- * 被省略的数量由调用方渲染成 `_已省略 N 个早期步骤_`（与 omittedBlocks 同款提示）。
+ * 被省略的数量由调用方与 `omittedBlocks` 合并后渲染成一条
+ * `_已省略 N 个早期步骤_`——同一时间线的两个省略来源不能各出一行。
  */
 function selectVisibleGroups(groups: BlockGroup[]): {
   visible: BlockGroup[];
@@ -577,11 +578,18 @@ function approvalAreaCompact(state: RunState): object[] {
   return elements;
 }
 
-/** 底部操作行之前的内容区提示：被 MAX_BLOCKS 截掉的早期块计数（信息保真）。 */
+/**
+ * 「早期步骤」省略提示。两个来源共用同一句话，必须合并成一个计数：
+ * 状态层 MAX_BLOCKS 丢弃的块（omittedBlocks）与渲染预算裁掉的早期组。
+ * 分开渲染时同一个时间线会出现「已省略 24 个」+「已省略 4 个」两行。
+ */
+function omittedStepsHint(total: number): object[] {
+  return total > 0 ? [markdownDiv(`_💡 已省略 ${total} 个早期步骤_`)] : [];
+}
+
+/** 只含状态层省略（不做进度组裁剪的路径用）。 */
 function omittedBlocksHint(state: RunState): object[] {
-  return state.omittedBlocks !== undefined && state.omittedBlocks > 0
-    ? [markdownDiv(`_💡 已省略 ${state.omittedBlocks} 个早期步骤_`)]
-    : [];
+  return omittedStepsHint(state.omittedBlocks ?? 0);
 }
 
 /** Assemble the card shell (schema/config/header) around body elements. */
@@ -633,7 +641,7 @@ function buildFallbackElements(
 
   if (allThinkingBlocks.length > tier.thinkingKeep) {
     const omitted = allThinkingBlocks.length - tier.thinkingKeep;
-    elements.push(markdownDiv(`_💡 ${omitted} 个早期思考已省略_`));
+    elements.push(markdownDiv(`_💡 已省略 ${omitted} 个早期思考_`));
   }
   const thinkingBlocksToShow = allThinkingBlocks.slice(-tier.thinkingKeep);
 
@@ -642,7 +650,7 @@ function buildFallbackElements(
 
   // Add omit hint for tools if any were omitted
   if (toolsOmitted > 0) {
-    elements.push(markdownDiv(`_💡 另外 ${toolsOmitted} 个工具调用已省略_`));
+    elements.push(markdownDiv(`_💡 已省略 ${toolsOmitted} 个工具调用_`));
   }
 
   // use object references (like the extreme path) instead of timestamps.
@@ -673,7 +681,7 @@ function buildFallbackElements(
     (g) => g.kind === 'plan' || g.kind === 'file_change',
   ).length;
   if (omittedPlanOrFileChange > 0) {
-    elements.push(markdownDiv(`_💡 另外 ${omittedPlanOrFileChange} 个计划/文件变更已省略_`));
+    elements.push(markdownDiv(`_💡 已省略 ${omittedPlanOrFileChange} 个计划/文件变更_`));
   }
 
   // notices 作为普通消息按时间插入内容流（与正常路径同语义）；降级只裁剪
@@ -938,6 +946,7 @@ export function estimateCardBytes(
   // 与 buildChronologicalContent 同源：估算必须测量"将要渲染的内容"，而正常
   // 路径会按节点预算省略最旧的组（不模拟这一步会系统性高估）。
   const { visible, omitted } = selectVisibleGroups(groups);
+  const baseOmitted = state.omittedBlocks ?? 0;
   const outputMax = toolOutputBudget(state);
 
   // 卡片外壳直接实测 assembleRunCard 空元素产物（schema/config/header/body 结构
@@ -952,9 +961,9 @@ export function estimateCardBytes(
 
   // 块内容：与 buildChronologicalContent 同源（describePanelGroup 单源）
   let renderedAny = false;
-  if (omitted > 0) {
+  if (baseOmitted + omitted > 0) {
     renderedAny = true;
-    total += measureJson(markdownDiv(`_💡 已省略 ${omitted} 个早期步骤_`));
+    total += measureJson(markdownDiv(`_💡 已省略 ${baseOmitted + omitted} 个早期步骤_`));
   }
   for (const group of visible) {
     if (group.kind === 'tool') {
@@ -1047,8 +1056,7 @@ function renderLegacyRunCard(state: RunState, options: RunCardRenderOptions): ob
   if (estimate < DEGRADED_THRESHOLD) {
     const elements: object[] = [
       statusRow(state),
-      ...omittedBlocksHint(state),
-      ...buildChronologicalContent(state, prepared, groups),
+      ...buildChronologicalContent(state, prepared, groups, state.omittedBlocks ?? 0),
       ...buildSummaryContent(state, { includeNotices: false }),
       ...actionRow(state, options),
       ...approvalArea(state),
@@ -1131,16 +1139,17 @@ function buildFinalAnswerPriorityCard(
   const safeAnswer = truncateMarkdownTables(finalAnswer.content);
   const ts = formatTimestamp(finalAnswer.timestamp);
   const answerElements = renderTextBlock(safeAnswer, ts);
-  const fixedStart = [statusRow(state), ...omittedBlocksHint(state)];
+  const baseOmitted = state.omittedBlocks ?? 0;
+  const fixedStart = [statusRow(state)];
   const summary = buildSummaryContent(state, { includeNotices: false });
   const controls = [...actionRow(state, options), ...approvalArea(state)];
 
   const buildWithProgress = (start: number, includeSummary: boolean): object => {
     const renderedProgress = renderContentGroups(state, prepared, groups.slice(start));
-    const progress =
-      start < groups.length
-        ? [markdownDiv(`_💡 已省略 ${start} 个早期步骤_`), ...renderedProgress]
-        : renderedProgress;
+    // 状态层丢弃的块与进度组裁剪合并成一个计数。start=0（全部保留）或
+    // start=groups.length（不渲染进度）时没有进度组被裁掉，只剩状态层那部分。
+    const omittedAtRender = start < groups.length ? start : 0;
+    const progress = [...omittedStepsHint(baseOmitted + omittedAtRender), ...renderedProgress];
     return assembleRunCard(state, options, [
       ...fixedStart,
       ...progress,
@@ -1171,6 +1180,7 @@ function buildFinalAnswerPriorityCard(
 
   const overflowCard = assembleRunCard(state, options, [
     ...fixedStart,
+    ...omittedBlocksHint(state),
     markdownDiv(FINAL_ANSWER_OVERFLOW_MARKER),
     ...controls,
   ]);
@@ -1248,11 +1258,12 @@ function buildChronologicalContent(
   state: RunState,
   prepared: GroupContentPrepared,
   groups: BlockGroup[],
+  baseOmitted = 0,
 ): object[] {
   // 节点预算内从最新往回选择可见组：超限时只省略最旧的几步，不整卡降级。
+  // 状态层已丢的块（baseOmitted）与这里裁掉的组合并成一条提示。
   const { visible, omitted } = selectVisibleGroups(groups);
-  const elements: object[] = [];
-  if (omitted > 0) elements.push(markdownDiv(`_💡 已省略 ${omitted} 个早期步骤_`));
+  const elements: object[] = [...omittedStepsHint(baseOmitted + omitted)];
   elements.push(...renderContentGroups(state, prepared, visible));
 
   if (elements.length === 0) {

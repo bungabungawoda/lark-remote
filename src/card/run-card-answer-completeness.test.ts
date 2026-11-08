@@ -25,6 +25,7 @@ import { PiRpcTranslator } from '../runner/pi/rpc/translator.js';
 import { KimiAcpTranslator } from '../runner/kimi/acp/translator.js';
 import { OpencodeAcpTranslator } from '../runner/opencode/acp/translator.js';
 import { DshTranslator } from '../runner/dsh/translator.js';
+import { expectNoV1ActionContainer } from '../../tests/lib/card-view.js';
 
 const ANSWER_HEAD = 'ANSWER-HEAD:';
 const ANSWER_TAIL = ':ANSWER-TAIL';
@@ -225,4 +226,108 @@ describe('run card final answer completeness (all agents)', () => {
       expect(Buffer.byteLength(json, 'utf8')).toBeLessThanOrEqual(CARD_BUDGET_BYTES);
     });
   }
+});
+
+describe('run card progress omission hint', () => {
+  it('does not claim "已省略 0 个早期步骤" when every progress group fits', () => {
+    let state = createInitialRunState('run-omitted-zero');
+    const events = [
+      { type: 'system', subtype: 'init', session_id: 's', cwd: '/w', model: 'm' },
+      {
+        type: 'assistant',
+        message: { content: [{ type: 'thinking', thinking: 'PROGRESS-THINKING' }] },
+      },
+      { type: 'assistant', message: { content: [{ type: 'text', text: 'SHORT-ANSWER' }] } },
+      { type: 'result', subtype: 'success', session_id: 's' },
+    ] as AgentEvent[];
+    for (const event of events) state = reduceRunState(state, event);
+    state = finishRun(state, 'done');
+    expect(state.finalAnswer?.content).toBe('SHORT-ANSWER');
+    // 进度组仍在：答案优先卡的预算循环会走到 start=0 的「全部保留」分支。
+    expect(state.blocks.length).toBeGreaterThan(0);
+
+    const { card } = renderRunCardDetailed(state, { agentKind: 'claude' });
+    const json = JSON.stringify(card);
+    expect(json).toContain('SHORT-ANSWER');
+    expect(json).toContain('PROGRESS-THINKING');
+    expect(json).not.toContain('个早期步骤');
+    expectNoV1ActionContainer(json);
+  });
+
+  /** 16 个 4KB 思考组：答案优先卡的字节预算一定会裁掉其中一部分。 */
+  function bigProgressState(omittedBlocks?: number): RunState {
+    return {
+      runId: 'run-omitted-n',
+      terminal: 'done' as const,
+      footer: null,
+      sessionId: 's',
+      resultSubtype: 'success' as const,
+      ...(omittedBlocks === undefined ? {} : { omittedBlocks }),
+      finalAnswer: {
+        content: 'SHORT-ANSWER',
+        timestamp: '2026-11-08T12:00:00.000Z',
+        complete: true,
+        source: 'protocol' as const,
+      },
+      blocks: Array.from({ length: 16 }, (_, i) => ({
+        kind: 'thinking' as const,
+        content: `思考${i}:` + 'X'.repeat(4_000),
+        active: false,
+        timestamp: `2026-11-08T11:${String(i).padStart(2, '0')}:00.000Z`,
+      })),
+    } as RunState;
+  }
+
+  function stepHints(json: string): string[] {
+    return json.match(/已省略 \d+ 个早期步骤/g) ?? [];
+  }
+
+  it('still reports a non-zero count when early groups are actually dropped', () => {
+    const { card } = renderRunCardDetailed(bigProgressState(), { agentKind: 'claude' });
+    const json = JSON.stringify(card);
+    const hints = stepHints(json);
+    expect(hints).toHaveLength(1);
+    expect(hints[0]).toMatch(/已省略 [1-9]\d* 个早期步骤/);
+    expectNoV1ActionContainer(json);
+  });
+
+  it('merges MAX_BLOCKS and render-budget omissions into one count', () => {
+    const { card } = renderRunCardDetailed(bigProgressState(24), { agentKind: 'claude' });
+    const json = JSON.stringify(card);
+    const hints = stepHints(json);
+    expect(hints).toHaveLength(1);
+    const total = Number(/已省略 (\d+) 个早期步骤/.exec(hints[0])![1]);
+    // 24 个状态层丢弃的块 + 至少 1 个被渲染预算裁掉的组。
+    expect(total).toBeGreaterThan(24);
+    expect(total).toBeLessThanOrEqual(24 + 16);
+    expectNoV1ActionContainer(json);
+  });
+
+  it('keeps a single state-level hint when no progress groups are trimmed', () => {
+    const state = {
+      runId: 'run-omitted-base-only',
+      terminal: 'done' as const,
+      footer: null,
+      sessionId: 's',
+      resultSubtype: 'success' as const,
+      omittedBlocks: 24,
+      finalAnswer: {
+        content: 'SHORT-ANSWER',
+        timestamp: '2026-11-08T12:00:00.000Z',
+        complete: true,
+        source: 'protocol' as const,
+      },
+      blocks: [
+        {
+          kind: 'thinking' as const,
+          content: 'PROGRESS-THINKING',
+          active: false,
+          timestamp: '2026-11-08T11:00:00.000Z',
+        },
+      ],
+    } as RunState;
+
+    const { card } = renderRunCardDetailed(state, { agentKind: 'claude' });
+    expect(stepHints(JSON.stringify(card))).toEqual(['已省略 24 个早期步骤']);
+  });
 });

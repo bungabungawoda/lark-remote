@@ -146,7 +146,7 @@ describe('renderRunCard budget invariants', () => {
     expectNoV1ActionContainer(json);
 
     // 互斥：要么降级（早期省略），要么完整（全部保留）——不能既降级又完整。
-    const isDegraded = /\d+ 个早期思考已省略/.test(json);
+    const isDegraded = /已省略 \d+ 个早期思考/.test(json);
     const allPresent = ['思考块1', '思考块5'].every((t) => json.includes(t));
     expect(isDegraded || allPresent).toBe(true);
   });
@@ -207,7 +207,7 @@ describe('renderRunCard budget invariants', () => {
     expect(json).toContain('交错文本3');
     expect(json).toContain('交错文本5');
 
-    expect(/\d+ 个早期思考已省略/.test(json)).toBe(true);
+    expect(/已省略 \d+ 个早期思考/.test(json)).toBe(true);
   });
 });
 
