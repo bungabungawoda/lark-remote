@@ -6,7 +6,7 @@ English | [简体中文](README.md)
 [![npm](https://img.shields.io/npm/v/lark-remote.svg)](https://www.npmjs.com/package/lark-remote)
 [![CI](https://github.com/bungabungawoda/lark-remote/actions/workflows/ci.yml/badge.svg)](https://github.com/bungabungawoda/lark-remote/actions/workflows/ci.yml)
 
-A bridge between Feishu (Lark) private chat and local coding agents. Talk to Claude Code (or Codex / opencode / pi / Kimi / DSH) from Feishu — the agent reads/writes files and runs commands in a local directory you pick, with execution streamed live into a single CardKit 2.0 card.
+A bridge between Feishu (Lark) private chat and local coding agents. Talk to Claude Code (or Codex / opencode / pi / Kimi / DSH / CodeBuddy / Qoder) from Feishu — the agent reads/writes files and runs commands in a local directory you pick, with execution streamed live into a single CardKit 2.0 card.
 
 Designed for a single-user, peer-to-peer private chat. The agent's system prompt is never modified.
 
@@ -19,7 +19,7 @@ Designed for a single-user, peer-to-peer private chat. The agent's system prompt
 - OS: macOS / Linux / Windows 10+ (native Windows support is verified on real hardware, with behavior matching macOS/Linux)
 - Node.js 20+ ([Bun](https://bun.sh/) for development)
 - A Feishu custom app (either way): scan-to-create (a QR code pops up in the terminal on first launch; scan it with the Feishu app to create the app and write credentials automatically); or create one manually in the Open Platform — enable bot capability, subscribe to `im.message.receive_v1` and `card.action.trigger` via **long connection** (WebSocket, no public address needed), with at least the `im:message` scope.
-- Claude Code CLI installed locally and logged in once in a terminal (`claude` → browser OAuth). Same idea for other agents (codex / opencode / pi / kimi): install the corresponding CLI first. DSH connects to a local DSH Web Host via HTTP+WebSocket (no local subprocess), default address `http://127.0.0.1:3080`. lark-remote reads `$DSH_HOME/.credentials.yaml` (default `~/.dsh/.credentials.yaml`) and mints short-lived cookies automatically, so a `dsh web` restart needs no manual token update; `agents.dsh.token` is only a fallback when that file is unavailable.
+- Claude Code CLI installed locally and logged in once in a terminal (`claude` → browser OAuth). Same idea for other agents (codex / opencode / pi / kimi / codebuddy / qoder): install the corresponding CLI first. DSH connects to a local DSH Web Host via HTTP+WebSocket (no local subprocess), default address `http://127.0.0.1:3080`. lark-remote reads `$DSH_HOME/.credentials.yaml` (default `~/.dsh/.credentials.yaml`) and mints short-lived cookies automatically, so a `dsh web` restart needs no manual token update; `agents.dsh.token` is only a fallback when that file is unavailable.
 
 ## Installation
 

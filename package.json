@@ -1,7 +1,7 @@
 {
   "name": "lark-remote",
-  "version": "0.6.0",
-  "description": "Feishu (Lark) private-chat bridge to local coding agents — Claude Code / Codex / opencode / pi / kimi, with live-streaming CardKit 2.0 cards",
+  "version": "0.6.1",
+  "description": "Feishu (Lark) private-chat bridge to local coding agents — Claude Code / Codex / opencode / pi / kimi / DSH / CodeBuddy / Qoder, with live-streaming CardKit 2.0 cards",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "exports": {
@@ -73,6 +73,9 @@
     "codex",
     "opencode",
     "kimi",
+    "dsh",
+    "codebuddy",
+    "qoder",
     "coding-agent",
     "bridge",
     "cli",
