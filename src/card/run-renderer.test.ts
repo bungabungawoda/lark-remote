@@ -1694,6 +1694,43 @@ describe('renderRunCard', () => {
     expect(usdJson).toContain('结果 - success');
   });
 
+  it('test_anchor_qoder_agentkind_minimal_even_without_credits', () => {
+    // ACP 传输下 qoder 回包可能没有 total_credits：极简判定不能再只靠 credits
+    // 字段，agentKind === 'qoder'（建 state 时盖章）同样生效——Model/结果/USD
+    // 行不渲染；credits 缺席时积分行也缺席。
+    let state = createInitialRunState('run-qoder-acp', { agentKind: 'qoder' });
+    state = reduceRunState(state, {
+      type: 'system',
+      subtype: 'init',
+      session_id: 's1',
+      cwd: '/home/user/project',
+      model: 'dfmodel',
+    } as never);
+    state = finishRun(state, 'done', { resultSubtype: 'success' });
+    const json = JSON.stringify(renderRunCard(state));
+    expect(json).not.toContain('Model - dfmodel');
+    expect(json).not.toContain('结果 - success');
+    expect(json).not.toContain('Cost - $0.0000');
+
+    // 非 qoder 身份不受影响
+    let other = createInitialRunState('run-claude', { agentKind: 'claude' });
+    other = reduceRunState(other, {
+      type: 'system',
+      subtype: 'init',
+      session_id: 's1',
+      cwd: '/home/user/project',
+      model: 'test-model',
+    } as never);
+    other = reduceRunState(other, {
+      type: 'result',
+      subtype: 'success',
+      session_id: 's1',
+      total_cost_usd: 0.42,
+    } as never);
+    other = finishRun(other, 'done', { resultSubtype: 'success' });
+    expect(JSON.stringify(renderRunCard(other))).toContain('Cost - $0.4200');
+  });
+
   it('test_anchor_done_card_threads_cumulative_input_output', () => {
     // Session-cumulative total/input/output (read from jsonl, threaded via FinishMeta
     // -> RunState -> formatUsageStats) must render as "· 累计 X" on the

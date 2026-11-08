@@ -183,6 +183,8 @@ export interface RunState extends UsageSnapshot {
   costUsd?: number;
   /** 本次 run 积分（result 事件 total_credits，qoder 原样显示；qoder 无 USD 口径）。 */
   credits?: number;
+  /** Agent 身份（建 state 时盖章；用量区极简判定等渲染读取）。 */
+  agentKind?: string;
   /** 运行期通知（warning / 重路由 / 压缩提示），按到达顺序。 */
   notices?: RunNotice[];
   /** 被 MAX_BLOCKS 静默丢弃的早期块计数（>0 时渲染「已省略 N 个早期步骤」）。 */
@@ -246,11 +248,13 @@ export interface FinishMeta extends UsageSnapshot {
   idleTimeoutMinutes?: number;
 }
 
-export function createInitialRunState(runId: string): RunState {
+export function createInitialRunState(runId: string, opts?: { agentKind?: string }): RunState {
   return {
     runId,
     terminal: 'running',
     footer: 'thinking',
+    // agent 身份盖章一次（桥建 session 时已知），用量区极简判定等渲染直接读。
+    ...(opts?.agentKind ? { agentKind: opts.agentKind } : {}),
     // 状态行的耗时口径：从 run 状态建立那一刻算起（卡片首帧即开始计时）。
     startedAt: Date.now(),
     blocks: [],
