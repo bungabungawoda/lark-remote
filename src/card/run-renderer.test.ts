@@ -11,6 +11,36 @@ import { renderRunCardDetailed, FINAL_ANSWER_OVERFLOW_MARKER } from './run-rende
 import { countCardElements, MAX_CARD_ELEMENTS } from './card-budget.js';
 import { displayWidth, HEADER_DISPLAY_MAX } from './tool-render.js';
 import { expectNoV1ActionContainer } from '../../tests/lib/card-view.js';
+import { frontOmissionMarker } from '../common/truncate.js';
+
+describe('front-omission marker in rendered thinking blocks', () => {
+  it('omits only from the front, with no contradictory tail truncation marker', () => {
+    // 存储层 keepTailMarked 产出「前 N 字符已省略」+ 尾部正文。渲染层若再按
+    // 字节做 head 截断，会保留头部标记又在结尾追加「…（已截断）」——两个语义
+    // 相反的提示同时出现。改为继续从头部省略，只在前面留一条标记。
+    const content = frontOmissionMarker(1016) + '思考'.repeat(2000);
+    const state = {
+      ...createInitialRunState('run-no-double-marker'),
+      blocks: [
+        {
+          kind: 'thinking' as const,
+          content,
+          active: false,
+          timestamp: '2026-11-08T08:00:00.000Z',
+        },
+      ],
+    } as RunState;
+    const json = JSON.stringify(renderRunCard(state));
+
+    expect(json).toContain('字符已省略');
+    expect(json).not.toContain('…（已截断）');
+    // 只有一条前省略标记，不再叠加尾截断提示。
+    expect((json.match(/…（前 \d+ 字符已省略）/g) ?? []).length).toBe(1);
+    // 渲染收紧后省略数增大（继续从前删），语义是保留最新尾部。
+    const dropped = Number(/…（前 (\d+) 字符已省略）/.exec(json)?.[1]);
+    expect(dropped).toBeGreaterThan(1016);
+  });
+});
 
 describe('renderRunCard', () => {
   it('uses an overflow channel when the final answer alone exceeds one card', () => {

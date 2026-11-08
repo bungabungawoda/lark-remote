@@ -22,7 +22,7 @@ import {
 import { collapsibleMarkdownPanel, markdownDiv, type PanelBorder } from './collapsible.js';
 import { toolBodyMd, toolHeaderText } from './tool-render.js';
 import { truncateMarkdownTables, CARD_BUDGET_BYTES } from './text-truncate.js';
-import { truncateUtf8 } from '../common/truncate.js';
+import { truncateUtf8, truncateUtf8WithOmissionMarker } from '../common/truncate.js';
 import { countCardElements, MAX_CARD_ELEMENTS } from './card-budget.js';
 import { displayWidth, truncateToDisplayWidth } from '../common/text-width.js';
 import { isContentFilterFailure } from '../common/turn-failure.js';
@@ -311,9 +311,9 @@ function prepareGroupContent(groups: BlockGroup[]): GroupContentPrepared {
   const prepared = new Map<BlockGroup, string>();
   for (const group of groups) {
     if (group.kind === 'thinking') {
-      prepared.set(group, truncateUtf8(group.content, REASONING_BYTES));
+      prepared.set(group, truncateUtf8WithOmissionMarker(group.content, REASONING_BYTES));
     } else if (group.kind === 'plan') {
-      prepared.set(group, truncateUtf8(group.content, REASONING_BYTES * 2));
+      prepared.set(group, truncateUtf8WithOmissionMarker(group.content, REASONING_BYTES * 2));
     } else if (group.kind === 'text') {
       prepared.set(group, truncateUtf8(group.content, TEXT_BYTES, true, '…（已截断）\n'));
     }
@@ -692,7 +692,7 @@ function buildFallbackElements(
     if (group.kind === 'thinking') {
       const ts = formatTimestamp(group.timestamp);
       const title = '💭 **思考完成**';
-      const content = truncateUtf8(group.content, tier.thinkingBytes);
+      const content = truncateUtf8WithOmissionMarker(group.content, tier.thinkingBytes);
       const header = ts ? `${title} (${ts})` : title;
       elements.push(
         collapsibleMarkdownPanel({
