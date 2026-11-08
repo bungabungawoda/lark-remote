@@ -69,3 +69,15 @@ playbook*.md
 docs/feishu-card-*/
 docs/images/*.original.gif
 scripts/*.sh
+
+# AI 会话记忆 / 计划草稿（含本机路径与环境探测结论，不入库）
+.workbuddy-ai/
+.zcode/
+.qoder/
+
+# 本地个人数据台账与生成的报告（非项目资产，不入库）
+holding*.toml
+holding_report_*.md
+
+# 临时工作清单
+TODO.md
