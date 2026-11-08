@@ -7,8 +7,9 @@
  * 为什么是异步而不是 spawnSync 预排 stdin：--acp 服务端在 stdin EOF 时开始
  * 关闭，spawnSync 写完 input 即关 stdin，`session/new` 响应永远等不到
  * （实测 ETIMEDOUT 只收到 initialize）。必须真进程保住 stdin，顺序
- * initialize → session/new，拿到响应立即杀。同步侧只读缓存；`/config` 卡的
- * buildFields 内联点火与启动预热负责异步刷新（同 DSH 目录探针模式）。
+ * initialize → session/new，拿到响应立即杀。同步侧只读缓存（过期也先用
+ * 上次成功快照渲染，stale-while-revalidate）；`/config` 卡的 buildFields
+ * 内联点火与启动预热负责异步刷新（同 DSH 目录探针模式）。
  *
  * 副作用：每次探针在 `<codebuddyHome>/projects/<tmpdir编码>/` 留一个空会话
  * 文件——TTL 缓存 + 预热摊平。spawn 收口 `platform/spawn.ts`（win32 垫片
@@ -69,11 +70,14 @@ export function invalidateCodebuddyCatalogCache(): void {
   catalogCache = null;
 }
 
-/** 同步读缓存（config 卡 buildFields 用）。未预热/过期 → null。 */
+/**
+ * 同步读缓存（config 卡 buildFields 用）。从未成功探测 → null（卡片回退
+ * 文本输入）。过期不影响可读性：返回上次成功目录，刷新由同一帧点火的
+ * refreshCodebuddyCatalog 在后台完成（stale-while-revalidate）——否则卡在
+ * TTL 边界打开时下拉会退化成输入框，而探针完成又不会触发重绘。
+ */
 export function loadCodebuddyCatalog(): CodebuddyCatalog | null {
-  if (!catalogCache) return null;
-  if (Date.now() - catalogCache.timestamp >= CATALOG_CACHE_TTL_MS) return null;
-  return catalogCache.result;
+  return catalogCache?.result ?? null;
 }
 
 interface CatalogModelInput {
@@ -307,9 +311,9 @@ async function probeOnce(
 }
 
 /**
- * 异步刷新目录（buildFields 内联点火 / 启动预热调用）。成功与否都写缓存
- * （negative cache 让失败的探针在 TTL 内不再反复 spawn）。返回本次结果。
- * timeoutMs 是测试 seam，生产调用不传。
+ * 异步刷新目录（buildFields 内联点火 / 启动预热调用）。成功写入新目录；
+ * 失败保留上次成功目录并照常记时间戳（negative cache 让失败的探针在 TTL
+ * 内不再反复 spawn）。返回本次结果。timeoutMs 是测试 seam，生产调用不传。
  */
 export function refreshCodebuddyCatalog(
   binary = 'codebuddy',
@@ -325,10 +329,12 @@ export function refreshCodebuddyCatalog(
 
   catalogRefreshInFlight = probeOnce(binary, os.tmpdir(), timeoutMs)
     .then((result) => {
-      catalogCache = { result, timestamp: Date.now() };
+      // 失败不得清掉上次成功目录：stale 快照继续供卡片渲染，避免一次瞬时
+      // 探针失败就把模型下拉打回文本输入直到下次成功。
+      catalogCache = { result: result ?? catalogCache?.result ?? null, timestamp: Date.now() };
       if (!result) {
         getLogger().warn(
-          '[codebuddy-catalog] probe unavailable, config card falls back to static lists',
+          '[codebuddy-catalog] probe unavailable, keeping last known catalog if any',
         );
       }
       return result;
@@ -339,7 +345,10 @@ export function refreshCodebuddyCatalog(
   return catalogRefreshInFlight;
 }
 
-/** 后台预热（fire-and-forget；失败落 negative cache，卡片路径优雅回退）。 */
+/**
+ * 后台预热（fire-and-forget；失败保留上次成功目录，从未成功时落 negative
+ * cache，卡片路径优雅回退）。
+ */
 export function warmCodebuddyCatalogCache(binary = 'codebuddy'): void {
   void refreshCodebuddyCatalog(binary).catch(() => {});
 }

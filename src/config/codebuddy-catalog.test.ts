@@ -306,4 +306,44 @@ describe('refreshCodebuddyCatalog 探针 fixture', () => {
 
     expect(Number(fs.readFileSync(countFile, 'utf8'))).toBe(1);
   }, 20_000);
+
+  /**
+   * 故障形态：目录缓存过期后打开 /config，同步读缓存拿不到值 → 模型字段
+   * 退化成文本输入；探针随后成功也不会触发重绘，用户只能手输模型才能恢复
+   * 下拉。约束：过期缓存继续用于渲染（stale-while-revalidate），后台刷新
+   * 失败也不得清掉上次成功目录。
+   */
+  it('过期缓存继续渲染（stale-while-revalidate），刷新失败保留上次目录', async () => {
+    const successSource = [
+      "import { createInterface } from 'node:readline';",
+      'const rl = createInterface({ input: process.stdin });',
+      "const send = (o) => process.stdout.write(JSON.stringify(o) + '\\n');",
+      "rl.on('line', (line) => {",
+      '  let msg; try { msg = JSON.parse(line); } catch { return; }',
+      "  if (msg.id === 1) send({ jsonrpc: '2.0', id: 1, result: { agentInfo: { version: '2.142.0' } } });",
+      '  if (msg.id === 2) {',
+      "    send({ jsonrpc: '2.0', id: 2, result: " + JSON.stringify(REAL_SHAPED) + ' });',
+      '    setTimeout(() => process.exit(0), 50);',
+      '  }',
+      '});',
+    ].join('\n');
+    mockProbe(successSource);
+    const first = await refreshCodebuddyCatalog(BINARY, 5_000);
+    expect(first).not.toBeNull();
+
+    // 只伪造 Date：探针进程与超时计时器仍走真实时间。
+    vi.useFakeTimers({ now: Date.now() + 6 * 60_000, toFake: ['Date'] });
+    try {
+      // TTL 已过：同步读仍返回上次成功目录 → 卡片保持下拉
+      expect(loadCodebuddyCatalog()).toEqual(first);
+
+      // 过期后的这轮刷新换成必失败探针：不得抹掉 stale 目录
+      mockProbe('setTimeout(() => process.exit(0), 80);\n');
+      const refreshed = await refreshCodebuddyCatalog(BINARY, 5_000);
+      expect(refreshed).toBeNull();
+      expect(loadCodebuddyCatalog()).toEqual(first);
+    } finally {
+      vi.useRealTimers();
+    }
+  }, 20_000);
 });
