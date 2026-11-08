@@ -877,6 +877,26 @@ describe('RunState', () => {
     expect(state.costUsd).toBe(0.42);
   });
 
+  it('test_anchor_result_event_captures_credits', () => {
+    // result.total_credits → state.credits（同 costUsd 口径：首个非 undefined
+    // 胜出；qoder 的积分原样透传，供卡片 Cost 行显示）。
+    let state = reduceRunState(createInitialRunState('run-c1-credits'), {
+      type: 'system',
+      subtype: 'init',
+      session_id: 's1',
+      cwd: '/home/user/project',
+      model: 'test-model',
+    } as never);
+    state = reduceRunState(state, {
+      type: 'result',
+      subtype: 'success',
+      session_id: 's1',
+      total_cost_usd: 0,
+      total_credits: 12,
+    } as never);
+    expect(state.credits).toBe(12);
+  });
+
   it('test_anchor_notice_event_appends_to_notices', () => {
     // notice 事件（warning / 重路由 / 压缩提示）按到达顺序累积。
     let state = reduceRunState(createInitialRunState('run-c1-notice'), {

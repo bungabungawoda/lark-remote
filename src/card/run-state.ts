@@ -181,6 +181,8 @@ export interface RunState extends UsageSnapshot {
   model?: string;
   /** 本次 run 花费（USD，result 事件 total_cost_usd）。 */
   costUsd?: number;
+  /** 本次 run 积分（result 事件 total_credits，qoder 原样显示；qoder 无 USD 口径）。 */
+  credits?: number;
   /** 运行期通知（warning / 重路由 / 压缩提示），按到达顺序。 */
   notices?: RunNotice[];
   /** 被 MAX_BLOCKS 静默丢弃的早期块计数（>0 时渲染「已省略 N 个早期步骤」）。 */
@@ -795,6 +797,10 @@ function reduceResultEvent(state: RunState, event: ResultEvent): RunState {
     // costUsd：首个非 undefined 胜出（与 errorMsg 合并语义一致）
     ...(event.total_cost_usd !== undefined && withFinalAnswer.costUsd === undefined
       ? { costUsd: event.total_cost_usd }
+      : {}),
+    // credits：同上口径（qoder 的积分原样透传，与 total_cost_usd 并列）
+    ...(event.total_credits !== undefined && withFinalAnswer.credits === undefined
+      ? { credits: event.total_credits }
       : {}),
   };
 }

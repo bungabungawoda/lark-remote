@@ -81,12 +81,16 @@ function result(subtype, extra) {
             cache_creation_input_tokens: 0,
             cache_read_input_tokens: 0,
           };
+  // MOCK_RESULT_CREDITS：复刻 qoder result 顶层 total_credits（与
+  // total_cost_usd 并列），供「积分原样透传/显示」用例使用。
+  const credits = process.env.MOCK_RESULT_CREDITS;
   emit({
     type: 'result',
     subtype,
     session_id: sessionId,
     result: 'ok',
     usage,
+    ...(credits !== undefined ? { total_credits: Number(credits) } : {}),
     ...extra,
   });
 }

@@ -327,6 +327,8 @@ export interface ResultEvent {
     reasoning_tokens?: number;
   };
   total_cost_usd?: number;
+  /** 积分（qoder result 顶层携带，与 total_cost_usd 并列；qoder 无 USD 口径）。 */
+  total_credits?: number;
   errorMessage?: string; // For auth errors and other run failures
 }
 

@@ -1646,6 +1646,54 @@ describe('renderRunCard', () => {
     expect(json).toContain('Total token - 393');
   });
 
+  it('test_anchor_done_card_shows_credits_instead_of_pseudo_usd', () => {
+    // qoder 极简卡：credits 存在（total_credits 是 qoder 专属 wire 字段）时
+    // 用量区只留积分行——Model/结果/伪 $0.0000 行全部不渲染；credits 缺席
+    // （claude/codex 等）各行照旧。
+    let state = createInitialRunState('run-credits');
+    state = reduceRunState(state, {
+      type: 'system',
+      subtype: 'init',
+      session_id: 's1',
+      cwd: '/home/user/project',
+      model: 'dfmodel',
+    } as never);
+    state = reduceRunState(state, {
+      type: 'result',
+      subtype: 'success',
+      session_id: 's1',
+      total_cost_usd: 0,
+      total_credits: 12,
+    } as never);
+    state = finishRun(state, 'done', { resultSubtype: 'success' });
+    const json = JSON.stringify(renderRunCard(state));
+    expect(json).toContain('Cost - 12 credits');
+    expect(json).not.toContain('$0.0000');
+    expect(json).not.toContain('Model - dfmodel');
+    expect(json).not.toContain('结果 - success');
+
+    // credits 缺席 → Model/结果/USD 行不变
+    let usd = createInitialRunState('run-usd');
+    usd = reduceRunState(usd, {
+      type: 'system',
+      subtype: 'init',
+      session_id: 's1',
+      cwd: '/home/user/project',
+      model: 'dfmodel',
+    } as never);
+    usd = reduceRunState(usd, {
+      type: 'result',
+      subtype: 'success',
+      session_id: 's1',
+      total_cost_usd: 0.42,
+    } as never);
+    usd = finishRun(usd, 'done', { resultSubtype: 'success' });
+    const usdJson = JSON.stringify(renderRunCard(usd));
+    expect(usdJson).toContain('Cost - $0.4200');
+    expect(usdJson).toContain('Model - dfmodel');
+    expect(usdJson).toContain('结果 - success');
+  });
+
   it('test_anchor_done_card_threads_cumulative_input_output', () => {
     // Session-cumulative total/input/output (read from jsonl, threaded via FinishMeta
     // -> RunState -> formatUsageStats) must render as "· 累计 X" on the

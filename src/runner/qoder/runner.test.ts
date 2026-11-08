@@ -209,6 +209,20 @@ describe('QoderRunner (long-lived stream-json session)', () => {
     expect(result?.usage).toBeUndefined();
   });
 
+  it('test_anchor_strips_usage_but_keeps_total_credits', async () => {
+    // 全零剥离只剥 usage 对象：顶层的 total_credits（qoder 的真实计费数字）
+    // 必须原样透传给卡片，否则积分显示无从谈起。
+    createMockQodercn({ MOCK_SESSION_USAGE: 'qoder-zero', MOCK_RESULT_CREDITS: '12' });
+    const runner = makeRunner();
+
+    const events = await collectRunWithTimeout(runner, 'hello');
+
+    const result = events.find((e) => e.type === 'result') as
+      (AgentEvent & { usage?: unknown; total_credits?: number }) | undefined;
+    expect(result?.usage).toBeUndefined();
+    expect(result?.total_credits).toBe(12);
+  });
+
   it('test_anchor_keeps_real_usage_from_result', async () => {
     // 非全零 usage（如 /compact 回包带真实 token 数）原样保留
     createMockQodercn({ MOCK_SESSION_USAGE: 'qoder-real' });
