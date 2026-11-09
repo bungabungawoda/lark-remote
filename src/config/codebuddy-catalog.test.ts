@@ -18,6 +18,7 @@ import {
   drainCodebuddyProbes,
   CODEBUDDY_ACP_ARGS,
   readHostCodebuddyRegion,
+  readCodebuddyProductConfigCacheRegion,
   regionFromProductConfig,
   type RegionProbeResult,
 } from './codebuddy-catalog.js';
@@ -1010,6 +1011,63 @@ describe('宿主/V3 区域前置判据与 ACP 启动参数', () => {
     process.env.ACC_PRODUCT_CONFIG_V3 = JSON.stringify({ networkEnvironment: 'external' });
     expect(readHostCodebuddyRegion()).toEqual({ region: 'external', source: 'v3-config' });
   });
+
+  it('WorkBuddy V3 缓存按 mtime 取最新配置定区', () => {
+    const cache = path.join(dir, 'workbuddy-cache');
+    fs.mkdirSync(cache);
+    const oldFile = path.join(cache, 'acc-product-config-v3-old.json');
+    const newFile = path.join(cache, 'acc-product-config-v3-new.json');
+    fs.writeFileSync(oldFile, JSON.stringify({ networkEnvironment: 'external' }), 'utf8');
+    fs.writeFileSync(newFile, JSON.stringify({ networkEnvironment: 'internal' }), 'utf8');
+    // 明确旧新顺序（同一秒内写入的 mtime 可能相同）
+    fs.utimesSync(oldFile, new Date(1_000), new Date(1_000));
+    fs.utimesSync(newFile, new Date(2_000), new Date(2_000));
+
+    expect(readCodebuddyProductConfigCacheRegion(cache)).toEqual({
+      region: 'internal',
+      source: 'workbuddy-cache',
+    });
+  });
+
+  it('WorkBuddy 缓存无 networkEnvironment 时用 endpoint 域名兜底', () => {
+    const cache = path.join(dir, 'workbuddy-cache-endpoint');
+    fs.mkdirSync(cache);
+    fs.writeFileSync(
+      path.join(cache, 'acc-product-config-v3-cn.json'),
+      JSON.stringify({ endpoint: 'https://www.workbuddy.cn' }),
+      'utf8',
+    );
+    expect(readCodebuddyProductConfigCacheRegion(cache)?.region).toBe('internal');
+  });
+
+  it('WorkBuddy 缓存不可用 / 无有效配置时不接管', () => {
+    expect(readCodebuddyProductConfigCacheRegion(null)).toBeNull();
+    expect(readCodebuddyProductConfigCacheRegion(path.join(dir, 'missing'))).toBeNull();
+    const cache = path.join(dir, 'workbuddy-cache-empty');
+    fs.mkdirSync(cache);
+    fs.writeFileSync(path.join(cache, 'acc-product-config-v3-bad.json'), '{oops', 'utf8');
+    expect(readCodebuddyProductConfigCacheRegion(cache)).toBeNull();
+  });
+
+  it('宿主缓存声明区域时只跑一次探针并定区', async () => {
+    const countFile = path.join(dir, 'spawn.cache.count');
+    mockRegionProbe(countFile);
+    const cache = path.join(dir, 'workbuddy-cache-hit');
+    fs.mkdirSync(cache);
+    fs.writeFileSync(
+      path.join(cache, 'acc-product-config-v3-hit.json'),
+      JSON.stringify({ networkEnvironment: 'internal' }),
+      'utf8',
+    );
+
+    const region = await detectCodebuddyRegion({
+      binary: BIN,
+      timeoutMs: 5_000,
+      hostProductConfigCacheDir: cache,
+    });
+    expect(region).toBe('internal');
+    expect(fs.readFileSync(countFile, 'utf8')).toBe('1');
+  }, 20_000);
 
   it('命中前置信号时只跑一次探针，区域与目录同时落地', async () => {
     const countFile = path.join(dir, 'spawn.count');

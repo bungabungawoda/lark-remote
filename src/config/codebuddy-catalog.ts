@@ -30,6 +30,11 @@
  * 优先级 20000 高于 ClientInternetEnviromentProductProvider 6005）。命中即
  * 定区，只跑一次目录探针，不猜、不双探。
  *
+ * 宿主没有 V3 / env 信号时，再读 WorkBuddy 桌面端落盘的 V3 产品配置缓存
+ * （~/.workbuddy/cache/acc-product-config-v3-*.json 的 networkEnvironment）：
+ * lark-remote 从普通终端启动时看不到 WorkBuddy 注入给子进程的产品配置，
+ * 但宿主已按该缓存登录（endpoint / 账号区域同源），用它补上缺失的声明。
+ *
  * 宿主没有信号时才退回双探针：internal / external 各跑一次，拿两份目录与
  * settings.json 的当前模型做唯一性匹配。两次探针复用 refreshCodebuddyCatalog
  * 的 in-flight 串行，不并发 spawn 两个 ACP server；胜出目录直接写回缓存。
@@ -126,7 +131,7 @@ const PRODUCT_CONFIG_INLINE_KEYS = [
 ] as const;
 
 /** 宿主/V3 已声明的区域（不 spawn、不联网）。 */
-export type CodebuddyRegionSource = 'v3-config' | 'host-env';
+export type CodebuddyRegionSource = 'v3-config' | 'host-env' | 'workbuddy-cache';
 export interface CodebuddyRegionSignal {
   region: CodebuddyRegion;
   source: CodebuddyRegionSource;
@@ -229,6 +234,58 @@ export function readHostCodebuddyRegion(
     return { region: v3Region, source: 'v3-config' };
   }
   return hostRegion ? { region: hostRegion, source: 'host-env' } : null;
+}
+
+/**
+ * WorkBuddy 桌面端缓存的 V3 产品配置目录；目录不存在返回 null。
+ * 只有 lark-remote 从普通终端启动（拿不到 WorkBuddy 注入的
+ * ACC_PRODUCT_CONFIG_*）时才需要它。
+ */
+export function defaultCodebuddyProductConfigCacheDir(): string | null {
+  try {
+    const dir = path.join(os.homedir(), '.workbuddy', 'cache');
+    return fs.statSync(dir).isDirectory() ? dir : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 从 WorkBuddy 的 V3 产品配置缓存读宿主区域：按 mtime 从新到旧，最多看
+ * 3 个 `acc-product-config-v3-*.json`（有的缓存只写 endpoint，由
+ * regionFromProductConfig 的域名兜底判定）。读不到/解析失败返回 null。
+ * 纯本地读，不 spawn、不联网。
+ */
+export function readCodebuddyProductConfigCacheRegion(
+  cacheDir: string | null | undefined,
+): CodebuddyRegionSignal | null {
+  if (!cacheDir) return null;
+  let names: string[];
+  try {
+    names = fs.readdirSync(cacheDir);
+  } catch {
+    return null;
+  }
+  const candidates: Array<{ file: string; mtime: number }> = [];
+  for (const name of names) {
+    if (!/^acc-product-config-v3-.*\.json$/.test(name)) continue;
+    const file = path.join(cacheDir, name);
+    try {
+      candidates.push({ file, mtime: fs.statSync(file).mtimeMs });
+    } catch {
+      // 读取中被清理：跳过
+    }
+  }
+  candidates.sort((a, b) => b.mtime - a.mtime);
+  for (const { file } of candidates.slice(0, 3)) {
+    try {
+      const region = regionFromProductConfig(JSON.parse(fs.readFileSync(file, 'utf-8')));
+      if (region) return { region, source: 'workbuddy-cache' };
+    } catch {
+      // 非 JSON / 半截文件：看下一个
+    }
+  }
+  return null;
 }
 
 /**
@@ -735,7 +792,7 @@ export function invalidateCodebuddyRegion(): void {
  */
 export async function ensureCodebuddyRegion(
   env: CodebuddyCatalogEnv = {},
-  opts: { waitMs?: number; binary?: string } = {},
+  opts: { waitMs?: number; binary?: string; hostProductConfigCacheDir?: string | null } = {},
 ): Promise<CodebuddyRegion | null> {
   if (env[REGION_ENV_KEY] !== undefined) return null;
   if (detectedRegion) return detectedRegion;
@@ -748,7 +805,11 @@ export async function ensureCodebuddyRegion(
   });
   try {
     const result = await Promise.race([
-      detectCodebuddyRegion({ configuredEnv: env, binary: opts.binary }),
+      detectCodebuddyRegion({
+        configuredEnv: env,
+        binary: opts.binary,
+        hostProductConfigCacheDir: opts.hostProductConfigCacheDir,
+      }),
       timeout,
     ]);
     if (result === null && !detectedRegion) {
@@ -771,14 +832,18 @@ export async function ensureCodebuddyRegion(
  */
 export function scheduleCodebuddyRegionRedetect(
   env: CodebuddyCatalogEnv = {},
-  opts: { binary?: string } = {},
+  opts: { binary?: string; hostProductConfigCacheDir?: string | null } = {},
 ): void {
   if (env[REGION_ENV_KEY] !== undefined) return;
   const now = Date.now();
   if (now - lastRegionRedetectAt < REGION_REDETECT_COOLDOWN_MS) return;
   lastRegionRedetectAt = now;
   const fire = () => {
-    void detectCodebuddyRegion({ configuredEnv: env, binary: opts.binary }).catch(() => {});
+    void detectCodebuddyRegion({
+      configuredEnv: env,
+      binary: opts.binary,
+      hostProductConfigCacheDir: opts.hostProductConfigCacheDir,
+    }).catch(() => {});
   };
   const inFlight = regionDetectionInFlight;
   if (inFlight) {
@@ -795,6 +860,11 @@ export interface DetectCodebuddyRegionOptions {
   accountModel?: string;
   /** 丢弃已判定结果重新判定（`/config` 发现当前区域探不通时使用）。 */
   force?: boolean;
+  /**
+   * WorkBuddy V3 产品配置缓存目录（宿主区域声明的本地副本）。生产入口传入
+   * `defaultCodebuddyProductConfigCacheDir()`；不传 = 不看缓存（双探针语义）。
+   */
+  hostProductConfigCacheDir?: string | null;
 }
 
 /**
@@ -823,8 +893,11 @@ export async function detectCodebuddyRegion(
   const task = (async () => {
     // 前置判据：宿主/V3 已经声明区域就不必猜。只跑一次目录探针（双探针的
     // 前提不存在），结果由 refreshCodebuddyCatalog 按胜出区域的 envKey 入缓存，
-    // runner 与 /config 通过 resolveCodebuddyEnv 拿到同一份 env。
-    const hostSignal = readHostCodebuddyRegion();
+    // runner 与 /config 通过 resolveCodebuddyEnv 拿到同一份 env。V3/env 都没
+    // 声明时再看 WorkBuddy 落盘的产品配置缓存（普通终端启动的常见形态）。
+    const hostSignal =
+      readHostCodebuddyRegion() ??
+      readCodebuddyProductConfigCacheRegion(opts.hostProductConfigCacheDir);
     if (hostSignal) {
       const env = { ...configuredEnv, [REGION_ENV_KEY]: hostSignal.region };
       await refreshCodebuddyCatalog(binary, timeoutMs, env);
@@ -899,6 +972,7 @@ export async function refreshCodebuddyCatalogForConfig(
     binary?: string;
     env?: CodebuddyCatalogEnv;
     timeoutMs?: number;
+    hostProductConfigCacheDir?: string | null;
   } = {},
 ): Promise<CodebuddyConfigRefresh> {
   const configuredEnv = opts.env ?? {};
@@ -923,6 +997,7 @@ export async function refreshCodebuddyCatalogForConfig(
       binary,
       timeoutMs,
       force: true,
+      hostProductConfigCacheDir: opts.hostProductConfigCacheDir,
     });
     const fresh = detected ? loadCodebuddyCatalog() : null;
     if (detected && fresh) {
@@ -949,12 +1024,13 @@ export async function refreshCodebuddyCatalogForConfig(
 export function warmCodebuddyCatalogWithRegionDetection(
   env: CodebuddyCatalogEnv = {},
   binary?: string,
+  hostProductConfigCacheDir?: string | null,
 ): void {
   if (env[REGION_ENV_KEY] !== undefined) {
     warmCodebuddyCatalogCache(env, binary);
     return;
   }
-  void detectCodebuddyRegion({ configuredEnv: env, binary })
+  void detectCodebuddyRegion({ configuredEnv: env, binary, hostProductConfigCacheDir })
     .then((region) => {
       if (!region) warmCodebuddyCatalogCache(resolveCodebuddyEnv(env), binary);
     })

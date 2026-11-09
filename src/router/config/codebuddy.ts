@@ -98,6 +98,30 @@ function thinkingLevelField(
   };
 }
 
+/** 区域配置的 YAML 路径（与 runner / 目录探针共用同一份 env）。 */
+const REGION_FIELD_KEY = 'agents.codebuddy.env.CODEBUDDY_INTERNET_ENVIRONMENT';
+/** 卡片哨兵：不写该键，交给宿主信号 / 双探针自动判定。 */
+const REGION_AUTO = 'auto';
+
+/**
+ * 区域手动锁定：写 `agents.codebuddy.env.CODEBUDDY_INTERNET_ENVIRONMENT`。
+ * `auto` 删除该键（自动判定）；internal / external 锁定对应端点。保存后
+ * router 的 codebuddy identity 失效逻辑会清 runner / session，下一条消息生效。
+ */
+function regionField(current: string | undefined): ConfigField {
+  return {
+    key: REGION_FIELD_KEY,
+    label: '区域',
+    type: 'select',
+    options: [
+      { value: REGION_AUTO, text: 'auto（自动判定）' },
+      { value: 'internal', text: 'internal（国内）' },
+      { value: 'external', text: 'external（海外）' },
+    ],
+    currentValue: current === 'internal' || current === 'external' ? current : REGION_AUTO,
+  };
+}
+
 /** 未配置 = 不下发（跟随 CodeBuddy 默认 false）。 */
 function sandboxField(current: boolean | undefined): ConfigField {
   return {
@@ -141,6 +165,7 @@ export class CodebuddyConfigBuilder implements AgentConfigCardBuilder {
         PERMISSION_MODE_OPTIONS,
         cb?.permissionMode ?? 'default',
       ),
+      regionField(cb?.env?.CODEBUDDY_INTERNET_ENVIRONMENT),
       thinkingLevelField(cbCfg.thoughtLevels, cb?.thinkingLevel ?? ''),
       sandboxField(cb?.sandbox),
       turnIdleTimeoutField(
@@ -157,6 +182,14 @@ export class CodebuddyConfigBuilder implements AgentConfigCardBuilder {
   ): Array<{ key: string; value: unknown }> {
     // default 哨兵 / 空串（旧卡片）= 清除配置（跟随 CodeBuddy 默认）。
     if (key === 'agents.codebuddy.model' && typeof value === 'string' && !value.trim()) {
+      return [{ key, value: undefined }];
+    }
+    // 区域：auto / 空串 = 删键（自动判定），其余按 internal / external 锁定。
+    if (key === REGION_FIELD_KEY) {
+      if (value === '' || value === undefined || value === REGION_AUTO) {
+        return [{ key, value: undefined }];
+      }
+      if (typeof value === 'string') return [{ key, value }];
       return [{ key, value: undefined }];
     }
     if (
