@@ -174,6 +174,28 @@ describe('CodebuddyConfigBuilder', () => {
       expect(permField!.currentValue).toBe('default');
     });
 
+    it('区域手动锁定：select 回显 env 里的 CODEBUDDY_INTERNET_ENVIRONMENT', () => {
+      const auto = builder
+        .buildFields(makeConfig())
+        .find((f) => f.key === 'agents.codebuddy.env.CODEBUDDY_INTERNET_ENVIRONMENT');
+      expect(auto!.type).toBe('select');
+      expect(auto!.options).toEqual([
+        { value: 'auto', text: 'auto（自动判定）' },
+        { value: 'internal', text: 'internal（国内）' },
+        { value: 'external', text: 'external（海外）' },
+      ]);
+      expect(auto!.currentValue).toBe('auto');
+
+      const locked = builder
+        .buildFields(
+          makeConfig({
+            agents: { codebuddy: { env: { CODEBUDDY_INTERNET_ENVIRONMENT: 'internal' } } },
+          }),
+        )
+        .find((f) => f.key === 'agents.codebuddy.env.CODEBUDDY_INTERNET_ENVIRONMENT');
+      expect(locked!.currentValue).toBe('internal');
+    });
+
     it('exposes acp.turnIdleTimeoutMinutes', () => {
       const fields = builder.buildFields(makeConfig());
       expect(
@@ -244,6 +266,20 @@ describe('CodebuddyConfigBuilder', () => {
         makeConfig(),
       );
       expect(patches).toEqual([{ key: 'agents.codebuddy.permissionMode', value: 'acceptEdits' }]);
+    });
+
+    it('区域：auto / 空串删键，internal / external 原样写入', () => {
+      const key = 'agents.codebuddy.env.CODEBUDDY_INTERNET_ENVIRONMENT';
+      expect(builder.handleFieldChange(key, 'auto', makeConfig())).toEqual([
+        { key, value: undefined },
+      ]);
+      expect(builder.handleFieldChange(key, '', makeConfig())).toEqual([{ key, value: undefined }]);
+      expect(builder.handleFieldChange(key, 'internal', makeConfig())).toEqual([
+        { key, value: 'internal' },
+      ]);
+      expect(builder.handleFieldChange(key, 'external', makeConfig())).toEqual([
+        { key, value: 'external' },
+      ]);
     });
   });
 });

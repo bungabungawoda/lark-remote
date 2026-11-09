@@ -33,6 +33,7 @@ import { AgentRegistry } from './runner/registry.js';
 import { probeAllAgents } from './runner/probe.js';
 import { warmCodexCatalogCache } from './config/codex-config.js';
 import {
+  defaultCodebuddyProductConfigCacheDir,
   warmCodebuddyCatalogWithRegionDetection,
   resolveCodebuddyEnv,
 } from './config/codebuddy-catalog.js';
@@ -629,7 +630,11 @@ function initializeRunner(
   const cbConf = getAgentConfig(config, 'codebuddy');
   // 模型事实源（账号可用清单 + 上次成功值）落在配置目录，跨重启复用。
   configureCodebuddyModelState(path.join(configDir, 'codebuddy-model-state.json'));
-  warmCodebuddyCatalogWithRegionDetection(cbConf?.env, cbConf?.acp?.binary);
+  warmCodebuddyCatalogWithRegionDetection(
+    cbConf?.env,
+    cbConf?.acp?.binary,
+    defaultCodebuddyProductConfigCacheDir(),
+  );
 
   // Warm the codex model catalog in the background so the first Codex /config
   // card open reads a warm cache instead of blocking the event loop for up to

@@ -15,6 +15,7 @@ import {
 } from '../config/index.js';
 import { syncAgentChoices } from '../runner/index.js';
 import {
+  defaultCodebuddyProductConfigCacheDir,
   invalidateCodebuddyCatalogCache,
   invalidateCodebuddyRegion,
   refreshCodebuddyCatalogForConfig,
@@ -3952,6 +3953,7 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
       const outcome = await refreshCodebuddyCatalogForConfig({
         binary: cbConf?.acp?.binary,
         env: cbConf?.env,
+        hostProductConfigCacheDir: defaultCodebuddyProductConfigCacheDir(),
       });
       if (outcome.identityChanged && ctx) this.bridge.resetCodebuddyRuntime(ctx.userId);
       return;

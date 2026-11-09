@@ -6,6 +6,7 @@ import type { AgentRegistry } from '../runner/registry.js';
 import type { SessionReaderRegistry, SessionStore } from '../session/index.js';
 import { getAgentConfig, type AppConfig } from '../config/index.js';
 import {
+  defaultCodebuddyProductConfigCacheDir,
   ensureCodebuddyRegion,
   invalidateCodebuddyCatalogCache,
   invalidateCodebuddyRegion,
@@ -89,7 +90,7 @@ const IDLE_TIMEOUT_MS = 15 * 60 * 1000;
 const CODEBUDDY_AUTH_RECOVERY_HINT =
   '\n\n【已自动重置】登录态或区域已失效：旧会话、模型目录与长驻连接均已清除。' +
   '\n区域正在后台重新判定，下一条消息会新建会话并自动使用判定结果。' +
-  '\n若仍失败，请在终端执行 codebuddy /login 重新登录；显式设置 agents.codebuddy.env.CODEBUDDY_INTERNET_ENVIRONMENT 可锁定区域。' +
+  '\n若仍失败，请在终端执行 codebuddy /login 重新登录；也可在 /config 的「区域」里手动选 internal / external 锁定端点。' +
   '\n重新打开 /config 可刷新模型列表。';
 
 /**
@@ -1485,7 +1486,10 @@ export class Bridge {
     // 配置、已判定、探测超时都立即放行，不影响其他 agent。
     if (agentKind === 'codebuddy') {
       const cbConf = getAgentConfig(this.config, 'codebuddy');
-      await ensureCodebuddyRegion(cbConf?.env, { binary: cbConf?.acp?.binary });
+      await ensureCodebuddyRegion(cbConf?.env, {
+        binary: cbConf?.acp?.binary,
+        hostProductConfigCacheDir: defaultCodebuddyProductConfigCacheDir(),
+      });
     }
 
     // Resolve the runner BEFORE creating the run session so the exact instance
@@ -1843,7 +1847,10 @@ export class Bridge {
     // 不需要重启 lark-remote。schedule 内部有冷却窗口与 in-flight 串行，
     // 上游持续 401 时不会反复 spawn 探针。binary 与 runner 同源。
     const cbConf = getAgentConfig(this.config, 'codebuddy');
-    scheduleCodebuddyRegionRedetect(cbConf?.env, { binary: cbConf?.acp?.binary });
+    scheduleCodebuddyRegionRedetect(cbConf?.env, {
+      binary: cbConf?.acp?.binary,
+      hostProductConfigCacheDir: defaultCodebuddyProductConfigCacheDir(),
+    });
     event.errorMessage = `${event.errorMessage ?? '上游认证失效'}${CODEBUDDY_AUTH_RECOVERY_HINT}`;
     getLogger().warn(
       `[lark-remote] codebuddy auth failure: catalog/region/session/runner invalidated, redetect scheduled runId=${runId}`,
