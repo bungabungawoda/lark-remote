@@ -32,7 +32,14 @@ import {
 import { AgentRegistry } from './runner/registry.js';
 import { probeAllAgents } from './runner/probe.js';
 import { warmCodexCatalogCache } from './config/codex-config.js';
-import { warmCodebuddyCatalogCache } from './config/codebuddy-catalog.js';
+import {
+  warmCodebuddyCatalogWithRegionDetection,
+  resolveCodebuddyEnv,
+} from './config/codebuddy-catalog.js';
+import {
+  configureCodebuddyModelState,
+  resolveCodebuddyModel,
+} from './config/codebuddy-model-state.js';
 import { warmQoderConfigCache } from './config/qoder-config.js';
 import { SessionReaderRegistry, SessionStore } from './session/index.js';
 import {
@@ -427,11 +434,13 @@ function codebuddyRunnerOptions(deps: RunnerFactoryDeps) {
     sessionReader: deps.readers.codebuddy,
     binary: acpConf?.binary,
     // env 透传（如 CN 版 CODEBUDDY_INTERNET_ENVIRONMENT），undefined 不覆盖。
-    env: conf?.env,
+    // 显式配置优先；未配置时叠加启动双探针判定的区域，保持与目录探针同口径。
+    env: resolveCodebuddyEnv(conf?.env),
     requestTimeoutMs: acpConf?.requestTimeoutMs,
     idleTtlMs: acpConf?.idleTtlMs,
     turnIdleTimeoutMs: minutesToMs(acpConf?.turnIdleTimeoutMinutes),
-    model: conf?.model,
+    // 换区后配置里的 model 可能已不在当前目录（跨区域 id 不同），按目录对齐。
+    model: resolveCodebuddyModel(conf?.model),
     permissionMode: conf?.permissionMode ?? CODEBUDDY_DEFAULTS.permissionMode,
     thinkingLevel: conf?.thinkingLevel,
     sandbox: conf?.sandbox,
@@ -479,6 +488,9 @@ function dshRunnerOptions(deps: RunnerFactoryDeps) {
     provider: dshConf?.provider,
     model: dshConf?.model,
     reasoningEffort: dshConf?.reasoningEffort,
+    // The daemon's start budget also covers the host's async session-service
+    // activation: 0.2.2 answers HTTP before `sessionController` is ready.
+    serviceReadyTimeoutMs: dshConf?.startTimeoutMs,
     // Durable markers for turns that outlive this process; reconciled on the
     // next startup (see reconcileInflightDshRuns).
     inflightPath: dshInflightPath(deps.configDir),
@@ -610,7 +622,14 @@ function initializeRunner(
 
   // Warm the codebuddy ACP catalog in the background（模型/思考档位下拉的
   // 数据源；失败落 negative cache，卡片回退文本输入 + 静态档位清单）。
-  warmCodebuddyCatalogCache();
+  // 必须与 runner 同一份 agents.codebuddy.env：目录探针和会话连接若看到
+  // 不同区域，/config 下拉会停留在旧账号的模型清单（国内版 internal）。
+  // 未显式配区域时先跑 internal / external 双探针判定当前账号所属区域，
+  // 胜出目录直接入缓存；显式配置则原样预热（用户优先）。
+  const cbConf = getAgentConfig(config, 'codebuddy');
+  // 模型事实源（账号可用清单 + 上次成功值）落在配置目录，跨重启复用。
+  configureCodebuddyModelState(path.join(configDir, 'codebuddy-model-state.json'));
+  warmCodebuddyCatalogWithRegionDetection(cbConf?.env, cbConf?.acp?.binary);
 
   // Warm the codex model catalog in the background so the first Codex /config
   // card open reads a warm cache instead of blocking the event loop for up to

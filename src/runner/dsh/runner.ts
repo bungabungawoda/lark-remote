@@ -35,6 +35,7 @@ import type {
 } from '../types.js';
 import type { AgentRunner } from '../types.js';
 import { DshClient, DshError, newPromptRequestId, type WebSocketFactory } from './client.js';
+import { isDshTransientAvailabilityError } from './errors.js';
 import { DshTranslator } from './translator.js';
 import { goalFromChange, goalFromProjection, goalStateEvent, sameGoal } from './goal-view.js';
 import { DshApprovalTracker, type DshApprovalAudit, type DshApprovalBinding } from './approval.js';
@@ -159,10 +160,27 @@ export interface DshRunnerOptions {
    * 窗口内没有新的 turn/start 就收尾，避免 armed goal 卡住整个 run。
    */
   goalQuiescenceMs?: number;
+  /**
+   * 等待 DSH session 服务激活的上限（ms）；0 关闭。生产取 `dsh.startTimeoutMs`。
+   * 只在注入了 daemon 时生效：daemon 是共享宿主的生产路径，测试里的 fake
+   * host 默认已就绪。
+   */
+  serviceReadyTimeoutMs?: number;
+  /** 模型/权限对齐遇到启动期瞬时不可用时的重试预算（ms）；0 = 不重试。 */
+  alignmentRetryTimeoutMs?: number;
+  /** `session/follow` 连续断开的容忍上限（ms）；0 关闭。 */
+  streamDisconnectTimeoutMs?: number;
 }
 
 /** Budget for one session/cancel attempt on stop. */
 const CANCEL_TIMEOUT_MS = 5_000;
+
+/** 与 daemon 启动预算同源：等待 session 服务激活，而不只是端口可用。 */
+const DEFAULT_SERVICE_READY_TIMEOUT_MS = 30_000;
+/** 对齐阶段遇到启动竞态时的有限重试预算（就绪门之后仍可能抖动）。 */
+const ALIGN_RETRY_TIMEOUT_MS = 10_000;
+const ALIGN_RETRY_BACKOFF_MS = 250;
+const ALIGN_RETRY_BACKOFF_MAX_MS = 1_000;
 
 /**
  * goal 探测的预算。goal 是"增强信息"：读不到就按没有（known:false）继续跑，
@@ -467,6 +485,8 @@ export class DshRunner implements AgentRunner {
   private configuredPermissionPreset: string | undefined;
   private readonly reasoningEffort: string | undefined;
   private readonly goalQuiescenceMs: number;
+  private readonly serviceReadyTimeoutMs: number;
+  private readonly alignmentRetryTimeoutMs: number;
 
   private activeAbort: AbortController | null = null;
   private activeSessionId: string | null = null;
@@ -525,6 +545,8 @@ export class DshRunner implements AgentRunner {
     this.configuredPermissionPreset = opts.permissionPreset;
     this.reasoningEffort = opts.reasoningEffort;
     this.goalQuiescenceMs = opts.goalQuiescenceMs ?? DEFAULT_GOAL_QUIESCENCE_MS;
+    this.serviceReadyTimeoutMs = opts.serviceReadyTimeoutMs ?? DEFAULT_SERVICE_READY_TIMEOUT_MS;
+    this.alignmentRetryTimeoutMs = opts.alignmentRetryTimeoutMs ?? ALIGN_RETRY_TIMEOUT_MS;
     this.inflight = opts.inflightPath ? new DshInflightStore(opts.inflightPath) : null;
     this.client = new DshClient(opts.host ?? 'http://127.0.0.1:3080', {
       dshHome: opts.dshHome,
@@ -533,6 +555,7 @@ export class DshRunner implements AgentRunner {
       fetchImpl: opts.fetchImpl,
       webSocketImpl: opts.webSocketImpl,
       requestTimeoutMs: opts.requestTimeoutMs,
+      streamDisconnectTimeoutMs: opts.streamDisconnectTimeoutMs,
     });
     this.cancelOnExit =
       opts.cancelOnExit ??
@@ -694,7 +717,17 @@ export class DshRunner implements AgentRunner {
       // DSH is a shared, machine-wide process. Reuse it when it is already
       // listening; otherwise start it detached so lark-remote exiting does not
       // stop it for every other instance.
-      if (this.daemon) await this.daemon.ensure();
+      if (this.daemon) {
+        await this.daemon.ensure();
+        // 0.2.2 的 HTTP/gateway 先于 sessionController 的异步 Service.init
+        // 就绪；daemon 的端口探针只能证明「HTTP 已响应」。第一个 session RPC
+        // 之前必须等业务服务真正可用，否则启动竞态会被误判成 provider 配置
+        // 错误。测试不注入 daemon（fake host 视为已就绪）；生产路径始终注入。
+        await this.client.waitForSessionService({
+          signal: abort.signal,
+          timeoutMs: this.serviceReadyTimeoutMs,
+        });
+      }
 
       // session/create 必须包进同一 try/finally，否则创建失败（服务端不可达/报错）
       // 会在进入旧 try 之前抛异常，finally 不执行 → running 恒 true、activeAbort 残留。
@@ -924,8 +957,10 @@ export class DshRunner implements AgentRunner {
     // provider 会让用户以为切换成功，实际模型与账单都错。
     if ((this.configuredModel || this.configuredProvider) && !this.alignedSessions.has(sessionId)) {
       try {
-        const selection = await this.resolveModelSelection(abort.signal);
-        await this.client.selectModel({ sessionId, ...selection }, { signal: abort.signal });
+        await this.withReadinessRetry('selectModel', abort.signal, async () => {
+          const selection = await this.resolveModelSelection(abort.signal);
+          await this.client.selectModel({ sessionId, ...selection }, { signal: abort.signal });
+        });
         this.alignedSessions.add(sessionId);
       } catch (err) {
         if (abort.signal.aborted) {
@@ -933,6 +968,13 @@ export class DshRunner implements AgentRunner {
           return { ok: false };
         }
         if (this.configuredProvider) {
+          if (isDshTransientAvailabilityError(err)) {
+            throw new Error(
+              'DSH 服务端在模型对齐阶段仍未就绪（session 服务未激活，可能正在启动或升级）：' +
+                `${(err as Error).message}。请稍后重试。`,
+              { cause: err },
+            );
+          }
           throw new Error(
             `Provider "${this.configuredProvider}" 的模型对齐失败：${(err as Error).message}。` +
               '请在 DSH Web UI → 设置 → Models 检查该 Provider 的凭据与模型目录',
@@ -940,7 +982,9 @@ export class DshRunner implements AgentRunner {
           );
         }
         getLogger().warn(
-          `[dsh] selectModel failed for session ${sessionId} (run continues): ${(err as Error).message}`,
+          `[dsh] selectModel failed for session ${sessionId} (run continues)${
+            isDshTransientAvailabilityError(err) ? ' while DSH was still starting' : ''
+          }: ${(err as Error).message}`,
         );
       }
     }
@@ -974,6 +1018,40 @@ export class DshRunner implements AgentRunner {
       goalEvents.push(goalStateEvent(null, false));
     }
     return { ok: true, lastGoal, goalKnown: seedGoal.known, goalEvents };
+  }
+
+  /**
+   * 只重试「宿主仍在启动」的瞬时失败；provider/model、命令语义错误保持
+   * 单次失败。对齐调用都是幂等的（selectModel 写同一选择、/permission 同一
+   * preset），重试不会产生额外副作用。
+   */
+  private async withReadinessRetry<T>(
+    label: string,
+    signal: AbortSignal,
+    run: () => Promise<T>,
+  ): Promise<T> {
+    const deadline = Date.now() + this.alignmentRetryTimeoutMs;
+    let attempt = 0;
+    for (;;) {
+      try {
+        return await run();
+      } catch (err) {
+        if (signal.aborted || !isDshTransientAvailabilityError(err)) throw err;
+        const remaining = deadline - Date.now();
+        if (remaining <= 0) throw err;
+        attempt += 1;
+        const backoff = Math.min(
+          ALIGN_RETRY_BACKOFF_MAX_MS,
+          ALIGN_RETRY_BACKOFF_MS * 2 ** Math.min(attempt - 1, 3),
+        );
+        const waitMs = Math.min(backoff, remaining);
+        getLogger().warn(
+          `[dsh] ${label} hit a starting DSH service (attempt ${attempt}); retrying in ${waitMs}ms`,
+        );
+        await this.awaitOrAbort(delay(waitMs), signal);
+        if (signal.aborted) throw err;
+      }
+    }
   }
 
   /**
@@ -1288,7 +1366,20 @@ export class DshRunner implements AgentRunner {
   private async alignPermissionPreset(sessionId: string, signal: AbortSignal): Promise<void> {
     const preset = this.configuredPermissionPreset;
     if (!preset || this.permissionAlignedSessions.has(sessionId)) return;
-    const result = await this.client.executeCommand(sessionId, `/permission ${preset}`, { signal });
+    let result: Awaited<ReturnType<DshClient['executeCommand']>>;
+    try {
+      result = await this.withReadinessRetry('permission preset', signal, () =>
+        this.client.executeCommand(sessionId, `/permission ${preset}`, { signal }),
+      );
+    } catch (err) {
+      if (!signal.aborted && isDshTransientAvailabilityError(err)) {
+        throw new DshError(
+          'service-not-ready',
+          `DSH 服务端在应用权限预设时仍未就绪（可能正在启动或升级）：${(err as Error).message}。请稍后重试。`,
+        );
+      }
+      throw err;
+    }
     if (!result) {
       throw new DshError(
         'command-unavailable',

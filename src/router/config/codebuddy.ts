@@ -2,14 +2,16 @@
  * CodeBuddy config builder — builds fields and handles field changes for
  * CodeBuddy agent (pure ACP mode).
  *
- * 模型/思考档位来自 ACP session/new 目录探针（`codebuddy-catalog.ts`，后台
- * 预热 + TTL 缓存；过期按上次成功快照渲染并在后台刷新，stale-while-
- * revalidate）。从未探测成功时模型回退文本输入、思考档位回退真机观测的
- * 静态清单。沙箱是官方固定两态（true/false）。
+ * 模型清单以账号可用清单为准（`codebuddy-model-state.ts`，学自上游 400 的
+ * supported list）；还没学到清单时才用 ACP 目录探针兜底（后台预热 + TTL
+ * 缓存，过期按上次成功快照渲染并刷新）。目录是 CLI 静态清单，含账号无权的
+ * id，只提供展示名与积分费率。两者都不可用时模型回退文本输入、思考档位
+ * 回退真机观测的静态清单。沙箱是官方固定两态（true/false）。
  */
 
 import { loadCodebuddyConfig, type CodebuddyConfigResult } from '../../config/codebuddy-config.js';
-import { refreshCodebuddyCatalog } from '../../config/codebuddy-catalog.js';
+import { refreshCodebuddyCatalog, resolveCodebuddyEnv } from '../../config/codebuddy-catalog.js';
+import { resolveCodebuddyModel } from '../../config/codebuddy-model-state.js';
 import { CODEBUDDY_PERMISSION_MODES } from '../../config/index.js';
 import type { AgentConfigCardBuilder, ConfigField, SelectOption } from './types.js';
 import type { AppConfig } from '../../config/index.js';
@@ -115,15 +117,25 @@ export class CodebuddyConfigBuilder implements AgentConfigCardBuilder {
     // 目录冷路径在这里点火：buildFields 是同步契约（kimi 的 buildFields 同样
     // 在内联 spawn 探测），本次渲染用缓存/兜底：缓存过期也先用上次成功快照
     // （stale-while-revalidate），探针完成后下一次渲染换新；只有从未成功
-    // 探测过才回退文本输入。启动时 initializeRunner 已预热，常态下这里是
-    // 纯缓存读。fire-and-forget：不阻塞卡片，失败保留上次目录。router 层的
-    // catalog 预取编排只对 DSH 生效，CodeBuddy 必须在这里自行点火。
-    void refreshCodebuddyCatalog().catch(() => {});
-    const cbCfg = loadCodebuddyConfig();
+    // 探测过才回退文本输入。启动时 initializeRunner 已预热，`/config` 打开
+    // 时 router 层还会先 await 一次按账号指纹的刷新（见
+    // prefetchConfigCardCatalogs），常态下这里是纯缓存读。fire-and-forget：
+    // 不阻塞卡片，失败保留上次目录。
+    // binary/timeoutMs 走默认，第三个参数把统一后的 env 透给探针：显式配置
+    // 优先，未配置时叠加启动双探针判定的区域。国内版的
+    // CODEBUDDY_INTERNET_ENVIRONMENT=internal 必须同时作用于会话连接和目录
+    // 探针，否则 /config 读的是海外账号的模型清单。
     const cb = displayConfig.agents?.codebuddy;
+    void refreshCodebuddyCatalog(cb?.acp?.binary, undefined, resolveCodebuddyEnv(cb?.env)).catch(
+      () => {},
+    );
+    const cbCfg = loadCodebuddyConfig();
+    // 配置里的 model 若不在账号可用清单里（换账号/换区后旧 id），卡片必须
+    // 显示校正后的值，否则下拉回显一个账号无权、一发就 400 的模型。
+    const alignedModel = resolveCodebuddyModel(cb?.model) ?? cbCfg.currentModel ?? '';
 
     return [
-      modelField(cbCfg, cb?.model ?? cbCfg.currentModel ?? ''),
+      modelField(cbCfg, alignedModel),
       permissionModeField(
         'agents.codebuddy.permissionMode',
         PERMISSION_MODE_OPTIONS,

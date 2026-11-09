@@ -91,7 +91,7 @@ Notes:
 - Fallbacks when no turn can be delimited split two ways: claude / pi / dsh fall back to the last sample; a kimi wire with no `turn.prompt` anywhere (legacy or truncated) keeps "whole file = one turn".
 - codex context excluding the last turn's output is an existing documented convention but inconsistent with other readers; changing it requires updating §9.21 and every reader.
 - Sub-agents: kimi sub-agent wires enter cumulative, not flow; codex sub-agent rollout files are excluded from lists and reads; claude's `isSidechain` currently only blocks turn boundaries — usage aggregation does not filter it, see §5.
-- `AgentSessionReader.supportsCompactCount` declares whether a reader produces compactCount; readers that do not (opencode / dsh) no longer re-run a full export/read during compact finish.
+- `AgentSessionReader.supportsCompactCount` declares whether a reader produces compaction statistics; readers that do not (opencode / dsh) show no usage block at all on the compact card — what they read is only the pre-compaction last sample, verbatim identical to the previous run card, and showing it would read as post-compaction numbers. They also no longer pay a full export/read for data that cannot arrive.
 - dsh creates one live translator per run and only accumulates durable usage; live path itself has no scope problem.
 
 ---

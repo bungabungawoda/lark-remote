@@ -34,6 +34,10 @@ export interface MockAcpScenarioOpts {
   questionOptions?: Array<{ optionId: string; name: string; kind: string }>;
   /** (kimi) Send an elicitation/create form request during the prompt. */
   sendElicitation?: boolean;
+  /** (codebuddy) Send an AskUserQuestion extMethod request during the prompt. */
+  sendCodebuddyQuestion?: boolean;
+  /** (codebuddy) Override the question extMethod params (malformed-frame tests). */
+  codebuddyQuestionParams?: unknown;
   /** (opencode) Send an fs/write_text_file server request (client must reject). */
   sendFsWrite?: boolean;
   /** (kimi) Exit the process right after session/new (crash recovery test). */
@@ -290,6 +294,39 @@ rl.on('line', (line) => {
       }, delay);
       delay += 60;
     }
+    if (config.sendCodebuddyQuestion) {
+      setTimeout(() => {
+        send({
+          jsonrpc: '2.0', id: 45, method: '_codebuddy.ai/question',
+          params: config.codebuddyQuestionParams ?? {
+            sessionId: config.sessionId,
+            toolCallId: 'call_q',
+            inputType: 'question',
+            schema: {
+              questions: [
+                {
+                  id: 'q_0', question: 'Which database?', header: 'DB',
+                  options: [
+                    { label: 'PostgreSQL', description: 'Robust' },
+                    { label: 'SQLite', description: 'Lightweight' },
+                  ],
+                  multiSelect: false,
+                },
+                {
+                  id: 'q_1', question: 'Frameworks?', header: 'FW',
+                  options: [
+                    { label: 'React', description: '' },
+                    { label: 'Vue', description: '' },
+                  ],
+                  multiSelect: true,
+                },
+              ],
+            },
+          },
+        });
+      }, delay);
+      delay += 60;
+    }
     if (config.sendFsWrite) {
       setTimeout(() => {
         send({
@@ -379,6 +416,8 @@ export function writeScenario(
       sendQuestion: opts.sendQuestion ?? false,
       questionOptions: opts.questionOptions ?? null,
       sendElicitation: opts.sendElicitation ?? false,
+      sendCodebuddyQuestion: opts.sendCodebuddyQuestion ?? false,
+      codebuddyQuestionParams: opts.codebuddyQuestionParams ?? null,
       sendFsWrite: opts.sendFsWrite ?? false,
       crashAfterInit: opts.crashAfterInit ?? false,
       delayNewMs: opts.delayNewMs ?? 0,

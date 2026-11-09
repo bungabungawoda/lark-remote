@@ -32,7 +32,12 @@ import type {
 } from '../../types.js';
 import { produceTurnStartedEvent } from '../turn-started.js';
 import { truncateWithEllipsis } from './acp-approval.js';
-import { describePromptError, type PromptErrorDetail } from './prompt-error.js';
+import {
+  describePromptError,
+  isAuthenticationFailure,
+  isPromptAuthenticationFailure,
+  type PromptErrorDetail,
+} from './prompt-error.js';
 import {
   NotificationMethod,
   ServerRequestMethod,
@@ -113,6 +118,22 @@ function extractToolCallContentText(content: unknown[] | undefined): string | un
     }
   }
   return found ? text : undefined;
+}
+
+/**
+ * agent_message_chunk / agent_thought_chunk 的 content 文本提取。
+ *
+ * 契约形状是对象 `{type:'text', text}`。CodeBuddy 的 compact 广播
+ * （`_meta['codebuddy.ai/isCompactInternal']`）把 content 发成数组
+ * `[{type:'text', text}]`——translator 直接取 `.text` 得到 undefined，
+ * 进 run-state 后成为 `content: undefined` 的 text 块，卡片截断层
+ * `Buffer.byteLength(undefined)` 抛 TypeError 并经 fatal 通道退出进程。
+ * 不符合契约的帧一律丢弃。
+ */
+export function acpChunkText(content: unknown): string | undefined {
+  if (typeof content !== 'object' || content === null || Array.isArray(content)) return undefined;
+  const text = (content as { text?: unknown }).text;
+  return typeof text === 'string' ? text : undefined;
 }
 
 /**
@@ -221,6 +242,19 @@ export abstract class BaseAcpTranslator {
 
     const notif = params as SessionUpdateNotification['params'];
     const update = notif.update;
+
+    // 文本类 chunk 帧先验 content 形状（见 acpChunkText）：数组/缺失 text 的
+    // 帧在这里丢弃，不让 undefined 流进 run-state。
+    if (
+      (update.sessionUpdate === SessionEventType.AGENT_MESSAGE_CHUNK ||
+        update.sessionUpdate === SessionEventType.AGENT_THOUGHT_CHUNK) &&
+      acpChunkText((update as { content?: unknown }).content) === undefined
+    ) {
+      getLogger().warn(
+        `[${this.logTag}] dropped ${update.sessionUpdate} without object content.text`,
+      );
+      return [];
+    }
 
     switch (update.sessionUpdate) {
       case SessionEventType.AGENT_MESSAGE_CHUNK:
@@ -332,10 +366,14 @@ export abstract class BaseAcpTranslator {
           : 'error';
 
     let errorText: string | undefined;
+    let authFailure = false;
     if (subtype === 'error') {
       const detail = describePromptError(result);
       errorText = detail.text;
       this.logPromptError(result, detail);
+      // 401 是身份失效的唯一可信信号：打标让 runner / bridge 一次性清掉
+      // 长驻连接、模型目录快照和持久会话，而不是只把错误文本贴到卡片上。
+      authFailure = isPromptAuthenticationFailure(result);
     }
 
     return {
@@ -345,6 +383,7 @@ export abstract class BaseAcpTranslator {
       ...(this.hasLiveUsage ? { usage: this.liveUsageSnapshot() } : {}),
       ...(this.liveCostUsd !== undefined ? { total_cost_usd: this.liveCostUsd } : {}),
       ...(errorText ? { errorMessage: errorText } : {}),
+      ...(authFailure ? { authFailure: true } : {}),
     };
   }
 
@@ -370,6 +409,8 @@ export abstract class BaseAcpTranslator {
       subtype: 'error',
       session_id: sessionId,
       errorMessage,
+      // JSON-RPC 层直接抛错时没有 SessionPromptResult 可解析，只能按文本判定。
+      ...(isAuthenticationFailure(errorMessage) ? { authFailure: true } : {}),
       ...(this.hasLiveUsage ? { usage: this.liveUsageSnapshot() } : {}),
       ...(this.liveCostUsd !== undefined ? { total_cost_usd: this.liveCostUsd } : {}),
     };

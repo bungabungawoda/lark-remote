@@ -163,6 +163,30 @@ function jsonResponse(value: unknown): Response {
   } as unknown as Response;
 }
 
+function jsonRpcError(code: string, message: string): Response {
+  return {
+    ok: true,
+    status: 200,
+    json: async () => ({ result: { ok: false, error: { code, message } } }),
+  } as unknown as Response;
+}
+
+/** A WebSocket whose handshake always fails, for disconnect-watchdog tests. */
+class FailingWebSocket implements WebSocketLike {
+  onopen: ((event: unknown) => void) | null = null;
+  onmessage: ((event: { data: unknown }) => void) | null = null;
+  onerror: ((event: unknown) => void) | null = null;
+  onclose: ((event: unknown) => void) | null = null;
+  onunexpectedresponse: ((event: { statusCode?: number }) => void) | null = null;
+
+  constructor() {
+    setTimeout(() => this.onerror?.({ message: 'connect ECONNREFUSED' }), 0);
+  }
+
+  send(): void {}
+  close(): void {}
+}
+
 describe('DshClient auth', () => {
   it('extracts the token from a pasted dsh web URL', () => {
     expect(extractDshToken('http://127.0.0.1:3080/?token=abc')).toBe('abc');
@@ -279,6 +303,83 @@ describe('DshClient auth', () => {
   });
 });
 
+describe('DshClient session readiness', () => {
+  it('waits for sessionController to activate instead of treating HTTP readiness as final', async () => {
+    let calls = 0;
+    const fetchImpl = (async () => {
+      calls += 1;
+      if (calls === 1) {
+        return jsonRpcError(
+          'gateway/service-unavailable',
+          'active Service "sessionController" is unavailable',
+        );
+      }
+      return jsonResponse({ items: [] });
+    }) as typeof fetch;
+    const client = new DshClient('http://127.0.0.1:3080', {
+      credentialsFile: NO_CREDENTIALS_FILE,
+      fetchImpl,
+    });
+
+    await client.waitForSessionService({ timeoutMs: 1_000 });
+
+    expect(calls).toBe(2);
+  });
+
+  it('fails with a startup-specific message when the session service never activates', async () => {
+    const fetchImpl = (async () =>
+      jsonRpcError(
+        'gateway/service-unavailable',
+        'active Service "sessionController" is unavailable',
+      )) as typeof fetch;
+    const client = new DshClient('http://127.0.0.1:3080', {
+      credentialsFile: NO_CREDENTIALS_FILE,
+      fetchImpl,
+    });
+
+    await expect(client.waitForSessionService({ timeoutMs: 40 })).rejects.toThrow(
+      /未完成 session 服务启动/,
+    );
+  });
+
+  it('does not block a host whose readiness endpoint is unsupported', async () => {
+    let calls = 0;
+    const fetchImpl = (async () => {
+      calls += 1;
+      return jsonRpcError(
+        'gateway/invocation-unavailable',
+        'no active Remote method exports this endpoint',
+      );
+    }) as typeof fetch;
+    const client = new DshClient('http://127.0.0.1:3080', {
+      credentialsFile: NO_CREDENTIALS_FILE,
+      fetchImpl,
+    });
+
+    await client.waitForSessionService({ timeoutMs: 1_000 });
+
+    expect(calls).toBe(1);
+  });
+
+  it('stops a readiness wait as soon as the run is aborted', async () => {
+    const controller = new AbortController();
+    const fetchImpl = (async () =>
+      jsonRpcError('gateway/service-unavailable', 'starting')) as typeof fetch;
+    const client = new DshClient('http://127.0.0.1:3080', {
+      credentialsFile: NO_CREDENTIALS_FILE,
+      fetchImpl,
+    });
+
+    const waiting = client.waitForSessionService({
+      signal: controller.signal,
+      timeoutMs: 5_000,
+    });
+    setTimeout(() => controller.abort(), 10);
+
+    await expect(waiting).rejects.toThrow(/aborted/);
+  });
+});
+
 describe('DshClient remote mux', () => {
   it('refreshes auth and reconnects once when the WebSocket handshake returns 401', async () => {
     const fetchImpl = (async (input: RequestInfo | URL) => {
@@ -311,6 +412,22 @@ describe('DshClient remote mux', () => {
 
     expect(socketCount).toBe(2);
     expect(events).toHaveLength(1);
+  });
+
+  it('fails a live follow stream after a sustained disconnect instead of reconnecting forever', async () => {
+    const client = new DshClient('http://127.0.0.1:3080', {
+      credentialsFile: NO_CREDENTIALS_FILE,
+      streamDisconnectTimeoutMs: 20,
+      webSocketImpl: () => new FailingWebSocket(),
+    });
+
+    const consume = (async () => {
+      for await (const _item of client.sessionEvents(SID, new AbortController().signal)) {
+        // The failing socket never yields a frame.
+      }
+    })();
+
+    await expect(consume).rejects.toThrow(/不可达/);
   });
 
   it('consumes follow snapshot events and assistant deltas, then stops on turn/end', async () => {

@@ -27,10 +27,34 @@ import { rmRf } from '../../tests/lib/tmp-cleanup.js';
 import { asAgentRunner as wrapAgentRunner } from '../../tests/lib/agent-runner.js';
 import { mockLogger } from '../../tests/lib/logger-mock.js';
 import { ClaudeSessionReader } from '../session/claude/index.js';
+import { encodeCodebuddyProjectDirName } from '../session/codebuddy/sessions.js';
+import {
+  configureCodebuddyModelState,
+  resetCodebuddyModelState,
+} from '../config/codebuddy-model-state.js';
 
 vi.mock('../logger/index.js', async () =>
   (await import('../../tests/lib/logger-mock.js')).loggerModuleMock(),
 );
+
+/**
+ * 目录/区域探针会 spawn 真 `codebuddy --acp`（探针参数见 CODEBUDDY_ACP_ARGS）。
+ * 本文件的 401 / 模型拒绝用例只断言派生状态（session、runner、卡片），不需要
+ * 真目录——按「测试禁止 spawn 真 coding agent」把点火函数换成 stub，避免测试
+ * 结果取决于机器是否装了 CLI（win32 CI 上没装就是 spawn ENOENT）。纯函数与
+ * 判据保留原实现。
+ */
+vi.mock('../config/codebuddy-catalog.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../config/codebuddy-catalog.js')>();
+  return {
+    ...actual,
+    ensureCodebuddyRegion: vi.fn(async () => null),
+    scheduleCodebuddyRegionRedetect: vi.fn(),
+    refreshCodebuddyCatalog: vi.fn(async () => null),
+    warmCodebuddyCatalogCache: vi.fn(),
+    warmCodebuddyCatalogWithRegionDetection: vi.fn(),
+  };
+});
 
 // --- Stubs ---
 /** A runner that yields events, then hangs forever until stop() releases it.
@@ -833,6 +857,108 @@ describe('Bridge.forwardToClaude', () => {
     expect(json).not.toContain('Context - 243');
   });
 
+  /**
+   * 故障形态：CodeBuddy 重新登录 / 换区后，旧 sessionId 仍被 /restart 的
+   * auto-resume 恢复，长驻连接仍持有旧凭据，/config 仍渲染旧区域模型目录。
+   * 约束：上游 401 一到，三份派生状态一次性作废，卡片给出可执行的恢复指引。
+   */
+  it('codebuddy 401 终态清掉持久会话并给出恢复指引', async () => {
+    const runner = createStubRunner({
+      mode: 'streaming',
+      events: [
+        { type: 'system', subtype: 'init', session_id: 's-401', cwd: tmpDir, model: 'hy3' },
+        {
+          type: 'result',
+          subtype: 'error',
+          session_id: 's-401',
+          errorMessage: '401 Unauthorized',
+          authFailure: true,
+        } as AgentEvent,
+      ],
+    });
+    const codebuddyConfig = { ...config, defaultAgent: 'codebuddy' as const };
+    const { bridge, sessionStore, connector } = makeBridge({ runner, config: codebuddyConfig });
+    sessionStore.setCwd(ctx.userId, tmpDir);
+    sessionStore.setSessionIdAndCwd(ctx.userId, 'codebuddy', 's-401', tmpDir);
+
+    await bridge.forwardToClaude('hi', ctx);
+
+    // 旧会话不再被 startup 的 restoreLastSession() 恢复成同一个 401 会话。
+    expect(sessionStore.getSessionId(ctx.userId, 'codebuddy')).toBeUndefined();
+    const json = JSON.stringify(connector._cards.at(-1));
+    expect(json).toContain('已自动重置');
+    expect(json).toContain('codebuddy /login');
+  });
+
+  it('codebuddy 模型被上游拒绝时学到账号清单并作废旧会话', async () => {
+    // 故障形态：配置里的 model 属于别的账号，上游 400 只回泛化的
+    // Internal error，卡片看不出原因，下一条消息继续下发同一个 id。
+    const codebuddyHome = fs.mkdtempSync(path.join(os.tmpdir(), 'lark-cb-home-'));
+    const projectDir = path.join(codebuddyHome, 'projects', encodeCodebuddyProjectDirName(tmpDir));
+    fs.mkdirSync(projectDir, { recursive: true });
+    const sessionId = 's-model-rejected';
+    fs.writeFileSync(
+      path.join(projectDir, `${sessionId}.jsonl`),
+      `${JSON.stringify({
+        type: 'message',
+        role: 'assistant',
+        status: 'incomplete',
+        content: [
+          {
+            type: 'output_text',
+            text: [
+              '400 model [model-sg] service info not found (req-1/sess-1)',
+              'Currently supported models for your account:',
+              '  - model-a',
+              '  - model-b',
+            ].join('\n'),
+          },
+        ],
+      })}\n`,
+    );
+    const statePath = path.join(codebuddyHome, 'codebuddy-model-state.json');
+    configureCodebuddyModelState(statePath);
+
+    const runner = createStubRunner({
+      mode: 'streaming',
+      events: [
+        { type: 'system', subtype: 'init', session_id: sessionId, cwd: tmpDir, model: 'model-sg' },
+        {
+          type: 'result',
+          subtype: 'error',
+          session_id: sessionId,
+          errorMessage: 'Internal error',
+        } as AgentEvent,
+      ],
+    });
+    const cbConfig = AppConfigSchema.parse({
+      feishu: { appId: 'test', appSecret: 'test' },
+      agents: { codebuddy: { model: 'model-sg', permissionMode: 'auto' } },
+      defaultAgent: 'codebuddy',
+    });
+    const { bridge, sessionStore, connector } = makeBridge({
+      runner,
+      config: cbConfig,
+      codebuddyHome,
+    });
+    sessionStore.setCwd(ctx.userId, tmpDir);
+    sessionStore.setSessionIdAndCwd(ctx.userId, 'codebuddy', sessionId, tmpDir);
+
+    await bridge.forwardToClaude('hi', ctx);
+
+    // 旧会话是用被拒模型建的，runner 槽位也缓存了旧 model：两者都必须作废。
+    expect(sessionStore.getSessionId(ctx.userId, 'codebuddy')).toBeUndefined();
+    const json = JSON.stringify(connector._cards.at(-1));
+    expect(json).toContain('已自动校正');
+    expect(json).toContain('model-a');
+    // 账号清单落盘，供后续 turn 与 /config 复用。
+    const state = JSON.parse(fs.readFileSync(statePath, 'utf-8')) as { supported: string[] };
+    expect(state.supported).toEqual(['model-a', 'model-b']);
+
+    resetCodebuddyModelState();
+    rmRf(codebuddyHome);
+  });
+
   it('claude run card (stream-json, no turn_started) shows compact button when runner has runCompact', async () => {
     // 回归：claude 走 stream-json 不发射 turn_started，
     // operationKind 恒 undefined；若以 operationKind==='turn' 作按钮门控，
@@ -1197,9 +1323,10 @@ describe('Bridge.forwardToClaude', () => {
     expect(compactCard).not.toContain('"cmd":"compact"');
   });
 
-  it('does not retry jsonl reads for readers that do not produce compactCount', async () => {
-    // 回归：opencode reader 不产出 compactCount，旧重试循环每次 compact 都
-    // 固定多跑两次完整 export。supportsCompactCount=false 时应只读一次。
+  it('does not read usage for readers that do not produce compact stats', async () => {
+    // 回归：opencode/dsh reader 不产出压缩统计，读到的 usage 只是压缩前末次
+    // 采样，与上一张 run 卡逐字相同。compaction 卡必须整块不展示，也不为拿
+    // 不到的数据读一次完整 export。
     const cwd = fs.realpathSync(tmpDir);
     const readSpy = vi.fn(() => ({
       events: [],
@@ -1244,7 +1371,11 @@ describe('Bridge.forwardToClaude', () => {
     expect(runId).toBeDefined();
 
     await bridge.handleCompactAction({ runId: runId! }, ctx);
-    expect(readSpy).toHaveBeenCalledTimes(1);
+    expect(readSpy).not.toHaveBeenCalled();
+    // 压缩卡不得复述上一张 run 卡的用量块。
+    const compactCard = JSON.stringify(connector._cards.at(-1));
+    expect(compactCard).not.toContain('Context -');
+    expect(compactCard).not.toContain('Input token');
   });
 
   it('unsent fallback run card hides compact button when runner lacks runCompact', async () => {
@@ -4091,6 +4222,8 @@ describe('Bridge handleResumeCompact（resume 卡 Compact 按钮）', () => {
     // 用错 reader 查 session（报「未找到 session」或用错会话），压缩落到错的 agent。
     const cwd = fs.realpathSync(tmpDir);
     const runCompactSpy = vi.fn(compactTurnEvents);
+    // dsh reader 无压缩统计（supportsCompactCount=false）：校验阶段会读一次，
+    // 但压缩收尾不再读 usage。
     const dshRead = vi.fn(
       tailRead({ inputTokens: 0, outputTokens: 0, compactCount: 1, contextLength: 100 }),
     );
@@ -4103,6 +4236,7 @@ describe('Bridge handleResumeCompact（resume 卡 Compact 按钮）', () => {
           getNewestSession: () => null,
           readSessionContent: dshRead,
           isSessionActive: () => false,
+          supportsCompactCount: false,
         },
       },
     });
@@ -4115,6 +4249,10 @@ describe('Bridge handleResumeCompact（resume 卡 Compact 按钮）', () => {
     expect(runCompactSpy).toHaveBeenCalledWith('', { cwd, sessionId: 'dsh-session-1' });
     const sentJsons = connector._sent.map((s) => JSON.stringify(s.input));
     expect(sentJsons.some((j) => j.includes('未找到 session'))).toBe(false);
+    // dsh 无压缩统计：压缩卡不复述上一张 run 卡的用量块。
+    const compactCard = JSON.stringify(connector._cards.at(-1));
+    expect(compactCard).not.toContain('Context -');
+    expect(compactCard).not.toContain('Input token');
   });
 
   it('test_anchor_handle_resume_compact_card_context_percentage_from_jsonl_limit', async () => {

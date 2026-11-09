@@ -14,10 +14,16 @@
  * （官方 ACP 集成文档的工具代理条款；声明 true 会改发 fs/*、terminal/*
  * reverse RPC，客户端未实现该面）。探针（config/codebuddy-catalog.ts）与
  * runner 共用这一份，改能力声明只需改这里。
+ *
+ * `_meta['codebuddy.ai'].question = true` 打开 AskUserQuestion：CLI 的
+ * AskUserQuestionTool.isEnabled 在 ACP 模式下只认这个标记，未声明时工具
+ * 直接不出现在模型工具列表里。声明后服务端以 `_codebuddy.ai/question`
+ * 扩展方法下发结构化问题（见 CodebuddyAcpTranslator）。
  */
 export const CODEBUDDY_CLIENT_CAPABILITIES = {
   fs: { readTextFile: false, writeTextFile: false },
   terminal: false,
+  _meta: { 'codebuddy.ai': { question: true } },
 } as const;
 
 /**

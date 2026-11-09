@@ -39,6 +39,71 @@ export function describePromptError(result: SessionPromptResult): PromptErrorDet
   };
 }
 
+/**
+ * Upstream authentication failure (HTTP 401 + an auth marker).
+ *
+ * Identity is runtime state: a re-login / region switch only changes the CLI's
+ * on-disk credential truth, while the bridge keeps a catalog snapshot, a
+ * long-lived ACP connection and a persisted session id. The upstream 401 is
+ * the ONLY trustworthy invalidation signal — we deliberately do not read the
+ * CLI's private credential store or try to fingerprint a token.
+ *
+ * Both halves are required: a bare `401` can be ordinary answer text about the
+ * HTTP status code (or DSH's "DSH HTTP 401 for session.create"), and an auth
+ * phrase without 401 is not a credential failure. False positives here would
+ * silently drop a user's session, so stay conservative.
+ */
+const AUTH_PHRASE =
+  /unauthori[sz]ed|authentication required|please use \/login|sign in to your account|invalid[ -]?token|token[ -]?expired|not authenticated/i;
+
+export function isAuthenticationFailure(text: string | undefined): boolean {
+  if (!text || !/\b401\b/.test(text)) return false;
+  return AUTH_PHRASE.test(text);
+}
+
+/**
+ * Classify a whole prompt response. Three accepted signals, all upstream:
+ * human-readable `401 + auth phrase`, structured `code|status: 401`, or
+ * `data.category: 'auth'` plus an auth phrase. The last one covers the
+ * unauthenticated-ACP case (real capture 2026-11-09: `code:-32000`,
+ * `message:'Authentication required'`, `data.category:'auth'`), which carries
+ * no 401 anywhere. Still conservative: a bare auth category without an auth
+ * phrase is not enough, because a false positive drops the user's session.
+ */
+export function isPromptAuthenticationFailure(result: SessionPromptResult): boolean {
+  if (isAuthenticationFailure(upstreamPromptError(result))) return true;
+  const meta = asRecord(result._meta);
+  const candidates: unknown[] = [
+    result.error,
+    result.errorMessage,
+    meta?.['codebuddy.ai/errorMessage'],
+    meta?.errorMessage,
+    meta?.error,
+  ];
+  return candidates.some((value) => hasAuthStatusCode(value) || hasAuthCategory(value));
+}
+
+/** `data.category:'auth'` is the upstream's own classification, not a guess. */
+function hasAuthCategory(value: unknown): boolean {
+  const rec = asRecord(parseMaybeJson(value));
+  if (!rec) return false;
+  const data = asRecord(rec.data);
+  if (data?.category !== 'auth') return false;
+  const text = [rec.message, rec.details, data.message, data.details]
+    .filter((part): part is string => typeof part === 'string')
+    .join(' ');
+  return AUTH_PHRASE.test(text);
+}
+
+function hasAuthStatusCode(value: unknown): boolean {
+  const rec = asRecord(parseMaybeJson(value));
+  if (!rec) return false;
+  const data = asRecord(rec.data);
+  return [rec.code, rec.status, data?.statusCode, data?.status].some(
+    (code) => code === 401 || code === '401',
+  );
+}
+
 /** Extract the server-provided error message from the prompt response. */
 export function upstreamPromptError(result: SessionPromptResult): string | undefined {
   const direct = errorMessageOf(result.error) ?? errorMessageOf(result.errorMessage);

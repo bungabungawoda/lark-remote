@@ -255,6 +255,11 @@ export class DshDaemon {
    * Probe the API prefix, not `/`: a listening server whose plugin tree has
    * not mounted yet answers 404 there, while a ready DSH answers 401 before
    * dispatch. Any other status still proves the listener is alive.
+   *
+   * This is process/HTTP liveness only. DSH 0.2.2 can answer `/api/` while
+   * `sessionController` is still finishing its async `Service.init`; the
+   * runner's `waitForSessionService()` is the business-level gate after
+   * `ensure()`.
    */
   protected async probe(baseUrl: string): Promise<boolean> {
     try {

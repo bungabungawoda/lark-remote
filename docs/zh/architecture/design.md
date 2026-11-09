@@ -334,7 +334,7 @@ agents:
     manageProcess: true # 未运行时由 lark-remote detached 拉起
     dshHome: '' # 可选：DSH_HOME
     dshCommand: dsh # 可选：dsh 可执行文件
-    startTimeoutMs: 30000 # 启动等待上限
+    startTimeoutMs: 30000 # 端口 + session 服务就绪等待上限（启动/外部已运行都适用）
     token: '' # YAML-only 兜底：dsh web 启动 URL 中的 token；不在 /config 卡片展示
     credentialsFile: '' # 可选：DSH 凭据文件，默认 $DSH_HOME/.credentials.yaml
     agentPreset: '' # 留空 = 跟随服务端默认；session 创建后不可改
@@ -378,6 +378,15 @@ lark-remote 每次请求都现签一个短时效 v1 cookie；签名密钥按文�
 用同一签名密钥自动恢复；token 只在凭据文件不可用时兜底。凭据文件按 DSH 约定要求
 `0600`，lark-remote 只读不写，且日志中不输出密钥或 cookie。
 
+DSH 0.2.2 的 HTTP/admission 层先于 `sessionController` 的异步 `Service.init`
+就绪：`/api/` 已经可用时，`session/*` 仍可能回 `gateway/service-unavailable`。
+runner 在 `daemon.ensure()` 之后、第一个 session RPC 之前用 `session/list` 做
+业务级就绪探测；只对 `gateway/service-unavailable` / `gateway/context-unavailable`
+/ 启动期 transport/5xx 重试，其他错误视为探测不可用直接放行（兼容不提供该端点
+的旧宿主）。模型/权限对齐阶段对同类瞬时错误再做有限退避重试；provider/模型/
+命令错误仍然 fail closed。run 期间 `session/follow` 连续断开超过 90s 直接以
+明确错误终止，不再无限重连等 idle 看门狗。
+
 DSH 的审批与其它 agent 不同：`session/follow` 只携带持久审计事件
 `approval/asked` / `approval/decided`，真正可回答的是 `/api/remote.mux` 上独立的
 `$events` waterfall（`approval/request`）。lark-remote 用 `approvalId` 作为飞书卡片的
@@ -419,7 +428,8 @@ DSH 的压缩走 `commands/execute` 发 `/compact`（`dsh-command-compact`，无
 **不能**走 `session/prompt`——后者只把文本当普通 user message 交给模型。该 RPC 在压缩结束后
 才返回，所以 `DshRunner.runCompact` 关闭 unary 超时（由 `/stop` 与卡片空闲看门狗兜底）；
 压缩不产生 turn 事件，卡片终态由 runner 合成；DSH 也不提供 claude 的 `compact_boundary`
-或 codex 的 `compacted` 事件，因此压缩卡不渲染「压缩前/后」统计。各 agent 的 compact 能力
+或 codex 的 `compacted` 事件，会话读取端只能读到压缩前末次采样——压缩卡因此不展示用量块
+（与上一张 run 卡逐字相同，展示会被读成「压缩后的数字」）。各 agent 的 compact 能力
 由 `runner/types.ts` 的 `COMPACT_CAPABILITY` 单源声明（键集 = `AgentKind`，缺项编译失败），
 bridge 按「声明 && runner 实现」双重门控，声明与实现的一致性由 runner 结构测试的矩阵用例保证。
 

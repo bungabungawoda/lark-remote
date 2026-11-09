@@ -74,7 +74,7 @@ agents:
     manageProcess: true # 未运行时由 lark-remote 后台拉起（detached，退出不停止 DSH）
     dshHome: '' # 可选：DSH_HOME，默认 $DSH_HOME 或 ~/.dsh
     dshCommand: dsh # 可选：dsh 可执行文件
-    startTimeoutMs: 30000 # 后台启动后等待端口可用的上限
+    startTimeoutMs: 30000 # 等待端口与 session 服务就绪的上限（后台启动/外部已运行都适用）
     token: '' # 可选兜底：dsh web 启动 URL 里的 token（重启后会变）
     credentialsFile: '' # 可选：DSH 凭据文件；默认 $DSH_HOME/.credentials.yaml 或 ~/.dsh/.credentials.yaml
     agentPreset: '' # preset（标准/极简/...）；留空 = 跟随服务端默认；session 创建后不可改
@@ -113,10 +113,16 @@ CodeBuddy 以官方 ACP 模式接入（`codebuddy --acp`，stdio 上的 JSON-RPC
 - `agents.codebuddy.model`：模型 id。`/config` 卡片的模型下拉来自 ACP 会话目录（`codebuddy --acp` 一次性探针，启动时后台预热），选项文本为「模型名 + 积分费率」（目录 `_meta.credits`，如 `x0.29`），控件形态与 claude / codex 的模型字段一致；同名模型的费率通常不同，可直接区分，只有名称与费率都相同的极端情况才补 `（id）`。目录缓存过期时按上次成功快照继续渲染列表并在后台刷新（stale-while-revalidate），只有从未探测成功才回退 `~/.codebuddy/settings.json` 的当前模型并降级为文本输入。审批 kind、可用模式（`default` / `acceptEdits` / `plan` / `auto` / `dontAsk` / `bypassPermissions` / `fullAccess`）随会话目录校验。
 - 每次模型请求实际消耗的积分在 ACP `usage_update` 的 `cost.amount`（单位是 CodeBuddy 积分，非美元，不上 `total_cost_usd`）；费率以目录 `credits` 字段为准（随版本/活动变化）。给 lark-remote 做真机测试时选目录里 `x0.00 credits` 的免费档（如 hy3/hy4free）不消耗积分。
 - `agents.codebuddy.permissionMode`：`default`（不干预，跟随 CodeBuddy 默认）或官方 modes 枚举。
+- **交互式提问（`AskUserQuestion`）**：ACP initialize 声明 `clientCapabilities._meta['codebuddy.ai'].question=true` 后，模型可调用 CodeBuddy 内置的 `AskUserQuestion`；问题以 `_codebuddy.ai/question` 扩展方法下发，飞书 run 卡渲染选项卡（选项 / Other 自定义答案 / 多选提交 / 跳过回答），答案按 `q_0…q_n` 回编，跳过或超时回 `cancelled`。
 - `agents.codebuddy.thinkingLevel`：思考档位（ACP `thought_level`），可选 `enabled`（默认）/ `disabled` / `minimal` / `low` / `medium` / `high` / `xhigh` / `max`；留空 = 不下发。
 - `agents.codebuddy.sandbox`：命令沙箱（ACP `sandbox`），`true` = Bash 跑在 sandbox-cli 隔离层；留空 = 不下发（跟随 CodeBuddy 默认 false）。
 - `agents.codebuddy.acp.binary` / `requestTimeoutMs` / `idleTtlMs` / `turnIdleTimeoutMinutes`：连接参数，同 kimi/opencode 的 acp 子配置口径。
-- `agents.codebuddy.env`：透传给 ACP 子进程的环境变量。腾讯云文档要求**中国版**设置 `CODEBUDDY_INTERNET_ENVIRONMENT: internal`（海外版不设）——首次接入若 ACP 连接/鉴权失败，先补这个变量。
+- ACP 子进程固定以 `--acp --serve --port 0` 启动：CodeBuddy CLI 在 ACP 模式下仍会起一个本地 HTTP 服务，默认端口写死（CLI 2.181.0 实测 50403）。WorkBuddy 桌面端等其它 CodeBuddy 实例占着该端口时，进程直接 `EADDRINUSE` 退出——模型目录拿不到（`/config` 列表停在旧快照），会话也起不来。`--port 0` 让 CLI 自动分配，ACP 仍走 stdio。
+- `agents.codebuddy.env`：透传给 ACP 子进程的环境变量。区域由 `CODEBUDDY_INTERNET_ENVIRONMENT` 决定：中国版 `internal`，海外版 `external`。显式配置优先；不配时先读宿主已声明的区域——V3 产品配置（`ACC_PRODUCT_CONFIG_PATH` / `ACC_PRODUCT_CONFIG_V3` 的 `networkEnvironment`，缺失时看 endpoint 域名）优先于进程环境变量 `CODEBUDDY_INTERNET_ENVIRONMENT`（CLI 最终 endpoint 由 V3 裁决）。命中即定区、只探一次目录；宿主没有声明时才用两个区域各跑一次目录探针，拿 `~/.codebuddy/settings.json` 的当前模型做唯一匹配。两种判据都得不出结论时保持宿主环境，不擅自接管。判定结果同时作用于 ACP 会话与 `/config` 的模型目录。每条消息开跑前会等判定完成（有超时上限，超时按宿主环境继续），所以刚启动就发消息也不会打错端点；上游返回 401 或未登录的认证错误后判定结果作废、旧会话与连接清除，随即在进程内重新判定（带冷却窗口，避免上游持续失败时反复探测），重新登录后无需重启。配置里的模型若已不属于当前账号，会自动换成账号清单内的模型。除交互式登录本身外没有需要手动执行的步骤。
+
+- **切换登录后 `/config` 立即反映当前账号**：打开 `/config` 前会先刷新一次模型目录。判据是 `~/.codebuddy/settings.json` 的 mtime+size——切换登录时 CLI 会重写它，目录探针本身不写（真机实测探针前后 mtime 不变），所以指纹变化等于账号被外部改过。指纹变了就强制重探当前区域；当前区域探不通（换区后旧区域必然拒绝）时再跑一轮区域判定（有宿主信号按信号定区，否则双探针）、接管新区域。两种情况都会同时清掉旧身份上的持久 sessionId 与 runner——它们绑在旧连接上，不重置的话下一条消息会在失效端点重放 401。显式配了 `CODEBUDDY_INTERNET_ENVIRONMENT` 时区域以配置为准，只重探目录、不接管。已学到的账号模型清单（`codebuddy-model-state.json`）不跟着清：它是账号清单的唯一权威信号，换账号后第一条消息若被上游拒绝，仍走「自动校正 + 请重发」那条自愈路径。
+
+模型是否可用**不**看 `/config` 的目录清单：ACP `session/new` 返回的是 CLI 内置静态清单（`codebuddy --help` 的 `--model` 可选项与它逐项相同），既不按账号权益过滤，也不区分区域，里面常有一批当前账号无权使用的 id。真正的判据是上游 400 附带的 `Currently supported models for your account:` 清单，加上每次成功 turn 记下的模型；两者学到的结果落在 `<configDir>/codebuddy-model-state.json`，跨重启复用。配置值不在账号清单内时，按「上次成功 → 账号当前 → 偏好顺序」挑一个可用模型；被上游拒绝的那一轮会在卡片上标注「已自动校正，请重发」，并作废旧会话与 runner，下一条消息用校正后的模型新建会话。
 
 token 用量：CodeBuddy 的 ACP `usage_update` 把每模型请求的全量明细放在 `_meta.usage`（含缓存命中/未命中拆分），lark-remote 按 turn 累加后随 result 事件折叠，jsonl 会话文件（`providerData.usage`，`inputTokens` 含缓存）作兜底口径。
 

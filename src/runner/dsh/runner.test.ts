@@ -3391,6 +3391,206 @@ describe('DshClient / DshRunner integration', () => {
   });
 });
 
+describe('DshRunner session-service readiness', () => {
+  let server: FakeDshServer;
+
+  afterEach(async () => {
+    await server?.stop();
+  });
+
+  function managedDaemon(baseUrl: string): DshDaemon {
+    return { ensure: async () => baseUrl } as unknown as DshDaemon;
+  }
+
+  const serviceUnavailable = {
+    ok: false as const,
+    error: {
+      code: 'gateway/service-unavailable',
+      message: 'active Service "sessionController" is unavailable',
+    },
+  };
+
+  it('retries selectModel while the session service is still starting', async () => {
+    server = new FakeDshServer();
+    let selectCalls = 0;
+    let prompted = false;
+    server.register('session/selectModel', () => {
+      selectCalls += 1;
+      if (selectCalls === 1) return serviceUnavailable;
+      return {
+        ok: true,
+        value: { selected: { provider: 'anthropic', model: 'claude-sonnet-4-5' } },
+      };
+    });
+    server.register('session/prompt', () => {
+      prompted = true;
+      return { ok: true, value: { accepted: true } };
+    });
+    server.setMuxFrames([sessionEventFrame(SID, turnEnd('completed', 1))]);
+    await server.start();
+
+    const runner = new DshRunner({
+      kind: 'dsh',
+      sessionReader: stubReader,
+      host: server.baseUrl,
+      provider: 'anthropic',
+      model: 'claude-sonnet-4-5',
+      alignmentRetryTimeoutMs: 1_000,
+    });
+    const events = await collect(runner.run('hi', { cwd: CWD, sessionId: SID }));
+
+    expect(selectCalls).toBe(2);
+    expect(prompted).toBe(true);
+    expect(events.find((e) => e.type === 'result')).toMatchObject({ subtype: 'success' });
+  });
+
+  it('reports a starting DSH service instead of blaming the provider', async () => {
+    server = new FakeDshServer();
+    let prompted = false;
+    server.register('session/selectModel', () => serviceUnavailable);
+    server.register('session/prompt', () => {
+      prompted = true;
+      return { ok: true, value: { accepted: true } };
+    });
+    await server.start();
+
+    const runner = new DshRunner({
+      kind: 'dsh',
+      sessionReader: stubReader,
+      host: server.baseUrl,
+      provider: 'opencode-go',
+      model: 'deepseek-v4.1-flash',
+      alignmentRetryTimeoutMs: 120,
+    });
+    const events = await collect(runner.run('hi', { cwd: CWD, sessionId: SID }));
+    const result = events.find((e) => e.type === 'result');
+    const message = result?.type === 'result' ? (result.errorMessage ?? '') : '';
+
+    expect(result).toMatchObject({ subtype: 'error' });
+    expect(message).toContain('仍未就绪');
+    expect(message).not.toContain('DSH Web UI');
+    expect(prompted).toBe(false);
+  });
+
+  it('retries permission alignment while the session service is still starting', async () => {
+    server = new FakeDshServer();
+    let permissionCalls = 0;
+    let prompted = false;
+    server.register('commands/execute', () => {
+      permissionCalls += 1;
+      if (permissionCalls === 1) return serviceUnavailable;
+      return { ok: true, value: { result: { kind: 'success' } } };
+    });
+    server.register('session/prompt', () => {
+      prompted = true;
+      return { ok: true, value: { accepted: true } };
+    });
+    server.setMuxFrames([sessionEventFrame(SID, turnEnd('completed', 1))]);
+    await server.start();
+
+    const runner = new DshRunner({
+      kind: 'dsh',
+      sessionReader: stubReader,
+      host: server.baseUrl,
+      permissionPreset: 'workspace-write',
+      alignmentRetryTimeoutMs: 1_000,
+    });
+    const events = await collect(runner.run('hi', { cwd: CWD, sessionId: SID }));
+
+    expect(permissionCalls).toBe(2);
+    expect(prompted).toBe(true);
+    expect(events.find((e) => e.type === 'result')).toMatchObject({ subtype: 'success' });
+  });
+
+  it('waits for the session service before the first RPC when the daemon manages the host', async () => {
+    server = new FakeDshServer();
+    let listCalls = 0;
+    server.register('session/list', () => {
+      listCalls += 1;
+      if (listCalls === 1) return serviceUnavailable;
+      return { ok: true, value: { items: [] } };
+    });
+    server.register('session/selectModel', () => ({
+      ok: true,
+      value: { selected: { provider: 'anthropic', model: 'claude-sonnet-4-5' } },
+    }));
+    server.register('session/prompt', () => ({ ok: true, value: { accepted: true } }));
+    server.setMuxFrames([sessionEventFrame(SID, turnEnd('completed', 1))]);
+    await server.start();
+
+    const runner = new DshRunner({
+      kind: 'dsh',
+      sessionReader: stubReader,
+      host: server.baseUrl,
+      daemon: managedDaemon(server.baseUrl),
+      provider: 'anthropic',
+      model: 'claude-sonnet-4-5',
+      serviceReadyTimeoutMs: 2_000,
+    });
+    const events = await collect(runner.run('hi', { cwd: CWD, sessionId: SID }));
+
+    expect(listCalls).toBeGreaterThanOrEqual(2);
+    expect(events.find((e) => e.type === 'result')).toMatchObject({ subtype: 'success' });
+  });
+
+  it('does not block a host whose readiness probe endpoint is unsupported', async () => {
+    server = new FakeDshServer();
+    server.register('session/list', () => ({
+      ok: false,
+      error: {
+        code: 'gateway/invocation-unavailable',
+        message: 'no active Remote method exports this endpoint',
+      },
+    }));
+    server.register('session/selectModel', () => ({
+      ok: true,
+      value: { selected: { provider: 'anthropic', model: 'claude-sonnet-4-5' } },
+    }));
+    server.register('session/prompt', () => ({ ok: true, value: { accepted: true } }));
+    server.setMuxFrames([sessionEventFrame(SID, turnEnd('completed', 1))]);
+    await server.start();
+
+    const runner = new DshRunner({
+      kind: 'dsh',
+      sessionReader: stubReader,
+      host: server.baseUrl,
+      daemon: managedDaemon(server.baseUrl),
+      provider: 'anthropic',
+      model: 'claude-sonnet-4-5',
+      serviceReadyTimeoutMs: 2_000,
+    });
+    const events = await collect(runner.run('hi', { cwd: CWD, sessionId: SID }));
+
+    expect(events.find((e) => e.type === 'result')).toMatchObject({ subtype: 'success' });
+  });
+
+  it('fails with a clear message when the session service never activates', async () => {
+    server = new FakeDshServer();
+    let prompted = false;
+    server.register('session/list', () => serviceUnavailable);
+    server.register('session/prompt', () => {
+      prompted = true;
+      return { ok: true, value: { accepted: true } };
+    });
+    await server.start();
+
+    const runner = new DshRunner({
+      kind: 'dsh',
+      sessionReader: stubReader,
+      host: server.baseUrl,
+      daemon: managedDaemon(server.baseUrl),
+      serviceReadyTimeoutMs: 80,
+    });
+    const events = await collect(runner.run('hi', { cwd: CWD, sessionId: SID }));
+    const result = events.find((e) => e.type === 'result');
+    const message = result?.type === 'result' ? (result.errorMessage ?? '') : '';
+
+    expect(result).toMatchObject({ subtype: 'error' });
+    expect(message).toContain('未完成 session 服务启动');
+    expect(prompted).toBe(false);
+  });
+});
+
 describe('DshRunner stop state', () => {
   it('isRunning reflects an in-flight run', async () => {
     const server = new FakeDshServer();

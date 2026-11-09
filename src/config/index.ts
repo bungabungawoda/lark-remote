@@ -224,7 +224,7 @@ const DshConfigSchema = z.object({
   dshHome: z.string().optional(),
   /** DSH 可执行文件；默认 dsh。 */
   dshCommand: z.string().optional(),
-  /** 后台拉起 DSH 后等待端口可用的上限（毫秒）。 */
+  /** 等待 DSH 端口与 session 服务就绪的上限（毫秒）；后台拉起与外部已运行都适用。 */
   startTimeoutMs: z.number().int().min(1000).max(600000).default(30_000),
   /**
    * DSH Web launch token (0.2.x requires auth). Paste the token from the URL
