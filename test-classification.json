@@ -53,6 +53,7 @@
     "src/router/config/config-card-controls.test.ts",
     "src/router/config/common/model-patch.test.ts",
     "src/router/update-command.test.ts",
+    "src/router/codebuddy-config-refresh.test.ts",
     "src/router/commands/ls.test.ts",
     "tests/router/**/*.test.ts",
     "tests/anchor/agent-switch/**/*.test.ts",
@@ -222,6 +223,7 @@
     "src/session/codebuddy/**/*.test.ts",
     "src/config/codebuddy-catalog.test.ts",
     "src/config/codebuddy-config.test.ts",
+    "src/config/codebuddy-model-state.test.ts",
     "src/router/config/codebuddy.test.ts"
   ],
   "agent-qoder": [

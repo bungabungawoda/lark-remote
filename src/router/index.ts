@@ -14,6 +14,11 @@ import {
   getAgentConfig,
 } from '../config/index.js';
 import { syncAgentChoices } from '../runner/index.js';
+import {
+  invalidateCodebuddyCatalogCache,
+  invalidateCodebuddyRegion,
+  refreshCodebuddyCatalogForConfig,
+} from '../config/codebuddy-catalog.js';
 import { resolveDshCredentialsFile } from '../dsh/auth.js';
 import { WorkspaceStore } from '../workspace/index.js';
 import { OrderStore, ORDER_NOT_FOUND_TEXT, type OrderEntry } from '../order/index.js';
@@ -2805,6 +2810,26 @@ export class CommandRouter {
     const changedKeys = Object.keys(updates);
     const hasAgentConfigChange = computeHasAgentConfigChange(changedKeys);
 
+    // CodeBuddy 模型目录是 f(登录态, 区域)：env（尤其
+    // CODEBUDDY_INTERNET_ENVIRONMENT）或 binary 一变，旧快照就属于另一个身份。
+    // 立刻失效，让同一次保存后的卡片重绘重新点火探针；否则 negative cache
+    // 会在 5 分钟 TTL 内继续把旧区域的模型列表渲染给用户。
+    const hasCodebuddyIdentityChange = changedKeys.some(
+      (key) =>
+        key.startsWith('agents.codebuddy.env') ||
+        key.startsWith('agents.codebuddy.cli') ||
+        key === 'agents.codebuddy.binary',
+    );
+    if (hasCodebuddyIdentityChange) {
+      invalidateCodebuddyCatalogCache();
+      invalidateCodebuddyRegion();
+      // 换区后旧 sessionId 属于另一个身份：留着会被 /restart 的
+      // restoreLastSession() auto-resume 回旧区域会话并重放 401。只清当前
+      // agent 的 session，cwd 保留（用户还在同一个工作目录）。
+      this.sessionStore.clearSessionId(ctx.userId, 'codebuddy');
+      getLogger().info('[config] codebuddy identity changed, catalog/region/session invalidated');
+    }
+
     // 当 defaultAgent 改变时，清除旧 agent 的 sessionId，
     // 同时清除新 agent 的 sessionId（等效于 /new 命令），
     // 并支持 session 恢复 - 切换回来时如果条件满足则恢复之前的 session。
@@ -3025,7 +3050,8 @@ export class CommandRouter {
       text: {
         tag: 'lark_md',
         content:
-          '**Agent**\n通过 `/config` → 默认 Agent 切换：Claude / Codex / Opencode / Pi / Kimi',
+          '**Agent**\n通过 `/config` → 默认 Agent 切换：' +
+          AGENT_KINDS.map((kind) => agentDisplayName(kind)).join(' / '),
       },
     });
 
@@ -3852,9 +3878,9 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
     // Ensure probe cache is populated before building the card.
     await probeAllAgents();
 
-    // 动态清单预取（DSH 模型/预设目录）：卡渲染前强制刷新，DSH Web UI 刚新增
-    // 的 provider 立即可见；失败回退兜底清单。
-    await this.prefetchConfigCardCatalogs(true);
+    // 动态清单预取：DSH 模型/预设目录、CodeBuddy 模型目录。卡渲染前刷新，
+    // 外部新增的 provider 与切换后的 CodeBuddy 登录立即可见；失败回退兜底。
+    await this.prefetchConfigCardCatalogs(true, ctx);
 
     // Check if this is a direct set command: /config <key> <value>
     // Command-style set: immediate write to disk, clear pendingConfig
@@ -3908,12 +3934,28 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
   }
 
   /**
-   * DSH /config 卡片构建前异步预取模型/预设目录（§4.2 动态清单）。
-   * 只在 defaultAgent 为 dsh 时生效；其他 agent 无 prefetch 钩子直接跳过。
-   * 预取失败不阻断——DshConfigBuilder 内部已回退固定兜底清单。
-   * `force` 在打开 /config 时使用：DSH Web UI 刚新增的 provider 立即出现。
+   * 卡片构建前的动态清单预取。
+   *
+   * - **DSH**：`/config` 打开时强制刷新模型/预设目录，Web UI 刚新增的 provider
+   *   立即可见；失败回退固定兜底清单。
+   * - **CodeBuddy**：模型清单只随 ACP `session/new` 下发，且目录是
+   *   f(登录态, 区域)。这里按账号指纹（`settings.json` 的 mtime+size）决定是否
+   *   重探：切换 CodeBuddy 登录后第一次打开 `/config` 就能看到新模型，而不是
+   *   等下一条消息 401 才被动重建。指纹/区域变化时顺带重置持久 sessionId 与
+   *   runner（它们绑在旧身份上，不重置会在失效端点重放 401）。
+   *
+   * 预取失败不阻断——两个 builder 内部都有兜底（DSH 固定清单、CodeBuddy 文本输入）。
    */
-  private async prefetchConfigCardCatalogs(force = false): Promise<void> {
+  private async prefetchConfigCardCatalogs(force = false, ctx?: CommandContext): Promise<void> {
+    if (this.config.defaultAgent === 'codebuddy') {
+      const cbConf = getAgentConfig(this.config, 'codebuddy');
+      const outcome = await refreshCodebuddyCatalogForConfig({
+        binary: cbConf?.acp?.binary,
+        env: cbConf?.env,
+      });
+      if (outcome.identityChanged && ctx) this.bridge.resetCodebuddyRuntime(ctx.userId);
+      return;
+    }
     if (this.config.defaultAgent !== 'dsh') return;
     const builder = getConfigBuilder('dsh');
     const dshConf = getAgentConfig(this.config, 'dsh');

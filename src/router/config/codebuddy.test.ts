@@ -1,15 +1,26 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { CodebuddyConfigBuilder } from './codebuddy.js';
 import { buildConfigCardFromTabs } from './common/render.js';
 import type { AppConfig } from '../../config/index.js';
 import { expectNoV1ActionContainer } from '../../../tests/lib/card-view.js';
-import { refreshCodebuddyCatalog } from '../../config/codebuddy-catalog.js';
+import { refreshCodebuddyCatalog, resolveCodebuddyEnv } from '../../config/codebuddy-catalog.js';
+import { resolveCodebuddyModel } from '../../config/codebuddy-model-state.js';
 import { loadCodebuddyConfig } from '../../config/codebuddy-config.js';
 
 // 目录探针会 spawn 真 codebuddy --acp（红线：测试禁止 spawn 真 agent）——
 // 这里必须 mock 掉；buildFields 点火接线用下方断言钉住，不因 mock 静默失效。
-vi.mock('../../config/codebuddy-catalog.js', () => ({
-  refreshCodebuddyCatalog: vi.fn(async () => null),
+// 模型事实源同理：真实实现会读配置目录里的学习结果，测试用可控 mock。
+vi.mock('../../config/codebuddy-catalog.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../config/codebuddy-catalog.js')>();
+  return {
+    ...actual,
+    refreshCodebuddyCatalog: vi.fn(async () => null),
+    resolveCodebuddyEnv: vi.fn((env: Record<string, string | undefined> = {}) => env),
+  };
+});
+
+vi.mock('../../config/codebuddy-model-state.js', () => ({
+  resolveCodebuddyModel: vi.fn((configured?: string) => configured),
 }));
 
 vi.mock('../../config/codebuddy-config.js', () => ({
@@ -37,6 +48,21 @@ describe('CodebuddyConfigBuilder', () => {
   const builder = new CodebuddyConfigBuilder();
 
   describe('buildFields', () => {
+    beforeEach(() => {
+      // buildFields 几乎在每个用例里都会点火目录探针；两个 mock 的调用记录与
+      // mockReturnValueOnce 队列必须跨用例隔离，否则 toHaveBeenCalledTimes(1)
+      // 会被前面用例累计的调用打挂。mockReset 会连工厂里的默认实现一起清掉，
+      // 这里显式恢复成与生产一致的口径（resolve 原样返回显式 env）。
+      vi.mocked(refreshCodebuddyCatalog).mockReset();
+      vi.mocked(refreshCodebuddyCatalog).mockResolvedValue(null);
+      vi.mocked(resolveCodebuddyEnv).mockReset();
+      vi.mocked(resolveCodebuddyEnv).mockImplementation(
+        (env: Record<string, string | undefined> = {}) => env,
+      );
+      vi.mocked(resolveCodebuddyModel).mockReset();
+      vi.mocked(resolveCodebuddyModel).mockImplementation((configured?: string) => configured);
+    });
+
     it('model renders as a select over the ACP catalog (name + credits, no id)', () => {
       const fields = builder.buildFields(makeConfig());
       const modelField = fields.find((f) => f.key === 'agents.codebuddy.model');
@@ -69,9 +95,20 @@ describe('CodebuddyConfigBuilder', () => {
 
     it('configured model overrides the catalog current', () => {
       const fields = builder.buildFields(
-        makeConfig({ agents: { codebuddy: { model: 'my-model' } } }),
+        makeConfig({ agents: { codebuddy: { model: 'hy4free' } } }),
       );
-      expect(fields.find((f) => f.key === 'agents.codebuddy.model')!.currentValue).toBe('my-model');
+      expect(fields.find((f) => f.key === 'agents.codebuddy.model')!.currentValue).toBe('hy4free');
+    });
+
+    it('配置的 model 被账号清单校正时，卡片显示校正后的值', () => {
+      // 换账号后配置里还是旧账号的 id：卡片不能回显一个一发就 400 的值，
+      // 必须走 resolveCodebuddyModel（账号清单在它内部裁决）。
+      vi.mocked(resolveCodebuddyModel).mockReturnValueOnce('hy3');
+      const fields = builder.buildFields(
+        makeConfig({ agents: { codebuddy: { model: 'sg-model' } } }),
+      );
+      expect(resolveCodebuddyModel).toHaveBeenCalledWith('sg-model');
+      expect(fields.find((f) => f.key === 'agents.codebuddy.model')!.currentValue).toBe('hy3');
     });
 
     it('thinking level select: default sentinel = follow CodeBuddy default', () => {
@@ -145,9 +182,31 @@ describe('CodebuddyConfigBuilder', () => {
     });
 
     it('buildFields fires the catalog refresh (wiring pinned; probe mocked)', () => {
-      vi.mocked(refreshCodebuddyCatalog).mockClear();
       builder.buildFields(makeConfig());
       expect(refreshCodebuddyCatalog).toHaveBeenCalledTimes(1);
+    });
+
+    it('buildFields 把 agents.codebuddy.env 透给目录探针', () => {
+      const config = makeConfig({
+        agents: { codebuddy: { env: { CODEBUDDY_INTERNET_ENVIRONMENT: 'internal' } } },
+      });
+      builder.buildFields(config);
+      // binary/timeoutMs 走默认；第三个参数必须与 runner 的 env 是同一份配置。
+      expect(refreshCodebuddyCatalog).toHaveBeenCalledWith(undefined, undefined, {
+        CODEBUDDY_INTERNET_ENVIRONMENT: 'internal',
+      });
+    });
+
+    it('buildFields 走统一 env 口径：自动判定区域叠加到探针参数', () => {
+      vi.mocked(resolveCodebuddyEnv).mockReturnValueOnce({
+        CODEBUDDY_INTERNET_ENVIRONMENT: 'internal',
+      });
+      builder.buildFields(makeConfig());
+      expect(resolveCodebuddyEnv).toHaveBeenCalledTimes(1);
+      // 卡片不能自己读配置拼 env，必须与 runner 共用同一个 resolve 结果。
+      expect(refreshCodebuddyCatalog).toHaveBeenCalledWith(undefined, undefined, {
+        CODEBUDDY_INTERNET_ENVIRONMENT: 'internal',
+      });
     });
 
     it('renders as a v1-safe card container (no tag:action)', () => {

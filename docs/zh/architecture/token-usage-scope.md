@@ -95,7 +95,7 @@ session reader ────┘        （flow: live 优先；context/compact: js
 - 无从划分 turn 时的兜底分两类：claude / pi / dsh 退回末条采样；kimi 的整份 wire 没有 `turn.prompt`（旧数据/截断）时沿用「整份文件 = 一个 turn」。
 - codex 的 context 不含末轮 output 是既有文档约定，与其他 reader 不一致；改口径时需要同步 §9.21 与所有 reader。
 - 子 agent：kimi 的子 agent wire 进累计、不进 flow；codex 的 subagent rollout 文件在列表和读取时整体排除；claude 的 `isSidechain` 目前只挡 turn 边界，usage 聚合仍不过滤，见 §5。
-- `AgentSessionReader.supportsCompactCount` 声明该 reader 能否产出 compactCount；不支持的（opencode / dsh）在 compact 收尾不再重复走完整 export/读取。
+- `AgentSessionReader.supportsCompactCount` 声明该 reader 能否产出压缩统计；不支持的（opencode / dsh）在 compact 收尾整块不展示用量：读到的只是压缩前末次采样，与上一张 run 卡逐字相同，展示会被读成「压缩后的数字」；也不再为拿不到的数据读取一次完整 export。
 - dsh 的 live translator 一次 run 创建一个、只累加 durable usage，turnUsage 不跨 run，live 路径本身没有 scope 问题。
 
 ---

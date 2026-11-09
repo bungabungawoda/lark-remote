@@ -186,6 +186,137 @@ describe('CodebuddyAcpRunner', () => {
     await runner.dispose();
   });
 
+  it('drops compact broadcast chunks (array content + isCompactInternal) without breaking the turn', async () => {
+    // 真机形状：CodeBuddy emergency compact 的 broadcastCompactStarted/Completed
+    // 以 agent_message_chunk 发送，但 content 是数组 `[{type:'text', text}]`
+    // （正常 chunk 是对象）。未过滤时 translator 取 .text 得到 undefined，
+    // 卡片截断层 Buffer.byteLength(undefined) 会击穿进程。
+    const compactId = `compact-maxtoken-${SESSION_ID}-1`;
+    const { wrapper, cwd } = writeScenario(tmpDir, serverScript, 'codebuddy', {
+      notifications: [
+        {
+          method: 'session/update',
+          params: {
+            sessionId: SESSION_ID,
+            update: {
+              sessionUpdate: 'agent_message_chunk',
+              messageId: compactId,
+              content: [{ type: 'text', text: '<conversation_history_summary><summary>' }],
+              _meta: {
+                'codebuddy.ai/isCompactInternal': true,
+                'codebuddy.ai': { messageId: compactId },
+              },
+            },
+          },
+        },
+        {
+          method: 'session/update',
+          params: {
+            sessionId: SESSION_ID,
+            update: {
+              sessionUpdate: 'agent_message_chunk',
+              content: { type: 'text', text: '好' },
+            },
+          },
+        },
+      ],
+    });
+
+    const runner = makeRunner(wrapper);
+    const events = await collectEvents(runner, 'hello', { cwd });
+
+    const assistantTexts = events
+      .filter((e) => e.type === 'assistant')
+      .flatMap(
+        (e) =>
+          (e as { message: { content: Array<{ type: string; text?: unknown }> } }).message.content,
+      )
+      .filter((c) => c.type === 'text');
+    expect(assistantTexts.map((c) => c.text)).toEqual(['好']);
+
+    await runner.dispose();
+  });
+
+  it('drops text/thinking chunks whose wire content.text is not a string (seam guard)', async () => {
+    const { wrapper, cwd } = writeScenario(tmpDir, serverScript, 'codebuddy', {
+      notifications: [
+        {
+          method: 'session/update',
+          params: {
+            sessionId: SESSION_ID,
+            update: {
+              sessionUpdate: 'agent_message_chunk',
+              content: [{ type: 'text', text: '数组形状' }],
+            },
+          },
+        },
+        {
+          method: 'session/update',
+          params: {
+            sessionId: SESSION_ID,
+            update: {
+              sessionUpdate: 'agent_message_chunk',
+              content: { type: 'text' },
+            },
+          },
+        },
+        {
+          method: 'session/update',
+          params: {
+            sessionId: SESSION_ID,
+            update: {
+              sessionUpdate: 'agent_thought_chunk',
+              content: [],
+            },
+          },
+        },
+        {
+          method: 'session/update',
+          params: {
+            sessionId: SESSION_ID,
+            update: {
+              sessionUpdate: 'agent_message_chunk',
+              content: { type: 'text', text: '好' },
+            },
+          },
+        },
+      ],
+    });
+
+    const runner = makeRunner(wrapper);
+    const events = await collectEvents(runner, 'hello', { cwd });
+
+    // 畸形帧不得产出 content 非 string 的块（run-state 会原样存成 undefined，
+    // 渲染层 truncateUtf8 随后崩溃）。
+    const malformed = events
+      .filter((e) => e.type === 'assistant')
+      .flatMap(
+        (e) =>
+          (
+            e as {
+              message: { content: Array<{ type?: string; text?: unknown; thinking?: unknown }> };
+            }
+          ).message.content,
+      )
+      .filter(
+        (c) =>
+          (c.type === 'text' && typeof c.text !== 'string') ||
+          (c.type === 'thinking' && typeof c.thinking !== 'string'),
+      );
+    expect(malformed).toEqual([]);
+
+    const assistantTexts = events
+      .filter((e) => e.type === 'assistant')
+      .flatMap(
+        (e) =>
+          (e as { message: { content: Array<{ type: string; text?: unknown }> } }).message.content,
+      )
+      .filter((c) => c.type === 'text');
+    expect(assistantTexts.map((c) => c.text)).toEqual(['好']);
+
+    await runner.dispose();
+  });
+
   it('applies configured model and permission mode via config/mode requests', async () => {
     const capturePath = join(tmpDir, 'capture.jsonl');
     const { wrapper, cwd } = writeScenario(tmpDir, serverScript, 'codebuddy', {
@@ -381,6 +512,108 @@ describe('CodebuddyAcpRunner', () => {
     };
     expect(snapshot.env.CODEBUDDY_INTERNET_ENVIRONMENT).toBe('internal');
     expect(snapshot.cwd).toBeTruthy();
+
+    await runner.dispose();
+  });
+
+  it('advertises the AskUserQuestion capability in initialize', async () => {
+    const capturePath = join(tmpDir, 'init-capability.jsonl');
+    const { wrapper, cwd } = writeScenario(tmpDir, serverScript, 'codebuddy', { capturePath });
+    const runner = makeRunner(wrapper);
+
+    await collectEvents(runner, 'hello', { cwd });
+
+    const init = readCapture(capturePath).find((m) => m.method === 'initialize');
+    const capabilities = (
+      init?.params as {
+        clientCapabilities?: { _meta?: { 'codebuddy.ai'?: { question?: boolean } } };
+      }
+    )?.clientCapabilities;
+    expect(capabilities?._meta?.['codebuddy.ai']?.question).toBe(true);
+
+    await runner.dispose();
+  });
+
+  it('surfaces _codebuddy.ai/question and responds with q-indexed answers', async () => {
+    const capturePath = join(tmpDir, 'question.jsonl');
+    const { wrapper, cwd } = writeScenario(tmpDir, serverScript, 'codebuddy', {
+      sendCodebuddyQuestion: true,
+      holdPromptUntilResponse: true,
+      capturePath,
+    });
+    const runner = makeRunner(wrapper);
+
+    const events: AgentEvent[] = [];
+    let questionSeen = false;
+    for await (const event of runner.run('ask me', { cwd })) {
+      events.push(event);
+      if (event.type === 'approval_requested' && event.kind === 'question') {
+        questionSeen = true;
+        expect(event.view.questions).toHaveLength(2);
+        expect(event.view.questions?.[1]?.multiSelect).toBe(true);
+        await runner.respondApproval(event.requestId, {
+          action: 'answer',
+          answers: {
+            'Which database?': 'PostgreSQL',
+            'Frameworks?': ['React', 'Vue'],
+          },
+        });
+      }
+    }
+
+    expect(questionSeen).toBe(true);
+    expect(events.some((e) => e.type === 'result')).toBe(true);
+
+    // 回包必须满足 CodeBuddy callAskUserQuestion 的扁平形状：answer key 是
+    // 问题序号 q_0/q_1（服务端据此回查题面），多选保留数组由服务端 join。
+    const response = readCapture(capturePath).find((m) => m.id === 45 && m.result !== undefined);
+    expect(response?.result).toEqual({
+      outcome: 'submitted',
+      answers: { q_0: 'PostgreSQL', q_1: ['React', 'Vue'] },
+    });
+
+    await runner.dispose();
+  });
+
+  it('maps decline/skip to the cancelled outcome for CodeBuddy questions', async () => {
+    const capturePath = join(tmpDir, 'question-decline.jsonl');
+    const { wrapper, cwd } = writeScenario(tmpDir, serverScript, 'codebuddy', {
+      sendCodebuddyQuestion: true,
+      holdPromptUntilResponse: true,
+      capturePath,
+    });
+    const runner = makeRunner(wrapper);
+
+    for await (const event of runner.run('ask me', { cwd })) {
+      if (event.type === 'approval_requested' && event.kind === 'question') {
+        await runner.respondApproval(event.requestId, { action: 'decline' });
+      }
+    }
+
+    const response = readCapture(capturePath).find((m) => m.id === 45 && m.result !== undefined);
+    expect(response?.result).toEqual({ outcome: 'cancelled' });
+
+    await runner.dispose();
+  });
+
+  it('auto-cancels an unparseable question request instead of hanging the turn', async () => {
+    const capturePath = join(tmpDir, 'question-malformed.jsonl');
+    const { wrapper, cwd } = writeScenario(tmpDir, serverScript, 'codebuddy', {
+      sendCodebuddyQuestion: true,
+      codebuddyQuestionParams: { sessionId: SESSION_ID, schema: { questions: [] } },
+      holdPromptUntilResponse: true,
+      capturePath,
+    });
+    const runner = makeRunner(wrapper);
+
+    const events = await collectEvents(runner, 'ask me', { cwd });
+
+    expect(events.some((e) => e.type === 'approval_requested' && e.kind === 'question')).toBe(
+      false,
+    );
+    expect(events.some((e) => e.type === 'result')).toBe(true);
+    const response = readCapture(capturePath).find((m) => m.id === 45 && m.result !== undefined);
+    expect(response?.result).toEqual({ outcome: 'cancelled' });
 
     await runner.dispose();
   });

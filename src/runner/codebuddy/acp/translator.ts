@@ -15,9 +15,14 @@
  * 工具事件：基类 rawInput 归一化 + kind→常用工具名映射；tool_result 内容从
  * rawOutput 对象取 `.text`（真机形状）。真量 token 在 usage_update 的
  * `_meta.usage`（`used/size` 恒 0），按 turn 累加后随 result 事件折叠。
+ *
+ * AskUserQuestion：服务端以 `_codebuddy.ai/question` 扩展方法下发结构化问题
+ * （需 initialize 声明 clientCapabilities._meta['codebuddy.ai'].question）。
+ * translator 把它翻译成 kind:'question' 审批事件；答案由 runner 按
+ * `{outcome:'submitted', answers:{q_0:…}}` 回编。
  */
 
-import type { ApprovalView } from '../../types.js';
+import type { ApprovalView, UserQuestion } from '../../types.js';
 import type {
   AgentThoughtChunkEvent,
   RequestPermissionParams,
@@ -29,12 +34,16 @@ import {
   deriveAcpAvailableDecisions,
   truncateWithEllipsis,
 } from '../../common/acp/acp-approval.js';
+import { makeQuestionApprovalEvent } from '../../question-common.js';
 import { getLogger } from '../../../logger/index.js';
 import {
   acpStringify,
   BaseAcpTranslator,
   type AcpTranslatorEvent,
 } from '../../common/acp/base-translator.js';
+
+/** CodeBuddy AskUserQuestion 的 ACP 扩展方法（server → client 反向 RPC）。 */
+export const CODEBUDDY_QUESTION_METHOD = '_codebuddy.ai/question';
 
 export class CodebuddyAcpTranslator extends BaseAcpTranslator {
   protected readonly logTag = 'codebuddy-acp-translator';
@@ -80,6 +89,23 @@ export class CodebuddyAcpTranslator extends BaseAcpTranslator {
     _event: ToolCallEvent | ToolCallUpdateEvent,
   ): string | undefined {
     return undefined;
+  }
+
+  /**
+   * CodeBuddy 私有扩展方法：AskUserQuestion 的结构化提问。
+   * 入参：`{sessionId, toolCallId, inputType:'question', schema:{questions:[…]}}`，
+   * 每题带 id（q_0…）、题干、header、options 与 multiSelect。翻译成公共
+   * question 审批事件后，答案由 runner 按 q_{index} 回编。
+   */
+  protected override handleOtherServerRequest(
+    requestId: number | string,
+    method: string,
+    params: unknown,
+  ): AcpTranslatorEvent[] {
+    if (method !== CODEBUDDY_QUESTION_METHOD) return [];
+    const questions = codebuddyQuestionsFromParams(params);
+    if (questions.length === 0) return [];
+    return [makeQuestionApprovalEvent(requestId, questions, sessionIdFromParams(params))];
   }
 
   protected override handleRequestPermission(
@@ -214,6 +240,58 @@ export function usageFromMeta(metaUsage: Record<string, unknown>): TurnFlow {
 function toolNameFromMeta(toolCall: { _meta?: Record<string, unknown> }): string | undefined {
   const value = toolCall._meta?.['codebuddy.ai/toolName'];
   return typeof value === 'string' && value ? value : undefined;
+}
+
+/** `_codebuddy.ai/question` 的入参形状（除 schema 外的字段按需读取）。 */
+interface CodebuddyQuestionParams {
+  sessionId?: unknown;
+  schema?: { questions?: unknown };
+}
+
+/** sessionId 缺失时回空串（threadId 是诊断字段，不影响提问卡）。 */
+function sessionIdFromParams(params: unknown): string {
+  const sessionId = (params as CodebuddyQuestionParams | null)?.sessionId;
+  return typeof sessionId === 'string' ? sessionId : '';
+}
+
+/**
+ * 解析 `schema.questions[]` 为公共 UserQuestion[]；缺题干/非对象的条目跳过。
+ * CodeBuddy 的提问 UI 恒带自由文本输入，故不设 `isOther=false`（渲染层默认
+ * 提供 Other 输入）。答案 key 由 runner 按问题序号编码成 q_0…q_n。
+ */
+function codebuddyQuestionsFromParams(params: unknown): UserQuestion[] {
+  const raw = (params as CodebuddyQuestionParams | null)?.schema?.questions;
+  if (!Array.isArray(raw)) return [];
+  const questions: UserQuestion[] = [];
+  for (const item of raw) {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) continue;
+    const q = item as Record<string, unknown>;
+    const question = typeof q.question === 'string' ? q.question.trim() : '';
+    if (!question) continue;
+    const header = typeof q.header === 'string' && q.header.trim() ? q.header.trim() : undefined;
+    const options = Array.isArray(q.options)
+      ? q.options
+          .filter(
+            (opt): opt is Record<string, unknown> =>
+              !!opt && typeof opt === 'object' && !Array.isArray(opt),
+          )
+          .map((opt) => ({
+            label: typeof opt.label === 'string' ? opt.label : '',
+            ...(typeof opt.description === 'string' && opt.description
+              ? { description: opt.description }
+              : {}),
+          }))
+          .filter((opt) => opt.label.length > 0)
+      : [];
+    questions.push({
+      ...(typeof q.id === 'string' && q.id ? { id: q.id } : {}),
+      question,
+      ...(header ? { header } : {}),
+      options,
+      ...(q.multiSelect === true ? { multiSelect: true } : {}),
+    });
+  }
+  return questions;
 }
 
 /** `_meta['codebuddy.ai/messageId']` → thinking 块身份（字段缺失/类型不对 → undefined）。 */

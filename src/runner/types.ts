@@ -330,6 +330,12 @@ export interface ResultEvent {
   /** 积分（qoder result 顶层携带，与 total_cost_usd 并列；qoder 无 USD 口径）。 */
   total_credits?: number;
   errorMessage?: string; // For auth errors and other run failures
+  /**
+   * 上游明确报告认证失效（HTTP 401 / Authentication required），由 translator
+   * 打标。runner 用它释放常驻连接，bridge 用它清目录缓存 + 持久会话 +
+   * runner 槽位。这是 runner 自愿声明的事实，渲染层只透传错误文本、不推断。
+   */
+  authFailure?: boolean;
 }
 
 /** TokenUsage = ResultEvent['usage'] without the optional wrapper.

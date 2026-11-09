@@ -467,6 +467,8 @@ export interface MakeBridgeOpts {
   connector?: StubConnector;
   /** 覆盖默认测试 config；不传时使用 defaultTestConfig()。 */
   config?: AppConfig;
+  /** CodeBuddy 会话根目录（默认 `~/.codebuddy`）；测试注入临时目录。 */
+  codebuddyHome?: string;
 }
 
 /**
@@ -487,6 +489,7 @@ export function makeBridge(opts: MakeBridgeOpts = {}) {
     agentRegistry: createStubAgentRegistry(runner),
     sessionReaderRegistry: createStubSessionReaderRegistry(),
     ...(opts.idleTimeoutMs !== undefined ? { idleTimeoutMs: opts.idleTimeoutMs } : {}),
+    ...(opts.codebuddyHome !== undefined ? { codebuddyHome: opts.codebuddyHome } : {}),
   });
   return { bridge, sessionStore, connector, runner };
 }

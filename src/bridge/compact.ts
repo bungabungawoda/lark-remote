@@ -527,20 +527,23 @@ export class CompactLifecycle {
     // 压缩结束后从会话 jsonl 读权威统计（压缩后上下文、压缩次数、本次压缩
     // token 消耗与会话累计）。thread/compacted 通知与 jsonl 落盘几乎同时
     // （实测差 ~9ms），compactCount 未读到则短重试，仍失败优雅降级（无统计）。
-    // 不支持 compactCount 的 reader（opencode/dsh）不重试——否则每次 compact
-    // 都会固定多跑两次完整 export/读取，且永远等不到该字段。
-    const compactCountSupported =
+    // 不支持压缩统计的 reader（opencode/dsh）读到的只是压缩前末次采样，与上一张
+    // run 卡的用量块逐字相同——重复展示会被读成「压缩后的数字」，因此整块不展示，
+    // 也不再为拿不到的数据空跑一次完整读取。
+    const compactStatsSupported =
       this.deps.sessionReaderRegistry.tryGet(agentKind)?.supportsCompactCount !== false;
-    let finalUsage = resolveFinalUsage(
-      this.deps.sessionReaderRegistry,
-      this.deps.getConfig().defaultAgent,
-      sessionId,
-      cwd,
-      agentKind,
-    );
+    let finalUsage = compactStatsSupported
+      ? resolveFinalUsage(
+          this.deps.sessionReaderRegistry,
+          this.deps.getConfig().defaultAgent,
+          sessionId,
+          cwd,
+          agentKind,
+        )
+      : undefined;
     for (
       let attempt = 0;
-      compactCountSupported && !finalUsage?.compactCount && attempt < 2;
+      compactStatsSupported && !finalUsage?.compactCount && attempt < 2;
       attempt++
     ) {
       await sleep(150);

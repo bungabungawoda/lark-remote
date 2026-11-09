@@ -60,6 +60,12 @@ export abstract class BaseAcpRunner<
   protected readonly connectionManager: ConnectionManager;
   protected currentTranslator: TTranslator | null = null;
   protected activeSessionId: string | null = null;
+  /**
+   * 本轮 cwd。上游 401 时要按 cwd 丢掉 ConnectionManager 里的常驻连接：
+   * 长驻 ACP 子进程持有旧登录态，不释放的话后续 turn 复用同一条连接，
+   * 用户重新登录后仍会持续 401（/restart 也救不回来）。
+   */
+  protected authFailureCwd: string | null = null;
   protected model?: string;
 
   /** Pending approval requests: requestId → kind + view + options. */
@@ -373,6 +379,7 @@ export abstract class BaseAcpRunner<
       return;
     }
     const resultEvent = translator.produceErrorResult(sessionId, (err as Error).message);
+    this.maybeHandleAuthenticationFailure(resultEvent);
     this.pushEvents([resultEvent]);
   }
 
@@ -384,7 +391,27 @@ export abstract class BaseAcpRunner<
     this.promptSettled = true;
     if (this.stopRequested) return; // already cancelled
     const resultEvent = translator.handlePromptResponse(sessionId, result);
+    this.maybeHandleAuthenticationFailure(resultEvent);
     this.pushEvents([resultEvent]);
+  }
+
+  /**
+   * translator 打标的 401 是身份失效信号：先丢掉本 cwd 的长驻连接，让下一轮
+   * acquire 用磁盘上的新登录态重新 spawn。目录缓存 / 持久会话 / runner 槽位
+   * 由 bridge 在消费这个 result 事件时一并清理（它同时持有这三份状态）。
+   */
+  private maybeHandleAuthenticationFailure(resultEvent: AgentEvent): void {
+    if (resultEvent.type !== 'result' || !resultEvent.authFailure) return;
+    const cwd = this.authFailureCwd;
+    if (!cwd) return;
+    getLogger().warn(
+      `[${this.logTag}] upstream authentication failure, dropping cached connection cwd=${cwd}`,
+    );
+    void this.releaseConnection(cwd).catch((err: Error) => {
+      getLogger().warn(
+        `[${this.logTag}] release connection after auth failure failed: ${err.message}`,
+      );
+    });
   }
 
   // =========================================================================
@@ -396,6 +423,7 @@ export abstract class BaseAcpRunner<
    * session/resume (existing sessionId) → applyTurnSettings → session/prompt.
    */
   protected async setupTurn(message: string, opts: SpawnOptions): Promise<void> {
+    this.authFailureCwd = opts.cwd;
     // 本轮回调归属锚点（代际 + client）由 acquireForTurn 捕获：旧轮迟到的
     // prompt 结果/通知在新轮开始时 stopRequested 已被重置，只有这对值能识别它。
     const anchor = await this.acquireForTurn(opts.cwd, () =>
@@ -474,6 +502,7 @@ export abstract class BaseAcpRunner<
    * prompt text (both servers intercept it) → agent-specific result dispatch.
    */
   async *runCompact(_message: string, opts: SpawnOptions): AsyncGenerator<AgentEvent> {
+    this.authFailureCwd = opts.cwd;
     yield* this.executeTurn(opts, async () => {
       // 同 setupTurn：acquireForTurn 捕获代际锚点，installTurnHooks 守卫 dispatch。
       const anchor = await this.acquireForTurn(opts.cwd, () =>

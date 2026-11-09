@@ -59,7 +59,7 @@ import type {
 } from '../../dsh/types.js';
 import { goalFromLiveView, goalFromProjection } from './goal-view.js';
 import type { GoalView } from '../types.js';
-import { DshError } from './errors.js';
+import { DshError, isDshTransientAvailabilityError } from './errors.js';
 import { openMuxStream } from './mux-stream.js';
 
 export { DshError } from './errors.js';
@@ -183,6 +183,28 @@ async function readUnaryBody(method: string, res: Response): Promise<unknown> {
   }
   return body.result.value;
 }
+
+/**
+ * session 服务就绪探测的默认预算。
+ *
+ * 0.2.2 的 HTTP/gateway 先于 `sessionController` 的异步 Service.init 就绪；
+ * daemon 的端口探针看到的是「HTTP 已响应」，不是「session RPC 可用」。
+ * 这段等待发生在 run 启动、任何 prompt 入队之前，宁可多等几秒也不能把
+ * 启动竞态误报成 provider 配置错误。
+ */
+const DEFAULT_SERVICE_READY_TIMEOUT_MS = 30_000;
+/** 单次就绪探测的 unary 预算：启动期的请求应该秒回或直接拒连。 */
+const SERVICE_READY_PROBE_TIMEOUT_MS = 5_000;
+const SERVICE_READY_BACKOFF_MS = 200;
+const SERVICE_READY_BACKOFF_MAX_MS = 2_000;
+
+/**
+ * run 期间 session/follow 连续断开的上限。超过后以明确错误终止本轮，
+ * 而不是像 0.2.2 升级那次一样挂 39 分钟等 idle 看门狗。
+ *
+ * 只统计「已断开且重连失败」的时间；连接正常但模型长时间不出帧不算。
+ */
+const DEFAULT_STREAM_DISCONNECT_TIMEOUT_MS = 90_000;
 
 /** Backoff between mux reconnects to avoid a hot loop on a dropping server. */
 const RECONNECT_BACKOFF_MS = 200;
@@ -590,6 +612,12 @@ export interface DshClientOptions {
    * release the bridge's workspace queue.
    */
   requestTimeoutMs?: number;
+  /**
+   * Live `sessionEvents` streams fail after this long of continuous disconnect
+   * (measured from the first failed reconnect, reset by any received frame).
+   * 0 disables. A connected-but-silent model turn is not affected.
+   */
+  streamDisconnectTimeoutMs?: number;
 }
 
 export class DshClient {
@@ -602,6 +630,7 @@ export class DshClient {
   private readonly fetchImpl: typeof fetch;
   private readonly webSocketImpl: WebSocketFactory;
   private readonly requestTimeoutMs: number;
+  private readonly streamDisconnectTimeoutMs: number;
   private cookiePromise?: Promise<string | undefined>;
   /** (mtime, size) 指纹命中时复用的 signing secret，见 resolveCredentialsSecret。 */
   private secretCache?: { mtimeMs: number; size: number; secret: Buffer };
@@ -617,6 +646,8 @@ export class DshClient {
     this.fetchImpl = options.fetchImpl ?? fetch;
     this.webSocketImpl = options.webSocketImpl ?? defaultWebSocketFactory;
     this.requestTimeoutMs = options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
+    this.streamDisconnectTimeoutMs =
+      options.streamDisconnectTimeoutMs ?? DEFAULT_STREAM_DISCONNECT_TIMEOUT_MS;
   }
 
   /**
@@ -871,6 +902,93 @@ export class DshClient {
     timeoutMs?: number;
   }): Promise<DshModelCatalogValue> {
     return (await this.unary('session/modelCatalog', {}, opts)) as DshModelCatalogValue;
+  }
+
+  /**
+   * Wait until the Host accepts session RPCs.
+   *
+   * 0.2.2 mounts the HTTP gateway before `sessionController` finishes its
+   * asynchronous `Service.init`: `/api/` is already authenticated while
+   * `session/*` calls still answer `gateway/service-unavailable`. The daemon
+   * probe only proves HTTP liveness, so the first session RPC must be gated on
+   * this business-level probe instead.
+   *
+   * Compatibility: retry only errors that prove the endpoint exists but its
+   * service/context is still starting (or a boot-time transport/timeout/5xx
+   * failure). Any other failure is inconclusive — log and proceed — so an
+   * older Host is never blocked by a probe it does not implement.
+   */
+  async waitForSessionService(
+    opts: { signal?: AbortSignal; timeoutMs?: number } = {},
+  ): Promise<void> {
+    const timeoutMs = opts.timeoutMs ?? DEFAULT_SERVICE_READY_TIMEOUT_MS;
+    if (timeoutMs <= 0) return;
+    const deadline = Date.now() + timeoutMs;
+    let attempt = 0;
+    for (;;) {
+      if (opts.signal?.aborted) {
+        throw new DshError('aborted', 'DSH session service readiness aborted');
+      }
+      try {
+        await this.unary(
+          'session/list',
+          {},
+          {
+            signal: opts.signal,
+            timeoutMs: Math.max(1, Math.min(SERVICE_READY_PROBE_TIMEOUT_MS, deadline - Date.now())),
+          },
+        );
+        return;
+      } catch (err) {
+        if (opts.signal?.aborted) throw err;
+        if (!isDshTransientAvailabilityError(err)) {
+          getLogger().info(
+            `[dsh] session readiness probe inconclusive (${(err as Error).message}); continuing`,
+          );
+          return;
+        }
+        const remaining = deadline - Date.now();
+        if (remaining <= 0) {
+          throw new DshError(
+            'service-not-ready',
+            `DSH 服务端在 ${timeoutMs}ms 内未完成 session 服务启动（可能正在启动或升级）：${(err as Error).message}`,
+          );
+        }
+        attempt += 1;
+        const backoff = Math.min(
+          SERVICE_READY_BACKOFF_MAX_MS,
+          SERVICE_READY_BACKOFF_MS * 2 ** Math.min(attempt - 1, 4),
+        );
+        getLogger().warn(
+          `[dsh] session service not ready yet (attempt ${attempt}); retrying in ${Math.min(backoff, remaining)}ms`,
+        );
+        await this.sleepWithAbort(Math.min(backoff, remaining), opts.signal);
+      }
+    }
+  }
+
+  /** Abortable sleep used by the readiness gate; run() must stay stoppable. */
+  private async sleepWithAbort(ms: number, signal?: AbortSignal): Promise<void> {
+    if (ms <= 0) return;
+    await new Promise<void>((resolve, reject) => {
+      if (signal?.aborted) {
+        reject(new DshError('aborted', 'DSH session service readiness aborted'));
+        return;
+      }
+      const timer = setTimeout(() => {
+        cleanup();
+        resolve();
+      }, ms);
+      function cleanup(): void {
+        clearTimeout(timer);
+        signal?.removeEventListener('abort', onAbort);
+      }
+      function onAbort(): void {
+        cleanup();
+        reject(new DshError('aborted', 'DSH session service readiness aborted'));
+      }
+      signal?.addEventListener('abort', onAbort, { once: true });
+    });
   }
 
   /**
@@ -1332,12 +1450,16 @@ export class DshClient {
     // 在途时，固定 200ms 会造成每秒 ~5 次「握手+快照重放」风暴；指数退避把
     // 稳态压到 5s/次，瞬断仍按第一档快速恢复。
     let failedReconnects = 0;
+    // 从第一次「已断开」开始计时；收到任何帧即清零。只惩罚断连，不惩罚
+    // 连接正常但模型长时间不出帧——后者由 turn idle / idle 看门狗负责。
+    let disconnectedSince: number | undefined;
     while (!signal.aborted) {
       let receivedFrame = false;
       try {
         for await (const frame of this.followStream(sessionId, signal)) {
           if (signal.aborted) return;
           receivedFrame = true;
+          disconnectedSince = undefined;
           state.authRefreshAttempted = false;
           for (const ev of await sessionFrameEvents(this, state, frame, signal)) {
             const step = advanceSessionEvent(state, ev);
@@ -1362,11 +1484,26 @@ export class DshClient {
           continue;
         }
         if (action.kind === 'rethrow') throw err;
+        disconnectedSince ??= Date.now();
         getLogger().warn(
           `[dsh] remote mux disconnected for session ${sessionId}: ${(err as Error).message}; reconnecting`,
         );
       }
       if (signal.aborted) return;
+      // 干净 end（没有异常）同样是一次断连：重连成功后收到帧才会清零。
+      disconnectedSince ??= Date.now();
+      const disconnectedAt = disconnectedSince;
+      if (
+        this.streamDisconnectTimeoutMs > 0 &&
+        disconnectedAt !== undefined &&
+        Date.now() - disconnectedAt >= this.streamDisconnectTimeoutMs
+      ) {
+        throw new DshError(
+          'unavailable',
+          `DSH 服务端已连续 ${Math.max(1, Math.round((Date.now() - disconnectedAt) / 1000))}s 不可达` +
+            '（可能正在重启或升级）；本轮已终止，请稍后重试',
+        );
+      }
       // 本轮拿到过帧 = 连接曾恢复：退避归零后按首轮节奏重连（干净断开同理）。
       const backoff = reconnectBackoffMs(receivedFrame ? 0 : failedReconnects);
       failedReconnects = receivedFrame ? 0 : failedReconnects + 1;

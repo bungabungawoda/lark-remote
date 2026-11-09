@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   approvalCommandFrom,
   approvalReasonFrom,
+  CODEBUDDY_QUESTION_METHOD,
   CodebuddyAcpTranslator,
   usageFromMeta,
 } from './translator.js';
@@ -460,5 +461,164 @@ describe('CodebuddyAcpTranslator', () => {
       expect(approvalReasonFrom({ command: 'ls' })).toBe('{"command":"ls"}');
       expect(approvalReasonFrom({})).toBeUndefined();
     });
+  });
+});
+
+/**
+ * 401 打标：runner 用它释放长驻连接，bridge 用它清目录/会话/runner 槽位。
+ * 文本脱敏合成（不含真 token / 真代理地址）。
+ */
+describe('CodebuddyAcpTranslator 身份失效打标', () => {
+  it('上游 _meta 里的 401 → result event 带 authFailure', () => {
+    const t = new CodebuddyAcpTranslator();
+    const event = t.handlePromptResponse('sess-1', {
+      stopReason: 'refusal',
+      _meta: {
+        'codebuddy.ai/errorMessage': JSON.stringify({
+          code: 401,
+          message:
+            '401 Authentication required. Please use /login command to sign in to your account',
+        }),
+      },
+    });
+    expect(event).toMatchObject({ type: 'result', subtype: 'error', authFailure: true });
+  });
+
+  it('真机回放：未登录 -32000 + category:auth → result event 带 authFailure', () => {
+    const t = new CodebuddyAcpTranslator();
+    const event = t.handlePromptResponse('sess-1', {
+      stopReason: 'refusal',
+      _meta: {
+        'codebuddy.ai/errorMessage': JSON.stringify({
+          code: -32000,
+          message: 'Authentication required',
+          data: {
+            details:
+              'Authentication required. Please use /login command to sign in to your account',
+            category: 'auth',
+          },
+        }),
+      },
+    });
+    expect(event).toMatchObject({
+      type: 'result',
+      subtype: 'error',
+      authFailure: true,
+      errorMessage: 'Authentication required',
+    });
+  });
+
+  it('429 限流 / 正常结束不打标', () => {
+    const t = new CodebuddyAcpTranslator();
+    const limited = t.handlePromptResponse('sess-1', {
+      stopReason: 'refusal',
+      _meta: { 'codebuddy.ai/errorMessage': '{"code":6004,"message":"rate limited"}' },
+    });
+    expect(limited).toMatchObject({ subtype: 'error' });
+    expect(limited).not.toHaveProperty('authFailure');
+    expect(t.handlePromptResponse('sess-1', { stopReason: 'end_turn' })).not.toHaveProperty(
+      'authFailure',
+    );
+  });
+
+  it('JSON-RPC 直接抛错的 401 文本也打标', () => {
+    const t = new CodebuddyAcpTranslator();
+    expect(t.produceErrorResult('sess-1', '401 Unauthorized')).toMatchObject({
+      subtype: 'error',
+      authFailure: true,
+    });
+    expect(t.produceErrorResult('sess-1', 'DSH HTTP 401 for session.create')).not.toHaveProperty(
+      'authFailure',
+    );
+  });
+});
+
+/**
+ * CodeBuddy ACP 的 AskUserQuestion 走 `_codebuddy.ai/question` 反向 RPC。
+ * 入参每题带 q_0… 形式的 id、题干、header、options 与 multiSelect；翻译成
+ * 公共 question 审批事件后，由 runner 按序号回编 answers。
+ */
+describe('AskUserQuestion（_codebuddy.ai/question 反向 RPC）', () => {
+  const request = (questions: unknown, sessionId = 'aaaaaaaa-1111') => ({
+    sessionId,
+    toolCallId: 'call-q',
+    inputType: 'question',
+    schema: { questions },
+  });
+
+  it('结构化问题映射为 kind:question 审批事件', () => {
+    const t = new CodebuddyAcpTranslator();
+    const events = t.handleServerRequest(
+      17,
+      CODEBUDDY_QUESTION_METHOD,
+      request([
+        {
+          id: 'q_0',
+          question: 'Which database?',
+          header: 'DB',
+          options: [
+            { label: 'PostgreSQL', description: 'Robust' },
+            { label: 'SQLite', description: 'Lightweight' },
+          ],
+          multiSelect: false,
+        },
+        {
+          id: 'q_1',
+          question: 'Frameworks?',
+          header: 'FW',
+          multiSelect: true,
+          options: [{ label: 'React', description: '' }],
+        },
+      ]),
+    );
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({
+      type: 'approval_requested',
+      requestId: 17,
+      kind: 'question',
+      threadId: 'aaaaaaaa-1111',
+      view: {
+        requestId: 17,
+        kind: 'question',
+        availableDecisions: [],
+        questions: [
+          {
+            id: 'q_0',
+            question: 'Which database?',
+            header: 'DB',
+            options: [
+              { label: 'PostgreSQL', description: 'Robust' },
+              { label: 'SQLite', description: 'Lightweight' },
+            ],
+          },
+          {
+            id: 'q_1',
+            question: 'Frameworks?',
+            header: 'FW',
+            multiSelect: true,
+            options: [{ label: 'React' }],
+          },
+        ],
+      },
+    });
+    // 空 description 不落进视图（渲染层按缺省处理）。
+    const view = (events[0] as { view: { questions: Array<{ options: unknown[] }> } }).view;
+    expect(view.questions[1]?.options).toEqual([{ label: 'React' }]);
+  });
+
+  it('缺 schema / 空 questions / 缺题干 → 不产事件（runner 回 cancelled）', () => {
+    const t = new CodebuddyAcpTranslator();
+    expect(t.handleServerRequest(18, CODEBUDDY_QUESTION_METHOD, {})).toEqual([]);
+    expect(
+      t.handleServerRequest(18, CODEBUDDY_QUESTION_METHOD, { schema: { questions: [] } }),
+    ).toEqual([]);
+    expect(
+      t.handleServerRequest(18, CODEBUDDY_QUESTION_METHOD, request([{ id: 'q_0', options: [] }])),
+    ).toEqual([]);
+  });
+
+  it('未知扩展方法不产事件（由基类/runner 决定兜底）', () => {
+    const t = new CodebuddyAcpTranslator();
+    expect(t.handleServerRequest(19, '_codebuddy.ai/other', {})).toEqual([]);
   });
 });

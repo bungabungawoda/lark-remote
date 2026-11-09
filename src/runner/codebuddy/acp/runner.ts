@@ -12,9 +12,12 @@
  * - clientCapabilities 只声明 fs:false / terminal:false：官方文档明确「客户端
  *   声明 fs/terminal 能力时代理到客户端执行」——我们不实现该面，声明 false
  *   让 CodeBuddy 本地自执行（同 opencode 的口径）。
- * - Agent Teams 私有扩展过滤：`session_info_update._meta['codebuddy.ai/
- *   teamUpdate']` 与成员消息的 `_meta['codebuddy.ai/memberEvent']` 不进主
- *   事件流（§9.27 codex 子线程污染的同源教训）。
+ * - AskUserQuestion：额外声明 `_meta['codebuddy.ai'].question=true`（ACP 下
+ *   工具可见性的唯一开关），并处理 `_codebuddy.ai/question` 反向 RPC；答案
+ *   按 `{outcome:'submitted', answers:{q_0:…}}` 回编。
+ * - 私有扩展过滤：`_meta` 带 `codebuddy.ai/teamUpdate`（团队状态）、
+ *   `codebuddy.ai/memberEvent`（成员消息）或 `codebuddy.ai/isCompactInternal`
+ *   （compact 广播）的事件不进主事件流（§9.27 子线程污染的同源教训）。
  * - /compact 按 opencode 的同步口径处理（prompt 结算即结果；CodeBuddy 的
  *   压缩后台态无类似 kimi wire.jsonl 的观察通道，待真机验证后再加）。
  * - 用量：ACP `usage_update` 的 `_meta.usage` 带每次模型请求的 input/output，
@@ -24,13 +27,14 @@
 
 import type { AgentKind } from '../../../agent-kinds.js';
 import type { AgentSessionReader } from '../../../session-contract.js';
-import type { AgentStatusInfo } from '../../types.js';
+import type { AgentStatusInfo, UserQuestion } from '../../types.js';
+import { CODEBUDDY_ACP_ARGS } from '../../../config/codebuddy-catalog.js';
 import {
   ConnectionManager,
   type ConnectionManagerOptions,
 } from '../../common/jsonrpc/connection-manager.js';
 import { JsonRpcClient } from '../../common/jsonrpc/client.js';
-import { CodebuddyAcpTranslator } from './translator.js';
+import { CODEBUDDY_QUESTION_METHOD, CodebuddyAcpTranslator } from './translator.js';
 import {
   type SessionResumeResult,
   type SessionNewResult,
@@ -39,7 +43,12 @@ import {
   NotificationMethod,
 } from '../../common/acp/protocol-types.js';
 import { CODEBUDDY_CLIENT_CAPABILITIES } from '../../../acp-protocol.js';
-import { CODEBUDDY_APPROVAL_KINDS, type AcpApprovalKinds } from '../../common/acp/acp-approval.js';
+import {
+  CODEBUDDY_APPROVAL_KINDS,
+  type AcpApprovalKinds,
+  type AcpPendingApproval,
+} from '../../common/acp/acp-approval.js';
+import { mapAnswersByIndex } from '../../question-common.js';
 import { getLogger } from '../../../logger/index.js';
 import { BaseAcpRunner } from '../../common/acp/base-acp-runner.js';
 
@@ -50,7 +59,7 @@ export interface CodebuddyAcpRunnerOptions {
   binary?: string;
   /** Environment variables（如 CN 版的 CODEBUDDY_INTERNET_ENVIRONMENT）。 */
   env?: Record<string, string | undefined>;
-  /** Args to spawn the ACP server with. Defaults to `['--acp']`. */
+  /** Args to spawn the ACP server with. Defaults to `CODEBUDDY_ACP_ARGS`. */
   acpArgs?: string[];
   /** Request timeout in milliseconds. */
   requestTimeoutMs?: number;
@@ -128,7 +137,7 @@ export class CodebuddyAcpRunner extends BaseAcpRunner<CodebuddyAcpTranslator> {
   constructor(opts: CodebuddyAcpRunnerOptions) {
     const managerOpts: ConnectionManagerOptions = {
       binary: opts.binary ?? 'codebuddy',
-      args: opts.acpArgs ?? ['--acp'],
+      args: opts.acpArgs ?? [...CODEBUDDY_ACP_ARGS],
       env: opts.env,
       requestTimeoutMs: opts.requestTimeoutMs,
       idleTtlMs: opts.idleTtlMs,
@@ -268,6 +277,31 @@ export class CodebuddyAcpRunner extends BaseAcpRunner<CodebuddyAcpTranslator> {
     return CODEBUDDY_APPROVAL_KINDS;
   }
 
+  /**
+   * AskUserQuestion 回编：bridge 的 `{问题文本: 答案}` → CodeBuddy 扩展方法
+   * 的 `{outcome:'submitted', answers:{q_0:…}}`。服务端固定用 q_{index} 作
+   * answer key 回查题面（callAskUserQuestion 的 Map(q_${i} → question)），
+   * 多选沿用数组由服务端 join；跳过/超时一律回 `{outcome:'cancelled'}`。
+   * 非 question 审批继续走 ACP optionId 映射。
+   */
+  protected override buildApprovalOutcome(
+    action: string,
+    pending: AcpPendingApproval,
+    response: unknown,
+  ): unknown {
+    if (pending.kind !== 'question') {
+      return super.buildApprovalOutcome(action, pending, response);
+    }
+    if (action === 'answer') {
+      const answers = (response as { answers?: Record<string, string | string[]> }).answers ?? {};
+      return {
+        outcome: 'submitted',
+        answers: codebuddyQuestionAnswers(pending.view.questions ?? [], answers),
+      };
+    }
+    return { outcome: 'cancelled' };
+  }
+
   getStatusInfo(): AgentStatusInfo {
     return {
       kind: this.kind,
@@ -301,6 +335,33 @@ export class CodebuddyAcpRunner extends BaseAcpRunner<CodebuddyAcpTranslator> {
   // Notification dispatch（server-request 兜底走 BaseAcpRunner 默认实现）
   // =========================================================================
 
+  /**
+   * AskUserQuestion 的 extMethod 请求必须回信，否则服务端一直挂起等客户端。
+   * 帧无法解析成问题时回 `{outcome:'cancelled'}`（工具侧按「用户拒绝回答」
+   * 继续 turn），而不是默认的 METHOD_NOT_FOUND。
+   */
+  protected override handleServerRequest(
+    id: number | string,
+    method: string,
+    params: unknown,
+  ): void {
+    if (method !== CODEBUDDY_QUESTION_METHOD) {
+      super.handleServerRequest(id, method, params);
+      return;
+    }
+    const events = this.currentTranslator?.handleServerRequest(id, method, params) ?? [];
+    if (events.length === 0) {
+      this.currentClient?.respond(id, { outcome: 'cancelled' });
+      getLogger().info(
+        `[${this.logTag}] auto-responded cancelled to unparseable question requestId=${id}`,
+      );
+      return;
+    }
+    // 提问帧没有 permission options；登记与推流复用基类同一套逻辑。
+    this.registerApprovalEvents(events, []);
+    this.pushEvents(events);
+  }
+
   protected override handleNotification(method: string, params: unknown): void {
     // CodeBuddy 私有扩展先过滤（Agent Teams 的团队状态/成员消息走 _meta 标记，
     // 属于成员时间线而非主对话；不滤会在 run 卡上出现无关面板）。
@@ -314,7 +375,12 @@ export class CodebuddyAcpRunner extends BaseAcpRunner<CodebuddyAcpTranslator> {
 
 /**
  * CodeBuddy 私有扩展噪声判定：`update._meta` 带 `codebuddy.ai/teamUpdate`
- * （团队状态推送）或 `codebuddy.ai/memberEvent`（成员消息标记）即不进主事件流。
+ * （团队状态推送）、`codebuddy.ai/memberEvent`（成员消息标记）或
+ * `codebuddy.ai/isCompactInternal`（compact 广播）即不进主事件流。
+ *
+ * compact 广播不走标准 ACP 形状：`agent_message_chunk.content` 是数组
+ * `[{type:'text', text:'<conversation_history_summary>…'}]`，且正文是内部
+ * 摘要标记，不应作为回答正文渲染。
  */
 function isCodebuddyMetaNoise(params: unknown): boolean {
   if (typeof params !== 'object' || params === null) return false;
@@ -322,5 +388,37 @@ function isCodebuddyMetaNoise(params: unknown): boolean {
   if (!update || typeof update !== 'object') return false;
   const meta = (update as { _meta?: Record<string, unknown> })._meta;
   if (!meta || typeof meta !== 'object') return false;
-  return 'codebuddy.ai/teamUpdate' in meta || 'codebuddy.ai/memberEvent' in meta;
+  return (
+    'codebuddy.ai/teamUpdate' in meta ||
+    'codebuddy.ai/memberEvent' in meta ||
+    'codebuddy.ai/isCompactInternal' in meta
+  );
+}
+
+/**
+ * bridge 的 `{问题文本: 答案}` → CodeBuddy `answers{q_0…q_n}`。
+ * 未答题不补空值（与 Kimi elicitation 同口径）；多选保留数组，服务端
+ * 在 callAskUserQuestion 里自行 join。key 固定用序号——服务端按
+ * `q_${index}` 回查题面，与请求里的 id 同源。
+ */
+function codebuddyQuestionAnswers(
+  questions: UserQuestion[],
+  answers: Record<string, string | string[]>,
+): Record<string, string | string[]> {
+  const byIndex = mapAnswersByIndex(questions, answers);
+  const result: Record<string, string | string[]> = {};
+  for (let i = 0; i < questions.length; i++) {
+    const value = byIndex[i];
+    if (value === undefined) continue;
+    if (questions[i]!.multiSelect) {
+      const values = (Array.isArray(value) ? value : [value]).filter(
+        (v): v is string => typeof v === 'string' && v.length > 0,
+      );
+      if (values.length > 0) result[`q_${i}`] = values;
+    } else {
+      const single = Array.isArray(value) ? value[0] : value;
+      if (typeof single === 'string' && single.length > 0) result[`q_${i}`] = single;
+    }
+  }
+  return result;
 }
