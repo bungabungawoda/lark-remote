@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.3] - 2026-11-09
+
+### 新增
+
+- **Qoder 交互式提问（AskUserQuestion）**：ACP initialize 声明 `clientCapabilities.elicitation.form` 后 Qoder 保留该工具（未声明时 CLI 把工具加入 deny 集合），题目经 `elicitation/create` 的 form 下发到飞书 run 卡提问区，支持单选、多选与跳过回答。短标题在 `title`、完整题干在 `description` 首行，选项取 `oneOf` / `items.anyOf` 的 `const`，答案按 `q0…qn` 回编；无法解析的 form 自动回 `cancel`，不让服务端悬挂
+- **`/config` 新增「区域」开关**：CodeBuddy 可手动选 auto / internal / external，保存后写回 `agents.codebuddy.env.CODEBUDDY_INTERNET_ENVIRONMENT`，选 auto 删除该键交回自动判定
+
+### 修复
+
+- **CodeBuddy 交互式提问改走工具审批回传**：2.181 的 stdio 通道是 `session/request_permission`（题目在 `toolCall.rawInput.questions`）加 `_codebuddy.ai/resolveInterruption` 回传答案，题目广播只发给 CodeBuddy Web UI，原先依赖的 `_codebuddy.ai/question` 扩展方法在 stdio 连接上收不到问题。跳过或超时按 skip 处理，答案投递失败时取消工具审批，避免上游等满超时后误报「用户拒绝」
+- **CodeBuddy 区域判定补读 WorkBuddy V3 缓存**：从普通终端启动时拿不到 WorkBuddy 注入给子进程的产品配置，现读 `~/.workbuddy/cache` 下最新的 `acc-product-config-v3-*.json` 取 `networkEnvironment` 补上缺失的声明；缓存缺失或解析失败仍走原判据，不改变「两种判据都得不出结论则保持宿主环境」的口径
+- **认证失效恢复提示**：改为引导在 `/config` 的「区域」里手动锁定端点，不再要求改配置文件
+
+### 文档
+
+- 中文使用文档同步 CodeBuddy 提问通道、区域缓存判定与 `/config` 区域开关的口径
+
 ## [0.6.2] - 2026-11-09
 
 ### 新增
