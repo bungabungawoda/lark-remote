@@ -272,6 +272,10 @@ export class CodebuddyAcpRunner extends BaseAcpRunner<CodebuddyAcpTranslator> {
     return {
       kind: this.kind,
       model: this.model ?? '(codebuddy-acp)',
+      // 与 /config 卡片同口径：未配置时显示卡片哨兵 `default`（跟随 CodeBuddy
+      // 默认），不把「会话回读的当前值」混进来——/status 反映配置态，与
+      // model / permissionMode 一致。
+      reasoning: this.thinkingLevel || 'default',
       extras: {
         mode: 'acp',
         permissionMode: this.permissionMode,

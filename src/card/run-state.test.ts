@@ -273,6 +273,58 @@ describe('RunState', () => {
     ]);
   });
 
+  it('goal 续轮正文不得并入 archivedAnswer（上一轮回答必须保持独立）', () => {
+    // 红：turn_started 把上一轮回答归档为 archivedAnswer 文本块后，下一轮第一个
+    // assistant text delta 若只按「最后一块是 text」就拼接，会把上一轮回答改成
+    // "first answersecond answer" 并丢掉 archivedAnswer 标记。
+    const initial = createInitialRunState('run-goal-archived');
+    const inited = reduceRunState(initial, {
+      type: 'system',
+      subtype: 'init',
+      session_id: 'session-1',
+      cwd: '/home/user/project',
+      model: 'test-model',
+    });
+    const round1 = reduceRunState(inited, {
+      type: 'result',
+      subtype: 'success',
+      session_id: 'session-1',
+      finalAnswerText: 'first answer',
+    });
+    const resumed = reduceRunState(round1, {
+      type: 'turn_started',
+      threadId: 'session-1',
+      turnId: '',
+      operationKind: 'turn',
+    });
+
+    const streaming = reduceRunState(resumed, {
+      type: 'assistant',
+      message: { content: [{ type: 'text', text: 'second answer' }] },
+      timestamp: '2026-01-01T00:00:02.000Z',
+    });
+
+    expect(streaming.blocks).toHaveLength(2);
+    expect(streaming.blocks[0]).toMatchObject({
+      kind: 'text',
+      content: 'first answer',
+      archivedAnswer: true,
+    });
+    expect(streaming.blocks[1]).toMatchObject({ kind: 'text', content: 'second answer' });
+
+    // 本轮 result 不带 finalAnswerText：最终回答必须只取本轮正文，不能把上一轮
+    // 归档回答拼进来。
+    const round2 = reduceRunState(streaming, {
+      type: 'result',
+      subtype: 'success',
+      session_id: 'session-1',
+    });
+    expect(round2.finalAnswer).toMatchObject({ content: 'second answer' });
+    expect(round2.blocks).toEqual([
+      expect.objectContaining({ kind: 'text', content: 'first answer', archivedAnswer: true }),
+    ]);
+  });
+
   it('test_anchor_result_error_event_transitions_to_finalizing_with_error', () => {
     const initial = createInitialRunState('run-1');
     const inited = reduceRunState(initial, {

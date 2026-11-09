@@ -7,6 +7,7 @@ import {
   parseQoderEffortList,
   resolveQoderConfigDir,
   loadQoderConfig,
+  refreshQoderConfig,
   invalidateQoderConfigCache,
 } from './qoder-config.js';
 import { rmRf } from '../../tests/lib/tmp-cleanup.js';
@@ -89,14 +90,15 @@ describe('resolveQoderConfigDir', () => {
   });
 });
 
-describe('loadQoderConfig', () => {
+describe('refreshQoderConfig / loadQoderConfig', () => {
   let tmpDir: string;
   let savedPath: string | undefined;
 
   /**
-   * 造一个假 CLI：每次 spawn 给计数文件 +1（缓存命中/穿透证据，含 effort 探测
-   * 的 spawn）。绝不 spawn 真 CLI —— 假 bin 经 path-mock 的 prependPath 挂到
-   * PATH 首位。
+   * 造一个假 CLI：每次 spawn 往计数文件追加一个字节（缓存命中/穿透证据，
+   * 含 effort 探测的 spawn）。追加而不是读改写：模型探测与档位探测并发
+   * spawn，读改写会丢计数。绝不 spawn 真 CLI —— 假 bin 经 path-mock 的
+   * prependPath 挂到 PATH 首位。
    *
    * effort 探测行为（按 argv 分流，1.1.84 真机口径：合法值静默、非法值报
    * Invalid + 全表）：
@@ -118,9 +120,7 @@ describe('loadQoderConfig', () => {
     const source = [
       "import fs from 'node:fs';",
       `const counter = ${JSON.stringify(counterFile)};`,
-      'let n = 0;',
-      "try { n = Number(fs.readFileSync(counter, 'utf-8')); } catch {}",
-      'fs.writeFileSync(counter, String(n + 1));',
+      "fs.appendFileSync(counter, 'x');",
       `const effortList = ${JSON.stringify(opts?.effortList ?? '')};`,
       `const effortRejected = ${JSON.stringify(opts?.effortRejected ?? [])};`,
       'const argv = process.argv;',
@@ -151,6 +151,15 @@ describe('loadQoderConfig', () => {
     writeMockBin(tmpDir, name, entry);
   }
 
+  /** spawn 次数（计数文件每 spawn 追加一个字节）。 */
+  function spawnCount(counterFile: string): number {
+    try {
+      return fs.readFileSync(counterFile, 'utf-8').length;
+    } catch {
+      return 0;
+    }
+  }
+
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'lark-qoder-config-'));
     savedPath = prependPath(tmpDir);
@@ -163,13 +172,14 @@ describe('loadQoderConfig', () => {
     rmRf(tmpDir);
   });
 
-  it('reads current model from settings.json and tolerates a failing binary', () => {
+  it('reads current model from settings.json and tolerates a failing binary', async () => {
     fs.writeFileSync(
       path.join(tmpDir, 'settings.json'),
       JSON.stringify({ model: { name: 'qfmodel', preferences: {} } }),
       'utf-8',
     );
     // 不存在的 binary：spawn 失败 → modelOptions/effortOptions 为空、currentModel 保留
+    await refreshQoderConfig('definitely-not-a-real-binary-xyz', tmpDir);
     const result = loadQoderConfig('definitely-not-a-real-binary-xyz', tmpDir);
     expect(result.currentModel).toBe('qfmodel');
     expect(result.modelOptions).toEqual([]);
@@ -191,7 +201,7 @@ describe('loadQoderConfig', () => {
     );
   });
 
-  it('parses --list-models output into modelOptions via a mock qodercn (E6)', () => {
+  it('parses --list-models output into modelOptions via a mock qodercn (E6)', async () => {
     const counterFile = path.join(tmpDir, 'spawn-count');
     writeListModelsBin(
       'qodercn',
@@ -204,38 +214,39 @@ describe('loadQoderConfig', () => {
       ]),
       counterFile,
     );
+    await refreshQoderConfig('qodercn', tmpDir);
     const result = loadQoderConfig('qodercn', tmpDir);
     expect(result.modelOptions).toEqual(['qfmodel', 'lite', 'performance']);
     // 哨兵静默（无 effortList）→ effort 探测只 1 次、解析为空；合计 2 次 spawn
     expect(result.effortOptions).toEqual([]);
-    expect(fs.readFileSync(counterFile, 'utf-8')).toBe('2');
+    expect(spawnCount(counterFile)).toBe(2);
   });
 
-  it('caches within TTL: a second identical call does not spawn again (E6)', () => {
+  it('caches within TTL: a second identical refresh does not spawn again (E6)', async () => {
     const counterFile = path.join(tmpDir, 'spawn-count');
     writeListModelsBin('qodercn', '["qfmodel","lite"]', counterFile);
-    const first = loadQoderConfig('qodercn', tmpDir);
-    const second = loadQoderConfig('qodercn', tmpDir);
+    const first = await refreshQoderConfig('qodercn', tmpDir);
+    const second = await refreshQoderConfig('qodercn', tmpDir);
     expect(second.modelOptions).toEqual(first.modelOptions);
     expect(second.effortOptions).toEqual(first.effortOptions);
-    expect(fs.readFileSync(counterFile, 'utf-8')).toBe('2');
+    expect(spawnCount(counterFile)).toBe(2);
   });
 
-  it('cache is keyed by binary: switching binary re-spawns (E6)', () => {
+  it('cache is keyed by binary: switching binary re-spawns (E6)', async () => {
     const counterFile = path.join(tmpDir, 'spawn-count');
     writeListModelsBin('qodercn', '["qfmodel-cn"]', counterFile);
     writeListModelsBin('qoder', '["qfmodel-intl"]', counterFile);
 
-    const cn = loadQoderConfig('qodercn', tmpDir);
+    const cn = await refreshQoderConfig('qodercn', tmpDir);
     expect(cn.modelOptions).toEqual(['qfmodel-cn']);
-    expect(fs.readFileSync(counterFile, 'utf-8')).toBe('2');
+    expect(spawnCount(counterFile)).toBe(2);
 
-    const intl = loadQoderConfig('qoder', tmpDir);
+    const intl = await refreshQoderConfig('qoder', tmpDir);
     expect(intl.modelOptions).toEqual(['qfmodel-intl']);
-    expect(fs.readFileSync(counterFile, 'utf-8')).toBe('4');
+    expect(spawnCount(counterFile)).toBe(4);
   });
 
-  it('warns and falls back to an empty list on a non-zero --list-models exit (E6)', () => {
+  it('warns and falls back to an empty list on a non-zero --list-models exit (E6)', async () => {
     fs.writeFileSync(path.join(tmpDir, 'settings.json'), '{}', 'utf-8');
     mockLogger.warn.mockClear();
     writeListModelsBin('qodercn', '', path.join(tmpDir, 'spawn-count'), {
@@ -243,7 +254,7 @@ describe('loadQoderConfig', () => {
       stderr: 'probe boom',
     });
 
-    const result = loadQoderConfig('qodercn', tmpDir);
+    const result = await refreshQoderConfig('qodercn', tmpDir);
     expect(result.modelOptions).toEqual([]);
     expect(mockLogger.warn).toHaveBeenCalledWith(
       expect.stringContaining('[qoder-config] failed to load models'),
@@ -251,25 +262,25 @@ describe('loadQoderConfig', () => {
     expect(mockLogger.warn).toHaveBeenCalledWith(expect.stringContaining('exited 2: probe boom'));
   });
 
-  it('warns when --list-models produces no model names (E6)', () => {
+  it('warns when --list-models produces no model names (E6)', async () => {
     fs.writeFileSync(path.join(tmpDir, 'settings.json'), '{}', 'utf-8');
     mockLogger.warn.mockClear();
     writeListModelsBin('qodercn', '   \n', path.join(tmpDir, 'spawn-count'));
 
-    const result = loadQoderConfig('qodercn', tmpDir);
+    const result = await refreshQoderConfig('qodercn', tmpDir);
     expect(result.modelOptions).toEqual([]);
     expect(mockLogger.warn).toHaveBeenCalledWith(
       '[qoder-config] --list-models produced no model names, card falls back to input',
     );
   });
 
-  it('probes effort levels from the validation error and appends accepted supplements', () => {
+  it('probes effort levels from the validation error and appends accepted supplements', async () => {
     const counterFile = path.join(tmpDir, 'spawn-count');
     writeListModelsBin('qodercn', '["qfmodel"]', counterFile, {
       // 1.1.84 真机报错全表：8 档，漏列 off
       effortList: 'auto, none, low, medium, high, xhigh, max, ultracode',
     });
-    const result = loadQoderConfig('qodercn', tmpDir);
+    const result = await refreshQoderConfig('qodercn', tmpDir);
     // 全表 8 档 + 补充探测接受的 off
     expect(result.effortOptions).toEqual([
       'auto',
@@ -283,41 +294,63 @@ describe('loadQoderConfig', () => {
       'off',
     ]);
     // 3 次 spawn：--list-models + 哨兵探测 + off 补充探测
-    expect(fs.readFileSync(counterFile, 'utf-8')).toBe('3');
+    expect(spawnCount(counterFile)).toBe(3);
   });
 
-  it('skips the supplement probe when the error list already contains the level', () => {
+  it('skips the supplement probe when the error list already contains the level', async () => {
     const counterFile = path.join(tmpDir, 'spawn-count');
     writeListModelsBin('qodercn', '["qfmodel"]', counterFile, {
       effortList: 'auto, low, off',
     });
-    const result = loadQoderConfig('qodercn', tmpDir);
+    const result = await refreshQoderConfig('qodercn', tmpDir);
     expect(result.effortOptions).toEqual(['auto', 'low', 'off']);
     // 2 次 spawn：--list-models + 哨兵探测（off 已在全表，不再补探）
-    expect(fs.readFileSync(counterFile, 'utf-8')).toBe('2');
+    expect(spawnCount(counterFile)).toBe(2);
   });
 
-  it('drops a supplement level the CLI rejects', () => {
+  it('drops a supplement level the CLI rejects', async () => {
     const counterFile = path.join(tmpDir, 'spawn-count');
     writeListModelsBin('qodercn', '["qfmodel"]', counterFile, {
       effortList: 'auto, low, high',
       effortRejected: ['off'],
     });
-    const result = loadQoderConfig('qodercn', tmpDir);
+    const result = await refreshQoderConfig('qodercn', tmpDir);
     expect(result.effortOptions).toEqual(['auto', 'low', 'high']);
-    expect(fs.readFileSync(counterFile, 'utf-8')).toBe('3');
+    expect(spawnCount(counterFile)).toBe(3);
   });
 
-  it('falls back to an empty effort list when the probe reports no levels', () => {
+  it('falls back to an empty effort list when the probe reports no levels', async () => {
     mockLogger.warn.mockClear();
     const counterFile = path.join(tmpDir, 'spawn-count');
     writeListModelsBin('qodercn', '["qfmodel"]', counterFile); // 哨兵静默 → 无全表
-    const result = loadQoderConfig('qodercn', tmpDir);
+    const result = await refreshQoderConfig('qodercn', tmpDir);
     expect(result.effortOptions).toEqual([]);
     expect(mockLogger.warn).toHaveBeenCalledWith(
       expect.stringContaining('[qoder-config] effort probe produced no levels'),
     );
     // 解析为空 → 早退，不再做补充探测
-    expect(fs.readFileSync(counterFile, 'utf-8')).toBe('2');
+    expect(spawnCount(counterFile)).toBe(2);
+  });
+
+  it('keeps the last successful snapshot when a later refresh fails', async () => {
+    const counterFile = path.join(tmpDir, 'spawn-count');
+    writeListModelsBin('qodercn', '["qfmodel","lite"]', counterFile, {
+      effortList: 'auto, low, high',
+    });
+    await refreshQoderConfig('qodercn', tmpDir);
+
+    // 同一个 binary 换成必然失败的实现（模拟 CLI 升级/临时故障），
+    // 先让 TTL 过期（缓存键按 binary，时间戳由 Date.now 决定）。
+    writeListModelsBin('qodercn', '', counterFile, { exitCode: 1, stderr: 'boom' });
+    const nowSpy = vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 6 * 60_000);
+    try {
+      await refreshQoderConfig('qodercn', tmpDir);
+    } finally {
+      nowSpy.mockRestore();
+    }
+
+    const result = loadQoderConfig('qodercn', tmpDir);
+    expect(result.modelOptions).toEqual(['qfmodel', 'lite']);
+    expect(result.effortOptions).toEqual(['auto', 'low', 'high', 'off']);
   });
 });

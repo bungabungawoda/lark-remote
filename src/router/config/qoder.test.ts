@@ -3,10 +3,11 @@ import { QoderConfigBuilder } from './qoder.js';
 import { buildConfigCardFromTabs } from './common/render.js';
 import type { AppConfig } from '../../config/index.js';
 import { expectNoV1ActionContainer } from '../../../tests/lib/card-view.js';
-import { loadQoderConfig } from '../../config/qoder-config.js';
+import { loadQoderConfig, refreshQoderConfig } from '../../config/qoder-config.js';
 
 vi.mock('../../config/qoder-config.js', () => ({
   loadQoderConfig: vi.fn(),
+  refreshQoderConfig: vi.fn(),
 }));
 
 /** loadQoderConfig 的默认桩：探测清单为空（对应字段回退文本输入的旧口径）。 */
@@ -25,14 +26,25 @@ describe('QoderConfigBuilder', () => {
 
   beforeEach(() => {
     vi.mocked(loadQoderConfig).mockReset().mockReturnValue(baseQoderCfg);
+    vi.mocked(refreshQoderConfig).mockReset().mockResolvedValue(baseQoderCfg);
   });
 
   describe('buildFields', () => {
     it('probes --list-models with the configured cli.binary (CN/国际版安装名不同)', () => {
       builder.buildFields(makeConfig({ agents: { qoder: { cli: { binary: 'qoder' } } } }));
+      expect(vi.mocked(refreshQoderConfig)).toHaveBeenLastCalledWith('qoder');
       expect(vi.mocked(loadQoderConfig)).toHaveBeenLastCalledWith('qoder');
       builder.buildFields(makeConfig());
+      expect(vi.mocked(refreshQoderConfig)).toHaveBeenLastCalledWith(undefined);
       expect(vi.mocked(loadQoderConfig)).toHaveBeenLastCalledWith(undefined);
+    });
+
+    it('does not wait for the async catalog refresh (card build stays sync)', () => {
+      // 刷新永不 settle：buildFields 仍必须立即返回（只读缓存）。
+      vi.mocked(refreshQoderConfig).mockReturnValue(new Promise(() => {}));
+      const fields = builder.buildFields(makeConfig());
+      expect(fields.length).toBeGreaterThan(0);
+      expect(vi.mocked(refreshQoderConfig)).toHaveBeenCalledTimes(1);
     });
     it('model is a select over --list-models when the list is non-empty', () => {
       const fields = builder.buildFields(makeConfig());

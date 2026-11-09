@@ -17,7 +17,7 @@
  * `_meta.usage`（`used/size` 恒 0），按 turn 累加后随 result 事件折叠。
  */
 
-import type { AgentEvent, ApprovalView } from '../../types.js';
+import type { ApprovalView } from '../../types.js';
 import type {
   AgentThoughtChunkEvent,
   RequestPermissionParams,
@@ -104,20 +104,6 @@ export class CodebuddyAcpTranslator extends BaseAcpTranslator {
     };
 
     return this.approvalRequestedEvents(requestId, params.sessionId, view);
-  }
-
-  /**
-   * stopReason 'refusal' 的可读化：斜杠命令被引擎拒绝（典型：上下文不足时
-   * /compact）或模型拒答。基类默认文案是裸 stopReason，卡片不可读。
-   */
-  override handlePromptResponse(sessionId: string, result: { stopReason: string }): AgentEvent {
-    if (result.stopReason === 'refusal') {
-      return this.produceErrorResult(
-        sessionId,
-        '请求被 CodeBuddy 拒绝（refusal）。常见原因：/compact 等命令在当前上下文下被引擎拒绝（如尚无内容可压缩），或模型拒答；可稍后重试。',
-      );
-    }
-    return super.handlePromptResponse(sessionId, result);
   }
 
   /**

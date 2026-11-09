@@ -103,20 +103,463 @@ exports[`structure equivalence: card budget degrade stages > C: 多个超限面�
 
 exports[`structure equivalence: card budget degrade stages > D: 元素总数超限但字节达标 → 阶段4.5 丢弃最旧元素 1`] = `
 {
-  "bytesAfter": 304,
+  "bytesAfter": 5102,
   "bytesBefore": 5342,
-  "elementCount": 1,
+  "elementCount": 90,
   "panelInners": [],
-  "reason": "extreme_fallback",
+  "reason": "element_budget_elements_dropped",
   "topTags": [
+    "div",
+    "div",
+    "div",
+    "div",
+    "div",
+    "div",
+    "div",
+    "div",
+    "div",
+    "div",
+    "div",
+    "div",
+    "div",
+    "div",
+    "div",
+    "div",
+    "div",
+    "div",
+    "div",
+    "div",
+    "div",
+    "div",
+    "div",
+    "div",
+    "div",
+    "div",
+    "div",
+    "div",
+    "div",
+    "div",
+    "div",
+    "div",
+    "div",
+    "div",
+    "div",
+    "div",
+    "div",
+    "div",
+    "div",
+    "div",
+    "div",
+    "div",
+    "div",
+    "div",
+    "div",
+    "div",
+    "div",
+    "div",
+    "div",
+    "div",
+    "div",
+    "div",
+    "div",
+    "div",
+    "div",
+    "div",
+    "div",
+    "div",
+    "div",
+    "div",
+    "div",
+    "div",
+    "div",
+    "div",
+    "div",
+    "div",
+    "div",
+    "div",
+    "div",
+    "div",
+    "div",
+    "div",
+    "div",
+    "div",
+    "div",
+    "div",
+    "div",
+    "div",
+    "div",
+    "div",
+    "div",
+    "div",
+    "div",
+    "div",
+    "div",
+    "div",
+    "div",
+    "div",
+    "div",
     "div",
   ],
   "topTexts": [
     {
-      "head": "会话内容过大，已自动截断。
-
-请使用 \`/active\` 查看完",
-      "len": 36,
+      "head": "📜 还有 6 个事件未显示",
+      "len": 14,
+    },
+    {
+      "head": "d6",
+      "len": 2,
+    },
+    {
+      "head": "d7",
+      "len": 2,
+    },
+    {
+      "head": "d8",
+      "len": 2,
+    },
+    {
+      "head": "d9",
+      "len": 2,
+    },
+    {
+      "head": "d10",
+      "len": 3,
+    },
+    {
+      "head": "d11",
+      "len": 3,
+    },
+    {
+      "head": "d12",
+      "len": 3,
+    },
+    {
+      "head": "d13",
+      "len": 3,
+    },
+    {
+      "head": "d14",
+      "len": 3,
+    },
+    {
+      "head": "d15",
+      "len": 3,
+    },
+    {
+      "head": "d16",
+      "len": 3,
+    },
+    {
+      "head": "d17",
+      "len": 3,
+    },
+    {
+      "head": "d18",
+      "len": 3,
+    },
+    {
+      "head": "d19",
+      "len": 3,
+    },
+    {
+      "head": "d20",
+      "len": 3,
+    },
+    {
+      "head": "d21",
+      "len": 3,
+    },
+    {
+      "head": "d22",
+      "len": 3,
+    },
+    {
+      "head": "d23",
+      "len": 3,
+    },
+    {
+      "head": "d24",
+      "len": 3,
+    },
+    {
+      "head": "d25",
+      "len": 3,
+    },
+    {
+      "head": "d26",
+      "len": 3,
+    },
+    {
+      "head": "d27",
+      "len": 3,
+    },
+    {
+      "head": "d28",
+      "len": 3,
+    },
+    {
+      "head": "d29",
+      "len": 3,
+    },
+    {
+      "head": "d30",
+      "len": 3,
+    },
+    {
+      "head": "d31",
+      "len": 3,
+    },
+    {
+      "head": "d32",
+      "len": 3,
+    },
+    {
+      "head": "d33",
+      "len": 3,
+    },
+    {
+      "head": "d34",
+      "len": 3,
+    },
+    {
+      "head": "d35",
+      "len": 3,
+    },
+    {
+      "head": "d36",
+      "len": 3,
+    },
+    {
+      "head": "d37",
+      "len": 3,
+    },
+    {
+      "head": "d38",
+      "len": 3,
+    },
+    {
+      "head": "d39",
+      "len": 3,
+    },
+    {
+      "head": "d40",
+      "len": 3,
+    },
+    {
+      "head": "d41",
+      "len": 3,
+    },
+    {
+      "head": "d42",
+      "len": 3,
+    },
+    {
+      "head": "d43",
+      "len": 3,
+    },
+    {
+      "head": "d44",
+      "len": 3,
+    },
+    {
+      "head": "d45",
+      "len": 3,
+    },
+    {
+      "head": "d46",
+      "len": 3,
+    },
+    {
+      "head": "d47",
+      "len": 3,
+    },
+    {
+      "head": "d48",
+      "len": 3,
+    },
+    {
+      "head": "d49",
+      "len": 3,
+    },
+    {
+      "head": "d50",
+      "len": 3,
+    },
+    {
+      "head": "d51",
+      "len": 3,
+    },
+    {
+      "head": "d52",
+      "len": 3,
+    },
+    {
+      "head": "d53",
+      "len": 3,
+    },
+    {
+      "head": "d54",
+      "len": 3,
+    },
+    {
+      "head": "d55",
+      "len": 3,
+    },
+    {
+      "head": "d56",
+      "len": 3,
+    },
+    {
+      "head": "d57",
+      "len": 3,
+    },
+    {
+      "head": "d58",
+      "len": 3,
+    },
+    {
+      "head": "d59",
+      "len": 3,
+    },
+    {
+      "head": "d60",
+      "len": 3,
+    },
+    {
+      "head": "d61",
+      "len": 3,
+    },
+    {
+      "head": "d62",
+      "len": 3,
+    },
+    {
+      "head": "d63",
+      "len": 3,
+    },
+    {
+      "head": "d64",
+      "len": 3,
+    },
+    {
+      "head": "d65",
+      "len": 3,
+    },
+    {
+      "head": "d66",
+      "len": 3,
+    },
+    {
+      "head": "d67",
+      "len": 3,
+    },
+    {
+      "head": "d68",
+      "len": 3,
+    },
+    {
+      "head": "d69",
+      "len": 3,
+    },
+    {
+      "head": "d70",
+      "len": 3,
+    },
+    {
+      "head": "d71",
+      "len": 3,
+    },
+    {
+      "head": "d72",
+      "len": 3,
+    },
+    {
+      "head": "d73",
+      "len": 3,
+    },
+    {
+      "head": "d74",
+      "len": 3,
+    },
+    {
+      "head": "d75",
+      "len": 3,
+    },
+    {
+      "head": "d76",
+      "len": 3,
+    },
+    {
+      "head": "d77",
+      "len": 3,
+    },
+    {
+      "head": "d78",
+      "len": 3,
+    },
+    {
+      "head": "d79",
+      "len": 3,
+    },
+    {
+      "head": "d80",
+      "len": 3,
+    },
+    {
+      "head": "d81",
+      "len": 3,
+    },
+    {
+      "head": "d82",
+      "len": 3,
+    },
+    {
+      "head": "d83",
+      "len": 3,
+    },
+    {
+      "head": "d84",
+      "len": 3,
+    },
+    {
+      "head": "d85",
+      "len": 3,
+    },
+    {
+      "head": "d86",
+      "len": 3,
+    },
+    {
+      "head": "d87",
+      "len": 3,
+    },
+    {
+      "head": "d88",
+      "len": 3,
+    },
+    {
+      "head": "d89",
+      "len": 3,
+    },
+    {
+      "head": "d90",
+      "len": 3,
+    },
+    {
+      "head": "d91",
+      "len": 3,
+    },
+    {
+      "head": "d92",
+      "len": 3,
+    },
+    {
+      "head": "d93",
+      "len": 3,
+    },
+    {
+      "head": "d94",
+      "len": 3,
     },
   ],
   "wasTruncated": true,

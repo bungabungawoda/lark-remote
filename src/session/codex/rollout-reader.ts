@@ -283,12 +283,60 @@ function recordHumanMessage(
   state.lastUserMessageSource = human.source;
 }
 
+/** 只接受真实的有限数字；字段缺失/漂移返回 undefined，由调用方决定如何兜底。 */
+function finiteTokenCount(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
+}
+
+/**
+ * 单轮采样（last_token_usage）可以缺字段：缺失按 0 参与算术，避免 NaN 上卡片。
+ * 全字段都缺失时视为空采样，直接丢弃。
+ */
+function normalizeLastUsage(value: RawTokenUsage | undefined): RawTokenUsage | undefined {
+  if (!value) return undefined;
+  const input = finiteTokenCount(value.input_tokens);
+  const cached = finiteTokenCount(value.cached_input_tokens);
+  const output = finiteTokenCount(value.output_tokens);
+  const total = finiteTokenCount(value.total_tokens);
+  if (input === undefined && cached === undefined && output === undefined && total === undefined) {
+    return undefined;
+  }
+  return {
+    input_tokens: input ?? 0,
+    cached_input_tokens: cached ?? 0,
+    output_tokens: output ?? 0,
+    total_tokens: total ?? 0,
+  };
+}
+
+/**
+ * 累计采样（total_token_usage）要参与 total - previousTotals 的差值计算：
+ * 任一字段缺失都无法得到可信差值（补 0 会算出负数），整条 total 必须丢弃，
+ * 保持上一轮 previousTotals/lastTotalUsage 不变。
+ */
+function normalizeTotalUsage(value: RawTokenUsage | undefined): RawTokenUsage | undefined {
+  if (!value) return undefined;
+  const input = finiteTokenCount(value.input_tokens);
+  const cached = finiteTokenCount(value.cached_input_tokens);
+  const output = finiteTokenCount(value.output_tokens);
+  const total = finiteTokenCount(value.total_tokens);
+  if (input === undefined || cached === undefined || output === undefined || total === undefined) {
+    return undefined;
+  }
+  return {
+    input_tokens: input,
+    cached_input_tokens: cached,
+    output_tokens: output,
+    total_tokens: total,
+  };
+}
+
 function resolveRawUsage(
   info: Record<string, unknown> | undefined,
   previousTotals: RawTokenUsage | undefined,
 ): { raw: RawTokenUsage | undefined; total: RawTokenUsage | undefined } {
-  const last = info?.last_token_usage as RawTokenUsage | undefined;
-  const total = info?.total_token_usage as RawTokenUsage | undefined;
+  const last = normalizeLastUsage(info?.last_token_usage as RawTokenUsage | undefined);
+  const total = normalizeTotalUsage(info?.total_token_usage as RawTokenUsage | undefined);
   let raw: RawTokenUsage | undefined;
   if (last) {
     raw = last;

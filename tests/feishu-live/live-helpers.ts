@@ -62,10 +62,12 @@ export interface CardMetricVector {
   objects: number;
   /** 最大的单个容器子元素数（`elements` 或 `columns` 任一）。 */
   maxChildren: number;
+  /** 递归统计所有带 `tag` 的节点（飞书 11310 的真实判据，实测 ≤ 200）。 */
+  tagged: number;
 }
 
 export function cardMetrics(card: object): CardMetricVector {
-  const counts = { elementsOnly: 0, elemsPlusCols: 0, objects: 0, maxChildren: 0 };
+  const counts = { elementsOnly: 0, elemsPlusCols: 0, objects: 0, maxChildren: 0, tagged: 0 };
   const walk = (value: unknown): void => {
     if (Array.isArray(value)) {
       for (const item of value) walk(item);
@@ -73,6 +75,7 @@ export function cardMetrics(card: object): CardMetricVector {
     }
     if (!value || typeof value !== 'object') return;
     counts.objects += 1;
+    if (typeof (value as { tag?: unknown }).tag === 'string') counts.tagged += 1;
     const rec = value as { elements?: unknown; columns?: unknown };
     if (Array.isArray(rec.elements)) {
       counts.maxChildren = Math.max(counts.maxChildren, rec.elements.length);
@@ -105,7 +108,7 @@ export function cardMetrics(card: object): CardMetricVector {
 export function logCardMetrics(label: string, card: object): void {
   const m = cardMetrics(card);
   console.log(
-    `[metrics] ${label} top=${m.top} elementsOnly=${m.elementsOnly} elemsPlusCols=${m.elemsPlusCols} objects=${m.objects} maxChildren=${m.maxChildren}`,
+    `[metrics] ${label} top=${m.top} elementsOnly=${m.elementsOnly} elemsPlusCols=${m.elemsPlusCols} tagged=${m.tagged} objects=${m.objects} maxChildren=${m.maxChildren}`,
   );
 }
 

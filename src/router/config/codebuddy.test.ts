@@ -4,6 +4,7 @@ import { buildConfigCardFromTabs } from './common/render.js';
 import type { AppConfig } from '../../config/index.js';
 import { expectNoV1ActionContainer } from '../../../tests/lib/card-view.js';
 import { refreshCodebuddyCatalog } from '../../config/codebuddy-catalog.js';
+import { loadCodebuddyConfig } from '../../config/codebuddy-config.js';
 
 // 目录探针会 spawn 真 codebuddy --acp（红线：测试禁止 spawn 真 agent）——
 // 这里必须 mock 掉；buildFields 点火接线用下方断言钉住，不因 mock 静默失效。
@@ -36,17 +37,34 @@ describe('CodebuddyConfigBuilder', () => {
   const builder = new CodebuddyConfigBuilder();
 
   describe('buildFields', () => {
-    it('model renders as a select over the ACP catalog with display names', () => {
+    it('model renders as a select over the ACP catalog (name + credits, no id)', () => {
       const fields = builder.buildFields(makeConfig());
       const modelField = fields.find((f) => f.key === 'agents.codebuddy.model');
       expect(modelField!.type).toBe('select');
-      // 下拉文本带积分费率（真机目录 _meta.credits），免费档一眼可见
+      // 与 claude / codex 的模型字段同一种控件；id 多数只是名称的重复，不展示。
       expect(modelField!.options).toEqual([
-        { value: 'hy4free', text: 'Hy4（hy4free） · x0.00 credits' },
-        { value: 'hy3', text: 'Hy3（hy3） · x0.00 credits' },
-        { value: 'kimi-k3-1', text: 'Kimi-K3（kimi-k3-1） · x1.62 credits' },
+        { value: 'hy4free', text: 'Hy4 x0.00' },
+        { value: 'hy3', text: 'Hy3 x0.00' },
+        { value: 'kimi-k3-1', text: 'Kimi-K3 x1.62' },
       ]);
       expect(modelField!.currentValue).toBe('hy3');
+    });
+
+    it('appends the id only when name + credits collide', () => {
+      vi.mocked(loadCodebuddyConfig).mockReturnValueOnce({
+        currentModel: 'a',
+        modelOptions: ['a', 'b'],
+        modelDisplayNames: { a: 'Same', b: 'Same' },
+        modelCredits: { a: 'x0.10', b: 'x0.10' },
+        thoughtLevels: [{ value: 'enabled', name: 'On（默认）' }],
+      });
+      const field = builder
+        .buildFields(makeConfig())
+        .find((f) => f.key === 'agents.codebuddy.model');
+      expect(field!.options).toEqual([
+        { value: 'a', text: 'Same x0.10（a）' },
+        { value: 'b', text: 'Same x0.10（b）' },
+      ]);
     });
 
     it('configured model overrides the catalog current', () => {
@@ -140,6 +158,8 @@ describe('CodebuddyConfigBuilder', () => {
       expect(cardStr).toContain('"schema":"2.0"');
       expectNoV1ActionContainer(cardStr);
       expect(cardStr).toContain('"cmd":"config.');
+      // 模型下拉的选项文本：展示名 + 费率。
+      expect(cardStr).toContain('Hy3 x0.00');
     });
   });
 

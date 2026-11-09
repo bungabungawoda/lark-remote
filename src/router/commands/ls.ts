@@ -426,12 +426,14 @@ function lsResolveTarget(
   args: string[],
   cwd: string,
 ): { targetDir: string } | { result: CommandResult } {
-  if (!args[0]) return { targetDir: cwd };
-  const arg = args[0].startsWith('~') ? path.join(os.homedir(), args[0].slice(1)) : args[0];
+  // 路径可含空格：参数按空白切分后拼回整段（同 /cd、/download）。
+  const raw = args.join(' ').trim();
+  if (!raw) return { targetDir: cwd };
+  const arg = raw.startsWith('~') ? path.join(os.homedir(), raw.slice(1)) : raw;
   const potentialDir = path.resolve(cwd, arg);
   const kind = inspectPath(potentialDir);
   if (kind === 'missing' || kind === 'unreadable') {
-    return { result: { text: `ls: ${args[0]}: No such file or directory` } };
+    return { result: { text: `ls: ${raw}: No such file or directory` } };
   }
   if (kind === 'file') return { result: buildFileCard(potentialDir) };
   return { targetDir: potentialDir };

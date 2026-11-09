@@ -831,7 +831,7 @@ export class DshClient {
         'http',
         `DSH HTTP 401 for ${method}: 认证失败；请确认 ${this.credentialsFile} 可读，` +
           '或在 config.yaml 的 agents.dsh.token 填入当前 dsh web 启动 token。' +
-          '若凭据文件可读且格式正确，可能是 DSH 版本改变了 cookie 认证格式',
+          '若凭据文件可读且格式正确仍返回 401，请查看 DSH 日志确认认证方式',
         { status: 401 },
       );
     }

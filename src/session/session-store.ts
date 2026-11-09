@@ -415,18 +415,31 @@ export class SessionStore {
   /** Persisted format: cwd + sessions + previous/arrival session maps. */
   private load(): void {
     if (!this.persistPath) return;
+    let raw: string;
     try {
-      if (!fs.existsSync(this.persistPath)) return;
-      const raw = fs.readFileSync(this.persistPath, 'utf-8');
-      const parsed = JSON.parse(raw);
-      if (typeof parsed === 'object' && parsed !== null) {
-        for (const [userId, data] of Object.entries(parsed)) {
-          const entry = parsePersistedEntry(data);
-          if (entry) this.sessions.set(userId, entry);
-        }
-      }
+      raw = fs.readFileSync(this.persistPath, 'utf-8');
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') return;
+      // 读失败（EACCES/EISDIR/EBUSY…）不是「文件损坏」：不能改名封存，
+      // 否则可能完好的 store 被搬走，下次启动所有指针归零。
+      getLogger().warn(
+        `[session] cannot read persisted session store (${this.persistPath}), ignoring:`,
+        err,
+      );
+      return;
+    }
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(raw);
     } catch (err) {
       preserveCorruptStore(this.persistPath, err);
+      return;
+    }
+    if (typeof parsed === 'object' && parsed !== null) {
+      for (const [userId, data] of Object.entries(parsed)) {
+        const entry = parsePersistedEntry(data);
+        if (entry) this.sessions.set(userId, entry);
+      }
     }
   }
 

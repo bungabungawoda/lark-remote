@@ -4,7 +4,7 @@ import YAML from 'yaml';
 import type { SessionStore, SessionReaderRegistry } from '../session/index.js';
 import type { AppConfig } from '../config/index.js';
 import type { Bridge, CommandContext, CommandResult } from '../bridge/index.js';
-import { formatHostStopResult } from '../bridge/host-stop.js';
+import { stopCurrentTurn } from '../bridge/stop-current.js';
 import type { AgentBinding } from '../bridge/queue-manager.js';
 import {
   getConfigDir,
@@ -19,6 +19,7 @@ import { WorkspaceStore } from '../workspace/index.js';
 import { OrderStore, ORDER_NOT_FOUND_TEXT, type OrderEntry } from '../order/index.js';
 import { resolveAlias } from '../order/alias-resolve.js';
 import { diffConfig, setNestedValue } from './config-diff.js';
+import { sleep } from '../common/sleep.js';
 import type { AgentKind } from '../agent-kinds.js';
 import type {
   AgentSession,
@@ -442,6 +443,9 @@ const IMMEDIATE_ACTION_CMDS: ReadonlySet<string> = new Set([
   // 控制操作免排队）。排进串行队列会等当前 run 结束才杀任务——stop 类按钮
   // 排队正是 §9.6 要防的形态，且排队期间还占 lane 多出一张排队卡。
   'job.kill',
+  // 恢复卡「终止」取消宿主轮次，与 stop 同类：排队会等当前 run 结束才执行，
+  // 队列满时还会被拒收（终止请求丢失）。
+  'stop.session',
   'order.delete',
   'order.page',
   'order.aliasEdit',
@@ -512,6 +516,14 @@ const CARD_PAYLOAD_MISSING = '⚠️ 卡片 payload 缺少必要信息';
  * 卡片只有最近一两张，5 张足够覆盖；无上限会让长跑进程的 Set 随卡片数增长。
  */
 const MAX_CONFIG_CARDS = 5;
+
+/**
+ * config.save 回调响应的预算（ms）。飞书要求卡片回调 3 秒内响应；扣掉
+ * message-handlers 的 flush 等待与网络往返，router 侧最多占 1.5s。超预算时
+ * 保存已经落盘，卡片刷新与切换卡转入后台继续；下一个 config.* 动作会先等
+ * 它收尾（`configSaveTail`），保持既有的串行语义。
+ */
+const CONFIG_SAVE_RESPONSE_BUDGET_MS = 1_500;
 
 /** 本次改动是否落进 `agents.<kind>` 子树。 */
 function touchesAgentsSubtree(keys: readonly string[], kind: string): boolean {
@@ -839,6 +851,11 @@ export class CommandRouter {
   };
   /** /config 卡片编辑暂存区（public：测试直接读取断言，替代 as unknown as）。 */
   pendingConfig: AppConfig | null = null;
+  /**
+   * 上一轮 config.save 的延迟收尾（卡片刷新 / 切换卡）。保存响应超出预算时
+   * 收尾转入后台，后续 config.* 动作在串行队列里先等它，避免并发改卡乱序。
+   */
+  private configSaveTail: Promise<void> = Promise.resolve();
   /**
    * 已见过的 /config 卡片 messageId（有界，最近的在最后）。
    *
@@ -1551,7 +1568,11 @@ export class CommandRouter {
             tag: 'div',
             text: {
               tag: 'lark_md',
-              content: `**可能原因**\n1. **当前有其他任务在运行** — 串行队列确保每次只执行一个任务\n2. **之前的任务卡住了** — 可点击"⚡ 立即执行"停止当前任务并执行这一条\n3. **Idle 超时触发** — 如果之前的任务长时间没有输出，watchdog 会自动停止它`,
+              content: `**队列判断**\n${
+                queueInfo.isRunning
+                  ? `当前有 run 在消费队列，该消息前面还有 ${tasksAhead} 个任务。`
+                  : '当前没有活跃的 run 在消费队列（队列停滞）。'
+              }`,
             },
           },
         ],
@@ -1758,7 +1779,7 @@ export class CommandRouter {
     // value.root 是本次 /ls 浏览的起点（绝对路径，不受 cwd 变更影响），透传后
     // 「返回」仍回到用户最初 /ls 的那个目录。
     const card = this.cmdLs([resolution.canonical], ctx, 0, value.root);
-    await this.bridge.updateCardInPlace(card.card!, ctx);
+    await this.refreshLsCard(card, ctx);
     // Message channel: send switch confirmation / auto-resume card to chat
     await this.bridge.sendResult(notifyResult, ctx);
   }
@@ -1775,7 +1796,21 @@ export class CommandRouter {
       targetPath && isDirectorySafe(targetPath)
         ? this.cmdLs([targetPath], ctx, offset, value.root, value.q)
         : this.cmdLs([], ctx, offset, value.root, value.q);
-    await this.bridge.updateCardInPlace(card.card!, ctx);
+    await this.refreshLsCard(card, ctx);
+  }
+
+  /**
+   * ls 卡片动作的统一出口：命令返回 card 时原地刷新；只返回 text（目录读取
+   * 失败等）时必须把文案发给用户，不能对 `card.card!` 传 undefined——那样
+   * updateCardInPlace 失败后 sendResult({card:undefined}) 也直接返回 false，
+   * 用户点了按钮没有任何反馈、真实错误被吞掉。
+   */
+  private async refreshLsCard(result: CommandResult, ctx: CommandContext): Promise<void> {
+    if (result.card) {
+      await this.bridge.updateCardInPlace(result.card, ctx);
+      return;
+    }
+    await this.bridge.sendResult({ text: result.text ?? '读取目录失败' }, ctx);
   }
 
   /**
@@ -1798,8 +1833,11 @@ export class CommandRouter {
       return { toast: { type: 'error', content: `路径无效: ${resolvedTarget}` } };
     }
     const card = this.cmdLs([resolvedTarget], ctx, paging.offset, value.root, value.q);
+    if (!card.card) {
+      return { toast: { type: 'error', content: card.text ?? '读取目录失败' } };
+    }
     // 直接更新卡片，与 ls.browse/ls.refresh 行为一致
-    await this.bridge.updateCardInPlace(card.card!, ctx);
+    await this.bridge.updateCardInPlace(card.card, ctx);
     return { toast: { type: 'success', content: '' } };
   }
 
@@ -1824,7 +1862,10 @@ export class CommandRouter {
       return { toast: { type: 'error', content: `路径无效: ${resolvedTarget}` } };
     }
     const card = this.cmdLs([resolvedTarget], ctx, 0, value.root, q);
-    await this.bridge.updateCardInPlace(card.card!, ctx);
+    if (!card.card) {
+      return { toast: { type: 'error', content: card.text ?? '读取目录失败' } };
+    }
+    await this.bridge.updateCardInPlace(card.card, ctx);
     return { toast: { type: 'success', content: q ? `筛选："${q}"` : '已清除筛选' } };
   }
 
@@ -1903,7 +1944,7 @@ export class CommandRouter {
     }
     // Always reset to page 0 when browsing to a new directory
     const card = this.cmdLs([resolvedTarget], ctx, 0, value.root);
-    await this.bridge.updateCardInPlace(card.card!, ctx);
+    await this.refreshLsCard(card, ctx);
   }
 
   /**
@@ -2589,6 +2630,8 @@ export class CommandRouter {
     ctx: CommandContext,
   ): Promise<CardActionResponse | void> {
     const run = async (): Promise<CardActionResponse | void> => {
+      // 上一轮 config.save 若把收尾转入后台，先等它，避免并发改卡（连击乱序）。
+      await this.configSaveTail;
       try {
         return await this.dispatchConfigAction(value, ctx);
       } catch (err) {
@@ -2661,31 +2704,56 @@ export class CommandRouter {
           const switchResult = this.propagateConfigSave(oldDefaultAgent, updates, ctx);
 
           this.pendingConfig = null;
-          // 原地更新卡片：保存后卡片刷新为已保存状态。
-          // 卡片刷新失败不吞切换通知——保存已成功，仅记录日志，
-          // 后续切换消息照常发送；真正写盘/传播阶段的失败才走外层 catch 报「保存失败」。
-          try {
-            // host 可能已变更 → 重新预取 DSH 目录（内部按 host 缓存，未变不重复拉）
-            await this.prefetchConfigCardCatalogs();
-            await this.refreshConfigCards(ctx);
-          } catch (refreshErr) {
-            getLogger().warn(
-              `[router] config.save 卡片刷新失败（保存已成功）: ${(refreshErr as Error).message}`,
-            );
-          }
-
-          // agent 切换时发送 Resume 卡片（替代纯文本通知），
-          // 让用户直观看到新 agent 的会话状态和历史。
-          // 发送失败（resolve false）时兜底回退 toast 即时反馈。
-          if (switchResult.notice) {
-            const switchCard = this.buildConfigSwitchCard(switchResult, ctx);
-            const sent = await this.bridge.sendResult(switchCard, ctx);
-            if (!sent) {
-              return {
-                toast: { type: 'info', content: switchResult.notice },
-              };
+          // 保存已成功。卡片刷新 + 切换卡是收尾工作：给它们一个响应预算，
+          // 超时就把剩下的部分转入后台，回调先回 200——飞书 3 秒上限之外没有
+          // 第二次机会，卡在慢操作上时用户只会看到「目标服务器超时未响应」。
+          const finish = async (): Promise<CardActionResponse | void> => {
+            // 原地更新卡片：保存后卡片刷新为已保存状态。
+            // 卡片刷新失败不吞切换通知——保存已成功，仅记录日志，
+            // 后续切换消息照常发送；真正写盘/传播阶段的失败才走外层 catch 报「保存失败」。
+            try {
+              // host 可能已变更 → 重新预取 DSH 目录（内部按 host 缓存，未变不重复拉）
+              await this.prefetchConfigCardCatalogs();
+              await this.refreshConfigCards(ctx);
+            } catch (refreshErr) {
+              getLogger().warn(
+                `[router] config.save 卡片刷新失败（保存已成功）: ${(refreshErr as Error).message}`,
+              );
             }
+
+            // agent 切换时发送 Resume 卡片（替代纯文本通知），
+            // 让用户直观看到新 agent 的会话状态和历史。
+            // 发送失败（resolve false）时兜底回退 toast 即时反馈。
+            if (switchResult.notice) {
+              const switchCard = this.buildConfigSwitchCard(switchResult, ctx);
+              const sent = await this.bridge.sendResult(switchCard, ctx);
+              if (!sent) {
+                return {
+                  toast: { type: 'info', content: switchResult.notice },
+                };
+              }
+            }
+          };
+
+          const work = finish().catch((err: unknown) => {
+            getLogger().error('[router] config.save 收尾失败（保存已成功）:', err);
+          });
+          this.configSaveTail = work.then(
+            () => undefined,
+            () => undefined,
+          );
+          const budgetExceeded = Symbol('config-save-budget');
+          const outcome = await Promise.race([
+            work,
+            sleep(CONFIG_SAVE_RESPONSE_BUDGET_MS).then(() => budgetExceeded),
+          ]);
+          if (outcome === budgetExceeded) {
+            getLogger().warn(
+              `[router] config.save 响应超出 ${CONFIG_SAVE_RESPONSE_BUDGET_MS}ms 预算，卡片刷新与切换卡转入后台`,
+            );
+            return;
           }
+          return outcome as CardActionResponse | void;
         } catch (err) {
           await this.bridge.sendResult({ text: `保存失败: ${(err as Error).message}` }, ctx);
         }
@@ -3058,32 +3126,8 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
   }
 
   private async cmdStop(ctx: CommandContext): Promise<CommandResult | null> {
-    const interrupt = await this.bridge.interruptCurrentRunDetailed({
-      userId: ctx.userId,
-      chatId: ctx.chatId,
-    });
-    if (!interrupt.stopped) {
-      // 本地没有 activeRun/bash：恢复会话的 turn 可能仍在 DSH 宿主里跑。
-      // 只按当前用户/cwd/默认 agent 的当前 session 取消，不扫别的会话。
-      const hostStop = await this.bridge.stopCurrentHostTurn(ctx.userId);
-      if (hostStop && hostStop.status !== 'noop') {
-        return { text: formatHostStopResult(hostStop) };
-      }
-      return { text: '当前没有运行中的进程' };
-    }
-    if (interrupt.stop?.status === 'unconfirmed') {
-      const name = interrupt.agentKind ? agentDisplayName(interrupt.agentKind) : 'agent';
-      return {
-        text:
-          `⚠️ 未能确认 ${name} 的 turn 已停止，它可能仍在后台运行。\n` +
-          '请在 DSH Web UI 检查；需要终止时再发一次 /stop。',
-      };
-    }
-    // 多个 workspace 并行时 /stop 会停掉全部；把这件事说出来，避免用户以为
-    // 只停了当前那个（旧实现只停一条且无提示）。
-    const count = interrupt.stoppedCount ?? 1;
-    if (count > 1) return { text: `✅ 已停止 ${count} 个运行中的任务` };
-    return null;
+    // 单一实现：文本 /stop 与卡片停止共用（含 DSH 宿主轮次 fallback）。
+    return stopCurrentTurn(this.bridge, ctx);
   }
 
   private async cmdExit(): Promise<CommandResult> {
@@ -3181,7 +3225,8 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
   }
 
   private cmdCd(args: string[], ctx: CommandContext): CommandResult {
-    const target = args[0];
+    // 路径可含空格：命令参数按空白切分后必须拼回整段（同 /download）。
+    const target = args.join(' ').trim();
     if (!target) {
       const cwd = this.sessionStore.getCwd(ctx.userId) ?? '(未设置)';
       return { text: `当前目录: ${cwd}` };
@@ -3913,7 +3958,7 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
       currentValue: selectedAgent,
     };
 
-    const tabs: ConfigTab[] = [
+    const tabDefs: ConfigTab[] = [
       {
         id: 'agent',
         label: `🤖 ${agentDisplayName(defaultAgent)}`,
@@ -3939,7 +3984,7 @@ ${sessionCwdLine}${agentLines.map((l) => `- ${l}`).join('\n')}
     ];
 
     // 使用共享渲染模块构建卡片（Agent 选择器作为普通 select 字段参与渲染）
-    return { card: buildConfigCardFromTabs(tabs, displayConfig) };
+    return { card: buildConfigCardFromTabs(tabDefs, displayConfig) };
   }
 
   /** /order 实现（public：测试直接调用）。 */

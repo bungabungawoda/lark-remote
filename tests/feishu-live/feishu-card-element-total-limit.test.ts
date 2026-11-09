@@ -5,11 +5,17 @@
  * 元素不超限」两条互相矛盾的结论，且把 230025 记作「elements 过多」但从无实测。
  * 在测试会话探测后确定：
  *
- * - 判据是**递归统计 `elements` 数组成员（不含 `columns`）≤ 99**：
- *   平铺 99 个 div 通过、100 个失败；单列内嵌 98 个 div（99）通过、99 个（100）失败；
+ * - 判据是**整卡所有带 `tag` 的节点 ≤ 200**：div、column_set、column、button、
+ *   input、select、plain_text / lark_md 文本、select 的每个选项文本、header
+ *   标题都算。15 行模型列表 + 23 个下拉选项的配置卡恰好 200 通过、24 个选项
+ *   201 失败；
+ * - 对纯 div 卡片，它等价于「递归统计 `elements` 数组成员（不含 `columns`）
+ *   ≤ 99」：平铺 99 个 div（199 个节点）通过、100 个（201）失败；单列内嵌
+ *   98 个 div（199）通过、99 个（201）失败；
  * - 整卡 JSON 对象数**不是**判据：`/ws` 分页卡 227 个对象能发出去，而平铺
  *   100 个 div 只有 205 个对象却失败；
- * - 另一个独立维度：单个 column_set 66 列（元素计数 67）通过、67 列（68）失败；
+ * - 字节数也不是判据：同形状 30KB 文本卡通过，13KB 的配置卡被拒；
+ * - 另一个独立维度：单个 column_set 66 列通过、67 列失败；
  * - 失败返回 `230099 / ErrCode: 11310 element exceeds the limit`，与 markdown
  *   table 超限同码不同因；**本次探测没有出现 230025**。
  *
@@ -29,7 +35,11 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { FeishuConnector } from '../../src/connector/index.js';
 import { loadConfig } from '../../src/config/index.js';
-import { countCardElements, MAX_CARD_ELEMENTS } from '../../src/card/card-budget.js';
+import {
+  countCardComponents,
+  countCardElements,
+  MAX_CARD_ELEMENTS,
+} from '../../src/card/card-budget.js';
 import { renderRunCard } from '../../src/card/run-renderer.js';
 import type { RunState } from '../../src/card/run-state.js';
 import {
@@ -49,6 +59,7 @@ interface ProbeResult {
   shape: string;
   topLevel: number;
   elements: number;
+  components: number;
   ok: boolean;
   code?: string | number;
   msg?: string;
@@ -103,6 +114,80 @@ function wrap(elements: object[], title: string): object {
 }
 
 /**
+ * 一行「文本 + 按钮」：column_set + 2 个 column + div + 文本 + button +
+ * 按钮文本 = 7 个带 tag 节点。
+ */
+function actionRow(i: number): object {
+  return {
+    tag: 'column_set',
+    flex_mode: 'none',
+    columns: [
+      {
+        tag: 'column',
+        width: 'weighted',
+        weight: 1,
+        elements: [{ tag: 'div', text: { tag: 'lark_md', content: `row-${i}` } }],
+      },
+      {
+        tag: 'column',
+        width: 'auto',
+        elements: [
+          {
+            tag: 'button',
+            text: { tag: 'plain_text', content: '选择' },
+            size: 'small',
+            behaviors: [{ type: 'callback', value: { cmd: 'probe', index: i } }],
+          },
+        ],
+      },
+    ],
+  };
+}
+
+/**
+ * 一行下拉：column_set + 2 个 column + div + 文本 + select + 占位文本 = 7 个
+ * 带 tag 节点，每个选项再 +1（选项文本）。
+ */
+function selectRow(optionCount: number): object {
+  return {
+    tag: 'column_set',
+    flex_mode: 'none',
+    columns: [
+      {
+        tag: 'column',
+        width: 'weighted',
+        weight: 2,
+        elements: [{ tag: 'div', text: { tag: 'lark_md', content: '下拉' } }],
+      },
+      {
+        tag: 'column',
+        width: 'weighted',
+        weight: 3,
+        elements: [
+          {
+            tag: 'select_static',
+            placeholder: { tag: 'plain_text', content: '请选择' },
+            options: Array.from({ length: optionCount }, (_, i) => ({
+              text: { tag: 'plain_text', content: `o${i}` },
+              value: `o${i}`,
+            })),
+            behaviors: [{ type: 'callback', value: { cmd: 'probe.select' } }],
+          },
+        ],
+      },
+    ],
+  };
+}
+
+/**
+ * 组件数恰好 `rows * 7 + 7 + options + 1`（header 标题）的卡片。
+ * rows=27、options=3 时是 200，options=4 时是 201。
+ */
+function taggedBoundaryCard(rows: number, options: number): object[] {
+  return [...Array.from({ length: rows }, (_, i) => actionRow(i)), selectRow(options)];
+}
+
+/**
  * 渲染器最坏形状：`tools` 个工具（含输出）+ `panels` 个思考面板，
  * 工具是与 thinking 一样的折叠面板（运行中/失败默认展开）。
  */
@@ -111,6 +196,7 @@ async function probeCard(shape: string, card: object, topLevel: number): Promise
     shape,
     topLevel,
     elements: countCardElements(card),
+    components: countCardComponents(card),
     ok: false,
   };
   try {
@@ -124,7 +210,7 @@ async function probeCard(shape: string, card: object, topLevel: number): Promise
     result.msg = feishuError?.msg ?? (err as Error).message;
   }
   console.log(
-    `[probe] ${result.ok ? '✅' : '❌'} ${shape} 顶层=${result.topLevel} 元素=${result.elements}` +
+    `[probe] ${result.ok ? '✅' : '❌'} ${shape} 顶层=${result.topLevel} 元素=${result.elements} 组件=${result.components}` +
       (result.ok ? '' : ` code=${result.code} msg=${result.msg}`),
   );
   logCardMetrics(`${result.ok ? 'PASS' : 'FAIL'} ${shape}`, card);
@@ -185,6 +271,22 @@ describeLive('飞书 API 集成测试 - 卡片元素总数上限', () => {
     // 所以这里只锁结果，不锁计数）。
     expect(colsOk.ok).toBe(true);
     expect(colsFail.ok).toBe(false);
+  }, 60_000);
+
+  it('组件数分界：200 个带 tag 节点通过、201 个触发 11310', async () => {
+    if (skipIfNoConfig() || !connector || !testChatId) return;
+    // 27 行 × 7 + 1 行下拉 × 7 + 1 个 header 标题 = 197；再加 3 个选项文本
+    // 恰好 200，加 4 个就是 201。elements 数不变（27 × 3 + 3 = 84），只变选项数。
+    const ok = await probe('tagged-200', taggedBoundaryCard(27, 3));
+    const fail = await probe('tagged-201', taggedBoundaryCard(27, 4));
+
+    expect(ok.elements).toBe(84);
+    expect(ok.components).toBe(200);
+    expect(ok.ok).toBe(true);
+    expect(fail.elements).toBe(84);
+    expect(fail.components).toBe(201);
+    expect(fail.ok).toBe(false);
+    expect(String(fail.msg)).toContain('11310');
   }, 60_000);
 
   it('渲染器最坏 run 卡片：元素数在预算内且发送成功', async () => {

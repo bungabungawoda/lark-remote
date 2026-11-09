@@ -63,25 +63,32 @@ function fieldRow(label: string, control: object): object {
   };
 }
 
+/** 选中值：优先 field.currentValue（卡片显示覆盖值），否则取 config 值。 */
+function resolveSelectedValue(field: ConfigField, currentValue: unknown): string | undefined {
+  const value = field.currentValue != null ? field.currentValue : currentValue;
+  return value == null ? undefined : String(value);
+}
+
 function buildSelectElement(field: ConfigField, currentValue: unknown): object {
-  // 优先使用 field.currentValue（卡片显示用覆盖值），否则使用 config 中的值
-  const selectedValue =
-    field.currentValue != null
-      ? String(field.currentValue)
-      : currentValue == null
-        ? undefined
-        : String(currentValue);
+  const selectedValue = resolveSelectedValue(field, currentValue);
   return fieldRow(field.label, {
     tag: 'select_static',
     placeholder: { tag: 'plain_text', content: '请选择' },
-    options: field.options!.map((opt) => {
-      const text = typeof opt === 'string' ? opt : opt.text;
-      const value = typeof opt === 'string' ? opt : opt.value;
-      return { text: { tag: 'plain_text', content: text }, value };
-    }),
+    options: field.options!.map((opt) => ({
+      text: { tag: 'plain_text', content: optionText(opt) },
+      value: optionValue(opt),
+    })),
     initial_option: selectedValue,
     behaviors: [{ type: 'callback', value: { cmd: 'config.set', key: field.key } }],
   });
+}
+
+function optionText(opt: string | { text: string }): string {
+  return typeof opt === 'string' ? opt : opt.text;
+}
+
+function optionValue(opt: string | { value: string }): string {
+  return typeof opt === 'string' ? opt : opt.value;
 }
 
 function buildInputElement(field: ConfigField, currentValue: unknown): object {

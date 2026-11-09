@@ -1121,7 +1121,7 @@ function reduceAssistantEvent(state: RunState, event: AssistantEvent): RunState 
       // 最新正文原样保留（见 capStaleTextBlocks）：这里一旦按窗口截断，最终回答
       // 就在进渲染层之前已经缺头，任何「回答优先」的排版都救不回来。
       const newBlocks =
-        last?.kind === 'text'
+        last?.kind === 'text' && !last.archivedAnswer
           ? [
               ...blocks.slice(0, -1),
               {

@@ -182,6 +182,8 @@ beforeEach(() => {
 });
 afterEach(() => {
   rmRf(tmpDir);
+  // 防止 readdir 故障注入等 test-only spy 泄漏到后续用例。
+  vi.restoreAllMocks();
 });
 
 function createRouter(overrides?: {
@@ -484,6 +486,33 @@ describe('CommandRouter', () => {
     // writes into JSONL (`/var/folders/...` → `/private/var/folders/...`).
     expect(entry?.cwd).toBe(fs.realpathSync(tmpDir));
     expect(entry?.sessions.get('claude')).toBe('');
+  });
+
+  it('/cd keeps spaces in path (does not silently switch to an existing prefix)', async () => {
+    // 红：args[0] 只取第一段空白。前缀目录存在时 /cd /tmp/x/my proj 会**
+    // 静默切到 /tmp/x/my**，不报错；后续 run 全在错误目录。
+    const prefix = path.join(tmpDir, 'my');
+    const target = path.join(prefix, 'proj space');
+    fs.mkdirSync(target, { recursive: true });
+
+    const { router, sessionStore } = createRouter();
+    sessionStore.setCwd('user1', fs.realpathSync(tmpDir));
+    await router.handle(`/cd ${target}`, ctx);
+
+    expect(sessionStore.getCwd('user1')).toBe(fs.realpathSync(target));
+  });
+
+  it('/ls keeps spaces in path (does not list an existing prefix directory)', async () => {
+    const prefix = path.join(tmpDir, 'ls-prefix');
+    const target = path.join(prefix, 'project dir');
+    fs.mkdirSync(target, { recursive: true });
+    fs.writeFileSync(path.join(target, 'inside.txt'), 'x');
+
+    const { router, sessionStore, connector } = createRouter();
+    sessionStore.setCwd('user1', fs.realpathSync(tmpDir));
+    await router.handle(`/ls ${target}`, ctx);
+
+    expect(JSON.stringify(connector._sent[0]?.input)).toContain('inside.txt');
   });
 
   // 目录 symlink 是 POSIX 原语（win32 创建目录链接需要特权/ Junction 语义），门控
@@ -930,6 +959,53 @@ describe('CommandRouter', () => {
     expect(cardStr).not.toContain('下一页');
   });
 
+  /** 让指定目录的 readdir 抛 EACCES，其余路径走真实实现。 */
+  function failReaddirFor(dir: string): void {
+    const originalReaddir = fs.readdirSync as unknown as (p: fs.PathLike, o?: unknown) => unknown;
+    vi.spyOn(fs, 'readdirSync').mockImplementation(((p: fs.PathLike, opts?: unknown) => {
+      if (path.basename(String(p)) === path.basename(dir)) {
+        throw Object.assign(new Error('EACCES: permission denied'), { code: 'EACCES' });
+      }
+      return originalReaddir(p, opts);
+    }) as unknown as typeof fs.readdirSync);
+  }
+
+  it('ls.page 读取失败时回错误 toast，而不是成功 toast + 零反馈', async () => {
+    // 红：cmdLs 在 readdir 失败时返回 {text}，handler 却直接 card.card! ——
+    // undefined 传给 updateCardInPlace，sendResult({card:undefined}) 也直接
+    // 返回 false；真实错误文案被吞，用户点了没有任何反馈。
+    const dir = path.join(tmpDir, 'unreadable-page');
+    fs.mkdirSync(dir);
+    const { router, sessionStore } = createRouter();
+    sessionStore.setCwd('user1', fs.realpathSync(tmpDir));
+    failReaddirFor(dir);
+
+    const res = await router.handleCardAction(
+      { cmd: 'ls.page', path: dir, offset: 0 },
+      { userId: 'user1', chatId: 'chat1', messageId: 'msg1' },
+    );
+
+    expect(res).toEqual({
+      toast: { type: 'error', content: expect.stringContaining('读取目录失败') },
+    });
+  });
+
+  it('ls.refresh 读取失败时把错误文案发给用户', async () => {
+    const dir = path.join(tmpDir, 'unreadable-refresh');
+    fs.mkdirSync(dir);
+    const { router, sessionStore, connector } = createRouter();
+    sessionStore.setCwd('user1', fs.realpathSync(tmpDir));
+    failReaddirFor(dir);
+
+    await router.handleCardAction(
+      { cmd: 'ls.refresh', path: dir },
+      { userId: 'user1', chatId: 'chat1', messageId: 'msg1' },
+    );
+
+    const last = connector._sent.at(-1)?.input as { text?: string } | undefined;
+    expect(last?.text).toContain('读取目录失败');
+  });
+
   it('/ls card has no empty elements[] anywhere (structural invariant)', async () => {
     // Broader invariant: every column.elements and top-level elements[] in the
     // entire card must be non-empty. This catches any future regression where
@@ -994,6 +1070,22 @@ describe('CommandRouter', () => {
 
     await router.handle('/ws remove proj', ctx);
     expect((connector._sent[3].input as { text: string }).text).toContain('已删除');
+  });
+
+  it('/ws save/use/remove keeps spaces in the workspace name', async () => {
+    // 红：只取 args[1]。/ws save my proj 会存成 "my"，use/remove 同样错位。
+    const { router, sessionStore, connector } = createRouter();
+    sessionStore.setCwd('user1', fs.realpathSync(tmpDir));
+
+    await router.handle('/ws save my proj', ctx);
+    expect((connector._sent[0].input as { text: string }).text).toContain('"my proj"');
+
+    await router.handle('/ws list', ctx);
+    const listCard = connector._sent[1].input as { card: TestCard };
+    expect(JSON.stringify(listCard.card)).toContain('"name":"my proj"');
+
+    await router.handle('/ws remove my proj', ctx);
+    expect((connector._sent[2].input as { text: string }).text).toContain('已删除');
   });
 
   it('/ws list: buttons labeled 切换/删除, no workspace name on label (TDD)', async () => {
@@ -3489,6 +3581,26 @@ describe('CommandRouter', () => {
 
     // pendingConfig 应清空
     expect(router.pendingConfig).toBeNull();
+  });
+
+  it('config.save returns within the response budget when the card refresh hangs', async () => {
+    // 飞书卡片回调 3 秒上限：卡片刷新（慢探针/网络）不得把响应一起拖住。
+    // 保存已经落盘，超预算后收尾转入后台（下一个 config.* 动作会先等它）。
+    const { router, bridge } = createRouter();
+    await router.handleCardAction(
+      { cmd: 'config.set', key: 'logging.level', option: 'debug' },
+      ctx,
+    );
+    vi.spyOn(bridge, 'updateCardInPlace').mockReturnValue(new Promise(() => {}));
+    vi.useFakeTimers();
+    try {
+      const save = router.handleCardAction({ cmd: 'config.save' }, ctx);
+      await vi.advanceTimersByTimeAsync(1_500);
+      await expect(save).resolves.toBeUndefined();
+    } finally {
+      vi.useRealTimers();
+    }
+    expect(fs.readFileSync(router.configPath, 'utf-8')).toContain('level: debug');
   });
 
   it('config.save correctly saves new nested agent config object (regression: agents.opencode [object Object])', async () => {

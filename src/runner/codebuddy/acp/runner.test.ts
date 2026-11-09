@@ -64,6 +64,20 @@ describe('CodebuddyAcpRunner', () => {
     expect(runner.usesLiveResultEvents()).toBe(true);
   });
 
+  it('reports the configured thinking level as reasoning', () => {
+    const runner = makeRunner(serverScript, { thinkingLevel: 'high' });
+    expect(runner.getStatusInfo()).toMatchObject({
+      kind: 'codebuddy',
+      reasoning: 'high',
+      extras: { mode: 'acp', permissionMode: 'default' },
+    });
+  });
+
+  it('reports the default sentinel as reasoning when no thinking level is configured', () => {
+    const runner = makeRunner(serverScript);
+    expect(runner.getStatusInfo().reasoning).toBe('default');
+  });
+
   it('runs a full turn: text deltas on the assistant channel + success result with usage', async () => {
     const { wrapper, cwd } = writeScenario(tmpDir, serverScript, 'codebuddy', {
       notifications: [

@@ -1587,7 +1587,7 @@ export class DshRunner implements AgentRunner {
           type: 'result',
           subtype: 'error',
           session_id: sessionId,
-          errorMessage: 'DSH 未执行压缩：该 session 没有 /compact 命令',
+          errorMessage: 'DSH 未返回压缩结果（该 session 可能没有 /compact 命令）',
         };
         return;
       }

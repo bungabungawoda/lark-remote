@@ -270,6 +270,61 @@ not valid json
       expect(content.usage!.contextLimit).toBeUndefined();
     });
 
+    it('missing input/cached fields never leak NaN into usage', () => {
+      // 红：cached_input_tokens / input_tokens 直接参与 Math.min 与减法；rollout
+      // 词表漂移导致字段缺失时，只要 output 非 0 该采样就进 usage，全部变成 NaN
+      // 并渲染到卡片。
+      const sessionsDir = path.join(tmpDir, 'sessions', '2026', '07', '19');
+      fs.mkdirSync(sessionsDir, { recursive: true });
+      const file = path.join(sessionsDir, 'rollout-019f-partial.jsonl');
+      fs.writeFileSync(
+        file,
+        `{"type":"session_meta","payload":{"session_id":"019f-partial","cwd":"/tmp"}}
+{"type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"output_tokens":20,"total_tokens":20}}}}
+`,
+        'utf-8',
+      );
+
+      const content = readCodexSessionContent('019f-partial', { codexHome: tmpDir });
+      expect(content.usage).toBeDefined();
+      const usage = content.usage!;
+      for (const value of [
+        usage.inputTokens,
+        usage.outputTokens,
+        usage.totalTokens,
+        usage.cacheReadTokens,
+        usage.contextLength,
+      ]) {
+        expect(Number.isFinite(value)).toBe(true);
+      }
+    });
+
+    it('a partial total_token_usage after a valid one must not produce negative usage', () => {
+      // 红：缺失字段补 0 后，partial total 会参与 total - previousTotals 的减法，
+      // 得到负数；负数在 handleTokenCount 的 || 判断里是 truthy，会进入 usage。
+      const sessionsDir = path.join(tmpDir, 'sessions', '2026', '07', '20');
+      fs.mkdirSync(sessionsDir, { recursive: true });
+      const file = path.join(sessionsDir, 'rollout-019f-partial-total.jsonl');
+      fs.writeFileSync(
+        file,
+        `{"type":"session_meta","payload":{"session_id":"019f-partial-total","cwd":"/tmp"}}
+{"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":40,"output_tokens":10,"total_tokens":110}}}}
+{"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{}}}}
+`,
+        'utf-8',
+      );
+
+      const content = readCodexSessionContent('019f-partial-total', { codexHome: tmpDir });
+      expect(content.usage).toBeDefined();
+      expect(content.usage).toMatchObject({
+        inputTokens: 60,
+        outputTokens: 10,
+        totalTokens: 110,
+        cacheReadTokens: 40,
+        contextLength: 100,
+      });
+    });
+
     it('extracts last token_count usage with input=raw-cached, cacheCreation=0', () => {
       const sessionsDir = path.join(tmpDir, 'sessions', '2026', '07', '14');
       fs.mkdirSync(sessionsDir, { recursive: true });

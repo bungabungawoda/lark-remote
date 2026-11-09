@@ -63,6 +63,7 @@ function makeHarness(opts: { cloneActive?: boolean } = {}) {
     }),
     sendResult: vi.fn().mockResolvedValue(true),
     interruptCurrentRunDetailed: vi.fn().mockResolvedValue({ stopped: false }),
+    stopCurrentHostTurn: vi.fn().mockResolvedValue(undefined),
     saveInboundMedia: vi.fn().mockResolvedValue({ attachments: [], rejected: [] }),
   };
   const binder = {
@@ -238,6 +239,42 @@ describe('setupMessageHandlers 分支口径（ub characterization）', () => {
       userId: 'u1',
       chatId: 'c1',
     });
+  });
+
+  it('/stop 本地无 run 时回退宿主轮次取消（DSH 恢复会话）', async () => {
+    // 红：/stop 的文本快路径只查本地 activeRuns/bash，本地 miss 就直接回
+    // 「没有进程」；恢复会话/上个实例留在 DSH host 里的 turn 永远不会被取消。
+    const h = makeHarness();
+    h.bridge.stopCurrentHostTurn.mockResolvedValue({
+      status: 'cancelled',
+      sessionId: 'dsh-session-1',
+      agentKind: 'dsh',
+      goalPhase: 'paused',
+    });
+    h.handlers.message?.(message('/stop'));
+    await vi.waitFor(() =>
+      expect(h.bridge.sendResult).toHaveBeenCalledWith(
+        { text: expect.stringContaining('已终止 DSH 会话') },
+        { userId: 'u1', chatId: 'c1', messageId: 'm1' },
+      ),
+    );
+  });
+
+  it('/stop 停止结果 unconfirmed → 警告可能仍在后台运行', async () => {
+    const h = makeHarness();
+    h.bridge.interruptCurrentRunDetailed.mockResolvedValue({
+      stopped: true,
+      stoppedCount: 1,
+      agentKind: 'dsh',
+      stop: { status: 'unconfirmed', detail: 'turn still open after cancel' },
+    });
+    h.handlers.message?.(message('/stop'));
+    await vi.waitFor(() =>
+      expect(h.bridge.sendResult).toHaveBeenCalledWith(
+        { text: expect.stringContaining('未能确认') },
+        expect.anything(),
+      ),
+    );
   });
 
   it('/t 且停止多个 → 回「已停止 N 个运行中的任务」', async () => {
