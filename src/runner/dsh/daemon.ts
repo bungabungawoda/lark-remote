@@ -168,8 +168,7 @@ export class DshDaemon {
       if (spawned.exited()) {
         throw new DshDaemonError(
           'spawn',
-          `DSH 启动进程提前退出（端口可能被其他进程占用），${baseUrl} 未就绪。\n` +
-            `日志：${this.logFile()}`,
+          `DSH 启动进程提前退出，${baseUrl} 未就绪。\n` + `日志：${this.logFile()}`,
         );
       }
       throw new DshDaemonError(

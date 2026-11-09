@@ -42,9 +42,45 @@ import { cardWithHeader } from './card-shared.js';
  * **旧结论勘误**：仓库曾把 `230025` 记为「elements 过多」。本次探测中它一次都
  * 没有出现；元素超限统一是 `230099 / ErrCode: 11310 element exceeds the limit`。
  *
+ * **补充判据（2026-11-08 实测）**：`elements` 数组成员数只是近似——它漏算了
+ * 文本、列、按钮、select 选项等同样带 `tag` 的节点。真实边界是**整卡所有带
+ * `tag` 的节点 ≤ 200**（见 `FEISHU_MAX_CARD_COMPONENTS`）。对纯 div 卡片两者
+ * 恰好等价（每个 div 带 1 个文本节点），但对 `column_set` / `select` 密集的
+ * 卡片，`elements` 会明显低估：15 行模型列表 + 24 个 select 选项的配置卡
+ * `elements` 只有 78（低于 90），`tagged` 已达 201，仍被 11310 拒绝。
+ *
  * `MAX_CARD_ELEMENTS` 取 90（相对实测 99 留 10% 余量），用于渲染前的保守裁剪。
  */
 export const MAX_CARD_ELEMENTS = 90;
+
+/**
+ * 飞书单卡「组件」总量上限（实测，含）。
+ *
+ * 判据是**整卡所有带 `tag` 字段的节点**：div / column_set / column / button /
+ * input / select / plain_text / lark_md / select 的每个选项文本 / header 标题。
+ * 2026-11-08 真实 API 探测的通过/失败点（`tagged` 为整卡计数）：
+ *
+ * | 形状 | tagged | 结果 |
+ * | --- | --- | --- |
+ * | 配置卡 15 行模型 + 23 个选项 | 200 | ✅ |
+ * | 配置卡 15 行模型 + 24 个选项 | 201 | ❌ 11310 |
+ * | 顶层平铺 99 / 100 个 div | 199 / 201 | ✅ / ❌ |
+ * | 单 column_set 内嵌 98 / 99 个 div | 199 / 201 | ✅ / ❌ |
+ * | 单个 column_set 66 / 67 列 | 200 / 203 | ✅ / ❌ |
+ * | 79 elements 的 select 密集卡（27 个选项） | 187 | ✅ |
+ *
+ * 边界正好落在 200：`tagged <= 200` 通过，`>= 201` 报 `11310 element exceeds
+ * the limit`。字节数不是判据（同形状 30KB 文本通过，13KB 的配置卡被拒）。
+ */
+export const FEISHU_MAX_CARD_COMPONENTS = 200;
+
+/**
+ * 渲染前的保守组件预算（相对实测 200 留 5% 余量）。
+ *
+ * 必须高于「纯 div 卡片按 `MAX_CARD_ELEMENTS` 裁到 90」时的组件数（90 个 div +
+ * 90 个文本 + header 标题 = 181），否则元素预算与组件预算会互相打架。
+ */
+export const MAX_CARD_COMPONENTS = 190;
 
 /**
  * 卡片递归的 `elements` 数组成员数（`columns` 不计数）——与飞书实测边界对齐。
@@ -75,6 +111,28 @@ export function countCardElements(card: unknown): number {
       if (key === 'elements' || key === 'columns') continue;
       walk(child);
     }
+  };
+  walk(card);
+  return total;
+}
+
+/**
+ * 卡片递归的「带 tag 节点」总数——与飞书 11310 的真实边界对齐。
+ *
+ * 包含 `elements` 成员、`columns`、以及它们的文本/占位/选项等全部子节点，
+ * 也就是渲染树上每个组件节点。用于补上 `countCardElements` 对 `column_set`
+ * 与 `select` 密集卡片的低估（见 `FEISHU_MAX_CARD_COMPONENTS` 的实测表）。
+ */
+export function countCardComponents(card: unknown): number {
+  let total = 0;
+  const walk = (value: unknown): void => {
+    if (Array.isArray(value)) {
+      for (const item of value) walk(item);
+      return;
+    }
+    if (!value || typeof value !== 'object') return;
+    if (typeof (value as { tag?: unknown }).tag === 'string') total++;
+    for (const child of Object.values(value as Record<string, unknown>)) walk(child);
   };
   walk(card);
   return total;
@@ -134,11 +192,18 @@ export function enforceCardBudget(
   const bytesBefore = Buffer.byteLength(cardStr, 'utf8');
   const parsed = JSON.parse(cardStr) as CardNode;
   const elementsBefore = countCardElements(parsed);
+  const componentsBefore = countCardComponents(parsed);
   const droppedTables = capCardMarkdownTables(parsed, FEISHU_MAX_TABLES);
   if (droppedTables > 0) {
     const fixedStr = JSON.stringify(parsed);
-    // table 截断后可能仍超预算（字节或元素总数），继续走后续阶段
-    if (fitsBudget(Buffer.byteLength(fixedStr, 'utf8'), countCardElements(parsed))) {
+    // table 截断后可能仍超预算（字节、元素总数或组件总数），继续走后续阶段
+    if (
+      fitsBudget(
+        Buffer.byteLength(fixedStr, 'utf8'),
+        countCardElements(parsed),
+        countCardComponents(parsed),
+      )
+    ) {
       return {
         card: parsed,
         wasTruncated: true,
@@ -150,12 +215,15 @@ export function enforceCardBudget(
     return enforceElementBudget(parsed, opts, bytesBefore);
   }
 
-  if (fitsBudget(bytesBefore, elementsBefore)) {
+  if (fitsBudget(bytesBefore, elementsBefore, componentsBefore)) {
     return { card, wasTruncated: false, bytesBefore, bytesAfter: bytesBefore };
   }
 
-  // 元素总数超限：table 与字节可能都正常，必须先按元素数裁剪。
-  if (bytesBefore <= CARD_BUDGET_BYTES && elementsBefore > MAX_CARD_ELEMENTS) {
+  // 元素总数或组件总数超限：table 与字节可能都正常，必须先按数量裁剪。
+  if (
+    bytesBefore <= CARD_BUDGET_BYTES &&
+    (elementsBefore > MAX_CARD_ELEMENTS || componentsBefore > MAX_CARD_COMPONENTS)
+  ) {
     return enforceElementBudget(parsed, opts, bytesBefore);
   }
 
@@ -163,9 +231,18 @@ export function enforceCardBudget(
   return enforceByteBudget(JSON.parse(cardStr) as CardNode, opts, bytesBefore);
 }
 
-/** 同时满足字节与元素总数两个预算。 */
-function fitsBudget(bytes: number, elements: number): boolean {
-  return bytes <= CARD_BUDGET_BYTES && elements <= MAX_CARD_ELEMENTS;
+/** 同时满足字节、元素总数、组件总数三个预算。 */
+function fitsBudget(bytes: number, elements: number, components: number): boolean {
+  return (
+    bytes <= CARD_BUDGET_BYTES && elements <= MAX_CARD_ELEMENTS && components <= MAX_CARD_COMPONENTS
+  );
+}
+
+/** 元素总数或组件总数是否超预算。 */
+function cardQuantityExceeded(card: CardNode): boolean {
+  return (
+    countCardElements(card) > MAX_CARD_ELEMENTS || countCardComponents(card) > MAX_CARD_COMPONENTS
+  );
 }
 
 /**
@@ -202,12 +279,12 @@ function enforceElementBudget(
   const panelCount = getPanelIndices(elements).length;
   if (panelCount > 0) {
     let dropped = 0;
-    while (countCardElements(card) > MAX_CARD_ELEMENTS && getPanelIndices(elements).length > 0) {
+    while (cardQuantityExceeded(card) && getPanelIndices(elements).length > 0) {
       dropped += dropPanels(1);
     }
     if (dropped > 0) reasons.push('element_budget_panels_dropped');
   }
-  if (countCardElements(card) <= MAX_CARD_ELEMENTS && size() <= CARD_BUDGET_BYTES) {
+  if (!cardQuantityExceeded(card) && size() <= CARD_BUDGET_BYTES) {
     return done(true);
   }
 
@@ -305,7 +382,22 @@ function byteBudgetDone(ctx: ByteBudgetContext, wasTruncated: boolean): BudgetRe
 
 /** 原 elementsWithinBudgetWithHint 闭包（含 hint 预留位）。 */
 function byteBudgetElementsWithin(ctx: ByteBudgetContext): boolean {
-  return countCardElements(ctx.truncated) + (ctx.omitted > 0 ? 1 : 0) <= MAX_CARD_ELEMENTS;
+  return !elementBudgetExceeded(ctx);
+}
+
+/**
+ * 元素总数或组件总数是否超预算——把「裁剪后要补的省略提示」算进去。
+ *
+ * 提示本身占 1 个元素 / 2 个组件（div + 文本）；只按裸数量裁到恰好 MAX，
+ * 补提示后就会越界，所有裁剪/判定共用这一个口径。
+ */
+function elementBudgetExceeded(ctx: ByteBudgetContext): boolean {
+  const hintElements = ctx.omitted > 0 ? 1 : 0;
+  const hintComponents = ctx.omitted > 0 ? 2 : 0;
+  return (
+    countCardElements(ctx.truncated) + hintElements > MAX_CARD_ELEMENTS ||
+    countCardComponents(ctx.truncated) + hintComponents > MAX_CARD_COMPONENTS
+  );
 }
 
 /** 原 `size() <= ... && elementsWithinBudgetWithHint()` 达标判定。 */
@@ -395,9 +487,13 @@ function truncateTopLevelDivs(ctx: ByteBudgetContext): void {
 // 阶段1-4 只会裁内容/删面板；元素超限且无面板时在此按序丢弃最旧的顶层
 // 元素直到达标（与 table/panel 的「删最旧、留最新」口径一致，尾部操作
 // 按钮保留）。留 ≥3 个元素兜底，仍不达标则交给阶段5 的最小卡。
+//
+// 达标判定必须用 `elementBudgetExceeded`（含省略提示预留位）：只按裸元素
+// 数裁到恰好 MAX 时，补提示后变成 MAX+1，判定不达标且本阶段不再重试，
+// 整卡被换成最小卡（元素数刚超限的配置卡曾整卡变成「⚠️ 内容已截断」）。
 function dropExcessElements(ctx: ByteBudgetContext): BudgetResult | undefined {
-  if (countCardElements(ctx.truncated) > MAX_CARD_ELEMENTS) {
-    while (countCardElements(ctx.truncated) > MAX_CARD_ELEMENTS && ctx.elements.length > 3) {
+  if (elementBudgetExceeded(ctx)) {
+    while (elementBudgetExceeded(ctx) && ctx.elements.length > 3) {
       ctx.elements.shift();
       ctx.omitted++;
     }

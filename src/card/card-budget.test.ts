@@ -1,5 +1,11 @@
 import { describe, it, expect } from 'vitest';
-import { countCardElements, enforceCardBudget, MAX_CARD_ELEMENTS } from './card-budget.js';
+import {
+  countCardComponents,
+  countCardElements,
+  enforceCardBudget,
+  MAX_CARD_COMPONENTS,
+  MAX_CARD_ELEMENTS,
+} from './card-budget.js';
 import { CARD_BUDGET_BYTES, FEISHU_MAX_TABLES } from './text-truncate.js';
 import { sessionEventPanel } from './card-helpers.js';
 import { markdownDiv } from './collapsible.js';
@@ -754,10 +760,10 @@ describe('enforceCardBudget element-total budget', () => {
   });
 
   it('does not collapse a panel-free card into the minimal fallback', () => {
-    // 30 行 /active 风格的行（div+div+button+hr）：元素超预算但没有面板可丢，
-    // 此时必须原样返回，不能降级成一句话（这些行不受面板裁剪支配）。
+    // 46 行 /active 风格的行（div+button，2 元素/行 = 92 个元素）：元素超预算
+    // 但没有面板可丢，必须裁掉最旧的顶层元素后继续发原卡，不能降级成一句话。
     const rows: object[] = [];
-    for (let i = 0; i < 30; i++) {
+    for (let i = 0; i < 46; i++) {
       rows.push({ tag: 'div', text: { tag: 'lark_md', content: `行 ${i}` } });
       rows.push({
         tag: 'button',
@@ -767,9 +773,113 @@ describe('enforceCardBudget element-total budget', () => {
       });
     }
     const input = card(rows);
-    const before = countCardElements(input);
     const result = enforceCardBudget(input);
-    expect(countCardElements(result.card)).toBe(before);
-    expect(result.reason).toBeUndefined();
+    expect(result.reason).toBe('element_budget_elements_dropped');
+    expect(countCardElements(result.card)).toBeLessThanOrEqual(MAX_CARD_ELEMENTS);
+    // 保留最新的行（与面板/table 的「删最旧、留最新」口径一致）
+    expect(JSON.stringify(result.card)).toContain('行 45');
+    expect(JSON.stringify(result.card)).not.toContain('行 0');
+  });
+
+  it('leaves room for the omitted hint when trimming (boundary: exactly MAX+1)', () => {
+    // 91 个平铺 div（1 个头部 + 90 行）：组件数 183，仍在组件预算内，只有
+    // 元素预算绑定。只裁到 90 时补 1 个省略提示会变成 91，旧实现判定不达标
+    // 且不再重试，整卡被换成「⚠️ 内容已截断」。循环必须按 MAX-1 收口。
+    const input = card([
+      { tag: 'div', text: { tag: 'lark_md', content: 'head' } },
+      ...Array.from({ length: 90 }, (_, i) => ({
+        tag: 'div',
+        text: { tag: 'lark_md', content: `行 ${i}` },
+      })),
+    ]);
+    expect(countCardElements(input)).toBe(MAX_CARD_ELEMENTS + 1);
+    expect(countCardComponents(input)).toBeLessThanOrEqual(MAX_CARD_COMPONENTS);
+
+    const result = enforceCardBudget(input);
+    expect(result.reason).toBe('element_budget_elements_dropped');
+    expect(countCardElements(result.card)).toBeLessThanOrEqual(MAX_CARD_ELEMENTS);
+    expect(
+      (result.card as { header?: { title?: { content?: string } } }).header?.title?.content,
+    ).not.toContain('内容已截断');
+    // 提示已插入，且仍保留最新的行
+    expect(JSON.stringify(result.card)).toContain('还有');
+    expect(JSON.stringify(result.card)).toContain('行 89');
+  });
+
+  it('trims a column_set-heavy card that only exceeds the component budget', () => {
+    // 30 行 × 7 个带 tag 节点 + header = 211 个组件，elements 只有 30。
+    // 元素预算完全够用，但飞书按组件数判 11310（实测 200 通过 / 201 失败）。
+    const row = (i: number): object => ({
+      tag: 'column_set',
+      flex_mode: 'none',
+      columns: [
+        {
+          tag: 'column',
+          width: 'weighted',
+          weight: 1,
+          elements: [{ tag: 'div', text: { tag: 'lark_md', content: `行 ${i}` } }],
+        },
+        {
+          tag: 'column',
+          width: 'auto',
+          elements: [
+            {
+              tag: 'button',
+              text: { tag: 'plain_text', content: '选择' },
+              size: 'small',
+              behaviors: [{ type: 'callback', value: { cmd: 'pick', index: i } }],
+            },
+          ],
+        },
+      ],
+    });
+    const input = card(Array.from({ length: 30 }, (_, i) => row(i)));
+    expect(countCardElements(input)).toBeLessThanOrEqual(MAX_CARD_ELEMENTS);
+    expect(countCardComponents(input)).toBeGreaterThan(MAX_CARD_COMPONENTS);
+
+    const result = enforceCardBudget(input);
+    expect(result.reason).toBe('element_budget_elements_dropped');
+    expect(countCardComponents(result.card)).toBeLessThanOrEqual(MAX_CARD_COMPONENTS);
+    const json = JSON.stringify(result.card);
+    expect(json).toContain('行 29');
+    expect(json).not.toContain('内容已截断');
+  });
+});
+
+describe('countCardComponents', () => {
+  it('counts every tagged node, including columns and select option texts', () => {
+    const input = {
+      schema: '2.0',
+      header: { title: { tag: 'plain_text', content: 't' } },
+      body: {
+        elements: [
+          {
+            tag: 'column_set',
+            columns: [
+              {
+                tag: 'column',
+                elements: [{ tag: 'div', text: { tag: 'lark_md', content: 'x' } }],
+              },
+              {
+                tag: 'column',
+                elements: [
+                  {
+                    tag: 'select_static',
+                    options: [
+                      { text: { tag: 'plain_text', content: 'a' }, value: 'a' },
+                      { text: { tag: 'plain_text', content: 'b' }, value: 'b' },
+                    ],
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+      },
+    };
+    // elements 只数数组成员：column_set + div + select
+    expect(countCardElements(input)).toBe(3);
+    // 组件数还要算 header 标题、2 个 column、2 个选项文本和 div 文本
+    expect(countCardComponents(input)).toBe(9);
   });
 });

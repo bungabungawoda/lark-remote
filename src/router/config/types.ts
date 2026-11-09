@@ -28,7 +28,7 @@ export interface ConfigField {
    * 实现细节与未上卡的键走 YAML（见 `buildConfigCard` 的分 tab 注释）。
    */
   type: 'select' | 'input' | 'note';
-  /** For select type: the list of options shown in the dropdown.
+  /** For select type: the list of options shown in the card.
    *  Accepts plain strings (text=value) or {text, value} objects for
    *  display-value separation (e.g. 'manual（逐项审批）' → value 'manual'). */
   options?: readonly (string | SelectOption)[];

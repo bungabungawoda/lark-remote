@@ -268,6 +268,31 @@ describe('ApprovalCoordinator', () => {
       expect(event.view.permissions!.items[0].selected).toBe(true);
     });
 
+    it('pushes approval_view_updated so the card renders the new selection', async () => {
+      // 红：togglePerm 原地改 selected 但不回推卡片。响应里回显的仍是旧图标/按钮，
+      // 而 Codex 授权范围读的是被改过的 selected —— 用户看到的与最终授权不一致。
+      const event = makePermissionsEvent();
+      coordinator.onRequested(event);
+      await coordinator.togglePerm(
+        { permId: 'net:api.example.com:443', selected: true },
+        { requestId: 1003 },
+      );
+
+      expect(pushToCard).toHaveBeenCalledTimes(1);
+      const pushed = pushToCard.mock.calls[0]![0] as Array<{
+        type: string;
+        requestId: number | string;
+        view: { permissions?: { items: Array<{ id: string; selected?: boolean }> } };
+      }>;
+      expect(pushed).toEqual([
+        expect.objectContaining({ type: 'approval_view_updated', requestId: 1003 }),
+      ]);
+      expect(pushed[0]!.view.permissions!.items[0]).toMatchObject({
+        id: 'net:api.example.com:443',
+        selected: true,
+      });
+    });
+
     it('throws for non-permissions request', async () => {
       const event = makeCommandEvent();
       coordinator.onRequested(event);

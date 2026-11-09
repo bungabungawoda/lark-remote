@@ -33,6 +33,7 @@ import { AgentRegistry } from './runner/registry.js';
 import { probeAllAgents } from './runner/probe.js';
 import { warmCodexCatalogCache } from './config/codex-config.js';
 import { warmCodebuddyCatalogCache } from './config/codebuddy-catalog.js';
+import { warmQoderConfigCache } from './config/qoder-config.js';
 import { SessionReaderRegistry, SessionStore } from './session/index.js';
 import {
   ClaudeSessionReader,
@@ -616,6 +617,11 @@ function initializeRunner(
   // 8s (execFileSync cold path). Fire-and-forget; failure lands in negative
   // cache and the sync card path falls back gracefully.
   warmCodexCatalogCache();
+
+  // Warm the qoder model/effort catalog in the background. The probes are
+  // async but each cold refresh costs seconds; warming keeps the first
+  // /config open on a cache hit instead of degrading to text inputs.
+  warmQoderConfigCache(getAgentConfig(config, 'qoder')?.cli?.binary);
 
   return { agentRegistry, sessionReaderRegistry };
 }

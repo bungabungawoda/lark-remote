@@ -324,7 +324,10 @@ export class SessionIndex {
     const paths = this.bySessionId.get(sessionId);
     if (!paths || paths.size === 0) return undefined;
 
-    for (const p of paths) {
+    // 快照迭代：updateEntry 会对同一 path 做 delete+add（同 sessionId 有多个
+    // path 时 Set 本身仍存在），直接迭代原 Set 会在指纹持续变化时反复重访
+    // 同一路径、重复全量解析（活跃会话写入期间可卡死事件循环）。
+    for (const p of [...paths]) {
       const entry = this.byPath.get(p);
       if (!entry) continue;
 
@@ -392,6 +395,10 @@ export class SessionIndex {
     this.built = true;
 
     const currentPaths = new Set<string>();
+    // 非 ENOENT 读取失败（EACCES/EMFILE…）的 project 目录：本轮读不到不等于
+    // 会话消失，末尾清理必须保留这些目录下的旧条目，否则一次瞬时故障就会让
+    // /resume 静默少一整批会话。
+    const unreadableDirs = new Set<string>();
 
     for (const entry of entries) {
       const subdir = path.join(this.projectsDir, entry);
@@ -400,6 +407,7 @@ export class SessionIndex {
         st = fs.statSync(subdir);
         if (!st.isDirectory()) continue;
       } catch (err) {
+        if ((err as NodeJS.ErrnoException).code !== 'ENOENT') unreadableDirs.add(subdir);
         getLogger().debug(
           `[session-index] skipped unreadable project dir ${subdir}: ${
             (err as Error)?.message ?? String(err)
@@ -412,6 +420,7 @@ export class SessionIndex {
       try {
         files = fs.readdirSync(subdir).filter((f) => f.endsWith('.jsonl'));
       } catch (err) {
+        if ((err as NodeJS.ErrnoException).code !== 'ENOENT') unreadableDirs.add(subdir);
         getLogger().debug(
           `[session-index] skipped unreadable project subdir ${subdir}: ${
             (err as Error)?.message ?? String(err)
@@ -465,9 +474,10 @@ export class SessionIndex {
       }
     }
 
-    // Remove entries for files that no longer exist
+    // Remove entries for files that no longer exist（读取失败的目录除外：
+    // 本轮没读到不代表文件已删除）
     for (const p of [...this.byPath.keys()]) {
-      if (!currentPaths.has(p)) {
+      if (!currentPaths.has(p) && !unreadableDirs.has(path.dirname(p))) {
         this.removeEntry(p);
       }
     }

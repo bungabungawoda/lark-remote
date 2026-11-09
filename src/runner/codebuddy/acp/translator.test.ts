@@ -58,22 +58,46 @@ describe('CodebuddyAcpTranslator', () => {
     expect(block.content).toBe('Stdout: 0\nExit Code: 0');
   });
 
-  it("stopReason 'refusal' 映射为可读错误（真机：上下文不足时 /compact 被引擎拒绝）", () => {
+  it("stopReason 'refusal' 透传 _meta 里的真实错误（真机：429 配额耗尽）", () => {
     const t = new CodebuddyAcpTranslator();
-    const result = t.handlePromptResponse('aaaaaaaa-1111', { stopReason: 'refusal' }) as {
+    const result = t.handlePromptResponse('aaaaaaaa-1111', {
+      stopReason: 'refusal',
+      _meta: {
+        'codebuddy.ai/errorMessage': JSON.stringify({
+          code: 6004,
+          message:
+            '429 usage exceeds frequency limit, your usage will reset at 2026-11-09 15:35:32',
+          data: { statusCode: 429 },
+        }),
+      },
+    }) as {
       type: string;
       subtype?: string;
       errorMessage?: string;
     };
     expect(result.type).toBe('result');
     expect(result.subtype).toBe('error');
-    expect(result.errorMessage).toContain('refusal');
-    expect(result.errorMessage).toContain('/compact');
+    expect(result.errorMessage).toContain('429 usage exceeds frequency limit');
+    expect(result.errorMessage).toContain('2026-11-09');
+    expect(result.errorMessage).not.toContain('/compact');
     // 其余 stopReason 不受影响（end_turn → success）
     const ok = t.handlePromptResponse('aaaaaaaa-1111', { stopReason: 'end_turn' }) as {
       subtype?: string;
     };
     expect(ok.subtype).toBe('success');
+  });
+
+  it("stopReason 'refusal' 无上游详情时不臆测原因", () => {
+    const t = new CodebuddyAcpTranslator();
+    const result = t.handlePromptResponse('aaaaaaaa-1111', { stopReason: 'refusal' }) as {
+      subtype?: string;
+      errorMessage?: string;
+    };
+    expect(result.subtype).toBe('error');
+    expect(result.errorMessage).toContain('refusal');
+    expect(result.errorMessage).toContain('未说明原因');
+    expect(result.errorMessage).not.toContain('/compact');
+    expect(result.errorMessage).not.toContain('模型拒答');
   });
 
   it('审批视图取真字段：Bash 用 rawInput.command/description，Read 用 file_path', () => {

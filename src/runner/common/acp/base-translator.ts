@@ -31,6 +31,8 @@ import type {
   TurnStartedEvent,
 } from '../../types.js';
 import { produceTurnStartedEvent } from '../turn-started.js';
+import { truncateWithEllipsis } from './acp-approval.js';
+import { describePromptError, type PromptErrorDetail } from './prompt-error.js';
 import {
   NotificationMethod,
   ServerRequestMethod,
@@ -42,10 +44,12 @@ import {
   type UsageUpdateEvent,
   type SessionUpdateNotification,
   type RequestPermissionParams,
+  type SessionPromptResult,
   type AcpPlanEvent,
   type SessionInfoUpdateEvent,
   type CurrentModeUpdateEvent,
 } from './protocol-types.js';
+import { getLogger } from '../../../logger/index.js';
 
 /**
  * ACP tool kind → 常用工具名映射（信息保真，数据驱动无 agent 分支）。
@@ -314,8 +318,12 @@ export abstract class BaseAcpTranslator {
    * stopReason: end_turn → success; cancelled → interrupted (independent
    * terminal state, must NOT merge into error); anything else
    * (max_tokens / refusal / …) → error.
+   *
+   * Error text comes from the upstream payload when the server forwarded one
+   * (`error` / `_meta`), otherwise from the stopReason itself. See
+   * prompt-error.ts for why no cause is inferred.
    */
-  handlePromptResponse(sessionId: string, result: { stopReason: string }): AgentEvent {
+  handlePromptResponse(sessionId: string, result: SessionPromptResult): AgentEvent {
     const subtype =
       result.stopReason === 'end_turn'
         ? 'success'
@@ -323,16 +331,34 @@ export abstract class BaseAcpTranslator {
           ? 'interrupted'
           : 'error';
 
+    let errorText: string | undefined;
+    if (subtype === 'error') {
+      const detail = describePromptError(result);
+      errorText = detail.text;
+      this.logPromptError(result, detail);
+    }
+
     return {
       type: 'result',
       subtype,
       session_id: sessionId,
       ...(this.hasLiveUsage ? { usage: this.liveUsageSnapshot() } : {}),
       ...(this.liveCostUsd !== undefined ? { total_cost_usd: this.liveCostUsd } : {}),
-      ...(subtype === 'error'
-        ? { errorMessage: `Prompt ended with stopReason: ${result.stopReason}` }
-        : {}),
+      ...(errorText ? { errorMessage: errorText } : {}),
     };
+  }
+
+  /**
+   * One warn line per failed prompt: the raw stopReason plus whether the server
+   * forwarded a real message. Without it the card is the only record of a
+   * failure, and a wrong card text cannot be traced back.
+   */
+  private logPromptError(result: SessionPromptResult, detail: PromptErrorDetail): void {
+    getLogger().warn(
+      `[${this.logTag}] prompt error stopReason=${result.stopReason} ` +
+        `upstream=${detail.upstream ? truncateWithEllipsis(detail.upstream, 300) : '(none)'} ` +
+        `metaKeys=${result._meta ? Object.keys(result._meta).join(',') : '(none)'}`,
+    );
   }
 
   /**

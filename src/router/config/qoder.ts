@@ -8,7 +8,7 @@
  * 词汇（1.1.84 session/new availableModes 实测），旧 snake_case 值显示前归一。
  */
 
-import { loadQoderConfig } from '../../config/qoder-config.js';
+import { loadQoderConfig, refreshQoderConfig } from '../../config/qoder-config.js';
 import { QODER_PERMISSION_MODES, normalizeQoderPermissionMode } from '../../config/index.js';
 import type { AgentConfigCardBuilder, ConfigField, SelectOption } from './types.js';
 import type { AppConfig } from '../../config/index.js';
@@ -116,7 +116,13 @@ export class QoderConfigBuilder implements AgentConfigCardBuilder {
   buildFields(displayConfig: AppConfig): ConfigField[] {
     // binary 随配置（CN 版 qodercn / 国际版 qoder）——loader 探测的命令必须
     // 与 runner 实际 spawn 的一致，否则 --list-models 永远打不到已装的 CLI。
-    const qCfg = loadQoderConfig(displayConfig.agents?.qoder?.cli?.binary);
+    const binary = displayConfig.agents?.qoder?.cli?.binary;
+    // 目录刷新在后台点火，卡片本帧只读缓存（stale-while-revalidate）。
+    // 同步探测单次 4–6s（`--reasoning-effort off -p ""`），会堵住事件循环
+    // 让卡片回调超过飞书 3 秒上限；缓存冷时本帧回退文本输入，探针完成后
+    // 下一次渲染换成下拉。启动时 warmQoderConfigCache 已预热，常态纯缓存读。
+    void refreshQoderConfig(binary).catch(() => {});
+    const qCfg = loadQoderConfig(binary);
     const q = displayConfig.agents?.qoder;
 
     return [

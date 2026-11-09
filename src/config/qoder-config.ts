@@ -11,13 +11,19 @@
  * 校验时报出全表（1.1.84 实测：`Valid values are: auto, none, low, medium,
  * high, xhigh, max, ultracode.`），据此解析出与安装版本一致的档位下拉；探测
  * 不成立时该字段同样回退文本输入。
+ *
+ * 探测全部走**异步 spawn**（`refreshQoderConfig`，卡片构建只同步读缓存）：
+ * 单次 `--reasoning-effort off -p ""` 实测 4–6s，同步路径会堵住事件循环，
+ * 让卡片回调超过飞书 3 秒上限（客户端提示「目标服务器超时未响应」）。缓存
+ * 过期时先用上次成功快照渲染，后台刷新（stale-while-revalidate）；从未探测
+ * 成功才回退文本输入。启动预热见 `warmQoderConfigCache`。
  */
 
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { getLogger } from '../logger/index.js';
-import { spawnProcessSync } from '../platform/spawn.js';
+import { spawnProcess } from '../platform/spawn.js';
 
 /** Qoder CLI 输出中模型的宽松形态（结构未承诺，字段全部可选）。 */
 interface QoderModelEntryLike {
@@ -35,19 +41,40 @@ export interface QoderConfigResult {
   effortOptions: string[];
 }
 
-/** 清空缓存（仅供测试使用，生产代码无调用点）。 */
-export function invalidateQoderConfigCache(): void {
-  qoderConfigCache = null;
+/** 目录快照（只含探测结果；currentModel 每次实时读 settings.json）。 */
+interface QoderCatalogSnapshot {
+  modelOptions: string[];
+  effortOptions: string[];
 }
 
+/** 单次 CLI 调用超时（与旧同步路径的 10s 口径一致）。 */
+const PROBE_TIMEOUT_MS = 10_000;
+/** 单次 CLI 输出上限（防异常输出打爆内存；量级与旧 spawnSync 的 maxBuffer 一致）。 */
+const MAX_OUTPUT_BYTES = 2 * 1024 * 1024;
+/** 目录缓存 TTL。CLI 升级/模型增删在 5 分钟内可见。 */
+const CATALOG_CACHE_TTL_MS = 5 * 60_000;
+
+interface QoderCatalogCacheEntry {
+  binary: string;
+  snapshot: QoderCatalogSnapshot;
+  timestamp: number;
+}
+
+let catalogCache: QoderCatalogCacheEntry | null = null;
+/** 在途刷新（并发点火复用，避免同一时刻 spawn 多份 CLI）。 */
+let catalogRefreshInFlight: Promise<QoderConfigResult> | null = null;
 /**
- * Cache for loadQoderConfig to avoid repeated sync calls。按 binary 键控：
- * CN 版（qodercn）与国际版（qoder）的 --list-models 输出不同，TTL 内切换
- * binary 不得读到另一家的结果。
+ * 补充档位（`off`）的探测结果，按 binary 永久缓存：该探测实测 4–6s，
+ * 每 5 分钟重跑一次没有收益。失败不写缓存，下次刷新重试。
  */
-let qoderConfigCache: { binary: string; result: QoderConfigResult; timestamp: number } | null =
-  null;
-const QODER_CONFIG_CACHE_TTL_MS = 60000; // 1 minute TTL
+const effortSupplementCache = new Map<string, string[]>();
+
+/** 清空缓存（仅供测试使用，生产代码无调用点）。 */
+export function invalidateQoderConfigCache(): void {
+  catalogCache = null;
+  catalogRefreshInFlight = null;
+  effortSupplementCache.clear();
+}
 
 /**
  * Qoder 配置根目录解析：显式配置优先；缺省时 CN 版（~/.qoder-cn）优先于
@@ -123,28 +150,73 @@ function dedupe(names: string[]): string[] {
   return [...new Set(names)];
 }
 
+interface CapturedRun {
+  status: number | null;
+  stdout: string;
+  stderr: string;
+}
+
 /**
- * 从 `<binary> --list-models` 拉取并解析模型清单：spawn + 退出码校验 +
- * parse + 空清单 warn。任何失败（命令缺失/非零退出）一律回退空数组
- * （卡片回退文本输入），不把异常抛给调用方。
+ * 异步 spawn + 捕获输出（一次性 CLI 探测）。超时/起不来 → reject，调用方
+ * 统一回退空清单。走 `platform/spawn.ts` 统一收口（win32 垫片解析口径）。
  */
-function fetchModelOptions(binary: string): string[] {
-  try {
-    // spawnProcessSync（cross-spawn）而非 execFileSync：win32 垫片解析口径与
-    // runner spawn 一致（同 kimi-config 的理由）。
-    const res = spawnProcessSync(binary, ['--list-models'], {
+function runCaptured(binary: string, args: string[]): Promise<CapturedRun> {
+  return new Promise((resolve, reject) => {
+    const child = spawnProcess(binary, args, {
       stdio: ['ignore', 'pipe', 'pipe'],
-      timeout: 10000,
-      maxBuffer: 2 * 1024 * 1024,
-      encoding: 'utf-8',
       windowsHide: true,
     });
-    if (res.error) throw res.error;
+    let stdout = '';
+    let stderr = '';
+    let settled = false;
+    const settle = (fn: () => void): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      fn();
+    };
+    const timer = setTimeout(() => {
+      settle(() => {
+        child.kill('SIGKILL');
+        reject(new Error(`${binary} timed out after ${PROBE_TIMEOUT_MS}ms`));
+      });
+    }, PROBE_TIMEOUT_MS);
+    child.stdout?.on('data', (chunk: Buffer | string) => {
+      stdout += String(chunk);
+      if (stdout.length > MAX_OUTPUT_BYTES) {
+        settle(() => {
+          child.kill('SIGKILL');
+          reject(new Error(`${binary} stdout exceeded ${MAX_OUTPUT_BYTES} bytes`));
+        });
+      }
+    });
+    child.stderr?.on('data', (chunk: Buffer | string) => {
+      stderr += String(chunk);
+      if (stderr.length > MAX_OUTPUT_BYTES) {
+        settle(() => {
+          child.kill('SIGKILL');
+          reject(new Error(`${binary} stderr exceeded ${MAX_OUTPUT_BYTES} bytes`));
+        });
+      }
+    });
+    child.on('error', (err: Error) => settle(() => reject(err)));
+    child.on('close', (status: number | null) => settle(() => resolve({ status, stdout, stderr })));
+  });
+}
+
+/**
+ * 从 `<binary> --list-models` 拉取并解析模型清单：spawn + 退出码校验 +
+ * parse + 空清单 warn。任何失败（命令缺失/非零退出/超时）→ undefined，
+ * 由调用方保留上次成功快照（从未成功则卡片回退文本输入）。
+ */
+async function fetchModelOptions(binary: string): Promise<string[] | undefined> {
+  try {
+    const res = await runCaptured(binary, ['--list-models']);
     if (res.status !== 0) {
-      const stderr = String(res.stderr ?? '').trim();
+      const stderr = res.stderr.trim();
       throw new Error(`${binary} exited ${res.status}${stderr ? `: ${stderr.slice(0, 200)}` : ''}`);
     }
-    const modelOptions = parseQoderModelList(String(res.stdout ?? ''));
+    const modelOptions = parseQoderModelList(res.stdout);
     if (modelOptions.length === 0) {
       getLogger().warn(
         '[qoder-config] --list-models produced no model names, card falls back to input',
@@ -155,7 +227,7 @@ function fetchModelOptions(binary: string): string[] {
     getLogger().warn(
       `[qoder-config] failed to load models: ${(err as Error).message}, using empty list`,
     );
-    return [];
+    return undefined;
   }
 }
 
@@ -168,7 +240,8 @@ const QODER_EFFORT_PROBE_SENTINEL = '__lark_remote_effort_probe__';
 /**
  * 校验报错漏列、但 CLI 实际接受的档位（TUI /effort 有 off，报错全表没有，
  * 传 off 实测静默通过）。逐个探测后才并入：被拒（报 Invalid reasoning
- * effort）则不进下拉，清单始终与安装的 CLI 对齐。
+ * effort）则不进下拉，清单始终与安装的 CLI 对齐。探测结果按 binary 永久缓存
+ * ——单次实测 4–6s，重复探测没有收益。
  */
 const QODER_EFFORT_SUPPLEMENT = ['off'] as const;
 
@@ -189,39 +262,13 @@ export function parseQoderEffortList(output: string): string[] {
 }
 
 /**
- * 捕获式 spawn：进程起不来/超时抛 res.error，返回退出码与 stdout+stderr 合并
- * 输出（探测判定只看报错文案，不盯退出码 —— 合法值静默 exit 42、非法值
- * exit 1 都是版本细节）。
- */
-function spawnCaptured(binary: string, args: string[]): { status: number | null; output: string } {
-  // spawnProcessSync（cross-spawn）而非 execFileSync：win32 垫片解析口径与
-  // runner spawn 一致（同 kimi-config 的理由）。
-  const res = spawnProcessSync(binary, args, {
-    stdio: ['ignore', 'pipe', 'pipe'],
-    timeout: 10000,
-    maxBuffer: 2 * 1024 * 1024,
-    encoding: 'utf-8',
-    windowsHide: true,
-  });
-  if (res.error) throw res.error;
-  return {
-    status: res.status,
-    output: `${String(res.stdout ?? '')}\n${String(res.stderr ?? '')}`,
-  };
-}
-
-/**
  * 单档位探测：`--reasoning-effort <level> -p ""`。空 prompt 走不到模型调用，
  * 探测零 token 成本；合法值静默退出，非法值在 stderr 报 Invalid + 全表。
  */
-function runEffortProbe(binary: string, level: string): { status: number | null; output: string } {
-  return spawnCaptured(binary, ['--reasoning-effort', level, '-p', '']);
-}
-
-/** 探测单个档位是否被当前 CLI 接受：输出里没有 Invalid reasoning effort 即接受。 */
-function probeAcceptsEffort(binary: string, level: string): boolean {
+async function probeAcceptsEffort(binary: string, level: string): Promise<boolean> {
   try {
-    return !/invalid reasoning effort/i.test(runEffortProbe(binary, level).output);
+    const res = await runCaptured(binary, ['--reasoning-effort', level, '-p', '']);
+    return !/invalid reasoning effort/i.test(`${res.stdout}\n${res.stderr}`);
   } catch {
     return false;
   }
@@ -229,49 +276,104 @@ function probeAcceptsEffort(binary: string, level: string): boolean {
 
 /**
  * 探测推理强度档位：哨兵值触发 CLI 校验报错 → 解析全表；报错漏列的补充档位
- * （off）逐个探测后并入。哨兵探不出全表（CLI 缺失/未登录/未来版本改文案）
- * 一律空数组，卡片回退文本输入 —— 与 --list-models 的回退口径一致。
+ * （off）按 binary 只探测一次后并入。哨兵探不出全表（CLI 缺失/未登录/未来
+ * 版本改文案）→ undefined，由调用方保留上次成功快照（从未成功则回退文本
+ * 输入）—— 与 --list-models 的回退口径一致。
  */
-function fetchEffortOptions(binary: string): string[] {
+async function fetchEffortOptions(binary: string): Promise<string[] | undefined> {
   try {
-    const parsed = parseQoderEffortList(runEffortProbe(binary, QODER_EFFORT_PROBE_SENTINEL).output);
+    const probe = await runCaptured(binary, [
+      '--reasoning-effort',
+      QODER_EFFORT_PROBE_SENTINEL,
+      '-p',
+      '',
+    ]);
+    const parsed = parseQoderEffortList(`${probe.stdout}\n${probe.stderr}`);
     if (parsed.length === 0) {
       getLogger().warn('[qoder-config] effort probe produced no levels, card falls back to input');
-      return [];
+      return undefined;
     }
-    const extra = QODER_EFFORT_SUPPLEMENT.filter(
-      (level) => !parsed.includes(level) && probeAcceptsEffort(binary, level),
-    );
-    return [...parsed, ...extra];
+    let supplements = effortSupplementCache.get(binary);
+    if (supplements === undefined) {
+      supplements = [];
+      for (const level of QODER_EFFORT_SUPPLEMENT) {
+        if (!parsed.includes(level) && (await probeAcceptsEffort(binary, level))) {
+          supplements.push(level);
+        }
+      }
+      effortSupplementCache.set(binary, supplements);
+    }
+    return [...parsed, ...supplements.filter((level) => !parsed.includes(level))];
   } catch (err) {
     getLogger().warn(
       `[qoder-config] effort probe failed: ${(err as Error).message}, using empty list`,
     );
-    return [];
+    return undefined;
   }
 }
 
 /**
- * Load Qoder models from `<binary> --list-models` + current model from
- * settings.json, effort levels from a validation-error probe. Uses caching to
- * avoid repeated sync calls.
+ * 同步读缓存（config 卡 buildFields 用，绝不 spawn）。从未成功探测 → 空清单
+ * （卡片回退文本输入）；缓存过期仍返回上次成功快照，刷新由同一帧点火的
+ * `refreshQoderConfig` 在后台完成（stale-while-revalidate）。
  */
 export function loadQoderConfig(binary = 'qodercn', configDir?: string): QoderConfigResult {
-  const now = Date.now();
-  if (
-    qoderConfigCache &&
-    qoderConfigCache.binary === binary &&
-    now - qoderConfigCache.timestamp < QODER_CONFIG_CACHE_TTL_MS
-  ) {
-    return qoderConfigCache.result;
+  const snapshot = catalogCache?.binary === binary ? catalogCache.snapshot : undefined;
+  return {
+    currentModel: readCurrentModel(resolveQoderConfigDir(configDir)),
+    modelOptions: snapshot?.modelOptions ?? [],
+    effortOptions: snapshot?.effortOptions ?? [],
+  };
+}
+
+/**
+ * 异步刷新目录（buildFields 内联点火 / 启动预热调用）。TTL 内直接吃缓存；
+ * 并发点火复用同一个 in-flight 刷新。探测失败保留上次成功快照（从未成功
+ * 则空清单），并照常写时间戳（negative cache 让失败不再每个渲染都重试）。
+ */
+export function refreshQoderConfig(
+  binary = 'qodercn',
+  configDir?: string,
+): Promise<QoderConfigResult> {
+  const cached = catalogCache;
+  if (cached && cached.binary === binary && Date.now() - cached.timestamp < CATALOG_CACHE_TTL_MS) {
+    return Promise.resolve({
+      currentModel: readCurrentModel(resolveQoderConfigDir(configDir)),
+      ...cached.snapshot,
+    });
   }
+  if (catalogRefreshInFlight) return catalogRefreshInFlight;
 
-  const resolvedDir = resolveQoderConfigDir(configDir);
-  const currentModel = readCurrentModel(resolvedDir);
-  const modelOptions = fetchModelOptions(binary);
-  const effortOptions = fetchEffortOptions(binary);
+  const previous = cached?.binary === binary ? cached.snapshot : undefined;
+  catalogRefreshInFlight = (async (): Promise<QoderConfigResult> => {
+    const [modelOptions, effortOptions] = await Promise.all([
+      fetchModelOptions(binary),
+      fetchEffortOptions(binary),
+    ]);
+    const snapshot: QoderCatalogSnapshot = {
+      modelOptions: modelOptions ?? previous?.modelOptions ?? [],
+      effortOptions: effortOptions ?? previous?.effortOptions ?? [],
+    };
+    catalogCache = { binary, snapshot, timestamp: Date.now() };
+    return { currentModel: readCurrentModel(resolveQoderConfigDir(configDir)), ...snapshot };
+  })()
+    .catch((err) => {
+      // fetch* 已内部兜底；这里只兜「Promise.all 之外」的意外，保持调用方零异常。
+      getLogger().warn(`[qoder-config] refresh failed: ${(err as Error).message}`);
+      const snapshot = previous ?? { modelOptions: [], effortOptions: [] };
+      catalogCache = { binary, snapshot, timestamp: Date.now() };
+      return { currentModel: readCurrentModel(resolveQoderConfigDir(configDir)), ...snapshot };
+    })
+    .finally(() => {
+      catalogRefreshInFlight = null;
+    });
+  return catalogRefreshInFlight;
+}
 
-  const result: QoderConfigResult = { currentModel, modelOptions, effortOptions };
-  qoderConfigCache = { binary, result, timestamp: Date.now() };
-  return result;
+/**
+ * 启动/后台预热（fire-and-forget）：让首次打开 /config 卡时缓存已温，
+ * 不必等一次后台刷新才从文本输入升级为下拉。
+ */
+export function warmQoderConfigCache(binary = 'qodercn'): void {
+  void refreshQoderConfig(binary).catch(() => {});
 }

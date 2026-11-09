@@ -427,6 +427,18 @@ describe('SessionStore load — 字段完整性与空值语义 (characterization
     new SessionStore(filePath);
     expect(fs.readdirSync(tmpDir).some((f) => f.includes('.corrupt-'))).toBe(true);
   });
+
+  it('读错误（EISDIR/EACCES）不把文件当损坏封存', () => {
+    // 红：load 的 try 同时覆盖 readFileSync 与 JSON.parse，任何读失败都被
+    // preserveCorruptStore 改名；可能完好的 store 被搬走，下次启动指针归零。
+    const dirPath = path.join(tmpDir, 'last-session.json');
+    fs.mkdirSync(dirPath);
+
+    new SessionStore(dirPath);
+
+    expect(fs.statSync(dirPath).isDirectory()).toBe(true);
+    expect(fs.readdirSync(tmpDir).some((f) => f.includes('.corrupt-'))).toBe(false);
+  });
 });
 
 /**

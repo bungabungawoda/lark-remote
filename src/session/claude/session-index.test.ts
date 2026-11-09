@@ -561,12 +561,85 @@ describe('SessionIndex findBySessionIdAndCwd', () => {
     expect(entry3).toBeUndefined();
   });
 
+  it('does not re-parse the same path repeatedly when stat keeps changing mid-lookup', () => {
+    // 红：findBySessionIdAndCwd 迭代 bySessionId 的 Set，updateEntry 会
+    // delete+add 同一 path（Set 迭代器把它排到队尾后重新访问）。文件持续写入
+    // （活跃会话）时指纹每次都不一致，同一个 path 被反复全量解析。
+    // 必须有两个同 sessionId 的 path：只有一个时 removeCrossRefs 会连 Set 一起删掉，
+    // 迭代器结束，掩盖 delete+add 的重访行为。
+    const fileA = writeJsonl('-home-user-project', FAKE_SESSION_ID_A, [
+      initLine(FAKE_CWD_1),
+      userMessageLine('placeholder'),
+    ]);
+    const fileB = writeJsonl('-home-user-other', FAKE_SESSION_ID_A, [
+      initLine(FAKE_CWD_1),
+      userMessageLine('placeholder'),
+    ]);
+    const targets = new Set([fileA, fileB]);
+
+    const idx = new SessionIndex(projectsDir);
+    idx.build();
+
+    const originalStatSync = fs.statSync;
+    let syntheticStats = 0;
+    const spy = vi.spyOn(fs, 'statSync').mockImplementation(((
+      p: fs.PathLike,
+      opts?: fs.StatSyncOptions,
+    ) => {
+      if (targets.has(String(p)) && syntheticStats < 8) {
+        syntheticStats++;
+        const n = syntheticStats;
+        return {
+          size: BigInt(1000 + n),
+          mtimeNs: BigInt(1_000_000 + n),
+          ctimeNs: BigInt(1_000_000 + n),
+          dev: BigInt(1),
+          ino: BigInt(1),
+          mtimeMs: 1000 + n,
+        } as unknown as fs.BigIntStats;
+      }
+      return (originalStatSync as (p: fs.PathLike, o?: fs.StatSyncOptions) => fs.Stats)(p, opts);
+    }) as unknown as typeof fs.statSync);
+
+    expect(idx.findBySessionIdAndCwd(FAKE_SESSION_ID_A, FAKE_CWD_2)).toBeUndefined();
+    // 一次查询最多：两个 path 各 buildFingerprint + 更新条目 1 次 stat = 4。
+    expect(syntheticStats).toBeLessThanOrEqual(4);
+    spy.mockRestore();
+  });
+
   it('returns undefined for nonexistent sessionId', () => {
     const idx = new SessionIndex(projectsDir);
     idx.build();
 
     const entry = idx.findBySessionIdAndCwd('no-such-id', FAKE_CWD_1);
     expect(entry).toBeUndefined();
+  });
+  it('subdir read failure preserves existing entries instead of deleting them', () => {
+    // 红：单个 project 子目录 readdir 失败只记 debug 并 continue，文件不进
+    // currentPaths；末尾「删除已消失文件」把该目录全部条目移出索引。EACCES/
+    // EMFILE 这类可恢复读取失败会表现成「这些会话不存在」。
+    writeJsonl('-home-user-project', FAKE_SESSION_ID_A, [
+      initLine(FAKE_CWD_1),
+      userMessageLine('placeholder'),
+    ]);
+    const idx = new SessionIndex(projectsDir);
+    idx.build();
+    expect(idx.listByCwd(FAKE_CWD_1)).toHaveLength(1);
+
+    const originalReaddir = fs.readdirSync as unknown as (p: fs.PathLike, o?: unknown) => unknown;
+    const spy = vi.spyOn(fs, 'readdirSync').mockImplementation(((
+      p: fs.PathLike,
+      opts?: unknown,
+    ) => {
+      if (path.basename(String(p)) === '-home-user-project') {
+        throw Object.assign(new Error('EACCES: permission denied'), { code: 'EACCES' });
+      }
+      return originalReaddir(p, opts);
+    }) as unknown as typeof fs.readdirSync);
+
+    idx.build();
+    expect(idx.listByCwd(FAKE_CWD_1)).toHaveLength(1);
+    spy.mockRestore();
   });
 });
 

@@ -182,7 +182,7 @@ function wsSave(
   _q: string | undefined,
   deps: WsCommandDeps,
 ): CommandResult {
-  const name = args[1];
+  const name = args.slice(1).join(' ').trim();
   if (!name) return { text: '用法: /ws save <name>' };
   const cwd = deps.getCwd(ctx.userId);
   if (!cwd) return { text: '请先 /cd 设置工作目录' };
@@ -197,7 +197,7 @@ function wsUse(
   _q: string | undefined,
   deps: WsCommandDeps,
 ): CommandResult {
-  const name = args[1];
+  const name = args.slice(1).join(' ').trim();
   if (!name) return { text: '用法: /ws use <name>' };
   const wsPath = deps.getWorkspace(name);
   if (!wsPath) return { text: `workspace "${name}" 不存在` };
@@ -218,7 +218,7 @@ function wsRemove(
   _q: string | undefined,
   deps: WsCommandDeps,
 ): CommandResult {
-  const name = args[1];
+  const name = args.slice(1).join(' ').trim();
   if (!name) return { text: '用法: /ws remove <name>' };
   if (!deps.hasWorkspace(name)) return { text: `workspace "${name}" 不存在` };
   deps.removeWorkspace(name);

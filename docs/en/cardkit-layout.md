@@ -135,13 +135,13 @@ Counter-example / correct example (run-card status row):
 ## Debugging Tips
 
 - Use `JSON.stringify(card)` to inspect the structure
-- Before sending, check the 28KB limit **and** the element total with
-  `enforceCardBudget()` / `countCardNodes()`
+- Before sending, check the 28KB limit, the element total (`countCardElements`)
+  and the component total (`countCardComponents`) with `enforceCardBudget()`
 - Feishu API error codes: 200621 (tag/structure error), 300123 (form missing
   submit), 230099/11310 (**element total or markdown-table limit** — one code,
   two causes; see below)
 
-### Card element total limit (measured against the real API, 2026-10-19)
+### Card element total limit (measured against the real API, 2026-10-19 / 2026-11-08)
 
 `tests/feishu-live/feishu-card-element-total-limit.test.ts` measured, in the test
 chat:
@@ -152,21 +152,35 @@ chat:
 | Divs nested in one column_set column | 98 (+ the column_set = 99) | 99 (= 100) |
 | Columns in one column_set            | 66                         | 67         |
 
-The rule is **recursively counted `elements` array members (excluding `columns`)
-≤ 99**. The whole-card JSON object count is **not** the criterion: the `/ws`
-pagination card carries 227 JSON objects and still sends, while 100 flat divs
-(205 objects) fails. Column count is an independent dimension (the 66/67
-boundary); every card in this repo uses at most 3 columns, so it never applies.
-Over-limit responses carry `230099` with an inner `ErrCode: 11310 element
-exceeds the limit`.
+The criterion (corrected 2026-11-08) is **at most 200 tagged nodes across the
+whole card**: div, column_set, column, button, input, select, plain_text /
+lark_md text, every select option text, and the header title. For pure-div cards
+this is equivalent to "`elements` array members (excluding `columns`) ≤ 99",
+because each div carries one text node; `column_set` / `select`-heavy cards are
+underestimated by the element count:
+
+| Shape                                    | elements | tagged nodes | Result   |
+| ---------------------------------------- | -------- | ------------ | -------- |
+| Config card, 15 model rows + 23 options  | 78       | 200          | ✅       |
+| Config card, 15 model rows + 24 options  | 78       | 201          | ❌ 11310 |
+
+The whole-card JSON object count is **not** the criterion: the `/ws` pagination
+card carries 227 JSON objects and still sends, while 100 flat divs (205 objects)
+fails. Byte size is not the criterion either: a 30KB text card of the same shape
+sends, while a 13KB config card is rejected. Column count is an independent
+dimension (the 66/67 boundary); every card in this repo uses at most 3 columns,
+so it never applies. Over-limit responses carry `230099` with an inner
+`ErrCode: 11310 element exceeds the limit`.
 
 **Correction**: the repo used to record `230025` as "too many elements". It
 never appeared in this measurement; do not use it as the element-total
 criterion. The older "/ws fails at 61 top-level elements" observation holds
 because its 20 rows × (div + column_set + 2 buttons) count to 101 elements.
 
-On the implementation side: `MAX_CARD_ELEMENTS = 90` (10% below the measured 99)
-and `countCardElements()` in `src/card/card-budget.ts`, plus the element-trimming
-branch of `enforceCardBudget()`; the run card enforces both budgets via
+On the implementation side: `MAX_CARD_ELEMENTS = 90` (10% below the measured 99),
+`MAX_CARD_COMPONENTS = 190` (5% below the measured 200),
+`countCardElements()` / `countCardComponents()` in `src/card/card-budget.ts`,
+plus the quantity-trimming branch of `enforceCardBudget()` (either budget being
+over triggers trimming); the run card enforces both budgets via
 `withinRunCardBudget()` in `run-renderer.ts`, and its normal path drops the
 oldest steps to stay inside the element budget (`selectVisibleGroups()`).

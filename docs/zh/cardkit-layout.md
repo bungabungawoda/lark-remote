@@ -127,11 +127,12 @@
 ## 调试技巧
 
 - 使用 `JSON.stringify(card)` 检查结构
-- 发送前用 `enforceCardBudget()` 检查是否超 28KB 与元素总数（`countCardNodes`）
+- 发送前用 `enforceCardBudget()` 检查是否超 28KB、元素总数（`countCardElements`）
+  与组件总数（`countCardComponents`）
 - 飞书 API 错误码：200621（标签/结构错误）、300123（form 缺少 submit）、
   230099/11310（**元素总数或 markdown table 超限**——同一码两个成因，见下）
 
-### 卡片元素总数上限（2026-10-19 真实 API 实测）
+### 卡片元素总数上限（2026-10-19 / 2026-11-08 真实 API 实测）
 
 `tests/feishu-live/feishu-card-element-total-limit.test.ts` 在测试会话实测：
 
@@ -141,9 +142,20 @@
 | 单列 column_set 内嵌 div | 98 个（+1 个 column_set = 99） | 99 个（= 100） |
 | 单 column_set 的列数     | 66 列                          | 67 列          |
 
-判据是**递归统计 `elements` 数组成员（不含 `columns`）≤ 99**。整卡 JSON 对象数
-**不是**判据：`/ws` 分页卡有 227 个 JSON 对象仍能发出去，而平铺 100 个 div 只有
-205 个对象却失败。列数是另一个独立维度（66/67 的边界），本仓库的卡片列数都在 3
+判据（2026-11-08 修正）是**整卡所有带 `tag` 的节点 ≤ 200**：div、column_set、
+column、button、input、select、plain_text / lark_md 文本、select 的每个选项
+文本、header 标题都算。对纯 div 卡片，它与「`elements` 数组成员（不含
+`columns`）≤ 99」恰好等价（每个 div 带 1 个文本节点），所以旧表的 99/100 边界
+两个口径都成立；但 `column_set` / `select` 密集的卡片会被 `elements` 明显低估：
+
+| 形状                             | elements | 带 tag 节点 | 结果    |
+| -------------------------------- | -------- | ----------- | ------- |
+| 配置卡 15 行模型 + 23 个下拉选项 | 78       | 200         | ✅      |
+| 配置卡 15 行模型 + 24 个下拉选项 | 78       | 201         | ❌ 11310 |
+
+整卡 JSON 对象数**不是**判据：`/ws` 分页卡有 227 个 JSON 对象仍能发出去，而平铺
+100 个 div 只有 205 个对象却失败。字节数也不是判据：同形状的 30KB 文本卡通过，
+13KB 的配置卡被拒。列数是另一个独立维度（66/67 的边界），本仓库的卡片列数都在 3
 以内，用不到。超限报 `230099`，内层 `ErrCode: 11310 element exceeds the limit`。
 
 **勘误**：仓库早期把 `230025` 记作「elements 过多」，本次探测中一次都没有出现，
@@ -151,6 +163,8 @@
 是因为 20 行 × (div + column_set + 2 button) 的元素计数到了 101。
 
 实现侧：`src/card/card-budget.ts` 的 `MAX_CARD_ELEMENTS = 90`（相对实测 99 留
-10% 余量）、`countCardElements()`，以及 `enforceCardBudget()` 的元素裁剪分支；
-run 卡片由 `run-renderer.ts` 的 `withinRunCardBudget()` 做双预算（28KB + 90 元素）
-检查，正常路径还会按元素预算从最新往回省略最旧的步骤（`selectVisibleGroups()`）。
+10% 余量）、`MAX_CARD_COMPONENTS = 190`（相对实测 200 留 5% 余量）、
+`countCardElements()` / `countCardComponents()`，以及 `enforceCardBudget()` 的
+数量裁剪分支（两个预算任一超限都会裁剪）；run 卡片由 `run-renderer.ts` 的
+`withinRunCardBudget()` 做双预算（28KB + 90 元素）检查，正常路径还会按元素预算
+从最新往回省略最旧的步骤（`selectVisibleGroups()`）。

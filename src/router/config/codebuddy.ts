@@ -36,7 +36,20 @@ const SANDBOX_OPTIONS: SelectOption[] = [
  */
 const DEFAULT_SENTINEL = 'default';
 
-/** 模型：目录可用 → 下拉（展示名 + 积分费率），否则文本输入。 */
+/** 费率展示：目录里 `x0.29 credits` 与 `x0.29` 两种形态，统一去掉单位后缀。 */
+function formatCredits(credits: string | undefined): string {
+  return credits ? credits.replace(/\s*credits$/i, '').trim() : '';
+}
+
+/**
+ * 模型：目录可用 → 下拉（展示名 + 费率），否则文本输入。
+ *
+ * 选项文本不带 id：目录里多数 id 只是展示名的重复（`Deepseek-V4.1-Flash`
+ * 与 `deepseek-v4.1-flash`）。同名模型的费率通常不同（实测
+ * `deepseek-v4.1-flash` x0.00 / `deepseek-v4.1-flash-sg` x0.03），仍可区分；
+ * 只有「名称 + 费率」完全相同的极端情况才补 `（id）`，避免下拉里出现两个
+ * 一模一样的选项。
+ */
 function modelField(cbCfg: CodebuddyConfigResult, configured: string): ConfigField {
   if (cbCfg.modelOptions.length === 0) {
     return {
@@ -46,17 +59,22 @@ function modelField(cbCfg: CodebuddyConfigResult, configured: string): ConfigFie
       currentValue: configured,
     };
   }
+  const options = cbCfg.modelOptions.map((id) => {
+    const name = cbCfg.modelDisplayNames[id];
+    const label = name && name !== id ? name : id;
+    const credits = formatCredits(cbCfg.modelCredits[id]);
+    return { value: id, text: credits ? `${label} ${credits}` : label };
+  });
+  const textCounts = new Map<string, number>();
+  for (const opt of options) textCounts.set(opt.text, (textCounts.get(opt.text) ?? 0) + 1);
+  for (const opt of options) {
+    if ((textCounts.get(opt.text) ?? 0) > 1) opt.text = `${opt.text}（${opt.value}）`;
+  }
   return {
     key: 'agents.codebuddy.model',
     label: '使用模型',
     type: 'select',
-    options: cbCfg.modelOptions.map((id) => {
-      const name = cbCfg.modelDisplayNames[id];
-      // 积分费率随目录下发（如 'x0.29 credits'），选模型时直接可见
-      const credits = cbCfg.modelCredits[id];
-      const base = name && name !== id ? `${name}（${id}）` : id;
-      return { value: id, text: credits ? `${base} · ${credits}` : base };
-    }),
+    options,
     currentValue: configured,
   };
 }

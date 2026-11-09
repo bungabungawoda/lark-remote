@@ -251,6 +251,9 @@ export class ApprovalCoordinator {
     }
 
     item.selected = action.selected;
+    // 与 toggleAnswer 同口径：原地状态变化必须回推卡片，否则按钮/图标停在
+    // 旧渲染，而 accept 时 runner 读取的是这份已改过的 selected。
+    this.pushApprovalViewUpdate(ctx.requestId, tracked);
   }
 
   /**

@@ -135,6 +135,14 @@ export interface SessionPromptParams {
 
 export interface SessionPromptResult {
   stopReason: 'end_turn' | 'cancelled' | string;
+  /** ACP error variant (some servers use it for a subset of failures). */
+  error?: unknown;
+  /**
+   * Vendor metadata. The real provider error may live here when `stopReason`
+   * is only a coarse terminal state (CodeBuddy:
+   * `_meta['codebuddy.ai/errorMessage']`).
+   */
+  _meta?: Record<string, unknown>;
   [key: string]: unknown;
 }
 

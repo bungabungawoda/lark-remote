@@ -24,8 +24,15 @@ import { bestEffortUnlink } from './common/fs.js';
 import { dispatchOrderExecForQueue } from './router/order-exec-dispatch.js';
 import { buildCardActionFullValue } from './router/card-action-payload.js';
 import { actionFeedbackText } from './router/card-action-feedback.js';
+import { stopCurrentTurn } from './bridge/stop-current.js';
 
-const SESSION_MUTATING_FLUSH_BUDGET_MS = 2_000;
+/**
+ * 会改 session 的卡片动作在分发前等待 inbound flush 的上限（ms）。
+ *
+ * 飞书卡片回调要求 3 秒内响应；flush 只是「让在途附件落定」，不该独占整个
+ * 预算——超时后 flush 仍在后台继续，router 侧还有 1.5s 收尾预算。
+ */
+const SESSION_MUTATING_FLUSH_BUDGET_MS = 1_000;
 
 /**
  * /stop 命令别名单源：普通消息的停止分支与 clone 活跃期拦截的排除条件
@@ -209,19 +216,11 @@ function handleInboundMessage(ctx: HandlerContext, msg: FeishuMessage): void {
   const content = ctx.router.expandAliasMessage(msg.content);
   if (isStopCommand(content)) {
     void (async () => {
-      const interrupt = await ctx.bridge.interruptCurrentRunDetailed({
-        userId: msg.userId,
-        chatId: msg.chatId,
-      });
       const stopCtx = { userId: msg.userId, chatId: msg.chatId, messageId: msg.messageId };
-      if (!interrupt.stopped) {
-        await ctx.bridge.sendResult({ text: '当前没有运行中的进程' }, stopCtx);
-      } else if ((interrupt.stoppedCount ?? 1) > 1) {
-        await ctx.bridge.sendResult(
-          { text: `✅ 已停止 ${interrupt.stoppedCount} 个运行中的任务` },
-          stopCtx,
-        );
-      }
+      // 与 /stop 斜杠命令共用同一实现：本地 miss 时必须继续走 DSH 宿主轮次
+      // 取消，并保留 unconfirmed 警告。文本快路径自己拼一份会漏掉这两条。
+      const result = await stopCurrentTurn(ctx.bridge, stopCtx);
+      if (result) await ctx.bridge.sendResult(result, stopCtx);
     })().catch((err: unknown) => ctx.logger.error('[control] /stop failed:', err));
     return;
   }
