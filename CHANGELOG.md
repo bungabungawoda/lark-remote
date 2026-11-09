@@ -5,6 +5,30 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.2] - 2026-11-09
+
+### 新增
+
+- **CodeBuddy 区域自动判定**：启动时先读宿主已声明的区域（V3 产品配置优先于 `CODEBUDDY_INTERNET_ENVIRONMENT`），宿主没有声明时才用国内/海外双探针各探一次目录，以账号当前模型做唯一匹配定区；每条消息开跑前等待判定完成，刚启动发消息也不会打错端点。上游返回 401 或未登录认证错误后判定作废并清掉旧会话与连接，随即在进程内重新判定（带冷却窗口），重新登录无需重启；配置的模型若已不属于当前账号，自动换成账号清单内的可用模型
+- **CodeBuddy 交互式提问（AskUserQuestion）**：ACP initialize 声明 `_meta['codebuddy.ai'].question` 后，模型可发起单选、多选、Other 自定义答案或跳过，问题渲染为飞书 run 卡上的选项卡，答案按 `q_0…q_n` 回编，跳过或超时回 `cancelled`
+- **切换登录后 `/config` 立即反映当前账号**：打开 `/config` 前按 `settings.json` 指纹刷新模型目录；换账号后清掉旧身份绑定的持久会话与 runner，旧区域探不通时自动重新定区。已学到的账号模型清单跨重启复用，不随换号清除
+
+### 修复
+
+- **CodeBuddy ACP 子进程改用 `--serve --port 0`**：CLI 在 ACP 模式下仍会起本地 HTTP 服务且默认端口固定，被 WorkBuddy 等实例占用时进程直接 `EADDRINUSE` 退出；改由 CLI 自动分配端口，ACP 仍走 stdio
+- **模型可用性以账号清单为准**：不再信任 `session/new` 返回的静态模型清单，按上游「当前账号可用模型」与成功 turn 的学习结果校正；配置了无权模型时自动替换并在卡片提示重发，同时作废旧会话与 runner
+- **CodeBuddy 模型选项改为可折行列表**：控件形态与 claude / codex 的模型字段一致，手机窄屏下长模型名不再被截断
+- **配置卡按真实组件上限收口**：统一 CodeBuddy 配置与状态展示，按「整卡带 `tag` 节点 ≤ 200」的真实上限裁剪，避免配置项多时触发 `11310 element exceeds the limit`
+- **Qoder 配置探测改异步**：修复切换配置卡时探测阻塞导致的超时与卡顿
+- **上游错误原样透传**：不再用 `stopReason` 臆测失败原因，ACP runner 统一携带真实错误信息
+- **修正 `/stop` 宿主回退、会话索引与用量读取**：补上停止时的宿主侧回退路径，修正 Claude 会话索引与 Codex rollout 的用量读取缺陷
+- **compact 健壮性**：无压缩统计的 reader 不再渲染空用量块；丢弃 compact 广播与畸形 chunk，避免 `undefined` 正文击穿进程；CodeBuddy 目录探针的 `spawn ENOENT` 收口
+- **DSH 启动竞态**：增加就绪门与对齐重试、断连恢复；`startTimeoutMs` 同时覆盖后台拉起与外部已运行实例的端口 / session 就绪等待
+
+### 文档
+
+- 中英使用文档同步 CodeBuddy 区域判定、`AskUserQuestion`、`--serve --port 0` 与模型可用性口径；中英卡片布局文档补上「整卡带 `tag` 节点 ≤ 200」的实测上限与计数实现
+
 ## [0.6.1] - 2026-11-08
 
 ### 新增
