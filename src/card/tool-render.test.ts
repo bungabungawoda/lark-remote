@@ -227,13 +227,13 @@ describe('toolHeaderText', () => {
     const tool = makeTool({
       name: 'read',
       input: {
-        file_path: '/home/user/notes-app/docs/notes/2026-10-19-vision-remaining.md',
+        file_path: '/home/user/project/packages/widget/src/components/button.tsx',
       },
     });
     const header = toolHeaderText(tool);
     expect(displayWidth(header)).toBeLessThanOrEqual(HEADER_DISPLAY_MAX);
     // 中间省略：结尾的文件名必须还在（头部截断会把文件名整个切掉）
-    expect(header.endsWith('remaining.md')).toBe(true);
+    expect(header.endsWith('button.tsx')).toBe(true);
   });
 
   // ── Lowercase tool names ──
