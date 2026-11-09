@@ -16,6 +16,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { AgentEvent } from '../../types.js';
 import {
+  CODEBUDDY_RESOLVE_INTERRUPTION_METHOD,
   CodebuddyAcpRunner,
   sessionCurrentFrom,
   type CodebuddyAcpRunnerOptions,
@@ -614,6 +615,80 @@ describe('CodebuddyAcpRunner', () => {
     expect(events.some((e) => e.type === 'result')).toBe(true);
     const response = readCapture(capturePath).find((m) => m.id === 45 && m.result !== undefined);
     expect(response?.result).toEqual({ outcome: 'cancelled' });
+
+    await runner.dispose();
+  });
+  it('surfaces an AskUserQuestion permission and delivers answers via resolveInterruption', async () => {
+    const capturePath = join(tmpDir, 'question-permission.jsonl');
+    const { wrapper, cwd } = writeScenario(tmpDir, serverScript, 'codebuddy', {
+      sendCodebuddyQuestionPermission: true,
+      holdPromptUntilResponse: true,
+      capturePath,
+    });
+    const runner = makeRunner(wrapper);
+
+    let questionSeen = false;
+    for await (const event of runner.run('ask me', { cwd })) {
+      if (event.type === 'approval_requested' && event.kind === 'question') {
+        questionSeen = true;
+        expect(event.view.questions).toHaveLength(2);
+        await runner.respondApproval(event.requestId, {
+          action: 'answer',
+          answers: {
+            'Which database?': 'PostgreSQL',
+            'Frameworks?': ['React', 'Vue'],
+          },
+        });
+      }
+    }
+    expect(questionSeen).toBe(true);
+
+    const calls = readCapture(capturePath);
+    const resolve = calls.find((m) => m.method === CODEBUDDY_RESOLVE_INTERRUPTION_METHOD);
+    expect(resolve?.params).toEqual({
+      sessionId: SESSION_ID,
+      toolCallId: 'call_q_perm',
+      decision: 'allow',
+      answers: { q_0: 'PostgreSQL', q_1: ['React', 'Vue'] },
+    });
+    // 工具审批仍要结算，否则 handleToolApproval 一直挂着。
+    const permissionResponse = calls.find((m) => m.id === 46 && m.result !== undefined);
+    expect(permissionResponse?.result).toEqual({
+      outcome: { outcome: 'selected', optionId: 'allow' },
+    });
+
+    await runner.dispose();
+  });
+
+  it('maps a skipped AskUserQuestion permission to resolveInterruption deny', async () => {
+    const capturePath = join(tmpDir, 'question-permission-skip.jsonl');
+    const { wrapper, cwd } = writeScenario(tmpDir, serverScript, 'codebuddy', {
+      sendCodebuddyQuestionPermission: true,
+      holdPromptUntilResponse: true,
+      capturePath,
+    });
+    const runner = makeRunner(wrapper);
+
+    let questionSeen = false;
+    for await (const event of runner.run('ask me', { cwd })) {
+      if (event.type === 'approval_requested' && event.kind === 'question') {
+        questionSeen = true;
+        await runner.respondApproval(event.requestId, { action: 'decline' });
+      }
+    }
+    expect(questionSeen).toBe(true);
+
+    const calls = readCapture(capturePath);
+    const resolve = calls.find((m) => m.method === CODEBUDDY_RESOLVE_INTERRUPTION_METHOD);
+    expect(resolve?.params).toEqual({
+      sessionId: SESSION_ID,
+      toolCallId: 'call_q_perm',
+      decision: 'deny',
+    });
+    const permissionResponse = calls.find((m) => m.id === 46 && m.result !== undefined);
+    expect(permissionResponse?.result).toEqual({
+      outcome: { outcome: 'selected', optionId: 'allow' },
+    });
 
     await runner.dispose();
   });

@@ -16,10 +16,12 @@
  * rawOutput 对象取 `.text`（真机形状）。真量 token 在 usage_update 的
  * `_meta.usage`（`used/size` 恒 0），按 turn 累加后随 result 事件折叠。
  *
- * AskUserQuestion：服务端以 `_codebuddy.ai/question` 扩展方法下发结构化问题
- * （需 initialize 声明 clientCapabilities._meta['codebuddy.ai'].question）。
- * translator 把它翻译成 kind:'question' 审批事件；答案由 runner 按
- * `{outcome:'submitted', answers:{q_0:…}}` 回编。
+ * AskUserQuestion：CodeBuddy 2.181 在 ACP 下先发标准 `session/request_permission`
+ * 做工具审批（options 仍是 allow/deny），题目放在 toolCall.rawInput.questions；
+ * 真正的答案由客户端调 `_codebuddy.ai/resolveInterruption` 回传（interruption
+ * 广播只发给 Web UI，stdio 连接被排除）。translator 在 request_permission 里
+ * 识别 AskUserQuestion 并翻译成 kind:'question'；答案由 runner 回编。
+ * `_codebuddy.ai/question` 扩展方法是另一条（Web UI / 未来版本）通道，保留兼容。
  */
 
 import type { ApprovalView, UserQuestion } from '../../types.js';
@@ -121,6 +123,10 @@ export class CodebuddyAcpTranslator extends BaseAcpTranslator {
 
     const rawInput = (params.toolCall.rawInput ?? {}) as Record<string, unknown>;
     const toolName = toolNameFromMeta(params.toolCall as { _meta?: Record<string, unknown> });
+    const question = codebuddyQuestionPermissionContext(params);
+    if (question) {
+      return [makeQuestionApprovalEvent(requestId, question.questions, question.sessionId)];
+    }
     const view: ApprovalView = {
       requestId,
       kind: 'command',
@@ -255,12 +261,65 @@ function sessionIdFromParams(params: unknown): string {
 }
 
 /**
- * 解析 `schema.questions[]` 为公共 UserQuestion[]；缺题干/非对象的条目跳过。
+ * `session/request_permission` 里的 AskUserQuestion 识别。
+ *
+ * CodeBuddy 2.181 的 ACP 服务端不会发 `_codebuddy.ai/question`：它把题目放在
+ * 工具审批的 `toolCall.rawInput.questions` 里，答案必须由客户端另调
+ * `_codebuddy.ai/resolveInterruption`。只有真名/title 命中、题目可解析且
+ * sessionId + toolCallId 齐全时才返回上下文；否则按普通命令审批处理，
+ * 避免渲染一张无法回传答案的假提问卡。
+ */
+export function codebuddyQuestionPermissionContext(params: RequestPermissionParams): {
+  sessionId: string;
+  toolCallId: string;
+  questions: UserQuestion[];
+} | null {
+  const toolCall = params.toolCall;
+  if (!toolCall) return null;
+  const toolName = toolNameFromMeta(toolCall as { _meta?: Record<string, unknown> });
+  const isAsk =
+    toolName === 'AskUserQuestion' ||
+    (toolName === undefined && toolCall.title === 'AskUserQuestion');
+  if (!isAsk) return null;
+  const questions = codebuddyQuestionsFromInput(toolCall.rawInput);
+  if (questions.length === 0) return null;
+  const sessionId = typeof params.sessionId === 'string' ? params.sessionId : '';
+  const toolCallId = typeof toolCall.toolCallId === 'string' ? toolCall.toolCallId : '';
+  if (!sessionId || !toolCallId) return null;
+  return { sessionId, toolCallId, questions };
+}
+
+/** toolCall.rawInput 是模型原始入参（对象或 JSON 字符串），题目在 .questions。 */
+function codebuddyQuestionsFromInput(rawInput: unknown): UserQuestion[] {
+  return codebuddyQuestionsFromArray(parseRecord(rawInput)?.questions);
+}
+
+/** `_codebuddy.ai/question` 的题目在 `schema.questions`。 */
+function codebuddyQuestionsFromParams(params: unknown): UserQuestion[] {
+  const raw = (params as CodebuddyQuestionParams | null)?.schema?.questions;
+  return codebuddyQuestionsFromArray(raw);
+}
+
+/** rawInput 兼容 JSON 字符串（老 agent 契约）。 */
+function parseRecord(raw: unknown): Record<string, unknown> | undefined {
+  let parsed = raw;
+  if (typeof parsed === 'string') {
+    try {
+      parsed = JSON.parse(parsed);
+    } catch {
+      return undefined;
+    }
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return undefined;
+  return parsed as Record<string, unknown>;
+}
+
+/**
+ * 解析题目数组为公共 UserQuestion[]；缺题干/非对象的条目跳过。
  * CodeBuddy 的提问 UI 恒带自由文本输入，故不设 `isOther=false`（渲染层默认
  * 提供 Other 输入）。答案 key 由 runner 按问题序号编码成 q_0…q_n。
  */
-function codebuddyQuestionsFromParams(params: unknown): UserQuestion[] {
-  const raw = (params as CodebuddyQuestionParams | null)?.schema?.questions;
+function codebuddyQuestionsFromArray(raw: unknown): UserQuestion[] {
   if (!Array.isArray(raw)) return [];
   const questions: UserQuestion[] = [];
   for (const item of raw) {

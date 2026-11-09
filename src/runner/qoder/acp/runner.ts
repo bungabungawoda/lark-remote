@@ -9,7 +9,10 @@
  * Turn/connection/compact/approval orchestration lives in BaseAcpRunner;
  * Qoder-specific parts:
  * - clientCapabilities 与 CodeBuddy 同口径（fs/terminal false → CLI 本地自执行，
- *   见 acp-protocol.ts）。
+ *   见 acp-protocol.ts），另声明 `elicitation.form` 打开 AskUserQuestion。
+ * - AskUserQuestion 经 `elicitation/create` form 下发（translator 解析为
+ *   question 审批事件），答案按 `q0..qn` 回编 `{action:'accept', content}`；
+ *   无法解析的 form 自动回 `{action:'cancel'}`，不让服务端悬挂。
  * - model / reasoningEffort / contextWindow 无 ACP 协议内通道（session/new 的
  *   configOptions 只见 mode），沿用 stream-json 时代验证过的 spawn 旗标随连接
  *   下发；/config 变更后 runner 实例由桥重建（clearRunners），新连接生效。
@@ -23,7 +26,7 @@
  */
 
 import type { AgentSessionReader } from '../../../session-contract.js';
-import type { AgentStatusInfo, SpawnOptions } from '../../types.js';
+import type { AgentStatusInfo, SpawnOptions, UserQuestion } from '../../types.js';
 import {
   ConnectionManager,
   type ConnectionManagerOptions,
@@ -35,9 +38,12 @@ import {
   type SessionResumeResult,
   type SessionSetModeParams,
   type AcpMode,
+  type ElicitationCreateResponse,
+  ServerRequestMethod,
 } from '../../common/acp/protocol-types.js';
 import { QODER_CLIENT_CAPABILITIES } from '../../../acp-protocol.js';
-import type { AcpApprovalKinds } from '../../common/acp/acp-approval.js';
+import type { AcpApprovalKinds, AcpPendingApproval } from '../../common/acp/acp-approval.js';
+import { mapAnswersByIndex } from '../../question-common.js';
 import { normalizeQoderPermissionMode } from '../../../config/index.js';
 import { getLogger } from '../../../logger/index.js';
 import { BaseAcpRunner } from '../../common/acp/base-acp-runner.js';
@@ -96,6 +102,50 @@ export function qoderAcpSpawnArgs(opts: {
   if (opts.reasoningEffort) args.push('--reasoning-effort', opts.reasoningEffort);
   if (opts.contextWindow) args.push('--context-window', String(opts.contextWindow));
   return args;
+}
+
+/** elicitation form：{问题文本: 值} → 按问题顺序展开的 q0..qn content。 */
+function qoderElicitationContent(
+  questions: UserQuestion[],
+  answers: Record<string, string | string[]>,
+): Record<string, string | string[]> {
+  const byIndex = mapAnswersByIndex(questions, answers);
+  const content: Record<string, string | string[]> = {};
+  for (let i = 0; i < questions.length; i++) {
+    const value = byIndex[i];
+    if (value === undefined) continue;
+    if (questions[i]!.multiSelect) {
+      const values = (Array.isArray(value) ? value : [value]).filter(
+        (v): v is string => typeof v === 'string' && v.length > 0,
+      );
+      if (values.length > 0) content[`q${i}`] = values;
+    } else {
+      const single = Array.isArray(value) ? value[0] : value;
+      if (typeof single === 'string' && single.length > 0) content[`q${i}`] = single;
+    }
+  }
+  return content;
+}
+
+/**
+ * 提问回编（Qoder elicitation form）：answer → `{action:'accept',
+ * content:{q0..qn}}`（多选数组 / 单选字符串，未答题不补空值）；decline →
+ * decline；其余（含超时 cancel）→ cancel。
+ */
+function qoderElicitationResponse(
+  action: string,
+  pending: AcpPendingApproval,
+  response: unknown,
+): ElicitationCreateResponse {
+  if (action === 'answer') {
+    const answers =
+      (response as { answers?: Record<string, string | string[]> } | null)?.answers ?? {};
+    return {
+      action: 'accept',
+      content: qoderElicitationContent(pending.view.questions ?? [], answers),
+    };
+  }
+  return { action: action === 'decline' ? 'decline' : 'cancel' };
 }
 
 export class QoderAcpRunner extends BaseAcpRunner<QoderAcpTranslator> {
@@ -188,6 +238,44 @@ export class QoderAcpRunner extends BaseAcpRunner<QoderAcpTranslator> {
   /** qoder ACP 的审批 option kind 未真机验证，按 ACP 标准词汇。 */
   protected override get approvalKinds(): AcpApprovalKinds {
     return QODER_APPROVAL_KINDS;
+  }
+
+  /** 提问走 elicitation form 回编；其余审批沿用 option kind 映射。 */
+  protected override buildApprovalOutcome(
+    action: string,
+    pending: AcpPendingApproval,
+    response: unknown,
+  ): unknown {
+    return pending.kind === 'question'
+      ? qoderElicitationResponse(action, pending, response)
+      : super.buildApprovalOutcome(action, pending, response);
+  }
+
+  /**
+   * AskUserQuestion 的 elicitation form 必须回信，否则服务端一直挂起等客户端。
+   * 帧无法解析成问题时回 `{action:'cancel'}`（Qoder 按「用户跳过提问」继续
+   * turn），而不是默认的 METHOD_NOT_FOUND；其余 server request 走基类。
+   */
+  protected override handleServerRequest(
+    id: number | string,
+    method: string,
+    params: unknown,
+  ): void {
+    if (method !== ServerRequestMethod.ELICITATION_CREATE) {
+      super.handleServerRequest(id, method, params);
+      return;
+    }
+    const events = this.currentTranslator?.handleServerRequest(id, method, params) ?? [];
+    if (events.length === 0) {
+      this.currentClient?.respond(id, { action: 'cancel' });
+      getLogger().info(
+        `[${this.logTag}] auto-responded cancel to unparseable elicitation requestId=${id}`,
+      );
+      return;
+    }
+    // 提问帧没有 permission options；登记与推流复用基类同一套逻辑。
+    this.registerApprovalEvents(events, [], 'elicitation');
+    this.pushEvents(events);
   }
 
   /**

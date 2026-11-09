@@ -13,8 +13,10 @@
  *   声明 fs/terminal 能力时代理到客户端执行」——我们不实现该面，声明 false
  *   让 CodeBuddy 本地自执行（同 opencode 的口径）。
  * - AskUserQuestion：额外声明 `_meta['codebuddy.ai'].question=true`（ACP 下
- *   工具可见性的唯一开关），并处理 `_codebuddy.ai/question` 反向 RPC；答案
- *   按 `{outcome:'submitted', answers:{q_0:…}}` 回编。
+ *   工具可见性的唯一开关）。2.181 的实际通道是 request_permission 携带题目 +
+ *   `_codebuddy.ai/resolveInterruption` 回传答案（interruption 广播排除
+ *   stdio-main）；translator 把 permission 识别成 kind:'question'，runner 在
+ *   respondApproval 里同时投递答案并结算工具审批。
  * - 私有扩展过滤：`_meta` 带 `codebuddy.ai/teamUpdate`（团队状态）、
  *   `codebuddy.ai/memberEvent`（成员消息）或 `codebuddy.ai/isCompactInternal`
  *   （compact 广播）的事件不进主事件流（§9.27 子线程污染的同源教训）。
@@ -34,16 +36,23 @@ import {
   type ConnectionManagerOptions,
 } from '../../common/jsonrpc/connection-manager.js';
 import { JsonRpcClient } from '../../common/jsonrpc/client.js';
-import { CODEBUDDY_QUESTION_METHOD, CodebuddyAcpTranslator } from './translator.js';
+import {
+  CODEBUDDY_QUESTION_METHOD,
+  codebuddyQuestionPermissionContext,
+  CodebuddyAcpTranslator,
+} from './translator.js';
 import {
   type SessionResumeResult,
   type SessionNewResult,
   type SessionSetModeParams,
+  type RequestPermissionParams,
   type AcpMode,
   NotificationMethod,
+  ServerRequestMethod,
 } from '../../common/acp/protocol-types.js';
 import { CODEBUDDY_CLIENT_CAPABILITIES } from '../../../acp-protocol.js';
 import {
+  buildAcpPermissionOutcome,
   CODEBUDDY_APPROVAL_KINDS,
   type AcpApprovalKinds,
   type AcpPendingApproval,
@@ -51,6 +60,13 @@ import {
 import { mapAnswersByIndex } from '../../question-common.js';
 import { getLogger } from '../../../logger/index.js';
 import { BaseAcpRunner } from '../../common/acp/base-acp-runner.js';
+
+/**
+ * CodeBuddy 的 AskUserQuestion 答案回传扩展方法（client → server）。
+ * 服务端把题目放在 request_permission 的 toolCall.rawInput 里，答案只能走
+ * 这个通道；interruption 广播只发给 Web UI，stdio 连接收不到。
+ */
+export const CODEBUDDY_RESOLVE_INTERRUPTION_METHOD = '_codebuddy.ai/resolveInterruption';
 
 export interface CodebuddyAcpRunnerOptions {
   kind: AgentKind;
@@ -133,6 +149,16 @@ export class CodebuddyAcpRunner extends BaseAcpRunner<CodebuddyAcpTranslator> {
    * （字段缺失）按需下发（fail open）。set_mode 不在此列——无条件下发。
    */
   private sessionCurrent?: SessionCurrent;
+
+  /**
+   * AskUserQuestion 的 request_permission 上下文：requestId → sessionId +
+   * toolCallId。答案必须经 `_codebuddy.ai/resolveInterruption` 回传，不能只
+   * 回 permission 的 optionId。
+   */
+  private readonly questionContexts = new Map<
+    number | string,
+    { sessionId: string; toolCallId: string }
+  >();
 
   constructor(opts: CodebuddyAcpRunnerOptions) {
     const managerOpts: ConnectionManagerOptions = {
@@ -278,11 +304,10 @@ export class CodebuddyAcpRunner extends BaseAcpRunner<CodebuddyAcpTranslator> {
   }
 
   /**
-   * AskUserQuestion 回编：bridge 的 `{问题文本: 答案}` → CodeBuddy 扩展方法
-   * 的 `{outcome:'submitted', answers:{q_0:…}}`。服务端固定用 q_{index} 作
-   * answer key 回查题面（callAskUserQuestion 的 Map(q_${i} → question)），
-   * 多选沿用数组由服务端 join；跳过/超时一律回 `{outcome:'cancelled'}`。
-   * 非 question 审批继续走 ACP optionId 映射。
+   * `_codebuddy.ai/question` 扩展方法通道的回编（Web UI / 未来版本）：
+   * bridge 的 `{问题文本: 答案}` → `{outcome:'submitted', answers:{q_0:…}}`。
+   * 2.181 的 stdio 实际走 request_permission + resolveInterruption，由
+   * respondApproval 拦截，不会进到这里。
    */
   protected override buildApprovalOutcome(
     action: string,
@@ -300,6 +325,69 @@ export class CodebuddyAcpRunner extends BaseAcpRunner<CodebuddyAcpTranslator> {
       };
     }
     return { outcome: 'cancelled' };
+  }
+
+  /**
+   * AskUserQuestion 在 permission 通道的答案回传：先把答案/跳过投递给
+   * `_codebuddy.ai/resolveInterruption`，再结算原来的 permission 请求。
+   *
+   * 两条链路不能只做一条：
+   * - 只回 permission 的 allow（旧行为）→ AskService 收不到答案，10 分钟后
+   *   超时，模型看到 "User declined"；
+   * - 只调 resolveInterruption → permission 请求仍挂着，工具审批不结算。
+   *
+   * 跳过/超时用 decision:'deny'（服务端走 skip_question，而不是拒绝 turn）；
+   * 工具审批仍回 allow，让工具执行并消费刚投递的 skip 答案。
+   */
+  override async respondApproval(requestId: number | string, response: unknown): Promise<void> {
+    const context = this.questionContexts.get(requestId);
+    const pending = this.pendingApprovals.get(requestId);
+    if (context && pending?.kind === 'question') {
+      this.questionContexts.delete(requestId);
+      await this.respondQuestionViaPermission(requestId, context, pending, response);
+      return;
+    }
+    await super.respondApproval(requestId, response);
+  }
+
+  private async respondQuestionViaPermission(
+    requestId: number | string,
+    context: { sessionId: string; toolCallId: string },
+    pending: AcpPendingApproval,
+    response: unknown,
+  ): Promise<void> {
+    const action = (response as { action?: string } | null)?.action ?? 'decline';
+    const rawAnswers =
+      (response as { answers?: Record<string, string | string[]> } | null)?.answers ?? {};
+    const answers =
+      action === 'answer' ? codebuddyQuestionAnswers(pending.view.questions ?? [], rawAnswers) : {};
+    const decision = action === 'answer' && Object.keys(answers).length > 0 ? 'allow' : 'deny';
+    let delivered = false;
+    try {
+      const result = (await this.currentClient?.request(CODEBUDDY_RESOLVE_INTERRUPTION_METHOD, {
+        sessionId: context.sessionId,
+        toolCallId: context.toolCallId,
+        decision,
+        ...(Object.keys(answers).length > 0 ? { answers } : {}),
+      })) as { resolved?: unknown; queued?: unknown } | undefined;
+      // 服务端明确 resolved:false 且没有排队时视为失败；未知形状（mock/旧版）
+      // 按成功处理，避免把已投递的答案误判成失败。
+      delivered = !(result && result.resolved === false && result.queued !== true);
+    } catch (err) {
+      getLogger().warn(
+        `[${this.logTag}] resolveInterruption failed requestId=${requestId}: ${
+          (err as Error).message
+        }`,
+      );
+    }
+    const outcome = delivered
+      ? buildAcpPermissionOutcome('accept', pending.options ?? [], CODEBUDDY_APPROVAL_KINDS)
+      : { outcome: { outcome: 'cancelled' as const } };
+    this.currentClient?.respond(requestId, outcome);
+    this.pendingApprovals.delete(requestId);
+    getLogger().info(
+      `[${this.logTag}] question responded requestId=${requestId} action=${action} delivered=${delivered}`,
+    );
   }
 
   getStatusInfo(): AgentStatusInfo {
@@ -345,21 +433,48 @@ export class CodebuddyAcpRunner extends BaseAcpRunner<CodebuddyAcpTranslator> {
     method: string,
     params: unknown,
   ): void {
-    if (method !== CODEBUDDY_QUESTION_METHOD) {
-      super.handleServerRequest(id, method, params);
+    if (method === CODEBUDDY_QUESTION_METHOD) {
+      const events = this.currentTranslator?.handleServerRequest(id, method, params) ?? [];
+      if (events.length === 0) {
+        this.currentClient?.respond(id, { outcome: 'cancelled' });
+        getLogger().info(
+          `[${this.logTag}] auto-responded cancelled to unparseable question requestId=${id}`,
+        );
+        return;
+      }
+      // 提问帧没有 permission options；登记与推流复用基类同一套逻辑。
+      this.registerApprovalEvents(events, []);
+      this.pushEvents(events);
       return;
     }
-    const events = this.currentTranslator?.handleServerRequest(id, method, params) ?? [];
-    if (events.length === 0) {
-      this.currentClient?.respond(id, { outcome: 'cancelled' });
-      getLogger().info(
-        `[${this.logTag}] auto-responded cancelled to unparseable question requestId=${id}`,
-      );
-      return;
+
+    // CodeBuddy 2.181 的 AskUserQuestion 走 request_permission：先识别题目，
+    // 登记 requestId → sessionId/toolCallId，答案在 respondApproval 里经
+    // resolveInterruption 回传。普通权限请求继续走基类。
+    if (method === ServerRequestMethod.REQUEST_PERMISSION) {
+      const permission = params as RequestPermissionParams;
+      const question = codebuddyQuestionPermissionContext(permission);
+      if (question) {
+        const events = this.currentTranslator?.handleServerRequest(id, method, params) ?? [];
+        if (events.length > 0) {
+          this.questionContexts.set(id, {
+            sessionId: question.sessionId,
+            toolCallId: question.toolCallId,
+          });
+          this.registerApprovalEvents(events, permission.options ?? [], 'permission');
+          this.pushEvents(events);
+          return;
+        }
+      }
     }
-    // 提问帧没有 permission options；登记与推流复用基类同一套逻辑。
-    this.registerApprovalEvents(events, []);
-    this.pushEvents(events);
+
+    super.handleServerRequest(id, method, params);
+  }
+
+  /** 轮次结束清掉未结算的提问上下文（连接长驻，不能跨轮复用 requestId）。 */
+  protected override onClearTurnState(): void {
+    this.questionContexts.clear();
+    super.onClearTurnState();
   }
 
   protected override handleNotification(method: string, params: unknown): void {

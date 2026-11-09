@@ -167,6 +167,119 @@ describe('QoderAcpTranslator', () => {
     expect(events).toEqual([]);
   });
 
+  it('elicitation/create → question approval event (title=header, description first line=question)', () => {
+    const translator = new QoderAcpTranslator();
+    const events = translator.handleServerRequest(44, 'elicitation/create', {
+      sessionId: 's1',
+      toolCallId: 'call_q',
+      mode: 'form',
+      message: '请回答下面的问题',
+      requestedSchema: {
+        type: 'object',
+        required: ['q0', 'q1'],
+        properties: {
+          // qoder：title = header || question；description = 题干 + 选项说明行
+          q0: {
+            type: 'string',
+            title: 'DB',
+            description: '用哪个数据库？\nPostgreSQL: 功能全\nSQLite: 轻量',
+            oneOf: [{ const: 'PostgreSQL' }, { const: 'SQLite' }],
+          },
+          q1: {
+            type: 'array',
+            title: 'Frameworks',
+            description: '选前端框架',
+            minItems: 1,
+            items: {
+              anyOf: [{ const: 'React' }, { const: 'Vue' }],
+            },
+          },
+        },
+      },
+    });
+    expect(events).toHaveLength(1);
+    const event = events[0] as unknown as {
+      type: string;
+      requestId: number;
+      kind: string;
+      view: {
+        questions?: Array<Record<string, unknown>>;
+        intro?: string;
+        availableDecisions?: string[];
+      };
+    };
+    expect(event.type).toBe('approval_requested');
+    expect(event.requestId).toBe(44);
+    expect(event.kind).toBe('question');
+    expect(event.view.intro).toBe('请回答下面的问题');
+    expect(event.view.questions).toEqual([
+      {
+        question: '用哪个数据库？',
+        header: 'DB',
+        multiSelect: false,
+        isOther: false,
+        options: [{ label: 'PostgreSQL' }, { label: 'SQLite' }],
+      },
+      {
+        question: '选前端框架',
+        header: 'Frameworks',
+        multiSelect: true,
+        isOther: false,
+        options: [{ label: 'React' }, { label: 'Vue' }],
+      },
+    ]);
+  });
+
+  it('elicitation/create with title equal to the question keeps title as question text', () => {
+    const translator = new QoderAcpTranslator();
+    const events = translator.handleServerRequest(45, 'elicitation/create', {
+      sessionId: 's1',
+      mode: 'form',
+      requestedSchema: {
+        type: 'object',
+        properties: {
+          q0: {
+            type: 'string',
+            title: '用哪个数据库？',
+            description: '用哪个数据库？',
+            oneOf: [{ const: 'PostgreSQL' }],
+          },
+        },
+      },
+    });
+    const event = events[0] as unknown as {
+      view: { questions?: Array<Record<string, unknown>>; intro?: string };
+    };
+    expect(event.view.questions?.[0]).toMatchObject({
+      question: '用哪个数据库？',
+      header: '用哪个数据库？',
+    });
+    // 单题且 form message 缺省 → 不设概要行
+    expect(event.view.intro).toBeUndefined();
+  });
+
+  it('elicitation/create without parseable properties → no events (runner auto-cancels)', () => {
+    const translator = new QoderAcpTranslator();
+    expect(
+      translator.handleServerRequest(46, 'elicitation/create', {
+        sessionId: 's1',
+        mode: 'form',
+        requestedSchema: { type: 'object', properties: {} },
+      }),
+    ).toEqual([]);
+    // 选项全不可解析同样视为无题
+    expect(
+      translator.handleServerRequest(47, 'elicitation/create', {
+        sessionId: 's1',
+        mode: 'form',
+        requestedSchema: {
+          type: 'object',
+          properties: { q0: { type: 'string', title: 'Header' } },
+        },
+      }),
+    ).toEqual([]);
+  });
+
   it('prompt stopReason mapping: end_turn/cancelled/other → success/interrupted/error', () => {
     const translator = new QoderAcpTranslator();
     expect(

@@ -622,3 +622,120 @@ describe('AskUserQuestion（_codebuddy.ai/question 反向 RPC）', () => {
     expect(t.handleServerRequest(19, '_codebuddy.ai/other', {})).toEqual([]);
   });
 });
+
+/**
+ * CodeBuddy 2.181 的 stdio ACP 实际通道：AskUserQuestion 先走工具审批，
+ * 题目在 toolCall.rawInput.questions 里；答案要由 runner 另调
+ * `_codebuddy.ai/resolveInterruption`。
+ */
+describe('AskUserQuestion（session/request_permission 通道）', () => {
+  const permission = (toolCall: Record<string, unknown>, sessionId = 'aaaaaaaa-1111') => ({
+    sessionId,
+    options: [
+      { optionId: 'allow_always', name: 'Always Allow', kind: 'allow_always' },
+      { optionId: 'allow', name: 'Allow', kind: 'allow_once' },
+      { optionId: 'reject', name: 'Reject', kind: 'reject_once' },
+    ],
+    toolCall: {
+      title: 'AskUserQuestion',
+      ...toolCall,
+    },
+  });
+
+  const questions = [
+    {
+      question: 'Which database?',
+      header: 'DB',
+      options: [
+        { label: 'PostgreSQL', description: 'Robust' },
+        { label: 'SQLite', description: 'Lightweight' },
+      ],
+    },
+    {
+      question: 'Frameworks?',
+      header: 'FW',
+      multiSelect: true,
+      options: [{ label: 'React', description: '' }],
+    },
+  ];
+
+  it('把 permission 里的 AskUserQuestion 映射为 question 事件', () => {
+    const t = new CodebuddyAcpTranslator();
+    const events = t.handleServerRequest(
+      21,
+      'session/request_permission',
+      permission({
+        toolCallId: 'call-q',
+        rawInput: { questions },
+        _meta: { 'codebuddy.ai/toolName': 'AskUserQuestion' },
+      }),
+    );
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({
+      type: 'approval_requested',
+      requestId: 21,
+      kind: 'question',
+      threadId: 'aaaaaaaa-1111',
+      view: {
+        requestId: 21,
+        kind: 'question',
+        availableDecisions: [],
+        questions: [
+          {
+            question: 'Which database?',
+            header: 'DB',
+            options: [
+              { label: 'PostgreSQL', description: 'Robust' },
+              { label: 'SQLite', description: 'Lightweight' },
+            ],
+          },
+          {
+            question: 'Frameworks?',
+            header: 'FW',
+            multiSelect: true,
+            options: [{ label: 'React' }],
+          },
+        ],
+      },
+    });
+  });
+
+  it('rawInput 是 JSON 字符串时同样解析', () => {
+    const t = new CodebuddyAcpTranslator();
+    const events = t.handleServerRequest(
+      22,
+      'session/request_permission',
+      permission({
+        toolCallId: 'call-q',
+        rawInput: JSON.stringify({ questions }),
+        _meta: { 'codebuddy.ai/toolName': 'AskUserQuestion' },
+      }),
+    );
+    expect(events[0]).toMatchObject({ kind: 'question' });
+    expect((events[0] as { view: { questions: unknown[] } }).view.questions).toHaveLength(2);
+  });
+
+  it('缺 toolCallId 或题目不可解析时回落 command 审批', () => {
+    const t = new CodebuddyAcpTranslator();
+    const noToolCallId = t.handleServerRequest(
+      23,
+      'session/request_permission',
+      permission({
+        rawInput: { questions },
+        _meta: { 'codebuddy.ai/toolName': 'AskUserQuestion' },
+      }),
+    );
+    expect(noToolCallId[0]).toMatchObject({ kind: 'command', view: { kind: 'command' } });
+
+    const noQuestions = t.handleServerRequest(
+      24,
+      'session/request_permission',
+      permission({
+        toolCallId: 'call-q',
+        rawInput: {},
+        _meta: { 'codebuddy.ai/toolName': 'AskUserQuestion' },
+      }),
+    );
+    expect(noQuestions[0]).toMatchObject({ kind: 'command' });
+  });
+});

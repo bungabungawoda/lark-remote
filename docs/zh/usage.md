@@ -113,7 +113,7 @@ CodeBuddy 以官方 ACP 模式接入（`codebuddy --acp`，stdio 上的 JSON-RPC
 - `agents.codebuddy.model`：模型 id。`/config` 卡片的模型下拉来自 ACP 会话目录（`codebuddy --acp` 一次性探针，启动时后台预热），选项文本为「模型名 + 积分费率」（目录 `_meta.credits`，如 `x0.29`），控件形态与 claude / codex 的模型字段一致；同名模型的费率通常不同，可直接区分，只有名称与费率都相同的极端情况才补 `（id）`。目录缓存过期时按上次成功快照继续渲染列表并在后台刷新（stale-while-revalidate），只有从未探测成功才回退 `~/.codebuddy/settings.json` 的当前模型并降级为文本输入。审批 kind、可用模式（`default` / `acceptEdits` / `plan` / `auto` / `dontAsk` / `bypassPermissions` / `fullAccess`）随会话目录校验。
 - 每次模型请求实际消耗的积分在 ACP `usage_update` 的 `cost.amount`（单位是 CodeBuddy 积分，非美元，不上 `total_cost_usd`）；费率以目录 `credits` 字段为准（随版本/活动变化）。给 lark-remote 做真机测试时选目录里 `x0.00 credits` 的免费档（如 hy3/hy4free）不消耗积分。
 - `agents.codebuddy.permissionMode`：`default`（不干预，跟随 CodeBuddy 默认）或官方 modes 枚举。
-- **交互式提问（`AskUserQuestion`）**：ACP initialize 声明 `clientCapabilities._meta['codebuddy.ai'].question=true` 后，模型可调用 CodeBuddy 内置的 `AskUserQuestion`；问题以 `_codebuddy.ai/question` 扩展方法下发，飞书 run 卡渲染选项卡（选项 / Other 自定义答案 / 多选提交 / 跳过回答），答案按 `q_0…q_n` 回编，跳过或超时回 `cancelled`。
+- **交互式提问（`AskUserQuestion`）**：ACP initialize 声明 `clientCapabilities._meta['codebuddy.ai'].question=true` 后，模型可调用 CodeBuddy 内置的 `AskUserQuestion`。2.181 的实际通道是工具审批 `session/request_permission`（题目在 `toolCall.rawInput.questions`）加 `_codebuddy.ai/resolveInterruption` 回传答案；题目广播只发给 CodeBuddy Web UI，stdio 连接收不到。飞书 run 卡渲染选项卡（选项 / Other 自定义答案 / 多选提交 / 跳过回答），答案按 `q_0…q_n` 回传，跳过或超时按 skip 处理。
 - `agents.codebuddy.thinkingLevel`：思考档位（ACP `thought_level`），可选 `enabled`（默认）/ `disabled` / `minimal` / `low` / `medium` / `high` / `xhigh` / `max`；留空 = 不下发。
 - `agents.codebuddy.sandbox`：命令沙箱（ACP `sandbox`），`true` = Bash 跑在 sandbox-cli 隔离层；留空 = 不下发（跟随 CodeBuddy 默认 false）。
 - `agents.codebuddy.acp.binary` / `requestTimeoutMs` / `idleTtlMs` / `turnIdleTimeoutMinutes`：连接参数，同 kimi/opencode 的 acp 子配置口径。
@@ -141,7 +141,7 @@ Qoder 走 ACP 模式接入（`qodercn --acp`，stdio 上的 JSON-RPC 长连接�
 
 - **未登录**：非交互启动直接失败（exit 1），lark-remote 以错误卡呈现；不是挂起。
 - **done 卡用量区极简**：不渲染 Model / 结果 / USD 行；积分可得时显示积分行（如 `Cost - 12 credits`）。qoder 的 result 回包没有 token 明细（字段恒 0，2026-11-05 实测），且 ACP `usage_update` 实测不随 turn 下发（2026-11-07 真机），done 卡通常无任何用量行。
-- **`AskUserQuestion` 不可用**（2026-11-07 真机验证）：stream-json 下工具存在但调用被 CLI 拒绝；ACP 下工具干脆不在会话工具列表——两条传输都没有交互提问通道，纯 CLI 侧限制。
+- **交互式提问（`AskUserQuestion`）可用**：initialize 声明 `clientCapabilities.elicitation.form` 后 Qoder 保留该工具（不声明时 CLI 把工具加入 deny 集合），题目经 `elicitation/create` form 下发到飞书 run 卡的提问区（选项 / 多选提交 / 跳过回答），答案按 `q0…qn` 回编。字段 `title` 是短 header，完整题干在 `description` 首行；选项只认声明值（无自定义答案输入）。1.1.84 代码路径确认，真机验证待补。
 - **会话落盘正常**（2026-11-07 真机验证）：ACP 会话照常写 `<configDir>/projects/` 下的 jsonl，`/resume` 列表可用；jsonl 内无 usage 行（与 stream-json 时代一致）。
 - **动态审批已验证**（2026-11-07 真机）：`default` 模式下写文件触发 `session/request_permission`，飞书审批卡正常弹出并生效。
 - **同连接会话复用**（2026-11-07 真机）：turn 结束后会话在长驻连接上保持 active，对其再发 `session/resume` 会被拒（"already open (state=active)"）；runner 跟踪连接上的 open 会话，同会话下一轮跳过 resume 直接 prompt（跨会话 resume——如 `/resume` 切到连接上未加载的旧会话——未验证）。
