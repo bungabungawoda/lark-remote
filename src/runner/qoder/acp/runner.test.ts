@@ -226,6 +226,82 @@ describe('QoderAcpRunner', () => {
     await runner.dispose();
   });
 
+  it('declares elicitation.form in initialize so Qoder keeps AskUserQuestion', async () => {
+    const capturePath = join(tmpDir, 'capture-initialize.jsonl');
+    const { wrapper, cwd } = writeScenario(tmpDir, serverScript, 'qoder', { capturePath });
+    const runner = makeRunner(wrapper);
+
+    await collectEvents(runner, 'hello', { cwd });
+
+    const initialize = readCapture(capturePath).find((m) => m.method === 'initialize');
+    expect(initialize?.params).toEqual({
+      protocolVersion: 1,
+      clientCapabilities: {
+        fs: { readTextFile: false, writeTextFile: false },
+        terminal: false,
+        // 必须是对象：布尔 true 会被 ACP SDK 的 zod schema 静默丢弃
+        elicitation: { form: {} },
+      },
+    });
+
+    await runner.dispose();
+  });
+
+  it('surfaces elicitation form questions and answers via respondApproval', async () => {
+    const capturePath = join(tmpDir, 'capture-elicitation.jsonl');
+    const { wrapper, cwd } = writeScenario(tmpDir, serverScript, 'qoder', {
+      sendElicitation: true,
+      holdPromptUntilResponse: true,
+      capturePath,
+    });
+    const runner = makeRunner(wrapper);
+
+    const events = await collectEvents(runner, 'ask me', { cwd }, async (ev) => {
+      if (ev.type === 'approval_requested' && ev.kind === 'question') {
+        expect(ev.view.questions).toHaveLength(2);
+        expect(ev.view.questions?.[1]?.multiSelect).toBe(true);
+        // 文本 key 答案（按题面标题）→ 序号回编 content{q0,q1}
+        await runner.respondApproval(ev.requestId, {
+          action: 'answer',
+          answers: { Setup: 'PostgreSQL', Frameworks: ['React', 'Vue'] },
+        });
+      }
+    });
+
+    expect(events.some((e) => e.type === 'approval_requested')).toBe(true);
+    expect(events.some((e) => e.type === 'result')).toBe(true);
+
+    const frame = readCapture(capturePath).find((m) => m.id === 44 && m.result !== undefined);
+    expect(frame?.result).toEqual({
+      action: 'accept',
+      content: { q0: 'PostgreSQL', q1: ['React', 'Vue'] },
+    });
+
+    await runner.dispose();
+  });
+
+  it('declines elicitation form with action decline', async () => {
+    const capturePath = join(tmpDir, 'capture-elicitation-decline.jsonl');
+    const { wrapper, cwd } = writeScenario(tmpDir, serverScript, 'qoder', {
+      sendElicitation: true,
+      holdPromptUntilResponse: true,
+      capturePath,
+    });
+    const runner = makeRunner(wrapper);
+
+    const events = await collectEvents(runner, 'ask me', { cwd }, async (ev) => {
+      if (ev.type === 'approval_requested' && ev.kind === 'question') {
+        await runner.respondApproval(ev.requestId, { action: 'decline' });
+      }
+    });
+    expect(events.some((e) => e.type === 'result')).toBe(true);
+
+    const frame = readCapture(capturePath).find((m) => m.id === 44 && m.result !== undefined);
+    expect(frame?.result).toEqual({ action: 'decline' });
+
+    await runner.dispose();
+  });
+
   it('resumes an existing session via session/resume when sessionId is provided', async () => {
     const capturePath = join(tmpDir, 'capture.jsonl');
     const { wrapper, cwd } = writeScenario(tmpDir, serverScript, 'qoder', {

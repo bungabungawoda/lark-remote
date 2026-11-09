@@ -27,11 +27,18 @@ export const CODEBUDDY_CLIENT_CAPABILITIES = {
 } as const;
 
 /**
- * Qoder 的 clientCapabilities：与 CodeBuddy 同口径——fs/terminal 均不声明，
- * 工具由 CLI 本地自执行（客户端未实现 fs/*、terminal/* reverse RPC 面）。
- * 1.1.84 `qodercn --acp` initialize 握手实测通过。
+ * Qoder 的 clientCapabilities：fs/terminal 均不声明 → 工具由 CLI 本地自执行
+ * （客户端未实现 fs/*、terminal/* reverse RPC 面）。1.1.84 `qodercn --acp`
+ * initialize 握手实测通过。
+ *
+ * `elicitation.form` 打开 AskUserQuestion：Qoder 的能力门控只认
+ * `elicitation.form` 为真（`form === null` / 缺省视为不支持，不支持时把
+ * `AskUserQuestion` 加入 deny 集合），题目经 `elicitation/create` 下发
+ * （见 QoderAcpTranslator）。必须用空对象 `{}` 而不是 `true`——ACP SDK 的
+ * zod schema 是对象，布尔 true 会被服务端静默丢弃（kimi 同款坑）。
  */
 export const QODER_CLIENT_CAPABILITIES = {
   fs: { readTextFile: false, writeTextFile: false },
   terminal: false,
+  elicitation: { form: {} },
 } as const;

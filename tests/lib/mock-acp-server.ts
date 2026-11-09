@@ -38,6 +38,10 @@ export interface MockAcpScenarioOpts {
   sendCodebuddyQuestion?: boolean;
   /** (codebuddy) Override the question extMethod params (malformed-frame tests). */
   codebuddyQuestionParams?: unknown;
+  /** (codebuddy) Send an AskUserQuestion tool-approval request during the prompt. */
+  sendCodebuddyQuestionPermission?: boolean;
+  /** (codebuddy) Override the question permission params (malformed-frame tests). */
+  codebuddyQuestionPermissionParams?: unknown;
   /** (opencode) Send an fs/write_text_file server request (client must reject). */
   sendFsWrite?: boolean;
   /** (kimi) Exit the process right after session/new (crash recovery test). */
@@ -327,6 +331,51 @@ rl.on('line', (line) => {
       }, delay);
       delay += 60;
     }
+    if (config.sendCodebuddyQuestionPermission) {
+      setTimeout(() => {
+        send({
+          jsonrpc: '2.0', id: 46, method: 'session/request_permission',
+          params: config.codebuddyQuestionPermissionParams ?? {
+            sessionId: config.sessionId,
+            options: [
+              { optionId: 'allow_always', name: 'Always Allow', kind: 'allow_always' },
+              { optionId: 'allow', name: 'Allow', kind: 'allow_once' },
+              { optionId: 'reject', name: 'Reject', kind: 'reject_once' },
+            ],
+            toolCall: {
+              toolCallId: 'call_q_perm',
+              title: 'AskUserQuestion',
+              kind: 'other',
+              status: 'pending',
+              rawInput: {
+                questions: [
+                  {
+                    question: 'Which database?',
+                    header: 'DB',
+                    options: [
+                      { label: 'PostgreSQL', description: 'Robust' },
+                      { label: 'SQLite', description: 'Lightweight' },
+                    ],
+                    multiSelect: false,
+                  },
+                  {
+                    question: 'Frameworks?',
+                    header: 'FW',
+                    options: [
+                      { label: 'React', description: '' },
+                      { label: 'Vue', description: '' },
+                    ],
+                    multiSelect: true,
+                  },
+                ],
+              },
+              _meta: { 'codebuddy.ai/toolName': 'AskUserQuestion' },
+            },
+          },
+        });
+      }, delay);
+      delay += 60;
+    }
     if (config.sendFsWrite) {
       setTimeout(() => {
         send({
@@ -418,6 +467,8 @@ export function writeScenario(
       sendElicitation: opts.sendElicitation ?? false,
       sendCodebuddyQuestion: opts.sendCodebuddyQuestion ?? false,
       codebuddyQuestionParams: opts.codebuddyQuestionParams ?? null,
+      sendCodebuddyQuestionPermission: opts.sendCodebuddyQuestionPermission ?? false,
+      codebuddyQuestionPermissionParams: opts.codebuddyQuestionPermissionParams ?? null,
       sendFsWrite: opts.sendFsWrite ?? false,
       crashAfterInit: opts.crashAfterInit ?? false,
       delayNewMs: opts.delayNewMs ?? 0,
