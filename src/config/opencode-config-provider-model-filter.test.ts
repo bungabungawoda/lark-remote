@@ -9,7 +9,10 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { loadOpencodeConfig, invalidateOpencodeConfigCache } from '../config/opencode-config.js';
+import {
+  loadOpencodeConfig,
+  _invalidateOpencodeConfigCacheForTest,
+} from '../config/opencode-config.js';
 
 // 直接在模块顶层定义 mock（兼容 bun 的 vitest）
 const mockSpawnSync = vi.fn();
@@ -26,7 +29,7 @@ vi.mock('../platform/spawn.js', () => ({
 describe('opencode-config provider-model filtering', () => {
   beforeEach(() => {
     // 模块级 TTL 缓存会在测试间串状态，每个用例前清空
-    invalidateOpencodeConfigCache();
+    _invalidateOpencodeConfigCacheForTest();
     vi.clearAllMocks();
     mockResolveExecutable.mockReturnValue({ kind: 'direct', file: '/usr/local/bin/opencode' });
   });

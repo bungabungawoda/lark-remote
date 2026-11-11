@@ -43,7 +43,7 @@ function isStopCommand(text: string): boolean {
   return t === '/stop' || t === '/t';
 }
 
-export interface MessageHandlerDeps {
+interface MessageHandlerDeps {
   connector: FeishuConnector;
   router: CommandRouter;
   bridge: Bridge;

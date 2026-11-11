@@ -52,7 +52,7 @@ function busySleep(ms: number): void {
   }
 }
 
-export interface BusyRetryOptions {
+interface BusyRetryOptions {
   /** 平台注入（测试用）；默认当前宿主。占用重试仅 win32 生效 */
   platform?: NodeJS.Platform;
   /** 重试耗尽（或 posix 首次占用即失败）时回调，用于告警/保留现场 */
@@ -79,5 +79,18 @@ export function withBusyRetry<T>(op: () => T, opts?: BusyRetryOptions): T {
       }
       busySleep(BASE_RETRY_DELAY_MS * attempt);
     }
+  }
+}
+
+/**
+ * 目标路径存在且是目录；任何 stat 异常（不存在/权限/竞态删除）按 false 处理。
+ * 目录探测的统一兜底形态（pick-dir 与 codex rollout reader 原各有一份逐字
+ * 相同的本地实现）。
+ */
+export function isDirectoryPath(p: string): boolean {
+  try {
+    return fs.statSync(p).isDirectory();
+  } catch {
+    return false;
   }
 }

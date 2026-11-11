@@ -21,7 +21,7 @@ import type {
   ApprovalToggleAction,
 } from './approval-coordinator.js';
 
-export interface ApprovalActionDeps {
+interface ApprovalActionDeps {
   /** 按 runId 取该 run 的 coordinator；已结束返回 undefined。 */
   coordinatorFor(runId: string): ApprovalCoordinator | undefined;
 }

@@ -29,7 +29,7 @@ const DEFAULT_IDLE_TTL_MS = 30 * 60 * 1000; // 30 minutes
 const MAX_ACQUIRE_ATTEMPTS = 5;
 
 /** Minimal client surface the manager needs from any protocol client. */
-export interface ConnectionClient {
+interface ConnectionClient {
   ready: boolean;
   healthy: boolean;
   connect(): Promise<unknown>;
@@ -37,12 +37,12 @@ export interface ConnectionClient {
 }
 
 /** Request context for acquire() — currently only an optional session id. */
-export interface AcquireRequest {
+interface AcquireRequest {
   sessionId?: string;
 }
 
 /** Context passed to clientFactory to build + wire a concrete client. */
-export interface ClientFactoryContext {
+interface ClientFactoryContext {
   transport: JsonlRpcTransport;
   requestTimeoutMs: number;
   /** Wire into the client's close callback so slot cleanup + onConnectionLost fire. */

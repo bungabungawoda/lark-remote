@@ -16,7 +16,13 @@ import path from 'node:path';
 const SRC = import.meta.dirname; // src/router/config
 const renderSource = fs.readFileSync(path.join(SRC, 'common/render.ts'), 'utf-8');
 const typesSource = fs.readFileSync(path.join(SRC, 'types.ts'), 'utf-8');
-const routerSource = fs.readFileSync(path.join(SRC, '../index.ts'), 'utf-8');
+// config.* 的处理分支随卡片族拆到 actions/config-actions.ts。守卫按
+// 「渲染端 cmd ↔ 处理端分支 ↔ 即时名单」的意图读分发器与该族实现两处，
+// 迁移后不能只盯着 index.ts，否则会把有 handler 的控件误判成无人处理。
+const routerSource = [
+  fs.readFileSync(path.join(SRC, '../index.ts'), 'utf-8'),
+  fs.readFileSync(path.join(SRC, '../actions/config-actions.ts'), 'utf-8'),
+].join('\n');
 
 /** `ConfigField.type` 声明支持的控件形态。 */
 const declaredTypes = (typesSource.match(/type:\s*((?:'[a-z_][a-z0-9_]*'\s*\|?\s*)+)/)![1] ?? '')

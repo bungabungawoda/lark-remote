@@ -23,25 +23,22 @@
  */
 
 import type { ApprovalView, UserQuestion } from '../../types.js';
-import { makeQuestionApprovalEvent } from '../../question-common.js';
-import {
-  ServerRequestMethod,
-  type AgentThoughtChunkEvent,
-  type ElicitationCreateParams,
-  type ElicitationEnumOption,
-  type ElicitationPropertySchema,
-  type RequestPermissionParams,
-  type ToolCallEvent,
-  type ToolCallUpdateEvent,
+import type {
+  AgentThoughtChunkEvent,
+  ElicitationCreateParams,
+  ElicitationEnumOption,
+  ElicitationPropertySchema,
+  RequestPermissionParams,
+  ToolCallEvent,
+  ToolCallUpdateEvent,
 } from '../../common/acp/protocol-types.js';
-import {
-  deriveAcpAvailableDecisions,
-  truncateWithEllipsis,
-} from '../../common/acp/acp-approval.js';
+import { deriveAcpAvailableDecisions } from '../../common/acp/acp-approval.js';
 import { getLogger } from '../../../logger/index.js';
 import {
-  acpStringify,
+  approvalCommandFrom,
+  approvalReasonFrom,
   BaseAcpTranslator,
+  textFromRawOutput,
   type AcpTranslatorEvent,
 } from '../../common/acp/base-translator.js';
 
@@ -107,58 +104,26 @@ export class QoderAcpTranslator extends BaseAcpTranslator {
    * 沿用 codebuddy 已验证的兜底链），字符串原样，其余空串。
    */
   protected override extractToolResultContent(event: ToolCallUpdateEvent): unknown {
-    const rawOutput = event.rawOutput;
-    if (rawOutput && typeof rawOutput === 'object') {
-      const text = (rawOutput as { text?: unknown }).text;
-      if (typeof text === 'string') return text;
-    }
-    if (typeof rawOutput === 'string') return rawOutput;
-    return '';
-  }
-
-  protected override handleOtherServerRequest(
-    requestId: number | string,
-    method: string,
-    params: unknown,
-  ): AcpTranslatorEvent[] {
-    if (method !== ServerRequestMethod.ELICITATION_CREATE) {
-      return [];
-    }
-    return this.handleElicitationCreate(requestId, params as ElicitationCreateParams);
+    return textFromRawOutput(event.rawOutput);
   }
 
   /**
-   * Qoder elicitation form：requestedSchema.properties 按顺序解析为
-   * UserQuestion[]（type:array → 多选；oneOf / items.anyOf 的 const → 选项
-   * label）。Qoder 的字段 title 是短 header（`header || question`），完整题干
-   * 在 description 第一行（后续行是 `label: description` 的选项说明），因此
-   * question 取 description 首行，header 取 title；两者相同时直接用 title。
-   * form 只接受声明选项 → isOther=false（卡片隐藏自定义答案输入）。
+   * Qoder elicitation form 的属性解析：字段 title 是短 header
+   * （`header || question`），完整题干在 description 第一行（后续行是
+   * `label: description` 的选项说明），因此 question 取 description 首行，
+   * header 取 title；两者相同时直接用 title。选项在 oneOf / items.anyOf 的
+   * `const`。form 只接受声明选项 → isOther=false（卡片隐藏自定义答案输入）。
+   * 公共脚手架（顺序解析 / 逐题 warn / intro 透传）在基类。
    */
-  private handleElicitationCreate(
+  protected override handleElicitationCreate(
     requestId: number | string,
     params: ElicitationCreateParams,
   ): AcpTranslatorEvent[] {
-    const properties = params.requestedSchema?.properties ?? {};
-    const questions: UserQuestion[] = [];
-    for (const [key, prop] of Object.entries(properties)) {
-      const q = qoderElicitationPropertyToQuestion(prop);
-      if (!q) {
-        getLogger().warn(`[qoder-acp-translator] elicitation property skipped: key=${key}`);
-        continue;
-      }
-      questions.push(q);
-    }
-    if (questions.length === 0) {
-      // 无法解析 → 交还 runner 自动回 cancel（不悬挂服务端）。
-      return [];
-    }
-    const message = params.message?.trim();
-    const single = questions.length === 1;
-    const intro = message && (!single || message !== questions[0]!.question) ? message : undefined;
-    const event = makeQuestionApprovalEvent(requestId, questions, params.sessionId);
-    if (intro) event.view.intro = intro;
-    return [event];
+    return this.buildElicitationQuestionEvent(
+      requestId,
+      params,
+      qoderElicitationPropertyToQuestion,
+    );
   }
 }
 
@@ -188,25 +153,5 @@ function qoderElicitationPropertyToQuestion(prop: ElicitationPropertySchema): Us
   };
 }
 
-/** 审批 command 候选链：真实命令 → 文件路径 → title，300 字截断。 */
-function approvalCommandFrom(
-  rawInput: Record<string, unknown>,
-  title: string | undefined,
-): string | undefined {
-  const command =
-    (typeof rawInput.command === 'string' && rawInput.command) ||
-    (typeof rawInput.file_path === 'string' && rawInput.file_path) ||
-    title ||
-    undefined;
-  return command ? truncateWithEllipsis(command, 300) : undefined;
-}
-
-/** 审批 reason：优先 description，否则 rawInput 序列化截断到 200。 */
-function approvalReasonFrom(rawInput: Record<string, unknown>): string | undefined {
-  const reason =
-    (typeof rawInput.description === 'string' && rawInput.description) ||
-    (Object.keys(rawInput).length > 0
-      ? truncateWithEllipsis(acpStringify(rawInput), 200)
-      : undefined);
-  return reason ? truncateWithEllipsis(reason, 200) : undefined;
-}
+/** 审批 command 候选链（真实命令 → 文件路径 → title，300 字截断）与 reason
+ * （优先 description，否则 rawInput 序列化截断到 200）实现单源于 base-translator。 */

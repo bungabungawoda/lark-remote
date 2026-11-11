@@ -19,7 +19,7 @@ vi.mock('../../config/codex-config.js', () => ({
     return ['none'];
   }),
   getDefaultReasoningEffort: vi.fn(() => 'medium'),
-  invalidateCodexBundledCache: vi.fn(),
+  _invalidateCodexBundledCacheForTest: vi.fn(),
 }));
 
 function makeConfig(overrides?: Record<string, unknown>): AppConfig {

@@ -54,7 +54,7 @@ interface ReplayedUserEvent {
   message: { content: unknown };
 }
 
-export interface ClaudeSessionOptions {
+interface ClaudeSessionOptions {
   pidDir?: string;
   cwd: string;
   stopGraceMs?: number;
@@ -83,7 +83,7 @@ export interface ClaudeSessionOptions {
 }
 
 /** 审批响应结果（behavior allow/deny）。 */
-export interface PermissionResult {
+interface PermissionResult {
   behavior: 'allow' | 'deny';
   message?: string;
   /**

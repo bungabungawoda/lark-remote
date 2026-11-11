@@ -11,7 +11,7 @@ import { formatHostStopResult, type HostTurnStopResult } from './host-stop.js';
  * turn」在用户发 `/stop` 后仍会继续跑。任何调用方自己拼一份「没有进程」的
  * 分支都会漏掉这段 fallback 与 unconfirmed 警告。
  */
-export interface StopCurrentTurnBridge {
+interface StopCurrentTurnBridge {
   interruptCurrentRunDetailed(input: { userId: string; chatId: string }): Promise<InterruptOutcome>;
   stopCurrentHostTurn(userId: string): Promise<HostTurnStopResult | undefined>;
 }

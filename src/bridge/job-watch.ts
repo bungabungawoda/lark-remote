@@ -28,7 +28,7 @@ import type { RunCardSnapshot } from './index.js';
  *   「订阅帧」都会改同一张终态卡：不串行化时两条 PATCH 并发，后发先至的那条
  *   会把卡片写回旧内容（任务又变回「运行中」）。
  */
-export interface JobWatchLifecycleDeps {
+interface JobWatchLifecycleDeps {
   getRunner(cwd: string, kind?: AgentKind): Runner;
   /** 终态快照表在 bridge 侧（rememberRunCardSnapshot 收口），这里只读。 */
   getRunCardSnapshot(runId: string): RunCardSnapshot | undefined;

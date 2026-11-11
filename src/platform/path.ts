@@ -13,7 +13,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { currentPlatform, isWin32 } from './select.js';
 
-export interface PathOptions {
+interface PathOptions {
   platform?: NodeJS.Platform;
 }
 

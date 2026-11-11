@@ -12,7 +12,7 @@ import type { AgentSessionReader } from '../session-contract.js';
 // Agent Event Types
 // =============================================================================
 
-export interface SystemInitEvent {
+interface SystemInitEvent {
   type: 'system';
   subtype: 'init';
   session_id: string;
@@ -66,7 +66,7 @@ export interface ApprovalViewUpdatedEvent {
 }
 
 /** Approval expired locally (bridge-side timeout) — card should show expired UI. */
-export interface ApprovalExpiredEvent {
+interface ApprovalExpiredEvent {
   type: 'approval_expired';
   requestId: number | string;
   timestamp?: string;
@@ -104,7 +104,7 @@ export type ApprovalAction =
     };
 
 /** AskUserQuestion 公共契约（Agent 无关）的单个选项。 */
-export interface UserQuestionOption {
+interface UserQuestionOption {
   label: string;
   description?: string;
 }
@@ -393,7 +393,7 @@ export interface RunStatusEvent {
 }
 
 /** 宿主是否还会自动起下一轮（进程内状态，见 {@link GoalView.activation}）。 */
-export type GoalActivation = 'armed' | 'disarmed';
+type GoalActivation = 'armed' | 'disarmed';
 
 /**
  * 会话级长期目标（DSH `goal` 投影的渲染快照）。
@@ -602,7 +602,7 @@ export interface SpawnOptions {
  *                   an open turn afterwards. A turn may still be running.
  * - `noop`        — there was no session to stop (e.g. stop during setup).
  */
-export type StopStatus = 'withdrawn' | 'cancelled' | 'unconfirmed' | 'noop';
+type StopStatus = 'withdrawn' | 'cancelled' | 'unconfirmed' | 'noop';
 
 export interface StopOutcome {
   status: StopStatus;

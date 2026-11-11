@@ -33,7 +33,7 @@ export type PlaceholderKind =
   | 'unsupported'
   | 'unknown';
 
-export interface StripResult {
+interface StripResult {
   /** 剥离占位符后的文本（trim 后；forwarded 与未知成对标签只剥标签、保留内部文本）。 */
   clean: string;
   /** 命中的占位符种类（去重、保序），用于 rejected 回执与排障。 */

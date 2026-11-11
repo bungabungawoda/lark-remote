@@ -18,7 +18,7 @@ export interface DshApprovalAudit {
   reason?: string;
 }
 
-export interface DshApprovalWaterfall {
+interface DshApprovalWaterfall {
   eventId: string;
   clientId: string;
   callId?: string;

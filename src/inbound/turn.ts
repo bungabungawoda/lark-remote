@@ -6,7 +6,7 @@
  */
 
 /** 附件种类（命名/展示语义）。与下载语义 `InboundMediaItem.type` 分离（§5.3）。 */
-export type AttachmentKind = 'image' | 'file' | 'video' | 'audio' | 'sticker';
+type AttachmentKind = 'image' | 'file' | 'video' | 'audio' | 'sticker';
 
 export interface InboundAttachment {
   /** 绝对路径（落盘后位置）。 */

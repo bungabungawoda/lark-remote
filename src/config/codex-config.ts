@@ -431,7 +431,7 @@ function runCodexCommandAsync(args: string[]): Promise<string> {
  * command path (`--bundled`) directly use `invalidateCodexBundledTestCache`
  * from `tests/lib/codex-bundled-test-helpers.ts`.
  */
-export function invalidateCodexBundledCache(): void {
+export function _invalidateCodexBundledCacheForTest(): void {
   catalogCache = null;
 }
 

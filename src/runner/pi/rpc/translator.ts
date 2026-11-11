@@ -29,7 +29,7 @@ import {
   type PiRpcUsage,
 } from './protocol-types.js';
 
-export type PiRpcTurnStartedEvent = TurnStartedEvent;
+type PiRpcTurnStartedEvent = TurnStartedEvent;
 
 export type PiRpcTranslatorEvent = AgentEvent | PiRpcTurnStartedEvent;
 

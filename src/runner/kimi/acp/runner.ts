@@ -64,7 +64,7 @@ import { createTerminator, type Terminator } from '../../../platform/terminator.
 // Configuration
 // =============================================================================
 
-export interface KimiAcpRunnerOptions {
+interface KimiAcpRunnerOptions {
   kind: AgentKind;
   sessionReader: AgentSessionReader;
   /** Path to the kimi binary. Defaults to `kimi`. */
@@ -1064,15 +1064,27 @@ export class KimiAcpRunner extends BaseAcpRunner<KimiAcpTranslator> {
     ]);
   }
 
-  /** terminal/output: 回累计全量输出 + truncated + 当前退出状态（可未退出）。 */
-  private handleTerminalOutput(id: number | string, params: TerminalOutputParams): void {
-    const handle = this.terminals.get(params.terminalId);
+  /**
+   * 取 terminal handle；不存在时回 INVALID_PARAMS 错误并返回 undefined，
+   * 调用方直接 return（terminal/output、wait_for_exit、kill、release 四个
+   * handler 共用的守卫，原为四份逐字相同的 get+respondError）。
+   */
+  private requireTerminal(id: number | string, terminalId: string): TerminalHandle | undefined {
+    const handle = this.terminals.get(terminalId);
     if (!handle) {
       this.currentClient?.respondError(
         id,
         RpcErrorCode.INVALID_PARAMS,
-        `Unknown terminal: ${params.terminalId}`,
+        `Unknown terminal: ${terminalId}`,
       );
+    }
+    return handle;
+  }
+
+  /** terminal/output: 回累计全量输出 + truncated + 当前退出状态（可未退出）。 */
+  private handleTerminalOutput(id: number | string, params: TerminalOutputParams): void {
+    const handle = this.requireTerminal(id, params.terminalId);
+    if (!handle) {
       return;
     }
     this.currentClient?.respond(id, {
@@ -1087,30 +1099,16 @@ export class KimiAcpRunner extends BaseAcpRunner<KimiAcpTranslator> {
     id: number | string,
     params: TerminalWaitForExitParams,
   ): Promise<void> {
-    const handle = this.terminals.get(params.terminalId);
-    if (!handle) {
-      this.currentClient?.respondError(
-        id,
-        RpcErrorCode.INVALID_PARAMS,
-        `Unknown terminal: ${params.terminalId}`,
-      );
-      return;
-    }
+    const handle = this.requireTerminal(id, params.terminalId);
+    if (!handle) return;
     await handle.exitPromise;
     this.currentClient?.respond(id, { exitCode: handle.exitCode, signal: handle.signal });
   }
 
   /** terminal/kill: 立即杀进程组，回 {}。 */
   private async handleTerminalKill(id: number | string, params: TerminalKillParams): Promise<void> {
-    const handle = this.terminals.get(params.terminalId);
-    if (!handle) {
-      this.currentClient?.respondError(
-        id,
-        RpcErrorCode.INVALID_PARAMS,
-        `Unknown terminal: ${params.terminalId}`,
-      );
-      return;
-    }
+    const handle = this.requireTerminal(id, params.terminalId);
+    if (!handle) return;
     await this.terminator.stop(handle.proc, { immediate: true });
     this.currentClient?.respond(id, {});
   }
@@ -1120,15 +1118,8 @@ export class KimiAcpRunner extends BaseAcpRunner<KimiAcpTranslator> {
     id: number | string,
     params: TerminalReleaseParams,
   ): Promise<void> {
-    const handle = this.terminals.get(params.terminalId);
-    if (!handle) {
-      this.currentClient?.respondError(
-        id,
-        RpcErrorCode.INVALID_PARAMS,
-        `Unknown terminal: ${params.terminalId}`,
-      );
-      return;
-    }
+    const handle = this.requireTerminal(id, params.terminalId);
+    if (!handle) return;
     this.terminals.delete(params.terminalId);
     // stop 对已退出进程是 no-op；仍在跑则立即 SIGTERM+SIGKILL。
     await this.terminator.stop(handle.proc, { immediate: true });

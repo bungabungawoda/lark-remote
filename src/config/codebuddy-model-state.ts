@@ -22,7 +22,7 @@ import path from 'node:path';
 import { atomicWriteJson } from '../persistence/atomic-write.js';
 import { getLogger } from '../logger/index.js';
 
-export interface CodebuddyModelState {
+interface CodebuddyModelState {
   /** 账号真实可用模型 id（来自上游 400 的错误文本）。 */
   supported: string[];
   /** 上次成功完成 turn 的模型 id。 */
@@ -56,7 +56,7 @@ export function configureCodebuddyModelState(filePath: string): void {
 }
 
 /** 测试/多实例复位用：清掉内存缓存与路径绑定。 */
-export function resetCodebuddyModelState(): void {
+export function _resetCodebuddyModelStateForTest(): void {
   statePath = null;
   cached = null;
 }
@@ -165,7 +165,7 @@ export function parseRejectedModel(text: string | undefined): string | undefined
   return m?.[1];
 }
 
-export interface PickCodebuddyModelInput {
+interface PickCodebuddyModelInput {
   /** 配置里的 model（用户显式选择）。 */
   configured?: string;
   /** 已学到的账号可用清单；空 = 还没有权威信号。 */

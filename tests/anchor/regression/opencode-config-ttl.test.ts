@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import {
   loadOpencodeConfig,
-  invalidateOpencodeConfigCache,
+  _invalidateOpencodeConfigCacheForTest,
 } from '../../../src/config/opencode-config.js';
 
 // 直接在模块顶层定义 mock（兼容 bun 的 vitest，与既有 opencode 测试同模式）
@@ -30,7 +30,7 @@ deepseek/deepseek-chat
 `;
 
 beforeEach(() => {
-  invalidateOpencodeConfigCache();
+  _invalidateOpencodeConfigCacheForTest();
   mockExecSync.mockReset();
 });
 

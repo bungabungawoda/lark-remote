@@ -29,7 +29,7 @@ import {
 /** Upper bound on the exit-path cancel:退出不能被一个卡住的 host 拖住。 */
 const EXIT_CANCEL_TIMEOUT_MS = 2_000;
 
-export interface SyncCancelOptions {
+interface SyncCancelOptions {
   baseUrl: string;
   sessionId: string;
   /** Configured `agents.dsh.dshHome` (selects `.credentials.yaml`). */

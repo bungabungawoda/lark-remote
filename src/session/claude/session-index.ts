@@ -26,7 +26,7 @@ export interface SessionIndexEntry {
   cwdSet: Set<string>;
 }
 
-export interface SessionIndexOptions {
+interface SessionIndexOptions {
   /** Minimum interval between refresh scans (ms). Default 5000. */
   refreshIntervalMs?: number;
   /**
@@ -93,7 +93,7 @@ export function titleFromRow(obj: Record<string, unknown>): string | undefined {
 
 // ─── parseSessionJsonl ──────────────────────────────────────
 
-export interface ParsedSession {
+interface ParsedSession {
   cwdSet: Set<string>;
   summary: string;
   /**

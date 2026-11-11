@@ -15,14 +15,14 @@ vi.mock('../logger/index.js', async () =>
   (await import('../../tests/lib/logger-mock.js')).loggerModuleMock(),
 );
 
-import { loadOpencodeConfig, invalidateOpencodeConfigCache } from './opencode-config.js';
+import { loadOpencodeConfig, _invalidateOpencodeConfigCacheForTest } from './opencode-config.js';
 
 beforeEach(() => {
   mockSpawnSync.mockReset();
   mockResolveExecutable.mockReset();
   mockResolveExecutable.mockReturnValue({ kind: 'direct', file: '/usr/local/bin/opencode' });
   mockLogger.warn.mockReset();
-  invalidateOpencodeConfigCache();
+  _invalidateOpencodeConfigCacheForTest();
 });
 
 const VALID_OUTPUT = [
@@ -144,7 +144,7 @@ describe('loadOpencodeConfig', () => {
     mockSpawnSync.mockReturnValue({ status: 0, stdout: VALID_OUTPUT, stderr: '' });
 
     loadOpencodeConfig();
-    invalidateOpencodeConfigCache();
+    _invalidateOpencodeConfigCacheForTest();
     loadOpencodeConfig();
 
     expect(mockSpawnSync).toHaveBeenCalledTimes(2);

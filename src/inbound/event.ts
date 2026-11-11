@@ -11,7 +11,7 @@
 import type { PlaceholderKind } from './placeholder.js';
 import type { MediaOutcome } from './turn.js';
 
-export interface InboundEventBase {
+interface InboundEventBase {
   userId: string;
   chatId: string;
   messageId: string;
@@ -20,7 +20,7 @@ export interface InboundEventBase {
   rawContentType: string;
 }
 
-export interface TextInboundEvent extends InboundEventBase {
+interface TextInboundEvent extends InboundEventBase {
   kind: 'text';
   /** 已剥离结构占位符的文本（可为空串：整条消息都是占位符）。 */
   text: string;
@@ -30,13 +30,13 @@ export interface TextInboundEvent extends InboundEventBase {
   unknownTags: string[];
 }
 
-export interface MediaInboundEvent extends InboundEventBase {
+interface MediaInboundEvent extends InboundEventBase {
   kind: 'media';
   /** 下载 + 落盘结果；装配器在窗口到期后等它落定才 commit。 */
   outcome: Promise<MediaOutcome>;
 }
 
-export interface RejectedInboundEvent extends InboundEventBase {
+interface RejectedInboundEvent extends InboundEventBase {
   kind: 'rejected';
   /** 面向人的说明（如「入站媒体保存已关闭」）。 */
   reason: string;

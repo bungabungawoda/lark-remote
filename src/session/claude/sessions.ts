@@ -337,7 +337,7 @@ interface ClaudeRawUsage {
 }
 
 /** per-message-id 合并后的 usage 采样（四个分量 + 采集时的真人 turn 序号）。 */
-export interface ClaudePerMessageUsage {
+interface ClaudePerMessageUsage {
   input: number;
   output: number;
   cacheRead: number;

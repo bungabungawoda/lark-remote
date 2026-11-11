@@ -22,7 +22,7 @@ import type { PiRpcCommand, PiRpcEvent, PiRpcResponse } from './protocol-types.j
 /** Per-run hooks set by the runner. Accepts a superset so the base class's
  *  respawnAfterConnectionLost({onNotification,onServerRequest,onClose})
  *  detach call stays type-compatible. */
-export interface PiRpcClientHooks {
+interface PiRpcClientHooks {
   onEvent?(evt: PiRpcEvent): void;
   onClose?(): void;
   onNotification?(): void;

@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { EventEmitter } from 'node:events';
 import type { ChildProcess } from 'node:child_process';
-import { BashProcessRunner } from './index.js';
+import { BashProcessRunner } from './runner.js';
 import { describePosix } from '../../../tests/lib/platform.js';
 import { ShellUnavailableError, type ShellBackend } from '../../platform/shell.js';
 import type { Terminator } from '../../platform/terminator.js';

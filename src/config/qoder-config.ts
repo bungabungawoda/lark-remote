@@ -32,7 +32,7 @@ interface QoderModelEntryLike {
   model?: unknown;
 }
 
-export interface QoderConfigResult {
+interface QoderConfigResult {
   /** settings.json 里的当前模型（缺省 undefined = 跟随 Qoder 默认）。 */
   currentModel: string | undefined;
   /** --list-models 解析出的模型清单；解析失败为空列表。 */
@@ -70,7 +70,7 @@ let catalogRefreshInFlight: Promise<QoderConfigResult> | null = null;
 const effortSupplementCache = new Map<string, string[]>();
 
 /** 清空缓存（仅供测试使用，生产代码无调用点）。 */
-export function invalidateQoderConfigCache(): void {
+export function _invalidateQoderConfigCacheForTest(): void {
   catalogCache = null;
   catalogRefreshInFlight = null;
   effortSupplementCache.clear();

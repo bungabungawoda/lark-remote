@@ -57,7 +57,7 @@ interface KimiConfigResult {
 }
 
 /** 清空缓存（仅供测试使用，生产代码无调用点） */
-export function invalidateKimiConfigCache(): void {
+export function _invalidateKimiConfigCacheForTest(): void {
   kimiConfigCache = null;
 }
 

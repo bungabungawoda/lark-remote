@@ -24,7 +24,7 @@ import { getLogger } from '../logger/index.js';
 
 type ApprovalState = 'pending' | 'submitting' | 'resolved' | 'failed' | 'expired';
 
-export interface TrackedApproval {
+interface TrackedApproval {
   requestId: number | string;
   kind: 'command' | 'file' | 'permissions' | 'question' | 'tool';
   state: ApprovalState;

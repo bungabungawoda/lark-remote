@@ -19,9 +19,9 @@ export const BOT_INFO_FILE = 'bot-info.json';
 /** 应用名很少变；7 天足够新，同时避免每次选择都联网。 */
 export const BOT_INFO_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 /** token + bot info 两步共享的总预算。 */
-export const BOT_INFO_TIMEOUT_MS = 3000;
+const BOT_INFO_TIMEOUT_MS = 3000;
 /** 并发上限：避免一次性打爆 tenant_access_token 端点。 */
-export const BOT_INFO_CONCURRENCY = 8;
+const BOT_INFO_CONCURRENCY = 8;
 
 const TOKEN_URL = 'https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal';
 const BOT_INFO_URL = 'https://open.feishu.cn/open-apis/bot/v3/info';
@@ -34,12 +34,12 @@ export interface BotInfo {
 
 export type BotNameSource = 'cache' | 'fresh' | 'stale' | 'none';
 
-export interface BotName {
+interface BotName {
   appName?: string;
   source: BotNameSource;
 }
 
-export interface BotInfoTarget {
+interface BotInfoTarget {
   dir: string;
   appId: string;
   appSecret: string;

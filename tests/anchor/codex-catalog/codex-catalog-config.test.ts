@@ -13,7 +13,7 @@ import {
   getCodexCatalogModels,
   getDefaultReasoningEffort,
   getReasoningEffortOptions,
-  invalidateCodexBundledCache,
+  _invalidateCodexBundledCacheForTest,
   isCodexCatalogMode,
   loadCodexConfig,
 } from '../../../src/config/codex-config.js';
@@ -122,7 +122,7 @@ let oldCodexHome: string | undefined;
 beforeEach(() => {
   mockSpawnSync.mockReset();
   mockLogger.warn.mockReset();
-  invalidateCodexBundledCache();
+  _invalidateCodexBundledCacheForTest();
   oldCodexHome = process.env.CODEX_HOME;
   tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-catalog-config-'));
   process.env.CODEX_HOME = tmpDir;
@@ -136,12 +136,12 @@ afterEach(() => {
     process.env.CODEX_HOME = oldCodexHome;
   }
   fs.rmSync(tmpDir, { recursive: true, force: true });
-  invalidateCodexBundledCache();
+  _invalidateCodexBundledCacheForTest();
 });
 
 function writeConfig(lines: string[]): void {
   fs.writeFileSync(path.join(tmpDir, 'config.toml'), lines.join('\n'));
-  invalidateCodexBundledCache();
+  _invalidateCodexBundledCacheForTest();
 }
 
 function writeModels(catalog: string): string {

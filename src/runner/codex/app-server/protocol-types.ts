@@ -27,12 +27,12 @@ export type {
 // Lifecycle: initialize
 // =============================================================================
 
-export interface ClientInfo {
+interface ClientInfo {
   name: string;
   version: string;
 }
 
-export interface InitializeCapabilities {
+interface InitializeCapabilities {
   experimentalApi?: boolean;
   requestAttestation?: boolean;
   optOutNotificationMethods?: string[];
@@ -106,7 +106,7 @@ export interface ThreadStartResponse {
 }
 
 /** Real wire shape: ThreadStatus is a discriminated object, not a string. */
-export type ThreadStatus =
+type ThreadStatus =
   | { type: 'notLoaded' }
   | { type: 'idle' }
   | { type: 'systemError' }
@@ -121,13 +121,6 @@ export interface ThreadResumeParams {
   sandbox?: SandboxMode;
   /** Configuration overrides for the resumed thread (codex v2 wire field). */
   config?: Record<string, unknown> | null;
-}
-
-export interface ThreadResumeResponse {
-  thread: Thread;
-  cwd: string;
-  model: string;
-  modelProvider: string;
 }
 
 /** `thread/settings/update` params (real v2 protocol). */
@@ -145,19 +138,6 @@ export interface ThreadSettingsUpdateParams {
 
 export interface ThreadSettingsUpdateResponse {
   // Empty success body.
-}
-
-/** Server→client notification after a settings update is applied. */
-export interface ThreadSettingsUpdatedNotification {
-  method: 'thread/settings/updated';
-  params: {
-    threadId: string;
-    threadSettings: unknown;
-  };
-}
-
-export interface ThreadCompactStartParams {
-  threadId: string;
 }
 
 export interface Thread {
@@ -181,7 +161,7 @@ export interface Thread {
 // Lifecycle: turn
 // =============================================================================
 
-export interface UserInput {
+interface UserInput {
   type: 'text';
   text: string;
   text_elements?: unknown[];
@@ -201,14 +181,9 @@ export interface TurnStartResponse {
   turn: Turn;
 }
 
-export interface TurnInterruptParams {
-  threadId: string;
-  turnId: string;
-}
+type TurnStatus = 'inProgress' | 'completed' | 'failed' | 'interrupted';
 
-export type TurnStatus = 'inProgress' | 'completed' | 'failed' | 'interrupted';
-
-export interface TurnError {
+interface TurnError {
   message: string;
   additionalDetails?: string | null;
   codexErrorInfo?: unknown;
@@ -228,21 +203,21 @@ export interface Turn {
 // Thread items
 // =============================================================================
 
-export interface AgentMessageItem {
+interface AgentMessageItem {
   type: 'agentMessage';
   id: string;
   text: string;
   phase?: string | null;
 }
 
-export interface ReasoningItem {
+interface ReasoningItem {
   type: 'reasoning';
   id: string;
   content?: string[];
   summary?: string[];
 }
 
-export interface CommandExecutionItem {
+interface CommandExecutionItem {
   type: 'commandExecution';
   id: string;
   command: string;
@@ -251,13 +226,13 @@ export interface CommandExecutionItem {
   status?: string | null;
 }
 
-export interface PlanItem {
+interface PlanItem {
   type: 'plan';
   id: string;
   text: string;
 }
 
-export interface FileChangeItem {
+interface FileChangeItem {
   type: 'fileChange';
   id: string;
   changes: FileUpdateChange[];
@@ -276,14 +251,14 @@ export interface FileUpdateChange {
   diff: string;
 }
 
-export interface ObservationItem {
+interface ObservationItem {
   type: 'observation';
   id: string;
   content: string;
   timestamp: number;
 }
 
-export interface DiffItem {
+interface DiffItem {
   type: 'diff';
   id: string;
   diff: string;
@@ -291,7 +266,7 @@ export interface DiffItem {
 }
 
 /** Web search item（来源：codex-rs ThreadItem::WebSearch / v2 schema）。 */
-export interface WebSearchItem {
+interface WebSearchItem {
   type: 'webSearch';
   id: string;
   query: string;
@@ -426,16 +401,6 @@ export interface ReasoningSummaryTextDeltaNotification {
   };
 }
 
-export interface ReasoningSummaryPartAddedNotification {
-  method: 'item/reasoning/summaryPartAdded';
-  params: {
-    threadId: string;
-    turnId: string;
-    itemId: string;
-    summaryIndex: number;
-  };
-}
-
 export interface ReasoningTextDeltaNotification {
   method: 'item/reasoning/textDelta';
   params: {
@@ -469,17 +434,7 @@ export interface PlanDeltaNotification {
   };
 }
 
-export interface FileChangeOutputDeltaNotification {
-  method: 'item/fileChange/outputDelta';
-  params: {
-    threadId: string;
-    turnId: string;
-    itemId: string;
-    delta: string;
-  };
-}
-
-export interface TokenUsageBreakdown {
+interface TokenUsageBreakdown {
   inputTokens: number;
   outputTokens: number;
   cachedInputTokens?: number;
@@ -488,7 +443,7 @@ export interface TokenUsageBreakdown {
   cacheCreationTokens?: number;
 }
 
-export interface ThreadTokenUsage {
+interface ThreadTokenUsage {
   last: TokenUsageBreakdown;
   total: TokenUsageBreakdown;
   /** 当前模型 context window 上限（v2 schema 中与 last/total 平级；
@@ -534,15 +489,6 @@ export interface WarningNotification {
   };
 }
 
-export interface ThreadStatusChangedNotification {
-  method: 'thread/status/changed';
-  params: {
-    threadId: string;
-    status: string;
-    timestamp?: string;
-  };
-}
-
 export interface ModelReroutedNotification {
   method: 'model/rerouted';
   params: {
@@ -570,7 +516,7 @@ export const ServerRequestMethod = {
   REQUEST_USER_INPUT: 'item/tool/requestUserInput',
 } as const;
 
-export interface NetworkApprovalContext {
+interface NetworkApprovalContext {
   host: string;
   protocol: string;
   port?: number | null;
@@ -589,7 +535,7 @@ export interface CommandExecutionRequestApprovalParams {
   approvalId?: string | null;
 }
 
-export interface NetworkPolicyAmendment {
+interface NetworkPolicyAmendment {
   host: string;
   action: 'allow' | 'deny';
 }
@@ -603,10 +549,6 @@ export type CommandExecutionApprovalDecision =
   | { acceptWithExecpolicyAmendment: { execpolicy_amendment: string[] } }
   | { applyNetworkPolicyAmendment: { network_policy_amendment: NetworkPolicyAmendment } };
 
-export interface CommandExecutionRequestApprovalResponse {
-  decision: CommandExecutionApprovalDecision;
-}
-
 export interface FileChangeRequestApprovalParams {
   threadId: string;
   turnId: string;
@@ -618,20 +560,16 @@ export interface FileChangeRequestApprovalParams {
 
 export type FileChangeApprovalDecision = 'accept' | 'acceptForSession' | 'decline' | 'cancel';
 
-export interface FileChangeRequestApprovalResponse {
-  decision: FileChangeApprovalDecision;
-}
+type FileSystemAccessMode = 'read' | 'write' | 'deny';
 
-export type FileSystemAccessMode = 'read' | 'write' | 'deny';
-
-export interface FileSystemSandboxEntry {
+interface FileSystemSandboxEntry {
   path: string;
   access: FileSystemAccessMode;
 }
 
 /** Real wire shape: `read`/`write` are legacy string arrays; `entries` is the
  *  current structured form (`[{ path, access }]`). */
-export interface AdditionalFileSystemPermissions {
+interface AdditionalFileSystemPermissions {
   entries?: FileSystemSandboxEntry[] | null;
   read?: string[] | null;
   write?: string[] | null;
@@ -661,11 +599,6 @@ export interface PermissionsRequestApprovalParams {
   reason?: string | null;
 }
 
-export interface PermissionsRequestApprovalResponse {
-  permissions: GrantedPermissionProfile;
-  scope?: 'turn' | 'session';
-}
-
 /**
  * Codex AskUserQuestion（request_user_input）协议形状。
  * 来源：codex-rs/codex-rs/protocol/src/request_user_input.rs +
@@ -673,7 +606,7 @@ export interface PermissionsRequestApprovalResponse {
  * isOther=true → 渲染层提供自定义答案输入；isSecret 仅影响展示（按普通输入
  * 处理）；options 为 null/空 → 自由文本题。
  */
-export interface ToolRequestUserInputOption {
+interface ToolRequestUserInputOption {
   label: string;
   description: string;
 }
@@ -693,14 +626,6 @@ export interface ToolRequestUserInputParams {
   itemId: string;
   questions: ToolRequestUserInputQuestion[];
   autoResolutionMs?: number | null;
-}
-
-export interface ToolRequestUserInputAnswer {
-  answers: string[];
-}
-
-export interface ToolRequestUserInputResponse {
-  answers: Record<string, ToolRequestUserInputAnswer>;
 }
 
 /** Unsupported / ignored server request methods. */

@@ -15,7 +15,7 @@ import {
   createWin32ShellBackend,
   ShellUnavailableError,
 } from './shell.js';
-import { clearResolveCache } from './command.js';
+import { _clearResolveCacheForTest } from './command.js';
 
 const mockSpawn = vi.mocked(spawnProcess);
 
@@ -29,12 +29,12 @@ function mkdtemp(): string {
 beforeEach(() => {
   mockSpawn.mockReset();
   mockSpawn.mockReturnValue(createMockProc({ pid: 4242 }));
-  clearResolveCache();
+  _clearResolveCacheForTest();
 });
 
 afterEach(() => {
   for (const dir of tmpDirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
-  clearResolveCache();
+  _clearResolveCacheForTest();
 });
 
 /** 取出第一次 spawn 调用的 (file, args, options)。 */

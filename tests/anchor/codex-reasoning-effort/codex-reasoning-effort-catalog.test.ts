@@ -6,7 +6,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import {
   getReasoningEffortOptions,
   getDefaultReasoningEffort,
-  invalidateCodexBundledCache,
+  _invalidateCodexBundledCacheForTest,
 } from '../../../src/config/codex-config.js';
 import {
   getCodexBundledModels,
@@ -99,7 +99,7 @@ describe('getCodexBundledModels - anchor', () => {
   beforeEach(() => {
     mockSpawnSync.mockReset();
     mockLogger.warn.mockReset();
-    invalidateCodexBundledCache();
+    _invalidateCodexBundledCacheForTest();
     invalidateCodexBundledTestCache();
   });
 
@@ -181,7 +181,7 @@ describe('getReasoningEffortOptions - anchor', () => {
   beforeEach(() => {
     mockSpawnSync.mockReset();
     mockLogger.warn.mockReset();
-    invalidateCodexBundledCache();
+    _invalidateCodexBundledCacheForTest();
     invalidateCodexBundledTestCache();
   });
 
@@ -214,7 +214,7 @@ describe('getDefaultReasoningEffort - anchor', () => {
   beforeEach(() => {
     mockSpawnSync.mockReset();
     mockLogger.warn.mockReset();
-    invalidateCodexBundledCache();
+    _invalidateCodexBundledCacheForTest();
     invalidateCodexBundledTestCache();
   });
 
@@ -255,7 +255,7 @@ describe('reasoning effort functions read bundled catalog', () => {
   beforeEach(() => {
     mockSpawnSync.mockReset();
     mockLogger.warn.mockReset();
-    invalidateCodexBundledCache();
+    _invalidateCodexBundledCacheForTest();
     oldCodexHome = process.env.CODEX_HOME;
     tmpDir = makeTempDir('codex-effort-binary-');
     process.env.CODEX_HOME = tmpDir;
@@ -268,7 +268,7 @@ describe('reasoning effort functions read bundled catalog', () => {
       process.env.CODEX_HOME = oldCodexHome;
     }
     fs.rmSync(tmpDir, { recursive: true, force: true });
-    invalidateCodexBundledCache();
+    _invalidateCodexBundledCacheForTest();
   });
 
   it('test_anchor_getReasoningEffortOptions_reads_bundled_catalog', () => {
@@ -382,7 +382,7 @@ describe('Config card codex model switch reasoning adjustment - anchor', () => {
   beforeEach(() => {
     mockSpawnSync.mockReset();
     mockLogger.warn.mockReset();
-    invalidateCodexBundledCache();
+    _invalidateCodexBundledCacheForTest();
     mockSpawnSync.mockReturnValue(MODEL_SWITCH_BUNDLED_JSON);
   });
 

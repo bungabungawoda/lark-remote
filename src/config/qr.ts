@@ -37,7 +37,7 @@ const DARK_HALF_BOTH = ' ';
 /** Used when stdout reports no width — non-TTY pipes, and consoles that report 0. */
 const DEFAULT_COLUMNS = 80;
 
-export type TerminalQrMode = 'full-block' | 'half-block';
+type TerminalQrMode = 'full-block' | 'half-block';
 
 export interface TerminalQr {
   mode: TerminalQrMode;

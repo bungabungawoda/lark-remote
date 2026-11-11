@@ -29,7 +29,9 @@ import type {
   ResultEvent,
   SessionInfoEvent,
   TurnStartedEvent,
+  UserQuestion,
 } from '../../types.js';
+import { makeQuestionApprovalEvent } from '../../question-common.js';
 import { produceTurnStartedEvent } from '../turn-started.js';
 import { truncateWithEllipsis } from './acp-approval.js';
 import {
@@ -49,6 +51,8 @@ import {
   type UsageUpdateEvent,
   type SessionUpdateNotification,
   type RequestPermissionParams,
+  type ElicitationCreateParams,
+  type ElicitationPropertySchema,
   type SessionPromptResult,
   type AcpPlanEvent,
   type SessionInfoUpdateEvent,
@@ -130,7 +134,7 @@ function extractToolCallContentText(content: unknown[] | undefined): string | un
  * `Buffer.byteLength(undefined)` 抛 TypeError 并经 fatal 通道退出进程。
  * 不符合契约的帧一律丢弃。
  */
-export function acpChunkText(content: unknown): string | undefined {
+function acpChunkText(content: unknown): string | undefined {
   if (typeof content !== 'object' || content === null || Array.isArray(content)) return undefined;
   const text = (content as { text?: unknown }).text;
   return typeof text === 'string' ? text : undefined;
@@ -151,6 +155,53 @@ export function acpStringify(value: unknown): string {
 }
 
 /**
+ * tool_result rawOutput 的文本提取兜底链：对象取 `.text` 字符串、字符串原样、
+ * 其余空串。codebuddy/qoder 的 tool_result 形状口径（qoder 沿用 codebuddy
+ * 已验证的链，两份覆写原来逐字相同）。
+ */
+export function textFromRawOutput(rawOutput: unknown): unknown {
+  if (rawOutput && typeof rawOutput === 'object') {
+    const text = (rawOutput as { text?: unknown }).text;
+    if (typeof text === 'string') return text;
+  }
+  if (typeof rawOutput === 'string') return rawOutput;
+  return '';
+}
+
+/**
+ * 审批 reason（codebuddy/qoder 同款）：优先 rawInput.description，
+ * 否则 rawInput 序列化后截断到 200 兜底；最终统一再截断到 200。
+ */
+export function approvalReasonFrom(rawInput: Record<string, unknown>): string | undefined {
+  const reason =
+    (typeof rawInput.description === 'string' && rawInput.description) ||
+    (Object.keys(rawInput).length > 0
+      ? truncateWithEllipsis(acpStringify(rawInput), 200)
+      : undefined);
+  return reason ? truncateWithEllipsis(reason, 200) : undefined;
+}
+
+/**
+ * 审批卡片 command 候选回退链 + 300 字截断（codebuddy/qoder 同款）。
+ * 真机形状：Bash rawInput={command,description}、Read rawInput={file_path,limit}；
+ * 卡片 command 列优先真实命令/文件路径（title 是带反引号的 shell 呈现串），
+ * qoder 无 toolName 兜底（传 undefined 即可）。
+ */
+export function approvalCommandFrom(
+  rawInput: Record<string, unknown>,
+  title: string | undefined,
+  toolName?: string | undefined,
+): string | undefined {
+  const command =
+    (typeof rawInput.command === 'string' && rawInput.command) ||
+    (typeof rawInput.file_path === 'string' && rawInput.file_path) ||
+    title ||
+    toolName ||
+    undefined;
+  return command ? truncateWithEllipsis(command, 300) : undefined;
+}
+
+/**
  * 记录最新值并给 map 封顶（删最老 key，近似 LRU）。
  * `trackToolCallArgs` 与 `trackToolCallName` 曾是逐字相同的两段，合并到这里。
  */
@@ -168,7 +219,7 @@ function trackBounded(map: Map<string, string>, key: string, value: string): voi
 // =============================================================================
 
 /** Self-produced turn_started event (no wire equivalent — produced on prompt start). */
-export type AcpTurnStartedEvent = TurnStartedEvent;
+type AcpTurnStartedEvent = TurnStartedEvent;
 
 /**
  * Live usage snapshot from usage_update. The ACP wire carries context
@@ -176,7 +227,7 @@ export type AcpTurnStartedEvent = TurnStartedEvent;
  * input/output token split. input_tokens/output_tokens stay undefined so the
  * bridge falls back to per-agent transcript readback for cumulative stats.
  */
-export interface AcpLiveUsage {
+interface AcpLiveUsage {
   total_tokens?: number;
   context_limit?: number;
   input_tokens?: number;
@@ -184,7 +235,7 @@ export interface AcpLiveUsage {
 }
 
 /** Usage update event for live token display. */
-export interface AcpUsageEvent {
+interface AcpUsageEvent {
   type: 'usage';
   usage: AcpLiveUsage;
   timestamp?: string;
@@ -309,13 +360,66 @@ export abstract class BaseAcpTranslator {
     return this.handleOtherServerRequest(id, method, params);
   }
 
-  /** Hook for server requests other than session/request_permission. */
+  /**
+   * Hook for server requests other than session/request_permission.
+   * 默认只路由 elicitation/create（AskUserQuestion form）；其他扩展方法
+   * （codebuddy 的 `_codebuddy.ai/*` 等）由子类整体覆写本钩子处理。
+   */
   protected handleOtherServerRequest(
-    _id: number | string,
-    _method: string,
-    _params: unknown,
+    id: number | string,
+    method: string,
+    params: unknown,
+  ): AcpTranslatorEvent[] {
+    if (method === ServerRequestMethod.ELICITATION_CREATE) {
+      return this.handleElicitationCreate(id, params as ElicitationCreateParams);
+    }
+    return [];
+  }
+
+  /**
+   * elicitation/create（AskUserQuestion form）默认不处理：返回空数组交还
+   * runner 自动兜底（不悬挂服务端）。支持 form 的 agent（kimi/qoder）覆写
+   * 本钩子，用 buildElicitationQuestionEvent 承载公共脚手架。
+   */
+  protected handleElicitationCreate(
+    _requestId: number | string,
+    _params: ElicitationCreateParams,
   ): AcpTranslatorEvent[] {
     return [];
+  }
+
+  /**
+   * elicitation form 公共脚手架（kimi/qoder 原两份逐字相同，仅属性解析器
+   * 与日志前缀不同）：requestedSchema.properties 按顺序经 toQuestion 解析
+   * 为 UserQuestion[]，解析失败的逐题 warn 跳过；全失败返回 []（交还
+   * runner 自动兜底）；form 级 message 作为卡片概要行（view.intro）透传，
+   * 单题且 message 与题面相同时不重复。isOther=false 由各 parser 决定
+   * （form 只接受声明选项，卡片隐藏自定义答案输入）。
+   */
+  protected buildElicitationQuestionEvent(
+    requestId: number | string,
+    params: ElicitationCreateParams,
+    toQuestion: (prop: ElicitationPropertySchema) => UserQuestion | null,
+  ): AcpTranslatorEvent[] {
+    const properties = params.requestedSchema?.properties ?? {};
+    const questions: UserQuestion[] = [];
+    for (const [key, prop] of Object.entries(properties)) {
+      const q = toQuestion(prop);
+      if (!q) {
+        getLogger().warn(`[${this.logTag}] elicitation property skipped: key=${key}`);
+        continue;
+      }
+      questions.push(q);
+    }
+    if (questions.length === 0) {
+      return [];
+    }
+    const message = params.message?.trim();
+    const single = questions.length === 1;
+    const intro = message && (!single || message !== questions[0]!.question) ? message : undefined;
+    const event = makeQuestionApprovalEvent(requestId, questions, params.sessionId);
+    if (intro) event.view.intro = intro;
+    return [event];
   }
 
   /**

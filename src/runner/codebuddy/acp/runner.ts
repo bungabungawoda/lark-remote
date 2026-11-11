@@ -29,7 +29,7 @@
 
 import type { AgentKind } from '../../../agent-kinds.js';
 import type { AgentSessionReader } from '../../../session-contract.js';
-import type { AgentStatusInfo, UserQuestion } from '../../types.js';
+import type { AgentStatusInfo } from '../../types.js';
 import { CODEBUDDY_ACP_ARGS } from '../../../config/codebuddy-catalog.js';
 import {
   ConnectionManager,
@@ -57,7 +57,7 @@ import {
   type AcpApprovalKinds,
   type AcpPendingApproval,
 } from '../../common/acp/acp-approval.js';
-import { mapAnswersByIndex } from '../../question-common.js';
+import { encodeAnswersByIndex } from '../../question-common.js';
 import { getLogger } from '../../../logger/index.js';
 import { BaseAcpRunner } from '../../common/acp/base-acp-runner.js';
 
@@ -93,7 +93,7 @@ export interface CodebuddyAcpRunnerOptions {
 }
 
 /** session/new|resume 回读到的会话当前配置（只保留桥接会下发的三项）。 */
-export interface SessionCurrent {
+interface SessionCurrent {
   model?: string;
   thinkingLevel?: string;
   sandbox?: boolean;
@@ -321,7 +321,7 @@ export class CodebuddyAcpRunner extends BaseAcpRunner<CodebuddyAcpTranslator> {
       const answers = (response as { answers?: Record<string, string | string[]> }).answers ?? {};
       return {
         outcome: 'submitted',
-        answers: codebuddyQuestionAnswers(pending.view.questions ?? [], answers),
+        answers: encodeAnswersByIndex(pending.view.questions ?? [], answers, (i) => `q_${i}`),
       };
     }
     return { outcome: 'cancelled' };
@@ -360,7 +360,9 @@ export class CodebuddyAcpRunner extends BaseAcpRunner<CodebuddyAcpTranslator> {
     const rawAnswers =
       (response as { answers?: Record<string, string | string[]> } | null)?.answers ?? {};
     const answers =
-      action === 'answer' ? codebuddyQuestionAnswers(pending.view.questions ?? [], rawAnswers) : {};
+      action === 'answer'
+        ? encodeAnswersByIndex(pending.view.questions ?? [], rawAnswers, (i) => `q_${i}`)
+        : {};
     const decision = action === 'answer' && Object.keys(answers).length > 0 ? 'allow' : 'deny';
     let delivered = false;
     try {
@@ -516,24 +518,3 @@ function isCodebuddyMetaNoise(params: unknown): boolean {
  * 在 callAskUserQuestion 里自行 join。key 固定用序号——服务端按
  * `q_${index}` 回查题面，与请求里的 id 同源。
  */
-function codebuddyQuestionAnswers(
-  questions: UserQuestion[],
-  answers: Record<string, string | string[]>,
-): Record<string, string | string[]> {
-  const byIndex = mapAnswersByIndex(questions, answers);
-  const result: Record<string, string | string[]> = {};
-  for (let i = 0; i < questions.length; i++) {
-    const value = byIndex[i];
-    if (value === undefined) continue;
-    if (questions[i]!.multiSelect) {
-      const values = (Array.isArray(value) ? value : [value]).filter(
-        (v): v is string => typeof v === 'string' && v.length > 0,
-      );
-      if (values.length > 0) result[`q_${i}`] = values;
-    } else {
-      const single = Array.isArray(value) ? value[0] : value;
-      if (typeof single === 'string' && single.length > 0) result[`q_${i}`] = single;
-    }
-  }
-  return result;
-}

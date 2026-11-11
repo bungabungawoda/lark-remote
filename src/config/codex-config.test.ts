@@ -15,7 +15,11 @@ vi.mock('../logger/index.js', async () =>
   (await import('../../tests/lib/logger-mock.js')).loggerModuleMock(),
 );
 
-import { resolveCodexHome, loadCodexConfig, invalidateCodexBundledCache } from './codex-config.js';
+import {
+  resolveCodexHome,
+  loadCodexConfig,
+  _invalidateCodexBundledCacheForTest,
+} from './codex-config.js';
 import {
   getCodexBundledModelSlugs,
   invalidateCodexBundledTestCache,
@@ -29,7 +33,7 @@ const syncErr = (message: string) => ({ status: null, error: new Error(message),
 beforeEach(() => {
   mockSpawnSync.mockReset();
   mockLogger.warn.mockReset();
-  invalidateCodexBundledCache();
+  _invalidateCodexBundledCacheForTest();
   invalidateCodexBundledTestCache();
 });
 
@@ -171,7 +175,7 @@ describe('loadCodexConfig model options merge', () => {
   afterEach(() => {
     fs.rmSync(tmpRoot, { recursive: true, force: true });
     fs.mkdirSync(tmpRoot, { recursive: true });
-    invalidateCodexBundledCache();
+    _invalidateCodexBundledCacheForTest();
   });
 
   afterAll(() => {

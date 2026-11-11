@@ -1,10 +1,10 @@
 import fs from 'node:fs';
 
-export type PathKind = 'directory' | 'file' | 'missing' | 'unreadable';
-export type StatResolution =
+type PathKind = 'directory' | 'file' | 'missing' | 'unreadable';
+type StatResolution =
   { ok: true; stat: fs.Stats } | { ok: false; reason: 'missing' | 'unreadable' };
 
-export type DirectoryResolution =
+type DirectoryResolution =
   | { ok: true; canonical: string }
   | { ok: false; reason: 'missing' | 'not_directory' | 'unreadable' };
 

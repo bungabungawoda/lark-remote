@@ -333,7 +333,7 @@ function emptyFlow(): OpencodeUsageFlow {
 }
 
 /** v1 扫描累积器结果（纯数据）。 */
-export interface OpencodeV1Scan {
+interface OpencodeV1Scan {
   /** 末条 user 消息下标（catch-up tail 起点）；整份 export 无 user 消息 = -1。 */
   lastUserIndex: number;
   /** tail 内首条 user 文本（displayTitle 首选）。 */
@@ -570,7 +570,7 @@ function finalizeTurnUsage(
 }
 
 /** v2 usage 扫描累积器结果（纯数据）。 */
-export interface OpencodeV2UsageScan {
+interface OpencodeV2UsageScan {
   /** 末条采样（contextLength 水位来源）。 */
   latest: AgentSessionUsage | undefined;
   /** 末个 turn（末个 turn 起点之后）的采样求和（本 run flow）。 */

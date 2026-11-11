@@ -68,7 +68,7 @@ interface WebSocketMessageEvent {
   data: unknown;
 }
 
-export interface WebSocketOptions {
+interface WebSocketOptions {
   headers?: Record<string, string>;
 }
 
@@ -582,7 +582,7 @@ function classifySessionStreamError(
   return { kind: 'reconnect' };
 }
 
-export interface DshClientOptions {
+interface DshClientOptions {
   /** Configured DSH home; selects `.credentials.yaml` when no explicit file is given. */
   dshHome?: string;
   /**

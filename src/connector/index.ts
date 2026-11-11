@@ -153,7 +153,7 @@ export interface InboundMediaItem {
   tempPath: string;
 }
 
-export interface InboundMediaFailure {
+interface InboundMediaFailure {
   /** 资源种类（排障/回执分组用）。 */
   kind?: InboundResourceKind;
   fileName?: string;

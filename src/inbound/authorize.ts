@@ -16,9 +16,9 @@
 import type { OwnerBinder } from '../binder.js';
 import { getLogger } from '../logger/index.js';
 
-export type InboundAuthorization = 'owner' | 'bind_success' | 'rejected';
+type InboundAuthorization = 'owner' | 'bind_success' | 'rejected';
 
-export interface InboundAuthorizerOptions {
+interface InboundAuthorizerOptions {
   binder: OwnerBinder;
   /**
    * 首次绑定时的副作用（同步设置默认 cwd + 异步发欢迎语/帮助卡）。

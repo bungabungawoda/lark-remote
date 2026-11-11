@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { classifyRejection } from './error-classification.js';
+import { classifyRejection, isTransientTransportError } from './error-classification.js';
 
 describe('classifyRejection', () => {
   // ===== 既有 recoverable 用例（网络瞬态）—— 防回归 =====
@@ -65,5 +65,44 @@ describe('classifyRejection', () => {
       },
     };
     expect(classifyRejection(feishu230027)).toBe('recoverable');
+  });
+
+  // ===== 边界钉死（变异测试补强：非对象 reason / 5xx 上界 / 4xx 下界） =====
+  it('treats null/undefined/primitive reasons as fatal (no TypeError escape)', () => {
+    // guard 注释的契约：reason 非对象时必须走 fatal，不能在 handler 里抛
+    // TypeError 触发 uncaughtException 误导归因
+    expect(classifyRejection(null)).toBe('fatal');
+    expect(classifyRejection(undefined)).toBe('fatal');
+    expect(classifyRejection('boom')).toBe('fatal');
+    expect(classifyRejection(42)).toBe('fatal');
+  });
+
+  it('treats 5xx window as [500, 600): 599 recoverable, 600 fatal', () => {
+    expect(classifyRejection({ response: { status: 500 } })).toBe('recoverable');
+    expect(classifyRejection({ response: { status: 599 } })).toBe('recoverable');
+    expect(classifyRejection({ response: { status: 600 } })).toBe('fatal');
+  });
+
+  it('treats feishu business code at 4xx lower bound (400) as recoverable', () => {
+    expect(classifyRejection({ response: { status: 400, data: { code: 230027 } } })).toBe(
+      'recoverable',
+    );
+  });
+});
+
+describe('isTransientTransportError', () => {
+  it('returns true only for transient transport codes', () => {
+    expect(isTransientTransportError({ code: 'ECONNRESET' })).toBe(true);
+    expect(isTransientTransportError({ code: 'ETIMEDOUT' })).toBe(true);
+    expect(isTransientTransportError({ code: 'ERR_SOCKET_CLOSED' })).toBe(true);
+  });
+
+  it('returns false for non-transient / non-string / non-object reasons', () => {
+    expect(isTransientTransportError({ code: 'ENOENT' })).toBe(false);
+    expect(isTransientTransportError({ code: 5 })).toBe(false);
+    expect(isTransientTransportError({})).toBe(false);
+    expect(isTransientTransportError(null)).toBe(false);
+    expect(isTransientTransportError(undefined)).toBe(false);
+    expect(isTransientTransportError('ECONNRESET')).toBe(false);
   });
 });

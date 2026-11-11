@@ -8,7 +8,7 @@ import {
   resolveQoderConfigDir,
   loadQoderConfig,
   refreshQoderConfig,
-  invalidateQoderConfigCache,
+  _invalidateQoderConfigCacheForTest,
 } from './qoder-config.js';
 import { rmRf } from '../../tests/lib/tmp-cleanup.js';
 import { prependPath, restorePath, writeMockBin } from '../../tests/lib/path-mock.js';
@@ -163,11 +163,11 @@ describe('refreshQoderConfig / loadQoderConfig', () => {
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'lark-qoder-config-'));
     savedPath = prependPath(tmpDir);
-    invalidateQoderConfigCache();
+    _invalidateQoderConfigCacheForTest();
   });
 
   afterEach(() => {
-    invalidateQoderConfigCache();
+    _invalidateQoderConfigCacheForTest();
     restorePath(savedPath);
     rmRf(tmpDir);
   });

@@ -14,6 +14,7 @@ import path from 'node:path';
 import readline from 'node:readline';
 import YAML from 'yaml';
 import { AppConfigSchema } from './index.js';
+import { isDirectoryPath } from '../common/fs.js';
 import { resolveBotNames, type BotInfoHttp, type BotNameSource } from './bot-info.js';
 import {
   displayWidth,
@@ -45,7 +46,7 @@ interface ConfigDirEntry {
   missingCredentials: boolean;
 }
 
-export interface ListCandidatesOptions {
+interface ListCandidatesOptions {
   home?: string;
   now?: number;
   http?: BotInfoHttp;
@@ -65,14 +66,6 @@ const DIR_PREFIX = '.lark-remote';
 function hasConfigFile(dir: string): boolean {
   try {
     return fs.statSync(path.join(dir, CONFIG_FILE)).isFile();
-  } catch {
-    return false;
-  }
-}
-
-function isDirectory(dir: string): boolean {
-  try {
-    return fs.statSync(dir).isDirectory();
   } catch {
     return false;
   }
@@ -175,7 +168,7 @@ function siblingConfigDirs(home: string): string[] {
   return entries
     .filter((entry) => entry.name.startsWith(DIR_PREFIX))
     .map((entry) => path.join(home, entry.name))
-    .filter(isDirectory);
+    .filter(isDirectoryPath);
 }
 
 function sortConfigDirs(dirs: string[], defaultDir: string): string[] {
@@ -249,19 +242,19 @@ export function candidateAppLabel(item: ConfigDirCandidate): string {
   return '飞书：未配置';
 }
 
-export interface PickerKey {
+interface PickerKey {
   name?: string;
   ctrl?: boolean;
   sequence?: string;
 }
 
-export type PickerAction = 'continue' | 'confirm' | 'cancel' | 'interrupt';
+type PickerAction = 'continue' | 'confirm' | 'cancel' | 'interrupt';
 
-export interface PickerState {
+interface PickerState {
   index: number;
 }
 
-export interface PickerKeyResult extends PickerState {
+interface PickerKeyResult extends PickerState {
   action: PickerAction;
 }
 
@@ -330,7 +323,7 @@ export function applyPickerKey(state: PickerState, key: PickerKey, count: number
   return { index: state.index, action: INTENT_ACTIONS[intent] ?? 'continue' };
 }
 
-export interface RenderOptions {
+interface RenderOptions {
   columns?: number;
   rows?: number;
   color?: boolean;
@@ -432,7 +425,7 @@ export interface PickOutcome {
   item?: ConfigDirCandidate;
 }
 
-export interface PickerIO {
+interface PickerIO {
   input?: NodeJS.ReadStream;
   output?: NodeJS.WriteStream;
 }
@@ -555,7 +548,7 @@ class PickerSession {
   }
 }
 
-export interface ConfigDirPickCliArgs {
+interface ConfigDirPickCliArgs {
   configDir?: string;
   configDirPick?: boolean;
 }
@@ -566,7 +559,7 @@ interface StdoutLike {
   write(text: string): unknown;
 }
 
-export interface ApplyConfigDirPickDeps {
+interface ApplyConfigDirPickDeps {
   stdin?: { isTTY?: boolean };
   stdout?: StdoutLike;
   exit?: (code: number) => void;

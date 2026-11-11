@@ -76,7 +76,7 @@ export interface QueuedTask {
  * lane 条目的展示类型。只影响排队卡如何描述「正在执行的是什么」：
  * `message` 普通消息（缺省）、`compact` 压缩会话、`command` 其他卡片动作。
  */
-export type LaneTaskKind = 'message' | 'compact' | 'command';
+type LaneTaskKind = 'message' | 'compact' | 'command';
 
 /**
  * lane 当前占用者的展示信息。由 begin 路径登记、settle 路径清除，与执行

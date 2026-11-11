@@ -22,7 +22,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { BashProcessRunner } from '../../../src/runner/bash/index.js';
+import { BashProcessRunner } from '../../../src/runner/bash/runner.js';
 import { SpawningRunner } from '../../../src/runner/common/spawning-runner.js';
 import { waitForOrThrow } from '../../lib/wait-for.js';
 import { rmRf } from '../../../tests/lib/tmp-cleanup.js';
