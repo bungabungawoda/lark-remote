@@ -19,7 +19,7 @@ import type {
 } from '../../session-contract.js';
 
 import { isStale } from '../common/constants.js';
-import { encodeProjectDirName, samePath } from '../../platform/path.js';
+import { samePath } from '../../platform/path.js';
 import { paginate } from '../common/pagination.js';
 import { newestOf, sortByRecencyDesc } from '../common/recency.js';
 import { TtlCache } from '../../common/ttl-cache.js';
@@ -60,15 +60,20 @@ function defaultPiDir(): string {
 }
 
 /**
- * Encode cwd to pi's directory name format: '--<cwd with / \ : -> - --'
+ * Encode cwd to pi's on-disk directory name.
  *
- * 与 claude 共用 `encodeProjectDirName`（同一套 win32 归一规则），再去掉
- * 前导分隔符产生的首个 `-`：`/Users/x` -> `Users-x`（不是 `-Users-x`）。
- * win32 同理：`C:\Users\x` -> `C--Users-x`。
+ * 镜像 pi 自己的落盘规则（pi session-manager：去一个前导分隔符，`/ \ :` →
+ * `-`，**保留 `_`**，再包 `--…--`）：`/Users/x` → `--Users-x--`，
+ * `/home/user/project/security_data` → `--home-user-project-security_data--`。
+ *
+ * 不能与 claude 共用 `encodeProjectDirName`：claude 会把 `_` 归一成 `-`
+ * （`disk_d` → `disk-d`），cwd 一含下划线就定位不到 pi 的真实目录，jsonl
+ * 用量整体读空、卡片退回 per-run live 口径（丢累计/Context 百分比/Compact）。
+ * 也不能把这边的规则并回公共编码函数——claude/qoder 的落盘确实是 `_`→`-`，
+ * 两套约定只是长得像，不是同一套。
  */
 function projectDirForCwd(cwd: string, sessionsDir: string): string {
-  const encodedCwd = encodeProjectDirName(cwd).replace(/^-+/, '');
-  const encoded = `--${encodedCwd}--`;
+  const encoded = `--${cwd.replace(/^[/\\]/, '').replace(/[/\\:]/g, '-')}--`;
   return path.join(sessionsDir, encoded);
 }
 

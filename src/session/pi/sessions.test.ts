@@ -3,7 +3,6 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { PiSessionReader } from '../../session/pi/sessions.js';
-import { encodeProjectDirName } from '../../platform/path.js';
 import { currentPlatform, isWin32 } from '../../platform/select.js';
 import { expectRunUsageScope } from '../../../tests/lib/usage-scope-contract.js';
 import { mockLogger } from '../../../tests/lib/logger-mock.js';
@@ -23,11 +22,15 @@ afterEach(() => {
 });
 
 /**
- * Encode cwd to pi's directory name format: --<cwd-with-/-\-:->-.
- * 复用生产 `encodeProjectDirName`（win32 归一规则只此一处），避免镜像漂移。
+ * Encode cwd to pi's on-disk directory name.
+ *
+ * 镜像 pi 自己的落盘规则（去一个前导分隔符 + `/ \ :`→`-`，`_` 保留）。
+ * **不能**复用生产编码函数：fixture 代表的是 pi 的输出，不是 lark-remote
+ * 算出来的路径——复用会把「实现算错目录」固化成「测试也找同一个错目录」
+ * （underscore 回归就是这么漏掉的）。
  */
 function encodeCwd(cwd: string): string {
-  return `--${encodeProjectDirName(cwd).replace(/^-+/, '')}--`;
+  return `--${cwd.replace(/^[/\\]/, '').replace(/[/\\:]/g, '-')}--`;
 }
 
 /**
@@ -477,6 +480,40 @@ describe('PiSessionReader', () => {
     expect(content.usage!.outputTokens).toBe(200);
     // contextLength = input+output+cacheRead+cacheCreation（含末轮 output，§9.21 口径）
     expect(content.usage!.contextLength).toBe(1200);
+  });
+
+  it('finds the session dir when the cwd contains underscores (pi keeps them on disk)', () => {
+    // 回归：pi 落盘目录保留 `_`（pi session-manager 不归一下划线），此前 reader
+    // 误用 claude 编码（`_`→`-`），`/home/user/project/security_data` 这类 cwd
+    // 永远定位不到目录，jsonl 用量整体读空、卡片退回 per-run live 口径。
+    const sessionId = 'sess-underscore-cwd';
+    const cwd = '/home/user/project/security_data';
+    const filePath = writeSessionFile(sessionId, cwd, [
+      { type: 'session', id: sessionId, cwd },
+      { type: 'message', message: { role: 'user', content: [{ type: 'text', text: 'do it' }] } },
+      {
+        type: 'message',
+        message: {
+          role: 'assistant',
+          usage: { input: 100, output: 30 },
+          content: [{ type: 'text', text: 'done' }],
+        },
+      },
+    ]);
+    // fixture 目录名本身就是 pi 规则的产物：必须保留下划线，否则这条测试
+    // 测的就不是 pi 的真实落盘形态。
+    expect(path.basename(path.dirname(filePath))).toBe('--home-user-project-security_data--');
+
+    const reader = new PiSessionReader({ piDir: tmpDir });
+    const content = reader.readSessionContent(sessionId, cwd);
+    expect(content.events.length).toBeGreaterThan(0);
+    expectRunUsageScope(content.usage, {
+      flowInput: 100,
+      flowOutput: 30,
+      contextLength: 130,
+      cumulativeInput: 100,
+      cumulativeOutput: 30,
+    });
   });
 
   it('sums every assistant message of the last real-user turn (tool_result does not split it)', () => {

@@ -29,12 +29,14 @@ export function encodeClaudeProjectDir(cwd: string): string {
 /**
  * pi 会话目录名的**中段**编码（`--<中段>--` 去掉两侧 `--`）。
  *
- * 生产侧见 `src/session/pi/sessions.ts` 的 projectDirForCwd。这里只导出中段，
- * 因为不少 fixture 在 join 时才拼两侧 `--`。与 claude 同理：win32 的 `\` 与
- * `:` 必须归一，否则目录名含 `:` → mkdir ENOENT。
+ * 镜像 pi 自己的落盘规则（pi session-manager：去一个前导分隔符，
+ * `/ \\ :` → `-`，**保留 `_`**）。**不能**委托生产 `encodeProjectDirName`：
+ * 那是 claude 的规则（`_`→`-`），而 fixture 代表的是 pi 的输出——复用会把
+ * 「生产算错目录」固化成「fixture 也写进同一个错目录」，测试永远变绿
+ * （pi `_` 回归就是这么漏掉的）。生产侧见 `src/session/pi/sessions.ts`。
  */
 export function piEncodeCwd(cwd: string): string {
-  return encodeProjectDirName(cwd).replace(/^-+/, '');
+  return cwd.replace(/^[/\\]/, '').replace(/[/\\:]/g, '-');
 }
 
 export function encodedProjectDir(cwd: string): string {
