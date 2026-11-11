@@ -14,7 +14,12 @@ import os from 'node:os';
 import path from 'node:path';
 import TOML from '@iarna/toml';
 import { getLogger } from '../logger/index.js';
-import { spawnProcess, spawnProcessSync } from '../platform/spawn.js';
+import { runTextCommandAsync, runTextCommandSync } from '../platform/cli-command.js';
+import {
+  cachedEndpointModels,
+  warmEndpointModels,
+  type EndpointModelsTarget,
+} from './endpoint-models.js';
 
 /** codex CLI 名（cross-spawn 负责 win32 .cmd 垫片解析）。 */
 const CODEX_BINARY = 'codex';
@@ -22,6 +27,13 @@ const CODEX_BINARY = 'codex';
 /** codex CLI 调用超时 / 输出上限（同步与异步路径一致）。 */
 const CODEX_TIMEOUT_MS = 8_000;
 const CODEX_MAX_BUFFER = 4 * 1024 * 1024;
+
+/** 探测调用的边界（共用实现见 platform/cli-command）。 */
+const CODEX_COMMAND = {
+  label: 'codex',
+  timeoutMs: CODEX_TIMEOUT_MS,
+  maxBuffer: CODEX_MAX_BUFFER,
+} as const;
 
 /**
  * Resolve codex home directory.
@@ -353,77 +365,14 @@ function catalogArgs(bundled: boolean): string[] {
   return bundled ? ['debug', 'models', '--bundled'] : ['debug', 'models'];
 }
 
-/**
- * 同步运行 codex CLI（`debug models ...`），成功返回 stdout。
- *
- * 必须经 platform/spawn（cross-spawn）而非裸 execFileSync：codex 是 npm 全局
- * 安装的 .cmd 垫片，win32 上 execFileSync 不做 PATHEXT 解析 —— 裸名 'codex'
- * 会被解析到无扩展名的 sh 脚本（给 Git Bash/WSL 用的那份），Windows 原生
- * 执行直接失败（bun 下 exit 1「系统找不到指定的路径」，node 下 ENOENT）；
- * 而 execFileSync('codex.cmd') 又因 execFile 不经 shell 直接 EINVAL。
- * cross-spawn 与 runner spawn 走同一垫片执行路径（posix 直通）。
- * stderr 参与 pipe：失败信息带上 stderr 片段，避免只留一句无诊断价值的
- * "Command failed"（历史教训：真因只存在于被丢弃的 stderr 里）。
- */
+/** `codex debug models` 的同步输出；命令名进错误信息，stderr 片段随错误带出。 */
 function runCodexCommandSync(args: string[]): string {
-  const res = spawnProcessSync(CODEX_BINARY, args, {
-    encoding: 'utf-8',
-    timeout: CODEX_TIMEOUT_MS,
-    maxBuffer: CODEX_MAX_BUFFER,
-    stdio: ['ignore', 'pipe', 'pipe'],
-  });
-  if (res.error) throw res.error;
-  if (res.status !== 0) {
-    const stderr = String(res.stderr ?? '').trim();
-    throw new Error(`codex exited ${res.status}${stderr ? `: ${stderr.slice(0, 200)}` : ''}`);
-  }
-  return String(res.stdout ?? '');
+  return runTextCommandSync(CODEX_BINARY, args, CODEX_COMMAND);
 }
 
-/**
- * 异步运行 codex CLI（spawnProcess + 流式收集），成功返回完整 stdout。
- * 与同步路径同超时 / 输出上限；stdout 超 4MB 主动 kill（对齐 execFile maxBuffer 语义）。
- */
+/** `codex debug models` 的异步输出，与同步路径同超时 / 输出上限。 */
 function runCodexCommandAsync(args: string[]): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const child = spawnProcess(CODEX_BINARY, args, { stdio: ['ignore', 'pipe', 'pipe'] });
-    let stdout = '';
-    let stderr = '';
-    let settled = false;
-    const settle = (fn: () => void): void => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      fn();
-    };
-    const timer = setTimeout(() => {
-      settle(() => {
-        child.kill();
-        reject(new Error(`codex timed out after ${CODEX_TIMEOUT_MS}ms`));
-      });
-    }, CODEX_TIMEOUT_MS);
-    child.stdout?.on('data', (chunk: string | Buffer) => {
-      stdout += String(chunk);
-      if (stdout.length > CODEX_MAX_BUFFER) {
-        settle(() => reject(new Error('codex stdout exceeded maxBuffer (4MB)')));
-        child.kill();
-      }
-    });
-    child.stderr?.on('data', (chunk: string | Buffer) => {
-      stderr += String(chunk);
-    });
-    child.on('error', (err: Error) => settle(() => reject(err)));
-    child.on('close', (code: number | null) => {
-      settle(() => {
-        if (code === 0) {
-          resolve(stdout);
-        } else {
-          const tail = stderr.trim().slice(0, 200);
-          reject(new Error(`codex exited ${code}${tail ? `: ${tail}` : ''}`));
-        }
-      });
-    });
-  });
+  return runTextCommandAsync(CODEX_BINARY, args, CODEX_COMMAND);
 }
 
 /**
@@ -478,6 +427,55 @@ interface LoadCodexConfigOpts {
 function extractCustomProvider(providers: Record<string, unknown>): string | undefined {
   const keys = Object.keys(providers);
   return keys.find((k) => k !== 'openai' && k !== 'anthropic');
+}
+
+/**
+ * 一个自定义 provider 的清单端点：`base_url` + `env_key` 指向的环境变量。
+ *
+ * 凭据只从环境变量取，与 codex 自己读 key 的方式一致（config.toml 不存 key）；
+ * 环境里没有 key 就不探——没有认证的请求只会换回 401，白等一次超时。
+ * `wire_api = "anthropic"` 的 provider 按 Anthropic 方言问（带 anthropic-version
+ * 头、允许剥 /anthropic 回 root）。
+ */
+function endpointTargetOf(config: unknown): EndpointModelsTarget | undefined {
+  if (!config || typeof config !== 'object') return undefined;
+  const cfg = config as Record<string, unknown>;
+  const baseUrl = typeof cfg.base_url === 'string' ? cfg.base_url.trim() : '';
+  if (!baseUrl) return undefined;
+  const envKey = typeof cfg.env_key === 'string' ? cfg.env_key.trim() : '';
+  const apiKey = envKey ? (process.env[envKey] ?? '').trim() : '';
+  if (!apiKey) return undefined;
+  return { baseUrl, apiKey, anthropic: cfg.wire_api === 'anthropic' };
+}
+
+/** 自定义 provider 的端点清单（同步读缓存；未命中时踢一次后台探测）。 */
+function endpointModelsOf(config: unknown): string[] | undefined {
+  const target = endpointTargetOf(config);
+  return target ? cachedEndpointModels(target) : undefined;
+}
+
+/**
+ * 启动预热：非 catalog 模式下，后台探一次自定义 provider 的清单。
+ *
+ * 只读 config.toml（不触目录、不 spawn codex）——启动路径上不能因为预热把
+ * `codex debug models` 的同步 spawn 拉进来。
+ */
+export function warmCodexEndpointModels(codexHome?: string): void {
+  const home = resolveCodexHome(codexHome);
+  if (isCodexCatalogMode(home)) return; // catalog 模式不替换列表，探了也用不上
+  const toml = readCodexToml(home);
+  if (toml.state !== 'parsed') return;
+  const providers = providersOf(toml.parsed);
+  const name = extractCustomProvider(providers);
+  if (!name) return;
+  const target = endpointTargetOf(providers[name]);
+  if (target) warmEndpointModels(target);
+}
+
+/** config.toml 的 `model_providers` 表（缺失或形状不对时空对象）。 */
+function providersOf(parsed: Record<string, unknown>): Record<string, unknown> {
+  const providers = parsed.model_providers;
+  return providers && typeof providers === 'object' ? (providers as Record<string, unknown>) : {};
 }
 
 // ---------------------------------------------------------------------------
@@ -546,7 +544,7 @@ function normalizeProviders(
   const currentProvider = String(parsed.model_provider ?? FALLBACK_PROVIDERS[0]);
 
   // Extract model_providers section
-  const modelProviders = (parsed.model_providers ?? {}) as Record<string, Record<string, unknown>>;
+  const modelProviders = providersOf(parsed) as Record<string, Record<string, unknown>>;
   const rawProviderNames = Object.keys(modelProviders);
 
   if (catalogMode) {
@@ -621,8 +619,12 @@ function normalizeProviders(
     providerModels['anthropic'] = anthropicModels;
   }
   if (customProvider) {
-    // Custom provider: use the model from config.toml
-    providerModels[customProvider] = [currentModel];
+    // 自定义 provider：先按 config.toml 里的 base_url 问端点自己列了什么。
+    // 探不到（无 base_url / 无 key / 失败）就只用 config.toml 的当前模型——
+    // 不能凭空造列表。buildModelOptions 会把 currentModel 补到列表首位，
+    // 所以替换掉 [currentModel] 不会让正在用的模型从下拉里消失。
+    const live = endpointModelsOf(modelProviders[customProvider]);
+    providerModels[customProvider] = live && live.length > 0 ? live : [currentModel];
   }
 
   return {

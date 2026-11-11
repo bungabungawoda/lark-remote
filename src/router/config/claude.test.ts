@@ -4,6 +4,10 @@ import os from 'node:os';
 import path from 'node:path';
 import { ClaudeConfigBuilder } from './claude.js';
 import { CLAUDE_PERMISSION_MODES, type AppConfig } from '../../config/index.js';
+import {
+  fetchEndpointModels,
+  _invalidateEndpointModelsCacheForTest,
+} from '../../config/endpoint-models.js';
 
 vi.mock('../../config/index.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../config/index.js')>();
@@ -47,12 +51,28 @@ describe('ClaudeConfigBuilder', () => {
     settingsFile = path.join(tmpDir, 'settings.json');
     // Create a minimal settings file so findSettingsPath() succeeds via CLAUDE_SETTINGS_PATH
     fs.writeFileSync(settingsFile, '{}');
+    _invalidateEndpointModelsCacheForTest();
   });
 
   afterEach(() => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
     delete process.env.CLAUDE_SETTINGS_PATH;
+    vi.unstubAllGlobals();
+    _invalidateEndpointModelsCacheForTest();
   });
+
+  /** 写一份指向自定义 base 的 settings.json。 */
+  function writeCustomBaseSettings(): void {
+    fs.writeFileSync(
+      settingsFile,
+      JSON.stringify({
+        env: {
+          ANTHROPIC_BASE_URL: 'https://relay.example.com/anthropic',
+          ANTHROPIC_AUTH_TOKEN: 'sk-test',
+        },
+      }),
+    );
+  }
 
   describe('findSettingsPath (via buildFields)', () => {
     it('neither env path nor ~/.claude/settings.json exists → default alias options', async () => {
@@ -140,6 +160,65 @@ describe('ClaudeConfigBuilder', () => {
       );
       expect(optionValues).toEqual(CLAUDE_PERMISSION_MODES.filter((m) => m !== 'manual'));
       expect(optionValues).not.toContain('manual');
+    });
+  });
+
+  describe('自定义 base 的端点清单', () => {
+    it('并上端点列出的模型：env 值在前、去重', async () => {
+      process.env.CLAUDE_SETTINGS_PATH = settingsFile;
+      writeCustomBaseSettings();
+      const { getModelOptionsFromSettings } = await import('../../config/index.js');
+      vi.mocked(getModelOptionsFromSettings).mockReturnValue(['relay-a']);
+      vi.stubGlobal('fetch', () =>
+        Promise.resolve(
+          new Response(JSON.stringify({ data: [{ id: 'relay-a' }, { id: 'relay-b' }] }), {
+            status: 200,
+          }),
+        ),
+      );
+      // 探测是异步的：先让它落进缓存，卡片（同步路径）才读得到
+      await fetchEndpointModels({
+        baseUrl: 'https://relay.example.com/anthropic',
+        apiKey: 'sk-test',
+        anthropic: true,
+      });
+
+      const fields = builder.buildFields(makeConfig());
+      const modelField = fields.find((f) => f.key === 'claude.model' && f.type === 'select');
+
+      expect(modelField!.options).toEqual(['relay-a', 'relay-b']);
+    });
+
+    it('探测失败时只用 env 里的模型', async () => {
+      process.env.CLAUDE_SETTINGS_PATH = settingsFile;
+      writeCustomBaseSettings();
+      const { getModelOptionsFromSettings } = await import('../../config/index.js');
+      vi.mocked(getModelOptionsFromSettings).mockReturnValue(['relay-a']);
+      vi.stubGlobal('fetch', () => Promise.resolve(new Response('nope', { status: 404 })));
+      await fetchEndpointModels({
+        baseUrl: 'https://relay.example.com/anthropic',
+        apiKey: 'sk-test',
+        anthropic: true,
+      });
+
+      const fields = builder.buildFields(makeConfig());
+      const modelField = fields.find((f) => f.key === 'claude.model' && f.type === 'select');
+
+      expect(modelField!.options).toEqual(['relay-a']);
+    });
+
+    it('用官方 API（无 base URL）时不探端点', async () => {
+      process.env.CLAUDE_SETTINGS_PATH = settingsFile;
+      const { getModelOptionsFromSettings } = await import('../../config/index.js');
+      vi.mocked(getModelOptionsFromSettings).mockReturnValue(['opus', 'sonnet']);
+      const fetchSpy = vi.fn();
+      vi.stubGlobal('fetch', fetchSpy);
+
+      const fields = builder.buildFields(makeConfig());
+      const modelField = fields.find((f) => f.key === 'claude.model' && f.type === 'select');
+
+      expect(modelField!.options).toEqual(['opus', 'sonnet']);
+      expect(fetchSpy).not.toHaveBeenCalled();
     });
   });
 

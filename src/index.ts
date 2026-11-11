@@ -5,6 +5,7 @@ import {
   KIMI_DEFAULTS,
   CODEBUDDY_DEFAULTS,
   QODER_DEFAULTS,
+  warmClaudeEndpointModels,
   type AppConfig,
 } from './config/index.js';
 import type { AgentSessionContentEvent, AgentSessionUsage } from './session-contract.js';
@@ -31,7 +32,8 @@ import {
 } from './runner/index.js';
 import { AgentRegistry } from './runner/registry.js';
 import { probeAllAgents } from './runner/probe.js';
-import { warmCodexCatalogCache } from './config/codex-config.js';
+import { warmCodexCatalogCache, warmCodexEndpointModels } from './config/codex-config.js';
+import { warmPiListCache } from './config/pi-config.js';
 import {
   defaultCodebuddyProductConfigCacheDir,
   warmCodebuddyCatalogWithRegionDetection,
@@ -641,6 +643,20 @@ function initializeRunner(
   // 8s (execFileSync cold path). Fire-and-forget; failure lands in negative
   // cache and the sync card path falls back gracefully.
   warmCodexCatalogCache();
+
+  // Warm pi's model list in the background too: `pi --list-models` merges the
+  // built-in provider catalog with models.json and filters by usable
+  // credentials, so it is the only source that matches what pi will actually
+  // accept. Fire-and-forget; a failure lands in the negative cache and the sync
+  // card path falls back to the static list.
+  warmPiListCache();
+
+  // Warm the model list of the endpoints the agents point at, when they point at
+  // a custom one (a relay, a self-hosted gateway): Claude Code's settings
+  // ANTHROPIC_BASE_URL and Codex's custom model_providers base_url. Fire-and-forget
+  // — a probe that fails changes nothing, the card keeps what config says.
+  warmClaudeEndpointModels();
+  warmCodexEndpointModels();
 
   // Warm the qoder model/effort catalog in the background. The probes are
   // async but each cold refresh costs seconds; warming keeps the first

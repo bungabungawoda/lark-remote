@@ -2,14 +2,14 @@
  * Claude config builder — builds fields and handles field changes for Claude agent.
  */
 
-import fs from 'node:fs';
-import os from 'node:os';
-import path from 'node:path';
 import {
   CLAUDE_EFFORTS,
   CLAUDE_PERMISSION_MODES,
+  getClaudeSettingsEndpoint,
   getModelOptionsFromSettings,
+  resolveClaudeSettingsPath,
 } from '../../config/index.js';
+import { cachedEndpointModels } from '../../config/endpoint-models.js';
 import { MODEL_ALIAS_TO_ID, MODEL_ID_TO_ALIAS } from '../../model-catalog.js';
 import type { AgentConfigCardBuilder, ConfigField } from './types.js';
 import type { AppConfig } from '../../config/index.js';
@@ -36,19 +36,6 @@ const PERMISSION_MODE_OPTIONS = CLAUDE_PERMISSION_MODES.filter((m) => m !== 'man
 }));
 
 export class ClaudeConfigBuilder implements AgentConfigCardBuilder {
-  /** Find Claude settings.json path (for dynamic model reading). */
-  private findSettingsPath(): string | undefined {
-    const envPath = process.env.CLAUDE_SETTINGS_PATH;
-    if (envPath && fs.existsSync(envPath)) {
-      return envPath;
-    }
-    const defaultPath = path.join(os.homedir(), '.claude', 'settings.json');
-    if (fs.existsSync(defaultPath)) {
-      return defaultPath;
-    }
-    return undefined;
-  }
-
   buildFields(displayConfig: AppConfig): ConfigField[] {
     const fields: ConfigField[] = [];
 
@@ -58,10 +45,17 @@ export class ClaudeConfigBuilder implements AgentConfigCardBuilder {
     const currentEffort = displayConfig.claude?.effort ?? 'medium';
 
     // 动态从 Claude settings.json 读取可选模型列表
-    const settingsPath = this.findSettingsPath();
+    const settingsPath = resolveClaudeSettingsPath();
     const dynamicModelOptions = settingsPath ? getModelOptionsFromSettings(settingsPath) : [];
+    // 指向自定义 base 时，再并上端点自己列出的模型：env 里只有用户手填过的名字，
+    // 端点清单才是它真正服务的集合。探测是异步的，没命中就只用 env 的值。
+    const endpoint = settingsPath ? getClaudeSettingsEndpoint(settingsPath) : undefined;
+    const liveModelOptions = endpoint
+      ? (cachedEndpointModels({ ...endpoint, anthropic: true }) ?? [])
+      : [];
+    const merged = [...new Set([...dynamicModelOptions, ...liveModelOptions])];
     // 如果从 settings 读取到模型，使用它们；否则使用默认的 alias 列表
-    const modelOptions = dynamicModelOptions.length > 0 ? dynamicModelOptions : modelAliasOptions;
+    const modelOptions = merged.length > 0 ? merged : modelAliasOptions;
 
     // 当前值处理：从 settings 读取时是 model ID，需要显示 alias
     let currentModelValue = currentModel;

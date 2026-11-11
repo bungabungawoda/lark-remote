@@ -115,6 +115,7 @@
     "src/config/config.test.ts",
     "src/config/agent-choices.test.ts",
     "src/config/dir.test.ts",
+    "src/config/endpoint-models.test.ts",
     "src/config/wizard.test.ts",
     "src/persistence/atomic-write.test.ts",
     "tests/anchor/regression/prototype-pollution.test.ts",

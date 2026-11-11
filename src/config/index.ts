@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import YAML from 'yaml';
 import { getLogger } from '../logger/index.js';
@@ -9,6 +10,7 @@ export { getConfigDir } from './dir.js';
 
 // Import constants from agent config files (SSOT: Layer 1 source)
 import { KIMI_THINKING_EFFORTS } from './kimi-config.js';
+import { warmEndpointModels } from './endpoint-models.js';
 
 /** Valid effort values for Claude */
 export const CLAUDE_EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'] as const;
@@ -809,6 +811,69 @@ export function getAgentConfig(
 }
 
 /**
+ * Claude settings.json 的路径：`CLAUDE_SETTINGS_PATH` 优先，其次
+ * `~/.claude/settings.json`；都不存在返回 undefined。
+ */
+export function resolveClaudeSettingsPath(): string | undefined {
+  const envPath = process.env.CLAUDE_SETTINGS_PATH;
+  if (envPath && fs.existsSync(envPath)) return envPath;
+  const defaultPath = path.join(os.homedir(), '.claude', 'settings.json');
+  return fs.existsSync(defaultPath) ? defaultPath : undefined;
+}
+
+/** Claude settings.json 的 env：模型名、自定义 base URL 与凭据。 */
+interface ClaudeSettingsEnv {
+  /** env 里所有以 MODEL 结尾的值（去重）：用户手填过的模型名。 */
+  models: string[];
+  /** 自定义 Anthropic 兼容端点；用官方 API 时为 undefined。 */
+  endpoint?: { baseUrl: string; apiKey?: string };
+}
+
+/**
+ * 读 Claude settings.json 的 env，解析成模型名与自定义端点。
+ *
+ * 端点只在配了 `ANTHROPIC_BASE_URL` / `CLAUDE_CODE_BASE_URL` 时存在——用官方
+ * API 时没有任何可问的清单，模型选项沿用 alias。
+ */
+function readClaudeSettingsEnv(settingsPath: string): ClaudeSettingsEnv {
+  const empty: ClaudeSettingsEnv = { models: [] };
+  if (!settingsPath) return empty;
+
+  try {
+    const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf-8'));
+    if (!settings.env || typeof settings.env !== 'object') return empty;
+    const env = settings.env as Record<string, unknown>;
+
+    const baseUrl = str(env.ANTHROPIC_BASE_URL) || str(env.CLAUDE_CODE_BASE_URL) || '';
+    if (!baseUrl) return empty;
+
+    const modelSet = new Set<string>();
+    for (const [key, value] of Object.entries(env)) {
+      if (!key.endsWith('MODEL')) continue;
+      const model = str(value);
+      if (model) modelSet.add(model);
+    }
+
+    return {
+      models: Array.from(modelSet),
+      endpoint: {
+        baseUrl,
+        apiKey: str(env.ANTHROPIC_AUTH_TOKEN) || str(env.ANTHROPIC_API_KEY) || undefined,
+      },
+    };
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return empty;
+    getLogger().warn(`[config] readClaudeSettingsEnv failed for ${settingsPath}: ${err}`);
+    return empty;
+  }
+}
+
+/** 非空字符串，其余（含非字符串）一律空串。 */
+function str(value: unknown): string {
+  return typeof value === 'string' ? value.trim() : '';
+}
+
+/**
  * 从 Claude settings.json 的 env 中读取所有以 MODEL 结尾的环境变量值，
  * 返回去重后的模型 ID 列表。
  * 例如 env 中有 ANTHROPIC_MODEL, ANTHROPIC_DEFAULT_OPUS_MODEL 等，
@@ -818,35 +883,26 @@ export function getAgentConfig(
  * 否则返回空数组（使用默认的 alias 列表）。
  */
 export function getModelOptionsFromSettings(settingsPath: string): string[] {
-  if (!settingsPath) return [];
+  return readClaudeSettingsEnv(settingsPath).models;
+}
 
-  try {
-    const content = fs.readFileSync(settingsPath, 'utf-8');
-    const settings = JSON.parse(content);
+/**
+ * Claude Code 当前指向的自定义端点（base URL + 凭据）；用官方 API 时为
+ * undefined。凭据只用于清单请求的头，不落日志。
+ */
+export function getClaudeSettingsEndpoint(
+  settingsPath: string,
+): { baseUrl: string; apiKey?: string } | undefined {
+  return readClaudeSettingsEnv(settingsPath).endpoint;
+}
 
-    if (!settings.env || typeof settings.env !== 'object') return [];
-
-    // 检查是否配置了自定义 base URL
-    // 如果使用默认的 Claude API，则返回空数组（使用默认 alias 列表）
-    const hasCustomBaseUrl = settings.env.ANTHROPIC_BASE_URL || settings.env.CLAUDE_CODE_BASE_URL;
-    if (!hasCustomBaseUrl) {
-      return [];
-    }
-
-    const modelSet = new Set<string>();
-    for (const key of Object.keys(settings.env)) {
-      if (key.endsWith('MODEL')) {
-        const value = settings.env[key];
-        if (typeof value === 'string' && value.trim()) {
-          modelSet.add(value.trim());
-        }
-      }
-    }
-
-    return Array.from(modelSet);
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return [];
-    getLogger().warn(`[config] getModelOptionsFromSettings failed for ${settingsPath}: ${err}`);
-    return [];
-  }
+/**
+ * 启动预热：Claude Code 指向自定义 base 时，后台探一次它的模型清单，
+ * 让首次打开 /config 卡片时已经命中缓存。
+ */
+export function warmClaudeEndpointModels(): void {
+  const settingsPath = resolveClaudeSettingsPath();
+  const endpoint = settingsPath ? getClaudeSettingsEndpoint(settingsPath) : undefined;
+  if (!endpoint) return;
+  warmEndpointModels({ ...endpoint, anthropic: true });
 }
