@@ -1,27 +1,35 @@
-import { createMockBridge, createMockSessionReaderRegistry } from '../lib/bridge-stubs.js';
 /**
- * 测试：pi provider 和 model 应该从 ~/.pi/agent/models.json 和 auth.json 动态读取
+ * 测试：pi provider 和 model 应该来自 `pi --list-models`
  *
  * 验证以下行为：
- * 1. pi provider 下拉选项应该从配置文件动态生成
- * 2. pi model 下拉选项应该从配置文件动态生成
- * 3. 不应该使用硬编码的 provider 列表
- * 4. pi.model 应该是 select 类型，不是 input 类型
+ * 1. pi provider 下拉选项来自 pi 自己列出的清单（不是硬编码）
+ * 2. pi model 下拉选项来自同一清单，并按当前 provider 过滤
+ * 3. pi.model 是 select 类型，不是 input 类型
  *
- * 使用 PI_CONFIG_DIR 环境变量重定向文件 I/O 到临时目录，
- * 避免依赖真实 ~/.pi/agent/ 状态（本地和 CI 环境可能不同）。
+ * 语义说明：`pi --list-models` 是 pi 运行时的解析结果——内置 provider 目录与
+ * models.json 叠加、再按凭据可用性过滤。只读 models.json 会漏掉内置 provider
+ * 的模型（models[] 是追加语义，不是全集）。
+ *
+ * 该 CLI 经 src/platform/spawn 拉起，测试 mock 该 seam，不 spawn 真 pi。
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { extractFieldOptions, isSelectField } from '../lib/pi-card-fields.js';
+
+// 生产代码经 platform/spawn（cross-spawn）调用 pi，mock 该 seam。
+const { mockSpawnSync } = vi.hoisted(() => ({ mockSpawnSync: vi.fn() }));
+
+vi.mock('../../src/platform/spawn.js', async () => ({
+  ...(await import('../lib/spawn-mock.js')).spawnModuleMock(mockSpawnSync),
+}));
+vi.mock('../../src/logger/index.js', async () =>
+  (await import('../lib/logger-mock.js')).loggerModuleMock(),
+);
+
 import { createRouterFixture } from '../lib/router-fixture.js';
+import { createMockBridge, createMockSessionReaderRegistry } from '../lib/bridge-stubs.js';
 import { AppConfigSchema } from '../../src/config/index.js';
-import {
-  getPiModelOptions,
-  loadPiProviderConfig,
-  _getModelsFilePath,
-  _getAuthFilePath,
-} from '../../src/config/pi-config.js';
+import { getPiModelOptions, _invalidatePiListCacheForTest } from '../../src/config/pi-config.js';
 import type { AppConfig } from '../../src/config/index.js';
 import path from 'node:path';
 import os from 'node:os';
@@ -51,25 +59,23 @@ function buildPiConfig(): AppConfig {
   });
 }
 
-/** Write a models.json into the current PI_CONFIG_DIR */
-function writeModelsJson(providers: Record<string, unknown>): void {
-  const modelsPath = _getModelsFilePath();
-  fs.mkdirSync(path.dirname(modelsPath), { recursive: true });
-  fs.writeFileSync(modelsPath, JSON.stringify({ providers }, null, 2), 'utf-8');
-}
+/** 两个 provider 的清单：Volcano 选中项在、lt 的模型只属于 lt。 */
+const TWO_PROVIDERS = [
+  'provider  model    context  max-out  thinking  images',
+  'Volcano   glm-5.2  262.1K   16.4K    yes       no    ',
+  'lt        glm-5.1  200K     16.4K    yes       no    ',
+].join('\n');
 
-/** Write an auth.json into the current PI_CONFIG_DIR */
-function writeAuthJson(auth: Record<string, unknown>): void {
-  const authPath = _getAuthFilePath();
-  fs.mkdirSync(path.dirname(authPath), { recursive: true });
-  fs.writeFileSync(authPath, JSON.stringify(auth, null, 2), 'utf-8');
+/** mock 一次成功的 `pi --list-models`（表格文本）。 */
+function mockListModels(table: string): void {
+  mockSpawnSync.mockReturnValue({ status: 0, stdout: table, stderr: '' });
 }
 
 // ---------------------------------------------------------------------------
 // Test suite
 // ---------------------------------------------------------------------------
 
-describe('pi provider/model config from pi files', () => {
+describe('pi provider/model config from pi list', () => {
   let tmpDir: string;
   let savedPiConfigDir: string | undefined;
 
@@ -77,6 +83,8 @@ describe('pi provider/model config from pi files', () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'lark-remote-test-'));
     savedPiConfigDir = process.env.PI_CONFIG_DIR;
     process.env.PI_CONFIG_DIR = tmpDir;
+    mockSpawnSync.mockReset();
+    _invalidatePiListCacheForTest();
   });
 
   afterEach(() => {
@@ -91,68 +99,41 @@ describe('pi provider/model config from pi files', () => {
   });
 
   /**
-   * TEST 1: 直接测试 loadPiProviderConfig 函数
-   * 验证能从配置文件读取 provider
+   * TEST 1: provider 清单来自 pi 的输出
    */
-  it('should read providers from config files via helper function', async () => {
-    writeModelsJson({
-      'custom-provider': {
-        baseUrl: 'http://localhost:11434/v1',
-        api: 'openai-completions',
-        models: [{ id: 'custom-model-1' }, { id: 'custom-model-2' }],
-      },
-      lt: {
-        baseUrl: 'https://pi-api.example.com/v1',
-        api: 'openai-completions',
-        models: [{ id: 'glm-5.1' }],
-      },
-    });
+  it('should read providers from pi --list-models', async () => {
+    mockListModels(
+      [
+        'provider        model        context  max-out  thinking  images',
+        'custom-provider  custom-1    128K     16.4K    no        no    ',
+        'custom-provider  custom-2    128K     16.4K    no        no    ',
+        'lt               glm-5.1     200K     16.4K    yes       no    ',
+        'anthropic        claude-opus 200K     64K      yes       yes   ',
+      ].join('\n'),
+    );
 
-    writeAuthJson({
-      anthropic: { type: 'api_key', key: 'sk-test-anthropic' },
-      'my-auth-provider': { type: 'api_key', key: 'sk-test-key' },
-    });
+    const providers = (await import('../../src/config/pi-config.js')).loadPiConfig().providerNames;
 
-    // 调用辅助函数
-    const config = loadPiProviderConfig();
-    const providers = config.map((p) => p.name);
-
-    // 验证包含配置文件中的 provider
     expect(providers).toContain('custom-provider');
     expect(providers).toContain('lt');
     expect(providers).toContain('anthropic');
-    expect(providers).toContain('my-auth-provider');
   });
 
   /**
-   * TEST 3: 验证 getPiModelOptions 返回非空列表
+   * TEST 2: getPiModelOptions 返回 pi 列出的模型（不是配置文件里的子集）
    */
-  it('should return non-empty model list', async () => {
-    writeModelsJson({
-      Volcano: {
-        baseUrl: 'https://ark.example.com/api/v3',
-        api: 'openai-completions',
-        models: [{ id: 'glm-5.2' }],
-      },
-    });
+  it('should return the models pi lists', async () => {
+    mockListModels(TWO_PROVIDERS);
 
     const models = getPiModelOptions();
-    // 精确断言：配置文件声明的模型必须出现在选项里，而非仅「非空」
-    expect(models).toContain('glm-5.2');
+    expect(models).toEqual(['glm-5.2', 'glm-5.1']);
   });
 
   /**
-   * TEST 4: pi.model 应该是 select 类型（不是 input）
-   * 通过检查 card 中该字段的 tag 来判断
+   * TEST 3: pi.model 应该是 select 类型（不是 input）
    */
   it('should use select for pi.model field', async () => {
-    writeModelsJson({
-      Volcano: {
-        baseUrl: 'https://ark.example.com/api/v3',
-        api: 'openai-completions',
-        models: [{ id: 'glm-5.2' }],
-      },
-    });
+    mockListModels(TWO_PROVIDERS);
 
     const config = buildPiConfig();
     const router = createRouterFixture({
@@ -165,29 +146,15 @@ describe('pi provider/model config from pi files', () => {
     const result = router.buildConfigCard();
     const card = result.card!;
 
-    // 验证 pi.model 是 select 类型
     expect(isSelectField(card, 'agents.pi.model')).toBe(true);
-
-    // 同时验证 pi.provider 也是 select
     expect(isSelectField(card, 'agents.pi.provider')).toBe(true);
   });
 
   /**
-   * TEST 5: provider 和 model 选项数量应该 > 0
+   * TEST 4: provider 选项含两个清单项；model 选项按当前 provider 过滤
    */
   it('should have options for provider and model fields', async () => {
-    writeModelsJson({
-      Volcano: {
-        baseUrl: 'https://ark.example.com/api/v3',
-        api: 'openai-completions',
-        models: [{ id: 'glm-5.2' }],
-      },
-      lt: {
-        baseUrl: 'https://pi-api.example.com/v1',
-        api: 'openai-completions',
-        models: [{ id: 'glm-5.1' }],
-      },
-    });
+    mockListModels(TWO_PROVIDERS);
 
     const config = buildPiConfig();
     const router = createRouterFixture({
@@ -203,10 +170,29 @@ describe('pi provider/model config from pi files', () => {
     const providerOptions = extractFieldOptions(card, 'agents.pi.provider');
     const modelOptions = extractFieldOptions(card, 'agents.pi.model');
 
-    // 精确断言：provider 选项含两个配置项；model 选项按当前选中
-    // provider 过滤，只含 Volcano 的模型（见 anchor 过滤语义用例）
+    // 精确断言：model 选项按当前选中 provider 过滤，只含 Volcano 的模型
     expect(providerOptions).toEqual(expect.arrayContaining(['Volcano', 'lt']));
     expect(modelOptions).toContain('glm-5.2');
     expect(modelOptions).not.toContain('glm-5.1');
+  });
+
+  /**
+   * TEST 5: 内置 provider 的模型不因 models.json 只写一条而丢失
+   */
+  it('should keep built-in provider models that models.json only appends to', async () => {
+    mockListModels(
+      [
+        'provider    model                       context  max-out  thinking  images',
+        'minimax-cn  MiniMax-M2.7                204.8K   131.1K   yes       no    ',
+        'minimax-cn  MiniMax-M3                  1M       524.3K   yes       yes   ',
+        'minimax-cn  MiniMax-M3.1-Flash-Preview  512K     128K     yes       yes   ',
+      ].join('\n'),
+    );
+
+    expect(getPiModelOptions('minimax-cn')).toEqual([
+      'MiniMax-M2.7',
+      'MiniMax-M3',
+      'MiniMax-M3.1-Flash-Preview',
+    ]);
   });
 });

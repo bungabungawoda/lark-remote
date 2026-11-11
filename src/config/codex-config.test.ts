@@ -24,6 +24,7 @@ import {
   getCodexBundledModelSlugs,
   invalidateCodexBundledTestCache,
 } from '../../tests/lib/codex-bundled-test-helpers.js';
+import { fetchEndpointModels, _invalidateEndpointModelsCacheForTest } from './endpoint-models.js';
 
 /** spawnProcessSync 成功返回形态 */
 const syncOk = (stdout: string) => ({ status: 0, stdout, stderr: '' });
@@ -285,6 +286,126 @@ describe('loadCodexConfig model options merge', () => {
     expect(opts).toContain('o3');
     expect(opts).toContain('gpt-4o');
     expect(mockLogger.warn).toHaveBeenCalled();
+  });
+
+  describe('自定义 provider 的端点清单', () => {
+    const ENV_KEY = 'ENDPOINT_MODELS_TEST_KEY';
+
+    beforeEach(() => {
+      process.env[ENV_KEY] = 'sk-test';
+      _invalidateEndpointModelsCacheForTest();
+    });
+
+    afterEach(() => {
+      delete process.env[ENV_KEY];
+      vi.unstubAllGlobals();
+      _invalidateEndpointModelsCacheForTest();
+    });
+
+    /** 一个自定义 provider 的 config.toml（无 model_catalog_json → 非 catalog 模式）。 */
+    function writeCustomConfig(): string {
+      return writeConfig(
+        [
+          'model = "glm-5.2"',
+          'model_provider = "relay"',
+          '',
+          '[model_providers.relay]',
+          'name = "relay"',
+          'base_url = "https://relay.example.com/v1"',
+          `env_key = "${ENV_KEY}"`,
+          'wire_api = "responses"',
+          '',
+        ].join('\n'),
+      );
+    }
+
+    it('端点的清单替换掉 [currentModel]，当前模型仍在下拉首位', async () => {
+      const codexHome = writeCustomConfig();
+      mockSpawnSync.mockReturnValue(syncOk(BUNDLED_JSON));
+      vi.stubGlobal('fetch', () =>
+        Promise.resolve(
+          new Response(JSON.stringify({ data: [{ id: 'live-a' }, { id: 'live-b' }] }), {
+            status: 200,
+          }),
+        ),
+      );
+
+      // 先让探测落进缓存（卡片路径是同步读缓存）
+      await fetchEndpointModels({
+        baseUrl: 'https://relay.example.com/v1',
+        apiKey: 'sk-test',
+      });
+
+      const cfg = loadCodexConfig({ codexHome });
+
+      expect(cfg.providerModels.relay).toEqual(['live-a', 'live-b']);
+      // currentModel 不在清单里 → buildModelOptions 补到首位
+      expect(cfg.modelOptions('relay')).toEqual(['glm-5.2', 'live-a', 'live-b']);
+    });
+
+    it('探不到时退回 config.toml 的当前模型（不造列表）', async () => {
+      const codexHome = writeCustomConfig();
+      mockSpawnSync.mockReturnValue(syncOk(BUNDLED_JSON));
+      vi.stubGlobal('fetch', () => Promise.resolve(new Response('nope', { status: 500 })));
+
+      await fetchEndpointModels({
+        baseUrl: 'https://relay.example.com/v1',
+        apiKey: 'sk-test',
+      });
+
+      const cfg = loadCodexConfig({ codexHome });
+
+      expect(cfg.providerModels.relay).toEqual(['glm-5.2']);
+      expect(cfg.modelOptions('relay')).toEqual(['glm-5.2']);
+    });
+
+    it('环境里没有 env_key 指向的 key 时不发请求', () => {
+      const codexHome = writeCustomConfig();
+      mockSpawnSync.mockReturnValue(syncOk(BUNDLED_JSON));
+      delete process.env[ENV_KEY];
+      const fetchSpy = vi.fn();
+      vi.stubGlobal('fetch', fetchSpy);
+
+      const cfg = loadCodexConfig({ codexHome });
+
+      expect(cfg.providerModels.relay).toEqual(['glm-5.2']);
+      expect(fetchSpy).not.toHaveBeenCalled();
+    });
+
+    it('catalog 模式不探端点：列表仍来自活动目录', () => {
+      const codexHome = writeConfig(
+        [
+          'model = "glm-5.2"',
+          'model_provider = "relay"',
+          'model_catalog_json = "~/.codex/models.json"',
+          '',
+          '[model_providers.relay]',
+          'name = "relay"',
+          'base_url = "https://relay.example.com/v1"',
+          `env_key = "${ENV_KEY}"`,
+          '',
+        ].join('\n'),
+      );
+      fs.writeFileSync(
+        path.join(codexHome, 'models.json'),
+        JSON.stringify({ models: [{ slug: 'catalog-model' }] }),
+        'utf-8',
+      );
+      mockSpawnSync.mockReturnValue(
+        syncOk(
+          JSON.stringify({
+            models: [{ slug: 'catalog-model', visibility: 'list', supported_in_api: true }],
+          }),
+        ),
+      );
+      const fetchSpy = vi.fn();
+      vi.stubGlobal('fetch', fetchSpy);
+
+      const cfg = loadCodexConfig({ codexHome });
+
+      expect(cfg.providerModels.relay).toEqual(['catalog-model']);
+      expect(fetchSpy).not.toHaveBeenCalled();
+    });
   });
 
   it('returns fallback providers + merged options when config.toml absent', () => {

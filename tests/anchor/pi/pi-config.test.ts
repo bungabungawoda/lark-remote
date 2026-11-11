@@ -3,11 +3,23 @@ import { createMockBridge, createMockSessionReaderRegistry } from '../../lib/bri
  * Anchor tests for pi config: path mapping, card model filter, provider
  * filter, fallback and reset.
  *
- * All pi-config file I/O tests use PI_CONFIG_DIR env var to redirect to a temp
- * directory, avoiding dependency on real ~/.pi/agent/ state (which may differ
- * between local and CI environments).
+ * pi 的 provider/model 清单来自 `pi --list-models`（内置 provider 目录与
+ * models.json 叠加后、按凭据可用过滤的运行时真相）。该命令经
+ * src/platform/spawn 拉起，这里 mock 该 seam，任何用例都不 spawn 真 pi；
+ * PI_CONFIG_DIR 仍重定向到临时目录，用于缓存键隔离。
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+
+// 生产代码经 platform/spawn（cross-spawn）调用 pi，mock 该 seam。
+const { mockSpawnSync } = vi.hoisted(() => ({ mockSpawnSync: vi.fn() }));
+
+vi.mock('../../../src/platform/spawn.js', async () => ({
+  ...(await import('../../lib/spawn-mock.js')).spawnModuleMock(mockSpawnSync),
+}));
+vi.mock('../../../src/logger/index.js', async () =>
+  (await import('../../lib/logger-mock.js')).loggerModuleMock(),
+);
+
 import {
   AppConfigSchema,
   type AppConfig,
@@ -17,8 +29,7 @@ import {
 import {
   getPiModelOptions,
   loadPiConfig,
-  _getModelsFilePath,
-  _getAuthFilePath,
+  _invalidatePiListCacheForTest,
 } from '../../../src/config/pi-config.js';
 import { extractFieldOptions } from '../../lib/pi-card-fields.js';
 import { createRouterFixture } from '../../lib/router-fixture.js';
@@ -30,15 +41,20 @@ import os from 'node:os';
 // Shared stub factories
 // ---------------------------------------------------------------------------
 
-/** Write a models.json into the current PI_CONFIG_DIR */
-function writeModelsJson(providers: Record<string, unknown>): void {
-  const modelsPath = _getModelsFilePath();
-  fs.mkdirSync(path.dirname(modelsPath), { recursive: true });
-  fs.writeFileSync(modelsPath, JSON.stringify({ providers }, null, 2), 'utf-8');
+/** 两个 provider 的 pi 清单：切换 provider 时模型必须跟着换。 */
+const TWO_PROVIDERS = [
+  'provider  model    context  max-out  thinking  images',
+  'Volcano   glm-5.2  262.1K   16.4K    yes       no    ',
+  'lt        glm-5.1  200K     16.4K    yes       no    ',
+].join('\n');
+
+/** mock 一次成功的 `pi --list-models`（表格文本）。 */
+function mockListModels(table: string = TWO_PROVIDERS): void {
+  mockSpawnSync.mockReturnValue({ status: 0, stdout: table, stderr: '' });
 }
 
 // ---------------------------------------------------------------------------
-// Shared beforeEach/afterEach: set PI_CONFIG_DIR to temp dir for all tests
+// Shared beforeEach/afterEach: 隔离 PI_CONFIG_DIR 与模块缓存
 // ---------------------------------------------------------------------------
 
 let piTmpDir: string;
@@ -48,6 +64,8 @@ beforeEach(() => {
   piTmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'lark-remote-pi-test-'));
   savedPiConfigDir = process.env.PI_CONFIG_DIR;
   process.env.PI_CONFIG_DIR = piTmpDir;
+  mockSpawnSync.mockReset();
+  _invalidatePiListCacheForTest();
 });
 
 afterEach(() => {
@@ -223,18 +241,7 @@ describe('anchor: config card model options filtered by provider', () => {
   });
 
   it('test_anchor_config_card_filters_model_by_provider', async () => {
-    writeModelsJson({
-      lt: {
-        baseUrl: 'https://pi-api.example.com/v1',
-        api: 'openai-completions',
-        models: [{ id: 'glm-5.1' }],
-      },
-      Volcano: {
-        baseUrl: 'https://ark.example.com/api/v3',
-        api: 'openai-completions',
-        models: [{ id: 'glm-5.2' }],
-      },
-    });
+    mockListModels();
 
     const config: AppConfig = AppConfigSchema.parse({
       feishu: { appId: 'test', appSecret: 'test' },
@@ -276,18 +283,7 @@ describe('anchor: config card model options filtered by provider', () => {
  */
 describe('anchor: pi model options filtered by provider', () => {
   it('test_anchor_getPiModelOptions_filters_by_provider', async () => {
-    writeModelsJson({
-      lt: {
-        baseUrl: 'https://pi-api.example.com/v1',
-        api: 'openai-completions',
-        models: [{ id: 'glm-5.1' }],
-      },
-      Volcano: {
-        baseUrl: 'https://ark.example.com/api/v3',
-        api: 'openai-completions',
-        models: [{ id: 'glm-5.2' }],
-      },
-    });
+    mockListModels();
 
     const ltModels = getPiModelOptions('lt');
     expect(ltModels.some((m) => m.includes('glm-5.1'))).toBe(true);
@@ -309,11 +305,8 @@ describe('anchor: pi model options filtered by provider', () => {
 
 describe('Bug 1: Fallback provider/model 列表应一致', () => {
   it('每个 provider fallback 都应有对应的 model fallback', () => {
-    // Ensure no models.json/auth.json in PI_CONFIG_DIR → triggers fallback
-    const modelsPath = _getModelsFilePath();
-    if (fs.existsSync(modelsPath)) fs.unlinkSync(modelsPath);
-    const authPath = _getAuthFilePath();
-    if (fs.existsSync(authPath)) fs.unlinkSync(authPath);
+    // 命令不可用（未安装/失败）→ 走静态 fallback 清单
+    mockSpawnSync.mockReturnValue({ status: null, error: new Error('ENOENT'), stdout: '' });
 
     const providers = loadPiConfig().providerNames;
     for (const provider of providers) {
@@ -344,18 +337,7 @@ describe('Bug 2: 切换 provider 后应自动重置 model', () => {
   });
 
   it('切换 provider 后，pendingConfig 中的 model 应属于新 provider', async () => {
-    writeModelsJson({
-      Volcano: {
-        baseUrl: 'https://ark.example.com/api/v3',
-        api: 'openai-completions',
-        models: [{ id: 'glm-5.2' }],
-      },
-      lt: {
-        baseUrl: 'https://pi-api.example.com/v1',
-        api: 'openai-completions',
-        models: [{ id: 'glm-5.1' }],
-      },
-    });
+    mockListModels();
 
     const config: AppConfig = AppConfigSchema.parse({
       feishu: { appId: 'test', appSecret: 'test' },
@@ -399,35 +381,30 @@ describe('Bug 2: 切换 provider 后应自动重置 model', () => {
 // Bug 4: loadPiConfig 应只读取文件一次
 // ---------------------------------------------------------------------------
 
-describe('Bug 4: loadPiConfig 应只读取文件一次', () => {
-  it('loadPiConfig 只调用一次 loadPiProviderConfig，同时获取 provider 和 model', () => {
-    writeModelsJson({
-      Volcano: {
-        baseUrl: 'https://ark.example.com/api/v3',
-        api: 'openai-completions',
-        models: [{ id: 'glm-5.2' }],
-      },
-    });
-
-    const readSpy = vi.spyOn(fs, 'readFileSync');
+describe('Bug 4: loadPiConfig 只拉一次清单', () => {
+  it('loadPiConfig 一次调用只 spawn 一次 pi，provider 与 model 同源', () => {
+    mockListModels();
 
     const piCfg = loadPiConfig();
     const providerOptions = piCfg.providerNames;
     const modelOptions = piCfg.modelOptions('Volcano');
-
-    const modelsJsonReads = readSpy.mock.calls.filter(
-      (call) => typeof call[0] === 'string' && (call[0] as string).endsWith('models.json'),
-    ).length;
-    const authJsonReads = readSpy.mock.calls.filter(
-      (call) => typeof call[0] === 'string' && (call[0] as string).endsWith('auth.json'),
-    ).length;
-
-    readSpy.mockRestore();
+    const allOptions = piCfg.modelOptions();
 
     expect(providerOptions.length).toBeGreaterThan(0);
     expect(modelOptions.length).toBeGreaterThan(0);
+    expect(allOptions.length).toBeGreaterThan(0);
 
-    expect(modelsJsonReads, 'models.json 应只被读取 1 次').toBeLessThanOrEqual(1);
-    expect(authJsonReads, 'auth.json 应只被读取 1 次').toBeLessThanOrEqual(1);
+    // provider 与 model 从同一份清单派生，不得为每个字段各拉一次
+    expect(mockSpawnSync).toHaveBeenCalledTimes(1);
+  });
+
+  it('pi 缺失时回退静态清单，且缓存失败结果不再重复 spawn', () => {
+    mockSpawnSync.mockReturnValue({ status: null, error: new Error('ENOENT'), stdout: '' });
+
+    const first = loadPiConfig();
+    const second = loadPiConfig();
+
+    expect(first.providerNames).toEqual(second.providerNames);
+    expect(mockSpawnSync).toHaveBeenCalledTimes(1);
   });
 });
