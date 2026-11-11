@@ -272,6 +272,55 @@ describe('anchor: config card model options filtered by provider', () => {
 });
 
 // ---------------------------------------------------------------------------
+// anchor: pi thinking level options
+// ---------------------------------------------------------------------------
+
+/**
+ * Anchor: /config 卡片的 pi 思考级别下拉必须与 `pi --thinking` 的合法取值一致
+ *
+ * 缺失后果：下拉只到 xhigh 时选不到 max（pi 0.80.6 起支持的最高档），对
+ * glm-5.3 / MiniMax-M3.1 这类最高档为 max 的模型只能跑到 xhigh；配置里写
+ * thinking: max 也会被 schema 拒绝。
+ */
+describe('anchor: pi thinking level options', () => {
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'lark-remote-pi-thinking-'));
+  });
+
+  afterEach(() => {
+    if (tmpDir && fs.existsSync(tmpDir)) {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it('test_anchor_config_card_pi_thinking_offers_max', () => {
+    mockListModels();
+
+    const config: AppConfig = AppConfigSchema.parse({
+      feishu: { appId: 'test', appSecret: 'test' },
+      defaultAgent: 'pi',
+      agents: {
+        pi: { provider: 'Volcano', model: 'glm-5.2', thinking: 'max' },
+      },
+    });
+    expect(config.agents?.pi?.thinking).toBe('max');
+
+    const router = createRouterFixture({
+      tmpDir,
+      config,
+      bridge: createMockBridge(),
+      sessionReaderRegistry: createMockSessionReaderRegistry(),
+    }).router;
+
+    const result = router.buildConfigCard();
+    const options = extractFieldOptions(result.card!, 'agents.pi.thinking');
+    expect(options).toEqual(['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max']);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // anchor: pi model options filtered by provider (unit level)
 // ---------------------------------------------------------------------------
 
