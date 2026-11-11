@@ -5,6 +5,30 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.4] - 2026-11-11
+
+### 修复
+
+- **dsh run 卡步数与上下文百分比停更**：dsh 0.2.2 起把变更投影合并成 `changes` 批量帧下发，客户端原先只认逐条 `change` 帧；现两种帧都接收，步数与上下文占用恢复实时更新
+- **`/resume` 预览恢复「最近输入 / 最后输出」**：改读 `session/projections`，0.2.2 升级后预览不再为空
+- **ls 子目录「上级 / 返回」恢复进入时的页码**：从子目录返回父目录时回到离开前那一页，不再跳回第一页
+- **run 卡用量区移除 Cost 行**：`total_cost_usd` / `total_credits` 不再采集与渲染，USD 与 credits 两种形态一并去掉
+- **`/new` 与 run 卡「✨ 新会话」按钮统一回执**：两个入口给出一致确认，并带上工作区
+- **codex app-server 启动时钉住 `model_provider`**：以 `-c model_provider="…"` 启动，消除进程默认值与 `/config` 选择不一致导致的跨 provider 续聊失败
+
+### 变更
+
+- 移除无消费者的库入口（`main` / `types` / `exports`）：本包只提供 CLI，没有对外导出的库 API
+
+### 文档
+
+- 新增 Codex 配置卡片使用指南（中英双语），说明字段映射、动态模型列表与 `-c` 钉住策略
+- 新增 agent 接入模板改为在 `src/runner/index.ts` 追加导出，不再要求创建 per-agent barrel
+
+### 重构
+
+- 消融审计清理：删除零引用类型、纯转发 barrel 与空库表面，合并重复实现；`DshRunner.run` 与 `CommandRouter` 按职责拆分，行为不变
+
 ## [0.6.3] - 2026-11-09
 
 ### 新增
