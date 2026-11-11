@@ -18,6 +18,7 @@ const MOCK_SERVER = `#!/usr/bin/env node
 const config = JSON.parse(process.env.MOCK_PI_SCENARIO || '{}');
 const readline = require('node:readline');
 const fs = require('node:fs');
+if (process.env.MOCK_PI_ARGV_LOG) fs.writeFileSync(process.env.MOCK_PI_ARGV_LOG, JSON.stringify(process.argv.slice(2)));
 const rl = readline.createInterface({ input: process.stdin });
 const send = (o) => process.stdout.write(JSON.stringify(o) + '\\n');
 const sendSettled = () => send({ type: 'agent_settled' });
@@ -76,11 +77,12 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 
-function makeRunner(scenario: Record<string, unknown> = {}): PiRpcRunner {
+function makeRunner(scenario: Record<string, unknown> = {}, thinking = 'medium'): PiRpcRunner {
   process.env.MOCK_PI_SCENARIO = JSON.stringify(scenario);
   return new PiRpcRunner({
     provider: 'Volcano',
     model: 'glm-5.2',
+    thinking,
     cwd: tmpDir,
     sessionReader: emptyReader,
     idleTtlMs: 60_000,
@@ -180,6 +182,27 @@ describe('PiRpcRunner', () => {
     expect(result.subtype).toBe('error');
     expect(result.errorMessage).toContain('invalid model: glm-does-not-exist');
   }, 15000);
+
+  it.each(['off', 'max'])('test_anchor_thinking_%s_sent_to_pi', async (level) => {
+    // off 不能靠「省略 --thinking」实现：省略时 pi 按 settings.json 的
+    // defaultThinkingLevel（缺省 medium）思考，卡片上的 off 就成了空转。
+    const argvPath = path.join(tmpDir, 'pi-argv.json');
+    process.env.MOCK_PI_ARGV_LOG = argvPath;
+    try {
+      const runner = makeRunner({}, level);
+      const events: unknown[] = [];
+      for await (const ev of runner.run('hello', { cwd: tmpDir })) events.push(ev);
+      await runner.dispose();
+      expect(events.length).toBeGreaterThan(0);
+
+      const argv = JSON.parse(fs.readFileSync(argvPath, 'utf-8')) as string[];
+      const idx = argv.indexOf('--thinking');
+      expect(idx, `pi argv 应含 --thinking：${argv.join(' ')}`).toBeGreaterThanOrEqual(0);
+      expect(argv[idx + 1]).toBe(level);
+    } finally {
+      delete process.env.MOCK_PI_ARGV_LOG;
+    }
+  });
 
   it('stop 在 prompt 已响应后经协议 abort 通道中断 turn', async () => {
     const logPath = path.join(tmpDir, 'pi-messages.log');

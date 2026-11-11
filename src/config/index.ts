@@ -34,8 +34,20 @@ export const CLAUDE_PERMISSION_MODES = [
   'plan',
 ] as const;
 
-/** Valid thinking levels for Pi */
-export const PI_THINKING_LEVELS = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh'] as const;
+/**
+ * Valid thinking levels for Pi：与 `pi --thinking` 的合法取值一致（pi 0.80.6 起
+ * 新增 max）。各模型实际支持的档位不同（例如 glm-5.3 只有 low/high/max），
+ * 下发不受支持的档位时 pi 自己夹取到最近一档，不会报错，所以这里列全集。
+ */
+export const PI_THINKING_LEVELS = [
+  'off',
+  'minimal',
+  'low',
+  'medium',
+  'high',
+  'xhigh',
+  'max',
+] as const;
 
 /** 默认值常量：schema 与 template 共享，避免双源不一致（G25 Magic Numbers）。 */
 const DEFAULTS = {
@@ -176,7 +188,7 @@ const PiConfigSchema = z.object({
   provider: z.string().default(PI_DEFAULTS.provider),
   /** Model ID or alias, e.g. 'glm-5.2'. */
   model: z.string().default(PI_DEFAULTS.model),
-  /** Thinking level: off/minimal/low/medium/high/xhigh. */
+  /** Thinking level: off/minimal/low/medium/high/xhigh/max（按模型能力夹取）。 */
   thinking: z.enum(PI_THINKING_LEVELS).default(PI_DEFAULTS.thinking),
   /** Comma-separated tool whitelist. */
   tools: z.string().default(PI_DEFAULTS.tools),

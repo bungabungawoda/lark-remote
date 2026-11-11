@@ -264,7 +264,9 @@ function buildPiArgs(
   sessionId?: string,
 ): string[] {
   const args = ['--mode', 'rpc', '--provider', provider, '--model', model];
-  if (thinking && thinking !== 'off') args.push('--thinking', thinking);
+  // off 也要下发：省略 --thinking 时 pi 按自己的默认档（settings.json 的
+  // defaultThinkingLevel，缺省 medium）思考，卡片上的「off」就变成空转。
+  if (thinking) args.push('--thinking', thinking);
   if (tools) args.push('--tools', tools);
   if (sessionId) args.push('--session-id', sessionId);
   return args;
