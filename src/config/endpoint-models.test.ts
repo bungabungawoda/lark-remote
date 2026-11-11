@@ -99,9 +99,7 @@ describe('候选 URL', () => {
   });
 
   it('带版本段的 base 只按原样问 base/models', async () => {
-    const { urls } = stubFetch(
-      byPathname({ '/api/v3/models': openAiList('glm-5.2', 'kimi-k3') }),
-    );
+    const { urls } = stubFetch(byPathname({ '/api/v3/models': openAiList('glm-5.2', 'kimi-k3') }));
 
     const ids = await fetchEndpointModels({
       baseUrl: 'https://ark.example.com/api/v3',

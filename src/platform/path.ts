@@ -67,7 +67,7 @@ export function samePath(a: string, b: string, opts?: PathOptions): boolean {
 }
 
 /**
- * cwd → 会话项目目录名（Claude/pi 的 on-disk 编码，lossy N-to-N）。
+ * cwd → 会话项目目录名（Claude/qoder 的 on-disk 编码，lossy N-to-N）。
  *
  * 只可用于**定位**目录，绝不可反解回 cwd——cwd 必须从 JSONL 内容读取
  * （否则 /resume & /cd 路径会错乱）。
@@ -76,6 +76,9 @@ export function samePath(a: string, b: string, opts?: PathOptions): boolean {
  * win32：`\` 与 `/` **都是**分隔符、`:` 是非法文件名字符，三者都必须归一，
  * 否则 `C:\Users\x\proj` 会原样拼进目录名，mkdir/stat 必然失败。
  * 反过来，posix 上 `:` 是**合法**文件名字符，不能动——否则既有目录定位不到。
+ *
+ * 注意：pi 的落盘规则**不同**（保留 `_`、只归一 `/ \ :`），pi reader 自带
+ * 编码，不走本函数——勿把两套约定合并。
  */
 export function encodeProjectDirName(cwd: string, opts?: PathOptions): string {
   const { platform } = resolveOptions(opts);
