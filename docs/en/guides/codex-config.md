@@ -139,6 +139,26 @@ if (key === 'agents.codex.modelProvider' && newValue) {
 }
 ```
 
+## Provider and the app-server process default
+
+The selected provider is not only sent as the `modelProvider` parameter of
+`thread/start`; it is also pinned into the `codex app-server` launch arguments as
+`-c model_provider="<id>"` (a process-scoped override that never writes
+`~/.codex/config.toml`). Codex decides whether a turn may start from the
+**process-level default provider** (`model_provider` in config.toml), not from
+the per-thread parameter. When the two differ, the whole turn is rejected
+(error data `modelProviderMismatch`, message `This chat uses X, but your current
+provider is Y`) before any inference request is sent. Pinning the spawn default
+keeps a single source of truth for both values.
+
+Two consequences:
+
+- After changing the provider, threads belonging to the old provider are still
+  rejected; press "✨ 新会话" and send the message again.
+- If the provider selected in the card is removed from config.toml, the
+  app-server fails to start (`Model provider '<id>' not found`). That failure is
+  intentional: it prevents the run from silently using the config.toml default.
+
 ## Model Switching Linked to Reasoning Effort
 
 When the user switches the `Model` dropdown, the system automatically validates whether the current `reasoningEffort` is still supported by the new model. If not, it resets per codex `with_model` semantics (`src/router/config/codex.ts` `CodexConfigBuilder.handleFieldChange`):

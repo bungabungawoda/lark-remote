@@ -46,7 +46,10 @@ interface CodexAppServerRunnerOptions {
   binary?: string;
   /** Environment variables. */
   env?: Record<string, string | undefined>;
-  /** Args to spawn the app server with. Defaults to `['app-server', '--stdio']`. */
+  /**
+   * Args to spawn the app server with. Defaults to `['app-server', '--stdio']`,
+   * prefixed with `-c model_provider=…` when `modelProvider` is set.
+   */
   appServerArgs?: string[];
   /** Request timeout in milliseconds. */
   requestTimeoutMs?: number;
@@ -61,6 +64,26 @@ interface CodexAppServerRunnerOptions {
   sandbox?: SandboxMode;
   /** Configured approval policy (Codex 官方 AskForApproval 标准值). */
   approvalPolicy?: AskForApproval;
+}
+
+/**
+ * Spawn args for `codex app-server`.
+ *
+ * codex resolves a turn's provider against the **process-level** default
+ * (`~/.codex/config.toml` `model_provider`, or `-c` overrides), not against the
+ * per-thread `modelProvider` we pass to `thread/start`. 0.166–0.167 compare the
+ * two before every input and reject the run with `modelProviderMismatch` when
+ * they differ (`check_thread_model_provider_for_input`), so a provider picked
+ * in `/config` only works while both sides agree. Pinning the spawn-level
+ * default to the same id keeps one source of truth, and `-c` is process-scoped
+ * — it never rewrites the user's `~/.codex/config.toml`.
+ */
+function codexAppServerArgs(modelProvider?: string): string[] {
+  const args = ['app-server', '--stdio'];
+  if (!modelProvider) return args;
+  // `-c key=value` 的 value 按 TOML 解析：加引号，避免 `true` / `123` 这类
+  // provider 名被解析成布尔或数字。
+  return ['-c', `model_provider="${modelProvider}"`, ...args];
 }
 
 /**
@@ -185,7 +208,7 @@ export class CodexAppServerRunner extends ConnectionBasedRunner<
 
     const managerOpts: ConnectionManagerOptions<JsonRpcClient<InitializeResult>> = {
       binary: opts.binary ?? 'codex',
-      args: opts.appServerArgs ?? ['app-server', '--stdio'],
+      args: opts.appServerArgs ?? codexAppServerArgs(opts.modelProvider),
       env: opts.env,
       requestTimeoutMs: opts.requestTimeoutMs,
       idleTtlMs: opts.idleTtlMs,

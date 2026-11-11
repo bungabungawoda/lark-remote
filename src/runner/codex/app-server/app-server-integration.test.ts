@@ -22,6 +22,26 @@ import { waitFor } from '../../../../tests/lib/wait-for.js';
 const FAKE_SERVER = join(process.cwd(), 'tests', 'fake-app-server', 'server.mjs');
 const FIXTURES = join(process.cwd(), 'tests', 'fake-app-server', 'fixtures');
 
+/**
+ * Wrapper that records the argv codex was spawned with, then execs the fake
+ * app server (the fixture-driven server ignores the codex args).
+ */
+function writeArgvRecorderWrapper(dir: string, argvLog: string): string {
+  const wrapper = join(dir, 'argv-recorder.sh');
+  writeFileSync(
+    wrapper,
+    [
+      '#!/bin/sh',
+      `: > "${argvLog}"`,
+      `for a in "$@"; do echo "$a" >> "${argvLog}"; done`,
+      `exec "${process.execPath}" "${FAKE_SERVER}" "${join(FIXTURES, 'normal-turn.json')}"`,
+      '',
+    ].join('\n'),
+  );
+  chmodSync(wrapper, 0o755);
+  return wrapper;
+}
+
 describePosix('CodexAppServerRunner integration', () => {
   let tmpDir: string;
 
@@ -1303,5 +1323,57 @@ describePosix('CodexAppServerRunner integration', () => {
 
       await runner.dispose();
     });
+  });
+
+  // `-c model_provider=…` 是进程级默认值；codex 0.166–0.167 在每次输入前拿它和
+  // 线程保存的 provider 比对，不一致就整轮拒绝（modelProviderMismatch）。线程参数
+  // 与进程默认值必须同源，否则消息在发起推理前就被拒。
+  it('spawns codex with the selected provider pinned via -c', async () => {
+    const cwd = join(tmpDir, 'workspace');
+    mkdirSync(cwd, { recursive: true });
+    const argvLog = join(tmpDir, 'spawn-argv.txt');
+    const wrapper = writeArgvRecorderWrapper(tmpDir, argvLog);
+
+    const runner = new CodexAppServerRunner({
+      kind: 'codex',
+      sessionReader: createStubSessionReader(),
+      binary: wrapper,
+      model: 'deepseek-v4.1-flash',
+      modelProvider: 'opencode',
+    });
+
+    const events: AgentEvent[] = [];
+    for await (const event of runner.run('hello', { cwd })) events.push(event);
+
+    expect(readFileSync(argvLog, 'utf8').trim().split('\n')).toEqual([
+      '-c',
+      'model_provider="opencode"',
+      'app-server',
+      '--stdio',
+    ]);
+    const result = events.find((e) => e.type === 'result') as
+      (AgentEvent & { subtype: string }) | undefined;
+    expect(result?.subtype).toBe('success');
+
+    await runner.dispose();
+  });
+
+  it('spawns codex without -c when no provider is selected', async () => {
+    const cwd = join(tmpDir, 'workspace');
+    mkdirSync(cwd, { recursive: true });
+    const argvLog = join(tmpDir, 'spawn-argv.txt');
+    const wrapper = writeArgvRecorderWrapper(tmpDir, argvLog);
+
+    const runner = new CodexAppServerRunner({
+      kind: 'codex',
+      sessionReader: createStubSessionReader(),
+      binary: wrapper,
+      model: 'deepseek-v4.1-flash',
+    });
+    for await (const event of runner.run('hello', { cwd })) void event;
+
+    expect(readFileSync(argvLog, 'utf8').trim().split('\n')).toEqual(['app-server', '--stdio']);
+
+    await runner.dispose();
   });
 });

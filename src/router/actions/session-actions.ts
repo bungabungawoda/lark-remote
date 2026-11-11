@@ -6,7 +6,12 @@ import { resolveAgentKind } from '../../agent-kinds.js';
 import { RESUME_PAGE_SIZE } from '../commands/resume.js';
 import type { CommandRouter } from '../index.js';
 import type { CardActionPayload, CardActionResponse } from './shared.js';
-import { ACTIVE_PAGE_SIZE, CARD_PAYLOAD_MISSING, normalizePageArgs } from './shared.js';
+import {
+  ACTIVE_PAGE_SIZE,
+  applyNewSession,
+  CARD_PAYLOAD_MISSING,
+  normalizePageArgs,
+} from './shared.js';
 
 /**
  * resume.use: 从 /resume 列表卡切换到所选会话。
@@ -40,15 +45,8 @@ export async function handleResumeUse(
 
 /** new-session: 清空当前会话绑定，下一条消息开始全新对话。 */
 export async function handleNewSession(host: CommandRouter, ctx: CommandContext): Promise<void> {
-  host.sessionStore.clearSessionId(ctx.userId, host.config.defaultAgent, {
-    clearSessionCwd: true,
-  });
-  const cwd = host.sessionStore.getCwd(ctx.userId) ?? '(未设置)';
-  const agentName = agentDisplayName(host.config.defaultAgent);
-  await host.bridge.sendResult(
-    { text: `已创建新 ${agentName} 会话，下一条消息将开始全新对话\n📁 ${cwd}` },
-    ctx,
-  );
+  const text = applyNewSession(host.sessionStore, host.config.defaultAgent, ctx.userId);
+  await host.bridge.sendResult({ text }, ctx);
 }
 
 /** compact: 对当前会话发起压缩（bridge 收口）。 */

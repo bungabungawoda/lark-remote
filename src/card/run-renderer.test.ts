@@ -1676,11 +1676,11 @@ describe('renderRunCard', () => {
     expect(json).toContain('Total token - 393');
   });
 
-  it('test_anchor_done_card_shows_credits_instead_of_pseudo_usd', () => {
-    // qoder 极简卡：credits 存在（total_credits 是 qoder 专属 wire 字段）时
-    // 用量区只留积分行——Model/结果/伪 $0.0000 行全部不渲染；credits 缺席
-    // （claude/codex 等）各行照旧。
-    let state = createInitialRunState('run-credits');
+  it('test_anchor_done_card_drops_cost_fields', () => {
+    // Cost 行已从用量区彻底移除（credits / USD 两种形态都不再渲染）：result
+    // 事件里的 total_cost_usd / total_credits 是不再消费的外来字段，出现时
+    // 不渲染、不影响 Model/结果 行，也不报错。
+    let state = createInitialRunState('run-cost-drop');
     state = reduceRunState(state, {
       type: 'system',
       subtype: 'init',
@@ -1692,73 +1692,31 @@ describe('renderRunCard', () => {
       type: 'result',
       subtype: 'success',
       session_id: 's1',
-      total_cost_usd: 0,
+      total_cost_usd: 0.42,
       total_credits: 12,
     } as never);
     state = finishRun(state, 'done', { resultSubtype: 'success' });
     const json = JSON.stringify(renderRunCard(state));
-    expect(json).toContain('Cost - 12 credits');
-    expect(json).not.toContain('$0.0000');
-    expect(json).not.toContain('Model - dfmodel');
-    expect(json).not.toContain('结果 - success');
+    expect(json).not.toContain('Cost - ');
+    expect(json).not.toContain('credits');
+    expect(json).toContain('Model - dfmodel');
+    expect(json).toContain('结果 - success');
 
-    // credits 缺席 → Model/结果/USD 行不变
-    let usd = createInitialRunState('run-usd');
-    usd = reduceRunState(usd, {
+    // qoder 身份同样回到标准形态（原极简形态只为突出积分行，积分行移除后
+    // 不再有任何特判）。
+    let qoder = createInitialRunState('run-qoder');
+    qoder = reduceRunState(qoder, {
       type: 'system',
       subtype: 'init',
       session_id: 's1',
       cwd: '/home/user/project',
-      model: 'dfmodel',
+      model: 'qmodel',
     } as never);
-    usd = reduceRunState(usd, {
-      type: 'result',
-      subtype: 'success',
-      session_id: 's1',
-      total_cost_usd: 0.42,
-    } as never);
-    usd = finishRun(usd, 'done', { resultSubtype: 'success' });
-    const usdJson = JSON.stringify(renderRunCard(usd));
-    expect(usdJson).toContain('Cost - $0.4200');
-    expect(usdJson).toContain('Model - dfmodel');
-    expect(usdJson).toContain('结果 - success');
-  });
-
-  it('test_anchor_qoder_agentkind_minimal_even_without_credits', () => {
-    // ACP 传输下 qoder 回包可能没有 total_credits：极简判定不能再只靠 credits
-    // 字段，agentKind === 'qoder'（建 state 时盖章）同样生效——Model/结果/USD
-    // 行不渲染；credits 缺席时积分行也缺席。
-    let state = createInitialRunState('run-qoder-acp', { agentKind: 'qoder' });
-    state = reduceRunState(state, {
-      type: 'system',
-      subtype: 'init',
-      session_id: 's1',
-      cwd: '/home/user/project',
-      model: 'dfmodel',
-    } as never);
-    state = finishRun(state, 'done', { resultSubtype: 'success' });
-    const json = JSON.stringify(renderRunCard(state));
-    expect(json).not.toContain('Model - dfmodel');
-    expect(json).not.toContain('结果 - success');
-    expect(json).not.toContain('Cost - $0.0000');
-
-    // 非 qoder 身份不受影响
-    let other = createInitialRunState('run-claude', { agentKind: 'claude' });
-    other = reduceRunState(other, {
-      type: 'system',
-      subtype: 'init',
-      session_id: 's1',
-      cwd: '/home/user/project',
-      model: 'test-model',
-    } as never);
-    other = reduceRunState(other, {
-      type: 'result',
-      subtype: 'success',
-      session_id: 's1',
-      total_cost_usd: 0.42,
-    } as never);
-    other = finishRun(other, 'done', { resultSubtype: 'success' });
-    expect(JSON.stringify(renderRunCard(other))).toContain('Cost - $0.4200');
+    qoder = finishRun(qoder, 'done', { resultSubtype: 'success' });
+    const qoderJson = JSON.stringify(renderRunCard(qoder));
+    expect(qoderJson).toContain('Model - qmodel');
+    expect(qoderJson).toContain('结果 - success');
+    expect(qoderJson).not.toContain('Cost - ');
   });
 
   it('test_anchor_done_card_threads_cumulative_input_output', () => {
@@ -2596,7 +2554,6 @@ describe('renderRunCard (CardKit 2.0)', () => {
       type: 'result',
       subtype: 'success',
       session_id: 'run-2',
-      total_cost_usd: 0.01,
     });
     // 验证进入 finalizing 非终态（不是 done）
     expect(state.terminal).toBe('finalizing');
@@ -3025,7 +2982,6 @@ describe('renderRunCard (CardKit 2.0)', () => {
             type: 'result',
             subtype: 'success',
             session_id: `run-text-panel-${_terminal}`,
-            total_cost_usd: 0.01,
           });
         } // running: 不加终态
 

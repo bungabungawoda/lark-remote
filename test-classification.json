@@ -33,6 +33,7 @@
     "tests/anchor/regression/send-with-retry-error.test.ts"
   ],
   "infra-router": [
+    "src/router/actions/new-session.test.ts",
     "src/router/file-limit.test.ts",
     "src/router/immediate-action.test.ts",
     "src/router/card-action-payload.test.ts",

@@ -2365,7 +2365,7 @@ describe('CommandRouter', () => {
           message: { role: 'assistant', content: [{ type: 'text', text: 'starting...' }] },
         }) +
         '\n' +
-        JSON.stringify({ type: 'result', subtype: 'success', total_cost_usd: 0.025 });
+        JSON.stringify({ type: 'result', subtype: 'success' });
       writeSessionJsonl(projDirB, sid, dirB, body);
 
       const { router, sessionStore, connector } = createRouter({ projectsDir });
@@ -2522,7 +2522,7 @@ describe('CommandRouter', () => {
           cwd: fs.realpathSync(dirB),
           model: 'opus',
         },
-        { type: 'result', subtype: 'success', session_id: sid, total_cost_usd: 1.1732 },
+        { type: 'result', subtype: 'success', session_id: sid },
       ];
       const { runner, release } = createBackgroundRunningRunner(events);
       const { router, sessionStore, connector } = createRouter({ runner, projectsDir });
@@ -2607,7 +2607,7 @@ describe('CommandRouter', () => {
           cwd: fs.realpathSync(dir),
           model: 'opus',
         },
-        { type: 'result', subtype: 'success', session_id: sid, total_cost_usd: 1.1732 },
+        { type: 'result', subtype: 'success', session_id: sid },
       ];
       const { runner, release } = createBackgroundRunningRunner(events);
       const { router, sessionStore, connector } = createRouter({ runner, projectsDir });
@@ -3960,7 +3960,7 @@ describe('CommandRouter', () => {
       { type: 'system', subtype: 'init', session_id: 's1', cwd: tmpDir, model: 'opus' },
       { type: 'assistant', message: { content: [{ type: 'text', text: 'part 1' }] } },
       { type: 'assistant', message: { content: [{ type: 'text', text: 'part 2' }] } },
-      { type: 'result', subtype: 'success', session_id: 's1', total_cost_usd: 0.01 },
+      { type: 'result', subtype: 'success', session_id: 's1' },
     ];
     const { router, sessionStore, connector } = createRouter({
       runner: createStubRunner({ mode: 'streaming', events, withStatusInfo: true }),

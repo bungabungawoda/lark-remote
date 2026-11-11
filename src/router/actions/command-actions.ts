@@ -31,7 +31,7 @@ import { buildResumeCommand, AUTO_RESUME_MAX_EVENTS } from '../commands/resume.j
 import { resolveDirectory } from '../path-validation.js';
 import { pageInfo } from '../paging.js';
 import type { CommandRouter } from '../index.js';
-import { ACTIVE_PAGE_SIZE } from './shared.js';
+import { ACTIVE_PAGE_SIZE, applyNewSession } from './shared.js';
 
 export function cmdHelp(_host: CommandRouter): CommandResult {
   // 按钮组（可直接点击触发；按钮 label 只保留子命令，不含参数）
@@ -356,14 +356,10 @@ export async function cmdClone(
 }
 
 export function cmdNew(host: CommandRouter, ctx: CommandContext): CommandResult {
-  // 只清 sessionId 保留 cwd — 否则 /new 之后 /resume 会提示"请先 /cd
-  // 设置工作目录"，但用户的 cwd 还在，用户 /new → /resume 后会被误导
-  // 以为需要重新 /cd。
-  const agentName = agentDisplayName(host.config.defaultAgent);
-  host.sessionStore.clearSessionId(ctx.userId, host.config.defaultAgent, {
-    clearSessionCwd: true,
-  });
-  return { text: `已清空 ${agentName} session，下次消息将启动新对话` };
+  // 与 run 卡「✨ 新会话」按钮（handleNewSession）共用 applyNewSession：
+  // 同一存储语义（清会话绑定，主 cwd 保留——/new 后 /resume 仍用原工作目录）
+  // + 同一回执（含 📁 工作区），两条触发路径不再分叉。
+  return { text: applyNewSession(host.sessionStore, host.config.defaultAgent, ctx.userId) };
 }
 
 export function cmdCd(host: CommandRouter, args: string[], ctx: CommandContext): CommandResult {

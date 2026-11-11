@@ -101,7 +101,7 @@ Qoder connects in ACP mode (`qodercn --acp`, a JSON-RPC long-lived connection ov
 - `agents.qoder.cli.binary`: the CN edition installs as `qodercn`, the international edition as `qoder`; defaults to CN.
 - `agents.qoder.configDir`: Qoder config root (session records live under `<configDir>/projects/`); when empty it auto-detects `~/.qoder-cn` → `~/.qoder`.
 
-The done card keeps the usage area minimal: Qoder's result carries no token breakdown, so Model / USD rows are omitted and a credit line is shown only when available.
+The done card's usage area carries no cost: the Cost line (USD and credits forms) has been fully removed; `total_cost_usd` / `total_credits` from result events are neither captured nor rendered. Qoder's result carries no token breakdown (fields always 0, verified 2026-11-05) and its ACP `usage_update` does not arrive per turn (verified 2026-11-07), so its usage area may be empty.
 
 Log in once with `qodercn` in an interactive terminal before first use; the ACP channel does not trigger login.
 

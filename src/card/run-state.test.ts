@@ -945,7 +945,7 @@ describe('RunState', () => {
   });
 
   // ===========================================================================
-  // 信息保真 model / costUsd / notices / omittedBlocks / reasoningTokens
+  // 信息保真 model / notices / omittedBlocks / reasoningTokens
   // ===========================================================================
 
   it('test_anchor_system_init_stores_model', () => {
@@ -960,8 +960,9 @@ describe('RunState', () => {
     expect(state.model).toBe('test-model');
   });
 
-  it('test_anchor_result_event_captures_costUsd', () => {
-    // result.total_cost_usd → state.costUsd（首个非 undefined 胜出）。
+  it('test_anchor_result_event_ignores_cost_fields', () => {
+    // Cost 行已从卡片移除：result 事件的 total_cost_usd / total_credits 是
+    // 不再消费的外来字段，RunState 不再捕获（状态里不存在这两个键）。
     let state = reduceRunState(createInitialRunState('run-c1-cost'), {
       type: 'system',
       subtype: 'init',
@@ -974,28 +975,10 @@ describe('RunState', () => {
       subtype: 'success',
       session_id: 's1',
       total_cost_usd: 0.42,
-    } as never);
-    expect(state.costUsd).toBe(0.42);
-  });
-
-  it('test_anchor_result_event_captures_credits', () => {
-    // result.total_credits → state.credits（同 costUsd 口径：首个非 undefined
-    // 胜出；qoder 的积分原样透传，供卡片 Cost 行显示）。
-    let state = reduceRunState(createInitialRunState('run-c1-credits'), {
-      type: 'system',
-      subtype: 'init',
-      session_id: 's1',
-      cwd: '/home/user/project',
-      model: 'test-model',
-    } as never);
-    state = reduceRunState(state, {
-      type: 'result',
-      subtype: 'success',
-      session_id: 's1',
-      total_cost_usd: 0,
       total_credits: 12,
     } as never);
-    expect(state.credits).toBe(12);
+    expect('costUsd' in state).toBe(false);
+    expect('credits' in state).toBe(false);
   });
 
   it('test_anchor_notice_event_appends_to_notices', () => {

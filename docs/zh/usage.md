@@ -140,7 +140,7 @@ Qoder 走 ACP 模式接入（`qodercn --acp`，stdio 上的 JSON-RPC 长连接�
 首次使用前先用交互式终端跑一次 `qodercn` 完成登录（浏览器 OAuth）与目录信任；ACP 通道不会触发登录（authMethods 复用现有登录）。已实测/待验证的行为差异（2026-11-07，qoder-cli 1.1.84）：
 
 - **未登录**：非交互启动直接失败（exit 1），lark-remote 以错误卡呈现；不是挂起。
-- **done 卡用量区极简**：不渲染 Model / 结果 / USD 行；积分可得时显示积分行（如 `Cost - 12 credits`）。qoder 的 result 回包没有 token 明细（字段恒 0，2026-11-05 实测），且 ACP `usage_update` 实测不随 turn 下发（2026-11-07 真机），done 卡通常无任何用量行。
+- **done 卡用量区不含费用**：Cost 行（USD / credits 两种形态）已彻底移除，`total_cost_usd` / `total_credits` 不再捕获、不再渲染。qoder 的 result 回包没有 token 明细（字段恒 0，2026-11-05 实测），且 ACP `usage_update` 实测不随 turn 下发（2026-11-07 真机），done 卡用量区可能为空。
 - **交互式提问（`AskUserQuestion`）可用**：initialize 声明 `clientCapabilities.elicitation.form` 后 Qoder 保留该工具（不声明时 CLI 把工具加入 deny 集合），题目经 `elicitation/create` form 下发到飞书 run 卡的提问区（选项 / 多选提交 / 跳过回答），答案按 `q0…qn` 回编。字段 `title` 是短 header，完整题干在 `description` 首行；选项只认声明值（无自定义答案输入）。1.1.84 代码路径确认，真机验证待补。
 - **会话落盘正常**（2026-11-07 真机验证）：ACP 会话照常写 `<configDir>/projects/` 下的 jsonl，`/resume` 列表可用；jsonl 内无 usage 行（与 stream-json 时代一致）。
 - **动态审批已验证**（2026-11-07 真机）：`default` 模式下写文件触发 `session/request_permission`，飞书审批卡正常弹出并生效。

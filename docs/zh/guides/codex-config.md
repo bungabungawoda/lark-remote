@@ -137,6 +137,22 @@ if (key === 'agents.codex.modelProvider' && newValue) {
 }
 ```
 
+## Provider 与 app-server 进程默认值
+
+选中的 provider 不只进 `thread/start` 的 `modelProvider` 参数，还会以
+`-c model_provider="<id>"` 写进 `codex app-server` 的启动参数（进程级覆盖，不改
+`~/.codex/config.toml`）。codex 判断一轮能否开跑时用的是**进程级默认 provider**
+（config.toml 的 `model_provider`），不是线程参数；两者不一致时整轮被拒（错误数据
+`modelProviderMismatch`，文案 `This chat uses X, but your current provider is Y`），
+不会发出任何推理请求。把选中值钉在启动参数上，两处取值就只剩一个来源。
+
+由此有两条使用约束：
+
+- 改 provider 后，属于旧 provider 的会话线程仍会被拒；点「✨ 新会话」再发消息即可。
+- 卡片选中的 provider 若已从 config.toml 删除，app-server 启动即失败
+  （`Model provider '<id>' not found`）。这是有意的失败方式，避免静默跑在
+  config.toml 的默认 provider 上。
+
 ## 模型切换联动推理强度
 
 当用户切换 `使用模型` 下拉框时，系统会自动校验当前 `reasoningEffort` 是否仍被新模型支持，

@@ -142,12 +142,10 @@ describe('OpencodeAcpRunner', () => {
     const result = events[resultIdx] as AgentEvent & {
       subtype?: string;
       usage?: { total_tokens?: number; context_limit?: number };
-      total_cost_usd?: number;
     };
     expect(result.subtype).toBe('success');
     expect(result.usage?.total_tokens).toBe(12345);
     expect(result.usage?.context_limit).toBe(200000);
-    expect(result.total_cost_usd).toBe(0.42);
 
     await runner.dispose();
   });

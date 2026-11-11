@@ -326,9 +326,6 @@ export interface ResultEvent {
     /** 推理 token（pi 提供）。缺省不展示。 */
     reasoning_tokens?: number;
   };
-  total_cost_usd?: number;
-  /** 积分（qoder result 顶层携带，与 total_cost_usd 并列；qoder 无 USD 口径）。 */
-  total_credits?: number;
   errorMessage?: string; // For auth errors and other run failures
   /**
    * 上游明确报告认证失效（HTTP 401 / Authentication required），由 translator
