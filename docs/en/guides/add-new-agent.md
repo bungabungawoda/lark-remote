@@ -52,13 +52,15 @@ export class <Agent>Runner implements AgentRunner {
 }
 ```
 
-### Step 2: Create the Runner Module Entry
+### Step 2: Add the Export to the Runner Entry
 
-Create `src/runner/<agent>/index.ts`:
+This repository does not use a per-agent `index.ts` barrel. Add one line to `src/runner/index.ts` that re-exports from the implementation file:
 
 ```typescript
-export { <Agent>Runner, type <Agent>RunnerConfig } from './runner.js';
+export { <Agent>Runner, type <Agent>RunnerConfig } from './<agent>/runner.js';
 ```
+
+`src/index.ts` imports runner classes from `./runner/index.js`, so skipping this step fails to compile at Step 6.
 
 ### Step 3: Create the Session Reader Implementation
 

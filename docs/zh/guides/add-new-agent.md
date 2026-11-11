@@ -51,13 +51,15 @@ export class <Agent>Runner implements AgentRunner {
 }
 ```
 
-### 步骤 2: 创建 Runner 模块入口
+### 步骤 2: 在 Runner 入口追加导出
 
-创建 `src/runner/<agent>/index.ts`：
+本仓库不建 per-agent 的 `index.ts` barrel，直接在 `src/runner/index.ts` 追加一行，从实现文件导出：
 
 ```typescript
-export { <Agent>Runner, type <Agent>RunnerConfig } from './runner.js';
+export { <Agent>Runner, type <Agent>RunnerConfig } from './<agent>/runner.js';
 ```
+
+`src/index.ts` 统一从 `./runner/index.js` 取 runner 类，因此这一步漏了会在步骤 6 编译失败。
 
 ### 步骤 3: 创建 Session Reader 实现
 
