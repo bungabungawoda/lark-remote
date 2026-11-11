@@ -2,7 +2,7 @@ import { describe, it, expect, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { resolveExecutable, clearResolveCache, isWslBashLauncher } from './command.js';
+import { resolveExecutable, _clearResolveCacheForTest, isWslBashLauncher } from './command.js';
 import { describePosix } from '../../tests/lib/platform.js';
 
 const tmpDirs: string[] = [];
@@ -13,7 +13,7 @@ function mkdtemp(): string {
 }
 afterEach(() => {
   for (const dir of tmpDirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
-  clearResolveCache();
+  _clearResolveCacheForTest();
 });
 
 // posix 的 PATH 分隔符就是 `:`；Windows 临时目录路径自带盘符冒号
@@ -200,7 +200,7 @@ describe('resolveExecutable (win32) — bash 必须避开 WSL 启动器', () => 
 });
 
 describe('resolveExecutable cache', () => {
-  it('caches resolution results per (platform, pathEnv, name); clearResolveCache resets', () => {
+  it('caches resolution results per (platform, pathEnv, name); _clearResolveCacheForTest resets', () => {
     const dir = mkdtemp();
     const bin = path.join(dir, 'cached.cmd');
     fs.writeFileSync(bin, '@echo off');
@@ -209,7 +209,7 @@ describe('resolveExecutable cache', () => {
     // 删除真实文件后再次解析 → TTL 内缓存命中，仍返回旧结果
     fs.unlinkSync(bin);
     expect(resolveExecutable('cached', opts)).toEqual({ kind: 'direct', file: bin });
-    clearResolveCache();
+    _clearResolveCacheForTest();
     expect(resolveExecutable('cached', opts)).toBeNull();
   });
 

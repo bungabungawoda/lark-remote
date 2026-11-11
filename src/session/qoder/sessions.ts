@@ -28,17 +28,17 @@ import { resolveQoderConfigDir } from '../../config/qoder-config.js';
 import type { AgentSession, AgentSessionReader, SessionContent } from '../../session-contract.js';
 import { paginate } from '../common/pagination.js';
 
-export interface QoderReaderOptions {
+interface QoderReaderOptions {
   /** Qoder 配置根目录；缺省自动探测（~/.qoder-cn → ~/.qoder）。 */
   configDir?: string;
 }
 
 /** projectsDir = `<configDir>/projects`；未显式给 configDir 时自动探测。 */
-export function qoderProjectsDir(configDir?: string): string {
+function qoderProjectsDir(configDir?: string): string {
   return path.join(resolveQoderConfigDir(configDir), 'projects');
 }
 
-export function listQoderSessions(
+function listQoderSessions(
   cwd: string,
   opts: { limit?: number; configDir?: string } = {},
 ): AgentSession[] {
@@ -52,7 +52,7 @@ export function listQoderSessions(
   }
 }
 
-export function readQoderSessionContent(
+function readQoderSessionContent(
   sessionId: string,
   cwd: string,
   opts: { maxEvents?: number; configDir?: string } = {},
@@ -63,7 +63,7 @@ export function readQoderSessionContent(
   });
 }
 
-export function isQoderSessionActive(
+function isQoderSessionActive(
   sessionId: string,
   cwd: string,
   opts: { configDir?: string } = {},

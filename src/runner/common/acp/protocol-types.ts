@@ -70,7 +70,7 @@ export interface InitializeParams {
   };
 }
 
-export interface AgentInfo {
+interface AgentInfo {
   name: string;
   version: string;
 }
@@ -246,7 +246,7 @@ export interface AcpPlanEvent {
   [key: string]: unknown;
 }
 
-export interface AvailableCommandsUpdateEvent {
+interface AvailableCommandsUpdateEvent {
   sessionUpdate: 'available_commands_update';
   availableCommands?: unknown[];
   [key: string]: unknown;
@@ -264,7 +264,7 @@ export interface CurrentModeUpdateEvent {
   [key: string]: unknown;
 }
 
-export interface ConfigOptionUpdateEvent {
+interface ConfigOptionUpdateEvent {
   sessionUpdate: 'config_option_update';
   configOptions?: unknown[];
   [key: string]: unknown;
@@ -280,7 +280,7 @@ export interface UsageUpdateEvent {
   [key: string]: unknown;
 }
 
-export type SessionUpdateEvent =
+type SessionUpdateEvent =
   | AgentMessageChunkEvent
   | AgentThoughtChunkEvent
   | ToolCallEvent

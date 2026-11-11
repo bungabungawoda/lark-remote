@@ -35,7 +35,7 @@ export interface AssemblerContext {
   messageId: string;
 }
 
-export interface AssemblerDeps {
+interface AssemblerDeps {
   /** 静默期窗口（毫秒），默认 700。 */
   windowMs?: number;
   /** 定时器注入（便于 vitest fake timers / 单元测试确定性）。 */

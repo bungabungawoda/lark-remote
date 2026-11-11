@@ -31,7 +31,7 @@ export interface DshDaemonOptions {
   readonly startTimeoutMs?: () => number | undefined;
 }
 
-export type DshDaemonErrorCode = 'stopped' | 'start-lock' | 'spawn' | 'start-timeout';
+type DshDaemonErrorCode = 'stopped' | 'start-lock' | 'spawn' | 'start-timeout';
 
 /** User-facing daemon failure; the bridge renders `message` in the chat card. */
 export class DshDaemonError extends Error {

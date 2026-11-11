@@ -33,20 +33,7 @@ export type PiRpcCommand =
 // Responses (server → client)
 // =============================================================================
 
-/**
- * get_state 的完整返回体。桥只读 sessionId，其余字段照上游 schema 保留：当前没有
- * consumer 是有意为之（静态扫描报的"零引用导出类型"即指此处），别据此删除。
- */
-export interface PiRpcGetStateData {
-  model?: unknown;
-  sessionId: string;
-  sessionFile?: string;
-  isStreaming?: boolean;
-  isCompacting?: boolean;
-  [key: string]: unknown;
-}
-
-export interface PiRpcSuccessResponse {
+interface PiRpcSuccessResponse {
   id?: string | number;
   type: 'response';
   command: string;
@@ -54,7 +41,7 @@ export interface PiRpcSuccessResponse {
   data?: unknown;
 }
 
-export interface PiRpcErrorResponse {
+interface PiRpcErrorResponse {
   id?: string | number;
   type: 'response';
   command: string;
@@ -68,18 +55,18 @@ export type PiRpcResponse = PiRpcSuccessResponse | PiRpcErrorResponse;
 // Events (server → client)
 // =============================================================================
 
-export interface PiRpcSessionEvent {
+interface PiRpcSessionEvent {
   type: 'session';
   id: string;
   cwd: string;
   model?: string;
 }
 
-export interface PiRpcAgentEvent {
+interface PiRpcAgentEvent {
   type: 'agent_start' | 'agent_end' | 'agent_settled';
 }
 
-export interface PiRpcTurnEvent {
+interface PiRpcTurnEvent {
   type: 'turn_start' | 'turn_end';
   message?: { usage?: PiRpcUsage };
 }

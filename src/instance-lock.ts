@@ -85,7 +85,7 @@ export type LockIdentityVerifier = (
   expectedBinary: string,
 ) => Promise<IdentityVerdict>;
 
-export interface InstanceLockOptions {
+interface InstanceLockOptions {
   /**
    * 注入身份判定（测试用）。缺省走真实查询；win32 上一次查询要拉起
    * PowerShell（冷启动约 1s），但只在「锁文件已存在」（陈旧锁/取锁竞态）

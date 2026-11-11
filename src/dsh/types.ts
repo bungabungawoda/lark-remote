@@ -38,7 +38,7 @@ export interface DshTokenUsage {
 }
 
 /** Projection block returned by session/list / session/projections / follow. */
-export interface DshProjections {
+interface DshProjections {
   kind?: 'cached' | 'sequenced';
   asOfSeq: number;
   values: {
@@ -96,7 +96,7 @@ export interface DshProjectionSnapshot {
 export type DshOpenTurnState = 'open' | 'closed' | 'unknown';
 
 /** session/page → value.records[]. */
-export interface DshPageRecord {
+interface DshPageRecord {
   event: DshSessionEvent;
   view?: unknown;
 }
@@ -108,7 +108,7 @@ export interface DshSessionPageValue {
 }
 
 /** One model entry inside a provider group (session/modelCatalog / session/selectModel groups[].models[]). */
-export interface DshCatalogModel {
+interface DshCatalogModel {
   id: string;
   name: string;
   description?: string;
@@ -116,7 +116,7 @@ export interface DshCatalogModel {
 }
 
 /** One provider group of the model catalog (session/modelCatalog groups[]). */
-export interface DshModelGroup {
+interface DshModelGroup {
   id: string;
   name: string;
   models: DshCatalogModel[];
@@ -138,7 +138,7 @@ export interface DshModelSelection {
 }
 
 /** One preset row of agentPresets/list. */
-export interface DshPresetEntry {
+interface DshPresetEntry {
   id: string;
   trust: 'system' | 'user';
   isDefault: boolean;
@@ -155,7 +155,7 @@ export interface DshPresetListValue {
 }
 
 /** One permission preset from `permissionPresets/catalog`. */
-export interface DshPermissionPresetOption {
+interface DshPermissionPresetOption {
   value: string;
   name: string;
   description?: string;
@@ -170,7 +170,7 @@ export interface DshPermissionCatalogValue {
 }
 
 /** One durable event record inside a follow snapshot / event frame. */
-export interface DshFollowRecord {
+interface DshFollowRecord {
   type: 'event';
   event: DshSessionEvent;
 }
@@ -204,7 +204,7 @@ export interface DshAssistantStreamFrame {
 }
 
 /** First item of the Gateway-owned `$events` stream. */
-export interface DshRemoteEventReadyFrame {
+interface DshRemoteEventReadyFrame {
   type: 'ready';
   clientId: string;
   host: { home: string };
@@ -220,13 +220,13 @@ export interface DshRemoteEventWaterfallFrame {
 }
 
 /** Cancellation of a previously delivered waterfall. */
-export interface DshRemoteEventCancelFrame {
+interface DshRemoteEventCancelFrame {
   type: 'cancel';
   eventId: string;
 }
 
 /** Ordinary forwarded notification (not used by the DSH approval path). */
-export interface DshRemoteEventEmitFrame {
+interface DshRemoteEventEmitFrame {
   type: 'emit';
   event: string;
   args: unknown[];

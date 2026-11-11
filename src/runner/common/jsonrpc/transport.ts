@@ -35,7 +35,7 @@ const MAX_LINE_BYTES = 10 * 1024 * 1024;
 /** Max bytes retained from stderr for diagnostics (64KB). */
 const MAX_STDERR_BYTES = 64 * 1024;
 
-export interface TransportEvents {
+interface TransportEvents {
   onMessage(msg: unknown): void;
   onClose(reason: string): void;
 }

@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { ClaudeRunner } from './index.js';
-import { PiRpcRunner } from './pi/index.js';
+import { PiRpcRunner } from './pi/rpc/runner.js';
 import type { AgentSessionReader } from '../session-contract.js';
 import { ClaudeSessionReader } from '../session/claude/index.js';
 

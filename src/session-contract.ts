@@ -120,7 +120,7 @@ export interface SessionSummary {
  * 只有把压缩写成 wire 状态机的 agent 能提供，见
  * {@link AgentSessionReader.readCompactionState}。
  */
-export interface CompactionState {
+interface CompactionState {
   inFlight: boolean;
   /** 在途 begin 的 time（epoch ms）。 */
   inFlightSince?: number;

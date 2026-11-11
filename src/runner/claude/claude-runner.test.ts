@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { ClaudeRunner } from './index.js';
+import { ClaudeRunner } from './runner.js';
 import { pidFileSuffix } from '../common/spawning-runner.js';
 import { prependPath, restorePath, writeMockBin } from '../../../tests/lib/path-mock.js';
 import type { AgentEvent } from '../types.js';

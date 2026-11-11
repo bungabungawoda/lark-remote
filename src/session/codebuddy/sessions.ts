@@ -44,11 +44,6 @@ import {
   type CodebuddyUsageSample,
 } from './usage-log.js';
 
-export interface CodebuddyReaderOptions {
-  /** CodeBuddy 配置根目录；缺省 `~/.codebuddy`。 */
-  configDir?: string;
-}
-
 export function codebuddyProjectsDir(configDir?: string): string {
   return path.join(resolveCodebuddyConfigDir(configDir), 'projects');
 }
@@ -70,7 +65,7 @@ function projectDirForCwd(cwd: string, configDir?: string): string {
 }
 
 /** content[] 里 input_text 优先于 output_text，取首个非空 text。 */
-export function textFromContent(content: unknown[]): string | undefined {
+function textFromContent(content: unknown[]): string | undefined {
   for (const wantType of ['input_text', 'output_text']) {
     for (const part of content) {
       const p = part as { type?: unknown; text?: unknown };
@@ -141,7 +136,7 @@ function extractSummaryLine(filePath: string): string {
  * errno 分别 throwSessionListError / debug 留痕。dir/cwd 入参、AgentSession[]
  * 出参明确，便于 fixture 直测。
  */
-export function collectSessionEntries(dir: string, cwd: string): AgentSession[] {
+function collectSessionEntries(dir: string, cwd: string): AgentSession[] {
   let entries: string[];
   try {
     entries = fs.readdirSync(dir);
@@ -315,7 +310,7 @@ interface CodebuddyScan {
 }
 
 /** scanRows 逐行累积的标题状态（纯数据，供 collectRowTitle 直测）。 */
-export interface CodebuddyTitleState {
+interface CodebuddyTitleState {
   tailTitle: string | undefined;
   firstTitle: string | undefined;
   aiTitle: string | undefined;
@@ -326,7 +321,7 @@ export interface CodebuddyTitleState {
  * user 行在尚无 firstTitle 时兜底；ai-title 行取最后一条。turn 边界
  * tailStart 由主循环按同一 isRealUserRow 判定记录，不在这里改。
  */
-export function collectRowTitle(row: Record<string, unknown>, state: CodebuddyTitleState): void {
+function collectRowTitle(row: Record<string, unknown>, state: CodebuddyTitleState): void {
   if (isRealUserRow(row)) {
     const text = textFromRow(row);
     // tail 从末条真人 user 行开始，「tail 内首条 user 文本」= 末条真人
@@ -347,7 +342,7 @@ export function collectRowTitle(row: Record<string, unknown>, state: CodebuddyTi
  * 文件）无法划分 turn，回退末条采样（与 claude/codex「无 turn 标记退回末条」
  * 一致），不把整份文件当成一轮。
  */
-export function summarizeTurnFlow(
+function summarizeTurnFlow(
   samples: Array<{ turn: number; sample: CodebuddyUsageSample }>,
   tailStart: number,
   latest: CodebuddyUsageSample | undefined,

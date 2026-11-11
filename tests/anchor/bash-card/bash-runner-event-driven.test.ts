@@ -44,7 +44,7 @@ vi.mock('../../../src/platform/spawn.js', () => ({
   spawnProcess: mockSpawn,
 }));
 
-import { BashProcessRunner } from '../../../src/runner/bash/index.js';
+import { BashProcessRunner } from '../../../src/runner/bash/runner.js';
 import { createMockProc, emitExit } from '../../../tests/lib/mock-process.js';
 
 /**

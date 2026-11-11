@@ -9,7 +9,7 @@ const { gate } = vi.hoisted(() => ({
   gate: { release: undefined as undefined | (() => void) },
 }));
 
-vi.mock('../runner/bash/index.js', () => ({
+vi.mock('../runner/bash/runner.js', () => ({
   BashProcessRunner: class {
     async *run() {
       yield { type: 'stdout', content: 'partial output' };

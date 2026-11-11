@@ -26,7 +26,7 @@
  */
 
 import type { AgentSessionReader } from '../../../session-contract.js';
-import type { AgentStatusInfo, SpawnOptions, UserQuestion } from '../../types.js';
+import type { AgentStatusInfo, SpawnOptions } from '../../types.js';
 import {
   ConnectionManager,
   type ConnectionManagerOptions,
@@ -43,7 +43,7 @@ import {
 } from '../../common/acp/protocol-types.js';
 import { QODER_CLIENT_CAPABILITIES } from '../../../acp-protocol.js';
 import type { AcpApprovalKinds, AcpPendingApproval } from '../../common/acp/acp-approval.js';
-import { mapAnswersByIndex } from '../../question-common.js';
+import { encodeAnswersByIndex } from '../../question-common.js';
 import { normalizeQoderPermissionMode } from '../../../config/index.js';
 import { getLogger } from '../../../logger/index.js';
 import { BaseAcpRunner } from '../../common/acp/base-acp-runner.js';
@@ -69,7 +69,7 @@ export interface QoderAcpRunnerOptions {
 }
 
 /** ACP 标准审批 option kind（qoder 未真机验证，与 mock-acp-server 同形）。 */
-export const QODER_APPROVAL_KINDS: AcpApprovalKinds = {
+const QODER_APPROVAL_KINDS: AcpApprovalKinds = {
   accept: ['allow_once', 'allow_always'],
   acceptForSession: ['allow_always'],
   decline: ['reject_once', 'reject'],
@@ -105,27 +105,6 @@ export function qoderAcpSpawnArgs(opts: {
 }
 
 /** elicitation form：{问题文本: 值} → 按问题顺序展开的 q0..qn content。 */
-function qoderElicitationContent(
-  questions: UserQuestion[],
-  answers: Record<string, string | string[]>,
-): Record<string, string | string[]> {
-  const byIndex = mapAnswersByIndex(questions, answers);
-  const content: Record<string, string | string[]> = {};
-  for (let i = 0; i < questions.length; i++) {
-    const value = byIndex[i];
-    if (value === undefined) continue;
-    if (questions[i]!.multiSelect) {
-      const values = (Array.isArray(value) ? value : [value]).filter(
-        (v): v is string => typeof v === 'string' && v.length > 0,
-      );
-      if (values.length > 0) content[`q${i}`] = values;
-    } else {
-      const single = Array.isArray(value) ? value[0] : value;
-      if (typeof single === 'string' && single.length > 0) content[`q${i}`] = single;
-    }
-  }
-  return content;
-}
 
 /**
  * 提问回编（Qoder elicitation form）：answer → `{action:'accept',
@@ -142,7 +121,7 @@ function qoderElicitationResponse(
       (response as { answers?: Record<string, string | string[]> } | null)?.answers ?? {};
     return {
       action: 'accept',
-      content: qoderElicitationContent(pending.view.questions ?? [], answers),
+      content: encodeAnswersByIndex(pending.view.questions ?? [], answers, (i) => `q${i}`),
     };
   }
   return { action: action === 'decline' ? 'decline' : 'cancel' };

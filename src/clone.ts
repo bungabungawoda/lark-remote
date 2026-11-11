@@ -81,7 +81,7 @@ export interface CloneContext {
 }
 
 /** clone 流程依赖的 connector 发送面（测试用 stub 结构化满足）。 */
-export interface CloneConnector {
+interface CloneConnector {
   sendWithRetry(
     chatId: string,
     input: { text: string } | { markdown: string } | { card: object },
@@ -127,7 +127,7 @@ function spawnDetachedCloneBridge(targetDir: string): number | undefined {
   return pid ?? undefined;
 }
 
-export interface CloneSessionOptions {
+interface CloneSessionOptions {
   connector: CloneConnector;
   /** 当前实例的 config.yaml 路径（配置复制源）。 */
   configPath: string;

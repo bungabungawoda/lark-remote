@@ -28,7 +28,7 @@ import { PiRpcClient } from './client.js';
 import { PiRpcTranslator, type PiRpcTranslatorEvent } from './translator.js';
 import type { PiRpcEvent } from './protocol-types.js';
 
-export interface PiRpcRunnerOptions {
+interface PiRpcRunnerOptions {
   /** LLM provider, e.g. 'Volcano'. */
   provider?: string;
   /** Model id or alias, e.g. 'glm-5.2'. */

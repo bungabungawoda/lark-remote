@@ -67,7 +67,7 @@ import { CODEBUDDY_CLIENT_CAPABILITIES } from '../acp-protocol.js';
 import { readCodebuddyAccountModel } from './codebuddy-model-state.js';
 
 /** 目录里的一个模型（真机形状：modelId/name/_meta.maxInputTokens/effortOptions）。 */
-export interface CodebuddyCatalogModel {
+interface CodebuddyCatalogModel {
   id: string;
   name: string;
   maxInputTokens?: number;
@@ -82,7 +82,7 @@ export interface CodebuddyCatalogModel {
 }
 
 /** session/new 下发的配置面子集（桥接关心的两张表）。 */
-export interface CodebuddyCatalog {
+interface CodebuddyCatalog {
   models: CodebuddyCatalogModel[];
   currentModelId?: string;
   thoughtLevels: Array<{ value: string; name: string }>;
@@ -120,8 +120,8 @@ const PROBE_TIMEOUT_MS = 30_000;
 export const CODEBUDDY_ACP_ARGS = ['--acp', '--serve', '--port', '0'] as const;
 
 /** 区域取值（CODEBUDDY_INTERNET_ENVIRONMENT 的两种口径）。 */
-export const CODEBUDDY_REGIONS = ['internal', 'external'] as const;
-export type CodebuddyRegion = (typeof CODEBUDDY_REGIONS)[number];
+const CODEBUDDY_REGIONS = ['internal', 'external'] as const;
+type CodebuddyRegion = (typeof CODEBUDDY_REGIONS)[number];
 const REGION_ENV_KEY = 'CODEBUDDY_INTERNET_ENVIRONMENT';
 const PRODUCT_CONFIG_PATH_KEY = 'ACC_PRODUCT_CONFIG_PATH';
 const PRODUCT_CONFIG_INLINE_KEYS = [
@@ -131,8 +131,8 @@ const PRODUCT_CONFIG_INLINE_KEYS = [
 ] as const;
 
 /** 宿主/V3 已声明的区域（不 spawn、不联网）。 */
-export type CodebuddyRegionSource = 'v3-config' | 'host-env' | 'workbuddy-cache';
-export interface CodebuddyRegionSignal {
+type CodebuddyRegionSource = 'v3-config' | 'host-env' | 'workbuddy-cache';
+interface CodebuddyRegionSignal {
   region: CodebuddyRegion;
   source: CodebuddyRegionSource;
 }
@@ -308,7 +308,7 @@ const REGION_DETECT_FAILURE_BACKOFF_MS = 60_000;
 let lastRegionDetectFailureAt = 0;
 
 /** 探针 env override（与 runner 侧 `agents.codebuddy.env` 同口径）。 */
-export type CodebuddyCatalogEnv = Record<string, string | undefined>;
+type CodebuddyCatalogEnv = Record<string, string | undefined>;
 
 /**
  * 缓存身份指纹：只编码显式的 env override。进程重启会重置整块缓存，
@@ -364,7 +364,7 @@ export function loadCodebuddyCatalog(): CodebuddyCatalog | null {
  * ——它可能把 `lastRegionDetectFailureAt` 设上退避，也可能让下一轮探针复用在途
  * 结果，断言（探针次数）就变成机器负载相关。最多排 8 轮，避免异常情况下挂住。
  */
-export async function drainCodebuddyProbes(): Promise<void> {
+export async function _drainCodebuddyProbesForTest(): Promise<void> {
   for (let i = 0; i < 8; i++) {
     const pending: Promise<unknown>[] = [];
     if (catalogRefreshInFlight) pending.push(catalogRefreshInFlight.promise);
@@ -583,7 +583,11 @@ async function probeOnce(
       clearTimeout(timer);
       void terminator
         .stop(proc, { immediate: true })
-        .catch(() => {})
+        .catch((err) => {
+          // 杀探针失败（如 win32 句柄占用重试耗尽）意味着探针进程可能残留，
+          // 不能无声——否则泄漏无痕（probe 本身的结果另走 warn，与此无关）。
+          logger.debug(`[codebuddy-catalog] probe terminator.stop failed: ${String(err)}`);
+        })
         .finally(() => {
           if (!value) {
             logger.warn(
@@ -704,10 +708,7 @@ export function refreshCodebuddyCatalog(
  * 后台预热（fire-and-forget；同身份失败保留上次成功目录，从未成功时落
  * negative cache，卡片路径优雅回退）。env 必须与 runner 侧同一份配置。
  */
-export function warmCodebuddyCatalogCache(
-  env: CodebuddyCatalogEnv = {},
-  binary = 'codebuddy',
-): void {
+function warmCodebuddyCatalogCache(env: CodebuddyCatalogEnv = {}, binary = 'codebuddy'): void {
   void refreshCodebuddyCatalog(binary, PROBE_TIMEOUT_MS, env).catch(() => {});
 }
 
@@ -755,7 +756,7 @@ export function pickWinningRegion(
 }
 
 /** 探测胜出后把目录写回缓存（同身份 envKey），避免再 spawn 一次探针。 */
-export function primeCodebuddyCatalog(catalog: CodebuddyCatalog, env: CodebuddyCatalogEnv): void {
+function primeCodebuddyCatalog(catalog: CodebuddyCatalog, env: CodebuddyCatalogEnv): void {
   catalogCache = {
     result: catalog,
     timestamp: Date.now(),
@@ -853,7 +854,7 @@ export function scheduleCodebuddyRegionRedetect(
   fire();
 }
 
-export interface DetectCodebuddyRegionOptions {
+interface DetectCodebuddyRegionOptions {
   binary?: string;
   timeoutMs?: number;
   configuredEnv?: CodebuddyCatalogEnv;
@@ -948,7 +949,7 @@ export async function detectCodebuddyRegion(
 }
 
 /** `/config` 打开时的目录刷新结果。 */
-export interface CodebuddyConfigRefresh {
+interface CodebuddyConfigRefresh {
   catalog: CodebuddyCatalog | null;
   /** 登录态/区域可能已变：调用方应丢弃持久 sessionId 与缓存 runner。 */
   identityChanged: boolean;

@@ -22,7 +22,7 @@ import {
   loadCodexCatalogModelsAsync,
   warmCodexCatalogCache,
   getCodexCatalogModels,
-  invalidateCodexBundledCache,
+  _invalidateCodexBundledCacheForTest,
   _clearCodexCatalogInFlightForTest,
 } from './codex-config.js';
 
@@ -64,7 +64,7 @@ beforeEach(() => {
   mockSpawnProcess.mockReset();
   mockSpawnSync.mockReset();
   mockLogger.warn.mockReset();
-  invalidateCodexBundledCache();
+  _invalidateCodexBundledCacheForTest();
   _clearCodexCatalogInFlightForTest();
 });
 

@@ -11,7 +11,7 @@
 
 import type { ApprovalRequestedEvent, ApprovalView, UserQuestion } from './types.js';
 
-export interface QuestionEventOptions {
+interface QuestionEventOptions {
   /** Per-request 审批超时覆盖（Codex autoResolutionMs）。 */
   timeoutMs?: number;
 }
@@ -55,4 +55,32 @@ export function mapAnswersByIndex(
   answers: Record<string, string | string[]>,
 ): Array<string | string[] | undefined> {
   return questions.map((q) => answers[q.question]);
+}
+
+/**
+ * 按问题顺序把答案编码成协议载荷，键名由 keyFor 决定（各 agent 协议不同）：
+ * 多选题值过滤空串后回数组（全空则整题跳过），单选题取首个字符串。
+ * 未作答（undefined）与空值整题跳过，不产生空键。
+ */
+export function encodeAnswersByIndex(
+  questions: UserQuestion[],
+  answers: Record<string, string | string[]>,
+  keyFor: (index: number) => string,
+): Record<string, string | string[]> {
+  const byIndex = mapAnswersByIndex(questions, answers);
+  const result: Record<string, string | string[]> = {};
+  for (let i = 0; i < questions.length; i++) {
+    const value = byIndex[i];
+    if (value === undefined) continue;
+    if (questions[i]!.multiSelect) {
+      const values = (Array.isArray(value) ? value : [value]).filter(
+        (v): v is string => typeof v === 'string' && v.length > 0,
+      );
+      if (values.length > 0) result[keyFor(i)] = values;
+    } else {
+      const single = Array.isArray(value) ? value[0] : value;
+      if (typeof single === 'string' && single.length > 0) result[keyFor(i)] = single;
+    }
+  }
+  return result;
 }

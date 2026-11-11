@@ -72,7 +72,7 @@ export const MAX_CARD_ELEMENTS = 90;
  * 边界正好落在 200：`tagged <= 200` 通过，`>= 201` 报 `11310 element exceeds
  * the limit`。字节数不是判据（同形状 30KB 文本通过，13KB 的配置卡被拒）。
  */
-export const FEISHU_MAX_CARD_COMPONENTS = 200;
+const FEISHU_MAX_CARD_COMPONENTS = 200;
 
 /**
  * 渲染前的保守组件预算（相对实测 200 留 5% 余量）。
@@ -80,7 +80,7 @@ export const FEISHU_MAX_CARD_COMPONENTS = 200;
  * 必须高于「纯 div 卡片按 `MAX_CARD_ELEMENTS` 裁到 90」时的组件数（90 个 div +
  * 90 个文本 + header 标题 = 181），否则元素预算与组件预算会互相打架。
  */
-export const MAX_CARD_COMPONENTS = 190;
+export const MAX_CARD_COMPONENTS = FEISHU_MAX_CARD_COMPONENTS - 10; // 实测 200 留 5% 余量
 
 /**
  * 卡片递归的 `elements` 数组成员数（`columns` 不计数）——与飞书实测边界对齐。

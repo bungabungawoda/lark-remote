@@ -33,7 +33,7 @@ vi.mock('../../../src/platform/spawn.js', () => ({
   spawnProcess: mockSpawn,
 }));
 
-import { BashProcessRunner } from '../../../src/runner/bash/index.js';
+import { BashProcessRunner } from '../../../src/runner/bash/runner.js';
 
 /**
  * Fake ChildProcess：stdout/stderr 用真实 PassThrough（有 isPaused/pause/resume 语义），

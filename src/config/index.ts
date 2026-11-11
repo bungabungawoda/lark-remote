@@ -358,7 +358,7 @@ const QODER_PERMISSION_MODE_LEGACY: Record<string, QoderPermissionMode> = {
   plan: 'default',
 };
 
-export type QoderPermissionMode = (typeof QODER_PERMISSION_MODES)[number];
+type QoderPermissionMode = (typeof QODER_PERMISSION_MODES)[number];
 
 /** 旧 snake_case 值 → ACP modeId；已是 ACP 词汇原样返回（未知值兜底 default）。 */
 export function normalizeQoderPermissionMode(value: string): QoderPermissionMode {
@@ -777,8 +777,8 @@ type OpencodeConfig = z.infer<typeof OpencodeConfigSchema>;
 type PiConfig = z.infer<typeof PiConfigSchema>;
 type KimiConfig = z.infer<typeof KimiConfigSchema>;
 export type DshConfig = z.infer<typeof DshConfigSchema>;
-export type CodebuddyConfig = z.infer<typeof CodebuddyConfigSchema>;
-export type QoderConfig = z.infer<typeof QoderConfigSchema>;
+type CodebuddyConfig = z.infer<typeof CodebuddyConfigSchema>;
+type QoderConfig = z.infer<typeof QoderConfigSchema>;
 
 /** Get configuration for a specific agent. Falls back to defaults if not configured. */
 export function getAgentConfig(config: AppConfig, kind: 'claude'): ClaudeConfig;

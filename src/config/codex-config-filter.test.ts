@@ -9,7 +9,10 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { loadCodexConfig, invalidateCodexBundledCache } from '../../src/config/codex-config.js';
+import {
+  loadCodexConfig,
+  _invalidateCodexBundledCacheForTest,
+} from '../../src/config/codex-config.js';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -28,7 +31,7 @@ describe('codex-config model filtering', () => {
 
   beforeEach(() => {
     fs.mkdirSync(testCodexHome, { recursive: true });
-    invalidateCodexBundledCache();
+    _invalidateCodexBundledCacheForTest();
   });
 
   afterEach(() => {

@@ -40,7 +40,7 @@ const { MockBashProcessRunner } = vi.hoisted(() => {
   return { MockBashProcessRunner };
 });
 
-vi.mock('../../../src/runner/bash/index.js', () => ({
+vi.mock('../../../src/runner/bash/runner.js', () => ({
   BashProcessRunner: MockBashProcessRunner,
 }));
 

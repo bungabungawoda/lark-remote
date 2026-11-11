@@ -29,7 +29,7 @@ export function dshInflightPath(configDir: string): string {
   return path.join(configDir, 'dsh-inflight.json');
 }
 
-export interface DshInflightEntry {
+interface DshInflightEntry {
   sessionId: string;
   promptRequestId: string;
   baseUrl: string;
@@ -101,7 +101,7 @@ export class DshInflightStore {
   }
 }
 
-export interface DshInflightReconcileOptions {
+interface DshInflightReconcileOptions {
   store: DshInflightStore;
   client: Pick<DshClient, 'baseUrl' | 'findPendingPrompt' | 'removeQueuedPrompt' | 'openTurnState'>;
   /** Owner notification; omitted when no p2p recipient is known yet. */
@@ -109,7 +109,7 @@ export interface DshInflightReconcileOptions {
   timeoutMs?: number;
 }
 
-export interface DshInflightReconcileResult {
+interface DshInflightReconcileResult {
   /** Pending prompts removed from the host inbox. */
   removed: number;
   /** Sessions that still reported an open turn (or an unreadable state). */

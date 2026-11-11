@@ -15,9 +15,9 @@ import type { Terminator } from './terminator.js';
 import type { TerminateResult } from './types.js';
 
 export type LogLevel = 'debug' | 'info' | 'warn';
-export type TerminatorLogger = (level: LogLevel, message: string) => void;
+type TerminatorLogger = (level: LogLevel, message: string) => void;
 
-export interface PosixTerminatorDeps {
+interface PosixTerminatorDeps {
   /** 优雅等待窗口（毫秒），对应现状 stopGraceMs */
   graceMs: number;
   /** 日志注入（测试用）；默认 logger 单例 */

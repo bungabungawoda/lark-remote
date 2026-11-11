@@ -32,15 +32,14 @@ import type {
   ToolCallUpdateEvent,
   UsageUpdateEvent,
 } from '../../common/acp/protocol-types.js';
-import {
-  deriveAcpAvailableDecisions,
-  truncateWithEllipsis,
-} from '../../common/acp/acp-approval.js';
+import { deriveAcpAvailableDecisions } from '../../common/acp/acp-approval.js';
 import { makeQuestionApprovalEvent } from '../../question-common.js';
 import { getLogger } from '../../../logger/index.js';
 import {
-  acpStringify,
+  approvalCommandFrom,
+  approvalReasonFrom,
   BaseAcpTranslator,
+  textFromRawOutput,
   type AcpTranslatorEvent,
 } from '../../common/acp/base-translator.js';
 
@@ -144,13 +143,7 @@ export class CodebuddyAcpTranslator extends BaseAcpTranslator {
    * 对象整个塞进卡片——取 `.text`；字符串原样（kimi 语义兜底）。
    */
   protected override extractToolResultContent(event: ToolCallUpdateEvent): unknown {
-    const rawOutput = event.rawOutput;
-    if (rawOutput && typeof rawOutput === 'object') {
-      const text = (rawOutput as { text?: unknown }).text;
-      if (typeof text === 'string') return text;
-    }
-    if (typeof rawOutput === 'string') return rawOutput;
-    return '';
+    return textFromRawOutput(event.rawOutput);
   }
 
   /**
@@ -180,7 +173,7 @@ export class CodebuddyAcpTranslator extends BaseAcpTranslator {
 }
 
 /** 一 turn 内逐模型请求累加的 flow（translator 按 turn 新建 → 实例即 turn 生命周期）。 */
-export interface TurnFlow {
+interface TurnFlow {
   input: number;
   output: number;
   cacheRead: number;
@@ -188,33 +181,10 @@ export interface TurnFlow {
 }
 
 /**
- * E7：审批卡片 command 的候选回退链 + 300 字截断（保留原截断与长度）。
- * 真机形状：Bash rawInput={command,description}、Read rawInput={file_path,limit}；
- * 卡片 command 列优先真实命令/文件路径（title 是带反引号的 shell 呈现串）。
+ * E7：审批卡片 command / reason 的候选回退链实现单源于 base-translator；
+ * 这里保留 re-export 维持 codebuddy 测试与调用方的导入路径。
  */
-export function approvalCommandFrom(
-  rawInput: Record<string, unknown>,
-  title: string | undefined,
-  toolName: string | undefined,
-): string | undefined {
-  const command =
-    (typeof rawInput.command === 'string' && rawInput.command) ||
-    (typeof rawInput.file_path === 'string' && rawInput.file_path) ||
-    title ||
-    toolName ||
-    undefined;
-  return command ? truncateWithEllipsis(command, 300) : undefined;
-}
-
-/** E7：reason 优先 description，否则 rawInput 序列化后截断到 200 兜底；最终统一再截断到 200。 */
-export function approvalReasonFrom(rawInput: Record<string, unknown>): string | undefined {
-  const reason =
-    (typeof rawInput.description === 'string' && rawInput.description) ||
-    (Object.keys(rawInput).length > 0
-      ? truncateWithEllipsis(acpStringify(rawInput), 200)
-      : undefined);
-  return reason ? truncateWithEllipsis(reason, 200) : undefined;
-}
+export { approvalCommandFrom, approvalReasonFrom } from '../../common/acp/base-translator.js';
 
 /**
  * E8：`_meta.usage`（OpenAI 风格）归一化成本 turn 一条 flow。口径：input =

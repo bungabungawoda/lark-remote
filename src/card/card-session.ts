@@ -14,7 +14,7 @@ export interface CardChannel {
   updateCard(messageId: string, card: object): Promise<void>;
 }
 
-export type StreamSettleResult = 'streamed' | 'updated' | 'unsent';
+type StreamSettleResult = 'streamed' | 'updated' | 'unsent';
 
 /**
  * Base class for single-card streaming sessions (RunCardSession, BashCardSession).

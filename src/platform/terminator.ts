@@ -32,7 +32,7 @@ export interface Terminator {
   cleanupOnExit(proc: ChildProcess): void;
 }
 
-export interface TerminatorDeps {
+interface TerminatorDeps {
   /** 优雅等待窗口（毫秒）；win32 为协议停止后的等待，posix 为 SIGTERM→SIGKILL 的 grace */
   graceMs: number;
   /** 平台注入（测试用）；默认当前宿主平台 */

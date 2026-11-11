@@ -19,9 +19,9 @@ import type { TerminateResult } from './types.js';
 export type SpawnLike = (file: string, args: string[], opts?: SpawnOptions) => ChildProcess;
 
 /** 等待 graceMs 与 exit 事件竞速；返回 true 表示等待结束后进程仍存活。 */
-export type WaitForExit = (proc: ChildProcess, ms: number) => Promise<boolean>;
+type WaitForExit = (proc: ChildProcess, ms: number) => Promise<boolean>;
 
-export interface Win32TerminatorDeps {
+interface Win32TerminatorDeps {
   /** 协议停止后的优雅等待窗口（毫秒），对应 posix 的 stopGraceMs */
   graceMs: number;
   /** 当前 run 所属 agent：用于查协议停止通道；缺省视为无通道 */

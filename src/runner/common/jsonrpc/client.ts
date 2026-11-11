@@ -52,7 +52,7 @@ export class ConnectionLostError extends Error {
 // =============================================================================
 
 /** Minimal shape of a pending request entry shared by JSON-line RPC clients. */
-export interface RpcPendingEntry {
+interface RpcPendingEntry {
   timer: ReturnType<typeof setTimeout>;
   reject: (err: Error) => void;
 }
@@ -70,7 +70,7 @@ export function rejectAllPending<K, V extends RpcPendingEntry>(
 }
 
 /** Per-client inputs for the shared dispose sequence. */
-export interface RpcDisposeContext<K, V extends RpcPendingEntry> {
+interface RpcDisposeContext<K, V extends RpcPendingEntry> {
   alreadyDisposed: boolean;
   markDisposed(): void;
   pending: Map<K, V>;
@@ -83,7 +83,7 @@ export interface RpcDisposeContext<K, V extends RpcPendingEntry> {
  * disposed + not-ready, reject pending, and close the transport. The pi RPC
  * client reuses this; only the disposed error message differs per client.
  */
-export async function disposeRpcClient<K, V extends RpcPendingEntry>(
+async function disposeRpcClient<K, V extends RpcPendingEntry>(
   ctx: RpcDisposeContext<K, V>,
 ): Promise<void> {
   if (ctx.alreadyDisposed) return;
@@ -122,7 +122,7 @@ export function disposeRpcClientInstance<K, V extends RpcPendingEntry>(
 // Client Hooks
 // =============================================================================
 
-export interface ClientHooks {
+interface ClientHooks {
   onNotification(method: string, params: unknown): void;
   onServerRequest(id: number | string, method: string, params: unknown): void;
   onClose(): void;

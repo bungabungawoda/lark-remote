@@ -29,7 +29,6 @@
 import type { ApprovalView, UserQuestion } from '../../types.js';
 import { makeQuestionApprovalEvent } from '../../question-common.js';
 import {
-  ServerRequestMethod,
   type RequestPermissionParams,
   type ElicitationCreateParams,
   type ElicitationPropertySchema,
@@ -93,25 +92,7 @@ export class KimiAcpTranslator extends BaseAcpTranslator {
     // REPLACES the block in place (snapshot semantics). Emitting the full
     // text as assistant/text (delta semantics) made the reducer append the
     // full text to itself on every chunk — duplicated card output.
-    const key = 'text';
-    const prev = this.textByItem.get(key) ?? '';
-    const next = prev + event.content.text;
-    this.textByItem.set(key, next);
-
-    return [
-      {
-        type: 'turn_diff',
-        itemId: TEXT_ITEM_ID,
-        text: next,
-        threadId: sessionId,
-        turnId: this.currentTurnId,
-        timestamp: new Date().toISOString(),
-        // 卡片块锚点时间刷新为本次 diff 时间：'text' 是整轮累积流，工具间隙
-        // 仍会续写增量；首见时间（如 08:39）会让标题与 move-to-end 后的位置
-        // 看起来“乱序”。这里显式声明 diff 时间即块的最新写入时间。
-        refreshTimestamp: true,
-      },
-    ];
+    return this.appendTurnDiffSnapshot(TEXT_ITEM_ID, 'text', event.content.text, sessionId);
   }
 
   protected override handleAgentThoughtChunk(
@@ -121,22 +102,38 @@ export class KimiAcpTranslator extends BaseAcpTranslator {
     // Same delta→snapshot contract as handleAgentMessageChunk: accumulate
     // wire deltas and emit a full reasoning snapshot via turn_diff so the
     // reducer replaces the thinking block instead of appending.
-    const key = THINKING_ITEM_ID;
-    const prev = this.thinkingByItem.get(key) ?? '';
-    const next = prev + event.content.text;
-    this.thinkingByItem.set(key, next);
+    return this.appendTurnDiffSnapshot(
+      THINKING_ITEM_ID,
+      'reasoning',
+      event.content.text,
+      sessionId,
+    );
+  }
 
-    return [
-      {
-        type: 'turn_diff',
-        itemId: THINKING_ITEM_ID,
-        reasoning: next,
-        threadId: sessionId,
-        turnId: this.currentTurnId,
-        timestamp: new Date().toISOString(),
-        refreshTimestamp: true,
-      },
-    ];
+  /**
+   * delta→snapshot 公共机制（text / reasoning 两通道共用）：按 itemId 累积
+   * wire delta，emit 整段 turn_diff 快照（reducer 原地替换而非追加）。
+   * refreshTimestamp 把卡片块锚点刷新为本次 diff 时间——整轮累积流在工具
+   * 间隙仍会续写，首见时间会让标题与 move-to-end 后的位置看起来“乱序”。
+   */
+  private appendTurnDiffSnapshot(
+    itemId: string,
+    field: 'text' | 'reasoning',
+    delta: string,
+    sessionId: string,
+  ): AcpTranslatorEvent[] {
+    const store = field === 'text' ? this.textByItem : this.thinkingByItem;
+    const next = (store.get(itemId) ?? '') + delta;
+    store.set(itemId, next);
+    const base = {
+      type: 'turn_diff' as const,
+      itemId,
+      threadId: sessionId,
+      turnId: this.currentTurnId,
+      timestamp: new Date().toISOString(),
+      refreshTimestamp: true,
+    };
+    return [field === 'text' ? { ...base, text: next } : { ...base, reasoning: next }];
   }
 
   // =========================================================================
@@ -203,48 +200,18 @@ export class KimiAcpTranslator extends BaseAcpTranslator {
     return this.approvalRequestedEvents(requestId, params.sessionId, view);
   }
 
-  protected override handleOtherServerRequest(
-    requestId: number | string,
-    method: string,
-    params: unknown,
-  ): AcpTranslatorEvent[] {
-    if (method !== ServerRequestMethod.ELICITATION_CREATE) {
-      return [];
-    }
-    return this.handleElicitationCreate(requestId, params as ElicitationCreateParams);
-  }
-
   /**
-   * Kimi elicitation form：requestedSchema.properties 按顺序解析为 UserQuestion[]
-   * （type:array → 多选；oneOf/anyOf const → 选项 label；title → header??question）。
-   * 题面完整文本只在 form 级 message 里合并出现（逐字段 title 可能只是短 header），
-   * 因此 message 作为卡片概要行（view.intro）透传。
-   * form 会丢弃非声明选项值 → isOther=false（卡片隐藏自定义答案输入）。
+   * Kimi elicitation form 的属性解析：type:array → 多选；oneOf/anyOf const →
+   * 选项 label；title → header??question。form 会丢弃非声明选项值 →
+   * isOther=false（卡片隐藏自定义答案输入）。公共脚手架（顺序解析 / 逐题
+   * warn / form 级 message 作 view.intro 透传——题面完整文本只在 form 级
+   * message 里合并出现）在基类。
    */
-  private handleElicitationCreate(
+  protected override handleElicitationCreate(
     requestId: number | string,
     params: ElicitationCreateParams,
   ): AcpTranslatorEvent[] {
-    const properties = params.requestedSchema?.properties ?? {};
-    const questions: UserQuestion[] = [];
-    for (const [key, prop] of Object.entries(properties)) {
-      const q = elicitationPropertyToQuestion(prop);
-      if (!q) {
-        getLogger().warn(`[kimi-acp-translator] elicitation property skipped: key=${key}`);
-        continue;
-      }
-      questions.push(q);
-    }
-    if (questions.length === 0) {
-      // 无法解析 → 交还 runner 自动响应（不悬挂服务端）。
-      return [];
-    }
-    const message = params.message?.trim();
-    const single = questions.length === 1;
-    const intro = message && (!single || message !== questions[0]!.question) ? message : undefined;
-    const event = makeQuestionApprovalEvent(requestId, questions, params.sessionId);
-    if (intro) event.view.intro = intro;
-    return [event];
+    return this.buildElicitationQuestionEvent(requestId, params, elicitationPropertyToQuestion);
   }
 
   /**

@@ -8,7 +8,7 @@ import { withQuery } from './ls.js';
 
 export const WS_PAGE_SIZE = 5;
 
-export interface WsCommandDeps {
+interface WsCommandDeps {
   getCwd(userId: string): string | undefined;
   saveWorkspace(name: string, cwd: string): void;
   getWorkspace(name: string): string | undefined;

@@ -30,7 +30,7 @@ const MAX_FILE_NAME_BYTES = 240;
 /** 魔数检测读取的头部字节数（png/jpg/gif/webp/mp4/ogg 签名都在前 12 字节内）。 */
 const MAGIC_HEAD_BYTES = 12;
 
-export interface InboundMediaDeps {
+interface InboundMediaDeps {
   /** 解析用户 cwd（bridge.resolveCwd 注入，统一三份复制点）。 */
   resolveCwd: (userId: string) => string | undefined;
   /** 读取当前配置（活引用，随 /config 保存更新，避免启动快照过期）。 */

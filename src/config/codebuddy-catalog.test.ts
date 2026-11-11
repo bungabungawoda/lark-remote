@@ -15,7 +15,7 @@ import {
   resolveCodebuddyEnv,
   ensureCodebuddyRegion,
   scheduleCodebuddyRegionRedetect,
-  drainCodebuddyProbes,
+  _drainCodebuddyProbesForTest,
   CODEBUDDY_ACP_ARGS,
   readHostCodebuddyRegion,
   readCodebuddyProductConfigCacheRegion,
@@ -693,7 +693,7 @@ describe('refreshCodebuddyCatalog 探针 fixture', () => {
     expect(Date.now() - started).toBeLessThan(5_000);
     // 等后台那轮探测自然收尾：固定 sleep 在满负载回归里会等不够，残留的
     // in-flight 会让下一个用例少 spawn 一次（断言变成负载相关）。
-    await drainCodebuddyProbes();
+    await _drainCodebuddyProbesForTest();
   }, 20_000);
 
   it('开跑前屏障：显式配置区域时不探测', async () => {
@@ -931,7 +931,7 @@ describe('宿主/V3 区域前置判据与 ACP 启动参数', () => {
   });
 
   afterEach(async () => {
-    await drainCodebuddyProbes();
+    await _drainCodebuddyProbesForTest();
     restorePath(savedPath);
     rmRf(dir);
   });

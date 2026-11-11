@@ -37,7 +37,7 @@ interface ActiveBashRun {
  * 依赖显式注入（与 ApprovalActions / CompactLifecycle / JobWatchLifecycle
  * 同一模式）。
  */
-export interface BashRunLifecycleDeps {
+interface BashRunLifecycleDeps {
   connector: BridgeChannel;
   sessionStore: SessionStore;
   resolveCwd(userId: string): string | undefined;

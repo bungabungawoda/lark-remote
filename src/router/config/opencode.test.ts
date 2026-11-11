@@ -12,7 +12,7 @@ vi.mock('../../config/opencode-config.js', () => ({
       return [];
     },
   })),
-  invalidateOpencodeConfigCache: vi.fn(),
+  _invalidateOpencodeConfigCacheForTest: vi.fn(),
 }));
 
 function makeConfig(overrides?: Record<string, unknown>): AppConfig {

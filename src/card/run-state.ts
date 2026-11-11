@@ -63,7 +63,7 @@ export function isRunTerminal(terminal: RunTerminal): terminal is RunFinalTermin
 }
 
 /** 仍在推进的两个状态（`RunTerminal` 的非终态部分）。 */
-export type RunActiveTerminal = 'running' | 'finalizing';
+type RunActiveTerminal = 'running' | 'finalizing';
 
 /**
  * 该状态是否仍在推进（running 或 finalizing）。
@@ -78,7 +78,7 @@ export function isRunActive(terminal: RunTerminal): terminal is RunActiveTermina
 
 export type RunFooter = 'thinking' | 'tool_running' | 'streaming' | null;
 /** 中断来源（interrupted 终态的原因），供卡片如实归因。 */
-export type InterruptedReason = 'approval_timeout' | 'user_stop' | 'approval_cancelled';
+type InterruptedReason = 'approval_timeout' | 'user_stop' | 'approval_cancelled';
 type ToolStatus = 'running' | 'ok' | 'error';
 
 export interface ToolEntry {
@@ -151,7 +151,7 @@ export interface RunNotice {
   timestamp?: string;
 }
 
-export interface FinalAnswerState {
+interface FinalAnswerState {
   content: string;
   timestamp?: string;
   complete: boolean;

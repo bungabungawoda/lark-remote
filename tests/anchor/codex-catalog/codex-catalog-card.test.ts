@@ -13,7 +13,7 @@ import type { AppConfig } from '../../../src/config/index.js';
 import {
   getDefaultReasoningEffort,
   getReasoningEffortOptions,
-  invalidateCodexBundledCache,
+  _invalidateCodexBundledCacheForTest,
   isCodexCatalogMode,
   loadCodexConfig,
 } from '../../../src/config/codex-config.js';
@@ -120,7 +120,7 @@ let oldCodexHome: string | undefined;
 beforeEach(() => {
   mockSpawnSync.mockReset();
   mockLogger.warn.mockReset();
-  invalidateCodexBundledCache();
+  _invalidateCodexBundledCacheForTest();
   oldCodexHome = process.env.CODEX_HOME;
   tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-catalog-card-'));
   // 默认 fallback 环境（无 config.toml）→ bundled gpt-5.2。
@@ -137,7 +137,7 @@ afterEach(() => {
   }
   rmRf(fallbackHome);
   rmRf(tmpDir);
-  invalidateCodexBundledCache();
+  _invalidateCodexBundledCacheForTest();
 });
 
 /** 在 tmpDir 写 config.toml + models.json，并切到该 CODEX_HOME。 */
@@ -155,14 +155,14 @@ function useCatalog(catalog: string, opts: { providers?: boolean; catalogLine?: 
   ];
   fs.writeFileSync(path.join(tmpDir, 'config.toml'), lines.join('\n'));
   process.env.CODEX_HOME = tmpDir;
-  invalidateCodexBundledCache();
+  _invalidateCodexBundledCacheForTest();
   return modelsPath;
 }
 
 function useBrokenConfig(mockLine: string): void {
   fs.writeFileSync(path.join(tmpDir, 'config.toml'), mockLine);
   process.env.CODEX_HOME = tmpDir;
-  invalidateCodexBundledCache();
+  _invalidateCodexBundledCacheForTest();
 }
 
 function makeRouter(config: AppConfig, dir = tmpDir): CommandRouter {

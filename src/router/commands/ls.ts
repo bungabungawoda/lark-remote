@@ -9,7 +9,7 @@ import { pageSlice } from '../paging.js';
 
 export const LS_PAGE_SIZE = 30;
 
-export interface LsCommandOptions {
+interface LsCommandOptions {
   cwd?: string;
   offset?: number;
   rootDir?: string;

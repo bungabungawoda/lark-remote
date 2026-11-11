@@ -27,6 +27,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { readJsonlLines, findJsonlLine } from '../common/jsonl.js';
+import { isDirectoryPath } from '../../common/fs.js';
 import { STALE_MS } from '../common/constants.js';
 import { samePath } from '../../platform/path.js';
 import { paginate, capEvents } from '../common/pagination.js';
@@ -787,17 +788,17 @@ function walkRolloutFiles(sessionsDir: string): string[] {
   for (const year of years) {
     if (!/^\d{4}$/.test(year)) continue;
     const yearPath = path.join(sessionsDir, year);
-    if (!safeIsDir(yearPath)) continue;
+    if (!isDirectoryPath(yearPath)) continue;
 
     for (const month of safeReaddir(yearPath)) {
       if (!/^\d{2}$/.test(month)) continue;
       const monthPath = path.join(yearPath, month);
-      if (!safeIsDir(monthPath)) continue;
+      if (!isDirectoryPath(monthPath)) continue;
 
       for (const day of safeReaddir(monthPath)) {
         if (!/^\d{2}$/.test(day)) continue;
         const dayPath = path.join(monthPath, day);
-        if (!safeIsDir(dayPath)) continue;
+        if (!isDirectoryPath(dayPath)) continue;
 
         const files = safeReaddir(dayPath).filter(
           (f) => f.startsWith('rollout-') && f.endsWith('.jsonl'),
@@ -822,14 +823,6 @@ function safeReaddir(dir: string): string[] {
 }
 
 /** statSync 的竞态安全目录判定。 */
-function safeIsDir(p: string): boolean {
-  try {
-    return fs.statSync(p).isDirectory();
-  } catch {
-    return false;
-  }
-}
-
 /**
  * Lightweight session index for O(1) lookups by sessionId.
  *

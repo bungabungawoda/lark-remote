@@ -44,7 +44,7 @@ let opencodeConfigCache: {
 let opencodeConfigFailedAt: { binary: string; timestamp: number } | null = null;
 
 /** 清空缓存（仅供测试使用，生产代码无调用点） */
-export function invalidateOpencodeConfigCache(): void {
+export function _invalidateOpencodeConfigCacheForTest(): void {
   opencodeConfigCache = null;
   opencodeConfigFailedAt = null;
 }

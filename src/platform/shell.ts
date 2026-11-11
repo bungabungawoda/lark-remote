@@ -15,7 +15,7 @@ import { currentPlatform, isWin32 } from './select.js';
 import { resolveExecutable, type ResolveOptions, type LaunchSpec } from './command.js';
 import { spawnProcess } from './spawn.js';
 
-export type ShellKind = 'bash' | 'powershell' | 'cmd';
+type ShellKind = 'bash' | 'powershell' | 'cmd';
 
 /** 首 token 是这些名字时按「要一个 shell」处理（win32 上它们只能来自 Git Bash）。 */
 const SHELL_COMMANDS = new Set(['bash', 'sh', 'zsh', 'dash']);
@@ -72,7 +72,7 @@ export type SpawnLike = (
   opts?: SpawnOptions,
 ) => ChildProcess;
 
-export interface ShellBackendDeps {
+interface ShellBackendDeps {
   /** 平台注入（测试用）；默认当前宿主平台 */
   platform?: NodeJS.Platform;
   /** win32 下的后端选择：默认 bash（Git Bash） */

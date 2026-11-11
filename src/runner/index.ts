@@ -8,16 +8,16 @@
  * （共享工具由消费方直接 import `common/*` 具体模块，不走 barrel）
  */
 
-// Re-export AgentRunner 实现（从各 agent 目录）
-export { ClaudeRunner } from './claude/index.js';
-export { CodexAppServerRunner } from './codex/index.js';
-export { OpencodeAcpRunner } from './opencode/index.js';
-export { PiRpcRunner } from './pi/index.js';
-export { KimiAcpRunner } from './kimi/index.js';
-export { DshRunner } from './dsh/index.js';
-export { CodebuddyAcpRunner } from './codebuddy/index.js';
-export { QoderAcpRunner } from './qoder/index.js';
-export { BashProcessRunner, type BashRunner } from './bash/index.js';
+// Re-export AgentRunner 实现（从各 agent 目录直连具体模块，不经过 barrel）
+export { ClaudeRunner } from './claude/runner.js';
+export { CodexAppServerRunner } from './codex/app-server/runner.js';
+export { OpencodeAcpRunner } from './opencode/acp/runner.js';
+export { PiRpcRunner } from './pi/rpc/runner.js';
+export { KimiAcpRunner } from './kimi/acp/runner.js';
+export { DshRunner } from './dsh/runner.js';
+export { CodebuddyAcpRunner } from './codebuddy/acp/runner.js';
+export { QoderAcpRunner } from './qoder/acp/runner.js';
+export { BashProcessRunner, type BashRunner } from './bash/runner.js';
 
 // Re-export registry
 export { AgentRegistry } from './registry.js';

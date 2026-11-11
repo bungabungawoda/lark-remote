@@ -107,7 +107,7 @@ interface KimiTurnPromptEvent {
  * - `full_compaction.complete`：只有 `{type, time}`。
  * `messagesCompacted` 是死字段，真实 record 里不存在——禁止再写。
  */
-export interface KimiCompactionRecord {
+interface KimiCompactionRecord {
   type:
     | 'full_compaction.begin'
     | 'full_compaction.complete'
@@ -182,7 +182,7 @@ function parseCompactionLine(line: string): KimiCompactionRecord | undefined {
 }
 
 /** runCompact 轮询用的增量压缩记录追踪器（见 createCompactionRecordTracker）。 */
-export interface KimiCompactionRecordTracker {
+interface KimiCompactionRecordTracker {
   /** 首调返回全量历史，之后返回「历史 + 增量」的累积列表（同一数组引用）。 */
   records(): KimiCompactionRecord[];
 }
@@ -322,7 +322,7 @@ export function extractWorkDir(state: KimiSessionState): string | undefined {
 }
 
 /** Cwd guard result: verified / failed / unverifiable */
-export type CwdGuardResult = 'verified' | 'failed' | 'unverifiable';
+type CwdGuardResult = 'verified' | 'failed' | 'unverifiable';
 
 /**
  * Three-state cwd guard. Distinguishes:
@@ -356,7 +356,7 @@ function emptyKimiTotals(): KimiUsageTotals {
 }
 
 /** kimi 主 wire usage 扫描累积器结果（纯数据）。 */
-export interface KimiWireUsageScan {
+interface KimiWireUsageScan {
   /** 会话累计：主 wire 全部 usage.record 逐字段求和（子 agent 由调用方并入）。 */
   totals: KimiUsageTotals;
   /**

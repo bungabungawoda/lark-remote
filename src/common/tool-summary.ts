@@ -17,7 +17,7 @@ export const HEADER_SUMMARY_MAX = 80;
  * 工具别名 → 渲染类别。run 卡面板（`card/tool-render.ts`）与摘要
  * （本文件）共用这一张表，新增别名只改这里，避免两处 switch 漂移。
  */
-export type ToolKind =
+type ToolKind =
   'shell' | 'file' | 'grep' | 'glob' | 'ls' | 'webfetch' | 'websearch' | 'websearch_queries';
 
 const TOOL_KIND_BY_NAME: Record<string, ToolKind> = {

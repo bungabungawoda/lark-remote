@@ -215,7 +215,7 @@ export interface RunCardRenderOptions {
   sessionFallbackAvailable?: boolean;
 }
 
-export interface RunCardRenderOutcome {
+interface RunCardRenderOutcome {
   card: object;
   finalAnswerStatus: 'none' | 'full' | 'overflow';
   /** Full text to deliver outside the card when finalAnswerStatus is overflow. */

@@ -7,7 +7,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { CommandRouter } from '../../../src/router/index.js';
 import { AppConfigSchema } from '../../../src/config/index.js';
 import type { AppConfig } from '../../../src/config/index.js';
-import { invalidateCodexBundledCache } from '../../../src/config/codex-config.js';
+import { _invalidateCodexBundledCacheForTest } from '../../../src/config/codex-config.js';
 import { makeModel, makeCatalog } from '../../fixtures/codex-catalog-fixture.js';
 import path from 'node:path';
 import fs from 'node:fs';
@@ -66,7 +66,7 @@ describe('Config card codex reasoningEffort - anchor', () => {
   beforeEach(() => {
     mockSpawnSync.mockReset();
     mockLogger.warn.mockReset();
-    invalidateCodexBundledCache();
+    _invalidateCodexBundledCacheForTest();
     oldCodexHome = process.env.CODEX_HOME;
     tmpDir = makeTempDir('codex-card-test-');
     process.env.CODEX_HOME = tmpDir;
@@ -85,7 +85,7 @@ describe('Config card codex reasoningEffort - anchor', () => {
       process.env.CODEX_HOME = oldCodexHome;
     }
     fs.rmSync(tmpDir, { recursive: true, force: true });
-    invalidateCodexBundledCache();
+    _invalidateCodexBundledCacheForTest();
   });
 
   it('test_anchor_config_card_codex_has_reasoning_effort_field', () => {
@@ -218,7 +218,7 @@ describe('codex config card effort follows model - anchor', () => {
   beforeEach(() => {
     mockSpawnSync.mockReset();
     mockLogger.warn.mockReset();
-    invalidateCodexBundledCache();
+    _invalidateCodexBundledCacheForTest();
     oldCodexHome = process.env.CODEX_HOME;
     tmpDir = makeTempDir('codex-effort-follows-');
     process.env.CODEX_HOME = tmpDir;
@@ -231,7 +231,7 @@ describe('codex config card effort follows model - anchor', () => {
       process.env.CODEX_HOME = oldCodexHome;
     }
     fs.rmSync(tmpDir, { recursive: true, force: true });
-    invalidateCodexBundledCache();
+    _invalidateCodexBundledCacheForTest();
   });
 
   function makeRouter(config: AppConfig): CommandRouter {
@@ -295,7 +295,7 @@ describe('codex config card effort follows model - anchor', () => {
     );
     fs.writeFileSync(path.join(catalogHome, 'models.json'), ACTIVE_CATALOG_JSON);
     process.env.CODEX_HOME = catalogHome;
-    invalidateCodexBundledCache();
+    _invalidateCodexBundledCacheForTest();
     mockSpawnSync.mockImplementation((_binary: string, args: string[]) => {
       if (args[0] === 'debug' && args[1] === 'models' && !args.includes('--bundled')) {
         return ACTIVE_CATALOG_JSON;

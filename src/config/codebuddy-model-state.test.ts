@@ -18,7 +18,7 @@ import {
   readCodebuddyModelError,
   recordCodebuddyModelRejection,
   recordCodebuddyModelSuccess,
-  resetCodebuddyModelState,
+  _resetCodebuddyModelStateForTest,
   resolveCodebuddyModel,
 } from './codebuddy-model-state.js';
 
@@ -32,7 +32,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  resetCodebuddyModelState();
+  _resetCodebuddyModelStateForTest();
   fs.rmSync(tmpDir, { recursive: true, force: true });
 });
 
@@ -152,7 +152,7 @@ describe('状态落盘与回读', () => {
     expect(raw.supported).toEqual(['hy3', 'deepseek-v4.1-flash']);
 
     // 模拟进程重启：清缓存后按同一路径重新加载。
-    resetCodebuddyModelState();
+    _resetCodebuddyModelStateForTest();
     configureCodebuddyModelState(statePath);
     expect(loadCodebuddyModelState().supported).toEqual(['hy3', 'deepseek-v4.1-flash']);
   });
@@ -174,7 +174,7 @@ describe('状态落盘与回读', () => {
 
   it('状态文件损坏时按空状态处理，不抛错', () => {
     fs.writeFileSync(statePath, '{not json');
-    resetCodebuddyModelState();
+    _resetCodebuddyModelStateForTest();
     configureCodebuddyModelState(statePath);
     expect(loadCodebuddyModelState().supported).toEqual([]);
   });

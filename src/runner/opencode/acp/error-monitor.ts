@@ -30,7 +30,7 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { getLogger } from '../../../logger/index.js';
 
-export interface OpencodeLogErrorMonitorOptions {
+interface OpencodeLogErrorMonitorOptions {
   /** Path to opencode's own log file (default: resolveOpencodeLogPath()). */
   logPath: string;
   /** Tail poll interval in milliseconds. Defaults to 2000. */

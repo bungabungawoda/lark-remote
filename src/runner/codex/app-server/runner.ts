@@ -39,7 +39,7 @@ import { mapAnswersByIndex } from '../../question-common.js';
 import { getLogger } from '../../../logger/index.js';
 import { ConnectionBasedRunner, type TurnAnchor } from '../../common/connection-based-runner.js';
 
-export interface CodexAppServerRunnerOptions {
+interface CodexAppServerRunnerOptions {
   kind: AgentKind;
   sessionReader: AgentSessionReader;
   /** Path to the codex binary. Defaults to `codex`. */

@@ -23,7 +23,7 @@ import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { ClaudeRunner } from '../../../src/runner/claude/index.js';
+import { ClaudeRunner } from '../../../src/runner/claude/runner.js';
 import { pidFileSuffix } from '../../../src/runner/common/spawning-runner.js';
 import { describePosix } from '../../lib/platform.js';
 import { ClaudeSessionReader } from '../../../src/session/claude/index.js';

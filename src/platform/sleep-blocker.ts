@@ -36,12 +36,12 @@ import type { ChildProcess } from 'node:child_process';
 import { spawnProcess } from './spawn.js';
 import { getLogger } from '../logger/index.js';
 
-export interface SleepBlocker {
+interface SleepBlocker {
   /** 防御性停止 helper（正常路径 helper 随 lark-remote 死亡自行退出）。 */
   stop(): void;
 }
 
-export interface SleepBlockerOptions {
+interface SleepBlockerOptions {
   platform: NodeJS.Platform;
   pid: number;
   /** 测试注入点：默认走 platform/spawn.ts 的 cross-spawn 收口。 */

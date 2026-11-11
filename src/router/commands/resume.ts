@@ -36,7 +36,7 @@ interface SessionDisplay {
   activeRunRunId?: string;
 }
 
-export interface ResumeCommandDeps {
+interface ResumeCommandDeps {
   defaultAgent: AgentKind;
   getSessionEntry(userId: string): ResumeSessionEntry | undefined;
   setSessionId(userId: string, agent: AgentKind, sessionId: string, cwd: string): void;

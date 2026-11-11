@@ -17,19 +17,19 @@ import { currentPlatform, isWin32 } from './select.js';
 import { spawnProcess, spawnProcessSync } from './spawn.js';
 
 /** 进程身份快照。creationDate 仅 win32（CIM CreationDate，DMTF 时间串）。 */
-export interface ProcessIdentity {
+interface ProcessIdentity {
   commandLine: string;
   creationDate?: string;
 }
 
-export interface QueryIdentityOptions {
+interface QueryIdentityOptions {
   /** 平台注入（测试用）；默认当前宿主平台 */
   platform?: NodeJS.Platform;
   /** 查询超时（毫秒），超时杀掉查询进程并返回 null */
   timeoutMs?: number;
 }
 
-export interface VerifyPidIdentityOptions extends QueryIdentityOptions {
+interface VerifyPidIdentityOptions extends QueryIdentityOptions {
   /** 期望的二进制名（basename，如 'claude'/'node'）；win32/darwin 大小写不敏感 */
   expectedBinary: string;
   /**
@@ -70,7 +70,7 @@ export interface VerifyPidIdentityOptions extends QueryIdentityOptions {
  *
  * 未被使用的一档强度等于死代码：加档必须同时有生产调用方与用例。
  */
-export type IdentityMatchMode = 'executable' | 'agent-invocation';
+type IdentityMatchMode = 'executable' | 'agent-invocation';
 
 const DEFAULT_TIMEOUT_MS = 3000;
 

@@ -74,7 +74,7 @@ interface CacheEntry {
 
 const resolveCache = new Map<string, CacheEntry>();
 
-export function clearResolveCache(): void {
+export function _clearResolveCacheForTest(): void {
   resolveCache.clear();
 }
 

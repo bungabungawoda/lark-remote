@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { loadKimiConfig, invalidateKimiConfigCache } from './kimi-config.js';
+import { loadKimiConfig, _invalidateKimiConfigCacheForTest } from './kimi-config.js';
 
 // 生产代码经 platform/spawn（cross-spawn）调用 kimi，mock 该 seam；
 // mock 返回 string/Buffer 时自动包装成 spawnProcessSync 的成功结果形态，
@@ -38,7 +38,7 @@ function makeProviderListJson(overrides: {
 
 describe('loadKimiConfig', () => {
   beforeEach(() => {
-    invalidateKimiConfigCache();
+    _invalidateKimiConfigCacheForTest();
     vi.clearAllMocks();
   });
 
@@ -121,7 +121,7 @@ describe('loadKimiConfig', () => {
     loadKimiConfig();
     expect(mockSpawnSync).toHaveBeenCalledTimes(1);
 
-    invalidateKimiConfigCache();
+    _invalidateKimiConfigCacheForTest();
 
     loadKimiConfig();
     expect(mockSpawnSync).toHaveBeenCalledTimes(2);

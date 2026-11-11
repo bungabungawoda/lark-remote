@@ -65,20 +65,18 @@ function hasRequiredSessionFields(entry: PersistedEntry): boolean {
   );
 }
 
-/** 只保留 truthy 值（sessions / previousSessions / sessionCwds 的口径）。 */
-function truthySessionMap(record: Record<string, string>): Map<AgentKind, string> {
+/**
+ * 持久化 record → 内存 Map。两种口径：
+ * - keepEmpty=false（sessions/previousSessions/sessionCwds）：只保留 truthy 值；
+ * - keepEmpty=true（arrivalSessions）：'' 是显式清空基线，必须跨重启存活。
+ */
+function sessionMapFromRecord(
+  record: Record<string, string>,
+  keepEmpty: boolean,
+): Map<AgentKind, string> {
   const map = new Map<AgentKind, string>();
   for (const [agent, sid] of Object.entries(record)) {
-    if (sid) map.set(agent as AgentKind, sid);
-  }
-  return map;
-}
-
-/** 全保留（arrivalSessions 的 '' 是显式清空基线，必须跨重启存活）。 */
-function fullSessionMap(record: Record<string, string>): Map<AgentKind, string> {
-  const map = new Map<AgentKind, string>();
-  for (const [agent, sid] of Object.entries(record)) {
-    map.set(agent as AgentKind, sid);
+    if (sid || keepEmpty) map.set(agent as AgentKind, sid);
   }
   return map;
 }
@@ -92,10 +90,10 @@ function parsePersistedEntry(data: unknown): SessionEntry | undefined {
   // cwd 尚为空——不能因 cwd 缺失把停车位整条丢掉
   // （anchor_r7_parked_previous_survives_rebuild_without_cwd）。
   if (!hasRequiredSessionFields(entry)) return undefined;
-  const sessions = truthySessionMap(entry.sessions);
-  const previousSessions = truthySessionMap(entry.previousSessions);
-  const arrivalSessions = fullSessionMap(entry.arrivalSessions);
-  const sessionCwds = truthySessionMap(entry.sessionCwds);
+  const sessions = sessionMapFromRecord(entry.sessions, false);
+  const previousSessions = sessionMapFromRecord(entry.previousSessions, false);
+  const arrivalSessions = sessionMapFromRecord(entry.arrivalSessions, true);
+  const sessionCwds = sessionMapFromRecord(entry.sessionCwds, false);
   // Persist any user that has state: cwd set, or any meaningful
   // sessions/previousSessions value, or any arrival baseline entry
   // ('' arrivals are meaningful). Fully empty records are skipped.

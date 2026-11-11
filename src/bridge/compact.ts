@@ -116,7 +116,7 @@ interface CompactRunRecord {
  *   `/stop` + §9.12 空闲看门狗兜底。
  * - 记账上限 per-cwd `MAX_COMPACTABLE_RUNS_PER_CWD`，超出按插入序淘汰最旧。
  */
-export interface CompactLifecycleDeps {
+interface CompactLifecycleDeps {
   /** 与普通 run 共用的 cwd 槽位表（Bridge.activeRuns，按引用共享）。 */
   activeRuns: Map<string, ActiveRun>;
   connector: BridgeChannel;

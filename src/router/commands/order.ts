@@ -6,7 +6,7 @@ import { pageSlice } from '../paging.js';
 
 export const ORDER_PAGE_SIZE = 8;
 
-export interface OrderCommandDeps {
+interface OrderCommandDeps {
   reload(): void;
   list(): OrderEntry[];
   save(text: string): void;

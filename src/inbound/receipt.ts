@@ -41,7 +41,7 @@ export function unsupportedReason(kind: PlaceholderKind): string {
   return `暂不支持${PLACEHOLDER_LABELS[kind]}消息`;
 }
 
-export interface ReceiptInput {
+interface ReceiptInput {
   /** 本次已落盘的绝对路径（仅无文本场景展示）。 */
   saved: string[];
   /** 未处理项（不支持 / 超限 / 失败）。 */

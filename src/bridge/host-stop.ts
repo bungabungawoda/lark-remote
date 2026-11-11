@@ -13,7 +13,7 @@ import type { CommandContext, CommandResult } from './index.js';
  * 但宿主仍然认 sessionId。这里把「按 sessionId 取消宿主 turn」收成一个入口，
  * /stop 的 fallback 与恢复卡按钮共用，避免两处各自拼 stop 语义。
  */
-export interface HostTurnStopDeps {
+interface HostTurnStopDeps {
   sessionStore: SessionStore;
   sessionReaderRegistry: SessionReaderRegistry;
   /** live 取值：/config 会整体替换 config 引用。 */
@@ -22,7 +22,7 @@ export interface HostTurnStopDeps {
   sendResult(result: CommandResult, ctx: CommandContext): Promise<boolean>;
 }
 
-export interface HostTurnStopTarget {
+interface HostTurnStopTarget {
   sessionId: string;
   cwd: string;
   agentKind: AgentKind;

@@ -75,13 +75,13 @@ function isDateDir(name: string): boolean {
  * CodeBuddy 日志文件名：`<cwd basename>__<md5(cwd)>.log`（真机实测命名）。
  * 同一项目同一天的所有进程 append 到同一个文件。
  */
-export function codebuddyLogFileName(cwd: string): string {
+function codebuddyLogFileName(cwd: string): string {
   const hash = createHash('md5').update(cwd).digest('hex');
   return `${path.basename(cwd)}__${hash}.log`;
 }
 
 /** 与 cwd 匹配的日志文件（按日期升序）；目录不存在/无匹配返回 []。 */
-export function codebuddyLogFiles(cwd: string, configDir?: string): string[] {
+function codebuddyLogFiles(cwd: string, configDir?: string): string[] {
   const root = path.join(resolveCodebuddyConfigDir(configDir), 'logs');
   let entries: string[];
   try {

@@ -5,7 +5,7 @@ import { currentPlatform, isWin32 } from '../platform/select.js';
 import { spawnProcess, spawnProcessSync } from '../platform/spawn.js';
 
 /** Supported package managers for global install. */
-export type PackageManager = 'npm' | 'bun' | 'pnpm';
+type PackageManager = 'npm' | 'bun' | 'pnpm';
 
 /** Result of an install attempt. */
 export interface InstallResult {

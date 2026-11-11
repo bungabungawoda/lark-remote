@@ -17,7 +17,7 @@ interface PiProviderInfo {
 }
 
 /** loadPiConfig() 的返回类型，包含 provider 和 model 的聚合信息 */
-export interface PiConfigResult {
+interface PiConfigResult {
   /** provider 名称列表 */
   providerNames: string[];
   /** 获取指定 provider 的 model 选项 */

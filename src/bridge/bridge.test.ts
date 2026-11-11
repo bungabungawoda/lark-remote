@@ -5,7 +5,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { Bridge } from './index.js';
 import { FINAL_ANSWER_OVERFLOW_MARKER } from '../card/run-renderer.js';
-import { ClaudeRunner } from '../runner/claude/index.js';
+import { ClaudeRunner } from '../runner/claude/runner.js';
 import { SessionStore } from '../session/index.js';
 import { SessionReaderRegistry } from '../session/registry.js';
 import { AppConfigSchema } from '../config/index.js';
@@ -30,7 +30,7 @@ import { ClaudeSessionReader } from '../session/claude/index.js';
 import { encodeCodebuddyProjectDirName } from '../session/codebuddy/sessions.js';
 import {
   configureCodebuddyModelState,
-  resetCodebuddyModelState,
+  _resetCodebuddyModelStateForTest,
 } from '../config/codebuddy-model-state.js';
 
 vi.mock('../logger/index.js', async () =>
@@ -955,7 +955,7 @@ describe('Bridge.forwardToClaude', () => {
     const state = JSON.parse(fs.readFileSync(statePath, 'utf-8')) as { supported: string[] };
     expect(state.supported).toEqual(['model-a', 'model-b']);
 
-    resetCodebuddyModelState();
+    _resetCodebuddyModelStateForTest();
     rmRf(codebuddyHome);
   });
 
