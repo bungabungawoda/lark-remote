@@ -128,7 +128,6 @@ describe('createJSONLStream', () => {
         subtype: 'success',
         session_id: 's1',
         usage: { input_tokens: 100, output_tokens: 50 },
-        total_cost_usd: 0.01,
       },
     ] as const;
     const input = events.map((e) => JSON.stringify(e)).join('\n') + '\n';

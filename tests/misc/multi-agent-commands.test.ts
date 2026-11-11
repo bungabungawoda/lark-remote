@@ -184,8 +184,10 @@ describe('multi-agent legacy issues', () => {
     await router.handle('/new', ctx);
     const text = (connector._sent[0].input as { text: string }).text;
 
-    // Should mention the agent name, not just "session"
-    expect(text).toMatch(/Opencode.*session|session.*Opencode/);
+    // 回执与 run 卡「✨ 新会话」按钮统一（applyNewSession 单一来源）：
+    // 必须带 agent 名，且带 📁 工作区行。
+    expect(text).toContain('Opencode');
+    expect(text).toContain('📁 /tmp');
   });
 
   // ── Issue 10 — new-session card button should show agent name ─

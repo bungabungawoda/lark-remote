@@ -33,7 +33,6 @@ import type {
   AgentThoughtChunkEvent,
   ToolCallEvent,
   ToolCallUpdateEvent,
-  UsageUpdateEvent,
 } from '../../common/acp/protocol-types.js';
 import {
   deriveAcpAvailableDecisions,
@@ -171,14 +170,6 @@ export class OpencodeAcpTranslator extends BaseAcpTranslator {
         ],
       },
     };
-  }
-
-  /** opencode usage_update also carries session cost: {cost:{amount}} (USD). */
-  protected override onUsageSample(event: UsageUpdateEvent): void {
-    const cost = (event as { cost?: { amount?: number } }).cost;
-    if (typeof cost?.amount === 'number') {
-      this.liveCostUsd = cost.amount;
-    }
   }
 
   // =========================================================================

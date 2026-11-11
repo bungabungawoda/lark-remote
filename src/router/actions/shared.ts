@@ -159,6 +159,24 @@ export interface DefaultAgentSwitchOutcome {
 }
 
 /**
+ * 「开新会话」的统一入口（/new 命令与 run 卡「✨ 新会话」按钮共用）：
+ * 清当前 agent 的会话绑定（含 per-agent sessionCwd；主 cwd 保留——/new 后
+ * /resume 仍能用原工作目录），返回带工作区的回执文案。
+ *
+ * 两条触发路径必须走这里，回执不允许再分叉（§9.19：按操作语义分类，
+ * 不按触发方式分类）。
+ */
+export function applyNewSession(
+  sessionStore: SessionStore,
+  agentKind: AgentKind,
+  userId: string,
+): string {
+  sessionStore.clearSessionId(userId, agentKind, { clearSessionCwd: true });
+  const cwd = sessionStore.getCwd(userId) ?? '(未设置)';
+  return `已创建新 ${agentDisplayName(agentKind)} 会话，下一条消息将开始全新对话\n📁 ${cwd}`;
+}
+
+/**
  * 记住并同步刷新的 config 卡片数上限。一次 /config 会话里用户实际会交互的
  * 卡片只有最近一两张，5 张足够覆盖；无上限会让长跑进程的 Set 随卡片数增长。
  */

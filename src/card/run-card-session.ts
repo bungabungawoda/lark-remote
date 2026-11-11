@@ -25,7 +25,7 @@ export class RunCardSession extends CardSession<RunState, RunCardRenderOptions> 
     /** push 合批窗口，默认 100ms（0 = 禁用合批，每事件立即 flush）。 */
     coalesceMs?: number;
   }) {
-    super(createInitialRunState(opts.runId, { agentKind: opts.renderOptions?.agentKind }), {
+    super(createInitialRunState(opts.runId), {
       connector: opts.connector,
       chatId: opts.chatId,
       replyTo: opts.replyTo,

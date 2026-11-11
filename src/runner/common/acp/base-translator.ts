@@ -258,7 +258,6 @@ export abstract class BaseAcpTranslator {
   /** Whether any usage_update has been seen this turn (no update → no usage). */
   protected hasLiveUsage = false;
   /** Session cost from usage_update cost.amount (USD). Written by opencode only. */
-  protected liveCostUsd?: number;
   /** Current turn id, set by produceTurnStarted. */
   protected currentTurnId = '';
 
@@ -485,7 +484,6 @@ export abstract class BaseAcpTranslator {
       subtype,
       session_id: sessionId,
       ...(this.hasLiveUsage ? { usage: this.liveUsageSnapshot() } : {}),
-      ...(this.liveCostUsd !== undefined ? { total_cost_usd: this.liveCostUsd } : {}),
       ...(errorText ? { errorMessage: errorText } : {}),
       ...(authFailure ? { authFailure: true } : {}),
     };
@@ -516,7 +514,6 @@ export abstract class BaseAcpTranslator {
       // JSON-RPC 层直接抛错时没有 SessionPromptResult 可解析，只能按文本判定。
       ...(isAuthenticationFailure(errorMessage) ? { authFailure: true } : {}),
       ...(this.hasLiveUsage ? { usage: this.liveUsageSnapshot() } : {}),
-      ...(this.liveCostUsd !== undefined ? { total_cost_usd: this.liveCostUsd } : {}),
     };
   }
 

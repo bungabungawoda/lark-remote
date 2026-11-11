@@ -240,18 +240,16 @@ describe('OpencodeAcpTranslator', () => {
         sessionUpdate: SessionEventType.USAGE_UPDATE,
         used: 12345,
         size: 200000,
-        cost: { amount: 0.42, currency: 'USD' },
       }),
     );
     const result = t.handlePromptResponse(SESSION_ID, { stopReason: 'end_turn' }) as {
       subtype: string;
       usage?: { total_tokens?: number; context_limit?: number };
-      total_cost_usd?: number;
     };
     expect(result.subtype).toBe('success');
     expect(result.usage?.total_tokens).toBe(12345);
     expect(result.usage?.context_limit).toBe(200000);
-    expect(result.total_cost_usd).toBe(0.42);
+    expect('total_cost_usd' in result).toBe(false); // cost 链路已彻底移除
   });
 
   it('maps prompt stopReason: end_turn→success, cancelled→interrupted, other→error', () => {
@@ -276,10 +274,8 @@ describe('OpencodeAcpTranslator', () => {
     const t = new OpencodeAcpTranslator();
     const result = t.handlePromptResponse(SESSION_ID, { stopReason: 'end_turn' }) as {
       usage?: unknown;
-      total_cost_usd?: unknown;
     };
     expect(result.usage).toBeUndefined();
-    expect(result.total_cost_usd).toBeUndefined();
   });
 
   it('maps session/request_permission to approval_requested with command view', () => {

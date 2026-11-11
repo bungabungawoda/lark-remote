@@ -1507,7 +1507,7 @@ describe('Bridge.forwardToClaude', () => {
     const events: AgentEvent[] = [
       { type: 'system', subtype: 'init', session_id: 's1', cwd: tmpDir, model: 'opus' },
       { type: 'assistant', message: { content: [{ type: 'text', text: 'hello' }] } },
-      { type: 'result', subtype: 'success', session_id: 's1', total_cost_usd: 0.01 },
+      { type: 'result', subtype: 'success', session_id: 's1' },
     ];
     const { bridge, sessionStore, connector } = makeBridge({
       runner: createStubRunner({ mode: 'streaming', events: events }),
@@ -1651,7 +1651,7 @@ describe('Bridge.forwardToClaude', () => {
       { type: 'system', subtype: 'init', session_id: 's1', cwd: tmpDir, model: 'opus' },
       { type: 'assistant', message: { content: [{ type: 'text', text: 'part 1' }] } },
       { type: 'assistant', message: { content: [{ type: 'text', text: 'part 2' }] } },
-      { type: 'result', subtype: 'success', session_id: 's1', total_cost_usd: 0.01 },
+      { type: 'result', subtype: 'success', session_id: 's1' },
     ];
     const { bridge, sessionStore, connector } = makeBridge({
       runner: createStubRunner({ mode: 'streaming', events: events }),
