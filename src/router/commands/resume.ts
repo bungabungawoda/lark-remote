@@ -68,6 +68,8 @@ interface ResumeSessionMeta {
   aiTitle?: string;
   recap?: string;
   displayTitle?: string;
+  lastUserMessage?: string;
+  lastAssistantMessage?: string;
 }
 
 type ResumeMetaMap = Map<string, ResumeSessionMeta>;
@@ -238,15 +240,22 @@ function loadResumePage(
   return { pageOffset, sessions: pageResult.sessions, total: pageResult.total };
 }
 
-/** 行级预览字段缺失时才预取，且只预取前 5 条。 */
+/**
+ * 行级预览字段缺失时才预取，且只预取前 5 条。
+ *
+ * 有 `readSessionSummary` 的 reader（codex / dsh）读摘要很便宜，按「末轮预览
+ * 缺不缺」判断：DSH 0.2.2 起列表行只带标题，`turnOutline` 要单独取。没有该
+ * 能力的 reader 保持原判据（有任何展示字段就跳过），否则会退化成整段历史读取。
+ */
 function prefetchResumeMeta(
   reader: AgentSessionReader,
   allSessions: AgentSession[],
   cwd: string,
 ): ResumeMetaMap {
   const sessionMeta: ResumeMetaMap = new Map();
+  const cheapSummary = reader.readSessionSummary !== undefined;
   for (const session of allSessions.slice(0, RESUME_CONTENT_PREFETCH)) {
-    if (session.title || session.lastUserMessage || session.lastAssistantMessage) continue;
+    if (!needsPreviewPrefetch(session, cheapSummary)) continue;
     const meta = reader.readSessionSummary
       ? reader.readSessionSummary(session.sessionId, cwd)
       : (() => {
@@ -260,6 +269,17 @@ function prefetchResumeMeta(
     sessionMeta.set(session.sessionId, meta);
   }
   return sessionMeta;
+}
+
+/**
+ * 这一行要不要预取末轮预览。
+ *
+ * 没有 `readSessionSummary` 的 reader 只能退化成读整段历史（贵），所以行上有
+ * 任何展示字段就跳过，保持原判据；有便宜摘要能力时只看末轮预览缺不缺。
+ */
+function needsPreviewPrefetch(session: AgentSession, cheapSummary: boolean): boolean {
+  if (session.lastUserMessage || session.lastAssistantMessage) return false;
+  return cheapSummary || !session.title;
 }
 
 function formatRelativeTime(mtimeMs: number, now: number): string {
@@ -276,10 +296,12 @@ function resumeTitleParts(
   meta: ResumeSessionMeta | undefined,
 ): { titleText: string; titleLabel: string } {
   const summaryIsPlaceholder = RESUME_SUMMARY_PLACEHOLDERS.has(session.summary.trim());
-  const prefetchedTitle = meta?.displayTitle;
   const rowTitleRaw = session.title?.trim() ?? '';
   const rowTitle =
     rowTitleRaw && !RESUME_SUMMARY_PLACEHOLDERS.has(rowTitleRaw) ? rowTitleRaw : undefined;
+  // 行上有标题就以行为准：预取只在标题缺失时才是「标题」的来源（此前两者互斥，
+  // 判据放宽后可能同时存在，取行的版本保持既有卡片口径）。
+  const prefetchedTitle = rowTitle ? undefined : meta?.displayTitle;
   const titleText = prefetchedTitle ?? rowTitle ?? (summaryIsPlaceholder ? '' : session.summary);
   const titleLabel = prefetchedTitle
     ? meta?.aiTitle
@@ -308,14 +330,15 @@ function resumeInfoSections(
   if (meta?.recap) {
     sections.push(`📝 **Recap**\n${meta.recap.slice(0, 60)}${meta.recap.length > 60 ? '...' : ''}`);
   }
-  if (session.lastUserMessage) {
-    sections.push(
-      `✏️ **最近输入**\n${sessionPreviewLine(session.lastUserMessage, RESUME_PREVIEW_MAX)}`,
-    );
+  // 行内没带末轮预览时用预取的摘要补（DSH 0.2.2 起列表行不再带 turnOutline）。
+  const lastUserMessage = session.lastUserMessage ?? meta?.lastUserMessage;
+  const lastAssistantMessage = session.lastAssistantMessage ?? meta?.lastAssistantMessage;
+  if (lastUserMessage) {
+    sections.push(`✏️ **最近输入**\n${sessionPreviewLine(lastUserMessage, RESUME_PREVIEW_MAX)}`);
   }
-  if (session.lastAssistantMessage) {
+  if (lastAssistantMessage) {
     sections.push(
-      `📤 **最后输出**\n${sessionPreviewLine(session.lastAssistantMessage, RESUME_PREVIEW_MAX)}`,
+      `📤 **最后输出**\n${sessionPreviewLine(lastAssistantMessage, RESUME_PREVIEW_MAX)}`,
     );
   }
   return sections;

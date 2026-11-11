@@ -38,6 +38,7 @@
     "src/router/card-action-payload.test.ts",
     "src/router/card-action-feedback.test.ts",
     "src/router/ls-file.test.ts",
+    "src/router/ls-browse-return-page.test.ts",
     "src/router/paging-jump.test.ts",
     "src/router/download.test.ts",
     "src/router/command-guard.test.ts",

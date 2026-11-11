@@ -299,6 +299,34 @@ function inboxItemsOf(values: Record<string, unknown>): DshInboxItem[] {
   return out;
 }
 
+/**
+ * 一帧 `session/control` projection 展开成逐 key 变更。
+ *
+ * 0.2.2 起宿主把同一次提交里变更的多个 key 合成一帧
+ * `{type:'projection', sessionId, seq, changes:[{key,val}]}`；0.2.1 及更早是
+ * 一帧一个 key（`{sessionId, key, value, seq}`）。两种形态都收：只认旧形态时
+ * 所有增量帧都被静默丢掉，卡片停在订阅瞬间的 baseline（新会话就是「0 步」，
+ * 首个 usage 采样之前也没有上下文百分比）。
+ */
+function projectionChangesOf(frame: {
+  key?: unknown;
+  value?: unknown;
+  changes?: unknown;
+}): Array<{ key: string; value: unknown }> {
+  if (Array.isArray(frame.changes)) {
+    const out: Array<{ key: string; value: unknown }> = [];
+    for (const change of frame.changes) {
+      if (!change || typeof change !== 'object') continue;
+      const { key, val } = change as { key?: unknown; val?: unknown };
+      if (typeof key === 'string' && key.length > 0) out.push({ key, value: val });
+    }
+    return out;
+  }
+  return typeof frame.key === 'string' && frame.key.length > 0
+    ? [{ key: frame.key, value: frame.value }]
+    : [];
+}
+
 // =============================================================================
 // approvalEvents 的模块级命名 handler（显式传 state / client，避免方法内闭包）
 // =============================================================================
@@ -1591,8 +1619,9 @@ export class DshClient {
         const frame = raw as {
           type?: string;
           sessionId?: string;
-          key?: string;
+          key?: unknown;
           value?: unknown;
+          changes?: unknown;
         };
         if (!frame || typeof frame !== 'object') continue;
         if (frame.type === 'baseline') {
@@ -1608,12 +1637,13 @@ export class DshClient {
           }
           continue;
         }
-        if (frame.type === 'projection' && frame.sessionId && frame.key) {
+        if (frame.type !== 'projection' || !frame.sessionId) continue;
+        for (const change of projectionChangesOf(frame)) {
           yield {
             kind: 'projection',
             sessionId: frame.sessionId,
-            key: frame.key,
-            value: frame.value,
+            key: change.key,
+            value: change.value,
           };
         }
       }

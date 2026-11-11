@@ -677,6 +677,59 @@ describe('DshClient / DshRunner integration', () => {
     expect(result?.type === 'result' && result.usage?.context_limit).toBe(100_000);
   });
 
+  it('applies batched control-projection changes as live run_status updates', async () => {
+    server = new FakeDshServer();
+    server.register('session/create', () => ({ ok: true, value: { sessionId: SID } }));
+    server.register('session/prompt', () => ({ ok: true, value: { accepted: true } }));
+    server.setControlFrames([
+      {
+        type: 'baseline',
+        value: {
+          projections: {
+            [SID]: { asOfSeq: 0, values: { sessionStats: { turns: 0, steps: 1 } } },
+          },
+        },
+      },
+      // 0.2.2 起宿主把一次提交里变更的多个 key 合成一帧下发；只认旧的一帧一个
+      // key 时这些帧全被丢掉，卡片会停在 baseline（新会话就是「0 步」且没有百分比）。
+      {
+        type: 'projection',
+        sessionId: SID,
+        seq: 9,
+        changes: [
+          { key: 'sessionStats', val: { turns: 1, steps: 9, toolMs: 1_500 } },
+          {
+            key: 'contextPressure',
+            val: { pressureTokens: 12_000, projectedTokens: 12_500, contextWindow: 100_000 },
+          },
+        ],
+      },
+    ]);
+    server.setMuxFrames([
+      // 多垫几帧，让变更帧（控制流 5ms 一帧）先于 turn/end 到达：
+      // 否则 run 在 result 处结束，断言就变成两条定时器的竞速。
+      sessionEventFrame(SID, textChunk('working', 1)),
+      sessionEventFrame(SID, textChunk('still here', 2)),
+      sessionEventFrame(SID, textChunk('still here', 3)),
+      sessionEventFrame(SID, textChunk('still here', 4)),
+      sessionEventFrame(SID, textChunk('still here', 5)),
+      sessionEventFrame(SID, turnEnd('completed', 6)),
+    ]);
+    await server.start();
+
+    const runner = new DshRunner({ kind: 'dsh', sessionReader: stubReader, host: server.baseUrl });
+    const events = await collect(runner.run('hi', { cwd: CWD }));
+
+    const statuses = events.filter((e) => e.type === 'run_status');
+    expect(statuses[0]).toMatchObject({ type: 'run_status', steps: 1 });
+    expect(statuses.at(-1)).toMatchObject({
+      type: 'run_status',
+      steps: 9,
+      contextUsed: 12_500,
+      contextLimit: 100_000,
+    });
+  });
+
   it('reports only still-running background jobs at turn end', async () => {
     server = new FakeDshServer();
     server.register('session/create', () => ({ ok: true, value: { sessionId: SID } }));

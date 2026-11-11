@@ -1657,6 +1657,8 @@ export class CommandRouter {
    *                丢回 工作目录。
    * @param q       关键词筛选：只匹配**当前层**条目名（不递归），大小写不敏感。
    *                省略/空 = 无筛选。
+   * @param trail   上级目录原页码（「上级/返回」回到进入子目录时所在页）。
+   *                省略 = 上级都从第 1 页开始。
    */
   cmdLs(
     args: string[],
@@ -1664,8 +1666,9 @@ export class CommandRouter {
     offset = 0,
     rootDir?: string,
     q?: string,
+    trail?: Array<{ path: string; offset: number }>,
   ): CommandResult {
-    return commandActions.cmdLs(this, args, ctx, offset, rootDir, q);
+    return commandActions.cmdLs(this, args, ctx, offset, rootDir, q, trail);
   }
 
   /**

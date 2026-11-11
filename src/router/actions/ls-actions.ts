@@ -4,10 +4,28 @@ import type { CommandContext, CommandResult } from '../../bridge/index.js';
 import { MAX_FILE_UPLOAD_SIZE } from '../../connector/file-limits.js';
 import { parseJumpOffset, PAGE_JUMP_INVALID_HINT } from '../../card/card-helpers.js';
 import { isDirectorySafe, resolveDirectory, statPath } from '../path-validation.js';
-import { LS_PAGE_SIZE } from '../commands/ls.js';
+import { LS_PAGE_SIZE, recordTrail } from '../commands/ls.js';
+import type { LsTrailEntry } from '../commands/ls.js';
 import type { CommandRouter } from '../index.js';
 import type { CardActionPayload, CardActionResponse } from './shared.js';
 import { payloadOffset, searchQueryFrom } from './shared.js';
+
+/**
+ * 解析卡片回传的 trail（外部输入）：只收字符串 path + 有限 offset。
+ * 旧卡片 / 手写 payload 没有该字段 → []，行为退回「上级回第 1 页」。
+ */
+function readTrail(value: CardActionPayload): LsTrailEntry[] {
+  const raw: unknown[] = Array.isArray(value.trail) ? value.trail : [];
+  const trail: LsTrailEntry[] = [];
+  for (const entry of raw) {
+    if (typeof entry !== 'object' || entry === null) continue;
+    const { path: entryPath, offset } = entry as { path?: unknown; offset?: unknown };
+    const numericOffset = Number(offset);
+    if (typeof entryPath !== 'string' || !Number.isFinite(numericOffset)) continue;
+    trail.push({ path: entryPath, offset: Math.max(0, Math.trunc(numericOffset)) });
+  }
+  return trail;
+}
 
 /**
  * 分页卡动作的 offset 解析：优先读取「跳转页码」输入框（paginationBar 内置
@@ -57,8 +75,8 @@ export async function handleLsSwitch(
   const notifyResult = host.switchCwdAndNotify(ctx.userId, resolution.canonical, ctx);
   // Card channel: refresh ls card in-place (existing behavior preserved)。
   // value.root 是本次 /ls 浏览的起点（绝对路径，不受 cwd 变更影响），透传后
-  // 「返回」仍回到用户最初 /ls 的那个目录。
-  const card = host.cmdLs([resolution.canonical], ctx, 0, value.root);
+  // 「返回」仍回到用户最初 /ls 的那个目录；trail 保留各上级的原页码。
+  const card = host.cmdLs([resolution.canonical], ctx, 0, value.root, undefined, readTrail(value));
   await host.refreshLsCard(card, ctx);
   // Message channel: send switch confirmation / auto-resume card to chat
   await host.bridge.sendResult(notifyResult, ctx);
@@ -74,12 +92,13 @@ export async function handleLsRefresh(
 ): Promise<void> {
   const targetPath = value.path;
   const offset = value.offset ?? 0;
+  const trail = readTrail(value);
   // Treat a vanished/non-dir path as "use current cwd" instead of crashing
   // the refresh. inspectPath closes the former existsSync→statSync race.
   const card =
     targetPath && isDirectorySafe(targetPath)
-      ? host.cmdLs([targetPath], ctx, offset, value.root, value.q)
-      : host.cmdLs([], ctx, offset, value.root, value.q);
+      ? host.cmdLs([targetPath], ctx, offset, value.root, value.q, trail)
+      : host.cmdLs([], ctx, offset, value.root, value.q, trail);
   await host.refreshLsCard(card, ctx);
 }
 
@@ -121,7 +140,14 @@ export async function handleLsPage(
   if (!isDirectorySafe(resolvedTarget)) {
     return { toast: { type: 'error', content: `路径无效: ${resolvedTarget}` } };
   }
-  const card = host.cmdLs([resolvedTarget], ctx, paging.offset, value.root, value.q);
+  const card = host.cmdLs(
+    [resolvedTarget],
+    ctx,
+    paging.offset,
+    value.root,
+    value.q,
+    readTrail(value),
+  );
   if (!card.card) {
     return { toast: { type: 'error', content: card.text ?? '读取目录失败' } };
   }
@@ -151,7 +177,7 @@ export async function handleLsFilter(
   if (!isDirectorySafe(resolvedTarget)) {
     return { toast: { type: 'error', content: `路径无效: ${resolvedTarget}` } };
   }
-  const card = host.cmdLs([resolvedTarget], ctx, 0, value.root, q);
+  const card = host.cmdLs([resolvedTarget], ctx, 0, value.root, q, readTrail(value));
   if (!card.card) {
     return { toast: { type: 'error', content: card.text ?? '读取目录失败' } };
   }
@@ -177,8 +203,17 @@ export async function handleLsBrowse(
     await host.bridge.sendResult({ text: `路径无效: ${resolvedTarget}` }, ctx);
     return;
   }
-  // Always reset to page 0 when browsing to a new directory
-  const card = host.cmdLs([resolvedTarget], ctx, 0, value.root);
+  // 进入子目录：目标从第 1 页开始，同时把来源目录（目标的父目录）当前页记进
+  // trail；「上级/返回」：直接按目标目录取回 trail 里的原页。buildLsCommand
+  // 收口保证 trail 只含目标目录的严格上级。
+  const trail = readTrail(value);
+  const from = value.from;
+  const enteringDir = typeof from === 'number' && Number.isFinite(from);
+  const nextTrail = enteringDir
+    ? recordTrail(trail, path.dirname(resolvedTarget), Math.max(0, Math.trunc(from)))
+    : trail;
+  const offset = enteringDir ? 0 : payloadOffset(value);
+  const card = host.cmdLs([resolvedTarget], ctx, offset, value.root, undefined, nextTrail);
   await host.refreshLsCard(card, ctx);
 }
 

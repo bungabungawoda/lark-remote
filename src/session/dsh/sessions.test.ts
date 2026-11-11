@@ -459,6 +459,45 @@ describe('DshSessionReader', () => {
     expect(reader.isSessionActive(SID_C, CWD)).toBe(false);
   });
 
+  it('readSessionSummary 从 session/projections 补末轮预览（0.2.2 列表行不再带 turnOutline）', () => {
+    const server = new FakeDshServer();
+    registerSession(server);
+    server.register('session/projections', () => ({
+      ok: true,
+      value: {
+        asOfSeq: 9,
+        values: {
+          title: '清理文档',
+          // 末轮 response 还是空串（在途）：回溯到最近一条有内容的输出。
+          turnOutline: [
+            { turn: 1, seq: 3, prompt: '旧输入', response: '旧输出' },
+            { turn: 2, seq: 9, prompt: '末轮输入', response: '' },
+          ],
+        },
+      },
+    }));
+
+    const reader = makeReader(server);
+    expect(reader.readSessionSummary(SID_A, CWD)).toEqual({
+      lastUserMessage: '末轮输入',
+      lastAssistantMessage: '旧输出',
+    });
+    // cwd guard 与 readSessionContent 同口径：别的 workspace 一律不读。
+    expect(reader.readSessionSummary(SID_A, OTHER)).toEqual({});
+  });
+
+  it('readSessionSummary 读不到投影时返回空摘要（预览可缺省，不是故障）', () => {
+    const server = new FakeDshServer();
+    registerSession(server);
+    server.register('session/projections', () => ({
+      ok: false,
+      error: { code: 'gateway/unknown', message: 'projections unavailable' },
+    }));
+
+    const reader = makeReader(server);
+    expect(reader.readSessionSummary(SID_A, CWD)).toEqual({});
+  });
+
   it('test_anchor_dsh_session_cwd_mismatch_rejected', () => {
     // session 属于另一个 cwd 时，readSessionContent 必须 fail-closed。
     // 只按 sessionId 查 history 会让 /resume 跨 workspace 绑定会话。
