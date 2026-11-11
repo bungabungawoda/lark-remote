@@ -43,6 +43,8 @@ interface Harness {
   router: CommandRouter;
   /** 被调用 readSessionContent 的次数（全量内容读取 = 昂贵路径）。 */
   contentReads: () => number;
+  /** 被调用 readSessionSummary 的次数（投影级摘要，便宜路径）。 */
+  summaryReads: () => number;
 }
 
 const tempDirs: string[] = [];
@@ -50,8 +52,16 @@ afterEach(() => {
   for (const dir of tempDirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
 });
 
-function makeHarness(rows: AgentSession[]): Harness {
+function makeHarness(
+  rows: AgentSession[],
+  /**
+   * 提供时 reader 具备 `readSessionSummary`（codex / dsh 同款）：行上缺末轮预览
+   * 时走这条便宜路径，而不是读整段历史。
+   */
+  readSummary?: () => { lastUserMessage?: string; lastAssistantMessage?: string },
+): Harness {
   let contentReads = 0;
+  let summaryReads = 0;
   const reader: AgentSessionReader = {
     listSessions: () => ({ sessions: rows, total: rows.length }),
     getNewestSession: () => null,
@@ -60,6 +70,14 @@ function makeHarness(rows: AgentSession[]): Harness {
       return { events: [] };
     },
     isSessionActive: () => false,
+    ...(readSummary
+      ? {
+          readSessionSummary: () => {
+            summaryReads += 1;
+            return readSummary();
+          },
+        }
+      : {}),
   };
 
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'resume-preview-'));
@@ -82,7 +100,7 @@ function makeHarness(rows: AgentSession[]): Harness {
     workspacePath: path.join(tmp, 'workspace.json'),
     sessionReaderRegistry: registry,
   });
-  return { router, contentReads: () => contentReads };
+  return { router, contentReads: () => contentReads, summaryReads: () => summaryReads };
 }
 
 /** 捕获 /resume 发出的卡片，返回其中所有 markdown 文本。 */
@@ -117,6 +135,31 @@ describe('/resume 列表卡：会话预览', () => {
     expect(texts).toContain('修复，还有你的历史 run log 是在哪个文件里面看的？');
     expect(texts).toContain('**最后输出**');
     expect(texts).toContain('修复已经完成并进入代码库，共 2 个提交');
+  });
+
+  it('DSH 0.2.2：行上只有标题时用 readSessionSummary 补末轮预览，不读全量内容', async () => {
+    const { router, contentReads, summaryReads } = makeHarness(
+      [
+        {
+          sessionId: 'session-title-only',
+          summary: '清理文档',
+          title: '清理文档',
+          mtime: 1792541886753,
+        },
+      ],
+      () => ({ lastUserMessage: '末轮输入', lastAssistantMessage: '最后输出' }),
+    );
+
+    const texts = (await resumeCardTexts(router)).join('\n');
+    // 标题仍然来自列表行（标题标签不变），末轮预览来自投影摘要。
+    expect(texts).toContain('**标题**');
+    expect(texts).toContain('清理文档');
+    expect(texts).toContain('**最近输入**');
+    expect(texts).toContain('末轮输入');
+    expect(texts).toContain('**最后输出**');
+    expect(texts).toContain('最后输出');
+    expect(summaryReads()).toBe(1);
+    expect(contentReads()).toBe(0);
   });
 
   it('行级已带预览时不触发全量内容读取（DSH 零额外请求）', async () => {

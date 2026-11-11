@@ -24,6 +24,7 @@ import type {
 import type { SessionDisplayUsage } from '../../card/usage-format.js';
 import { getLogger } from '../../logger/index.js';
 import { buildLsCommand } from '../commands/ls.js';
+import type { LsTrailEntry } from '../commands/ls.js';
 import { buildWsCommand } from '../commands/ws.js';
 import { buildOrderCommand } from '../commands/order.js';
 import { buildResumeCommand, AUTO_RESUME_MAX_EVENTS } from '../commands/resume.js';
@@ -407,12 +408,14 @@ export function cmdLs(
   offset = 0,
   rootDir?: string,
   q?: string,
+  trail?: LsTrailEntry[],
 ): CommandResult {
   return buildLsCommand(args, ctx, {
     cwd: host.sessionStore.getCwd(ctx.userId),
     offset,
     rootDir,
     q,
+    trail,
   });
 }
 

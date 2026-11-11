@@ -113,6 +113,13 @@ export interface SessionSummary {
   recap?: string;
   displayTitle?: string;
   usage?: AgentSessionUsage;
+  /**
+   * 末轮的用户输入与最终输出。列表行本身可能不带（DSH 0.2.2 起把
+   * `turnOutline` 移出列表摘要，只在 `session/projections` 里有），
+   * 由 prefetch 单独取回；调用方把两者视为可缺省的展示字段。
+   */
+  lastUserMessage?: string;
+  lastAssistantMessage?: string;
 }
 
 /**

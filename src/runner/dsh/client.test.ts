@@ -613,7 +613,7 @@ describe('DshClient remote mux', () => {
     expect(state).toBe('unknown');
   });
 
-  it('parses session/control baseline and projection frames into filtered items', async () => {
+  it('parses session/control baseline and both projection frame shapes into filtered items', async () => {
     const fetchImpl = (async () => jsonResponse({})) as typeof fetch;
     const client = new DshClient('http://127.0.0.1:3080', {
       credentialsFile: NO_CREDENTIALS_FILE,
@@ -629,7 +629,24 @@ describe('DshClient remote mux', () => {
               },
             },
           },
-          { type: 'projection', sessionId: SID, key: 'sessionStats', value: { steps: 3 }, seq: 9 },
+          // 0.2.2 起：一次提交里变更的多个 key 合成一帧（缺 key/value 时不得整帧丢掉）。
+          {
+            type: 'projection',
+            sessionId: SID,
+            seq: 9,
+            changes: [
+              { key: 'sessionStats', val: { steps: 4 } },
+              { key: 'contextPressure', val: { projectedTokens: 2, contextWindow: 10 } },
+            ],
+          },
+          // 0.2.1 及更早：一帧一个 key。
+          {
+            type: 'projection',
+            sessionId: SID,
+            key: 'sessionStats',
+            value: { steps: 5 },
+            seq: 10,
+          },
         ]),
     });
     const items = [];
@@ -637,7 +654,7 @@ describe('DshClient remote mux', () => {
       items.push(item);
     }
     // baseline 展开成逐 key 的 item（调用方按 sessionId 过滤），
-    // 之后的增量帧原样透传；baseline 覆盖全 Host，不做 session 过滤。
+    // 之后的增量帧同样归一成逐 key；baseline 覆盖全 Host，不做 session 过滤。
     expect(items).toEqual([
       {
         kind: 'projection',
@@ -646,7 +663,43 @@ describe('DshClient remote mux', () => {
         value: { projectedTokens: 1 },
       },
       { kind: 'projection', sessionId: 'session-other', key: 'sessionStats', value: { steps: 3 } },
-      { kind: 'projection', sessionId: SID, key: 'sessionStats', value: { steps: 3 } },
+      { kind: 'projection', sessionId: SID, key: 'sessionStats', value: { steps: 4 } },
+      {
+        kind: 'projection',
+        sessionId: SID,
+        key: 'contextPressure',
+        value: { projectedTokens: 2, contextWindow: 10 },
+      },
+      { kind: 'projection', sessionId: SID, key: 'sessionStats', value: { steps: 5 } },
+    ]);
+  });
+
+  it('skips malformed entries inside a batched projection frame', async () => {
+    const fetchImpl = (async () => jsonResponse({})) as typeof fetch;
+    const client = new DshClient('http://127.0.0.1:3080', {
+      credentialsFile: NO_CREDENTIALS_FILE,
+      fetchImpl,
+      webSocketImpl: () =>
+        new ScriptedWebSocket('ws://127.0.0.1:3080/api/remote.mux', [
+          {
+            type: 'projection',
+            sessionId: SID,
+            seq: 3,
+            changes: [
+              null,
+              { key: '' },
+              { val: { steps: 1 } },
+              { key: 'plan', val: { active: true } },
+            ],
+          },
+        ]),
+    });
+    const items = [];
+    for await (const item of client.controlFrames(new AbortController().signal)) {
+      items.push(item);
+    }
+    expect(items).toEqual([
+      { kind: 'projection', sessionId: SID, key: 'plan', value: { active: true } },
     ]);
   });
 

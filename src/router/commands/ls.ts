@@ -14,6 +14,20 @@ interface LsCommandOptions {
   offset?: number;
   rootDir?: string;
   q?: string;
+  /** 上级目录的原页码（见 LsTrailEntry）。省略 = 上级都从第 1 页开始。 */
+  trail?: LsTrailEntry[];
+}
+
+/**
+ * `/ls` 浏览痕：记录「从哪个目录的哪一页进入子目录」。
+ *
+ * 「上级」/「返回」要回到离开父目录时所在的那页，但卡片动作是服务端零状态
+ * 的，页码只能随卡片 callback value 传递。只记录 offset > 0 的目录——第 1 页
+ * 是查不到时的默认值，写进每张卡片只会让 payload 无谓膨胀。
+ */
+export interface LsTrailEntry {
+  path: string;
+  offset: number;
 }
 
 function formatBytes(bytes: number): string {
@@ -86,6 +100,40 @@ export function withQuery(
   filter: string | undefined,
 ): Record<string, unknown> {
   return filter ? { ...value, q: filter } : { ...value };
+}
+
+/** trail 为空时不写字段：常见场景（没翻过页）保持旧 payload 形态与体积。 */
+function withTrail(
+  value: Record<string, unknown>,
+  trail: readonly LsTrailEntry[],
+): Record<string, unknown> {
+  return trail.length > 0 ? { ...value, trail: [...trail] } : value;
+}
+
+/** 目标目录在 trail 里的原页；没记录过 = 第 1 页。 */
+function trailOffsetFor(trail: readonly LsTrailEntry[], dir: string): number {
+  const hit = trail.find((entry) => entry.path === dir);
+  return hit ? Math.max(0, Math.trunc(hit.offset)) : 0;
+}
+
+/** 记录 dir 的原页：同一目录只留最新一条，第 1 页不记录。 */
+export function recordTrail(
+  trail: readonly LsTrailEntry[],
+  dir: string,
+  offset: number,
+): LsTrailEntry[] {
+  const rest = trail.filter((entry) => entry.path !== dir);
+  return offset > 0 ? [...rest, { path: dir, offset }] : rest;
+}
+
+/** 只留 dir 的严格上级：下钻记录不泄漏到兄弟目录/更深层。 */
+export function pruneTrail(trail: readonly LsTrailEntry[], dir: string): LsTrailEntry[] {
+  return trail.filter((entry) => isStrictAncestor(entry.path, dir));
+}
+
+function isStrictAncestor(ancestor: string, dir: string): boolean {
+  const rel = path.relative(ancestor, dir);
+  return rel !== '' && rel !== '..' && !rel.startsWith(`..${path.sep}`) && !path.isAbsolute(rel);
 }
 
 function lsCompareNames(a: string, b: string): number {
@@ -176,10 +224,20 @@ function lsColumns(elements: object[]): object[] {
   return columns;
 }
 
-function lsDirButton(name: string, targetDir: string, browseRoot: string): object {
+/** 进入子目录：`from` 记录来源目录当前页，「上级/返回」据此恢复原页。 */
+function lsDirButton(
+  name: string,
+  targetDir: string,
+  browseRoot: string,
+  offset: number,
+  trail: readonly LsTrailEntry[],
+): object {
   return cardButton(
     `📁 ${name}`,
-    { cmd: 'ls.browse', path: path.join(targetDir, name), root: browseRoot },
+    withTrail(
+      { cmd: 'ls.browse', path: path.join(targetDir, name), root: browseRoot, from: offset },
+      trail,
+    ),
     { type: 'default' },
   );
 }
@@ -192,39 +250,58 @@ function lsFileButton(name: string, size: number | undefined, targetDir: string)
   );
 }
 
+/** 「上级/返回」的目标页：目标目录在 trail 里的原页 + 目标自己的上级链。 */
+function lsBackPayload(
+  targetDir: string,
+  browseRoot: string,
+  trail: readonly LsTrailEntry[],
+): Record<string, unknown> {
+  return withTrail(
+    {
+      cmd: 'ls.browse',
+      path: targetDir,
+      root: browseRoot,
+      offset: trailOffsetFor(trail, targetDir),
+    },
+    pruneTrail(trail, targetDir),
+  );
+}
+
 function lsHeaderButtons(
   targetDir: string,
   cwd: string,
   browseRoot: string,
   safeOffset: number,
   filter: string | undefined,
+  trail: readonly LsTrailEntry[],
 ): object[] {
   const headerElements: object[] = [];
   const parentDir = path.dirname(targetDir);
   if (parentDir !== targetDir) {
     headerElements.push(
-      cardButton(
-        '上级',
-        { cmd: 'ls.browse', path: parentDir, root: browseRoot },
-        { type: 'default', size: 'small' },
-      ),
+      cardButton('上级', lsBackPayload(parentDir, browseRoot, trail), {
+        type: 'default',
+        size: 'small',
+      }),
     );
   }
   if (targetDir !== browseRoot) {
     headerElements.push(
-      cardButton(
-        '返回',
-        { cmd: 'ls.browse', path: browseRoot, root: browseRoot },
-        { type: 'default', size: 'small' },
-      ),
+      cardButton('返回', lsBackPayload(browseRoot, browseRoot, trail), {
+        type: 'default',
+        size: 'small',
+      }),
     );
   }
   headerElements.push(
     cardButton(
       '刷新',
-      withQuery(
-        { cmd: 'ls.refresh', path: targetDir, offset: safeOffset, root: browseRoot },
-        filter,
+      withTrail(
+        withQuery(
+          { cmd: 'ls.refresh', path: targetDir, offset: safeOffset, root: browseRoot },
+          filter,
+        ),
+        trail,
       ),
       { type: 'default', size: 'small' },
     ),
@@ -233,7 +310,7 @@ function lsHeaderButtons(
     headerElements.push(
       cardButton(
         '切换',
-        { cmd: 'ls.switch', path: targetDir, root: browseRoot },
+        withTrail({ cmd: 'ls.switch', path: targetDir, root: browseRoot }, trail),
         { type: 'primary', size: 'small' },
       ),
     );
@@ -247,6 +324,8 @@ function lsDirSection(
   currentPage: number,
   targetDir: string,
   browseRoot: string,
+  safeOffset: number,
+  trail: readonly LsTrailEntry[],
 ): object[] {
   const section: object[] = [
     { tag: 'div', text: { tag: 'lark_md', content: `**📂 目录 (${visibleDirCount})**` } },
@@ -260,7 +339,7 @@ function lsDirSection(
           {
             tag: 'column',
             width: 'auto',
-            elements: [lsDirButton(dir.name, targetDir, browseRoot)],
+            elements: [lsDirButton(dir.name, targetDir, browseRoot, safeOffset, trail)],
           },
         ],
       });
@@ -318,6 +397,7 @@ function lsPagination(
   targetDir: string,
   browseRoot: string,
   filter: string | undefined,
+  trail: readonly LsTrailEntry[],
 ): object[] {
   return [
     { tag: 'hr' },
@@ -326,7 +406,7 @@ function lsPagination(
       offset: safeOffset,
       pageSize: LS_PAGE_SIZE,
       total: totalCount,
-      extra: withQuery({ path: targetDir, root: browseRoot }, filter),
+      extra: withTrail(withQuery({ path: targetDir, root: browseRoot }, filter), trail),
       label: `**第 ${currentPage}/${totalPages} 页**（共 ${totalCount} 项）`,
     }),
   ];
@@ -339,8 +419,9 @@ function lsCard(opts: {
   browseRoot: string;
   offset: number;
   filter: string | undefined;
+  trail: readonly LsTrailEntry[];
 }): CommandResult {
-  const { targetDir, cwd, browseRoot, offset, filter } = opts;
+  const { targetDir, cwd, browseRoot, offset, filter, trail } = opts;
   const { dirs, files } = lsScanEntries(targetDir);
   const allItems = lsBuildItems(dirs, files);
   const ql = filter?.toLowerCase();
@@ -355,7 +436,7 @@ function lsCard(opts: {
   const { pageDirs, pageFiles } = lsPartitionPage(pageItems);
   lsFillPageFileSizes(pageFiles, targetDir);
 
-  const headerElements = lsHeaderButtons(targetDir, cwd, browseRoot, safeOffset, filter);
+  const headerElements = lsHeaderButtons(targetDir, cwd, browseRoot, safeOffset, filter, trail);
   const elements: object[] = [
     {
       tag: 'div',
@@ -370,7 +451,7 @@ function lsCard(opts: {
       cmd: 'ls.filter',
       placeholder: '搜索本层目录/文件名，输完回车',
       currentQuery: filter,
-      extra: { path: targetDir, root: browseRoot },
+      extra: withTrail({ path: targetDir, root: browseRoot }, trail),
     }),
   ];
   if (filter) {
@@ -389,7 +470,17 @@ function lsCard(opts: {
       text: { tag: 'lark_md', content: `🔍 无匹配条目（关键词："${filter}"）` },
     });
   } else {
-    elements.push(...lsDirSection(pageDirs, visibleDirCount, currentPage, targetDir, browseRoot));
+    elements.push(
+      ...lsDirSection(
+        pageDirs,
+        visibleDirCount,
+        currentPage,
+        targetDir,
+        browseRoot,
+        safeOffset,
+        trail,
+      ),
+    );
     elements.push({ tag: 'hr' });
     elements.push(...lsFileSection(pageFiles, visibleFileCount, currentPage, targetDir));
   }
@@ -404,6 +495,7 @@ function lsCard(opts: {
         targetDir,
         browseRoot,
         filter,
+        trail,
       ),
     );
   }
@@ -452,9 +544,12 @@ export function buildLsCommand(
   if ('result' in resolved) return resolved.result;
   const targetDir = resolved.targetDir;
   const browseRoot = rootDir ? path.resolve(cwd, rootDir) : targetDir;
+  // 卡片上的 trail 恒等于「目标目录的严格上级」：切换目录/路径失效回退等
+  // 情况下也不让旧下钻记录扩散到兄弟或更深层。
+  const trail = pruneTrail(options.trail ?? [], targetDir);
 
   try {
-    return lsCard({ targetDir, cwd, browseRoot, offset, filter });
+    return lsCard({ targetDir, cwd, browseRoot, offset, filter, trail });
   } catch (err) {
     return { text: `读取目录失败: ${(err as Error).message}` };
   }

@@ -33,6 +33,14 @@ export interface CardActionPayload {
    * 卡片上的「返回」按钮回到这里，而不是回到会话工作目录。
    */
   root?: string;
+  /**
+   * `/ls` 浏览痕：上级目录的原页码（只记录离开时不在第 1 页的目录）。
+   * 「上级」/「返回」据此回到进入子目录时所在的那页。服务端零状态，随卡片
+   * callback value 传递。
+   */
+  trail?: Array<{ path: string; offset: number }>;
+  /** `/ls` 进入子目录时来源目录的当前页（条目 offset），写入新卡的 trail。 */
+  from?: number;
   /** /resume 列表的 agent 类型。 */
   agent?: string;
   /** /resume 列表页大小覆盖。 */

@@ -27,6 +27,7 @@ import type {
   AgentSessionReader,
   AgentSessionUsage,
   SessionContent,
+  SessionSummary,
 } from '../../session-contract.js';
 import type {
   DshSessionEvent,
@@ -196,6 +197,9 @@ function isAuthFailure(err: unknown): boolean {
   return /\b401\b|\b403\b|unauthori[sz]ed|forbidden|invalid[ -]?cookie/i.test(msg);
 }
 
+/** 列表行 / `session/projections` 里本仓库消费的投影值。 */
+type DshProjectionValues = NonNullable<DshSessionSummary['projections']>['values'];
+
 export class DshSessionReader implements AgentSessionReader {
   /** DSH session/page 没有 compactCount；compact 收尾不应因此重试读取。 */
   readonly supportsCompactCount = false;
@@ -314,7 +318,7 @@ export class DshSessionReader implements AgentSessionReader {
           sessionId: String(i.sessionId),
           mtime: i.updatedAt,
           ...sessionPreset(i),
-          ...sessionPreview(i),
+          ...sessionPreview(i.projections?.values),
         }));
       sortByRecencyDesc(
         filtered,
@@ -356,7 +360,7 @@ export class DshSessionReader implements AgentSessionReader {
       }
       const throughSeq = this.resolveThroughSeq(sessionId, session);
       // 服务端投影带来的标题与末轮输入：详情卡头部用它们，不必再从事件里猜。
-      const preview = sessionPreview(session);
+      const preview = sessionPreview(session.projections?.values);
       const value = this.unary('session/page', {
         address: { kind: 'session', sessionId },
         throughSeq,
@@ -378,6 +382,47 @@ export class DshSessionReader implements AgentSessionReader {
       getLogger().error(`[dsh-session-reader] isSessionActive failed: ${error}`);
       return false;
     }
+  }
+
+  /**
+   * `/resume` 列表的每行预览（标题 + 末轮输入/输出），只读投影、不拉历史。
+   *
+   * DSH 0.2.2 起 `turnOutline` 声明了 `summary: false`，不再随 `session/list`
+   * 下发；同一份值仍在 `session/projections` 里，所以这里按需单独取一次。
+   * 与 `readSessionContent` 同口径做 cwd 守卫：跨 workspace 的会话一律不读。
+   */
+  readSessionSummary(sessionId: string, cwd: string): SessionSummary {
+    try {
+      const session = this.resolveSession(sessionId, cwd);
+      if (!session) return {};
+      const preview = sessionPreview(this.projectionValuesOf(sessionId));
+      // 标题不回传：列表行本来就有，`/resume` 会把它当「近期取回的标题」重标成
+      // 最近输入（resumeTitleParts 的标签口径），那样标题与末轮输入会重复一次。
+      return {
+        ...(preview.lastUserMessage ? { lastUserMessage: preview.lastUserMessage } : {}),
+        ...(preview.lastAssistantMessage
+          ? { lastAssistantMessage: preview.lastAssistantMessage }
+          : {}),
+      };
+    } catch (error) {
+      // 预览是展示增强：投影读不到时留空，别把整张 /resume 列表打成读取失败。
+      getLogger().warn(`[dsh-session-reader] readSessionSummary failed for ${sessionId}: ${error}`);
+      return {};
+    }
+  }
+
+  /**
+   * `session/projections` 的整份投影值，用于补齐列表行缺失的预览字段。
+   * 读不到时返回 undefined：预览可缺省，不是故障（详情卡另有自己的错误路径）。
+   */
+  private projectionValuesOf(sessionId: string): DshProjectionValues | undefined {
+    const value = this.unary('session/projections', { sessionId }) as {
+      values?: unknown;
+    } | null;
+    const values = value?.values;
+    return values && typeof values === 'object' && !Array.isArray(values)
+      ? (values as DshProjectionValues)
+      : undefined;
   }
 
   /**
@@ -438,21 +483,22 @@ function sessionPreset(item: {
 /**
  * 会话预览（列表卡上的「标题 / 最近输入 / 最后输出」）。
  *
- * 全部取自 `session/list` 的 `projections.values`——DSH 0.2.x 已经随列表一起
- * 返回 title 与 turnOutline（每轮的 prompt/response），所以这里不需要再拉
- * `session/page`：它按 `maxMessages=10000` 的上限拉整段历史，一页前 5 行就是
- * 5 次这种大响应（把每行的 cwd 守卫与 projections 一起算，是 15 次同步请求）。
+ * 输入是投影值：`session/list` 的行投影或 `session/projections` 的整份值。
+ * `title` 一直随列表行下发；`turnOutline`（每轮的 prompt/response）在 0.2.2
+ * 起登记为 `summary: false`，只能从 `session/projections` 取——所以要预览就得
+ * 额外读一次投影，不能指望行里有。
  *
- * `turnOutline` 的 prompt/response 由 DSH 侧按长度截断（结尾带 `…`），列表卡
- * 只做单行预览，直接复用即可。缺字段 / 类型不对时全部留空，不影响列表。
+ * 不拉 `session/page`：它按 `maxMessages=10000` 的上限拉整段历史，一页前 5 行
+ * 就是 5 次这种大响应（把每行的 cwd 守卫与 projections 一起算，是 15 次同步
+ * 请求）。`turnOutline` 的 prompt/response 由 DSH 侧按长度截断（结尾带 `…`），
+ * 列表卡只做单行预览，直接复用即可。缺字段 / 类型不对时全部留空，不影响列表。
  */
-function sessionPreview(item: DshSessionSummary): {
+function sessionPreview(values: DshProjectionValues | undefined): {
   summary: string;
   title?: string;
   lastUserMessage?: string;
   lastAssistantMessage?: string;
 } {
-  const values = item.projections?.values;
   const rawTitle = values?.title;
   const title = typeof rawTitle === 'string' ? rawTitle.trim() : '';
   const outline = values?.turnOutline;
